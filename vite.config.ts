@@ -7,6 +7,7 @@ import { defineConfig } from "vite";
 const config = defineConfig({
 	resolve: { tsconfigPaths: true },
 	plugins: [devtools(), tailwindcss(), tanstackStart(), viteReact()],
+	server: { host: "0.0.0.0" },
 });
 
 export default config;
