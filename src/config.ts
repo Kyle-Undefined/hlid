@@ -21,6 +21,8 @@ const ServerSchema = z.object({
 
 const ClaudeSchema = z.object({
 	model: z.string().default("claude-sonnet-4-6"),
+	effort: z.enum(["low", "medium", "high", "xhigh", "max"]).default("high"),
+	max_turns: z.number().int().positive().optional(),
 	permission_mode: z
 		.enum(["default", "acceptEdits", "bypassPermissions"])
 		.default("default"),
@@ -37,6 +39,7 @@ export const HlidConfigSchema = z.object({
 	server: ServerSchema.default(() => ({ port: 3000, host: "0.0.0.0" })),
 	claude: ClaudeSchema.default(() => ({
 		model: "claude-sonnet-4-6",
+		effort: "high" as const,
 		permission_mode: "default" as const,
 	})),
 	status_vocabulary: StatusVocabularySchema.default(() => ({

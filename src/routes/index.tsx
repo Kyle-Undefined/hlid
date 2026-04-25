@@ -1,183 +1,455 @@
 import { readdirSync } from "node:fs";
 import { join } from "node:path";
-import { createFileRoute, useRouter } from "@tanstack/react-router";
+import {
+	createFileRoute,
+	useNavigate,
+	useRouter,
+} from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
-import { useState } from "react";
+import { ChevronRight } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { FirstRunWizard } from "#/components/wizard/FirstRunWizard";
 import { getConfig } from "#/config";
 import { useWs } from "#/hooks/useWs";
-import { scanProjects } from "#/lib/vault";
+import type { Skill } from "#/lib/vault";
+import { scanProjects, scanSkills } from "#/lib/vault";
 import type { ServerMessage } from "#/server/protocol";
 
-const getCockpitStats = createServerFn({ method: "GET" }).handler(async () => {
+// ─── recent runs (localStorage) ───────────────────────────────────────────────
+
+type RecentRun = {
+	id: string;
+	label: string;
+	time: string;
+	timestamp: number;
+};
+
+const RUNS_KEY = "hlid_recent_runs";
+const MAX_RUNS = 14;
+
+function loadRuns(): RecentRun[] {
+	if (typeof window === "undefined") return [];
+	try {
+		return JSON.parse(localStorage.getItem(RUNS_KEY) ?? "[]");
+	} catch {
+		return [];
+	}
+}
+
+function pushRun(label: string): void {
+	const now = new Date();
+	const time = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
+	const run: RecentRun = {
+		id: crypto.randomUUID(),
+		label: label.slice(0, 32).toUpperCase(),
+		time,
+		timestamp: Date.now(),
+	};
+	const runs = [run, ...loadRuns()].slice(0, MAX_RUNS);
+	localStorage.setItem(RUNS_KEY, JSON.stringify(runs));
+}
+
+// ─── server fn ───────────────────────────────────────────────────────────────
+
+const getCockpitData = createServerFn({ method: "GET" }).handler(async () => {
 	const config = await getConfig();
+	const { vault, status_vocabulary } = config;
 
 	let inboxCount = 0;
-	if (config.vault.path && config.vault.inbox) {
+	if (vault.path && vault.inbox) {
 		try {
-			inboxCount = readdirSync(
-				join(config.vault.path, config.vault.inbox),
-			).filter((f) => f.endsWith(".md")).length;
-		} catch {
-			inboxCount = 0;
+			inboxCount = readdirSync(join(vault.path, vault.inbox)).filter((f) =>
+				f.endsWith(".md"),
+			).length;
+		} catch (err) {
+			if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+				console.warn("Failed to read inbox directory:", err);
+			}
 		}
 	}
 
 	let activeCount = 0;
 	let totalCount = 0;
-	if (config.vault.path && config.vault.projects) {
+	if (vault.path && vault.projects) {
 		const projects = scanProjects(
-			config.vault.path,
-			config.vault.projects,
-			config.status_vocabulary,
+			vault.path,
+			vault.projects,
+			status_vocabulary,
 		);
 		totalCount = projects.length;
 		activeCount = projects.filter((p) => p.status === "active").length;
 	}
 
-	return { inboxCount, activeCount, totalCount };
+	const skills =
+		vault.path && vault.skills ? scanSkills(vault.path, vault.skills) : [];
+
+	return { inboxCount, activeCount, totalCount, skills };
 });
+
+// ─── route ───────────────────────────────────────────────────────────────────
 
 export const Route = createFileRoute("/")({
 	loader: async () => {
-		const [config, stats] = await Promise.all([getConfig(), getCockpitStats()]);
-		return { config, stats };
+		const [config, data] = await Promise.all([getConfig(), getCockpitData()]);
+		return { config, data };
 	},
 	component: CockpitPage,
 });
 
-function StatCard({ label, value }: { label: string; value: string }) {
+// ─── components ──────────────────────────────────────────────────────────────
+
+function StatCell({
+	label,
+	value,
+	dim,
+}: {
+	label: string;
+	value: string;
+	dim?: boolean;
+}) {
 	return (
-		<div className="p-4 rounded-lg border border-border bg-card">
-			<div className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-2">
+		<div className="px-4 py-3 flex flex-col gap-1">
+			<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
 				{label}
 			</div>
-			<div className="text-2xl font-semibold text-foreground tabular-nums">
+			<div
+				className={`text-xl font-bold tabular-nums ${dim ? "text-muted-foreground/20" : "text-[#38bdf8]"}`}
+			>
 				{value}
 			</div>
 		</div>
 	);
 }
 
-function VaultCard({
-	vault,
+function SkillRow({
+	skill,
+	active,
+	onSelect,
 }: {
-	vault: { name: string; path: string; inbox?: string; projects?: string };
+	skill: Skill;
+	active: boolean;
+	onSelect: (content: string, name: string) => void;
 }) {
 	return (
-		<div className="p-4 rounded-lg border border-border bg-card">
-			<div className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-2">
-				Vault
-			</div>
-			<div className="font-medium text-foreground">{vault.name}</div>
-			<div className="text-xs text-muted-foreground mt-1 font-mono truncate">
-				{vault.path}
-			</div>
-		</div>
+		<button
+			type="button"
+			onClick={() => onSelect(skill.content, skill.name)}
+			className={`flex items-center w-full px-4 py-2.5 gap-4 border-l-2 text-left transition-colors group ${
+				active
+					? "border-primary bg-primary/[0.08]"
+					: "border-transparent hover:border-primary/30 hover:bg-primary/[0.03]"
+			}`}
+		>
+			<ChevronRight
+				className={`w-3 h-3 shrink-0 transition-transform ${
+					active
+						? "rotate-90 text-primary"
+						: "text-muted-foreground/25 group-hover:text-primary/40"
+				}`}
+			/>
+			<span
+				className={`text-[11px] tracking-wider font-medium uppercase w-36 shrink-0 truncate ${
+					active ? "text-primary" : "text-foreground/80"
+				}`}
+			>
+				{skill.name}
+			</span>
+			{skill.description && (
+				<span className="text-[10px] text-muted-foreground/50 truncate flex-1 leading-snug">
+					{skill.description}
+				</span>
+			)}
+		</button>
 	);
 }
 
-function SessionBadge() {
-	const { wsStatus, sessionState, model } = useWs();
-
-	if (wsStatus === "disconnected" || wsStatus === "connecting") {
-		return (
-			<div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-secondary text-muted-foreground text-xs font-medium">
-				<div className="w-1.5 h-1.5 rounded-full bg-muted-foreground/40" />
-				Offline
-			</div>
-		);
-	}
-
-	if (sessionState === "running") {
-		return (
-			<div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-secondary text-xs font-medium text-foreground">
-				<div className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse" />
-				Running
-			</div>
-		);
-	}
-
-	if (sessionState === "error") {
-		return (
-			<div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-secondary text-xs font-medium text-destructive">
-				<div className="w-1.5 h-1.5 rounded-full bg-destructive" />
-				Error
-			</div>
-		);
-	}
+function RecentRunsStrip({ runs }: { runs: RecentRun[] }) {
+	const [open, setOpen] = useState(false);
+	if (runs.length === 0) return null;
+	const latest = runs[0];
+	const rest = runs.slice(1);
 
 	return (
-		<div
-			className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-secondary text-xs font-medium text-foreground"
-			title={model}
-		>
-			<div className="w-1.5 h-1.5 rounded-full bg-green-400" />
-			Ready
+		<div className="border-b border-border shrink-0">
+			<button
+				type="button"
+				onClick={() => setOpen(!open)}
+				className="flex items-center gap-3 w-full px-4 py-2 hover:bg-accent/50 transition-colors text-left group"
+			>
+				<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase shrink-0">
+					LAST RUN
+				</span>
+				<span className="text-[10px] tabular-nums text-[#38bdf8]/50 shrink-0 font-mono">
+					{latest.time}
+				</span>
+				<span className="text-[10px] tracking-wider text-muted-foreground/60 truncate flex-1">
+					{latest.label}
+				</span>
+				{rest.length > 0 && (
+					<span
+						className={`text-[9px] tracking-widest text-muted-foreground/30 shrink-0 transition-transform group-hover:text-muted-foreground/50 ${open ? "rotate-180" : ""}`}
+					>
+						{open ? "▲" : `▼ ${rest.length} MORE`}
+					</span>
+				)}
+			</button>
+			{open && rest.length > 0 && (
+				<div className="border-t border-border/40">
+					{rest.map((run) => (
+						<div
+							key={run.id}
+							className="flex items-baseline gap-3 px-4 py-1.5 border-b border-border/20 last:border-0"
+						>
+							<span className="text-[10px] tabular-nums text-[#38bdf8]/40 shrink-0 w-9 font-mono">
+								{run.time}
+							</span>
+							<span className="text-[10px] tracking-wider text-muted-foreground/50 truncate">
+								{run.label}
+							</span>
+						</div>
+					))}
+				</div>
+			)}
 		</div>
 	);
 }
 
-function CockpitPage() {
-	const { config, stats } = Route.useLoaderData();
-	const router = useRouter();
-	const [sessionCost, setSessionCost] = useState<number>(0);
+// ─── page ────────────────────────────────────────────────────────────────────
 
-	const { wsStatus } = useWs((msg: ServerMessage) => {
-		if (msg.type === "done" && msg.cost != null) {
-			const cost = msg.cost;
-			setSessionCost((prev) => prev + cost);
-		}
-	});
+function CockpitPage() {
+	const { config, data } = Route.useLoaderData();
+	const router = useRouter();
+	const navigate = useNavigate();
+	const [sessionCost, setSessionCost] = useState(0);
+	const [prompt, setPrompt] = useState("");
+	const [activeSkill, setActiveSkill] = useState<string | null>(null);
+	const [recentRuns, setRecentRuns] = useState<RecentRun[]>([]);
+	const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+	useEffect(() => {
+		setRecentRuns(loadRuns());
+	}, []);
+
+	const { wsStatus, sessionState, model, send } = useWs(
+		(msg: ServerMessage) => {
+			if (msg.type === "done" && msg.cost != null) {
+				const cost = msg.cost;
+				setSessionCost((prev) => prev + cost);
+			}
+		},
+	);
+
+	// biome-ignore lint/correctness/useExhaustiveDependencies: prompt length triggers resize
+	useEffect(() => {
+		const el = textareaRef.current;
+		if (!el) return;
+		el.style.height = "auto";
+		el.style.height = `${Math.min(el.scrollHeight, 280)}px`;
+	}, [prompt]);
 
 	if (!config.vault.path) {
 		return <FirstRunWizard onComplete={() => router.invalidate()} />;
 	}
 
+	function handleSkillSelect(content: string, name: string) {
+		setPrompt(content);
+		setActiveSkill(name);
+		setTimeout(() => textareaRef.current?.focus(), 0);
+	}
+
+	function handleClear() {
+		setPrompt("");
+		setActiveSkill(null);
+	}
+
+	function handleRun() {
+		const text = prompt.trim();
+		if (!text || isRunning || wsStatus !== "connected") return;
+		pushRun(activeSkill ?? text.slice(0, 32));
+		setRecentRuns(loadRuns());
+		send({ type: "chat", text });
+		navigate({ to: "/chat" });
+	}
+
+	const isConnected = wsStatus === "connected";
+	const isRunning = isConnected && sessionState === "running";
+	const canRun = prompt.trim().length > 0 && !isRunning && isConnected;
+
 	const costStr =
 		sessionCost > 0
 			? `$${sessionCost.toFixed(4)}`
-			: wsStatus === "connected"
+			: isConnected
 				? "$0.0000"
 				: "--";
 
+	const MODEL_LABELS: Record<string, string> = {
+		"claude-opus-4-7": "Opus 4.7",
+		"claude-sonnet-4-6": "Sonnet 4.6",
+		"claude-haiku-4-5-20251001": "Haiku 4.5",
+	};
+	const modelShort = model
+		? (MODEL_LABELS[model] ??
+			model.replace("claude-", "").replace(/-\d{8}$/, ""))
+		: null;
+
 	return (
-		<div className="p-6 max-w-3xl mx-auto">
-			<div className="flex items-start justify-between mb-8">
-				<div>
-					<h1 className="text-xl font-semibold text-foreground tracking-tight">
-						Cockpit
-					</h1>
-					<p className="text-sm text-muted-foreground mt-0.5">
-						{config.vault.name || "Hlid"}
-					</p>
+		<div className="flex flex-col h-full">
+			{/* Header strip */}
+			<div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
+				<div className="flex items-center gap-3">
+					<span className="text-[11px] tracking-widest text-muted-foreground uppercase">
+						COCKPIT
+					</span>
+					<span className="text-muted-foreground/25">·</span>
+					<span className="text-[11px] tracking-widest text-primary uppercase">
+						{config.vault.name || "HLID"}
+					</span>
+					{modelShort && (
+						<>
+							<span className="text-muted-foreground/25">·</span>
+							<span className="text-[10px] tracking-widest text-muted-foreground/40">
+								{modelShort}
+							</span>
+						</>
+					)}
 				</div>
-				<SessionBadge />
 			</div>
 
-			<div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4">
-				<StatCard
-					label="Inbox"
-					value={config.vault.inbox ? String(stats.inboxCount) : "--"}
-				/>
-				<StatCard
-					label="Active Projects"
-					value={config.vault.projects ? String(stats.activeCount) : "--"}
-				/>
-				<StatCard label="Session Cost" value={costStr} />
+			{/* Stat bar */}
+			<div className="border-b border-border shrink-0">
+				<div className="grid grid-cols-2 sm:grid-cols-4 divide-x divide-border">
+					<StatCell
+						label="INBOX"
+						value={config.vault.inbox ? String(data.inboxCount) : "--"}
+						dim={!config.vault.inbox}
+					/>
+					<StatCell
+						label="ACTIVE"
+						value={config.vault.projects ? String(data.activeCount) : "--"}
+						dim={!config.vault.projects}
+					/>
+					<StatCell
+						label="PROJECTS"
+						value={config.vault.projects ? String(data.totalCount) : "--"}
+						dim={!config.vault.projects}
+					/>
+					<StatCell label="SESSION COST" value={costStr} dim={!isConnected} />
+				</div>
 			</div>
 
-			<VaultCard vault={config.vault} />
+			{/* Recent runs strip */}
+			<RecentRunsStrip runs={recentRuns} />
 
-			<div className="mt-4 p-4 rounded-lg border border-border bg-card">
-				<div className="text-[11px] font-medium text-muted-foreground uppercase tracking-wider mb-3">
-					Recent Activity
+			{/* Main body — single column */}
+			<div className="flex flex-1 flex-col overflow-auto">
+				{/* Prompt area */}
+				<div className="p-4 border-b border-border space-y-2 shrink-0">
+					<div className="flex items-center justify-between mb-1">
+						<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+							PROMPT
+							{activeSkill && (
+								<span className="text-primary/50 ml-2">· {activeSkill}</span>
+							)}
+						</div>
+						{prompt && (
+							<button
+								type="button"
+								onClick={handleClear}
+								className="text-[9px] tracking-widest text-muted-foreground/40 hover:text-muted-foreground transition-colors uppercase"
+							>
+								CLEAR
+							</button>
+						)}
+					</div>
+
+					<div
+						className={`border bg-card transition-colors ${isConnected ? "border-border focus-within:border-primary/30" : "border-border/40"}`}
+					>
+						<div className="flex items-start">
+							<span className="text-primary text-sm px-3 py-2.5 shrink-0 select-none">
+								›
+							</span>
+							<textarea
+								ref={textareaRef}
+								value={prompt}
+								onChange={(e) => {
+									setPrompt(e.target.value);
+									if (activeSkill) setActiveSkill(null);
+								}}
+								onKeyDown={(e) => {
+									if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+										e.preventDefault();
+										handleRun();
+									}
+								}}
+								rows={3}
+								placeholder={
+									!isConnected
+										? "server offline…"
+										: "type a prompt, or pick a skill below"
+								}
+								disabled={!isConnected}
+								className="flex-1 resize-none bg-transparent py-2.5 pr-3 text-sm text-foreground placeholder:text-muted-foreground/25 focus:outline-none disabled:opacity-30 overflow-hidden min-h-[72px]"
+							/>
+						</div>
+						<div className="flex items-center justify-between px-3 py-2 border-t border-border/60">
+							<span className="text-[9px] tracking-wider text-muted-foreground/25">
+								{isConnected ? "⌘↵ TO RUN" : "OFFLINE"}
+							</span>
+							<div className="flex gap-2">
+								{prompt && (
+									<button
+										type="button"
+										onClick={handleClear}
+										className="px-3 py-1 border border-border text-[10px] tracking-widest text-muted-foreground/50 hover:text-foreground hover:border-border/80 transition-colors uppercase"
+									>
+										CLEAR
+									</button>
+								)}
+								<button
+									type="button"
+									onClick={handleRun}
+									disabled={!canRun}
+									className="px-3 py-1 bg-primary text-primary-foreground text-[10px] tracking-widest font-bold hover:opacity-90 transition-opacity disabled:opacity-25 uppercase"
+								>
+									RUN →
+								</button>
+							</div>
+						</div>
+					</div>
 				</div>
-				<p className="text-sm text-muted-foreground">
-					{wsStatus === "connected"
-						? "Session ready. Start a conversation in Chat."
-						: "Server offline."}
-				</p>
+
+				{/* Skills — episode rows */}
+				{data.skills.length > 0 ? (
+					<div className="flex flex-col">
+						<div className="px-4 py-2.5 border-b border-border">
+							<span className="text-[9px] tracking-widest text-muted-foreground uppercase">
+								SKILLS
+							</span>
+						</div>
+						<div className="flex flex-col divide-y divide-border/30">
+							{data.skills.map((skill) => (
+								<SkillRow
+									key={skill.file}
+									skill={skill}
+									active={activeSkill === skill.name}
+									onSelect={handleSkillSelect}
+								/>
+							))}
+						</div>
+					</div>
+				) : (
+					<div className="flex-1 flex items-center justify-center">
+						<div className="text-center space-y-2">
+							<div className="text-[10px] tracking-widest text-muted-foreground/30 uppercase">
+								no skills yet
+							</div>
+							<div className="text-[9px] tracking-wider text-muted-foreground/20">
+								drop .md files into your vault skills folder
+							</div>
+						</div>
+					</div>
+				)}
 			</div>
 		</div>
 	);

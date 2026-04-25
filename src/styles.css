@@ -3,60 +3,46 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* Tokyo Night palette */
-:root {
-  --tn-bg: #1a1b26;
-  --tn-bg-dark: #16161e;
-  --tn-surface: #24283b;
-  --tn-border: #292e42;
-  --tn-fg: #c0caf5;
-  --tn-fg-muted: #a9b1d6;
-  --tn-comment: #565f89;
-  --tn-blue: #7aa2f7;
-  --tn-cyan: #7dcfff;
-  --tn-teal: #73daca;
-  --tn-green: #9ece6a;
-  --tn-magenta: #bb9af7;
-  --tn-red: #f7768e;
-  --tn-orange: #ff9e64;
-  --tn-yellow: #e0af68;
-}
-
-/* shadcn CSS vars; always dark (Tokyo Night) */
+/* inspo.png palette — neutral dark, sky blue accent */
 :root,
 .dark {
-  --background: oklch(0.14 0.02 280);
-  --foreground: oklch(0.83 0.045 280);
-  --card: oklch(0.16 0.02 280);
-  --card-foreground: oklch(0.83 0.045 280);
-  --popover: oklch(0.16 0.02 280);
-  --popover-foreground: oklch(0.83 0.045 280);
-  --primary: oklch(0.68 0.12 255);
-  --primary-foreground: oklch(0.14 0.02 280);
-  --secondary: oklch(0.22 0.022 278);
-  --secondary-foreground: oklch(0.83 0.045 280);
-  --muted: oklch(0.22 0.022 278);
-  --muted-foreground: oklch(0.55 0.045 278);
-  --accent: oklch(0.22 0.022 278);
-  --accent-foreground: oklch(0.83 0.045 280);
-  --destructive: oklch(0.67 0.17 15);
-  --destructive-foreground: oklch(0.83 0.045 280);
-  --border: oklch(0.22 0.022 278);
-  --input: oklch(0.22 0.022 278);
-  --ring: oklch(0.68 0.12 255);
-  --radius: 0.5rem;
-  --sidebar: oklch(0.115 0.016 280);
-  --sidebar-foreground: oklch(0.83 0.045 280);
-  --sidebar-primary: oklch(0.68 0.12 255);
-  --sidebar-primary-foreground: oklch(0.14 0.02 280);
-  --sidebar-accent: oklch(0.19 0.02 280);
-  --sidebar-accent-foreground: oklch(0.83 0.045 280);
-  --sidebar-border: oklch(0.19 0.018 280);
-  --sidebar-ring: oklch(0.68 0.12 255);
+  --background: #0f0f12;
+  --foreground: #d0d0d8;
+  --card: #151518;
+  --card-foreground: #d0d0d8;
+  --popover: #131316;
+  --popover-foreground: #d0d0d8;
+  --primary: #38bdf8;
+  --primary-foreground: #071825;
+  --secondary: #1a1a1e;
+  --secondary-foreground: #d0d0d8;
+  --muted: #1a1a1e;
+  --muted-foreground: #a8a8b8;
+  --accent: #1e1e22;
+  --accent-foreground: #d0d0d8;
+  --destructive: #963232;
+  --destructive-foreground: #d0d0d8;
+  --border: #222226;
+  --input: #1a1a1e;
+  --ring: #38bdf8;
+  --radius: 0px;
+  --sidebar: #0b0b0e;
+  --sidebar-foreground: #d0d0d8;
+  --sidebar-primary: #38bdf8;
+  --sidebar-primary-foreground: #071825;
+  --sidebar-accent: #1a1a1e;
+  --sidebar-accent-foreground: #d0d0d8;
+  --sidebar-border: #161618;
+  --sidebar-ring: #38bdf8;
+  /* data/stat accent */
+  --data: #38bdf8;
+  /* tool block expanded panel — sky blue inset */
+  --tool-panel: #071825;
+  --tool-panel-border: #1a5580;
 }
 
 @theme inline {
-  --font-sans: ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'JetBrains Mono', 'Cascadia Code', ui-monospace, monospace;
   --font-mono: 'JetBrains Mono', 'Cascadia Code', ui-monospace, monospace;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
@@ -77,10 +63,10 @@
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
   --color-sidebar: var(--sidebar);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar-primary: var(--sidebar-primary);
@@ -89,6 +75,8 @@
   --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
   --color-sidebar-border: var(--sidebar-border);
   --color-sidebar-ring: var(--sidebar-ring);
+  --color-tool-panel: var(--tool-panel);
+  --color-tool-panel-border: var(--tool-panel-border);
 }
 
 html,
@@ -99,8 +87,9 @@ body,
 
 body {
   margin: 0;
-  background-color: var(--tn-bg);
-  color: var(--tn-fg);
+  background-color: var(--background);
+  color: var(--foreground);
+  font-family: 'JetBrains Mono', 'Cascadia Code', ui-monospace, monospace;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -113,4 +102,61 @@ body {
     background-color: var(--background);
     color: var(--foreground);
   }
+  button,
+  a,
+  select,
+  label[for],
+  label:has(input[type="radio"]),
+  label:has(input[type="checkbox"]) {
+    cursor: pointer;
+  }
+  button:disabled {
+    cursor: not-allowed;
+  }
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #222226 transparent;
+}
+
+*::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+
+*::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: #222226;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: #38bdf8;
+}
+
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+@keyframes cursor-blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
+}
+
+.cursor-blink {
+  animation: cursor-blink 1s step-end infinite;
 }

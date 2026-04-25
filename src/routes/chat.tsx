@@ -1,5 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { Check, ChevronRight, Send, SquarePen, X } from "lucide-react";
+import { Check, ChevronRight, SquarePen, X } from "lucide-react";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { useWs } from "#/hooks/useWs";
 import type {
@@ -115,24 +115,39 @@ function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 
 function ToolBlock({ event }: { event: ToolEventMessage }) {
 	const [open, setOpen] = useState(false);
+	const pills = Object.entries(event.input ?? {}).slice(0, 3);
+
 	return (
-		<div className="border border-border rounded-md overflow-hidden text-xs font-mono">
+		<div className="my-0.5">
 			<button
 				type="button"
 				onClick={() => setOpen(!open)}
-				className="w-full flex items-center gap-2 px-3 py-1.5 bg-muted/40 text-muted-foreground hover:bg-muted transition-colors text-left"
+				className="flex items-center gap-2.5 w-full px-3 py-1.5 group hover:bg-primary/[0.03] transition-colors text-left"
 			>
 				<ChevronRight
-					className={`w-3 h-3 shrink-0 transition-transform duration-150 ${open ? "rotate-90" : ""}`}
+					className={`w-3 h-3 shrink-0 text-sky-600/60 group-hover:text-sky-500/80 transition-transform duration-150 ${open ? "rotate-90" : ""}`}
 				/>
-				<span className="text-foreground/60 font-sans font-medium">
+				<span className="text-[11px] font-medium tracking-wider text-sky-400/70 group-hover:text-sky-400/90 shrink-0">
 					{event.name}
 				</span>
+				<div className="flex gap-1.5 flex-wrap">
+					{pills.map(([k, v]) => (
+						<span
+							key={k}
+							className="text-[9px] tracking-wide border border-sky-900/40 text-sky-600/50 px-1.5 py-0.5 font-mono"
+						>
+							{k}: {String(v).slice(0, 24)}
+							{String(v).length > 24 ? "…" : ""}
+						</span>
+					))}
+				</div>
 			</button>
 			{open && (
-				<pre className="px-3 py-2 text-xs overflow-auto max-h-48 bg-card/40 text-foreground/60 leading-relaxed">
-					{JSON.stringify(event.input, null, 2)}
-				</pre>
+				<div className="mx-3 mb-1.5 border border-[var(--tool-panel-border)] bg-[var(--tool-panel)]">
+					<pre className="text-[11px] text-sky-300/60 font-mono leading-relaxed p-3 overflow-auto max-h-48">
+						{JSON.stringify(event.input, null, 2)}
+					</pre>
+				</div>
 			)}
 		</div>
 	);
@@ -149,85 +164,103 @@ function PermissionCard({
 
 	if (!pending) {
 		return (
-			<div className="flex items-center gap-2 px-3 py-2 rounded-xl border border-border bg-card text-xs text-muted-foreground">
-				{message.decision === "approved" ? (
-					<Check className="w-3.5 h-3.5 text-green-400 shrink-0" />
-				) : (
-					<X className="w-3.5 h-3.5 text-destructive shrink-0" />
-				)}
-				<span>
-					{message.displayName ?? message.toolName}{" "}
-					{message.decision === "approved" ? "approved" : "denied"}
-				</span>
+			<div className="flex gap-0">
+				<div className="w-12 shrink-0 text-[9px] tracking-widest text-muted-foreground/30 pt-0.5 uppercase">
+					PERM
+				</div>
+				<div className="flex items-center gap-2 text-xs text-muted-foreground/50">
+					{message.decision === "approved" ? (
+						<Check className="w-3 h-3 text-green-600/60" />
+					) : (
+						<X className="w-3 h-3 text-destructive/60" />
+					)}
+					<span className="tracking-wider text-[10px]">
+						{(message.displayName ?? message.toolName).toUpperCase()}{" "}
+						{message.decision === "approved" ? "APPROVED" : "DENIED"}
+					</span>
+				</div>
 			</div>
 		);
 	}
 
 	return (
-		<div className="rounded-xl border border-border bg-card overflow-hidden">
-			<div className="px-4 py-3 space-y-1">
-				<div className="text-sm font-medium text-foreground">
-					{message.title}
-				</div>
-				{message.description && (
-					<div className="text-xs text-muted-foreground">
-						{message.description}
+		<div className="flex gap-0">
+			<div className="w-12 shrink-0 text-[9px] tracking-widest text-primary/40 pt-0.5 uppercase">
+				PERM
+			</div>
+			<div className="flex-1 border border-border bg-card">
+				<div className="px-4 py-3 border-b border-border">
+					<div className="text-[9px] tracking-widest text-muted-foreground/50 uppercase mb-1">
+						PERMISSION REQUEST
 					</div>
-				)}
-			</div>
-			<div className="flex border-t border-border divide-x divide-border">
-				<button
-					type="button"
-					onClick={() => onDecide(message.id, false)}
-					className="flex-1 flex items-center justify-center gap-2 py-3 text-sm font-medium text-destructive hover:bg-destructive/10 transition-colors"
-				>
-					<X className="w-4 h-4" />
-					Deny
-				</button>
-				<button
-					type="button"
-					onClick={() => onDecide(message.id, true)}
-					className="flex-1 flex items-center justify-center gap-2 py-3 text-sm font-medium text-green-400 hover:bg-green-400/10 transition-colors"
-				>
-					<Check className="w-4 h-4" />
-					Approve
-				</button>
-			</div>
-		</div>
-	);
-}
-
-function UserMsg({ message }: { message: UserMessage }) {
-	return (
-		<div className="flex justify-end">
-			<div className="max-w-[80%] px-4 py-2.5 rounded-2xl rounded-br-sm bg-primary text-primary-foreground text-sm whitespace-pre-wrap">
-				{message.text}
-			</div>
-		</div>
-	);
-}
-
-function AssistantMsg({ message }: { message: AssistantMessage }) {
-	return (
-		<div className="flex flex-col gap-2 max-w-[90%]">
-			{message.toolEvents.length > 0 && (
-				<div className="space-y-1">
-					{message.toolEvents.map((e) => (
-						<ToolBlock key={e.id} event={e} />
-					))}
-				</div>
-			)}
-			{(message.text || message.streaming) && (
-				<div className="px-4 py-2.5 rounded-2xl rounded-bl-sm bg-card border border-border text-sm text-foreground whitespace-pre-wrap">
-					{message.text}
-					{message.streaming && (
-						<span className="inline-block w-1.5 h-4 ml-0.5 align-middle bg-foreground/40 animate-pulse rounded-sm" />
+					<div className="text-sm text-foreground">{message.title}</div>
+					{message.description && (
+						<div className="text-xs text-muted-foreground/60 mt-1">
+							{message.description}
+						</div>
 					)}
 				</div>
-			)}
-			{!message.streaming && message.cost !== null && (
-				<div className="text-[10px] text-muted-foreground/60 px-1">
-					${message.cost.toFixed(4)}
+				<div className="flex divide-x divide-border">
+					<button
+						type="button"
+						onClick={() => onDecide(message.id, false)}
+						className="flex-1 flex items-center justify-center gap-2 py-2 text-[10px] tracking-widest text-destructive/70 hover:bg-destructive/5 transition-colors uppercase"
+					>
+						<X className="w-3 h-3" />
+						DENY
+					</button>
+					<button
+						type="button"
+						onClick={() => onDecide(message.id, true)}
+						className="flex-1 flex items-center justify-center gap-2 py-2 text-[10px] tracking-widest text-green-500/70 hover:bg-green-500/5 transition-colors uppercase"
+					>
+						<Check className="w-3 h-3" />
+						APPROVE
+					</button>
+				</div>
+			</div>
+		</div>
+	);
+}
+
+// inspo.png flat-row style: right-aligned with "YOU" label on far right
+function UserMsg({ message }: { message: UserMessage }) {
+	return (
+		<div className="flex items-start gap-3 py-3 border-b border-border/40">
+			<div className="flex-1" />
+			<div className="text-sm text-foreground/90 whitespace-pre-wrap text-right max-w-[78%] leading-relaxed">
+				{message.text}
+			</div>
+			<div className="text-[9px] tracking-widest text-primary/40 shrink-0 pt-0.5 w-11 text-right">
+				YOU
+			</div>
+		</div>
+	);
+}
+
+// inspo.png flat-row: left label, text block, right cost metadata
+function AssistantMsg({ message }: { message: AssistantMessage }) {
+	return (
+		<div className="py-3 border-b border-border/40 space-y-1.5">
+			{message.toolEvents.map((e) => (
+				<ToolBlock key={e.id} event={e} />
+			))}
+			{(message.text || message.streaming) && (
+				<div className="flex items-start gap-0">
+					<div className="text-[9px] tracking-widest text-muted-foreground/30 shrink-0 pt-0.5 w-12 uppercase">
+						AI
+					</div>
+					<div className="flex-1 text-sm text-foreground/90 whitespace-pre-wrap leading-relaxed pr-4">
+						{message.text}
+						{message.streaming && (
+							<span className="inline-block w-[7px] h-[1em] ml-0.5 align-middle bg-primary/50 cursor-blink" />
+						)}
+					</div>
+					{!message.streaming && message.cost !== null && (
+						<div className="text-[9px] tabular-nums text-muted-foreground/25 shrink-0 pt-0.5 font-mono">
+							${message.cost.toFixed(4)}
+						</div>
+					)}
 				</div>
 			)}
 		</div>
@@ -271,7 +304,7 @@ function ChatPage() {
 			dispatch({
 				type: "APPEND_CHUNK",
 				id,
-				text: `\n\n[Error: ${msg.message}]`,
+				text: `\n\n[ERROR: ${msg.message}]`,
 			});
 			dispatch({ type: "DONE", id, cost: null });
 			pendingIdRef.current = null;
@@ -292,12 +325,12 @@ function ChatPage() {
 		[send],
 	);
 
-	// biome-ignore lint/correctness/useExhaustiveDependencies: messages is the trigger
+	// biome-ignore lint/correctness/useExhaustiveDependencies: messages is trigger
 	useEffect(() => {
 		bottomRef.current?.scrollIntoView({ behavior: "smooth" });
 	}, [messages]);
 
-	// biome-ignore lint/correctness/useExhaustiveDependencies: input length change triggers resize
+	// biome-ignore lint/correctness/useExhaustiveDependencies: input length triggers resize
 	useEffect(() => {
 		const el = textareaRef.current;
 		if (!el) return;
@@ -308,7 +341,6 @@ function ChatPage() {
 	const handleSend = useCallback(() => {
 		const text = input.trim();
 		if (!text || sessionState === "running") return;
-
 		const id = crypto.randomUUID();
 		dispatch({ type: "ADD_USER", id, text });
 		send({ type: "chat", text });
@@ -321,37 +353,63 @@ function ChatPage() {
 		send({ type: "clear" });
 	}, [send]);
 
+	const isRunning = sessionState === "running";
 	const canSend =
-		input.trim().length > 0 &&
-		sessionState !== "running" &&
-		wsStatus === "connected";
+		input.trim().length > 0 && !isRunning && wsStatus === "connected";
+
+	const lastUserText = [...messages]
+		.reverse()
+		.find((m) => m.role === "user")?.text;
+	const taskTitle = lastUserText
+		? lastUserText.length > 52
+			? `${lastUserText.slice(0, 52)}…`
+			: lastUserText
+		: null;
 
 	return (
 		<div className="h-full flex flex-col">
 			{/* Header */}
-			<div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
-				<h1 className="text-sm font-semibold text-foreground">Chat</h1>
+			<div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
+				<div className="flex items-center gap-3 min-w-0">
+					<span className="text-[11px] tracking-widest text-muted-foreground uppercase shrink-0">
+						CHAT
+					</span>
+					{isRunning && taskTitle && (
+						<>
+							<span className="text-muted-foreground/25 shrink-0">·</span>
+							<div className="flex items-center gap-2 min-w-0">
+								<div className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse shrink-0" />
+								<span className="text-[10px] tracking-wider text-primary/70 truncate uppercase">
+									{taskTitle}
+								</span>
+							</div>
+						</>
+					)}
+				</div>
 				{messages.length > 0 && (
 					<button
 						type="button"
 						onClick={handleClear}
-						className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+						className="flex items-center gap-1.5 text-[10px] tracking-widest text-muted-foreground/40 hover:text-muted-foreground transition-colors uppercase shrink-0 ml-4"
 					>
-						<SquarePen className="w-3.5 h-3.5" />
-						New conversation
+						<SquarePen className="w-3 h-3" />
+						NEW
 					</button>
 				)}
 			</div>
 
 			{/* Messages */}
-			<div className="flex-1 overflow-auto px-4 py-4 space-y-4">
+			<div className="flex-1 overflow-auto px-5 py-2">
 				{messages.length === 0 && (
-					<div className="h-full flex items-center justify-center">
-						<p className="text-sm text-muted-foreground">
-							{wsStatus !== "connected"
-								? "Connecting to session…"
-								: "What's on your mind?"}
-						</p>
+					<div className="h-full flex flex-col items-center justify-center gap-3">
+						<div className="text-2xl font-bold tracking-widest text-foreground/8 uppercase select-none">
+							{wsStatus !== "connected" ? "CONNECTING" : "READY WHEN YOU ARE"}
+						</div>
+						{wsStatus === "connected" && (
+							<div className="text-[9px] tracking-[0.35em] text-muted-foreground/20">
+								↵ send · ⇧↵ newline
+							</div>
+						)}
 					</div>
 				)}
 				{messages.map((m) => {
@@ -366,8 +424,11 @@ function ChatPage() {
 			</div>
 
 			{/* Input */}
-			<div className="shrink-0 border-t border-border bg-background px-4 py-3">
-				<div className="flex gap-2 items-end">
+			<div className="shrink-0 border-t border-border bg-background">
+				<div className="flex items-end">
+					<span className="text-primary text-sm px-4 py-3 shrink-0 select-none">
+						›
+					</span>
 					<textarea
 						ref={textareaRef}
 						value={input}
@@ -381,20 +442,22 @@ function ChatPage() {
 						rows={1}
 						placeholder={
 							wsStatus !== "connected"
-								? "Connecting…"
-								: "Message Claude… (↵ send, ⇧↵ newline)"
+								? "connecting…"
+								: isRunning
+									? "running…"
+									: "message claude"
 						}
-						disabled={wsStatus !== "connected"}
-						className="flex-1 resize-none bg-secondary border border-border rounded-lg px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50 overflow-hidden"
+						disabled={wsStatus !== "connected" || isRunning}
+						className="flex-1 resize-none bg-transparent py-3 pr-2 text-sm text-foreground placeholder:text-muted-foreground/20 focus:outline-none disabled:opacity-30 overflow-hidden"
 					/>
 					<button
 						type="button"
 						onClick={handleSend}
 						disabled={!canSend}
-						className="p-2 rounded-lg bg-primary text-primary-foreground disabled:opacity-40 transition-opacity shrink-0"
+						className="px-4 py-3 text-[10px] tracking-widest text-primary/50 hover:text-primary disabled:text-muted-foreground/20 transition-colors shrink-0 uppercase font-bold"
 						aria-label="Send"
 					>
-						<Send className="w-4 h-4" />
+						RUN
 					</button>
 				</div>
 			</div>

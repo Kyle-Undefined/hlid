@@ -6,78 +6,77 @@ import {
 	MessageSquare,
 	Settings,
 } from "lucide-react";
-import { useWs } from "#/hooks/useWs";
+import { useSyncExternalStore } from "react";
+import { version } from "../../../package.json";
+import * as wsStore from "../../hooks/wsStore";
 
 const NAV_ITEMS = [
-	{ to: "/", label: "Main", icon: LayoutDashboard, exact: true },
-	{ to: "/chat", label: "Chat", icon: MessageSquare, exact: false },
-	{ to: "/stats", label: "Stats", icon: BarChart3, exact: false },
-	{ to: "/vault", label: "Vault", icon: FolderOpen, exact: false },
-	{ to: "/settings", label: "Settings", icon: Settings, exact: false },
+	{ to: "/", label: "COCKPIT", icon: LayoutDashboard, exact: true },
+	{ to: "/chat", label: "CHAT", icon: MessageSquare, exact: false },
+	{ to: "/vault", label: "VAULT", icon: FolderOpen, exact: false },
+	{ to: "/stats", label: "STATS", icon: BarChart3, exact: false },
+	{ to: "/settings", label: "CONFIG", icon: Settings, exact: false },
 ] as const;
 
-function SidebarStatus() {
-	const { wsStatus, sessionState } = useWs();
-
-	const dot =
-		wsStatus !== "connected"
-			? "bg-muted-foreground/40"
-			: sessionState === "running"
-				? "bg-yellow-400 animate-pulse"
-				: sessionState === "error"
-					? "bg-destructive"
-					: "bg-green-400";
-
-	const label =
-		wsStatus !== "connected"
-			? "Offline"
-			: sessionState === "running"
-				? "Running"
-				: sessionState === "error"
-					? "Error"
-					: "Ready";
-
-	return (
-		<div className="px-4 py-3 border-t border-sidebar-border">
-			<div className="flex items-center gap-2">
-				<div className={`w-1.5 h-1.5 rounded-full ${dot}`} />
-				<span className="text-xs text-sidebar-foreground/40">{label}</span>
-			</div>
-		</div>
-	);
-}
+const SERVER_SNAP = {
+	wsStatus: "connecting" as const,
+	sessionState: "idle" as const,
+	model: "",
+};
 
 export function Sidebar() {
+	const { wsStatus, sessionState } = useSyncExternalStore(
+		wsStore.subscribeStatus,
+		wsStore.getSnapshot,
+		() => SERVER_SNAP,
+	);
+
+	const isRunning = wsStatus === "connected" && sessionState === "running";
+	const isError = wsStatus === "connected" && sessionState === "error";
+
+	const dot =
+		!wsStatus || wsStatus === "disconnected" || wsStatus === "connecting"
+			? "bg-muted-foreground/25"
+			: isError
+				? "bg-destructive"
+				: isRunning
+					? "bg-primary animate-pulse"
+					: "bg-green-600";
+
 	return (
-		<aside className="hidden md:flex flex-col w-52 shrink-0 bg-sidebar border-r border-sidebar-border">
-			<div className="px-4 py-5 border-b border-sidebar-border">
-				<h1 className="text-base font-semibold text-sidebar-foreground tracking-tight">
-					Hlid
-				</h1>
-				<p className="text-xs text-sidebar-foreground/40 mt-0.5">
-					command center
-				</p>
+		<aside className="hidden md:flex flex-col w-44 shrink-0 bg-sidebar border-r border-sidebar-border">
+			<div className="px-4 py-4 border-b border-sidebar-border">
+				<div className="flex items-center gap-2">
+					<div className="text-[13px] font-bold tracking-[0.25em] text-primary">
+						Hlið
+					</div>
+					<div className={`w-1.5 h-1.5 rounded-full shrink-0 ${dot}`} />
+				</div>
+				<div className="text-[9px] tracking-widest text-muted-foreground/50 mt-0.5 uppercase">
+					watcher of worlds
+				</div>
+				<div className="text-[9px] tabular-nums text-muted-foreground/30 mt-0.5 font-mono">
+					v{version}
+				</div>
 			</div>
 
-			<nav className="flex-1 p-2 space-y-0.5">
+			<nav className="flex-1 py-1">
 				{NAV_ITEMS.map(({ to, label, icon: Icon, exact }) => (
 					<Link
 						key={to}
 						to={to}
-						className="flex items-center gap-3 px-3 py-2 rounded-md text-sm text-sidebar-foreground/60 hover:text-sidebar-foreground hover:bg-sidebar-accent transition-colors duration-150"
+						className="flex items-center gap-3 px-4 py-2.5 text-[11px] tracking-widest text-muted-foreground hover:text-foreground hover:bg-accent transition-colors duration-100 border-l-2 border-transparent"
 						activeProps={{
 							className:
-								"flex items-center gap-3 px-3 py-2 rounded-md text-sm bg-sidebar-accent text-sidebar-primary font-medium transition-colors duration-150",
+								"flex items-center gap-3 px-4 py-2.5 text-[11px] tracking-widest text-primary border-l-2 border-primary bg-primary/5 transition-colors duration-100",
 						}}
 						activeOptions={{ exact }}
 					>
-						<Icon className="w-4 h-4 shrink-0" />
+						<Icon className="w-3.5 h-3.5 shrink-0" />
 						<span>{label}</span>
 					</Link>
 				))}
 			</nav>
-
-			<SidebarStatus />
 		</aside>
 	);
 }

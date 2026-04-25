@@ -12,6 +12,8 @@ export class SessionManager {
 	private state: SessionState = "idle";
 	private abortController: AbortController | null = null;
 	private model: string;
+	private effort: "low" | "medium" | "high" | "xhigh" | "max";
+	private maxTurns: number | undefined;
 	private vaultPath: string;
 	private permissionMode: PermissionMode;
 	private history: Turn[] = [];
@@ -19,6 +21,8 @@ export class SessionManager {
 
 	constructor(config: HlidConfig) {
 		this.model = config.claude.model;
+		this.effort = config.claude.effort;
+		this.maxTurns = config.claude.max_turns;
 		this.vaultPath = config.vault.path || process.env.HOME || "/";
 		this.permissionMode = config.claude.permission_mode;
 	}
@@ -26,6 +30,8 @@ export class SessionManager {
 	reinitialize(config: HlidConfig): void {
 		this.abort();
 		this.model = config.claude.model;
+		this.effort = config.claude.effort;
+		this.maxTurns = config.claude.max_turns;
 		this.vaultPath = config.vault.path || process.env.HOME || "/";
 		this.permissionMode = config.claude.permission_mode;
 		this.history = [];
@@ -87,6 +93,8 @@ export class SessionManager {
 					cwd: this.vaultPath,
 					abortController: this.abortController,
 					permissionMode: this.permissionMode,
+					effort: this.effort,
+					...(this.maxTurns !== undefined && { maxTurns: this.maxTurns }),
 					allowDangerouslySkipPermissions:
 						this.permissionMode === "bypassPermissions",
 					persistSession: false,

@@ -10,6 +10,32 @@ export const Route = createFileRoute("/settings")({
 	component: SettingsPage,
 });
 
+const EFFORT_OPTIONS: {
+	value: HlidConfig["claude"]["effort"];
+	label: string;
+	desc: string;
+}[] = [
+	{ value: "low", label: "Low", desc: "minimal thinking, quick turnaround" },
+	{ value: "medium", label: "Medium", desc: "some thinking, pretty balanced" },
+	{
+		value: "high",
+		label: "High",
+		desc: "solid reasoning, this is the default",
+	},
+	{ value: "xhigh", label: "X-High", desc: "goes deeper, Opus 4.7 only" },
+	{
+		value: "max",
+		label: "Max",
+		desc: "everything Claude has, Opus 4.6/4.7 only",
+	},
+];
+
+const MODEL_OPTIONS = [
+	{ value: "claude-opus-4-7", label: "Opus 4.7" },
+	{ value: "claude-sonnet-4-6", label: "Sonnet 4.6" },
+	{ value: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
+] as const;
+
 const PERMISSION_OPTIONS: {
 	value: HlidConfig["claude"]["permission_mode"];
 	label: string;
@@ -18,17 +44,17 @@ const PERMISSION_OPTIONS: {
 	{
 		value: "default",
 		label: "Ask for approval",
-		desc: "Claude asks before taking any action",
+		desc: "Claude asks before doing anything",
 	},
 	{
 		value: "acceptEdits",
 		label: "Auto-approve edits",
-		desc: "File edits auto-approved, other actions still ask",
+		desc: "edits go through automatically, everything else still asks",
 	},
 	{
 		value: "bypassPermissions",
 		label: "Auto-approve all",
-		desc: "All actions approved automatically. Fastest mode.",
+		desc: "everything goes through, no interruptions",
 	},
 ];
 
@@ -40,11 +66,11 @@ function Section({
 	children: React.ReactNode;
 }) {
 	return (
-		<div className="space-y-3">
-			<h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+		<div className="space-y-2">
+			<div className="text-[9px] tracking-widest text-muted-foreground uppercase px-1">
 				{title}
-			</h2>
-			<div className="rounded-lg border border-border bg-card divide-y divide-border">
+			</div>
+			<div className="border border-border bg-card divide-y divide-border">
 				{children}
 			</div>
 		</div>
@@ -61,9 +87,9 @@ function Field({
 	children: React.ReactNode;
 }) {
 	return (
-		<div className="flex items-start justify-between gap-6 px-4 py-3">
+		<div className="flex items-center justify-between gap-6 px-4 py-3">
 			<div className="min-w-0">
-				<div className="text-sm font-medium text-foreground">{label}</div>
+				<div className="text-sm text-foreground">{label}</div>
 				{hint && (
 					<div className="text-xs text-muted-foreground mt-0.5">{hint}</div>
 				)}
@@ -90,7 +116,7 @@ function TextInput({
 			value={value}
 			onChange={(e) => onChange(e.target.value)}
 			placeholder={placeholder}
-			className={`w-48 bg-secondary border border-border rounded-md px-2.5 py-1.5 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-ring ${mono ? "font-mono text-xs" : ""}`}
+			className={`w-48 bg-secondary border border-border px-2.5 py-1.5 text-sm text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors ${mono ? "font-mono text-xs" : ""}`}
 		/>
 	);
 }
@@ -111,35 +137,98 @@ function PathField({
 				value={value}
 				onChange={(e) => onChange(e.target.value)}
 				placeholder="~/vault"
-				className="w-48 bg-secondary border border-border rounded-md px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-ring"
+				className="w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
 			/>
 			<button
 				type="button"
 				onClick={() => setOpen(true)}
-				className="text-xs px-2.5 py-1.5 rounded-md border border-border text-muted-foreground hover:bg-accent transition-colors shrink-0"
+				className="text-[10px] tracking-widest px-2.5 py-1.5 border border-border text-muted-foreground hover:bg-accent hover:text-foreground transition-colors shrink-0 uppercase"
 			>
-				Browse
+				BROWSE
 			</button>
 
 			{open && (
-				<div className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4">
-					<div className="w-full max-w-md bg-card border border-border rounded-xl shadow-2xl p-5 space-y-4">
+				<div className="fixed inset-0 z-50 bg-background/90 backdrop-blur-sm flex items-center justify-center p-4">
+					<div className="w-full max-w-md bg-card border border-border shadow-2xl p-5 space-y-4">
 						<div className="flex items-center justify-between">
-							<h3 className="text-sm font-semibold text-foreground">
-								Pick vault folder
-							</h3>
+							<div className="text-[10px] tracking-widest text-muted-foreground uppercase">
+								PICK VAULT FOLDER
+							</div>
 							<button
 								type="button"
 								onClick={() => setOpen(false)}
-								className="text-muted-foreground hover:text-foreground transition-colors text-xs"
+								className="text-[10px] tracking-widest text-muted-foreground hover:text-foreground transition-colors uppercase"
 							>
-								Cancel
+								CANCEL
 							</button>
 						</div>
 						<FolderBrowser
 							initialPath={value || undefined}
 							onSelect={(path) => {
 								onChange(path);
+								setOpen(false);
+							}}
+						/>
+					</div>
+				</div>
+			)}
+		</div>
+	);
+}
+
+function RelativeFolderField({
+	value,
+	onChange,
+	basePath,
+	placeholder,
+}: {
+	value: string;
+	onChange: (v: string) => void;
+	basePath: string;
+	placeholder?: string;
+}) {
+	const [open, setOpen] = useState(false);
+
+	return (
+		<div className="flex items-center gap-2">
+			<input
+				type="text"
+				value={value}
+				onChange={(e) => onChange(e.target.value)}
+				placeholder={placeholder}
+				className="w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+			/>
+			<button
+				type="button"
+				onClick={() => setOpen(true)}
+				disabled={!basePath}
+				className="text-[10px] tracking-widest px-2.5 py-1.5 border border-border text-muted-foreground hover:bg-accent hover:text-foreground transition-colors shrink-0 uppercase disabled:opacity-30"
+			>
+				BROWSE
+			</button>
+
+			{open && (
+				<div className="fixed inset-0 z-50 bg-background/90 backdrop-blur-sm flex items-center justify-center p-4">
+					<div className="w-full max-w-md bg-card border border-border shadow-2xl p-5 space-y-4">
+						<div className="flex items-center justify-between">
+							<div className="text-[10px] tracking-widest text-muted-foreground uppercase">
+								PICK FOLDER
+							</div>
+							<button
+								type="button"
+								onClick={() => setOpen(false)}
+								className="text-[10px] tracking-widest text-muted-foreground hover:text-foreground transition-colors uppercase"
+							>
+								CANCEL
+							</button>
+						</div>
+						<FolderBrowser
+							initialPath={basePath}
+							onSelect={(path) => {
+								const rel = path.startsWith(`${basePath}/`)
+									? path.slice(basePath.length + 1)
+									: (path.split("/").pop() ?? path);
+								onChange(rel);
 								setOpen(false);
 							}}
 						/>
@@ -160,6 +249,12 @@ function SettingsPage() {
 	const [projects, setProjects] = useState(initial.vault.projects ?? "");
 	const [areas, setAreas] = useState(initial.vault.areas ?? "");
 	const [model, setModel] = useState(initial.claude.model);
+	const [effort, setEffort] = useState(initial.claude.effort);
+	const [maxTurns, setMaxTurns] = useState(
+		initial.claude.max_turns !== undefined
+			? String(initial.claude.max_turns)
+			: "",
+	);
 	const [permissionMode, setPermissionMode] = useState(
 		initial.claude.permission_mode,
 	);
@@ -191,6 +286,8 @@ function SettingsPage() {
 			},
 			claude: {
 				model,
+				effort,
+				max_turns: maxTurns !== "" ? Number(maxTurns) : undefined,
 				permission_mode: permissionMode,
 			},
 			status_vocabulary: initial.status_vocabulary,
@@ -224,117 +321,186 @@ function SettingsPage() {
 	}
 
 	return (
-		<div className="p-6 max-w-2xl mx-auto space-y-8 pb-24">
-			<div>
-				<h1 className="text-xl font-semibold text-foreground tracking-tight">
-					Settings
-				</h1>
-				<p className="text-sm text-muted-foreground mt-0.5">
-					Vault, Claude, and server config.
-				</p>
+		<div className="flex flex-col h-full">
+			{/* Header */}
+			<div className="px-5 py-3.5 border-b border-border shrink-0">
+				<span className="text-[11px] tracking-widest text-muted-foreground uppercase">
+					CONFIG
+				</span>
 			</div>
 
-			<Section title="Vault">
-				<Field label="Name">
-					<TextInput value={vaultName} onChange={setVaultName} />
-				</Field>
-				<Field label="Path" hint="Absolute path to your Obsidian vault">
-					<PathField value={vaultPath} onChange={setVaultPath} />
-				</Field>
-				<Field label="Inbox folder" hint="Relative folder name inside vault">
-					<TextInput value={inbox} onChange={setInbox} placeholder="00 Inbox" />
-				</Field>
-				<Field label="Projects folder">
-					<TextInput
-						value={projects}
-						onChange={setProjects}
-						placeholder="10 Projects"
-					/>
-				</Field>
-				<Field label="Areas folder">
-					<TextInput value={areas} onChange={setAreas} placeholder="20 Areas" />
-				</Field>
-			</Section>
-
-			<Section title="Claude">
-				<Field label="Model">
-					<TextInput
-						value={model}
-						onChange={setModel}
-						placeholder="claude-sonnet-4-6"
-						mono
-					/>
-				</Field>
-				<div className="px-4 py-3 space-y-2">
-					<div className="text-sm font-medium text-foreground">Permissions</div>
-					<div className="space-y-1.5">
-						{PERMISSION_OPTIONS.map((opt) => (
-							<label
-								key={opt.value}
-								className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
-									permissionMode === opt.value
-										? "border-primary bg-primary/5"
-										: "border-border hover:bg-accent"
-								}`}
-							>
-								<input
-									type="radio"
-									name="permission"
-									value={opt.value}
-									checked={permissionMode === opt.value}
-									onChange={() => setPermissionMode(opt.value)}
-									className="mt-0.5 accent-primary shrink-0"
-								/>
-								<div>
-									<div className="text-sm font-medium text-foreground">
-										{opt.label}
-									</div>
-									<div className="text-xs text-muted-foreground">
-										{opt.desc}
-									</div>
-								</div>
-							</label>
-						))}
-					</div>
-				</div>
-			</Section>
-
-			<Section title="Server">
-				<Field label="Port">
-					<TextInput value={port} onChange={setPort} placeholder="3000" mono />
-				</Field>
-				<Field label="Host">
-					<TextInput
-						value={host}
-						onChange={setHost}
-						placeholder="0.0.0.0"
-						mono
-					/>
-				</Field>
-			</Section>
-
-			<Section title="Session">
-				<Field
-					label="Reload session"
-					hint="Reinitializes Claude with current config. Clears conversation history."
-				>
-					<button
-						type="button"
-						onClick={reloadSession}
-						className="text-sm px-3 py-1.5 rounded-md border border-border text-muted-foreground hover:bg-accent transition-colors"
+			<div className="flex-1 overflow-auto p-5 space-y-6 pb-20">
+				<Section title="Vault">
+					<Field label="Name">
+						<TextInput value={vaultName} onChange={setVaultName} />
+					</Field>
+					<Field label="Path" hint="absolute path to your Obsidian vault">
+						<PathField value={vaultPath} onChange={setVaultPath} />
+					</Field>
+					<Field
+						label="Inbox folder"
+						hint="folder name relative to your vault root"
 					>
-						Reload
-					</button>
-				</Field>
-			</Section>
+						<RelativeFolderField
+							value={inbox}
+							onChange={setInbox}
+							basePath={vaultPath}
+							placeholder="00 Inbox"
+						/>
+					</Field>
+					<Field label="Projects folder">
+						<RelativeFolderField
+							value={projects}
+							onChange={setProjects}
+							basePath={vaultPath}
+							placeholder="10 Projects"
+						/>
+					</Field>
+					<Field label="Areas folder">
+						<RelativeFolderField
+							value={areas}
+							onChange={setAreas}
+							basePath={vaultPath}
+							placeholder="20 Areas"
+						/>
+					</Field>
+				</Section>
 
-			{/* sticky save bar */}
-			<div className="fixed bottom-0 left-0 right-0 md:left-52 border-t border-border bg-background/95 backdrop-blur-sm px-6 py-3 flex items-center justify-between gap-4">
-				<div className="text-sm">
+				<Section title="Claude">
+					<Field label="Model">
+						<select
+							value={model}
+							onChange={(e) => setModel(e.target.value)}
+							className="w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
+						>
+							{MODEL_OPTIONS.map((m) => (
+								<option key={m.value} value={m.value}>
+									{m.label}
+								</option>
+							))}
+						</select>
+					</Field>
+					<div className="px-4 py-3 space-y-2">
+						<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+							EFFORT
+						</div>
+						<div className="space-y-1.5">
+							{EFFORT_OPTIONS.map((opt) => (
+								<label
+									key={opt.value}
+									className={`flex items-start gap-3 p-3 border cursor-pointer transition-colors ${
+										effort === opt.value
+											? "border-primary/40 bg-primary/5"
+											: "border-border hover:bg-accent"
+									}`}
+								>
+									<input
+										type="radio"
+										name="effort"
+										value={opt.value}
+										checked={effort === opt.value}
+										onChange={() => setEffort(opt.value)}
+										className="mt-0.5 accent-primary shrink-0"
+									/>
+									<div>
+										<div className="text-sm text-foreground">{opt.label}</div>
+										<div className="text-xs text-muted-foreground">
+											{opt.desc}
+										</div>
+									</div>
+								</label>
+							))}
+						</div>
+					</div>
+					<div className="px-4 py-3 space-y-2">
+						<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+							PERMISSIONS
+						</div>
+						<div className="space-y-1.5">
+							{PERMISSION_OPTIONS.map((opt) => (
+								<label
+									key={opt.value}
+									className={`flex items-start gap-3 p-3 border cursor-pointer transition-colors ${
+										permissionMode === opt.value
+											? "border-primary/40 bg-primary/5"
+											: "border-border hover:bg-accent"
+									}`}
+								>
+									<input
+										type="radio"
+										name="permission"
+										value={opt.value}
+										checked={permissionMode === opt.value}
+										onChange={() => setPermissionMode(opt.value)}
+										className="mt-0.5 accent-primary shrink-0"
+									/>
+									<div>
+										<div className="text-sm text-foreground">{opt.label}</div>
+										<div className="text-xs text-muted-foreground">
+											{opt.desc}
+										</div>
+									</div>
+								</label>
+							))}
+						</div>
+					</div>
+					<Field
+						label="Max turns"
+						hint="max turns Claude can run, blank means no limit"
+					>
+						<input
+							type="number"
+							min={1}
+							value={maxTurns}
+							onChange={(e) => setMaxTurns(e.target.value)}
+							placeholder="unlimited"
+							className="w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+						/>
+					</Field>
+				</Section>
+
+				<Section title="Server">
+					<Field label="Port">
+						<TextInput
+							value={port}
+							onChange={setPort}
+							placeholder="3000"
+							mono
+						/>
+					</Field>
+					<Field label="Host">
+						<TextInput
+							value={host}
+							onChange={setHost}
+							placeholder="0.0.0.0"
+							mono
+						/>
+					</Field>
+				</Section>
+
+				<Section title="Session">
+					<Field
+						label="Reload session"
+						hint="restarts Claude with the current config and wipes conversation history"
+					>
+						<button
+							type="button"
+							onClick={reloadSession}
+							className="text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:bg-accent hover:text-foreground transition-colors uppercase"
+						>
+							RELOAD
+						</button>
+					</Field>
+				</Section>
+			</div>
+
+			{/* Sticky save bar — offset for w-44 sidebar */}
+			<div className="fixed bottom-0 left-0 right-0 md:left-44 border-t border-border bg-background/95 backdrop-blur-sm px-5 py-3 flex items-center justify-between gap-4">
+				<div className="text-xs tracking-wider">
 					{error && <span className="text-destructive">{error}</span>}
 					{saved && (
-						<span className="text-green-400">
-							Saved. Reload session to apply.
+						<span className="text-green-500">
+							saved, reload session to apply changes
 						</span>
 					)}
 				</div>
@@ -342,9 +508,9 @@ function SettingsPage() {
 					type="button"
 					onClick={save}
 					disabled={saving}
-					className="px-4 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
+					className="px-4 py-2 bg-primary text-primary-foreground text-[10px] tracking-widest font-bold hover:opacity-90 transition-opacity disabled:opacity-50 uppercase"
 				>
-					{saving ? "Saving…" : "Save changes"}
+					{saving ? "SAVING…" : "SAVE CHANGES"}
 				</button>
 			</div>
 		</div>

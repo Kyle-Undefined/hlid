@@ -1,7 +1,7 @@
 {
   "name": "hlid",
-  "description": "Hliðskjálf - ðinn's high seat from which he could see all nine realms.",
-  "version": "0.0.1",
+  "description": "Hliðskjálf - Watcher of Worlds",
+  "version": "0.0.2",
   "private": true,
   "type": "module",
   "imports": {

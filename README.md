@@ -2,7 +2,7 @@
 
 *Short for Hliðskjálf, Óðinn's high seat from which he could see all nine realms.*
 
-`Hlid` is an always-on local command center for your Obsidian vault. It runs a persistent Claude Code Agent SDK session pointed at the vault, so you don't need a terminal inside of Obsidian or a session wired up somewhere else. Chat with Claude, watch tool use, manage your vault and Claude settings from one place.
+`Hlid` is a local command center for your Obsidian vault, powered by Claude Code Agent SDK. So you don't need a terminal inside of Obsidian, or a `/remote-control` session that approval prompts break while mobile. Chat with Claude, watch tool use, manage your vault and Claude settings from one place.
 
 Windows-first. Accessible anywhere via Tailscale. Built for personal use but configurable enough to adapt to other vault setups.
 

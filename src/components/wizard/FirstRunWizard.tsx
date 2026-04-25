@@ -11,17 +11,17 @@ const PERMISSION_OPTIONS = [
 	{
 		value: "default" as const,
 		label: "Ask for approval",
-		desc: "Claude will ask before taking any action",
+		desc: "Claude asks before doing anything",
 	},
 	{
 		value: "acceptEdits" as const,
 		label: "Auto-approve edits",
-		desc: "File edits auto-approved, other actions still ask",
+		desc: "edits go through automatically, everything else still asks",
 	},
 	{
 		value: "bypassPermissions" as const,
 		label: "Auto-approve all",
-		desc: "All actions approved automatically. Fastest mode.",
+		desc: "everything goes through, no interruptions",
 	},
 ];
 
@@ -89,6 +89,7 @@ export function FirstRunWizard({ onComplete }: Props) {
 				server: { port: 3000, host: "0.0.0.0" },
 				claude: {
 					model: "claude-sonnet-4-6",
+					effort: "high" as const,
 					permission_mode: permissionMode,
 				},
 				status_vocabulary: {
@@ -136,8 +137,7 @@ export function FirstRunWizard({ onComplete }: Props) {
 									Welcome to Hlid
 								</h2>
 								<p className="text-sm text-muted-foreground mt-1">
-									Your always-on vault command center. Takes about a minute to
-									set up.
+									Your vault command center. Takes about a minute to get going.
 								</p>
 							</div>
 							<ul className="space-y-2 text-sm text-muted-foreground">
@@ -169,7 +169,7 @@ export function FirstRunWizard({ onComplete }: Props) {
 									Pick your vault
 								</h2>
 								<p className="text-sm text-muted-foreground mt-1">
-									Navigate to your Obsidian vault folder and hit Select.
+									Navigate to your vault and hit Select.
 								</p>
 							</div>
 							<FolderBrowser
@@ -284,7 +284,7 @@ export function FirstRunWizard({ onComplete }: Props) {
 									You're all set
 								</h2>
 								<p className="text-sm text-muted-foreground mt-1">
-									Hlid is configured and ready to go.
+									You're good to go.
 								</p>
 							</div>
 							<button
