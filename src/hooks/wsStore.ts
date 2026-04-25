@@ -9,6 +9,34 @@ type Snapshot = {
 	model: string;
 };
 
+export type LiveStats = {
+	turns: number;
+	cost: number;
+	duration_ms: number;
+	input_tokens: number;
+	output_tokens: number;
+	cache_read_tokens: number;
+	cache_creation_tokens: number;
+	context_window: number | null;
+	max_output_tokens: number | null;
+	last_context_used: number | null;
+	queries: number;
+};
+
+const EMPTY_STATS: LiveStats = {
+	turns: 0,
+	cost: 0,
+	duration_ms: 0,
+	input_tokens: 0,
+	output_tokens: 0,
+	cache_read_tokens: 0,
+	cache_creation_tokens: 0,
+	context_window: null,
+	max_output_tokens: null,
+	last_context_used: null,
+	queries: 0,
+};
+
 let _snap: Snapshot = {
 	wsStatus: "connecting",
 	sessionState: "idle",
@@ -16,9 +44,12 @@ let _snap: Snapshot = {
 };
 let _ws: WebSocket | null = null;
 let _pendingPrompt: string | null = null;
+let _liveStats: LiveStats = { ...EMPTY_STATS };
+let _activeSessionId: string | null = null;
 
 const statusSubs = new Set<() => void>();
 const messageSubs = new Set<(msg: ServerMessage) => void>();
+const statsSubs = new Set<() => void>();
 
 function getWsUrl(): string {
 	const wsPort =
@@ -81,6 +112,25 @@ function connect() {
 		if (msg.type === "status") {
 			setSnap({ sessionState: msg.state, model: msg.model });
 		}
+		if (msg.type === "done") {
+			_liveStats = {
+				turns: _liveStats.turns + msg.turns,
+				cost: _liveStats.cost + (msg.cost ?? 0),
+				duration_ms: _liveStats.duration_ms + msg.duration_ms,
+				input_tokens: _liveStats.input_tokens + msg.input_tokens,
+				output_tokens: _liveStats.output_tokens + msg.output_tokens,
+				cache_read_tokens: _liveStats.cache_read_tokens + msg.cache_read_tokens,
+				cache_creation_tokens:
+					_liveStats.cache_creation_tokens + msg.cache_creation_tokens,
+				context_window: msg.context_window ?? _liveStats.context_window,
+				max_output_tokens:
+					msg.max_output_tokens ?? _liveStats.max_output_tokens,
+				last_context_used:
+					msg.input_tokens + msg.cache_read_tokens + msg.cache_creation_tokens,
+				queries: _liveStats.queries + 1,
+			};
+			for (const fn of statsSubs) fn();
+		}
 		for (const fn of messageSubs) fn(msg);
 	};
 }
@@ -115,4 +165,21 @@ export function claimPendingPrompt(): string | null {
 	const p = _pendingPrompt;
 	_pendingPrompt = null;
 	return p;
+}
+
+export function getLiveStats(): LiveStats {
+	return _liveStats;
+}
+
+export function subscribeStats(fn: () => void): () => void {
+	statsSubs.add(fn);
+	return () => statsSubs.delete(fn);
+}
+
+export function getActiveSessionId(): string | null {
+	return _activeSessionId;
+}
+
+export function setActiveSessionId(id: string): void {
+	_activeSessionId = id;
 }

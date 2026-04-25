@@ -12,6 +12,7 @@ dist-ssr
 __unconfig*
 todos.json
 hlid.db
+hlid.db-*
 .cta.json
 logs/
 hlid.config.toml

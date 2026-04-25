@@ -5,51 +5,18 @@ import {
 } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import { ChevronRight } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { StatusDot } from "#/components/nav/StatusDot";
 import { FirstRunWizard } from "#/components/wizard/FirstRunWizard";
 import { getConfig } from "#/config";
+import type { SessionRow } from "#/db";
 import { useWs } from "#/hooks/useWs";
 import * as wsStore from "#/hooks/wsStore";
 import { uid } from "#/lib/utils";
 import type { Skill } from "#/lib/vault";
 import type { ServerMessage } from "#/server/protocol";
 
-// ─── recent runs (localStorage) ───────────────────────────────────────────────
-
-type RecentRun = {
-	id: string;
-	label: string;
-	time: string;
-	timestamp: number;
-};
-
-const RUNS_KEY = "hlid_recent_runs";
-const MAX_RUNS = 14;
-
-function loadRuns(): RecentRun[] {
-	if (typeof window === "undefined") return [];
-	try {
-		return JSON.parse(localStorage.getItem(RUNS_KEY) ?? "[]");
-	} catch {
-		return [];
-	}
-}
-
-function pushRun(label: string): void {
-	const now = new Date();
-	const time = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
-	const run: RecentRun = {
-		id: uid(),
-		label: label.slice(0, 32).toUpperCase(),
-		time,
-		timestamp: Date.now(),
-	};
-	const runs = [run, ...loadRuns()].slice(0, MAX_RUNS);
-	localStorage.setItem(RUNS_KEY, JSON.stringify(runs));
-}
-
-// ─── server fn ───────────────────────────────────────────────────────────────
+// ─── server fns ──────────────────────────────────────────────────────────────
 
 const getCockpitData = createServerFn({ method: "GET" }).handler(async () => {
 	const [{ readdirSync }, { join }, { scanProjects, scanSkills }] =
@@ -94,15 +61,53 @@ const getCockpitData = createServerFn({ method: "GET" }).handler(async () => {
 	return { inboxCount, activeCount, totalCount, skills, sectionOrder };
 });
 
+const getRecentSessionsFn = createServerFn({ method: "GET" }).handler(
+	async () => {
+		const { server } = await getConfig();
+		const res = await fetch(
+			`http://localhost:${server.port + 1}/db/recent-sessions?limit=14`,
+		);
+		if (!res.ok) return [] as SessionRow[];
+		return res.json() as Promise<SessionRow[]>;
+	},
+);
+
+const getCurrentSessionIdFn = createServerFn({ method: "GET" }).handler(
+	async () => {
+		const { server } = await getConfig();
+		try {
+			const res = await fetch(
+				`http://localhost:${server.port + 1}/db/current-session`,
+			);
+			if (!res.ok) return null as string | null;
+			const data = (await res.json()) as { session_id: string | null };
+			return data.session_id;
+		} catch {
+			return null as string | null;
+		}
+	},
+);
+
 // ─── route ───────────────────────────────────────────────────────────────────
 
 export const Route = createFileRoute("/")({
 	loader: async () => {
-		const [config, data] = await Promise.all([getConfig(), getCockpitData()]);
-		return { config, data };
+		const [config, data, recentSessions] = await Promise.all([
+			getConfig(),
+			getCockpitData(),
+			getRecentSessionsFn(),
+		]);
+		return { config, data, recentSessions };
 	},
 	component: CockpitPage,
 });
+
+// ─── helpers ─────────────────────────────────────────────────────────────────
+
+function fmtRunTime(unixSecs: number): string {
+	const d = new Date(unixSecs * 1000);
+	return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
 
 // ─── components ──────────────────────────────────────────────────────────────
 
@@ -141,7 +146,6 @@ function groupSkills(
 		groups.push({ section: sec, skills: members });
 		for (const s of members) seen.add(s.file);
 	}
-	groups.sort((a, b) => (a.section ?? "").localeCompare(b.section ?? ""));
 	const unsectioned = skills.filter((s) => !seen.has(s.file));
 	if (unsectioned.length > 0)
 		groups.push({ section: null, skills: unsectioned });
@@ -190,7 +194,13 @@ function SkillRow({
 	);
 }
 
-function RecentRunsStrip({ runs }: { runs: RecentRun[] }) {
+function RecentRunsStrip({
+	runs,
+	onRunClick,
+}: {
+	runs: SessionRow[];
+	onRunClick: (sessionId: string) => void;
+}) {
 	const [open, setOpen] = useState(false);
 	if (runs.length === 0) return null;
 	const latest = runs[0];
@@ -207,10 +217,10 @@ function RecentRunsStrip({ runs }: { runs: RecentRun[] }) {
 					LAST RUN
 				</span>
 				<span className="text-[10px] tabular-nums text-[#38bdf8]/50 shrink-0 font-mono">
-					{latest.time}
+					{fmtRunTime(latest.started_at)}
 				</span>
 				<span className="text-[10px] tracking-wider text-muted-foreground/60 truncate flex-1">
-					{latest.label}
+					{latest.label ?? "—"}
 				</span>
 				{rest.length > 0 && (
 					<span
@@ -223,17 +233,19 @@ function RecentRunsStrip({ runs }: { runs: RecentRun[] }) {
 			{open && rest.length > 0 && (
 				<div className="border-t border-border/40">
 					{rest.map((run) => (
-						<div
+						<button
 							key={run.id}
-							className="flex items-baseline gap-3 px-4 py-1.5 border-b border-border/20 last:border-0"
+							type="button"
+							onClick={() => onRunClick(run.id)}
+							className="flex items-baseline gap-3 px-4 py-1.5 border-b border-border/20 last:border-0 w-full text-left hover:bg-accent/30 transition-colors"
 						>
 							<span className="text-[10px] tabular-nums text-[#38bdf8]/40 shrink-0 w-9 font-mono">
-								{run.time}
+								{fmtRunTime(run.started_at)}
 							</span>
 							<span className="text-[10px] tracking-wider text-muted-foreground/50 truncate">
-								{run.label}
+								{run.label ?? "—"}
 							</span>
-						</div>
+						</button>
 					))}
 				</div>
 			)}
@@ -244,25 +256,30 @@ function RecentRunsStrip({ runs }: { runs: RecentRun[] }) {
 // ─── page ────────────────────────────────────────────────────────────────────
 
 function CockpitPage() {
-	const { config, data } = Route.useLoaderData();
+	const { config, data, recentSessions } = Route.useLoaderData();
 	const router = useRouter();
 	const navigate = useNavigate();
-	const [sessionCost, setSessionCost] = useState(0);
+	const liveStats = useSyncExternalStore(
+		wsStore.subscribeStats,
+		wsStore.getLiveStats,
+		() => ({ cost: 0, queries: 0 }) as wsStore.LiveStats,
+	);
 	const [prompt, setPrompt] = useState("");
 	const [activeSkill, setActiveSkill] = useState<string | null>(null);
 	const [background, setBackground] = useState(false);
-	const [recentRuns, setRecentRuns] = useState<RecentRun[]>([]);
+	const [sameSession, setSameSession] = useState(false);
+	const [recentRuns, setRecentRuns] = useState<SessionRow[]>(recentSessions);
+	const [runError, setRunError] = useState<string | null>(null);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-	useEffect(() => {
-		setRecentRuns(loadRuns());
-	}, []);
 
 	const { wsStatus, sessionState, model, send } = useWs(
 		(msg: ServerMessage) => {
-			if (msg.type === "done" && msg.cost != null) {
-				const cost = msg.cost;
-				setSessionCost((prev) => prev + cost);
+			if (msg.type === "done") {
+				setRunError(null);
+				getRecentSessionsFn().then(setRecentRuns);
+			}
+			if (msg.type === "error") {
+				setRunError(msg.message);
 			}
 		},
 	);
@@ -290,14 +307,24 @@ function CockpitPage() {
 		setActiveSkill(null);
 	}
 
-	function handleRun() {
+	async function handleRun() {
 		const text = prompt.trim();
 		if (!text || isRunning || wsStatus !== "connected") return;
-		pushRun(activeSkill ?? text.slice(0, 32));
-		setRecentRuns(loadRuns());
-		wsStore.setPendingPrompt(text);
-		send({ type: "chat", text });
-		if (!background) navigate({ to: "/chat" });
+		setRunError(null);
+		let sessionId: string;
+		if (sameSession) {
+			const currentId = await getCurrentSessionIdFn();
+			sessionId = currentId ?? uid();
+		} else {
+			sessionId = uid();
+		}
+		send({ type: "chat", text, session_id: sessionId });
+		setPrompt("");
+		setActiveSkill(null);
+		if (!background) {
+			wsStore.setPendingPrompt(text);
+			navigate({ to: "/chat", search: { session: sessionId } });
+		}
 	}
 
 	const isConnected = wsStatus === "connected";
@@ -305,8 +332,8 @@ function CockpitPage() {
 	const canRun = prompt.trim().length > 0 && !isRunning && isConnected;
 
 	const costStr =
-		sessionCost > 0
-			? `$${sessionCost.toFixed(4)}`
+		liveStats.cost > 0
+			? `$${liveStats.cost.toFixed(4)}`
 			: isConnected
 				? "$0.0000"
 				: "--";
@@ -364,7 +391,10 @@ function CockpitPage() {
 			</div>
 
 			{/* Recent runs strip */}
-			<RecentRunsStrip runs={recentRuns} />
+			<RecentRunsStrip
+				runs={recentRuns}
+				onRunClick={(id) => navigate({ to: "/chat", search: { session: id } })}
+			/>
 
 			{/* Main body — single column */}
 			<div className="flex flex-1 flex-col overflow-auto">
@@ -410,24 +440,44 @@ function CockpitPage() {
 							/>
 						</div>
 						<div className="flex items-center justify-between px-3 py-2 border-t border-border/60">
-							<label className="flex items-center gap-1.5 cursor-pointer select-none group">
-								<input
-									type="checkbox"
-									checked={background}
-									onChange={(e) => setBackground(e.target.checked)}
-									className="sr-only"
-								/>
-								<span
-									className={`w-3 h-3 border flex items-center justify-center shrink-0 transition-colors ${background ? "border-primary bg-primary/20" : "border-border bg-secondary group-hover:border-primary/40"}`}
-								>
-									{background && (
-										<span className="w-1.5 h-1.5 bg-primary block" />
-									)}
-								</span>
-								<span className="text-[9px] tracking-wider text-muted-foreground/40 uppercase">
-									Background
-								</span>
-							</label>
+							<div className="flex items-center gap-3">
+								<label className="flex items-center gap-1.5 cursor-pointer select-none group">
+									<input
+										type="checkbox"
+										checked={background}
+										onChange={(e) => setBackground(e.target.checked)}
+										className="sr-only"
+									/>
+									<span
+										className={`w-3 h-3 border flex items-center justify-center shrink-0 transition-colors ${background ? "border-primary bg-primary/20" : "border-border bg-secondary group-hover:border-primary/40"}`}
+									>
+										{background && (
+											<span className="w-1.5 h-1.5 bg-primary block" />
+										)}
+									</span>
+									<span className="text-[9px] tracking-wider text-muted-foreground/40 uppercase">
+										Background
+									</span>
+								</label>
+								<label className="flex items-center gap-1.5 cursor-pointer select-none group">
+									<input
+										type="checkbox"
+										checked={sameSession}
+										onChange={(e) => setSameSession(e.target.checked)}
+										className="sr-only"
+									/>
+									<span
+										className={`w-3 h-3 border flex items-center justify-center shrink-0 transition-colors ${sameSession ? "border-primary bg-primary/20" : "border-border bg-secondary group-hover:border-primary/40"}`}
+									>
+										{sameSession && (
+											<span className="w-1.5 h-1.5 bg-primary block" />
+										)}
+									</span>
+									<span className="text-[9px] tracking-wider text-muted-foreground/40 uppercase">
+										Same Session
+									</span>
+								</label>
+							</div>
 							<div className="flex gap-2">
 								{prompt && (
 									<button
@@ -450,6 +500,15 @@ function CockpitPage() {
 						</div>
 					</div>
 				</div>
+
+				{/* Background run error */}
+				{runError && (
+					<div className="px-4 py-2 border-b border-destructive/20 bg-destructive/5 shrink-0">
+						<span className="text-[10px] tracking-wider text-destructive/80">
+							ERR: {runError}
+						</span>
+					</div>
+				)}
 
 				{/* Skills */}
 				{data.skills.length > 0 ? (

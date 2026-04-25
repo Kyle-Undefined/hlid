@@ -1,4 +1,5 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createServerFn } from "@tanstack/react-start";
 import { Check, ChevronRight, SquarePen, X } from "lucide-react";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import Markdown from "react-markdown";
@@ -19,8 +20,49 @@ function normalizeMd(text: string): string {
 	return text.replace(/\*\*\s+((?:[^*\n]|\*(?!\*))+?)\s+\*\*/g, "**$1**");
 }
 
+// ─── server fns ──────────────────────────────────────────────────────────────
+
+const getSessionDataFn = createServerFn({ method: "GET" })
+	.inputValidator((sessionId: string) => sessionId)
+	.handler(async ({ data: sessionId }) => {
+		const { server } = await getConfig();
+		const res = await fetch(
+			`http://localhost:${server.port + 1}/db/session-messages?session_id=${encodeURIComponent(sessionId)}`,
+		);
+		if (!res.ok) return [] as import("#/db").MessageRow[];
+		return res.json() as Promise<import("#/db").MessageRow[]>;
+	});
+
+const getCurrentSessionFn = createServerFn({ method: "GET" }).handler(
+	async () => {
+		const { server } = await getConfig();
+		try {
+			const res = await fetch(
+				`http://localhost:${server.port + 1}/db/current-session`,
+			);
+			if (!res.ok) return null as string | null;
+			const data = (await res.json()) as { session_id: string | null };
+			return data.session_id;
+		} catch {
+			return null as string | null;
+		}
+	},
+);
+
+// ─── route ───────────────────────────────────────────────────────────────────
+
 export const Route = createFileRoute("/chat")({
-	loader: () => getConfig(),
+	validateSearch: (search: Record<string, unknown>) => ({
+		session: typeof search.session === "string" ? search.session : undefined,
+	}),
+	loaderDeps: ({ search: { session } }) => ({ session }),
+	loader: async ({ deps: { session } }) => {
+		const [config, dbSessionId] = await Promise.all([
+			getConfig(),
+			session ? Promise.resolve(null) : getCurrentSessionFn(),
+		]);
+		return { config, existingSessionId: session ?? dbSessionId };
+	},
 	component: ChatPage,
 });
 
@@ -63,6 +105,10 @@ type Action =
 	| { type: "DONE"; id: string; cost: number | null }
 	| { type: "ADD_PERMISSION"; msg: PermissionRequestMessage }
 	| { type: "RESOLVE_PERMISSION"; id: string; decision: "approved" | "denied" }
+	| {
+			type: "LOAD_HISTORY";
+			messages: Array<{ id: string; role: string; text: string }>;
+	  }
 	| { type: "CLEAR" };
 
 function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
@@ -117,6 +163,19 @@ function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 				m.id === action.id && m.role === "permission"
 					? { ...m, decision: action.decision }
 					: m,
+			);
+		case "LOAD_HISTORY":
+			return action.messages.map((m) =>
+				m.role === "user"
+					? { id: m.id, role: "user" as const, text: m.text }
+					: {
+							id: m.id,
+							role: "assistant" as const,
+							text: m.text,
+							toolEvents: [],
+							streaming: false,
+							cost: null,
+						},
 			);
 		case "CLEAR":
 			return [];
@@ -235,7 +294,6 @@ function PermissionCard({
 	);
 }
 
-// inspo.png flat-row style: right-aligned with "YOU" label on far right
 function UserMsg({ message }: { message: UserMessage }) {
 	return (
 		<div className="flex items-start gap-3 py-3 border-b border-border/40">
@@ -250,7 +308,6 @@ function UserMsg({ message }: { message: UserMessage }) {
 	);
 }
 
-// inspo.png flat-row: left label, text block, right cost metadata
 function AssistantMsg({ message }: { message: AssistantMessage }) {
 	return (
 		<div className="py-3 border-b border-border/40 space-y-1.5">
@@ -393,14 +450,61 @@ function AssistantMsg({ message }: { message: AssistantMessage }) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 function ChatPage() {
-	const { ui } = Route.useLoaderData();
+	const { config, existingSessionId } = Route.useLoaderData();
+	const navigate = useNavigate();
+	const [sessionId, setSessionId] = useState(() => existingSessionId ?? uid());
+	const sessionIdRef = useRef(sessionId);
+	useEffect(() => {
+		sessionIdRef.current = sessionId;
+	}, [sessionId]);
+
 	const [messages, dispatch] = useReducer(reducer, []);
 	const [input, setInput] = useState("");
 	const pendingIdRef = useRef<string | null>(null);
 	const bottomRef = useRef<HTMLDivElement>(null);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+	// Load history for existing sessions, then claim any pending prompt
+	useEffect(() => {
+		if (!existingSessionId) {
+			const p = wsStore.claimPendingPrompt();
+			if (p) dispatch({ type: "ADD_USER", id: uid(), text: p });
+			return;
+		}
+		getSessionDataFn({ data: existingSessionId }).then((rows) => {
+			// Don't overwrite in-flight streaming state
+			if (rows.length > 0 && pendingIdRef.current === null) {
+				dispatch({
+					type: "LOAD_HISTORY",
+					messages: rows.map((r) => ({
+						id: uid(),
+						role: r.role,
+						text: r.text,
+					})),
+				});
+			}
+			const p = wsStore.claimPendingPrompt();
+			if (p) {
+				// Don't duplicate if the DB already persisted this message before we loaded
+				const lastRow = rows[rows.length - 1];
+				if (!lastRow || lastRow.role !== "user" || lastRow.text !== p) {
+					dispatch({ type: "ADD_USER", id: uid(), text: p });
+				}
+			}
+		});
+		// existingSessionId is stable (comes from loader, only changes on navigation)
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [existingSessionId]);
+
 	const handleWsMessage = useCallback((msg: ServerMessage) => {
+		// Cross-device: show user message from another client if it matches our session
+		if (msg.type === "user_message") {
+			if (msg.session_id === sessionIdRef.current) {
+				dispatch({ type: "ADD_USER", id: uid(), text: msg.text });
+			}
+			return;
+		}
+
 		const id = pendingIdRef.current;
 
 		if (msg.type === "status" && msg.state === "running" && !id) {
@@ -444,11 +548,6 @@ function ChatPage() {
 
 	const { wsStatus, sessionState, send } = useWs(handleWsMessage);
 
-	useEffect(() => {
-		const p = wsStore.claimPendingPrompt();
-		if (p) dispatch({ type: "ADD_USER", id: uid(), text: p });
-	}, []);
-
 	const handleDecide = useCallback(
 		(id: string, approved: boolean) => {
 			dispatch({
@@ -479,15 +578,19 @@ function ChatPage() {
 		if (!text || sessionState === "running") return;
 		const id = uid();
 		dispatch({ type: "ADD_USER", id, text });
-		send({ type: "chat", text });
+		send({ type: "chat", text, session_id: sessionId });
 		setInput("");
-	}, [input, sessionState, send]);
+	}, [input, sessionState, send, sessionId]);
 
 	const handleClear = useCallback(() => {
 		pendingIdRef.current = null;
 		dispatch({ type: "CLEAR" });
 		send({ type: "clear" });
-	}, [send]);
+		const newId = uid();
+		setSessionId(newId);
+		sessionIdRef.current = newId;
+		navigate({ to: "/chat", replace: true });
+	}, [send, navigate]);
 
 	const isRunning = sessionState === "running";
 	const canSend =
@@ -538,7 +641,7 @@ function ChatPage() {
 								e.key === "Enter" &&
 								!e.shiftKey &&
 								!isTouch &&
-								ui.enter_to_submit
+								config.ui.enter_to_submit
 							) {
 								e.preventDefault();
 								handleSend();

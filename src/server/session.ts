@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { HlidConfig } from "../config";
+import * as db from "../db";
 import type { ServerMessage } from "./protocol";
 
 function resolveClaudeExecutable(configOverride?: string): string | undefined {
@@ -38,6 +39,8 @@ export class SessionManager {
 	private claudeExecutable: string | undefined;
 	private history: Turn[] = [];
 	private pendingPermissions = new Map<string, (approved: boolean) => void>();
+	private currentSessionId: string | null = null;
+	private messageSeq = 0;
 
 	constructor(config: HlidConfig) {
 		this.model = config.claude.model;
@@ -58,6 +61,11 @@ export class SessionManager {
 		this.claudeExecutable = resolveClaudeExecutable(config.claude.executable);
 		this.history = [];
 		this.state = "idle";
+		this.currentSessionId = null;
+		this.messageSeq = 0;
+		db.clearCurrentSessionId().catch((e) =>
+			console.error("[db] clearCurrentSessionId failed:", e),
+		);
 	}
 
 	getStatus(): { state: SessionState; model: string } {
@@ -80,6 +88,11 @@ export class SessionManager {
 
 	clearHistory(): void {
 		this.history = [];
+		this.currentSessionId = null;
+		this.messageSeq = 0;
+		db.clearCurrentSessionId().catch((e) =>
+			console.error("[db] clearCurrentSessionId failed:", e),
+		);
 	}
 
 	private buildPrompt(userMessage: string): string {
@@ -95,22 +108,51 @@ export class SessionManager {
 	async runQuery(
 		userMessage: string,
 		emit: (msg: ServerMessage) => void,
+		sessionId?: string,
 	): Promise<void> {
 		if (this.state === "running") {
 			emit({ type: "error", message: "Session already running" });
 			return;
 		}
 
-		this.abortController = new AbortController();
+		// Set running immediately — prevents TOCTOU from concurrent chat messages
 		this.state = "running";
+		this.abortController = new AbortController();
 		emit({ type: "status", state: "running", model: this.model });
+
+		// Switch or initialize session context
+		if (sessionId && sessionId !== this.currentSessionId) {
+			const prior = await db.getSessionMessages(sessionId);
+			this.history = prior.map((m) => ({
+				role: m.role as "user" | "assistant",
+				text: m.text,
+			}));
+			this.messageSeq = prior.length;
+			this.currentSessionId = sessionId;
+			db.setCurrentSessionId(sessionId).catch((e) =>
+				console.error("[db] setCurrentSessionId failed:", e),
+			);
+		}
+
+		// Create DB session record for new sessions
+		if (sessionId && this.messageSeq === 0) {
+			const label = userMessage.slice(0, 40).toUpperCase();
+			await db.createSession(sessionId, label, this.model);
+		}
 
 		let assistantText = "";
 
 		try {
+			// Build prompt before pushing user turn to avoid duplication
+			const prompt = this.buildPrompt(userMessage);
 			this.history.push({ role: "user", text: userMessage });
+			const userSeq = this.messageSeq++;
+			if (sessionId) {
+				await db.appendMessage(sessionId, userSeq, "user", userMessage);
+			}
+
 			const conversation = query({
-				prompt: this.buildPrompt(userMessage),
+				prompt,
 				options: {
 					cwd: this.vaultPath,
 					abortController: this.abortController,
@@ -167,32 +209,75 @@ export class SessionManager {
 					}
 				}
 
+				if (message.type === "rate_limit_event") {
+					const info = message.rate_limit_info;
+					emit({
+						type: "rate_limit",
+						status: info.status,
+						rateLimitType: info.rateLimitType,
+						utilization: info.utilization,
+						resetsAt: info.resetsAt,
+					});
+				}
+
 				if (message.type === "result") {
 					const primaryModel = Object.values(message.modelUsage ?? {})[0];
-					emit({
-						type: "done",
-						cost: message.total_cost_usd ?? null,
-						turns: message.num_turns,
-						duration_ms: message.duration_ms ?? 0,
+					const queryData: db.QueryData = {
+						cost: message.total_cost_usd ?? 0,
 						input_tokens: message.usage?.input_tokens ?? 0,
 						output_tokens: message.usage?.output_tokens ?? 0,
 						cache_read_tokens: message.usage?.cache_read_input_tokens ?? 0,
 						cache_creation_tokens:
 							message.usage?.cache_creation_input_tokens ?? 0,
+						duration_ms: message.duration_ms ?? 0,
+						turns: message.num_turns,
 						context_window: primaryModel?.contextWindow ?? null,
-						max_output_tokens: primaryModel?.maxOutputTokens ?? null,
 						stop_reason: message.stop_reason ?? null,
+					};
+					if (sessionId) {
+						await db.recordQuery(sessionId, queryData);
+					}
+					emit({
+						type: "done",
+						session_id: sessionId,
+						cost: message.total_cost_usd ?? null,
+						turns: message.num_turns,
+						duration_ms: message.duration_ms ?? 0,
+						input_tokens: queryData.input_tokens,
+						output_tokens: queryData.output_tokens,
+						cache_read_tokens: queryData.cache_read_tokens,
+						cache_creation_tokens: queryData.cache_creation_tokens,
+						context_window: queryData.context_window,
+						max_output_tokens: primaryModel?.maxOutputTokens ?? null,
+						stop_reason: queryData.stop_reason,
 					});
 				}
 			}
 
-			this.history.push({ role: "assistant", text: assistantText });
 			this.state = "idle";
 		} catch (err) {
 			this.state = "error";
 			const msg = err instanceof Error ? err.message : "Unknown error";
+			console.error("[session] runQuery error:", err);
 			emit({ type: "error", message: msg });
 		} finally {
+			// Persist assistant text regardless of success or error (covers partial responses)
+			if (assistantText) {
+				this.history.push({ role: "assistant", text: assistantText });
+				if (sessionId) {
+					const assistantSeq = this.messageSeq++;
+					try {
+						await db.appendMessage(
+							sessionId,
+							assistantSeq,
+							"assistant",
+							assistantText,
+						);
+					} catch (e) {
+						console.error("[db] appendMessage (assistant) failed:", e);
+					}
+				}
+			}
 			this.abortController = null;
 			emit({ type: "status", state: this.state, model: this.model });
 		}

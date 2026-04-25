@@ -24,6 +24,7 @@ export type ToolResultMessage = {
 
 export type DoneMessage = {
 	type: "done";
+	session_id?: string;
 	cost: number | null;
 	turns: number;
 	duration_ms: number;
@@ -34,6 +35,14 @@ export type DoneMessage = {
 	context_window: number | null;
 	max_output_tokens: number | null;
 	stop_reason: string | null;
+};
+
+export type RateLimitMessage = {
+	type: "rate_limit";
+	status: string;
+	rateLimitType?: string;
+	utilization?: number;
+	resetsAt?: number;
 };
 
 export type ErrorMessage = {
@@ -50,19 +59,28 @@ export type PermissionRequestMessage = {
 	description?: string;
 };
 
+export type UserMessageEvent = {
+	type: "user_message";
+	text: string;
+	session_id?: string;
+};
+
 export type ServerMessage =
 	| StatusMessage
 	| ChunkMessage
 	| ToolEventMessage
 	| ToolResultMessage
 	| DoneMessage
+	| RateLimitMessage
 	| ErrorMessage
-	| PermissionRequestMessage;
+	| PermissionRequestMessage
+	| UserMessageEvent;
 
 // Client → server messages
 export type ClientChatMessage = {
 	type: "chat";
 	text: string;
+	session_id?: string;
 };
 
 export type ClientAbortMessage = {
