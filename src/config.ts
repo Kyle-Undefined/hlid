@@ -26,11 +26,19 @@ const ClaudeSchema = z.object({
 	permission_mode: z
 		.enum(["default", "acceptEdits", "bypassPermissions"])
 		.default("default"),
+	executable: z.string().optional(),
+});
+
+const UiSchema = z.object({
+	enter_to_submit: z.boolean().default(true),
+	hide_skills_index: z.boolean().default(true),
 });
 
 const StatusVocabularySchema = z.object({
-	active: z.array(z.string()).default(["Active", "In Progress"]),
-	planning: z.array(z.string()).default(["Planning", "Ideas"]),
+	active: z.array(z.string()).default(["Active", "In Progress", "Doing"]),
+	planning: z
+		.array(z.string())
+		.default(["Planning", "Ideas", "Backlog", "On Hold"]),
 	done: z.array(z.string()).default(["Done", "Complete", "Archived"]),
 });
 
@@ -42,6 +50,7 @@ export const HlidConfigSchema = z.object({
 		effort: "high" as const,
 		permission_mode: "default" as const,
 	})),
+	ui: UiSchema.default(() => ({ enter_to_submit: true })),
 	status_vocabulary: StatusVocabularySchema.default(() => ({
 		active: ["Active", "In Progress"],
 		planning: ["Planning", "Ideas"],

@@ -15,17 +15,30 @@ let _snap: Snapshot = {
 	model: "",
 };
 let _ws: WebSocket | null = null;
+let _pendingPrompt: string | null = null;
 
 const statusSubs = new Set<() => void>();
 const messageSubs = new Set<(msg: ServerMessage) => void>();
 
 function getWsUrl(): string {
-	const proto = window.location.protocol === "https:" ? "wss" : "ws";
-	const port =
-		(typeof import.meta !== "undefined" &&
-			(import.meta as { env?: { VITE_WS_PORT?: string } }).env?.VITE_WS_PORT) ||
-		"3001";
-	return `${proto}://${window.location.hostname}:${port}/ws`;
+	const wsPort =
+		typeof import.meta !== "undefined"
+			? (import.meta as { env?: { VITE_WS_PORT?: string } }).env?.VITE_WS_PORT
+			: undefined;
+
+	if (wsPort) {
+		const proto = window.location.protocol === "https:" ? "wss" : "ws";
+		return `${proto}://${window.location.hostname}:${wsPort}/ws`;
+	}
+
+	// HTTPS (e.g. Tailscale serve): same-origin, proxy routes /ws
+	if (window.location.protocol === "https:") {
+		return `wss://${window.location.host}/ws`;
+	}
+
+	// HTTP: WS server runs on app port + 1
+	const appPort = Number(window.location.port) || 80;
+	return `ws://${window.location.hostname}:${appPort + 1}/ws`;
 }
 
 function setSnap(next: Partial<Snapshot>) {
@@ -92,4 +105,14 @@ export function send(msg: ClientMessage): void {
 	if (_ws?.readyState === WebSocket.OPEN) {
 		_ws.send(JSON.stringify(msg));
 	}
+}
+
+export function setPendingPrompt(text: string): void {
+	_pendingPrompt = text;
+}
+
+export function claimPendingPrompt(): string | null {
+	const p = _pendingPrompt;
+	_pendingPrompt = null;
+	return p;
 }

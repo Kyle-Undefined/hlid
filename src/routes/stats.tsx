@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
+import { StatusDot } from "#/components/nav/StatusDot";
 import { getConfig } from "#/config";
 import { useWs } from "#/hooks/useWs";
 import type { DoneMessage, ServerMessage } from "#/server/protocol";
@@ -138,7 +139,7 @@ function Row({ label, value }: { label: string; value: string }) {
 function StatsPage() {
 	const config = Route.useLoaderData();
 	const [stats, setStats] = useState<SessionStats>(EMPTY);
-	const { wsStatus, sessionState, model } = useWs((msg: ServerMessage) => {
+	const { wsStatus, model } = useWs((msg: ServerMessage) => {
 		if (msg.type === "done") setStats((prev) => accumulate(prev, msg));
 	});
 
@@ -151,29 +152,12 @@ function StatsPage() {
 	const avgCostPerQuery = stats.queries > 0 ? stats.cost / stats.queries : 0;
 	const connected = wsStatus === "connected";
 	const idle = stats.queries === 0;
-	const isRunning = connected && sessionState === "running";
-
-	const statusDot = !connected
-		? "bg-muted-foreground/30"
-		: isRunning
-			? "bg-primary animate-pulse"
-			: "bg-green-600";
-
-	const statusLabel = !connected ? "OFFLINE" : isRunning ? "RUNNING" : "READY";
 
 	return (
 		<div className="flex flex-col h-full">
 			{/* Header */}
-			<div className="flex items-center justify-between px-5 py-3.5 border-b border-border shrink-0">
-				<span className="text-[11px] tracking-widest text-muted-foreground uppercase">
-					STATS
-				</span>
-				<div className="flex items-center gap-2">
-					<div className={`w-1.5 h-1.5 rounded-full ${statusDot}`} />
-					<span className="text-[10px] tracking-widest text-muted-foreground">
-						{statusLabel}
-					</span>
-				</div>
+			<div className="flex items-center justify-end px-5 py-3.5 border-b border-border shrink-0">
+				<StatusDot />
 			</div>
 
 			<div className="flex-1 overflow-auto">

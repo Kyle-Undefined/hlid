@@ -36,7 +36,17 @@ export function writeConfig(config: HlidConfig): void {
 	lines.push("");
 	lines.push("[claude]");
 	lines.push(`model = ${tomlVal(config.claude.model)}`);
+	lines.push(`effort = ${tomlVal(config.claude.effort)}`);
 	lines.push(`permission_mode = ${tomlVal(config.claude.permission_mode)}`);
+	if (config.claude.max_turns !== undefined)
+		lines.push(`max_turns = ${tomlVal(config.claude.max_turns)}`);
+	if (config.claude.executable)
+		lines.push(`executable = ${tomlVal(config.claude.executable)}`);
+
+	lines.push("");
+	lines.push("[ui]");
+	lines.push(`enter_to_submit = ${tomlVal(config.ui.enter_to_submit)}`);
+	lines.push(`hide_skills_index = ${tomlVal(config.ui.hide_skills_index)}`);
 
 	lines.push("");
 	lines.push("[status_vocabulary]");

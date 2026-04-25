@@ -1,8 +1,14 @@
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import matter from "gray-matter";
+import {
+	classifyStatus,
+	type ProjectStatus,
+	type StatusVocabulary,
+} from "#/lib/classify";
 
-export type ProjectStatus = "active" | "planning" | "done" | "unknown";
+export type { ProjectStatus, StatusVocabulary };
+export { classifyStatus };
 
 export type Project = {
 	file: string;
@@ -14,22 +20,27 @@ export type Project = {
 	modified?: string;
 };
 
-export type StatusVocabulary = {
-	active: string[];
-	planning: string[];
-	done: string[];
-};
-
-export function classifyStatus(
-	raw: string | undefined,
-	vocab: StatusVocabulary,
-): ProjectStatus {
-	if (!raw) return "unknown";
-	const lower = raw.toLowerCase();
-	if (vocab.active.some((v) => v.toLowerCase() === lower)) return "active";
-	if (vocab.planning.some((v) => v.toLowerCase() === lower)) return "planning";
-	if (vocab.done.some((v) => v.toLowerCase() === lower)) return "done";
-	return "unknown";
+function walkProjects(dir: string): string[] {
+	let results: string[] = [];
+	let entries: string[];
+	try {
+		entries = readdirSync(dir);
+	} catch {
+		return [];
+	}
+	for (const entry of entries) {
+		const full = join(dir, entry);
+		try {
+			if (statSync(full).isDirectory()) {
+				results = results.concat(walkProjects(full));
+			} else if (entry.endsWith(".md")) {
+				results.push(full);
+			}
+		} catch {
+			// skip unreadable
+		}
+	}
+	return results;
 }
 
 export function scanProjects(
@@ -38,20 +49,16 @@ export function scanProjects(
 	vocab: StatusVocabulary,
 ): Project[] {
 	const dir = join(vaultPath, projectsFolder);
-	let files: string[];
-	try {
-		files = readdirSync(dir).filter((f) => f.endsWith(".md"));
-	} catch {
-		return [];
-	}
+	const files = walkProjects(dir);
 
-	return files.map((file) => {
+	return files.map((fullPath) => {
+		const file = relative(dir, fullPath);
 		try {
-			const raw = readFileSync(join(dir, file), "utf-8");
+			const raw = readFileSync(fullPath, "utf-8");
 			const { data } = matter(raw);
 			const rawStatus = String(data.status ?? "");
 			const titleFromFrontmatter = data.title as string | undefined;
-			const titleFromFilename = file.replace(/\.md$/, "");
+			const titleFromFilename = fullPath.split(sep).pop()?.replace(/\.md$/, "");
 			return {
 				file,
 				title: titleFromFrontmatter ?? titleFromFilename,
@@ -78,23 +85,93 @@ export type Skill = {
 	name: string;
 	description: string;
 	content: string;
+	section?: string;
 };
 
-export function scanSkills(vaultPath: string, skillsFolder: string): Skill[] {
-	const dir = join(vaultPath, skillsFolder);
-	let files: string[];
+function parseSectionMap(indexPath: string): {
+	sectionMap: Map<string, string>;
+	sectionOrder: string[];
+} {
+	const sectionMap = new Map<string, string>();
+	const sectionOrder: string[] = [];
+	let raw: string;
 	try {
-		files = readdirSync(dir).filter((f) => f.endsWith(".md"));
+		raw = readFileSync(indexPath, "utf-8");
 	} catch {
-		return [];
+		return { sectionMap, sectionOrder };
+	}
+	let currentSection = "";
+	for (const line of raw.split("\n")) {
+		const heading = line.match(/^##\s+(.+)/);
+		if (heading) {
+			currentSection = heading[1].trim();
+			if (!sectionOrder.includes(currentSection))
+				sectionOrder.push(currentSection);
+			continue;
+		}
+		if (currentSection) {
+			// match backtick-quoted name in first pipe-table column: | `name` | ...
+			const cell = line.match(/^\|?\s*`([^`]+)`/);
+			if (cell) sectionMap.set(cell[1].trim(), currentSection);
+		}
+	}
+	return { sectionMap, sectionOrder };
+}
+
+export function scanSkills(
+	vaultPath: string,
+	skillsFolder: string,
+	hideIndex = true,
+): { skills: Skill[]; sectionOrder: string[] } {
+	const dir = join(vaultPath, skillsFolder);
+	let entries: string[];
+	try {
+		entries = readdirSync(dir);
+	} catch {
+		return { skills: [], sectionOrder: [] };
 	}
 
-	return files.map((file) => {
+	const skillFiles: { file: string; fullPath: string }[] = [];
+	let indexPath: string | null = null;
+
+	for (const entry of entries) {
+		const full = join(dir, entry);
 		try {
-			const raw = readFileSync(join(dir, file), "utf-8");
+			const stat = statSync(full);
+			if (stat.isDirectory()) {
+				// skill folder — find the .md file directly inside (one level only)
+				const inner = readdirSync(full).filter((f) => f.endsWith(".md"));
+				// prefer file matching folder name, else first .md
+				const match =
+					inner.find((f) => f.replace(/\.md$/, "") === entry) ?? inner[0];
+				if (match)
+					skillFiles.push({
+						file: join(entry, match),
+						fullPath: join(full, match),
+					});
+			} else if (entry.endsWith(".md")) {
+				if (entry.toLowerCase() === "index.md") {
+					indexPath = full;
+					if (hideIndex) continue;
+				}
+				skillFiles.push({ file: entry, fullPath: full });
+			}
+		} catch {
+			// skip
+		}
+	}
+
+	const { sectionMap, sectionOrder } = indexPath
+		? parseSectionMap(indexPath)
+		: { sectionMap: new Map<string, string>(), sectionOrder: [] };
+
+	const skills = skillFiles.map(({ file, fullPath }) => {
+		try {
+			const raw = readFileSync(fullPath, "utf-8");
 			const { data, content } = matter(raw);
 			const name =
-				(data.name as string | undefined) ?? file.replace(/\.md$/, "");
+				(data.name as string | undefined) ??
+				file.split(sep)[0].replace(/\.md$/, "");
 			const firstLine =
 				content
 					.trim()
@@ -103,16 +180,21 @@ export function scanSkills(vaultPath: string, skillsFolder: string): Skill[] {
 			const description =
 				(data.description as string | undefined) ??
 				firstLine.replace(/^#+\s*/, "");
-			return { file, name, description, content: raw };
+			const section = sectionMap.get(name);
+			return { file, name, description, content: raw, section };
 		} catch {
 			return {
 				file,
-				name: file.replace(/\.md$/, ""),
+				name: file.split(sep)[0].replace(/\.md$/, ""),
 				description: "",
 				content: "",
 			};
 		}
 	});
+
+	skills.sort((a, b) => a.name.localeCompare(b.name));
+
+	return { skills, sectionOrder };
 }
 
 export type MemoryFile = {

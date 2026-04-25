@@ -1,6 +1,25 @@
+import { existsSync } from "node:fs";
+import { resolve } from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { HlidConfig } from "../config";
 import type { ServerMessage } from "./protocol";
+
+function resolveClaudeExecutable(configOverride?: string): string | undefined {
+	if (configOverride) return configOverride;
+	// On linux x64, SDK prefers musl binary but WSL2/glibc systems can't run it.
+	// Fall back to glibc variant if musl libc is absent.
+	if (process.platform === "linux" && process.arch === "x64") {
+		const muslLib = "/lib/ld-musl-x86_64.so.1";
+		if (!existsSync(muslLib)) {
+			const glibcBin = resolve(
+				import.meta.dirname,
+				"../../node_modules/@anthropic-ai/claude-agent-sdk-linux-x64/claude",
+			);
+			if (existsSync(glibcBin)) return glibcBin;
+		}
+	}
+	return undefined;
+}
 
 export type SessionState = "idle" | "running" | "error";
 
@@ -16,6 +35,7 @@ export class SessionManager {
 	private maxTurns: number | undefined;
 	private vaultPath: string;
 	private permissionMode: PermissionMode;
+	private claudeExecutable: string | undefined;
 	private history: Turn[] = [];
 	private pendingPermissions = new Map<string, (approved: boolean) => void>();
 
@@ -25,6 +45,7 @@ export class SessionManager {
 		this.maxTurns = config.claude.max_turns;
 		this.vaultPath = config.vault.path || process.env.HOME || "/";
 		this.permissionMode = config.claude.permission_mode;
+		this.claudeExecutable = resolveClaudeExecutable(config.claude.executable);
 	}
 
 	reinitialize(config: HlidConfig): void {
@@ -34,6 +55,7 @@ export class SessionManager {
 		this.maxTurns = config.claude.max_turns;
 		this.vaultPath = config.vault.path || process.env.HOME || "/";
 		this.permissionMode = config.claude.permission_mode;
+		this.claudeExecutable = resolveClaudeExecutable(config.claude.executable);
 		this.history = [];
 		this.state = "idle";
 	}
@@ -95,6 +117,9 @@ export class SessionManager {
 					permissionMode: this.permissionMode,
 					effort: this.effort,
 					...(this.maxTurns !== undefined && { maxTurns: this.maxTurns }),
+					...(this.claudeExecutable !== undefined && {
+						pathToClaudeCodeExecutable: this.claudeExecutable,
+					}),
 					allowDangerouslySkipPermissions:
 						this.permissionMode === "bypassPermissions",
 					persistSession: false,

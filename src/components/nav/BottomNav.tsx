@@ -8,11 +8,11 @@ import {
 } from "lucide-react";
 
 const NAV_ITEMS = [
-	{ to: "/", label: "COCKPIT", icon: LayoutDashboard, exact: true },
-	{ to: "/chat", label: "CHAT", icon: MessageSquare, exact: false },
+	{ to: "/", label: "WATCH", icon: LayoutDashboard, exact: true },
+	{ to: "/chat", label: "RAVEN", icon: MessageSquare, exact: false },
 	{ to: "/vault", label: "VAULT", icon: FolderOpen, exact: false },
-	{ to: "/stats", label: "STATS", icon: BarChart3, exact: false },
-	{ to: "/settings", label: "CONFIG", icon: Settings, exact: false },
+	{ to: "/stats", label: "LEDGER", icon: BarChart3, exact: false },
+	{ to: "/settings", label: "FORGE", icon: Settings, exact: false },
 ] as const;
 
 const BASE =
@@ -20,7 +20,7 @@ const BASE =
 
 export function BottomNav() {
 	return (
-		<nav className="fixed bottom-0 left-0 right-0 md:hidden bg-sidebar border-t border-sidebar-border z-50">
+		<nav className="shrink-0 md:hidden bg-sidebar border-t border-sidebar-border">
 			<div className="flex safe-area-inset-bottom">
 				{NAV_ITEMS.map(({ to, label, icon: Icon, exact }) => (
 					<Link

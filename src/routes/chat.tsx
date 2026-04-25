@@ -1,14 +1,26 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { Check, ChevronRight, SquarePen, X } from "lucide-react";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { StatusDot } from "#/components/nav/StatusDot";
+import { getConfig } from "#/config";
 import { useWs } from "#/hooks/useWs";
+import * as wsStore from "#/hooks/wsStore";
+import { uid } from "#/lib/utils";
 import type {
 	PermissionRequestMessage,
 	ServerMessage,
 	ToolEventMessage,
 } from "#/server/protocol";
 
+function normalizeMd(text: string): string {
+	// CommonMark: "** text **" doesn't bold (space after opener). Normalize.
+	return text.replace(/\*\*\s+((?:[^*\n]|\*(?!\*))+?)\s+\*\*/g, "**$1**");
+}
+
 export const Route = createFileRoute("/chat")({
+	loader: () => getConfig(),
 	component: ChatPage,
 });
 
@@ -232,7 +244,7 @@ function UserMsg({ message }: { message: UserMessage }) {
 				{message.text}
 			</div>
 			<div className="text-[9px] tracking-widest text-primary/40 shrink-0 pt-0.5 w-11 text-right">
-				YOU
+				ME
 			</div>
 		</div>
 	);
@@ -247,11 +259,122 @@ function AssistantMsg({ message }: { message: AssistantMessage }) {
 			))}
 			{(message.text || message.streaming) && (
 				<div className="flex items-start gap-0">
-					<div className="text-[9px] tracking-widest text-muted-foreground/30 shrink-0 pt-0.5 w-12 uppercase">
-						AI
+					<div className="shrink-0 pt-0.5 w-12 flex">
+						<svg
+							xmlns="http://www.w3.org/2000/svg"
+							viewBox="0 0 32 32"
+							className="w-4 h-4 opacity-40"
+							role="img"
+							aria-label="Hlid"
+						>
+							<path
+								d="M2 16 C7 6 25 6 30 16 C25 26 7 26 2 16Z"
+								fill="none"
+								stroke="#38bdf8"
+								strokeWidth="1.5"
+								strokeLinejoin="round"
+							/>
+							<circle
+								cx="16"
+								cy="16"
+								r="5.5"
+								fill="none"
+								stroke="#38bdf8"
+								strokeWidth="1.5"
+							/>
+							<circle cx="16" cy="16" r="2" fill="#38bdf8" />
+						</svg>
 					</div>
-					<div className="flex-1 text-sm text-foreground/90 whitespace-pre-wrap leading-relaxed pr-4">
-						{message.text}
+					<div className="flex-1 text-sm text-foreground/90 leading-relaxed pr-4 min-w-0">
+						<Markdown
+							remarkPlugins={[remarkGfm]}
+							components={{
+								p: ({ children }) => (
+									<p className="mb-3 last:mb-0">{children}</p>
+								),
+								h1: ({ children }) => (
+									<h1 className="text-base font-bold mb-2 mt-4 first:mt-0">
+										{children}
+									</h1>
+								),
+								h2: ({ children }) => (
+									<h2 className="text-sm font-bold mb-2 mt-4 first:mt-0 tracking-wide">
+										{children}
+									</h2>
+								),
+								h3: ({ children }) => (
+									<h3 className="text-sm font-semibold mb-1.5 mt-3 first:mt-0">
+										{children}
+									</h3>
+								),
+								ul: ({ children }) => (
+									<ul className="list-disc pl-5 mb-3 space-y-0.5">
+										{children}
+									</ul>
+								),
+								ol: ({ children }) => (
+									<ol className="list-decimal pl-5 mb-3 space-y-0.5">
+										{children}
+									</ol>
+								),
+								li: ({ children }) => (
+									<li className="leading-relaxed">{children}</li>
+								),
+								code: ({ children, className }) => {
+									const isBlock = className?.startsWith("language-");
+									return isBlock ? (
+										<code className="block bg-secondary/60 border border-border rounded-none px-3 py-2 text-xs font-mono text-foreground/80 overflow-x-auto whitespace-pre mb-3">
+											{children}
+										</code>
+									) : (
+										<code className="bg-secondary/80 px-1.5 py-0.5 text-[11px] font-mono text-primary/80 rounded-none">
+											{children}
+										</code>
+									);
+								},
+								pre: ({ children }) => <pre className="mb-3">{children}</pre>,
+								blockquote: ({ children }) => (
+									<blockquote className="border-l-2 border-primary/30 pl-3 text-foreground/60 italic mb-3">
+										{children}
+									</blockquote>
+								),
+								a: ({ href, children }) => (
+									<a
+										href={href}
+										className="text-primary underline underline-offset-2 hover:text-primary/80"
+										target="_blank"
+										rel="noreferrer"
+									>
+										{children}
+									</a>
+								),
+								strong: ({ children }) => (
+									<strong className="font-semibold text-foreground">
+										{children}
+									</strong>
+								),
+								hr: () => <hr className="border-border my-3" />,
+								table: ({ children }) => (
+									<div className="overflow-x-auto mb-3">
+										<table className="text-xs w-full border-collapse">
+											{children}
+										</table>
+									</div>
+								),
+								th: ({ children }) => (
+									<th className="border border-border px-3 py-1.5 text-left text-[10px] tracking-wider text-muted-foreground bg-secondary/40">
+										{children}
+									</th>
+								),
+								td: ({ children }) => (
+									<td className="border border-border px-3 py-1.5">
+										{children}
+									</td>
+								),
+							}}
+						>
+							{normalizeMd(message.text)}
+						</Markdown>
 						{message.streaming && (
 							<span className="inline-block w-[7px] h-[1em] ml-0.5 align-middle bg-primary/50 cursor-blink" />
 						)}
@@ -270,6 +393,7 @@ function AssistantMsg({ message }: { message: AssistantMessage }) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 function ChatPage() {
+	const { ui } = Route.useLoaderData();
 	const [messages, dispatch] = useReducer(reducer, []);
 	const [input, setInput] = useState("");
 	const pendingIdRef = useRef<string | null>(null);
@@ -280,7 +404,7 @@ function ChatPage() {
 		const id = pendingIdRef.current;
 
 		if (msg.type === "status" && msg.state === "running" && !id) {
-			const newId = crypto.randomUUID();
+			const newId = uid();
 			pendingIdRef.current = newId;
 			dispatch({ type: "ADD_ASSISTANT", id: newId });
 			return;
@@ -291,27 +415,39 @@ function ChatPage() {
 			return;
 		}
 
-		if (!id) return;
+		if (!id && (msg.type === "chunk" || msg.type === "tool_event")) {
+			const newId = uid();
+			pendingIdRef.current = newId;
+			dispatch({ type: "ADD_ASSISTANT", id: newId });
+		}
+
+		const activeId = pendingIdRef.current;
+		if (!activeId) return;
 
 		if (msg.type === "chunk") {
-			dispatch({ type: "APPEND_CHUNK", id, text: msg.text });
+			dispatch({ type: "APPEND_CHUNK", id: activeId, text: msg.text });
 		} else if (msg.type === "tool_event") {
-			dispatch({ type: "ADD_TOOL_EVENT", id, event: msg });
+			dispatch({ type: "ADD_TOOL_EVENT", id: activeId, event: msg });
 		} else if (msg.type === "done") {
-			dispatch({ type: "DONE", id, cost: msg.cost });
+			dispatch({ type: "DONE", id: activeId, cost: msg.cost });
 			pendingIdRef.current = null;
 		} else if (msg.type === "error") {
 			dispatch({
 				type: "APPEND_CHUNK",
-				id,
+				id: activeId,
 				text: `\n\n[ERROR: ${msg.message}]`,
 			});
-			dispatch({ type: "DONE", id, cost: null });
+			dispatch({ type: "DONE", id: activeId, cost: null });
 			pendingIdRef.current = null;
 		}
 	}, []);
 
 	const { wsStatus, sessionState, send } = useWs(handleWsMessage);
+
+	useEffect(() => {
+		const p = wsStore.claimPendingPrompt();
+		if (p) dispatch({ type: "ADD_USER", id: uid(), text: p });
+	}, []);
 
 	const handleDecide = useCallback(
 		(id: string, approved: boolean) => {
@@ -341,7 +477,7 @@ function ChatPage() {
 	const handleSend = useCallback(() => {
 		const text = input.trim();
 		if (!text || sessionState === "running") return;
-		const id = crypto.randomUUID();
+		const id = uid();
 		dispatch({ type: "ADD_USER", id, text });
 		send({ type: "chat", text });
 		setInput("");
@@ -357,47 +493,8 @@ function ChatPage() {
 	const canSend =
 		input.trim().length > 0 && !isRunning && wsStatus === "connected";
 
-	const lastUserText = [...messages]
-		.reverse()
-		.find((m) => m.role === "user")?.text;
-	const taskTitle = lastUserText
-		? lastUserText.length > 52
-			? `${lastUserText.slice(0, 52)}…`
-			: lastUserText
-		: null;
-
 	return (
 		<div className="h-full flex flex-col">
-			{/* Header */}
-			<div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
-				<div className="flex items-center gap-3 min-w-0">
-					<span className="text-[11px] tracking-widest text-muted-foreground uppercase shrink-0">
-						CHAT
-					</span>
-					{isRunning && taskTitle && (
-						<>
-							<span className="text-muted-foreground/25 shrink-0">·</span>
-							<div className="flex items-center gap-2 min-w-0">
-								<div className="w-1.5 h-1.5 rounded-full bg-primary animate-pulse shrink-0" />
-								<span className="text-[10px] tracking-wider text-primary/70 truncate uppercase">
-									{taskTitle}
-								</span>
-							</div>
-						</>
-					)}
-				</div>
-				{messages.length > 0 && (
-					<button
-						type="button"
-						onClick={handleClear}
-						className="flex items-center gap-1.5 text-[10px] tracking-widest text-muted-foreground/40 hover:text-muted-foreground transition-colors uppercase shrink-0 ml-4"
-					>
-						<SquarePen className="w-3 h-3" />
-						NEW
-					</button>
-				)}
-			</div>
-
 			{/* Messages */}
 			<div className="flex-1 overflow-auto px-5 py-2">
 				{messages.length === 0 && (
@@ -425,7 +522,7 @@ function ChatPage() {
 
 			{/* Input */}
 			<div className="shrink-0 border-t border-border bg-background">
-				<div className="flex items-end">
+				<div className="flex items-center">
 					<span className="text-primary text-sm px-4 py-3 shrink-0 select-none">
 						›
 					</span>
@@ -434,7 +531,15 @@ function ChatPage() {
 						value={input}
 						onChange={(e) => setInput(e.target.value)}
 						onKeyDown={(e) => {
-							if (e.key === "Enter" && !e.shiftKey) {
+							const isTouch =
+								typeof window !== "undefined" &&
+								window.matchMedia("(pointer: coarse)").matches;
+							if (
+								e.key === "Enter" &&
+								!e.shiftKey &&
+								!isTouch &&
+								ui.enter_to_submit
+							) {
 								e.preventDefault();
 								handleSend();
 							}
@@ -459,6 +564,19 @@ function ChatPage() {
 					>
 						RUN
 					</button>
+					{messages.length > 0 && (
+						<button
+							type="button"
+							onClick={handleClear}
+							className="px-3 py-3 text-muted-foreground/25 hover:text-muted-foreground transition-colors shrink-0"
+							aria-label="New chat"
+						>
+							<SquarePen className="w-3.5 h-3.5" />
+						</button>
+					)}
+					<div className="px-2 shrink-0">
+						<StatusDot />
+					</div>
 				</div>
 			</div>
 		</div>

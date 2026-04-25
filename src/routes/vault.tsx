@@ -2,28 +2,21 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import { ChevronDown, ChevronRight, Play } from "lucide-react";
 import { useState } from "react";
+import { StatusDot } from "#/components/nav/StatusDot";
 import { getConfig } from "#/config";
 import { useWs } from "#/hooks/useWs";
-import type {
-	MemoryFile,
-	Project,
-	ProjectStatus,
-	Skill,
-	StatusVocabulary,
-} from "#/lib/vault";
-import {
-	classifyStatus,
-	scanMemory,
-	scanProjects,
-	scanSkills,
-	setProjectStatus,
-} from "#/lib/vault";
+import * as wsStore from "#/hooks/wsStore";
+import type { ProjectStatus } from "#/lib/classify";
+import type { MemoryFile, Project, Skill } from "#/lib/vault";
 import type { ClientMessage } from "#/server/protocol";
 
 // ─── server fns ────────────────────────────────────────────────────────────
 
 const getVaultData = createServerFn({ method: "GET" }).handler(async () => {
-	const config = await getConfig();
+	const [config, { scanProjects, scanSkills, scanMemory }] = await Promise.all([
+		getConfig(),
+		import("#/lib/vault"),
+	]);
 	const { vault, status_vocabulary } = config;
 
 	const projects =
@@ -31,37 +24,16 @@ const getVaultData = createServerFn({ method: "GET" }).handler(async () => {
 			? scanProjects(vault.path, vault.projects, status_vocabulary)
 			: [];
 
-	const skills =
-		vault.path && vault.skills ? scanSkills(vault.path, vault.skills) : [];
+	const { skills, sectionOrder } =
+		vault.path && vault.skills
+			? scanSkills(vault.path, vault.skills, config.ui.hide_skills_index)
+			: { skills: [], sectionOrder: [] };
 
 	const memory =
 		vault.path && vault.memory ? scanMemory(vault.path, vault.memory) : [];
 
-	return { projects, skills, memory, vocab: status_vocabulary };
+	return { projects, skills, sectionOrder, memory, vocab: status_vocabulary };
 });
-
-const updateStatus = createServerFn({ method: "POST" })
-	.inputValidator((d: unknown) => {
-		if (
-			typeof d !== "object" ||
-			d === null ||
-			typeof (d as Record<string, unknown>).file !== "string" ||
-			typeof (d as Record<string, unknown>).status !== "string"
-		) {
-			throw new Error("Invalid input");
-		}
-		return d as { file: string; status: string };
-	})
-	.handler(async ({ data }) => {
-		const config = await getConfig();
-		if (!config.vault.path || !config.vault.projects) return;
-		setProjectStatus(
-			config.vault.path,
-			config.vault.projects,
-			data.file,
-			data.status,
-		);
-	});
 
 // ─── route ─────────────────────────────────────────────────────────────────
 
@@ -93,68 +65,7 @@ const STATUS_DOT: Record<ProjectStatus, string> = {
 	unknown: "bg-muted-foreground/20",
 };
 
-function StatusPill({
-	project,
-	allStatuses,
-	onChange,
-}: {
-	project: Project;
-	allStatuses: string[];
-	onChange: (status: string) => void;
-}) {
-	const [open, setOpen] = useState(false);
-
-	return (
-		<div className="relative">
-			<button
-				type="button"
-				onClick={() => setOpen((v) => !v)}
-				className="flex items-center gap-1.5 px-2 py-0.5 bg-secondary text-[10px] tracking-wider text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-			>
-				<span
-					className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_DOT[project.status]}`}
-				/>
-				{project.rawStatus || "NO STATUS"}
-			</button>
-
-			{open && (
-				<>
-					<button
-						type="button"
-						aria-label="Close"
-						className="fixed inset-0 z-40"
-						onClick={() => setOpen(false)}
-					/>
-					<div className="absolute right-0 top-full mt-px z-50 bg-popover border border-border shadow-lg overflow-hidden min-w-32">
-						{allStatuses.map((s) => (
-							<button
-								key={s}
-								type="button"
-								onClick={() => {
-									onChange(s);
-									setOpen(false);
-								}}
-								className={`w-full text-left px-3 py-1.5 text-xs tracking-wider hover:bg-accent transition-colors ${s === project.rawStatus ? "text-primary" : "text-foreground"}`}
-							>
-								{s}
-							</button>
-						))}
-					</div>
-				</>
-			)}
-		</div>
-	);
-}
-
-function ProjectCard({
-	project,
-	allStatuses,
-	onStatusChange,
-}: {
-	project: Project;
-	allStatuses: string[];
-	onStatusChange: (file: string, status: string) => void;
-}) {
+function ProjectCard({ project }: { project: Project }) {
 	return (
 		<div className="flex items-center justify-between gap-4 px-4 py-3">
 			<div className="min-w-0">
@@ -172,11 +83,12 @@ function ProjectCard({
 					</div>
 				)}
 			</div>
-			<StatusPill
-				project={project}
-				allStatuses={allStatuses}
-				onChange={(s) => onStatusChange(project.file, s)}
-			/>
+			<div className="flex items-center gap-1.5 px-2 py-0.5 bg-secondary text-[10px] tracking-wider text-muted-foreground shrink-0">
+				<span
+					className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_DOT[project.status]}`}
+				/>
+				{project.rawStatus || "NO STATUS"}
+			</div>
 		</div>
 	);
 }
@@ -184,13 +96,9 @@ function ProjectCard({
 function ProjectGroup({
 	status,
 	projects,
-	allStatuses,
-	onStatusChange,
 }: {
 	status: ProjectStatus;
 	projects: Project[];
-	allStatuses: string[];
-	onStatusChange: (file: string, status: string) => void;
 }) {
 	if (projects.length === 0) return null;
 	return (
@@ -206,60 +114,23 @@ function ProjectGroup({
 			</div>
 			<div className="border border-border bg-card divide-y divide-border">
 				{projects.map((p) => (
-					<ProjectCard
-						key={p.file}
-						project={p}
-						allStatuses={allStatuses}
-						onStatusChange={onStatusChange}
-					/>
+					<ProjectCard key={p.file} project={p} />
 				))}
 			</div>
 		</div>
 	);
 }
 
-function ProjectsTab({
-	initial,
-	vocab,
-}: {
-	initial: Project[];
-	vocab: StatusVocabulary;
-}) {
-	const [projects, setProjects] = useState<Project[]>(initial);
-
-	const allStatuses = Array.from(
-		new Set(projects.map((p) => p.rawStatus).filter(Boolean)),
-	).sort();
-
-	async function handleStatusChange(file: string, newStatus: string) {
-		const prev = projects;
-		setProjects((ps) =>
-			ps.map((p) =>
-				p.file === file
-					? {
-							...p,
-							rawStatus: newStatus,
-							status: classifyStatus(newStatus, vocab),
-						}
-					: p,
-			),
-		);
-		try {
-			await updateStatus({ data: { file, status: newStatus } });
-		} catch {
-			setProjects(prev);
-		}
-	}
-
+function ProjectsTab({ initial }: { initial: Project[] }) {
 	const grouped = STATUS_ORDER.reduce(
 		(acc, s) => {
-			acc[s] = projects.filter((p) => p.status === s);
+			acc[s] = initial.filter((p) => p.status === s);
 			return acc;
 		},
 		{} as Record<ProjectStatus, Project[]>,
 	);
 
-	if (projects.length === 0) {
+	if (initial.length === 0) {
 		return (
 			<div className="border border-border bg-card px-4 py-8 text-center">
 				<p className="text-xs tracking-wider text-muted-foreground">
@@ -272,13 +143,7 @@ function ProjectsTab({
 	return (
 		<div className="space-y-6">
 			{STATUS_ORDER.map((s) => (
-				<ProjectGroup
-					key={s}
-					status={s}
-					projects={grouped[s]}
-					allStatuses={allStatuses}
-					onStatusChange={handleStatusChange}
-				/>
+				<ProjectGroup key={s} status={s} projects={grouped[s]} />
 			))}
 		</div>
 	);
@@ -305,7 +170,7 @@ function SkillCard({
 			</div>
 			<button
 				type="button"
-				onClick={() => onRun(skill.content)}
+				onClick={() => onRun(`/${skill.name}`)}
 				title="Run this skill"
 				className="flex items-center gap-1.5 px-2.5 py-1.5 bg-primary/10 border border-primary/20 text-[10px] tracking-widest text-primary hover:bg-primary/20 transition-colors shrink-0 uppercase"
 			>
@@ -316,11 +181,35 @@ function SkillCard({
 	);
 }
 
+function groupSkills(
+	skills: Skill[],
+	sectionOrder: string[],
+): { section: string | null; skills: Skill[] }[] {
+	const groups: { section: string | null; skills: Skill[] }[] = [];
+	const seen = new Set<string>();
+
+	for (const sec of sectionOrder) {
+		const members = skills.filter((s) => s.section === sec);
+		if (members.length === 0) continue;
+		groups.push({ section: sec, skills: members });
+		for (const s of members) seen.add(s.file);
+	}
+
+	groups.sort((a, b) => (a.section ?? "").localeCompare(b.section ?? ""));
+	const unsectioned = skills.filter((s) => !seen.has(s.file));
+	if (unsectioned.length > 0)
+		groups.push({ section: null, skills: unsectioned });
+
+	return groups;
+}
+
 function SkillsTab({
 	skills,
+	sectionOrder,
 	onRun,
 }: {
 	skills: Skill[];
+	sectionOrder: string[];
 	onRun: (content: string) => void;
 }) {
 	if (skills.length === 0) {
@@ -335,10 +224,27 @@ function SkillsTab({
 		);
 	}
 
+	const groups = groupSkills(skills, sectionOrder);
+
 	return (
-		<div className="border border-border bg-card divide-y divide-border">
-			{skills.map((s) => (
-				<SkillCard key={s.file} skill={s} onRun={onRun} />
+		<div className="space-y-6">
+			{groups.map((g) => (
+				<div key={g.section ?? "__unsectioned__"} className="space-y-2">
+					<div className="flex items-center gap-2">
+						<span className="w-1.5 h-1.5 rounded-full bg-primary/40 shrink-0" />
+						<span className="text-[10px] tracking-widest text-muted-foreground uppercase">
+							{g.section ?? "SKILLS"}
+						</span>
+						<span className="text-[10px] text-muted-foreground/50">
+							{g.skills.length}
+						</span>
+					</div>
+					<div className="border border-border bg-card divide-y divide-border">
+						{g.skills.map((s) => (
+							<SkillCard key={s.file} skill={s} onRun={onRun} />
+						))}
+					</div>
+				</div>
 			))}
 		</div>
 	);
@@ -408,7 +314,7 @@ const TABS: { id: Tab; label: string }[] = [
 ];
 
 function VaultPage() {
-	const { projects, skills, memory, vocab } = Route.useLoaderData();
+	const { projects, skills, sectionOrder, memory } = Route.useLoaderData();
 	const { tab } = Route.useSearch();
 	const navigate = useNavigate({ from: "/vault" });
 	const { send } = useWs();
@@ -418,18 +324,16 @@ function VaultPage() {
 	}
 
 	function runSkill(content: string) {
-		const msg: ClientMessage = { type: "chat", text: content };
-		send(msg);
+		wsStore.setPendingPrompt(content);
+		send({ type: "chat", text: content } satisfies ClientMessage);
 		navigate({ to: "/chat" });
 	}
 
 	return (
 		<div className="flex flex-col h-full">
 			{/* Header */}
-			<div className="px-5 py-3.5 border-b border-border shrink-0">
-				<span className="text-[11px] tracking-widest text-muted-foreground uppercase">
-					VAULT
-				</span>
+			<div className="flex items-center justify-end px-5 py-3.5 border-b border-border shrink-0">
+				<StatusDot />
 			</div>
 
 			{/* Tabs */}
@@ -452,8 +356,14 @@ function VaultPage() {
 
 			{/* Content */}
 			<div className="flex-1 overflow-auto p-5 space-y-5">
-				{tab === "projects" && <ProjectsTab initial={projects} vocab={vocab} />}
-				{tab === "skills" && <SkillsTab skills={skills} onRun={runSkill} />}
+				{tab === "projects" && <ProjectsTab initial={projects} />}
+				{tab === "skills" && (
+					<SkillsTab
+						skills={skills}
+						sectionOrder={sectionOrder}
+						onRun={runSkill}
+					/>
+				)}
 				{tab === "memory" && <MemoryTab memory={memory} />}
 			</div>
 		</div>

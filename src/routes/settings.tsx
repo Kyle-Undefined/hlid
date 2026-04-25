@@ -1,5 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
+import { StatusDot } from "#/components/nav/StatusDot";
 import { FolderBrowser } from "#/components/wizard/FolderBrowser";
 import type { HlidConfig } from "#/config";
 import { getConfig } from "#/config";
@@ -116,8 +117,33 @@ function TextInput({
 			value={value}
 			onChange={(e) => onChange(e.target.value)}
 			placeholder={placeholder}
-			className={`w-48 bg-secondary border border-border px-2.5 py-1.5 text-sm text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors ${mono ? "font-mono text-xs" : ""}`}
+			className={`w-32 sm:w-48 bg-secondary border border-border px-2.5 py-1.5 text-sm text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors ${mono ? "font-mono text-xs" : ""}`}
 		/>
+	);
+}
+
+function VocabRow({
+	label,
+	value,
+	onChange,
+}: {
+	label: string;
+	value: string;
+	onChange: (v: string) => void;
+}) {
+	return (
+		<div className="px-4 py-3 space-y-1.5">
+			<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+				{label}
+			</div>
+			<input
+				type="text"
+				value={value}
+				onChange={(e) => onChange(e.target.value)}
+				className="w-full bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+				placeholder="comma separated values"
+			/>
+		</div>
 	);
 }
 
@@ -137,12 +163,12 @@ function PathField({
 				value={value}
 				onChange={(e) => onChange(e.target.value)}
 				placeholder="~/vault"
-				className="w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+				className="w-28 sm:w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
 			/>
 			<button
 				type="button"
 				onClick={() => setOpen(true)}
-				className="text-[10px] tracking-widest px-2.5 py-1.5 border border-border text-muted-foreground hover:bg-accent hover:text-foreground transition-colors shrink-0 uppercase"
+				className="text-[10px] tracking-widest px-2 py-1.5 border border-border text-muted-foreground hover:bg-accent hover:text-foreground transition-colors shrink-0 uppercase"
 			>
 				BROWSE
 			</button>
@@ -196,13 +222,13 @@ function RelativeFolderField({
 				value={value}
 				onChange={(e) => onChange(e.target.value)}
 				placeholder={placeholder}
-				className="w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+				className="w-28 sm:w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
 			/>
 			<button
 				type="button"
 				onClick={() => setOpen(true)}
 				disabled={!basePath}
-				className="text-[10px] tracking-widest px-2.5 py-1.5 border border-border text-muted-foreground hover:bg-accent hover:text-foreground transition-colors shrink-0 uppercase disabled:opacity-30"
+				className="text-[10px] tracking-widest px-2 py-1.5 border border-border text-muted-foreground hover:bg-accent hover:text-foreground transition-colors shrink-0 uppercase disabled:opacity-30"
 			>
 				BROWSE
 			</button>
@@ -260,6 +286,21 @@ function SettingsPage() {
 	);
 	const [port, setPort] = useState(String(initial.server.port));
 	const [host, setHost] = useState(initial.server.host);
+	const [enterToSubmit, setEnterToSubmit] = useState(
+		initial.ui.enter_to_submit,
+	);
+	const [hideSkillsIndex, setHideSkillsIndex] = useState(
+		initial.ui.hide_skills_index,
+	);
+	const [vocabActive, setVocabActive] = useState(
+		initial.status_vocabulary.active.join(", "),
+	);
+	const [vocabPlanning, setVocabPlanning] = useState(
+		initial.status_vocabulary.planning.join(", "),
+	);
+	const [vocabDone, setVocabDone] = useState(
+		initial.status_vocabulary.done.join(", "),
+	);
 
 	const [saving, setSaving] = useState(false);
 	const [saved, setSaved] = useState(false);
@@ -290,7 +331,24 @@ function SettingsPage() {
 				max_turns: maxTurns !== "" ? Number(maxTurns) : undefined,
 				permission_mode: permissionMode,
 			},
-			status_vocabulary: initial.status_vocabulary,
+			ui: {
+				enter_to_submit: enterToSubmit,
+				hide_skills_index: hideSkillsIndex,
+			},
+			status_vocabulary: {
+				active: vocabActive
+					.split(",")
+					.map((s) => s.trim())
+					.filter(Boolean),
+				planning: vocabPlanning
+					.split(",")
+					.map((s) => s.trim())
+					.filter(Boolean),
+				done: vocabDone
+					.split(",")
+					.map((s) => s.trim())
+					.filter(Boolean),
+			},
 		};
 
 		try {
@@ -323,24 +381,19 @@ function SettingsPage() {
 	return (
 		<div className="flex flex-col h-full">
 			{/* Header */}
-			<div className="px-5 py-3.5 border-b border-border shrink-0">
-				<span className="text-[11px] tracking-widest text-muted-foreground uppercase">
-					CONFIG
-				</span>
+			<div className="flex items-center justify-end px-5 py-3.5 border-b border-border shrink-0">
+				<StatusDot />
 			</div>
 
-			<div className="flex-1 overflow-auto p-5 space-y-6 pb-20">
+			<div className="flex-1 overflow-auto p-5 space-y-6">
 				<Section title="Vault">
 					<Field label="Name">
 						<TextInput value={vaultName} onChange={setVaultName} />
 					</Field>
-					<Field label="Path" hint="absolute path to your Obsidian vault">
+					<Field label="Path">
 						<PathField value={vaultPath} onChange={setVaultPath} />
 					</Field>
-					<Field
-						label="Inbox folder"
-						hint="folder name relative to your vault root"
-					>
+					<Field label="Inbox folder">
 						<RelativeFolderField
 							value={inbox}
 							onChange={setInbox}
@@ -371,7 +424,7 @@ function SettingsPage() {
 						<select
 							value={model}
 							onChange={(e) => setModel(e.target.value)}
-							className="w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
+							className="w-32 sm:w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
 						>
 							{MODEL_OPTIONS.map((m) => (
 								<option key={m.value} value={m.value}>
@@ -454,7 +507,7 @@ function SettingsPage() {
 							value={maxTurns}
 							onChange={(e) => setMaxTurns(e.target.value)}
 							placeholder="unlimited"
-							className="w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+							className="w-32 sm:w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
 						/>
 					</Field>
 				</Section>
@@ -478,6 +531,52 @@ function SettingsPage() {
 					</Field>
 				</Section>
 
+				<Section title="Status Vocabulary">
+					<VocabRow
+						label="Active"
+						value={vocabActive}
+						onChange={setVocabActive}
+					/>
+					<VocabRow
+						label="Planning"
+						value={vocabPlanning}
+						onChange={setVocabPlanning}
+					/>
+					<VocabRow label="Done" value={vocabDone} onChange={setVocabDone} />
+				</Section>
+
+				<Section title="UI">
+					<Field
+						label="Enter to submit"
+						hint="desktop only, mobile always uses Enter for newline"
+					>
+						<label className="flex items-center gap-2 cursor-pointer">
+							<input
+								type="checkbox"
+								checked={enterToSubmit}
+								onChange={(e) => setEnterToSubmit(e.target.checked)}
+								className="accent-primary w-3.5 h-3.5"
+							/>
+							<span className="text-xs text-muted-foreground">
+								{enterToSubmit ? "on" : "off"}
+							</span>
+						</label>
+					</Field>
+					<Field label="Hide skills index.md">
+						<label className="flex items-center gap-2 cursor-pointer">
+							<input
+								type="checkbox"
+								checked={hideSkillsIndex}
+								onChange={(e) => setHideSkillsIndex(e.target.checked)}
+								className="accent-primary w-3.5 h-3.5"
+							/>
+							<span className="text-xs text-muted-foreground">
+								{hideSkillsIndex ? "on" : "off"}
+							</span>
+						</label>
+					</Field>
+				</Section>
+
 				<Section title="Session">
 					<Field
 						label="Reload session"
@@ -494,8 +593,8 @@ function SettingsPage() {
 				</Section>
 			</div>
 
-			{/* Sticky save bar — offset for w-44 sidebar */}
-			<div className="fixed bottom-0 left-0 right-0 md:left-44 border-t border-border bg-background/95 backdrop-blur-sm px-5 py-3 flex items-center justify-between gap-4">
+			{/* Save bar */}
+			<div className="shrink-0 border-t border-border bg-background/95 px-5 py-3 flex items-center justify-between gap-4">
 				<div className="text-xs tracking-wider">
 					{error && <span className="text-destructive">{error}</span>}
 					{saved && (

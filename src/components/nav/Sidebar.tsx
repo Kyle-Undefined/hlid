@@ -11,11 +11,11 @@ import { version } from "../../../package.json";
 import * as wsStore from "../../hooks/wsStore";
 
 const NAV_ITEMS = [
-	{ to: "/", label: "COCKPIT", icon: LayoutDashboard, exact: true },
-	{ to: "/chat", label: "CHAT", icon: MessageSquare, exact: false },
+	{ to: "/", label: "WATCH", icon: LayoutDashboard, exact: true },
+	{ to: "/chat", label: "RAVEN", icon: MessageSquare, exact: false },
 	{ to: "/vault", label: "VAULT", icon: FolderOpen, exact: false },
-	{ to: "/stats", label: "STATS", icon: BarChart3, exact: false },
-	{ to: "/settings", label: "CONFIG", icon: Settings, exact: false },
+	{ to: "/stats", label: "LEDGER", icon: BarChart3, exact: false },
+	{ to: "/settings", label: "FORGE", icon: Settings, exact: false },
 ] as const;
 
 const SERVER_SNAP = {

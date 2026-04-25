@@ -1,5 +1,3 @@
-import { readdirSync } from "node:fs";
-import { join } from "node:path";
 import {
 	createFileRoute,
 	useNavigate,
@@ -8,11 +6,13 @@ import {
 import { createServerFn } from "@tanstack/react-start";
 import { ChevronRight } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { StatusDot } from "#/components/nav/StatusDot";
 import { FirstRunWizard } from "#/components/wizard/FirstRunWizard";
 import { getConfig } from "#/config";
 import { useWs } from "#/hooks/useWs";
+import * as wsStore from "#/hooks/wsStore";
+import { uid } from "#/lib/utils";
 import type { Skill } from "#/lib/vault";
-import { scanProjects, scanSkills } from "#/lib/vault";
 import type { ServerMessage } from "#/server/protocol";
 
 // ─── recent runs (localStorage) ───────────────────────────────────────────────
@@ -40,7 +40,7 @@ function pushRun(label: string): void {
 	const now = new Date();
 	const time = `${String(now.getHours()).padStart(2, "0")}:${String(now.getMinutes()).padStart(2, "0")}`;
 	const run: RecentRun = {
-		id: crypto.randomUUID(),
+		id: uid(),
 		label: label.slice(0, 32).toUpperCase(),
 		time,
 		timestamp: Date.now(),
@@ -52,6 +52,12 @@ function pushRun(label: string): void {
 // ─── server fn ───────────────────────────────────────────────────────────────
 
 const getCockpitData = createServerFn({ method: "GET" }).handler(async () => {
+	const [{ readdirSync }, { join }, { scanProjects, scanSkills }] =
+		await Promise.all([
+			import("node:fs"),
+			import("node:path"),
+			import("#/lib/vault"),
+		]);
 	const config = await getConfig();
 	const { vault, status_vocabulary } = config;
 
@@ -80,10 +86,12 @@ const getCockpitData = createServerFn({ method: "GET" }).handler(async () => {
 		activeCount = projects.filter((p) => p.status === "active").length;
 	}
 
-	const skills =
-		vault.path && vault.skills ? scanSkills(vault.path, vault.skills) : [];
+	const { skills, sectionOrder } =
+		vault.path && vault.skills
+			? scanSkills(vault.path, vault.skills, config.ui.hide_skills_index)
+			: { skills: [], sectionOrder: [] };
 
-	return { inboxCount, activeCount, totalCount, skills };
+	return { inboxCount, activeCount, totalCount, skills, sectionOrder };
 });
 
 // ─── route ───────────────────────────────────────────────────────────────────
@@ -121,6 +129,25 @@ function StatCell({
 	);
 }
 
+function groupSkills(
+	skills: Skill[],
+	sectionOrder: string[],
+): { section: string | null; skills: Skill[] }[] {
+	const groups: { section: string | null; skills: Skill[] }[] = [];
+	const seen = new Set<string>();
+	for (const sec of sectionOrder) {
+		const members = skills.filter((s) => s.section === sec);
+		if (members.length === 0) continue;
+		groups.push({ section: sec, skills: members });
+		for (const s of members) seen.add(s.file);
+	}
+	groups.sort((a, b) => (a.section ?? "").localeCompare(b.section ?? ""));
+	const unsectioned = skills.filter((s) => !seen.has(s.file));
+	if (unsectioned.length > 0)
+		groups.push({ section: null, skills: unsectioned });
+	return groups;
+}
+
 function SkillRow({
 	skill,
 	active,
@@ -133,7 +160,7 @@ function SkillRow({
 	return (
 		<button
 			type="button"
-			onClick={() => onSelect(skill.content, skill.name)}
+			onClick={() => onSelect(`/${skill.name} `, skill.name)}
 			className={`flex items-center w-full px-4 py-2.5 gap-4 border-l-2 text-left transition-colors group ${
 				active
 					? "border-primary bg-primary/[0.08]"
@@ -223,6 +250,7 @@ function CockpitPage() {
 	const [sessionCost, setSessionCost] = useState(0);
 	const [prompt, setPrompt] = useState("");
 	const [activeSkill, setActiveSkill] = useState<string | null>(null);
+	const [background, setBackground] = useState(false);
 	const [recentRuns, setRecentRuns] = useState<RecentRun[]>([]);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 
@@ -267,8 +295,9 @@ function CockpitPage() {
 		if (!text || isRunning || wsStatus !== "connected") return;
 		pushRun(activeSkill ?? text.slice(0, 32));
 		setRecentRuns(loadRuns());
+		wsStore.setPendingPrompt(text);
 		send({ type: "chat", text });
-		navigate({ to: "/chat" });
+		if (!background) navigate({ to: "/chat" });
 	}
 
 	const isConnected = wsStatus === "connected";
@@ -297,10 +326,6 @@ function CockpitPage() {
 			{/* Header strip */}
 			<div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
 				<div className="flex items-center gap-3">
-					<span className="text-[11px] tracking-widest text-muted-foreground uppercase">
-						COCKPIT
-					</span>
-					<span className="text-muted-foreground/25">·</span>
 					<span className="text-[11px] tracking-widest text-primary uppercase">
 						{config.vault.name || "HLID"}
 					</span>
@@ -313,6 +338,7 @@ function CockpitPage() {
 						</>
 					)}
 				</div>
+				<StatusDot />
 			</div>
 
 			{/* Stat bar */}
@@ -351,15 +377,6 @@ function CockpitPage() {
 								<span className="text-primary/50 ml-2">· {activeSkill}</span>
 							)}
 						</div>
-						{prompt && (
-							<button
-								type="button"
-								onClick={handleClear}
-								className="text-[9px] tracking-widest text-muted-foreground/40 hover:text-muted-foreground transition-colors uppercase"
-							>
-								CLEAR
-							</button>
-						)}
 					</div>
 
 					<div
@@ -393,9 +410,24 @@ function CockpitPage() {
 							/>
 						</div>
 						<div className="flex items-center justify-between px-3 py-2 border-t border-border/60">
-							<span className="text-[9px] tracking-wider text-muted-foreground/25">
-								{isConnected ? "⌘↵ TO RUN" : "OFFLINE"}
-							</span>
+							<label className="flex items-center gap-1.5 cursor-pointer select-none group">
+								<input
+									type="checkbox"
+									checked={background}
+									onChange={(e) => setBackground(e.target.checked)}
+									className="sr-only"
+								/>
+								<span
+									className={`w-3 h-3 border flex items-center justify-center shrink-0 transition-colors ${background ? "border-primary bg-primary/20" : "border-border bg-secondary group-hover:border-primary/40"}`}
+								>
+									{background && (
+										<span className="w-1.5 h-1.5 bg-primary block" />
+									)}
+								</span>
+								<span className="text-[9px] tracking-wider text-muted-foreground/40 uppercase">
+									Background
+								</span>
+							</label>
 							<div className="flex gap-2">
 								{prompt && (
 									<button
@@ -419,24 +451,32 @@ function CockpitPage() {
 					</div>
 				</div>
 
-				{/* Skills — episode rows */}
+				{/* Skills */}
 				{data.skills.length > 0 ? (
-					<div className="flex flex-col">
-						<div className="px-4 py-2.5 border-b border-border">
-							<span className="text-[9px] tracking-widest text-muted-foreground uppercase">
-								SKILLS
-							</span>
-						</div>
-						<div className="flex flex-col divide-y divide-border/30">
-							{data.skills.map((skill) => (
-								<SkillRow
-									key={skill.file}
-									skill={skill}
-									active={activeSkill === skill.name}
-									onSelect={handleSkillSelect}
-								/>
-							))}
-						</div>
+					<div className="p-4 space-y-5">
+						{groupSkills(data.skills, data.sectionOrder).map((g) => (
+							<div key={g.section ?? "__unsectioned__"} className="space-y-2">
+								<div className="flex items-center gap-2">
+									<span className="w-1.5 h-1.5 rounded-full bg-primary/40 shrink-0" />
+									<span className="text-[10px] tracking-widest text-muted-foreground uppercase">
+										{g.section ?? "SKILLS"}
+									</span>
+									<span className="text-[10px] text-muted-foreground/50">
+										{g.skills.length}
+									</span>
+								</div>
+								<div className="border border-border bg-card divide-y divide-border">
+									{g.skills.map((skill) => (
+										<SkillRow
+											key={skill.file}
+											skill={skill}
+											active={activeSkill === skill.name}
+											onSelect={handleSkillSelect}
+										/>
+									))}
+								</div>
+							</div>
+						))}
 					</div>
 				) : (
 					<div className="flex-1 flex items-center justify-center">
