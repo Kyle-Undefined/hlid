@@ -98,6 +98,11 @@ Bun.serve({
 			return Response.json(stats);
 		}
 
+		if (url.pathname === "/db/usage-windows") {
+			const windows = await db.getUsageWindows();
+			return Response.json(windows);
+		}
+
 		return new Response("Not found", { status: 404 });
 	},
 

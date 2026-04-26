@@ -13,7 +13,7 @@ import {
 } from "react";
 import { FirstRunWizard } from "#/components/wizard/FirstRunWizard";
 import { getConfig } from "#/config";
-import type { AggStats, SessionRow, WeeklyStats } from "#/db";
+import type { AggStats, SessionRow, UsageWindows, WeeklyStats } from "#/db";
 import { useWs } from "#/hooks/useWs";
 import * as wsStore from "#/hooks/wsStore";
 import { uid } from "#/lib/utils";
@@ -157,6 +157,21 @@ const getWeeklyStatsFn = createServerFn({ method: "GET" }).handler(async () => {
 	}
 });
 
+const getUsageWindowsFn = createServerFn({ method: "GET" }).handler(
+	async () => {
+		const { server } = await getConfig();
+		try {
+			const res = await fetch(
+				`http://localhost:${server.port + 1}/db/usage-windows`,
+			);
+			if (!res.ok) return null as UsageWindows | null;
+			return res.json() as Promise<UsageWindows>;
+		} catch {
+			return null as UsageWindows | null;
+		}
+	},
+);
+
 const getMcpServersFn = createServerFn({ method: "GET" }).handler(async () => {
 	const [{ readFileSync }, { join }, { homedir }] = await Promise.all([
 		import("node:fs"),
@@ -204,16 +219,32 @@ const getMcpServersFn = createServerFn({ method: "GET" }).handler(async () => {
 
 export const Route = createFileRoute("/")({
 	loader: async () => {
-		const [config, data, recentSessions, statsData, mcpServers, weeklyStats] =
-			await Promise.all([
-				getConfig(),
-				getCockpitData(),
-				getRecentSessionsFn(),
-				getCockpitStatsFn(),
-				getMcpServersFn(),
-				getWeeklyStatsFn(),
-			]);
-		return { config, data, recentSessions, statsData, mcpServers, weeklyStats };
+		const [
+			config,
+			data,
+			recentSessions,
+			statsData,
+			mcpServers,
+			weeklyStats,
+			usageWindows,
+		] = await Promise.all([
+			getConfig(),
+			getCockpitData(),
+			getRecentSessionsFn(),
+			getCockpitStatsFn(),
+			getMcpServersFn(),
+			getWeeklyStatsFn(),
+			getUsageWindowsFn(),
+		]);
+		return {
+			config,
+			data,
+			recentSessions,
+			statsData,
+			mcpServers,
+			weeklyStats,
+			usageWindows,
+		};
 	},
 	component: CockpitPage,
 });
@@ -511,6 +542,168 @@ function DashboardHeader({
 	);
 }
 
+function MobileStatsPanel({
+	stats,
+	agg,
+	rateLimit,
+	isConnected,
+}: {
+	stats: wsStore.LiveStats;
+	agg: AggStats;
+	rateLimit: RateLimitMessage | null;
+	isConnected: boolean;
+}) {
+	const [open, setOpen] = useState(false);
+	return (
+		<div className="md:hidden shrink-0">
+			<button
+				type="button"
+				onClick={() => setOpen((v) => !v)}
+				className="w-full flex items-center justify-between px-4 py-2.5 border-b border-border hover:bg-accent/20 transition-colors"
+			>
+				<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase">
+					Stats
+				</span>
+				<span
+					className="text-[9px] text-muted-foreground/30 transition-transform"
+					style={{ transform: open ? "rotate(180deg)" : undefined }}
+				>
+					▾
+				</span>
+			</button>
+			{open && (
+				<DashboardHeader
+					stats={stats}
+					agg={agg}
+					rateLimit={rateLimit}
+					isConnected={isConnected}
+				/>
+			)}
+		</div>
+	);
+}
+
+function UsageWindowsPanel({
+	initial,
+	liveQueryCount,
+	rateLimit,
+}: {
+	initial: UsageWindows | null;
+	liveQueryCount: number;
+	rateLimit: RateLimitMessage | null;
+}) {
+	const [data, setData] = useState<UsageWindows | null>(initial);
+
+	useEffect(() => {
+		if (liveQueryCount === 0) return;
+		void getUsageWindowsFn().then(setData);
+	}, [liveQueryCount]);
+
+	useEffect(() => {
+		const id = setInterval(
+			() => void getUsageWindowsFn().then(setData),
+			60_000,
+		);
+		return () => clearInterval(id);
+	}, []);
+
+	useEffect(() => {
+		if (!rateLimit || rateLimit.utilization == null) return;
+		setData((prev) => {
+			if (!prev) return prev;
+			const update = {
+				utilization: rateLimit.utilization ?? null,
+				resetsAt: rateLimit.resetsAt ?? null,
+				rateLimitType: rateLimit.rateLimitType ?? null,
+			};
+			const resetsAt = rateLimit.resetsAt ?? 0;
+			const is5hr = resetsAt - Date.now() / 1000 <= 5 * 3600 + 300;
+			return is5hr
+				? { ...prev, fiveHour: { ...prev.fiveHour, ...update } }
+				: { ...prev, weekly: { ...prev.weekly, ...update } };
+		});
+	}, [rateLimit]);
+
+	return (
+		<div className="border-b border-border shrink-0 flex divide-x divide-border/40">
+			<UsageWindowSection label="5-HOUR WINDOW" win={data?.fiveHour ?? null} />
+			<UsageWindowSection label="WEEKLY WINDOW" win={data?.weekly ?? null} />
+			<RoutinesWindowSection />
+		</div>
+	);
+}
+
+function UsageWindowSection({
+	label,
+	win,
+}: {
+	label: string;
+	win: {
+		tokens: number;
+		sessions: number;
+		cost: number;
+		utilization: number | null;
+		resetsAt: number | null;
+	} | null;
+}) {
+	const tokens = win?.tokens ?? 0;
+	const utilPct =
+		win?.utilization != null ? Math.min(win.utilization * 100, 100) : null;
+	const derivedLimit =
+		utilPct != null && utilPct > 0 && tokens > 0
+			? Math.round(tokens / (utilPct / 100) / 1e5) * 1e5
+			: null;
+
+	return (
+		<div className="flex-1 px-4 py-2.5 min-w-0 space-y-1">
+			<div className="flex items-center justify-between gap-2">
+				<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase shrink-0">
+					{label}
+				</span>
+				{win?.resetsAt != null && (
+					<span className="text-[9px] tracking-widest text-muted-foreground/25 truncate">
+						RESETS · {fmtResetTime(win.resetsAt)}
+					</span>
+				)}
+			</div>
+			<div className="h-1 bg-secondary/40 overflow-hidden">
+				<div
+					className="h-full bg-primary/60 transition-all duration-500"
+					style={{ width: utilPct != null ? `${utilPct}%` : "0%" }}
+				/>
+			</div>
+			<div className="flex items-center gap-2">
+				<span className="text-[10px] tracking-widest tabular-nums text-foreground/50">
+					{fmt(tokens)}
+					{derivedLimit ? (
+						<span className="text-muted-foreground/30">
+							{" "}
+							/ ~{fmt(derivedLimit)}
+						</span>
+					) : null}
+				</span>
+				<span className="text-muted-foreground/25">·</span>
+				<span className="text-[9px] tracking-widest text-muted-foreground/40">
+					{win?.sessions ?? 0} sessions
+				</span>
+			</div>
+		</div>
+	);
+}
+
+function RoutinesWindowSection() {
+	return (
+		<div className="flex-1 px-4 py-2.5 min-w-0">
+			<div className="text-[9px] tracking-widest text-muted-foreground/40 uppercase mb-1.5">
+				ROUTINES
+			</div>
+			<span className="text-[10px] tracking-widest text-muted-foreground/20">
+				no routines configured
+			</span>
+		</div>
+	);
+}
+
 function McpPanel({
 	servers,
 }: {
@@ -621,17 +814,101 @@ function RecentRunsSidebar({
 	runs,
 	weeklyStats,
 	onRunClick,
+	stats,
+	agg,
+	isConnected,
 	className = "",
 }: {
 	runs: SessionRow[];
 	weeklyStats: WeeklyStats;
 	onRunClick: (sessionId: string) => void;
+	stats: wsStore.LiveStats;
+	agg: AggStats;
+	isConnected: boolean;
 	className?: string;
 }) {
+	const idle = stats.queries === 0;
+	const hasContext =
+		stats.last_context_used != null && stats.context_window != null;
+	const contextUsed = stats.last_context_used ?? 0;
+	const contextWindow = stats.context_window ?? 0;
+	const contextPct =
+		hasContext && contextWindow > 0
+			? ((contextUsed / contextWindow) * 100).toFixed(0)
+			: "0";
+
 	return (
 		<div
 			className={`w-72 border-l border-border flex flex-col shrink-0 overflow-hidden ${className}`}
 		>
+			{/* Stats block */}
+			<div className="border-b border-border shrink-0">
+				<div className="grid grid-cols-2 divide-x divide-border border-b border-border">
+					<div className="px-3 py-3">
+						<div className="text-[8px] tracking-widest text-muted-foreground/50 uppercase mb-1">
+							Session
+						</div>
+						<div
+							className={`text-sm font-bold tabular-nums leading-none ${idle && !isConnected ? "text-muted-foreground/20" : "text-[#38bdf8]"}`}
+						>
+							{isConnected || stats.cost > 0
+								? `$${stats.cost.toFixed(4)}`
+								: "--"}
+						</div>
+						<div className="mt-1 text-[8px] tracking-wider text-muted-foreground/40">
+							{idle
+								? "idle"
+								: `${stats.queries}q · ${fmtMs(stats.duration_ms)}`}
+						</div>
+					</div>
+					<div className="px-3 py-3">
+						<div className="text-[8px] tracking-widest text-muted-foreground/50 uppercase mb-1">
+							Today
+						</div>
+						<div className="text-sm font-bold tabular-nums leading-none text-[#38bdf8]">
+							${agg.today.cost.toFixed(4)}
+						</div>
+						<div className="mt-1 text-[8px] tracking-wider text-muted-foreground/40">
+							{agg.today.queries}q · {fmt(agg.today.tokens)}t
+						</div>
+					</div>
+				</div>
+				<div className="grid grid-cols-2 divide-x divide-border border-b border-border">
+					<div className="px-3 py-2.5">
+						<div className="text-[8px] tracking-widest text-muted-foreground/50 uppercase mb-1">
+							Month
+						</div>
+						<div className="text-sm font-bold tabular-nums leading-none text-[#38bdf8]">
+							${agg.thisMonth.cost.toFixed(4)}
+						</div>
+						<div className="mt-1 text-[8px] tracking-wider text-muted-foreground/40">
+							{agg.thisMonth.queries}q · {fmt(agg.thisMonth.tokens)}t
+						</div>
+					</div>
+					<div className="px-3 py-2.5">
+						<div className="text-[8px] tracking-widest text-muted-foreground/40 uppercase mb-1">
+							All Time
+						</div>
+						<div className="text-sm font-bold tabular-nums text-foreground/60">
+							${agg.allTime.cost.toFixed(2)}
+						</div>
+					</div>
+				</div>
+				{hasContext && (
+					<div className="px-3 py-2 border-t border-border flex items-center gap-2">
+						<span className="text-[8px] tracking-widest text-muted-foreground/40 uppercase shrink-0">
+							Ctx
+						</span>
+						<div className="flex-1">
+							<UtilBar value={contextUsed} max={contextWindow} />
+						</div>
+						<span className="text-[8px] tabular-nums text-muted-foreground/40 shrink-0">
+							{contextPct}%
+						</span>
+					</div>
+				)}
+			</div>
+
 			<div className="px-4 py-2.5 border-b border-border shrink-0 flex items-center justify-between">
 				<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase">
 					Recent Runs
@@ -745,6 +1022,7 @@ function CockpitPage() {
 		statsData,
 		mcpServers,
 		weeklyStats: initialWeeklyStats,
+		usageWindows: initialUsageWindows,
 	} = Route.useLoaderData();
 	const router = useRouter();
 	const navigate = useNavigate();
@@ -908,12 +1186,19 @@ function CockpitPage() {
 				)}
 			</div>
 
-			{/* Dashboard stats header */}
-			<DashboardHeader
+			{/* Stats — desktop: right sidebar; mobile: collapsible section */}
+			<MobileStatsPanel
 				stats={liveStats}
 				agg={agg}
 				rateLimit={rateLimit}
 				isConnected={isConnected}
+			/>
+
+			{/* Usage windows */}
+			<UsageWindowsPanel
+				initial={initialUsageWindows}
+				liveQueryCount={liveStats?.queries ?? 0}
+				rateLimit={rateLimit}
 			/>
 
 			{/* MCP panel */}
@@ -1096,6 +1381,9 @@ function CockpitPage() {
 					onRunClick={(id) =>
 						navigate({ to: "/chat", search: { session: id } })
 					}
+					stats={liveStats}
+					agg={agg}
+					isConnected={isConnected}
 					className="hidden md:flex"
 				/>
 			</div>

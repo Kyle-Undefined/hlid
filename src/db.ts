@@ -286,6 +286,14 @@ export async function getCurrentSessionId(): Promise<string | null> {
 	return row?.value ?? null;
 }
 
+export async function saveSetting(key: string, value: string): Promise<void> {
+	const db = await getDb();
+	db.run(
+		`INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, unixepoch())`,
+		[key, value],
+	);
+}
+
 export async function setCurrentSessionId(id: string): Promise<void> {
 	const db = await getDb();
 	db.run(
@@ -364,6 +372,92 @@ export async function getAggregatedStats(): Promise<AggStats> {
 			.get() ?? EMPTY_WINDOW;
 
 	return { allTime, today, thisMonth };
+}
+
+export type UsageWindow = {
+	tokens: number;
+	sessions: number;
+	queries: number;
+	cost: number;
+	utilization: number | null;
+	resetsAt: number | null;
+	rateLimitType: string | null;
+};
+
+export type UsageWindows = {
+	fiveHour: UsageWindow;
+	weekly: UsageWindow;
+};
+
+export async function getUsageWindows(): Promise<UsageWindows> {
+	const db = await getDb();
+
+	type WindowRow = {
+		tokens: number;
+		sessions: number;
+		queries: number;
+		cost: number;
+	};
+	const EMPTY: WindowRow = { tokens: 0, sessions: 0, queries: 0, cost: 0 };
+
+	const fiveHourRow =
+		db
+			.query<WindowRow, []>(`
+      SELECT
+        COALESCE(SUM(input_tokens + output_tokens), 0) as tokens,
+        COUNT(DISTINCT session_id) as sessions,
+        COUNT(*) as queries,
+        COALESCE(SUM(cost), 0) as cost
+      FROM queries
+      WHERE timestamp >= unixepoch('now', '-5 hours')
+    `)
+			.get() ?? EMPTY;
+
+	const weeklyRow =
+		db
+			.query<WindowRow, []>(`
+      SELECT
+        COALESCE(SUM(input_tokens + output_tokens), 0) as tokens,
+        COUNT(DISTINCT session_id) as sessions,
+        COUNT(*) as queries,
+        COALESCE(SUM(cost), 0) as cost
+      FROM queries
+      WHERE timestamp >= unixepoch('now', '-7 days')
+    `)
+			.get() ?? EMPTY;
+
+	type SettingsRow = { value: string };
+	type RlState = {
+		utilization: number | null;
+		resetsAt: number | null;
+		rateLimitType: string | null;
+	};
+	const NULL_RL: RlState = {
+		utilization: null,
+		resetsAt: null,
+		rateLimitType: null,
+	};
+
+	const parseRl = (row: SettingsRow | null): RlState => {
+		if (!row) return NULL_RL;
+		try {
+			return JSON.parse(row.value) as RlState;
+		} catch {
+			return NULL_RL;
+		}
+	};
+
+	const rl5hr = db
+		.query<SettingsRow, [string]>(`SELECT value FROM settings WHERE key = ?`)
+		.get("rl_5hr");
+	const rlWeekly = db
+		.query<SettingsRow, [string]>(`SELECT value FROM settings WHERE key = ?`)
+		.get("rl_weekly");
+
+	return {
+		fiveHour: { ...fiveHourRow, ...parseRl(rl5hr) },
+		weekly: { ...weeklyRow, ...parseRl(rlWeekly) },
+	};
 }
 
 export type WeeklyStats = {

@@ -232,7 +232,13 @@ export class SessionManager {
 			for await (const message of conversation) {
 				if (message.type === "assistant") {
 					if (message.message.usage) {
-						lastTurnUsage = message.message.usage;
+						const u = message.message.usage;
+						lastTurnUsage = {
+							input_tokens: u.input_tokens,
+							cache_read_input_tokens: u.cache_read_input_tokens ?? undefined,
+							cache_creation_input_tokens:
+								u.cache_creation_input_tokens ?? undefined,
+						};
 					}
 					for (const block of message.message.content) {
 						if (block.type === "text") {
@@ -264,6 +270,20 @@ export class SessionManager {
 						utilization: info.utilization,
 						resetsAt: info.resetsAt,
 					});
+					// Persist for usage windows display
+					const resetsAt = info.resetsAt ?? 0;
+					const settingsKey =
+						resetsAt - Date.now() / 1000 <= 5 * 3600 + 300
+							? "rl_5hr"
+							: "rl_weekly";
+					void db.saveSetting(
+						settingsKey,
+						JSON.stringify({
+							utilization: info.utilization ?? null,
+							resetsAt: info.resetsAt ?? null,
+							rateLimitType: info.rateLimitType ?? null,
+						}),
+					);
 				}
 
 				if (message.type === "result") {
