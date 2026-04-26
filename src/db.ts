@@ -474,6 +474,35 @@ export type WeeklyStats = {
 	days: number[]; // index 0=Sun … 6=Sat
 };
 
+export type ThirtyDayStats = {
+	days: { date: string; count: number }[];
+	total: number;
+};
+
+export async function getThirtyDayStats(): Promise<ThirtyDayStats> {
+	const db = await getDb();
+	const rows = db
+		.query<{ date: string; count: number }, []>(`
+    SELECT DATE(started_at, 'unixepoch', 'localtime') as date, COUNT(*) as count
+    FROM sessions
+    WHERE started_at >= unixepoch('now', '-29 days', 'start of day')
+    GROUP BY date
+    ORDER BY date ASC
+  `)
+		.all();
+
+	const map = new Map(rows.map((r) => [r.date, r.count]));
+	const total = rows.reduce((a, r) => a + r.count, 0);
+	const days: { date: string; count: number }[] = [];
+	for (let i = 29; i >= 0; i--) {
+		const d = new Date();
+		d.setDate(d.getDate() - i);
+		const date = d.toISOString().slice(0, 10);
+		days.push({ date, count: map.get(date) ?? 0 });
+	}
+	return { days, total };
+}
+
 export async function getWeeklyStats(): Promise<WeeklyStats> {
 	const db = await getDb();
 	const now = new Date();

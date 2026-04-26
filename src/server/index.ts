@@ -209,6 +209,11 @@ Bun.serve({
 			return Response.json(stats);
 		}
 
+		if (url.pathname === "/db/thirty-day-stats") {
+			const stats = await db.getThirtyDayStats();
+			return Response.json(stats);
+		}
+
 		if (url.pathname === "/db/usage-windows") {
 			const windows = await db.getUsageWindows();
 			// Overlay in-memory high-water marks — DB writes are async/void so the mark

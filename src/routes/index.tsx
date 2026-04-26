@@ -11,9 +11,23 @@ import {
 	useState,
 	useSyncExternalStore,
 } from "react";
+import {
+	Area,
+	AreaChart,
+	ResponsiveContainer,
+	Tooltip,
+	XAxis,
+	YAxis,
+} from "recharts";
 import { FirstRunWizard } from "#/components/wizard/FirstRunWizard";
 import { getConfig } from "#/config";
-import type { AggStats, SessionRow, UsageWindows, WeeklyStats } from "#/db";
+import type {
+	AggStats,
+	SessionRow,
+	ThirtyDayStats,
+	UsageWindows,
+	WeeklyStats,
+} from "#/db";
 import { useWs } from "#/hooks/useWs";
 import * as wsStore from "#/hooks/wsStore";
 import { uid } from "#/lib/utils";
@@ -172,6 +186,21 @@ const getUsageWindowsFn = createServerFn({ method: "GET" }).handler(
 	},
 );
 
+const getThirtyDayStatsFn = createServerFn({ method: "GET" }).handler(
+	async () => {
+		const { server } = await getConfig();
+		try {
+			const res = await fetch(
+				`http://localhost:${server.port + 1}/db/thirty-day-stats`,
+			);
+			if (!res.ok) return { days: [], total: 0 } as ThirtyDayStats;
+			return res.json() as Promise<ThirtyDayStats>;
+		} catch {
+			return { days: [], total: 0 } as ThirtyDayStats;
+		}
+	},
+);
+
 const getMcpServersFn = createServerFn({ method: "GET" }).handler(async () => {
 	const [{ readFileSync }, { join }, { homedir }] = await Promise.all([
 		import("node:fs"),
@@ -227,6 +256,7 @@ export const Route = createFileRoute("/")({
 			mcpServers,
 			weeklyStats,
 			usageWindows,
+			thirtyDayStats,
 		] = await Promise.all([
 			getConfig(),
 			getCockpitData(),
@@ -235,6 +265,7 @@ export const Route = createFileRoute("/")({
 			getMcpServersFn(),
 			getWeeklyStatsFn(),
 			getUsageWindowsFn(),
+			getThirtyDayStatsFn(),
 		]);
 		return {
 			config,
@@ -244,6 +275,7 @@ export const Route = createFileRoute("/")({
 			mcpServers,
 			weeklyStats,
 			usageWindows,
+			thirtyDayStats,
 		};
 	},
 	component: CockpitPage,
@@ -465,6 +497,90 @@ function DashboardHeader({
 					</span>
 				</div>
 			</div>
+		</div>
+	);
+}
+
+function fmtTickDate(iso: string): string {
+	const [, m, d] = iso.split("-");
+	const month = [
+		"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+		"Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+	][parseInt(m, 10) - 1];
+	return `${month} ${parseInt(d, 10)}`;
+}
+
+function ThirtyDayGraph({ data }: { data: ThirtyDayStats }) {
+	const points = useMemo(() => {
+		let running = 0;
+		return data.days.map((d) => ({
+			date: d.date,
+			value: (running += d.count),
+		}));
+	}, [data.days]);
+
+	const isEmpty = data.total === 0;
+
+	const tickDates = useMemo(() => {
+		if (data.days.length === 0) return [];
+		// show ~4 ticks: day 0, ~10, ~20, last
+		return [0, 9, 19, 29]
+			.filter((i) => i < data.days.length)
+			.map((i) => data.days[i].date);
+	}, [data.days]);
+
+	return (
+		<div className="border-b border-border shrink-0 px-4 pt-2.5 pb-0">
+			<div className="flex items-center justify-between mb-1">
+				<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase">
+					30D Activity
+				</span>
+				<span className="text-[9px] tabular-nums text-muted-foreground/30">
+					{data.total} sessions
+				</span>
+			</div>
+			<ResponsiveContainer width="100%" height={56}>
+				<AreaChart
+					data={points}
+					margin={{ top: 2, right: 0, bottom: 0, left: 0 }}
+				>
+					<defs>
+						<linearGradient id="thirtyDayFill" x1="0" y1="0" x2="0" y2="1">
+							<stop offset="0%" stopColor="#38bdf8" stopOpacity={0.2} />
+							<stop offset="100%" stopColor="#38bdf8" stopOpacity={0} />
+						</linearGradient>
+					</defs>
+					<XAxis
+						dataKey="date"
+						ticks={tickDates}
+						tickFormatter={fmtTickDate}
+						tickLine={false}
+						axisLine={false}
+						tick={{ fontSize: 8, fill: "rgba(168,168,184,0.3)", fontFamily: "inherit" }}
+						interval="preserveStartEnd"
+						height={16}
+					/>
+					<YAxis hide domain={isEmpty ? [0, 1] : ["auto", "auto"]} />
+					<Tooltip
+						content={() => null}
+						cursor={{
+							stroke: "#38bdf8",
+							strokeWidth: 1,
+							strokeOpacity: 0.2,
+						}}
+					/>
+					<Area
+						type="monotone"
+						dataKey="value"
+						stroke="#38bdf8"
+						strokeWidth={1.5}
+						fill="url(#thirtyDayFill)"
+						dot={false}
+						activeDot={{ r: 3, fill: "#38bdf8", strokeWidth: 0 }}
+						isAnimationActive={false}
+					/>
+				</AreaChart>
+			</ResponsiveContainer>
 		</div>
 	);
 }
@@ -1016,6 +1132,7 @@ function CockpitPage() {
 		mcpServers,
 		weeklyStats: initialWeeklyStats,
 		usageWindows: initialUsageWindows,
+		thirtyDayStats: initialThirtyDayStats,
 	} = Route.useLoaderData();
 	const router = useRouter();
 	const navigate = useNavigate();
@@ -1036,6 +1153,9 @@ function CockpitPage() {
 	const [agg, setAgg] = useState<AggStats>(statsData.agg);
 	const [weeklyStats, setWeeklyStats] =
 		useState<WeeklyStats>(initialWeeklyStats);
+	const [thirtyDayStats, setThirtyDayStats] = useState<ThirtyDayStats>(
+		initialThirtyDayStats,
+	);
 	const [runError, setRunError] = useState<string | null>(null);
 	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -1047,6 +1167,7 @@ function CockpitPage() {
 				getRecentSessionsFn().then(setRecentRuns);
 				getCockpitStatsFn().then((d) => setAgg(d.agg));
 				getWeeklyStatsFn().then(setWeeklyStats);
+				getThirtyDayStatsFn().then(setThirtyDayStats);
 			}
 			if (msg.type === "error") {
 				setRunError(msg.message);
@@ -1188,6 +1309,9 @@ function CockpitPage() {
 
 			{/* Mobile context band — shows context % when active */}
 			<MobileContextBand stats={liveStats} />
+
+			{/* 30-day activity graph */}
+			<ThirtyDayGraph data={thirtyDayStats} />
 
 			{/* Stats — desktop: right sidebar; mobile: collapsible section */}
 			<MobileStatsPanel stats={liveStats} agg={agg} isConnected={isConnected} />
