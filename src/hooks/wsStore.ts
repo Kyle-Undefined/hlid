@@ -7,6 +7,7 @@ type Snapshot = {
 	wsStatus: WsStatus;
 	sessionState: SessionState;
 	model: string;
+	hasPendingPermissions: boolean;
 };
 
 export type LiveStats = {
@@ -37,15 +38,43 @@ const EMPTY_STATS: LiveStats = {
 	queries: 0,
 };
 
+const STATS_KEY = "hlid:live_stats";
+
+function persistStats(stats: LiveStats): void {
+	try {
+		sessionStorage.setItem(STATS_KEY, JSON.stringify(stats));
+	} catch {}
+}
+
+function loadPersistedStats(): LiveStats | null {
+	try {
+		const raw = sessionStorage.getItem(STATS_KEY);
+		return raw ? (JSON.parse(raw) as LiveStats) : null;
+	} catch {
+		return null;
+	}
+}
+
+function clearPersistedStats(): void {
+	try {
+		sessionStorage.removeItem(STATS_KEY);
+	} catch {}
+}
+
 let _snap: Snapshot = {
 	wsStatus: "connecting",
 	sessionState: "idle",
 	model: "",
+	hasPendingPermissions: false,
 };
 let _ws: WebSocket | null = null;
 let _pendingPrompt: string | null = null;
-let _liveStats: LiveStats = { ...EMPTY_STATS };
+let _liveStats: LiveStats = loadPersistedStats() ?? { ...EMPTY_STATS };
 let _activeSessionId: string | null = null;
+// Buffers in-flight chunks/tool_events for the current run so they survive SPA navigation.
+// Always written (even when subscribers exist) — cleared on run end or new run start.
+let _messageBuffer: ServerMessage[] = [];
+let _pendingPermCount = 0;
 
 const statusSubs = new Set<() => void>();
 const messageSubs = new Set<(msg: ServerMessage) => void>();
@@ -110,7 +139,17 @@ function connect() {
 			return;
 		}
 		if (msg.type === "status") {
-			setSnap({ sessionState: msg.state, model: msg.model });
+			// New or ended run — previous permission state is no longer valid
+			_pendingPermCount = 0;
+			setSnap({
+				sessionState: msg.state,
+				model: msg.model,
+				hasPendingPermissions: false,
+			});
+		}
+		if (msg.type === "permission_request") {
+			_pendingPermCount++;
+			setSnap({ hasPendingPermissions: true });
 		}
 		if (msg.type === "done") {
 			_liveStats = {
@@ -126,10 +165,20 @@ function connect() {
 				max_output_tokens:
 					msg.max_output_tokens ?? _liveStats.max_output_tokens,
 				last_context_used:
+					msg.tokens_in_context ??
 					msg.input_tokens + msg.cache_read_tokens + msg.cache_creation_tokens,
 				queries: _liveStats.queries + 1,
 			};
+			persistStats(_liveStats);
 			for (const fn of statsSubs) fn();
+		}
+		// Always buffer in-flight events so they survive SPA navigation (component unmount/remount).
+		// Buffer is cleared when run ends (done/error) or a new run starts (chat/clear sent).
+		// permission_request excluded — sync replays those from the server.
+		if (msg.type === "chunk" || msg.type === "tool_event") {
+			_messageBuffer.push(msg);
+		} else if (msg.type === "done" || msg.type === "error") {
+			_messageBuffer = [];
 		}
 		for (const fn of messageSubs) fn(msg);
 	};
@@ -152,9 +201,30 @@ export function subscribeMessage(fn: (msg: ServerMessage) => void): () => void {
 }
 
 export function send(msg: ClientMessage): void {
+	if (msg.type === "chat" || msg.type === "clear") _messageBuffer = [];
+	if (msg.type === "permission_response") {
+		_pendingPermCount = Math.max(0, _pendingPermCount - 1);
+		setSnap({ hasPendingPermissions: _pendingPermCount > 0 });
+	}
 	if (_ws?.readyState === WebSocket.OPEN) {
 		_ws.send(JSON.stringify(msg));
 	}
+}
+
+export function drainMessageBuffer(): ServerMessage[] {
+	const msgs = _messageBuffer;
+	_messageBuffer = [];
+	return msgs;
+}
+
+export function clearMessageBuffer(): void {
+	_messageBuffer = [];
+}
+
+export function resetLiveStats(): void {
+	_liveStats = { ...EMPTY_STATS };
+	clearPersistedStats();
+	for (const fn of statsSubs) fn();
 }
 
 export function setPendingPrompt(text: string): void {

@@ -39,6 +39,10 @@ export class SessionManager {
 	private claudeExecutable: string | undefined;
 	private history: Turn[] = [];
 	private pendingPermissions = new Map<string, (approved: boolean) => void>();
+	private pendingPermissionData = new Map<
+		string,
+		Extract<ServerMessage, { type: "permission_request" }>
+	>();
 	private currentSessionId: string | null = null;
 	private messageSeq = 0;
 
@@ -77,13 +81,23 @@ export class SessionManager {
 	}
 
 	abort(): void {
-		for (const resolve of this.pendingPermissions.values()) resolve(false);
+		const resolvers = Array.from(this.pendingPermissions.values());
 		this.pendingPermissions.clear();
+		this.pendingPermissionData.clear();
 		this.abortController?.abort();
+		for (const resolve of resolvers) resolve(false);
 	}
 
 	handlePermissionResponse(id: string, approved: boolean): void {
 		this.pendingPermissions.get(id)?.(approved);
+		this.pendingPermissionData.delete(id);
+	}
+
+	getPendingPermissionRequests(): Extract<
+		ServerMessage,
+		{ type: "permission_request" }
+	>[] {
+		return Array.from(this.pendingPermissionData.values());
 	}
 
 	clearHistory(): void {
@@ -109,6 +123,7 @@ export class SessionManager {
 		userMessage: string,
 		emit: (msg: ServerMessage) => void,
 		sessionId?: string,
+		skillContext?: string,
 	): Promise<void> {
 		if (this.state === "running") {
 			emit({ type: "error", message: "Session already running" });
@@ -141,11 +156,30 @@ export class SessionManager {
 		}
 
 		let assistantText = "";
+		let lastTurnUsage: {
+			input_tokens: number;
+			cache_read_input_tokens?: number;
+			cache_creation_input_tokens?: number;
+		} | null = null;
+		const pendingToolEvents: {
+			toolId: string;
+			name: string;
+			input: unknown;
+		}[] = [];
 
 		try {
-			// Build prompt before pushing user turn to avoid duplication
-			const prompt = this.buildPrompt(userMessage);
-			this.history.push({ role: "user", text: userMessage });
+			// For vault skills: skillContext is the absolute file path.
+			// Validate it stays within the vault before interpolating into the prompt.
+			// For Claude skills (skillContext absent): message starts with '/' and CLI handles
+			// the slash command natively from ~/.claude/skills/ — keep the slash intact.
+			const safeSkillContext = skillContext?.startsWith(`${this.vaultPath}/`)
+				? skillContext
+				: undefined;
+			const claudeMessage = safeSkillContext
+				? `Please read the skill file at \`${safeSkillContext}\` and follow its instructions.\n\nUser: ${userMessage || "(no additional input)"}`
+				: userMessage;
+			const prompt = this.buildPrompt(claudeMessage);
+			this.history.push({ role: "user", text: claudeMessage });
 			const userSeq = this.messageSeq++;
 			if (sessionId) {
 				await db.appendMessage(sessionId, userSeq, "user", userMessage);
@@ -167,38 +201,50 @@ export class SessionManager {
 					persistSession: false,
 					canUseTool: (
 						toolName,
-						_input,
+						input,
 						{ toolUseID, title, displayName, description },
 					) =>
 						new Promise((resolve) => {
+							const permReq = {
+								type: "permission_request" as const,
+								id: toolUseID,
+								toolName,
+								title: title ?? `Claude wants to use ${toolName}`,
+								displayName,
+								description,
+								input: input as Record<string, unknown> | undefined,
+							};
+							this.pendingPermissionData.set(toolUseID, permReq);
 							this.pendingPermissions.set(toolUseID, (approved) => {
 								this.pendingPermissions.delete(toolUseID);
+								this.pendingPermissionData.delete(toolUseID);
 								resolve(
 									approved
 										? { behavior: "allow" as const }
 										: { behavior: "deny" as const, message: "Denied by user" },
 								);
 							});
-							emit({
-								type: "permission_request",
-								id: toolUseID,
-								toolName,
-								title: title ?? `Claude wants to use ${toolName}`,
-								displayName,
-								description,
-							});
+							emit(permReq);
 						}),
 				},
 			});
 
 			for await (const message of conversation) {
 				if (message.type === "assistant") {
+					if (message.message.usage) {
+						lastTurnUsage = message.message.usage;
+					}
 					for (const block of message.message.content) {
 						if (block.type === "text") {
 							assistantText += block.text;
 							emit({ type: "chunk", text: block.text });
 						}
 						if (block.type === "tool_use") {
+							pendingToolEvents.push({
+								toolId: block.id,
+								name: block.name,
+								input: block.input,
+							});
 							emit({
 								type: "tool_event",
 								id: block.id,
@@ -234,9 +280,48 @@ export class SessionManager {
 						context_window: primaryModel?.contextWindow ?? null,
 						stop_reason: message.stop_reason ?? null,
 					};
+					// Slash commands (e.g. /triage-inbox) produce no streaming text —
+					// their output lands in message.result instead of assistant chunks.
+					if (
+						!assistantText &&
+						message.subtype === "success" &&
+						message.result
+					) {
+						assistantText = message.result;
+						emit({ type: "chunk", text: message.result });
+					}
 					if (sessionId) {
 						await db.recordQuery(sessionId, queryData);
+						if (assistantText) {
+							const assistantSeq = this.messageSeq++;
+							await db.appendMessage(
+								sessionId,
+								assistantSeq,
+								"assistant",
+								assistantText,
+							);
+							// Only push to in-memory history after DB write succeeds
+							this.history.push({ role: "assistant", text: assistantText });
+							for (const te of pendingToolEvents) {
+								db.appendToolEvent(
+									sessionId,
+									assistantSeq,
+									te.toolId,
+									te.name,
+									te.input,
+								).catch((e) =>
+									console.error("[db] appendToolEvent failed:", e),
+								);
+							}
+							pendingToolEvents.length = 0;
+							assistantText = "";
+						}
 					}
+					const tokensInContext = lastTurnUsage
+						? lastTurnUsage.input_tokens +
+							(lastTurnUsage.cache_read_input_tokens ?? 0) +
+							(lastTurnUsage.cache_creation_input_tokens ?? 0)
+						: null;
 					emit({
 						type: "done",
 						session_id: sessionId,
@@ -247,9 +332,10 @@ export class SessionManager {
 						output_tokens: queryData.output_tokens,
 						cache_read_tokens: queryData.cache_read_tokens,
 						cache_creation_tokens: queryData.cache_creation_tokens,
-						context_window: queryData.context_window,
+						context_window: queryData.context_window ?? 200_000,
 						max_output_tokens: primaryModel?.maxOutputTokens ?? null,
 						stop_reason: queryData.stop_reason,
+						tokens_in_context: tokensInContext,
 					});
 				}
 			}
@@ -261,9 +347,8 @@ export class SessionManager {
 			console.error("[session] runQuery error:", err);
 			emit({ type: "error", message: msg });
 		} finally {
-			// Persist assistant text regardless of success or error (covers partial responses)
+			// Persist any remaining assistant text (error/abort path — result block clears it on success)
 			if (assistantText) {
-				this.history.push({ role: "assistant", text: assistantText });
 				if (sessionId) {
 					const assistantSeq = this.messageSeq++;
 					try {
@@ -273,9 +358,24 @@ export class SessionManager {
 							"assistant",
 							assistantText,
 						);
+						// Only push to in-memory history after DB write succeeds
+						this.history.push({ role: "assistant", text: assistantText });
+						for (const te of pendingToolEvents) {
+							db.appendToolEvent(
+								sessionId,
+								assistantSeq,
+								te.toolId,
+								te.name,
+								te.input,
+							).catch((e) =>
+								console.error("[db] appendToolEvent (finally) failed:", e),
+							);
+						}
 					} catch (e) {
 						console.error("[db] appendMessage (assistant) failed:", e);
 					}
+				} else {
+					this.history.push({ role: "assistant", text: assistantText });
 				}
 			}
 			this.abortController = null;

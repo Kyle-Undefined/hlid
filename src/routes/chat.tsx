@@ -1,10 +1,9 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { createFileRoute } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import { Check, ChevronRight, SquarePen, X } from "lucide-react";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { StatusDot } from "#/components/nav/StatusDot";
 import { getConfig } from "#/config";
 import { useWs } from "#/hooks/useWs";
 import * as wsStore from "#/hooks/wsStore";
@@ -22,6 +21,10 @@ function normalizeMd(text: string): string {
 
 // ─── server fns ──────────────────────────────────────────────────────────────
 
+type EnrichedMessageRow = import("#/db").MessageRow & {
+	toolEvents?: import("#/db").ToolEventRow[];
+};
+
 const getSessionDataFn = createServerFn({ method: "GET" })
 	.inputValidator((sessionId: string) => sessionId)
 	.handler(async ({ data: sessionId }) => {
@@ -29,8 +32,8 @@ const getSessionDataFn = createServerFn({ method: "GET" })
 		const res = await fetch(
 			`http://localhost:${server.port + 1}/db/session-messages?session_id=${encodeURIComponent(sessionId)}`,
 		);
-		if (!res.ok) return [] as import("#/db").MessageRow[];
-		return res.json() as Promise<import("#/db").MessageRow[]>;
+		if (!res.ok) return [] as EnrichedMessageRow[];
+		return res.json() as Promise<EnrichedMessageRow[]>;
 	});
 
 const getCurrentSessionFn = createServerFn({ method: "GET" }).handler(
@@ -90,6 +93,7 @@ type PermissionMessage = {
 	title: string;
 	displayName?: string;
 	description?: string;
+	input?: Record<string, unknown>;
 	decision: "pending" | "approved" | "denied";
 };
 
@@ -107,7 +111,12 @@ type Action =
 	| { type: "RESOLVE_PERMISSION"; id: string; decision: "approved" | "denied" }
 	| {
 			type: "LOAD_HISTORY";
-			messages: Array<{ id: string; role: string; text: string }>;
+			messages: Array<{
+				id: string;
+				role: string;
+				text: string;
+				toolEvents?: ToolEventMessage[];
+			}>;
 	  }
 	| { type: "CLEAR" };
 
@@ -155,6 +164,7 @@ function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 					title: action.msg.title,
 					displayName: action.msg.displayName,
 					description: action.msg.description,
+					input: action.msg.input,
 					decision: "pending",
 				},
 			];
@@ -172,7 +182,7 @@ function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 							id: m.id,
 							role: "assistant" as const,
 							text: m.text,
-							toolEvents: [],
+							toolEvents: m.toolEvents ?? [],
 							streaming: false,
 							cost: null,
 						},
@@ -196,16 +206,16 @@ function ToolBlock({ event }: { event: ToolEventMessage }) {
 				className="flex items-center gap-2.5 w-full px-3 py-1.5 group hover:bg-primary/[0.03] transition-colors text-left"
 			>
 				<ChevronRight
-					className={`w-3 h-3 shrink-0 text-sky-600/60 group-hover:text-sky-500/80 transition-transform duration-150 ${open ? "rotate-90" : ""}`}
+					className={`w-3 h-3 shrink-0 text-sky-500/70 group-hover:text-sky-400/90 transition-transform duration-150 ${open ? "rotate-90" : ""}`}
 				/>
-				<span className="text-[11px] font-medium tracking-wider text-sky-400/70 group-hover:text-sky-400/90 shrink-0">
+				<span className="text-[11px] font-medium tracking-wider text-sky-400/90 group-hover:text-sky-300 shrink-0">
 					{event.name}
 				</span>
 				<div className="flex gap-1.5 flex-wrap">
 					{pills.map(([k, v]) => (
 						<span
 							key={k}
-							className="text-[9px] tracking-wide border border-sky-900/40 text-sky-600/50 px-1.5 py-0.5 font-mono"
+							className="text-[9px] tracking-wide border border-sky-800/50 text-sky-400/70 px-1.5 py-0.5 font-mono"
 						>
 							{k}: {String(v).slice(0, 24)}
 							{String(v).length > 24 ? "…" : ""}
@@ -215,7 +225,7 @@ function ToolBlock({ event }: { event: ToolEventMessage }) {
 			</button>
 			{open && (
 				<div className="mx-3 mb-1.5 border border-[var(--tool-panel-border)] bg-[var(--tool-panel)]">
-					<pre className="text-[11px] text-sky-300/60 font-mono leading-relaxed p-3 overflow-auto max-h-48">
+					<pre className="text-[11px] text-sky-300/80 font-mono leading-relaxed p-3 overflow-auto max-h-48">
 						{JSON.stringify(event.input, null, 2)}
 					</pre>
 				</div>
@@ -236,10 +246,10 @@ function PermissionCard({
 	if (!pending) {
 		return (
 			<div className="flex gap-0">
-				<div className="w-12 shrink-0 text-[9px] tracking-widest text-muted-foreground/30 pt-0.5 uppercase">
+				<div className="w-12 shrink-0 text-[9px] tracking-widest text-muted-foreground/50 pt-0.5 uppercase">
 					PERM
 				</div>
-				<div className="flex items-center gap-2 text-xs text-muted-foreground/50">
+				<div className="flex items-center gap-2 text-xs text-muted-foreground/65">
 					{message.decision === "approved" ? (
 						<Check className="w-3 h-3 text-green-600/60" />
 					) : (
@@ -254,19 +264,31 @@ function PermissionCard({
 		);
 	}
 
+	const inputPreview = message.input
+		? ((message.input.command as string | undefined) ??
+			(message.input.file_path as string | undefined) ??
+			(message.input.path as string | undefined) ??
+			Object.values(message.input).find((v) => typeof v === "string"))
+		: undefined;
+
 	return (
 		<div className="flex gap-0">
-			<div className="w-12 shrink-0 text-[9px] tracking-widest text-primary/40 pt-0.5 uppercase">
+			<div className="w-12 shrink-0 text-[9px] tracking-widest text-primary/60 pt-0.5 uppercase">
 				PERM
 			</div>
 			<div className="flex-1 border border-border bg-card">
 				<div className="px-4 py-3 border-b border-border">
-					<div className="text-[9px] tracking-widest text-muted-foreground/50 uppercase mb-1">
+					<div className="text-[9px] tracking-widest text-muted-foreground/65 uppercase mb-1">
 						PERMISSION REQUEST
 					</div>
 					<div className="text-sm text-foreground">{message.title}</div>
+					{inputPreview && (
+						<div className="mt-2 px-2 py-1.5 bg-secondary/60 border border-border font-mono text-[11px] text-foreground/80 break-all">
+							{inputPreview}
+						</div>
+					)}
 					{message.description && (
-						<div className="text-xs text-muted-foreground/60 mt-1">
+						<div className="text-xs text-muted-foreground/75 mt-1">
 							{message.description}
 						</div>
 					)}
@@ -298,10 +320,10 @@ function UserMsg({ message }: { message: UserMessage }) {
 	return (
 		<div className="flex items-start gap-3 py-3 border-b border-border/40">
 			<div className="flex-1" />
-			<div className="text-sm text-foreground/90 whitespace-pre-wrap text-right max-w-[78%] leading-relaxed">
+			<div className="text-sm text-foreground whitespace-pre-wrap text-right max-w-[78%] leading-relaxed">
 				{message.text}
 			</div>
-			<div className="text-[9px] tracking-widest text-primary/40 shrink-0 pt-0.5 w-11 text-right">
+			<div className="text-[9px] tracking-widest text-primary/60 shrink-0 pt-0.5 w-11 text-right">
 				ME
 			</div>
 		</div>
@@ -320,7 +342,7 @@ function AssistantMsg({ message }: { message: AssistantMessage }) {
 						<svg
 							xmlns="http://www.w3.org/2000/svg"
 							viewBox="0 0 32 32"
-							className="w-4 h-4 opacity-40"
+							className="w-4 h-4 opacity-60"
 							role="img"
 							aria-label="Hlid"
 						>
@@ -342,7 +364,7 @@ function AssistantMsg({ message }: { message: AssistantMessage }) {
 							<circle cx="16" cy="16" r="2" fill="#38bdf8" />
 						</svg>
 					</div>
-					<div className="flex-1 text-sm text-foreground/90 leading-relaxed pr-4 min-w-0">
+					<div className="flex-1 text-sm text-foreground leading-relaxed pr-4 min-w-0">
 						<Markdown
 							remarkPlugins={[remarkGfm]}
 							components={{
@@ -380,7 +402,7 @@ function AssistantMsg({ message }: { message: AssistantMessage }) {
 								code: ({ children, className }) => {
 									const isBlock = className?.startsWith("language-");
 									return isBlock ? (
-										<code className="block bg-secondary/60 border border-border rounded-none px-3 py-2 text-xs font-mono text-foreground/80 overflow-x-auto whitespace-pre mb-3">
+										<code className="block bg-secondary/60 border border-border rounded-none px-3 py-2 text-xs font-mono text-foreground/90 overflow-x-auto whitespace-pre mb-3">
 											{children}
 										</code>
 									) : (
@@ -391,7 +413,7 @@ function AssistantMsg({ message }: { message: AssistantMessage }) {
 								},
 								pre: ({ children }) => <pre className="mb-3">{children}</pre>,
 								blockquote: ({ children }) => (
-									<blockquote className="border-l-2 border-primary/30 pl-3 text-foreground/60 italic mb-3">
+									<blockquote className="border-l-2 border-primary/30 pl-3 text-foreground/75 italic mb-3">
 										{children}
 									</blockquote>
 								),
@@ -437,7 +459,7 @@ function AssistantMsg({ message }: { message: AssistantMessage }) {
 						)}
 					</div>
 					{!message.streaming && message.cost !== null && (
-						<div className="text-[9px] tabular-nums text-muted-foreground/25 shrink-0 pt-0.5 font-mono">
+						<div className="text-[9px] tabular-nums text-muted-foreground/40 shrink-0 pt-0.5 font-mono">
 							${message.cost.toFixed(4)}
 						</div>
 					)}
@@ -451,7 +473,6 @@ function AssistantMsg({ message }: { message: AssistantMessage }) {
 
 function ChatPage() {
 	const { config, existingSessionId } = Route.useLoaderData();
-	const navigate = useNavigate();
 	const [sessionId, setSessionId] = useState(() => existingSessionId ?? uid());
 	const sessionIdRef = useRef(sessionId);
 	useEffect(() => {
@@ -461,40 +482,10 @@ function ChatPage() {
 	const [messages, dispatch] = useReducer(reducer, []);
 	const [input, setInput] = useState("");
 	const pendingIdRef = useRef<string | null>(null);
+	// Tracks whether initial history load is done so the isRunning effect doesn't race it
+	const historyReadyRef = useRef(!existingSessionId);
 	const bottomRef = useRef<HTMLDivElement>(null);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
-
-	// Load history for existing sessions, then claim any pending prompt
-	useEffect(() => {
-		if (!existingSessionId) {
-			const p = wsStore.claimPendingPrompt();
-			if (p) dispatch({ type: "ADD_USER", id: uid(), text: p });
-			return;
-		}
-		getSessionDataFn({ data: existingSessionId }).then((rows) => {
-			// Don't overwrite in-flight streaming state
-			if (rows.length > 0 && pendingIdRef.current === null) {
-				dispatch({
-					type: "LOAD_HISTORY",
-					messages: rows.map((r) => ({
-						id: uid(),
-						role: r.role,
-						text: r.text,
-					})),
-				});
-			}
-			const p = wsStore.claimPendingPrompt();
-			if (p) {
-				// Don't duplicate if the DB already persisted this message before we loaded
-				const lastRow = rows[rows.length - 1];
-				if (!lastRow || lastRow.role !== "user" || lastRow.text !== p) {
-					dispatch({ type: "ADD_USER", id: uid(), text: p });
-				}
-			}
-		});
-		// existingSessionId is stable (comes from loader, only changes on navigation)
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [existingSessionId]);
 
 	const handleWsMessage = useCallback((msg: ServerMessage) => {
 		// Cross-device: show user message from another client if it matches our session
@@ -536,17 +527,93 @@ function ChatPage() {
 			dispatch({ type: "DONE", id: activeId, cost: msg.cost });
 			pendingIdRef.current = null;
 		} else if (msg.type === "error") {
+			const errorId =
+				activeId ??
+				(() => {
+					const newId = uid();
+					dispatch({ type: "ADD_ASSISTANT", id: newId });
+					return newId;
+				})();
 			dispatch({
 				type: "APPEND_CHUNK",
-				id: activeId,
+				id: errorId,
 				text: `\n\n[ERROR: ${msg.message}]`,
 			});
-			dispatch({ type: "DONE", id: activeId, cost: null });
+			dispatch({ type: "DONE", id: errorId, cost: null });
 			pendingIdRef.current = null;
 		}
 	}, []);
 
+	// Load history for existing sessions, then claim any pending prompt
+	useEffect(() => {
+		if (!existingSessionId) {
+			const p = wsStore.claimPendingPrompt();
+			if (p) dispatch({ type: "ADD_USER", id: uid(), text: p });
+			historyReadyRef.current = true;
+			wsStore.clearMessageBuffer();
+			wsStore.send({ type: "sync" });
+			return;
+		}
+		getSessionDataFn({ data: existingSessionId })
+			.then((rows) => {
+				dispatch({
+					type: "LOAD_HISTORY",
+					messages: rows.map((r) => ({
+						id: uid(),
+						role: r.role,
+						text: r.text,
+						toolEvents: r.toolEvents?.map((te) => ({
+							type: "tool_event" as const,
+							id: te.tool_id,
+							name: te.name,
+							input: (() => {
+								try {
+									return JSON.parse(te.input_json) as unknown;
+								} catch {
+									return {};
+								}
+							})(),
+						})),
+					})),
+				});
+				const p = wsStore.claimPendingPrompt();
+				if (p) {
+					const lastRow = rows[rows.length - 1];
+					if (!lastRow || lastRow.role !== "user" || lastRow.text !== p) {
+						dispatch({ type: "ADD_USER", id: uid(), text: p });
+					}
+				}
+				historyReadyRef.current = true;
+				// If session is running, add pending bubble before draining so chunks attach to it
+				if (
+					wsStore.getSnapshot().sessionState === "running" &&
+					!pendingIdRef.current
+				) {
+					const newId = uid();
+					pendingIdRef.current = newId;
+					dispatch({ type: "ADD_ASSISTANT", id: newId });
+				}
+				// Replay messages that arrived while component was unmounted (tool events, chunks)
+				for (const msg of wsStore.drainMessageBuffer()) {
+					handleWsMessage(msg);
+				}
+				// Sync with server — replays pending permissions in case WS didn't reconnect (SPA nav)
+				wsStore.send({ type: "sync" });
+			})
+			.catch(console.error);
+	}, [existingSessionId, handleWsMessage]);
+
 	const { wsStatus, sessionState, send } = useWs(handleWsMessage);
+
+	// If session is running but no pending assistant turn exists, add one.
+	// Guard with historyReadyRef so we don't race the initial DB load.
+	const isRunning = sessionState === "running";
+	useEffect(() => {
+		if (!isRunning || !historyReadyRef.current || pendingIdRef.current) return;
+		const newId = uid();
+		pendingIdRef.current = newId;
+		dispatch({ type: "ADD_ASSISTANT", id: newId });
+	}, [isRunning]);
 
 	const handleDecide = useCallback(
 		(id: string, approved: boolean) => {
@@ -586,41 +653,53 @@ function ChatPage() {
 		pendingIdRef.current = null;
 		dispatch({ type: "CLEAR" });
 		send({ type: "clear" });
+		wsStore.resetLiveStats();
+		wsStore.clearMessageBuffer();
 		const newId = uid();
 		setSessionId(newId);
 		sessionIdRef.current = newId;
-		navigate({ to: "/chat", replace: true });
-	}, [send, navigate]);
+	}, [send]);
 
-	const isRunning = sessionState === "running";
 	const canSend =
 		input.trim().length > 0 && !isRunning && wsStatus === "connected";
 
 	return (
 		<div className="h-full flex flex-col">
-			{/* Messages */}
-			<div className="flex-1 overflow-auto px-5 py-2">
-				{messages.length === 0 && (
-					<div className="h-full flex flex-col items-center justify-center gap-3">
-						<div className="text-2xl font-bold tracking-widest text-foreground/8 uppercase select-none">
-							{wsStatus !== "connected" ? "CONNECTING" : "READY WHEN YOU ARE"}
-						</div>
-						{wsStatus === "connected" && (
-							<div className="text-[9px] tracking-[0.35em] text-muted-foreground/20">
-								↵ send · ⇧↵ newline
+			{/* Messages — inner min-h-full + justify-end anchors messages to bottom */}
+			<div className="flex-1 overflow-auto">
+				<div className="min-h-full flex flex-col justify-end px-5 py-2">
+					{messages.length === 0 ? (
+						<div className="flex-1 flex flex-col items-center justify-center gap-3">
+							<div className="text-2xl font-bold tracking-widest text-foreground/20 uppercase select-none">
+								{wsStatus !== "connected"
+									? "CONNECTING"
+									: "THE WATCHER LISTENS"}
 							</div>
-						)}
-					</div>
-				)}
-				{messages.map((m) => {
-					if (m.role === "user") return <UserMsg key={m.id} message={m} />;
-					if (m.role === "permission")
-						return (
-							<PermissionCard key={m.id} message={m} onDecide={handleDecide} />
-						);
-					return <AssistantMsg key={m.id} message={m} />;
-				})}
-				<div ref={bottomRef} />
+							{wsStatus === "connected" && (
+								<div className="text-[9px] tracking-[0.35em] text-muted-foreground/35">
+									↵ send · ⇧↵ newline
+								</div>
+							)}
+						</div>
+					) : (
+						<>
+							{messages.map((m) => {
+								if (m.role === "user")
+									return <UserMsg key={m.id} message={m} />;
+								if (m.role === "permission")
+									return (
+										<PermissionCard
+											key={m.id}
+											message={m}
+											onDecide={handleDecide}
+										/>
+									);
+								return <AssistantMsg key={m.id} message={m} />;
+							})}
+							<div ref={bottomRef} />
+						</>
+					)}
+				</div>
 			</div>
 
 			{/* Input */}
@@ -653,33 +732,41 @@ function ChatPage() {
 								? "connecting…"
 								: isRunning
 									? "running…"
-									: "message claude"
+									: "speak to the watcher…"
 						}
 						disabled={wsStatus !== "connected" || isRunning}
-						className="flex-1 resize-none bg-transparent py-3 pr-2 text-sm text-foreground placeholder:text-muted-foreground/20 focus:outline-none disabled:opacity-30 overflow-hidden"
+						className="flex-1 resize-none bg-transparent py-3 pr-2 text-sm text-foreground placeholder:text-muted-foreground/35 focus:outline-none disabled:opacity-30 overflow-hidden"
 					/>
-					<button
-						type="button"
-						onClick={handleSend}
-						disabled={!canSend}
-						className="px-4 py-3 text-[10px] tracking-widest text-primary/50 hover:text-primary disabled:text-muted-foreground/20 transition-colors shrink-0 uppercase font-bold"
-						aria-label="Send"
-					>
-						RUN
-					</button>
+					{isRunning ? (
+						<button
+							type="button"
+							onClick={() => send({ type: "abort" })}
+							className="px-4 py-3 text-[10px] tracking-widest text-destructive/70 hover:text-destructive transition-colors shrink-0 uppercase font-bold"
+							aria-label="Abort"
+						>
+							STOP
+						</button>
+					) : (
+						<button
+							type="button"
+							onClick={handleSend}
+							disabled={!canSend}
+							className="px-4 py-3 text-[10px] tracking-widest text-primary/70 hover:text-primary disabled:text-muted-foreground/35 transition-colors shrink-0 uppercase font-bold"
+							aria-label="Send"
+						>
+							RUN
+						</button>
+					)}
 					{messages.length > 0 && (
 						<button
 							type="button"
 							onClick={handleClear}
-							className="px-3 py-3 text-muted-foreground/25 hover:text-muted-foreground transition-colors shrink-0"
+							className="px-3 py-3 text-muted-foreground/45 hover:text-muted-foreground transition-colors shrink-0"
 							aria-label="New chat"
 						>
 							<SquarePen className="w-3.5 h-3.5" />
 						</button>
 					)}
-					<div className="px-2 shrink-0">
-						<StatusDot />
-					</div>
 				</div>
 			</div>
 		</div>

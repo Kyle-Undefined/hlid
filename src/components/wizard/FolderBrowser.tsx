@@ -70,7 +70,7 @@ export function FolderBrowser({ initialPath, onSelect }: Props) {
 			</div>
 
 			<div className="border border-border rounded-lg overflow-hidden">
-				<div className="max-h-52 overflow-y-auto divide-y divide-border">
+				<div className="max-h-[40svh] sm:max-h-52 overflow-y-auto divide-y divide-border">
 					{currentPath && currentPath !== "/" && (
 						<button
 							type="button"

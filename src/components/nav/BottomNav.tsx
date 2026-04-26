@@ -6,6 +6,7 @@ import {
 	MessageSquare,
 	Settings,
 } from "lucide-react";
+import { StatusDot } from "./StatusDot";
 
 const NAV_ITEMS = [
 	{ to: "/", label: "WATCH", icon: LayoutDashboard, exact: true },
@@ -20,7 +21,10 @@ const BASE =
 
 export function BottomNav() {
 	return (
-		<nav className="shrink-0 md:hidden bg-sidebar border-t border-sidebar-border">
+		<nav className="shrink-0 md:hidden bg-sidebar border-t border-sidebar-border relative">
+			<div className="absolute top-1.5 right-2 z-10">
+				<StatusDot />
+			</div>
 			<div className="flex safe-area-inset-bottom">
 				{NAV_ITEMS.map(({ to, label, icon: Icon, exact }) => (
 					<Link

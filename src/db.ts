@@ -28,6 +28,15 @@ export type MessageRow = {
 	timestamp: number;
 };
 
+export type ToolEventRow = {
+	id: number;
+	session_id: string;
+	assistant_seq: number;
+	tool_id: string;
+	name: string;
+	input_json: string;
+};
+
 export type QueryData = {
 	cost: number;
 	input_tokens: number;
@@ -137,6 +146,18 @@ function initSchema(db: import("bun:sqlite").Database): void {
 	db.run(
 		`CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id)`,
 	);
+	db.run(`
+    CREATE TABLE IF NOT EXISTS tool_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL REFERENCES sessions(id),
+      assistant_seq INTEGER NOT NULL,
+      tool_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      input_json TEXT NOT NULL
+    )`);
+	db.run(
+		`CREATE INDEX IF NOT EXISTS idx_tool_events_session ON tool_events(session_id)`,
+	);
 }
 
 export async function createSession(
@@ -208,6 +229,31 @@ export async function appendMessage(
 		`INSERT INTO messages (session_id, seq, role, text, timestamp) VALUES (?, ?, ?, ?, unixepoch())`,
 		[sessionId, seq, role, text],
 	);
+}
+
+export async function appendToolEvent(
+	sessionId: string,
+	assistantSeq: number,
+	toolId: string,
+	name: string,
+	input: unknown,
+): Promise<void> {
+	const db = await getDb();
+	db.run(
+		`INSERT INTO tool_events (session_id, assistant_seq, tool_id, name, input_json) VALUES (?, ?, ?, ?, ?)`,
+		[sessionId, assistantSeq, toolId, name, JSON.stringify(input)],
+	);
+}
+
+export async function getSessionToolEvents(
+	sessionId: string,
+): Promise<ToolEventRow[]> {
+	const db = await getDb();
+	return db
+		.query<ToolEventRow, [string]>(
+			`SELECT * FROM tool_events WHERE session_id = ? ORDER BY id ASC`,
+		)
+		.all(sessionId);
 }
 
 export async function getRecentSessions(limit = 14): Promise<SessionRow[]> {
@@ -318,4 +364,37 @@ export async function getAggregatedStats(): Promise<AggStats> {
 			.get() ?? EMPTY_WINDOW;
 
 	return { allTime, today, thisMonth };
+}
+
+export type WeeklyStats = {
+	total: number;
+	days: number[]; // index 0=Sun … 6=Sat
+};
+
+export async function getWeeklyStats(): Promise<WeeklyStats> {
+	const db = await getDb();
+	const now = new Date();
+	const startOfWeek = new Date(now);
+	startOfWeek.setHours(0, 0, 0, 0);
+	startOfWeek.setDate(startOfWeek.getDate() - now.getDay());
+	const startUnix = Math.floor(startOfWeek.getTime() / 1000);
+
+	type Row = { day: number; count: number };
+	const rows = db
+		.query<Row, [number]>(
+			`SELECT CAST(strftime('%w', started_at, 'unixepoch', 'localtime') AS INTEGER) as day,
+			        COUNT(*) as count
+			 FROM sessions
+			 WHERE started_at >= ?
+			 GROUP BY day`,
+		)
+		.all(startUnix);
+
+	const days = Array(7).fill(0) as number[];
+	let total = 0;
+	for (const row of rows) {
+		days[row.day] = row.count;
+		total += row.count;
+	}
+	return { total, days };
 }

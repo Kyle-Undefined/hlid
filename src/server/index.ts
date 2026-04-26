@@ -12,7 +12,13 @@ const clients = new Set<ServerWebSocket<unknown>>();
 // Tracks which client initiated the current running session (for permission scoping)
 let sessionOwnerWs: ServerWebSocket<unknown> | null = null;
 
+// Last error from a session — re-sent to clients that reconnect after the error fired
+let lastSessionError: string | null = null;
+
 function broadcast(msg: ServerMessage): void {
+	if (msg.type === "error") lastSessionError = msg.message;
+	else if (msg.type === "status" && msg.state === "running")
+		lastSessionError = null;
 	const data = JSON.stringify(msg);
 	for (const ws of clients) {
 		// Permission requests only go to the session owner
@@ -55,8 +61,23 @@ Bun.serve({
 			const sessionId = url.searchParams.get("session_id");
 			if (!sessionId)
 				return new Response("Missing session_id", { status: 400 });
-			const rows = await db.getSessionMessages(sessionId);
-			return Response.json(rows);
+			const [messages, toolEvents] = await Promise.all([
+				db.getSessionMessages(sessionId),
+				db.getSessionToolEvents(sessionId),
+			]);
+			// Group tool events by assistant_seq for O(1) lookup
+			const toolsBySeq = new Map<number, (typeof toolEvents)[number][]>();
+			for (const te of toolEvents) {
+				const list = toolsBySeq.get(te.assistant_seq) ?? [];
+				list.push(te);
+				toolsBySeq.set(te.assistant_seq, list);
+			}
+			const enriched = messages.map((m) => ({
+				...m,
+				toolEvents:
+					m.role === "assistant" ? (toolsBySeq.get(m.seq) ?? []) : undefined,
+			}));
+			return Response.json(enriched);
 		}
 
 		if (url.pathname === "/db/stats") {
@@ -72,6 +93,11 @@ Bun.serve({
 			return Response.json({ session_id: sessionId });
 		}
 
+		if (url.pathname === "/db/weekly-stats") {
+			const stats = await db.getWeeklyStats();
+			return Response.json(stats);
+		}
+
 		return new Response("Not found", { status: 404 });
 	},
 
@@ -80,13 +106,24 @@ Bun.serve({
 			clients.add(ws);
 			const status = session.getStatus();
 			send(ws, { type: "status", ...status });
+			// Re-send last error only when session is still in error state
+			if (lastSessionError !== null && session.getStatus().state === "error") {
+				send(ws, { type: "error", message: lastSessionError });
+			}
+			// If session is running and has no owner (e.g. page refresh), claim ownership
+			// and re-send any pending permission requests so they aren't lost.
+			if (session.isRunning() && sessionOwnerWs === null) {
+				sessionOwnerWs = ws;
+				for (const req of session.getPendingPermissionRequests()) {
+					send(ws, req);
+				}
+			}
 		},
 
 		close(ws) {
 			clients.delete(ws);
 			if (ws === sessionOwnerWs) sessionOwnerWs = null;
-			// if this was the last client, deny any hanging permission prompts
-			if (clients.size === 0) session.abort();
+			// Session persists — no abort on disconnect
 		},
 
 		async message(ws, raw) {
@@ -98,6 +135,19 @@ Bun.serve({
 				return;
 			}
 
+			if (msg.type === "sync") {
+				send(ws, { type: "status", ...session.getStatus() });
+				if (session.isRunning()) {
+					if (sessionOwnerWs === null) sessionOwnerWs = ws;
+					if (ws === sessionOwnerWs) {
+						for (const req of session.getPendingPermissionRequests()) {
+							send(ws, req);
+						}
+					}
+				}
+				return;
+			}
+
 			if (msg.type === "abort") {
 				session.abort();
 				return;
@@ -105,12 +155,14 @@ Bun.serve({
 
 			if (msg.type === "clear") {
 				session.clearHistory();
+				lastSessionError = null;
 				return;
 			}
 
 			if (msg.type === "reload_session") {
 				const fresh = loadConfig();
 				session.reinitialize(fresh);
+				lastSessionError = null;
 				broadcast({ type: "status", ...session.getStatus() });
 				return;
 			}
@@ -149,12 +201,15 @@ Bun.serve({
 						msg.text,
 						(event) => broadcast(event),
 						msg.session_id,
+						msg.skill_context,
 					);
 				} catch (err) {
 					const message = err instanceof Error ? err.message : "Unknown error";
 					send(ws, { type: "error", message });
 				} finally {
-					sessionOwnerWs = null;
+					// Only clear ownership if this ws still owns it — a sync from a
+					// reconnecting client may have claimed ownership mid-run.
+					if (sessionOwnerWs === ws) sessionOwnerWs = null;
 				}
 			}
 		},

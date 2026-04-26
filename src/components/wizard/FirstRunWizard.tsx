@@ -2,6 +2,7 @@ import { Check } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { HlidConfig } from "#/config";
 import { FolderBrowser } from "./FolderBrowser";
+import { RelativeFolderField } from "./RelativeFolderField";
 
 type Entry = { name: string; isDirectory: boolean };
 
@@ -51,6 +52,8 @@ export function FirstRunWizard({ onComplete }: Props) {
 	const [inbox, setInbox] = useState("");
 	const [projects, setProjects] = useState("");
 	const [areas, setAreas] = useState("");
+	const [skills, setSkills] = useState("");
+	const [memory, setMemory] = useState("");
 	const [permissionMode, setPermissionMode] = useState<
 		"default" | "acceptEdits" | "bypassPermissions"
 	>("default");
@@ -83,8 +86,8 @@ export function FirstRunWizard({ onComplete }: Props) {
 					inbox: inbox || undefined,
 					projects: projects || undefined,
 					areas: areas || undefined,
-					skills: ".claude/skills",
-					memory: ".claude/projects",
+					skills: skills || undefined,
+					memory: memory || undefined,
 				},
 				server: { port: 3000, host: "0.0.0.0" },
 				claude: {
@@ -92,6 +95,7 @@ export function FirstRunWizard({ onComplete }: Props) {
 					effort: "high" as const,
 					permission_mode: permissionMode,
 				},
+				ui: { enter_to_submit: true, hide_skills_index: true },
 				status_vocabulary: {
 					active: ["Active", "In Progress"],
 					planning: ["Planning", "Ideas"],
@@ -113,10 +117,10 @@ export function FirstRunWizard({ onComplete }: Props) {
 	}
 
 	return (
-		<div className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex items-center justify-center p-4">
-			<div className="w-full max-w-lg bg-card border border-border rounded-xl shadow-2xl overflow-hidden">
+		<div className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm flex flex-col sm:items-center sm:justify-center">
+			<div className="flex flex-col flex-1 sm:flex-none w-full sm:max-w-lg bg-card border-0 sm:border sm:border-border sm:rounded-xl sm:shadow-2xl overflow-hidden sm:m-4">
 				{/* Progress */}
-				<div className="flex border-b border-border">
+				<div className="flex border-b border-border shrink-0">
 					{(["welcome", "vault", "structure", "done"] as Step[]).map((s, i) => (
 						<div
 							key={s}
@@ -129,22 +133,23 @@ export function FirstRunWizard({ onComplete }: Props) {
 					))}
 				</div>
 
-				<div className="p-6">
+				<div className="flex-1 overflow-y-auto p-4 sm:p-6">
 					{step === "welcome" && (
 						<div className="space-y-4">
 							<div>
 								<h2 className="text-lg font-semibold text-foreground">
-									Welcome to Hlid
+									The gate awaits
 								</h2>
 								<p className="text-sm text-muted-foreground mt-1">
-									Your vault command center. Takes about a minute to get going.
+									Hlið stands watch over your vault. One minute to open the
+									gate.
 								</p>
 							</div>
 							<ul className="space-y-2 text-sm text-muted-foreground">
 								{[
-									"Pick your Obsidian vault folder",
-									"Confirm the structure Hlid detected",
-									"Choose how Claude handles permissions",
+									"Bind your Obsidian vault",
+									"Review what Hlid has mapped",
+									"Set the bounds of Claude's reach",
 								].map((item) => (
 									<li key={item} className="flex items-center gap-2">
 										<Check className="w-3.5 h-3.5 text-primary shrink-0" />
@@ -157,7 +162,7 @@ export function FirstRunWizard({ onComplete }: Props) {
 								onClick={() => setStep("vault")}
 								className="w-full py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity"
 							>
-								Get started
+								Open the gate
 							</button>
 						</div>
 					)}
@@ -166,10 +171,10 @@ export function FirstRunWizard({ onComplete }: Props) {
 						<div className="space-y-4">
 							<div>
 								<h2 className="text-lg font-semibold text-foreground">
-									Pick your vault
+									Find your hall
 								</h2>
 								<p className="text-sm text-muted-foreground mt-1">
-									Navigate to your vault and hit Select.
+									Navigate to your vault and press Select.
 								</p>
 							</div>
 							<FolderBrowser
@@ -185,11 +190,10 @@ export function FirstRunWizard({ onComplete }: Props) {
 						<div className="space-y-4">
 							<div>
 								<h2 className="text-lg font-semibold text-foreground">
-									Confirm your setup
+									Mark the bounds
 								</h2>
 								<p className="text-sm text-muted-foreground mt-1">
-									Hlid scanned your vault and pre-filled what it found. Edit
-									anything that looks off.
+									Hlið has mapped your vault. Correct anything that looks off.
 								</p>
 							</div>
 
@@ -199,29 +203,46 @@ export function FirstRunWizard({ onComplete }: Props) {
 									value={vaultName}
 									onChange={setVaultName}
 								/>
-								<Field
+								<FolderRow
 									label="Inbox folder"
 									value={inbox}
 									onChange={setInbox}
+									basePath={vaultPath}
 									placeholder="e.g. 00 Inbox"
 								/>
-								<Field
+								<FolderRow
 									label="Projects folder"
 									value={projects}
 									onChange={setProjects}
+									basePath={vaultPath}
 									placeholder="e.g. 10 Projects"
 								/>
-								<Field
+								<FolderRow
 									label="Areas folder"
 									value={areas}
 									onChange={setAreas}
+									basePath={vaultPath}
 									placeholder="e.g. 20 Areas"
+								/>
+								<FolderRow
+									label="Skills folder"
+									value={skills}
+									onChange={setSkills}
+									basePath={vaultPath}
+									placeholder="_munin/skills"
+								/>
+								<FolderRow
+									label="Memory folder"
+									value={memory}
+									onChange={setMemory}
+									basePath={vaultPath}
+									placeholder="_munin/memory"
 								/>
 							</div>
 
 							<div className="space-y-2">
 								<p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-									Claude permissions
+									Claude's authority
 								</p>
 								<div className="space-y-1.5">
 									{PERMISSION_OPTIONS.map((opt) => (
@@ -268,7 +289,7 @@ export function FirstRunWizard({ onComplete }: Props) {
 									disabled={saving}
 									className="flex-1 py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity disabled:opacity-50"
 								>
-									{saving ? "Saving…" : "Save and finish"}
+									{saving ? "Sealing…" : "Seal and enter"}
 								</button>
 							</div>
 						</div>
@@ -281,10 +302,10 @@ export function FirstRunWizard({ onComplete }: Props) {
 							</div>
 							<div>
 								<h2 className="text-lg font-semibold text-foreground">
-									You're all set
+									The gate is open
 								</h2>
 								<p className="text-sm text-muted-foreground mt-1">
-									You're good to go.
+									Hlið is ready. Your hall awaits.
 								</p>
 							</div>
 							<button
@@ -292,7 +313,7 @@ export function FirstRunWizard({ onComplete }: Props) {
 								onClick={onComplete}
 								className="w-full py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity"
 							>
-								Go to cockpit
+								Take the Watch
 							</button>
 						</div>
 					)}
@@ -324,5 +345,32 @@ function Field({
 				className="w-full bg-secondary border border-border rounded-md px-3 py-1.5 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-ring"
 			/>
 		</label>
+	);
+}
+
+function FolderRow({
+	label,
+	value,
+	onChange,
+	basePath,
+	placeholder,
+}: {
+	label: string;
+	value: string;
+	onChange: (v: string) => void;
+	basePath: string;
+	placeholder?: string;
+}) {
+	return (
+		<div className="space-y-1">
+			<span className="text-xs font-medium text-muted-foreground">{label}</span>
+			<RelativeFolderField
+				value={value}
+				onChange={onChange}
+				basePath={basePath}
+				placeholder={placeholder}
+				fullWidth
+			/>
+		</div>
 	);
 }

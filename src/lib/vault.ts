@@ -61,7 +61,7 @@ export function scanProjects(
 			const titleFromFilename = fullPath.split(sep).pop()?.replace(/\.md$/, "");
 			return {
 				file,
-				title: titleFromFrontmatter ?? titleFromFilename,
+				title: titleFromFrontmatter ?? titleFromFilename ?? "",
 				status: classifyStatus(rawStatus, vocab),
 				rawStatus,
 				tags: Array.isArray(data.tags) ? (data.tags as string[]) : [],
@@ -85,6 +85,7 @@ export type Skill = {
 	name: string;
 	description: string;
 	content: string;
+	filePath: string;
 	section?: string;
 };
 
@@ -181,13 +182,21 @@ export function scanSkills(
 				(data.description as string | undefined) ??
 				firstLine.replace(/^#+\s*/, "");
 			const section = sectionMap.get(name);
-			return { file, name, description, content: raw, section };
+			return {
+				file,
+				name,
+				description,
+				content: raw,
+				filePath: fullPath,
+				section,
+			};
 		} catch {
 			return {
 				file,
 				name: file.split(sep)[0].replace(/\.md$/, ""),
 				description: "",
 				content: "",
+				filePath: fullPath,
 			};
 		}
 	});

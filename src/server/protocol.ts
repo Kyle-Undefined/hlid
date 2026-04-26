@@ -35,6 +35,7 @@ export type DoneMessage = {
 	context_window: number | null;
 	max_output_tokens: number | null;
 	stop_reason: string | null;
+	tokens_in_context: number | null;
 };
 
 export type RateLimitMessage = {
@@ -57,6 +58,7 @@ export type PermissionRequestMessage = {
 	title: string;
 	displayName?: string;
 	description?: string;
+	input?: Record<string, unknown>;
 };
 
 export type UserMessageEvent = {
@@ -81,6 +83,7 @@ export type ClientChatMessage = {
 	type: "chat";
 	text: string;
 	session_id?: string;
+	skill_context?: string;
 };
 
 export type ClientAbortMessage = {
@@ -101,9 +104,14 @@ export type ClientPermissionResponseMessage = {
 	approved: boolean;
 };
 
+export type ClientSyncMessage = {
+	type: "sync";
+};
+
 export type ClientMessage =
 	| ClientChatMessage
 	| ClientAbortMessage
 	| ClientClearMessage
 	| ClientReloadMessage
-	| ClientPermissionResponseMessage;
+	| ClientPermissionResponseMessage
+	| ClientSyncMessage;

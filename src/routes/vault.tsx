@@ -2,7 +2,6 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import { ChevronDown, ChevronRight, Play } from "lucide-react";
 import { useState } from "react";
-import { StatusDot } from "#/components/nav/StatusDot";
 import { getConfig } from "#/config";
 import { useWs } from "#/hooks/useWs";
 import * as wsStore from "#/hooks/wsStore";
@@ -326,16 +325,11 @@ function VaultPage() {
 	function runSkill(content: string) {
 		wsStore.setPendingPrompt(content);
 		send({ type: "chat", text: content } satisfies ClientMessage);
-		navigate({ to: "/chat" });
+		navigate({ to: "/chat", search: { session: undefined } });
 	}
 
 	return (
 		<div className="flex flex-col h-full">
-			{/* Header */}
-			<div className="flex items-center justify-end px-5 py-3.5 border-b border-border shrink-0">
-				<StatusDot />
-			</div>
-
 			{/* Tabs */}
 			<div className="flex border-b border-border shrink-0">
 				{TABS.map((t) => (

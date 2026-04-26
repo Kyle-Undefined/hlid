@@ -4,27 +4,36 @@ import {
 	useRouter,
 } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
-import { ChevronRight } from "lucide-react";
-import { useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { StatusDot } from "#/components/nav/StatusDot";
+import {
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+	useSyncExternalStore,
+} from "react";
 import { FirstRunWizard } from "#/components/wizard/FirstRunWizard";
 import { getConfig } from "#/config";
-import type { SessionRow } from "#/db";
+import type { AggStats, SessionRow, WeeklyStats } from "#/db";
 import { useWs } from "#/hooks/useWs";
 import * as wsStore from "#/hooks/wsStore";
 import { uid } from "#/lib/utils";
 import type { Skill } from "#/lib/vault";
-import type { ServerMessage } from "#/server/protocol";
+import type { RateLimitMessage, ServerMessage } from "#/server/protocol";
 
 // ─── server fns ──────────────────────────────────────────────────────────────
 
 const getCockpitData = createServerFn({ method: "GET" }).handler(async () => {
-	const [{ readdirSync }, { join }, { scanProjects, scanSkills }] =
-		await Promise.all([
-			import("node:fs"),
-			import("node:path"),
-			import("#/lib/vault"),
-		]);
+	const [
+		{ readdirSync },
+		{ join, resolve },
+		{ homedir },
+		{ scanProjects, scanSkills },
+	] = await Promise.all([
+		import("node:fs"),
+		import("node:path"),
+		import("node:os"),
+		import("#/lib/vault"),
+	]);
 	const config = await getConfig();
 	const { vault, status_vocabulary } = config;
 
@@ -53,19 +62,36 @@ const getCockpitData = createServerFn({ method: "GET" }).handler(async () => {
 		activeCount = projects.filter((p) => p.status === "active").length;
 	}
 
-	const { skills, sectionOrder } =
+	const { skills: vaultSkills, sectionOrder } =
 		vault.path && vault.skills
 			? scanSkills(vault.path, vault.skills, config.ui.hide_skills_index)
 			: { skills: [], sectionOrder: [] };
 
-	return { inboxCount, activeCount, totalCount, skills, sectionOrder };
+	const claudeSkillsDir = resolve(homedir(), ".claude", "skills");
+	const { skills: rawClaudeSkills } = scanSkills(claudeSkillsDir, "", false);
+	const claudeSkills = rawClaudeSkills.map((s) => ({
+		...s,
+		section: "claude",
+	}));
+
+	const skills = [...vaultSkills, ...claudeSkills];
+	const allSectionOrder =
+		claudeSkills.length > 0 ? [...sectionOrder, "claude"] : sectionOrder;
+
+	return {
+		inboxCount,
+		activeCount,
+		totalCount,
+		skills,
+		sectionOrder: allSectionOrder,
+	};
 });
 
 const getRecentSessionsFn = createServerFn({ method: "GET" }).handler(
 	async () => {
 		const { server } = await getConfig();
 		const res = await fetch(
-			`http://localhost:${server.port + 1}/db/recent-sessions?limit=14`,
+			`http://localhost:${server.port + 1}/db/recent-sessions?limit=5`,
 		);
 		if (!res.ok) return [] as SessionRow[];
 		return res.json() as Promise<SessionRow[]>;
@@ -88,19 +114,117 @@ const getCurrentSessionIdFn = createServerFn({ method: "GET" }).handler(
 	},
 );
 
+const getCockpitStatsFn = createServerFn({ method: "GET" }).handler(
+	async () => {
+		const { server } = await getConfig();
+		const res = await fetch(`http://localhost:${server.port + 1}/db/stats`);
+		if (!res.ok) {
+			return {
+				agg: {
+					allTime: {
+						cost: 0,
+						queries: 0,
+						input_tokens: 0,
+						output_tokens: 0,
+						cache_read_tokens: 0,
+						cache_creation_tokens: 0,
+						turns: 0,
+					},
+					today: { cost: 0, queries: 0, tokens: 0 },
+					thisMonth: { cost: 0, queries: 0, tokens: 0 },
+				},
+			} as { agg: AggStats };
+		}
+		const data = (await res.json()) as {
+			agg: AggStats;
+			sessions: SessionRow[];
+		};
+		return { agg: data.agg };
+	},
+);
+
+const getWeeklyStatsFn = createServerFn({ method: "GET" }).handler(async () => {
+	const { server } = await getConfig();
+	try {
+		const res = await fetch(
+			`http://localhost:${server.port + 1}/db/weekly-stats`,
+		);
+		if (!res.ok)
+			return { total: 0, days: [0, 0, 0, 0, 0, 0, 0] } as WeeklyStats;
+		return res.json() as Promise<WeeklyStats>;
+	} catch {
+		return { total: 0, days: [0, 0, 0, 0, 0, 0, 0] } as WeeklyStats;
+	}
+});
+
+const getMcpServersFn = createServerFn({ method: "GET" }).handler(async () => {
+	const [{ readFileSync }, { join }, { homedir }] = await Promise.all([
+		import("node:fs"),
+		import("node:path"),
+		import("node:os"),
+	]);
+	const config = await getConfig();
+
+	type McpServersMap = Record<string, unknown>;
+
+	function parseMcpServers(filePath: string): string[] {
+		try {
+			const content = readFileSync(filePath, "utf8");
+			const parsed = JSON.parse(content) as { mcpServers?: McpServersMap };
+			return Object.keys(parsed.mcpServers ?? {});
+		} catch {
+			return [];
+		}
+	}
+
+	const globalPath = join(homedir(), ".claude", "settings.json");
+	const globalServers = parseMcpServers(globalPath);
+
+	const vaultServers: string[] = [];
+	if (config.vault.path) {
+		const vaultMcpPath = join(config.vault.path, ".mcp.json");
+		vaultServers.push(...parseMcpServers(vaultMcpPath));
+	}
+
+	const seen = new Set<string>();
+	const result: { name: string; source: "global" | "vault" }[] = [];
+	for (const name of vaultServers) {
+		seen.add(name);
+		result.push({ name, source: "vault" });
+	}
+	for (const name of globalServers) {
+		if (!seen.has(name)) {
+			result.push({ name, source: "global" });
+		}
+	}
+	return result;
+});
+
 // ─── route ───────────────────────────────────────────────────────────────────
 
 export const Route = createFileRoute("/")({
 	loader: async () => {
-		const [config, data, recentSessions] = await Promise.all([
-			getConfig(),
-			getCockpitData(),
-			getRecentSessionsFn(),
-		]);
-		return { config, data, recentSessions };
+		const [config, data, recentSessions, statsData, mcpServers, weeklyStats] =
+			await Promise.all([
+				getConfig(),
+				getCockpitData(),
+				getRecentSessionsFn(),
+				getCockpitStatsFn(),
+				getMcpServersFn(),
+				getWeeklyStatsFn(),
+			]);
+		return { config, data, recentSessions, statsData, mcpServers, weeklyStats };
 	},
 	component: CockpitPage,
 });
+
+// ─── constants ───────────────────────────────────────────────────────────────
+
+const MODEL_LABELS: Record<string, string> = {
+	"claude-opus-4-7": "Opus 4.7",
+	"claude-sonnet-4-6": "Sonnet 4.6",
+	"claude-haiku-4-5-20251001": "Haiku 4.5",
+};
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -109,29 +233,24 @@ function fmtRunTime(unixSecs: number): string {
 	return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
 }
 
-// ─── components ──────────────────────────────────────────────────────────────
+function fmt(n: number): string {
+	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+	if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+	return String(n);
+}
 
-function StatCell({
-	label,
-	value,
-	dim,
-}: {
-	label: string;
-	value: string;
-	dim?: boolean;
-}) {
-	return (
-		<div className="px-4 py-3 flex flex-col gap-1">
-			<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
-				{label}
-			</div>
-			<div
-				className={`text-xl font-bold tabular-nums ${dim ? "text-muted-foreground/20" : "text-[#38bdf8]"}`}
-			>
-				{value}
-			</div>
-		</div>
-	);
+function fmtMs(ms: number): string {
+	if (ms < 1000) return `${ms}ms`;
+	return `${(ms / 1000).toFixed(1)}s`;
+}
+
+function fmtResetTime(unixSecs: number): string {
+	const diff = unixSecs - Date.now() / 1000;
+	if (diff <= 0) return "now";
+	const h = Math.floor(diff / 3600);
+	const m = Math.floor((diff % 3600) / 60);
+	if (h > 0) return `${h}h ${m}m`;
+	return `${m}m`;
 }
 
 function groupSkills(
@@ -143,50 +262,314 @@ function groupSkills(
 	for (const sec of sectionOrder) {
 		const members = skills.filter((s) => s.section === sec);
 		if (members.length === 0) continue;
-		groups.push({ section: sec, skills: members });
+		groups.push({
+			section: sec,
+			skills: [...members].sort((a, b) => a.name.localeCompare(b.name)),
+		});
 		for (const s of members) seen.add(s.file);
 	}
 	const unsectioned = skills.filter((s) => !seen.has(s.file));
 	if (unsectioned.length > 0)
-		groups.push({ section: null, skills: unsectioned });
+		groups.push({
+			section: null,
+			skills: [...unsectioned].sort((a, b) => a.name.localeCompare(b.name)),
+		});
+	groups.sort((a, b) => {
+		if (a.section === null) return 1;
+		if (b.section === null) return -1;
+		if (a.section === "claude") return 1;
+		if (b.section === "claude") return -1;
+		return a.section.localeCompare(b.section);
+	});
 	return groups;
 }
 
-function SkillRow({
+// ─── components ──────────────────────────────────────────────────────────────
+
+function UtilBar({ value, max }: { value: number; max: number }) {
+	const pct = max > 0 ? Math.min((value / max) * 100, 100) : 0;
+	const color =
+		pct > 80 ? "bg-destructive" : pct > 60 ? "bg-yellow-600" : "bg-primary";
+	return (
+		<div className="h-1 bg-secondary overflow-hidden mt-1">
+			<div
+				className={`h-full transition-all ${color}`}
+				style={{ width: `${pct}%` }}
+			/>
+		</div>
+	);
+}
+
+const DAY_LABELS = ["S", "M", "T", "W", "T", "F", "S"] as const;
+
+const DAY_KEYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
+
+function WeekBarGraph({ days }: { days: number[] }) {
+	const max = Math.max(...days, 1);
+	const today = new Date().getDay();
+	return (
+		<div className="flex items-end gap-0.5">
+			{days.map((count, i) => (
+				<div
+					key={DAY_KEYS[i]}
+					className="flex flex-col items-center gap-0.5 flex-1 min-w-0"
+				>
+					<span className="text-[7px] tabular-nums text-muted-foreground/25 leading-none h-2 flex items-end">
+						{count > 0 ? count : ""}
+					</span>
+					<div
+						className="w-full flex items-end"
+						style={{ height: "20px" }}
+						aria-hidden
+					>
+						<div
+							className={`w-full transition-all ${i === today ? "bg-primary/60" : "bg-primary/20"}`}
+							style={{
+								height: `${count > 0 ? Math.max((count / max) * 20, 2) : 0}px`,
+							}}
+						/>
+					</div>
+					<span
+						className={`text-[8px] tracking-wider ${i === today ? "text-primary/50" : "text-muted-foreground/25"}`}
+					>
+						{DAY_LABELS[i]}
+					</span>
+				</div>
+			))}
+		</div>
+	);
+}
+
+function DashboardHeader({
+	stats,
+	agg,
+	rateLimit,
+	isConnected,
+}: {
+	stats: wsStore.LiveStats;
+	agg: AggStats;
+	rateLimit: RateLimitMessage | null;
+	isConnected: boolean;
+}) {
+	const idle = stats.queries === 0;
+	const hasContext =
+		stats.last_context_used != null && stats.context_window != null;
+	const contextUsed = stats.last_context_used ?? 0;
+	const contextWindow = stats.context_window ?? 0;
+	const contextPct =
+		hasContext && contextWindow > 0
+			? ((contextUsed / contextWindow) * 100).toFixed(0)
+			: "0";
+
+	const rlPct =
+		rateLimit?.utilization != null
+			? Math.min(rateLimit.utilization * 100, 100)
+			: null;
+	let rlColor: string | null = null;
+	if (rlPct != null) {
+		if (rlPct > 80) rlColor = "text-destructive/80";
+		else if (rlPct > 60) rlColor = "text-yellow-500/70";
+		else rlColor = "text-green-500/70";
+	}
+
+	return (
+		<div className="border-b border-border shrink-0">
+			{/* Row 1 — primary windows */}
+			<div className="grid grid-cols-3 divide-x divide-border border-b border-border">
+				{/* SESSION */}
+				<div className="px-3 md:px-5 py-3 md:py-4">
+					<div className="text-[9px] tracking-widest text-muted-foreground/50 uppercase mb-1 md:mb-2">
+						Session
+					</div>
+					<div
+						className={`text-lg md:text-2xl font-bold tabular-nums leading-none ${idle && !isConnected ? "text-muted-foreground/20" : "text-[#38bdf8]"}`}
+					>
+						{isConnected || stats.cost > 0 ? `$${stats.cost.toFixed(4)}` : "--"}
+					</div>
+					<div className="mt-1 md:mt-1.5 text-[9px] tracking-wider text-muted-foreground/40">
+						{idle
+							? "idle"
+							: `${stats.queries} quer · ${fmtMs(stats.duration_ms)}`}
+					</div>
+				</div>
+
+				{/* TODAY */}
+				<div className="px-3 md:px-5 py-3 md:py-4">
+					<div className="text-[9px] tracking-widest text-muted-foreground/50 uppercase mb-1 md:mb-2">
+						Today
+					</div>
+					<div className="text-lg md:text-2xl font-bold tabular-nums leading-none text-[#38bdf8]">
+						${agg.today.cost.toFixed(4)}
+					</div>
+					<div className="mt-1 md:mt-1.5 text-[9px] tracking-wider text-muted-foreground/40">
+						{agg.today.queries} quer · {fmt(agg.today.tokens)} tok
+					</div>
+				</div>
+
+				{/* THIS MONTH */}
+				<div className="px-3 md:px-5 py-3 md:py-4">
+					<div className="text-[9px] tracking-widest text-muted-foreground/50 uppercase mb-1 md:mb-2">
+						This Month
+					</div>
+					<div className="text-lg md:text-2xl font-bold tabular-nums leading-none text-[#38bdf8]">
+						${agg.thisMonth.cost.toFixed(4)}
+					</div>
+					<div className="mt-1 md:mt-1.5 text-[9px] tracking-wider text-muted-foreground/40">
+						{agg.thisMonth.queries} quer · {fmt(agg.thisMonth.tokens)} tok
+					</div>
+				</div>
+			</div>
+
+			{/* Row 2 — all-time + rate limit */}
+			<div className="grid grid-cols-2 divide-x divide-border border-b border-border">
+				{/* ALL TIME */}
+				<div className="px-5 py-3 flex items-center gap-6">
+					<div>
+						<div className="text-[9px] tracking-widest text-muted-foreground/40 uppercase mb-1">
+							All Time
+						</div>
+						<div className="text-sm font-bold tabular-nums text-foreground/60">
+							${agg.allTime.cost.toFixed(2)}
+						</div>
+					</div>
+					<div className="flex items-center gap-4 text-[9px] tracking-wider text-muted-foreground/40">
+						<span>
+							<span className="text-foreground/50 tabular-nums">
+								{fmt(agg.allTime.queries)}
+							</span>{" "}
+							queries
+						</span>
+						<span>
+							<span className="text-foreground/50 tabular-nums">
+								{fmt(agg.allTime.turns)}
+							</span>{" "}
+							turns
+						</span>
+						<span>
+							<span className="text-foreground/50 tabular-nums">
+								{fmt(
+									agg.allTime.input_tokens +
+										agg.allTime.output_tokens +
+										agg.allTime.cache_read_tokens,
+								)}
+							</span>{" "}
+							tok
+						</span>
+					</div>
+				</div>
+
+				{/* RATE LIMIT */}
+				<div className="px-5 py-3">
+					<div className="text-[9px] tracking-widest text-muted-foreground/40 uppercase mb-1">
+						Rate Limit
+					</div>
+					{rateLimit ? (
+						<div className="flex items-center gap-3">
+							<span
+								className={`text-[10px] tracking-wider font-medium ${rlColor}`}
+							>
+								{rateLimit.status.replace("_", " ").toUpperCase()}
+							</span>
+							{rlPct != null && (
+								<span className="text-[9px] tabular-nums text-muted-foreground/50">
+									{rlPct.toFixed(0)}%
+								</span>
+							)}
+							{rateLimit.resetsAt != null && (
+								<span className="text-[9px] tracking-wider text-muted-foreground/40">
+									resets {fmtResetTime(rateLimit.resetsAt)}
+								</span>
+							)}
+							{rateLimit.rateLimitType && (
+								<span className="text-[9px] tracking-wider text-muted-foreground/30 uppercase">
+									{rateLimit.rateLimitType.replace(/_/g, " ")}
+								</span>
+							)}
+						</div>
+					) : (
+						<span className="text-[10px] text-muted-foreground/20">--</span>
+					)}
+					{rlPct != null && <UtilBar value={rlPct} max={100} />}
+				</div>
+			</div>
+
+			{/* Row 3 — context window (conditional) */}
+			{hasContext && (
+				<div className="px-5 py-2.5 flex items-center gap-4">
+					<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase shrink-0">
+						Context
+					</span>
+					<div className="flex-1">
+						<UtilBar value={contextUsed} max={contextWindow} />
+					</div>
+					<span className="text-[9px] tabular-nums text-muted-foreground/40 shrink-0">
+						{fmt(contextUsed)} / {fmt(contextWindow)} ({contextPct}%)
+					</span>
+				</div>
+			)}
+		</div>
+	);
+}
+
+function McpPanel({
+	servers,
+}: {
+	servers: { name: string; source: "global" | "vault" }[];
+}) {
+	return (
+		<div className="border-b border-border shrink-0 flex items-center gap-3 px-4 py-2 overflow-x-auto">
+			<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase shrink-0">
+				MCP
+			</span>
+			<span className="w-px h-3 bg-border/60 shrink-0" />
+			{servers.length === 0 ? (
+				<span className="text-[9px] tracking-widest text-muted-foreground/20">
+					no mcp configured
+				</span>
+			) : (
+				servers.map((s) => (
+					<span key={s.name} className="flex items-center gap-1.5 shrink-0">
+						<span
+							className={`w-1.5 h-1.5 rounded-full shrink-0 ${s.source === "vault" ? "bg-primary/80" : "bg-primary/40"}`}
+						/>
+						<span className="text-[9px] tracking-widest uppercase text-foreground/50">
+							{s.name}
+						</span>
+					</span>
+				))
+			)}
+		</div>
+	);
+}
+
+function SkillCard({
 	skill,
 	active,
 	onSelect,
 }: {
 	skill: Skill;
 	active: boolean;
-	onSelect: (content: string, name: string) => void;
+	onSelect: (skill: Skill) => void;
 }) {
 	return (
 		<button
 			type="button"
-			onClick={() => onSelect(`/${skill.name} `, skill.name)}
-			className={`flex items-center w-full px-4 py-2.5 gap-4 border-l-2 text-left transition-colors group ${
+			onClick={() => onSelect(skill)}
+			className={`flex flex-col w-full md:w-40 px-3 py-2 border text-left transition-colors ${
 				active
-					? "border-primary bg-primary/[0.08]"
-					: "border-transparent hover:border-primary/30 hover:bg-primary/[0.03]"
+					? "border-primary/40 bg-primary/[0.08]"
+					: "border-border bg-card hover:border-primary/20 hover:bg-primary/[0.03]"
 			}`}
 		>
-			<ChevronRight
-				className={`w-3 h-3 shrink-0 transition-transform ${
-					active
-						? "rotate-90 text-primary"
-						: "text-muted-foreground/25 group-hover:text-primary/40"
-				}`}
-			/>
 			<span
-				className={`text-[11px] tracking-wider font-medium uppercase w-36 shrink-0 truncate ${
+				className={`text-[11px] tracking-wider font-medium uppercase ${
 					active ? "text-primary" : "text-foreground/80"
 				}`}
 			>
 				{skill.name}
 			</span>
 			{skill.description && (
-				<span className="text-[10px] text-muted-foreground/50 truncate flex-1 leading-snug">
+				<span className="text-[9px] tracking-wider text-muted-foreground/40 truncate w-full mt-0.5">
 					{skill.description}
 				</span>
 			)}
@@ -194,59 +577,158 @@ function SkillRow({
 	);
 }
 
-function RecentRunsStrip({
+function RunList({
 	runs,
 	onRunClick,
 }: {
 	runs: SessionRow[];
 	onRunClick: (sessionId: string) => void;
 }) {
-	const [open, setOpen] = useState(false);
-	if (runs.length === 0) return null;
-	const latest = runs[0];
-	const rest = runs.slice(1);
-
+	if (runs.length === 0) {
+		return (
+			<div className="flex items-center justify-center py-4">
+				<span className="text-[9px] tracking-widest text-muted-foreground/20">
+					no runs yet
+				</span>
+			</div>
+		);
+	}
 	return (
-		<div className="border-b border-border shrink-0">
-			<button
-				type="button"
-				onClick={() => setOpen(!open)}
-				className="flex items-center gap-3 w-full px-4 py-2 hover:bg-accent/50 transition-colors text-left group"
-			>
-				<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase shrink-0">
-					LAST RUN
+		<>
+			{runs.map((run) => (
+				<button
+					key={run.id}
+					type="button"
+					onClick={() => onRunClick(run.id)}
+					className="flex items-center gap-2 w-full px-4 py-2 border-b border-border/20 last:border-0 hover:bg-accent/30 transition-colors text-left group"
+				>
+					<span className="text-[9px] tabular-nums text-primary/50 shrink-0 font-mono w-9">
+						{fmtRunTime(run.started_at)}
+					</span>
+					<span className="text-[10px] tracking-wider text-muted-foreground/60 truncate flex-1">
+						{run.label ?? "—"}
+					</span>
+					<span className="text-[8px] tracking-widest text-muted-foreground/20 uppercase shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+						↗
+					</span>
+				</button>
+			))}
+		</>
+	);
+}
+
+function RecentRunsSidebar({
+	runs,
+	weeklyStats,
+	onRunClick,
+	className = "",
+}: {
+	runs: SessionRow[];
+	weeklyStats: WeeklyStats;
+	onRunClick: (sessionId: string) => void;
+	className?: string;
+}) {
+	return (
+		<div
+			className={`w-72 border-l border-border flex flex-col shrink-0 overflow-hidden ${className}`}
+		>
+			<div className="px-4 py-2.5 border-b border-border shrink-0 flex items-center justify-between">
+				<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase">
+					Recent Runs
 				</span>
-				<span className="text-[10px] tabular-nums text-[#38bdf8]/50 shrink-0 font-mono">
-					{fmtRunTime(latest.started_at)}
-				</span>
-				<span className="text-[10px] tracking-wider text-muted-foreground/60 truncate flex-1">
-					{latest.label ?? "—"}
-				</span>
-				{rest.length > 0 && (
-					<span
-						className={`text-[9px] tracking-widest text-muted-foreground/30 shrink-0 transition-transform group-hover:text-muted-foreground/50 ${open ? "rotate-180" : ""}`}
-					>
-						{open ? "▲" : `▼ ${rest.length} MORE`}
+				{runs.length > 0 && (
+					<span className="text-[9px] tabular-nums text-muted-foreground/25">
+						{runs.length}
 					</span>
 				)}
+			</div>
+			<div className="overflow-auto">
+				<RunList runs={runs} onRunClick={onRunClick} />
+			</div>
+			<div className="border-t border-border">
+				<div className="px-4 py-2.5 border-b border-border/40 flex items-center justify-between">
+					<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase">
+						This Week
+					</span>
+					<span className="text-[9px] tabular-nums text-muted-foreground/30">
+						{weeklyStats.total} runs
+					</span>
+				</div>
+				<div className="px-4 py-3">
+					<WeekBarGraph days={weeklyStats.days} />
+				</div>
+			</div>
+		</div>
+	);
+}
+
+function MobileRunsPanel({
+	runs,
+	weeklyStats,
+	onRunClick,
+}: {
+	runs: SessionRow[];
+	weeklyStats: WeeklyStats;
+	onRunClick: (sessionId: string) => void;
+}) {
+	const [runsOpen, setRunsOpen] = useState(false);
+	const [weekOpen, setWeekOpen] = useState(true);
+
+	return (
+		<div className="md:hidden border-b border-border shrink-0">
+			{/* Recent runs — collapsed by default */}
+			<button
+				type="button"
+				onClick={() => setRunsOpen((v) => !v)}
+				className="w-full flex items-center justify-between px-4 py-2.5 border-b border-border/60 hover:bg-accent/20 transition-colors"
+			>
+				<div className="flex items-center gap-2">
+					<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase">
+						Recent Runs
+					</span>
+					{runs.length > 0 && (
+						<span className="text-[9px] tabular-nums text-muted-foreground/25">
+							{runs.length}
+						</span>
+					)}
+				</div>
+				<span
+					className="text-[9px] text-muted-foreground/30 transition-transform"
+					style={{ transform: runsOpen ? "rotate(180deg)" : undefined }}
+				>
+					▾
+				</span>
 			</button>
-			{open && rest.length > 0 && (
-				<div className="border-t border-border/40">
-					{rest.map((run) => (
-						<button
-							key={run.id}
-							type="button"
-							onClick={() => onRunClick(run.id)}
-							className="flex items-baseline gap-3 px-4 py-1.5 border-b border-border/20 last:border-0 w-full text-left hover:bg-accent/30 transition-colors"
-						>
-							<span className="text-[10px] tabular-nums text-[#38bdf8]/40 shrink-0 w-9 font-mono">
-								{fmtRunTime(run.started_at)}
-							</span>
-							<span className="text-[10px] tracking-wider text-muted-foreground/50 truncate">
-								{run.label ?? "—"}
-							</span>
-						</button>
-					))}
+			{runsOpen && (
+				<div className="border-b border-border/40">
+					<RunList runs={runs} onRunClick={onRunClick} />
+				</div>
+			)}
+
+			{/* This week — open by default */}
+			<button
+				type="button"
+				onClick={() => setWeekOpen((v) => !v)}
+				className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-accent/20 transition-colors"
+			>
+				<div className="flex items-center gap-2">
+					<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase">
+						This Week
+					</span>
+					<span className="text-[9px] tabular-nums text-muted-foreground/30">
+						{weeklyStats.total} runs
+					</span>
+				</div>
+				<span
+					className="text-[9px] text-muted-foreground/30 transition-transform"
+					style={{ transform: weekOpen ? "rotate(180deg)" : undefined }}
+				>
+					▾
+				</span>
+			</button>
+			{weekOpen && (
+				<div className="px-4 pb-3 pt-1">
+					<WeekBarGraph days={weeklyStats.days} />
 				</div>
 			)}
 		</div>
@@ -256,20 +738,35 @@ function RecentRunsStrip({
 // ─── page ────────────────────────────────────────────────────────────────────
 
 function CockpitPage() {
-	const { config, data, recentSessions } = Route.useLoaderData();
+	const {
+		config,
+		data,
+		recentSessions,
+		statsData,
+		mcpServers,
+		weeklyStats: initialWeeklyStats,
+	} = Route.useLoaderData();
 	const router = useRouter();
 	const navigate = useNavigate();
 	const liveStats = useSyncExternalStore(
 		wsStore.subscribeStats,
 		wsStore.getLiveStats,
-		() => ({ cost: 0, queries: 0 }) as wsStore.LiveStats,
+		wsStore.getLiveStats,
 	);
 	const [prompt, setPrompt] = useState("");
-	const [activeSkill, setActiveSkill] = useState<string | null>(null);
+	const [activeSkill, setActiveSkill] = useState<{
+		name: string;
+		section?: string;
+		filePath: string;
+	} | null>(null);
 	const [background, setBackground] = useState(false);
 	const [sameSession, setSameSession] = useState(false);
 	const [recentRuns, setRecentRuns] = useState<SessionRow[]>(recentSessions);
+	const [agg, setAgg] = useState<AggStats>(statsData.agg);
+	const [weeklyStats, setWeeklyStats] =
+		useState<WeeklyStats>(initialWeeklyStats);
 	const [runError, setRunError] = useState<string | null>(null);
+	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 
 	const { wsStatus, sessionState, model, send } = useWs(
@@ -277,11 +774,21 @@ function CockpitPage() {
 			if (msg.type === "done") {
 				setRunError(null);
 				getRecentSessionsFn().then(setRecentRuns);
+				getCockpitStatsFn().then((d) => setAgg(d.agg));
+				getWeeklyStatsFn().then(setWeeklyStats);
 			}
 			if (msg.type === "error") {
 				setRunError(msg.message);
 			}
+			if (msg.type === "rate_limit") {
+				setRateLimit(msg);
+			}
 		},
+	);
+
+	const skillGroups = useMemo(
+		() => groupSkills(data.skills, data.sectionOrder),
+		[data.skills, data.sectionOrder],
 	);
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: prompt length triggers resize
@@ -296,10 +803,19 @@ function CockpitPage() {
 		return <FirstRunWizard onComplete={() => router.invalidate()} />;
 	}
 
-	function handleSkillSelect(content: string, name: string) {
-		setPrompt(content);
-		setActiveSkill(name);
-		setTimeout(() => textareaRef.current?.focus(), 0);
+	function handleSkillSelect(skill: Skill) {
+		setPrompt("");
+		setActiveSkill({
+			name: skill.name,
+			section: skill.section,
+			filePath: skill.filePath,
+		});
+		setTimeout(() => {
+			const el = textareaRef.current;
+			if (!el) return;
+			el.focus();
+			el.selectionStart = el.selectionEnd = 0;
+		}, 0);
 	}
 
 	function handleClear() {
@@ -308,7 +824,39 @@ function CockpitPage() {
 	}
 
 	async function handleRun() {
-		const text = prompt.trim();
+		const typed = prompt.trim();
+		let skillContext: string | undefined;
+		let text: string;
+
+		if (activeSkill) {
+			if (activeSkill.section === "claude") {
+				// Claude skill: pass as slash command, CLI handles it natively
+				text = typed
+					? `/${activeSkill.name}: ${typed}`
+					: `/${activeSkill.name}`;
+			} else {
+				// Vault skill: pass file path, server instructs Claude to read it
+				skillContext = activeSkill.filePath;
+				text = typed
+					? `/${activeSkill.name}: ${typed}`
+					: `/${activeSkill.name}`;
+			}
+		} else if (typed.startsWith("/")) {
+			const slashName = typed.slice(1).split(/[:\s]/)[0].toLowerCase();
+			const match = data.skills.find((s) => s.name.toLowerCase() === slashName);
+			if (match) {
+				if (match.section !== "claude") {
+					skillContext = match.filePath;
+					text = typed.slice(match.name.length + 2).trim(); // strip "/name: "
+				} else {
+					text = typed; // Claude skill: keep slash, CLI handles
+				}
+			} else {
+				text = typed;
+			}
+		} else {
+			text = typed;
+		}
 		if (!text || isRunning || wsStatus !== "connected") return;
 		setRunError(null);
 		let sessionId: string;
@@ -318,7 +866,13 @@ function CockpitPage() {
 		} else {
 			sessionId = uid();
 		}
-		send({ type: "chat", text, session_id: sessionId });
+		if (!sameSession) wsStore.resetLiveStats();
+		send({
+			type: "chat",
+			text,
+			session_id: sessionId,
+			skill_context: skillContext,
+		});
 		setPrompt("");
 		setActiveSkill(null);
 		if (!background) {
@@ -329,226 +883,221 @@ function CockpitPage() {
 
 	const isConnected = wsStatus === "connected";
 	const isRunning = isConnected && sessionState === "running";
-	const canRun = prompt.trim().length > 0 && !isRunning && isConnected;
+	const canRun =
+		(!!activeSkill || prompt.trim().length > 0) && !isRunning && isConnected;
 
-	const costStr =
-		liveStats.cost > 0
-			? `$${liveStats.cost.toFixed(4)}`
-			: isConnected
-				? "$0.0000"
-				: "--";
-
-	const MODEL_LABELS: Record<string, string> = {
-		"claude-opus-4-7": "Opus 4.7",
-		"claude-sonnet-4-6": "Sonnet 4.6",
-		"claude-haiku-4-5-20251001": "Haiku 4.5",
-	};
 	const modelShort = model
 		? (MODEL_LABELS[model] ??
 			model.replace("claude-", "").replace(/-\d{8}$/, ""))
 		: null;
 
 	return (
-		<div className="flex flex-col h-full">
+		<div className="flex flex-col md:h-full">
 			{/* Header strip */}
-			<div className="flex items-center justify-between px-5 py-3 border-b border-border shrink-0">
-				<div className="flex items-center gap-3">
-					<span className="text-[11px] tracking-widest text-primary uppercase">
-						{config.vault.name || "HLID"}
-					</span>
-					{modelShort && (
-						<>
-							<span className="text-muted-foreground/25">·</span>
-							<span className="text-[10px] tracking-widest text-muted-foreground/40">
-								{modelShort}
-							</span>
-						</>
-					)}
-				</div>
-				<StatusDot />
+			<div className="flex items-center gap-3 px-5 py-3 border-b border-border shrink-0">
+				<span className="text-[11px] tracking-widest text-primary uppercase">
+					{config.vault.name || "HLID"}
+				</span>
+				{modelShort && (
+					<>
+						<span className="text-muted-foreground/25">·</span>
+						<span className="text-[10px] tracking-widest text-muted-foreground/40">
+							{modelShort}
+						</span>
+					</>
+				)}
 			</div>
 
-			{/* Stat bar */}
-			<div className="border-b border-border shrink-0">
-				<div className="grid grid-cols-2 sm:grid-cols-4 divide-x divide-border">
-					<StatCell
-						label="INBOX"
-						value={config.vault.inbox ? String(data.inboxCount) : "--"}
-						dim={!config.vault.inbox}
-					/>
-					<StatCell
-						label="ACTIVE"
-						value={config.vault.projects ? String(data.activeCount) : "--"}
-						dim={!config.vault.projects}
-					/>
-					<StatCell
-						label="PROJECTS"
-						value={config.vault.projects ? String(data.totalCount) : "--"}
-						dim={!config.vault.projects}
-					/>
-					<StatCell label="SESSION COST" value={costStr} dim={!isConnected} />
-				</div>
-			</div>
+			{/* Dashboard stats header */}
+			<DashboardHeader
+				stats={liveStats}
+				agg={agg}
+				rateLimit={rateLimit}
+				isConnected={isConnected}
+			/>
 
-			{/* Recent runs strip */}
-			<RecentRunsStrip
+			{/* MCP panel */}
+			<McpPanel servers={mcpServers} />
+
+			{/* Mobile: collapsible recent runs + this week graph */}
+			<MobileRunsPanel
 				runs={recentRuns}
+				weeklyStats={weeklyStats}
 				onRunClick={(id) => navigate({ to: "/chat", search: { session: id } })}
 			/>
 
-			{/* Main body — single column */}
-			<div className="flex flex-1 flex-col overflow-auto">
-				{/* Prompt area */}
-				<div className="p-4 border-b border-border space-y-2 shrink-0">
-					<div className="flex items-center justify-between mb-1">
-						<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
-							PROMPT
-							{activeSkill && (
-								<span className="text-primary/50 ml-2">· {activeSkill}</span>
-							)}
-						</div>
-					</div>
-
-					<div
-						className={`border bg-card transition-colors ${isConnected ? "border-border focus-within:border-primary/30" : "border-border/40"}`}
-					>
-						<div className="flex items-start">
-							<span className="text-primary text-sm px-3 py-2.5 shrink-0 select-none">
-								›
-							</span>
-							<textarea
-								ref={textareaRef}
-								value={prompt}
-								onChange={(e) => {
-									setPrompt(e.target.value);
-									if (activeSkill) setActiveSkill(null);
-								}}
-								onKeyDown={(e) => {
-									if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-										e.preventDefault();
-										handleRun();
-									}
-								}}
-								rows={3}
-								placeholder={
-									!isConnected
-										? "server offline…"
-										: "type a prompt, or pick a skill below"
-								}
-								disabled={!isConnected}
-								className="flex-1 resize-none bg-transparent py-2.5 pr-3 text-sm text-foreground placeholder:text-muted-foreground/25 focus:outline-none disabled:opacity-30 overflow-hidden min-h-[72px]"
-							/>
-						</div>
-						<div className="flex items-center justify-between px-3 py-2 border-t border-border/60">
-							<div className="flex items-center gap-3">
-								<label className="flex items-center gap-1.5 cursor-pointer select-none group">
-									<input
-										type="checkbox"
-										checked={background}
-										onChange={(e) => setBackground(e.target.checked)}
-										className="sr-only"
-									/>
-									<span
-										className={`w-3 h-3 border flex items-center justify-center shrink-0 transition-colors ${background ? "border-primary bg-primary/20" : "border-border bg-secondary group-hover:border-primary/40"}`}
-									>
-										{background && (
-											<span className="w-1.5 h-1.5 bg-primary block" />
-										)}
+			{/* Two-column body */}
+			<div className="flex md:flex-1 md:overflow-hidden">
+				{/* Main column */}
+				<div className="flex flex-col flex-1 md:overflow-auto">
+					{/* Prompt area */}
+					<div className="p-4 border-b border-border space-y-2 shrink-0">
+						<div className="flex items-center justify-between mb-1">
+							<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+								PROMPT
+								{activeSkill && (
+									<span className="text-primary/50 ml-2">
+										· {activeSkill.name}
 									</span>
-									<span className="text-[9px] tracking-wider text-muted-foreground/40 uppercase">
-										Background
-									</span>
-								</label>
-								<label className="flex items-center gap-1.5 cursor-pointer select-none group">
-									<input
-										type="checkbox"
-										checked={sameSession}
-										onChange={(e) => setSameSession(e.target.checked)}
-										className="sr-only"
-									/>
-									<span
-										className={`w-3 h-3 border flex items-center justify-center shrink-0 transition-colors ${sameSession ? "border-primary bg-primary/20" : "border-border bg-secondary group-hover:border-primary/40"}`}
-									>
-										{sameSession && (
-											<span className="w-1.5 h-1.5 bg-primary block" />
-										)}
-									</span>
-									<span className="text-[9px] tracking-wider text-muted-foreground/40 uppercase">
-										Same Session
-									</span>
-								</label>
+								)}
 							</div>
-							<div className="flex gap-2">
-								{prompt && (
+						</div>
+
+						<div
+							className={`border bg-card transition-colors ${isConnected ? "border-border focus-within:border-primary/30" : "border-border/40"}`}
+						>
+							<div className="flex items-start">
+								<span className="text-primary text-sm px-3 py-2.5 shrink-0 select-none">
+									›
+								</span>
+								<textarea
+									ref={textareaRef}
+									value={prompt}
+									onChange={(e) => {
+										setPrompt(e.target.value);
+									}}
+									onKeyDown={(e) => {
+										if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+											e.preventDefault();
+											handleRun();
+										}
+									}}
+									rows={3}
+									placeholder={
+										!isConnected
+											? "server offline…"
+											: activeSkill
+												? "add context… (optional)"
+												: "type a prompt, or pick a skill below"
+									}
+									disabled={!isConnected}
+									className="flex-1 resize-none bg-transparent py-2.5 pr-3 text-sm text-foreground placeholder:text-muted-foreground/25 focus:outline-none disabled:opacity-30 overflow-hidden min-h-[72px]"
+								/>
+							</div>
+							<div className="flex items-center justify-between px-3 py-2 border-t border-border/60">
+								<div className="flex items-center gap-3">
+									<label className="flex items-center gap-1.5 cursor-pointer select-none group">
+										<input
+											type="checkbox"
+											checked={background}
+											onChange={(e) => setBackground(e.target.checked)}
+											className="sr-only"
+										/>
+										<span
+											className={`w-3 h-3 border flex items-center justify-center shrink-0 transition-colors ${background ? "border-primary bg-primary/20" : "border-border bg-secondary group-hover:border-primary/40"}`}
+										>
+											{background && (
+												<span className="w-1.5 h-1.5 bg-primary block" />
+											)}
+										</span>
+										<span className="text-[9px] tracking-wider text-muted-foreground/40 uppercase">
+											Background
+										</span>
+									</label>
+									<label className="flex items-center gap-1.5 cursor-pointer select-none group">
+										<input
+											type="checkbox"
+											checked={sameSession}
+											onChange={(e) => setSameSession(e.target.checked)}
+											className="sr-only"
+										/>
+										<span
+											className={`w-3 h-3 border flex items-center justify-center shrink-0 transition-colors ${sameSession ? "border-primary bg-primary/20" : "border-border bg-secondary group-hover:border-primary/40"}`}
+										>
+											{sameSession && (
+												<span className="w-1.5 h-1.5 bg-primary block" />
+											)}
+										</span>
+										<span className="text-[9px] tracking-wider text-muted-foreground/40 uppercase">
+											Same Session
+										</span>
+									</label>
+								</div>
+								<div className="flex gap-2">
+									{(prompt || activeSkill) && (
+										<button
+											type="button"
+											onClick={handleClear}
+											className="px-3 py-1 border border-border text-[10px] tracking-widest text-muted-foreground/50 hover:text-foreground hover:border-border/80 transition-colors uppercase"
+										>
+											CLEAR
+										</button>
+									)}
 									<button
 										type="button"
-										onClick={handleClear}
-										className="px-3 py-1 border border-border text-[10px] tracking-widest text-muted-foreground/50 hover:text-foreground hover:border-border/80 transition-colors uppercase"
+										onClick={handleRun}
+										disabled={!canRun}
+										className="px-3 py-1 bg-primary text-primary-foreground text-[10px] tracking-widest font-bold hover:opacity-90 transition-opacity disabled:opacity-25 uppercase"
 									>
-										CLEAR
+										RUN →
 									</button>
-								)}
-								<button
-									type="button"
-									onClick={handleRun}
-									disabled={!canRun}
-									className="px-3 py-1 bg-primary text-primary-foreground text-[10px] tracking-widest font-bold hover:opacity-90 transition-opacity disabled:opacity-25 uppercase"
-								>
-									RUN →
-								</button>
+								</div>
 							</div>
 						</div>
 					</div>
+
+					{/* Background run error */}
+					{runError && (
+						<div className="px-4 py-2 border-b border-destructive/20 bg-destructive/5 shrink-0">
+							<span className="text-[10px] tracking-wider text-destructive/80">
+								ERR: {runError}
+							</span>
+						</div>
+					)}
+
+					{/* Skills */}
+					{data.skills.length > 0 ? (
+						<div className="p-4 flex flex-col md:flex-row md:flex-wrap gap-x-6 gap-y-5 items-start content-start">
+							{skillGroups.map((g) => (
+								<div
+									key={g.section ?? "__unsectioned__"}
+									className="space-y-2 w-full md:w-auto md:shrink-0"
+								>
+									<div className="flex items-center gap-2">
+										<span className="w-1.5 h-1.5 rounded-full bg-primary/40 shrink-0" />
+										<span className="text-[10px] tracking-widest text-muted-foreground uppercase">
+											{g.section ?? "SKILLS"}
+										</span>
+										<span className="text-[10px] text-muted-foreground/50">
+											{g.skills.length}
+										</span>
+									</div>
+									<div className="grid grid-cols-2 gap-2 md:flex md:flex-wrap md:max-w-xs">
+										{g.skills.map((skill) => (
+											<SkillCard
+												key={skill.file}
+												skill={skill}
+												active={activeSkill?.name === skill.name}
+												onSelect={(s) => handleSkillSelect(s)}
+											/>
+										))}
+									</div>
+								</div>
+							))}
+						</div>
+					) : (
+						<div className="flex-1 flex items-center justify-center">
+							<div className="text-center space-y-2">
+								<div className="text-[10px] tracking-widest text-muted-foreground/30 uppercase">
+									no skills yet
+								</div>
+								<div className="text-[9px] tracking-wider text-muted-foreground/20">
+									drop .md files into your vault skills folder
+								</div>
+							</div>
+						</div>
+					)}
 				</div>
 
-				{/* Background run error */}
-				{runError && (
-					<div className="px-4 py-2 border-b border-destructive/20 bg-destructive/5 shrink-0">
-						<span className="text-[10px] tracking-wider text-destructive/80">
-							ERR: {runError}
-						</span>
-					</div>
-				)}
-
-				{/* Skills */}
-				{data.skills.length > 0 ? (
-					<div className="p-4 space-y-5">
-						{groupSkills(data.skills, data.sectionOrder).map((g) => (
-							<div key={g.section ?? "__unsectioned__"} className="space-y-2">
-								<div className="flex items-center gap-2">
-									<span className="w-1.5 h-1.5 rounded-full bg-primary/40 shrink-0" />
-									<span className="text-[10px] tracking-widest text-muted-foreground uppercase">
-										{g.section ?? "SKILLS"}
-									</span>
-									<span className="text-[10px] text-muted-foreground/50">
-										{g.skills.length}
-									</span>
-								</div>
-								<div className="border border-border bg-card divide-y divide-border">
-									{g.skills.map((skill) => (
-										<SkillRow
-											key={skill.file}
-											skill={skill}
-											active={activeSkill === skill.name}
-											onSelect={handleSkillSelect}
-										/>
-									))}
-								</div>
-							</div>
-						))}
-					</div>
-				) : (
-					<div className="flex-1 flex items-center justify-center">
-						<div className="text-center space-y-2">
-							<div className="text-[10px] tracking-widest text-muted-foreground/30 uppercase">
-								no skills yet
-							</div>
-							<div className="text-[9px] tracking-wider text-muted-foreground/20">
-								drop .md files into your vault skills folder
-							</div>
-						</div>
-					</div>
-				)}
+				{/* Recent runs sidebar — desktop only */}
+				<RecentRunsSidebar
+					runs={recentRuns}
+					weeklyStats={weeklyStats}
+					onRunClick={(id) =>
+						navigate({ to: "/chat", search: { session: id } })
+					}
+					className="hidden md:flex"
+				/>
 			</div>
 		</div>
 	);

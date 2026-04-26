@@ -1,7 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import { useState, useSyncExternalStore } from "react";
-import { StatusDot } from "#/components/nav/StatusDot";
 import { getConfig } from "#/config";
 import type { AggStats, SessionRow } from "#/db";
 import { useWs } from "#/hooks/useWs";
@@ -244,11 +243,6 @@ function StatsPage() {
 
 	return (
 		<div className="flex flex-col h-full">
-			{/* Header */}
-			<div className="flex items-center justify-end px-5 py-3.5 border-b border-border shrink-0">
-				<StatusDot />
-			</div>
-
 			<div className="flex-1 overflow-auto">
 				{/* Live session stat grid */}
 				<div className="grid grid-cols-2 sm:grid-cols-4 divide-x divide-y divide-border border-b border-border">

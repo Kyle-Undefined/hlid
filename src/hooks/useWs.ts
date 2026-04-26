@@ -8,6 +8,7 @@ const SERVER_SNAPSHOT = {
 	wsStatus: "connecting" as const,
 	sessionState: "idle" as const,
 	model: "",
+	hasPendingPermissions: false,
 };
 
 export function useWs(onMessage?: (msg: ServerMessage) => void) {

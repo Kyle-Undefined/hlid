@@ -50,7 +50,10 @@ export const HlidConfigSchema = z.object({
 		effort: "high" as const,
 		permission_mode: "default" as const,
 	})),
-	ui: UiSchema.default(() => ({ enter_to_submit: true })),
+	ui: UiSchema.default(() => ({
+		enter_to_submit: true,
+		hide_skills_index: true,
+	})),
 	status_vocabulary: StatusVocabularySchema.default(() => ({
 		active: ["Active", "In Progress"],
 		planning: ["Planning", "Ideas"],

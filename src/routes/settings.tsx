@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { useState } from "react";
-import { StatusDot } from "#/components/nav/StatusDot";
 import { FolderBrowser } from "#/components/wizard/FolderBrowser";
+import { RelativeFolderField } from "#/components/wizard/RelativeFolderField";
 import type { HlidConfig } from "#/config";
 import { getConfig } from "#/config";
 import { useWs } from "#/hooks/useWs";
@@ -163,7 +163,7 @@ function PathField({
 				value={value}
 				onChange={(e) => onChange(e.target.value)}
 				placeholder="~/vault"
-				className="w-28 sm:w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+				className="w-32 sm:w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
 			/>
 			<button
 				type="button"
@@ -202,69 +202,6 @@ function PathField({
 	);
 }
 
-function RelativeFolderField({
-	value,
-	onChange,
-	basePath,
-	placeholder,
-}: {
-	value: string;
-	onChange: (v: string) => void;
-	basePath: string;
-	placeholder?: string;
-}) {
-	const [open, setOpen] = useState(false);
-
-	return (
-		<div className="flex items-center gap-2">
-			<input
-				type="text"
-				value={value}
-				onChange={(e) => onChange(e.target.value)}
-				placeholder={placeholder}
-				className="w-28 sm:w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
-			/>
-			<button
-				type="button"
-				onClick={() => setOpen(true)}
-				disabled={!basePath}
-				className="text-[10px] tracking-widest px-2 py-1.5 border border-border text-muted-foreground hover:bg-accent hover:text-foreground transition-colors shrink-0 uppercase disabled:opacity-30"
-			>
-				BROWSE
-			</button>
-
-			{open && (
-				<div className="fixed inset-0 z-50 bg-background/90 backdrop-blur-sm flex items-center justify-center p-4">
-					<div className="w-full max-w-md bg-card border border-border shadow-2xl p-5 space-y-4">
-						<div className="flex items-center justify-between">
-							<div className="text-[10px] tracking-widest text-muted-foreground uppercase">
-								PICK FOLDER
-							</div>
-							<button
-								type="button"
-								onClick={() => setOpen(false)}
-								className="text-[10px] tracking-widest text-muted-foreground hover:text-foreground transition-colors uppercase"
-							>
-								CANCEL
-							</button>
-						</div>
-						<FolderBrowser
-							initialPath={basePath}
-							onSelect={(path) => {
-								const rel = path.startsWith(`${basePath}/`)
-									? path.slice(basePath.length + 1)
-									: (path.split("/").pop() ?? path);
-								onChange(rel);
-								setOpen(false);
-							}}
-						/>
-					</div>
-				</div>
-			)}
-		</div>
-	);
-}
-
 function SettingsPage() {
 	const initial = Route.useLoaderData();
 	const { send } = useWs();
@@ -274,6 +211,8 @@ function SettingsPage() {
 	const [inbox, setInbox] = useState(initial.vault.inbox ?? "");
 	const [projects, setProjects] = useState(initial.vault.projects ?? "");
 	const [areas, setAreas] = useState(initial.vault.areas ?? "");
+	const [skills, setSkills] = useState(initial.vault.skills ?? "");
+	const [memory, setMemory] = useState(initial.vault.memory ?? "");
 	const [model, setModel] = useState(initial.claude.model);
 	const [effort, setEffort] = useState(initial.claude.effort);
 	const [maxTurns, setMaxTurns] = useState(
@@ -318,8 +257,8 @@ function SettingsPage() {
 				inbox: inbox || undefined,
 				projects: projects || undefined,
 				areas: areas || undefined,
-				skills: initial.vault.skills,
-				memory: initial.vault.memory,
+				skills: skills || undefined,
+				memory: memory || undefined,
 			},
 			server: {
 				port: Number(port) || 3000,
@@ -380,11 +319,6 @@ function SettingsPage() {
 
 	return (
 		<div className="flex flex-col h-full">
-			{/* Header */}
-			<div className="flex items-center justify-end px-5 py-3.5 border-b border-border shrink-0">
-				<StatusDot />
-			</div>
-
 			<div className="flex-1 overflow-auto p-5 space-y-6">
 				<Section title="Vault">
 					<Field label="Name">
@@ -415,6 +349,28 @@ function SettingsPage() {
 							onChange={setAreas}
 							basePath={vaultPath}
 							placeholder="20 Areas"
+						/>
+					</Field>
+					<Field
+						label="Skills folder"
+						hint="vault skills (relative to vault path)"
+					>
+						<RelativeFolderField
+							value={skills}
+							onChange={setSkills}
+							basePath={vaultPath}
+							placeholder=".claude/skills"
+						/>
+					</Field>
+					<Field
+						label="Memory folder"
+						hint="vault memory files (relative to vault path)"
+					>
+						<RelativeFolderField
+							value={memory}
+							onChange={setMemory}
+							basePath={vaultPath}
+							placeholder=".claude/projects"
 						/>
 					</Field>
 				</Section>

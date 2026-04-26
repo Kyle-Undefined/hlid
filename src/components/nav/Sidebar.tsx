@@ -22,14 +22,16 @@ const SERVER_SNAP = {
 	wsStatus: "connecting" as const,
 	sessionState: "idle" as const,
 	model: "",
+	hasPendingPermissions: false,
 };
 
 export function Sidebar() {
-	const { wsStatus, sessionState } = useSyncExternalStore(
-		wsStore.subscribeStatus,
-		wsStore.getSnapshot,
-		() => SERVER_SNAP,
-	);
+	const { wsStatus, sessionState, hasPendingPermissions } =
+		useSyncExternalStore(
+			wsStore.subscribeStatus,
+			wsStore.getSnapshot,
+			() => SERVER_SNAP,
+		);
 
 	const isRunning = wsStatus === "connected" && sessionState === "running";
 	const isError = wsStatus === "connected" && sessionState === "error";
@@ -39,9 +41,11 @@ export function Sidebar() {
 			? "bg-muted-foreground/25"
 			: isError
 				? "bg-destructive"
-				: isRunning
-					? "bg-primary animate-pulse"
-					: "bg-green-600";
+				: hasPendingPermissions
+					? "bg-yellow-400 animate-pulse"
+					: isRunning
+						? "bg-primary animate-pulse"
+						: "bg-green-600";
 
 	return (
 		<aside className="hidden md:flex flex-col w-44 shrink-0 bg-sidebar border-r border-sidebar-border">
