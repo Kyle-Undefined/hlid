@@ -387,6 +387,7 @@ export type UsageWindow = {
 export type UsageWindows = {
 	fiveHour: UsageWindow;
 	weekly: UsageWindow;
+	weeklySonnet: { utilization: number | null; resetsAt: number | null } | null;
 };
 
 export async function getUsageWindows(): Promise<UsageWindows> {
@@ -453,10 +454,18 @@ export async function getUsageWindows(): Promise<UsageWindows> {
 	const rlWeekly = db
 		.query<SettingsRow, [string]>(`SELECT value FROM settings WHERE key = ?`)
 		.get("rl_weekly");
+	const rlWeeklySonnet = db
+		.query<SettingsRow, [string]>(`SELECT value FROM settings WHERE key = ?`)
+		.get("rl_weekly_sonnet");
 
+	const sonnetRl = parseRl(rlWeeklySonnet);
 	return {
 		fiveHour: { ...fiveHourRow, ...parseRl(rl5hr) },
 		weekly: { ...weeklyRow, ...parseRl(rlWeekly) },
+		weeklySonnet:
+			sonnetRl.utilization !== null
+				? { utilization: sonnetRl.utilization, resetsAt: sonnetRl.resetsAt }
+				: null,
 	};
 }
 

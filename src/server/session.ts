@@ -271,11 +271,8 @@ export class SessionManager {
 						resetsAt: info.resetsAt,
 					});
 					// Persist for usage windows display
-					const resetsAt = info.resetsAt ?? 0;
 					const settingsKey =
-						resetsAt - Date.now() / 1000 <= 5 * 3600 + 300
-							? "rl_5hr"
-							: "rl_weekly";
+						info.rateLimitType === "five_hour" ? "rl_5hr" : "rl_weekly";
 					void db.saveSetting(
 						settingsKey,
 						JSON.stringify({

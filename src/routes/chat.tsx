@@ -1,15 +1,24 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import { Check, ChevronRight, SquarePen, X } from "lucide-react";
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import {
+	useCallback,
+	useEffect,
+	useReducer,
+	useRef,
+	useState,
+	useSyncExternalStore,
+} from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { getConfig } from "#/config";
+import type { UsageWindows } from "#/db";
 import { useWs } from "#/hooks/useWs";
 import * as wsStore from "#/hooks/wsStore";
 import { uid } from "#/lib/utils";
 import type {
 	PermissionRequestMessage,
+	RateLimitMessage,
 	ServerMessage,
 	ToolEventMessage,
 } from "#/server/protocol";
@@ -36,6 +45,21 @@ const getSessionDataFn = createServerFn({ method: "GET" })
 		return res.json() as Promise<EnrichedMessageRow[]>;
 	});
 
+const getUsageWindowsFn = createServerFn({ method: "GET" }).handler(
+	async () => {
+		const { server } = await getConfig();
+		try {
+			const res = await fetch(
+				`http://localhost:${server.port + 1}/db/usage-windows`,
+			);
+			if (!res.ok) return null as UsageWindows | null;
+			return res.json() as Promise<UsageWindows>;
+		} catch {
+			return null as UsageWindows | null;
+		}
+	},
+);
+
 const getCurrentSessionFn = createServerFn({ method: "GET" }).handler(
 	async () => {
 		const { server } = await getConfig();
@@ -60,11 +84,12 @@ export const Route = createFileRoute("/chat")({
 	}),
 	loaderDeps: ({ search: { session } }) => ({ session }),
 	loader: async ({ deps: { session } }) => {
-		const [config, dbSessionId] = await Promise.all([
+		const [config, dbSessionId, usageWindows] = await Promise.all([
 			getConfig(),
 			session ? Promise.resolve(null) : getCurrentSessionFn(),
+			getUsageWindowsFn(),
 		]);
-		return { config, existingSessionId: session ?? dbSessionId };
+		return { config, existingSessionId: session ?? dbSessionId, usageWindows };
 	},
 	component: ChatPage,
 });
@@ -190,6 +215,229 @@ function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 		case "CLEAR":
 			return [];
 	}
+}
+
+// ─── Usage windows ────────────────────────────────────────────────────────────
+
+function fmtResetTime(unixSecs: number): string {
+	const diff = unixSecs - Date.now() / 1000;
+	if (diff <= 0) return "now";
+	const h = Math.floor(diff / 3600);
+	const m = Math.floor((diff % 3600) / 60);
+	if (h > 0) return `${h}h ${m}m`;
+	return `${m}m`;
+}
+
+function UsageWindowSection({
+	label,
+	win,
+	hideStats,
+}: {
+	label: string;
+	win: {
+		queries: number;
+		sessions: number;
+		cost: number;
+		utilization: number | null;
+		resetsAt: number | null;
+	} | null;
+	hideStats?: boolean;
+}) {
+	const utilPct =
+		win?.utilization != null ? Math.min(win.utilization * 100, 100) : null;
+	return (
+		<div className="flex-1 px-2 py-2 md:px-4 md:py-2.5 min-w-0 space-y-1">
+			<div className="flex flex-col md:flex-row md:items-center md:justify-between gap-0.5 md:gap-2">
+				<div className="flex items-center gap-1.5 md:gap-2 min-w-0">
+					<span className="text-[8px] md:text-[9px] tracking-widest text-muted-foreground/40 uppercase truncate">
+						{label}
+					</span>
+					{utilPct != null && (
+						<span className="text-[9px] md:text-[10px] tabular-nums font-medium text-foreground/60 shrink-0">
+							{Math.floor(utilPct)}%
+						</span>
+					)}
+				</div>
+				{win?.resetsAt != null && (
+					<span className="text-[8px] tracking-widest text-muted-foreground/20 truncate">
+						{fmtResetTime(win.resetsAt)}
+					</span>
+				)}
+			</div>
+			<div className="h-1 bg-secondary/40 overflow-hidden">
+				<div
+					className="h-full bg-primary/60 transition-all duration-500"
+					style={{ width: utilPct != null ? `${utilPct}%` : "0%" }}
+				/>
+			</div>
+			{!hideStats && (
+				<div className="flex items-center flex-wrap gap-x-1.5 gap-y-0">
+					<span className="text-[9px] tabular-nums text-foreground/50">
+						${(win?.cost ?? 0).toFixed(2)}
+					</span>
+					<span className="text-muted-foreground/25 hidden md:inline">·</span>
+					<span className="text-[8px] tracking-widest text-muted-foreground/40">
+						<span className="md:hidden">{win?.queries ?? 0}q</span>
+						<span className="hidden md:inline">
+							{win?.queries ?? 0} queries
+						</span>
+					</span>
+					<span className="text-muted-foreground/25 hidden md:inline">·</span>
+					<span className="text-[8px] tracking-widest text-muted-foreground/40">
+						<span className="md:hidden">{win?.sessions ?? 0}s</span>
+						<span className="hidden md:inline">
+							{win?.sessions ?? 0} sessions
+						</span>
+					</span>
+				</div>
+			)}
+		</div>
+	);
+}
+
+function ContextWindowSection({ stats }: { stats: wsStore.LiveStats }) {
+	const hasContext =
+		stats.last_context_used != null && stats.context_window != null;
+	const contextUsed = stats.last_context_used ?? 0;
+	const contextWindow = stats.context_window ?? 0;
+	const utilPct =
+		hasContext && contextWindow > 0
+			? Math.min((contextUsed / contextWindow) * 100, 100)
+			: null;
+
+	return (
+		<div className="flex-1 px-2 py-2 md:px-4 md:py-2.5 min-w-0 space-y-1">
+			<div className="flex flex-col md:flex-row md:items-center md:justify-between gap-0.5 md:gap-2">
+				<div className="flex items-center gap-1.5 md:gap-2 min-w-0">
+					<span className="text-[8px] md:text-[9px] tracking-widest text-muted-foreground/40 uppercase truncate">
+						CONTEXT
+					</span>
+					{utilPct != null && (
+						<span className="text-[9px] md:text-[10px] tabular-nums font-medium text-foreground/60 shrink-0">
+							{Math.floor(utilPct)}%
+						</span>
+					)}
+				</div>
+				{hasContext && (
+					<span className="text-[8px] tracking-widest text-muted-foreground/20 truncate">
+						{contextUsed.toLocaleString()} / {contextWindow.toLocaleString()}
+					</span>
+				)}
+			</div>
+			<div className="h-1 bg-secondary/40 overflow-hidden">
+				<div
+					className={`h-full transition-all duration-500 ${utilPct != null && utilPct > 80 ? "bg-destructive/60" : utilPct != null && utilPct > 60 ? "bg-yellow-600/60" : "bg-primary/60"}`}
+					style={{ width: utilPct != null ? `${utilPct}%` : "0%" }}
+				/>
+			</div>
+			{!hasContext && (
+				<span className="text-[8px] tracking-widest text-muted-foreground/20">
+					no active context
+				</span>
+			)}
+		</div>
+	);
+}
+
+function mergeUsageWindows(
+	fresh: UsageWindows,
+	prev: UsageWindows | null,
+): UsageWindows {
+	if (!prev) return fresh;
+	const keep = (
+		freshWin: UsageWindows["fiveHour"],
+		prevWin: UsageWindows["fiveHour"],
+	) => ({
+		...freshWin,
+		utilization: prevWin.utilization ?? freshWin.utilization,
+		resetsAt:
+			prevWin.utilization != null ? prevWin.resetsAt : freshWin.resetsAt,
+	});
+	return {
+		...fresh,
+		fiveHour: keep(fresh.fiveHour, prev.fiveHour),
+		weekly: keep(fresh.weekly, prev.weekly),
+		weeklySonnet:
+			fresh.weeklySonnet != null
+				? prev.weeklySonnet?.utilization != null
+					? {
+							...fresh.weeklySonnet,
+							utilization: prev.weeklySonnet.utilization,
+							resetsAt: prev.weeklySonnet.resetsAt,
+						}
+					: fresh.weeklySonnet
+				: null,
+	};
+}
+
+function ChatUsageWindowsPanel({
+	initial,
+	liveQueryCount,
+	rateLimit,
+	liveStats,
+}: {
+	initial: UsageWindows | null;
+	liveQueryCount: number;
+	rateLimit: RateLimitMessage | null;
+	liveStats: wsStore.LiveStats;
+}) {
+	const [data, setData] = useState<UsageWindows | null>(initial);
+
+	useEffect(() => {
+		if (liveQueryCount === 0) return;
+		void getUsageWindowsFn().then((d) => {
+			if (d) setData((prev) => mergeUsageWindows(d, prev));
+		});
+	}, [liveQueryCount]);
+
+	useEffect(() => {
+		const id = setInterval(
+			() =>
+				void getUsageWindowsFn().then((d) => {
+					if (d) setData((prev) => mergeUsageWindows(d, prev));
+				}),
+			60_000,
+		);
+		return () => clearInterval(id);
+	}, []);
+
+	useEffect(() => {
+		if (!rateLimit || rateLimit.utilization == null) return;
+		setData((prev) => {
+			if (!prev) return prev;
+			const update = {
+				utilization: rateLimit.utilization ?? null,
+				resetsAt: rateLimit.resetsAt ?? null,
+				rateLimitType: rateLimit.rateLimitType ?? null,
+			};
+			if (rateLimit.rateLimitType === "five_hour")
+				return { ...prev, fiveHour: { ...prev.fiveHour, ...update } };
+			if (rateLimit.rateLimitType === "weekly_sonnet")
+				return {
+					...prev,
+					weeklySonnet: {
+						utilization: update.utilization,
+						resetsAt: update.resetsAt,
+					},
+				};
+			return { ...prev, weekly: { ...prev.weekly, ...update } };
+		});
+	}, [rateLimit]);
+
+	return (
+		<div className="border-b border-border shrink-0 flex divide-x divide-border/40">
+			<UsageWindowSection label="5-HOUR" win={data?.fiveHour ?? null} />
+			<UsageWindowSection label="WEEKLY" win={data?.weekly ?? null} />
+			{data?.weeklySonnet != null && (
+				<UsageWindowSection
+					label="SONNET"
+					win={{ queries: 0, sessions: 0, cost: 0, ...data.weeklySonnet }}
+					hideStats
+				/>
+			)}
+			<ContextWindowSection stats={liveStats} />
+		</div>
+	);
 }
 
 // ─── Components ───────────────────────────────────────────────────────────────
@@ -472,13 +720,23 @@ function AssistantMsg({ message }: { message: AssistantMessage }) {
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 function ChatPage() {
-	const { config, existingSessionId } = Route.useLoaderData();
+	const {
+		config,
+		existingSessionId,
+		usageWindows: initialUsageWindows,
+	} = Route.useLoaderData();
 	const [sessionId, setSessionId] = useState(() => existingSessionId ?? uid());
 	const sessionIdRef = useRef(sessionId);
 	useEffect(() => {
 		sessionIdRef.current = sessionId;
 	}, [sessionId]);
 
+	const liveStats = useSyncExternalStore(
+		wsStore.subscribeStats,
+		wsStore.getLiveStats,
+		wsStore.getLiveStats,
+	);
+	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
 	const [messages, dispatch] = useReducer(reducer, []);
 	const [input, setInput] = useState("");
 	const pendingIdRef = useRef<string | null>(null);
@@ -489,6 +747,11 @@ function ChatPage() {
 
 	const handleWsMessage = useCallback((msg: ServerMessage) => {
 		// Cross-device: show user message from another client if it matches our session
+		if (msg.type === "rate_limit") {
+			setRateLimit(msg);
+			return;
+		}
+
 		if (msg.type === "user_message") {
 			if (msg.session_id === sessionIdRef.current) {
 				dispatch({ type: "ADD_USER", id: uid(), text: msg.text });
@@ -665,6 +928,13 @@ function ChatPage() {
 
 	return (
 		<div className="h-full flex flex-col">
+			<ChatUsageWindowsPanel
+				initial={initialUsageWindows}
+				liveQueryCount={liveStats?.queries ?? 0}
+				rateLimit={rateLimit}
+				liveStats={liveStats}
+			/>
+
 			{/* Messages — inner min-h-full + justify-end anchors messages to bottom */}
 			<div className="flex-1 overflow-auto">
 				<div className="min-h-full flex flex-col justify-end px-5 py-2">

@@ -374,34 +374,13 @@ function WeekBarGraph({ days }: { days: number[] }) {
 function DashboardHeader({
 	stats,
 	agg,
-	rateLimit,
 	isConnected,
 }: {
 	stats: wsStore.LiveStats;
 	agg: AggStats;
-	rateLimit: RateLimitMessage | null;
 	isConnected: boolean;
 }) {
 	const idle = stats.queries === 0;
-	const hasContext =
-		stats.last_context_used != null && stats.context_window != null;
-	const contextUsed = stats.last_context_used ?? 0;
-	const contextWindow = stats.context_window ?? 0;
-	const contextPct =
-		hasContext && contextWindow > 0
-			? ((contextUsed / contextWindow) * 100).toFixed(0)
-			: "0";
-
-	const rlPct =
-		rateLimit?.utilization != null
-			? Math.min(rateLimit.utilization * 100, 100)
-			: null;
-	let rlColor: string | null = null;
-	if (rlPct != null) {
-		if (rlPct > 80) rlColor = "text-destructive/80";
-		else if (rlPct > 60) rlColor = "text-yellow-500/70";
-		else rlColor = "text-green-500/70";
-	}
 
 	return (
 		<div className="border-b border-border shrink-0">
@@ -451,93 +430,41 @@ function DashboardHeader({
 				</div>
 			</div>
 
-			{/* Row 2 — all-time + rate limit */}
-			<div className="grid grid-cols-2 divide-x divide-border border-b border-border">
-				{/* ALL TIME */}
-				<div className="px-5 py-3 flex items-center gap-6">
-					<div>
-						<div className="text-[9px] tracking-widest text-muted-foreground/40 uppercase mb-1">
-							All Time
-						</div>
-						<div className="text-sm font-bold tabular-nums text-foreground/60">
-							${agg.allTime.cost.toFixed(2)}
-						</div>
+			{/* Row 2 — all-time */}
+			<div className="px-5 py-3 flex items-center gap-6">
+				<div>
+					<div className="text-[9px] tracking-widest text-muted-foreground/40 uppercase mb-1">
+						All Time
 					</div>
-					<div className="flex items-center gap-4 text-[9px] tracking-wider text-muted-foreground/40">
-						<span>
-							<span className="text-foreground/50 tabular-nums">
-								{fmt(agg.allTime.queries)}
-							</span>{" "}
-							queries
-						</span>
-						<span>
-							<span className="text-foreground/50 tabular-nums">
-								{fmt(agg.allTime.turns)}
-							</span>{" "}
-							turns
-						</span>
-						<span>
-							<span className="text-foreground/50 tabular-nums">
-								{fmt(
-									agg.allTime.input_tokens +
-										agg.allTime.output_tokens +
-										agg.allTime.cache_read_tokens,
-								)}
-							</span>{" "}
-							tok
-						</span>
+					<div className="text-sm font-bold tabular-nums text-foreground/60">
+						${agg.allTime.cost.toFixed(2)}
 					</div>
 				</div>
-
-				{/* RATE LIMIT */}
-				<div className="px-5 py-3">
-					<div className="text-[9px] tracking-widest text-muted-foreground/40 uppercase mb-1">
-						Rate Limit
-					</div>
-					{rateLimit ? (
-						<div className="flex items-center gap-3">
-							<span
-								className={`text-[10px] tracking-wider font-medium ${rlColor}`}
-							>
-								{rateLimit.status.replace("_", " ").toUpperCase()}
-							</span>
-							{rlPct != null && (
-								<span className="text-[9px] tabular-nums text-muted-foreground/50">
-									{rlPct.toFixed(0)}%
-								</span>
+				<div className="flex items-center gap-4 text-[9px] tracking-wider text-muted-foreground/40">
+					<span>
+						<span className="text-foreground/50 tabular-nums">
+							{fmt(agg.allTime.queries)}
+						</span>{" "}
+						queries
+					</span>
+					<span>
+						<span className="text-foreground/50 tabular-nums">
+							{fmt(agg.allTime.turns)}
+						</span>{" "}
+						turns
+					</span>
+					<span>
+						<span className="text-foreground/50 tabular-nums">
+							{fmt(
+								agg.allTime.input_tokens +
+									agg.allTime.output_tokens +
+									agg.allTime.cache_read_tokens,
 							)}
-							{rateLimit.resetsAt != null && (
-								<span className="text-[9px] tracking-wider text-muted-foreground/40">
-									resets {fmtResetTime(rateLimit.resetsAt)}
-								</span>
-							)}
-							{rateLimit.rateLimitType && (
-								<span className="text-[9px] tracking-wider text-muted-foreground/30 uppercase">
-									{rateLimit.rateLimitType.replace(/_/g, " ")}
-								</span>
-							)}
-						</div>
-					) : (
-						<span className="text-[10px] text-muted-foreground/20">--</span>
-					)}
-					{rlPct != null && <UtilBar value={rlPct} max={100} />}
+						</span>{" "}
+						tok
+					</span>
 				</div>
 			</div>
-
-			{/* Row 3 — context window (conditional) */}
-			{hasContext && (
-				<div className="px-5 py-2.5 flex items-center gap-4">
-					<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase shrink-0">
-						Context
-					</span>
-					<div className="flex-1">
-						<UtilBar value={contextUsed} max={contextWindow} />
-					</div>
-					<span className="text-[9px] tabular-nums text-muted-foreground/40 shrink-0">
-						{fmt(contextUsed)} / {fmt(contextWindow)} ({contextPct}%)
-					</span>
-				</div>
-			)}
 		</div>
 	);
 }
@@ -545,12 +472,10 @@ function DashboardHeader({
 function MobileStatsPanel({
 	stats,
 	agg,
-	rateLimit,
 	isConnected,
 }: {
 	stats: wsStore.LiveStats;
 	agg: AggStats;
-	rateLimit: RateLimitMessage | null;
 	isConnected: boolean;
 }) {
 	const [open, setOpen] = useState(false);
@@ -562,7 +487,7 @@ function MobileStatsPanel({
 				className="w-full flex items-center justify-between px-4 py-2.5 border-b border-border hover:bg-accent/20 transition-colors"
 			>
 				<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase">
-					Stats
+					Costs
 				</span>
 				<span
 					className="text-[9px] text-muted-foreground/30 transition-transform"
@@ -572,15 +497,32 @@ function MobileStatsPanel({
 				</span>
 			</button>
 			{open && (
-				<DashboardHeader
-					stats={stats}
-					agg={agg}
-					rateLimit={rateLimit}
-					isConnected={isConnected}
-				/>
+				<DashboardHeader stats={stats} agg={agg} isConnected={isConnected} />
 			)}
 		</div>
 	);
+}
+
+function mergeUsageWindows(
+	fresh: UsageWindows,
+	prev: UsageWindows | null,
+): UsageWindows {
+	if (!prev) return fresh;
+	const keep = (
+		freshWin: UsageWindows["fiveHour"],
+		prevWin: UsageWindows["fiveHour"],
+	) => ({
+		...freshWin,
+		utilization: prevWin.utilization ?? freshWin.utilization,
+		resetsAt:
+			prevWin.utilization != null ? prevWin.resetsAt : freshWin.resetsAt,
+	});
+	return {
+		...fresh,
+		fiveHour: keep(fresh.fiveHour, prev.fiveHour),
+		weekly: keep(fresh.weekly, prev.weekly),
+		weeklySonnet: prev.weeklySonnet ?? fresh.weeklySonnet ?? null,
+	};
 }
 
 function UsageWindowsPanel({
@@ -596,12 +538,17 @@ function UsageWindowsPanel({
 
 	useEffect(() => {
 		if (liveQueryCount === 0) return;
-		void getUsageWindowsFn().then(setData);
+		void getUsageWindowsFn().then((d) => {
+			if (d) setData((prev) => mergeUsageWindows(d, prev));
+		});
 	}, [liveQueryCount]);
 
 	useEffect(() => {
 		const id = setInterval(
-			() => void getUsageWindowsFn().then(setData),
+			() =>
+				void getUsageWindowsFn().then((d) => {
+					if (d) setData((prev) => mergeUsageWindows(d, prev));
+				}),
 			60_000,
 		);
 		return () => clearInterval(id);
@@ -616,11 +563,17 @@ function UsageWindowsPanel({
 				resetsAt: rateLimit.resetsAt ?? null,
 				rateLimitType: rateLimit.rateLimitType ?? null,
 			};
-			const resetsAt = rateLimit.resetsAt ?? 0;
-			const is5hr = resetsAt - Date.now() / 1000 <= 5 * 3600 + 300;
-			return is5hr
-				? { ...prev, fiveHour: { ...prev.fiveHour, ...update } }
-				: { ...prev, weekly: { ...prev.weekly, ...update } };
+			const is5hr = rateLimit.rateLimitType === "five_hour";
+			if (is5hr) return { ...prev, fiveHour: { ...prev.fiveHour, ...update } };
+			if (rateLimit.rateLimitType === "weekly_sonnet")
+				return {
+					...prev,
+					weeklySonnet: {
+						utilization: update.utilization,
+						resetsAt: update.resetsAt,
+					},
+				};
+			return { ...prev, weekly: { ...prev.weekly, ...update } };
 		});
 	}, [rateLimit]);
 
@@ -628,6 +581,13 @@ function UsageWindowsPanel({
 		<div className="border-b border-border shrink-0 flex divide-x divide-border/40">
 			<UsageWindowSection label="5-HOUR WINDOW" win={data?.fiveHour ?? null} />
 			<UsageWindowSection label="WEEKLY WINDOW" win={data?.weekly ?? null} />
+			{data?.weeklySonnet != null && (
+				<UsageWindowSection
+					label="WEEKLY SONNET"
+					win={{ queries: 0, sessions: 0, cost: 0, ...data.weeklySonnet }}
+					hideStats
+				/>
+			)}
 			<RoutinesWindowSection />
 		</div>
 	);
@@ -636,33 +596,37 @@ function UsageWindowsPanel({
 function UsageWindowSection({
 	label,
 	win,
+	hideStats,
 }: {
 	label: string;
 	win: {
-		tokens: number;
+		queries: number;
 		sessions: number;
 		cost: number;
 		utilization: number | null;
 		resetsAt: number | null;
 	} | null;
+	hideStats?: boolean;
 }) {
-	const tokens = win?.tokens ?? 0;
 	const utilPct =
 		win?.utilization != null ? Math.min(win.utilization * 100, 100) : null;
-	const derivedLimit =
-		utilPct != null && utilPct > 0 && tokens > 0
-			? Math.round(tokens / (utilPct / 100) / 1e5) * 1e5
-			: null;
 
 	return (
-		<div className="flex-1 px-4 py-2.5 min-w-0 space-y-1">
-			<div className="flex items-center justify-between gap-2">
-				<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase shrink-0">
-					{label}
-				</span>
+		<div className="flex-1 px-2 py-2 md:px-4 md:py-2.5 min-w-0 space-y-1">
+			<div className="flex flex-col md:flex-row md:items-center md:justify-between gap-0.5 md:gap-2">
+				<div className="flex items-center gap-1.5 md:gap-2 min-w-0">
+					<span className="text-[8px] md:text-[9px] tracking-widest text-muted-foreground/40 uppercase truncate">
+						{label}
+					</span>
+					{utilPct != null && (
+						<span className="text-[9px] md:text-[10px] tabular-nums font-medium text-foreground/60 shrink-0">
+							{Math.floor(utilPct)}%
+						</span>
+					)}
+				</div>
 				{win?.resetsAt != null && (
-					<span className="text-[9px] tracking-widest text-muted-foreground/25 truncate">
-						RESETS · {fmtResetTime(win.resetsAt)}
+					<span className="text-[8px] tracking-widest text-muted-foreground/20 truncate">
+						{fmtResetTime(win.resetsAt)}
 					</span>
 				)}
 			</div>
@@ -672,21 +636,50 @@ function UsageWindowSection({
 					style={{ width: utilPct != null ? `${utilPct}%` : "0%" }}
 				/>
 			</div>
-			<div className="flex items-center gap-2">
-				<span className="text-[10px] tracking-widest tabular-nums text-foreground/50">
-					{fmt(tokens)}
-					{derivedLimit ? (
-						<span className="text-muted-foreground/30">
-							{" "}
-							/ ~{fmt(derivedLimit)}
+			{!hideStats && (
+				<div className="flex items-center flex-wrap gap-x-1.5 gap-y-0">
+					<span className="text-[9px] tabular-nums text-foreground/50">
+						${(win?.cost ?? 0).toFixed(2)}
+					</span>
+					<span className="text-muted-foreground/25 hidden md:inline">·</span>
+					<span className="text-[8px] tracking-widest text-muted-foreground/40">
+						<span className="md:hidden">{win?.queries ?? 0}q</span>
+						<span className="hidden md:inline">
+							{win?.queries ?? 0} queries
 						</span>
-					) : null}
-				</span>
-				<span className="text-muted-foreground/25">·</span>
-				<span className="text-[9px] tracking-widest text-muted-foreground/40">
-					{win?.sessions ?? 0} sessions
-				</span>
+					</span>
+					<span className="text-muted-foreground/25 hidden md:inline">·</span>
+					<span className="text-[8px] tracking-widest text-muted-foreground/40">
+						<span className="md:hidden">{win?.sessions ?? 0}s</span>
+						<span className="hidden md:inline">
+							{win?.sessions ?? 0} sessions
+						</span>
+					</span>
+				</div>
+			)}
+		</div>
+	);
+}
+
+function MobileContextBand({ stats }: { stats: wsStore.LiveStats }) {
+	const hasContext =
+		stats.last_context_used != null && stats.context_window != null;
+	if (!hasContext) return null;
+	const contextUsed = stats.last_context_used ?? 0;
+	const contextWindow = stats.context_window ?? 0;
+	const contextPct =
+		contextWindow > 0 ? ((contextUsed / contextWindow) * 100).toFixed(0) : "0";
+	return (
+		<div className="md:hidden border-b border-border shrink-0 px-4 py-2 flex items-center gap-3">
+			<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase shrink-0">
+				Context
+			</span>
+			<div className="flex-1">
+				<UtilBar value={contextUsed} max={contextWindow} />
 			</div>
+			<span className="text-[9px] tabular-nums text-muted-foreground/40 shrink-0">
+				{contextPct}%
+			</span>
 		</div>
 	);
 }
@@ -1186,20 +1179,18 @@ function CockpitPage() {
 				)}
 			</div>
 
-			{/* Stats — desktop: right sidebar; mobile: collapsible section */}
-			<MobileStatsPanel
-				stats={liveStats}
-				agg={agg}
-				rateLimit={rateLimit}
-				isConnected={isConnected}
-			/>
-
 			{/* Usage windows */}
 			<UsageWindowsPanel
 				initial={initialUsageWindows}
 				liveQueryCount={liveStats?.queries ?? 0}
 				rateLimit={rateLimit}
 			/>
+
+			{/* Mobile context band — shows context % when active */}
+			<MobileContextBand stats={liveStats} />
+
+			{/* Stats — desktop: right sidebar; mobile: collapsible section */}
+			<MobileStatsPanel stats={liveStats} agg={agg} isConnected={isConnected} />
 
 			{/* MCP panel */}
 			<McpPanel servers={mcpServers} />

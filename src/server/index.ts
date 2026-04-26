@@ -31,7 +31,118 @@ function send(ws: ServerWebSocket<unknown>, msg: ServerMessage): void {
 	ws.send(JSON.stringify(msg));
 }
 
+type WindowMark = { utilization: number; resetsAt: number | null };
+const windowHighMark = new Map<string, WindowMark>();
+
+function captureUtilizationHeaders(headers: Headers): void {
+	const h5 = headers.get("anthropic-ratelimit-unified-5h-utilization");
+	const h7 = headers.get("anthropic-ratelimit-unified-7d-utilization");
+	const hSonnet = headers.get(
+		"anthropic-ratelimit-unified-7d_sonnet-utilization",
+	);
+	const r5 = headers.get("anthropic-ratelimit-unified-5h-reset");
+	const r7 = headers.get("anthropic-ratelimit-unified-7d-reset");
+	const rSonnet = headers.get("anthropic-ratelimit-unified-7d_sonnet-reset");
+
+	function toUnix(s: string | null): number | null {
+		if (!s) return null;
+		const t = parseInt(s, 10);
+		return Number.isFinite(t) ? t : null;
+	}
+
+	function maybeUpdate(
+		dbKey: string,
+		rateLimitType: string,
+		utilization: number,
+		resetsAt: number | null,
+	): void {
+		const current = windowHighMark.get(rateLimitType);
+		const newWindow =
+			!current || (resetsAt !== null && current.resetsAt !== resetsAt);
+		if (!newWindow && utilization <= (current?.utilization ?? 0)) return;
+		windowHighMark.set(rateLimitType, { utilization, resetsAt });
+		void db.saveSetting(
+			dbKey,
+			JSON.stringify({ utilization, resetsAt, rateLimitType }),
+		);
+		broadcast({
+			type: "rate_limit",
+			status: "allowed",
+			rateLimitType,
+			utilization,
+			resetsAt: resetsAt ?? undefined,
+		});
+	}
+
+	if (h5 !== null) {
+		const raw = parseFloat(h5);
+		if (Number.isFinite(raw))
+			maybeUpdate("rl_5hr", "five_hour", raw > 1 ? raw / 100 : raw, toUnix(r5));
+	}
+	if (h7 !== null) {
+		const raw = parseFloat(h7);
+		if (Number.isFinite(raw))
+			maybeUpdate("rl_weekly", "weekly", raw > 1 ? raw / 100 : raw, toUnix(r7));
+	}
+	if (hSonnet !== null) {
+		const raw = parseFloat(hSonnet);
+		if (Number.isFinite(raw))
+			maybeUpdate(
+				"rl_weekly_sonnet",
+				"weekly_sonnet",
+				raw > 1 ? raw / 100 : raw,
+				toUnix(rSonnet),
+			);
+	}
+}
+
 const PORT = config.server.port + 1; // 3001 when TanStack Start is on 3000
+const PROXY_PORT = config.server.port + 2; // 3002
+
+// Transparent proxy — captures unified utilization headers from every API response.
+// Set ANTHROPIC_BASE_URL before any subprocess is spawned so claude CLI routes through it.
+const upstreamBase = (
+	process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com"
+).replace(/\/$/, "");
+
+try {
+	Bun.serve({
+		hostname: "127.0.0.1",
+		port: PROXY_PORT,
+		async fetch(req) {
+			const reqUrl = new URL(req.url);
+			const targetUrl = `${upstreamBase}${reqUrl.pathname}${reqUrl.search}`;
+			const forwardHeaders = new Headers(req.headers);
+			forwardHeaders.delete("host");
+			let upstream: Response;
+			try {
+				upstream = await fetch(targetUrl, {
+					method: req.method,
+					headers: forwardHeaders,
+					body:
+						req.method !== "GET" && req.method !== "HEAD"
+							? req.body
+							: undefined,
+				});
+			} catch {
+				return new Response("upstream error", { status: 502 });
+			}
+			captureUtilizationHeaders(upstream.headers);
+			const responseHeaders = new Headers(upstream.headers);
+			responseHeaders.delete("content-encoding");
+			responseHeaders.delete("content-length");
+			responseHeaders.delete("transfer-encoding");
+			return new Response(upstream.body, {
+				status: upstream.status,
+				headers: responseHeaders,
+			});
+		},
+	});
+	process.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${PROXY_PORT}`;
+	console.log(`Anthropic proxy on :${PROXY_PORT} → ${upstreamBase}`);
+} catch (e) {
+	console.warn("[proxy] failed to start, utilization tracking disabled:", e);
+}
 
 Bun.serve({
 	port: PORT,
@@ -100,6 +211,28 @@ Bun.serve({
 
 		if (url.pathname === "/db/usage-windows") {
 			const windows = await db.getUsageWindows();
+			// Overlay in-memory high-water marks — DB writes are async/void so the mark
+			// is always more current during a session; DB is the cold-start fallback only.
+			const m5 = windowHighMark.get("five_hour");
+			const mW = windowHighMark.get("weekly");
+			const mS = windowHighMark.get("weekly_sonnet");
+			if (m5)
+				windows.fiveHour = {
+					...windows.fiveHour,
+					utilization: m5.utilization,
+					resetsAt: m5.resetsAt,
+				};
+			if (mW)
+				windows.weekly = {
+					...windows.weekly,
+					utilization: mW.utilization,
+					resetsAt: mW.resetsAt,
+				};
+			if (mS)
+				windows.weeklySonnet = {
+					utilization: mS.utilization,
+					resetsAt: mS.resetsAt,
+				};
 			return Response.json(windows);
 		}
 
