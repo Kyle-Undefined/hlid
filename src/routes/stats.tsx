@@ -1,13 +1,14 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import { useState, useSyncExternalStore } from "react";
 import { getConfig } from "#/config";
 import type { AggStats, SessionRow } from "#/db";
 import { useWs } from "#/hooks/useWs";
 import * as wsStore from "#/hooks/wsStore";
+import { uid } from "#/lib/utils";
 import type { RateLimitMessage, ServerMessage } from "#/server/protocol";
 
-// ─── server fn ───────────────────────────────────────────────────────────────
+// ─── server fns ──────────────────────────────────────────────────────────────
 
 const getStatsDataFn = createServerFn({ method: "GET" }).handler(async () => {
 	const { server } = await getConfig();
@@ -27,26 +28,62 @@ const getStatsDataFn = createServerFn({ method: "GET" }).handler(async () => {
 				today: { cost: 0, queries: 0, tokens: 0 },
 				thisMonth: { cost: 0, queries: 0, tokens: 0 },
 			},
-			sessions: [] as SessionRow[],
-		};
+		} as { agg: AggStats };
 	}
-	return res.json() as Promise<{ agg: AggStats; sessions: SessionRow[] }>;
+	const data = (await res.json()) as { agg: AggStats };
+	return { agg: data.agg };
 });
+
+const getSessionsPageFn = createServerFn({ method: "POST" })
+	.inputValidator((data: { page: number; size: number }) => data)
+	.handler(async ({ data }) => {
+		const { server } = await getConfig();
+		const res = await fetch(
+			`http://localhost:${server.port + 1}/db/sessions?page=${data.page}&size=${data.size}`,
+		);
+		if (!res.ok) return { sessions: [] as SessionRow[], total: 0 };
+		return res.json() as Promise<{ sessions: SessionRow[]; total: number }>;
+	});
+
+const deleteSessionFn = createServerFn({ method: "POST" })
+	.inputValidator((data: { id: string }) => data)
+	.handler(async ({ data }) => {
+		const { server } = await getConfig();
+		const res = await fetch(
+			`http://localhost:${server.port + 1}/db/session?id=${data.id}`,
+			{ method: "DELETE" },
+		);
+		return { ok: res.ok };
+	});
+
+const cleanupSessionsFn = createServerFn({ method: "POST" })
+	.inputValidator((data: { days: number }) => data)
+	.handler(async ({ data }) => {
+		const { server } = await getConfig();
+		const res = await fetch(
+			`http://localhost:${server.port + 1}/db/sessions/cleanup?older_than_days=${data.days}`,
+			{ method: "POST" },
+		);
+		if (!res.ok) return { deleted: 0 };
+		return res.json() as Promise<{ deleted: number }>;
+	});
 
 // ─── route ───────────────────────────────────────────────────────────────────
 
+const PAGE_SIZE = 20;
+
 export const Route = createFileRoute("/stats")({
 	loader: async () => {
-		const [config, statsData] = await Promise.all([
-			getConfig(),
+		const [statsData, initialSessions] = await Promise.all([
 			getStatsDataFn(),
+			getSessionsPageFn({ data: { page: 1, size: PAGE_SIZE } }),
 		]);
-		return { config, statsData };
+		return { statsData, initialSessions };
 	},
 	component: StatsPage,
 });
 
-// ─── types ───────────────────────────────────────────────────────────────────
+// ─── constants ───────────────────────────────────────────────────────────────
 
 const EMPTY_STATS: wsStore.LiveStats = {
 	turns: 0,
@@ -112,7 +149,7 @@ function StatCell({
 				{label}
 			</div>
 			<div
-				className={`text-xl font-bold tabular-nums ${dim ? "text-muted-foreground/20" : "text-[#38bdf8]"}`}
+				className={`text-xl font-bold tabular-nums ${dim ? "text-muted-foreground/20" : "text-[var(--data)]"}`}
 			>
 				{value}
 			</div>
@@ -188,29 +225,248 @@ function Row({ label, value }: { label: string; value: string }) {
 	);
 }
 
-function SessionItem({ session }: { session: SessionRow }) {
+function SessionItem({
+	session,
+	onDelete,
+	onNavigate,
+}: {
+	session: SessionRow;
+	onDelete: (id: string) => void;
+	onNavigate: (id: string) => void;
+}) {
+	const [confirming, setConfirming] = useState(false);
+
 	return (
-		<div className="flex items-center gap-3 px-4 py-2.5 border-b border-border last:border-0">
-			<div className="flex-1 min-w-0">
-				<div className="text-[11px] tracking-wider text-foreground/80 truncate">
-					{session.label ?? "—"}
+		<div className="flex items-center gap-2 border-b border-border last:border-0 group hover:bg-accent/20 transition-colors">
+			<button
+				type="button"
+				onClick={() => onNavigate(session.id)}
+				className="flex items-center gap-3 flex-1 min-w-0 px-4 py-2.5 text-left"
+			>
+				<div className="flex-1 min-w-0">
+					<div className="text-[11px] tracking-wider text-foreground/80 truncate">
+						{session.label ?? "—"}
+					</div>
+					<div className="text-[9px] tracking-wider text-muted-foreground/40 mt-0.5">
+						{fmtDate(session.started_at)} · {session.query_count}q
+					</div>
 				</div>
-				<div className="text-[9px] tracking-wider text-muted-foreground/40 mt-0.5">
-					{fmtDate(session.started_at)}
+				<div className="text-right shrink-0">
+					<div className="text-[11px] tabular-nums text-[var(--data)]/70">
+						${(session.total_cost ?? 0).toFixed(4)}
+					</div>
+					<div className="text-[9px] tabular-nums text-muted-foreground/40">
+						{fmt(
+							(session.total_input_tokens ?? 0) +
+								(session.total_output_tokens ?? 0),
+						)}{" "}
+						tok
+					</div>
 				</div>
+			</button>
+			{confirming ? (
+				<div className="flex items-center gap-2 pr-2 shrink-0">
+					<button
+						type="button"
+						onClick={() => onDelete(session.id)}
+						className="text-[9px] tracking-widest text-destructive/60 hover:text-destructive uppercase transition-colors"
+					>
+						delete
+					</button>
+					<button
+						type="button"
+						onClick={() => setConfirming(false)}
+						className="text-[9px] tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 uppercase transition-colors"
+					>
+						cancel
+					</button>
+				</div>
+			) : (
+				<button
+					type="button"
+					onClick={() => setConfirming(true)}
+					className="shrink-0 w-8 h-full flex items-center justify-center text-muted-foreground/20 hover:text-destructive/60 md:opacity-0 md:group-hover:opacity-100 transition-all pr-2"
+					title="Delete session"
+				>
+					×
+				</button>
+			)}
+		</div>
+	);
+}
+
+const BUILD_SKILL_PROMPT = `Create a vault skill for the hlid session management API.
+
+Read \`hlid.config.toml\` to find \`server.port\`. The data API runs on that port + 1.
+
+Endpoints:
+  GET  /db/sessions?page=N&size=N
+  GET  /db/session-messages?session_id=ID
+  GET  /db/recent-sessions?limit=N
+  GET  /db/stats
+  GET  /db/current-session
+  GET  /db/weekly-stats
+  GET  /db/thirty-day-stats
+  GET  /db/usage-windows
+  DELETE /db/session?id=ID
+  POST /db/sessions/cleanup  { older_than_days: N }
+
+Create a skill file in the vault's skills folder (\`vault.skillsFolder\` in config, default \`.claude/skills\`). Add YAML frontmatter with \`name\` and \`description\` fields.
+
+Register the skill in the vault's skills/index.md under an appropriate section using the pipe table format:
+## Section Name
+| \`skill-name\` | one-line description |`;
+
+function SessionsLedger({
+	data,
+	page,
+	totalPages,
+	loading,
+	onPageChange,
+	onDelete,
+	onNavigate,
+	onCleanup,
+	onBuildSkill,
+	connected,
+}: {
+	data: { sessions: SessionRow[]; total: number };
+	page: number;
+	totalPages: number;
+	loading: boolean;
+	onPageChange: (p: number) => void;
+	onDelete: (id: string) => void;
+	onNavigate: (id: string) => void;
+	onCleanup: (days: number) => void;
+	onBuildSkill: () => void;
+	connected: boolean;
+}) {
+	const [headerAction, setHeaderAction] = useState<"cleanup" | "build" | null>(
+		null,
+	);
+
+	return (
+		<div className="border border-border bg-card">
+			<div className="px-4 py-3 border-b border-border flex items-center justify-between">
+				<div className="flex items-center gap-3">
+					<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+						SESSIONS
+					</div>
+					<span className="text-[9px] tabular-nums text-muted-foreground/40">
+						{data.total}
+					</span>
+				</div>
+				{headerAction === null ? (
+					<div className="flex items-center gap-3">
+						{connected && (
+							<button
+								type="button"
+								onClick={() => setHeaderAction("build")}
+								className="text-[8px] tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 uppercase transition-colors"
+							>
+								build skill
+							</button>
+						)}
+						{data.total > 0 && (
+							<button
+								type="button"
+								onClick={() => setHeaderAction("cleanup")}
+								className="text-[8px] tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 uppercase transition-colors"
+							>
+								clean up
+							</button>
+						)}
+					</div>
+				) : headerAction === "cleanup" ? (
+					<div className="flex items-center gap-2">
+						<span className="text-[9px] text-muted-foreground/50">
+							delete older than 30d?
+						</span>
+						<button
+							type="button"
+							onClick={() => {
+								onCleanup(30);
+								setHeaderAction(null);
+							}}
+							className="text-[9px] tracking-widest text-destructive/60 hover:text-destructive uppercase transition-colors"
+						>
+							confirm
+						</button>
+						<button
+							type="button"
+							onClick={() => setHeaderAction(null)}
+							className="text-[9px] tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 uppercase transition-colors"
+						>
+							cancel
+						</button>
+					</div>
+				) : (
+					<div className="flex items-center gap-2">
+						<span className="text-[9px] text-muted-foreground/50">
+							send to Claude?
+						</span>
+						<button
+							type="button"
+							onClick={() => {
+								onBuildSkill();
+								setHeaderAction(null);
+							}}
+							className="text-[9px] tracking-widest text-primary/60 hover:text-primary uppercase transition-colors"
+						>
+							confirm
+						</button>
+						<button
+							type="button"
+							onClick={() => setHeaderAction(null)}
+							className="text-[9px] tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 uppercase transition-colors"
+						>
+							cancel
+						</button>
+					</div>
+				)}
 			</div>
-			<div className="text-right shrink-0">
-				<div className="text-[11px] tabular-nums text-[#38bdf8]/70">
-					${(session.total_cost ?? 0).toFixed(4)}
+
+			{loading ? (
+				<div className="px-4 py-6 text-center text-[9px] tracking-widest text-muted-foreground/50">
+					loading…
 				</div>
-				<div className="text-[9px] tabular-nums text-muted-foreground/40">
-					{fmt(
-						(session.total_input_tokens ?? 0) +
-							(session.total_output_tokens ?? 0),
-					)}{" "}
-					tok
+			) : data.sessions.length === 0 ? (
+				<div className="px-4 py-6 text-center text-[9px] tracking-widest text-muted-foreground/50">
+					no sessions
 				</div>
-			</div>
+			) : (
+				data.sessions.map((s) => (
+					<SessionItem
+						key={s.id}
+						session={s}
+						onDelete={onDelete}
+						onNavigate={onNavigate}
+					/>
+				))
+			)}
+
+			{totalPages > 1 && (
+				<div className="px-4 py-2.5 border-t border-border flex items-center justify-between">
+					<button
+						type="button"
+						disabled={page <= 1 || loading}
+						onClick={() => onPageChange(page - 1)}
+						className="text-[9px] tracking-widest text-muted-foreground/40 hover:text-foreground disabled:opacity-20 uppercase transition-colors"
+					>
+						← prev
+					</button>
+					<span className="text-[9px] tabular-nums text-muted-foreground/30">
+						{page} / {totalPages}
+					</span>
+					<button
+						type="button"
+						disabled={page >= totalPages || loading}
+						onClick={() => onPageChange(page + 1)}
+						className="text-[9px] tracking-widest text-muted-foreground/40 hover:text-foreground disabled:opacity-20 uppercase transition-colors"
+					>
+						next →
+					</button>
+				</div>
+			)}
 		</div>
 	);
 }
@@ -218,16 +474,61 @@ function SessionItem({ session }: { session: SessionRow }) {
 // ─── page ─────────────────────────────────────────────────────────────────────
 
 function StatsPage() {
-	const { config, statsData } = Route.useLoaderData();
+	const { statsData, initialSessions } = Route.useLoaderData();
+	const navigate = useNavigate();
 	const stats = useSyncExternalStore(
 		wsStore.subscribeStats,
 		wsStore.getLiveStats,
 		() => EMPTY_STATS,
 	);
 	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
-	const { wsStatus, model } = useWs((msg: ServerMessage) => {
+	const { wsStatus, model, send } = useWs((msg: ServerMessage) => {
 		if (msg.type === "rate_limit") setRateLimit(msg);
 	});
+
+	const [sessionsPage, setSessionsPage] = useState(1);
+	const [sessionsData, setSessionsData] = useState(initialSessions);
+	const [loadingSessions, setLoadingSessions] = useState(false);
+
+	const totalPages = Math.ceil(sessionsData.total / PAGE_SIZE);
+
+	async function loadPage(page: number) {
+		setLoadingSessions(true);
+		try {
+			const result = await getSessionsPageFn({
+				data: { page, size: PAGE_SIZE },
+			});
+			setSessionsData(result);
+			setSessionsPage(page);
+		} finally {
+			setLoadingSessions(false);
+		}
+	}
+
+	async function handleDeleteSession(id: string) {
+		const prevData = sessionsData;
+		setSessionsData((prev) => ({
+			sessions: prev.sessions.filter((s) => s.id !== id),
+			total: prev.total - 1,
+		}));
+		const result = await deleteSessionFn({ data: { id } });
+		if (!result.ok) {
+			setSessionsData(prevData);
+		}
+	}
+
+	async function handleCleanup(days: number) {
+		await cleanupSessionsFn({ data: { days } });
+		await loadPage(1);
+	}
+
+	function handleBuildSkill() {
+		send({
+			type: "chat",
+			text: BUILD_SKILL_PROMPT,
+			session_id: uid(),
+		});
+	}
 
 	const totalInput =
 		stats.input_tokens + stats.cache_read_tokens + stats.cache_creation_tokens;
@@ -239,7 +540,7 @@ function StatsPage() {
 	const connected = wsStatus === "connected";
 	const idle = stats.queries === 0;
 
-	const { agg, sessions } = statsData;
+	const { agg } = statsData;
 
 	return (
 		<div className="flex flex-col h-full">
@@ -298,7 +599,7 @@ function StatsPage() {
 								<div className="text-[9px] tracking-widest text-muted-foreground/50 uppercase">
 									Today
 								</div>
-								<div className="text-lg font-bold tabular-nums text-[#38bdf8]">
+								<div className="text-lg font-bold tabular-nums text-[var(--data)]">
 									${agg.today.cost.toFixed(4)}
 								</div>
 								<div className="text-[10px] text-muted-foreground/50">
@@ -309,7 +610,7 @@ function StatsPage() {
 								<div className="text-[9px] tracking-widest text-muted-foreground/50 uppercase">
 									This Month
 								</div>
-								<div className="text-lg font-bold tabular-nums text-[#38bdf8]">
+								<div className="text-lg font-bold tabular-nums text-[var(--data)]">
 									${agg.thisMonth.cost.toFixed(4)}
 								</div>
 								<div className="text-[10px] text-muted-foreground/50">
@@ -443,43 +744,21 @@ function StatsPage() {
 						/>
 					</div>
 
-					{/* Recent sessions — from DB */}
-					{sessions.length > 0 && (
-						<div className="border border-border bg-card">
-							<div className="px-4 py-3 border-b border-border">
-								<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
-									RECENT SESSIONS
-								</div>
-							</div>
-							{sessions.map((s) => (
-								<SessionItem key={s.id} session={s} />
-							))}
-						</div>
-					)}
-
-					{/* Config section */}
-					<div className="border border-border bg-card">
-						<div className="px-4 py-3 border-b border-border">
-							<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
-								SESSION
-							</div>
-						</div>
-						<Row label="Vault" value={config.vault.name || "--"} />
-						<Row
-							label="Permissions"
-							value={
-								config.claude.permission_mode === "default"
-									? "ASK"
-									: config.claude.permission_mode === "acceptEdits"
-										? "AUTO EDITS"
-										: "AUTO ALL"
-							}
-						/>
-						<Row
-							label="Server"
-							value={`${config.server.host}:${config.server.port}`}
-						/>
-					</div>
+					{/* Paginated sessions ledger */}
+					<SessionsLedger
+						data={sessionsData}
+						page={sessionsPage}
+						totalPages={totalPages}
+						loading={loadingSessions}
+						onPageChange={loadPage}
+						onDelete={handleDeleteSession}
+						onNavigate={(id) =>
+							navigate({ to: "/chat", search: { session: id } })
+						}
+						onCleanup={handleCleanup}
+						onBuildSkill={handleBuildSkill}
+						connected={connected}
+					/>
 				</div>
 			</div>
 		</div>

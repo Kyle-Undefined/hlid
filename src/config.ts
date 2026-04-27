@@ -12,6 +12,7 @@ const VaultSchema = z.object({
 	areas: z.string().optional(),
 	skills: z.string().optional(),
 	memory: z.string().optional(),
+	outputs: z.string().optional(),
 });
 
 const ServerSchema = z.object({
@@ -32,6 +33,8 @@ const ClaudeSchema = z.object({
 const UiSchema = z.object({
 	enter_to_submit: z.boolean().default(true),
 	hide_skills_index: z.boolean().default(true),
+	theme: z.enum(["dark", "tan"]).default("tan"),
+	mobile_theme: z.enum(["dark", "tan"]).optional(),
 });
 
 const StatusVocabularySchema = z.object({
@@ -53,6 +56,7 @@ export const HlidConfigSchema = z.object({
 	ui: UiSchema.default(() => ({
 		enter_to_submit: true,
 		hide_skills_index: true,
+		theme: "tan" as const,
 	})),
 	status_vocabulary: StatusVocabularySchema.default(() => ({
 		active: ["Active", "In Progress"],

@@ -2,6 +2,8 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import { ChevronDown, ChevronRight, Play } from "lucide-react";
 import { useState } from "react";
+import Markdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { getConfig } from "#/config";
 import { useWs } from "#/hooks/useWs";
 import * as wsStore from "#/hooks/wsStore";
@@ -148,6 +150,88 @@ function ProjectsTab({ initial }: { initial: Project[] }) {
 	);
 }
 
+// ─── shared markdown renderer ──────────────────────────────────────────────
+
+function MarkdownBody({ content }: { content: string }) {
+	return (
+		<Markdown
+			remarkPlugins={[remarkGfm]}
+			components={{
+				p: ({ children }) => <p className="mb-3 last:mb-0">{children}</p>,
+				h1: ({ children }) => (
+					<h1 className="text-base font-bold mb-2 mt-4 first:mt-0">
+						{children}
+					</h1>
+				),
+				h2: ({ children }) => (
+					<h2 className="text-sm font-bold mb-2 mt-4 first:mt-0 tracking-wide">
+						{children}
+					</h2>
+				),
+				h3: ({ children }) => (
+					<h3 className="text-sm font-semibold mb-1.5 mt-3 first:mt-0">
+						{children}
+					</h3>
+				),
+				ul: ({ children }) => (
+					<ul className="list-disc pl-5 mb-3 space-y-0.5">{children}</ul>
+				),
+				ol: ({ children }) => (
+					<ol className="list-decimal pl-5 mb-3 space-y-0.5">{children}</ol>
+				),
+				li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+				code: ({ children, className }) => {
+					const isBlock = className?.startsWith("language-");
+					return isBlock ? (
+						<code className="block bg-secondary/60 border border-border px-3 py-2 text-xs font-mono text-foreground/90 overflow-x-auto whitespace-pre mb-3">
+							{children}
+						</code>
+					) : (
+						<code className="bg-secondary/80 px-1.5 py-0.5 text-[11px] font-mono text-primary/80">
+							{children}
+						</code>
+					);
+				},
+				pre: ({ children }) => <pre className="mb-3">{children}</pre>,
+				blockquote: ({ children }) => (
+					<blockquote className="border-l-2 border-primary/30 pl-3 text-foreground/75 italic mb-3">
+						{children}
+					</blockquote>
+				),
+				a: ({ href, children }) => (
+					<a
+						href={href}
+						className="text-primary underline underline-offset-2 hover:text-primary/80"
+						target="_blank"
+						rel="noreferrer"
+					>
+						{children}
+					</a>
+				),
+				strong: ({ children }) => (
+					<strong className="font-semibold text-foreground">{children}</strong>
+				),
+				hr: () => <hr className="border-border my-3" />,
+				table: ({ children }) => (
+					<div className="overflow-x-auto mb-3">
+						<table className="text-xs w-full border-collapse">{children}</table>
+					</div>
+				),
+				th: ({ children }) => (
+					<th className="border border-border px-3 py-1.5 text-left text-[10px] tracking-wider text-muted-foreground bg-secondary/40">
+						{children}
+					</th>
+				),
+				td: ({ children }) => (
+					<td className="border border-border px-3 py-1.5">{children}</td>
+				),
+			}}
+		>
+			{content}
+		</Markdown>
+	);
+}
+
 // ─── skills ────────────────────────────────────────────────────────────────
 
 function SkillCard({
@@ -157,25 +241,45 @@ function SkillCard({
 	skill: Skill;
 	onRun: (content: string) => void;
 }) {
+	const [open, setOpen] = useState(false);
+
 	return (
-		<div className="flex items-center justify-between gap-4 px-4 py-3">
-			<div className="min-w-0">
-				<div className="text-sm text-foreground">{skill.name}</div>
-				{skill.description && (
-					<div className="text-xs text-muted-foreground mt-0.5 truncate">
-						{skill.description}
+		<div className="divide-y divide-border">
+			<div className="flex items-center gap-3 px-4 py-3">
+				<button
+					type="button"
+					onClick={() => setOpen((v) => !v)}
+					className="flex items-center gap-3 min-w-0 flex-1 text-left hover:opacity-80 transition-opacity"
+				>
+					{open ? (
+						<ChevronDown className="w-3 h-3 text-muted-foreground shrink-0" />
+					) : (
+						<ChevronRight className="w-3 h-3 text-muted-foreground shrink-0" />
+					)}
+					<div className="min-w-0">
+						<div className="text-sm text-foreground">{skill.name}</div>
+						{skill.description && (
+							<div className="text-xs text-muted-foreground mt-0.5 truncate">
+								{skill.description}
+							</div>
+						)}
 					</div>
-				)}
+				</button>
+				<button
+					type="button"
+					onClick={() => onRun(`/${skill.name}`)}
+					title="Run this skill"
+					className="flex items-center gap-1.5 px-2.5 py-1.5 bg-primary/10 border border-primary/20 text-[10px] tracking-widest text-primary hover:bg-primary/20 transition-colors shrink-0 uppercase"
+				>
+					<Play className="w-3 h-3" />
+					RUN
+				</button>
 			</div>
-			<button
-				type="button"
-				onClick={() => onRun(`/${skill.name}`)}
-				title="Run this skill"
-				className="flex items-center gap-1.5 px-2.5 py-1.5 bg-primary/10 border border-primary/20 text-[10px] tracking-widest text-primary hover:bg-primary/20 transition-colors shrink-0 uppercase"
-			>
-				<Play className="w-3 h-3" />
-				RUN
-			</button>
+			{open && skill.content && (
+				<div className="px-6 py-4 bg-secondary/30 text-xs text-foreground/80 leading-relaxed">
+					<MarkdownBody content={skill.content} />
+				</div>
+			)}
 		</div>
 	);
 }
@@ -274,10 +378,8 @@ function MemoryCard({ file }: { file: MemoryFile }) {
 				</div>
 			</button>
 			{open && (
-				<div className="px-4 py-3 bg-secondary/30">
-					<pre className="text-xs text-foreground/70 whitespace-pre-wrap font-mono leading-relaxed max-h-64 overflow-y-auto">
-						{file.content}
-					</pre>
+				<div className="px-6 py-4 bg-secondary/30 text-xs text-foreground/80 leading-relaxed">
+					<MarkdownBody content={file.content} />
 				</div>
 			)}
 		</div>

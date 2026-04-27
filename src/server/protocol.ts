@@ -67,6 +67,16 @@ export type UserMessageEvent = {
 	session_id?: string;
 };
 
+export type McpStatusMessage = {
+	type: "mcp_status";
+	servers: Array<{
+		name: string;
+		status: "connected" | "failed" | "needs-auth" | "pending" | "disabled";
+		scope?: string;
+		error?: string;
+	}>;
+};
+
 export type ServerMessage =
 	| StatusMessage
 	| ChunkMessage
@@ -76,7 +86,8 @@ export type ServerMessage =
 	| RateLimitMessage
 	| ErrorMessage
 	| PermissionRequestMessage
-	| UserMessageEvent;
+	| UserMessageEvent
+	| McpStatusMessage;
 
 // Client → server messages
 export type ClientChatMessage = {

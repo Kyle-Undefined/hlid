@@ -76,6 +76,12 @@ const getCurrentSessionFn = createServerFn({ method: "GET" }).handler(
 	},
 );
 
+const MODEL_LABELS: Record<string, string> = {
+	"claude-opus-4-7": "Opus 4.7",
+	"claude-sonnet-4-6": "Sonnet 4.6",
+	"claude-haiku-4-5-20251001": "Haiku 4.5",
+};
+
 // ─── route ───────────────────────────────────────────────────────────────────
 
 export const Route = createFileRoute("/chat")({
@@ -224,6 +230,7 @@ function fmtResetTime(unixSecs: number): string {
 	if (diff <= 0) return "now";
 	const h = Math.floor(diff / 3600);
 	const m = Math.floor((diff % 3600) / 60);
+	if (h >= 24) return `${Math.floor(h / 24)}d ${h % 24}h`;
 	if (h > 0) return `${h}h ${m}m`;
 	return `${m}m`;
 }
@@ -249,17 +256,17 @@ function UsageWindowSection({
 		<div className="flex-1 px-2 py-2 md:px-4 md:py-2.5 min-w-0 space-y-1">
 			<div className="flex flex-col md:flex-row md:items-center md:justify-between gap-0.5 md:gap-2">
 				<div className="flex items-center gap-1.5 md:gap-2 min-w-0">
-					<span className="text-[8px] md:text-[9px] tracking-widest text-muted-foreground/40 uppercase truncate">
+					<span className="text-[8px] md:text-[9px] tracking-widest text-muted-foreground/40 uppercase truncate leading-none">
 						{label}
 					</span>
 					{utilPct != null && (
-						<span className="text-[9px] md:text-[10px] tabular-nums font-medium text-foreground/60 shrink-0">
+						<span className="text-[9px] md:text-[10px] tabular-nums font-medium text-foreground/60 shrink-0 leading-none">
 							{Math.floor(utilPct)}%
 						</span>
 					)}
 				</div>
 				{win?.resetsAt != null && (
-					<span className="text-[8px] tracking-widest text-muted-foreground/20 truncate">
+					<span className="text-[8px] tracking-widest text-muted-foreground/50 truncate">
 						{fmtResetTime(win.resetsAt)}
 					</span>
 				)}
@@ -309,17 +316,17 @@ function ContextWindowSection({ stats }: { stats: wsStore.LiveStats }) {
 		<div className="flex-1 px-2 py-2 md:px-4 md:py-2.5 min-w-0 space-y-1">
 			<div className="flex flex-col md:flex-row md:items-center md:justify-between gap-0.5 md:gap-2">
 				<div className="flex items-center gap-1.5 md:gap-2 min-w-0">
-					<span className="text-[8px] md:text-[9px] tracking-widest text-muted-foreground/40 uppercase truncate">
+					<span className="text-[8px] md:text-[9px] tracking-widest text-muted-foreground/40 uppercase truncate leading-none">
 						CONTEXT
 					</span>
 					{utilPct != null && (
-						<span className="text-[9px] md:text-[10px] tabular-nums font-medium text-foreground/60 shrink-0">
+						<span className="text-[9px] md:text-[10px] tabular-nums font-medium text-foreground/60 shrink-0 leading-none">
 							{Math.floor(utilPct)}%
 						</span>
 					)}
 				</div>
 				{hasContext && (
-					<span className="text-[8px] tracking-widest text-muted-foreground/20 truncate">
+					<span className="text-[8px] tracking-widest text-muted-foreground/50 truncate">
 						{contextUsed.toLocaleString()} / {contextWindow.toLocaleString()}
 					</span>
 				)}
@@ -427,7 +434,7 @@ function ChatUsageWindowsPanel({
 	return (
 		<div className="border-b border-border shrink-0 flex divide-x divide-border/40">
 			<UsageWindowSection label="5-HOUR" win={data?.fiveHour ?? null} />
-			<UsageWindowSection label="WEEKLY" win={data?.weekly ?? null} />
+			<UsageWindowSection label="7-DAY" win={data?.weekly ?? null} />
 			{data?.weeklySonnet != null && (
 				<UsageWindowSection
 					label="SONNET"
@@ -454,16 +461,16 @@ function ToolBlock({ event }: { event: ToolEventMessage }) {
 				className="flex items-center gap-2.5 w-full px-3 py-1.5 group hover:bg-primary/[0.03] transition-colors text-left"
 			>
 				<ChevronRight
-					className={`w-3 h-3 shrink-0 text-sky-500/70 group-hover:text-sky-400/90 transition-transform duration-150 ${open ? "rotate-90" : ""}`}
+					className={`w-3 h-3 shrink-0 text-primary/50 group-hover:text-primary/80 transition-transform duration-150 ${open ? "rotate-90" : ""}`}
 				/>
-				<span className="text-[11px] font-medium tracking-wider text-sky-400/90 group-hover:text-sky-300 shrink-0">
+				<span className="text-[11px] font-medium tracking-wider text-primary/70 group-hover:text-primary/90 shrink-0">
 					{event.name}
 				</span>
 				<div className="flex gap-1.5 flex-wrap">
 					{pills.map(([k, v]) => (
 						<span
 							key={k}
-							className="text-[9px] tracking-wide border border-sky-800/50 text-sky-400/70 px-1.5 py-0.5 font-mono"
+							className="text-[9px] tracking-wide border border-primary/20 text-primary/50 px-1.5 py-0.5 font-mono"
 						>
 							{k}: {String(v).slice(0, 24)}
 							{String(v).length > 24 ? "…" : ""}
@@ -473,7 +480,7 @@ function ToolBlock({ event }: { event: ToolEventMessage }) {
 			</button>
 			{open && (
 				<div className="mx-3 mb-1.5 border border-[var(--tool-panel-border)] bg-[var(--tool-panel)]">
-					<pre className="text-[11px] text-sky-300/80 font-mono leading-relaxed p-3 overflow-auto max-h-48">
+					<pre className="text-[11px] text-primary/60 font-mono leading-relaxed p-3 overflow-auto max-h-48">
 						{JSON.stringify(event.input, null, 2)}
 					</pre>
 				</div>
@@ -597,7 +604,7 @@ function AssistantMsg({ message }: { message: AssistantMessage }) {
 							<path
 								d="M2 16 C7 6 25 6 30 16 C25 26 7 26 2 16Z"
 								fill="none"
-								stroke="#38bdf8"
+								style={{ stroke: "var(--data)" }}
 								strokeWidth="1.5"
 								strokeLinejoin="round"
 							/>
@@ -606,10 +613,10 @@ function AssistantMsg({ message }: { message: AssistantMessage }) {
 								cy="16"
 								r="5.5"
 								fill="none"
-								stroke="#38bdf8"
+								style={{ stroke: "var(--data)" }}
 								strokeWidth="1.5"
 							/>
-							<circle cx="16" cy="16" r="2" fill="#38bdf8" />
+							<circle cx="16" cy="16" r="2" style={{ fill: "var(--data)" }} />
 						</svg>
 					</div>
 					<div className="flex-1 text-sm text-foreground leading-relaxed pr-4 min-w-0">
@@ -743,6 +750,8 @@ function ChatPage() {
 	// Tracks whether initial history load is done so the isRunning effect doesn't race it
 	const historyReadyRef = useRef(!existingSessionId);
 	const bottomRef = useRef<HTMLDivElement>(null);
+	const scrollRef = useRef<HTMLDivElement>(null);
+	const atBottomRef = useRef(true);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 
 	const handleWsMessage = useCallback((msg: ServerMessage) => {
@@ -866,7 +875,7 @@ function ChatPage() {
 			.catch(console.error);
 	}, [existingSessionId, handleWsMessage]);
 
-	const { wsStatus, sessionState, send } = useWs(handleWsMessage);
+	const { wsStatus, sessionState, model, send } = useWs(handleWsMessage);
 
 	// If session is running but no pending assistant turn exists, add one.
 	// Guard with historyReadyRef so we don't race the initial DB load.
@@ -890,9 +899,22 @@ function ChatPage() {
 		[send],
 	);
 
+	useEffect(() => {
+		const el = scrollRef.current;
+		if (!el) return;
+		const onScroll = () => {
+			atBottomRef.current =
+				el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+		};
+		el.addEventListener("scroll", onScroll, { passive: true });
+		return () => el.removeEventListener("scroll", onScroll);
+	}, []);
+
 	// biome-ignore lint/correctness/useExhaustiveDependencies: messages is trigger
 	useEffect(() => {
-		bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+		if (atBottomRef.current) {
+			bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+		}
 	}, [messages]);
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: input length triggers resize
@@ -906,6 +928,7 @@ function ChatPage() {
 	const handleSend = useCallback(() => {
 		const text = input.trim();
 		if (!text || sessionState === "running") return;
+		atBottomRef.current = true;
 		const id = uid();
 		dispatch({ type: "ADD_USER", id, text });
 		send({ type: "chat", text, session_id: sessionId });
@@ -926,6 +949,11 @@ function ChatPage() {
 	const canSend =
 		input.trim().length > 0 && !isRunning && wsStatus === "connected";
 
+	const modelShort = model
+		? (MODEL_LABELS[model] ??
+			model.replace("claude-", "").replace(/-\d{8}$/, ""))
+		: null;
+
 	return (
 		<div className="h-full flex flex-col">
 			<ChatUsageWindowsPanel
@@ -936,7 +964,7 @@ function ChatPage() {
 			/>
 
 			{/* Messages — inner min-h-full + justify-end anchors messages to bottom */}
-			<div className="flex-1 overflow-auto">
+			<div ref={scrollRef} className="flex-1 overflow-auto">
 				<div className="min-h-full flex flex-col justify-end px-5 py-2">
 					{messages.length === 0 ? (
 						<div className="flex-1 flex flex-col items-center justify-center gap-3">
@@ -973,7 +1001,12 @@ function ChatPage() {
 			</div>
 
 			{/* Input */}
-			<div className="shrink-0 border-t border-border bg-background">
+			<div className="shrink-0 border-t border-border bg-background relative">
+				{modelShort && (
+					<span className="absolute -top-5 right-3 text-[9px] tracking-widest text-muted-foreground/50 border border-border/70 px-2 py-0.5 uppercase bg-background">
+						{modelShort}
+					</span>
+				)}
 				<div className="flex items-center">
 					<span className="text-primary text-sm px-4 py-3 shrink-0 select-none">
 						›

@@ -1,10 +1,127 @@
-import { createFileRoute } from "@tanstack/react-router";
-import { useState } from "react";
+import { createFileRoute, useRouter } from "@tanstack/react-router";
+import { createServerFn } from "@tanstack/react-start";
+import { useCallback, useEffect, useState } from "react";
 import { FolderBrowser } from "#/components/wizard/FolderBrowser";
 import { RelativeFolderField } from "#/components/wizard/RelativeFolderField";
 import type { HlidConfig } from "#/config";
 import { getConfig } from "#/config";
 import { useWs } from "#/hooks/useWs";
+import type { ServerMessage } from "#/server/protocol";
+
+// ─── MCP vault types ─────────────────────────────────────────────────────────
+
+type StdioConfig = { type?: "stdio"; command: string; args?: string[] };
+type RemoteConfig = { type: "http" | "sse"; url: string };
+type VaultMcpConfig = StdioConfig | RemoteConfig;
+type VaultMcpServer = {
+	name: string;
+	config: VaultMcpConfig;
+	disabled: boolean;
+};
+
+// ─── MCP server functions ─────────────────────────────────────────────────────
+
+const getVaultMcpFn = createServerFn({ method: "GET" }).handler(async () => {
+	const { readFileSync } = await import("node:fs");
+	const { join } = await import("node:path");
+	const config = await getConfig();
+	if (!config.vault.path) return { servers: [] as VaultMcpServer[] };
+
+	let mcpMap: Record<string, VaultMcpConfig> = {};
+	try {
+		const raw = readFileSync(join(config.vault.path, ".mcp.json"), "utf8");
+		mcpMap =
+			(JSON.parse(raw) as { mcpServers?: Record<string, VaultMcpConfig> })
+				.mcpServers ?? {};
+	} catch {}
+
+	let disabled: string[] = [];
+	try {
+		const raw = readFileSync(
+			join(config.vault.path, ".claude", "settings.local.json"),
+			"utf8",
+		);
+		disabled =
+			(JSON.parse(raw) as { disabledMcpjsonServers?: string[] })
+				.disabledMcpjsonServers ?? [];
+	} catch {}
+
+	return {
+		servers: Object.entries(mcpMap).map(([name, cfg]) => ({
+			name,
+			config: cfg,
+			disabled: disabled.includes(name),
+		})),
+	};
+});
+
+const writeVaultMcpFn = createServerFn({ method: "POST" })
+	.inputValidator(
+		(raw: unknown) => raw as { servers: Record<string, VaultMcpConfig> },
+	)
+	.handler(async ({ data }) => {
+		const { writeFileSync } = await import("node:fs");
+		const { join } = await import("node:path");
+		const config = await getConfig();
+		if (!config.vault.path) throw new Error("No vault configured");
+		writeFileSync(
+			join(config.vault.path, ".mcp.json"),
+			JSON.stringify({ mcpServers: data.servers }, null, 2),
+			"utf8",
+		);
+	});
+
+const toggleVaultMcpFn = createServerFn({ method: "POST" })
+	.inputValidator((raw: unknown) => raw as { name: string; disabled: boolean })
+	.handler(async ({ data }) => {
+		const { readFileSync, writeFileSync, mkdirSync } = await import("node:fs");
+		const { join } = await import("node:path");
+		const config = await getConfig();
+		if (!config.vault.path) throw new Error("No vault configured");
+
+		const settingsPath = join(
+			config.vault.path,
+			".claude",
+			"settings.local.json",
+		);
+		let settings: Record<string, unknown> = {};
+		try {
+			settings = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<
+				string,
+				unknown
+			>;
+		} catch {}
+
+		const disabledSet = new Set<string>(
+			(settings.disabledMcpjsonServers as string[] | undefined) ?? [],
+		);
+		if (data.disabled) disabledSet.add(data.name);
+		else disabledSet.delete(data.name);
+		settings.disabledMcpjsonServers = [...disabledSet];
+
+		mkdirSync(join(config.vault.path, ".claude"), { recursive: true });
+		writeFileSync(settingsPath, JSON.stringify(settings, null, 2), "utf8");
+	});
+
+const getLiveMcpStatusFn = createServerFn({ method: "GET" }).handler(
+	async () => {
+		const config = await getConfig();
+		try {
+			const res = await fetch(
+				`http://127.0.0.1:${config.server.port + 1}/mcp-status`,
+			);
+			return (await res.json()) as Array<{
+				name: string;
+				status: string;
+				scope?: string;
+			}>;
+		} catch {
+			return [];
+		}
+	},
+);
+
+// ─── route ────────────────────────────────────────────────────────────────────
 
 export const Route = createFileRoute("/settings")({
 	loader: () => getConfig(),
@@ -202,6 +319,298 @@ function PathField({
 	);
 }
 
+// ─── MCP section ─────────────────────────────────────────────────────────────
+
+function McpSection({ vaultPath }: { vaultPath: string }) {
+	const [servers, setServers] = useState<VaultMcpServer[] | null>(null);
+	const [liveStatus, setLiveStatus] = useState<Map<string, string>>(new Map());
+	const [showAdd, setShowAdd] = useState(false);
+	const [addName, setAddName] = useState("");
+	const [addType, setAddType] = useState<"stdio" | "http" | "sse">("stdio");
+	const [addCommand, setAddCommand] = useState("");
+	const [addArgs, setAddArgs] = useState("");
+	const [addUrl, setAddUrl] = useState("");
+	const [opError, setOpError] = useState<string | null>(null);
+
+	const onMessage = useCallback((msg: ServerMessage) => {
+		if (msg.type === "mcp_status") {
+			setLiveStatus(new Map(msg.servers.map((s) => [s.name, s.status])));
+		}
+	}, []);
+	useWs(onMessage);
+
+	useEffect(() => {
+		getVaultMcpFn().then((d) => setServers(d.servers));
+		getLiveMcpStatusFn().then((statuses) =>
+			setLiveStatus(new Map(statuses.map((s) => [s.name, s.status]))),
+		);
+	}, []);
+
+	function statusDot(name: string): string {
+		switch (liveStatus.get(name)) {
+			case "connected":
+				return "bg-green-500/80";
+			case "needs-auth":
+				return "bg-amber-400/70";
+			case "failed":
+				return "bg-red-500/70";
+			case "pending":
+				return "bg-yellow-400/60 animate-pulse";
+			default:
+				return "bg-primary/20";
+		}
+	}
+
+	function typeBadge(cfg: VaultMcpConfig): string {
+		if ("url" in cfg) return cfg.type === "sse" ? "SSE" : "HTTP";
+		return "STDIO";
+	}
+
+	async function handleToggle(name: string, makeDisabled: boolean) {
+		setOpError(null);
+		try {
+			await toggleVaultMcpFn({ data: { name, disabled: makeDisabled } });
+			setServers(
+				(prev) =>
+					prev?.map((s) =>
+						s.name === name ? { ...s, disabled: makeDisabled } : s,
+					) ?? null,
+			);
+		} catch (e) {
+			setOpError(e instanceof Error ? e.message : "Toggle failed");
+		}
+	}
+
+	async function handleRemove(name: string) {
+		if (!servers) return;
+		setOpError(null);
+		try {
+			const next = Object.fromEntries(
+				servers.filter((s) => s.name !== name).map((s) => [s.name, s.config]),
+			);
+			await writeVaultMcpFn({ data: { servers: next } });
+			setServers((prev) => prev?.filter((s) => s.name !== name) ?? null);
+		} catch (e) {
+			setOpError(e instanceof Error ? e.message : "Remove failed");
+		}
+	}
+
+	async function handleAdd() {
+		if (!addName.trim()) {
+			setOpError("Name required");
+			return;
+		}
+		setOpError(null);
+		const current = servers ?? [];
+
+		let cfg: VaultMcpConfig;
+		if (addType === "stdio") {
+			if (!addCommand.trim()) {
+				setOpError("Command required");
+				return;
+			}
+			const args = addArgs
+				.split(",")
+				.map((a) => a.trim())
+				.filter(Boolean);
+			cfg = { command: addCommand.trim(), ...(args.length ? { args } : {}) };
+		} else {
+			if (!addUrl.trim()) {
+				setOpError("URL required");
+				return;
+			}
+			cfg = { type: addType, url: addUrl.trim() };
+		}
+
+		const next = {
+			...Object.fromEntries(current.map((s) => [s.name, s.config])),
+			[addName.trim()]: cfg,
+		};
+
+		try {
+			await writeVaultMcpFn({ data: { servers: next } });
+			setServers([
+				...current,
+				{ name: addName.trim(), config: cfg, disabled: false },
+			]);
+			setShowAdd(false);
+			setAddName("");
+			setAddCommand("");
+			setAddArgs("");
+			setAddUrl("");
+		} catch (e) {
+			setOpError(e instanceof Error ? e.message : "Add failed");
+		}
+	}
+
+	if (!vaultPath) return null;
+
+	return (
+		<Section title="MCP — Vault Servers">
+			{servers === null && (
+				<div className="px-4 py-3 text-xs text-muted-foreground/50">
+					loading…
+				</div>
+			)}
+
+			{servers?.map((s) => (
+				<div key={s.name} className="flex items-center gap-3 px-4 py-3">
+					<span
+						className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDot(s.name)}`}
+					/>
+					<span
+						className={`flex-1 text-sm min-w-0 truncate ${s.disabled ? "text-muted-foreground line-through" : "text-foreground"}`}
+					>
+						{s.name}
+					</span>
+					<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase shrink-0">
+						{typeBadge(s.config)}
+					</span>
+					<label className="flex items-center gap-1.5 cursor-pointer shrink-0">
+						<input
+							type="checkbox"
+							checked={!s.disabled}
+							onChange={() => handleToggle(s.name, !s.disabled)}
+							className="accent-primary w-3.5 h-3.5"
+						/>
+						<span className="text-xs text-muted-foreground">
+							{s.disabled ? "off" : "on"}
+						</span>
+					</label>
+					<button
+						type="button"
+						onClick={() => handleRemove(s.name)}
+						className="text-muted-foreground/30 hover:text-destructive transition-colors text-base shrink-0 leading-none"
+					>
+						×
+					</button>
+				</div>
+			))}
+
+			{servers !== null && !showAdd && (
+				<div className="px-4 py-3">
+					<button
+						type="button"
+						onClick={() => setShowAdd(true)}
+						className="text-[10px] tracking-widest text-muted-foreground/40 hover:text-foreground transition-colors uppercase"
+					>
+						+ ADD SERVER
+					</button>
+				</div>
+			)}
+
+			{showAdd && (
+				<div className="px-4 py-4 space-y-3">
+					<div className="flex gap-3">
+						<div className="flex-1 space-y-1">
+							<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+								Name
+							</div>
+							<input
+								type="text"
+								value={addName}
+								onChange={(e) => setAddName(e.target.value)}
+								placeholder="my-server"
+								className="w-full bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+							/>
+						</div>
+						<div className="space-y-1">
+							<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+								Type
+							</div>
+							<select
+								value={addType}
+								onChange={(e) =>
+									setAddType(e.target.value as "stdio" | "http" | "sse")
+								}
+								className="bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
+							>
+								<option value="stdio">stdio</option>
+								<option value="http">http</option>
+								<option value="sse">sse</option>
+							</select>
+						</div>
+					</div>
+
+					{addType === "stdio" ? (
+						<div className="flex gap-3">
+							<div className="flex-1 space-y-1">
+								<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+									Command
+								</div>
+								<input
+									type="text"
+									value={addCommand}
+									onChange={(e) => setAddCommand(e.target.value)}
+									placeholder="npx"
+									className="w-full bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+								/>
+							</div>
+							<div className="flex-1 space-y-1">
+								<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+									Args (comma-separated)
+								</div>
+								<input
+									type="text"
+									value={addArgs}
+									onChange={(e) => setAddArgs(e.target.value)}
+									placeholder="-y, some-mcp-package"
+									className="w-full bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+								/>
+							</div>
+						</div>
+					) : (
+						<div className="space-y-1">
+							<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+								URL
+							</div>
+							<input
+								type="text"
+								value={addUrl}
+								onChange={(e) => setAddUrl(e.target.value)}
+								placeholder="http://localhost:8080"
+								className="w-full bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+							/>
+						</div>
+					)}
+
+					{opError && <div className="text-xs text-destructive">{opError}</div>}
+
+					<div className="flex gap-2 justify-end pt-1">
+						<button
+							type="button"
+							onClick={() => {
+								setShowAdd(false);
+								setOpError(null);
+							}}
+							className="text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:bg-accent transition-colors uppercase"
+						>
+							CANCEL
+						</button>
+						<button
+							type="button"
+							onClick={handleAdd}
+							className="text-[10px] tracking-widest px-3 py-1.5 border border-primary/40 text-primary hover:bg-primary/10 transition-colors uppercase"
+						>
+							ADD
+						</button>
+					</div>
+				</div>
+			)}
+
+			{opError && !showAdd && (
+				<div className="px-4 py-2 text-xs text-destructive">{opError}</div>
+			)}
+
+			<div className="px-4 py-2 text-[9px] text-muted-foreground/30">
+				changes take effect on next session · cloud MCPs managed on claude.ai
+			</div>
+		</Section>
+	);
+}
+
+// ─── page ─────────────────────────────────────────────────────────────────────
+
 function SettingsPage() {
 	const initial = Route.useLoaderData();
 	const { send } = useWs();
@@ -231,6 +640,10 @@ function SettingsPage() {
 	const [hideSkillsIndex, setHideSkillsIndex] = useState(
 		initial.ui.hide_skills_index,
 	);
+	const [theme, setTheme] = useState<"dark" | "tan">(initial.ui.theme);
+	const [mobileTheme, setMobileTheme] = useState<"dark" | "tan" | "same">(
+		initial.ui.mobile_theme ?? "same",
+	);
 	const [vocabActive, setVocabActive] = useState(
 		initial.status_vocabulary.active.join(", "),
 	);
@@ -244,6 +657,11 @@ function SettingsPage() {
 	const [saving, setSaving] = useState(false);
 	const [saved, setSaved] = useState(false);
 	const [error, setError] = useState<string | null>(null);
+	const router = useRouter();
+
+	useEffect(() => {
+		document.documentElement.setAttribute("data-theme", theme);
+	}, [theme]);
 
 	async function save() {
 		setSaving(true);
@@ -273,6 +691,8 @@ function SettingsPage() {
 			ui: {
 				enter_to_submit: enterToSubmit,
 				hide_skills_index: hideSkillsIndex,
+				theme,
+				mobile_theme: mobileTheme === "same" ? undefined : mobileTheme,
 			},
 			status_vocabulary: {
 				active: vocabActive
@@ -306,6 +726,7 @@ function SettingsPage() {
 			}
 			setSaved(true);
 			setTimeout(() => setSaved(false), 3000);
+			await router.invalidate();
 		} catch (err) {
 			setError(err instanceof Error ? err.message : "Save failed");
 		} finally {
@@ -502,6 +923,96 @@ function SettingsPage() {
 				</Section>
 
 				<Section title="UI">
+					<div className="px-4 py-3 space-y-2">
+						<div className="text-sm text-foreground">Theme</div>
+						<div className="grid grid-cols-2 gap-2">
+							{(
+								[
+									{
+										value: "dark" as const,
+										label: "Dark",
+										desc: "neutral dark, sky blue",
+									},
+									{
+										value: "tan" as const,
+										label: "Tan",
+										desc: "warm parchment, terracotta",
+									},
+								] satisfies {
+									value: "dark" | "tan";
+									label: string;
+									desc: string;
+								}[]
+							).map((opt) => (
+								<button
+									key={opt.value}
+									type="button"
+									onClick={() => setTheme(opt.value)}
+									className={`flex flex-col gap-1 p-3 border text-left transition-colors ${
+										theme === opt.value
+											? "border-primary bg-primary/5"
+											: "border-border hover:bg-accent"
+									}`}
+								>
+									<span className="text-sm font-medium text-foreground">
+										{opt.label}
+									</span>
+									<span className="text-xs text-muted-foreground">
+										{opt.desc}
+									</span>
+								</button>
+							))}
+						</div>
+					</div>
+					<div className="px-4 py-3 space-y-2">
+						<div className="text-sm text-foreground">Mobile theme override</div>
+						<div className="text-xs text-muted-foreground mb-2">
+							override theme on touch devices
+						</div>
+						<div className="grid grid-cols-3 gap-2">
+							{(
+								[
+									{
+										value: "same" as const,
+										label: "Same",
+										desc: "no override",
+									},
+									{
+										value: "dark" as const,
+										label: "Dark",
+										desc: "neutral dark, sky blue",
+									},
+									{
+										value: "tan" as const,
+										label: "Tan",
+										desc: "warm parchment, terracotta",
+									},
+								] satisfies {
+									value: "dark" | "tan" | "same";
+									label: string;
+									desc: string;
+								}[]
+							).map((opt) => (
+								<button
+									key={opt.value}
+									type="button"
+									onClick={() => setMobileTheme(opt.value)}
+									className={`flex flex-col gap-1 p-3 border text-left transition-colors ${
+										mobileTheme === opt.value
+											? "border-primary bg-primary/5"
+											: "border-border hover:bg-accent"
+									}`}
+								>
+									<span className="text-sm font-medium text-foreground">
+										{opt.label}
+									</span>
+									<span className="text-xs text-muted-foreground">
+										{opt.desc}
+									</span>
+								</button>
+							))}
+						</div>
+					</div>
 					<Field
 						label="Enter to submit"
 						hint="desktop only, mobile always uses Enter for newline"
@@ -532,6 +1043,8 @@ function SettingsPage() {
 						</label>
 					</Field>
 				</Section>
+
+				<McpSection vaultPath={vaultPath} />
 
 				<Section title="Session">
 					<Field

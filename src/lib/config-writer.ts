@@ -47,6 +47,9 @@ export function writeConfig(config: HlidConfig): void {
 	lines.push("[ui]");
 	lines.push(`enter_to_submit = ${tomlVal(config.ui.enter_to_submit)}`);
 	lines.push(`hide_skills_index = ${tomlVal(config.ui.hide_skills_index)}`);
+	lines.push(`theme = ${tomlVal(config.ui.theme)}`);
+	if (config.ui.mobile_theme)
+		lines.push(`mobile_theme = ${tomlVal(config.ui.mobile_theme)}`);
 
 	lines.push("");
 	lines.push("[status_vocabulary]");

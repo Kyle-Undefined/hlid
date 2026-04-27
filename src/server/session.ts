@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
+import type { McpServerStatus } from "@anthropic-ai/claude-agent-sdk";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { HlidConfig } from "../config";
 import * as db from "../db";
@@ -45,6 +46,7 @@ export class SessionManager {
 	>();
 	private currentSessionId: string | null = null;
 	private messageSeq = 0;
+	private lastMcpStatus: McpServerStatus[] | null = null;
 
 	constructor(config: HlidConfig) {
 		this.model = config.claude.model;
@@ -74,6 +76,14 @@ export class SessionManager {
 
 	getStatus(): { state: SessionState; model: string } {
 		return { state: this.state, model: this.model };
+	}
+
+	getLastMcpStatus(): McpServerStatus[] | null {
+		return this.lastMcpStatus;
+	}
+
+	restoreMcpStatus(statuses: McpServerStatus[]): void {
+		this.lastMcpStatus = statuses;
 	}
 
 	isRunning(): boolean {
@@ -229,7 +239,26 @@ export class SessionManager {
 				},
 			});
 
+			let mcpChecked = false;
 			for await (const message of conversation) {
+				if (!mcpChecked) {
+					mcpChecked = true;
+					void conversation
+						.mcpServerStatus()
+						.then((statuses) => {
+							this.lastMcpStatus = statuses;
+							emit({
+								type: "mcp_status",
+								servers: statuses.map((s) => ({
+									name: s.name,
+									status: s.status,
+									scope: s.scope,
+									error: s.error,
+								})),
+							});
+						})
+						.catch(() => {});
+				}
 				if (message.type === "assistant") {
 					if (message.message.usage) {
 						const u = message.message.usage;
@@ -270,17 +299,20 @@ export class SessionManager {
 						utilization: info.utilization,
 						resetsAt: info.resetsAt,
 					});
-					// Persist for usage windows display
-					const settingsKey =
-						info.rateLimitType === "five_hour" ? "rl_5hr" : "rl_weekly";
-					void db.saveSetting(
-						settingsKey,
-						JSON.stringify({
-							utilization: info.utilization ?? null,
-							resetsAt: info.resetsAt ?? null,
-							rateLimitType: info.rateLimitType ?? null,
-						}),
-					);
+					// Persist for usage windows display — skip if utilization is null
+					// (proxy server writes the authoritative value from API response headers)
+					if (info.utilization != null) {
+						const settingsKey =
+							info.rateLimitType === "five_hour" ? "rl_5hr" : "rl_weekly";
+						void db.saveSetting(
+							settingsKey,
+							JSON.stringify({
+								utilization: info.utilization,
+								resetsAt: info.resetsAt ?? null,
+								rateLimitType: info.rateLimitType ?? null,
+							}),
+						);
+					}
 				}
 
 				if (message.type === "result") {

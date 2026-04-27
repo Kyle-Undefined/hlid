@@ -158,6 +158,63 @@ function initSchema(db: import("bun:sqlite").Database): void {
 	db.run(
 		`CREATE INDEX IF NOT EXISTS idx_tool_events_session ON tool_events(session_id)`,
 	);
+	db.run(`
+    CREATE TABLE IF NOT EXISTS usage_daily (
+      date TEXT PRIMARY KEY,
+      cost REAL DEFAULT 0,
+      queries INTEGER DEFAULT 0,
+      input_tokens INTEGER DEFAULT 0,
+      output_tokens INTEGER DEFAULT 0,
+      cache_read_tokens INTEGER DEFAULT 0,
+      cache_creation_tokens INTEGER DEFAULT 0,
+      turns INTEGER DEFAULT 0
+    )
+  `);
+	db.run(`
+    CREATE TABLE IF NOT EXISTS usage_queries (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT,
+      timestamp INTEGER NOT NULL,
+      cost REAL DEFAULT 0,
+      input_tokens INTEGER DEFAULT 0,
+      output_tokens INTEGER DEFAULT 0,
+      cache_read_tokens INTEGER DEFAULT 0,
+      cache_creation_tokens INTEGER DEFAULT 0,
+      turns INTEGER DEFAULT 0
+    )
+  `);
+	db.run(
+		`CREATE INDEX IF NOT EXISTS idx_usage_queries_ts ON usage_queries(timestamp)`,
+	);
+
+	const migrated = db
+		.query<{ value: string }, [string]>(
+			`SELECT value FROM settings WHERE key = ?`,
+		)
+		.get("_migrated_usage_tables");
+	if (!migrated) {
+		db.transaction(() => {
+			db.run(`
+        INSERT OR IGNORE INTO usage_daily (date, cost, queries, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, turns)
+        SELECT
+          DATE(timestamp, 'unixepoch', 'localtime'),
+          COALESCE(SUM(cost), 0), COUNT(*),
+          COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
+          COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(cache_creation_tokens), 0),
+          COALESCE(SUM(turns), 0)
+        FROM queries
+        GROUP BY DATE(timestamp, 'unixepoch', 'localtime')
+      `);
+			db.run(`
+        INSERT INTO usage_queries (session_id, timestamp, cost, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, turns)
+        SELECT session_id, timestamp, cost, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, turns
+        FROM queries
+      `);
+			db.run(
+				`INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('_migrated_usage_tables', '1', unixepoch())`,
+			);
+		})();
+	}
 }
 
 export async function createSession(
@@ -215,6 +272,39 @@ export async function recordQuery(
 				sessionId,
 			],
 		);
+		database.run(
+			`INSERT INTO usage_daily (date, cost, queries, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, turns)
+       VALUES (DATE('now', 'localtime'), ?, 1, ?, ?, ?, ?, ?)
+       ON CONFLICT(date) DO UPDATE SET
+         cost = cost + excluded.cost,
+         queries = queries + 1,
+         input_tokens = input_tokens + excluded.input_tokens,
+         output_tokens = output_tokens + excluded.output_tokens,
+         cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+         cache_creation_tokens = cache_creation_tokens + excluded.cache_creation_tokens,
+         turns = turns + excluded.turns`,
+			[
+				data.cost,
+				data.input_tokens,
+				data.output_tokens,
+				data.cache_read_tokens,
+				data.cache_creation_tokens,
+				data.turns,
+			],
+		);
+		database.run(
+			`INSERT INTO usage_queries (session_id, timestamp, cost, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, turns)
+       VALUES (?, unixepoch(), ?, ?, ?, ?, ?, ?)`,
+			[
+				sessionId,
+				data.cost,
+				data.input_tokens,
+				data.output_tokens,
+				data.cache_read_tokens,
+				data.cache_creation_tokens,
+				data.turns,
+			],
+		);
 	})();
 }
 
@@ -256,6 +346,61 @@ export async function getSessionToolEvents(
 		.all(sessionId);
 }
 
+export async function getSessionsPaginated(
+	page: number,
+	pageSize: number,
+): Promise<{ sessions: SessionRow[]; total: number }> {
+	const db = await getDb();
+	const offset = (page - 1) * pageSize;
+	const sessions = db
+		.query<SessionRow, [number, number]>(
+			`SELECT * FROM sessions ORDER BY started_at DESC LIMIT ? OFFSET ?`,
+		)
+		.all(pageSize, offset);
+	const row = db
+		.query<{ total: number }, []>(`SELECT COUNT(*) as total FROM sessions`)
+		.get();
+	return { sessions, total: row?.total ?? 0 };
+}
+
+export async function deleteSession(id: string): Promise<void> {
+	const db = await getDb();
+	db.transaction(() => {
+		db.run(`DELETE FROM tool_events WHERE session_id = ?`, [id]);
+		db.run(`DELETE FROM messages WHERE session_id = ?`, [id]);
+		db.run(`DELETE FROM queries WHERE session_id = ?`, [id]);
+		db.run(`DELETE FROM sessions WHERE id = ?`, [id]);
+	})();
+}
+
+export async function deleteSessionsOlderThan(days: number): Promise<number> {
+	const db = await getDb();
+	const cutoff = Math.floor(Date.now() / 1000) - days * 86400;
+	const row = db
+		.query<{ total: number }, [number]>(
+			`SELECT COUNT(*) as total FROM sessions WHERE started_at < ?`,
+		)
+		.get(cutoff);
+	const total = row?.total ?? 0;
+	if (total === 0) return 0;
+	db.transaction(() => {
+		db.run(
+			`DELETE FROM tool_events WHERE session_id IN (SELECT id FROM sessions WHERE started_at < ?)`,
+			[cutoff],
+		);
+		db.run(
+			`DELETE FROM messages WHERE session_id IN (SELECT id FROM sessions WHERE started_at < ?)`,
+			[cutoff],
+		);
+		db.run(
+			`DELETE FROM queries WHERE session_id IN (SELECT id FROM sessions WHERE started_at < ?)`,
+			[cutoff],
+		);
+		db.run(`DELETE FROM sessions WHERE started_at < ?`, [cutoff]);
+	})();
+	return total;
+}
+
 export async function getRecentSessions(limit = 14): Promise<SessionRow[]> {
 	const db = await getDb();
 	return db
@@ -283,6 +428,16 @@ export async function getCurrentSessionId(): Promise<string | null> {
 			`SELECT value FROM settings WHERE key = ?`,
 		)
 		.get("current_session_id");
+	return row?.value ?? null;
+}
+
+export async function getSetting(key: string): Promise<string | null> {
+	const db = await getDb();
+	const row = db
+		.query<{ value: string }, [string]>(
+			`SELECT value FROM settings WHERE key = ?`,
+		)
+		.get(key);
 	return row?.value ?? null;
 }
 
@@ -336,14 +491,14 @@ export async function getAggregatedStats(): Promise<AggStats> {
 		db
 			.query<AllTimeRow, []>(`
     SELECT
-      COALESCE(SUM(total_cost), 0) as cost,
-      COALESCE(SUM(query_count), 0) as queries,
-      COALESCE(SUM(total_input_tokens), 0) as input_tokens,
-      COALESCE(SUM(total_output_tokens), 0) as output_tokens,
-      COALESCE(SUM(total_cache_read_tokens), 0) as cache_read_tokens,
-      COALESCE(SUM(total_cache_creation_tokens), 0) as cache_creation_tokens,
-      COALESCE(SUM(total_turns), 0) as turns
-    FROM sessions
+      COALESCE(SUM(cost), 0) as cost,
+      COALESCE(SUM(queries), 0) as queries,
+      COALESCE(SUM(input_tokens), 0) as input_tokens,
+      COALESCE(SUM(output_tokens), 0) as output_tokens,
+      COALESCE(SUM(cache_read_tokens), 0) as cache_read_tokens,
+      COALESCE(SUM(cache_creation_tokens), 0) as cache_creation_tokens,
+      COALESCE(SUM(turns), 0) as turns
+    FROM usage_daily
   `)
 			.get() ?? EMPTY_ALLTIME;
 
@@ -351,11 +506,11 @@ export async function getAggregatedStats(): Promise<AggStats> {
 		db
 			.query<WindowRow, []>(`
     SELECT
-      COALESCE(SUM(total_cost), 0) as cost,
-      COALESCE(SUM(query_count), 0) as queries,
-      COALESCE(SUM(total_input_tokens + total_output_tokens), 0) as tokens
-    FROM sessions
-    WHERE started_at >= unixepoch('now', 'start of day')
+      COALESCE(SUM(cost), 0) as cost,
+      COALESCE(SUM(queries), 0) as queries,
+      COALESCE(SUM(input_tokens + output_tokens), 0) as tokens
+    FROM usage_daily
+    WHERE date = DATE('now', 'localtime')
   `)
 			.get() ?? EMPTY_WINDOW;
 
@@ -363,11 +518,11 @@ export async function getAggregatedStats(): Promise<AggStats> {
 		db
 			.query<WindowRow, []>(`
     SELECT
-      COALESCE(SUM(total_cost), 0) as cost,
-      COALESCE(SUM(query_count), 0) as queries,
-      COALESCE(SUM(total_input_tokens + total_output_tokens), 0) as tokens
-    FROM sessions
-    WHERE started_at >= unixepoch('now', 'start of month')
+      COALESCE(SUM(cost), 0) as cost,
+      COALESCE(SUM(queries), 0) as queries,
+      COALESCE(SUM(input_tokens + output_tokens), 0) as tokens
+    FROM usage_daily
+    WHERE date >= DATE('now', 'localtime', 'start of month')
   `)
 			.get() ?? EMPTY_WINDOW;
 
@@ -409,7 +564,7 @@ export async function getUsageWindows(): Promise<UsageWindows> {
         COUNT(DISTINCT session_id) as sessions,
         COUNT(*) as queries,
         COALESCE(SUM(cost), 0) as cost
-      FROM queries
+      FROM usage_queries
       WHERE timestamp >= unixepoch('now', '-5 hours')
     `)
 			.get() ?? EMPTY;
@@ -422,7 +577,7 @@ export async function getUsageWindows(): Promise<UsageWindows> {
         COUNT(DISTINCT session_id) as sessions,
         COUNT(*) as queries,
         COALESCE(SUM(cost), 0) as cost
-      FROM queries
+      FROM usage_queries
       WHERE timestamp >= unixepoch('now', '-7 days')
     `)
 			.get() ?? EMPTY;
@@ -442,7 +597,11 @@ export async function getUsageWindows(): Promise<UsageWindows> {
 	const parseRl = (row: SettingsRow | null): RlState => {
 		if (!row) return NULL_RL;
 		try {
-			return JSON.parse(row.value) as RlState;
+			const parsed = JSON.parse(row.value) as RlState;
+			if (parsed.resetsAt != null && parsed.resetsAt < Date.now() / 1000) {
+				return NULL_RL;
+			}
+			return parsed;
 		} catch {
 			return NULL_RL;
 		}
@@ -483,10 +642,9 @@ export async function getThirtyDayStats(): Promise<ThirtyDayStats> {
 	const db = await getDb();
 	const rows = db
 		.query<{ date: string; count: number }, []>(`
-    SELECT DATE(started_at, 'unixepoch', 'localtime') as date, COUNT(*) as count
-    FROM sessions
-    WHERE started_at >= unixepoch('now', '-29 days', 'start of day')
-    GROUP BY date
+    SELECT date, queries as count
+    FROM usage_daily
+    WHERE date >= DATE('now', 'localtime', '-29 days')
     ORDER BY date ASC
   `)
 		.all();
@@ -509,18 +667,21 @@ export async function getWeeklyStats(): Promise<WeeklyStats> {
 	const startOfWeek = new Date(now);
 	startOfWeek.setHours(0, 0, 0, 0);
 	startOfWeek.setDate(startOfWeek.getDate() - now.getDay());
-	const startUnix = Math.floor(startOfWeek.getTime() / 1000);
+	const y = startOfWeek.getFullYear();
+	const m = String(startOfWeek.getMonth() + 1).padStart(2, "0");
+	const d = String(startOfWeek.getDate()).padStart(2, "0");
+	const startDate = `${y}-${m}-${d}`;
 
 	type Row = { day: number; count: number };
 	const rows = db
-		.query<Row, [number]>(
-			`SELECT CAST(strftime('%w', started_at, 'unixepoch', 'localtime') AS INTEGER) as day,
-			        COUNT(*) as count
-			 FROM sessions
-			 WHERE started_at >= ?
+		.query<Row, [string]>(
+			`SELECT CAST(strftime('%w', date) AS INTEGER) as day,
+			        SUM(queries) as count
+			 FROM usage_daily
+			 WHERE date >= ?
 			 GROUP BY day`,
 		)
-		.all(startUnix);
+		.all(startDate);
 
 	const days = Array(7).fill(0) as number[];
 	let total = 0;

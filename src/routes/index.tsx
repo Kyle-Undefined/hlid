@@ -201,13 +201,61 @@ const getThirtyDayStatsFn = createServerFn({ method: "GET" }).handler(
 	},
 );
 
+type McpServerEntry = {
+	name: string;
+	displayName: string;
+	source: "cloud" | "vault" | "global";
+	status:
+		| "connected"
+		| "failed"
+		| "needs-auth"
+		| "pending"
+		| "disabled"
+		| "unknown";
+};
+
 const getMcpServersFn = createServerFn({ method: "GET" }).handler(async () => {
+	const config = await getConfig();
+	const serverPort = config.server.port + 1;
+
+	// Try live status from the WS server (populated after any session runs)
+	try {
+		const res = await fetch(`http://127.0.0.1:${serverPort}/mcp-status`);
+		if (res.ok) {
+			const servers = (await res.json()) as Array<{
+				name: string;
+				status: string;
+				scope?: string;
+				error?: string;
+			}>;
+			if (servers.length > 0) {
+				return servers.map(
+					(s): McpServerEntry => ({
+						name: s.name,
+						displayName: s.name.startsWith("claude.ai ")
+							? s.name.slice("claude.ai ".length)
+							: s.name,
+						source:
+							s.scope === "claudeai"
+								? "cloud"
+								: s.scope === "project"
+									? "vault"
+									: "global",
+						status: (s.status as McpServerEntry["status"]) ?? "unknown",
+					}),
+				);
+			}
+		}
+	} catch {
+		// Server not running yet; fall through to static file read
+	}
+
+	// Fallback: read static config files (no live status available)
 	const [{ readFileSync }, { join }, { homedir }] = await Promise.all([
 		import("node:fs"),
 		import("node:path"),
 		import("node:os"),
 	]);
-	const config = await getConfig();
 
 	type McpServersMap = Record<string, unknown>;
 
@@ -231,14 +279,24 @@ const getMcpServersFn = createServerFn({ method: "GET" }).handler(async () => {
 	}
 
 	const seen = new Set<string>();
-	const result: { name: string; source: "global" | "vault" }[] = [];
+	const result: McpServerEntry[] = [];
 	for (const name of vaultServers) {
 		seen.add(name);
-		result.push({ name, source: "vault" });
+		result.push({
+			name,
+			displayName: name,
+			source: "vault",
+			status: "unknown",
+		});
 	}
 	for (const name of globalServers) {
 		if (!seen.has(name)) {
-			result.push({ name, source: "global" });
+			result.push({
+				name,
+				displayName: name,
+				source: "global",
+				status: "unknown",
+			});
 		}
 	}
 	return result;
@@ -312,6 +370,7 @@ function fmtResetTime(unixSecs: number): string {
 	if (diff <= 0) return "now";
 	const h = Math.floor(diff / 3600);
 	const m = Math.floor((diff % 3600) / 60);
+	if (h >= 24) return `${Math.floor(h / 24)}d ${h % 24}h`;
 	if (h > 0) return `${h}h ${m}m`;
 	return `${m}m`;
 }
@@ -424,14 +483,12 @@ function DashboardHeader({
 						Session
 					</div>
 					<div
-						className={`text-lg md:text-2xl font-bold tabular-nums leading-none ${idle && !isConnected ? "text-muted-foreground/20" : "text-[#38bdf8]"}`}
+						className={`text-lg md:text-2xl font-bold tabular-nums leading-none ${idle && !isConnected ? "text-muted-foreground/20" : "text-[var(--data)]"}`}
 					>
 						{isConnected || stats.cost > 0 ? `$${stats.cost.toFixed(4)}` : "--"}
 					</div>
 					<div className="mt-1 md:mt-1.5 text-[9px] tracking-wider text-muted-foreground/40">
-						{idle
-							? "idle"
-							: `${stats.queries} quer · ${fmtMs(stats.duration_ms)}`}
+						{idle ? "idle" : `${stats.queries}q · ${fmtMs(stats.duration_ms)}`}
 					</div>
 				</div>
 
@@ -440,11 +497,11 @@ function DashboardHeader({
 					<div className="text-[9px] tracking-widest text-muted-foreground/50 uppercase mb-1 md:mb-2">
 						Today
 					</div>
-					<div className="text-lg md:text-2xl font-bold tabular-nums leading-none text-[#38bdf8]">
+					<div className="text-lg md:text-2xl font-bold tabular-nums leading-none text-[var(--data)]">
 						${agg.today.cost.toFixed(4)}
 					</div>
 					<div className="mt-1 md:mt-1.5 text-[9px] tracking-wider text-muted-foreground/40">
-						{agg.today.queries} quer · {fmt(agg.today.tokens)} tok
+						{agg.today.queries}q · {fmt(agg.today.tokens)} tok
 					</div>
 				</div>
 
@@ -453,11 +510,11 @@ function DashboardHeader({
 					<div className="text-[9px] tracking-widest text-muted-foreground/50 uppercase mb-1 md:mb-2">
 						This Month
 					</div>
-					<div className="text-lg md:text-2xl font-bold tabular-nums leading-none text-[#38bdf8]">
+					<div className="text-lg md:text-2xl font-bold tabular-nums leading-none text-[var(--data)]">
 						${agg.thisMonth.cost.toFixed(4)}
 					</div>
 					<div className="mt-1 md:mt-1.5 text-[9px] tracking-wider text-muted-foreground/40">
-						{agg.thisMonth.queries} quer · {fmt(agg.thisMonth.tokens)} tok
+						{agg.thisMonth.queries}q · {fmt(agg.thisMonth.tokens)} tok
 					</div>
 				</div>
 			</div>
@@ -504,8 +561,18 @@ function DashboardHeader({
 function fmtTickDate(iso: string): string {
 	const [, m, d] = iso.split("-");
 	const month = [
-		"Jan", "Feb", "Mar", "Apr", "May", "Jun",
-		"Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+		"Jan",
+		"Feb",
+		"Mar",
+		"Apr",
+		"May",
+		"Jun",
+		"Jul",
+		"Aug",
+		"Sep",
+		"Oct",
+		"Nov",
+		"Dec",
 	][parseInt(m, 10) - 1];
 	return `${month} ${parseInt(d, 10)}`;
 }
@@ -513,10 +580,10 @@ function fmtTickDate(iso: string): string {
 function ThirtyDayGraph({ data }: { data: ThirtyDayStats }) {
 	const points = useMemo(() => {
 		let running = 0;
-		return data.days.map((d) => ({
-			date: d.date,
-			value: (running += d.count),
-		}));
+		return data.days.map((d) => {
+			running += d.count;
+			return { date: d.date, value: running };
+		});
 	}, [data.days]);
 
 	const isEmpty = data.total === 0;
@@ -535,7 +602,7 @@ function ThirtyDayGraph({ data }: { data: ThirtyDayStats }) {
 				<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase">
 					30D Activity
 				</span>
-				<span className="text-[9px] tabular-nums text-muted-foreground/30">
+				<span className="text-[9px] tabular-nums text-muted-foreground/50">
 					{data.total} sessions
 				</span>
 			</div>
@@ -546,8 +613,16 @@ function ThirtyDayGraph({ data }: { data: ThirtyDayStats }) {
 				>
 					<defs>
 						<linearGradient id="thirtyDayFill" x1="0" y1="0" x2="0" y2="1">
-							<stop offset="0%" stopColor="#38bdf8" stopOpacity={0.2} />
-							<stop offset="100%" stopColor="#38bdf8" stopOpacity={0} />
+							<stop
+								offset="0%"
+								style={{ stopColor: "var(--data)" }}
+								stopOpacity={0.2}
+							/>
+							<stop
+								offset="100%"
+								style={{ stopColor: "var(--data)" }}
+								stopOpacity={0}
+							/>
 						</linearGradient>
 					</defs>
 					<XAxis
@@ -556,7 +631,11 @@ function ThirtyDayGraph({ data }: { data: ThirtyDayStats }) {
 						tickFormatter={fmtTickDate}
 						tickLine={false}
 						axisLine={false}
-						tick={{ fontSize: 8, fill: "rgba(168,168,184,0.3)", fontFamily: "inherit" }}
+						tick={{
+							fontSize: 8,
+							fill: "color-mix(in oklch, var(--muted-foreground) 45%, transparent)",
+							fontFamily: "inherit",
+						}}
 						interval="preserveStartEnd"
 						height={16}
 					/>
@@ -564,7 +643,7 @@ function ThirtyDayGraph({ data }: { data: ThirtyDayStats }) {
 					<Tooltip
 						content={() => null}
 						cursor={{
-							stroke: "#38bdf8",
+							stroke: "var(--data)",
 							strokeWidth: 1,
 							strokeOpacity: 0.2,
 						}}
@@ -572,11 +651,11 @@ function ThirtyDayGraph({ data }: { data: ThirtyDayStats }) {
 					<Area
 						type="monotone"
 						dataKey="value"
-						stroke="#38bdf8"
+						stroke="var(--data)"
 						strokeWidth={1.5}
 						fill="url(#thirtyDayFill)"
 						dot={false}
-						activeDot={{ r: 3, fill: "#38bdf8", strokeWidth: 0 }}
+						activeDot={{ r: 3, fill: "var(--data)", strokeWidth: 0 }}
 						isAnimationActive={false}
 					/>
 				</AreaChart>
@@ -695,11 +774,11 @@ function UsageWindowsPanel({
 
 	return (
 		<div className="border-b border-border shrink-0 flex divide-x divide-border/40">
-			<UsageWindowSection label="5-HOUR WINDOW" win={data?.fiveHour ?? null} />
-			<UsageWindowSection label="WEEKLY WINDOW" win={data?.weekly ?? null} />
+			<UsageWindowSection label="5-HOUR" win={data?.fiveHour ?? null} />
+			<UsageWindowSection label="7-DAY" win={data?.weekly ?? null} />
 			{data?.weeklySonnet != null && (
 				<UsageWindowSection
-					label="WEEKLY SONNET"
+					label="SONNET"
 					win={{ queries: 0, sessions: 0, cost: 0, ...data.weeklySonnet }}
 					hideStats
 				/>
@@ -731,17 +810,17 @@ function UsageWindowSection({
 		<div className="flex-1 px-2 py-2 md:px-4 md:py-2.5 min-w-0 space-y-1">
 			<div className="flex flex-col md:flex-row md:items-center md:justify-between gap-0.5 md:gap-2">
 				<div className="flex items-center gap-1.5 md:gap-2 min-w-0">
-					<span className="text-[8px] md:text-[9px] tracking-widest text-muted-foreground/40 uppercase truncate">
+					<span className="text-[8px] md:text-[9px] tracking-widest text-muted-foreground/40 uppercase truncate leading-none">
 						{label}
 					</span>
 					{utilPct != null && (
-						<span className="text-[9px] md:text-[10px] tabular-nums font-medium text-foreground/60 shrink-0">
+						<span className="text-[9px] md:text-[10px] tabular-nums font-medium text-foreground/60 shrink-0 leading-none">
 							{Math.floor(utilPct)}%
 						</span>
 					)}
 				</div>
 				{win?.resetsAt != null && (
-					<span className="text-[8px] tracking-widest text-muted-foreground/20 truncate">
+					<span className="text-[8px] tracking-widest text-muted-foreground/50 truncate">
 						{fmtResetTime(win.resetsAt)}
 					</span>
 				)}
@@ -806,36 +885,66 @@ function RoutinesWindowSection() {
 			<div className="text-[9px] tracking-widest text-muted-foreground/40 uppercase mb-1.5">
 				ROUTINES
 			</div>
-			<span className="text-[10px] tracking-widest text-muted-foreground/20">
+			<span className="text-[10px] tracking-widest text-muted-foreground/50">
 				no routines configured
 			</span>
 		</div>
 	);
 }
 
-function McpPanel({
-	servers,
-}: {
-	servers: { name: string; source: "global" | "vault" }[];
-}) {
+const MCP_STATUS_ORDER: Record<McpServerEntry["status"], number> = {
+	connected: 0,
+	pending: 1,
+	"needs-auth": 2,
+	failed: 3,
+	disabled: 4,
+	unknown: 5,
+};
+
+function McpPanel({ servers }: { servers: McpServerEntry[] }) {
+	const sorted = [...servers].sort(
+		(a, b) => MCP_STATUS_ORDER[a.status] - MCP_STATUS_ORDER[b.status],
+	);
+
+	function dotClass(status: McpServerEntry["status"]): string {
+		switch (status) {
+			case "connected":
+				return "bg-green-500/80";
+			case "needs-auth":
+				return "bg-amber-400/70";
+			case "failed":
+				return "bg-red-500/70";
+			case "pending":
+				return "bg-yellow-400/60 animate-pulse";
+			default:
+				return "bg-primary/30";
+		}
+	}
+
 	return (
 		<div className="border-b border-border shrink-0 flex items-center gap-3 px-4 py-2 overflow-x-auto">
 			<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase shrink-0">
 				MCP
 			</span>
 			<span className="w-px h-3 bg-border/60 shrink-0" />
-			{servers.length === 0 ? (
-				<span className="text-[9px] tracking-widest text-muted-foreground/20">
+			{sorted.length === 0 ? (
+				<span className="text-[9px] tracking-widest text-muted-foreground/50">
 					no mcp configured
 				</span>
 			) : (
-				servers.map((s) => (
+				sorted.map((s) => (
 					<span key={s.name} className="flex items-center gap-1.5 shrink-0">
 						<span
-							className={`w-1.5 h-1.5 rounded-full shrink-0 ${s.source === "vault" ? "bg-primary/80" : "bg-primary/40"}`}
+							className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotClass(s.status)}`}
 						/>
 						<span className="text-[9px] tracking-widest uppercase text-foreground/50">
-							{s.name}
+							{s.displayName}
+							{s.source === "vault" && (
+								<span className="text-muted-foreground/30 ml-0.5">·v</span>
+							)}
+							{s.source === "global" && (
+								<span className="text-muted-foreground/30 ml-0.5">·g</span>
+							)}
 						</span>
 					</span>
 				))
@@ -857,7 +966,7 @@ function SkillCard({
 		<button
 			type="button"
 			onClick={() => onSelect(skill)}
-			className={`flex flex-col w-full md:w-40 px-3 py-2 border text-left transition-colors ${
+			className={`flex flex-col w-full px-3 py-2 border text-left transition-colors ${
 				active
 					? "border-primary/40 bg-primary/[0.08]"
 					: "border-border bg-card hover:border-primary/20 hover:bg-primary/[0.03]"
@@ -889,7 +998,7 @@ function RunList({
 	if (runs.length === 0) {
 		return (
 			<div className="flex items-center justify-center py-4">
-				<span className="text-[9px] tracking-widest text-muted-foreground/20">
+				<span className="text-[9px] tracking-widest text-muted-foreground/50">
 					no runs yet
 				</span>
 			</div>
@@ -916,6 +1025,21 @@ function RunList({
 				</button>
 			))}
 		</>
+	);
+}
+
+function ViewAllLink() {
+	const navigate = useNavigate();
+	return (
+		<div className="px-4 py-2 border-t border-border/30">
+			<button
+				type="button"
+				onClick={() => navigate({ to: "/stats" })}
+				className="text-[8px] tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 uppercase transition-colors w-full text-left"
+			>
+				view all →
+			</button>
+		</div>
 	);
 }
 
@@ -958,7 +1082,7 @@ function RecentRunsSidebar({
 							Session
 						</div>
 						<div
-							className={`text-sm font-bold tabular-nums leading-none ${idle && !isConnected ? "text-muted-foreground/20" : "text-[#38bdf8]"}`}
+							className={`text-sm font-bold tabular-nums leading-none ${idle && !isConnected ? "text-muted-foreground/20" : "text-[var(--data)]"}`}
 						>
 							{isConnected || stats.cost > 0
 								? `$${stats.cost.toFixed(4)}`
@@ -974,11 +1098,11 @@ function RecentRunsSidebar({
 						<div className="text-[8px] tracking-widest text-muted-foreground/50 uppercase mb-1">
 							Today
 						</div>
-						<div className="text-sm font-bold tabular-nums leading-none text-[#38bdf8]">
+						<div className="text-sm font-bold tabular-nums leading-none text-[var(--data)]">
 							${agg.today.cost.toFixed(4)}
 						</div>
 						<div className="mt-1 text-[8px] tracking-wider text-muted-foreground/40">
-							{agg.today.queries}q · {fmt(agg.today.tokens)}t
+							{agg.today.queries}q · {fmt(agg.today.tokens)} tok
 						</div>
 					</div>
 				</div>
@@ -987,11 +1111,11 @@ function RecentRunsSidebar({
 						<div className="text-[8px] tracking-widest text-muted-foreground/50 uppercase mb-1">
 							Month
 						</div>
-						<div className="text-sm font-bold tabular-nums leading-none text-[#38bdf8]">
+						<div className="text-sm font-bold tabular-nums leading-none text-[var(--data)]">
 							${agg.thisMonth.cost.toFixed(4)}
 						</div>
 						<div className="mt-1 text-[8px] tracking-wider text-muted-foreground/40">
-							{agg.thisMonth.queries}q · {fmt(agg.thisMonth.tokens)}t
+							{agg.thisMonth.queries}q · {fmt(agg.thisMonth.tokens)} tok
 						</div>
 					</div>
 					<div className="px-3 py-2.5">
@@ -1023,13 +1147,14 @@ function RecentRunsSidebar({
 					Recent Runs
 				</span>
 				{runs.length > 0 && (
-					<span className="text-[9px] tabular-nums text-muted-foreground/25">
+					<span className="text-[9px] tabular-nums text-muted-foreground/50">
 						{runs.length}
 					</span>
 				)}
 			</div>
 			<div className="overflow-auto">
 				<RunList runs={runs} onRunClick={onRunClick} />
+				<ViewAllLink />
 			</div>
 			<div className="border-t border-border">
 				<div className="px-4 py-2.5 border-b border-border/40 flex items-center justify-between">
@@ -1088,6 +1213,7 @@ function MobileRunsPanel({
 			{runsOpen && (
 				<div className="border-b border-border/40">
 					<RunList runs={runs} onRunClick={onRunClick} />
+					<ViewAllLink />
 				</div>
 			)}
 
@@ -1129,7 +1255,7 @@ function CockpitPage() {
 		data,
 		recentSessions,
 		statsData,
-		mcpServers,
+		mcpServers: initialMcpServers,
 		weeklyStats: initialWeeklyStats,
 		usageWindows: initialUsageWindows,
 		thirtyDayStats: initialThirtyDayStats,
@@ -1156,6 +1282,8 @@ function CockpitPage() {
 	const [thirtyDayStats, setThirtyDayStats] = useState<ThirtyDayStats>(
 		initialThirtyDayStats,
 	);
+	const [mcpServers, setMcpServers] =
+		useState<McpServerEntry[]>(initialMcpServers);
 	const [runError, setRunError] = useState<string | null>(null);
 	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -1174,6 +1302,23 @@ function CockpitPage() {
 			}
 			if (msg.type === "rate_limit") {
 				setRateLimit(msg);
+			}
+			if (msg.type === "mcp_status") {
+				setMcpServers(
+					msg.servers.map((s) => ({
+						name: s.name,
+						displayName: s.name.startsWith("claude.ai ")
+							? s.name.slice("claude.ai ".length)
+							: s.name,
+						source:
+							s.scope === "claudeai"
+								? "cloud"
+								: s.scope === "project"
+									? "vault"
+									: "global",
+						status: (s.status as McpServerEntry["status"]) ?? "unknown",
+					})),
+				);
 			}
 		},
 	);
@@ -1360,6 +1505,19 @@ function CockpitPage() {
 										if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
 											e.preventDefault();
 											handleRun();
+											return;
+										}
+										const isTouch =
+											typeof window !== "undefined" &&
+											window.matchMedia("(pointer: coarse)").matches;
+										if (
+											e.key === "Enter" &&
+											!e.shiftKey &&
+											!isTouch &&
+											config.ui.enter_to_submit
+										) {
+											e.preventDefault();
+											handleRun();
 										}
 									}}
 									rows={3}
@@ -1447,11 +1605,11 @@ function CockpitPage() {
 
 					{/* Skills */}
 					{data.skills.length > 0 ? (
-						<div className="p-4 flex flex-col md:flex-row md:flex-wrap gap-x-6 gap-y-5 items-start content-start">
+						<div className="p-4 grid grid-cols-1 md:grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-x-4 gap-y-5">
 							{skillGroups.map((g) => (
 								<div
 									key={g.section ?? "__unsectioned__"}
-									className="space-y-2 w-full md:w-auto md:shrink-0"
+									className="space-y-2 min-w-0"
 								>
 									<div className="flex items-center gap-2">
 										<span className="w-1.5 h-1.5 rounded-full bg-primary/40 shrink-0" />
@@ -1462,7 +1620,7 @@ function CockpitPage() {
 											{g.skills.length}
 										</span>
 									</div>
-									<div className="grid grid-cols-2 gap-2 md:flex md:flex-wrap md:max-w-xs">
+									<div className="grid grid-cols-2 gap-2 md:grid-cols-1">
 										{g.skills.map((skill) => (
 											<SkillCard
 												key={skill.file}

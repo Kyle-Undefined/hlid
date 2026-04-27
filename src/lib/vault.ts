@@ -186,7 +186,7 @@ export function scanSkills(
 				file,
 				name,
 				description,
-				content: raw,
+				content,
 				filePath: fullPath,
 				section,
 			};
@@ -228,7 +228,8 @@ function walkMd(dir: string, root: string): MemoryFile[] {
 				results = results.concat(walkMd(full, root));
 			} else if (entry.endsWith(".md")) {
 				const rel = relative(root, full);
-				const content = readFileSync(full, "utf-8");
+				const raw = readFileSync(full, "utf-8");
+				const { content } = matter(raw);
 				results.push({ path: rel, name: entry.replace(/\.md$/, ""), content });
 			}
 		} catch {

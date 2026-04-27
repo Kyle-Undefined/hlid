@@ -7,17 +7,17 @@
 :root,
 .dark {
   --background: #0f0f12;
-  --foreground: #d0d0d8;
+  --foreground: #dcdce4;
   --card: #151518;
-  --card-foreground: #d0d0d8;
+  --card-foreground: #dcdce4;
   --popover: #131316;
-  --popover-foreground: #d0d0d8;
+  --popover-foreground: #dcdce4;
   --primary: #38bdf8;
   --primary-foreground: #071825;
   --secondary: #1a1a1e;
-  --secondary-foreground: #d0d0d8;
+  --secondary-foreground: #dcdce4;
   --muted: #1a1a1e;
-  --muted-foreground: #a8a8b8;
+  --muted-foreground: #ccccda;
   --accent: #1e1e22;
   --accent-foreground: #d0d0d8;
   --destructive: #963232;
@@ -27,7 +27,7 @@
   --ring: #38bdf8;
   --radius: 0px;
   --sidebar: #0b0b0e;
-  --sidebar-foreground: #d0d0d8;
+  --sidebar-foreground: #dcdce4;
   --sidebar-primary: #38bdf8;
   --sidebar-primary-foreground: #071825;
   --sidebar-accent: #1a1a1e;
@@ -39,6 +39,39 @@
   /* tool block expanded panel — sky blue inset */
   --tool-panel: #071825;
   --tool-panel-border: #1a5580;
+}
+
+html[data-theme="tan"] {
+  --background: #f0e6d3;
+  --foreground: #2a1a10;
+  --card: #e9ddc8;
+  --card-foreground: #2a1a10;
+  --popover: #eddfd0;
+  --popover-foreground: #2a1a10;
+  --primary: #8c4e35;
+  --primary-foreground: #f5ede0;
+  --secondary: #e4d4ba;
+  --secondary-foreground: #2a1a10;
+  --muted: #e4d4ba;
+  --muted-foreground: #4d2c18;
+  --accent: #ddd0b5;
+  --accent-foreground: #2a1a10;
+  --destructive: #b03a2e;
+  --destructive-foreground: #f5ede0;
+  --border: #c5a882;
+  --input: #e4d4ba;
+  --ring: #8c4e35;
+  --sidebar: #e6d5bc;
+  --sidebar-foreground: #2a1a10;
+  --sidebar-primary: #8c4e35;
+  --sidebar-primary-foreground: #f5ede0;
+  --sidebar-accent: #ddd0b5;
+  --sidebar-accent-foreground: #2a1a10;
+  --sidebar-border: #b89870;
+  --sidebar-ring: #8c4e35;
+  --data: #8c4e35;
+  --tool-panel: #e9ddc8;
+  --tool-panel-border: #c5a882;
 }
 
 @theme inline {
@@ -80,9 +113,12 @@
 }
 
 html,
-body,
-#app {
-  min-height: 100%;
+body {
+  height: 100%;
+}
+
+body {
+  overflow: hidden;
 }
 
 body {
@@ -135,6 +171,18 @@ body {
 
 *::-webkit-scrollbar-thumb:hover {
   background: #38bdf8;
+}
+
+html[data-theme="tan"] * {
+  scrollbar-color: #c5a882 transparent;
+}
+
+html[data-theme="tan"] *::-webkit-scrollbar-thumb {
+  background: #c5a882;
+}
+
+html[data-theme="tan"] *::-webkit-scrollbar-thumb:hover {
+  background: #8c4e35;
 }
 
 input[type="number"]::-webkit-inner-spin-button,

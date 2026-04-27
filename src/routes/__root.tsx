@@ -1,10 +1,16 @@
 import { createRootRoute, HeadContent, Scripts } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
 import { BottomNav } from "#/components/nav/BottomNav";
 import { Sidebar } from "#/components/nav/Sidebar";
+import { getConfig } from "#/config";
 
 import appCss from "../styles.css?url";
 
 export const Route = createRootRoute({
+	loader: async () => {
+		const config = await getConfig();
+		return { theme: config.ui.theme, mobileTheme: config.ui.mobile_theme };
+	},
 	head: () => ({
 		meta: [
 			{ charSet: "utf-8" },
@@ -30,8 +36,22 @@ export const Route = createRootRoute({
 });
 
 function RootDocument({ children }: { children: React.ReactNode }) {
+	const { theme, mobileTheme } = Route.useLoaderData();
+	const [activeTheme, setActiveTheme] = useState(theme);
+
+	useEffect(() => {
+		if (!mobileTheme) return;
+		const isMobile = window.matchMedia("(pointer: coarse)").matches;
+		if (isMobile) setActiveTheme(mobileTheme);
+	}, [mobileTheme]);
+
+	useEffect(() => {
+		document.documentElement.setAttribute("data-theme", activeTheme);
+		document.documentElement.className = activeTheme;
+	}, [activeTheme]);
+
 	return (
-		<html lang="en" className="dark">
+		<html lang="en" data-theme={activeTheme} className={activeTheme}>
 			<head>
 				<HeadContent />
 			</head>

@@ -1,3 +1,4 @@
+import type { McpServerStatus } from "@anthropic-ai/claude-agent-sdk";
 import type { ServerWebSocket } from "bun";
 import * as db from "../db";
 import { loadConfig } from "./config";
@@ -19,6 +20,8 @@ function broadcast(msg: ServerMessage): void {
 	if (msg.type === "error") lastSessionError = msg.message;
 	else if (msg.type === "status" && msg.state === "running")
 		lastSessionError = null;
+	else if (msg.type === "mcp_status")
+		void db.saveSetting("mcp_status_cache", JSON.stringify(msg.servers));
 	const data = JSON.stringify(msg);
 	for (const ws of clients) {
 		// Permission requests only go to the session owner
@@ -27,12 +30,46 @@ function broadcast(msg: ServerMessage): void {
 	}
 }
 
+// Restore cached MCP status from previous run so cockpit shows servers before first query
+void db.getSetting("mcp_status_cache").then((cached) => {
+	if (!cached) return;
+	try {
+		session.restoreMcpStatus(JSON.parse(cached) as McpServerStatus[]);
+	} catch {}
+});
+
 function send(ws: ServerWebSocket<unknown>, msg: ServerMessage): void {
 	ws.send(JSON.stringify(msg));
 }
 
 type WindowMark = { utilization: number; resetsAt: number | null };
 const windowHighMark = new Map<string, WindowMark>();
+
+// Seed from DB so cold-start page loads show usage windows without waiting for an API call
+void (async () => {
+	const entries: [string, string][] = [
+		["rl_5hr", "five_hour"],
+		["rl_weekly", "weekly"],
+		["rl_weekly_sonnet", "weekly_sonnet"],
+	];
+	for (const [dbKey, type] of entries) {
+		const raw = await db.getSetting(dbKey);
+		if (!raw) continue;
+		try {
+			const parsed = JSON.parse(raw) as {
+				utilization: number | null;
+				resetsAt: number | null;
+			};
+			if (parsed.utilization == null) continue;
+			if (parsed.resetsAt != null && parsed.resetsAt < Date.now() / 1000)
+				continue;
+			windowHighMark.set(type, {
+				utilization: parsed.utilization,
+				resetsAt: parsed.resetsAt ?? null,
+			});
+		} catch {}
+	}
+})();
 
 function captureUtilizationHeaders(headers: Headers): void {
 	const h5 = headers.get("anthropic-ratelimit-unified-5h-utilization");
@@ -160,6 +197,43 @@ Bun.serve({
 			return Response.json(session.getStatus());
 		}
 
+		if (url.pathname === "/db/sessions" && req.method === "GET") {
+			const pageParam = parseInt(url.searchParams.get("page") ?? "1", 10);
+			const sizeParam = parseInt(url.searchParams.get("size") ?? "20", 10);
+			const page = Number.isNaN(pageParam) || pageParam < 1 ? 1 : pageParam;
+			const size =
+				Number.isNaN(sizeParam) || sizeParam < 1 || sizeParam > 100
+					? 20
+					: sizeParam;
+			const result = await db.getSessionsPaginated(page, size);
+			return Response.json(result);
+		}
+
+		if (url.pathname === "/db/session" && req.method === "DELETE") {
+			const clientIP = server.requestIP(req);
+			if (clientIP?.address !== "127.0.0.1" && clientIP?.address !== "::1") {
+				return new Response("Forbidden", { status: 403 });
+			}
+			const id = url.searchParams.get("id");
+			if (!id) return new Response("Missing id", { status: 400 });
+			await db.deleteSession(id);
+			return Response.json({ ok: true });
+		}
+
+		if (url.pathname === "/db/sessions/cleanup" && req.method === "POST") {
+			const clientIP = server.requestIP(req);
+			if (clientIP?.address !== "127.0.0.1" && clientIP?.address !== "::1") {
+				return new Response("Forbidden", { status: 403 });
+			}
+			const daysParam = parseInt(
+				url.searchParams.get("older_than_days") ?? "30",
+				10,
+			);
+			const days = Number.isNaN(daysParam) || daysParam <= 0 ? 30 : daysParam;
+			const deleted = await db.deleteSessionsOlderThan(days);
+			return Response.json({ deleted });
+		}
+
 		if (url.pathname === "/db/recent-sessions") {
 			const limitParam = parseInt(url.searchParams.get("limit") ?? "14", 10);
 			const limit =
@@ -241,6 +315,10 @@ Bun.serve({
 			return Response.json(windows);
 		}
 
+		if (url.pathname === "/mcp-status" && req.method === "GET") {
+			return Response.json(session.getLastMcpStatus() ?? []);
+		}
+
 		return new Response("Not found", { status: 404 });
 	},
 
@@ -260,6 +338,19 @@ Bun.serve({
 				for (const req of session.getPendingPermissionRequests()) {
 					send(ws, req);
 				}
+			}
+			// Send cached MCP status so clients see server list immediately on connect
+			const cachedMcp = session.getLastMcpStatus();
+			if (cachedMcp) {
+				send(ws, {
+					type: "mcp_status",
+					servers: cachedMcp.map((s) => ({
+						name: s.name,
+						status: s.status,
+						scope: s.scope,
+						error: s.error,
+					})),
+				});
 			}
 		},
 
