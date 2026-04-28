@@ -554,7 +554,11 @@ Bun.serve({
 			if (msg.type === "permission_response") {
 				// Only the client that started the session can respond to permissions
 				if (ws !== sessionOwnerWs) return;
-				session.handlePermissionResponse(msg.id, msg.approved);
+				session.handlePermissionResponse(
+					msg.id,
+					msg.approved,
+					msg.sessionAllow,
+				);
 				return;
 			}
 
@@ -587,6 +591,7 @@ Bun.serve({
 						msg.session_id,
 						msg.skill_context,
 						msg.attachments,
+						msg.agent_cwd,
 					);
 				} catch (err) {
 					const message = err instanceof Error ? err.message : "Unknown error";

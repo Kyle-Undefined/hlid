@@ -103,6 +103,7 @@ export type ClientChatMessage = {
 	text: string;
 	session_id?: string;
 	skill_context?: string;
+	agent_cwd?: string;
 	attachments?: ChatAttachment[];
 };
 
@@ -122,6 +123,7 @@ export type ClientPermissionResponseMessage = {
 	type: "permission_response";
 	id: string;
 	approved: boolean;
+	sessionAllow?: boolean;
 };
 
 export type ClientSyncMessage = {

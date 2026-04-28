@@ -1043,7 +1043,7 @@ function ViewAllLink() {
 		<div className="px-4 py-2 border-t border-border/30">
 			<button
 				type="button"
-				onClick={() => navigate({ to: "/stats" })}
+				onClick={() => navigate({ to: "/stats", search: { page: 1 } })}
 				className="text-[8px] tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 uppercase transition-colors w-full text-left"
 			>
 				view all →
@@ -1427,7 +1427,10 @@ function CockpitPage() {
 		setActiveSkill(null);
 		if (!background) {
 			wsStore.setPendingPrompt(text);
-			navigate({ to: "/chat", search: { session: sessionId } });
+			navigate({
+				to: "/chat",
+				search: { session: sessionId, agent: undefined },
+			});
 		}
 	}
 
@@ -1481,7 +1484,9 @@ function CockpitPage() {
 			<MobileRunsPanel
 				runs={recentRuns}
 				weeklyStats={weeklyStats}
-				onRunClick={(id) => navigate({ to: "/chat", search: { session: id } })}
+				onRunClick={(id) =>
+					navigate({ to: "/chat", search: { session: id, agent: undefined } })
+				}
 			/>
 
 			{/* Two-column body */}
@@ -1665,7 +1670,7 @@ function CockpitPage() {
 					runs={recentRuns}
 					weeklyStats={weeklyStats}
 					onRunClick={(id) =>
-						navigate({ to: "/chat", search: { session: id } })
+						navigate({ to: "/chat", search: { session: id, agent: undefined } })
 					}
 					stats={liveStats}
 					agg={agg}

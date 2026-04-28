@@ -168,6 +168,7 @@ export function FirstRunWizard({ onComplete }: Props) {
 					done: ["Done", "Complete", "Archived"],
 				},
 				attachments: DEFAULT_ATTACHMENTS_CONFIG,
+				agents: [],
 			};
 
 			const res = await fetch("/api/config", {

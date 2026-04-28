@@ -327,6 +327,40 @@ function initSchema(db: import("bun:sqlite").Database): void {
 			);
 		})();
 	}
+
+	const agentCwdMigrated = db
+		.query<{ value: string }, [string]>(
+			`SELECT value FROM settings WHERE key = ?`,
+		)
+		.get("_migrated_sessions_agent_cwd");
+	if (!agentCwdMigrated) {
+		db.transaction(() => {
+			db.run(`ALTER TABLE sessions ADD COLUMN agent_cwd TEXT`);
+			db.run(
+				`INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('_migrated_sessions_agent_cwd', '1', unixepoch())`,
+			);
+		})();
+	}
+}
+
+export async function setSessionAgentCwd(
+	sessionId: string,
+	cwd: string,
+): Promise<void> {
+	const db = await getDb();
+	db.run(`UPDATE sessions SET agent_cwd = ? WHERE id = ?`, [cwd, sessionId]);
+}
+
+export async function getSessionAgentCwd(
+	sessionId: string,
+): Promise<string | null> {
+	const db = await getDb();
+	const row = db
+		.query<{ agent_cwd: string | null }, [string]>(
+			`SELECT agent_cwd FROM sessions WHERE id = ?`,
+		)
+		.get(sessionId);
+	return row?.agent_cwd ?? null;
 }
 
 export async function createSession(

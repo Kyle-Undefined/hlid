@@ -63,5 +63,12 @@ export function writeConfig(config: HlidConfig): void {
 	lines.push(`planning = ${tomlVal(config.status_vocabulary.planning)}`);
 	lines.push(`done = ${tomlVal(config.status_vocabulary.done)}`);
 
+	for (const agent of config.agents ?? []) {
+		lines.push("");
+		lines.push("[[agents]]");
+		lines.push(`path = ${tomlVal(agent.path)}`);
+		if (agent.name) lines.push(`name = ${tomlVal(agent.name)}`);
+	}
+
 	writeFileSync(CONFIG_PATH, `${lines.join("\n")}\n`, "utf-8");
 }

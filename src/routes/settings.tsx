@@ -1401,6 +1401,7 @@ function SettingsPage() {
 					.filter(Boolean),
 			},
 			attachments: initial.attachments ?? DEFAULT_ATTACHMENTS_CONFIG,
+			agents: initial.agents ?? [],
 		};
 
 		try {

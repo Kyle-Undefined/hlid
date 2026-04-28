@@ -39,7 +39,10 @@ export class SessionManager {
 	private permissionMode: PermissionMode;
 	private claudeExecutable: string | undefined;
 	private history: Turn[] = [];
-	private pendingPermissions = new Map<string, (approved: boolean) => void>();
+	private pendingPermissions = new Map<
+		string,
+		(approved: boolean, sessionAllow?: boolean) => void
+	>();
 	private pendingPermissionData = new Map<
 		string,
 		Extract<ServerMessage, { type: "permission_request" }>
@@ -48,6 +51,7 @@ export class SessionManager {
 	private messageSeq = 0;
 	private lastMcpStatus: McpServerStatus[] | null = null;
 	private probing = false;
+	private agentCwd: string | undefined;
 
 	constructor(config: HlidConfig) {
 		this.model = config.claude.model;
@@ -148,8 +152,12 @@ export class SessionManager {
 		for (const resolve of resolvers) resolve(false);
 	}
 
-	handlePermissionResponse(id: string, approved: boolean): void {
-		this.pendingPermissions.get(id)?.(approved);
+	handlePermissionResponse(
+		id: string,
+		approved: boolean,
+		sessionAllow?: boolean,
+	): void {
+		this.pendingPermissions.get(id)?.(approved, sessionAllow);
 		this.pendingPermissionData.delete(id);
 	}
 
@@ -164,6 +172,7 @@ export class SessionManager {
 		this.history = [];
 		this.currentSessionId = null;
 		this.messageSeq = 0;
+		this.agentCwd = undefined;
 		db.clearCurrentSessionId().catch((e) => {
 			console.error("[db] clearCurrentSessionId failed:", e);
 			void db.appendLog("error", "db", "clearCurrentSessionId failed", {
@@ -188,6 +197,7 @@ export class SessionManager {
 		sessionId?: string,
 		skillContext?: string,
 		attachments?: ChatAttachment[],
+		agentCwd?: string,
 	): Promise<void> {
 		if (this.state === "running") {
 			emit({ type: "error", message: "Session already running" });
@@ -201,13 +211,18 @@ export class SessionManager {
 
 		// Switch or initialize session context
 		if (sessionId && sessionId !== this.currentSessionId) {
-			const prior = await db.getSessionMessages(sessionId);
+			this.agentCwd = undefined;
+			const [prior, savedAgentCwd] = await Promise.all([
+				db.getSessionMessages(sessionId),
+				db.getSessionAgentCwd(sessionId),
+			]);
 			this.history = prior.map((m) => ({
 				role: m.role as "user" | "assistant",
 				text: m.text,
 			}));
 			this.messageSeq = prior.length;
 			this.currentSessionId = sessionId;
+			if (savedAgentCwd) this.agentCwd = savedAgentCwd;
 			db.setCurrentSessionId(sessionId).catch((e) => {
 				console.error("[db] setCurrentSessionId failed:", e);
 				void db.appendLog("error", "db", "setCurrentSessionId failed", {
@@ -216,10 +231,26 @@ export class SessionManager {
 			});
 		}
 
+		// Set agent cwd for first message of an agent session (in-memory only here)
+		if (agentCwd && !this.agentCwd) {
+			const resolvedAgent = resolve(agentCwd);
+			const vaultRoot = resolve(this.vaultPath);
+			if (resolvedAgent.startsWith(`${vaultRoot}/`)) {
+				this.agentCwd = resolvedAgent;
+			}
+		}
+
 		// Create DB session record for new sessions
 		if (sessionId && this.messageSeq === 0) {
 			const label = userMessage.slice(0, 40).toUpperCase();
 			await db.createSession(sessionId, label, this.model);
+		}
+
+		// Persist agent cwd after session row exists
+		if (this.agentCwd && sessionId && agentCwd) {
+			db.setSessionAgentCwd(sessionId, this.agentCwd).catch((e) => {
+				console.error("[session] setSessionAgentCwd failed:", e);
+			});
 		}
 
 		let assistantText = "";
@@ -272,10 +303,14 @@ export class SessionManager {
 				}
 			}
 
+			const activeCwd = this.agentCwd ?? this.vaultPath;
 			const conversation = query({
 				prompt,
 				options: {
-					cwd: this.vaultPath,
+					cwd: activeCwd,
+					...(this.agentCwd
+						? { additionalDirectories: [resolve(this.vaultPath)] }
+						: {}),
 					abortController: this.abortController,
 					permissionMode: this.permissionMode,
 					effort: this.effort,
@@ -302,15 +337,33 @@ export class SessionManager {
 								input: input as Record<string, unknown> | undefined,
 							};
 							this.pendingPermissionData.set(toolUseID, permReq);
-							this.pendingPermissions.set(toolUseID, (approved) => {
-								this.pendingPermissions.delete(toolUseID);
-								this.pendingPermissionData.delete(toolUseID);
-								resolve(
-									approved
-										? { behavior: "allow" as const }
-										: { behavior: "deny" as const, message: "Denied by user" },
-								);
-							});
+							this.pendingPermissions.set(
+								toolUseID,
+								(approved, sessionAllow?) => {
+									this.pendingPermissions.delete(toolUseID);
+									this.pendingPermissionData.delete(toolUseID);
+									if (!approved) {
+										resolve({
+											behavior: "deny" as const,
+											message: "Denied by user",
+										});
+									} else if (sessionAllow) {
+										resolve({
+											behavior: "allow" as const,
+											updatedPermissions: [
+												{
+													type: "addRules" as const,
+													rules: [{ toolName }],
+													behavior: "allow" as const,
+													destination: "session" as const,
+												},
+											],
+										});
+									} else {
+										resolve({ behavior: "allow" as const });
+									}
+								},
+							);
 							emit(permReq);
 						}),
 				},

@@ -1,6 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import {
 	BarChart3,
+	Bot,
 	FolderOpen,
 	LayoutDashboard,
 	MessageSquare,
@@ -14,6 +15,7 @@ const NAV_ITEMS = [
 	{ to: "/chat", label: "RAVEN", icon: MessageSquare, exact: false },
 	{ to: "/vault", label: "VAULT", icon: FolderOpen, exact: false },
 	{ to: "/attachments", label: "RELICS", icon: Paperclip, exact: false },
+	{ to: "/einherjar", label: "EINHERJAR", icon: Bot, exact: false },
 	{ to: "/stats", label: "LEDGER", icon: BarChart3, exact: false },
 	{ to: "/settings", label: "FORGE", icon: Settings, exact: false },
 ] as const;

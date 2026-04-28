@@ -21,6 +21,7 @@ export type LiveStats = {
 	context_window: number | null;
 	max_output_tokens: number | null;
 	last_context_used: number | null;
+	last_output_tokens: number | null;
 	queries: number;
 };
 
@@ -35,6 +36,7 @@ const EMPTY_STATS: LiveStats = {
 	context_window: null,
 	max_output_tokens: null,
 	last_context_used: null,
+	last_output_tokens: null,
 	queries: 0,
 };
 
@@ -167,6 +169,7 @@ function connect() {
 				last_context_used:
 					msg.tokens_in_context ??
 					msg.input_tokens + msg.cache_read_tokens + msg.cache_creation_tokens,
+				last_output_tokens: msg.output_tokens,
 				queries: _liveStats.queries + 1,
 			};
 			persistStats(_liveStats);

@@ -78,6 +78,13 @@ const AttachmentsSchema = z.object({
 		.default(DEFAULT_ATTACHMENTS_CONFIG.allowed_mimes),
 });
 
+const AgentSchema = z.object({
+	path: z.string(),
+	name: z.string().optional(),
+});
+
+export type Agent = z.infer<typeof AgentSchema>;
+
 export const HlidConfigSchema = z.object({
 	vault: VaultSchema.default(() => ({ name: "Vault", path: "" })),
 	server: ServerSchema.default(() => ({
@@ -101,6 +108,7 @@ export const HlidConfigSchema = z.object({
 		done: ["Done", "Complete", "Archived"],
 	})),
 	attachments: AttachmentsSchema.default(DEFAULT_ATTACHMENTS_CONFIG),
+	agents: z.array(AgentSchema).default([]),
 });
 
 export type HlidConfig = z.infer<typeof HlidConfigSchema>;

@@ -1,6 +1,10 @@
-import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import {
+	createFileRoute,
+	useNavigate,
+	useRouterState,
+} from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
-import { useState, useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { getConfig } from "#/config";
 import type { AggStats, SessionRow } from "#/db";
 import { useWs } from "#/hooks/useWs";
@@ -73,12 +77,19 @@ const cleanupSessionsFn = createServerFn({ method: "POST" })
 const PAGE_SIZE = 20;
 
 export const Route = createFileRoute("/stats")({
-	loader: async () => {
+	validateSearch: (search: Record<string, unknown>) => ({
+		page:
+			typeof search.page === "number"
+				? Math.max(1, Math.floor(search.page))
+				: 1,
+	}),
+	loaderDeps: ({ search: { page } }) => ({ page }),
+	loader: async ({ deps: { page } }) => {
 		const [statsData, initialSessions] = await Promise.all([
 			getStatsDataFn(),
-			getSessionsPageFn({ data: { page: 1, size: PAGE_SIZE } }),
+			getSessionsPageFn({ data: { page, size: PAGE_SIZE } }),
 		]);
-		return { statsData, initialSessions };
+		return { statsData, initialSessions, page };
 	},
 	component: StatsPage,
 });
@@ -96,6 +107,7 @@ const EMPTY_STATS: wsStore.LiveStats = {
 	context_window: null,
 	max_output_tokens: null,
 	last_context_used: null,
+	last_output_tokens: null,
 	queries: 0,
 };
 
@@ -282,14 +294,25 @@ function SessionItem({
 					</button>
 				</div>
 			) : (
-				<button
-					type="button"
-					onClick={() => setConfirming(true)}
-					className="shrink-0 w-8 h-full flex items-center justify-center text-muted-foreground/20 hover:text-destructive/60 md:opacity-0 md:group-hover:opacity-100 transition-all pr-2"
-					title="Delete session"
-				>
-					×
-				</button>
+				<div className="flex items-center shrink-0">
+					<a
+						href={`/chat?session=${session.id}`}
+						target="_blank"
+						rel="noreferrer"
+						className="w-7 h-full flex items-center justify-center text-[11px] text-muted-foreground/25 hover:text-primary/60 md:opacity-0 md:group-hover:opacity-100 transition-all"
+						title="Open in new tab"
+					>
+						↗
+					</a>
+					<button
+						type="button"
+						onClick={() => setConfirming(true)}
+						className="w-7 h-full flex items-center justify-center text-muted-foreground/20 hover:text-destructive/60 md:opacity-0 md:group-hover:opacity-100 transition-all pr-2"
+						title="Delete session"
+					>
+						×
+					</button>
+				</div>
 			)}
 		</div>
 	);
@@ -474,8 +497,11 @@ function SessionsLedger({
 // ─── page ─────────────────────────────────────────────────────────────────────
 
 function StatsPage() {
-	const { statsData, initialSessions } = Route.useLoaderData();
+	const { statsData, initialSessions, page } = Route.useLoaderData();
 	const navigate = useNavigate();
+	const isRouterLoading = useRouterState({
+		select: (s) => s.status === "pending",
+	});
 	const stats = useSyncExternalStore(
 		wsStore.subscribeStats,
 		wsStore.getLiveStats,
@@ -486,40 +512,40 @@ function StatsPage() {
 		if (msg.type === "rate_limit") setRateLimit(msg);
 	});
 
-	const [sessionsPage, setSessionsPage] = useState(1);
-	const [sessionsData, setSessionsData] = useState(initialSessions);
-	const [loadingSessions, setLoadingSessions] = useState(false);
+	const [deletedIds, setDeletedIds] = useState<Set<string>>(new Set());
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: reset on page nav
+	useEffect(() => {
+		setDeletedIds(new Set());
+	}, [page]);
+
+	const sessionsData = {
+		sessions: initialSessions.sessions.filter((s) => !deletedIds.has(s.id)),
+		total: initialSessions.total - deletedIds.size,
+	};
 	const totalPages = Math.ceil(sessionsData.total / PAGE_SIZE);
 
-	async function loadPage(page: number) {
-		setLoadingSessions(true);
-		try {
-			const result = await getSessionsPageFn({
-				data: { page, size: PAGE_SIZE },
-			});
-			setSessionsData(result);
-			setSessionsPage(page);
-		} finally {
-			setLoadingSessions(false);
-		}
+	function onPageChange(p: number) {
+		navigate({ to: "/stats", search: { page: p } });
 	}
 
 	async function handleDeleteSession(id: string) {
-		const prevData = sessionsData;
-		setSessionsData((prev) => ({
-			sessions: prev.sessions.filter((s) => s.id !== id),
-			total: prev.total - 1,
-		}));
+		setDeletedIds((prev) => new Set(prev).add(id));
 		const result = await deleteSessionFn({ data: { id } });
 		if (!result.ok) {
-			setSessionsData(prevData);
+			setDeletedIds((prev) => {
+				const next = new Set(prev);
+				next.delete(id);
+				return next;
+			});
+		} else if (sessionsData.sessions.length <= 1 && page > 1) {
+			navigate({ to: "/stats", search: { page: page - 1 } });
 		}
 	}
 
 	async function handleCleanup(days: number) {
 		await cleanupSessionsFn({ data: { days } });
-		await loadPage(1);
+		navigate({ to: "/stats", search: { page: 1 } });
 	}
 
 	function handleBuildSkill() {
@@ -688,8 +714,8 @@ function StatsPage() {
 								/>
 								<Bar
 									label="Output cap"
-									value={stats.max_output_tokens}
-									max={64_000}
+									value={stats.last_output_tokens ?? 0}
+									max={stats.max_output_tokens}
 								/>
 							</div>
 						)}
@@ -724,6 +750,19 @@ function StatsPage() {
 								idle ? "--" : fmt(stats.input_tokens + stats.output_tokens)
 							}
 						/>
+						<Row
+							label="Total w/ cache"
+							value={
+								idle
+									? "--"
+									: fmt(
+											stats.input_tokens +
+												stats.output_tokens +
+												stats.cache_read_tokens +
+												stats.cache_creation_tokens,
+										)
+							}
+						/>
 					</div>
 
 					{/* All-time totals — from DB */}
@@ -747,13 +786,16 @@ function StatsPage() {
 					{/* Paginated sessions ledger */}
 					<SessionsLedger
 						data={sessionsData}
-						page={sessionsPage}
+						page={page}
 						totalPages={totalPages}
-						loading={loadingSessions}
-						onPageChange={loadPage}
+						loading={isRouterLoading}
+						onPageChange={onPageChange}
 						onDelete={handleDeleteSession}
 						onNavigate={(id) =>
-							navigate({ to: "/chat", search: { session: id } })
+							navigate({
+								to: "/chat",
+								search: { session: id, agent: undefined },
+							})
 						}
 						onCleanup={handleCleanup}
 						onBuildSkill={handleBuildSkill}

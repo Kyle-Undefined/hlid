@@ -69,6 +69,13 @@ const getUsageWindowsFn = createServerFn({ method: "GET" }).handler(
 	},
 );
 
+const getSessionAgentCwdFn = createServerFn({ method: "GET" })
+	.inputValidator((sessionId: string) => sessionId)
+	.handler(async ({ data: sessionId }) => {
+		const { getSessionAgentCwd } = await import("#/db");
+		return getSessionAgentCwd(sessionId);
+	});
+
 const getCurrentSessionFn = createServerFn({ method: "GET" }).handler(
 	async () => {
 		const { server } = await getConfig();
@@ -96,15 +103,27 @@ const MODEL_LABELS: Record<string, string> = {
 export const Route = createFileRoute("/chat")({
 	validateSearch: (search: Record<string, unknown>) => ({
 		session: typeof search.session === "string" ? search.session : undefined,
+		agent: typeof search.agent === "string" ? search.agent : undefined,
 	}),
-	loaderDeps: ({ search: { session } }) => ({ session }),
-	loader: async ({ deps: { session } }) => {
+	loaderDeps: ({ search: { session, agent } }) => ({ session, agent }),
+	loader: async ({ deps: { session, agent } }) => {
 		const [config, dbSessionId, usageWindows] = await Promise.all([
 			getConfig(),
 			session ? Promise.resolve(null) : getCurrentSessionFn(),
 			getUsageWindowsFn(),
 		]);
-		return { config, existingSessionId: session ?? dbSessionId, usageWindows };
+		const resolvedSessionId = session ?? dbSessionId;
+		let agentSkillContext = agent;
+		if (!agentSkillContext && resolvedSessionId) {
+			agentSkillContext =
+				(await getSessionAgentCwdFn({ data: resolvedSessionId })) ?? undefined;
+		}
+		return {
+			config,
+			existingSessionId: resolvedSessionId,
+			usageWindows,
+			agentSkillContext,
+		};
 	},
 	component: ChatPage,
 });
@@ -135,7 +154,7 @@ type PermissionMessage = {
 	displayName?: string;
 	description?: string;
 	input?: Record<string, unknown>;
-	decision: "pending" | "approved" | "denied";
+	decision: "pending" | "approved" | "approved_session" | "denied";
 };
 
 type ChatMessage = UserMessage | AssistantMessage | PermissionMessage;
@@ -154,7 +173,11 @@ type Action =
 	| { type: "ADD_TOOL_EVENT"; id: string; event: ToolEventMessage }
 	| { type: "DONE"; id: string; cost: number | null }
 	| { type: "ADD_PERMISSION"; msg: PermissionRequestMessage }
-	| { type: "RESOLVE_PERMISSION"; id: string; decision: "approved" | "denied" }
+	| {
+			type: "RESOLVE_PERMISSION";
+			id: string;
+			decision: "approved" | "approved_session" | "denied";
+	  }
 	| {
 			type: "LOAD_HISTORY";
 			messages: Array<{
@@ -523,25 +546,32 @@ function PermissionCard({
 	onDecide,
 }: {
 	message: PermissionMessage;
-	onDecide: (id: string, approved: boolean) => void;
+	onDecide: (id: string, approved: boolean, sessionAllow?: boolean) => void;
 }) {
 	const pending = message.decision === "pending";
 
 	if (!pending) {
+		const approved =
+			message.decision === "approved" ||
+			message.decision === "approved_session";
 		return (
 			<div className="flex gap-0">
 				<div className="w-12 shrink-0 text-[9px] tracking-widest text-muted-foreground/50 pt-0.5 uppercase">
 					PERM
 				</div>
 				<div className="flex items-center gap-2 text-xs text-muted-foreground/65">
-					{message.decision === "approved" ? (
+					{approved ? (
 						<Check className="w-3 h-3 text-green-600/60" />
 					) : (
 						<X className="w-3 h-3 text-destructive/60" />
 					)}
 					<span className="tracking-wider text-[10px]">
 						{(message.displayName ?? message.toolName).toUpperCase()}{" "}
-						{message.decision === "approved" ? "APPROVED" : "DENIED"}
+						{message.decision === "approved_session"
+							? "APPROVED FOR SESSION"
+							: approved
+								? "APPROVED"
+								: "DENIED"}
 					</span>
 				</div>
 			</div>
@@ -593,6 +623,14 @@ function PermissionCard({
 					>
 						<Check className="w-3 h-3" />
 						APPROVE
+					</button>
+					<button
+						type="button"
+						onClick={() => onDecide(message.id, true, true)}
+						className="flex-1 flex items-center justify-center gap-2 py-2 text-[10px] tracking-widest text-blue-500/70 hover:bg-blue-500/5 transition-colors uppercase"
+					>
+						<Check className="w-3 h-3" />
+						SESSION
 					</button>
 				</div>
 			</div>
@@ -803,7 +841,9 @@ function ChatPage() {
 		config,
 		existingSessionId,
 		usageWindows: initialUsageWindows,
+		agentSkillContext,
 	} = Route.useLoaderData();
+	const agentContextSentRef = useRef(false);
 	const [sessionId, setSessionId] = useState(() => existingSessionId ?? uid());
 	const sessionIdRef = useRef(sessionId);
 	useEffect(() => {
@@ -977,13 +1017,17 @@ function ChatPage() {
 	}, [isRunning]);
 
 	const handleDecide = useCallback(
-		(id: string, approved: boolean) => {
+		(id: string, approved: boolean, sessionAllow?: boolean) => {
 			dispatch({
 				type: "RESOLVE_PERMISSION",
 				id,
-				decision: approved ? "approved" : "denied",
+				decision: approved
+					? sessionAllow
+						? "approved_session"
+						: "approved"
+					: "denied",
 			});
-			send({ type: "permission_response", id, approved });
+			send({ type: "permission_response", id, approved, sessionAllow });
 		},
 		[send],
 	);
@@ -1075,18 +1119,32 @@ function ChatPage() {
 		const id = uid();
 		const attachments = pendingAttachments;
 		dispatch({ type: "ADD_USER", id, text, attachments });
+		const agentCwdToSend =
+			agentSkillContext && !agentContextSentRef.current
+				? agentSkillContext
+				: undefined;
+		if (agentCwdToSend) agentContextSentRef.current = true;
 		send({
 			type: "chat",
 			text,
 			session_id: sessionId,
 			attachments: attachments.length > 0 ? attachments : undefined,
+			agent_cwd: agentCwdToSend,
 		});
 		setInput("");
 		setPendingAttachments([]);
-	}, [input, sessionState, send, sessionId, pendingAttachments]);
+	}, [
+		input,
+		sessionState,
+		send,
+		sessionId,
+		pendingAttachments,
+		agentSkillContext,
+	]);
 
 	const handleClear = useCallback(() => {
 		pendingIdRef.current = null;
+		agentContextSentRef.current = false;
 		dispatch({ type: "CLEAR" });
 		send({ type: "clear" });
 		wsStore.resetLiveStats();
@@ -1155,6 +1213,11 @@ function ChatPage() {
 
 			{/* Bottom bar — wrapper is relative so model badge floats above entire block */}
 			<div className="shrink-0 relative">
+				{agentSkillContext && (
+					<span className="absolute -top-5 left-3 text-[9px] tracking-widest text-primary/60 border border-primary/30 px-2 py-0.5 uppercase bg-background z-10">
+						{agentSkillContext.split("/").pop() ?? "agent"}
+					</span>
+				)}
 				{modelShort && (
 					<span className="absolute -top-5 right-3 text-[9px] tracking-widest text-muted-foreground/50 border border-border/70 px-2 py-0.5 uppercase bg-background z-10">
 						{modelShort}

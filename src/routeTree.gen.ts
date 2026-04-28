@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as VaultRouteImport } from './routes/vault'
 import { Route as StatsRouteImport } from './routes/stats'
 import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as EinherjarRouteImport } from './routes/einherjar'
 import { Route as ChatRouteImport } from './routes/chat'
 import { Route as AttachmentsRouteImport } from './routes/attachments'
 import { Route as IndexRouteImport } from './routes/index'
@@ -35,6 +36,11 @@ const StatsRoute = StatsRouteImport.update({
 const SettingsRoute = SettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const EinherjarRoute = EinherjarRouteImport.update({
+  id: '/einherjar',
+  path: '/einherjar',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ChatRoute = ChatRouteImport.update({
@@ -87,6 +93,7 @@ export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
   '/attachments': typeof AttachmentsRoute
   '/chat': typeof ChatRoute
+  '/einherjar': typeof EinherjarRoute
   '/settings': typeof SettingsRoute
   '/stats': typeof StatsRoute
   '/vault': typeof VaultRoute
@@ -101,6 +108,7 @@ export interface FileRoutesByTo {
   '/': typeof IndexRoute
   '/attachments': typeof AttachmentsRoute
   '/chat': typeof ChatRoute
+  '/einherjar': typeof EinherjarRoute
   '/settings': typeof SettingsRoute
   '/stats': typeof StatsRoute
   '/vault': typeof VaultRoute
@@ -116,6 +124,7 @@ export interface FileRoutesById {
   '/': typeof IndexRoute
   '/attachments': typeof AttachmentsRoute
   '/chat': typeof ChatRoute
+  '/einherjar': typeof EinherjarRoute
   '/settings': typeof SettingsRoute
   '/stats': typeof StatsRoute
   '/vault': typeof VaultRoute
@@ -132,6 +141,7 @@ export interface FileRouteTypes {
     | '/'
     | '/attachments'
     | '/chat'
+    | '/einherjar'
     | '/settings'
     | '/stats'
     | '/vault'
@@ -146,6 +156,7 @@ export interface FileRouteTypes {
     | '/'
     | '/attachments'
     | '/chat'
+    | '/einherjar'
     | '/settings'
     | '/stats'
     | '/vault'
@@ -160,6 +171,7 @@ export interface FileRouteTypes {
     | '/'
     | '/attachments'
     | '/chat'
+    | '/einherjar'
     | '/settings'
     | '/stats'
     | '/vault'
@@ -175,6 +187,7 @@ export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
   AttachmentsRoute: typeof AttachmentsRoute
   ChatRoute: typeof ChatRoute
+  EinherjarRoute: typeof EinherjarRoute
   SettingsRoute: typeof SettingsRoute
   StatsRoute: typeof StatsRoute
   VaultRoute: typeof VaultRoute
@@ -206,6 +219,13 @@ declare module '@tanstack/react-router' {
       path: '/settings'
       fullPath: '/settings'
       preLoaderRoute: typeof SettingsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/einherjar': {
+      id: '/einherjar'
+      path: '/einherjar'
+      fullPath: '/einherjar'
+      preLoaderRoute: typeof EinherjarRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/chat': {
@@ -289,6 +309,7 @@ const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   AttachmentsRoute: AttachmentsRoute,
   ChatRoute: ChatRoute,
+  EinherjarRoute: EinherjarRoute,
   SettingsRoute: SettingsRoute,
   StatsRoute: StatsRoute,
   VaultRoute: VaultRoute,
