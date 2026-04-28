@@ -65,7 +65,10 @@ function detect(entries: Entry[]): {
 	inbox?: string;
 	projects?: string;
 	areas?: string;
-	notes?: string;
+	resources?: string;
+	archive?: string;
+	rawFolder?: string;
+	wikiFolder?: string;
 	outputs?: string;
 } {
 	const find = (patterns: string[]) =>
@@ -75,17 +78,22 @@ function detect(entries: Entry[]): {
 
 	const wikiFolder = find(["wiki"]);
 	const rawFolder = find(["raw"]);
-	const projectsFolder = find(["projects", "10 project"]);
-	const areasFolder = find(["areas", "20 area"]);
+	const projectsFolder = find(["projects", "10 project", "1 project"]);
+	const areasFolder = find(["areas", "20 area", "2 area"]);
 
 	const isWiki = !!(wikiFolder || rawFolder) && !projectsFolder && !areasFolder;
 
 	return {
 		style: isWiki ? "wiki" : "para",
-		inbox: isWiki ? rawFolder : find(["inbox", "00"]),
-		projects: isWiki ? wikiFolder : projectsFolder,
-		areas: areasFolder,
-		notes: wikiFolder,
+		inbox: isWiki ? undefined : find(["inbox", "00"]),
+		projects: isWiki ? undefined : projectsFolder,
+		areas: isWiki ? undefined : areasFolder,
+		resources: isWiki
+			? undefined
+			: find(["resources", "30 resource", "3 resource"]),
+		archive: isWiki ? undefined : find(["archive", "40 archive", "4 archive"]),
+		rawFolder: isWiki ? rawFolder : undefined,
+		wikiFolder: isWiki ? wikiFolder : undefined,
 		outputs: find(["outputs", "output"]),
 	};
 }
@@ -102,6 +110,8 @@ export function FirstRunWizard({ onComplete }: Props) {
 	const [inbox, setInbox] = useState("");
 	const [projects, setProjects] = useState("");
 	const [areas, setAreas] = useState("");
+	const [resources, setResources] = useState("");
+	const [archive, setArchive] = useState("");
 	const [wikiFolder, setWikiFolder] = useState("");
 	const [rawFolder, setRawFolder] = useState("");
 	const [outputs, setOutputs] = useState("");
@@ -122,12 +132,14 @@ export function FirstRunWizard({ onComplete }: Props) {
 				const detected = detect(data.entries);
 				setVaultStyle(detected.style);
 				if (detected.style === "wiki") {
-					if (detected.notes) setWikiFolder(detected.notes);
-					if (detected.inbox) setRawFolder(detected.inbox);
+					if (detected.wikiFolder) setWikiFolder(detected.wikiFolder);
+					if (detected.rawFolder) setRawFolder(detected.rawFolder);
 				} else {
 					if (detected.inbox) setInbox(detected.inbox);
 					if (detected.projects) setProjects(detected.projects);
 					if (detected.areas) setAreas(detected.areas);
+					if (detected.resources) setResources(detected.resources);
+					if (detected.archive) setArchive(detected.archive);
 				}
 				if (detected.outputs) setOutputs(detected.outputs);
 				// use last folder name as vault name
@@ -144,13 +156,15 @@ export function FirstRunWizard({ onComplete }: Props) {
 				vault: {
 					name: vaultName,
 					path: vaultPath,
-					inbox:
-						vaultStyle === "para" ? inbox || undefined : rawFolder || undefined,
-					projects:
-						vaultStyle === "para"
-							? projects || undefined
-							: wikiFolder || undefined,
+					style: vaultStyle,
+					inbox: vaultStyle === "para" ? inbox || undefined : undefined,
+					projects: vaultStyle === "para" ? projects || undefined : undefined,
 					areas: vaultStyle === "para" ? areas || undefined : undefined,
+					resources: vaultStyle === "para" ? resources || undefined : undefined,
+					archive: vaultStyle === "para" ? archive || undefined : undefined,
+					raw: vaultStyle === "wiki" ? rawFolder || undefined : undefined,
+					wiki_folder:
+						vaultStyle === "wiki" ? wikiFolder || undefined : undefined,
 					skills: skills || undefined,
 					memory: memory || undefined,
 					outputs: outputs || undefined,
@@ -326,6 +340,20 @@ export function FirstRunWizard({ onComplete }: Props) {
 											onChange={setAreas}
 											basePath={vaultPath}
 											placeholder="e.g. 20 Areas"
+										/>
+										<FolderRow
+											label="Resources folder"
+											value={resources}
+											onChange={setResources}
+											basePath={vaultPath}
+											placeholder="e.g. 30 Resources"
+										/>
+										<FolderRow
+											label="Archive folder"
+											value={archive}
+											onChange={setArchive}
+											basePath={vaultPath}
+											placeholder="e.g. 40 Archive"
 										/>
 									</>
 								) : (

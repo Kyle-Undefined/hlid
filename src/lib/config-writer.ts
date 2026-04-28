@@ -19,14 +19,24 @@ export function writeConfig(config: HlidConfig): void {
 	lines.push("[vault]");
 	lines.push(`name = ${tomlVal(config.vault.name)}`);
 	lines.push(`path = ${tomlVal(config.vault.path)}`);
+	if (config.vault.style) lines.push(`style = ${tomlVal(config.vault.style)}`);
 	if (config.vault.inbox) lines.push(`inbox = ${tomlVal(config.vault.inbox)}`);
 	if (config.vault.projects)
 		lines.push(`projects = ${tomlVal(config.vault.projects)}`);
 	if (config.vault.areas) lines.push(`areas = ${tomlVal(config.vault.areas)}`);
+	if (config.vault.resources)
+		lines.push(`resources = ${tomlVal(config.vault.resources)}`);
+	if (config.vault.archive)
+		lines.push(`archive = ${tomlVal(config.vault.archive)}`);
+	if (config.vault.raw) lines.push(`raw = ${tomlVal(config.vault.raw)}`);
+	if (config.vault.wiki_folder)
+		lines.push(`wiki_folder = ${tomlVal(config.vault.wiki_folder)}`);
 	if (config.vault.skills)
 		lines.push(`skills = ${tomlVal(config.vault.skills)}`);
 	if (config.vault.memory)
 		lines.push(`memory = ${tomlVal(config.vault.memory)}`);
+	if (config.vault.outputs)
+		lines.push(`outputs = ${tomlVal(config.vault.outputs)}`);
 
 	lines.push("");
 	lines.push("[server]");

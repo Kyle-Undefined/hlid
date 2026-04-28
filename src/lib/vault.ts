@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { lstatSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import matter from "gray-matter";
 import {
@@ -10,6 +10,14 @@ import {
 export type { ProjectStatus, StatusVocabulary };
 export { classifyStatus };
 
+export type ProjectNode = {
+	name: string;
+	path: string;
+	isFolder: boolean;
+	content?: string;
+	children?: ProjectNode[];
+};
+
 export type Project = {
 	file: string;
 	title: string;
@@ -18,29 +26,49 @@ export type Project = {
 	tags: string[];
 	created?: string;
 	modified?: string;
+	isFolder: boolean;
+	content?: string;
+	children?: ProjectNode[];
 };
 
-function walkProjects(dir: string): string[] {
-	let results: string[] = [];
+function buildNodes(dir: string, baseDir: string): ProjectNode[] {
+	const nodes: ProjectNode[] = [];
 	let entries: string[];
 	try {
-		entries = readdirSync(dir);
+		entries = readdirSync(dir).sort();
 	} catch {
 		return [];
 	}
 	for (const entry of entries) {
 		const full = join(dir, entry);
+		const path = relative(baseDir, full);
 		try {
-			if (statSync(full).isDirectory()) {
-				results = results.concat(walkProjects(full));
+			const stat = lstatSync(full);
+			if (stat.isSymbolicLink()) continue;
+			if (stat.isDirectory()) {
+				nodes.push({
+					name: entry,
+					path,
+					isFolder: true,
+					children: buildNodes(full, baseDir),
+				});
 			} else if (entry.endsWith(".md")) {
-				results.push(full);
+				const raw = readFileSync(full, "utf-8");
+				const { content } = matter(raw);
+				nodes.push({
+					name: entry.replace(/\.md$/, ""),
+					path,
+					isFolder: false,
+					content,
+				});
+			} else {
+				nodes.push({ name: entry, path, isFolder: false });
 			}
 		} catch {
 			// skip unreadable
 		}
 	}
-	return results;
+	return nodes;
 }
 
 export function scanProjects(
@@ -49,35 +77,111 @@ export function scanProjects(
 	vocab: StatusVocabulary,
 ): Project[] {
 	const dir = join(vaultPath, projectsFolder);
-	const files = walkProjects(dir);
+	let entries: string[];
+	try {
+		entries = readdirSync(dir);
+	} catch {
+		return [];
+	}
 
-	return files.map((fullPath) => {
-		const file = relative(dir, fullPath);
+	const projects: Project[] = [];
+
+	for (const entry of entries) {
+		const full = join(dir, entry);
 		try {
-			const raw = readFileSync(fullPath, "utf-8");
-			const { data } = matter(raw);
-			const rawStatus = String(data.status ?? "");
-			const titleFromFrontmatter = data.title as string | undefined;
-			const titleFromFilename = fullPath.split(sep).pop()?.replace(/\.md$/, "");
-			return {
-				file,
-				title: titleFromFrontmatter ?? titleFromFilename ?? "",
-				status: classifyStatus(rawStatus, vocab),
-				rawStatus,
-				tags: Array.isArray(data.tags) ? (data.tags as string[]) : [],
-				created: data.created as string | undefined,
-				modified: data.modified as string | undefined,
-			};
+			const stat = lstatSync(full);
+			if (stat.isSymbolicLink()) continue;
+
+			if (stat.isDirectory()) {
+				let innerEntries: string[];
+				try {
+					innerEntries = readdirSync(full);
+				} catch {
+					continue;
+				}
+				const mdFiles = innerEntries.filter((f) => f.endsWith(".md"));
+				const mainFile =
+					mdFiles.find((f) => f.toLowerCase() === "index.md") ??
+					mdFiles.find((f) => f.replace(/\.md$/, "") === entry) ??
+					mdFiles[0] ??
+					null;
+
+				if (!mainFile) continue;
+
+				const mainFullPath = join(full, mainFile);
+				const mainRelPath = join(entry, mainFile);
+
+				let title = entry;
+				let rawStatus = "";
+				let tags: string[] = [];
+				let created: string | undefined;
+				let modified: string | undefined;
+				let content: string | undefined;
+
+				try {
+					const raw = readFileSync(mainFullPath, "utf-8");
+					const parsed = matter(raw);
+					rawStatus = String(parsed.data.status ?? "");
+					title = (parsed.data.title as string | undefined) ?? entry;
+					tags = Array.isArray(parsed.data.tags)
+						? (parsed.data.tags as string[])
+						: [];
+					created = parsed.data.created as string | undefined;
+					modified = parsed.data.modified as string | undefined;
+					content = parsed.content || undefined;
+				} catch {
+					// use defaults
+				}
+
+				const allChildren = buildNodes(full, dir);
+				const children = allChildren.filter((n) => n.path !== mainRelPath);
+
+				projects.push({
+					file: mainRelPath,
+					title,
+					status: classifyStatus(rawStatus, vocab),
+					rawStatus,
+					tags,
+					created,
+					modified,
+					isFolder: true,
+					content,
+					children: children.length > 0 ? children : undefined,
+				});
+			} else if (entry.endsWith(".md")) {
+				try {
+					const raw = readFileSync(full, "utf-8");
+					const { data, content } = matter(raw);
+					const rawStatus = String(data.status ?? "");
+					projects.push({
+						file: entry,
+						title:
+							(data.title as string | undefined) ?? entry.replace(/\.md$/, ""),
+						status: classifyStatus(rawStatus, vocab),
+						rawStatus,
+						tags: Array.isArray(data.tags) ? (data.tags as string[]) : [],
+						created: data.created as string | undefined,
+						modified: data.modified as string | undefined,
+						isFolder: false,
+						content: content || undefined,
+					});
+				} catch {
+					projects.push({
+						file: entry,
+						title: entry.replace(/\.md$/, ""),
+						status: "unknown" as const,
+						rawStatus: "",
+						tags: [],
+						isFolder: false,
+					});
+				}
+			}
 		} catch {
-			return {
-				file,
-				title: file.replace(/\.md$/, ""),
-				status: "unknown" as const,
-				rawStatus: "",
-				tags: [],
-			};
+			// skip unreadable entries
 		}
-	});
+	}
+
+	return projects;
 }
 
 export type Skill = {
@@ -138,7 +242,8 @@ export function scanSkills(
 	for (const entry of entries) {
 		const full = join(dir, entry);
 		try {
-			const stat = statSync(full);
+			const stat = lstatSync(full);
+			if (stat.isSymbolicLink()) continue;
 			if (stat.isDirectory()) {
 				// skill folder — find the .md file directly inside (one level only)
 				const inner = readdirSync(full).filter((f) => f.endsWith(".md"));
@@ -223,7 +328,8 @@ function walkMd(dir: string, root: string): MemoryFile[] {
 	for (const entry of entries) {
 		const full = join(dir, entry);
 		try {
-			const stat = statSync(full);
+			const stat = lstatSync(full);
+			if (stat.isSymbolicLink()) continue;
 			if (stat.isDirectory()) {
 				results = results.concat(walkMd(full, root));
 			} else if (entry.endsWith(".md")) {

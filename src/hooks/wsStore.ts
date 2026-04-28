@@ -77,6 +77,7 @@ let _activeSessionId: string | null = null;
 // Always written (even when subscribers exist) — cleared on run end or new run start.
 let _messageBuffer: ServerMessage[] = [];
 let _pendingPermCount = 0;
+let _pendingSessionToday = false;
 
 const statusSubs = new Set<() => void>();
 const messageSubs = new Set<(msg: ServerMessage) => void>();
@@ -154,6 +155,7 @@ function connect() {
 			setSnap({ hasPendingPermissions: true });
 		}
 		if (msg.type === "done") {
+			_pendingSessionToday = false;
 			_liveStats = {
 				turns: _liveStats.turns + msg.turns,
 				cost: _liveStats.cost + (msg.cost ?? 0),
@@ -182,6 +184,7 @@ function connect() {
 			_messageBuffer.push(msg);
 		} else if (msg.type === "done" || msg.type === "error") {
 			_messageBuffer = [];
+			if (msg.type === "error") _pendingSessionToday = false;
 		}
 		for (const fn of messageSubs) fn(msg);
 	};
@@ -204,6 +207,7 @@ export function subscribeMessage(fn: (msg: ServerMessage) => void): () => void {
 }
 
 export function send(msg: ClientMessage): void {
+	if (msg.type === "chat") _pendingSessionToday = true;
 	if (msg.type === "chat" || msg.type === "clear") _messageBuffer = [];
 	if (msg.type === "permission_response") {
 		_pendingPermCount = Math.max(0, _pendingPermCount - 1);
@@ -247,6 +251,10 @@ export function getLiveStats(): LiveStats {
 export function subscribeStats(fn: () => void): () => void {
 	statsSubs.add(fn);
 	return () => statsSubs.delete(fn);
+}
+
+export function getPendingSessionToday(): boolean {
+	return _pendingSessionToday;
 }
 
 export function getActiveSessionId(): string | null {

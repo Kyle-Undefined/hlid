@@ -1,4 +1,3 @@
-import type React from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -30,15 +29,9 @@ export function MarkdownBody({ content }: { content: string }) {
 					<ol className="list-decimal pl-5 mb-3 space-y-0.5">{children}</ol>
 				),
 				li: ({ children }) => <li className="leading-relaxed">{children}</li>,
-				code: ({
-					children,
-					inline,
-				}: {
-					children: React.ReactNode;
-					className?: string;
-					inline?: boolean;
-				}) => {
-					return !inline ? (
+				code: ({ children, className }) => {
+					const isBlock = /language-/.test(className ?? "");
+					return isBlock ? (
 						<code className="block bg-secondary/60 border border-border px-3 py-2 text-xs font-mono text-foreground/90 overflow-x-auto whitespace-pre mb-3">
 							{children}
 						</code>

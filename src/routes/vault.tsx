@@ -1,16 +1,59 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
-import { ChevronDown, ChevronRight, Play } from "lucide-react";
+import { ChevronDown, ChevronRight, Folder, Play } from "lucide-react";
 import { useState } from "react";
 import { MarkdownBody } from "#/components/MarkdownBody";
 import { getConfig } from "#/config";
 import { useWs } from "#/hooks/useWs";
 import * as wsStore from "#/hooks/wsStore";
 import type { ProjectStatus } from "#/lib/classify";
-import type { MemoryFile, Project, Skill } from "#/lib/vault";
+import type { MemoryFile, Project, ProjectNode, Skill } from "#/lib/vault";
 import type { ClientMessage } from "#/server/protocol";
 
 // ─── server fns ────────────────────────────────────────────────────────────
+
+type VaultFolderKey =
+	| "inbox"
+	| "projects"
+	| "areas"
+	| "resources"
+	| "archive"
+	| "raw"
+	| "wiki_folder"
+	| "skills"
+	| "memory"
+	| "outputs";
+
+const PARA_ORDER: VaultFolderKey[] = [
+	"inbox",
+	"projects",
+	"areas",
+	"resources",
+	"archive",
+	"skills",
+	"memory",
+	"outputs",
+];
+const WIKI_ORDER: VaultFolderKey[] = [
+	"raw",
+	"wiki_folder",
+	"outputs",
+	"skills",
+	"memory",
+];
+
+const FIELD_LABELS: Record<VaultFolderKey, string> = {
+	inbox: "INBOX",
+	projects: "PROJECTS",
+	areas: "AREAS",
+	resources: "RESOURCES",
+	archive: "ARCHIVE",
+	raw: "RAW",
+	wiki_folder: "WIKI",
+	skills: "SKILLS",
+	memory: "MEMORY",
+	outputs: "OUTPUTS",
+};
 
 const getVaultData = createServerFn({ method: "GET" }).handler(async () => {
 	const [config, { scanProjects, scanSkills, scanMemory }] = await Promise.all([
@@ -19,9 +62,21 @@ const getVaultData = createServerFn({ method: "GET" }).handler(async () => {
 	]);
 	const { vault, status_vocabulary } = config;
 
+	const isWiki = vault.style === "wiki";
+	const fieldOrder = isWiki ? WIKI_ORDER : PARA_ORDER;
+
+	const tabConfig = fieldOrder
+		.filter((key) => !!vault[key])
+		.map((key) => ({ id: key, label: FIELD_LABELS[key] }));
+
 	const projects =
 		vault.path && vault.projects
 			? scanProjects(vault.path, vault.projects, status_vocabulary)
+			: [];
+
+	const wikiPages =
+		vault.path && vault.wiki_folder
+			? scanProjects(vault.path, vault.wiki_folder, status_vocabulary)
 			: [];
 
 	const { skills, sectionOrder } =
@@ -32,16 +87,49 @@ const getVaultData = createServerFn({ method: "GET" }).handler(async () => {
 	const memory =
 		vault.path && vault.memory ? scanMemory(vault.path, vault.memory) : [];
 
-	return { projects, skills, sectionOrder, memory, vocab: status_vocabulary };
+	const inbox =
+		vault.path && vault.inbox ? scanMemory(vault.path, vault.inbox) : [];
+
+	const raw = vault.path && vault.raw ? scanMemory(vault.path, vault.raw) : [];
+
+	const areas =
+		vault.path && vault.areas ? scanMemory(vault.path, vault.areas) : [];
+
+	const resources =
+		vault.path && vault.resources
+			? scanProjects(vault.path, vault.resources, status_vocabulary)
+			: [];
+
+	const archive =
+		vault.path && vault.archive
+			? scanProjects(vault.path, vault.archive, status_vocabulary)
+			: [];
+
+	const outputs =
+		vault.path && vault.outputs ? scanMemory(vault.path, vault.outputs) : [];
+
+	return {
+		tabConfig,
+		projects,
+		wikiPages,
+		resources,
+		archive,
+		skills,
+		sectionOrder,
+		memory,
+		inbox,
+		raw,
+		areas,
+		outputs,
+		vocab: status_vocabulary,
+	};
 });
 
 // ─── route ─────────────────────────────────────────────────────────────────
 
-type Tab = "projects" | "skills" | "memory";
-
 export const Route = createFileRoute("/vault")({
 	validateSearch: (s: Record<string, unknown>) => ({
-		tab: (s.tab as Tab | undefined) ?? "projects",
+		tab: s.tab as string | undefined,
 	}),
 	loader: () => getVaultData(),
 	component: VaultPage,
@@ -65,30 +153,126 @@ const STATUS_DOT: Record<ProjectStatus, string> = {
 	unknown: "bg-muted-foreground/20",
 };
 
-function ProjectCard({ project }: { project: Project }) {
+function ProjectNodeItem({
+	node,
+	depth = 0,
+}: {
+	node: ProjectNode;
+	depth?: number;
+}) {
+	const [open, setOpen] = useState(false);
+	const hasContent = node.isFolder
+		? !!(node.children && node.children.length > 0)
+		: !!node.content;
+
 	return (
-		<div className="flex items-center justify-between gap-4 px-4 py-3">
-			<div className="min-w-0">
-				<div className="text-sm text-foreground truncate">{project.title}</div>
-				{project.tags.length > 0 && (
-					<div className="flex gap-1 mt-0.5 flex-wrap">
-						{project.tags.map((t) => (
-							<span
-								key={t}
-								className="text-[9px] tracking-wider px-1.5 py-0.5 bg-secondary text-muted-foreground"
-							>
-								{t}
-							</span>
+		<div>
+			<button
+				type="button"
+				onClick={() => hasContent && setOpen((v) => !v)}
+				className={`w-full flex items-center gap-1.5 py-1 text-left transition-opacity ${
+					hasContent
+						? "hover:opacity-80 cursor-pointer"
+						: "cursor-default opacity-50"
+				}`}
+				style={{ paddingLeft: `${depth * 14}px` }}
+			>
+				<span className="w-3 h-3 shrink-0 flex items-center justify-center">
+					{hasContent ? (
+						open ? (
+							<ChevronDown className="w-2.5 h-2.5 text-muted-foreground" />
+						) : (
+							<ChevronRight className="w-2.5 h-2.5 text-muted-foreground" />
+						)
+					) : null}
+				</span>
+				{node.isFolder && (
+					<Folder className="w-3 h-3 text-muted-foreground/70 shrink-0" />
+				)}
+				<span className="text-xs text-foreground/70 truncate">{node.name}</span>
+			</button>
+			{open && node.isFolder && node.children && (
+				<div>
+					{node.children.map((child) => (
+						<ProjectNodeItem key={child.path} node={child} depth={depth + 1} />
+					))}
+				</div>
+			)}
+			{open && !node.isFolder && node.content && (
+				<div
+					className="text-xs text-foreground/70 leading-relaxed border-l border-border/50 py-2 pr-2"
+					style={{ marginLeft: `${depth * 14 + 12}px`, paddingLeft: "8px" }}
+				>
+					<MarkdownBody content={node.content} />
+				</div>
+			)}
+		</div>
+	);
+}
+
+function ProjectCard({ project }: { project: Project }) {
+	const [open, setOpen] = useState(false);
+	const hasContent =
+		!!project.content?.trim() ||
+		!!(project.isFolder && project.children && project.children.length > 0);
+
+	return (
+		<div className="divide-y divide-border">
+			<button
+				type="button"
+				onClick={() => hasContent && setOpen((v) => !v)}
+				className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors ${
+					hasContent ? "hover:bg-accent cursor-pointer" : "cursor-default"
+				}`}
+			>
+				{hasContent ? (
+					open ? (
+						<ChevronDown className="w-3 h-3 text-muted-foreground shrink-0" />
+					) : (
+						<ChevronRight className="w-3 h-3 text-muted-foreground shrink-0" />
+					)
+				) : (
+					<span className="w-3 h-3 shrink-0" />
+				)}
+				<div className="min-w-0 flex-1">
+					<div className="text-sm text-foreground truncate">
+						{project.title}
+					</div>
+					{project.tags.length > 0 && (
+						<div className="flex gap-1 mt-0.5 flex-wrap">
+							{project.tags.map((t) => (
+								<span
+									key={t}
+									className="text-[9px] tracking-wider px-1.5 py-0.5 bg-secondary text-muted-foreground"
+								>
+									{t}
+								</span>
+							))}
+						</div>
+					)}
+				</div>
+				<div className="flex items-center gap-1.5 px-2 py-0.5 bg-secondary text-[10px] tracking-wider text-muted-foreground shrink-0">
+					<span
+						className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_DOT[project.status]}`}
+					/>
+					{project.rawStatus || "NO STATUS"}
+				</div>
+			</button>
+			{open && project.content && project.content.trim() && (
+				<div className="px-6 py-4 bg-secondary/30 text-xs text-foreground/80 leading-relaxed">
+					<MarkdownBody content={project.content} />
+				</div>
+			)}
+			{open &&
+				project.isFolder &&
+				project.children &&
+				project.children.length > 0 && (
+					<div className="px-4 py-3 bg-secondary/20 space-y-0.5">
+						{project.children.map((child) => (
+							<ProjectNodeItem key={child.path} node={child} depth={0} />
 						))}
 					</div>
 				)}
-			</div>
-			<div className="flex items-center gap-1.5 px-2 py-0.5 bg-secondary text-[10px] tracking-wider text-muted-foreground shrink-0">
-				<span
-					className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_DOT[project.status]}`}
-				/>
-				{project.rawStatus || "NO STATUS"}
-			</div>
 		</div>
 	);
 }
@@ -121,7 +305,13 @@ function ProjectGroup({
 	);
 }
 
-function ProjectsTab({ initial }: { initial: Project[] }) {
+function ProjectsTab({
+	initial,
+	emptyLabel,
+}: {
+	initial: Project[];
+	emptyLabel?: string;
+}) {
 	const grouped = STATUS_ORDER.reduce(
 		(acc, s) => {
 			acc[s] = initial.filter((p) => p.status === s);
@@ -134,7 +324,7 @@ function ProjectsTab({ initial }: { initial: Project[] }) {
 		return (
 			<div className="border border-border bg-card px-4 py-8 text-center">
 				<p className="text-xs tracking-wider text-muted-foreground">
-					no projects found, set a projects folder in config
+					{emptyLabel ?? "no projects found, set a projects folder in config"}
 				</p>
 			</div>
 		);
@@ -270,7 +460,7 @@ function SkillsTab({
 	);
 }
 
-// ─── memory ────────────────────────────────────────────────────────────────
+// ─── memory / generic folder ───────────────────────────────────────────────
 
 function MemoryCard({ file }: { file: MemoryFile }) {
 	const [open, setOpen] = useState(false);
@@ -303,12 +493,18 @@ function MemoryCard({ file }: { file: MemoryFile }) {
 	);
 }
 
-function MemoryTab({ memory }: { memory: MemoryFile[] }) {
-	if (memory.length === 0) {
+function NotesTab({
+	notes,
+	emptyLabel,
+}: {
+	notes: MemoryFile[];
+	emptyLabel?: string;
+}) {
+	if (notes.length === 0) {
 		return (
 			<div className="border border-border bg-card px-4 py-8 text-center">
 				<p className="text-xs tracking-wider text-muted-foreground">
-					nothing in memory yet
+					{emptyLabel ?? "nothing here yet"}
 				</p>
 			</div>
 		);
@@ -316,7 +512,7 @@ function MemoryTab({ memory }: { memory: MemoryFile[] }) {
 
 	return (
 		<div className="border border-border bg-card overflow-hidden divide-y divide-border">
-			{memory.map((f) => (
+			{notes.map((f) => (
 				<MemoryCard key={f.path} file={f} />
 			))}
 		</div>
@@ -325,19 +521,29 @@ function MemoryTab({ memory }: { memory: MemoryFile[] }) {
 
 // ─── page ──────────────────────────────────────────────────────────────────
 
-const TABS: { id: Tab; label: string }[] = [
-	{ id: "projects", label: "PROJECTS" },
-	{ id: "skills", label: "SKILLS" },
-	{ id: "memory", label: "MEMORY" },
-];
-
 function VaultPage() {
-	const { projects, skills, sectionOrder, memory } = Route.useLoaderData();
-	const { tab } = Route.useSearch();
+	const {
+		tabConfig,
+		projects,
+		wikiPages,
+		resources,
+		archive,
+		skills,
+		sectionOrder,
+		memory,
+		inbox,
+		raw,
+		areas,
+		outputs,
+	} = Route.useLoaderData();
+	const { tab: rawTab } = Route.useSearch();
 	const navigate = useNavigate({ from: "/vault" });
 	const { send } = useWs();
 
-	function setTab(t: Tab) {
+	const tab =
+		tabConfig.find((t) => t.id === rawTab)?.id ?? tabConfig[0]?.id ?? "";
+
+	function setTab(t: string) {
 		navigate({ search: { tab: t } });
 	}
 
@@ -354,7 +560,7 @@ function VaultPage() {
 		<div className="flex flex-col h-full">
 			{/* Tabs */}
 			<div className="flex border-b border-border shrink-0">
-				{TABS.map((t) => (
+				{tabConfig.map((t) => (
 					<button
 						key={t.id}
 						type="button"
@@ -373,6 +579,9 @@ function VaultPage() {
 			{/* Content */}
 			<div className="flex-1 overflow-auto p-5 space-y-5">
 				{tab === "projects" && <ProjectsTab initial={projects} />}
+				{tab === "wiki_folder" && (
+					<ProjectsTab initial={wikiPages} emptyLabel="wiki is empty" />
+				)}
 				{tab === "skills" && (
 					<SkillsTab
 						skills={skills}
@@ -380,7 +589,27 @@ function VaultPage() {
 						onRun={runSkill}
 					/>
 				)}
-				{tab === "memory" && <MemoryTab memory={memory} />}
+				{tab === "memory" && (
+					<NotesTab notes={memory} emptyLabel="nothing in memory yet" />
+				)}
+				{tab === "inbox" && (
+					<NotesTab notes={inbox} emptyLabel="inbox is empty" />
+				)}
+				{tab === "raw" && (
+					<NotesTab notes={raw} emptyLabel="raw folder is empty" />
+				)}
+				{tab === "areas" && (
+					<NotesTab notes={areas} emptyLabel="no areas found" />
+				)}
+				{tab === "resources" && (
+					<ProjectsTab initial={resources} emptyLabel="no resources found" />
+				)}
+				{tab === "archive" && (
+					<ProjectsTab initial={archive} emptyLabel="archive is empty" />
+				)}
+				{tab === "outputs" && (
+					<NotesTab notes={outputs} emptyLabel="no outputs yet" />
+				)}
 			</div>
 		</div>
 	);

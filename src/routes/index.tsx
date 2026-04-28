@@ -1311,11 +1311,26 @@ function CockpitPage() {
 	const [sameSession, setSameSession] = useState(false);
 	const [recentRuns, setRecentRuns] = useState<SessionRow[]>(recentSessions);
 	const [agg, setAgg] = useState<AggStats>(statsData.agg);
-	const [weeklyStats, setWeeklyStats] =
-		useState<WeeklyStats>(initialWeeklyStats);
-	const [thirtyDayStats, setThirtyDayStats] = useState<ThirtyDayStats>(
-		initialThirtyDayStats,
-	);
+	const [weeklyStats, setWeeklyStats] = useState<WeeklyStats>(() => {
+		if (!wsStore.getPendingSessionToday()) return initialWeeklyStats;
+		const dow = new Date().getDay();
+		const days = [...initialWeeklyStats.days];
+		days[dow] = (days[dow] ?? 0) + 1;
+		return { total: initialWeeklyStats.total + 1, days };
+	});
+	const [thirtyDayStats, setThirtyDayStats] = useState<ThirtyDayStats>(() => {
+		if (!wsStore.getPendingSessionToday()) return initialThirtyDayStats;
+		const today = new Date().toISOString().slice(0, 10);
+		const hasToday = initialThirtyDayStats.days.some((d) => d.date === today);
+		return {
+			total: initialThirtyDayStats.total + 1,
+			days: hasToday
+				? initialThirtyDayStats.days.map((d) =>
+						d.date === today ? { ...d, count: d.count + 1 } : d,
+					)
+				: [...initialThirtyDayStats.days, { date: today, count: 1 }],
+		};
+	});
 	const [mcpServers, setMcpServers] =
 		useState<McpServerEntry[]>(initialMcpServers);
 	const [runError, setRunError] = useState<string | null>(null);
@@ -1325,9 +1340,6 @@ function CockpitPage() {
 	>([]);
 	const [uploadingCount, setUploadingCount] = useState(0);
 	const [uploadError, setUploadError] = useState<string | null>(null);
-	const [attachKind, setAttachKind] = useState<"ephemeral" | "vault">(
-		"ephemeral",
-	);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const attachSessionIdRef = useRef<string | null>(null);
@@ -1371,56 +1383,53 @@ function CockpitPage() {
 		send({ type: "sync_mcp_list" });
 	}, [send]);
 
-	const uploadFiles = useCallback(
-		async (files: FileList | File[]) => {
-			const list = Array.from(files);
-			if (list.length === 0) return;
-			setUploadError(null);
-			if (!attachSessionIdRef.current) attachSessionIdRef.current = uid();
-			const sessionId = attachSessionIdRef.current;
-			setUploadingCount((c) => c + list.length);
-			try {
-				const uploaded = await Promise.all(
-					list.map(async (file) => {
-						const fd = new FormData();
-						fd.append("file", file);
-						fd.append("kind", attachKind);
-						fd.append("session_id", sessionId);
-						const res = await fetch("/api/attachments/upload", {
-							method: "POST",
-							body: fd,
-						});
-						if (!res.ok) {
-							let msg = `upload failed (${res.status})`;
-							try {
-								const body = (await res.json()) as { error?: string };
-								if (body.error) msg = body.error;
-							} catch {}
-							throw new Error(`${file.name}: ${msg}`);
-						}
-						return (await res.json()) as ChatAttachment & {
-							size_bytes: number;
-						};
-					}),
-				);
-				setPendingAttachments((prev) => [
-					...prev,
-					...uploaded.map((u) => ({
-						id: u.id,
-						path: u.path,
-						filename: u.filename,
-						mime: u.mime,
-						kind: u.kind,
-					})),
-				]);
-			} catch (err) {
-				setUploadError(err instanceof Error ? err.message : "upload failed");
-			} finally {
-				setUploadingCount((c) => Math.max(0, c - list.length));
-			}
-		},
-		[attachKind],
-	);
+	const uploadFiles = useCallback(async (files: FileList | File[]) => {
+		const list = Array.from(files);
+		if (list.length === 0) return;
+		setUploadError(null);
+		if (!attachSessionIdRef.current) attachSessionIdRef.current = uid();
+		const sessionId = attachSessionIdRef.current;
+		setUploadingCount((c) => c + list.length);
+		try {
+			const uploaded = await Promise.all(
+				list.map(async (file) => {
+					const fd = new FormData();
+					fd.append("file", file);
+					fd.append("kind", "ephemeral");
+					fd.append("session_id", sessionId);
+					const res = await fetch("/api/attachments/upload", {
+						method: "POST",
+						body: fd,
+					});
+					if (!res.ok) {
+						let msg = `upload failed (${res.status})`;
+						try {
+							const body = (await res.json()) as { error?: string };
+							if (body.error) msg = body.error;
+						} catch {}
+						throw new Error(`${file.name}: ${msg}`);
+					}
+					return (await res.json()) as ChatAttachment & {
+						size_bytes: number;
+					};
+				}),
+			);
+			setPendingAttachments((prev) => [
+				...prev,
+				...uploaded.map((u) => ({
+					id: u.id,
+					path: u.path,
+					filename: u.filename,
+					mime: u.mime,
+					kind: u.kind,
+				})),
+			]);
+		} catch (err) {
+			setUploadError(err instanceof Error ? err.message : "upload failed");
+		} finally {
+			setUploadingCount((c) => Math.max(0, c - list.length));
+		}
+	}, []);
 
 	const removePending = useCallback((id: string) => {
 		setPendingAttachments((prev) => prev.filter((a) => a.id !== id));
@@ -1519,6 +1528,45 @@ function CockpitPage() {
 			agent_cwd: selectedAgentPath || undefined,
 			attachments: attachments.length > 0 ? attachments : undefined,
 		});
+		if (!sameSession) {
+			setRecentRuns((prev) => {
+				const already = prev.some((r) => r.id === sessionId);
+				if (already) return prev;
+				const pending: SessionRow = {
+					id: sessionId,
+					label: text.slice(0, 40).toUpperCase(),
+					model: model ?? null,
+					started_at: Math.floor(Date.now() / 1000),
+					ended_at: null,
+					query_count: 0,
+					total_cost: 0,
+					total_input_tokens: 0,
+					total_output_tokens: 0,
+					total_cache_read_tokens: 0,
+					total_cache_creation_tokens: 0,
+					total_turns: 0,
+				};
+				return [pending, ...prev].slice(0, 5);
+			});
+			const today = new Date().toISOString().slice(0, 10);
+			setThirtyDayStats((prev) => {
+				const hasToday = prev.days.some((d) => d.date === today);
+				return {
+					total: prev.total + 1,
+					days: hasToday
+						? prev.days.map((d) =>
+								d.date === today ? { ...d, count: d.count + 1 } : d,
+							)
+						: [...prev.days, { date: today, count: 1 }],
+				};
+			});
+			setWeeklyStats((prev) => {
+				const dow = new Date().getDay();
+				const days = [...prev.days];
+				days[dow] = (days[dow] ?? 0) + 1;
+				return { total: prev.total + 1, days };
+			});
+		}
 		setPrompt("");
 		setActiveSkill(null);
 		if (!background) {
@@ -1638,11 +1686,6 @@ function CockpitPage() {
 												<FileIcon className="w-3 h-3 shrink-0 opacity-60" />
 											)}
 											<span className="truncate font-mono">{a.filename}</span>
-											{a.kind === "vault" && (
-												<span className="text-[8px] tracking-widest uppercase text-primary/60 shrink-0">
-													V
-												</span>
-											)}
 											<button
 												type="button"
 												onClick={() => removePending(a.id)}
@@ -1663,23 +1706,6 @@ function CockpitPage() {
 											{uploadError}
 										</span>
 									)}
-									<div className="ml-auto flex items-center gap-2 text-[9px] tracking-widest uppercase text-muted-foreground/60">
-										<span>save:</span>
-										<button
-											type="button"
-											onClick={() => setAttachKind("ephemeral")}
-											className={`px-2 py-0.5 border ${attachKind === "ephemeral" ? "border-primary/60 text-primary/80" : "border-border/60 hover:border-border"}`}
-										>
-											ref
-										</button>
-										<button
-											type="button"
-											onClick={() => setAttachKind("vault")}
-											className={`px-2 py-0.5 border ${attachKind === "vault" ? "border-primary/60 text-primary/80" : "border-border/60 hover:border-border"}`}
-										>
-											vault
-										</button>
-									</div>
 								</div>
 							)}
 							<div className="flex items-start">
@@ -1760,7 +1786,7 @@ function CockpitPage() {
 										disabled={!isConnected}
 										className="text-muted-foreground/45 hover:text-muted-foreground transition-colors shrink-0 disabled:opacity-30"
 										aria-label="Attach file"
-										title={`Attach (default: ${attachKind})`}
+										title="Attach file"
 									>
 										<Paperclip className="w-3.5 h-3.5" />
 									</button>

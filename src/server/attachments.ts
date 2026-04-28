@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, unlink, writeFile } from "node:fs/promises";
-import { basename, extname, join, resolve } from "node:path";
+import { mkdir, readdir, rmdir, unlink, writeFile } from "node:fs/promises";
+import { basename, dirname, extname, join, resolve } from "node:path";
 import type { HlidConfig } from "../config";
 import * as db from "../db";
 
@@ -57,7 +57,7 @@ export type UploadResult = {
 export async function handleUpload(
 	req: Request,
 	config: HlidConfig,
-	onUploaded?: (id: string, kind: "ephemeral" | "vault") => void,
+	onUploaded?: (id: string, kind: "ephemeral") => void,
 ): Promise<Response> {
 	const vaultPath = config.vault.path;
 	if (!vaultPath) {
@@ -77,8 +77,6 @@ export async function handleUpload(
 		return new Response("Missing file", { status: 400 });
 	}
 
-	const kindRaw = String(form.get("kind") ?? "ephemeral");
-	const kind: db.AttachmentKind = kindRaw === "vault" ? "vault" : "ephemeral";
 	const sessionId = form.get("session_id");
 	const sessionIdStr =
 		typeof sessionId === "string" && sessionId.length > 0 ? sessionId : null;
@@ -100,14 +98,10 @@ export async function handleUpload(
 	}
 
 	const filename = sanitizeFilename(file.name);
+	const kind: db.AttachmentKind = "ephemeral";
 
-	let targetDir: string;
-	if (kind === "vault") {
-		targetDir = resolve(vaultRoot, config.attachments.vault_folder);
-	} else {
-		const sub = sessionIdStr ? sanitizeFilename(sessionIdStr) : "_unsessioned";
-		targetDir = resolve(vaultRoot, ".hlid", "attachments", sub);
-	}
+	const sub = sessionIdStr ? sanitizeFilename(sessionIdStr) : "_unsessioned";
+	const targetDir = resolve(vaultRoot, ".hlid", "attachments", sub);
 	ensureWithin(vaultRoot, targetDir);
 	await mkdir(targetDir, { recursive: true });
 
@@ -161,21 +155,17 @@ export async function serveAttachment(id: string): Promise<Response> {
 	});
 }
 
-export async function removeAttachment(
-	id: string,
-	opts: { confirmVault?: boolean } = {},
-): Promise<Response> {
+export async function removeAttachment(id: string): Promise<Response> {
 	const row = await db.getAttachment(id);
 	if (!row) return new Response("Not found", { status: 404 });
-	if (row.kind === "vault" && !opts.confirmVault) {
-		return Response.json(
-			{ error: "vault_delete_requires_confirm", id },
-			{ status: 409 },
-		);
-	}
 	await db.deleteAttachment(id);
 	try {
 		await unlink(row.path);
+		const dir = dirname(row.path);
+		const remaining = await readdir(dir).catch(() => null);
+		if (remaining?.length === 0) {
+			await rmdir(dir).catch(() => {});
+		}
 	} catch (err: unknown) {
 		if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
 			console.warn(`[attachments] unlink failed for ${row.path}:`, err);

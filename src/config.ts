@@ -7,9 +7,14 @@ import { z } from "zod";
 const VaultSchema = z.object({
 	name: z.string().default("Vault"),
 	path: z.string().default(""),
+	style: z.enum(["para", "wiki"]).optional(),
 	inbox: z.string().optional(),
 	projects: z.string().optional(),
 	areas: z.string().optional(),
+	resources: z.string().optional(),
+	archive: z.string().optional(),
+	raw: z.string().optional(),
+	wiki_folder: z.string().optional(),
 	skills: z.string().optional(),
 	memory: z.string().optional(),
 	outputs: z.string().optional(),
@@ -62,7 +67,6 @@ export const DEFAULT_ATTACHMENT_MIMES = [
 
 export const DEFAULT_ATTACHMENTS_CONFIG = {
 	max_bytes: 25 * 1024 * 1024,
-	vault_folder: "Attachments",
 	allowed_mimes: DEFAULT_ATTACHMENT_MIMES,
 };
 
@@ -72,7 +76,6 @@ const AttachmentsSchema = z.object({
 		.int()
 		.positive()
 		.default(DEFAULT_ATTACHMENTS_CONFIG.max_bytes),
-	vault_folder: z.string().default(DEFAULT_ATTACHMENTS_CONFIG.vault_folder),
 	allowed_mimes: z
 		.array(z.string())
 		.default(DEFAULT_ATTACHMENTS_CONFIG.allowed_mimes),

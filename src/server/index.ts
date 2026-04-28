@@ -382,8 +382,7 @@ Bun.serve({
 
 		const idMatch = url.pathname.match(/^\/api\/attachments\/([a-zA-Z0-9-]+)$/);
 		if (idMatch && req.method === "DELETE") {
-			const confirmVault = url.searchParams.get("confirm_vault") === "1";
-			return removeAttachment(idMatch[1], { confirmVault });
+			return removeAttachment(idMatch[1]);
 		}
 
 		if (url.pathname === "/db/attachments" && req.method === "GET") {

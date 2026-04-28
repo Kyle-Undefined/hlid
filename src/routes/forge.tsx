@@ -497,6 +497,9 @@ function KvTextarea({
 function McpSection({ vaultPath }: { vaultPath: string }) {
 	const [servers, setServers] = useState<VaultMcpServer[] | null>(null);
 	const [liveStatus, setLiveStatus] = useState<Map<string, string>>(new Map());
+	const [cloudServers, setCloudServers] = useState<
+		Array<{ name: string; status: string }>
+	>([]);
 	const [showAdd, setShowAdd] = useState(false);
 	const [addName, setAddName] = useState("");
 	const [addType, setAddType] = useState<"stdio" | "http" | "sse">("stdio");
@@ -519,6 +522,11 @@ function McpSection({ vaultPath }: { vaultPath: string }) {
 	const onMessage = useCallback((msg: ServerMessage) => {
 		if (msg.type === "mcp_status") {
 			setLiveStatus(new Map(msg.servers.map((s) => [s.name, s.status])));
+			setCloudServers(
+				msg.servers
+					.filter((s) => s.scope === "claudeai")
+					.map((s) => ({ name: s.name, status: s.status })),
+			);
 			setProbing(false);
 		}
 	}, []);
@@ -532,9 +540,14 @@ function McpSection({ vaultPath }: { vaultPath: string }) {
 				setServers([]);
 			});
 		getLiveMcpStatusFn()
-			.then((statuses) =>
-				setLiveStatus(new Map(statuses.map((s) => [s.name, s.status]))),
-			)
+			.then((statuses) => {
+				setLiveStatus(new Map(statuses.map((s) => [s.name, s.status])));
+				setCloudServers(
+					statuses
+						.filter((s) => s.scope === "claudeai")
+						.map((s) => ({ name: s.name, status: s.status })),
+				);
+			})
 			.catch((e) => console.error("[mcp] Failed to load status:", e));
 	}, []);
 
@@ -904,6 +917,25 @@ function McpSection({ vaultPath }: { vaultPath: string }) {
 				),
 			)}
 
+			{cloudServers.map((s) => (
+				<div
+					key={s.name}
+					className="flex items-center gap-3 px-4 py-3 opacity-60"
+				>
+					<span
+						className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDot(s.name)}`}
+					/>
+					<span className="flex-1 text-sm min-w-0 truncate text-foreground">
+						{s.name.startsWith("claude.ai ")
+							? s.name.slice("claude.ai ".length)
+							: s.name}
+					</span>
+					<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase shrink-0">
+						claude.ai
+					</span>
+				</div>
+			))}
+
 			{servers !== null && !showAdd && (
 				<div className="px-4 py-3">
 					<button
@@ -1048,7 +1080,7 @@ function McpSection({ vaultPath }: { vaultPath: string }) {
 					changes take effect on next session · cloud MCPs managed on claude.ai
 					<br />
 					use <span className="text-muted-foreground/50">check MCPs</span> to
-					validate configs, runs a quick SDK query (cached)
+					validate configs, runs a quick SDK query
 				</div>
 				<button
 					type="button"
@@ -1299,9 +1331,17 @@ function SettingsPage() {
 
 	const [vaultName, setVaultName] = useState(initial.vault.name);
 	const [vaultPath, setVaultPath] = useState(initial.vault.path);
+	const [vaultStyle, setVaultStyle] = useState<"para" | "wiki">(
+		initial.vault.style ?? "para",
+	);
 	const [inbox, setInbox] = useState(initial.vault.inbox ?? "");
 	const [projects, setProjects] = useState(initial.vault.projects ?? "");
 	const [areas, setAreas] = useState(initial.vault.areas ?? "");
+	const [resources, setResources] = useState(initial.vault.resources ?? "");
+	const [archive, setArchive] = useState(initial.vault.archive ?? "");
+	const [raw, setRaw] = useState(initial.vault.raw ?? "");
+	const [wikiFolder, setWikiFolder] = useState(initial.vault.wiki_folder ?? "");
+	const [outputs, setOutputs] = useState(initial.vault.outputs ?? "");
 	const [skills, setSkills] = useState(initial.vault.skills ?? "");
 	const [memory, setMemory] = useState(initial.vault.memory ?? "");
 	const [model, setModel] = useState(initial.claude.model);
@@ -1368,9 +1408,16 @@ function SettingsPage() {
 			vault: {
 				name: vaultName,
 				path: vaultPath,
-				inbox: inbox || undefined,
-				projects: projects || undefined,
-				areas: areas || undefined,
+				style: vaultStyle,
+				inbox: vaultStyle === "para" ? inbox || undefined : undefined,
+				projects: vaultStyle === "para" ? projects || undefined : undefined,
+				areas: vaultStyle === "para" ? areas || undefined : undefined,
+				resources: vaultStyle === "para" ? resources || undefined : undefined,
+				archive: vaultStyle === "para" ? archive || undefined : undefined,
+				raw: vaultStyle === "wiki" ? raw || undefined : undefined,
+				wiki_folder:
+					vaultStyle === "wiki" ? wikiFolder || undefined : undefined,
+				outputs: vaultStyle === "wiki" ? outputs || undefined : undefined,
 				skills: skills || undefined,
 				memory: memory || undefined,
 			},
@@ -1580,36 +1627,142 @@ function SettingsPage() {
 				</Section>
 
 				<Section title="Vault">
+					<div className="px-4 py-3 space-y-2">
+						<div className="text-sm text-foreground">Style</div>
+						<div className="grid grid-cols-2 gap-2">
+							{[
+								{
+									value: "para" as const,
+									label: "PARA",
+									desc: "Inbox · Projects · Areas · Resources · Archive",
+								},
+								{
+									value: "wiki" as const,
+									label: "LLM Wiki",
+									desc: "Raw · Wiki · Outputs",
+								},
+							].map((opt) => (
+								<button
+									key={opt.value}
+									type="button"
+									onClick={() => setVaultStyle(opt.value)}
+									className={`flex flex-col gap-1 p-3 border text-left transition-colors ${
+										vaultStyle === opt.value
+											? "border-primary bg-primary/5"
+											: "border-border hover:bg-accent"
+									}`}
+								>
+									<span className="text-sm font-medium text-foreground">
+										{opt.label}
+									</span>
+									<span className="text-xs text-muted-foreground">
+										{opt.desc}
+									</span>
+								</button>
+							))}
+						</div>
+					</div>
 					<Field label="Name">
 						<TextInput value={vaultName} onChange={setVaultName} />
 					</Field>
 					<Field label="Path">
 						<PathField value={vaultPath} onChange={setVaultPath} />
 					</Field>
-					<Field label="Inbox folder">
-						<RelativeFolderField
-							value={inbox}
-							onChange={setInbox}
-							basePath={vaultPath}
-							placeholder="00 Inbox"
-						/>
-					</Field>
-					<Field label="Projects folder">
-						<RelativeFolderField
-							value={projects}
-							onChange={setProjects}
-							basePath={vaultPath}
-							placeholder="10 Projects"
-						/>
-					</Field>
-					<Field label="Areas folder">
-						<RelativeFolderField
-							value={areas}
-							onChange={setAreas}
-							basePath={vaultPath}
-							placeholder="20 Areas"
-						/>
-					</Field>
+					{vaultStyle === "para" ? (
+						<>
+							<Field
+								label="Inbox folder"
+								hint="quick captures, unprocessed notes"
+							>
+								<RelativeFolderField
+									value={inbox}
+									onChange={setInbox}
+									basePath={vaultPath}
+									placeholder="00 Inbox"
+								/>
+							</Field>
+							<Field
+								label="Projects folder"
+								hint="active work with a defined outcome"
+							>
+								<RelativeFolderField
+									value={projects}
+									onChange={setProjects}
+									basePath={vaultPath}
+									placeholder="10 Projects"
+								/>
+							</Field>
+							<Field
+								label="Areas folder"
+								hint="ongoing responsibilities with no end date"
+							>
+								<RelativeFolderField
+									value={areas}
+									onChange={setAreas}
+									basePath={vaultPath}
+									placeholder="20 Areas"
+								/>
+							</Field>
+							<Field
+								label="Resources folder"
+								hint="reference material organized by topic"
+							>
+								<RelativeFolderField
+									value={resources}
+									onChange={setResources}
+									basePath={vaultPath}
+									placeholder="30 Resources"
+								/>
+							</Field>
+							<Field
+								label="Archive folder"
+								hint="completed or inactive projects and areas"
+							>
+								<RelativeFolderField
+									value={archive}
+									onChange={setArchive}
+									basePath={vaultPath}
+									placeholder="40 Archive"
+								/>
+							</Field>
+						</>
+					) : (
+						<>
+							<Field
+								label="Raw folder"
+								hint="unprocessed notes / quick captures"
+							>
+								<RelativeFolderField
+									value={raw}
+									onChange={setRaw}
+									basePath={vaultPath}
+									placeholder="raw"
+								/>
+							</Field>
+							<Field
+								label="Wiki folder"
+								hint="curated knowledge pages, LLM-maintained"
+							>
+								<RelativeFolderField
+									value={wikiFolder}
+									onChange={setWikiFolder}
+									basePath={vaultPath}
+									placeholder="wiki"
+								/>
+							</Field>
+							<Field
+								label="Outputs folder"
+								hint="generated content, blog posts, essays"
+							>
+								<RelativeFolderField
+									value={outputs}
+									onChange={setOutputs}
+									basePath={vaultPath}
+									placeholder="outputs"
+								/>
+							</Field>
+						</>
+					)}
 					<Field
 						label="Skills folder"
 						hint="vault skills (relative to vault path)"

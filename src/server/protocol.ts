@@ -101,7 +101,7 @@ export type ChatAttachment = {
 	path: string;
 	filename: string;
 	mime: string;
-	kind: "ephemeral" | "vault";
+	kind: string;
 };
 
 // Client → server messages

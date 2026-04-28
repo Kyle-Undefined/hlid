@@ -290,19 +290,19 @@ function EinherjarPage() {
 					) : (
 						agents.map((agent) => (
 							<div key={agent.path} className="divide-y divide-border/50">
-								<div className="flex items-center gap-3 px-4 py-3">
-									<button
-										type="button"
-										onClick={() => void handleToggleView(agent)}
-										disabled={!agent.hasClaudemd}
-										className="shrink-0 text-muted-foreground/40 hover:text-foreground transition-colors disabled:opacity-20"
-									>
+								<button
+									type="button"
+									onClick={() => void handleToggleView(agent)}
+									disabled={!agent.hasClaudemd}
+									className="w-full flex items-center gap-3 px-4 py-3 hover:bg-accent transition-colors text-left disabled:cursor-default"
+								>
+									<span className="shrink-0 text-muted-foreground/40 group-hover:text-foreground transition-colors">
 										{expandedPath === agent.path ? (
 											<ChevronDown className="w-3.5 h-3.5" />
 										) : (
-											<ChevronRight className="w-3.5 h-3.5" />
+											<ChevronRight className="w-3.5 h-3.5 opacity-40" />
 										)}
-									</button>
+									</span>
 									<div className="flex-1 min-w-0">
 										<div className="flex items-center gap-2">
 											<span className="text-[11px] tracking-wide text-foreground">
@@ -326,7 +326,12 @@ function EinherjarPage() {
 											</div>
 										)}
 									</div>
-									<div className="flex items-center gap-2 shrink-0">
+									{/* biome-ignore lint/a11y/noStaticElementInteractions: stop-propagation wrapper */}
+									<div
+										className="flex items-center gap-2 shrink-0"
+										onClick={(e) => e.stopPropagation()}
+										onKeyDown={(e) => e.stopPropagation()}
+									>
 										<button
 											type="button"
 											onClick={() => handleChat(agent)}
@@ -365,7 +370,7 @@ function EinherjarPage() {
 											</button>
 										)}
 									</div>
-								</div>
+								</button>
 								{expandedPath === agent.path &&
 									expandedContent[agent.path] != null && (
 										<div className="px-6 py-4 bg-secondary/30 text-xs text-foreground/80 leading-relaxed">

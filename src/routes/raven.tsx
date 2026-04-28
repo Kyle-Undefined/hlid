@@ -663,7 +663,7 @@ function AttachmentChip({ a }: { a: ChatAttachment }) {
 			target="_blank"
 			rel="noreferrer"
 			className="inline-flex items-center gap-1.5 max-w-[200px] border border-border/60 bg-secondary/30 hover:bg-secondary/60 transition-colors px-2 py-1 text-[10px] text-foreground/80"
-			title={`${a.filename} (${a.kind})`}
+			title={a.filename}
 		>
 			{isImage ? (
 				<img
@@ -675,11 +675,6 @@ function AttachmentChip({ a }: { a: ChatAttachment }) {
 				<FileIcon className="w-3 h-3 shrink-0 opacity-60" />
 			)}
 			<span className="truncate font-mono">{a.filename}</span>
-			{a.kind === "vault" && (
-				<span className="text-[8px] tracking-widest uppercase text-primary/60 shrink-0">
-					V
-				</span>
-			)}
 		</a>
 	);
 }
@@ -881,9 +876,6 @@ function ChatPage() {
 	const [pendingAttachments, setPendingAttachments] = useState<
 		ChatAttachment[]
 	>([]);
-	const [defaultKind, setDefaultKind] = useState<"ephemeral" | "vault">(
-		"ephemeral",
-	);
 	const [uploadingCount, setUploadingCount] = useState(0);
 	const [uploadError, setUploadError] = useState<string | null>(null);
 	const [dragOver, setDragOver] = useState(false);
@@ -1081,71 +1073,68 @@ function ChatPage() {
 		el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
 	}, [input]);
 
-	const uploadFiles = useCallback(
-		async (files: FileList | File[]) => {
-			const list = Array.from(files);
-			if (list.length === 0) return;
-			setUploadError(null);
-			setUploadingCount((c) => c + list.length);
-			try {
-				const results = await Promise.allSettled(
-					list.map(async (file) => {
-						const fd = new FormData();
-						fd.append("file", file);
-						fd.append("kind", defaultKind);
-						fd.append("session_id", sessionIdRef.current);
-						const res = await fetch("/api/attachments/upload", {
-							method: "POST",
-							body: fd,
-						});
-						if (!res.ok) {
-							let msg = `upload failed (${res.status})`;
-							try {
-								const body = (await res.json()) as { error?: string };
-								if (body.error) msg = body.error;
-							} catch {}
-							throw new Error(`${file.name}: ${msg}`);
-						}
-						return (await res.json()) as ChatAttachment & {
-							size_bytes: number;
-						};
-					}),
+	const uploadFiles = useCallback(async (files: FileList | File[]) => {
+		const list = Array.from(files);
+		if (list.length === 0) return;
+		setUploadError(null);
+		setUploadingCount((c) => c + list.length);
+		try {
+			const results = await Promise.allSettled(
+				list.map(async (file) => {
+					const fd = new FormData();
+					fd.append("file", file);
+					fd.append("kind", "ephemeral");
+					fd.append("session_id", sessionIdRef.current);
+					const res = await fetch("/api/attachments/upload", {
+						method: "POST",
+						body: fd,
+					});
+					if (!res.ok) {
+						let msg = `upload failed (${res.status})`;
+						try {
+							const body = (await res.json()) as { error?: string };
+							if (body.error) msg = body.error;
+						} catch {}
+						throw new Error(`${file.name}: ${msg}`);
+					}
+					return (await res.json()) as ChatAttachment & {
+						size_bytes: number;
+					};
+				}),
+			);
+			const fulfilled = results
+				.filter(
+					(
+						r,
+					): r is PromiseFulfilledResult<
+						ChatAttachment & { size_bytes: number }
+					> => r.status === "fulfilled",
+				)
+				.map((r) => r.value);
+			const failed = results
+				.filter((r): r is PromiseRejectedResult => r.status === "rejected")
+				.map((r) =>
+					r.reason instanceof Error ? r.reason.message : "upload failed",
 				);
-				const fulfilled = results
-					.filter(
-						(
-							r,
-						): r is PromiseFulfilledResult<
-							ChatAttachment & { size_bytes: number }
-						> => r.status === "fulfilled",
-					)
-					.map((r) => r.value);
-				const failed = results
-					.filter((r): r is PromiseRejectedResult => r.status === "rejected")
-					.map((r) =>
-						r.reason instanceof Error ? r.reason.message : "upload failed",
-					);
-				if (fulfilled.length > 0) {
-					setPendingAttachments((prev) => [
-						...prev,
-						...fulfilled.map((u) => ({
-							id: u.id,
-							path: u.path,
-							filename: u.filename,
-							mime: u.mime,
-							kind: u.kind,
-						})),
-					]);
-				}
-				if (failed.length > 0) setUploadError(failed.join("; "));
-			} catch (err) {
-				setUploadError(err instanceof Error ? err.message : "upload failed");
-			} finally {
-				setUploadingCount((c) => Math.max(0, c - list.length));
+			if (fulfilled.length > 0) {
+				setPendingAttachments((prev) => [
+					...prev,
+					...fulfilled.map((u) => ({
+						id: u.id,
+						path: u.path,
+						filename: u.filename,
+						mime: u.mime,
+						kind: u.kind,
+					})),
+				]);
 			}
-		},
-		[defaultKind],
-	);
+			if (failed.length > 0) setUploadError(failed.join("; "));
+		} catch (err) {
+			setUploadError(err instanceof Error ? err.message : "upload failed");
+		} finally {
+			setUploadingCount((c) => Math.max(0, c - list.length));
+		}
+	}, []);
 
 	const removePending = useCallback((id: string) => {
 		setPendingAttachments((prev) => prev.filter((a) => a.id !== id));
@@ -1328,11 +1317,6 @@ function ChatPage() {
 										<FileIcon className="w-3 h-3 shrink-0 opacity-60" />
 									)}
 									<span className="truncate font-mono">{a.filename}</span>
-									{a.kind === "vault" && (
-										<span className="text-[8px] tracking-widest uppercase text-primary/60 shrink-0">
-											V
-										</span>
-									)}
 									<button
 										type="button"
 										onClick={() => removePending(a.id)}
@@ -1353,31 +1337,6 @@ function ChatPage() {
 									{uploadError}
 								</span>
 							)}
-							<div className="ml-auto flex items-center gap-2 text-[9px] tracking-widest uppercase text-muted-foreground/60">
-								<span>save:</span>
-								<button
-									type="button"
-									onClick={() => setDefaultKind("ephemeral")}
-									className={`px-2 py-0.5 border ${
-										defaultKind === "ephemeral"
-											? "border-primary/60 text-primary/80"
-											: "border-border/60 hover:border-border"
-									}`}
-								>
-									ref
-								</button>
-								<button
-									type="button"
-									onClick={() => setDefaultKind("vault")}
-									className={`px-2 py-0.5 border ${
-										defaultKind === "vault"
-											? "border-primary/60 text-primary/80"
-											: "border-border/60 hover:border-border"
-									}`}
-								>
-									vault
-								</button>
-							</div>
 						</div>
 					)}
 					{agentList.length > 0 && (
@@ -1423,7 +1382,7 @@ function ChatPage() {
 							disabled={wsStatus !== "connected" || isRunning}
 							className="px-2 py-3 text-muted-foreground/45 hover:text-muted-foreground transition-colors shrink-0 disabled:opacity-30"
 							aria-label="Attach file"
-							title={`Attach (default: ${defaultKind})`}
+							title="Attach file"
 						>
 							<Paperclip className="w-3.5 h-3.5" />
 						</button>

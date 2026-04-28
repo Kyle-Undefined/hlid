@@ -1,11 +1,17 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
-import { File as FileIcon, Search, Trash2 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import {
+	ChevronDown,
+	ChevronRight,
+	File as FileIcon,
+	Search,
+	Trash2,
+} from "lucide-react";
+import { Fragment, useCallback, useEffect, useState } from "react";
+import { MarkdownBody } from "#/components/MarkdownBody";
 import { getConfig } from "#/config";
 import type { AttachmentRow } from "#/db";
 import { useWs } from "#/hooks/useWs";
-import { uid } from "#/lib/utils";
 import type { ServerMessage } from "#/server/protocol";
 
 type ListResult = {
@@ -17,7 +23,6 @@ type ListResult = {
 const listAttachmentsFn = createServerFn({ method: "POST" })
 	.inputValidator(
 		(data: {
-			kind?: "ephemeral" | "vault";
 			search?: string;
 			session_id?: string;
 			limit: number;
@@ -27,7 +32,6 @@ const listAttachmentsFn = createServerFn({ method: "POST" })
 	.handler(async ({ data }) => {
 		const { server } = await getConfig();
 		const params = new URLSearchParams();
-		if (data.kind) params.set("kind", data.kind);
 		if (data.search) params.set("search", data.search);
 		if (data.session_id) params.set("session_id", data.session_id);
 		params.set("limit", String(data.limit));
@@ -43,11 +47,8 @@ const listAttachmentsFn = createServerFn({ method: "POST" })
 
 export const Route = createFileRoute("/relics")({
 	loader: async () => {
-		const [initial, config] = await Promise.all([
-			listAttachmentsFn({ data: { limit: 50, offset: 0 } }),
-			getConfig(),
-		]);
-		return { initial, config };
+		const initial = await listAttachmentsFn({ data: { limit: 50, offset: 0 } });
+		return { initial };
 	},
 	staleTime: 0,
 	component: AttachmentsPage,
@@ -66,50 +67,83 @@ function formatDate(unix: number): string {
 
 const PAGE_SIZE = 50;
 
-function buildSkillPrompt(opts: {
-	dataPort: number;
-	vaultPath: string;
-	vaultFolder: string;
-	skillsFolder: string;
-}): string {
-	const { dataPort, vaultPath, vaultFolder, skillsFolder } = opts;
-	return `Create a vault skill for the hlid attachments API.
+function RelicPreview({ id, mime }: { id: string; mime: string }) {
+	const [text, setText] = useState<string | null>(null);
+	const [loading, setLoading] = useState(false);
+	const [err, setErr] = useState<string | null>(null);
 
-Data API base URL: \`http://127.0.0.1:${dataPort}\`
+	const isImage = mime.startsWith("image/");
+	const isText = mime.startsWith("text/") || mime === "application/json";
+	const isPdf = mime === "application/pdf";
 
-Endpoints:
-  POST   /api/attachments/upload          (multipart: file, kind=ephemeral|vault, session_id?)
-  GET    /api/attachments/:id/raw         (stream the file)
-  DELETE /api/attachments/:id             (vault deletes require ?confirm_vault=1)
-  GET    /db/attachments?kind=&session_id=&search=&limit=&offset=
-  GET    /db/session-messages?session_id=ID  (each user message includes attachments[])
+	useEffect(() => {
+		if (!isText) return;
+		const controller = new AbortController();
+		setLoading(true);
+		fetch(`/api/attachments/${id}/raw`, { signal: controller.signal })
+			.then((r) => {
+				if (!r.ok)
+					throw new Error(`fetch failed (${r.status} ${r.statusText})`);
+				return r.text();
+			})
+			.then(setText)
+			.catch((e) => {
+				if (e instanceof Error && e.name === "AbortError") return;
+				setErr(e instanceof Error ? e.message : "fetch failed");
+			})
+			.finally(() => setLoading(false));
+		return () => controller.abort();
+	}, [id, isText]);
 
-Storage layout:
-  Vault root: \`${vaultPath}\`
-  Ephemeral:  \`${vaultPath}/.hlid/attachments/<sessionId>/<filename>\`
-  Vault:      \`${vaultPath}/${vaultFolder}/<filename>\`
-
-Cascade behavior:
-  Deleting a session removes ephemeral attachment files + rows; vault rows survive with session_id NULL.
-  Vault attachments are never auto-deleted.
-
-Create the skill file at \`${skillsFolder}/<skill-name>.md\` with YAML frontmatter containing \`name\` and \`description\` fields. Register it in \`${skillsFolder}/index.md\` under an appropriate section using the pipe table format:
-## Section Name
-| \`skill-name\` | one-line description |`;
+	if (isImage) {
+		return (
+			<img
+				src={`/api/attachments/${id}/raw`}
+				alt=""
+				className="max-h-96 max-w-full object-contain"
+			/>
+		);
+	}
+	if (isPdf) {
+		return (
+			<iframe
+				src={`/api/attachments/${id}/raw`}
+				className="w-full h-96 border-0"
+				title="pdf preview"
+			/>
+		);
+	}
+	if (isText) {
+		if (loading)
+			return (
+				<span className="text-[11px] text-muted-foreground/50">loading…</span>
+			);
+		if (err)
+			return <span className="text-[11px] text-destructive/70">{err}</span>;
+		if (text === null) return null;
+		if (mime === "text/markdown") return <MarkdownBody content={text} />;
+		return (
+			<pre className="text-[11px] whitespace-pre-wrap break-words font-mono">
+				{text}
+			</pre>
+		);
+	}
+	return (
+		<span className="text-[11px] text-muted-foreground/50">no preview</span>
+	);
 }
 
 function AttachmentsPage() {
-	const { initial, config } = Route.useLoaderData();
+	const { initial } = Route.useLoaderData();
 	const [rows, setRows] = useState<AttachmentRow[]>(initial.rows);
 	const [total, setTotal] = useState(initial.total);
 	const [totalBytes, setTotalBytes] = useState(initial.total_bytes);
 	const [page, setPage] = useState(1);
-	const [kind, setKind] = useState<"all" | "ephemeral" | "vault">("all");
 	const [search, setSearch] = useState("");
 	const [selected, setSelected] = useState<Set<string>>(new Set());
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
-	const [headerAction, setHeaderAction] = useState<"build" | null>(null);
+	const [expandedId, setExpandedId] = useState<string | null>(null);
 	const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 	const [confirmDeleteBulk, setConfirmDeleteBulk] = useState(false);
 
@@ -122,17 +156,12 @@ function AttachmentsPage() {
 	}, [initial]);
 
 	const reload = useCallback(
-		async (
-			nextPage: number,
-			nextKind: "all" | "ephemeral" | "vault" = kind,
-			nextSearch: string = search,
-		) => {
+		async (nextPage: number, nextSearch: string = search) => {
 			setBusy(true);
 			setError(null);
 			try {
 				const res = await listAttachmentsFn({
 					data: {
-						kind: nextKind === "all" ? undefined : nextKind,
 						search: nextSearch.trim() || undefined,
 						limit: PAGE_SIZE,
 						offset: (nextPage - 1) * PAGE_SIZE,
@@ -149,7 +178,7 @@ function AttachmentsPage() {
 				setBusy(false);
 			}
 		},
-		[kind, search],
+		[search],
 	);
 
 	const handleWsMessage = useCallback(
@@ -158,29 +187,7 @@ function AttachmentsPage() {
 		},
 		[reload],
 	);
-	const { wsStatus, send } = useWs(handleWsMessage);
-	const connected = wsStatus === "connected";
-
-	const handleBuildSkill = () => {
-		const skillsFolder = config.vault.skills
-			? `${config.vault.path}/${config.vault.skills}`
-			: `${config.vault.path}/.claude/skills`;
-		send({
-			type: "chat",
-			text: buildSkillPrompt({
-				dataPort: config.server.port + 1,
-				vaultPath: config.vault.path,
-				vaultFolder: config.attachments.vault_folder,
-				skillsFolder,
-			}),
-			session_id: uid(),
-		});
-	};
-
-	const changeKind = (k: "all" | "ephemeral" | "vault") => {
-		setKind(k);
-		void reload(1, k, search);
-	};
+	useWs(handleWsMessage);
 
 	const toggle = (id: string) => {
 		setSelected((prev) => {
@@ -205,8 +212,9 @@ function AttachmentsPage() {
 		if (!row) return;
 		setBusy(true);
 		try {
-			const url = `/api/attachments/${row.id}${row.kind === "vault" ? "?confirm_vault=1" : ""}`;
-			const res = await fetch(url, { method: "DELETE" });
+			const res = await fetch(`/api/attachments/${row.id}`, {
+				method: "DELETE",
+			});
 			if (!res.ok) {
 				setError(`delete failed (${res.status})`);
 				return;
@@ -227,8 +235,9 @@ function AttachmentsPage() {
 			for (const id of ids) {
 				const row = rows.find((r) => r.id === id);
 				if (!row) continue;
-				const url = `/api/attachments/${row.id}${row.kind === "vault" ? "?confirm_vault=1" : ""}`;
-				const res = await fetch(url, { method: "DELETE" });
+				const res = await fetch(`/api/attachments/${row.id}`, {
+					method: "DELETE",
+				});
 				if (!res.ok) failures.push(row.filename);
 			}
 			if (failures.length > 0)
@@ -255,22 +264,6 @@ function AttachmentsPage() {
 						</div>
 					</div>
 					<div className="flex items-center gap-2 flex-wrap">
-						<div className="flex border border-border">
-							{(["all", "ephemeral", "vault"] as const).map((k) => (
-								<button
-									type="button"
-									key={k}
-									onClick={() => changeKind(k)}
-									className={`px-3 py-1.5 text-[10px] tracking-widest uppercase ${
-										kind === k
-											? "bg-primary/10 text-primary"
-											: "text-muted-foreground hover:text-foreground"
-									}`}
-								>
-									{k === "all" ? "all" : k === "ephemeral" ? "ref" : "vault"}
-								</button>
-							))}
-						</div>
 						<div className="flex items-center border border-border">
 							<Search className="w-3 h-3 mx-2 text-muted-foreground/60" />
 							<input
@@ -292,39 +285,6 @@ function AttachmentsPage() {
 						>
 							Refresh
 						</button>
-						{connected &&
-							(headerAction === null ? (
-								<button
-									type="button"
-									onClick={() => setHeaderAction("build")}
-									className="text-[9px] tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 uppercase transition-colors px-2"
-								>
-									build skill
-								</button>
-							) : (
-								<div className="flex items-center gap-2 px-2">
-									<span className="text-[9px] text-muted-foreground/50">
-										send to Claude?
-									</span>
-									<button
-										type="button"
-										onClick={() => {
-											handleBuildSkill();
-											setHeaderAction(null);
-										}}
-										className="text-[9px] tracking-widest text-primary/60 hover:text-primary uppercase transition-colors"
-									>
-										confirm
-									</button>
-									<button
-										type="button"
-										onClick={() => setHeaderAction(null)}
-										className="text-[9px] tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 uppercase transition-colors"
-									>
-										cancel
-									</button>
-								</div>
-							))}
 					</div>
 				</div>
 				{error && (
@@ -384,7 +344,6 @@ function AttachmentsPage() {
 								/>
 							</th>
 							<th className="px-3 py-2 text-left">File</th>
-							<th className="px-3 py-2 text-left w-20">Kind</th>
 							<th className="px-3 py-2 text-right w-24">Size</th>
 							<th className="px-3 py-2 text-left w-40">Type</th>
 							<th className="px-3 py-2 text-left w-44">Session</th>
@@ -396,7 +355,7 @@ function AttachmentsPage() {
 						{rows.length === 0 ? (
 							<tr>
 								<td
-									colSpan={8}
+									colSpan={7}
 									className="px-3 py-12 text-center text-muted-foreground/50"
 								>
 									no relics
@@ -404,88 +363,107 @@ function AttachmentsPage() {
 							</tr>
 						) : (
 							rows.map((r) => (
-								<tr
-									key={r.id}
-									className="border-b border-border/40 hover:bg-secondary/20"
-								>
-									<td className="px-3 py-2">
-										<input
-											type="checkbox"
-											checked={selected.has(r.id)}
-											onChange={() => toggle(r.id)}
-										/>
-									</td>
-									<td className="px-3 py-2">
-										<a
-											href={`/api/attachments/${r.id}/raw`}
-											target="_blank"
-											rel="noreferrer"
-											className="inline-flex items-center gap-2 text-foreground hover:text-primary"
+								<Fragment key={r.id}>
+									<tr
+										className="border-b border-border/40 hover:bg-secondary/20 cursor-pointer"
+										onClick={() =>
+											setExpandedId(expandedId === r.id ? null : r.id)
+										}
+									>
+										<td
+											className="px-3 py-2"
+											onClick={(e) => e.stopPropagation()}
+											onKeyDown={(e) => e.stopPropagation()}
 										>
-											{r.mime.startsWith("image/") ? (
-												<img
-													src={`/api/attachments/${r.id}/raw`}
-													alt={r.filename}
-													className="w-6 h-6 object-cover shrink-0"
-												/>
-											) : (
-												<FileIcon className="w-3 h-3 shrink-0 opacity-60" />
-											)}
-											<span className="font-mono truncate max-w-[280px]">
-												{r.filename}
-											</span>
-										</a>
-									</td>
-									<td className="px-3 py-2 uppercase tracking-widest text-[9px]">
-										{r.kind === "vault" ? (
-											<span className="text-primary/80">vault</span>
-										) : (
-											<span className="text-muted-foreground/70">ref</span>
-										)}
-									</td>
-									<td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
-										{formatBytes(r.size_bytes)}
-									</td>
-									<td className="px-3 py-2 font-mono text-muted-foreground/70 truncate">
-										{r.mime}
-									</td>
-									<td className="px-3 py-2 font-mono text-muted-foreground/60 truncate">
-										{r.session_id ? r.session_id.slice(0, 12) : "—"}
-									</td>
-									<td className="px-3 py-2 text-muted-foreground/70 tabular-nums">
-										{formatDate(r.created_at)}
-									</td>
-									<td className="px-3 py-2 text-right">
-										{confirmDeleteId === r.id ? (
-											<div className="flex items-center justify-end gap-1.5">
-												<button
-													type="button"
-													onClick={() => void deleteOne(r.id)}
-													className="text-[9px] tracking-widest text-destructive/60 hover:text-destructive uppercase transition-colors"
+											<input
+												type="checkbox"
+												checked={selected.has(r.id)}
+												onChange={() => toggle(r.id)}
+											/>
+										</td>
+										<td className="px-3 py-2">
+											<div className="flex items-center gap-1.5">
+												{expandedId === r.id ? (
+													<ChevronDown className="w-3 h-3 shrink-0 text-muted-foreground/50" />
+												) : (
+													<ChevronRight className="w-3 h-3 shrink-0 text-muted-foreground/50" />
+												)}
+												{r.mime.startsWith("image/") ? (
+													<img
+														src={`/api/attachments/${r.id}/raw`}
+														alt={r.filename}
+														className="w-6 h-6 object-cover shrink-0"
+													/>
+												) : (
+													<FileIcon className="w-3 h-3 shrink-0 opacity-60" />
+												)}
+												<a
+													href={`/api/attachments/${r.id}/raw`}
+													target="_blank"
+													rel="noreferrer"
+													onClick={(e) => e.stopPropagation()}
+													className="font-mono truncate max-w-[260px] text-foreground hover:text-primary"
 												>
-													confirm
-												</button>
-												<button
-													type="button"
-													onClick={() => setConfirmDeleteId(null)}
-													className="text-[9px] tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 uppercase transition-colors"
-												>
-													cancel
-												</button>
+													{r.filename}
+												</a>
 											</div>
-										) : (
-											<button
-												type="button"
-												onClick={() => setConfirmDeleteId(r.id)}
-												disabled={busy}
-												className="text-muted-foreground/50 hover:text-destructive disabled:opacity-30"
-												aria-label={`Delete ${r.filename}`}
-											>
-												<Trash2 className="w-3.5 h-3.5" />
-											</button>
-										)}
-									</td>
-								</tr>
+										</td>
+										<td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+											{formatBytes(r.size_bytes)}
+										</td>
+										<td className="px-3 py-2 font-mono text-muted-foreground/70 truncate">
+											{r.mime}
+										</td>
+										<td className="px-3 py-2 font-mono text-muted-foreground/60 truncate">
+											{r.session_id ? r.session_id.slice(0, 12) : "—"}
+										</td>
+										<td className="px-3 py-2 text-muted-foreground/70 tabular-nums">
+											{formatDate(r.created_at)}
+										</td>
+										<td
+											className="px-3 py-2 text-right"
+											onClick={(e) => e.stopPropagation()}
+											onKeyDown={(e) => e.stopPropagation()}
+										>
+											{confirmDeleteId === r.id ? (
+												<div className="flex items-center justify-end gap-1.5">
+													<button
+														type="button"
+														onClick={() => void deleteOne(r.id)}
+														className="text-[9px] tracking-widest text-destructive/60 hover:text-destructive uppercase transition-colors"
+													>
+														confirm
+													</button>
+													<button
+														type="button"
+														onClick={() => setConfirmDeleteId(null)}
+														className="text-[9px] tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 uppercase transition-colors"
+													>
+														cancel
+													</button>
+												</div>
+											) : (
+												<button
+													type="button"
+													onClick={() => setConfirmDeleteId(r.id)}
+													disabled={busy}
+													className="text-muted-foreground/50 hover:text-destructive disabled:opacity-30"
+													aria-label={`Delete ${r.filename}`}
+												>
+													<Trash2 className="w-3.5 h-3.5" />
+												</button>
+											)}
+										</td>
+									</tr>
+									{expandedId === r.id && (
+										<tr className="border-b border-border/40 bg-secondary/20">
+											<td />
+											<td colSpan={6} className="px-4 py-4">
+												<RelicPreview id={r.id} mime={r.mime} />
+											</td>
+										</tr>
+									)}
+								</Fragment>
 							))
 						)}
 					</tbody>
