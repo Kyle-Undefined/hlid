@@ -1,6 +1,14 @@
 import type { McpServerStatus } from "@anthropic-ai/claude-agent-sdk";
 import type { ServerWebSocket } from "bun";
 import * as db from "../db";
+import { isAllowedOrigin } from "../lib/allowedOrigin";
+import { clampInt } from "../lib/utils";
+import {
+	handleUpload,
+	removeAttachment,
+	serveAttachment,
+	unlinkPaths,
+} from "./attachments";
 import { loadConfig } from "./config";
 import type { ClientMessage, ServerMessage } from "./protocol";
 import { SessionManager } from "./session";
@@ -72,15 +80,6 @@ void (async () => {
 })();
 
 function captureUtilizationHeaders(headers: Headers): void {
-	const h5 = headers.get("anthropic-ratelimit-unified-5h-utilization");
-	const h7 = headers.get("anthropic-ratelimit-unified-7d-utilization");
-	const hSonnet = headers.get(
-		"anthropic-ratelimit-unified-7d_sonnet-utilization",
-	);
-	const r5 = headers.get("anthropic-ratelimit-unified-5h-reset");
-	const r7 = headers.get("anthropic-ratelimit-unified-7d-reset");
-	const rSonnet = headers.get("anthropic-ratelimit-unified-7d_sonnet-reset");
-
 	function toUnix(s: string | null): number | null {
 		if (!s) return null;
 		const t = parseInt(s, 10);
@@ -111,24 +110,36 @@ function captureUtilizationHeaders(headers: Headers): void {
 		});
 	}
 
-	if (h5 !== null) {
-		const raw = parseFloat(h5);
-		if (Number.isFinite(raw))
-			maybeUpdate("rl_5hr", "five_hour", raw > 1 ? raw / 100 : raw, toUnix(r5));
-	}
-	if (h7 !== null) {
-		const raw = parseFloat(h7);
-		if (Number.isFinite(raw))
-			maybeUpdate("rl_weekly", "weekly", raw > 1 ? raw / 100 : raw, toUnix(r7));
-	}
-	if (hSonnet !== null) {
-		const raw = parseFloat(hSonnet);
+	const windows = [
+		[
+			"anthropic-ratelimit-unified-5h-utilization",
+			"anthropic-ratelimit-unified-5h-reset",
+			"rl_5hr",
+			"five_hour",
+		],
+		[
+			"anthropic-ratelimit-unified-7d-utilization",
+			"anthropic-ratelimit-unified-7d-reset",
+			"rl_weekly",
+			"weekly",
+		],
+		[
+			"anthropic-ratelimit-unified-7d_sonnet-utilization",
+			"anthropic-ratelimit-unified-7d_sonnet-reset",
+			"rl_weekly_sonnet",
+			"weekly_sonnet",
+		],
+	] as const;
+	for (const [utilHeader, resetHeader, dbKey, rateLimitType] of windows) {
+		const h = headers.get(utilHeader);
+		if (h === null) continue;
+		const raw = parseFloat(h);
 		if (Number.isFinite(raw))
 			maybeUpdate(
-				"rl_weekly_sonnet",
-				"weekly_sonnet",
+				dbKey,
+				rateLimitType,
 				raw > 1 ? raw / 100 : raw,
-				toUnix(rSonnet),
+				toUnix(headers.get(resetHeader)),
 			);
 	}
 }
@@ -146,6 +157,9 @@ try {
 	Bun.serve({
 		hostname: "127.0.0.1",
 		port: PROXY_PORT,
+		// Long SSE streams from Anthropic can idle past 10s during tool calls.
+		// 255s is Bun.serve's max — prevents premature socket close.
+		idleTimeout: 255,
 		async fetch(req) {
 			const reqUrl = new URL(req.url);
 			const targetUrl = `${upstreamBase}${reqUrl.pathname}${reqUrl.search}`;
@@ -179,14 +193,37 @@ try {
 	console.log(`Anthropic proxy on :${PROXY_PORT} → ${upstreamBase}`);
 } catch (e) {
 	console.warn("[proxy] failed to start, utilization tracking disabled:", e);
+	void db.appendLog(
+		"warn",
+		"proxy",
+		"failed to start, utilization tracking disabled",
+		{ error: String(e) },
+	);
 }
+
+const tlsConfig =
+	process.env.HLID_TLS &&
+	config.server.tls_cert_path &&
+	config.server.tls_key_path
+		? {
+				tls: {
+					cert: Bun.file(config.server.tls_cert_path),
+					key: Bun.file(config.server.tls_key_path),
+				},
+			}
+		: {};
 
 Bun.serve({
 	port: PORT,
 	hostname: config.server.host,
+	...tlsConfig,
 
 	async fetch(req, server) {
 		const url = new URL(req.url);
+
+		if (!isAllowedOrigin(server.requestIP(req)?.address)) {
+			return new Response("Forbidden", { status: 403 });
+		}
 
 		if (url.pathname === "/ws") {
 			if (server.upgrade(req)) return undefined;
@@ -198,46 +235,29 @@ Bun.serve({
 		}
 
 		if (url.pathname === "/db/sessions" && req.method === "GET") {
-			const pageParam = parseInt(url.searchParams.get("page") ?? "1", 10);
-			const sizeParam = parseInt(url.searchParams.get("size") ?? "20", 10);
-			const page = Number.isNaN(pageParam) || pageParam < 1 ? 1 : pageParam;
-			const size =
-				Number.isNaN(sizeParam) || sizeParam < 1 || sizeParam > 100
-					? 20
-					: sizeParam;
+			const page = clampInt(url.searchParams.get("page"), 1, 1);
+			const size = clampInt(url.searchParams.get("size"), 20, 1, 100);
 			const result = await db.getSessionsPaginated(page, size);
 			return Response.json(result);
 		}
 
 		if (url.pathname === "/db/session" && req.method === "DELETE") {
-			const clientIP = server.requestIP(req);
-			if (clientIP?.address !== "127.0.0.1" && clientIP?.address !== "::1") {
-				return new Response("Forbidden", { status: 403 });
-			}
 			const id = url.searchParams.get("id");
 			if (!id) return new Response("Missing id", { status: 400 });
-			await db.deleteSession(id);
+			const { ephemeralPaths } = await db.deleteSession(id);
+			await unlinkPaths(ephemeralPaths);
 			return Response.json({ ok: true });
 		}
 
 		if (url.pathname === "/db/sessions/cleanup" && req.method === "POST") {
-			const clientIP = server.requestIP(req);
-			if (clientIP?.address !== "127.0.0.1" && clientIP?.address !== "::1") {
-				return new Response("Forbidden", { status: 403 });
-			}
-			const daysParam = parseInt(
-				url.searchParams.get("older_than_days") ?? "30",
-				10,
-			);
-			const days = Number.isNaN(daysParam) || daysParam <= 0 ? 30 : daysParam;
-			const deleted = await db.deleteSessionsOlderThan(days);
-			return Response.json({ deleted });
+			const days = clampInt(url.searchParams.get("older_than_days"), 30, 1);
+			const { count, ephemeralPaths } = await db.deleteSessionsOlderThan(days);
+			await unlinkPaths(ephemeralPaths);
+			return Response.json({ deleted: count });
 		}
 
 		if (url.pathname === "/db/recent-sessions") {
-			const limitParam = parseInt(url.searchParams.get("limit") ?? "14", 10);
-			const limit =
-				Number.isNaN(limitParam) || limitParam <= 0 ? 14 : limitParam;
+			const limit = clampInt(url.searchParams.get("limit"), 14, 1);
 			const rows = await db.getRecentSessions(limit);
 			return Response.json(rows);
 		}
@@ -246,21 +266,30 @@ Bun.serve({
 			const sessionId = url.searchParams.get("session_id");
 			if (!sessionId)
 				return new Response("Missing session_id", { status: 400 });
-			const [messages, toolEvents] = await Promise.all([
+			const [messages, toolEvents, attachments] = await Promise.all([
 				db.getSessionMessages(sessionId),
 				db.getSessionToolEvents(sessionId),
+				db.getAttachmentsForSession(sessionId),
 			]);
-			// Group tool events by assistant_seq for O(1) lookup
 			const toolsBySeq = new Map<number, (typeof toolEvents)[number][]>();
 			for (const te of toolEvents) {
 				const list = toolsBySeq.get(te.assistant_seq) ?? [];
 				list.push(te);
 				toolsBySeq.set(te.assistant_seq, list);
 			}
+			const attachBySeq = new Map<number, (typeof attachments)[number][]>();
+			for (const a of attachments) {
+				if (a.message_seq == null) continue;
+				const list = attachBySeq.get(a.message_seq) ?? [];
+				list.push(a);
+				attachBySeq.set(a.message_seq, list);
+			}
 			const enriched = messages.map((m) => ({
 				...m,
 				toolEvents:
 					m.role === "assistant" ? (toolsBySeq.get(m.seq) ?? []) : undefined,
+				attachments:
+					m.role === "user" ? (attachBySeq.get(m.seq) ?? []) : undefined,
 			}));
 			return Response.json(enriched);
 		}
@@ -317,6 +346,66 @@ Bun.serve({
 
 		if (url.pathname === "/mcp-status" && req.method === "GET") {
 			return Response.json(session.getLastMcpStatus() ?? []);
+		}
+
+		if (url.pathname === "/db/logs" && req.method === "GET") {
+			const page = clampInt(url.searchParams.get("page"), 1, 1);
+			const size = clampInt(url.searchParams.get("size"), 50, 1, 200);
+			const levelParam = url.searchParams.get("level") ?? "all";
+			const level =
+				levelParam === "error" || levelParam === "warn" || levelParam === "info"
+					? (levelParam as import("../db").LogLevel)
+					: undefined;
+			const result = await db.getLogs(page, size, level);
+			return Response.json(result);
+		}
+
+		if (url.pathname === "/db/logs" && req.method === "DELETE") {
+			await db.clearLogs();
+			return Response.json({ ok: true });
+		}
+
+		if (url.pathname === "/api/attachments/upload" && req.method === "POST") {
+			return handleUpload(req, config);
+		}
+
+		const rawMatch = url.pathname.match(
+			/^\/api\/attachments\/([a-zA-Z0-9-]+)\/raw$/,
+		);
+		if (rawMatch && req.method === "GET") {
+			return serveAttachment(rawMatch[1]);
+		}
+
+		const idMatch = url.pathname.match(/^\/api\/attachments\/([a-zA-Z0-9-]+)$/);
+		if (idMatch && req.method === "DELETE") {
+			const confirmVault = url.searchParams.get("confirm_vault") === "1";
+			return removeAttachment(idMatch[1], { confirmVault });
+		}
+
+		if (url.pathname === "/db/attachments" && req.method === "GET") {
+			const kindParam = url.searchParams.get("kind");
+			const kind =
+				kindParam === "ephemeral" || kindParam === "vault"
+					? kindParam
+					: undefined;
+			const sessionId = url.searchParams.get("session_id") ?? undefined;
+			const search = url.searchParams.get("search") ?? undefined;
+			const sinceParam = url.searchParams.get("since");
+			const untilParam = url.searchParams.get("until");
+			const since = sinceParam ? Number(sinceParam) : undefined;
+			const until = untilParam ? Number(untilParam) : undefined;
+			const limit = clampInt(url.searchParams.get("limit"), 100, 1, 500);
+			const offset = clampInt(url.searchParams.get("offset"), 0, 0);
+			const result = await db.listAttachments({
+				kind,
+				sessionId,
+				search,
+				since: since && !Number.isNaN(since) ? since : undefined,
+				until: until && !Number.isNaN(until) ? until : undefined,
+				limit,
+				offset,
+			});
+			return Response.json(result);
 		}
 
 		return new Response("Not found", { status: 404 });
@@ -436,6 +525,7 @@ Bun.serve({
 						(event) => broadcast(event),
 						msg.session_id,
 						msg.skill_context,
+						msg.attachments,
 					);
 				} catch (err) {
 					const message = err instanceof Error ? err.message : "Unknown error";
@@ -450,4 +540,4 @@ Bun.serve({
 	},
 });
 
-console.log(`Hlid server on :${PORT}`);
+console.log(`Hlid server on :${PORT}${process.env.HLID_TLS ? " (TLS)" : ""}`);

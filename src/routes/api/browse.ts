@@ -2,6 +2,7 @@ import { readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { resolve, sep } from "node:path";
 import { createFileRoute } from "@tanstack/react-router";
+import { forbiddenResponse } from "#/lib/originGate";
 
 const HOME = homedir();
 
@@ -18,7 +19,9 @@ function safePath(reqPath: string): string | null {
 export const Route = createFileRoute("/api/browse")({
 	server: {
 		handlers: {
-			GET: ({ request }) => {
+			GET: async ({ request }) => {
+				const forbidden = await forbiddenResponse();
+				if (forbidden) return forbidden;
 				const url = new URL(request.url);
 				const raw = url.searchParams.get("path") ?? HOME;
 				const safed = safePath(raw === "~" ? HOME : raw);

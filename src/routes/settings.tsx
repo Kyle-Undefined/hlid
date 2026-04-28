@@ -1,10 +1,12 @@
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import { useCallback, useEffect, useState } from "react";
+import { FileBrowser } from "#/components/wizard/FileBrowser";
 import { FolderBrowser } from "#/components/wizard/FolderBrowser";
 import { RelativeFolderField } from "#/components/wizard/RelativeFolderField";
 import type { HlidConfig } from "#/config";
-import { getConfig } from "#/config";
+import { DEFAULT_ATTACHMENTS_CONFIG, getConfig } from "#/config";
+import type { LogCounts, LogLevel, LogRow } from "#/db";
 import { useWs } from "#/hooks/useWs";
 import type { ServerMessage } from "#/server/protocol";
 
@@ -120,6 +122,43 @@ const getLiveMcpStatusFn = createServerFn({ method: "GET" }).handler(
 		}
 	},
 );
+
+const getLogsFn = createServerFn({ method: "GET" })
+	.inputValidator(
+		(raw: unknown) => raw as { page: number; size: number; level: string },
+	)
+	.handler(async ({ data }) => {
+		const config = await getConfig();
+		const params = new URLSearchParams({
+			page: String(data.page),
+			size: String(data.size),
+			level: data.level,
+		});
+		const res = await fetch(
+			`http://127.0.0.1:${config.server.port + 1}/db/logs?${params}`,
+		);
+		if (!res.ok)
+			return {
+				logs: [] as LogRow[],
+				total: 0,
+				counts: { error: 0, warn: 0, info: 0 } as LogCounts,
+			};
+		return res.json() as Promise<{
+			logs: LogRow[];
+			total: number;
+			counts: LogCounts;
+		}>;
+	});
+
+const clearLogsFn = createServerFn({ method: "POST" }).handler(async () => {
+	const config = await getConfig();
+	const res = await fetch(
+		`http://127.0.0.1:${config.server.port + 1}/db/logs`,
+		{ method: "DELETE" },
+	);
+	if (!res.ok) throw new Error(`Failed to clear logs: ${res.status}`);
+	return { ok: true };
+});
 
 // ─── route ────────────────────────────────────────────────────────────────────
 
@@ -307,6 +346,66 @@ function PathField({
 						</div>
 						<FolderBrowser
 							initialPath={value || undefined}
+							onSelect={(path) => {
+								onChange(path);
+								setOpen(false);
+							}}
+						/>
+					</div>
+				</div>
+			)}
+		</div>
+	);
+}
+
+function FilePathField({
+	value,
+	onChange,
+	placeholder,
+	extensions,
+}: {
+	value: string;
+	onChange: (v: string) => void;
+	placeholder?: string;
+	extensions?: string[];
+}) {
+	const [open, setOpen] = useState(false);
+
+	return (
+		<div className="flex items-center gap-2">
+			<input
+				type="text"
+				value={value}
+				onChange={(e) => onChange(e.target.value)}
+				placeholder={placeholder}
+				className="w-32 sm:w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+			/>
+			<button
+				type="button"
+				onClick={() => setOpen(true)}
+				className="text-[10px] tracking-widest px-2 py-1.5 border border-border text-muted-foreground hover:bg-accent hover:text-foreground transition-colors shrink-0 uppercase"
+			>
+				BROWSE
+			</button>
+
+			{open && (
+				<div className="fixed inset-0 z-50 bg-background/90 backdrop-blur-sm flex items-center justify-center p-4">
+					<div className="w-full max-w-md bg-card border border-border shadow-2xl p-5 space-y-4">
+						<div className="flex items-center justify-between">
+							<div className="text-[10px] tracking-widest text-muted-foreground uppercase">
+								PICK FILE
+							</div>
+							<button
+								type="button"
+								onClick={() => setOpen(false)}
+								className="text-[10px] tracking-widest text-muted-foreground hover:text-foreground transition-colors uppercase"
+							>
+								CANCEL
+							</button>
+						</div>
+						<FileBrowser
+							initialPath={value || undefined}
+							extensions={extensions}
 							onSelect={(path) => {
 								onChange(path);
 								setOpen(false);
@@ -609,6 +708,231 @@ function McpSection({ vaultPath }: { vaultPath: string }) {
 	);
 }
 
+// ─── event log ───────────────────────────────────────────────────────────────
+
+const LOG_PAGE_SIZE = 50;
+const LEVEL_TABS = ["all", "error", "warn", "info"] as const;
+type LevelTab = (typeof LEVEL_TABS)[number];
+
+const LEVEL_COLORS: Record<LogLevel, string> = {
+	error: "text-destructive",
+	warn: "text-yellow-500",
+	info: "text-muted-foreground",
+};
+
+function LogEntryRow({ entry }: { entry: LogRow }) {
+	const [expanded, setExpanded] = useState(false);
+	const d = new Date(entry.timestamp * 1000);
+	const tsShort = d.toLocaleTimeString(undefined, {
+		hour: "2-digit",
+		minute: "2-digit",
+		second: "2-digit",
+	});
+	const tsFull = d.toLocaleString(undefined, {
+		month: "short",
+		day: "numeric",
+		hour: "2-digit",
+		minute: "2-digit",
+		second: "2-digit",
+	});
+	return (
+		<div className="border-b border-border last:border-0">
+			<button
+				type="button"
+				onClick={() => entry.detail != null && setExpanded((p) => !p)}
+				className={`w-full flex items-start gap-3 px-4 py-2.5 text-left ${entry.detail != null ? "hover:bg-accent/20 cursor-pointer" : "cursor-default"} transition-colors`}
+			>
+				<span className="text-[9px] tabular-nums text-muted-foreground/40 shrink-0 pt-0.5 w-16 sm:w-28">
+					<span className="sm:hidden">{tsShort}</span>
+					<span className="hidden sm:inline">{tsFull}</span>
+				</span>
+				<span
+					className={`text-[9px] tracking-widest uppercase shrink-0 w-10 pt-0.5 ${LEVEL_COLORS[entry.level]}`}
+				>
+					{entry.level}
+				</span>
+				<span className="hidden sm:inline text-[9px] tracking-widest text-muted-foreground/50 uppercase shrink-0 w-14 pt-0.5">
+					{entry.source}
+				</span>
+				<span className="text-xs text-foreground/80 flex-1 min-w-0 break-words">
+					{entry.message}
+				</span>
+				{entry.detail != null && (
+					<span className="text-[9px] text-muted-foreground/30 shrink-0">
+						{expanded ? "▲" : "▼"}
+					</span>
+				)}
+			</button>
+			{expanded && entry.detail != null && (
+				<div className="px-4 pb-2.5">
+					<pre className="text-[10px] font-mono text-muted-foreground bg-secondary p-2 overflow-x-auto whitespace-pre-wrap break-all">
+						{(() => {
+							try {
+								return JSON.stringify(
+									JSON.parse(entry.detail as string),
+									null,
+									2,
+								);
+							} catch {
+								return entry.detail;
+							}
+						})()}
+					</pre>
+				</div>
+			)}
+		</div>
+	);
+}
+
+function EventLogSection() {
+	const [activeTab, setActiveTab] = useState<LevelTab>("all");
+	const [page, setPage] = useState(1);
+	const [data, setData] = useState<{
+		logs: LogRow[];
+		total: number;
+		counts: LogCounts;
+	} | null>(null);
+	const [loading, setLoading] = useState(false);
+	const [clearConfirming, setClearConfirming] = useState(false);
+
+	const load = useCallback(async (tab: LevelTab, p: number) => {
+		setLoading(true);
+		try {
+			const result = await getLogsFn({
+				data: { page: p, size: LOG_PAGE_SIZE, level: tab },
+			});
+			setData(result);
+		} finally {
+			setLoading(false);
+		}
+	}, []);
+
+	useEffect(() => {
+		void load(activeTab, page);
+	}, [load, activeTab, page]);
+
+	function handleTabChange(tab: LevelTab) {
+		setActiveTab(tab);
+		setPage(1);
+	}
+
+	async function handleClear() {
+		try {
+			await clearLogsFn();
+		} catch (e) {
+			console.error("[logs] clear failed:", e);
+		}
+		setClearConfirming(false);
+		setPage(1);
+		void load(activeTab, 1);
+	}
+
+	const total = data?.total ?? 0;
+	const counts = data?.counts ?? { error: 0, warn: 0, info: 0 };
+	const totalPages = Math.ceil(total / LOG_PAGE_SIZE);
+
+	return (
+		<Section title="Event Log">
+			<div className="border-b border-border">
+				<div className="flex items-center justify-between px-4 py-2">
+					<div className="flex items-center gap-3">
+						{LEVEL_TABS.map((tab) => {
+							const count =
+								tab === "all"
+									? counts.error + counts.warn + counts.info
+									: (counts[tab as LogLevel] ?? 0);
+							return (
+								<button
+									key={tab}
+									type="button"
+									onClick={() => handleTabChange(tab)}
+									className={`text-[9px] tracking-widest uppercase transition-colors ${
+										activeTab === tab
+											? "text-foreground"
+											: "text-muted-foreground/40 hover:text-muted-foreground/70"
+									}`}
+								>
+									{tab}
+									{count > 0 && (
+										<span className="ml-1 tabular-nums text-muted-foreground/40">
+											{count}
+										</span>
+									)}
+								</button>
+							);
+						})}
+					</div>
+					{clearConfirming ? (
+						<div className="flex items-center gap-2">
+							<span className="text-[9px] text-muted-foreground/50">
+								clear all?
+							</span>
+							<button
+								type="button"
+								onClick={handleClear}
+								className="text-[9px] tracking-widest text-destructive/60 hover:text-destructive uppercase transition-colors"
+							>
+								confirm
+							</button>
+							<button
+								type="button"
+								onClick={() => setClearConfirming(false)}
+								className="text-[9px] tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 uppercase transition-colors"
+							>
+								cancel
+							</button>
+						</div>
+					) : total > 0 ? (
+						<button
+							type="button"
+							onClick={() => setClearConfirming(true)}
+							className="text-[8px] tracking-widest text-muted-foreground/30 hover:text-muted-foreground/60 uppercase transition-colors"
+						>
+							clear
+						</button>
+					) : null}
+				</div>
+			</div>
+
+			{loading ? (
+				<div className="px-4 py-6 text-center text-[9px] tracking-widest text-muted-foreground/50">
+					loading…
+				</div>
+			) : !data || data.logs.length === 0 ? (
+				<div className="px-4 py-6 text-center text-[9px] tracking-widest text-muted-foreground/30">
+					no logs
+				</div>
+			) : (
+				data.logs.map((entry) => <LogEntryRow key={entry.id} entry={entry} />)
+			)}
+
+			{totalPages > 1 && (
+				<div className="px-4 py-2.5 border-t border-border flex items-center justify-between">
+					<button
+						type="button"
+						disabled={page <= 1 || loading}
+						onClick={() => setPage((p) => p - 1)}
+						className="text-[9px] tracking-widest text-muted-foreground/40 hover:text-foreground disabled:opacity-20 uppercase transition-colors"
+					>
+						← prev
+					</button>
+					<span className="text-[9px] tabular-nums text-muted-foreground/30">
+						{page} / {totalPages}
+					</span>
+					<button
+						type="button"
+						disabled={page >= totalPages || loading}
+						onClick={() => setPage((p) => p + 1)}
+						className="text-[9px] tracking-widest text-muted-foreground/40 hover:text-foreground disabled:opacity-20 uppercase transition-colors"
+					>
+						next →
+					</button>
+				</div>
+			)}
+		</Section>
+	);
+}
+
 // ─── page ─────────────────────────────────────────────────────────────────────
 
 function SettingsPage() {
@@ -634,6 +958,17 @@ function SettingsPage() {
 	);
 	const [port, setPort] = useState(String(initial.server.port));
 	const [host, setHost] = useState(initial.server.host);
+	const [tlsCertPath, setTlsCertPath] = useState(
+		initial.server.tls_cert_path ?? "",
+	);
+	const [tlsKeyPath, setTlsKeyPath] = useState(
+		initial.server.tls_key_path ?? "",
+	);
+	const [tlsProxyPort, setTlsProxyPort] = useState(
+		initial.server.tls_proxy_port != null
+			? String(initial.server.tls_proxy_port)
+			: "",
+	);
 	const [enterToSubmit, setEnterToSubmit] = useState(
 		initial.ui.enter_to_submit,
 	);
@@ -660,8 +995,11 @@ function SettingsPage() {
 	const router = useRouter();
 
 	useEffect(() => {
-		document.documentElement.setAttribute("data-theme", theme);
-	}, [theme]);
+		const isMobile = window.matchMedia("(pointer: coarse)").matches;
+		const effective = isMobile && mobileTheme !== "same" ? mobileTheme : theme;
+		document.documentElement.setAttribute("data-theme", effective);
+		document.documentElement.className = effective;
+	}, [theme, mobileTheme]);
 
 	async function save() {
 		setSaving(true);
@@ -681,6 +1019,9 @@ function SettingsPage() {
 			server: {
 				port: Number(port) || 3000,
 				host: host || "0.0.0.0",
+				tls_cert_path: tlsCertPath || undefined,
+				tls_key_path: tlsKeyPath || undefined,
+				tls_proxy_port: Number(tlsProxyPort) || 3443,
 			},
 			claude: {
 				model,
@@ -708,6 +1049,7 @@ function SettingsPage() {
 					.map((s) => s.trim())
 					.filter(Boolean),
 			},
+			attachments: initial.attachments ?? DEFAULT_ATTACHMENTS_CONFIG,
 		};
 
 		try {
@@ -741,6 +1083,21 @@ function SettingsPage() {
 	return (
 		<div className="flex flex-col h-full">
 			<div className="flex-1 overflow-auto p-5 space-y-6">
+				<Section title="Session">
+					<Field
+						label="Reload session"
+						hint="restarts Claude with the current config and wipes conversation history"
+					>
+						<button
+							type="button"
+							onClick={reloadSession}
+							className="text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:bg-accent hover:text-foreground transition-colors uppercase"
+						>
+							RELOAD
+						</button>
+					</Field>
+				</Section>
+
 				<Section title="Vault">
 					<Field label="Name">
 						<TextInput value={vaultName} onChange={setVaultName} />
@@ -906,6 +1263,30 @@ function SettingsPage() {
 							mono
 						/>
 					</Field>
+					<Field label="TLS Cert Path">
+						<FilePathField
+							value={tlsCertPath}
+							onChange={setTlsCertPath}
+							placeholder="/path/to/cert.pem"
+							extensions={[".pem", ".crt", ".cer"]}
+						/>
+					</Field>
+					<Field label="TLS Key Path">
+						<FilePathField
+							value={tlsKeyPath}
+							onChange={setTlsKeyPath}
+							placeholder="/path/to/key.pem"
+							extensions={[".pem", ".key"]}
+						/>
+					</Field>
+					<Field label="TLS Proxy Port">
+						<TextInput
+							value={tlsProxyPort}
+							onChange={setTlsProxyPort}
+							placeholder="3443"
+							mono
+						/>
+					</Field>
 				</Section>
 
 				<Section title="Status Vocabulary">
@@ -1046,20 +1427,7 @@ function SettingsPage() {
 
 				<McpSection vaultPath={vaultPath} />
 
-				<Section title="Session">
-					<Field
-						label="Reload session"
-						hint="restarts Claude with the current config and wipes conversation history"
-					>
-						<button
-							type="button"
-							onClick={reloadSession}
-							className="text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:bg-accent hover:text-foreground transition-colors uppercase"
-						>
-							RELOAD
-						</button>
-					</Field>
-				</Section>
+				<EventLogSection />
 			</div>
 
 			{/* Save bar */}

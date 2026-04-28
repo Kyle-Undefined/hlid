@@ -641,11 +641,20 @@ function ThirtyDayGraph({ data }: { data: ThirtyDayStats }) {
 					/>
 					<YAxis hide domain={isEmpty ? [0, 1] : ["auto", "auto"]} />
 					<Tooltip
-						content={() => null}
+						content={({ active, payload }) => {
+							if (!active || !payload?.length) return null;
+							const val = payload[0]?.value;
+							if (val == null) return null;
+							return (
+								<div className="text-[9px] tabular-nums bg-background/90 border border-border px-1.5 py-0.5 rounded shadow-sm text-foreground/70">
+									{val}
+								</div>
+							);
+						}}
 						cursor={{
 							stroke: "var(--data)",
 							strokeWidth: 1,
-							strokeOpacity: 0.2,
+							strokeOpacity: 0.3,
 						}}
 					/>
 					<Area

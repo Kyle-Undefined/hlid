@@ -89,12 +89,21 @@ export type ServerMessage =
 	| UserMessageEvent
 	| McpStatusMessage;
 
+export type ChatAttachment = {
+	id: string;
+	path: string;
+	filename: string;
+	mime: string;
+	kind: "ephemeral" | "vault";
+};
+
 // Client → server messages
 export type ClientChatMessage = {
 	type: "chat";
 	text: string;
 	session_id?: string;
 	skill_context?: string;
+	attachments?: ChatAttachment[];
 };
 
 export type ClientAbortMessage = {

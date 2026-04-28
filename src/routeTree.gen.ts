@@ -13,10 +13,14 @@ import { Route as VaultRouteImport } from './routes/vault'
 import { Route as StatsRouteImport } from './routes/stats'
 import { Route as SettingsRouteImport } from './routes/settings'
 import { Route as ChatRouteImport } from './routes/chat'
+import { Route as AttachmentsRouteImport } from './routes/attachments'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as ApiConfigRouteImport } from './routes/api/config'
 import { Route as ApiBrowseRouteImport } from './routes/api/browse'
+import { Route as ApiAttachmentsUploadRouteImport } from './routes/api/attachments/upload'
+import { Route as ApiAttachmentsIdRouteImport } from './routes/api/attachments/$id'
+import { Route as ApiAttachmentsIdRawRouteImport } from './routes/api/attachments/$id.raw'
 
 const VaultRoute = VaultRouteImport.update({
   id: '/vault',
@@ -36,6 +40,11 @@ const SettingsRoute = SettingsRouteImport.update({
 const ChatRoute = ChatRouteImport.update({
   id: '/chat',
   path: '/chat',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const AttachmentsRoute = AttachmentsRouteImport.update({
+  id: '/attachments',
+  path: '/attachments',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -58,9 +67,25 @@ const ApiBrowseRoute = ApiBrowseRouteImport.update({
   path: '/api/browse',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiAttachmentsUploadRoute = ApiAttachmentsUploadRouteImport.update({
+  id: '/api/attachments/upload',
+  path: '/api/attachments/upload',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAttachmentsIdRoute = ApiAttachmentsIdRouteImport.update({
+  id: '/api/attachments/$id',
+  path: '/api/attachments/$id',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAttachmentsIdRawRoute = ApiAttachmentsIdRawRouteImport.update({
+  id: '/raw',
+  path: '/raw',
+  getParentRoute: () => ApiAttachmentsIdRoute,
+} as any)
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
+  '/attachments': typeof AttachmentsRoute
   '/chat': typeof ChatRoute
   '/settings': typeof SettingsRoute
   '/stats': typeof StatsRoute
@@ -68,9 +93,13 @@ export interface FileRoutesByFullPath {
   '/api/browse': typeof ApiBrowseRoute
   '/api/config': typeof ApiConfigRoute
   '/api/health': typeof ApiHealthRoute
+  '/api/attachments/$id': typeof ApiAttachmentsIdRouteWithChildren
+  '/api/attachments/upload': typeof ApiAttachmentsUploadRoute
+  '/api/attachments/$id/raw': typeof ApiAttachmentsIdRawRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
+  '/attachments': typeof AttachmentsRoute
   '/chat': typeof ChatRoute
   '/settings': typeof SettingsRoute
   '/stats': typeof StatsRoute
@@ -78,10 +107,14 @@ export interface FileRoutesByTo {
   '/api/browse': typeof ApiBrowseRoute
   '/api/config': typeof ApiConfigRoute
   '/api/health': typeof ApiHealthRoute
+  '/api/attachments/$id': typeof ApiAttachmentsIdRouteWithChildren
+  '/api/attachments/upload': typeof ApiAttachmentsUploadRoute
+  '/api/attachments/$id/raw': typeof ApiAttachmentsIdRawRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
+  '/attachments': typeof AttachmentsRoute
   '/chat': typeof ChatRoute
   '/settings': typeof SettingsRoute
   '/stats': typeof StatsRoute
@@ -89,11 +122,15 @@ export interface FileRoutesById {
   '/api/browse': typeof ApiBrowseRoute
   '/api/config': typeof ApiConfigRoute
   '/api/health': typeof ApiHealthRoute
+  '/api/attachments/$id': typeof ApiAttachmentsIdRouteWithChildren
+  '/api/attachments/upload': typeof ApiAttachmentsUploadRoute
+  '/api/attachments/$id/raw': typeof ApiAttachmentsIdRawRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
+    | '/attachments'
     | '/chat'
     | '/settings'
     | '/stats'
@@ -101,9 +138,13 @@ export interface FileRouteTypes {
     | '/api/browse'
     | '/api/config'
     | '/api/health'
+    | '/api/attachments/$id'
+    | '/api/attachments/upload'
+    | '/api/attachments/$id/raw'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
+    | '/attachments'
     | '/chat'
     | '/settings'
     | '/stats'
@@ -111,9 +152,13 @@ export interface FileRouteTypes {
     | '/api/browse'
     | '/api/config'
     | '/api/health'
+    | '/api/attachments/$id'
+    | '/api/attachments/upload'
+    | '/api/attachments/$id/raw'
   id:
     | '__root__'
     | '/'
+    | '/attachments'
     | '/chat'
     | '/settings'
     | '/stats'
@@ -121,10 +166,14 @@ export interface FileRouteTypes {
     | '/api/browse'
     | '/api/config'
     | '/api/health'
+    | '/api/attachments/$id'
+    | '/api/attachments/upload'
+    | '/api/attachments/$id/raw'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
+  AttachmentsRoute: typeof AttachmentsRoute
   ChatRoute: typeof ChatRoute
   SettingsRoute: typeof SettingsRoute
   StatsRoute: typeof StatsRoute
@@ -132,6 +181,8 @@ export interface RootRouteChildren {
   ApiBrowseRoute: typeof ApiBrowseRoute
   ApiConfigRoute: typeof ApiConfigRoute
   ApiHealthRoute: typeof ApiHealthRoute
+  ApiAttachmentsIdRoute: typeof ApiAttachmentsIdRouteWithChildren
+  ApiAttachmentsUploadRoute: typeof ApiAttachmentsUploadRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -164,6 +215,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ChatRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/attachments': {
+      id: '/attachments'
+      path: '/attachments'
+      fullPath: '/attachments'
+      preLoaderRoute: typeof AttachmentsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/': {
       id: '/'
       path: '/'
@@ -192,11 +250,44 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiBrowseRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/attachments/upload': {
+      id: '/api/attachments/upload'
+      path: '/api/attachments/upload'
+      fullPath: '/api/attachments/upload'
+      preLoaderRoute: typeof ApiAttachmentsUploadRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/attachments/$id': {
+      id: '/api/attachments/$id'
+      path: '/api/attachments/$id'
+      fullPath: '/api/attachments/$id'
+      preLoaderRoute: typeof ApiAttachmentsIdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/attachments/$id/raw': {
+      id: '/api/attachments/$id/raw'
+      path: '/raw'
+      fullPath: '/api/attachments/$id/raw'
+      preLoaderRoute: typeof ApiAttachmentsIdRawRouteImport
+      parentRoute: typeof ApiAttachmentsIdRoute
+    }
   }
 }
 
+interface ApiAttachmentsIdRouteChildren {
+  ApiAttachmentsIdRawRoute: typeof ApiAttachmentsIdRawRoute
+}
+
+const ApiAttachmentsIdRouteChildren: ApiAttachmentsIdRouteChildren = {
+  ApiAttachmentsIdRawRoute: ApiAttachmentsIdRawRoute,
+}
+
+const ApiAttachmentsIdRouteWithChildren =
+  ApiAttachmentsIdRoute._addFileChildren(ApiAttachmentsIdRouteChildren)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
+  AttachmentsRoute: AttachmentsRoute,
   ChatRoute: ChatRoute,
   SettingsRoute: SettingsRoute,
   StatsRoute: StatsRoute,
@@ -204,6 +295,8 @@ const rootRouteChildren: RootRouteChildren = {
   ApiBrowseRoute: ApiBrowseRoute,
   ApiConfigRoute: ApiConfigRoute,
   ApiHealthRoute: ApiHealthRoute,
+  ApiAttachmentsIdRoute: ApiAttachmentsIdRouteWithChildren,
+  ApiAttachmentsUploadRoute: ApiAttachmentsUploadRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

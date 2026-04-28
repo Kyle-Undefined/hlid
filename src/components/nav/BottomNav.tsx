@@ -4,6 +4,7 @@ import {
 	FolderOpen,
 	LayoutDashboard,
 	MessageSquare,
+	Paperclip,
 	Settings,
 } from "lucide-react";
 import { StatusDot } from "./StatusDot";
@@ -12,6 +13,7 @@ const NAV_ITEMS = [
 	{ to: "/", label: "WATCH", icon: LayoutDashboard, exact: true },
 	{ to: "/chat", label: "RAVEN", icon: MessageSquare, exact: false },
 	{ to: "/vault", label: "VAULT", icon: FolderOpen, exact: false },
+	{ to: "/attachments", label: "RELICS", icon: Paperclip, exact: false },
 	{ to: "/stats", label: "LEDGER", icon: BarChart3, exact: false },
 	{ to: "/settings", label: "FORGE", icon: Settings, exact: false },
 ] as const;

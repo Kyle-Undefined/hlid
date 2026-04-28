@@ -1,7 +1,7 @@
 {
   "name": "hlid",
   "description": "Hliðskjálf - Watcher of Worlds",
-  "version": "0.0.9",
+  "version": "0.0.10",
   "private": true,
   "type": "module",
   "imports": {
@@ -10,7 +10,8 @@
   "scripts": {
     "dev": "vite dev --port 3000",
     "dev:server": "bun --watch src/server/index.ts",
-    "dev:all": "concurrently -n ui,server -c cyan,magenta 'bun --bun run dev' 'bun run dev:server'",
+    "dev:all": "concurrently -n ui,server,tls -c cyan,magenta,yellow 'bun --bun run dev' 'bun run dev:server' 'bun run dev:tls-proxy'",
+    "dev:tls-proxy": "bun scripts/tls-proxy.ts",
     "build": "vite build",
     "start": "bun src/server/index.ts",
     "preview": "vite preview",
@@ -18,8 +19,9 @@
     "format": "biome format",
     "lint": "biome lint",
     "check": "biome check",
-    "stage": "biome format --write && biome lint --fix && biome check && tsc --noEmit",
-    "version:bump": "bumpp --quiet"
+    "stage": "biome format --write && biome lint --fix && biome check && biome check --write",
+    "version:bump": "bumpp --quiet",
+    "generate-icons": "bun scripts/generate-icons.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.2.119",
@@ -59,6 +61,7 @@
     "@vitejs/plugin-react": "^6.0.1",
     "concurrently": "^9.2.1",
     "jsdom": "^28.1.0",
+    "sharp": "^0.34.5",
     "typescript": "^5.7.2",
     "vite": "^8.0.0",
     "vitest": "^3.0.5"

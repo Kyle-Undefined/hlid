@@ -4,7 +4,7 @@ import type { McpServerStatus } from "@anthropic-ai/claude-agent-sdk";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { HlidConfig } from "../config";
 import * as db from "../db";
-import type { ServerMessage } from "./protocol";
+import type { ChatAttachment, ServerMessage } from "./protocol";
 
 function resolveClaudeExecutable(configOverride?: string): string | undefined {
 	if (configOverride) return configOverride;
@@ -69,9 +69,12 @@ export class SessionManager {
 		this.state = "idle";
 		this.currentSessionId = null;
 		this.messageSeq = 0;
-		db.clearCurrentSessionId().catch((e) =>
-			console.error("[db] clearCurrentSessionId failed:", e),
-		);
+		db.clearCurrentSessionId().catch((e) => {
+			console.error("[db] clearCurrentSessionId failed:", e);
+			void db.appendLog("error", "db", "clearCurrentSessionId failed", {
+				error: String(e),
+			});
+		});
 	}
 
 	getStatus(): { state: SessionState; model: string } {
@@ -114,9 +117,12 @@ export class SessionManager {
 		this.history = [];
 		this.currentSessionId = null;
 		this.messageSeq = 0;
-		db.clearCurrentSessionId().catch((e) =>
-			console.error("[db] clearCurrentSessionId failed:", e),
-		);
+		db.clearCurrentSessionId().catch((e) => {
+			console.error("[db] clearCurrentSessionId failed:", e);
+			void db.appendLog("error", "db", "clearCurrentSessionId failed", {
+				error: String(e),
+			});
+		});
 	}
 
 	private buildPrompt(userMessage: string): string {
@@ -134,6 +140,7 @@ export class SessionManager {
 		emit: (msg: ServerMessage) => void,
 		sessionId?: string,
 		skillContext?: string,
+		attachments?: ChatAttachment[],
 	): Promise<void> {
 		if (this.state === "running") {
 			emit({ type: "error", message: "Session already running" });
@@ -154,9 +161,12 @@ export class SessionManager {
 			}));
 			this.messageSeq = prior.length;
 			this.currentSessionId = sessionId;
-			db.setCurrentSessionId(sessionId).catch((e) =>
-				console.error("[db] setCurrentSessionId failed:", e),
-			);
+			db.setCurrentSessionId(sessionId).catch((e) => {
+				console.error("[db] setCurrentSessionId failed:", e);
+				void db.appendLog("error", "db", "setCurrentSessionId failed", {
+					error: String(e),
+				});
+			});
 		}
 
 		// Create DB session record for new sessions
@@ -182,17 +192,37 @@ export class SessionManager {
 			// Validate it stays within the vault before interpolating into the prompt.
 			// For Claude skills (skillContext absent): message starts with '/' and CLI handles
 			// the slash command natively from ~/.claude/skills/ — keep the slash intact.
-			const safeSkillContext = skillContext?.startsWith(`${this.vaultPath}/`)
-				? skillContext
-				: undefined;
+			const vaultRoot = resolve(this.vaultPath);
+			const safeSkillContext = (() => {
+				if (!skillContext) return undefined;
+				const p = resolve(skillContext);
+				return p.startsWith(`${vaultRoot}/`) ? skillContext : undefined;
+			})();
+			const safeAttachments = (attachments ?? []).filter((a) => {
+				const p = resolve(a.path);
+				return p.startsWith(`${vaultRoot}/`);
+			});
+			const attachmentBlock =
+				safeAttachments.length > 0
+					? `Attachments (read with the Read tool when relevant):\n${safeAttachments
+							.map((a) => `- ${a.path} (${a.mime})`)
+							.join("\n")}\n\n`
+					: "";
 			const claudeMessage = safeSkillContext
-				? `Please read the skill file at \`${safeSkillContext}\` and follow its instructions.\n\nUser: ${userMessage || "(no additional input)"}`
-				: userMessage;
+				? `${attachmentBlock}Please read the skill file at \`${safeSkillContext}\` and follow its instructions.\n\nUser: ${userMessage || "(no additional input)"}`
+				: `${attachmentBlock}${userMessage}`;
 			const prompt = this.buildPrompt(claudeMessage);
 			this.history.push({ role: "user", text: claudeMessage });
 			const userSeq = this.messageSeq++;
 			if (sessionId) {
 				await db.appendMessage(sessionId, userSeq, "user", userMessage);
+				for (const a of safeAttachments) {
+					await db
+						.linkAttachmentToMessage(a.id, sessionId, userSeq)
+						.catch((e) => {
+							console.error("[session] linkAttachmentToMessage failed:", e);
+						});
+				}
 			}
 
 			const conversation = query({
@@ -358,9 +388,12 @@ export class SessionManager {
 									te.toolId,
 									te.name,
 									te.input,
-								).catch((e) =>
-									console.error("[db] appendToolEvent failed:", e),
-								);
+								).catch((e) => {
+									console.error("[db] appendToolEvent failed:", e);
+									void db.appendLog("error", "db", "appendToolEvent failed", {
+										error: String(e),
+									});
+								});
 							}
 							pendingToolEvents.length = 0;
 							assistantText = "";
@@ -394,6 +427,11 @@ export class SessionManager {
 			this.state = "error";
 			const msg = err instanceof Error ? err.message : "Unknown error";
 			console.error("[session] runQuery error:", err);
+			void db.appendLog("error", "session", "runQuery error", {
+				message: msg,
+				name: err instanceof Error ? err.name : undefined,
+				stack: err instanceof Error ? err.stack?.slice(0, 500) : undefined,
+			});
 			emit({ type: "error", message: msg });
 		} finally {
 			// Persist any remaining assistant text (error/abort path — result block clears it on success)
@@ -416,12 +454,26 @@ export class SessionManager {
 								te.toolId,
 								te.name,
 								te.input,
-							).catch((e) =>
-								console.error("[db] appendToolEvent (finally) failed:", e),
-							);
+							).catch((e) => {
+								console.error("[db] appendToolEvent (finally) failed:", e);
+								void db.appendLog(
+									"error",
+									"db",
+									"appendToolEvent (finally) failed",
+									{ error: String(e) },
+								);
+							});
 						}
 					} catch (e) {
 						console.error("[db] appendMessage (assistant) failed:", e);
+						void db.appendLog(
+							"error",
+							"db",
+							"appendMessage (assistant) failed",
+							{
+								error: String(e),
+							},
+						);
 					}
 				} else {
 					this.history.push({ role: "assistant", text: assistantText });

@@ -69,6 +69,34 @@ export type AggStats = {
 	thisMonth: AggWindow;
 };
 
+export type AttachmentKind = "ephemeral" | "vault";
+
+export type AttachmentRow = {
+	id: string;
+	session_id: string | null;
+	message_seq: number | null;
+	kind: AttachmentKind;
+	filename: string;
+	path: string;
+	mime: string;
+	size_bytes: number;
+	sha256: string | null;
+	created_at: number;
+};
+
+export type LogLevel = "error" | "warn" | "info";
+
+export type LogRow = {
+	id: number;
+	timestamp: number;
+	level: LogLevel;
+	source: string;
+	message: string;
+	detail: string | null;
+};
+
+export type LogCounts = { error: number; warn: number; info: number };
+
 export function getDb(): Promise<import("bun:sqlite").Database> {
 	if (!_initPromise) {
 		_initPromise = (async () => {
@@ -186,6 +214,90 @@ function initSchema(db: import("bun:sqlite").Database): void {
 	db.run(
 		`CREATE INDEX IF NOT EXISTS idx_usage_queries_ts ON usage_queries(timestamp)`,
 	);
+	db.run(`
+    CREATE TABLE IF NOT EXISTS event_log (
+      id        INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp INTEGER NOT NULL DEFAULT (unixepoch()),
+      level     TEXT NOT NULL CHECK(level IN ('error','warn','info')),
+      source    TEXT NOT NULL,
+      message   TEXT NOT NULL,
+      detail    TEXT
+    )
+  `);
+	db.run(
+		`CREATE INDEX IF NOT EXISTS idx_event_log_ts ON event_log(timestamp DESC)`,
+	);
+	db.run(
+		`CREATE INDEX IF NOT EXISTS idx_event_log_level_ts ON event_log(level, timestamp DESC)`,
+	);
+	db.run(`
+    CREATE TABLE IF NOT EXISTS attachments (
+      id TEXT PRIMARY KEY,
+      session_id TEXT,
+      message_seq INTEGER,
+      kind TEXT NOT NULL CHECK(kind IN ('ephemeral','vault')),
+      filename TEXT NOT NULL,
+      path TEXT NOT NULL,
+      mime TEXT NOT NULL,
+      size_bytes INTEGER NOT NULL,
+      sha256 TEXT,
+      created_at INTEGER NOT NULL
+    )
+  `);
+	db.run(
+		`CREATE INDEX IF NOT EXISTS idx_attachments_session ON attachments(session_id)`,
+	);
+	db.run(
+		`CREATE INDEX IF NOT EXISTS idx_attachments_kind ON attachments(kind)`,
+	);
+	db.run(
+		`CREATE INDEX IF NOT EXISTS idx_attachments_created ON attachments(created_at DESC)`,
+	);
+
+	const fkMigrated = db
+		.query<{ value: string }, [string]>(
+			`SELECT value FROM settings WHERE key = ?`,
+		)
+		.get("_migrated_attachments_no_fk");
+	if (!fkMigrated) {
+		const fkRows = db
+			.query<{ id: number }, []>(`PRAGMA foreign_key_list(attachments)`)
+			.all();
+		if (fkRows.length > 0) {
+			db.transaction(() => {
+				db.run(`
+          CREATE TABLE attachments_new (
+            id TEXT PRIMARY KEY,
+            session_id TEXT,
+            message_seq INTEGER,
+            kind TEXT NOT NULL CHECK(kind IN ('ephemeral','vault')),
+            filename TEXT NOT NULL,
+            path TEXT NOT NULL,
+            mime TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            sha256 TEXT,
+            created_at INTEGER NOT NULL
+          )
+        `);
+				db.run(
+					`INSERT INTO attachments_new SELECT id, session_id, message_seq, kind, filename, path, mime, size_bytes, sha256, created_at FROM attachments`,
+				);
+				db.run(`DROP TABLE attachments`);
+				db.run(`ALTER TABLE attachments_new RENAME TO attachments`);
+				db.run(
+					`CREATE INDEX idx_attachments_session ON attachments(session_id)`,
+				);
+				db.run(`CREATE INDEX idx_attachments_kind ON attachments(kind)`);
+				db.run(
+					`CREATE INDEX idx_attachments_created ON attachments(created_at DESC)`,
+				);
+			})();
+		}
+		db.run(
+			`INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, unixepoch())`,
+			["_migrated_attachments_no_fk", "1"],
+		);
+	}
 
 	const migrated = db
 		.query<{ value: string }, [string]>(
@@ -363,17 +475,37 @@ export async function getSessionsPaginated(
 	return { sessions, total: row?.total ?? 0 };
 }
 
-export async function deleteSession(id: string): Promise<void> {
+export async function deleteSession(
+	id: string,
+): Promise<{ ephemeralPaths: string[] }> {
 	const db = await getDb();
+	const ephemeralPaths: string[] = [];
 	db.transaction(() => {
+		const rows = db
+			.query<{ path: string }, [string]>(
+				`SELECT path FROM attachments WHERE session_id = ? AND kind = 'ephemeral'`,
+			)
+			.all(id);
+		for (const r of rows) ephemeralPaths.push(r.path);
+		db.run(
+			`DELETE FROM attachments WHERE session_id = ? AND kind = 'ephemeral'`,
+			[id],
+		);
+		db.run(
+			`UPDATE attachments SET session_id = NULL, message_seq = NULL WHERE session_id = ? AND kind = 'vault'`,
+			[id],
+		);
 		db.run(`DELETE FROM tool_events WHERE session_id = ?`, [id]);
 		db.run(`DELETE FROM messages WHERE session_id = ?`, [id]);
 		db.run(`DELETE FROM queries WHERE session_id = ?`, [id]);
 		db.run(`DELETE FROM sessions WHERE id = ?`, [id]);
 	})();
+	return { ephemeralPaths };
 }
 
-export async function deleteSessionsOlderThan(days: number): Promise<number> {
+export async function deleteSessionsOlderThan(
+	days: number,
+): Promise<{ count: number; ephemeralPaths: string[] }> {
 	const db = await getDb();
 	const cutoff = Math.floor(Date.now() / 1000) - days * 86400;
 	const row = db
@@ -382,8 +514,23 @@ export async function deleteSessionsOlderThan(days: number): Promise<number> {
 		)
 		.get(cutoff);
 	const total = row?.total ?? 0;
-	if (total === 0) return 0;
+	if (total === 0) return { count: 0, ephemeralPaths: [] };
+	const ephemeralPaths: string[] = [];
 	db.transaction(() => {
+		const rows = db
+			.query<{ path: string }, [number]>(
+				`SELECT path FROM attachments WHERE kind = 'ephemeral' AND session_id IN (SELECT id FROM sessions WHERE started_at < ?)`,
+			)
+			.all(cutoff);
+		for (const r of rows) ephemeralPaths.push(r.path);
+		db.run(
+			`DELETE FROM attachments WHERE kind = 'ephemeral' AND session_id IN (SELECT id FROM sessions WHERE started_at < ?)`,
+			[cutoff],
+		);
+		db.run(
+			`UPDATE attachments SET session_id = NULL, message_seq = NULL WHERE kind = 'vault' AND session_id IN (SELECT id FROM sessions WHERE started_at < ?)`,
+			[cutoff],
+		);
 		db.run(
 			`DELETE FROM tool_events WHERE session_id IN (SELECT id FROM sessions WHERE started_at < ?)`,
 			[cutoff],
@@ -398,7 +545,7 @@ export async function deleteSessionsOlderThan(days: number): Promise<number> {
 		);
 		db.run(`DELETE FROM sessions WHERE started_at < ?`, [cutoff]);
 	})();
-	return total;
+	return { count: total, ephemeralPaths };
 }
 
 export async function getRecentSessions(limit = 14): Promise<SessionRow[]> {
@@ -690,4 +837,207 @@ export async function getWeeklyStats(): Promise<WeeklyStats> {
 		total += row.count;
 	}
 	return { total, days };
+}
+
+export async function appendLog(
+	level: LogLevel,
+	source: string,
+	message: string,
+	detail?: unknown,
+): Promise<void> {
+	try {
+		const db = await getDb();
+		db.transaction(() => {
+			db.run(
+				`INSERT INTO event_log (level, source, message, detail) VALUES (?, ?, ?, ?)`,
+				[
+					level,
+					source,
+					message,
+					detail !== undefined ? JSON.stringify(detail) : null,
+				],
+			);
+			db.run(
+				`DELETE FROM event_log WHERE id <= (SELECT id FROM event_log ORDER BY id DESC LIMIT 1 OFFSET 999)`,
+			);
+		})();
+	} catch (e) {
+		console.error("[db] appendLog failed:", e);
+	}
+}
+
+export async function getLogs(
+	page: number,
+	pageSize: number,
+	level?: LogLevel,
+): Promise<{ logs: LogRow[]; total: number; counts: LogCounts }> {
+	const db = await getDb();
+	const offset = (page - 1) * pageSize;
+
+	const rows = level
+		? db
+				.query<LogRow, [string, number, number]>(
+					`SELECT * FROM event_log WHERE level = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
+				)
+				.all(level, pageSize, offset)
+		: db
+				.query<LogRow, [number, number]>(
+					`SELECT * FROM event_log ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
+				)
+				.all(pageSize, offset);
+
+	const totalRow = level
+		? db
+				.query<{ total: number }, [string]>(
+					`SELECT COUNT(*) as total FROM event_log WHERE level = ?`,
+				)
+				.get(level)
+		: db
+				.query<{ total: number }, []>(`SELECT COUNT(*) as total FROM event_log`)
+				.get();
+
+	const countRows = db
+		.query<{ level: string; n: number }, []>(
+			`SELECT level, COUNT(*) as n FROM event_log GROUP BY level`,
+		)
+		.all();
+	const counts: LogCounts = { error: 0, warn: 0, info: 0 };
+	for (const r of countRows) {
+		if (r.level === "error" || r.level === "warn" || r.level === "info")
+			counts[r.level] = r.n;
+	}
+
+	return { logs: rows, total: totalRow?.total ?? 0, counts };
+}
+
+export async function clearLogs(): Promise<void> {
+	const db = await getDb();
+	db.run(`DELETE FROM event_log`);
+}
+
+export async function createAttachment(row: {
+	id: string;
+	session_id: string | null;
+	kind: AttachmentKind;
+	filename: string;
+	path: string;
+	mime: string;
+	size_bytes: number;
+	sha256: string | null;
+}): Promise<void> {
+	const db = await getDb();
+	db.run(
+		`INSERT INTO attachments (id, session_id, message_seq, kind, filename, path, mime, size_bytes, sha256, created_at)
+     VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, unixepoch())`,
+		[
+			row.id,
+			row.session_id,
+			row.kind,
+			row.filename,
+			row.path,
+			row.mime,
+			row.size_bytes,
+			row.sha256,
+		],
+	);
+}
+
+export async function linkAttachmentToMessage(
+	id: string,
+	sessionId: string,
+	messageSeq: number,
+): Promise<boolean> {
+	const db = await getDb();
+	const result = db.run(
+		`UPDATE attachments SET session_id = ?, message_seq = ? WHERE id = ?`,
+		[sessionId, messageSeq, id],
+	);
+	return result.changes > 0;
+}
+
+export async function getAttachment(id: string): Promise<AttachmentRow | null> {
+	const db = await getDb();
+	return (
+		db
+			.query<AttachmentRow, [string]>(`SELECT * FROM attachments WHERE id = ?`)
+			.get(id) ?? null
+	);
+}
+
+export async function getAttachmentsForSession(
+	sessionId: string,
+): Promise<AttachmentRow[]> {
+	const db = await getDb();
+	return db
+		.query<AttachmentRow, [string]>(
+			`SELECT * FROM attachments WHERE session_id = ? ORDER BY created_at ASC`,
+		)
+		.all(sessionId);
+}
+
+export async function deleteAttachment(
+	id: string,
+): Promise<AttachmentRow | null> {
+	const db = await getDb();
+	const row = db
+		.query<AttachmentRow, [string]>(`SELECT * FROM attachments WHERE id = ?`)
+		.get(id);
+	if (!row) return null;
+	db.run(`DELETE FROM attachments WHERE id = ?`, [id]);
+	return row;
+}
+
+export type AttachmentListFilter = {
+	kind?: AttachmentKind;
+	sessionId?: string;
+	search?: string;
+	since?: number;
+	until?: number;
+	limit?: number;
+	offset?: number;
+};
+
+export async function listAttachments(
+	filter: AttachmentListFilter = {},
+): Promise<{ rows: AttachmentRow[]; total: number; total_bytes: number }> {
+	const db = await getDb();
+	const where: string[] = [];
+	const params: (string | number)[] = [];
+	if (filter.kind) {
+		where.push("kind = ?");
+		params.push(filter.kind);
+	}
+	if (filter.sessionId) {
+		where.push("session_id = ?");
+		params.push(filter.sessionId);
+	}
+	if (filter.search) {
+		where.push("filename LIKE ?");
+		params.push(`%${filter.search}%`);
+	}
+	if (filter.since != null) {
+		where.push("created_at >= ?");
+		params.push(filter.since);
+	}
+	if (filter.until != null) {
+		where.push("created_at <= ?");
+		params.push(filter.until);
+	}
+	const whereSql = where.length ? `WHERE ${where.join(" AND ")}` : "";
+
+	const totals = db
+		.query<{ total: number; total_bytes: number }, (string | number)[]>(
+			`SELECT COUNT(*) as total, COALESCE(SUM(size_bytes), 0) as total_bytes FROM attachments ${whereSql}`,
+		)
+		.get(...params) ?? { total: 0, total_bytes: 0 };
+
+	const limit = filter.limit ?? 100;
+	const offset = filter.offset ?? 0;
+	const rows = db
+		.query<AttachmentRow, (string | number)[]>(
+			`SELECT * FROM attachments ${whereSql} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+		)
+		.all(...params, limit, offset);
+
+	return { rows, total: totals.total, total_bytes: totals.total_bytes };
 }

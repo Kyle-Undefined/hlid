@@ -18,6 +18,9 @@ const VaultSchema = z.object({
 const ServerSchema = z.object({
 	port: z.number().default(3000),
 	host: z.string().default("0.0.0.0"),
+	tls_cert_path: z.string().optional(),
+	tls_key_path: z.string().optional(),
+	tls_proxy_port: z.number().default(3443),
 });
 
 const ClaudeSchema = z.object({
@@ -45,9 +48,43 @@ const StatusVocabularySchema = z.object({
 	done: z.array(z.string()).default(["Done", "Complete", "Archived"]),
 });
 
+export const DEFAULT_ATTACHMENT_MIMES = [
+	"image/png",
+	"image/jpeg",
+	"image/gif",
+	"image/webp",
+	"application/pdf",
+	"text/plain",
+	"text/markdown",
+	"text/csv",
+	"application/json",
+];
+
+export const DEFAULT_ATTACHMENTS_CONFIG = {
+	max_bytes: 25 * 1024 * 1024,
+	vault_folder: "Attachments",
+	allowed_mimes: DEFAULT_ATTACHMENT_MIMES,
+};
+
+const AttachmentsSchema = z.object({
+	max_bytes: z
+		.number()
+		.int()
+		.positive()
+		.default(DEFAULT_ATTACHMENTS_CONFIG.max_bytes),
+	vault_folder: z.string().default(DEFAULT_ATTACHMENTS_CONFIG.vault_folder),
+	allowed_mimes: z
+		.array(z.string())
+		.default(DEFAULT_ATTACHMENTS_CONFIG.allowed_mimes),
+});
+
 export const HlidConfigSchema = z.object({
 	vault: VaultSchema.default(() => ({ name: "Vault", path: "" })),
-	server: ServerSchema.default(() => ({ port: 3000, host: "0.0.0.0" })),
+	server: ServerSchema.default(() => ({
+		port: 3000,
+		host: "0.0.0.0",
+		tls_proxy_port: 3443,
+	})),
 	claude: ClaudeSchema.default(() => ({
 		model: "claude-sonnet-4-6",
 		effort: "high" as const,
@@ -63,6 +100,7 @@ export const HlidConfigSchema = z.object({
 		planning: ["Planning", "Ideas"],
 		done: ["Done", "Complete", "Archived"],
 	})),
+	attachments: AttachmentsSchema.default(DEFAULT_ATTACHMENTS_CONFIG),
 });
 
 export type HlidConfig = z.infer<typeof HlidConfigSchema>;

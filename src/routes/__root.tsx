@@ -1,5 +1,5 @@
 import { createRootRoute, HeadContent, Scripts } from "@tanstack/react-router";
-import { useEffect, useState } from "react";
+import { useEffect } from "react";
 import { BottomNav } from "#/components/nav/BottomNav";
 import { Sidebar } from "#/components/nav/Sidebar";
 import { getConfig } from "#/config";
@@ -16,8 +16,18 @@ export const Route = createRootRoute({
 			{ charSet: "utf-8" },
 			{ name: "viewport", content: "width=device-width, initial-scale=1" },
 			{ title: "Hliðskjálf" },
+			{ name: "theme-color", content: "#0f0f12" },
+			{ name: "mobile-web-app-capable", content: "yes" },
+			{ name: "apple-mobile-web-app-capable", content: "yes" },
+			{
+				name: "apple-mobile-web-app-status-bar-style",
+				content: "black-translucent",
+			},
+			{ name: "apple-mobile-web-app-title", content: "Hlid" },
 		],
 		links: [
+			{ rel: "manifest", href: "/manifest.json" },
+			{ rel: "apple-touch-icon", href: "/apple-touch-icon.png" },
 			{ rel: "preconnect", href: "https://fonts.googleapis.com" },
 			{
 				rel: "preconnect",
@@ -35,24 +45,34 @@ export const Route = createRootRoute({
 	shellComponent: RootDocument,
 });
 
+function RegisterSW() {
+	useEffect(() => {
+		if ("serviceWorker" in navigator) {
+			navigator.serviceWorker.register("/sw.js");
+		}
+	}, []);
+	return null;
+}
+
 function RootDocument({ children }: { children: React.ReactNode }) {
 	const { theme, mobileTheme } = Route.useLoaderData();
-	const [activeTheme, setActiveTheme] = useState(theme);
 
-	useEffect(() => {
-		if (!mobileTheme) return;
-		const isMobile = window.matchMedia("(pointer: coarse)").matches;
-		if (isMobile) setActiveTheme(mobileTheme);
-	}, [mobileTheme]);
-
-	useEffect(() => {
-		document.documentElement.setAttribute("data-theme", activeTheme);
-		document.documentElement.className = activeTheme;
-	}, [activeTheme]);
+	// JSON.stringify on enum strings ("dark"|"tan"|"same") is XSS-safe.
+	// Runs before first paint to prevent flash when mobile theme differs from desktop.
+	const themeInitScript = `(function(){var t=${JSON.stringify(theme)},m=${JSON.stringify(mobileTheme ?? null)};if(m&&m!=="same"&&window.matchMedia("(pointer: coarse)").matches)t=m;document.documentElement.setAttribute("data-theme",t);document.documentElement.className=t;})();`;
 
 	return (
-		<html lang="en" data-theme={activeTheme} className={activeTheme}>
+		// suppressHydrationWarning: inline script mutates data-theme/className before
+		// React hydrates, so server and client values intentionally differ on mobile.
+		<html
+			lang="en"
+			data-theme={theme}
+			className={theme}
+			suppressHydrationWarning
+		>
 			<head>
+				{/* biome-ignore lint/security/noDangerouslySetInnerHtml: theme init script built from JSON.stringify on enum values, no user input */}
+				<script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
 				<HeadContent />
 			</head>
 			<body>
@@ -64,6 +84,7 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 					</div>
 				</div>
 				<Scripts />
+				<RegisterSW />
 			</body>
 		</html>
 	);

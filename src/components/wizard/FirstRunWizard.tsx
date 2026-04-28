@@ -1,6 +1,7 @@
 import { Check } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { HlidConfig } from "#/config";
+import { DEFAULT_ATTACHMENTS_CONFIG } from "#/config";
 import { FolderBrowser } from "./FolderBrowser";
 import { RelativeFolderField } from "./RelativeFolderField";
 
@@ -154,7 +155,7 @@ export function FirstRunWizard({ onComplete }: Props) {
 					memory: memory || undefined,
 					outputs: outputs || undefined,
 				},
-				server: { port: 3000, host: "0.0.0.0" },
+				server: { port: 3000, host: "0.0.0.0", tls_proxy_port: 3443 },
 				claude: {
 					model: "claude-sonnet-4-6",
 					effort: "high" as const,
@@ -166,6 +167,7 @@ export function FirstRunWizard({ onComplete }: Props) {
 					planning: ["Planning", "Ideas"],
 					done: ["Done", "Complete", "Archived"],
 				},
+				attachments: DEFAULT_ATTACHMENTS_CONFIG,
 			};
 
 			const res = await fetch("/api/config", {
