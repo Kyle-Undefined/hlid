@@ -182,7 +182,7 @@ function EinherjarPage() {
 	function handleChat(agent: AgentEntry) {
 		const sessionId = uid();
 		void navigate({
-			to: "/chat",
+			to: "/raven",
 			search: {
 				session: sessionId,
 				agent: agent.path,

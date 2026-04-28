@@ -4,7 +4,9 @@ import {
 	useRouter,
 } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
+import { File as FileIcon, Paperclip, X } from "lucide-react";
 import {
+	useCallback,
 	useEffect,
 	useMemo,
 	useRef,
@@ -32,7 +34,11 @@ import { useWs } from "#/hooks/useWs";
 import * as wsStore from "#/hooks/wsStore";
 import { uid } from "#/lib/utils";
 import type { Skill } from "#/lib/vault";
-import type { RateLimitMessage, ServerMessage } from "#/server/protocol";
+import type {
+	ChatAttachment,
+	RateLimitMessage,
+	ServerMessage,
+} from "#/server/protocol";
 
 // ─── server fns ──────────────────────────────────────────────────────────────
 
@@ -99,6 +105,20 @@ const getCockpitData = createServerFn({ method: "GET" }).handler(async () => {
 		skills,
 		sectionOrder: allSectionOrder,
 	};
+});
+
+const getAgentListFn = createServerFn({ method: "GET" }).handler(async () => {
+	const { basename } = await import("node:path");
+	const config = await getConfig();
+	return (config.agents ?? []).map((a) => ({
+		path: a.path,
+		name:
+			a.name ??
+			basename(a.path)
+				.split(/[-_\s]+/)
+				.map((w: string) => w.charAt(0).toUpperCase() + w.slice(1))
+				.join(" "),
+	}));
 });
 
 const getRecentSessionsFn = createServerFn({ method: "GET" }).handler(
@@ -315,6 +335,7 @@ export const Route = createFileRoute("/")({
 			weeklyStats,
 			usageWindows,
 			thirtyDayStats,
+			agentList,
 		] = await Promise.all([
 			getConfig(),
 			getCockpitData(),
@@ -324,6 +345,7 @@ export const Route = createFileRoute("/")({
 			getWeeklyStatsFn(),
 			getUsageWindowsFn(),
 			getThirtyDayStatsFn(),
+			getAgentListFn(),
 		]);
 		return {
 			config,
@@ -334,6 +356,7 @@ export const Route = createFileRoute("/")({
 			weeklyStats,
 			usageWindows,
 			thirtyDayStats,
+			agentList,
 		};
 	},
 	component: CockpitPage,
@@ -1043,7 +1066,7 @@ function ViewAllLink() {
 		<div className="px-4 py-2 border-t border-border/30">
 			<button
 				type="button"
-				onClick={() => navigate({ to: "/stats", search: { page: 1 } })}
+				onClick={() => navigate({ to: "/ledger", search: { page: 1 } })}
 				className="text-[8px] tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 uppercase transition-colors w-full text-left"
 			>
 				view all →
@@ -1268,6 +1291,7 @@ function CockpitPage() {
 		weeklyStats: initialWeeklyStats,
 		usageWindows: initialUsageWindows,
 		thirtyDayStats: initialThirtyDayStats,
+		agentList,
 	} = Route.useLoaderData();
 	const router = useRouter();
 	const navigate = useNavigate();
@@ -1277,6 +1301,7 @@ function CockpitPage() {
 		wsStore.getLiveStats,
 	);
 	const [prompt, setPrompt] = useState("");
+	const [selectedAgentPath, setSelectedAgentPath] = useState("");
 	const [activeSkill, setActiveSkill] = useState<{
 		name: string;
 		section?: string;
@@ -1295,7 +1320,17 @@ function CockpitPage() {
 		useState<McpServerEntry[]>(initialMcpServers);
 	const [runError, setRunError] = useState<string | null>(null);
 	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
+	const [pendingAttachments, setPendingAttachments] = useState<
+		ChatAttachment[]
+	>([]);
+	const [uploadingCount, setUploadingCount] = useState(0);
+	const [uploadError, setUploadError] = useState<string | null>(null);
+	const [attachKind, setAttachKind] = useState<"ephemeral" | "vault">(
+		"ephemeral",
+	);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
+	const fileInputRef = useRef<HTMLInputElement>(null);
+	const attachSessionIdRef = useRef<string | null>(null);
 
 	const { wsStatus, sessionState, model, send } = useWs(
 		(msg: ServerMessage) => {
@@ -1335,6 +1370,61 @@ function CockpitPage() {
 	useEffect(() => {
 		send({ type: "sync_mcp_list" });
 	}, [send]);
+
+	const uploadFiles = useCallback(
+		async (files: FileList | File[]) => {
+			const list = Array.from(files);
+			if (list.length === 0) return;
+			setUploadError(null);
+			if (!attachSessionIdRef.current) attachSessionIdRef.current = uid();
+			const sessionId = attachSessionIdRef.current;
+			setUploadingCount((c) => c + list.length);
+			try {
+				const uploaded = await Promise.all(
+					list.map(async (file) => {
+						const fd = new FormData();
+						fd.append("file", file);
+						fd.append("kind", attachKind);
+						fd.append("session_id", sessionId);
+						const res = await fetch("/api/attachments/upload", {
+							method: "POST",
+							body: fd,
+						});
+						if (!res.ok) {
+							let msg = `upload failed (${res.status})`;
+							try {
+								const body = (await res.json()) as { error?: string };
+								if (body.error) msg = body.error;
+							} catch {}
+							throw new Error(`${file.name}: ${msg}`);
+						}
+						return (await res.json()) as ChatAttachment & {
+							size_bytes: number;
+						};
+					}),
+				);
+				setPendingAttachments((prev) => [
+					...prev,
+					...uploaded.map((u) => ({
+						id: u.id,
+						path: u.path,
+						filename: u.filename,
+						mime: u.mime,
+						kind: u.kind,
+					})),
+				]);
+			} catch (err) {
+				setUploadError(err instanceof Error ? err.message : "upload failed");
+			} finally {
+				setUploadingCount((c) => Math.max(0, c - list.length));
+			}
+		},
+		[attachKind],
+	);
+
+	const removePending = useCallback((id: string) => {
+		setPendingAttachments((prev) => prev.filter((a) => a.id !== id));
+	}, []);
 
 	const skillGroups = useMemo(
 		() => groupSkills(data.skills, data.sectionOrder),
@@ -1414,22 +1504,31 @@ function CockpitPage() {
 			const currentId = await getCurrentSessionIdFn();
 			sessionId = currentId ?? uid();
 		} else {
-			sessionId = uid();
+			sessionId = attachSessionIdRef.current ?? uid();
 		}
+		attachSessionIdRef.current = null;
 		if (!sameSession) wsStore.resetLiveStats();
+		const attachments = pendingAttachments;
+		setPendingAttachments([]);
+		setUploadError(null);
 		send({
 			type: "chat",
 			text,
 			session_id: sessionId,
 			skill_context: skillContext,
+			agent_cwd: selectedAgentPath || undefined,
+			attachments: attachments.length > 0 ? attachments : undefined,
 		});
 		setPrompt("");
 		setActiveSkill(null);
 		if (!background) {
 			wsStore.setPendingPrompt(text);
 			navigate({
-				to: "/chat",
-				search: { session: sessionId, agent: undefined },
+				to: "/raven",
+				search: {
+					session: sessionId,
+					agent: selectedAgentPath || undefined,
+				},
 			});
 		}
 	}
@@ -1485,7 +1584,7 @@ function CockpitPage() {
 				runs={recentRuns}
 				weeklyStats={weeklyStats}
 				onRunClick={(id) =>
-					navigate({ to: "/chat", search: { session: id, agent: undefined } })
+					navigate({ to: "/raven", search: { session: id, agent: undefined } })
 				}
 			/>
 
@@ -1506,9 +1605,83 @@ function CockpitPage() {
 							</div>
 						</div>
 
-						<div
+						<section
+							aria-label="Prompt input area"
 							className={`border bg-card transition-colors ${isConnected ? "border-border focus-within:border-primary/30" : "border-border/40"}`}
+							onDragOver={(e) => {
+								if (e.dataTransfer?.types?.includes("Files"))
+									e.preventDefault();
+							}}
+							onDrop={(e) => {
+								if (e.dataTransfer?.files?.length) {
+									e.preventDefault();
+									void uploadFiles(e.dataTransfer.files);
+								}
+							}}
 						>
+							{(pendingAttachments.length > 0 ||
+								uploadingCount > 0 ||
+								uploadError) && (
+								<div className="px-3 py-2 flex flex-wrap items-center gap-1.5 border-b border-border/40">
+									{pendingAttachments.map((a) => (
+										<span
+											key={a.id}
+											className="inline-flex items-center gap-1.5 max-w-[220px] border border-border/60 bg-secondary/30 px-2 py-1 text-[10px] text-foreground/80"
+										>
+											{a.mime.startsWith("image/") ? (
+												<img
+													src={`/api/attachments/${a.id}/raw`}
+													alt={a.filename}
+													className="w-5 h-5 object-cover shrink-0"
+												/>
+											) : (
+												<FileIcon className="w-3 h-3 shrink-0 opacity-60" />
+											)}
+											<span className="truncate font-mono">{a.filename}</span>
+											{a.kind === "vault" && (
+												<span className="text-[8px] tracking-widest uppercase text-primary/60 shrink-0">
+													V
+												</span>
+											)}
+											<button
+												type="button"
+												onClick={() => removePending(a.id)}
+												className="opacity-50 hover:opacity-100 shrink-0"
+												aria-label={`Remove ${a.filename}`}
+											>
+												<X className="w-3 h-3" />
+											</button>
+										</span>
+									))}
+									{uploadingCount > 0 && (
+										<span className="text-[10px] tracking-widest text-muted-foreground/60 uppercase">
+											uploading {uploadingCount}…
+										</span>
+									)}
+									{uploadError && (
+										<span className="text-[10px] text-destructive/80">
+											{uploadError}
+										</span>
+									)}
+									<div className="ml-auto flex items-center gap-2 text-[9px] tracking-widest uppercase text-muted-foreground/60">
+										<span>save:</span>
+										<button
+											type="button"
+											onClick={() => setAttachKind("ephemeral")}
+											className={`px-2 py-0.5 border ${attachKind === "ephemeral" ? "border-primary/60 text-primary/80" : "border-border/60 hover:border-border"}`}
+										>
+											ref
+										</button>
+										<button
+											type="button"
+											onClick={() => setAttachKind("vault")}
+											className={`px-2 py-0.5 border ${attachKind === "vault" ? "border-primary/60 text-primary/80" : "border-border/60 hover:border-border"}`}
+										>
+											vault
+										</button>
+									</div>
+								</div>
+							)}
 							<div className="flex items-start">
 								<span className="text-primary text-sm px-3 py-2.5 shrink-0 select-none">
 									›
@@ -1547,11 +1720,69 @@ function CockpitPage() {
 												: "type a prompt, or pick a skill below"
 									}
 									disabled={!isConnected}
-									className="flex-1 resize-none bg-transparent py-2.5 pr-3 text-sm text-foreground placeholder:text-muted-foreground/25 focus:outline-none disabled:opacity-30 overflow-hidden min-h-[72px]"
+									className={`flex-1 resize-none bg-transparent py-2.5 pr-3 text-sm text-foreground focus:outline-none disabled:opacity-30 overflow-hidden min-h-[72px] ${!isConnected ? "placeholder:text-foreground/50" : "placeholder:text-muted-foreground/25"}`}
 								/>
 							</div>
+							{agentList.length > 0 && (
+								<div className="md:hidden flex items-center gap-2 px-3 py-1.5 border-t border-border/60">
+									<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase shrink-0">
+										AGENT
+									</span>
+									<select
+										value={selectedAgentPath}
+										onChange={(e) => setSelectedAgentPath(e.target.value)}
+										className="text-[9px] tracking-widest text-muted-foreground/60 bg-background border border-border/50 px-2 py-0.5 focus:outline-none focus:border-primary/40 uppercase min-w-0 flex-1"
+									>
+										<option value="">— none —</option>
+										{agentList.map((a) => (
+											<option key={a.path} value={a.path}>
+												{a.name}
+											</option>
+										))}
+									</select>
+								</div>
+							)}
 							<div className="flex items-center justify-between px-3 py-2 border-t border-border/60">
 								<div className="flex items-center gap-3">
+									<input
+										ref={fileInputRef}
+										type="file"
+										multiple
+										className="hidden"
+										onChange={(e) => {
+											if (e.target.files) void uploadFiles(e.target.files);
+											e.target.value = "";
+										}}
+									/>
+									<button
+										type="button"
+										onClick={() => fileInputRef.current?.click()}
+										disabled={!isConnected}
+										className="text-muted-foreground/45 hover:text-muted-foreground transition-colors shrink-0 disabled:opacity-30"
+										aria-label="Attach file"
+										title={`Attach (default: ${attachKind})`}
+									>
+										<Paperclip className="w-3.5 h-3.5" />
+									</button>
+									{agentList.length > 0 && (
+										<div className="hidden md:flex items-center gap-1.5">
+											<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase shrink-0">
+												AGENT
+											</span>
+											<select
+												value={selectedAgentPath}
+												onChange={(e) => setSelectedAgentPath(e.target.value)}
+												className="text-[9px] tracking-widest text-muted-foreground/60 bg-background border border-border/50 px-2 py-0.5 focus:outline-none focus:border-primary/40 uppercase"
+											>
+												<option value="">— none —</option>
+												{agentList.map((a) => (
+													<option key={a.path} value={a.path}>
+														{a.name}
+													</option>
+												))}
+											</select>
+										</div>
+									)}
 									<label className="flex items-center gap-1.5 cursor-pointer select-none group">
 										<input
 											type="checkbox"
@@ -1609,7 +1840,7 @@ function CockpitPage() {
 									</button>
 								</div>
 							</div>
-						</div>
+						</section>
 					</div>
 
 					{/* Background run error */}
@@ -1670,7 +1901,10 @@ function CockpitPage() {
 					runs={recentRuns}
 					weeklyStats={weeklyStats}
 					onRunClick={(id) =>
-						navigate({ to: "/chat", search: { session: id, agent: undefined } })
+						navigate({
+							to: "/raven",
+							search: { session: id, agent: undefined },
+						})
 					}
 					stats={liveStats}
 					agg={agg}

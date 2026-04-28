@@ -368,7 +368,9 @@ Bun.serve({
 		}
 
 		if (url.pathname === "/api/attachments/upload" && req.method === "POST") {
-			return handleUpload(req, config);
+			return handleUpload(req, config, (id, kind) =>
+				broadcast({ type: "attachment_created", id, kind }),
+			);
 		}
 
 		const rawMatch = url.pathname.match(

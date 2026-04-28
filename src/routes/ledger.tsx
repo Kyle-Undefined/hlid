@@ -4,6 +4,7 @@ import {
 	useRouterState,
 } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
+import { ChevronLeft, ChevronRight, ExternalLink, X } from "lucide-react";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { getConfig } from "#/config";
 import type { AggStats, SessionRow } from "#/db";
@@ -76,7 +77,7 @@ const cleanupSessionsFn = createServerFn({ method: "POST" })
 
 const PAGE_SIZE = 20;
 
-export const Route = createFileRoute("/stats")({
+export const Route = createFileRoute("/ledger")({
 	validateSearch: (search: Record<string, unknown>) => ({
 		page:
 			typeof search.page === "number"
@@ -296,13 +297,13 @@ function SessionItem({
 			) : (
 				<div className="flex items-center shrink-0">
 					<a
-						href={`/chat?session=${session.id}`}
+						href={`/raven?session=${session.id}`}
 						target="_blank"
 						rel="noreferrer"
-						className="w-7 h-full flex items-center justify-center text-[11px] text-muted-foreground/25 hover:text-primary/60 md:opacity-0 md:group-hover:opacity-100 transition-all"
+						className="w-7 h-full flex items-center justify-center text-muted-foreground/25 hover:text-primary/60 md:opacity-0 md:group-hover:opacity-100 transition-all"
 						title="Open in new tab"
 					>
-						↗
+						<ExternalLink size={11} />
 					</a>
 					<button
 						type="button"
@@ -310,7 +311,7 @@ function SessionItem({
 						className="w-7 h-full flex items-center justify-center text-muted-foreground/20 hover:text-destructive/60 md:opacity-0 md:group-hover:opacity-100 transition-all pr-2"
 						title="Delete session"
 					>
-						×
+						<X size={11} />
 					</button>
 				</div>
 			)}
@@ -473,9 +474,9 @@ function SessionsLedger({
 						type="button"
 						disabled={page <= 1 || loading}
 						onClick={() => onPageChange(page - 1)}
-						className="text-[9px] tracking-widest text-muted-foreground/40 hover:text-foreground disabled:opacity-20 uppercase transition-colors"
+						className="flex items-center gap-0.5 text-[9px] tracking-widest text-muted-foreground/40 hover:text-foreground disabled:opacity-20 uppercase transition-colors"
 					>
-						← prev
+						<ChevronLeft size={10} /> prev
 					</button>
 					<span className="text-[9px] tabular-nums text-muted-foreground/30">
 						{page} / {totalPages}
@@ -484,9 +485,9 @@ function SessionsLedger({
 						type="button"
 						disabled={page >= totalPages || loading}
 						onClick={() => onPageChange(page + 1)}
-						className="text-[9px] tracking-widest text-muted-foreground/40 hover:text-foreground disabled:opacity-20 uppercase transition-colors"
+						className="flex items-center gap-0.5 text-[9px] tracking-widest text-muted-foreground/40 hover:text-foreground disabled:opacity-20 uppercase transition-colors"
 					>
-						next →
+						next <ChevronRight size={10} />
 					</button>
 				</div>
 			)}
@@ -526,10 +527,11 @@ function StatsPage() {
 	const totalPages = Math.ceil(sessionsData.total / PAGE_SIZE);
 
 	function onPageChange(p: number) {
-		navigate({ to: "/stats", search: { page: p } });
+		navigate({ to: "/ledger", search: { page: p } });
 	}
 
 	async function handleDeleteSession(id: string) {
+		const wasLastOnPage = sessionsData.sessions.length <= 1;
 		setDeletedIds((prev) => new Set(prev).add(id));
 		const result = await deleteSessionFn({ data: { id } });
 		if (!result.ok) {
@@ -538,14 +540,14 @@ function StatsPage() {
 				next.delete(id);
 				return next;
 			});
-		} else if (sessionsData.sessions.length <= 1 && page > 1) {
-			navigate({ to: "/stats", search: { page: page - 1 } });
+		} else if (wasLastOnPage && page > 1) {
+			navigate({ to: "/ledger", search: { page: page - 1 } });
 		}
 	}
 
 	async function handleCleanup(days: number) {
 		await cleanupSessionsFn({ data: { days } });
-		navigate({ to: "/stats", search: { page: 1 } });
+		navigate({ to: "/ledger", search: { page: 1 } });
 	}
 
 	function handleBuildSkill() {
@@ -793,7 +795,7 @@ function StatsPage() {
 						onDelete={handleDeleteSession}
 						onNavigate={(id) =>
 							navigate({
-								to: "/chat",
+								to: "/raven",
 								search: { session: id, agent: undefined },
 							})
 						}

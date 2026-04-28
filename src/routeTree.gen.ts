@@ -10,11 +10,11 @@
 
 import { Route as rootRouteImport } from './routes/__root'
 import { Route as VaultRouteImport } from './routes/vault'
-import { Route as StatsRouteImport } from './routes/stats'
-import { Route as SettingsRouteImport } from './routes/settings'
+import { Route as RelicsRouteImport } from './routes/relics'
+import { Route as RavenRouteImport } from './routes/raven'
+import { Route as LedgerRouteImport } from './routes/ledger'
+import { Route as ForgeRouteImport } from './routes/forge'
 import { Route as EinherjarRouteImport } from './routes/einherjar'
-import { Route as ChatRouteImport } from './routes/chat'
-import { Route as AttachmentsRouteImport } from './routes/attachments'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as ApiConfigRouteImport } from './routes/api/config'
@@ -28,29 +28,29 @@ const VaultRoute = VaultRouteImport.update({
   path: '/vault',
   getParentRoute: () => rootRouteImport,
 } as any)
-const StatsRoute = StatsRouteImport.update({
-  id: '/stats',
-  path: '/stats',
+const RelicsRoute = RelicsRouteImport.update({
+  id: '/relics',
+  path: '/relics',
   getParentRoute: () => rootRouteImport,
 } as any)
-const SettingsRoute = SettingsRouteImport.update({
-  id: '/settings',
-  path: '/settings',
+const RavenRoute = RavenRouteImport.update({
+  id: '/raven',
+  path: '/raven',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LedgerRoute = LedgerRouteImport.update({
+  id: '/ledger',
+  path: '/ledger',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ForgeRoute = ForgeRouteImport.update({
+  id: '/forge',
+  path: '/forge',
   getParentRoute: () => rootRouteImport,
 } as any)
 const EinherjarRoute = EinherjarRouteImport.update({
   id: '/einherjar',
   path: '/einherjar',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ChatRoute = ChatRouteImport.update({
-  id: '/chat',
-  path: '/chat',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const AttachmentsRoute = AttachmentsRouteImport.update({
-  id: '/attachments',
-  path: '/attachments',
   getParentRoute: () => rootRouteImport,
 } as any)
 const IndexRoute = IndexRouteImport.update({
@@ -91,11 +91,11 @@ const ApiAttachmentsIdRawRoute = ApiAttachmentsIdRawRouteImport.update({
 
 export interface FileRoutesByFullPath {
   '/': typeof IndexRoute
-  '/attachments': typeof AttachmentsRoute
-  '/chat': typeof ChatRoute
   '/einherjar': typeof EinherjarRoute
-  '/settings': typeof SettingsRoute
-  '/stats': typeof StatsRoute
+  '/forge': typeof ForgeRoute
+  '/ledger': typeof LedgerRoute
+  '/raven': typeof RavenRoute
+  '/relics': typeof RelicsRoute
   '/vault': typeof VaultRoute
   '/api/browse': typeof ApiBrowseRoute
   '/api/config': typeof ApiConfigRoute
@@ -106,11 +106,11 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
-  '/attachments': typeof AttachmentsRoute
-  '/chat': typeof ChatRoute
   '/einherjar': typeof EinherjarRoute
-  '/settings': typeof SettingsRoute
-  '/stats': typeof StatsRoute
+  '/forge': typeof ForgeRoute
+  '/ledger': typeof LedgerRoute
+  '/raven': typeof RavenRoute
+  '/relics': typeof RelicsRoute
   '/vault': typeof VaultRoute
   '/api/browse': typeof ApiBrowseRoute
   '/api/config': typeof ApiConfigRoute
@@ -122,11 +122,11 @@ export interface FileRoutesByTo {
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/': typeof IndexRoute
-  '/attachments': typeof AttachmentsRoute
-  '/chat': typeof ChatRoute
   '/einherjar': typeof EinherjarRoute
-  '/settings': typeof SettingsRoute
-  '/stats': typeof StatsRoute
+  '/forge': typeof ForgeRoute
+  '/ledger': typeof LedgerRoute
+  '/raven': typeof RavenRoute
+  '/relics': typeof RelicsRoute
   '/vault': typeof VaultRoute
   '/api/browse': typeof ApiBrowseRoute
   '/api/config': typeof ApiConfigRoute
@@ -139,11 +139,11 @@ export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
     | '/'
-    | '/attachments'
-    | '/chat'
     | '/einherjar'
-    | '/settings'
-    | '/stats'
+    | '/forge'
+    | '/ledger'
+    | '/raven'
+    | '/relics'
     | '/vault'
     | '/api/browse'
     | '/api/config'
@@ -154,11 +154,11 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
-    | '/attachments'
-    | '/chat'
     | '/einherjar'
-    | '/settings'
-    | '/stats'
+    | '/forge'
+    | '/ledger'
+    | '/raven'
+    | '/relics'
     | '/vault'
     | '/api/browse'
     | '/api/config'
@@ -169,11 +169,11 @@ export interface FileRouteTypes {
   id:
     | '__root__'
     | '/'
-    | '/attachments'
-    | '/chat'
     | '/einherjar'
-    | '/settings'
-    | '/stats'
+    | '/forge'
+    | '/ledger'
+    | '/raven'
+    | '/relics'
     | '/vault'
     | '/api/browse'
     | '/api/config'
@@ -185,11 +185,11 @@ export interface FileRouteTypes {
 }
 export interface RootRouteChildren {
   IndexRoute: typeof IndexRoute
-  AttachmentsRoute: typeof AttachmentsRoute
-  ChatRoute: typeof ChatRoute
   EinherjarRoute: typeof EinherjarRoute
-  SettingsRoute: typeof SettingsRoute
-  StatsRoute: typeof StatsRoute
+  ForgeRoute: typeof ForgeRoute
+  LedgerRoute: typeof LedgerRoute
+  RavenRoute: typeof RavenRoute
+  RelicsRoute: typeof RelicsRoute
   VaultRoute: typeof VaultRoute
   ApiBrowseRoute: typeof ApiBrowseRoute
   ApiConfigRoute: typeof ApiConfigRoute
@@ -207,18 +207,32 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof VaultRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/stats': {
-      id: '/stats'
-      path: '/stats'
-      fullPath: '/stats'
-      preLoaderRoute: typeof StatsRouteImport
+    '/relics': {
+      id: '/relics'
+      path: '/relics'
+      fullPath: '/relics'
+      preLoaderRoute: typeof RelicsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/settings': {
-      id: '/settings'
-      path: '/settings'
-      fullPath: '/settings'
-      preLoaderRoute: typeof SettingsRouteImport
+    '/raven': {
+      id: '/raven'
+      path: '/raven'
+      fullPath: '/raven'
+      preLoaderRoute: typeof RavenRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/ledger': {
+      id: '/ledger'
+      path: '/ledger'
+      fullPath: '/ledger'
+      preLoaderRoute: typeof LedgerRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/forge': {
+      id: '/forge'
+      path: '/forge'
+      fullPath: '/forge'
+      preLoaderRoute: typeof ForgeRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/einherjar': {
@@ -226,20 +240,6 @@ declare module '@tanstack/react-router' {
       path: '/einherjar'
       fullPath: '/einherjar'
       preLoaderRoute: typeof EinherjarRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/chat': {
-      id: '/chat'
-      path: '/chat'
-      fullPath: '/chat'
-      preLoaderRoute: typeof ChatRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/attachments': {
-      id: '/attachments'
-      path: '/attachments'
-      fullPath: '/attachments'
-      preLoaderRoute: typeof AttachmentsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/': {
@@ -307,11 +307,11 @@ const ApiAttachmentsIdRouteWithChildren =
 
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
-  AttachmentsRoute: AttachmentsRoute,
-  ChatRoute: ChatRoute,
   EinherjarRoute: EinherjarRoute,
-  SettingsRoute: SettingsRoute,
-  StatsRoute: StatsRoute,
+  ForgeRoute: ForgeRoute,
+  LedgerRoute: LedgerRoute,
+  RavenRoute: RavenRoute,
+  RelicsRoute: RelicsRoute,
   VaultRoute: VaultRoute,
   ApiBrowseRoute: ApiBrowseRoute,
   ApiConfigRoute: ApiConfigRoute,

@@ -57,6 +57,7 @@ export type UploadResult = {
 export async function handleUpload(
 	req: Request,
 	config: HlidConfig,
+	onUploaded?: (id: string, kind: "ephemeral" | "vault") => void,
 ): Promise<Response> {
 	const vaultPath = config.vault.path;
 	if (!vaultPath) {
@@ -138,6 +139,7 @@ export async function handleUpload(
 		sha256,
 		created_at: Math.floor(Date.now() / 1000),
 	};
+	onUploaded?.(id, kind);
 	return Response.json(result);
 }
 

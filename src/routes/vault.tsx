@@ -344,7 +344,10 @@ function VaultPage() {
 	function runSkill(content: string) {
 		wsStore.setPendingPrompt(content);
 		send({ type: "chat", text: content } satisfies ClientMessage);
-		navigate({ to: "/chat", search: { session: undefined, agent: undefined } });
+		navigate({
+			to: "/raven",
+			search: { session: undefined, agent: undefined },
+		});
 	}
 
 	return (

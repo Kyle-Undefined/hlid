@@ -77,6 +77,12 @@ export type McpStatusMessage = {
 	}>;
 };
 
+export type AttachmentCreatedMessage = {
+	type: "attachment_created";
+	id: string;
+	kind: "ephemeral" | "vault";
+};
+
 export type ServerMessage =
 	| StatusMessage
 	| ChunkMessage
@@ -87,7 +93,8 @@ export type ServerMessage =
 	| ErrorMessage
 	| PermissionRequestMessage
 	| UserMessageEvent
-	| McpStatusMessage;
+	| McpStatusMessage
+	| AttachmentCreatedMessage;
 
 export type ChatAttachment = {
 	id: string;

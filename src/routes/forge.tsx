@@ -171,7 +171,7 @@ const clearLogsFn = createServerFn({ method: "POST" }).handler(async () => {
 
 // ─── route ────────────────────────────────────────────────────────────────────
 
-export const Route = createFileRoute("/settings")({
+export const Route = createFileRoute("/forge")({
 	loader: () => getConfig(),
 	component: SettingsPage,
 });
@@ -525,10 +525,17 @@ function McpSection({ vaultPath }: { vaultPath: string }) {
 	const { send } = useWs(onMessage);
 
 	useEffect(() => {
-		getVaultMcpFn().then((d) => setServers(d.servers));
-		getLiveMcpStatusFn().then((statuses) =>
-			setLiveStatus(new Map(statuses.map((s) => [s.name, s.status]))),
-		);
+		getVaultMcpFn()
+			.then((d) => setServers(d.servers))
+			.catch((e) => {
+				console.error("[mcp] Failed to load servers:", e);
+				setServers([]);
+			});
+		getLiveMcpStatusFn()
+			.then((statuses) =>
+				setLiveStatus(new Map(statuses.map((s) => [s.name, s.status]))),
+			)
+			.catch((e) => console.error("[mcp] Failed to load status:", e));
 	}, []);
 
 	function statusDot(name: string): string {

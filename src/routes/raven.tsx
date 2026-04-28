@@ -76,6 +76,20 @@ const getSessionAgentCwdFn = createServerFn({ method: "GET" })
 		return getSessionAgentCwd(sessionId);
 	});
 
+const getAgentListFn = createServerFn({ method: "GET" }).handler(async () => {
+	const { basename } = await import("node:path");
+	const config = await getConfig();
+	return (config.agents ?? []).map((a) => ({
+		path: a.path,
+		name:
+			a.name ??
+			basename(a.path)
+				.split(/[-_\s]+/)
+				.map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+				.join(" "),
+	}));
+});
+
 const getCurrentSessionFn = createServerFn({ method: "GET" }).handler(
 	async () => {
 		const { server } = await getConfig();
@@ -100,17 +114,18 @@ const MODEL_LABELS: Record<string, string> = {
 
 // ─── route ───────────────────────────────────────────────────────────────────
 
-export const Route = createFileRoute("/chat")({
+export const Route = createFileRoute("/raven")({
 	validateSearch: (search: Record<string, unknown>) => ({
 		session: typeof search.session === "string" ? search.session : undefined,
 		agent: typeof search.agent === "string" ? search.agent : undefined,
 	}),
 	loaderDeps: ({ search: { session, agent } }) => ({ session, agent }),
 	loader: async ({ deps: { session, agent } }) => {
-		const [config, dbSessionId, usageWindows] = await Promise.all([
+		const [config, dbSessionId, usageWindows, agentList] = await Promise.all([
 			getConfig(),
 			session ? Promise.resolve(null) : getCurrentSessionFn(),
 			getUsageWindowsFn(),
+			getAgentListFn(),
 		]);
 		const resolvedSessionId = session ?? dbSessionId;
 		let agentSkillContext = agent;
@@ -123,6 +138,7 @@ export const Route = createFileRoute("/chat")({
 			existingSessionId: resolvedSessionId,
 			usageWindows,
 			agentSkillContext,
+			agentList,
 		};
 	},
 	component: ChatPage,
@@ -841,8 +857,12 @@ function ChatPage() {
 		config,
 		existingSessionId,
 		usageWindows: initialUsageWindows,
-		agentSkillContext,
+		agentSkillContext: initialAgentSkillContext,
+		agentList,
 	} = Route.useLoaderData();
+	const [agentSkillContext, setAgentSkillContext] = useState(
+		initialAgentSkillContext,
+	);
 	const agentContextSentRef = useRef(false);
 	const [sessionId, setSessionId] = useState(() => existingSessionId ?? uid());
 	const sessionIdRef = useRef(sessionId);
@@ -1001,7 +1021,10 @@ function ChatPage() {
 				// Sync with server — replays pending permissions in case WS didn't reconnect (SPA nav)
 				wsStore.send({ type: "sync" });
 			})
-			.catch(console.error);
+			.catch(console.error)
+			.finally(() => {
+				historyReadyRef.current = true;
+			});
 	}, [existingSessionId, handleWsMessage]);
 
 	const { wsStatus, sessionState, model, send } = useWs(handleWsMessage);
@@ -1065,7 +1088,7 @@ function ChatPage() {
 			setUploadError(null);
 			setUploadingCount((c) => c + list.length);
 			try {
-				const uploaded = await Promise.all(
+				const results = await Promise.allSettled(
 					list.map(async (file) => {
 						const fd = new FormData();
 						fd.append("file", file);
@@ -1088,16 +1111,33 @@ function ChatPage() {
 						};
 					}),
 				);
-				setPendingAttachments((prev) => [
-					...prev,
-					...uploaded.map((u) => ({
-						id: u.id,
-						path: u.path,
-						filename: u.filename,
-						mime: u.mime,
-						kind: u.kind,
-					})),
-				]);
+				const fulfilled = results
+					.filter(
+						(
+							r,
+						): r is PromiseFulfilledResult<
+							ChatAttachment & { size_bytes: number }
+						> => r.status === "fulfilled",
+					)
+					.map((r) => r.value);
+				const failed = results
+					.filter((r): r is PromiseRejectedResult => r.status === "rejected")
+					.map((r) =>
+						r.reason instanceof Error ? r.reason.message : "upload failed",
+					);
+				if (fulfilled.length > 0) {
+					setPendingAttachments((prev) => [
+						...prev,
+						...fulfilled.map((u) => ({
+							id: u.id,
+							path: u.path,
+							filename: u.filename,
+							mime: u.mime,
+							kind: u.kind,
+						})),
+					]);
+				}
+				if (failed.length > 0) setUploadError(failed.join("; "));
 			} catch (err) {
 				setUploadError(err instanceof Error ? err.message : "upload failed");
 			} finally {
@@ -1152,6 +1192,7 @@ function ChatPage() {
 		const newId = uid();
 		setSessionId(newId);
 		sessionIdRef.current = newId;
+		setAgentSkillContext(undefined);
 	}, [send]);
 
 	const canSend =
@@ -1339,6 +1380,29 @@ function ChatPage() {
 							</div>
 						</div>
 					)}
+					{agentList.length > 0 && (
+						<div className="flex items-center gap-2 px-4 py-1.5 border-b border-border/40">
+							<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase shrink-0">
+								AGENT
+							</span>
+							<select
+								value={agentSkillContext ?? ""}
+								onChange={(e) => {
+									const val = e.target.value || undefined;
+									setAgentSkillContext(val);
+									agentContextSentRef.current = false;
+								}}
+								className="text-[9px] tracking-widest text-muted-foreground/60 bg-background border border-border/50 px-2 py-0.5 focus:outline-none focus:border-primary/40 uppercase"
+							>
+								<option value="">— none —</option>
+								{agentList.map((a) => (
+									<option key={a.path} value={a.path}>
+										{a.name}
+									</option>
+								))}
+							</select>
+						</div>
+					)}
 					<div className="flex items-center">
 						<span className="text-primary text-sm px-4 py-3 shrink-0 select-none">
 							›
@@ -1397,7 +1461,7 @@ function ChatPage() {
 										: "speak to the watcher…"
 							}
 							disabled={wsStatus !== "connected" || isRunning}
-							className="flex-1 resize-none bg-transparent py-3 pr-2 text-sm text-foreground placeholder:text-muted-foreground/35 focus:outline-none disabled:opacity-30 overflow-hidden"
+							className={`flex-1 resize-none bg-transparent py-3 pr-2 text-sm text-foreground focus:outline-none disabled:opacity-30 overflow-hidden ${wsStatus !== "connected" ? "placeholder:text-foreground/50" : "placeholder:text-muted-foreground/35"}`}
 						/>
 						{isRunning ? (
 							<button

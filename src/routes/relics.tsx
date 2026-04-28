@@ -1,11 +1,12 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import { File as FileIcon, Search, Trash2 } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { getConfig } from "#/config";
 import type { AttachmentRow } from "#/db";
 import { useWs } from "#/hooks/useWs";
 import { uid } from "#/lib/utils";
+import type { ServerMessage } from "#/server/protocol";
 
 type ListResult = {
 	rows: AttachmentRow[];
@@ -40,7 +41,7 @@ const listAttachmentsFn = createServerFn({ method: "POST" })
 		return res.json() as Promise<ListResult>;
 	});
 
-export const Route = createFileRoute("/attachments")({
+export const Route = createFileRoute("/relics")({
 	loader: async () => {
 		const [initial, config] = await Promise.all([
 			listAttachmentsFn({ data: { limit: 50, offset: 0 } }),
@@ -48,6 +49,7 @@ export const Route = createFileRoute("/attachments")({
 		]);
 		return { initial, config };
 	},
+	staleTime: 0,
 	component: AttachmentsPage,
 });
 
@@ -108,24 +110,16 @@ function AttachmentsPage() {
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [headerAction, setHeaderAction] = useState<"build" | null>(null);
-	const { wsStatus, send } = useWs();
-	const connected = wsStatus === "connected";
+	const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+	const [confirmDeleteBulk, setConfirmDeleteBulk] = useState(false);
 
-	const handleBuildSkill = () => {
-		const skillsFolder = config.vault.skills
-			? `${config.vault.path}/${config.vault.skills}`
-			: `${config.vault.path}/.claude/skills`;
-		send({
-			type: "chat",
-			text: buildSkillPrompt({
-				dataPort: config.server.port + 1,
-				vaultPath: config.vault.path,
-				vaultFolder: config.attachments.vault_folder,
-				skillsFolder,
-			}),
-			session_id: uid(),
-		});
-	};
+	useEffect(() => {
+		setRows(initial.rows);
+		setTotal(initial.total);
+		setTotalBytes(initial.total_bytes);
+		setPage(1);
+		setSelected(new Set());
+	}, [initial]);
 
 	const reload = useCallback(
 		async (
@@ -158,6 +152,31 @@ function AttachmentsPage() {
 		[kind, search],
 	);
 
+	const handleWsMessage = useCallback(
+		(msg: ServerMessage) => {
+			if (msg.type === "attachment_created") void reload(1);
+		},
+		[reload],
+	);
+	const { wsStatus, send } = useWs(handleWsMessage);
+	const connected = wsStatus === "connected";
+
+	const handleBuildSkill = () => {
+		const skillsFolder = config.vault.skills
+			? `${config.vault.path}/${config.vault.skills}`
+			: `${config.vault.path}/.claude/skills`;
+		send({
+			type: "chat",
+			text: buildSkillPrompt({
+				dataPort: config.server.port + 1,
+				vaultPath: config.vault.path,
+				vaultFolder: config.attachments.vault_folder,
+				skillsFolder,
+			}),
+			session_id: uid(),
+		});
+	};
+
 	const changeKind = (k: "all" | "ephemeral" | "vault") => {
 		setKind(k);
 		void reload(1, k, search);
@@ -180,34 +199,28 @@ function AttachmentsPage() {
 		);
 	};
 
-	const deleteOne = async (row: AttachmentRow) => {
-		if (
-			row.kind === "vault" &&
-			!confirm(`Delete vault file ${row.filename}? This cannot be undone.`)
-		)
-			return;
-		const url = `/api/attachments/${row.id}${row.kind === "vault" ? "?confirm_vault=1" : ""}`;
-		const res = await fetch(url, { method: "DELETE" });
-		if (!res.ok) {
-			setError(`delete failed (${res.status})`);
-			return;
+	const deleteOne = async (id: string) => {
+		setConfirmDeleteId(null);
+		const row = rows.find((r) => r.id === id);
+		if (!row) return;
+		setBusy(true);
+		try {
+			const url = `/api/attachments/${row.id}${row.kind === "vault" ? "?confirm_vault=1" : ""}`;
+			const res = await fetch(url, { method: "DELETE" });
+			if (!res.ok) {
+				setError(`delete failed (${res.status})`);
+				return;
+			}
+			await reload(page);
+		} finally {
+			setBusy(false);
 		}
-		await reload(page);
 	};
 
 	const deleteSelected = async () => {
 		const ids = Array.from(selected);
 		if (ids.length === 0) return;
-		const vaultRows = rows.filter(
-			(r) => selected.has(r.id) && r.kind === "vault",
-		);
-		if (
-			vaultRows.length > 0 &&
-			!confirm(
-				`${vaultRows.length} vault file(s) selected. Delete all ${ids.length}? This cannot be undone.`,
-			)
-		)
-			return;
+		setConfirmDeleteBulk(false);
 		setBusy(true);
 		try {
 			const failures: string[] = [];
@@ -324,15 +337,38 @@ function AttachmentsPage() {
 					<span className="text-[11px] tracking-widest uppercase text-foreground">
 						{selected.size} selected
 					</span>
-					<button
-						type="button"
-						onClick={deleteSelected}
-						disabled={busy}
-						className="px-3 py-1.5 text-[10px] tracking-widest text-destructive/80 hover:text-destructive border border-destructive/40 uppercase disabled:opacity-30 inline-flex items-center gap-1.5"
-					>
-						<Trash2 className="w-3 h-3" />
-						Delete
-					</button>
+					{confirmDeleteBulk ? (
+						<div className="flex items-center gap-2">
+							<span className="text-[9px] text-muted-foreground/50">
+								delete {selected.size}?
+							</span>
+							<button
+								type="button"
+								onClick={() => void deleteSelected()}
+								disabled={busy}
+								className="text-[9px] tracking-widest text-destructive/60 hover:text-destructive uppercase transition-colors disabled:opacity-30"
+							>
+								confirm
+							</button>
+							<button
+								type="button"
+								onClick={() => setConfirmDeleteBulk(false)}
+								className="text-[9px] tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 uppercase transition-colors"
+							>
+								cancel
+							</button>
+						</div>
+					) : (
+						<button
+							type="button"
+							onClick={() => setConfirmDeleteBulk(true)}
+							disabled={busy}
+							className="px-3 py-1.5 text-[10px] tracking-widest text-destructive/80 hover:text-destructive border border-destructive/40 uppercase disabled:opacity-30 inline-flex items-center gap-1.5"
+						>
+							<Trash2 className="w-3 h-3" />
+							Delete
+						</button>
+					)}
 				</div>
 			)}
 
@@ -420,15 +456,34 @@ function AttachmentsPage() {
 										{formatDate(r.created_at)}
 									</td>
 									<td className="px-3 py-2 text-right">
-										<button
-											type="button"
-											onClick={() => deleteOne(r)}
-											disabled={busy}
-											className="text-muted-foreground/50 hover:text-destructive disabled:opacity-30"
-											aria-label={`Delete ${r.filename}`}
-										>
-											<Trash2 className="w-3.5 h-3.5" />
-										</button>
+										{confirmDeleteId === r.id ? (
+											<div className="flex items-center justify-end gap-1.5">
+												<button
+													type="button"
+													onClick={() => void deleteOne(r.id)}
+													className="text-[9px] tracking-widest text-destructive/60 hover:text-destructive uppercase transition-colors"
+												>
+													confirm
+												</button>
+												<button
+													type="button"
+													onClick={() => setConfirmDeleteId(null)}
+													className="text-[9px] tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 uppercase transition-colors"
+												>
+													cancel
+												</button>
+											</div>
+										) : (
+											<button
+												type="button"
+												onClick={() => setConfirmDeleteId(r.id)}
+												disabled={busy}
+												className="text-muted-foreground/50 hover:text-destructive disabled:opacity-30"
+												aria-label={`Delete ${r.filename}`}
+											>
+												<Trash2 className="w-3.5 h-3.5" />
+											</button>
+										)}
 									</td>
 								</tr>
 							))
