@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { McpServerStatus } from "@anthropic-ai/claude-agent-sdk";
 import type { ServerWebSocket } from "bun";
 import * as db from "../db";
@@ -487,6 +489,65 @@ Bun.serve({
 				session.reinitialize(fresh);
 				lastSessionError = null;
 				broadcast({ type: "status", ...session.getStatus() });
+				return;
+			}
+
+			if (msg.type === "probe_mcp") {
+				void session.probeMcpStatus(broadcast);
+				return;
+			}
+
+			if (msg.type === "sync_mcp_list") {
+				const cfg = loadConfig();
+				if (!cfg.vault.path) return;
+				let vaultNames = new Set<string>();
+				try {
+					vaultNames = new Set(
+						Object.keys(
+							(
+								JSON.parse(
+									readFileSync(join(cfg.vault.path, ".mcp.json"), "utf8"),
+								) as { mcpServers?: Record<string, unknown> }
+							).mcpServers ?? {},
+						),
+					);
+				} catch {}
+				let disabled: string[] = [];
+				try {
+					disabled =
+						(
+							JSON.parse(
+								readFileSync(
+									join(cfg.vault.path, ".claude", "settings.local.json"),
+									"utf8",
+								),
+							) as { disabledMcpjsonServers?: string[] }
+						).disabledMcpjsonServers ?? [];
+				} catch {}
+				const cachedList = session.getLastMcpStatus() ?? [];
+				const cachedMap = new Map(cachedList.map((s) => [s.name, s]));
+				// Preserve cloud/global entries from cache unchanged
+				const preserved = cachedList
+					.filter((s) => s.scope !== "project")
+					.map((s) => ({
+						name: s.name,
+						status: s.status,
+						scope: s.scope,
+						error: s.error,
+					}));
+				// Vault entries: current .mcp.json + cached status
+				const vault = [...vaultNames].map((name) => {
+					if (disabled.includes(name))
+						return { name, status: "disabled" as const };
+					const c = cachedMap.get(name);
+					return {
+						name,
+						status: c?.status ?? ("pending" as const),
+						scope: "project" as const,
+						error: c?.error,
+					};
+				});
+				broadcast({ type: "mcp_status", servers: [...preserved, ...vault] });
 				return;
 			}
 

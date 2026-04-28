@@ -1332,6 +1332,10 @@ function CockpitPage() {
 		},
 	);
 
+	useEffect(() => {
+		send({ type: "sync_mcp_list" });
+	}, [send]);
+
 	const skillGroups = useMemo(
 		() => groupSkills(data.skills, data.sectionOrder),
 		[data.skills, data.sectionOrder],

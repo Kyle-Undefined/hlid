@@ -2,7 +2,6 @@ import { X509Certificate } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import tailwindcss from "@tailwindcss/vite";
-import { devtools } from "@tanstack/devtools-vite";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import viteReact from "@vitejs/plugin-react";
 import { parse } from "smol-toml";
@@ -76,13 +75,7 @@ const tls = process.env.HLID_TLS ? loadTls() : null;
 
 const config = defineConfig({
 	resolve: { tsconfigPaths: true },
-	plugins: [
-		ipGatePlugin(),
-		...(!tls ? [devtools()] : []),
-		tailwindcss(),
-		tanstackStart(),
-		viteReact(),
-	],
+	plugins: [ipGatePlugin(), tailwindcss(), tanstackStart(), viteReact()],
 	server: {
 		host: "0.0.0.0",
 		allowedHosts: true,

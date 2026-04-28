@@ -18,7 +18,9 @@ self.addEventListener("activate", (e) => {
 
 self.addEventListener("fetch", (e) => {
 	const url = new URL(e.request.url);
-	if (e.request.method !== "GET" || url.pathname.startsWith("/api/")) return;
+	if (e.request.method !== "GET") return;
+	if (url.protocol !== "http:" && url.protocol !== "https:") return;
+	if (url.pathname.startsWith("/api/")) return;
 
 	const isStatic = STATIC_EXTS.some((ext) => url.pathname.endsWith(ext));
 

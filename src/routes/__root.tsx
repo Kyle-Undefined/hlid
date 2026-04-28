@@ -28,16 +28,6 @@ export const Route = createRootRoute({
 		links: [
 			{ rel: "manifest", href: "/manifest.json" },
 			{ rel: "apple-touch-icon", href: "/apple-touch-icon.png" },
-			{ rel: "preconnect", href: "https://fonts.googleapis.com" },
-			{
-				rel: "preconnect",
-				href: "https://fonts.gstatic.com",
-				crossOrigin: "anonymous" as const,
-			},
-			{
-				rel: "stylesheet",
-				href: "https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&display=swap",
-			},
 			{ rel: "icon", href: "/favicon.svg", type: "image/svg+xml" },
 			{ rel: "stylesheet", href: appCss },
 		],

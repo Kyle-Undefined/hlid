@@ -32,6 +32,12 @@ export function writeConfig(config: HlidConfig): void {
 	lines.push("[server]");
 	lines.push(`port = ${tomlVal(config.server.port)}`);
 	lines.push(`host = ${tomlVal(config.server.host)}`);
+	if (config.server.tls_cert_path)
+		lines.push(`tls_cert_path = ${tomlVal(config.server.tls_cert_path)}`);
+	if (config.server.tls_key_path)
+		lines.push(`tls_key_path = ${tomlVal(config.server.tls_key_path)}`);
+	if (config.server.tls_proxy_port !== undefined)
+		lines.push(`tls_proxy_port = ${tomlVal(config.server.tls_proxy_port)}`);
 
 	lines.push("");
 	lines.push("[claude]");

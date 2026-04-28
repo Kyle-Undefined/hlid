@@ -128,10 +128,20 @@ export type ClientSyncMessage = {
 	type: "sync";
 };
 
+export type ClientProbeMcpMessage = {
+	type: "probe_mcp";
+};
+
+export type ClientSyncMcpListMessage = {
+	type: "sync_mcp_list";
+};
+
 export type ClientMessage =
 	| ClientChatMessage
 	| ClientAbortMessage
 	| ClientClearMessage
 	| ClientReloadMessage
 	| ClientPermissionResponseMessage
-	| ClientSyncMessage;
+	| ClientSyncMessage
+	| ClientProbeMcpMessage
+	| ClientSyncMcpListMessage;

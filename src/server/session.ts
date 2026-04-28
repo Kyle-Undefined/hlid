@@ -47,6 +47,7 @@ export class SessionManager {
 	private currentSessionId: string | null = null;
 	private messageSeq = 0;
 	private lastMcpStatus: McpServerStatus[] | null = null;
+	private probing = false;
 
 	constructor(config: HlidConfig) {
 		this.model = config.claude.model;
@@ -87,6 +88,52 @@ export class SessionManager {
 
 	restoreMcpStatus(statuses: McpServerStatus[]): void {
 		this.lastMcpStatus = statuses;
+	}
+
+	async probeMcpStatus(emit: (msg: ServerMessage) => void): Promise<void> {
+		if (this.probing || this.state === "running") return;
+		this.probing = true;
+		const ac = new AbortController();
+		const timeout = setTimeout(() => ac.abort(), 30_000);
+		try {
+			const conv = query({
+				prompt: ".",
+				options: {
+					cwd: this.vaultPath,
+					abortController: ac,
+					permissionMode: "default",
+					effort: "low" as const,
+					maxTurns: 1,
+					persistSession: false,
+					...(this.claudeExecutable !== undefined && {
+						pathToClaudeCodeExecutable: this.claudeExecutable,
+					}),
+					allowDangerouslySkipPermissions: false,
+					canUseTool: () =>
+						Promise.resolve({ behavior: "deny" as const, message: "probe" }),
+				},
+			});
+			for await (const _ of conv) {
+				const statuses = await conv.mcpServerStatus();
+				this.lastMcpStatus = statuses;
+				emit({
+					type: "mcp_status",
+					servers: statuses.map((s) => ({
+						name: s.name,
+						status: s.status,
+						scope: s.scope,
+						error: s.error,
+					})),
+				});
+				ac.abort();
+				break;
+			}
+		} catch {
+			// abort errors expected
+		} finally {
+			clearTimeout(timeout);
+			this.probing = false;
+		}
 	}
 
 	isRunning(): boolean {

@@ -12,8 +12,17 @@ import type { ServerMessage } from "#/server/protocol";
 
 // ─── MCP vault types ─────────────────────────────────────────────────────────
 
-type StdioConfig = { type?: "stdio"; command: string; args?: string[] };
-type RemoteConfig = { type: "http" | "sse"; url: string };
+type StdioConfig = {
+	type?: "stdio";
+	command: string;
+	args?: string[];
+	env?: Record<string, string>;
+};
+type RemoteConfig = {
+	type: "http" | "sse";
+	url: string;
+	headers?: Record<string, string>;
+};
 type VaultMcpConfig = StdioConfig | RemoteConfig;
 type VaultMcpServer = {
 	name: string;
@@ -418,6 +427,71 @@ function FilePathField({
 	);
 }
 
+// ─── MCP helpers ─────────────────────────────────────────────────────────────
+
+function parseKV(text: string): Record<string, string> | undefined {
+	const entries = text
+		.split("\n")
+		.map((l) => l.trim())
+		.filter((l) => l.includes("="))
+		.map((l) => {
+			const idx = l.indexOf("=");
+			return [l.slice(0, idx).trim(), l.slice(idx + 1)] as [string, string];
+		})
+		.filter(([k]) => k.length > 0);
+	return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+function serializeKV(obj: Record<string, string> | undefined): string {
+	if (!obj) return "";
+	return Object.entries(obj)
+		.map(([k, v]) => `${k}=${v}`)
+		.join("\n");
+}
+
+function parseHeader(text: string): Record<string, string> | undefined {
+	const entries = text
+		.split("\n")
+		.map((l) => l.trim())
+		.filter((l) => l.includes(":"))
+		.map((l) => {
+			const idx = l.indexOf(":");
+			return [l.slice(0, idx).trim(), l.slice(idx + 1).trim()] as [
+				string,
+				string,
+			];
+		})
+		.filter(([k]) => k.length > 0);
+	return entries.length > 0 ? Object.fromEntries(entries) : undefined;
+}
+
+function serializeHeader(obj: Record<string, string> | undefined): string {
+	if (!obj) return "";
+	return Object.entries(obj)
+		.map(([k, v]) => `${k}: ${v}`)
+		.join("\n");
+}
+
+function KvTextarea({
+	value,
+	onChange,
+	placeholder,
+}: {
+	value: string;
+	onChange: (v: string) => void;
+	placeholder: string;
+}) {
+	return (
+		<textarea
+			value={value}
+			onChange={(e) => onChange(e.target.value)}
+			placeholder={placeholder}
+			rows={3}
+			className="w-full bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors resize-none"
+		/>
+	);
+}
+
 // ─── MCP section ─────────────────────────────────────────────────────────────
 
 function McpSection({ vaultPath }: { vaultPath: string }) {
@@ -429,14 +503,26 @@ function McpSection({ vaultPath }: { vaultPath: string }) {
 	const [addCommand, setAddCommand] = useState("");
 	const [addArgs, setAddArgs] = useState("");
 	const [addUrl, setAddUrl] = useState("");
+	const [addEnv, setAddEnv] = useState("");
+	const [addHeaders, setAddHeaders] = useState("");
 	const [opError, setOpError] = useState<string | null>(null);
+	const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
+	const [editingServer, setEditingServer] = useState<string | null>(null);
+	const [editType, setEditType] = useState<"stdio" | "http" | "sse">("stdio");
+	const [editCommand, setEditCommand] = useState("");
+	const [editArgs, setEditArgs] = useState("");
+	const [editUrl, setEditUrl] = useState("");
+	const [editEnv, setEditEnv] = useState("");
+	const [editHeaders, setEditHeaders] = useState("");
+	const [probing, setProbing] = useState(false);
 
 	const onMessage = useCallback((msg: ServerMessage) => {
 		if (msg.type === "mcp_status") {
 			setLiveStatus(new Map(msg.servers.map((s) => [s.name, s.status])));
+			setProbing(false);
 		}
 	}, []);
-	useWs(onMessage);
+	const { send } = useWs(onMessage);
 
 	useEffect(() => {
 		getVaultMcpFn().then((d) => setServers(d.servers));
@@ -475,6 +561,7 @@ function McpSection({ vaultPath }: { vaultPath: string }) {
 						s.name === name ? { ...s, disabled: makeDisabled } : s,
 					) ?? null,
 			);
+			send({ type: "sync_mcp_list" });
 		} catch (e) {
 			setOpError(e instanceof Error ? e.message : "Toggle failed");
 		}
@@ -489,8 +576,77 @@ function McpSection({ vaultPath }: { vaultPath: string }) {
 			);
 			await writeVaultMcpFn({ data: { servers: next } });
 			setServers((prev) => prev?.filter((s) => s.name !== name) ?? null);
+			send({ type: "sync_mcp_list" });
 		} catch (e) {
 			setOpError(e instanceof Error ? e.message : "Remove failed");
+		}
+	}
+
+	function handleStartEdit(s: VaultMcpServer) {
+		setEditingServer(s.name);
+		setOpError(null);
+		if ("url" in s.config) {
+			setEditType(s.config.type === "sse" ? "sse" : "http");
+			setEditUrl(s.config.url);
+			setEditHeaders(serializeHeader(s.config.headers));
+			setEditCommand("");
+			setEditArgs("");
+			setEditEnv("");
+		} else {
+			setEditType("stdio");
+			setEditCommand(s.config.command);
+			setEditArgs((s.config.args ?? []).join(", "));
+			setEditEnv(serializeKV(s.config.env));
+			setEditUrl("");
+			setEditHeaders("");
+		}
+	}
+
+	async function handleSaveEdit(name: string) {
+		if (!servers) return;
+		setOpError(null);
+		let cfg: VaultMcpConfig;
+		if (editType === "stdio") {
+			if (!editCommand.trim()) {
+				setOpError("Command required");
+				return;
+			}
+			const args = editArgs
+				.split(",")
+				.map((a) => a.trim())
+				.filter(Boolean);
+			const env = parseKV(editEnv);
+			cfg = {
+				command: editCommand.trim(),
+				...(args.length ? { args } : {}),
+				...(env ? { env } : {}),
+			};
+		} else {
+			if (!editUrl.trim()) {
+				setOpError("URL required");
+				return;
+			}
+			const headers = parseHeader(editHeaders);
+			cfg = {
+				type: editType,
+				url: editUrl.trim(),
+				...(headers ? { headers } : {}),
+			};
+		}
+		const next = Object.fromEntries(
+			servers.map((s) => [s.name, s.name === name ? cfg : s.config]),
+		);
+		try {
+			await writeVaultMcpFn({ data: { servers: next } });
+			setServers(
+				(prev) =>
+					prev?.map((s) => (s.name === name ? { ...s, config: cfg } : s)) ??
+					null,
+			);
+			setEditingServer(null);
+			send({ type: "sync_mcp_list" });
+		} catch (e) {
+			setOpError(e instanceof Error ? e.message : "Save failed");
 		}
 	}
 
@@ -512,13 +668,23 @@ function McpSection({ vaultPath }: { vaultPath: string }) {
 				.split(",")
 				.map((a) => a.trim())
 				.filter(Boolean);
-			cfg = { command: addCommand.trim(), ...(args.length ? { args } : {}) };
+			const env = parseKV(addEnv);
+			cfg = {
+				command: addCommand.trim(),
+				...(args.length ? { args } : {}),
+				...(env ? { env } : {}),
+			};
 		} else {
 			if (!addUrl.trim()) {
 				setOpError("URL required");
 				return;
 			}
-			cfg = { type: addType, url: addUrl.trim() };
+			const headers = parseHeader(addHeaders);
+			cfg = {
+				type: addType,
+				url: addUrl.trim(),
+				...(headers ? { headers } : {}),
+			};
 		}
 
 		const next = {
@@ -537,6 +703,9 @@ function McpSection({ vaultPath }: { vaultPath: string }) {
 			setAddCommand("");
 			setAddArgs("");
 			setAddUrl("");
+			setAddEnv("");
+			setAddHeaders("");
+			send({ type: "sync_mcp_list" });
 		} catch (e) {
 			setOpError(e instanceof Error ? e.message : "Add failed");
 		}
@@ -545,46 +714,188 @@ function McpSection({ vaultPath }: { vaultPath: string }) {
 	if (!vaultPath) return null;
 
 	return (
-		<Section title="MCP — Vault Servers">
+		<Section title="MCP">
 			{servers === null && (
 				<div className="px-4 py-3 text-xs text-muted-foreground/50">
 					loading…
 				</div>
 			)}
 
-			{servers?.map((s) => (
-				<div key={s.name} className="flex items-center gap-3 px-4 py-3">
-					<span
-						className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDot(s.name)}`}
-					/>
-					<span
-						className={`flex-1 text-sm min-w-0 truncate ${s.disabled ? "text-muted-foreground line-through" : "text-foreground"}`}
-					>
-						{s.name}
-					</span>
-					<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase shrink-0">
-						{typeBadge(s.config)}
-					</span>
-					<label className="flex items-center gap-1.5 cursor-pointer shrink-0">
-						<input
-							type="checkbox"
-							checked={!s.disabled}
-							onChange={() => handleToggle(s.name, !s.disabled)}
-							className="accent-primary w-3.5 h-3.5"
+			{servers?.map((s) =>
+				editingServer === s.name ? (
+					<div key={s.name} className="px-4 py-4 space-y-3">
+						<div className="flex items-center justify-between">
+							<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+								Edit — {s.name}
+							</div>
+							<select
+								value={editType}
+								onChange={(e) =>
+									setEditType(e.target.value as "stdio" | "http" | "sse")
+								}
+								className="bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
+							>
+								<option value="stdio">stdio</option>
+								<option value="http">http</option>
+								<option value="sse">sse</option>
+							</select>
+						</div>
+						{editType === "stdio" ? (
+							<>
+								<div className="flex gap-3">
+									<div className="flex-1 space-y-1">
+										<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+											Command
+										</div>
+										<input
+											type="text"
+											value={editCommand}
+											onChange={(e) => setEditCommand(e.target.value)}
+											placeholder="npx"
+											className="w-full bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+										/>
+									</div>
+									<div className="flex-1 space-y-1">
+										<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+											Args (comma-separated)
+										</div>
+										<input
+											type="text"
+											value={editArgs}
+											onChange={(e) => setEditArgs(e.target.value)}
+											placeholder="-y, some-mcp-package"
+											className="w-full bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+										/>
+									</div>
+								</div>
+								<div className="space-y-1">
+									<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+										Env vars (KEY=value, one per line)
+									</div>
+									<KvTextarea
+										value={editEnv}
+										onChange={setEditEnv}
+										placeholder={"API_KEY=abc123\nANOTHER_VAR=value"}
+									/>
+								</div>
+							</>
+						) : (
+							<>
+								<div className="space-y-1">
+									<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+										URL
+									</div>
+									<input
+										type="text"
+										value={editUrl}
+										onChange={(e) => setEditUrl(e.target.value)}
+										placeholder="https://example.com/mcp"
+										className="w-full bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+									/>
+								</div>
+								<div className="space-y-1">
+									<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+										Headers (KEY: value, one per line)
+									</div>
+									<KvTextarea
+										value={editHeaders}
+										onChange={setEditHeaders}
+										placeholder={
+											"Authorization: Bearer token123\nX-Api-Key: key"
+										}
+									/>
+								</div>
+							</>
+						)}
+						{opError && editingServer === s.name && (
+							<div className="text-xs text-destructive">{opError}</div>
+						)}
+						<div className="flex gap-2 justify-end pt-1">
+							<button
+								type="button"
+								onClick={() => {
+									setEditingServer(null);
+									setOpError(null);
+								}}
+								className="text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:bg-accent transition-colors uppercase"
+							>
+								CANCEL
+							</button>
+							<button
+								type="button"
+								onClick={() => void handleSaveEdit(s.name)}
+								className="text-[10px] tracking-widest px-3 py-1.5 border border-primary/40 text-primary hover:bg-primary/10 transition-colors uppercase"
+							>
+								SAVE
+							</button>
+						</div>
+					</div>
+				) : (
+					<div key={s.name} className="flex items-center gap-3 px-4 py-3">
+						<span
+							className={`w-1.5 h-1.5 rounded-full shrink-0 ${statusDot(s.name)}`}
 						/>
-						<span className="text-xs text-muted-foreground">
-							{s.disabled ? "off" : "on"}
+						<span
+							className={`flex-1 text-sm min-w-0 truncate ${s.disabled ? "text-muted-foreground line-through" : "text-foreground"}`}
+						>
+							{s.name}
 						</span>
-					</label>
-					<button
-						type="button"
-						onClick={() => handleRemove(s.name)}
-						className="text-muted-foreground/30 hover:text-destructive transition-colors text-base shrink-0 leading-none"
-					>
-						×
-					</button>
-				</div>
-			))}
+						<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase shrink-0">
+							{typeBadge(s.config)}
+						</span>
+						<button
+							type="button"
+							onClick={() => handleStartEdit(s)}
+							className="text-[9px] tracking-widest text-muted-foreground/30 hover:text-foreground uppercase transition-colors shrink-0"
+						>
+							edit
+						</button>
+						<label className="flex items-center gap-1.5 cursor-pointer shrink-0">
+							<input
+								type="checkbox"
+								checked={!s.disabled}
+								onChange={() => handleToggle(s.name, !s.disabled)}
+								className="accent-primary w-3.5 h-3.5"
+							/>
+							<span className="text-xs text-muted-foreground">
+								{s.disabled ? "off" : "on"}
+							</span>
+						</label>
+						{confirmRemove === s.name ? (
+							<div className="flex items-center gap-2 shrink-0">
+								<span className="text-[9px] text-muted-foreground/50">
+									remove?
+								</span>
+								<button
+									type="button"
+									onClick={() => {
+										setConfirmRemove(null);
+										void handleRemove(s.name);
+									}}
+									className="text-[9px] tracking-widest text-destructive/60 hover:text-destructive uppercase transition-colors"
+								>
+									confirm
+								</button>
+								<button
+									type="button"
+									onClick={() => setConfirmRemove(null)}
+									className="text-[9px] tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 uppercase transition-colors"
+								>
+									cancel
+								</button>
+							</div>
+						) : (
+							<button
+								type="button"
+								onClick={() => setConfirmRemove(s.name)}
+								className="text-muted-foreground/30 hover:text-destructive transition-colors text-base shrink-0 leading-none"
+							>
+								×
+							</button>
+						)}
+					</div>
+				),
+			)}
 
 			{servers !== null && !showAdd && (
 				<div className="px-4 py-3">
@@ -632,45 +943,69 @@ function McpSection({ vaultPath }: { vaultPath: string }) {
 					</div>
 
 					{addType === "stdio" ? (
-						<div className="flex gap-3">
-							<div className="flex-1 space-y-1">
-								<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
-									Command
+						<>
+							<div className="flex gap-3">
+								<div className="flex-1 space-y-1">
+									<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+										Command
+									</div>
+									<input
+										type="text"
+										value={addCommand}
+										onChange={(e) => setAddCommand(e.target.value)}
+										placeholder="npx"
+										className="w-full bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+									/>
 								</div>
-								<input
-									type="text"
-									value={addCommand}
-									onChange={(e) => setAddCommand(e.target.value)}
-									placeholder="npx"
-									className="w-full bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+								<div className="flex-1 space-y-1">
+									<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+										Args (comma-separated)
+									</div>
+									<input
+										type="text"
+										value={addArgs}
+										onChange={(e) => setAddArgs(e.target.value)}
+										placeholder="-y, some-mcp-package"
+										className="w-full bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+									/>
+								</div>
+							</div>
+							<div className="space-y-1">
+								<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+									Env vars (KEY=value, one per line)
+								</div>
+								<KvTextarea
+									value={addEnv}
+									onChange={setAddEnv}
+									placeholder={"API_KEY=abc123\nANOTHER_VAR=value"}
 								/>
 							</div>
-							<div className="flex-1 space-y-1">
-								<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
-									Args (comma-separated)
-								</div>
-								<input
-									type="text"
-									value={addArgs}
-									onChange={(e) => setAddArgs(e.target.value)}
-									placeholder="-y, some-mcp-package"
-									className="w-full bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
-								/>
-							</div>
-						</div>
+						</>
 					) : (
-						<div className="space-y-1">
-							<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
-								URL
+						<>
+							<div className="space-y-1">
+								<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+									URL
+								</div>
+								<input
+									type="text"
+									value={addUrl}
+									onChange={(e) => setAddUrl(e.target.value)}
+									placeholder="https://example.com/mcp"
+									className="w-full bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+								/>
 							</div>
-							<input
-								type="text"
-								value={addUrl}
-								onChange={(e) => setAddUrl(e.target.value)}
-								placeholder="http://localhost:8080"
-								className="w-full bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
-							/>
-						</div>
+							<div className="space-y-1">
+								<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+									Headers (KEY: value, one per line)
+								</div>
+								<KvTextarea
+									value={addHeaders}
+									onChange={setAddHeaders}
+									placeholder={"Authorization: Bearer token123\nX-Api-Key: key"}
+								/>
+							</div>
+						</>
 					)}
 
 					{opError && <div className="text-xs text-destructive">{opError}</div>}
@@ -701,8 +1036,24 @@ function McpSection({ vaultPath }: { vaultPath: string }) {
 				<div className="px-4 py-2 text-xs text-destructive">{opError}</div>
 			)}
 
-			<div className="px-4 py-2 text-[9px] text-muted-foreground/30">
-				changes take effect on next session · cloud MCPs managed on claude.ai
+			<div className="px-4 py-3 flex items-center justify-between gap-4 border-t border-border">
+				<div className="text-[9px] text-muted-foreground/30 leading-relaxed">
+					changes take effect on next session · cloud MCPs managed on claude.ai
+					<br />
+					use <span className="text-muted-foreground/50">check MCPs</span> to
+					validate configs, runs a quick SDK query (cached)
+				</div>
+				<button
+					type="button"
+					disabled={probing}
+					onClick={() => {
+						setProbing(true);
+						send({ type: "probe_mcp" });
+					}}
+					className="text-[9px] tracking-widest text-muted-foreground/40 hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed uppercase transition-colors shrink-0"
+				>
+					{probing ? "checking…" : "check MCPs"}
+				</button>
 			</div>
 		</Section>
 	);
@@ -1098,6 +1449,128 @@ function SettingsPage() {
 					</Field>
 				</Section>
 
+				<Section title="UI">
+					<div className="px-4 py-3 space-y-2">
+						<div className="text-sm text-foreground">Theme</div>
+						<div className="grid grid-cols-2 gap-2">
+							{(
+								[
+									{
+										value: "dark" as const,
+										label: "Dark",
+										desc: "neutral dark, sky blue",
+									},
+									{
+										value: "tan" as const,
+										label: "Tan",
+										desc: "warm parchment, terracotta",
+									},
+								] satisfies {
+									value: "dark" | "tan";
+									label: string;
+									desc: string;
+								}[]
+							).map((opt) => (
+								<button
+									key={opt.value}
+									type="button"
+									onClick={() => setTheme(opt.value)}
+									className={`flex flex-col gap-1 p-3 border text-left transition-colors ${
+										theme === opt.value
+											? "border-primary bg-primary/5"
+											: "border-border hover:bg-accent"
+									}`}
+								>
+									<span className="text-sm font-medium text-foreground">
+										{opt.label}
+									</span>
+									<span className="text-xs text-muted-foreground">
+										{opt.desc}
+									</span>
+								</button>
+							))}
+						</div>
+					</div>
+					<div className="px-4 py-3 space-y-2">
+						<div className="text-sm text-foreground">Mobile theme override</div>
+						<div className="text-xs text-muted-foreground mb-2">
+							override theme on touch devices
+						</div>
+						<div className="grid grid-cols-3 gap-2">
+							{(
+								[
+									{
+										value: "same" as const,
+										label: "Same",
+										desc: "no override",
+									},
+									{
+										value: "dark" as const,
+										label: "Dark",
+										desc: "neutral dark, sky blue",
+									},
+									{
+										value: "tan" as const,
+										label: "Tan",
+										desc: "warm parchment, terracotta",
+									},
+								] satisfies {
+									value: "dark" | "tan" | "same";
+									label: string;
+									desc: string;
+								}[]
+							).map((opt) => (
+								<button
+									key={opt.value}
+									type="button"
+									onClick={() => setMobileTheme(opt.value)}
+									className={`flex flex-col gap-1 p-3 border text-left transition-colors ${
+										mobileTheme === opt.value
+											? "border-primary bg-primary/5"
+											: "border-border hover:bg-accent"
+									}`}
+								>
+									<span className="text-sm font-medium text-foreground">
+										{opt.label}
+									</span>
+									<span className="text-xs text-muted-foreground">
+										{opt.desc}
+									</span>
+								</button>
+							))}
+						</div>
+					</div>
+					<Field
+						label="Enter to submit"
+						hint="desktop only, mobile always uses Enter for newline"
+					>
+						<label className="flex items-center gap-2 cursor-pointer">
+							<input
+								type="checkbox"
+								checked={enterToSubmit}
+								onChange={(e) => setEnterToSubmit(e.target.checked)}
+								className="accent-primary w-3.5 h-3.5"
+							/>
+							<span className="text-xs text-muted-foreground">
+								{enterToSubmit ? "on" : "off"}
+							</span>
+						</label>
+					</Field>
+					<Field label="Hide skills index.md">
+						<label className="flex items-center gap-2 cursor-pointer">
+							<input
+								type="checkbox"
+								checked={hideSkillsIndex}
+								onChange={(e) => setHideSkillsIndex(e.target.checked)}
+								className="accent-primary w-3.5 h-3.5"
+							/>
+							<span className="text-xs text-muted-foreground">
+								{hideSkillsIndex ? "on" : "off"}
+							</span>
+						</label>
+					</Field>
+				</Section>
+
 				<Section title="Vault">
 					<Field label="Name">
 						<TextInput value={vaultName} onChange={setVaultName} />
@@ -1152,6 +1625,22 @@ function SettingsPage() {
 						/>
 					</Field>
 				</Section>
+
+				<Section title="Status Vocabulary">
+					<VocabRow
+						label="Active"
+						value={vocabActive}
+						onChange={setVocabActive}
+					/>
+					<VocabRow
+						label="Planning"
+						value={vocabPlanning}
+						onChange={setVocabPlanning}
+					/>
+					<VocabRow label="Done" value={vocabDone} onChange={setVocabDone} />
+				</Section>
+
+				<McpSection vaultPath={vaultPath} />
 
 				<Section title="Claude">
 					<Field label="Model">
@@ -1288,144 +1777,6 @@ function SettingsPage() {
 						/>
 					</Field>
 				</Section>
-
-				<Section title="Status Vocabulary">
-					<VocabRow
-						label="Active"
-						value={vocabActive}
-						onChange={setVocabActive}
-					/>
-					<VocabRow
-						label="Planning"
-						value={vocabPlanning}
-						onChange={setVocabPlanning}
-					/>
-					<VocabRow label="Done" value={vocabDone} onChange={setVocabDone} />
-				</Section>
-
-				<Section title="UI">
-					<div className="px-4 py-3 space-y-2">
-						<div className="text-sm text-foreground">Theme</div>
-						<div className="grid grid-cols-2 gap-2">
-							{(
-								[
-									{
-										value: "dark" as const,
-										label: "Dark",
-										desc: "neutral dark, sky blue",
-									},
-									{
-										value: "tan" as const,
-										label: "Tan",
-										desc: "warm parchment, terracotta",
-									},
-								] satisfies {
-									value: "dark" | "tan";
-									label: string;
-									desc: string;
-								}[]
-							).map((opt) => (
-								<button
-									key={opt.value}
-									type="button"
-									onClick={() => setTheme(opt.value)}
-									className={`flex flex-col gap-1 p-3 border text-left transition-colors ${
-										theme === opt.value
-											? "border-primary bg-primary/5"
-											: "border-border hover:bg-accent"
-									}`}
-								>
-									<span className="text-sm font-medium text-foreground">
-										{opt.label}
-									</span>
-									<span className="text-xs text-muted-foreground">
-										{opt.desc}
-									</span>
-								</button>
-							))}
-						</div>
-					</div>
-					<div className="px-4 py-3 space-y-2">
-						<div className="text-sm text-foreground">Mobile theme override</div>
-						<div className="text-xs text-muted-foreground mb-2">
-							override theme on touch devices
-						</div>
-						<div className="grid grid-cols-3 gap-2">
-							{(
-								[
-									{
-										value: "same" as const,
-										label: "Same",
-										desc: "no override",
-									},
-									{
-										value: "dark" as const,
-										label: "Dark",
-										desc: "neutral dark, sky blue",
-									},
-									{
-										value: "tan" as const,
-										label: "Tan",
-										desc: "warm parchment, terracotta",
-									},
-								] satisfies {
-									value: "dark" | "tan" | "same";
-									label: string;
-									desc: string;
-								}[]
-							).map((opt) => (
-								<button
-									key={opt.value}
-									type="button"
-									onClick={() => setMobileTheme(opt.value)}
-									className={`flex flex-col gap-1 p-3 border text-left transition-colors ${
-										mobileTheme === opt.value
-											? "border-primary bg-primary/5"
-											: "border-border hover:bg-accent"
-									}`}
-								>
-									<span className="text-sm font-medium text-foreground">
-										{opt.label}
-									</span>
-									<span className="text-xs text-muted-foreground">
-										{opt.desc}
-									</span>
-								</button>
-							))}
-						</div>
-					</div>
-					<Field
-						label="Enter to submit"
-						hint="desktop only, mobile always uses Enter for newline"
-					>
-						<label className="flex items-center gap-2 cursor-pointer">
-							<input
-								type="checkbox"
-								checked={enterToSubmit}
-								onChange={(e) => setEnterToSubmit(e.target.checked)}
-								className="accent-primary w-3.5 h-3.5"
-							/>
-							<span className="text-xs text-muted-foreground">
-								{enterToSubmit ? "on" : "off"}
-							</span>
-						</label>
-					</Field>
-					<Field label="Hide skills index.md">
-						<label className="flex items-center gap-2 cursor-pointer">
-							<input
-								type="checkbox"
-								checked={hideSkillsIndex}
-								onChange={(e) => setHideSkillsIndex(e.target.checked)}
-								className="accent-primary w-3.5 h-3.5"
-							/>
-							<span className="text-xs text-muted-foreground">
-								{hideSkillsIndex ? "on" : "off"}
-							</span>
-						</label>
-					</Field>
-				</Section>
-
-				<McpSection vaultPath={vaultPath} />
 
 				<EventLogSection />
 			</div>
