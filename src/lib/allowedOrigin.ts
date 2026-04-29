@@ -1,5 +1,8 @@
-// Allowed: localhost and Tailscale (CGNAT 100.64.0.0/10 + IPv6 fd7a:115c:a1e0::/48).
-export function isAllowedOrigin(addr: string | undefined): boolean {
+// Allowed: localhost, Tailscale CGNAT, and optionally RFC1918 local network.
+export function isAllowedOrigin(
+	addr: string | undefined,
+	allowLocalNetwork = false,
+): boolean {
 	if (!addr) return false;
 	const ip = addr.startsWith("::ffff:") ? addr.slice(7) : addr;
 	if (ip === "127.0.0.1" || ip === "::1") return true;
@@ -10,5 +13,11 @@ export function isAllowedOrigin(addr: string | undefined): boolean {
 	const octets = parts.map(Number);
 	if (octets.some((o) => o < 0 || o > 255)) return false;
 	const [a, b] = octets;
-	return a === 100 && b >= 64 && b <= 127;
+	if (a === 100 && b >= 64 && b <= 127) return true; // Tailscale CGNAT
+	if (!allowLocalNetwork) return false;
+	// RFC1918: 10.x, 172.16-31.x, 192.168.x
+	if (a === 10) return true;
+	if (a === 172 && b >= 16 && b <= 31) return true;
+	if (a === 192 && b === 168) return true;
+	return false;
 }

@@ -223,7 +223,12 @@ Bun.serve({
 	async fetch(req, server) {
 		const url = new URL(req.url);
 
-		if (!isAllowedOrigin(server.requestIP(req)?.address)) {
+		if (
+			!isAllowedOrigin(
+				server.requestIP(req)?.address,
+				config.server.local_network_access,
+			)
+		) {
 			return new Response("Forbidden", { status: 403 });
 		}
 

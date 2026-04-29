@@ -17,6 +17,7 @@ const raw = parse(readFileSync(configPath, "utf-8")) as {
 		tls_key_path?: string;
 		port?: number;
 		tls_proxy_port?: number;
+		local_network_access?: boolean;
 	};
 };
 
@@ -31,6 +32,7 @@ if (!certPath || !keyPath) {
 const vitePort = raw.server?.port ?? 3000;
 const bunPort = vitePort + 1;
 const tlsPort = raw.server?.tls_proxy_port ?? 3443;
+const localNetworkAccess = raw.server?.local_network_access ?? false;
 
 const certBuf = readFileSync(resolve(certPath));
 const x509 = new X509Certificate(certBuf);
@@ -78,7 +80,7 @@ Bun.serve<WsData>({
 	},
 	async fetch(req, server) {
 		const addr = server.requestIP(req)?.address;
-		if (!isAllowedOrigin(addr)) {
+		if (!isAllowedOrigin(addr, localNetworkAccess)) {
 			return new Response("Forbidden", { status: 403 });
 		}
 

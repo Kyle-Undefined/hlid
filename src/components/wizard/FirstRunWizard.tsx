@@ -169,7 +169,12 @@ export function FirstRunWizard({ onComplete }: Props) {
 					memory: memory || undefined,
 					outputs: outputs || undefined,
 				},
-				server: { port: 3000, host: "0.0.0.0", tls_proxy_port: 3443 },
+				server: {
+					port: 3000,
+					host: "0.0.0.0",
+					tls_proxy_port: 3443,
+					local_network_access: false,
+				},
 				claude: {
 					model: "claude-sonnet-4-6",
 					effort: "high" as const,

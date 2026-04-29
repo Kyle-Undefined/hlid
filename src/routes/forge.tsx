@@ -1367,6 +1367,9 @@ function SettingsPage() {
 			? String(initial.server.tls_proxy_port)
 			: "",
 	);
+	const [localNetworkAccess, setLocalNetworkAccess] = useState(
+		initial.server.local_network_access ?? false,
+	);
 	const [enterToSubmit, setEnterToSubmit] = useState(
 		initial.ui.enter_to_submit,
 	);
@@ -1427,6 +1430,7 @@ function SettingsPage() {
 				tls_cert_path: tlsCertPath || undefined,
 				tls_key_path: tlsKeyPath || undefined,
 				tls_proxy_port: Number(tlsProxyPort) || 3443,
+				local_network_access: localNetworkAccess,
 			},
 			claude: {
 				model,
@@ -1936,6 +1940,22 @@ function SettingsPage() {
 							placeholder="3443"
 							mono
 						/>
+					</Field>
+					<Field
+						label="Local Network Access"
+						hint="allows devices on the same wifi to connect without tailscale, anyone on the network can access"
+					>
+						<label className="flex items-center gap-2 cursor-pointer">
+							<input
+								type="checkbox"
+								checked={localNetworkAccess}
+								onChange={(e) => setLocalNetworkAccess(e.target.checked)}
+								className="accent-primary w-3.5 h-3.5"
+							/>
+							<span className="text-xs text-muted-foreground">
+								{localNetworkAccess ? "on" : "off"}
+							</span>
+						</label>
 					</Field>
 				</Section>
 

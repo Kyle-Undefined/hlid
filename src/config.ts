@@ -26,6 +26,7 @@ const ServerSchema = z.object({
 	tls_cert_path: z.string().optional(),
 	tls_key_path: z.string().optional(),
 	tls_proxy_port: z.number().default(3443),
+	local_network_access: z.boolean().default(false),
 });
 
 const ClaudeSchema = z.object({
@@ -94,6 +95,7 @@ export const HlidConfigSchema = z.object({
 		port: 3000,
 		host: "0.0.0.0",
 		tls_proxy_port: 3443,
+		local_network_access: false,
 	})),
 	claude: ClaudeSchema.default(() => ({
 		model: "claude-sonnet-4-6",

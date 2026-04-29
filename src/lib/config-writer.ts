@@ -48,6 +48,8 @@ export function writeConfig(config: HlidConfig): void {
 		lines.push(`tls_key_path = ${tomlVal(config.server.tls_key_path)}`);
 	if (config.server.tls_proxy_port !== undefined)
 		lines.push(`tls_proxy_port = ${tomlVal(config.server.tls_proxy_port)}`);
+	if (config.server.local_network_access)
+		lines.push(`local_network_access = true`);
 
 	lines.push("");
 	lines.push("[claude]");
