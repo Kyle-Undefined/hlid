@@ -3,6 +3,7 @@ import { createServerFn } from "@tanstack/react-start";
 import { ChevronDown, ChevronRight, Folder, Play } from "lucide-react";
 import { useState } from "react";
 import { MarkdownBody } from "#/components/MarkdownBody";
+import { PrivacyMask } from "#/components/PrivacyMask";
 import { getConfig } from "#/config";
 import { useWs } from "#/hooks/useWs";
 import * as wsStore from "#/hooks/wsStore";
@@ -189,7 +190,7 @@ function ProjectNodeItem({
 				{node.isFolder && (
 					<Folder className="w-3 h-3 text-muted-foreground/70 shrink-0" />
 				)}
-				<span className="text-xs text-foreground/70 truncate">{node.name}</span>
+				<PrivacyMask inline className="text-xs text-foreground/70 truncate">{node.name}</PrivacyMask>
 			</button>
 			{open && node.isFolder && node.children && (
 				<div>
@@ -203,7 +204,7 @@ function ProjectNodeItem({
 					className="text-xs text-foreground/70 leading-relaxed border-l border-border/50 py-2 pr-2"
 					style={{ marginLeft: `${depth * 14 + 12}px`, paddingLeft: "8px" }}
 				>
-					<MarkdownBody content={node.content} />
+					<PrivacyMask><MarkdownBody content={node.content} /></PrivacyMask>
 				</div>
 			)}
 		</div>
@@ -235,11 +236,11 @@ function ProjectCard({ project }: { project: Project }) {
 					<span className="w-3 h-3 shrink-0" />
 				)}
 				<div className="min-w-0 flex-1">
-					<div className="text-sm text-foreground truncate">
+					<PrivacyMask inline className="text-sm text-foreground truncate">
 						{project.title}
-					</div>
+					</PrivacyMask>
 					{project.tags.length > 0 && (
-						<div className="flex gap-1 mt-0.5 flex-wrap">
+						<PrivacyMask className="flex gap-1 mt-0.5 flex-wrap">
 							{project.tags.map((t) => (
 								<span
 									key={t}
@@ -248,19 +249,19 @@ function ProjectCard({ project }: { project: Project }) {
 									{t}
 								</span>
 							))}
-						</div>
+						</PrivacyMask>
 					)}
 				</div>
 				<div className="flex items-center gap-1.5 px-2 py-0.5 bg-secondary text-[10px] tracking-wider text-muted-foreground shrink-0">
 					<span
 						className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_DOT[project.status]}`}
 					/>
-					{project.rawStatus || "NO STATUS"}
+					<PrivacyMask inline>{project.rawStatus || "NO STATUS"}</PrivacyMask>
 				</div>
 			</button>
 			{open && project.content && project.content.trim() && (
 				<div className="px-6 py-4 bg-secondary/30 text-xs text-foreground/80 leading-relaxed">
-					<MarkdownBody content={project.content} />
+					<PrivacyMask><MarkdownBody content={project.content} /></PrivacyMask>
 				</div>
 			)}
 			{open &&
@@ -364,11 +365,11 @@ function SkillCard({
 						<ChevronRight className="w-3 h-3 text-muted-foreground shrink-0" />
 					)}
 					<div className="min-w-0">
-						<div className="text-sm text-foreground">{skill.name}</div>
+						<PrivacyMask className="text-sm text-foreground truncate">{skill.name}</PrivacyMask>
 						{skill.description && (
-							<div className="text-xs text-muted-foreground mt-0.5 truncate">
+							<PrivacyMask className="text-xs text-muted-foreground mt-0.5 truncate">
 								{skill.description}
-							</div>
+							</PrivacyMask>
 						)}
 					</div>
 				</button>
@@ -384,7 +385,7 @@ function SkillCard({
 			</div>
 			{open && skill.content && (
 				<div className="px-6 py-4 bg-secondary/30 text-xs text-foreground/80 leading-relaxed">
-					<MarkdownBody content={skill.content} />
+					<PrivacyMask><MarkdownBody content={skill.content} /></PrivacyMask>
 				</div>
 			)}
 		</div>
@@ -442,9 +443,9 @@ function SkillsTab({
 				<div key={g.section ?? "__unsectioned__"} className="space-y-2">
 					<div className="flex items-center gap-2">
 						<span className="w-1.5 h-1.5 rounded-full bg-primary/40 shrink-0" />
-						<span className="text-[10px] tracking-widest text-muted-foreground uppercase">
+						<PrivacyMask inline className="text-[10px] tracking-widest text-muted-foreground uppercase">
 							{g.section ?? "SKILLS"}
-						</span>
+						</PrivacyMask>
 						<span className="text-[10px] text-muted-foreground/50">
 							{g.skills.length}
 						</span>
@@ -478,15 +479,15 @@ function MemoryCard({ file }: { file: MemoryFile }) {
 					<ChevronRight className="w-3 h-3 text-muted-foreground shrink-0" />
 				)}
 				<div className="min-w-0">
-					<div className="text-sm text-foreground">{file.name}</div>
-					<div className="text-[10px] tracking-wider text-muted-foreground font-mono truncate mt-0.5">
+					<PrivacyMask className="text-sm text-foreground truncate">{file.name}</PrivacyMask>
+					<PrivacyMask className="text-[10px] tracking-wider text-muted-foreground font-mono truncate mt-0.5">
 						{file.path}
-					</div>
+					</PrivacyMask>
 				</div>
 			</button>
 			{open && (
 				<div className="px-6 py-4 bg-secondary/30 text-xs text-foreground/80 leading-relaxed">
-					<MarkdownBody content={file.content} />
+					<PrivacyMask><MarkdownBody content={file.content} /></PrivacyMask>
 				</div>
 			)}
 		</div>
@@ -559,7 +560,7 @@ function VaultPage() {
 	return (
 		<div className="flex flex-col h-full">
 			{/* Tabs */}
-			<div className="flex border-b border-border shrink-0">
+			<div className="flex flex-wrap border-b border-border shrink-0">
 				{tabConfig.map((t) => (
 					<button
 						key={t.id}

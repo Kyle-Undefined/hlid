@@ -18,6 +18,7 @@ import {
 } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { PrivacyMask } from "#/components/PrivacyMask";
 import { getConfig } from "#/config";
 import type { UsageWindows } from "#/db";
 import { useWs } from "#/hooks/useWs";
@@ -347,23 +348,23 @@ function UsageWindowSection({
 			</div>
 			{!hideStats && (
 				<div className="flex items-center flex-wrap gap-x-1.5 gap-y-0">
-					<span className="text-[9px] tabular-nums text-foreground/50">
+					<PrivacyMask inline className="text-[9px] tabular-nums text-foreground/50">
 						${(win?.cost ?? 0).toFixed(2)}
-					</span>
+					</PrivacyMask>
 					<span className="text-muted-foreground/25 hidden md:inline">·</span>
-					<span className="text-[8px] tracking-widest text-muted-foreground/40">
+					<PrivacyMask inline className="text-[8px] tracking-widest text-muted-foreground/40">
 						<span className="md:hidden">{win?.queries ?? 0}q</span>
 						<span className="hidden md:inline">
 							{win?.queries ?? 0} queries
 						</span>
-					</span>
+					</PrivacyMask>
 					<span className="text-muted-foreground/25 hidden md:inline">·</span>
-					<span className="text-[8px] tracking-widest text-muted-foreground/40">
+					<PrivacyMask inline className="text-[8px] tracking-widest text-muted-foreground/40">
 						<span className="md:hidden">{win?.sessions ?? 0}s</span>
 						<span className="hidden md:inline">
 							{win?.sessions ?? 0} sessions
 						</span>
-					</span>
+					</PrivacyMask>
 				</div>
 			)}
 		</div>
@@ -531,10 +532,10 @@ function ToolBlock({ event }: { event: ToolEventMessage }) {
 				<ChevronRight
 					className={`w-3 h-3 shrink-0 text-primary/50 group-hover:text-primary/80 transition-transform duration-150 ${open ? "rotate-90" : ""}`}
 				/>
-				<span className="text-[11px] font-medium tracking-wider text-primary/70 group-hover:text-primary/90 shrink-0">
+				<PrivacyMask inline className="text-[11px] font-medium tracking-wider text-primary/70 group-hover:text-primary/90 shrink-0">
 					{event.name}
-				</span>
-				<div className="flex gap-1.5 flex-wrap">
+				</PrivacyMask>
+				<PrivacyMask className="flex gap-1.5 flex-wrap">
 					{pills.map(([k, v]) => (
 						<span
 							key={k}
@@ -544,14 +545,14 @@ function ToolBlock({ event }: { event: ToolEventMessage }) {
 							{String(v).length > 24 ? "…" : ""}
 						</span>
 					))}
-				</div>
+				</PrivacyMask>
 			</button>
 			{open && (
-				<div className="mx-3 mb-1.5 border border-[var(--tool-panel-border)] bg-[var(--tool-panel)]">
+				<PrivacyMask className="mx-3 mb-1.5 border border-[var(--tool-panel-border)] bg-[var(--tool-panel)]">
 					<pre className="text-[11px] text-primary/60 font-mono leading-relaxed p-3 overflow-auto max-h-48">
 						{JSON.stringify(event.input, null, 2)}
 					</pre>
-				</div>
+				</PrivacyMask>
 			)}
 		</div>
 	);
@@ -691,12 +692,14 @@ function UserMsg({ message }: { message: UserMessage }) {
 					</div>
 				)}
 				{message.text && (
-					<div
-						className="text-sm text-foreground whitespace-pre-wrap text-right leading-relaxed w-full"
-						style={{ overflowWrap: "anywhere" }}
-					>
-						{message.text}
-					</div>
+					<PrivacyMask className="w-full">
+						<div
+							className="text-sm text-foreground whitespace-pre-wrap text-right leading-relaxed w-full"
+							style={{ overflowWrap: "anywhere" }}
+						>
+							{message.text}
+						</div>
+					</PrivacyMask>
 				)}
 			</div>
 			<div className="text-[9px] tracking-widest text-primary/60 shrink-0 pt-0.5 w-11 text-right">
@@ -740,7 +743,7 @@ function AssistantMsg({ message }: { message: AssistantMessage }) {
 							<circle cx="16" cy="16" r="2" style={{ fill: "var(--data)" }} />
 						</svg>
 					</div>
-					<div className="flex-1 text-sm text-foreground leading-relaxed pr-4 min-w-0">
+					<PrivacyMask className="flex-1 text-sm text-foreground leading-relaxed pr-4 min-w-0">
 						<Markdown
 							remarkPlugins={[remarkGfm]}
 							components={{
@@ -833,11 +836,11 @@ function AssistantMsg({ message }: { message: AssistantMessage }) {
 						{message.streaming && (
 							<span className="inline-block w-[7px] h-[1em] ml-0.5 align-middle bg-primary/50 cursor-blink" />
 						)}
-					</div>
+					</PrivacyMask>
 					{!message.streaming && message.cost !== null && (
-						<div className="text-[9px] tabular-nums text-muted-foreground/40 shrink-0 pt-0.5 font-mono">
+						<PrivacyMask inline className="text-[9px] tabular-nums text-muted-foreground/40 shrink-0 pt-0.5 font-mono">
 							${message.cost.toFixed(4)}
-						</div>
+						</PrivacyMask>
 					)}
 				</div>
 			)}
@@ -1244,9 +1247,9 @@ function ChatPage() {
 			{/* Bottom bar — wrapper is relative so model badge floats above entire block */}
 			<div className="shrink-0 relative">
 				{agentSkillContext && (
-					<span className="absolute -top-5 left-3 text-[9px] tracking-widest text-primary/60 border border-primary/30 px-2 py-0.5 uppercase bg-background z-10">
+					<PrivacyMask inline className="absolute -top-5 left-3 text-[9px] tracking-widest text-primary/60 border border-primary/30 px-2 py-0.5 uppercase bg-background z-10">
 						{agentSkillContext.split("/").pop() ?? "agent"}
-					</span>
+					</PrivacyMask>
 				)}
 				{modelShort && (
 					<span className="absolute -top-5 right-3 text-[9px] tracking-widest text-muted-foreground/50 border border-border/70 px-2 py-0.5 uppercase bg-background z-10">
@@ -1344,22 +1347,24 @@ function ChatPage() {
 							<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase shrink-0">
 								AGENT
 							</span>
-							<select
-								value={agentSkillContext ?? ""}
-								onChange={(e) => {
-									const val = e.target.value || undefined;
-									setAgentSkillContext(val);
-									agentContextSentRef.current = false;
-								}}
-								className="text-[9px] tracking-widest text-muted-foreground/60 bg-background border border-border/50 px-2 py-0.5 focus:outline-none focus:border-primary/40 uppercase"
-							>
-								<option value="">— none —</option>
-								{agentList.map((a) => (
-									<option key={a.path} value={a.path}>
-										{a.name}
-									</option>
-								))}
-							</select>
+							<PrivacyMask inline>
+								<select
+									value={agentSkillContext ?? ""}
+									onChange={(e) => {
+										const val = e.target.value || undefined;
+										setAgentSkillContext(val);
+										agentContextSentRef.current = false;
+									}}
+									className="text-[9px] tracking-widest text-muted-foreground/60 bg-background border border-border/50 px-2 py-0.5 focus:outline-none focus:border-primary/40 uppercase"
+								>
+									<option value="">— none —</option>
+									{agentList.map((a) => (
+										<option key={a.path} value={a.path}>
+											{a.name}
+										</option>
+									))}
+								</select>
+							</PrivacyMask>
 						</div>
 					)}
 					<div className="flex items-center">

@@ -1,6 +1,7 @@
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import { useCallback, useEffect, useState } from "react";
+import { PrivacyToggle } from "#/components/nav/PrivacyToggle";
 import { FileBrowser } from "#/components/wizard/FileBrowser";
 import { FolderBrowser } from "#/components/wizard/FolderBrowser";
 import { RelativeFolderField } from "#/components/wizard/RelativeFolderField";
@@ -1505,6 +1506,12 @@ function SettingsPage() {
 						>
 							RELOAD
 						</button>
+					</Field>
+					<Field
+						label="Privacy mode"
+						hint="blur personal data for demos (browser-local, not saved to config)"
+					>
+						<PrivacyToggle />
 					</Field>
 				</Section>
 

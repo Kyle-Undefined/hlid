@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { BottomNav } from "#/components/nav/BottomNav";
 import { Sidebar } from "#/components/nav/Sidebar";
 import { getConfig } from "#/config";
+import * as privacyStore from "#/hooks/privacyStore";
 
 import appCss from "../styles.css?url";
 
@@ -44,6 +45,13 @@ function RegisterSW() {
 	return null;
 }
 
+function SyncPrivacyStore() {
+	useEffect(() => {
+		privacyStore.initFromStorage();
+	}, []);
+	return null;
+}
+
 function RootDocument({ children }: { children: React.ReactNode }) {
 	const { theme, mobileTheme } = Route.useLoaderData();
 
@@ -75,6 +83,7 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 				</div>
 				<Scripts />
 				<RegisterSW />
+				<SyncPrivacyStore />
 			</body>
 		</html>
 	);

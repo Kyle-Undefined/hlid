@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { MarkdownBody } from "#/components/MarkdownBody";
+import { PrivacyMask } from "#/components/PrivacyMask";
 import { getConfig } from "#/config";
 import type { AttachmentRow } from "#/db";
 import { useWs } from "#/hooks/useWs";
@@ -258,10 +259,10 @@ function AttachmentsPage() {
 						<div className="text-[11px] tracking-[0.3em] text-muted-foreground uppercase">
 							Relics
 						</div>
-						<div className="text-sm font-bold mt-0.5">
+						<PrivacyMask inline className="text-sm font-bold mt-0.5">
 							{total} {total === 1 ? "file" : "files"} ·{" "}
 							{formatBytes(totalBytes)}
-						</div>
+						</PrivacyMask>
 					</div>
 					<div className="flex items-center gap-2 flex-wrap">
 						<div className="flex items-center border border-border">
@@ -397,19 +398,21 @@ function AttachmentsPage() {
 												) : (
 													<FileIcon className="w-3 h-3 shrink-0 opacity-60" />
 												)}
-												<a
-													href={`/api/attachments/${r.id}/raw`}
-													target="_blank"
-													rel="noreferrer"
-													onClick={(e) => e.stopPropagation()}
-													className="font-mono truncate max-w-[260px] text-foreground hover:text-primary"
-												>
-													{r.filename}
-												</a>
+												<PrivacyMask inline>
+													<a
+														href={`/api/attachments/${r.id}/raw`}
+														target="_blank"
+														rel="noreferrer"
+														onClick={(e) => e.stopPropagation()}
+														className="font-mono truncate max-w-[260px] text-foreground hover:text-primary"
+													>
+														{r.filename}
+													</a>
+												</PrivacyMask>
 											</div>
 										</td>
 										<td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
-											{formatBytes(r.size_bytes)}
+											<PrivacyMask inline>{formatBytes(r.size_bytes)}</PrivacyMask>
 										</td>
 										<td className="px-3 py-2 font-mono text-muted-foreground/70 truncate">
 											{r.mime}
@@ -459,7 +462,7 @@ function AttachmentsPage() {
 										<tr className="border-b border-border/40 bg-secondary/20">
 											<td />
 											<td colSpan={6} className="px-4 py-4">
-												<RelicPreview id={r.id} mime={r.mime} />
+												<PrivacyMask><RelicPreview id={r.id} mime={r.mime} /></PrivacyMask>
 											</td>
 										</tr>
 									)}

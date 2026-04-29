@@ -6,6 +6,7 @@ import {
 import { createServerFn } from "@tanstack/react-start";
 import { ChevronLeft, ChevronRight, ExternalLink, X } from "lucide-react";
 import { useEffect, useState, useSyncExternalStore } from "react";
+import { PrivacyMask } from "#/components/PrivacyMask";
 import { getConfig } from "#/config";
 import type { AggStats, SessionRow } from "#/db";
 import { useWs } from "#/hooks/useWs";
@@ -161,15 +162,16 @@ function StatCell({
 			<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
 				{label}
 			</div>
-			<div
+			<PrivacyMask
+				inline
 				className={`text-xl font-bold tabular-nums ${dim ? "text-muted-foreground/20" : "text-[var(--data)]"}`}
 			>
 				{value}
-			</div>
+			</PrivacyMask>
 			{sub && (
-				<div className="text-[10px] text-muted-foreground tracking-wider">
+				<PrivacyMask inline className="text-[10px] text-muted-foreground tracking-wider">
 					{sub}
-				</div>
+				</PrivacyMask>
 			)}
 		</div>
 	);
@@ -231,9 +233,9 @@ function Row({ label, value }: { label: string; value: string }) {
 			<span className="text-[10px] tracking-widest text-muted-foreground uppercase">
 				{label}
 			</span>
-			<span className="text-sm font-medium text-foreground tabular-nums">
+			<PrivacyMask inline className="text-sm font-medium text-foreground tabular-nums">
 				{value}
-			</span>
+			</PrivacyMask>
 		</div>
 	);
 }
@@ -257,24 +259,24 @@ function SessionItem({
 				className="flex items-center gap-3 flex-1 min-w-0 px-4 py-2.5 text-left"
 			>
 				<div className="flex-1 min-w-0">
-					<div className="text-[11px] tracking-wider text-foreground/80 truncate">
+					<PrivacyMask inline className="text-[11px] tracking-wider text-foreground/80 truncate">
 						{session.label ?? "—"}
-					</div>
-					<div className="text-[9px] tracking-wider text-muted-foreground/40 mt-0.5">
+					</PrivacyMask>
+					<PrivacyMask inline className="text-[9px] tracking-wider text-muted-foreground/40 mt-0.5">
 						{fmtDate(session.started_at)} · {session.query_count}q
-					</div>
+					</PrivacyMask>
 				</div>
 				<div className="text-right shrink-0">
-					<div className="text-[11px] tabular-nums text-[var(--data)]/70">
+					<PrivacyMask inline className="text-[11px] tabular-nums text-[var(--data)]/70">
 						${(session.total_cost ?? 0).toFixed(4)}
-					</div>
-					<div className="text-[9px] tabular-nums text-muted-foreground/40">
+					</PrivacyMask>
+					<PrivacyMask inline className="text-[9px] tabular-nums text-muted-foreground/40">
 						{fmt(
 							(session.total_input_tokens ?? 0) +
 								(session.total_output_tokens ?? 0),
 						)}{" "}
 						tok
-					</div>
+					</PrivacyMask>
 				</div>
 			</button>
 			{confirming ? (
@@ -627,24 +629,24 @@ function StatsPage() {
 								<div className="text-[9px] tracking-widest text-muted-foreground/50 uppercase">
 									Today
 								</div>
-								<div className="text-lg font-bold tabular-nums text-[var(--data)]">
+								<PrivacyMask inline className="text-lg font-bold tabular-nums text-[var(--data)]">
 									${agg.today.cost.toFixed(4)}
-								</div>
-								<div className="text-[10px] text-muted-foreground/50">
+								</PrivacyMask>
+								<PrivacyMask inline className="text-[10px] text-muted-foreground/50">
 									{agg.today.queries} queries · {fmt(agg.today.tokens)} tok
-								</div>
+								</PrivacyMask>
 							</div>
 							<div className="p-4 space-y-1">
 								<div className="text-[9px] tracking-widest text-muted-foreground/50 uppercase">
 									This Month
 								</div>
-								<div className="text-lg font-bold tabular-nums text-[var(--data)]">
+								<PrivacyMask inline className="text-lg font-bold tabular-nums text-[var(--data)]">
 									${agg.thisMonth.cost.toFixed(4)}
-								</div>
-								<div className="text-[10px] text-muted-foreground/50">
+								</PrivacyMask>
+								<PrivacyMask inline className="text-[10px] text-muted-foreground/50">
 									{agg.thisMonth.queries} queries · {fmt(agg.thisMonth.tokens)}{" "}
 									tok
-								</div>
+								</PrivacyMask>
 							</div>
 						</div>
 					</div>

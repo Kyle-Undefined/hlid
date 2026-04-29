@@ -21,6 +21,7 @@ import {
 	XAxis,
 	YAxis,
 } from "recharts";
+import { PrivacyMask } from "#/components/PrivacyMask";
 import { FirstRunWizard } from "#/components/wizard/FirstRunWizard";
 import { getConfig } from "#/config";
 import type {
@@ -520,12 +521,12 @@ function DashboardHeader({
 					<div className="text-[9px] tracking-widest text-muted-foreground/50 uppercase mb-1 md:mb-2">
 						Today
 					</div>
-					<div className="text-lg md:text-2xl font-bold tabular-nums leading-none text-[var(--data)]">
+					<PrivacyMask inline className="text-lg md:text-2xl font-bold tabular-nums leading-none text-[var(--data)]">
 						${agg.today.cost.toFixed(4)}
-					</div>
-					<div className="mt-1 md:mt-1.5 text-[9px] tracking-wider text-muted-foreground/40">
+					</PrivacyMask>
+					<PrivacyMask inline className="mt-1 md:mt-1.5 text-[9px] tracking-wider text-muted-foreground/40">
 						{agg.today.queries}q · {fmt(agg.today.tokens)} tok
-					</div>
+					</PrivacyMask>
 				</div>
 
 				{/* THIS MONTH */}
@@ -533,12 +534,12 @@ function DashboardHeader({
 					<div className="text-[9px] tracking-widest text-muted-foreground/50 uppercase mb-1 md:mb-2">
 						This Month
 					</div>
-					<div className="text-lg md:text-2xl font-bold tabular-nums leading-none text-[var(--data)]">
+					<PrivacyMask inline className="text-lg md:text-2xl font-bold tabular-nums leading-none text-[var(--data)]">
 						${agg.thisMonth.cost.toFixed(4)}
-					</div>
-					<div className="mt-1 md:mt-1.5 text-[9px] tracking-wider text-muted-foreground/40">
+					</PrivacyMask>
+					<PrivacyMask inline className="mt-1 md:mt-1.5 text-[9px] tracking-wider text-muted-foreground/40">
 						{agg.thisMonth.queries}q · {fmt(agg.thisMonth.tokens)} tok
-					</div>
+					</PrivacyMask>
 				</div>
 			</div>
 
@@ -548,11 +549,11 @@ function DashboardHeader({
 					<div className="text-[9px] tracking-widest text-muted-foreground/40 uppercase mb-1">
 						All Time
 					</div>
-					<div className="text-sm font-bold tabular-nums text-foreground/60">
+					<PrivacyMask inline className="text-sm font-bold tabular-nums text-foreground/60">
 						${agg.allTime.cost.toFixed(2)}
-					</div>
+					</PrivacyMask>
 				</div>
-				<div className="flex items-center gap-4 text-[9px] tracking-wider text-muted-foreground/40">
+				<PrivacyMask className="flex items-center gap-4 text-[9px] tracking-wider text-muted-foreground/40">
 					<span>
 						<span className="text-foreground/50 tabular-nums">
 							{fmt(agg.allTime.queries)}
@@ -575,7 +576,7 @@ function DashboardHeader({
 						</span>{" "}
 						tok
 					</span>
-				</div>
+				</PrivacyMask>
 			</div>
 		</div>
 	);
@@ -625,9 +626,9 @@ function ThirtyDayGraph({ data }: { data: ThirtyDayStats }) {
 				<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase">
 					30D Activity
 				</span>
-				<span className="text-[9px] tabular-nums text-muted-foreground/50">
+				<PrivacyMask inline className="text-[9px] tabular-nums text-muted-foreground/50">
 					{data.total} sessions
-				</span>
+				</PrivacyMask>
 			</div>
 			<ResponsiveContainer width="100%" height={56}>
 				<AreaChart
@@ -865,23 +866,23 @@ function UsageWindowSection({
 			</div>
 			{!hideStats && (
 				<div className="flex items-center flex-wrap gap-x-1.5 gap-y-0">
-					<span className="text-[9px] tabular-nums text-foreground/50">
+					<PrivacyMask inline className="text-[9px] tabular-nums text-foreground/50">
 						${(win?.cost ?? 0).toFixed(2)}
-					</span>
+					</PrivacyMask>
 					<span className="text-muted-foreground/25 hidden md:inline">·</span>
-					<span className="text-[8px] tracking-widest text-muted-foreground/40">
+					<PrivacyMask inline className="text-[8px] tracking-widest text-muted-foreground/40">
 						<span className="md:hidden">{win?.queries ?? 0}q</span>
 						<span className="hidden md:inline">
 							{win?.queries ?? 0} queries
 						</span>
-					</span>
+					</PrivacyMask>
 					<span className="text-muted-foreground/25 hidden md:inline">·</span>
-					<span className="text-[8px] tracking-widest text-muted-foreground/40">
+					<PrivacyMask inline className="text-[8px] tracking-widest text-muted-foreground/40">
 						<span className="md:hidden">{win?.sessions ?? 0}s</span>
 						<span className="hidden md:inline">
 							{win?.sessions ?? 0} sessions
 						</span>
-					</span>
+					</PrivacyMask>
 				</div>
 			)}
 		</div>
@@ -1004,17 +1005,17 @@ function SkillCard({
 					: "border-border bg-card hover:border-primary/20 hover:bg-primary/[0.03]"
 			}`}
 		>
-			<span
-				className={`text-[11px] tracking-wider font-medium uppercase ${
+			<PrivacyMask
+				className={`text-[11px] tracking-wider font-medium uppercase truncate ${
 					active ? "text-primary" : "text-foreground/80"
 				}`}
 			>
 				{skill.name}
-			</span>
+			</PrivacyMask>
 			{skill.description && (
-				<span className="text-[9px] tracking-wider text-muted-foreground/40 truncate w-full mt-0.5">
+				<PrivacyMask className="text-[9px] tracking-wider text-muted-foreground/40 truncate w-full mt-0.5">
 					{skill.description}
-				</span>
+				</PrivacyMask>
 			)}
 		</button>
 	);
@@ -1048,9 +1049,9 @@ function RunList({
 					<span className="text-[9px] tabular-nums text-primary/50 shrink-0 font-mono w-9">
 						{fmtRunTime(run.started_at)}
 					</span>
-					<span className="text-[10px] tracking-wider text-muted-foreground/60 truncate flex-1">
+					<PrivacyMask inline className="text-[10px] tracking-wider text-muted-foreground/60 truncate flex-1">
 						{run.label ?? "—"}
-					</span>
+					</PrivacyMask>
 					<span className="text-[8px] tracking-widest text-muted-foreground/20 uppercase shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
 						↗
 					</span>
@@ -1113,29 +1114,30 @@ function RecentRunsSidebar({
 						<div className="text-[8px] tracking-widest text-muted-foreground/50 uppercase mb-1">
 							Session
 						</div>
-						<div
+						<PrivacyMask
+							inline
 							className={`text-sm font-bold tabular-nums leading-none ${idle && !isConnected ? "text-muted-foreground/20" : "text-[var(--data)]"}`}
 						>
 							{isConnected || stats.cost > 0
 								? `$${stats.cost.toFixed(4)}`
 								: "--"}
-						</div>
-						<div className="mt-1 text-[8px] tracking-wider text-muted-foreground/40">
+						</PrivacyMask>
+						<PrivacyMask inline className="mt-1 text-[8px] tracking-wider text-muted-foreground/40">
 							{idle
 								? "idle"
 								: `${stats.queries}q · ${fmtMs(stats.duration_ms)}`}
-						</div>
+						</PrivacyMask>
 					</div>
 					<div className="px-3 py-3">
 						<div className="text-[8px] tracking-widest text-muted-foreground/50 uppercase mb-1">
 							Today
 						</div>
-						<div className="text-sm font-bold tabular-nums leading-none text-[var(--data)]">
+						<PrivacyMask inline className="text-sm font-bold tabular-nums leading-none text-[var(--data)]">
 							${agg.today.cost.toFixed(4)}
-						</div>
-						<div className="mt-1 text-[8px] tracking-wider text-muted-foreground/40">
+						</PrivacyMask>
+						<PrivacyMask inline className="mt-1 text-[8px] tracking-wider text-muted-foreground/40">
 							{agg.today.queries}q · {fmt(agg.today.tokens)} tok
-						</div>
+						</PrivacyMask>
 					</div>
 				</div>
 				<div className="grid grid-cols-2 divide-x divide-border border-b border-border">
@@ -1143,20 +1145,20 @@ function RecentRunsSidebar({
 						<div className="text-[8px] tracking-widest text-muted-foreground/50 uppercase mb-1">
 							Month
 						</div>
-						<div className="text-sm font-bold tabular-nums leading-none text-[var(--data)]">
+						<PrivacyMask inline className="text-sm font-bold tabular-nums leading-none text-[var(--data)]">
 							${agg.thisMonth.cost.toFixed(4)}
-						</div>
-						<div className="mt-1 text-[8px] tracking-wider text-muted-foreground/40">
+						</PrivacyMask>
+						<PrivacyMask inline className="mt-1 text-[8px] tracking-wider text-muted-foreground/40">
 							{agg.thisMonth.queries}q · {fmt(agg.thisMonth.tokens)} tok
-						</div>
+						</PrivacyMask>
 					</div>
 					<div className="px-3 py-2.5">
 						<div className="text-[8px] tracking-widest text-muted-foreground/40 uppercase mb-1">
 							All Time
 						</div>
-						<div className="text-sm font-bold tabular-nums text-foreground/60">
+						<PrivacyMask inline className="text-sm font-bold tabular-nums text-foreground/60">
 							${agg.allTime.cost.toFixed(2)}
-						</div>
+						</PrivacyMask>
 					</div>
 				</div>
 				{hasContext && (
@@ -1595,9 +1597,9 @@ function CockpitPage() {
 		<div className="flex flex-col md:h-full">
 			{/* Header strip */}
 			<div className="flex items-center gap-3 px-5 py-3 border-b border-border shrink-0">
-				<span className="text-[11px] tracking-widest text-primary uppercase">
+				<PrivacyMask inline className="text-[11px] tracking-widest text-primary uppercase">
 					{config.vault.name || "HLID"}
-				</span>
+				</PrivacyMask>
 				{modelShort && (
 					<>
 						<span className="text-muted-foreground/25">·</span>
@@ -1619,7 +1621,7 @@ function CockpitPage() {
 			<MobileContextBand stats={liveStats} />
 
 			{/* 30-day activity graph */}
-			<ThirtyDayGraph data={thirtyDayStats} />
+			<PrivacyMask><ThirtyDayGraph data={thirtyDayStats} /></PrivacyMask>
 
 			{/* Stats — desktop: right sidebar; mobile: collapsible section */}
 			<MobileStatsPanel stats={liveStats} agg={agg} isConnected={isConnected} />
@@ -1754,18 +1756,20 @@ function CockpitPage() {
 									<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase shrink-0">
 										AGENT
 									</span>
-									<select
-										value={selectedAgentPath}
-										onChange={(e) => setSelectedAgentPath(e.target.value)}
-										className="text-[9px] tracking-widest text-muted-foreground/60 bg-background border border-border/50 px-2 py-0.5 focus:outline-none focus:border-primary/40 uppercase min-w-0 flex-1"
-									>
-										<option value="">— none —</option>
-										{agentList.map((a) => (
-											<option key={a.path} value={a.path}>
-												{a.name}
-											</option>
-										))}
-									</select>
+									<PrivacyMask inline className="min-w-0 flex-1">
+										<select
+											value={selectedAgentPath}
+											onChange={(e) => setSelectedAgentPath(e.target.value)}
+											className="text-[9px] tracking-widest text-muted-foreground/60 bg-background border border-border/50 px-2 py-0.5 focus:outline-none focus:border-primary/40 uppercase min-w-0 w-full"
+										>
+											<option value="">— none —</option>
+											{agentList.map((a) => (
+												<option key={a.path} value={a.path}>
+													{a.name}
+												</option>
+											))}
+										</select>
+									</PrivacyMask>
 								</div>
 							)}
 							<div className="flex items-center justify-between px-3 py-2 border-t border-border/60">
@@ -1795,18 +1799,20 @@ function CockpitPage() {
 											<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase shrink-0">
 												AGENT
 											</span>
-											<select
-												value={selectedAgentPath}
-												onChange={(e) => setSelectedAgentPath(e.target.value)}
-												className="text-[9px] tracking-widest text-muted-foreground/60 bg-background border border-border/50 px-2 py-0.5 focus:outline-none focus:border-primary/40 uppercase"
-											>
-												<option value="">— none —</option>
-												{agentList.map((a) => (
-													<option key={a.path} value={a.path}>
-														{a.name}
-													</option>
-												))}
-											</select>
+											<PrivacyMask inline>
+												<select
+													value={selectedAgentPath}
+													onChange={(e) => setSelectedAgentPath(e.target.value)}
+													className="text-[9px] tracking-widest text-muted-foreground/60 bg-background border border-border/50 px-2 py-0.5 focus:outline-none focus:border-primary/40 uppercase"
+												>
+													<option value="">— none —</option>
+													{agentList.map((a) => (
+														<option key={a.path} value={a.path}>
+															{a.name}
+														</option>
+													))}
+												</select>
+											</PrivacyMask>
 										</div>
 									)}
 									<label className="flex items-center gap-1.5 cursor-pointer select-none group">
@@ -1888,9 +1894,9 @@ function CockpitPage() {
 								>
 									<div className="flex items-center gap-2">
 										<span className="w-1.5 h-1.5 rounded-full bg-primary/40 shrink-0" />
-										<span className="text-[10px] tracking-widest text-muted-foreground uppercase">
+										<PrivacyMask inline className="text-[10px] tracking-widest text-muted-foreground uppercase">
 											{g.section ?? "SKILLS"}
-										</span>
+										</PrivacyMask>
 										<span className="text-[10px] text-muted-foreground/50">
 											{g.skills.length}
 										</span>
