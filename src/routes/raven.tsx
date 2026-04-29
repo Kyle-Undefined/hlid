@@ -23,6 +23,7 @@ import { getConfig } from "#/config";
 import type { UsageWindows } from "#/db";
 import { useWs } from "#/hooks/useWs";
 import * as wsStore from "#/hooks/wsStore";
+import { fmtResetTime, MODEL_LABELS } from "#/lib/formatters";
 import { uid } from "#/lib/utils";
 import type {
 	ChatAttachment,
@@ -106,12 +107,6 @@ const getCurrentSessionFn = createServerFn({ method: "GET" }).handler(
 		}
 	},
 );
-
-const MODEL_LABELS: Record<string, string> = {
-	"claude-opus-4-7": "Opus 4.7",
-	"claude-sonnet-4-6": "Sonnet 4.6",
-	"claude-haiku-4-5-20251001": "Haiku 4.5",
-};
 
 // ─── route ───────────────────────────────────────────────────────────────────
 
@@ -294,16 +289,6 @@ function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 
 // ─── Usage windows ────────────────────────────────────────────────────────────
 
-function fmtResetTime(unixSecs: number): string {
-	const diff = unixSecs - Date.now() / 1000;
-	if (diff <= 0) return "now";
-	const h = Math.floor(diff / 3600);
-	const m = Math.floor((diff % 3600) / 60);
-	if (h >= 24) return `${Math.floor(h / 24)}d ${h % 24}h`;
-	if (h > 0) return `${h}h ${m}m`;
-	return `${m}m`;
-}
-
 function UsageWindowSection({
 	label,
 	win,
@@ -348,18 +333,27 @@ function UsageWindowSection({
 			</div>
 			{!hideStats && (
 				<div className="flex items-center flex-wrap gap-x-1.5 gap-y-0">
-					<PrivacyMask inline className="text-[9px] tabular-nums text-foreground/50">
+					<PrivacyMask
+						inline
+						className="text-[9px] tabular-nums text-foreground/50"
+					>
 						${(win?.cost ?? 0).toFixed(2)}
 					</PrivacyMask>
 					<span className="text-muted-foreground/25 hidden md:inline">·</span>
-					<PrivacyMask inline className="text-[8px] tracking-widest text-muted-foreground/40">
+					<PrivacyMask
+						inline
+						className="text-[8px] tracking-widest text-muted-foreground/40"
+					>
 						<span className="md:hidden">{win?.queries ?? 0}q</span>
 						<span className="hidden md:inline">
 							{win?.queries ?? 0} queries
 						</span>
 					</PrivacyMask>
 					<span className="text-muted-foreground/25 hidden md:inline">·</span>
-					<PrivacyMask inline className="text-[8px] tracking-widest text-muted-foreground/40">
+					<PrivacyMask
+						inline
+						className="text-[8px] tracking-widest text-muted-foreground/40"
+					>
 						<span className="md:hidden">{win?.sessions ?? 0}s</span>
 						<span className="hidden md:inline">
 							{win?.sessions ?? 0} sessions
@@ -532,7 +526,10 @@ function ToolBlock({ event }: { event: ToolEventMessage }) {
 				<ChevronRight
 					className={`w-3 h-3 shrink-0 text-primary/50 group-hover:text-primary/80 transition-transform duration-150 ${open ? "rotate-90" : ""}`}
 				/>
-				<PrivacyMask inline className="text-[11px] font-medium tracking-wider text-primary/70 group-hover:text-primary/90 shrink-0">
+				<PrivacyMask
+					inline
+					className="text-[11px] font-medium tracking-wider text-primary/70 group-hover:text-primary/90 shrink-0"
+				>
 					{event.name}
 				</PrivacyMask>
 				<PrivacyMask className="flex gap-1.5 flex-wrap">
@@ -838,7 +835,10 @@ function AssistantMsg({ message }: { message: AssistantMessage }) {
 						)}
 					</PrivacyMask>
 					{!message.streaming && message.cost !== null && (
-						<PrivacyMask inline className="text-[9px] tabular-nums text-muted-foreground/40 shrink-0 pt-0.5 font-mono">
+						<PrivacyMask
+							inline
+							className="text-[9px] tabular-nums text-muted-foreground/40 shrink-0 pt-0.5 font-mono"
+						>
 							${message.cost.toFixed(4)}
 						</PrivacyMask>
 					)}
@@ -1247,7 +1247,10 @@ function ChatPage() {
 			{/* Bottom bar — wrapper is relative so model badge floats above entire block */}
 			<div className="shrink-0 relative">
 				{agentSkillContext && (
-					<PrivacyMask inline className="absolute -top-5 left-3 text-[9px] tracking-widest text-primary/60 border border-primary/30 px-2 py-0.5 uppercase bg-background z-10">
+					<PrivacyMask
+						inline
+						className="absolute -top-5 left-3 text-[9px] tracking-widest text-primary/60 border border-primary/30 px-2 py-0.5 uppercase bg-background z-10"
+					>
 						{agentSkillContext.split("/").pop() ?? "agent"}
 					</PrivacyMask>
 				)}

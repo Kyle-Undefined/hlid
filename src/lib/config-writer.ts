@@ -58,8 +58,6 @@ export function writeConfig(config: HlidConfig): void {
 	lines.push(`permission_mode = ${tomlVal(config.claude.permission_mode)}`);
 	if (config.claude.max_turns !== undefined)
 		lines.push(`max_turns = ${tomlVal(config.claude.max_turns)}`);
-	if (config.claude.executable)
-		lines.push(`executable = ${tomlVal(config.claude.executable)}`);
 
 	lines.push("");
 	lines.push("[ui]");

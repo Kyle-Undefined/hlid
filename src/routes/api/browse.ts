@@ -1,16 +1,15 @@
-import { readdirSync, realpathSync } from "node:fs";
-import { homedir } from "node:os";
+import { readdirSync, realpathSync, statSync } from "node:fs";
 import { resolve, sep } from "node:path";
 import { createFileRoute } from "@tanstack/react-router";
 import { forbiddenResponse } from "#/lib/originGate";
+import { loadConfig } from "#/server/config";
 
-const HOME = homedir();
-
-function safePath(reqPath: string): string | null {
+function safePath(reqPath: string, allowedRoots: string[]): string | null {
 	try {
 		const real = realpathSync(resolve(reqPath));
-		if (!real.startsWith(HOME + sep) && real !== HOME) return null;
-		return real;
+		if (allowedRoots.some((r) => real === r || real.startsWith(r + sep)))
+			return real;
+		return null;
 	} catch {
 		return null;
 	}
@@ -20,11 +19,34 @@ export const Route = createFileRoute("/api/browse")({
 	server: {
 		handlers: {
 			GET: async ({ request }) => {
-				const forbidden = await forbiddenResponse();
+				const forbidden = forbiddenResponse(request);
 				if (forbidden) return forbidden;
+
+				const config = loadConfig();
+				const vaultPath = config.vault?.path;
+				if (!vaultPath) {
+					return Response.json(
+						{ error: "Vault not configured" },
+						{ status: 400 },
+					);
+				}
+
+				// allowedRoots: vault path only for now — extend this list to add more dirs later
+				let vaultReal: string;
+				try {
+					vaultReal = realpathSync(vaultPath);
+					statSync(vaultReal); // must exist
+				} catch {
+					return Response.json(
+						{ error: "Vault path not accessible" },
+						{ status: 400 },
+					);
+				}
+				const allowedRoots = [vaultReal];
+
 				const url = new URL(request.url);
-				const raw = url.searchParams.get("path") ?? HOME;
-				const safed = safePath(raw === "~" ? HOME : raw);
+				const raw = url.searchParams.get("path") ?? vaultReal;
+				const safed = safePath(raw, allowedRoots);
 
 				if (!safed) {
 					return Response.json({ error: "Access denied" }, { status: 403 });

@@ -306,14 +306,20 @@ function EinherjarPage() {
 									</span>
 									<div className="flex-1 min-w-0">
 										<div className="flex items-center gap-2">
-											<PrivacyMask inline className="text-[11px] tracking-wide text-foreground">
+											<PrivacyMask
+												inline
+												className="text-[11px] tracking-wide text-foreground"
+											>
 												{agent.name}
 											</PrivacyMask>
 											{(!agent.dirExists || !agent.hasClaudemd) && (
 												<TriangleAlert className="w-3 h-3 text-yellow-500/70 shrink-0" />
 											)}
 										</div>
-										<PrivacyMask inline className="text-[9px] font-mono text-muted-foreground/40 truncate mt-0.5">
+										<PrivacyMask
+											inline
+											className="text-[9px] font-mono text-muted-foreground/40 truncate mt-0.5"
+										>
 											{agent.path}
 										</PrivacyMask>
 										{!agent.dirExists && (
@@ -375,7 +381,9 @@ function EinherjarPage() {
 								{expandedPath === agent.path &&
 									expandedContent[agent.path] != null && (
 										<div className="px-6 py-4 bg-secondary/30 text-xs text-foreground/80 leading-relaxed">
-											<PrivacyMask><MarkdownBody content={expandedContent[agent.path]} /></PrivacyMask>
+											<PrivacyMask>
+												<MarkdownBody content={expandedContent[agent.path]} />
+											</PrivacyMask>
 										</div>
 									)}
 							</div>

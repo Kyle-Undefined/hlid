@@ -5,8 +5,8 @@ import { forbiddenResponse } from "#/lib/originGate";
 export const Route = createFileRoute("/api/attachments/$id/raw")({
 	server: {
 		handlers: {
-			GET: async ({ params }) => {
-				const forbidden = await forbiddenResponse();
+			GET: async ({ request, params }) => {
+				const forbidden = forbiddenResponse(request);
 				if (forbidden) return forbidden;
 				const { server } = await getConfig();
 				const target = `http://127.0.0.1:${server.port + 1}/api/attachments/${encodeURIComponent(params.id)}/raw`;

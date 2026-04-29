@@ -89,7 +89,7 @@ Bun.serve<WsData>({
 		if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
 			if (url.pathname === "/ws") {
 				const upgraded = server.upgrade(req, {
-					data: { wsTarget: `ws://localhost:${bunPort}/ws`, back: null, queue: [] },
+					data: { wsTarget: `ws://localhost:${bunPort}/ws${url.search}`, back: null, queue: [] },
 				});
 				if (!upgraded) return new Response("WebSocket upgrade failed", { status: 500 });
 				return;

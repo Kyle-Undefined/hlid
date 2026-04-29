@@ -36,7 +36,6 @@ const ClaudeSchema = z.object({
 	permission_mode: z
 		.enum(["default", "acceptEdits", "bypassPermissions"])
 		.default("default"),
-	executable: z.string().optional(),
 });
 
 const UiSchema = z.object({

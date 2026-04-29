@@ -412,7 +412,9 @@ function AttachmentsPage() {
 											</div>
 										</td>
 										<td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
-											<PrivacyMask inline>{formatBytes(r.size_bytes)}</PrivacyMask>
+											<PrivacyMask inline>
+												{formatBytes(r.size_bytes)}
+											</PrivacyMask>
 										</td>
 										<td className="px-3 py-2 font-mono text-muted-foreground/70 truncate">
 											{r.mime}
@@ -462,7 +464,9 @@ function AttachmentsPage() {
 										<tr className="border-b border-border/40 bg-secondary/20">
 											<td />
 											<td colSpan={6} className="px-4 py-4">
-												<PrivacyMask><RelicPreview id={r.id} mime={r.mime} /></PrivacyMask>
+												<PrivacyMask>
+													<RelicPreview id={r.id} mime={r.mime} />
+												</PrivacyMask>
 											</td>
 										</tr>
 									)}

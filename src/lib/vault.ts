@@ -1,4 +1,10 @@
-import { lstatSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+	lstatSync,
+	readdirSync,
+	readFileSync,
+	realpathSync,
+	writeFileSync,
+} from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import matter from "gray-matter";
 import {
@@ -71,12 +77,27 @@ function buildNodes(dir: string, baseDir: string): ProjectNode[] {
 	return nodes;
 }
 
+function assertContained(base: string, joined: string): void {
+	let real: string;
+	try {
+		real = realpathSync(joined);
+	} catch {
+		// Path doesn't exist yet — check the join result directly
+		real = resolve(joined);
+	}
+	if (real !== base && !real.startsWith(base + sep)) {
+		throw new Error("Access denied: path escapes vault");
+	}
+}
+
 export function scanProjects(
 	vaultPath: string,
 	projectsFolder: string,
 	vocab: StatusVocabulary,
 ): Project[] {
-	const dir = join(vaultPath, projectsFolder);
+	const base = resolve(vaultPath);
+	const dir = join(base, projectsFolder);
+	assertContained(base, dir);
 	let entries: string[];
 	try {
 		entries = readdirSync(dir);
@@ -228,7 +249,9 @@ export function scanSkills(
 	skillsFolder: string,
 	hideIndex = true,
 ): { skills: Skill[]; sectionOrder: string[] } {
-	const dir = join(vaultPath, skillsFolder);
+	const base = resolve(vaultPath);
+	const dir = join(base, skillsFolder);
+	assertContained(base, dir);
 	let entries: string[];
 	try {
 		entries = readdirSync(dir);
@@ -349,7 +372,9 @@ export function scanMemory(
 	vaultPath: string,
 	memoryFolder: string,
 ): MemoryFile[] {
-	const dir = join(vaultPath, memoryFolder);
+	const base = resolve(vaultPath);
+	const dir = join(base, memoryFolder);
+	assertContained(base, dir);
 	return walkMd(dir, dir);
 }
 

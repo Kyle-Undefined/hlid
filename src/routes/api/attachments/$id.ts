@@ -6,7 +6,7 @@ export const Route = createFileRoute("/api/attachments/$id")({
 	server: {
 		handlers: {
 			DELETE: async ({ request, params }) => {
-				const forbidden = await forbiddenResponse();
+				const forbidden = forbiddenResponse(request);
 				if (forbidden) return forbidden;
 				const { server } = await getConfig();
 				const url = new URL(request.url);

@@ -6,7 +6,7 @@ export const Route = createFileRoute("/api/attachments/upload")({
 	server: {
 		handlers: {
 			POST: async ({ request }) => {
-				const forbidden = await forbiddenResponse();
+				const forbidden = forbiddenResponse(request);
 				if (forbidden) return forbidden;
 				const { server } = await getConfig();
 				const target = `http://127.0.0.1:${server.port + 1}/api/attachments/upload`;

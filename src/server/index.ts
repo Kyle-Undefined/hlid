@@ -3,7 +3,8 @@ import { join } from "node:path";
 import type { McpServerStatus } from "@anthropic-ai/claude-agent-sdk";
 import type { ServerWebSocket } from "bun";
 import * as db from "../db";
-import { isAllowedOrigin } from "../lib/allowedOrigin";
+import { isAllowedOrigin, isAllowedOriginHeader } from "../lib/allowedOrigin";
+import { loadToken, verifyToken } from "../lib/token";
 import { clampInt } from "../lib/utils";
 import {
 	handleUpload,
@@ -17,6 +18,7 @@ import { SessionManager } from "./session";
 
 const config = loadConfig();
 const session = new SessionManager(config);
+const SERVER_TOKEN = loadToken();
 
 const clients = new Set<ServerWebSocket<unknown>>();
 
@@ -232,7 +234,32 @@ Bun.serve({
 			return new Response("Forbidden", { status: 403 });
 		}
 
+		// C3: For state-mutating requests, reject cross-origin Origin headers.
+		// Server fn calls from TanStack Start have no Origin header and are allowed.
+		if (
+			req.method !== "GET" &&
+			req.method !== "HEAD" &&
+			!isAllowedOriginHeader(
+				req.headers.get("origin"),
+				config.server.local_network_access,
+			)
+		) {
+			return new Response("Forbidden", { status: 403 });
+		}
+
 		if (url.pathname === "/ws") {
+			// C2: Reject cross-origin WS connections (prevents drive-by chat execution)
+			if (
+				!isAllowedOriginHeader(
+					req.headers.get("origin"),
+					config.server.local_network_access,
+				)
+			) {
+				return new Response("Forbidden", { status: 403 });
+			}
+			if (!verifyToken(url.searchParams.get("token"), SERVER_TOKEN)) {
+				return new Response("Unauthorized", { status: 401 });
+			}
 			if (server.upgrade(req)) return undefined;
 			return new Response("WebSocket upgrade required", { status: 426 });
 		}
@@ -480,11 +507,13 @@ Bun.serve({
 			}
 
 			if (msg.type === "abort") {
+				if (sessionOwnerWs !== null && ws !== sessionOwnerWs) return;
 				session.abort();
 				return;
 			}
 
 			if (msg.type === "clear") {
+				if (sessionOwnerWs !== null && ws !== sessionOwnerWs) return;
 				session.clearHistory();
 				lastSessionError = null;
 				return;
@@ -571,6 +600,14 @@ Bun.serve({
 			if (msg.type === "chat") {
 				if (typeof msg.text !== "string" || !msg.text.trim()) {
 					send(ws, { type: "error", message: "Invalid message" });
+					return;
+				}
+
+				// L1: Only the designated session owner (first sender) may initiate chats.
+				// Ownership persists until that WS disconnects, preventing other connected
+				// clients from hijacking the session between turns.
+				if (sessionOwnerWs !== null && ws !== sessionOwnerWs) {
+					send(ws, { type: "error", message: "Not session owner" });
 					return;
 				}
 

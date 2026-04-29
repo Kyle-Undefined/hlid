@@ -1,3 +1,4 @@
+import { statSync } from "node:fs";
 import { createFileRoute } from "@tanstack/react-router";
 import { HlidConfigSchema } from "#/config";
 import { writeConfig } from "#/lib/config-writer";
@@ -7,11 +8,28 @@ export const Route = createFileRoute("/api/config")({
 	server: {
 		handlers: {
 			POST: async ({ request }) => {
-				const forbidden = await forbiddenResponse();
+				const forbidden = forbiddenResponse(request);
 				if (forbidden) return forbidden;
 				try {
 					const body = await request.json();
 					const config = HlidConfigSchema.parse(body);
+					// M1: Validate vault.path is a real directory before persisting
+					if (config.vault.path) {
+						try {
+							const stat = statSync(config.vault.path);
+							if (!stat.isDirectory()) {
+								return Response.json(
+									{ error: "vault.path is not a directory" },
+									{ status: 400 },
+								);
+							}
+						} catch {
+							return Response.json(
+								{ error: "vault.path does not exist" },
+								{ status: 400 },
+							);
+						}
+					}
 					writeConfig(config);
 					return Response.json({ ok: true });
 				} catch (err) {

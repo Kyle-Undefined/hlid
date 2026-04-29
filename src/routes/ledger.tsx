@@ -11,6 +11,7 @@ import { getConfig } from "#/config";
 import type { AggStats, SessionRow } from "#/db";
 import { useWs } from "#/hooks/useWs";
 import * as wsStore from "#/hooks/wsStore";
+import { fmt, fmtMs, fmtResetTime, MODEL_LABELS } from "#/lib/formatters";
 import { uid } from "#/lib/utils";
 import type { RateLimitMessage, ServerMessage } from "#/server/protocol";
 
@@ -96,35 +97,7 @@ export const Route = createFileRoute("/ledger")({
 	component: StatsPage,
 });
 
-// ─── constants ───────────────────────────────────────────────────────────────
-
-const EMPTY_STATS: wsStore.LiveStats = {
-	turns: 0,
-	cost: 0,
-	duration_ms: 0,
-	input_tokens: 0,
-	output_tokens: 0,
-	cache_read_tokens: 0,
-	cache_creation_tokens: 0,
-	context_window: null,
-	max_output_tokens: null,
-	last_context_used: null,
-	last_output_tokens: null,
-	queries: 0,
-};
-
 // ─── format helpers ───────────────────────────────────────────────────────────
-
-function fmt(n: number): string {
-	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-	if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-	return String(n);
-}
-
-function fmtMs(ms: number): string {
-	if (ms < 1000) return `${ms}ms`;
-	return `${(ms / 1000).toFixed(1)}s`;
-}
 
 function fmtDate(unixSecs: number): string {
 	return new Date(unixSecs * 1000).toLocaleDateString(undefined, {
@@ -133,15 +106,6 @@ function fmtDate(unixSecs: number): string {
 		hour: "2-digit",
 		minute: "2-digit",
 	});
-}
-
-function fmtResetTime(unixSecs: number): string {
-	const diff = unixSecs - Date.now() / 1000;
-	if (diff <= 0) return "now";
-	const h = Math.floor(diff / 3600);
-	const m = Math.floor((diff % 3600) / 60);
-	if (h > 0) return `${h}h ${m}m`;
-	return `${m}m`;
 }
 
 // ─── components ──────────────────────────────────────────────────────────────
@@ -169,7 +133,10 @@ function StatCell({
 				{value}
 			</PrivacyMask>
 			{sub && (
-				<PrivacyMask inline className="text-[10px] text-muted-foreground tracking-wider">
+				<PrivacyMask
+					inline
+					className="text-[10px] text-muted-foreground tracking-wider"
+				>
 					{sub}
 				</PrivacyMask>
 			)}
@@ -233,7 +200,10 @@ function Row({ label, value }: { label: string; value: string }) {
 			<span className="text-[10px] tracking-widest text-muted-foreground uppercase">
 				{label}
 			</span>
-			<PrivacyMask inline className="text-sm font-medium text-foreground tabular-nums">
+			<PrivacyMask
+				inline
+				className="text-sm font-medium text-foreground tabular-nums"
+			>
 				{value}
 			</PrivacyMask>
 		</div>
@@ -259,18 +229,30 @@ function SessionItem({
 				className="flex items-center gap-3 flex-1 min-w-0 px-4 py-2.5 text-left"
 			>
 				<div className="flex-1 min-w-0">
-					<PrivacyMask inline className="text-[11px] tracking-wider text-foreground/80 truncate">
+					<PrivacyMask
+						inline
+						className="text-[11px] tracking-wider text-foreground/80 truncate"
+					>
 						{session.label ?? "—"}
 					</PrivacyMask>
-					<PrivacyMask inline className="text-[9px] tracking-wider text-muted-foreground/40 mt-0.5">
+					<PrivacyMask
+						inline
+						className="text-[9px] tracking-wider text-muted-foreground/40 mt-0.5"
+					>
 						{fmtDate(session.started_at)} · {session.query_count}q
 					</PrivacyMask>
 				</div>
 				<div className="text-right shrink-0">
-					<PrivacyMask inline className="text-[11px] tabular-nums text-[var(--data)]/70">
+					<PrivacyMask
+						inline
+						className="text-[11px] tabular-nums text-[var(--data)]/70"
+					>
 						${(session.total_cost ?? 0).toFixed(4)}
 					</PrivacyMask>
-					<PrivacyMask inline className="text-[9px] tabular-nums text-muted-foreground/40">
+					<PrivacyMask
+						inline
+						className="text-[9px] tabular-nums text-muted-foreground/40"
+					>
 						{fmt(
 							(session.total_input_tokens ?? 0) +
 								(session.total_output_tokens ?? 0),
@@ -508,7 +490,7 @@ function StatsPage() {
 	const stats = useSyncExternalStore(
 		wsStore.subscribeStats,
 		wsStore.getLiveStats,
-		() => EMPTY_STATS,
+		() => wsStore.EMPTY_STATS,
 	);
 	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
 	const { wsStatus, model, send } = useWs((msg: ServerMessage) => {
@@ -604,11 +586,7 @@ function StatsPage() {
 						label="MODEL"
 						value={
 							model
-								? ({
-										"claude-opus-4-7": "Opus 4.7",
-										"claude-sonnet-4-6": "Sonnet 4.6",
-										"claude-haiku-4-5-20251001": "Haiku 4.5",
-									}[model] ??
+								? (MODEL_LABELS[model] ??
 									model.replace("claude-", "").replace(/-\d{8}$/, ""))
 								: "--"
 						}
@@ -629,10 +607,16 @@ function StatsPage() {
 								<div className="text-[9px] tracking-widest text-muted-foreground/50 uppercase">
 									Today
 								</div>
-								<PrivacyMask inline className="text-lg font-bold tabular-nums text-[var(--data)]">
+								<PrivacyMask
+									inline
+									className="text-lg font-bold tabular-nums text-[var(--data)]"
+								>
 									${agg.today.cost.toFixed(4)}
 								</PrivacyMask>
-								<PrivacyMask inline className="text-[10px] text-muted-foreground/50">
+								<PrivacyMask
+									inline
+									className="text-[10px] text-muted-foreground/50"
+								>
 									{agg.today.queries} queries · {fmt(agg.today.tokens)} tok
 								</PrivacyMask>
 							</div>
@@ -640,10 +624,16 @@ function StatsPage() {
 								<div className="text-[9px] tracking-widest text-muted-foreground/50 uppercase">
 									This Month
 								</div>
-								<PrivacyMask inline className="text-lg font-bold tabular-nums text-[var(--data)]">
+								<PrivacyMask
+									inline
+									className="text-lg font-bold tabular-nums text-[var(--data)]"
+								>
 									${agg.thisMonth.cost.toFixed(4)}
 								</PrivacyMask>
-								<PrivacyMask inline className="text-[10px] text-muted-foreground/50">
+								<PrivacyMask
+									inline
+									className="text-[10px] text-muted-foreground/50"
+								>
 									{agg.thisMonth.queries} queries · {fmt(agg.thisMonth.tokens)}{" "}
 									tok
 								</PrivacyMask>

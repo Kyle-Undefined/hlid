@@ -25,7 +25,7 @@ export type LiveStats = {
 	queries: number;
 };
 
-const EMPTY_STATS: LiveStats = {
+export const EMPTY_STATS: LiveStats = {
 	turns: 0,
 	cost: 0,
 	duration_ms: 0,
@@ -83,7 +83,18 @@ const statusSubs = new Set<() => void>();
 const messageSubs = new Set<(msg: ServerMessage) => void>();
 const statsSubs = new Set<() => void>();
 
+function getHlidToken(): string {
+	return (
+		document
+			.querySelector('meta[name="hlid-token"]')
+			?.getAttribute("content") ?? ""
+	);
+}
+
 function getWsUrl(): string {
+	const token = getHlidToken();
+	const tokenParam = token ? `?token=${encodeURIComponent(token)}` : "";
+
 	const wsPort =
 		typeof import.meta !== "undefined"
 			? (import.meta as { env?: { VITE_WS_PORT?: string } }).env?.VITE_WS_PORT
@@ -91,17 +102,17 @@ function getWsUrl(): string {
 
 	if (wsPort) {
 		const proto = window.location.protocol === "https:" ? "wss" : "ws";
-		return `${proto}://${window.location.hostname}:${wsPort}/ws`;
+		return `${proto}://${window.location.hostname}:${wsPort}/ws${tokenParam}`;
 	}
 
 	// HTTPS (e.g. Tailscale serve): same-origin, proxy routes /ws
 	if (window.location.protocol === "https:") {
-		return `wss://${window.location.host}/ws`;
+		return `wss://${window.location.host}/ws${tokenParam}`;
 	}
 
 	// HTTP: WS server runs on app port + 1
 	const appPort = Number(window.location.port) || 80;
-	return `ws://${window.location.hostname}:${appPort + 1}/ws`;
+	return `ws://${window.location.hostname}:${appPort + 1}/ws${tokenParam}`;
 }
 
 function setSnap(next: Partial<Snapshot>) {

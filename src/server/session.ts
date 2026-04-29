@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import type { McpServerStatus } from "@anthropic-ai/claude-agent-sdk";
 import { query } from "@anthropic-ai/claude-agent-sdk";
@@ -6,8 +6,7 @@ import type { HlidConfig } from "../config";
 import * as db from "../db";
 import type { ChatAttachment, ServerMessage } from "./protocol";
 
-function resolveClaudeExecutable(configOverride?: string): string | undefined {
-	if (configOverride) return configOverride;
+function resolveClaudeExecutable(): string | undefined {
 	// On linux x64, SDK prefers musl binary but WSL2/glibc systems can't run it.
 	// Fall back to glibc variant if musl libc is absent.
 	if (process.platform === "linux" && process.arch === "x64") {
@@ -59,7 +58,7 @@ export class SessionManager {
 		this.maxTurns = config.claude.max_turns;
 		this.vaultPath = config.vault.path || process.env.HOME || "/";
 		this.permissionMode = config.claude.permission_mode;
-		this.claudeExecutable = resolveClaudeExecutable(config.claude.executable);
+		this.claudeExecutable = resolveClaudeExecutable();
 	}
 
 	reinitialize(config: HlidConfig): void {
@@ -69,7 +68,7 @@ export class SessionManager {
 		this.maxTurns = config.claude.max_turns;
 		this.vaultPath = config.vault.path || process.env.HOME || "/";
 		this.permissionMode = config.claude.permission_mode;
-		this.claudeExecutable = resolveClaudeExecutable(config.claude.executable);
+		this.claudeExecutable = resolveClaudeExecutable();
 		this.history = [];
 		this.state = "idle";
 		this.currentSessionId = null;
@@ -233,10 +232,14 @@ export class SessionManager {
 
 		// Set agent cwd for first message of an agent session (in-memory only here)
 		if (agentCwd && !this.agentCwd) {
-			const resolvedAgent = resolve(agentCwd);
-			const vaultRoot = resolve(this.vaultPath);
-			if (resolvedAgent.startsWith(`${vaultRoot}/`)) {
-				this.agentCwd = resolvedAgent;
+			try {
+				const realAgent = realpathSync(agentCwd);
+				const realVault = realpathSync(this.vaultPath);
+				if (realAgent.startsWith(`${realVault}/`)) {
+					this.agentCwd = realAgent;
+				}
+			} catch {
+				// path doesn't exist or symlink cycle — deny
 			}
 		}
 

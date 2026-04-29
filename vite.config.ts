@@ -6,23 +6,39 @@ import { tanstackStart } from "@tanstack/react-start/plugin/vite";
 import viteReact from "@vitejs/plugin-react";
 import { parse } from "smol-toml";
 import { defineConfig, type Plugin } from "vite";
+import { isAllowedOrigin } from "./src/lib/allowedOrigin";
 
-function loadTls(): {
+type ServerConfig = {
+	tls_cert_path?: string;
+	tls_key_path?: string;
+	port?: number;
+	local_network_access?: boolean;
+};
+
+function loadServerConfig(): ServerConfig {
+	const configPath = resolve(process.cwd(), "hlid.config.toml");
+	if (!existsSync(configPath)) return {};
+	try {
+		const parsed = parse(readFileSync(configPath, "utf-8")) as {
+			server?: ServerConfig;
+		};
+		return parsed.server ?? {};
+	} catch {
+		return {};
+	}
+}
+
+function loadTls(server: ServerConfig): {
 	cert: Buffer;
 	key: Buffer;
 	wsPort: number;
 	hostname: string;
 } | null {
-	const configPath = resolve(process.cwd(), "hlid.config.toml");
-	if (!existsSync(configPath)) return null;
+	const certPath = server.tls_cert_path;
+	const keyPath = server.tls_key_path;
+	if (!certPath || !keyPath) return null;
 	try {
-		const parsed = parse(readFileSync(configPath, "utf-8")) as {
-			server?: { tls_cert_path?: string; tls_key_path?: string; port?: number };
-		};
-		const certPath = parsed.server?.tls_cert_path;
-		const keyPath = parsed.server?.tls_key_path;
-		if (!certPath || !keyPath) return null;
-		const wsPort = (parsed.server?.port ?? 3000) + 1;
+		const wsPort = (server.port ?? 3000) + 1;
 		const cert = readFileSync(resolve(certPath));
 		const key = readFileSync(resolve(keyPath));
 		// Extract hostname from cert SAN so Vite HMR knows the external host.
@@ -36,19 +52,7 @@ function loadTls(): {
 	}
 }
 
-function ipGatePlugin(): Plugin {
-	function isAllowed(raw: string | undefined): boolean {
-		if (!raw) return false;
-		const ip = raw.startsWith("::ffff:") ? raw.slice(7) : raw;
-		if (ip === "127.0.0.1" || ip === "::1") return true;
-		// Tailscale IPv6 (fd7a:115c:a1e0::/48)
-		if (ip.toLowerCase().startsWith("fd7a:115c:a1e0:")) return true;
-		const parts = ip.split(".");
-		if (parts.length !== 4) return false;
-		const a = parseInt(parts[0], 10);
-		const b = parseInt(parts[1], 10);
-		return a === 100 && b >= 64 && b <= 127;
-	}
+function ipGatePlugin(allowLocalNetwork: boolean): Plugin {
 	return {
 		name: "hlid-ip-gate",
 		configureServer(server) {
@@ -59,7 +63,7 @@ function ipGatePlugin(): Plugin {
 					| (typeof req.socket & { socket?: { remoteAddress?: string } })
 					| undefined;
 				const addr = sock?.remoteAddress ?? sock?.socket?.remoteAddress;
-				if (!isAllowed(addr)) {
+				if (!isAllowedOrigin(addr, allowLocalNetwork)) {
 					res.writeHead(403, { "content-type": "text/plain" });
 					res.end("Forbidden");
 					return;
@@ -71,11 +75,19 @@ function ipGatePlugin(): Plugin {
 }
 
 // TLS only when HLID_TLS=1 — cert is valid for Tailscale host, not localhost.
-const tls = process.env.HLID_TLS ? loadTls() : null;
+const serverCfg = loadServerConfig();
+const tls = /^1|true$/i.test(process.env.HLID_TLS ?? "")
+	? loadTls(serverCfg)
+	: null;
 
 const config = defineConfig({
 	resolve: { tsconfigPaths: true },
-	plugins: [ipGatePlugin(), tailwindcss(), tanstackStart(), viteReact()],
+	plugins: [
+		ipGatePlugin(serverCfg.local_network_access ?? false),
+		tailwindcss(),
+		tanstackStart(),
+		viteReact(),
+	],
 	server: {
 		host: "0.0.0.0",
 		allowedHosts: true,

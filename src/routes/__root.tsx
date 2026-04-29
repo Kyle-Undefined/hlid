@@ -1,4 +1,5 @@
 import { createRootRoute, HeadContent, Scripts } from "@tanstack/react-router";
+import { createServerFn } from "@tanstack/react-start";
 import { useEffect } from "react";
 import { BottomNav } from "#/components/nav/BottomNav";
 import { Sidebar } from "#/components/nav/Sidebar";
@@ -7,10 +8,19 @@ import * as privacyStore from "#/hooks/privacyStore";
 
 import appCss from "../styles.css?url";
 
+const getHlidToken = createServerFn({ method: "GET" }).handler(async () => {
+	const { loadToken } = await import("#/lib/token");
+	return loadToken();
+});
+
 export const Route = createRootRoute({
 	loader: async () => {
-		const config = await getConfig();
-		return { theme: config.ui.theme, mobileTheme: config.ui.mobile_theme };
+		const [config, token] = await Promise.all([getConfig(), getHlidToken()]);
+		return {
+			theme: config.ui.theme,
+			mobileTheme: config.ui.mobile_theme,
+			token,
+		};
 	},
 	head: () => ({
 		meta: [
@@ -53,7 +63,7 @@ function SyncPrivacyStore() {
 }
 
 function RootDocument({ children }: { children: React.ReactNode }) {
-	const { theme, mobileTheme } = Route.useLoaderData();
+	const { theme, mobileTheme, token } = Route.useLoaderData();
 
 	// JSON.stringify on enum strings ("dark"|"tan"|"same") is XSS-safe.
 	// Runs before first paint to prevent flash when mobile theme differs from desktop.
@@ -71,6 +81,7 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 			<head>
 				{/* biome-ignore lint/security/noDangerouslySetInnerHtml: theme init script built from JSON.stringify on enum values, no user input */}
 				<script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+				<meta name="hlid-token" content={token} />
 				<HeadContent />
 			</head>
 			<body>

@@ -190,7 +190,9 @@ function ProjectNodeItem({
 				{node.isFolder && (
 					<Folder className="w-3 h-3 text-muted-foreground/70 shrink-0" />
 				)}
-				<PrivacyMask inline className="text-xs text-foreground/70 truncate">{node.name}</PrivacyMask>
+				<PrivacyMask inline className="text-xs text-foreground/70 truncate">
+					{node.name}
+				</PrivacyMask>
 			</button>
 			{open && node.isFolder && node.children && (
 				<div>
@@ -204,7 +206,9 @@ function ProjectNodeItem({
 					className="text-xs text-foreground/70 leading-relaxed border-l border-border/50 py-2 pr-2"
 					style={{ marginLeft: `${depth * 14 + 12}px`, paddingLeft: "8px" }}
 				>
-					<PrivacyMask><MarkdownBody content={node.content} /></PrivacyMask>
+					<PrivacyMask>
+						<MarkdownBody content={node.content} />
+					</PrivacyMask>
 				</div>
 			)}
 		</div>
@@ -261,7 +265,9 @@ function ProjectCard({ project }: { project: Project }) {
 			</button>
 			{open && project.content && project.content.trim() && (
 				<div className="px-6 py-4 bg-secondary/30 text-xs text-foreground/80 leading-relaxed">
-					<PrivacyMask><MarkdownBody content={project.content} /></PrivacyMask>
+					<PrivacyMask>
+						<MarkdownBody content={project.content} />
+					</PrivacyMask>
 				</div>
 			)}
 			{open &&
@@ -365,7 +371,9 @@ function SkillCard({
 						<ChevronRight className="w-3 h-3 text-muted-foreground shrink-0" />
 					)}
 					<div className="min-w-0">
-						<PrivacyMask className="text-sm text-foreground truncate">{skill.name}</PrivacyMask>
+						<PrivacyMask className="text-sm text-foreground truncate">
+							{skill.name}
+						</PrivacyMask>
 						{skill.description && (
 							<PrivacyMask className="text-xs text-muted-foreground mt-0.5 truncate">
 								{skill.description}
@@ -385,7 +393,9 @@ function SkillCard({
 			</div>
 			{open && skill.content && (
 				<div className="px-6 py-4 bg-secondary/30 text-xs text-foreground/80 leading-relaxed">
-					<PrivacyMask><MarkdownBody content={skill.content} /></PrivacyMask>
+					<PrivacyMask>
+						<MarkdownBody content={skill.content} />
+					</PrivacyMask>
 				</div>
 			)}
 		</div>
@@ -443,7 +453,10 @@ function SkillsTab({
 				<div key={g.section ?? "__unsectioned__"} className="space-y-2">
 					<div className="flex items-center gap-2">
 						<span className="w-1.5 h-1.5 rounded-full bg-primary/40 shrink-0" />
-						<PrivacyMask inline className="text-[10px] tracking-widest text-muted-foreground uppercase">
+						<PrivacyMask
+							inline
+							className="text-[10px] tracking-widest text-muted-foreground uppercase"
+						>
 							{g.section ?? "SKILLS"}
 						</PrivacyMask>
 						<span className="text-[10px] text-muted-foreground/50">
@@ -479,7 +492,9 @@ function MemoryCard({ file }: { file: MemoryFile }) {
 					<ChevronRight className="w-3 h-3 text-muted-foreground shrink-0" />
 				)}
 				<div className="min-w-0">
-					<PrivacyMask className="text-sm text-foreground truncate">{file.name}</PrivacyMask>
+					<PrivacyMask className="text-sm text-foreground truncate">
+						{file.name}
+					</PrivacyMask>
 					<PrivacyMask className="text-[10px] tracking-wider text-muted-foreground font-mono truncate mt-0.5">
 						{file.path}
 					</PrivacyMask>
@@ -487,7 +502,9 @@ function MemoryCard({ file }: { file: MemoryFile }) {
 			</button>
 			{open && (
 				<div className="px-6 py-4 bg-secondary/30 text-xs text-foreground/80 leading-relaxed">
-					<PrivacyMask><MarkdownBody content={file.content} /></PrivacyMask>
+					<PrivacyMask>
+						<MarkdownBody content={file.content} />
+					</PrivacyMask>
 				</div>
 			)}
 		</div>
