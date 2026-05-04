@@ -44,7 +44,7 @@ export const Route = createFileRoute("/api/browse")({
 						const raw = execFileSync(
 							"wsl",
 							["-e", "sh", "-c", "wslpath -w ~"],
-							{ encoding: "utf-8", timeout: 5000 },
+							{ encoding: "utf-8", timeout: 5000, windowsHide: true },
 						).trim();
 						if (!raw.startsWith("\\\\")) throw new Error("unexpected");
 						return Response.json({ wslHome: raw });

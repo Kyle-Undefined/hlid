@@ -81,6 +81,7 @@ function openInBrowser(url: string): void {
 		// to create a new visible console window for the child.
 		Bun.spawn(["explorer.exe", url], {
 			stdio: ["ignore", "ignore", "ignore"],
+			windowsHide: true,
 		});
 	} else if (process.platform === "darwin") {
 		Bun.spawn(["open", url], { stdio: ["ignore", "ignore", "ignore"] });

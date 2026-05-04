@@ -5,6 +5,7 @@ export const Route = createFileRoute("/api/health")({
 		handlers: {
 			GET: async () => {
 				return Response.json({
+					service: "hlid",
 					status: "ok",
 					version: "0.1.0",
 					ts: Date.now(),

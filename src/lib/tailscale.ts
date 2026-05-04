@@ -52,6 +52,7 @@ async function runTailscale(
 		const proc = Bun.spawn([binary, ...args], {
 			stdout: "pipe",
 			stderr: "pipe",
+			windowsHide: true,
 		});
 		// Drain pipes concurrently with awaiting exit so a noisy child can't
 		// deadlock waiting for someone to read.

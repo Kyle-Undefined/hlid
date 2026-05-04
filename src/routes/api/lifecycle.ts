@@ -1,13 +1,20 @@
 import { createFileRoute } from "@tanstack/react-router";
 import {
 	getAutostart,
+	getInstallPaths,
 	installAutostart,
+	openInstallDir,
 	shutdown,
 	uninstallAutostart,
 } from "#/lib/lifecycle";
 import { forbiddenResponse } from "#/lib/originGate";
 
-const ACTIONS = ["install", "uninstall", "shutdown"] as const;
+const ACTIONS = [
+	"install",
+	"uninstall",
+	"shutdown",
+	"open_install_dir",
+] as const;
 type Action = (typeof ACTIONS)[number];
 
 function isAction(v: unknown): v is Action {
@@ -20,8 +27,14 @@ export const Route = createFileRoute("/api/lifecycle")({
 			GET: async ({ request }) => {
 				const forbidden = forbiddenResponse(request);
 				if (forbidden) return forbidden;
-				const result = await getAutostart();
-				return Response.json(result);
+				const autostart = await getAutostart();
+				if (!autostart.ok) return Response.json(autostart);
+				const install = getInstallPaths();
+				const data =
+					typeof autostart.data === "object" && autostart.data !== null
+						? { ...(autostart.data as object), install }
+						: { install };
+				return Response.json({ ok: true, data });
 			},
 			POST: async ({ request }) => {
 				const forbidden = forbiddenResponse(request);
@@ -51,6 +64,8 @@ export const Route = createFileRoute("/api/lifecycle")({
 						return Response.json(await uninstallAutostart());
 					case "shutdown":
 						return Response.json(shutdown());
+					case "open_install_dir":
+						return Response.json(await openInstallDir());
 				}
 			},
 		},

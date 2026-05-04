@@ -1334,11 +1334,26 @@ function EventLogSection() {
 
 // ─── system / lifecycle ───────────────────────────────────────────────────────
 
-type AutostartState = { enabled: boolean; supported: boolean; path?: string };
+type InstallPaths = {
+	exe: string;
+	dir: string;
+	canonical_exe: string;
+	canonical_dir: string;
+	is_canonical: boolean;
+};
+
+type LifecycleState = {
+	enabled: boolean;
+	supported: boolean;
+	path?: string;
+	install?: InstallPaths;
+};
 
 function SystemSection() {
-	const [autostart, setAutostart] = useState<AutostartState | null>(null);
-	const [busy, setBusy] = useState<null | "toggle" | "shutdown">(null);
+	const [autostart, setAutostart] = useState<LifecycleState | null>(null);
+	const [busy, setBusy] = useState<
+		null | "toggle" | "shutdown" | "open_install_dir"
+	>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [confirmShutdown, setConfirmShutdown] = useState(false);
 
@@ -1347,7 +1362,7 @@ function SystemSection() {
 			const res = await fetch("/api/lifecycle");
 			const j = (await res.json()) as {
 				ok: boolean;
-				data?: AutostartState;
+				data?: LifecycleState;
 			};
 			if (j.ok && j.data) setAutostart(j.data);
 		} catch (e) {
@@ -1359,13 +1374,25 @@ function SystemSection() {
 		void refresh();
 	}, [refresh]);
 
-	async function post(action: "install" | "uninstall" | "shutdown") {
+	async function post(
+		action: "install" | "uninstall" | "shutdown" | "open_install_dir",
+	) {
 		const res = await fetch("/api/lifecycle", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ action }),
 		});
 		return (await res.json()) as { ok: boolean; error?: string };
+	}
+
+	async function openInstallDir() {
+		setError(null);
+		setBusy("open_install_dir");
+		const r = await post("open_install_dir").catch(
+			(e) => ({ ok: false, error: String(e) }) as const,
+		);
+		if (!r.ok) setError(r.error ?? "Failed to open folder");
+		setBusy(null);
 	}
 
 	async function toggleAutostart() {
@@ -1395,9 +1422,27 @@ function SystemSection() {
 
 	const supported = autostart?.supported ?? false;
 	const enabled = autostart?.enabled ?? false;
+	const install = autostart?.install;
 
 	return (
 		<Section title="System">
+			{install && (
+				<Field label="Install location" hint={install.dir}>
+					<button
+						type="button"
+						onClick={() => {
+							void openInstallDir();
+						}}
+						disabled={busy === "open_install_dir" || !supported}
+						title={
+							supported ? "open install folder in Explorer" : "Windows only"
+						}
+						className="text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors uppercase disabled:opacity-40"
+					>
+						{busy === "open_install_dir" ? "OPENING…" : "OPEN"}
+					</button>
+				</Field>
+			)}
 			<Field
 				label="Launch on login"
 				hint={
