@@ -49,5 +49,18 @@ const proc = Bun.spawn(["bun", ...args], {
 });
 const code = await proc.exited;
 if (code !== 0) process.exit(code);
+
+// bun's --windows-hide-console silently doesn't flip the PE subsystem byte
+// (verified empirically: every release exe shipped with subsystem=3/CUI),
+// so a blank console window pops on launch. Patch it directly.
+const exePath = resolve(outDir, "hlid.exe");
+const patch = Bun.spawn(["bun", "scripts/patch-subsystem.ts", exePath], {
+	cwd: root,
+	stdout: "inherit",
+	stderr: "inherit",
+});
+const patchCode = await patch.exited;
+if (patchCode !== 0) process.exit(patchCode);
+
 const meta = onWindows ? `windows-version ${winVersion}` : "no metadata (cross-compile)";
 console.log(`Built dist/builds/hlid.exe (${meta})`);

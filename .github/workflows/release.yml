@@ -108,6 +108,13 @@ jobs:
             --outfile build/hlid.exe `
             src/server/index.ts
 
+      # bun's --windows-hide-console silently fails to flip the PE subsystem
+      # byte (verified on v0.0.19-v0.0.23: every shipped exe had subsystem=3/CUI,
+      # which is why a blank console window appeared on launch). Patch directly.
+      - name: Patch PE subsystem to GUI
+        shell: pwsh
+        run: bun scripts/patch-subsystem.ts build/hlid.exe
+
       - name: Rename for release
         shell: pwsh
         env:
