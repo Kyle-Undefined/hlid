@@ -727,11 +727,7 @@ const _wsServer = Bun.serve({
 			if (msg.type === "permission_response") {
 				// Only the client that started the session can respond to permissions
 				if (ws !== sessionOwnerWs) return;
-				session.handlePermissionResponse(
-					msg.id,
-					msg.approved,
-					msg.sessionAllow,
-				);
+				session.handlePermissionResponse(msg.id, msg.approved, msg.saveScope);
 				return;
 			}
 

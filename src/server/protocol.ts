@@ -130,7 +130,7 @@ export type ClientPermissionResponseMessage = {
 	type: "permission_response";
 	id: string;
 	approved: boolean;
-	sessionAllow?: boolean;
+	saveScope?: "session" | "local";
 };
 
 export type ClientSyncMessage = {

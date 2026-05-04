@@ -87,7 +87,7 @@ export class SessionManager {
 	private history: Turn[] = [];
 	private pendingPermissions = new Map<
 		string,
-		(approved: boolean, sessionAllow?: boolean) => void
+		(approved: boolean, saveScope?: "session" | "local") => void
 	>();
 	private pendingPermissionData = new Map<
 		string,
@@ -159,6 +159,7 @@ export class SessionManager {
 					effort: "low" as const,
 					maxTurns: 1,
 					persistSession: false,
+					settingSources: ["user", "project"],
 					...(this.claudeExecutable !== undefined && {
 						pathToClaudeCodeExecutable: this.claudeExecutable,
 					}),
@@ -205,9 +206,9 @@ export class SessionManager {
 	handlePermissionResponse(
 		id: string,
 		approved: boolean,
-		sessionAllow?: boolean,
+		saveScope?: "session" | "local",
 	): void {
-		this.pendingPermissions.get(id)?.(approved, sessionAllow);
+		this.pendingPermissions.get(id)?.(approved, saveScope);
 		this.pendingPermissionData.delete(id);
 	}
 
@@ -479,6 +480,12 @@ export class SessionManager {
 					}),
 					allowDangerouslySkipPermissions:
 						this.permissionMode === "bypassPermissions",
+					// Each cwd loads its own user global + project settings + local file.
+					// Vault chats see vault hooks/MCP/CLAUDE.md; agent chats see that
+					// agent's. canUseTool stays sole permission authority as long as
+					// settings files contain only allow-rules written by Hlid (no
+					// permissions.deny, no PreToolUse hooks).
+					settingSources: ["user", "project"],
 					persistSession: false,
 					canUseTool: (
 						toolName,
@@ -496,33 +503,42 @@ export class SessionManager {
 								input: input as Record<string, unknown> | undefined,
 							};
 							this.pendingPermissionData.set(toolUseID, permReq);
-							this.pendingPermissions.set(
-								toolUseID,
-								(approved, sessionAllow?) => {
-									this.pendingPermissions.delete(toolUseID);
-									this.pendingPermissionData.delete(toolUseID);
-									if (!approved) {
-										resolve({
-											behavior: "deny" as const,
-											message: "Denied by user",
-										});
-									} else if (sessionAllow) {
-										resolve({
-											behavior: "allow" as const,
-											updatedPermissions: [
-												{
-													type: "addRules" as const,
-													rules: [{ toolName }],
-													behavior: "allow" as const,
-													destination: "session" as const,
-												},
-											],
-										});
-									} else {
-										resolve({ behavior: "allow" as const });
-									}
-								},
-							);
+							this.pendingPermissions.set(toolUseID, (approved, saveScope) => {
+								this.pendingPermissions.delete(toolUseID);
+								this.pendingPermissionData.delete(toolUseID);
+								if (!approved) {
+									resolve({
+										behavior: "deny" as const,
+										message: "Denied by user",
+									});
+								} else if (saveScope === "session") {
+									resolve({
+										behavior: "allow" as const,
+										updatedPermissions: [
+											{
+												type: "addRules" as const,
+												rules: [{ toolName }],
+												behavior: "allow" as const,
+												destination: "session" as const,
+											},
+										],
+									});
+								} else if (saveScope === "local") {
+									resolve({
+										behavior: "allow" as const,
+										updatedPermissions: [
+											{
+												type: "addRules" as const,
+												rules: [{ toolName }],
+												behavior: "allow" as const,
+												destination: "localSettings" as const,
+											},
+										],
+									});
+								} else {
+									resolve({ behavior: "allow" as const });
+								}
+							});
 							emit(permReq);
 						}),
 				},

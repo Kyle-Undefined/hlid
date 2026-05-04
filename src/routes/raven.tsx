@@ -171,7 +171,12 @@ type PermissionMessage = {
 	displayName?: string;
 	description?: string;
 	input?: Record<string, unknown>;
-	decision: "pending" | "approved" | "approved_session" | "denied";
+	decision:
+		| "pending"
+		| "approved"
+		| "approved_session"
+		| "approved_always"
+		| "denied";
 };
 
 type ChatMessage = UserMessage | AssistantMessage | PermissionMessage;
@@ -193,7 +198,7 @@ type Action =
 	| {
 			type: "RESOLVE_PERMISSION";
 			id: string;
-			decision: "approved" | "approved_session" | "denied";
+			decision: "approved" | "approved_session" | "approved_always" | "denied";
 	  }
 	| {
 			type: "LOAD_HISTORY";
@@ -576,14 +581,27 @@ function PermissionCard({
 	onDecide,
 }: {
 	message: PermissionMessage;
-	onDecide: (id: string, approved: boolean, sessionAllow?: boolean) => void;
+	onDecide: (
+		id: string,
+		approved: boolean,
+		saveScope?: "session" | "local",
+	) => void;
 }) {
 	const pending = message.decision === "pending";
 
 	if (!pending) {
 		const approved =
 			message.decision === "approved" ||
-			message.decision === "approved_session";
+			message.decision === "approved_session" ||
+			message.decision === "approved_always";
+		const label =
+			message.decision === "approved_always"
+				? "APPROVED ALWAYS"
+				: message.decision === "approved_session"
+					? "APPROVED FOR SESSION"
+					: approved
+						? "APPROVED"
+						: "DENIED";
 		return (
 			<div className="flex gap-0">
 				<div className="w-12 shrink-0 text-[9px] tracking-widest text-muted-foreground/50 pt-0.5 uppercase">
@@ -596,12 +614,7 @@ function PermissionCard({
 						<X className="w-3 h-3 text-destructive/60" />
 					)}
 					<span className="tracking-wider text-[10px]">
-						{(message.displayName ?? message.toolName).toUpperCase()}{" "}
-						{message.decision === "approved_session"
-							? "APPROVED FOR SESSION"
-							: approved
-								? "APPROVED"
-								: "DENIED"}
+						{(message.displayName ?? message.toolName).toUpperCase()} {label}
 					</span>
 				</div>
 			</div>
@@ -656,11 +669,19 @@ function PermissionCard({
 					</button>
 					<button
 						type="button"
-						onClick={() => onDecide(message.id, true, true)}
+						onClick={() => onDecide(message.id, true, "session")}
 						className="flex-1 flex items-center justify-center gap-2 py-2 text-[10px] tracking-widest text-blue-500/70 hover:bg-blue-500/5 transition-colors uppercase"
 					>
 						<Check className="w-3 h-3" />
 						SESSION
+					</button>
+					<button
+						type="button"
+						onClick={() => onDecide(message.id, true, "local")}
+						className="flex-1 flex items-center justify-center gap-2 py-2 text-[10px] tracking-widest text-purple-500/70 hover:bg-purple-500/5 transition-colors uppercase"
+					>
+						<Check className="w-3 h-3" />
+						ALWAYS
 					</button>
 				</div>
 			</div>
@@ -1065,17 +1086,16 @@ function ChatPage() {
 	}, [isRunning]);
 
 	const handleDecide = useCallback(
-		(id: string, approved: boolean, sessionAllow?: boolean) => {
-			dispatch({
-				type: "RESOLVE_PERMISSION",
-				id,
-				decision: approved
-					? sessionAllow
+		(id: string, approved: boolean, saveScope?: "session" | "local") => {
+			const decision = approved
+				? saveScope === "local"
+					? "approved_always"
+					: saveScope === "session"
 						? "approved_session"
 						: "approved"
-					: "denied",
-			});
-			send({ type: "permission_response", id, approved, sessionAllow });
+				: "denied";
+			dispatch({ type: "RESOLVE_PERMISSION", id, decision });
+			send({ type: "permission_response", id, approved, saveScope });
 		},
 		[send],
 	);
