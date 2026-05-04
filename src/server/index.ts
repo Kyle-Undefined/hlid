@@ -25,6 +25,23 @@ import type { ClientMessage, ServerMessage } from "./protocol";
 import { SessionManager } from "./session";
 import { syncWrappers } from "./wrappers";
 
+// In a compiled exe (--windows-hide-console), any write to stdout/stderr causes
+// Bun to call AllocConsole(), making Windows show a console window. Redirect
+// all console output to the DB log so no console is ever allocated.
+if (process.execPath.endsWith(".exe")) {
+	const toDb = (level: "info" | "warn" | "error", args: unknown[]) => {
+		const msg = args
+			.map((a) => (a instanceof Error ? (a.stack ?? a.message) : String(a)))
+			.join(" ");
+		void db.appendLog(level, "console", msg);
+	};
+	console.log = (...a) => toDb("info", a);
+	console.info = (...a) => toDb("info", a);
+	console.warn = (...a) => toDb("warn", a);
+	console.error = (...a) => toDb("error", a);
+	console.debug = () => {};
+}
+
 // CLI flags. `--background` = silent boot (used by the autostart registry entry).
 // No flag = interactive launch (double-click); we'll open the browser once the
 // server is ready.
@@ -785,7 +802,7 @@ if (config.server.tls_cert_path && config.server.tls_key_path) {
 	type WsData = {
 		wsTarget: string;
 		back: WebSocket | null;
-		queue: (string | ArrayBuffer | Uint8Array)[];
+		queue: (string | ArrayBuffer)[];
 	};
 
 	const SKIP_REQ = new Set(["host", "connection", "keep-alive"]);
@@ -814,10 +831,19 @@ if (config.server.tls_cert_path && config.server.tls_key_path) {
 				back.onerror = () => ws.close();
 			},
 			message(ws, data) {
+				// Normalize to string | ArrayBuffer — Uint8Array<ArrayBufferLike> is
+				// not assignable to WebSocket.send()'s BufferSource without a copy.
+				const payload: string | ArrayBuffer =
+					typeof data === "string"
+						? data
+						: (data.buffer.slice(
+								data.byteOffset,
+								data.byteOffset + data.byteLength,
+							) as ArrayBuffer);
 				if (ws.data.back?.readyState === WebSocket.OPEN) {
-					ws.data.back.send(data);
+					ws.data.back.send(payload);
 				} else {
-					ws.data.queue.push(data);
+					ws.data.queue.push(payload);
 				}
 			},
 			close(ws) {
