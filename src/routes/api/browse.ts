@@ -10,7 +10,7 @@ import { loadConfig } from "#/server/config";
 function safePath(reqPath: string, allowedRoots: string[]): string | null {
 	try {
 		const real = realpathSync(resolve(expandTilde(reqPath)));
-		if (allowedRoots.some((r) => pathStartsWith(real, r))) return real;
+		if (allowedRoots.some((r) => pathStartsWith(r, real))) return real;
 		return null;
 	} catch {
 		return null;
