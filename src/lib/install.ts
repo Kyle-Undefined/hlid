@@ -143,6 +143,23 @@ async function writeAutostart(canonicalExe: string): Promise<void> {
 	);
 }
 
+// Bust the Windows shell icon cache. Without this, replacing a file at a path
+// that previously had a different icon shows the OLD icon in Explorer/taskbar
+// until the user manually refreshes (kills explorer.exe, runs ie4uinit, etc).
+// SHChangeNotify(SHCNE_ASSOCCHANGED, 0, NULL, NULL) tells the shell that file
+// associations have changed; it re-reads icons on next render.
+async function refreshShellIconCache(): Promise<void> {
+	const memberDef =
+		'[System.Runtime.InteropServices.DllImport(\\"Shell32.dll\\")] public static extern void SHChangeNotify(int eventId, int flags, System.IntPtr item1, System.IntPtr item2);';
+	const cmd = [
+		`Add-Type -Namespace Win32 -Name Shell32 -MemberDefinition "${memberDef}"`,
+		`[Win32.Shell32]::SHChangeNotify(0x08000000, 0, [System.IntPtr]::Zero, [System.IntPtr]::Zero)`,
+	].join("; ");
+	try {
+		await runPs(cmd);
+	} catch {}
+}
+
 function parseExeFromCommand(cmd: string): string | null {
 	const quoted = cmd.match(/^"([^"]+)"/);
 	if (quoted) return quoted[1];
@@ -244,6 +261,11 @@ export async function maybeSelfInstall(): Promise<void> {
 	// Drop / refresh a Start Menu shortcut so the user can find the app
 	// without digging through AppData.
 	await createStartMenuShortcut(canonical);
+
+	// Tell the shell to invalidate its icon cache so the new exe's icon
+	// shows up immediately instead of inheriting whatever was at this path
+	// before (the Bun icon from a prior WSL test build, etc).
+	await refreshShellIconCache();
 
 	// Relaunch from the canonical location, forwarding original args. Detached
 	// + ignored stdio so the child is fully decoupled from this transient exe.
