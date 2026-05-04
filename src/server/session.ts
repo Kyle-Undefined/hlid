@@ -503,6 +503,11 @@ export class SessionManager {
 								input: input as Record<string, unknown> | undefined,
 							};
 							this.pendingPermissionData.set(toolUseID, permReq);
+							// SDK runtime Zod schema requires `updatedInput` on the allow
+							// branch even though the .d.ts marks it optional. Pass the
+							// original input unchanged as a no-op so the tool runs as
+							// requested.
+							const passInput = input as Record<string, unknown>;
 							this.pendingPermissions.set(toolUseID, (approved, saveScope) => {
 								this.pendingPermissions.delete(toolUseID);
 								this.pendingPermissionData.delete(toolUseID);
@@ -514,6 +519,7 @@ export class SessionManager {
 								} else if (saveScope === "session") {
 									resolve({
 										behavior: "allow" as const,
+										updatedInput: passInput,
 										updatedPermissions: [
 											{
 												type: "addRules" as const,
@@ -526,6 +532,7 @@ export class SessionManager {
 								} else if (saveScope === "local") {
 									resolve({
 										behavior: "allow" as const,
+										updatedInput: passInput,
 										updatedPermissions: [
 											{
 												type: "addRules" as const,
@@ -536,7 +543,10 @@ export class SessionManager {
 										],
 									});
 								} else {
-									resolve({ behavior: "allow" as const });
+									resolve({
+										behavior: "allow" as const,
+										updatedInput: passInput,
+									});
 								}
 							});
 							emit(permReq);
