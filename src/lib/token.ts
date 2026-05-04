@@ -15,7 +15,7 @@ export function loadToken(): string {
 			mkdirSync(TOKEN_DIR, { recursive: true, mode: 0o700 });
 		} catch {}
 		try {
-			// Exclusive create — if another process wins the race, read what they wrote.
+			// Exclusive create. If another process wins the race, read what they wrote.
 			writeFileSync(TOKEN_PATH, token, { mode: 0o600, flag: "wx" });
 			return token;
 		} catch {

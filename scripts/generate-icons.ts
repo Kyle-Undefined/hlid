@@ -1,5 +1,6 @@
 import sharp from "sharp";
-import { readFileSync } from "fs";
+import pngToIco from "png-to-ico";
+import { readFileSync, writeFileSync } from "fs";
 import { resolve, dirname } from "path";
 import { fileURLToPath } from "url";
 
@@ -22,9 +23,12 @@ for (const { name, size } of sizes) {
 	console.log(`Generated public/${name}`);
 }
 
-// favicon.ico (32x32 PNG works fine as .ico in modern browsers)
-await sharp(svg)
-	.resize(32, 32)
-	.png()
-	.toFile(resolve(root, "public/favicon.ico"));
+// Real multi-resolution .ico for Windows compile (bun --windows-icon).
+// Bundle 16/32/48/256, Windows picks the best size per surface.
+const icoSizes = [16, 32, 48, 256];
+const icoPngs = await Promise.all(
+	icoSizes.map((s) => sharp(svg).resize(s, s).png().toBuffer()),
+);
+const icoBuffer = await pngToIco(icoPngs);
+writeFileSync(resolve(root, "public/favicon.ico"), icoBuffer);
 console.log("Generated public/favicon.ico");

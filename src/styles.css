@@ -12,7 +12,7 @@
 
 @custom-variant dark (&:is(.dark *));
 
-/* inspo.png palette — neutral dark, sky blue accent */
+/* inspo.png palette, neutral dark, sky blue accent */
 :root,
 .dark {
   --background: #0f0f12;
@@ -45,7 +45,7 @@
   --sidebar-ring: #38bdf8;
   /* data/stat accent */
   --data: #38bdf8;
-  /* tool block expanded panel — sky blue inset */
+  /* tool block expanded panel, sky blue inset */
   --tool-panel: #071825;
   --tool-panel-border: #1a5580;
 }

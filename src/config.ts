@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { createServerFn } from "@tanstack/react-start";
 import { parse } from "smol-toml";
 import { z } from "zod";
+import { APP_DIR } from "./lib/paths";
 
 const VaultSchema = z.object({
 	name: z.string().default("Vault"),
@@ -22,11 +23,11 @@ const VaultSchema = z.object({
 
 const ServerSchema = z.object({
 	port: z.number().default(3000),
-	host: z.string().default("0.0.0.0"),
 	tls_cert_path: z.string().optional(),
 	tls_key_path: z.string().optional(),
 	tls_proxy_port: z.number().default(3443),
 	local_network_access: z.boolean().default(false),
+	allow_external_agents: z.boolean().default(false),
 });
 
 const ClaudeSchema = z.object({
@@ -84,6 +85,7 @@ const AttachmentsSchema = z.object({
 const AgentSchema = z.object({
 	path: z.string(),
 	name: z.string().optional(),
+	mode: z.enum(["cwd", "context"]).default("cwd"),
 });
 
 export type Agent = z.infer<typeof AgentSchema>;
@@ -92,9 +94,9 @@ export const HlidConfigSchema = z.object({
 	vault: VaultSchema.default(() => ({ name: "Vault", path: "" })),
 	server: ServerSchema.default(() => ({
 		port: 3000,
-		host: "0.0.0.0",
 		tls_proxy_port: 3443,
 		local_network_access: false,
+		allow_external_agents: false,
 	})),
 	claude: ClaudeSchema.default(() => ({
 		model: "claude-sonnet-4-6",
@@ -117,7 +119,7 @@ export const HlidConfigSchema = z.object({
 
 export type HlidConfig = z.infer<typeof HlidConfigSchema>;
 
-const CONFIG_PATH = resolve(process.cwd(), "hlid.config.toml");
+const CONFIG_PATH = resolve(APP_DIR, "hlid.config.toml");
 
 function loadFromDisk(): HlidConfig {
 	try {

@@ -471,7 +471,7 @@ function DashboardHeader({
 
 	return (
 		<div className="border-b border-border shrink-0">
-			{/* Row 1 — primary windows */}
+			{/* Row 1, primary windows */}
 			<div className="grid grid-cols-3 divide-x divide-border border-b border-border">
 				{/* SESSION */}
 				<div className="px-3 md:px-5 py-3 md:py-4">
@@ -527,7 +527,7 @@ function DashboardHeader({
 				</div>
 			</div>
 
-			{/* Row 2 — all-time */}
+			{/* Row 2, all-time */}
 			<div className="px-5 py-3 flex items-center gap-6">
 				<div>
 					<div className="text-[9px] tracking-widest text-muted-foreground/40 uppercase mb-1">
@@ -1052,7 +1052,7 @@ function RunList({
 						inline
 						className="text-[10px] tracking-wider text-muted-foreground/60 truncate flex-1"
 					>
-						{run.label ?? "—"}
+						{run.label ?? "untitled"}
 					</PrivacyMask>
 					<span className="text-[8px] tracking-widest text-muted-foreground/20 uppercase shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
 						↗
@@ -1241,7 +1241,7 @@ function MobileRunsPanel({
 
 	return (
 		<div className="md:hidden border-b border-border shrink-0">
-			{/* Recent runs — collapsed by default */}
+			{/* Recent runs, collapsed by default */}
 			<button
 				type="button"
 				onClick={() => setRunsOpen((v) => !v)}
@@ -1271,7 +1271,7 @@ function MobileRunsPanel({
 				</div>
 			)}
 
-			{/* This week — open by default */}
+			{/* This week, open by default */}
 			<button
 				type="button"
 				onClick={() => setWeekOpen((v) => !v)}
@@ -1640,7 +1640,7 @@ function CockpitPage() {
 				rateLimit={rateLimit}
 			/>
 
-			{/* Mobile context band — shows context % when active */}
+			{/* Mobile context band, shows context % when active */}
 			<MobileContextBand stats={liveStats} />
 
 			{/* 30-day activity graph */}
@@ -1648,7 +1648,7 @@ function CockpitPage() {
 				<ThirtyDayGraph data={thirtyDayStats} />
 			</PrivacyMask>
 
-			{/* Stats — desktop: right sidebar; mobile: collapsible section */}
+			{/* Stats, desktop: right sidebar; mobile: collapsible section */}
 			<MobileStatsPanel stats={liveStats} agg={agg} isConnected={isConnected} />
 
 			{/* MCP panel */}
@@ -1787,7 +1787,7 @@ function CockpitPage() {
 											onChange={(e) => setSelectedAgentPath(e.target.value)}
 											className="text-[9px] tracking-widest text-muted-foreground/60 bg-background border border-border/50 px-2 py-0.5 focus:outline-none focus:border-primary/40 uppercase min-w-0 w-full"
 										>
-											<option value="">— none —</option>
+											<option value="">none</option>
 											{agentList.map((a) => (
 												<option key={a.path} value={a.path}>
 													{a.name}
@@ -1830,7 +1830,7 @@ function CockpitPage() {
 													onChange={(e) => setSelectedAgentPath(e.target.value)}
 													className="text-[9px] tracking-widest text-muted-foreground/60 bg-background border border-border/50 px-2 py-0.5 focus:outline-none focus:border-primary/40 uppercase"
 												>
-													<option value="">— none —</option>
+													<option value="">none</option>
 													{agentList.map((a) => (
 														<option key={a.path} value={a.path}>
 															{a.name}
@@ -1956,7 +1956,7 @@ function CockpitPage() {
 					)}
 				</div>
 
-				{/* Recent runs sidebar — desktop only */}
+				{/* Recent runs sidebar, desktop only */}
 				<RecentRunsSidebar
 					runs={recentRuns}
 					weeklyStats={weeklyStats}

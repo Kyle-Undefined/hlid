@@ -16,6 +16,8 @@ import { Route as LedgerRouteImport } from './routes/ledger'
 import { Route as ForgeRouteImport } from './routes/forge'
 import { Route as EinherjarRouteImport } from './routes/einherjar'
 import { Route as IndexRouteImport } from './routes/index'
+import { Route as ApiTailscaleRouteImport } from './routes/api/tailscale'
+import { Route as ApiLifecycleRouteImport } from './routes/api/lifecycle'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as ApiConfigRouteImport } from './routes/api/config'
 import { Route as ApiBrowseRouteImport } from './routes/api/browse'
@@ -56,6 +58,16 @@ const EinherjarRoute = EinherjarRouteImport.update({
 const IndexRoute = IndexRouteImport.update({
   id: '/',
   path: '/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiTailscaleRoute = ApiTailscaleRouteImport.update({
+  id: '/api/tailscale',
+  path: '/api/tailscale',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiLifecycleRoute = ApiLifecycleRouteImport.update({
+  id: '/api/lifecycle',
+  path: '/api/lifecycle',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiHealthRoute = ApiHealthRouteImport.update({
@@ -100,6 +112,8 @@ export interface FileRoutesByFullPath {
   '/api/browse': typeof ApiBrowseRoute
   '/api/config': typeof ApiConfigRoute
   '/api/health': typeof ApiHealthRoute
+  '/api/lifecycle': typeof ApiLifecycleRoute
+  '/api/tailscale': typeof ApiTailscaleRoute
   '/api/attachments/$id': typeof ApiAttachmentsIdRouteWithChildren
   '/api/attachments/upload': typeof ApiAttachmentsUploadRoute
   '/api/attachments/$id/raw': typeof ApiAttachmentsIdRawRoute
@@ -115,6 +129,8 @@ export interface FileRoutesByTo {
   '/api/browse': typeof ApiBrowseRoute
   '/api/config': typeof ApiConfigRoute
   '/api/health': typeof ApiHealthRoute
+  '/api/lifecycle': typeof ApiLifecycleRoute
+  '/api/tailscale': typeof ApiTailscaleRoute
   '/api/attachments/$id': typeof ApiAttachmentsIdRouteWithChildren
   '/api/attachments/upload': typeof ApiAttachmentsUploadRoute
   '/api/attachments/$id/raw': typeof ApiAttachmentsIdRawRoute
@@ -131,6 +147,8 @@ export interface FileRoutesById {
   '/api/browse': typeof ApiBrowseRoute
   '/api/config': typeof ApiConfigRoute
   '/api/health': typeof ApiHealthRoute
+  '/api/lifecycle': typeof ApiLifecycleRoute
+  '/api/tailscale': typeof ApiTailscaleRoute
   '/api/attachments/$id': typeof ApiAttachmentsIdRouteWithChildren
   '/api/attachments/upload': typeof ApiAttachmentsUploadRoute
   '/api/attachments/$id/raw': typeof ApiAttachmentsIdRawRoute
@@ -148,6 +166,8 @@ export interface FileRouteTypes {
     | '/api/browse'
     | '/api/config'
     | '/api/health'
+    | '/api/lifecycle'
+    | '/api/tailscale'
     | '/api/attachments/$id'
     | '/api/attachments/upload'
     | '/api/attachments/$id/raw'
@@ -163,6 +183,8 @@ export interface FileRouteTypes {
     | '/api/browse'
     | '/api/config'
     | '/api/health'
+    | '/api/lifecycle'
+    | '/api/tailscale'
     | '/api/attachments/$id'
     | '/api/attachments/upload'
     | '/api/attachments/$id/raw'
@@ -178,6 +200,8 @@ export interface FileRouteTypes {
     | '/api/browse'
     | '/api/config'
     | '/api/health'
+    | '/api/lifecycle'
+    | '/api/tailscale'
     | '/api/attachments/$id'
     | '/api/attachments/upload'
     | '/api/attachments/$id/raw'
@@ -194,6 +218,8 @@ export interface RootRouteChildren {
   ApiBrowseRoute: typeof ApiBrowseRoute
   ApiConfigRoute: typeof ApiConfigRoute
   ApiHealthRoute: typeof ApiHealthRoute
+  ApiLifecycleRoute: typeof ApiLifecycleRoute
+  ApiTailscaleRoute: typeof ApiTailscaleRoute
   ApiAttachmentsIdRoute: typeof ApiAttachmentsIdRouteWithChildren
   ApiAttachmentsUploadRoute: typeof ApiAttachmentsUploadRoute
 }
@@ -247,6 +273,20 @@ declare module '@tanstack/react-router' {
       path: '/'
       fullPath: '/'
       preLoaderRoute: typeof IndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/tailscale': {
+      id: '/api/tailscale'
+      path: '/api/tailscale'
+      fullPath: '/api/tailscale'
+      preLoaderRoute: typeof ApiTailscaleRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/lifecycle': {
+      id: '/api/lifecycle'
+      path: '/api/lifecycle'
+      fullPath: '/api/lifecycle'
+      preLoaderRoute: typeof ApiLifecycleRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/health': {
@@ -316,6 +356,8 @@ const rootRouteChildren: RootRouteChildren = {
   ApiBrowseRoute: ApiBrowseRoute,
   ApiConfigRoute: ApiConfigRoute,
   ApiHealthRoute: ApiHealthRoute,
+  ApiLifecycleRoute: ApiLifecycleRoute,
+  ApiTailscaleRoute: ApiTailscaleRoute,
   ApiAttachmentsIdRoute: ApiAttachmentsIdRouteWithChildren,
   ApiAttachmentsUploadRoute: ApiAttachmentsUploadRoute,
 }

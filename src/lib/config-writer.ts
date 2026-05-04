@@ -1,8 +1,10 @@
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { HlidConfig } from "../config";
+import { syncWrappers } from "../server/wrappers";
+import { APP_DIR } from "./paths";
 
-const CONFIG_PATH = resolve(process.cwd(), "hlid.config.toml");
+const CONFIG_PATH = resolve(APP_DIR, "hlid.config.toml");
 
 function tomlVal(value: unknown): string {
 	if (typeof value === "string") return JSON.stringify(value);
@@ -41,7 +43,6 @@ export function writeConfig(config: HlidConfig): void {
 	lines.push("");
 	lines.push("[server]");
 	lines.push(`port = ${tomlVal(config.server.port)}`);
-	lines.push(`host = ${tomlVal(config.server.host)}`);
 	if (config.server.tls_cert_path)
 		lines.push(`tls_cert_path = ${tomlVal(config.server.tls_cert_path)}`);
 	if (config.server.tls_key_path)
@@ -50,6 +51,8 @@ export function writeConfig(config: HlidConfig): void {
 		lines.push(`tls_proxy_port = ${tomlVal(config.server.tls_proxy_port)}`);
 	if (config.server.local_network_access)
 		lines.push(`local_network_access = true`);
+	if (config.server.allow_external_agents)
+		lines.push(`allow_external_agents = true`);
 
 	lines.push("");
 	lines.push("[claude]");
@@ -81,4 +84,5 @@ export function writeConfig(config: HlidConfig): void {
 	}
 
 	writeFileSync(CONFIG_PATH, `${lines.join("\n")}\n`, "utf-8");
+	syncWrappers(config.agents ?? []);
 }

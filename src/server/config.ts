@@ -3,8 +3,9 @@ import { resolve } from "node:path";
 import { parse } from "smol-toml";
 import type { HlidConfig } from "../config";
 import { HlidConfigSchema } from "../config";
+import { APP_DIR } from "../lib/paths";
 
-const CONFIG_PATH = resolve(process.cwd(), "hlid.config.toml");
+const CONFIG_PATH = resolve(APP_DIR, "hlid.config.toml");
 
 export function loadConfig(): HlidConfig {
 	try {

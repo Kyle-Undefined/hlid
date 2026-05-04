@@ -1,13 +1,61 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readdir, rmdir, unlink, writeFile } from "node:fs/promises";
+import { realpathSync } from "node:fs";
+import {
+	mkdir,
+	readdir,
+	readFile,
+	rmdir,
+	unlink,
+	writeFile,
+} from "node:fs/promises";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import type { HlidConfig } from "../config";
 import * as db from "../db";
+import { expandTilde, pathStartsWith, samePath } from "../lib/paths";
+
+function resolveRegisteredAgent(
+	config: HlidConfig,
+	requested: string,
+): string | null {
+	let real: string;
+	try {
+		real = realpathSync(resolve(expandTilde(requested)));
+	} catch {
+		return null;
+	}
+	for (const a of config.agents ?? []) {
+		try {
+			const candidate = realpathSync(resolve(expandTilde(a.path)));
+			if (samePath(candidate, real)) return real;
+		} catch {
+			// skip missing
+		}
+	}
+	return null;
+}
+
+async function checkGitignore(
+	agentRoot: string,
+): Promise<{ has_gitignore: boolean; covers_hlid: boolean }> {
+	try {
+		const text = await readFile(join(agentRoot, ".gitignore"), "utf-8");
+		const covers = text
+			.split("\n")
+			.map((l) => l.trim())
+			.some(
+				(l) =>
+					l === ".hlid" || l === ".hlid/" || l === "/.hlid" || l === "/.hlid/",
+			);
+		return { has_gitignore: true, covers_hlid: covers };
+	} catch {
+		return { has_gitignore: false, covers_hlid: false };
+	}
+}
 
 const FILENAME_SAFE = /[^a-zA-Z0-9._-]+/g;
 
 // Sniff MIME type from first 12 bytes of file content.
-// Only covers binary types where spoofing is meaningful — text/* types are safe with nosniff.
+// Only covers binary types where spoofing is meaningful. text/* types are safe with nosniff.
 function sniffMime(buf: Buffer): string | null {
 	if (buf.length < 4) return null;
 	if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47)
@@ -39,9 +87,7 @@ function sanitizeFilename(name: string): string {
 }
 
 function ensureWithin(parent: string, child: string): void {
-	const p = resolve(parent);
-	const c = resolve(child);
-	if (c !== p && !c.startsWith(`${p}/`)) {
+	if (!pathStartsWith(parent, child)) {
 		throw new Error("path escapes allowed root");
 	}
 }
@@ -78,6 +124,7 @@ export type UploadResult = {
 	size_bytes: number;
 	sha256: string;
 	created_at: number;
+	gitignore_suggestion?: { agent_root: string; missing_entry: ".hlid/" };
 };
 
 export async function handleUpload(
@@ -127,8 +174,19 @@ export async function handleUpload(
 	const kind: db.AttachmentKind = "ephemeral";
 
 	const sub = sessionIdStr ? sanitizeFilename(sessionIdStr) : "_unsessioned";
-	const targetDir = resolve(vaultRoot, ".hlid", "attachments", sub);
-	ensureWithin(vaultRoot, targetDir);
+
+	const agentCwdField = form.get("agent_cwd");
+	const agentCwdRaw =
+		typeof agentCwdField === "string" && agentCwdField.length > 0
+			? agentCwdField
+			: null;
+	const agentRoot = agentCwdRaw
+		? resolveRegisteredAgent(config, agentCwdRaw)
+		: null;
+
+	const storageRoot = agentRoot ?? vaultRoot;
+	const targetDir = resolve(storageRoot, ".hlid", "attachments", sub);
+	ensureWithin(storageRoot, targetDir);
 	await mkdir(targetDir, { recursive: true });
 
 	const buf = Buffer.from(await file.arrayBuffer());
@@ -161,6 +219,14 @@ export async function handleUpload(
 		sha256,
 	});
 
+	let gitignoreSuggestion: UploadResult["gitignore_suggestion"];
+	if (agentRoot) {
+		const gi = await checkGitignore(agentRoot);
+		if (!gi.covers_hlid) {
+			gitignoreSuggestion = { agent_root: agentRoot, missing_entry: ".hlid/" };
+		}
+	}
+
 	const result: UploadResult = {
 		id,
 		session_id: sessionIdStr,
@@ -171,6 +237,9 @@ export async function handleUpload(
 		size_bytes: buf.byteLength,
 		sha256,
 		created_at: Math.floor(Date.now() / 1000),
+		...(gitignoreSuggestion
+			? { gitignore_suggestion: gitignoreSuggestion }
+			: {}),
 	};
 	onUploaded?.(id, kind);
 	return Response.json(result);

@@ -420,7 +420,7 @@ function AttachmentsPage() {
 											{r.mime}
 										</td>
 										<td className="px-3 py-2 font-mono text-muted-foreground/60 truncate">
-											{r.session_id ? r.session_id.slice(0, 12) : "—"}
+											{r.session_id ? r.session_id.slice(0, 12) : "?"}
 										</td>
 										<td className="px-3 py-2 text-muted-foreground/70 tabular-nums">
 											{formatDate(r.created_at)}

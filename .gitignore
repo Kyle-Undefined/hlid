@@ -17,3 +17,5 @@ hlid.db-*
 logs/
 hlid.config.toml
 .vscode
+src/server/embedded-client.ts
+build

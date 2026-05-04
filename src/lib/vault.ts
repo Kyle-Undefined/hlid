@@ -12,6 +12,7 @@ import {
 	type ProjectStatus,
 	type StatusVocabulary,
 } from "#/lib/classify";
+import { pathStartsWith } from "./paths";
 
 export type { ProjectStatus, StatusVocabulary };
 export { classifyStatus };
@@ -82,10 +83,10 @@ function assertContained(base: string, joined: string): void {
 	try {
 		real = realpathSync(joined);
 	} catch {
-		// Path doesn't exist yet — check the join result directly
+		// Path doesn't exist yet, check the join result directly
 		real = resolve(joined);
 	}
-	if (real !== base && !real.startsWith(base + sep)) {
+	if (!pathStartsWith(base, real)) {
 		throw new Error("Access denied: path escapes vault");
 	}
 }
@@ -96,7 +97,7 @@ export function scanProjects(
 	vocab: StatusVocabulary,
 ): Project[] {
 	const base = resolve(vaultPath);
-	const dir = join(base, projectsFolder);
+	const dir = resolve(base, projectsFolder);
 	assertContained(base, dir);
 	let entries: string[];
 	try {
@@ -250,7 +251,7 @@ export function scanSkills(
 	hideIndex = true,
 ): { skills: Skill[]; sectionOrder: string[] } {
 	const base = resolve(vaultPath);
-	const dir = join(base, skillsFolder);
+	const dir = resolve(base, skillsFolder);
 	assertContained(base, dir);
 	let entries: string[];
 	try {
@@ -268,7 +269,7 @@ export function scanSkills(
 			const stat = lstatSync(full);
 			if (stat.isSymbolicLink()) continue;
 			if (stat.isDirectory()) {
-				// skill folder — find the .md file directly inside (one level only)
+				// skill folder, find the .md file directly inside (one level only)
 				const inner = readdirSync(full).filter((f) => f.endsWith(".md"));
 				// prefer file matching folder name, else first .md
 				const match =
@@ -373,7 +374,7 @@ export function scanMemory(
 	memoryFolder: string,
 ): MemoryFile[] {
 	const base = resolve(vaultPath);
-	const dir = join(base, memoryFolder);
+	const dir = resolve(base, memoryFolder);
 	assertContained(base, dir);
 	return walkMd(dir, dir);
 }
@@ -386,9 +387,7 @@ export function setProjectStatus(
 ): void {
 	const baseDir = resolve(vaultPath, projectsFolder);
 	const target = resolve(baseDir, file);
-	if (!target.startsWith(baseDir + sep)) {
-		throw new Error("Access denied");
-	}
+	assertContained(baseDir, target);
 	const raw = readFileSync(target, "utf-8");
 	const parsed = matter(raw);
 	parsed.data.status = newStatus;

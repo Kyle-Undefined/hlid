@@ -1,12 +1,41 @@
 import { existsSync, realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import { delimiter, join, resolve } from "node:path";
 import type { McpServerStatus } from "@anthropic-ai/claude-agent-sdk";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { HlidConfig } from "../config";
 import * as db from "../db";
+import {
+	expandTilde,
+	parseWslUnc,
+	pathStartsWith,
+	samePath,
+	toLogical,
+} from "../lib/paths";
+import { loadConfig } from "./config";
 import type { ChatAttachment, ServerMessage } from "./protocol";
+import { wrapperPathForAgent, writeWrapper } from "./wrappers";
+
+function computeAllowedAgentRealPaths(config: HlidConfig): string[] {
+	const paths: string[] = [];
+	for (const agent of config.agents ?? []) {
+		try {
+			paths.push(realpathSync(resolve(expandTilde(agent.path))));
+		} catch {
+			// agent dir missing, skip. Will be rejected at use site.
+		}
+	}
+	return paths;
+}
+
+function isAllowedAgentPath(allowed: string[], candidate: string): boolean {
+	return allowed.some((p) => samePath(p, candidate));
+}
 
 function resolveClaudeExecutable(): string | undefined {
+	// Explicit override always wins
+	const env = process.env.HLID_CLAUDE_EXE;
+	if (env && existsSync(env)) return env;
+
 	// On linux x64, SDK prefers musl binary but WSL2/glibc systems can't run it.
 	// Fall back to glibc variant if musl libc is absent.
 	if (process.platform === "linux" && process.arch === "x64") {
@@ -19,6 +48,24 @@ function resolveClaudeExecutable(): string | undefined {
 			if (existsSync(glibcBin)) return glibcBin;
 		}
 	}
+
+	// On Windows the SDK has no native binary package on npm. Find the standalone
+	// Claude Code CLI on PATH (or in the common per-user install dir).
+	if (process.platform === "win32") {
+		const candidates: string[] = [];
+		const pathDirs = (process.env.PATH ?? "").split(delimiter);
+		for (const dir of pathDirs) {
+			if (!dir) continue;
+			candidates.push(join(dir, "claude.exe"));
+			candidates.push(join(dir, "claude.cmd"));
+		}
+		const home = process.env.USERPROFILE;
+		if (home) candidates.push(join(home, ".local", "bin", "claude.exe"));
+		for (const c of candidates) {
+			if (existsSync(c)) return c;
+		}
+	}
+
 	return undefined;
 }
 
@@ -51,6 +98,8 @@ export class SessionManager {
 	private lastMcpStatus: McpServerStatus[] | null = null;
 	private probing = false;
 	private agentCwd: string | undefined;
+	private agentMode: "cwd" | "context" = "cwd";
+	private allowedAgentRealPaths: string[] = [];
 
 	constructor(config: HlidConfig) {
 		this.model = config.claude.model;
@@ -59,6 +108,7 @@ export class SessionManager {
 		this.vaultPath = config.vault.path || process.env.HOME || "/";
 		this.permissionMode = config.claude.permission_mode;
 		this.claudeExecutable = resolveClaudeExecutable();
+		this.allowedAgentRealPaths = computeAllowedAgentRealPaths(config);
 	}
 
 	reinitialize(config: HlidConfig): void {
@@ -69,6 +119,7 @@ export class SessionManager {
 		this.vaultPath = config.vault.path || process.env.HOME || "/";
 		this.permissionMode = config.claude.permission_mode;
 		this.claudeExecutable = resolveClaudeExecutable();
+		this.allowedAgentRealPaths = computeAllowedAgentRealPaths(config);
 		this.history = [];
 		this.state = "idle";
 		this.currentSessionId = null;
@@ -172,6 +223,7 @@ export class SessionManager {
 		this.currentSessionId = null;
 		this.messageSeq = 0;
 		this.agentCwd = undefined;
+		this.agentMode = "cwd";
 		db.clearCurrentSessionId().catch((e) => {
 			console.error("[db] clearCurrentSessionId failed:", e);
 			void db.appendLog("error", "db", "clearCurrentSessionId failed", {
@@ -203,7 +255,7 @@ export class SessionManager {
 			return;
 		}
 
-		// Set running immediately — prevents TOCTOU from concurrent chat messages
+		// Set running immediately, prevents TOCTOU from concurrent chat messages
 		this.state = "running";
 		this.abortController = new AbortController();
 		emit({ type: "status", state: "running", model: this.model });
@@ -211,6 +263,7 @@ export class SessionManager {
 		// Switch or initialize session context
 		if (sessionId && sessionId !== this.currentSessionId) {
 			this.agentCwd = undefined;
+			this.agentMode = "cwd";
 			const [prior, savedAgentCwd] = await Promise.all([
 				db.getSessionMessages(sessionId),
 				db.getSessionAgentCwd(sessionId),
@@ -221,7 +274,26 @@ export class SessionManager {
 			}));
 			this.messageSeq = prior.length;
 			this.currentSessionId = sessionId;
-			if (savedAgentCwd) this.agentCwd = savedAgentCwd;
+			if (savedAgentCwd) {
+				this.agentCwd = savedAgentCwd;
+				// Resolve mode for resumed sessions from current config.
+				try {
+					const cfg = loadConfig();
+					const matched = (cfg.agents ?? []).find((a) => {
+						try {
+							return samePath(
+								realpathSync(resolve(expandTilde(a.path))),
+								savedAgentCwd,
+							);
+						} catch {
+							return false;
+						}
+					});
+					if (matched?.mode === "context") this.agentMode = "context";
+				} catch {
+					// fall back to cwd mode
+				}
+			}
 			db.setCurrentSessionId(sessionId).catch((e) => {
 				console.error("[db] setCurrentSessionId failed:", e);
 				void db.appendLog("error", "db", "setCurrentSessionId failed", {
@@ -230,16 +302,35 @@ export class SessionManager {
 			});
 		}
 
-		// Set agent cwd for first message of an agent session (in-memory only here)
+		// Set agent dir + mode on first message of an agent session (in-memory).
+		// Registration is gated by allow_external_agents at save time; here we
+		// just confirm the path still matches a registered agent before locking
+		// it onto the session. Mode is locked once and survives until session end.
 		if (agentCwd && !this.agentCwd) {
 			try {
-				const realAgent = realpathSync(agentCwd);
-				const realVault = realpathSync(this.vaultPath);
-				if (realAgent.startsWith(`${realVault}/`)) {
+				this.allowedAgentRealPaths = computeAllowedAgentRealPaths(loadConfig());
+				const realAgent = realpathSync(expandTilde(agentCwd));
+				if (isAllowedAgentPath(this.allowedAgentRealPaths, realAgent)) {
 					this.agentCwd = realAgent;
+					try {
+						const cfg = loadConfig();
+						const matched = (cfg.agents ?? []).find((a) => {
+							try {
+								return samePath(
+									realpathSync(resolve(expandTilde(a.path))),
+									realAgent,
+								);
+							} catch {
+								return false;
+							}
+						});
+						this.agentMode = matched?.mode === "context" ? "context" : "cwd";
+					} catch {
+						this.agentMode = "cwd";
+					}
 				}
 			} catch {
-				// path doesn't exist or symlink cycle — deny
+				// path doesn't exist or symlink cycle, deny
 			}
 		}
 
@@ -272,26 +363,50 @@ export class SessionManager {
 			// For vault skills: skillContext is the absolute file path.
 			// Validate it stays within the vault before interpolating into the prompt.
 			// For Claude skills (skillContext absent): message starts with '/' and CLI handles
-			// the slash command natively from ~/.claude/skills/ — keep the slash intact.
+			// the slash command natively from ~/.claude/skills/. Keep the slash intact.
 			const vaultRoot = resolve(this.vaultPath);
+			let vaultRootReal: string;
+			try {
+				vaultRootReal = realpathSync(vaultRoot);
+			} catch {
+				vaultRootReal = vaultRoot;
+			}
 			const safeSkillContext = (() => {
 				if (!skillContext) return undefined;
 				const p = resolve(skillContext);
-				return p.startsWith(`${vaultRoot}/`) ? skillContext : undefined;
+				return pathStartsWith(vaultRoot, p) ? skillContext : undefined;
 			})();
 			const safeAttachments = (attachments ?? []).filter((a) => {
-				const p = resolve(a.path);
-				return p.startsWith(`${vaultRoot}/`);
+				let real: string;
+				try {
+					real = realpathSync(a.path);
+				} catch {
+					return false;
+				}
+				if (pathStartsWith(vaultRootReal, real)) return true;
+				for (const root of this.allowedAgentRealPaths) {
+					if (pathStartsWith(root, real)) return true;
+				}
+				return false;
 			});
 			const attachmentBlock =
 				safeAttachments.length > 0
 					? `Attachments (read with the Read tool when relevant):\n${safeAttachments
-							.map((a) => `- ${a.path} (${a.mime})`)
+							.map((a) => `- ${toLogical(a.path)} (${a.mime})`)
 							.join("\n")}\n\n`
 					: "";
+			// Context-mode persona preamble: only on the first turn, and only when
+			// CLAUDE.md actually exists at the agent dir.
+			const personaBlock =
+				this.agentMode === "context" &&
+				this.agentCwd &&
+				this.history.length === 0 &&
+				existsSync(join(this.agentCwd, "CLAUDE.md"))
+					? `Please read \`${toLogical(this.agentCwd)}/CLAUDE.md\` and adopt its persona/instructions for this conversation.\n\n`
+					: "";
 			const claudeMessage = safeSkillContext
-				? `${attachmentBlock}Please read the skill file at \`${safeSkillContext}\` and follow its instructions.\n\nUser: ${userMessage || "(no additional input)"}`
-				: `${attachmentBlock}${userMessage}`;
+				? `${personaBlock}${attachmentBlock}Please read the skill file at \`${toLogical(safeSkillContext)}\` and follow its instructions.\n\nUser: ${userMessage || "(no additional input)"}`
+				: `${personaBlock}${attachmentBlock}${userMessage}`;
 			const prompt = this.buildPrompt(claudeMessage);
 			this.history.push({ role: "user", text: claudeMessage });
 			const userSeq = this.messageSeq++;
@@ -306,20 +421,61 @@ export class SessionManager {
 				}
 			}
 
-			const activeCwd = this.agentCwd ?? this.vaultPath;
+			const activeCwd =
+				this.agentMode === "cwd" && this.agentCwd
+					? this.agentCwd
+					: this.vaultPath;
+			// Build additionalDirectories so Claude can read attachments stored
+			// under agents other than the current cwd. Include vault when agent
+			// cwd is set (existing behavior) plus any registered agent root that
+			// has an attachment referenced this turn. Context mode also needs the
+			// agent dir on this list so CLAUDE.md is readable from the vault cwd.
+			const extraDirs = new Set<string>();
+			if (this.agentMode === "cwd" && this.agentCwd)
+				extraDirs.add(resolve(this.vaultPath));
+			if (this.agentMode === "context" && this.agentCwd)
+				extraDirs.add(this.agentCwd);
+			const activeCwdReal = resolve(activeCwd);
+			for (const a of safeAttachments) {
+				const p = resolve(a.path);
+				for (const root of this.allowedAgentRealPaths) {
+					if (!samePath(root, activeCwdReal) && pathStartsWith(root, p)) {
+						extraDirs.add(root);
+					}
+				}
+			}
+			// WSL agents run Claude inside Linux via a generated wrapper .cmd that
+			// invokes `wsl.exe -d <distro> --cd <posix> -- claude`. Native paths use
+			// the standard Windows-side resolution. Selection is per-session based
+			// on the active cwd's form.
+			const wslParsed = parseWslUnc(activeCwd);
+			let executable = this.claudeExecutable;
+			if (wslParsed) {
+				const wrapper = wrapperPathForAgent(activeCwd);
+				if (existsSync(wrapper)) {
+					executable = wrapper;
+				} else {
+					// Defensive: regenerate if config-writer never ran or file was
+					// removed manually. Falls back to default exe on failure.
+					const written = writeWrapper(activeCwd);
+					if (written) executable = written;
+				}
+			}
 			const conversation = query({
 				prompt,
 				options: {
 					cwd: activeCwd,
-					...(this.agentCwd
-						? { additionalDirectories: [resolve(this.vaultPath)] }
+					...(extraDirs.size > 0
+						? {
+								additionalDirectories: Array.from(extraDirs).map(toLogical),
+							}
 						: {}),
 					abortController: this.abortController,
 					permissionMode: this.permissionMode,
 					effort: this.effort,
 					...(this.maxTurns !== undefined && { maxTurns: this.maxTurns }),
-					...(this.claudeExecutable !== undefined && {
-						pathToClaudeCodeExecutable: this.claudeExecutable,
+					...(executable !== undefined && {
+						pathToClaudeCodeExecutable: executable,
 					}),
 					allowDangerouslySkipPermissions:
 						this.permissionMode === "bypassPermissions",
@@ -432,7 +588,7 @@ export class SessionManager {
 						utilization: info.utilization,
 						resetsAt: info.resetsAt,
 					});
-					// Persist for usage windows display — skip if utilization is null
+					// Persist for usage windows display, skip if utilization is null
 					// (proxy server writes the authoritative value from API response headers)
 					if (info.utilization != null) {
 						const settingsKey =
@@ -462,8 +618,8 @@ export class SessionManager {
 						context_window: primaryModel?.contextWindow ?? null,
 						stop_reason: message.stop_reason ?? null,
 					};
-					// Slash commands (e.g. /triage-inbox) produce no streaming text —
-					// their output lands in message.result instead of assistant chunks.
+					// Slash commands (e.g. /triage-inbox) produce no streaming text.
+					// Their output lands in message.result instead of assistant chunks.
 					if (
 						!assistantText &&
 						message.subtype === "success" &&
@@ -537,7 +693,7 @@ export class SessionManager {
 			});
 			emit({ type: "error", message: msg });
 		} finally {
-			// Persist any remaining assistant text (error/abort path — result block clears it on success)
+			// Persist any remaining assistant text (error/abort path. Result block clears it on success)
 			if (assistantText) {
 				if (sessionId) {
 					const assistantSeq = this.messageSeq++;

@@ -15,6 +15,10 @@ type ServerConfig = {
 	local_network_access?: boolean;
 };
 
+function bindHost(allowLocalNetwork: boolean): string {
+	return allowLocalNetwork ? "0.0.0.0" : "127.0.0.1";
+}
+
 function loadServerConfig(): ServerConfig {
 	const configPath = resolve(process.cwd(), "hlid.config.toml");
 	if (!existsSync(configPath)) return {};
@@ -74,7 +78,7 @@ function ipGatePlugin(allowLocalNetwork: boolean): Plugin {
 	};
 }
 
-// TLS only when HLID_TLS=1 — cert is valid for Tailscale host, not localhost.
+// TLS only when HLID_TLS=1. Cert is valid for Tailscale host, not localhost.
 const serverCfg = loadServerConfig();
 const tls = /^1|true$/i.test(process.env.HLID_TLS ?? "")
 	? loadTls(serverCfg)
@@ -85,11 +89,13 @@ const config = defineConfig({
 	plugins: [
 		ipGatePlugin(serverCfg.local_network_access ?? false),
 		tailwindcss(),
-		tanstackStart(),
+		tanstackStart({
+			spa: { enabled: true, prerender: { enabled: false } },
+		}),
 		viteReact(),
 	],
 	server: {
-		host: "0.0.0.0",
+		host: bindHost(serverCfg.local_network_access ?? false),
 		allowedHosts: true,
 		...(tls
 			? {

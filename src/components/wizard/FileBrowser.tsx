@@ -3,26 +3,51 @@ import { useEffect, useState } from "react";
 
 type Entry = { name: string; isDirectory: boolean };
 
+function isWindowsPath(path: string): boolean {
+	return /^[a-zA-Z]:[\\/]/.test(path) || path.startsWith("\\\\");
+}
+
 function parentPath(path: string): string {
+	if (isWindowsPath(path)) {
+		const trimmed = path.replace(/[\\/]+$/, "");
+		const idx = Math.max(trimmed.lastIndexOf("\\"), trimmed.lastIndexOf("/"));
+		if (idx <= 2) return `${trimmed.slice(0, 2)}\\`;
+		return trimmed.slice(0, idx);
+	}
 	const parts = path.replace(/\/$/, "").split("/");
 	parts.pop();
 	return parts.join("/") || "/";
 }
 
 function joinPath(base: string, name: string): string {
+	if (isWindowsPath(base)) {
+		const sep = base.endsWith("\\") || base.endsWith("/") ? "" : "\\";
+		return `${base}${sep}${name}`;
+	}
 	return base === "/" ? `/${name}` : `${base}/${name}`;
 }
 
 type Props = {
 	initialPath?: string;
 	extensions?: string[];
+	external?: boolean;
 	onSelect: (path: string) => void;
 };
 
-export function FileBrowser({ initialPath, extensions, onSelect }: Props) {
-	const initialDir = initialPath?.includes("/")
-		? initialPath.substring(0, initialPath.lastIndexOf("/"))
-		: (initialPath ?? "");
+export function FileBrowser({
+	initialPath,
+	extensions,
+	external,
+	onSelect,
+}: Props) {
+	const initialDir = (() => {
+		if (!initialPath) return "";
+		const lastSlash = Math.max(
+			initialPath.lastIndexOf("/"),
+			initialPath.lastIndexOf("\\"),
+		);
+		return lastSlash > 0 ? initialPath.substring(0, lastSlash) : "";
+	})();
 
 	const [currentPath, setCurrentPath] = useState(initialDir);
 	const [entries, setEntries] = useState<Entry[]>([]);
@@ -33,7 +58,9 @@ export function FileBrowser({ initialPath, extensions, onSelect }: Props) {
 		const controller = new AbortController();
 		setLoading(true);
 		setError(null);
-		fetch(`/api/browse?path=${encodeURIComponent(currentPath || "~")}`, {
+		const params = new URLSearchParams({ path: currentPath || "~" });
+		if (external) params.set("external", "1");
+		fetch(`/api/browse?${params.toString()}`, {
 			signal: controller.signal,
 		})
 			.then((r) => {
@@ -61,7 +88,7 @@ export function FileBrowser({ initialPath, extensions, onSelect }: Props) {
 			.finally(() => setLoading(false));
 
 		return () => controller.abort();
-	}, [currentPath, extensions]);
+	}, [currentPath, extensions, external]);
 
 	const navigate = (name: string) =>
 		setCurrentPath(joinPath(currentPath, name));

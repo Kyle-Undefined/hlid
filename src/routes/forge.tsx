@@ -170,10 +170,15 @@ const clearLogsFn = createServerFn({ method: "POST" }).handler(async () => {
 	return { ok: true };
 });
 
+const getCwdFn = createServerFn({ method: "GET" }).handler(() => process.cwd());
+
 // ─── route ────────────────────────────────────────────────────────────────────
 
 export const Route = createFileRoute("/forge")({
-	loader: () => getConfig(),
+	loader: async () => {
+		const [config, cwd] = await Promise.all([getConfig(), getCwdFn()]);
+		return { ...config, cwd };
+	},
 	component: SettingsPage,
 });
 
@@ -373,11 +378,13 @@ function FilePathField({
 	onChange,
 	placeholder,
 	extensions,
+	external,
 }: {
 	value: string;
 	onChange: (v: string) => void;
 	placeholder?: string;
 	extensions?: string[];
+	external?: boolean;
 }) {
 	const [open, setOpen] = useState(false);
 
@@ -416,6 +423,7 @@ function FilePathField({
 						<FileBrowser
 							initialPath={value || undefined}
 							extensions={extensions}
+							external={external}
 							onSelect={(path) => {
 								onChange(path);
 								setOpen(false);
@@ -747,7 +755,7 @@ function McpSection({ vaultPath }: { vaultPath: string }) {
 					<div key={s.name} className="px-4 py-4 space-y-3">
 						<div className="flex items-center justify-between">
 							<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
-								Edit — {s.name}
+								Edit: {s.name}
 							</div>
 							<select
 								value={editType}
@@ -1324,6 +1332,357 @@ function EventLogSection() {
 	);
 }
 
+// ─── system / lifecycle ───────────────────────────────────────────────────────
+
+type AutostartState = { enabled: boolean; supported: boolean; path?: string };
+
+function SystemSection() {
+	const [autostart, setAutostart] = useState<AutostartState | null>(null);
+	const [busy, setBusy] = useState<null | "toggle" | "shutdown">(null);
+	const [error, setError] = useState<string | null>(null);
+	const [confirmShutdown, setConfirmShutdown] = useState(false);
+
+	const refresh = useCallback(async () => {
+		try {
+			const res = await fetch("/api/lifecycle");
+			const j = (await res.json()) as {
+				ok: boolean;
+				data?: AutostartState;
+			};
+			if (j.ok && j.data) setAutostart(j.data);
+		} catch (e) {
+			console.error("[lifecycle] Failed to fetch status:", e);
+		}
+	}, []);
+
+	useEffect(() => {
+		void refresh();
+	}, [refresh]);
+
+	async function post(action: "install" | "uninstall" | "shutdown") {
+		const res = await fetch("/api/lifecycle", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ action }),
+		});
+		return (await res.json()) as { ok: boolean; error?: string };
+	}
+
+	async function toggleAutostart() {
+		if (!autostart?.supported) return;
+		setError(null);
+		setBusy("toggle");
+		const action = autostart.enabled ? "uninstall" : "install";
+		const r = await post(action).catch(
+			(e) => ({ ok: false, error: String(e) }) as const,
+		);
+		if (!r.ok) setError(r.error ?? "Failed");
+		await refresh();
+		setBusy(null);
+	}
+
+	async function doShutdown() {
+		setError(null);
+		setBusy("shutdown");
+		const r = await post("shutdown").catch(
+			(e) => ({ ok: false, error: String(e) }) as const,
+		);
+		if (!r.ok) {
+			setError(r.error ?? "Shutdown failed");
+			setBusy(null);
+		}
+	}
+
+	const supported = autostart?.supported ?? false;
+	const enabled = autostart?.enabled ?? false;
+
+	return (
+		<Section title="System">
+			<Field
+				label="Launch on login"
+				hint={
+					autostart === null
+						? "checking…"
+						: !supported
+							? "Windows only"
+							: enabled
+								? "starts in background when you sign in"
+								: "off; Hlid won't start automatically"
+				}
+			>
+				<label className="flex items-center gap-2 cursor-pointer">
+					<input
+						type="checkbox"
+						checked={enabled}
+						disabled={!supported || busy === "toggle"}
+						onChange={() => {
+							void toggleAutostart();
+						}}
+						className="accent-primary w-3.5 h-3.5"
+					/>
+					<span className="text-xs text-muted-foreground">
+						{enabled ? "on" : "off"}
+					</span>
+				</label>
+			</Field>
+			<Field label="Shutdown" hint="exit Hlid completely">
+				{confirmShutdown ? (
+					<div className="flex items-center gap-2 shrink-0">
+						<span className="text-[9px] text-muted-foreground/50">
+							shutdown?
+						</span>
+						<button
+							type="button"
+							onClick={() => {
+								setConfirmShutdown(false);
+								void doShutdown();
+							}}
+							className="text-[9px] tracking-widest text-destructive/60 hover:text-destructive uppercase transition-colors"
+						>
+							confirm
+						</button>
+						<button
+							type="button"
+							onClick={() => setConfirmShutdown(false)}
+							className="text-[9px] tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 uppercase transition-colors"
+						>
+							cancel
+						</button>
+					</div>
+				) : (
+					<button
+						type="button"
+						onClick={() => setConfirmShutdown(true)}
+						disabled={busy !== null}
+						className="text-[10px] tracking-widest px-3 py-1.5 border border-destructive/40 text-destructive/80 hover:text-destructive hover:bg-destructive/10 transition-colors uppercase disabled:opacity-40"
+					>
+						{busy === "shutdown" ? "STOPPING…" : "SHUTDOWN"}
+					</button>
+				)}
+			</Field>
+			{error && (
+				<div className="px-4 py-2 text-xs text-destructive/80">{error}</div>
+			)}
+		</Section>
+	);
+}
+
+// ─── tailscale ────────────────────────────────────────────────────────────────
+
+type TailscaleStatus = {
+	installed: boolean;
+	state:
+		| "Running"
+		| "NeedsLogin"
+		| "Stopped"
+		| "Starting"
+		| "NoState"
+		| "Unknown"
+		| null;
+	magicDNS: string | null;
+	ips: string[];
+	error?: string;
+};
+
+function tailscaleSetupPrompt(cwd: string) {
+	return `Help me set up Tailscale for hlid. My current working directory is \`${cwd}\`. Detect if Tailscale is installed and walk me through install for my OS if not. Then help me run \`tailscale up\` to authenticate. Ask me where to store the TLS certs, then run \`tailscale cert <my-magicdns-hostname>\` there. Update tls_cert_path and tls_key_path in hlid.config.toml. When done, tell me to restart hlid.`;
+}
+
+function StatusDot({ ok }: { ok: boolean | null }) {
+	const cls =
+		ok === true
+			? "bg-emerald-500"
+			: ok === false
+				? "bg-destructive"
+				: "bg-muted-foreground/40";
+	return <span className={`inline-block w-2 h-2 rounded-full ${cls}`} />;
+}
+
+function TailscaleSection({
+	tlsProxyPort,
+	setTlsProxyPort,
+	tlsCertPath,
+	setTlsCertPath,
+	tlsKeyPath,
+	setTlsKeyPath,
+	localNetworkAccess,
+	cwd,
+}: {
+	tlsProxyPort: string;
+	setTlsProxyPort: (v: string) => void;
+	tlsCertPath: string;
+	setTlsCertPath: (v: string) => void;
+	tlsKeyPath: string;
+	setTlsKeyPath: (v: string) => void;
+	localNetworkAccess: boolean;
+	cwd: string;
+}) {
+	const router = useRouter();
+	const [status, setStatus] = useState<TailscaleStatus | null>(null);
+	const [checking, setChecking] = useState(false);
+
+	const refresh = useCallback(async () => {
+		setChecking(true);
+		try {
+			const res = await fetch("/api/tailscale");
+			if (res.ok) setStatus((await res.json()) as TailscaleStatus);
+		} catch (e) {
+			console.error("[tailscale] Failed to fetch status:", e);
+		} finally {
+			setChecking(false);
+		}
+	}, []);
+
+	useEffect(() => {
+		void refresh();
+	}, [refresh]);
+
+	const installed = status?.installed ?? null;
+	const authed = status?.state === "Running" ? true : status ? false : null;
+	const certsConfigured = Boolean(tlsCertPath && tlsKeyPath);
+	const reachable =
+		status?.state === "Running" &&
+		status.magicDNS &&
+		certsConfigured &&
+		localNetworkAccess;
+	const url = reachable
+		? `https://${status.magicDNS}:${Number(tlsProxyPort) || 3443}`
+		: null;
+
+	function startSetup() {
+		router.navigate({
+			to: "/raven",
+			search: { prompt: tailscaleSetupPrompt(cwd) },
+		});
+	}
+
+	return (
+		<Section title="Tailscale">
+			<Field label="Installed">
+				<div className="flex items-center gap-3">
+					<StatusDot ok={installed} />
+					<span className="text-xs text-muted-foreground">
+						{installed === null
+							? "checking…"
+							: installed
+								? "yes"
+								: "not detected"}
+					</span>
+					{installed === false && (
+						<button
+							type="button"
+							onClick={() =>
+								window.open(
+									"https://tailscale.com/download",
+									"_blank",
+									"noopener,noreferrer",
+								)
+							}
+							className="text-[10px] tracking-widest px-2 py-1 border border-border text-muted-foreground hover:bg-accent hover:text-foreground transition-colors uppercase"
+						>
+							DOWNLOAD
+						</button>
+					)}
+					<button
+						type="button"
+						onClick={() => void refresh()}
+						disabled={checking}
+						className="text-[10px] tracking-widest px-2 py-1 border border-border text-muted-foreground hover:bg-accent hover:text-foreground transition-colors uppercase disabled:opacity-40"
+					>
+						{checking ? "…" : "RECHECK"}
+					</button>
+				</div>
+			</Field>
+			{installed && (
+				<Field
+					label="Authenticated"
+					hint={
+						status?.state === "NeedsLogin"
+							? "run `tailscale up` to log in"
+							: status?.state && status.state !== "Running"
+								? `state: ${status.state}`
+								: undefined
+					}
+				>
+					<div className="flex items-center gap-3">
+						<StatusDot ok={authed} />
+						<span className="text-xs text-muted-foreground">
+							{authed === null ? "?" : authed ? "yes" : "no"}
+						</span>
+					</div>
+				</Field>
+			)}
+			{status?.magicDNS && (
+				<div className="px-4 py-3 space-y-1.5">
+					<div className="text-sm text-foreground">MagicDNS</div>
+					<div className="text-xs font-mono text-muted-foreground break-all">
+						{status.magicDNS}
+					</div>
+				</div>
+			)}
+			<Field label="TLS Cert Path">
+				<FilePathField
+					value={tlsCertPath}
+					onChange={setTlsCertPath}
+					placeholder="/path/to/cert.pem"
+					extensions={[".pem", ".crt", ".cer"]}
+					external
+				/>
+			</Field>
+			<Field label="TLS Key Path">
+				<FilePathField
+					value={tlsKeyPath}
+					onChange={setTlsKeyPath}
+					placeholder="/path/to/key.pem"
+					extensions={[".pem", ".key"]}
+					external
+				/>
+			</Field>
+			<Field label="TLS Proxy Port">
+				<TextInput
+					value={tlsProxyPort}
+					onChange={setTlsProxyPort}
+					placeholder="3443"
+					mono
+				/>
+			</Field>
+			{url && (
+				<div className="px-4 py-3 space-y-1.5">
+					<div className="text-sm text-foreground">Reachable at</div>
+					<div className="text-xs text-muted-foreground">
+						open this URL from any device on your tailnet
+					</div>
+					<a
+						href={url}
+						target="_blank"
+						rel="noopener noreferrer"
+						className="block text-xs font-mono text-primary hover:underline break-all pt-1"
+					>
+						{url}
+					</a>
+				</div>
+			)}
+			<Field
+				label="Set up with Claude"
+				hint="opens chat with a setup prompt, Claude walks you through install, auth, and cert generation"
+			>
+				<button
+					type="button"
+					onClick={startSetup}
+					className="text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:bg-accent hover:text-foreground transition-colors uppercase"
+				>
+					START
+				</button>
+			</Field>
+			{status?.error && (
+				<div className="px-4 py-2 text-xs text-destructive/80">
+					{status.error}
+				</div>
+			)}
+		</Section>
+	);
+}
+
 // ─── page ─────────────────────────────────────────────────────────────────────
 
 function SettingsPage() {
@@ -1356,7 +1715,6 @@ function SettingsPage() {
 		initial.claude.permission_mode,
 	);
 	const [port, setPort] = useState(String(initial.server.port));
-	const [host, setHost] = useState(initial.server.host);
 	const [tlsCertPath, setTlsCertPath] = useState(
 		initial.server.tls_cert_path ?? "",
 	);
@@ -1370,6 +1728,9 @@ function SettingsPage() {
 	);
 	const [localNetworkAccess, setLocalNetworkAccess] = useState(
 		initial.server.local_network_access ?? false,
+	);
+	const [allowExternalAgents, setAllowExternalAgents] = useState(
+		initial.server.allow_external_agents ?? false,
 	);
 	const [enterToSubmit, setEnterToSubmit] = useState(
 		initial.ui.enter_to_submit,
@@ -1427,11 +1788,11 @@ function SettingsPage() {
 			},
 			server: {
 				port: Number(port) || 3000,
-				host: host || "0.0.0.0",
 				tls_cert_path: tlsCertPath || undefined,
 				tls_key_path: tlsKeyPath || undefined,
 				tls_proxy_port: Number(tlsProxyPort) || 3443,
 				local_network_access: localNetworkAccess,
+				allow_external_agents: allowExternalAgents,
 			},
 			claude: {
 				model,
@@ -1494,6 +1855,62 @@ function SettingsPage() {
 	return (
 		<div className="flex flex-col h-full">
 			<div className="flex-1 overflow-auto p-5 space-y-6">
+				<SystemSection />
+
+				<Section title="Server">
+					<Field label="Port">
+						<TextInput
+							value={port}
+							onChange={setPort}
+							placeholder="3000"
+							mono
+						/>
+					</Field>
+					<Field
+						label="Local Network Access"
+						hint="binds the server on 0.0.0.0 so devices on your LAN/Tailscale can connect (default binds 127.0.0.1 only). requires restart. anyone on the network can reach the server when on."
+					>
+						<label className="flex items-center gap-2 cursor-pointer">
+							<input
+								type="checkbox"
+								checked={localNetworkAccess}
+								onChange={(e) => setLocalNetworkAccess(e.target.checked)}
+								className="accent-primary w-3.5 h-3.5"
+							/>
+							<span className="text-xs text-muted-foreground">
+								{localNetworkAccess ? "on" : "off"}
+							</span>
+						</label>
+					</Field>
+					<Field
+						label="Allow External Agents"
+						hint="register agent directories outside the vault (e.g. native WSL or Windows project paths). filesystem browse is unrestricted when on; only enable on trusted machines."
+					>
+						<label className="flex items-center gap-2 cursor-pointer">
+							<input
+								type="checkbox"
+								checked={allowExternalAgents}
+								onChange={(e) => setAllowExternalAgents(e.target.checked)}
+								className="accent-primary w-3.5 h-3.5"
+							/>
+							<span className="text-xs text-muted-foreground">
+								{allowExternalAgents ? "on" : "off"}
+							</span>
+						</label>
+					</Field>
+				</Section>
+
+				<TailscaleSection
+					tlsProxyPort={tlsProxyPort}
+					setTlsProxyPort={setTlsProxyPort}
+					tlsCertPath={tlsCertPath}
+					setTlsCertPath={setTlsCertPath}
+					tlsKeyPath={tlsKeyPath}
+					setTlsKeyPath={setTlsKeyPath}
+					localNetworkAccess={localNetworkAccess}
+					cwd={initial.cwd}
+				/>
+
 				<Section title="Session">
 					<Field
 						label="Reload session"
@@ -1904,65 +2321,6 @@ function SettingsPage() {
 							placeholder="unlimited"
 							className="w-32 sm:w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
 						/>
-					</Field>
-				</Section>
-
-				<Section title="Server">
-					<Field label="Port">
-						<TextInput
-							value={port}
-							onChange={setPort}
-							placeholder="3000"
-							mono
-						/>
-					</Field>
-					<Field label="Host">
-						<TextInput
-							value={host}
-							onChange={setHost}
-							placeholder="0.0.0.0"
-							mono
-						/>
-					</Field>
-					<Field label="TLS Cert Path">
-						<FilePathField
-							value={tlsCertPath}
-							onChange={setTlsCertPath}
-							placeholder="/path/to/cert.pem"
-							extensions={[".pem", ".crt", ".cer"]}
-						/>
-					</Field>
-					<Field label="TLS Key Path">
-						<FilePathField
-							value={tlsKeyPath}
-							onChange={setTlsKeyPath}
-							placeholder="/path/to/key.pem"
-							extensions={[".pem", ".key"]}
-						/>
-					</Field>
-					<Field label="TLS Proxy Port">
-						<TextInput
-							value={tlsProxyPort}
-							onChange={setTlsProxyPort}
-							placeholder="3443"
-							mono
-						/>
-					</Field>
-					<Field
-						label="Local Network Access"
-						hint="allows devices on the same wifi to connect without tailscale, anyone on the network can access"
-					>
-						<label className="flex items-center gap-2 cursor-pointer">
-							<input
-								type="checkbox"
-								checked={localNetworkAccess}
-								onChange={(e) => setLocalNetworkAccess(e.target.checked)}
-								className="accent-primary w-3.5 h-3.5"
-							/>
-							<span className="text-xs text-muted-foreground">
-								{localNetworkAccess ? "on" : "off"}
-							</span>
-						</label>
 					</Field>
 				</Section>
 

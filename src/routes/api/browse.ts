@@ -1,16 +1,29 @@
+import { execFileSync } from "node:child_process";
 import { readdirSync, realpathSync, statSync } from "node:fs";
-import { resolve, sep } from "node:path";
+import { homedir } from "node:os";
+import { resolve } from "node:path";
 import { createFileRoute } from "@tanstack/react-router";
 import { forbiddenResponse } from "#/lib/originGate";
+import { expandTilde, pathStartsWith } from "#/lib/paths";
 import { loadConfig } from "#/server/config";
 
 function safePath(reqPath: string, allowedRoots: string[]): string | null {
 	try {
-		const real = realpathSync(resolve(reqPath));
-		if (allowedRoots.some((r) => real === r || real.startsWith(r + sep)))
-			return real;
+		const real = realpathSync(resolve(expandTilde(reqPath)));
+		if (allowedRoots.some((r) => pathStartsWith(real, r))) return real;
 		return null;
 	} catch {
+		return null;
+	}
+}
+
+function unrestrictedPath(reqPath: string): string | null {
+	const r = resolve(expandTilde(reqPath));
+	try {
+		return realpathSync(r);
+	} catch {
+		// UNC paths like \\wsl.localhost\ are valid on Windows but realpathSync may reject them.
+		if (r.startsWith("\\\\")) return r;
 		return null;
 	}
 }
@@ -24,29 +37,71 @@ export const Route = createFileRoute("/api/browse")({
 
 				const config = loadConfig();
 				const vaultPath = config.vault?.path;
-				if (!vaultPath) {
-					return Response.json(
-						{ error: "Vault not configured" },
-						{ status: 400 },
-					);
-				}
-
-				// allowedRoots: vault path only for now — extend this list to add more dirs later
-				let vaultReal: string;
-				try {
-					vaultReal = realpathSync(vaultPath);
-					statSync(vaultReal); // must exist
-				} catch {
-					return Response.json(
-						{ error: "Vault path not accessible" },
-						{ status: 400 },
-					);
-				}
-				const allowedRoots = [vaultReal];
-
 				const url = new URL(request.url);
-				const raw = url.searchParams.get("path") ?? vaultReal;
-				const safed = safePath(raw, allowedRoots);
+
+				if (url.searchParams.get("wsl") === "1") {
+					try {
+						const raw = execFileSync(
+							"wsl",
+							["-e", "sh", "-c", "wslpath -w ~"],
+							{ encoding: "utf-8", timeout: 5000 },
+						).trim();
+						if (!raw.startsWith("\\\\")) throw new Error("unexpected");
+						return Response.json({ wslHome: raw });
+					} catch {
+						return Response.json(
+							{ error: "WSL not available" },
+							{ status: 404 },
+						);
+					}
+				}
+
+				const externalRequested = url.searchParams.get("external") === "1";
+				const externalAllowed =
+					externalRequested && config.server.allow_external_agents;
+
+				let defaultRoot: string;
+				let safed: string | null;
+				if (externalAllowed) {
+					try {
+						defaultRoot = realpathSync(homedir());
+					} catch {
+						return Response.json(
+							{ error: "Home directory not accessible" },
+							{ status: 500 },
+						);
+					}
+					const raw = url.searchParams.get("path") ?? defaultRoot;
+					safed = unrestrictedPath(raw);
+				} else {
+					// First-run / no vault: allow browsing under the user's home directory so
+					// the wizard's FolderBrowser can pick a vault before one is configured.
+					let allowedRoots: string[];
+					if (!vaultPath) {
+						try {
+							defaultRoot = realpathSync(homedir());
+						} catch {
+							return Response.json(
+								{ error: "Home directory not accessible" },
+								{ status: 500 },
+							);
+						}
+						allowedRoots = [defaultRoot];
+					} else {
+						try {
+							defaultRoot = realpathSync(expandTilde(vaultPath));
+							statSync(defaultRoot); // must exist
+						} catch {
+							return Response.json(
+								{ error: "Vault path not accessible" },
+								{ status: 400 },
+							);
+						}
+						allowedRoots = [defaultRoot];
+					}
+					const raw = url.searchParams.get("path") ?? defaultRoot;
+					safed = safePath(raw, allowedRoots);
+				}
 
 				if (!safed) {
 					return Response.json({ error: "Access denied" }, { status: 403 });

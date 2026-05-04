@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import {
 	Check,
@@ -111,10 +111,15 @@ const getCurrentSessionFn = createServerFn({ method: "GET" }).handler(
 // ─── route ───────────────────────────────────────────────────────────────────
 
 export const Route = createFileRoute("/raven")({
-	validateSearch: (search: Record<string, unknown>) => ({
-		session: typeof search.session === "string" ? search.session : undefined,
-		agent: typeof search.agent === "string" ? search.agent : undefined,
-	}),
+	validateSearch: (
+		search: Record<string, unknown>,
+	): { session?: string; agent?: string; prompt?: string } => {
+		const out: { session?: string; agent?: string; prompt?: string } = {};
+		if (typeof search.session === "string") out.session = search.session;
+		if (typeof search.agent === "string") out.agent = search.agent;
+		if (typeof search.prompt === "string") out.prompt = search.prompt;
+		return out;
+	},
 	loaderDeps: ({ search: { session, agent } }) => ({ session, agent }),
 	loader: async ({ deps: { session, agent } }) => {
 		const [config, dbSessionId, usageWindows, agentList] = await Promise.all([
@@ -227,11 +232,10 @@ function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 				},
 			];
 		case "APPEND_CHUNK":
-			return state.map((m) =>
-				m.id === action.id && m.role === "assistant"
-					? { ...m, text: m.text + action.text }
-					: m,
-			);
+			return state.map((m) => {
+				if (m.id !== action.id || m.role !== "assistant") return m;
+				return { ...m, text: m.text + action.text };
+			});
 		case "ADD_TOOL_EVENT":
 			return state.map((m) =>
 				m.id === action.id && m.role === "assistant"
@@ -536,19 +540,31 @@ function ToolBlock({ event }: { event: ToolEventMessage }) {
 					{pills.map(([k, v]) => (
 						<span
 							key={k}
-							className="text-[9px] tracking-wide border border-primary/20 text-primary/50 px-1.5 py-0.5 font-mono"
+							className="text-[9px] tracking-wide border border-primary/20 text-primary/50 px-1.5 py-0.5 font-mono break-all"
 						>
-							{k}: {String(v).slice(0, 24)}
-							{String(v).length > 24 ? "…" : ""}
+							{k}: {String(v)}
 						</span>
 					))}
 				</PrivacyMask>
 			</button>
 			{open && (
 				<PrivacyMask className="mx-3 mb-1.5 border border-[var(--tool-panel-border)] bg-[var(--tool-panel)]">
-					<pre className="text-[11px] text-primary/60 font-mono leading-relaxed p-3 overflow-auto max-h-48">
-						{JSON.stringify(event.input, null, 2)}
-					</pre>
+					<div className="text-[11px] text-primary/60 font-mono leading-relaxed p-3 overflow-auto max-h-48 space-y-1">
+						{Object.entries(event.input ?? {}).map(([k, v]) => (
+							<div key={k} className="flex gap-1.5 min-w-0">
+								<span className="text-primary/40 shrink-0">{k}:</span>
+								{typeof v === "string" ? (
+									<span className="whitespace-pre-wrap break-words min-w-0">
+										{v}
+									</span>
+								) : (
+									<span className="whitespace-pre-wrap break-words min-w-0">
+										{JSON.stringify(v, null, 2)}
+									</span>
+								)}
+							</div>
+						))}
+					</div>
 				</PrivacyMask>
 			)}
 		</div>
@@ -611,7 +627,7 @@ function PermissionCard({
 					</div>
 					<div className="text-sm text-foreground">{message.title}</div>
 					{inputPreview && (
-						<div className="mt-2 px-2 py-1.5 bg-secondary/60 border border-border font-mono text-[11px] text-foreground/80 break-all">
+						<div className="mt-2 px-2 py-1.5 bg-secondary/60 border border-border font-mono text-[11px] text-foreground/80 whitespace-pre-wrap break-words">
 							{inputPreview}
 						</div>
 					)}
@@ -875,12 +891,26 @@ function ChatPage() {
 	);
 	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
 	const [messages, dispatch] = useReducer(reducer, []);
-	const [input, setInput] = useState("");
+	const { prompt: seededPrompt } = Route.useSearch();
+	const [input, setInput] = useState(seededPrompt ?? "");
+	const navigate = useNavigate();
+	// Strip ?prompt from URL after seeding so refresh doesn't re-fill the box.
+	useEffect(() => {
+		if (seededPrompt === undefined) return;
+		navigate({
+			to: "/raven",
+			search: (prev) => ({ ...prev, prompt: undefined }),
+			replace: true,
+		});
+	}, [seededPrompt, navigate]);
 	const [pendingAttachments, setPendingAttachments] = useState<
 		ChatAttachment[]
 	>([]);
 	const [uploadingCount, setUploadingCount] = useState(0);
 	const [uploadError, setUploadError] = useState<string | null>(null);
+	const [gitignoreHint, setGitignoreHint] = useState<{
+		agent_root: string;
+	} | null>(null);
 	const [dragOver, setDragOver] = useState(false);
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const pendingIdRef = useRef<string | null>(null);
@@ -1013,7 +1043,7 @@ function ChatPage() {
 				for (const msg of wsStore.drainMessageBuffer()) {
 					handleWsMessage(msg);
 				}
-				// Sync with server — replays pending permissions in case WS didn't reconnect (SPA nav)
+				// Sync with server, replays pending permissions in case WS didn't reconnect (SPA nav)
 				wsStore.send({ type: "sync" });
 			})
 			.catch(console.error)
@@ -1076,68 +1106,88 @@ function ChatPage() {
 		el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
 	}, [input]);
 
-	const uploadFiles = useCallback(async (files: FileList | File[]) => {
-		const list = Array.from(files);
-		if (list.length === 0) return;
-		setUploadError(null);
-		setUploadingCount((c) => c + list.length);
-		try {
-			const results = await Promise.allSettled(
-				list.map(async (file) => {
-					const fd = new FormData();
-					fd.append("file", file);
-					fd.append("kind", "ephemeral");
-					fd.append("session_id", sessionIdRef.current);
-					const res = await fetch("/api/attachments/upload", {
-						method: "POST",
-						body: fd,
-					});
-					if (!res.ok) {
-						let msg = `upload failed (${res.status})`;
-						try {
-							const body = (await res.json()) as { error?: string };
-							if (body.error) msg = body.error;
-						} catch {}
-						throw new Error(`${file.name}: ${msg}`);
-					}
-					return (await res.json()) as ChatAttachment & {
-						size_bytes: number;
-					};
-				}),
-			);
-			const fulfilled = results
-				.filter(
-					(
-						r,
-					): r is PromiseFulfilledResult<
-						ChatAttachment & { size_bytes: number }
-					> => r.status === "fulfilled",
-				)
-				.map((r) => r.value);
-			const failed = results
-				.filter((r): r is PromiseRejectedResult => r.status === "rejected")
-				.map((r) =>
-					r.reason instanceof Error ? r.reason.message : "upload failed",
+	const uploadFiles = useCallback(
+		async (files: FileList | File[]) => {
+			const list = Array.from(files);
+			if (list.length === 0) return;
+			setUploadError(null);
+			setUploadingCount((c) => c + list.length);
+			try {
+				const results = await Promise.allSettled(
+					list.map(async (file) => {
+						const fd = new FormData();
+						fd.append("file", file);
+						fd.append("kind", "ephemeral");
+						fd.append("session_id", sessionIdRef.current);
+						if (agentSkillContext) fd.append("agent_cwd", agentSkillContext);
+						const res = await fetch("/api/attachments/upload", {
+							method: "POST",
+							body: fd,
+						});
+						if (!res.ok) {
+							let msg = `upload failed (${res.status})`;
+							try {
+								const body = (await res.json()) as { error?: string };
+								if (body.error) msg = body.error;
+							} catch {}
+							throw new Error(`${file.name}: ${msg}`);
+						}
+						return (await res.json()) as ChatAttachment & {
+							size_bytes: number;
+							gitignore_suggestion?: { agent_root: string };
+						};
+					}),
 				);
-			if (fulfilled.length > 0) {
-				setPendingAttachments((prev) => [
-					...prev,
-					...fulfilled.map((u) => ({
-						id: u.id,
-						path: u.path,
-						filename: u.filename,
-						mime: u.mime,
-						kind: u.kind,
-					})),
-				]);
+				const fulfilled = results
+					.filter(
+						(
+							r,
+						): r is PromiseFulfilledResult<
+							ChatAttachment & {
+								size_bytes: number;
+								gitignore_suggestion?: { agent_root: string };
+							}
+						> => r.status === "fulfilled",
+					)
+					.map((r) => r.value);
+				const suggestion = fulfilled.find(
+					(u) => u.gitignore_suggestion,
+				)?.gitignore_suggestion;
+				if (suggestion) {
+					const dismissKey = `hlid:gitignore-hint:${suggestion.agent_root}`;
+					if (
+						typeof localStorage !== "undefined" &&
+						localStorage.getItem(dismissKey) !== "dismissed"
+					) {
+						setGitignoreHint({ agent_root: suggestion.agent_root });
+					}
+				}
+				const failed = results
+					.filter((r): r is PromiseRejectedResult => r.status === "rejected")
+					.map((r) =>
+						r.reason instanceof Error ? r.reason.message : "upload failed",
+					);
+				if (fulfilled.length > 0) {
+					setPendingAttachments((prev) => [
+						...prev,
+						...fulfilled.map((u) => ({
+							id: u.id,
+							path: u.path,
+							filename: u.filename,
+							mime: u.mime,
+							kind: u.kind,
+						})),
+					]);
+				}
+				if (failed.length > 0) setUploadError(failed.join("; "));
+			} catch (err) {
+				setUploadError(err instanceof Error ? err.message : "upload failed");
+			} finally {
+				setUploadingCount((c) => Math.max(0, c - list.length));
 			}
-			if (failed.length > 0) setUploadError(failed.join("; "));
-		} catch (err) {
-			setUploadError(err instanceof Error ? err.message : "upload failed");
-		} finally {
-			setUploadingCount((c) => Math.max(0, c - list.length));
-		}
-	}, []);
+		},
+		[agentSkillContext],
+	);
 
 	const removePending = useCallback((id: string) => {
 		setPendingAttachments((prev) => prev.filter((a) => a.id !== id));
@@ -1207,7 +1257,7 @@ function ChatPage() {
 				liveStats={liveStats}
 			/>
 
-			{/* Messages — inner min-h-full + justify-end anchors messages to bottom */}
+			{/* Messages, inner min-h-full + justify-end anchors messages to bottom */}
 			<div ref={scrollRef} className="flex-1 overflow-y-auto overflow-x-hidden">
 				<div className="min-h-full flex flex-col justify-end px-5 py-2 min-w-0">
 					{messages.length === 0 ? (
@@ -1244,14 +1294,16 @@ function ChatPage() {
 				</div>
 			</div>
 
-			{/* Bottom bar — wrapper is relative so model badge floats above entire block */}
+			{/* Bottom bar, wrapper is relative so model badge floats above entire block */}
 			<div className="shrink-0 relative">
 				{agentSkillContext && (
 					<PrivacyMask
 						inline
 						className="absolute -top-5 left-3 text-[9px] tracking-widest text-primary/60 border border-primary/30 px-2 py-0.5 uppercase bg-background z-10"
 					>
-						{agentSkillContext.split("/").pop() ?? "agent"}
+						{agentList.find((a) => a.path === agentSkillContext)?.name ??
+							agentSkillContext.split("/").pop() ??
+							"agent"}
 					</PrivacyMask>
 				)}
 				{modelShort && (
@@ -1277,7 +1329,7 @@ function ChatPage() {
 				)}
 
 				{/* Input */}
-				{/* biome-ignore lint/a11y/noStaticElementInteractions: drop zone wraps the input — interactive children handle keyboard input */}
+				{/* biome-ignore lint/a11y/noStaticElementInteractions: drop zone wraps the input, interactive children handle keyboard input */}
 				<div
 					className={`border-t border-border bg-background transition-colors ${
 						dragOver ? "bg-primary/5" : ""
@@ -1304,6 +1356,39 @@ function ChatPage() {
 						}
 					}}
 				>
+					{gitignoreHint && (
+						<div className="px-4 py-2 flex items-start gap-2 border-b border-border/40 bg-yellow-500/5">
+							<div className="flex-1 text-[10px] text-foreground/70 leading-relaxed">
+								<span className="text-yellow-500/80">tip:</span> attachments
+								stored at{" "}
+								<code className="text-[10px] font-mono text-foreground/90">
+									{gitignoreHint.agent_root}/.hlid/
+								</code>
+								. Add{" "}
+								<code className="text-[10px] font-mono text-foreground/90">
+									.hlid/
+								</code>{" "}
+								to <code className="text-[10px] font-mono">.gitignore</code> if
+								this is a git repo.
+							</div>
+							<button
+								type="button"
+								onClick={() => {
+									if (typeof localStorage !== "undefined") {
+										localStorage.setItem(
+											`hlid:gitignore-hint:${gitignoreHint.agent_root}`,
+											"dismissed",
+										);
+									}
+									setGitignoreHint(null);
+								}}
+								className="text-muted-foreground/40 hover:text-foreground transition-colors shrink-0"
+								aria-label="Dismiss"
+							>
+								<X className="w-3 h-3" />
+							</button>
+						</div>
+					)}
 					{(pendingAttachments.length > 0 ||
 						uploadingCount > 0 ||
 						uploadError) && (
@@ -1345,7 +1430,7 @@ function ChatPage() {
 							)}
 						</div>
 					)}
-					{agentList.length > 0 && (
+					{agentList.length > 0 && messages.length === 0 && (
 						<div className="flex items-center gap-2 px-4 py-1.5 border-b border-border/40">
 							<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase shrink-0">
 								AGENT
@@ -1360,7 +1445,7 @@ function ChatPage() {
 									}}
 									className="text-[9px] tracking-widest text-muted-foreground/60 bg-background border border-border/50 px-2 py-0.5 focus:outline-none focus:border-primary/40 uppercase"
 								>
-									<option value="">— none —</option>
+									<option value="">none</option>
 									{agentList.map((a) => (
 										<option key={a.path} value={a.path}>
 											{a.name}

@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
+import { APP_DIR } from "./lib/paths";
 
-const DB_PATH = resolve(process.cwd(), "hlid.db");
+const DB_PATH = resolve(APP_DIR, "hlid.db");
 
 let _initPromise: Promise<import("bun:sqlite").Database> | null = null;
 

@@ -52,9 +52,16 @@ export function RelativeFolderField({
 						<FolderBrowser
 							initialPath={basePath}
 							onSelect={(path) => {
-								const rel = path.startsWith(`${basePath}/`)
-									? path.slice(basePath.length + 1)
-									: (path.split("/").pop() ?? path);
+								// Normalize separators for prefix comparison; preserve original
+								// path when slicing so the returned relative path keeps its style.
+								const normPath = path.replace(/\\/g, "/");
+								const normBase = basePath.replace(/\\/g, "/");
+								const prefix = normBase.endsWith("/")
+									? normBase
+									: `${normBase}/`;
+								const rel = normPath.startsWith(prefix)
+									? path.slice(prefix.length)
+									: (path.split(/[/\\]/).pop() ?? path);
 								onChange(rel);
 								setOpen(false);
 							}}

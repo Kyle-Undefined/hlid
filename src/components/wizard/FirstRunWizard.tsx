@@ -7,7 +7,39 @@ import { RelativeFolderField } from "./RelativeFolderField";
 
 type Entry = { name: string; isDirectory: boolean };
 
-type Step = "welcome" | "vault" | "structure" | "done";
+type Step = "welcome" | "vault" | "structure" | "primer" | "done";
+
+const PRIMER_ITEMS: { name: string; meaning: string }[] = [
+	{
+		name: "Watch",
+		meaning:
+			"your cockpit. Inbox count, what's running, what owes you attention.",
+	},
+	{
+		name: "Vault",
+		meaning: "projects, skills, memory. The shape of your hall.",
+	},
+	{
+		name: "Relics",
+		meaning: "attachments. PDFs, images, files Claude has touched.",
+	},
+	{
+		name: "Raven",
+		meaning: "chat. Huginn and Muninn carry your messages to Claude and back.",
+	},
+	{
+		name: "Einherjar",
+		meaning: "agents. Óðinn's chosen warriors, summoned for specific tasks.",
+	},
+	{
+		name: "Ledger",
+		meaning: "sessions, tokens, cost. What you've spent, what you've used.",
+	},
+	{
+		name: "Forge",
+		meaning: "settings. Where you reshape the thing.",
+	},
+];
 
 type VaultStyle = "para" | "wiki";
 
@@ -19,12 +51,12 @@ const VAULT_STYLE_OPTIONS: {
 	{
 		value: "para",
 		label: "PARA (Obsidian)",
-		desc: "Projects · Areas · Resources · Archive — hierarchical GTD-style vault",
+		desc: "Projects · Areas · Resources · Archive, hierarchical GTD-style vault",
 	},
 	{
 		value: "wiki",
 		label: "LLM Wiki (Karpathy)",
-		desc: "raw/ · wiki/ · outputs/ — three-layer architecture, LLM owns wiki",
+		desc: "raw/ · wiki/ · outputs/, three-layer architecture, LLM owns wiki",
 	},
 ];
 
@@ -33,12 +65,12 @@ const THEME_OPTIONS: { value: "dark" | "tan"; label: string; desc: string }[] =
 		{
 			value: "dark",
 			label: "Dark",
-			desc: "neutral dark with sky blue accent — the default",
+			desc: "neutral dark with sky blue accent, the default",
 		},
 		{
 			value: "tan",
 			label: "Tan",
-			desc: "warm parchment with terracotta accent — easy on the eyes",
+			desc: "warm parchment with terracotta accent, easy on the eyes",
 		},
 	];
 
@@ -171,9 +203,9 @@ export function FirstRunWizard({ onComplete }: Props) {
 				},
 				server: {
 					port: 3000,
-					host: "0.0.0.0",
 					tls_proxy_port: 3443,
 					local_network_access: false,
+					allow_external_agents: false,
 				},
 				claude: {
 					model: "claude-sonnet-4-6",
@@ -197,7 +229,7 @@ export function FirstRunWizard({ onComplete }: Props) {
 			});
 
 			if (!res.ok) throw new Error("Save failed");
-			setStep("done");
+			setStep("primer");
 		} catch {
 			setSaving(false);
 		}
@@ -208,16 +240,20 @@ export function FirstRunWizard({ onComplete }: Props) {
 			<div className="flex flex-col flex-1 sm:flex-none w-full sm:max-w-lg bg-card border-0 sm:border sm:border-border sm:rounded-xl sm:shadow-2xl overflow-hidden sm:m-4">
 				{/* Progress */}
 				<div className="flex border-b border-border shrink-0">
-					{(["welcome", "vault", "structure", "done"] as Step[]).map((s, i) => (
-						<div
-							key={s}
-							className={`flex-1 h-1 transition-colors ${
-								["welcome", "vault", "structure", "done"].indexOf(step) >= i
-									? "bg-primary"
-									: "bg-border"
-							}`}
-						/>
-					))}
+					{(["welcome", "vault", "structure", "primer", "done"] as Step[]).map(
+						(s, i) => (
+							<div
+								key={s}
+								className={`flex-1 h-1 transition-colors ${
+									["welcome", "vault", "structure", "primer", "done"].indexOf(
+										step,
+									) >= i
+										? "bg-primary"
+										: "bg-border"
+								}`}
+							/>
+						),
+					)}
 				</div>
 
 				<div className="flex-1 overflow-y-auto p-4 sm:p-6">
@@ -487,6 +523,58 @@ export function FirstRunWizard({ onComplete }: Props) {
 									{saving ? "Sealing…" : "Seal and enter"}
 								</button>
 							</div>
+						</div>
+					)}
+
+					{step === "primer" && (
+						<div className="space-y-4">
+							<div>
+								<h2 className="text-lg font-semibold text-foreground">
+									The lay of the land
+								</h2>
+								<p className="text-sm text-muted-foreground mt-1">
+									The menu speaks Norse. Half the fun of a project is a name
+									that <em>hits</em>. The other half is telling you what it
+									actually does.
+								</p>
+							</div>
+							<div className="rounded-lg border border-border bg-secondary/30 p-3 space-y-1.5">
+								<div className="text-xs">
+									<span className="font-semibold text-foreground">
+										Hlið / Hliðskjálf
+									</span>
+									<span className="text-muted-foreground">
+										{" "}
+										— the app itself. Óðinn's high seat, where he watched all
+										nine realms.
+									</span>
+								</div>
+							</div>
+							<ul className="space-y-2">
+								{PRIMER_ITEMS.map((item) => (
+									<li
+										key={item.name}
+										className="text-xs leading-relaxed flex gap-2"
+									>
+										<span className="font-semibold text-foreground tracking-widest uppercase shrink-0 w-20">
+											{item.name}
+										</span>
+										<span className="text-muted-foreground">
+											{item.meaning}
+										</span>
+									</li>
+								))}
+							</ul>
+							<p className="text-xs text-muted-foreground/70 italic">
+								You'll get the hang of it. The icons help.
+							</p>
+							<button
+								type="button"
+								onClick={() => setStep("done")}
+								className="w-full py-2 rounded-lg bg-primary text-primary-foreground text-sm font-medium hover:opacity-90 transition-opacity"
+							>
+								Got it
+							</button>
 						</div>
 					)}
 

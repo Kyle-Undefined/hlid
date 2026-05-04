@@ -74,7 +74,7 @@ let _pendingPrompt: string | null = null;
 let _liveStats: LiveStats = loadPersistedStats() ?? { ...EMPTY_STATS };
 let _activeSessionId: string | null = null;
 // Buffers in-flight chunks/tool_events for the current run so they survive SPA navigation.
-// Always written (even when subscribers exist) — cleared on run end or new run start.
+// Always written (even when subscribers exist), cleared on run end or new run start.
 let _messageBuffer: ServerMessage[] = [];
 let _pendingPermCount = 0;
 let _pendingSessionToday = false;
@@ -153,7 +153,7 @@ function connect() {
 			return;
 		}
 		if (msg.type === "status") {
-			// New or ended run — previous permission state is no longer valid
+			// New or ended run, previous permission state is no longer valid
 			_pendingPermCount = 0;
 			setSnap({
 				sessionState: msg.state,
@@ -190,7 +190,7 @@ function connect() {
 		}
 		// Always buffer in-flight events so they survive SPA navigation (component unmount/remount).
 		// Buffer is cleared when run ends (done/error) or a new run starts (chat/clear sent).
-		// permission_request excluded — sync replays those from the server.
+		// permission_request excluded, sync replays those from the server.
 		if (msg.type === "chunk" || msg.type === "tool_event") {
 			_messageBuffer.push(msg);
 		} else if (msg.type === "done" || msg.type === "error") {

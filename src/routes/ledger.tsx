@@ -233,7 +233,7 @@ function SessionItem({
 						inline
 						className="text-[11px] tracking-wider text-foreground/80 truncate"
 					>
-						{session.label ?? "—"}
+						{session.label ?? "untitled"}
 					</PrivacyMask>
 					<PrivacyMask
 						inline
@@ -595,7 +595,7 @@ function StatsPage() {
 				</div>
 
 				<div className="p-5 space-y-5">
-					{/* Usage windows — from DB */}
+					{/* Usage windows, from DB */}
 					<div className="border border-border bg-card">
 						<div className="px-4 py-3 border-b border-border">
 							<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
@@ -641,7 +641,7 @@ function StatsPage() {
 						</div>
 					</div>
 
-					{/* Rate limit — from WS, only shown when available */}
+					{/* Rate limit, from WS, only shown when available */}
 					{rateLimit && (
 						<div className="border border-border bg-card">
 							<div className="px-4 py-3 border-b border-border">
@@ -693,7 +693,7 @@ function StatsPage() {
 						</div>
 					)}
 
-					{/* Context window — live */}
+					{/* Context window, live */}
 					{stats.last_context_used != null &&
 						stats.context_window != null &&
 						stats.max_output_tokens != null && (
@@ -714,7 +714,7 @@ function StatsPage() {
 							</div>
 						)}
 
-					{/* Token breakdown — live session */}
+					{/* Token breakdown, live session */}
 					<div className="border border-border bg-card">
 						<div className="px-4 py-3 border-b border-border">
 							<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
@@ -759,7 +759,7 @@ function StatsPage() {
 						/>
 					</div>
 
-					{/* All-time totals — from DB */}
+					{/* All-time totals, from DB */}
 					<div className="border border-border bg-card">
 						<div className="px-4 py-3 border-b border-border">
 							<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
