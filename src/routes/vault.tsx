@@ -8,7 +8,13 @@ import { getConfig } from "#/config";
 import { useWs } from "#/hooks/useWs";
 import * as wsStore from "#/hooks/wsStore";
 import type { ProjectStatus } from "#/lib/classify";
-import type { MemoryFile, Project, ProjectNode, Skill } from "#/lib/vault";
+import type {
+	FolderGroup,
+	MemoryFile,
+	Project,
+	ProjectNode,
+	Skill,
+} from "#/lib/vault";
 import type { ClientMessage } from "#/server/protocol";
 
 // ─── server fns ────────────────────────────────────────────────────────────
@@ -57,10 +63,8 @@ const FIELD_LABELS: Record<VaultFolderKey, string> = {
 };
 
 const getVaultData = createServerFn({ method: "GET" }).handler(async () => {
-	const [config, { scanProjects, scanSkills, scanMemory }] = await Promise.all([
-		getConfig(),
-		import("#/lib/vault"),
-	]);
+	const [config, { scanProjects, scanSkills, scanMemory, scanFolderGroups }] =
+		await Promise.all([getConfig(), import("#/lib/vault")]);
 	const { vault, status_vocabulary } = config;
 
 	const isWiki = vault.style === "wiki";
@@ -94,11 +98,11 @@ const getVaultData = createServerFn({ method: "GET" }).handler(async () => {
 	const raw = vault.path && vault.raw ? scanMemory(vault.path, vault.raw) : [];
 
 	const areas =
-		vault.path && vault.areas ? scanMemory(vault.path, vault.areas) : [];
+		vault.path && vault.areas ? scanFolderGroups(vault.path, vault.areas) : [];
 
 	const resources =
 		vault.path && vault.resources
-			? scanProjects(vault.path, vault.resources, status_vocabulary)
+			? scanFolderGroups(vault.path, vault.resources)
 			: [];
 
 	const archive =
@@ -511,6 +515,55 @@ function MemoryCard({ file }: { file: MemoryFile }) {
 	);
 }
 
+function FolderGroupsTab({
+	groups,
+	emptyLabel,
+}: {
+	groups: FolderGroup[];
+	emptyLabel?: string;
+}) {
+	if (groups.length === 0) {
+		return (
+			<div className="border border-border bg-card px-4 py-8 text-center">
+				<p className="text-xs tracking-wider text-muted-foreground">
+					{emptyLabel ?? "nothing here yet"}
+				</p>
+			</div>
+		);
+	}
+	return (
+		<div className="space-y-6">
+			{groups.map((g) => (
+				<div key={g.name || "__root__"} className="space-y-2">
+					<div className="flex items-center gap-2">
+						<Folder className="w-3 h-3 text-muted-foreground/60 shrink-0" />
+						<PrivacyMask
+							inline
+							className="text-[10px] tracking-widest text-muted-foreground uppercase"
+						>
+							{g.name || "ROOT"}
+						</PrivacyMask>
+						<span className="text-[10px] text-muted-foreground/50">
+							{g.notes.length}
+						</span>
+					</div>
+					{g.notes.length > 0 ? (
+						<div className="border border-border bg-card divide-y divide-border">
+							{g.notes.map((f) => (
+								<MemoryCard key={f.path} file={f} />
+							))}
+						</div>
+					) : (
+						<div className="border border-border bg-card px-4 py-3 text-[11px] tracking-wider text-muted-foreground/60">
+							empty
+						</div>
+					)}
+				</div>
+			))}
+		</div>
+	);
+}
+
 function NotesTab({
 	notes,
 	emptyLabel,
@@ -617,10 +670,10 @@ function VaultPage() {
 					<NotesTab notes={raw} emptyLabel="raw folder is empty" />
 				)}
 				{tab === "areas" && (
-					<NotesTab notes={areas} emptyLabel="no areas found" />
+					<FolderGroupsTab groups={areas} emptyLabel="no areas found" />
 				)}
 				{tab === "resources" && (
-					<ProjectsTab initial={resources} emptyLabel="no resources found" />
+					<FolderGroupsTab groups={resources} emptyLabel="no resources found" />
 				)}
 				{tab === "archive" && (
 					<ProjectsTab initial={archive} emptyLabel="archive is empty" />

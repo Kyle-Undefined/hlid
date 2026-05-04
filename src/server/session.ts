@@ -349,6 +349,10 @@ export class SessionManager {
 		}
 
 		let assistantText = "";
+		// Track the last content block type across all SDK messages in this turn.
+		// When a text block follows a tool_use, prepend a paragraph break so the
+		// rendered chat doesn't smash post-tool text into pre-tool punctuation.
+		let lastBlockType: "text" | "tool_use" | null = null;
 		let lastTurnUsage: {
 			input_tokens: number;
 			cache_read_input_tokens?: number;
@@ -586,8 +590,17 @@ export class SessionManager {
 					}
 					for (const block of message.message.content) {
 						if (block.type === "text") {
-							assistantText += block.text;
-							emit({ type: "chunk", text: block.text });
+							let chunkText = block.text;
+							if (
+								lastBlockType === "tool_use" &&
+								chunkText &&
+								!chunkText.startsWith("\n")
+							) {
+								chunkText = `\n\n${chunkText}`;
+							}
+							assistantText += chunkText;
+							emit({ type: "chunk", text: chunkText });
+							lastBlockType = "text";
 						}
 						if (block.type === "tool_use") {
 							pendingToolEvents.push({
@@ -601,6 +614,7 @@ export class SessionManager {
 								name: block.name,
 								input: block.input,
 							});
+							lastBlockType = "tool_use";
 						}
 					}
 				}

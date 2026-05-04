@@ -379,6 +379,58 @@ export function scanMemory(
 	return walkMd(dir, dir);
 }
 
+export type FolderGroup = {
+	name: string;
+	notes: MemoryFile[];
+};
+
+// Top-level subfolders become groups (always shown, even if empty). Loose .md
+// files at the root land in a group keyed by "". Each group's notes recursively
+// walk the subtree for .md content.
+export function scanFolderGroups(
+	vaultPath: string,
+	folder: string,
+): FolderGroup[] {
+	const base = resolve(vaultPath);
+	const dir = resolve(base, folder);
+	assertContained(base, dir);
+
+	let entries: string[];
+	try {
+		entries = readdirSync(dir).sort();
+	} catch {
+		return [];
+	}
+
+	const groups: FolderGroup[] = [];
+	const looseFiles: MemoryFile[] = [];
+
+	for (const entry of entries) {
+		const full = join(dir, entry);
+		try {
+			const stat = lstatSync(full);
+			if (stat.isSymbolicLink()) continue;
+
+			if (stat.isDirectory()) {
+				groups.push({ name: entry, notes: walkMd(full, full) });
+			} else if (entry.endsWith(".md")) {
+				const raw = readFileSync(full, "utf-8");
+				const { content } = matter(raw);
+				looseFiles.push({
+					path: entry,
+					name: entry.replace(/\.md$/, ""),
+					content,
+				});
+			}
+		} catch {
+			// skip unreadable
+		}
+	}
+
+	if (looseFiles.length > 0) groups.unshift({ name: "", notes: looseFiles });
+	return groups;
+}
+
 export function setProjectStatus(
 	vaultPath: string,
 	projectsFolder: string,
