@@ -58,7 +58,10 @@ if (process.execPath.endsWith(".exe")) {
 
 function openInBrowser(url: string): void {
 	if (process.platform === "win32") {
-		Bun.spawn(["cmd", "/c", "start", "", url], {
+		// Use explorer.exe (GUI subsystem) instead of cmd.exe (console subsystem).
+		// Spawning a console app from a --windows-hide-console exe causes Windows
+		// to create a new visible console window for the child.
+		Bun.spawn(["explorer.exe", url], {
 			stdio: ["ignore", "ignore", "ignore"],
 		});
 	} else if (process.platform === "darwin") {
