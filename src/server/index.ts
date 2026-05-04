@@ -1,3 +1,4 @@
+import "./prelude";
 import { X509Certificate } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { extname, join } from "node:path";
