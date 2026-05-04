@@ -544,13 +544,13 @@ function FolderGroupsTab({
 							{g.name || "ROOT"}
 						</PrivacyMask>
 						<span className="text-[10px] text-muted-foreground/50">
-							{g.notes.length}
+							{g.children.length}
 						</span>
 					</div>
-					{g.notes.length > 0 ? (
-						<div className="border border-border bg-card divide-y divide-border">
-							{g.notes.map((f) => (
-								<MemoryCard key={f.path} file={f} />
+					{g.children.length > 0 ? (
+						<div className="border border-border bg-card px-3 py-2">
+							{g.children.map((child) => (
+								<ProjectNodeItem key={child.path} node={child} />
 							))}
 						</div>
 					) : (

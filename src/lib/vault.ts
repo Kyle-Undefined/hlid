@@ -381,12 +381,12 @@ export function scanMemory(
 
 export type FolderGroup = {
 	name: string;
-	notes: MemoryFile[];
+	children: ProjectNode[];
 };
 
 // Top-level subfolders become groups (always shown, even if empty). Loose .md
-// files at the root land in a group keyed by "". Each group's notes recursively
-// walk the subtree for .md content.
+// files at the root land in a group keyed by "". Children preserve folder
+// hierarchy via ProjectNode trees so nested folders render as expandable.
 export function scanFolderGroups(
 	vaultPath: string,
 	folder: string,
@@ -403,7 +403,7 @@ export function scanFolderGroups(
 	}
 
 	const groups: FolderGroup[] = [];
-	const looseFiles: MemoryFile[] = [];
+	const looseFiles: ProjectNode[] = [];
 
 	for (const entry of entries) {
 		const full = join(dir, entry);
@@ -412,13 +412,14 @@ export function scanFolderGroups(
 			if (stat.isSymbolicLink()) continue;
 
 			if (stat.isDirectory()) {
-				groups.push({ name: entry, notes: walkMd(full, full) });
+				groups.push({ name: entry, children: buildNodes(full, full) });
 			} else if (entry.endsWith(".md")) {
 				const raw = readFileSync(full, "utf-8");
 				const { content } = matter(raw);
 				looseFiles.push({
-					path: entry,
 					name: entry.replace(/\.md$/, ""),
+					path: entry,
+					isFolder: false,
 					content,
 				});
 			}
@@ -427,7 +428,7 @@ export function scanFolderGroups(
 		}
 	}
 
-	if (looseFiles.length > 0) groups.unshift({ name: "", notes: looseFiles });
+	if (looseFiles.length > 0) groups.unshift({ name: "", children: looseFiles });
 	return groups;
 }
 
