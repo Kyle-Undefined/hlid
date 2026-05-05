@@ -1299,7 +1299,9 @@ function ChatPage() {
 			actualModel.replace("claude-", "").replace(/-\d{8}$/, ""))
 		: null;
 	const modelMismatch =
-		!!actualModel && !!model && normalizeModel(actualModel) !== normalizeModel(model);
+		!!actualModel &&
+		!!model &&
+		normalizeModel(actualModel) !== normalizeModel(model);
 
 	return (
 		<div className="h-full flex flex-col">
