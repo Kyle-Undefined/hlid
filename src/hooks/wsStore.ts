@@ -7,6 +7,11 @@ type Snapshot = {
 	wsStatus: WsStatus;
 	sessionState: SessionState;
 	model: string;
+	// The model the CLI actually used on the most recent inference for the
+	// current chat. May differ from `model` (configured vault model) when an
+	// agent's CLAUDE.md frontmatter, slash command, or subagent overrode it.
+	// Reset to null on `status` events so a new run starts unknown.
+	actualModel: string | null;
 	hasPendingPermissions: boolean;
 };
 
@@ -67,6 +72,7 @@ let _snap: Snapshot = {
 	wsStatus: "connecting",
 	sessionState: "idle",
 	model: "",
+	actualModel: null,
 	hasPendingPermissions: false,
 };
 let _ws: WebSocket | null = null;
@@ -153,17 +159,38 @@ function connect() {
 			return;
 		}
 		if (msg.type === "status") {
-			// New or ended run, previous permission state is no longer valid
+			// New or ended run, previous permission state is no longer valid.
+			// Reset actualModel — a new run is unknown until the first
+			// usage_update reports what the CLI actually used.
 			_pendingPermCount = 0;
 			setSnap({
 				sessionState: msg.state,
 				model: msg.model,
+				actualModel: null,
 				hasPendingPermissions: false,
 			});
 		}
 		if (msg.type === "permission_request") {
 			_pendingPermCount++;
 			setSnap({ hasPendingPermissions: true });
+		}
+		if (msg.type === "usage_update") {
+			// Live per-turn snapshot. Update only the "current turn" fields —
+			// cumulative tokens/cost/turns/duration/queries are still summed at `done`
+			// from the result's authoritative totals.
+			_liveStats = {
+				..._liveStats,
+				last_context_used: msg.tokens_in_context,
+				last_output_tokens: msg.output_tokens,
+			};
+			persistStats(_liveStats);
+			for (const fn of statsSubs) fn();
+			// actualModel rides on usage_update because it's reported per
+			// inference. Surface via the status snapshot so the model badge
+			// can compare against the configured vault model.
+			if (msg.actualModel && msg.actualModel !== _snap.actualModel) {
+				setSnap({ actualModel: msg.actualModel });
+			}
 		}
 		if (msg.type === "done") {
 			_pendingSessionToday = false;

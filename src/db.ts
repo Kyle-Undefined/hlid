@@ -342,6 +342,25 @@ function initSchema(db: import("bun:sqlite").Database): void {
 			);
 		})();
 	}
+
+	// claude_session_id: the SDK's internal session UUID for `resume`. Captured
+	// from the `system/init` event on the first turn of each chat and reused
+	// thereafter so the CLI manages conversation history natively (no manual
+	// transcript replay). Existing chats migrate with NULL — their next message
+	// starts a fresh CLI session, losing model-side context for that one turn.
+	const claudeSidMigrated = db
+		.query<{ value: string }, [string]>(
+			`SELECT value FROM settings WHERE key = ?`,
+		)
+		.get("_migrated_sessions_claude_session_id");
+	if (!claudeSidMigrated) {
+		db.transaction(() => {
+			db.run(`ALTER TABLE sessions ADD COLUMN claude_session_id TEXT`);
+			db.run(
+				`INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('_migrated_sessions_claude_session_id', '1', unixepoch())`,
+			);
+		})();
+	}
 }
 
 export async function setSessionAgentCwd(
@@ -362,6 +381,29 @@ export async function getSessionAgentCwd(
 		)
 		.get(sessionId);
 	return row?.agent_cwd ?? null;
+}
+
+export async function setSessionClaudeId(
+	sessionId: string,
+	claudeId: string | null,
+): Promise<void> {
+	const db = await getDb();
+	db.run(`UPDATE sessions SET claude_session_id = ? WHERE id = ?`, [
+		claudeId,
+		sessionId,
+	]);
+}
+
+export async function getSessionClaudeId(
+	sessionId: string,
+): Promise<string | null> {
+	const db = await getDb();
+	const row = db
+		.query<{ claude_session_id: string | null }, [string]>(
+			`SELECT claude_session_id FROM sessions WHERE id = ?`,
+		)
+		.get(sessionId);
+	return row?.claude_session_id ?? null;
 }
 
 export async function createSession(

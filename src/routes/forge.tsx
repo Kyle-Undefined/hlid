@@ -1332,6 +1332,216 @@ function EventLogSection() {
 	);
 }
 
+// ─── updates ──────────────────────────────────────────────────────────────────
+
+type UpdateStatus = {
+	current: string;
+	latest: string | null;
+	available: boolean;
+	lastCheckedAt: number;
+	error?: string;
+};
+
+type ApplyState =
+	| { phase: "idle" }
+	| { phase: "checking" }
+	| { phase: "downloading" }
+	| { phase: "applying"; targetVersion: string | null }
+	| { phase: "error"; message: string };
+
+function relativeTime(epochMs: number): string {
+	if (!epochMs) return "never";
+	const diff = Date.now() - epochMs;
+	if (diff < 60_000) return "just now";
+	if (diff < 3_600_000) return `${Math.floor(diff / 60_000)}m ago`;
+	if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)}h ago`;
+	return `${Math.floor(diff / 86_400_000)}d ago`;
+}
+
+function UpdatesSection() {
+	const [status, setStatus] = useState<UpdateStatus | null>(null);
+	const [state, setState] = useState<ApplyState>({ phase: "idle" });
+
+	const refresh = useCallback(async () => {
+		try {
+			const res = await fetch("/api/updates");
+			const j = (await res.json()) as { ok: boolean; data?: UpdateStatus };
+			if (j.ok && j.data) setStatus(j.data);
+		} catch (e) {
+			console.error("[updates] fetch failed:", e);
+		}
+	}, []);
+
+	useEffect(() => {
+		void refresh();
+	}, [refresh]);
+
+	// State C polling: while applying, hit /api/version every 1.5s. When the
+	// version response changes (new instance is up after the staged exe took
+	// canonical), reload so dad sees a fresh page on the new build.
+	useEffect(() => {
+		if (state.phase !== "applying") return;
+		const startVersion = status?.current ?? null;
+		const id = setInterval(async () => {
+			try {
+				const r = await fetch("/api/version", { cache: "no-store" });
+				if (!r.ok) return;
+				const j = (await r.json()) as { version?: string };
+				if (j.version && j.version !== startVersion) {
+					window.location.reload();
+				}
+			} catch {
+				// Brief disconnect mid-restart is expected; keep polling.
+			}
+		}, 1500);
+		return () => clearInterval(id);
+	}, [state.phase, status?.current]);
+
+	async function postAction(
+		action: "check" | "download" | "apply",
+		extra?: Record<string, unknown>,
+	): Promise<{ ok: boolean; data?: unknown; error?: string }> {
+		const res = await fetch("/api/updates", {
+			method: "POST",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ action, ...(extra ?? {}) }),
+		});
+		return (await res.json()) as {
+			ok: boolean;
+			data?: unknown;
+			error?: string;
+		};
+	}
+
+	async function checkNow() {
+		setState({ phase: "checking" });
+		const r = await postAction("check").catch(
+			(e) => ({ ok: false, error: String(e) }) as const,
+		);
+		if (r.ok && r.data) {
+			setStatus(r.data as UpdateStatus);
+			setState({ phase: "idle" });
+		} else {
+			setState({ phase: "error", message: r.error ?? "check failed" });
+		}
+	}
+
+	// Download → verify checksum → apply, in one user gesture. Done as a
+	// single click because there's no meaningful intermediate step the user
+	// would inspect; a checksum mismatch surfaces as an error and the staged
+	// file is wiped, leaving the running version untouched.
+	async function updateNow() {
+		setState({ phase: "downloading" });
+		const dl = await postAction("download").catch(
+			(e) => ({ ok: false, error: String(e) }) as const,
+		);
+		if (!dl.ok) {
+			setState({ phase: "error", message: dl.error ?? "download failed" });
+			return;
+		}
+		const data = dl.data as { stagedExe: string; version: string } | undefined;
+		if (!data?.stagedExe) {
+			setState({ phase: "error", message: "no staged exe path returned" });
+			return;
+		}
+		setState({ phase: "applying", targetVersion: data.version });
+		const ap = await postAction("apply", { stagedExe: data.stagedExe }).catch(
+			(e) => ({ ok: false, error: String(e) }) as const,
+		);
+		// On success the server begins shutting itself down; the polling
+		// effect above takes over and reloads when the new version answers.
+		if (!ap.ok) {
+			setState({ phase: "error", message: ap.error ?? "apply failed" });
+		}
+	}
+
+	const current = status?.current ?? "—";
+	const latest = status?.latest;
+	const available = status?.available ?? false;
+
+	return (
+		<Section title="Updates">
+			<Field
+				label="Version"
+				hint={
+					status === null
+						? "loading…"
+						: available && latest
+							? `update available: v${latest}`
+							: "you're on the latest version"
+				}
+			>
+				<span className="text-xs font-mono text-muted-foreground">
+					v{current}
+					{available && latest ? (
+						<>
+							{" "}
+							<span className="text-foreground">→ v{latest}</span>
+						</>
+					) : null}
+				</span>
+			</Field>
+
+			<Field
+				label="Check for updates"
+				hint={
+					status?.lastCheckedAt
+						? `last checked ${relativeTime(status.lastCheckedAt)}`
+						: "never checked"
+				}
+			>
+				<button
+					type="button"
+					onClick={() => {
+						void checkNow();
+					}}
+					disabled={state.phase !== "idle" && state.phase !== "error"}
+					className="text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors uppercase disabled:opacity-40"
+				>
+					{state.phase === "checking" ? "CHECKING…" : "CHECK"}
+				</button>
+			</Field>
+
+			{available && (
+				<Field label="Install update" hint="downloads, verifies, then restarts">
+					<button
+						type="button"
+						onClick={() => {
+							void updateNow();
+						}}
+						disabled={state.phase !== "idle" && state.phase !== "error"}
+						className="text-[10px] tracking-widest px-3 py-1.5 border border-primary/40 text-primary hover:bg-primary/10 transition-colors uppercase disabled:opacity-40"
+					>
+						{state.phase === "downloading"
+							? "DOWNLOADING…"
+							: state.phase === "applying"
+								? "RESTARTING…"
+								: "UPDATE NOW"}
+					</button>
+				</Field>
+			)}
+
+			{state.phase === "applying" && (
+				<div className="px-4 py-2 text-xs text-muted-foreground">
+					installing v{state.targetVersion ?? "?"} — page will reload when the
+					new version is up.
+				</div>
+			)}
+
+			{state.phase === "error" && (
+				<div className="px-4 py-2 text-xs text-destructive/80">
+					{state.message}
+				</div>
+			)}
+			{status?.error && state.phase !== "error" && (
+				<div className="px-4 py-2 text-xs text-muted-foreground/70">
+					last check: {status.error}
+				</div>
+			)}
+		</Section>
+	);
+}
+
 // ─── system / lifecycle ───────────────────────────────────────────────────────
 
 type InstallPaths = {
@@ -1900,6 +2110,8 @@ function SettingsPage() {
 	return (
 		<div className="flex flex-col h-full">
 			<div className="flex-1 overflow-auto p-5 space-y-6">
+				<UpdatesSection />
+
 				<SystemSection />
 
 				<Section title="Server">

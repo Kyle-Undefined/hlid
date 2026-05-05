@@ -229,30 +229,18 @@ function SessionItem({
 				className="flex items-center gap-3 flex-1 min-w-0 px-4 py-2.5 text-left"
 			>
 				<div className="flex-1 min-w-0">
-					<PrivacyMask
-						inline
-						className="text-[11px] tracking-wider text-foreground/80 truncate"
-					>
+					<PrivacyMask className="text-[11px] tracking-wider text-foreground/80 truncate">
 						{session.label ?? "untitled"}
 					</PrivacyMask>
-					<PrivacyMask
-						inline
-						className="text-[9px] tracking-wider text-muted-foreground/40 mt-0.5"
-					>
+					<PrivacyMask className="text-[9px] tracking-wider text-muted-foreground/40 mt-0.5 truncate">
 						{fmtDate(session.started_at)} · {session.query_count}q
 					</PrivacyMask>
 				</div>
 				<div className="text-right shrink-0">
-					<PrivacyMask
-						inline
-						className="text-[11px] tabular-nums text-[var(--data)]/70"
-					>
+					<PrivacyMask className="text-[11px] tabular-nums text-[var(--data)]/70">
 						${(session.total_cost ?? 0).toFixed(4)}
 					</PrivacyMask>
-					<PrivacyMask
-						inline
-						className="text-[9px] tabular-nums text-muted-foreground/40"
-					>
+					<PrivacyMask className="text-[9px] tabular-nums text-muted-foreground/40 mt-0.5">
 						{fmt(
 							(session.total_input_tokens ?? 0) +
 								(session.total_output_tokens ?? 0),
@@ -774,6 +762,19 @@ function StatsPage() {
 						<Row
 							label="Cache read"
 							value={fmt(agg.allTime.cache_read_tokens)}
+						/>
+						<Row
+							label="Cache creation"
+							value={fmt(agg.allTime.cache_creation_tokens)}
+						/>
+						<Row
+							label="Total"
+							value={fmt(
+								agg.allTime.input_tokens +
+									agg.allTime.output_tokens +
+									agg.allTime.cache_read_tokens +
+									agg.allTime.cache_creation_tokens,
+							)}
 						/>
 					</div>
 

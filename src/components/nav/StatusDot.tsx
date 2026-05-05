@@ -5,6 +5,7 @@ const SERVER_SNAP = {
 	wsStatus: "connecting" as const,
 	sessionState: "idle" as const,
 	model: "",
+	actualModel: null,
 	hasPendingPermissions: false,
 };
 

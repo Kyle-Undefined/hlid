@@ -8,11 +8,12 @@ const SERVER_SNAPSHOT = {
 	wsStatus: "connecting" as const,
 	sessionState: "idle" as const,
 	model: "",
+	actualModel: null,
 	hasPendingPermissions: false,
 };
 
 export function useWs(onMessage?: (msg: ServerMessage) => void) {
-	const { wsStatus, sessionState, model } = useSyncExternalStore(
+	const { wsStatus, sessionState, model, actualModel } = useSyncExternalStore(
 		wsStore.subscribeStatus,
 		wsStore.getSnapshot,
 		() => SERVER_SNAPSHOT,
@@ -25,5 +26,5 @@ export function useWs(onMessage?: (msg: ServerMessage) => void) {
 
 	const send = useCallback(wsStore.send, []);
 
-	return { wsStatus, sessionState, model, send };
+	return { wsStatus, sessionState, model, actualModel, send };
 }

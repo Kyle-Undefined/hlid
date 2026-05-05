@@ -355,7 +355,7 @@ const tlsConfig =
 			}
 		: {};
 
-const _wsServer = Bun.serve({
+Bun.serve({
 	port: PORT,
 	hostname: BIND_HOST,
 	...tlsConfig,
@@ -538,7 +538,18 @@ const _wsServer = Bun.serve({
 		}
 
 		if (url.pathname === "/api/attachments/upload" && req.method === "POST") {
-			return handleUpload(req, config, (id, kind) =>
+			// Re-read config so newly-added agents route correctly without a restart.
+			// Falls back to the captured startup config if disk read fails.
+			let uploadConfig = config;
+			try {
+				uploadConfig = loadConfig();
+			} catch (err) {
+				console.warn(
+					"[attachments] loadConfig failed, using startup config:",
+					err,
+				);
+			}
+			return handleUpload(req, uploadConfig, (id, kind) =>
 				broadcast({ type: "attachment_created", id, kind }),
 			);
 		}

@@ -46,6 +46,24 @@ export type RateLimitMessage = {
 	resetsAt?: number;
 };
 
+// Per-turn usage snapshot, emitted on every assistant message so the UI
+// can update the context gauge / live stats without waiting for `done`.
+// Cumulative fields (cost, duration, num_turns, stop_reason, total tokens)
+// are NOT included here — those only land at the result boundary.
+export type UsageUpdateMessage = {
+	type: "usage_update";
+	input_tokens: number;
+	output_tokens: number;
+	cache_read_tokens: number;
+	cache_creation_tokens: number;
+	tokens_in_context: number;
+	// The model the CLI actually used for this inference. May differ from
+	// the configured vault model if an agent's CLAUDE.md frontmatter, slash
+	// command, or subagent overrode it. Includes the dated suffix
+	// (e.g. "claude-opus-4-7-20251001"); strip with /-\d{8}$/ to compare.
+	actualModel?: string;
+};
+
 export type ErrorMessage = {
 	type: "error";
 	message: string;
@@ -90,6 +108,7 @@ export type ServerMessage =
 	| ToolResultMessage
 	| DoneMessage
 	| RateLimitMessage
+	| UsageUpdateMessage
 	| ErrorMessage
 	| PermissionRequestMessage
 	| UserMessageEvent

@@ -1405,53 +1405,58 @@ function CockpitPage() {
 		send({ type: "sync_mcp_list" });
 	}, [send]);
 
-	const uploadFiles = useCallback(async (files: FileList | File[]) => {
-		const list = Array.from(files);
-		if (list.length === 0) return;
-		setUploadError(null);
-		if (!attachSessionIdRef.current) attachSessionIdRef.current = uid();
-		const sessionId = attachSessionIdRef.current;
-		setUploadingCount((c) => c + list.length);
-		try {
-			const uploaded = await Promise.all(
-				list.map(async (file) => {
-					const fd = new FormData();
-					fd.append("file", file);
-					fd.append("kind", "ephemeral");
-					fd.append("session_id", sessionId);
-					const res = await fetch("/api/attachments/upload", {
-						method: "POST",
-						body: fd,
-					});
-					if (!res.ok) {
-						let msg = `upload failed (${res.status})`;
-						try {
-							const body = (await res.json()) as { error?: string };
-							if (body.error) msg = body.error;
-						} catch {}
-						throw new Error(`${file.name}: ${msg}`);
-					}
-					return (await res.json()) as ChatAttachment & {
-						size_bytes: number;
-					};
-				}),
-			);
-			setPendingAttachments((prev) => [
-				...prev,
-				...uploaded.map((u) => ({
-					id: u.id,
-					path: u.path,
-					filename: u.filename,
-					mime: u.mime,
-					kind: u.kind,
-				})),
-			]);
-		} catch (err) {
-			setUploadError(err instanceof Error ? err.message : "upload failed");
-		} finally {
-			setUploadingCount((c) => Math.max(0, c - list.length));
-		}
-	}, []);
+	const uploadFiles = useCallback(
+		async (files: FileList | File[]) => {
+			const list = Array.from(files);
+			if (list.length === 0) return;
+			setUploadError(null);
+			if (!attachSessionIdRef.current) attachSessionIdRef.current = uid();
+			const sessionId = attachSessionIdRef.current;
+			const agentCwd = selectedAgentPath;
+			setUploadingCount((c) => c + list.length);
+			try {
+				const uploaded = await Promise.all(
+					list.map(async (file) => {
+						const fd = new FormData();
+						fd.append("file", file);
+						fd.append("kind", "ephemeral");
+						fd.append("session_id", sessionId);
+						if (agentCwd) fd.append("agent_cwd", agentCwd);
+						const res = await fetch("/api/attachments/upload", {
+							method: "POST",
+							body: fd,
+						});
+						if (!res.ok) {
+							let msg = `upload failed (${res.status})`;
+							try {
+								const body = (await res.json()) as { error?: string };
+								if (body.error) msg = body.error;
+							} catch {}
+							throw new Error(`${file.name}: ${msg}`);
+						}
+						return (await res.json()) as ChatAttachment & {
+							size_bytes: number;
+						};
+					}),
+				);
+				setPendingAttachments((prev) => [
+					...prev,
+					...uploaded.map((u) => ({
+						id: u.id,
+						path: u.path,
+						filename: u.filename,
+						mime: u.mime,
+						kind: u.kind,
+					})),
+				]);
+			} catch (err) {
+				setUploadError(err instanceof Error ? err.message : "upload failed");
+			} finally {
+				setUploadingCount((c) => Math.max(0, c - list.length));
+			}
+		},
+		[selectedAgentPath],
+	);
 
 	const removePending = useCallback((id: string) => {
 		setPendingAttachments((prev) => prev.filter((a) => a.id !== id));

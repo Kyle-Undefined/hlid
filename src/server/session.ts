@@ -71,8 +71,6 @@ function resolveClaudeExecutable(): string | undefined {
 
 export type SessionState = "idle" | "running" | "error";
 
-type Turn = { role: "user" | "assistant"; text: string };
-
 type PermissionMode = "default" | "acceptEdits" | "bypassPermissions";
 
 export class SessionManager {
@@ -84,7 +82,10 @@ export class SessionManager {
 	private vaultPath: string;
 	private permissionMode: PermissionMode;
 	private claudeExecutable: string | undefined;
-	private history: Turn[] = [];
+	// SDK session UUID for the active chat. Captured from the `system/init`
+	// event on first turn, persisted per chat row, and passed back to query()
+	// via `resume` on subsequent turns so the CLI manages history natively.
+	private claudeSessionId: string | null = null;
 	private pendingPermissions = new Map<
 		string,
 		(approved: boolean, saveScope?: "session" | "local") => void
@@ -120,9 +121,9 @@ export class SessionManager {
 		this.permissionMode = config.claude.permission_mode;
 		this.claudeExecutable = resolveClaudeExecutable();
 		this.allowedAgentRealPaths = computeAllowedAgentRealPaths(config);
-		this.history = [];
 		this.state = "idle";
 		this.currentSessionId = null;
+		this.claudeSessionId = null;
 		this.messageSeq = 0;
 		db.clearCurrentSessionId().catch((e) => {
 			console.error("[db] clearCurrentSessionId failed:", e);
@@ -220,8 +221,8 @@ export class SessionManager {
 	}
 
 	clearHistory(): void {
-		this.history = [];
 		this.currentSessionId = null;
+		this.claudeSessionId = null;
 		this.messageSeq = 0;
 		this.agentCwd = undefined;
 		this.agentMode = "cwd";
@@ -231,16 +232,6 @@ export class SessionManager {
 				error: String(e),
 			});
 		});
-	}
-
-	private buildPrompt(userMessage: string): string {
-		if (this.history.length === 0) return userMessage;
-
-		const ctx = this.history
-			.map((t) => `${t.role === "user" ? "User" : "Assistant"}: ${t.text}`)
-			.join("\n\n");
-
-		return `Conversation so far:\n${ctx}\n\nUser: ${userMessage}`;
 	}
 
 	async runQuery(
@@ -265,16 +256,14 @@ export class SessionManager {
 		if (sessionId && sessionId !== this.currentSessionId) {
 			this.agentCwd = undefined;
 			this.agentMode = "cwd";
-			const [prior, savedAgentCwd] = await Promise.all([
+			const [prior, savedAgentCwd, savedClaudeId] = await Promise.all([
 				db.getSessionMessages(sessionId),
 				db.getSessionAgentCwd(sessionId),
+				db.getSessionClaudeId(sessionId),
 			]);
-			this.history = prior.map((m) => ({
-				role: m.role as "user" | "assistant",
-				text: m.text,
-			}));
 			this.messageSeq = prior.length;
 			this.currentSessionId = sessionId;
+			this.claudeSessionId = savedClaudeId;
 			if (savedAgentCwd) {
 				this.agentCwd = savedAgentCwd;
 				// Resolve mode for resumed sessions from current config.
@@ -400,20 +389,25 @@ export class SessionManager {
 							.map((a) => `- ${toLogical(a.path)} (${a.mime})`)
 							.join("\n")}\n\n`
 					: "";
-			// Context-mode persona preamble: only on the first turn, and only when
-			// CLAUDE.md actually exists at the agent dir.
+			// Context-mode persona preamble: inject whenever there is no captured
+			// SDK session to resume — i.e. on the first turn of a brand-new chat
+			// AND on the first turn of any pre-resume-migration chat (where
+			// messageSeq > 0 but claudeSessionId is still null). This guarantees
+			// the persona lands on the very turn that establishes the CLI-side
+			// session that subsequent turns will resume.
 			const personaBlock =
 				this.agentMode === "context" &&
 				this.agentCwd &&
-				this.history.length === 0 &&
+				this.claudeSessionId === null &&
 				existsSync(join(this.agentCwd, "CLAUDE.md"))
 					? `Please read \`${toLogical(this.agentCwd)}/CLAUDE.md\` and adopt its persona/instructions for this conversation.\n\n`
 					: "";
 			const claudeMessage = safeSkillContext
 				? `${personaBlock}${attachmentBlock}Please read the skill file at \`${toLogical(safeSkillContext)}\` and follow its instructions.\n\nUser: ${userMessage || "(no additional input)"}`
 				: `${personaBlock}${attachmentBlock}${userMessage}`;
-			const prompt = this.buildPrompt(claudeMessage);
-			this.history.push({ role: "user", text: claudeMessage });
+			// With `resume`, the CLI maintains conversation state on its end. We
+			// send only the new user turn — no transcript replay.
+			const prompt = claudeMessage;
 			const userSeq = this.messageSeq++;
 			if (sessionId) {
 				await db.appendMessage(sessionId, userSeq, "user", userMessage);
@@ -466,258 +460,349 @@ export class SessionManager {
 					if (written) executable = written;
 				}
 			}
-			const conversation = query({
-				prompt,
-				options: {
-					cwd: activeCwd,
-					...(extraDirs.size > 0
-						? {
-								additionalDirectories: Array.from(extraDirs).map(toLogical),
-							}
-						: {}),
-					abortController: this.abortController,
-					permissionMode: this.permissionMode,
-					effort: this.effort,
-					...(this.maxTurns !== undefined && { maxTurns: this.maxTurns }),
-					...(executable !== undefined && {
-						pathToClaudeCodeExecutable: executable,
-					}),
-					allowDangerouslySkipPermissions:
-						this.permissionMode === "bypassPermissions",
-					// Each cwd loads its own user global + project settings + local file.
-					// Vault chats see vault hooks/MCP/CLAUDE.md; agent chats see that
-					// agent's. canUseTool stays sole permission authority as long as
-					// settings files contain only allow-rules written by Hlid (no
-					// permissions.deny, no PreToolUse hooks).
-					settingSources: ["user", "project"],
-					persistSession: false,
-					canUseTool: (
-						toolName,
-						input,
-						{ toolUseID, title, displayName, description },
-					) =>
-						new Promise((resolve) => {
-							const permReq = {
-								type: "permission_request" as const,
-								id: toolUseID,
-								toolName,
-								title: title ?? `Claude wants to use ${toolName}`,
-								displayName,
-								description,
-								input: input as Record<string, unknown> | undefined,
-							};
-							this.pendingPermissionData.set(toolUseID, permReq);
-							// SDK runtime Zod schema requires `updatedInput` on the allow
-							// branch even though the .d.ts marks it optional. Pass the
-							// original input unchanged as a no-op so the tool runs as
-							// requested.
-							const passInput = input as Record<string, unknown>;
-							this.pendingPermissions.set(toolUseID, (approved, saveScope) => {
-								this.pendingPermissions.delete(toolUseID);
-								this.pendingPermissionData.delete(toolUseID);
-								if (!approved) {
-									resolve({
-										behavior: "deny" as const,
-										message: "Denied by user",
-									});
-								} else if (saveScope === "session") {
-									resolve({
-										behavior: "allow" as const,
-										updatedInput: passInput,
-										updatedPermissions: [
-											{
-												type: "addRules" as const,
-												rules: [{ toolName }],
-												behavior: "allow" as const,
-												destination: "session" as const,
-											},
-										],
-									});
-								} else if (saveScope === "local") {
-									resolve({
-										behavior: "allow" as const,
-										updatedInput: passInput,
-										updatedPermissions: [
-											{
-												type: "addRules" as const,
-												rules: [{ toolName }],
-												behavior: "allow" as const,
-												destination: "localSettings" as const,
-											},
-										],
-									});
-								} else {
-									resolve({
-										behavior: "allow" as const,
-										updatedInput: passInput,
-									});
+			// `persistSession` defaults to true. Required for `resume` to work —
+			// the SDK persists conversation state to ~/.claude/projects/ and
+			// reloads it on the next call when `resume` is set. We capture the
+			// SDK's session UUID from the first `system/init` event, persist it
+			// per chat row, and pass it back here on subsequent turns.
+			//
+			// Inlined inside `startQuery` so query()'s `options` parameter gives
+			// `canUseTool` its contextual type (extracting to a helper widens
+			// PermissionUpdate to unknown[] and breaks the SDK type bound).
+			const startQuery = (resumeId: string | null) =>
+				query({
+					prompt,
+					options: {
+						cwd: activeCwd,
+						...(extraDirs.size > 0
+							? {
+									additionalDirectories: Array.from(extraDirs).map(toLogical),
 								}
-							});
-							emit(permReq);
+							: {}),
+						abortController: this.abortController ?? undefined,
+						permissionMode: this.permissionMode,
+						effort: this.effort,
+						...(this.maxTurns !== undefined && { maxTurns: this.maxTurns }),
+						...(executable !== undefined && {
+							pathToClaudeCodeExecutable: executable,
 						}),
-				},
-			});
-
-			let mcpChecked = false;
-			for await (const message of conversation) {
-				if (!mcpChecked) {
-					mcpChecked = true;
-					void conversation
-						.mcpServerStatus()
-						.then((statuses) => {
-							this.lastMcpStatus = statuses;
-							emit({
-								type: "mcp_status",
-								servers: statuses.map((s) => ({
-									name: s.name,
-									status: s.status,
-									scope: s.scope,
-									error: s.error,
-								})),
-							});
-						})
-						.catch(() => {});
-				}
-				if (message.type === "assistant") {
-					if (message.message.usage) {
-						const u = message.message.usage;
-						lastTurnUsage = {
-							input_tokens: u.input_tokens,
-							cache_read_input_tokens: u.cache_read_input_tokens ?? undefined,
-							cache_creation_input_tokens:
-								u.cache_creation_input_tokens ?? undefined,
-						};
-					}
-					for (const block of message.message.content) {
-						if (block.type === "text") {
-							let chunkText = block.text;
-							if (
-								lastBlockType === "tool_use" &&
-								chunkText &&
-								!chunkText.startsWith("\n")
-							) {
-								chunkText = `\n\n${chunkText}`;
-							}
-							assistantText += chunkText;
-							emit({ type: "chunk", text: chunkText });
-							lastBlockType = "text";
-						}
-						if (block.type === "tool_use") {
-							pendingToolEvents.push({
-								toolId: block.id,
-								name: block.name,
-								input: block.input,
-							});
-							emit({
-								type: "tool_event",
-								id: block.id,
-								name: block.name,
-								input: block.input,
-							});
-							lastBlockType = "tool_use";
-						}
-					}
-				}
-
-				if (message.type === "rate_limit_event") {
-					const info = message.rate_limit_info;
-					emit({
-						type: "rate_limit",
-						status: info.status,
-						rateLimitType: info.rateLimitType,
-						utilization: info.utilization,
-						resetsAt: info.resetsAt,
-					});
-					// Persist for usage windows display, skip if utilization is null
-					// (proxy server writes the authoritative value from API response headers)
-					if (info.utilization != null) {
-						const settingsKey =
-							info.rateLimitType === "five_hour" ? "rl_5hr" : "rl_weekly";
-						void db.saveSetting(
-							settingsKey,
-							JSON.stringify({
-								utilization: info.utilization,
-								resetsAt: info.resetsAt ?? null,
-								rateLimitType: info.rateLimitType ?? null,
+						allowDangerouslySkipPermissions:
+							this.permissionMode === "bypassPermissions",
+						// Each cwd loads its own user global + project settings +
+						// local file. Vault chats see vault hooks/MCP/CLAUDE.md;
+						// agent chats see that agent's. canUseTool stays sole
+						// permission authority as long as settings files contain
+						// only allow-rules written by Hlid (no permissions.deny,
+						// no PreToolUse hooks).
+						settingSources: ["user", "project"],
+						...(resumeId !== null ? { resume: resumeId } : {}),
+						canUseTool: (
+							toolName,
+							input,
+							{ toolUseID, title, displayName, description },
+						) =>
+							new Promise((resolve) => {
+								const permReq = {
+									type: "permission_request" as const,
+									id: toolUseID,
+									toolName,
+									title: title ?? `Claude wants to use ${toolName}`,
+									displayName,
+									description,
+									input: input as Record<string, unknown> | undefined,
+								};
+								this.pendingPermissionData.set(toolUseID, permReq);
+								// SDK runtime Zod schema requires `updatedInput` on the allow
+								// branch even though the .d.ts marks it optional. Pass the
+								// original input unchanged as a no-op so the tool runs as
+								// requested.
+								const passInput = input as Record<string, unknown>;
+								this.pendingPermissions.set(
+									toolUseID,
+									(approved, saveScope) => {
+										this.pendingPermissions.delete(toolUseID);
+										this.pendingPermissionData.delete(toolUseID);
+										if (!approved) {
+											resolve({
+												behavior: "deny" as const,
+												message: "Denied by user",
+											});
+										} else if (saveScope === "session") {
+											resolve({
+												behavior: "allow" as const,
+												updatedInput: passInput,
+												updatedPermissions: [
+													{
+														type: "addRules" as const,
+														rules: [{ toolName }],
+														behavior: "allow" as const,
+														destination: "session" as const,
+													},
+												],
+											});
+										} else if (saveScope === "local") {
+											resolve({
+												behavior: "allow" as const,
+												updatedInput: passInput,
+												updatedPermissions: [
+													{
+														type: "addRules" as const,
+														rules: [{ toolName }],
+														behavior: "allow" as const,
+														destination: "localSettings" as const,
+													},
+												],
+											});
+										} else {
+											resolve({
+												behavior: "allow" as const,
+												updatedInput: passInput,
+											});
+										}
+									},
+								);
+								emit(permReq);
 							}),
-						);
-					}
-				}
+					},
+				});
 
-				if (message.type === "result") {
-					const primaryModel = Object.values(message.modelUsage ?? {})[0];
-					const queryData: db.QueryData = {
-						cost: message.total_cost_usd ?? 0,
-						input_tokens: message.usage?.input_tokens ?? 0,
-						output_tokens: message.usage?.output_tokens ?? 0,
-						cache_read_tokens: message.usage?.cache_read_input_tokens ?? 0,
-						cache_creation_tokens:
-							message.usage?.cache_creation_input_tokens ?? 0,
-						duration_ms: message.duration_ms ?? 0,
-						turns: message.num_turns,
-						context_window: primaryModel?.contextWindow ?? null,
-						stop_reason: message.stop_reason ?? null,
-					};
-					// Slash commands (e.g. /triage-inbox) produce no streaming text.
-					// Their output lands in message.result instead of assistant chunks.
-					if (
-						!assistantText &&
-						message.subtype === "success" &&
-						message.result
-					) {
-						assistantText = message.result;
-						emit({ type: "chunk", text: message.result });
+			// Receive flag is shared across attempts so the resume-fallback retry
+			// only fires when resume failed before any message was emitted (i.e.
+			// the prior session record was wiped/invalid). Errors after init
+			// reaches us are real and propagate normally.
+			let receivedAny = false;
+
+			const iterate = async (
+				conversation: ReturnType<typeof query>,
+			): Promise<void> => {
+				let mcpChecked = false;
+				for await (const message of conversation) {
+					receivedAny = true;
+					if (!mcpChecked) {
+						mcpChecked = true;
+						void conversation
+							.mcpServerStatus()
+							.then((statuses) => {
+								this.lastMcpStatus = statuses;
+								emit({
+									type: "mcp_status",
+									servers: statuses.map((s) => ({
+										name: s.name,
+										status: s.status,
+										scope: s.scope,
+										error: s.error,
+									})),
+								});
+							})
+							.catch(() => {});
 					}
-					if (sessionId) {
-						await db.recordQuery(sessionId, queryData);
-						if (assistantText) {
-							const assistantSeq = this.messageSeq++;
-							await db.appendMessage(
-								sessionId,
-								assistantSeq,
-								"assistant",
-								assistantText,
-							);
-							// Only push to in-memory history after DB write succeeds
-							this.history.push({ role: "assistant", text: assistantText });
-							for (const te of pendingToolEvents) {
-								db.appendToolEvent(
-									sessionId,
-									assistantSeq,
-									te.toolId,
-									te.name,
-									te.input,
-								).catch((e) => {
-									console.error("[db] appendToolEvent failed:", e);
-									void db.appendLog("error", "db", "appendToolEvent failed", {
-										error: String(e),
-									});
+					// Capture the SDK session UUID. Always update on every init —
+					// the CLI may reassign on compaction/fork, and we want the
+					// latest valid id persisted for the next turn's resume.
+					if (message.type === "system" && message.subtype === "init") {
+						const newId = message.session_id;
+						if (newId && newId !== this.claudeSessionId) {
+							this.claudeSessionId = newId;
+							if (sessionId) {
+								void db.setSessionClaudeId(sessionId, newId).catch((e) => {
+									console.error("[db] setSessionClaudeId failed:", e);
+									void db.appendLog(
+										"error",
+										"db",
+										"setSessionClaudeId failed",
+										{ error: String(e) },
+									);
 								});
 							}
-							pendingToolEvents.length = 0;
-							assistantText = "";
 						}
 					}
-					const tokensInContext = lastTurnUsage
-						? lastTurnUsage.input_tokens +
-							(lastTurnUsage.cache_read_input_tokens ?? 0) +
-							(lastTurnUsage.cache_creation_input_tokens ?? 0)
-						: null;
-					emit({
-						type: "done",
-						session_id: sessionId,
-						cost: message.total_cost_usd ?? null,
-						turns: message.num_turns,
-						duration_ms: message.duration_ms ?? 0,
-						input_tokens: queryData.input_tokens,
-						output_tokens: queryData.output_tokens,
-						cache_read_tokens: queryData.cache_read_tokens,
-						cache_creation_tokens: queryData.cache_creation_tokens,
-						context_window: queryData.context_window ?? 200_000,
-						max_output_tokens: primaryModel?.maxOutputTokens ?? null,
-						stop_reason: queryData.stop_reason,
-						tokens_in_context: tokensInContext,
-					});
+					if (message.type === "assistant") {
+						if (message.message.usage) {
+							const u = message.message.usage;
+							lastTurnUsage = {
+								input_tokens: u.input_tokens,
+								cache_read_input_tokens: u.cache_read_input_tokens ?? undefined,
+								cache_creation_input_tokens:
+									u.cache_creation_input_tokens ?? undefined,
+							};
+							// Stream a per-turn usage snapshot so the context gauge / stats
+							// panel update with each model inference instead of waiting for
+							// the result boundary.
+							const cacheRead = u.cache_read_input_tokens ?? 0;
+							const cacheCreation = u.cache_creation_input_tokens ?? 0;
+							emit({
+								type: "usage_update",
+								input_tokens: u.input_tokens,
+								output_tokens: u.output_tokens,
+								cache_read_tokens: cacheRead,
+								cache_creation_tokens: cacheCreation,
+								tokens_in_context: u.input_tokens + cacheRead + cacheCreation,
+								actualModel: message.message.model,
+							});
+						}
+						for (const block of message.message.content) {
+							if (block.type === "text") {
+								let chunkText = block.text;
+								if (
+									lastBlockType === "tool_use" &&
+									chunkText &&
+									!chunkText.startsWith("\n")
+								) {
+									chunkText = `\n\n${chunkText}`;
+								}
+								assistantText += chunkText;
+								emit({ type: "chunk", text: chunkText });
+								lastBlockType = "text";
+							}
+							if (block.type === "tool_use") {
+								pendingToolEvents.push({
+									toolId: block.id,
+									name: block.name,
+									input: block.input,
+								});
+								emit({
+									type: "tool_event",
+									id: block.id,
+									name: block.name,
+									input: block.input,
+								});
+								lastBlockType = "tool_use";
+							}
+						}
+					}
+
+					if (message.type === "rate_limit_event") {
+						const info = message.rate_limit_info;
+						emit({
+							type: "rate_limit",
+							status: info.status,
+							rateLimitType: info.rateLimitType,
+							utilization: info.utilization,
+							resetsAt: info.resetsAt,
+						});
+						// Persist for usage windows display, skip if utilization is null
+						// (proxy server writes the authoritative value from API response headers)
+						if (info.utilization != null) {
+							const settingsKey =
+								info.rateLimitType === "five_hour" ? "rl_5hr" : "rl_weekly";
+							void db.saveSetting(
+								settingsKey,
+								JSON.stringify({
+									utilization: info.utilization,
+									resetsAt: info.resetsAt ?? null,
+									rateLimitType: info.rateLimitType ?? null,
+								}),
+							);
+						}
+					}
+
+					if (message.type === "result") {
+						const primaryModel = Object.values(message.modelUsage ?? {})[0];
+						const queryData: db.QueryData = {
+							cost: message.total_cost_usd ?? 0,
+							input_tokens: message.usage?.input_tokens ?? 0,
+							output_tokens: message.usage?.output_tokens ?? 0,
+							cache_read_tokens: message.usage?.cache_read_input_tokens ?? 0,
+							cache_creation_tokens:
+								message.usage?.cache_creation_input_tokens ?? 0,
+							duration_ms: message.duration_ms ?? 0,
+							turns: message.num_turns,
+							context_window: primaryModel?.contextWindow ?? null,
+							stop_reason: message.stop_reason ?? null,
+						};
+						// Slash commands (e.g. /triage-inbox) produce no streaming text.
+						// Their output lands in message.result instead of assistant chunks.
+						if (
+							!assistantText &&
+							message.subtype === "success" &&
+							message.result
+						) {
+							assistantText = message.result;
+							emit({ type: "chunk", text: message.result });
+						}
+						if (sessionId) {
+							await db.recordQuery(sessionId, queryData);
+							if (assistantText) {
+								const assistantSeq = this.messageSeq++;
+								await db.appendMessage(
+									sessionId,
+									assistantSeq,
+									"assistant",
+									assistantText,
+								);
+								for (const te of pendingToolEvents) {
+									db.appendToolEvent(
+										sessionId,
+										assistantSeq,
+										te.toolId,
+										te.name,
+										te.input,
+									).catch((e) => {
+										console.error("[db] appendToolEvent failed:", e);
+										void db.appendLog("error", "db", "appendToolEvent failed", {
+											error: String(e),
+										});
+									});
+								}
+								pendingToolEvents.length = 0;
+								assistantText = "";
+							}
+						}
+						const tokensInContext = lastTurnUsage
+							? lastTurnUsage.input_tokens +
+								(lastTurnUsage.cache_read_input_tokens ?? 0) +
+								(lastTurnUsage.cache_creation_input_tokens ?? 0)
+							: null;
+						emit({
+							type: "done",
+							session_id: sessionId,
+							cost: message.total_cost_usd ?? null,
+							turns: message.num_turns,
+							duration_ms: message.duration_ms ?? 0,
+							input_tokens: queryData.input_tokens,
+							output_tokens: queryData.output_tokens,
+							cache_read_tokens: queryData.cache_read_tokens,
+							cache_creation_tokens: queryData.cache_creation_tokens,
+							context_window: queryData.context_window ?? 200_000,
+							max_output_tokens: primaryModel?.maxOutputTokens ?? null,
+							stop_reason: queryData.stop_reason,
+							tokens_in_context: tokensInContext,
+						});
+					}
+				}
+			};
+
+			// Run with resume if we have a captured session id, else fresh.
+			// On resume failure (no `system/init` ever fired), retry once
+			// without resume — covers the case where the SDK's persisted
+			// session record was rotated/wiped between turns.
+			const triedResume = this.claudeSessionId !== null;
+			try {
+				await iterate(startQuery(this.claudeSessionId));
+			} catch (err) {
+				if (triedResume && !receivedAny) {
+					console.warn(
+						"[session] resume failed before any message, retrying fresh:",
+						err,
+					);
+					void db.appendLog(
+						"warn",
+						"session",
+						"resume failed, retrying fresh",
+						{
+							error: err instanceof Error ? err.message : String(err),
+							claude_session_id: this.claudeSessionId,
+						},
+					);
+					this.claudeSessionId = null;
+					if (sessionId) {
+						await db.setSessionClaudeId(sessionId, null).catch((e) => {
+							console.error("[db] setSessionClaudeId(null) failed:", e);
+						});
+					}
+					await iterate(startQuery(null));
+				} else {
+					throw err;
 				}
 			}
 
@@ -744,8 +829,6 @@ export class SessionManager {
 							"assistant",
 							assistantText,
 						);
-						// Only push to in-memory history after DB write succeeds
-						this.history.push({ role: "assistant", text: assistantText });
 						for (const te of pendingToolEvents) {
 							db.appendToolEvent(
 								sessionId,
@@ -774,9 +857,10 @@ export class SessionManager {
 							},
 						);
 					}
-				} else {
-					this.history.push({ role: "assistant", text: assistantText });
 				}
+				// Without a sessionId there's nowhere to persist orphaned
+				// assistant text. The CLI's own session record (managed via
+				// `resume`) holds the model-side context regardless.
 			}
 			this.abortController = null;
 			emit({ type: "status", state: this.state, model: this.model });

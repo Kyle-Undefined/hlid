@@ -12,6 +12,7 @@ import {
 	existsSync,
 	mkdirSync,
 	openSync,
+	writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -205,6 +206,21 @@ export async function maybeSelfInstall(): Promise<void> {
 
 	const canonicalDir = dirname(canonical);
 	const versionedDir = dirname(process.execPath);
+
+	// Staging-ack marker: tells a launching parent (the previously-running
+	// canonical instance, in the update flow from src/lib/updates.ts) that
+	// we've committed to taking over canonical. Writing this *before* the
+	// shutdown POST is what lets the parent exit cleanly instead of timing
+	// out waiting for a signal we'd otherwise emit only after the
+	// destructive copy. Best-effort: a fresh install (no parent listening)
+	// drops the marker into a dir nobody reads, which is harmless.
+	try {
+		mkdirSync(canonicalDir, { recursive: true });
+		writeFileSync(
+			join(canonicalDir, ".staging-ack"),
+			JSON.stringify({ pid: process.pid, ts: Date.now() }),
+		);
+	} catch {}
 
 	// Find the legacy install dir (where existing config/db live, if any).
 	// Prefer the path stored in the autostart registry entry; fall back to

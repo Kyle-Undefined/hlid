@@ -436,10 +436,7 @@ function EinherjarPage() {
 													<TriangleAlert className="w-3 h-3 text-yellow-500/70 shrink-0" />
 												)}
 											</div>
-											<PrivacyMask
-												inline
-												className="text-[9px] font-mono text-muted-foreground/40 truncate mt-0.5"
-											>
+											<PrivacyMask className="text-[9px] font-mono text-muted-foreground/40 truncate mt-0.5">
 												{agent.path}
 											</PrivacyMask>
 											{!agent.dirExists && (

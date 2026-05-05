@@ -43,7 +43,11 @@ function wrapperContent(distro: string, posixPath: string): string {
 		);
 	}
 	// %SystemRoot% is set by Windows for every process; safer than relying on PATH.
-	// bash -l sources the login profile so ~/.local/bin (where `claude` lives) is on PATH.
+	// bash -l sources the login profile (~/.profile) so user PATH additions that
+	// live there (bun, opencode, etc.) become visible to claude and every
+	// subprocess it spawns. Interactive-only setup (aliases, prompt) stays in
+	// ~/.bashrc behind the standard non-interactive guard.
+	//
 	// Single-quoted bash -c string passes through CMD unchanged; "$@" preserves arg boundaries.
 	return [
 		"@echo off",

@@ -1,4 +1,5 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { CURRENT_VERSION } from "#/lib/version";
 
 export const Route = createFileRoute("/api/health")({
 	server: {
@@ -7,7 +8,7 @@ export const Route = createFileRoute("/api/health")({
 				return Response.json({
 					service: "hlid",
 					status: "ok",
-					version: "0.1.0",
+					version: CURRENT_VERSION,
 					ts: Date.now(),
 				});
 			},

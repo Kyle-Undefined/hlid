@@ -521,7 +521,13 @@ function ChatUsageWindowsPanel({
 
 // ─── Components ───────────────────────────────────────────────────────────────
 
-function ToolBlock({ event }: { event: ToolEventMessage }) {
+function ToolBlock({
+	event,
+	permissionLabel,
+}: {
+	event: ToolEventMessage;
+	permissionLabel?: string;
+}) {
 	const [open, setOpen] = useState(false);
 	const pills = Object.entries(event.input ?? {}).slice(0, 3);
 
@@ -552,6 +558,12 @@ function ToolBlock({ event }: { event: ToolEventMessage }) {
 					))}
 				</PrivacyMask>
 			</button>
+			{permissionLabel && (
+				<div className="flex items-center gap-1.5 pl-8 pr-3 pb-1 -mt-0.5 text-[9px] tracking-widest text-muted-foreground/55 uppercase">
+					<Check className="w-2.5 h-2.5 text-green-600/55" />
+					<span>{permissionLabel}</span>
+				</div>
+			)}
 			{open && (
 				<PrivacyMask className="mx-3 mb-1.5 border border-[var(--tool-panel-border)] bg-[var(--tool-panel)]">
 					<div className="text-[11px] text-primary/60 font-mono leading-relaxed p-3 overflow-auto max-h-48 space-y-1">
@@ -650,37 +662,37 @@ function PermissionCard({
 						</div>
 					)}
 				</div>
-				<div className="flex divide-x divide-border">
+				<div className="grid grid-cols-2 sm:grid-cols-4">
 					<button
 						type="button"
 						onClick={() => onDecide(message.id, false)}
-						className="flex-1 flex items-center justify-center gap-2 py-2 text-[10px] tracking-widest text-destructive/70 hover:bg-destructive/5 transition-colors uppercase"
+						className="min-w-0 flex items-center justify-center gap-1.5 sm:gap-2 px-1 py-2 text-[10px] tracking-widest text-destructive/70 hover:bg-destructive/5 transition-colors uppercase border-b border-r border-border sm:border-b-0 sm:border-r-0"
 					>
-						<X className="w-3 h-3" />
+						<X className="w-3 h-3 shrink-0" />
 						DENY
 					</button>
 					<button
 						type="button"
 						onClick={() => onDecide(message.id, true)}
-						className="flex-1 flex items-center justify-center gap-2 py-2 text-[10px] tracking-widest text-green-500/70 hover:bg-green-500/5 transition-colors uppercase"
+						className="min-w-0 flex items-center justify-center gap-1.5 sm:gap-2 px-1 py-2 text-[10px] tracking-widest text-green-500/70 hover:bg-green-500/5 transition-colors uppercase border-b border-border sm:border-b-0 sm:border-l"
 					>
-						<Check className="w-3 h-3" />
+						<Check className="w-3 h-3 shrink-0" />
 						APPROVE
 					</button>
 					<button
 						type="button"
 						onClick={() => onDecide(message.id, true, "session")}
-						className="flex-1 flex items-center justify-center gap-2 py-2 text-[10px] tracking-widest text-blue-500/70 hover:bg-blue-500/5 transition-colors uppercase"
+						className="min-w-0 flex items-center justify-center gap-1.5 sm:gap-2 px-1 py-2 text-[10px] tracking-widest text-blue-500/70 hover:bg-blue-500/5 transition-colors uppercase border-r border-border sm:border-r-0 sm:border-l"
 					>
-						<Check className="w-3 h-3" />
+						<Check className="w-3 h-3 shrink-0" />
 						SESSION
 					</button>
 					<button
 						type="button"
 						onClick={() => onDecide(message.id, true, "local")}
-						className="flex-1 flex items-center justify-center gap-2 py-2 text-[10px] tracking-widest text-purple-500/70 hover:bg-purple-500/5 transition-colors uppercase"
+						className="min-w-0 flex items-center justify-center gap-1.5 sm:gap-2 px-1 py-2 text-[10px] tracking-widest text-purple-500/70 hover:bg-purple-500/5 transition-colors uppercase sm:border-l border-border"
 					>
-						<Check className="w-3 h-3" />
+						<Check className="w-3 h-3 shrink-0" />
 						ALWAYS
 					</button>
 				</div>
@@ -743,11 +755,21 @@ function UserMsg({ message }: { message: UserMessage }) {
 	);
 }
 
-function AssistantMsg({ message }: { message: AssistantMessage }) {
+function AssistantMsg({
+	message,
+	permissionLabels,
+}: {
+	message: AssistantMessage;
+	permissionLabels?: Map<string, string>;
+}) {
 	return (
 		<div className="py-3 border-b border-border/40 space-y-1.5">
 			{message.toolEvents.map((e) => (
-				<ToolBlock key={e.id} event={e} />
+				<ToolBlock
+					key={e.id}
+					event={e}
+					permissionLabel={permissionLabels?.get(e.id)}
+				/>
 			))}
 			{(message.text || message.streaming) && (
 				<div className="flex items-start gap-0">
@@ -1073,7 +1095,8 @@ function ChatPage() {
 			});
 	}, [existingSessionId, handleWsMessage]);
 
-	const { wsStatus, sessionState, model, send } = useWs(handleWsMessage);
+	const { wsStatus, sessionState, model, actualModel, send } =
+		useWs(handleWsMessage);
 
 	// If session is running but no pending assistant turn exists, add one.
 	// Guard with historyReadyRef so we don't race the initial DB load.
@@ -1263,10 +1286,20 @@ function ChatPage() {
 		!isRunning &&
 		wsStatus === "connected";
 
+	// Strip the dated suffix the SDK reports (e.g. "-20251001") so we compare
+	// the base model identifier against the configured short-form value.
+	const normalizeModel = (m: string) => m.replace(/-\d{8}$/, "");
 	const modelShort = model
 		? (MODEL_LABELS[model] ??
 			model.replace("claude-", "").replace(/-\d{8}$/, ""))
 		: null;
+	const actualModelShort = actualModel
+		? (MODEL_LABELS[actualModel] ??
+			MODEL_LABELS[normalizeModel(actualModel)] ??
+			actualModel.replace("claude-", "").replace(/-\d{8}$/, ""))
+		: null;
+	const modelMismatch =
+		!!actualModel && !!model && normalizeModel(actualModel) !== normalizeModel(model);
 
 	return (
 		<div className="h-full flex flex-col">
@@ -1279,7 +1312,7 @@ function ChatPage() {
 
 			{/* Messages, inner min-h-full + justify-end anchors messages to bottom */}
 			<div ref={scrollRef} className="flex-1 overflow-y-auto overflow-x-hidden">
-				<div className="min-h-full flex flex-col justify-end px-5 py-2 min-w-0">
+				<div className="min-h-full flex flex-col justify-end px-5 pt-2 pb-7 min-w-0">
 					{messages.length === 0 ? (
 						<div className="flex-1 flex flex-col items-center justify-center gap-3">
 							<div className="text-2xl font-bold tracking-widest text-foreground/20 uppercase select-none">
@@ -1295,19 +1328,45 @@ function ChatPage() {
 						</div>
 					) : (
 						<>
-							{messages.map((m) => {
-								if (m.role === "user")
-									return <UserMsg key={m.id} message={m} />;
-								if (m.role === "permission")
+							{(() => {
+								// Approved permissions render as a chip under the matching
+								// tool block (matched by toolUseID === ToolEvent.id) instead
+								// of a separate row, so a long run of approvals doesn't
+								// stack up above each tool call.
+								const permissionLabels = new Map<string, string>();
+								for (const m of messages) {
+									if (m.role !== "permission") continue;
+									if (m.decision === "approved")
+										permissionLabels.set(m.id, "APPROVED");
+									else if (m.decision === "approved_session")
+										permissionLabels.set(m.id, "APPROVED FOR SESSION");
+									else if (m.decision === "approved_always")
+										permissionLabels.set(m.id, "APPROVED ALWAYS");
+								}
+								return messages.map((m) => {
+									if (m.role === "user")
+										return <UserMsg key={m.id} message={m} />;
+									if (m.role === "permission") {
+										// Approved variants are folded into the tool block.
+										// Pending and denied still render standalone.
+										if (permissionLabels.has(m.id)) return null;
+										return (
+											<PermissionCard
+												key={m.id}
+												message={m}
+												onDecide={handleDecide}
+											/>
+										);
+									}
 									return (
-										<PermissionCard
+										<AssistantMsg
 											key={m.id}
 											message={m}
-											onDecide={handleDecide}
+											permissionLabels={permissionLabels}
 										/>
 									);
-								return <AssistantMsg key={m.id} message={m} />;
-							})}
+								});
+							})()}
 							<div ref={bottomRef} />
 						</>
 					)}
@@ -1327,7 +1386,18 @@ function ChatPage() {
 					</PrivacyMask>
 				)}
 				{modelShort && (
-					<span className="absolute -top-5 right-3 text-[9px] tracking-widest text-muted-foreground/50 border border-border/70 px-2 py-0.5 uppercase bg-background z-10">
+					<span
+						className={`absolute -top-5 right-3 text-[9px] tracking-widest px-2 py-0.5 uppercase bg-background z-10 border ${
+							modelMismatch
+								? "text-amber-500/80 border-amber-500/60"
+								: "text-muted-foreground/50 border-border/70"
+						}`}
+						title={
+							modelMismatch
+								? `Vault: ${modelShort} · Agent: ${actualModelShort}`
+								: undefined
+						}
+					>
 						{modelShort}
 					</span>
 				)}
