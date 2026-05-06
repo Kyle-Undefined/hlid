@@ -48,6 +48,7 @@ export type QueryData = {
 	turns: number;
 	context_window: number | null;
 	stop_reason: string | null;
+	tokens_in_context?: number | null;
 };
 
 export type AggWindow = {
@@ -186,6 +187,19 @@ function initSchema(db: import("bun:sqlite").Database): void {
     )`);
 	db.run(
 		`CREATE INDEX IF NOT EXISTS idx_tool_events_session ON tool_events(session_id)`,
+	);
+	db.run(`
+    CREATE TABLE IF NOT EXISTS permission_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      session_id TEXT NOT NULL REFERENCES sessions(id),
+      tool_id TEXT NOT NULL,
+      tool_name TEXT NOT NULL,
+      display_name TEXT,
+      decision TEXT NOT NULL,
+      timestamp INTEGER NOT NULL
+    )`);
+	db.run(
+		`CREATE INDEX IF NOT EXISTS idx_permission_events_session ON permission_events(session_id)`,
 	);
 	db.run(`
     CREATE TABLE IF NOT EXISTS usage_daily (
@@ -361,6 +375,36 @@ function initSchema(db: import("bun:sqlite").Database): void {
 			);
 		})();
 	}
+
+	// actual_model: the model the CLI actually used (may differ from `model`
+	// when an agent's CLAUDE.md frontmatter overrides the vault default).
+	const actualModelMigrated = db
+		.query<{ value: string }, [string]>(
+			`SELECT value FROM settings WHERE key = ?`,
+		)
+		.get("_migrated_sessions_actual_model");
+	if (!actualModelMigrated) {
+		db.transaction(() => {
+			db.run(`ALTER TABLE sessions ADD COLUMN actual_model TEXT`);
+			db.run(
+				`INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('_migrated_sessions_actual_model', '1', unixepoch())`,
+			);
+		})();
+	}
+
+	const tokensInContextMigrated = db
+		.query<{ value: string }, [string]>(
+			`SELECT value FROM settings WHERE key = ?`,
+		)
+		.get("_migrated_queries_tokens_in_context");
+	if (!tokensInContextMigrated) {
+		db.transaction(() => {
+			db.run(`ALTER TABLE queries ADD COLUMN tokens_in_context INTEGER`);
+			db.run(
+				`INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('_migrated_queries_tokens_in_context', '1', unixepoch())`,
+			);
+		})();
+	}
 }
 
 export async function setSessionAgentCwd(
@@ -406,6 +450,29 @@ export async function getSessionClaudeId(
 	return row?.claude_session_id ?? null;
 }
 
+export async function setSessionActualModel(
+	sessionId: string,
+	actualModel: string,
+): Promise<void> {
+	const db = await getDb();
+	db.run(`UPDATE sessions SET actual_model = ? WHERE id = ?`, [
+		actualModel,
+		sessionId,
+	]);
+}
+
+export async function getSessionActualModel(
+	sessionId: string,
+): Promise<string | null> {
+	const db = await getDb();
+	const row = db
+		.query<{ actual_model: string | null }, [string]>(
+			`SELECT actual_model FROM sessions WHERE id = ?`,
+		)
+		.get(sessionId);
+	return row?.actual_model ?? null;
+}
+
 export async function createSession(
 	id: string,
 	label: string,
@@ -425,8 +492,8 @@ export async function recordQuery(
 	const database = await getDb();
 	database.transaction(() => {
 		database.run(
-			`INSERT INTO queries (session_id, timestamp, cost, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, duration_ms, turns, context_window, stop_reason)
-       VALUES (?, unixepoch(), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO queries (session_id, timestamp, cost, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, duration_ms, turns, context_window, stop_reason, tokens_in_context)
+       VALUES (?, unixepoch(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				sessionId,
 				data.cost,
@@ -438,6 +505,7 @@ export async function recordQuery(
 				data.turns,
 				data.context_window,
 				data.stop_reason,
+				data.tokens_in_context ?? null,
 			],
 		);
 		database.run(
@@ -524,6 +592,64 @@ export async function appendToolEvent(
 	);
 }
 
+export async function getSessionLastQueryContext(sessionId: string): Promise<{
+	context_window: number | null;
+	last_context_used: number | null;
+} | null> {
+	const db = await getDb();
+	return (
+		db
+			.query<
+				{ context_window: number | null; last_context_used: number | null },
+				[string]
+			>(
+				`SELECT context_window,
+				        COALESCE(tokens_in_context, input_tokens + cache_read_tokens + cache_creation_tokens) AS last_context_used
+				 FROM queries
+				 WHERE session_id = ?
+				 ORDER BY timestamp DESC
+				 LIMIT 1`,
+			)
+			.get(sessionId) ?? null
+	);
+}
+
+export type PermissionEventRow = {
+	tool_id: string;
+	tool_name: string;
+	display_name: string | null;
+	decision: string;
+};
+
+export async function recordPermissionEvent(
+	sessionId: string,
+	toolId: string,
+	toolName: string,
+	displayName: string | undefined,
+	decision: string,
+): Promise<void> {
+	const db = await getDb();
+	db.run(
+		`INSERT INTO permission_events (session_id, tool_id, tool_name, display_name, decision, timestamp)
+     VALUES (?, ?, ?, ?, ?, unixepoch())`,
+		[sessionId, toolId, toolName, displayName ?? null, decision],
+	);
+}
+
+export async function getSessionPermissionEvents(
+	sessionId: string,
+): Promise<PermissionEventRow[]> {
+	const db = await getDb();
+	return db
+		.query<PermissionEventRow, [string]>(
+			`SELECT tool_id, tool_name, display_name, decision
+       FROM permission_events
+       WHERE session_id = ?
+       ORDER BY timestamp ASC`,
+		)
+		.all(sessionId);
+}
+
 export async function getSessionToolEvents(
 	sessionId: string,
 ): Promise<ToolEventRow[]> {
@@ -573,6 +699,7 @@ export async function deleteSession(
 			[id],
 		);
 		db.run(`DELETE FROM tool_events WHERE session_id = ?`, [id]);
+		db.run(`DELETE FROM permission_events WHERE session_id = ?`, [id]);
 		db.run(`DELETE FROM messages WHERE session_id = ?`, [id]);
 		db.run(`DELETE FROM queries WHERE session_id = ?`, [id]);
 		db.run(`DELETE FROM sessions WHERE id = ?`, [id]);
@@ -610,6 +737,10 @@ export async function deleteSessionsOlderThan(
 		);
 		db.run(
 			`DELETE FROM tool_events WHERE session_id IN (SELECT id FROM sessions WHERE started_at < ?)`,
+			[cutoff],
+		);
+		db.run(
+			`DELETE FROM permission_events WHERE session_id IN (SELECT id FROM sessions WHERE started_at < ?)`,
 			[cutoff],
 		);
 		db.run(

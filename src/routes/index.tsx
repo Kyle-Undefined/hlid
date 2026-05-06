@@ -499,10 +499,7 @@ function DashboardHeader({
 					>
 						${agg.today.cost.toFixed(4)}
 					</PrivacyMask>
-					<PrivacyMask
-						inline
-						className="mt-1 md:mt-1.5 text-[9px] tracking-wider text-muted-foreground/40"
-					>
+					<PrivacyMask className="mt-1 md:mt-1.5 text-[9px] tracking-wider text-muted-foreground/40">
 						{agg.today.queries}q · {fmt(agg.today.tokens)} tok
 					</PrivacyMask>
 				</div>
@@ -518,10 +515,7 @@ function DashboardHeader({
 					>
 						${agg.thisMonth.cost.toFixed(4)}
 					</PrivacyMask>
-					<PrivacyMask
-						inline
-						className="mt-1 md:mt-1.5 text-[9px] tracking-wider text-muted-foreground/40"
-					>
+					<PrivacyMask className="mt-1 md:mt-1.5 text-[9px] tracking-wider text-muted-foreground/40">
 						{agg.thisMonth.queries}q · {fmt(agg.thisMonth.tokens)} tok
 					</PrivacyMask>
 				</div>
@@ -947,7 +941,7 @@ function McpPanel({ servers }: { servers: McpServerEntry[] }) {
 			case "failed":
 				return "bg-red-500/70";
 			case "pending":
-				return "bg-yellow-400/60 animate-pulse";
+				return "bg-orange-500/60 animate-pulse";
 			default:
 				return "bg-primary/30";
 		}
@@ -1124,10 +1118,7 @@ function RecentRunsSidebar({
 								? `$${stats.cost.toFixed(4)}`
 								: "--"}
 						</PrivacyMask>
-						<PrivacyMask
-							inline
-							className="mt-1 text-[8px] tracking-wider text-muted-foreground/40"
-						>
+						<PrivacyMask className="mt-1 text-[8px] tracking-wider text-muted-foreground/40">
 							{idle
 								? "idle"
 								: `${stats.queries}q · ${fmtMs(stats.duration_ms)}`}
@@ -1143,10 +1134,7 @@ function RecentRunsSidebar({
 						>
 							${agg.today.cost.toFixed(4)}
 						</PrivacyMask>
-						<PrivacyMask
-							inline
-							className="mt-1 text-[8px] tracking-wider text-muted-foreground/40"
-						>
+						<PrivacyMask className="mt-1 text-[8px] tracking-wider text-muted-foreground/40">
 							{agg.today.queries}q · {fmt(agg.today.tokens)} tok
 						</PrivacyMask>
 					</div>
@@ -1162,10 +1150,7 @@ function RecentRunsSidebar({
 						>
 							${agg.thisMonth.cost.toFixed(4)}
 						</PrivacyMask>
-						<PrivacyMask
-							inline
-							className="mt-1 text-[8px] tracking-wider text-muted-foreground/40"
-						>
+						<PrivacyMask className="mt-1 text-[8px] tracking-wider text-muted-foreground/40">
 							{agg.thisMonth.queries}q · {fmt(agg.thisMonth.tokens)} tok
 						</PrivacyMask>
 					</div>
@@ -1782,7 +1767,7 @@ function CockpitPage() {
 								/>
 							</div>
 							{agentList.length > 0 && (
-								<div className="md:hidden flex items-center gap-2 px-3 py-1.5 border-t border-border/60">
+								<div className="md:hidden flex items-baseline gap-2 px-3 py-1.5 border-t border-border/60">
 									<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase shrink-0">
 										AGENT
 									</span>
@@ -1825,7 +1810,7 @@ function CockpitPage() {
 										<Paperclip className="w-3.5 h-3.5" />
 									</button>
 									{agentList.length > 0 && (
-										<div className="hidden md:flex items-center gap-1.5">
+										<div className="hidden md:flex items-baseline gap-1.5">
 											<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase shrink-0">
 												AGENT
 											</span>

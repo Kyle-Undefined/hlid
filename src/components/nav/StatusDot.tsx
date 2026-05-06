@@ -26,7 +26,7 @@ export function StatusDot() {
 			: isError
 				? "bg-destructive"
 				: hasPendingPermissions
-					? "bg-yellow-400 animate-pulse"
+					? "bg-orange-500 animate-pulse"
 					: isRunning
 						? "bg-primary animate-pulse"
 						: "bg-green-600";

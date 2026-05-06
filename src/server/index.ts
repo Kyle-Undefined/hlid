@@ -101,16 +101,31 @@ let sessionOwnerWs: ServerWebSocket<unknown> | null = null;
 // Last error from a session, re-sent to clients that reconnect after the error fired
 let lastSessionError: string | null = null;
 
+// Buffers in-flight events for the current run so new connections can replay them.
+// Cleared at run start and on run end (done/error).
+let _runBuffer: ServerMessage[] = [];
+
 function broadcast(msg: ServerMessage): void {
 	if (msg.type === "error") lastSessionError = msg.message;
-	else if (msg.type === "status" && msg.state === "running")
+	else if (msg.type === "status" && msg.state === "running") {
 		lastSessionError = null;
-	else if (msg.type === "mcp_status")
+		_runBuffer = [];
+	} else if (msg.type === "mcp_status")
 		void db.saveSetting("mcp_status_cache", JSON.stringify(msg.servers));
+
+	if (
+		msg.type === "chunk" ||
+		msg.type === "tool_event" ||
+		msg.type === "permission_request" ||
+		msg.type === "permission_resolved"
+	) {
+		_runBuffer.push(msg);
+	} else if (msg.type === "done" || msg.type === "error") {
+		_runBuffer = [];
+	}
+
 	const data = JSON.stringify(msg);
 	for (const ws of clients) {
-		// Permission requests only go to the session owner
-		if (msg.type === "permission_request" && ws !== sessionOwnerWs) continue;
 		ws.send(data);
 	}
 }
@@ -479,6 +494,25 @@ Bun.serve({
 			return Response.json({ session_id: sessionId });
 		}
 
+		if (url.pathname === "/db/session-context") {
+			const sessionId = url.searchParams.get("session_id");
+			if (!sessionId)
+				return new Response("Missing session_id", { status: 400 });
+			const [result, actualModel] = await Promise.all([
+				db.getSessionLastQueryContext(sessionId),
+				db.getSessionActualModel(sessionId),
+			]);
+			return Response.json({ ...result, actual_model: actualModel });
+		}
+
+		if (url.pathname === "/db/session-permissions") {
+			const sessionId = url.searchParams.get("session_id");
+			if (!sessionId)
+				return new Response("Missing session_id", { status: 400 });
+			const events = await db.getSessionPermissionEvents(sessionId);
+			return Response.json(events);
+		}
+
 		if (url.pathname === "/db/weekly-stats") {
 			const stats = await db.getWeeklyStats();
 			return Response.json(stats);
@@ -604,12 +638,18 @@ Bun.serve({
 			if (lastSessionError !== null && session.getStatus().state === "error") {
 				send(ws, { type: "error", message: lastSessionError });
 			}
-			// If session is running and has no owner (e.g. page refresh), claim ownership
-			// and re-send any pending permission requests so they aren't lost.
-			if (session.isRunning() && sessionOwnerWs === null) {
-				sessionOwnerWs = ws;
-				for (const req of session.getPendingPermissionRequests()) {
-					send(ws, req);
+			if (session.isRunning()) {
+				// Replay buffered run events (chunks, tool_events, permission events)
+				// so new connections see what happened since the run started.
+				for (const msg of _runBuffer) {
+					send(ws, msg);
+				}
+				// Claim ownership and replay pending permissions if no owner yet (page refresh).
+				if (sessionOwnerWs === null) {
+					sessionOwnerWs = ws;
+					for (const req of session.getPendingPermissionRequests()) {
+						send(ws, req);
+					}
 				}
 			}
 			// Send cached MCP status so clients see server list immediately on connect
@@ -644,12 +684,10 @@ Bun.serve({
 
 			if (msg.type === "sync") {
 				send(ws, { type: "status", ...session.getStatus() });
-				if (session.isRunning()) {
-					if (sessionOwnerWs === null) sessionOwnerWs = ws;
-					if (ws === sessionOwnerWs) {
-						for (const req of session.getPendingPermissionRequests()) {
-							send(ws, req);
-						}
+				if (session.isRunning() && sessionOwnerWs === null) {
+					sessionOwnerWs = ws;
+					for (const req of session.getPendingPermissionRequests()) {
+						send(ws, req);
 					}
 				}
 				return;
@@ -736,9 +774,40 @@ Bun.serve({
 			}
 
 			if (msg.type === "permission_response") {
-				// Only the client that started the session can respond to permissions
-				if (ws !== sessionOwnerWs) return;
+				const pending = session
+					.getPendingPermissionRequests()
+					.find((r) => r.id === msg.id);
 				session.handlePermissionResponse(msg.id, msg.approved, msg.saveScope);
+				if (pending) {
+					const decision = !msg.approved
+						? ("denied" as const)
+						: msg.saveScope === "local"
+							? ("approved_always" as const)
+							: msg.saveScope === "session"
+								? ("approved_session" as const)
+								: ("approved" as const);
+					broadcast({
+						type: "permission_resolved",
+						id: msg.id,
+						toolName: pending.toolName,
+						displayName: pending.displayName,
+						decision,
+					});
+					const currentSessionId = session.getCurrentSessionId();
+					if (currentSessionId) {
+						void db
+							.recordPermissionEvent(
+								currentSessionId,
+								msg.id,
+								pending.toolName,
+								pending.displayName,
+								decision,
+							)
+							.catch((e) => {
+								console.error("[db] recordPermissionEvent failed:", e);
+							});
+					}
+				}
 				return;
 			}
 

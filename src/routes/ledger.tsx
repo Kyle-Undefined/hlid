@@ -601,10 +601,7 @@ function StatsPage() {
 								>
 									${agg.today.cost.toFixed(4)}
 								</PrivacyMask>
-								<PrivacyMask
-									inline
-									className="text-[10px] text-muted-foreground/50"
-								>
+								<PrivacyMask className="text-[10px] text-muted-foreground/50">
 									{agg.today.queries} queries · {fmt(agg.today.tokens)} tok
 								</PrivacyMask>
 							</div>
@@ -618,10 +615,7 @@ function StatsPage() {
 								>
 									${agg.thisMonth.cost.toFixed(4)}
 								</PrivacyMask>
-								<PrivacyMask
-									inline
-									className="text-[10px] text-muted-foreground/50"
-								>
+								<PrivacyMask className="text-[10px] text-muted-foreground/50">
 									{agg.thisMonth.queries} queries · {fmt(agg.thisMonth.tokens)}{" "}
 									tok
 								</PrivacyMask>

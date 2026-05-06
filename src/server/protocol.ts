@@ -62,6 +62,11 @@ export type UsageUpdateMessage = {
 	// command, or subagent overrode it. Includes the dated suffix
 	// (e.g. "claude-opus-4-7-20251001"); strip with /-\d{8}$/ to compare.
 	actualModel?: string;
+	// Max context window for the model used this inference. Carried forward
+	// from the most recent `result` message so the gauge can render without
+	// waiting for the next `done`. Absent on the very first turn of a fresh
+	// session (no prior result yet).
+	context_window?: number;
 };
 
 export type ErrorMessage = {
@@ -101,6 +106,14 @@ export type AttachmentCreatedMessage = {
 	kind: "ephemeral" | "vault";
 };
 
+export type PermissionResolvedMessage = {
+	type: "permission_resolved";
+	id: string;
+	toolName: string;
+	displayName?: string;
+	decision: "approved" | "approved_session" | "approved_always" | "denied";
+};
+
 export type ServerMessage =
 	| StatusMessage
 	| ChunkMessage
@@ -111,6 +124,7 @@ export type ServerMessage =
 	| UsageUpdateMessage
 	| ErrorMessage
 	| PermissionRequestMessage
+	| PermissionResolvedMessage
 	| UserMessageEvent
 	| McpStatusMessage
 	| AttachmentCreatedMessage;

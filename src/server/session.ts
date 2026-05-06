@@ -133,8 +133,27 @@ export class SessionManager {
 		});
 	}
 
+	// Lightweight config refresh — updates runtime settings without resetting
+	// session history or conversation continuity. Safe to call when idle.
+	// Returns true if the model changed (so callers can broadcast a status update).
+	syncConfig(config: HlidConfig): boolean {
+		const modelChanged = this.model !== config.claude.model;
+		this.model = config.claude.model;
+		this.effort = config.claude.effort;
+		this.maxTurns = config.claude.max_turns;
+		this.vaultPath = config.vault.path || process.env.HOME || "/";
+		this.permissionMode = config.claude.permission_mode;
+		this.claudeExecutable = resolveClaudeExecutable();
+		this.allowedAgentRealPaths = computeAllowedAgentRealPaths(config);
+		return modelChanged;
+	}
+
 	getStatus(): { state: SessionState; model: string } {
 		return { state: this.state, model: this.model };
+	}
+
+	getCurrentSessionId(): string | null {
+		return this.currentSessionId;
 	}
 
 	getLastMcpStatus(): McpServerStatus[] | null {
@@ -342,11 +361,16 @@ export class SessionManager {
 		// When a text block follows a tool_use, prepend a paragraph break so the
 		// rendered chat doesn't smash post-tool text into pre-tool punctuation.
 		let lastBlockType: "text" | "tool_use" | null = null;
+		let lastActualModel: string | null = null;
 		let lastTurnUsage: {
 			input_tokens: number;
 			cache_read_input_tokens?: number;
 			cache_creation_input_tokens?: number;
 		} | null = null;
+		// Carry context window size forward across turns so usage_update can
+		// populate the gauge without waiting for `done`. Set from each result
+		// message; absent (null) only on the very first turn of a fresh session.
+		let lastKnownContextWindow: number | null = null;
 		const pendingToolEvents: {
 			toolId: string;
 			name: string;
@@ -480,6 +504,9 @@ export class SessionManager {
 								}
 							: {}),
 						abortController: this.abortController ?? undefined,
+						// Vault sessions use the configured model. Agent sessions defer to
+						// whatever is configured in the agent's CLAUDE.md or local settings.
+						...(this.agentCwd ? {} : { model: this.model }),
 						permissionMode: this.permissionMode,
 						effort: this.effort,
 						...(this.maxTurns !== undefined && { maxTurns: this.maxTurns }),
@@ -630,6 +657,8 @@ export class SessionManager {
 							// the result boundary.
 							const cacheRead = u.cache_read_input_tokens ?? 0;
 							const cacheCreation = u.cache_creation_input_tokens ?? 0;
+							const actualModel = message.message.model;
+							lastActualModel = actualModel ?? null;
 							emit({
 								type: "usage_update",
 								input_tokens: u.input_tokens,
@@ -637,7 +666,10 @@ export class SessionManager {
 								cache_read_tokens: cacheRead,
 								cache_creation_tokens: cacheCreation,
 								tokens_in_context: u.input_tokens + cacheRead + cacheCreation,
-								actualModel: message.message.model,
+								actualModel,
+								...(lastKnownContextWindow != null
+									? { context_window: lastKnownContextWindow }
+									: {}),
 							});
 						}
 						for (const block of message.message.content) {
@@ -698,6 +730,16 @@ export class SessionManager {
 
 					if (message.type === "result") {
 						const primaryModel = Object.values(message.modelUsage ?? {})[0];
+						// Persist so subsequent usage_update messages can carry context_window
+						// to the gauge without waiting for the next done.
+						if (primaryModel?.contextWindow) {
+							lastKnownContextWindow = primaryModel.contextWindow;
+						}
+						const tokensInContext = lastTurnUsage
+							? lastTurnUsage.input_tokens +
+								(lastTurnUsage.cache_read_input_tokens ?? 0) +
+								(lastTurnUsage.cache_creation_input_tokens ?? 0)
+							: null;
 						const queryData: db.QueryData = {
 							cost: message.total_cost_usd ?? 0,
 							input_tokens: message.usage?.input_tokens ?? 0,
@@ -709,6 +751,7 @@ export class SessionManager {
 							turns: message.num_turns,
 							context_window: primaryModel?.contextWindow ?? null,
 							stop_reason: message.stop_reason ?? null,
+							tokens_in_context: tokensInContext,
 						};
 						// Slash commands (e.g. /triage-inbox) produce no streaming text.
 						// Their output lands in message.result instead of assistant chunks.
@@ -722,6 +765,13 @@ export class SessionManager {
 						}
 						if (sessionId) {
 							await db.recordQuery(sessionId, queryData);
+							if (lastActualModel) {
+								db.setSessionActualModel(sessionId, lastActualModel).catch(
+									(e) => {
+										console.error("[db] setSessionActualModel failed:", e);
+									},
+								);
+							}
 							if (assistantText) {
 								const assistantSeq = this.messageSeq++;
 								await db.appendMessage(
@@ -748,11 +798,6 @@ export class SessionManager {
 								assistantText = "";
 							}
 						}
-						const tokensInContext = lastTurnUsage
-							? lastTurnUsage.input_tokens +
-								(lastTurnUsage.cache_read_input_tokens ?? 0) +
-								(lastTurnUsage.cache_creation_input_tokens ?? 0)
-							: null;
 						emit({
 							type: "done",
 							session_id: sessionId,

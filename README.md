@@ -43,7 +43,6 @@ Quick reference for all vault skills. Load the full `SKILL.md` only on match.
 - Claude Code Agent SDK for the persistent vault session
 - WebSockets for real-time streaming and tool use visibility
 - `SQLite` for session and settings storage
-- Optional TLS sidecar (`scripts/tls-proxy.ts`) for HTTPS in dev and on the tailnet
 - Tailscale for remote access (no cloud needed)
 
 ## Setup
@@ -84,6 +83,10 @@ bun run build
 Runs `vite build`, then `scripts/embed-client.ts` walks `dist/client` and emits `src/server/embedded-client.ts`; every static asset becomes a `with { type: "file" }` import so `bun build --compile` bakes the bytes into the executable. No sibling `dist/` folder needed at runtime.
 
 The release workflow (`.github/workflows/release.yml`) tags trigger a Windows build that produces `hlid-vX.Y.Z-windows-x64.exe` plus a `sha256` checksum file, attached to a GitHub Release.
+
+## Updates
+
+Automatically checks GitHub Releases for new versions on launch. A manual check option is available in Forge. After downloading an update, the server automatically reloads.
 
 ## Windows Autostart
 

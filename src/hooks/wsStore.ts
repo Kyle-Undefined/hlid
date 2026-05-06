@@ -10,7 +10,8 @@ type Snapshot = {
 	// The model the CLI actually used on the most recent inference for the
 	// current chat. May differ from `model` (configured vault model) when an
 	// agent's CLAUDE.md frontmatter, slash command, or subagent overrode it.
-	// Reset to null on `status` events so a new run starts unknown.
+	// Reset to null only when a new run starts (state === "running") so the
+	// mismatch badge persists after the run completes.
 	actualModel: string | null;
 	hasPendingPermissions: boolean;
 };
@@ -82,6 +83,7 @@ let _activeSessionId: string | null = null;
 // Buffers in-flight chunks/tool_events for the current run so they survive SPA navigation.
 // Always written (even when subscribers exist), cleared on run end or new run start.
 let _messageBuffer: ServerMessage[] = [];
+let _bufferingEnabled = true;
 let _pendingPermCount = 0;
 let _pendingSessionToday = false;
 
@@ -159,14 +161,15 @@ function connect() {
 			return;
 		}
 		if (msg.type === "status") {
-			// New or ended run, previous permission state is no longer valid.
-			// Reset actualModel — a new run is unknown until the first
-			// usage_update reports what the CLI actually used.
+			// When a run starts, clear actualModel so the badge shows "unknown"
+			// until the first usage_update confirms what the CLI actually used.
+			// On idle/error (run ended), preserve actualModel so the mismatch
+			// badge persists after the run completes.
 			_pendingPermCount = 0;
 			setSnap({
 				sessionState: msg.state,
 				model: msg.model,
-				actualModel: null,
+				...(msg.state === "running" ? { actualModel: null } : {}),
 				hasPendingPermissions: false,
 			});
 		}
@@ -174,14 +177,23 @@ function connect() {
 			_pendingPermCount++;
 			setSnap({ hasPendingPermissions: true });
 		}
+		if (msg.type === "permission_resolved") {
+			_pendingPermCount = Math.max(0, _pendingPermCount - 1);
+			setSnap({ hasPendingPermissions: _pendingPermCount > 0 });
+		}
 		if (msg.type === "usage_update") {
 			// Live per-turn snapshot. Update only the "current turn" fields —
 			// cumulative tokens/cost/turns/duration/queries are still summed at `done`
 			// from the result's authoritative totals.
+			// context_window is carried forward from the most recent result so the
+			// gauge can render on sessions that haven't completed a query yet.
 			_liveStats = {
 				..._liveStats,
 				last_context_used: msg.tokens_in_context,
 				last_output_tokens: msg.output_tokens,
+				...(msg.context_window != null
+					? { context_window: msg.context_window }
+					: {}),
 			};
 			persistStats(_liveStats);
 			for (const fn of statsSubs) fn();
@@ -215,11 +227,16 @@ function connect() {
 			persistStats(_liveStats);
 			for (const fn of statsSubs) fn();
 		}
-		// Always buffer in-flight events so they survive SPA navigation (component unmount/remount).
-		// Buffer is cleared when run ends (done/error) or a new run starts (chat/clear sent).
-		// permission_request excluded, sync replays those from the server.
-		if (msg.type === "chunk" || msg.type === "tool_event") {
-			_messageBuffer.push(msg);
+		// Buffer in-flight events while buffering is enabled (before history loads,
+		// or during SPA nav with component unmounted). Disabled after history drains
+		// so the buffer doesn't grow during a live session.
+		if (
+			msg.type === "chunk" ||
+			msg.type === "tool_event" ||
+			msg.type === "permission_request" ||
+			msg.type === "permission_resolved"
+		) {
+			if (_bufferingEnabled) _messageBuffer.push(msg);
 		} else if (msg.type === "done" || msg.type === "error") {
 			_messageBuffer = [];
 			if (msg.type === "error") _pendingSessionToday = false;
@@ -266,9 +283,38 @@ export function clearMessageBuffer(): void {
 	_messageBuffer = [];
 }
 
+export function setBufferingEnabled(enabled: boolean): void {
+	_bufferingEnabled = enabled;
+	if (!enabled) _messageBuffer = [];
+}
+
 export function resetLiveStats(): void {
 	_liveStats = { ...EMPTY_STATS };
 	clearPersistedStats();
+	for (const fn of statsSubs) fn();
+}
+
+// Seed the actual model from the DB when loading an existing session so the
+// model badge reflects what was previously used without waiting for a new query.
+export function seedActualModel(actualModel: string | null): void {
+	if (actualModel === _snap.actualModel) return;
+	setSnap({ actualModel });
+}
+
+// Seed context window info from the DB when loading an existing session so
+// the gauge shows the last known value immediately, before any new query runs.
+// Always applied on session load — live usage_update/done events override it
+// naturally within seconds of any new activity.
+export function seedContextStats(
+	contextWindow: number,
+	lastContextUsed: number,
+): void {
+	_liveStats = {
+		..._liveStats,
+		context_window: contextWindow,
+		last_context_used: lastContextUsed,
+	};
+	persistStats(_liveStats);
 	for (const fn of statsSubs) fn();
 }
 

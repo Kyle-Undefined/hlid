@@ -19,3 +19,4 @@ hlid.config.toml
 .vscode
 src/server/embedded-client.ts
 build
+.hlid/

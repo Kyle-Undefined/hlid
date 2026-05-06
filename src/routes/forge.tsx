@@ -259,11 +259,13 @@ function Field({
 	children: React.ReactNode;
 }) {
 	return (
-		<div className="flex items-center justify-between gap-6 px-4 py-3">
+		<div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2 md:gap-6 px-4 py-3">
 			<div className="min-w-0">
 				<div className="text-sm text-foreground">{label}</div>
 				{hint && (
-					<div className="text-xs text-muted-foreground mt-0.5">{hint}</div>
+					<div className="text-xs text-muted-foreground mt-0.5 break-all">
+						{hint}
+					</div>
 				)}
 			</div>
 			<div className="shrink-0">{children}</div>
@@ -569,7 +571,7 @@ function McpSection({ vaultPath }: { vaultPath: string }) {
 			case "failed":
 				return "bg-red-500/70";
 			case "pending":
-				return "bg-yellow-400/60 animate-pulse";
+				return "bg-orange-500/60 animate-pulse";
 			default:
 				return "bg-primary/20";
 		}

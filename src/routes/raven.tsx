@@ -92,6 +92,40 @@ const getAgentListFn = createServerFn({ method: "GET" }).handler(async () => {
 	}));
 });
 
+const getSessionPermissionsFn = createServerFn({ method: "GET" })
+	.inputValidator((sessionId: string) => sessionId)
+	.handler(async ({ data: sessionId }) => {
+		const { server } = await getConfig();
+		try {
+			const res = await fetch(
+				`http://localhost:${server.port + 1}/db/session-permissions?session_id=${encodeURIComponent(sessionId)}`,
+			);
+			if (!res.ok) return [] as import("#/db").PermissionEventRow[];
+			return res.json() as Promise<import("#/db").PermissionEventRow[]>;
+		} catch {
+			return [] as import("#/db").PermissionEventRow[];
+		}
+	});
+
+const getSessionContextFn = createServerFn({ method: "GET" })
+	.inputValidator((sessionId: string) => sessionId)
+	.handler(async ({ data: sessionId }) => {
+		const { server } = await getConfig();
+		try {
+			const res = await fetch(
+				`http://localhost:${server.port + 1}/db/session-context?session_id=${encodeURIComponent(sessionId)}`,
+			);
+			if (!res.ok) return null;
+			return res.json() as Promise<{
+				context_window: number | null;
+				last_context_used: number | null;
+				actual_model: string | null;
+			} | null>;
+		} catch {
+			return null;
+		}
+	});
+
 const getCurrentSessionFn = createServerFn({ method: "GET" }).handler(
 	async () => {
 		const { server } = await getConfig();
@@ -201,6 +235,13 @@ type Action =
 			decision: "approved" | "approved_session" | "approved_always" | "denied";
 	  }
 	| {
+			type: "RESOLVE_OR_ADD_PERMISSION";
+			id: string;
+			toolName: string;
+			displayName?: string;
+			decision: "approved" | "approved_session" | "approved_always" | "denied";
+	  }
+	| {
 			type: "LOAD_HISTORY";
 			messages: Array<{
 				id: string;
@@ -208,6 +249,12 @@ type Action =
 				text: string;
 				toolEvents?: ToolEventMessage[];
 				attachments?: ChatAttachment[];
+			}>;
+			permissions: Array<{
+				tool_id: string;
+				tool_name: string;
+				display_name: string | null;
+				decision: string;
 			}>;
 	  }
 	| { type: "CLEAR" };
@@ -273,8 +320,31 @@ function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 					? { ...m, decision: action.decision }
 					: m,
 			);
-		case "LOAD_HISTORY":
-			return action.messages.map((m) =>
+		case "RESOLVE_OR_ADD_PERMISSION": {
+			const exists = state.some(
+				(m) => m.id === action.id && m.role === "permission",
+			);
+			if (exists) {
+				return state.map((m) =>
+					m.id === action.id && m.role === "permission"
+						? { ...m, decision: action.decision }
+						: m,
+				);
+			}
+			return [
+				...state,
+				{
+					id: action.id,
+					role: "permission" as const,
+					toolName: action.toolName,
+					title: "",
+					displayName: action.displayName,
+					decision: action.decision,
+				},
+			];
+		}
+		case "LOAD_HISTORY": {
+			const msgs: ChatMessage[] = action.messages.map((m) =>
 				m.role === "user"
 					? {
 							id: m.id,
@@ -291,6 +361,19 @@ function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 							cost: null,
 						},
 			);
+			for (const p of action.permissions) {
+				const decision = p.decision as PermissionMessage["decision"];
+				msgs.push({
+					id: p.tool_id,
+					role: "permission" as const,
+					toolName: p.tool_name,
+					title: "",
+					displayName: p.display_name ?? undefined,
+					decision,
+				});
+			}
+			return msgs;
+		}
 		case "CLEAR":
 			return [];
 	}
@@ -645,14 +728,14 @@ function PermissionCard({
 			<div className="w-12 shrink-0 text-[9px] tracking-widest text-primary/60 pt-0.5 uppercase">
 				PERM
 			</div>
-			<div className="flex-1 border border-border bg-card">
+			<div className="flex-1 min-w-0 border border-border bg-card">
 				<div className="px-4 py-3 border-b border-border">
 					<div className="text-[9px] tracking-widest text-muted-foreground/65 uppercase mb-1">
 						PERMISSION REQUEST
 					</div>
 					<div className="text-sm text-foreground">{message.title}</div>
 					{inputPreview && (
-						<div className="mt-2 px-2 py-1.5 bg-secondary/60 border border-border font-mono text-[11px] text-foreground/80 whitespace-pre-wrap break-words">
+						<div className="mt-2 px-2 py-1.5 bg-secondary/60 border border-border font-mono text-[11px] text-foreground/80 whitespace-pre-wrap break-all overflow-x-hidden">
 							{inputPreview}
 						</div>
 					)}
@@ -955,6 +1038,8 @@ function ChatPage() {
 		agent_root: string;
 	} | null>(null);
 	const [dragOver, setDragOver] = useState(false);
+	const [showModelPopup, setShowModelPopup] = useState(false);
+	const modelBadgeRef = useRef<HTMLDivElement>(null);
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const pendingIdRef = useRef<string | null>(null);
 	// Tracks whether initial history load is done so the isRunning effect doesn't race it
@@ -965,6 +1050,11 @@ function ChatPage() {
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 
 	const handleWsMessage = useCallback((msg: ServerMessage) => {
+		// Gate all messages until history has loaded. Events that arrive before
+		// history is ready are buffered and replayed via drainMessageBuffer() after
+		// LOAD_HISTORY, so returning early here doesn't lose them.
+		if (!historyReadyRef.current) return;
+
 		// Cross-device: show user message from another client if it matches our session
 		if (msg.type === "rate_limit") {
 			setRateLimit(msg);
@@ -989,6 +1079,17 @@ function ChatPage() {
 
 		if (msg.type === "permission_request") {
 			dispatch({ type: "ADD_PERMISSION", msg });
+			return;
+		}
+
+		if (msg.type === "permission_resolved") {
+			dispatch({
+				type: "RESOLVE_OR_ADD_PERMISSION",
+				id: msg.id,
+				toolName: msg.toolName,
+				displayName: msg.displayName,
+				decision: msg.decision,
+			});
 			return;
 		}
 
@@ -1028,16 +1129,38 @@ function ChatPage() {
 
 	// Load history for existing sessions, then claim any pending prompt
 	useEffect(() => {
+		// Enable buffering so events arriving before history loads are captured
+		// and can be replayed via drainMessageBuffer() after LOAD_HISTORY.
+		wsStore.setBufferingEnabled(true);
+
 		if (!existingSessionId) {
 			const p = wsStore.claimPendingPrompt();
 			if (p) dispatch({ type: "ADD_USER", id: uid(), text: p });
 			historyReadyRef.current = true;
-			wsStore.clearMessageBuffer();
+			wsStore.setBufferingEnabled(false);
 			wsStore.send({ type: "sync" });
-			return;
+			return () => {
+				wsStore.setBufferingEnabled(true);
+			};
 		}
-		getSessionDataFn({ data: existingSessionId })
-			.then((rows) => {
+
+		let cancelled = false;
+		Promise.all([
+			getSessionDataFn({ data: existingSessionId }),
+			getSessionContextFn({ data: existingSessionId }),
+			getSessionPermissionsFn({ data: existingSessionId }),
+		])
+			.then(([rows, ctx, permEvents]) => {
+				if (cancelled) return;
+				// Seed context gauge from DB so it's visible immediately on session open,
+				// before any new message is sent. Live usage_update/done events will
+				// override this once the session is active.
+				if (ctx?.context_window && ctx.last_context_used != null) {
+					wsStore.seedContextStats(ctx.context_window, ctx.last_context_used);
+				}
+				if (ctx?.actual_model !== undefined) {
+					wsStore.seedActualModel(ctx.actual_model);
+				}
 				dispatch({
 					type: "LOAD_HISTORY",
 					messages: rows.map((r) => ({
@@ -1064,6 +1187,7 @@ function ChatPage() {
 							kind: a.kind,
 						})),
 					})),
+					permissions: permEvents,
 				});
 				const p = wsStore.claimPendingPrompt();
 				if (p) {
@@ -1073,26 +1197,38 @@ function ChatPage() {
 					}
 				}
 				historyReadyRef.current = true;
-				// If session is running, add pending bubble before draining so chunks attach to it
-				if (
-					wsStore.getSnapshot().sessionState === "running" &&
-					!pendingIdRef.current
-				) {
+				// Reset any stale pending ID — LOAD_HISTORY wiped the bubble it referenced,
+				// so we must start fresh before draining. Without this, chunks buffered
+				// during the DB fetch get APPEND_CHUNK'd to a non-existent message ID and
+				// silently vanish (the reducer map-over just skips the missing ID).
+				pendingIdRef.current = null;
+				// If session is running, add a fresh bubble before draining so buffered
+				// chunks have a target to attach to.
+				if (wsStore.getSnapshot().sessionState === "running") {
 					const newId = uid();
 					pendingIdRef.current = newId;
 					dispatch({ type: "ADD_ASSISTANT", id: newId });
 				}
-				// Replay messages that arrived while component was unmounted (tool events, chunks)
+				// Replay events that arrived before history was ready (from open() buffer
+				// replay or live events during the async DB fetch). Buffering is then
+				// disabled so events flow directly for the rest of the session.
 				for (const msg of wsStore.drainMessageBuffer()) {
 					handleWsMessage(msg);
 				}
-				// Sync with server, replays pending permissions in case WS didn't reconnect (SPA nav)
+				wsStore.setBufferingEnabled(false);
+				// Sync with server to claim session ownership if not yet set
 				wsStore.send({ type: "sync" });
 			})
 			.catch(console.error)
 			.finally(() => {
-				historyReadyRef.current = true;
+				if (!cancelled) historyReadyRef.current = true;
 			});
+
+		return () => {
+			cancelled = true;
+			// Re-enable buffering for SPA nav so events during unmount are captured
+			wsStore.setBufferingEnabled(true);
+		};
 	}, [existingSessionId, handleWsMessage]);
 
 	const { wsStatus, sessionState, model, actualModel, send } =
@@ -1148,6 +1284,21 @@ function ChatPage() {
 		el.style.height = "auto";
 		el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
 	}, [input]);
+
+	// Dismiss the model detail popup on any click outside the badge.
+	useEffect(() => {
+		if (!showModelPopup) return;
+		const handleClick = (e: MouseEvent) => {
+			if (
+				modelBadgeRef.current &&
+				!modelBadgeRef.current.contains(e.target as Node)
+			) {
+				setShowModelPopup(false);
+			}
+		};
+		document.addEventListener("click", handleClick);
+		return () => document.removeEventListener("click", handleClick);
+	}, [showModelPopup]);
 
 	const uploadFiles = useCallback(
 		async (files: FileList | File[]) => {
@@ -1273,6 +1424,7 @@ function ChatPage() {
 		dispatch({ type: "CLEAR" });
 		send({ type: "clear" });
 		wsStore.resetLiveStats();
+		wsStore.seedActualModel(null);
 		wsStore.clearMessageBuffer();
 		const newId = uid();
 		setSessionId(newId);
@@ -1378,30 +1530,48 @@ function ChatPage() {
 			{/* Bottom bar, wrapper is relative so model badge floats above entire block */}
 			<div className="shrink-0 relative">
 				{agentSkillContext && (
-					<PrivacyMask
-						inline
-						className="absolute -top-5 left-3 text-[9px] tracking-widest text-primary/60 border border-primary/30 px-2 py-0.5 uppercase bg-background z-10"
-					>
-						{agentList.find((a) => a.path === agentSkillContext)?.name ??
-							agentSkillContext.split("/").pop() ??
-							"agent"}
-					</PrivacyMask>
+					<div className="absolute -top-5 left-3 z-10">
+						<button
+							type="button"
+							className="text-[9px] tracking-widest px-2 py-0.5 uppercase bg-background border border-primary/30 text-primary/60 cursor-default"
+						>
+							<PrivacyMask inline>
+								{agentList.find((a) => a.path === agentSkillContext)?.name ??
+									agentSkillContext.split("/").pop() ??
+									"agent"}
+							</PrivacyMask>
+						</button>
+					</div>
 				)}
 				{modelShort && (
-					<span
-						className={`absolute -top-5 right-3 text-[9px] tracking-widest px-2 py-0.5 uppercase bg-background z-10 border ${
-							modelMismatch
-								? "text-amber-500/80 border-amber-500/60"
-								: "text-muted-foreground/50 border-border/70"
-						}`}
-						title={
-							modelMismatch
-								? `Vault: ${modelShort} · Agent: ${actualModelShort}`
-								: undefined
-						}
-					>
-						{modelShort}
-					</span>
+					<div ref={modelBadgeRef} className="absolute -top-5 right-3 z-10">
+						<button
+							type="button"
+							onClick={(e) => {
+								e.stopPropagation();
+								if (modelMismatch) setShowModelPopup((v) => !v);
+							}}
+							className={`text-[9px] tracking-widest px-2 py-0.5 uppercase bg-background border ${
+								modelMismatch
+									? "text-amber-500/80 border-amber-500/60 cursor-pointer"
+									: "text-muted-foreground/50 border-border/70 cursor-default"
+							}`}
+						>
+							{actualModelShort ?? modelShort}
+						</button>
+						{showModelPopup && modelMismatch && (
+							<div className="absolute bottom-full right-0 mb-1.5 bg-background border border-amber-500/40 px-3 py-2 text-[9px] tracking-widest uppercase whitespace-nowrap space-y-0.5">
+								<div>
+									<span className="text-muted-foreground/50">vault </span>
+									<span className="text-foreground/60">{modelShort}</span>
+								</div>
+								<div>
+									<span className="text-muted-foreground/50">agent </span>
+									<span className="text-amber-400">{actualModelShort}</span>
+								</div>
+							</div>
+						)}
+					</div>
 				)}
 
 				{/* Error banner */}
@@ -1423,7 +1593,7 @@ function ChatPage() {
 				{/* Input */}
 				{/* biome-ignore lint/a11y/noStaticElementInteractions: drop zone wraps the input, interactive children handle keyboard input */}
 				<div
-					className={`border-t border-border bg-background transition-colors ${
+					className={`border-t border-border bg-background transition-colors relative z-0 ${
 						dragOver ? "bg-primary/5" : ""
 					}`}
 					onDragEnter={(e) => {
@@ -1523,7 +1693,7 @@ function ChatPage() {
 						</div>
 					)}
 					{agentList.length > 0 && messages.length === 0 && (
-						<div className="flex items-center gap-2 px-4 py-1.5 border-b border-border/40">
+						<div className="flex items-baseline gap-2 px-4 py-1.5 border-b border-border/40">
 							<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase shrink-0">
 								AGENT
 							</span>
