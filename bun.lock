@@ -49,7 +49,7 @@
         "vitest": "^3.0.5",
       },
       "optionalDependencies": {
-        "@anthropic-ai/claude-agent-sdk-win32-x64": "^0.2.119",
+        "@anthropic-ai/claude-agent-sdk-win32-x64": "^0.2.129",
       },
     },
   },
@@ -72,7 +72,7 @@
 
     "@anthropic-ai/claude-agent-sdk-win32-arm64": ["@anthropic-ai/claude-agent-sdk-win32-arm64@0.2.129", "", { "os": "win32", "cpu": "arm64" }, "sha512-iGqmOmCNEIrcINJ4zwK5acC1dfZFqes0SwwF1IqsibmPqmUDJvjcbCTq5HyF6VvbEZRKKGgkAKTTiBW/zloBeA=="],
 
-    "@anthropic-ai/claude-agent-sdk-win32-x64": ["@anthropic-ai/claude-agent-sdk-win32-x64@0.2.119", "", { "os": "win32", "cpu": "x64" }, "sha512-k98Ju0wtktm6FhqTE/cXlVr6K4kGqBolVjEGzeKkW6ZILc7124euwNapAvkQCwMAavAxS/ZnO3jdKMtHtwTVTA=="],
+    "@anthropic-ai/claude-agent-sdk-win32-x64": ["@anthropic-ai/claude-agent-sdk-win32-x64@0.2.129", "", { "os": "win32", "cpu": "x64" }, "sha512-fruJBHSrg82o0gIC0gUQOBltD9fZ1UfHKxc1fEdNuxP5/paWUmMlR54j88wN5Oh0e9QzP0pAr9qzmr6zSxG+Cw=="],
 
     "@anthropic-ai/sdk": ["@anthropic-ai/sdk@0.81.0", "", { "dependencies": { "json-schema-to-ts": "^3.1.1" }, "peerDependencies": { "zod": "^3.25.0 || ^4.0.0" }, "optionalPeers": ["zod"], "bin": { "anthropic-ai-sdk": "bin/cli" } }, "sha512-D4K5PvEV6wPiRtVlVsJHIUhHAmOZ6IT/I9rKlTf84gR7GyyAurPJK7z9BOf/AZqC5d1DhYQGJNKRmV+q8dGhgw=="],
 
@@ -1405,8 +1405,6 @@
     "zod-to-json-schema": ["zod-to-json-schema@3.25.2", "", { "peerDependencies": { "zod": "^3.25.28 || ^4" } }, "sha512-O/PgfnpT1xKSDeQYSCfRI5Gy3hPf91mKVDuYLUHZJMiDFptvP41MSnWofm8dnCm0256ZNfZIM7DSzuSMAFnjHA=="],
 
     "zwitch": ["zwitch@2.0.4", "", {}, "sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A=="],
-
-    "@anthropic-ai/claude-agent-sdk/@anthropic-ai/claude-agent-sdk-win32-x64": ["@anthropic-ai/claude-agent-sdk-win32-x64@0.2.129", "", { "os": "win32", "cpu": "x64" }, "sha512-fruJBHSrg82o0gIC0gUQOBltD9fZ1UfHKxc1fEdNuxP5/paWUmMlR54j88wN5Oh0e9QzP0pAr9qzmr6zSxG+Cw=="],
 
     "@babel/core/semver": ["semver@6.3.1", "", { "bin": { "semver": "bin/semver.js" } }, "sha512-BR7VvDCVHO+q2xBEWskxS6DJE1qRnb7DxzUrogb71CWoSficBxYsiAGd+Kl0mmq/MprG9yArRkyrQxTO6XjMzA=="],
 
