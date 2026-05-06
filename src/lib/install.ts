@@ -283,12 +283,12 @@ export async function maybeSelfInstall(): Promise<void> {
 	// before (the Bun icon from a prior WSL test build, etc).
 	await refreshShellIconCache();
 
-	// Relaunch from the canonical location, forwarding original args. Detached
-	// + ignored stdio so the child is fully decoupled from this transient exe.
-	const args = process.argv.slice(1);
-	Bun.spawn([canonical, ...args], {
+	// Relaunch from the canonical location. --restart tells the new canonical to
+	// skip the running-instance probe (it knows the old instance was replaced).
+	Bun.spawn([canonical, "--restart"], {
 		stdio: ["ignore", "ignore", "ignore"],
 		detached: true,
+		windowsHide: true,
 	});
 	process.exit(0);
 }

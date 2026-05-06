@@ -44,9 +44,12 @@ if (process.execPath.endsWith(".exe")) {
 }
 
 // CLI flags. `--background` = silent boot (used by the autostart registry entry).
+// `--restart` = post-update relaunch; implies background and skips the running-
+// instance probe (the old instance was just replaced, not still running).
 // No flag = interactive launch (double-click); we'll open the browser once the
 // server is ready.
-const BACKGROUND_MODE = process.argv.includes("--background");
+const RESTART_MODE = process.argv.includes("--restart");
+const BACKGROUND_MODE = RESTART_MODE || process.argv.includes("--background");
 
 const config = loadConfig();
 syncWrappers(config.agents ?? []);
@@ -58,8 +61,8 @@ const BIND_HOST = config.server.local_network_access ? "0.0.0.0" : "127.0.0.1";
 // If a previous instance is already running on our UI port, treat this launch
 // as a "click to open", surface the running UI in a browser and exit. This
 // makes double-clicking hlid.exe a friendly no-op when it's already up.
-// Skip this check when restarting: we deliberately replaced the old instance.
-if (process.execPath.endsWith(".exe")) {
+// Skipped on --restart: the old instance was deliberately replaced.
+if (process.execPath.endsWith(".exe") && !RESTART_MODE) {
 	const probeUrl = `http://127.0.0.1:${config.server.port}/`;
 	try {
 		const res = await fetch(probeUrl, {
