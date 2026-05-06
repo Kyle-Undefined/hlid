@@ -10,6 +10,7 @@ import type { ServerWebSocket } from "bun";
 import uiHandler from "../../dist/server/server.js";
 import * as db from "../db";
 import { isAllowedOrigin, isAllowedOriginHeader } from "../lib/allowedOrigin";
+import { registerBunServer } from "../lib/lifecycle";
 import { loadToken, verifyToken } from "../lib/token";
 import { clampInt } from "../lib/utils";
 import {
@@ -249,41 +250,43 @@ const upstreamBase = (
 ).replace(/\/$/, "");
 
 try {
-	Bun.serve({
-		hostname: "127.0.0.1",
-		port: PROXY_PORT,
-		// Long SSE streams from Anthropic can idle past 10s during tool calls.
-		// 255s is Bun.serve's max, prevents premature socket close.
-		idleTimeout: 255,
-		async fetch(req) {
-			const reqUrl = new URL(req.url);
-			const targetUrl = `${upstreamBase}${reqUrl.pathname}${reqUrl.search}`;
-			const forwardHeaders = new Headers(req.headers);
-			forwardHeaders.delete("host");
-			let upstream: Response;
-			try {
-				upstream = await fetch(targetUrl, {
-					method: req.method,
-					headers: forwardHeaders,
-					body:
-						req.method !== "GET" && req.method !== "HEAD"
-							? req.body
-							: undefined,
+	registerBunServer(
+		Bun.serve({
+			hostname: "127.0.0.1",
+			port: PROXY_PORT,
+			// Long SSE streams from Anthropic can idle past 10s during tool calls.
+			// 255s is Bun.serve's max, prevents premature socket close.
+			idleTimeout: 255,
+			async fetch(req) {
+				const reqUrl = new URL(req.url);
+				const targetUrl = `${upstreamBase}${reqUrl.pathname}${reqUrl.search}`;
+				const forwardHeaders = new Headers(req.headers);
+				forwardHeaders.delete("host");
+				let upstream: Response;
+				try {
+					upstream = await fetch(targetUrl, {
+						method: req.method,
+						headers: forwardHeaders,
+						body:
+							req.method !== "GET" && req.method !== "HEAD"
+								? req.body
+								: undefined,
+					});
+				} catch {
+					return new Response("upstream error", { status: 502 });
+				}
+				captureUtilizationHeaders(upstream.headers);
+				const responseHeaders = new Headers(upstream.headers);
+				responseHeaders.delete("content-encoding");
+				responseHeaders.delete("content-length");
+				responseHeaders.delete("transfer-encoding");
+				return new Response(upstream.body, {
+					status: upstream.status,
+					headers: responseHeaders,
 				});
-			} catch {
-				return new Response("upstream error", { status: 502 });
-			}
-			captureUtilizationHeaders(upstream.headers);
-			const responseHeaders = new Headers(upstream.headers);
-			responseHeaders.delete("content-encoding");
-			responseHeaders.delete("content-length");
-			responseHeaders.delete("transfer-encoding");
-			return new Response(upstream.body, {
-				status: upstream.status,
-				headers: responseHeaders,
-			});
-		},
-	});
+			},
+		}),
+	);
 	process.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${PROXY_PORT}`;
 	console.log(`Anthropic proxy on :${PROXY_PORT} → ${upstreamBase}`);
 } catch (e) {
@@ -331,25 +334,43 @@ function tryUiStatic(pathname: string): Response | null {
 }
 
 if (isCompiled) {
-	Bun.serve({
-		port: UI_PORT,
-		hostname: BIND_HOST,
-		idleTimeout: 60,
-		async fetch(req, srv) {
-			const url = new URL(req.url);
-			const staticRes = tryUiStatic(url.pathname);
-			if (staticRes) return staticRes;
-			// h3-v2 expects req.ip (or req.context.clientAddress). Bun surfaces the
-			// peer address via server.requestIP; attach it before delegating.
-			const peer = srv.requestIP(req)?.address;
-			if (peer && !(req as Request & { ip?: string }).ip) {
-				Object.defineProperty(req, "ip", { value: peer, configurable: true });
-			}
-			return (
-				uiHandler as { fetch: (r: Request, s: unknown) => Promise<Response> }
-			).fetch(req, srv);
-		},
-	});
+	// On --restart the old canonical's TCP socket may still be held by the OS
+	// briefly after the process exits. Retry until the socket is released.
+	const uiServeDeadline = Date.now() + 30_000;
+	while (true) {
+		try {
+			registerBunServer(
+				Bun.serve({
+					port: UI_PORT,
+					hostname: BIND_HOST,
+					idleTimeout: 60,
+					async fetch(req, srv) {
+						const url = new URL(req.url);
+						const staticRes = tryUiStatic(url.pathname);
+						if (staticRes) return staticRes;
+						// h3-v2 expects req.ip (or req.context.clientAddress). Bun surfaces the
+						// peer address via server.requestIP; attach it before delegating.
+						const peer = srv.requestIP(req)?.address;
+						if (peer && !(req as Request & { ip?: string }).ip) {
+							Object.defineProperty(req, "ip", {
+								value: peer,
+								configurable: true,
+							});
+						}
+						return (
+							uiHandler as {
+								fetch: (r: Request, s: unknown) => Promise<Response>;
+							}
+						).fetch(req, srv);
+					},
+				}),
+			);
+			break;
+		} catch (e) {
+			if (Date.now() >= uiServeDeadline) throw e;
+			await new Promise((r) => setTimeout(r, 200));
+		}
+	}
 	console.log(`Hlid UI on :${UI_PORT}`);
 
 	// Interactive launch (double-click) gets a browser pop. Autostart-at-login
@@ -373,39 +394,29 @@ const tlsConfig =
 			}
 		: {};
 
-Bun.serve({
-	port: PORT,
-	hostname: BIND_HOST,
-	...tlsConfig,
+registerBunServer(
+	Bun.serve({
+		port: PORT,
+		hostname: BIND_HOST,
+		...tlsConfig,
 
-	async fetch(req, server) {
-		const url = new URL(req.url);
+		async fetch(req, server) {
+			const url = new URL(req.url);
 
-		if (
-			!isAllowedOrigin(
-				server.requestIP(req)?.address,
-				config.server.local_network_access,
-			)
-		) {
-			return new Response("Forbidden", { status: 403 });
-		}
-
-		// C3: For state-mutating requests, reject cross-origin Origin headers.
-		// Server fn calls from TanStack Start have no Origin header and are allowed.
-		if (
-			req.method !== "GET" &&
-			req.method !== "HEAD" &&
-			!isAllowedOriginHeader(
-				req.headers.get("origin"),
-				config.server.local_network_access,
-			)
-		) {
-			return new Response("Forbidden", { status: 403 });
-		}
-
-		if (url.pathname === "/ws") {
-			// C2: Reject cross-origin WS connections (prevents drive-by chat execution)
 			if (
+				!isAllowedOrigin(
+					server.requestIP(req)?.address,
+					config.server.local_network_access,
+				)
+			) {
+				return new Response("Forbidden", { status: 403 });
+			}
+
+			// C3: For state-mutating requests, reject cross-origin Origin headers.
+			// Server fn calls from TanStack Start have no Origin header and are allowed.
+			if (
+				req.method !== "GET" &&
+				req.method !== "HEAD" &&
 				!isAllowedOriginHeader(
 					req.headers.get("origin"),
 					config.server.local_network_access,
@@ -413,458 +424,479 @@ Bun.serve({
 			) {
 				return new Response("Forbidden", { status: 403 });
 			}
-			if (!verifyToken(url.searchParams.get("token"), SERVER_TOKEN)) {
-				return new Response("Unauthorized", { status: 401 });
+
+			if (url.pathname === "/ws") {
+				// C2: Reject cross-origin WS connections (prevents drive-by chat execution)
+				if (
+					!isAllowedOriginHeader(
+						req.headers.get("origin"),
+						config.server.local_network_access,
+					)
+				) {
+					return new Response("Forbidden", { status: 403 });
+				}
+				if (!verifyToken(url.searchParams.get("token"), SERVER_TOKEN)) {
+					return new Response("Unauthorized", { status: 401 });
+				}
+				if (server.upgrade(req)) return undefined;
+				return new Response("WebSocket upgrade required", { status: 426 });
 			}
-			if (server.upgrade(req)) return undefined;
-			return new Response("WebSocket upgrade required", { status: 426 });
-		}
 
-		if (url.pathname === "/status") {
-			return Response.json(session.getStatus());
-		}
-
-		if (url.pathname === "/db/sessions" && req.method === "GET") {
-			const page = clampInt(url.searchParams.get("page"), 1, 1);
-			const size = clampInt(url.searchParams.get("size"), 20, 1, 100);
-			const result = await db.getSessionsPaginated(page, size);
-			return Response.json(result);
-		}
-
-		if (url.pathname === "/db/session" && req.method === "DELETE") {
-			const id = url.searchParams.get("id");
-			if (!id) return new Response("Missing id", { status: 400 });
-			const { ephemeralPaths } = await db.deleteSession(id);
-			await unlinkPaths(ephemeralPaths);
-			return Response.json({ ok: true });
-		}
-
-		if (url.pathname === "/db/sessions/cleanup" && req.method === "POST") {
-			const days = clampInt(url.searchParams.get("older_than_days"), 30, 1);
-			const { count, ephemeralPaths } = await db.deleteSessionsOlderThan(days);
-			await unlinkPaths(ephemeralPaths);
-			return Response.json({ deleted: count });
-		}
-
-		if (url.pathname === "/db/recent-sessions") {
-			const limit = clampInt(url.searchParams.get("limit"), 14, 1);
-			const rows = await db.getRecentSessions(limit);
-			return Response.json(rows);
-		}
-
-		if (url.pathname === "/db/session-messages") {
-			const sessionId = url.searchParams.get("session_id");
-			if (!sessionId)
-				return new Response("Missing session_id", { status: 400 });
-			const [messages, toolEvents, attachments] = await Promise.all([
-				db.getSessionMessages(sessionId),
-				db.getSessionToolEvents(sessionId),
-				db.getAttachmentsForSession(sessionId),
-			]);
-			const toolsBySeq = new Map<number, (typeof toolEvents)[number][]>();
-			for (const te of toolEvents) {
-				const list = toolsBySeq.get(te.assistant_seq) ?? [];
-				list.push(te);
-				toolsBySeq.set(te.assistant_seq, list);
+			if (url.pathname === "/status") {
+				return Response.json(session.getStatus());
 			}
-			const attachBySeq = new Map<number, (typeof attachments)[number][]>();
-			for (const a of attachments) {
-				if (a.message_seq == null) continue;
-				const list = attachBySeq.get(a.message_seq) ?? [];
-				list.push(a);
-				attachBySeq.set(a.message_seq, list);
+
+			if (url.pathname === "/db/sessions" && req.method === "GET") {
+				const page = clampInt(url.searchParams.get("page"), 1, 1);
+				const size = clampInt(url.searchParams.get("size"), 20, 1, 100);
+				const result = await db.getSessionsPaginated(page, size);
+				return Response.json(result);
 			}
-			const enriched = messages.map((m) => ({
-				...m,
-				toolEvents:
-					m.role === "assistant" ? (toolsBySeq.get(m.seq) ?? []) : undefined,
-				attachments:
-					m.role === "user" ? (attachBySeq.get(m.seq) ?? []) : undefined,
-			}));
-			return Response.json(enriched);
-		}
 
-		if (url.pathname === "/db/stats") {
-			const [agg, sessions] = await Promise.all([
-				db.getAggregatedStats(),
-				db.getRecentSessions(10),
-			]);
-			return Response.json({ agg, sessions });
-		}
+			if (url.pathname === "/db/session" && req.method === "DELETE") {
+				const id = url.searchParams.get("id");
+				if (!id) return new Response("Missing id", { status: 400 });
+				const { ephemeralPaths } = await db.deleteSession(id);
+				await unlinkPaths(ephemeralPaths);
+				return Response.json({ ok: true });
+			}
 
-		if (url.pathname === "/db/current-session") {
-			const sessionId = await db.getCurrentSessionId();
-			return Response.json({ session_id: sessionId });
-		}
+			if (url.pathname === "/db/sessions/cleanup" && req.method === "POST") {
+				const days = clampInt(url.searchParams.get("older_than_days"), 30, 1);
+				const { count, ephemeralPaths } =
+					await db.deleteSessionsOlderThan(days);
+				await unlinkPaths(ephemeralPaths);
+				return Response.json({ deleted: count });
+			}
 
-		if (url.pathname === "/db/session-context") {
-			const sessionId = url.searchParams.get("session_id");
-			if (!sessionId)
-				return new Response("Missing session_id", { status: 400 });
-			const [result, actualModel] = await Promise.all([
-				db.getSessionLastQueryContext(sessionId),
-				db.getSessionActualModel(sessionId),
-			]);
-			return Response.json({ ...result, actual_model: actualModel });
-		}
+			if (url.pathname === "/db/recent-sessions") {
+				const limit = clampInt(url.searchParams.get("limit"), 14, 1);
+				const rows = await db.getRecentSessions(limit);
+				return Response.json(rows);
+			}
 
-		if (url.pathname === "/db/session-permissions") {
-			const sessionId = url.searchParams.get("session_id");
-			if (!sessionId)
-				return new Response("Missing session_id", { status: 400 });
-			const events = await db.getSessionPermissionEvents(sessionId);
-			return Response.json(events);
-		}
+			if (url.pathname === "/db/session-messages") {
+				const sessionId = url.searchParams.get("session_id");
+				if (!sessionId)
+					return new Response("Missing session_id", { status: 400 });
+				const [messages, toolEvents, attachments] = await Promise.all([
+					db.getSessionMessages(sessionId),
+					db.getSessionToolEvents(sessionId),
+					db.getAttachmentsForSession(sessionId),
+				]);
+				const toolsBySeq = new Map<number, (typeof toolEvents)[number][]>();
+				for (const te of toolEvents) {
+					const list = toolsBySeq.get(te.assistant_seq) ?? [];
+					list.push(te);
+					toolsBySeq.set(te.assistant_seq, list);
+				}
+				const attachBySeq = new Map<number, (typeof attachments)[number][]>();
+				for (const a of attachments) {
+					if (a.message_seq == null) continue;
+					const list = attachBySeq.get(a.message_seq) ?? [];
+					list.push(a);
+					attachBySeq.set(a.message_seq, list);
+				}
+				const enriched = messages.map((m) => ({
+					...m,
+					toolEvents:
+						m.role === "assistant" ? (toolsBySeq.get(m.seq) ?? []) : undefined,
+					attachments:
+						m.role === "user" ? (attachBySeq.get(m.seq) ?? []) : undefined,
+				}));
+				return Response.json(enriched);
+			}
 
-		if (url.pathname === "/db/weekly-stats") {
-			const stats = await db.getWeeklyStats();
-			return Response.json(stats);
-		}
+			if (url.pathname === "/db/stats") {
+				const [agg, sessions] = await Promise.all([
+					db.getAggregatedStats(),
+					db.getRecentSessions(10),
+				]);
+				return Response.json({ agg, sessions });
+			}
 
-		if (url.pathname === "/db/thirty-day-stats") {
-			const stats = await db.getThirtyDayStats();
-			return Response.json(stats);
-		}
+			if (url.pathname === "/db/current-session") {
+				const sessionId = await db.getCurrentSessionId();
+				return Response.json({ session_id: sessionId });
+			}
 
-		if (url.pathname === "/db/usage-windows") {
-			const windows = await db.getUsageWindows();
-			// Overlay in-memory high-water marks. DB writes are async/void so the mark
-			// is always more current during a session; DB is the cold-start fallback only.
-			const m5 = windowHighMark.get("five_hour");
-			const mW = windowHighMark.get("weekly");
-			const mS = windowHighMark.get("weekly_sonnet");
-			if (m5)
-				windows.fiveHour = {
-					...windows.fiveHour,
-					utilization: m5.utilization,
-					resetsAt: m5.resetsAt,
-				};
-			if (mW)
-				windows.weekly = {
-					...windows.weekly,
-					utilization: mW.utilization,
-					resetsAt: mW.resetsAt,
-				};
-			if (mS)
-				windows.weeklySonnet = {
-					utilization: mS.utilization,
-					resetsAt: mS.resetsAt,
-				};
-			return Response.json(windows);
-		}
+			if (url.pathname === "/db/session-context") {
+				const sessionId = url.searchParams.get("session_id");
+				if (!sessionId)
+					return new Response("Missing session_id", { status: 400 });
+				const [result, actualModel] = await Promise.all([
+					db.getSessionLastQueryContext(sessionId),
+					db.getSessionActualModel(sessionId),
+				]);
+				return Response.json({ ...result, actual_model: actualModel });
+			}
 
-		if (url.pathname === "/mcp-status" && req.method === "GET") {
-			return Response.json(session.getLastMcpStatus() ?? []);
-		}
+			if (url.pathname === "/db/session-permissions") {
+				const sessionId = url.searchParams.get("session_id");
+				if (!sessionId)
+					return new Response("Missing session_id", { status: 400 });
+				const events = await db.getSessionPermissionEvents(sessionId);
+				return Response.json(events);
+			}
 
-		if (url.pathname === "/db/logs" && req.method === "GET") {
-			const page = clampInt(url.searchParams.get("page"), 1, 1);
-			const size = clampInt(url.searchParams.get("size"), 50, 1, 200);
-			const levelParam = url.searchParams.get("level") ?? "all";
-			const level =
-				levelParam === "error" || levelParam === "warn" || levelParam === "info"
-					? (levelParam as import("../db").LogLevel)
-					: undefined;
-			const result = await db.getLogs(page, size, level);
-			return Response.json(result);
-		}
+			if (url.pathname === "/db/weekly-stats") {
+				const stats = await db.getWeeklyStats();
+				return Response.json(stats);
+			}
 
-		if (url.pathname === "/db/logs" && req.method === "DELETE") {
-			await db.clearLogs();
-			return Response.json({ ok: true });
-		}
+			if (url.pathname === "/db/thirty-day-stats") {
+				const stats = await db.getThirtyDayStats();
+				return Response.json(stats);
+			}
 
-		if (url.pathname === "/api/attachments/upload" && req.method === "POST") {
-			// Re-read config so newly-added agents route correctly without a restart.
-			// Falls back to the captured startup config if disk read fails.
-			let uploadConfig = config;
-			try {
-				uploadConfig = loadConfig();
-			} catch (err) {
-				console.warn(
-					"[attachments] loadConfig failed, using startup config:",
-					err,
+			if (url.pathname === "/db/usage-windows") {
+				const windows = await db.getUsageWindows();
+				// Overlay in-memory high-water marks. DB writes are async/void so the mark
+				// is always more current during a session; DB is the cold-start fallback only.
+				const m5 = windowHighMark.get("five_hour");
+				const mW = windowHighMark.get("weekly");
+				const mS = windowHighMark.get("weekly_sonnet");
+				if (m5)
+					windows.fiveHour = {
+						...windows.fiveHour,
+						utilization: m5.utilization,
+						resetsAt: m5.resetsAt,
+					};
+				if (mW)
+					windows.weekly = {
+						...windows.weekly,
+						utilization: mW.utilization,
+						resetsAt: mW.resetsAt,
+					};
+				if (mS)
+					windows.weeklySonnet = {
+						utilization: mS.utilization,
+						resetsAt: mS.resetsAt,
+					};
+				return Response.json(windows);
+			}
+
+			if (url.pathname === "/mcp-status" && req.method === "GET") {
+				return Response.json(session.getLastMcpStatus() ?? []);
+			}
+
+			if (url.pathname === "/db/logs" && req.method === "GET") {
+				const page = clampInt(url.searchParams.get("page"), 1, 1);
+				const size = clampInt(url.searchParams.get("size"), 50, 1, 200);
+				const levelParam = url.searchParams.get("level") ?? "all";
+				const level =
+					levelParam === "error" ||
+					levelParam === "warn" ||
+					levelParam === "info"
+						? (levelParam as import("../db").LogLevel)
+						: undefined;
+				const result = await db.getLogs(page, size, level);
+				return Response.json(result);
+			}
+
+			if (url.pathname === "/db/logs" && req.method === "DELETE") {
+				await db.clearLogs();
+				return Response.json({ ok: true });
+			}
+
+			if (url.pathname === "/api/attachments/upload" && req.method === "POST") {
+				// Re-read config so newly-added agents route correctly without a restart.
+				// Falls back to the captured startup config if disk read fails.
+				let uploadConfig = config;
+				try {
+					uploadConfig = loadConfig();
+				} catch (err) {
+					console.warn(
+						"[attachments] loadConfig failed, using startup config:",
+						err,
+					);
+				}
+				return handleUpload(req, uploadConfig, (id, kind) =>
+					broadcast({ type: "attachment_created", id, kind }),
 				);
 			}
-			return handleUpload(req, uploadConfig, (id, kind) =>
-				broadcast({ type: "attachment_created", id, kind }),
+
+			const rawMatch = url.pathname.match(
+				/^\/api\/attachments\/([a-zA-Z0-9-]+)\/raw$/,
 			);
-		}
-
-		const rawMatch = url.pathname.match(
-			/^\/api\/attachments\/([a-zA-Z0-9-]+)\/raw$/,
-		);
-		if (rawMatch && req.method === "GET") {
-			return serveAttachment(rawMatch[1]);
-		}
-
-		const idMatch = url.pathname.match(/^\/api\/attachments\/([a-zA-Z0-9-]+)$/);
-		if (idMatch && req.method === "DELETE") {
-			return removeAttachment(idMatch[1]);
-		}
-
-		if (url.pathname === "/db/attachments" && req.method === "GET") {
-			const kindParam = url.searchParams.get("kind");
-			const kind =
-				kindParam === "ephemeral" || kindParam === "vault"
-					? kindParam
-					: undefined;
-			const sessionId = url.searchParams.get("session_id") ?? undefined;
-			const search = url.searchParams.get("search") ?? undefined;
-			const sinceParam = url.searchParams.get("since");
-			const untilParam = url.searchParams.get("until");
-			const since = sinceParam ? Number(sinceParam) : undefined;
-			const until = untilParam ? Number(untilParam) : undefined;
-			const limit = clampInt(url.searchParams.get("limit"), 100, 1, 500);
-			const offset = clampInt(url.searchParams.get("offset"), 0, 0);
-			const result = await db.listAttachments({
-				kind,
-				sessionId,
-				search,
-				since: since && !Number.isNaN(since) ? since : undefined,
-				until: until && !Number.isNaN(until) ? until : undefined,
-				limit,
-				offset,
-			});
-			return Response.json(result);
-		}
-
-		return new Response("Not found", { status: 404 });
-	},
-
-	websocket: {
-		open(ws) {
-			clients.add(ws);
-			const status = session.getStatus();
-			send(ws, { type: "status", ...status });
-			// Re-send last error only when session is still in error state
-			if (lastSessionError !== null && session.getStatus().state === "error") {
-				send(ws, { type: "error", message: lastSessionError });
+			if (rawMatch && req.method === "GET") {
+				return serveAttachment(rawMatch[1]);
 			}
-			if (session.isRunning()) {
-				// Replay buffered run events (chunks, tool_events, permission events)
-				// so new connections see what happened since the run started.
-				for (const msg of _runBuffer) {
-					send(ws, msg);
-				}
-				// Claim ownership and replay pending permissions if no owner yet (page refresh).
-				if (sessionOwnerWs === null) {
-					sessionOwnerWs = ws;
-					for (const req of session.getPendingPermissionRequests()) {
-						send(ws, req);
-					}
-				}
+
+			const idMatch = url.pathname.match(
+				/^\/api\/attachments\/([a-zA-Z0-9-]+)$/,
+			);
+			if (idMatch && req.method === "DELETE") {
+				return removeAttachment(idMatch[1]);
 			}
-			// Send cached MCP status so clients see server list immediately on connect
-			const cachedMcp = session.getLastMcpStatus();
-			if (cachedMcp) {
-				send(ws, {
-					type: "mcp_status",
-					servers: cachedMcp.map((s) => ({
-						name: s.name,
-						status: s.status,
-						scope: s.scope,
-						error: s.error,
-					})),
+
+			if (url.pathname === "/db/attachments" && req.method === "GET") {
+				const kindParam = url.searchParams.get("kind");
+				const kind =
+					kindParam === "ephemeral" || kindParam === "vault"
+						? kindParam
+						: undefined;
+				const sessionId = url.searchParams.get("session_id") ?? undefined;
+				const search = url.searchParams.get("search") ?? undefined;
+				const sinceParam = url.searchParams.get("since");
+				const untilParam = url.searchParams.get("until");
+				const since = sinceParam ? Number(sinceParam) : undefined;
+				const until = untilParam ? Number(untilParam) : undefined;
+				const limit = clampInt(url.searchParams.get("limit"), 100, 1, 500);
+				const offset = clampInt(url.searchParams.get("offset"), 0, 0);
+				const result = await db.listAttachments({
+					kind,
+					sessionId,
+					search,
+					since: since && !Number.isNaN(since) ? since : undefined,
+					until: until && !Number.isNaN(until) ? until : undefined,
+					limit,
+					offset,
 				});
-			}
-		},
-
-		close(ws) {
-			clients.delete(ws);
-			if (ws === sessionOwnerWs) sessionOwnerWs = null;
-			// Session persists, no abort on disconnect
-		},
-
-		async message(ws, raw) {
-			let msg: ClientMessage;
-			try {
-				msg = JSON.parse(raw.toString()) as ClientMessage;
-			} catch {
-				send(ws, { type: "error", message: "Invalid JSON" });
-				return;
+				return Response.json(result);
 			}
 
-			if (msg.type === "sync") {
-				send(ws, { type: "status", ...session.getStatus() });
-				if (session.isRunning() && sessionOwnerWs === null) {
-					sessionOwnerWs = ws;
-					for (const req of session.getPendingPermissionRequests()) {
-						send(ws, req);
+			return new Response("Not found", { status: 404 });
+		},
+
+		websocket: {
+			open(ws) {
+				clients.add(ws);
+				const status = session.getStatus();
+				send(ws, { type: "status", ...status });
+				// Re-send last error only when session is still in error state
+				if (
+					lastSessionError !== null &&
+					session.getStatus().state === "error"
+				) {
+					send(ws, { type: "error", message: lastSessionError });
+				}
+				if (session.isRunning()) {
+					// Replay buffered run events (chunks, tool_events, permission events)
+					// so new connections see what happened since the run started.
+					for (const msg of _runBuffer) {
+						send(ws, msg);
+					}
+					// Claim ownership and replay pending permissions if no owner yet (page refresh).
+					if (sessionOwnerWs === null) {
+						sessionOwnerWs = ws;
+						for (const req of session.getPendingPermissionRequests()) {
+							send(ws, req);
+						}
 					}
 				}
-				return;
-			}
+				// Send cached MCP status so clients see server list immediately on connect
+				const cachedMcp = session.getLastMcpStatus();
+				if (cachedMcp) {
+					send(ws, {
+						type: "mcp_status",
+						servers: cachedMcp.map((s) => ({
+							name: s.name,
+							status: s.status,
+							scope: s.scope,
+							error: s.error,
+						})),
+					});
+				}
+			},
 
-			if (msg.type === "abort") {
-				if (sessionOwnerWs !== null && ws !== sessionOwnerWs) return;
-				session.abort();
-				return;
-			}
+			close(ws) {
+				clients.delete(ws);
+				if (ws === sessionOwnerWs) sessionOwnerWs = null;
+				// Session persists, no abort on disconnect
+			},
 
-			if (msg.type === "clear") {
-				if (sessionOwnerWs !== null && ws !== sessionOwnerWs) return;
-				session.clearHistory();
-				lastSessionError = null;
-				return;
-			}
-
-			if (msg.type === "reload_session") {
-				const fresh = loadConfig();
-				session.reinitialize(fresh);
-				lastSessionError = null;
-				broadcast({ type: "status", ...session.getStatus() });
-				return;
-			}
-
-			if (msg.type === "probe_mcp") {
-				void session.probeMcpStatus(broadcast);
-				return;
-			}
-
-			if (msg.type === "sync_mcp_list") {
-				const cfg = loadConfig();
-				if (!cfg.vault.path) return;
-				let vaultNames = new Set<string>();
+			async message(ws, raw) {
+				let msg: ClientMessage;
 				try {
-					vaultNames = new Set(
-						Object.keys(
+					msg = JSON.parse(raw.toString()) as ClientMessage;
+				} catch {
+					send(ws, { type: "error", message: "Invalid JSON" });
+					return;
+				}
+
+				if (msg.type === "sync") {
+					send(ws, { type: "status", ...session.getStatus() });
+					if (session.isRunning() && sessionOwnerWs === null) {
+						sessionOwnerWs = ws;
+						for (const req of session.getPendingPermissionRequests()) {
+							send(ws, req);
+						}
+					}
+					return;
+				}
+
+				if (msg.type === "abort") {
+					if (sessionOwnerWs !== null && ws !== sessionOwnerWs) return;
+					session.abort();
+					return;
+				}
+
+				if (msg.type === "clear") {
+					if (sessionOwnerWs !== null && ws !== sessionOwnerWs) return;
+					session.clearHistory();
+					lastSessionError = null;
+					return;
+				}
+
+				if (msg.type === "reload_session") {
+					const fresh = loadConfig();
+					session.reinitialize(fresh);
+					lastSessionError = null;
+					broadcast({ type: "status", ...session.getStatus() });
+					return;
+				}
+
+				if (msg.type === "probe_mcp") {
+					void session.probeMcpStatus(broadcast);
+					return;
+				}
+
+				if (msg.type === "sync_mcp_list") {
+					const cfg = loadConfig();
+					if (!cfg.vault.path) return;
+					let vaultNames = new Set<string>();
+					try {
+						vaultNames = new Set(
+							Object.keys(
+								(
+									JSON.parse(
+										readFileSync(join(cfg.vault.path, ".mcp.json"), "utf8"),
+									) as { mcpServers?: Record<string, unknown> }
+								).mcpServers ?? {},
+							),
+						);
+					} catch {}
+					let disabled: string[] = [];
+					try {
+						disabled =
 							(
 								JSON.parse(
-									readFileSync(join(cfg.vault.path, ".mcp.json"), "utf8"),
-								) as { mcpServers?: Record<string, unknown> }
-							).mcpServers ?? {},
-						),
-					);
-				} catch {}
-				let disabled: string[] = [];
-				try {
-					disabled =
-						(
-							JSON.parse(
-								readFileSync(
-									join(cfg.vault.path, ".claude", "settings.local.json"),
-									"utf8",
-								),
-							) as { disabledMcpjsonServers?: string[] }
-						).disabledMcpjsonServers ?? [];
-				} catch {}
-				const cachedList = session.getLastMcpStatus() ?? [];
-				const cachedMap = new Map(cachedList.map((s) => [s.name, s]));
-				// Preserve cloud/global entries from cache unchanged
-				const preserved = cachedList
-					.filter((s) => s.scope !== "project")
-					.map((s) => ({
-						name: s.name,
-						status: s.status,
-						scope: s.scope,
-						error: s.error,
-					}));
-				// Vault entries: current .mcp.json + cached status
-				const vault = [...vaultNames].map((name) => {
-					if (disabled.includes(name))
-						return { name, status: "disabled" as const };
-					const c = cachedMap.get(name);
-					return {
-						name,
-						status: c?.status ?? ("pending" as const),
-						scope: "project" as const,
-						error: c?.error,
-					};
-				});
-				broadcast({ type: "mcp_status", servers: [...preserved, ...vault] });
-				return;
-			}
-
-			if (msg.type === "permission_response") {
-				const pending = session
-					.getPendingPermissionRequests()
-					.find((r) => r.id === msg.id);
-				session.handlePermissionResponse(msg.id, msg.approved, msg.saveScope);
-				if (pending) {
-					const decision = !msg.approved
-						? ("denied" as const)
-						: msg.saveScope === "local"
-							? ("approved_always" as const)
-							: msg.saveScope === "session"
-								? ("approved_session" as const)
-								: ("approved" as const);
-					broadcast({
-						type: "permission_resolved",
-						id: msg.id,
-						toolName: pending.toolName,
-						displayName: pending.displayName,
-						decision,
+									readFileSync(
+										join(cfg.vault.path, ".claude", "settings.local.json"),
+										"utf8",
+									),
+								) as { disabledMcpjsonServers?: string[] }
+							).disabledMcpjsonServers ?? [];
+					} catch {}
+					const cachedList = session.getLastMcpStatus() ?? [];
+					const cachedMap = new Map(cachedList.map((s) => [s.name, s]));
+					// Preserve cloud/global entries from cache unchanged
+					const preserved = cachedList
+						.filter((s) => s.scope !== "project")
+						.map((s) => ({
+							name: s.name,
+							status: s.status,
+							scope: s.scope,
+							error: s.error,
+						}));
+					// Vault entries: current .mcp.json + cached status
+					const vault = [...vaultNames].map((name) => {
+						if (disabled.includes(name))
+							return { name, status: "disabled" as const };
+						const c = cachedMap.get(name);
+						return {
+							name,
+							status: c?.status ?? ("pending" as const),
+							scope: "project" as const,
+							error: c?.error,
+						};
 					});
-					const currentSessionId = session.getCurrentSessionId();
-					if (currentSessionId) {
-						void db
-							.recordPermissionEvent(
-								currentSessionId,
-								msg.id,
-								pending.toolName,
-								pending.displayName,
-								decision,
-							)
-							.catch((e) => {
-								console.error("[db] recordPermissionEvent failed:", e);
-							});
+					broadcast({ type: "mcp_status", servers: [...preserved, ...vault] });
+					return;
+				}
+
+				if (msg.type === "permission_response") {
+					const pending = session
+						.getPendingPermissionRequests()
+						.find((r) => r.id === msg.id);
+					session.handlePermissionResponse(msg.id, msg.approved, msg.saveScope);
+					if (pending) {
+						const decision = !msg.approved
+							? ("denied" as const)
+							: msg.saveScope === "local"
+								? ("approved_always" as const)
+								: msg.saveScope === "session"
+									? ("approved_session" as const)
+									: ("approved" as const);
+						broadcast({
+							type: "permission_resolved",
+							id: msg.id,
+							toolName: pending.toolName,
+							displayName: pending.displayName,
+							decision,
+						});
+						const currentSessionId = session.getCurrentSessionId();
+						if (currentSessionId) {
+							void db
+								.recordPermissionEvent(
+									currentSessionId,
+									msg.id,
+									pending.toolName,
+									pending.displayName,
+									decision,
+								)
+								.catch((e) => {
+									console.error("[db] recordPermissionEvent failed:", e);
+								});
+						}
+					}
+					return;
+				}
+
+				if (msg.type === "chat") {
+					if (typeof msg.text !== "string" || !msg.text.trim()) {
+						send(ws, { type: "error", message: "Invalid message" });
+						return;
+					}
+
+					// L1: Only the designated session owner (first sender) may initiate chats.
+					// Ownership persists until that WS disconnects, preventing other connected
+					// clients from hijacking the session between turns.
+					if (sessionOwnerWs !== null && ws !== sessionOwnerWs) {
+						send(ws, { type: "error", message: "Not session owner" });
+						return;
+					}
+
+					if (session.isRunning()) {
+						send(ws, { type: "error", message: "Session already running" });
+						return;
+					}
+
+					// Broadcast user prompt to all OTHER clients for cross-device sync
+					const userEventData = JSON.stringify({
+						type: "user_message",
+						text: msg.text,
+						session_id: msg.session_id,
+					});
+					for (const client of clients) {
+						if (client !== ws) client.send(userEventData);
+					}
+
+					sessionOwnerWs = ws;
+					try {
+						await session.runQuery(
+							msg.text,
+							(event) => broadcast(event),
+							msg.session_id,
+							msg.skill_context,
+							msg.attachments,
+							msg.agent_cwd,
+						);
+					} catch (err) {
+						const message =
+							err instanceof Error ? err.message : "Unknown error";
+						send(ws, { type: "error", message });
+					} finally {
+						// Only clear ownership if this ws still owns it. A sync from a
+						// reconnecting client may have claimed ownership mid-run.
+						if (sessionOwnerWs === ws) sessionOwnerWs = null;
 					}
 				}
-				return;
-			}
-
-			if (msg.type === "chat") {
-				if (typeof msg.text !== "string" || !msg.text.trim()) {
-					send(ws, { type: "error", message: "Invalid message" });
-					return;
-				}
-
-				// L1: Only the designated session owner (first sender) may initiate chats.
-				// Ownership persists until that WS disconnects, preventing other connected
-				// clients from hijacking the session between turns.
-				if (sessionOwnerWs !== null && ws !== sessionOwnerWs) {
-					send(ws, { type: "error", message: "Not session owner" });
-					return;
-				}
-
-				if (session.isRunning()) {
-					send(ws, { type: "error", message: "Session already running" });
-					return;
-				}
-
-				// Broadcast user prompt to all OTHER clients for cross-device sync
-				const userEventData = JSON.stringify({
-					type: "user_message",
-					text: msg.text,
-					session_id: msg.session_id,
-				});
-				for (const client of clients) {
-					if (client !== ws) client.send(userEventData);
-				}
-
-				sessionOwnerWs = ws;
-				try {
-					await session.runQuery(
-						msg.text,
-						(event) => broadcast(event),
-						msg.session_id,
-						msg.skill_context,
-						msg.attachments,
-						msg.agent_cwd,
-					);
-				} catch (err) {
-					const message = err instanceof Error ? err.message : "Unknown error";
-					send(ws, { type: "error", message });
-				} finally {
-					// Only clear ownership if this ws still owns it. A sync from a
-					// reconnecting client may have claimed ownership mid-run.
-					if (sessionOwnerWs === ws) sessionOwnerWs = null;
-				}
-			}
+			},
 		},
-	},
-});
+	}),
+);
 
 console.log(`Hlid server on :${PORT}${process.env.HLID_TLS ? " (TLS)" : ""}`);
 
@@ -889,118 +921,120 @@ if (config.server.tls_cert_path && config.server.tls_key_path) {
 	const SKIP_REQ = new Set(["host", "connection", "keep-alive"]);
 	const SKIP_RES = new Set(["connection", "keep-alive", "transfer-encoding"]);
 
-	Bun.serve<WsData>({
-		port: TLS_PORT,
-		hostname: BIND_HOST,
-		tls: {
-			cert: Bun.file(config.server.tls_cert_path),
-			key: Bun.file(config.server.tls_key_path),
-		},
-		websocket: {
-			open(ws) {
-				ws.data.queue = [];
-				const back = new WebSocket(ws.data.wsTarget);
-				ws.data.back = back;
-				back.onopen = () => {
-					for (const msg of ws.data.queue) ws.data.back?.send(msg);
+	registerBunServer(
+		Bun.serve<WsData>({
+			port: TLS_PORT,
+			hostname: BIND_HOST,
+			tls: {
+				cert: Bun.file(config.server.tls_cert_path),
+				key: Bun.file(config.server.tls_key_path),
+			},
+			websocket: {
+				open(ws) {
 					ws.data.queue = [];
-				};
-				back.onmessage = (ev) => {
-					if (ws.readyState === WebSocket.OPEN) ws.send(ev.data);
-				};
-				back.onclose = () => ws.close();
-				back.onerror = () => ws.close();
-			},
-			message(ws, data) {
-				// Normalize to string | ArrayBuffer — Uint8Array<ArrayBufferLike> is
-				// not assignable to WebSocket.send()'s BufferSource without a copy.
-				const payload: string | ArrayBuffer =
-					typeof data === "string"
-						? data
-						: (data.buffer.slice(
-								data.byteOffset,
-								data.byteOffset + data.byteLength,
-							) as ArrayBuffer);
-				if (ws.data.back?.readyState === WebSocket.OPEN) {
-					ws.data.back.send(payload);
-				} else {
-					ws.data.queue.push(payload);
-				}
-			},
-			close(ws) {
-				ws.data.back?.close();
-			},
-		},
-		async fetch(req, server) {
-			if (
-				!isAllowedOrigin(
-					server.requestIP(req)?.address,
-					config.server.local_network_access,
-				)
-			) {
-				return new Response("Forbidden", { status: 403 });
-			}
-
-			const url = new URL(req.url);
-
-			if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
-				if (url.pathname === "/ws") {
-					if (
-						!isAllowedOriginHeader(
-							req.headers.get("origin"),
-							config.server.local_network_access,
-						)
-					) {
-						return new Response("Forbidden", { status: 403 });
+					const back = new WebSocket(ws.data.wsTarget);
+					ws.data.back = back;
+					back.onopen = () => {
+						for (const msg of ws.data.queue) ws.data.back?.send(msg);
+						ws.data.queue = [];
+					};
+					back.onmessage = (ev) => {
+						if (ws.readyState === WebSocket.OPEN) ws.send(ev.data);
+					};
+					back.onclose = () => ws.close();
+					back.onerror = () => ws.close();
+				},
+				message(ws, data) {
+					// Normalize to string | ArrayBuffer — Uint8Array<ArrayBufferLike> is
+					// not assignable to WebSocket.send()'s BufferSource without a copy.
+					const payload: string | ArrayBuffer =
+						typeof data === "string"
+							? data
+							: (data.buffer.slice(
+									data.byteOffset,
+									data.byteOffset + data.byteLength,
+								) as ArrayBuffer);
+					if (ws.data.back?.readyState === WebSocket.OPEN) {
+						ws.data.back.send(payload);
+					} else {
+						ws.data.queue.push(payload);
 					}
-					const upgraded = server.upgrade(req, {
-						data: {
-							wsTarget: `ws://127.0.0.1:${PORT}/ws${url.search}`,
-							back: null,
-							queue: [],
-						},
-					});
-					if (!upgraded)
-						return new Response("WebSocket upgrade failed", { status: 500 });
-					return undefined;
+				},
+				close(ws) {
+					ws.data.back?.close();
+				},
+			},
+			async fetch(req, server) {
+				if (
+					!isAllowedOrigin(
+						server.requestIP(req)?.address,
+						config.server.local_network_access,
+					)
+				) {
+					return new Response("Forbidden", { status: 403 });
 				}
-				return new Response("Bad Request", { status: 400 });
-			}
 
-			const fwdHeaders = new Headers();
-			for (const [k, v] of req.headers.entries()) {
-				if (!SKIP_REQ.has(k.toLowerCase())) fwdHeaders.set(k, v);
-			}
+				const url = new URL(req.url);
 
-			let upstream: Response;
-			try {
-				upstream = await fetch(
-					`http://127.0.0.1:${UI_PORT}${url.pathname}${url.search}`,
-					{
-						method: req.method,
-						headers: fwdHeaders,
-						body:
-							req.method === "GET" || req.method === "HEAD"
-								? undefined
-								: req.body,
-					},
-				);
-			} catch {
-				return new Response("Bad Gateway", { status: 502 });
-			}
+				if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
+					if (url.pathname === "/ws") {
+						if (
+							!isAllowedOriginHeader(
+								req.headers.get("origin"),
+								config.server.local_network_access,
+							)
+						) {
+							return new Response("Forbidden", { status: 403 });
+						}
+						const upgraded = server.upgrade(req, {
+							data: {
+								wsTarget: `ws://127.0.0.1:${PORT}/ws${url.search}`,
+								back: null,
+								queue: [],
+							},
+						});
+						if (!upgraded)
+							return new Response("WebSocket upgrade failed", { status: 500 });
+						return undefined;
+					}
+					return new Response("Bad Request", { status: 400 });
+				}
 
-			const resHeaders = new Headers();
-			for (const [k, v] of upstream.headers.entries()) {
-				if (!SKIP_RES.has(k.toLowerCase())) resHeaders.set(k, v);
-			}
+				const fwdHeaders = new Headers();
+				for (const [k, v] of req.headers.entries()) {
+					if (!SKIP_REQ.has(k.toLowerCase())) fwdHeaders.set(k, v);
+				}
 
-			return new Response(upstream.body, {
-				status: upstream.status,
-				statusText: upstream.statusText,
-				headers: resHeaders,
-			});
-		},
-	});
+				let upstream: Response;
+				try {
+					upstream = await fetch(
+						`http://127.0.0.1:${UI_PORT}${url.pathname}${url.search}`,
+						{
+							method: req.method,
+							headers: fwdHeaders,
+							body:
+								req.method === "GET" || req.method === "HEAD"
+									? undefined
+									: req.body,
+						},
+					);
+				} catch {
+					return new Response("Bad Gateway", { status: 502 });
+				}
+
+				const resHeaders = new Headers();
+				for (const [k, v] of upstream.headers.entries()) {
+					if (!SKIP_RES.has(k.toLowerCase())) resHeaders.set(k, v);
+				}
+
+				return new Response(upstream.body, {
+					status: upstream.status,
+					statusText: upstream.statusText,
+					headers: resHeaders,
+				});
+			},
+		}),
+	);
 
 	console.log(
 		`Hlid TLS proxy on :${TLS_PORT} → https://${tlsHostname}:${TLS_PORT}`,

@@ -7,16 +7,24 @@
 //   2. UI hits POST /api/updates {action:"download"} → downloadUpdate()
 //      streams the versioned exe + checksums file into the staging dir,
 //      then verifyChecksum() validates the binary's SHA-256.
-//   3. UI hits POST /api/updates {action:"apply"} → applyUpdate() spawns
-//      the staged exe detached, waits for the staging-ack marker
-//      (proves the child reached maybeSelfInstall and is committing),
-//      then triggers the regular shutdown path so the child can take
-//      over the canonical install in install.ts.
+//   3. UI hits POST /api/updates {action:"apply"} → applyUpdate() opens
+//      the staged exe via the Windows shell (`explorer.exe <path>`), the
+//      same code path as a user double-clicking the file in Explorer.
+//      The running canonical stays up. The staged exe — once the user
+//      clicks through any SmartScreen prompt — runs maybeSelfInstall,
+//      which posts /api/lifecycle shutdown to the running canonical,
+//      waits for it to exit, copies itself to the canonical path, and
+//      relaunches with --restart.
 //
-// Why this lives entirely in user-space (no installer/stub):
-//   maybeSelfInstall (src/lib/install.ts) is already a fully-working
-//   "I am a versioned exe, take me canonical" path. The update flow just
-//   stages a new versioned exe and runs it — install.ts does the rest.
+// Why ShellExecute via explorer.exe (vs. an in-process install or a chained
+// `Bun.spawn` of the staged exe):
+//   SmartScreen prompts only surface when a launch comes from an
+//   interactive shell context. Programmatic CreateProcess paths
+//   (Bun.spawn, hidden PowerShell, detached cmd /c start) silently
+//   swallow the dialog when the staged binary has no reputation, and
+//   the launch fails with no feedback to the user. Routing through
+//   explorer ensures the prompt renders, the user can click through,
+//   and the existing maybeSelfInstall path takes over from there.
 //
 // Why unauthenticated GitHub:
 //   Repo is OSS. Embedding a PAT in the binary would be extracted within
@@ -37,7 +45,6 @@ import { join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { canonicalInstallDir } from "./install";
-import { shutdown } from "./lifecycle";
 import { CURRENT_VERSION } from "./version";
 
 const REPO_OWNER = "Kyle-Undefined";
@@ -45,9 +52,6 @@ const REPO_NAME = "hlid";
 const RELEASES_LATEST_URL = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest`;
 const USER_AGENT = `hlid-updater/${CURRENT_VERSION}`;
 const CHECK_TTL_MS = 24 * 60 * 60 * 1000; // 24h
-const STAGING_ACK_FILENAME = ".staging-ack";
-const STAGING_ACK_TIMEOUT_MS = 5_000;
-const STAGING_POLL_INTERVAL_MS = 100;
 // Conservative caps. Real releases land around 90 MB; this leaves headroom
 // while rejecting obvious garbage (a 5 GB redirect target, etc.).
 const MAX_EXE_BYTES = 500 * 1024 * 1024;
@@ -80,10 +84,6 @@ function stagingDir(): string {
 
 function cachePath(): string {
 	return join(canonicalInstallDir(), "update-cache.json");
-}
-
-export function stagingAckPath(): string {
-	return join(canonicalInstallDir(), STAGING_ACK_FILENAME);
 }
 
 const EMPTY_CACHE: UpdateCache = {
@@ -417,34 +417,6 @@ export async function downloadUpdate(): Promise<
 	};
 }
 
-// Wait up to STAGING_ACK_TIMEOUT_MS for the staged child to write the ack
-// marker. Bails early if the child process exits before acking — that's a
-// startup crash and we want to surface it fast so the UI can recover.
-async function waitForStagingAck(proc: {
-	exited: Promise<number>;
-}): Promise<{ ok: true } | { ok: false; reason: string }> {
-	const ack = stagingAckPath();
-	const deadline = Date.now() + STAGING_ACK_TIMEOUT_MS;
-	let exitedCode: number | null = null;
-	void proc.exited.then((c) => {
-		exitedCode = c;
-	});
-	while (Date.now() < deadline) {
-		if (existsSync(ack)) return { ok: true };
-		if (exitedCode !== null) {
-			return {
-				ok: false,
-				reason: `staged exe exited with code ${exitedCode} before ack`,
-			};
-		}
-		await new Promise((r) => setTimeout(r, STAGING_POLL_INTERVAL_MS));
-	}
-	return {
-		ok: false,
-		reason: `staged exe did not ack within ${STAGING_ACK_TIMEOUT_MS}ms`,
-	};
-}
-
 export async function applyUpdate(
 	stagedExe: string,
 ): Promise<ActionResult<{ version: string | null }>> {
@@ -452,48 +424,34 @@ export async function applyUpdate(
 		return { ok: false, error: "staged exe missing; re-download" };
 	}
 
-	// Clear any stale ack from a previous attempt before we launch.
+	// Open the staged exe via Windows shell — same code path as the user
+	// double-clicking the file in Explorer. Crucially this surfaces the
+	// SmartScreen prompt (if any) on the user's interactive desktop;
+	// programmatic CreateProcess launches (Bun.spawn, hidden PowerShell,
+	// detached cmd) get silently suppressed for unsigned binaries.
+	//
+	// We don't exit here. The staged exe's maybeSelfInstall is what tells
+	// us to shut down (POST /api/lifecycle), so the old canonical stays
+	// alive until the staged exe is committed to the install. If the user
+	// dismisses the SmartScreen prompt instead, nothing happens — the
+	// running canonical is unaffected and the user can retry.
 	try {
-		unlinkSync(stagingAckPath());
-	} catch {}
-
-	// `--background` is propagated all the way through:
-	//   staged exe → maybeSelfInstall → spawn(canonical, [--background])
-	// → canonical sees BACKGROUND_MODE=true and skips openInBrowser. Without
-	// this the user gets a fresh browser tab popped at the end of every
-	// update on top of the existing FORGE tab they're already in. The tab
-	// they're in handles its own reload via /api/version polling.
-	let proc: ReturnType<typeof Bun.spawn>;
-	try {
-		proc = Bun.spawn([stagedExe, "--background"], {
+		Bun.spawn(["explorer.exe", stagedExe], {
 			stdio: ["ignore", "ignore", "ignore"],
 			detached: true,
 			windowsHide: true,
 		});
 	} catch (e) {
-		return { ok: false, error: `failed to spawn: ${(e as Error).message}` };
+		return { ok: false, error: `failed to launch: ${(e as Error).message}` };
 	}
 
-	const ack = await waitForStagingAck(proc);
-	if (!ack.ok) {
-		// Child crashed or hung before reaching the install handoff. Old
-		// instance is still alive and nothing destructive happened — surface
-		// the failure so the UI can offer "retry" without scaring the user.
-		return { ok: false, error: ack.reason };
-	}
-
-	// Child has marked itself as committing to the install. Hand off via the
-	// regular shutdown path so we share the existing 250ms-then-exit timer
-	// (avoids racing with the shutdown POST the child also issues).
 	const cache = await readCache().catch(() => null);
-	shutdown();
 	return { ok: true, data: { version: cache?.latestVersion ?? null } };
 }
 
 // Best-effort cleanup of the staging dir. Called on boot, after the new
-// canonical instance is up, so a successful update doesn't leave the old
-// versioned exe + checksums file lying around forever. Also wipes the
-// staging-ack marker so the next update starts clean.
+// canonical instance is up, so a successful update doesn't leave the prior
+// versioned exe + checksums file lying around forever.
 export function cleanupStagingDir(): void {
 	const dir = stagingDir();
 	try {
@@ -504,9 +462,5 @@ export function cleanupStagingDir(): void {
 				} catch {}
 			}
 		}
-	} catch {}
-	try {
-		const ack = stagingAckPath();
-		if (existsSync(ack)) unlinkSync(ack);
 	} catch {}
 }

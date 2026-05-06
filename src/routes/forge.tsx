@@ -1348,7 +1348,8 @@ type ApplyState =
 	| { phase: "idle" }
 	| { phase: "checking" }
 	| { phase: "downloading" }
-	| { phase: "applying"; targetVersion: string | null }
+	| { phase: "downloaded"; stagedExe: string; targetVersion: string }
+	| { phase: "launching"; targetVersion: string }
 	| { phase: "error"; message: string };
 
 function relativeTime(epochMs: number): string {
@@ -1378,11 +1379,11 @@ function UpdatesSection() {
 		void refresh();
 	}, [refresh]);
 
-	// State C polling: while applying, hit /api/version every 1.5s. When the
-	// version response changes (new instance is up after the staged exe took
-	// canonical), reload so dad sees a fresh page on the new build.
+	// While launching, hit /api/version every 1.5s. When the version response
+	// changes (new instance is up after the staged exe took canonical), reload
+	// so dad sees a fresh page on the new build.
 	useEffect(() => {
-		if (state.phase !== "applying") return;
+		if (state.phase !== "launching") return;
 		const startVersion = status?.current ?? null;
 		const id = setInterval(async () => {
 			try {
@@ -1428,11 +1429,14 @@ function UpdatesSection() {
 		}
 	}
 
-	// Download → verify checksum → apply, in one user gesture. Done as a
-	// single click because there's no meaningful intermediate step the user
-	// would inspect; a checksum mismatch surfaces as an error and the staged
-	// file is wiped, leaving the running version untouched.
-	async function updateNow() {
+	// Download + checksum-verify the new exe, then surface a "Launch" button.
+	// We don't auto-launch because Windows SmartScreen only renders its
+	// "More info → Run anyway" prompt when the launch comes from an
+	// interactive shell context. Routing the launch through `explorer.exe
+	// <stagedExe>` (server-side) on a user click is what gets the prompt
+	// in front of the user; a programmatic spawn is silently suppressed
+	// for unsigned binaries with no SmartScreen reputation.
+	async function downloadOnly() {
 		setState({ phase: "downloading" });
 		const dl = await postAction("download").catch(
 			(e) => ({ ok: false, error: String(e) }) as const,
@@ -1446,15 +1450,24 @@ function UpdatesSection() {
 			setState({ phase: "error", message: "no staged exe path returned" });
 			return;
 		}
-		setState({ phase: "applying", targetVersion: data.version });
-		const ap = await postAction("apply", { stagedExe: data.stagedExe }).catch(
+		setState({
+			phase: "downloaded",
+			stagedExe: data.stagedExe,
+			targetVersion: data.version,
+		});
+	}
+
+	async function launchStaged(stagedExe: string, targetVersion: string) {
+		setState({ phase: "launching", targetVersion });
+		const ap = await postAction("apply", { stagedExe }).catch(
 			(e) => ({ ok: false, error: String(e) }) as const,
 		);
-		// On success the server begins shutting itself down; the polling
-		// effect above takes over and reloads when the new version answers.
 		if (!ap.ok) {
-			setState({ phase: "error", message: ap.error ?? "apply failed" });
+			setState({ phase: "error", message: ap.error ?? "launch failed" });
 		}
+		// On success the staged exe's maybeSelfInstall path will POST a
+		// shutdown to the running canonical; the polling effect above
+		// takes over and reloads when the new version answers.
 	}
 
 	const current = status?.current ?? "—";
@@ -1504,29 +1517,42 @@ function UpdatesSection() {
 				</button>
 			</Field>
 
-			{available && (
-				<Field label="Install update" hint="downloads, verifies, then restarts">
+			{available && state.phase !== "downloaded" && (
+				<Field label="Download update" hint="fetches and verifies the new exe">
 					<button
 						type="button"
 						onClick={() => {
-							void updateNow();
+							void downloadOnly();
 						}}
 						disabled={state.phase !== "idle" && state.phase !== "error"}
 						className="text-[10px] tracking-widest px-3 py-1.5 border border-primary/40 text-primary hover:bg-primary/10 transition-colors uppercase disabled:opacity-40"
 					>
-						{state.phase === "downloading"
-							? "DOWNLOADING…"
-							: state.phase === "applying"
-								? "RESTARTING…"
-								: "UPDATE NOW"}
+						{state.phase === "downloading" ? "DOWNLOADING…" : "DOWNLOAD"}
 					</button>
 				</Field>
 			)}
 
-			{state.phase === "applying" && (
+			{state.phase === "downloaded" && (
+				<Field
+					label="Launch installer"
+					hint="opens the new exe via Windows shell — accept the SmartScreen prompt to install"
+				>
+					<button
+						type="button"
+						onClick={() => {
+							void launchStaged(state.stagedExe, state.targetVersion);
+						}}
+						className="text-[10px] tracking-widest px-3 py-1.5 border border-primary/40 text-primary hover:bg-primary/10 transition-colors uppercase"
+					>
+						LAUNCH v{state.targetVersion}
+					</button>
+				</Field>
+			)}
+
+			{state.phase === "launching" && (
 				<div className="px-4 py-2 text-xs text-muted-foreground">
-					installing v{state.targetVersion ?? "?"} — page will reload when the
-					new version is up.
+					launching v{state.targetVersion} — accept the SmartScreen prompt if it
+					appears. page will reload when the new version is up.
 				</div>
 			)}
 
@@ -1971,6 +1997,9 @@ function SettingsPage() {
 	const [permissionMode, setPermissionMode] = useState(
 		initial.claude.permission_mode,
 	);
+	const [turnRecaps, setTurnRecaps] = useState(
+		initial.claude.turn_recaps ?? true,
+	);
 	const [port, setPort] = useState(String(initial.server.port));
 	const [tlsCertPath, setTlsCertPath] = useState(
 		initial.server.tls_cert_path ?? "",
@@ -2056,6 +2085,7 @@ function SettingsPage() {
 				effort,
 				max_turns: maxTurns !== "" ? Number(maxTurns) : undefined,
 				permission_mode: permissionMode,
+				turn_recaps: turnRecaps,
 			},
 			ui: {
 				enter_to_submit: enterToSubmit,
@@ -2580,6 +2610,20 @@ function SettingsPage() {
 							placeholder="unlimited"
 							className="w-32 sm:w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
 						/>
+					</Field>
+					<Field
+						label="Turn recaps"
+						hint="generate a brief Haiku summary after turns with tool use"
+					>
+						<label className="flex items-center gap-2 cursor-pointer">
+							<input
+								type="checkbox"
+								checked={turnRecaps}
+								onChange={(e) => setTurnRecaps(e.target.checked)}
+								className="w-3.5 h-3.5 accent-primary"
+							/>
+							<span className="text-xs text-muted-foreground">enabled</span>
+						</label>
 					</Field>
 				</Section>
 

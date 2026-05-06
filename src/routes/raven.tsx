@@ -195,6 +195,7 @@ type AssistantMessage = {
 	toolEvents: ToolEventMessage[];
 	streaming: boolean;
 	cost: number | null;
+	recap?: string;
 };
 
 type PermissionMessage = {
@@ -228,6 +229,7 @@ type Action =
 	| { type: "APPEND_CHUNK"; id: string; text: string }
 	| { type: "ADD_TOOL_EVENT"; id: string; event: ToolEventMessage }
 	| { type: "DONE"; id: string; cost: number | null }
+	| { type: "SET_RECAP"; id: string; recap: string }
 	| { type: "ADD_PERMISSION"; msg: PermissionRequestMessage }
 	| {
 			type: "RESOLVE_PERMISSION";
@@ -249,6 +251,7 @@ type Action =
 				text: string;
 				toolEvents?: ToolEventMessage[];
 				attachments?: ChatAttachment[];
+				recap?: string | null;
 			}>;
 			permissions: Array<{
 				tool_id: string;
@@ -298,6 +301,12 @@ function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 			return state.map((m) =>
 				m.id === action.id && m.role === "assistant"
 					? { ...m, streaming: false, cost: action.cost }
+					: m,
+			);
+		case "SET_RECAP":
+			return state.map((m) =>
+				m.id === action.id && m.role === "assistant"
+					? { ...m, recap: action.recap }
 					: m,
 			);
 		case "ADD_PERMISSION":
@@ -359,6 +368,7 @@ function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 							toolEvents: m.toolEvents ?? [],
 							streaming: false,
 							cost: null,
+							recap: m.recap ?? undefined,
 						},
 			);
 			for (const p of action.permissions) {
@@ -986,6 +996,21 @@ function AssistantMsg({
 					)}
 				</div>
 			)}
+			{message.recap && !message.streaming && (
+				<div className="my-0.5">
+					<div className="flex items-baseline gap-2.5 w-full px-3 py-1.5">
+						<span className="text-muted-foreground/30 text-[11px] shrink-0 leading-none select-none">
+							—
+						</span>
+						<span className="text-[9px] font-medium tracking-wider text-muted-foreground/40 uppercase shrink-0">
+							RECAP
+						</span>
+						<span className="text-[11px] text-primary/55 leading-relaxed">
+							{message.recap}
+						</span>
+					</div>
+				</div>
+			)}
 		</div>
 	);
 }
@@ -1020,6 +1045,9 @@ function ChatPage() {
 	const { prompt: seededPrompt } = Route.useSearch();
 	const [input, setInput] = useState(seededPrompt ?? "");
 	const navigate = useNavigate();
+	const draftKey = existingSessionId
+		? `hlid:draft:${existingSessionId}`
+		: "hlid:draft:new";
 	// Strip ?prompt from URL after seeding so refresh doesn't re-fill the box.
 	useEffect(() => {
 		if (seededPrompt === undefined) return;
@@ -1029,6 +1057,32 @@ function ChatPage() {
 			replace: true,
 		});
 	}, [seededPrompt, navigate]);
+	// Guards against the restore→persist race when draftKey changes: the
+	// persist effect would otherwise see the previous session's `input` and
+	// stomp on the new draftKey before restore runs. Set true while restoring,
+	// cleared in the same tick so persist resumes on the next keystroke.
+	const isRestoringDraftRef = useRef(false);
+	// Restore draft when the active session changes (URL prompt takes precedence).
+	useEffect(() => {
+		if (seededPrompt !== undefined) return;
+		isRestoringDraftRef.current = true;
+		try {
+			const saved = localStorage.getItem(draftKey);
+			setInput(saved ?? "");
+		} catch {
+			setInput("");
+		} finally {
+			isRestoringDraftRef.current = false;
+		}
+	}, [draftKey, seededPrompt]);
+	// Persist draft on every keystroke.
+	useEffect(() => {
+		if (isRestoringDraftRef.current) return;
+		try {
+			if (input) localStorage.setItem(draftKey, input);
+			else localStorage.removeItem(draftKey);
+		} catch {}
+	}, [input, draftKey]);
 	const [pendingAttachments, setPendingAttachments] = useState<
 		ChatAttachment[]
 	>([]);
@@ -1042,6 +1096,7 @@ function ChatPage() {
 	const modelBadgeRef = useRef<HTMLDivElement>(null);
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const pendingIdRef = useRef<string | null>(null);
+	const lastAssistantIdRef = useRef<string | null>(null);
 	// Tracks whether initial history load is done so the isRunning effect doesn't race it
 	const historyReadyRef = useRef(!existingSessionId);
 	const bottomRef = useRef<HTMLDivElement>(null);
@@ -1099,6 +1154,13 @@ function ChatPage() {
 			dispatch({ type: "ADD_ASSISTANT", id: newId });
 		}
 
+		if (msg.type === "tool_use_summary") {
+			const targetId = pendingIdRef.current ?? lastAssistantIdRef.current;
+			if (targetId)
+				dispatch({ type: "SET_RECAP", id: targetId, recap: msg.summary });
+			return;
+		}
+
 		const activeId = pendingIdRef.current;
 		if (!activeId) return;
 
@@ -1108,6 +1170,7 @@ function ChatPage() {
 			dispatch({ type: "ADD_TOOL_EVENT", id: activeId, event: msg });
 		} else if (msg.type === "done") {
 			dispatch({ type: "DONE", id: activeId, cost: msg.cost });
+			lastAssistantIdRef.current = activeId;
 			pendingIdRef.current = null;
 		} else if (msg.type === "error") {
 			const errorId =
@@ -1186,6 +1249,7 @@ function ChatPage() {
 							mime: a.mime,
 							kind: a.kind,
 						})),
+						recap: r.recap,
 					})),
 					permissions: permEvents,
 				});
@@ -1281,8 +1345,9 @@ function ChatPage() {
 	useEffect(() => {
 		const el = textareaRef.current;
 		if (!el) return;
+		const maxH = window.innerWidth < 768 ? 240 : 480;
 		el.style.height = "auto";
-		el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+		el.style.height = `${Math.min(el.scrollHeight, maxH)}px`;
 	}, [input]);
 
 	// Dismiss the model detail popup on any click outside the badge.
@@ -1407,6 +1472,9 @@ function ChatPage() {
 			attachments: attachments.length > 0 ? attachments : undefined,
 			agent_cwd: agentCwdToSend,
 		});
+		try {
+			localStorage.removeItem(draftKey);
+		} catch {}
 		setInput("");
 		setPendingAttachments([]);
 	}, [
@@ -1416,10 +1484,18 @@ function ChatPage() {
 		sessionId,
 		pendingAttachments,
 		agentSkillContext,
+		draftKey,
 	]);
 
 	const handleClear = useCallback(() => {
+		try {
+			localStorage.removeItem(draftKey);
+		} catch {}
 		pendingIdRef.current = null;
+		// Reset the recap target ref too — it points at a message we're about
+		// to wipe via dispatch CLEAR, and a late tool_use_summary would
+		// otherwise dispatch SET_RECAP at a non-existent ID.
+		lastAssistantIdRef.current = null;
 		agentContextSentRef.current = false;
 		dispatch({ type: "CLEAR" });
 		send({ type: "clear" });
@@ -1430,7 +1506,7 @@ function ChatPage() {
 		setSessionId(newId);
 		sessionIdRef.current = newId;
 		setAgentSkillContext(undefined);
-	}, [send]);
+	}, [send, draftKey]);
 
 	const canSend =
 		(input.trim().length > 0 || pendingAttachments.length > 0) &&
@@ -1717,7 +1793,7 @@ function ChatPage() {
 							</PrivacyMask>
 						</div>
 					)}
-					<div className="flex items-center">
+					<div className="flex items-start">
 						<span className="text-primary text-sm px-4 py-3 shrink-0 select-none">
 							›
 						</span>
@@ -1775,7 +1851,7 @@ function ChatPage() {
 										: "speak to the watcher…"
 							}
 							disabled={wsStatus !== "connected" || isRunning}
-							className={`flex-1 resize-none bg-transparent py-3 pr-2 text-sm text-foreground focus:outline-none disabled:opacity-30 overflow-hidden ${wsStatus !== "connected" ? "placeholder:text-foreground/50" : "placeholder:text-muted-foreground/35"}`}
+							className={`flex-1 resize-none bg-transparent py-3 pr-2 text-sm text-foreground focus:outline-none disabled:opacity-30 overflow-y-hidden min-h-[60px] md:min-h-[120px] ${wsStatus !== "connected" ? "placeholder:text-foreground/50" : "placeholder:text-muted-foreground/35"}`}
 						/>
 						{isRunning ? (
 							<button

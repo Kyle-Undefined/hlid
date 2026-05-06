@@ -106,6 +106,11 @@ export type AttachmentCreatedMessage = {
 	kind: "ephemeral" | "vault";
 };
 
+export type ToolUseSummaryMessage = {
+	type: "tool_use_summary";
+	summary: string;
+};
+
 export type PermissionResolvedMessage = {
 	type: "permission_resolved";
 	id: string;
@@ -127,7 +132,8 @@ export type ServerMessage =
 	| PermissionResolvedMessage
 	| UserMessageEvent
 	| McpStatusMessage
-	| AttachmentCreatedMessage;
+	| AttachmentCreatedMessage
+	| ToolUseSummaryMessage;
 
 export type ChatAttachment = {
 	id: string;

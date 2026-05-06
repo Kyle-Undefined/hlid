@@ -1,7 +1,7 @@
 {
   "name": "hlid",
   "description": "Hliðskjálf - Watcher of Worlds",
-  "version": "0.0.34",
+  "version": "0.0.35",
   "private": true,
   "type": "module",
   "imports": {
@@ -25,7 +25,7 @@
     "generate-icons": "bun scripts/generate-icons.ts"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.119",
+    "@anthropic-ai/claude-agent-sdk": "^0.2.129",
     "@tailwindcss/vite": "^4.1.18",
     "@tanstack/react-devtools": "latest",
     "@tanstack/react-router": "latest",
@@ -75,6 +75,6 @@
     ]
   },
   "optionalDependencies": {
-    "@anthropic-ai/claude-agent-sdk-win32-x64": "^0.2.119"
+    "@anthropic-ai/claude-agent-sdk-win32-x64": "^0.2.129"
   }
 }

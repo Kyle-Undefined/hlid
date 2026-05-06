@@ -101,6 +101,7 @@ export class SessionManager {
 	private agentCwd: string | undefined;
 	private agentMode: "cwd" | "context" = "cwd";
 	private allowedAgentRealPaths: string[] = [];
+	private turnRecaps: boolean;
 
 	constructor(config: HlidConfig) {
 		this.model = config.claude.model;
@@ -108,6 +109,7 @@ export class SessionManager {
 		this.maxTurns = config.claude.max_turns;
 		this.vaultPath = config.vault.path || process.env.HOME || "/";
 		this.permissionMode = config.claude.permission_mode;
+		this.turnRecaps = config.claude.turn_recaps ?? true;
 		this.claudeExecutable = resolveClaudeExecutable();
 		this.allowedAgentRealPaths = computeAllowedAgentRealPaths(config);
 	}
@@ -119,6 +121,7 @@ export class SessionManager {
 		this.maxTurns = config.claude.max_turns;
 		this.vaultPath = config.vault.path || process.env.HOME || "/";
 		this.permissionMode = config.claude.permission_mode;
+		this.turnRecaps = config.claude.turn_recaps ?? true;
 		this.claudeExecutable = resolveClaudeExecutable();
 		this.allowedAgentRealPaths = computeAllowedAgentRealPaths(config);
 		this.state = "idle";
@@ -143,6 +146,7 @@ export class SessionManager {
 		this.maxTurns = config.claude.max_turns;
 		this.vaultPath = config.vault.path || process.env.HOME || "/";
 		this.permissionMode = config.claude.permission_mode;
+		this.turnRecaps = config.claude.turn_recaps ?? true;
 		this.claudeExecutable = resolveClaudeExecutable();
 		this.allowedAgentRealPaths = computeAllowedAgentRealPaths(config);
 		return modelChanged;
@@ -357,6 +361,7 @@ export class SessionManager {
 		}
 
 		let assistantText = "";
+		let lastAssistantText = "";
 		// Track the last content block type across all SDK messages in this turn.
 		// When a text block follows a tool_use, prepend a paragraph break so the
 		// rendered chat doesn't smash post-tool text into pre-tool punctuation.
@@ -371,6 +376,8 @@ export class SessionManager {
 		// populate the gauge without waiting for `done`. Set from each result
 		// message; absent (null) only on the very first turn of a fresh session.
 		let lastKnownContextWindow: number | null = null;
+		let hadToolEvents = false;
+		let lastAssistantSeq = -1;
 		const pendingToolEvents: {
 			toolId: string;
 			name: string;
@@ -687,6 +694,7 @@ export class SessionManager {
 								lastBlockType = "text";
 							}
 							if (block.type === "tool_use") {
+								hadToolEvents = true;
 								pendingToolEvents.push({
 									toolId: block.id,
 									name: block.name,
@@ -701,6 +709,10 @@ export class SessionManager {
 								lastBlockType = "tool_use";
 							}
 						}
+					}
+
+					if (message.type === "tool_use_summary") {
+						emit({ type: "tool_use_summary", summary: message.summary });
 					}
 
 					if (message.type === "rate_limit_event") {
@@ -773,6 +785,8 @@ export class SessionManager {
 								);
 							}
 							if (assistantText) {
+								lastAssistantText = assistantText;
+								lastAssistantSeq = this.messageSeq;
 								const assistantSeq = this.messageSeq++;
 								await db.appendMessage(
 									sessionId,
@@ -852,6 +866,16 @@ export class SessionManager {
 			}
 
 			this.state = "idle";
+
+			// Fire a Haiku recap after turns with tool use (async, best-effort).
+			if (hadToolEvents && this.turnRecaps && lastAssistantText) {
+				void this.generateRecap(
+					sessionId ?? null,
+					lastAssistantSeq,
+					lastAssistantText,
+					emit,
+				).catch(() => {});
+			}
 		} catch (err) {
 			this.state = "error";
 			const msg = err instanceof Error ? err.message : "Unknown error";
@@ -909,6 +933,67 @@ export class SessionManager {
 			}
 			this.abortController = null;
 			emit({ type: "status", state: this.state, model: this.model });
+		}
+	}
+
+	private async generateRecap(
+		sessionId: string | null,
+		assistantSeq: number,
+		assistantText: string,
+		emit: (msg: ServerMessage) => void,
+	): Promise<void> {
+		const excerpt = assistantText.slice(0, 400).replace(/\n+/g, " ").trim();
+		const prompt = `Below is a response from a coding assistant. Write ONE concise sentence (≤15 words, present tense, active voice) summarizing what was accomplished. Reply with only the sentence, no preamble.\n\nResponse excerpt:\n${excerpt}`;
+		const ac = new AbortController();
+		const timeout = setTimeout(() => ac.abort(), 30_000);
+		try {
+			const conv = query({
+				prompt,
+				options: {
+					cwd: this.vaultPath,
+					model: "claude-haiku-4-5",
+					effort: "low" as const,
+					maxTurns: 1,
+					persistSession: false,
+					abortController: ac,
+					settingSources: ["user"],
+					allowDangerouslySkipPermissions: false,
+					canUseTool: () =>
+						Promise.resolve({ behavior: "deny" as const, message: "no tools" }),
+					...(this.claudeExecutable !== undefined && {
+						pathToClaudeCodeExecutable: this.claudeExecutable,
+					}),
+				},
+			});
+			let summary = "";
+			for await (const msg of conv) {
+				if (msg.type === "assistant") {
+					for (const block of msg.message.content) {
+						if (block.type === "text") summary += block.text;
+					}
+				}
+				if (
+					msg.type === "result" &&
+					msg.subtype === "success" &&
+					!summary &&
+					msg.result
+				) {
+					summary = msg.result;
+				}
+			}
+			const trimmed = summary.trim();
+			if (trimmed) {
+				if (sessionId && assistantSeq >= 0) {
+					await db
+						.setMessageRecap(sessionId, assistantSeq, trimmed)
+						.catch((e) => {
+							console.error("[db] setMessageRecap failed:", e);
+						});
+				}
+				emit({ type: "tool_use_summary", summary: trimmed });
+			}
+		} finally {
+			clearTimeout(timeout);
 		}
 	}
 }

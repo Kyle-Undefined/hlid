@@ -145,7 +145,26 @@ export async function uninstallAutostart(): Promise<LifecycleResult> {
 	return { ok: true };
 }
 
+type BunServer = { stop(force?: boolean): void };
+
+// Bun's entry bundle and TanStack Start's SSR bundle are separate module
+// instances. A plain module-level array would be duplicated — registerBunServer
+// (called from the entry bundle) and shutdown (called from the SSR bundle) would
+// see different arrays. globalThis is shared across both bundles in the same
+// process, so we use it as the single source of truth.
+const G = globalThis as Record<string, unknown>;
+if (!G.__hlidServers) G.__hlidServers = [] as BunServer[];
+const registeredServers = G.__hlidServers as BunServer[];
+
+export function registerBunServer(s: BunServer): void {
+	registeredServers.push(s);
+}
+
 export function shutdown(): LifecycleResult {
+	// Delay exit so the HTTP response (the apply result) has time to flush
+	// before the process dies. process.exit(0) releases all ports and handles;
+	// calling stop(true) first can block the event loop on Windows when SSE or
+	// WS connections are active, preventing this timer from ever firing.
 	setTimeout(() => process.exit(0), 250);
 	return { ok: true };
 }

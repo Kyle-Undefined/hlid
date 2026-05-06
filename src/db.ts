@@ -27,6 +27,7 @@ export type MessageRow = {
 	role: string;
 	text: string;
 	timestamp: number;
+	recap: string | null;
 };
 
 export type ToolEventRow = {
@@ -405,6 +406,20 @@ function initSchema(db: import("bun:sqlite").Database): void {
 			);
 		})();
 	}
+
+	const messageRecapMigrated = db
+		.query<{ value: string }, [string]>(
+			`SELECT value FROM settings WHERE key = ?`,
+		)
+		.get("_migrated_messages_recap");
+	if (!messageRecapMigrated) {
+		db.transaction(() => {
+			db.run(`ALTER TABLE messages ADD COLUMN recap TEXT`);
+			db.run(
+				`INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES ('_migrated_messages_recap', '1', unixepoch())`,
+			);
+		})();
+	}
 }
 
 export async function setSessionAgentCwd(
@@ -576,6 +591,19 @@ export async function appendMessage(
 		`INSERT INTO messages (session_id, seq, role, text, timestamp) VALUES (?, ?, ?, ?, unixepoch())`,
 		[sessionId, seq, role, text],
 	);
+}
+
+export async function setMessageRecap(
+	sessionId: string,
+	seq: number,
+	recap: string,
+): Promise<void> {
+	const db = await getDb();
+	db.run(`UPDATE messages SET recap = ? WHERE session_id = ? AND seq = ?`, [
+		recap,
+		sessionId,
+		seq,
+	]);
 }
 
 export async function appendToolEvent(

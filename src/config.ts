@@ -37,6 +37,7 @@ const ClaudeSchema = z.object({
 	permission_mode: z
 		.enum(["default", "acceptEdits", "bypassPermissions"])
 		.default("default"),
+	turn_recaps: z.boolean().default(true),
 });
 
 const UiSchema = z.object({
