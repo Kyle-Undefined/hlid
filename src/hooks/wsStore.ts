@@ -1,7 +1,20 @@
-import type { ClientMessage, ServerMessage } from "../server/protocol";
+import type {
+	ChatAttachment,
+	ClientMessage,
+	ServerMessage,
+} from "../server/protocol";
 import type { SessionState } from "../server/session";
 
 export type WsStatus = "connecting" | "connected" | "disconnected";
+
+export type QueuedChatMessage = {
+	id: string;
+	text: string;
+	session_id: string;
+	skill_context?: string;
+	agent_cwd?: string;
+	attachments?: ChatAttachment[];
+};
 
 type Snapshot = {
 	wsStatus: WsStatus;
@@ -90,6 +103,48 @@ let _pendingSessionToday = false;
 const statusSubs = new Set<() => void>();
 const messageSubs = new Set<(msg: ServerMessage) => void>();
 const statsSubs = new Set<() => void>();
+const queueSubs = new Set<() => void>();
+
+let _chatQueue: QueuedChatMessage[] = [];
+
+function notifyQueue(): void {
+	for (const fn of queueSubs) fn();
+}
+
+function drainQueue(): void {
+	if (_chatQueue.length === 0) return;
+	if (_ws?.readyState !== WebSocket.OPEN) return;
+	const batch = _chatQueue;
+	const first = batch[0];
+	const text = batch
+		.map((m) => m.text)
+		.filter(Boolean)
+		.join("\n\n");
+	const attachments = batch.flatMap((m) => m.attachments ?? []);
+	const userEvent: ServerMessage = {
+		type: "user_message",
+		text,
+		session_id: first.session_id,
+	};
+	for (const fn of messageSubs) fn(userEvent);
+	_pendingSessionToday = true;
+	_activeSessionId = first.session_id;
+	_messageBuffer = [];
+	const payload: Record<string, unknown> = {
+		type: "chat",
+		text,
+		session_id: first.session_id,
+	};
+	if (first.agent_cwd) payload.agent_cwd = first.agent_cwd;
+	if (attachments.length > 0) payload.attachments = attachments;
+	try {
+		_ws.send(JSON.stringify(payload));
+		_chatQueue = [];
+		notifyQueue();
+	} catch {
+		// Connection closed unexpectedly; items remain in queue for retry on reconnect
+	}
+}
 
 function getHlidToken(): string {
 	return (
@@ -161,17 +216,17 @@ function connect() {
 			return;
 		}
 		if (msg.type === "status") {
-			// When a run starts, clear actualModel so the badge shows "unknown"
-			// until the first usage_update confirms what the CLI actually used.
-			// On idle/error (run ended), preserve actualModel so the mismatch
-			// badge persists after the run completes.
+			// Do not clear actualModel on run start — let usage_update update it
+			// naturally. This preserves the mismatch badge across submits so it only
+			// changes when the actual model actually changes. handleClear calls
+			// seedActualModel(null) explicitly for true new-session resets.
 			_pendingPermCount = 0;
 			setSnap({
 				sessionState: msg.state,
 				model: msg.model,
-				...(msg.state === "running" ? { actualModel: null } : {}),
 				hasPendingPermissions: false,
 			});
+			if (msg.state === "idle") drainQueue();
 		}
 		if (msg.type === "permission_request") {
 			_pendingPermCount++;
@@ -206,6 +261,9 @@ function connect() {
 		}
 		if (msg.type === "done") {
 			_pendingSessionToday = false;
+			// Ignore done from a stale session (e.g. in-flight query from before clear)
+			if (_activeSessionId !== null && msg.session_id !== _activeSessionId)
+				return;
 			_liveStats = {
 				turns: _liveStats.turns + msg.turns,
 				cost: _liveStats.cost + (msg.cost ?? 0),
@@ -238,7 +296,11 @@ function connect() {
 		) {
 			if (_bufferingEnabled) _messageBuffer.push(msg);
 		} else if (msg.type === "done" || msg.type === "error") {
-			_messageBuffer = [];
+			// Only clear the buffer in live mode. When buffering is enabled (history
+			// still loading), preserve the buffer so a fast-completing query doesn't
+			// lose its streamed chunks before history finishes loading. The component
+			// will clear or drain the buffer once LOAD_HISTORY completes.
+			if (!_bufferingEnabled) _messageBuffer = [];
 			if (msg.type === "error") _pendingSessionToday = false;
 		}
 		for (const fn of messageSubs) fn(msg);
@@ -264,6 +326,10 @@ export function subscribeMessage(fn: (msg: ServerMessage) => void): () => void {
 export function send(msg: ClientMessage): void {
 	if (msg.type === "chat") _pendingSessionToday = true;
 	if (msg.type === "chat" || msg.type === "clear") _messageBuffer = [];
+	if (msg.type === "clear") {
+		_chatQueue = [];
+		notifyQueue();
+	}
 	if (msg.type === "permission_response") {
 		_pendingPermCount = Math.max(0, _pendingPermCount - 1);
 		setSnap({ hasPendingPermissions: _pendingPermCount > 0 });
@@ -290,6 +356,7 @@ export function setBufferingEnabled(enabled: boolean): void {
 
 export function resetLiveStats(): void {
 	_liveStats = { ...EMPTY_STATS };
+	_activeSessionId = null;
 	clearPersistedStats();
 	for (const fn of statsSubs) fn();
 }
@@ -347,4 +414,32 @@ export function getActiveSessionId(): string | null {
 
 export function setActiveSessionId(id: string): void {
 	_activeSessionId = id;
+}
+
+export function enqueueChat(msg: QueuedChatMessage): void {
+	_chatQueue = [..._chatQueue, msg];
+	notifyQueue();
+}
+
+export function removeFromQueue(id: string): QueuedChatMessage | undefined {
+	const item = _chatQueue.find((m) => m.id === id);
+	if (!item) return undefined;
+	_chatQueue = _chatQueue.filter((m) => m.id !== id);
+	notifyQueue();
+	return item;
+}
+
+export function getQueue(): QueuedChatMessage[] {
+	return _chatQueue;
+}
+
+export function subscribeQueue(fn: () => void): () => void {
+	queueSubs.add(fn);
+	return () => queueSubs.delete(fn);
+}
+
+export function clearChatQueue(): void {
+	if (_chatQueue.length === 0) return;
+	_chatQueue = [];
+	notifyQueue();
 }

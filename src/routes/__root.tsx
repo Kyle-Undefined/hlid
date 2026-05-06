@@ -1,10 +1,12 @@
 import { createRootRoute, HeadContent, Scripts } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { BottomNav } from "#/components/nav/BottomNav";
 import { Sidebar } from "#/components/nav/Sidebar";
+import { PullToRefreshIndicator } from "#/components/PullToRefreshIndicator";
 import { getConfig } from "#/config";
 import * as privacyStore from "#/hooks/privacyStore";
+import { usePullToRefresh } from "#/hooks/usePullToRefresh";
 
 import appCss from "../styles.css?url";
 
@@ -64,6 +66,8 @@ function SyncPrivacyStore() {
 
 function RootDocument({ children }: { children: React.ReactNode }) {
 	const { theme, mobileTheme, token } = Route.useLoaderData();
+	const wrapperRef = useRef<HTMLDivElement>(null);
+	const { pullY, isRefreshing } = usePullToRefresh(wrapperRef);
 
 	// JSON.stringify on enum strings ("dark"|"tan"|"same") is XSS-safe.
 	// Runs before first paint to prevent flash when mobile theme differs from desktop.
@@ -87,8 +91,14 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 			<body>
 				<div className="flex h-dvh overflow-hidden bg-background text-foreground">
 					<Sidebar />
-					<div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-						<main className="flex-1 min-h-0 overflow-auto">{children}</main>
+					<div
+						ref={wrapperRef}
+						className="flex-1 flex flex-col min-h-0 overflow-hidden relative"
+					>
+						<PullToRefreshIndicator pullY={pullY} isRefreshing={isRefreshing} />
+						<main className="flex-1 min-h-0 overflow-auto overscroll-y-contain">
+							{children}
+						</main>
 						<BottomNav />
 					</div>
 				</div>

@@ -720,15 +720,21 @@ function mergeUsageWindows(
 	prev: UsageWindows | null,
 ): UsageWindows {
 	if (!prev) return fresh;
+	const now = Date.now() / 1000;
 	const keep = (
 		freshWin: UsageWindows["fiveHour"],
 		prevWin: UsageWindows["fiveHour"],
-	) => ({
-		...freshWin,
-		utilization: prevWin.utilization ?? freshWin.utilization,
-		resetsAt:
-			prevWin.utilization != null ? prevWin.resetsAt : freshWin.resetsAt,
-	});
+	) => {
+		const prevValid =
+			prevWin.utilization != null &&
+			prevWin.resetsAt != null &&
+			prevWin.resetsAt > now;
+		return {
+			...freshWin,
+			utilization: prevValid ? prevWin.utilization : freshWin.utilization,
+			resetsAt: prevValid ? prevWin.resetsAt : freshWin.resetsAt,
+		};
+	};
 	return {
 		...fresh,
 		fiveHour: keep(fresh.fiveHour, prev.fiveHour),
@@ -1518,7 +1524,7 @@ function CockpitPage() {
 		} else {
 			text = typed;
 		}
-		if (!text || isRunning || wsStatus !== "connected") return;
+		if (!text || wsStatus !== "connected") return;
 		setRunError(null);
 		let sessionId: string;
 		if (sameSession) {
@@ -1528,10 +1534,35 @@ function CockpitPage() {
 			sessionId = attachSessionIdRef.current ?? uid();
 		}
 		attachSessionIdRef.current = null;
-		if (!sameSession) wsStore.resetLiveStats();
 		const attachments = pendingAttachments;
 		setPendingAttachments([]);
 		setUploadError(null);
+
+		if (isRunning) {
+			wsStore.enqueueChat({
+				id: uid(),
+				text,
+				session_id: sessionId,
+				skill_context: skillContext,
+				agent_cwd: selectedAgentPath || undefined,
+				attachments: attachments.length > 0 ? attachments : undefined,
+			});
+			setPrompt("");
+			setActiveSkill(null);
+			if (!background) {
+				navigate({
+					to: "/raven",
+					search: {
+						session: sessionId,
+						agent: selectedAgentPath || undefined,
+					},
+				});
+			}
+			return;
+		}
+
+		if (!sameSession) wsStore.resetLiveStats();
+		wsStore.setActiveSessionId(sessionId);
 		send({
 			type: "chat",
 			text,
@@ -1595,8 +1626,7 @@ function CockpitPage() {
 
 	const isConnected = wsStatus === "connected";
 	const isRunning = isConnected && sessionState === "running";
-	const canRun =
-		(!!activeSkill || prompt.trim().length > 0) && !isRunning && isConnected;
+	const canRun = (!!activeSkill || prompt.trim().length > 0) && isConnected;
 
 	const modelShort = model
 		? (MODEL_LABELS[model] ??
@@ -1883,7 +1913,7 @@ function CockpitPage() {
 										disabled={!canRun}
 										className="px-3 py-1 bg-primary text-primary-foreground text-[10px] tracking-widest font-bold hover:opacity-90 transition-opacity disabled:opacity-25 uppercase"
 									>
-										RUN →
+										{isRunning ? "QUEUE →" : "RUN →"}
 									</button>
 								</div>
 							</div>

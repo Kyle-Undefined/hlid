@@ -211,6 +211,7 @@ export function FirstRunWizard({ onComplete }: Props) {
 					model: "claude-sonnet-4-6",
 					effort: "high" as const,
 					permission_mode: permissionMode,
+					turn_recaps: true,
 				},
 				ui: { enter_to_submit: true, hide_skills_index: true, theme },
 				status_vocabulary: {

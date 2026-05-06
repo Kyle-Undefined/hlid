@@ -103,6 +103,7 @@ export const HlidConfigSchema = z.object({
 		model: "claude-sonnet-4-6",
 		effort: "high" as const,
 		permission_mode: "default" as const,
+		turn_recaps: true,
 	})),
 	ui: UiSchema.default(() => ({
 		enter_to_submit: true,

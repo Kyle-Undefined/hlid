@@ -171,6 +171,9 @@ export const Route = createFileRoute("/raven")({
 		return {
 			config,
 			existingSessionId: resolvedSessionId,
+			// true = session came from URL param (explicit open/resume)
+			// false = session resolved via getCurrentSessionFn (implicit resume on fresh nav)
+			isExplicitSession: !!session,
 			usageWindows,
 			agentSkillContext,
 			agentList,
@@ -516,26 +519,36 @@ function mergeUsageWindows(
 	prev: UsageWindows | null,
 ): UsageWindows {
 	if (!prev) return fresh;
+	const now = Date.now() / 1000;
 	const keep = (
 		freshWin: UsageWindows["fiveHour"],
 		prevWin: UsageWindows["fiveHour"],
-	) => ({
-		...freshWin,
-		utilization: prevWin.utilization ?? freshWin.utilization,
-		resetsAt:
-			prevWin.utilization != null ? prevWin.resetsAt : freshWin.resetsAt,
-	});
+	) => {
+		const prevValid =
+			prevWin.utilization != null &&
+			prevWin.resetsAt != null &&
+			prevWin.resetsAt > now;
+		return {
+			...freshWin,
+			utilization: prevValid ? prevWin.utilization : freshWin.utilization,
+			resetsAt: prevValid ? prevWin.resetsAt : freshWin.resetsAt,
+		};
+	};
+	const prevSonnetValid =
+		prev.weeklySonnet?.utilization != null &&
+		prev.weeklySonnet?.resetsAt != null &&
+		prev.weeklySonnet.resetsAt > now;
 	return {
 		...fresh,
 		fiveHour: keep(fresh.fiveHour, prev.fiveHour),
 		weekly: keep(fresh.weekly, prev.weekly),
 		weeklySonnet:
 			fresh.weeklySonnet != null
-				? prev.weeklySonnet?.utilization != null
+				? prevSonnetValid
 					? {
 							...fresh.weeklySonnet,
-							utilization: prev.weeklySonnet.utilization,
-							resetsAt: prev.weeklySonnet.resetsAt,
+							utilization: prev.weeklySonnet?.utilization ?? null,
+							resetsAt: prev.weeklySonnet?.resetsAt ?? null,
 						}
 					: fresh.weeklySonnet
 				: null,
@@ -848,6 +861,53 @@ function UserMsg({ message }: { message: UserMessage }) {
 	);
 }
 
+function QueuedMsg({
+	message,
+	index,
+	onCancel,
+}: {
+	message: wsStore.QueuedChatMessage;
+	index: number;
+	onCancel: (id: string) => void;
+}) {
+	return (
+		<div className="flex items-start justify-end gap-3 py-3 border-b border-dashed border-border/25 opacity-50">
+			<div className="flex flex-col items-end gap-1.5 min-w-0 max-w-[78%]">
+				{message.attachments && message.attachments.length > 0 && (
+					<div className="flex flex-wrap gap-1.5 justify-end">
+						{message.attachments.map((a) => (
+							<AttachmentChip key={a.id} a={a} />
+						))}
+					</div>
+				)}
+				{message.text && (
+					<PrivacyMask className="w-full">
+						<div
+							className="text-sm text-foreground whitespace-pre-wrap text-right leading-relaxed w-full"
+							style={{ overflowWrap: "anywhere" }}
+						>
+							{message.text}
+						</div>
+					</PrivacyMask>
+				)}
+			</div>
+			<div className="flex flex-col items-end gap-1 shrink-0 pt-0.5 w-11">
+				<span className="text-[9px] tracking-widest text-muted-foreground/40 text-right">
+					Q{index + 1}
+				</span>
+				<button
+					type="button"
+					onClick={() => onCancel(message.id)}
+					className="text-muted-foreground/30 hover:text-destructive/70 transition-colors"
+					aria-label="Cancel queued message"
+				>
+					<X className="w-3 h-3" />
+				</button>
+			</div>
+		</div>
+	);
+}
+
 function AssistantMsg({
 	message,
 	permissionLabels,
@@ -1021,6 +1081,7 @@ function ChatPage() {
 	const {
 		config,
 		existingSessionId,
+		isExplicitSession,
 		usageWindows: initialUsageWindows,
 		agentSkillContext: initialAgentSkillContext,
 		agentList,
@@ -1039,6 +1100,11 @@ function ChatPage() {
 		wsStore.subscribeStats,
 		wsStore.getLiveStats,
 		wsStore.getLiveStats,
+	);
+	const chatQueue = useSyncExternalStore(
+		wsStore.subscribeQueue,
+		wsStore.getQueue,
+		wsStore.getQueue,
 	);
 	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
 	const [messages, dispatch] = useReducer(reducer, []);
@@ -1218,6 +1284,9 @@ function ChatPage() {
 				// Seed context gauge from DB so it's visible immediately on session open,
 				// before any new message is sent. Live usage_update/done events will
 				// override this once the session is active.
+				// For implicit resumes (fresh nav, no session param), reset live stats
+				// first so we don't carry over context from the previous session.
+				if (!isExplicitSession) wsStore.resetLiveStats();
 				if (ctx?.context_window && ctx.last_context_used != null) {
 					wsStore.seedContextStats(ctx.context_window, ctx.last_context_used);
 				}
@@ -1267,17 +1336,22 @@ function ChatPage() {
 				// silently vanish (the reducer map-over just skips the missing ID).
 				pendingIdRef.current = null;
 				// If session is running, add a fresh bubble before draining so buffered
-				// chunks have a target to attach to.
+				// chunks have a target to attach to. If the session already completed
+				// while history was loading, skip drain (DB data is authoritative) and
+				// clear the buffer to avoid replaying stale chunks into the wrong bubble.
 				if (wsStore.getSnapshot().sessionState === "running") {
 					const newId = uid();
 					pendingIdRef.current = newId;
 					dispatch({ type: "ADD_ASSISTANT", id: newId });
-				}
-				// Replay events that arrived before history was ready (from open() buffer
-				// replay or live events during the async DB fetch). Buffering is then
-				// disabled so events flow directly for the rest of the session.
-				for (const msg of wsStore.drainMessageBuffer()) {
-					handleWsMessage(msg);
+					// Replay events that arrived before history was ready (from open() buffer
+					// replay or live events during the async DB fetch). Buffering is then
+					// disabled so events flow directly for the rest of the session.
+					for (const msg of wsStore.drainMessageBuffer()) {
+						handleWsMessage(msg);
+					}
+				} else {
+					// Session done before history loaded — DB has complete data, discard buffer.
+					wsStore.clearMessageBuffer();
 				}
 				wsStore.setBufferingEnabled(false);
 				// Sync with server to claim session ownership if not yet set
@@ -1293,7 +1367,7 @@ function ChatPage() {
 			// Re-enable buffering for SPA nav so events during unmount are captured
 			wsStore.setBufferingEnabled(true);
 		};
-	}, [existingSessionId, handleWsMessage]);
+	}, [existingSessionId, handleWsMessage, isExplicitSession]);
 
 	const { wsStatus, sessionState, model, actualModel, send } =
 		useWs(handleWsMessage);
@@ -1454,8 +1528,25 @@ function ChatPage() {
 
 	const handleSend = useCallback(() => {
 		const text = input.trim();
-		if (sessionState === "running") return;
 		if (!text && pendingAttachments.length === 0) return;
+
+		if (sessionState === "running") {
+			wsStore.enqueueChat({
+				id: uid(),
+				text,
+				session_id: sessionId,
+				attachments:
+					pendingAttachments.length > 0 ? [...pendingAttachments] : undefined,
+				agent_cwd: agentSkillContext ?? undefined,
+			});
+			try {
+				localStorage.removeItem(draftKey);
+			} catch {}
+			setInput("");
+			setPendingAttachments([]);
+			return;
+		}
+
 		atBottomRef.current = true;
 		const id = uid();
 		const attachments = pendingAttachments;
@@ -1465,6 +1556,7 @@ function ChatPage() {
 				? agentSkillContext
 				: undefined;
 		if (agentCwdToSend) agentContextSentRef.current = true;
+		wsStore.setActiveSessionId(sessionId);
 		send({
 			type: "chat",
 			text,
@@ -1487,6 +1579,21 @@ function ChatPage() {
 		draftKey,
 	]);
 
+	const handleCancelQueued = useCallback(
+		(id: string) => {
+			const item = wsStore.removeFromQueue(id);
+			if (!item) return;
+			// Restore to input only if the input box is empty
+			if (!input.trim() && pendingAttachments.length === 0) {
+				setInput(item.text);
+				if (item.attachments && item.attachments.length > 0) {
+					setPendingAttachments(item.attachments);
+				}
+			}
+		},
+		[input, pendingAttachments.length],
+	);
+
 	const handleClear = useCallback(() => {
 		try {
 			localStorage.removeItem(draftKey);
@@ -1502,17 +1609,19 @@ function ChatPage() {
 		wsStore.resetLiveStats();
 		wsStore.seedActualModel(null);
 		wsStore.clearMessageBuffer();
+		wsStore.clearChatQueue();
 		const newId = uid();
 		setSessionId(newId);
 		sessionIdRef.current = newId;
 		setAgentSkillContext(undefined);
 	}, [send, draftKey]);
 
-	const canSend =
+	const hasInput =
 		(input.trim().length > 0 || pendingAttachments.length > 0) &&
 		uploadingCount === 0 &&
-		!isRunning &&
 		wsStatus === "connected";
+	const canSend = hasInput && !isRunning;
+	const canQueue = hasInput && isRunning;
 
 	// Strip the dated suffix the SDK reports (e.g. "-20251001") so we compare
 	// the base model identifier against the configured short-form value.
@@ -1597,6 +1706,16 @@ function ChatPage() {
 									);
 								});
 							})()}
+							{chatQueue
+								.filter((qm) => qm.session_id === sessionId)
+								.map((qm, i) => (
+									<QueuedMsg
+										key={qm.id}
+										message={qm}
+										index={i}
+										onCancel={handleCancelQueued}
+									/>
+								))}
 							<div ref={bottomRef} />
 						</>
 					)}
@@ -1810,7 +1929,7 @@ function ChatPage() {
 						<button
 							type="button"
 							onClick={() => fileInputRef.current?.click()}
-							disabled={wsStatus !== "connected" || isRunning}
+							disabled={wsStatus !== "connected"}
 							className="px-2 py-3 text-muted-foreground/45 hover:text-muted-foreground transition-colors shrink-0 disabled:opacity-30"
 							aria-label="Attach file"
 							title="Attach file"
@@ -1847,13 +1966,13 @@ function ChatPage() {
 								wsStatus !== "connected"
 									? "connecting…"
 									: isRunning
-										? "running…"
+										? "type to queue next…"
 										: "speak to the watcher…"
 							}
-							disabled={wsStatus !== "connected" || isRunning}
+							disabled={wsStatus !== "connected"}
 							className={`flex-1 resize-none bg-transparent py-3 pr-2 text-sm text-foreground focus:outline-none disabled:opacity-30 overflow-y-hidden min-h-[60px] md:min-h-[120px] ${wsStatus !== "connected" ? "placeholder:text-foreground/50" : "placeholder:text-muted-foreground/35"}`}
 						/>
-						{isRunning ? (
+						{isRunning && (
 							<button
 								type="button"
 								onClick={() => send({ type: "abort" })}
@@ -1861,6 +1980,17 @@ function ChatPage() {
 								aria-label="Abort"
 							>
 								STOP
+							</button>
+						)}
+						{isRunning ? (
+							<button
+								type="button"
+								onClick={handleSend}
+								disabled={!canQueue}
+								className="px-4 py-3 text-[10px] tracking-widest text-muted-foreground/50 hover:text-primary disabled:text-muted-foreground/20 transition-colors shrink-0 uppercase font-bold"
+								aria-label="Queue message"
+							>
+								Q→
 							</button>
 						) : (
 							<button

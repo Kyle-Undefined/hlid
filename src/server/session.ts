@@ -872,6 +872,8 @@ export class SessionManager {
 				void this.generateRecap(
 					sessionId ?? null,
 					lastAssistantSeq,
+					userMessage,
+					pendingToolEvents,
 					lastAssistantText,
 					emit,
 				).catch(() => {});
@@ -939,11 +941,42 @@ export class SessionManager {
 	private async generateRecap(
 		sessionId: string | null,
 		assistantSeq: number,
+		userMessage: string,
+		toolEvents: { name: string; input: unknown }[],
 		assistantText: string,
 		emit: (msg: ServerMessage) => void,
 	): Promise<void> {
-		const excerpt = assistantText.slice(0, 400).replace(/\n+/g, " ").trim();
-		const prompt = `Below is a response from a coding assistant. Write ONE concise sentence (≤15 words, present tense, active voice) summarizing what was accomplished. Reply with only the sentence, no preamble.\n\nResponse excerpt:\n${excerpt}`;
+		const userExcerpt = userMessage.slice(0, 300).replace(/\n+/g, " ").trim();
+		const assistantExcerpt = assistantText
+			.slice(0, 1200)
+			.replace(/\n+/g, " ")
+			.trim();
+
+		// Build a compact tool summary: name + key input field (path, command, etc.)
+		const toolLines = toolEvents
+			.map((te) => {
+				const inp = te.input as Record<string, unknown> | null;
+				const detail =
+					typeof inp?.path === "string"
+						? inp.path
+						: typeof inp?.command === "string"
+							? inp.command.slice(0, 80)
+							: typeof inp?.file_path === "string"
+								? inp.file_path
+								: null;
+				return detail ? `  - ${te.name}(${detail})` : `  - ${te.name}`;
+			})
+			.join("\n");
+
+		const prompt = [
+			"A coding assistant just completed a turn. Summarize what was accomplished in ONE concise sentence (≤20 words, present tense, active voice). Reply with only the sentence, no preamble.",
+			"",
+			`User request: ${userExcerpt}`,
+			"",
+			`Tools used:\n${toolLines}`,
+			"",
+			`Assistant response excerpt: ${assistantExcerpt}`,
+		].join("\n");
 		const ac = new AbortController();
 		const timeout = setTimeout(() => ac.abort(), 30_000);
 		try {
