@@ -62,7 +62,7 @@ beforeEach(() => {
 afterEach(() => {
 	vi.resetAllMocks();
 	vi.unstubAllGlobals();
-	// Re-apply non-null default for getSetting so beforeEach stubs work cleanly
+	// Re-apply non-null default for getSetting so next test's stubs work cleanly
 	vi.mocked(db.getSetting).mockResolvedValue(null);
 });
 

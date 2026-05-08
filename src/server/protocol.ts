@@ -111,6 +111,32 @@ export type ToolUseSummaryMessage = {
 	summary: string;
 };
 
+export type AskUserQuestionMessage = {
+	type: "ask_user_question";
+	id: string;
+	question: string;
+	options: string[];
+};
+
+export type AskUserQuestionResolvedMessage = {
+	type: "ask_user_question_resolved";
+	id: string;
+	selectedOption: string;
+};
+
+export type PlanModeExitMessage = {
+	type: "plan_mode_exit";
+	id: string;
+	/** Raw ExitPlanMode input from Claude — contains allowedPrompts and any extra fields. */
+	input: Record<string, unknown>;
+};
+
+export type PlanModeExitResolvedMessage = {
+	type: "plan_mode_exit_resolved";
+	id: string;
+	decision: "approved" | "edited" | "cancelled";
+};
+
 export type PermissionDecision =
 	| "approved"
 	| "approved_session"
@@ -178,7 +204,11 @@ export type ServerMessage =
 	| UserMessageEvent
 	| McpStatusMessage
 	| AttachmentCreatedMessage
-	| ToolUseSummaryMessage;
+	| ToolUseSummaryMessage
+	| AskUserQuestionMessage
+	| AskUserQuestionResolvedMessage
+	| PlanModeExitMessage
+	| PlanModeExitResolvedMessage;
 
 export type ChatAttachment = {
 	id: string;
@@ -215,6 +245,8 @@ export type ClientPermissionResponseMessage = {
 	id: string;
 	approved: boolean;
 	saveScope?: "session" | "local";
+	/** Custom message fed to Claude when denying — "tell Claude what to do instead". */
+	denyMessage?: string;
 };
 
 export type ClientSyncMessage = {
@@ -229,6 +261,25 @@ export type ClientSyncMcpListMessage = {
 	type: "sync_mcp_list";
 };
 
+export type ClientAskUserQuestionResponseMessage = {
+	type: "ask_user_question_response";
+	id: string;
+	selectedOption: string;
+};
+
+export type ClientPlanModeExitResponseMessage =
+	| {
+			type: "plan_mode_exit_response";
+			id: string;
+			decision: "approved" | "cancelled";
+	  }
+	| {
+			type: "plan_mode_exit_response";
+			id: string;
+			decision: "edited";
+			feedback: string;
+	  };
+
 export type ClientMessage =
 	| ClientChatMessage
 	| ClientAbortMessage
@@ -237,4 +288,6 @@ export type ClientMessage =
 	| ClientPermissionResponseMessage
 	| ClientSyncMessage
 	| ClientProbeMcpMessage
-	| ClientSyncMcpListMessage;
+	| ClientSyncMcpListMessage
+	| ClientAskUserQuestionResponseMessage
+	| ClientPlanModeExitResponseMessage;

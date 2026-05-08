@@ -225,7 +225,7 @@ function cascadeDeleteSessionIds(db: Db, ids: string[]): string[] {
 	db.run(`DELETE FROM permission_events WHERE session_id IN (${ph})`, ids);
 	db.run(`DELETE FROM messages WHERE session_id IN (${ph})`, ids);
 	db.run(`DELETE FROM queries WHERE session_id IN (${ph})`, ids);
-	db.run(`DELETE FROM usage_queries WHERE session_id IN (${ph})`, ids);
+	// usage_queries intentionally NOT deleted — immutable ledger for all-time stats
 	db.run(`DELETE FROM sessions WHERE id IN (${ph})`, ids);
 	return ephemeralPaths;
 }

@@ -68,6 +68,25 @@ export function useChatWsHandler({
 			return;
 		}
 
+		if (msg.type === "ask_user_question") {
+			dispatch({
+				type: "ADD_ASK_USER_QUESTION",
+				id: msg.id,
+				question: msg.question,
+				options: msg.options,
+			});
+			return;
+		}
+
+		if (msg.type === "ask_user_question_resolved") {
+			dispatch({
+				type: "RESOLVE_ASK_USER_QUESTION",
+				id: msg.id,
+				selectedOption: msg.selectedOption,
+			});
+			return;
+		}
+
 		if (
 			!id &&
 			(msg.type === "chunk" ||

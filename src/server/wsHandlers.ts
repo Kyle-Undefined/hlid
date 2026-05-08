@@ -35,11 +35,17 @@ export function createWsHandlers(session: SessionManager) {
 				for (const msg of getRunBuffer()) {
 					send(ws, msg);
 				}
-				// Claim ownership and replay pending permissions if no owner yet (page refresh).
+				// Claim ownership and replay pending prompts if no owner yet (page refresh).
 				if (wsState.sessionOwnerWs === null) {
 					wsState.sessionOwnerWs = ws;
 					for (const req of session.getPendingPermissionRequests()) {
 						send(ws, req);
+					}
+					for (const q of session.getPendingAskUserQuestions()) {
+						send(ws, q);
+					}
+					for (const exit of session.getPendingPlanModeExits()) {
+						send(ws, exit);
 					}
 				}
 			}
@@ -71,6 +77,9 @@ export function createWsHandlers(session: SessionManager) {
 					wsState.sessionOwnerWs = ws;
 					for (const req of session.getPendingPermissionRequests()) {
 						send(ws, req);
+					}
+					for (const exit of session.getPendingPlanModeExits()) {
+						send(ws, exit);
 					}
 				}
 				return;
@@ -157,7 +166,12 @@ export function createWsHandlers(session: SessionManager) {
 					.getPendingPermissionRequests()
 					.find((r) => r.id === msg.id);
 				if (pending) {
-					session.handlePermissionResponse(msg.id, msg.approved, msg.saveScope);
+					session.handlePermissionResponse(
+						msg.id,
+						msg.approved,
+						msg.saveScope,
+						msg.denyMessage,
+					);
 					const decision = decisionFromScope(msg.approved, msg.saveScope);
 					broadcast({
 						type: "permission_resolved",
@@ -181,6 +195,30 @@ export function createWsHandlers(session: SessionManager) {
 							});
 					}
 				}
+				return;
+			}
+
+			if (msg.type === "ask_user_question_response") {
+				session.handleAskUserQuestionResponse(msg.id, msg.selectedOption);
+				broadcast({
+					type: "ask_user_question_resolved",
+					id: msg.id,
+					selectedOption: msg.selectedOption,
+				});
+				return;
+			}
+
+			if (msg.type === "plan_mode_exit_response") {
+				session.handlePlanModeExitResponse(
+					msg.id,
+					msg.decision,
+					msg.decision === "edited" ? msg.feedback : undefined,
+				);
+				broadcast({
+					type: "plan_mode_exit_resolved",
+					id: msg.id,
+					decision: msg.decision,
+				});
 				return;
 			}
 

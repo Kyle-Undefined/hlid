@@ -241,7 +241,7 @@ export function AgentCard({
 			{expanded && claudemdLoaded && (
 				<div className="px-6 py-4 bg-secondary/30 text-xs text-foreground/80 leading-relaxed">
 					<PrivacyMask>
-						<MarkdownBody content={claudemdContent} />
+						<MarkdownBody content={claudemdContent ?? ""} />
 					</PrivacyMask>
 				</div>
 			)}

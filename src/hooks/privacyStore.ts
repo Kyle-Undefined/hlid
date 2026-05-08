@@ -36,3 +36,15 @@ export function initFromStorage(): void {
 	);
 	notify();
 }
+
+/** @internal — resets module state to initial values; for testing only. */
+export function __resetForTesting(): void {
+	_privacy = false;
+	_subscribers.clear();
+	try {
+		localStorage.removeItem("hlid:privacy");
+	} catch {}
+	try {
+		document.documentElement.setAttribute("data-privacy", "off");
+	} catch {}
+}

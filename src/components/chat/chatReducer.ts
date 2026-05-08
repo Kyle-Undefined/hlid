@@ -33,7 +33,19 @@ export type PermissionMessage = {
 	decision: "pending" | PermissionDecision;
 };
 
-export type ChatMessage = UserMessage | AssistantMessage | PermissionMessage;
+export type AskUserQuestionChatMessage = {
+	id: string;
+	role: "ask_user_question";
+	question: string;
+	options: string[];
+	selectedOption: string | null;
+};
+
+export type ChatMessage =
+	| UserMessage
+	| AssistantMessage
+	| PermissionMessage
+	| AskUserQuestionChatMessage;
 
 export type Action =
 	| {
@@ -81,6 +93,13 @@ export type Action =
 				  }
 			>;
 	  }
+	| {
+			type: "ADD_ASK_USER_QUESTION";
+			id: string;
+			question: string;
+			options: string[];
+	  }
+	| { type: "RESOLVE_ASK_USER_QUESTION"; id: string; selectedOption: string }
 	| { type: "CLEAR" };
 
 export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
@@ -227,6 +246,23 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 				};
 			});
 		}
+		case "ADD_ASK_USER_QUESTION":
+			return [
+				...state,
+				{
+					id: action.id,
+					role: "ask_user_question" as const,
+					question: action.question,
+					options: action.options,
+					selectedOption: null,
+				},
+			];
+		case "RESOLVE_ASK_USER_QUESTION":
+			return state.map((m) =>
+				m.id === action.id && m.role === "ask_user_question"
+					? { ...m, selectedOption: action.selectedOption }
+					: m,
+			);
 		case "CLEAR":
 			return [];
 		default:

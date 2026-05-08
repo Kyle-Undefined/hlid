@@ -39,5 +39,6 @@ export function buildVaultSection(f: VaultFields): HlidConfig["vault"] {
 		outputs: isWiki ? f.outputs || undefined : undefined,
 		skills: f.skills || undefined,
 		memory: f.memory || undefined,
+		delete_vault_attachments: false,
 	};
 }

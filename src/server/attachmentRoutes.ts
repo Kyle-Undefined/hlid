@@ -48,7 +48,13 @@ export async function handleAttachmentRoute(
 	if (idMatch) {
 		if (req.method !== "DELETE")
 			return new Response("Method Not Allowed", { status: 405 });
-		return removeAttachment(idMatch[1]);
+		let deleteConfig = fallbackConfig;
+		try {
+			deleteConfig = loadConfig();
+		} catch {
+			// fallback config already set
+		}
+		return removeAttachment(idMatch[1], deleteConfig);
 	}
 
 	return null;

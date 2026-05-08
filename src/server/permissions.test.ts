@@ -47,7 +47,7 @@ describe("PermissionManager", () => {
 		const resolver = vi.fn();
 		pm.register("t1", makeReq("t1"), resolver);
 		pm.complete("t1", true);
-		expect(resolver).toHaveBeenCalledWith(true, undefined);
+		expect(resolver).toHaveBeenCalledWith(true, undefined, undefined);
 		expect(pm.getPending()).toHaveLength(0);
 	});
 
@@ -56,7 +56,7 @@ describe("PermissionManager", () => {
 		const resolver = vi.fn();
 		pm.register("t1", makeReq("t1"), resolver);
 		pm.complete("t1", false);
-		expect(resolver).toHaveBeenCalledWith(false, undefined);
+		expect(resolver).toHaveBeenCalledWith(false, undefined, undefined);
 	});
 
 	it("complete passes saveScope to resolver", () => {
@@ -64,7 +64,7 @@ describe("PermissionManager", () => {
 		const resolver = vi.fn();
 		pm.register("t1", makeReq("t1"), resolver);
 		pm.complete("t1", true, "session");
-		expect(resolver).toHaveBeenCalledWith(true, "session");
+		expect(resolver).toHaveBeenCalledWith(true, "session", undefined);
 	});
 
 	it("complete with saveScope=local passes it through", () => {
@@ -72,7 +72,7 @@ describe("PermissionManager", () => {
 		const resolver = vi.fn();
 		pm.register("t1", makeReq("t1"), resolver);
 		pm.complete("t1", true, "local");
-		expect(resolver).toHaveBeenCalledWith(true, "local");
+		expect(resolver).toHaveBeenCalledWith(true, "local", undefined);
 	});
 
 	it("complete unknown id warns but does not throw", () => {
@@ -123,5 +123,21 @@ describe("PermissionManager", () => {
 		pm.register("t1", makeReq("t1"), vi.fn());
 		pm.complete("t1", true);
 		expect(() => pm.register("t1", makeReq("t1"), vi.fn())).not.toThrow();
+	});
+
+	it("complete passes denyMessage to resolver", () => {
+		const pm = new PermissionManager();
+		const resolver = vi.fn();
+		pm.register("t1", makeReq("t1"), resolver);
+		pm.complete("t1", false, undefined, "do this instead");
+		expect(resolver).toHaveBeenCalledWith(false, undefined, "do this instead");
+	});
+
+	it("complete passes denyMessage=undefined when not provided", () => {
+		const pm = new PermissionManager();
+		const resolver = vi.fn();
+		pm.register("t1", makeReq("t1"), resolver);
+		pm.complete("t1", false);
+		expect(resolver).toHaveBeenCalledWith(false, undefined, undefined);
 	});
 });

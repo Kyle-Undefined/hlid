@@ -142,6 +142,11 @@ function ChatPage() {
 
 	// ─── History loading ──────────────────────────────────────────────────────
 
+	// ─── WS connection ────────────────────────────────────────────────────────
+
+	const { wsStatus, sessionState, model, actualModel, send } =
+		useWs(handleWsMessage);
+
 	useLoadChatHistory({
 		existingSessionId,
 		isExplicitSession,
@@ -149,12 +154,9 @@ function ChatPage() {
 		pendingIdRef,
 		historyReadyRef,
 		handleWsMessage,
+		wsStatus,
+		sessionIdRef,
 	});
-
-	// ─── WS connection ────────────────────────────────────────────────────────
-
-	const { wsStatus, sessionState, model, actualModel, send } =
-		useWs(handleWsMessage);
 
 	// If session is running but no pending assistant turn exists, add one.
 	// Guard with historyReadyRef so we don't race the initial DB load.
@@ -169,10 +171,29 @@ function ChatPage() {
 	// ─── Handlers ─────────────────────────────────────────────────────────────
 
 	const handleDecide = useCallback(
-		(id: string, approved: boolean, saveScope?: "session" | "local") => {
+		(
+			id: string,
+			approved: boolean,
+			saveScope?: "session" | "local",
+			denyMessage?: string,
+		) => {
 			const decision = decisionFromScope(approved, saveScope);
 			dispatch({ type: "RESOLVE_PERMISSION", id, decision });
-			send({ type: "permission_response", id, approved, saveScope });
+			send({
+				type: "permission_response",
+				id,
+				approved,
+				saveScope,
+				denyMessage,
+			});
+		},
+		[send],
+	);
+
+	const handleSelectOption = useCallback(
+		(id: string, selectedOption: string) => {
+			dispatch({ type: "RESOLVE_ASK_USER_QUESTION", id, selectedOption });
+			send({ type: "ask_user_question_response", id, selectedOption });
 		},
 		[send],
 	);
@@ -361,6 +382,7 @@ function ChatPage() {
 							chatQueue={chatQueue}
 							sessionId={sessionId}
 							handleDecide={handleDecide}
+							handleSelectOption={handleSelectOption}
 							handleCancelQueued={handleCancelQueued}
 							bottomRef={bottomRef}
 						/>

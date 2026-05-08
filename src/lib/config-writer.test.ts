@@ -100,6 +100,7 @@ describe("writeConfig — vault section", () => {
 					projects: "projects",
 					skills: "skills",
 					memory: "memory",
+					delete_vault_attachments: false,
 				},
 			}),
 		);

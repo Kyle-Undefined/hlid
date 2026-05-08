@@ -335,7 +335,9 @@ function connect() {
 			msg.type === "chunk" ||
 			msg.type === "tool_event" ||
 			msg.type === "permission_request" ||
-			msg.type === "permission_resolved"
+			msg.type === "permission_resolved" ||
+			msg.type === "ask_user_question" ||
+			msg.type === "ask_user_question_resolved"
 		) {
 			if (_bufferingEnabled) _messageBuffer.push(msg);
 		} else if (msg.type === "done" || msg.type === "error") {
@@ -491,4 +493,22 @@ export function clearChatQueue(): void {
 	if (_chatQueue.length === 0) return;
 	_chatQueue = [];
 	notifyQueue();
+}
+
+/** @internal — resets all module state to initial values; for testing only. */
+export function __resetForTesting(): void {
+	_snap = { ...INITIAL_SNAPSHOT };
+	_ws = null;
+	_liveStats = { ...EMPTY_STATS };
+	_activeSessionId = null;
+	_messageBuffer = [];
+	_bufferingEnabled = true;
+	_pendingPermCount = 0;
+	_pendingSessionToday = false;
+	_pendingPrompt = null;
+	_chatQueue = [];
+	statusSubs.clear();
+	messageSubs.clear();
+	statsSubs.clear();
+	queueSubs.clear();
 }

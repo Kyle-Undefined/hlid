@@ -27,16 +27,20 @@ vi.mock("./config", () => ({
 	}),
 }));
 
-// vi.hoisted variables are evaluated before vi.mock factories, so they
-// can be referenced inside the factory without TDZ errors.
-const wsState = vi.hoisted(() => ({
-	clients: new Set<object>(),
-	sessionOwnerWs: null as object | null,
-	lastSessionError: null as string | null,
-}));
-const mockSend = vi.hoisted(() => vi.fn());
-const mockBroadcast = vi.hoisted(() => vi.fn());
-const mockGetRunBuffer = vi.hoisted(() => vi.fn().mockReturnValue([]));
+// vi.mock factories are hoisted before module-level code, so vars referenced
+// inside them must also be hoisted via vi.hoisted().
+const { wsState, mockSend, mockBroadcast, mockGetRunBuffer } = vi.hoisted(
+	() => ({
+		wsState: {
+			clients: new Set<object>(),
+			sessionOwnerWs: null as object | null,
+			lastSessionError: null as string | null,
+		},
+		mockSend: vi.fn(),
+		mockBroadcast: vi.fn(),
+		mockGetRunBuffer: vi.fn().mockReturnValue([]),
+	}),
+);
 
 vi.mock("./runState", () => ({
 	wsState,
@@ -63,6 +67,8 @@ function makeSession(overrides: Partial<SessionManager> = {}): SessionManager {
 		isRunning: vi.fn().mockReturnValue(false),
 		getLastMcpStatus: vi.fn().mockReturnValue(null),
 		getPendingPermissionRequests: vi.fn().mockReturnValue([]),
+		getPendingAskUserQuestions: vi.fn().mockReturnValue([]),
+		getPendingPlanModeExits: vi.fn().mockReturnValue([]),
 		getCurrentSessionId: vi.fn().mockReturnValue(null),
 		abort: vi.fn(),
 		clearHistory: vi.fn(),
@@ -70,6 +76,8 @@ function makeSession(overrides: Partial<SessionManager> = {}): SessionManager {
 		syncConfig: vi.fn().mockReturnValue(false),
 		runQuery: vi.fn().mockResolvedValue(undefined),
 		handlePermissionResponse: vi.fn(),
+		handleAskUserQuestionResponse: vi.fn(),
+		handlePlanModeExitResponse: vi.fn(),
 		probeMcpStatus: vi.fn().mockResolvedValue(undefined),
 		restoreMcpStatus: vi.fn(),
 		...overrides,
@@ -172,6 +180,52 @@ describe("open", () => {
 		const calls = mockSend.mock.calls.filter((c) => c[0] === ws);
 		const mcpMsg = calls.find((c) => c[1].type === "mcp_status");
 		expect(mcpMsg).toBeDefined();
+	});
+
+	it("replays pending ask_user_question messages when claiming ownership on reconnect", () => {
+		const pendingQ = {
+			type: "ask_user_question" as const,
+			id: "aqq-1",
+			question: "Which approach?",
+			options: ["Option A", "Option B"],
+		};
+		const session = makeSession({
+			isRunning: vi.fn().mockReturnValue(true),
+			getPendingAskUserQuestions: vi.fn().mockReturnValue([pendingQ]),
+		});
+		const { open } = createWsHandlers(session);
+		const ws = makeWs();
+		// No owner yet — reconnecting client claims ownership
+		open(ws as never);
+		const calls = mockSend.mock.calls.filter((c) => c[0] === ws);
+		const qMsg = calls.find((c) => c[1].type === "ask_user_question");
+		expect(qMsg).toBeDefined();
+		expect(qMsg?.[1]).toMatchObject({
+			id: "aqq-1",
+			question: "Which approach?",
+		});
+	});
+
+	it("does NOT replay ask_user_questions when another client already owns the session", () => {
+		const pendingQ = {
+			type: "ask_user_question" as const,
+			id: "aqq-1",
+			question: "Which approach?",
+			options: ["Option A", "Option B"],
+		};
+		const session = makeSession({
+			isRunning: vi.fn().mockReturnValue(true),
+			getPendingAskUserQuestions: vi.fn().mockReturnValue([pendingQ]),
+		});
+		const { open } = createWsHandlers(session);
+		const owner = makeWs();
+		const other = makeWs();
+		wsState.sessionOwnerWs = owner;
+		open(other as never);
+		const calls = mockSend.mock.calls.filter((c) => c[0] === other);
+		expect(
+			calls.find((c) => c[1].type === "ask_user_question"),
+		).toBeUndefined();
 	});
 });
 
@@ -417,6 +471,7 @@ describe("message — permission_response", () => {
 			"perm-1",
 			true,
 			undefined,
+			undefined,
 		);
 		expect(mockBroadcast).toHaveBeenCalledWith(
 			expect.objectContaining({ type: "permission_resolved", id: "perm-1" }),
@@ -438,5 +493,115 @@ describe("message — permission_response", () => {
 			}),
 		);
 		expect(session.handlePermissionResponse).not.toHaveBeenCalled();
+	});
+
+	it("forwards denyMessage to handlePermissionResponse", async () => {
+		const pending = {
+			type: "permission_request" as const,
+			id: "perm-2",
+			toolName: "Bash",
+			title: "Run command",
+			displayName: "Bash",
+		};
+		const session = makeSession({
+			getPendingPermissionRequests: vi.fn().mockReturnValue([pending]),
+			getCurrentSessionId: vi.fn().mockReturnValue("sess-1"),
+		});
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "permission_response",
+				id: "perm-2",
+				approved: false,
+				denyMessage: "use Read instead",
+			}),
+		);
+		expect(session.handlePermissionResponse).toHaveBeenCalledWith(
+			"perm-2",
+			false,
+			undefined,
+			"use Read instead",
+		);
+	});
+});
+
+// ── message: ask_user_question_response ───────────────────────────────────────
+
+describe("message — ask_user_question_response", () => {
+	it("calls session.handleAskUserQuestionResponse with id and selectedOption", async () => {
+		const session = makeSession();
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "ask_user_question_response",
+				id: "aqq-1",
+				selectedOption: "Option A",
+			}),
+		);
+		expect(session.handleAskUserQuestionResponse).toHaveBeenCalledWith(
+			"aqq-1",
+			"Option A",
+		);
+	});
+
+	it("does not throw when id is unknown", async () => {
+		const session = makeSession();
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		// Just await — if it throws the test fails; resolves.not.toThrow() not Bun-compatible
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "ask_user_question_response",
+				id: "ghost-id",
+				selectedOption: "Whatever",
+			}),
+		);
+	});
+
+	it("broadcasts ask_user_question_resolved after response", async () => {
+		const session = makeSession();
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "ask_user_question_response",
+				id: "aqq-2",
+				selectedOption: "Option B",
+			}),
+		);
+		expect(mockBroadcast).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "ask_user_question_resolved",
+				id: "aqq-2",
+				selectedOption: "Option B",
+			}),
+		);
+	});
+
+	it("any client can respond to ask_user_question (not owner-gated)", async () => {
+		const session = makeSession();
+		const { message } = createWsHandlers(session);
+		const owner = makeWs();
+		const other = makeWs();
+		wsState.sessionOwnerWs = owner;
+		// non-owner can still respond to a question
+		await message(
+			other as never,
+			JSON.stringify({
+				type: "ask_user_question_response",
+				id: "aqq-3",
+				selectedOption: "Option C",
+			}),
+		);
+		expect(session.handleAskUserQuestionResponse).toHaveBeenCalledWith(
+			"aqq-3",
+			"Option C",
+		);
 	});
 });

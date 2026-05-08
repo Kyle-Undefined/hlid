@@ -10,7 +10,9 @@ import {
 import { loadConfig } from "./config";
 
 // Mock ./config so resolveAgentMode doesn't read from disk in tests
-vi.mock("./config");
+vi.mock("./config", () => ({
+	loadConfig: vi.fn(),
+}));
 
 // ── isAllowedAgentPath ───────────────────────────────────────────────────────
 

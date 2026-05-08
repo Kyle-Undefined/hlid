@@ -2,15 +2,7 @@
  * getTailscaleStatus — tests coerceTailscaleState logic and status parsing.
  * Mocks Bun.spawn so no real tailscale binary is required.
  */
-import {
-	afterAll,
-	afterEach,
-	beforeEach,
-	describe,
-	expect,
-	it,
-	vi,
-} from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ── Bun mock ──────────────────────────────────────────────────────────────────
 
@@ -24,20 +16,19 @@ function makeProc(stdout: string, stderr = "", code = 0) {
 }
 
 const spawnMock = vi.fn();
-vi.stubGlobal("Bun", { spawn: spawnMock });
 
-// Import after stub so the module sees the mocked global.
-const { getTailscaleStatus } = await import("./tailscale");
+import { getTailscaleStatus } from "./tailscale";
 
-afterAll(() => {
-	vi.unstubAllGlobals();
-});
-
+// Stub Bun global before each test; unstub after.
+// getTailscaleStatus calls Bun.spawn inside the function body (not at module
+// load), so a static import above is safe — no module-level Bun references.
 beforeEach(() => {
+	vi.stubGlobal("Bun", { spawn: spawnMock });
 	spawnMock.mockReset();
 });
 
 afterEach(() => {
+	vi.unstubAllGlobals();
 	vi.restoreAllMocks();
 });
 

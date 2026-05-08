@@ -44,6 +44,7 @@ import {
 	getUsageWindowsFn,
 	getWeeklyStatsFn,
 } from "#/lib/serverFns";
+import { resolveSessionId } from "#/lib/sessionRouting";
 import { groupSkills, type Skill } from "#/lib/skills";
 import { SESSION_LABEL_LENGTH, uid } from "#/lib/utils";
 import type { RateLimitMessage, ServerMessage } from "#/server/protocol";
@@ -249,13 +250,20 @@ function CockpitPage() {
 		}
 		if (!text || wsStatus !== "connected") return;
 		setRunError(null);
-		let sessionId: string;
-		if (sameSession) {
-			const currentId = await getCurrentSessionFn();
-			sessionId = currentId ?? uid();
-		} else {
-			sessionId = attachSessionIdRef.current ?? uid();
-		}
+		// Resolve session: same-session → prefer active, then most recent from DB,
+		// then new; unchecked → always new (attachment pre-selection takes priority)
+		const currentId = sameSession ? await getCurrentSessionFn() : null;
+		const mostRecentId =
+			sameSession && !currentId
+				? (await getRecentSessionsFn())[0]?.id
+				: undefined;
+		const sessionId = resolveSessionId({
+			sameSession,
+			currentId,
+			mostRecentId,
+			attachedId: attachSessionIdRef.current,
+			newId: uid(),
+		});
 		attachSessionIdRef.current = null;
 		const attachments = pendingAttachments;
 		clearPendingAttachments();

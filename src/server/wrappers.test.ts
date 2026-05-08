@@ -12,7 +12,7 @@ import {
 // ── isSafePosixPath ───────────────────────────────────────────────────────────
 
 describe("isSafePosixPath", () => {
-	it('rejects paths containing double-quote', () => {
+	it("rejects paths containing double-quote", () => {
 		expect(isSafePosixPath('/home/k"yle/project')).toBe(false);
 	});
 
@@ -52,22 +52,22 @@ describe("wrapperContent", () => {
 		);
 	});
 
-	it('throws on distro name with single-quote (batch escape vector)', () => {
+	it("throws on distro name with single-quote (batch escape vector)", () => {
 		expect(() => wrapperContent("Ubuntu'injected", "/home/kyle")).toThrow(
 			"Invalid WSL distro name",
 		);
 	});
 
-	it('throws on path containing double-quote', () => {
-		expect(() =>
-			wrapperContent("Ubuntu", '/home/k"yle/project'),
-		).toThrow("Unsafe characters in WSL path");
+	it("throws on path containing double-quote", () => {
+		expect(() => wrapperContent("Ubuntu", '/home/k"yle/project')).toThrow(
+			"Unsafe characters in WSL path",
+		);
 	});
 
 	it("throws on path containing newline", () => {
-		expect(() =>
-			wrapperContent("Ubuntu", "/home/kyle\nmalicious"),
-		).toThrow("Unsafe characters in WSL path");
+		expect(() => wrapperContent("Ubuntu", "/home/kyle\nmalicious")).toThrow(
+			"Unsafe characters in WSL path",
+		);
 	});
 
 	it("produces @echo off header", () => {
@@ -123,7 +123,7 @@ describe("wrapperPathForAgent", () => {
 
 	it("filename portion is 16 hex chars + .cmd", () => {
 		const full = wrapperPathForAgent("\\\\wsl$\\Ubuntu\\home\\kyle");
-		const filename = full.split(/[/\\]/).at(-1)!;
+		const filename = full.split(/[/\\]/).at(-1) ?? "";
 		expect(filename).toMatch(/^[0-9a-f]{16}\.cmd$/);
 	});
 });

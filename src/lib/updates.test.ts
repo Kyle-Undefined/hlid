@@ -77,7 +77,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	vi.resetAllMocks(); // removes all mockReturnValue / mockResolvedValueOnce queues
-	vi.unstubAllGlobals(); // removes fetch stubs
+	vi.unstubAllGlobals();
 });
 
 // ── helpers ───────────────────────────────────────────────────────────────────

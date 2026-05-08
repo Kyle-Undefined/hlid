@@ -33,6 +33,7 @@ export function startTlsProxy(
 		Bun.serve<WsData>({
 			port: tlsPort,
 			hostname: bindHost,
+			idleTimeout: 35,
 			tls: {
 				cert: Bun.file(certPath),
 				key: Bun.file(keyPath),
@@ -148,8 +149,16 @@ export function startTlsProxy(
 					);
 					clearTimeout(timeoutId);
 				} catch (err) {
-					console.error("[tlsProxy] upstream fetch failed:", err);
-					return new Response("Bad Gateway", { status: 502 });
+					const isRefused =
+						err instanceof Error &&
+						("code" in err
+							? (err as NodeJS.ErrnoException).code === "ConnectionRefused"
+							: err.message.includes("ConnectionRefused") ||
+								err.message.includes("ECONNREFUSED"));
+					if (!isRefused) {
+						console.error("[tlsProxy] upstream fetch failed:", err);
+					}
+					return new Response("Service Unavailable", { status: 503 });
 				}
 
 				const resHeaders = new Headers();

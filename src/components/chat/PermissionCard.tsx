@@ -1,4 +1,5 @@
-import { Check, X } from "lucide-react";
+import { Check, CornerDownLeft, X } from "lucide-react";
+import { useState } from "react";
 import { approvedLabel } from "#/server/protocol";
 import type { PermissionMessage } from "./chatReducer";
 
@@ -11,9 +12,11 @@ export function PermissionCard({
 		id: string,
 		approved: boolean,
 		saveScope?: "session" | "local",
+		denyMessage?: string,
 	) => void;
 }) {
 	const pending = message.decision === "pending";
+	const [instruction, setInstruction] = useState("");
 
 	if (!pending) {
 		const approvedText = approvedLabel(message.decision);
@@ -110,6 +113,35 @@ export function PermissionCard({
 					>
 						<Check className="w-3 h-3 shrink-0" />
 						ALWAYS
+					</button>
+				</div>
+				<div className="flex items-stretch border-t border-border">
+					<textarea
+						value={instruction}
+						onChange={(e) => setInstruction(e.target.value)}
+						onKeyDown={(e) => {
+							if (e.key === "Enter" && !e.shiftKey) {
+								e.preventDefault();
+								const msg = instruction.trim();
+								if (msg) onDecide(message.id, false, undefined, msg);
+							}
+						}}
+						placeholder="Tell Claude what to do instead…"
+						rows={1}
+						className="flex-1 resize-none bg-transparent px-3 py-2 text-xs text-foreground/80 placeholder:text-muted-foreground/40 outline-none font-mono"
+					/>
+					<button
+						type="button"
+						disabled={!instruction.trim()}
+						onClick={() => {
+							const msg = instruction.trim();
+							if (msg) onDecide(message.id, false, undefined, msg);
+						}}
+						aria-label="Deny with instruction"
+						className="shrink-0 flex items-center gap-1 px-3 text-[10px] tracking-widest text-muted-foreground/50 hover:text-foreground/70 disabled:opacity-30 disabled:cursor-not-allowed transition-colors border-l border-border uppercase"
+					>
+						<CornerDownLeft className="w-3 h-3" />
+						REDIRECT
 					</button>
 				</div>
 			</div>

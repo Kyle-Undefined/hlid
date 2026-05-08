@@ -3,7 +3,7 @@
  * prompt passed to `query` and verifying emit / DB calls.
  * Mocks: @anthropic-ai/claude-agent-sdk (query), ../db (setMessageRecap).
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // ── mocks (declared before import) ───────────────────────────────────────────
 
@@ -37,7 +37,7 @@ function stubQueryReturns(text: string) {
 				subtype: "success" as const,
 				result: "",
 			};
-		})(),
+		})() as unknown as ReturnType<typeof query>,
 	);
 }
 
@@ -46,7 +46,7 @@ function stubQueryResult(result: string) {
 	mockQuery.mockReturnValue(
 		(async function* () {
 			yield { type: "result" as const, subtype: "success" as const, result };
-		})(),
+		})() as unknown as ReturnType<typeof query>,
 	);
 }
 
@@ -59,7 +59,7 @@ function stubQueryEmpty() {
 				subtype: "success" as const,
 				result: "",
 			};
-		})(),
+		})() as unknown as ReturnType<typeof query>,
 	);
 }
 

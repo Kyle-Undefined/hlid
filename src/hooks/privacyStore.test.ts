@@ -24,26 +24,24 @@ const documentMock = {
 	documentElement: { setAttribute: setAttributeMock },
 };
 
-vi.stubGlobal("localStorage", localStorageMock);
-vi.stubGlobal("document", documentMock);
+// ── module under test ─────────────────────────────────────────────────────────
 
-// ── fresh module per test ─────────────────────────────────────────────────────
+import * as store from "./privacyStore";
 
-type PrivacyStore = typeof import("./privacyStore");
-
-let store: PrivacyStore;
-
-beforeEach(async () => {
+beforeEach(() => {
+	vi.stubGlobal("localStorage", localStorageMock);
+	vi.stubGlobal("document", documentMock);
 	// Clear localStorage state
 	for (const key of Object.keys(localStorageStore)) {
 		delete localStorageStore[key];
 	}
 	vi.clearAllMocks();
-	vi.resetModules();
-	store = await import("./privacyStore");
+	// Reset module-level state
+	store.__resetForTesting();
 });
 
 afterEach(() => {
+	vi.unstubAllGlobals();
 	vi.restoreAllMocks();
 });
 

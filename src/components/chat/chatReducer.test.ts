@@ -86,6 +86,7 @@ describe("APPEND_CHUNK", () => {
 			id: "a1",
 			text: " world",
 		});
+		// biome-ignore lint/style/noNonNullAssertion: test knows message exists
 		const msg = state.find((m) => m.id === "a1")!;
 		expect(msg.role).toBe("assistant");
 		if (msg.role === "assistant") expect(msg.text).toBe(" world");
@@ -98,6 +99,7 @@ describe("APPEND_CHUNK", () => {
 			id: "a1",
 			text: "x",
 		});
+		// biome-ignore lint/style/noNonNullAssertion: test knows message exists
 		const a2 = state.find((m) => m.id === "a2")!;
 		if (a2.role === "assistant") expect(a2.text).toBe("");
 	});
@@ -258,6 +260,7 @@ describe("RESOLVE_PERMISSION", () => {
 			id: "p1",
 			decision: "denied",
 		});
+		// biome-ignore lint/style/noNonNullAssertion: test knows message exists
 		const p2 = state.find((m) => m.id === "p2")!;
 		if (p2.role === "permission") expect(p2.decision).toBe("pending");
 	});

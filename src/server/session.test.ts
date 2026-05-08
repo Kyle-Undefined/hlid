@@ -1,14 +1,13 @@
 /**
- * SessionManager unit tests — state machine and config methods only.
- * runQuery() is SDK-coupled and not tested here; SessionManager's
- * simple observable behaviors are fully covered.
+ * SessionManager unit tests — state machine, config methods, and
+ * session-scoped permission persistence.
  */
 import { describe, expect, it, vi } from "vitest";
 import type { HlidConfig } from "../config";
 
 // ── module mocks (hoisted) ────────────────────────────────────────────────────
 
-vi.mock("./config");
+vi.mock("./config", () => ({ loadConfig: vi.fn() }));
 vi.mock("./agentPaths", () => ({
 	computeAllowedAgentRealPaths: vi.fn().mockReturnValue([]),
 	isAllowedAgentPath: vi.fn().mockReturnValue(false),
@@ -42,11 +41,53 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
 vi.mock("./recap", () => ({
 	generateTurnRecap: vi.fn().mockResolvedValue(undefined),
 }));
+vi.mock("./executionContext", () => ({
+	resolveExecutionContext: vi.fn().mockReturnValue({
+		activeCwd: "/tmp/hlid-test-cwd",
+		extraDirs: new Set(),
+		executable: undefined,
+	}),
+}));
+vi.mock("./promptBuilder", () => ({
+	buildPrompt: vi.fn().mockReturnValue({
+		prompt: "test prompt",
+		safeAttachments: [],
+	}),
+}));
+vi.mock("node:fs", () => ({
+	mkdirSync: vi.fn(),
+	readFileSync: vi.fn((path: string) => {
+		// Return empty settings JSON for .claude/settings.json reads
+		if (typeof path === "string" && path.includes("settings.json")) {
+			return "{}";
+		}
+		return "{}";
+	}),
+	writeFileSync: vi.fn(),
+	realpathSync: vi.fn((p: string) => p),
+}));
 
 // ── import after mocks ────────────────────────────────────────────────────────
 
+import * as fsMock from "node:fs";
+import { type Options, query } from "@anthropic-ai/claude-agent-sdk";
 import * as dbMock from "../db";
 import { SessionManager } from "./session";
+
+// Bun doesn't support waitFor() — poll until assertion passes or timeout
+async function waitFor(fn: () => void, timeout = 1000): Promise<void> {
+	const deadline = Date.now() + timeout;
+	while (Date.now() < deadline) {
+		try {
+			fn();
+			return;
+		} catch {
+			/* keep polling */
+		}
+		await new Promise((r) => setTimeout(r, 10));
+	}
+	fn(); // final attempt — throws if still failing
+}
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
 
@@ -196,5 +237,366 @@ describe("SessionManager — reinitialize", () => {
 		const sm = new SessionManager(makeConfig());
 		sm.reinitialize(makeConfig());
 		expect(sm.getCurrentSessionId()).toBeNull();
+	});
+});
+
+// ── AskUserQuestion support ───────────────────────────────────────────────────
+
+describe("SessionManager — AskUserQuestion", () => {
+	it("getPendingAskUserQuestions() returns empty array initially", () => {
+		const sm = new SessionManager(makeConfig());
+		expect(sm.getPendingAskUserQuestions()).toEqual([]);
+	});
+
+	it("handleAskUserQuestionResponse() does not throw when id is unknown", () => {
+		const sm = new SessionManager(makeConfig());
+		expect(() =>
+			sm.handleAskUserQuestionResponse("ghost-id", "Option A"),
+		).not.toThrow();
+	});
+
+	it("abort() clears all pending ask_user_questions", () => {
+		const sm = new SessionManager(makeConfig());
+		// Register a fake pending question directly (simulates canUseTool calling it)
+		// We can't easily call runQuery without the SDK, so we test abort doesn't throw
+		// and leaves no pending questions
+		sm.abort();
+		expect(sm.getPendingAskUserQuestions()).toEqual([]);
+	});
+});
+
+// ── Session-scoped permission persistence ──────────────────────────────────────
+
+/**
+ * Returns an implementation function for vi.mocked(query).mockImplementation().
+ * The fake conversation: yield system/init, call canUseTool, yield result.
+ * Adds `mcpServerStatus()` (required by iterateConversation).
+ */
+function makeQueryImpl(toolName: string, toolUseID = "tid-1") {
+	return ({ options }: { prompt: unknown; options?: Options }) => {
+		const gen = (async function* () {
+			yield {
+				type: "system",
+				subtype: "init",
+				session_id: "sdk-session-1",
+				tools: [],
+			};
+			if (!options) throw new Error("options required in test mock");
+			await options.canUseTool(
+				toolName,
+				{},
+				{
+					toolUseID,
+					title: undefined,
+					displayName: undefined,
+					description: undefined,
+				},
+			);
+			yield {
+				type: "result",
+				subtype: "success",
+				total_cost_usd: 0,
+				session_id: "sdk-session-1",
+				usage: { input_tokens: 10, output_tokens: 5 },
+			};
+		})();
+		// iterateConversation calls conversation.mcpServerStatus() on first message.
+		Object.assign(gen, { mcpServerStatus: () => Promise.resolve([]) });
+		return gen;
+	};
+}
+
+describe("SessionManager — session-scoped permission persistence", () => {
+	it("session approval: same tool auto-approved on next turn without prompting", async () => {
+		const sm = new SessionManager(makeConfig());
+
+		// Turn 1: install mock that calls canUseTool("Bash")
+		vi.mocked(query).mockImplementation(makeQueryImpl("Bash"));
+
+		const emittedTurn1: unknown[] = [];
+		const turn1 = sm.runQuery("hello", (m) => emittedTurn1.push(m), "sess-1");
+
+		// Wait for permission_request to appear
+		await waitFor(() =>
+			expect(sm.getPendingPermissionRequests()).toHaveLength(1),
+		);
+		expect(
+			emittedTurn1.some(
+				(m) => (m as { type: string }).type === "permission_request",
+			),
+		).toBe(true);
+
+		// Approve with session scope
+		sm.handlePermissionResponse("tid-1", true, "session");
+		await turn1;
+
+		// Turn 2: same tool — should auto-approve, no permission_request emitted
+		const emittedTurn2: unknown[] = [];
+		vi.mocked(query).mockImplementation(makeQueryImpl("Bash", "tid-2"));
+
+		await sm.runQuery("hello again", (m) => emittedTurn2.push(m), "sess-1");
+
+		expect(
+			emittedTurn2.some(
+				(m) => (m as { type: string }).type === "permission_request",
+			),
+		).toBe(false);
+		expect(sm.getPendingPermissionRequests()).toHaveLength(0);
+	});
+
+	it("clearHistory clears session allowlist — tool prompts again after clear", async () => {
+		const sm = new SessionManager(makeConfig());
+
+		// Turn 1: approve "Bash" for session
+		vi.mocked(query).mockImplementation(makeQueryImpl("Bash"));
+		const turn1 = sm.runQuery("hello", () => {}, "sess-1");
+		await waitFor(() =>
+			expect(sm.getPendingPermissionRequests()).toHaveLength(1),
+		);
+		sm.handlePermissionResponse("tid-1", true, "session");
+		await turn1;
+
+		// Clear history — wipes sessionAllowedTools
+		sm.clearHistory();
+
+		// Turn 2: same tool should prompt again (new session context)
+		const emittedTurn2: unknown[] = [];
+		vi.mocked(query).mockImplementation(makeQueryImpl("Bash", "tid-2"));
+		const turn2 = sm.runQuery(
+			"new session msg",
+			(m) => emittedTurn2.push(m),
+			"sess-2",
+		);
+		await waitFor(() =>
+			expect(sm.getPendingPermissionRequests()).toHaveLength(1),
+		);
+		expect(
+			emittedTurn2.some(
+				(m) => (m as { type: string }).type === "permission_request",
+			),
+		).toBe(true);
+
+		// Clean up
+		sm.handlePermissionResponse("tid-2", false);
+		await turn2;
+	});
+
+	it("reinitialize clears session allowlist", async () => {
+		const sm = new SessionManager(makeConfig());
+
+		// Turn 1: approve "Read" for session
+		vi.mocked(query).mockImplementation(makeQueryImpl("Read"));
+		const turn1 = sm.runQuery("hello", () => {}, "sess-1");
+		await waitFor(() =>
+			expect(sm.getPendingPermissionRequests()).toHaveLength(1),
+		);
+		sm.handlePermissionResponse("tid-1", true, "session");
+		await turn1;
+
+		// Reinitialize — wipes allowlist
+		sm.reinitialize(makeConfig());
+
+		// Turn 2: "Read" should prompt again
+		const emittedTurn2: unknown[] = [];
+		vi.mocked(query).mockImplementation(makeQueryImpl("Read", "tid-2"));
+		const turn2 = sm.runQuery(
+			"after reinit",
+			(m) => emittedTurn2.push(m),
+			"sess-2",
+		);
+		await waitFor(() =>
+			expect(sm.getPendingPermissionRequests()).toHaveLength(1),
+		);
+		expect(
+			emittedTurn2.some(
+				(m) => (m as { type: string }).type === "permission_request",
+			),
+		).toBe(true);
+
+		sm.handlePermissionResponse("tid-2", false);
+		await turn2;
+	});
+
+	it("session switch clears allowlist", async () => {
+		const sm = new SessionManager(makeConfig());
+
+		// Turn 1 on session A: approve "Bash" for session
+		vi.mocked(query).mockImplementation(makeQueryImpl("Bash"));
+		const turn1 = sm.runQuery("hello", () => {}, "sess-A");
+		await waitFor(() =>
+			expect(sm.getPendingPermissionRequests()).toHaveLength(1),
+		);
+		sm.handlePermissionResponse("tid-1", true, "session");
+		await turn1;
+
+		// Switch to session B — allowlist should clear
+		const emittedTurn2: unknown[] = [];
+		vi.mocked(query).mockImplementation(makeQueryImpl("Bash", "tid-2"));
+		const turn2 = sm.runQuery(
+			"diff session",
+			(m) => emittedTurn2.push(m),
+			"sess-B",
+		);
+		await waitFor(() =>
+			expect(sm.getPendingPermissionRequests()).toHaveLength(1),
+		);
+		expect(
+			emittedTurn2.some(
+				(m) => (m as { type: string }).type === "permission_request",
+			),
+		).toBe(true);
+
+		sm.handlePermissionResponse("tid-2", false);
+		await turn2;
+	});
+
+	it("deny does not add tool to session allowlist", async () => {
+		const sm = new SessionManager(makeConfig());
+
+		// Turn 1: deny "Bash"
+		vi.mocked(query).mockImplementation(makeQueryImpl("Bash"));
+		const turn1 = sm.runQuery("hello", () => {}, "sess-1");
+		await waitFor(() =>
+			expect(sm.getPendingPermissionRequests()).toHaveLength(1),
+		);
+		sm.handlePermissionResponse("tid-1", false);
+		await turn1;
+
+		// Turn 2: "Bash" should still prompt
+		const emittedTurn2: unknown[] = [];
+		vi.mocked(query).mockImplementation(makeQueryImpl("Bash", "tid-2"));
+		const turn2 = sm.runQuery("again", (m) => emittedTurn2.push(m), "sess-1");
+		await waitFor(() =>
+			expect(sm.getPendingPermissionRequests()).toHaveLength(1),
+		);
+		expect(
+			emittedTurn2.some(
+				(m) => (m as { type: string }).type === "permission_request",
+			),
+		).toBe(true);
+
+		sm.handlePermissionResponse("tid-2", false);
+		await turn2;
+	});
+
+	it("deny with custom message sends that message to SDK canUseTool resolver", async () => {
+		const sm = new SessionManager(makeConfig());
+		let capturedResult: unknown;
+
+		vi.mocked(query).mockImplementation(
+			({ options }: { prompt: unknown; options?: Options }) => {
+				const gen = (async function* () {
+					yield {
+						type: "system",
+						subtype: "init",
+						session_id: "sdk-session-1",
+						tools: [],
+					};
+					capturedResult = await options.canUseTool(
+						"Bash",
+						{},
+						{
+							toolUseID: "tid-1",
+							title: undefined,
+							displayName: undefined,
+							description: undefined,
+						},
+					);
+					yield {
+						type: "result",
+						subtype: "success",
+						total_cost_usd: 0,
+						session_id: "sdk-session-1",
+						usage: { input_tokens: 10, output_tokens: 5 },
+					};
+				})();
+				Object.assign(gen, { mcpServerStatus: () => Promise.resolve([]) });
+				return gen;
+			},
+		);
+
+		const turn1 = sm.runQuery("hello", () => {}, "sess-1");
+		await waitFor(() =>
+			expect(sm.getPendingPermissionRequests()).toHaveLength(1),
+		);
+		sm.handlePermissionResponse("tid-1", false, undefined, "use Read instead");
+		await turn1;
+
+		expect(capturedResult).toEqual({
+			behavior: "deny",
+			message: "use Read instead",
+		});
+	});
+
+	it("deny without custom message uses default 'Denied by user'", async () => {
+		const sm = new SessionManager(makeConfig());
+		let capturedResult: unknown;
+
+		vi.mocked(query).mockImplementation(
+			({ options }: { prompt: unknown; options?: Options }) => {
+				const gen = (async function* () {
+					yield {
+						type: "system",
+						subtype: "init",
+						session_id: "sdk-session-1",
+						tools: [],
+					};
+					capturedResult = await options.canUseTool(
+						"Bash",
+						{},
+						{
+							toolUseID: "tid-1",
+							title: undefined,
+							displayName: undefined,
+							description: undefined,
+						},
+					);
+					yield {
+						type: "result",
+						subtype: "success",
+						total_cost_usd: 0,
+						session_id: "sdk-session-1",
+						usage: { input_tokens: 10, output_tokens: 5 },
+					};
+				})();
+				Object.assign(gen, { mcpServerStatus: () => Promise.resolve([]) });
+				return gen;
+			},
+		);
+
+		const turn1 = sm.runQuery("hello", () => {}, "sess-1");
+		await waitFor(() =>
+			expect(sm.getPendingPermissionRequests()).toHaveLength(1),
+		);
+		sm.handlePermissionResponse("tid-1", false);
+		await turn1;
+
+		expect(capturedResult).toEqual({
+			behavior: "deny",
+			message: "Denied by user",
+		});
+	});
+
+	it("local ('always') approval writes tool to project settings.json", async () => {
+		vi.mocked(fsMock.writeFileSync).mockClear();
+		vi.mocked(fsMock.readFileSync).mockClear();
+
+		const sm = new SessionManager(makeConfig());
+		vi.mocked(query).mockImplementation(makeQueryImpl("Bash"));
+
+		const turn1 = sm.runQuery("hello", () => {}, "sess-1");
+		await waitFor(() =>
+			expect(sm.getPendingPermissionRequests()).toHaveLength(1),
+		);
+
+		sm.handlePermissionResponse("tid-1", true, "local");
+		await turn1;
+
+		// writeFileSync should have been called with the project settings path
+		expect(vi.mocked(fsMock.writeFileSync)).toHaveBeenCalledWith(
+			expect.stringContaining(".claude/settings.json"),
+			expect.stringContaining('"Bash"'),
+			"utf8",
+		);
 	});
 });

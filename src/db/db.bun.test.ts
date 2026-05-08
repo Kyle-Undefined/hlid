@@ -4,7 +4,7 @@
  * Run with: bun test src/db/
  */
 import { Database } from "bun:sqlite";
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { beforeEach, describe, expect, it } from "bun:test";
 import {
 	createAttachment,
 	deleteAttachment,
@@ -280,7 +280,9 @@ describe("messages", () => {
 
 	it("setMessageRecap throws when row not found", async () => {
 		await createSession("s1", "L", "m");
-		await expect(setMessageRecap("s1", 99, "orphan")).rejects.toThrow("no row found");
+		await expect(setMessageRecap("s1", 99, "orphan")).rejects.toThrow(
+			"no row found",
+		);
 	});
 });
 
@@ -363,7 +365,7 @@ describe("event log — appendLog / getLogs", () => {
 	it("stores detail as JSON string", async () => {
 		await appendLog("error", "session", "query failed", { reason: "timeout" });
 		const { logs } = await getLogs(1, 10);
-		expect(JSON.parse(logs[0].detail!)).toEqual({ reason: "timeout" });
+		expect(JSON.parse(logs[0].detail ?? "null")).toEqual({ reason: "timeout" });
 	});
 
 	it("null detail stored as null", async () => {
@@ -505,8 +507,8 @@ describe("attachments — CRUD", () => {
 		await makeAttachment("att-1");
 		const row = await getAttachment("att-1");
 		expect(row).not.toBeNull();
-		expect(row!.filename).toBe("file-att-1.txt");
-		expect(row!.kind).toBe("ephemeral");
+		expect(row?.filename).toBe("file-att-1.txt");
+		expect(row?.kind).toBe("ephemeral");
 	});
 
 	it("returns null for unknown id", async () => {
@@ -519,8 +521,8 @@ describe("attachments — CRUD", () => {
 		const linked = await linkAttachmentToMessage("att-2", "s1", 3);
 		expect(linked).toBe(true);
 		const row = await getAttachment("att-2");
-		expect(row!.session_id).toBe("s1");
-		expect(row!.message_seq).toBe(3);
+		expect(row?.session_id).toBe("s1");
+		expect(row?.message_seq).toBe(3);
 	});
 
 	it("linkAttachmentToMessage returns false for unknown id", async () => {
@@ -541,7 +543,7 @@ describe("attachments — CRUD", () => {
 		await makeAttachment("att-5");
 		const deleted = await deleteAttachment("att-5");
 		expect(deleted).not.toBeNull();
-		expect(deleted!.id).toBe("att-5");
+		expect(deleted?.id).toBe("att-5");
 		expect(await getAttachment("att-5")).toBeNull();
 	});
 
@@ -686,8 +688,8 @@ describe("sessions — cascade delete completeness", () => {
 
 		const att = await getAttachment("att-v");
 		expect(att).not.toBeNull();
-		expect(att!.session_id).toBeNull();
-		expect(att!.message_seq).toBeNull();
+		expect(att?.session_id).toBeNull();
+		expect(att?.message_seq).toBeNull();
 	});
 });
 
@@ -726,7 +728,10 @@ describe("usage — getUsageWindows rate-limit settings", () => {
 
 	it("exposes utilization and resetsAt from rl_5hr when not expired", async () => {
 		const resetsAt = Math.floor(Date.now() / 1000) + 3600;
-		await saveSetting("rl_5hr", JSON.stringify({ utilization: 0.75, resetsAt }));
+		await saveSetting(
+			"rl_5hr",
+			JSON.stringify({ utilization: 0.75, resetsAt }),
+		);
 		const { fiveHour } = await getUsageWindows();
 		expect(fiveHour.utilization).toBeCloseTo(0.75);
 		expect(fiveHour.resetsAt).toBe(resetsAt);
@@ -753,7 +758,7 @@ describe("usage — getUsageWindows rate-limit settings", () => {
 		);
 		const { weeklySonnet } = await getUsageWindows();
 		expect(weeklySonnet).not.toBeNull();
-		expect(weeklySonnet!.utilization).toBeCloseTo(0.5);
+		expect(weeklySonnet?.utilization).toBeCloseTo(0.5);
 	});
 
 	it("weeklySonnet is null when rl_weekly_sonnet resetsAt expired", async () => {
@@ -764,5 +769,122 @@ describe("usage — getUsageWindows rate-limit settings", () => {
 		);
 		const { weeklySonnet } = await getUsageWindows();
 		expect(weeklySonnet).toBeNull();
+	});
+});
+
+// ── ledger immutability ───────────────────────────────────────────────────────
+// All-time stats (usage_daily) and window stats (usage_queries) must survive
+// session deletion. Deleting sessions should clean up disk/context but never
+// subtract from the historical record of what was used.
+
+describe("ledger — usage_daily survives session deletion (all-time immutability)", () => {
+	let db: ReturnType<typeof freshDb>;
+	beforeEach(() => {
+		db = freshDb();
+	});
+
+	it("usage_daily row is NOT removed when session is deleted", async () => {
+		await createSession("s1", "L", "m");
+		await recordQuery(
+			"s1",
+			baseQuery({ cost: 0.05, input_tokens: 300, output_tokens: 100 }),
+		);
+
+		// Confirm row exists
+		const before = await getAggregatedStats();
+		expect(before.allTime.queries).toBe(1);
+
+		await deleteSession("s1");
+
+		// All-time stats must be unchanged
+		const after = await getAggregatedStats();
+		expect(after.allTime.queries).toBe(1);
+		expect(after.allTime.input_tokens).toBe(300);
+		expect(after.allTime.output_tokens).toBe(100);
+		expect(after.allTime.cost).toBeCloseTo(0.05);
+	});
+
+	it("usage_daily survives deleteSessionsOlderThan", async () => {
+		const oldTs = Math.floor(Date.now() / 1000) - 10 * 86400;
+		db.run(
+			`INSERT INTO sessions (id, label, model, started_at) VALUES (?, ?, ?, ?)`,
+			["old-s", "Old", "m", oldTs],
+		);
+		await recordQuery("old-s", baseQuery({ cost: 0.1, input_tokens: 500 }));
+
+		const before = await getAggregatedStats();
+		expect(before.allTime.queries).toBe(1);
+
+		await deleteSessionsOlderThan(5);
+
+		const after = await getAggregatedStats();
+		expect(after.allTime.queries).toBe(1);
+		expect(after.allTime.input_tokens).toBe(500);
+	});
+
+	it("usage_daily has no FK to sessions (structural: deleting session cannot cascade to it)", async () => {
+		// Prove the table has no foreign-key referencing sessions.
+		// If someone adds a FK later, this test catches it.
+		const fkRows = db
+			.query<{ table: string }, []>(
+				`SELECT "table" FROM pragma_foreign_key_list('usage_daily')`,
+			)
+			.all();
+		expect(fkRows).toHaveLength(0);
+	});
+});
+
+describe("ledger — usage_queries survives session deletion (window immutability)", () => {
+	let db: ReturnType<typeof freshDb>;
+	beforeEach(() => {
+		db = freshDb();
+	});
+
+	it("usage_queries rows are NOT deleted when session is deleted", async () => {
+		await createSession("s1", "L", "m");
+		await recordQuery(
+			"s1",
+			baseQuery({ cost: 0.02, input_tokens: 150, output_tokens: 60 }),
+		);
+
+		// Confirm row exists in usage_queries
+		const countBefore = db
+			.query<{ n: number }, []>(`SELECT COUNT(*) as n FROM usage_queries`)
+			.get()?.n;
+		expect(countBefore).toBe(1);
+
+		await deleteSession("s1");
+
+		// usage_queries row must survive
+		const countAfter = db
+			.query<{ n: number }, []>(`SELECT COUNT(*) as n FROM usage_queries`)
+			.get()?.n;
+		expect(countAfter).toBe(1);
+	});
+
+	it("getUsageWindows query count unchanged after session deletion", async () => {
+		await createSession("s1", "L", "m");
+		await recordQuery(
+			"s1",
+			baseQuery({ input_tokens: 200, output_tokens: 80 }),
+		);
+
+		const before = await getUsageWindows();
+		expect(before.fiveHour.queries).toBe(1);
+
+		await deleteSession("s1");
+
+		const after = await getUsageWindows();
+		expect(after.fiveHour.queries).toBe(1);
+		expect(after.fiveHour.tokens).toBe(before.fiveHour.tokens);
+	});
+
+	it("usage_queries has no FK to sessions (structural)", async () => {
+		const fkRows = db
+			.query<{ table: string }, []>(
+				`SELECT "table" FROM pragma_foreign_key_list('usage_queries')`,
+			)
+			.all();
+		expect(fkRows).toHaveLength(0);
 	});
 });

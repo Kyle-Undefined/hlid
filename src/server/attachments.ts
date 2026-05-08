@@ -273,20 +273,32 @@ export async function serveAttachment(id: string): Promise<Response> {
 	});
 }
 
-export async function removeAttachment(id: string): Promise<Response> {
+export async function removeAttachment(
+	id: string,
+	config?: HlidConfig,
+): Promise<Response> {
 	const row = await db.getAttachment(id);
 	if (!row) return new Response("Not found", { status: 404 });
 	await db.deleteAttachment(id);
-	try {
-		await unlink(row.path);
-		const dir = dirname(row.path);
-		const remaining = await readdir(dir).catch(() => null);
-		if (remaining?.length === 0) {
-			await rmdir(dir).catch(() => {});
-		}
-	} catch (err: unknown) {
-		if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-			console.warn(`[attachments] unlink failed for ${row.path}:`, err);
+	// Ephemeral attachments: always delete the file (it belongs to hlid).
+	// Vault attachments: only delete the file when delete_vault_attachments is
+	// explicitly enabled — by default vault files are owned by the vault, not
+	// hlid, so removing the DB record is sufficient.
+	const shouldUnlink =
+		row.kind === "ephemeral" ||
+		(row.kind === "vault" && (config?.vault.delete_vault_attachments ?? false));
+	if (shouldUnlink) {
+		try {
+			await unlink(row.path);
+			const dir = dirname(row.path);
+			const remaining = await readdir(dir).catch(() => null);
+			if (remaining?.length === 0) {
+				await rmdir(dir).catch(() => {});
+			}
+		} catch (err: unknown) {
+			if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+				console.warn(`[attachments] unlink failed for ${row.path}:`, err);
+			}
 		}
 	}
 	return Response.json({ ok: true, id });

@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import type { QueuedChatMessage } from "#/hooks/wsStore";
 import { approvedLabel } from "#/server/protocol";
+import { AskUserQuestionCard } from "./AskUserQuestionCard";
 import { AssistantMsg } from "./AssistantMsg";
 import type { ChatMessage } from "./chatReducer";
 import { PermissionCard } from "./PermissionCard";
@@ -16,6 +17,7 @@ export function MessageList({
 	chatQueue,
 	sessionId,
 	handleDecide,
+	handleSelectOption,
 	handleCancelQueued,
 	bottomRef,
 }: {
@@ -26,7 +28,9 @@ export function MessageList({
 		id: string,
 		approved: boolean,
 		saveScope?: "session" | "local",
+		denyMessage?: string,
 	) => void;
+	handleSelectOption: (id: string, selectedOption: string) => void;
 	handleCancelQueued: (id: string) => void;
 	bottomRef: React.MutableRefObject<HTMLDivElement | null>;
 }) {
@@ -61,6 +65,15 @@ export function MessageList({
 							key={m.id}
 							message={m}
 							permissionLabels={permissionLabels}
+						/>
+					);
+				}
+				if (m.role === "ask_user_question") {
+					return (
+						<AskUserQuestionCard
+							key={m.id}
+							message={m}
+							onSelect={handleSelectOption}
 						/>
 					);
 				}

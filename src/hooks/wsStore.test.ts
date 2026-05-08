@@ -7,15 +7,18 @@
  * operations fail silently (try/catch), and _ws stays null throughout.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as wsStore from "./wsStore";
 
 // ── test suite ────────────────────────────────────────────────────────────────
 
 describe("wsStore state management", () => {
-	let store: typeof import("./wsStore");
+	// Use a reference alias so existing test code (store.xxx) works unchanged
+	const store = wsStore;
 
-	beforeEach(async () => {
-		vi.resetModules();
-		store = await import("./wsStore");
+	beforeEach(() => {
+		// Reset all module-level state between tests
+		// (vi.resetModules() is not supported in Bun — __resetForTesting() instead)
+		wsStore.__resetForTesting();
 	});
 
 	// ── initial state ─────────────────────────────────────────────────────────
@@ -146,7 +149,13 @@ describe("wsStore state management", () => {
 				agent_cwd: "/home/kyle/project",
 				skill_context: "some-context",
 				attachments: [
-					{ id: "att-1", filename: "note.txt", mime: "text/plain" },
+					{
+						id: "att-1",
+						filename: "note.txt",
+						mime: "text/plain",
+						path: "/tmp/note.txt",
+						kind: "ephemeral",
+					},
 				],
 			};
 			store.enqueueChat(msg);

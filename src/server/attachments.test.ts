@@ -27,16 +27,13 @@ vi.mock("node:fs/promises", () => ({
 // realpathSync is only called inside resolveRegisteredAgent (when agent_cwd is
 // present). For tests without an agent, we don't need this mock, but provide it
 // to avoid "Bun.file" references pulling in unexpected module resolution.
-vi.mock("node:fs", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("node:fs")>();
-	return {
-		...actual,
-		realpathSync: vi.fn().mockImplementation((p: string) => p),
-	};
-});
+vi.mock("node:fs", () => ({
+	realpathSync: vi.fn().mockImplementation((p: string) => p),
+}));
 
-vi.mock("node:crypto", async (importOriginal) => {
-	const actual = await importOriginal<typeof import("node:crypto")>();
+vi.mock("node:crypto", () => {
+	// eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+	const actual = require("node:crypto") as typeof import("node:crypto");
 	return {
 		...actual,
 		randomUUID: vi.fn().mockReturnValue("00000000-0000-0000-0000-000000000001"),
@@ -47,6 +44,7 @@ vi.mock("node:crypto", async (importOriginal) => {
 
 import { mkdir, unlink } from "node:fs/promises";
 import type { HlidConfig } from "../config";
+
 import { DEFAULT_ATTACHMENTS_CONFIG } from "../config";
 import * as db from "../db";
 import { handleUpload, removeAttachment, unlinkPaths } from "./attachments";
@@ -322,8 +320,10 @@ describe("handleUpload — filename sanitisation", () => {
 
 	it("replaces leading dots to prevent hidden files", async () => {
 		const config = makeConfig();
+		// Note: ".hidden_config" (no ext) loses MIME through Bun multipart round-trip
+		// Use ".hidden_config.txt" to test leading-dot sanitization with preserved MIME
 		const form = makeFormData(
-			new File(["data"], ".hidden_config", { type: "text/plain" }),
+			new File(["data"], ".hidden_config.txt", { type: "text/plain" }),
 		);
 		const res = await handleUpload(makeRequest(form), config);
 		expect(res.status).toBe(200);
@@ -460,7 +460,7 @@ describe("removeAttachment", () => {
 		expect(res.status).toBe(404);
 	});
 
-	it("deletes DB row and unlinks file on success", async () => {
+	it("deletes DB row and unlinks file for ephemeral attachment", async () => {
 		vi.mocked(db.getAttachment).mockResolvedValueOnce({
 			id: "att-1",
 			path: "/tmp/test-vault/.hlid/attachments/_unsessioned/note.txt",
@@ -481,5 +481,96 @@ describe("removeAttachment", () => {
 		expect(body.id).toBe("att-1");
 		expect(db.deleteAttachment).toHaveBeenCalledWith("att-1");
 		expect(unlink).toHaveBeenCalled();
+	});
+
+	it("deletes DB row but does NOT unlink file for vault attachment (default config)", async () => {
+		vi.mocked(db.getAttachment).mockResolvedValueOnce({
+			id: "att-v",
+			path: "/vault/notes/important.md",
+			filename: "important.md",
+			mime: "text/markdown",
+			kind: "vault",
+			size_bytes: 100,
+			sha256: "def",
+			session_id: "s1",
+			created_at: 0,
+		} as never);
+
+		const res = await removeAttachment("att-v");
+		expect(res.status).toBe(200);
+		const body = await res.json();
+		expect(body.ok).toBe(true);
+		expect(db.deleteAttachment).toHaveBeenCalledWith("att-v");
+		// Must NOT delete vault files — they exist independently in the vault
+		expect(unlink).not.toHaveBeenCalled();
+	});
+
+	it("does NOT unlink vault file when delete_vault_attachments is false", async () => {
+		vi.mocked(db.getAttachment).mockResolvedValueOnce({
+			id: "att-v",
+			path: "/vault/notes/important.md",
+			filename: "important.md",
+			mime: "text/markdown",
+			kind: "vault",
+			size_bytes: 100,
+			sha256: "def",
+			session_id: "s1",
+			created_at: 0,
+		} as never);
+
+		const config = makeConfig();
+		// Explicitly set false (the default)
+		config.vault.delete_vault_attachments = false;
+
+		const res = await removeAttachment("att-v", config);
+		expect(res.status).toBe(200);
+		expect(db.deleteAttachment).toHaveBeenCalledWith("att-v");
+		expect(unlink).not.toHaveBeenCalled();
+	});
+
+	it("DOES unlink vault file when delete_vault_attachments is true", async () => {
+		vi.mocked(db.getAttachment).mockResolvedValueOnce({
+			id: "att-v",
+			path: "/vault/notes/important.md",
+			filename: "important.md",
+			mime: "text/markdown",
+			kind: "vault",
+			size_bytes: 100,
+			sha256: "def",
+			session_id: "s1",
+			created_at: 0,
+		} as never);
+		vi.mocked(unlink).mockResolvedValueOnce(undefined);
+
+		const config = makeConfig();
+		config.vault.delete_vault_attachments = true;
+
+		const res = await removeAttachment("att-v", config);
+		expect(res.status).toBe(200);
+		expect(db.deleteAttachment).toHaveBeenCalledWith("att-v");
+		expect(unlink).toHaveBeenCalledWith("/vault/notes/important.md");
+	});
+
+	it("ephemeral attachment always unlinks regardless of delete_vault_attachments", async () => {
+		vi.mocked(db.getAttachment).mockResolvedValueOnce({
+			id: "att-e",
+			path: "/tmp/.hlid/attachments/s1/file.txt",
+			filename: "file.txt",
+			mime: "text/plain",
+			kind: "ephemeral",
+			size_bytes: 10,
+			sha256: "ghi",
+			session_id: "s1",
+			created_at: 0,
+		} as never);
+		vi.mocked(unlink).mockResolvedValueOnce(undefined);
+
+		// delete_vault_attachments=false should NOT affect ephemeral behavior
+		const config = makeConfig();
+		config.vault.delete_vault_attachments = false;
+
+		const res = await removeAttachment("att-e", config);
+		expect(res.status).toBe(200);
+		expect(unlink).toHaveBeenCalledWith("/tmp/.hlid/attachments/s1/file.txt");
 	});
 });

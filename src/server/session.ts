@@ -1,4 +1,5 @@
-import { realpathSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { McpServerStatus } from "@anthropic-ai/claude-agent-sdk";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import type { HlidConfig } from "../config";
@@ -13,7 +14,11 @@ import {
 } from "./agentPaths";
 import { loadConfig } from "./config";
 import { resolveExecutionContext } from "./executionContext";
-import { PermissionManager } from "./permissions";
+import {
+	AskUserQuestionManager,
+	PermissionManager,
+	PlanModeManager,
+} from "./permissions";
 import { buildPrompt } from "./promptBuilder";
 import type { ChatAttachment, ServerMessage } from "./protocol";
 import { mapMcpServer } from "./protocol";
@@ -55,7 +60,7 @@ type TurnState = {
 
 export type SessionState = "idle" | "running" | "error";
 
-type PermissionMode = "default" | "acceptEdits" | "bypassPermissions";
+type PermissionMode = "default" | "acceptEdits" | "bypassPermissions" | "plan";
 
 export class SessionManager {
 	private state: SessionState = "idle";
@@ -71,6 +76,10 @@ export class SessionManager {
 	// via `resume` on subsequent turns so the CLI manages history natively.
 	private claudeSessionId: string | null = null;
 	private permissions = new PermissionManager();
+	private askUserQuestions = new AskUserQuestionManager();
+	private planModeManager = new PlanModeManager();
+	/** Tools approved for the entire hlid session (survives SDK subprocess restarts). */
+	private sessionAllowedTools = new Set<string>();
 	private currentSessionId: string | null = null;
 	private messageSeq = 0;
 	private lastMcpStatus: McpServerStatus[] | null = null;
@@ -103,6 +112,7 @@ export class SessionManager {
 		this.currentSessionId = null;
 		this.claudeSessionId = null;
 		this.messageSeq = 0;
+		this.sessionAllowedTools.clear();
 		db.clearCurrentSessionId().catch((e) =>
 			logDbError("clearCurrentSessionId", e),
 		);
@@ -178,6 +188,8 @@ export class SessionManager {
 
 	abort(): void {
 		this.permissions.clearAll();
+		this.askUserQuestions.clearAll();
+		this.planModeManager.clearAll();
 		this.abortController?.abort();
 	}
 
@@ -185,8 +197,9 @@ export class SessionManager {
 		id: string,
 		approved: boolean,
 		saveScope?: "session" | "local",
+		denyMessage?: string,
 	): void {
-		this.permissions.complete(id, approved, saveScope);
+		this.permissions.complete(id, approved, saveScope, denyMessage);
 	}
 
 	getPendingPermissionRequests(): Extract<
@@ -196,12 +209,41 @@ export class SessionManager {
 		return this.permissions.getPending();
 	}
 
+	getPendingAskUserQuestions(): Extract<
+		ServerMessage,
+		{ type: "ask_user_question" }
+	>[] {
+		return this.askUserQuestions.getPending();
+	}
+
+	handleAskUserQuestionResponse(id: string, selectedOption: string): void {
+		this.askUserQuestions.complete(id, selectedOption);
+	}
+
+	handlePlanModeExitResponse(
+		id: string,
+		decision: "approved" | "edited" | "cancelled",
+		feedback?: string,
+	): void {
+		this.planModeManager.complete(id, decision, feedback);
+	}
+
+	getPendingPlanModeExits(): Extract<
+		ServerMessage,
+		{ type: "plan_mode_exit" }
+	>[] {
+		return this.planModeManager.getPending();
+	}
+
 	clearHistory(): void {
 		this.currentSessionId = null;
 		this.claudeSessionId = null;
 		this.messageSeq = 0;
 		this.agentCwd = undefined;
 		this.agentMode = "cwd";
+		this.sessionAllowedTools.clear();
+		this.askUserQuestions.clearAll();
+		this.planModeManager.clearAll();
 		db.clearCurrentSessionId().catch((e) =>
 			logDbError("clearCurrentSessionId", e),
 		);
@@ -221,6 +263,7 @@ export class SessionManager {
 		if (sessionId && sessionId !== this.currentSessionId) {
 			this.agentCwd = undefined;
 			this.agentMode = "cwd";
+			this.sessionAllowedTools.clear();
 			const [prior, savedAgentCwd, savedClaudeId] = await Promise.all([
 				db.getSessionMessages(sessionId),
 				db.getSessionAgentCwd(sessionId),
@@ -624,6 +667,90 @@ export class SessionManager {
 							{ toolUseID, title, displayName, description },
 						) =>
 							new Promise((resolve) => {
+								const passInput = input as Record<string, unknown>;
+
+								// AskUserQuestion: surface options to UI, auto-allow on selection.
+								// Never shows as a permission prompt — the user picks from the
+								// supplied options and that choice is injected as the tool answer.
+								if (toolName === "AskUserQuestion") {
+									const question =
+										typeof passInput.question === "string"
+											? passInput.question
+											: (title ?? "Question from Claude");
+									const options = Array.isArray(passInput.options)
+										? (passInput.options as unknown[]).filter(
+												(o): o is string => typeof o === "string",
+											)
+										: [];
+									const askReq = {
+										type: "ask_user_question" as const,
+										id: toolUseID,
+										question,
+										options,
+									};
+									this.askUserQuestions.register(
+										toolUseID,
+										askReq,
+										(selectedOption) => {
+											resolve({
+												behavior: "allow" as const,
+												updatedInput: {
+													...passInput,
+													answer: selectedOption,
+												},
+											});
+										},
+									);
+									emit(askReq);
+									return;
+								}
+
+								// ExitPlanMode: surface plan approval UI to user.
+								// Approve → Claude exits plan mode and implements.
+								// Edit → deny with feedback so Claude revises the plan.
+								// Cancel → deny so Claude stops.
+								if (toolName === "ExitPlanMode") {
+									const exitReq = {
+										type: "plan_mode_exit" as const,
+										id: toolUseID,
+										input: passInput,
+									};
+									this.planModeManager.register(
+										toolUseID,
+										exitReq,
+										(decision, feedback) => {
+											if (decision === "approved") {
+												resolve({
+													behavior: "allow" as const,
+													updatedInput: passInput,
+												});
+											} else if (decision === "edited") {
+												resolve({
+													behavior: "deny" as const,
+													message: `User requested changes to the plan:\n\n${feedback ?? ""}`,
+												});
+											} else {
+												resolve({
+													behavior: "deny" as const,
+													message: "Plan was cancelled by the user.",
+												});
+											}
+										},
+									);
+									emit(exitReq);
+									return;
+								}
+
+								// Session-approved: auto-allow without prompting.
+								// Survives SDK subprocess restarts since we track it ourselves.
+								if (this.sessionAllowedTools.has(toolName)) {
+									resolve({
+										behavior: "allow" as const,
+										updatedInput: passInput,
+									});
+									return;
+								}
+
 								const permReq = {
 									type: "permission_request" as const,
 									id: toolUseID,
@@ -637,42 +764,69 @@ export class SessionManager {
 								// branch even though the .d.ts marks it optional. Pass the
 								// original input unchanged as a no-op so the tool runs as
 								// requested.
-								const passInput = input as Record<string, unknown>;
 								this.permissions.register(
 									toolUseID,
 									permReq,
-									(approved, saveScope) => {
+									(approved, saveScope, denyMessage) => {
 										this.permissions.delete(toolUseID);
 										if (!approved) {
 											resolve({
 												behavior: "deny" as const,
-												message: "Denied by user",
+												message: denyMessage ?? "Denied by user",
 											});
 										} else if (saveScope === "session") {
+											// Track in our own set so it survives SDK subprocess restarts.
+											this.sessionAllowedTools.add(toolName);
 											resolve({
 												behavior: "allow" as const,
 												updatedInput: passInput,
-												updatedPermissions: [
-													{
-														type: "addRules" as const,
-														rules: [{ toolName }],
-														behavior: "allow" as const,
-														destination: "session" as const,
-													},
-												],
 											});
 										} else if (saveScope === "local") {
+											// Write directly to project settings.json (in settingSources)
+											// so the next subprocess picks up the rule. localSettings
+											// maps to settings.local.json which is excluded from
+											// settingSources, so we handle persistence ourselves.
+											try {
+												const settingsPath = join(
+													activeCwd,
+													".claude",
+													"settings.json",
+												);
+												let settings: {
+													permissions?: {
+														allow?: string[];
+														deny?: string[];
+													};
+												} = {};
+												try {
+													settings = JSON.parse(
+														readFileSync(settingsPath, "utf8"),
+													);
+												} catch {}
+												const allow = settings.permissions?.allow ?? [];
+												if (!allow.includes(toolName)) {
+													settings.permissions = {
+														...settings.permissions,
+														allow: [...allow, toolName],
+													};
+													mkdirSync(join(activeCwd, ".claude"), {
+														recursive: true,
+													});
+													writeFileSync(
+														settingsPath,
+														`${JSON.stringify(settings, null, 2)}\n`,
+														"utf8",
+													);
+												}
+											} catch (e) {
+												console.error(
+													"[session] failed to write always-allow rule:",
+													e,
+												);
+											}
 											resolve({
 												behavior: "allow" as const,
 												updatedInput: passInput,
-												updatedPermissions: [
-													{
-														type: "addRules" as const,
-														rules: [{ toolName }],
-														behavior: "allow" as const,
-														destination: "localSettings" as const,
-													},
-												],
 											});
 										} else {
 											resolve({

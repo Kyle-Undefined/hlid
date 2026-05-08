@@ -19,6 +19,9 @@ const VaultSchema = z.object({
 	skills: z.string().optional(),
 	memory: z.string().optional(),
 	outputs: z.string().optional(),
+	// When true, deleting a vault attachment from Relics also removes the file
+	// from disk. Default false — vault files are owned by the vault, not hlid.
+	delete_vault_attachments: z.boolean().default(false),
 });
 
 const ServerSchema = z.object({
@@ -35,7 +38,7 @@ const ClaudeSchema = z.object({
 	effort: z.enum(["low", "medium", "high", "xhigh", "max"]).default("high"),
 	max_turns: z.number().int().positive().optional(),
 	permission_mode: z
-		.enum(["default", "acceptEdits", "bypassPermissions"])
+		.enum(["default", "acceptEdits", "bypassPermissions", "plan"])
 		.default("default"),
 	turn_recaps: z.boolean().default(true),
 });
@@ -92,7 +95,11 @@ const AgentSchema = z.object({
 export type Agent = z.infer<typeof AgentSchema>;
 
 export const HlidConfigSchema = z.object({
-	vault: VaultSchema.default(() => ({ name: "Vault", path: "" })),
+	vault: VaultSchema.default(() => ({
+		name: "Vault",
+		path: "",
+		delete_vault_attachments: false,
+	})),
 	server: ServerSchema.default(() => ({
 		port: 3000,
 		tls_proxy_port: 3443,
