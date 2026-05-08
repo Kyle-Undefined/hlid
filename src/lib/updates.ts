@@ -57,7 +57,7 @@ const CHECK_TTL_MS = 24 * 60 * 60 * 1000; // 24h
 const MAX_EXE_BYTES = 500 * 1024 * 1024;
 const MAX_CHECKSUMS_BYTES = 64 * 1024;
 
-export type UpdateCache = {
+type UpdateCache = {
 	lastCheckedAt: number;
 	latestVersion: string | null;
 	latestExeUrl: string | null;
@@ -78,12 +78,25 @@ export type ActionResult<T = unknown> =
 	| { ok: true; data?: T }
 	| { ok: false; error: string };
 
+type ReleaseAsset = { name: string; browser_download_url: string };
+type ReleaseResponse = {
+	tag_name: string;
+	prerelease?: boolean;
+	assets: ReleaseAsset[];
+};
+
 function stagingDir(): string {
 	return join(canonicalInstallDir(), "updates");
 }
 
 function cachePath(): string {
 	return join(canonicalInstallDir(), "update-cache.json");
+}
+
+function tryUnlink(p: string): void {
+	try {
+		unlinkSync(p);
+	} catch {}
 }
 
 const EMPTY_CACHE: UpdateCache = {
@@ -127,7 +140,7 @@ function normalizeVersion(v: string): string {
 // the first "-") makes a version *older* than the same base, matching semver.
 // For our use we only ever compare release tags from GitHub against
 // package.json — both are clean semver in practice.
-export function compareVersions(a: string, b: string): number {
+function compareVersions(a: string, b: string): number {
 	const split = (v: string) => {
 		const norm = normalizeVersion(v);
 		const dash = norm.indexOf("-");
@@ -155,13 +168,6 @@ export function compareVersions(a: string, b: string): number {
 	if (!B.pre) return -1;
 	return A.pre < B.pre ? -1 : 1;
 }
-
-type ReleaseAsset = { name: string; browser_download_url: string };
-type ReleaseResponse = {
-	tag_name: string;
-	prerelease?: boolean;
-	assets: ReleaseAsset[];
-};
 
 // Fetch the latest non-prerelease and reshape it into our cache row.
 // Treats network/4xx/5xx as soft errors: cache untouched, caller still gets
@@ -282,7 +288,6 @@ async function streamToFile(
 	dest: string,
 	maxBytes: number,
 ): Promise<void> {
-	mkdirSync(stagingDir(), { recursive: true });
 	let total = 0;
 	// Wrap to enforce a hard size cap while streaming.
 	const checked = new ReadableStream<Uint8Array>({
@@ -352,12 +357,8 @@ export async function downloadUpdate(): Promise<
 	const sumsPath = join(dir, "hlid-checksums.txt");
 
 	// Best-effort cleanup of any prior partial download for the same name.
-	try {
-		if (existsSync(exePath)) unlinkSync(exePath);
-	} catch {}
-	try {
-		if (existsSync(sumsPath)) unlinkSync(sumsPath);
-	} catch {}
+	tryUnlink(exePath);
+	tryUnlink(sumsPath);
 
 	try {
 		const exeRes = await fetch(cache.latestExeUrl, {
@@ -383,28 +384,20 @@ export async function downloadUpdate(): Promise<
 	} catch (e) {
 		// Mid-stream failure (network drop, size cap exceeded). Clean up so a
 		// retry doesn't run verifyChecksum on a partial file.
-		try {
-			if (existsSync(exePath)) unlinkSync(exePath);
-		} catch {}
-		try {
-			if (existsSync(sumsPath)) unlinkSync(sumsPath);
-		} catch {}
+		tryUnlink(exePath);
+		tryUnlink(sumsPath);
 		return { ok: false, error: `download failed: ${(e as Error).message}` };
 	}
 
 	const sumsText = await readFile(sumsPath, "utf8");
 	const expected = checksumFor(sumsText, cache.latestExeName);
 	if (!expected) {
-		try {
-			unlinkSync(exePath);
-		} catch {}
+		tryUnlink(exePath);
 		return { ok: false, error: "checksum entry missing for downloaded exe" };
 	}
 	const actual = await sha256Of(exePath);
 	if (actual !== expected) {
-		try {
-			unlinkSync(exePath);
-		} catch {}
+		tryUnlink(exePath);
 		return {
 			ok: false,
 			error: `checksum mismatch (expected ${expected.slice(0, 12)}…, got ${actual.slice(0, 12)}…)`,

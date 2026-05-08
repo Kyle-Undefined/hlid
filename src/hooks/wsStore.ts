@@ -5,6 +5,8 @@ import type {
 } from "../server/protocol";
 import type { SessionState } from "../server/session";
 
+// ─── Types ───────────────────────────────────────────────────────────────────
+
 export type WsStatus = "connecting" | "connected" | "disconnected";
 
 export type QueuedChatMessage = {
@@ -59,6 +61,8 @@ export const EMPTY_STATS: LiveStats = {
 	queries: 0,
 };
 
+// ─── Stats persistence helpers ───────────────────────────────────────────────
+
 const STATS_KEY = "hlid:live_stats";
 
 function persistStats(stats: LiveStats): void {
@@ -82,15 +86,23 @@ function clearPersistedStats(): void {
 	} catch {}
 }
 
-let _snap: Snapshot = {
+// ─── Module state ────────────────────────────────────────────────────────────
+// All mutable state lives here as module-level variables. These are private;
+// consumers interact through the exported functions below.
+
+/** SSR/server-rendered snapshot default. Exported so consumers
+ *  (useWs, StatusDot, Sidebar) can pass it as the SSR fallback to
+ *  useSyncExternalStore. */
+export const INITIAL_SNAPSHOT: Snapshot = {
 	wsStatus: "connecting",
 	sessionState: "idle",
 	model: "",
 	actualModel: null,
 	hasPendingPermissions: false,
 };
+
+let _snap: Snapshot = { ...INITIAL_SNAPSHOT };
 let _ws: WebSocket | null = null;
-let _pendingPrompt: string | null = null;
 let _liveStats: LiveStats = loadPersistedStats() ?? { ...EMPTY_STATS };
 let _activeSessionId: string | null = null;
 // Buffers in-flight chunks/tool_events for the current run so they survive SPA navigation.
@@ -99,18 +111,22 @@ let _messageBuffer: ServerMessage[] = [];
 let _bufferingEnabled = true;
 let _pendingPermCount = 0;
 let _pendingSessionToday = false;
+let _pendingPrompt: string | null = null;
+let _chatQueue: QueuedChatMessage[] = [];
 
+// Subscriber sets — four concerns, each notified independently.
 const statusSubs = new Set<() => void>();
 const messageSubs = new Set<(msg: ServerMessage) => void>();
 const statsSubs = new Set<() => void>();
 const queueSubs = new Set<() => void>();
 
-let _chatQueue: QueuedChatMessage[] = [];
+// ─── Queue helpers ───────────────────────────────────────────────────────────
 
 function notifyQueue(): void {
 	for (const fn of queueSubs) fn();
 }
 
+/** Drain the chat queue when the session becomes idle. Batches all queued messages into one send. */
 function drainQueue(): void {
 	if (_chatQueue.length === 0) return;
 	if (_ws?.readyState !== WebSocket.OPEN) return;
@@ -136,6 +152,10 @@ function drainQueue(): void {
 		session_id: first.session_id,
 	};
 	if (first.agent_cwd) payload.agent_cwd = first.agent_cwd;
+	// skill_context taken from first queued message only. Batching multiple
+	// skill invocations into one send is not supported; concurrent skill queues
+	// are rare and the first-wins rule matches the single-message fast path.
+	if (first.skill_context) payload.skill_context = first.skill_context;
 	if (attachments.length > 0) payload.attachments = attachments;
 	try {
 		_ws.send(JSON.stringify(payload));
@@ -145,6 +165,8 @@ function drainQueue(): void {
 		// Connection closed unexpectedly; items remain in queue for retry on reconnect
 	}
 }
+
+// ─── WebSocket connection ─────────────────────────────────────────────────────
 
 function getHlidToken(): string {
 	return (
@@ -183,6 +205,92 @@ function setSnap(next: Partial<Snapshot>) {
 	for (const fn of statusSubs) fn();
 }
 
+// ─── Message handlers ────────────────────────────────────────────────────────
+
+function onStatus(msg: Extract<ServerMessage, { type: "status" }>): void {
+	// Do not clear actualModel on run start — let usage_update update it
+	// naturally. This preserves the mismatch badge across submits so it only
+	// changes when the actual model actually changes. handleClear calls
+	// seedActualModel(null) explicitly for true new-session resets.
+	//
+	// Only reset the pending permission count when the session reaches a
+	// terminal state. Resetting on every status message (including "running")
+	// would drop permission requests that arrived mid-run.
+	if (msg.state === "idle" || msg.state === "error") {
+		_pendingPermCount = 0;
+	}
+	setSnap({
+		sessionState: msg.state,
+		model: msg.model,
+		hasPendingPermissions: _pendingPermCount > 0,
+	});
+	if (msg.state === "idle") drainQueue();
+}
+
+function onPermissionRequest(): void {
+	_pendingPermCount++;
+	setSnap({ hasPendingPermissions: true });
+}
+
+function onPermissionResolved(): void {
+	_pendingPermCount = Math.max(0, _pendingPermCount - 1);
+	setSnap({ hasPendingPermissions: _pendingPermCount > 0 });
+}
+
+function onUsageUpdate(
+	msg: Extract<ServerMessage, { type: "usage_update" }>,
+): void {
+	// Live per-turn snapshot. Update only the "current turn" fields —
+	// cumulative tokens/cost/turns/duration/queries are still summed at `done`
+	// from the result's authoritative totals.
+	// context_window is carried forward from the most recent result so the
+	// gauge can render on sessions that haven't completed a query yet.
+	_liveStats = {
+		..._liveStats,
+		last_context_used: msg.tokens_in_context,
+		last_output_tokens: msg.output_tokens,
+		...(msg.context_window != null
+			? { context_window: msg.context_window }
+			: {}),
+	};
+	persistStats(_liveStats);
+	for (const fn of statsSubs) fn();
+	// actualModel rides on usage_update because it's reported per inference.
+	// Surface via the status snapshot so the model badge can compare against
+	// the configured vault model.
+	if (msg.actualModel && msg.actualModel !== _snap.actualModel) {
+		setSnap({ actualModel: msg.actualModel });
+	}
+}
+
+/** Returns false if the message is from a stale session and should be dropped. */
+function onDone(msg: Extract<ServerMessage, { type: "done" }>): boolean {
+	_pendingSessionToday = false;
+	// Ignore done from a stale session (e.g. in-flight query from before clear)
+	if (_activeSessionId !== null && msg.session_id !== _activeSessionId)
+		return false;
+	_liveStats = {
+		turns: _liveStats.turns + msg.turns,
+		cost: _liveStats.cost + (msg.cost ?? 0),
+		duration_ms: _liveStats.duration_ms + msg.duration_ms,
+		input_tokens: _liveStats.input_tokens + msg.input_tokens,
+		output_tokens: _liveStats.output_tokens + msg.output_tokens,
+		cache_read_tokens: _liveStats.cache_read_tokens + msg.cache_read_tokens,
+		cache_creation_tokens:
+			_liveStats.cache_creation_tokens + msg.cache_creation_tokens,
+		context_window: msg.context_window ?? _liveStats.context_window,
+		max_output_tokens: msg.max_output_tokens ?? _liveStats.max_output_tokens,
+		last_context_used:
+			msg.tokens_in_context ??
+			msg.input_tokens + msg.cache_read_tokens + msg.cache_creation_tokens,
+		last_output_tokens: msg.output_tokens,
+		queries: _liveStats.queries + 1,
+	};
+	persistStats(_liveStats);
+	for (const fn of statsSubs) fn();
+	return true;
+}
+
 function connect() {
 	if (typeof window === "undefined") return;
 	if (
@@ -215,76 +323,11 @@ function connect() {
 		} catch {
 			return;
 		}
-		if (msg.type === "status") {
-			// Do not clear actualModel on run start — let usage_update update it
-			// naturally. This preserves the mismatch badge across submits so it only
-			// changes when the actual model actually changes. handleClear calls
-			// seedActualModel(null) explicitly for true new-session resets.
-			_pendingPermCount = 0;
-			setSnap({
-				sessionState: msg.state,
-				model: msg.model,
-				hasPendingPermissions: false,
-			});
-			if (msg.state === "idle") drainQueue();
-		}
-		if (msg.type === "permission_request") {
-			_pendingPermCount++;
-			setSnap({ hasPendingPermissions: true });
-		}
-		if (msg.type === "permission_resolved") {
-			_pendingPermCount = Math.max(0, _pendingPermCount - 1);
-			setSnap({ hasPendingPermissions: _pendingPermCount > 0 });
-		}
-		if (msg.type === "usage_update") {
-			// Live per-turn snapshot. Update only the "current turn" fields —
-			// cumulative tokens/cost/turns/duration/queries are still summed at `done`
-			// from the result's authoritative totals.
-			// context_window is carried forward from the most recent result so the
-			// gauge can render on sessions that haven't completed a query yet.
-			_liveStats = {
-				..._liveStats,
-				last_context_used: msg.tokens_in_context,
-				last_output_tokens: msg.output_tokens,
-				...(msg.context_window != null
-					? { context_window: msg.context_window }
-					: {}),
-			};
-			persistStats(_liveStats);
-			for (const fn of statsSubs) fn();
-			// actualModel rides on usage_update because it's reported per
-			// inference. Surface via the status snapshot so the model badge
-			// can compare against the configured vault model.
-			if (msg.actualModel && msg.actualModel !== _snap.actualModel) {
-				setSnap({ actualModel: msg.actualModel });
-			}
-		}
-		if (msg.type === "done") {
-			_pendingSessionToday = false;
-			// Ignore done from a stale session (e.g. in-flight query from before clear)
-			if (_activeSessionId !== null && msg.session_id !== _activeSessionId)
-				return;
-			_liveStats = {
-				turns: _liveStats.turns + msg.turns,
-				cost: _liveStats.cost + (msg.cost ?? 0),
-				duration_ms: _liveStats.duration_ms + msg.duration_ms,
-				input_tokens: _liveStats.input_tokens + msg.input_tokens,
-				output_tokens: _liveStats.output_tokens + msg.output_tokens,
-				cache_read_tokens: _liveStats.cache_read_tokens + msg.cache_read_tokens,
-				cache_creation_tokens:
-					_liveStats.cache_creation_tokens + msg.cache_creation_tokens,
-				context_window: msg.context_window ?? _liveStats.context_window,
-				max_output_tokens:
-					msg.max_output_tokens ?? _liveStats.max_output_tokens,
-				last_context_used:
-					msg.tokens_in_context ??
-					msg.input_tokens + msg.cache_read_tokens + msg.cache_creation_tokens,
-				last_output_tokens: msg.output_tokens,
-				queries: _liveStats.queries + 1,
-			};
-			persistStats(_liveStats);
-			for (const fn of statsSubs) fn();
-		}
+		if (msg.type === "status") onStatus(msg);
+		if (msg.type === "permission_request") onPermissionRequest();
+		if (msg.type === "permission_resolved") onPermissionResolved();
+		if (msg.type === "usage_update") onUsageUpdate(msg);
+		if (msg.type === "done" && !onDone(msg)) return;
 		// Buffer in-flight events while buffering is enabled (before history loads,
 		// or during SPA nav with component unmounted). Disabled after history drains
 		// so the buffer doesn't grow during a live session.
@@ -309,6 +352,8 @@ function connect() {
 
 if (typeof window !== "undefined") connect();
 
+// ─── Public API — Connection & snapshot ──────────────────────────────────────
+
 export function getSnapshot(): Snapshot {
 	return _snap;
 }
@@ -330,14 +375,16 @@ export function send(msg: ClientMessage): void {
 		_chatQueue = [];
 		notifyQueue();
 	}
-	if (msg.type === "permission_response") {
-		_pendingPermCount = Math.max(0, _pendingPermCount - 1);
-		setSnap({ hasPendingPermissions: _pendingPermCount > 0 });
-	}
+	// Do NOT pre-decrement _pendingPermCount here. The server broadcasts
+	// `permission_resolved` back to all clients (including the sender), and
+	// onPermissionResolved() handles the decrement then. Pre-decrementing here
+	// causes a double-decrement that under-counts concurrent permissions.
 	if (_ws?.readyState === WebSocket.OPEN) {
 		_ws.send(JSON.stringify(msg));
 	}
 }
+
+// ─── Public API — Message buffer ─────────────────────────────────────────────
 
 export function drainMessageBuffer(): ServerMessage[] {
 	const msgs = _messageBuffer;
@@ -354,6 +401,17 @@ export function setBufferingEnabled(enabled: boolean): void {
 	if (!enabled) _messageBuffer = [];
 }
 
+// ─── Public API — Live stats ──────────────────────────────────────────────────
+
+export function getLiveStats(): LiveStats {
+	return _liveStats;
+}
+
+export function subscribeStats(fn: () => void): () => void {
+	statsSubs.add(fn);
+	return () => statsSubs.delete(fn);
+}
+
 export function resetLiveStats(): void {
 	_liveStats = { ...EMPTY_STATS };
 	_activeSessionId = null;
@@ -361,17 +419,25 @@ export function resetLiveStats(): void {
 	for (const fn of statsSubs) fn();
 }
 
-// Seed the actual model from the DB when loading an existing session so the
-// model badge reflects what was previously used without waiting for a new query.
+export function setActiveSessionId(id: string): void {
+	_activeSessionId = id;
+}
+
+export function getPendingSessionToday(): boolean {
+	return _pendingSessionToday;
+}
+
+/** Seed the actual model from DB so the model badge is correct before any new query. */
 export function seedActualModel(actualModel: string | null): void {
 	if (actualModel === _snap.actualModel) return;
 	setSnap({ actualModel });
 }
 
-// Seed context window info from the DB when loading an existing session so
-// the gauge shows the last known value immediately, before any new query runs.
-// Always applied on session load — live usage_update/done events override it
-// naturally within seconds of any new activity.
+/**
+ * Seed context window info from DB when loading an existing session so the
+ * gauge shows the last known value immediately, before any new query runs.
+ * Live usage_update/done events override it naturally once a query starts.
+ */
 export function seedContextStats(
 	contextWindow: number,
 	lastContextUsed: number,
@@ -385,6 +451,8 @@ export function seedContextStats(
 	for (const fn of statsSubs) fn();
 }
 
+// ─── Public API — Pending prompt ─────────────────────────────────────────────
+
 export function setPendingPrompt(text: string): void {
 	_pendingPrompt = text;
 }
@@ -395,26 +463,7 @@ export function claimPendingPrompt(): string | null {
 	return p;
 }
 
-export function getLiveStats(): LiveStats {
-	return _liveStats;
-}
-
-export function subscribeStats(fn: () => void): () => void {
-	statsSubs.add(fn);
-	return () => statsSubs.delete(fn);
-}
-
-export function getPendingSessionToday(): boolean {
-	return _pendingSessionToday;
-}
-
-export function getActiveSessionId(): string | null {
-	return _activeSessionId;
-}
-
-export function setActiveSessionId(id: string): void {
-	_activeSessionId = id;
-}
+// ─── Public API — Chat queue ──────────────────────────────────────────────────
 
 export function enqueueChat(msg: QueuedChatMessage): void {
 	_chatQueue = [..._chatQueue, msg];

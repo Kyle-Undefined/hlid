@@ -1,7 +1,6 @@
 import { RefreshCw } from "lucide-react";
-import { MAX_PULL } from "#/hooks/usePullToRefresh";
+import { MAX_PULL, THRESHOLD } from "#/hooks/usePullToRefresh";
 
-const THRESHOLD = 80;
 const BADGE_PX = 36;
 const VISIBLE_Y = 16;
 

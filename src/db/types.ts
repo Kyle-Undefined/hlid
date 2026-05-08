@@ -1,0 +1,138 @@
+export type SessionRow = {
+	id: string;
+	label: string | null;
+	model: string | null;
+	started_at: number;
+	ended_at: number | null;
+	query_count: number;
+	total_cost: number;
+	total_input_tokens: number;
+	total_output_tokens: number;
+	total_cache_read_tokens: number;
+	total_cache_creation_tokens: number;
+	total_turns: number;
+};
+
+export type MessageRow = {
+	id: number;
+	session_id: string;
+	seq: number;
+	role: string;
+	text: string;
+	timestamp: number;
+	recap: string | null;
+};
+
+export type ToolEventRow = {
+	id: number;
+	session_id: string;
+	assistant_seq: number;
+	tool_id: string;
+	name: string;
+	input_json: string;
+};
+
+export type QueryData = {
+	cost: number;
+	input_tokens: number;
+	output_tokens: number;
+	cache_read_tokens: number;
+	cache_creation_tokens: number;
+	duration_ms: number;
+	turns: number;
+	context_window: number | null;
+	stop_reason: string | null;
+	tokens_in_context?: number | null;
+};
+
+export type AggWindow = {
+	cost: number;
+	queries: number;
+	tokens: number;
+};
+
+export type AggStats = {
+	allTime: {
+		cost: number;
+		queries: number;
+		input_tokens: number;
+		output_tokens: number;
+		cache_read_tokens: number;
+		cache_creation_tokens: number;
+		turns: number;
+	};
+	today: AggWindow;
+	thisMonth: AggWindow;
+};
+
+export type AttachmentKind = "ephemeral" | "vault";
+
+export type AttachmentRow = {
+	id: string;
+	session_id: string | null;
+	message_seq: number | null;
+	kind: AttachmentKind;
+	filename: string;
+	path: string;
+	mime: string;
+	size_bytes: number;
+	sha256: string | null;
+	created_at: number;
+};
+
+export type LogLevel = "error" | "warn" | "info";
+
+export type LogRow = {
+	id: number;
+	timestamp: number;
+	level: LogLevel;
+	source: string;
+	message: string;
+	detail: string | null;
+};
+
+export type LogCounts = { error: number; warn: number; info: number };
+
+export type PermissionEventRow = {
+	tool_id: string;
+	tool_name: string;
+	display_name: string | null;
+	decision: string;
+	timestamp: number;
+};
+
+export type UsageWindow = {
+	tokens: number;
+	sessions: number;
+	queries: number;
+	cost: number;
+	utilization: number | null;
+	resetsAt: number | null;
+	rateLimitType: string | null;
+};
+
+export type UsageWindows = {
+	fiveHour: UsageWindow;
+	weekly: UsageWindow;
+	weeklySonnet: { utilization: number | null; resetsAt: number | null } | null;
+};
+
+export type WeeklyStats = {
+	total: number;
+	days: number[]; // index 0=Sun … 6=Sat
+};
+
+export type ThirtyDayStats = {
+	days: { date: string; count: number }[];
+	total: number;
+};
+
+export type AttachmentListFilter = {
+	kind?: AttachmentKind;
+	sessionId?: string;
+	search?: string;
+	since?: number;
+	until?: number;
+	limit?: number;
+	offset?: number;
+};

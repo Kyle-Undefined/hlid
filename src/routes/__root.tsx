@@ -1,12 +1,14 @@
 import { createRootRoute, HeadContent, Scripts } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import { useEffect, useRef } from "react";
+import { ErrorBoundary } from "#/components/ErrorBoundary";
 import { BottomNav } from "#/components/nav/BottomNav";
 import { Sidebar } from "#/components/nav/Sidebar";
 import { PullToRefreshIndicator } from "#/components/PullToRefreshIndicator";
 import { getConfig } from "#/config";
 import * as privacyStore from "#/hooks/privacyStore";
 import { usePullToRefresh } from "#/hooks/usePullToRefresh";
+import { logClientErrorFn } from "#/lib/serverFns";
 
 import appCss from "../styles.css?url";
 
@@ -64,6 +66,20 @@ function SyncPrivacyStore() {
 	return null;
 }
 
+function RegisterErrorLogger() {
+	useEffect(() => {
+		const handler = (e: PromiseRejectionEvent) => {
+			const message =
+				e.reason instanceof Error ? e.reason.message : String(e.reason);
+			const stack = e.reason instanceof Error ? (e.reason.stack ?? null) : null;
+			void logClientErrorFn({ data: { message, stack } }).catch(() => {});
+		};
+		window.addEventListener("unhandledrejection", handler);
+		return () => window.removeEventListener("unhandledrejection", handler);
+	}, []);
+	return null;
+}
+
 function RootDocument({ children }: { children: React.ReactNode }) {
 	const { theme, mobileTheme, token } = Route.useLoaderData();
 	const wrapperRef = useRef<HTMLDivElement>(null);
@@ -90,7 +106,9 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 			</head>
 			<body>
 				<div className="flex h-dvh overflow-hidden bg-background text-foreground">
-					<Sidebar />
+					<ErrorBoundary>
+						<Sidebar />
+					</ErrorBoundary>
 					<div
 						ref={wrapperRef}
 						className="flex-1 flex flex-col min-h-0 overflow-hidden relative"
@@ -99,12 +117,15 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 						<main className="flex-1 min-h-0 overflow-auto overscroll-y-contain">
 							{children}
 						</main>
-						<BottomNav />
+						<ErrorBoundary>
+							<BottomNav />
+						</ErrorBoundary>
 					</div>
 				</div>
 				<Scripts />
 				<RegisterSW />
 				<SyncPrivacyStore />
+				<RegisterErrorLogger />
 			</body>
 		</html>
 	);

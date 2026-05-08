@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 /** Pull distance (px) required to trigger refresh. */
-const THRESHOLD = 80;
+export const THRESHOLD = 80;
 /** Max visual pull distance shown. */
 export const MAX_PULL = 90;
 /** Minimum actual drag (px) before we start tracking a pull gesture. */

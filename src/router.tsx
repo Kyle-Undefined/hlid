@@ -1,5 +1,10 @@
 import { createRouter as createTanStackRouter } from "@tanstack/react-router";
+import { ErrorFallback } from "./components/ErrorBoundary";
 import { routeTree } from "./routeTree.gen";
+
+function RouterError({ error, reset }: { error: Error; reset: () => void }) {
+	return <ErrorFallback error={error} reset={reset} />;
+}
 
 export function getRouter() {
 	const router = createTanStackRouter({
@@ -8,6 +13,7 @@ export function getRouter() {
 		defaultPreload: "viewport",
 		defaultPreloadStaleTime: 30_000,
 		defaultStaleTime: 30_000,
+		defaultErrorComponent: RouterError,
 	});
 
 	return router;

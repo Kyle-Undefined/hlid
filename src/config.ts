@@ -55,7 +55,7 @@ const StatusVocabularySchema = z.object({
 	done: z.array(z.string()).default(["Done", "Complete", "Archived"]),
 });
 
-export const DEFAULT_ATTACHMENT_MIMES = [
+const DEFAULT_ATTACHMENT_MIMES = [
 	"image/png",
 	"image/jpeg",
 	"image/gif",

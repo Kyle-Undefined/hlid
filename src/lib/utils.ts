@@ -13,6 +13,9 @@ export function uid(): string {
 	return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
+/** Max chars for an auto-generated session label (server + client must agree). */
+export const SESSION_LABEL_LENGTH = 40;
+
 export function clampInt(
 	raw: string | null,
 	def: number,

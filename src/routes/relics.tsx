@@ -8,11 +8,13 @@ import {
 	Trash2,
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useState } from "react";
+import { ConfirmAction } from "#/components/ConfirmAction";
 import { MarkdownBody } from "#/components/MarkdownBody";
 import { PrivacyMask } from "#/components/PrivacyMask";
-import { getConfig } from "#/config";
 import type { AttachmentRow } from "#/db";
 import { useWs } from "#/hooks/useWs";
+import { dbFetch } from "#/lib/dbClient";
+import { fmtBytes } from "#/lib/formatters";
 import type { ServerMessage } from "#/server/protocol";
 
 type ListResult = {
@@ -31,15 +33,12 @@ const listAttachmentsFn = createServerFn({ method: "POST" })
 		}) => data,
 	)
 	.handler(async ({ data }) => {
-		const { server } = await getConfig();
 		const params = new URLSearchParams();
 		if (data.search) params.set("search", data.search);
 		if (data.session_id) params.set("session_id", data.session_id);
 		params.set("limit", String(data.limit));
 		params.set("offset", String(data.offset));
-		const res = await fetch(
-			`http://localhost:${server.port + 1}/db/attachments?${params.toString()}`,
-		);
+		const res = await dbFetch(`/db/attachments?${params.toString()}`);
 		if (!res.ok) {
 			throw new Error(`Failed to fetch attachments: ${res.status}`);
 		}
@@ -54,13 +53,6 @@ export const Route = createFileRoute("/relics")({
 	staleTime: 0,
 	component: AttachmentsPage,
 });
-
-function formatBytes(n: number): string {
-	if (n < 1024) return `${n} B`;
-	if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-	if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
-	return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
-}
 
 function formatDate(unix: number): string {
 	return new Date(unix * 1000).toLocaleString();
@@ -145,8 +137,6 @@ function AttachmentsPage() {
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [expandedId, setExpandedId] = useState<string | null>(null);
-	const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
-	const [confirmDeleteBulk, setConfirmDeleteBulk] = useState(false);
 
 	useEffect(() => {
 		setRows(initial.rows);
@@ -208,7 +198,6 @@ function AttachmentsPage() {
 	};
 
 	const deleteOne = async (id: string) => {
-		setConfirmDeleteId(null);
 		const row = rows.find((r) => r.id === id);
 		if (!row) return;
 		setBusy(true);
@@ -229,7 +218,6 @@ function AttachmentsPage() {
 	const deleteSelected = async () => {
 		const ids = Array.from(selected);
 		if (ids.length === 0) return;
-		setConfirmDeleteBulk(false);
 		setBusy(true);
 		try {
 			const failures: string[] = [];
@@ -260,8 +248,7 @@ function AttachmentsPage() {
 							Relics
 						</div>
 						<PrivacyMask inline className="text-sm font-bold mt-0.5">
-							{total} {total === 1 ? "file" : "files"} ·{" "}
-							{formatBytes(totalBytes)}
+							{total} {total === 1 ? "file" : "files"} · {fmtBytes(totalBytes)}
 						</PrivacyMask>
 					</div>
 					<div className="flex items-center gap-2 flex-wrap">
@@ -298,38 +285,21 @@ function AttachmentsPage() {
 					<span className="text-[11px] tracking-widest uppercase text-foreground">
 						{selected.size} selected
 					</span>
-					{confirmDeleteBulk ? (
-						<div className="flex items-center gap-2">
-							<span className="text-[9px] text-muted-foreground/50">
-								delete {selected.size}?
-							</span>
+					<ConfirmAction
+						label={`delete ${selected.size}?`}
+						onConfirm={() => void deleteSelected()}
+						trigger={(open) => (
 							<button
 								type="button"
-								onClick={() => void deleteSelected()}
+								onClick={open}
 								disabled={busy}
-								className="text-[9px] tracking-widest text-destructive/60 hover:text-destructive uppercase transition-colors disabled:opacity-30"
+								className="px-3 py-1.5 text-[10px] tracking-widest text-destructive/80 hover:text-destructive border border-destructive/40 uppercase disabled:opacity-30 inline-flex items-center gap-1.5"
 							>
-								confirm
+								<Trash2 className="w-3 h-3" />
+								Delete
 							</button>
-							<button
-								type="button"
-								onClick={() => setConfirmDeleteBulk(false)}
-								className="text-[9px] tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 uppercase transition-colors"
-							>
-								cancel
-							</button>
-						</div>
-					) : (
-						<button
-							type="button"
-							onClick={() => setConfirmDeleteBulk(true)}
-							disabled={busy}
-							className="px-3 py-1.5 text-[10px] tracking-widest text-destructive/80 hover:text-destructive border border-destructive/40 uppercase disabled:opacity-30 inline-flex items-center gap-1.5"
-						>
-							<Trash2 className="w-3 h-3" />
-							Delete
-						</button>
-					)}
+						)}
+					/>
 				</div>
 			)}
 
@@ -412,9 +382,7 @@ function AttachmentsPage() {
 											</div>
 										</td>
 										<td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
-											<PrivacyMask inline>
-												{formatBytes(r.size_bytes)}
-											</PrivacyMask>
+											<PrivacyMask inline>{fmtBytes(r.size_bytes)}</PrivacyMask>
 										</td>
 										<td className="px-3 py-2 font-mono text-muted-foreground/70 truncate">
 											{r.mime}
@@ -430,34 +398,21 @@ function AttachmentsPage() {
 											onClick={(e) => e.stopPropagation()}
 											onKeyDown={(e) => e.stopPropagation()}
 										>
-											{confirmDeleteId === r.id ? (
-												<div className="flex items-center justify-end gap-1.5">
+											<ConfirmAction
+												className="justify-end"
+												onConfirm={() => void deleteOne(r.id)}
+												trigger={(open) => (
 													<button
 														type="button"
-														onClick={() => void deleteOne(r.id)}
-														className="text-[9px] tracking-widest text-destructive/60 hover:text-destructive uppercase transition-colors"
+														onClick={open}
+														disabled={busy}
+														className="text-muted-foreground/50 hover:text-destructive disabled:opacity-30"
+														aria-label={`Delete ${r.filename}`}
 													>
-														confirm
+														<Trash2 className="w-3.5 h-3.5" />
 													</button>
-													<button
-														type="button"
-														onClick={() => setConfirmDeleteId(null)}
-														className="text-[9px] tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 uppercase transition-colors"
-													>
-														cancel
-													</button>
-												</div>
-											) : (
-												<button
-													type="button"
-													onClick={() => setConfirmDeleteId(r.id)}
-													disabled={busy}
-													className="text-muted-foreground/50 hover:text-destructive disabled:opacity-30"
-													aria-label={`Delete ${r.filename}`}
-												>
-													<Trash2 className="w-3.5 h-3.5" />
-												</button>
-											)}
+												)}
+											/>
 										</td>
 									</tr>
 									{expandedId === r.id && (

@@ -54,29 +54,39 @@ async function checkGitignore(
 
 const FILENAME_SAFE = /[^a-zA-Z0-9._-]+/g;
 
-// Sniff MIME type from first 12 bytes of file content.
-// Only covers binary types where spoofing is meaningful. text/* types are safe with nosniff.
+// Sniff MIME type from magic bytes. Only covers binary types where spoofing is
+// meaningful; text/* types are safe with x-content-type-options: nosniff.
+// WEBP uses a two-segment signature: RIFF at offset 0, WEBP at offset 8.
+type MimeSig = {
+	mime: string;
+	sig: number[];
+	offset2?: number;
+	sig2?: number[];
+};
+
+const MIME_SIGNATURES: MimeSig[] = [
+	{ mime: "image/png", sig: [0x89, 0x50, 0x4e, 0x47] },
+	{ mime: "image/jpeg", sig: [0xff, 0xd8, 0xff] },
+	{ mime: "image/gif", sig: [0x47, 0x49, 0x46] },
+	{ mime: "application/pdf", sig: [0x25, 0x50, 0x44, 0x46] },
+	{
+		mime: "image/webp",
+		sig: [0x52, 0x49, 0x46, 0x46],
+		offset2: 8,
+		sig2: [0x57, 0x45, 0x42, 0x50],
+	},
+];
+
 function sniffMime(buf: Buffer): string | null {
 	if (buf.length < 4) return null;
-	if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47)
-		return "image/png";
-	if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff)
-		return "image/jpeg";
-	if (buf[0] === 0x47 && buf[1] === 0x49 && buf[2] === 0x46) return "image/gif";
-	if (
-		buf.length >= 12 &&
-		buf[0] === 0x52 &&
-		buf[1] === 0x49 &&
-		buf[2] === 0x46 &&
-		buf[3] === 0x46 &&
-		buf[8] === 0x57 &&
-		buf[9] === 0x45 &&
-		buf[10] === 0x42 &&
-		buf[11] === 0x50
-	)
-		return "image/webp";
-	if (buf[0] === 0x25 && buf[1] === 0x50 && buf[2] === 0x44 && buf[3] === 0x46)
-		return "application/pdf";
+	for (const { mime, sig, offset2, sig2 } of MIME_SIGNATURES) {
+		if (!sig.every((b, i) => buf[i] === b)) continue;
+		if (offset2 !== undefined && sig2) {
+			if (buf.length < offset2 + sig2.length) continue;
+			if (!sig2.every((b, i) => buf[offset2 + i] === b)) continue;
+		}
+		return mime;
+	}
 	return null;
 }
 

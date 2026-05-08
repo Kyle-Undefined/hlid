@@ -1,146 +1,32 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { createServerFn } from "@tanstack/react-start";
-import {
-	Check,
-	ChevronRight,
-	File as FileIcon,
-	Paperclip,
-	SquarePen,
-	X,
-} from "lucide-react";
-import {
-	useCallback,
-	useEffect,
-	useReducer,
-	useRef,
-	useState,
-	useSyncExternalStore,
-} from "react";
-import Markdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import { Paperclip, SquarePen, X } from "lucide-react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import { AgentSelect } from "#/components/AgentSelect";
+import { AttachmentStrip } from "#/components/AttachmentStrip";
+import { reducer } from "#/components/chat/chatReducer";
+import { MessageList } from "#/components/chat/MessageList";
 import { PrivacyMask } from "#/components/PrivacyMask";
+import {
+	ContextWindowSection,
+	UsageWindowsPanel,
+} from "#/components/UsageWindowsPanel";
 import { getConfig } from "#/config";
-import type { UsageWindows } from "#/db";
+import { useChatWsHandler } from "#/hooks/useChatWsHandler";
+import { useDraft } from "#/hooks/useDraft";
+import { useFileUpload } from "#/hooks/useFileUpload";
+import { useLoadChatHistory } from "#/hooks/useLoadChatHistory";
 import { useWs } from "#/hooks/useWs";
+import { useWsChatQueue, useWsLiveStats } from "#/hooks/useWsSelectors";
 import * as wsStore from "#/hooks/wsStore";
-import { fmtResetTime, MODEL_LABELS } from "#/lib/formatters";
+import { fmtModel, normalizeModel } from "#/lib/formatters";
+import {
+	getAgentListFn,
+	getCurrentSessionFn,
+	getSessionAgentCwdFn,
+	getUsageWindowsFn,
+} from "#/lib/serverFns";
 import { uid } from "#/lib/utils";
-import type {
-	ChatAttachment,
-	PermissionRequestMessage,
-	RateLimitMessage,
-	ServerMessage,
-	ToolEventMessage,
-} from "#/server/protocol";
-
-function normalizeMd(text: string): string {
-	// CommonMark: "** text **" doesn't bold (space after opener). Normalize.
-	return text.replace(/\*\*\s+((?:[^*\n]|\*(?!\*))+?)\s+\*\*/g, "**$1**");
-}
-
-// ─── server fns ──────────────────────────────────────────────────────────────
-
-type EnrichedMessageRow = import("#/db").MessageRow & {
-	toolEvents?: import("#/db").ToolEventRow[];
-	attachments?: import("#/db").AttachmentRow[];
-};
-
-const getSessionDataFn = createServerFn({ method: "GET" })
-	.inputValidator((sessionId: string) => sessionId)
-	.handler(async ({ data: sessionId }) => {
-		const { server } = await getConfig();
-		const res = await fetch(
-			`http://localhost:${server.port + 1}/db/session-messages?session_id=${encodeURIComponent(sessionId)}`,
-		);
-		if (!res.ok) return [] as EnrichedMessageRow[];
-		return res.json() as Promise<EnrichedMessageRow[]>;
-	});
-
-const getUsageWindowsFn = createServerFn({ method: "GET" }).handler(
-	async () => {
-		const { server } = await getConfig();
-		try {
-			const res = await fetch(
-				`http://localhost:${server.port + 1}/db/usage-windows`,
-			);
-			if (!res.ok) return null as UsageWindows | null;
-			return res.json() as Promise<UsageWindows>;
-		} catch {
-			return null as UsageWindows | null;
-		}
-	},
-);
-
-const getSessionAgentCwdFn = createServerFn({ method: "GET" })
-	.inputValidator((sessionId: string) => sessionId)
-	.handler(async ({ data: sessionId }) => {
-		const { getSessionAgentCwd } = await import("#/db");
-		return getSessionAgentCwd(sessionId);
-	});
-
-const getAgentListFn = createServerFn({ method: "GET" }).handler(async () => {
-	const { basename } = await import("node:path");
-	const config = await getConfig();
-	return (config.agents ?? []).map((a) => ({
-		path: a.path,
-		name:
-			a.name ??
-			basename(a.path)
-				.split(/[-_\s]+/)
-				.map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-				.join(" "),
-	}));
-});
-
-const getSessionPermissionsFn = createServerFn({ method: "GET" })
-	.inputValidator((sessionId: string) => sessionId)
-	.handler(async ({ data: sessionId }) => {
-		const { server } = await getConfig();
-		try {
-			const res = await fetch(
-				`http://localhost:${server.port + 1}/db/session-permissions?session_id=${encodeURIComponent(sessionId)}`,
-			);
-			if (!res.ok) return [] as import("#/db").PermissionEventRow[];
-			return res.json() as Promise<import("#/db").PermissionEventRow[]>;
-		} catch {
-			return [] as import("#/db").PermissionEventRow[];
-		}
-	});
-
-const getSessionContextFn = createServerFn({ method: "GET" })
-	.inputValidator((sessionId: string) => sessionId)
-	.handler(async ({ data: sessionId }) => {
-		const { server } = await getConfig();
-		try {
-			const res = await fetch(
-				`http://localhost:${server.port + 1}/db/session-context?session_id=${encodeURIComponent(sessionId)}`,
-			);
-			if (!res.ok) return null;
-			return res.json() as Promise<{
-				context_window: number | null;
-				last_context_used: number | null;
-				actual_model: string | null;
-			} | null>;
-		} catch {
-			return null;
-		}
-	});
-
-const getCurrentSessionFn = createServerFn({ method: "GET" }).handler(
-	async () => {
-		const { server } = await getConfig();
-		try {
-			const res = await fetch(
-				`http://localhost:${server.port + 1}/db/current-session`,
-			);
-			if (!res.ok) return null as string | null;
-			const data = (await res.json()) as { session_id: string | null };
-			return data.session_id;
-		} catch {
-			return null as string | null;
-		}
-	},
-);
+import { decisionFromScope, type RateLimitMessage } from "#/server/protocol";
 
 // ─── route ───────────────────────────────────────────────────────────────────
 
@@ -182,899 +68,6 @@ export const Route = createFileRoute("/raven")({
 	component: ChatPage,
 });
 
-// ─── Message types ────────────────────────────────────────────────────────────
-
-type UserMessage = {
-	id: string;
-	role: "user";
-	text: string;
-	attachments?: ChatAttachment[];
-};
-
-type AssistantMessage = {
-	id: string;
-	role: "assistant";
-	text: string;
-	toolEvents: ToolEventMessage[];
-	streaming: boolean;
-	cost: number | null;
-	recap?: string;
-};
-
-type PermissionMessage = {
-	id: string;
-	role: "permission";
-	toolName: string;
-	title: string;
-	displayName?: string;
-	description?: string;
-	input?: Record<string, unknown>;
-	decision:
-		| "pending"
-		| "approved"
-		| "approved_session"
-		| "approved_always"
-		| "denied";
-};
-
-type ChatMessage = UserMessage | AssistantMessage | PermissionMessage;
-
-// ─── Reducer ─────────────────────────────────────────────────────────────────
-
-type Action =
-	| {
-			type: "ADD_USER";
-			id: string;
-			text: string;
-			attachments?: ChatAttachment[];
-	  }
-	| { type: "ADD_ASSISTANT"; id: string }
-	| { type: "APPEND_CHUNK"; id: string; text: string }
-	| { type: "ADD_TOOL_EVENT"; id: string; event: ToolEventMessage }
-	| { type: "DONE"; id: string; cost: number | null }
-	| { type: "SET_RECAP"; id: string; recap: string }
-	| { type: "ADD_PERMISSION"; msg: PermissionRequestMessage }
-	| {
-			type: "RESOLVE_PERMISSION";
-			id: string;
-			decision: "approved" | "approved_session" | "approved_always" | "denied";
-	  }
-	| {
-			type: "RESOLVE_OR_ADD_PERMISSION";
-			id: string;
-			toolName: string;
-			displayName?: string;
-			decision: "approved" | "approved_session" | "approved_always" | "denied";
-	  }
-	| {
-			type: "LOAD_HISTORY";
-			messages: Array<{
-				id: string;
-				role: string;
-				text: string;
-				toolEvents?: ToolEventMessage[];
-				attachments?: ChatAttachment[];
-				recap?: string | null;
-			}>;
-			permissions: Array<{
-				tool_id: string;
-				tool_name: string;
-				display_name: string | null;
-				decision: string;
-			}>;
-	  }
-	| { type: "CLEAR" };
-
-function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
-	switch (action.type) {
-		case "ADD_USER":
-			return [
-				...state,
-				{
-					id: action.id,
-					role: "user",
-					text: action.text,
-					attachments: action.attachments,
-				},
-			];
-		case "ADD_ASSISTANT":
-			return [
-				...state,
-				{
-					id: action.id,
-					role: "assistant",
-					text: "",
-					toolEvents: [],
-					streaming: true,
-					cost: null,
-				},
-			];
-		case "APPEND_CHUNK":
-			return state.map((m) => {
-				if (m.id !== action.id || m.role !== "assistant") return m;
-				return { ...m, text: m.text + action.text };
-			});
-		case "ADD_TOOL_EVENT":
-			return state.map((m) =>
-				m.id === action.id && m.role === "assistant"
-					? { ...m, toolEvents: [...m.toolEvents, action.event] }
-					: m,
-			);
-		case "DONE":
-			return state.map((m) =>
-				m.id === action.id && m.role === "assistant"
-					? { ...m, streaming: false, cost: action.cost }
-					: m,
-			);
-		case "SET_RECAP":
-			return state.map((m) =>
-				m.id === action.id && m.role === "assistant"
-					? { ...m, recap: action.recap }
-					: m,
-			);
-		case "ADD_PERMISSION":
-			return [
-				...state,
-				{
-					id: action.msg.id,
-					role: "permission",
-					toolName: action.msg.toolName,
-					title: action.msg.title,
-					displayName: action.msg.displayName,
-					description: action.msg.description,
-					input: action.msg.input,
-					decision: "pending",
-				},
-			];
-		case "RESOLVE_PERMISSION":
-			return state.map((m) =>
-				m.id === action.id && m.role === "permission"
-					? { ...m, decision: action.decision }
-					: m,
-			);
-		case "RESOLVE_OR_ADD_PERMISSION": {
-			const exists = state.some(
-				(m) => m.id === action.id && m.role === "permission",
-			);
-			if (exists) {
-				return state.map((m) =>
-					m.id === action.id && m.role === "permission"
-						? { ...m, decision: action.decision }
-						: m,
-				);
-			}
-			return [
-				...state,
-				{
-					id: action.id,
-					role: "permission" as const,
-					toolName: action.toolName,
-					title: "",
-					displayName: action.displayName,
-					decision: action.decision,
-				},
-			];
-		}
-		case "LOAD_HISTORY": {
-			const msgs: ChatMessage[] = action.messages.map((m) =>
-				m.role === "user"
-					? {
-							id: m.id,
-							role: "user" as const,
-							text: m.text,
-							attachments: m.attachments,
-						}
-					: {
-							id: m.id,
-							role: "assistant" as const,
-							text: m.text,
-							toolEvents: m.toolEvents ?? [],
-							streaming: false,
-							cost: null,
-							recap: m.recap ?? undefined,
-						},
-			);
-			for (const p of action.permissions) {
-				const decision = p.decision as PermissionMessage["decision"];
-				msgs.push({
-					id: p.tool_id,
-					role: "permission" as const,
-					toolName: p.tool_name,
-					title: "",
-					displayName: p.display_name ?? undefined,
-					decision,
-				});
-			}
-			return msgs;
-		}
-		case "CLEAR":
-			return [];
-	}
-}
-
-// ─── Usage windows ────────────────────────────────────────────────────────────
-
-function UsageWindowSection({
-	label,
-	win,
-	hideStats,
-}: {
-	label: string;
-	win: {
-		queries: number;
-		sessions: number;
-		cost: number;
-		utilization: number | null;
-		resetsAt: number | null;
-	} | null;
-	hideStats?: boolean;
-}) {
-	const utilPct =
-		win?.utilization != null ? Math.min(win.utilization * 100, 100) : null;
-	return (
-		<div className="flex-1 px-2 py-2 md:px-4 md:py-2.5 min-w-0 space-y-1">
-			<div className="flex flex-col md:flex-row md:items-center md:justify-between gap-0.5 md:gap-2">
-				<div className="flex items-center gap-1.5 md:gap-2 min-w-0">
-					<span className="text-[8px] md:text-[9px] tracking-widest text-muted-foreground/40 uppercase truncate leading-none">
-						{label}
-					</span>
-					{utilPct != null && (
-						<span className="text-[9px] md:text-[10px] tabular-nums font-medium text-foreground/60 shrink-0 leading-none">
-							{Math.floor(utilPct)}%
-						</span>
-					)}
-				</div>
-				{win?.resetsAt != null && (
-					<span className="text-[8px] tracking-widest text-muted-foreground/50 truncate">
-						{fmtResetTime(win.resetsAt)}
-					</span>
-				)}
-			</div>
-			<div className="h-1 bg-secondary/40 overflow-hidden">
-				<div
-					className="h-full bg-primary/60 transition-all duration-500"
-					style={{ width: utilPct != null ? `${utilPct}%` : "0%" }}
-				/>
-			</div>
-			{!hideStats && (
-				<div className="flex items-center flex-wrap gap-x-1.5 gap-y-0">
-					<PrivacyMask
-						inline
-						className="text-[9px] tabular-nums text-foreground/50"
-					>
-						${(win?.cost ?? 0).toFixed(2)}
-					</PrivacyMask>
-					<span className="text-muted-foreground/25 hidden md:inline">·</span>
-					<PrivacyMask
-						inline
-						className="text-[8px] tracking-widest text-muted-foreground/40"
-					>
-						<span className="md:hidden">{win?.queries ?? 0}q</span>
-						<span className="hidden md:inline">
-							{win?.queries ?? 0} queries
-						</span>
-					</PrivacyMask>
-					<span className="text-muted-foreground/25 hidden md:inline">·</span>
-					<PrivacyMask
-						inline
-						className="text-[8px] tracking-widest text-muted-foreground/40"
-					>
-						<span className="md:hidden">{win?.sessions ?? 0}s</span>
-						<span className="hidden md:inline">
-							{win?.sessions ?? 0} sessions
-						</span>
-					</PrivacyMask>
-				</div>
-			)}
-		</div>
-	);
-}
-
-function ContextWindowSection({ stats }: { stats: wsStore.LiveStats }) {
-	const hasContext =
-		stats.last_context_used != null && stats.context_window != null;
-	const contextUsed = stats.last_context_used ?? 0;
-	const contextWindow = stats.context_window ?? 0;
-	const utilPct =
-		hasContext && contextWindow > 0
-			? Math.min((contextUsed / contextWindow) * 100, 100)
-			: null;
-
-	return (
-		<div className="flex-1 px-2 py-2 md:px-4 md:py-2.5 min-w-0 space-y-1">
-			<div className="flex flex-col md:flex-row md:items-center md:justify-between gap-0.5 md:gap-2">
-				<div className="flex items-center gap-1.5 md:gap-2 min-w-0">
-					<span className="text-[8px] md:text-[9px] tracking-widest text-muted-foreground/40 uppercase truncate leading-none">
-						CONTEXT
-					</span>
-					{utilPct != null && (
-						<span className="text-[9px] md:text-[10px] tabular-nums font-medium text-foreground/60 shrink-0 leading-none">
-							{Math.floor(utilPct)}%
-						</span>
-					)}
-				</div>
-				{hasContext && (
-					<span className="text-[8px] tracking-widest text-muted-foreground/50 truncate">
-						{contextUsed.toLocaleString()} / {contextWindow.toLocaleString()}
-					</span>
-				)}
-			</div>
-			<div className="h-1 bg-secondary/40 overflow-hidden">
-				<div
-					className={`h-full transition-all duration-500 ${utilPct != null && utilPct > 80 ? "bg-destructive/60" : utilPct != null && utilPct > 60 ? "bg-yellow-600/60" : "bg-primary/60"}`}
-					style={{ width: utilPct != null ? `${utilPct}%` : "0%" }}
-				/>
-			</div>
-			{!hasContext && (
-				<span className="text-[8px] tracking-widest text-muted-foreground/20">
-					no active context
-				</span>
-			)}
-		</div>
-	);
-}
-
-function mergeUsageWindows(
-	fresh: UsageWindows,
-	prev: UsageWindows | null,
-): UsageWindows {
-	if (!prev) return fresh;
-	const now = Date.now() / 1000;
-	const keep = (
-		freshWin: UsageWindows["fiveHour"],
-		prevWin: UsageWindows["fiveHour"],
-	) => {
-		const prevValid =
-			prevWin.utilization != null &&
-			prevWin.resetsAt != null &&
-			prevWin.resetsAt > now;
-		return {
-			...freshWin,
-			utilization: prevValid ? prevWin.utilization : freshWin.utilization,
-			resetsAt: prevValid ? prevWin.resetsAt : freshWin.resetsAt,
-		};
-	};
-	const prevSonnetValid =
-		prev.weeklySonnet?.utilization != null &&
-		prev.weeklySonnet?.resetsAt != null &&
-		prev.weeklySonnet.resetsAt > now;
-	return {
-		...fresh,
-		fiveHour: keep(fresh.fiveHour, prev.fiveHour),
-		weekly: keep(fresh.weekly, prev.weekly),
-		weeklySonnet:
-			fresh.weeklySonnet != null
-				? prevSonnetValid
-					? {
-							...fresh.weeklySonnet,
-							utilization: prev.weeklySonnet?.utilization ?? null,
-							resetsAt: prev.weeklySonnet?.resetsAt ?? null,
-						}
-					: fresh.weeklySonnet
-				: null,
-	};
-}
-
-function ChatUsageWindowsPanel({
-	initial,
-	liveQueryCount,
-	rateLimit,
-	liveStats,
-}: {
-	initial: UsageWindows | null;
-	liveQueryCount: number;
-	rateLimit: RateLimitMessage | null;
-	liveStats: wsStore.LiveStats;
-}) {
-	const [data, setData] = useState<UsageWindows | null>(initial);
-
-	useEffect(() => {
-		if (liveQueryCount === 0) return;
-		void getUsageWindowsFn().then((d) => {
-			if (d) setData((prev) => mergeUsageWindows(d, prev));
-		});
-	}, [liveQueryCount]);
-
-	useEffect(() => {
-		const id = setInterval(
-			() =>
-				void getUsageWindowsFn().then((d) => {
-					if (d) setData((prev) => mergeUsageWindows(d, prev));
-				}),
-			60_000,
-		);
-		return () => clearInterval(id);
-	}, []);
-
-	useEffect(() => {
-		if (!rateLimit || rateLimit.utilization == null) return;
-		setData((prev) => {
-			if (!prev) return prev;
-			const update = {
-				utilization: rateLimit.utilization ?? null,
-				resetsAt: rateLimit.resetsAt ?? null,
-				rateLimitType: rateLimit.rateLimitType ?? null,
-			};
-			if (rateLimit.rateLimitType === "five_hour")
-				return { ...prev, fiveHour: { ...prev.fiveHour, ...update } };
-			if (rateLimit.rateLimitType === "weekly_sonnet")
-				return {
-					...prev,
-					weeklySonnet: {
-						utilization: update.utilization,
-						resetsAt: update.resetsAt,
-					},
-				};
-			return { ...prev, weekly: { ...prev.weekly, ...update } };
-		});
-	}, [rateLimit]);
-
-	return (
-		<div className="border-b border-border shrink-0 flex divide-x divide-border/40">
-			<UsageWindowSection label="5-HOUR" win={data?.fiveHour ?? null} />
-			<UsageWindowSection label="7-DAY" win={data?.weekly ?? null} />
-			{data?.weeklySonnet != null && (
-				<UsageWindowSection
-					label="SONNET"
-					win={{ queries: 0, sessions: 0, cost: 0, ...data.weeklySonnet }}
-					hideStats
-				/>
-			)}
-			<ContextWindowSection stats={liveStats} />
-		</div>
-	);
-}
-
-// ─── Components ───────────────────────────────────────────────────────────────
-
-function ToolBlock({
-	event,
-	permissionLabel,
-}: {
-	event: ToolEventMessage;
-	permissionLabel?: string;
-}) {
-	const [open, setOpen] = useState(false);
-	const pills = Object.entries(event.input ?? {}).slice(0, 3);
-
-	return (
-		<div className="my-0.5">
-			<button
-				type="button"
-				onClick={() => setOpen(!open)}
-				className="flex items-center gap-2.5 w-full px-3 py-1.5 group hover:bg-primary/[0.03] transition-colors text-left"
-			>
-				<ChevronRight
-					className={`w-3 h-3 shrink-0 text-primary/50 group-hover:text-primary/80 transition-transform duration-150 ${open ? "rotate-90" : ""}`}
-				/>
-				<PrivacyMask
-					inline
-					className="text-[11px] font-medium tracking-wider text-primary/70 group-hover:text-primary/90 shrink-0"
-				>
-					{event.name}
-				</PrivacyMask>
-				<PrivacyMask className="flex gap-1.5 flex-wrap">
-					{pills.map(([k, v]) => (
-						<span
-							key={k}
-							className="text-[9px] tracking-wide border border-primary/20 text-primary/50 px-1.5 py-0.5 font-mono break-all"
-						>
-							{k}: {String(v)}
-						</span>
-					))}
-				</PrivacyMask>
-			</button>
-			{permissionLabel && (
-				<div className="flex items-center gap-1.5 pl-8 pr-3 pb-1 -mt-0.5 text-[9px] tracking-widest text-muted-foreground/55 uppercase">
-					<Check className="w-2.5 h-2.5 text-green-600/55" />
-					<span>{permissionLabel}</span>
-				</div>
-			)}
-			{open && (
-				<PrivacyMask className="mx-3 mb-1.5 border border-[var(--tool-panel-border)] bg-[var(--tool-panel)]">
-					<div className="text-[11px] text-primary/60 font-mono leading-relaxed p-3 overflow-auto max-h-48 space-y-1">
-						{Object.entries(event.input ?? {}).map(([k, v]) => (
-							<div key={k} className="flex gap-1.5 min-w-0">
-								<span className="text-primary/40 shrink-0">{k}:</span>
-								{typeof v === "string" ? (
-									<span className="whitespace-pre-wrap break-words min-w-0">
-										{v}
-									</span>
-								) : (
-									<span className="whitespace-pre-wrap break-words min-w-0">
-										{JSON.stringify(v, null, 2)}
-									</span>
-								)}
-							</div>
-						))}
-					</div>
-				</PrivacyMask>
-			)}
-		</div>
-	);
-}
-
-function PermissionCard({
-	message,
-	onDecide,
-}: {
-	message: PermissionMessage;
-	onDecide: (
-		id: string,
-		approved: boolean,
-		saveScope?: "session" | "local",
-	) => void;
-}) {
-	const pending = message.decision === "pending";
-
-	if (!pending) {
-		const approved =
-			message.decision === "approved" ||
-			message.decision === "approved_session" ||
-			message.decision === "approved_always";
-		const label =
-			message.decision === "approved_always"
-				? "APPROVED ALWAYS"
-				: message.decision === "approved_session"
-					? "APPROVED FOR SESSION"
-					: approved
-						? "APPROVED"
-						: "DENIED";
-		return (
-			<div className="flex gap-0">
-				<div className="w-12 shrink-0 text-[9px] tracking-widest text-muted-foreground/50 pt-0.5 uppercase">
-					PERM
-				</div>
-				<div className="flex items-center gap-2 text-xs text-muted-foreground/65">
-					{approved ? (
-						<Check className="w-3 h-3 text-green-600/60" />
-					) : (
-						<X className="w-3 h-3 text-destructive/60" />
-					)}
-					<span className="tracking-wider text-[10px]">
-						{(message.displayName ?? message.toolName).toUpperCase()} {label}
-					</span>
-				</div>
-			</div>
-		);
-	}
-
-	const inputPreview = message.input
-		? ((message.input.command as string | undefined) ??
-			(message.input.file_path as string | undefined) ??
-			(message.input.path as string | undefined) ??
-			Object.values(message.input).find((v) => typeof v === "string"))
-		: undefined;
-
-	return (
-		<div className="flex gap-0">
-			<div className="w-12 shrink-0 text-[9px] tracking-widest text-primary/60 pt-0.5 uppercase">
-				PERM
-			</div>
-			<div className="flex-1 min-w-0 border border-border bg-card">
-				<div className="px-4 py-3 border-b border-border">
-					<div className="text-[9px] tracking-widest text-muted-foreground/65 uppercase mb-1">
-						PERMISSION REQUEST
-					</div>
-					<div className="text-sm text-foreground">{message.title}</div>
-					{inputPreview && (
-						<div className="mt-2 px-2 py-1.5 bg-secondary/60 border border-border font-mono text-[11px] text-foreground/80 whitespace-pre-wrap break-all overflow-x-hidden">
-							{inputPreview}
-						</div>
-					)}
-					{message.description && (
-						<div className="text-xs text-muted-foreground/75 mt-1">
-							{message.description}
-						</div>
-					)}
-				</div>
-				<div className="grid grid-cols-2 sm:grid-cols-4">
-					<button
-						type="button"
-						onClick={() => onDecide(message.id, false)}
-						className="min-w-0 flex items-center justify-center gap-1.5 sm:gap-2 px-1 py-2 text-[10px] tracking-widest text-destructive/70 hover:bg-destructive/5 transition-colors uppercase border-b border-r border-border sm:border-b-0 sm:border-r-0"
-					>
-						<X className="w-3 h-3 shrink-0" />
-						DENY
-					</button>
-					<button
-						type="button"
-						onClick={() => onDecide(message.id, true)}
-						className="min-w-0 flex items-center justify-center gap-1.5 sm:gap-2 px-1 py-2 text-[10px] tracking-widest text-green-500/70 hover:bg-green-500/5 transition-colors uppercase border-b border-border sm:border-b-0 sm:border-l"
-					>
-						<Check className="w-3 h-3 shrink-0" />
-						APPROVE
-					</button>
-					<button
-						type="button"
-						onClick={() => onDecide(message.id, true, "session")}
-						className="min-w-0 flex items-center justify-center gap-1.5 sm:gap-2 px-1 py-2 text-[10px] tracking-widest text-blue-500/70 hover:bg-blue-500/5 transition-colors uppercase border-r border-border sm:border-r-0 sm:border-l"
-					>
-						<Check className="w-3 h-3 shrink-0" />
-						SESSION
-					</button>
-					<button
-						type="button"
-						onClick={() => onDecide(message.id, true, "local")}
-						className="min-w-0 flex items-center justify-center gap-1.5 sm:gap-2 px-1 py-2 text-[10px] tracking-widest text-purple-500/70 hover:bg-purple-500/5 transition-colors uppercase sm:border-l border-border"
-					>
-						<Check className="w-3 h-3 shrink-0" />
-						ALWAYS
-					</button>
-				</div>
-			</div>
-		</div>
-	);
-}
-
-function AttachmentChip({ a }: { a: ChatAttachment }) {
-	const isImage = a.mime.startsWith("image/");
-	const href = `/api/attachments/${a.id}/raw`;
-	return (
-		<a
-			href={href}
-			target="_blank"
-			rel="noreferrer"
-			className="inline-flex items-center gap-1.5 max-w-[200px] border border-border/60 bg-secondary/30 hover:bg-secondary/60 transition-colors px-2 py-1 text-[10px] text-foreground/80"
-			title={a.filename}
-		>
-			{isImage ? (
-				<img
-					src={href}
-					alt={a.filename}
-					className="w-6 h-6 object-cover shrink-0"
-				/>
-			) : (
-				<FileIcon className="w-3 h-3 shrink-0 opacity-60" />
-			)}
-			<span className="truncate font-mono">{a.filename}</span>
-		</a>
-	);
-}
-
-function UserMsg({ message }: { message: UserMessage }) {
-	return (
-		<div className="flex items-start justify-end gap-3 py-3 border-b border-border/40">
-			<div className="flex flex-col items-end gap-1.5 min-w-0 max-w-[78%]">
-				{message.attachments && message.attachments.length > 0 && (
-					<div className="flex flex-wrap gap-1.5 justify-end">
-						{message.attachments.map((a) => (
-							<AttachmentChip key={a.id} a={a} />
-						))}
-					</div>
-				)}
-				{message.text && (
-					<PrivacyMask className="w-full">
-						<div
-							className="text-sm text-foreground whitespace-pre-wrap text-right leading-relaxed w-full"
-							style={{ overflowWrap: "anywhere" }}
-						>
-							{message.text}
-						</div>
-					</PrivacyMask>
-				)}
-			</div>
-			<div className="text-[9px] tracking-widest text-primary/60 shrink-0 pt-0.5 w-11 text-right">
-				ME
-			</div>
-		</div>
-	);
-}
-
-function QueuedMsg({
-	message,
-	index,
-	onCancel,
-}: {
-	message: wsStore.QueuedChatMessage;
-	index: number;
-	onCancel: (id: string) => void;
-}) {
-	return (
-		<div className="flex items-start justify-end gap-3 py-3 border-b border-dashed border-border/25 opacity-50">
-			<div className="flex flex-col items-end gap-1.5 min-w-0 max-w-[78%]">
-				{message.attachments && message.attachments.length > 0 && (
-					<div className="flex flex-wrap gap-1.5 justify-end">
-						{message.attachments.map((a) => (
-							<AttachmentChip key={a.id} a={a} />
-						))}
-					</div>
-				)}
-				{message.text && (
-					<PrivacyMask className="w-full">
-						<div
-							className="text-sm text-foreground whitespace-pre-wrap text-right leading-relaxed w-full"
-							style={{ overflowWrap: "anywhere" }}
-						>
-							{message.text}
-						</div>
-					</PrivacyMask>
-				)}
-			</div>
-			<div className="flex flex-col items-end gap-1 shrink-0 pt-0.5 w-11">
-				<span className="text-[9px] tracking-widest text-muted-foreground/40 text-right">
-					Q{index + 1}
-				</span>
-				<button
-					type="button"
-					onClick={() => onCancel(message.id)}
-					className="text-muted-foreground/30 hover:text-destructive/70 transition-colors"
-					aria-label="Cancel queued message"
-				>
-					<X className="w-3 h-3" />
-				</button>
-			</div>
-		</div>
-	);
-}
-
-function AssistantMsg({
-	message,
-	permissionLabels,
-}: {
-	message: AssistantMessage;
-	permissionLabels?: Map<string, string>;
-}) {
-	return (
-		<div className="py-3 border-b border-border/40 space-y-1.5">
-			{message.toolEvents.map((e) => (
-				<ToolBlock
-					key={e.id}
-					event={e}
-					permissionLabel={permissionLabels?.get(e.id)}
-				/>
-			))}
-			{(message.text || message.streaming) && (
-				<div className="flex items-start gap-0">
-					<div className="shrink-0 pt-0.5 w-12 flex">
-						<svg
-							xmlns="http://www.w3.org/2000/svg"
-							viewBox="0 0 32 32"
-							className="w-4 h-4 opacity-60"
-							role="img"
-							aria-label="Hlid"
-						>
-							<path
-								d="M2 16 C7 6 25 6 30 16 C25 26 7 26 2 16Z"
-								fill="none"
-								style={{ stroke: "var(--data)" }}
-								strokeWidth="1.5"
-								strokeLinejoin="round"
-							/>
-							<circle
-								cx="16"
-								cy="16"
-								r="5.5"
-								fill="none"
-								style={{ stroke: "var(--data)" }}
-								strokeWidth="1.5"
-							/>
-							<circle cx="16" cy="16" r="2" style={{ fill: "var(--data)" }} />
-						</svg>
-					</div>
-					<PrivacyMask className="flex-1 text-sm text-foreground leading-relaxed pr-4 min-w-0">
-						<Markdown
-							remarkPlugins={[remarkGfm]}
-							components={{
-								p: ({ children }) => (
-									<p className="mb-3 last:mb-0">{children}</p>
-								),
-								h1: ({ children }) => (
-									<h1 className="text-base font-bold mb-2 mt-4 first:mt-0">
-										{children}
-									</h1>
-								),
-								h2: ({ children }) => (
-									<h2 className="text-sm font-bold mb-2 mt-4 first:mt-0 tracking-wide">
-										{children}
-									</h2>
-								),
-								h3: ({ children }) => (
-									<h3 className="text-sm font-semibold mb-1.5 mt-3 first:mt-0">
-										{children}
-									</h3>
-								),
-								ul: ({ children }) => (
-									<ul className="list-disc pl-5 mb-3 space-y-0.5">
-										{children}
-									</ul>
-								),
-								ol: ({ children }) => (
-									<ol className="list-decimal pl-5 mb-3 space-y-0.5">
-										{children}
-									</ol>
-								),
-								li: ({ children }) => (
-									<li className="leading-relaxed">{children}</li>
-								),
-								code: ({ children, className }) => {
-									const isBlock = className?.startsWith("language-");
-									return isBlock ? (
-										<code className="block bg-secondary/60 border border-border rounded-none px-3 py-2 text-xs font-mono text-foreground/90 overflow-x-auto whitespace-pre mb-3">
-											{children}
-										</code>
-									) : (
-										<code className="bg-secondary/80 px-1.5 py-0.5 text-[11px] font-mono text-primary/80 rounded-none">
-											{children}
-										</code>
-									);
-								},
-								pre: ({ children }) => <pre className="mb-3">{children}</pre>,
-								blockquote: ({ children }) => (
-									<blockquote className="border-l-2 border-primary/30 pl-3 text-foreground/75 italic mb-3">
-										{children}
-									</blockquote>
-								),
-								a: ({ href, children }) => (
-									<a
-										href={href}
-										className="text-primary underline underline-offset-2 hover:text-primary/80"
-										target="_blank"
-										rel="noreferrer"
-									>
-										{children}
-									</a>
-								),
-								strong: ({ children }) => (
-									<strong className="font-semibold text-foreground">
-										{children}
-									</strong>
-								),
-								hr: () => <hr className="border-border my-3" />,
-								table: ({ children }) => (
-									<div className="overflow-x-auto mb-3">
-										<table className="text-xs w-full border-collapse">
-											{children}
-										</table>
-									</div>
-								),
-								th: ({ children }) => (
-									<th className="border border-border px-3 py-1.5 text-left text-[10px] tracking-wider text-muted-foreground bg-secondary/40">
-										{children}
-									</th>
-								),
-								td: ({ children }) => (
-									<td className="border border-border px-3 py-1.5">
-										{children}
-									</td>
-								),
-							}}
-						>
-							{normalizeMd(message.text)}
-						</Markdown>
-						{message.streaming && (
-							<span className="inline-block w-[7px] h-[1em] ml-0.5 align-middle bg-primary/50 cursor-blink" />
-						)}
-					</PrivacyMask>
-					{!message.streaming && message.cost !== null && (
-						<PrivacyMask
-							inline
-							className="text-[9px] tabular-nums text-muted-foreground/40 shrink-0 pt-0.5 font-mono"
-						>
-							${message.cost.toFixed(4)}
-						</PrivacyMask>
-					)}
-				</div>
-			)}
-			{message.recap && !message.streaming && (
-				<div className="my-0.5">
-					<div className="flex items-baseline gap-2.5 w-full px-3 py-1.5">
-						<span className="text-muted-foreground/30 text-[11px] shrink-0 leading-none select-none">
-							—
-						</span>
-						<span className="text-[9px] font-medium tracking-wider text-muted-foreground/40 uppercase shrink-0">
-							RECAP
-						</span>
-						<span className="text-[11px] text-primary/55 leading-relaxed">
-							{message.recap}
-						</span>
-					</div>
-				</div>
-			)}
-		</div>
-	);
-}
-
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 function ChatPage() {
@@ -1096,67 +89,33 @@ function ChatPage() {
 		sessionIdRef.current = sessionId;
 	}, [sessionId]);
 
-	const liveStats = useSyncExternalStore(
-		wsStore.subscribeStats,
-		wsStore.getLiveStats,
-		wsStore.getLiveStats,
-	);
-	const chatQueue = useSyncExternalStore(
-		wsStore.subscribeQueue,
-		wsStore.getQueue,
-		wsStore.getQueue,
-	);
+	const liveStats = useWsLiveStats();
+	const chatQueue = useWsChatQueue();
 	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
 	const [messages, dispatch] = useReducer(reducer, []);
 	const { prompt: seededPrompt } = Route.useSearch();
-	const [input, setInput] = useState(seededPrompt ?? "");
 	const navigate = useNavigate();
-	const draftKey = existingSessionId
-		? `hlid:draft:${existingSessionId}`
-		: "hlid:draft:new";
-	// Strip ?prompt from URL after seeding so refresh doesn't re-fill the box.
-	useEffect(() => {
-		if (seededPrompt === undefined) return;
-		navigate({
-			to: "/raven",
-			search: (prev) => ({ ...prev, prompt: undefined }),
-			replace: true,
-		});
-	}, [seededPrompt, navigate]);
-	// Guards against the restore→persist race when draftKey changes: the
-	// persist effect would otherwise see the previous session's `input` and
-	// stomp on the new draftKey before restore runs. Set true while restoring,
-	// cleared in the same tick so persist resumes on the next keystroke.
-	const isRestoringDraftRef = useRef(false);
-	// Restore draft when the active session changes (URL prompt takes precedence).
-	useEffect(() => {
-		if (seededPrompt !== undefined) return;
-		isRestoringDraftRef.current = true;
-		try {
-			const saved = localStorage.getItem(draftKey);
-			setInput(saved ?? "");
-		} catch {
-			setInput("");
-		} finally {
-			isRestoringDraftRef.current = false;
-		}
-	}, [draftKey, seededPrompt]);
-	// Persist draft on every keystroke.
-	useEffect(() => {
-		if (isRestoringDraftRef.current) return;
-		try {
-			if (input) localStorage.setItem(draftKey, input);
-			else localStorage.removeItem(draftKey);
-		} catch {}
-	}, [input, draftKey]);
-	const [pendingAttachments, setPendingAttachments] = useState<
-		ChatAttachment[]
-	>([]);
-	const [uploadingCount, setUploadingCount] = useState(0);
-	const [uploadError, setUploadError] = useState<string | null>(null);
-	const [gitignoreHint, setGitignoreHint] = useState<{
-		agent_root: string;
-	} | null>(null);
+	const { input, setInput, clearDraft } = useDraft({
+		existingSessionId,
+		seededPrompt,
+		onClearSeed: () =>
+			navigate({
+				to: "/raven",
+				search: (prev) => ({ ...prev, prompt: undefined }),
+				replace: true,
+			}),
+	});
+	const {
+		pendingAttachments,
+		uploadingCount,
+		uploadError,
+		gitignoreHint,
+		uploadFiles,
+		removePending,
+		clearPending: clearPendingAttachments,
+		setPendingAttachments,
+		dismissGitignoreHint,
+	} = useFileUpload({ agentCwd: agentSkillContext, sessionId });
 	const [dragOver, setDragOver] = useState(false);
 	const [showModelPopup, setShowModelPopup] = useState(false);
 	const modelBadgeRef = useRef<HTMLDivElement>(null);
@@ -1170,204 +129,29 @@ function ChatPage() {
 	const atBottomRef = useRef(true);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-	const handleWsMessage = useCallback((msg: ServerMessage) => {
-		// Gate all messages until history has loaded. Events that arrive before
-		// history is ready are buffered and replayed via drainMessageBuffer() after
-		// LOAD_HISTORY, so returning early here doesn't lose them.
-		if (!historyReadyRef.current) return;
+	// ─── WS message routing ───────────────────────────────────────────────────
 
-		// Cross-device: show user message from another client if it matches our session
-		if (msg.type === "rate_limit") {
-			setRateLimit(msg);
-			return;
-		}
+	const handleWsMessage = useChatWsHandler({
+		dispatch,
+		pendingIdRef,
+		lastAssistantIdRef,
+		historyReadyRef,
+		sessionIdRef,
+		setRateLimit,
+	});
 
-		if (msg.type === "user_message") {
-			if (msg.session_id === sessionIdRef.current) {
-				dispatch({ type: "ADD_USER", id: uid(), text: msg.text });
-			}
-			return;
-		}
+	// ─── History loading ──────────────────────────────────────────────────────
 
-		const id = pendingIdRef.current;
+	useLoadChatHistory({
+		existingSessionId,
+		isExplicitSession,
+		dispatch,
+		pendingIdRef,
+		historyReadyRef,
+		handleWsMessage,
+	});
 
-		if (msg.type === "status" && msg.state === "running" && !id) {
-			const newId = uid();
-			pendingIdRef.current = newId;
-			dispatch({ type: "ADD_ASSISTANT", id: newId });
-			return;
-		}
-
-		if (msg.type === "permission_request") {
-			dispatch({ type: "ADD_PERMISSION", msg });
-			return;
-		}
-
-		if (msg.type === "permission_resolved") {
-			dispatch({
-				type: "RESOLVE_OR_ADD_PERMISSION",
-				id: msg.id,
-				toolName: msg.toolName,
-				displayName: msg.displayName,
-				decision: msg.decision,
-			});
-			return;
-		}
-
-		if (!id && (msg.type === "chunk" || msg.type === "tool_event")) {
-			const newId = uid();
-			pendingIdRef.current = newId;
-			dispatch({ type: "ADD_ASSISTANT", id: newId });
-		}
-
-		if (msg.type === "tool_use_summary") {
-			const targetId = pendingIdRef.current ?? lastAssistantIdRef.current;
-			if (targetId)
-				dispatch({ type: "SET_RECAP", id: targetId, recap: msg.summary });
-			return;
-		}
-
-		const activeId = pendingIdRef.current;
-		if (!activeId) return;
-
-		if (msg.type === "chunk") {
-			dispatch({ type: "APPEND_CHUNK", id: activeId, text: msg.text });
-		} else if (msg.type === "tool_event") {
-			dispatch({ type: "ADD_TOOL_EVENT", id: activeId, event: msg });
-		} else if (msg.type === "done") {
-			dispatch({ type: "DONE", id: activeId, cost: msg.cost });
-			lastAssistantIdRef.current = activeId;
-			pendingIdRef.current = null;
-		} else if (msg.type === "error") {
-			const errorId =
-				activeId ??
-				(() => {
-					const newId = uid();
-					dispatch({ type: "ADD_ASSISTANT", id: newId });
-					return newId;
-				})();
-			dispatch({
-				type: "APPEND_CHUNK",
-				id: errorId,
-				text: `\n\n[ERROR: ${msg.message}]`,
-			});
-			dispatch({ type: "DONE", id: errorId, cost: null });
-			pendingIdRef.current = null;
-		}
-	}, []);
-
-	// Load history for existing sessions, then claim any pending prompt
-	useEffect(() => {
-		// Enable buffering so events arriving before history loads are captured
-		// and can be replayed via drainMessageBuffer() after LOAD_HISTORY.
-		wsStore.setBufferingEnabled(true);
-
-		if (!existingSessionId) {
-			const p = wsStore.claimPendingPrompt();
-			if (p) dispatch({ type: "ADD_USER", id: uid(), text: p });
-			historyReadyRef.current = true;
-			wsStore.setBufferingEnabled(false);
-			wsStore.send({ type: "sync" });
-			return () => {
-				wsStore.setBufferingEnabled(true);
-			};
-		}
-
-		let cancelled = false;
-		Promise.all([
-			getSessionDataFn({ data: existingSessionId }),
-			getSessionContextFn({ data: existingSessionId }),
-			getSessionPermissionsFn({ data: existingSessionId }),
-		])
-			.then(([rows, ctx, permEvents]) => {
-				if (cancelled) return;
-				// Seed context gauge from DB so it's visible immediately on session open,
-				// before any new message is sent. Live usage_update/done events will
-				// override this once the session is active.
-				// For implicit resumes (fresh nav, no session param), reset live stats
-				// first so we don't carry over context from the previous session.
-				if (!isExplicitSession) wsStore.resetLiveStats();
-				if (ctx?.context_window && ctx.last_context_used != null) {
-					wsStore.seedContextStats(ctx.context_window, ctx.last_context_used);
-				}
-				if (ctx?.actual_model !== undefined) {
-					wsStore.seedActualModel(ctx.actual_model);
-				}
-				dispatch({
-					type: "LOAD_HISTORY",
-					messages: rows.map((r) => ({
-						id: uid(),
-						role: r.role,
-						text: r.text,
-						toolEvents: r.toolEvents?.map((te) => ({
-							type: "tool_event" as const,
-							id: te.tool_id,
-							name: te.name,
-							input: (() => {
-								try {
-									return JSON.parse(te.input_json) as unknown;
-								} catch {
-									return {};
-								}
-							})(),
-						})),
-						attachments: r.attachments?.map((a) => ({
-							id: a.id,
-							path: a.path,
-							filename: a.filename,
-							mime: a.mime,
-							kind: a.kind,
-						})),
-						recap: r.recap,
-					})),
-					permissions: permEvents,
-				});
-				const p = wsStore.claimPendingPrompt();
-				if (p) {
-					const lastRow = rows[rows.length - 1];
-					if (!lastRow || lastRow.role !== "user" || lastRow.text !== p) {
-						dispatch({ type: "ADD_USER", id: uid(), text: p });
-					}
-				}
-				historyReadyRef.current = true;
-				// Reset any stale pending ID — LOAD_HISTORY wiped the bubble it referenced,
-				// so we must start fresh before draining. Without this, chunks buffered
-				// during the DB fetch get APPEND_CHUNK'd to a non-existent message ID and
-				// silently vanish (the reducer map-over just skips the missing ID).
-				pendingIdRef.current = null;
-				// If session is running, add a fresh bubble before draining so buffered
-				// chunks have a target to attach to. If the session already completed
-				// while history was loading, skip drain (DB data is authoritative) and
-				// clear the buffer to avoid replaying stale chunks into the wrong bubble.
-				if (wsStore.getSnapshot().sessionState === "running") {
-					const newId = uid();
-					pendingIdRef.current = newId;
-					dispatch({ type: "ADD_ASSISTANT", id: newId });
-					// Replay events that arrived before history was ready (from open() buffer
-					// replay or live events during the async DB fetch). Buffering is then
-					// disabled so events flow directly for the rest of the session.
-					for (const msg of wsStore.drainMessageBuffer()) {
-						handleWsMessage(msg);
-					}
-				} else {
-					// Session done before history loaded — DB has complete data, discard buffer.
-					wsStore.clearMessageBuffer();
-				}
-				wsStore.setBufferingEnabled(false);
-				// Sync with server to claim session ownership if not yet set
-				wsStore.send({ type: "sync" });
-			})
-			.catch(console.error)
-			.finally(() => {
-				if (!cancelled) historyReadyRef.current = true;
-			});
-
-		return () => {
-			cancelled = true;
-			// Re-enable buffering for SPA nav so events during unmount are captured
-			wsStore.setBufferingEnabled(true);
-		};
-	}, [existingSessionId, handleWsMessage, isExplicitSession]);
+	// ─── WS connection ────────────────────────────────────────────────────────
 
 	const { wsStatus, sessionState, model, actualModel, send } =
 		useWs(handleWsMessage);
@@ -1382,149 +166,16 @@ function ChatPage() {
 		dispatch({ type: "ADD_ASSISTANT", id: newId });
 	}, [isRunning]);
 
+	// ─── Handlers ─────────────────────────────────────────────────────────────
+
 	const handleDecide = useCallback(
 		(id: string, approved: boolean, saveScope?: "session" | "local") => {
-			const decision = approved
-				? saveScope === "local"
-					? "approved_always"
-					: saveScope === "session"
-						? "approved_session"
-						: "approved"
-				: "denied";
+			const decision = decisionFromScope(approved, saveScope);
 			dispatch({ type: "RESOLVE_PERMISSION", id, decision });
 			send({ type: "permission_response", id, approved, saveScope });
 		},
 		[send],
 	);
-
-	useEffect(() => {
-		const el = scrollRef.current;
-		if (!el) return;
-		const onScroll = () => {
-			atBottomRef.current =
-				el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-		};
-		el.addEventListener("scroll", onScroll, { passive: true });
-		return () => el.removeEventListener("scroll", onScroll);
-	}, []);
-
-	// biome-ignore lint/correctness/useExhaustiveDependencies: messages is trigger
-	useEffect(() => {
-		if (atBottomRef.current) {
-			bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-		}
-	}, [messages]);
-
-	// biome-ignore lint/correctness/useExhaustiveDependencies: input length triggers resize
-	useEffect(() => {
-		const el = textareaRef.current;
-		if (!el) return;
-		const maxH = window.innerWidth < 768 ? 240 : 480;
-		el.style.height = "auto";
-		el.style.height = `${Math.min(el.scrollHeight, maxH)}px`;
-	}, [input]);
-
-	// Dismiss the model detail popup on any click outside the badge.
-	useEffect(() => {
-		if (!showModelPopup) return;
-		const handleClick = (e: MouseEvent) => {
-			if (
-				modelBadgeRef.current &&
-				!modelBadgeRef.current.contains(e.target as Node)
-			) {
-				setShowModelPopup(false);
-			}
-		};
-		document.addEventListener("click", handleClick);
-		return () => document.removeEventListener("click", handleClick);
-	}, [showModelPopup]);
-
-	const uploadFiles = useCallback(
-		async (files: FileList | File[]) => {
-			const list = Array.from(files);
-			if (list.length === 0) return;
-			setUploadError(null);
-			setUploadingCount((c) => c + list.length);
-			try {
-				const results = await Promise.allSettled(
-					list.map(async (file) => {
-						const fd = new FormData();
-						fd.append("file", file);
-						fd.append("kind", "ephemeral");
-						fd.append("session_id", sessionIdRef.current);
-						if (agentSkillContext) fd.append("agent_cwd", agentSkillContext);
-						const res = await fetch("/api/attachments/upload", {
-							method: "POST",
-							body: fd,
-						});
-						if (!res.ok) {
-							let msg = `upload failed (${res.status})`;
-							try {
-								const body = (await res.json()) as { error?: string };
-								if (body.error) msg = body.error;
-							} catch {}
-							throw new Error(`${file.name}: ${msg}`);
-						}
-						return (await res.json()) as ChatAttachment & {
-							size_bytes: number;
-							gitignore_suggestion?: { agent_root: string };
-						};
-					}),
-				);
-				const fulfilled = results
-					.filter(
-						(
-							r,
-						): r is PromiseFulfilledResult<
-							ChatAttachment & {
-								size_bytes: number;
-								gitignore_suggestion?: { agent_root: string };
-							}
-						> => r.status === "fulfilled",
-					)
-					.map((r) => r.value);
-				const suggestion = fulfilled.find(
-					(u) => u.gitignore_suggestion,
-				)?.gitignore_suggestion;
-				if (suggestion) {
-					const dismissKey = `hlid:gitignore-hint:${suggestion.agent_root}`;
-					if (
-						typeof localStorage !== "undefined" &&
-						localStorage.getItem(dismissKey) !== "dismissed"
-					) {
-						setGitignoreHint({ agent_root: suggestion.agent_root });
-					}
-				}
-				const failed = results
-					.filter((r): r is PromiseRejectedResult => r.status === "rejected")
-					.map((r) =>
-						r.reason instanceof Error ? r.reason.message : "upload failed",
-					);
-				if (fulfilled.length > 0) {
-					setPendingAttachments((prev) => [
-						...prev,
-						...fulfilled.map((u) => ({
-							id: u.id,
-							path: u.path,
-							filename: u.filename,
-							mime: u.mime,
-							kind: u.kind,
-						})),
-					]);
-				}
-				if (failed.length > 0) setUploadError(failed.join("; "));
-			} catch (err) {
-				setUploadError(err instanceof Error ? err.message : "upload failed");
-			} finally {
-				setUploadingCount((c) => Math.max(0, c - list.length));
-			}
-		},
-		[agentSkillContext],
-	);
-
-	const removePending = useCallback((id: string) => {
-		setPendingAttachments((prev) => prev.filter((a) => a.id !== id));
-	}, []);
 
 	const handleSend = useCallback(() => {
 		const text = input.trim();
@@ -1539,11 +190,9 @@ function ChatPage() {
 					pendingAttachments.length > 0 ? [...pendingAttachments] : undefined,
 				agent_cwd: agentSkillContext ?? undefined,
 			});
-			try {
-				localStorage.removeItem(draftKey);
-			} catch {}
+			clearDraft();
 			setInput("");
-			setPendingAttachments([]);
+			clearPendingAttachments();
 			return;
 		}
 
@@ -1564,19 +213,19 @@ function ChatPage() {
 			attachments: attachments.length > 0 ? attachments : undefined,
 			agent_cwd: agentCwdToSend,
 		});
-		try {
-			localStorage.removeItem(draftKey);
-		} catch {}
+		clearDraft();
 		setInput("");
-		setPendingAttachments([]);
+		clearPendingAttachments();
 	}, [
 		input,
+		setInput,
 		sessionState,
 		send,
 		sessionId,
 		pendingAttachments,
 		agentSkillContext,
-		draftKey,
+		clearDraft,
+		clearPendingAttachments,
 	]);
 
 	const handleCancelQueued = useCallback(
@@ -1591,13 +240,11 @@ function ChatPage() {
 				}
 			}
 		},
-		[input, pendingAttachments.length],
+		[input, setInput, pendingAttachments.length, setPendingAttachments],
 	);
 
 	const handleClear = useCallback(() => {
-		try {
-			localStorage.removeItem(draftKey);
-		} catch {}
+		clearDraft();
 		pendingIdRef.current = null;
 		// Reset the recap target ref too — it points at a message we're about
 		// to wipe via dispatch CLEAR, and a late tool_use_summary would
@@ -1614,7 +261,57 @@ function ChatPage() {
 		setSessionId(newId);
 		sessionIdRef.current = newId;
 		setAgentSkillContext(undefined);
-	}, [send, draftKey]);
+	}, [send, clearDraft]);
+
+	// ─── Scroll management ────────────────────────────────────────────────────
+
+	useEffect(() => {
+		const el = scrollRef.current;
+		if (!el) return;
+		const onScroll = () => {
+			atBottomRef.current =
+				el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+		};
+		el.addEventListener("scroll", onScroll, { passive: true });
+		return () => el.removeEventListener("scroll", onScroll);
+	}, []);
+
+	// biome-ignore lint/correctness/useExhaustiveDependencies: messages is trigger
+	useEffect(() => {
+		if (atBottomRef.current) {
+			bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+		}
+	}, [messages]);
+
+	// ─── Textarea auto-resize ─────────────────────────────────────────────────
+
+	// biome-ignore lint/correctness/useExhaustiveDependencies: input length triggers resize
+	useEffect(() => {
+		const el = textareaRef.current;
+		if (!el) return;
+		const maxH = window.innerWidth < 768 ? 240 : 480;
+		el.style.height = "auto";
+		el.style.height = `${Math.min(el.scrollHeight, maxH)}px`;
+	}, [input]);
+
+	// ─── Model popup dismiss ──────────────────────────────────────────────────
+
+	// Dismiss the model detail popup on any click outside the badge.
+	useEffect(() => {
+		if (!showModelPopup) return;
+		const handleClick = (e: MouseEvent) => {
+			if (
+				modelBadgeRef.current &&
+				!modelBadgeRef.current.contains(e.target as Node)
+			) {
+				setShowModelPopup(false);
+			}
+		};
+		document.addEventListener("click", handleClick);
+		return () => document.removeEventListener("click", handleClick);
+	}, [showModelPopup]);
+
+	// ─── Derived state ────────────────────────────────────────────────────────
 
 	const hasInput =
 		(input.trim().length > 0 || pendingAttachments.length > 0) &&
@@ -1623,30 +320,23 @@ function ChatPage() {
 	const canSend = hasInput && !isRunning;
 	const canQueue = hasInput && isRunning;
 
-	// Strip the dated suffix the SDK reports (e.g. "-20251001") so we compare
-	// the base model identifier against the configured short-form value.
-	const normalizeModel = (m: string) => m.replace(/-\d{8}$/, "");
-	const modelShort = model
-		? (MODEL_LABELS[model] ??
-			model.replace("claude-", "").replace(/-\d{8}$/, ""))
-		: null;
-	const actualModelShort = actualModel
-		? (MODEL_LABELS[actualModel] ??
-			MODEL_LABELS[normalizeModel(actualModel)] ??
-			actualModel.replace("claude-", "").replace(/-\d{8}$/, ""))
-		: null;
+	const modelShort = model ? fmtModel(model) : null;
+	const actualModelShort = actualModel ? fmtModel(actualModel) : null;
 	const modelMismatch =
 		!!actualModel &&
 		!!model &&
 		normalizeModel(actualModel) !== normalizeModel(model);
 
+	// ─── Render ───────────────────────────────────────────────────────────────
+
 	return (
 		<div className="h-full flex flex-col">
-			<ChatUsageWindowsPanel
+			<UsageWindowsPanel
 				initial={initialUsageWindows}
 				liveQueryCount={liveStats?.queries ?? 0}
 				rateLimit={rateLimit}
-				liveStats={liveStats}
+				fetchFn={getUsageWindowsFn}
+				tail={<ContextWindowSection stats={liveStats} />}
 			/>
 
 			{/* Messages, inner min-h-full + justify-end anchors messages to bottom */}
@@ -1666,58 +356,14 @@ function ChatPage() {
 							)}
 						</div>
 					) : (
-						<>
-							{(() => {
-								// Approved permissions render as a chip under the matching
-								// tool block (matched by toolUseID === ToolEvent.id) instead
-								// of a separate row, so a long run of approvals doesn't
-								// stack up above each tool call.
-								const permissionLabels = new Map<string, string>();
-								for (const m of messages) {
-									if (m.role !== "permission") continue;
-									if (m.decision === "approved")
-										permissionLabels.set(m.id, "APPROVED");
-									else if (m.decision === "approved_session")
-										permissionLabels.set(m.id, "APPROVED FOR SESSION");
-									else if (m.decision === "approved_always")
-										permissionLabels.set(m.id, "APPROVED ALWAYS");
-								}
-								return messages.map((m) => {
-									if (m.role === "user")
-										return <UserMsg key={m.id} message={m} />;
-									if (m.role === "permission") {
-										// Approved variants are folded into the tool block.
-										// Pending and denied still render standalone.
-										if (permissionLabels.has(m.id)) return null;
-										return (
-											<PermissionCard
-												key={m.id}
-												message={m}
-												onDecide={handleDecide}
-											/>
-										);
-									}
-									return (
-										<AssistantMsg
-											key={m.id}
-											message={m}
-											permissionLabels={permissionLabels}
-										/>
-									);
-								});
-							})()}
-							{chatQueue
-								.filter((qm) => qm.session_id === sessionId)
-								.map((qm, i) => (
-									<QueuedMsg
-										key={qm.id}
-										message={qm}
-										index={i}
-										onCancel={handleCancelQueued}
-									/>
-								))}
-							<div ref={bottomRef} />
-						</>
+						<MessageList
+							messages={messages}
+							chatQueue={chatQueue}
+							sessionId={sessionId}
+							handleDecide={handleDecide}
+							handleCancelQueued={handleCancelQueued}
+							bottomRef={bottomRef}
+						/>
 					)}
 				</div>
 			</div>
@@ -1830,15 +476,7 @@ function ChatPage() {
 							</div>
 							<button
 								type="button"
-								onClick={() => {
-									if (typeof localStorage !== "undefined") {
-										localStorage.setItem(
-											`hlid:gitignore-hint:${gitignoreHint.agent_root}`,
-											"dismissed",
-										);
-									}
-									setGitignoreHint(null);
-								}}
+								onClick={dismissGitignoreHint}
 								className="text-muted-foreground/40 hover:text-foreground transition-colors shrink-0"
 								aria-label="Dismiss"
 							>
@@ -1846,70 +484,22 @@ function ChatPage() {
 							</button>
 						</div>
 					)}
-					{(pendingAttachments.length > 0 ||
-						uploadingCount > 0 ||
-						uploadError) && (
-						<div className="px-4 py-2 flex flex-wrap items-center gap-1.5 border-b border-border/40">
-							{pendingAttachments.map((a) => (
-								<span
-									key={a.id}
-									className="inline-flex items-center gap-1.5 max-w-[220px] border border-border/60 bg-secondary/30 px-2 py-1 text-[10px] text-foreground/80"
-								>
-									{a.mime.startsWith("image/") ? (
-										<img
-											src={`/api/attachments/${a.id}/raw`}
-											alt={a.filename}
-											className="w-5 h-5 object-cover shrink-0"
-										/>
-									) : (
-										<FileIcon className="w-3 h-3 shrink-0 opacity-60" />
-									)}
-									<span className="truncate font-mono">{a.filename}</span>
-									<button
-										type="button"
-										onClick={() => removePending(a.id)}
-										className="opacity-50 hover:opacity-100 shrink-0"
-										aria-label={`Remove ${a.filename}`}
-									>
-										<X className="w-3 h-3" />
-									</button>
-								</span>
-							))}
-							{uploadingCount > 0 && (
-								<span className="text-[10px] tracking-widest text-muted-foreground/60 uppercase">
-									uploading {uploadingCount}…
-								</span>
-							)}
-							{uploadError && (
-								<span className="text-[10px] text-destructive/80">
-									{uploadError}
-								</span>
-							)}
-						</div>
-					)}
+					<AttachmentStrip
+						attachments={pendingAttachments}
+						uploadingCount={uploadingCount}
+						uploadError={uploadError}
+						onRemove={removePending}
+					/>
 					{agentList.length > 0 && messages.length === 0 && (
 						<div className="flex items-baseline gap-2 px-4 py-1.5 border-b border-border/40">
-							<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase shrink-0">
-								AGENT
-							</span>
-							<PrivacyMask inline>
-								<select
-									value={agentSkillContext ?? ""}
-									onChange={(e) => {
-										const val = e.target.value || undefined;
-										setAgentSkillContext(val);
-										agentContextSentRef.current = false;
-									}}
-									className="text-[9px] tracking-widest text-muted-foreground/60 bg-background border border-border/50 px-2 py-0.5 focus:outline-none focus:border-primary/40 uppercase"
-								>
-									<option value="">none</option>
-									{agentList.map((a) => (
-										<option key={a.path} value={a.path}>
-											{a.name}
-										</option>
-									))}
-								</select>
-							</PrivacyMask>
+							<AgentSelect
+								agents={agentList}
+								value={agentSkillContext ?? ""}
+								onChange={(val) => {
+									setAgentSkillContext(val || undefined);
+									agentContextSentRef.current = false;
+								}}
+							/>
 						</div>
 					)}
 					<div className="flex items-start">

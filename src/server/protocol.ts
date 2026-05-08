@@ -111,13 +111,58 @@ export type ToolUseSummaryMessage = {
 	summary: string;
 };
 
+export type PermissionDecision =
+	| "approved"
+	| "approved_session"
+	| "approved_always"
+	| "denied";
+
 export type PermissionResolvedMessage = {
 	type: "permission_resolved";
 	id: string;
 	toolName: string;
 	displayName?: string;
-	decision: "approved" | "approved_session" | "approved_always" | "denied";
+	decision: PermissionDecision;
 };
+
+/** Narrow an MCP server object to the wire shape used in mcp_status messages. */
+export function mapMcpServer(s: {
+	name: string;
+	status: McpStatusMessage["servers"][number]["status"];
+	scope?: string;
+	error?: string;
+}): McpStatusMessage["servers"][number] {
+	return { name: s.name, status: s.status, scope: s.scope, error: s.error };
+}
+
+/** Map (approved, saveScope) from the WS client into a stable decision string. */
+export function decisionFromScope(
+	approved: boolean,
+	saveScope?: "session" | "local",
+): PermissionDecision {
+	if (!approved) return "denied";
+	if (saveScope === "local") return "approved_always";
+	if (saveScope === "session") return "approved_session";
+	return "approved";
+}
+
+/**
+ * Human label shown in chat UI for approval decisions. Returns null for
+ * non-approval values ("denied", "pending", or any unknown string) so
+ * callers can fall back to their own treatment.
+ */
+export function approvedLabel(decision: string): string | null {
+	switch (decision) {
+		case "approved_always":
+			return "APPROVED ALWAYS";
+		case "approved_session":
+			return "APPROVED FOR SESSION";
+		case "approved":
+			return "APPROVED";
+		default:
+			return null;
+	}
+}
 
 export type ServerMessage =
 	| StatusMessage

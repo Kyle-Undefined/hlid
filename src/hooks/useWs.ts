@@ -2,21 +2,11 @@ import { useCallback, useEffect, useSyncExternalStore } from "react";
 import type { ServerMessage } from "../server/protocol";
 import * as wsStore from "./wsStore";
 
-export type { WsStatus } from "./wsStore";
-
-const SERVER_SNAPSHOT = {
-	wsStatus: "connecting" as const,
-	sessionState: "idle" as const,
-	model: "",
-	actualModel: null,
-	hasPendingPermissions: false,
-};
-
 export function useWs(onMessage?: (msg: ServerMessage) => void) {
 	const { wsStatus, sessionState, model, actualModel } = useSyncExternalStore(
 		wsStore.subscribeStatus,
 		wsStore.getSnapshot,
-		() => SERVER_SNAPSHOT,
+		() => wsStore.INITIAL_SNAPSHOT,
 	);
 
 	useEffect(() => {

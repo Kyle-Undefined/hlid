@@ -1,56 +1,19 @@
 import { Link } from "@tanstack/react-router";
-import {
-	Archive,
-	Eye,
-	Gem,
-	Hammer,
-	MessageCircle,
-	Scroll,
-	Users,
-} from "lucide-react";
 import { useSyncExternalStore } from "react";
 import { version } from "../../../package.json";
 import * as wsStore from "../../hooks/wsStore";
-
-const NAV_ITEMS = [
-	{ to: "/", label: "WATCH", icon: Eye, exact: true },
-	{ to: "/vault", label: "VAULT", icon: Archive, exact: false },
-	{ to: "/relics", label: "RELICS", icon: Gem, exact: false },
-	{ to: "/raven", label: "RAVEN", icon: MessageCircle, exact: false },
-	{ to: "/einherjar", label: "EINHERJAR", icon: Users, exact: false },
-	{ to: "/ledger", label: "LEDGER", icon: Scroll, exact: false },
-	{ to: "/forge", label: "FORGE", icon: Hammer, exact: false },
-] as const;
-
-const SERVER_SNAP = {
-	wsStatus: "connecting" as const,
-	sessionState: "idle" as const,
-	model: "",
-	actualModel: null,
-	hasPendingPermissions: false,
-};
+import { NAV_ITEMS } from "./items";
+import { statusDotClass } from "./SystemStatusDot";
 
 export function Sidebar() {
 	const { wsStatus, sessionState, hasPendingPermissions } =
 		useSyncExternalStore(
 			wsStore.subscribeStatus,
 			wsStore.getSnapshot,
-			() => SERVER_SNAP,
+			() => wsStore.INITIAL_SNAPSHOT,
 		);
 
-	const isRunning = wsStatus === "connected" && sessionState === "running";
-	const isError = wsStatus === "connected" && sessionState === "error";
-
-	const dot =
-		!wsStatus || wsStatus === "disconnected" || wsStatus === "connecting"
-			? "bg-muted-foreground/25"
-			: isError
-				? "bg-destructive"
-				: hasPendingPermissions
-					? "bg-orange-500 animate-pulse"
-					: isRunning
-						? "bg-primary animate-pulse"
-						: "bg-green-600";
+	const dot = statusDotClass(wsStatus, sessionState, hasPendingPermissions);
 
 	return (
 		<aside className="hidden md:flex flex-col w-44 shrink-0 bg-sidebar border-r border-sidebar-border">

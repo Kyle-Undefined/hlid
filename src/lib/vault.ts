@@ -1,10 +1,4 @@
-import {
-	lstatSync,
-	readdirSync,
-	readFileSync,
-	realpathSync,
-	writeFileSync,
-} from "node:fs";
+import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import matter from "gray-matter";
 import {
@@ -13,9 +7,9 @@ import {
 	type StatusVocabulary,
 } from "#/lib/classify";
 import { pathStartsWith } from "./paths";
+import type { Skill } from "./skills";
 
-export type { ProjectStatus, StatusVocabulary };
-export { classifyStatus };
+export type { Skill, SkillGroup } from "./skills";
 
 export type ProjectNode = {
 	name: string;
@@ -205,15 +199,6 @@ export function scanProjects(
 
 	return projects;
 }
-
-export type Skill = {
-	file: string;
-	name: string;
-	description: string;
-	content: string;
-	filePath: string;
-	section?: string;
-};
 
 function parseSectionMap(indexPath: string): {
 	sectionMap: Map<string, string>;
@@ -430,20 +415,4 @@ export function scanFolderGroups(
 
 	if (looseFiles.length > 0) groups.unshift({ name: "", children: looseFiles });
 	return groups;
-}
-
-export function setProjectStatus(
-	vaultPath: string,
-	projectsFolder: string,
-	file: string,
-	newStatus: string,
-): void {
-	const baseDir = resolve(vaultPath, projectsFolder);
-	const target = resolve(baseDir, file);
-	assertContained(baseDir, target);
-	const raw = readFileSync(target, "utf-8");
-	const parsed = matter(raw);
-	parsed.data.status = newStatus;
-	const updated = matter.stringify(parsed.content, parsed.data);
-	writeFileSync(target, updated, "utf-8");
 }
