@@ -1,0 +1,442 @@
+/**
+ * wsHandlers unit tests — routes ClientMessages to the correct SessionManager
+ * method and enforces ownership semantics. SessionManager, runState, DB, and
+ * config are all mocked; only the routing logic inside createWsHandlers is real.
+ */
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ServerMessage } from "./protocol";
+import type { SessionManager } from "./session";
+
+// ── mocks ─────────────────────────────────────────────────────────────────────
+
+vi.mock("../db", () => ({
+	recordPermissionEvent: vi.fn().mockResolvedValue(undefined),
+	appendLog: vi.fn().mockResolvedValue(undefined),
+	saveSetting: vi.fn().mockResolvedValue(undefined),
+}));
+vi.mock("./config", () => ({
+	loadConfig: vi.fn().mockReturnValue({
+		vault: { path: "/tmp/test" },
+		claude: {
+			model: "test-model",
+			effort: "medium",
+			permission_mode: "default",
+			turn_recaps: false,
+		},
+		agents: [],
+	}),
+}));
+
+// vi.hoisted variables are evaluated before vi.mock factories, so they
+// can be referenced inside the factory without TDZ errors.
+const wsState = vi.hoisted(() => ({
+	clients: new Set<object>(),
+	sessionOwnerWs: null as object | null,
+	lastSessionError: null as string | null,
+}));
+const mockSend = vi.hoisted(() => vi.fn());
+const mockBroadcast = vi.hoisted(() => vi.fn());
+const mockGetRunBuffer = vi.hoisted(() => vi.fn().mockReturnValue([]));
+
+vi.mock("./runState", () => ({
+	wsState,
+	send: mockSend,
+	broadcast: mockBroadcast,
+	getRunBuffer: mockGetRunBuffer,
+}));
+
+// ── import after mocks ────────────────────────────────────────────────────────
+
+import { createWsHandlers } from "./wsHandlers";
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+/** Create a minimal fake WebSocket with a spy on send(). */
+function makeWs() {
+	return { send: vi.fn() };
+}
+
+/** Create a fully mocked SessionManager. */
+function makeSession(overrides: Partial<SessionManager> = {}): SessionManager {
+	return {
+		getStatus: vi.fn().mockReturnValue({ state: "idle", model: "test-model" }),
+		isRunning: vi.fn().mockReturnValue(false),
+		getLastMcpStatus: vi.fn().mockReturnValue(null),
+		getPendingPermissionRequests: vi.fn().mockReturnValue([]),
+		getCurrentSessionId: vi.fn().mockReturnValue(null),
+		abort: vi.fn(),
+		clearHistory: vi.fn(),
+		reinitialize: vi.fn(),
+		syncConfig: vi.fn().mockReturnValue(false),
+		runQuery: vi.fn().mockResolvedValue(undefined),
+		handlePermissionResponse: vi.fn(),
+		probeMcpStatus: vi.fn().mockResolvedValue(undefined),
+		restoreMcpStatus: vi.fn(),
+		...overrides,
+	} as unknown as SessionManager;
+}
+
+/** Capture the most recent arg to mockSend for a given ws. */
+function lastSentTo(ws: ReturnType<typeof makeWs>): ServerMessage | undefined {
+	const calls = mockSend.mock.calls.filter((c) => c[0] === ws);
+	return calls.length > 0 ? calls[calls.length - 1][1] : undefined;
+}
+
+beforeEach(() => {
+	wsState.clients.clear();
+	wsState.sessionOwnerWs = null;
+	wsState.lastSessionError = null;
+	mockSend.mockClear();
+	mockBroadcast.mockClear();
+	mockGetRunBuffer.mockClear().mockReturnValue([]);
+});
+
+// ── open ──────────────────────────────────────────────────────────────────────
+
+describe("open", () => {
+	it("adds ws to clients set", () => {
+		const session = makeSession();
+		const { open } = createWsHandlers(session);
+		const ws = makeWs();
+		open(ws as never);
+		expect(wsState.clients.has(ws)).toBe(true);
+	});
+
+	it("sends current status to new connection", () => {
+		const session = makeSession();
+		const { open } = createWsHandlers(session);
+		const ws = makeWs();
+		open(ws as never);
+		const sent = lastSentTo(ws);
+		expect(sent?.type).toBe("status");
+	});
+
+	it("re-sends last error when session is in error state", () => {
+		const session = makeSession({
+			getStatus: vi.fn().mockReturnValue({ state: "error", model: "m" }),
+		});
+		wsState.lastSessionError = "Something failed";
+		const { open } = createWsHandlers(session);
+		const ws = makeWs();
+		open(ws as never);
+		const calls = mockSend.mock.calls.filter((c) => c[0] === ws);
+		const errorMsg = calls.find((c) => c[1].type === "error");
+		expect(errorMsg).toBeDefined();
+		expect(errorMsg?.[1].message).toBe("Something failed");
+	});
+
+	it("does NOT re-send error when session recovered to idle", () => {
+		const session = makeSession({
+			getStatus: vi.fn().mockReturnValue({ state: "idle", model: "m" }),
+		});
+		wsState.lastSessionError = "old error";
+		const { open } = createWsHandlers(session);
+		const ws = makeWs();
+		open(ws as never);
+		const calls = mockSend.mock.calls.filter((c) => c[0] === ws);
+		expect(calls.find((c) => c[1].type === "error")).toBeUndefined();
+	});
+
+	it("replays run buffer when session is running", () => {
+		const chunks: ServerMessage[] = [
+			{ type: "chunk", text: "Hello" },
+			{ type: "chunk", text: " world" },
+		];
+		mockGetRunBuffer.mockReturnValue(chunks);
+		const session = makeSession({ isRunning: vi.fn().mockReturnValue(true) });
+		const { open } = createWsHandlers(session);
+		const ws = makeWs();
+		open(ws as never);
+		const sentChunks = mockSend.mock.calls
+			.filter((c) => c[0] === ws && c[1].type === "chunk")
+			.map((c) => c[1].text);
+		expect(sentChunks).toEqual(["Hello", " world"]);
+	});
+
+	it("claims ownership for reconnecting client when no owner set", () => {
+		const session = makeSession({ isRunning: vi.fn().mockReturnValue(true) });
+		const { open } = createWsHandlers(session);
+		const ws = makeWs();
+		open(ws as never);
+		expect(wsState.sessionOwnerWs).toBe(ws);
+	});
+
+	it("sends MCP status cache if available", () => {
+		const mcpStatuses = [{ name: "my-server", status: "connected" as const }];
+		const session = makeSession({
+			getLastMcpStatus: vi.fn().mockReturnValue(mcpStatuses),
+		});
+		const { open } = createWsHandlers(session);
+		const ws = makeWs();
+		open(ws as never);
+		const calls = mockSend.mock.calls.filter((c) => c[0] === ws);
+		const mcpMsg = calls.find((c) => c[1].type === "mcp_status");
+		expect(mcpMsg).toBeDefined();
+	});
+});
+
+// ── close ─────────────────────────────────────────────────────────────────────
+
+describe("close", () => {
+	it("removes ws from clients", () => {
+		const session = makeSession();
+		const { open, close } = createWsHandlers(session);
+		const ws = makeWs();
+		open(ws as never);
+		close(ws as never);
+		expect(wsState.clients.has(ws)).toBe(false);
+	});
+
+	it("clears sessionOwnerWs when owner disconnects", () => {
+		const session = makeSession();
+		const { close } = createWsHandlers(session);
+		const ws = makeWs();
+		wsState.sessionOwnerWs = ws;
+		close(ws as never);
+		expect(wsState.sessionOwnerWs).toBeNull();
+	});
+
+	it("does not clear owner when a non-owner disconnects", () => {
+		const session = makeSession();
+		const { close } = createWsHandlers(session);
+		const owner = makeWs();
+		const other = makeWs();
+		wsState.sessionOwnerWs = owner;
+		close(other as never);
+		expect(wsState.sessionOwnerWs).toBe(owner);
+	});
+});
+
+// ── message: invalid JSON ─────────────────────────────────────────────────────
+
+describe("message — invalid JSON", () => {
+	it("sends error on malformed JSON", async () => {
+		const session = makeSession();
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		await message(ws as never, "not-json");
+		expect(lastSentTo(ws)).toMatchObject({
+			type: "error",
+			message: "Invalid JSON",
+		});
+	});
+});
+
+// ── message: sync ─────────────────────────────────────────────────────────────
+
+describe("message — sync", () => {
+	it("sends current status", async () => {
+		const session = makeSession();
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		await message(ws as never, JSON.stringify({ type: "sync" }));
+		expect(lastSentTo(ws)).toMatchObject({ type: "status" });
+	});
+});
+
+// ── message: abort ────────────────────────────────────────────────────────────
+
+describe("message — abort", () => {
+	it("calls session.abort() when ws is owner", async () => {
+		const session = makeSession();
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		wsState.sessionOwnerWs = ws;
+		await message(ws as never, JSON.stringify({ type: "abort" }));
+		expect(session.abort).toHaveBeenCalled();
+	});
+
+	it("ignores abort from non-owner", async () => {
+		const session = makeSession();
+		const { message } = createWsHandlers(session);
+		const owner = makeWs();
+		const other = makeWs();
+		wsState.sessionOwnerWs = owner;
+		await message(other as never, JSON.stringify({ type: "abort" }));
+		expect(session.abort).not.toHaveBeenCalled();
+	});
+});
+
+// ── message: clear ────────────────────────────────────────────────────────────
+
+describe("message — clear", () => {
+	it("calls clearHistory and resets lastSessionError when owner", async () => {
+		const session = makeSession();
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		wsState.sessionOwnerWs = ws;
+		wsState.lastSessionError = "prev error";
+		await message(ws as never, JSON.stringify({ type: "clear" }));
+		expect(session.clearHistory).toHaveBeenCalled();
+		expect(wsState.lastSessionError).toBeNull();
+	});
+
+	it("ignores clear from non-owner", async () => {
+		const session = makeSession();
+		const { message } = createWsHandlers(session);
+		const owner = makeWs();
+		const other = makeWs();
+		wsState.sessionOwnerWs = owner;
+		await message(other as never, JSON.stringify({ type: "clear" }));
+		expect(session.clearHistory).not.toHaveBeenCalled();
+	});
+});
+
+// ── message: reload_session ───────────────────────────────────────────────────
+
+describe("message — reload_session", () => {
+	it("reinitializes session and broadcasts status when owner", async () => {
+		const session = makeSession();
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		wsState.sessionOwnerWs = ws;
+		await message(ws as never, JSON.stringify({ type: "reload_session" }));
+		expect(session.reinitialize).toHaveBeenCalled();
+		expect(mockBroadcast).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "status" }),
+		);
+	});
+
+	it("ignores reload from non-owner", async () => {
+		const session = makeSession();
+		const { message } = createWsHandlers(session);
+		const owner = makeWs();
+		const other = makeWs();
+		wsState.sessionOwnerWs = owner;
+		await message(other as never, JSON.stringify({ type: "reload_session" }));
+		expect(session.reinitialize).not.toHaveBeenCalled();
+	});
+});
+
+// ── message: chat ─────────────────────────────────────────────────────────────
+
+describe("message — chat", () => {
+	it("rejects empty text", async () => {
+		const session = makeSession();
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		wsState.sessionOwnerWs = ws;
+		await message(ws as never, JSON.stringify({ type: "chat", text: "   " }));
+		expect(lastSentTo(ws)).toMatchObject({
+			type: "error",
+			message: "Invalid message",
+		});
+		expect(session.runQuery).not.toHaveBeenCalled();
+	});
+
+	it("rejects chat from non-owner", async () => {
+		const session = makeSession();
+		const { message } = createWsHandlers(session);
+		const owner = makeWs();
+		const other = makeWs();
+		wsState.sessionOwnerWs = owner;
+		await message(other as never, JSON.stringify({ type: "chat", text: "hi" }));
+		expect(lastSentTo(other)).toMatchObject({
+			type: "error",
+			message: "Not session owner",
+		});
+		expect(session.runQuery).not.toHaveBeenCalled();
+	});
+
+	it("rejects chat when session already running", async () => {
+		const session = makeSession({
+			isRunning: vi.fn().mockReturnValue(true),
+		});
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		wsState.sessionOwnerWs = ws;
+		await message(ws as never, JSON.stringify({ type: "chat", text: "hi" }));
+		expect(lastSentTo(ws)).toMatchObject({
+			type: "error",
+			message: "Session already running",
+		});
+		expect(session.runQuery).not.toHaveBeenCalled();
+	});
+
+	it("calls session.runQuery with correct args", async () => {
+		const session = makeSession();
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		wsState.sessionOwnerWs = ws;
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "chat",
+				text: "hello",
+				session_id: "sess-1",
+				skill_context: "/vault/skills/s.md",
+			}),
+		);
+		expect(session.runQuery).toHaveBeenCalledWith(
+			"hello",
+			expect.any(Function),
+			"sess-1",
+			"/vault/skills/s.md",
+			undefined,
+			undefined,
+		);
+	});
+
+	it("first chat from unowned session is not rejected as non-owner", async () => {
+		const session = makeSession();
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		// No owner set — notOwner() returns false when sessionOwnerWs is null
+		await message(ws as never, JSON.stringify({ type: "chat", text: "hello" }));
+		// runQuery called proves the request wasn't rejected
+		expect(session.runQuery).toHaveBeenCalled();
+	});
+});
+
+// ── message: permission_response ──────────────────────────────────────────────
+
+describe("message — permission_response", () => {
+	it("resolves pending permission and broadcasts resolved event", async () => {
+		const pending = {
+			type: "permission_request" as const,
+			id: "perm-1",
+			toolName: "Bash",
+			title: "Run command",
+			displayName: "Bash",
+		};
+		const session = makeSession({
+			getPendingPermissionRequests: vi.fn().mockReturnValue([pending]),
+			getCurrentSessionId: vi.fn().mockReturnValue("sess-1"),
+		});
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "permission_response",
+				id: "perm-1",
+				approved: true,
+			}),
+		);
+		expect(session.handlePermissionResponse).toHaveBeenCalledWith(
+			"perm-1",
+			true,
+			undefined,
+		);
+		expect(mockBroadcast).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "permission_resolved", id: "perm-1" }),
+		);
+	});
+
+	it("does nothing when permission id not found", async () => {
+		const session = makeSession({
+			getPendingPermissionRequests: vi.fn().mockReturnValue([]),
+		});
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "permission_response",
+				id: "nonexistent",
+				approved: true,
+			}),
+		);
+		expect(session.handlePermissionResponse).not.toHaveBeenCalled();
+	});
+});

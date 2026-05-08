@@ -55,6 +55,12 @@ jobs:
       - name: Biome check
         run: bun run check
 
+      - name: Tests (Vitest — Node)
+        run: bun run test
+
+      - name: Tests (Bun — DB)
+        run: bun run test:db
+
   build:
     runs-on: windows-latest
     needs: validate

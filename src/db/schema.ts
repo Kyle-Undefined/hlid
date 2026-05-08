@@ -7,6 +7,16 @@ let _initPromise: Promise<import("bun:sqlite").Database> | null = null;
 
 export type Db = import("bun:sqlite").Database;
 
+/**
+ * Inject a pre-built in-memory Database for tests.
+ * Initializes schema on the provided DB so callers don't need to.
+ * Never call this in production code.
+ */
+export function setDbForTest(db: Db): void {
+	initSchema(db);
+	_initPromise = Promise.resolve(db);
+}
+
 export function getDb(): Promise<Db> {
 	if (!_initPromise) {
 		_initPromise = (async () => {

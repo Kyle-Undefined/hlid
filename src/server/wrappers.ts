@@ -29,11 +29,11 @@ const DISTRO_RE = /^[A-Za-z0-9._-]+$/;
 // NUL would either break batch quoting or split the command line. Reject them
 // rather than try to escape — these characters are not legitimate in a path
 // users would actually pick from the WSL folder browser.
-function isSafePosixPath(p: string): boolean {
+export function isSafePosixPath(p: string): boolean {
 	return !/["\r\n\0]/.test(p);
 }
 
-function wrapperContent(distro: string, posixPath: string): string {
+export function wrapperContent(distro: string, posixPath: string): string {
 	if (!DISTRO_RE.test(distro)) {
 		throw new Error(`Invalid WSL distro name: ${JSON.stringify(distro)}`);
 	}

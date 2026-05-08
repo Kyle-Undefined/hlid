@@ -176,10 +176,10 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 		case "LOAD_HISTORY": {
 			const validDecisions = new Set<PermissionMessage["decision"]>([
 				"pending",
-				"allow_once",
-				"allow_always",
-				"deny_once",
-				"deny_always",
+				"approved",
+				"approved_session",
+				"approved_always",
+				"denied",
 			]);
 			return action.items.map((item): ChatMessage => {
 				if (item.kind === "permission") {

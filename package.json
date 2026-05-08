@@ -1,7 +1,7 @@
 {
   "name": "hlid",
   "description": "Hliðskjálf - Watcher of Worlds",
-  "version": "0.0.37",
+  "version": "0.0.38",
   "private": true,
   "type": "module",
   "imports": {
@@ -17,6 +17,8 @@
     "start": "bun src/server/index.ts",
     "preview": "vite preview",
     "test": "vitest run",
+    "test:db": "bun test src/db/",
+    "test:all": "vitest run && bun test src/db/",
     "format": "biome format",
     "lint": "biome lint",
     "check": "biome check",
