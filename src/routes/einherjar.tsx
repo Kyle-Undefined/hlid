@@ -9,13 +9,26 @@ import { createServerFn } from "@tanstack/react-start";
 import { Plus } from "lucide-react";
 import { useState } from "react";
 import { AddAgentPanel } from "#/components/einherjar/AddAgentPanel";
-import type { AgentEntry } from "#/components/einherjar/AgentCard";
+import type {
+	AgentEntry,
+	AgentProviderSettings,
+} from "#/components/einherjar/AgentCard";
 import { AgentCard, AgentEmptyState } from "#/components/einherjar/AgentCard";
 import type { Agent } from "#/config";
 import { getConfig } from "#/config";
 import { writeConfig } from "#/lib/config-writer";
 import { expandTilde, samePath } from "#/lib/paths";
+import type { ProviderInfo } from "#/lib/serverFns";
+import { getProvidersFn } from "#/lib/serverFns";
 import { uid } from "#/lib/utils";
+
+const VALID_EFFORTS: string[] = ["low", "medium", "high", "xhigh", "max"];
+const VALID_PERMISSION_MODES: string[] = [
+	"default",
+	"acceptEdits",
+	"bypassPermissions",
+	"plan",
+];
 
 // ─── server fns ──────────────────────────────────────────────────────────────
 
@@ -35,8 +48,15 @@ const getAgentsFn = createServerFn({ method: "GET" }).handler(
 				path: agent.path,
 				name: agent.name ?? deriveAgentName(resolved),
 				mode: agent.mode ?? "cwd",
+				provider: agent.provider ?? "claude",
 				hasClaudemd: existsSync(join(resolved, "CLAUDE.md")),
 				dirExists: existsSync(resolved),
+				model: agent.model,
+				effort: agent.effort,
+				maxTurns:
+					agent.max_turns !== undefined ? String(agent.max_turns) : undefined,
+				permissionMode: agent.permission_mode,
+				recapModel: agent.recap_model,
 			};
 		});
 	},
@@ -98,31 +118,76 @@ const getExternalAllowedFn = createServerFn({ method: "GET" }).handler(
 
 // ─── route ───────────────────────────────────────────────────────────────────
 
-type LoaderData = { agents: AgentEntry[]; externalAllowed: boolean };
+const getVaultProviderFn = createServerFn({ method: "GET" }).handler(
+	async () => {
+		const config = await getConfig();
+		return config.vault_provider ?? "claude";
+	},
+);
+
+type LoaderData = {
+	agents: AgentEntry[];
+	externalAllowed: boolean;
+	providers: ProviderInfo[];
+	vaultProvider: string;
+};
 
 export const Route = createFileRoute("/einherjar")({
-	loader: async (): Promise<LoaderData> => ({
-		agents: await getAgentsFn(),
-		externalAllowed: await getExternalAllowedFn(),
-	}),
+	loader: async (): Promise<LoaderData> => {
+		const [agents, externalAllowed, providers, vaultProvider] =
+			await Promise.all([
+				getAgentsFn(),
+				getExternalAllowedFn(),
+				getProvidersFn(),
+				getVaultProviderFn(),
+			]);
+		return { agents, externalAllowed, providers, vaultProvider };
+	},
 	component: EinherjarPage,
 });
 
 // ─── component ───────────────────────────────────────────────────────────────
 
 function EinherjarPage() {
-	const { agents: initialAgents, externalAllowed } = Route.useLoaderData();
+	const {
+		agents: initialAgents,
+		externalAllowed,
+		providers,
+		vaultProvider,
+	} = Route.useLoaderData();
 	const router = useRouter();
 	const navigate = useNavigate();
 
 	const [agents, setAgents] = useState<AgentEntry[]>(initialAgents);
 	const [showAdd, setShowAdd] = useState(false);
 
+	function agentEntryToConfig(a: AgentEntry): Agent {
+		return {
+			path: a.path,
+			name: a.name,
+			mode: a.mode,
+			provider: a.provider,
+			model: a.model || undefined,
+			effort:
+				a.effort != null && VALID_EFFORTS.includes(a.effort)
+					? (a.effort as Agent["effort"])
+					: undefined,
+			max_turns: (() => {
+				const parsed = parseInt(a.maxTurns ?? "", 10);
+				return !Number.isNaN(parsed) ? parsed : undefined;
+			})(),
+			permission_mode:
+				a.permissionMode != null &&
+				VALID_PERMISSION_MODES.includes(a.permissionMode)
+					? (a.permissionMode as Agent["permission_mode"])
+					: undefined,
+			recap_model: a.recapModel || undefined,
+		};
+	}
+
 	async function handleRemove(path: string) {
 		const next = agents.filter((a) => a.path !== path);
-		await saveAgentsFn({
-			data: next.map((a) => ({ path: a.path, name: a.name, mode: a.mode })),
-		});
+		await saveAgentsFn({ data: next.map(agentEntryToConfig) });
 		setAgents(next);
 		await router.invalidate();
 	}
@@ -132,9 +197,7 @@ function EinherjarPage() {
 		const next = agents.map((a) => (a.path === path ? { ...a, mode } : a));
 		setAgents(next);
 		try {
-			await saveAgentsFn({
-				data: next.map((a) => ({ path: a.path, name: a.name, mode: a.mode })),
-			});
+			await saveAgentsFn({ data: next.map(agentEntryToConfig) });
 			await router.invalidate();
 		} catch {
 			setAgents(prevAgents);
@@ -145,16 +208,16 @@ function EinherjarPage() {
 		originalPath: string,
 		name: string,
 		mode: "cwd" | "context",
+		provider: string,
+		settings: AgentProviderSettings,
 	) {
 		const prevAgents = agents;
 		const next = agents.map((a) =>
-			a.path === originalPath ? { ...a, name, mode } : a,
+			a.path === originalPath ? { ...a, name, mode, provider, ...settings } : a,
 		);
 		setAgents(next);
 		try {
-			await saveAgentsFn({
-				data: next.map((a) => ({ path: a.path, name: a.name, mode: a.mode })),
-			});
+			await saveAgentsFn({ data: next.map(agentEntryToConfig) });
 			await router.invalidate();
 		} catch {
 			setAgents(prevAgents);
@@ -166,6 +229,8 @@ function EinherjarPage() {
 		path: string,
 		name: string,
 		mode: "cwd" | "context",
+		provider: string,
+		settings: AgentProviderSettings,
 	) {
 		if (agents.some((a) => a.path === path)) {
 			throw new Error("Agent already added");
@@ -180,9 +245,18 @@ function EinherjarPage() {
 			);
 		}
 		const resolvedName = name || validation.suggestedName;
+		const newEntry: AgentEntry = {
+			path,
+			name: resolvedName,
+			mode,
+			provider,
+			hasClaudemd: false,
+			dirExists: true,
+			...settings,
+		};
 		const next: Agent[] = [
-			...agents.map((a) => ({ path: a.path, name: a.name, mode: a.mode })),
-			{ path, name: resolvedName, mode },
+			...agents.map(agentEntryToConfig),
+			agentEntryToConfig(newEntry),
 		];
 		await saveAgentsFn({ data: next });
 		await router.invalidate();
@@ -227,6 +301,8 @@ function EinherjarPage() {
 						externalAllowed={externalAllowed}
 						onAdd={handleAdd}
 						onCancel={() => setShowAdd(false)}
+						providers={providers}
+						vaultProvider={vaultProvider}
 					/>
 				)}
 
@@ -242,10 +318,12 @@ function EinherjarPage() {
 								onRemove={() => void handleRemove(agent.path)}
 								onModeChange={(mode) => void handleModeChange(agent.path, mode)}
 								onChat={() => handleChat(agent)}
-								onSaveEdit={(name, mode) =>
-									handleSaveEdit(agent.path, name, mode)
+								onSaveEdit={(name, mode, provider, settings) =>
+									handleSaveEdit(agent.path, name, mode, provider, settings)
 								}
 								onReadClaudemd={() => readClaudemdFn({ data: agent.path })}
+								providers={providers}
+								vaultProvider={vaultProvider}
 							/>
 						))
 					)}

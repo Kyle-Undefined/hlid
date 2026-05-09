@@ -10,16 +10,60 @@ import { useState } from "react";
 import { ConfirmAction } from "#/components/ConfirmAction";
 import { MarkdownBody } from "#/components/MarkdownBody";
 import { PrivacyMask } from "#/components/PrivacyMask";
+import type { ProviderInfo } from "#/lib/serverFns";
 
 export type AgentEntry = {
 	path: string;
 	name: string;
 	mode: "cwd" | "context";
+	provider: string;
 	hasClaudemd: boolean;
 	dirExists: boolean;
+	model?: string;
+	effort?: string;
+	maxTurns?: string;
+	permissionMode?: string;
+	recapModel?: string;
 };
 
-type EditState = { name: string; mode: "cwd" | "context" };
+export type AgentProviderSettings = {
+	model?: string;
+	effort?: string;
+	maxTurns?: string;
+	permissionMode?: string;
+	recapModel?: string;
+};
+
+type EditState = {
+	name: string;
+	mode: "cwd" | "context";
+	provider: string;
+	model: string;
+	effort: string;
+	maxTurns: string;
+	permissionMode: string;
+	recapModel: string;
+};
+
+const EFFORT_OPTIONS = [
+	{ value: "low", label: "Low" },
+	{ value: "medium", label: "Medium" },
+	{ value: "high", label: "High" },
+	{ value: "xhigh", label: "X-High" },
+	{ value: "max", label: "Max" },
+] as const;
+
+const MODEL_OPTIONS = [
+	{ value: "claude-opus-4-7", label: "Opus 4.7" },
+	{ value: "claude-sonnet-4-6", label: "Sonnet 4.6" },
+	{ value: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
+] as const;
+
+const PERMISSION_OPTIONS = [
+	{ value: "default", label: "Ask for approval" },
+	{ value: "acceptEdits", label: "Auto-approve edits" },
+	{ value: "bypassPermissions", label: "Auto-approve all" },
+] as const;
 
 export function AgentCard({
 	agent,
@@ -28,13 +72,22 @@ export function AgentCard({
 	onChat,
 	onSaveEdit,
 	onReadClaudemd,
+	providers,
+	vaultProvider,
 }: {
 	agent: AgentEntry;
 	onRemove: () => void;
 	onModeChange: (mode: "cwd" | "context") => void;
 	onChat: () => void;
-	onSaveEdit: (name: string, mode: "cwd" | "context") => Promise<void>;
+	onSaveEdit: (
+		name: string,
+		mode: "cwd" | "context",
+		provider: string,
+		settings: AgentProviderSettings,
+	) => Promise<void>;
 	onReadClaudemd: () => Promise<string | null>;
+	providers: ProviderInfo[];
+	vaultProvider: string;
 }) {
 	const [editing, setEditing] = useState<EditState | null>(null);
 	const [expanded, setExpanded] = useState(false);
@@ -63,7 +116,18 @@ export function AgentCard({
 		if (!editing) return;
 		const trimmedName = editing.name.trim();
 		try {
-			await onSaveEdit(trimmedName || agent.name, editing.mode);
+			await onSaveEdit(
+				trimmedName || agent.name,
+				editing.mode,
+				editing.provider,
+				{
+					model: editing.model || undefined,
+					effort: editing.effort || undefined,
+					maxTurns: editing.maxTurns || undefined,
+					permissionMode: editing.permissionMode || undefined,
+					recapModel: editing.recapModel || undefined,
+				},
+			);
 			setEditing(null);
 		} catch (err) {
 			console.error("AgentCard: failed to save edit:", err);
@@ -147,7 +211,18 @@ export function AgentCard({
 					</button>
 					<button
 						type="button"
-						onClick={() => setEditing({ name: agent.name, mode: agent.mode })}
+						onClick={() =>
+							setEditing({
+								name: agent.name,
+								mode: agent.mode,
+								provider: agent.provider,
+								model: agent.model ?? "",
+								effort: agent.effort ?? "",
+								maxTurns: agent.maxTurns ?? "",
+								permissionMode: agent.permissionMode ?? "",
+								recapModel: agent.recapModel ?? "",
+							})
+						}
 						title="Edit agent"
 						className="text-muted-foreground/40 hover:text-primary transition-colors"
 					>
@@ -219,6 +294,149 @@ export function AgentCard({
 								: "claude stays in vault, loads CLAUDE.md as persona"}
 						</span>
 					</div>
+					{providers.length > 0 && (
+						<div className="flex items-center gap-2">
+							<span className="text-[9px] tracking-widest text-muted-foreground/50 uppercase shrink-0">
+								Provider
+							</span>
+							<div className="flex border border-border">
+								{providers.map((p, i) => (
+									<button
+										key={p.id}
+										type="button"
+										onClick={() =>
+											setEditing((s) => s && { ...s, provider: p.id })
+										}
+										className={`text-[10px] tracking-widest px-2.5 py-1 uppercase transition-colors ${i > 0 ? "border-l border-border" : ""} ${
+											editing.provider === p.id
+												? "bg-primary/10 text-primary"
+												: "text-muted-foreground/60 hover:text-foreground"
+										}`}
+									>
+										{p.label}
+									</button>
+								))}
+							</div>
+							{providers.find((p) => p.id === editing.provider)?.available ===
+								false && (
+								<span className="text-[9px] text-destructive/70">
+									{providers.find((p) => p.id === editing.provider)
+										?.unavailableReason ?? "unavailable"}
+								</span>
+							)}
+						</div>
+					)}
+					{editing.provider === vaultProvider && (
+						<div className="space-y-2 pt-1">
+							<div className="flex items-center gap-2">
+								<span className="text-[9px] tracking-widest text-muted-foreground/50 uppercase shrink-0 w-24">
+									Model
+								</span>
+								<select
+									value={editing.model}
+									onChange={(e) =>
+										setEditing((s) => s && { ...s, model: e.target.value })
+									}
+									className="flex-1 bg-secondary border border-border px-2 py-1 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
+								>
+									<option value="">— vault default —</option>
+									{MODEL_OPTIONS.map((m) => (
+										<option key={m.value} value={m.value}>
+											{m.label}
+										</option>
+									))}
+								</select>
+							</div>
+							<div className="flex items-center gap-2">
+								<span className="text-[9px] tracking-widest text-muted-foreground/50 uppercase shrink-0 w-24">
+									Effort
+								</span>
+								<select
+									value={editing.effort}
+									onChange={(e) =>
+										setEditing((s) => s && { ...s, effort: e.target.value })
+									}
+									className="flex-1 bg-secondary border border-border px-2 py-1 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
+								>
+									<option value="">— vault default —</option>
+									{EFFORT_OPTIONS.map((o) => (
+										<option key={o.value} value={o.value}>
+											{o.label}
+										</option>
+									))}
+								</select>
+							</div>
+							<div className="flex items-center gap-2">
+								<span className="text-[9px] tracking-widest text-muted-foreground/50 uppercase shrink-0 w-24">
+									Permissions
+								</span>
+								<select
+									value={editing.permissionMode}
+									onChange={(e) =>
+										setEditing(
+											(s) => s && { ...s, permissionMode: e.target.value },
+										)
+									}
+									className="flex-1 bg-secondary border border-border px-2 py-1 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
+								>
+									<option value="">— vault default —</option>
+									{PERMISSION_OPTIONS.map((o) => (
+										<option key={o.value} value={o.value}>
+											{o.label}
+										</option>
+									))}
+								</select>
+							</div>
+							<div className="flex items-center gap-2">
+								<span className="text-[9px] tracking-widest text-muted-foreground/50 uppercase shrink-0 w-24">
+									Max turns
+								</span>
+								<input
+									type="number"
+									min={1}
+									value={editing.maxTurns}
+									onChange={(e) => {
+										const raw = e.target.value;
+										if (raw === "") {
+											setEditing((s) => s && { ...s, maxTurns: "" });
+										} else {
+											const n = parseInt(raw, 10);
+											setEditing(
+												(s) =>
+													s && {
+														...s,
+														maxTurns: Number.isFinite(n)
+															? String(Math.max(1, n))
+															: "",
+													},
+											);
+										}
+									}}
+									placeholder="vault default"
+									className="flex-1 bg-secondary border border-border px-2 py-1 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+								/>
+							</div>
+							<div className="flex items-center gap-2">
+								<span className="text-[9px] tracking-widest text-muted-foreground/50 uppercase shrink-0 w-24">
+									Recap model
+								</span>
+								<select
+									value={editing.recapModel}
+									onChange={(e) =>
+										setEditing((s) => s && { ...s, recapModel: e.target.value })
+									}
+									className="flex-1 bg-secondary border border-border px-2 py-1 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
+								>
+									<option value="">— default (haiku) —</option>
+									{MODEL_OPTIONS.map((m) => (
+										<option key={m.value} value={m.value}>
+											{m.label}
+										</option>
+									))}
+								</select>
+							</div>
+						</div>
+					)}
 					<div className="flex items-center gap-2 pt-1">
 						<button
 							type="button"

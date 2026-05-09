@@ -115,9 +115,9 @@ export async function handleDbRoute(
 		const windows = await db.getUsageWindows();
 		// Overlay in-memory high-water marks. DB writes are async/void so the mark
 		// is always more current during a session; DB is the cold-start fallback only.
-		const m5 = getWindowMark("five_hour");
-		const mW = getWindowMark("weekly");
-		const mS = getWindowMark("weekly_sonnet");
+		const m5 = getWindowMark("claude", "five_hour");
+		const mW = getWindowMark("claude", "weekly");
+		const mS = getWindowMark("claude", "weekly_sonnet");
 		if (m5)
 			windows.fiveHour = {
 				...windows.fiveHour,
@@ -136,6 +136,27 @@ export async function handleDbRoute(
 				resetsAt: mS.resetsAt,
 			};
 		return Response.json(windows);
+	}
+
+	if (url.pathname === "/db/provider-usage" && req.method === "GET") {
+		const providerIds = (url.searchParams.get("providers") ?? "claude")
+			.split(",")
+			.map((s) => s.trim())
+			.filter(Boolean);
+		const snapshots = await Promise.all(
+			providerIds.map((id) => db.getProviderUsage(id)),
+		);
+		// Overlay in-memory high-water marks so live-session values are always current.
+		for (const snapshot of snapshots) {
+			for (const win of snapshot.windows) {
+				const mark = getWindowMark(snapshot.providerId, win.windowId);
+				if (!mark) continue;
+				win.utilization = mark.utilization;
+				win.remaining = mark.remaining;
+				win.resetsAt = mark.resetsAt;
+			}
+		}
+		return Response.json(snapshots);
 	}
 
 	if (url.pathname === "/db/attachments" && req.method === "GET") {

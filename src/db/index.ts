@@ -62,6 +62,8 @@ export type {
 	LogRow,
 	MessageRow,
 	PermissionEventRow,
+	ProviderUsageSnapshot,
+	ProviderWindowEntry,
 	QueryData,
 	SessionRow,
 	ThirtyDayStats,
@@ -73,6 +75,7 @@ export type {
 // Usage / stats
 export {
 	getAggregatedStats,
+	getProviderUsage,
 	getThirtyDayStats,
 	getUsageWindows,
 	getWeeklyStats,

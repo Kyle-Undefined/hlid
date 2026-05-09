@@ -83,6 +83,7 @@ export async function createSession(
 export async function recordQuery(
 	sessionId: string,
 	data: QueryData,
+	providerId = "claude",
 ): Promise<void> {
 	const database = await getDb();
 	database.transaction(() => {
@@ -145,8 +146,8 @@ export async function recordQuery(
 			],
 		);
 		database.run(
-			`INSERT INTO usage_queries (session_id, timestamp, cost, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, turns)
-       VALUES (?, unixepoch(), ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO usage_queries (session_id, timestamp, cost, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, turns, provider_id)
+       VALUES (?, unixepoch(), ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				sessionId,
 				data.cost,
@@ -155,6 +156,7 @@ export async function recordQuery(
 				data.cache_read_tokens,
 				data.cache_creation_tokens,
 				data.turns,
+				providerId,
 			],
 		);
 	})();

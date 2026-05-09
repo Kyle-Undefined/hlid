@@ -61,6 +61,8 @@ export function writeConfig(config: HlidConfig): void {
 	lines.push(`permission_mode = ${tomlVal(config.claude.permission_mode)}`);
 	if (config.claude.max_turns !== undefined)
 		lines.push(`max_turns = ${tomlVal(config.claude.max_turns)}`);
+	if (config.claude.recap_model)
+		lines.push(`recap_model = ${tomlVal(config.claude.recap_model)}`);
 
 	lines.push("");
 	lines.push("[ui]");
@@ -81,6 +83,8 @@ export function writeConfig(config: HlidConfig): void {
 		lines.push("[[agents]]");
 		lines.push(`path = ${tomlVal(agent.path)}`);
 		if (agent.name) lines.push(`name = ${tomlVal(agent.name)}`);
+		if (agent.recap_model)
+			lines.push(`recap_model = ${tomlVal(agent.recap_model)}`);
 	}
 
 	writeFileSync(CONFIG_PATH, `${lines.join("\n")}\n`, "utf-8");

@@ -1,5 +1,9 @@
-import { useEffect, useRef, useState } from "react";
-import type { UsageWindows } from "#/db";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type {
+	ProviderUsageSnapshot,
+	ProviderWindowEntry,
+	UsageWindows,
+} from "#/db";
 import type { LiveStats } from "#/hooks/wsStore";
 import { fmtResetTime } from "#/lib/formatters";
 import type { RateLimitMessage } from "#/server/protocol";
@@ -261,6 +265,224 @@ export function UsageWindowsPanel({
 				/>
 			)}
 			{tail}
+		</div>
+	);
+}
+
+// ─── ProviderUsageStrip ───────────────────────────────────────────────────────
+
+const PROVIDER_STRIP_KEY = "hlid_active_provider";
+
+function ProviderWindowCell({ win }: { win: ProviderWindowEntry }) {
+	const hasUtil = win.utilization != null;
+	const hasRemaining =
+		win.remaining != null && win.limit != null && win.limit > 0;
+	const utilPct = hasUtil
+		? Math.min((win.utilization as number) * 100, 100)
+		: hasRemaining
+			? Math.min(
+					(1 - (win.remaining as number) / (win.limit as number)) * 100,
+					100,
+				)
+			: null;
+
+	return (
+		<div className="flex-1 px-2 py-2 md:px-4 md:py-2.5 min-w-0 space-y-1">
+			<div className="flex flex-col md:flex-row md:items-center md:justify-between gap-0.5 md:gap-2">
+				<div className="flex items-center gap-1.5 md:gap-2 min-w-0">
+					<span className="text-[8px] md:text-[9px] tracking-widest text-muted-foreground/40 uppercase truncate leading-none">
+						{win.label}
+					</span>
+					{utilPct != null && (
+						<span className="text-[9px] md:text-[10px] tabular-nums font-medium text-foreground/60 shrink-0 leading-none">
+							{hasUtil
+								? `${Math.floor(utilPct)}%`
+								: `${win.remaining?.toLocaleString()} left`}
+						</span>
+					)}
+				</div>
+				{win.resetsAt != null && (
+					<span className="text-[8px] tracking-widest text-muted-foreground/50 truncate">
+						{fmtResetTime(win.resetsAt)}
+					</span>
+				)}
+			</div>
+			<div className="h-1 bg-secondary/40 overflow-hidden">
+				<div
+					className="h-full bg-primary/60 transition-all duration-500"
+					style={{ width: utilPct != null ? `${utilPct}%` : "0%" }}
+				/>
+			</div>
+			<div className="flex items-center flex-wrap gap-x-1.5 gap-y-0">
+				<PrivacyMask
+					inline
+					className="text-[9px] tabular-nums text-foreground/50"
+				>
+					${(win.cost ?? 0).toFixed(2)}
+				</PrivacyMask>
+				<span className="text-muted-foreground/25 hidden md:inline">·</span>
+				<PrivacyMask
+					inline
+					className="text-[8px] tracking-widest text-muted-foreground/40"
+				>
+					<span className="md:hidden">{win.queries}q</span>
+					<span className="hidden md:inline">{win.queries} queries</span>
+				</PrivacyMask>
+			</div>
+		</div>
+	);
+}
+
+function mergeProviderSnapshot(
+	fresh: ProviderUsageSnapshot,
+	prev: ProviderUsageSnapshot | undefined,
+	rateLimit: RateLimitMessage | null,
+): ProviderUsageSnapshot {
+	if (!prev) {
+		return applyRateLimitToSnapshot(fresh, rateLimit);
+	}
+	const now = Date.now() / 1000;
+	const windows = fresh.windows.map((win) => {
+		const prevWin = prev.windows.find((w) => w.windowId === win.windowId);
+		const prevValid =
+			prevWin?.utilization != null &&
+			prevWin?.resetsAt != null &&
+			prevWin.resetsAt > now;
+		return {
+			...win,
+			utilization: prevValid
+				? (prevWin?.utilization ?? win.utilization)
+				: win.utilization,
+			resetsAt: prevValid ? (prevWin?.resetsAt ?? win.resetsAt) : win.resetsAt,
+		};
+	});
+	return applyRateLimitToSnapshot({ ...fresh, windows }, rateLimit);
+}
+
+function applyRateLimitToSnapshot(
+	snapshot: ProviderUsageSnapshot,
+	rateLimit: RateLimitMessage | null,
+): ProviderUsageSnapshot {
+	if (!rateLimit || rateLimit.providerId !== snapshot.providerId)
+		return snapshot;
+	if (rateLimit.utilization == null) return snapshot;
+	const windowId = rateLimit.rateLimitType;
+	if (!windowId) return snapshot;
+	return {
+		...snapshot,
+		windows: snapshot.windows.map((w) =>
+			w.windowId === windowId
+				? {
+						...w,
+						utilization: rateLimit.utilization ?? w.utilization,
+						resetsAt: rateLimit.resetsAt ?? w.resetsAt,
+					}
+				: w,
+		),
+	};
+}
+
+export function ProviderUsageStrip({
+	initial,
+	liveQueryCount,
+	rateLimit,
+	tail,
+	fetchFn,
+}: {
+	initial: ProviderUsageSnapshot[];
+	liveQueryCount: number;
+	rateLimit: RateLimitMessage | null;
+	tail?: React.ReactNode;
+	fetchFn: () => Promise<ProviderUsageSnapshot[]>;
+}) {
+	const [snapshots, setSnapshots] = useState<ProviderUsageSnapshot[]>(initial);
+	const fetchFnRef = useRef(fetchFn);
+	fetchFnRef.current = fetchFn;
+
+	const providerIds = useMemo(
+		() => snapshots.map((s) => s.providerId),
+		[snapshots],
+	);
+	const [activeProvider, setActiveProvider] = useState<string>(() => {
+		try {
+			const stored = localStorage.getItem(PROVIDER_STRIP_KEY);
+			if (stored && providerIds.includes(stored)) return stored;
+		} catch {}
+		return providerIds[0] ?? "claude";
+	});
+
+	const activeSnapshot = snapshots.find((s) => s.providerId === activeProvider);
+
+	const refreshRef = useRef(() => {
+		void fetchFnRef
+			.current()
+			.then((fresh) => {
+				setSnapshots((prev) =>
+					fresh.map((f) => {
+						const p = prev.find((p) => p.providerId === f.providerId);
+						return mergeProviderSnapshot(f, p, null);
+					}),
+				);
+			})
+			.catch(() => {});
+	});
+
+	useEffect(() => {
+		if (liveQueryCount === 0) return;
+		refreshRef.current();
+	}, [liveQueryCount]);
+
+	useEffect(() => {
+		const id = setInterval(() => refreshRef.current(), 60_000);
+		return () => clearInterval(id);
+	}, []);
+
+	useEffect(() => {
+		if (!rateLimit) return;
+		setSnapshots((prev) =>
+			prev.map((s) => applyRateLimitToSnapshot(s, rateLimit)),
+		);
+		// Auto-select the provider that emitted the rate limit
+		if (rateLimit.providerId && providerIds.includes(rateLimit.providerId)) {
+			setActiveProvider(rateLimit.providerId);
+		}
+	}, [rateLimit, providerIds]);
+
+	function handleProviderSelect(id: string) {
+		setActiveProvider(id);
+		try {
+			localStorage.setItem(PROVIDER_STRIP_KEY, id);
+		} catch {}
+	}
+
+	const showTabs = snapshots.length > 1;
+
+	return (
+		<div className="border-b border-border shrink-0">
+			{showTabs && (
+				<div className="flex items-center gap-1 px-3 pt-1.5 pb-0 border-b border-border/30">
+					{snapshots.map((s) => (
+						<button
+							key={s.providerId}
+							type="button"
+							onClick={() => handleProviderSelect(s.providerId)}
+							className={`text-[8px] tracking-widest uppercase px-2 py-0.5 transition-colors ${
+								s.providerId === activeProvider
+									? "text-foreground/70 border-b border-primary/60"
+									: "text-muted-foreground/40 hover:text-muted-foreground/60"
+							}`}
+						>
+							{s.providerLabel}
+						</button>
+					))}
+				</div>
+			)}
+			<div className="flex divide-x divide-border/40">
+				{(activeSnapshot?.windows ?? []).map((win) => (
+					<ProviderWindowCell key={win.windowId} win={win} />
+				))}
+				{tail}
+			</div>
 		</div>
 	);
 }

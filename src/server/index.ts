@@ -1,14 +1,15 @@
 import "./prelude";
-import type { McpServerStatus } from "@anthropic-ai/claude-agent-sdk";
 import * as db from "../db";
 import { isAllowedOrigin, isAllowedOriginHeader } from "../lib/allowedOrigin";
 import { registerBunServer } from "../lib/lifecycle";
 import { loadToken, verifyToken } from "../lib/token";
+import type { AgentProvider, McpServerStatus } from "./agentProvider";
 import { handleAttachmentRoute } from "./attachmentRoutes";
 import { openInBrowser } from "./browser";
+import { ClaudeProvider } from "./claudeProvider";
 import { loadConfig } from "./config";
 import { handleDbRoute } from "./dbRoutes";
-import { startAnthropicProxy } from "./proxy";
+import { startProviderProxy } from "./proxy";
 import { SessionManager } from "./session";
 import { startTlsProxy } from "./tlsProxy";
 import { startUiServer } from "./uiServer";
@@ -66,7 +67,10 @@ if (process.execPath.endsWith(".exe") && !RESTART_MODE) {
 	}
 }
 
-const session = new SessionManager(config);
+const providers = new Map<string, AgentProvider>([
+	["claude", new ClaudeProvider()],
+]);
+const session = new SessionManager(config, providers);
 const SERVER_TOKEN = loadToken();
 
 // Restore cached MCP status from previous run so cockpit shows servers before first query
@@ -78,16 +82,19 @@ void db.getSetting("mcp_status_cache").then((cached) => {
 });
 
 const PORT = config.server.port + 1; // 3001 when TanStack Start is on 3000
-const PROXY_PORT = config.server.port + 2; // 3002
 const UI_PORT = config.server.port;
 
-// Transparent proxy. Captures unified utilization headers from every API response.
-// Set ANTHROPIC_BASE_URL before any subprocess is spawned so claude CLI routes through it.
-const upstreamBase = (
+// Per-provider transparent proxies. Each provider with proxyConfig gets its own
+// proxy that captures utilization headers and sets the provider's base URL env var.
+const anthropicUpstream = (
 	process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com"
 ).replace(/\/$/, "");
 
-void startAnthropicProxy(PROXY_PORT, upstreamBase);
+for (const provider of session.getAllProviders()) {
+	if (provider.proxyConfig) {
+		void startProviderProxy(provider, anthropicUpstream);
+	}
+}
 
 // ----- UI server (port = config.server.port, default 3000) ---------------
 // Serves embedded SPA assets and forwards everything else (server fns,
@@ -172,6 +179,26 @@ registerBunServer(
 
 			if (url.pathname === "/status") {
 				return Response.json(session.getStatus());
+			}
+
+			if (url.pathname === "/providers" && req.method === "GET") {
+				const list = await Promise.all(
+					session.getAllProviders().map(async (p) => {
+						const check = p.check
+							? await p
+									.check()
+									.catch(() => ({ available: false, reason: "check failed" }))
+							: null;
+						return {
+							id: p.providerId,
+							label: p.label ?? p.providerId,
+							available: check?.available ?? true,
+							unavailableReason:
+								check?.available === false ? check.reason : undefined,
+						};
+					}),
+				);
+				return Response.json({ providers: list });
 			}
 
 			if (url.pathname === "/mcp-status" && req.method === "GET") {

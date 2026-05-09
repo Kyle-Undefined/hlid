@@ -298,4 +298,28 @@ function initSchema(db: Db): void {
 	runMigration(db, "_migrated_messages_recap", (db) => {
 		db.run(`ALTER TABLE messages ADD COLUMN recap TEXT`);
 	});
+
+	// provider_id: tracks which agent provider recorded each query row so
+	// usage windows can be filtered per-provider in the multi-provider UI.
+	// Existing rows default to 'claude' (the only provider before this migration).
+	runMigration(db, "_migrated_usage_queries_provider_id", (db) => {
+		db.run(
+			`ALTER TABLE usage_queries ADD COLUMN provider_id TEXT NOT NULL DEFAULT 'claude'`,
+		);
+	});
+
+	// Rename Anthropic-specific settings keys to provider-namespaced format.
+	// Old: rl_5hr / rl_weekly / rl_weekly_sonnet
+	// New: rl_claude_five_hour / rl_claude_weekly / rl_claude_weekly_sonnet
+	runMigration(db, "_migrated_rl_keys_provider_namespaced", (db) => {
+		db.run(
+			`UPDATE settings SET key = 'rl_claude_five_hour' WHERE key = 'rl_5hr'`,
+		);
+		db.run(
+			`UPDATE settings SET key = 'rl_claude_weekly' WHERE key = 'rl_weekly'`,
+		);
+		db.run(
+			`UPDATE settings SET key = 'rl_claude_weekly_sonnet' WHERE key = 'rl_weekly_sonnet'`,
+		);
+	});
 }

@@ -1,6 +1,8 @@
 import { getDb } from "./schema";
 import type {
 	AggStats,
+	ProviderUsageSnapshot,
+	ProviderWindowEntry,
 	ThirtyDayStats,
 	UsageWindows,
 	WeeklyStats,
@@ -165,6 +167,126 @@ export async function getUsageWindows(): Promise<UsageWindows> {
 			sonnetRl.utilization !== null
 				? { utilization: sonnetRl.utilization, resetsAt: sonnetRl.resetsAt }
 				: null,
+	};
+}
+
+/**
+ * Window definitions per provider. Each entry describes a rolling time window
+ * that the provider's rate-limit headers report on.
+ */
+const PROVIDER_WINDOWS: Record<
+	string,
+	{ windowId: string; label: string; windowSecs: number }[]
+> = {
+	claude: [
+		{ windowId: "five_hour", label: "5-HOUR", windowSecs: 5 * 3600 },
+		{ windowId: "weekly", label: "7-DAY", windowSecs: 7 * 86400 },
+		{ windowId: "weekly_sonnet", label: "SONNET", windowSecs: 7 * 86400 },
+	],
+};
+
+/** Label shown in the provider tab selector. */
+const PROVIDER_LABEL: Record<string, string> = {
+	claude: "Claude",
+	openai: "OpenAI",
+	gemini: "Gemini",
+};
+
+/**
+ * Returns a ProviderUsageSnapshot for the given provider, reading DB query rows
+ * (for counts/cost) and settings keys (for utilization/remaining from headers).
+ */
+export async function getProviderUsage(
+	providerId: string,
+): Promise<ProviderUsageSnapshot> {
+	const db = await getDb();
+
+	const windowDefs = PROVIDER_WINDOWS[providerId] ?? [];
+
+	type WindowRow = {
+		tokens: number;
+		sessions: number;
+		queries: number;
+		cost: number;
+	};
+	const EMPTY_ROW: WindowRow = { tokens: 0, sessions: 0, queries: 0, cost: 0 };
+
+	type SettingsRow = { value: string };
+	type StoredRl = {
+		utilization?: number | null;
+		remaining?: number | null;
+		limit?: number | null;
+		resetsAt?: number | null;
+	};
+
+	function parseStoredRl(row: SettingsRow | null): StoredRl {
+		if (!row) return {};
+		try {
+			const parsed = JSON.parse(row.value) as unknown;
+			if (typeof parsed !== "object" || parsed === null) return {};
+			const obj = parsed as Record<string, unknown>;
+			const resetsAt =
+				typeof obj.resetsAt === "number"
+					? obj.resetsAt
+					: typeof obj.resetsAt === "string"
+						? Number(obj.resetsAt)
+						: null;
+			if (resetsAt != null && resetsAt < Date.now() / 1000) return {};
+			return {
+				utilization:
+					typeof obj.utilization === "number" ? obj.utilization : null,
+				remaining: typeof obj.remaining === "number" ? obj.remaining : null,
+				limit: typeof obj.limit === "number" ? obj.limit : null,
+				resetsAt,
+			};
+		} catch {
+			return {};
+		}
+	}
+
+	const windows: ProviderWindowEntry[] = [];
+
+	for (const def of windowDefs) {
+		const row =
+			db
+				.query<WindowRow, [string, number]>(`
+        SELECT
+          COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) as tokens,
+          COUNT(DISTINCT session_id) as sessions,
+          COUNT(*) as queries,
+          COALESCE(SUM(cost), 0) as cost
+        FROM usage_queries
+        WHERE provider_id = ? AND timestamp >= strftime('%s', 'now', ? || ' seconds')
+      `)
+				.get(providerId, -def.windowSecs) ?? EMPTY_ROW;
+
+		const rl = parseStoredRl(
+			db
+				.query<SettingsRow, [string]>(
+					`SELECT value FROM settings WHERE key = ?`,
+				)
+				.get(`rl_${providerId}_${def.windowId}`),
+		);
+
+		windows.push({
+			windowId: def.windowId,
+			label: def.label,
+			windowSecs: def.windowSecs,
+			tokens: row.tokens,
+			sessions: row.sessions,
+			queries: row.queries,
+			cost: row.cost,
+			utilization: rl.utilization ?? null,
+			remaining: rl.remaining ?? null,
+			limit: rl.limit ?? null,
+			resetsAt: rl.resetsAt ?? null,
+		});
+	}
+
+	return {
+		providerId,
+		providerLabel: PROVIDER_LABEL[providerId] ?? providerId,
+		windows,
 	};
 }
 

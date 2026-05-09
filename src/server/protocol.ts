@@ -44,6 +44,8 @@ export type RateLimitMessage = {
 	rateLimitType?: string;
 	utilization?: number;
 	resetsAt?: number;
+	/** Provider that emitted this rate-limit event, e.g. "claude". */
+	providerId?: string;
 };
 
 // Per-turn usage snapshot, emitted on every assistant message so the UI

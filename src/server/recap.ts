@@ -1,5 +1,5 @@
-import { query } from "@anthropic-ai/claude-agent-sdk";
 import * as db from "../db";
+import type { AgentProvider } from "./agentProvider";
 import type { ServerMessage } from "./protocol";
 
 export async function generateTurnRecap(
@@ -12,6 +12,8 @@ export async function generateTurnRecap(
 	vaultPath: string,
 	claudeExecutable: string | undefined,
 	sdkSummary: string | null = null,
+	provider?: AgentProvider, // required in practice; optional for legacy call sites
+	recapModel = "claude-haiku-4-5",
 ): Promise<void> {
 	const userExcerpt = userMessage
 		.slice(0, 600)
@@ -55,41 +57,27 @@ export async function generateTurnRecap(
 	}
 
 	const prompt = parts.join("\n");
+	if (!provider) return;
 	const ac = new AbortController();
 	const timeout = setTimeout(() => ac.abort(), 30_000);
 	try {
-		const conv = query({
+		const session = provider.query({
 			prompt,
-			options: {
-				cwd: vaultPath,
-				model: "claude-haiku-4-5",
-				effort: "low" as const,
-				maxTurns: 1,
-				persistSession: false,
-				abortController: ac,
-				settingSources: ["user"],
-				allowDangerouslySkipPermissions: false,
-				canUseTool: () =>
-					Promise.resolve({ behavior: "deny" as const, message: "no tools" }),
-				...(claudeExecutable !== undefined && {
-					pathToClaudeCodeExecutable: claudeExecutable,
-				}),
-			},
+			cwd: vaultPath,
+			model: recapModel,
+			effort: "low",
+			maxTurns: 1,
+			persistSession: false,
+			signal: ac.signal,
+			settingSources: ["user"],
+			executable: claudeExecutable,
+			canUseTool: () =>
+				Promise.resolve({ behavior: "deny" as const, message: "no tools" }),
 		});
 		let summary = "";
-		for await (const msg of conv) {
-			if (msg.type === "assistant") {
-				for (const block of msg.message.content) {
-					if (block.type === "text") summary += block.text;
-				}
-			}
-			if (
-				msg.type === "result" &&
-				msg.subtype === "success" &&
-				!summary &&
-				msg.result
-			) {
-				summary = msg.result;
+		for await (const event of session) {
+			if (event.type === "text_delta") {
+				summary += event.text;
 			}
 		}
 		const trimmed = summary.trim();

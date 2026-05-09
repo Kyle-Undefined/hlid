@@ -22,8 +22,8 @@ import { SkillCard } from "#/components/cockpit/SkillCard";
 import { ThirtyDayGraph } from "#/components/cockpit/ThirtyDayGraph";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import {
+	ProviderUsageStrip,
 	RoutinesWindowSection,
-	UsageWindowsPanel,
 } from "#/components/UsageWindowsPanel";
 import { FirstRunWizard } from "#/components/wizard/FirstRunWizard";
 import { getConfig } from "#/config";
@@ -39,9 +39,9 @@ import {
 	getCockpitStatsFn,
 	getCurrentSessionFn,
 	getMcpServersFn,
+	getProviderUsagesFn,
 	getRecentSessionsFn,
 	getThirtyDayStatsFn,
-	getUsageWindowsFn,
 	getWeeklyStatsFn,
 } from "#/lib/serverFns";
 import { resolveSessionId } from "#/lib/sessionRouting";
@@ -60,7 +60,7 @@ export const Route = createFileRoute("/")({
 			statsData,
 			mcpServers,
 			weeklyStats,
-			usageWindows,
+			providerUsages,
 			thirtyDayStats,
 			agentList,
 		] = await Promise.all([
@@ -70,7 +70,7 @@ export const Route = createFileRoute("/")({
 			getCockpitStatsFn(),
 			getMcpServersFn(),
 			getWeeklyStatsFn(),
-			getUsageWindowsFn(),
+			getProviderUsagesFn({ data: ["claude"] }),
 			getThirtyDayStatsFn(),
 			getAgentListFn(),
 		]);
@@ -81,7 +81,7 @@ export const Route = createFileRoute("/")({
 			statsData,
 			mcpServers,
 			weeklyStats,
-			usageWindows,
+			providerUsages,
 			thirtyDayStats,
 			agentList,
 		};
@@ -97,7 +97,7 @@ function CockpitPage() {
 		statsData,
 		mcpServers: initialMcpServers,
 		weeklyStats: initialWeeklyStats,
-		usageWindows: initialUsageWindows,
+		providerUsages: initialProviderUsages,
 		thirtyDayStats: initialThirtyDayStats,
 		agentList,
 	} = Route.useLoaderData();
@@ -381,11 +381,11 @@ function CockpitPage() {
 			</div>
 
 			{/* Usage windows */}
-			<UsageWindowsPanel
-				initial={initialUsageWindows}
+			<ProviderUsageStrip
+				initial={initialProviderUsages}
 				liveQueryCount={liveStats?.queries ?? 0}
 				rateLimit={rateLimit}
-				fetchFn={getUsageWindowsFn}
+				fetchFn={() => getProviderUsagesFn({ data: ["claude"] })}
 				tail={<RoutinesWindowSection />}
 			/>
 

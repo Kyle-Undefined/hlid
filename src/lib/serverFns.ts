@@ -13,6 +13,7 @@ import type {
 	AttachmentRow,
 	MessageRow,
 	PermissionEventRow,
+	ProviderUsageSnapshot,
 	SessionRow,
 	ThirtyDayStats,
 	ToolEventRow,
@@ -44,6 +45,20 @@ export const logClientErrorFn = createServerFn({ method: "POST" })
 		});
 	});
 
+export type ProviderInfo = {
+	id: string;
+	label: string;
+	available: boolean;
+	unavailableReason?: string;
+};
+
+/** Returns the list of compiled-in providers with availability status. */
+export const getProvidersFn = createServerFn({ method: "GET" }).handler(() =>
+	dbJson<{ providers: ProviderInfo[] }>("/providers", { providers: [] }).then(
+		(r) => r.providers,
+	),
+);
+
 export type AgentListItem = {
 	path: string;
 	name: string;
@@ -71,6 +86,20 @@ export const getAgentListFn = createServerFn({ method: "GET" }).handler(
 export const getUsageWindowsFn = createServerFn({ method: "GET" }).handler(() =>
 	dbJson<UsageWindows | null>("/db/usage-windows", null),
 );
+
+/** Returns provider-aware usage snapshots for the given provider IDs. */
+export const getProviderUsagesFn = createServerFn({ method: "GET" })
+	.inputValidator((raw) => {
+		const ids = Array.isArray(raw) ? (raw as string[]) : ["claude"];
+		return ids.filter((id): id is string => typeof id === "string");
+	})
+	.handler((ctx) => {
+		const providers = ctx.data.join(",");
+		return dbJson<ProviderUsageSnapshot[]>(
+			`/db/provider-usage?providers=${encodeURIComponent(providers)}`,
+			[],
+		);
+	});
 
 /** Returns the session_id of the currently active/last session, or null. */
 export const getCurrentSessionFn = createServerFn({ method: "GET" }).handler(

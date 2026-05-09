@@ -197,6 +197,59 @@ describe("writeConfig — claude section", () => {
 		writeConfig(makeConfig());
 		expect(capturedToml()).not.toContain("max_turns");
 	});
+
+	it("writes recap_model when set", () => {
+		writeConfig(
+			makeConfig({
+				claude: {
+					model: "claude-sonnet-4-6",
+					effort: "high",
+					permission_mode: "default",
+					turn_recaps: true,
+					recap_model: "claude-sonnet-4-6",
+				},
+			}),
+		);
+		expect(capturedToml()).toContain('recap_model = "claude-sonnet-4-6"');
+	});
+
+	it("omits recap_model when undefined", () => {
+		writeConfig(makeConfig());
+		expect(capturedToml()).not.toContain("recap_model");
+	});
+});
+
+// ── agents recap_model ────────────────────────────────────────────────────────
+
+describe("writeConfig — agents recap_model", () => {
+	it("writes recap_model in agent block when set", () => {
+		writeConfig(
+			makeConfig({
+				agents: [
+					{
+						path: "/agents/bot",
+						mode: "cwd",
+						provider: "claude",
+						recap_model: "claude-haiku-4-5-20251001",
+					},
+				],
+			}),
+		);
+		const toml = capturedToml();
+		expect(toml).toContain('recap_model = "claude-haiku-4-5-20251001"');
+	});
+
+	it("omits recap_model from agent block when not set", () => {
+		writeConfig(
+			makeConfig({
+				agents: [{ path: "/agents/bot", mode: "cwd", provider: "claude" }],
+			}),
+		);
+		const agentsSection = capturedToml().slice(
+			capturedToml().indexOf("[[agents]]"),
+		);
+		expect(agentsSection).not.toContain("recap_model");
+	});
 });
 
 // ── agents section ────────────────────────────────────────────────────────────
@@ -206,8 +259,13 @@ describe("writeConfig — agents section", () => {
 		writeConfig(
 			makeConfig({
 				agents: [
-					{ path: "/agents/bot-a", name: "Bot A", mode: "cwd" },
-					{ path: "/agents/bot-b", mode: "cwd" },
+					{
+						path: "/agents/bot-a",
+						name: "Bot A",
+						mode: "cwd",
+						provider: "claude",
+					},
+					{ path: "/agents/bot-b", mode: "cwd", provider: "claude" },
 				],
 			}),
 		);
@@ -222,7 +280,7 @@ describe("writeConfig — agents section", () => {
 	it("omits name field when absent", () => {
 		writeConfig(
 			makeConfig({
-				agents: [{ path: "/agents/anon", mode: "cwd" }],
+				agents: [{ path: "/agents/anon", mode: "cwd", provider: "claude" }],
 			}),
 		);
 		const toml = capturedToml();

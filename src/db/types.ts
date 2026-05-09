@@ -117,6 +117,35 @@ export type UsageWindows = {
 	weeklySonnet: { utilization: number | null; resetsAt: number | null } | null;
 };
 
+/**
+ * A single rate-limit window entry within a provider's usage snapshot.
+ * `utilization` is set for plan-% style providers (Anthropic).
+ * `remaining`/`limit` are set for remaining-capacity style providers (OpenAI/Google).
+ */
+export type ProviderWindowEntry = {
+	windowId: string;
+	label: string;
+	/** Rolling window size in seconds (used for DB time-range queries). */
+	windowSecs: number;
+	tokens: number;
+	queries: number;
+	sessions: number;
+	cost: number;
+	/** Plan utilization 0–1. Null if not available for this provider. */
+	utilization: number | null;
+	/** Tokens remaining in window. Null if not available. */
+	remaining: number | null;
+	/** Window token cap. Null if not available. */
+	limit: number | null;
+	resetsAt: number | null;
+};
+
+export type ProviderUsageSnapshot = {
+	providerId: string;
+	providerLabel: string;
+	windows: ProviderWindowEntry[];
+};
+
 export type WeeklyStats = {
 	total: number;
 	days: number[]; // index 0=Sun … 6=Sat

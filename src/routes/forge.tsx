@@ -19,6 +19,7 @@ import type { VocabForm } from "#/components/forge/VocabSection";
 import { VocabSection } from "#/components/forge/VocabSection";
 import type { HlidConfig } from "#/config";
 import { DEFAULT_ATTACHMENTS_CONFIG, getConfig } from "#/config";
+import { getProvidersFn } from "#/lib/serverFns";
 import { buildVaultSection } from "#/lib/vaultConfig";
 
 // ─── Server functions ─────────────────────────────────────────────────────────
@@ -29,8 +30,12 @@ const getCwdFn = createServerFn({ method: "GET" }).handler(() => process.cwd());
 
 export const Route = createFileRoute("/forge")({
 	loader: async () => {
-		const [config, cwd] = await Promise.all([getConfig(), getCwdFn()]);
-		return { ...config, cwd };
+		const [config, cwd, providers] = await Promise.all([
+			getConfig(),
+			getCwdFn(),
+			getProvidersFn(),
+		]);
+		return { ...config, cwd, providers };
 	},
 	component: SettingsPage,
 });
@@ -66,6 +71,7 @@ function SettingsPage() {
 				: "",
 		permissionMode: initial.claude.permission_mode,
 		turnRecaps: initial.claude.turn_recaps ?? true,
+		vaultProvider: initial.vault_provider ?? "claude",
 	});
 
 	const [server, setServer] = useState<ServerForm>({
@@ -103,6 +109,7 @@ function SettingsPage() {
 		setSaved(false);
 
 		const config: HlidConfig = {
+			vault_provider: claude.vaultProvider,
 			vault: buildVaultSection(vault),
 			server: {
 				port: Number(server.port) || 3000,
@@ -203,6 +210,7 @@ function SettingsPage() {
 				<ClaudeSection
 					claude={claude}
 					onChange={(p) => setClaude((s) => ({ ...s, ...p }))}
+					providers={initial.providers}
 				/>
 				<EventLogSection />
 			</div>

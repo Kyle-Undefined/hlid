@@ -130,6 +130,7 @@ export function FirstRunWizard({ onComplete }: Props) {
 				},
 				attachments: DEFAULT_ATTACHMENTS_CONFIG,
 				agents: [],
+				vault_provider: "claude",
 			};
 
 			const res = await fetch("/api/config", {

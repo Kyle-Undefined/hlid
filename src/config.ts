@@ -41,6 +41,7 @@ const ClaudeSchema = z.object({
 		.enum(["default", "acceptEdits", "bypassPermissions", "plan"])
 		.default("default"),
 	turn_recaps: z.boolean().default(true),
+	recap_model: z.string().optional(),
 });
 
 const UiSchema = z.object({
@@ -90,6 +91,14 @@ const AgentSchema = z.object({
 	path: z.string(),
 	name: z.string().optional(),
 	mode: z.enum(["cwd", "context"]).default("cwd"),
+	provider: z.string().optional().default("claude"),
+	model: z.string().optional(),
+	effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
+	max_turns: z.number().int().positive().optional(),
+	permission_mode: z
+		.enum(["default", "acceptEdits", "bypassPermissions", "plan"])
+		.optional(),
+	recap_model: z.string().optional(),
 });
 
 export type Agent = z.infer<typeof AgentSchema>;
@@ -124,6 +133,7 @@ export const HlidConfigSchema = z.object({
 	})),
 	attachments: AttachmentsSchema.default(DEFAULT_ATTACHMENTS_CONFIG),
 	agents: z.array(AgentSchema).default([]),
+	vault_provider: z.string().default("claude"),
 });
 
 export type HlidConfig = z.infer<typeof HlidConfigSchema>;
