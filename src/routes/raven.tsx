@@ -129,6 +129,17 @@ function ChatPage() {
 	const atBottomRef = useRef(true);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 
+	// ─── Session navigation reset ─────────────────────────────────────────────
+	// TanStack Router re-renders (not remounts) on same-route navigation with
+	// different search params. Client state must be explicitly reset when the
+	// user switches to a different session so it doesn't bleed across sessions.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: intentional — reset on session navigation only
+	useEffect(() => {
+		setRateLimit(null);
+		setAgentSkillContext(initialAgentSkillContext);
+		agentContextSentRef.current = false;
+	}, [existingSessionId]);
+
 	// ─── WS message routing ───────────────────────────────────────────────────
 
 	const handleWsMessage = useChatWsHandler({

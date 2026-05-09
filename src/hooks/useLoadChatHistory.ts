@@ -126,9 +126,11 @@ export function useLoadChatHistory({
 				// Seed context gauge from DB so it's visible immediately on session open,
 				// before any new message is sent. Live usage_update/done events will
 				// override this once the session is active.
-				// For implicit resumes (fresh nav, no session param), reset live stats
-				// first so we don't carry over context from the previous session.
-				if (!isExplicitSession) wsStore.resetLiveStats();
+				// Reset unconditionally on any session nav — avoids prior-session counters
+				// (turns, cost, tokens) bleeding into the newly-opened session.
+				// applyCtx re-seeds context_window/last_context_used/actual_model from DB;
+				// cumulative counters (turns, cost, tokens) will update on next done event.
+				wsStore.resetLiveStats();
 				applyCtx(ctx);
 				dispatch({
 					type: "LOAD_HISTORY",

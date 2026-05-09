@@ -14,6 +14,7 @@ import {
 } from "./agentPaths";
 import { loadConfig } from "./config";
 import { resolveExecutionContext } from "./executionContext";
+import { parseAskUserQuestion } from "./parseAskUserQuestion";
 import {
 	AskUserQuestionManager,
 	PermissionManager,
@@ -673,15 +674,10 @@ export class SessionManager {
 								// Never shows as a permission prompt — the user picks from the
 								// supplied options and that choice is injected as the tool answer.
 								if (toolName === "AskUserQuestion") {
-									const question =
-										typeof passInput.question === "string"
-											? passInput.question
-											: (title ?? "Question from Claude");
-									const options = Array.isArray(passInput.options)
-										? (passInput.options as unknown[]).filter(
-												(o): o is string => typeof o === "string",
-											)
-										: [];
+									const { question, options } = parseAskUserQuestion(
+										passInput,
+										title,
+									);
 									const askReq = {
 										type: "ask_user_question" as const,
 										id: toolUseID,

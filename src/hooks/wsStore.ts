@@ -352,7 +352,26 @@ function connect() {
 	};
 }
 
-if (typeof window !== "undefined") connect();
+/**
+ * On mobile browsers (iOS Safari) the WS onclose event may never fire when
+ * the OS backgrounds or suspends the tab (screen lock). This leaves wsStatus
+ * as "connected" while the socket is actually dead, so the reconnect effect
+ * in useLoadChatHistory never runs and history never reloads after unlock.
+ *
+ * Proactively call connect() whenever the page becomes visible. connect()
+ * already guards against creating a duplicate socket when one is OPEN or
+ * CONNECTING, so this is safe to call unconditionally.
+ */
+function handleVisibilityChange(): void {
+	if (typeof document === "undefined") return;
+	if (document.visibilityState !== "visible") return;
+	connect();
+}
+
+if (typeof window !== "undefined") {
+	connect();
+	document.addEventListener("visibilitychange", handleVisibilityChange);
+}
 
 // ─── Public API — Connection & snapshot ──────────────────────────────────────
 

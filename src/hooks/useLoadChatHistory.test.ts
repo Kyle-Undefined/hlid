@@ -375,6 +375,60 @@ describe("useLoadChatHistory — reconnect recovery", () => {
 		expect(calls.length).toBe(1);
 	});
 
+	it("resets live stats when loading an explicit session (prevents prev-session bleed)", async () => {
+		const dispatch = vi.fn();
+		const historyReadyRef = { current: false };
+		const pendingIdRef = { current: null as string | null };
+		const sessionIdRef = { current: "sess-2" };
+
+		vi.mocked(getSessionDataFn).mockResolvedValue([
+			makeRow("user", "hello", 1000),
+		]);
+
+		renderHistory({
+			existingSessionId: "sess-2",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef,
+			historyReadyRef,
+			handleWsMessage: noopWsHandler,
+			wsStatus: "connected",
+			sessionIdRef,
+		});
+
+		await act(async () => {});
+
+		// Stats from prior session must be cleared even on explicit session nav —
+		// applyCtx re-seeds from DB immediately after, so reset is always safe.
+		expect(wsStore.resetLiveStats).toHaveBeenCalled();
+	});
+
+	it("resets live stats when loading an implicit session (baseline behaviour)", async () => {
+		const dispatch = vi.fn();
+		const historyReadyRef = { current: false };
+		const pendingIdRef = { current: null as string | null };
+		const sessionIdRef = { current: "sess-1" };
+
+		vi.mocked(getSessionDataFn).mockResolvedValue([
+			makeRow("user", "hello", 1000),
+		]);
+
+		renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: false,
+			dispatch,
+			pendingIdRef,
+			historyReadyRef,
+			handleWsMessage: noopWsHandler,
+			wsStatus: "connected",
+			sessionIdRef,
+		});
+
+		await act(async () => {});
+
+		expect(wsStore.resetLiveStats).toHaveBeenCalled();
+	});
+
 	it("does NOT re-fetch on first connect (initial load handles that)", async () => {
 		const dispatch = vi.fn();
 		const historyReadyRef = { current: false };

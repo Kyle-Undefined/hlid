@@ -1,6 +1,8 @@
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { PrivacyMask } from "#/components/PrivacyMask";
+import { useCopyToClipboard } from "#/hooks/useCopyToClipboard";
+import { CopyButton } from "./CopyButton";
 import type { AssistantMessage } from "./chatReducer";
 import { ToolBlock } from "./ToolBlock";
 
@@ -16,8 +18,9 @@ export function AssistantMsg({
 	message: AssistantMessage;
 	permissionLabels?: Map<string, string>;
 }) {
+	const { copy, copied } = useCopyToClipboard();
 	return (
-		<div className="py-3 border-b border-border/40 space-y-1.5">
+		<div className="group py-3 border-b border-border/40 space-y-1.5">
 			{message.toolEvents.map((e) => (
 				<ToolBlock
 					key={e.id}
@@ -149,13 +152,22 @@ export function AssistantMsg({
 							<span className="inline-block w-[7px] h-[1em] ml-0.5 align-middle bg-primary/50 cursor-blink" />
 						)}
 					</PrivacyMask>
-					{!message.streaming && message.cost !== null && (
-						<PrivacyMask
-							inline
-							className="text-[9px] tabular-nums text-muted-foreground/40 shrink-0 pt-0.5 font-mono"
-						>
-							${message.cost.toFixed(4)}
-						</PrivacyMask>
+					{!message.streaming && message.text && (
+						<div className="flex items-center gap-1 shrink-0">
+							{message.cost !== null && (
+								<PrivacyMask
+									inline
+									className="text-[9px] tabular-nums text-muted-foreground/40 pt-0.5 font-mono"
+								>
+									${message.cost.toFixed(4)}
+								</PrivacyMask>
+							)}
+							<CopyButton
+								onCopy={() => copy(message.text ?? "")}
+								copied={copied}
+								className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity"
+							/>
+						</div>
 					)}
 				</div>
 			)}
