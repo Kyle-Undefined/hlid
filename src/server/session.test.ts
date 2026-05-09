@@ -72,6 +72,7 @@ vi.mock("node:fs", () => ({
 import * as fsMock from "node:fs";
 import { type Options, query } from "@anthropic-ai/claude-agent-sdk";
 import * as dbMock from "../db";
+import { generateTurnRecap } from "./recap";
 import { SessionManager } from "./session";
 
 // Bun doesn't support waitFor() — poll until assertion passes or timeout
@@ -577,7 +578,7 @@ describe("SessionManager — session-scoped permission persistence", () => {
 		});
 	});
 
-	it("local ('always') approval writes tool to project settings.json", async () => {
+	it("local ('always') approval writes tool to settings.local.json", async () => {
 		vi.mocked(fsMock.writeFileSync).mockClear();
 		vi.mocked(fsMock.readFileSync).mockClear();
 
@@ -592,11 +593,137 @@ describe("SessionManager — session-scoped permission persistence", () => {
 		sm.handlePermissionResponse("tid-1", true, "local");
 		await turn1;
 
-		// writeFileSync should have been called with the project settings path
+		// writeFileSync should have been called with the local settings path
 		expect(vi.mocked(fsMock.writeFileSync)).toHaveBeenCalledWith(
-			expect.stringContaining(".claude/settings.json"),
+			expect.stringContaining(".claude/settings.local.json"),
 			expect.stringContaining('"Bash"'),
 			"utf8",
 		);
+		// must NOT write to project settings.json (plain, non-local)
+		const calls = vi.mocked(fsMock.writeFileSync).mock.calls;
+		expect(
+			calls.some(
+				([p]) =>
+					typeof p === "string" &&
+					p.endsWith("settings.json") &&
+					!p.endsWith("settings.local.json"),
+			),
+		).toBe(false);
+	});
+
+	it("query options include 'local' in settingSources", async () => {
+		let capturedSettingSources: unknown;
+		vi.mocked(query).mockImplementation(
+			({ options }: { prompt: unknown; options?: Options }) => {
+				capturedSettingSources = options?.settingSources;
+				const gen = (async function* () {
+					yield {
+						type: "system",
+						subtype: "init",
+						session_id: "sdk-session-1",
+						tools: [],
+					};
+					yield {
+						type: "result",
+						subtype: "success",
+						total_cost_usd: 0,
+						session_id: "sdk-session-1",
+						usage: { input_tokens: 10, output_tokens: 5 },
+					};
+				})();
+				Object.assign(gen, { mcpServerStatus: () => Promise.resolve([]) });
+				return gen;
+			},
+		);
+
+		const sm = new SessionManager(makeConfig());
+		await sm.runQuery("hello", () => {}, "sess-1");
+
+		expect(capturedSettingSources).toContain("local");
+	});
+});
+
+// ── SDK tool_use_summary → generateTurnRecap ──────────────────────────────────
+
+describe("SessionManager — SDK summary passed to recap", () => {
+	it("passes SDK tool_use_summary to generateTurnRecap as sdkSummary", async () => {
+		const config = makeConfig();
+		config.claude.turn_recaps = true;
+		const sm = new SessionManager(config);
+
+		vi.mocked(query).mockImplementation(() => {
+			const gen = (async function* () {
+				yield {
+					type: "system",
+					subtype: "init",
+					session_id: "sdk-s1",
+					tools: [],
+				};
+				yield {
+					type: "assistant",
+					message: {
+						content: [
+							{ type: "tool_use", id: "t1", name: "Bash", input: {} },
+						],
+						usage: {},
+					},
+				};
+				yield {
+					type: "tool_use_summary",
+					summary: "Ran lint and fixed 2 warnings.",
+					preceding_tool_use_ids: ["t1"],
+					uuid: "u1",
+					session_id: "sdk-s1",
+				};
+				yield {
+					type: "assistant",
+					message: {
+						content: [{ type: "text", text: "Done." }],
+						usage: {},
+					},
+				};
+				yield {
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					session_id: "sdk-s1",
+					usage: { input_tokens: 10, output_tokens: 5 },
+					num_turns: 1,
+				};
+			})();
+			Object.assign(gen, { mcpServerStatus: () => Promise.resolve([]) });
+			return gen;
+		});
+
+		await sm.runQuery("fix lint", () => {}, "sess-sdk");
+
+		const recapMock = vi.mocked(generateTurnRecap);
+		expect(recapMock).toHaveBeenCalled();
+		const lastCall = recapMock.mock.calls[recapMock.mock.calls.length - 1];
+		// sdkSummary is the last (9th) argument
+		expect(lastCall[8]).toBe("Ran lint and fixed 2 warnings.");
+	});
+
+	it("passes null sdkSummary when SDK emits no tool_use_summary", async () => {
+		const config = makeConfig();
+		config.claude.turn_recaps = true;
+		const sm = new SessionManager(config);
+
+		vi.mocked(query).mockImplementation(makeQueryImpl("Bash"));
+		vi.mocked(generateTurnRecap).mockClear();
+
+		const turn = sm.runQuery("hello", () => {}, "sess-no-sdk");
+		await waitFor(() =>
+			expect(sm.getPendingPermissionRequests()).toHaveLength(1),
+		);
+		sm.handlePermissionResponse("tid-1", true, "session");
+		await turn;
+
+		const recapMock = vi.mocked(generateTurnRecap);
+		// recap may or may not fire (needs assistant text), so only check arg if called
+		if (recapMock.mock.calls.length > 0) {
+			const lastCall = recapMock.mock.calls[recapMock.mock.calls.length - 1];
+			expect(lastCall[8]).toBeNull();
+		}
 	});
 });

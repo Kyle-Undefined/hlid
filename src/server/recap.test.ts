@@ -147,7 +147,9 @@ describe("generateTurnRecap — tool summary", () => {
 			"/vault",
 			undefined,
 		);
-		expect(capturedPrompt()).toContain("  - TodoWrite\n");
+		const p = capturedPrompt();
+		expect(p).toContain("  - TodoWrite");
+		expect(p).not.toContain("  - TodoWrite(");
 	});
 
 	it("path takes precedence over command and file_path", async () => {
@@ -190,7 +192,7 @@ describe("generateTurnRecap — tool summary", () => {
 		expect(p).toContain("  - Bash(npm test)");
 	});
 
-	it("handles empty tool list", async () => {
+	it("omits tools section when tool list is empty", async () => {
 		stubQueryEmpty();
 		await generateTurnRecap(
 			null,
@@ -202,7 +204,7 @@ describe("generateTurnRecap — tool summary", () => {
 			"/vault",
 			undefined,
 		);
-		expect(capturedPrompt()).toContain("Tools used:\n");
+		expect(capturedPrompt()).not.toContain("Tools used:");
 	});
 
 	it("handles null input gracefully", async () => {
@@ -217,16 +219,18 @@ describe("generateTurnRecap — tool summary", () => {
 			"/vault",
 			undefined,
 		);
-		expect(capturedPrompt()).toContain("  - Ghost\n");
+		const p = capturedPrompt();
+		expect(p).toContain("  - Ghost");
+		expect(p).not.toContain("  - Ghost(");
 	});
 });
 
 // ── excerpt truncation ────────────────────────────────────────────────────────
 
 describe("generateTurnRecap — excerpt truncation", () => {
-	it("truncates user message to 300 chars", async () => {
+	it("truncates user message to 600 chars", async () => {
 		stubQueryEmpty();
-		const longMsg = "a".repeat(400);
+		const longMsg = "a".repeat(700);
 		await generateTurnRecap(
 			null,
 			0,
@@ -238,13 +242,13 @@ describe("generateTurnRecap — excerpt truncation", () => {
 			undefined,
 		);
 		const p = capturedPrompt();
-		expect(p).toContain(`User request: ${"a".repeat(300)}`);
-		expect(p).not.toContain("a".repeat(301));
+		expect(p).toContain("a".repeat(600));
+		expect(p).not.toContain("a".repeat(601));
 	});
 
-	it("truncates assistant text to 1200 chars", async () => {
+	it("truncates assistant text to 2400 chars", async () => {
 		stubQueryEmpty();
-		const longText = "b".repeat(1400);
+		const longText = "b".repeat(2600);
 		await generateTurnRecap(
 			null,
 			0,
@@ -256,40 +260,72 @@ describe("generateTurnRecap — excerpt truncation", () => {
 			undefined,
 		);
 		const p = capturedPrompt();
-		expect(p).toContain(`Assistant response excerpt: ${"b".repeat(1200)}`);
-		expect(p).not.toContain("b".repeat(1201));
+		expect(p).toContain("b".repeat(2400));
+		expect(p).not.toContain("b".repeat(2401));
 	});
 
-	it("collapses newlines to spaces in user message", async () => {
+	it("preserves single newlines in user message", async () => {
 		stubQueryEmpty();
 		await generateTurnRecap(
 			null,
 			0,
-			"line1\n\nline2",
+			"line1\nline2",
 			[],
 			"",
 			vi.fn(),
 			"/vault",
 			undefined,
 		);
-		expect(capturedPrompt()).toContain("User request: line1 line2");
+		expect(capturedPrompt()).toContain("line1\nline2");
 	});
 
-	it("collapses newlines to spaces in assistant text", async () => {
+	it("preserves single newlines in assistant text", async () => {
 		stubQueryEmpty();
 		await generateTurnRecap(
 			null,
 			0,
 			"req",
 			[],
-			"first\nsecond\n\nthird",
+			"first\nsecond\nthird",
 			vi.fn(),
 			"/vault",
 			undefined,
 		);
-		expect(capturedPrompt()).toContain(
-			"Assistant response excerpt: first second third",
+		expect(capturedPrompt()).toContain("first\nsecond\nthird");
+	});
+
+	it("normalizes 3+ blank lines to double newline in user message", async () => {
+		stubQueryEmpty();
+		await generateTurnRecap(
+			null,
+			0,
+			"a\n\n\n\nb",
+			[],
+			"",
+			vi.fn(),
+			"/vault",
+			undefined,
 		);
+		const p = capturedPrompt();
+		expect(p).toContain("a\n\nb");
+		expect(p).not.toContain("a\n\n\n");
+	});
+
+	it("normalizes 3+ blank lines to double newline in assistant text", async () => {
+		stubQueryEmpty();
+		await generateTurnRecap(
+			null,
+			0,
+			"req",
+			[],
+			"x\n\n\n\ny",
+			vi.fn(),
+			"/vault",
+			undefined,
+		);
+		const p = capturedPrompt();
+		expect(p).toContain("x\n\ny");
+		expect(p).not.toContain("x\n\n\n");
 	});
 });
 
@@ -417,5 +453,107 @@ describe("generateTurnRecap — DB persist", () => {
 			undefined,
 		);
 		expect(mockSetRecap).toHaveBeenCalledWith("sess-1", 0, "Zero seq summary.");
+	});
+});
+
+// ── prompt structure ──────────────────────────────────────────────────────────
+
+describe("generateTurnRecap — prompt structure", () => {
+	it("uses User: label for user message", async () => {
+		stubQueryEmpty();
+		await generateTurnRecap(
+			null,
+			0,
+			"do a thing",
+			[],
+			"",
+			vi.fn(),
+			"/vault",
+			undefined,
+		);
+		expect(capturedPrompt()).toContain("User: do a thing");
+	});
+
+	it("uses Assistant: label for assistant text", async () => {
+		stubQueryEmpty();
+		await generateTurnRecap(
+			null,
+			0,
+			"req",
+			[],
+			"I did the thing.",
+			vi.fn(),
+			"/vault",
+			undefined,
+		);
+		expect(capturedPrompt()).toContain("Assistant: I did the thing.");
+	});
+
+	it("prompt instruction uses past tense", async () => {
+		stubQueryEmpty();
+		await generateTurnRecap(
+			null,
+			0,
+			"req",
+			[],
+			"",
+			vi.fn(),
+			"/vault",
+			undefined,
+		);
+		expect(capturedPrompt()).toMatch(/past tense/);
+	});
+});
+
+// ── SDK summary context ───────────────────────────────────────────────────────
+
+describe("generateTurnRecap — SDK summary context", () => {
+	it("includes SDK summary in prompt when provided", async () => {
+		stubQueryEmpty();
+		await generateTurnRecap(
+			null,
+			0,
+			"req",
+			[],
+			"",
+			vi.fn(),
+			"/vault",
+			undefined,
+			"Ran the test suite and fixed 3 failures.",
+		);
+		expect(capturedPrompt()).toContain(
+			"Ran the test suite and fixed 3 failures.",
+		);
+	});
+
+	it("omits SDK summary section when null", async () => {
+		stubQueryEmpty();
+		await generateTurnRecap(
+			null,
+			0,
+			"req",
+			[],
+			"",
+			vi.fn(),
+			"/vault",
+			undefined,
+			null,
+		);
+		expect(capturedPrompt()).not.toContain("Claude's recap:");
+	});
+
+	it("omits SDK summary section when not provided", async () => {
+		stubQueryEmpty();
+		await generateTurnRecap(
+			null,
+			0,
+			"req",
+			[],
+			"",
+			vi.fn(),
+			"/vault",
+			undefined,
+		);
+		expect(capturedPrompt()).not.toContain("Claude's recap:");
 	});
 });

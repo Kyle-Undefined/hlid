@@ -11,11 +11,15 @@ export async function generateTurnRecap(
 	emit: (msg: ServerMessage) => void,
 	vaultPath: string,
 	claudeExecutable: string | undefined,
+	sdkSummary: string | null = null,
 ): Promise<void> {
-	const userExcerpt = userMessage.slice(0, 300).replace(/\n+/g, " ").trim();
+	const userExcerpt = userMessage
+		.slice(0, 600)
+		.replace(/\n{3,}/g, "\n\n")
+		.trim();
 	const assistantExcerpt = assistantText
-		.slice(0, 1200)
-		.replace(/\n+/g, " ")
+		.slice(0, 2400)
+		.replace(/\n{3,}/g, "\n\n")
 		.trim();
 
 	// Build a compact tool summary: name + key input field (path, command, etc.)
@@ -34,15 +38,23 @@ export async function generateTurnRecap(
 		})
 		.join("\n");
 
-	const prompt = [
-		"A coding assistant just completed a turn. Summarize what was accomplished in ONE concise sentence (≤20 words, present tense, active voice). Reply with only the sentence, no preamble.",
+	const parts = [
+		"A coding assistant just completed a turn. Summarize in ONE concise sentence (≤20 words, past tense) what was accomplished. Reply with only the sentence, no preamble.",
 		"",
-		`User request: ${userExcerpt}`,
+		`User: ${userExcerpt}`,
 		"",
-		`Tools used:\n${toolLines}`,
-		"",
-		`Assistant response excerpt: ${assistantExcerpt}`,
-	].join("\n");
+		`Assistant: ${assistantExcerpt}`,
+	];
+
+	if (sdkSummary) {
+		parts.push("", `Claude's recap: ${sdkSummary}`);
+	}
+
+	if (toolLines) {
+		parts.push("", `Tools used:\n${toolLines}`);
+	}
+
+	const prompt = parts.join("\n");
 	const ac = new AbortController();
 	const timeout = setTimeout(() => ac.abort(), 30_000);
 	try {

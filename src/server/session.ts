@@ -57,6 +57,7 @@ type TurnState = {
 	lastAssistantSeq: number;
 	pendingToolEvents: { toolId: string; name: string; input: unknown }[];
 	lastTurnToolEvents: { toolId: string; name: string; input: unknown }[];
+	sdkSummary: string | null;
 };
 
 export type SessionState = "idle" | "running" | "error";
@@ -545,6 +546,7 @@ export class SessionManager {
 				this.handleAssistant(message, turn, emit);
 			}
 			if (message.type === "tool_use_summary") {
+				turn.sdkSummary = message.summary;
 				emit({ type: "tool_use_summary", summary: message.summary });
 			}
 			if (message.type === "rate_limit_event") {
@@ -588,6 +590,7 @@ export class SessionManager {
 			lastAssistantSeq: -1,
 			pendingToolEvents: [],
 			lastTurnToolEvents: [],
+			sdkSummary: null,
 		};
 
 		try {
@@ -660,7 +663,7 @@ export class SessionManager {
 						// permission authority as long as settings files contain
 						// only allow-rules written by Hlid (no permissions.deny,
 						// no PreToolUse hooks).
-						settingSources: ["user", "project"],
+						settingSources: ["user", "project", "local"],
 						...(resumeId !== null ? { resume: resumeId } : {}),
 						canUseTool: (
 							toolName,
@@ -778,15 +781,14 @@ export class SessionManager {
 												updatedInput: passInput,
 											});
 										} else if (saveScope === "local") {
-											// Write directly to project settings.json (in settingSources)
-											// so the next subprocess picks up the rule. localSettings
-											// maps to settings.local.json which is excluded from
-											// settingSources, so we handle persistence ourselves.
+											// Write to settings.local.json (gitignored, user-specific).
+											// Loaded by the SDK via settingSources "local" so the next
+											// subprocess picks up the rule automatically.
 											try {
 												const settingsPath = join(
 													activeCwd,
 													".claude",
-													"settings.json",
+													"settings.local.json",
 												);
 												let settings: {
 													permissions?: {
@@ -894,6 +896,7 @@ export class SessionManager {
 					emit,
 					this.vaultPath,
 					this.claudeExecutable,
+					turn.sdkSummary,
 				).catch(() => {});
 			}
 		} catch (err) {
