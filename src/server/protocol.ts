@@ -113,17 +113,25 @@ export type ToolUseSummaryMessage = {
 	summary: string;
 };
 
+export type AskQuestion = {
+	question: string;
+	options: string[];
+	multiSelect: boolean;
+};
+
 export type AskUserQuestionMessage = {
 	type: "ask_user_question";
 	id: string;
-	question: string;
-	options: string[];
+	questions: AskQuestion[];
 };
+
+/** answers keyed by question text; arrays support multiSelect (single-select uses a 1-element array). */
+export type AskUserQuestionAnswers = Record<string, string[]>;
 
 export type AskUserQuestionResolvedMessage = {
 	type: "ask_user_question_resolved";
 	id: string;
-	selectedOption: string;
+	answers: AskUserQuestionAnswers;
 };
 
 export type PlanModeExitMessage = {
@@ -266,7 +274,7 @@ export type ClientSyncMcpListMessage = {
 export type ClientAskUserQuestionResponseMessage = {
 	type: "ask_user_question_response";
 	id: string;
-	selectedOption: string;
+	answers: AskUserQuestionAnswers;
 };
 
 export type ClientPlanModeExitResponseMessage =

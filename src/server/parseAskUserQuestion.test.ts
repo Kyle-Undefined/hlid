@@ -4,7 +4,7 @@ import { parseAskUserQuestion } from "./parseAskUserQuestion";
 // ── SDK format (current) ───────────────────────────────────────────────────────
 
 describe("parseAskUserQuestion — SDK format", () => {
-	it("extracts question from questions[0].question", () => {
+	it("extracts question text from questions[0].question", () => {
 		const result = parseAskUserQuestion({
 			questions: [
 				{
@@ -18,7 +18,7 @@ describe("parseAskUserQuestion — SDK format", () => {
 				},
 			],
 		});
-		expect(result.question).toBe("Which library?");
+		expect(result.questions[0].question).toBe("Which library?");
 	});
 
 	it("extracts option labels from questions[0].options", () => {
@@ -36,10 +36,10 @@ describe("parseAskUserQuestion — SDK format", () => {
 				},
 			],
 		});
-		expect(result.options).toEqual(["A", "B", "C"]);
+		expect(result.questions[0].options).toEqual(["A", "B", "C"]);
 	});
 
-	it("uses first question when multiple questions present", () => {
+	it("returns all questions when multiple are present", () => {
 		const result = parseAskUserQuestion({
 			questions: [
 				{
@@ -56,8 +56,45 @@ describe("parseAskUserQuestion — SDK format", () => {
 				},
 			],
 		});
-		expect(result.question).toBe("First?");
-		expect(result.options).toEqual(["Yes", "No"]);
+		expect(result.questions).toHaveLength(2);
+		expect(result.questions[0].question).toBe("First?");
+		expect(result.questions[0].options).toEqual(["Yes", "No"]);
+		expect(result.questions[1].question).toBe("Second?");
+		expect(result.questions[1].options).toEqual(["Alpha", "Beta"]);
+	});
+
+	it("preserves multiSelect flag per question", () => {
+		const result = parseAskUserQuestion({
+			questions: [
+				{
+					question: "Single?",
+					header: "S",
+					options: [{ label: "A" }, { label: "B" }],
+					multiSelect: false,
+				},
+				{
+					question: "Multi?",
+					header: "M",
+					options: [{ label: "X" }, { label: "Y" }, { label: "Z" }],
+					multiSelect: true,
+				},
+			],
+		});
+		expect(result.questions[0].multiSelect).toBe(false);
+		expect(result.questions[1].multiSelect).toBe(true);
+	});
+
+	it("defaults multiSelect to false when missing", () => {
+		const result = parseAskUserQuestion({
+			questions: [
+				{
+					question: "Q",
+					header: "H",
+					options: [{ label: "A" }, { label: "B" }],
+				},
+			],
+		});
+		expect(result.questions[0].multiSelect).toBe(false);
 	});
 
 	it("skips options without a string label", () => {
@@ -75,7 +112,28 @@ describe("parseAskUserQuestion — SDK format", () => {
 				},
 			],
 		});
-		expect(result.options).toEqual(["Valid"]);
+		expect(result.questions[0].options).toEqual(["Valid"]);
+	});
+
+	it("drops questions that have no usable options", () => {
+		const result = parseAskUserQuestion({
+			questions: [
+				{
+					question: "Empty?",
+					header: "E",
+					options: [],
+					multiSelect: false,
+				},
+				{
+					question: "Has options?",
+					header: "H",
+					options: [{ label: "Yes" }],
+					multiSelect: false,
+				},
+			],
+		});
+		expect(result.questions).toHaveLength(1);
+		expect(result.questions[0].question).toBe("Has options?");
 	});
 });
 
@@ -87,7 +145,8 @@ describe("parseAskUserQuestion — plain-string fallback", () => {
 			question: "Plain question?",
 			options: ["Opt A", "Opt B"],
 		});
-		expect(result.question).toBe("Plain question?");
+		expect(result.questions).toHaveLength(1);
+		expect(result.questions[0].question).toBe("Plain question?");
 	});
 
 	it("falls back to top-level string options array", () => {
@@ -95,7 +154,15 @@ describe("parseAskUserQuestion — plain-string fallback", () => {
 			question: "Q?",
 			options: ["X", "Y"],
 		});
-		expect(result.options).toEqual(["X", "Y"]);
+		expect(result.questions[0].options).toEqual(["X", "Y"]);
+	});
+
+	it("plain-string fallback is never multiSelect", () => {
+		const result = parseAskUserQuestion({
+			question: "Q?",
+			options: ["X", "Y"],
+		});
+		expect(result.questions[0].multiSelect).toBe(false);
 	});
 });
 
@@ -104,16 +171,17 @@ describe("parseAskUserQuestion — plain-string fallback", () => {
 describe("parseAskUserQuestion — title fallback", () => {
 	it("falls back to title when no question field anywhere", () => {
 		const result = parseAskUserQuestion({}, "Tool title");
-		expect(result.question).toBe("Tool title");
+		expect(result.questions[0].question).toBe("Tool title");
 	});
 
 	it("falls back to default string when no question and no title", () => {
 		const result = parseAskUserQuestion({});
-		expect(result.question).toBe("Question from Claude");
+		expect(result.questions[0].question).toBe("Question from Claude");
 	});
 
-	it("returns empty options when none present", () => {
+	it("returns a single question with empty options when nothing present", () => {
 		const result = parseAskUserQuestion({});
-		expect(result.options).toEqual([]);
+		expect(result.questions).toHaveLength(1);
+		expect(result.questions[0].options).toEqual([]);
 	});
 });

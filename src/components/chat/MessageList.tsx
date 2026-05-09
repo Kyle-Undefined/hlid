@@ -17,7 +17,7 @@ export function MessageList({
 	chatQueue,
 	sessionId,
 	handleDecide,
-	handleSelectOption,
+	handleSubmitAnswers,
 	handleCancelQueued,
 	bottomRef,
 }: {
@@ -30,7 +30,7 @@ export function MessageList({
 		saveScope?: "session" | "local",
 		denyMessage?: string,
 	) => void;
-	handleSelectOption: (id: string, selectedOption: string) => void;
+	handleSubmitAnswers: (id: string, answers: Record<string, string[]>) => void;
 	handleCancelQueued: (id: string) => void;
 	bottomRef: React.MutableRefObject<HTMLDivElement | null>;
 }) {
@@ -73,7 +73,7 @@ export function MessageList({
 						<AskUserQuestionCard
 							key={m.id}
 							message={m}
-							onSelect={handleSelectOption}
+							onSubmit={handleSubmitAnswers}
 						/>
 					);
 				}

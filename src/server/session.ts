@@ -25,7 +25,11 @@ import {
 	PlanModeManager,
 } from "./permissions";
 import { buildPrompt } from "./promptBuilder";
-import type { ChatAttachment, ServerMessage } from "./protocol";
+import type {
+	AskUserQuestionAnswers,
+	ChatAttachment,
+	ServerMessage,
+} from "./protocol";
 import { mapMcpServer } from "./protocol";
 import { generateTurnRecap } from "./recap";
 
@@ -277,8 +281,11 @@ export class SessionManager {
 		return this.askUserQuestions.getPending();
 	}
 
-	handleAskUserQuestionResponse(id: string, selectedOption: string): void {
-		this.askUserQuestions.complete(id, selectedOption);
+	handleAskUserQuestionResponse(
+		id: string,
+		answers: AskUserQuestionAnswers,
+	): void {
+		this.askUserQuestions.complete(id, answers);
 	}
 
 	handlePlanModeExitResponse(
@@ -703,29 +710,31 @@ export class SessionManager {
 						// Never shows as a permission prompt — the user picks from the
 						// supplied options and that choice is injected as the tool answer.
 						if (toolName === "AskUserQuestion") {
-							const { question, options } = parseAskUserQuestion(
-								passInput,
-								title,
-							);
+							const { questions } = parseAskUserQuestion(passInput, title);
 							const askReq = {
 								type: "ask_user_question" as const,
 								id: toolUseID,
-								question,
-								options,
+								questions,
 							};
-							this.askUserQuestions.register(
-								toolUseID,
-								askReq,
-								(selectedOption) => {
-									resolve({
-										behavior: "allow" as const,
-										updatedInput: {
-											...passInput,
-											answer: selectedOption,
-										},
-									});
-								},
-							);
+							this.askUserQuestions.register(toolUseID, askReq, (answers) => {
+								// SDK contract: AskUserQuestionOutput.answers is keyed by
+								// question text and string-valued (multi-select answers are
+								// comma-separated). A flat `answer` field caused the SDK to
+								// fall back to a default option (often the last).
+								const existing =
+									(passInput.answers as Record<string, string>) ?? {};
+								const sdkAnswers: Record<string, string> = { ...existing };
+								for (const [q, picks] of Object.entries(answers)) {
+									sdkAnswers[q] = picks.join(", ");
+								}
+								resolve({
+									behavior: "allow" as const,
+									updatedInput: {
+										...passInput,
+										answers: sdkAnswers,
+									},
+								});
+							});
 							emit(askReq);
 							return;
 						}

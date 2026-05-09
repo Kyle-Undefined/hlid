@@ -18,7 +18,7 @@ import { useLoadChatHistory } from "#/hooks/useLoadChatHistory";
 import { useWs } from "#/hooks/useWs";
 import { useWsChatQueue, useWsLiveStats } from "#/hooks/useWsSelectors";
 import * as wsStore from "#/hooks/wsStore";
-import { fmtModel, normalizeModel } from "#/lib/formatters";
+import { deriveModelMismatch, fmtModel } from "#/lib/formatters";
 import {
 	getAgentListFn,
 	getCurrentSessionFn,
@@ -201,10 +201,10 @@ function ChatPage() {
 		[send],
 	);
 
-	const handleSelectOption = useCallback(
-		(id: string, selectedOption: string) => {
-			dispatch({ type: "RESOLVE_ASK_USER_QUESTION", id, selectedOption });
-			send({ type: "ask_user_question_response", id, selectedOption });
+	const handleSubmitAnswers = useCallback(
+		(id: string, answers: Record<string, string[]>) => {
+			dispatch({ type: "RESOLVE_ASK_USER_QUESTION", id, answers });
+			send({ type: "ask_user_question_response", id, answers });
 		},
 		[send],
 	);
@@ -353,11 +353,18 @@ function ChatPage() {
 	const canQueue = hasInput && isRunning;
 
 	const modelShort = model ? fmtModel(model) : null;
-	const actualModelShort = actualModel ? fmtModel(actualModel) : null;
-	const modelMismatch =
-		!!actualModel &&
-		!!model &&
-		normalizeModel(actualModel) !== normalizeModel(model);
+	const agentModel =
+		(agentSkillContext &&
+			agentList.find((a) => a.path === agentSkillContext)?.model) ||
+		null;
+	const { effectiveActualModel, mismatch: modelMismatch } = deriveModelMismatch(
+		model,
+		actualModel,
+		agentModel,
+	);
+	const actualModelShort = effectiveActualModel
+		? fmtModel(effectiveActualModel)
+		: null;
 
 	// ─── Render ───────────────────────────────────────────────────────────────
 
@@ -393,7 +400,7 @@ function ChatPage() {
 							chatQueue={chatQueue}
 							sessionId={sessionId}
 							handleDecide={handleDecide}
-							handleSelectOption={handleSelectOption}
+							handleSubmitAnswers={handleSubmitAnswers}
 							handleCancelQueued={handleCancelQueued}
 							bottomRef={bottomRef}
 						/>

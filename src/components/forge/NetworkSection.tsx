@@ -3,6 +3,15 @@ import { useCallback, useEffect, useState } from "react";
 import { StatusDot } from "#/components/McpStatusDot";
 import { Field, FilePathField, Section, TextInput } from "./fields";
 
+export type ServerForm = {
+	port: string;
+	tlsCertPath: string;
+	tlsKeyPath: string;
+	tlsProxyPort: string;
+	localNetworkAccess: boolean;
+	allowExternalAgents: boolean;
+};
+
 type TailscaleStatus = {
 	installed: boolean;
 	state:
@@ -22,23 +31,13 @@ function tailscaleSetupPrompt(cwd: string) {
 	return `Help me set up Tailscale for hlid. My current working directory is \`${cwd}\`. Detect if Tailscale is installed and walk me through install for my OS if not. Then help me run \`tailscale up\` to authenticate. Ask me where to store the TLS certs, then run \`tailscale cert <my-magicdns-hostname>\` there. Update tls_cert_path and tls_key_path in hlid.config.toml. When done, tell me to restart hlid.`;
 }
 
-export function TailscaleSection({
-	tlsProxyPort,
-	setTlsProxyPort,
-	tlsCertPath,
-	setTlsCertPath,
-	tlsKeyPath,
-	setTlsKeyPath,
-	localNetworkAccess,
+export function NetworkSection({
+	server,
+	onChange,
 	cwd,
 }: {
-	tlsProxyPort: string;
-	setTlsProxyPort: (v: string) => void;
-	tlsCertPath: string;
-	setTlsCertPath: (v: string) => void;
-	tlsKeyPath: string;
-	setTlsKeyPath: (v: string) => void;
-	localNetworkAccess: boolean;
+	server: ServerForm;
+	onChange: (patch: Partial<ServerForm>) => void;
 	cwd: string;
 }) {
 	const router = useRouter();
@@ -67,14 +66,14 @@ export function TailscaleSection({
 
 	const installed = status?.installed ?? null;
 	const authed = status?.state === "Running" ? true : status ? false : null;
-	const certsConfigured = Boolean(tlsCertPath && tlsKeyPath);
+	const certsConfigured = Boolean(server.tlsCertPath && server.tlsKeyPath);
 	const reachable =
 		status?.state === "Running" &&
 		status.magicDNS &&
 		certsConfigured &&
-		localNetworkAccess;
+		server.localNetworkAccess;
 	const url = reachable
-		? `https://${status.magicDNS}:${Number(tlsProxyPort) || 3443}`
+		? `https://${status.magicDNS}:${Number(server.tlsProxyPort) || 3443}`
 		: null;
 
 	function startSetup() {
@@ -85,7 +84,53 @@ export function TailscaleSection({
 	}
 
 	return (
-		<Section title="Tailscale">
+		<Section title="Network">
+			<Field label="Port">
+				<TextInput
+					value={server.port}
+					onChange={(v) => onChange({ port: v })}
+					placeholder="3000"
+					mono
+				/>
+			</Field>
+			<Field
+				label="Local Network Access"
+				hint="binds the server on 0.0.0.0 so devices on your LAN/Tailscale can connect (default binds 127.0.0.1 only). requires restart. anyone on the network can reach the server when on."
+			>
+				<label className="flex items-center gap-2 cursor-pointer">
+					<input
+						type="checkbox"
+						checked={server.localNetworkAccess}
+						onChange={(e) => onChange({ localNetworkAccess: e.target.checked })}
+						className="accent-primary w-3.5 h-3.5"
+					/>
+					<span className="text-xs text-muted-foreground">
+						{server.localNetworkAccess ? "on" : "off"}
+					</span>
+				</label>
+			</Field>
+			<Field
+				label="Allow External Agents"
+				hint="register agent directories outside the vault (e.g. native WSL or Windows project paths). filesystem browse is unrestricted when on; only enable on trusted machines."
+			>
+				<label className="flex items-center gap-2 cursor-pointer">
+					<input
+						type="checkbox"
+						checked={server.allowExternalAgents}
+						onChange={(e) =>
+							onChange({ allowExternalAgents: e.target.checked })
+						}
+						className="accent-primary w-3.5 h-3.5"
+					/>
+					<span className="text-xs text-muted-foreground">
+						{server.allowExternalAgents ? "on" : "off"}
+					</span>
+				</label>
+			</Field>
+
+			<div className="px-4 py-2 text-[9px] tracking-widest text-muted-foreground/60 uppercase">
+				Tailscale
+			</div>
 			<Field label="Installed">
 				<div className="flex items-center gap-3">
 					<StatusDot ok={installed} />
@@ -150,8 +195,8 @@ export function TailscaleSection({
 			)}
 			<Field label="TLS Cert Path">
 				<FilePathField
-					value={tlsCertPath}
-					onChange={setTlsCertPath}
+					value={server.tlsCertPath}
+					onChange={(v) => onChange({ tlsCertPath: v })}
 					placeholder="/path/to/cert.pem"
 					extensions={[".pem", ".crt", ".cer"]}
 					external
@@ -159,8 +204,8 @@ export function TailscaleSection({
 			</Field>
 			<Field label="TLS Key Path">
 				<FilePathField
-					value={tlsKeyPath}
-					onChange={setTlsKeyPath}
+					value={server.tlsKeyPath}
+					onChange={(v) => onChange({ tlsKeyPath: v })}
 					placeholder="/path/to/key.pem"
 					extensions={[".pem", ".key"]}
 					external
@@ -168,8 +213,8 @@ export function TailscaleSection({
 			</Field>
 			<Field label="TLS Proxy Port">
 				<TextInput
-					value={tlsProxyPort}
-					onChange={setTlsProxyPort}
+					value={server.tlsProxyPort}
+					onChange={(v) => onChange({ tlsProxyPort: v })}
 					placeholder="3443"
 					mono
 				/>

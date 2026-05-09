@@ -9,6 +9,26 @@ export function normalizeModel(model: string): string {
 	return model.replace(/-\d{8}$/, "");
 }
 
+/**
+ * Resolve the "effective" model for mismatch comparison + the mismatch flag.
+ *
+ * `actualModel` (from per-inference usage events) is authoritative once a turn
+ * has run. Before that, the selected agent's configured model is used so the
+ * badge surfaces an opus-vs-sonnet override before any inference occurs.
+ */
+export function deriveModelMismatch(
+	vaultModel: string | null | undefined,
+	actualModel: string | null | undefined,
+	agentModel: string | null | undefined,
+): { effectiveActualModel: string | null; mismatch: boolean } {
+	const effectiveActualModel = actualModel ?? agentModel ?? null;
+	const mismatch =
+		!!effectiveActualModel &&
+		!!vaultModel &&
+		normalizeModel(effectiveActualModel) !== normalizeModel(vaultModel);
+	return { effectiveActualModel, mismatch };
+}
+
 /** Short human label for a model ID. Falls back to stripping prefix/datestamp. */
 export function fmtModel(model: string): string {
 	const normalized = normalizeModel(model);

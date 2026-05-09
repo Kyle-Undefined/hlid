@@ -1,4 +1,5 @@
 import type {
+	AskUserQuestionAnswers,
 	AskUserQuestionMessage,
 	PlanModeExitMessage,
 	ServerMessage,
@@ -79,7 +80,7 @@ export class PermissionManager {
 
 // ─── AskUserQuestionManager ───────────────────────────────────────────────────
 
-type AskUserQuestionResolver = (selectedOption: string) => void;
+type AskUserQuestionResolver = (answers: AskUserQuestionAnswers) => void;
 
 export class AskUserQuestionManager {
 	private resolvers = new Map<string, AskUserQuestionResolver>();
@@ -105,13 +106,13 @@ export class AskUserQuestionManager {
 	}
 
 	/** Invoke the resolver for a pending question, then remove its data. */
-	complete(id: string, selectedOption: string): void {
+	complete(id: string, answers: AskUserQuestionAnswers): void {
 		if (!this.resolvers.has(id)) {
 			console.warn(`AskUserQuestionManager.complete: unknown id "${id}"`);
 			return;
 		}
 		try {
-			this.resolvers.get(id)?.(selectedOption);
+			this.resolvers.get(id)?.(answers);
 		} finally {
 			this.delete(id);
 		}
@@ -121,14 +122,14 @@ export class AskUserQuestionManager {
 		return Array.from(this.requests.values());
 	}
 
-	/** Resolve all pending questions with empty string and clear (used on abort/clear). */
+	/** Resolve all pending questions with empty answers and clear (used on abort/clear). */
 	clearAll(): void {
 		const resolvers = Array.from(this.resolvers.values());
 		this.resolvers.clear();
 		this.requests.clear();
 		for (const resolve of resolvers) {
 			try {
-				resolve("");
+				resolve({});
 			} catch (err) {
 				console.error("AskUserQuestionManager.clearAll: resolver threw:", err);
 			}

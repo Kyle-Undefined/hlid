@@ -72,8 +72,7 @@ export function useChatWsHandler({
 			dispatch({
 				type: "ADD_ASK_USER_QUESTION",
 				id: msg.id,
-				question: msg.question,
-				options: msg.options,
+				questions: msg.questions,
 			});
 			return;
 		}
@@ -82,7 +81,7 @@ export function useChatWsHandler({
 			dispatch({
 				type: "RESOLVE_ASK_USER_QUESTION",
 				id: msg.id,
-				selectedOption: msg.selectedOption,
+				answers: msg.answers,
 			});
 			return;
 		}

@@ -3,6 +3,7 @@
  */
 import { describe, expect, it } from "vitest";
 import {
+	deriveModelMismatch,
 	fmt,
 	fmtBytes,
 	fmtModel,
@@ -47,6 +48,79 @@ describe("fmtModel", () => {
 
 	it("fallback preserves string when no claude- prefix", () => {
 		expect(fmtModel("gpt-4")).toBe("gpt-4");
+	});
+});
+
+// ── deriveModelMismatch ───────────────────────────────────────────────────────
+
+describe("deriveModelMismatch", () => {
+	it("flags mismatch when actualModel differs from vault", () => {
+		const r = deriveModelMismatch("claude-sonnet-4-6", "claude-opus-4-7", null);
+		expect(r.mismatch).toBe(true);
+		expect(r.effectiveActualModel).toBe("claude-opus-4-7");
+	});
+
+	it("no mismatch when actualModel matches vault", () => {
+		const r = deriveModelMismatch(
+			"claude-sonnet-4-6",
+			"claude-sonnet-4-6",
+			null,
+		);
+		expect(r.mismatch).toBe(false);
+		expect(r.effectiveActualModel).toBe("claude-sonnet-4-6");
+	});
+
+	it("falls back to agentModel when no actualModel yet (pre-inference badge)", () => {
+		const r = deriveModelMismatch("claude-sonnet-4-6", null, "claude-opus-4-7");
+		expect(r.mismatch).toBe(true);
+		expect(r.effectiveActualModel).toBe("claude-opus-4-7");
+	});
+
+	it("agentModel matching vault produces no mismatch", () => {
+		const r = deriveModelMismatch(
+			"claude-sonnet-4-6",
+			null,
+			"claude-sonnet-4-6",
+		);
+		expect(r.mismatch).toBe(false);
+		expect(r.effectiveActualModel).toBe("claude-sonnet-4-6");
+	});
+
+	it("actualModel takes precedence over agentModel", () => {
+		const r = deriveModelMismatch(
+			"claude-sonnet-4-6",
+			"claude-haiku-4-5",
+			"claude-opus-4-7",
+		);
+		expect(r.mismatch).toBe(true);
+		expect(r.effectiveActualModel).toBe("claude-haiku-4-5");
+	});
+
+	it("no mismatch when both actualModel and agentModel are absent", () => {
+		const r = deriveModelMismatch("claude-sonnet-4-6", null, null);
+		expect(r.mismatch).toBe(false);
+		expect(r.effectiveActualModel).toBeNull();
+	});
+
+	it("no mismatch when vaultModel is absent (cannot compare)", () => {
+		const r = deriveModelMismatch(null, "claude-opus-4-7", null);
+		expect(r.mismatch).toBe(false);
+		expect(r.effectiveActualModel).toBe("claude-opus-4-7");
+	});
+
+	it("ignores dated suffix when comparing (normalized equality)", () => {
+		const r = deriveModelMismatch(
+			"claude-haiku-4-5",
+			"claude-haiku-4-5-20251001",
+			null,
+		);
+		expect(r.mismatch).toBe(false);
+	});
+
+	it("treats undefined the same as null for all inputs", () => {
+		const r = deriveModelMismatch(undefined, undefined, undefined);
+		expect(r.mismatch).toBe(false);
+		expect(r.effectiveActualModel).toBeNull();
 	});
 });
 

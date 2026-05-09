@@ -1,42 +1,54 @@
+import type { AskQuestion } from "./protocol";
+
 /**
  * Parses the raw input from Claude Code's AskUserQuestion tool into the
- * question text and string options that Raven's UI expects.
+ * structured questions array that Raven's UI expects.
  *
  * SDK format (current):
  *   { questions: [{ question, header, options: [{ label, description }], multiSelect }] }
  *
  * Legacy/plain format (backwards compat):
  *   { question: string, options: string[] }
- *
- * When multiple questions are present, only the first is surfaced. Multi-question
- * UI support is a future enhancement.
  */
 export function parseAskUserQuestion(
 	input: Record<string, unknown>,
 	title?: string,
-): { question: string; options: string[] } {
-	// ── Resolve the first question object (SDK format) ─────────────────────────
-	const firstQ =
-		Array.isArray(input.questions) && input.questions.length > 0
-			? (input.questions[0] as Record<string, unknown>)
-			: null;
+): { questions: AskQuestion[] } {
+	// ── SDK format: array of question objects ──────────────────────────────────
+	if (Array.isArray(input.questions) && input.questions.length > 0) {
+		const out: AskQuestion[] = [];
+		for (const raw of input.questions) {
+			if (raw === null || typeof raw !== "object") continue;
+			const q = raw as Record<string, unknown>;
+			const question =
+				typeof q.question === "string"
+					? q.question
+					: (title ?? "Question from Claude");
+			const options = extractOptionLabels(q.options);
+			if (options.length === 0) continue;
+			out.push({
+				question,
+				options,
+				multiSelect: q.multiSelect === true,
+			});
+		}
+		if (out.length > 0) return { questions: out };
+	}
 
-	// ── Extract question text ──────────────────────────────────────────────────
+	// ── Legacy/plain format ────────────────────────────────────────────────────
 	const question =
-		typeof firstQ?.question === "string"
-			? firstQ.question
-			: typeof input.question === "string"
-				? input.question
-				: (title ?? "Question from Claude");
+		typeof input.question === "string"
+			? input.question
+			: (title ?? "Question from Claude");
+	const options = extractOptionLabels(input.options);
+	return {
+		questions: [{ question, options, multiSelect: false }],
+	};
+}
 
-	// ── Extract options as string labels ───────────────────────────────────────
-	const rawOptions: unknown[] = Array.isArray(firstQ?.options)
-		? (firstQ.options as unknown[])
-		: Array.isArray(input.options)
-			? (input.options as unknown[])
-			: [];
-
-	const options = rawOptions.flatMap((o) => {
+function extractOptionLabels(raw: unknown): string[] {
+	if (!Array.isArray(raw)) return [];
+	return raw.flatMap((o) => {
 		if (typeof o === "string") return [o];
 		if (
 			o !== null &&
@@ -47,6 +59,4 @@ export function parseAskUserQuestion(
 		}
 		return [];
 	});
-
-	return { question, options };
 }

@@ -1,4 +1,6 @@
 import type {
+	AskQuestion,
+	AskUserQuestionAnswers,
 	ChatAttachment,
 	PermissionDecision,
 	PermissionRequestMessage,
@@ -36,9 +38,9 @@ export type PermissionMessage = {
 export type AskUserQuestionChatMessage = {
 	id: string;
 	role: "ask_user_question";
-	question: string;
-	options: string[];
-	selectedOption: string | null;
+	questions: AskQuestion[];
+	/** null = unanswered; map keyed by question text, values arrays for multiSelect */
+	answers: AskUserQuestionAnswers | null;
 };
 
 export type ChatMessage =
@@ -96,10 +98,13 @@ export type Action =
 	| {
 			type: "ADD_ASK_USER_QUESTION";
 			id: string;
-			question: string;
-			options: string[];
+			questions: AskQuestion[];
 	  }
-	| { type: "RESOLVE_ASK_USER_QUESTION"; id: string; selectedOption: string }
+	| {
+			type: "RESOLVE_ASK_USER_QUESTION";
+			id: string;
+			answers: AskUserQuestionAnswers;
+	  }
 	| { type: "CLEAR" };
 
 export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
@@ -252,15 +257,14 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 				{
 					id: action.id,
 					role: "ask_user_question" as const,
-					question: action.question,
-					options: action.options,
-					selectedOption: null,
+					questions: action.questions,
+					answers: null,
 				},
 			];
 		case "RESOLVE_ASK_USER_QUESTION":
 			return state.map((m) =>
 				m.id === action.id && m.role === "ask_user_question"
-					? { ...m, selectedOption: action.selectedOption }
+					? { ...m, answers: action.answers }
 					: m,
 			);
 		case "CLEAR":

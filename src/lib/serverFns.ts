@@ -62,6 +62,7 @@ export const getProvidersFn = createServerFn({ method: "GET" }).handler(() =>
 export type AgentListItem = {
 	path: string;
 	name: string;
+	model?: string;
 };
 
 /** Resolves the list of configured agents with display names. */
@@ -77,6 +78,7 @@ export const getAgentListFn = createServerFn({ method: "GET" }).handler(
 						.split(/[-_\s]+/)
 						.map((w: string) => w.charAt(0).toUpperCase() + w.slice(1))
 						.join(" "),
+				...(a.model ? { model: a.model } : {}),
 			}),
 		);
 	},

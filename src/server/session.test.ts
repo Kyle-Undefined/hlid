@@ -355,7 +355,7 @@ describe("SessionManager — AskUserQuestion", () => {
 			makeProviders(makeProvider("Bash")),
 		);
 		expect(() =>
-			sm.handleAskUserQuestionResponse("ghost-id", "Option A"),
+			sm.handleAskUserQuestionResponse("ghost-id", { Q: ["Option A"] }),
 		).not.toThrow();
 	});
 
@@ -366,6 +366,351 @@ describe("SessionManager — AskUserQuestion", () => {
 		);
 		sm.abort();
 		expect(sm.getPendingAskUserQuestions()).toEqual([]);
+	});
+
+	// SDK contract: AskUserQuestionOutput.answers is keyed by question text.
+	// A flat `answer` field caused the SDK to fall back to a default option
+	// (often the last), making the model act on the wrong choice.
+	it("canUseTool resolves AskUserQuestion with answers map keyed by question text", async () => {
+		const QUESTION = "Which library?";
+		const SELECTED = "React";
+		const askInput = {
+			questions: [
+				{
+					question: QUESTION,
+					header: "Library",
+					options: [
+						{ label: "React", description: "Popular UI lib" },
+						{ label: "Vue", description: "Progressive framework" },
+					],
+					multiSelect: false,
+				},
+			],
+		};
+
+		let capturedResult: unknown;
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-session-1" };
+					capturedResult = await params.canUseTool(
+						"AskUserQuestion",
+						askInput,
+						{ toolUseID: "tid-ask-1", signal: new AbortController().signal },
+					);
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const turn = sm.runQuery("hello", () => {}, "sess-1");
+		await waitFor(() =>
+			expect(sm.getPendingAskUserQuestions()).toHaveLength(1),
+		);
+
+		sm.handleAskUserQuestionResponse("tid-ask-1", { [QUESTION]: [SELECTED] });
+		await turn;
+
+		expect(capturedResult).toEqual({
+			behavior: "allow",
+			updatedInput: {
+				...askInput,
+				answers: { [QUESTION]: SELECTED },
+			},
+		});
+		expect(
+			(capturedResult as { updatedInput: Record<string, unknown> }).updatedInput
+				.answer,
+		).toBeUndefined();
+	});
+
+	it("canUseTool merges into any pre-existing answers map", async () => {
+		const QUESTION = "Pick one";
+		const SELECTED = "B";
+		const askInput = {
+			questions: [
+				{
+					question: QUESTION,
+					header: "Pick",
+					options: [{ label: "A" }, { label: "B" }],
+					multiSelect: false,
+				},
+			],
+			answers: { "Earlier question?": "Yes" },
+		};
+
+		let capturedResult: unknown;
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-session-1" };
+					capturedResult = await params.canUseTool(
+						"AskUserQuestion",
+						askInput,
+						{ toolUseID: "tid-ask-2", signal: new AbortController().signal },
+					);
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const turn = sm.runQuery("hi", () => {}, "sess-1");
+		await waitFor(() =>
+			expect(sm.getPendingAskUserQuestions()).toHaveLength(1),
+		);
+
+		sm.handleAskUserQuestionResponse("tid-ask-2", { [QUESTION]: [SELECTED] });
+		await turn;
+
+		const updated = (
+			capturedResult as { updatedInput: { answers: Record<string, string> } }
+		).updatedInput;
+		expect(updated.answers).toEqual({
+			"Earlier question?": "Yes",
+			[QUESTION]: SELECTED,
+		});
+	});
+
+	it("emits ask_user_question event with parsed question and option labels", async () => {
+		const askInput = {
+			questions: [
+				{
+					question: "Which framework?",
+					header: "Framework",
+					options: [
+						{ label: "Next.js", description: "React meta-framework" },
+						{ label: "Remix", description: "Web standards focused" },
+						{ label: "SvelteKit", description: "Svelte meta-framework" },
+					],
+					multiSelect: false,
+				},
+			],
+		};
+
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-session-1" };
+					await params.canUseTool("AskUserQuestion", askInput, {
+						toolUseID: "tid-ask-3",
+						signal: new AbortController().signal,
+					});
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+
+		const emitted: unknown[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const turn = sm.runQuery("hi", (m) => emitted.push(m), "sess-1");
+		await waitFor(() =>
+			expect(sm.getPendingAskUserQuestions()).toHaveLength(1),
+		);
+
+		sm.handleAskUserQuestionResponse("tid-ask-3", {
+			"Which framework?": ["Remix"],
+		});
+		await turn;
+
+		const askEvent = emitted.find(
+			(m) => (m as { type: string }).type === "ask_user_question",
+		) as
+			| {
+					questions: Array<{
+						question: string;
+						options: string[];
+						multiSelect: boolean;
+					}>;
+			  }
+			| undefined;
+		expect(askEvent).toBeDefined();
+		expect(askEvent?.questions).toHaveLength(1);
+		expect(askEvent?.questions[0].question).toBe("Which framework?");
+		expect(askEvent?.questions[0].options).toEqual([
+			"Next.js",
+			"Remix",
+			"SvelteKit",
+		]);
+		expect(askEvent?.questions[0].multiSelect).toBe(false);
+	});
+
+	// Multi-question support — single AskUserQuestion call with N questions.
+	it("canUseTool resolves multi-question input with all answers comma-joined per question", async () => {
+		const askInput = {
+			questions: [
+				{
+					question: "First?",
+					header: "Q1",
+					options: [{ label: "Yes" }, { label: "No" }],
+					multiSelect: false,
+				},
+				{
+					question: "Second?",
+					header: "Q2",
+					options: [{ label: "Alpha" }, { label: "Beta" }, { label: "Gamma" }],
+					multiSelect: true,
+				},
+			],
+		};
+
+		let capturedResult: unknown;
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-session-1" };
+					capturedResult = await params.canUseTool(
+						"AskUserQuestion",
+						askInput,
+						{ toolUseID: "tid-multi", signal: new AbortController().signal },
+					);
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const turn = sm.runQuery("hi", () => {}, "sess-1");
+		await waitFor(() =>
+			expect(sm.getPendingAskUserQuestions()).toHaveLength(1),
+		);
+
+		// Single-select Q1 picks one; multiSelect Q2 picks two.
+		sm.handleAskUserQuestionResponse("tid-multi", {
+			"First?": ["Yes"],
+			"Second?": ["Alpha", "Gamma"],
+		});
+		await turn;
+
+		const updated = (
+			capturedResult as { updatedInput: { answers: Record<string, string> } }
+		).updatedInput;
+		expect(updated.answers).toEqual({
+			"First?": "Yes",
+			"Second?": "Alpha, Gamma",
+		});
+	});
+
+	it("emits ask_user_question event carrying every question and its multiSelect flag", async () => {
+		const askInput = {
+			questions: [
+				{
+					question: "Single?",
+					header: "S",
+					options: [{ label: "A" }, { label: "B" }],
+					multiSelect: false,
+				},
+				{
+					question: "Multi?",
+					header: "M",
+					options: [{ label: "X" }, { label: "Y" }],
+					multiSelect: true,
+				},
+			],
+		};
+
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-session-1" };
+					await params.canUseTool("AskUserQuestion", askInput, {
+						toolUseID: "tid-multi-emit",
+						signal: new AbortController().signal,
+					});
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+
+		const emitted: unknown[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const turn = sm.runQuery("hi", (m) => emitted.push(m), "sess-1");
+		await waitFor(() =>
+			expect(sm.getPendingAskUserQuestions()).toHaveLength(1),
+		);
+
+		sm.handleAskUserQuestionResponse("tid-multi-emit", {
+			"Single?": ["A"],
+			"Multi?": ["X", "Y"],
+		});
+		await turn;
+
+		const askEvent = emitted.find(
+			(m) => (m as { type: string }).type === "ask_user_question",
+		) as
+			| {
+					questions: Array<{
+						question: string;
+						options: string[];
+						multiSelect: boolean;
+					}>;
+			  }
+			| undefined;
+		expect(askEvent).toBeDefined();
+		expect(askEvent?.questions).toHaveLength(2);
+		expect(askEvent?.questions[0].multiSelect).toBe(false);
+		expect(askEvent?.questions[1].multiSelect).toBe(true);
 	});
 });
 

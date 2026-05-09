@@ -5,11 +5,10 @@ import type { ClaudeForm } from "#/components/forge/ClaudeSection";
 import { ClaudeSection } from "#/components/forge/ClaudeSection";
 import { EventLogSection } from "#/components/forge/EventLogSection";
 import { McpSection } from "#/components/forge/McpSection";
-import type { ServerForm } from "#/components/forge/ServerSection";
-import { ServerSection } from "#/components/forge/ServerSection";
+import type { ServerForm } from "#/components/forge/NetworkSection";
+import { NetworkSection } from "#/components/forge/NetworkSection";
 import { SessionSection } from "#/components/forge/SessionSection";
 import { SystemSection } from "#/components/forge/SystemSection";
-import { TailscaleSection } from "#/components/forge/TailscaleSection";
 import type { UiForm } from "#/components/forge/UiSection";
 import { UiSection } from "#/components/forge/UiSection";
 import { UpdatesSection } from "#/components/forge/UpdatesSection";
@@ -40,11 +39,25 @@ export const Route = createFileRoute("/forge")({
 	component: SettingsPage,
 });
 
+// ─── Tabs ─────────────────────────────────────────────────────────────────────
+
+const TABS = [
+	"general",
+	"network",
+	"vault",
+	"agent",
+	"interface",
+	"logs",
+] as const;
+type Tab = (typeof TABS)[number];
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 function SettingsPage() {
 	const initial = Route.useLoaderData();
 	const router = useRouter();
+
+	const [tab, setTab] = useState<Tab>("general");
 
 	const [vault, setVault] = useState<VaultForm>({
 		style: initial.vault.style ?? "para",
@@ -179,63 +192,91 @@ function SettingsPage() {
 		}
 	}
 
+	// Logs tab is read-only — hide save bar there.
+	const showSaveBar = tab !== "logs";
+
 	return (
 		<div className="flex flex-col h-full">
-			<div className="flex-1 overflow-auto p-5 space-y-6">
-				<UpdatesSection />
-				<SystemSection />
-				<ServerSection
-					server={server}
-					onChange={(p) => setServer((s) => ({ ...s, ...p }))}
-				/>
-				<TailscaleSection
-					tlsProxyPort={server.tlsProxyPort}
-					setTlsProxyPort={(v) => setServer((s) => ({ ...s, tlsProxyPort: v }))}
-					tlsCertPath={server.tlsCertPath}
-					setTlsCertPath={(v) => setServer((s) => ({ ...s, tlsCertPath: v }))}
-					tlsKeyPath={server.tlsKeyPath}
-					setTlsKeyPath={(v) => setServer((s) => ({ ...s, tlsKeyPath: v }))}
-					localNetworkAccess={server.localNetworkAccess}
-					cwd={initial.cwd}
-				/>
-				<SessionSection />
-				<UiSection ui={ui} onChange={(p) => setUi((s) => ({ ...s, ...p }))} />
-				<VaultSection
-					vault={vault}
-					onChange={(p) => setVault((s) => ({ ...s, ...p }))}
-				/>
-				<VocabSection
-					vocab={vocab}
-					onChange={(p) => setVocab((s) => ({ ...s, ...p }))}
-				/>
-				<McpSection vaultPath={vault.path} />
-				<ClaudeSection
-					claude={claude}
-					onChange={(p) => setClaude((s) => ({ ...s, ...p }))}
-					providers={initial.providers}
-				/>
-				<EventLogSection />
+			{/* Tab nav */}
+			<div className="shrink-0 border-b border-border bg-background/95 px-5 py-2 flex items-center gap-1 overflow-x-auto">
+				{TABS.map((t) => (
+					<button
+						key={t}
+						type="button"
+						onClick={() => setTab(t)}
+						aria-pressed={tab === t}
+						className={`text-[10px] tracking-widest uppercase px-3 py-1.5 transition-colors shrink-0 ${
+							tab === t
+								? "text-foreground border-b border-primary -mb-[9px] pb-[9px]"
+								: "text-muted-foreground/50 hover:text-foreground"
+						}`}
+					>
+						{t}
+					</button>
+				))}
 			</div>
 
-			{/* Save bar */}
-			<div className="shrink-0 border-t border-border bg-background/95 px-5 py-3 flex items-center justify-between gap-4">
-				<div className="text-xs tracking-wider">
-					{error && <span className="text-destructive">{error}</span>}
-					{saved && (
-						<span className="text-green-500">
-							saved, reload session to apply changes
-						</span>
-					)}
-				</div>
-				<button
-					type="button"
-					onClick={save}
-					disabled={saving}
-					className="px-4 py-2 bg-primary text-primary-foreground text-[10px] tracking-widest font-bold hover:opacity-90 transition-opacity disabled:opacity-50 uppercase"
-				>
-					{saving ? "SAVING…" : "SAVE CHANGES"}
-				</button>
+			<div className="flex-1 overflow-auto p-5 space-y-6">
+				{tab === "general" && (
+					<>
+						<UpdatesSection />
+						<SystemSection />
+						<SessionSection />
+					</>
+				)}
+				{tab === "network" && (
+					<NetworkSection
+						server={server}
+						onChange={(p) => setServer((s) => ({ ...s, ...p }))}
+						cwd={initial.cwd}
+					/>
+				)}
+				{tab === "vault" && (
+					<>
+						<VaultSection
+							vault={vault}
+							onChange={(p) => setVault((s) => ({ ...s, ...p }))}
+						/>
+						<VocabSection
+							vocab={vocab}
+							onChange={(p) => setVocab((s) => ({ ...s, ...p }))}
+						/>
+						<McpSection vaultPath={vault.path} />
+					</>
+				)}
+				{tab === "agent" && (
+					<ClaudeSection
+						claude={claude}
+						onChange={(p) => setClaude((s) => ({ ...s, ...p }))}
+						providers={initial.providers}
+					/>
+				)}
+				{tab === "interface" && (
+					<UiSection ui={ui} onChange={(p) => setUi((s) => ({ ...s, ...p }))} />
+				)}
+				{tab === "logs" && <EventLogSection />}
 			</div>
+
+			{showSaveBar && (
+				<div className="shrink-0 border-t border-border bg-background/95 px-5 py-3 flex items-center justify-between gap-4">
+					<div className="text-xs tracking-wider">
+						{error && <span className="text-destructive">{error}</span>}
+						{saved && (
+							<span className="text-green-500">
+								saved, reload session to apply changes
+							</span>
+						)}
+					</div>
+					<button
+						type="button"
+						onClick={save}
+						disabled={saving}
+						className="px-4 py-2 bg-primary text-primary-foreground text-[10px] tracking-widest font-bold hover:opacity-90 transition-opacity disabled:opacity-50 uppercase"
+					>
+						{saving ? "SAVING…" : "SAVE CHANGES"}
+					</button>
+				</div>
+			)}
 		</div>
 	);
 }

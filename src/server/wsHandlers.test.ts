@@ -186,8 +186,13 @@ describe("open", () => {
 		const pendingQ = {
 			type: "ask_user_question" as const,
 			id: "aqq-1",
-			question: "Which approach?",
-			options: ["Option A", "Option B"],
+			questions: [
+				{
+					question: "Which approach?",
+					options: ["Option A", "Option B"],
+					multiSelect: false,
+				},
+			],
 		};
 		const session = makeSession({
 			isRunning: vi.fn().mockReturnValue(true),
@@ -202,7 +207,7 @@ describe("open", () => {
 		expect(qMsg).toBeDefined();
 		expect(qMsg?.[1]).toMatchObject({
 			id: "aqq-1",
-			question: "Which approach?",
+			questions: [{ question: "Which approach?" }],
 		});
 	});
 
@@ -210,8 +215,13 @@ describe("open", () => {
 		const pendingQ = {
 			type: "ask_user_question" as const,
 			id: "aqq-1",
-			question: "Which approach?",
-			options: ["Option A", "Option B"],
+			questions: [
+				{
+					question: "Which approach?",
+					options: ["Option A", "Option B"],
+					multiSelect: false,
+				},
+			],
 		};
 		const session = makeSession({
 			isRunning: vi.fn().mockReturnValue(true),
@@ -530,7 +540,7 @@ describe("message — permission_response", () => {
 // ── message: ask_user_question_response ───────────────────────────────────────
 
 describe("message — ask_user_question_response", () => {
-	it("calls session.handleAskUserQuestionResponse with id and selectedOption", async () => {
+	it("calls session.handleAskUserQuestionResponse with id and answers map", async () => {
 		const session = makeSession();
 		const { message } = createWsHandlers(session);
 		const ws = makeWs();
@@ -539,12 +549,14 @@ describe("message — ask_user_question_response", () => {
 			JSON.stringify({
 				type: "ask_user_question_response",
 				id: "aqq-1",
-				selectedOption: "Option A",
+				answers: { "Q?": ["Option A"] },
 			}),
 		);
 		expect(session.handleAskUserQuestionResponse).toHaveBeenCalledWith(
 			"aqq-1",
-			"Option A",
+			{
+				"Q?": ["Option A"],
+			},
 		);
 	});
 
@@ -558,7 +570,7 @@ describe("message — ask_user_question_response", () => {
 			JSON.stringify({
 				type: "ask_user_question_response",
 				id: "ghost-id",
-				selectedOption: "Whatever",
+				answers: { "Q?": ["Whatever"] },
 			}),
 		);
 	});
@@ -572,14 +584,43 @@ describe("message — ask_user_question_response", () => {
 			JSON.stringify({
 				type: "ask_user_question_response",
 				id: "aqq-2",
-				selectedOption: "Option B",
+				answers: { "Q?": ["Option B"] },
 			}),
 		);
 		expect(mockBroadcast).toHaveBeenCalledWith(
 			expect.objectContaining({
 				type: "ask_user_question_resolved",
 				id: "aqq-2",
-				selectedOption: "Option B",
+				answers: { "Q?": ["Option B"] },
+			}),
+		);
+	});
+
+	it("propagates multi-question / multi-select answer maps verbatim", async () => {
+		const session = makeSession();
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		const answers = {
+			"First?": ["Yes"],
+			"Pick any?": ["Alpha", "Gamma"],
+		};
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "ask_user_question_response",
+				id: "aqq-multi",
+				answers,
+			}),
+		);
+		expect(session.handleAskUserQuestionResponse).toHaveBeenCalledWith(
+			"aqq-multi",
+			answers,
+		);
+		expect(mockBroadcast).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "ask_user_question_resolved",
+				id: "aqq-multi",
+				answers,
 			}),
 		);
 	});
@@ -596,12 +637,14 @@ describe("message — ask_user_question_response", () => {
 			JSON.stringify({
 				type: "ask_user_question_response",
 				id: "aqq-3",
-				selectedOption: "Option C",
+				answers: { "Q?": ["Option C"] },
 			}),
 		);
 		expect(session.handleAskUserQuestionResponse).toHaveBeenCalledWith(
 			"aqq-3",
-			"Option C",
+			{
+				"Q?": ["Option C"],
+			},
 		);
 	});
 });
