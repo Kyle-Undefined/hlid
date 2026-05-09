@@ -71,6 +71,7 @@ function SettingsPage() {
 				: "",
 		permissionMode: initial.claude.permission_mode,
 		turnRecaps: initial.claude.turn_recaps ?? true,
+		recapModel: initial.claude.recap_model ?? "",
 		vaultProvider: initial.vault_provider ?? "claude",
 	});
 
@@ -128,6 +129,7 @@ function SettingsPage() {
 						: undefined,
 				permission_mode: claude.permissionMode,
 				turn_recaps: claude.turnRecaps,
+				recap_model: claude.recapModel || undefined,
 			},
 			ui: {
 				enter_to_submit: ui.enterToSubmit,

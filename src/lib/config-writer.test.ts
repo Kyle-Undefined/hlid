@@ -170,12 +170,27 @@ describe("writeConfig — server section", () => {
 // ── claude section ────────────────────────────────────────────────────────────
 
 describe("writeConfig — claude section", () => {
-	it("writes model, effort, permission_mode", () => {
+	it("writes model, effort, permission_mode, turn_recaps", () => {
 		writeConfig(makeConfig());
 		const toml = capturedToml();
 		expect(toml).toContain('model = "claude-sonnet-4-6"');
 		expect(toml).toContain('effort = "high"');
 		expect(toml).toContain('permission_mode = "default"');
+		expect(toml).toContain("turn_recaps = true");
+	});
+
+	it("writes turn_recaps = false when disabled", () => {
+		writeConfig(
+			makeConfig({
+				claude: {
+					model: "claude-sonnet-4-6",
+					effort: "high",
+					permission_mode: "default",
+					turn_recaps: false,
+				},
+			}),
+		);
+		expect(capturedToml()).toContain("turn_recaps = false");
 	});
 
 	it("writes max_turns when set", () => {
@@ -216,6 +231,114 @@ describe("writeConfig — claude section", () => {
 	it("omits recap_model when undefined", () => {
 		writeConfig(makeConfig());
 		expect(capturedToml()).not.toContain("recap_model");
+	});
+});
+
+// ── agents all fields ─────────────────────────────────────────────────────────
+
+describe("writeConfig — agents all provider fields", () => {
+	it("writes model, effort, max_turns, permission_mode when set", () => {
+		writeConfig(
+			makeConfig({
+				agents: [
+					{
+						path: "/agents/bot",
+						mode: "cwd",
+						provider: "claude",
+						model: "claude-opus-4-7",
+						effort: "max",
+						max_turns: 5,
+						permission_mode: "bypassPermissions",
+					},
+				],
+			}),
+		);
+		const toml = capturedToml();
+		expect(toml).toContain('model = "claude-opus-4-7"');
+		expect(toml).toContain('effort = "max"');
+		expect(toml).toContain("max_turns = 5");
+		expect(toml).toContain('permission_mode = "bypassPermissions"');
+	});
+
+	it("omits model/effort/max_turns/permission_mode when not set", () => {
+		writeConfig(
+			makeConfig({
+				agents: [{ path: "/agents/bot", mode: "cwd", provider: "claude" }],
+			}),
+		);
+		const agents = capturedToml().slice(capturedToml().indexOf("[[agents]]"));
+		expect(agents).not.toMatch(/^model\s*=/m);
+		expect(agents).not.toMatch(/^effort\s*=/m);
+		expect(agents).not.toMatch(/^max_turns\s*=/m);
+		expect(agents).not.toMatch(/^permission_mode\s*=/m);
+	});
+
+	it("writes mode when not default (cwd)", () => {
+		writeConfig(
+			makeConfig({
+				agents: [{ path: "/agents/bot", mode: "context", provider: "claude" }],
+			}),
+		);
+		expect(capturedToml()).toContain('mode = "context"');
+	});
+
+	it("omits mode when cwd (default)", () => {
+		writeConfig(
+			makeConfig({
+				agents: [{ path: "/agents/bot", mode: "cwd", provider: "claude" }],
+			}),
+		);
+		const agents = capturedToml().slice(capturedToml().indexOf("[[agents]]"));
+		expect(agents).not.toMatch(/^mode\s*=/m);
+	});
+
+	it("writes provider when not claude (default)", () => {
+		writeConfig(
+			makeConfig({
+				agents: [{ path: "/agents/bot", mode: "cwd", provider: "openai" }],
+			}),
+		);
+		expect(capturedToml()).toContain('provider = "openai"');
+	});
+
+	it("omits provider when claude (default)", () => {
+		writeConfig(
+			makeConfig({
+				agents: [{ path: "/agents/bot", mode: "cwd", provider: "claude" }],
+			}),
+		);
+		const agents = capturedToml().slice(capturedToml().indexOf("[[agents]]"));
+		expect(agents).not.toMatch(/^provider\s*=/m);
+	});
+
+	it("roundtrips all agent fields", () => {
+		writeConfig(
+			makeConfig({
+				agents: [
+					{
+						path: "/agents/full",
+						name: "Full Bot",
+						mode: "context",
+						provider: "openai",
+						model: "claude-haiku-4-5-20251001",
+						effort: "low",
+						max_turns: 3,
+						permission_mode: "acceptEdits",
+						recap_model: "claude-haiku-4-5-20251001",
+					},
+				],
+			}),
+		);
+		const toml = capturedToml();
+		expect(toml).toContain('path = "/agents/full"');
+		expect(toml).toContain('name = "Full Bot"');
+		expect(toml).toContain('mode = "context"');
+		expect(toml).toContain('provider = "openai"');
+		expect(toml).toContain('model = "claude-haiku-4-5-20251001"');
+		expect(toml).toContain('effort = "low"');
+		expect(toml).toContain("max_turns = 3");
+		expect(toml).toContain('permission_mode = "acceptEdits"');
+		expect(toml).toContain('recap_model = "claude-haiku-4-5-20251001"');
 	});
 });
 

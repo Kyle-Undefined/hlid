@@ -18,6 +18,9 @@ function tomlVal(value: unknown): string {
 export function writeConfig(config: HlidConfig): void {
 	const lines: string[] = [];
 
+	if (config.vault_provider && config.vault_provider !== "claude")
+		lines.push(`vault_provider = ${tomlVal(config.vault_provider)}`);
+
 	lines.push("[vault]");
 	lines.push(`name = ${tomlVal(config.vault.name)}`);
 	lines.push(`path = ${tomlVal(config.vault.path)}`);
@@ -59,6 +62,7 @@ export function writeConfig(config: HlidConfig): void {
 	lines.push(`model = ${tomlVal(config.claude.model)}`);
 	lines.push(`effort = ${tomlVal(config.claude.effort)}`);
 	lines.push(`permission_mode = ${tomlVal(config.claude.permission_mode)}`);
+	lines.push(`turn_recaps = ${tomlVal(config.claude.turn_recaps)}`);
 	if (config.claude.max_turns !== undefined)
 		lines.push(`max_turns = ${tomlVal(config.claude.max_turns)}`);
 	if (config.claude.recap_model)
@@ -83,6 +87,16 @@ export function writeConfig(config: HlidConfig): void {
 		lines.push("[[agents]]");
 		lines.push(`path = ${tomlVal(agent.path)}`);
 		if (agent.name) lines.push(`name = ${tomlVal(agent.name)}`);
+		if (agent.mode && agent.mode !== "cwd")
+			lines.push(`mode = ${tomlVal(agent.mode)}`);
+		if (agent.provider && agent.provider !== "claude")
+			lines.push(`provider = ${tomlVal(agent.provider)}`);
+		if (agent.model) lines.push(`model = ${tomlVal(agent.model)}`);
+		if (agent.effort) lines.push(`effort = ${tomlVal(agent.effort)}`);
+		if (agent.max_turns !== undefined)
+			lines.push(`max_turns = ${tomlVal(agent.max_turns)}`);
+		if (agent.permission_mode)
+			lines.push(`permission_mode = ${tomlVal(agent.permission_mode)}`);
 		if (agent.recap_model)
 			lines.push(`recap_model = ${tomlVal(agent.recap_model)}`);
 	}

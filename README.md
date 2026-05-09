@@ -2,7 +2,7 @@
 
 *Short for Hliðskjálf, Óðinn's high seat from which he could see all nine realms.*
 
-`Hlid` is a local command center for your Obsidian vault, powered by the Claude Code Agent SDK. So you don't need a terminal inside Obsidian, or a `/remote-control` session that breaks on approval prompts while mobile. Chat with Claude, watch tool use, manage your vault and Claude settings from one place.
+`Hlid` is a local command center for your Obsidian vault, powered by the Claude Agent SDK. So you don't need a terminal inside Obsidian, or a `/remote-control` session that breaks on approval prompts while mobile. Chat with Claude, watch tool use, manage your vault and Claude settings from one place.
 
 Windows-first, distributed as a single compiled `hlid.exe`. Accessible anywhere via Tailscale. Built for personal use but configurable enough to adapt to other vault setups.
 
@@ -40,7 +40,7 @@ Quick reference for all vault skills. Load the full `SKILL.md` only on match.
 
 - `Bun` server, single-binary compile (`bun build --compile`) with the Vite client embedded into the executable
 - `TanStack Start` + `TanStack Router` for the web UI
-- Claude Code Agent SDK for the persistent vault session
+- Provider-agnostic `AgentProvider` interface for the persistent vault session; current implementation uses Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`), with ACP support planned
 - WebSockets for real-time streaming and tool use visibility
 - `SQLite` for session and settings storage
 - Tailscale for remote access (no cloud needed)
@@ -62,7 +62,7 @@ Everything lives in `hlid.config.toml` at the project root. Vault paths (inbox, 
 
 See `hlid.config.example.toml` for a minimal starting point. Most settings hot-reload while the server is running. Vault path and MCP changes need a session reload, which you can trigger from `FORGE`.
 
-Turn recaps (`claude.turn_recaps`) are on by default. They mimic the CLI recap feature by running a summary against Haiku.
+Turn recaps (`claude.turn_recaps`) are on by default. They mimic the CLI recap feature: Haiku generates a one-sentence summary enriched with the SDK's built-in turn summary and a list of tools used during the turn.
 
 ## Pages
 
@@ -71,7 +71,7 @@ Routes are named after Norse concepts; the sidebar uses the labels in caps.
 - **WATCH** (`/`): inbox count, active projects, session status, last query cost. Also has a 7-day and 30-day cumulative token chart, a recent sessions list, and a skills directory pulled from your vault and global Claude skills.
 - **VAULT** (`/vault`): file browser with tree navigation. Projects get grouped by status pulled from their YAML front-matter; it uses your custom `status_vocabulary` from config so it matches whatever labels your vault actually uses.
 - **RELICS** (`/relics`): attachment management. Ephemeral attachments are scoped to the session they were uploaded in; vault attachments persist. Search by filename or filter by date range.
-- **RAVEN** (`/raven`): full back-and-forth with Claude, tool use shown inline and collapsible, tap-to-approve permission cards, attachments. Drag-drop files onto the chat, load a skill context before sending, switch between sessions. Submit while Claude is running to queue the message; queued entries show in-chat with a cancel option, and the send button switches to `QUEUE →`.
+- **RAVEN** (`/raven`): full back-and-forth with Claude, tool use shown inline and collapsible, tap-to-approve permission cards, attachments. Drag-drop files onto the chat, load a skill context before sending, switch between sessions. Submit while Claude is running to queue the message; queued entries show in-chat with a cancel option, and the send button switches to `QUEUE →`. Copy button on each message. When Claude invokes the `AskUserQuestion` tool, an inline card surfaces the question and options; select one to respond without leaving the chat.
 - **EINHERJAR** (`/einherjar`): registered sub-agents. Two modes: `context` loads a `CLAUDE.md` from the agent path as a personality overlay on the main session, `cwd` runs Claude with that folder as its working directory.
 - **LEDGER** (`/ledger`): token usage, cache hit rate, cost per query, context window usage. Also tracks Anthropic rate limit windows (5-hour, 7-day, Sonnet weekly) and shows you utilization percentage and a reset countdown, so you're not just guessing when capacity comes back.
 - **FORGE** (`/forge`): vault config, Claude model and permissions, server config, autostart, restart/shutdown, Tailscale status, session reload. Also has a live logs viewer, session cleanup by age, and a full MCP management panel (covered below).
@@ -82,7 +82,7 @@ Files uploaded in `RAVEN` are either ephemeral (scoped to the current session) o
 
 ## Permissions
 
-When Claude wants to run a tool you haven't pre-approved, `RAVEN` shows a permission card inline. Approve or deny, and pick a scope: session only (forgets when you clear), or save to local (persists across sessions). The three permission modes in config control the baseline before any cards appear: `default` asks for everything, `acceptEdits` auto-approves file writes, `bypassPermissions` skips all prompts.
+When Claude wants to run a tool you haven't pre-approved, `RAVEN` shows a permission card inline. Approve or deny; denying supports optional feedback text that's passed back to Claude. Pick a scope: session only (forgets when you clear), or save to local (persists across sessions). The three permission modes in config control the baseline before any cards appear: `default` asks for everything, `acceptEdits` auto-approves file writes, `bypassPermissions` skips all prompts.
 
 ## MCP
 

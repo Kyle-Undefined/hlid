@@ -8,6 +8,7 @@ export type ClaudeForm = {
 	maxTurns: string;
 	permissionMode: HlidConfig["claude"]["permission_mode"];
 	turnRecaps: boolean;
+	recapModel: string;
 	vaultProvider: string;
 };
 
@@ -111,10 +112,10 @@ export function ClaudeSection({
 							))}
 						</select>
 					</Field>
-					<fieldset className="px-4 py-3 space-y-2 border-0 m-0 p-0 px-4 py-3">
-						<legend className="text-[9px] tracking-widest text-muted-foreground uppercase mb-2">
+					<fieldset className="border-0 m-0 p-0 px-4 py-3">
+						<div className="text-[9px] tracking-widest text-muted-foreground uppercase mb-2">
 							EFFORT
-						</legend>
+						</div>
 						<div className="space-y-1.5">
 							{EFFORT_OPTIONS.map((opt) => (
 								<label
@@ -144,9 +145,9 @@ export function ClaudeSection({
 						</div>
 					</fieldset>
 					<fieldset className="border-0 m-0 p-0 px-4 py-3">
-						<legend className="text-[9px] tracking-widest text-muted-foreground uppercase mb-2">
+						<div className="text-[9px] tracking-widest text-muted-foreground uppercase mb-2">
 							PERMISSIONS
-						</legend>
+						</div>
 						<div className="space-y-1.5">
 							{PERMISSION_OPTIONS.map((opt) => (
 								<label
@@ -211,6 +212,20 @@ export function ClaudeSection({
 							/>
 							<span className="text-xs text-muted-foreground">enabled</span>
 						</label>
+					</Field>
+					<Field label="Recap model" hint="model used for turn recap summaries">
+						<select
+							value={claude.recapModel}
+							onChange={(e) => onChange({ recapModel: e.target.value })}
+							className="w-32 sm:w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
+						>
+							<option value="">— default (haiku) —</option>
+							{MODEL_OPTIONS.map((m) => (
+								<option key={m.value} value={m.value}>
+									{m.label}
+								</option>
+							))}
+						</select>
 					</Field>
 				</>
 			)}
