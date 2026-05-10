@@ -557,6 +557,7 @@ describe("message — ask_user_question_response", () => {
 			{
 				"Q?": ["Option A"],
 			},
+			undefined,
 		);
 	});
 
@@ -615,12 +616,56 @@ describe("message — ask_user_question_response", () => {
 		expect(session.handleAskUserQuestionResponse).toHaveBeenCalledWith(
 			"aqq-multi",
 			answers,
+			undefined,
 		);
 		expect(mockBroadcast).toHaveBeenCalledWith(
 			expect.objectContaining({
 				type: "ask_user_question_resolved",
 				id: "aqq-multi",
 				answers,
+			}),
+		);
+	});
+
+	it("forwards notes to session.handleAskUserQuestionResponse when provided", async () => {
+		const session = makeSession();
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "ask_user_question_response",
+				id: "aqq-notes",
+				answers: { "Q?": ["A"] },
+				notes: { "Q?": "more context" },
+			}),
+		);
+		expect(session.handleAskUserQuestionResponse).toHaveBeenCalledWith(
+			"aqq-notes",
+			{ "Q?": ["A"] },
+			{ "Q?": "more context" },
+		);
+	});
+
+	it("broadcasts ask_user_question_resolved including notes when provided", async () => {
+		const session = makeSession();
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "ask_user_question_response",
+				id: "aqq-notes-2",
+				answers: { "Q?": ["A"] },
+				notes: { "Q?": "feedback text" },
+			}),
+		);
+		expect(mockBroadcast).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "ask_user_question_resolved",
+				id: "aqq-notes-2",
+				answers: { "Q?": ["A"] },
+				notes: { "Q?": "feedback text" },
 			}),
 		);
 	});
@@ -645,6 +690,7 @@ describe("message — ask_user_question_response", () => {
 			{
 				"Q?": ["Option C"],
 			},
+			undefined,
 		);
 	});
 });

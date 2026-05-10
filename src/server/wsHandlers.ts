@@ -199,11 +199,12 @@ export function createWsHandlers(session: SessionManager) {
 			}
 
 			if (msg.type === "ask_user_question_response") {
-				session.handleAskUserQuestionResponse(msg.id, msg.answers);
+				session.handleAskUserQuestionResponse(msg.id, msg.answers, msg.notes);
 				broadcast({
 					type: "ask_user_question_resolved",
 					id: msg.id,
 					answers: msg.answers,
+					...(msg.notes !== undefined ? { notes: msg.notes } : {}),
 				});
 				return;
 			}

@@ -198,17 +198,17 @@ function SettingsPage() {
 	return (
 		<div className="flex flex-col h-full">
 			{/* Tab nav */}
-			<div className="shrink-0 border-b border-border bg-background/95 px-5 py-2 flex items-center gap-1 overflow-x-auto">
+			<div className="flex flex-wrap border-b border-border shrink-0">
 				{TABS.map((t) => (
 					<button
 						key={t}
 						type="button"
 						onClick={() => setTab(t)}
 						aria-pressed={tab === t}
-						className={`text-[10px] tracking-widest uppercase px-3 py-1.5 transition-colors shrink-0 ${
+						className={`px-5 py-2.5 text-[10px] tracking-widest uppercase transition-colors border-b-2 -mb-px ${
 							tab === t
-								? "text-foreground border-b border-primary -mb-[9px] pb-[9px]"
-								: "text-muted-foreground/50 hover:text-foreground"
+								? "border-primary text-primary"
+								: "border-transparent text-muted-foreground hover:text-foreground"
 						}`}
 					>
 						{t}

@@ -202,9 +202,13 @@ function ChatPage() {
 	);
 
 	const handleSubmitAnswers = useCallback(
-		(id: string, answers: Record<string, string[]>) => {
-			dispatch({ type: "RESOLVE_ASK_USER_QUESTION", id, answers });
-			send({ type: "ask_user_question_response", id, answers });
+		(
+			id: string,
+			answers: Record<string, string[]>,
+			notes?: Record<string, string>,
+		) => {
+			dispatch({ type: "RESOLVE_ASK_USER_QUESTION", id, answers, notes });
+			send({ type: "ask_user_question_response", id, answers, notes });
 		},
 		[send],
 	);

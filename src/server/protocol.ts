@@ -128,10 +128,14 @@ export type AskUserQuestionMessage = {
 /** answers keyed by question text; arrays support multiSelect (single-select uses a 1-element array). */
 export type AskUserQuestionAnswers = Record<string, string[]>;
 
+/** Optional free-text notes the user added per question, keyed by question text. */
+export type AskUserQuestionNotes = Record<string, string>;
+
 export type AskUserQuestionResolvedMessage = {
 	type: "ask_user_question_resolved";
 	id: string;
 	answers: AskUserQuestionAnswers;
+	notes?: AskUserQuestionNotes;
 };
 
 export type PlanModeExitMessage = {
@@ -275,6 +279,8 @@ export type ClientAskUserQuestionResponseMessage = {
 	type: "ask_user_question_response";
 	id: string;
 	answers: AskUserQuestionAnswers;
+	/** Optional free-text user feedback per question, keyed by question text. */
+	notes?: AskUserQuestionNotes;
 };
 
 export type ClientPlanModeExitResponseMessage =

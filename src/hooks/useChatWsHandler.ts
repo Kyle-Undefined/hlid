@@ -82,6 +82,7 @@ export function useChatWsHandler({
 				type: "RESOLVE_ASK_USER_QUESTION",
 				id: msg.id,
 				answers: msg.answers,
+				notes: msg.notes,
 			});
 			return;
 		}

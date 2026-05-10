@@ -1,6 +1,7 @@
 import type {
 	AskUserQuestionAnswers,
 	AskUserQuestionMessage,
+	AskUserQuestionNotes,
 	PlanModeExitMessage,
 	ServerMessage,
 } from "./protocol";
@@ -80,7 +81,10 @@ export class PermissionManager {
 
 // ─── AskUserQuestionManager ───────────────────────────────────────────────────
 
-type AskUserQuestionResolver = (answers: AskUserQuestionAnswers) => void;
+type AskUserQuestionResolver = (
+	answers: AskUserQuestionAnswers,
+	notes?: AskUserQuestionNotes,
+) => void;
 
 export class AskUserQuestionManager {
 	private resolvers = new Map<string, AskUserQuestionResolver>();
@@ -106,13 +110,17 @@ export class AskUserQuestionManager {
 	}
 
 	/** Invoke the resolver for a pending question, then remove its data. */
-	complete(id: string, answers: AskUserQuestionAnswers): void {
+	complete(
+		id: string,
+		answers: AskUserQuestionAnswers,
+		notes?: AskUserQuestionNotes,
+	): void {
 		if (!this.resolvers.has(id)) {
 			console.warn(`AskUserQuestionManager.complete: unknown id "${id}"`);
 			return;
 		}
 		try {
-			this.resolvers.get(id)?.(answers);
+			this.resolvers.get(id)?.(answers, notes);
 		} finally {
 			this.delete(id);
 		}

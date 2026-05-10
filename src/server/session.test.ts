@@ -712,6 +712,124 @@ describe("SessionManager — AskUserQuestion", () => {
 		expect(askEvent?.questions[0].multiSelect).toBe(false);
 		expect(askEvent?.questions[1].multiSelect).toBe(true);
 	});
+
+	it("canUseTool appends user notes to the SDK answer string when provided", async () => {
+		const QUESTION = "Which library?";
+		const askInput = {
+			questions: [
+				{
+					question: QUESTION,
+					header: "Library",
+					options: [{ label: "React" }, { label: "Vue" }],
+					multiSelect: false,
+				},
+			],
+		};
+
+		let capturedResult: unknown;
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-session-1" };
+					capturedResult = await params.canUseTool(
+						"AskUserQuestion",
+						askInput,
+						{ toolUseID: "tid-notes", signal: new AbortController().signal },
+					);
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const turn = sm.runQuery("hi", () => {}, "sess-notes");
+		await waitFor(() =>
+			expect(sm.getPendingAskUserQuestions()).toHaveLength(1),
+		);
+
+		sm.handleAskUserQuestionResponse(
+			"tid-notes",
+			{ [QUESTION]: ["React"] },
+			{ [QUESTION]: "team already uses it" },
+		);
+		await turn;
+
+		const updated = (
+			capturedResult as { updatedInput: { answers: Record<string, string> } }
+		).updatedInput;
+		expect(updated.answers[QUESTION]).toContain("React");
+		expect(updated.answers[QUESTION]).toContain("team already uses it");
+	});
+
+	it("canUseTool omits notes section when none provided", async () => {
+		const QUESTION = "Pick?";
+		const askInput = {
+			questions: [
+				{
+					question: QUESTION,
+					header: "Q",
+					options: [{ label: "A" }, { label: "B" }],
+					multiSelect: false,
+				},
+			],
+		};
+
+		let capturedResult: unknown;
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-session-1" };
+					capturedResult = await params.canUseTool(
+						"AskUserQuestion",
+						askInput,
+						{
+							toolUseID: "tid-no-notes",
+							signal: new AbortController().signal,
+						},
+					);
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const turn = sm.runQuery("hi", () => {}, "sess-no-notes");
+		await waitFor(() =>
+			expect(sm.getPendingAskUserQuestions()).toHaveLength(1),
+		);
+
+		sm.handleAskUserQuestionResponse("tid-no-notes", { [QUESTION]: ["A"] });
+		await turn;
+
+		const updated = (
+			capturedResult as { updatedInput: { answers: Record<string, string> } }
+		).updatedInput;
+		expect(updated.answers[QUESTION]).toBe("A");
+	});
 });
 
 // ── Session-scoped permission persistence ──────────────────────────────────────

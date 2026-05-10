@@ -27,6 +27,7 @@ import {
 import { buildPrompt } from "./promptBuilder";
 import type {
 	AskUserQuestionAnswers,
+	AskUserQuestionNotes,
 	ChatAttachment,
 	ServerMessage,
 } from "./protocol";
@@ -284,8 +285,9 @@ export class SessionManager {
 	handleAskUserQuestionResponse(
 		id: string,
 		answers: AskUserQuestionAnswers,
+		notes?: AskUserQuestionNotes,
 	): void {
-		this.askUserQuestions.complete(id, answers);
+		this.askUserQuestions.complete(id, answers, notes);
 	}
 
 	handlePlanModeExitResponse(
@@ -716,25 +718,32 @@ export class SessionManager {
 								id: toolUseID,
 								questions,
 							};
-							this.askUserQuestions.register(toolUseID, askReq, (answers) => {
-								// SDK contract: AskUserQuestionOutput.answers is keyed by
-								// question text and string-valued (multi-select answers are
-								// comma-separated). A flat `answer` field caused the SDK to
-								// fall back to a default option (often the last).
-								const existing =
-									(passInput.answers as Record<string, string>) ?? {};
-								const sdkAnswers: Record<string, string> = { ...existing };
-								for (const [q, picks] of Object.entries(answers)) {
-									sdkAnswers[q] = picks.join(", ");
-								}
-								resolve({
-									behavior: "allow" as const,
-									updatedInput: {
-										...passInput,
-										answers: sdkAnswers,
-									},
-								});
-							});
+							this.askUserQuestions.register(
+								toolUseID,
+								askReq,
+								(answers, notes) => {
+									// SDK contract: AskUserQuestionOutput.answers is keyed by
+									// question text and string-valued (multi-select answers are
+									// comma-separated). A flat `answer` field caused the SDK to
+									// fall back to a default option (often the last).
+									const existing =
+										(passInput.answers as Record<string, string>) ?? {};
+									const sdkAnswers: Record<string, string> = { ...existing };
+									for (const [q, picks] of Object.entries(answers)) {
+										const note = notes?.[q]?.trim();
+										sdkAnswers[q] = note
+											? `${picks.join(", ")}\n\nNotes: ${note}`
+											: picks.join(", ");
+									}
+									resolve({
+										behavior: "allow" as const,
+										updatedInput: {
+											...passInput,
+											answers: sdkAnswers,
+										},
+									});
+								},
+							);
 							emit(askReq);
 							return;
 						}

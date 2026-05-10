@@ -713,11 +713,20 @@ describe("usage — getWeeklyStats", () => {
 	});
 
 	it("today's day index has non-zero count after recordQuery", async () => {
+		const db = freshDb();
 		await createSession("s1", "L", "m");
 		await recordQuery("s1", baseQuery());
 		const { days } = await getWeeklyStats();
-		const todayDow = new Date().getDay();
-		expect(days[todayDow]).toBeGreaterThan(0);
+		// Use SQLite's localtime DOW to match recordQuery's date insertion;
+		// JS `new Date().getDay()` can disagree with SQLite under some test
+		// runners (e.g. bun test forces UTC for JS Intl but the C runtime
+		// SQLite uses still reads the system TZ).
+		const { dow } = db
+			.query<{ dow: number }, []>(
+				`SELECT CAST(strftime('%w', 'now', 'localtime') AS INTEGER) AS dow`,
+			)
+			.get() ?? { dow: 0 };
+		expect(days[dow]).toBeGreaterThan(0);
 	});
 });
 

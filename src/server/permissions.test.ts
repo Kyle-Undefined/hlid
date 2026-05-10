@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PermissionRequest } from "./permissions";
-import { PermissionManager } from "./permissions";
+import { AskUserQuestionManager, PermissionManager } from "./permissions";
+import type { AskUserQuestionMessage } from "./protocol";
 
 function makeReq(id: string): PermissionRequest {
 	return {
@@ -139,5 +140,62 @@ describe("PermissionManager", () => {
 		pm.register("t1", makeReq("t1"), resolver);
 		pm.complete("t1", false);
 		expect(resolver).toHaveBeenCalledWith(false, undefined, undefined);
+	});
+});
+
+// ── AskUserQuestionManager ────────────────────────────────────────────────────
+
+function makeAskReq(id: string): AskUserQuestionMessage {
+	return {
+		type: "ask_user_question",
+		id,
+		questions: [{ question: "Pick?", options: ["A", "B"], multiSelect: false }],
+	};
+}
+
+describe("AskUserQuestionManager", () => {
+	it("complete forwards answers to the resolver", () => {
+		const m = new AskUserQuestionManager();
+		const resolver = vi.fn();
+		m.register("a1", makeAskReq("a1"), resolver);
+		m.complete("a1", { "Pick?": ["A"] });
+		expect(resolver).toHaveBeenCalledWith({ "Pick?": ["A"] }, undefined);
+		expect(m.getPending()).toHaveLength(0);
+	});
+
+	it("complete forwards notes to the resolver when provided", () => {
+		const m = new AskUserQuestionManager();
+		const resolver = vi.fn();
+		m.register("a1", makeAskReq("a1"), resolver);
+		m.complete("a1", { "Pick?": ["A"] }, { "Pick?": "user feedback here" });
+		expect(resolver).toHaveBeenCalledWith(
+			{ "Pick?": ["A"] },
+			{ "Pick?": "user feedback here" },
+		);
+	});
+
+	it("complete passes notes=undefined when not provided", () => {
+		const m = new AskUserQuestionManager();
+		const resolver = vi.fn();
+		m.register("a1", makeAskReq("a1"), resolver);
+		m.complete("a1", { "Pick?": ["A"] });
+		expect(resolver).toHaveBeenCalledWith({ "Pick?": ["A"] }, undefined);
+	});
+
+	it("complete unknown id warns but does not throw", () => {
+		const m = new AskUserQuestionManager();
+		const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+		expect(() => m.complete("ghost", { Q: ["x"] })).not.toThrow();
+		expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('"ghost"'));
+		warnSpy.mockRestore();
+	});
+
+	it("clearAll resolves pending with empty answers", () => {
+		const m = new AskUserQuestionManager();
+		const resolver = vi.fn();
+		m.register("a1", makeAskReq("a1"), resolver);
+		m.clearAll();
+		expect(resolver).toHaveBeenCalledWith({});
+		expect(m.getPending()).toHaveLength(0);
 	});
 });

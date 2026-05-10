@@ -318,26 +318,24 @@ export async function getThirtyDayStats(): Promise<ThirtyDayStats> {
 
 export async function getWeeklyStats(): Promise<WeeklyStats> {
 	const db = await getDb();
-	const now = new Date();
-	const startOfWeek = new Date(now);
-	startOfWeek.setHours(0, 0, 0, 0);
-	startOfWeek.setDate(startOfWeek.getDate() - now.getDay());
-	const y = startOfWeek.getFullYear();
-	const m = String(startOfWeek.getMonth() + 1).padStart(2, "0");
-	const d = String(startOfWeek.getDate()).padStart(2, "0");
-	const startDate = `${y}-${m}-${d}`;
 
+	// Compute start-of-week and today in SQLite using the same `localtime`
+	// reference that recordQuery uses to write usage_daily.date — mixing JS
+	// `new Date()` with SQLite localtime is unsafe when JS sees a different
+	// timezone than the SQLite C runtime (e.g. bun test forces UTC for Intl
+	// but SQLite still reads system TZ).
 	type Row = { day: number; count: number };
 	const rows = db
-		.query<Row, [string]>(
+		.query<Row, []>(
 			`SELECT CAST(strftime('%w', date) AS INTEGER) as day,
 			        SUM(queries) as count
 			 FROM usage_daily
-			 WHERE date >= ?
+			 WHERE date >= DATE('now', 'localtime',
+			                    '-' || CAST(strftime('%w', 'now', 'localtime') AS TEXT) || ' days')
 			   AND date <= DATE('now', 'localtime')
 			 GROUP BY day`,
 		)
-		.all(startDate);
+		.all();
 
 	const days = Array(7).fill(0) as number[];
 	let total = 0;

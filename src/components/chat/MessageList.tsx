@@ -30,7 +30,11 @@ export function MessageList({
 		saveScope?: "session" | "local",
 		denyMessage?: string,
 	) => void;
-	handleSubmitAnswers: (id: string, answers: Record<string, string[]>) => void;
+	handleSubmitAnswers: (
+		id: string,
+		answers: Record<string, string[]>,
+		notes?: Record<string, string>,
+	) => void;
 	handleCancelQueued: (id: string) => void;
 	bottomRef: React.MutableRefObject<HTMLDivElement | null>;
 }) {

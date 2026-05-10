@@ -2,7 +2,7 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as privacyStore from "#/hooks/privacyStore";
-import { AssistantMsg } from "./AssistantMsg";
+import { AssistantMsg, normalizeMd } from "./AssistantMsg";
 import type { AssistantMessage } from "./chatReducer";
 
 afterEach(cleanup);
@@ -24,6 +24,66 @@ beforeEach(() => {
 	Object.defineProperty(navigator, "clipboard", {
 		value: { writeText: vi.fn().mockResolvedValue(undefined) },
 		configurable: true,
+	});
+});
+
+describe("normalizeMd", () => {
+	it("inserts space after closer when preceded by punctuation and followed by word char", () => {
+		expect(normalizeMd("**foo:**Yes")).toBe("**foo:** Yes");
+	});
+
+	it("handles real-world agent output with parens and colon", () => {
+		expect(normalizeMd("**hlid (your app):**Yes. Bin")).toBe(
+			"**hlid (your app):** Yes. Bin",
+		);
+	});
+
+	it("handles other trailing punctuation (! . ))", () => {
+		expect(normalizeMd("**foo!**Yes")).toBe("**foo!** Yes");
+		expect(normalizeMd("**foo.**Yes")).toBe("**foo.** Yes");
+		expect(normalizeMd("**foo)**Yes")).toBe("**foo)** Yes");
+	});
+
+	it("does not modify already-correct intra-word strong", () => {
+		expect(normalizeMd("**foo**Yes")).toBe("**foo**Yes");
+	});
+
+	it("does not modify strong followed by space", () => {
+		expect(normalizeMd("**foo:** Yes")).toBe("**foo:** Yes");
+	});
+
+	it("leaves plain text unchanged", () => {
+		expect(normalizeMd("regular text with no markdown")).toBe(
+			"regular text with no markdown",
+		);
+	});
+
+	it("normalizes multiple occurrences on the same line", () => {
+		expect(normalizeMd("**a:**b **c:**d")).toBe("**a:** b **c:** d");
+	});
+
+	it("does not touch closer when followed by punctuation or whitespace", () => {
+		expect(normalizeMd("**foo:**, more")).toBe("**foo:**, more");
+		expect(normalizeMd("**foo:**\nbar")).toBe("**foo:**\nbar");
+	});
+
+	// Regression: previously a greedy '** text **' rule collapsed two valid
+	// adjacent strong blocks into one mangled span by pairing the closer of the
+	// first with the opener of the second.
+	it("preserves multiple adjacent strong blocks separated by sentences", () => {
+		const src =
+			"**Visual review:** border alignment trick, correct. **No DRY violations:** ok. **Summary:** done";
+		expect(normalizeMd(src)).toBe(src);
+	});
+
+	it("preserves structured agent output with code spans between strongs", () => {
+		const src =
+			"**Fix nit:** All 9 `normalizeMd` tests pass. **Summary:** done";
+		expect(normalizeMd(src)).toBe(src);
+	});
+
+	it("preserves a strong block followed by an unpaired ** marker", () => {
+		expect(normalizeMd("**Summary:** done **")).toBe("**Summary:** done **");
 	});
 });
 

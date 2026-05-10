@@ -1,6 +1,7 @@
 import type {
 	AskQuestion,
 	AskUserQuestionAnswers,
+	AskUserQuestionNotes,
 	ChatAttachment,
 	PermissionDecision,
 	PermissionRequestMessage,
@@ -41,6 +42,8 @@ export type AskUserQuestionChatMessage = {
 	questions: AskQuestion[];
 	/** null = unanswered; map keyed by question text, values arrays for multiSelect */
 	answers: AskUserQuestionAnswers | null;
+	/** Free-text notes the user attached per question, keyed by question text. */
+	notes?: AskUserQuestionNotes;
 };
 
 export type ChatMessage =
@@ -104,6 +107,7 @@ export type Action =
 			type: "RESOLVE_ASK_USER_QUESTION";
 			id: string;
 			answers: AskUserQuestionAnswers;
+			notes?: AskUserQuestionNotes;
 	  }
 	| { type: "CLEAR" };
 
@@ -264,7 +268,11 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 		case "RESOLVE_ASK_USER_QUESTION":
 			return state.map((m) =>
 				m.id === action.id && m.role === "ask_user_question"
-					? { ...m, answers: action.answers }
+					? {
+							...m,
+							answers: action.answers,
+							...(action.notes !== undefined ? { notes: action.notes } : {}),
+						}
 					: m,
 			);
 		case "CLEAR":

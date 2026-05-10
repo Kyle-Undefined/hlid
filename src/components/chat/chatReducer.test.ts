@@ -575,6 +575,90 @@ describe("APPEND_CHUNK — edge cases", () => {
 	});
 });
 
+// ── ADD_ASK_USER_QUESTION ─────────────────────────────────────────────────────
+
+describe("ADD_ASK_USER_QUESTION", () => {
+	it("appends an ask_user_question message with answers=null and notes=null", () => {
+		const state = reducer(empty(), {
+			type: "ADD_ASK_USER_QUESTION",
+			id: "aq-1",
+			questions: [
+				{ question: "Pick?", options: ["A", "B"], multiSelect: false },
+			],
+		});
+		expect(state).toHaveLength(1);
+		const msg = state[0];
+		if (msg.role !== "ask_user_question") throw new Error("wrong role");
+		expect(msg.answers).toBeNull();
+		expect(msg.notes ?? null).toBeNull();
+		expect(msg.questions).toHaveLength(1);
+		expect(msg.questions[0].question).toBe("Pick?");
+	});
+});
+
+// ── RESOLVE_ASK_USER_QUESTION ─────────────────────────────────────────────────
+
+describe("RESOLVE_ASK_USER_QUESTION", () => {
+	function withAsk(id = "aq-1"): ChatMessage[] {
+		return reducer(empty(), {
+			type: "ADD_ASK_USER_QUESTION",
+			id,
+			questions: [
+				{ question: "Pick?", options: ["A", "B"], multiSelect: false },
+			],
+		});
+	}
+
+	it("sets answers on the matching ask_user_question message", () => {
+		const before = withAsk("aq-1");
+		const after = reducer(before, {
+			type: "RESOLVE_ASK_USER_QUESTION",
+			id: "aq-1",
+			answers: { "Pick?": ["A"] },
+		});
+		const msg = after[0];
+		if (msg.role !== "ask_user_question") throw new Error("wrong role");
+		expect(msg.answers).toEqual({ "Pick?": ["A"] });
+	});
+
+	it("stores notes when provided", () => {
+		const before = withAsk("aq-1");
+		const after = reducer(before, {
+			type: "RESOLVE_ASK_USER_QUESTION",
+			id: "aq-1",
+			answers: { "Pick?": ["A"] },
+			notes: { "Pick?": "more context here" },
+		});
+		const msg = after[0];
+		if (msg.role !== "ask_user_question") throw new Error("wrong role");
+		expect(msg.notes).toEqual({ "Pick?": "more context here" });
+	});
+
+	it("leaves notes undefined when not provided", () => {
+		const before = withAsk("aq-1");
+		const after = reducer(before, {
+			type: "RESOLVE_ASK_USER_QUESTION",
+			id: "aq-1",
+			answers: { "Pick?": ["A"] },
+		});
+		const msg = after[0];
+		if (msg.role !== "ask_user_question") throw new Error("wrong role");
+		expect(msg.notes).toBeUndefined();
+	});
+
+	it("ignores ids that do not match any message", () => {
+		const before = withAsk("aq-1");
+		const after = reducer(before, {
+			type: "RESOLVE_ASK_USER_QUESTION",
+			id: "ghost",
+			answers: { "Pick?": ["A"] },
+		});
+		const msg = after[0];
+		if (msg.role !== "ask_user_question") throw new Error("wrong role");
+		expect(msg.answers).toBeNull();
+	});
+});
+
 describe("default — unknown action", () => {
 	it("returns state unchanged for unknown action type", () => {
 		const before = withUser();

@@ -218,3 +218,210 @@ input[type="number"] {
 .cursor-blink {
   animation: cursor-blink 1s step-end infinite;
 }
+
+@media (prefers-reduced-motion: reduce) {
+  .cursor-blink {
+    animation: none;
+    opacity: 0.6;
+  }
+  /* Mermaid emits SVGs with transitions/animations on edges and nodes;
+     strip them when the user opts out of motion. */
+  .mermaid-block,
+  .mermaid-block * {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* highlight.js token colors — dark theme (default) */
+.hljs-comment,
+.hljs-quote {
+  color: #6b7280;
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-built_in,
+.hljs-meta {
+  color: #c084fc;
+}
+.hljs-string,
+.hljs-attr,
+.hljs-template-tag,
+.hljs-template-variable {
+  color: #86efac;
+}
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet {
+  color: #fbbf24;
+}
+.hljs-title,
+.hljs-section,
+.hljs-name,
+.hljs-tag {
+  color: #38bdf8;
+}
+.hljs-variable,
+.hljs-params,
+.hljs-property {
+  color: #dcdce4;
+}
+.hljs-type,
+.hljs-class .hljs-title {
+  color: #f472b6;
+}
+.hljs-regexp,
+.hljs-link {
+  color: #fb923c;
+}
+.hljs-deletion {
+  color: #fca5a5;
+  background: rgba(150, 50, 50, 0.15);
+}
+.hljs-addition {
+  color: #86efac;
+  background: rgba(50, 150, 50, 0.15);
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: bold;
+}
+
+/* highlight.js token colors — tan theme overrides */
+html[data-theme="tan"] .hljs-comment,
+html[data-theme="tan"] .hljs-quote {
+  color: #7c5a3f;
+}
+html[data-theme="tan"] .hljs-keyword,
+html[data-theme="tan"] .hljs-selector-tag,
+html[data-theme="tan"] .hljs-literal,
+html[data-theme="tan"] .hljs-built_in,
+html[data-theme="tan"] .hljs-meta {
+  color: #6b21a8;
+}
+html[data-theme="tan"] .hljs-string,
+html[data-theme="tan"] .hljs-attr,
+html[data-theme="tan"] .hljs-template-tag,
+html[data-theme="tan"] .hljs-template-variable {
+  color: #166534;
+}
+html[data-theme="tan"] .hljs-number,
+html[data-theme="tan"] .hljs-symbol,
+html[data-theme="tan"] .hljs-bullet {
+  color: #92400e;
+}
+html[data-theme="tan"] .hljs-title,
+html[data-theme="tan"] .hljs-section,
+html[data-theme="tan"] .hljs-name,
+html[data-theme="tan"] .hljs-tag {
+  color: #8c4e35;
+}
+html[data-theme="tan"] .hljs-variable,
+html[data-theme="tan"] .hljs-params,
+html[data-theme="tan"] .hljs-property {
+  color: #2a1a10;
+}
+html[data-theme="tan"] .hljs-type,
+html[data-theme="tan"] .hljs-class .hljs-title {
+  color: #9d174d;
+}
+html[data-theme="tan"] .hljs-regexp,
+html[data-theme="tan"] .hljs-link {
+  color: #b45309;
+}
+html[data-theme="tan"] .hljs-deletion {
+  color: #991b1b;
+  background: rgba(176, 58, 46, 0.12);
+}
+html[data-theme="tan"] .hljs-addition {
+  color: #166534;
+  background: rgba(22, 101, 52, 0.12);
+}
+
+/* GitHub-style callouts (`> [!NOTE]` etc.) */
+.markdown-alert {
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.75rem;
+  border-left: 3px solid;
+  background: var(--secondary);
+  color: var(--foreground);
+}
+.markdown-alert > p {
+  margin-bottom: 0.25rem;
+}
+.markdown-alert > p:last-child {
+  margin-bottom: 0;
+}
+.markdown-alert-title {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.markdown-alert-title svg,
+.markdown-alert-title svg path {
+  fill: currentColor;
+}
+.markdown-alert-title svg {
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
+}
+
+.markdown-alert-note {
+  border-left-color: #38bdf8;
+}
+.markdown-alert-note .markdown-alert-title { color: #38bdf8; }
+
+.markdown-alert-tip {
+  border-left-color: #22c55e;
+}
+.markdown-alert-tip .markdown-alert-title { color: #22c55e; }
+
+.markdown-alert-important {
+  border-left-color: #c084fc;
+}
+.markdown-alert-important .markdown-alert-title { color: #c084fc; }
+
+.markdown-alert-warning {
+  border-left-color: #fbbf24;
+}
+.markdown-alert-warning .markdown-alert-title { color: #fbbf24; }
+
+.markdown-alert-caution {
+  border-left-color: #f87171;
+}
+.markdown-alert-caution .markdown-alert-title { color: #f87171; }
+
+html[data-theme="tan"] .markdown-alert-note {
+  border-left-color: #2563eb;
+}
+html[data-theme="tan"] .markdown-alert-note .markdown-alert-title { color: #1d4ed8; }
+
+html[data-theme="tan"] .markdown-alert-tip {
+  border-left-color: #15803d;
+}
+html[data-theme="tan"] .markdown-alert-tip .markdown-alert-title { color: #14532d; }
+
+html[data-theme="tan"] .markdown-alert-important {
+  border-left-color: #6b21a8;
+}
+html[data-theme="tan"] .markdown-alert-important .markdown-alert-title { color: #581c87; }
+
+html[data-theme="tan"] .markdown-alert-warning {
+  border-left-color: #b45309;
+}
+html[data-theme="tan"] .markdown-alert-warning .markdown-alert-title { color: #92400e; }
+
+html[data-theme="tan"] .markdown-alert-caution {
+  border-left-color: #b91c1c;
+}
+html[data-theme="tan"] .markdown-alert-caution .markdown-alert-title { color: #991b1b; }
