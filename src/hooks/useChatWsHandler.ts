@@ -38,7 +38,11 @@ export function useChatWsHandler({
 
 		if (msg.type === "user_message") {
 			if (msg.session_id === sessionIdRef.current) {
-				dispatch({ type: "ADD_USER", id: uid(), text: msg.text });
+				// Slice C: reuse the originating client's queue id (when present)
+				// so UserMsg can correlate to the chatQueue entry and render
+				// queue indicators / cancel chip without rendering the same
+				// message twice.
+				dispatch({ type: "ADD_USER", id: msg.id ?? uid(), text: msg.text });
 			}
 			return;
 		}
@@ -48,7 +52,15 @@ export function useChatWsHandler({
 		if (msg.type === "status" && msg.state === "running" && !id) {
 			const newId = uid();
 			pendingIdRef.current = newId;
-			dispatch({ type: "ADD_ASSISTANT", id: newId });
+			// Slice C: pass turn_id as afterUserId so the assistant placeholder
+			// inserts immediately after its matching user msg, preserving
+			// user/assistant/user/assistant ordering when queued msgs run
+			// out of insertion order (e.g. after promote).
+			dispatch({
+				type: "ADD_ASSISTANT",
+				id: newId,
+				...(msg.turn_id !== undefined ? { afterUserId: msg.turn_id } : {}),
+			});
 			return;
 		}
 

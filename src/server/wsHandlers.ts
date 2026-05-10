@@ -54,10 +54,15 @@ export function createWsHandlers(session: SessionManager) {
 			if (cachedMcp) {
 				send(ws, { type: "mcp_status", servers: cachedMcp.map(mapMcpServer) });
 			}
+			// Slice C polish: send queue state so the client can prune any
+			// orphan chatQueue items (e.g. _sent items that the server has
+			// no record of after a restart).
+			send(ws, { type: "queue_state", ...session.getQueueState() });
 		},
 
 		close(ws: ServerWebSocket<unknown>) {
 			wsState.clients.delete(ws);
+			wsState.inFlightChatCount.delete(ws);
 			if (ws === wsState.sessionOwnerWs) wsState.sessionOwnerWs = null;
 			// Session persists, no abort on disconnect
 		},
@@ -73,6 +78,7 @@ export function createWsHandlers(session: SessionManager) {
 
 			if (msg.type === "sync") {
 				send(ws, { type: "status", ...session.getStatus() });
+				send(ws, { type: "queue_state", ...session.getQueueState() });
 				if (session.isRunning() && wsState.sessionOwnerWs === null) {
 					wsState.sessionOwnerWs = ws;
 					for (const req of session.getPendingPermissionRequests()) {
@@ -88,6 +94,18 @@ export function createWsHandlers(session: SessionManager) {
 			if (msg.type === "abort") {
 				if (notOwner(ws)) return;
 				session.abort();
+				return;
+			}
+
+			if (msg.type === "cancel_queued") {
+				if (notOwner(ws)) return;
+				session.cancelQueued(msg.turn_id);
+				return;
+			}
+
+			if (msg.type === "promote_queued") {
+				if (notOwner(ws)) return;
+				session.promoteQueued(msg.turn_id);
 				return;
 			}
 
@@ -237,22 +255,32 @@ export function createWsHandlers(session: SessionManager) {
 					return;
 				}
 
-				if (session.isRunning()) {
-					send(ws, { type: "error", message: "Session already running" });
-					return;
-				}
+				// Slice A: typed-while-running messages are accepted and queued
+				// server-side. SessionManager.runQuery is re-entrant — concurrent
+				// calls drain in FIFO order at turn boundaries.
 
-				// Broadcast user prompt to all OTHER clients for cross-device sync
+				// Broadcast user prompt to all OTHER clients for cross-device sync.
+				// Slice C: include turn_id so receivers can correlate to their
+				// chatQueue (if they were also tracking it) — typically only the
+				// originator has the matching queue entry.
 				const userEventData = JSON.stringify({
 					type: "user_message",
 					text: msg.text,
 					session_id: msg.session_id,
+					...(msg.turn_id !== undefined ? { id: msg.turn_id } : {}),
 				});
 				for (const client of wsState.clients) {
 					if (client !== ws) client.send(userEventData);
 				}
 
 				wsState.sessionOwnerWs = ws;
+				// Track in-flight chats per ws so ownership only releases when this
+				// ws's last queued chat completes — not when an earlier one finishes
+				// while later queued ones are still pending.
+				wsState.inFlightChatCount.set(
+					ws,
+					(wsState.inFlightChatCount.get(ws) ?? 0) + 1,
+				);
 				try {
 					await session.runQuery(
 						msg.text,
@@ -261,14 +289,21 @@ export function createWsHandlers(session: SessionManager) {
 						msg.skill_context,
 						msg.attachments,
 						msg.agent_cwd,
+						msg.turn_id,
 					);
 				} catch (err) {
 					const message = err instanceof Error ? err.message : "Unknown error";
 					send(ws, { type: "error", message });
 				} finally {
-					// Only clear ownership if this ws still owns it. A sync from a
-					// reconnecting client may have claimed ownership mid-run.
-					if (wsState.sessionOwnerWs === ws) wsState.sessionOwnerWs = null;
+					const remaining = (wsState.inFlightChatCount.get(ws) ?? 1) - 1;
+					if (remaining <= 0) {
+						wsState.inFlightChatCount.delete(ws);
+						// Only clear ownership if this ws still owns it. A sync from a
+						// reconnecting client may have claimed ownership mid-run.
+						if (wsState.sessionOwnerWs === ws) wsState.sessionOwnerWs = null;
+					} else {
+						wsState.inFlightChatCount.set(ws, remaining);
+					}
 				}
 			}
 		},

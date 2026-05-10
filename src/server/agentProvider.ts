@@ -93,7 +93,6 @@ export type CanUseTool = (
 ) => Promise<AgentToolDecision>;
 
 export type AgentQueryParams = {
-	prompt: string;
 	cwd: string;
 	/** Resume token from a prior session; undefined starts fresh. */
 	sessionId?: string;
@@ -110,8 +109,32 @@ export type AgentQueryParams = {
 	executable?: string;
 };
 
+/**
+ * Options controlling how a sent message is delivered into the long-lived
+ * SDK stream. Slice B: defaults to "next" (queue at next turn boundary,
+ * matching CLI semantics). "now" interrupts the current turn (pending
+ * verification in Slice C). "later" appends to end of queue.
+ */
+export type SendOptions = {
+	priority?: "now" | "next" | "later";
+};
+
 export interface AgentSession extends AsyncIterable<AgentEvent> {
+	/**
+	 * Push a user message into the long-lived agent stream. Resolves once the
+	 * message has been accepted by the provider (not when the assistant turn
+	 * completes — for that, await the next `done` AgentEvent).
+	 */
+	send(message: string, opts?: SendOptions): Promise<void>;
 	cancel(): void;
+	/**
+	 * Slice C: stop the currently running assistant turn early and return
+	 * control to the caller. The session stays alive for subsequent send()s
+	 * (unlike cancel(), which tears down the SDK process). Used by the
+	 * "promote queued msg to now" UX — interrupts current, drain proceeds
+	 * to the next queued turn.
+	 */
+	interrupt?(): Promise<void>;
 	/** Available on providers that expose MCP server connectivity info. */
 	mcpServerStatus?(): Promise<McpServerStatus[]>;
 }

@@ -84,6 +84,23 @@ type TurnState = {
 /** Coalesce live assistant-text writes into ~150ms windows. */
 const TEXT_WRITE_THROTTLE_MS = 150;
 
+type RunQueryArgs = [
+	userMessage: string,
+	emit: (msg: ServerMessage) => void,
+	sessionId?: string,
+	skillContext?: string,
+	attachments?: ChatAttachment[],
+	agentCwd?: string,
+	turnId?: string,
+];
+
+type QueuedTurn = {
+	args: RunQueryArgs;
+	turnId?: string;
+	resolve: () => void;
+	reject: (err: Error) => void;
+};
+
 export type SessionState = "idle" | "running" | "error";
 
 type PermissionMode = "default" | "acceptEdits" | "bypassPermissions" | "plan";
@@ -127,6 +144,20 @@ export class SessionManager {
 	private allowedAgentRealPaths: string[] = [];
 	private turnRecaps!: boolean;
 	private recapModel!: string;
+	// Slice A: re-entrant runQuery. Concurrent calls (typed-while-running) are
+	// queued FIFO and drained serially. State stays "running" until the queue
+	// fully drains.
+	private turnQueue: QueuedTurn[] = [];
+	private isDraining = false;
+	// Slice B: long-lived AgentSession per chat. Cached by chat-scoped key so
+	// consecutive turns reuse one provider.query() invocation. Tear down on
+	// chat switch / clearHistory / abort.
+	private agentSession: AgentSession | null = null;
+	private agentSessionKey: string | null = null;
+	// Slice C: turn id of the currently running turn — threaded into the
+	// emitted `done` event so clients can correlate completions to specific
+	// submissions (and pop their queue display FIFO by id).
+	private currentTurnId: string | undefined;
 
 	constructor(config: HlidConfig, providers: Map<string, AgentProvider>) {
 		this.providers = providers;
@@ -240,7 +271,6 @@ export class SessionManager {
 		const timeout = setTimeout(() => ac.abort(), 30_000);
 		try {
 			const session = this.resolveProvider().query({
-				prompt: ".",
 				cwd: this.vaultPath,
 				signal: ac.signal,
 				permissionMode: "default",
@@ -252,6 +282,11 @@ export class SessionManager {
 				canUseTool: () =>
 					Promise.resolve({ behavior: "deny" as const, message: "probe" }),
 			});
+			// Slice B: streaming-input mode is lazy — the SDK query won't
+			// open until first send(). A trivial "." kicks off init so
+			// mcpServerStatus() has a query to query against; canUseTool
+			// denies any tool call so the SDK exits quickly.
+			await session.send(".");
 			for await (const _ of session) {
 				const statuses = (await session.mcpServerStatus?.()) ?? [];
 				this.lastMcpStatus = statuses;
@@ -275,7 +310,16 @@ export class SessionManager {
 		this.permissions.clearAll();
 		this.askUserQuestions.clearAll();
 		this.planModeManager.clearAll();
+		// Drop queued turns so abort cancels everything in flight, not just
+		// the currently running turn.
+		const dropped = this.turnQueue.splice(0);
+		for (const t of dropped) t.resolve();
 		this.abortController?.abort();
+		// Slice B: tear down the long-lived AgentSession so the next runQuery
+		// rebuilds the SDK stream from scratch.
+		this.agentSession?.cancel();
+		this.agentSession = null;
+		this.agentSessionKey = null;
 	}
 
 	handlePermissionResponse(
@@ -333,6 +377,14 @@ export class SessionManager {
 		this.sessionAllowedTools.clear();
 		this.askUserQuestions.clearAll();
 		this.planModeManager.clearAll();
+		// Drop any queued (not-yet-started) turns silently.
+		const dropped = this.turnQueue.splice(0);
+		for (const t of dropped) t.resolve();
+		// Slice B: tear down the AgentSession (cancels any running turn) so the
+		// next runQuery starts a fresh SDK stream for the new chat.
+		this.agentSession?.cancel();
+		this.agentSession = null;
+		this.agentSessionKey = null;
 		db.clearCurrentSessionId().catch((e) =>
 			logDbError("clearCurrentSessionId", e),
 		);
@@ -560,6 +612,9 @@ export class SessionManager {
 		emit({
 			type: "done",
 			session_id: sessionId,
+			...(this.currentTurnId !== undefined
+				? { turn_id: this.currentTurnId }
+				: {}),
 			cost: event.cost ?? null,
 			turns: event.turns,
 			duration_ms: event.durationMs,
@@ -758,10 +813,21 @@ export class SessionManager {
 				emit({ type: "mcp_status", servers: event.servers.map(mapMcpServer) });
 			} else if (event.type === "done") {
 				await this.handleDone(event, turn, sessionId, emit, provider);
+				// Slice B: long-lived session — break at the turn boundary so
+				// runOneTurn returns; the iterator stays open for the next
+				// runQuery to resume.
+				return;
 			}
 		}
 	}
 
+	/**
+	 * Submit a turn. Re-entrant: if a turn is already running, this call queues
+	 * behind it and resolves when *its* turn completes. Status stays "running"
+	 * across queued turns and only flips to "idle" when the queue is fully
+	 * drained (mirrors CLI behavior — typed-while-running messages are accepted
+	 * and processed at the next turn boundary).
+	 */
 	async runQuery(
 		userMessage: string,
 		emit: (msg: ServerMessage) => void,
@@ -769,17 +835,145 @@ export class SessionManager {
 		skillContext?: string,
 		attachments?: ChatAttachment[],
 		agentCwd?: string,
+		turnId?: string,
 	): Promise<void> {
-		if (this.state === "running") {
-			emit({ type: "error", message: "Session already running" });
-			return;
+		return new Promise<void>((resolve, reject) => {
+			this.turnQueue.push({
+				args: [
+					userMessage,
+					emit,
+					sessionId,
+					skillContext,
+					attachments,
+					agentCwd,
+					turnId,
+				],
+				turnId,
+				resolve,
+				reject,
+			});
+			if (!this.isDraining) void this.drainTurnQueue();
+		});
+	}
+
+	/**
+	 * Slice C: drop a not-yet-started turn from the queue. Returns true if a
+	 * matching pending turn was found and removed (its promise resolves
+	 * silently). Returns false if the turn id is unknown OR refers to the
+	 * currently running turn (which has already been shifted off the queue
+	 * — use abort() to stop it instead).
+	 */
+	/**
+	 * Slice C polish: snapshot of the server's queue state. Used by clients
+	 * (on connect / sync) to prune orphan chatQueue entries — e.g. items
+	 * that were _sent before a server restart and have no matching QueuedTurn
+	 * anymore.
+	 */
+	getQueueState(): {
+		pending_turn_ids: string[];
+		running_turn_id: string | null;
+	} {
+		return {
+			pending_turn_ids: this.turnQueue
+				.map((t) => t.turnId)
+				.filter((id): id is string => id !== undefined),
+			running_turn_id:
+				this.state === "running" ? (this.currentTurnId ?? null) : null,
+		};
+	}
+
+	cancelQueued(turnId: string): boolean {
+		const idx = this.turnQueue.findIndex((t) => t.turnId === turnId);
+		if (idx === -1) return false;
+		const [removed] = this.turnQueue.splice(idx, 1);
+		removed.resolve();
+		return true;
+	}
+
+	/**
+	 * Slice C: move a queued turn to the head of the queue and interrupt the
+	 * currently running turn so the promoted msg runs next. Returns false if
+	 * the turn id is unknown OR refers to the running turn (already shifted
+	 * off the queue). The current turn's partial output is preserved by the
+	 * SDK's interrupt mechanism — the promoted turn runs as a fresh user msg
+	 * in the same session.
+	 */
+	promoteQueued(turnId: string): boolean {
+		const idx = this.turnQueue.findIndex((t) => t.turnId === turnId);
+		if (idx === -1) return false;
+		if (idx > 0) {
+			const [promoted] = this.turnQueue.splice(idx, 1);
+			this.turnQueue.unshift(promoted);
+		}
+		// Interrupt current — drain loop's await iterateConversation returns,
+		// drain proceeds to the next queue head (the promoted turn).
+		void this.agentSession?.interrupt?.();
+		return true;
+	}
+
+	private async drainTurnQueue(): Promise<void> {
+		if (this.isDraining) return;
+		this.isDraining = true;
+
+		// Initialize the abortController once for the whole drain. Status
+		// running is emitted PER ITERATION below (with turn_id) so the client
+		// can distinguish "queued behind" from "currently running."
+		const head = this.turnQueue[0];
+		if (head && this.state !== "running") {
+			this.state = "running";
+			this.abortController = new AbortController();
 		}
 
-		// Set running immediately, prevents TOCTOU from concurrent chat messages
-		this.state = "running";
-		this.abortController = new AbortController();
-		emit({ type: "status", state: "running", model: this.model });
+		let lastEmit: ((msg: ServerMessage) => void) | null = null;
+		try {
+			while (this.turnQueue.length > 0) {
+				const next = this.turnQueue.shift();
+				if (!next) break;
+				// Recover from a prior turn's error so the next queued turn runs
+				// cleanly. Per-turn errors are already signaled to the UI via the
+				// "error" event emitted from runOneTurn.
+				if (this.state === "error") this.state = "running";
+				lastEmit = next.args[1];
+				// Slice C: emit status=running with this turn's id BEFORE running
+				// it, so the client can mark the matching chatQueue entry as
+				// "currently running" and hide its cancel/promote buttons.
+				next.args[1]({
+					type: "status",
+					state: "running",
+					model: this.model,
+					...(next.turnId !== undefined ? { turn_id: next.turnId } : {}),
+				});
+				try {
+					await this.runOneTurn(...next.args);
+					next.resolve();
+				} catch (err) {
+					next.reject(err instanceof Error ? err : new Error(String(err)));
+				}
+			}
+		} finally {
+			this.isDraining = false;
+			this.abortController = null;
+			// Settle final state. Per-turn errors set state="error" via the
+			// runOneTurn catch; preserve that. Otherwise return to idle.
+			if (this.state === "running") this.state = "idle";
+			lastEmit?.({
+				type: "status",
+				state: this.state,
+				model: this.model,
+			});
+		}
+	}
 
+	private async runOneTurn(
+		userMessage: string,
+		emit: (msg: ServerMessage) => void,
+		sessionId?: string,
+		skillContext?: string,
+		attachments?: ChatAttachment[],
+		agentCwd?: string,
+		turnId?: string,
+	): Promise<void> {
+		this.currentTurnId = turnId;
 		await this.initSessionContext(sessionId, agentCwd, userMessage);
 
 		// Resolve provider after initSessionContext so this.agentCwd is final.
@@ -841,236 +1035,260 @@ export class SessionManager {
 				claudeExecutable: this.claudeExecutable,
 				safeAttachments,
 			});
-			// The provider manages session continuity via sessionId. Resume retry
-			// (when the persisted session is rotated/wiped) is handled inside the
-			// provider. canUseTool stays here since it references session state.
-			const agentSession = currentProvider.query({
-				prompt,
-				cwd: activeCwd,
-				sessionId: this.claudeSessionId ?? undefined,
-				additionalDirectories:
-					extraDirs.size > 0 ? Array.from(extraDirs).map(toLogical) : undefined,
-				signal: this.abortController?.signal,
-				// Vault sessions use the configured model. Agent sessions use agent-specific
-				// model override when set, or defer to CLAUDE.md when no override.
-				model: agentSettings?.model ?? (this.agentCwd ? undefined : this.model),
-				permissionMode: agentSettings?.permissionMode ?? this.permissionMode,
-				effort: agentSettings?.effort ?? this.effort,
-				maxTurns: agentSettings?.maxTurns ?? this.maxTurns,
-				executable,
-				// Each cwd loads its own user global + project settings +
-				// local file. Vault chats see vault hooks/MCP/CLAUDE.md;
-				// agent chats see that agent's. canUseTool stays sole
-				// permission authority as long as settings files contain
-				// only allow-rules written by Hlid (no permissions.deny,
-				// no PreToolUse hooks).
-				settingSources: ["user", "project", "local"],
-				canUseTool: (
-					toolName,
-					input,
-					{ toolUseID, title, displayName, description },
-				) =>
-					new Promise((resolve) => {
-						const passInput = input as Record<string, unknown>;
+			// Slice B: long-lived AgentSession per chat. Cache by sessionId +
+			// agentCwd so consecutive turns within the same chat reuse one
+			// underlying SDK query. Different chat or different agent →
+			// tear down + rebuild. Resume retry (rotated/wiped session) is
+			// handled inside the provider. canUseTool stays here since it
+			// references session state.
+			const desiredKey = `${sessionId ?? "ephemeral"}|${this.agentCwd ?? ""}`;
+			if (this.agentSession && this.agentSessionKey !== desiredKey) {
+				this.agentSession.cancel();
+				this.agentSession = null;
+				this.agentSessionKey = null;
+			}
+			let agentSession = this.agentSession;
+			if (!agentSession) {
+				agentSession = currentProvider.query({
+					cwd: activeCwd,
+					sessionId: this.claudeSessionId ?? undefined,
+					additionalDirectories:
+						extraDirs.size > 0
+							? Array.from(extraDirs).map(toLogical)
+							: undefined,
+					signal: this.abortController?.signal,
+					// Vault sessions use the configured model. Agent sessions use agent-specific
+					// model override when set, or defer to CLAUDE.md when no override.
+					model:
+						agentSettings?.model ?? (this.agentCwd ? undefined : this.model),
+					permissionMode: agentSettings?.permissionMode ?? this.permissionMode,
+					effort: agentSettings?.effort ?? this.effort,
+					maxTurns: agentSettings?.maxTurns ?? this.maxTurns,
+					executable,
+					// Each cwd loads its own user global + project settings +
+					// local file. Vault chats see vault hooks/MCP/CLAUDE.md;
+					// agent chats see that agent's. canUseTool stays sole
+					// permission authority as long as settings files contain
+					// only allow-rules written by Hlid (no permissions.deny,
+					// no PreToolUse hooks).
+					settingSources: ["user", "project", "local"],
+					canUseTool: (
+						toolName,
+						input,
+						{ toolUseID, title, displayName, description },
+					) =>
+						new Promise((resolve) => {
+							const passInput = input as Record<string, unknown>;
 
-						// AskUserQuestion: surface options to UI, auto-allow on selection.
-						// Never shows as a permission prompt — the user picks from the
-						// supplied options and that choice is injected as the tool answer.
-						if (toolName === "AskUserQuestion") {
-							const { questions } = parseAskUserQuestion(passInput, title);
-							const askReq = {
-								type: "ask_user_question" as const,
-								id: toolUseID,
-								questions,
-							};
-							this.askUserQuestions.register(
-								toolUseID,
-								askReq,
-								(answers, notes) => {
-									// SDK contract: AskUserQuestionOutput.answers is keyed by
-									// question text and string-valued (multi-select answers are
-									// comma-separated). A flat `answer` field caused the SDK to
-									// fall back to a default option (often the last).
-									const existing =
-										(passInput.answers as Record<string, string>) ?? {};
-									const sdkAnswers: Record<string, string> = { ...existing };
-									for (const [q, picks] of Object.entries(answers)) {
-										const note = notes?.[q]?.trim();
-										sdkAnswers[q] = note
-											? `${picks.join(", ")}\n\nNotes: ${note}`
-											: picks.join(", ");
-									}
-									resolve({
-										behavior: "allow" as const,
-										updatedInput: {
-											...passInput,
-											answers: sdkAnswers,
-										},
-									});
-								},
-							);
-							emit(askReq);
-							return;
-						}
-
-						// ExitPlanMode: surface plan approval UI to user.
-						// Approve → Claude exits plan mode and implements.
-						// Edit → deny with feedback so Claude revises the plan.
-						// Cancel → deny so Claude stops.
-						if (toolName === "ExitPlanMode") {
-							const exitReq = {
-								type: "plan_mode_exit" as const,
-								id: toolUseID,
-								input: passInput,
-							};
-							const planText =
-								typeof passInput.plan === "string"
-									? passInput.plan
-									: JSON.stringify(passInput.plan ?? "");
-							const planSeq = this.messageSeq++;
-							if (sessionId) {
-								void db
-									.appendPlanProposal(
-										sessionId,
-										toolUseID,
-										planSeq,
-										planText,
-										"pending",
-									)
-									.catch((e) => logDbError("appendPlanProposal", e));
+							// AskUserQuestion: surface options to UI, auto-allow on selection.
+							// Never shows as a permission prompt — the user picks from the
+							// supplied options and that choice is injected as the tool answer.
+							if (toolName === "AskUserQuestion") {
+								const { questions } = parseAskUserQuestion(passInput, title);
+								const askReq = {
+									type: "ask_user_question" as const,
+									id: toolUseID,
+									questions,
+								};
+								this.askUserQuestions.register(
+									toolUseID,
+									askReq,
+									(answers, notes) => {
+										// SDK contract: AskUserQuestionOutput.answers is keyed by
+										// question text and string-valued (multi-select answers are
+										// comma-separated). A flat `answer` field caused the SDK to
+										// fall back to a default option (often the last).
+										const existing =
+											(passInput.answers as Record<string, string>) ?? {};
+										const sdkAnswers: Record<string, string> = { ...existing };
+										for (const [q, picks] of Object.entries(answers)) {
+											const note = notes?.[q]?.trim();
+											sdkAnswers[q] = note
+												? `${picks.join(", ")}\n\nNotes: ${note}`
+												: picks.join(", ");
+										}
+										resolve({
+											behavior: "allow" as const,
+											updatedInput: {
+												...passInput,
+												answers: sdkAnswers,
+											},
+										});
+									},
+								);
+								emit(askReq);
+								return;
 							}
-							this.planModeManager.register(
+
+							// ExitPlanMode: surface plan approval UI to user.
+							// Approve → Claude exits plan mode and implements.
+							// Edit → deny with feedback so Claude revises the plan.
+							// Cancel → deny so Claude stops.
+							if (toolName === "ExitPlanMode") {
+								const exitReq = {
+									type: "plan_mode_exit" as const,
+									id: toolUseID,
+									input: passInput,
+								};
+								const planText =
+									typeof passInput.plan === "string"
+										? passInput.plan
+										: JSON.stringify(passInput.plan ?? "");
+								const planSeq = this.messageSeq++;
+								if (sessionId) {
+									void db
+										.appendPlanProposal(
+											sessionId,
+											toolUseID,
+											planSeq,
+											planText,
+											"pending",
+										)
+										.catch((e) => logDbError("appendPlanProposal", e));
+								}
+								this.planModeManager.register(
+									toolUseID,
+									exitReq,
+									(decision, feedback) => {
+										if (sessionId) {
+											void db
+												.setPlanProposalDecision(sessionId, toolUseID, decision)
+												.catch((e) => logDbError("setPlanProposalDecision", e));
+										}
+										if (decision === "approved") {
+											resolve({
+												behavior: "allow" as const,
+												updatedInput: passInput,
+											});
+										} else if (decision === "edited") {
+											resolve({
+												behavior: "deny" as const,
+												message: `User requested changes to the plan:\n\n${feedback ?? ""}`,
+											});
+										} else {
+											resolve({
+												behavior: "deny" as const,
+												message: "Plan was cancelled by the user.",
+											});
+										}
+									},
+								);
+								emit(exitReq);
+								return;
+							}
+
+							// Session-approved: auto-allow without prompting.
+							// Survives provider subprocess restarts since we track it ourselves.
+							if (this.sessionAllowedTools.has(toolName)) {
+								resolve({
+									behavior: "allow" as const,
+									updatedInput: passInput,
+								});
+								return;
+							}
+
+							const permReq = {
+								type: "permission_request" as const,
+								id: toolUseID,
+								toolName,
+								title: title ?? `Claude wants to use ${toolName}`,
+								displayName,
+								description,
+								input: input as Record<string, unknown> | undefined,
+							};
+							// Provider runtime requires `updatedInput` on the allow branch even
+							// though the type marks it optional. Pass the original input unchanged
+							// as a no-op so the tool runs as requested.
+							this.permissions.register(
 								toolUseID,
-								exitReq,
-								(decision, feedback) => {
-									if (sessionId) {
-										void db
-											.setPlanProposalDecision(sessionId, toolUseID, decision)
-											.catch((e) => logDbError("setPlanProposalDecision", e));
-									}
-									if (decision === "approved") {
+								permReq,
+								(approved, saveScope, denyMessage) => {
+									this.permissions.delete(toolUseID);
+									if (!approved) {
+										resolve({
+											behavior: "deny" as const,
+											message: denyMessage ?? "Denied by user",
+										});
+									} else if (saveScope === "session") {
+										// Track in our own set so it survives provider subprocess restarts.
+										this.sessionAllowedTools.add(toolName);
 										resolve({
 											behavior: "allow" as const,
 											updatedInput: passInput,
 										});
-									} else if (decision === "edited") {
+									} else if (saveScope === "local") {
+										// Write to settings.local.json (gitignored, user-specific).
+										// Loaded by the provider via settingSources "local" so the next
+										// subprocess picks up the rule automatically.
+										try {
+											const settingsPath = join(
+												activeCwd,
+												".claude",
+												"settings.local.json",
+											);
+											let settings: {
+												permissions?: {
+													allow?: string[];
+													deny?: string[];
+												};
+											} = {};
+											try {
+												settings = JSON.parse(
+													readFileSync(settingsPath, "utf8"),
+												);
+											} catch (e) {
+												if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
+													console.error(
+														"[session] Failed to parse settings.local.json:",
+														e,
+													);
+												}
+											}
+											const allow = settings.permissions?.allow ?? [];
+											if (!allow.includes(toolName)) {
+												settings.permissions = {
+													...settings.permissions,
+													allow: [...allow, toolName],
+												};
+												mkdirSync(join(activeCwd, ".claude"), {
+													recursive: true,
+												});
+												writeFileSync(
+													settingsPath,
+													`${JSON.stringify(settings, null, 2)}\n`,
+													"utf8",
+												);
+											}
+										} catch (e) {
+											console.error(
+												"[session] failed to write always-allow rule:",
+												e,
+											);
+										}
 										resolve({
-											behavior: "deny" as const,
-											message: `User requested changes to the plan:\n\n${feedback ?? ""}`,
+											behavior: "allow" as const,
+											updatedInput: passInput,
 										});
 									} else {
 										resolve({
-											behavior: "deny" as const,
-											message: "Plan was cancelled by the user.",
+											behavior: "allow" as const,
+											updatedInput: passInput,
 										});
 									}
 								},
 							);
-							emit(exitReq);
-							return;
-						}
+							emit(permReq);
+						}),
+				});
+				this.agentSession = agentSession;
+				this.agentSessionKey = desiredKey;
+			}
 
-						// Session-approved: auto-allow without prompting.
-						// Survives provider subprocess restarts since we track it ourselves.
-						if (this.sessionAllowedTools.has(toolName)) {
-							resolve({
-								behavior: "allow" as const,
-								updatedInput: passInput,
-							});
-							return;
-						}
-
-						const permReq = {
-							type: "permission_request" as const,
-							id: toolUseID,
-							toolName,
-							title: title ?? `Claude wants to use ${toolName}`,
-							displayName,
-							description,
-							input: input as Record<string, unknown> | undefined,
-						};
-						// Provider runtime requires `updatedInput` on the allow branch even
-						// though the type marks it optional. Pass the original input unchanged
-						// as a no-op so the tool runs as requested.
-						this.permissions.register(
-							toolUseID,
-							permReq,
-							(approved, saveScope, denyMessage) => {
-								this.permissions.delete(toolUseID);
-								if (!approved) {
-									resolve({
-										behavior: "deny" as const,
-										message: denyMessage ?? "Denied by user",
-									});
-								} else if (saveScope === "session") {
-									// Track in our own set so it survives provider subprocess restarts.
-									this.sessionAllowedTools.add(toolName);
-									resolve({
-										behavior: "allow" as const,
-										updatedInput: passInput,
-									});
-								} else if (saveScope === "local") {
-									// Write to settings.local.json (gitignored, user-specific).
-									// Loaded by the provider via settingSources "local" so the next
-									// subprocess picks up the rule automatically.
-									try {
-										const settingsPath = join(
-											activeCwd,
-											".claude",
-											"settings.local.json",
-										);
-										let settings: {
-											permissions?: {
-												allow?: string[];
-												deny?: string[];
-											};
-										} = {};
-										try {
-											settings = JSON.parse(readFileSync(settingsPath, "utf8"));
-										} catch (e) {
-											if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
-												console.error(
-													"[session] Failed to parse settings.local.json:",
-													e,
-												);
-											}
-										}
-										const allow = settings.permissions?.allow ?? [];
-										if (!allow.includes(toolName)) {
-											settings.permissions = {
-												...settings.permissions,
-												allow: [...allow, toolName],
-											};
-											mkdirSync(join(activeCwd, ".claude"), {
-												recursive: true,
-											});
-											writeFileSync(
-												settingsPath,
-												`${JSON.stringify(settings, null, 2)}\n`,
-												"utf8",
-											);
-										}
-									} catch (e) {
-										console.error(
-											"[session] failed to write always-allow rule:",
-											e,
-										);
-									}
-									resolve({
-										behavior: "allow" as const,
-										updatedInput: passInput,
-									});
-								} else {
-									resolve({
-										behavior: "allow" as const,
-										updatedInput: passInput,
-									});
-								}
-							},
-						);
-						emit(permReq);
-					}),
-			});
+			// Slice B: deliver this turn's user message via send() rather than
+			// passing it as a one-shot prompt. The long-lived stream pushes it
+			// onto the SDK's input AsyncIterable and the next assistant turn
+			// runs inside the same SDK query.
+			await agentSession.send(prompt);
 
 			await this.iterateConversation(
 				agentSession,
@@ -1080,7 +1298,9 @@ export class SessionManager {
 				currentProvider,
 			);
 
-			this.state = "idle";
+			// Per-turn success: drainTurnQueue settles the final session state
+			// after the queue empties. Successful turns leave state alone so the
+			// drain loop sees "running" → resets to "idle" at end.
 
 			// Fire a recap after turns with tool use (async, best-effort).
 			if (turn.hadToolEvents && this.turnRecaps && turn.lastAssistantText) {
@@ -1109,6 +1329,12 @@ export class SessionManager {
 				stack: err instanceof Error ? err.stack?.slice(0, 500) : undefined,
 			});
 			emit({ type: "error", message: msg });
+			// Slice B: tear down the AgentSession on error — its iterator may
+			// be in an inconsistent state. The next queued turn (or new
+			// runQuery) rebuilds a fresh SDK stream.
+			this.agentSession?.cancel();
+			this.agentSession = null;
+			this.agentSessionKey = null;
 		} finally {
 			// Persist any remaining assistant text (error/abort path. Result block clears it on success)
 			if (turn.assistantText) {
@@ -1175,8 +1401,10 @@ export class SessionManager {
 				// assistant text. The CLI's own session record (managed via
 				// `resume`) holds the model-side context regardless.
 			}
-			this.abortController = null;
-			emit({ type: "status", state: this.state, model: this.model });
+			// drainTurnQueue handles the final status emit + abortController
+			// reset after the queue fully drains. We intentionally do not emit
+			// per-turn status here so queued turns never see a transient idle
+			// flicker between turns.
 		}
 	}
 }

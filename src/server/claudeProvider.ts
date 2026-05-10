@@ -7,70 +7,193 @@ import type {
 	AgentSession,
 	McpServerStatus,
 	ProviderWindowReading,
+	SendOptions,
 } from "./agentProvider";
 
 type SdkQuery = ReturnType<typeof query>;
 
-class ClaudeAgentSession implements AgentSession {
-	private abortController: AbortController;
-	private makeQuery: (resumeId: string | undefined) => SdkQuery;
-	private sessionId: string | undefined;
-	private _currentQuery: SdkQuery | null = null;
+// SDKUserMessage shape per @anthropic-ai/claude-agent-sdk's sdk.d.ts. Kept
+// minimal here to avoid pulling the deep SDK type — the SDK accepts any
+// object matching this shape.
+type SdkUserMessage = {
+	type: "user";
+	message: { role: "user"; content: Array<{ type: "text"; text: string }> };
+	parent_tool_use_id: null;
+	priority?: "now" | "next" | "later";
+};
 
-	constructor(
-		makeQuery: (resumeId: string | undefined) => SdkQuery,
-		abortController: AbortController,
-		sessionId: string | undefined,
-	) {
-		this.makeQuery = makeQuery;
-		this.abortController = abortController;
-		this.sessionId = sessionId;
+/**
+ * Internal queue+waiter feeding the SDK's AsyncIterable<SDKUserMessage> input.
+ * Slice B: replaces the per-turn `prompt: string` model with a long-lived
+ * stream — multiple send() calls on the AgentSession push onto this queue;
+ * the SDK consumes them as separate user turns.
+ */
+class InputStream {
+	private buffer: SdkUserMessage[] = [];
+	private waiters: Array<(v: SdkUserMessage | null) => void> = [];
+	private closed = false;
+
+	push(msg: SdkUserMessage): void {
+		if (this.closed) return;
+		const w = this.waiters.shift();
+		if (w) w(msg);
+		else this.buffer.push(msg);
 	}
 
-	cancel(): void {
-		this.abortController.abort();
-	}
-
-	async mcpServerStatus(): Promise<McpServerStatus[]> {
-		if (!this._currentQuery) return [];
-		return this._currentQuery.mcpServerStatus() as Promise<McpServerStatus[]>;
-	}
-
-	async *[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
-		const triedResume = this.sessionId !== undefined;
-		let receivedAny = false;
-
-		let sdkQuery = this.makeQuery(this.sessionId);
-		this._currentQuery = sdkQuery;
-
-		try {
-			yield* this.translateEvents(sdkQuery, (hadAny) => {
-				receivedAny = hadAny;
-			});
-		} catch (err) {
-			if (triedResume && !receivedAny) {
-				// Persisted session record was rotated/wiped — retry fresh.
-				sdkQuery = this.makeQuery(undefined);
-				this._currentQuery = sdkQuery;
-				yield* this.translateEvents(sdkQuery, () => {});
-			} else {
-				throw err;
-			}
+	close(): void {
+		if (this.closed) return;
+		this.closed = true;
+		while (this.waiters.length > 0) {
+			const w = this.waiters.shift();
+			w?.(null);
 		}
 	}
 
-	private async *translateEvents(
-		sdkQuery: SdkQuery,
-		onFirst: (hadAny: boolean) => void,
-	): AsyncGenerator<AgentEvent> {
-		let hadText = false;
-		let first = true;
-
-		for await (const message of sdkQuery) {
-			if (first) {
-				first = false;
-				onFirst(true);
+	async *iterate(): AsyncGenerator<SdkUserMessage> {
+		while (true) {
+			if (this.buffer.length > 0) {
+				const next = this.buffer.shift();
+				if (next) yield next;
+				continue;
 			}
+			if (this.closed) return;
+			const next = await new Promise<SdkUserMessage | null>((resolve) => {
+				this.waiters.push(resolve);
+			});
+			if (next === null) return;
+			yield next;
+		}
+	}
+}
+
+function buildSdkUserMessage(
+	text: string,
+	priority: "now" | "next" | "later",
+): SdkUserMessage {
+	return {
+		type: "user",
+		message: { role: "user", content: [{ type: "text", text }] },
+		parent_tool_use_id: null,
+		priority,
+	};
+}
+
+class ClaudeAgentSession implements AgentSession {
+	private abortController: AbortController;
+	private makeQuery: (
+		input: AsyncIterable<SdkUserMessage>,
+		resumeId: string | undefined,
+	) => SdkQuery;
+	private resumeId: string | undefined;
+	private inputStream: InputStream = new InputStream();
+	private sdkQuery: SdkQuery | null = null;
+	private cachedIter: AsyncIterator<AgentEvent> | null = null;
+	private firstSend: SdkUserMessage | null = null;
+	private receivedAnyEvent = false;
+	private retriedWithoutResume = false;
+
+	constructor(
+		makeQuery: (
+			input: AsyncIterable<SdkUserMessage>,
+			resumeId: string | undefined,
+		) => SdkQuery,
+		abortController: AbortController,
+		resumeId: string | undefined,
+	) {
+		this.makeQuery = makeQuery;
+		this.abortController = abortController;
+		this.resumeId = resumeId;
+	}
+
+	cancel(): void {
+		this.inputStream.close();
+		this.abortController.abort();
+	}
+
+	async interrupt(): Promise<void> {
+		// SDK's Query.interrupt() is only available in streaming-input mode,
+		// which we always use. Stops the current assistant turn early; the
+		// session stays alive for subsequent send()s.
+		if (!this.sdkQuery) return;
+		await this.sdkQuery.interrupt();
+	}
+
+	async send(message: string, opts?: SendOptions): Promise<void> {
+		const sdkMsg = buildSdkUserMessage(message, opts?.priority ?? "next");
+		// Capture the first send so we can replay it if cold-resume retry kicks in.
+		if (this.firstSend === null) this.firstSend = sdkMsg;
+		// Lazily open the SDK query on first send so an empty session that's
+		// never sent doesn't spawn the CLI.
+		this.ensureSdkQuery();
+		this.inputStream.push(sdkMsg);
+	}
+
+	async mcpServerStatus(): Promise<McpServerStatus[]> {
+		if (!this.sdkQuery) return [];
+		return this.sdkQuery.mcpServerStatus() as Promise<McpServerStatus[]>;
+	}
+
+	private ensureSdkQuery(): void {
+		if (this.sdkQuery) return;
+		this.sdkQuery = this.makeQuery(this.inputStream.iterate(), this.resumeId);
+	}
+
+	[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
+		if (!this.cachedIter) {
+			this.cachedIter = this.createIterator();
+		}
+		const inner = this.cachedIter;
+		// Wrap so that `for await` breaking out of the loop (via `return` in
+		// iterateConversation when a `done` event arrives) does NOT call
+		// inner.return() and close the underlying AsyncGenerator. Without this
+		// wrap, the cached iterator gets terminated at the first turn boundary
+		// and subsequent runQuery calls receive no events forever — observed
+		// as "second user message sits with no response".
+		return {
+			next: () => inner.next(),
+			return: async () =>
+				({ value: undefined, done: true }) as IteratorResult<AgentEvent>,
+		};
+	}
+
+	private createIterator(): AsyncIterator<AgentEvent> {
+		// Capture `this` for the generator below.
+		const self = this;
+		const generator = (async function* (): AsyncGenerator<AgentEvent> {
+			self.ensureSdkQuery();
+			try {
+				yield* self.translateEvents();
+			} catch (err) {
+				// Cold-resume retry: if the persisted resume id was rotated/wiped
+				// by the CLI, the first iteration fails before any event arrives.
+				// Recreate the SDK query without resume and replay the first send.
+				if (
+					self.resumeId !== undefined &&
+					!self.receivedAnyEvent &&
+					!self.retriedWithoutResume
+				) {
+					self.retriedWithoutResume = true;
+					self.resumeId = undefined;
+					// Fresh input stream so the SDK consumes the replayed msg.
+					self.inputStream.close();
+					self.inputStream = new InputStream();
+					self.sdkQuery = self.makeQuery(self.inputStream.iterate(), undefined);
+					if (self.firstSend) self.inputStream.push(self.firstSend);
+					yield* self.translateEvents();
+					return;
+				}
+				throw err;
+			}
+		})();
+		return generator[Symbol.asyncIterator]();
+	}
+
+	private async *translateEvents(): AsyncGenerator<AgentEvent> {
+		const sdkQuery = this.sdkQuery;
+		if (!sdkQuery) return;
+		let hadText = false;
+		for await (const message of sdkQuery) {
+			this.receivedAnyEvent = true;
 
 			if (message.type === "system" && message.subtype === "init") {
 				yield { type: "session_start", sessionId: message.session_id };
@@ -145,7 +268,6 @@ class ClaudeAgentSession implements AgentSession {
 			}
 
 			if (message.type === "result") {
-				// Slash commands emit their output in message.result with no assistant chunks.
 				if (!hadText && message.subtype === "success" && message.result) {
 					yield { type: "text_delta", text: message.result };
 				}
@@ -169,6 +291,11 @@ class ClaudeAgentSession implements AgentSession {
 							}
 						: undefined,
 				};
+				// Reset hadText so the next turn's tracking starts fresh. The
+				// generator continues iterating the same SDK query for subsequent
+				// turns; consumers break on `done` to release control between
+				// turns and resume iteration on the next runOneTurn.
+				hadText = false;
 			}
 		}
 	}
@@ -276,9 +403,12 @@ export class ClaudeProvider implements AgentProvider {
 			}
 		}
 
-		const makeQuery = (resumeId: string | undefined): SdkQuery =>
+		const makeQuery = (
+			input: AsyncIterable<SdkUserMessage>,
+			resumeId: string | undefined,
+		): SdkQuery =>
 			query({
-				prompt: params.prompt,
+				prompt: input as unknown as Parameters<typeof query>[0]["prompt"],
 				options: {
 					cwd: params.cwd,
 					...(params.additionalDirectories?.length

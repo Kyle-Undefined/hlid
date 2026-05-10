@@ -22,6 +22,7 @@ const mockSetRecap = vi.mocked(db.setMessageRecap);
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 let capturedParams: AgentQueryParams | undefined;
+let capturedSendArg: string | undefined;
 
 /** Build a mock AgentProvider that captures params and returns the given text. */
 function makeProvider(responseText: string): AgentProvider {
@@ -44,6 +45,9 @@ function makeProvider(responseText: string): AgentProvider {
 			return {
 				[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
 				cancel: vi.fn(),
+				send: vi.fn(async (msg: string) => {
+					capturedSendArg = msg;
+				}),
 			};
 		},
 	};
@@ -58,14 +62,15 @@ function stubEmpty(): AgentProvider {
 }
 
 function capturedPrompt(): string {
-	if (!capturedParams)
-		throw new Error("No query was made — provider not called");
-	return capturedParams.prompt;
+	if (capturedSendArg === undefined)
+		throw new Error("No send was made — recap did not push prompt");
+	return capturedSendArg;
 }
 
 beforeEach(() => {
 	vi.clearAllMocks();
 	capturedParams = undefined;
+	capturedSendArg = undefined;
 });
 
 // ── tool summary line building ────────────────────────────────────────────────

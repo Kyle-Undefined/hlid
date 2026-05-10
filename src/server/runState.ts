@@ -6,6 +6,10 @@ export const wsState = {
 	clients: new Set<ServerWebSocket<unknown>>(),
 	sessionOwnerWs: null as ServerWebSocket<unknown> | null,
 	lastSessionError: null as string | null,
+	// Per-ws in-flight chat count. Ownership only releases when a ws's count
+	// hits zero, so concurrent typed-while-running chats from the same ws
+	// don't release ownership prematurely.
+	inFlightChatCount: new Map<ServerWebSocket<unknown>, number>(),
 };
 
 let _runBuffer: ServerMessage[] = [];

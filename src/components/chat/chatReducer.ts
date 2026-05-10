@@ -73,7 +73,30 @@ export type Action =
 			text: string;
 			attachments?: ChatAttachment[];
 	  }
-	| { type: "ADD_ASSISTANT"; id: string }
+	| { type: "REMOVE_USER"; id: string }
+	| {
+			/**
+			 * Slice C polish: move the promoted user msg to position right
+			 * before the first OTHER still-pending user msg, so live transcript
+			 * order matches server processing order (and DB / refresh).
+			 */
+			type: "PROMOTE_USER";
+			turnId: string;
+			pendingTurnIds: string[];
+	  }
+	| {
+			type: "ADD_ASSISTANT";
+			id: string;
+			/**
+			 * Slice C: when set, insert the assistant placeholder right after
+			 * the matching user msg (correlated by user msg id = turn_id).
+			 * Without this, multiple queued user msgs would show ADD_ASSISTANT
+			 * placeholders all appended at the end, making the transcript
+			 * order user/user/user/assistant/assistant/assistant rather than
+			 * user/assistant/user/assistant/user/assistant.
+			 */
+			afterUserId?: string;
+	  }
 	| { type: "APPEND_CHUNK"; id: string; text: string }
 	| { type: "ADD_TOOL_EVENT"; id: string; event: ToolEventMessage }
 	| {
@@ -155,18 +178,55 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 					attachments: action.attachments,
 				},
 			];
-		case "ADD_ASSISTANT":
-			return [
-				...state,
-				{
-					id: action.id,
-					role: "assistant",
-					text: "",
-					toolEvents: [],
-					streaming: true,
-					cost: null,
-				},
+		case "REMOVE_USER":
+			return state.filter((m) => !(m.id === action.id && m.role === "user"));
+		case "PROMOTE_USER": {
+			const { turnId, pendingTurnIds } = action;
+			const promotedIdx = state.findIndex(
+				(m) => m.id === turnId && m.role === "user",
+			);
+			if (promotedIdx === -1) return state;
+			// Find earliest pending-and-not-promoted user msg → that's where
+			// the promoted msg should land (right before it).
+			const targetIdx = state.findIndex(
+				(m) =>
+					m.role === "user" && m.id !== turnId && pendingTurnIds.includes(m.id),
+			);
+			if (targetIdx === -1 || targetIdx >= promotedIdx) return state;
+			const promoted = state[promotedIdx];
+			const without = [
+				...state.slice(0, promotedIdx),
+				...state.slice(promotedIdx + 1),
 			];
+			return [
+				...without.slice(0, targetIdx),
+				promoted,
+				...without.slice(targetIdx),
+			];
+		}
+		case "ADD_ASSISTANT": {
+			const placeholder: ChatMessage = {
+				id: action.id,
+				role: "assistant",
+				text: "",
+				toolEvents: [],
+				streaming: true,
+				cost: null,
+			};
+			if (action.afterUserId) {
+				const idx = state.findIndex(
+					(m) => m.id === action.afterUserId && m.role === "user",
+				);
+				if (idx !== -1) {
+					return [
+						...state.slice(0, idx + 1),
+						placeholder,
+						...state.slice(idx + 1),
+					];
+				}
+			}
+			return [...state, placeholder];
+		}
 		case "APPEND_CHUNK":
 			return state.map((m) => {
 				if (m.id !== action.id || m.role !== "assistant") return m;

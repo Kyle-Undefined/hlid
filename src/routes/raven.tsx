@@ -155,7 +155,7 @@ function ChatPage() {
 
 	// ─── WS connection ────────────────────────────────────────────────────────
 
-	const { wsStatus, sessionState, model, actualModel, send } =
+	const { wsStatus, sessionState, model, actualModel, runningTurnId, send } =
 		useWs(handleWsMessage);
 
 	useLoadChatHistory({
@@ -289,6 +289,11 @@ function ChatPage() {
 		(id: string) => {
 			const item = wsStore.removeFromQueue(id);
 			if (!item) return;
+			// Slice C fix: cancelled msgs were never persisted server-side, so
+			// remove them from the local transcript too. Otherwise they appear
+			// in the chat until refresh (which clears them by reloading from
+			// DB) — confusing because they look "sent."
+			dispatch({ type: "REMOVE_USER", id });
 			// Restore to input only if the input box is empty
 			if (!input.trim() && pendingAttachments.length === 0) {
 				setInput(item.text);
@@ -298,6 +303,22 @@ function ChatPage() {
 			}
 		},
 		[input, setInput, pendingAttachments.length, setPendingAttachments],
+	);
+
+	const handlePromoteQueued = useCallback(
+		(id: string) => {
+			// Slice C: server interrupts current turn + reorders queue so this
+			// msg runs next. Also reorder the local transcript so the
+			// promoted user msg appears in its new processing position —
+			// matches what DB/refresh will show.
+			wsStore.promoteQueued(id);
+			dispatch({
+				type: "PROMOTE_USER",
+				turnId: id,
+				pendingTurnIds: chatQueue.map((q) => q.id),
+			});
+		},
+		[chatQueue],
 	);
 
 	const handleClear = useCallback(() => {
@@ -424,10 +445,13 @@ function ChatPage() {
 							messages={messages}
 							chatQueue={chatQueue}
 							sessionId={sessionId}
+							sessionState={sessionState}
+							runningTurnId={runningTurnId}
 							handleDecide={handleDecide}
 							handleSubmitAnswers={handleSubmitAnswers}
 							handlePlanDecide={handlePlanDecide}
 							handleCancelQueued={handleCancelQueued}
+							handlePromoteQueued={handlePromoteQueued}
 							bottomRef={bottomRef}
 						/>
 					)}

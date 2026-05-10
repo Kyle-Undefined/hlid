@@ -62,7 +62,6 @@ export async function generateTurnRecap(
 	const timeout = setTimeout(() => ac.abort(), 30_000);
 	try {
 		const session = provider.query({
-			prompt,
 			cwd: vaultPath,
 			model: recapModel,
 			effort: "low",
@@ -74,6 +73,10 @@ export async function generateTurnRecap(
 			canUseTool: () =>
 				Promise.resolve({ behavior: "deny" as const, message: "no tools" }),
 		});
+		// Slice B: streaming-input mode — push the recap prompt explicitly so
+		// the SDK query opens. This is a one-shot ephemeral session; no further
+		// sends are needed.
+		await session.send(prompt);
 		let summary = "";
 		for await (const event of session) {
 			if (event.type === "text_delta") {

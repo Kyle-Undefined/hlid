@@ -16,6 +16,13 @@ export type QueuedChatMessage = {
 	skill_context?: string;
 	agent_cwd?: string;
 	attachments?: ChatAttachment[];
+	/**
+	 * Internal flag set after the message has been delivered to the server.
+	 * Items remain in the queue (for UI display of in-flight turns) until
+	 * their `done` event arrives, so we use this flag to avoid re-sending
+	 * on reconnect.
+	 */
+	_sent?: boolean;
 };
 
 type Snapshot = {
@@ -29,6 +36,13 @@ type Snapshot = {
 	// mismatch badge persists after the run completes.
 	actualModel: string | null;
 	hasPendingPermissions: boolean;
+	/**
+	 * Slice C: turn_id of the turn the server is currently processing
+	 * (when sessionState === "running"). Used by MessageList to mark the
+	 * matching chatQueue entry as "RUN" (no cancel/promote buttons) and
+	 * leave the rest as cancellable / promotable.
+	 */
+	runningTurnId: string | null;
 };
 
 export type LiveStats = {
@@ -99,6 +113,7 @@ export const INITIAL_SNAPSHOT: Snapshot = {
 	model: "",
 	actualModel: null,
 	hasPendingPermissions: false,
+	runningTurnId: null,
 };
 
 let _snap: Snapshot = { ...INITIAL_SNAPSHOT };
@@ -126,44 +141,92 @@ function notifyQueue(): void {
 	for (const fn of queueSubs) fn();
 }
 
-/** Drain the chat queue when the session becomes idle. Batches all queued messages into one send. */
-function drainQueue(): void {
-	if (_chatQueue.length === 0) return;
-	if (_ws?.readyState !== WebSocket.OPEN) return;
-	const batch = _chatQueue;
-	const first = batch[0];
-	const text = batch
-		.map((m) => m.text)
-		.filter(Boolean)
-		.join("\n\n");
-	const attachments = batch.flatMap((m) => m.attachments ?? []);
+/**
+ * Slice A: server-side queueing. Enqueued messages are sent to the server
+ * IMMEDIATELY (not batched on idle). The server accepts mid-run and queues
+ * FIFO at the SessionManager level. The client queue mirrors what's still in
+ * flight: items remain visible until their `done` event arrives.
+ *
+ * Items added while the WS is closed remain in the queue and drain on the
+ * next ws.onopen.
+ */
+function sendChatToServer(msg: QueuedChatMessage): boolean {
+	if (_ws?.readyState !== WebSocket.OPEN) return false;
 	const userEvent: ServerMessage = {
 		type: "user_message",
-		text,
-		session_id: first.session_id,
+		text: msg.text,
+		session_id: msg.session_id,
+		id: msg.id,
 	};
 	for (const fn of messageSubs) fn(userEvent);
 	_pendingSessionToday = true;
-	_activeSessionId = first.session_id;
+	_activeSessionId = msg.session_id;
 	_messageBuffer = [];
 	const payload: Record<string, unknown> = {
 		type: "chat",
-		text,
-		session_id: first.session_id,
+		text: msg.text,
+		session_id: msg.session_id,
+		// Slice C: pass the client-generated id as turn_id so the server
+		// echoes it back in `done` for FIFO correlation, and so the client
+		// can reference it in cancel_queued.
+		turn_id: msg.id,
 	};
-	if (first.agent_cwd) payload.agent_cwd = first.agent_cwd;
-	// skill_context taken from first queued message only. Batching multiple
-	// skill invocations into one send is not supported; concurrent skill queues
-	// are rare and the first-wins rule matches the single-message fast path.
-	if (first.skill_context) payload.skill_context = first.skill_context;
-	if (attachments.length > 0) payload.attachments = attachments;
+	if (msg.agent_cwd) payload.agent_cwd = msg.agent_cwd;
+	if (msg.skill_context) payload.skill_context = msg.skill_context;
+	if (msg.attachments && msg.attachments.length > 0) {
+		payload.attachments = msg.attachments;
+	}
 	try {
 		_ws.send(JSON.stringify(payload));
-		_chatQueue = [];
-		notifyQueue();
+		return true;
 	} catch {
-		// Connection closed unexpectedly; items remain in queue for retry on reconnect
+		return false;
 	}
+}
+
+/**
+ * Send any queued items that haven't yet been delivered to the server. Used
+ * by ws.onopen to flush the backlog accumulated while the connection was
+ * down. Items are tagged with `_sent` once delivered so we don't re-send them
+ * on subsequent reconnects (the server won't have erased them).
+ */
+function drainPendingToServer(): void {
+	if (_ws?.readyState !== WebSocket.OPEN) return;
+	for (const item of _chatQueue) {
+		if (item._sent) continue;
+		if (sendChatToServer(item)) item._sent = true;
+		else break;
+	}
+}
+
+/**
+ * Remove the queued item matching the given turn_id. Called on each `done`
+ * from server. Matches by id rather than head position because promote can
+ * reorder the server-side queue, leaving client's insertion-order queue out
+ * of sync with the actual processing order.
+ */
+function popQueueById(turnId: string): void {
+	const idx = _chatQueue.findIndex((q) => q.id === turnId);
+	if (idx === -1) return;
+	_chatQueue = _chatQueue.filter((_, i) => i !== idx);
+	notifyQueue();
+}
+
+/**
+ * Slice C polish: reconcile chatQueue against the server's authoritative
+ * queue state. Sent items not in the server's pending list (and not the
+ * currently running one) are orphans — e.g. server restarted, lost the
+ * QueuedTurn — and get pruned. Not-yet-sent items (still in the local
+ * outbox awaiting ws connect) are preserved.
+ */
+function reconcileQueueState(
+	pendingIds: string[],
+	runningId: string | null,
+): void {
+	const known = new Set([...pendingIds, ...(runningId ? [runningId] : [])]);
+	const before = _chatQueue.length;
+	_chatQueue = _chatQueue.filter((q) => !q._sent || known.has(q.id));
+	if (_chatQueue.length !== before) notifyQueue();
 }
 
 // ─── WebSocket connection ─────────────────────────────────────────────────────
@@ -219,12 +282,19 @@ function onStatus(msg: Extract<ServerMessage, { type: "status" }>): void {
 	if (msg.state === "idle" || msg.state === "error") {
 		_pendingPermCount = 0;
 	}
+	// Slice C: track the running turn_id so MessageList can render the
+	// correct queue chip on chatQueue entries. When state is not running,
+	// clear it.
+	const runningTurnId = msg.state === "running" ? (msg.turn_id ?? null) : null;
 	setSnap({
 		sessionState: msg.state,
 		model: msg.model,
 		hasPendingPermissions: _pendingPermCount > 0,
+		runningTurnId,
 	});
-	if (msg.state === "idle") drainQueue();
+	// Slice A: server-side queue manages drain order. Client no longer batches
+	// or sends on state=idle — items are dispatched immediately on enqueue and
+	// removed from the local queue when their `done` event arrives.
 }
 
 function onPermissionRequest(): void {
@@ -269,6 +339,15 @@ function onDone(msg: Extract<ServerMessage, { type: "done" }>): boolean {
 	// Ignore done from a stale session (e.g. in-flight query from before clear)
 	if (_activeSessionId !== null && msg.session_id !== _activeSessionId)
 		return false;
+	// Slice C: pop the queue item matching this done's turn_id. Match by
+	// id (not head position) because promote can reorder the server queue,
+	// so the just-finished turn might not be at the head of the client's
+	// insertion-order queue. Done events for turns NOT in the local queue
+	// (e.g. the first idle-path submission from raven, sent via direct
+	// ws.send instead of enqueueChat) leave the queue alone.
+	if (msg.turn_id) {
+		popQueueById(msg.turn_id);
+	}
 	_liveStats = {
 		turns: _liveStats.turns + msg.turns,
 		cost: _liveStats.cost + (msg.cost ?? 0),
@@ -310,7 +389,12 @@ function connect() {
 	_ws = new WebSocket(getWsUrl());
 	setSnap({ wsStatus: "connecting" });
 
-	_ws.onopen = () => setSnap({ wsStatus: "connected" });
+	_ws.onopen = () => {
+		setSnap({ wsStatus: "connected" });
+		// Flush any items enqueued while the connection was down. Already-sent
+		// items are skipped via the _sent flag.
+		drainPendingToServer();
+	};
 	_ws.onerror = () => setSnap({ wsStatus: "disconnected" });
 	_ws.onclose = () => {
 		setSnap({ wsStatus: "disconnected" });
@@ -328,6 +412,9 @@ function connect() {
 		if (msg.type === "permission_resolved") onPermissionResolved();
 		if (msg.type === "usage_update") onUsageUpdate(msg);
 		if (msg.type === "done" && !onDone(msg)) return;
+		if (msg.type === "queue_state") {
+			reconcileQueueState(msg.pending_turn_ids, msg.running_turn_id);
+		}
 		// Buffer in-flight events while buffering is enabled (before history loads,
 		// or during SPA nav with component unmounted). Disabled after history drains
 		// so the buffer doesn't grow during a live session.
@@ -490,13 +577,42 @@ export function claimPendingPrompt(): string | null {
 // ─── Public API — Chat queue ──────────────────────────────────────────────────
 
 export function enqueueChat(msg: QueuedChatMessage): void {
-	_chatQueue = [..._chatQueue, msg];
+	const item: QueuedChatMessage = { ...msg };
+	_chatQueue = [..._chatQueue, item];
 	notifyQueue();
+	if (sendChatToServer(item)) item._sent = true;
+}
+
+/**
+ * Slice C: ask the server to promote a queued msg — interrupts the current
+ * running turn so this msg runs next. The server may decline (returns false)
+ * if the id is unknown or refers to the running turn; the client doesn't
+ * need to track that distinction since the UI only shows the button on
+ * non-running queue items.
+ */
+export function promoteQueued(id: string): void {
+	if (_ws?.readyState !== WebSocket.OPEN) return;
+	try {
+		_ws.send(JSON.stringify({ type: "promote_queued", turn_id: id }));
+	} catch {
+		// Connection lost — best-effort; UI stays consistent next refresh.
+	}
 }
 
 export function removeFromQueue(id: string): QueuedChatMessage | undefined {
 	const item = _chatQueue.find((m) => m.id === id);
 	if (!item) return undefined;
+	// Slice C: if the item was already sent to the server, ask the server
+	// to cancel it. The server only cancels pending (not-yet-running) turns;
+	// the running turn is unaffected and produces its done as usual. Local
+	// removal happens regardless so the UI updates instantly.
+	if (item._sent && _ws?.readyState === WebSocket.OPEN) {
+		try {
+			_ws.send(JSON.stringify({ type: "cancel_queued", turn_id: id }));
+		} catch {
+			// Connection lost — local removal still proceeds.
+		}
+	}
 	_chatQueue = _chatQueue.filter((m) => m.id !== id);
 	notifyQueue();
 	return item;

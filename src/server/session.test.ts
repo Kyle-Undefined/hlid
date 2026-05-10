@@ -78,6 +78,7 @@ import type {
 	AgentQueryParams,
 	AgentSession,
 } from "./agentProvider";
+import type { ServerMessage } from "./protocol";
 import { generateTurnRecap } from "./recap";
 import { SessionManager } from "./session";
 
@@ -145,6 +146,7 @@ function makeProvider(toolName: string, toolUseID = "tid-1"): AgentProvider {
 			return {
 				[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
 				cancel: vi.fn(),
+				send: vi.fn().mockResolvedValue(undefined),
 				mcpServerStatus: () => Promise.resolve([]),
 			};
 		},
@@ -415,6 +417,7 @@ describe("SessionManager — AskUserQuestion", () => {
 				return {
 					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
 					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
 					mcpServerStatus: () => Promise.resolve([]),
 				};
 			},
@@ -479,6 +482,7 @@ describe("SessionManager — AskUserQuestion", () => {
 				return {
 					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
 					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
 					mcpServerStatus: () => Promise.resolve([]),
 				};
 			},
@@ -538,6 +542,7 @@ describe("SessionManager — AskUserQuestion", () => {
 				return {
 					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
 					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
 					mcpServerStatus: () => Promise.resolve([]),
 				};
 			},
@@ -618,6 +623,7 @@ describe("SessionManager — AskUserQuestion", () => {
 				return {
 					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
 					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
 					mcpServerStatus: () => Promise.resolve([]),
 				};
 			},
@@ -683,6 +689,7 @@ describe("SessionManager — AskUserQuestion", () => {
 				return {
 					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
 					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
 					mcpServerStatus: () => Promise.resolve([]),
 				};
 			},
@@ -753,6 +760,7 @@ describe("SessionManager — AskUserQuestion", () => {
 				return {
 					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
 					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
 					mcpServerStatus: () => Promise.resolve([]),
 				};
 			},
@@ -816,6 +824,7 @@ describe("SessionManager — AskUserQuestion", () => {
 				return {
 					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
 					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
 					mcpServerStatus: () => Promise.resolve([]),
 				};
 			},
@@ -865,6 +874,7 @@ describe("SessionManager — session-scoped permission persistence", () => {
 				return {
 					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
 					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
 					mcpServerStatus: () => Promise.resolve([]),
 				};
 			},
@@ -1025,6 +1035,7 @@ describe("SessionManager — session-scoped permission persistence", () => {
 				return {
 					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
 					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
 					mcpServerStatus: () => Promise.resolve([]),
 				};
 			},
@@ -1070,6 +1081,7 @@ describe("SessionManager — session-scoped permission persistence", () => {
 				return {
 					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
 					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
 					mcpServerStatus: () => Promise.resolve([]),
 				};
 			},
@@ -1139,6 +1151,7 @@ describe("SessionManager — session-scoped permission persistence", () => {
 				return {
 					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
 					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
 					mcpServerStatus: () => Promise.resolve([]),
 				};
 			},
@@ -1182,6 +1195,7 @@ describe("SessionManager — summary passed to recap", () => {
 				return {
 					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
 					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
 					mcpServerStatus: () => Promise.resolve([]),
 				};
 			},
@@ -1219,6 +1233,7 @@ describe("SessionManager — summary passed to recap", () => {
 				return {
 					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
 					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
 					mcpServerStatus: () => Promise.resolve([]),
 				};
 			},
@@ -1257,6 +1272,7 @@ function makeRecapTriggerProvider(): AgentProvider {
 			return {
 				[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
 				cancel: vi.fn(),
+				send: vi.fn().mockResolvedValue(undefined),
 				mcpServerStatus: () => Promise.resolve([]),
 			};
 		},
@@ -1387,6 +1403,7 @@ function makeCaptureProvider(id = "claude"): {
 			return {
 				[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
 				cancel: vi.fn(),
+				send: vi.fn().mockResolvedValue(undefined),
 				mcpServerStatus: () => Promise.resolve([]),
 			};
 		},
@@ -1644,6 +1661,7 @@ function makeControlledProvider(
 			return {
 				[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
 				cancel: vi.fn(),
+				send: vi.fn().mockResolvedValue(undefined),
 				mcpServerStatus: () => Promise.resolve([]),
 			};
 		},
@@ -1818,6 +1836,7 @@ describe("SessionManager — live tool_event persistence", () => {
 				return {
 					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
 					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
 					mcpServerStatus: () => Promise.resolve([]),
 				};
 			},
@@ -1870,6 +1889,7 @@ describe("SessionManager — live tool_event persistence", () => {
 				return {
 					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
 					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
 					mcpServerStatus: () => Promise.resolve([]),
 				};
 			},
@@ -2020,6 +2040,7 @@ describe("SessionManager — live tool_event persistence", () => {
 				return {
 					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
 					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
 					mcpServerStatus: () => Promise.resolve([]),
 				};
 			},
@@ -2032,5 +2053,846 @@ describe("SessionManager — live tool_event persistence", () => {
 			.mocked(dbMock.setToolEventResult)
 			.mock.calls.filter((c) => c[1] === "ghost");
 		expect(ghostCalls).toHaveLength(0);
+	});
+});
+
+// ── runQuery queueing (Slice A) ───────────────────────────────────────────────
+
+/**
+ * Slice B-aware controllable provider: one long-lived AgentSession per chat,
+ * each send() call enrolls a `{ resolveDone }` controller so the test can
+ * release turns individually. Use `turns.length` as the probe for "how many
+ * turns have started" — provider.query() is invoked once per chat under
+ * Slice B caching, so it is no longer a useful probe.
+ */
+function makeControllableProvider() {
+	const turns: Array<{ resolveDone: () => void }> = [];
+	let queryCount = 0;
+	const eventQueue: AgentEvent[] = [];
+	const waiters: Array<(e: AgentEvent | null) => void> = [];
+	let closed = false;
+
+	function pushEvent(e: AgentEvent): void {
+		const w = waiters.shift();
+		if (w) w(e);
+		else eventQueue.push(e);
+	}
+
+	const provider: AgentProvider = {
+		providerId: "claude",
+		query(_p: AgentQueryParams): AgentSession {
+			queryCount++;
+			const queryIndex = queryCount;
+			let started = false;
+			const cachedIter: AsyncIterator<AgentEvent> = {
+				async next(): Promise<IteratorResult<AgentEvent>> {
+					if (closed) return { value: undefined as never, done: true };
+					if (!started) {
+						started = true;
+						return {
+							value: {
+								type: "session_start",
+								sessionId: `sdk-${queryIndex}`,
+							},
+							done: false,
+						};
+					}
+					if (eventQueue.length > 0) {
+						return {
+							value: eventQueue.shift() as AgentEvent,
+							done: false,
+						};
+					}
+					return new Promise<IteratorResult<AgentEvent>>((resolve) => {
+						waiters.push((e) => {
+							if (e === null) {
+								resolve({ value: undefined as never, done: true });
+							} else {
+								resolve({ value: e, done: false });
+							}
+						});
+					});
+				},
+			};
+			const send = vi.fn(async () => {
+				let resolveDone!: () => void;
+				const donePromise = new Promise<void>((r) => {
+					resolveDone = r;
+				});
+				turns.push({ resolveDone });
+				void donePromise.then(() => {
+					pushEvent({
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					});
+				});
+			});
+			return {
+				[Symbol.asyncIterator]: () => cachedIter,
+				cancel: () => {
+					closed = true;
+					while (waiters.length > 0) {
+						const w = waiters.shift();
+						w?.(null);
+					}
+				},
+				send,
+				mcpServerStatus: () => Promise.resolve([]),
+			};
+		},
+	};
+	return {
+		provider,
+		turns,
+		getQueryCount: () => queryCount,
+		getSendCount: () => turns.length,
+	};
+}
+
+describe("SessionManager — runQuery queueing", () => {
+	it("queues second runQuery while first is running and drains FIFO at done", async () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		const events1: unknown[] = [];
+		const events2: unknown[] = [];
+		const turn1 = sm.runQuery("first", (m) => events1.push(m), "sess-1");
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+
+		// Second runQuery while first is still running — must queue, not reject.
+		const turn2 = sm.runQuery("second", (m) => events2.push(m), "sess-1");
+
+		// Provider must NOT have been invoked for turn 2 yet.
+		expect(ctl.getSendCount()).toBe(1);
+
+		// Release turn 1 — turn 2 should then start.
+		ctl.turns[0].resolveDone();
+		await turn1;
+		await waitFor(() => expect(ctl.getSendCount()).toBe(2));
+		ctl.turns[1].resolveDone();
+		await turn2;
+
+		expect(events1.some((m) => (m as { type: string }).type === "done")).toBe(
+			true,
+		);
+		expect(events2.some((m) => (m as { type: string }).type === "done")).toBe(
+			true,
+		);
+	});
+
+	it("preserves FIFO order across multiple queued turns", async () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		const order: string[] = [];
+		const recordDone =
+			(label: string) =>
+			(m: ServerMessage): void => {
+				if (m.type === "done") order.push(label);
+			};
+		const t1 = sm.runQuery("a", recordDone("a"), "sess-1");
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		const t2 = sm.runQuery("b", recordDone("b"), "sess-1");
+		const t3 = sm.runQuery("c", recordDone("c"), "sess-1");
+
+		ctl.turns[0].resolveDone();
+		await t1;
+		await waitFor(() => expect(ctl.getSendCount()).toBe(2));
+		ctl.turns[1].resolveDone();
+		await t2;
+		await waitFor(() => expect(ctl.getSendCount()).toBe(3));
+		ctl.turns[2].resolveDone();
+		await t3;
+
+		expect(order).toEqual(["a", "b", "c"]);
+	});
+
+	it("emits status=running per queued turn (with turn_id) and status=idle once at drain end", async () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		const statusEvents: Array<{ state: string; turn_id?: string }> = [];
+		const onMsg = (m: ServerMessage): void => {
+			if (m.type === "status") {
+				statusEvents.push({
+					state: m.state,
+					...(m.turn_id !== undefined ? { turn_id: m.turn_id } : {}),
+				});
+			}
+		};
+
+		const t1 = sm.runQuery(
+			"a",
+			onMsg,
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-a",
+		);
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		const t2 = sm.runQuery(
+			"b",
+			onMsg,
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-b",
+		);
+
+		ctl.turns[0].resolveDone();
+		await t1;
+		await waitFor(() => expect(ctl.getSendCount()).toBe(2));
+
+		// Between turn 1 and turn 2 we must NOT see an idle status.
+		expect(statusEvents.map((e) => e.state)).not.toContain("idle");
+
+		ctl.turns[1].resolveDone();
+		await t2;
+
+		// Slice C: each turn emits a running status with its turn_id so the
+		// client can mark the corresponding chatQueue entry as RUN.
+		const runningEvents = statusEvents.filter((e) => e.state === "running");
+		expect(runningEvents).toHaveLength(2);
+		expect(runningEvents[0].turn_id).toBe("turn-a");
+		expect(runningEvents[1].turn_id).toBe("turn-b");
+		// Idle emitted exactly once after full drain.
+		expect(statusEvents.filter((e) => e.state === "idle")).toHaveLength(1);
+	});
+
+	it("first turn error does not block subsequent queued turn from running", async () => {
+		let calls = 0;
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(_p: AgentQueryParams): AgentSession {
+				calls++;
+				const willThrow = calls === 1;
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					if (willThrow) throw new Error("first turn fail");
+					yield { type: "session_start", sessionId: "sdk-2" };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const t1 = sm.runQuery("a", () => {}, "sess-1");
+		const t2 = sm.runQuery("b", () => {}, "sess-1");
+
+		const results = await Promise.allSettled([t1, t2]);
+		// runQuery itself never throws — errors are emitted as events. Both
+		// promises resolve; second turn must have invoked the provider.
+		expect(results[0].status).toBe("fulfilled");
+		expect(results[1].status).toBe("fulfilled");
+		expect(calls).toBe(2);
+	});
+
+	it("clearHistory drops queued turns silently and does not start them", async () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		const t1 = sm.runQuery("a", () => {}, "sess-1");
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		const t2 = sm.runQuery("b", () => {}, "sess-1");
+
+		// Clear before turn 1 completes — turn 2 should never start.
+		sm.clearHistory();
+
+		// Let turn 1 finish so its iterator drains.
+		ctl.turns[0].resolveDone();
+		await t1;
+
+		// Give the drain loop a tick; turn 2 must not have invoked the provider.
+		await new Promise((r) => setTimeout(r, 20));
+		expect(ctl.getSendCount()).toBe(1);
+
+		// t2 should resolve (or reject) without hanging.
+		await Promise.race([
+			t2,
+			new Promise((_, rej) => setTimeout(() => rej(new Error("t2 hung")), 200)),
+		]).catch(() => {
+			/* either resolution acceptable */
+		});
+	});
+});
+
+// ── Slice C: cancelQueued ─────────────────────────────────────────────────────
+
+describe("SessionManager — cancelQueued", () => {
+	it("removes a pending queued turn by turn_id and resolves its promise silently", async () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		const t1 = sm.runQuery(
+			"first",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-1",
+		);
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		const t2 = sm.runQuery(
+			"second",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-2",
+		);
+
+		expect(sm.cancelQueued("turn-2")).toBe(true);
+
+		ctl.turns[0].resolveDone();
+		await t1;
+		// t2 was cancelled — its promise resolves silently; no second send.
+		await t2;
+		expect(ctl.getSendCount()).toBe(1);
+	});
+
+	it("returns false when the turn_id is unknown", () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+		expect(sm.cancelQueued("nope")).toBe(false);
+	});
+
+	it("returns false for the currently running turn (cannot cancel-running)", async () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		const t1 = sm.runQuery(
+			"first",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-1",
+		);
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+
+		// turn-1 is currently running (already shifted off turnQueue), so
+		// cancelQueued must NOT match it.
+		expect(sm.cancelQueued("turn-1")).toBe(false);
+
+		ctl.turns[0].resolveDone();
+		await t1;
+	});
+});
+
+describe("SessionManager — promoteQueued", () => {
+	it("moves a queued turn to the head and calls agentSession.interrupt", async () => {
+		const ctl = makeControllableProvider();
+		// Wrap provider so we can capture the interrupt spy on the live session.
+		let capturedInterrupt: ReturnType<typeof vi.fn> | null = null;
+		const wrapped: AgentProvider = {
+			providerId: "claude",
+			query(p: AgentQueryParams): AgentSession {
+				const sess = ctl.provider.query(p);
+				const interruptSpy = vi.fn().mockResolvedValue(undefined);
+				capturedInterrupt = interruptSpy;
+				return { ...sess, interrupt: interruptSpy };
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(wrapped));
+
+		const t1 = sm.runQuery(
+			"first",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-1",
+		);
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		const t2 = sm.runQuery(
+			"second",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-2",
+		);
+		const t3 = sm.runQuery(
+			"third",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-3",
+		);
+
+		// Promote turn-3 — should reorder turnQueue (turn-3 before turn-2) and
+		// interrupt the currently running turn.
+		expect(sm.promoteQueued("turn-3")).toBe(true);
+		expect(capturedInterrupt).not.toBeNull();
+		expect(capturedInterrupt).toHaveBeenCalledTimes(1);
+
+		// Resolve current turn (turn-1) — drain proceeds to turn-3 (promoted),
+		// then turn-2.
+		ctl.turns[0].resolveDone();
+		await t1;
+		await waitFor(() => expect(ctl.getSendCount()).toBe(2));
+		ctl.turns[1].resolveDone();
+		await t3;
+		await waitFor(() => expect(ctl.getSendCount()).toBe(3));
+		ctl.turns[2].resolveDone();
+		await t2;
+	});
+
+	it("returns false for unknown turn id", () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+		expect(sm.promoteQueued("nope")).toBe(false);
+	});
+
+	it("returns false for the currently running turn (already shifted off queue)", async () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		const t1 = sm.runQuery(
+			"first",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-1",
+		);
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		expect(sm.promoteQueued("turn-1")).toBe(false);
+		ctl.turns[0].resolveDone();
+		await t1;
+	});
+});
+
+describe("SessionManager — Slice C edge cases", () => {
+	it("cancel after promote: cancels the promoted turn (still in queue, just at head)", async () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		const t1 = sm.runQuery(
+			"first",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-1",
+		);
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		const t2 = sm.runQuery(
+			"second",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-2",
+		);
+		const t3 = sm.runQuery(
+			"third",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-3",
+		);
+
+		expect(sm.promoteQueued("turn-3")).toBe(true);
+		// Now turnQueue is [turn-3, turn-2]. Cancel turn-3 → only turn-2 remains.
+		expect(sm.cancelQueued("turn-3")).toBe(true);
+
+		ctl.turns[0].resolveDone();
+		await t1;
+		await t3; // resolved silently by cancel
+		await waitFor(() => expect(ctl.getSendCount()).toBe(2));
+		ctl.turns[1].resolveDone();
+		await t2;
+		expect(ctl.getSendCount()).toBe(2); // turn-3 never ran
+	});
+
+	it("double promote: second promote moves a different turn to head", async () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		const t1 = sm.runQuery(
+			"first",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-1",
+		);
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		const t2 = sm.runQuery(
+			"second",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-2",
+		);
+		const t3 = sm.runQuery(
+			"third",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-3",
+		);
+
+		expect(sm.promoteQueued("turn-3")).toBe(true);
+		// Queue: [turn-3, turn-2]. Promote turn-2 → [turn-2, turn-3].
+		expect(sm.promoteQueued("turn-2")).toBe(true);
+
+		ctl.turns[0].resolveDone();
+		await t1;
+		await waitFor(() => expect(ctl.getSendCount()).toBe(2));
+		ctl.turns[1].resolveDone();
+		await t2;
+		await waitFor(() => expect(ctl.getSendCount()).toBe(3));
+		ctl.turns[2].resolveDone();
+		await t3;
+	});
+
+	it("abort clears queue and tears down session even if queue had promotions", async () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		const t1 = sm.runQuery(
+			"first",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-1",
+		);
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		const t2 = sm.runQuery(
+			"second",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-2",
+		);
+		const t3 = sm.runQuery(
+			"third",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-3",
+		);
+		expect(sm.promoteQueued("turn-3")).toBe(true);
+
+		sm.abort();
+		// Drain the running turn so Promise.allSettled resolves.
+		ctl.turns[0].resolveDone();
+
+		await Promise.allSettled([t1, t2, t3]);
+		// Queue was cleared by abort — turn-2 and turn-3 never ran.
+		expect(ctl.getSendCount()).toBe(1);
+	});
+});
+
+describe("SessionManager — turn_id forwarding", () => {
+	it("done event includes the turn_id supplied to runQuery", async () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		const events: ServerMessage[] = [];
+		const turn = sm.runQuery(
+			"first",
+			(m) => events.push(m),
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-xyz",
+		);
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		ctl.turns[0].resolveDone();
+		await turn;
+
+		const doneEvt = events.find((e) => e.type === "done") as
+			| { type: "done"; turn_id?: string }
+			| undefined;
+		expect(doneEvt?.turn_id).toBe("turn-xyz");
+	});
+});
+
+// ── Slice B: long-lived AgentSession reuse ────────────────────────────────────
+
+/**
+ * Build a provider whose AgentSession stays open across send() calls. Each
+ * send() emits its own done event into the shared stream so iterateConversation
+ * sees one done per turn and breaks (preserving iterator state between turns).
+ * Counts how many times provider.query() was invoked.
+ */
+function makeLongLivedProvider() {
+	let queryCallCount = 0;
+	const eventQueue: AgentEvent[] = [];
+	const waiters: Array<(e: AgentEvent | null) => void> = [];
+	let closed = false;
+
+	function pushEvent(e: AgentEvent): void {
+		if (waiters.length > 0) {
+			const w = waiters.shift();
+			w?.(e);
+		} else {
+			eventQueue.push(e);
+		}
+	}
+
+	function close(): void {
+		closed = true;
+		while (waiters.length > 0) {
+			const w = waiters.shift();
+			w?.(null);
+		}
+	}
+
+	const provider: AgentProvider = {
+		providerId: "claude",
+		query(_p: AgentQueryParams): AgentSession {
+			queryCallCount++;
+			const queryIndex = queryCallCount;
+			let started = false;
+			const cachedIter: AsyncIterator<AgentEvent> = {
+				async next(): Promise<IteratorResult<AgentEvent>> {
+					if (closed) return { value: undefined as never, done: true };
+					if (!started) {
+						started = true;
+						return {
+							value: {
+								type: "session_start",
+								sessionId: `sdk-${queryIndex}`,
+							},
+							done: false,
+						};
+					}
+					if (eventQueue.length > 0) {
+						const next = eventQueue.shift();
+						return { value: next as AgentEvent, done: false };
+					}
+					return new Promise<IteratorResult<AgentEvent>>((resolve) => {
+						waiters.push((e) => {
+							if (e === null) {
+								resolve({ value: undefined as never, done: true });
+							} else {
+								resolve({ value: e, done: false });
+							}
+						});
+					});
+				},
+			};
+			return {
+				[Symbol.asyncIterator]: () => cachedIter,
+				send: vi.fn(async (_msg: string) => {
+					pushEvent({
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					});
+				}),
+				cancel: () => close(),
+				mcpServerStatus: () => Promise.resolve([]),
+			};
+		},
+	};
+	return {
+		provider,
+		getQueryCallCount: () => queryCallCount,
+		closeStream: close,
+	};
+}
+
+describe("SessionManager — Slice B AgentSession reuse", () => {
+	it("two consecutive runQuery calls in same chat reuse one provider.query()", async () => {
+		const ctl = makeLongLivedProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		await sm.runQuery("first", () => {}, "sess-1");
+		await sm.runQuery("second", () => {}, "sess-1");
+
+		expect(ctl.getQueryCallCount()).toBe(1);
+		ctl.closeStream();
+	});
+
+	it("switching to a different sessionId rebuilds the AgentSession", async () => {
+		const ctl = makeLongLivedProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		await sm.runQuery("first", () => {}, "sess-A");
+		await sm.runQuery("second", () => {}, "sess-B");
+
+		expect(ctl.getQueryCallCount()).toBe(2);
+		ctl.closeStream();
+	});
+
+	it("clearHistory tears down the cached AgentSession", async () => {
+		const ctl = makeLongLivedProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		await sm.runQuery("first", () => {}, "sess-1");
+		sm.clearHistory();
+		await sm.runQuery("second", () => {}, "sess-2");
+
+		expect(ctl.getQueryCallCount()).toBe(2);
+		ctl.closeStream();
+	});
+
+	it("abort tears down the cached AgentSession", async () => {
+		const ctl = makeLongLivedProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		await sm.runQuery("first", () => {}, "sess-1");
+		sm.abort();
+		await sm.runQuery("second", () => {}, "sess-1");
+
+		expect(ctl.getQueryCallCount()).toBe(2);
+		ctl.closeStream();
+	});
+
+	it("regression: cached iterator survives turn-boundary break (for-await must not close it)", async () => {
+		// Use a real AsyncGenerator (which has a `return` method) to catch
+		// the for-await early-exit bug. A naive impl that returns the
+		// underlying iter from [Symbol.asyncIterator] gets closed by
+		// iterateConversation's `return` on done — symptom: turn 2 hangs
+		// because every iter.next() resolves done=true forever.
+		let generatorReturnCalled = 0;
+		const eventQueue: AgentEvent[] = [];
+		const waiters: Array<(e: AgentEvent | null) => void> = [];
+
+		function pushEvent(e: AgentEvent): void {
+			const w = waiters.shift();
+			if (w) w(e);
+			else eventQueue.push(e);
+		}
+
+		const realGenerator = (async function* (): AsyncGenerator<AgentEvent> {
+			try {
+				yield { type: "session_start", sessionId: "sdk-real" };
+				while (true) {
+					if (eventQueue.length > 0) {
+						const next = eventQueue.shift();
+						if (next) yield next;
+						continue;
+					}
+					const next = await new Promise<AgentEvent | null>((r) => {
+						waiters.push(r);
+					});
+					if (next === null) return;
+					yield next;
+				}
+			} finally {
+				generatorReturnCalled++;
+			}
+		})();
+
+		// Wrap the inner iterator so consumer's break/return DOES NOT close
+		// the underlying generator (mirrors ClaudeAgentSession's wrapper).
+		const innerIter = realGenerator[Symbol.asyncIterator]();
+		const wrapperIter: AsyncIterator<AgentEvent> = {
+			next: () => innerIter.next(),
+			return: async () =>
+				({ value: undefined, done: true }) as IteratorResult<AgentEvent>,
+		};
+
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(_p: AgentQueryParams): AgentSession {
+				return {
+					[Symbol.asyncIterator]: () => wrapperIter,
+					send: vi.fn(async () => {
+						pushEvent({
+							type: "done",
+							cost: 0,
+							turns: 1,
+							durationMs: 0,
+							usage: { inputTokens: 1, outputTokens: 1 },
+						});
+					}),
+					cancel: () => {
+						const w = waiters.shift();
+						w?.(null);
+					},
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const events1: ServerMessage[] = [];
+		const events2: ServerMessage[] = [];
+
+		await sm.runQuery("first", (m) => events1.push(m), "sess-1");
+		expect(events1.some((m) => m.type === "done")).toBe(true);
+		expect(generatorReturnCalled).toBe(0);
+
+		// CRITICAL: turn 2 must receive its own done event. With a naive
+		// [Symbol.asyncIterator] that returns the raw AsyncGenerator,
+		// for-await's exit closes it and turn 2 hangs.
+		await Promise.race([
+			sm.runQuery("second", (m) => events2.push(m), "sess-1"),
+			new Promise((_, rej) =>
+				setTimeout(() => rej(new Error("turn 2 hung")), 1000),
+			),
+		]);
+		expect(events2.some((m) => m.type === "done")).toBe(true);
+	});
+
+	it("runOneTurn calls agentSession.send() with the user message", async () => {
+		const ctl = makeLongLivedProvider();
+		let lastSendSpy: ReturnType<typeof vi.fn> | null = null;
+		const wrappedProvider: AgentProvider = {
+			providerId: "claude",
+			query(p: AgentQueryParams): AgentSession {
+				const sess = ctl.provider.query(p);
+				lastSendSpy = sess.send as ReturnType<typeof vi.fn>;
+				return sess;
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(wrappedProvider));
+		await sm.runQuery("hello world", () => {}, "sess-1");
+		expect(lastSendSpy).not.toBeNull();
+		expect(lastSendSpy).toHaveBeenCalledTimes(1);
+		const sentArg = (lastSendSpy as ReturnType<typeof vi.fn>).mock
+			.calls[0][0] as string;
+		// buildPrompt is mocked at module level to return "test prompt", which
+		// SessionManager forwards verbatim to agentSession.send().
+		expect(sentArg).toBe("test prompt");
+		ctl.closeStream();
 	});
 });

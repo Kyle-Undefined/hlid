@@ -3,11 +3,12 @@ import type { ServerMessage } from "../server/protocol";
 import * as wsStore from "./wsStore";
 
 export function useWs(onMessage?: (msg: ServerMessage) => void) {
-	const { wsStatus, sessionState, model, actualModel } = useSyncExternalStore(
-		wsStore.subscribeStatus,
-		wsStore.getSnapshot,
-		() => wsStore.INITIAL_SNAPSHOT,
-	);
+	const { wsStatus, sessionState, model, actualModel, runningTurnId } =
+		useSyncExternalStore(
+			wsStore.subscribeStatus,
+			wsStore.getSnapshot,
+			() => wsStore.INITIAL_SNAPSHOT,
+		);
 
 	useEffect(() => {
 		if (!onMessage) return;
@@ -16,5 +17,12 @@ export function useWs(onMessage?: (msg: ServerMessage) => void) {
 
 	const send = useCallback(wsStore.send, []);
 
-	return { wsStatus, sessionState, model, actualModel, send };
+	return {
+		wsStatus,
+		sessionState,
+		model,
+		actualModel,
+		runningTurnId,
+		send,
+	};
 }

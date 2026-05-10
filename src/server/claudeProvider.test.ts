@@ -35,7 +35,6 @@ function baseParams(
 	overrides: Partial<AgentQueryParams> = {},
 ): AgentQueryParams {
 	return {
-		prompt: "hello",
 		cwd: "/tmp/test",
 		canUseTool: vi.fn().mockResolvedValue({ behavior: "allow" }),
 		...overrides,
@@ -909,5 +908,183 @@ describe("ClaudeProvider — check()", () => {
 			available: false,
 			reason: "Claude Code CLI not found",
 		});
+	});
+});
+
+// ── Slice B: streaming-input mode ─────────────────────────────────────────────
+
+describe("ClaudeProvider — Slice B streaming-input", () => {
+	it("opens SDK query with AsyncIterable prompt (not a string)", async () => {
+		let capturedPrompt: unknown;
+		vi.mocked(query).mockImplementationOnce(
+			({ prompt }: { prompt: unknown; options?: unknown }) => {
+				capturedPrompt = prompt;
+				return sdkGen([]);
+			},
+		);
+		const provider = new ClaudeProvider();
+		const session = provider.query(baseParams());
+		// The SDK query is opened lazily on first send.
+		await session.send("hi");
+		expect(typeof capturedPrompt).toBe("object");
+		expect(capturedPrompt).not.toBeNull();
+		expect(
+			typeof (capturedPrompt as { [Symbol.asyncIterator]?: unknown })[
+				Symbol.asyncIterator
+			],
+		).toBe("function");
+		session.cancel();
+	});
+
+	it("send() pushes a SDKUserMessage onto the prompt stream", async () => {
+		let capturedPrompt: AsyncIterable<unknown> | undefined;
+		vi.mocked(query).mockImplementationOnce(
+			({ prompt }: { prompt: unknown; options?: unknown }) => {
+				capturedPrompt = prompt as AsyncIterable<unknown>;
+				return sdkGen([]);
+			},
+		);
+		const provider = new ClaudeProvider();
+		const session = provider.query(baseParams());
+		await session.send("hello world");
+
+		// Pull the first SDKUserMessage out of the captured stream.
+		const iter = (capturedPrompt as AsyncIterable<unknown>)[
+			Symbol.asyncIterator
+		]();
+		const result = await Promise.race([
+			iter.next(),
+			new Promise<never>((_, rej) =>
+				setTimeout(() => rej(new Error("send didn't push within 200ms")), 200),
+			),
+		]);
+		expect((result as IteratorResult<unknown>).done).toBe(false);
+		const sdkMsg = (
+			result as IteratorResult<{
+				type: string;
+				message: { content: Array<{ type: string; text: string }> };
+			}>
+		).value;
+		expect(sdkMsg.type).toBe("user");
+		expect(sdkMsg.message.content[0].text).toBe("hello world");
+	});
+
+	it("multiple send() calls in one session result in a single SDK query() invocation", async () => {
+		vi.mocked(query).mockClear();
+		vi.mocked(query).mockImplementation(() =>
+			sdkGen([
+				{
+					type: "system",
+					subtype: "init",
+					session_id: "sid-1",
+					tools: [],
+				},
+			]),
+		);
+		const provider = new ClaudeProvider();
+		const session = provider.query(baseParams());
+		await session.send("first");
+		await session.send("second");
+		expect(vi.mocked(query)).toHaveBeenCalledTimes(1);
+		session.cancel();
+	});
+
+	it("send() with priority='now' tags the SDKUserMessage", async () => {
+		let capturedPrompt: AsyncIterable<unknown> | undefined;
+		vi.mocked(query).mockImplementationOnce(
+			({ prompt }: { prompt: unknown; options?: unknown }) => {
+				capturedPrompt = prompt as AsyncIterable<unknown>;
+				return sdkGen([]);
+			},
+		);
+		const provider = new ClaudeProvider();
+		const session = provider.query(baseParams());
+		await session.send("urgent", { priority: "now" });
+
+		const iter = (capturedPrompt as AsyncIterable<unknown>)[
+			Symbol.asyncIterator
+		]();
+		const result = await iter.next();
+		expect((result.value as { priority?: string }).priority).toBe("now");
+	});
+
+	it("regression: for-await `return` from consumer does not close the cached iterator", async () => {
+		// Real-world bug observed in raven: after turn 1's `done` event,
+		// iterateConversation does an early `return` from the for-await loop.
+		// Without the wrapper, that calls iter.return() and closes the
+		// AsyncGenerator — turn 2 then hangs with no events ever emitted.
+		const events: Array<Record<string, unknown>> = [
+			{ type: "system", subtype: "init", session_id: "sid-1", tools: [] },
+			{
+				type: "result",
+				subtype: "success",
+				total_cost_usd: 0,
+				num_turns: 1,
+				duration_ms: 100,
+				usage: { input_tokens: 1, output_tokens: 1 },
+			},
+			{
+				type: "assistant",
+				message: {
+					content: [{ type: "text", text: "second-turn-marker" }],
+					usage: { input_tokens: 1, output_tokens: 1 },
+				},
+			},
+			{
+				type: "result",
+				subtype: "success",
+				total_cost_usd: 0,
+				num_turns: 1,
+				duration_ms: 100,
+				usage: { input_tokens: 1, output_tokens: 1 },
+			},
+		];
+		vi.mocked(query).mockReturnValueOnce(sdkGen(events));
+		const provider = new ClaudeProvider();
+		const session = provider.query(baseParams());
+		await session.send("turn 1");
+
+		// Drain turn 1's events — break out as iterateConversation does.
+		const collected1: AgentEvent[] = [];
+		for await (const e of session) {
+			collected1.push(e);
+			if (e.type === "done") break;
+		}
+		expect(collected1.some((e) => e.type === "done")).toBe(true);
+
+		await session.send("turn 2");
+		// Without the wrapper fix, this for-await yields nothing and the
+		// loop exits immediately (cached iter is closed).
+		const collected2: AgentEvent[] = [];
+		for await (const e of session) {
+			collected2.push(e);
+			if (e.type === "done") break;
+		}
+		expect(collected2.some((e) => e.type === "done")).toBe(true);
+		expect(
+			collected2.some(
+				(e) => e.type === "text_delta" && e.text === "second-turn-marker",
+			),
+		).toBe(true);
+		session.cancel();
+	});
+
+	it("send() defaults priority to 'next' when no opts given", async () => {
+		let capturedPrompt: AsyncIterable<unknown> | undefined;
+		vi.mocked(query).mockImplementationOnce(
+			({ prompt }: { prompt: unknown; options?: unknown }) => {
+				capturedPrompt = prompt as AsyncIterable<unknown>;
+				return sdkGen([]);
+			},
+		);
+		const provider = new ClaudeProvider();
+		const session = provider.query(baseParams());
+		await session.send("regular");
+
+		const iter = (capturedPrompt as AsyncIterable<unknown>)[
+			Symbol.asyncIterator
+		]();
+		const result = await iter.next();
+		expect((result.value as { priority?: string }).priority).toBe("next");
 	});
 });

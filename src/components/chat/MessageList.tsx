@@ -6,8 +6,7 @@ import { AssistantMsg } from "./AssistantMsg";
 import type { ChatMessage } from "./chatReducer";
 import { PermissionCard } from "./PermissionCard";
 import { PlanCard, type PlanDecision } from "./PlanCard";
-import { QueuedMsg } from "./QueuedMsg";
-import { UserMsg } from "./UserMsg";
+import { UserMsg, type UserMsgQueueState } from "./UserMsg";
 
 /**
  * Renders the full message thread: history, permission cards, queued messages,
@@ -17,15 +16,20 @@ export function MessageList({
 	messages,
 	chatQueue,
 	sessionId,
+	sessionState,
+	runningTurnId,
 	handleDecide,
 	handleSubmitAnswers,
 	handlePlanDecide,
 	handleCancelQueued,
+	handlePromoteQueued,
 	bottomRef,
 }: {
 	messages: ChatMessage[];
 	chatQueue: QueuedChatMessage[];
 	sessionId: string;
+	sessionState: "idle" | "running" | "error";
+	runningTurnId: string | null;
 	handleDecide: (
 		id: string,
 		approved: boolean,
@@ -43,6 +47,7 @@ export function MessageList({
 		feedback?: string,
 	) => void;
 	handleCancelQueued: (id: string) => void;
+	handlePromoteQueued: (id: string) => void;
 	bottomRef: React.MutableRefObject<HTMLDivElement | null>;
 }) {
 	// Approved permissions render as a chip under the matching tool block
@@ -58,10 +63,40 @@ export function MessageList({
 		return map;
 	}, [messages]);
 
+	// Slice C: build a lookup from queue.id → state. Match against the
+	// server-reported runningTurnId for "currently running" — positional
+	// heuristics are unreliable because chatQueue[0] can be either the
+	// running turn (after a previous turn's done popped its predecessor) OR
+	// a not-yet-running turn queued behind an idle-path msg.
+	const queueStateById = useMemo(() => {
+		const map = new Map<string, UserMsgQueueState>();
+		const filtered = chatQueue.filter((qm) => qm.session_id === sessionId);
+		let queuedIndex = 0;
+		for (const qm of filtered) {
+			if (qm.id === runningTurnId && sessionState === "running") {
+				map.set(qm.id, { kind: "running" });
+			} else {
+				map.set(qm.id, { kind: "queued", index: queuedIndex });
+				queuedIndex++;
+			}
+		}
+		return map;
+	}, [chatQueue, sessionId, sessionState, runningTurnId]);
+
 	return (
 		<>
 			{messages.map((m) => {
-				if (m.role === "user") return <UserMsg key={m.id} message={m} />;
+				if (m.role === "user") {
+					return (
+						<UserMsg
+							key={m.id}
+							message={m}
+							queueState={queueStateById.get(m.id)}
+							onCancel={handleCancelQueued}
+							onPromote={handlePromoteQueued}
+						/>
+					);
+				}
 				if (m.role === "permission") {
 					// Approved variants are folded into the tool block.
 					// Pending and denied still render standalone.
@@ -95,16 +130,6 @@ export function MessageList({
 				}
 				return null;
 			})}
-			{chatQueue
-				.filter((qm) => qm.session_id === sessionId)
-				.map((qm, i) => (
-					<QueuedMsg
-						key={qm.id}
-						message={qm}
-						index={i}
-						onCancel={handleCancelQueued}
-					/>
-				))}
 			<div ref={bottomRef} />
 		</>
 	);

@@ -35,6 +35,7 @@ const { wsState, mockSend, mockBroadcast, mockGetRunBuffer } = vi.hoisted(
 			clients: new Set<object>(),
 			sessionOwnerWs: null as object | null,
 			lastSessionError: null as string | null,
+			inFlightChatCount: new Map<object, number>(),
 		},
 		mockSend: vi.fn(),
 		mockBroadcast: vi.fn(),
@@ -75,6 +76,11 @@ function makeSession(overrides: Partial<SessionManager> = {}): SessionManager {
 		reinitialize: vi.fn(),
 		syncConfig: vi.fn().mockReturnValue(false),
 		runQuery: vi.fn().mockResolvedValue(undefined),
+		cancelQueued: vi.fn().mockReturnValue(false),
+		promoteQueued: vi.fn().mockReturnValue(false),
+		getQueueState: vi
+			.fn()
+			.mockReturnValue({ pending_turn_ids: [], running_turn_id: null }),
 		handlePermissionResponse: vi.fn(),
 		handleAskUserQuestionResponse: vi.fn(),
 		handlePlanModeExitResponse: vi.fn(),
@@ -94,6 +100,7 @@ beforeEach(() => {
 	wsState.clients.clear();
 	wsState.sessionOwnerWs = null;
 	wsState.lastSessionError = null;
+	wsState.inFlightChatCount.clear();
 	mockSend.mockClear();
 	mockBroadcast.mockClear();
 	mockGetRunBuffer.mockClear().mockReturnValue([]);
@@ -115,8 +122,10 @@ describe("open", () => {
 		const { open } = createWsHandlers(session);
 		const ws = makeWs();
 		open(ws as never);
-		const sent = lastSentTo(ws);
-		expect(sent?.type).toBe("status");
+		const types = mockSend.mock.calls
+			.filter((c) => c[0] === ws)
+			.map((c) => (c[1] as { type: string }).type);
+		expect(types).toContain("status");
 	});
 
 	it("re-sends last error when session is in error state", () => {
@@ -294,7 +303,10 @@ describe("message — sync", () => {
 		const { message } = createWsHandlers(session);
 		const ws = makeWs();
 		await message(ws as never, JSON.stringify({ type: "sync" }));
-		expect(lastSentTo(ws)).toMatchObject({ type: "status" });
+		const types = mockSend.mock.calls
+			.filter((c) => c[0] === ws)
+			.map((c) => (c[1] as { type: string }).type);
+		expect(types).toContain("status");
 	});
 });
 
@@ -402,7 +414,7 @@ describe("message — chat", () => {
 		expect(session.runQuery).not.toHaveBeenCalled();
 	});
 
-	it("rejects chat when session already running", async () => {
+	it("does not reject chat when session is running — forwards to runQuery (Slice A)", async () => {
 		const session = makeSession({
 			isRunning: vi.fn().mockReturnValue(true),
 		});
@@ -410,11 +422,54 @@ describe("message — chat", () => {
 		const ws = makeWs();
 		wsState.sessionOwnerWs = ws;
 		await message(ws as never, JSON.stringify({ type: "chat", text: "hi" }));
-		expect(lastSentTo(ws)).toMatchObject({
-			type: "error",
-			message: "Session already running",
+		// No "Session already running" error should be sent.
+		const errorCalls = mockSend.mock.calls.filter(
+			(c) => (c[1] as { type?: string })?.type === "error",
+		);
+		expect(errorCalls).toHaveLength(0);
+		// runQuery is invoked even though session.isRunning() reported true.
+		expect(session.runQuery).toHaveBeenCalled();
+	});
+
+	it("keeps ownership across concurrent chats from the same ws (Slice A)", async () => {
+		// Provider runQuery resolves only when we say so — lets us simulate two
+		// chats in-flight from the same ws.
+		const turn1Resolvers: Array<() => void> = [];
+		const turn2Resolvers: Array<() => void> = [];
+		let callCount = 0;
+		const session = makeSession({
+			runQuery: vi.fn(() => {
+				callCount++;
+				return new Promise<void>((resolve) => {
+					if (callCount === 1) turn1Resolvers.push(resolve);
+					else turn2Resolvers.push(resolve);
+				});
+			}) as unknown as SessionManager["runQuery"],
 		});
-		expect(session.runQuery).not.toHaveBeenCalled();
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		wsState.sessionOwnerWs = ws;
+
+		// Fire two chats concurrently — do not await yet.
+		const p1 = message(
+			ws as never,
+			JSON.stringify({ type: "chat", text: "first" }),
+		);
+		const p2 = message(
+			ws as never,
+			JSON.stringify({ type: "chat", text: "second" }),
+		);
+
+		// Resolve turn 1 — ownership must NOT clear because turn 2 still in-flight
+		// from the same ws.
+		turn1Resolvers[0]?.();
+		await p1;
+		expect(wsState.sessionOwnerWs).toBe(ws);
+
+		// Resolve turn 2 — now ownership should clear.
+		turn2Resolvers[0]?.();
+		await p2;
+		expect(wsState.sessionOwnerWs).toBeNull();
 	});
 
 	it("calls session.runQuery with correct args", async () => {
@@ -438,7 +493,66 @@ describe("message — chat", () => {
 			"/vault/skills/s.md",
 			undefined,
 			undefined,
+			undefined,
 		);
+	});
+
+	it("cancel_queued forwards turn_id to session.cancelQueued", async () => {
+		const session = makeSession({
+			cancelQueued: vi.fn().mockReturnValue(true),
+		});
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		wsState.sessionOwnerWs = ws;
+		await message(
+			ws as never,
+			JSON.stringify({ type: "cancel_queued", turn_id: "turn-xyz" }),
+		);
+		expect(session.cancelQueued).toHaveBeenCalledWith("turn-xyz");
+	});
+
+	it("promote_queued forwards turn_id to session.promoteQueued", async () => {
+		const session = makeSession({
+			promoteQueued: vi.fn().mockReturnValue(true),
+		});
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		wsState.sessionOwnerWs = ws;
+		await message(
+			ws as never,
+			JSON.stringify({ type: "promote_queued", turn_id: "turn-3" }),
+		);
+		expect(session.promoteQueued).toHaveBeenCalledWith("turn-3");
+	});
+
+	it("promote_queued ignored when ws is not session owner", async () => {
+		const session = makeSession({
+			promoteQueued: vi.fn().mockReturnValue(true),
+		});
+		const { message } = createWsHandlers(session);
+		const owner = makeWs();
+		const other = makeWs();
+		wsState.sessionOwnerWs = owner;
+		await message(
+			other as never,
+			JSON.stringify({ type: "promote_queued", turn_id: "turn-3" }),
+		);
+		expect(session.promoteQueued).not.toHaveBeenCalled();
+	});
+
+	it("cancel_queued ignored when ws is not session owner", async () => {
+		const session = makeSession({
+			cancelQueued: vi.fn().mockReturnValue(true),
+		});
+		const { message } = createWsHandlers(session);
+		const owner = makeWs();
+		const other = makeWs();
+		wsState.sessionOwnerWs = owner;
+		await message(
+			other as never,
+			JSON.stringify({ type: "cancel_queued", turn_id: "turn-xyz" }),
+		);
+		expect(session.cancelQueued).not.toHaveBeenCalled();
 	});
 
 	it("first chat from unowned session is not rejected as non-owner", async () => {

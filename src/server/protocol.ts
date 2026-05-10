@@ -3,6 +3,13 @@ export type StatusMessage = {
 	type: "status";
 	state: "idle" | "running" | "error";
 	model: string;
+	/**
+	 * Slice C: when state=running, the turn_id of the turn the server is
+	 * currently processing. Lets the client distinguish "queued behind
+	 * running" from "currently running" in the chat queue UI without
+	 * relying on local-only positional heuristics.
+	 */
+	turn_id?: string;
 };
 
 export type ChunkMessage = {
@@ -30,6 +37,13 @@ export type ToolResultMessage = {
 export type DoneMessage = {
 	type: "done";
 	session_id?: string;
+	/**
+	 * Slice C: echoes the turn_id from the originating ClientChatMessage,
+	 * letting the client correlate this `done` to the specific submitted msg
+	 * that produced it. Absent when the turn was started without a turn_id
+	 * (e.g. legacy clients or server-internal turns).
+	 */
+	turn_id?: string;
 	cost: number | null;
 	turns: number;
 	duration_ms: number;
@@ -95,6 +109,28 @@ export type UserMessageEvent = {
 	type: "user_message";
 	text: string;
 	session_id?: string;
+	/**
+	 * Slice C: turn id from the originating ClientChatMessage. Originating
+	 * client uses this to correlate UserMsg → chatQueue entry (so the queued
+	 * message is rendered ONCE rather than twice — once as UserMsg in the
+	 * transcript and once as a duplicate QueuedMsg). Cross-device clients
+	 * can use it for the same correlation.
+	 */
+	id?: string;
+};
+
+/**
+ * Slice C polish: server-authoritative queue state. Emitted on connect and
+ * sync. Client uses it to prune orphan chatQueue items (e.g. items that
+ * were _sent before a server restart and the server no longer has a
+ * matching QueuedTurn).
+ */
+export type QueueStateMessage = {
+	type: "queue_state";
+	/** turn_ids currently in the server's pending queue (head is next-up). */
+	pending_turn_ids: string[];
+	/** turn_id of the turn the server is running, if any. */
+	running_turn_id: string | null;
 };
 
 export type McpStatusMessage = {
@@ -221,6 +257,7 @@ export type ServerMessage =
 	| PermissionRequestMessage
 	| PermissionResolvedMessage
 	| UserMessageEvent
+	| QueueStateMessage
 	| McpStatusMessage
 	| AttachmentCreatedMessage
 	| ToolUseSummaryMessage
@@ -245,6 +282,22 @@ export type ClientChatMessage = {
 	skill_context?: string;
 	agent_cwd?: string;
 	attachments?: ChatAttachment[];
+	/**
+	 * Slice C: client-generated turn id. Server stores it on the QueuedTurn
+	 * and echoes it back in the matching `done` event so the client can
+	 * correlate done events to specific submitted msgs (and cancel by id).
+	 */
+	turn_id?: string;
+};
+
+export type ClientCancelQueuedMessage = {
+	type: "cancel_queued";
+	turn_id: string;
+};
+
+export type ClientPromoteQueuedMessage = {
+	type: "promote_queued";
+	turn_id: string;
 };
 
 export type ClientAbortMessage = {
@@ -303,6 +356,8 @@ export type ClientPlanModeExitResponseMessage =
 
 export type ClientMessage =
 	| ClientChatMessage
+	| ClientCancelQueuedMessage
+	| ClientPromoteQueuedMessage
 	| ClientAbortMessage
 	| ClientClearMessage
 	| ClientReloadMessage
