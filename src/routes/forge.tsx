@@ -1,6 +1,6 @@
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ClaudeForm } from "#/components/forge/ClaudeSection";
 import { ClaudeSection } from "#/components/forge/ClaudeSection";
 import { EventLogSection } from "#/components/forge/EventLogSection";
@@ -114,25 +114,36 @@ function SettingsPage() {
 	});
 
 	const [saving, setSaving] = useState(false);
-	const [saved, setSaved] = useState(false);
+	const [savedMsg, setSavedMsg] = useState<"saved" | "restart" | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	// Stable refs to initial state — new object refs are only created when the
+	// user edits, so reference equality detects real changes without a mount guard
+	// (which breaks under React StrictMode's double-invoke).
+	const initialStateRef = useRef({ vault, claude, ui, vocab });
+	const saveRef = useRef<((requiresRestart?: boolean) => Promise<void>) | null>(
+		null,
+	);
 
-	async function save() {
+	async function save(requiresRestart = false) {
 		setSaving(true);
 		setError(null);
-		setSaved(false);
+		setSavedMsg(null);
 
 		const config: HlidConfig = {
 			vault_provider: claude.vaultProvider,
 			vault: buildVaultSection(vault),
-			server: {
-				port: Number(server.port) || 3000,
-				tls_cert_path: server.tlsCertPath || undefined,
-				tls_key_path: server.tlsKeyPath || undefined,
-				tls_proxy_port: Number(server.tlsProxyPort) || 3443,
-				local_network_access: server.localNetworkAccess,
-				allow_external_agents: server.allowExternalAgents,
-			},
+			// For auto-save, keep persisted server values so in-progress network
+			// edits don't commit without an explicit save.
+			server: requiresRestart
+				? {
+						port: Number(server.port) || 3000,
+						tls_cert_path: server.tlsCertPath || undefined,
+						tls_key_path: server.tlsKeyPath || undefined,
+						tls_proxy_port: Number(server.tlsProxyPort) || 3443,
+						local_network_access: server.localNetworkAccess,
+						allow_external_agents: server.allowExternalAgents,
+					}
+				: initial.server,
 			claude: {
 				model: claude.model,
 				effort: claude.effort,
@@ -182,8 +193,8 @@ function SettingsPage() {
 				} catch {}
 				throw new Error(msg);
 			}
-			setSaved(true);
-			setTimeout(() => setSaved(false), 3000);
+			setSavedMsg(requiresRestart ? "restart" : "saved");
+			setTimeout(() => setSavedMsg(null), 3000);
 			await router.invalidate();
 		} catch (err) {
 			setError(err instanceof Error ? err.message : "Save failed");
@@ -191,9 +202,28 @@ function SettingsPage() {
 			setSaving(false);
 		}
 	}
+	saveRef.current = save;
 
-	// Logs tab is read-only — hide save bar there.
-	const showSaveBar = tab !== "logs";
+	// Auto-save vault/claude/ui/vocab changes — server settings require explicit save.
+	useEffect(() => {
+		const init = initialStateRef.current;
+		if (
+			vault === init.vault &&
+			claude === init.claude &&
+			ui === init.ui &&
+			vocab === init.vocab
+		)
+			return;
+		const timer = setTimeout(() => void saveRef.current?.(false), 800);
+		return () => clearTimeout(timer);
+	}, [vault, claude, ui, vocab]);
+
+	const showSaveButton = tab === "network";
+	const showSaveBar =
+		showSaveButton ||
+		(tab !== "logs" &&
+			tab !== "general" &&
+			(savedMsg !== null || error !== null));
 
 	return (
 		<div className="flex flex-col h-full">
@@ -261,20 +291,25 @@ function SettingsPage() {
 				<div className="shrink-0 border-t border-border bg-background/95 px-5 py-3 flex items-center justify-between gap-4">
 					<div className="text-xs tracking-wider">
 						{error && <span className="text-destructive">{error}</span>}
-						{saved && (
+						{savedMsg === "saved" && (
+							<span className="text-green-500">Changes saved.</span>
+						)}
+						{savedMsg === "restart" && (
 							<span className="text-green-500">
-								saved, reload session to apply changes
+								Changes saved. Restart required.
 							</span>
 						)}
 					</div>
-					<button
-						type="button"
-						onClick={save}
-						disabled={saving}
-						className="px-4 py-2 bg-primary text-primary-foreground text-[10px] tracking-widest font-bold hover:opacity-90 transition-opacity disabled:opacity-50 uppercase"
-					>
-						{saving ? "SAVING…" : "SAVE CHANGES"}
-					</button>
+					{showSaveButton && (
+						<button
+							type="button"
+							onClick={() => void save(true)}
+							disabled={saving}
+							className="px-4 py-2 bg-primary text-primary-foreground text-[10px] tracking-widest font-bold hover:opacity-90 transition-opacity disabled:opacity-50 uppercase"
+						>
+							{saving ? "SAVING…" : "SAVE CHANGES"}
+						</button>
+					)}
 				</div>
 			)}
 		</div>

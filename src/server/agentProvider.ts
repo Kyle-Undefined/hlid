@@ -135,6 +135,12 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 	 * to the next queued turn.
 	 */
 	interrupt?(): Promise<void>;
+	/**
+	 * Close the input stream without aborting the session. Use for one-shot
+	 * queries (e.g. recap) after the final send() so the SDK process sees EOF
+	 * on stdin and exits cleanly after its turn instead of waiting indefinitely.
+	 */
+	closeInput?(): void;
 	/** Available on providers that expose MCP server connectivity info. */
 	mcpServerStatus?(): Promise<McpServerStatus[]>;
 }

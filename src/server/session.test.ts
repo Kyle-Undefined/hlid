@@ -2888,8 +2888,7 @@ describe("SessionManager — Slice B AgentSession reuse", () => {
 		await sm.runQuery("hello world", () => {}, "sess-1");
 		expect(lastSendSpy).not.toBeNull();
 		expect(lastSendSpy).toHaveBeenCalledTimes(1);
-		const sentArg = (lastSendSpy as ReturnType<typeof vi.fn>).mock
-			.calls[0][0] as string;
+		const sentArg = lastSendSpy?.mock.calls[0][0] as string;
 		// buildPrompt is mocked at module level to return "test prompt", which
 		// SessionManager forwards verbatim to agentSession.send().
 		expect(sentArg).toBe("test prompt");

@@ -73,10 +73,11 @@ export async function generateTurnRecap(
 			canUseTool: () =>
 				Promise.resolve({ behavior: "deny" as const, message: "no tools" }),
 		});
-		// Slice B: streaming-input mode — push the recap prompt explicitly so
-		// the SDK query opens. This is a one-shot ephemeral session; no further
-		// sends are needed.
+		// Streaming-input mode: push the recap prompt then close the input so
+		// the SDK process sees EOF after this turn and exits instead of waiting
+		// indefinitely for more messages.
 		await session.send(prompt);
+		session.closeInput?.();
 		let summary = "";
 		for await (const event of session) {
 			if (event.type === "text_delta") {
@@ -95,9 +96,10 @@ export async function generateTurnRecap(
 			emit({ type: "tool_use_summary", summary: trimmed });
 		}
 	} catch (e) {
-		if (e instanceof Error && e.name === "AbortError") {
-			// expected: 30s timeout fired
-		} else {
+		const isAbort =
+			e instanceof Error &&
+			(e.name === "AbortError" || e.message.includes("aborted by user"));
+		if (!isAbort) {
 			console.error("[recap] generateTurnRecap failed:", e);
 		}
 	} finally {

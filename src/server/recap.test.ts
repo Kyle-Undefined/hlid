@@ -667,6 +667,7 @@ describe("generateTurnRecap — recap model", () => {
 				return {
 					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
 					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
 				};
 			},
 		};

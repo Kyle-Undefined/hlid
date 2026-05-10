@@ -110,6 +110,10 @@ class ClaudeAgentSession implements AgentSession {
 		this.abortController.abort();
 	}
 
+	closeInput(): void {
+		this.inputStream.close();
+	}
+
 	async interrupt(): Promise<void> {
 		// SDK's Query.interrupt() is only available in streaming-input mode,
 		// which we always use. Stops the current assistant turn early; the

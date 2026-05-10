@@ -98,6 +98,7 @@ describe("useLoadChatHistory — reconnect recovery", () => {
 			model: "",
 			actualModel: null,
 			hasPendingPermissions: false,
+			runningTurnId: null,
 		});
 		vi.mocked(wsStore.claimPendingPrompt).mockReturnValue(null);
 		vi.mocked(wsStore.drainMessageBuffer).mockReturnValue([]);
@@ -273,6 +274,7 @@ describe("useLoadChatHistory — reconnect recovery", () => {
 			model: "",
 			actualModel: null,
 			hasPendingPermissions: false,
+			runningTurnId: null,
 		});
 
 		rerender({
@@ -510,6 +512,7 @@ describe("useLoadChatHistory — placeholder reuse during running turn", () => {
 			model: "",
 			actualModel: null,
 			hasPendingPermissions: false,
+			runningTurnId: null,
 		});
 		vi.mocked(wsStore.claimPendingPrompt).mockReturnValue(null);
 		vi.mocked(wsStore.drainMessageBuffer).mockReturnValue([]);
