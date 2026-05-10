@@ -18,6 +18,16 @@ export async function handleDbRoute(
 		return Response.json(result);
 	}
 
+	if (url.pathname === "/db/session" && req.method === "PATCH") {
+		const id = url.searchParams.get("id");
+		if (!id) return new Response("Missing id", { status: 400 });
+		const body = await req.json().catch(() => null);
+		if (!body || typeof body.label !== "string")
+			return new Response("Missing label", { status: 400 });
+		await db.renameSession(id, body.label);
+		return Response.json({ ok: true });
+	}
+
 	if (url.pathname === "/db/session" && req.method === "DELETE") {
 		const id = url.searchParams.get("id");
 		if (!id) return new Response("Missing id", { status: 400 });

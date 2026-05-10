@@ -1,6 +1,7 @@
-import { useRouter } from "@tanstack/react-router";
+import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useState } from "react";
 import { StatusDot } from "#/components/McpStatusDot";
+import { uid } from "#/lib/utils";
 import { Field, FilePathField, Section, TextInput } from "./fields";
 
 export type ServerForm = {
@@ -28,7 +29,7 @@ type TailscaleStatus = {
 };
 
 function tailscaleSetupPrompt(cwd: string) {
-	return `Help me set up Tailscale for hlid. My current working directory is \`${cwd}\`. Detect if Tailscale is installed and walk me through install for my OS if not. Then help me run \`tailscale up\` to authenticate. Ask me where to store the TLS certs, then run \`tailscale cert <my-magicdns-hostname>\` there. Update tls_cert_path and tls_key_path in hlid.config.toml. When done, tell me to restart hlid.`;
+	return `Help me set up Tailscale for hlid. My current working directory is \`${cwd}\`. Detect if Tailscale is installed and walk me through install for my OS if not. Then help me run \`tailscale up\` to authenticate. Store the TLS certs in the OS user data directory: on Windows use \`%LOCALAPPDATA%\\hlid\\\` (AppData\\Local — not ProgramData). Run \`tailscale cert <my-magicdns-hostname>\` there. Update tls_cert_path and tls_key_path in hlid.config.toml. When done, tell me to restart hlid.`;
 }
 
 export function NetworkSection({
@@ -40,7 +41,7 @@ export function NetworkSection({
 	onChange: (patch: Partial<ServerForm>) => void;
 	cwd: string;
 }) {
-	const router = useRouter();
+	const navigate = useNavigate();
 	const [status, setStatus] = useState<TailscaleStatus | null>(null);
 	const [checking, setChecking] = useState(false);
 
@@ -77,9 +78,9 @@ export function NetworkSection({
 		: null;
 
 	function startSetup() {
-		router.navigate({
+		void navigate({
 			to: "/raven",
-			search: { prompt: tailscaleSetupPrompt(cwd) },
+			search: { session: uid(), prompt: tailscaleSetupPrompt(cwd) },
 		});
 	}
 
@@ -236,8 +237,8 @@ export function NetworkSection({
 				</div>
 			)}
 			<Field
-				label="Set up with Claude"
-				hint="opens chat with a setup prompt, Claude walks you through install, auth, and cert generation"
+				label="Setup Guide"
+				hint="opens a new chat with a guided setup prompt for install, auth, and cert generation"
 			>
 				<button
 					type="button"

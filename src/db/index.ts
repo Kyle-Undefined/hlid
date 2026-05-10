@@ -45,6 +45,7 @@ export {
 	getSessionLastQueryContext,
 	getSessionsPaginated,
 	recordQuery,
+	renameSession,
 	setSessionActualModel,
 	setSessionAgentCwd,
 	setSessionClaudeId,

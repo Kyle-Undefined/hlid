@@ -13,7 +13,7 @@ export function SessionSection() {
 		<Section title="Session">
 			<Field
 				label="Reload session"
-				hint="restarts Claude with the current config and wipes conversation history"
+				hint="restarts the session with the current config and wipes conversation history"
 			>
 				<button
 					type="button"

@@ -264,6 +264,11 @@ export async function deleteSessionsOlderThan(
 	return { count: ids.length, ephemeralPaths };
 }
 
+export async function renameSession(id: string, label: string): Promise<void> {
+	const db = await getDb();
+	db.run(`UPDATE sessions SET label = ? WHERE id = ?`, [label, id]);
+}
+
 export async function getRecentSessions(limit = 14): Promise<SessionRow[]> {
 	const db = await getDb();
 	return db

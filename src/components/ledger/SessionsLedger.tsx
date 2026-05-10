@@ -1,4 +1,11 @@
-import { ChevronLeft, ChevronRight, ExternalLink, X } from "lucide-react";
+import {
+	ChevronLeft,
+	ChevronRight,
+	ExternalLink,
+	Pencil,
+	X,
+} from "lucide-react";
+import { useRef, useState } from "react";
 import { ConfirmAction } from "#/components/ConfirmAction";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { SessionRow } from "#/db";
@@ -12,40 +19,86 @@ function SessionItem({
 	session,
 	onDelete,
 	onNavigate,
+	onRename,
 }: {
 	session: SessionRow;
 	onDelete: (id: string) => void;
 	onNavigate: (id: string) => void;
+	onRename: (id: string, label: string) => void;
 }) {
+	const [editing, setEditing] = useState(false);
+	const [editValue, setEditValue] = useState("");
+	const inputRef = useRef<HTMLInputElement>(null);
+
+	function startEdit() {
+		setEditValue(session.label ?? "");
+		setEditing(true);
+		setTimeout(() => {
+			inputRef.current?.focus();
+			inputRef.current?.select();
+		}, 0);
+	}
+
+	function commitEdit() {
+		const trimmed = editValue.trim();
+		if (trimmed && trimmed !== session.label) {
+			onRename(session.id, trimmed);
+		}
+		setEditing(false);
+	}
+
+	function cancelEdit() {
+		setEditing(false);
+	}
+
 	return (
 		<div className="flex items-center gap-2 border-b border-border last:border-0 group hover:bg-accent/20 transition-colors">
-			<button
-				type="button"
-				onClick={() => onNavigate(session.id)}
-				className="flex items-center gap-3 flex-1 min-w-0 px-4 py-2.5 text-left"
-			>
-				<div className="flex-1 min-w-0">
-					<PrivacyMask className="text-[11px] tracking-wider text-foreground/80 truncate">
-						{session.label ?? "untitled"}
-					</PrivacyMask>
-					<PrivacyMask className="text-[9px] tracking-wider text-muted-foreground/40 mt-0.5 truncate">
-						{session.started_at != null ? fmtDate(session.started_at) : "—"} ·{" "}
-						{session.query_count}q
-					</PrivacyMask>
+			{editing ? (
+				<div className="flex-1 min-w-0 px-4 py-2.5">
+					<input
+						ref={inputRef}
+						value={editValue}
+						onChange={(e) => setEditValue(e.target.value)}
+						onKeyDown={(e) => {
+							if (e.key === "Enter") commitEdit();
+							else if (e.key === "Escape") cancelEdit();
+						}}
+						className="w-full bg-transparent border-b border-border text-[11px] tracking-wider text-foreground/80 outline-none placeholder:text-muted-foreground/40"
+						placeholder="session name"
+					/>
+					<div className="text-[9px] tracking-wider text-muted-foreground/40 mt-0.5">
+						Enter to save · Esc to cancel
+					</div>
 				</div>
-				<div className="text-right shrink-0">
-					<PrivacyMask className="text-[11px] tabular-nums text-[var(--data)]/70">
-						${(session.total_cost ?? 0).toFixed(4)}
-					</PrivacyMask>
-					<PrivacyMask className="text-[9px] tabular-nums text-muted-foreground/40 mt-0.5">
-						{fmt(
-							(session.total_input_tokens ?? 0) +
-								(session.total_output_tokens ?? 0),
-						)}{" "}
-						tok
-					</PrivacyMask>
-				</div>
-			</button>
+			) : (
+				<button
+					type="button"
+					onClick={() => onNavigate(session.id)}
+					className="flex items-center gap-3 flex-1 min-w-0 px-4 py-2.5 text-left"
+				>
+					<div className="flex-1 min-w-0">
+						<PrivacyMask className="text-[11px] tracking-wider text-foreground/80 truncate">
+							{session.label ?? "untitled"}
+						</PrivacyMask>
+						<PrivacyMask className="text-[9px] tracking-wider text-muted-foreground/40 mt-0.5 truncate">
+							{session.started_at != null ? fmtDate(session.started_at) : "—"} ·{" "}
+							{session.query_count}q
+						</PrivacyMask>
+					</div>
+					<div className="text-right shrink-0">
+						<PrivacyMask className="text-[11px] tabular-nums text-[var(--data)]/70">
+							${(session.total_cost ?? 0).toFixed(4)}
+						</PrivacyMask>
+						<PrivacyMask className="text-[9px] tabular-nums text-muted-foreground/40 mt-0.5">
+							{fmt(
+								(session.total_input_tokens ?? 0) +
+									(session.total_output_tokens ?? 0),
+							)}{" "}
+							tok
+						</PrivacyMask>
+					</div>
+				</button>
+			)}
 			<ConfirmAction
 				confirmText="delete"
 				onConfirm={() => onDelete(session.id)}
@@ -62,6 +115,15 @@ function SessionItem({
 						>
 							<ExternalLink size={11} />
 						</a>
+						<button
+							type="button"
+							onClick={startEdit}
+							className="w-7 h-full flex items-center justify-center text-muted-foreground/20 hover:text-primary/60 md:opacity-0 md:group-hover:opacity-100 transition-all"
+							title="Rename session"
+							aria-label="Rename session"
+						>
+							<Pencil size={11} />
+						</button>
 						<button
 							type="button"
 							onClick={open}
@@ -87,6 +149,7 @@ export function SessionsLedger({
 	loading,
 	onPageChange,
 	onDelete,
+	onRename,
 	onNavigate,
 	onCleanup,
 	onBuildSkill,
@@ -98,6 +161,7 @@ export function SessionsLedger({
 	loading: boolean;
 	onPageChange: (p: number) => void;
 	onDelete: (id: string) => void;
+	onRename: (id: string, label: string) => void;
 	onNavigate: (id: string) => void;
 	onCleanup: (days: number) => void;
 	onBuildSkill: () => void;
@@ -167,6 +231,7 @@ export function SessionsLedger({
 						key={s.id}
 						session={s}
 						onDelete={onDelete}
+						onRename={onRename}
 						onNavigate={onNavigate}
 					/>
 				))

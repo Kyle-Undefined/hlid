@@ -32,10 +32,11 @@ Endpoints:
   GET  /db/weekly-stats
   GET  /db/thirty-day-stats
   GET  /db/usage-windows
+  PATCH  /db/session?id=ID   { label: string }
   DELETE /db/session?id=ID
   POST /db/sessions/cleanup  { older_than_days: N }
 
-Create a skill file in the vault's skills folder (\`vault.skillsFolder\` in config, default \`.claude/skills\`). Add YAML frontmatter with \`name\` and \`description\` fields.
+Create a skill file in the vault's skills folder (\`vault.skills\` in config). Add YAML frontmatter with \`name\` and \`description\` fields.
 
 Register the skill in the vault's skills/index.md under an appropriate section using the pipe table format:
 ## Section Name
@@ -62,6 +63,17 @@ const deleteSessionFn = createServerFn({ method: "POST" })
 	.handler(async ({ data }) => {
 		const res = await dbFetch(`/db/session?id=${data.id}`, {
 			method: "DELETE",
+		});
+		return { ok: res.ok };
+	});
+
+const renameSessionFn = createServerFn({ method: "POST" })
+	.inputValidator((data: { id: string; label: string }) => data)
+	.handler(async ({ data }) => {
+		const res = await dbFetch(`/db/session?id=${data.id}`, {
+			method: "PATCH",
+			headers: { "Content-Type": "application/json" },
+			body: JSON.stringify({ label: data.label }),
 		});
 		return { ok: res.ok };
 	});
@@ -114,14 +126,24 @@ function StatsPage() {
 	});
 
 	const [deletedIds, setDeletedIds] = useState<Set<string>>(new Set());
+	const [renamedLabels, setRenamedLabels] = useState<Map<string, string>>(
+		new Map(),
+	);
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: reset on page nav
 	useEffect(() => {
 		setDeletedIds(new Set());
+		setRenamedLabels(new Map());
 	}, [page]);
 
 	const sessionsData = {
-		sessions: initialSessions.sessions.filter((s) => !deletedIds.has(s.id)),
+		sessions: initialSessions.sessions
+			.filter((s) => !deletedIds.has(s.id))
+			.map((s) =>
+				renamedLabels.has(s.id)
+					? { ...s, label: renamedLabels.get(s.id) as string }
+					: s,
+			),
 		total: initialSessions.total - deletedIds.size,
 	};
 	const totalPages = Math.ceil(sessionsData.total / PAGE_SIZE);
@@ -142,6 +164,18 @@ function StatsPage() {
 			});
 		} else if (wasLastOnPage && page > 1) {
 			navigate({ to: "/ledger", search: { page: page - 1 } });
+		}
+	}
+
+	async function handleRenameSession(id: string, label: string) {
+		setRenamedLabels((prev) => new Map(prev).set(id, label));
+		const result = await renameSessionFn({ data: { id, label } });
+		if (!result.ok) {
+			setRenamedLabels((prev) => {
+				const next = new Map(prev);
+				next.delete(id);
+				return next;
+			});
 		}
 	}
 
@@ -403,6 +437,7 @@ function StatsPage() {
 						loading={isRouterLoading}
 						onPageChange={onPageChange}
 						onDelete={handleDeleteSession}
+						onRename={handleRenameSession}
 						onNavigate={(id) =>
 							navigate({
 								to: "/raven",
