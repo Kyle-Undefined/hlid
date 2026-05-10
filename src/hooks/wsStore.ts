@@ -5,6 +5,11 @@ import type {
 } from "../server/protocol";
 import type { SessionState } from "../server/session";
 
+// WebSocket readyState constants — avoid referencing WebSocket global directly
+// so tests running in Node.js (where WebSocket may be undefined) don't throw.
+const WS_CONNECTING = 0;
+const WS_OPEN = 1;
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 export type WsStatus = "connecting" | "connected" | "disconnected";
@@ -151,7 +156,7 @@ function notifyQueue(): void {
  * next ws.onopen.
  */
 function sendChatToServer(msg: QueuedChatMessage): boolean {
-	if (_ws?.readyState !== WebSocket.OPEN) return false;
+	if (_ws?.readyState !== WS_OPEN) return false;
 	const userEvent: ServerMessage = {
 		type: "user_message",
 		text: msg.text,
@@ -191,7 +196,7 @@ function sendChatToServer(msg: QueuedChatMessage): boolean {
  * on subsequent reconnects (the server won't have erased them).
  */
 function drainPendingToServer(): void {
-	if (_ws?.readyState !== WebSocket.OPEN) return;
+	if (_ws?.readyState !== WS_OPEN) return;
 	for (const item of _chatQueue) {
 		if (item._sent) continue;
 		if (sendChatToServer(item)) item._sent = true;
@@ -372,11 +377,7 @@ function onDone(msg: Extract<ServerMessage, { type: "done" }>): boolean {
 
 function connect() {
 	if (typeof window === "undefined") return;
-	if (
-		_ws &&
-		(_ws.readyState === WebSocket.CONNECTING ||
-			_ws.readyState === WebSocket.OPEN)
-	) {
+	if (_ws && (_ws.readyState === WS_CONNECTING || _ws.readyState === WS_OPEN)) {
 		return;
 	}
 	if (_ws) {
@@ -490,7 +491,7 @@ export function send(msg: ClientMessage): void {
 	// `permission_resolved` back to all clients (including the sender), and
 	// onPermissionResolved() handles the decrement then. Pre-decrementing here
 	// causes a double-decrement that under-counts concurrent permissions.
-	if (_ws?.readyState === WebSocket.OPEN) {
+	if (_ws?.readyState === WS_OPEN) {
 		_ws.send(JSON.stringify(msg));
 	}
 }
@@ -591,7 +592,7 @@ export function enqueueChat(msg: QueuedChatMessage): void {
  * non-running queue items.
  */
 export function promoteQueued(id: string): void {
-	if (_ws?.readyState !== WebSocket.OPEN) return;
+	if (_ws?.readyState !== WS_OPEN) return;
 	try {
 		_ws.send(JSON.stringify({ type: "promote_queued", turn_id: id }));
 	} catch {
@@ -606,7 +607,7 @@ export function removeFromQueue(id: string): QueuedChatMessage | undefined {
 	// to cancel it. The server only cancels pending (not-yet-running) turns;
 	// the running turn is unaffected and produces its done as usual. Local
 	// removal happens regardless so the UI updates instantly.
-	if (item._sent && _ws?.readyState === WebSocket.OPEN) {
+	if (item._sent && _ws?.readyState === WS_OPEN) {
 		try {
 			_ws.send(JSON.stringify({ type: "cancel_queued", turn_id: id }));
 		} catch {
