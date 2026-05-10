@@ -1,7 +1,9 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { ServerWebSocket } from "bun";
 import * as db from "../db";
+import { expandTilde } from "../lib/paths";
+import { computeAllowedAgentRealPaths, isAllowedAgentPath } from "./agentPaths";
 import { loadConfig } from "./config";
 import {
 	type ClientMessage,
@@ -132,6 +134,69 @@ export function createWsHandlers(session: SessionManager) {
 
 			if (msg.type === "sync_mcp_list") {
 				const cfg = loadConfig();
+
+				// ── agent-cwd branch: send only to requesting client ──────────────
+				if (msg.agent_cwd) {
+					// Validate that the requested path is a registered agent
+					const allowedRealPaths = computeAllowedAgentRealPaths(cfg);
+					let resolvedAgent: string;
+					try {
+						resolvedAgent = realpathSync(expandTilde(msg.agent_cwd));
+					} catch {
+						return; // path doesn't exist — silently ignore
+					}
+					if (!isAllowedAgentPath(allowedRealPaths, resolvedAgent)) return;
+
+					let agentNames = new Set<string>();
+					try {
+						agentNames = new Set(
+							Object.keys(
+								(
+									JSON.parse(
+										readFileSync(join(resolvedAgent, ".mcp.json"), "utf8"),
+									) as { mcpServers?: Record<string, unknown> }
+								).mcpServers ?? {},
+							),
+						);
+					} catch {}
+					let agentDisabled: string[] = [];
+					try {
+						agentDisabled =
+							(
+								JSON.parse(
+									readFileSync(
+										join(resolvedAgent, ".claude", "settings.local.json"),
+										"utf8",
+									),
+								) as { disabledMcpjsonServers?: string[] }
+							).disabledMcpjsonServers ?? [];
+					} catch {}
+
+					const agentServers = [...agentNames].map((name) => {
+						if (agentDisabled.includes(name))
+							return mapMcpServer({
+								name,
+								status: "disabled",
+								scope: "project",
+							});
+						return mapMcpServer({
+							name,
+							status: "pending",
+							scope: "project",
+						});
+					});
+					// Use send (not broadcast) — agent MCP is a per-client view,
+					// not shared session state. Tag with agent_cwd so the vault
+					// McpSection can ignore it.
+					send(ws, {
+						type: "mcp_status",
+						servers: agentServers,
+						agent_cwd: resolvedAgent,
+					});
+					return;
+				}
+
+				// ── vault branch: broadcast to all clients (existing behaviour) ───
 				if (!cfg.vault.path) return;
 				let vaultNames = new Set<string>();
 				try {

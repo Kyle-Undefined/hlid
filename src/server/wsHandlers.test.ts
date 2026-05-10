@@ -3,7 +3,10 @@
  * method and enforces ownership semantics. SessionManager, runState, DB, and
  * config are all mocked; only the routing logic inside createWsHandlers is real.
  */
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ServerMessage } from "./protocol";
 import type { SessionManager } from "./session";
 
@@ -14,23 +17,11 @@ vi.mock("../db", () => ({
 	appendLog: vi.fn().mockResolvedValue(undefined),
 	saveSetting: vi.fn().mockResolvedValue(undefined),
 }));
-vi.mock("./config", () => ({
-	loadConfig: vi.fn().mockReturnValue({
-		vault: { path: "/tmp/test" },
-		claude: {
-			model: "test-model",
-			effort: "medium",
-			permission_mode: "default",
-			turn_recaps: false,
-		},
-		agents: [],
-	}),
-}));
 
 // vi.mock factories are hoisted before module-level code, so vars referenced
 // inside them must also be hoisted via vi.hoisted().
-const { wsState, mockSend, mockBroadcast, mockGetRunBuffer } = vi.hoisted(
-	() => ({
+const { wsState, mockSend, mockBroadcast, mockGetRunBuffer, mockLoadConfig } =
+	vi.hoisted(() => ({
 		wsState: {
 			clients: new Set<object>(),
 			sessionOwnerWs: null as object | null,
@@ -40,8 +31,21 @@ const { wsState, mockSend, mockBroadcast, mockGetRunBuffer } = vi.hoisted(
 		mockSend: vi.fn(),
 		mockBroadcast: vi.fn(),
 		mockGetRunBuffer: vi.fn().mockReturnValue([]),
-	}),
-);
+		mockLoadConfig: vi.fn().mockReturnValue({
+			vault: { path: "/tmp/test" },
+			claude: {
+				model: "test-model",
+				effort: "medium",
+				permission_mode: "default",
+				turn_recaps: false,
+			},
+			agents: [],
+		}),
+	}));
+
+vi.mock("./config", () => ({
+	loadConfig: mockLoadConfig,
+}));
 
 vi.mock("./runState", () => ({
 	wsState,
@@ -833,5 +837,185 @@ describe("message — ask_user_question_response", () => {
 			},
 			undefined,
 		);
+	});
+});
+
+// ── message — sync_mcp_list (agent_cwd) ───────────────────────────────────────
+
+describe("message — sync_mcp_list (agent_cwd)", () => {
+	let agentDir: string;
+
+	beforeEach(() => {
+		agentDir = mkdtempSync(join(tmpdir(), "hlid-ws-agent-"));
+		mockLoadConfig.mockReturnValue({
+			vault: { path: "/tmp/test" },
+			claude: {
+				model: "test-model",
+				effort: "medium",
+				permission_mode: "default",
+				turn_recaps: false,
+			},
+			agents: [
+				{ path: agentDir, name: "test", mode: "cwd", provider: "claude" },
+			],
+		});
+	});
+
+	afterEach(() => {
+		rmSync(agentDir, { recursive: true, force: true });
+		// Restore default mock
+		mockLoadConfig.mockReturnValue({
+			vault: { path: "/tmp/test" },
+			claude: {
+				model: "test-model",
+				effort: "medium",
+				permission_mode: "default",
+				turn_recaps: false,
+			},
+			agents: [],
+		});
+	});
+
+	it("without agent_cwd: calls broadcast with vault mcp_status", async () => {
+		const session = makeSession();
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		await message(ws as never, JSON.stringify({ type: "sync_mcp_list" }));
+		expect(mockBroadcast).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "mcp_status" }),
+		);
+	});
+
+	it("with valid agent_cwd: calls send(ws) not broadcast", async () => {
+		writeFileSync(
+			join(agentDir, ".mcp.json"),
+			JSON.stringify({ mcpServers: { "my-server": { command: "bun" } } }),
+			"utf8",
+		);
+		const session = makeSession();
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		mockSend.mockClear();
+		mockBroadcast.mockClear();
+		await message(
+			ws as never,
+			JSON.stringify({ type: "sync_mcp_list", agent_cwd: agentDir }),
+		);
+		// send called with our ws
+		const mcpCall = mockSend.mock.calls.find(
+			(c) => c[0] === ws && c[1]?.type === "mcp_status",
+		);
+		expect(mcpCall).toBeDefined();
+		// broadcast NOT called for the mcp_status
+		const broadcastMcp = mockBroadcast.mock.calls.find(
+			(c) => c[0]?.type === "mcp_status",
+		);
+		expect(broadcastMcp).toBeUndefined();
+	});
+
+	it("with valid agent_cwd: includes server names from agent .mcp.json", async () => {
+		writeFileSync(
+			join(agentDir, ".mcp.json"),
+			JSON.stringify({
+				mcpServers: {
+					"image-gen": { command: "bun", args: ["bridge.ts"] },
+					search: { command: "npx" },
+				},
+			}),
+			"utf8",
+		);
+		const session = makeSession();
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		mockSend.mockClear();
+		await message(
+			ws as never,
+			JSON.stringify({ type: "sync_mcp_list", agent_cwd: agentDir }),
+		);
+		const mcpCall = mockSend.mock.calls.find(
+			(c) => c[0] === ws && c[1]?.type === "mcp_status",
+		);
+		const serverNames = (
+			mcpCall?.[1] as { servers: Array<{ name: string }> }
+		).servers.map((s) => s.name);
+		expect(serverNames).toContain("image-gen");
+		expect(serverNames).toContain("search");
+	});
+
+	it("with valid agent_cwd: marks disabled names from settings.local.json", async () => {
+		writeFileSync(
+			join(agentDir, ".mcp.json"),
+			JSON.stringify({
+				mcpServers: {
+					"image-gen": { command: "bun" },
+					search: { command: "npx" },
+				},
+			}),
+			"utf8",
+		);
+		mkdirSync(join(agentDir, ".claude"), { recursive: true });
+		writeFileSync(
+			join(agentDir, ".claude", "settings.local.json"),
+			JSON.stringify({ disabledMcpjsonServers: ["image-gen"] }),
+			"utf8",
+		);
+		const session = makeSession();
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		mockSend.mockClear();
+		await message(
+			ws as never,
+			JSON.stringify({ type: "sync_mcp_list", agent_cwd: agentDir }),
+		);
+		const mcpCall = mockSend.mock.calls.find(
+			(c) => c[0] === ws && c[1]?.type === "mcp_status",
+		);
+		const servers = (
+			mcpCall?.[1] as { servers: Array<{ name: string; status: string }> }
+		).servers;
+		const imageGen = servers.find((s) => s.name === "image-gen");
+		expect(imageGen?.status).toBe("disabled");
+		const search = servers.find((s) => s.name === "search");
+		expect(search?.status).not.toBe("disabled");
+	});
+
+	it("with unregistered agent_cwd: silently does nothing", async () => {
+		const session = makeSession();
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		mockSend.mockClear();
+		mockBroadcast.mockClear();
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "sync_mcp_list",
+				agent_cwd: "/tmp/not-a-registered-agent",
+			}),
+		);
+		const mcpSend = mockSend.mock.calls.find(
+			(c) => c[1]?.type === "mcp_status",
+		);
+		expect(mcpSend).toBeUndefined();
+		const mcpBroadcast = mockBroadcast.mock.calls.find(
+			(c) => c[0]?.type === "mcp_status",
+		);
+		expect(mcpBroadcast).toBeUndefined();
+	});
+
+	it("with agent_cwd + no .mcp.json: sends empty servers array", async () => {
+		const session = makeSession();
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		mockSend.mockClear();
+		await message(
+			ws as never,
+			JSON.stringify({ type: "sync_mcp_list", agent_cwd: agentDir }),
+		);
+		const mcpCall = mockSend.mock.calls.find(
+			(c) => c[0] === ws && c[1]?.type === "mcp_status",
+		);
+		expect(mcpCall).toBeDefined();
+		const servers = (mcpCall?.[1] as { servers: unknown[] }).servers;
+		expect(servers).toHaveLength(0);
 	});
 });

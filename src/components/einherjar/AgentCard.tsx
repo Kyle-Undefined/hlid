@@ -4,10 +4,12 @@ import {
 	ChevronRight,
 	MessageSquare,
 	Pencil,
+	Server,
 	TriangleAlert,
 } from "lucide-react";
 import { useState } from "react";
 import { ConfirmAction } from "#/components/ConfirmAction";
+import { AgentMcpSection } from "#/components/forge/McpSection";
 import { MarkdownBody } from "#/components/MarkdownBody";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { ProviderInfo } from "#/lib/serverFns";
@@ -93,6 +95,7 @@ export function AgentCard({
 	const [expanded, setExpanded] = useState(false);
 	const [claudemdContent, setClaudemdContent] = useState<string | null>(null);
 	const [claudemdLoaded, setClaudemdLoaded] = useState(false);
+	const [showMcp, setShowMcp] = useState(false);
 
 	async function handleToggleView() {
 		if (expanded) {
@@ -228,6 +231,25 @@ export function AgentCard({
 					>
 						<Pencil className="w-3.5 h-3.5" />
 					</button>
+					{agent.mode === "cwd" && agent.dirExists && (
+						<button
+							type="button"
+							onClick={() => setShowMcp((v) => !v)}
+							title={
+								showMcp ? "Hide agent MCP servers" : "Show agent MCP servers"
+							}
+							aria-label={
+								showMcp ? "Hide agent MCP servers" : "Show agent MCP servers"
+							}
+							className={`w-9 h-9 flex items-center justify-center transition-colors ${
+								showMcp
+									? "text-primary"
+									: "text-muted-foreground/40 hover:text-primary"
+							}`}
+						>
+							<Server className="w-3.5 h-3.5" />
+						</button>
+					)}
 					<ConfirmAction
 						label="remove?"
 						onConfirm={onRemove}
@@ -461,6 +483,12 @@ export function AgentCard({
 					<PrivacyMask>
 						<MarkdownBody content={claudemdContent ?? ""} />
 					</PrivacyMask>
+				</div>
+			)}
+
+			{agent.mode === "cwd" && agent.dirExists && showMcp && (
+				<div className="border-t border-border/50 px-4 py-3">
+					<AgentMcpSection agentPath={agent.path} />
 				</div>
 			)}
 		</div>

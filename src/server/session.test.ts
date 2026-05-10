@@ -2,6 +2,8 @@
  * SessionManager unit tests — state machine, config methods, and
  * session-scoped permission persistence.
  */
+
+import type { Mock } from "vitest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent, HlidConfig } from "../config";
 
@@ -2897,7 +2899,7 @@ describe("SessionManager — Slice B AgentSession reuse", () => {
 
 	it("runOneTurn calls agentSession.send() with the user message", async () => {
 		const ctl = makeLongLivedProvider();
-		let lastSendSpy: ReturnType<typeof vi.fn> | null = null;
+		let lastSendSpy: Mock | null = null;
 		const wrappedProvider: AgentProvider = {
 			providerId: "claude",
 			query(p: AgentQueryParams): AgentSession {
@@ -2910,7 +2912,7 @@ describe("SessionManager — Slice B AgentSession reuse", () => {
 		await sm.runQuery("hello world", () => {}, "sess-1");
 		expect(lastSendSpy).not.toBeNull();
 		expect(lastSendSpy).toHaveBeenCalledTimes(1);
-		const sentArg = lastSendSpy?.mock.calls[0][0] as string;
+		const sentArg = (lastSendSpy as Mock).mock.calls[0][0] as string;
 		// buildPrompt is mocked at module level to return "test prompt", which
 		// SessionManager forwards verbatim to agentSession.send().
 		expect(sentArg).toBe("test prompt");

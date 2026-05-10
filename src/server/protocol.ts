@@ -141,6 +141,8 @@ export type McpStatusMessage = {
 		scope?: string;
 		error?: string;
 	}>;
+	/** Set when this status response is scoped to a specific cwd-agent's .mcp.json. */
+	agent_cwd?: string;
 };
 
 export type AttachmentCreatedMessage = {
@@ -333,6 +335,8 @@ export type ClientProbeMcpMessage = {
 
 export type ClientSyncMcpListMessage = {
 	type: "sync_mcp_list";
+	/** When set, sync MCP servers from this cwd-agent's .mcp.json instead of the vault's. */
+	agent_cwd?: string;
 };
 
 export type ClientAskUserQuestionResponseMessage = {
