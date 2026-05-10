@@ -11,13 +11,19 @@ export {
 } from "./attachments";
 // Event log
 export { appendLog, clearLogs, getLogs } from "./logs";
+export type { PlanProposalRow } from "./messages";
 // Messages & tool events
 export {
 	appendMessage,
+	appendPlanProposal,
 	appendToolEvent,
 	getSessionMessages,
+	getSessionPlanProposals,
 	getSessionToolEvents,
 	setMessageRecap,
+	setMessageText,
+	setPlanProposalDecision,
+	setToolEventResult,
 } from "./messages";
 // Permissions
 export {

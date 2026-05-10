@@ -213,6 +213,27 @@ function ChatPage() {
 		[send],
 	);
 
+	const handlePlanDecide = useCallback(
+		(
+			id: string,
+			decision: "approved" | "edited" | "cancelled",
+			feedback?: string,
+		) => {
+			dispatch({ type: "RESOLVE_PLAN_PROPOSAL", id, decision });
+			if (decision === "edited") {
+				send({
+					type: "plan_mode_exit_response",
+					id,
+					decision: "edited",
+					feedback: feedback ?? "",
+				});
+			} else {
+				send({ type: "plan_mode_exit_response", id, decision });
+			}
+		},
+		[send],
+	);
+
 	const handleSend = useCallback(() => {
 		const text = input.trim();
 		if (!text && pendingAttachments.length === 0) return;
@@ -405,6 +426,7 @@ function ChatPage() {
 							sessionId={sessionId}
 							handleDecide={handleDecide}
 							handleSubmitAnswers={handleSubmitAnswers}
+							handlePlanDecide={handlePlanDecide}
 							handleCancelQueued={handleCancelQueued}
 							bottomRef={bottomRef}
 						/>

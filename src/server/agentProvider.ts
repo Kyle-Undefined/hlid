@@ -29,6 +29,12 @@ export type AgentEvent =
 	| { type: "session_start"; sessionId: string }
 	| { type: "text_delta"; text: string }
 	| { type: "tool_start"; toolId: string; name: string; input: unknown }
+	| {
+			type: "tool_result";
+			toolId: string;
+			content: string;
+			isError?: boolean;
+	  }
 	| { type: "summary"; text: string }
 	| {
 			type: "usage";

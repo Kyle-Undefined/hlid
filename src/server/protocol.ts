@@ -15,11 +15,16 @@ export type ToolEventMessage = {
 	name: string;
 	input: unknown;
 	id: string;
+	/** Populated client-side once a matching tool_result arrives or from history. */
+	result?: string;
+	isError?: boolean;
 };
 
 export type ToolResultMessage = {
 	type: "tool_result";
 	id: string;
+	content: string;
+	isError?: boolean;
 };
 
 export type DoneMessage = {

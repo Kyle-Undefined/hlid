@@ -6,6 +6,7 @@ import {
 	getSessionContextFn,
 	getSessionDataFn,
 	getSessionPermissionsFn,
+	getSessionPlanProposalsFn,
 } from "#/lib/serverFns";
 import { uid } from "#/lib/utils";
 import type { ServerMessage } from "#/server/protocol";
@@ -14,9 +15,14 @@ import type { ServerMessage } from "#/server/protocol";
 
 type SessionDataRow = Awaited<ReturnType<typeof getSessionDataFn>>[number];
 type PermRow = Awaited<ReturnType<typeof getSessionPermissionsFn>>[number];
+type PlanRow = Awaited<ReturnType<typeof getSessionPlanProposalsFn>>[number];
 type CtxRow = Awaited<ReturnType<typeof getSessionContextFn>>;
 
-function mapSessionRows(rows: SessionDataRow[], permEvents: PermRow[]) {
+function mapSessionRows(
+	rows: SessionDataRow[],
+	permEvents: PermRow[],
+	planRows: PlanRow[],
+) {
 	const messageItems = rows.map((r) => ({
 		kind: "message" as const,
 		timestamp: r.timestamp,
@@ -34,6 +40,8 @@ function mapSessionRows(rows: SessionDataRow[], permEvents: PermRow[]) {
 					return {};
 				}
 			})(),
+			...(te.result_text != null ? { result: te.result_text } : {}),
+			...(te.is_error != null ? { isError: te.is_error === 1 } : {}),
 		})),
 		attachments: r.attachments?.map((a) => ({
 			id: a.id,
@@ -52,9 +60,73 @@ function mapSessionRows(rows: SessionDataRow[], permEvents: PermRow[]) {
 		display_name: p.display_name,
 		decision: p.decision,
 	}));
-	return [...messageItems, ...permissionItems].sort(
+	const planItems = planRows.map((p) => ({
+		kind: "plan_proposal" as const,
+		timestamp: p.timestamp,
+		id: p.proposal_id,
+		plan: p.plan,
+		decision: p.decision,
+	}));
+	return [...messageItems, ...permissionItems, ...planItems].sort(
 		(a, b) => a.timestamp - b.timestamp,
 	);
+}
+
+/**
+ * Find the in-flight assistant placeholder (last assistant row with empty
+ * text). The server pre-inserts this on the first tool_start so a mid-turn
+ * reload can show the tool calls. If found, returns the id used in the mapped
+ * items (so callers can reuse it as pendingIdRef instead of dispatching a
+ * fresh ADD_ASSISTANT).
+ */
+function findPlaceholderAssistant(
+	items: ReturnType<typeof mapSessionRows>,
+): { id: string; toolIds: Set<string> } | null {
+	for (let i = items.length - 1; i >= 0; i--) {
+		const item = items[i];
+		if (item.kind !== "message") continue;
+		if (item.role === "user") return null;
+		if (item.role === "assistant" && item.text === "") {
+			const toolIds = new Set<string>();
+			for (const te of item.toolEvents ?? []) toolIds.add(te.id);
+			return { id: item.id, toolIds };
+		}
+		// Last assistant row already has text — not a placeholder.
+		return null;
+	}
+	return null;
+}
+
+/**
+ * Drain wsStore buffer into the chat handler when reusing a placeholder.
+ *
+ * The server is the source of truth: assistant text streams to DB on every
+ * chunk, tool_event/tool_result rows persist live, plan proposals + permissions
+ * are written immediately. So the buffer (events that arrived while the
+ * component was unmounted) is mostly redundant on a placeholder reload —
+ * everything's already in the LOAD_HISTORY snapshot.
+ *
+ * Skip:
+ *   - chunk: assistant text already in DB row.text
+ *   - tool_event/tool_result whose tool_use_id is on the placeholder.
+ *
+ * Pass through everything else (status, usage_update, ask_user_question, etc.)
+ * because those aren't fully captured in the message row snapshot.
+ */
+function drainBufferDeduped(
+	handle: (msg: import("#/server/protocol").ServerMessage) => void,
+	knownToolIds: Set<string>,
+): void {
+	for (const msg of wsStore.drainMessageBuffer()) {
+		if (msg.type === "chunk") continue;
+		if (
+			(msg.type === "tool_event" || msg.type === "tool_result") &&
+			knownToolIds.has(msg.id)
+		) {
+			continue;
+		}
+		handle(msg);
+	}
 }
 
 function applyCtx(ctx: CtxRow): void {
@@ -120,8 +192,9 @@ export function useLoadChatHistory({
 			getSessionDataFn({ data: existingSessionId }),
 			getSessionContextFn({ data: existingSessionId }),
 			getSessionPermissionsFn({ data: existingSessionId }),
+			getSessionPlanProposalsFn({ data: existingSessionId }),
 		])
-			.then(([rows, ctx, permEvents]) => {
+			.then(([rows, ctx, permEvents, planRows]) => {
 				if (cancelled) return;
 				// Seed context gauge from DB so it's visible immediately on session open,
 				// before any new message is sent. Live usage_update/done events will
@@ -132,10 +205,9 @@ export function useLoadChatHistory({
 				// cumulative counters (turns, cost, tokens) will update on next done event.
 				wsStore.resetLiveStats();
 				applyCtx(ctx);
-				dispatch({
-					type: "LOAD_HISTORY",
-					items: mapSessionRows(rows, permEvents),
-				});
+				const items = mapSessionRows(rows, permEvents, planRows);
+				dispatch({ type: "LOAD_HISTORY", items });
+				const placeholder = findPlaceholderAssistant(items);
 				const p = wsStore.claimPendingPrompt();
 				if (p) {
 					const lastRow = rows[rows.length - 1];
@@ -154,14 +226,24 @@ export function useLoadChatHistory({
 				// while history was loading, skip drain (DB data is authoritative) and
 				// clear the buffer to avoid replaying stale chunks into the wrong bubble.
 				if (wsStore.getSnapshot().sessionState === "running") {
-					const newId = uid();
-					pendingIdRef.current = newId;
-					dispatch({ type: "ADD_ASSISTANT", id: newId });
-					// Replay events that arrived before history was ready (from open() buffer
-					// replay or live events during the async DB fetch). Buffering is then
-					// disabled so events flow directly for the rest of the session.
-					for (const msg of wsStore.drainMessageBuffer()) {
-						handleWsMessage(msg);
+					if (placeholder) {
+						// Reuse the in-flight assistant placeholder loaded from DB instead
+						// of opening a fresh bubble — otherwise the user sees two
+						// assistant blocks (placeholder with persisted tool_events + new
+						// empty bubble for live chunks). Dedup the buffer so already
+						// persisted tool_events don't reapply.
+						pendingIdRef.current = placeholder.id;
+						drainBufferDeduped(handleWsMessage, placeholder.toolIds);
+					} else {
+						const newId = uid();
+						pendingIdRef.current = newId;
+						dispatch({ type: "ADD_ASSISTANT", id: newId });
+						// Replay events that arrived before history was ready (from open() buffer
+						// replay or live events during the async DB fetch). Buffering is then
+						// disabled so events flow directly for the rest of the session.
+						for (const msg of wsStore.drainMessageBuffer()) {
+							handleWsMessage(msg);
+						}
 					}
 				} else {
 					// Session done before history loaded — DB has complete data, discard buffer.
@@ -215,20 +297,25 @@ export function useLoadChatHistory({
 			getSessionDataFn({ data: sid }),
 			getSessionContextFn({ data: sid }),
 			getSessionPermissionsFn({ data: sid }),
+			getSessionPlanProposalsFn({ data: sid }),
 		])
-			.then(([rows, ctx, permEvents]) => {
+			.then(([rows, ctx, permEvents, planRows]) => {
 				if (cancelled) return;
 				applyCtx(ctx);
-				dispatch({
-					type: "LOAD_HISTORY",
-					items: mapSessionRows(rows, permEvents),
-				});
+				const items = mapSessionRows(rows, permEvents, planRows);
+				dispatch({ type: "LOAD_HISTORY", items });
+				const placeholder = findPlaceholderAssistant(items);
 				if (wsStore.getSnapshot().sessionState === "running") {
-					const newId = uid();
-					pendingIdRef.current = newId;
-					dispatch({ type: "ADD_ASSISTANT", id: newId });
-					for (const msg of wsStore.drainMessageBuffer()) {
-						handleWsMessage(msg);
+					if (placeholder) {
+						pendingIdRef.current = placeholder.id;
+						drainBufferDeduped(handleWsMessage, placeholder.toolIds);
+					} else {
+						const newId = uid();
+						pendingIdRef.current = newId;
+						dispatch({ type: "ADD_ASSISTANT", id: newId });
+						for (const msg of wsStore.drainMessageBuffer()) {
+							handleWsMessage(msg);
+						}
 					}
 				} else {
 					wsStore.clearMessageBuffer();

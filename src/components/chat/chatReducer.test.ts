@@ -145,6 +145,172 @@ describe("ADD_TOOL_EVENT", () => {
 	});
 });
 
+// ── ADD_TOOL_RESULT ───────────────────────────────────────────────────────────
+
+describe("ADD_TOOL_RESULT", () => {
+	it("attaches result to matching tool event on assistant message", () => {
+		let state = reducer(withAssistant("a1"), {
+			type: "ADD_TOOL_EVENT",
+			id: "a1",
+			event: {
+				type: "tool_event",
+				id: "te1",
+				name: "Bash",
+				input: { command: "ls" },
+			},
+		});
+		state = reducer(state, {
+			type: "ADD_TOOL_RESULT",
+			toolUseId: "te1",
+			content: "file1\nfile2",
+		});
+		const msg = state[0];
+		if (msg.role === "assistant") {
+			expect(msg.toolEvents[0].result).toBe("file1\nfile2");
+			expect(msg.toolEvents[0].isError).toBeUndefined();
+		}
+	});
+
+	it("flags isError when set", () => {
+		let state = reducer(withAssistant("a1"), {
+			type: "ADD_TOOL_EVENT",
+			id: "a1",
+			event: { type: "tool_event", id: "te1", name: "Bash", input: {} },
+		});
+		state = reducer(state, {
+			type: "ADD_TOOL_RESULT",
+			toolUseId: "te1",
+			content: "denied",
+			isError: true,
+		});
+		const msg = state[0];
+		if (msg.role === "assistant") {
+			expect(msg.toolEvents[0].isError).toBe(true);
+		}
+	});
+
+	it("locates tool event across multiple assistant messages", () => {
+		let state = [...withAssistant("a1"), ...withAssistant("a2")];
+		state = reducer(state, {
+			type: "ADD_TOOL_EVENT",
+			id: "a2",
+			event: { type: "tool_event", id: "te9", name: "Read", input: {} },
+		});
+		state = reducer(state, {
+			type: "ADD_TOOL_RESULT",
+			toolUseId: "te9",
+			content: "content",
+		});
+		const a2 = state[1];
+		if (a2.role === "assistant") {
+			expect(a2.toolEvents[0].result).toBe("content");
+		}
+	});
+
+	it("no-op when toolUseId not found", () => {
+		const before = withAssistant("a1");
+		const after = reducer(before, {
+			type: "ADD_TOOL_RESULT",
+			toolUseId: "ghost",
+			content: "x",
+		});
+		expect(after).toEqual(before);
+	});
+
+	it("does not affect other tool events on same message", () => {
+		let state = withAssistant("a1");
+		state = reducer(state, {
+			type: "ADD_TOOL_EVENT",
+			id: "a1",
+			event: { type: "tool_event", id: "te1", name: "Read", input: {} },
+		});
+		state = reducer(state, {
+			type: "ADD_TOOL_EVENT",
+			id: "a1",
+			event: { type: "tool_event", id: "te2", name: "Bash", input: {} },
+		});
+		state = reducer(state, {
+			type: "ADD_TOOL_RESULT",
+			toolUseId: "te1",
+			content: "r1",
+		});
+		const msg = state[0];
+		if (msg.role === "assistant") {
+			expect(msg.toolEvents[0].result).toBe("r1");
+			expect(msg.toolEvents[1].result).toBeUndefined();
+		}
+	});
+});
+
+// ── ADD_PLAN_PROPOSAL ─────────────────────────────────────────────────────────
+
+describe("ADD_PLAN_PROPOSAL", () => {
+	it("appends a plan_proposal message in pending state", () => {
+		const state = reducer(empty(), {
+			type: "ADD_PLAN_PROPOSAL",
+			id: "pp1",
+			plan: "## Steps\n1. do x",
+		});
+		expect(state).toHaveLength(1);
+		const msg = state[0];
+		if (msg.role !== "plan_proposal") throw new Error("wrong role");
+		expect(msg.id).toBe("pp1");
+		expect(msg.plan).toBe("## Steps\n1. do x");
+		expect(msg.decision).toBe("pending");
+	});
+});
+
+// ── RESOLVE_PLAN_PROPOSAL ─────────────────────────────────────────────────────
+
+describe("RESOLVE_PLAN_PROPOSAL", () => {
+	function withPlan(id = "pp1"): ChatMessage[] {
+		return reducer(empty(), {
+			type: "ADD_PLAN_PROPOSAL",
+			id,
+			plan: "do stuff",
+		});
+	}
+
+	it("sets decision on matching plan", () => {
+		const state = reducer(withPlan(), {
+			type: "RESOLVE_PLAN_PROPOSAL",
+			id: "pp1",
+			decision: "approved",
+		});
+		const msg = state[0];
+		if (msg.role !== "plan_proposal") throw new Error("wrong role");
+		expect(msg.decision).toBe("approved");
+	});
+
+	it("supports edited and cancelled decisions", () => {
+		let state = withPlan();
+		state = reducer(state, {
+			type: "RESOLVE_PLAN_PROPOSAL",
+			id: "pp1",
+			decision: "edited",
+		});
+		const m1 = state[0];
+		if (m1.role === "plan_proposal") expect(m1.decision).toBe("edited");
+		state = reducer(state, {
+			type: "RESOLVE_PLAN_PROPOSAL",
+			id: "pp1",
+			decision: "cancelled",
+		});
+		const m2 = state[0];
+		if (m2.role === "plan_proposal") expect(m2.decision).toBe("cancelled");
+	});
+
+	it("ignores unknown id", () => {
+		const before = withPlan();
+		const after = reducer(before, {
+			type: "RESOLVE_PLAN_PROPOSAL",
+			id: "ghost",
+			decision: "approved",
+		});
+		expect(after).toEqual(before);
+	});
+});
+
 // ── DONE ──────────────────────────────────────────────────────────────────────
 
 describe("DONE", () => {
@@ -460,6 +626,54 @@ describe("LOAD_HISTORY", () => {
 		}
 	});
 
+	it("rehydrates tool event result + isError", () => {
+		const state = reducer(empty(), {
+			type: "LOAD_HISTORY",
+			items: [
+				{
+					kind: "message",
+					id: "a1",
+					role: "assistant",
+					text: "ok",
+					toolEvents: [
+						{
+							type: "tool_event",
+							id: "te1",
+							name: "Bash",
+							input: { command: "ls" },
+							result: "file1",
+							isError: false,
+						},
+					],
+				},
+			],
+		});
+		const msg = state[0];
+		if (msg.role === "assistant") {
+			expect(msg.toolEvents[0].result).toBe("file1");
+			expect(msg.toolEvents[0].isError).toBe(false);
+		}
+	});
+
+	it("rehydrates plan_proposal items", () => {
+		const state = reducer(empty(), {
+			type: "LOAD_HISTORY",
+			items: [
+				{
+					kind: "plan_proposal",
+					id: "pp1",
+					plan: "the plan",
+					decision: "approved",
+				},
+			],
+		});
+		expect(state).toHaveLength(1);
+		const msg = state[0];
+		if (msg.role !== "plan_proposal") throw new Error("wrong role");
+		expect(msg.plan).toBe("the plan");
+		expect(msg.decision).toBe("approved");
+	});
+
 	it("normalizes unknown role to assistant", () => {
 		const state = reducer(empty(), {
 			type: "LOAD_HISTORY",
@@ -578,7 +792,7 @@ describe("APPEND_CHUNK — edge cases", () => {
 // ── ADD_ASK_USER_QUESTION ─────────────────────────────────────────────────────
 
 describe("ADD_ASK_USER_QUESTION", () => {
-	it("appends an ask_user_question message with answers=null and notes=null", () => {
+	it("appends an ask_user_question message with answers=null and notes undefined", () => {
 		const state = reducer(empty(), {
 			type: "ADD_ASK_USER_QUESTION",
 			id: "aq-1",
@@ -590,7 +804,7 @@ describe("ADD_ASK_USER_QUESTION", () => {
 		const msg = state[0];
 		if (msg.role !== "ask_user_question") throw new Error("wrong role");
 		expect(msg.answers).toBeNull();
-		expect(msg.notes ?? null).toBeNull();
+		expect(msg.notes).toBeUndefined();
 		expect(msg.questions).toHaveLength(1);
 		expect(msg.questions[0].question).toBe("Pick?");
 	});

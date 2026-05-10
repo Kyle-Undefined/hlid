@@ -32,6 +32,7 @@ vi.mock("#/lib/serverFns", () => ({
 	getSessionDataFn: vi.fn(),
 	getSessionContextFn: vi.fn(),
 	getSessionPermissionsFn: vi.fn(),
+	getSessionPlanProposalsFn: vi.fn(),
 }));
 
 vi.mock("#/lib/utils", () => ({
@@ -45,6 +46,7 @@ import {
 	getSessionContextFn,
 	getSessionDataFn,
 	getSessionPermissionsFn,
+	getSessionPlanProposalsFn,
 } from "#/lib/serverFns";
 import { useLoadChatHistory } from "./useLoadChatHistory";
 
@@ -101,6 +103,7 @@ describe("useLoadChatHistory — reconnect recovery", () => {
 		vi.mocked(wsStore.drainMessageBuffer).mockReturnValue([]);
 		vi.mocked(getSessionContextFn).mockResolvedValue(makeCtx());
 		vi.mocked(getSessionPermissionsFn).mockResolvedValue(makePerms());
+		vi.mocked(getSessionPlanProposalsFn).mockResolvedValue([]);
 	});
 
 	afterEach(() => {
@@ -459,5 +462,211 @@ describe("useLoadChatHistory — reconnect recovery", () => {
 		expect(loadHistoryCalls).toHaveLength(1);
 		// And only one DB fetch
 		expect(getSessionDataFn).toHaveBeenCalledTimes(1);
+	});
+});
+
+// ── Mid-turn placeholder reuse ────────────────────────────────────────────────
+// When the server pre-inserts an empty assistant placeholder + tool_event rows
+// at first tool_start, a mid-turn reload must reuse that placeholder id as the
+// pending bubble (instead of opening a fresh ADD_ASSISTANT bubble) so the user
+// sees a single coherent assistant turn — not the placeholder followed by a
+// second empty bubble.
+
+function makeAssistantRowWithTools(
+	toolIds: string[],
+	{ text = "", timestamp = 2000 }: { text?: string; timestamp?: number } = {},
+) {
+	const id = ++_seq;
+	return {
+		id,
+		session_id: "sess-1",
+		seq: id,
+		role: "assistant" as const,
+		text,
+		timestamp,
+		toolEvents: toolIds.map((tid) => ({
+			id: 0,
+			session_id: "sess-1",
+			assistant_seq: id,
+			tool_id: tid,
+			name: "Read",
+			input_json: "{}",
+			result_text: null,
+			is_error: null,
+		})),
+		attachments: [],
+		recap: null,
+	};
+}
+
+describe("useLoadChatHistory — placeholder reuse during running turn", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		_seq = 0;
+		// Session is RUNNING — mid-turn reload scenario.
+		vi.mocked(wsStore.getSnapshot).mockReturnValue({
+			sessionState: "running",
+			wsStatus: "connected",
+			model: "",
+			actualModel: null,
+			hasPendingPermissions: false,
+		});
+		vi.mocked(wsStore.claimPendingPrompt).mockReturnValue(null);
+		vi.mocked(wsStore.drainMessageBuffer).mockReturnValue([]);
+		vi.mocked(getSessionContextFn).mockResolvedValue(makeCtx());
+		vi.mocked(getSessionPermissionsFn).mockResolvedValue([]);
+		vi.mocked(getSessionPlanProposalsFn).mockResolvedValue([]);
+	});
+
+	it("reuses placeholder id as pendingIdRef when last assistant row has empty text", async () => {
+		const dispatch = vi.fn();
+		const historyReadyRef = { current: false };
+		const pendingIdRef = { current: null as string | null };
+		const sessionIdRef = { current: "sess-1" };
+
+		vi.mocked(getSessionDataFn).mockResolvedValue([
+			makeRow("user", "read please", 1000),
+			makeAssistantRowWithTools(["tu-1", "tu-2"]),
+		]);
+
+		renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef,
+			historyReadyRef,
+			handleWsMessage: noopWsHandler,
+			wsStatus: "connected",
+			sessionIdRef,
+		});
+
+		await act(async () => {});
+
+		// Should NOT dispatch a fresh ADD_ASSISTANT — we reuse the placeholder.
+		const addAssistantCalls = dispatch.mock.calls.filter(
+			([a]) => a.type === "ADD_ASSISTANT",
+		);
+		expect(addAssistantCalls).toHaveLength(0);
+
+		// pendingIdRef should match the placeholder's id from the LOAD_HISTORY items.
+		const loadCall = dispatch.mock.calls.find(
+			([a]) => a.type === "LOAD_HISTORY",
+		);
+		const items = loadCall?.[0].items as { role: string; id: string }[];
+		const placeholder = [...items]
+			.reverse()
+			.find((i: { role: string; id: string }) => i.role === "assistant");
+		expect(pendingIdRef.current).toBe(placeholder?.id);
+	});
+
+	it("opens a fresh bubble when no placeholder exists (last row is user)", async () => {
+		const dispatch = vi.fn();
+		const historyReadyRef = { current: false };
+		const pendingIdRef = { current: null as string | null };
+		const sessionIdRef = { current: "sess-1" };
+
+		vi.mocked(getSessionDataFn).mockResolvedValue([
+			makeRow("user", "hello", 1000),
+		]);
+
+		renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef,
+			historyReadyRef,
+			handleWsMessage: noopWsHandler,
+			wsStatus: "connected",
+			sessionIdRef,
+		});
+
+		await act(async () => {});
+
+		const addAssistantCalls = dispatch.mock.calls.filter(
+			([a]) => a.type === "ADD_ASSISTANT",
+		);
+		expect(addAssistantCalls).toHaveLength(1);
+		expect(pendingIdRef.current).toBe(addAssistantCalls[0][0].id);
+	});
+
+	it("opens a fresh bubble when last assistant row has non-empty text (not a placeholder)", async () => {
+		const dispatch = vi.fn();
+		const historyReadyRef = { current: false };
+		const pendingIdRef = { current: null as string | null };
+		const sessionIdRef = { current: "sess-1" };
+
+		vi.mocked(getSessionDataFn).mockResolvedValue([
+			makeRow("user", "hi", 1000),
+			makeRow("assistant", "completed turn", 2000),
+		]);
+
+		renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef,
+			historyReadyRef,
+			handleWsMessage: noopWsHandler,
+			wsStatus: "connected",
+			sessionIdRef,
+		});
+
+		await act(async () => {});
+
+		const addAssistantCalls = dispatch.mock.calls.filter(
+			([a]) => a.type === "ADD_ASSISTANT",
+		);
+		expect(addAssistantCalls).toHaveLength(1);
+	});
+
+	it("dedupes drained tool_event/tool_result whose tool_use_id is already on the placeholder, and drops chunks (DB streams text)", async () => {
+		const dispatch = vi.fn();
+		const historyReadyRef = { current: false };
+		const pendingIdRef = { current: null as string | null };
+		const sessionIdRef = { current: "sess-1" };
+
+		vi.mocked(getSessionDataFn).mockResolvedValue([
+			makeRow("user", "go", 1000),
+			makeAssistantRowWithTools(["tu-1"]),
+		]);
+
+		// Buffer contains: duplicate tu-1 events, a fresh tu-2, a chunk (must be
+		// dropped — assistant text streams to DB row directly), and an
+		// ask_user_question (NOT persisted to DB, must pass through).
+		const handleWsMessage = vi.fn();
+		vi.mocked(wsStore.drainMessageBuffer).mockReturnValue([
+			{ type: "tool_event", id: "tu-1", name: "Read", input: {} },
+			{ type: "tool_result", id: "tu-1", content: "duplicate" },
+			{ type: "tool_event", id: "tu-2", name: "Read", input: {} },
+			{ type: "chunk", text: "live text" },
+			{
+				type: "ask_user_question",
+				id: "aq-1",
+				questions: [{ question: "?", options: ["a"], multiSelect: false }],
+			},
+		]);
+
+		renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef,
+			historyReadyRef,
+			handleWsMessage,
+			wsStatus: "connected",
+			sessionIdRef,
+		});
+
+		await act(async () => {});
+
+		const forwarded = handleWsMessage.mock.calls.map((c) => c[0]);
+		expect(forwarded).toEqual([
+			{ type: "tool_event", id: "tu-2", name: "Read", input: {} },
+			{
+				type: "ask_user_question",
+				id: "aq-1",
+				questions: [{ question: "?", options: ["a"], multiSelect: false }],
+			},
+		]);
 	});
 });

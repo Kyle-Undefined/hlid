@@ -299,6 +299,28 @@ function initSchema(db: Db): void {
 		db.run(`ALTER TABLE messages ADD COLUMN recap TEXT`);
 	});
 
+	runMigration(db, "_migrated_tool_events_result", (db) => {
+		db.run(`ALTER TABLE tool_events ADD COLUMN result_text TEXT`);
+		db.run(`ALTER TABLE tool_events ADD COLUMN is_error INTEGER`);
+	});
+
+	runMigration(db, "_migrated_plan_proposals_table", (db) => {
+		db.run(`
+      CREATE TABLE IF NOT EXISTS plan_proposals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL REFERENCES sessions(id),
+        proposal_id TEXT NOT NULL UNIQUE,
+        seq INTEGER NOT NULL,
+        plan TEXT NOT NULL,
+        decision TEXT NOT NULL,
+        timestamp INTEGER NOT NULL DEFAULT (unixepoch())
+      )
+    `);
+		db.run(
+			`CREATE INDEX IF NOT EXISTS idx_plan_proposals_session ON plan_proposals(session_id)`,
+		);
+	});
+
 	// provider_id: tracks which agent provider recorded each query row so
 	// usage windows can be filtered per-provider in the multi-provider UI.
 	// Existing rows default to 'claude' (the only provider before this migration).

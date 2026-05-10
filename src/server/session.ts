@@ -61,9 +61,28 @@ type TurnState = {
 	hadToolEvents: boolean;
 	lastAssistantSeq: number;
 	pendingToolEvents: { toolId: string; name: string; input: unknown }[];
+	pendingToolResults: Map<string, { content: string; isError: boolean }>;
+	/**
+	 * Reserved seq for the assistant message of this turn. Allocated lazily on
+	 * the first text_delta or tool_start so live writes (text streaming, tool
+	 * event inserts) attach to a real row that mid-turn reloads can render.
+	 */
+	reservedAssistantSeq: number | null;
+	persistedToolIds: Set<string>;
+	/**
+	 * Throttled text-write state: a setTimeout handle that flushes the current
+	 * `assistantText` to the DB row. Many chunks arrive per second; rewriting
+	 * the full text column on each one would be O(N²) bytes written across the
+	 * turn. Coalescing into ~150ms windows keeps liveness while bounding I/O.
+	 */
+	textWriteTimer: ReturnType<typeof setTimeout> | null;
+	textWriteDirty: boolean;
 	lastTurnToolEvents: { toolId: string; name: string; input: unknown }[];
 	sdkSummary: string | null;
 };
+
+/** Coalesce live assistant-text writes into ~150ms windows. */
+const TEXT_WRITE_THROTTLE_MS = 150;
 
 export type SessionState = "idle" | "running" | "error";
 
@@ -472,25 +491,69 @@ export class SessionManager {
 			}
 			if (turn.assistantText) {
 				turn.lastAssistantText = turn.assistantText;
-				turn.lastAssistantSeq = this.messageSeq;
-				const assistantSeq = this.messageSeq++;
-				await db.appendMessage(
-					sessionId,
-					assistantSeq,
-					"assistant",
-					turn.assistantText,
-				);
+				// Reuse the seq reserved at first tool_start so live-persisted
+				// tool_event rows correctly link to this assistant message. If no
+				// tools ran this turn, allocate a fresh seq now.
+				const reused = turn.reservedAssistantSeq != null;
+				const assistantSeq = turn.reservedAssistantSeq ?? this.messageSeq++;
+				turn.lastAssistantSeq = assistantSeq;
+				// Cancel any pending throttled text write — done writes the final
+				// text authoritatively below.
+				if (turn.textWriteTimer) {
+					clearTimeout(turn.textWriteTimer);
+					turn.textWriteTimer = null;
+				}
+				turn.textWriteDirty = false;
+				if (reused) {
+					await db.setMessageText(sessionId, assistantSeq, turn.assistantText);
+				} else {
+					await db.appendMessage(
+						sessionId,
+						assistantSeq,
+						"assistant",
+						turn.assistantText,
+					);
+				}
 				for (const te of turn.pendingToolEvents) {
+					const result = turn.pendingToolResults.get(te.toolId);
+					if (turn.persistedToolIds.has(te.toolId)) {
+						// Already inserted live on tool_start. Just write the result
+						// if it didn't land at tool_result time (e.g., race or no
+						// tool_result event for this tool — defensive).
+						if (result) {
+							db.setToolEventResult(
+								sessionId,
+								te.toolId,
+								result.content,
+								result.isError,
+							).catch((e) => logDbError("setToolEventResult (done)", e));
+						}
+						continue;
+					}
 					db.appendToolEvent(
 						sessionId,
 						assistantSeq,
 						te.toolId,
 						te.name,
 						te.input,
-					).catch((e) => logDbError("appendToolEvent", e));
+					)
+						.then(() => {
+							if (result) {
+								return db.setToolEventResult(
+									sessionId,
+									te.toolId,
+									result.content,
+									result.isError,
+								);
+							}
+						})
+						.catch((e) => logDbError("appendToolEvent", e));
 				}
 				turn.lastTurnToolEvents = [...turn.pendingToolEvents];
 				turn.pendingToolEvents.length = 0;
+				turn.pendingToolResults.clear();
+				turn.persistedToolIds.clear();
+				turn.reservedAssistantSeq = null;
 				turn.assistantText = "";
 			}
 		}
@@ -515,6 +578,43 @@ export class SessionManager {
 	 * Processes the provider AgentEvent stream for one query, updating
 	 * turn state in place.
 	 */
+	/**
+	 * Schedule a throttled DB write of the accumulated assistant text. Called on
+	 * every text_delta. The first chunk after an idle window starts a 150ms
+	 * timer; subsequent chunks within the window mark the row dirty without
+	 * rescheduling. When the timer fires, the *current* (latest) text is
+	 * written, so coalesced chunks land in a single UPDATE.
+	 */
+	private scheduleTextWrite(turn: TurnState, sessionId: string): void {
+		const seq = turn.reservedAssistantSeq;
+		if (seq == null) return;
+		turn.textWriteDirty = true;
+		if (turn.textWriteTimer) return;
+		turn.textWriteTimer = setTimeout(() => {
+			turn.textWriteTimer = null;
+			turn.textWriteDirty = false;
+			void db
+				.setMessageText(sessionId, seq, turn.assistantText)
+				.catch((e) => logDbError("setMessageText (live)", e));
+		}, TEXT_WRITE_THROTTLE_MS);
+	}
+
+	/**
+	 * Allocate the assistant message seq + insert an empty placeholder row on
+	 * first call. Subsequent calls return the same seq. Used by text_delta and
+	 * tool_start so live writes (text streaming, tool_event inserts) attach to
+	 * a real row that mid-turn reloads can render.
+	 */
+	private ensureAssistantRow(turn: TurnState, sessionId: string): number {
+		if (turn.reservedAssistantSeq != null) return turn.reservedAssistantSeq;
+		const seq = this.messageSeq++;
+		turn.reservedAssistantSeq = seq;
+		void db
+			.appendMessage(sessionId, seq, "assistant", "")
+			.catch((e) => logDbError("appendMessage (placeholder)", e));
+		return seq;
+	}
+
 	private async iterateConversation(
 		session: AgentSession,
 		sessionId: string | undefined,
@@ -551,9 +651,28 @@ export class SessionManager {
 				}
 				turn.assistantText += text;
 				emit({ type: "chunk", text });
+				// Stream the accumulated text to DB so the front end is a thin
+				// viewer: nav-away/back during a turn rehydrates the partial text
+				// from the DB instead of relying on the unmount-time buffer. Writes
+				// are coalesced into ~150ms windows to bound I/O across long turns
+				// (rewriting the full text column on every chunk would be O(N²)
+				// bytes written).
+				if (sessionId) {
+					this.ensureAssistantRow(turn, sessionId);
+					this.scheduleTextWrite(turn, sessionId);
+				}
 				turn.lastBlockType = "text";
 			} else if (event.type === "tool_start") {
 				turn.hadToolEvents = true;
+				// ExitPlanMode renders as a dedicated PlanCard via plan_mode_exit
+				// (emitted from canUseTool). Skip both the tool_event broadcast and
+				// the pendingToolEvents persistence path so the chat doesn't show
+				// both a tool block and a plan card. Real ExitPlanMode tools never
+				// run to completion until the user approves anyway.
+				if (event.name === "ExitPlanMode") {
+					turn.lastBlockType = "tool_use";
+					continue;
+				}
 				turn.pendingToolEvents.push({
 					toolId: event.toolId,
 					name: event.name,
@@ -565,7 +684,48 @@ export class SessionManager {
 					name: event.name,
 					input: event.input,
 				});
+				// Persist live so SPA nav / browser refresh during a running query
+				// can show the call once history reloads (DB is the source of truth
+				// when the in-page reducer state is gone). Reserve the assistant_seq
+				// once per turn; the assistant message row is written at done with
+				// the same seq.
+				if (sessionId) {
+					const seq = this.ensureAssistantRow(turn, sessionId);
+					const toolId = event.toolId;
+					void db
+						.appendToolEvent(sessionId, seq, toolId, event.name, event.input)
+						.then(() => {
+							// Mark persisted only after the INSERT succeeded so handleDone
+							// won't skip a re-insert when this row never landed.
+							turn.persistedToolIds.add(toolId);
+						})
+						.catch((e) => logDbError("appendToolEvent (live)", e));
+				}
 				turn.lastBlockType = "tool_use";
+			} else if (event.type === "tool_result") {
+				emit({
+					type: "tool_result",
+					id: event.toolId,
+					content: event.content,
+					...(event.isError ? { isError: true } : {}),
+				});
+				turn.pendingToolResults.set(event.toolId, {
+					content: event.content,
+					isError: event.isError === true,
+				});
+				// Persist result if the tool_event row is in flight. Both the
+				// INSERT (live) and this UPDATE go through Bun's serialized DB
+				// queue, so the UPDATE always observes the row.
+				if (sessionId && turn.persistedToolIds.has(event.toolId)) {
+					void db
+						.setToolEventResult(
+							sessionId,
+							event.toolId,
+							event.content,
+							event.isError === true,
+						)
+						.catch((e) => logDbError("setToolEventResult (live)", e));
+				}
 			} else if (event.type === "usage") {
 				const cacheRead = event.cacheReadTokens ?? 0;
 				const cacheCreation = event.cacheCreationTokens ?? 0;
@@ -639,6 +799,11 @@ export class SessionManager {
 			hadToolEvents: false,
 			lastAssistantSeq: -1,
 			pendingToolEvents: [],
+			pendingToolResults: new Map(),
+			reservedAssistantSeq: null,
+			persistedToolIds: new Set(),
+			textWriteTimer: null,
+			textWriteDirty: false,
 			lastTurnToolEvents: [],
 			sdkSummary: null,
 		};
@@ -758,10 +923,31 @@ export class SessionManager {
 								id: toolUseID,
 								input: passInput,
 							};
+							const planText =
+								typeof passInput.plan === "string"
+									? passInput.plan
+									: JSON.stringify(passInput.plan ?? "");
+							const planSeq = this.messageSeq++;
+							if (sessionId) {
+								void db
+									.appendPlanProposal(
+										sessionId,
+										toolUseID,
+										planSeq,
+										planText,
+										"pending",
+									)
+									.catch((e) => logDbError("appendPlanProposal", e));
+							}
 							this.planModeManager.register(
 								toolUseID,
 								exitReq,
 								(decision, feedback) => {
+									if (sessionId) {
+										void db
+											.setPlanProposalDecision(sessionId, toolUseID, decision)
+											.catch((e) => logDbError("setPlanProposalDecision", e));
+									}
 									if (decision === "approved") {
 										resolve({
 											behavior: "allow" as const,
@@ -927,22 +1113,59 @@ export class SessionManager {
 			// Persist any remaining assistant text (error/abort path. Result block clears it on success)
 			if (turn.assistantText) {
 				if (sessionId) {
-					const assistantSeq = this.messageSeq++;
+					const reused = turn.reservedAssistantSeq != null;
+					const assistantSeq = turn.reservedAssistantSeq ?? this.messageSeq++;
+					if (turn.textWriteTimer) {
+						clearTimeout(turn.textWriteTimer);
+						turn.textWriteTimer = null;
+					}
+					turn.textWriteDirty = false;
 					try {
-						await db.appendMessage(
-							sessionId,
-							assistantSeq,
-							"assistant",
-							turn.assistantText,
-						);
+						if (reused) {
+							await db.setMessageText(
+								sessionId,
+								assistantSeq,
+								turn.assistantText,
+							);
+						} else {
+							await db.appendMessage(
+								sessionId,
+								assistantSeq,
+								"assistant",
+								turn.assistantText,
+							);
+						}
 						for (const te of turn.pendingToolEvents) {
+							const result = turn.pendingToolResults.get(te.toolId);
+							if (turn.persistedToolIds.has(te.toolId)) {
+								if (result) {
+									db.setToolEventResult(
+										sessionId,
+										te.toolId,
+										result.content,
+										result.isError,
+									).catch((e) => logDbError("setToolEventResult (finally)", e));
+								}
+								continue;
+							}
 							db.appendToolEvent(
 								sessionId,
 								assistantSeq,
 								te.toolId,
 								te.name,
 								te.input,
-							).catch((e) => logDbError("appendToolEvent (finally)", e));
+							)
+								.then(() => {
+									if (result) {
+										return db.setToolEventResult(
+											sessionId,
+											te.toolId,
+											result.content,
+											result.isError,
+										);
+									}
+								})
+								.catch((e) => logDbError("appendToolEvent (finally)", e));
 						}
 					} catch (e) {
 						logDbError("appendMessage (assistant)", e);

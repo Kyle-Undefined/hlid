@@ -155,6 +155,23 @@ export const getSessionPermissionsFn = createServerFn({ method: "GET" })
 		),
 	);
 
+export type SessionPlanProposalRow = {
+	proposal_id: string;
+	seq: number;
+	plan: string;
+	decision: string;
+	timestamp: number;
+};
+
+export const getSessionPlanProposalsFn = createServerFn({ method: "GET" })
+	.inputValidator((sessionId: string) => sessionId)
+	.handler(({ data: sessionId }) =>
+		dbJson<SessionPlanProposalRow[]>(
+			`/db/session-plan-proposals?session_id=${encodeURIComponent(sessionId)}`,
+			[],
+		),
+	);
+
 export const getSessionContextFn = createServerFn({ method: "GET" })
 	.inputValidator((sessionId: string) => sessionId)
 	.handler(({ data: sessionId }) =>

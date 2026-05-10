@@ -21,6 +21,11 @@ vi.mock("../db", () => ({
 	setCurrentSessionId: vi.fn().mockResolvedValue(undefined),
 	appendMessage: vi.fn().mockResolvedValue(undefined),
 	appendToolEvent: vi.fn().mockResolvedValue(undefined),
+	appendPlanProposal: vi.fn().mockResolvedValue(undefined),
+	setPlanProposalDecision: vi.fn().mockResolvedValue(undefined),
+	setMessageText: vi.fn().mockResolvedValue(undefined),
+	setMessageRecap: vi.fn().mockResolvedValue(undefined),
+	setToolEventResult: vi.fn().mockResolvedValue(undefined),
 	appendLog: vi.fn().mockResolvedValue(undefined),
 	createSession: vi.fn().mockResolvedValue(undefined),
 	recordQuery: vi.fn().mockResolvedValue(undefined),
@@ -1595,5 +1600,437 @@ describe("SessionManager — per-agent settings", () => {
 		// No agentCwd — vault query
 		await sm.runQuery("hello", () => {}, "sess-vault");
 		expect(captured.params?.model).toBe("vault-model-x");
+	});
+});
+
+// ── Live tool_event persistence ────────────────────────────────────────────────
+// Background: tool_event rows used to be persisted only at handleDone, alongside
+// the assistant message row. SPA navigation away from /raven and back during a
+// running query lost the in-memory reducer state, and the DB was empty for the
+// in-flight turn — so tool calls vanished until the query finished AND the user
+// did a full refresh. The current behavior pre-inserts an empty assistant
+// message + tool_event rows on the first tool_start so a mid-turn reload sees
+// them. Tool results UPDATE the row live as they arrive.
+
+/**
+ * Provider that surfaces controllable hooks for "in-flight" tests:
+ *   - resolves a promise once each named milestone has been emitted
+ *   - blocks the generator on `gateRelease` so the test can inspect DB state
+ *     mid-turn before letting the generator emit `done`
+ */
+function makeControlledProvider(
+	events: AgentEvent[],
+	gateRelease: Promise<void>,
+): { provider: AgentProvider; gateReached: Promise<void> } {
+	let resolveGate: () => void = () => {};
+	const gateReached = new Promise<void>((res) => {
+		resolveGate = res;
+	});
+	const provider: AgentProvider = {
+		providerId: "claude",
+		query(_params: AgentQueryParams): AgentSession {
+			const gen = (async function* (): AsyncGenerator<AgentEvent> {
+				for (const e of events) yield e;
+				resolveGate();
+				await gateRelease;
+				yield {
+					type: "done",
+					cost: 0,
+					turns: 1,
+					durationMs: 0,
+					usage: { inputTokens: 10, outputTokens: 5 },
+				};
+			})();
+			return {
+				[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+				cancel: vi.fn(),
+				mcpServerStatus: () => Promise.resolve([]),
+			};
+		},
+	};
+	return { provider, gateReached };
+}
+
+describe("SessionManager — live tool_event persistence", () => {
+	beforeEach(() => {
+		vi.mocked(dbMock.appendMessage).mockClear();
+		vi.mocked(dbMock.appendToolEvent).mockClear();
+		vi.mocked(dbMock.setToolEventResult).mockClear();
+		vi.mocked(dbMock.setMessageText).mockClear();
+	});
+
+	it("inserts assistant placeholder + tool_event row on first tool_start (before done)", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{ type: "session_start", sessionId: "sdk-live-1" },
+				{
+					type: "tool_start",
+					toolId: "tu-1",
+					name: "Read",
+					input: { file_path: "/a" },
+				},
+			],
+			gate,
+		);
+
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const runPromise = sm.runQuery("read a", () => {}, "sess-live-1");
+		await gateReached;
+		// At this point, before done, the placeholder + tool_event must have hit DB.
+		await waitFor(() => {
+			expect(dbMock.appendMessage).toHaveBeenCalledWith(
+				"sess-live-1",
+				expect.any(Number),
+				"assistant",
+				"",
+			);
+			expect(dbMock.appendToolEvent).toHaveBeenCalledWith(
+				"sess-live-1",
+				expect.any(Number),
+				"tu-1",
+				"Read",
+				{ file_path: "/a" },
+			);
+		});
+		release();
+		await runPromise;
+	});
+
+	it("multiple tool_starts share the reserved assistant_seq with a single placeholder", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{ type: "session_start", sessionId: "sdk-live-2" },
+				{ type: "tool_start", toolId: "tu-1", name: "Read", input: {} },
+				{ type: "tool_start", toolId: "tu-2", name: "Read", input: {} },
+				{ type: "tool_start", toolId: "tu-3", name: "Bash", input: {} },
+			],
+			gate,
+		);
+
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const runPromise = sm.runQuery("multi", () => {}, "sess-live-2");
+		await gateReached;
+		await waitFor(() => {
+			expect(dbMock.appendToolEvent).toHaveBeenCalledTimes(3);
+		});
+		// Only one assistant placeholder for the 3 tools
+		const placeholderCalls = vi
+			.mocked(dbMock.appendMessage)
+			.mock.calls.filter(
+				(c) => c[0] === "sess-live-2" && c[2] === "assistant" && c[3] === "",
+			);
+		expect(placeholderCalls).toHaveLength(1);
+		// All three tool_event rows share the same assistant_seq
+		const seqs = vi.mocked(dbMock.appendToolEvent).mock.calls.map((c) => c[1]);
+		expect(new Set(seqs).size).toBe(1);
+		release();
+		await runPromise;
+	});
+
+	it("tool_result triggers setToolEventResult live (after the tool_event has been inserted)", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{ type: "session_start", sessionId: "sdk-live-3" },
+				{ type: "tool_start", toolId: "tu-1", name: "Read", input: {} },
+				{ type: "tool_result", toolId: "tu-1", content: "file contents" },
+			],
+			gate,
+		);
+
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const runPromise = sm.runQuery("read", () => {}, "sess-live-3");
+		await gateReached;
+		await waitFor(() => {
+			expect(dbMock.setToolEventResult).toHaveBeenCalledWith(
+				"sess-live-3",
+				"tu-1",
+				"file contents",
+				false,
+			);
+		});
+		release();
+		await runPromise;
+	});
+
+	it("tool_result with isError=true persists is_error=true", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{ type: "session_start", sessionId: "sdk-live-3e" },
+				{ type: "tool_start", toolId: "tu-1", name: "Bash", input: {} },
+				{
+					type: "tool_result",
+					toolId: "tu-1",
+					content: "denied",
+					isError: true,
+				},
+			],
+			gate,
+		);
+
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const runPromise = sm.runQuery("bash", () => {}, "sess-live-3e");
+		await gateReached;
+		await waitFor(() => {
+			expect(dbMock.setToolEventResult).toHaveBeenCalledWith(
+				"sess-live-3e",
+				"tu-1",
+				"denied",
+				true,
+			);
+		});
+		release();
+		await runPromise;
+	});
+
+	it("handleDone updates the placeholder message text (does not insert a duplicate)", async () => {
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(_p: AgentQueryParams): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-live-4" };
+					yield { type: "tool_start", toolId: "tu-1", name: "Read", input: {} };
+					yield { type: "tool_result", toolId: "tu-1", content: "ok" };
+					yield { type: "text_delta", text: "All set." };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("go", () => {}, "sess-live-4");
+
+		// Placeholder appendMessage("assistant", "") was called, NOT a second
+		// appendMessage with the final text.
+		const assistantInserts = vi
+			.mocked(dbMock.appendMessage)
+			.mock.calls.filter((c) => c[0] === "sess-live-4" && c[2] === "assistant");
+		expect(assistantInserts).toHaveLength(1);
+		expect(assistantInserts[0][3]).toBe("");
+		// setMessageText carries the final assistant text under the same seq.
+		// session.ts prepends "\n\n" when text follows a tool block.
+		expect(dbMock.setMessageText).toHaveBeenCalledWith(
+			"sess-live-4",
+			assistantInserts[0][1],
+			"\n\nAll set.",
+		);
+		// Tool_event row was NOT inserted a second time at done.
+		expect(dbMock.appendToolEvent).toHaveBeenCalledTimes(1);
+	});
+
+	it("ExitPlanMode tool_start does not write a tool_event row (renders as PlanCard only)", async () => {
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(_params: AgentQueryParams): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-live-5" };
+					// canUseTool registers the plan_mode_exit and waits for user response;
+					// since the test never resolves it, we don't await here. We only need
+					// to confirm the tool_start branch does not persist.
+					yield {
+						type: "tool_start",
+						toolId: "tu-plan",
+						name: "ExitPlanMode",
+						input: { plan: "## Plan" },
+					};
+					yield { type: "text_delta", text: "Awaiting decision." };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("propose", () => {}, "sess-live-5");
+
+		// No appendToolEvent for the ExitPlanMode tool.
+		const toolCalls = vi
+			.mocked(dbMock.appendToolEvent)
+			.mock.calls.filter((c) => c[0] === "sess-live-5");
+		expect(toolCalls).toHaveLength(0);
+	});
+
+	it("text_delta streams accumulated assistant text to DB live (throttled to coalesce chunks)", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{ type: "session_start", sessionId: "sdk-live-text" },
+				{ type: "text_delta", text: "Hello, " },
+				{ type: "text_delta", text: "world." },
+			],
+			gate,
+		);
+
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const runPromise = sm.runQuery("hi", () => {}, "sess-live-text");
+		await gateReached;
+
+		// Placeholder inserted on first text_delta. Both chunks fall inside the
+		// ~150ms throttle window, so a single setMessageText fires with the
+		// fully accumulated text — bounded I/O without losing liveness.
+		await waitFor(() => {
+			const placeholderInserts = vi
+				.mocked(dbMock.appendMessage)
+				.mock.calls.filter(
+					(c) =>
+						c[0] === "sess-live-text" && c[2] === "assistant" && c[3] === "",
+				);
+			expect(placeholderInserts).toHaveLength(1);
+
+			const liveTexts = vi
+				.mocked(dbMock.setMessageText)
+				.mock.calls.filter((c) => c[0] === "sess-live-text")
+				.map((c) => c[2]);
+			expect(liveTexts.length).toBeGreaterThanOrEqual(1);
+			// Whichever write fires, the *latest* one always reflects full text.
+			expect(liveTexts[liveTexts.length - 1]).toBe("Hello, world.");
+		});
+		release();
+		await runPromise;
+	});
+
+	it("only one setMessageText is scheduled when many chunks arrive in quick succession", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		const chunks: AgentEvent[] = [];
+		for (let i = 0; i < 50; i++) {
+			chunks.push({ type: "text_delta", text: `${i} ` });
+		}
+		const { provider, gateReached } = makeControlledProvider(
+			[{ type: "session_start", sessionId: "sdk-live-throttle" }, ...chunks],
+			gate,
+		);
+
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const runPromise = sm.runQuery("burst", () => {}, "sess-live-throttle");
+		await gateReached;
+
+		// Wait for the throttled flush to fire at least once, then confirm we
+		// did NOT do 50 writes — only a small handful.
+		await waitFor(() => {
+			const writes = vi
+				.mocked(dbMock.setMessageText)
+				.mock.calls.filter((c) => c[0] === "sess-live-throttle");
+			expect(writes.length).toBeGreaterThanOrEqual(1);
+		});
+		const writes = vi
+			.mocked(dbMock.setMessageText)
+			.mock.calls.filter((c) => c[0] === "sess-live-throttle");
+		// 50 chunks emitted essentially synchronously → coalesced into ≤ a few
+		// writes (one per ~150ms window). Allow some slack for scheduling jitter.
+		expect(writes.length).toBeLessThanOrEqual(5);
+		release();
+		await runPromise;
+	});
+
+	it("text_delta after a tool_start reuses the same placeholder (one assistant row per turn)", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((r) => {
+			release = r;
+		});
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{ type: "session_start", sessionId: "sdk-live-mix" },
+				{ type: "tool_start", toolId: "tu-1", name: "Read", input: {} },
+				{ type: "text_delta", text: "After tool." },
+			],
+			gate,
+		);
+
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const runPromise = sm.runQuery("go", () => {}, "sess-live-mix");
+		await gateReached;
+		await waitFor(() => {
+			const placeholderInserts = vi
+				.mocked(dbMock.appendMessage)
+				.mock.calls.filter(
+					(c) =>
+						c[0] === "sess-live-mix" && c[2] === "assistant" && c[3] === "",
+				);
+			expect(placeholderInserts).toHaveLength(1);
+			const toolCall = vi
+				.mocked(dbMock.appendToolEvent)
+				.mock.calls.find((c) => c[0] === "sess-live-mix" && c[2] === "tu-1");
+			expect(toolCall?.[1]).toBe(placeholderInserts[0][1]);
+			const textCall = vi
+				.mocked(dbMock.setMessageText)
+				.mock.calls.find((c) => c[0] === "sess-live-mix");
+			expect(textCall?.[1]).toBe(placeholderInserts[0][1]);
+		});
+		release();
+		await runPromise;
+	});
+
+	it("tool_result before any tool_start is a no-op (defensive: gated on persistedToolIds)", async () => {
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(_p: AgentQueryParams): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-live-6" };
+					// Out-of-order: tool_result without a preceding tool_start
+					yield { type: "tool_result", toolId: "ghost", content: "x" };
+					yield { type: "text_delta", text: "ok." };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("noop", () => {}, "sess-live-6");
+
+		// Live setToolEventResult must NOT be invoked for an unknown tool id.
+		const ghostCalls = vi
+			.mocked(dbMock.setToolEventResult)
+			.mock.calls.filter((c) => c[1] === "ghost");
+		expect(ghostCalls).toHaveLength(0);
 	});
 });

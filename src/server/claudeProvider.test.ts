@@ -139,6 +139,108 @@ describe("ClaudeProvider — event mapping", () => {
 		]);
 	});
 
+	it("yields tool_result for user tool_result content blocks (string)", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "user",
+					message: {
+						content: [
+							{
+								type: "tool_result",
+								tool_use_id: "t-1",
+								content: "file1\nfile2",
+							},
+						],
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 1, output_tokens: 1 },
+				},
+			]),
+		);
+		const events = await collectEvents(baseParams());
+		const trs = events.filter((e) => e.type === "tool_result");
+		expect(trs).toEqual([
+			{ type: "tool_result", toolId: "t-1", content: "file1\nfile2" },
+		]);
+	});
+
+	it("yields tool_result with isError=true and concatenates text array content", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "user",
+					message: {
+						content: [
+							{
+								type: "tool_result",
+								tool_use_id: "t-2",
+								is_error: true,
+								content: [
+									{ type: "text", text: "line1\n" },
+									{ type: "text", text: "line2" },
+								],
+							},
+						],
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 1, output_tokens: 1 },
+				},
+			]),
+		);
+		const events = await collectEvents(baseParams());
+		const trs = events.filter((e) => e.type === "tool_result");
+		expect(trs).toEqual([
+			{
+				type: "tool_result",
+				toolId: "t-2",
+				content: "line1\nline2",
+				isError: true,
+			},
+		]);
+	});
+
+	it("truncates tool_result content past 8KB", async () => {
+		const big = "x".repeat(10_000);
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "user",
+					message: {
+						content: [
+							{ type: "tool_result", tool_use_id: "t-3", content: big },
+						],
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 1, output_tokens: 1 },
+				},
+			]),
+		);
+		const events = await collectEvents(baseParams());
+		const tr = events.find((e) => e.type === "tool_result");
+		if (!tr || tr.type !== "tool_result") throw new Error("missing");
+		expect(tr.content.length).toBeLessThanOrEqual(8192 + 64);
+		expect(tr.content).toContain("[truncated");
+	});
+
 	it("yields usage from assistant message usage data", async () => {
 		vi.mocked(query).mockReturnValueOnce(
 			sdkGen([

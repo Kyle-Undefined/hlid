@@ -77,6 +77,25 @@ class ClaudeAgentSession implements AgentSession {
 				continue;
 			}
 
+			if (message.type === "user") {
+				const content = (message as { message?: { content?: unknown } }).message
+					?.content;
+				if (Array.isArray(content)) {
+					for (const block of content as Array<Record<string, unknown>>) {
+						if (block.type !== "tool_result") continue;
+						const text = normalizeToolResultContent(block.content);
+						const truncated = truncateToolResult(text);
+						yield {
+							type: "tool_result",
+							toolId: String(block.tool_use_id ?? ""),
+							content: truncated,
+							...(block.is_error === true ? { isError: true } : {}),
+						};
+					}
+				}
+				continue;
+			}
+
 			if (message.type === "assistant") {
 				if (message.message.usage) {
 					const u = message.message.usage;
@@ -153,6 +172,28 @@ class ClaudeAgentSession implements AgentSession {
 			}
 		}
 	}
+}
+
+const TOOL_RESULT_MAX_BYTES = 8192;
+
+function normalizeToolResultContent(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	const parts: string[] = [];
+	for (const block of content as Array<Record<string, unknown>>) {
+		if (block.type === "text" && typeof block.text === "string") {
+			parts.push(block.text);
+		} else if (block.type === "image") {
+			parts.push("[image]");
+		}
+	}
+	return parts.join("");
+}
+
+function truncateToolResult(s: string): string {
+	if (s.length <= TOOL_RESULT_MAX_BYTES) return s;
+	const dropped = s.length - TOOL_RESULT_MAX_BYTES;
+	return `${s.slice(0, TOOL_RESULT_MAX_BYTES)}\n\n[truncated ${dropped} chars]`;
 }
 
 /** Parse Anthropic rate-limit utilization headers from an API response. */

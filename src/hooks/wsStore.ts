@@ -334,10 +334,13 @@ function connect() {
 		if (
 			msg.type === "chunk" ||
 			msg.type === "tool_event" ||
+			msg.type === "tool_result" ||
 			msg.type === "permission_request" ||
 			msg.type === "permission_resolved" ||
 			msg.type === "ask_user_question" ||
-			msg.type === "ask_user_question_resolved"
+			msg.type === "ask_user_question_resolved" ||
+			msg.type === "plan_mode_exit" ||
+			msg.type === "plan_mode_exit_resolved"
 		) {
 			if (_bufferingEnabled) _messageBuffer.push(msg);
 		} else if (msg.type === "done" || msg.type === "error") {

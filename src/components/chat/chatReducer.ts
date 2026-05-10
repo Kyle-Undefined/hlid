@@ -46,11 +46,25 @@ export type AskUserQuestionChatMessage = {
 	notes?: AskUserQuestionNotes;
 };
 
+export type PlanProposalDecision =
+	| "pending"
+	| "approved"
+	| "edited"
+	| "cancelled";
+
+export type PlanProposalMessage = {
+	id: string;
+	role: "plan_proposal";
+	plan: string;
+	decision: PlanProposalDecision;
+};
+
 export type ChatMessage =
 	| UserMessage
 	| AssistantMessage
 	| PermissionMessage
-	| AskUserQuestionChatMessage;
+	| AskUserQuestionChatMessage
+	| PlanProposalMessage;
 
 export type Action =
 	| {
@@ -62,6 +76,18 @@ export type Action =
 	| { type: "ADD_ASSISTANT"; id: string }
 	| { type: "APPEND_CHUNK"; id: string; text: string }
 	| { type: "ADD_TOOL_EVENT"; id: string; event: ToolEventMessage }
+	| {
+			type: "ADD_TOOL_RESULT";
+			toolUseId: string;
+			content: string;
+			isError?: boolean;
+	  }
+	| { type: "ADD_PLAN_PROPOSAL"; id: string; plan: string }
+	| {
+			type: "RESOLVE_PLAN_PROPOSAL";
+			id: string;
+			decision: Exclude<PlanProposalDecision, "pending">;
+	  }
 	| { type: "DONE"; id: string; cost: number | null }
 	| { type: "SET_RECAP"; id: string; recap: string }
 	| { type: "ADD_PERMISSION"; msg: PermissionRequestMessage }
@@ -94,6 +120,12 @@ export type Action =
 						tool_id: string;
 						tool_name: string;
 						display_name: string | null;
+						decision: string;
+				  }
+				| {
+						kind: "plan_proposal";
+						id: string;
+						plan: string;
 						decision: string;
 				  }
 			>;
@@ -146,6 +178,49 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 					? { ...m, toolEvents: [...m.toolEvents, action.event] }
 					: m,
 			);
+		case "ADD_TOOL_RESULT": {
+			let matched = false;
+			const next = state.map((m) => {
+				if (m.role !== "assistant") return m;
+				let touched = false;
+				const toolEvents = m.toolEvents.map((te) => {
+					if (te.id !== action.toolUseId) return te;
+					touched = true;
+					return {
+						...te,
+						result: action.content,
+						...(action.isError !== undefined
+							? { isError: action.isError }
+							: {}),
+					};
+				});
+				if (!touched) return m;
+				matched = true;
+				return { ...m, toolEvents };
+			});
+			return matched ? next : state;
+		}
+		case "ADD_PLAN_PROPOSAL":
+			return [
+				...state,
+				{
+					id: action.id,
+					role: "plan_proposal" as const,
+					plan: action.plan,
+					decision: "pending" as const,
+				},
+			];
+		case "RESOLVE_PLAN_PROPOSAL": {
+			const exists = state.some(
+				(m) => m.id === action.id && m.role === "plan_proposal",
+			);
+			if (!exists) return state;
+			return state.map((m) =>
+				m.id === action.id && m.role === "plan_proposal"
+					? { ...m, decision: action.decision }
+					: m,
+			);
+		}
 		case "DONE":
 			return state.map((m) =>
 				m.id === action.id && m.role === "assistant"
@@ -209,7 +284,26 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 				"approved_always",
 				"denied",
 			]);
+			const validPlanDecisions = new Set<PlanProposalDecision>([
+				"pending",
+				"approved",
+				"edited",
+				"cancelled",
+			]);
 			return action.items.map((item): ChatMessage => {
+				if (item.kind === "plan_proposal") {
+					const decision = validPlanDecisions.has(
+						item.decision as PlanProposalDecision,
+					)
+						? (item.decision as PlanProposalDecision)
+						: "pending";
+					return {
+						id: item.id,
+						role: "plan_proposal",
+						plan: item.plan,
+						decision,
+					};
+				}
 				if (item.kind === "permission") {
 					const decision = validDecisions.has(
 						item.decision as PermissionMessage["decision"],

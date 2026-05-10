@@ -5,6 +5,7 @@ import { AskUserQuestionCard } from "./AskUserQuestionCard";
 import { AssistantMsg } from "./AssistantMsg";
 import type { ChatMessage } from "./chatReducer";
 import { PermissionCard } from "./PermissionCard";
+import { PlanCard, type PlanDecision } from "./PlanCard";
 import { QueuedMsg } from "./QueuedMsg";
 import { UserMsg } from "./UserMsg";
 
@@ -18,6 +19,7 @@ export function MessageList({
 	sessionId,
 	handleDecide,
 	handleSubmitAnswers,
+	handlePlanDecide,
 	handleCancelQueued,
 	bottomRef,
 }: {
@@ -34,6 +36,11 @@ export function MessageList({
 		id: string,
 		answers: Record<string, string[]>,
 		notes?: Record<string, string>,
+	) => void;
+	handlePlanDecide: (
+		id: string,
+		decision: PlanDecision,
+		feedback?: string,
 	) => void;
 	handleCancelQueued: (id: string) => void;
 	bottomRef: React.MutableRefObject<HTMLDivElement | null>;
@@ -79,6 +86,11 @@ export function MessageList({
 							message={m}
 							onSubmit={handleSubmitAnswers}
 						/>
+					);
+				}
+				if (m.role === "plan_proposal") {
+					return (
+						<PlanCard key={m.id} message={m} onDecide={handlePlanDecide} />
 					);
 				}
 				return null;

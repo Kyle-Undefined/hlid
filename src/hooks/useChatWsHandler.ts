@@ -87,6 +87,37 @@ export function useChatWsHandler({
 			return;
 		}
 
+		if (msg.type === "plan_mode_exit") {
+			const planRaw = (msg.input as { plan?: unknown }).plan;
+			const plan =
+				planRaw == null
+					? ""
+					: typeof planRaw === "string"
+						? planRaw
+						: JSON.stringify(planRaw);
+			dispatch({ type: "ADD_PLAN_PROPOSAL", id: msg.id, plan });
+			return;
+		}
+
+		if (msg.type === "plan_mode_exit_resolved") {
+			dispatch({
+				type: "RESOLVE_PLAN_PROPOSAL",
+				id: msg.id,
+				decision: msg.decision,
+			});
+			return;
+		}
+
+		if (msg.type === "tool_result") {
+			dispatch({
+				type: "ADD_TOOL_RESULT",
+				toolUseId: msg.id,
+				content: msg.content,
+				...(msg.isError !== undefined ? { isError: msg.isError } : {}),
+			});
+			return;
+		}
+
 		if (
 			!id &&
 			(msg.type === "chunk" ||

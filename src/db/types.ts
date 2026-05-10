@@ -30,6 +30,8 @@ export type ToolEventRow = {
 	tool_id: string;
 	name: string;
 	input_json: string;
+	result_text: string | null;
+	is_error: number | null;
 };
 
 export type QueryData = {
