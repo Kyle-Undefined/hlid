@@ -288,6 +288,8 @@ export type ClientChatMessage = {
 	 * correlate done events to specific submitted msgs (and cancel by id).
 	 */
 	turn_id?: string;
+	/** Enable plan mode for this session (only effective on first turn). */
+	plan_mode?: boolean;
 };
 
 export type ClientCancelQueuedMessage = {

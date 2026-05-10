@@ -81,8 +81,9 @@ type TurnState = {
 	sdkSummary: string | null;
 };
 
-/** Coalesce live assistant-text writes into ~150ms windows. */
-const TEXT_WRITE_THROTTLE_MS = 150;
+// Coalesce live assistant-text writes. 800ms balances persistence liveness
+// against event-loop saturation on Windows (antivirus scans each SQLite write).
+const TEXT_WRITE_THROTTLE_MS = 800;
 
 type RunQueryArgs = [
 	userMessage: string,
@@ -92,6 +93,7 @@ type RunQueryArgs = [
 	attachments?: ChatAttachment[],
 	agentCwd?: string,
 	turnId?: string,
+	planMode?: boolean,
 ];
 
 type QueuedTurn = {
@@ -836,6 +838,7 @@ export class SessionManager {
 		attachments?: ChatAttachment[],
 		agentCwd?: string,
 		turnId?: string,
+		planMode?: boolean,
 	): Promise<void> {
 		return new Promise<void>((resolve, reject) => {
 			this.turnQueue.push({
@@ -847,6 +850,7 @@ export class SessionManager {
 					attachments,
 					agentCwd,
 					turnId,
+					planMode,
 				],
 				turnId,
 				resolve,
@@ -972,6 +976,7 @@ export class SessionManager {
 		attachments?: ChatAttachment[],
 		agentCwd?: string,
 		turnId?: string,
+		planMode?: boolean,
 	): Promise<void> {
 		this.currentTurnId = turnId;
 		await this.initSessionContext(sessionId, agentCwd, userMessage);
@@ -1061,7 +1066,9 @@ export class SessionManager {
 					// model override when set, or defer to CLAUDE.md when no override.
 					model:
 						agentSettings?.model ?? (this.agentCwd ? undefined : this.model),
-					permissionMode: agentSettings?.permissionMode ?? this.permissionMode,
+					permissionMode: planMode
+						? "plan"
+						: (agentSettings?.permissionMode ?? this.permissionMode),
 					effort: agentSettings?.effort ?? this.effort,
 					maxTurns: agentSettings?.maxTurns ?? this.maxTurns,
 					executable,

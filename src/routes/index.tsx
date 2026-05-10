@@ -34,6 +34,7 @@ import { useWsLiveStats } from "#/hooks/useWsSelectors";
 import * as wsStore from "#/hooks/wsStore";
 import { fmtModel } from "#/lib/formatters";
 import {
+	getActiveSessionRowFn,
 	getAgentListFn,
 	getCockpitData,
 	getCockpitStatsFn,
@@ -63,6 +64,7 @@ export const Route = createFileRoute("/")({
 			providerUsages,
 			thirtyDayStats,
 			agentList,
+			activeSession,
 		] = await Promise.all([
 			getConfig(),
 			getCockpitData(),
@@ -73,6 +75,7 @@ export const Route = createFileRoute("/")({
 			getProviderUsagesFn({ data: ["claude"] }),
 			getThirtyDayStatsFn(),
 			getAgentListFn(),
+			getActiveSessionRowFn(),
 		]);
 		return {
 			config,
@@ -84,6 +87,7 @@ export const Route = createFileRoute("/")({
 			providerUsages,
 			thirtyDayStats,
 			agentList,
+			activeSession,
 		};
 	},
 	component: CockpitPage,
@@ -100,6 +104,7 @@ function CockpitPage() {
 		providerUsages: initialProviderUsages,
 		thirtyDayStats: initialThirtyDayStats,
 		agentList,
+		activeSession,
 	} = Route.useLoaderData();
 	const router = useRouter();
 	const navigate = useNavigate();
@@ -660,7 +665,7 @@ function CockpitPage() {
 					}
 					stats={liveStats}
 					agg={agg}
-					isConnected={isConnected}
+					activeSession={activeSession}
 					className="hidden md:flex"
 				/>
 			</div>

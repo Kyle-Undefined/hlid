@@ -290,6 +290,7 @@ export function createWsHandlers(session: SessionManager) {
 						msg.attachments,
 						msg.agent_cwd,
 						msg.turn_id,
+						msg.plan_mode,
 					);
 				} catch (err) {
 					const message = err instanceof Error ? err.message : "Unknown error";

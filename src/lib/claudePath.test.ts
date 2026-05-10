@@ -11,13 +11,14 @@ vi.mock("node:fs", () => ({
 }));
 
 import { existsSync } from "node:fs";
-import { resolveClaudeExecutable } from "./claudePath";
+import { __resetCacheForTesting, resolveClaudeExecutable } from "./claudePath";
 
 const mockExists = vi.mocked(existsSync);
 
 beforeEach(() => {
 	mockExists.mockReset().mockReturnValue(false);
 	delete process.env.HLID_CLAUDE_EXE;
+	__resetCacheForTesting();
 });
 
 afterEach(() => {

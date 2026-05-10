@@ -94,6 +94,25 @@ export async function handleDbRoute(
 		return Response.json({ session_id: sessionId });
 	}
 
+	if (url.pathname === "/db/session-row" && req.method === "GET") {
+		const id = url.searchParams.get("id");
+		if (!id) return new Response("Missing id", { status: 400 });
+		const row = await db.getSessionById(id);
+		return Response.json(row);
+	}
+
+	// Combines current-session + session-row + recent-sessions fallback in one
+	// round-trip. Used by getActiveSessionRowFn to avoid 3 sequential HTTP calls.
+	if (url.pathname === "/db/active-session" && req.method === "GET") {
+		const currentId = await db.getCurrentSessionId();
+		if (currentId) {
+			const row = await db.getSessionById(currentId);
+			return Response.json(row); // null when stale ID — do not fall back
+		}
+		const recent = await db.getRecentSessions(1);
+		return Response.json(recent[0] ?? null);
+	}
+
 	if (url.pathname === "/db/session-context" && req.method === "GET") {
 		const sessionId = url.searchParams.get("session_id");
 		if (!sessionId) return new Response("Missing session_id", { status: 400 });

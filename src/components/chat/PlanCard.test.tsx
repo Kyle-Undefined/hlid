@@ -84,6 +84,27 @@ describe("PlanCard — resolved", () => {
 		expect(screen.queryByRole("button", { name: /approve/i })).toBeNull();
 	});
 
+	it("approved card hides plan content by default", () => {
+		render(
+			<PlanCard
+				message={makeMsg({ decision: "approved" })}
+				onDecide={vi.fn()}
+			/>,
+		);
+		expect(screen.queryByText("Refactor")).toBeNull();
+	});
+
+	it("approved card expands content on click", () => {
+		render(
+			<PlanCard
+				message={makeMsg({ decision: "approved" })}
+				onDecide={vi.fn()}
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button"));
+		expect(screen.getByText("Refactor")).not.toBeNull();
+	});
+
 	it("renders cancelled label", () => {
 		render(
 			<PlanCard
@@ -94,10 +115,28 @@ describe("PlanCard — resolved", () => {
 		expect(screen.getByText("PLAN CANCELLED")).not.toBeNull();
 	});
 
+	it("cancelled card hides plan content", () => {
+		render(
+			<PlanCard
+				message={makeMsg({ decision: "cancelled" })}
+				onDecide={vi.fn()}
+			/>,
+		);
+		expect(screen.queryByText("Refactor")).toBeNull();
+	});
+
 	it("renders edited label", () => {
 		render(
 			<PlanCard message={makeMsg({ decision: "edited" })} onDecide={vi.fn()} />,
 		);
 		expect(screen.getByText("PLAN REVISED")).not.toBeNull();
+	});
+
+	it("edited card hides plan content and has no expand button", () => {
+		render(
+			<PlanCard message={makeMsg({ decision: "edited" })} onDecide={vi.fn()} />,
+		);
+		expect(screen.queryByText("Refactor")).toBeNull();
+		expect(screen.queryByRole("button")).toBeNull();
 	});
 });

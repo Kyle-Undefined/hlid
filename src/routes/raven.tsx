@@ -1,5 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { Paperclip, SquarePen, X } from "lucide-react";
+import { Paperclip, ShieldCheck, SquarePen, X } from "lucide-react";
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { AgentSelect } from "#/components/AgentSelect";
 import { AttachmentStrip } from "#/components/AttachmentStrip";
@@ -116,6 +116,7 @@ function ChatPage() {
 		setPendingAttachments,
 		dismissGitignoreHint,
 	} = useFileUpload({ agentCwd: agentSkillContext, sessionId });
+	const [planMode, setPlanMode] = useState(false);
 	const [dragOver, setDragOver] = useState(false);
 	const [showModelPopup, setShowModelPopup] = useState(false);
 	const modelBadgeRef = useRef<HTMLDivElement>(null);
@@ -269,6 +270,7 @@ function ChatPage() {
 			session_id: sessionId,
 			attachments: attachments.length > 0 ? attachments : undefined,
 			agent_cwd: agentCwdToSend,
+			plan_mode: planMode || undefined,
 		});
 		clearDraft();
 		setInput("");
@@ -283,6 +285,7 @@ function ChatPage() {
 		agentSkillContext,
 		clearDraft,
 		clearPendingAttachments,
+		planMode,
 	]);
 
 	const handleCancelQueued = useCallback(
@@ -322,6 +325,7 @@ function ChatPage() {
 	);
 
 	const handleClear = useCallback(() => {
+		setPlanMode(false);
 		clearDraft();
 		pendingIdRef.current = null;
 		// Reset the recap target ref too — it points at a message we're about
@@ -580,16 +584,31 @@ function ChatPage() {
 						uploadError={uploadError}
 						onRemove={removePending}
 					/>
-					{agentList.length > 0 && messages.length === 0 && (
-						<div className="flex items-baseline gap-2 px-4 py-1.5 border-b border-border/40">
-							<AgentSelect
-								agents={agentList}
-								value={agentSkillContext ?? ""}
-								onChange={(val) => {
-									setAgentSkillContext(val || undefined);
-									agentContextSentRef.current = false;
-								}}
-							/>
+					{messages.length === 0 && (
+						<div className="flex items-center gap-3 px-4 py-1.5 border-b border-border/40">
+							{agentList.length > 0 && (
+								<AgentSelect
+									agents={agentList}
+									value={agentSkillContext ?? ""}
+									onChange={(val) => {
+										setAgentSkillContext(val || undefined);
+										agentContextSentRef.current = false;
+									}}
+								/>
+							)}
+							<button
+								type="button"
+								onClick={() => setPlanMode((v) => !v)}
+								title="Enable plan mode — Claude plans before acting"
+								className={`flex items-center gap-1.5 text-[9px] tracking-widest uppercase transition-colors shrink-0 ${
+									planMode
+										? "text-primary border-b border-primary/50"
+										: "text-muted-foreground/40 hover:text-muted-foreground/70"
+								}`}
+							>
+								<ShieldCheck className="w-3 h-3" />
+								plan
+							</button>
 						</div>
 					)}
 					<div className="flex items-start">

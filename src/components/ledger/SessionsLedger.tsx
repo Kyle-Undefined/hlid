@@ -1,10 +1,4 @@
-import {
-	ChevronLeft,
-	ChevronRight,
-	ExternalLink,
-	Pencil,
-	X,
-} from "lucide-react";
+import { ChevronLeft, ChevronRight, Pencil, X } from "lucide-react";
 import { useRef, useState } from "react";
 import { ConfirmAction } from "#/components/ConfirmAction";
 import { PrivacyMask } from "#/components/PrivacyMask";
@@ -54,22 +48,33 @@ function SessionItem({
 	return (
 		<div className="flex items-center gap-2 border-b border-border last:border-0 group hover:bg-accent/20 transition-colors">
 			{editing ? (
-				<div className="flex-1 min-w-0 px-4 py-2.5">
-					<input
-						ref={inputRef}
-						value={editValue}
-						onChange={(e) => setEditValue(e.target.value)}
-						onKeyDown={(e) => {
-							if (e.key === "Enter") commitEdit();
-							else if (e.key === "Escape") cancelEdit();
-						}}
-						className="w-full bg-transparent border-b border-border text-[11px] tracking-wider text-foreground/80 outline-none placeholder:text-muted-foreground/40"
-						placeholder="session name"
-					/>
-					<div className="text-[9px] tracking-wider text-muted-foreground/40 mt-0.5">
-						Enter to save · Esc to cancel
+				<>
+					<div className="flex-1 min-w-0 px-4 py-2.5">
+						<input
+							ref={inputRef}
+							value={editValue}
+							onChange={(e) => setEditValue(e.target.value)}
+							onKeyDown={(e) => {
+								if (e.key === "Enter") commitEdit();
+								else if (e.key === "Escape") cancelEdit();
+							}}
+							className="w-full bg-transparent border-b border-border text-[11px] tracking-wider text-foreground/80 outline-none placeholder:text-muted-foreground/40"
+							placeholder="session name"
+							aria-label="Session name"
+						/>
+						<div className="text-[9px] tracking-wider text-muted-foreground/40 mt-0.5">
+							Enter to save · Esc to cancel
+						</div>
 					</div>
-				</div>
+					<button
+						type="button"
+						onClick={cancelEdit}
+						className="pr-4 text-muted-foreground/40 hover:text-foreground transition-colors shrink-0"
+						aria-label="Cancel rename"
+					>
+						<X size={12} />
+					</button>
+				</>
 			) : (
 				<button
 					type="button"
@@ -105,20 +110,10 @@ function SessionItem({
 				className="pr-2 shrink-0"
 				trigger={(open) => (
 					<div className="flex items-center shrink-0">
-						<a
-							href={`/raven?session=${encodeURIComponent(session.id)}`}
-							target="_blank"
-							rel="noreferrer"
-							className="w-7 h-full flex items-center justify-center text-muted-foreground/25 hover:text-primary/60 md:opacity-0 md:group-hover:opacity-100 transition-all"
-							title="Open in new tab"
-							aria-label="Open session in new tab"
-						>
-							<ExternalLink size={11} />
-						</a>
 						<button
 							type="button"
 							onClick={startEdit}
-							className="w-7 h-full flex items-center justify-center text-muted-foreground/20 hover:text-primary/60 md:opacity-0 md:group-hover:opacity-100 transition-all"
+							className="w-9 h-9 flex items-center justify-center text-muted-foreground/20 hover:text-primary/60 md:opacity-0 md:group-hover:opacity-100 transition-all"
 							title="Rename session"
 							aria-label="Rename session"
 						>
@@ -127,7 +122,7 @@ function SessionItem({
 						<button
 							type="button"
 							onClick={open}
-							className="w-7 h-full flex items-center justify-center text-muted-foreground/20 hover:text-destructive/60 md:opacity-0 md:group-hover:opacity-100 transition-all pr-2"
+							className="w-9 h-9 flex items-center justify-center text-muted-foreground/20 hover:text-destructive/60 md:opacity-0 md:group-hover:opacity-100 transition-all pr-1"
 							title="Delete session"
 							aria-label="Delete session"
 						>

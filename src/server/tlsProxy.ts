@@ -131,6 +131,18 @@ export function startTlsProxy(
 					if (!SKIP_REQ.has(k.toLowerCase())) fwdHeaders.set(k, v);
 				}
 
+				// Buffer body before forwarding — avoids stream-abort propagation when
+				// the browser cancels an in-flight request mid-proxy (e.g. quick nav).
+				let body: ArrayBuffer | undefined;
+				if (req.method !== "GET" && req.method !== "HEAD") {
+					try {
+						body = await req.arrayBuffer();
+					} catch {
+						// Client disconnected before body was fully received — nothing to forward.
+						return new Response("Client Disconnected", { status: 499 });
+					}
+				}
+
 				let upstream: Response;
 				try {
 					const controller = new AbortController();
@@ -140,22 +152,22 @@ export function startTlsProxy(
 						{
 							method: req.method,
 							headers: fwdHeaders,
-							body:
-								req.method === "GET" || req.method === "HEAD"
-									? undefined
-									: req.body,
+							body,
 							signal: controller.signal,
 						},
 					);
 					clearTimeout(timeoutId);
 				} catch (err) {
-					const isRefused =
-						err instanceof Error &&
-						("code" in err
-							? (err as NodeJS.ErrnoException).code === "ConnectionRefused"
-							: err.message.includes("ConnectionRefused") ||
-								err.message.includes("ECONNREFUSED"));
-					if (!isRefused) {
+					const msg = err instanceof Error ? err.message : String(err);
+					const isExpected =
+						msg.includes("abort") ||
+						msg.includes("Abort") ||
+						msg.includes("ConnectionRefused") ||
+						msg.includes("ECONNREFUSED") ||
+						(err instanceof Error &&
+							"code" in err &&
+							(err as NodeJS.ErrnoException).code === "ConnectionRefused");
+					if (!isExpected) {
 						console.error("[tlsProxy] upstream fetch failed:", err);
 					}
 					return new Response("Service Unavailable", { status: 503 });

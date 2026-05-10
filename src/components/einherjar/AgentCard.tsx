@@ -174,13 +174,13 @@ export function AgentCard({
 						)}
 					</div>
 				</button>
-				<div className="flex items-center gap-2 shrink-0 self-end sm:self-auto">
+				<div className="flex items-center gap-1 shrink-0 self-end sm:self-auto">
 					<div className="flex border border-border/50">
 						<button
 							type="button"
 							onClick={() => onModeChange("cwd")}
 							title="Run claude in agent's directory"
-							className={`text-[9px] tracking-widest px-1.5 py-0.5 uppercase transition-colors ${
+							className={`text-[9px] tracking-widest px-2.5 py-1.5 sm:px-1.5 sm:py-0.5 uppercase transition-colors ${
 								agent.mode === "cwd"
 									? "bg-primary/10 text-primary"
 									: "text-muted-foreground/40 hover:text-foreground"
@@ -192,7 +192,7 @@ export function AgentCard({
 							type="button"
 							onClick={() => onModeChange("context")}
 							title="Stay in vault, load CLAUDE.md as persona"
-							className={`text-[9px] tracking-widest px-1.5 py-0.5 uppercase transition-colors border-l border-border/50 ${
+							className={`text-[9px] tracking-widest px-2.5 py-1.5 sm:px-1.5 sm:py-0.5 uppercase transition-colors border-l border-border/50 ${
 								agent.mode === "context"
 									? "bg-primary/10 text-primary"
 									: "text-muted-foreground/40 hover:text-foreground"
@@ -205,7 +205,7 @@ export function AgentCard({
 						type="button"
 						onClick={onChat}
 						title="Chat with agent"
-						className="text-muted-foreground/40 hover:text-primary transition-colors"
+						className="w-9 h-9 flex items-center justify-center text-muted-foreground/40 hover:text-primary transition-colors"
 					>
 						<MessageSquare className="w-3.5 h-3.5" />
 					</button>
@@ -224,7 +224,7 @@ export function AgentCard({
 							})
 						}
 						title="Edit agent"
-						className="text-muted-foreground/40 hover:text-primary transition-colors"
+						className="w-9 h-9 flex items-center justify-center text-muted-foreground/40 hover:text-primary transition-colors"
 					>
 						<Pencil className="w-3.5 h-3.5" />
 					</button>
@@ -235,7 +235,7 @@ export function AgentCard({
 							<button
 								type="button"
 								onClick={open}
-								className="text-muted-foreground/30 hover:text-destructive transition-colors text-base leading-none"
+								className="w-9 h-9 flex items-center justify-center text-muted-foreground/30 hover:text-destructive transition-colors text-base leading-none"
 							>
 								×
 							</button>

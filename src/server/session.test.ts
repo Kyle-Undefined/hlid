@@ -1577,6 +1577,28 @@ describe("SessionManager — per-agent settings", () => {
 		expect(captured.params?.permissionMode).toBe("bypassPermissions");
 	});
 
+	it("plan_mode=true overrides permissionMode to 'plan' without mutating config", async () => {
+		const { provider, captured } = makeCaptureProvider("claude");
+		const config: HlidConfig = {
+			...makeConfig(),
+			vault_provider: "claude",
+		} as unknown as HlidConfig;
+		const sm = new SessionManager(config, makeProviders(provider));
+		await sm.runQuery(
+			"hello",
+			() => {},
+			"sess-plan",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			true,
+		);
+		expect(captured.params?.permissionMode).toBe("plan");
+		// config-level default remains unchanged
+		expect(config.claude.permission_mode).toBe("default");
+	});
+
 	it("agent query uses agent-specific maxTurns when configured", async () => {
 		const { provider, captured } = makeCaptureProvider("claude");
 		const config = makeConfigWithAgent(AGENT_PATH, { max_turns: 5 });

@@ -494,6 +494,33 @@ describe("message — chat", () => {
 			undefined,
 			undefined,
 			undefined,
+			undefined,
+		);
+	});
+
+	it("forwards plan_mode flag to session.runQuery", async () => {
+		const session = makeSession();
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		wsState.sessionOwnerWs = ws;
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "chat",
+				text: "hello",
+				session_id: "sess-1",
+				plan_mode: true,
+			}),
+		);
+		expect(session.runQuery).toHaveBeenCalledWith(
+			"hello",
+			expect.any(Function),
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			true,
 		);
 	});
 

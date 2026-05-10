@@ -3,7 +3,7 @@ import { useState } from "react";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { AggStats, SessionRow, WeeklyStats } from "#/db";
 import type * as wsStore from "#/hooks/wsStore";
-import { fmt, fmtMs, fmtRunTime } from "#/lib/formatters";
+import { fmt, fmtRunTime } from "#/lib/formatters";
 
 // ─── UtilBar ─────────────────────────────────────────────────────────────────
 
@@ -119,7 +119,9 @@ export function ViewAllLink() {
 		<div className="px-4 py-2 border-t border-border/30">
 			<button
 				type="button"
-				onClick={() => navigate({ to: "/ledger", search: { page: 1 } })}
+				onClick={() =>
+					navigate({ to: "/ledger", search: { tab: "sessions", page: 1 } })
+				}
 				className="text-[8px] tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 uppercase transition-colors w-full text-left"
 			>
 				view all →
@@ -136,7 +138,7 @@ export function RecentRunsSidebar({
 	onRunClick,
 	stats,
 	agg,
-	isConnected,
+	activeSession,
 	className = "",
 }: {
 	runs: SessionRow[];
@@ -144,10 +146,10 @@ export function RecentRunsSidebar({
 	onRunClick: (sessionId: string) => void;
 	stats: wsStore.LiveStats;
 	agg: AggStats;
-	isConnected: boolean;
+	activeSession: SessionRow | null;
 	className?: string;
 }) {
-	const idle = stats.queries === 0;
+	const session = activeSession ?? runs[0] ?? null;
 	const hasContext =
 		stats.last_context_used != null && stats.context_window != null;
 	const contextUsed = stats.last_context_used ?? 0;
@@ -166,20 +168,18 @@ export function RecentRunsSidebar({
 				<div className="grid grid-cols-2 divide-x divide-border border-b border-border">
 					<div className="px-3 py-3">
 						<div className="text-[8px] tracking-widest text-muted-foreground/50 uppercase mb-1">
-							Session
+							Last Session
 						</div>
 						<PrivacyMask
 							inline
-							className={`text-sm font-bold tabular-nums leading-none ${idle && !isConnected ? "text-muted-foreground/20" : "text-[var(--data)]"}`}
+							className={`text-sm font-bold tabular-nums leading-none ${session ? "text-[var(--data)]" : "text-muted-foreground/20"}`}
 						>
-							{isConnected || stats.cost > 0
-								? `$${stats.cost.toFixed(4)}`
-								: "--"}
+							{session ? `$${session.total_cost.toFixed(4)}` : "--"}
 						</PrivacyMask>
 						<PrivacyMask className="mt-1 text-[8px] tracking-wider text-muted-foreground/40">
-							{idle
-								? "idle"
-								: `${stats.queries}q · ${fmtMs(stats.duration_ms)}`}
+							{session
+								? `${session.query_count}q · ${session.total_turns} turns`
+								: "no sessions"}
 						</PrivacyMask>
 					</div>
 					<div className="px-3 py-3">

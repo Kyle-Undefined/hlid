@@ -41,6 +41,7 @@ export {
 	getRecentSessions,
 	getSessionActualModel,
 	getSessionAgentCwd,
+	getSessionById,
 	getSessionClaudeId,
 	getSessionLastQueryContext,
 	getSessionsPaginated,

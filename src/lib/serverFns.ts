@@ -114,6 +114,15 @@ export const getCurrentSessionFn = createServerFn({ method: "GET" }).handler(
 	},
 );
 
+/**
+ * Returns the SessionRow for the currently active session (from server memory),
+ * falling back to the most recent session in the DB if no session is active.
+ * Uses a single round-trip to the data API instead of 2-3 sequential requests.
+ */
+export const getActiveSessionRowFn = createServerFn({
+	method: "GET",
+}).handler(() => dbJson<SessionRow | null>("/db/active-session", null));
+
 // ─── Session-specific fns (used by /raven) ───────────────────────────────────
 
 export type EnrichedMessageRow = MessageRow & {

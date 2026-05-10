@@ -269,6 +269,15 @@ export async function renameSession(id: string, label: string): Promise<void> {
 	db.run(`UPDATE sessions SET label = ? WHERE id = ?`, [label, id]);
 }
 
+export async function getSessionById(id: string): Promise<SessionRow | null> {
+	const db = await getDb();
+	return (
+		db
+			.query<SessionRow, [string]>(`SELECT * FROM sessions WHERE id = ?`)
+			.get(id) ?? null
+	);
+}
+
 export async function getRecentSessions(limit = 14): Promise<SessionRow[]> {
 	const db = await getDb();
 	return db

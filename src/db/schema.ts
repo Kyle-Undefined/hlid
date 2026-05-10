@@ -23,6 +23,8 @@ export function getDb(): Promise<Db> {
 			const { Database } = await import("bun:sqlite");
 			const db = new Database(DB_PATH);
 			db.run("PRAGMA journal_mode=WAL");
+			// Retry for up to 5s when the DB file is locked (e.g. antivirus on Windows)
+			db.run("PRAGMA busy_timeout=5000");
 			initSchema(db);
 			return db;
 		})().catch((err) => {
