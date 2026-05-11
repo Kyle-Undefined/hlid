@@ -114,8 +114,8 @@ Endpoints:
   GET  /api/vault/skills
     — Returns: { skills: Skill[], sectionOrder: string[] }
 
-  GET  /api/vault/memory?folder={optional}
-    — Returns: MemoryFile[]  (defaults to vault.memory folder; pass ?folder=inbox etc. for other folders)
+  GET  /api/vault/memory
+    — Returns: MemoryFile[]
 
 Create a skill file in the vault's skills folder (\`vault.skills\` in config). Add YAML frontmatter with \`name\` and \`description\` fields. Include examples for reading vault data from an AI agent perspective.
 
@@ -182,7 +182,7 @@ const API_GROUPS = [
 		id: "vault",
 		label: "Vault API",
 		description: "Read skills and memory",
-		endpoints: ["GET  /api/vault/skills", "GET  /api/vault/memory?folder="],
+		endpoints: ["GET  /api/vault/skills", "GET  /api/vault/memory"],
 		prompt: VAULT_API_PROMPT,
 	},
 ] as const;

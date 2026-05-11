@@ -8,28 +8,15 @@ export async function handleGetMemory(request: Request): Promise<Response> {
 	if (forbidden) return forbidden;
 
 	const config = loadConfig();
-	if (!config.vault.path) {
-		return Response.json({ error: "No vault configured" }, { status: 400 });
-	}
-
-	const url = new URL(request.url);
-	const folder =
-		url.searchParams.get("folder") ?? config.vault.memory ?? "memory";
-
-	if (!folder) {
+	if (!config.vault.path || !config.vault.memory) {
 		return Response.json(
-			{ error: "No memory folder configured" },
+			{ error: "No vault or memory folder configured" },
 			{ status: 400 },
 		);
 	}
 
-	try {
-		const files = scanMemory(config.vault.path, folder);
-		return Response.json(files);
-	} catch (err) {
-		const msg = err instanceof Error ? err.message : "Internal error";
-		return Response.json({ error: msg }, { status: 500 });
-	}
+	const files = scanMemory(config.vault.path, config.vault.memory);
+	return Response.json(files);
 }
 
 export const Route = createFileRoute("/api/vault/memory")({

@@ -76,18 +76,11 @@ describe("handleGetMemory", () => {
 		expect(res.status).toBe(400);
 	});
 
-	it("uses vault.memory folder by default", async () => {
+	it("delegates to scanMemory with correct args", async () => {
 		withVault();
 		mockScanMemory.mockReturnValue([]);
 		await handleGetMemory(getReq("/api/vault/memory"));
 		expect(mockScanMemory).toHaveBeenCalledWith("/vault", "memory");
-	});
-
-	it("uses custom folder param when provided", async () => {
-		withVault();
-		mockScanMemory.mockReturnValue([]);
-		await handleGetMemory(getReq("/api/vault/memory", { folder: "inbox" }));
-		expect(mockScanMemory).toHaveBeenCalledWith("/vault", "inbox");
 	});
 
 	it("returns memory files", async () => {
