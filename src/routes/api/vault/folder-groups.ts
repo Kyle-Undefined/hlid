@@ -22,7 +22,11 @@ export async function handleGetFolderGroups(
 		return Response.json({ error: "No folder configured" }, { status: 400 });
 	}
 
-	if (folder.includes("..") || folder.startsWith("/") || folder.includes("\\")) {
+	if (
+		folder.includes("..") ||
+		folder.startsWith("/") ||
+		folder.includes("\\")
+	) {
 		return Response.json({ error: "Invalid folder path" }, { status: 400 });
 	}
 
