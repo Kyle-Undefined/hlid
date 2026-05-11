@@ -25,9 +25,7 @@ import { Route as ApiConfigRouteImport } from './routes/api/config'
 import { Route as ApiBrowseRouteImport } from './routes/api/browse'
 import { Route as ApiAgentsIndexRouteImport } from './routes/api/agents/index'
 import { Route as ApiVaultSkillsRouteImport } from './routes/api/vault/skills'
-import { Route as ApiVaultProjectsRouteImport } from './routes/api/vault/projects'
 import { Route as ApiVaultMemoryRouteImport } from './routes/api/vault/memory'
-import { Route as ApiVaultFolderGroupsRouteImport } from './routes/api/vault/folder-groups'
 import { Route as ApiMcpVaultRouteImport } from './routes/api/mcp/vault'
 import { Route as ApiMcpAgentRouteImport } from './routes/api/mcp/agent'
 import { Route as ApiAttachmentsUploadRouteImport } from './routes/api/attachments/upload'
@@ -118,19 +116,9 @@ const ApiVaultSkillsRoute = ApiVaultSkillsRouteImport.update({
   path: '/api/vault/skills',
   getParentRoute: () => rootRouteImport,
 } as any)
-const ApiVaultProjectsRoute = ApiVaultProjectsRouteImport.update({
-  id: '/api/vault/projects',
-  path: '/api/vault/projects',
-  getParentRoute: () => rootRouteImport,
-} as any)
 const ApiVaultMemoryRoute = ApiVaultMemoryRouteImport.update({
   id: '/api/vault/memory',
   path: '/api/vault/memory',
-  getParentRoute: () => rootRouteImport,
-} as any)
-const ApiVaultFolderGroupsRoute = ApiVaultFolderGroupsRouteImport.update({
-  id: '/api/vault/folder-groups',
-  path: '/api/vault/folder-groups',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiMcpVaultRoute = ApiMcpVaultRouteImport.update({
@@ -200,9 +188,7 @@ export interface FileRoutesByFullPath {
   '/api/attachments/upload': typeof ApiAttachmentsUploadRoute
   '/api/mcp/agent': typeof ApiMcpAgentRouteWithChildren
   '/api/mcp/vault': typeof ApiMcpVaultRouteWithChildren
-  '/api/vault/folder-groups': typeof ApiVaultFolderGroupsRoute
   '/api/vault/memory': typeof ApiVaultMemoryRoute
-  '/api/vault/projects': typeof ApiVaultProjectsRoute
   '/api/vault/skills': typeof ApiVaultSkillsRoute
   '/api/agents/': typeof ApiAgentsIndexRoute
   '/api/attachments/$id/raw': typeof ApiAttachmentsIdRawRoute
@@ -230,9 +216,7 @@ export interface FileRoutesByTo {
   '/api/attachments/upload': typeof ApiAttachmentsUploadRoute
   '/api/mcp/agent': typeof ApiMcpAgentRouteWithChildren
   '/api/mcp/vault': typeof ApiMcpVaultRouteWithChildren
-  '/api/vault/folder-groups': typeof ApiVaultFolderGroupsRoute
   '/api/vault/memory': typeof ApiVaultMemoryRoute
-  '/api/vault/projects': typeof ApiVaultProjectsRoute
   '/api/vault/skills': typeof ApiVaultSkillsRoute
   '/api/agents': typeof ApiAgentsIndexRoute
   '/api/attachments/$id/raw': typeof ApiAttachmentsIdRawRoute
@@ -261,9 +245,7 @@ export interface FileRoutesById {
   '/api/attachments/upload': typeof ApiAttachmentsUploadRoute
   '/api/mcp/agent': typeof ApiMcpAgentRouteWithChildren
   '/api/mcp/vault': typeof ApiMcpVaultRouteWithChildren
-  '/api/vault/folder-groups': typeof ApiVaultFolderGroupsRoute
   '/api/vault/memory': typeof ApiVaultMemoryRoute
-  '/api/vault/projects': typeof ApiVaultProjectsRoute
   '/api/vault/skills': typeof ApiVaultSkillsRoute
   '/api/agents/': typeof ApiAgentsIndexRoute
   '/api/attachments/$id/raw': typeof ApiAttachmentsIdRawRoute
@@ -293,9 +275,7 @@ export interface FileRouteTypes {
     | '/api/attachments/upload'
     | '/api/mcp/agent'
     | '/api/mcp/vault'
-    | '/api/vault/folder-groups'
     | '/api/vault/memory'
-    | '/api/vault/projects'
     | '/api/vault/skills'
     | '/api/agents/'
     | '/api/attachments/$id/raw'
@@ -323,9 +303,7 @@ export interface FileRouteTypes {
     | '/api/attachments/upload'
     | '/api/mcp/agent'
     | '/api/mcp/vault'
-    | '/api/vault/folder-groups'
     | '/api/vault/memory'
-    | '/api/vault/projects'
     | '/api/vault/skills'
     | '/api/agents'
     | '/api/attachments/$id/raw'
@@ -353,9 +331,7 @@ export interface FileRouteTypes {
     | '/api/attachments/upload'
     | '/api/mcp/agent'
     | '/api/mcp/vault'
-    | '/api/vault/folder-groups'
     | '/api/vault/memory'
-    | '/api/vault/projects'
     | '/api/vault/skills'
     | '/api/agents/'
     | '/api/attachments/$id/raw'
@@ -384,9 +360,7 @@ export interface RootRouteChildren {
   ApiAttachmentsUploadRoute: typeof ApiAttachmentsUploadRoute
   ApiMcpAgentRoute: typeof ApiMcpAgentRouteWithChildren
   ApiMcpVaultRoute: typeof ApiMcpVaultRouteWithChildren
-  ApiVaultFolderGroupsRoute: typeof ApiVaultFolderGroupsRoute
   ApiVaultMemoryRoute: typeof ApiVaultMemoryRoute
-  ApiVaultProjectsRoute: typeof ApiVaultProjectsRoute
   ApiVaultSkillsRoute: typeof ApiVaultSkillsRoute
   ApiAgentsIndexRoute: typeof ApiAgentsIndexRoute
 }
@@ -505,25 +479,11 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiVaultSkillsRouteImport
       parentRoute: typeof rootRouteImport
     }
-    '/api/vault/projects': {
-      id: '/api/vault/projects'
-      path: '/api/vault/projects'
-      fullPath: '/api/vault/projects'
-      preLoaderRoute: typeof ApiVaultProjectsRouteImport
-      parentRoute: typeof rootRouteImport
-    }
     '/api/vault/memory': {
       id: '/api/vault/memory'
       path: '/api/vault/memory'
       fullPath: '/api/vault/memory'
       preLoaderRoute: typeof ApiVaultMemoryRouteImport
-      parentRoute: typeof rootRouteImport
-    }
-    '/api/vault/folder-groups': {
-      id: '/api/vault/folder-groups'
-      path: '/api/vault/folder-groups'
-      fullPath: '/api/vault/folder-groups'
-      preLoaderRoute: typeof ApiVaultFolderGroupsRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/mcp/vault': {
@@ -648,9 +608,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAttachmentsUploadRoute: ApiAttachmentsUploadRoute,
   ApiMcpAgentRoute: ApiMcpAgentRouteWithChildren,
   ApiMcpVaultRoute: ApiMcpVaultRouteWithChildren,
-  ApiVaultFolderGroupsRoute: ApiVaultFolderGroupsRoute,
   ApiVaultMemoryRoute: ApiVaultMemoryRoute,
-  ApiVaultProjectsRoute: ApiVaultProjectsRoute,
   ApiVaultSkillsRoute: ApiVaultSkillsRoute,
   ApiAgentsIndexRoute: ApiAgentsIndexRoute,
 }

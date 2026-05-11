@@ -111,17 +111,11 @@ const VAULT_API_PROMPT = `Create a vault skill for the hlid vault data API.
 All endpoints are served at http://localhost:3000.
 
 Endpoints:
-  GET  /api/vault/projects
-    — Returns: Project[]  (each with name, status, tags, content, dates)
-
   GET  /api/vault/skills
     — Returns: { skills: Skill[], sectionOrder: string[] }
 
   GET  /api/vault/memory?folder={optional}
     — Returns: MemoryFile[]  (defaults to vault.memory folder; pass ?folder=inbox etc. for other folders)
-
-  GET  /api/vault/folder-groups?folder={optional}
-    — Returns: FolderGroup[]  (hierarchical folder tree; defaults to vault.areas)
 
 Create a skill file in the vault's skills folder (\`vault.skills\` in config). Add YAML frontmatter with \`name\` and \`description\` fields. Include examples for reading vault data from an AI agent perspective.
 
@@ -187,13 +181,8 @@ const API_GROUPS = [
 	{
 		id: "vault",
 		label: "Vault API",
-		description: "Read projects, skills, memory, and folder groups",
-		endpoints: [
-			"GET  /api/vault/projects",
-			"GET  /api/vault/skills",
-			"GET  /api/vault/memory?folder=",
-			"GET  /api/vault/folder-groups?folder=",
-		],
+		description: "Read skills and memory",
+		endpoints: ["GET  /api/vault/skills", "GET  /api/vault/memory?folder="],
 		prompt: VAULT_API_PROMPT,
 	},
 ] as const;
