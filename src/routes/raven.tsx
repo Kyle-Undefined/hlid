@@ -686,10 +686,10 @@ function ChatPage() {
 								type="button"
 								onClick={handleSend}
 								disabled={!canQueue}
-								className="px-4 py-3 text-[10px] tracking-widest text-muted-foreground/50 hover:text-primary disabled:text-muted-foreground/20 transition-colors shrink-0 uppercase font-bold"
+								className="px-4 py-3 text-[10px] tracking-widest text-primary/70 hover:text-primary disabled:text-muted-foreground/35 transition-colors shrink-0 uppercase font-bold"
 								aria-label="Queue message"
 							>
-								Q→
+								QUEUE
 							</button>
 						) : (
 							<button
