@@ -59,7 +59,7 @@ export function AssistantMsg({
 							<circle cx="16" cy="16" r="2" style={{ fill: "var(--data)" }} />
 						</svg>
 					</div>
-					<PrivacyMask className="flex-1 text-sm text-foreground leading-relaxed pr-4 min-w-0">
+					<PrivacyMask className="flex-1 text-sm leading-relaxed pr-4 min-w-0 text-[var(--agent-msg)]">
 						<MarkdownBody
 							content={normalizeMd(message.text ?? "")}
 							streaming={message.streaming}

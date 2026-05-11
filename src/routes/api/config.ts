@@ -3,10 +3,18 @@ import { createFileRoute } from "@tanstack/react-router";
 import { HlidConfigSchema } from "#/config";
 import { writeConfig } from "#/lib/config-writer";
 import { forbiddenResponse } from "#/lib/originGate";
+import { loadConfig } from "#/server/config";
+
+export async function handleGetConfig(request: Request): Promise<Response> {
+	const forbidden = forbiddenResponse(request);
+	if (forbidden) return forbidden;
+	return Response.json(loadConfig());
+}
 
 export const Route = createFileRoute("/api/config")({
 	server: {
 		handlers: {
+			GET: ({ request }) => handleGetConfig(request),
 			POST: async ({ request }) => {
 				const forbidden = forbiddenResponse(request);
 				if (forbidden) return forbidden;

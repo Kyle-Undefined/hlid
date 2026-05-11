@@ -23,8 +23,19 @@ import { Route as ApiLifecycleRouteImport } from './routes/api/lifecycle'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as ApiConfigRouteImport } from './routes/api/config'
 import { Route as ApiBrowseRouteImport } from './routes/api/browse'
+import { Route as ApiAgentsIndexRouteImport } from './routes/api/agents/index'
+import { Route as ApiVaultSkillsRouteImport } from './routes/api/vault/skills'
+import { Route as ApiVaultProjectsRouteImport } from './routes/api/vault/projects'
+import { Route as ApiVaultMemoryRouteImport } from './routes/api/vault/memory'
+import { Route as ApiVaultFolderGroupsRouteImport } from './routes/api/vault/folder-groups'
+import { Route as ApiMcpVaultRouteImport } from './routes/api/mcp/vault'
+import { Route as ApiMcpAgentRouteImport } from './routes/api/mcp/agent'
 import { Route as ApiAttachmentsUploadRouteImport } from './routes/api/attachments/upload'
 import { Route as ApiAttachmentsIdRouteImport } from './routes/api/attachments/$id'
+import { Route as ApiAgentsValidateRouteImport } from './routes/api/agents/validate'
+import { Route as ApiAgentsClaudemdRouteImport } from './routes/api/agents/claudemd'
+import { Route as ApiMcpVaultToggleRouteImport } from './routes/api/mcp/vault.toggle'
+import { Route as ApiMcpAgentToggleRouteImport } from './routes/api/mcp/agent.toggle'
 import { Route as ApiAttachmentsIdRawRouteImport } from './routes/api/attachments/$id.raw'
 
 const VaultRoute = VaultRouteImport.update({
@@ -97,6 +108,41 @@ const ApiBrowseRoute = ApiBrowseRouteImport.update({
   path: '/api/browse',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiAgentsIndexRoute = ApiAgentsIndexRouteImport.update({
+  id: '/api/agents/',
+  path: '/api/agents/',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiVaultSkillsRoute = ApiVaultSkillsRouteImport.update({
+  id: '/api/vault/skills',
+  path: '/api/vault/skills',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiVaultProjectsRoute = ApiVaultProjectsRouteImport.update({
+  id: '/api/vault/projects',
+  path: '/api/vault/projects',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiVaultMemoryRoute = ApiVaultMemoryRouteImport.update({
+  id: '/api/vault/memory',
+  path: '/api/vault/memory',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiVaultFolderGroupsRoute = ApiVaultFolderGroupsRouteImport.update({
+  id: '/api/vault/folder-groups',
+  path: '/api/vault/folder-groups',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiMcpVaultRoute = ApiMcpVaultRouteImport.update({
+  id: '/api/mcp/vault',
+  path: '/api/mcp/vault',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiMcpAgentRoute = ApiMcpAgentRouteImport.update({
+  id: '/api/mcp/agent',
+  path: '/api/mcp/agent',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAttachmentsUploadRoute = ApiAttachmentsUploadRouteImport.update({
   id: '/api/attachments/upload',
   path: '/api/attachments/upload',
@@ -106,6 +152,26 @@ const ApiAttachmentsIdRoute = ApiAttachmentsIdRouteImport.update({
   id: '/api/attachments/$id',
   path: '/api/attachments/$id',
   getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAgentsValidateRoute = ApiAgentsValidateRouteImport.update({
+  id: '/api/agents/validate',
+  path: '/api/agents/validate',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiAgentsClaudemdRoute = ApiAgentsClaudemdRouteImport.update({
+  id: '/api/agents/claudemd',
+  path: '/api/agents/claudemd',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiMcpVaultToggleRoute = ApiMcpVaultToggleRouteImport.update({
+  id: '/toggle',
+  path: '/toggle',
+  getParentRoute: () => ApiMcpVaultRoute,
+} as any)
+const ApiMcpAgentToggleRoute = ApiMcpAgentToggleRouteImport.update({
+  id: '/toggle',
+  path: '/toggle',
+  getParentRoute: () => ApiMcpAgentRoute,
 } as any)
 const ApiAttachmentsIdRawRoute = ApiAttachmentsIdRawRouteImport.update({
   id: '/raw',
@@ -128,9 +194,20 @@ export interface FileRoutesByFullPath {
   '/api/tailscale': typeof ApiTailscaleRoute
   '/api/updates': typeof ApiUpdatesRoute
   '/api/version': typeof ApiVersionRoute
+  '/api/agents/claudemd': typeof ApiAgentsClaudemdRoute
+  '/api/agents/validate': typeof ApiAgentsValidateRoute
   '/api/attachments/$id': typeof ApiAttachmentsIdRouteWithChildren
   '/api/attachments/upload': typeof ApiAttachmentsUploadRoute
+  '/api/mcp/agent': typeof ApiMcpAgentRouteWithChildren
+  '/api/mcp/vault': typeof ApiMcpVaultRouteWithChildren
+  '/api/vault/folder-groups': typeof ApiVaultFolderGroupsRoute
+  '/api/vault/memory': typeof ApiVaultMemoryRoute
+  '/api/vault/projects': typeof ApiVaultProjectsRoute
+  '/api/vault/skills': typeof ApiVaultSkillsRoute
+  '/api/agents/': typeof ApiAgentsIndexRoute
   '/api/attachments/$id/raw': typeof ApiAttachmentsIdRawRoute
+  '/api/mcp/agent/toggle': typeof ApiMcpAgentToggleRoute
+  '/api/mcp/vault/toggle': typeof ApiMcpVaultToggleRoute
 }
 export interface FileRoutesByTo {
   '/': typeof IndexRoute
@@ -147,9 +224,20 @@ export interface FileRoutesByTo {
   '/api/tailscale': typeof ApiTailscaleRoute
   '/api/updates': typeof ApiUpdatesRoute
   '/api/version': typeof ApiVersionRoute
+  '/api/agents/claudemd': typeof ApiAgentsClaudemdRoute
+  '/api/agents/validate': typeof ApiAgentsValidateRoute
   '/api/attachments/$id': typeof ApiAttachmentsIdRouteWithChildren
   '/api/attachments/upload': typeof ApiAttachmentsUploadRoute
+  '/api/mcp/agent': typeof ApiMcpAgentRouteWithChildren
+  '/api/mcp/vault': typeof ApiMcpVaultRouteWithChildren
+  '/api/vault/folder-groups': typeof ApiVaultFolderGroupsRoute
+  '/api/vault/memory': typeof ApiVaultMemoryRoute
+  '/api/vault/projects': typeof ApiVaultProjectsRoute
+  '/api/vault/skills': typeof ApiVaultSkillsRoute
+  '/api/agents': typeof ApiAgentsIndexRoute
   '/api/attachments/$id/raw': typeof ApiAttachmentsIdRawRoute
+  '/api/mcp/agent/toggle': typeof ApiMcpAgentToggleRoute
+  '/api/mcp/vault/toggle': typeof ApiMcpVaultToggleRoute
 }
 export interface FileRoutesById {
   __root__: typeof rootRouteImport
@@ -167,9 +255,20 @@ export interface FileRoutesById {
   '/api/tailscale': typeof ApiTailscaleRoute
   '/api/updates': typeof ApiUpdatesRoute
   '/api/version': typeof ApiVersionRoute
+  '/api/agents/claudemd': typeof ApiAgentsClaudemdRoute
+  '/api/agents/validate': typeof ApiAgentsValidateRoute
   '/api/attachments/$id': typeof ApiAttachmentsIdRouteWithChildren
   '/api/attachments/upload': typeof ApiAttachmentsUploadRoute
+  '/api/mcp/agent': typeof ApiMcpAgentRouteWithChildren
+  '/api/mcp/vault': typeof ApiMcpVaultRouteWithChildren
+  '/api/vault/folder-groups': typeof ApiVaultFolderGroupsRoute
+  '/api/vault/memory': typeof ApiVaultMemoryRoute
+  '/api/vault/projects': typeof ApiVaultProjectsRoute
+  '/api/vault/skills': typeof ApiVaultSkillsRoute
+  '/api/agents/': typeof ApiAgentsIndexRoute
   '/api/attachments/$id/raw': typeof ApiAttachmentsIdRawRoute
+  '/api/mcp/agent/toggle': typeof ApiMcpAgentToggleRoute
+  '/api/mcp/vault/toggle': typeof ApiMcpVaultToggleRoute
 }
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
@@ -188,9 +287,20 @@ export interface FileRouteTypes {
     | '/api/tailscale'
     | '/api/updates'
     | '/api/version'
+    | '/api/agents/claudemd'
+    | '/api/agents/validate'
     | '/api/attachments/$id'
     | '/api/attachments/upload'
+    | '/api/mcp/agent'
+    | '/api/mcp/vault'
+    | '/api/vault/folder-groups'
+    | '/api/vault/memory'
+    | '/api/vault/projects'
+    | '/api/vault/skills'
+    | '/api/agents/'
     | '/api/attachments/$id/raw'
+    | '/api/mcp/agent/toggle'
+    | '/api/mcp/vault/toggle'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/'
@@ -207,9 +317,20 @@ export interface FileRouteTypes {
     | '/api/tailscale'
     | '/api/updates'
     | '/api/version'
+    | '/api/agents/claudemd'
+    | '/api/agents/validate'
     | '/api/attachments/$id'
     | '/api/attachments/upload'
+    | '/api/mcp/agent'
+    | '/api/mcp/vault'
+    | '/api/vault/folder-groups'
+    | '/api/vault/memory'
+    | '/api/vault/projects'
+    | '/api/vault/skills'
+    | '/api/agents'
     | '/api/attachments/$id/raw'
+    | '/api/mcp/agent/toggle'
+    | '/api/mcp/vault/toggle'
   id:
     | '__root__'
     | '/'
@@ -226,9 +347,20 @@ export interface FileRouteTypes {
     | '/api/tailscale'
     | '/api/updates'
     | '/api/version'
+    | '/api/agents/claudemd'
+    | '/api/agents/validate'
     | '/api/attachments/$id'
     | '/api/attachments/upload'
+    | '/api/mcp/agent'
+    | '/api/mcp/vault'
+    | '/api/vault/folder-groups'
+    | '/api/vault/memory'
+    | '/api/vault/projects'
+    | '/api/vault/skills'
+    | '/api/agents/'
     | '/api/attachments/$id/raw'
+    | '/api/mcp/agent/toggle'
+    | '/api/mcp/vault/toggle'
   fileRoutesById: FileRoutesById
 }
 export interface RootRouteChildren {
@@ -246,8 +378,17 @@ export interface RootRouteChildren {
   ApiTailscaleRoute: typeof ApiTailscaleRoute
   ApiUpdatesRoute: typeof ApiUpdatesRoute
   ApiVersionRoute: typeof ApiVersionRoute
+  ApiAgentsClaudemdRoute: typeof ApiAgentsClaudemdRoute
+  ApiAgentsValidateRoute: typeof ApiAgentsValidateRoute
   ApiAttachmentsIdRoute: typeof ApiAttachmentsIdRouteWithChildren
   ApiAttachmentsUploadRoute: typeof ApiAttachmentsUploadRoute
+  ApiMcpAgentRoute: typeof ApiMcpAgentRouteWithChildren
+  ApiMcpVaultRoute: typeof ApiMcpVaultRouteWithChildren
+  ApiVaultFolderGroupsRoute: typeof ApiVaultFolderGroupsRoute
+  ApiVaultMemoryRoute: typeof ApiVaultMemoryRoute
+  ApiVaultProjectsRoute: typeof ApiVaultProjectsRoute
+  ApiVaultSkillsRoute: typeof ApiVaultSkillsRoute
+  ApiAgentsIndexRoute: typeof ApiAgentsIndexRoute
 }
 
 declare module '@tanstack/react-router' {
@@ -350,6 +491,55 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiBrowseRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/agents/': {
+      id: '/api/agents/'
+      path: '/api/agents'
+      fullPath: '/api/agents/'
+      preLoaderRoute: typeof ApiAgentsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/vault/skills': {
+      id: '/api/vault/skills'
+      path: '/api/vault/skills'
+      fullPath: '/api/vault/skills'
+      preLoaderRoute: typeof ApiVaultSkillsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/vault/projects': {
+      id: '/api/vault/projects'
+      path: '/api/vault/projects'
+      fullPath: '/api/vault/projects'
+      preLoaderRoute: typeof ApiVaultProjectsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/vault/memory': {
+      id: '/api/vault/memory'
+      path: '/api/vault/memory'
+      fullPath: '/api/vault/memory'
+      preLoaderRoute: typeof ApiVaultMemoryRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/vault/folder-groups': {
+      id: '/api/vault/folder-groups'
+      path: '/api/vault/folder-groups'
+      fullPath: '/api/vault/folder-groups'
+      preLoaderRoute: typeof ApiVaultFolderGroupsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/mcp/vault': {
+      id: '/api/mcp/vault'
+      path: '/api/mcp/vault'
+      fullPath: '/api/mcp/vault'
+      preLoaderRoute: typeof ApiMcpVaultRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/mcp/agent': {
+      id: '/api/mcp/agent'
+      path: '/api/mcp/agent'
+      fullPath: '/api/mcp/agent'
+      preLoaderRoute: typeof ApiMcpAgentRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/attachments/upload': {
       id: '/api/attachments/upload'
       path: '/api/attachments/upload'
@@ -363,6 +553,34 @@ declare module '@tanstack/react-router' {
       fullPath: '/api/attachments/$id'
       preLoaderRoute: typeof ApiAttachmentsIdRouteImport
       parentRoute: typeof rootRouteImport
+    }
+    '/api/agents/validate': {
+      id: '/api/agents/validate'
+      path: '/api/agents/validate'
+      fullPath: '/api/agents/validate'
+      preLoaderRoute: typeof ApiAgentsValidateRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/agents/claudemd': {
+      id: '/api/agents/claudemd'
+      path: '/api/agents/claudemd'
+      fullPath: '/api/agents/claudemd'
+      preLoaderRoute: typeof ApiAgentsClaudemdRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/mcp/vault/toggle': {
+      id: '/api/mcp/vault/toggle'
+      path: '/toggle'
+      fullPath: '/api/mcp/vault/toggle'
+      preLoaderRoute: typeof ApiMcpVaultToggleRouteImport
+      parentRoute: typeof ApiMcpVaultRoute
+    }
+    '/api/mcp/agent/toggle': {
+      id: '/api/mcp/agent/toggle'
+      path: '/toggle'
+      fullPath: '/api/mcp/agent/toggle'
+      preLoaderRoute: typeof ApiMcpAgentToggleRouteImport
+      parentRoute: typeof ApiMcpAgentRoute
     }
     '/api/attachments/$id/raw': {
       id: '/api/attachments/$id/raw'
@@ -385,6 +603,30 @@ const ApiAttachmentsIdRouteChildren: ApiAttachmentsIdRouteChildren = {
 const ApiAttachmentsIdRouteWithChildren =
   ApiAttachmentsIdRoute._addFileChildren(ApiAttachmentsIdRouteChildren)
 
+interface ApiMcpAgentRouteChildren {
+  ApiMcpAgentToggleRoute: typeof ApiMcpAgentToggleRoute
+}
+
+const ApiMcpAgentRouteChildren: ApiMcpAgentRouteChildren = {
+  ApiMcpAgentToggleRoute: ApiMcpAgentToggleRoute,
+}
+
+const ApiMcpAgentRouteWithChildren = ApiMcpAgentRoute._addFileChildren(
+  ApiMcpAgentRouteChildren,
+)
+
+interface ApiMcpVaultRouteChildren {
+  ApiMcpVaultToggleRoute: typeof ApiMcpVaultToggleRoute
+}
+
+const ApiMcpVaultRouteChildren: ApiMcpVaultRouteChildren = {
+  ApiMcpVaultToggleRoute: ApiMcpVaultToggleRoute,
+}
+
+const ApiMcpVaultRouteWithChildren = ApiMcpVaultRoute._addFileChildren(
+  ApiMcpVaultRouteChildren,
+)
+
 const rootRouteChildren: RootRouteChildren = {
   IndexRoute: IndexRoute,
   EinherjarRoute: EinherjarRoute,
@@ -400,8 +642,17 @@ const rootRouteChildren: RootRouteChildren = {
   ApiTailscaleRoute: ApiTailscaleRoute,
   ApiUpdatesRoute: ApiUpdatesRoute,
   ApiVersionRoute: ApiVersionRoute,
+  ApiAgentsClaudemdRoute: ApiAgentsClaudemdRoute,
+  ApiAgentsValidateRoute: ApiAgentsValidateRoute,
   ApiAttachmentsIdRoute: ApiAttachmentsIdRouteWithChildren,
   ApiAttachmentsUploadRoute: ApiAttachmentsUploadRoute,
+  ApiMcpAgentRoute: ApiMcpAgentRouteWithChildren,
+  ApiMcpVaultRoute: ApiMcpVaultRouteWithChildren,
+  ApiVaultFolderGroupsRoute: ApiVaultFolderGroupsRoute,
+  ApiVaultMemoryRoute: ApiVaultMemoryRoute,
+  ApiVaultProjectsRoute: ApiVaultProjectsRoute,
+  ApiVaultSkillsRoute: ApiVaultSkillsRoute,
+  ApiAgentsIndexRoute: ApiAgentsIndexRoute,
 }
 export const routeTree = rootRouteImport
   ._addFileChildren(rootRouteChildren)

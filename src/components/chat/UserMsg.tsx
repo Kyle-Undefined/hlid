@@ -56,7 +56,7 @@ export function UserMsg({
 				{message.text && (
 					<PrivacyMask className="w-full">
 						<div
-							className="text-sm text-foreground whitespace-pre-wrap text-right leading-relaxed w-full"
+							className="text-sm whitespace-pre-wrap text-right leading-relaxed w-full text-[var(--user-msg)]"
 							style={{ overflowWrap: "anywhere" }}
 						>
 							{message.text}
@@ -65,13 +65,6 @@ export function UserMsg({
 				)}
 			</div>
 			<div className="flex flex-col items-end gap-0.5 shrink-0">
-				{message.text && !isQueued && !isRunning && (
-					<CopyButton
-						onCopy={() => copy(message.text)}
-						copied={copied}
-						className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity"
-					/>
-				)}
 				<div
 					className={`text-[9px] tracking-widest pt-0.5 w-11 text-right ${
 						isQueued || isRunning
@@ -81,6 +74,13 @@ export function UserMsg({
 				>
 					{label}
 				</div>
+				{message.text && !isQueued && !isRunning && (
+					<CopyButton
+						onCopy={() => copy(message.text)}
+						copied={copied}
+						className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity"
+					/>
+				)}
 				{isQueued && (
 					<div className="flex items-center gap-0.5">
 						{onPromote && (

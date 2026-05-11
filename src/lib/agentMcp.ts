@@ -7,9 +7,23 @@
  * Callers are responsible for authorising the agentPath before calling.
  */
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import type { HlidConfig } from "../config";
 import { expandTilde, samePath } from "./paths";
+
+// ─── Name helper ─────────────────────────────────────────────────────────────
+
+/**
+ * Derive a human-readable display name from an agent directory path.
+ * e.g. "/projects/my-cool_agent" → "My Cool Agent"
+ */
+export function deriveAgentName(p: string): string {
+	return basename(p)
+		.split(/[-_\s]+/)
+		.filter(Boolean)
+		.map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+		.join(" ");
+}
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
 
@@ -25,6 +39,49 @@ export function validateAgentPath(agentPath: string, config: HlidConfig): void {
 	if (!allowedPaths.some((p) => samePath(p, requested))) {
 		throw new Error("Unauthorized");
 	}
+}
+
+// ─── Read helper ─────────────────────────────────────────────────────────────
+
+/**
+ * Read MCP server list from {resolvedPath}/.mcp.json merged with the
+ * disabledMcpjsonServers list in {resolvedPath}/.claude/settings.local.json.
+ * ENOENT on either file is treated as empty. Caller must have already
+ * validated that resolvedPath is an authorised agent path.
+ */
+export function readAgentMcpFile(resolvedPath: string): {
+	servers: Array<{ name: string; config: unknown; disabled: boolean }>;
+} {
+	let mcpMap: Record<string, unknown> = {};
+	try {
+		const raw = readFileSync(join(resolvedPath, ".mcp.json"), "utf8");
+		mcpMap =
+			(JSON.parse(raw) as { mcpServers?: Record<string, unknown> })
+				.mcpServers ?? {};
+	} catch (e) {
+		if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+	}
+
+	let disabled: string[] = [];
+	try {
+		const raw = readFileSync(
+			join(resolvedPath, ".claude", "settings.local.json"),
+			"utf8",
+		);
+		disabled =
+			(JSON.parse(raw) as { disabledMcpjsonServers?: string[] })
+				.disabledMcpjsonServers ?? [];
+	} catch (e) {
+		if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+	}
+
+	return {
+		servers: Object.entries(mcpMap).map(([name, config]) => ({
+			name,
+			config,
+			disabled: disabled.includes(name),
+		})),
+	};
 }
 
 // ─── Write helpers ────────────────────────────────────────────────────────────

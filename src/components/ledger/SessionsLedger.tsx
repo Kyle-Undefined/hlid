@@ -147,8 +147,6 @@ export function SessionsLedger({
 	onRename,
 	onNavigate,
 	onCleanup,
-	onBuildSkill,
-	connected,
 }: {
 	data: { sessions: SessionRow[]; total: number };
 	page: number;
@@ -159,8 +157,6 @@ export function SessionsLedger({
 	onRename: (id: string, label: string) => void;
 	onNavigate: (id: string) => void;
 	onCleanup: (days: number) => void;
-	onBuildSkill: () => void;
-	connected: boolean;
 }) {
 	return (
 		<div className="border border-border bg-card">
@@ -174,22 +170,6 @@ export function SessionsLedger({
 					</span>
 				</div>
 				<div className="flex items-center gap-3">
-					{connected && (
-						<ConfirmAction
-							label="send to Claude?"
-							variant="primary"
-							onConfirm={onBuildSkill}
-							trigger={(open) => (
-								<button
-									type="button"
-									onClick={open}
-									className="text-[8px] tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 uppercase transition-colors"
-								>
-									build skill
-								</button>
-							)}
-						/>
-					)}
 					{data.sessions.some(
 						(s) =>
 							s.started_at != null &&

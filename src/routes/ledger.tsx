@@ -30,33 +30,7 @@ import {
 	getProviderUsagesFn,
 	getThirtyDayStatsFn,
 } from "#/lib/serverFns";
-import { uid } from "#/lib/utils";
 import type { RateLimitMessage, ServerMessage } from "#/server/protocol";
-
-// ─── constants ───────────────────────────────────────────────────────────────
-
-const BUILD_SKILL_PROMPT = `Create a vault skill for the hlid session management API.
-
-Read \`hlid.config.toml\` to find \`server.port\`. The data API runs on that port + 1.
-
-Endpoints:
-  GET  /db/sessions?page=N&size=N
-  GET  /db/session-messages?session_id=ID
-  GET  /db/recent-sessions?limit=N
-  GET  /db/stats
-  GET  /db/current-session
-  GET  /db/weekly-stats
-  GET  /db/thirty-day-stats
-  GET  /db/usage-windows
-  PATCH  /db/session?id=ID   { label: string }
-  DELETE /db/session?id=ID
-  POST /db/sessions/cleanup  { older_than_days: N }
-
-Create a skill file in the vault's skills folder (\`vault.skills\` in config). Add YAML frontmatter with \`name\` and \`description\` fields.
-
-Register the skill in the vault's skills/index.md under an appropriate section using the pipe table format:
-## Section Name
-| \`skill-name\` | one-line description |`;
 
 // ─── search param helper (exported for tests) ────────────────────────────────
 
@@ -173,7 +147,7 @@ function StatsPage() {
 	});
 	const stats = useWsLiveStats();
 	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
-	const { wsStatus, send } = useWs((msg: ServerMessage) => {
+	useWs((msg: ServerMessage) => {
 		if (msg.type === "rate_limit") setRateLimit(msg);
 	});
 
@@ -235,16 +209,6 @@ function StatsPage() {
 		await cleanupSessionsFn({ data: { days } });
 		navigate({ to: "/ledger", search: { tab: "sessions", page: 1 } });
 	}
-
-	function handleBuildSkill() {
-		send({
-			type: "chat",
-			text: BUILD_SKILL_PROMPT,
-			session_id: uid(),
-		});
-	}
-
-	const connected = wsStatus === "connected";
 
 	const { agg } = statsData;
 
@@ -359,8 +323,6 @@ function StatsPage() {
 								})
 							}
 							onCleanup={handleCleanup}
-							onBuildSkill={handleBuildSkill}
-							connected={connected}
 						/>
 					</div>
 				)}

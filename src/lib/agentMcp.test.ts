@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { HlidConfig } from "../config";
 import {
+	readAgentMcpFile,
 	toggleAgentMcpFile,
 	validateAgentPath,
 	writeAgentMcpFile,
@@ -62,6 +63,58 @@ beforeEach(() => {
 afterEach(() => {
 	rmSync(agentDir, { recursive: true, force: true });
 	rmSync(otherDir, { recursive: true, force: true });
+});
+
+// ── readAgentMcpFile ─────────────────────────────────────────────────────────
+
+describe("readAgentMcpFile", () => {
+	it("returns empty servers when .mcp.json is missing", () => {
+		expect(readAgentMcpFile(agentDir)).toEqual({ servers: [] });
+	});
+
+	it("returns servers with disabled=false when settings.local.json is missing", () => {
+		writeFileSync(
+			join(agentDir, ".mcp.json"),
+			JSON.stringify({ mcpServers: { filesystem: { command: "npx" } } }),
+			"utf8",
+		);
+		expect(readAgentMcpFile(agentDir)).toEqual({
+			servers: [
+				{ name: "filesystem", config: { command: "npx" }, disabled: false },
+			],
+		});
+	});
+
+	it("marks servers as disabled based on settings.local.json", () => {
+		writeFileSync(
+			join(agentDir, ".mcp.json"),
+			JSON.stringify({
+				mcpServers: {
+					filesystem: { command: "npx" },
+					brave: { command: "uvx" },
+				},
+			}),
+			"utf8",
+		);
+		mkdirSync(join(agentDir, ".claude"), { recursive: true });
+		writeFileSync(
+			join(agentDir, ".claude", "settings.local.json"),
+			JSON.stringify({ disabledMcpjsonServers: ["filesystem"] }),
+			"utf8",
+		);
+		const result = readAgentMcpFile(agentDir);
+		expect(result.servers.find((s) => s.name === "filesystem")?.disabled).toBe(
+			true,
+		);
+		expect(result.servers.find((s) => s.name === "brave")?.disabled).toBe(
+			false,
+		);
+	});
+
+	it("returns empty servers when mcpServers key is absent", () => {
+		writeFileSync(join(agentDir, ".mcp.json"), JSON.stringify({}), "utf8");
+		expect(readAgentMcpFile(agentDir)).toEqual({ servers: [] });
+	});
 });
 
 // ── validateAgentPath ────────────────────────────────────────────────────────

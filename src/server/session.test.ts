@@ -1990,17 +1990,19 @@ describe("SessionManager — live tool_event persistence", () => {
 
 		// Wait for the throttled flush to fire at least once, then confirm we
 		// did NOT do 50 writes — only a small handful.
+		// Throttle fires after TEXT_WRITE_THROTTLE_MS (800ms); use 2500ms to give
+		// comfortable headroom under CI / full-suite load and avoid flakiness.
 		await waitFor(() => {
 			const writes = vi
 				.mocked(dbMock.setMessageText)
 				.mock.calls.filter((c) => c[0] === "sess-live-throttle");
 			expect(writes.length).toBeGreaterThanOrEqual(1);
-		});
+		}, 2500);
 		const writes = vi
 			.mocked(dbMock.setMessageText)
 			.mock.calls.filter((c) => c[0] === "sess-live-throttle");
 		// 50 chunks emitted essentially synchronously → coalesced into ≤ a few
-		// writes (one per ~150ms window). Allow some slack for scheduling jitter.
+		// writes (one per TEXT_WRITE_THROTTLE_MS window). Allow slack for jitter.
 		expect(writes.length).toBeLessThanOrEqual(5);
 		release();
 		await runPromise;

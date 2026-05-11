@@ -91,6 +91,7 @@ const config = defineConfig({
 		tailwindcss(),
 		tanstackStart({
 			spa: { enabled: true, prerender: { enabled: false } },
+			router: { routeFileIgnorePattern: "\\.test\\.(ts|tsx)$" },
 		}),
 		viteReact(),
 	],

@@ -1,6 +1,7 @@
 import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import type { HlidConfig } from "../config";
+import { setConfigCache } from "../server/config";
 import { syncWrappers } from "../server/wrappers";
 import { APP_DIR } from "./paths";
 
@@ -102,5 +103,6 @@ export function writeConfig(config: HlidConfig): void {
 	}
 
 	writeFileSync(CONFIG_PATH, `${lines.join("\n")}\n`, "utf-8");
+	setConfigCache(config);
 	syncWrappers(config.agents ?? []);
 }

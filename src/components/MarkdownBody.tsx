@@ -163,7 +163,7 @@ export const MarkdownBody = memo(function MarkdownBody({
 					</a>
 				),
 				strong: ({ children }) => (
-					<strong className="font-semibold text-foreground">{children}</strong>
+					<strong className="font-semibold text-current">{children}</strong>
 				),
 				hr: () => <hr className="border-border my-3" />,
 				table: ({ children }) => (

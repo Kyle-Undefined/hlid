@@ -87,7 +87,7 @@ const AttachmentsSchema = z.object({
 		.default(DEFAULT_ATTACHMENTS_CONFIG.allowed_mimes),
 });
 
-const AgentSchema = z.object({
+export const AgentSchema = z.object({
 	path: z.string(),
 	name: z.string().optional(),
 	mode: z.enum(["cwd", "context"]).default("cwd"),

@@ -48,6 +48,9 @@
   /* tool block expanded panel, sky blue inset */
   --tool-panel: #071825;
   --tool-panel-border: #1a5580;
+  /* chat message text colors */
+  --user-msg: #dcdce4;
+  --agent-msg: #38bdf8;
 }
 
 html[data-theme="tan"] {
@@ -81,6 +84,9 @@ html[data-theme="tan"] {
   --data: #8c4e35;
   --tool-panel: #e9ddc8;
   --tool-panel-border: #c5a882;
+  /* chat message text colors */
+  --user-msg: #2a1a10;
+  --agent-msg: #8c4e35;
 }
 
 @theme inline {

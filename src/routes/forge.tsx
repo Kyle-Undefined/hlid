@@ -1,6 +1,7 @@
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import { useEffect, useRef, useState } from "react";
+import { ApiSection } from "#/components/forge/ApiSection";
 import type { ClaudeForm } from "#/components/forge/ClaudeSection";
 import { ClaudeSection } from "#/components/forge/ClaudeSection";
 import { EventLogSection } from "#/components/forge/EventLogSection";
@@ -48,6 +49,7 @@ const TABS = [
 	"agent",
 	"interface",
 	"logs",
+	"api",
 ] as const;
 type Tab = (typeof TABS)[number];
 
@@ -285,6 +287,7 @@ function SettingsPage() {
 					<UiSection ui={ui} onChange={(p) => setUi((s) => ({ ...s, ...p }))} />
 				)}
 				{tab === "logs" && <EventLogSection />}
+				{tab === "api" && <ApiSection />}
 			</div>
 
 			{showSaveBar && (
