@@ -88,6 +88,59 @@ function renderHistory(props: HookProps) {
 
 // ── tests ─────────────────────────────────────────────────────────────────────
 
+describe("useLoadChatHistory — initial load", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		_seq = 0;
+		vi.mocked(wsStore.getSnapshot).mockReturnValue({
+			sessionState: "idle",
+			wsStatus: "connected",
+			model: "",
+			actualModel: null,
+			hasPendingPermissions: false,
+			runningTurnId: null,
+		});
+		vi.mocked(wsStore.claimPendingPrompt).mockReturnValue(null);
+		vi.mocked(wsStore.drainMessageBuffer).mockReturnValue([]);
+		vi.mocked(getSessionContextFn).mockResolvedValue(makeCtx());
+		vi.mocked(getSessionPermissionsFn).mockResolvedValue(makePerms());
+		vi.mocked(getSessionPlanProposalsFn).mockResolvedValue([]);
+	});
+
+	afterEach(() => {
+		vi.clearAllMocks();
+	});
+
+	it("preserves live stats across session navigation (does not reset on load)", async () => {
+		// Stats should persist when navigating to any session — they track the active
+		// running session, not the viewed session. Reset only happens when a new run
+		// starts (index.tsx) or the user explicitly clears (raven.tsx).
+		vi.mocked(getSessionDataFn).mockResolvedValue([
+			makeRow("user", "hello", 1000),
+		]);
+
+		const dispatch = vi.fn();
+		const historyReadyRef = { current: false };
+		const pendingIdRef = { current: null as string | null };
+		const sessionIdRef = { current: "sess-1" };
+
+		renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef,
+			historyReadyRef,
+			handleWsMessage: noopWsHandler,
+			wsStatus: "connected",
+			sessionIdRef,
+		});
+
+		await act(async () => {});
+
+		expect(wsStore.resetLiveStats).not.toHaveBeenCalled();
+	});
+});
+
 describe("useLoadChatHistory — reconnect recovery", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
@@ -380,7 +433,7 @@ describe("useLoadChatHistory — reconnect recovery", () => {
 		expect(calls.length).toBe(1);
 	});
 
-	it("resets live stats when loading an explicit session (prevents prev-session bleed)", async () => {
+	it("does not reset live stats when navigating to an explicit session", async () => {
 		const dispatch = vi.fn();
 		const historyReadyRef = { current: false };
 		const pendingIdRef = { current: null as string | null };
@@ -403,12 +456,11 @@ describe("useLoadChatHistory — reconnect recovery", () => {
 
 		await act(async () => {});
 
-		// Stats from prior session must be cleared even on explicit session nav —
-		// applyCtx re-seeds from DB immediately after, so reset is always safe.
-		expect(wsStore.resetLiveStats).toHaveBeenCalled();
+		// Stats persist across SPA navigation — only index.tsx resets on new run.
+		expect(wsStore.resetLiveStats).not.toHaveBeenCalled();
 	});
 
-	it("resets live stats when loading an implicit session (baseline behaviour)", async () => {
+	it("does not reset live stats when navigating to an implicit session", async () => {
 		const dispatch = vi.fn();
 		const historyReadyRef = { current: false };
 		const pendingIdRef = { current: null as string | null };
@@ -431,7 +483,7 @@ describe("useLoadChatHistory — reconnect recovery", () => {
 
 		await act(async () => {});
 
-		expect(wsStore.resetLiveStats).toHaveBeenCalled();
+		expect(wsStore.resetLiveStats).not.toHaveBeenCalled();
 	});
 
 	it("does NOT re-fetch on first connect (initial load handles that)", async () => {

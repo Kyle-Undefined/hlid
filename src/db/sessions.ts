@@ -192,7 +192,7 @@ export async function getSessionsPaginated(
 	const offset = Math.max(0, (page - 1) * pageSize);
 	const sessions = db
 		.query<SessionRow, [number, number]>(
-			`SELECT * FROM sessions ORDER BY started_at DESC LIMIT ? OFFSET ?`,
+			`SELECT * FROM sessions ORDER BY COALESCE(ended_at, started_at) DESC LIMIT ? OFFSET ?`,
 		)
 		.all(pageSize, offset);
 	const row = db
@@ -282,7 +282,7 @@ export async function getRecentSessions(limit = 14): Promise<SessionRow[]> {
 	const db = await getDb();
 	return db
 		.query<SessionRow, [number]>(
-			`SELECT * FROM sessions ORDER BY started_at DESC LIMIT ?`,
+			`SELECT * FROM sessions ORDER BY COALESCE(ended_at, started_at) DESC LIMIT ?`,
 		)
 		.all(limit);
 }

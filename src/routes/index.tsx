@@ -140,6 +140,9 @@ function CockpitPage() {
 				: [...initialThirtyDayStats.days, { date: today, count: 1 }],
 		};
 	});
+	const [liveActiveSession, setLiveActiveSession] = useState<SessionRow | null>(
+		activeSession,
+	);
 	const [mcpServers, setMcpServers] =
 		useState<McpServerEntry[]>(initialMcpServers);
 	const [runError, setRunError] = useState<string | null>(null);
@@ -155,6 +158,7 @@ function CockpitPage() {
 				getCockpitStatsFn().then((d) => setAgg(d.agg));
 				getWeeklyStatsFn().then(setWeeklyStats);
 				getThirtyDayStatsFn().then(setThirtyDayStats);
+				getActiveSessionRowFn().then(setLiveActiveSession);
 			}
 			if (msg.type === "error") {
 				setRunError(msg.message);
@@ -171,6 +175,18 @@ function CockpitPage() {
 	useEffect(() => {
 		send({ type: "sync_mcp_list" });
 	}, [send]);
+
+	// Refresh active session on mount — router cache may serve stale loader data
+	// when user navigates back to / after a session completed elsewhere.
+	useEffect(() => {
+		let active = true;
+		void getActiveSessionRowFn().then((s) => {
+			if (active) setLiveActiveSession(s);
+		});
+		return () => {
+			active = false;
+		};
+	}, []);
 
 	const {
 		pendingAttachments,
@@ -665,7 +681,7 @@ function CockpitPage() {
 					}
 					stats={liveStats}
 					agg={agg}
-					activeSession={activeSession}
+					activeSession={liveActiveSession}
 					className="hidden md:flex"
 				/>
 			</div>

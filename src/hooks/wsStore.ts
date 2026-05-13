@@ -548,17 +548,18 @@ export function seedActualModel(actualModel: string | null): void {
 /**
  * Seed context window info from DB when loading an existing session so the
  * gauge shows the last known value immediately, before any new query runs.
- * Live usage_update/done events override it naturally once a query starts.
+ * Only fills null fields — live usage_update/done events that arrived after
+ * resetLiveStats() already set these values and must not be overwritten.
  */
 export function seedContextStats(
 	contextWindow: number,
 	lastContextUsed: number,
 ): void {
-	_liveStats = {
-		..._liveStats,
-		context_window: contextWindow,
-		last_context_used: lastContextUsed,
-	};
+	const cw = _liveStats.context_window ?? contextWindow;
+	const lcu = _liveStats.last_context_used ?? lastContextUsed;
+	if (cw === _liveStats.context_window && lcu === _liveStats.last_context_used)
+		return;
+	_liveStats = { ..._liveStats, context_window: cw, last_context_used: lcu };
 	persistStats(_liveStats);
 	for (const fn of statsSubs) fn();
 }

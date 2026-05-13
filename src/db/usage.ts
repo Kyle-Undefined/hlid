@@ -20,7 +20,16 @@ export async function getAggregatedStats(): Promise<AggStats> {
 		cache_creation_tokens: number;
 		turns: number;
 	};
-	type WindowRow = { cost: number; queries: number; tokens: number };
+	type WindowRow = {
+		cost: number;
+		queries: number;
+		turns: number;
+		tokens: number;
+		input_tokens: number;
+		output_tokens: number;
+		cache_read_tokens: number;
+		cache_creation_tokens: number;
+	};
 
 	const EMPTY_ALLTIME: AllTimeRow = {
 		cost: 0,
@@ -31,7 +40,16 @@ export async function getAggregatedStats(): Promise<AggStats> {
 		cache_creation_tokens: 0,
 		turns: 0,
 	};
-	const EMPTY_WINDOW: WindowRow = { cost: 0, queries: 0, tokens: 0 };
+	const EMPTY_WINDOW: WindowRow = {
+		cost: 0,
+		queries: 0,
+		turns: 0,
+		tokens: 0,
+		input_tokens: 0,
+		output_tokens: 0,
+		cache_read_tokens: 0,
+		cache_creation_tokens: 0,
+	};
 
 	const allTime =
 		db
@@ -48,13 +66,22 @@ export async function getAggregatedStats(): Promise<AggStats> {
   `)
 			.get() ?? EMPTY_ALLTIME;
 
+	const sessionCount =
+		db.query<{ n: number }, []>(`SELECT COUNT(*) as n FROM sessions`).get()
+			?.n ?? 0;
+
 	const today =
 		db
 			.query<WindowRow, []>(`
     SELECT
       COALESCE(SUM(cost), 0) as cost,
       COALESCE(SUM(queries), 0) as queries,
-      COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) as tokens
+      COALESCE(SUM(turns), 0) as turns,
+      COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) as tokens,
+      COALESCE(SUM(input_tokens), 0) as input_tokens,
+      COALESCE(SUM(output_tokens), 0) as output_tokens,
+      COALESCE(SUM(cache_read_tokens), 0) as cache_read_tokens,
+      COALESCE(SUM(cache_creation_tokens), 0) as cache_creation_tokens
     FROM usage_daily
     WHERE date = DATE('now', 'localtime')
   `)
@@ -66,13 +93,18 @@ export async function getAggregatedStats(): Promise<AggStats> {
     SELECT
       COALESCE(SUM(cost), 0) as cost,
       COALESCE(SUM(queries), 0) as queries,
-      COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) as tokens
+      COALESCE(SUM(turns), 0) as turns,
+      COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) as tokens,
+      COALESCE(SUM(input_tokens), 0) as input_tokens,
+      COALESCE(SUM(output_tokens), 0) as output_tokens,
+      COALESCE(SUM(cache_read_tokens), 0) as cache_read_tokens,
+      COALESCE(SUM(cache_creation_tokens), 0) as cache_creation_tokens
     FROM usage_daily
     WHERE date >= DATE('now', 'localtime', 'start of month')
   `)
 			.get() ?? EMPTY_WINDOW;
 
-	return { allTime, today, thisMonth };
+	return { allTime: { ...allTime, sessions: sessionCount }, today, thisMonth };
 }
 
 export async function getUsageWindows(): Promise<UsageWindows> {
@@ -170,27 +202,54 @@ export async function getUsageWindows(): Promise<UsageWindows> {
 	};
 }
 
-/**
- * Window definitions per provider. Each entry describes a rolling time window
- * that the provider's rate-limit headers report on.
- */
-const PROVIDER_WINDOWS: Record<
-	string,
-	{ windowId: string; label: string; windowSecs: number }[]
-> = {
-	claude: [
-		{ windowId: "five_hour", label: "5-HOUR", windowSecs: 5 * 3600 },
-		{ windowId: "weekly", label: "7-DAY", windowSecs: 7 * 86400 },
-		{ windowId: "weekly_sonnet", label: "SONNET", windowSecs: 7 * 86400 },
-	],
+/** A single rolling time-window definition for a provider. */
+export type ProviderWindowDef = {
+	windowId: string;
+	label: string;
+	windowSecs: number;
 };
 
-/** Label shown in the provider tab selector. */
-const PROVIDER_LABEL: Record<string, string> = {
-	claude: "Claude",
-	openai: "OpenAI",
-	gemini: "Gemini",
-};
+/**
+ * Window definitions per provider — mutable so new providers (e.g. Codex,
+ * Gemini) can register their own windows at server init without editing this
+ * file. Keyed by providerId.
+ */
+const providerWindows = new Map<string, ProviderWindowDef[]>([
+	[
+		"claude",
+		[
+			{ windowId: "five_hour", label: "5-HOUR", windowSecs: 5 * 3600 },
+			{ windowId: "weekly", label: "7-DAY", windowSecs: 7 * 86400 },
+			{ windowId: "weekly_sonnet", label: "SONNET", windowSecs: 7 * 86400 },
+		],
+	],
+]);
+
+/** Human-readable label shown in the provider tab selector. */
+const providerLabels = new Map<string, string>([
+	["claude", "Claude"],
+	["openai", "OpenAI"],
+	["gemini", "Gemini"],
+]);
+
+/**
+ * Register a new provider's window definitions and display label.
+ * Call this at server startup for each non-Claude provider before any
+ * getProviderUsage() calls. Safe to call multiple times (last write wins).
+ *
+ * @example
+ * registerProvider("openai", "OpenAI", [
+ *   { windowId: "hourly", label: "1-HOUR", windowSecs: 3600 },
+ * ]);
+ */
+export function registerProvider(
+	id: string,
+	label: string,
+	windows: ProviderWindowDef[],
+): void {
+	providerLabels.set(id, label);
+	providerWindows.set(id, windows);
+}
 
 /**
  * Returns a ProviderUsageSnapshot for the given provider, reading DB query rows
@@ -201,7 +260,7 @@ export async function getProviderUsage(
 ): Promise<ProviderUsageSnapshot> {
 	const db = await getDb();
 
-	const windowDefs = PROVIDER_WINDOWS[providerId] ?? [];
+	const windowDefs = providerWindows.get(providerId) ?? [];
 
 	type WindowRow = {
 		tokens: number;
@@ -285,7 +344,7 @@ export async function getProviderUsage(
 
 	return {
 		providerId,
-		providerLabel: PROVIDER_LABEL[providerId] ?? providerId,
+		providerLabel: providerLabels.get(providerId) ?? providerId,
 		windows,
 	};
 }

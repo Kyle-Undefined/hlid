@@ -4,16 +4,18 @@ import {
 	useRouterState,
 } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ThirtyDayGraph } from "#/components/cockpit/ThirtyDayGraph";
-import { Bar, Row, StatCell, UtilBar } from "#/components/ledger/LedgerStats";
+import { Row, StatCell, UtilBar } from "#/components/ledger/LedgerStats";
 import { SessionsLedger } from "#/components/ledger/SessionsLedger";
+import { statusDotClass } from "#/components/nav/SystemStatusDot";
 import {
 	ContextWindowSection,
 	ProviderUsageStrip,
 } from "#/components/UsageWindowsPanel";
 import type {
 	AggStats,
+	AggWindow,
 	ProviderUsageSnapshot,
 	SessionRow,
 	ThirtyDayStats,
@@ -38,10 +40,40 @@ export function parseLedgerSearch(search: Record<string, unknown>): {
 	tab: "stats" | "sessions";
 	page: number;
 } {
-	const tab = search.tab === "sessions" ? "sessions" : "stats";
+	const tab = search.tab === "stats" ? "stats" : "sessions";
 	const page =
 		typeof search.page === "number" ? Math.max(1, Math.floor(search.page)) : 1;
 	return { tab, page };
+}
+
+// ─── optimistic-state filter helpers (exported for tests) ────────────────────
+
+/**
+ * Retain only IDs that are still present in the server response.
+ * - ID still in `freshIds` → delete not yet confirmed, keep hiding it
+ * - ID gone from `freshIds` → server processed the delete, safe to drop
+ * Returns `prev` unchanged (same reference) when nothing was evicted.
+ */
+export function filterOptimisticIds(
+	prev: Set<string>,
+	freshIds: Set<string>,
+): Set<string> {
+	if (prev.size === 0) return prev;
+	const next = new Set([...prev].filter((id) => freshIds.has(id)));
+	return next.size === prev.size ? prev : next;
+}
+
+/**
+ * Retain only label overrides for IDs still present in the server response.
+ * Returns `prev` unchanged (same reference) when nothing was evicted.
+ */
+export function filterOptimisticLabels(
+	prev: Map<string, string>,
+	freshIds: Set<string>,
+): Map<string, string> {
+	if (prev.size === 0) return prev;
+	const next = new Map([...prev].filter(([id]) => freshIds.has(id)));
+	return next.size === prev.size ? prev : next;
 }
 
 // ─── server fns ──────────────────────────────────────────────────────────────
@@ -147,9 +179,71 @@ function StatsPage() {
 	});
 	const stats = useWsLiveStats();
 	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
-	useWs((msg: ServerMessage) => {
-		if (msg.type === "rate_limit") setRateLimit(msg);
-	});
+
+	const [activeSessionData, setActiveSessionData] = useState(activeSession);
+
+	const [sessionPage, setSessionPage] = useState(initialSessions);
+	// Mutate ref during render so it's always current before any event handler fires.
+	// useEffect would lag by one render cycle, causing refreshSessions to fetch the
+	// wrong page if a `done` event arrives between render and effect commit.
+	const pageRef = useRef(page);
+	pageRef.current = page;
+
+	// Monotonic counter: whichever fetch (loader sync or WS-triggered refresh)
+	// resolves last wins. Earlier results are silently discarded.
+	const fetchVersionRef = useRef(0);
+
+	// Sync when loader data changes (page navigation).
+	useEffect(() => {
+		const v = ++fetchVersionRef.current;
+		// Guard: if refreshSessions already resolved with a newer version, discard
+		// the loader snapshot so we don't stomp fresher WS-triggered data.
+		setSessionPage((cur) =>
+			fetchVersionRef.current === v ? initialSessions : cur,
+		);
+	}, [initialSessions]);
+
+	const refreshSessions = useCallback(async () => {
+		const v = ++fetchVersionRef.current;
+		const fresh = await getSessionsPageFn({
+			data: { page: pageRef.current, size: PAGE_SIZE },
+		});
+		// Discard if a newer fetch (loader sync or another WS done) already landed.
+		if (fetchVersionRef.current !== v) return;
+		setSessionPage(fresh);
+		// Only evict optimistic state for entries confirmed gone by the server.
+		// Blanket-clearing would re-show a session the user just deleted if a
+		// background `done` event fires before the delete RPC resolves.
+		const freshIds = new Set(fresh.sessions.map((s) => s.id));
+		setDeletedIds((prev) => filterOptimisticIds(prev, freshIds));
+		setRenamedLabels((prev) => filterOptimisticLabels(prev, freshIds));
+	}, []);
+
+	const { wsStatus, model, actualModel, sessionState, hasPendingPermissions } =
+		useWs(
+			useCallback(
+				(msg: ServerMessage) => {
+					if (msg.type === "rate_limit") setRateLimit(msg);
+					if (msg.type === "done") {
+						void refreshSessions();
+						void getActiveSessionRowFn().then(setActiveSessionData);
+					}
+				},
+				[refreshSessions],
+			),
+		);
+
+	// Refresh active session on mount — loader data may be stale from router cache
+	// when user navigates back to /ledger after a session completed elsewhere.
+	useEffect(() => {
+		let active = true;
+		void getActiveSessionRowFn().then((s) => {
+			if (active) setActiveSessionData(s);
+		});
+		return () => {
+			active = false;
+		};
+	}, []);
 
 	const [deletedIds, setDeletedIds] = useState<Set<string>>(new Set());
 	const [renamedLabels, setRenamedLabels] = useState<Map<string, string>>(
@@ -163,14 +257,14 @@ function StatsPage() {
 	}, [page]);
 
 	const sessionsData = {
-		sessions: initialSessions.sessions
+		sessions: sessionPage.sessions
 			.filter((s) => !deletedIds.has(s.id))
 			.map((s) =>
 				renamedLabels.has(s.id)
 					? { ...s, label: renamedLabels.get(s.id) as string }
 					: s,
 			),
-		total: initialSessions.total - deletedIds.size,
+		total: sessionPage.total - deletedIds.size,
 	};
 	const totalPages = Math.ceil(sessionsData.total / PAGE_SIZE);
 
@@ -213,14 +307,18 @@ function StatsPage() {
 	const { agg } = statsData;
 
 	function switchTab(next: "stats" | "sessions") {
-		navigate({ to: "/ledger", search: { tab: next, page: 1 } });
+		if (next === "sessions") {
+			navigate({ to: "/ledger", search: { tab: next, page: 1 } });
+		} else {
+			navigate({ to: "/ledger", search: { tab: next } });
+		}
 	}
 
 	return (
 		<div className="flex flex-col h-full">
 			{/* Tab bar */}
 			<div className="flex flex-wrap border-b border-border shrink-0">
-				{(["stats", "sessions"] as const).map((t) => (
+				{(["sessions", "stats"] as const).map((t) => (
 					<button
 						key={t}
 						type="button"
@@ -237,66 +335,113 @@ function StatsPage() {
 				))}
 			</div>
 
-			{/* Active session stat grid */}
-			<div className="grid grid-cols-2 sm:grid-cols-4 border-b border-border shrink-0">
-				<div className="border-r border-b sm:border-b-0 border-border">
-					<StatCell
-						label="COST"
-						value={
-							activeSession ? `$${activeSession.total_cost.toFixed(4)}` : "--"
-						}
-						sub={
-							activeSession && activeSession.query_count > 0
-								? `$${(activeSession.total_cost / activeSession.query_count).toFixed(4)}/query`
-								: undefined
-						}
-						dim={!activeSession}
-					/>
-				</div>
-				<div className="border-b sm:border-b-0 sm:border-r border-border">
-					<StatCell
-						label="QUERIES"
-						value={activeSession ? String(activeSession.query_count) : "--"}
-						sub={
-							activeSession && activeSession.total_turns > 0
-								? `${activeSession.total_turns} turns`
-								: undefined
-						}
-						dim={!activeSession}
-					/>
-				</div>
-				<div className="border-r border-border">
-					<StatCell
-						label="TOKENS"
-						value={
-							activeSession
-								? fmt(
-										activeSession.total_input_tokens +
-											activeSession.total_output_tokens,
-									)
-								: "--"
-						}
-						sub={
-							activeSession &&
-							activeSession.total_cache_read_tokens +
-								activeSession.total_cache_creation_tokens >
-								0
-								? `${fmt(activeSession.total_cache_read_tokens + activeSession.total_cache_creation_tokens)} cached`
-								: undefined
-						}
-						dim={!activeSession}
-					/>
-				</div>
-				<div>
-					<StatCell
-						label="MODEL"
-						value={activeSession?.model ? fmtModel(activeSession.model) : "--"}
-						dim={!activeSession?.model}
-					/>
-				</div>
-			</div>
-
 			<div className="flex-1 overflow-auto">
+				{/* Active session callout strip */}
+				<div className="flex items-center gap-2.5 px-4 py-2 border-b border-border">
+					{activeSessionData ? (
+						<>
+							<span
+								className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${statusDotClass(wsStatus, sessionState, hasPendingPermissions)}`}
+							/>
+							<span className="text-[9px] tracking-widest uppercase text-muted-foreground">
+								Active Session
+							</span>
+							{activeSessionData.label && (
+								<span className="text-[9px] tracking-widest uppercase text-foreground/60 truncate">
+									· {activeSessionData.label}
+								</span>
+							)}
+							{sessionState === "running" && (
+								<span className="ml-auto text-[9px] tracking-widest uppercase text-primary/70">
+									Running
+								</span>
+							)}
+						</>
+					) : (
+						<>
+							<span
+								className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${statusDotClass(wsStatus, sessionState, hasPendingPermissions)}`}
+							/>
+							<span className="text-[9px] tracking-widest uppercase text-muted-foreground/40">
+								No Active Session
+							</span>
+						</>
+					)}
+				</div>
+
+				{/* Active session stat grid — scrolls with content */}
+				<div className="grid grid-cols-2 sm:grid-cols-4 border-b border-border">
+					<div className="border-r border-b sm:border-b-0 border-border">
+						<StatCell
+							label="COST"
+							value={
+								activeSessionData
+									? `$${activeSessionData.total_cost.toFixed(4)}`
+									: "--"
+							}
+							sub={
+								activeSessionData && activeSessionData.query_count > 0
+									? `$${(activeSessionData.total_cost / activeSessionData.query_count).toFixed(4)}/query`
+									: undefined
+							}
+							dim={!activeSessionData}
+						/>
+					</div>
+					<div className="border-b sm:border-b-0 sm:border-r border-border">
+						<StatCell
+							label="QUERIES"
+							value={
+								activeSessionData ? String(activeSessionData.query_count) : "--"
+							}
+							sub={
+								activeSessionData && activeSessionData.total_turns > 0
+									? `${activeSessionData.total_turns} turns`
+									: undefined
+							}
+							dim={!activeSessionData}
+						/>
+					</div>
+					<div className="border-r border-border">
+						<StatCell
+							label="TOKENS"
+							value={
+								stats.queries > 0
+									? fmt(stats.input_tokens + stats.output_tokens)
+									: activeSessionData
+										? fmt(
+												activeSessionData.total_input_tokens +
+													activeSessionData.total_output_tokens,
+											)
+										: "--"
+							}
+							sub={
+								stats.cache_read_tokens + stats.cache_creation_tokens > 0
+									? `${fmt(stats.cache_read_tokens + stats.cache_creation_tokens)} cached`
+									: activeSessionData &&
+											activeSessionData.total_cache_read_tokens +
+												activeSessionData.total_cache_creation_tokens >
+												0
+										? `${fmt(activeSessionData.total_cache_read_tokens + activeSessionData.total_cache_creation_tokens)} cached`
+										: undefined
+							}
+							dim={stats.queries === 0 && !activeSessionData}
+						/>
+					</div>
+					<div>
+						<StatCell
+							label="MODEL"
+							value={
+								(actualModel ?? model)
+									? fmtModel((actualModel ?? model) as string)
+									: activeSessionData?.model
+										? fmtModel(activeSessionData.model)
+										: "--"
+							}
+							dim={!actualModel && !model && !activeSessionData?.model}
+						/>
+					</div>
+				</div>
+
 				{tab === "stats" ? (
 					<StatsTab
 						agg={agg}
@@ -305,6 +450,7 @@ function StatsPage() {
 						providerUsages={providerUsages}
 						providerIds={providerIds}
 						thirtyDayStats={thirtyDayStats}
+						activeSession={activeSessionData}
 					/>
 				) : (
 					<div className="p-5">
@@ -333,6 +479,34 @@ function StatsPage() {
 
 // ─── Stats tab content ────────────────────────────────────────────────────────
 
+/** Compact time-window breakdown card (TODAY / THIS MONTH). */
+function WindowCard({ title, w }: { title: string; w: AggWindow }) {
+	const totalInput =
+		w.input_tokens + w.cache_read_tokens + w.cache_creation_tokens;
+	const cacheHitPct =
+		totalInput > 0
+			? ((w.cache_read_tokens / totalInput) * 100).toFixed(1)
+			: "0";
+	return (
+		<div className="border border-border bg-card">
+			<div className="px-4 py-3 border-b border-border">
+				<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+					{title}
+				</div>
+			</div>
+			<Row label="Cost" value={`$${w.cost.toFixed(4)}`} />
+			<Row label="Queries" value={String(w.queries)} />
+			<Row label="Turns" value={String(w.turns)} />
+			<Row label="Input" value={fmt(w.input_tokens)} />
+			<Row label="Output" value={fmt(w.output_tokens)} />
+			<Row label="Cache read" value={fmt(w.cache_read_tokens)} />
+			<Row label="Cache creation" value={fmt(w.cache_creation_tokens)} />
+			<Row label="Cache hit rate" value={`${cacheHitPct}%`} />
+			<Row label="Total tokens" value={fmt(w.input_tokens + w.output_tokens)} />
+		</div>
+	);
+}
+
 function StatsTab({
 	agg,
 	stats,
@@ -340,6 +514,7 @@ function StatsTab({
 	providerUsages,
 	providerIds,
 	thirtyDayStats,
+	activeSession,
 }: {
 	agg: AggStats;
 	stats: LiveStats;
@@ -347,17 +522,107 @@ function StatsTab({
 	providerUsages: ProviderUsageSnapshot[];
 	providerIds: string[];
 	thirtyDayStats: ThirtyDayStats;
+	activeSession: SessionRow | null;
 }) {
 	const idle = stats.queries === 0;
-	const totalInput =
+
+	// Live session derived
+	const liveTotalInput =
 		stats.input_tokens + stats.cache_read_tokens + stats.cache_creation_tokens;
-	const cacheHitPct =
-		totalInput > 0
-			? ((stats.cache_read_tokens / totalInput) * 100).toFixed(0)
+	const liveCacheHitPct =
+		liveTotalInput > 0
+			? ((stats.cache_read_tokens / liveTotalInput) * 100).toFixed(1)
+			: "0";
+
+	// All-time derived metrics
+	const allTimeTotal =
+		agg.allTime.input_tokens +
+		agg.allTime.output_tokens +
+		agg.allTime.cache_read_tokens +
+		agg.allTime.cache_creation_tokens;
+	const allTimeTotalInput =
+		agg.allTime.input_tokens +
+		agg.allTime.cache_read_tokens +
+		agg.allTime.cache_creation_tokens;
+	const allTimeCacheHitPct =
+		allTimeTotalInput > 0
+			? ((agg.allTime.cache_read_tokens / allTimeTotalInput) * 100).toFixed(1)
+			: "0";
+	const avgCostPerQuery =
+		agg.allTime.queries > 0
+			? `$${(agg.allTime.cost / agg.allTime.queries).toFixed(4)}`
+			: "--";
+	const avgTurnsPerQuery =
+		agg.allTime.queries > 0
+			? (agg.allTime.turns / agg.allTime.queries).toFixed(1)
+			: "--";
+
+	// Active session derived
+	const activeAvgCost =
+		activeSession && activeSession.query_count > 0
+			? `$${(activeSession.total_cost / activeSession.query_count).toFixed(4)}`
+			: "--";
+	const activeCacheInput = activeSession
+		? activeSession.total_cache_read_tokens +
+			activeSession.total_cache_creation_tokens
+		: 0;
+	const activeTotalInput = activeSession
+		? activeSession.total_input_tokens +
+			activeSession.total_cache_read_tokens +
+			activeSession.total_cache_creation_tokens
+		: 0;
+	const activeCacheHitPct =
+		activeSession && activeTotalInput > 0
+			? (
+					(activeSession.total_cache_read_tokens / activeTotalInput) *
+					100
+				).toFixed(1)
 			: "0";
 
 	return (
 		<div>
+			{/* Summary headline strip — 4 key metrics at a glance */}
+			<div className="grid grid-cols-2 sm:grid-cols-4 border-b border-border shrink-0">
+				<div className="border-r border-b sm:border-b-0 border-border">
+					<StatCell
+						label="TODAY"
+						value={`$${agg.today.cost.toFixed(4)}`}
+						sub={
+							agg.today.queries > 0 ? `${agg.today.queries} queries` : undefined
+						}
+					/>
+				</div>
+				<div className="border-b sm:border-b-0 sm:border-r border-border">
+					<StatCell
+						label="THIS MONTH"
+						value={`$${agg.thisMonth.cost.toFixed(4)}`}
+						sub={
+							agg.thisMonth.queries > 0
+								? `${agg.thisMonth.queries} queries`
+								: undefined
+						}
+					/>
+				</div>
+				<div className="border-r border-border">
+					<StatCell
+						label="ALL-TIME"
+						value={`$${agg.allTime.cost.toFixed(4)}`}
+						sub={`${agg.allTime.queries} queries`}
+					/>
+				</div>
+				<div>
+					<StatCell
+						label="SESSIONS"
+						value={String(agg.allTime.sessions)}
+						sub={
+							agg.allTime.queries > 0
+								? `${agg.allTime.queries} queries`
+								: undefined
+						}
+					/>
+				</div>
+			</div>
+
 			{/* 30-day activity graph */}
 			<ThirtyDayGraph data={thirtyDayStats} />
 
@@ -371,7 +636,7 @@ function StatsTab({
 			/>
 
 			<div className="p-5 space-y-5">
-				{/* Rate limit */}
+				{/* Rate limit — only shown when active */}
 				{rateLimit && (
 					<div className="border border-border bg-card">
 						<div className="px-4 py-3 border-b border-border">
@@ -413,74 +678,102 @@ function StatsTab({
 					</div>
 				)}
 
-				{/* Context window — last query */}
-				{stats.last_context_used != null &&
-					stats.context_window != null &&
-					stats.max_output_tokens != null && (
-						<div className="border border-border bg-card p-4 space-y-4">
-							<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
-								CONTEXT · LAST QUERY
+				{/* Live + DB session — 2-col responsive grid */}
+				{(!idle || activeSession) && (
+					<div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+						{/* Live: current session (from wsStore) */}
+						{!idle && (
+							<div className="border border-border bg-card">
+								<div className="px-4 py-3 border-b border-border">
+									<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+										LIVE · THIS SESSION
+									</div>
+								</div>
+								<Row label="Cost" value={`$${stats.cost.toFixed(4)}`} />
+								<Row label="Queries" value={String(stats.queries)} />
+								<Row label="Turns" value={String(stats.turns)} />
+								<Row label="Input" value={fmt(stats.input_tokens)} />
+								<Row label="Output" value={fmt(stats.output_tokens)} />
+								<Row label="Cache read" value={fmt(stats.cache_read_tokens)} />
+								<Row
+									label="Cache creation"
+									value={fmt(stats.cache_creation_tokens)}
+								/>
+								<Row label="Cache hit rate" value={`${liveCacheHitPct}%`} />
+								<Row
+									label="Total tokens"
+									value={fmt(stats.input_tokens + stats.output_tokens)}
+								/>
 							</div>
-							<Bar
-								label="Context used"
-								value={stats.last_context_used}
-								max={stats.context_window}
-							/>
-							<Bar
-								label="Output cap"
-								value={stats.last_output_tokens ?? 0}
-								max={stats.max_output_tokens}
-							/>
-						</div>
-					)}
+						)}
 
-				{/* Token breakdown — live session */}
-				<div className="border border-border bg-card">
-					<div className="px-4 py-3 border-b border-border">
-						<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
-							TOKEN USAGE · THIS SESSION
-						</div>
+						{/* DB totals — persisted, accurate across reloads */}
+						{activeSession && (
+							<div className="border border-border bg-card">
+								<div className="px-4 py-3 border-b border-border">
+									<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+										SESSION
+									</div>
+								</div>
+								<Row
+									label="Cost"
+									value={`$${activeSession.total_cost.toFixed(4)}`}
+								/>
+								<Row label="Avg cost/query" value={activeAvgCost} />
+								<Row
+									label="Queries"
+									value={String(activeSession.query_count)}
+								/>
+								<Row label="Turns" value={String(activeSession.total_turns)} />
+								<Row
+									label="Input"
+									value={fmt(activeSession.total_input_tokens)}
+								/>
+								<Row
+									label="Output"
+									value={fmt(activeSession.total_output_tokens)}
+								/>
+								<Row
+									label="Cache read"
+									value={fmt(activeSession.total_cache_read_tokens)}
+								/>
+								<Row
+									label="Cache creation"
+									value={fmt(activeSession.total_cache_creation_tokens)}
+								/>
+								<Row label="Cache hit rate" value={`${activeCacheHitPct}%`} />
+								<Row label="Cache tokens" value={fmt(activeCacheInput)} />
+								<Row
+									label="Total tokens"
+									value={fmt(
+										activeSession.total_input_tokens +
+											activeSession.total_output_tokens,
+									)}
+								/>
+							</div>
+						)}
 					</div>
-					<Row label="Input" value={idle ? "--" : fmt(stats.input_tokens)} />
-					<Row label="Output" value={idle ? "--" : fmt(stats.output_tokens)} />
-					<Row
-						label="Cache read"
-						value={idle ? "--" : fmt(stats.cache_read_tokens)}
-					/>
-					<Row
-						label="Cache creation"
-						value={idle ? "--" : fmt(stats.cache_creation_tokens)}
-					/>
-					<Row label="Cache hit rate" value={idle ? "--" : `${cacheHitPct}%`} />
-					<Row
-						label="Total"
-						value={idle ? "--" : fmt(stats.input_tokens + stats.output_tokens)}
-					/>
-					<Row
-						label="Total w/ cache"
-						value={
-							idle
-								? "--"
-								: fmt(
-										stats.input_tokens +
-											stats.output_tokens +
-											stats.cache_read_tokens +
-											stats.cache_creation_tokens,
-									)
-						}
-					/>
+				)}
+
+				{/* TODAY + THIS MONTH — 2-col responsive grid */}
+				<div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+					<WindowCard title="TODAY" w={agg.today} />
+					<WindowCard title="THIS MONTH" w={agg.thisMonth} />
 				</div>
 
-				{/* All-time totals */}
+				{/* All-time — full width */}
 				<div className="border border-border bg-card">
 					<div className="px-4 py-3 border-b border-border">
 						<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
 							ALL-TIME
 						</div>
 					</div>
-					<Row label="Total Cost" value={`$${agg.allTime.cost.toFixed(4)}`} />
+					<Row label="Sessions" value={String(agg.allTime.sessions)} />
+					<Row label="Cost" value={`$${agg.allTime.cost.toFixed(4)}`} />
+					<Row label="Avg cost/query" value={avgCostPerQuery} />
 					<Row label="Queries" value={String(agg.allTime.queries)} />
 					<Row label="Turns" value={String(agg.allTime.turns)} />
+					<Row label="Avg turns/query" value={avgTurnsPerQuery} />
 					<Row label="Input" value={fmt(agg.allTime.input_tokens)} />
 					<Row label="Output" value={fmt(agg.allTime.output_tokens)} />
 					<Row label="Cache read" value={fmt(agg.allTime.cache_read_tokens)} />
@@ -488,15 +781,14 @@ function StatsTab({
 						label="Cache creation"
 						value={fmt(agg.allTime.cache_creation_tokens)}
 					/>
+					<Row label="Cache hit rate" value={`${allTimeCacheHitPct}%`} />
 					<Row
-						label="Total"
+						label="Cache tokens"
 						value={fmt(
-							agg.allTime.input_tokens +
-								agg.allTime.output_tokens +
-								agg.allTime.cache_read_tokens +
-								agg.allTime.cache_creation_tokens,
+							agg.allTime.cache_read_tokens + agg.allTime.cache_creation_tokens,
 						)}
 					/>
+					<Row label="Total tokens" value={fmt(allTimeTotal)} />
 				</div>
 			</div>
 		</div>

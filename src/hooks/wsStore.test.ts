@@ -238,6 +238,25 @@ describe("wsStore state management", () => {
 			// No public getter for activeSessionId; verify via resetLiveStats not throwing
 			expect(store.getLiveStats()).toEqual(store.EMPTY_STATS);
 		});
+
+		it("seedContextStats does not overwrite values already set", () => {
+			// First seed on clean state (both fields null) — should apply
+			store.seedContextStats(200_000, 50_000);
+			// Second seed — fields already set, should be a no-op
+			store.seedContextStats(100_000, 10_000);
+			const s = store.getLiveStats();
+			expect(s.context_window).toBe(200_000);
+			expect(s.last_context_used).toBe(50_000);
+		});
+
+		it("seedContextStats does not notify subscribers when values are already set", () => {
+			store.seedContextStats(200_000, 50_000); // first seed — sets both
+			const fn = vi.fn();
+			const unsub = store.subscribeStats(fn);
+			store.seedContextStats(100_000, 10_000); // no-op — both already set
+			expect(fn).not.toHaveBeenCalled();
+			unsub();
+		});
 	});
 
 	// ── snapshot / actualModel ────────────────────────────────────────────────

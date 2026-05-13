@@ -196,18 +196,30 @@ export const getSessionContextFn = createServerFn({ method: "GET" })
 
 // ─── Cockpit fns ─────────────────────────────────────────────────────────────
 
+const EMPTY_AGG_WINDOW = {
+	cost: 0,
+	queries: 0,
+	turns: 0,
+	tokens: 0,
+	input_tokens: 0,
+	output_tokens: 0,
+	cache_read_tokens: 0,
+	cache_creation_tokens: 0,
+};
+
 export const EMPTY_AGG: AggStats = {
 	allTime: {
 		cost: 0,
 		queries: 0,
+		sessions: 0,
 		input_tokens: 0,
 		output_tokens: 0,
 		cache_read_tokens: 0,
 		cache_creation_tokens: 0,
 		turns: 0,
 	},
-	today: { cost: 0, queries: 0, tokens: 0 },
-	thisMonth: { cost: 0, queries: 0, tokens: 0 },
+	today: { ...EMPTY_AGG_WINDOW },
+	thisMonth: { ...EMPTY_AGG_WINDOW },
 };
 
 export const getCockpitData = createServerFn({ method: "GET" }).handler(

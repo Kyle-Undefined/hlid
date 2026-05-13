@@ -168,7 +168,7 @@ export function RecentRunsSidebar({
 				<div className="grid grid-cols-2 divide-x divide-border border-b border-border">
 					<div className="px-3 py-3">
 						<div className="text-[8px] tracking-widest text-muted-foreground/50 uppercase mb-1">
-							Last Session
+							This Session
 						</div>
 						<PrivacyMask
 							inline

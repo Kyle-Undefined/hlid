@@ -51,9 +51,11 @@ import {
 import type { QueryData } from "./types";
 import {
 	getAggregatedStats,
+	getProviderUsage,
 	getThirtyDayStats,
 	getUsageWindows,
 	getWeeklyStats,
+	registerProvider,
 } from "./usage";
 
 function freshDb(): Database {
@@ -420,6 +422,7 @@ describe("usage — getAggregatedStats", () => {
 		const { allTime, today, thisMonth } = await getAggregatedStats();
 		expect(allTime.cost).toBe(0);
 		expect(allTime.queries).toBe(0);
+		expect(allTime.sessions).toBe(0);
 		expect(today.cost).toBe(0);
 		expect(thisMonth.tokens).toBe(0);
 	});
@@ -432,10 +435,44 @@ describe("usage — getAggregatedStats", () => {
 		);
 		const { allTime } = await getAggregatedStats();
 		expect(allTime.queries).toBe(1);
+		expect(allTime.sessions).toBe(1);
 		expect(allTime.input_tokens).toBe(500);
 		expect(allTime.output_tokens).toBe(200);
 		expect(allTime.turns).toBe(3);
 		expect(allTime.cost).toBeCloseTo(0.1);
+	});
+
+	it("today and thisMonth include full token breakdown", async () => {
+		await createSession("s1", "L", "m");
+		await recordQuery(
+			"s1",
+			baseQuery({
+				cost: 0.05,
+				input_tokens: 300,
+				output_tokens: 100,
+				cache_read_tokens: 80,
+				cache_creation_tokens: 20,
+				turns: 2,
+			}),
+		);
+		const { today, thisMonth } = await getAggregatedStats();
+
+		// today
+		expect(today.input_tokens).toBe(300);
+		expect(today.output_tokens).toBe(100);
+		expect(today.cache_read_tokens).toBe(80);
+		expect(today.cache_creation_tokens).toBe(20);
+		expect(today.turns).toBe(2);
+		expect(today.queries).toBe(1);
+		expect(today.tokens).toBe(400); // input + output
+		expect(today.cost).toBeCloseTo(0.05);
+
+		// thisMonth mirrors today (single record, same calendar month)
+		expect(thisMonth.input_tokens).toBe(300);
+		expect(thisMonth.output_tokens).toBe(100);
+		expect(thisMonth.cache_read_tokens).toBe(80);
+		expect(thisMonth.cache_creation_tokens).toBe(20);
+		expect(thisMonth.turns).toBe(2);
 	});
 });
 
@@ -895,5 +932,124 @@ describe("ledger — usage_queries survives session deletion (window immutabilit
 			)
 			.all();
 		expect(fkRows).toHaveLength(0);
+	});
+});
+
+// ── sessions — sort by most-recently-active ───────────────────────────────────
+
+describe("sessions — sort by most-recently-active (COALESCE ended_at, started_at)", () => {
+	let db: ReturnType<typeof freshDb>;
+	beforeEach(() => {
+		db = freshDb();
+	});
+
+	it("session with recent ended_at sorts before session with newer started_at but no queries", async () => {
+		const now = Math.floor(Date.now() / 1000);
+		// s-old: old start, but recently queried (ended_at = now)
+		db.run(
+			`INSERT INTO sessions (id, label, model, started_at, ended_at) VALUES (?, ?, ?, ?, ?)`,
+			["s-old", "Old but active", "m", now - 1000, now],
+		);
+		// s-new: newer start, never queried (ended_at = null)
+		db.run(
+			`INSERT INTO sessions (id, label, model, started_at) VALUES (?, ?, ?, ?)`,
+			["s-new", "New but idle", "m", now - 100],
+		);
+
+		const { sessions } = await getSessionsPaginated(1, 10);
+		expect(sessions[0].id).toBe("s-old"); // COALESCE(now, now-1000) = now
+		expect(sessions[1].id).toBe("s-new"); // COALESCE(null, now-100) = now-100
+	});
+
+	it("getRecentSessions also sorts by most-recently-active", async () => {
+		const now = Math.floor(Date.now() / 1000);
+		db.run(
+			`INSERT INTO sessions (id, label, model, started_at, ended_at) VALUES (?, ?, ?, ?, ?)`,
+			["s-recent-query", "Q", "m", now - 2000, now - 5],
+		);
+		db.run(
+			`INSERT INTO sessions (id, label, model, started_at) VALUES (?, ?, ?, ?)`,
+			["s-newer-start", "N", "m", now - 500],
+		);
+
+		const rows = await getRecentSessions(10);
+		// s-newer-start: COALESCE(null, now-500) = now-500
+		// s-recent-query: COALESCE(now-5, now-2000) = now-5
+		// now-5 > now-500, so s-recent-query sorts first
+		expect(rows[0].id).toBe("s-recent-query");
+		expect(rows[1].id).toBe("s-newer-start");
+	});
+
+	it("multiple sessions without queries sort by started_at DESC", async () => {
+		const now = Math.floor(Date.now() / 1000);
+		db.run(
+			`INSERT INTO sessions (id, label, model, started_at) VALUES (?, ?, ?, ?)`,
+			["s1", "A", "m", now - 300],
+		);
+		db.run(
+			`INSERT INTO sessions (id, label, model, started_at) VALUES (?, ?, ?, ?)`,
+			["s2", "B", "m", now - 100],
+		);
+		db.run(
+			`INSERT INTO sessions (id, label, model, started_at) VALUES (?, ?, ?, ?)`,
+			["s3", "C", "m", now - 200],
+		);
+
+		const { sessions } = await getSessionsPaginated(1, 10);
+		// No ended_at → COALESCE falls back to started_at
+		expect(sessions[0].id).toBe("s2"); // started_at = now-100
+		expect(sessions[1].id).toBe("s3"); // started_at = now-200
+		expect(sessions[2].id).toBe("s1"); // started_at = now-300
+	});
+});
+
+// ── usage — registerProvider ──────────────────────────────────────────────────
+
+describe("usage — registerProvider", () => {
+	beforeEach(() => freshDb());
+
+	it("registerProvider exposes windows via getProviderUsage", async () => {
+		registerProvider("testprovider", "Test Provider", [
+			{ windowId: "hourly", label: "1-HOUR", windowSecs: 3600 },
+		]);
+		const snapshot = await getProviderUsage("testprovider");
+		expect(snapshot.providerId).toBe("testprovider");
+		expect(snapshot.providerLabel).toBe("Test Provider");
+		expect(snapshot.windows).toHaveLength(1);
+		expect(snapshot.windows[0].windowId).toBe("hourly");
+		expect(snapshot.windows[0].label).toBe("1-HOUR");
+	});
+
+	it("registerProvider overwrites an existing provider registration", async () => {
+		registerProvider("testprovider2", "Old Label", [
+			{ windowId: "w1", label: "W1", windowSecs: 3600 },
+		]);
+		registerProvider("testprovider2", "New Label", [
+			{ windowId: "w2", label: "W2", windowSecs: 7200 },
+		]);
+		const snapshot = await getProviderUsage("testprovider2");
+		expect(snapshot.providerLabel).toBe("New Label");
+		expect(snapshot.windows).toHaveLength(1);
+		expect(snapshot.windows[0].windowId).toBe("w2");
+	});
+
+	it("getProviderUsage for unknown provider returns empty windows and uses id as label", async () => {
+		const snapshot = await getProviderUsage("unknownprovider-xyz");
+		expect(snapshot.providerId).toBe("unknownprovider-xyz");
+		expect(snapshot.providerLabel).toBe("unknownprovider-xyz"); // fallback: id
+		expect(snapshot.windows).toHaveLength(0);
+	});
+
+	it("claude provider windows are unchanged after registering another provider", async () => {
+		registerProvider("another", "Another", [
+			{ windowId: "w1", label: "W1", windowSecs: 1000 },
+		]);
+		const snapshot = await getProviderUsage("claude");
+		expect(snapshot.providerLabel).toBe("Claude");
+		expect(snapshot.windows).toHaveLength(3); // five_hour, weekly, weekly_sonnet
+		const ids = snapshot.windows.map((w) => w.windowId);
+		expect(ids).toContain("five_hour");
+		expect(ids).toContain("weekly");
+		expect(ids).toContain("weekly_sonnet");
 	});
 });

@@ -187,6 +187,12 @@ export function useLoadChatHistory({
 			};
 		}
 
+		// Do NOT reset live stats here. Stats represent the active/running session
+		// and should persist across SPA navigations (viewing other sessions, ledger,
+		// home) until a new run is explicitly started. Resetting here caused stats to
+		// disappear whenever the user navigated back to the raven page. The reset
+		// responsibility lives in index.tsx (new non-same-session run) and
+		// raven.tsx (explicit clear action).
 		let cancelled = false;
 		Promise.all([
 			getSessionDataFn({ data: existingSessionId }),
@@ -196,14 +202,6 @@ export function useLoadChatHistory({
 		])
 			.then(([rows, ctx, permEvents, planRows]) => {
 				if (cancelled) return;
-				// Seed context gauge from DB so it's visible immediately on session open,
-				// before any new message is sent. Live usage_update/done events will
-				// override this once the session is active.
-				// Reset unconditionally on any session nav — avoids prior-session counters
-				// (turns, cost, tokens) bleeding into the newly-opened session.
-				// applyCtx re-seeds context_window/last_context_used/actual_model from DB;
-				// cumulative counters (turns, cost, tokens) will update on next done event.
-				wsStore.resetLiveStats();
 				applyCtx(ctx);
 				const items = mapSessionRows(rows, permEvents, planRows);
 				dispatch({ type: "LOAD_HISTORY", items });

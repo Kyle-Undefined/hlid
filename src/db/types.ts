@@ -50,13 +50,20 @@ export type QueryData = {
 export type AggWindow = {
 	cost: number;
 	queries: number;
+	turns: number;
+	/** input_tokens + output_tokens (for backwards compat) */
 	tokens: number;
+	input_tokens: number;
+	output_tokens: number;
+	cache_read_tokens: number;
+	cache_creation_tokens: number;
 };
 
 export type AggStats = {
 	allTime: {
 		cost: number;
 		queries: number;
+		sessions: number;
 		input_tokens: number;
 		output_tokens: number;
 		cache_read_tokens: number;
