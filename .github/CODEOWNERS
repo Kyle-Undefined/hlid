@@ -1,0 +1,3 @@
+# Require review from repo owner for any CI/workflow changes.
+# Prevents supply chain hardening from being silently modified.
+.github/workflows/ @Kyle-Undefined

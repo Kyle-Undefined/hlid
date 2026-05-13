@@ -1,0 +1,4 @@
+[install]
+# Block packages published less than 5 days ago from being resolved.
+# Defends against same-day supply chain attacks (e.g. CVE-2026-45321 / TanStack, May 2026).
+minimumReleaseAge = 432000 # 5 days in seconds
