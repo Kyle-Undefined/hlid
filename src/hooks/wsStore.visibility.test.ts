@@ -9,22 +9,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as wsStore from "./wsStore";
-
-// ── WebSocket mock ────────────────────────────────────────────────────────────
-
-const WS_STATES = { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 };
-
-function makeMockWs(readyState = WS_STATES.OPEN) {
-	return {
-		readyState,
-		onopen: null as null | (() => void),
-		onerror: null as null | (() => void),
-		onclose: null as null | (() => void),
-		onmessage: null as null | ((e: unknown) => void),
-		send: vi.fn(),
-		close: vi.fn(),
-	};
-}
+import { makeMockWs, WS_STATES } from "./wsStore.test-utils";
 
 let wsCtorSpy: ReturnType<typeof vi.fn>;
 

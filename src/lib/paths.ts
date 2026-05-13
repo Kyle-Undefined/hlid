@@ -9,6 +9,9 @@ export const APP_DIR =
 		? dirname(process.execPath)
 		: process.cwd();
 
+/** Canonical path to `hlid.config.toml`. Single source of truth — import this instead of re-computing. */
+export const CONFIG_PATH = resolve(APP_DIR, "hlid.config.toml");
+
 const isWindows = process.platform === "win32";
 
 export function expandTilde(p: string): string {

@@ -47,26 +47,6 @@ type EditState = {
 	recapModel: string;
 };
 
-const EFFORT_OPTIONS = [
-	{ value: "low", label: "Low" },
-	{ value: "medium", label: "Medium" },
-	{ value: "high", label: "High" },
-	{ value: "xhigh", label: "X-High" },
-	{ value: "max", label: "Max" },
-] as const;
-
-const MODEL_OPTIONS = [
-	{ value: "claude-opus-4-7", label: "Opus 4.7" },
-	{ value: "claude-sonnet-4-6", label: "Sonnet 4.6" },
-	{ value: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
-] as const;
-
-const PERMISSION_OPTIONS = [
-	{ value: "default", label: "Ask for approval" },
-	{ value: "acceptEdits", label: "Auto-approve edits" },
-	{ value: "bypassPermissions", label: "Auto-approve all" },
-] as const;
-
 export function AgentCard({
 	agent,
 	onRemove,
@@ -96,6 +76,14 @@ export function AgentCard({
 	const [claudemdContent, setClaudemdContent] = useState<string | null>(null);
 	const [claudemdLoaded, setClaudemdLoaded] = useState(false);
 	const [showMcp, setShowMcp] = useState(false);
+
+	// Options come from the active provider's declared capabilities.
+	const activeProvider = providers.find(
+		(p) => p.id === (editing?.provider ?? agent.provider),
+	);
+	const modelOptions = activeProvider?.models ?? [];
+	const effortOptions = activeProvider?.effortLevels ?? [];
+	const permissionOptions = activeProvider?.permissionModes ?? [];
 
 	async function handleToggleView() {
 		if (expanded) {
@@ -362,7 +350,7 @@ export function AgentCard({
 									className="flex-1 bg-secondary border border-border px-2 py-1 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
 								>
 									<option value="">— vault default —</option>
-									{MODEL_OPTIONS.map((m) => (
+									{modelOptions.map((m) => (
 										<option key={m.value} value={m.value}>
 											{m.label}
 										</option>
@@ -381,7 +369,7 @@ export function AgentCard({
 									className="flex-1 bg-secondary border border-border px-2 py-1 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
 								>
 									<option value="">— vault default —</option>
-									{EFFORT_OPTIONS.map((o) => (
+									{effortOptions.map((o) => (
 										<option key={o.value} value={o.value}>
 											{o.label}
 										</option>
@@ -402,7 +390,7 @@ export function AgentCard({
 									className="flex-1 bg-secondary border border-border px-2 py-1 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
 								>
 									<option value="">— vault default —</option>
-									{PERMISSION_OPTIONS.map((o) => (
+									{permissionOptions.map((o) => (
 										<option key={o.value} value={o.value}>
 											{o.label}
 										</option>
@@ -450,7 +438,7 @@ export function AgentCard({
 									className="flex-1 bg-secondary border border-border px-2 py-1 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
 								>
 									<option value="">— default (haiku) —</option>
-									{MODEL_OPTIONS.map((m) => (
+									{modelOptions.map((m) => (
 										<option key={m.value} value={m.value}>
 											{m.label}
 										</option>

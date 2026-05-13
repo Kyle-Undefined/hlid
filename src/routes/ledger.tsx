@@ -4,7 +4,7 @@ import {
 	useRouterState,
 } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ThirtyDayGraph } from "#/components/cockpit/ThirtyDayGraph";
 import { Row, StatCell, UtilBar } from "#/components/ledger/LedgerStats";
 import { SessionsLedger } from "#/components/ledger/SessionsLedger";
@@ -74,6 +74,19 @@ export function filterOptimisticLabels(
 	if (prev.size === 0) return prev;
 	const next = new Map([...prev].filter(([id]) => freshIds.has(id)));
 	return next.size === prev.size ? prev : next;
+}
+
+/**
+ * Compute cache hit rate as a percentage string (one decimal).
+ * Returns "0" when total input is zero to avoid division by zero.
+ */
+export function cacheHitPct(
+	input: number,
+	cacheRead: number,
+	cacheCreate: number,
+): string {
+	const total = input + cacheRead + cacheCreate;
+	return total > 0 ? ((cacheRead / total) * 100).toFixed(1) : "0";
 }
 
 // ─── server fns ──────────────────────────────────────────────────────────────
@@ -256,16 +269,19 @@ function StatsPage() {
 		setRenamedLabels(new Map());
 	}, [page]);
 
-	const sessionsData = {
-		sessions: sessionPage.sessions
-			.filter((s) => !deletedIds.has(s.id))
-			.map((s) =>
-				renamedLabels.has(s.id)
-					? { ...s, label: renamedLabels.get(s.id) as string }
-					: s,
-			),
-		total: sessionPage.total - deletedIds.size,
-	};
+	const sessionsData = useMemo(
+		() => ({
+			sessions: sessionPage.sessions
+				.filter((s) => !deletedIds.has(s.id))
+				.map((s) =>
+					renamedLabels.has(s.id)
+						? { ...s, label: renamedLabels.get(s.id) as string }
+						: s,
+				),
+			total: sessionPage.total - deletedIds.size,
+		}),
+		[sessionPage, deletedIds, renamedLabels],
+	);
 	const totalPages = Math.ceil(sessionsData.total / PAGE_SIZE);
 
 	function onPageChange(p: number) {
@@ -310,7 +326,8 @@ function StatsPage() {
 		if (next === "sessions") {
 			navigate({ to: "/ledger", search: { tab: next, page: 1 } });
 		} else {
-			navigate({ to: "/ledger", search: { tab: next } });
+			// stats tab has no pagination — preserve existing page value in URL
+			navigate({ to: "/ledger", search: { tab: next, page } });
 		}
 	}
 
@@ -481,12 +498,11 @@ function StatsPage() {
 
 /** Compact time-window breakdown card (TODAY / THIS MONTH). */
 function WindowCard({ title, w }: { title: string; w: AggWindow }) {
-	const totalInput =
-		w.input_tokens + w.cache_read_tokens + w.cache_creation_tokens;
-	const cacheHitPct =
-		totalInput > 0
-			? ((w.cache_read_tokens / totalInput) * 100).toFixed(1)
-			: "0";
+	const hitPct = cacheHitPct(
+		w.input_tokens,
+		w.cache_read_tokens,
+		w.cache_creation_tokens,
+	);
 	return (
 		<div className="border border-border bg-card">
 			<div className="px-4 py-3 border-b border-border">
@@ -501,7 +517,7 @@ function WindowCard({ title, w }: { title: string; w: AggWindow }) {
 			<Row label="Output" value={fmt(w.output_tokens)} />
 			<Row label="Cache read" value={fmt(w.cache_read_tokens)} />
 			<Row label="Cache creation" value={fmt(w.cache_creation_tokens)} />
-			<Row label="Cache hit rate" value={`${cacheHitPct}%`} />
+			<Row label="Cache hit rate" value={`${hitPct}%`} />
 			<Row label="Total tokens" value={fmt(w.input_tokens + w.output_tokens)} />
 		</div>
 	);
@@ -527,12 +543,11 @@ function StatsTab({
 	const idle = stats.queries === 0;
 
 	// Live session derived
-	const liveTotalInput =
-		stats.input_tokens + stats.cache_read_tokens + stats.cache_creation_tokens;
-	const liveCacheHitPct =
-		liveTotalInput > 0
-			? ((stats.cache_read_tokens / liveTotalInput) * 100).toFixed(1)
-			: "0";
+	const liveCacheHitPct = cacheHitPct(
+		stats.input_tokens,
+		stats.cache_read_tokens,
+		stats.cache_creation_tokens,
+	);
 
 	// All-time derived metrics
 	const allTimeTotal =
@@ -540,14 +555,11 @@ function StatsTab({
 		agg.allTime.output_tokens +
 		agg.allTime.cache_read_tokens +
 		agg.allTime.cache_creation_tokens;
-	const allTimeTotalInput =
-		agg.allTime.input_tokens +
-		agg.allTime.cache_read_tokens +
-		agg.allTime.cache_creation_tokens;
-	const allTimeCacheHitPct =
-		allTimeTotalInput > 0
-			? ((agg.allTime.cache_read_tokens / allTimeTotalInput) * 100).toFixed(1)
-			: "0";
+	const allTimeCacheHitPct = cacheHitPct(
+		agg.allTime.input_tokens,
+		agg.allTime.cache_read_tokens,
+		agg.allTime.cache_creation_tokens,
+	);
 	const avgCostPerQuery =
 		agg.allTime.queries > 0
 			? `$${(agg.allTime.cost / agg.allTime.queries).toFixed(4)}`
@@ -566,18 +578,13 @@ function StatsTab({
 		? activeSession.total_cache_read_tokens +
 			activeSession.total_cache_creation_tokens
 		: 0;
-	const activeTotalInput = activeSession
-		? activeSession.total_input_tokens +
-			activeSession.total_cache_read_tokens +
-			activeSession.total_cache_creation_tokens
-		: 0;
-	const activeCacheHitPct =
-		activeSession && activeTotalInput > 0
-			? (
-					(activeSession.total_cache_read_tokens / activeTotalInput) *
-					100
-				).toFixed(1)
-			: "0";
+	const activeCacheHitPct = activeSession
+		? cacheHitPct(
+				activeSession.total_input_tokens,
+				activeSession.total_cache_read_tokens,
+				activeSession.total_cache_creation_tokens,
+			)
+		: "0";
 
 	return (
 		<div>

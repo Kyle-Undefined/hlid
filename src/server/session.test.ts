@@ -2913,8 +2913,9 @@ describe("SessionManager — Slice B AgentSession reuse", () => {
 		const sm = new SessionManager(makeConfig(), makeProviders(wrappedProvider));
 		await sm.runQuery("hello world", () => {}, "sess-1");
 		expect(lastSendSpy).not.toBeNull();
+		if (!lastSendSpy) throw new Error("send spy was never assigned");
 		expect(lastSendSpy).toHaveBeenCalledTimes(1);
-		const sentArg = (lastSendSpy as Mock).mock.calls[0][0] as string;
+		const sentArg = lastSendSpy.mock.calls[0][0] as string;
 		// buildPrompt is mocked at module level to return "test prompt", which
 		// SessionManager forwards verbatim to agentSession.send().
 		expect(sentArg).toBe("test prompt");

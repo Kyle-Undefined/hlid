@@ -2,6 +2,8 @@ import { homedir } from "node:os";
 import { resolve, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+	APP_DIR,
+	CONFIG_PATH,
 	canonical,
 	expandTilde,
 	parseWslUnc,
@@ -9,6 +11,14 @@ import {
 	samePath,
 	toLogical,
 } from "./paths";
+
+// ── CONFIG_PATH ───────────────────────────────────────────────────────────────
+
+describe("CONFIG_PATH", () => {
+	it("resolves to hlid.config.toml inside APP_DIR", () => {
+		expect(CONFIG_PATH).toBe(resolve(APP_DIR, "hlid.config.toml"));
+	});
+});
 
 // ── expandTilde ───────────────────────────────────────────────────────────────
 

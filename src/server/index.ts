@@ -195,6 +195,9 @@ registerBunServer(
 							available: check?.available ?? true,
 							unavailableReason:
 								check?.available === false ? check.reason : undefined,
+							models: p.models,
+							effortLevels: p.effortLevels,
+							permissionModes: p.permissionModes,
 						};
 					}),
 				);

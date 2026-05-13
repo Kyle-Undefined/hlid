@@ -54,14 +54,33 @@ const defaultAgg: AggStats = {
 	allTime: {
 		cost: 10.5,
 		queries: 200,
+		sessions: 0,
 		input_tokens: 50000,
 		output_tokens: 25000,
 		cache_read_tokens: 5000,
 		cache_creation_tokens: 2500,
 		turns: 100,
 	},
-	today: { cost: 0.5, queries: 10, tokens: 3000 },
-	thisMonth: { cost: 3.0, queries: 80, tokens: 20000 },
+	today: {
+		cost: 0.5,
+		queries: 10,
+		tokens: 3000,
+		turns: 0,
+		input_tokens: 0,
+		output_tokens: 0,
+		cache_read_tokens: 0,
+		cache_creation_tokens: 0,
+	},
+	thisMonth: {
+		cost: 3.0,
+		queries: 80,
+		tokens: 20000,
+		turns: 0,
+		input_tokens: 0,
+		output_tokens: 0,
+		cache_read_tokens: 0,
+		cache_creation_tokens: 0,
+	},
 };
 
 const defaultStats: wsStore.LiveStats = {

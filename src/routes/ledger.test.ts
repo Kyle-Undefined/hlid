@@ -1,9 +1,36 @@
 import { describe, expect, it } from "vitest";
 import {
+	cacheHitPct,
 	filterOptimisticIds,
 	filterOptimisticLabels,
 	parseLedgerSearch,
 } from "./ledger";
+
+// ─── cacheHitPct ─────────────────────────────────────────────────────────────
+
+describe("cacheHitPct", () => {
+	it("returns '0' when all token counts are zero", () => {
+		expect(cacheHitPct(0, 0, 0)).toBe("0");
+	});
+
+	it("returns '0' when there are tokens but no cache reads", () => {
+		expect(cacheHitPct(1000, 0, 0)).toBe("0.0");
+	});
+
+	it("calculates correct hit rate to one decimal place", () => {
+		// 500 cache reads out of 1000 total = 50%
+		expect(cacheHitPct(500, 500, 0)).toBe("50.0");
+	});
+
+	it("includes cacheCreate in denominator but only cacheRead in numerator", () => {
+		// 100 read, 200 create, 700 plain = 1000 total; hit = 100/1000 = 10%
+		expect(cacheHitPct(700, 100, 200)).toBe("10.0");
+	});
+
+	it("returns '100.0' when everything is cache reads", () => {
+		expect(cacheHitPct(0, 1000, 0)).toBe("100.0");
+	});
+});
 
 describe("parseLedgerSearch", () => {
 	it("defaults tab to 'sessions' when not provided", () => {

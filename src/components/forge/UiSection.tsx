@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { THEME_OPTIONS } from "#/lib/agentOptions";
 import { Field, Section } from "./fields";
 
 export type UiForm = {
@@ -7,11 +8,6 @@ export type UiForm = {
 	enterToSubmit: boolean;
 	hideSkillsIndex: boolean;
 };
-
-const THEME_OPTIONS = [
-	{ value: "dark" as const, label: "Dark", desc: "neutral dark, sky blue" },
-	{ value: "tan" as const, label: "Tan", desc: "warm parchment, terracotta" },
-] satisfies { value: "dark" | "tan"; label: string; desc: string }[];
 
 const MOBILE_THEME_OPTIONS = [
 	{ value: "same" as const, label: "Same", desc: "no override" },

@@ -3,6 +3,7 @@
  * the wizard owns all shared state and passes slices as props.
  */
 import { Check } from "lucide-react";
+import { THEME_OPTIONS } from "#/lib/agentOptions";
 import { FolderBrowser } from "./FolderBrowser";
 import { RelativeFolderField } from "./RelativeFolderField";
 
@@ -22,38 +23,6 @@ const VAULT_STYLE_OPTIONS: {
 		value: "wiki",
 		label: "LLM Wiki (Karpathy)",
 		desc: "raw/ · wiki/ · outputs/, three-layer architecture, LLM owns wiki",
-	},
-];
-
-const THEME_OPTIONS: { value: "dark" | "tan"; label: string; desc: string }[] =
-	[
-		{
-			value: "dark",
-			label: "Dark",
-			desc: "neutral dark with sky blue accent, the default",
-		},
-		{
-			value: "tan",
-			label: "Tan",
-			desc: "warm parchment with terracotta accent, easy on the eyes",
-		},
-	];
-
-const PERMISSION_OPTIONS = [
-	{
-		value: "default" as const,
-		label: "Ask for approval",
-		desc: "Claude asks before doing anything",
-	},
-	{
-		value: "acceptEdits" as const,
-		label: "Auto-approve edits",
-		desc: "edits go through automatically, everything else still asks",
-	},
-	{
-		value: "bypassPermissions" as const,
-		label: "Auto-approve all",
-		desc: "everything goes through, no interruptions",
 	},
 ];
 
@@ -227,12 +196,19 @@ export function StructureStep({
 	onChange,
 	onBack,
 	onSave,
+	permissionOptions = [],
 }: {
 	state: StructureState;
 	saving: boolean;
 	onChange: (patch: Partial<StructureState>) => void;
 	onBack: () => void;
 	onSave: () => void;
+	/** Permission modes declared by the active provider. Falls back to empty (no radio group shown). */
+	permissionOptions?: ReadonlyArray<{
+		value: string;
+		label: string;
+		desc?: string;
+	}>;
 }) {
 	return (
 		<div className="space-y-4">
@@ -361,38 +337,49 @@ export function StructureStep({
 				/>
 			</div>
 
-			<div className="space-y-2">
-				<p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-					Claude's authority
-				</p>
-				<div className="space-y-1.5">
-					{PERMISSION_OPTIONS.map((opt) => (
-						<label
-							key={opt.value}
-							className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
-								state.permissionMode === opt.value
-									? "border-primary bg-primary/5"
-									: "border-border hover:bg-accent"
-							}`}
-						>
-							<input
-								type="radio"
-								name="permission"
-								value={opt.value}
-								checked={state.permissionMode === opt.value}
-								onChange={() => onChange({ permissionMode: opt.value })}
-								className="mt-0.5 accent-primary shrink-0"
-							/>
-							<div>
-								<div className="text-sm font-medium text-foreground">
-									{opt.label}
+			{permissionOptions.length > 0 && (
+				<div className="space-y-2">
+					<p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+						Claude's authority
+					</p>
+					<div className="space-y-1.5">
+						{permissionOptions.map((opt) => (
+							<label
+								key={opt.value}
+								className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+									state.permissionMode === opt.value
+										? "border-primary bg-primary/5"
+										: "border-border hover:bg-accent"
+								}`}
+							>
+								<input
+									type="radio"
+									name="permission"
+									value={opt.value}
+									checked={state.permissionMode === opt.value}
+									onChange={() =>
+										onChange({
+											permissionMode:
+												opt.value as StructureState["permissionMode"],
+										})
+									}
+									className="mt-0.5 accent-primary shrink-0"
+								/>
+								<div>
+									<div className="text-sm font-medium text-foreground">
+										{opt.label}
+									</div>
+									{opt.desc && (
+										<div className="text-xs text-muted-foreground">
+											{opt.desc}
+										</div>
+									)}
 								</div>
-								<div className="text-xs text-muted-foreground">{opt.desc}</div>
-							</div>
-						</label>
-					))}
+							</label>
+						))}
+					</div>
 				</div>
-			</div>
+			)}
 
 			<div className="space-y-2">
 				<p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">

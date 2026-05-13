@@ -150,6 +150,29 @@ export interface AgentProvider {
 	readonly providerId: string;
 	/** Human-readable display name, e.g. "Claude". Defaults to providerId. */
 	readonly label?: string;
+	/**
+	 * Models this provider supports. UI uses this to populate the model picker.
+	 * Omit for providers with fully dynamic or unconstrained model lists.
+	 */
+	readonly models?: ReadonlyArray<{ value: string; label: string }>;
+	/**
+	 * Effort / thinking levels this provider supports.
+	 * Omit if the provider has no such concept (e.g. OpenAI doesn't expose it).
+	 */
+	readonly effortLevels?: ReadonlyArray<{
+		value: string;
+		label: string;
+		desc?: string;
+	}>;
+	/**
+	 * Permission gate modes this provider honours.
+	 * Omit if the provider ignores permissionMode entirely.
+	 */
+	readonly permissionModes?: ReadonlyArray<{
+		value: string;
+		label: string;
+		desc?: string;
+	}>;
 	/** Optional availability check. Returns false + reason if provider can't run. */
 	check?(): Promise<{ available: boolean; reason?: string }>;
 	query(params: AgentQueryParams): AgentSession;

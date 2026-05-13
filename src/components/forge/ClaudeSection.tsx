@@ -12,54 +12,6 @@ export type ClaudeForm = {
 	vaultProvider: string;
 };
 
-const EFFORT_OPTIONS: {
-	value: HlidConfig["claude"]["effort"];
-	label: string;
-	desc: string;
-}[] = [
-	{ value: "low", label: "Low", desc: "minimal thinking, quick turnaround" },
-	{ value: "medium", label: "Medium", desc: "some thinking, pretty balanced" },
-	{
-		value: "high",
-		label: "High",
-		desc: "solid reasoning, this is the default",
-	},
-	{ value: "xhigh", label: "X-High", desc: "goes deeper, Opus 4.7 only" },
-	{
-		value: "max",
-		label: "Max",
-		desc: "everything Claude has, Opus 4.7 only",
-	},
-];
-
-const MODEL_OPTIONS = [
-	{ value: "claude-opus-4-7", label: "Opus 4.7" },
-	{ value: "claude-sonnet-4-6", label: "Sonnet 4.6" },
-	{ value: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
-] as const;
-
-const PERMISSION_OPTIONS: {
-	value: HlidConfig["claude"]["permission_mode"];
-	label: string;
-	desc: string;
-}[] = [
-	{
-		value: "default",
-		label: "Ask for approval",
-		desc: "Claude asks before doing anything",
-	},
-	{
-		value: "acceptEdits",
-		label: "Auto-approve edits",
-		desc: "edits go through automatically, everything else still asks",
-	},
-	{
-		value: "bypassPermissions",
-		label: "Auto-approve all",
-		desc: "everything goes through, no interruptions",
-	},
-];
-
 export function ClaudeSection({
 	claude,
 	onChange,
@@ -69,7 +21,16 @@ export function ClaudeSection({
 	onChange: (patch: Partial<ClaudeForm>) => void;
 	providers: ProviderInfo[];
 }) {
-	const isClaudeProvider = claude.vaultProvider === "claude";
+	// Options come from the selected provider's declared capabilities.
+	const activeProvider = providers.find((p) => p.id === claude.vaultProvider);
+	const modelOptions = activeProvider?.models ?? [];
+	const effortOptions = activeProvider?.effortLevels ?? [];
+	const permissionOptions = activeProvider?.permissionModes ?? [];
+	// Show provider-specific settings only when the provider declares capabilities.
+	const hasProviderOptions =
+		modelOptions.length > 0 ||
+		effortOptions.length > 0 ||
+		permissionOptions.length > 0;
 
 	return (
 		<Section title="Vault Agent">
@@ -97,85 +58,104 @@ export function ClaudeSection({
 					</div>
 				</Field>
 			)}
-			{isClaudeProvider && (
+			{hasProviderOptions && (
 				<>
-					<Field label="Model">
-						<select
-							value={claude.model}
-							onChange={(e) => onChange({ model: e.target.value })}
-							className="w-32 sm:w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
-						>
-							{MODEL_OPTIONS.map((m) => (
-								<option key={m.value} value={m.value}>
-									{m.label}
-								</option>
-							))}
-						</select>
-					</Field>
-					<fieldset className="border-0 m-0 p-0 px-4 py-3">
-						<div className="text-[9px] tracking-widest text-muted-foreground uppercase mb-2">
-							EFFORT
-						</div>
-						<div className="space-y-1.5">
-							{EFFORT_OPTIONS.map((opt) => (
-								<label
-									key={opt.value}
-									className={`flex items-start gap-3 p-3 border cursor-pointer transition-colors ${
-										claude.effort === opt.value
-											? "border-primary/40 bg-primary/5"
-											: "border-border hover:bg-accent"
-									}`}
-								>
-									<input
-										type="radio"
-										name="effort"
-										value={opt.value}
-										checked={claude.effort === opt.value}
-										onChange={() => onChange({ effort: opt.value })}
-										className="mt-0.5 accent-primary shrink-0"
-									/>
-									<div>
-										<div className="text-sm text-foreground">{opt.label}</div>
-										<div className="text-xs text-muted-foreground">
-											{opt.desc}
+					{modelOptions.length > 0 && (
+						<Field label="Model">
+							<select
+								value={claude.model}
+								onChange={(e) => onChange({ model: e.target.value })}
+								className="w-32 sm:w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
+							>
+								{modelOptions.map((m) => (
+									<option key={m.value} value={m.value}>
+										{m.label}
+									</option>
+								))}
+							</select>
+						</Field>
+					)}
+					{effortOptions.length > 0 && (
+						<fieldset className="border-0 m-0 p-0 px-4 py-3">
+							<div className="text-[9px] tracking-widest text-muted-foreground uppercase mb-2">
+								EFFORT
+							</div>
+							<div className="space-y-1.5">
+								{effortOptions.map((opt) => (
+									<label
+										key={opt.value}
+										className={`flex items-start gap-3 p-3 border cursor-pointer transition-colors ${
+											claude.effort === opt.value
+												? "border-primary/40 bg-primary/5"
+												: "border-border hover:bg-accent"
+										}`}
+									>
+										<input
+											type="radio"
+											name="effort"
+											value={opt.value}
+											checked={claude.effort === opt.value}
+											onChange={() =>
+												onChange({
+													effort: opt.value as HlidConfig["claude"]["effort"],
+												})
+											}
+											className="mt-0.5 accent-primary shrink-0"
+										/>
+										<div>
+											<div className="text-sm text-foreground">{opt.label}</div>
+											{opt.desc && (
+												<div className="text-xs text-muted-foreground">
+													{opt.desc}
+												</div>
+											)}
 										</div>
-									</div>
-								</label>
-							))}
-						</div>
-					</fieldset>
-					<fieldset className="border-0 m-0 p-0 px-4 py-3">
-						<div className="text-[9px] tracking-widest text-muted-foreground uppercase mb-2">
-							PERMISSIONS
-						</div>
-						<div className="space-y-1.5">
-							{PERMISSION_OPTIONS.map((opt) => (
-								<label
-									key={opt.value}
-									className={`flex items-start gap-3 p-3 border cursor-pointer transition-colors ${
-										claude.permissionMode === opt.value
-											? "border-primary/40 bg-primary/5"
-											: "border-border hover:bg-accent"
-									}`}
-								>
-									<input
-										type="radio"
-										name="permission"
-										value={opt.value}
-										checked={claude.permissionMode === opt.value}
-										onChange={() => onChange({ permissionMode: opt.value })}
-										className="mt-0.5 accent-primary shrink-0"
-									/>
-									<div>
-										<div className="text-sm text-foreground">{opt.label}</div>
-										<div className="text-xs text-muted-foreground">
-											{opt.desc}
+									</label>
+								))}
+							</div>
+						</fieldset>
+					)}
+					{permissionOptions.length > 0 && (
+						<fieldset className="border-0 m-0 p-0 px-4 py-3">
+							<div className="text-[9px] tracking-widest text-muted-foreground uppercase mb-2">
+								PERMISSIONS
+							</div>
+							<div className="space-y-1.5">
+								{permissionOptions.map((opt) => (
+									<label
+										key={opt.value}
+										className={`flex items-start gap-3 p-3 border cursor-pointer transition-colors ${
+											claude.permissionMode === opt.value
+												? "border-primary/40 bg-primary/5"
+												: "border-border hover:bg-accent"
+										}`}
+									>
+										<input
+											type="radio"
+											name="permission"
+											value={opt.value}
+											checked={claude.permissionMode === opt.value}
+											onChange={() =>
+												onChange({
+													permissionMode:
+														opt.value as HlidConfig["claude"]["permission_mode"],
+												})
+											}
+											className="mt-0.5 accent-primary shrink-0"
+										/>
+										<div>
+											<div className="text-sm text-foreground">{opt.label}</div>
+											{opt.desc && (
+												<div className="text-xs text-muted-foreground">
+													{opt.desc}
+												</div>
+											)}
 										</div>
-									</div>
-								</label>
-							))}
-						</div>
-					</fieldset>
+									</label>
+								))}
+							</div>
+						</fieldset>
+					)}
 					<Field
 						label="Max turns"
 						hint="max turns Claude can run, blank means no limit"
@@ -220,7 +200,7 @@ export function ClaudeSection({
 							className="w-32 sm:w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
 						>
 							<option value="">— default (haiku) —</option>
-							{MODEL_OPTIONS.map((m) => (
+							{modelOptions.map((m) => (
 								<option key={m.value} value={m.value}>
 									{m.label}
 								</option>

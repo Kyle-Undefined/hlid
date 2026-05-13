@@ -50,6 +50,12 @@ export type ProviderInfo = {
 	label: string;
 	available: boolean;
 	unavailableReason?: string;
+	/** Models the provider supports. Use to populate model picker in UI. */
+	models?: Array<{ value: string; label: string }>;
+	/** Effort/thinking levels. Absent if the provider has no such concept. */
+	effortLevels?: Array<{ value: string; label: string; desc?: string }>;
+	/** Permission gate modes the provider honours. */
+	permissionModes?: Array<{ value: string; label: string; desc?: string }>;
 };
 
 /** Returns the list of compiled-in providers with availability status. */

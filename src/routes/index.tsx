@@ -46,6 +46,7 @@ import {
 	getWeeklyStatsFn,
 } from "#/lib/serverFns";
 import { resolveSessionId } from "#/lib/sessionRouting";
+import { resolveSkillPrompt } from "#/lib/skillPrompt";
 import { groupSkills, type Skill } from "#/lib/skills";
 import { SESSION_LABEL_LENGTH, uid } from "#/lib/utils";
 import type { RateLimitMessage, ServerMessage } from "#/server/protocol";
@@ -237,38 +238,11 @@ function CockpitPage() {
 
 	async function handleRun() {
 		const typed = prompt.trim();
-		let skillContext: string | undefined;
-		let text: string;
-
-		if (activeSkill) {
-			if (activeSkill.section === "claude") {
-				// Claude skill: pass as slash command, CLI handles it natively
-				text = typed
-					? `/${activeSkill.name}: ${typed}`
-					: `/${activeSkill.name}`;
-			} else {
-				// Vault skill: pass file path, server instructs Claude to read it
-				skillContext = activeSkill.filePath;
-				text = typed
-					? `/${activeSkill.name}: ${typed}`
-					: `/${activeSkill.name}`;
-			}
-		} else if (typed.startsWith("/")) {
-			const slashName = typed.slice(1).split(/[:\s]/)[0].toLowerCase();
-			const match = data.skills.find((s) => s.name.toLowerCase() === slashName);
-			if (match) {
-				if (match.section !== "claude") {
-					skillContext = match.filePath;
-					text = typed.slice(match.name.length + 2).trim(); // strip "/name: "
-				} else {
-					text = typed; // Claude skill: keep slash, CLI handles
-				}
-			} else {
-				text = typed;
-			}
-		} else {
-			text = typed;
-		}
+		const { text, skillContext } = resolveSkillPrompt(
+			activeSkill,
+			typed,
+			data.skills,
+		);
 		if (!text || wsStatus !== "connected") return;
 		setRunError(null);
 		// Resolve session: same-session → prefer active, then most recent from DB,

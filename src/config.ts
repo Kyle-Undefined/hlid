@@ -1,9 +1,8 @@
 import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
 import { createServerFn } from "@tanstack/react-start";
 import { parse } from "smol-toml";
 import { z } from "zod";
-import { APP_DIR } from "./lib/paths";
+import { CONFIG_PATH } from "./lib/paths";
 
 const VaultSchema = z.object({
 	name: z.string().default("Vault"),
@@ -137,8 +136,6 @@ export const HlidConfigSchema = z.object({
 });
 
 export type HlidConfig = z.infer<typeof HlidConfigSchema>;
-
-const CONFIG_PATH = resolve(APP_DIR, "hlid.config.toml");
 
 function loadFromDisk(): HlidConfig {
 	try {

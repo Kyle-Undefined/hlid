@@ -380,6 +380,50 @@ export class ClaudeProvider implements AgentProvider {
 	readonly providerId = "claude";
 	readonly label = "Claude";
 
+	readonly models = [
+		{ value: "claude-opus-4-7", label: "Opus 4.7" },
+		{ value: "claude-sonnet-4-6", label: "Sonnet 4.6" },
+		{ value: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
+	] as const;
+
+	readonly effortLevels = [
+		{ value: "low", label: "Low", desc: "minimal thinking, quick turnaround" },
+		{
+			value: "medium",
+			label: "Medium",
+			desc: "some thinking, pretty balanced",
+		},
+		{
+			value: "high",
+			label: "High",
+			desc: "solid reasoning, this is the default",
+		},
+		{ value: "xhigh", label: "X-High", desc: "goes deeper, Opus 4.7 only" },
+		{
+			value: "max",
+			label: "Max",
+			desc: "everything Claude has, Opus 4.7 only",
+		},
+	] as const;
+
+	readonly permissionModes = [
+		{
+			value: "default",
+			label: "Ask for approval",
+			desc: "asks before doing anything",
+		},
+		{
+			value: "acceptEdits",
+			label: "Auto-approve edits",
+			desc: "edits go through automatically, everything else still asks",
+		},
+		{
+			value: "bypassPermissions",
+			label: "Auto-approve all",
+			desc: "everything goes through, no interruptions",
+		},
+	] as const;
+
 	async check(): Promise<{ available: boolean; reason?: string }> {
 		const exe = resolveClaudeExecutable();
 		if (exe === undefined) {

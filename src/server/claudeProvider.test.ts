@@ -1088,3 +1088,47 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 		expect((result.value as { priority?: string }).priority).toBe("next");
 	});
 });
+
+// ── Provider capability declarations ─────────────────────────────────────────
+
+describe("ClaudeProvider capability declarations", () => {
+	it("exposes a non-empty models array", () => {
+		const p = new ClaudeProvider();
+		const models = p.models ?? [];
+		expect(models.length).toBeGreaterThan(0);
+		// All entries must have value + label strings
+		for (const m of models) {
+			expect(typeof m.value).toBe("string");
+			expect(typeof m.label).toBe("string");
+		}
+	});
+
+	it("exposes a non-empty effortLevels array", () => {
+		const p = new ClaudeProvider();
+		const effortLevels = p.effortLevels ?? [];
+		expect(effortLevels.length).toBeGreaterThan(0);
+		const values = effortLevels.map((e) => e.value);
+		expect(values).toContain("low");
+		expect(values).toContain("high");
+		expect(values).toContain("max");
+	});
+
+	it("exposes a non-empty permissionModes array", () => {
+		const p = new ClaudeProvider();
+		const permissionModes = p.permissionModes ?? [];
+		expect(permissionModes.length).toBeGreaterThan(0);
+		const values = permissionModes.map((m) => m.value);
+		expect(values).toContain("default");
+		expect(values).toContain("acceptEdits");
+		expect(values).toContain("bypassPermissions");
+	});
+
+	it("includes desc on effortLevels entries", () => {
+		const p = new ClaudeProvider();
+		const effortLevels = p.effortLevels ?? [];
+		for (const e of effortLevels) {
+			expect(typeof e.desc).toBe("string");
+			expect((e.desc ?? "").length).toBeGreaterThan(0);
+		}
+	});
+});

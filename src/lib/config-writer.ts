@@ -1,11 +1,8 @@
 import { writeFileSync } from "node:fs";
-import { resolve } from "node:path";
 import type { HlidConfig } from "../config";
 import { setConfigCache } from "../server/config";
 import { syncWrappers } from "../server/wrappers";
-import { APP_DIR } from "./paths";
-
-const CONFIG_PATH = resolve(APP_DIR, "hlid.config.toml");
+import { CONFIG_PATH } from "./paths";
 
 function tomlVal(value: unknown): string {
 	if (typeof value === "string") return JSON.stringify(value);

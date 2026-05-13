@@ -1,11 +1,8 @@
 import { readFileSync, statSync } from "node:fs";
-import { resolve } from "node:path";
 import { parse } from "smol-toml";
 import type { HlidConfig } from "../config";
 import { HlidConfigSchema } from "../config";
-import { APP_DIR } from "../lib/paths";
-
-const CONFIG_PATH = resolve(APP_DIR, "hlid.config.toml");
+import { CONFIG_PATH } from "../lib/paths";
 
 let _cache: { config: HlidConfig; mtimeMs: number } | null = null;
 

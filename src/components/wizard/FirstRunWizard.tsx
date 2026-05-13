@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { HlidConfig } from "#/config";
 import { DEFAULT_ATTACHMENTS_CONFIG } from "#/config";
+import { getProvidersFn, type ProviderInfo } from "#/lib/serverFns";
 import { buildVaultSection } from "#/lib/vaultConfig";
 import type { StructureState } from "./WizardSteps";
 import {
@@ -51,6 +52,7 @@ type Props = {
 export function FirstRunWizard({ onComplete }: Props) {
 	const [step, setStep] = useState<Step>("welcome");
 	const [saving, setSaving] = useState(false);
+	const [providers, setProviders] = useState<ProviderInfo[]>([]);
 	const [structure, setStructure] = useState<StructureState>({
 		vaultName: "My Vault",
 		vaultPath: "",
@@ -68,6 +70,13 @@ export function FirstRunWizard({ onComplete }: Props) {
 		permissionMode: "default",
 		theme: "tan",
 	});
+
+	// Fetch providers once on mount so StructureStep can show dynamic permission options.
+	useEffect(() => {
+		getProvidersFn()
+			.then(setProviders)
+			.catch(() => {});
+	}, []);
 
 	// Auto-detect structure when vault is picked.
 	useEffect(() => {
@@ -180,6 +189,9 @@ export function FirstRunWizard({ onComplete }: Props) {
 							onChange={(p) => setStructure((s) => ({ ...s, ...p }))}
 							onBack={() => setStep("vault")}
 							onSave={save}
+							permissionOptions={
+								providers.find((p) => p.id === "claude")?.permissionModes
+							}
 						/>
 					)}
 					{step === "primer" && <PrimerStep onNext={() => setStep("done")} />}

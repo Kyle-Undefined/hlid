@@ -324,9 +324,7 @@ function onUsageUpdate(
 		..._liveStats,
 		last_context_used: msg.tokens_in_context,
 		last_output_tokens: msg.output_tokens,
-		...(msg.context_window != null
-			? { context_window: msg.context_window }
-			: {}),
+		context_window: msg.context_window ?? _liveStats.context_window,
 	};
 	persistStats(_liveStats);
 	for (const fn of statsSubs) fn();
