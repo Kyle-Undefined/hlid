@@ -27,6 +27,32 @@ export function getWindowMark(
 	return windowHighMark.get(markKey(providerId, windowId));
 }
 
+/**
+ * Update the in-memory high-water mark from a CLI rate_limit event.
+ * Called by session.ts handleRateLimit so /db/usage-windows overlay reflects
+ * live values even when the SDK reports rate-limit info directly (not via
+ * proxy response headers). Only updates when utilization is higher or the
+ * window period has rolled over.
+ */
+export function updateWindowMark(
+	providerId: string,
+	windowId: string,
+	utilization: number | null,
+	resetsAt: number | null,
+): void {
+	const key = markKey(providerId, windowId);
+	const current = windowHighMark.get(key);
+	const newWindow = !current || current.resetsAt !== resetsAt;
+	const isHigher =
+		utilization != null && utilization > (current?.utilization ?? 0);
+	if (!newWindow && !isHigher) return;
+	windowHighMark.set(key, {
+		utilization,
+		remaining: newWindow ? null : (current?.remaining ?? null),
+		resetsAt,
+	});
+}
+
 function applyReading(
 	providerId: string,
 	reading: ProviderWindowReading,

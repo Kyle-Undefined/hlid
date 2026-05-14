@@ -30,7 +30,7 @@ vi.mock("./runState", () => ({
 import * as db from "../db";
 import { registerBunServer } from "../lib/lifecycle";
 import type { AgentProvider } from "./agentProvider";
-import { getWindowMark, startProviderProxy } from "./proxy";
+import { getWindowMark, startProviderProxy, updateWindowMark } from "./proxy";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -241,6 +241,84 @@ describe("startProviderProxy — DB seeding on startup", () => {
 		await startProviderProxy(provider, "http://localhost:9000");
 
 		expect(registerBunServer).not.toHaveBeenCalled();
+	});
+});
+
+// ── updateWindowMark ──────────────────────────────────────────────────────────
+// Uses "upd" provider to avoid colliding with the "claude" marks seeded above.
+
+describe("updateWindowMark", () => {
+	it("sets a new entry when none exists", () => {
+		const resetsAt = futureUnix();
+		updateWindowMark("upd", "new_entry", 0.5, resetsAt);
+		const mark = getWindowMark("upd", "new_entry");
+		expect(mark?.utilization).toBeCloseTo(0.5);
+		expect(mark?.resetsAt).toBe(resetsAt);
+	});
+
+	it("updates when new utilization is higher (same window)", () => {
+		const resetsAt = futureUnix();
+		updateWindowMark("upd", "higher", 0.3, resetsAt);
+		updateWindowMark("upd", "higher", 0.7, resetsAt);
+		expect(getWindowMark("upd", "higher")?.utilization).toBeCloseTo(0.7);
+	});
+
+	it("does not update when utilization is lower (same window)", () => {
+		const resetsAt = futureUnix();
+		updateWindowMark("upd", "lower", 0.8, resetsAt);
+		updateWindowMark("upd", "lower", 0.3, resetsAt);
+		expect(getWindowMark("upd", "lower")?.utilization).toBeCloseTo(0.8);
+	});
+
+	it("does not update when utilization is equal (same window)", () => {
+		const resetsAt = futureUnix();
+		updateWindowMark("upd", "equal", 0.5, resetsAt);
+		updateWindowMark("upd", "equal", 0.5, resetsAt);
+		// utilization > current is strict — equal returns false
+		expect(getWindowMark("upd", "equal")?.utilization).toBeCloseTo(0.5);
+	});
+
+	it("updates on window rollover even if utilization is lower", () => {
+		const resetsAt1 = futureUnix(3600);
+		const resetsAt2 = futureUnix(7200);
+		updateWindowMark("upd", "rollover", 0.9, resetsAt1);
+		updateWindowMark("upd", "rollover", 0.1, resetsAt2);
+		const mark = getWindowMark("upd", "rollover");
+		expect(mark?.utilization).toBeCloseTo(0.1);
+		expect(mark?.resetsAt).toBe(resetsAt2);
+	});
+
+	it("sets entry with null utilization when no entry exists", () => {
+		updateWindowMark("upd", "null_new", null, futureUnix());
+		const mark = getWindowMark("upd", "null_new");
+		expect(mark).toBeDefined();
+		expect(mark?.utilization).toBeNull();
+	});
+
+	it("does not update when utilization is null and entry already exists (same window)", () => {
+		const resetsAt = futureUnix();
+		updateWindowMark("upd", "null_existing", 0.6, resetsAt);
+		// null utilization: isHigher = false, newWindow = false → skip
+		updateWindowMark("upd", "null_existing", null, resetsAt);
+		expect(getWindowMark("upd", "null_existing")?.utilization).toBeCloseTo(0.6);
+	});
+
+	it("is provider-namespaced — same windowId under different providers are independent", () => {
+		const resetsAt = futureUnix();
+		updateWindowMark("upd-a", "shared", 0.4, resetsAt);
+		updateWindowMark("upd-b", "shared", 0.9, resetsAt);
+		expect(getWindowMark("upd-a", "shared")?.utilization).toBeCloseTo(0.4);
+		expect(getWindowMark("upd-b", "shared")?.utilization).toBeCloseTo(0.9);
+	});
+
+	it("preserves remaining from previous entry when updating", () => {
+		const resetsAt = futureUnix();
+		// First call: remaining = null (no prior entry)
+		updateWindowMark("upd", "preserve", 0.3, resetsAt);
+		expect(getWindowMark("upd", "preserve")?.remaining).toBeNull();
+		// Higher-util update: remaining carried forward as null
+		updateWindowMark("upd", "preserve", 0.6, resetsAt);
+		expect(getWindowMark("upd", "preserve")?.remaining).toBeNull();
 	});
 });
 

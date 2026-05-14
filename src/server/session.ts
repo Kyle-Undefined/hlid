@@ -32,6 +32,7 @@ import type {
 	ServerMessage,
 } from "./protocol";
 import { mapMcpServer } from "./protocol";
+import { updateWindowMark } from "./proxy";
 import { generateTurnRecap } from "./recap";
 
 /** Fallback context window size when the SDK omits it from result metadata. */
@@ -500,6 +501,14 @@ export class SessionManager {
 					windowId: event.rateLimitType,
 				}),
 			);
+			// Mirror into the in-memory high-water mark so /db/usage-windows
+			// overlay reflects live values immediately (not just on next cold start).
+			updateWindowMark(
+				providerId,
+				event.rateLimitType,
+				event.utilization,
+				event.resetsAt ?? null,
+			);
 		}
 	}
 
@@ -801,9 +810,7 @@ export class SessionManager {
 					cache_creation_tokens: cacheCreation,
 					tokens_in_context: event.inputTokens + cacheRead + cacheCreation,
 					actualModel: event.model,
-					...(turn.lastKnownContextWindow != null
-						? { context_window: turn.lastKnownContextWindow }
-						: {}),
+					context_window: turn.lastKnownContextWindow ?? DEFAULT_CONTEXT_WINDOW,
 				});
 			} else if (event.type === "summary") {
 				turn.sdkSummary = event.text;

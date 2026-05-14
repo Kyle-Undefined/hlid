@@ -360,6 +360,12 @@ export function createWsHandlers(session: SessionManager) {
 					(wsState.inFlightChatCount.get(ws) ?? 0) + 1,
 				);
 				try {
+					// Pick up config changes (e.g. model switch in Forge) without
+					// requiring a server restart. loadConfig() is mtime-cached — free
+					// when nothing changed.
+					const modelChanged = session.syncConfig(loadConfig());
+					if (modelChanged)
+						broadcast({ type: "status", ...session.getStatus() });
 					await session.runQuery(
 						msg.text,
 						(event) => broadcast(event),

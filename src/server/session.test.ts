@@ -83,6 +83,7 @@ import type {
 	AgentSession,
 } from "./agentProvider";
 import type { ServerMessage } from "./protocol";
+import { getWindowMark } from "./proxy";
 import { generateTurnRecap } from "./recap";
 import { SessionManager } from "./session";
 
@@ -2931,5 +2932,96 @@ describe("SessionManager — Slice B AgentSession reuse", () => {
 		// SessionManager forwards verbatim to agentSession.send().
 		expect(sentArg).toBe("test prompt");
 		ctl.closeStream();
+	});
+});
+
+// ── handleRateLimit → updateWindowMark ───────────────────────────────────────
+// proxy.ts is NOT mocked in this file, so updateWindowMark writes to the real
+// in-memory windowHighMark and getWindowMark can verify it. Uses unique
+// providerId strings to avoid colliding with other tests.
+
+describe("SessionManager — handleRateLimit mirrors rate_limit into window mark", () => {
+	function makeRateLimitProvider(
+		providerId: string,
+		utilization: number | undefined,
+		resetsAt: number | undefined,
+		rateLimitType = "five_hour",
+	): AgentProvider {
+		return {
+			providerId,
+			query(): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-rl-1" };
+					yield {
+						type: "rate_limit",
+						status: "warning",
+						rateLimitType,
+						utilization,
+						resetsAt,
+					};
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+	}
+
+	it("sets window mark after rate_limit event with utilization", async () => {
+		const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+		const provider = makeRateLimitProvider("rl-mirror", 0.75, resetsAt);
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("test", () => {}, "sess-rl");
+		const mark = getWindowMark("rl-mirror", "five_hour");
+		expect(mark?.utilization).toBeCloseTo(0.75);
+		expect(mark?.resetsAt).toBe(resetsAt);
+	});
+
+	it("does not set window mark when utilization is absent", async () => {
+		// event.utilization == null → handleRateLimit skips the updateWindowMark call
+		const provider = makeRateLimitProvider("rl-no-util", undefined, undefined);
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("test", () => {}, "sess-rl-null");
+		expect(getWindowMark("rl-no-util", "five_hour")).toBeUndefined();
+	});
+
+	it("does not set window mark when rateLimitType is absent", async () => {
+		const provider: AgentProvider = {
+			providerId: "rl-no-type",
+			query(): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-rl-2" };
+					// rateLimitType omitted — condition: event.utilization != null && event.rateLimitType
+					yield { type: "rate_limit", status: "warning", utilization: 0.5 };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("test", () => {}, "sess-rl-notype");
+		// No windowId → no mark should be written (rateLimitType is the windowId key)
+		expect(getWindowMark("rl-no-type", "five_hour")).toBeUndefined();
 	});
 });

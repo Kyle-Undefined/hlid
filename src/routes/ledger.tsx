@@ -7,7 +7,6 @@ import { createServerFn } from "@tanstack/react-start";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ThirtyDayGraph } from "#/components/cockpit/ThirtyDayGraph";
 import { HourOfDayChart } from "#/components/ledger/charts/HourOfDayChart";
-import { LatencyChart } from "#/components/ledger/charts/LatencyChart";
 import { ModelSplitDonut } from "#/components/ledger/charts/ModelSplitDonut";
 import { StopReasonDonut } from "#/components/ledger/charts/StopReasonDonut";
 import { TopToolsChart } from "#/components/ledger/charts/TopToolsChart";
@@ -210,6 +209,7 @@ function StatsPage() {
 	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
 
 	const [activeSessionData, setActiveSessionData] = useState(activeSession);
+	const [statsDataState, setStatsDataState] = useState(statsData);
 
 	const [sessionPage, setSessionPage] = useState(initialSessions);
 	// Mutate refs during render so they're always current before any event
@@ -259,6 +259,7 @@ function StatsPage() {
 					if (msg.type === "done") {
 						void refreshSessions();
 						void getActiveSessionRowFn().then(setActiveSessionData);
+						void getStatsDataFn().then(setStatsDataState);
 					}
 				},
 				[refreshSessions],
@@ -358,7 +359,7 @@ function StatsPage() {
 		navigate({ to: "/ledger", search: { tab: "sessions", page: 1, size } });
 	}
 
-	const { agg } = statsData;
+	const { agg } = statsDataState;
 
 	function switchTab(next: "stats" | "sessions") {
 		if (next === "sessions") {
@@ -398,12 +399,9 @@ function StatsPage() {
 							<span
 								className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${statusDotClass(wsStatus, sessionState, hasPendingPermissions)}`}
 							/>
-							<span className="text-[9px] tracking-widest uppercase text-muted-foreground">
-								Active Session
-							</span>
 							{activeSessionData.label && (
 								<span className="text-[9px] tracking-widest uppercase text-foreground/60 truncate">
-									· {activeSessionData.label}
+									{activeSessionData.label}
 								</span>
 							)}
 							{sessionState === "running" && (
@@ -571,21 +569,6 @@ function StatsTab({
 	activeSession: SessionRow | null;
 	activity: ActivityStats;
 }) {
-	const idle = stats.queries === 0;
-
-	// Normalize every window onto the StatBundle shape so StatRows can render
-	// the same 12 rows in the same order across every card (drops the old
-	// inconsistency where SESSION/TODAY/MONTH/ALL-TIME each surfaced a
-	// slightly different subset of metrics).
-	const liveBundle: StatBundle = {
-		cost: stats.cost,
-		queries: stats.queries,
-		turns: stats.turns,
-		input_tokens: stats.input_tokens,
-		output_tokens: stats.output_tokens,
-		cache_read_tokens: stats.cache_read_tokens,
-		cache_creation_tokens: stats.cache_creation_tokens,
-	};
 	const sessionBundle: StatBundle | null = activeSession
 		? {
 				cost: activeSession.total_cost,
@@ -665,8 +648,9 @@ function StatsTab({
 					<div className="lg:col-span-2">
 						<TopToolsChart data={activity.topTools} />
 					</div>
-					<HourOfDayChart data={activity.hourOfDay} />
-					<LatencyChart data={activity.latency} />
+					<div className="lg:col-span-2">
+						<HourOfDayChart data={activity.hourOfDay} />
+					</div>
 				</div>
 
 				{/* Rate limit — only shown when active */}
@@ -708,18 +692,6 @@ function StatsTab({
 								<UtilBar utilization={rateLimit.utilization} />
 							)}
 						</div>
-					</div>
-				)}
-
-				{/* Live: current session (from wsStore) — own row, only when running */}
-				{!idle && (
-					<div className="border border-border bg-card">
-						<div className="px-4 py-3 border-b border-border">
-							<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
-								LIVE · THIS SESSION
-							</div>
-						</div>
-						<StatRows s={liveBundle} />
 					</div>
 				)}
 

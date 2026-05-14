@@ -528,6 +528,35 @@ describe("message — chat", () => {
 		);
 	});
 
+	it("broadcasts status when syncConfig reports model changed", async () => {
+		const session = makeSession({
+			syncConfig: vi.fn().mockReturnValue(true),
+		});
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		wsState.sessionOwnerWs = ws;
+		mockBroadcast.mockClear();
+		await message(ws as never, JSON.stringify({ type: "chat", text: "hi" }));
+		expect(mockBroadcast).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "status" }),
+		);
+	});
+
+	it("does not broadcast status when syncConfig reports no model change", async () => {
+		const session = makeSession({
+			syncConfig: vi.fn().mockReturnValue(false),
+		});
+		const { message } = createWsHandlers(session);
+		const ws = makeWs();
+		wsState.sessionOwnerWs = ws;
+		mockBroadcast.mockClear();
+		await message(ws as never, JSON.stringify({ type: "chat", text: "hi" }));
+		const statusBroadcasts = mockBroadcast.mock.calls.filter(
+			(c) => (c[0] as { type?: string })?.type === "status",
+		);
+		expect(statusBroadcasts).toHaveLength(0);
+	});
+
 	it("cancel_queued forwards turn_id to session.cancelQueued", async () => {
 		const session = makeSession({
 			cancelQueued: vi.fn().mockReturnValue(true),
