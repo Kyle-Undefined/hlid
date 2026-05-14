@@ -11,15 +11,18 @@ export {
 } from "./attachments";
 // Event log
 export { appendLog, clearLogs, getLogs } from "./logs";
-export type { PlanProposalRow } from "./messages";
+export type { AskUserQuestionRow, PlanProposalRow } from "./messages";
 // Messages & tool events
 export {
+	appendAskUserQuestion,
 	appendMessage,
 	appendPlanProposal,
 	appendToolEvent,
+	getSessionAskUserQuestions,
 	getSessionMessages,
 	getSessionPlanProposals,
 	getSessionToolEvents,
+	setAskUserQuestionResolution,
 	setMessageRecap,
 	setMessageText,
 	setPlanProposalDecision,

@@ -1,5 +1,5 @@
 import { ChevronLeft, ChevronRight, Pencil, X } from "lucide-react";
-import { useRef, useState } from "react";
+import { type KeyboardEvent, useRef, useState } from "react";
 import { ConfirmAction } from "#/components/ConfirmAction";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { SessionRow } from "#/db";
@@ -140,9 +140,12 @@ function SessionItem({
 export function SessionsLedger({
 	data,
 	page,
+	pageSize,
+	pageSizeOptions,
 	totalPages,
 	loading,
 	onPageChange,
+	onPageSizeChange,
 	onDelete,
 	onRename,
 	onNavigate,
@@ -150,14 +153,36 @@ export function SessionsLedger({
 }: {
 	data: { sessions: SessionRow[]; total: number };
 	page: number;
+	pageSize: number;
+	pageSizeOptions: readonly number[];
 	totalPages: number;
 	loading: boolean;
 	onPageChange: (p: number) => void;
+	onPageSizeChange: (size: number) => void;
 	onDelete: (id: string) => void;
 	onRename: (id: string, label: string) => void;
 	onNavigate: (id: string) => void;
 	onCleanup: (days: number) => void;
 }) {
+	const [jumpInput, setJumpInput] = useState("");
+
+	function commitJump() {
+		const parsed = parseInt(jumpInput, 10);
+		if (Number.isFinite(parsed) && parsed >= 1 && parsed <= totalPages) {
+			onPageChange(parsed);
+		}
+		setJumpInput("");
+	}
+
+	function handleJumpKey(e: KeyboardEvent<HTMLInputElement>) {
+		if (e.key === "Enter") {
+			e.preventDefault();
+			commitJump();
+		} else if (e.key === "Escape") {
+			setJumpInput("");
+		}
+	}
+
 	return (
 		<div className="border border-border bg-card">
 			<div className="px-4 py-3 border-b border-border flex items-center justify-between">
@@ -170,6 +195,21 @@ export function SessionsLedger({
 					</span>
 				</div>
 				<div className="flex items-center gap-3">
+					<label className="flex items-center gap-1.5 text-[8px] tracking-widest text-muted-foreground/50 uppercase">
+						<span>per page</span>
+						<select
+							value={pageSize}
+							onChange={(e) => onPageSizeChange(Number(e.target.value))}
+							className="bg-transparent border border-border text-[9px] tabular-nums text-foreground/70 px-1.5 py-0.5 focus:outline-none focus:border-primary/50 transition-colors"
+							aria-label="Sessions per page"
+						>
+							{pageSizeOptions.map((n) => (
+								<option key={n} value={n}>
+									{n}
+								</option>
+							))}
+						</select>
+					</label>
 					{data.sessions.some(
 						(s) =>
 							s.started_at != null &&
@@ -213,7 +253,16 @@ export function SessionsLedger({
 			)}
 
 			{totalPages > 1 && (
-				<div className="px-4 py-2.5 border-t border-border flex items-center justify-between">
+				<div className="px-4 py-2.5 border-t border-border flex items-center justify-between gap-3">
+					<button
+						type="button"
+						disabled={page <= 1 || loading}
+						onClick={() => onPageChange(1)}
+						className="text-[9px] tracking-widest text-muted-foreground/40 hover:text-foreground disabled:opacity-20 uppercase transition-colors"
+						aria-label="First page"
+					>
+						« first
+					</button>
 					<button
 						type="button"
 						disabled={page <= 1 || loading}
@@ -222,9 +271,29 @@ export function SessionsLedger({
 					>
 						<ChevronLeft size={10} /> prev
 					</button>
-					<span className="text-[9px] tabular-nums text-muted-foreground/30">
-						{page} / {totalPages}
-					</span>
+					<div className="flex items-center gap-2">
+						<span className="text-[9px] tabular-nums text-muted-foreground/30">
+							{page} / {totalPages}
+						</span>
+						<label className="flex items-center gap-1 text-[8px] tracking-widest text-muted-foreground/50 uppercase">
+							<span className="sr-only">go to page</span>
+							<span aria-hidden="true">go</span>
+							<input
+								type="number"
+								min={1}
+								max={totalPages}
+								value={jumpInput}
+								onChange={(e) => setJumpInput(e.target.value)}
+								onKeyDown={handleJumpKey}
+								onBlur={() => {
+									if (jumpInput) commitJump();
+								}}
+								placeholder="#"
+								className="bg-transparent border border-border w-12 px-1.5 py-0.5 text-[9px] tabular-nums text-foreground/70 focus:outline-none focus:border-primary/50 transition-colors placeholder:text-muted-foreground/30 [appearance:textfield] [&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none"
+								aria-label={`Jump to page (1 to ${totalPages})`}
+							/>
+						</label>
+					</div>
 					<button
 						type="button"
 						disabled={page >= totalPages || loading}
@@ -232,6 +301,15 @@ export function SessionsLedger({
 						className="flex items-center gap-0.5 text-[9px] tracking-widest text-muted-foreground/40 hover:text-foreground disabled:opacity-20 uppercase transition-colors"
 					>
 						next <ChevronRight size={10} />
+					</button>
+					<button
+						type="button"
+						disabled={page >= totalPages || loading}
+						onClick={() => onPageChange(totalPages)}
+						className="text-[9px] tracking-widest text-muted-foreground/40 hover:text-foreground disabled:opacity-20 uppercase transition-colors"
+						aria-label="Last page"
+					>
+						last »
 					</button>
 				</div>
 			)}

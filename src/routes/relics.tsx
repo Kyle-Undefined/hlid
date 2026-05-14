@@ -1,4 +1,4 @@
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, Link } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import {
 	ChevronDown,
@@ -387,8 +387,22 @@ function AttachmentsPage() {
 										<td className="px-3 py-2 font-mono text-muted-foreground/70 truncate">
 											{r.mime}
 										</td>
-										<td className="px-3 py-2 font-mono text-muted-foreground/60 truncate">
-											{r.session_id ? r.session_id.slice(0, 12) : "?"}
+										<td
+											className="px-3 py-2 font-mono text-muted-foreground/60 truncate"
+											onClick={(e) => e.stopPropagation()}
+											onKeyDown={(e) => e.stopPropagation()}
+										>
+											{r.session_id ? (
+												<Link
+													to="/raven"
+													search={{ session: r.session_id, agent: undefined }}
+													className="hover:text-primary transition-colors"
+												>
+													{r.session_id.slice(0, 12)}
+												</Link>
+											) : (
+												"?"
+											)}
 										</td>
 										<td className="px-3 py-2 text-muted-foreground/70 tabular-nums">
 											{formatDate(r.created_at)}

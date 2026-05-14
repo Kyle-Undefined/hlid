@@ -323,6 +323,28 @@ function initSchema(db: Db): void {
 		);
 	});
 
+	// ask_user_questions: persist interactive question prompts so the card
+	// survives reload and is visible/answerable from any device that loads the
+	// session. answers_json + notes_json stay NULL until the user responds.
+	// Mirrors plan_proposals structure (request_id UNIQUE for upsert on retry).
+	runMigration(db, "_migrated_ask_user_questions_table", (db) => {
+		db.run(`
+      CREATE TABLE IF NOT EXISTS ask_user_questions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL REFERENCES sessions(id),
+        request_id TEXT NOT NULL UNIQUE,
+        seq INTEGER NOT NULL,
+        questions_json TEXT NOT NULL,
+        answers_json TEXT,
+        notes_json TEXT,
+        timestamp INTEGER NOT NULL DEFAULT (unixepoch())
+      )
+    `);
+		db.run(
+			`CREATE INDEX IF NOT EXISTS idx_ask_user_questions_session ON ask_user_questions(session_id)`,
+		);
+	});
+
 	// provider_id: tracks which agent provider recorded each query row so
 	// usage windows can be filtered per-provider in the multi-provider UI.
 	// Existing rows default to 'claude' (the only provider before this migration).

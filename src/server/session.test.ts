@@ -25,6 +25,8 @@ vi.mock("../db", () => ({
 	appendToolEvent: vi.fn().mockResolvedValue(undefined),
 	appendPlanProposal: vi.fn().mockResolvedValue(undefined),
 	setPlanProposalDecision: vi.fn().mockResolvedValue(undefined),
+	appendAskUserQuestion: vi.fn().mockResolvedValue(undefined),
+	setAskUserQuestionResolution: vi.fn().mockResolvedValue(undefined),
 	setMessageText: vi.fn().mockResolvedValue(undefined),
 	setMessageRecap: vi.fn().mockResolvedValue(undefined),
 	setToolEventResult: vi.fn().mockResolvedValue(undefined),
@@ -429,6 +431,15 @@ describe("SessionManager — AskUserQuestion", () => {
 		const turn = sm.runQuery("hello", () => {}, "sess-1");
 		await waitFor(() =>
 			expect(sm.getPendingAskUserQuestions()).toHaveLength(1),
+		);
+
+		// Persistence: the pending question is written to DB on emit so it
+		// survives reload and is visible from any device that loads the session.
+		expect(vi.mocked(dbMock.appendAskUserQuestion)).toHaveBeenCalledWith(
+			"sess-1",
+			"tid-ask-1",
+			expect.any(Number),
+			expect.stringContaining(QUESTION),
 		);
 
 		sm.handleAskUserQuestionResponse("tid-ask-1", { [QUESTION]: [SELECTED] });

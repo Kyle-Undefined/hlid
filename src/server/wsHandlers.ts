@@ -289,6 +289,19 @@ export function createWsHandlers(session: SessionManager) {
 					answers: msg.answers,
 					...(msg.notes !== undefined ? { notes: msg.notes } : {}),
 				});
+				const aukSessionId = session.getCurrentSessionId();
+				if (aukSessionId) {
+					void db
+						.setAskUserQuestionResolution(
+							aukSessionId,
+							msg.id,
+							JSON.stringify(msg.answers),
+							msg.notes !== undefined ? JSON.stringify(msg.notes) : null,
+						)
+						.catch((e) => {
+							console.error("[db] setAskUserQuestionResolution failed:", e);
+						});
+				}
 				return;
 			}
 

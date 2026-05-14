@@ -187,6 +187,24 @@ export const getSessionPlanProposalsFn = createServerFn({ method: "GET" })
 		),
 	);
 
+export type SessionAskUserQuestionRow = {
+	request_id: string;
+	seq: number;
+	questions_json: string;
+	answers_json: string | null;
+	notes_json: string | null;
+	timestamp: number;
+};
+
+export const getSessionAskUserQuestionsFn = createServerFn({ method: "GET" })
+	.inputValidator((sessionId: string) => sessionId)
+	.handler(({ data: sessionId }) =>
+		dbJson<SessionAskUserQuestionRow[]>(
+			`/db/session-ask-user-questions?session_id=${encodeURIComponent(sessionId)}`,
+			[],
+		),
+	);
+
 export const getSessionContextFn = createServerFn({ method: "GET" })
 	.inputValidator((sessionId: string) => sessionId)
 	.handler(({ data: sessionId }) =>

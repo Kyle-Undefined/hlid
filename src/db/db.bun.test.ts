@@ -15,10 +15,13 @@ import {
 } from "./attachments";
 import { appendLog, clearLogs, getLogs } from "./logs";
 import {
+	appendAskUserQuestion,
 	appendMessage,
 	appendToolEvent,
+	getSessionAskUserQuestions,
 	getSessionMessages,
 	getSessionToolEvents,
+	setAskUserQuestionResolution,
 	setMessageRecap,
 } from "./messages";
 import {
@@ -1051,5 +1054,88 @@ describe("usage — registerProvider", () => {
 		expect(ids).toContain("five_hour");
 		expect(ids).toContain("weekly");
 		expect(ids).toContain("weekly_sonnet");
+	});
+});
+
+// ── ask_user_questions ────────────────────────────────────────────────────────
+
+describe("ask_user_questions", () => {
+	beforeEach(() => freshDb());
+
+	const sampleQuestionsJson = JSON.stringify([
+		{ question: "Pick?", options: ["A", "B"], multiSelect: false },
+	]);
+
+	it("appendAskUserQuestion inserts a pending row (answers_json + notes_json null)", async () => {
+		await createSession("s1", "TEST", "claude-sonnet");
+		await appendAskUserQuestion("s1", "req-1", 0, sampleQuestionsJson);
+		const rows = await getSessionAskUserQuestions("s1");
+		expect(rows).toHaveLength(1);
+		expect(rows[0].request_id).toBe("req-1");
+		expect(rows[0].questions_json).toBe(sampleQuestionsJson);
+		expect(rows[0].answers_json).toBeNull();
+		expect(rows[0].notes_json).toBeNull();
+	});
+
+	it("appendAskUserQuestion upserts on the same request_id (retry-safe)", async () => {
+		await createSession("s1", "TEST", "claude-sonnet");
+		await appendAskUserQuestion("s1", "req-1", 0, sampleQuestionsJson);
+		const updatedJson = JSON.stringify([
+			{ question: "Pick again?", options: ["X", "Y"], multiSelect: true },
+		]);
+		await appendAskUserQuestion("s1", "req-1", 0, updatedJson);
+		const rows = await getSessionAskUserQuestions("s1");
+		expect(rows).toHaveLength(1);
+		expect(rows[0].questions_json).toBe(updatedJson);
+	});
+
+	it("setAskUserQuestionResolution stores answers and notes", async () => {
+		await createSession("s1", "TEST", "claude-sonnet");
+		await appendAskUserQuestion("s1", "req-1", 0, sampleQuestionsJson);
+		const answersJson = JSON.stringify({ "Pick?": ["A"] });
+		const notesJson = JSON.stringify({ "Pick?": "because A" });
+		await setAskUserQuestionResolution("s1", "req-1", answersJson, notesJson);
+		const rows = await getSessionAskUserQuestions("s1");
+		expect(rows[0].answers_json).toBe(answersJson);
+		expect(rows[0].notes_json).toBe(notesJson);
+	});
+
+	it("setAskUserQuestionResolution accepts null notes_json", async () => {
+		await createSession("s1", "TEST", "claude-sonnet");
+		await appendAskUserQuestion("s1", "req-1", 0, sampleQuestionsJson);
+		const answersJson = JSON.stringify({ "Pick?": ["B"] });
+		await setAskUserQuestionResolution("s1", "req-1", answersJson, null);
+		const rows = await getSessionAskUserQuestions("s1");
+		expect(rows[0].answers_json).toBe(answersJson);
+		expect(rows[0].notes_json).toBeNull();
+	});
+
+	it("setAskUserQuestionResolution throws when the row does not exist", async () => {
+		await createSession("s1", "TEST", "claude-sonnet");
+		await expect(
+			setAskUserQuestionResolution("s1", "missing-id", "{}", null),
+		).rejects.toThrow(/no row found/);
+	});
+
+	it("getSessionAskUserQuestions orders by seq ASC", async () => {
+		await createSession("s1", "TEST", "claude-sonnet");
+		await appendAskUserQuestion("s1", "req-c", 2, sampleQuestionsJson);
+		await appendAskUserQuestion("s1", "req-a", 0, sampleQuestionsJson);
+		await appendAskUserQuestion("s1", "req-b", 1, sampleQuestionsJson);
+		const rows = await getSessionAskUserQuestions("s1");
+		expect(rows.map((r) => r.request_id)).toEqual(["req-a", "req-b", "req-c"]);
+	});
+
+	it("getSessionAskUserQuestions scopes by session_id", async () => {
+		await createSession("s1", "ONE", "claude-sonnet");
+		await createSession("s2", "TWO", "claude-sonnet");
+		await appendAskUserQuestion("s1", "req-1", 0, sampleQuestionsJson);
+		await appendAskUserQuestion("s2", "req-2", 0, sampleQuestionsJson);
+		const rows1 = await getSessionAskUserQuestions("s1");
+		const rows2 = await getSessionAskUserQuestions("s2");
+		expect(rows1).toHaveLength(1);
+		expect(rows1[0].request_id).toBe("req-1");
+		expect(rows2).toHaveLength(1);
+		expect(rows2[0].request_id).toBe("req-2");
 	});
 });

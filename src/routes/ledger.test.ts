@@ -71,6 +71,27 @@ describe("parseLedgerSearch", () => {
 		expect(parseLedgerSearch({ page: 0 })).toMatchObject({ page: 1 });
 		expect(parseLedgerSearch({ page: -5 })).toMatchObject({ page: 1 });
 	});
+
+	it("defaults size to 20 when not provided", () => {
+		expect(parseLedgerSearch({})).toMatchObject({ size: 20 });
+	});
+
+	it.each([10, 20, 50, 100])("accepts valid page size %i", (size) => {
+		expect(parseLedgerSearch({ size })).toMatchObject({ size });
+	});
+
+	it("falls back to 20 for invalid page sizes", () => {
+		expect(parseLedgerSearch({ size: 5 })).toMatchObject({ size: 20 });
+		expect(parseLedgerSearch({ size: 999 })).toMatchObject({ size: 20 });
+		expect(parseLedgerSearch({ size: "20" })).toMatchObject({ size: 20 });
+		expect(parseLedgerSearch({ size: null })).toMatchObject({ size: 20 });
+	});
+
+	it("floors fractional size values then validates against allowed set", () => {
+		expect(parseLedgerSearch({ size: 20.7 })).toMatchObject({ size: 20 });
+		// 19.9 floors to 19, which is invalid → fallback to 20
+		expect(parseLedgerSearch({ size: 19.9 })).toMatchObject({ size: 20 });
+	});
 });
 
 // ─── filterOptimisticIds ──────────────────────────────────────────────────────

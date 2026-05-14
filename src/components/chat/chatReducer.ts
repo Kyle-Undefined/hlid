@@ -151,6 +151,13 @@ export type Action =
 						plan: string;
 						decision: string;
 				  }
+				| {
+						kind: "ask_user_question";
+						id: string;
+						questions: AskQuestion[];
+						answers: AskUserQuestionAnswers | null;
+						notes?: AskUserQuestionNotes;
+				  }
 			>;
 	  }
 	| {
@@ -351,6 +358,15 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 				"cancelled",
 			]);
 			return action.items.map((item): ChatMessage => {
+				if (item.kind === "ask_user_question") {
+					return {
+						id: item.id,
+						role: "ask_user_question",
+						questions: item.questions,
+						answers: item.answers,
+						...(item.notes !== undefined ? { notes: item.notes } : {}),
+					};
+				}
 				if (item.kind === "plan_proposal") {
 					const decision = validPlanDecisions.has(
 						item.decision as PlanProposalDecision,
@@ -409,7 +425,15 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 				};
 			});
 		}
-		case "ADD_ASK_USER_QUESTION":
+		case "ADD_ASK_USER_QUESTION": {
+			// Dedup: LOAD_HISTORY may have already hydrated this id from DB. The
+			// WS server also re-emits pending questions on reconnect (see
+			// wsHandlers.ts pending replay). Without this guard the same prompt
+			// would render twice.
+			const exists = state.some(
+				(m) => m.id === action.id && m.role === "ask_user_question",
+			);
+			if (exists) return state;
 			return [
 				...state,
 				{
@@ -419,6 +443,7 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 					answers: null,
 				},
 			];
+		}
 		case "RESOLVE_ASK_USER_QUESTION":
 			return state.map((m) =>
 				m.id === action.id && m.role === "ask_user_question"

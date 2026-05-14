@@ -137,6 +137,63 @@ export async function getSessionPlanProposals(
 		.all(sessionId);
 }
 
+// ─── ask_user_questions ──────────────────────────────────────────────────────
+// Persist the interactive question card so it survives reload and is visible
+// from any device that loads the session. Mirrors plan_proposals — insert
+// on emit with answers_json NULL, update with the response when resolved.
+
+export type AskUserQuestionRow = {
+	request_id: string;
+	seq: number;
+	questions_json: string;
+	answers_json: string | null;
+	notes_json: string | null;
+	timestamp: number;
+};
+
+export async function appendAskUserQuestion(
+	sessionId: string,
+	requestId: string,
+	seq: number,
+	questionsJson: string,
+): Promise<void> {
+	const db = await getDb();
+	db.run(
+		`INSERT INTO ask_user_questions (session_id, request_id, seq, questions_json, timestamp) VALUES (?, ?, ?, ?, unixepoch())
+     ON CONFLICT(request_id) DO UPDATE SET questions_json = excluded.questions_json`,
+		[sessionId, requestId, seq, questionsJson],
+	);
+}
+
+export async function setAskUserQuestionResolution(
+	sessionId: string,
+	requestId: string,
+	answersJson: string,
+	notesJson: string | null,
+): Promise<void> {
+	const db = await getDb();
+	const { changes } = db.run(
+		`UPDATE ask_user_questions SET answers_json = ?, notes_json = ? WHERE session_id = ? AND request_id = ?`,
+		[answersJson, notesJson, sessionId, requestId],
+	);
+	if (changes === 0) {
+		throw new Error(
+			`setAskUserQuestionResolution: no row found for session=${sessionId} request_id=${requestId}`,
+		);
+	}
+}
+
+export async function getSessionAskUserQuestions(
+	sessionId: string,
+): Promise<AskUserQuestionRow[]> {
+	const db = await getDb();
+	return db
+		.query<AskUserQuestionRow, [string]>(
+			`SELECT request_id, seq, questions_json, answers_json, notes_json, timestamp FROM ask_user_questions WHERE session_id = ? ORDER BY seq ASC`,
+		)
+		.all(sessionId);
+}
+
 export async function getSessionMessages(
 	sessionId: string,
 ): Promise<MessageRow[]> {

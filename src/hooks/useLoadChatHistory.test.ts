@@ -33,6 +33,7 @@ vi.mock("#/lib/serverFns", () => ({
 	getSessionContextFn: vi.fn(),
 	getSessionPermissionsFn: vi.fn(),
 	getSessionPlanProposalsFn: vi.fn(),
+	getSessionAskUserQuestionsFn: vi.fn(),
 }));
 
 vi.mock("#/lib/utils", () => ({
@@ -43,6 +44,7 @@ vi.mock("#/lib/utils", () => ({
 
 import * as wsStore from "#/hooks/wsStore";
 import {
+	getSessionAskUserQuestionsFn,
 	getSessionContextFn,
 	getSessionDataFn,
 	getSessionPermissionsFn,
@@ -105,6 +107,7 @@ describe("useLoadChatHistory — initial load", () => {
 		vi.mocked(getSessionContextFn).mockResolvedValue(makeCtx());
 		vi.mocked(getSessionPermissionsFn).mockResolvedValue(makePerms());
 		vi.mocked(getSessionPlanProposalsFn).mockResolvedValue([]);
+		vi.mocked(getSessionAskUserQuestionsFn).mockResolvedValue([]);
 	});
 
 	afterEach(() => {
@@ -158,6 +161,7 @@ describe("useLoadChatHistory — reconnect recovery", () => {
 		vi.mocked(getSessionContextFn).mockResolvedValue(makeCtx());
 		vi.mocked(getSessionPermissionsFn).mockResolvedValue(makePerms());
 		vi.mocked(getSessionPlanProposalsFn).mockResolvedValue([]);
+		vi.mocked(getSessionAskUserQuestionsFn).mockResolvedValue([]);
 	});
 
 	afterEach(() => {
@@ -571,6 +575,7 @@ describe("useLoadChatHistory — placeholder reuse during running turn", () => {
 		vi.mocked(getSessionContextFn).mockResolvedValue(makeCtx());
 		vi.mocked(getSessionPermissionsFn).mockResolvedValue([]);
 		vi.mocked(getSessionPlanProposalsFn).mockResolvedValue([]);
+		vi.mocked(getSessionAskUserQuestionsFn).mockResolvedValue([]);
 	});
 
 	it("reuses placeholder id as pendingIdRef when last assistant row has empty text", async () => {

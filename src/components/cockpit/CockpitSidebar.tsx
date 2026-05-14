@@ -120,7 +120,10 @@ export function ViewAllLink() {
 			<button
 				type="button"
 				onClick={() =>
-					navigate({ to: "/ledger", search: { tab: "sessions", page: 1 } })
+					navigate({
+						to: "/ledger",
+						search: { tab: "sessions", page: 1, size: 20 },
+					})
 				}
 				className="text-[8px] tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 uppercase transition-colors w-full text-left"
 			>

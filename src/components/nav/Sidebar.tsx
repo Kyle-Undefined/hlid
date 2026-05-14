@@ -1,6 +1,12 @@
 import { Link } from "@tanstack/react-router";
-import { useSyncExternalStore } from "react";
+import { useEffect, useState, useSyncExternalStore } from "react";
 import { version } from "../../../package.json";
+import {
+	fetchUpdateStatus,
+	getUpdateSnapshot,
+	subscribeUpdateStatus,
+	type UpdateStatus,
+} from "../../hooks/updateStore";
 import * as wsStore from "../../hooks/wsStore";
 import { NAV_ITEMS } from "./items";
 import { statusDotClass } from "./SystemStatusDot";
@@ -15,6 +21,21 @@ export function Sidebar() {
 
 	const dot = statusDotClass(wsStatus, sessionState, hasPendingPermissions);
 
+	const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
+	useEffect(() => {
+		// Read current store state immediately (handles case where fetch already
+		// completed before this component mounted).
+		setUpdateStatus(getUpdateSnapshot());
+		// Trigger the fetch (idempotent — no-op if banner already fired it).
+		void fetchUpdateStatus();
+		// Subscribe to future store updates.
+		return subscribeUpdateStatus(() => {
+			setUpdateStatus(getUpdateSnapshot());
+		});
+	}, []);
+	const updateAvailable = updateStatus?.available ?? false;
+	const latestVersion = updateStatus?.latest;
+
 	return (
 		<aside className="hidden md:flex flex-col w-44 shrink-0 bg-sidebar border-r border-sidebar-border">
 			<div className="px-4 py-4 border-b border-sidebar-border">
@@ -27,8 +48,13 @@ export function Sidebar() {
 				<div className="text-[9px] tracking-widest text-muted-foreground/50 mt-0.5 uppercase">
 					watcher of worlds
 				</div>
-				<div className="text-[9px] tabular-nums text-muted-foreground/30 mt-0.5 font-mono">
+				<div className="text-[9px] tabular-nums text-muted-foreground/30 mt-0.5 font-mono flex items-center gap-1">
 					v{version}
+					{updateAvailable && latestVersion && (
+						<span className="text-primary/70" title="Update available">
+							→ v{latestVersion}
+						</span>
+					)}
 				</div>
 			</div>
 

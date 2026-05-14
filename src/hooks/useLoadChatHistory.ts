@@ -3,25 +3,41 @@ import type { Action } from "#/components/chat/chatReducer";
 import type { WsStatus } from "#/hooks/wsStore";
 import * as wsStore from "#/hooks/wsStore";
 import {
+	getSessionAskUserQuestionsFn,
 	getSessionContextFn,
 	getSessionDataFn,
 	getSessionPermissionsFn,
 	getSessionPlanProposalsFn,
 } from "#/lib/serverFns";
 import { uid } from "#/lib/utils";
-import type { ServerMessage } from "#/server/protocol";
+import type {
+	AskQuestion,
+	AskUserQuestionAnswers,
+	AskUserQuestionNotes,
+	ServerMessage,
+} from "#/server/protocol";
 
 // ─── shared row-mapping helpers ───────────────────────────────────────────────
 
 type SessionDataRow = Awaited<ReturnType<typeof getSessionDataFn>>[number];
 type PermRow = Awaited<ReturnType<typeof getSessionPermissionsFn>>[number];
 type PlanRow = Awaited<ReturnType<typeof getSessionPlanProposalsFn>>[number];
+type AukRow = Awaited<ReturnType<typeof getSessionAskUserQuestionsFn>>[number];
 type CtxRow = Awaited<ReturnType<typeof getSessionContextFn>>;
+
+function safeParseJson<T>(raw: string, fallback: T): T {
+	try {
+		return JSON.parse(raw) as T;
+	} catch {
+		return fallback;
+	}
+}
 
 function mapSessionRows(
 	rows: SessionDataRow[],
 	permEvents: PermRow[],
 	planRows: PlanRow[],
+	aukRows: AukRow[],
 ) {
 	const messageItems = rows.map((r) => ({
 		kind: "message" as const,
@@ -67,7 +83,24 @@ function mapSessionRows(
 		plan: p.plan,
 		decision: p.decision,
 	}));
-	return [...messageItems, ...permissionItems, ...planItems].sort(
+	const askItems = aukRows.map((a) => ({
+		kind: "ask_user_question" as const,
+		timestamp: a.timestamp,
+		id: a.request_id,
+		questions: safeParseJson<AskQuestion[]>(a.questions_json, []),
+		answers:
+			a.answers_json != null
+				? safeParseJson<AskUserQuestionAnswers | null>(a.answers_json, null)
+				: null,
+		notes:
+			a.notes_json != null
+				? safeParseJson<AskUserQuestionNotes | undefined>(
+						a.notes_json,
+						undefined,
+					)
+				: undefined,
+	}));
+	return [...messageItems, ...permissionItems, ...planItems, ...askItems].sort(
 		(a, b) => a.timestamp - b.timestamp,
 	);
 }
@@ -199,11 +232,12 @@ export function useLoadChatHistory({
 			getSessionContextFn({ data: existingSessionId }),
 			getSessionPermissionsFn({ data: existingSessionId }),
 			getSessionPlanProposalsFn({ data: existingSessionId }),
+			getSessionAskUserQuestionsFn({ data: existingSessionId }),
 		])
-			.then(([rows, ctx, permEvents, planRows]) => {
+			.then(([rows, ctx, permEvents, planRows, aukRows]) => {
 				if (cancelled) return;
 				applyCtx(ctx);
-				const items = mapSessionRows(rows, permEvents, planRows);
+				const items = mapSessionRows(rows, permEvents, planRows, aukRows);
 				dispatch({ type: "LOAD_HISTORY", items });
 				const placeholder = findPlaceholderAssistant(items);
 				const p = wsStore.claimPendingPrompt();
@@ -296,11 +330,12 @@ export function useLoadChatHistory({
 			getSessionContextFn({ data: sid }),
 			getSessionPermissionsFn({ data: sid }),
 			getSessionPlanProposalsFn({ data: sid }),
+			getSessionAskUserQuestionsFn({ data: sid }),
 		])
-			.then(([rows, ctx, permEvents, planRows]) => {
+			.then(([rows, ctx, permEvents, planRows, aukRows]) => {
 				if (cancelled) return;
 				applyCtx(ctx);
-				const items = mapSessionRows(rows, permEvents, planRows);
+				const items = mapSessionRows(rows, permEvents, planRows, aukRows);
 				dispatch({ type: "LOAD_HISTORY", items });
 				const placeholder = findPlaceholderAssistant(items);
 				if (wsStore.getSnapshot().sessionState === "running") {

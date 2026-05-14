@@ -674,6 +674,68 @@ describe("LOAD_HISTORY", () => {
 		expect(msg.decision).toBe("approved");
 	});
 
+	it("rehydrates pending ask_user_question items (answers=null)", () => {
+		const state = reducer(empty(), {
+			type: "LOAD_HISTORY",
+			items: [
+				{
+					kind: "ask_user_question",
+					id: "aq-1",
+					questions: [
+						{ question: "Pick?", options: ["A", "B"], multiSelect: false },
+					],
+					answers: null,
+				},
+			],
+		});
+		expect(state).toHaveLength(1);
+		const msg = state[0];
+		if (msg.role !== "ask_user_question") throw new Error("wrong role");
+		expect(msg.answers).toBeNull();
+		expect(msg.notes).toBeUndefined();
+		expect(msg.questions[0].question).toBe("Pick?");
+	});
+
+	it("rehydrates resolved ask_user_question items with answers + notes", () => {
+		const state = reducer(empty(), {
+			type: "LOAD_HISTORY",
+			items: [
+				{
+					kind: "ask_user_question",
+					id: "aq-1",
+					questions: [
+						{ question: "Pick?", options: ["A", "B"], multiSelect: false },
+					],
+					answers: { "Pick?": ["A"] },
+					notes: { "Pick?": "because A" },
+				},
+			],
+		});
+		const msg = state[0];
+		if (msg.role !== "ask_user_question") throw new Error("wrong role");
+		expect(msg.answers).toEqual({ "Pick?": ["A"] });
+		expect(msg.notes).toEqual({ "Pick?": "because A" });
+	});
+
+	it("omits notes field when not provided on the loaded item", () => {
+		const state = reducer(empty(), {
+			type: "LOAD_HISTORY",
+			items: [
+				{
+					kind: "ask_user_question",
+					id: "aq-1",
+					questions: [
+						{ question: "Pick?", options: ["A", "B"], multiSelect: false },
+					],
+					answers: { "Pick?": ["B"] },
+				},
+			],
+		});
+		const msg = state[0];
+		if (msg.role !== "ask_user_question") throw new Error("wrong role");
+		expect(msg.notes).toBeUndefined();
+	});
+
 	it("normalizes unknown role to assistant", () => {
 		const state = reducer(empty(), {
 			type: "LOAD_HISTORY",
@@ -807,6 +869,52 @@ describe("ADD_ASK_USER_QUESTION", () => {
 		expect(msg.notes).toBeUndefined();
 		expect(msg.questions).toHaveLength(1);
 		expect(msg.questions[0].question).toBe("Pick?");
+	});
+
+	it("dedups when an ask_user_question with the same id is already in state", () => {
+		// Mirrors the live flow: LOAD_HISTORY hydrates the card from DB, then
+		// the WS server re-emits the same pending question on reconnect. Without
+		// the dedup guard the prompt would appear twice.
+		const before = reducer(empty(), {
+			type: "LOAD_HISTORY",
+			items: [
+				{
+					kind: "ask_user_question",
+					id: "aq-1",
+					questions: [
+						{ question: "Pick?", options: ["A", "B"], multiSelect: false },
+					],
+					answers: null,
+				},
+			],
+		});
+		const after = reducer(before, {
+			type: "ADD_ASK_USER_QUESTION",
+			id: "aq-1",
+			questions: [
+				{ question: "Pick?", options: ["A", "B"], multiSelect: false },
+			],
+		});
+		expect(after).toHaveLength(1);
+		// Same reference returned when no work happens — avoids unnecessary re-renders.
+		expect(after).toBe(before);
+	});
+
+	it("still appends when the existing id belongs to a different role", () => {
+		const before = reducer(empty(), {
+			type: "ADD_USER",
+			id: "aq-1",
+			text: "user message reusing the id",
+		});
+		const after = reducer(before, {
+			type: "ADD_ASK_USER_QUESTION",
+			id: "aq-1",
+			questions: [
+				{ question: "Pick?", options: ["A", "B"], multiSelect: false },
+			],
+		});
+		// Role check ensures dedup is scoped to ask_user_question only.
+		expect(after).toHaveLength(2);
 	});
 });
 

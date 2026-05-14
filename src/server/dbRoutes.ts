@@ -137,6 +137,16 @@ export async function handleDbRoute(
 		return Response.json(rows);
 	}
 
+	if (
+		url.pathname === "/db/session-ask-user-questions" &&
+		req.method === "GET"
+	) {
+		const sessionId = url.searchParams.get("session_id");
+		if (!sessionId) return new Response("Missing session_id", { status: 400 });
+		const rows = await db.getSessionAskUserQuestions(sessionId);
+		return Response.json(rows);
+	}
+
 	if (url.pathname === "/db/weekly-stats" && req.method === "GET") {
 		const stats = await db.getWeeklyStats();
 		return Response.json(stats);

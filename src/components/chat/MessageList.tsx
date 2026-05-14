@@ -83,6 +83,28 @@ export function MessageList({
 		return map;
 	}, [chatQueue, sessionId, sessionState, runningTurnId]);
 
+	// Queued msgs live in wsStore._chatQueue (module state, survives SPA nav)
+	// but the reducer transcript does not. On remount, history reloads from DB
+	// — which has no row for a not-yet-running queued turn (server persists
+	// the user row only when drainTurnQueue starts processing it) — so the
+	// queued msg would vanish until processed. Re-surface any queued item not
+	// already in the transcript:
+	//   - skip ids already rendered (live case: synthetic user_message
+	//     dispatched ADD_USER with id === queue.id)
+	//   - skip the running turn (its user row is in DB with a fresh uid, so
+	//     rendering the queue copy would double it)
+	const orphanQueued = useMemo(() => {
+		const renderedUserIds = new Set(
+			messages.filter((m) => m.role === "user").map((m) => m.id),
+		);
+		return chatQueue.filter(
+			(qm) =>
+				qm.session_id === sessionId &&
+				!renderedUserIds.has(qm.id) &&
+				qm.id !== runningTurnId,
+		);
+	}, [messages, chatQueue, sessionId, runningTurnId]);
+
 	return (
 		<>
 			{messages.map((m) => {
@@ -130,6 +152,20 @@ export function MessageList({
 				}
 				return null;
 			})}
+			{orphanQueued.map((qm) => (
+				<UserMsg
+					key={qm.id}
+					message={{
+						id: qm.id,
+						role: "user" as const,
+						text: qm.text,
+						attachments: qm.attachments,
+					}}
+					queueState={queueStateById.get(qm.id)}
+					onCancel={handleCancelQueued}
+					onPromote={handlePromoteQueued}
+				/>
+			))}
 			<div ref={bottomRef} />
 		</>
 	);

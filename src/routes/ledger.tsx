@@ -6,7 +6,8 @@ import {
 import { createServerFn } from "@tanstack/react-start";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ThirtyDayGraph } from "#/components/cockpit/ThirtyDayGraph";
-import { Row, StatCell, UtilBar } from "#/components/ledger/LedgerStats";
+import type { StatBundle } from "#/components/ledger/LedgerStats";
+import { StatCell, StatRows, UtilBar } from "#/components/ledger/LedgerStats";
 import { SessionsLedger } from "#/components/ledger/SessionsLedger";
 import { statusDotClass } from "#/components/nav/SystemStatusDot";
 import {
@@ -36,14 +37,28 @@ import type { RateLimitMessage, ServerMessage } from "#/server/protocol";
 
 // ─── search param helper (exported for tests) ────────────────────────────────
 
+export const VALID_PAGE_SIZES = [10, 20, 50, 100] as const;
+export type PageSize = (typeof VALID_PAGE_SIZES)[number];
+const DEFAULT_PAGE_SIZE: PageSize = 20;
+
+export function isValidSize(n: number): n is PageSize {
+	return (VALID_PAGE_SIZES as readonly number[]).includes(n);
+}
+
 export function parseLedgerSearch(search: Record<string, unknown>): {
 	tab: "stats" | "sessions";
 	page: number;
+	size: PageSize;
 } {
 	const tab = search.tab === "stats" ? "stats" : "sessions";
 	const page =
 		typeof search.page === "number" ? Math.max(1, Math.floor(search.page)) : 1;
-	return { tab, page };
+	const sizeRaw =
+		typeof search.size === "number"
+			? Math.floor(search.size)
+			: DEFAULT_PAGE_SIZE;
+	const size: PageSize = isValidSize(sizeRaw) ? sizeRaw : DEFAULT_PAGE_SIZE;
+	return { tab, page, size };
 }
 
 // ─── optimistic-state filter helpers (exported for tests) ────────────────────
@@ -76,18 +91,9 @@ export function filterOptimisticLabels(
 	return next.size === prev.size ? prev : next;
 }
 
-/**
- * Compute cache hit rate as a percentage string (one decimal).
- * Returns "0" when total input is zero to avoid division by zero.
- */
-export function cacheHitPct(
-	input: number,
-	cacheRead: number,
-	cacheCreate: number,
-): string {
-	const total = input + cacheRead + cacheCreate;
-	return total > 0 ? ((cacheRead / total) * 100).toFixed(1) : "0";
-}
+// Re-exported from LedgerStats so existing tests (and any external imports)
+// continue to resolve cacheHitPct via this module path.
+export { cacheHitPct } from "#/components/ledger/LedgerStats";
 
 // ─── server fns ──────────────────────────────────────────────────────────────
 
@@ -138,12 +144,10 @@ const cleanupSessionsFn = createServerFn({ method: "POST" })
 
 // ─── route ───────────────────────────────────────────────────────────────────
 
-const PAGE_SIZE = 20;
-
 export const Route = createFileRoute("/ledger")({
 	validateSearch: parseLedgerSearch,
-	loaderDeps: ({ search: { page } }) => ({ page }),
-	loader: async ({ deps: { page } }) => {
+	loaderDeps: ({ search: { page, size } }) => ({ page, size }),
+	loader: async ({ deps: { page, size } }) => {
 		const [statsData, providers, thirtyDayStats, activeSession] =
 			await Promise.all([
 				getStatsDataFn(),
@@ -156,7 +160,7 @@ export const Route = createFileRoute("/ledger")({
 		const providerIds = availableIds.length > 0 ? availableIds : ["claude"];
 
 		const [initialSessions, providerUsages] = await Promise.all([
-			getSessionsPageFn({ data: { page, size: PAGE_SIZE } }),
+			getSessionsPageFn({ data: { page, size } }),
 			getProviderUsagesFn({ data: providerIds }),
 		]);
 
@@ -164,6 +168,7 @@ export const Route = createFileRoute("/ledger")({
 			statsData,
 			initialSessions,
 			page,
+			size,
 			thirtyDayStats,
 			providerUsages,
 			providerIds,
@@ -180,6 +185,7 @@ function StatsPage() {
 		statsData,
 		initialSessions,
 		page,
+		size,
 		thirtyDayStats,
 		providerUsages,
 		providerIds,
@@ -196,11 +202,14 @@ function StatsPage() {
 	const [activeSessionData, setActiveSessionData] = useState(activeSession);
 
 	const [sessionPage, setSessionPage] = useState(initialSessions);
-	// Mutate ref during render so it's always current before any event handler fires.
-	// useEffect would lag by one render cycle, causing refreshSessions to fetch the
-	// wrong page if a `done` event arrives between render and effect commit.
+	// Mutate refs during render so they're always current before any event
+	// handler fires. useEffect would lag by one render cycle, causing
+	// refreshSessions to fetch with stale page/size if a `done` event arrives
+	// between render and effect commit.
 	const pageRef = useRef(page);
 	pageRef.current = page;
+	const sizeRef = useRef(size);
+	sizeRef.current = size;
 
 	// Monotonic counter: whichever fetch (loader sync or WS-triggered refresh)
 	// resolves last wins. Earlier results are silently discarded.
@@ -219,7 +228,7 @@ function StatsPage() {
 	const refreshSessions = useCallback(async () => {
 		const v = ++fetchVersionRef.current;
 		const fresh = await getSessionsPageFn({
-			data: { page: pageRef.current, size: PAGE_SIZE },
+			data: { page: pageRef.current, size: sizeRef.current },
 		});
 		// Discard if a newer fetch (loader sync or another WS done) already landed.
 		if (fetchVersionRef.current !== v) return;
@@ -282,10 +291,26 @@ function StatsPage() {
 		}),
 		[sessionPage, deletedIds, renamedLabels],
 	);
-	const totalPages = Math.ceil(sessionsData.total / PAGE_SIZE);
+	const totalPages = Math.max(1, Math.ceil(sessionsData.total / size));
 
 	function onPageChange(p: number) {
-		navigate({ to: "/ledger", search: { tab: "sessions", page: p } });
+		const clamped = Math.max(1, Math.min(totalPages, p));
+		navigate({
+			to: "/ledger",
+			search: { tab: "sessions", page: clamped, size },
+		});
+	}
+
+	function onPageSizeChange(nextSize: number) {
+		// Guard: the <select> only emits values from VALID_PAGE_SIZES at runtime,
+		// but TS can't narrow that — validate at the boundary so the URL search
+		// state stays well-typed.
+		if (!isValidSize(nextSize)) return;
+		// Reset to page 1 — current page may not exist at the new size.
+		navigate({
+			to: "/ledger",
+			search: { tab: "sessions", page: 1, size: nextSize },
+		});
 	}
 
 	async function handleDeleteSession(id: string) {
@@ -299,7 +324,10 @@ function StatsPage() {
 				return next;
 			});
 		} else if (wasLastOnPage && page > 1) {
-			navigate({ to: "/ledger", search: { tab: "sessions", page: page - 1 } });
+			navigate({
+				to: "/ledger",
+				search: { tab: "sessions", page: page - 1, size },
+			});
 		}
 	}
 
@@ -317,17 +345,17 @@ function StatsPage() {
 
 	async function handleCleanup(days: number) {
 		await cleanupSessionsFn({ data: { days } });
-		navigate({ to: "/ledger", search: { tab: "sessions", page: 1 } });
+		navigate({ to: "/ledger", search: { tab: "sessions", page: 1, size } });
 	}
 
 	const { agg } = statsData;
 
 	function switchTab(next: "stats" | "sessions") {
 		if (next === "sessions") {
-			navigate({ to: "/ledger", search: { tab: next, page: 1 } });
+			navigate({ to: "/ledger", search: { tab: next, page: 1, size } });
 		} else {
-			// stats tab has no pagination — preserve existing page value in URL
-			navigate({ to: "/ledger", search: { tab: next, page } });
+			// stats tab has no pagination — preserve existing page/size in URL
+			navigate({ to: "/ledger", search: { tab: next, page, size } });
 		}
 	}
 
@@ -474,9 +502,12 @@ function StatsPage() {
 						<SessionsLedger
 							data={sessionsData}
 							page={page}
+							pageSize={size}
+							pageSizeOptions={VALID_PAGE_SIZES}
 							totalPages={totalPages}
 							loading={isRouterLoading}
 							onPageChange={onPageChange}
+							onPageSizeChange={onPageSizeChange}
 							onDelete={handleDeleteSession}
 							onRename={handleRenameSession}
 							onNavigate={(id) =>
@@ -498,11 +529,6 @@ function StatsPage() {
 
 /** Compact time-window breakdown card (TODAY / THIS MONTH). */
 function WindowCard({ title, w }: { title: string; w: AggWindow }) {
-	const hitPct = cacheHitPct(
-		w.input_tokens,
-		w.cache_read_tokens,
-		w.cache_creation_tokens,
-	);
 	return (
 		<div className="border border-border bg-card">
 			<div className="px-4 py-3 border-b border-border">
@@ -510,15 +536,7 @@ function WindowCard({ title, w }: { title: string; w: AggWindow }) {
 					{title}
 				</div>
 			</div>
-			<Row label="Cost" value={`$${w.cost.toFixed(4)}`} />
-			<Row label="Queries" value={String(w.queries)} />
-			<Row label="Turns" value={String(w.turns)} />
-			<Row label="Input" value={fmt(w.input_tokens)} />
-			<Row label="Output" value={fmt(w.output_tokens)} />
-			<Row label="Cache read" value={fmt(w.cache_read_tokens)} />
-			<Row label="Cache creation" value={fmt(w.cache_creation_tokens)} />
-			<Row label="Cache hit rate" value={`${hitPct}%`} />
-			<Row label="Total tokens" value={fmt(w.input_tokens + w.output_tokens)} />
+			<StatRows s={w} />
 		</div>
 	);
 }
@@ -542,49 +560,30 @@ function StatsTab({
 }) {
 	const idle = stats.queries === 0;
 
-	// Live session derived
-	const liveCacheHitPct = cacheHitPct(
-		stats.input_tokens,
-		stats.cache_read_tokens,
-		stats.cache_creation_tokens,
-	);
-
-	// All-time derived metrics
-	const allTimeTotal =
-		agg.allTime.input_tokens +
-		agg.allTime.output_tokens +
-		agg.allTime.cache_read_tokens +
-		agg.allTime.cache_creation_tokens;
-	const allTimeCacheHitPct = cacheHitPct(
-		agg.allTime.input_tokens,
-		agg.allTime.cache_read_tokens,
-		agg.allTime.cache_creation_tokens,
-	);
-	const avgCostPerQuery =
-		agg.allTime.queries > 0
-			? `$${(agg.allTime.cost / agg.allTime.queries).toFixed(4)}`
-			: "--";
-	const avgTurnsPerQuery =
-		agg.allTime.queries > 0
-			? (agg.allTime.turns / agg.allTime.queries).toFixed(1)
-			: "--";
-
-	// Active session derived
-	const activeAvgCost =
-		activeSession && activeSession.query_count > 0
-			? `$${(activeSession.total_cost / activeSession.query_count).toFixed(4)}`
-			: "--";
-	const activeCacheInput = activeSession
-		? activeSession.total_cache_read_tokens +
-			activeSession.total_cache_creation_tokens
-		: 0;
-	const activeCacheHitPct = activeSession
-		? cacheHitPct(
-				activeSession.total_input_tokens,
-				activeSession.total_cache_read_tokens,
-				activeSession.total_cache_creation_tokens,
-			)
-		: "0";
+	// Normalize every window onto the StatBundle shape so StatRows can render
+	// the same 12 rows in the same order across every card (drops the old
+	// inconsistency where SESSION/TODAY/MONTH/ALL-TIME each surfaced a
+	// slightly different subset of metrics).
+	const liveBundle: StatBundle = {
+		cost: stats.cost,
+		queries: stats.queries,
+		turns: stats.turns,
+		input_tokens: stats.input_tokens,
+		output_tokens: stats.output_tokens,
+		cache_read_tokens: stats.cache_read_tokens,
+		cache_creation_tokens: stats.cache_creation_tokens,
+	};
+	const sessionBundle: StatBundle | null = activeSession
+		? {
+				cost: activeSession.total_cost,
+				queries: activeSession.query_count,
+				turns: activeSession.total_turns,
+				input_tokens: activeSession.total_input_tokens,
+				output_tokens: activeSession.total_output_tokens,
+				cache_read_tokens: activeSession.total_cache_read_tokens,
+				cache_creation_tokens: activeSession.total_cache_creation_tokens,
+			}
+		: null;
 
 	return (
 		<div>
@@ -685,117 +684,46 @@ function StatsTab({
 					</div>
 				)}
 
-				{/* Live + DB session — 2-col responsive grid */}
-				{(!idle || activeSession) && (
-					<div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-						{/* Live: current session (from wsStore) */}
-						{!idle && (
-							<div className="border border-border bg-card">
-								<div className="px-4 py-3 border-b border-border">
-									<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
-										LIVE · THIS SESSION
-									</div>
-								</div>
-								<Row label="Cost" value={`$${stats.cost.toFixed(4)}`} />
-								<Row label="Queries" value={String(stats.queries)} />
-								<Row label="Turns" value={String(stats.turns)} />
-								<Row label="Input" value={fmt(stats.input_tokens)} />
-								<Row label="Output" value={fmt(stats.output_tokens)} />
-								<Row label="Cache read" value={fmt(stats.cache_read_tokens)} />
-								<Row
-									label="Cache creation"
-									value={fmt(stats.cache_creation_tokens)}
-								/>
-								<Row label="Cache hit rate" value={`${liveCacheHitPct}%`} />
-								<Row
-									label="Total tokens"
-									value={fmt(stats.input_tokens + stats.output_tokens)}
-								/>
+				{/* Live: current session (from wsStore) — own row, only when running */}
+				{!idle && (
+					<div className="border border-border bg-card">
+						<div className="px-4 py-3 border-b border-border">
+							<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+								LIVE · THIS SESSION
 							</div>
-						)}
-
-						{/* DB totals — persisted, accurate across reloads */}
-						{activeSession && (
-							<div className="border border-border bg-card">
-								<div className="px-4 py-3 border-b border-border">
-									<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
-										SESSION
-									</div>
-								</div>
-								<Row
-									label="Cost"
-									value={`$${activeSession.total_cost.toFixed(4)}`}
-								/>
-								<Row label="Avg cost/query" value={activeAvgCost} />
-								<Row
-									label="Queries"
-									value={String(activeSession.query_count)}
-								/>
-								<Row label="Turns" value={String(activeSession.total_turns)} />
-								<Row
-									label="Input"
-									value={fmt(activeSession.total_input_tokens)}
-								/>
-								<Row
-									label="Output"
-									value={fmt(activeSession.total_output_tokens)}
-								/>
-								<Row
-									label="Cache read"
-									value={fmt(activeSession.total_cache_read_tokens)}
-								/>
-								<Row
-									label="Cache creation"
-									value={fmt(activeSession.total_cache_creation_tokens)}
-								/>
-								<Row label="Cache hit rate" value={`${activeCacheHitPct}%`} />
-								<Row label="Cache tokens" value={fmt(activeCacheInput)} />
-								<Row
-									label="Total tokens"
-									value={fmt(
-										activeSession.total_input_tokens +
-											activeSession.total_output_tokens,
-									)}
-								/>
-							</div>
-						)}
+						</div>
+						<StatRows s={liveBundle} />
 					</div>
 				)}
 
-				{/* TODAY + THIS MONTH — 2-col responsive grid */}
-				<div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+				{/* SESSION (DB) + TODAY + THIS MONTH + ALL-TIME — same-size row.
+				    Falls back to 3 cols when there's no active session so the
+				    remaining cards still fill the row without a trailing gap. */}
+				<div
+					className={`grid grid-cols-1 sm:grid-cols-2 gap-4 ${
+						activeSession ? "lg:grid-cols-4" : "lg:grid-cols-3"
+					}`}
+				>
+					{sessionBundle && (
+						<div className="border border-border bg-card">
+							<div className="px-4 py-3 border-b border-border">
+								<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+									SESSION
+								</div>
+							</div>
+							<StatRows s={sessionBundle} />
+						</div>
+					)}
 					<WindowCard title="TODAY" w={agg.today} />
 					<WindowCard title="THIS MONTH" w={agg.thisMonth} />
-				</div>
-
-				{/* All-time — full width */}
-				<div className="border border-border bg-card">
-					<div className="px-4 py-3 border-b border-border">
-						<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
-							ALL-TIME
+					<div className="border border-border bg-card">
+						<div className="px-4 py-3 border-b border-border">
+							<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+								ALL-TIME
+							</div>
 						</div>
+						<StatRows s={agg.allTime} />
 					</div>
-					<Row label="Sessions" value={String(agg.allTime.sessions)} />
-					<Row label="Cost" value={`$${agg.allTime.cost.toFixed(4)}`} />
-					<Row label="Avg cost/query" value={avgCostPerQuery} />
-					<Row label="Queries" value={String(agg.allTime.queries)} />
-					<Row label="Turns" value={String(agg.allTime.turns)} />
-					<Row label="Avg turns/query" value={avgTurnsPerQuery} />
-					<Row label="Input" value={fmt(agg.allTime.input_tokens)} />
-					<Row label="Output" value={fmt(agg.allTime.output_tokens)} />
-					<Row label="Cache read" value={fmt(agg.allTime.cache_read_tokens)} />
-					<Row
-						label="Cache creation"
-						value={fmt(agg.allTime.cache_creation_tokens)}
-					/>
-					<Row label="Cache hit rate" value={`${allTimeCacheHitPct}%`} />
-					<Row
-						label="Cache tokens"
-						value={fmt(
-							agg.allTime.cache_read_tokens + agg.allTime.cache_creation_tokens,
-						)}
-					/>
-					<Row label="Total tokens" value={fmt(allTimeTotal)} />
 				</div>
 			</div>
 		</div>

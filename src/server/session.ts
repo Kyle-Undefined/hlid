@@ -1097,6 +1097,17 @@ export class SessionManager {
 									id: toolUseID,
 									questions,
 								};
+								const askSeq = this.messageSeq++;
+								if (sessionId) {
+									void db
+										.appendAskUserQuestion(
+											sessionId,
+											toolUseID,
+											askSeq,
+											JSON.stringify(questions),
+										)
+										.catch((e) => logDbError("appendAskUserQuestion", e));
+								}
 								this.askUserQuestions.register(
 									toolUseID,
 									askReq,
