@@ -2,3 +2,16 @@
 # Block packages published less than 5 days ago from being resolved.
 # Defends against same-day supply chain attacks (e.g. CVE-2026-45321 / TanStack, May 2026).
 minimumReleaseAge = 432000 # 5 days in seconds
+
+# Per-package bypass — only add a name here if a fresh release fixes a known
+# CVE we are exposed to and we accept the supply-chain trade-off.
+#   - mermaid 11.15.0 (2026-05-11) patches CVE-2026-41148/49/59 (CSS injection
+#     via user-supplied diagrams rendered in MermaidBlock.tsx) and CVE-2026-41150
+#     (gantt DoS). Worth bypassing the age floor.
+#   - tailwind-merge 3.6.0 (2026-05-10) adds Tailwind v4.3 support, matching the
+#     tailwindcss version pinned in package.json.
+minimumReleaseAgeExcludes = [
+  "mermaid",
+  "@mermaid-js/parser", # transitive dep of mermaid@11.15.0
+  "tailwind-merge",
+]
