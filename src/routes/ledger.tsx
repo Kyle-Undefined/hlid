@@ -6,6 +6,11 @@ import {
 import { createServerFn } from "@tanstack/react-start";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ThirtyDayGraph } from "#/components/cockpit/ThirtyDayGraph";
+import { HourOfDayChart } from "#/components/ledger/charts/HourOfDayChart";
+import { LatencyChart } from "#/components/ledger/charts/LatencyChart";
+import { ModelSplitDonut } from "#/components/ledger/charts/ModelSplitDonut";
+import { StopReasonDonut } from "#/components/ledger/charts/StopReasonDonut";
+import { TopToolsChart } from "#/components/ledger/charts/TopToolsChart";
 import type { StatBundle } from "#/components/ledger/LedgerStats";
 import { StatCell, StatRows, UtilBar } from "#/components/ledger/LedgerStats";
 import { SessionsLedger } from "#/components/ledger/SessionsLedger";
@@ -26,9 +31,11 @@ import { useWsLiveStats } from "#/hooks/useWsSelectors";
 import type { LiveStats } from "#/hooks/wsStore";
 import { dbFetch, dbJson } from "#/lib/dbClient";
 import { fmt, fmtModel } from "#/lib/formatters";
+import type { ActivityStats } from "#/lib/serverFns";
 import {
 	EMPTY_AGG,
 	getActiveSessionRowFn,
+	getActivityStatsFn,
 	getProvidersFn,
 	getProviderUsagesFn,
 	getThirtyDayStatsFn,
@@ -148,12 +155,13 @@ export const Route = createFileRoute("/ledger")({
 	validateSearch: parseLedgerSearch,
 	loaderDeps: ({ search: { page, size } }) => ({ page, size }),
 	loader: async ({ deps: { page, size } }) => {
-		const [statsData, providers, thirtyDayStats, activeSession] =
+		const [statsData, providers, thirtyDayStats, activeSession, activity] =
 			await Promise.all([
 				getStatsDataFn(),
 				getProvidersFn(),
 				getThirtyDayStatsFn(),
 				getActiveSessionRowFn(),
+				getActivityStatsFn(),
 			]);
 
 		const availableIds = providers.filter((p) => p.available).map((p) => p.id);
@@ -173,6 +181,7 @@ export const Route = createFileRoute("/ledger")({
 			providerUsages,
 			providerIds,
 			activeSession,
+			activity,
 		};
 	},
 	component: StatsPage,
@@ -190,6 +199,7 @@ function StatsPage() {
 		providerUsages,
 		providerIds,
 		activeSession,
+		activity,
 	} = Route.useLoaderData();
 	const { tab } = Route.useSearch();
 	const navigate = useNavigate();
@@ -496,6 +506,7 @@ function StatsPage() {
 						providerIds={providerIds}
 						thirtyDayStats={thirtyDayStats}
 						activeSession={activeSessionData}
+						activity={activity}
 					/>
 				) : (
 					<div className="p-5">
@@ -549,6 +560,7 @@ function StatsTab({
 	providerIds,
 	thirtyDayStats,
 	activeSession,
+	activity,
 }: {
 	agg: AggStats;
 	stats: LiveStats;
@@ -557,6 +569,7 @@ function StatsTab({
 	providerIds: string[];
 	thirtyDayStats: ThirtyDayStats;
 	activeSession: SessionRow | null;
+	activity: ActivityStats;
 }) {
 	const idle = stats.queries === 0;
 
@@ -642,6 +655,20 @@ function StatsTab({
 			/>
 
 			<div className="p-5 space-y-5">
+				{/* System activity — charts */}
+				<div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+					{/* Donuts paired side-by-side on lg so the wide-screen space goes
+					    toward the inline legend instead of empty whitespace. */}
+					<ModelSplitDonut data={activity.modelSplit} />
+					<StopReasonDonut data={activity.stopReasonSplit} />
+					{/* TopTools is dense (10 horizontal bars) — give it the full row. */}
+					<div className="lg:col-span-2">
+						<TopToolsChart data={activity.topTools} />
+					</div>
+					<HourOfDayChart data={activity.hourOfDay} />
+					<LatencyChart data={activity.latency} />
+				</div>
+
 				{/* Rate limit — only shown when active */}
 				{rateLimit && (
 					<div className="border border-border bg-card">

@@ -45,6 +45,9 @@
   --sidebar-ring: #38bdf8;
   /* data/stat accent */
   --data: #38bdf8;
+  /* chart error accent — brighter than --destructive (#963232) so error
+     bars stay readable on the near-black chart background */
+  --chart-error: #ef4444;
   /* tool block expanded panel, sky blue inset */
   --tool-panel: #071825;
   --tool-panel-border: #1a5580;
@@ -82,6 +85,8 @@ html[data-theme="tan"] {
   --sidebar-border: #b89870;
   --sidebar-ring: #8c4e35;
   --data: #8c4e35;
+  /* chart error accent — warmer red tuned for the tan card background */
+  --chart-error: #c0392b;
   --tool-panel: #e9ddc8;
   --tool-panel-border: #c5a882;
   /* chat message text colors */

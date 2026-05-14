@@ -89,6 +89,24 @@ export async function handleDbRoute(
 		return Response.json({ agg, sessions });
 	}
 
+	if (url.pathname === "/db/activity" && req.method === "GET") {
+		const [topTools, hourOfDay, latency, modelSplit, stopReasonSplit] =
+			await Promise.all([
+				db.getTopToolCalls(10),
+				db.getHourOfDayActivity(),
+				db.getLatencyDistribution(),
+				db.getModelSplit(),
+				db.getStopReasonSplit(),
+			]);
+		return Response.json({
+			topTools,
+			hourOfDay,
+			latency,
+			modelSplit,
+			stopReasonSplit,
+		});
+	}
+
 	if (url.pathname === "/db/current-session" && req.method === "GET") {
 		const sessionId = await db.getCurrentSessionId();
 		return Response.json({ session_id: sessionId });
