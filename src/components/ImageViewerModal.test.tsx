@@ -20,9 +20,7 @@ describe("ImageViewerModal", () => {
 	});
 
 	it("has role=dialog and aria-modal=true", () => {
-		render(
-			<ImageViewerModal src="x.png" alt="" onClose={vi.fn()} />,
-		);
+		render(<ImageViewerModal src="x.png" alt="" onClose={vi.fn()} />);
 		const dialog = screen.getByRole("dialog");
 		expect(dialog).toBeDefined();
 		expect(dialog.getAttribute("aria-modal")).toBe("true");
@@ -64,9 +62,7 @@ describe("ImageViewerModal", () => {
 	});
 
 	it("shows alt text as caption when non-empty", () => {
-		render(
-			<ImageViewerModal src="x.png" alt="my caption" onClose={vi.fn()} />,
-		);
+		render(<ImageViewerModal src="x.png" alt="my caption" onClose={vi.fn()} />);
 		expect(screen.getByText("my caption")).toBeDefined();
 	});
 });

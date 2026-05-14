@@ -9,7 +9,10 @@ import {
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { ConfirmAction } from "#/components/ConfirmAction";
-import { ClickableImage, ImageViewerModal } from "#/components/ImageViewerModal";
+import {
+	ClickableImage,
+	ImageViewerModal,
+} from "#/components/ImageViewerModal";
 import { MarkdownBody } from "#/components/MarkdownBody";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { AttachmentRow } from "#/db";

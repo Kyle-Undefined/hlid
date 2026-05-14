@@ -1,7 +1,6 @@
 import "katex/dist/katex.min.css";
 import { memo } from "react";
 import Markdown, { type Options } from "react-markdown";
-import { ClickableImage } from "./ImageViewerModal";
 import rehypeKatex from "rehype-katex";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
@@ -11,6 +10,7 @@ import { remarkAlert } from "remark-github-blockquote-alert";
 import { remarkMark } from "remark-mark-highlight";
 import remarkMath from "remark-math";
 import { CodeBlock } from "./CodeBlock";
+import { ClickableImage } from "./ImageViewerModal";
 import { MermaidBlock } from "./MermaidBlock";
 
 // Sanitize before katex: user-supplied HTML is filtered, then katex generates

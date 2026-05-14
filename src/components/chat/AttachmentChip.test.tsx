@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { AttachmentChip } from "./AttachmentChip";
 
 afterEach(cleanup);
@@ -38,10 +38,11 @@ describe("AttachmentChip — image", () => {
 	it("modal shows the correct image src", () => {
 		render(<AttachmentChip a={makeAttachment({ id: "abc123" })} />);
 		fireEvent.click(screen.getByRole("button"));
-		const img = screen.getAllByRole("img").find(
-			(el) =>
+		const img = screen
+			.getAllByRole("img")
+			.find((el) =>
 				(el as HTMLImageElement).src.includes("/api/attachments/abc123/raw"),
-		);
+			);
 		expect(img).toBeDefined();
 	});
 

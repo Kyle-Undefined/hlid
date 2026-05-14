@@ -17,6 +17,8 @@ export function ImageViewerModal({
 	}, []);
 
 	return (
+		// biome-ignore lint/a11y/useKeyWithClickEvents: backdrop Escape handled by inner dialog
+		// biome-ignore lint/a11y/noStaticElementInteractions: modal backdrop pattern
 		<div
 			className="fixed inset-0 z-50 bg-background/90 backdrop-blur-sm flex items-center justify-center p-4"
 			onClick={onClose}
@@ -45,7 +47,6 @@ export function ImageViewerModal({
 					src={src}
 					alt={alt}
 					className="max-h-[85vh] max-w-[90vw] object-contain shadow-2xl"
-					onClick={(e) => e.stopPropagation()}
 				/>
 				{alt && (
 					<p className="text-[11px] font-mono text-muted-foreground/70 max-w-[90vw] truncate">

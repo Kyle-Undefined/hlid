@@ -317,9 +317,10 @@ describe("MarkdownBody", () => {
 			);
 			const img = screen.getByRole("img", { name: "a cat" });
 			expect(img).toBeDefined();
-			const btn = img.closest("button");
+			// ClickableImage wraps img in a button with aria-label "View a cat"
+			const btn = screen.getByRole("button", { name: /view a cat/i });
 			expect(btn).toBeDefined();
-			fireEvent.click(btn!);
+			fireEvent.click(btn);
 			expect(screen.getByRole("dialog")).toBeDefined();
 		});
 	});
