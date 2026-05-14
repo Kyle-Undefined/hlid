@@ -1,6 +1,7 @@
 import "katex/dist/katex.min.css";
 import { memo } from "react";
 import Markdown, { type Options } from "react-markdown";
+import { ClickableImage } from "./ImageViewerModal";
 import rehypeKatex from "rehype-katex";
 import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
@@ -183,6 +184,9 @@ export const MarkdownBody = memo(function MarkdownBody({
 					<mark className="bg-primary/25 text-foreground px-0.5 rounded-sm">
 						{children}
 					</mark>
+				),
+				img: ({ src, alt }) => (
+					<ClickableImage src={src ?? ""} alt={alt ?? ""} />
 				),
 				u: ({ children }) => (
 					<u className="underline underline-offset-2 decoration-foreground/60">

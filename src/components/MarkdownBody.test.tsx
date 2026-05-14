@@ -309,4 +309,18 @@ describe("MarkdownBody", () => {
 			expect(details?.getAttribute("onclick")).toBeNull();
 		});
 	});
+
+	describe("images", () => {
+		it("renders markdown images as clickable buttons that open viewer modal", () => {
+			render(
+				<MarkdownBody content={"![a cat](https://example.com/cat.png)"} />,
+			);
+			const img = screen.getByRole("img", { name: "a cat" });
+			expect(img).toBeDefined();
+			const btn = img.closest("button");
+			expect(btn).toBeDefined();
+			fireEvent.click(btn!);
+			expect(screen.getByRole("dialog")).toBeDefined();
+		});
+	});
 });

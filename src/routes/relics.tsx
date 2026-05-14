@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { Fragment, useCallback, useEffect, useState } from "react";
 import { ConfirmAction } from "#/components/ConfirmAction";
+import { ClickableImage, ImageViewerModal } from "#/components/ImageViewerModal";
 import { MarkdownBody } from "#/components/MarkdownBody";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { AttachmentRow } from "#/db";
@@ -90,10 +91,10 @@ function RelicPreview({ id, mime }: { id: string; mime: string }) {
 
 	if (isImage) {
 		return (
-			<img
+			<ClickableImage
 				src={`/api/attachments/${id}/raw`}
 				alt=""
-				className="max-h-96 max-w-full object-contain"
+				className="max-h-96 max-w-full"
 			/>
 		);
 	}
@@ -137,6 +138,10 @@ function AttachmentsPage() {
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [expandedId, setExpandedId] = useState<string | null>(null);
+	const [viewerImg, setViewerImg] = useState<{
+		src: string;
+		alt: string;
+	} | null>(null);
 
 	useEffect(() => {
 		setRows(initial.rows);
@@ -360,24 +365,53 @@ function AttachmentsPage() {
 													<ChevronRight className="w-3 h-3 shrink-0 text-muted-foreground/50" />
 												)}
 												{r.mime.startsWith("image/") ? (
-													<img
-														src={`/api/attachments/${r.id}/raw`}
-														alt={r.filename}
-														className="w-6 h-6 object-cover shrink-0"
-													/>
+													<button
+														type="button"
+														className="shrink-0 hover:opacity-75 transition-opacity cursor-zoom-in"
+														aria-label={`View ${r.filename}`}
+														onClick={(e) => {
+															e.stopPropagation();
+															setViewerImg({
+																src: `/api/attachments/${r.id}/raw`,
+																alt: r.filename,
+															});
+														}}
+													>
+														<img
+															src={`/api/attachments/${r.id}/raw`}
+															alt={r.filename}
+															className="w-6 h-6 object-cover"
+														/>
+													</button>
 												) : (
 													<FileIcon className="w-3 h-3 shrink-0 opacity-60" />
 												)}
 												<PrivacyMask inline>
-													<a
-														href={`/api/attachments/${r.id}/raw`}
-														target="_blank"
-														rel="noreferrer"
-														onClick={(e) => e.stopPropagation()}
-														className="font-mono truncate max-w-[260px] text-foreground hover:text-primary"
-													>
-														{r.filename}
-													</a>
+													{r.mime.startsWith("image/") ? (
+														<button
+															type="button"
+															onClick={(e) => {
+																e.stopPropagation();
+																setViewerImg({
+																	src: `/api/attachments/${r.id}/raw`,
+																	alt: r.filename,
+																});
+															}}
+															className="font-mono truncate max-w-[260px] text-foreground hover:text-primary cursor-zoom-in"
+														>
+															{r.filename}
+														</button>
+													) : (
+														<a
+															href={`/api/attachments/${r.id}/raw`}
+															target="_blank"
+															rel="noreferrer"
+															onClick={(e) => e.stopPropagation()}
+															className="font-mono truncate max-w-[260px] text-foreground hover:text-primary"
+														>
+															{r.filename}
+														</a>
+													)}
 												</PrivacyMask>
 											</div>
 										</td>
@@ -468,6 +502,13 @@ function AttachmentsPage() {
 						next →
 					</button>
 				</div>
+			)}
+			{viewerImg && (
+				<ImageViewerModal
+					src={viewerImg.src}
+					alt={viewerImg.alt}
+					onClose={() => setViewerImg(null)}
+				/>
 			)}
 		</div>
 	);
