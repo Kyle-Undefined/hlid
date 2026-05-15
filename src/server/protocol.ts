@@ -156,6 +156,21 @@ export type ToolUseSummaryMessage = {
 	summary: string;
 };
 
+export type LocalCommandOutputMessage = {
+	type: "local_command_output";
+	content: string;
+};
+
+export type SlashCommandsMessage = {
+	type: "slash_commands";
+	commands: Array<{
+		name: string;
+		description: string;
+		argumentHint: string;
+		aliases?: string[];
+	}>;
+};
+
 export type AskQuestion = {
 	question: string;
 	options: string[];
@@ -266,7 +281,9 @@ export type ServerMessage =
 	| AskUserQuestionMessage
 	| AskUserQuestionResolvedMessage
 	| PlanModeExitMessage
-	| PlanModeExitResolvedMessage;
+	| PlanModeExitResolvedMessage
+	| LocalCommandOutputMessage
+	| SlashCommandsMessage;
 
 export type ChatAttachment = {
 	id: string;
@@ -333,6 +350,10 @@ export type ClientProbeMcpMessage = {
 	type: "probe_mcp";
 };
 
+export type ClientProbeSlashCommandsMessage = {
+	type: "probe_slash_commands";
+};
+
 export type ClientSyncMcpListMessage = {
 	type: "sync_mcp_list";
 	/** When set, sync MCP servers from this cwd-agent's .mcp.json instead of the vault's. */
@@ -370,6 +391,7 @@ export type ClientMessage =
 	| ClientPermissionResponseMessage
 	| ClientSyncMessage
 	| ClientProbeMcpMessage
+	| ClientProbeSlashCommandsMessage
 	| ClientSyncMcpListMessage
 	| ClientAskUserQuestionResponseMessage
 	| ClientPlanModeExitResponseMessage;

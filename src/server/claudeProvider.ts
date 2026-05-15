@@ -8,6 +8,7 @@ import type {
 	McpServerStatus,
 	ProviderWindowReading,
 	SendOptions,
+	SlashCommand,
 } from "./agentProvider";
 
 type SdkQuery = ReturnType<typeof query>;
@@ -137,6 +138,11 @@ class ClaudeAgentSession implements AgentSession {
 		return this.sdkQuery.mcpServerStatus() as Promise<McpServerStatus[]>;
 	}
 
+	async supportedCommands(): Promise<SlashCommand[]> {
+		if (!this.sdkQuery) return [];
+		return this.sdkQuery.supportedCommands() as Promise<SlashCommand[]>;
+	}
+
 	private ensureSdkQuery(): void {
 		if (this.sdkQuery) return;
 		this.sdkQuery = this.makeQuery(this.inputStream.iterate(), this.resumeId);
@@ -201,6 +207,17 @@ class ClaudeAgentSession implements AgentSession {
 
 			if (message.type === "system" && message.subtype === "init") {
 				yield { type: "session_start", sessionId: message.session_id };
+				continue;
+			}
+
+			if (
+				message.type === "system" &&
+				(message as { subtype: string }).subtype === "local_command_output"
+			) {
+				yield {
+					type: "local_command_output",
+					content: (message as { content: string }).content,
+				};
 				continue;
 			}
 

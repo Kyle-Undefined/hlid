@@ -59,12 +59,19 @@ export type PlanProposalMessage = {
 	decision: PlanProposalDecision;
 };
 
+export type LocalCommandOutputChatMessage = {
+	id: string;
+	role: "local_command_output";
+	content: string;
+};
+
 export type ChatMessage =
 	| UserMessage
 	| AssistantMessage
 	| PermissionMessage
 	| AskUserQuestionChatMessage
-	| PlanProposalMessage;
+	| PlanProposalMessage
+	| LocalCommandOutputChatMessage;
 
 export type Action =
 	| {
@@ -111,6 +118,7 @@ export type Action =
 			id: string;
 			decision: Exclude<PlanProposalDecision, "pending">;
 	  }
+	| { type: "ADD_LOCAL_COMMAND_OUTPUT"; id: string; content: string }
 	| { type: "DONE"; id: string; cost: number | null }
 	| { type: "SET_RECAP"; id: string; recap: string }
 	| { type: "ADD_PERMISSION"; msg: PermissionRequestMessage }
@@ -267,6 +275,15 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 			});
 			return matched ? next : state;
 		}
+		case "ADD_LOCAL_COMMAND_OUTPUT":
+			return [
+				...state,
+				{
+					id: action.id,
+					role: "local_command_output" as const,
+					content: action.content,
+				},
+			];
 		case "ADD_PLAN_PROPOSAL":
 			return [
 				...state,

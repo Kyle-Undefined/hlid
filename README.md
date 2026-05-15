@@ -2,7 +2,7 @@
 
 *Short for Hliðskjálf, Óðinn's high seat from which he could see all nine realms.*
 
-`Hlid` is a local command center for your Obsidian vault, powered by the Claude Agent SDK (with ACP-backed agents also supported). So you don't need a terminal inside Obsidian, or a `/remote-control` session that breaks on approval prompts while mobile. Chat with your agent, watch tool use, manage your vault and agent settings from one place.
+`Hlid` is a local command center for your Obsidian vault, powered by the Claude Agent SDK. So you don't need a terminal inside Obsidian, or a `/remote-control` session that breaks on approval prompts while mobile. Chat with your agent, watch tool use, manage your vault and agent settings from one place.
 
 Windows-first, distributed as a single compiled `hlid.exe`. Accessible anywhere via Tailscale. Built for personal use but configurable enough to adapt to other vault setups.
 
@@ -40,7 +40,7 @@ Quick reference for all vault skills. Load the full `SKILL.md` only on match.
 
 - `Bun` server, single-binary compile (`bun build --compile`) with the Vite client embedded into the executable
 - `TanStack Start` + `TanStack Router` for the web UI
-- Provider-agnostic `AgentProvider` interface for the persistent vault session; supports the Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`) and ACP-backed agents
+- Provider-agnostic `AgentProvider` interface for the persistent vault session; supports the Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`)
 - WebSockets for real-time streaming and tool use visibility
 - `SQLite` for session and settings storage
 - Tailscale for remote access (no cloud needed)

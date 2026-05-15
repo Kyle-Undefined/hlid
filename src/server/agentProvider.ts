@@ -25,9 +25,21 @@ export type McpServerStatus = {
 	error?: string;
 };
 
+/**
+ * A slash command exposed by the underlying agent (e.g. /help, /usage).
+ * Mirrors the SDK's SlashCommand shape but kept provider-agnostic here.
+ */
+export type SlashCommand = {
+	name: string;
+	description: string;
+	argumentHint: string;
+	aliases?: string[];
+};
+
 export type AgentEvent =
 	| { type: "session_start"; sessionId: string }
 	| { type: "text_delta"; text: string }
+	| { type: "local_command_output"; content: string }
 	| { type: "tool_start"; toolId: string; name: string; input: unknown }
 	| {
 			type: "tool_result";
@@ -143,6 +155,8 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 	closeInput?(): void;
 	/** Available on providers that expose MCP server connectivity info. */
 	mcpServerStatus?(): Promise<McpServerStatus[]>;
+	/** Available on providers that expose the list of supported slash commands. */
+	supportedCommands?(): Promise<SlashCommand[]>;
 }
 
 export interface AgentProvider {

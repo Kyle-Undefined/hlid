@@ -2938,6 +2938,156 @@ describe("SessionManager — Slice B AgentSession reuse", () => {
 // ── handleRateLimit → updateWindowMark ───────────────────────────────────────
 // proxy.ts is NOT mocked in this file, so updateWindowMark writes to the real
 // in-memory windowHighMark and getWindowMark can verify it. Uses unique
+// ── local_command_output ──────────────────────────────────────────────────────
+
+describe("SessionManager — local_command_output forwarding", () => {
+	it("emits local_command_output WS message when agent yields local_command_output event", async () => {
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-cmd-1" };
+					yield { type: "local_command_output", content: "/help output here" };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 5, outputTokens: 2 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("hello", (m) => emitted.push(m), "sess-cmd-1");
+
+		expect(
+			emitted.some(
+				(m) =>
+					m.type === "local_command_output" &&
+					(m as { type: string; content: string }).content ===
+						"/help output here",
+			),
+		).toBe(true);
+	});
+
+	it("does not interrupt text accumulation around local_command_output", async () => {
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-cmd-2" };
+					yield { type: "local_command_output", content: "cmd out" };
+					yield { type: "text_delta", text: "assistant reply" };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 5, outputTokens: 2 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("hello", (m) => emitted.push(m), "sess-cmd-2");
+
+		expect(emitted.some((m) => m.type === "local_command_output")).toBe(true);
+		expect(emitted.some((m) => m.type === "chunk")).toBe(true);
+	});
+});
+
+// ── probeSlashCommands ────────────────────────────────────────────────────────
+
+describe("SessionManager — probeSlashCommands", () => {
+	it("emits slash_commands WS message with commands from supportedCommands()", async () => {
+		const mockCommands = [
+			{ name: "help", description: "Show help", argumentHint: "" },
+			{ name: "usage", description: "Show token usage", argumentHint: "" },
+		];
+
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+					supportedCommands: () => Promise.resolve(mockCommands),
+				};
+			},
+		};
+
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.probeSlashCommands((m) => emitted.push(m));
+
+		expect(
+			emitted.some(
+				(m) =>
+					m.type === "slash_commands" &&
+					(m as { type: string; commands: unknown[] }).commands.length === 2,
+			),
+		).toBe(true);
+	});
+
+	it("does not throw when supportedCommands is not available on provider session", async () => {
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+					// no supportedCommands
+				};
+			},
+		};
+
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await expect(
+			sm.probeSlashCommands((m) => emitted.push(m)),
+		).resolves.not.toThrow();
+	});
+});
+
 // providerId strings to avoid colliding with other tests.
 
 describe("SessionManager — handleRateLimit mirrors rate_limit into window mark", () => {

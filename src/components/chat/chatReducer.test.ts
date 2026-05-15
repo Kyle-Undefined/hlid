@@ -981,6 +981,47 @@ describe("RESOLVE_ASK_USER_QUESTION", () => {
 	});
 });
 
+// ── ADD_LOCAL_COMMAND_OUTPUT ──────────────────────────────────────────────────
+
+describe("ADD_LOCAL_COMMAND_OUTPUT", () => {
+	it("appends a local_command_output message", () => {
+		const state = reducer(empty(), {
+			type: "ADD_LOCAL_COMMAND_OUTPUT",
+			id: "lco-1",
+			content: "/help output here",
+		});
+		expect(state).toHaveLength(1);
+		const msg = state[0];
+		expect(msg.role).toBe("local_command_output");
+		if (msg.role === "local_command_output") {
+			expect(msg.id).toBe("lco-1");
+			expect(msg.content).toBe("/help output here");
+		}
+	});
+
+	it("appends after existing messages without touching them", () => {
+		const initial = withUser("u1", "hello");
+		const state = reducer(initial, {
+			type: "ADD_LOCAL_COMMAND_OUTPUT",
+			id: "lco-2",
+			content: "command result",
+		});
+		expect(state).toHaveLength(2);
+		expect(state[0].role).toBe("user");
+		expect(state[1].role).toBe("local_command_output");
+	});
+
+	it("does not mutate previous state", () => {
+		const initial = empty();
+		reducer(initial, {
+			type: "ADD_LOCAL_COMMAND_OUTPUT",
+			id: "lco-3",
+			content: "x",
+		});
+		expect(initial).toHaveLength(0);
+	});
+});
+
 describe("default — unknown action", () => {
 	it("returns state unchanged for unknown action type", () => {
 		const before = withUser();

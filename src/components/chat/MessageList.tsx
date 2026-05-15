@@ -150,6 +150,16 @@ export function MessageList({
 						<PlanCard key={m.id} message={m} onDecide={handlePlanDecide} />
 					);
 				}
+				if (m.role === "local_command_output") {
+					return (
+						<div
+							key={m.id}
+							className="px-4 py-2 font-mono text-xs text-muted-foreground whitespace-pre-wrap border-l-2 border-primary/20 ml-4"
+						>
+							{m.content}
+						</div>
+					);
+				}
 				return null;
 			})}
 			{orphanQueued.map((qm) => (

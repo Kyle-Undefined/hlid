@@ -132,6 +132,11 @@ export function createWsHandlers(session: SessionManager) {
 				return;
 			}
 
+			if (msg.type === "probe_slash_commands") {
+				void session.probeSlashCommands(broadcast);
+				return;
+			}
+
 			if (msg.type === "sync_mcp_list") {
 				const cfg = loadConfig();
 

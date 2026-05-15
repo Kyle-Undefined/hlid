@@ -19,6 +19,7 @@ import {
 import { MobileContextBand } from "#/components/cockpit/MobileContextBand";
 import { MobileStatsPanel } from "#/components/cockpit/MobileStatsPanel";
 import { SkillCard } from "#/components/cockpit/SkillCard";
+import { SlashPicker } from "#/components/cockpit/SlashPicker";
 import { ThirtyDayGraph } from "#/components/cockpit/ThirtyDayGraph";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import {
@@ -29,6 +30,8 @@ import { FirstRunWizard } from "#/components/wizard/FirstRunWizard";
 import { getConfig } from "#/config";
 import type { AggStats, SessionRow, ThirtyDayStats, WeeklyStats } from "#/db";
 import { useFileUpload } from "#/hooks/useFileUpload";
+import { useMergedSkills } from "#/hooks/useMergedSkills";
+import { useSlashPicker } from "#/hooks/useSlashPicker";
 import { useWs } from "#/hooks/useWs";
 import { useWsLiveStats } from "#/hooks/useWsSelectors";
 import * as wsStore from "#/hooks/wsStore";
@@ -146,6 +149,14 @@ function CockpitPage() {
 	);
 	const [mcpServers, setMcpServers] =
 		useState<McpServerEntry[]>(initialMcpServers);
+	const [sdkSlashCommands, setSdkSlashCommands] = useState<
+		Array<{
+			name: string;
+			description: string;
+			argumentHint: string;
+			aliases?: string[];
+		}>
+	>([]);
 	const [runError, setRunError] = useState<string | null>(null);
 	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -170,11 +181,15 @@ function CockpitPage() {
 			if (msg.type === "mcp_status") {
 				setMcpServers(msg.servers.map(mapMcpServer));
 			}
+			if (msg.type === "slash_commands") {
+				setSdkSlashCommands(msg.commands);
+			}
 		},
 	);
 
 	useEffect(() => {
 		send({ type: "sync_mcp_list" });
+		send({ type: "probe_slash_commands" });
 	}, [send]);
 
 	// Refresh active session on mount — router cache may serve stale loader data
@@ -199,10 +214,20 @@ function CockpitPage() {
 		clearPending: clearPendingAttachments,
 	} = useFileUpload({ agentCwd: selectedAgentPath });
 
+	const allSkills = useMergedSkills(data.skills, sdkSlashCommands);
+
 	const skillGroups = useMemo(
-		() => groupSkills(data.skills, data.sectionOrder),
-		[data.skills, data.sectionOrder],
+		() => groupSkills(allSkills, data.sectionOrder),
+		[allSkills, data.sectionOrder],
 	);
+
+	const {
+		isOpen: pickerOpen,
+		items: pickerItems,
+		selectedIndex: pickerIndex,
+		navigate: pickerNavigate,
+		close: pickerClose,
+	} = useSlashPicker(prompt, allSkills, activeSkill);
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: prompt length triggers resize
 	useEffect(() => {
@@ -212,23 +237,30 @@ function CockpitPage() {
 		el.style.height = `${Math.min(el.scrollHeight, 280)}px`;
 	}, [prompt]);
 
+	// Focus textarea after skill activation (useEffect avoids setTimeout race)
+	const pendingSkillFocusRef = useRef(false);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: activeSkill is the trigger dep
+	useEffect(() => {
+		if (!pendingSkillFocusRef.current) return;
+		pendingSkillFocusRef.current = false;
+		const el = textareaRef.current;
+		if (!el) return;
+		el.focus();
+		el.selectionStart = el.selectionEnd = 0;
+	}, [activeSkill]);
+
 	if (!config.vault.path) {
 		return <FirstRunWizard onComplete={() => router.invalidate()} />;
 	}
 
 	function handleSkillSelect(skill: Skill) {
+		pendingSkillFocusRef.current = true;
 		setPrompt("");
 		setActiveSkill({
 			name: skill.name,
 			section: skill.section,
 			filePath: skill.filePath,
 		});
-		setTimeout(() => {
-			const el = textareaRef.current;
-			if (!el) return;
-			el.focus();
-			el.selectionStart = el.selectionEnd = 0;
-		}, 0);
 	}
 
 	function handleClear() {
@@ -241,7 +273,7 @@ function CockpitPage() {
 		const { text, skillContext } = resolveSkillPrompt(
 			activeSkill,
 			typed,
-			data.skills,
+			allSkills,
 		);
 		if (!text || wsStatus !== "connected") return;
 		setRunError(null);
@@ -426,7 +458,7 @@ function CockpitPage() {
 
 						<section
 							aria-label="Prompt input area"
-							className={`border bg-card transition-colors ${isConnected ? "border-border focus-within:border-primary/30" : "border-border/40"}`}
+							className={`relative border bg-card transition-colors ${isConnected ? "border-border focus-within:border-primary/30" : "border-border/40"}`}
 							onDragOver={(e) => {
 								if (e.dataTransfer?.types?.includes("Files"))
 									e.preventDefault();
@@ -438,6 +470,13 @@ function CockpitPage() {
 								}
 							}}
 						>
+							{pickerOpen && (
+								<SlashPicker
+									items={pickerItems}
+									selectedIndex={pickerIndex}
+									onSelect={handleSkillSelect}
+								/>
+							)}
 							<AttachmentStrip
 								attachments={pendingAttachments}
 								uploadingCount={uploadingCount}
@@ -456,6 +495,41 @@ function CockpitPage() {
 										setPrompt(e.target.value);
 									}}
 									onKeyDown={(e) => {
+										// Slash picker navigation — intercept before run handlers
+										if (pickerOpen) {
+											if (e.key === "ArrowDown") {
+												e.preventDefault();
+												pickerNavigate(1);
+												return;
+											}
+											if (e.key === "ArrowUp") {
+												e.preventDefault();
+												pickerNavigate(-1);
+												return;
+											}
+											if (e.key === "Escape") {
+												e.preventDefault();
+												pickerClose();
+												return;
+											}
+											if (e.key === "Tab") {
+												e.preventDefault();
+												if (pickerItems.length > 0)
+													handleSkillSelect(pickerItems[pickerIndex]);
+												return;
+											}
+											if (
+												e.key === "Enter" &&
+												!e.shiftKey &&
+												!e.metaKey &&
+												!e.ctrlKey
+											) {
+												e.preventDefault();
+												if (pickerItems.length > 0)
+													handleSkillSelect(pickerItems[pickerIndex]);
+												return;
+											}
+										}
 										if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
 											e.preventDefault();
 											handleRun();
@@ -474,6 +548,13 @@ function CockpitPage() {
 											handleRun();
 										}
 									}}
+									role="combobox"
+									aria-expanded={pickerOpen}
+									aria-controls="slash-picker"
+									aria-autocomplete="list"
+									aria-activedescendant={
+										pickerOpen ? `slash-picker-opt-${pickerIndex}` : undefined
+									}
 									rows={3}
 									placeholder={
 										!isConnected

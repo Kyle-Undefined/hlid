@@ -120,6 +120,15 @@ export function useChatWsHandler({
 			return;
 		}
 
+		if (msg.type === "local_command_output") {
+			dispatch({
+				type: "ADD_LOCAL_COMMAND_OUTPUT",
+				id: uid(),
+				content: msg.content,
+			});
+			return;
+		}
+
 		if (msg.type === "tool_result") {
 			dispatch({
 				type: "ADD_TOOL_RESULT",

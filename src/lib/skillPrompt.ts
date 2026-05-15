@@ -31,8 +31,11 @@ export function resolveSkillPrompt(
 		const match = allSkills.find((s) => s.name.toLowerCase() === slashName);
 		if (match) {
 			if (match.section !== "claude") {
-				// Vault skill: strip "/name: " prefix so only the user suffix is sent
-				const text = typed.slice(match.name.length + 2).trim();
+				// Vault skill: strip "/name: " prefix so only the user suffix is sent.
+				// If there is no suffix (bare "/name"), fall back to the full typed text
+				// so the run is non-empty and the skill still executes.
+				const suffix = typed.slice(match.name.length + 2).trim();
+				const text = suffix || typed;
 				return { text, skillContext: match.filePath };
 			}
 			// Claude skill: keep full slash command, CLI handles it natively

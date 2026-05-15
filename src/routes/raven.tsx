@@ -5,6 +5,7 @@ import { AgentSelect } from "#/components/AgentSelect";
 import { AttachmentStrip } from "#/components/AttachmentStrip";
 import { reducer } from "#/components/chat/chatReducer";
 import { MessageList } from "#/components/chat/MessageList";
+import { SlashPicker } from "#/components/cockpit/SlashPicker";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import {
 	ContextWindowSection,
@@ -15,16 +16,21 @@ import { useChatWsHandler } from "#/hooks/useChatWsHandler";
 import { useDraft } from "#/hooks/useDraft";
 import { useFileUpload } from "#/hooks/useFileUpload";
 import { useLoadChatHistory } from "#/hooks/useLoadChatHistory";
+import { useMergedSkills } from "#/hooks/useMergedSkills";
+import { useSlashPicker } from "#/hooks/useSlashPicker";
 import { useWs } from "#/hooks/useWs";
 import { useWsChatQueue, useWsLiveStats } from "#/hooks/useWsSelectors";
 import * as wsStore from "#/hooks/wsStore";
 import { deriveModelMismatch, fmtModel } from "#/lib/formatters";
 import {
 	getAgentListFn,
+	getCockpitData,
 	getCurrentSessionFn,
 	getSessionAgentCwdFn,
 	getUsageWindowsFn,
 } from "#/lib/serverFns";
+import { resolveSkillPrompt } from "#/lib/skillPrompt";
+import type { Skill } from "#/lib/skills";
 import { uid } from "#/lib/utils";
 import { decisionFromScope, type RateLimitMessage } from "#/server/protocol";
 
@@ -42,12 +48,14 @@ export const Route = createFileRoute("/raven")({
 	},
 	loaderDeps: ({ search: { session, agent } }) => ({ session, agent }),
 	loader: async ({ deps: { session, agent } }) => {
-		const [config, dbSessionId, usageWindows, agentList] = await Promise.all([
-			getConfig(),
-			session ? Promise.resolve(null) : getCurrentSessionFn(),
-			getUsageWindowsFn(),
-			getAgentListFn(),
-		]);
+		const [config, dbSessionId, usageWindows, agentList, cockpitData] =
+			await Promise.all([
+				getConfig(),
+				session ? Promise.resolve(null) : getCurrentSessionFn(),
+				getUsageWindowsFn(),
+				getAgentListFn(),
+				getCockpitData(),
+			]);
 		const resolvedSessionId = session ?? dbSessionId;
 		let agentSkillContext = agent;
 		if (!agentSkillContext && resolvedSessionId) {
@@ -63,6 +71,7 @@ export const Route = createFileRoute("/raven")({
 			usageWindows,
 			agentSkillContext,
 			agentList,
+			vaultSkills: cockpitData.skills,
 		};
 	},
 	component: ChatPage,
@@ -78,6 +87,7 @@ function ChatPage() {
 		usageWindows: initialUsageWindows,
 		agentSkillContext: initialAgentSkillContext,
 		agentList,
+		vaultSkills,
 	} = Route.useLoaderData();
 	const [agentSkillContext, setAgentSkillContext] = useState(
 		initialAgentSkillContext,
@@ -88,6 +98,20 @@ function ChatPage() {
 	useEffect(() => {
 		sessionIdRef.current = sessionId;
 	}, [sessionId]);
+
+	const [sdkSlashCommands, setSdkSlashCommands] = useState<
+		Array<{
+			name: string;
+			description: string;
+			argumentHint: string;
+			aliases?: string[];
+		}>
+	>([]);
+	const [activeSkill, setActiveSkill] = useState<{
+		name: string;
+		section?: string;
+		filePath: string;
+	} | null>(null);
 
 	const liveStats = useWsLiveStats();
 	const chatQueue = useWsChatQueue();
@@ -156,8 +180,20 @@ function ChatPage() {
 
 	// ─── WS connection ────────────────────────────────────────────────────────
 
+	// Wrap chat handler to also intercept slash_commands probe responses
+	const handleAllMessages = useCallback(
+		(msg: Parameters<typeof handleWsMessage>[0]) => {
+			if (msg.type === "slash_commands") {
+				setSdkSlashCommands(msg.commands);
+				return;
+			}
+			handleWsMessage(msg);
+		},
+		[handleWsMessage],
+	);
+
 	const { wsStatus, sessionState, model, actualModel, runningTurnId, send } =
-		useWs(handleWsMessage);
+		useWs(handleAllMessages);
 
 	useLoadChatHistory({
 		existingSessionId,
@@ -165,10 +201,15 @@ function ChatPage() {
 		dispatch,
 		pendingIdRef,
 		historyReadyRef,
-		handleWsMessage,
+		handleWsMessage: handleAllMessages,
 		wsStatus,
 		sessionIdRef,
 	});
+
+	// Probe SDK slash commands on connect
+	useEffect(() => {
+		send({ type: "probe_slash_commands" });
+	}, [send]);
 
 	// If session is running but no pending assistant turn exists, add one.
 	// Guard with historyReadyRef so we don't race the initial DB load.
@@ -179,6 +220,37 @@ function ChatPage() {
 		pendingIdRef.current = newId;
 		dispatch({ type: "ADD_ASSISTANT", id: newId });
 	}, [isRunning]);
+
+	// ─── Skills + slash picker ────────────────────────────────────────────────
+
+	const allSkills = useMergedSkills(vaultSkills, sdkSlashCommands);
+
+	const {
+		isOpen: pickerOpen,
+		items: pickerItems,
+		selectedIndex: pickerIndex,
+		navigate: pickerNavigate,
+		close: pickerClose,
+	} = useSlashPicker(input, allSkills, activeSkill);
+
+	// Focus textarea after skill activation (useEffect avoids setTimeout race)
+	const pendingSkillFocusRef = useRef(false);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: activeSkill is the trigger dep
+	useEffect(() => {
+		if (!pendingSkillFocusRef.current) return;
+		pendingSkillFocusRef.current = false;
+		textareaRef.current?.focus();
+	}, [activeSkill]);
+
+	function handleSkillSelect(skill: Skill) {
+		pendingSkillFocusRef.current = true;
+		setActiveSkill({
+			name: skill.name,
+			section: skill.section,
+			filePath: skill.filePath,
+		});
+		setInput("");
+	}
 
 	// ─── Handlers ─────────────────────────────────────────────────────────────
 
@@ -236,7 +308,14 @@ function ChatPage() {
 	);
 
 	const handleSend = useCallback(() => {
-		const text = input.trim();
+		const typed = input.trim();
+		if (!typed && pendingAttachments.length === 0) return;
+
+		const { text, skillContext } = resolveSkillPrompt(
+			activeSkill,
+			typed,
+			allSkills,
+		);
 		if (!text && pendingAttachments.length === 0) return;
 
 		if (sessionState === "running") {
@@ -244,12 +323,14 @@ function ChatPage() {
 				id: uid(),
 				text,
 				session_id: sessionId,
+				skill_context: skillContext,
 				attachments:
 					pendingAttachments.length > 0 ? [...pendingAttachments] : undefined,
 				agent_cwd: agentSkillContext ?? undefined,
 			});
 			clearDraft();
 			setInput("");
+			setActiveSkill(null);
 			clearPendingAttachments();
 			return;
 		}
@@ -268,16 +349,20 @@ function ChatPage() {
 			type: "chat",
 			text,
 			session_id: sessionId,
+			skill_context: skillContext,
 			attachments: attachments.length > 0 ? attachments : undefined,
 			agent_cwd: agentCwdToSend,
 			plan_mode: planMode || undefined,
 		});
 		clearDraft();
 		setInput("");
+		setActiveSkill(null);
 		clearPendingAttachments();
 	}, [
 		input,
 		setInput,
+		activeSkill,
+		allSkills,
 		sessionState,
 		send,
 		sessionId,
@@ -464,6 +549,14 @@ function ChatPage() {
 
 			{/* Bottom bar, wrapper is relative so model badge floats above entire block */}
 			<div className="shrink-0 relative">
+				{pickerOpen && (
+					<SlashPicker
+						items={pickerItems}
+						selectedIndex={pickerIndex}
+						onSelect={handleSkillSelect}
+						direction="up"
+					/>
+				)}
 				{agentSkillContext && (
 					<div className="absolute -top-5 left-3 z-10">
 						<button
@@ -647,6 +740,41 @@ function ChatPage() {
 								}
 							}}
 							onKeyDown={(e) => {
+								// Slash picker navigation — intercept before send handler
+								if (pickerOpen) {
+									if (e.key === "ArrowDown") {
+										e.preventDefault();
+										pickerNavigate(1);
+										return;
+									}
+									if (e.key === "ArrowUp") {
+										e.preventDefault();
+										pickerNavigate(-1);
+										return;
+									}
+									if (e.key === "Escape") {
+										e.preventDefault();
+										pickerClose();
+										return;
+									}
+									if (e.key === "Tab") {
+										e.preventDefault();
+										if (pickerItems.length > 0)
+											handleSkillSelect(pickerItems[pickerIndex]);
+										return;
+									}
+									if (
+										e.key === "Enter" &&
+										!e.shiftKey &&
+										!e.metaKey &&
+										!e.ctrlKey
+									) {
+										e.preventDefault();
+										if (pickerItems.length > 0)
+											handleSkillSelect(pickerItems[pickerIndex]);
+										return;
+									}
+								}
 								const isTouch =
 									typeof window !== "undefined" &&
 									window.matchMedia("(pointer: coarse)").matches;
@@ -660,13 +788,22 @@ function ChatPage() {
 									handleSend();
 								}
 							}}
+							role="combobox"
+							aria-expanded={pickerOpen}
+							aria-controls="slash-picker"
+							aria-autocomplete="list"
+							aria-activedescendant={
+								pickerOpen ? `slash-picker-opt-${pickerIndex}` : undefined
+							}
 							rows={1}
 							placeholder={
 								wsStatus !== "connected"
 									? "connecting…"
-									: isRunning
-										? "type to queue next…"
-										: "speak to the watcher…"
+									: activeSkill
+										? `add context for /${activeSkill.name}… (optional)`
+										: isRunning
+											? "type to queue next…"
+											: "speak to the watcher…"
 							}
 							disabled={wsStatus !== "connected"}
 							className={`flex-1 resize-none bg-transparent py-3 pr-2 text-sm text-foreground focus:outline-none disabled:opacity-30 overflow-y-hidden min-h-[60px] md:min-h-[120px] ${wsStatus !== "connected" ? "placeholder:text-foreground/50" : "placeholder:text-muted-foreground/35"}`}

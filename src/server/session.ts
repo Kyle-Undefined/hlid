@@ -305,6 +305,39 @@ export class SessionManager {
 		}
 	}
 
+	async probeSlashCommands(emit: (msg: ServerMessage) => void): Promise<void> {
+		if (this.probing || this.state === "running") return;
+		this.probing = true;
+		const ac = new AbortController();
+		const timeout = setTimeout(() => ac.abort(), 30_000);
+		try {
+			const session = this.resolveProvider().query({
+				cwd: this.vaultPath,
+				signal: ac.signal,
+				permissionMode: "default",
+				effort: "low",
+				maxTurns: 1,
+				persistSession: false,
+				settingSources: ["user", "project"],
+				executable: this.claudeExecutable,
+				canUseTool: () =>
+					Promise.resolve({ behavior: "deny" as const, message: "probe" }),
+			});
+			await session.send(".");
+			for await (const _ of session) {
+				const commands = (await session.supportedCommands?.()) ?? [];
+				emit({ type: "slash_commands", commands });
+				session.cancel();
+				break;
+			}
+		} catch {
+			// abort errors expected
+		} finally {
+			clearTimeout(timeout);
+			this.probing = false;
+		}
+	}
+
 	isRunning(): boolean {
 		return this.state === "running";
 	}
@@ -817,6 +850,8 @@ export class SessionManager {
 				emit({ type: "tool_use_summary", summary: event.text });
 			} else if (event.type === "rate_limit") {
 				this.handleRateLimit(event, emit, provider);
+			} else if (event.type === "local_command_output") {
+				emit({ type: "local_command_output", content: event.content });
 			} else if (event.type === "mcp_status") {
 				this.lastMcpStatus = event.servers;
 				emit({ type: "mcp_status", servers: event.servers.map(mapMcpServer) });

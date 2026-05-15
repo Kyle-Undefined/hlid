@@ -563,6 +563,104 @@ describe("ClaudeProvider — canUseTool pass-through", () => {
 	});
 });
 
+// ── local_command_output ──────────────────────────────────────────────────────
+
+describe("ClaudeProvider — local_command_output", () => {
+	it("yields local_command_output event for system/local_command_output messages", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "system",
+					subtype: "local_command_output",
+					content: "Available commands: /help /usage",
+					uuid: "uuid-1",
+					session_id: "sid-abc",
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 10, output_tokens: 5 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		const cmdEvent = events.find((e) => e.type === "local_command_output");
+		expect(cmdEvent).toEqual({
+			type: "local_command_output",
+			content: "Available commands: /help /usage",
+		});
+	});
+
+	it("still yields done event after local_command_output", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "system",
+					subtype: "local_command_output",
+					content: "some output",
+					uuid: "uuid-2",
+					session_id: "sid-abc",
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0.001,
+					num_turns: 1,
+					duration_ms: 50,
+					usage: { input_tokens: 5, output_tokens: 2 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		const doneEvent = events.find((e) => e.type === "done");
+		expect(doneEvent).toBeDefined();
+	});
+});
+
+// ── supportedCommands ─────────────────────────────────────────────────────────
+
+describe("ClaudeProvider — supportedCommands", () => {
+	it("delegates supportedCommands() to the underlying SDK query", async () => {
+		const mockCommands = [
+			{ name: "help", description: "Show help", argumentHint: "" },
+			{ name: "usage", description: "Show usage", argumentHint: "" },
+		];
+		const gen = sdkGen([
+			{
+				type: "result",
+				subtype: "success",
+				total_cost_usd: 0,
+				num_turns: 1,
+				duration_ms: 100,
+				usage: { input_tokens: 10, output_tokens: 5 },
+			},
+		]);
+		gen.supportedCommands = vi.fn().mockResolvedValue(mockCommands);
+		vi.mocked(query).mockReturnValueOnce(gen);
+
+		const provider = new ClaudeProvider();
+		const session = provider.query(baseParams());
+
+		const iter = session[Symbol.asyncIterator]();
+		await iter.next();
+
+		const commands = await session.supportedCommands?.();
+		expect(commands).toEqual(mockCommands);
+	});
+
+	it("returns empty array when SDK query not yet initialized", async () => {
+		const provider = new ClaudeProvider();
+		const session = provider.query(baseParams());
+		const commands = await session.supportedCommands?.();
+		expect(commands).toEqual([]);
+	});
+});
+
 // ── mcpServerStatus ───────────────────────────────────────────────────────────
 
 describe("ClaudeProvider — mcpServerStatus", () => {

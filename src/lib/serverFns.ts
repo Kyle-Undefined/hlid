@@ -288,11 +288,16 @@ export const getCockpitData = createServerFn({ method: "GET" }).handler(
 				: { skills: [], sectionOrder: [] };
 
 		const claudeSkillsDir = resolve(homedir(), ".claude", "skills");
-		const { skills: rawClaudeSkills } = scanSkills(claudeSkillsDir, "", false);
-		const claudeSkills = rawClaudeSkills.map((s) => ({
-			...s,
-			section: "claude",
-		}));
+		const { skills: rawClaudeSkills } = scanSkills(claudeSkillsDir, ".", false);
+
+		// Deduplicate: skip claude skills whose name already appears in vault skills.
+		// This prevents doubles when the vault skills path overlaps ~/.claude/skills/.
+		const vaultSkillNames = new Set(
+			vaultSkills.map((s) => s.name.toLowerCase()),
+		);
+		const claudeSkills = rawClaudeSkills
+			.filter((s) => !vaultSkillNames.has(s.name.toLowerCase()))
+			.map((s) => ({ ...s, section: "claude" }));
 
 		const skills = [...vaultSkills, ...claudeSkills];
 		const allSectionOrder =
