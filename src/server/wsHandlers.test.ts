@@ -326,14 +326,14 @@ describe("message — abort", () => {
 		expect(session.abort).toHaveBeenCalled();
 	});
 
-	it("ignores abort from non-owner", async () => {
+	it("allows abort from any device", async () => {
 		const session = makeSession();
 		const { message } = createWsHandlers(session);
 		const owner = makeWs();
 		const other = makeWs();
 		wsState.sessionOwnerWs = owner;
 		await message(other as never, JSON.stringify({ type: "abort" }));
-		expect(session.abort).not.toHaveBeenCalled();
+		expect(session.abort).toHaveBeenCalled();
 	});
 });
 
@@ -351,14 +351,14 @@ describe("message — clear", () => {
 		expect(wsState.lastSessionError).toBeNull();
 	});
 
-	it("ignores clear from non-owner", async () => {
+	it("allows clear from any device", async () => {
 		const session = makeSession();
 		const { message } = createWsHandlers(session);
 		const owner = makeWs();
 		const other = makeWs();
 		wsState.sessionOwnerWs = owner;
 		await message(other as never, JSON.stringify({ type: "clear" }));
-		expect(session.clearHistory).not.toHaveBeenCalled();
+		expect(session.clearHistory).toHaveBeenCalled();
 	});
 });
 
@@ -377,14 +377,14 @@ describe("message — reload_session", () => {
 		);
 	});
 
-	it("ignores reload from non-owner", async () => {
+	it("allows reload from any device", async () => {
 		const session = makeSession();
 		const { message } = createWsHandlers(session);
 		const owner = makeWs();
 		const other = makeWs();
 		wsState.sessionOwnerWs = owner;
 		await message(other as never, JSON.stringify({ type: "reload_session" }));
-		expect(session.reinitialize).not.toHaveBeenCalled();
+		expect(session.reinitialize).toHaveBeenCalled();
 	});
 });
 
@@ -404,18 +404,18 @@ describe("message — chat", () => {
 		expect(session.runQuery).not.toHaveBeenCalled();
 	});
 
-	it("rejects chat from non-owner", async () => {
+	it("allows chat from any device regardless of who owns the session", async () => {
 		const session = makeSession();
 		const { message } = createWsHandlers(session);
 		const owner = makeWs();
 		const other = makeWs();
 		wsState.sessionOwnerWs = owner;
 		await message(other as never, JSON.stringify({ type: "chat", text: "hi" }));
-		expect(lastSentTo(other)).toMatchObject({
-			type: "error",
-			message: "Not session owner",
-		});
-		expect(session.runQuery).not.toHaveBeenCalled();
+		const errorCalls = mockSend.mock.calls.filter(
+			(c) => (c[1] as { type?: string })?.type === "error",
+		);
+		expect(errorCalls).toHaveLength(0);
+		expect(session.runQuery).toHaveBeenCalled();
 	});
 
 	it("does not reject chat when session is running — forwards to runQuery (Slice A)", async () => {
@@ -585,7 +585,7 @@ describe("message — chat", () => {
 		expect(session.promoteQueued).toHaveBeenCalledWith("turn-3");
 	});
 
-	it("promote_queued ignored when ws is not session owner", async () => {
+	it("promote_queued allowed from any device", async () => {
 		const session = makeSession({
 			promoteQueued: vi.fn().mockReturnValue(true),
 		});
@@ -597,10 +597,10 @@ describe("message — chat", () => {
 			other as never,
 			JSON.stringify({ type: "promote_queued", turn_id: "turn-3" }),
 		);
-		expect(session.promoteQueued).not.toHaveBeenCalled();
+		expect(session.promoteQueued).toHaveBeenCalledWith("turn-3");
 	});
 
-	it("cancel_queued ignored when ws is not session owner", async () => {
+	it("cancel_queued allowed from any device", async () => {
 		const session = makeSession({
 			cancelQueued: vi.fn().mockReturnValue(true),
 		});
@@ -612,14 +612,14 @@ describe("message — chat", () => {
 			other as never,
 			JSON.stringify({ type: "cancel_queued", turn_id: "turn-xyz" }),
 		);
-		expect(session.cancelQueued).not.toHaveBeenCalled();
+		expect(session.cancelQueued).toHaveBeenCalledWith("turn-xyz");
 	});
 
 	it("first chat from unowned session is not rejected as non-owner", async () => {
 		const session = makeSession();
 		const { message } = createWsHandlers(session);
 		const ws = makeWs();
-		// No owner set — notOwner() returns false when sessionOwnerWs is null
+		// No owner set — chat allowed from any ws
 		await message(ws as never, JSON.stringify({ type: "chat", text: "hello" }));
 		// runQuery called proves the request wasn't rejected
 		expect(session.runQuery).toHaveBeenCalled();

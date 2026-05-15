@@ -13,11 +13,6 @@ import {
 import { broadcast, getRunBuffer, send, wsState } from "./runState";
 import type { SessionManager } from "./session";
 
-/** Returns true if ws is not the designated session owner and should be rejected. */
-function notOwner(ws: ServerWebSocket<unknown>): boolean {
-	return wsState.sessionOwnerWs !== null && ws !== wsState.sessionOwnerWs;
-}
-
 export function createWsHandlers(session: SessionManager) {
 	return {
 		open(ws: ServerWebSocket<unknown>) {
@@ -94,32 +89,27 @@ export function createWsHandlers(session: SessionManager) {
 			}
 
 			if (msg.type === "abort") {
-				if (notOwner(ws)) return;
 				session.abort();
 				return;
 			}
 
 			if (msg.type === "cancel_queued") {
-				if (notOwner(ws)) return;
 				session.cancelQueued(msg.turn_id);
 				return;
 			}
 
 			if (msg.type === "promote_queued") {
-				if (notOwner(ws)) return;
 				session.promoteQueued(msg.turn_id);
 				return;
 			}
 
 			if (msg.type === "clear") {
-				if (notOwner(ws)) return;
 				session.clearHistory();
 				wsState.lastSessionError = null;
 				return;
 			}
 
 			if (msg.type === "reload_session") {
-				if (notOwner(ws)) return;
 				const fresh = loadConfig();
 				session.reinitialize(fresh);
 				wsState.lastSessionError = null;
@@ -327,14 +317,6 @@ export function createWsHandlers(session: SessionManager) {
 			if (msg.type === "chat") {
 				if (typeof msg.text !== "string" || !msg.text.trim()) {
 					send(ws, { type: "error", message: "Invalid message" });
-					return;
-				}
-
-				// L1: Only the designated session owner (first sender) may initiate chats.
-				// Ownership persists until that WS disconnects, preventing other connected
-				// clients from hijacking the session between turns.
-				if (notOwner(ws)) {
-					send(ws, { type: "error", message: "Not session owner" });
 					return;
 				}
 
