@@ -76,6 +76,37 @@ export async function getTopToolCalls(limit = 10): Promise<TopToolCall[]> {
 	}));
 }
 
+// ─── getToolErrors ────────────────────────────────────────────────────────────
+
+export type ToolErrorEntry = {
+	/** Raw result_text from the tool event. */
+	text: string;
+	/** How many times this exact message appeared. */
+	count: number;
+};
+
+/**
+ * Returns the top distinct error messages for a given tool name, grouped by
+ * result_text so repeated identical errors collapse into a single row.
+ */
+export async function getToolErrors(
+	toolName: string,
+	limit = 10,
+): Promise<ToolErrorEntry[]> {
+	const db = await getDb();
+	type Row = { text: string; count: number };
+	return db
+		.query<Row, [string, number]>(
+			`SELECT result_text AS text, COUNT(*) AS count
+			 FROM tool_events
+			 WHERE name = ? AND is_error = 1
+			 GROUP BY result_text
+			 ORDER BY count DESC
+			 LIMIT ?`,
+		)
+		.all(toolName, limit);
+}
+
 // ─── getHourOfDayActivity ─────────────────────────────────────────────────────
 
 export async function getHourOfDayActivity(): Promise<HourOfDayBucket[]> {

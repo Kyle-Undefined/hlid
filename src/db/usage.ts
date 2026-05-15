@@ -183,13 +183,13 @@ export async function getUsageWindows(): Promise<UsageWindows> {
 
 	const rl5hr = db
 		.query<SettingsRow, [string]>(`SELECT value FROM settings WHERE key = ?`)
-		.get("rl_5hr");
+		.get("rl_claude_five_hour");
 	const rlWeekly = db
 		.query<SettingsRow, [string]>(`SELECT value FROM settings WHERE key = ?`)
-		.get("rl_weekly");
+		.get("rl_claude_weekly");
 	const rlWeeklySonnet = db
 		.query<SettingsRow, [string]>(`SELECT value FROM settings WHERE key = ?`)
-		.get("rl_weekly_sonnet");
+		.get("rl_claude_weekly_sonnet");
 
 	const sonnetRl = parseRl(rlWeeklySonnet);
 	return {

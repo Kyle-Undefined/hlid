@@ -409,6 +409,12 @@ function connect() {
 		if (msg.type === "status") onStatus(msg);
 		if (msg.type === "permission_request") onPermissionRequest();
 		if (msg.type === "permission_resolved") onPermissionResolved();
+		// ask_user_question and plan_mode_exit require user input — show same
+		// orange dot as a pending permission so the agent icon signals clearly.
+		if (msg.type === "ask_user_question") onPermissionRequest();
+		if (msg.type === "ask_user_question_resolved") onPermissionResolved();
+		if (msg.type === "plan_mode_exit") onPermissionRequest();
+		if (msg.type === "plan_mode_exit_resolved") onPermissionResolved();
 		if (msg.type === "usage_update") onUsageUpdate(msg);
 		if (msg.type === "done" && !onDone(msg)) return;
 		if (msg.type === "queue_state") {

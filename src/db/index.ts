@@ -6,6 +6,7 @@ export type {
 	LatencyDistribution,
 	ModelSplitEntry,
 	StopReasonEntry,
+	ToolErrorEntry,
 	TopToolCall,
 } from "./activity";
 // Activity (charts aggregations)
@@ -15,6 +16,7 @@ export {
 	getLatencyDistribution,
 	getModelSplit,
 	getStopReasonSplit,
+	getToolErrors,
 	getTopToolCalls,
 } from "./activity";
 // Attachments

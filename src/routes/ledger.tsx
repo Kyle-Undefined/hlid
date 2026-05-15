@@ -11,9 +11,8 @@ import { ModelSplitDonut } from "#/components/ledger/charts/ModelSplitDonut";
 import { StopReasonDonut } from "#/components/ledger/charts/StopReasonDonut";
 import { TopToolsChart } from "#/components/ledger/charts/TopToolsChart";
 import type { StatBundle } from "#/components/ledger/LedgerStats";
-import { StatCell, StatRows, UtilBar } from "#/components/ledger/LedgerStats";
+import { StatCell, StatRows } from "#/components/ledger/LedgerStats";
 import { SessionsLedger } from "#/components/ledger/SessionsLedger";
-import { statusDotClass } from "#/components/nav/SystemStatusDot";
 import {
 	ContextWindowSection,
 	ProviderUsageStrip,
@@ -392,66 +391,46 @@ function StatsPage() {
 			</div>
 
 			<div className="flex-1 overflow-auto">
-				{/* Active session callout strip */}
-				<div className="flex items-center gap-2.5 px-4 py-2 border-b border-border">
-					{activeSessionData ? (
-						<>
-							<span
-								className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${statusDotClass(wsStatus, sessionState, hasPendingPermissions)}`}
-							/>
-							{activeSessionData.label && (
-								<span className="text-[9px] tracking-widest uppercase text-foreground/60 truncate">
-									{activeSessionData.label}
-								</span>
-							)}
-							{sessionState === "running" && (
-								<span className="ml-auto text-[9px] tracking-widest uppercase text-primary/70">
-									Running
-								</span>
-							)}
-						</>
-					) : (
-						<>
-							<span
-								className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${statusDotClass(wsStatus, sessionState, hasPendingPermissions)}`}
-							/>
-							<span className="text-[9px] tracking-widest uppercase text-muted-foreground/40">
-								No Active Session
-							</span>
-						</>
-					)}
-				</div>
-
 				{/* Active session stat grid — scrolls with content */}
 				<div className="grid grid-cols-2 sm:grid-cols-4 border-b border-border">
 					<div className="border-r border-b sm:border-b-0 border-border">
 						<StatCell
 							label="COST"
 							value={
-								activeSessionData
-									? `$${activeSessionData.total_cost.toFixed(4)}`
-									: "--"
+								stats.queries > 0
+									? `$${stats.cost.toFixed(4)}`
+									: activeSessionData
+										? `$${activeSessionData.total_cost.toFixed(4)}`
+										: "--"
 							}
 							sub={
-								activeSessionData && activeSessionData.query_count > 0
-									? `$${(activeSessionData.total_cost / activeSessionData.query_count).toFixed(4)}/query`
-									: undefined
+								stats.queries > 0
+									? `$${(stats.cost / stats.queries).toFixed(4)}/query`
+									: activeSessionData && activeSessionData.query_count > 0
+										? `$${(activeSessionData.total_cost / activeSessionData.query_count).toFixed(4)}/query`
+										: undefined
 							}
-							dim={!activeSessionData}
+							dim={stats.queries === 0 && !activeSessionData}
 						/>
 					</div>
 					<div className="border-b sm:border-b-0 sm:border-r border-border">
 						<StatCell
 							label="QUERIES"
 							value={
-								activeSessionData ? String(activeSessionData.query_count) : "--"
+								stats.queries > 0
+									? String(stats.queries)
+									: activeSessionData
+										? String(activeSessionData.query_count)
+										: "--"
 							}
 							sub={
-								activeSessionData && activeSessionData.total_turns > 0
-									? `${activeSessionData.total_turns} turns`
-									: undefined
+								stats.queries > 0
+									? `${stats.turns} turns`
+									: activeSessionData && activeSessionData.total_turns > 0
+										? `${activeSessionData.total_turns} turns`
+										: undefined
 							}
-							dim={!activeSessionData}
+							dim={stats.queries === 0 && !activeSessionData}
 						/>
 					</div>
 					<div className="border-r border-border">
@@ -526,6 +505,11 @@ function StatsPage() {
 								})
 							}
 							onCleanup={handleCleanup}
+							activeSessionId={activeSessionData?.id}
+							wsStatus={wsStatus}
+							sessionState={sessionState}
+							hasPendingPermissions={hasPendingPermissions}
+							liveStats={stats}
 						/>
 					</div>
 				)}
@@ -652,48 +636,6 @@ function StatsTab({
 						<HourOfDayChart data={activity.hourOfDay} />
 					</div>
 				</div>
-
-				{/* Rate limit — only shown when active */}
-				{rateLimit && (
-					<div className="border border-border bg-card">
-						<div className="px-4 py-3 border-b border-border">
-							<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
-								RATE LIMIT
-							</div>
-						</div>
-						<div className="p-4 space-y-3">
-							<div className="flex items-center justify-between">
-								<span className="text-[10px] tracking-widest text-muted-foreground uppercase">
-									Status
-								</span>
-								<span
-									className={`text-[11px] tracking-wider font-medium ${
-										rateLimit.status === "allowed"
-											? "text-green-500/70"
-											: rateLimit.status === "allowed_warning"
-												? "text-yellow-500/70"
-												: "text-destructive/70"
-									}`}
-								>
-									{rateLimit.status.replace("_", " ").toUpperCase()}
-								</span>
-							</div>
-							{rateLimit.rateLimitType && (
-								<div className="flex items-center justify-between">
-									<span className="text-[10px] tracking-widest text-muted-foreground uppercase">
-										Window
-									</span>
-									<span className="text-[11px] tracking-wider text-foreground/70">
-										{rateLimit.rateLimitType.replace(/_/g, " ").toUpperCase()}
-									</span>
-								</div>
-							)}
-							{rateLimit.utilization != null && (
-								<UtilBar utilization={rateLimit.utilization} />
-							)}
-						</div>
-					</div>
-				)}
 
 				{/* SESSION (DB) + TODAY + THIS MONTH + ALL-TIME — same-size row.
 				    Falls back to 3 cols when there's no active session so the

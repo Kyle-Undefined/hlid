@@ -1,8 +1,10 @@
 import { ChevronLeft, ChevronRight, Pencil, X } from "lucide-react";
 import { type KeyboardEvent, useRef, useState } from "react";
 import { ConfirmAction } from "#/components/ConfirmAction";
+import { statusDotClass } from "#/components/nav/SystemStatusDot";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { SessionRow } from "#/db";
+import type { LiveStats, WsStatus } from "#/hooks/wsStore";
 import { fmt, fmtDate } from "#/lib/formatters";
 
 const THIRTY_DAYS_S = 30 * 86_400;
@@ -14,11 +16,21 @@ function SessionItem({
 	onDelete,
 	onNavigate,
 	onRename,
+	isActive,
+	wsStatus,
+	sessionState,
+	hasPendingPermissions,
+	liveStats,
 }: {
 	session: SessionRow;
 	onDelete: (id: string) => void;
 	onNavigate: (id: string) => void;
 	onRename: (id: string, label: string) => void;
+	isActive?: boolean;
+	wsStatus?: WsStatus;
+	sessionState?: "idle" | "running" | "error";
+	hasPendingPermissions?: boolean;
+	liveStats?: LiveStats;
 }) {
 	const [editing, setEditing] = useState(false);
 	const [editValue, setEditValue] = useState("");
@@ -81,6 +93,11 @@ function SessionItem({
 					onClick={() => onNavigate(session.id)}
 					className="flex items-center gap-3 flex-1 min-w-0 px-4 py-2.5 text-left"
 				>
+					{isActive && wsStatus && sessionState && (
+						<span
+							className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${statusDotClass(wsStatus, sessionState, hasPendingPermissions ?? false)}`}
+						/>
+					)}
 					<div className="flex-1 min-w-0">
 						<PrivacyMask className="text-[11px] tracking-wider text-foreground/80 truncate">
 							{session.label ?? "untitled"}
@@ -92,12 +109,18 @@ function SessionItem({
 					</div>
 					<div className="text-right shrink-0">
 						<PrivacyMask className="text-[11px] tabular-nums text-[var(--data)]/70">
-							${(session.total_cost ?? 0).toFixed(4)}
+							$
+							{(isActive && liveStats && liveStats.queries > 0
+								? liveStats.cost
+								: (session.total_cost ?? 0)
+							).toFixed(4)}
 						</PrivacyMask>
 						<PrivacyMask className="text-[9px] tabular-nums text-muted-foreground/40 mt-0.5">
 							{fmt(
-								(session.total_input_tokens ?? 0) +
-									(session.total_output_tokens ?? 0),
+								isActive && liveStats && liveStats.queries > 0
+									? liveStats.input_tokens + liveStats.output_tokens
+									: (session.total_input_tokens ?? 0) +
+											(session.total_output_tokens ?? 0),
 							)}{" "}
 							tok
 						</PrivacyMask>
@@ -150,6 +173,11 @@ export function SessionsLedger({
 	onRename,
 	onNavigate,
 	onCleanup,
+	activeSessionId,
+	wsStatus,
+	sessionState,
+	hasPendingPermissions,
+	liveStats,
 }: {
 	data: { sessions: SessionRow[]; total: number };
 	page: number;
@@ -163,6 +191,11 @@ export function SessionsLedger({
 	onRename: (id: string, label: string) => void;
 	onNavigate: (id: string) => void;
 	onCleanup: (days: number) => void;
+	activeSessionId?: string | null;
+	wsStatus?: WsStatus;
+	sessionState?: "idle" | "running" | "error";
+	hasPendingPermissions?: boolean;
+	liveStats?: LiveStats;
 }) {
 	const [jumpInput, setJumpInput] = useState("");
 
@@ -248,6 +281,11 @@ export function SessionsLedger({
 						onDelete={onDelete}
 						onRename={onRename}
 						onNavigate={onNavigate}
+						isActive={activeSessionId != null && s.id === activeSessionId}
+						wsStatus={wsStatus}
+						sessionState={sessionState}
+						hasPendingPermissions={hasPendingPermissions}
+						liveStats={liveStats}
 					/>
 				))
 			)}

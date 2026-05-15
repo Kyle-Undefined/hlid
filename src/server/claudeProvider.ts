@@ -281,9 +281,11 @@ class ClaudeAgentSession implements AgentSession {
 					rateLimitType: info.rateLimitType,
 					utilization: info.utilization,
 					resetsAt:
-						typeof info.resetsAt === "string"
-							? Math.floor(new Date(info.resetsAt).getTime() / 1000)
-							: null,
+						typeof info.resetsAt === "number"
+							? info.resetsAt
+							: typeof info.resetsAt === "string"
+								? Math.floor(new Date(info.resetsAt).getTime() / 1000)
+								: null,
 				};
 				continue;
 			}

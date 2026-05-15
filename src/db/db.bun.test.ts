@@ -775,10 +775,10 @@ describe("usage — getWeeklyStats", () => {
 describe("usage — getUsageWindows rate-limit settings", () => {
 	beforeEach(() => freshDb());
 
-	it("exposes utilization and resetsAt from rl_5hr when not expired", async () => {
+	it("exposes utilization and resetsAt from rl_claude_five_hour when not expired", async () => {
 		const resetsAt = Math.floor(Date.now() / 1000) + 3600;
 		await saveSetting(
-			"rl_5hr",
+			"rl_claude_five_hour",
 			JSON.stringify({ utilization: 0.75, resetsAt }),
 		);
 		const { fiveHour } = await getUsageWindows();
@@ -786,23 +786,26 @@ describe("usage — getUsageWindows rate-limit settings", () => {
 		expect(fiveHour.resetsAt).toBe(resetsAt);
 	});
 
-	it("ignores rl_5hr setting when resetsAt is in the past", async () => {
+	it("ignores rl_claude_five_hour setting when resetsAt is in the past", async () => {
 		const resetsAt = Math.floor(Date.now() / 1000) - 60;
-		await saveSetting("rl_5hr", JSON.stringify({ utilization: 0.9, resetsAt }));
+		await saveSetting(
+			"rl_claude_five_hour",
+			JSON.stringify({ utilization: 0.9, resetsAt }),
+		);
 		const { fiveHour } = await getUsageWindows();
 		expect(fiveHour.utilization).toBeNull();
 	});
 
 	it("handles malformed JSON in rl settings without throwing", async () => {
-		await saveSetting("rl_5hr", "not-valid-json{{");
+		await saveSetting("rl_claude_five_hour", "not-valid-json{{");
 		const { fiveHour } = await getUsageWindows();
 		expect(fiveHour.utilization).toBeNull();
 	});
 
-	it("returns weeklySonnet utilization when rl_weekly_sonnet is set and unexpired", async () => {
+	it("returns weeklySonnet utilization when rl_claude_weekly_sonnet is set and unexpired", async () => {
 		const resetsAt = Math.floor(Date.now() / 1000) + 3600;
 		await saveSetting(
-			"rl_weekly_sonnet",
+			"rl_claude_weekly_sonnet",
 			JSON.stringify({ utilization: 0.5, resetsAt }),
 		);
 		const { weeklySonnet } = await getUsageWindows();
@@ -810,10 +813,10 @@ describe("usage — getUsageWindows rate-limit settings", () => {
 		expect(weeklySonnet?.utilization).toBeCloseTo(0.5);
 	});
 
-	it("weeklySonnet is null when rl_weekly_sonnet resetsAt expired", async () => {
+	it("weeklySonnet is null when rl_claude_weekly_sonnet resetsAt expired", async () => {
 		const resetsAt = Math.floor(Date.now() / 1000) - 1;
 		await saveSetting(
-			"rl_weekly_sonnet",
+			"rl_claude_weekly_sonnet",
 			JSON.stringify({ utilization: 0.5, resetsAt }),
 		);
 		const { weeklySonnet } = await getUsageWindows();

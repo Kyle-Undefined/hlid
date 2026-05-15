@@ -2037,6 +2037,8 @@ describe("SessionManager — live tool_event persistence", () => {
 		const sm = new SessionManager(makeConfig(), makeProviders(provider));
 		const runPromise = sm.runQuery("go", () => {}, "sess-live-mix");
 		await gateReached;
+		// TEXT_WRITE_THROTTLE_MS is 800ms; use 2500ms for comfortable headroom
+		// under CI / full-suite load (matches the other throttle test).
 		await waitFor(() => {
 			const placeholderInserts = vi
 				.mocked(dbMock.appendMessage)
@@ -2053,7 +2055,7 @@ describe("SessionManager — live tool_event persistence", () => {
 				.mocked(dbMock.setMessageText)
 				.mock.calls.find((c) => c[0] === "sess-live-mix");
 			expect(textCall?.[1]).toBe(placeholderInserts[0][1]);
-		});
+		}, 2500);
 		release();
 		await runPromise;
 	});

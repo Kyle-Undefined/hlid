@@ -372,6 +372,13 @@ export const getActivityStatsFn = createServerFn({ method: "GET" }).handler(
 	() => dbJson<ActivityStats>("/db/activity", EMPTY_ACTIVITY),
 );
 
+export const getToolErrorsFn = createServerFn({ method: "GET" })
+	.inputValidator((raw) => z.string().min(1).parse(raw))
+	.handler(async ({ data: toolName }) => {
+		const { getToolErrors } = await import("#/db");
+		return getToolErrors(toolName, 10);
+	});
+
 export const getMcpServersFn = createServerFn({ method: "GET" }).handler(
 	async () => {
 		// Try live status from the WS server (populated after any session runs)
