@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import type { Action } from "#/components/chat/chatReducer";
+import * as wsStore from "#/hooks/wsStore";
 import { uid } from "#/lib/utils";
 import type { RateLimitMessage, ServerMessage } from "#/server/protocol";
 
@@ -34,6 +35,21 @@ export function useChatWsHandler({
 		if (msg.type === "rate_limit") {
 			setRateLimit(msg);
 			return;
+		}
+
+		// Gate live streaming messages when viewing a different session than the
+		// one currently running. Prevents session A's output from bleeding into
+		// session B's view when the user navigates away mid-run.
+		// user_message has its own session_id check below; rate_limit is global.
+		if (msg.type !== "user_message") {
+			const runningId = wsStore.getActiveSessionId();
+			if (
+				runningId !== null &&
+				runningId !== sessionIdRef.current &&
+				wsStore.getSnapshot().sessionState === "running"
+			) {
+				return;
+			}
 		}
 
 		if (msg.type === "user_message") {

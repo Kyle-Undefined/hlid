@@ -11,6 +11,39 @@ import { PrivacyMask } from "./PrivacyMask";
 
 // ─── Merge logic ─────────────────────────────────────────────────────────────
 
+/**
+ * Apply a rate_limit WS event to the local UsageWindows state.
+ * Returns `prev` unchanged for unknown rateLimitType values so stale data is
+ * never clobbered by an event we don't understand (e.g. "overage").
+ */
+export function applyRateLimitToWindowData(
+	prev: UsageWindows | null,
+	rateLimit: Pick<
+		RateLimitMessage,
+		"rateLimitType" | "utilization" | "resetsAt"
+	>,
+): UsageWindows | null {
+	if (!prev || rateLimit.utilization == null) return prev;
+	const update = {
+		utilization: rateLimit.utilization ?? null,
+		resetsAt: rateLimit.resetsAt ?? null,
+	};
+	if (rateLimit.rateLimitType === "five_hour")
+		return { ...prev, fiveHour: { ...prev.fiveHour, ...update } };
+	if (rateLimit.rateLimitType === "weekly_sonnet")
+		return {
+			...prev,
+			weeklySonnet: {
+				utilization: update.utilization,
+				resetsAt: update.resetsAt,
+			},
+		};
+	if (rateLimit.rateLimitType === "weekly")
+		return { ...prev, weekly: { ...prev.weekly, ...update } };
+	// Unknown rateLimitType (e.g. "seven_day_opus", "overage") — leave unchanged
+	return prev;
+}
+
 export function mergeUsageWindows(
 	fresh: UsageWindows,
 	prev: UsageWindows | null,
@@ -21,10 +54,15 @@ export function mergeUsageWindows(
 		freshWin: UsageWindows["fiveHour"],
 		prevWin: UsageWindows["fiveHour"],
 	) => {
+		// Only prefer prev when the server has no utilization data at all. When
+		// the server returns a valid utilization it comes from the in-memory mark
+		// overlay and is authoritative — even if it's lower (e.g. external reset).
 		const prevValid =
 			prevWin.utilization != null &&
 			prevWin.resetsAt != null &&
-			prevWin.resetsAt > now;
+			prevWin.resetsAt > now &&
+			freshWin.utilization == null &&
+			(freshWin.resetsAt == null || freshWin.resetsAt === prevWin.resetsAt);
 		return {
 			...freshWin,
 			utilization: prevValid ? prevWin.utilization : freshWin.utilization,
@@ -34,7 +72,10 @@ export function mergeUsageWindows(
 	const prevSonnetValid =
 		prev.weeklySonnet?.utilization != null &&
 		prev.weeklySonnet?.resetsAt != null &&
-		prev.weeklySonnet.resetsAt > now;
+		prev.weeklySonnet.resetsAt > now &&
+		fresh.weeklySonnet?.utilization == null &&
+		(fresh.weeklySonnet?.resetsAt == null ||
+			fresh.weeklySonnet.resetsAt === prev.weeklySonnet.resetsAt);
 	return {
 		...fresh,
 		fiveHour: keep(fresh.fiveHour, prev.fiveHour),
@@ -70,7 +111,7 @@ export function UsageWindowSection({
 	hideStats?: boolean;
 }) {
 	const utilPct =
-		win?.utilization != null ? Math.min(win.utilization * 100, 100) : null;
+		win != null ? Math.min((win.utilization ?? 0) * 100, 100) : null;
 	return (
 		<div className="flex-1 px-2 py-2 md:px-4 md:py-2.5 min-w-0 space-y-1">
 			<div className="flex flex-col md:flex-row md:items-center md:justify-between gap-0.5 md:gap-2">
@@ -233,24 +274,7 @@ export function UsageWindowsPanel({
 
 	useEffect(() => {
 		if (!rateLimit || rateLimit.utilization == null) return;
-		setData((prev) => {
-			if (!prev) return prev;
-			const update = {
-				utilization: rateLimit.utilization ?? null,
-				resetsAt: rateLimit.resetsAt ?? null,
-			};
-			if (rateLimit.rateLimitType === "five_hour")
-				return { ...prev, fiveHour: { ...prev.fiveHour, ...update } };
-			if (rateLimit.rateLimitType === "weekly_sonnet")
-				return {
-					...prev,
-					weeklySonnet: {
-						utilization: update.utilization,
-						resetsAt: update.resetsAt,
-					},
-				};
-			return { ...prev, weekly: { ...prev.weekly, ...update } };
-		});
+		setData((prev) => applyRateLimitToWindowData(prev, rateLimit));
 	}, [rateLimit]);
 
 	return (
@@ -333,7 +357,7 @@ function ProviderWindowCell({ win }: { win: ProviderWindowEntry }) {
 	);
 }
 
-function mergeProviderSnapshot(
+export function mergeProviderSnapshot(
 	fresh: ProviderUsageSnapshot,
 	prev: ProviderUsageSnapshot | undefined,
 	rateLimit: RateLimitMessage | null,
@@ -344,10 +368,15 @@ function mergeProviderSnapshot(
 	const now = Date.now() / 1000;
 	const windows = fresh.windows.map((win) => {
 		const prevWin = prev.windows.find((w) => w.windowId === win.windowId);
+		// Only prefer prev when the server has no utilization data. A valid
+		// fresh utilization comes from the in-memory mark overlay and is
+		// authoritative — external Anthropic resets can lower it mid-window.
 		const prevValid =
 			prevWin?.utilization != null &&
 			prevWin?.resetsAt != null &&
-			prevWin.resetsAt > now;
+			prevWin.resetsAt > now &&
+			win.utilization == null &&
+			(win.resetsAt == null || win.resetsAt === prevWin.resetsAt);
 		return {
 			...win,
 			utilization: prevValid

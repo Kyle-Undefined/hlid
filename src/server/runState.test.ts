@@ -24,7 +24,6 @@ function makeWs() {
 /** Reset module-level mutable state before each test. */
 function resetState() {
 	wsState.clients.clear();
-	wsState.sessionOwnerWs = null;
 	wsState.lastSessionError = null;
 	// Flush _runBuffer by broadcasting a status/running message
 	broadcast({ type: "status", state: "running", model: "__reset__" });
@@ -261,5 +260,231 @@ describe("send", () => {
 		expect(() =>
 			send(dead as never, { type: "chunk", text: "x" }),
 		).not.toThrow();
+	});
+});
+
+// ── SessionRunState ───────────────────────────────────────────────────────────
+
+import { SessionRunState } from "./runState";
+
+describe("SessionRunState — subscriber management", () => {
+	it("addSubscriber puts ws in subscriber set", () => {
+		const rs = new SessionRunState("session-1");
+		const ws = makeWs();
+		rs.addSubscriber(ws as never);
+		expect(rs.getSubscriberCount()).toBe(1);
+	});
+
+	it("removeSubscriber removes ws from subscriber set", () => {
+		const rs = new SessionRunState("session-1");
+		const ws = makeWs();
+		rs.addSubscriber(ws as never);
+		rs.removeSubscriber(ws as never);
+		expect(rs.getSubscriberCount()).toBe(0);
+	});
+
+	it("removeSubscriber is a no-op for non-subscriber ws", () => {
+		const rs = new SessionRunState("session-1");
+		const ws = makeWs();
+		expect(() => rs.removeSubscriber(ws as never)).not.toThrow();
+	});
+
+	it("multiple subscribers tracked independently", () => {
+		const rs = new SessionRunState("session-1");
+		const ws1 = makeWs();
+		const ws2 = makeWs();
+		rs.addSubscriber(ws1 as never);
+		rs.addSubscriber(ws2 as never);
+		expect(rs.getSubscriberCount()).toBe(2);
+		rs.removeSubscriber(ws1 as never);
+		expect(rs.getSubscriberCount()).toBe(1);
+	});
+});
+
+describe("SessionRunState — broadcast", () => {
+	it("sends to all subscribers", () => {
+		const rs = new SessionRunState("session-1");
+		const ws1 = makeWs();
+		const ws2 = makeWs();
+		rs.addSubscriber(ws1 as never);
+		rs.addSubscriber(ws2 as never);
+
+		rs.broadcast({ type: "chunk", text: "hello" });
+
+		expect(ws1.send).toHaveBeenCalledOnce();
+		expect(ws2.send).toHaveBeenCalledOnce();
+	});
+
+	it("message payload includes session_id", () => {
+		const rs = new SessionRunState("my-session-id");
+		const ws = makeWs();
+		rs.addSubscriber(ws as never);
+
+		rs.broadcast({ type: "chunk", text: "hello" });
+
+		const payload = JSON.parse(ws.send.mock.calls[0][0] as string);
+		expect(payload.session_id).toBe("my-session-id");
+	});
+
+	it("does not throw for dead subscriber (send throws)", () => {
+		const rs = new SessionRunState("session-1");
+		const dead = {
+			send: vi.fn().mockImplementation(() => {
+				throw new Error("closed");
+			}),
+		};
+		rs.addSubscriber(dead as never);
+		expect(() => rs.broadcast({ type: "chunk", text: "x" })).not.toThrow();
+	});
+
+	it("sends nothing when no subscribers", () => {
+		const rs = new SessionRunState("session-1");
+		expect(() => rs.broadcast({ type: "chunk", text: "x" })).not.toThrow();
+	});
+});
+
+describe("SessionRunState — send (unicast)", () => {
+	it("sends to specified ws only", () => {
+		const rs = new SessionRunState("session-1");
+		const ws1 = makeWs();
+		const ws2 = makeWs();
+		rs.addSubscriber(ws1 as never);
+		rs.addSubscriber(ws2 as never);
+
+		rs.send(ws1 as never, { type: "status", state: "idle", model: "m" });
+
+		expect(ws1.send).toHaveBeenCalledOnce();
+		expect(ws2.send).not.toHaveBeenCalled();
+	});
+
+	it("does not throw for dead ws", () => {
+		const rs = new SessionRunState("session-1");
+		const dead = {
+			send: vi.fn().mockImplementation(() => {
+				throw new Error("gone");
+			}),
+		};
+		expect(() =>
+			rs.send(dead as never, { type: "chunk", text: "x" }),
+		).not.toThrow();
+	});
+});
+
+describe("SessionRunState — replay buffer", () => {
+	it("chunk is added to buffer", () => {
+		const rs = new SessionRunState("session-1");
+		rs.broadcast({ type: "chunk", text: "hello" });
+		expect(rs.getReplayBuffer()).toHaveLength(1);
+	});
+
+	it("tool_event is added to buffer", () => {
+		const rs = new SessionRunState("session-1");
+		rs.broadcast({ type: "tool_event", id: "t1", name: "Bash", input: {} });
+		expect(rs.getReplayBuffer()).toHaveLength(1);
+	});
+
+	it("permission_request is added to buffer", () => {
+		const rs = new SessionRunState("session-1");
+		rs.broadcast({
+			type: "permission_request",
+			id: "p1",
+			toolName: "Bash",
+			title: "Run?",
+		});
+		expect(rs.getReplayBuffer()).toHaveLength(1);
+	});
+
+	it("status/running clears buffer", () => {
+		const rs = new SessionRunState("session-1");
+		rs.broadcast({ type: "chunk", text: "a" });
+		rs.broadcast({ type: "status", state: "running", model: "m" });
+		expect(rs.getReplayBuffer()).toHaveLength(0);
+	});
+
+	it("done clears buffer", () => {
+		const rs = new SessionRunState("session-1");
+		rs.broadcast({ type: "chunk", text: "a" });
+		rs.broadcast({
+			type: "done",
+			cost: null,
+			turns: 1,
+			duration_ms: 0,
+			input_tokens: 0,
+			output_tokens: 0,
+			cache_read_tokens: 0,
+			cache_creation_tokens: 0,
+			context_window: null,
+			max_output_tokens: null,
+			stop_reason: null,
+			tokens_in_context: null,
+		});
+		expect(rs.getReplayBuffer()).toHaveLength(0);
+	});
+
+	it("error clears buffer", () => {
+		const rs = new SessionRunState("session-1");
+		rs.broadcast({ type: "chunk", text: "a" });
+		rs.broadcast({ type: "error", message: "boom" });
+		expect(rs.getReplayBuffer()).toHaveLength(0);
+	});
+
+	it("caps buffer at 500, drops oldest on overflow", () => {
+		const rs = new SessionRunState("session-1");
+		for (let i = 0; i < 501; i++) {
+			rs.broadcast({ type: "chunk", text: `msg-${i}` });
+		}
+		expect(rs.getReplayBuffer()).toHaveLength(500);
+		const texts = rs.getReplayBuffer().map((m) => {
+			const parsed = JSON.parse(JSON.stringify(m)) as { text?: string };
+			return parsed.text;
+		});
+		expect(texts[0]).toBe("msg-1");
+		expect(texts[499]).toBe("msg-500");
+	});
+});
+
+describe("SessionRunState — error state", () => {
+	it("lastError is null initially", () => {
+		const rs = new SessionRunState("session-1");
+		expect(rs.lastError).toBeNull();
+	});
+
+	it("error broadcast sets lastError", () => {
+		const rs = new SessionRunState("session-1");
+		rs.broadcast({ type: "error", message: "something broke" });
+		expect(rs.lastError).toBe("something broke");
+	});
+
+	it("status/running clears lastError", () => {
+		const rs = new SessionRunState("session-1");
+		rs.broadcast({ type: "error", message: "old error" });
+		rs.broadcast({ type: "status", state: "running", model: "m" });
+		expect(rs.lastError).toBeNull();
+	});
+
+	it("clearError resets lastError to null", () => {
+		const rs = new SessionRunState("session-1");
+		rs.broadcast({ type: "error", message: "oops" });
+		rs.clearError();
+		expect(rs.lastError).toBeNull();
+	});
+});
+
+describe("SessionRunState — owner tracking", () => {
+	it("ownerWs is null initially", () => {
+		const rs = new SessionRunState("session-1");
+		expect(rs.ownerWs).toBeNull();
+	});
+
+	it("ownerWs can be set and read", () => {
+		const rs = new SessionRunState("session-1");
+		const ws = makeWs();
+		rs.ownerWs = ws as never;
+		expect(rs.ownerWs).toBe(ws);
+	});
+
+	it("inFlightChatCount is empty initially", () => {
+		const rs = new SessionRunState("session-1");
+		expect(rs.inFlightChatCount.size).toBe(0);
 	});
 });

@@ -10,7 +10,7 @@ import { ClaudeProvider } from "./claudeProvider";
 import { loadConfig } from "./config";
 import { handleDbRoute } from "./dbRoutes";
 import { startProviderProxy } from "./proxy";
-import { SessionManager } from "./session";
+import { SessionPool } from "./sessionPool";
 import { startTlsProxy } from "./tlsProxy";
 import { startUiServer } from "./uiServer";
 import { syncWrappers } from "./wrappers";
@@ -70,15 +70,27 @@ if (process.execPath.endsWith(".exe") && !RESTART_MODE) {
 const providers = new Map<string, AgentProvider>([
 	["claude", new ClaudeProvider()],
 ]);
-const session = new SessionManager(config, providers);
+const pool = new SessionPool(config, providers);
 const SERVER_TOKEN = loadToken();
 
 // Restore cached MCP status from previous run so cockpit shows servers before first query
 void db.getSetting("mcp_status_cache").then((cached) => {
 	if (!cached) return;
 	try {
-		session.restoreMcpStatus(JSON.parse(cached) as McpServerStatus[]);
+		pool
+			.vaultEntry()
+			.manager.restoreMcpStatus(JSON.parse(cached) as McpServerStatus[]);
 	} catch {}
+});
+
+// Graceful shutdown: abort all running sessions on SIGTERM / SIGINT
+process.on("SIGTERM", () => {
+	pool.closeAll();
+	process.exit(0);
+});
+process.on("SIGINT", () => {
+	pool.closeAll();
+	process.exit(0);
 });
 
 const PORT = config.server.port + 1; // 3001 when TanStack Start is on 3000
@@ -90,7 +102,7 @@ const anthropicUpstream = (
 	process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com"
 ).replace(/\/$/, "");
 
-for (const provider of session.getAllProviders()) {
+for (const provider of providers.values()) {
 	if (provider.proxyConfig) {
 		void startProviderProxy(provider, anthropicUpstream);
 	}
@@ -173,17 +185,18 @@ registerBunServer(
 				if (!verifyToken(url.searchParams.get("token"), SERVER_TOKEN)) {
 					return new Response("Unauthorized", { status: 401 });
 				}
-				if (server.upgrade(req, { data: undefined })) return undefined;
+				if (server.upgrade(req, { data: { subscribedSessionId: "" } }))
+					return undefined;
 				return new Response("WebSocket upgrade required", { status: 426 });
 			}
 
 			if (url.pathname === "/status") {
-				return Response.json(session.getStatus());
+				return Response.json(pool.vaultEntry().manager.getStatus());
 			}
 
 			if (url.pathname === "/providers" && req.method === "GET") {
 				const list = await Promise.all(
-					session.getAllProviders().map(async (p) => {
+					[...providers.values()].map(async (p) => {
 						const check = p.check
 							? await p
 									.check()
@@ -205,10 +218,12 @@ registerBunServer(
 			}
 
 			if (url.pathname === "/mcp-status" && req.method === "GET") {
-				return Response.json(session.getLastMcpStatus() ?? []);
+				return Response.json(
+					pool.vaultEntry().manager.getLastMcpStatus() ?? [],
+				);
 			}
 
-			const dbResult = await handleDbRoute(url, req);
+			const dbResult = await handleDbRoute(url, req, pool);
 			if (dbResult) return dbResult;
 
 			const attResult = await handleAttachmentRoute(url, req, config);
@@ -217,7 +232,7 @@ registerBunServer(
 			return new Response("Not found", { status: 404 });
 		},
 
-		websocket: createWsHandlers(session),
+		websocket: createWsHandlers(pool),
 	}),
 );
 

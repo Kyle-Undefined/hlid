@@ -1,15 +1,14 @@
 import { ChevronLeft, ChevronRight, Pencil, X } from "lucide-react";
 import { type KeyboardEvent, useRef, useState } from "react";
 import { ConfirmAction } from "#/components/ConfirmAction";
-import { statusDotClass } from "#/components/nav/SystemStatusDot";
+import { sessionEntryDotClass } from "#/components/nav/SystemStatusDot";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { SessionRow } from "#/db";
-import type { LiveStats, WsStatus } from "#/hooks/wsStore";
+import type { LiveStats } from "#/hooks/wsStore";
 import { fmt, fmtDate } from "#/lib/formatters";
+import type { SessionStatusEntry } from "#/server/protocol";
 
 const THIRTY_DAYS_S = 30 * 86_400;
-
-// ─── SessionItem ──────────────────────────────────────────────────────────────
 
 function SessionItem({
 	session,
@@ -17,9 +16,7 @@ function SessionItem({
 	onNavigate,
 	onRename,
 	isActive,
-	wsStatus,
-	sessionState,
-	hasPendingPermissions,
+	poolSession,
 	liveStats,
 }: {
 	session: SessionRow;
@@ -27,9 +24,7 @@ function SessionItem({
 	onNavigate: (id: string) => void;
 	onRename: (id: string, label: string) => void;
 	isActive?: boolean;
-	wsStatus?: WsStatus;
-	sessionState?: "idle" | "running" | "error";
-	hasPendingPermissions?: boolean;
+	poolSession?: SessionStatusEntry;
 	liveStats?: LiveStats;
 }) {
 	const [editing, setEditing] = useState(false);
@@ -93,9 +88,11 @@ function SessionItem({
 					onClick={() => onNavigate(session.id)}
 					className="flex items-center gap-3 flex-1 min-w-0 px-4 py-2.5 text-left"
 				>
-					{isActive && wsStatus && sessionState && (
-						<span
-							className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${statusDotClass(wsStatus, sessionState, hasPendingPermissions ?? false)}`}
+					{poolSession && (
+						<div
+							className={`w-1.5 h-1.5 rounded-full shrink-0 ${sessionEntryDotClass(poolSession)}`}
+							role="img"
+							aria-label={`${poolSession.state} subprocess`}
 						/>
 					)}
 					<div className="flex-1 min-w-0">
@@ -174,9 +171,7 @@ export function SessionsLedger({
 	onNavigate,
 	onCleanup,
 	activeSessionId,
-	wsStatus,
-	sessionState,
-	hasPendingPermissions,
+	sessionsStatus,
 	liveStats,
 }: {
 	data: { sessions: SessionRow[]; total: number };
@@ -192,9 +187,7 @@ export function SessionsLedger({
 	onNavigate: (id: string) => void;
 	onCleanup: (days: number) => void;
 	activeSessionId?: string | null;
-	wsStatus?: WsStatus;
-	sessionState?: "idle" | "running" | "error";
-	hasPendingPermissions?: boolean;
+	sessionsStatus?: SessionStatusEntry[];
 	liveStats?: LiveStats;
 }) {
 	const [jumpInput, setJumpInput] = useState("");
@@ -282,9 +275,7 @@ export function SessionsLedger({
 						onRename={onRename}
 						onNavigate={onNavigate}
 						isActive={activeSessionId != null && s.id === activeSessionId}
-						wsStatus={wsStatus}
-						sessionState={sessionState}
-						hasPendingPermissions={hasPendingPermissions}
+						poolSession={sessionsStatus?.find((p) => p.db_session_id === s.id)}
 						liveStats={liveStats}
 					/>
 				))

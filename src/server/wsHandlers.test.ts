@@ -2,6 +2,9 @@
  * wsHandlers unit tests — routes ClientMessages to the correct SessionManager
  * method and enforces ownership semantics. SessionManager, runState, DB, and
  * config are all mocked; only the routing logic inside createWsHandlers is real.
+ *
+ * Uses a single-session pool wrapper so existing per-session tests work with the
+ * new pool-based createWsHandlers(pool) API.
  */
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,32 +19,28 @@ vi.mock("../db", () => ({
 	recordPermissionEvent: vi.fn().mockResolvedValue(undefined),
 	appendLog: vi.fn().mockResolvedValue(undefined),
 	saveSetting: vi.fn().mockResolvedValue(undefined),
+	setAskUserQuestionResolution: vi.fn().mockResolvedValue(undefined),
 }));
 
 // vi.mock factories are hoisted before module-level code, so vars referenced
 // inside them must also be hoisted via vi.hoisted().
-const { wsState, mockSend, mockBroadcast, mockGetRunBuffer, mockLoadConfig } =
-	vi.hoisted(() => ({
-		wsState: {
-			clients: new Set<object>(),
-			sessionOwnerWs: null as object | null,
-			lastSessionError: null as string | null,
-			inFlightChatCount: new Map<object, number>(),
+const { wsState, mockSend, mockBroadcast, mockLoadConfig } = vi.hoisted(() => ({
+	wsState: {
+		clients: new Set<object>(),
+	},
+	mockSend: vi.fn(),
+	mockBroadcast: vi.fn(),
+	mockLoadConfig: vi.fn().mockReturnValue({
+		vault: { path: "/tmp/test", name: "Test Vault" },
+		claude: {
+			model: "test-model",
+			effort: "medium",
+			permission_mode: "default",
+			turn_recaps: false,
 		},
-		mockSend: vi.fn(),
-		mockBroadcast: vi.fn(),
-		mockGetRunBuffer: vi.fn().mockReturnValue([]),
-		mockLoadConfig: vi.fn().mockReturnValue({
-			vault: { path: "/tmp/test" },
-			claude: {
-				model: "test-model",
-				effort: "medium",
-				permission_mode: "default",
-				turn_recaps: false,
-			},
-			agents: [],
-		}),
-	}));
+		agents: [],
+	}),
+}));
 
 vi.mock("./config", () => ({
 	loadConfig: mockLoadConfig,
@@ -51,7 +50,6 @@ vi.mock("./runState", () => ({
 	wsState,
 	send: mockSend,
 	broadcast: mockBroadcast,
-	getRunBuffer: mockGetRunBuffer,
 }));
 
 // ── import after mocks ────────────────────────────────────────────────────────
@@ -60,9 +58,26 @@ import { createWsHandlers } from "./wsHandlers";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
-/** Create a minimal fake WebSocket with a spy on send(). */
-function makeWs() {
-	return { send: vi.fn() };
+/** Create a minimal fake WebSocket with a spy on send() and pool-required data. */
+function makeWs(subscribedSessionId = "vault-id") {
+	return { send: vi.fn(), data: { subscribedSessionId } };
+}
+
+/** Per-session run state mock (mirrors SessionRunState public API). */
+function makeRunState(sessionId = "vault-id") {
+	return {
+		sessionId,
+		addSubscriber: vi.fn(),
+		removeSubscriber: vi.fn(),
+		getSubscriberCount: vi.fn().mockReturnValue(0),
+		broadcast: vi.fn(),
+		send: vi.fn(),
+		getReplayBuffer: vi.fn().mockReturnValue([]),
+		clearError: vi.fn(),
+		lastError: null as string | null,
+		ownerWs: null as object | null,
+		inFlightChatCount: new Map<object, number>(),
+	};
 }
 
 /** Create a fully mocked SessionManager. */
@@ -74,7 +89,7 @@ function makeSession(overrides: Partial<SessionManager> = {}): SessionManager {
 		getPendingPermissionRequests: vi.fn().mockReturnValue([]),
 		getPendingAskUserQuestions: vi.fn().mockReturnValue([]),
 		getPendingPlanModeExits: vi.fn().mockReturnValue([]),
-		getCurrentSessionId: vi.fn().mockReturnValue(null),
+		getCurrentSessionId: vi.fn().mockReturnValue("mock-db-session"),
 		abort: vi.fn(),
 		clearHistory: vi.fn(),
 		reinitialize: vi.fn(),
@@ -94,6 +109,35 @@ function makeSession(overrides: Partial<SessionManager> = {}): SessionManager {
 	} as unknown as SessionManager;
 }
 
+/**
+ * Wrap a single SessionManager in a minimal pool mock.
+ * Returns { pool, entry, runState } so tests can inspect per-session state.
+ */
+function wrapSession(session: SessionManager) {
+	const runState = makeRunState("vault-id");
+	const entry = {
+		sessionId: "vault-id",
+		agentCwd: "/tmp/test",
+		agentName: "Test Vault",
+		manager: session,
+		runState,
+	};
+	const pool = {
+		vaultEntry: vi.fn().mockReturnValue(entry),
+		vaultSessionId: vi.fn().mockReturnValue("vault-id"),
+		get: vi.fn((id: string) => (id === "vault-id" ? entry : undefined)),
+		create: vi.fn().mockReturnValue(entry),
+		close: vi.fn(),
+		getSessionsStatus: vi.fn().mockReturnValue([]),
+		getAllEntries: vi.fn().mockReturnValue([][Symbol.iterator]()),
+		syncConfig: vi.fn(),
+		getSize: vi.fn().mockReturnValue(1),
+		findByDbSessionId: vi.fn().mockReturnValue(undefined),
+		isVaultSession: vi.fn().mockReturnValue(false),
+	};
+	return { pool, entry, runState };
+}
+
 /** Capture the most recent arg to mockSend for a given ws. */
 function lastSentTo(ws: ReturnType<typeof makeWs>): ServerMessage | undefined {
 	const calls = mockSend.mock.calls.filter((c) => c[0] === ws);
@@ -102,12 +146,8 @@ function lastSentTo(ws: ReturnType<typeof makeWs>): ServerMessage | undefined {
 
 beforeEach(() => {
 	wsState.clients.clear();
-	wsState.sessionOwnerWs = null;
-	wsState.lastSessionError = null;
-	wsState.inFlightChatCount.clear();
 	mockSend.mockClear();
 	mockBroadcast.mockClear();
-	mockGetRunBuffer.mockClear().mockReturnValue([]);
 });
 
 // ── open ──────────────────────────────────────────────────────────────────────
@@ -115,7 +155,8 @@ beforeEach(() => {
 describe("open", () => {
 	it("adds ws to clients set", () => {
 		const session = makeSession();
-		const { open } = createWsHandlers(session);
+		const { pool } = wrapSession(session);
+		const { open } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		open(ws as never);
 		expect(wsState.clients.has(ws)).toBe(true);
@@ -123,7 +164,8 @@ describe("open", () => {
 
 	it("sends current status to new connection", () => {
 		const session = makeSession();
-		const { open } = createWsHandlers(session);
+		const { pool } = wrapSession(session);
+		const { open } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		open(ws as never);
 		const types = mockSend.mock.calls
@@ -136,8 +178,9 @@ describe("open", () => {
 		const session = makeSession({
 			getStatus: vi.fn().mockReturnValue({ state: "error", model: "m" }),
 		});
-		wsState.lastSessionError = "Something failed";
-		const { open } = createWsHandlers(session);
+		const { pool, runState } = wrapSession(session);
+		runState.lastError = "Something failed";
+		const { open } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		open(ws as never);
 		const calls = mockSend.mock.calls.filter((c) => c[0] === ws);
@@ -150,8 +193,9 @@ describe("open", () => {
 		const session = makeSession({
 			getStatus: vi.fn().mockReturnValue({ state: "idle", model: "m" }),
 		});
-		wsState.lastSessionError = "old error";
-		const { open } = createWsHandlers(session);
+		const { pool, runState } = wrapSession(session);
+		runState.lastError = "old error";
+		const { open } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		open(ws as never);
 		const calls = mockSend.mock.calls.filter((c) => c[0] === ws);
@@ -163,9 +207,10 @@ describe("open", () => {
 			{ type: "chunk", text: "Hello" },
 			{ type: "chunk", text: " world" },
 		];
-		mockGetRunBuffer.mockReturnValue(chunks);
 		const session = makeSession({ isRunning: vi.fn().mockReturnValue(true) });
-		const { open } = createWsHandlers(session);
+		const { pool, runState } = wrapSession(session);
+		runState.getReplayBuffer.mockReturnValue(chunks);
+		const { open } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		open(ws as never);
 		const sentChunks = mockSend.mock.calls
@@ -176,10 +221,11 @@ describe("open", () => {
 
 	it("claims ownership for reconnecting client when no owner set", () => {
 		const session = makeSession({ isRunning: vi.fn().mockReturnValue(true) });
-		const { open } = createWsHandlers(session);
+		const { pool, runState } = wrapSession(session);
+		const { open } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		open(ws as never);
-		expect(wsState.sessionOwnerWs).toBe(ws);
+		expect(runState.ownerWs).toBe(ws);
 	});
 
 	it("sends MCP status cache if available", () => {
@@ -187,7 +233,8 @@ describe("open", () => {
 		const session = makeSession({
 			getLastMcpStatus: vi.fn().mockReturnValue(mcpStatuses),
 		});
-		const { open } = createWsHandlers(session);
+		const { pool } = wrapSession(session);
+		const { open } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		open(ws as never);
 		const calls = mockSend.mock.calls.filter((c) => c[0] === ws);
@@ -211,7 +258,8 @@ describe("open", () => {
 			isRunning: vi.fn().mockReturnValue(true),
 			getPendingAskUserQuestions: vi.fn().mockReturnValue([pendingQ]),
 		});
-		const { open } = createWsHandlers(session);
+		const { pool } = wrapSession(session);
+		const { open } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		// No owner yet — reconnecting client claims ownership
 		open(ws as never);
@@ -240,10 +288,11 @@ describe("open", () => {
 			isRunning: vi.fn().mockReturnValue(true),
 			getPendingAskUserQuestions: vi.fn().mockReturnValue([pendingQ]),
 		});
-		const { open } = createWsHandlers(session);
+		const { pool, runState } = wrapSession(session);
+		const { open } = createWsHandlers(pool as never);
 		const owner = makeWs();
-		const other = makeWs();
-		wsState.sessionOwnerWs = owner;
+		const other = makeWs("vault-id");
+		runState.ownerWs = owner; // pre-set an existing owner
 		open(other as never);
 		const calls = mockSend.mock.calls.filter((c) => c[0] === other);
 		expect(
@@ -257,30 +306,35 @@ describe("open", () => {
 describe("close", () => {
 	it("removes ws from clients", () => {
 		const session = makeSession();
-		const { open, close } = createWsHandlers(session);
+		const { pool } = wrapSession(session);
+		const { open, close } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		open(ws as never);
 		close(ws as never);
 		expect(wsState.clients.has(ws)).toBe(false);
 	});
 
-	it("clears sessionOwnerWs when owner disconnects", () => {
+	it("calls runState.removeSubscriber when owner disconnects", () => {
 		const session = makeSession();
-		const { close } = createWsHandlers(session);
+		const { pool, runState } = wrapSession(session);
+		const { open, close } = createWsHandlers(pool as never);
 		const ws = makeWs();
-		wsState.sessionOwnerWs = ws;
+		runState.ownerWs = ws;
+		open(ws as never);
 		close(ws as never);
-		expect(wsState.sessionOwnerWs).toBeNull();
+		expect(runState.removeSubscriber).toHaveBeenCalledWith(ws);
 	});
 
-	it("does not clear owner when a non-owner disconnects", () => {
+	it("calls runState.removeSubscriber when non-owner disconnects", () => {
 		const session = makeSession();
-		const { close } = createWsHandlers(session);
+		const { pool, runState } = wrapSession(session);
+		const { open, close } = createWsHandlers(pool as never);
 		const owner = makeWs();
-		const other = makeWs();
-		wsState.sessionOwnerWs = owner;
+		const other = makeWs("vault-id");
+		runState.ownerWs = owner;
+		open(other as never);
 		close(other as never);
-		expect(wsState.sessionOwnerWs).toBe(owner);
+		expect(runState.removeSubscriber).toHaveBeenCalledWith(other);
 	});
 });
 
@@ -289,7 +343,8 @@ describe("close", () => {
 describe("message — invalid JSON", () => {
 	it("sends error on malformed JSON", async () => {
 		const session = makeSession();
-		const { message } = createWsHandlers(session);
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		await message(ws as never, "not-json");
 		expect(lastSentTo(ws)).toMatchObject({
@@ -304,7 +359,8 @@ describe("message — invalid JSON", () => {
 describe("message — sync", () => {
 	it("sends current status", async () => {
 		const session = makeSession();
-		const { message } = createWsHandlers(session);
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		await message(ws as never, JSON.stringify({ type: "sync" }));
 		const types = mockSend.mock.calls
@@ -319,19 +375,21 @@ describe("message — sync", () => {
 describe("message — abort", () => {
 	it("calls session.abort() when ws is owner", async () => {
 		const session = makeSession();
-		const { message } = createWsHandlers(session);
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
-		wsState.sessionOwnerWs = ws;
+		runState.ownerWs = ws;
 		await message(ws as never, JSON.stringify({ type: "abort" }));
 		expect(session.abort).toHaveBeenCalled();
 	});
 
 	it("allows abort from any device", async () => {
 		const session = makeSession();
-		const { message } = createWsHandlers(session);
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const owner = makeWs();
-		const other = makeWs();
-		wsState.sessionOwnerWs = owner;
+		const other = makeWs("vault-id");
+		runState.ownerWs = owner;
 		await message(other as never, JSON.stringify({ type: "abort" }));
 		expect(session.abort).toHaveBeenCalled();
 	});
@@ -340,49 +398,53 @@ describe("message — abort", () => {
 // ── message: clear ────────────────────────────────────────────────────────────
 
 describe("message — clear", () => {
-	it("calls clearHistory and resets lastSessionError when owner", async () => {
+	it("sets pendingNewSession and clears error on subscribed session", async () => {
 		const session = makeSession();
-		const { message } = createWsHandlers(session);
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
-		wsState.sessionOwnerWs = ws;
-		wsState.lastSessionError = "prev error";
+		runState.ownerWs = ws;
+		runState.lastError = "prev error";
 		await message(ws as never, JSON.stringify({ type: "clear" }));
-		expect(session.clearHistory).toHaveBeenCalled();
-		expect(wsState.lastSessionError).toBeNull();
+		expect((ws as { data: { pendingNewSession?: boolean } }).data.pendingNewSession).toBe(true);
+		expect(runState.clearError).toHaveBeenCalled();
 	});
 
 	it("allows clear from any device", async () => {
 		const session = makeSession();
-		const { message } = createWsHandlers(session);
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const owner = makeWs();
-		const other = makeWs();
-		wsState.sessionOwnerWs = owner;
+		const other = makeWs("vault-id");
+		runState.ownerWs = owner;
 		await message(other as never, JSON.stringify({ type: "clear" }));
-		expect(session.clearHistory).toHaveBeenCalled();
+		expect((other as { data: { pendingNewSession?: boolean } }).data.pendingNewSession).toBe(true);
 	});
 });
 
 // ── message: reload_session ───────────────────────────────────────────────────
 
 describe("message — reload_session", () => {
-	it("reinitializes session and broadcasts status when owner", async () => {
+	it("reinitializes session and broadcasts status via runState when owner", async () => {
 		const session = makeSession();
-		const { message } = createWsHandlers(session);
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
-		wsState.sessionOwnerWs = ws;
+		runState.ownerWs = ws;
 		await message(ws as never, JSON.stringify({ type: "reload_session" }));
 		expect(session.reinitialize).toHaveBeenCalled();
-		expect(mockBroadcast).toHaveBeenCalledWith(
+		expect(runState.broadcast).toHaveBeenCalledWith(
 			expect.objectContaining({ type: "status" }),
 		);
 	});
 
 	it("allows reload from any device", async () => {
 		const session = makeSession();
-		const { message } = createWsHandlers(session);
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const owner = makeWs();
-		const other = makeWs();
-		wsState.sessionOwnerWs = owner;
+		const other = makeWs("vault-id");
+		runState.ownerWs = owner;
 		await message(other as never, JSON.stringify({ type: "reload_session" }));
 		expect(session.reinitialize).toHaveBeenCalled();
 	});
@@ -393,9 +455,10 @@ describe("message — reload_session", () => {
 describe("message — chat", () => {
 	it("rejects empty text", async () => {
 		const session = makeSession();
-		const { message } = createWsHandlers(session);
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
-		wsState.sessionOwnerWs = ws;
+		runState.ownerWs = ws;
 		await message(ws as never, JSON.stringify({ type: "chat", text: "   " }));
 		expect(lastSentTo(ws)).toMatchObject({
 			type: "error",
@@ -406,10 +469,11 @@ describe("message — chat", () => {
 
 	it("allows chat from any device regardless of who owns the session", async () => {
 		const session = makeSession();
-		const { message } = createWsHandlers(session);
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const owner = makeWs();
-		const other = makeWs();
-		wsState.sessionOwnerWs = owner;
+		const other = makeWs("vault-id");
+		runState.ownerWs = owner;
 		await message(other as never, JSON.stringify({ type: "chat", text: "hi" }));
 		const errorCalls = mockSend.mock.calls.filter(
 			(c) => (c[1] as { type?: string })?.type === "error",
@@ -422,9 +486,10 @@ describe("message — chat", () => {
 		const session = makeSession({
 			isRunning: vi.fn().mockReturnValue(true),
 		});
-		const { message } = createWsHandlers(session);
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
-		wsState.sessionOwnerWs = ws;
+		runState.ownerWs = ws;
 		await message(ws as never, JSON.stringify({ type: "chat", text: "hi" }));
 		// No "Session already running" error should be sent.
 		const errorCalls = mockSend.mock.calls.filter(
@@ -450,9 +515,9 @@ describe("message — chat", () => {
 				});
 			}) as unknown as SessionManager["runQuery"],
 		});
-		const { message } = createWsHandlers(session);
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
-		wsState.sessionOwnerWs = ws;
 
 		// Fire two chats concurrently — do not await yet.
 		const p1 = message(
@@ -468,19 +533,19 @@ describe("message — chat", () => {
 		// from the same ws.
 		turn1Resolvers[0]?.();
 		await p1;
-		expect(wsState.sessionOwnerWs).toBe(ws);
+		expect(runState.ownerWs).toBe(ws);
 
 		// Resolve turn 2 — now ownership should clear.
 		turn2Resolvers[0]?.();
 		await p2;
-		expect(wsState.sessionOwnerWs).toBeNull();
+		expect(runState.ownerWs).toBeNull();
 	});
 
 	it("calls session.runQuery with correct args", async () => {
 		const session = makeSession();
-		const { message } = createWsHandlers(session);
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
-		wsState.sessionOwnerWs = ws;
 		await message(
 			ws as never,
 			JSON.stringify({
@@ -504,9 +569,9 @@ describe("message — chat", () => {
 
 	it("forwards plan_mode flag to session.runQuery", async () => {
 		const session = makeSession();
-		const { message } = createWsHandlers(session);
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
-		wsState.sessionOwnerWs = ws;
 		await message(
 			ws as never,
 			JSON.stringify({
@@ -528,16 +593,16 @@ describe("message — chat", () => {
 		);
 	});
 
-	it("broadcasts status when syncConfig reports model changed", async () => {
+	it("broadcasts status via runState when syncConfig reports model changed", async () => {
 		const session = makeSession({
 			syncConfig: vi.fn().mockReturnValue(true),
 		});
-		const { message } = createWsHandlers(session);
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
-		wsState.sessionOwnerWs = ws;
-		mockBroadcast.mockClear();
+		runState.broadcast.mockClear();
 		await message(ws as never, JSON.stringify({ type: "chat", text: "hi" }));
-		expect(mockBroadcast).toHaveBeenCalledWith(
+		expect(runState.broadcast).toHaveBeenCalledWith(
 			expect.objectContaining({ type: "status" }),
 		);
 	});
@@ -546,12 +611,12 @@ describe("message — chat", () => {
 		const session = makeSession({
 			syncConfig: vi.fn().mockReturnValue(false),
 		});
-		const { message } = createWsHandlers(session);
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
-		wsState.sessionOwnerWs = ws;
-		mockBroadcast.mockClear();
+		runState.broadcast.mockClear();
 		await message(ws as never, JSON.stringify({ type: "chat", text: "hi" }));
-		const statusBroadcasts = mockBroadcast.mock.calls.filter(
+		const statusBroadcasts = runState.broadcast.mock.calls.filter(
 			(c) => (c[0] as { type?: string })?.type === "status",
 		);
 		expect(statusBroadcasts).toHaveLength(0);
@@ -561,9 +626,10 @@ describe("message — chat", () => {
 		const session = makeSession({
 			cancelQueued: vi.fn().mockReturnValue(true),
 		});
-		const { message } = createWsHandlers(session);
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
-		wsState.sessionOwnerWs = ws;
+		runState.ownerWs = ws;
 		await message(
 			ws as never,
 			JSON.stringify({ type: "cancel_queued", turn_id: "turn-xyz" }),
@@ -575,9 +641,10 @@ describe("message — chat", () => {
 		const session = makeSession({
 			promoteQueued: vi.fn().mockReturnValue(true),
 		});
-		const { message } = createWsHandlers(session);
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
-		wsState.sessionOwnerWs = ws;
+		runState.ownerWs = ws;
 		await message(
 			ws as never,
 			JSON.stringify({ type: "promote_queued", turn_id: "turn-3" }),
@@ -589,10 +656,11 @@ describe("message — chat", () => {
 		const session = makeSession({
 			promoteQueued: vi.fn().mockReturnValue(true),
 		});
-		const { message } = createWsHandlers(session);
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const owner = makeWs();
-		const other = makeWs();
-		wsState.sessionOwnerWs = owner;
+		const other = makeWs("vault-id");
+		runState.ownerWs = owner;
 		await message(
 			other as never,
 			JSON.stringify({ type: "promote_queued", turn_id: "turn-3" }),
@@ -604,10 +672,11 @@ describe("message — chat", () => {
 		const session = makeSession({
 			cancelQueued: vi.fn().mockReturnValue(true),
 		});
-		const { message } = createWsHandlers(session);
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const owner = makeWs();
-		const other = makeWs();
-		wsState.sessionOwnerWs = owner;
+		const other = makeWs("vault-id");
+		runState.ownerWs = owner;
 		await message(
 			other as never,
 			JSON.stringify({ type: "cancel_queued", turn_id: "turn-xyz" }),
@@ -617,7 +686,8 @@ describe("message — chat", () => {
 
 	it("first chat from unowned session is not rejected as non-owner", async () => {
 		const session = makeSession();
-		const { message } = createWsHandlers(session);
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		// No owner set — chat allowed from any ws
 		await message(ws as never, JSON.stringify({ type: "chat", text: "hello" }));
@@ -629,7 +699,7 @@ describe("message — chat", () => {
 // ── message: permission_response ──────────────────────────────────────────────
 
 describe("message — permission_response", () => {
-	it("resolves pending permission and broadcasts resolved event", async () => {
+	it("resolves pending permission and broadcasts resolved event via runState", async () => {
 		const pending = {
 			type: "permission_request" as const,
 			id: "perm-1",
@@ -641,7 +711,8 @@ describe("message — permission_response", () => {
 			getPendingPermissionRequests: vi.fn().mockReturnValue([pending]),
 			getCurrentSessionId: vi.fn().mockReturnValue("sess-1"),
 		});
-		const { message } = createWsHandlers(session);
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		await message(
 			ws as never,
@@ -657,7 +728,7 @@ describe("message — permission_response", () => {
 			undefined,
 			undefined,
 		);
-		expect(mockBroadcast).toHaveBeenCalledWith(
+		expect(runState.broadcast).toHaveBeenCalledWith(
 			expect.objectContaining({ type: "permission_resolved", id: "perm-1" }),
 		);
 	});
@@ -666,7 +737,8 @@ describe("message — permission_response", () => {
 		const session = makeSession({
 			getPendingPermissionRequests: vi.fn().mockReturnValue([]),
 		});
-		const { message } = createWsHandlers(session);
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		await message(
 			ws as never,
@@ -691,7 +763,8 @@ describe("message — permission_response", () => {
 			getPendingPermissionRequests: vi.fn().mockReturnValue([pending]),
 			getCurrentSessionId: vi.fn().mockReturnValue("sess-1"),
 		});
-		const { message } = createWsHandlers(session);
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		await message(
 			ws as never,
@@ -716,7 +789,8 @@ describe("message — permission_response", () => {
 describe("message — ask_user_question_response", () => {
 	it("calls session.handleAskUserQuestionResponse with id and answers map", async () => {
 		const session = makeSession();
-		const { message } = createWsHandlers(session);
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		await message(
 			ws as never,
@@ -737,9 +811,9 @@ describe("message — ask_user_question_response", () => {
 
 	it("does not throw when id is unknown", async () => {
 		const session = makeSession();
-		const { message } = createWsHandlers(session);
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
-		// Just await — if it throws the test fails; resolves.not.toThrow() not Bun-compatible
 		await message(
 			ws as never,
 			JSON.stringify({
@@ -750,9 +824,10 @@ describe("message — ask_user_question_response", () => {
 		);
 	});
 
-	it("broadcasts ask_user_question_resolved after response", async () => {
+	it("broadcasts ask_user_question_resolved via runState after response", async () => {
 		const session = makeSession();
-		const { message } = createWsHandlers(session);
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		await message(
 			ws as never,
@@ -762,7 +837,7 @@ describe("message — ask_user_question_response", () => {
 				answers: { "Q?": ["Option B"] },
 			}),
 		);
-		expect(mockBroadcast).toHaveBeenCalledWith(
+		expect(runState.broadcast).toHaveBeenCalledWith(
 			expect.objectContaining({
 				type: "ask_user_question_resolved",
 				id: "aqq-2",
@@ -773,7 +848,8 @@ describe("message — ask_user_question_response", () => {
 
 	it("propagates multi-question / multi-select answer maps verbatim", async () => {
 		const session = makeSession();
-		const { message } = createWsHandlers(session);
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		const answers = {
 			"First?": ["Yes"],
@@ -792,7 +868,7 @@ describe("message — ask_user_question_response", () => {
 			answers,
 			undefined,
 		);
-		expect(mockBroadcast).toHaveBeenCalledWith(
+		expect(runState.broadcast).toHaveBeenCalledWith(
 			expect.objectContaining({
 				type: "ask_user_question_resolved",
 				id: "aqq-multi",
@@ -803,7 +879,8 @@ describe("message — ask_user_question_response", () => {
 
 	it("forwards notes to session.handleAskUserQuestionResponse when provided", async () => {
 		const session = makeSession();
-		const { message } = createWsHandlers(session);
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		await message(
 			ws as never,
@@ -823,7 +900,8 @@ describe("message — ask_user_question_response", () => {
 
 	it("broadcasts ask_user_question_resolved including notes when provided", async () => {
 		const session = makeSession();
-		const { message } = createWsHandlers(session);
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		await message(
 			ws as never,
@@ -834,7 +912,7 @@ describe("message — ask_user_question_response", () => {
 				notes: { "Q?": "feedback text" },
 			}),
 		);
-		expect(mockBroadcast).toHaveBeenCalledWith(
+		expect(runState.broadcast).toHaveBeenCalledWith(
 			expect.objectContaining({
 				type: "ask_user_question_resolved",
 				id: "aqq-notes-2",
@@ -846,10 +924,11 @@ describe("message — ask_user_question_response", () => {
 
 	it("any client can respond to ask_user_question (not owner-gated)", async () => {
 		const session = makeSession();
-		const { message } = createWsHandlers(session);
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const owner = makeWs();
-		const other = makeWs();
-		wsState.sessionOwnerWs = owner;
+		const other = makeWs("vault-id");
+		runState.ownerWs = owner;
 		// non-owner can still respond to a question
 		await message(
 			other as never,
@@ -877,7 +956,7 @@ describe("message — sync_mcp_list (agent_cwd)", () => {
 	beforeEach(() => {
 		agentDir = mkdtempSync(join(tmpdir(), "hlid-ws-agent-"));
 		mockLoadConfig.mockReturnValue({
-			vault: { path: "/tmp/test" },
+			vault: { path: "/tmp/test", name: "Test Vault" },
 			claude: {
 				model: "test-model",
 				effort: "medium",
@@ -894,7 +973,7 @@ describe("message — sync_mcp_list (agent_cwd)", () => {
 		rmSync(agentDir, { recursive: true, force: true });
 		// Restore default mock
 		mockLoadConfig.mockReturnValue({
-			vault: { path: "/tmp/test" },
+			vault: { path: "/tmp/test", name: "Test Vault" },
 			claude: {
 				model: "test-model",
 				effort: "medium",
@@ -907,7 +986,8 @@ describe("message — sync_mcp_list (agent_cwd)", () => {
 
 	it("without agent_cwd: calls broadcast with vault mcp_status", async () => {
 		const session = makeSession();
-		const { message } = createWsHandlers(session);
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		await message(ws as never, JSON.stringify({ type: "sync_mcp_list" }));
 		expect(mockBroadcast).toHaveBeenCalledWith(
@@ -922,7 +1002,8 @@ describe("message — sync_mcp_list (agent_cwd)", () => {
 			"utf8",
 		);
 		const session = makeSession();
-		const { message } = createWsHandlers(session);
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		mockSend.mockClear();
 		mockBroadcast.mockClear();
@@ -954,7 +1035,8 @@ describe("message — sync_mcp_list (agent_cwd)", () => {
 			"utf8",
 		);
 		const session = makeSession();
-		const { message } = createWsHandlers(session);
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		mockSend.mockClear();
 		await message(
@@ -989,7 +1071,8 @@ describe("message — sync_mcp_list (agent_cwd)", () => {
 			"utf8",
 		);
 		const session = makeSession();
-		const { message } = createWsHandlers(session);
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		mockSend.mockClear();
 		await message(
@@ -1010,7 +1093,8 @@ describe("message — sync_mcp_list (agent_cwd)", () => {
 
 	it("with unregistered agent_cwd: silently does nothing", async () => {
 		const session = makeSession();
-		const { message } = createWsHandlers(session);
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		mockSend.mockClear();
 		mockBroadcast.mockClear();
@@ -1033,7 +1117,8 @@ describe("message — sync_mcp_list (agent_cwd)", () => {
 
 	it("with agent_cwd + no .mcp.json: sends empty servers array", async () => {
 		const session = makeSession();
-		const { message } = createWsHandlers(session);
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		mockSend.mockClear();
 		await message(
@@ -1046,5 +1131,211 @@ describe("message — sync_mcp_list (agent_cwd)", () => {
 		expect(mcpCall).toBeDefined();
 		const servers = (mcpCall?.[1] as { servers: unknown[] }).servers;
 		expect(servers).toHaveLength(0);
+	});
+});
+
+// ── message: new_session ──────────────────────────────────────────────────────
+
+describe("message — new_session", () => {
+	it("sends session_created to requesting ws", async () => {
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+		mockSend.mockClear();
+		await message(ws as never, JSON.stringify({ type: "new_session" }));
+		const createdMsg = mockSend.mock.calls.find(
+			(c) =>
+				c[0] === ws && (c[1] as { type?: string })?.type === "session_created",
+		);
+		expect(createdMsg).toBeDefined();
+	});
+
+	it("sends status and queue_state to requesting ws after creation", async () => {
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+		mockSend.mockClear();
+		await message(ws as never, JSON.stringify({ type: "new_session" }));
+		const types = mockSend.mock.calls
+			.filter((c) => c[0] === ws)
+			.map((c) => (c[1] as { type?: string })?.type);
+		expect(types).toContain("status");
+		expect(types).toContain("queue_state");
+	});
+
+	it("subscribes ws to new session (addSubscriber called)", async () => {
+		const session = makeSession();
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs("vault-id");
+		await message(ws as never, JSON.stringify({ type: "new_session" }));
+		expect(runState.addSubscriber).toHaveBeenCalledWith(ws);
+	});
+
+	it("unsubscribes ws from old session before subscribing to new", async () => {
+		const session = makeSession();
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs("vault-id");
+		await message(ws as never, JSON.stringify({ type: "new_session" }));
+		expect(runState.removeSubscriber).toHaveBeenCalledWith(ws);
+	});
+
+	it("updates ws.data.subscribedSessionId to new session id", async () => {
+		const session = makeSession();
+		const { pool, entry } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs("vault-id");
+		await message(ws as never, JSON.stringify({ type: "new_session" }));
+		expect(ws.data.subscribedSessionId).toBe(entry.sessionId);
+	});
+
+	it("broadcasts sessions_status after creation", async () => {
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+		mockBroadcast.mockClear();
+		await message(ws as never, JSON.stringify({ type: "new_session" }));
+		expect(mockBroadcast).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "sessions_status" }),
+		);
+	});
+
+	it("sends error (not throw) when pool is at capacity", async () => {
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		pool.create = vi.fn().mockImplementation(() => {
+			throw new Error(
+				"Session pool at capacity (20). Close a session before creating a new one.",
+			);
+		});
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+		await expect(
+			message(ws as never, JSON.stringify({ type: "new_session" })),
+		).resolves.toBeUndefined();
+		expect(lastSentTo(ws)).toMatchObject({
+			type: "error",
+			message: expect.stringContaining("capacity"),
+		});
+	});
+
+	it("does not broadcast sessions_status on capacity error", async () => {
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		pool.create = vi.fn().mockImplementation(() => {
+			throw new Error("capacity");
+		});
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+		mockBroadcast.mockClear();
+		await message(ws as never, JSON.stringify({ type: "new_session" }));
+		expect(mockBroadcast).not.toHaveBeenCalled();
+	});
+});
+
+// ── message: close_session ────────────────────────────────────────────────────
+
+describe("message — close_session", () => {
+	it("sends error when attempting to close the vault session", async () => {
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+		await message(
+			ws as never,
+			JSON.stringify({ type: "close_session", session_id: "vault-id" }),
+		);
+		expect(lastSentTo(ws)).toMatchObject({
+			type: "error",
+			message: expect.stringContaining("vault"),
+		});
+	});
+
+	it("does not call pool.close when session_id is the vault", async () => {
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+		await message(
+			ws as never,
+			JSON.stringify({ type: "close_session", session_id: "vault-id" }),
+		);
+		expect(pool.close).not.toHaveBeenCalled();
+	});
+
+	it("calls pool.close for a non-vault session", async () => {
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+		await message(
+			ws as never,
+			JSON.stringify({ type: "close_session", session_id: "other-session" }),
+		);
+		expect(pool.close).toHaveBeenCalledWith("other-session");
+	});
+
+	it("broadcasts session_closed after closing a non-vault session", async () => {
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+		mockBroadcast.mockClear();
+		await message(
+			ws as never,
+			JSON.stringify({ type: "close_session", session_id: "other-session" }),
+		);
+		expect(mockBroadcast).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "session_closed",
+				session_id: "other-session",
+			}),
+		);
+	});
+});
+
+// ── message: chat at capacity ─────────────────────────────────────────────────
+
+describe("message — chat auto-create at capacity", () => {
+	it("sends error when pool is at capacity during chat auto-create", async () => {
+		// No current DB session → triggers auto-create path
+		const session = makeSession({
+			getCurrentSessionId: vi.fn().mockReturnValue(null),
+			isRunning: vi.fn().mockReturnValue(false),
+		});
+		const { pool } = wrapSession(session);
+		pool.create = vi.fn().mockImplementation(() => {
+			throw new Error(
+				"Session pool at capacity (20). Close a session before creating a new one.",
+			);
+		});
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+		await message(ws as never, JSON.stringify({ type: "chat", text: "hello" }));
+		expect(lastSentTo(ws)).toMatchObject({
+			type: "error",
+			message: expect.stringContaining("capacity"),
+		});
+	});
+
+	it("does not call runQuery when chat auto-create fails at capacity", async () => {
+		const session = makeSession({
+			getCurrentSessionId: vi.fn().mockReturnValue(null),
+			isRunning: vi.fn().mockReturnValue(false),
+		});
+		const { pool } = wrapSession(session);
+		pool.create = vi.fn().mockImplementation(() => {
+			throw new Error(
+				"Session pool at capacity (20). Close a session before creating a new one.",
+			);
+		});
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+		await message(ws as never, JSON.stringify({ type: "chat", text: "hello" }));
+		expect(session.runQuery).not.toHaveBeenCalled();
 	});
 });

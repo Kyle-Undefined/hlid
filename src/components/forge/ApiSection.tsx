@@ -6,25 +6,78 @@ const SESSION_API_PROMPT = `Create a vault skill for the hlid session management
 
 Read \`hlid.config.toml\` to find \`server.port\`. The data API runs on that port + 1.
 
-Endpoints:
+## DB Session Endpoints (persistent history)
+
   GET  /db/sessions?page=N&size=N
-  GET  /db/session-messages?session_id=ID
+    — Paginated session history. Returns { rows: SessionRow[], total, page, size }.
+
   GET  /db/session-row?id=ID
+    — Single session by DB session ID. Returns SessionRow or null.
+
   GET  /db/recent-sessions?limit=N
-  GET  /db/stats
+    — Most recent N sessions (default 14, max 100).
+
   GET  /db/current-session
+    — Returns { session_id } for the currently active session, or null.
+
   GET  /db/active-session
+    — Returns the active SessionRow (current or most recent). Null-safe fallback.
+
+  GET  /db/session-messages?session_id=ID
+    — Full message history for a session, enriched with tool events and attachments.
+
   GET  /db/session-context?session_id=ID
+    — Context window snapshot from the last query in the session.
+
   GET  /db/session-permissions?session_id=ID
+    — Permission events (allow/deny decisions) for a session.
+
   GET  /db/session-plan-proposals?session_id=ID
+    — Plan mode proposals history for a session.
+
+  GET  /db/stats
+    — Aggregated usage stats + last 10 sessions.
+
   GET  /db/weekly-stats
+    — Query counts grouped by day of week.
+
   GET  /db/thirty-day-stats
+    — Daily query counts for the last 30 days.
+
   GET  /db/usage-windows
+    — Provider rate-limit window utilization (live in-memory overlay + DB fallback).
+
   PATCH  /db/session?id=ID   { label: string }
+    — Rename a DB session. Body must include \`label\`.
+
   DELETE /db/session?id=ID
-  POST /db/sessions/cleanup  { older_than_days: N }
+    — Delete a DB session and all related rows (messages, tool events, attachments, etc.).
+
+  POST /db/sessions/cleanup  { older_than_days: number }
+    — Bulk-delete sessions older than N days. Returns { deleted: count }.
+    — Default: 30 days. Also accepted as query param ?older_than_days=N.
+
+## Live Session Endpoints (in-memory pool, resets on server restart)
+
+  GET  /db/live-sessions
+    — List all currently active pool sessions.
+    — Returns array of: { session_id, agent_cwd, agent_name, state, model,
+        hasPendingPermissions, hasDbSession, db_session_id, lastLabel }
+    — state: "idle" | "running" | "error"
+
+  POST /db/live-sessions/stop  { session_id: string }
+    — Abort the currently running turn for a live session.
+    — The session stays in the pool (can resume); only the in-flight turn is cancelled.
+    — Returns { ok: true } or 404 if not found.
+
+  POST /db/live-sessions/close  { session_id: string }
+    — Remove a live session from the pool entirely.
+    — The vault session cannot be closed (returns 403).
+    — Returns { ok: true } or 404/403 on error.
 
 Create a skill file in the vault's skills folder (\`vault.skills\` in config). Add YAML frontmatter with \`name\` and \`description\` fields.
+
+The skill should be able to: list live sessions, stop/close sessions, rename sessions, delete old sessions, and run cleanup by age.
 
 Register the skill in the vault's skills/index.md under an appropriate section using the pipe table format:
 ## Section Name
@@ -129,7 +182,7 @@ const API_GROUPS = [
 	{
 		id: "session",
 		label: "Session API",
-		description: "Session CRUD, messages, stats, usage",
+		description: "Session CRUD, messages, stats, usage, live pool management",
 		endpoints: [
 			"GET  /db/sessions?page=N&size=N",
 			"GET  /db/session-messages?session_id=ID",
@@ -142,6 +195,9 @@ const API_GROUPS = [
 			"PATCH  /db/session?id=ID",
 			"DELETE /db/session?id=ID",
 			"POST /db/sessions/cleanup",
+			"GET  /db/live-sessions",
+			"POST /db/live-sessions/stop",
+			"POST /db/live-sessions/close",
 		],
 		prompt: SESSION_API_PROMPT,
 	},

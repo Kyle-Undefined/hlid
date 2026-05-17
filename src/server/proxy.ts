@@ -28,11 +28,13 @@ export function getWindowMark(
 }
 
 /**
- * Update the in-memory high-water mark from a CLI rate_limit event.
+ * Update the in-memory mark from a CLI rate_limit event.
  * Called by session.ts handleRateLimit so /db/usage-windows overlay reflects
  * live values even when the SDK reports rate-limit info directly (not via
- * proxy response headers). Only updates when utilization is higher or the
- * window period has rolled over.
+ * proxy response headers). Always reflects the latest reading — external
+ * Anthropic resets can lower utilization within the same window period
+ * (same resetsAt) without emitting a new window. Only skips when no useful
+ * data arrives for an already-tracked window.
  */
 export function updateWindowMark(
 	providerId: string,
@@ -43,9 +45,7 @@ export function updateWindowMark(
 	const key = markKey(providerId, windowId);
 	const current = windowHighMark.get(key);
 	const newWindow = !current || current.resetsAt !== resetsAt;
-	const isHigher =
-		utilization != null && utilization > (current?.utilization ?? 0);
-	if (!newWindow && !isHigher) return;
+	if (!newWindow && utilization == null) return;
 	windowHighMark.set(key, {
 		utilization,
 		remaining: newWindow ? null : (current?.remaining ?? null),
@@ -53,28 +53,27 @@ export function updateWindowMark(
 	});
 }
 
-function applyReading(
+export function applyReading(
 	providerId: string,
 	reading: ProviderWindowReading,
 ): void {
 	const key = markKey(providerId, reading.windowId);
 	const current = windowHighMark.get(key);
 	const newWindow = !current || current.resetsAt !== reading.resetsAt;
-	const isHigher =
-		reading.utilization != null
-			? reading.utilization > (current?.utilization ?? 0)
-			: reading.remaining != null && current?.remaining != null
-				? reading.remaining < current.remaining
-				: true;
 
-	if (!newWindow && !isHigher) return;
+	// Skip pure no-data events within an unchanged window.
+	if (!newWindow && reading.utilization == null && reading.remaining == null)
+		return;
 
-	windowHighMark.set(key, {
+	const next: WindowMark = {
 		utilization: reading.utilization,
 		remaining: reading.remaining,
 		resetsAt: reading.resetsAt,
-	});
+	};
+	windowHighMark.set(key, next);
 
+	// DB write fires on every valid reading — single INSERT OR REPLACE on a
+	// fixed settings row; negligible overhead relative to a proxy round-trip.
 	void db.saveSetting(
 		dbSettingKey(providerId, reading.windowId),
 		JSON.stringify({
@@ -86,6 +85,14 @@ function applyReading(
 			label: reading.label,
 		}),
 	);
+
+	// Only broadcast when something changed to avoid WS noise under heavy load.
+	const changed =
+		!current ||
+		current.utilization !== next.utilization ||
+		current.remaining !== next.remaining ||
+		current.resetsAt !== next.resetsAt;
+	if (!changed) return;
 
 	broadcast({
 		type: "rate_limit",

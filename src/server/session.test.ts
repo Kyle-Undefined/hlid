@@ -82,7 +82,7 @@ import type {
 	AgentQueryParams,
 	AgentSession,
 } from "./agentProvider";
-import type { ServerMessage } from "./protocol";
+import type { RateLimitMessage, ServerMessage } from "./protocol";
 import { getWindowMark } from "./proxy";
 import { generateTurnRecap } from "./recap";
 import { SessionManager } from "./session";
@@ -1961,6 +1961,8 @@ describe("SessionManager — live tool_event persistence", () => {
 		// Placeholder inserted on first text_delta. Both chunks fall inside the
 		// ~150ms throttle window, so a single setMessageText fires with the
 		// fully accumulated text — bounded I/O without losing liveness.
+		// TEXT_WRITE_THROTTLE_MS is 800ms; use 2500ms for comfortable headroom
+		// under CI / full-suite load so this doesn't flap.
 		await waitFor(() => {
 			const placeholderInserts = vi
 				.mocked(dbMock.appendMessage)
@@ -1977,7 +1979,7 @@ describe("SessionManager — live tool_event persistence", () => {
 			expect(liveTexts.length).toBeGreaterThanOrEqual(1);
 			// Whichever write fires, the *latest* one always reflects full text.
 			expect(liveTexts[liveTexts.length - 1]).toBe("Hello, world.");
-		});
+		}, 2500);
 		release();
 		await runPromise;
 	});
@@ -3139,6 +3141,48 @@ describe("SessionManager — handleRateLimit mirrors rate_limit into window mark
 		expect(mark?.resetsAt).toBe(resetsAt);
 	});
 
+	it('translates SDK "seven_day" → "weekly" window mark and emitted rateLimitType', async () => {
+		const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+		const provider = makeRateLimitProvider(
+			"rl-7day",
+			0.6,
+			resetsAt,
+			"seven_day",
+		);
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const emitted: ServerMessage[] = [];
+		await sm.runQuery("test", (m) => emitted.push(m), "sess-7day");
+		// window mark written under "weekly", NOT "seven_day"
+		expect(getWindowMark("rl-7day", "weekly")?.utilization).toBeCloseTo(0.6);
+		expect(getWindowMark("rl-7day", "seven_day")).toBeUndefined();
+		// emitted WS message carries canonical name
+		const rlMsg = emitted.find((m) => m.type === "rate_limit") as
+			| RateLimitMessage
+			| undefined;
+		expect(rlMsg?.rateLimitType).toBe("weekly");
+	});
+
+	it('translates SDK "seven_day_sonnet" → "weekly_sonnet" window mark and emitted rateLimitType', async () => {
+		const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+		const provider = makeRateLimitProvider(
+			"rl-sonnet",
+			0.4,
+			resetsAt,
+			"seven_day_sonnet",
+		);
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const emitted: ServerMessage[] = [];
+		await sm.runQuery("test", (m) => emitted.push(m), "sess-sonnet");
+		expect(
+			getWindowMark("rl-sonnet", "weekly_sonnet")?.utilization,
+		).toBeCloseTo(0.4);
+		expect(getWindowMark("rl-sonnet", "seven_day_sonnet")).toBeUndefined();
+		const rlMsg = emitted.find((m) => m.type === "rate_limit") as
+			| RateLimitMessage
+			| undefined;
+		expect(rlMsg?.rateLimitType).toBe("weekly_sonnet");
+	});
+
 	it("does not set window mark when utilization is absent", async () => {
 		// event.utilization == null → handleRateLimit skips the updateWindowMark call
 		const provider = makeRateLimitProvider("rl-no-util", undefined, undefined);
@@ -3175,5 +3219,113 @@ describe("SessionManager — handleRateLimit mirrors rate_limit into window mark
 		await sm.runQuery("test", () => {}, "sess-rl-notype");
 		// No windowId → no mark should be written (rateLimitType is the windowId key)
 		expect(getWindowMark("rl-no-type", "five_hour")).toBeUndefined();
+	});
+
+	it("lower utilization replaces higher within same window after second rate_limit event", async () => {
+		const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+
+		// First session: sets mark at 0.75
+		const providerHigh = makeRateLimitProvider("rl-downward", 0.75, resetsAt);
+		const smHigh = new SessionManager(
+			makeConfig(),
+			makeProviders(providerHigh),
+		);
+		await smHigh.runQuery("test", () => {}, "sess-rl-high");
+		expect(getWindowMark("rl-downward", "five_hour")?.utilization).toBeCloseTo(
+			0.75,
+		);
+
+		// Second session: same resetsAt, lower utilization = external Anthropic reset
+		const providerLow = makeRateLimitProvider("rl-downward", 0.12, resetsAt);
+		const smLow = new SessionManager(makeConfig(), makeProviders(providerLow));
+		await smLow.runQuery("test", () => {}, "sess-rl-low");
+		expect(getWindowMark("rl-downward", "five_hour")?.utilization).toBeCloseTo(
+			0.12,
+		);
+	});
+});
+
+// ── status event ordering ─────────────────────────────────────────────────────
+
+/**
+ * Bug fix: "status: running" must fire AFTER initSessionContext so that
+ * getCurrentSessionId() is non-null when clients receive the event.
+ * Previously drainTurnQueue emitted it before runOneTurn → before
+ * initSessionContext set currentSessionId.
+ */
+describe("SessionManager — status:running fires after initSessionContext", () => {
+	/** Provider that completes immediately (no tool permission gate). */
+	function makeImmediateProvider(): AgentProvider {
+		return {
+			providerId: "claude",
+			query(): ReturnType<AgentProvider["query"]> {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-immediate" };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+	}
+
+	it("getCurrentSessionId() is non-null when status:running event fires", async () => {
+		const sm = new SessionManager(
+			makeConfig(),
+			makeProviders(makeImmediateProvider()),
+		);
+
+		let sessionIdOnRunning: string | null | undefined;
+
+		await sm.runQuery(
+			"hello",
+			(event) => {
+				if (event.type === "status" && event.state === "running") {
+					sessionIdOnRunning = sm.getCurrentSessionId();
+				}
+			},
+			"test-db-session-id",
+		);
+
+		// status:running must have fired (undefined means it never fired)
+		expect(sessionIdOnRunning).not.toBeUndefined();
+		// and currentSessionId must be set at that point
+		expect(sessionIdOnRunning).toBe("test-db-session-id");
+	});
+
+	it("turn_id is included in status:running when provided", async () => {
+		const sm = new SessionManager(
+			makeConfig(),
+			makeProviders(makeImmediateProvider()),
+		);
+
+		let runningEvent: Record<string, unknown> | null = null;
+
+		await sm.runQuery(
+			"hello",
+			(event) => {
+				if (event.type === "status" && event.state === "running") {
+					runningEvent = event as Record<string, unknown>;
+				}
+			},
+			"test-db-session-id",
+			undefined,
+			undefined,
+			undefined,
+			"turn-abc-123",
+		);
+
+		expect(runningEvent).not.toBeNull();
+		expect(runningEvent?.turn_id).toBe("turn-abc-123");
 	});
 });

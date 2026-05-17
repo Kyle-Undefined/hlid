@@ -99,7 +99,7 @@ export async function getToolErrors(
 		.query<Row, [string, number]>(
 			`SELECT result_text AS text, COUNT(*) AS count
 			 FROM tool_events
-			 WHERE name = ? AND is_error = 1
+			 WHERE name = ? AND is_error = 1 AND result_text IS NOT NULL
 			 GROUP BY result_text
 			 ORDER BY count DESC
 			 LIMIT ?`,

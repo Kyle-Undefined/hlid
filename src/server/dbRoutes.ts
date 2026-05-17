@@ -2,6 +2,7 @@ import * as db from "../db";
 import { clampInt } from "../lib/utils";
 import { unlinkPaths } from "./attachments";
 import { getWindowMark } from "./proxy";
+import type { SessionPool } from "./sessionPool";
 
 /**
  * Handles all /db/* routes. Returns null if the path doesn't match,
@@ -10,6 +11,7 @@ import { getWindowMark } from "./proxy";
 export async function handleDbRoute(
 	url: URL,
 	req: Request,
+	pool?: SessionPool,
 ): Promise<Response | null> {
 	if (url.pathname === "/db/sessions" && req.method === "GET") {
 		const page = clampInt(url.searchParams.get("page"), 1, 1);
@@ -37,7 +39,14 @@ export async function handleDbRoute(
 	}
 
 	if (url.pathname === "/db/sessions/cleanup" && req.method === "POST") {
-		const days = clampInt(url.searchParams.get("older_than_days"), 30, 1);
+		const body = await req.json().catch(() => null);
+		const fromBody = body?.older_than_days;
+		const fromQuery = url.searchParams.get("older_than_days");
+		const days = clampInt(
+			fromBody != null ? String(fromBody) : fromQuery,
+			30,
+			1,
+		);
 		const { count, ephemeralPaths } = await db.deleteSessionsOlderThan(days);
 		await unlinkPaths(ephemeralPaths);
 		return Response.json({ deleted: count });
@@ -263,6 +272,35 @@ export async function handleDbRoute(
 
 	if (url.pathname === "/db/logs" && req.method === "DELETE") {
 		await db.clearLogs();
+		return Response.json({ ok: true });
+	}
+
+	// ── live pool session endpoints ─────────────────────────────────────────────
+
+	if (url.pathname === "/db/live-sessions" && req.method === "GET") {
+		return Response.json(pool?.getSessionsStatus() ?? []);
+	}
+
+	if (url.pathname === "/db/live-sessions/stop" && req.method === "POST") {
+		const body = await req.json().catch(() => null);
+		const id = body?.session_id;
+		if (!id) return new Response("Missing session_id", { status: 400 });
+		const entry = pool?.get(id);
+		if (!entry) return new Response("Session not found", { status: 404 });
+		entry.manager.abort();
+		return Response.json({ ok: true });
+	}
+
+	if (url.pathname === "/db/live-sessions/close" && req.method === "POST") {
+		const body = await req.json().catch(() => null);
+		const id = body?.session_id;
+		if (!id) return new Response("Missing session_id", { status: 400 });
+		if (!pool?.get(id))
+			return new Response("Session not found", { status: 404 });
+		if (pool.isVaultSession(id)) {
+			return new Response("Cannot close vault session", { status: 403 });
+		}
+		pool.close(id);
 		return Response.json({ ok: true });
 	}
 

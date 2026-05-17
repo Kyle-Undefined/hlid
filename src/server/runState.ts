@@ -2,14 +2,104 @@ import type { ServerWebSocket } from "bun";
 import * as db from "../db";
 import type { ServerMessage } from "./protocol";
 
+// ── SessionRunState ───────────────────────────────────────────────────────────
+
+const SESSION_RUN_BUFFER_MAX = 500;
+
+type WsType = ServerWebSocket<unknown>;
+
+/**
+ * Per-session WS state: subscriber set, replay buffer, error tracking,
+ * ownership, and in-flight chat count.
+ *
+ * Each SessionPool entry owns one SessionRunState so sessions are fully
+ * isolated — a broadcast on session A never reaches subscribers of session B.
+ */
+export class SessionRunState {
+	readonly sessionId: string;
+	private subscribers: Set<WsType> = new Set();
+	private _replayBuffer: ServerMessage[] = [];
+	lastError: string | null = null;
+	ownerWs: WsType | null = null;
+	inFlightChatCount: Map<WsType, number> = new Map();
+
+	constructor(sessionId: string) {
+		this.sessionId = sessionId;
+	}
+
+	addSubscriber(ws: WsType): void {
+		this.subscribers.add(ws);
+	}
+
+	removeSubscriber(ws: WsType): void {
+		this.subscribers.delete(ws);
+		this.inFlightChatCount.delete(ws);
+		if (this.ownerWs === ws) this.ownerWs = null;
+	}
+
+	getSubscriberCount(): number {
+		return this.subscribers.size;
+	}
+
+	/**
+	 * Broadcast a message to all subscribers, tagging it with this session's id.
+	 * Also manages the replay buffer and error state.
+	 */
+	broadcast(msg: ServerMessage): void {
+		// Buffer management (mirrors module-level _runBuffer logic)
+		if (msg.type === "error") {
+			this.lastError = msg.message;
+			this._replayBuffer = [];
+		} else if (msg.type === "status" && msg.state === "running") {
+			this.lastError = null;
+			this._replayBuffer = [];
+		} else if (msg.type === "done") {
+			this._replayBuffer = [];
+		} else if (
+			msg.type === "chunk" ||
+			msg.type === "tool_event" ||
+			msg.type === "permission_request" ||
+			msg.type === "permission_resolved"
+		) {
+			this._replayBuffer.push(msg);
+			if (this._replayBuffer.length > SESSION_RUN_BUFFER_MAX) {
+				this._replayBuffer.shift();
+			}
+		}
+
+		// Tag with session_id so clients can route to the right conversation
+		const tagged = { ...msg, session_id: this.sessionId };
+		const data = JSON.stringify(tagged);
+		for (const ws of this.subscribers) {
+			try {
+				ws.send(data);
+			} catch {
+				// Dead socket — skip; close event handles removal
+			}
+		}
+	}
+
+	/** Unicast a message to a specific ws (with session_id tag). */
+	send(ws: WsType, msg: ServerMessage): void {
+		try {
+			ws.send(JSON.stringify({ ...msg, session_id: this.sessionId }));
+		} catch {
+			// Dead socket
+		}
+	}
+
+	getReplayBuffer(): readonly ServerMessage[] {
+		return this._replayBuffer;
+	}
+
+	clearError(): void {
+		this.lastError = null;
+	}
+}
+
 export const wsState = {
 	clients: new Set<ServerWebSocket<unknown>>(),
-	sessionOwnerWs: null as ServerWebSocket<unknown> | null,
 	lastSessionError: null as string | null,
-	// Per-ws in-flight chat count. Ownership only releases when a ws's count
-	// hits zero, so concurrent typed-while-running chats from the same ws
-	// don't release ownership prematurely.
-	inFlightChatCount: new Map<ServerWebSocket<unknown>, number>(),
 };
 
 let _runBuffer: ServerMessage[] = [];

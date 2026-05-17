@@ -43,10 +43,18 @@ function ErrorModal({
 	const dialogRef = useRef<HTMLDivElement>(null);
 
 	useEffect(() => {
+		let cancelled = false;
 		dialogRef.current?.focus();
 		getToolErrorsFn({ data: toolName })
-			.then(setErrors)
-			.catch(() => setErrors([]));
+			.then((data) => {
+				if (!cancelled) setErrors(data);
+			})
+			.catch(() => {
+				if (!cancelled) setErrors([]);
+			});
+		return () => {
+			cancelled = true;
+		};
 	}, [toolName]);
 
 	const displayName = shortToolName(toolName);
@@ -192,11 +200,9 @@ export function TopToolsChart({ data }: { data: TopToolCall[] }) {
 						dataKey="count"
 						radius={[0, 2, 2, 0]}
 						isAnimationActive={false}
-						onClick={(barData) => {
-							const r = barData as unknown as (typeof rows)[number];
-							if (r.errorRate > 0) setSelectedTool(r.fullName);
+						onClick={(barData: { fullName: string; errorRate: number }) => {
+							if (barData.errorRate > 0) setSelectedTool(barData.fullName);
 						}}
-						style={{ cursor: "pointer" }}
 					>
 						{rows.map((r) => {
 							// Defensive clamp: errorRate is contract-bounded to [0,1] but
@@ -209,6 +215,7 @@ export function TopToolsChart({ data }: { data: TopToolCall[] }) {
 									key={r.fullName}
 									fill={er > 0 ? "var(--chart-error)" : "var(--data)"}
 									fillOpacity={er > 0 ? 0.7 + er * 0.3 : 0.85}
+									style={{ cursor: er > 0 ? "pointer" : "default" }}
 								/>
 							);
 						})}

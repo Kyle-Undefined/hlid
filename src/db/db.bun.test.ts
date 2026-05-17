@@ -802,6 +802,27 @@ describe("usage — getUsageWindows rate-limit settings", () => {
 		expect(fiveHour.utilization).toBeNull();
 	});
 
+	it("exposes utilization and resetsAt from rl_claude_weekly when not expired", async () => {
+		const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+		await saveSetting(
+			"rl_claude_weekly",
+			JSON.stringify({ utilization: 0.6, resetsAt }),
+		);
+		const { weekly } = await getUsageWindows();
+		expect(weekly.utilization).toBeCloseTo(0.6);
+		expect(weekly.resetsAt).toBe(resetsAt);
+	});
+
+	it("ignores rl_claude_weekly setting when resetsAt is in the past", async () => {
+		const resetsAt = Math.floor(Date.now() / 1000) - 60;
+		await saveSetting(
+			"rl_claude_weekly",
+			JSON.stringify({ utilization: 0.8, resetsAt }),
+		);
+		const { weekly } = await getUsageWindows();
+		expect(weekly.utilization).toBeNull();
+	});
+
 	it("returns weeklySonnet utilization when rl_claude_weekly_sonnet is set and unexpired", async () => {
 		const resetsAt = Math.floor(Date.now() / 1000) + 3600;
 		await saveSetting(

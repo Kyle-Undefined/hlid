@@ -2,6 +2,7 @@ import type {
 	ChatAttachment,
 	ClientMessage,
 	ServerMessage,
+	SessionStatusEntry,
 } from "../server/protocol";
 import type { SessionState } from "../server/session";
 
@@ -134,11 +135,19 @@ let _pendingSessionToday = false;
 let _pendingPrompt: string | null = null;
 let _chatQueue: QueuedChatMessage[] = [];
 
-// Subscriber sets — four concerns, each notified independently.
+// ── Multi-session state ───────────────────────────────────────────────────────
+/** Pool-wide list of all live sessions (updated by sessions_status messages). */
+let _sessionsStatus: SessionStatusEntry[] = [];
+/** UUID of the WS pool session this client is currently subscribed to.
+ *  Empty string = not yet subscribed (no filtering applied — backward compat). */
+let _subscribedSessionId = "";
+
+// Subscriber sets — five concerns, each notified independently.
 const statusSubs = new Set<() => void>();
 const messageSubs = new Set<(msg: ServerMessage) => void>();
 const statsSubs = new Set<() => void>();
 const queueSubs = new Set<() => void>();
+const sessionsStatusSubs = new Set<() => void>();
 
 // ─── Queue helpers ───────────────────────────────────────────────────────────
 
@@ -339,9 +348,10 @@ function onUsageUpdate(
 /** Returns false if the message is from a stale session and should be dropped. */
 function onDone(msg: Extract<ServerMessage, { type: "done" }>): boolean {
 	_pendingSessionToday = false;
-	// Ignore done from a stale session (e.g. in-flight query from before clear)
-	if (_activeSessionId !== null && msg.session_id !== _activeSessionId)
-		return false;
+	// Note: stale-session filtering is handled by the per-session filter in
+	// onmessage (_subscribedSessionId gate). Do not gate on _activeSessionId
+	// here — that's a DB session ID and doesn't match the pool UUID carried by
+	// done events broadcast from entry.runState.broadcast().
 	// Slice C: pop the queue item matching this done's turn_id. Match by
 	// id (not head position) because promote can reorder the server queue,
 	// so the just-finished turn might not be at the head of the client's
@@ -406,6 +416,38 @@ function connect() {
 		} catch {
 			return;
 		}
+
+		// ── Multi-session global handlers (never filtered) ──────────────────────
+		if (msg.type === "sessions_status") {
+			_sessionsStatus = msg.sessions;
+			recomputeAggregateNavStatus();
+			for (const fn of sessionsStatusSubs) fn();
+			// sessions_status is a global broadcast — do not fall through to
+			// per-session handling below.
+			return;
+		}
+		if (msg.type === "session_closed") {
+			_sessionsStatus = _sessionsStatus.filter(
+				(s) => s.session_id !== msg.session_id,
+			);
+			recomputeAggregateNavStatus();
+			for (const fn of sessionsStatusSubs) fn();
+			return;
+		}
+
+		// ── Per-session filtering ────────────────────────────────────────────────
+		// When subscribed to a specific session, drop messages that belong to a
+		// different session. Messages without a session_id tag are always processed
+		// (backward compat with single-session servers).
+		const msgSessionId = (msg as { session_id?: string }).session_id;
+		if (
+			_subscribedSessionId !== "" &&
+			msgSessionId !== undefined &&
+			msgSessionId !== _subscribedSessionId
+		) {
+			return;
+		}
+
 		if (msg.type === "status") onStatus(msg);
 		if (msg.type === "permission_request") onPermissionRequest();
 		if (msg.type === "permission_resolved") onPermissionResolved();
@@ -472,6 +514,11 @@ if (typeof window !== "undefined") {
 
 export function getSnapshot(): Snapshot {
 	return _snap;
+}
+
+/** The session_id most recently sent to the server (null until first message). */
+export function getActiveSessionId(): string | null {
+	return _activeSessionId;
 }
 
 export function subscribeStatus(fn: () => void): () => void {
@@ -639,6 +686,98 @@ export function clearChatQueue(): void {
 	notifyQueue();
 }
 
+// ─── Public API — Multi-session ──────────────────────────────────────────────
+
+/** Pool-wide list of all live sessions, updated by sessions_status messages. */
+export function getSessionsStatus(): SessionStatusEntry[] {
+	return _sessionsStatus;
+}
+
+/** Subscribe to pool-wide session list changes. Returns unsubscribe fn. */
+export function subscribeSessionsStatus(fn: () => void): () => void {
+	sessionsStatusSubs.add(fn);
+	return () => sessionsStatusSubs.delete(fn);
+}
+
+/**
+ * Switch the client's focused session.
+ * Updates the local subscription ID, sends `subscribe_session` to the server,
+ * and notifies status subscribers so the UI can re-render.
+ */
+export function subscribeToSession(sessionId: string): void {
+	_subscribedSessionId = sessionId;
+	if (_ws?.readyState === WS_OPEN) {
+		try {
+			_ws.send(
+				JSON.stringify({ type: "subscribe_session", session_id: sessionId }),
+			);
+		} catch {
+			// Best-effort; reconnect logic will re-subscribe.
+		}
+	}
+	// Notify so snapshot consumers know the active session changed.
+	for (const fn of statusSubs) fn();
+}
+
+/** UUID of the WS pool session this client is subscribed to (empty = not yet set). */
+export function getSubscribedSessionId(): string {
+	return _subscribedSessionId;
+}
+
+/**
+ * Aggregate nav status across all live sessions.
+ * Driving rule:
+ *   running > error > idle
+ * runningCount = number of sessions in "running" state.
+ * pendingPermissions = true if any session has hasPendingPermissions.
+ */
+export type AggregateNavStatus = {
+	state: "idle" | "running" | "error";
+	runningCount: number;
+	pendingPermissions: boolean;
+};
+
+// Cached aggregate so useSyncExternalStore gets a stable reference between
+// store updates. React requires getSnapshot() to return the same object if the
+// store hasn't changed; returning a new object every call causes infinite loops.
+let _aggregateNavStatus: AggregateNavStatus = {
+	state: "idle",
+	runningCount: 0,
+	pendingPermissions: false,
+};
+
+function recomputeAggregateNavStatus(): void {
+	let hasRunning = false;
+	let hasError = false;
+	let runningCount = 0;
+	let pendingPermissions = false;
+	for (const s of _sessionsStatus) {
+		if (s.state === "running") {
+			hasRunning = true;
+			runningCount++;
+		}
+		if (s.state === "error") hasError = true;
+		if (s.hasPendingPermissions) pendingPermissions = true;
+	}
+	const state: "idle" | "running" | "error" = hasRunning
+		? "running"
+		: hasError
+			? "error"
+			: "idle";
+	// Only replace when values actually changed (keeps reference stable).
+	if (
+		state !== _aggregateNavStatus.state ||
+		runningCount !== _aggregateNavStatus.runningCount ||
+		pendingPermissions !== _aggregateNavStatus.pendingPermissions
+	) {
+		_aggregateNavStatus = { state, runningCount, pendingPermissions };
+	}
+}
+
+export function getAggregateNavStatus(): AggregateNavStatus {
+	return _aggregateNavStatus;
+}
+
 /** @internal — resets all module state to initial values; for testing only. */
 export function __resetForTesting(): void {
 	_snap = { ...INITIAL_SNAPSHOT };
@@ -651,8 +790,16 @@ export function __resetForTesting(): void {
 	_pendingSessionToday = false;
 	_pendingPrompt = null;
 	_chatQueue = [];
+	_sessionsStatus = [];
+	_aggregateNavStatus = {
+		state: "idle",
+		runningCount: 0,
+		pendingPermissions: false,
+	};
+	_subscribedSessionId = "";
 	statusSubs.clear();
 	messageSubs.clear();
 	statsSubs.clear();
 	queueSubs.clear();
+	sessionsStatusSubs.clear();
 }

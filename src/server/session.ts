@@ -139,6 +139,7 @@ export class SessionManager {
 	/** Tools approved for the entire hlid session (survives provider subprocess restarts). */
 	private sessionAllowedTools = new Set<string>();
 	private currentSessionId: string | null = null;
+	private currentSessionLabel: string | null = null;
 	private messageSeq = 0;
 	private lastMcpStatus: McpServerStatus[] | null = null;
 	private probing = false;
@@ -234,6 +235,7 @@ export class SessionManager {
 		this.applyConfig(config);
 		this.state = "idle";
 		this.currentSessionId = null;
+		this.currentSessionLabel = null;
 		this.claudeSessionId = null;
 		this.messageSeq = 0;
 		this.sessionAllowedTools.clear();
@@ -257,6 +259,10 @@ export class SessionManager {
 
 	getCurrentSessionId(): string | null {
 		return this.currentSessionId;
+	}
+
+	getSessionLabel(): string | null {
+		return this.currentSessionLabel;
 	}
 
 	getLastMcpStatus(): McpServerStatus[] | null {
@@ -406,6 +412,7 @@ export class SessionManager {
 
 	clearHistory(): void {
 		this.currentSessionId = null;
+		this.currentSessionLabel = null;
 		this.claudeSessionId = null;
 		this.messageSeq = 0;
 		this.agentCwd = undefined;
@@ -478,6 +485,7 @@ export class SessionManager {
 		// Create DB session record for new sessions
 		if (sessionId && this.messageSeq === 0) {
 			const label = userMessage.slice(0, SESSION_LABEL_LENGTH).toUpperCase();
+			this.currentSessionLabel = label;
 			await db.createSession(sessionId, label, this.model);
 		}
 
@@ -515,30 +523,42 @@ export class SessionManager {
 		provider: AgentProvider,
 	): void {
 		const providerId = provider.providerId;
+		// The Claude Agent SDK emits "seven_day" / "seven_day_sonnet" but hlid
+		// uses "weekly" / "weekly_sonnet" as canonical window IDs everywhere
+		// (DB settings keys, providerWindows map, applyRateLimitToSnapshot).
+		// Translate here so the rest of the system sees consistent names.
+		const SDK_TO_WINDOW_ID: Record<string, string> = {
+			five_hour: "five_hour",
+			seven_day: "weekly",
+			seven_day_sonnet: "weekly_sonnet",
+		};
+		const windowId = event.rateLimitType
+			? (SDK_TO_WINDOW_ID[event.rateLimitType] ?? event.rateLimitType)
+			: undefined;
 		emit({
 			type: "rate_limit",
 			status: event.status,
-			rateLimitType: event.rateLimitType,
+			rateLimitType: windowId,
 			utilization: event.utilization,
 			resetsAt: event.resetsAt as number | undefined,
 			providerId,
 		});
 		// Persist for usage windows display, skip if utilization is null
 		// (proxy server writes the authoritative value from API response headers)
-		if (event.utilization != null && event.rateLimitType) {
+		if (event.utilization != null && windowId) {
 			void db.saveSetting(
-				`rl_${providerId}_${event.rateLimitType}`,
+				`rl_${providerId}_${windowId}`,
 				JSON.stringify({
 					utilization: event.utilization,
 					resetsAt: event.resetsAt ?? null,
-					windowId: event.rateLimitType,
+					windowId,
 				}),
 			);
 			// Mirror into the in-memory high-water mark so /db/usage-windows
 			// overlay reflects live values immediately (not just on next cold start).
 			updateWindowMark(
 				providerId,
-				event.rateLimitType,
+				windowId,
 				event.utilization,
 				event.resetsAt ?? null,
 			);
@@ -980,15 +1000,6 @@ export class SessionManager {
 				// "error" event emitted from runOneTurn.
 				if (this.state === "error") this.state = "running";
 				lastEmit = next.args[1];
-				// Slice C: emit status=running with this turn's id BEFORE running
-				// it, so the client can mark the matching chatQueue entry as
-				// "currently running" and hide its cancel/promote buttons.
-				next.args[1]({
-					type: "status",
-					state: "running",
-					model: this.model,
-					...(next.turnId !== undefined ? { turn_id: next.turnId } : {}),
-				});
 				try {
 					await this.runOneTurn(...next.args);
 					next.resolve();
@@ -1022,6 +1033,16 @@ export class SessionManager {
 	): Promise<void> {
 		this.currentTurnId = turnId;
 		await this.initSessionContext(sessionId, agentCwd, userMessage);
+
+		// Slice C: emit status=running AFTER initSessionContext so getCurrentSessionId()
+		// is non-null when clients receive this event. This lets the ledger detect new
+		// sessions immediately via the non-null db_session_id in sessions_status broadcasts.
+		emit({
+			type: "status",
+			state: "running",
+			model: this.model,
+			...(turnId !== undefined ? { turn_id: turnId } : {}),
+		});
 
 		// Resolve provider after initSessionContext so this.agentCwd is final.
 		const currentProvider = this.resolveProvider(this.agentCwd);

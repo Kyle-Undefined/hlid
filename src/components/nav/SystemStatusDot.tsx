@@ -1,5 +1,17 @@
 import { useSyncExternalStore } from "react";
 import * as wsStore from "../../hooks/wsStore";
+import type { SessionStatusEntry } from "../../server/protocol";
+
+/**
+ * Tailwind class for a single pool session's status dot (SessionStatusEntry).
+ * Shared by SessionsLedger and any other component rendering per-session dots.
+ */
+export function sessionEntryDotClass(s: SessionStatusEntry): string {
+	if (s.state === "error") return "bg-destructive";
+	if (s.hasPendingPermissions) return "bg-orange-500 animate-pulse";
+	if (s.state === "running") return "bg-primary animate-pulse";
+	return "bg-muted-foreground/40";
+}
 
 /**
  * Tailwind class for the connection/session status dot, given the
@@ -20,6 +32,29 @@ export function statusDotClass(
 	return "bg-green-600";
 }
 
+/**
+ * Aggregate dot class derived from pool-wide sessions_status.
+ * Falls back to per-session state when no sessions are in the pool.
+ */
+export function aggregateDotClass(
+	wsStatus: wsStore.WsStatus,
+	agg: wsStore.AggregateNavStatus,
+	fallbackState: "idle" | "running" | "error",
+	fallbackPending: boolean,
+): string {
+	if (wsStatus === "disconnected" || wsStatus === "connecting") {
+		return "bg-muted-foreground/25";
+	}
+	// Use aggregate when pool has sessions, else fall back to single-session
+	const state =
+		agg.state !== "idle" || agg.runningCount > 0 ? agg.state : fallbackState;
+	const pending = agg.pendingPermissions || fallbackPending;
+	if (state === "error") return "bg-destructive";
+	if (pending) return "bg-orange-500 animate-pulse";
+	if (state === "running") return "bg-primary animate-pulse";
+	return "bg-green-600";
+}
+
 export function WsStatusDot() {
 	const { wsStatus, sessionState, hasPendingPermissions } =
 		useSyncExternalStore(
@@ -28,22 +63,38 @@ export function WsStatusDot() {
 			() => wsStore.INITIAL_SNAPSHOT,
 		);
 
+	const agg = useSyncExternalStore(
+		wsStore.subscribeSessionsStatus,
+		wsStore.getAggregateNavStatus,
+		() => ({
+			state: "idle" as const,
+			runningCount: 0,
+			pendingPermissions: false,
+		}),
+	);
+
+	const dotClass = aggregateDotClass(
+		wsStatus,
+		agg,
+		sessionState,
+		hasPendingPermissions,
+	);
+
 	const statusLabel = (() => {
 		if (wsStatus === "disconnected" || wsStatus === "connecting")
 			return "Connecting to system";
-		if (sessionState === "error") return "System error";
-		if (hasPendingPermissions) return "Waiting for permissions";
-		if (sessionState === "running") return "System running";
+		if (agg.state === "error" || sessionState === "error")
+			return "System error";
+		if (agg.pendingPermissions || hasPendingPermissions)
+			return "Waiting for permissions";
+		if (agg.state === "running" || sessionState === "running")
+			return "System running";
 		return "System connected";
 	})();
 
 	return (
 		<div
-			className={`md:hidden w-1.5 h-1.5 rounded-full shrink-0 ${statusDotClass(
-				wsStatus,
-				sessionState,
-				hasPendingPermissions,
-			)}`}
+			className={`md:hidden w-1.5 h-1.5 rounded-full shrink-0 ${dotClass}`}
 			role="img"
 			aria-label={statusLabel}
 		/>

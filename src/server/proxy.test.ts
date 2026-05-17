@@ -30,7 +30,13 @@ vi.mock("./runState", () => ({
 import * as db from "../db";
 import { registerBunServer } from "../lib/lifecycle";
 import type { AgentProvider } from "./agentProvider";
-import { getWindowMark, startProviderProxy, updateWindowMark } from "./proxy";
+import {
+	applyReading,
+	getWindowMark,
+	startProviderProxy,
+	updateWindowMark,
+} from "./proxy";
+import { broadcast } from "./runState";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -263,18 +269,18 @@ describe("updateWindowMark", () => {
 		expect(getWindowMark("upd", "higher")?.utilization).toBeCloseTo(0.7);
 	});
 
-	it("does not update when utilization is lower (same window)", () => {
+	it("updates when utilization is lower (external reset)", () => {
+		// Anthropic can reset usage without changing resetsAt — downward moves valid.
 		const resetsAt = futureUnix();
 		updateWindowMark("upd", "lower", 0.8, resetsAt);
 		updateWindowMark("upd", "lower", 0.3, resetsAt);
-		expect(getWindowMark("upd", "lower")?.utilization).toBeCloseTo(0.8);
+		expect(getWindowMark("upd", "lower")?.utilization).toBeCloseTo(0.3);
 	});
 
-	it("does not update when utilization is equal (same window)", () => {
+	it("overwrites with equal utilization (idempotent latest-wins)", () => {
 		const resetsAt = futureUnix();
 		updateWindowMark("upd", "equal", 0.5, resetsAt);
 		updateWindowMark("upd", "equal", 0.5, resetsAt);
-		// utilization > current is strict — equal returns false
 		expect(getWindowMark("upd", "equal")?.utilization).toBeCloseTo(0.5);
 	});
 
@@ -295,10 +301,10 @@ describe("updateWindowMark", () => {
 		expect(mark?.utilization).toBeNull();
 	});
 
-	it("does not update when utilization is null and entry already exists (same window)", () => {
+	it("skips update when utilization is null within unchanged window (no useful data)", () => {
 		const resetsAt = futureUnix();
 		updateWindowMark("upd", "null_existing", 0.6, resetsAt);
-		// null utilization: isHigher = false, newWindow = false → skip
+		// null utilization with same window = no useful data, skip update
 		updateWindowMark("upd", "null_existing", null, resetsAt);
 		expect(getWindowMark("upd", "null_existing")?.utilization).toBeCloseTo(0.6);
 	});
@@ -311,14 +317,134 @@ describe("updateWindowMark", () => {
 		expect(getWindowMark("upd-b", "shared")?.utilization).toBeCloseTo(0.9);
 	});
 
-	it("preserves remaining from previous entry when updating", () => {
+	it("preserves remaining from previous entry when updating (any direction)", () => {
 		const resetsAt = futureUnix();
 		// First call: remaining = null (no prior entry)
 		updateWindowMark("upd", "preserve", 0.3, resetsAt);
 		expect(getWindowMark("upd", "preserve")?.remaining).toBeNull();
-		// Higher-util update: remaining carried forward as null
-		updateWindowMark("upd", "preserve", 0.6, resetsAt);
+		// Same-window update (any direction): remaining carried forward as null
+		updateWindowMark("upd", "preserve", 0.1, resetsAt);
 		expect(getWindowMark("upd", "preserve")?.remaining).toBeNull();
+	});
+});
+
+// ── applyReading ──────────────────────────────────────────────────────────────
+// Uses "ar" provider namespace to avoid colliding with "upd" or "claude" marks.
+
+describe("applyReading", () => {
+	const BASE_RESETS_AT = Math.floor(Date.now() / 1000) + 3600;
+
+	function makeReading(
+		overrides: Partial<Parameters<typeof applyReading>[1]> = {},
+	): Parameters<typeof applyReading>[1] {
+		return {
+			windowId: "weekly",
+			label: "7-DAY",
+			utilization: 0.5,
+			remaining: null,
+			limit: null,
+			resetsAt: BASE_RESETS_AT,
+			...overrides,
+		};
+	}
+
+	it("sets mark on first call and writes DB + broadcasts", () => {
+		vi.mocked(db.saveSetting).mockClear();
+		vi.mocked(broadcast).mockClear();
+		applyReading(
+			"ar",
+			makeReading({ windowId: "first_call", utilization: 0.5 }),
+		);
+		expect(getWindowMark("ar", "first_call")?.utilization).toBeCloseTo(0.5);
+		expect(db.saveSetting).toHaveBeenCalledOnce();
+		expect(broadcast).toHaveBeenCalledOnce();
+	});
+
+	it("lower utilization replaces higher within same window (external reset)", () => {
+		applyReading("ar", makeReading({ windowId: "ar_lower", utilization: 0.8 }));
+		applyReading(
+			"ar",
+			makeReading({ windowId: "ar_lower", utilization: 0.03 }),
+		);
+		expect(getWindowMark("ar", "ar_lower")?.utilization).toBeCloseTo(0.03);
+	});
+
+	it("DB write fires on every valid reading regardless of direction", () => {
+		vi.mocked(db.saveSetting).mockClear();
+		applyReading(
+			"ar",
+			makeReading({ windowId: "ar_db_fire", utilization: 0.8 }),
+		);
+		applyReading(
+			"ar",
+			makeReading({ windowId: "ar_db_fire", utilization: 0.03 }),
+		);
+		expect(db.saveSetting).toHaveBeenCalledTimes(2);
+	});
+
+	it("broadcast only fires when value changes (no WS noise on identical readings)", () => {
+		vi.mocked(broadcast).mockClear();
+		applyReading("ar", makeReading({ windowId: "ar_bcast", utilization: 0.5 }));
+		applyReading("ar", makeReading({ windowId: "ar_bcast", utilization: 0.5 })); // identical
+		expect(broadcast).toHaveBeenCalledTimes(1); // only first call triggers it
+	});
+
+	it("broadcast fires on each change between different values", () => {
+		vi.mocked(broadcast).mockClear();
+		applyReading(
+			"ar",
+			makeReading({ windowId: "ar_bcast2", utilization: 0.8 }),
+		);
+		applyReading(
+			"ar",
+			makeReading({ windowId: "ar_bcast2", utilization: 0.03 }),
+		);
+		expect(broadcast).toHaveBeenCalledTimes(2);
+	});
+
+	it("new window (resetsAt changed) resets remaining to null in mark", () => {
+		const resetsAt2 = BASE_RESETS_AT + 3600;
+		applyReading(
+			"ar",
+			makeReading({
+				windowId: "ar_new_win",
+				utilization: 0.8,
+				remaining: 5000,
+				resetsAt: BASE_RESETS_AT,
+			}),
+		);
+		applyReading(
+			"ar",
+			makeReading({
+				windowId: "ar_new_win",
+				utilization: 0.1,
+				remaining: null,
+				resetsAt: resetsAt2,
+			}),
+		);
+		const mark = getWindowMark("ar", "ar_new_win");
+		expect(mark?.resetsAt).toBe(resetsAt2);
+		expect(mark?.utilization).toBeCloseTo(0.1);
+	});
+
+	it("skips pure no-data events (both null) within unchanged window", () => {
+		vi.mocked(db.saveSetting).mockClear();
+		applyReading(
+			"ar",
+			makeReading({ windowId: "ar_nodata", utilization: 0.6 }),
+		);
+		vi.mocked(db.saveSetting).mockClear();
+		applyReading(
+			"ar",
+			makeReading({
+				windowId: "ar_nodata",
+				utilization: null,
+				remaining: null,
+			}),
+		);
+		// Mark should be unchanged, DB should not be written
+		expect(getWindowMark("ar", "ar_nodata")?.utilization).toBeCloseTo(0.6);
+		expect(db.saveSetting).not.toHaveBeenCalled();
 	});
 });
 

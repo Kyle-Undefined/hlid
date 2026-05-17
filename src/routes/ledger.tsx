@@ -4,8 +4,16 @@ import {
 	useRouterState,
 } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	useCallback,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+	useSyncExternalStore,
+} from "react";
 import { ThirtyDayGraph } from "#/components/cockpit/ThirtyDayGraph";
+import { ActiveSessionsPanel } from "#/components/ledger/ActiveSessionsPanel";
 import { HourOfDayChart } from "#/components/ledger/charts/HourOfDayChart";
 import { ModelSplitDonut } from "#/components/ledger/charts/ModelSplitDonut";
 import { StopReasonDonut } from "#/components/ledger/charts/StopReasonDonut";
@@ -27,6 +35,7 @@ import type {
 import { useWs } from "#/hooks/useWs";
 import { useWsLiveStats } from "#/hooks/useWsSelectors";
 import type { LiveStats } from "#/hooks/wsStore";
+import * as wsStore from "#/hooks/wsStore";
 import { dbFetch, dbJson } from "#/lib/dbClient";
 import { fmt, fmtModel } from "#/lib/formatters";
 import type { ActivityStats } from "#/lib/serverFns";
@@ -152,6 +161,7 @@ const cleanupSessionsFn = createServerFn({ method: "POST" })
 export const Route = createFileRoute("/ledger")({
 	validateSearch: parseLedgerSearch,
 	loaderDeps: ({ search: { page, size } }) => ({ page, size }),
+	staleTime: 0,
 	loader: async ({ deps: { page, size } }) => {
 		const [statsData, providers, thirtyDayStats, activeSession, activity] =
 			await Promise.all([
@@ -207,6 +217,13 @@ function StatsPage() {
 	const stats = useWsLiveStats();
 	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
 
+	// ── Active sessions (multi-session pool status) ───────────────────────────
+	const sessionsStatus = useSyncExternalStore(
+		wsStore.subscribeSessionsStatus,
+		wsStore.getSessionsStatus,
+		() => [],
+	);
+
 	const [activeSessionData, setActiveSessionData] = useState(activeSession);
 	const [statsDataState, setStatsDataState] = useState(statsData);
 
@@ -250,20 +267,71 @@ function StatsPage() {
 		setRenamedLabels((prev) => filterOptimisticLabels(prev, freshIds));
 	}, []);
 
-	const { wsStatus, model, actualModel, sessionState, hasPendingPermissions } =
-		useWs(
-			useCallback(
-				(msg: ServerMessage) => {
-					if (msg.type === "rate_limit") setRateLimit(msg);
-					if (msg.type === "done") {
-						void refreshSessions();
-						void getActiveSessionRowFn().then(setActiveSessionData);
-						void getStatsDataFn().then(setStatsDataState);
-					}
-				},
-				[refreshSessions],
-			),
+	// Refresh DB session list when:
+	//   (a) any pool session completes a turn (running→idle/error), or
+	//   (b) a brand-new db_session_id appears that wasn't seen before
+	//       (new chat just wrote its first DB row via initSessionContext).
+	const prevSessionStatesRef = useRef<
+		Map<string, "idle" | "running" | "error">
+	>(new Map());
+	const seenDbSessionIdsRef = useRef<Set<string>>(new Set());
+	useEffect(() => {
+		const prev = prevSessionStatesRef.current;
+		let shouldRefresh = false;
+
+		for (const s of sessionsStatus) {
+			const prevState = prev.get(s.session_id);
+			// running→idle/error = turn just completed
+			if (prevState === "running" && s.state !== "running") {
+				shouldRefresh = true;
+			}
+			// new db_session_id we haven't seen yet = session row just created in DB
+			if (
+				s.db_session_id &&
+				!seenDbSessionIdsRef.current.has(s.db_session_id)
+			) {
+				seenDbSessionIdsRef.current.add(s.db_session_id);
+				shouldRefresh = true;
+			}
+		}
+
+		prevSessionStatesRef.current = new Map(
+			sessionsStatus.map((s) => [s.session_id, s.state]),
 		);
+		if (shouldRefresh) void refreshSessions();
+	}, [sessionsStatus, refreshSessions]);
+
+	const {
+		model,
+		actualModel,
+		send: sendWs,
+	} = useWs(
+		useCallback(
+			(msg: ServerMessage) => {
+				if (msg.type === "rate_limit") setRateLimit(msg);
+				if (msg.type === "done") {
+					void refreshSessions();
+					void getActiveSessionRowFn().then(setActiveSessionData);
+					void getStatsDataFn().then(setStatsDataState);
+				}
+			},
+			[refreshSessions],
+		),
+	);
+
+	const handleStopSession = useCallback(
+		(poolSessionId: string) => {
+			sendWs({ type: "stop_session", session_id: poolSessionId });
+		},
+		[sendWs],
+	);
+
+	const handleCloseSession = useCallback(
+		(poolSessionId: string) => {
+			sendWs({ type: "close_session", session_id: poolSessionId });
+		},
+		[sendWs],
+	);
 
 	// Refresh active session on mount — loader data may be stale from router cache
 	// when user navigates back to /ledger after a session completed elsewhere.
@@ -364,7 +432,6 @@ function StatsPage() {
 		if (next === "sessions") {
 			navigate({ to: "/ledger", search: { tab: next, page: 1, size } });
 		} else {
-			// stats tab has no pagination — preserve existing page/size in URL
 			navigate({ to: "/ledger", search: { tab: next, page, size } });
 		}
 	}
@@ -486,31 +553,40 @@ function StatsPage() {
 						activity={activity}
 					/>
 				) : (
-					<div className="p-5">
-						<SessionsLedger
-							data={sessionsData}
-							page={page}
-							pageSize={size}
-							pageSizeOptions={VALID_PAGE_SIZES}
-							totalPages={totalPages}
-							loading={isRouterLoading}
-							onPageChange={onPageChange}
-							onPageSizeChange={onPageSizeChange}
-							onDelete={handleDeleteSession}
-							onRename={handleRenameSession}
-							onNavigate={(id) =>
-								navigate({
-									to: "/raven",
-									search: { session: id, agent: undefined },
-								})
-							}
-							onCleanup={handleCleanup}
-							activeSessionId={activeSessionData?.id}
-							wsStatus={wsStatus}
-							sessionState={sessionState}
-							hasPendingPermissions={hasPendingPermissions}
-							liveStats={stats}
-						/>
+					<div>
+						{sessionsStatus.length > 0 && (
+							<div className="border-b border-border">
+								<ActiveSessionsPanel
+									sessions={sessionsStatus}
+									onStop={handleStopSession}
+									onClose={handleCloseSession}
+								/>
+							</div>
+						)}
+						<div className="p-5">
+							<SessionsLedger
+								data={sessionsData}
+								page={page}
+								pageSize={size}
+								pageSizeOptions={VALID_PAGE_SIZES}
+								totalPages={totalPages}
+								loading={isRouterLoading}
+								onPageChange={onPageChange}
+								onPageSizeChange={onPageSizeChange}
+								onDelete={handleDeleteSession}
+								onRename={handleRenameSession}
+								onNavigate={(id) =>
+									navigate({
+										to: "/raven",
+										search: { session: id, agent: undefined },
+									})
+								}
+								onCleanup={handleCleanup}
+								activeSessionId={activeSessionData?.id}
+								sessionsStatus={sessionsStatus}
+								liveStats={stats}
+							/>
+						</div>
 					</div>
 				)}
 			</div>

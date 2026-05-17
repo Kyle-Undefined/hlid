@@ -262,6 +262,46 @@ export function approvedLabel(decision: string): string | null {
 	}
 }
 
+// ── Multi-session types ───────────────────────────────────────────────────────
+
+/** Status snapshot for a single live session in the pool. */
+export type SessionStatusEntry = {
+	session_id: string;
+	agent_cwd: string;
+	agent_name: string;
+	state: "idle" | "running" | "error";
+	model: string;
+	hasPendingPermissions: boolean;
+	/** True when the session has started at least one DB chat (getCurrentSessionId !== null). */
+	hasDbSession: boolean;
+	/** The DB chat session ID currently open in this pool session, if any. */
+	db_session_id: string | null;
+	lastLabel?: string;
+};
+
+/**
+ * Sent to ALL connected clients whenever pool state changes.
+ * Used to render the RAVEN sidebar and LEDGER ACTIVE tab.
+ */
+export type SessionsStatusMessage = {
+	type: "sessions_status";
+	sessions: SessionStatusEntry[];
+};
+
+/** Broadcast when a session entry is removed from the pool. */
+export type SessionClosedMessage = {
+	type: "session_closed";
+	session_id: string;
+};
+
+/** Sent to the requesting client when a new session entry is created. */
+export type SessionCreatedMessage = {
+	type: "session_created";
+	session_id: string;
+	agent_cwd: string;
+	agent_name: string;
+};
+
 export type ServerMessage =
 	| StatusMessage
 	| ChunkMessage
@@ -283,7 +323,10 @@ export type ServerMessage =
 	| PlanModeExitMessage
 	| PlanModeExitResolvedMessage
 	| LocalCommandOutputMessage
-	| SlashCommandsMessage;
+	| SlashCommandsMessage
+	| SessionsStatusMessage
+	| SessionClosedMessage
+	| SessionCreatedMessage;
 
 export type ChatAttachment = {
 	id: string;
@@ -381,6 +424,33 @@ export type ClientPlanModeExitResponseMessage =
 			feedback: string;
 	  };
 
+// ── Multi-session client → server messages ────────────────────────────────────
+
+/** Create a new session (optionally for a specific agent). Server replies with session_created. */
+export type ClientNewSessionMessage = {
+	type: "new_session";
+	agent_cwd?: string;
+	agent_name?: string;
+};
+
+/** Switch this WS connection's focused session. Server replays the new session's buffer. */
+export type ClientSubscribeSessionMessage = {
+	type: "subscribe_session";
+	session_id: string;
+};
+
+/** Abort the running turn in a session but keep it in the pool. */
+export type ClientStopSessionMessage = {
+	type: "stop_session";
+	session_id: string;
+};
+
+/** Abort the running turn and remove the session from the pool entirely. */
+export type ClientCloseSessionMessage = {
+	type: "close_session";
+	session_id: string;
+};
+
 export type ClientMessage =
 	| ClientChatMessage
 	| ClientCancelQueuedMessage
@@ -394,4 +464,8 @@ export type ClientMessage =
 	| ClientProbeSlashCommandsMessage
 	| ClientSyncMcpListMessage
 	| ClientAskUserQuestionResponseMessage
-	| ClientPlanModeExitResponseMessage;
+	| ClientPlanModeExitResponseMessage
+	| ClientNewSessionMessage
+	| ClientSubscribeSessionMessage
+	| ClientStopSessionMessage
+	| ClientCloseSessionMessage;

@@ -9,7 +9,7 @@ import {
 } from "../../hooks/updateStore";
 import * as wsStore from "../../hooks/wsStore";
 import { NAV_ITEMS } from "./items";
-import { statusDotClass } from "./SystemStatusDot";
+import { aggregateDotClass } from "./SystemStatusDot";
 
 export function Sidebar() {
 	const { wsStatus, sessionState, hasPendingPermissions } =
@@ -19,7 +19,22 @@ export function Sidebar() {
 			() => wsStore.INITIAL_SNAPSHOT,
 		);
 
-	const dot = statusDotClass(wsStatus, sessionState, hasPendingPermissions);
+	const agg = useSyncExternalStore(
+		wsStore.subscribeSessionsStatus,
+		wsStore.getAggregateNavStatus,
+		() => ({
+			state: "idle" as const,
+			runningCount: 0,
+			pendingPermissions: false,
+		}),
+	);
+
+	const dot = aggregateDotClass(
+		wsStatus,
+		agg,
+		sessionState,
+		hasPendingPermissions,
+	);
 
 	const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
 	useEffect(() => {
@@ -43,7 +58,14 @@ export function Sidebar() {
 					<div className="text-[13px] font-bold tracking-[0.25em] text-primary">
 						Hlið
 					</div>
-					<div className={`w-1.5 h-1.5 rounded-full shrink-0 ${dot}`} />
+					<div className="relative flex items-center">
+						<div className={`w-1.5 h-1.5 rounded-full shrink-0 ${dot}`} />
+						{agg.runningCount > 1 && (
+							<span className="absolute -top-1.5 -right-2.5 text-[8px] tabular-nums text-primary/60 font-mono leading-none">
+								{agg.runningCount > 9 ? "9+" : agg.runningCount}
+							</span>
+						)}
+					</div>
 				</div>
 				<div className="text-[9px] tracking-widest text-muted-foreground/50 mt-0.5 uppercase">
 					watcher of worlds
