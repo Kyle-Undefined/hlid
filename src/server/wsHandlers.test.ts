@@ -406,7 +406,9 @@ describe("message — clear", () => {
 		runState.ownerWs = ws;
 		runState.lastError = "prev error";
 		await message(ws as never, JSON.stringify({ type: "clear" }));
-		expect((ws as { data: { pendingNewSession?: boolean } }).data.pendingNewSession).toBe(true);
+		expect(
+			(ws as { data: { pendingNewSession?: boolean } }).data.pendingNewSession,
+		).toBe(true);
 		expect(runState.clearError).toHaveBeenCalled();
 	});
 
@@ -418,7 +420,10 @@ describe("message — clear", () => {
 		const other = makeWs("vault-id");
 		runState.ownerWs = owner;
 		await message(other as never, JSON.stringify({ type: "clear" }));
-		expect((other as { data: { pendingNewSession?: boolean } }).data.pendingNewSession).toBe(true);
+		expect(
+			(other as { data: { pendingNewSession?: boolean } }).data
+				.pendingNewSession,
+		).toBe(true);
 	});
 });
 

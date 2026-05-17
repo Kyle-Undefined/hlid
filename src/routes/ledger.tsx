@@ -14,6 +14,7 @@ import {
 } from "react";
 import { ThirtyDayGraph } from "#/components/cockpit/ThirtyDayGraph";
 import { ActiveSessionsPanel } from "#/components/ledger/ActiveSessionsPanel";
+import { CostBreakdown } from "#/components/ledger/CostBreakdown";
 import { HourOfDayChart } from "#/components/ledger/charts/HourOfDayChart";
 import { ModelSplitDonut } from "#/components/ledger/charts/ModelSplitDonut";
 import { StopReasonDonut } from "#/components/ledger/charts/StopReasonDonut";
@@ -712,6 +713,9 @@ function StatsTab({
 						<HourOfDayChart data={activity.hourOfDay} />
 					</div>
 				</div>
+
+				{/* Cost breakdown — all-time window for maximum analytical richness */}
+				<CostBreakdown s={agg.allTime} />
 
 				{/* SESSION (DB) + TODAY + THIS MONTH + ALL-TIME — same-size row.
 				    Falls back to 3 cols when there's no active session so the
