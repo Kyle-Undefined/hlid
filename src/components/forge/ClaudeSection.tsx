@@ -10,6 +10,8 @@ export type ClaudeForm = {
 	turnRecaps: boolean;
 	recapModel: string;
 	vaultProvider: string;
+	/** Use Claude CLI directly in a terminal instead of the Agent SDK. */
+	interactiveMode: boolean;
 };
 
 export function ClaudeSection({
@@ -206,6 +208,22 @@ export function ClaudeSection({
 								</option>
 							))}
 						</select>
+					</Field>
+					<Field
+						label="Interactive mode"
+						hint="to not go against your &quot;programmatic&quot; usage, if you desire"
+					>
+						<label className="flex items-center gap-2 cursor-pointer">
+							<input
+								type="checkbox"
+								checked={claude.interactiveMode}
+								onChange={(e) =>
+									onChange({ interactiveMode: e.target.checked })
+								}
+								className="w-3.5 h-3.5 accent-primary"
+							/>
+							<span className="text-xs text-muted-foreground">enabled</span>
+						</label>
 					</Field>
 				</>
 			)}

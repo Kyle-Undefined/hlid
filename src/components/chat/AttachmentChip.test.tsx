@@ -11,6 +11,8 @@ function makeAttachment(
 		filename: string;
 		mime: string;
 		size_bytes: number;
+		path: string;
+		kind: "vault" | "upload";
 	}> = {},
 ) {
 	return {
@@ -18,6 +20,8 @@ function makeAttachment(
 		filename: "photo.png",
 		mime: "image/png",
 		size_bytes: 1024,
+		path: "/tmp/photo.png",
+		kind: "upload" as const,
 		...overrides,
 	};
 }

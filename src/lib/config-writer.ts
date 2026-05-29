@@ -65,6 +65,7 @@ export function writeConfig(config: HlidConfig): void {
 		lines.push(`max_turns = ${tomlVal(config.claude.max_turns)}`);
 	if (config.claude.recap_model)
 		lines.push(`recap_model = ${tomlVal(config.claude.recap_model)}`);
+	if (config.claude.interactive_mode) lines.push(`interactive_mode = true`);
 
 	lines.push("");
 	lines.push("[ui]");
@@ -97,6 +98,8 @@ export function writeConfig(config: HlidConfig): void {
 			lines.push(`permission_mode = ${tomlVal(agent.permission_mode)}`);
 		if (agent.recap_model)
 			lines.push(`recap_model = ${tomlVal(agent.recap_model)}`);
+		if (agent.interactive_mode !== undefined)
+			lines.push(`interactive_mode = ${tomlVal(agent.interactive_mode)}`);
 	}
 
 	writeFileSync(CONFIG_PATH, `${lines.join("\n")}\n`, "utf-8");

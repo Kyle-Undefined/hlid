@@ -1,4 +1,5 @@
 import "./prelude";
+import type { ServerWebSocket } from "bun";
 import * as db from "../db";
 import { isAllowedOrigin, isAllowedOriginHeader } from "../lib/allowedOrigin";
 import { registerBunServer } from "../lib/lifecycle";
@@ -9,12 +10,21 @@ import { openInBrowser } from "./browser";
 import { ClaudeProvider } from "./claudeProvider";
 import { loadConfig } from "./config";
 import { handleDbRoute } from "./dbRoutes";
+import { getLiveSessionsStatus } from "./liveSessions";
 import { startProviderProxy } from "./proxy";
+import { bootstrapPtyRuntime } from "./pty-bootstrap";
+import { broadcast } from "./runState";
 import { SessionPool } from "./sessionPool";
+import { resolveAllowedTerminalCwd } from "./terminalAccess";
+import { TerminalSessionPool } from "./terminalSessionPool";
 import { startTlsProxy } from "./tlsProxy";
 import { startUiServer } from "./uiServer";
 import { syncWrappers } from "./wrappers";
-import { createWsHandlers } from "./wsHandlers";
+import { createWsHandlers, type WsData } from "./wsHandlers";
+import {
+	createTerminalWsHandlers,
+	type TerminalWsData,
+} from "./wsHandlers.terminal";
 
 // In a compiled exe (--windows-hide-console), any write to stdout/stderr causes
 // Bun to call AllocConsole(), making Windows show a console window. Redirect
@@ -71,6 +81,13 @@ const providers = new Map<string, AgentProvider>([
 	["claude", new ClaudeProvider()],
 ]);
 const pool = new SessionPool(config, providers);
+const ptyWorkerPath = bootstrapPtyRuntime();
+const terminalPool = new TerminalSessionPool(ptyWorkerPath, () => {
+	broadcast({
+		type: "sessions_status",
+		sessions: getLiveSessionsStatus(pool, terminalPool),
+	});
+});
 const SERVER_TOKEN = loadToken();
 
 // Restore cached MCP status from previous run so cockpit shows servers before first query
@@ -86,10 +103,12 @@ void db.getSetting("mcp_status_cache").then((cached) => {
 // Graceful shutdown: abort all running sessions on SIGTERM / SIGINT
 process.on("SIGTERM", () => {
 	pool.closeAll();
+	terminalPool.closeAll();
 	process.exit(0);
 });
 process.on("SIGINT", () => {
 	pool.closeAll();
+	terminalPool.closeAll();
 	process.exit(0);
 });
 
@@ -142,7 +161,7 @@ const tlsConfig =
 		: {};
 
 registerBunServer(
-	Bun.serve({
+	Bun.serve<WsData | TerminalWsData>({
 		port: PORT,
 		hostname: BIND_HOST,
 		...tlsConfig,
@@ -185,7 +204,70 @@ registerBunServer(
 				if (!verifyToken(url.searchParams.get("token"), SERVER_TOKEN)) {
 					return new Response("Unauthorized", { status: 401 });
 				}
-				if (server.upgrade(req, { data: { subscribedSessionId: "" } }))
+				if (
+					server.upgrade(req, {
+						data: { isTerminal: false, subscribedSessionId: "" },
+					})
+				)
+					return undefined;
+				return new Response("WebSocket upgrade required", { status: 426 });
+			}
+
+			if (url.pathname === "/ws/terminal") {
+				// Same security checks as /ws
+				if (
+					!isAllowedOriginHeader(
+						req.headers.get("origin"),
+						config.server.local_network_access,
+					)
+				) {
+					return new Response("Forbidden", { status: 403 });
+				}
+				if (!verifyToken(url.searchParams.get("token"), SERVER_TOKEN)) {
+					return new Response("Unauthorized", { status: 401 });
+				}
+				const sessionId = url.searchParams.get("session_id") ?? "";
+				const requestedCwd = url.searchParams.get("cwd") ?? config.vault.path;
+				const cwd = resolveAllowedTerminalCwd(config, requestedCwd);
+				if (!cwd) {
+					return new Response("Forbidden", { status: 403 });
+				}
+				let label: string | null = null;
+				if (sessionId) {
+					await db.createSession(sessionId, "Terminal session", "claude-cli");
+					label =
+						(await db.getSessionById(sessionId))?.label ?? "Terminal session";
+				}
+				const cols = Math.max(
+					1,
+					parseInt(url.searchParams.get("cols") ?? "80", 10),
+				);
+				const rows = Math.max(
+					1,
+					parseInt(url.searchParams.get("rows") ?? "24", 10),
+				);
+				// Look up claude_session_id for --resume
+				let claudeSessionId: string | null = null;
+				if (sessionId) {
+					try {
+						claudeSessionId = await db.getSessionClaudeId(sessionId);
+					} catch {
+						// Continue without resume
+					}
+				}
+				if (
+					server.upgrade(req, {
+						data: {
+							isTerminal: true,
+							sessionId,
+							cwd,
+							label,
+							cols,
+							rows,
+							claudeSessionId,
+						},
+					})
+				)
 					return undefined;
 				return new Response("WebSocket upgrade required", { status: 426 });
 			}
@@ -223,7 +305,7 @@ registerBunServer(
 				);
 			}
 
-			const dbResult = await handleDbRoute(url, req, pool);
+			const dbResult = await handleDbRoute(url, req, pool, terminalPool);
 			if (dbResult) return dbResult;
 
 			const attResult = await handleAttachmentRoute(url, req, config);
@@ -232,7 +314,30 @@ registerBunServer(
 			return new Response("Not found", { status: 404 });
 		},
 
-		websocket: createWsHandlers(pool),
+		websocket: (() => {
+			const chatHandlers = createWsHandlers(pool, terminalPool);
+			const termHandlers = createTerminalWsHandlers(terminalPool);
+			type ChatWs = Parameters<typeof chatHandlers.open>[0];
+			type TerminalWs = ServerWebSocket<TerminalWsData>;
+			type AppWs = ChatWs | TerminalWs;
+			type WsMessage = Parameters<typeof chatHandlers.message>[1];
+			const isTerminalWs = (ws: AppWs): ws is TerminalWs =>
+				"isTerminal" in ws.data && ws.data.isTerminal === true;
+			return {
+				open(ws: AppWs) {
+					if (isTerminalWs(ws)) termHandlers.open(ws);
+					else chatHandlers.open(ws);
+				},
+				message(ws: AppWs, data: WsMessage) {
+					if (isTerminalWs(ws)) termHandlers.message(ws, data);
+					else chatHandlers.message(ws, data);
+				},
+				close(ws: AppWs) {
+					if (isTerminalWs(ws)) termHandlers.close(ws);
+					else chatHandlers.close(ws);
+				},
+			};
+		})(),
 	}),
 );
 

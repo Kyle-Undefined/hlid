@@ -200,8 +200,9 @@ export function TopToolsChart({ data }: { data: TopToolCall[] }) {
 						dataKey="count"
 						radius={[0, 2, 2, 0]}
 						isAnimationActive={false}
-						onClick={(barData: { fullName: string; errorRate: number }) => {
-							if (barData.errorRate > 0) setSelectedTool(barData.fullName);
+						onClick={(barData) => {
+							const row = barData as unknown as (typeof rows)[number];
+							if (row.errorRate > 0) setSelectedTool(row.fullName);
 						}}
 					>
 						{rows.map((r) => {

@@ -88,6 +88,7 @@ function SettingsPage() {
 		turnRecaps: initial.claude.turn_recaps ?? true,
 		recapModel: initial.claude.recap_model ?? "",
 		vaultProvider: initial.vault_provider ?? "claude",
+		interactiveMode: initial.claude.interactive_mode ?? false,
 	});
 
 	const [server, setServer] = useState<ServerForm>({
@@ -156,6 +157,7 @@ function SettingsPage() {
 				permission_mode: claude.permissionMode,
 				turn_recaps: claude.turnRecaps,
 				recap_model: claude.recapModel || undefined,
+				interactive_mode: claude.interactiveMode,
 			},
 			ui: {
 				enter_to_submit: ui.enterToSubmit,

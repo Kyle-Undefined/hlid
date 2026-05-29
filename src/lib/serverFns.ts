@@ -28,6 +28,7 @@ import type {
 import { dbFetch, dbJson } from "#/lib/dbClient";
 import type { McpServerEntry } from "#/lib/mcp";
 import { mapMcpServer } from "#/lib/mcp";
+import type { SessionStatusEntry } from "#/server/protocol";
 
 const logClientErrorSchema = z.object({
 	message: z
@@ -133,6 +134,10 @@ export const getCurrentSessionFn = createServerFn({ method: "GET" }).handler(
 export const getActiveSessionRowFn = createServerFn({
 	method: "GET",
 }).handler(() => dbJson<SessionRow | null>("/db/active-session", null));
+
+export const getLiveSessionsFn = createServerFn({ method: "GET" }).handler(() =>
+	dbJson<SessionStatusEntry[]>("/db/live-sessions", []),
+);
 
 // ─── Session-specific fns (used by /raven) ───────────────────────────────────
 
@@ -449,3 +454,43 @@ export const getMcpServersFn = createServerFn({ method: "GET" }).handler(
 		return result;
 	},
 );
+
+// ─── Terminal mode fns ────────────────────────────────────────────────────────
+
+/**
+ * Look up the claude_session_id stored for a given hlid DB session.
+ * Used by TerminalView to pass --resume to the CLI when switching to terminal mode.
+ */
+export const getSessionClaudeIdFn = createServerFn({ method: "GET" })
+	.inputValidator((sessionId: string) => sessionId)
+	.handler(async ({ data: sessionId }) => {
+		try {
+			const { getSessionClaudeId } = await import("#/db");
+			return await getSessionClaudeId(sessionId);
+		} catch {
+			return null as string | null;
+		}
+	});
+
+/**
+ * Ensure a DB session row exists for the given session ID.
+ * Terminal sessions don't write messages/tool_events but do need a row so
+ * the Ledger shows an entry and resume works when switching back to custom UI.
+ */
+export const ensureSessionFn = createServerFn({ method: "POST" })
+	.inputValidator((raw) => {
+		const { id, label, model } = raw as {
+			id: string;
+			label: string;
+			model: string;
+		};
+		return { id, label, model };
+	})
+	.handler(async ({ data: { id, label, model } }) => {
+		try {
+			const { createSession } = await import("#/db");
+			await createSession(id, label, model);
+		} catch {
+			// OR IGNORE — session may already exist
+		}
+	});

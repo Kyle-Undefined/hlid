@@ -1,12 +1,26 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { Paperclip, ShieldCheck, SquarePen, X } from "lucide-react";
-import { useCallback, useEffect, useReducer, useRef, useState } from "react";
+import {
+	Paperclip,
+	ShieldCheck,
+	SquarePen,
+	TerminalIcon,
+	X,
+} from "lucide-react";
+import {
+	useCallback,
+	useEffect,
+	useReducer,
+	useRef,
+	useState,
+	useSyncExternalStore,
+} from "react";
 import { AgentSelect } from "#/components/AgentSelect";
 import { AttachmentStrip } from "#/components/AttachmentStrip";
 import { reducer } from "#/components/chat/chatReducer";
 import { MessageList } from "#/components/chat/MessageList";
 import { SlashPicker } from "#/components/cockpit/SlashPicker";
 import { PrivacyMask } from "#/components/PrivacyMask";
+import { TerminalView } from "#/components/TerminalView";
 import {
 	ContextWindowSection,
 	UsageWindowsPanel,
@@ -23,9 +37,11 @@ import { useWsChatQueue, useWsLiveStats } from "#/hooks/useWsSelectors";
 import * as wsStore from "#/hooks/wsStore";
 import { deriveModelMismatch, fmtModel } from "#/lib/formatters";
 import {
+	ensureSessionFn,
 	getAgentListFn,
 	getCockpitData,
 	getCurrentSessionFn,
+	getLiveSessionsFn,
 	getSessionAgentCwdFn,
 	getUsageWindowsFn,
 } from "#/lib/serverFns";
@@ -48,20 +64,49 @@ export const Route = createFileRoute("/raven")({
 	},
 	loaderDeps: ({ search: { session, agent } }) => ({ session, agent }),
 	loader: async ({ deps: { session, agent } }) => {
-		const [config, dbSessionId, usageWindows, agentList, cockpitData] =
-			await Promise.all([
-				getConfig(),
-				session ? Promise.resolve(null) : getCurrentSessionFn(),
-				getUsageWindowsFn(),
-				getAgentListFn(),
-				getCockpitData(),
-			]);
-		const resolvedSessionId = session ?? dbSessionId;
+		const [config, usageWindows, agentList, cockpitData] = await Promise.all([
+			getConfig(),
+			getUsageWindowsFn(),
+			getAgentListFn(),
+			getCockpitData(),
+		]);
+		const agentConfig = (config.agents ?? []).find((a) => a.path === agent);
+		const routeInteractiveMode =
+			agentConfig?.interactive_mode ?? config.claude?.interactive_mode ?? false;
+		let resolvedSessionId = session ?? null;
 		let agentSkillContext = agent;
+		if (!resolvedSessionId && !routeInteractiveMode) {
+			resolvedSessionId = await getCurrentSessionFn();
+		}
 		if (!agentSkillContext && resolvedSessionId) {
 			agentSkillContext =
 				(await getSessionAgentCwdFn({ data: resolvedSessionId })) ?? undefined;
 		}
+
+		// Resolve interactive_mode: per-agent override → vault default → false
+		const resolvedAgentConfig = (config.agents ?? []).find(
+			(a) => a.path === agentSkillContext,
+		);
+		const interactiveMode =
+			resolvedAgentConfig?.interactive_mode ??
+			config.claude?.interactive_mode ??
+			false;
+		if (!resolvedSessionId && interactiveMode) {
+			const cwd = agentSkillContext ?? config.vault.path;
+			const liveSessions = await getLiveSessionsFn();
+			const liveTerminal = liveSessions
+				.slice()
+				.reverse()
+				.find(
+					(s) =>
+						s.mode === "terminal" &&
+						s.state === "running" &&
+						s.agent_cwd === cwd,
+				);
+			resolvedSessionId =
+				liveTerminal?.db_session_id ?? liveTerminal?.session_id ?? null;
+		}
+
 		return {
 			config,
 			existingSessionId: resolvedSessionId,
@@ -72,6 +117,7 @@ export const Route = createFileRoute("/raven")({
 			agentSkillContext,
 			agentList,
 			vaultSkills: cockpitData.skills,
+			interactiveMode,
 		};
 	},
 	component: ChatPage,
@@ -88,16 +134,58 @@ function ChatPage() {
 		agentSkillContext: initialAgentSkillContext,
 		agentList,
 		vaultSkills,
+		interactiveMode,
 	} = Route.useLoaderData();
+	const navigate = useNavigate();
 	const [agentSkillContext, setAgentSkillContext] = useState(
 		initialAgentSkillContext,
 	);
 	const agentContextSentRef = useRef(false);
-	const [sessionId, setSessionId] = useState(() => existingSessionId ?? uid());
+	const sessionsStatus = useSyncExternalStore(
+		wsStore.subscribeSessionsStatus,
+		wsStore.getSessionsStatus,
+		() => [],
+	);
+	const [sessionId, setSessionId] = useState(
+		() => existingSessionId ?? (interactiveMode ? "" : uid()),
+	);
+	const handleNewTerminalSession = useCallback(() => {
+		const newId = uid();
+		setSessionId(newId);
+		sessionIdRef.current = newId;
+		void navigate({
+			to: "/raven",
+			search: (prev) => ({ ...prev, session: undefined }),
+			replace: true,
+		});
+	}, [navigate]);
 	const sessionIdRef = useRef(sessionId);
 	useEffect(() => {
 		sessionIdRef.current = sessionId;
 	}, [sessionId]);
+
+	useEffect(() => {
+		if (!interactiveMode || existingSessionId || sessionId) return;
+		const cwd = agentSkillContext ?? config.vault.path;
+		const liveTerminal = sessionsStatus
+			.slice()
+			.reverse()
+			.find(
+				(s) =>
+					s.mode === "terminal" && s.state === "running" && s.agent_cwd === cwd,
+			);
+		const nextId =
+			liveTerminal?.db_session_id ?? liveTerminal?.session_id ?? uid();
+		setSessionId(nextId);
+		sessionIdRef.current = nextId;
+	}, [
+		interactiveMode,
+		existingSessionId,
+		sessionId,
+		sessionsStatus,
+		agentSkillContext,
+		config.vault.path,
+	]);
 
 	const [sdkSlashCommands, setSdkSlashCommands] = useState<
 		Array<{
@@ -118,7 +206,6 @@ function ChatPage() {
 	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
 	const [messages, dispatch] = useReducer(reducer, []);
 	const { prompt: seededPrompt } = Route.useSearch();
-	const navigate = useNavigate();
 	const { input, setInput, clearDraft } = useDraft({
 		existingSessionId,
 		seededPrompt,
@@ -160,10 +247,25 @@ function ChatPage() {
 	// user switches to a different session so it doesn't bleed across sessions.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: intentional — reset on session navigation only
 	useEffect(() => {
+		if (existingSessionId) {
+			setSessionId(existingSessionId);
+			sessionIdRef.current = existingSessionId;
+		}
 		setRateLimit(null);
 		setAgentSkillContext(initialAgentSkillContext);
 		agentContextSentRef.current = false;
 	}, [existingSessionId]);
+
+	// ─── Terminal mode session row ────────────────────────────────────────────
+	// Ensure a DB session row exists for terminal sessions so they appear in the
+	// Ledger. Standard SDK sessions create the row on first turn; terminal mode
+	// bypasses the SDK so we create it here.
+	useEffect(() => {
+		if (!interactiveMode || !sessionId) return;
+		void ensureSessionFn({
+			data: { id: sessionId, label: "Terminal session", model: "claude-cli" },
+		});
+	}, [interactiveMode, sessionId]);
 
 	// ─── WS message routing ───────────────────────────────────────────────────
 
@@ -513,345 +615,389 @@ function ChatPage() {
 				tail={<ContextWindowSection stats={liveStats} />}
 			/>
 
-			{/* Messages, inner min-h-full + justify-end anchors messages to bottom */}
-			<div ref={scrollRef} className="flex-1 overflow-y-auto overflow-x-hidden">
-				<div className="min-h-full flex flex-col justify-end px-5 pt-2 pb-7 min-w-0">
-					{messages.length === 0 ? (
-						<div className="flex-1 flex flex-col items-center justify-center gap-3">
-							<div className="text-2xl font-bold tracking-widest text-foreground/20 uppercase select-none">
-								{wsStatus !== "connected"
-									? "CONNECTING"
-									: "THE WATCHER LISTENS"}
-							</div>
-							{wsStatus === "connected" && (
-								<div className="text-[9px] tracking-[0.35em] text-muted-foreground/35">
-									↵ send · ⇧↵ newline
-								</div>
-							)}
-						</div>
-					) : (
-						<MessageList
-							messages={messages}
-							chatQueue={chatQueue}
-							sessionId={sessionId}
-							sessionState={sessionState}
-							runningTurnId={runningTurnId}
-							handleDecide={handleDecide}
-							handleSubmitAnswers={handleSubmitAnswers}
-							handlePlanDecide={handlePlanDecide}
-							handleCancelQueued={handleCancelQueued}
-							handlePromoteQueued={handlePromoteQueued}
-							bottomRef={bottomRef}
-						/>
-					)}
+			{/* Interactive mode badge — visible when running claude CLI directly */}
+			{interactiveMode && (
+				<div className="shrink-0 px-3 py-1.5 flex items-center gap-2 border-b border-border/50 bg-background/80">
+					<TerminalIcon className="w-3 h-3 text-primary/60" />
+					<span className="text-[9px] tracking-widest uppercase text-primary/60 font-medium">
+						Interactive Mode
+					</span>
+					<span className="text-[9px] text-muted-foreground/40 ml-auto">
+						Claude CLI · billing via Claude Code
+					</span>
+					<button
+						type="button"
+						onClick={handleNewTerminalSession}
+						className="ml-2 text-muted-foreground/45 hover:text-muted-foreground transition-colors"
+						aria-label="New terminal session"
+					>
+						<SquarePen className="w-3.5 h-3.5" />
+					</button>
 				</div>
-			</div>
+			)}
 
-			{/* Bottom bar, wrapper is relative so model badge floats above entire block */}
-			<div className="shrink-0 relative">
-				{pickerOpen && (
-					<SlashPicker
-						items={pickerItems}
-						selectedIndex={pickerIndex}
-						onSelect={handleSkillSelect}
-						direction="up"
+			{/* Terminal mode: replace messages + input with full-height xterm.js view */}
+			{interactiveMode && sessionId && (
+				<div className="flex-1 overflow-hidden">
+					<TerminalView
+						sessionId={sessionId}
+						cwd={agentSkillContext ?? config.vault.path}
+						active={true}
+						onNewSession={handleNewTerminalSession}
 					/>
-				)}
-				{agentSkillContext && (
-					<div className="absolute -top-5 left-3 z-10">
-						<button
-							type="button"
-							className="text-[9px] tracking-widest px-2 py-0.5 uppercase bg-background border border-primary/30 text-primary/60 cursor-default"
-						>
-							<PrivacyMask inline>
-								{agentList.find((a) => a.path === agentSkillContext)?.name ??
-									agentSkillContext.split("/").pop() ??
-									"agent"}
-							</PrivacyMask>
-						</button>
-					</div>
-				)}
-				{modelShort && (
-					<div ref={modelBadgeRef} className="absolute -top-5 right-3 z-10">
-						<button
-							type="button"
-							onClick={(e) => {
-								e.stopPropagation();
-								if (modelMismatch) setShowModelPopup((v) => !v);
-							}}
-							className={`text-[9px] tracking-widest px-2 py-0.5 uppercase bg-background border ${
-								modelMismatch
-									? "text-amber-500/80 border-amber-500/60 cursor-pointer"
-									: "text-muted-foreground/50 border-border/70 cursor-default"
-							}`}
-						>
-							{actualModelShort ?? modelShort}
-						</button>
-						{showModelPopup && modelMismatch && (
-							<div className="absolute bottom-full right-0 mb-1.5 bg-background border border-amber-500/40 px-3 py-2 text-[9px] tracking-widest uppercase whitespace-nowrap space-y-0.5">
-								<div>
-									<span className="text-muted-foreground/50">vault </span>
-									<span className="text-foreground/60">{modelShort}</span>
+				</div>
+			)}
+
+			{/* Messages, inner min-h-full + justify-end anchors messages to bottom */}
+			{!interactiveMode && (
+				<div
+					ref={scrollRef}
+					className="flex-1 overflow-y-auto overflow-x-hidden"
+				>
+					<div className="min-h-full flex flex-col justify-end px-5 pt-2 pb-7 min-w-0">
+						{messages.length === 0 ? (
+							<div className="flex-1 flex flex-col items-center justify-center gap-3">
+								<div className="text-2xl font-bold tracking-widest text-foreground/20 uppercase select-none">
+									{wsStatus !== "connected"
+										? "CONNECTING"
+										: "THE WATCHER LISTENS"}
 								</div>
-								<div>
-									<span className="text-muted-foreground/50">agent </span>
-									<span className="text-amber-400">{actualModelShort}</span>
-								</div>
+								{wsStatus === "connected" && (
+									<div className="text-[9px] tracking-[0.35em] text-muted-foreground/35">
+										↵ send · ⇧↵ newline
+									</div>
+								)}
 							</div>
+						) : (
+							<MessageList
+								messages={messages}
+								chatQueue={chatQueue}
+								sessionId={sessionId}
+								sessionState={sessionState}
+								runningTurnId={runningTurnId}
+								handleDecide={handleDecide}
+								handleSubmitAnswers={handleSubmitAnswers}
+								handlePlanDecide={handlePlanDecide}
+								handleCancelQueued={handleCancelQueued}
+								handlePromoteQueued={handlePromoteQueued}
+								bottomRef={bottomRef}
+							/>
 						)}
 					</div>
-				)}
+				</div>
+			)}
 
-				{/* Error banner */}
-				{sessionState === "error" && (
-					<div className="border-t border-destructive/30 bg-destructive/5 px-4 py-2 flex items-center justify-between gap-4">
-						<span className="text-[10px] tracking-widest text-destructive/70 uppercase">
-							session error
-						</span>
-						<button
-							type="button"
-							onClick={() => send({ type: "reload_session" })}
-							className="text-[10px] tracking-widest px-3 py-1 border border-destructive/40 text-destructive/70 hover:text-destructive hover:border-destructive transition-colors uppercase font-bold"
-						>
-							RESET SESSION
-						</button>
-					</div>
-				)}
-
-				{/* Input */}
-				{/* biome-ignore lint/a11y/noStaticElementInteractions: drop zone wraps the input, interactive children handle keyboard input */}
-				<div
-					className={`border-t border-border bg-background transition-colors relative z-0 ${
-						dragOver ? "bg-primary/5" : ""
-					}`}
-					onDragEnter={(e) => {
-						if (e.dataTransfer?.types?.includes("Files")) {
-							e.preventDefault();
-							setDragOver(true);
-						}
-					}}
-					onDragOver={(e) => {
-						if (e.dataTransfer?.types?.includes("Files")) {
-							e.preventDefault();
-						}
-					}}
-					onDragLeave={(e) => {
-						if (e.currentTarget === e.target) setDragOver(false);
-					}}
-					onDrop={(e) => {
-						if (e.dataTransfer?.files?.length) {
-							e.preventDefault();
-							setDragOver(false);
-							void uploadFiles(e.dataTransfer.files);
-						}
-					}}
-				>
-					{gitignoreHint && (
-						<div className="px-4 py-2 flex items-start gap-2 border-b border-border/40 bg-yellow-500/5">
-							<div className="flex-1 text-[10px] text-foreground/70 leading-relaxed">
-								<span className="text-yellow-500/80">tip:</span> attachments
-								stored at{" "}
-								<code className="text-[10px] font-mono text-foreground/90">
-									{gitignoreHint.agent_root}/.hlid/
-								</code>
-								. Add{" "}
-								<code className="text-[10px] font-mono text-foreground/90">
-									.hlid/
-								</code>{" "}
-								to <code className="text-[10px] font-mono">.gitignore</code> if
-								this is a git repo.
+			{/* Bottom bar — hidden in terminal mode (the terminal handles input directly) */}
+			{!interactiveMode && (
+				<>
+					{/* Bottom bar, wrapper is relative so model badge floats above entire block */}
+					<div className="shrink-0 relative">
+						{pickerOpen && (
+							<SlashPicker
+								items={pickerItems}
+								selectedIndex={pickerIndex}
+								onSelect={handleSkillSelect}
+								direction="up"
+							/>
+						)}
+						{agentSkillContext && (
+							<div className="absolute -top-5 left-3 z-10">
+								<button
+									type="button"
+									className="text-[9px] tracking-widest px-2 py-0.5 uppercase bg-background border border-primary/30 text-primary/60 cursor-default"
+								>
+									<PrivacyMask inline>
+										{agentList.find((a) => a.path === agentSkillContext)
+											?.name ??
+											agentSkillContext.split("/").pop() ??
+											"agent"}
+									</PrivacyMask>
+								</button>
 							</div>
-							<button
-								type="button"
-								onClick={dismissGitignoreHint}
-								className="text-muted-foreground/40 hover:text-foreground transition-colors shrink-0"
-								aria-label="Dismiss"
-							>
-								<X className="w-3 h-3" />
-							</button>
-						</div>
-					)}
-					<AttachmentStrip
-						attachments={pendingAttachments}
-						uploadingCount={uploadingCount}
-						uploadError={uploadError}
-						onRemove={removePending}
-					/>
-					{messages.length === 0 && (
-						<div className="flex items-center gap-3 px-4 py-1.5 border-b border-border/40">
-							{agentList.length > 0 && (
-								<AgentSelect
-									agents={agentList}
-									value={agentSkillContext ?? ""}
-									onChange={(val) => {
-										setAgentSkillContext(val || undefined);
-										agentContextSentRef.current = false;
+						)}
+						{modelShort && (
+							<div ref={modelBadgeRef} className="absolute -top-5 right-3 z-10">
+								<button
+									type="button"
+									onClick={(e) => {
+										e.stopPropagation();
+										if (modelMismatch) setShowModelPopup((v) => !v);
+									}}
+									className={`text-[9px] tracking-widest px-2 py-0.5 uppercase bg-background border ${
+										modelMismatch
+											? "text-amber-500/80 border-amber-500/60 cursor-pointer"
+											: "text-muted-foreground/50 border-border/70 cursor-default"
+									}`}
+								>
+									{actualModelShort ?? modelShort}
+								</button>
+								{showModelPopup && modelMismatch && (
+									<div className="absolute bottom-full right-0 mb-1.5 bg-background border border-amber-500/40 px-3 py-2 text-[9px] tracking-widest uppercase whitespace-nowrap space-y-0.5">
+										<div>
+											<span className="text-muted-foreground/50">vault </span>
+											<span className="text-foreground/60">{modelShort}</span>
+										</div>
+										<div>
+											<span className="text-muted-foreground/50">agent </span>
+											<span className="text-amber-400">{actualModelShort}</span>
+										</div>
+									</div>
+								)}
+							</div>
+						)}
+
+						{/* Error banner */}
+						{sessionState === "error" && (
+							<div className="border-t border-destructive/30 bg-destructive/5 px-4 py-2 flex items-center justify-between gap-4">
+								<span className="text-[10px] tracking-widest text-destructive/70 uppercase">
+									session error
+								</span>
+								<button
+									type="button"
+									onClick={() => send({ type: "reload_session" })}
+									className="text-[10px] tracking-widest px-3 py-1 border border-destructive/40 text-destructive/70 hover:text-destructive hover:border-destructive transition-colors uppercase font-bold"
+								>
+									RESET SESSION
+								</button>
+							</div>
+						)}
+
+						{/* Input */}
+						{/* biome-ignore lint/a11y/noStaticElementInteractions: drop zone wraps the input, interactive children handle keyboard input */}
+						<div
+							className={`border-t border-border bg-background transition-colors relative z-0 ${
+								dragOver ? "bg-primary/5" : ""
+							}`}
+							onDragEnter={(e) => {
+								if (e.dataTransfer?.types?.includes("Files")) {
+									e.preventDefault();
+									setDragOver(true);
+								}
+							}}
+							onDragOver={(e) => {
+								if (e.dataTransfer?.types?.includes("Files")) {
+									e.preventDefault();
+								}
+							}}
+							onDragLeave={(e) => {
+								if (e.currentTarget === e.target) setDragOver(false);
+							}}
+							onDrop={(e) => {
+								if (e.dataTransfer?.files?.length) {
+									e.preventDefault();
+									setDragOver(false);
+									void uploadFiles(e.dataTransfer.files);
+								}
+							}}
+						>
+							{gitignoreHint && (
+								<div className="px-4 py-2 flex items-start gap-2 border-b border-border/40 bg-yellow-500/5">
+									<div className="flex-1 text-[10px] text-foreground/70 leading-relaxed">
+										<span className="text-yellow-500/80">tip:</span> attachments
+										stored at{" "}
+										<code className="text-[10px] font-mono text-foreground/90">
+											{gitignoreHint.agent_root}/.hlid/
+										</code>
+										. Add{" "}
+										<code className="text-[10px] font-mono text-foreground/90">
+											.hlid/
+										</code>{" "}
+										to <code className="text-[10px] font-mono">.gitignore</code>{" "}
+										if this is a git repo.
+									</div>
+									<button
+										type="button"
+										onClick={dismissGitignoreHint}
+										className="text-muted-foreground/40 hover:text-foreground transition-colors shrink-0"
+										aria-label="Dismiss"
+									>
+										<X className="w-3 h-3" />
+									</button>
+								</div>
+							)}
+							<AttachmentStrip
+								attachments={pendingAttachments}
+								uploadingCount={uploadingCount}
+								uploadError={uploadError}
+								onRemove={removePending}
+							/>
+							{messages.length === 0 && (
+								<div className="flex items-center gap-3 px-4 py-1.5 border-b border-border/40">
+									{agentList.length > 0 && (
+										<AgentSelect
+											agents={agentList}
+											value={agentSkillContext ?? ""}
+											onChange={(val) => {
+												setAgentSkillContext(val || undefined);
+												agentContextSentRef.current = false;
+											}}
+										/>
+									)}
+									<button
+										type="button"
+										onClick={() => setPlanMode((v) => !v)}
+										title="Enable plan mode — Claude plans before acting"
+										className={`flex items-center gap-1.5 text-[9px] tracking-widest uppercase transition-colors shrink-0 ${
+											planMode
+												? "text-primary border-b border-primary/50"
+												: "text-muted-foreground/40 hover:text-muted-foreground/70"
+										}`}
+									>
+										<ShieldCheck className="w-3 h-3" />
+										plan
+									</button>
+								</div>
+							)}
+							<div className="flex items-start">
+								<span className="text-primary text-sm px-4 py-3 shrink-0 select-none">
+									›
+								</span>
+								<input
+									ref={fileInputRef}
+									type="file"
+									multiple
+									className="hidden"
+									onChange={(e) => {
+										if (e.target.files) void uploadFiles(e.target.files);
+										e.target.value = "";
 									}}
 								/>
-							)}
-							<button
-								type="button"
-								onClick={() => setPlanMode((v) => !v)}
-								title="Enable plan mode — Claude plans before acting"
-								className={`flex items-center gap-1.5 text-[9px] tracking-widest uppercase transition-colors shrink-0 ${
-									planMode
-										? "text-primary border-b border-primary/50"
-										: "text-muted-foreground/40 hover:text-muted-foreground/70"
-								}`}
-							>
-								<ShieldCheck className="w-3 h-3" />
-								plan
-							</button>
+								<button
+									type="button"
+									onClick={() => fileInputRef.current?.click()}
+									disabled={wsStatus !== "connected"}
+									className="px-2 py-3 text-muted-foreground/45 hover:text-muted-foreground transition-colors shrink-0 disabled:opacity-30"
+									aria-label="Attach file"
+									title="Attach file"
+								>
+									<Paperclip className="w-3.5 h-3.5" />
+								</button>
+								<textarea
+									ref={textareaRef}
+									value={input}
+									onChange={(e) => setInput(e.target.value)}
+									onPaste={(e) => {
+										const files = Array.from(e.clipboardData?.files ?? []);
+										if (files.length > 0) {
+											e.preventDefault();
+											void uploadFiles(files);
+										}
+									}}
+									onKeyDown={(e) => {
+										// Slash picker navigation — intercept before send handler
+										if (pickerOpen) {
+											if (e.key === "ArrowDown") {
+												e.preventDefault();
+												pickerNavigate(1);
+												return;
+											}
+											if (e.key === "ArrowUp") {
+												e.preventDefault();
+												pickerNavigate(-1);
+												return;
+											}
+											if (e.key === "Escape") {
+												e.preventDefault();
+												pickerClose();
+												return;
+											}
+											if (e.key === "Tab") {
+												e.preventDefault();
+												if (pickerItems.length > 0)
+													handleSkillSelect(pickerItems[pickerIndex]);
+												return;
+											}
+											if (
+												e.key === "Enter" &&
+												!e.shiftKey &&
+												!e.metaKey &&
+												!e.ctrlKey
+											) {
+												e.preventDefault();
+												if (pickerItems.length > 0)
+													handleSkillSelect(pickerItems[pickerIndex]);
+												return;
+											}
+										}
+										const isTouch =
+											typeof window !== "undefined" &&
+											window.matchMedia("(pointer: coarse)").matches;
+										if (
+											e.key === "Enter" &&
+											!e.shiftKey &&
+											!isTouch &&
+											config.ui.enter_to_submit
+										) {
+											e.preventDefault();
+											handleSend();
+										}
+									}}
+									role="combobox"
+									aria-expanded={pickerOpen}
+									aria-controls="slash-picker"
+									aria-autocomplete="list"
+									aria-activedescendant={
+										pickerOpen ? `slash-picker-opt-${pickerIndex}` : undefined
+									}
+									rows={1}
+									placeholder={
+										wsStatus !== "connected"
+											? "connecting…"
+											: activeSkill
+												? `add context for /${activeSkill.name}… (optional)`
+												: isRunning
+													? "type to queue next…"
+													: "speak to the watcher…"
+									}
+									disabled={wsStatus !== "connected"}
+									className={`flex-1 resize-none bg-transparent py-3 pr-2 text-sm text-foreground focus:outline-none disabled:opacity-30 overflow-y-hidden min-h-[60px] md:min-h-[120px] ${wsStatus !== "connected" ? "placeholder:text-foreground/50" : "placeholder:text-muted-foreground/35"}`}
+								/>
+								{isRunning && (
+									<button
+										type="button"
+										onClick={() => send({ type: "abort" })}
+										className="px-4 py-3 text-[10px] tracking-widest text-destructive/70 hover:text-destructive transition-colors shrink-0 uppercase font-bold"
+										aria-label="Abort"
+									>
+										STOP
+									</button>
+								)}
+								{isRunning ? (
+									<button
+										type="button"
+										onClick={handleSend}
+										disabled={!canQueue}
+										className="px-4 py-3 text-[10px] tracking-widest text-primary/70 hover:text-primary disabled:text-muted-foreground/35 transition-colors shrink-0 uppercase font-bold"
+										aria-label="Queue message"
+									>
+										QUEUE
+									</button>
+								) : (
+									<button
+										type="button"
+										onClick={handleSend}
+										disabled={!canSend}
+										className="px-4 py-3 text-[10px] tracking-widest text-primary/70 hover:text-primary disabled:text-muted-foreground/35 transition-colors shrink-0 uppercase font-bold"
+										aria-label="Send"
+									>
+										RUN
+									</button>
+								)}
+								{messages.length > 0 && (
+									<button
+										type="button"
+										onClick={handleClear}
+										className="px-3 py-3 text-muted-foreground/45 hover:text-muted-foreground transition-colors shrink-0"
+										aria-label="New chat"
+									>
+										<SquarePen className="w-3.5 h-3.5" />
+									</button>
+								)}
+							</div>
 						</div>
-					)}
-					<div className="flex items-start">
-						<span className="text-primary text-sm px-4 py-3 shrink-0 select-none">
-							›
-						</span>
-						<input
-							ref={fileInputRef}
-							type="file"
-							multiple
-							className="hidden"
-							onChange={(e) => {
-								if (e.target.files) void uploadFiles(e.target.files);
-								e.target.value = "";
-							}}
-						/>
-						<button
-							type="button"
-							onClick={() => fileInputRef.current?.click()}
-							disabled={wsStatus !== "connected"}
-							className="px-2 py-3 text-muted-foreground/45 hover:text-muted-foreground transition-colors shrink-0 disabled:opacity-30"
-							aria-label="Attach file"
-							title="Attach file"
-						>
-							<Paperclip className="w-3.5 h-3.5" />
-						</button>
-						<textarea
-							ref={textareaRef}
-							value={input}
-							onChange={(e) => setInput(e.target.value)}
-							onPaste={(e) => {
-								const files = Array.from(e.clipboardData?.files ?? []);
-								if (files.length > 0) {
-									e.preventDefault();
-									void uploadFiles(files);
-								}
-							}}
-							onKeyDown={(e) => {
-								// Slash picker navigation — intercept before send handler
-								if (pickerOpen) {
-									if (e.key === "ArrowDown") {
-										e.preventDefault();
-										pickerNavigate(1);
-										return;
-									}
-									if (e.key === "ArrowUp") {
-										e.preventDefault();
-										pickerNavigate(-1);
-										return;
-									}
-									if (e.key === "Escape") {
-										e.preventDefault();
-										pickerClose();
-										return;
-									}
-									if (e.key === "Tab") {
-										e.preventDefault();
-										if (pickerItems.length > 0)
-											handleSkillSelect(pickerItems[pickerIndex]);
-										return;
-									}
-									if (
-										e.key === "Enter" &&
-										!e.shiftKey &&
-										!e.metaKey &&
-										!e.ctrlKey
-									) {
-										e.preventDefault();
-										if (pickerItems.length > 0)
-											handleSkillSelect(pickerItems[pickerIndex]);
-										return;
-									}
-								}
-								const isTouch =
-									typeof window !== "undefined" &&
-									window.matchMedia("(pointer: coarse)").matches;
-								if (
-									e.key === "Enter" &&
-									!e.shiftKey &&
-									!isTouch &&
-									config.ui.enter_to_submit
-								) {
-									e.preventDefault();
-									handleSend();
-								}
-							}}
-							role="combobox"
-							aria-expanded={pickerOpen}
-							aria-controls="slash-picker"
-							aria-autocomplete="list"
-							aria-activedescendant={
-								pickerOpen ? `slash-picker-opt-${pickerIndex}` : undefined
-							}
-							rows={1}
-							placeholder={
-								wsStatus !== "connected"
-									? "connecting…"
-									: activeSkill
-										? `add context for /${activeSkill.name}… (optional)`
-										: isRunning
-											? "type to queue next…"
-											: "speak to the watcher…"
-							}
-							disabled={wsStatus !== "connected"}
-							className={`flex-1 resize-none bg-transparent py-3 pr-2 text-sm text-foreground focus:outline-none disabled:opacity-30 overflow-y-hidden min-h-[60px] md:min-h-[120px] ${wsStatus !== "connected" ? "placeholder:text-foreground/50" : "placeholder:text-muted-foreground/35"}`}
-						/>
-						{isRunning && (
-							<button
-								type="button"
-								onClick={() => send({ type: "abort" })}
-								className="px-4 py-3 text-[10px] tracking-widest text-destructive/70 hover:text-destructive transition-colors shrink-0 uppercase font-bold"
-								aria-label="Abort"
-							>
-								STOP
-							</button>
-						)}
-						{isRunning ? (
-							<button
-								type="button"
-								onClick={handleSend}
-								disabled={!canQueue}
-								className="px-4 py-3 text-[10px] tracking-widest text-primary/70 hover:text-primary disabled:text-muted-foreground/35 transition-colors shrink-0 uppercase font-bold"
-								aria-label="Queue message"
-							>
-								QUEUE
-							</button>
-						) : (
-							<button
-								type="button"
-								onClick={handleSend}
-								disabled={!canSend}
-								className="px-4 py-3 text-[10px] tracking-widest text-primary/70 hover:text-primary disabled:text-muted-foreground/35 transition-colors shrink-0 uppercase font-bold"
-								aria-label="Send"
-							>
-								RUN
-							</button>
-						)}
-						{messages.length > 0 && (
-							<button
-								type="button"
-								onClick={handleClear}
-								className="px-3 py-3 text-muted-foreground/45 hover:text-muted-foreground transition-colors shrink-0"
-								aria-label="New chat"
-							>
-								<SquarePen className="w-3.5 h-3.5" />
-							</button>
-						)}
 					</div>
-				</div>
-			</div>
+				</>
+			)}
 		</div>
 	);
 }

@@ -57,6 +57,7 @@ const getAgentsFn = createServerFn({ method: "GET" }).handler(
 					agent.max_turns !== undefined ? String(agent.max_turns) : undefined,
 				permissionMode: agent.permission_mode,
 				recapModel: agent.recap_model,
+				interactiveMode: agent.interactive_mode,
 			};
 		});
 	},
@@ -182,6 +183,7 @@ function EinherjarPage() {
 					? (a.permissionMode as Agent["permission_mode"])
 					: undefined,
 			recap_model: a.recapModel || undefined,
+			interactive_mode: a.interactiveMode || undefined,
 		};
 	}
 

@@ -44,6 +44,7 @@ vi.mock("./runState", () => ({
 
 // ── import after mocks ────────────────────────────────────────────────────────
 
+import type { WsData } from "./wsHandlers";
 import { createWsHandlers } from "./wsHandlers";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -167,7 +168,10 @@ function makePool(vaultEntry?: ReturnType<typeof makeEntry>): SessionPool & {
 
 /** Fake WS with per-ws data (matches Bun ServerWebSocket<WsData>). */
 function makeWs(subscribedSessionId = "vault-id") {
-	return { send: vi.fn(), data: { subscribedSessionId } };
+	return {
+		send: vi.fn(),
+		data: { subscribedSessionId } as WsData,
+	};
 }
 
 beforeEach(() => {
@@ -270,7 +274,7 @@ describe("open (pool)", () => {
 		const vault = makeEntry("vault-id");
 		vault.manager.isRunning.mockReturnValue(true);
 		const existingOwner = makeWs();
-		vault.runState.ownerWs = existingOwner;
+		vault.runState.ownerWs = existingOwner as never;
 		const pool = makePool(vault);
 		const { open } = createWsHandlers(pool);
 		const ws = makeWs();
@@ -559,7 +563,14 @@ describe("message — stop_session", () => {
 describe("message — close_session", () => {
 	it("calls pool.close() with the session_id", async () => {
 		const vault = makeEntry("vault-id");
+		const sessionEntry = makeEntry("session-abc");
 		const pool = makePool(vault);
+		// Register session-abc as a known SDK session.
+		pool.get.mockImplementation((id: string) => {
+			if (id === vault.sessionId) return vault;
+			if (id === "session-abc") return sessionEntry;
+			return undefined;
+		});
 		const { message } = createWsHandlers(pool);
 		const ws = makeWs();
 		await message(
@@ -602,7 +613,14 @@ describe("message — close_session", () => {
 
 	it("re-subscribes ws to vault when ws was watching the closed session", async () => {
 		const vault = makeEntry("vault-id");
+		const sessionEntry = makeEntry("session-abc");
 		const pool = makePool(vault);
+		// Register session-abc as a known SDK session.
+		pool.get.mockImplementation((id: string) => {
+			if (id === vault.sessionId) return vault;
+			if (id === "session-abc") return sessionEntry;
+			return undefined;
+		});
 		const ws = makeWs("session-abc");
 		wsState.clients.add(ws);
 		const { message } = createWsHandlers(pool);

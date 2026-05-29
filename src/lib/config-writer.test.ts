@@ -38,6 +38,7 @@ function makeConfig(overrides: Partial<HlidConfig> = {}): HlidConfig {
 			effort: "high",
 			permission_mode: "default",
 			turn_recaps: true,
+			interactive_mode: false,
 		},
 		ui: {
 			enter_to_submit: true,
@@ -187,6 +188,7 @@ describe("writeConfig — claude section", () => {
 					effort: "high",
 					permission_mode: "default",
 					turn_recaps: false,
+					interactive_mode: false,
 				},
 			}),
 		);
@@ -201,6 +203,7 @@ describe("writeConfig — claude section", () => {
 					effort: "low",
 					permission_mode: "default",
 					turn_recaps: true,
+					interactive_mode: false,
 					max_turns: 10,
 				},
 			}),
@@ -221,6 +224,7 @@ describe("writeConfig — claude section", () => {
 					effort: "high",
 					permission_mode: "default",
 					turn_recaps: true,
+					interactive_mode: false,
 					recap_model: "claude-sonnet-4-6",
 				},
 			}),

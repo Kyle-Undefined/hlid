@@ -41,6 +41,8 @@ const ClaudeSchema = z.object({
 		.default("default"),
 	turn_recaps: z.boolean().default(true),
 	recap_model: z.string().optional(),
+	/** When true, Raven spawns the Claude CLI in a PTY instead of using the SDK. */
+	interactive_mode: z.boolean().default(false),
 });
 
 const UiSchema = z.object({
@@ -98,6 +100,8 @@ export const AgentSchema = z.object({
 		.enum(["default", "acceptEdits", "bypassPermissions", "plan"])
 		.optional(),
 	recap_model: z.string().optional(),
+	/** Override vault-level interactive_mode for this specific agent. */
+	interactive_mode: z.boolean().optional(),
 });
 
 export type Agent = z.infer<typeof AgentSchema>;
@@ -119,6 +123,7 @@ export const HlidConfigSchema = z.object({
 		effort: "high" as const,
 		permission_mode: "default" as const,
 		turn_recaps: true,
+		interactive_mode: false,
 	})),
 	ui: UiSchema.default(() => ({
 		enter_to_submit: true,

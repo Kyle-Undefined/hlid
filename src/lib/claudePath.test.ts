@@ -14,15 +14,24 @@ import { existsSync } from "node:fs";
 import { __resetCacheForTesting, resolveClaudeExecutable } from "./claudePath";
 
 const mockExists = vi.mocked(existsSync);
+const ORIGINAL_PATH = process.env.PATH;
+const ORIGINAL_HOME = process.env.HOME;
+const ORIGINAL_USERPROFILE = process.env.USERPROFILE;
 
 beforeEach(() => {
 	mockExists.mockReset().mockReturnValue(false);
 	delete process.env.HLID_CLAUDE_EXE;
+	process.env.PATH = "/bin:/usr/bin";
+	process.env.HOME = "/home/test";
+	process.env.USERPROFILE = "C:\\Users\\test";
 	__resetCacheForTesting();
 });
 
 afterEach(() => {
 	delete process.env.HLID_CLAUDE_EXE;
+	process.env.PATH = ORIGINAL_PATH;
+	process.env.HOME = ORIGINAL_HOME;
+	process.env.USERPROFILE = ORIGINAL_USERPROFILE;
 });
 
 // ── HLID_CLAUDE_EXE override ──────────────────────────────────────────────────
@@ -54,6 +63,15 @@ describe("HLID_CLAUDE_EXE env override", () => {
 	});
 });
 
+// ── standalone CLI ───────────────────────────────────────────────────────────
+
+describe("standalone Claude Code CLI", () => {
+	it("prefers claude on PATH over bundled SDK fallback", () => {
+		mockExists.mockImplementation((path) => String(path) === "/usr/bin/claude");
+		expect(resolveClaudeExecutable()).toBe("/usr/bin/claude");
+	});
+});
+
 // ── linux x64 glibc fallback ──────────────────────────────────────────────────
 
 // These tests only run on linux/x64 — the platform we use in CI.
@@ -62,30 +80,30 @@ const isLinuxX64 = process.platform === "linux" && process.arch === "x64";
 
 describe.skipIf(!isLinuxX64)("linux x64 — glibc fallback", () => {
 	it("returns glibc binary when musl absent and glibc found", () => {
-		// Call sequence (no HLID_CLAUDE_EXE set):
-		//   1st: existsSync("/lib/ld-musl-x86_64.so.1") → false (no musl)
-		//   2nd: existsSync(glibcBin) → true
-		mockExists
-			.mockReturnValueOnce(false) // musl absent
-			.mockReturnValueOnce(true); // glibc present
+		mockExists.mockImplementation((path) =>
+			String(path).includes("claude-agent-sdk-linux-x64/claude"),
+		);
 		const result = resolveClaudeExecutable();
 		expect(typeof result).toBe("string");
-		expect(result).toContain("claude");
+		expect(result).toContain("claude-agent-sdk-linux-x64/claude");
 	});
 
 	it("returns undefined when musl absent and glibc not found", () => {
-		mockExists
-			.mockReturnValueOnce(false) // musl absent
-			.mockReturnValueOnce(false); // glibc absent too
+		mockExists.mockReturnValue(false);
 		expect(resolveClaudeExecutable()).toBeUndefined();
 	});
 
 	it("skips glibc fallback when musl library present", () => {
 		// musl found → SDK can use its bundled musl binary → return undefined
-		mockExists.mockReturnValueOnce(true); // musl present
+		mockExists.mockImplementation(
+			(path) => String(path) === "/lib/ld-musl-x86_64.so.1",
+		);
 		expect(resolveClaudeExecutable()).toBeUndefined();
-		// Only one existsSync call (musl check); glibc check skipped
-		expect(mockExists).toHaveBeenCalledTimes(1);
+		expect(
+			mockExists.mock.calls.some((c) =>
+				String(c[0]).includes("claude-agent-sdk-linux-x64/claude"),
+			),
+		).toBe(false);
 	});
 });
 

@@ -1274,7 +1274,12 @@ describe("message — close_session", () => {
 
 	it("calls pool.close for a non-vault session", async () => {
 		const session = makeSession();
-		const { pool } = wrapSession(session);
+		const { pool, entry } = wrapSession(session);
+		// Register "other-session" as a known SDK session so the handler routes
+		// to pool.close() rather than the terminal pool fallback.
+		pool.get.mockImplementation((id: string) =>
+			id === "vault-id" || id === "other-session" ? entry : undefined,
+		);
 		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		await message(

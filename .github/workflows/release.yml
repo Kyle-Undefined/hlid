@@ -102,6 +102,8 @@ jobs:
 
       - run: bun scripts/generate-icons.ts
 
+      - run: bun scripts/bundle-pty-assets.ts
+
       - run: bun run build
 
       - name: Compile hlid.exe

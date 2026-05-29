@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { ProviderUsageSnapshot, UsageWindows } from "#/db";
+import type { ProviderUsageSnapshot, UsageWindow, UsageWindows } from "#/db";
 import {
 	applyRateLimitToWindowData,
 	mergeProviderSnapshot,
@@ -10,7 +10,15 @@ function makeWindows(
 	utilization: number | null,
 	resetsAt: number | null,
 ): UsageWindows {
-	const win = { queries: 0, sessions: 0, cost: 0, utilization, resetsAt };
+	const win: UsageWindow = {
+		tokens: 0,
+		queries: 0,
+		sessions: 0,
+		cost: 0,
+		utilization,
+		resetsAt,
+		rateLimitType: null,
+	};
 	return { fiveHour: win, weekly: win, weeklySonnet: null };
 }
 
@@ -70,12 +78,14 @@ describe("mergeUsageWindows", () => {
 
 	// Sonnet window
 	it("uses fresh sonnet when resetsAt changed (early reset)", () => {
-		const win = {
+		const win: UsageWindow = {
+			tokens: 0,
 			queries: 0,
 			sessions: 0,
 			cost: 0,
 			utilization: 0.0,
 			resetsAt: FUTURE_NEAR,
+			rateLimitType: null,
 		};
 		const prev: UsageWindows = {
 			fiveHour: win,
@@ -94,12 +104,14 @@ describe("mergeUsageWindows", () => {
 	});
 
 	it("uses fresh sonnet utilization within same window (external reset)", () => {
-		const win = {
+		const win: UsageWindow = {
+			tokens: 0,
 			queries: 0,
 			sessions: 0,
 			cost: 0,
 			utilization: 0.0,
 			resetsAt: FUTURE_NEAR,
+			rateLimitType: null,
 		};
 		const prev: UsageWindows = {
 			fiveHour: win,
@@ -117,12 +129,14 @@ describe("mergeUsageWindows", () => {
 	});
 
 	it("keeps prev sonnet when fresh.utilization is null (anti-flicker)", () => {
-		const win = {
+		const win: UsageWindow = {
+			tokens: 0,
 			queries: 0,
 			sessions: 0,
 			cost: 0,
 			utilization: 0.0,
 			resetsAt: FUTURE_NEAR,
+			rateLimitType: null,
 		};
 		const prev: UsageWindows = {
 			fiveHour: win,

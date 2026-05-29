@@ -41,6 +41,7 @@ function makeConfig(agentPaths: string[] = []): HlidConfig {
 			effort: "high",
 			permission_mode: "default",
 			turn_recaps: false,
+			interactive_mode: false,
 		},
 		ui: { enter_to_submit: true, hide_skills_index: false, theme: "tan" },
 		status_vocabulary: { active: [], planning: [], done: [] },

@@ -1,8 +1,10 @@
 import * as db from "../db";
 import { clampInt } from "../lib/utils";
 import { unlinkPaths } from "./attachments";
+import { getLiveSessionsStatus, hasLiveTerminalSession } from "./liveSessions";
 import { getWindowMark } from "./proxy";
 import type { SessionPool } from "./sessionPool";
+import type { TerminalSessionPool } from "./terminalSessionPool";
 
 /**
  * Handles all /db/* routes. Returns null if the path doesn't match,
@@ -12,6 +14,7 @@ export async function handleDbRoute(
 	url: URL,
 	req: Request,
 	pool?: SessionPool,
+	terminalPool?: TerminalSessionPool,
 ): Promise<Response | null> {
 	if (url.pathname === "/db/sessions" && req.method === "GET") {
 		const page = clampInt(url.searchParams.get("page"), 1, 1);
@@ -27,6 +30,7 @@ export async function handleDbRoute(
 		if (!body || typeof body.label !== "string")
 			return new Response("Missing label", { status: 400 });
 		await db.renameSession(id, body.label);
+		terminalPool?.setSessionLabel(id, body.label);
 		return Response.json({ ok: true });
 	}
 
@@ -278,7 +282,7 @@ export async function handleDbRoute(
 	// ── live pool session endpoints ─────────────────────────────────────────────
 
 	if (url.pathname === "/db/live-sessions" && req.method === "GET") {
-		return Response.json(pool?.getSessionsStatus() ?? []);
+		return Response.json(getLiveSessionsStatus(pool, terminalPool));
 	}
 
 	if (url.pathname === "/db/live-sessions/stop" && req.method === "POST") {
@@ -286,8 +290,13 @@ export async function handleDbRoute(
 		const id = body?.session_id;
 		if (!id) return new Response("Missing session_id", { status: 400 });
 		const entry = pool?.get(id);
-		if (!entry) return new Response("Session not found", { status: 404 });
-		entry.manager.abort();
+		if (entry) {
+			entry.manager.abort();
+		} else if (terminalPool && hasLiveTerminalSession(terminalPool, id)) {
+			terminalPool.write(id, "\x03");
+		} else {
+			return new Response("Session not found", { status: 404 });
+		}
 		return Response.json({ ok: true });
 	}
 
@@ -295,12 +304,15 @@ export async function handleDbRoute(
 		const body = await req.json().catch(() => null);
 		const id = body?.session_id;
 		if (!id) return new Response("Missing session_id", { status: 400 });
-		if (!pool?.get(id))
+		const entry = pool?.get(id);
+		const terminalExists = hasLiveTerminalSession(terminalPool, id);
+		if (!entry && !terminalExists)
 			return new Response("Session not found", { status: 404 });
-		if (pool.isVaultSession(id)) {
+		if (entry && pool?.isVaultSession(id)) {
 			return new Response("Cannot close vault session", { status: 403 });
 		}
-		pool.close(id);
+		if (entry) pool?.close(id);
+		else terminalPool?.close(id);
 		return Response.json({ ok: true });
 	}
 

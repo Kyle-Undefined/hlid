@@ -126,6 +126,7 @@ export function FirstRunWizard({ onComplete }: Props) {
 					effort: "high" as const,
 					permission_mode: s.permissionMode,
 					turn_recaps: true,
+					interactive_mode: false,
 				},
 				ui: {
 					enter_to_submit: true,

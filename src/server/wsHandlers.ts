@@ -5,6 +5,7 @@ import * as db from "../db";
 import { expandTilde } from "../lib/paths";
 import { computeAllowedAgentRealPaths, isAllowedAgentPath } from "./agentPaths";
 import { loadConfig } from "./config";
+import { getLiveSessionsStatus } from "./liveSessions";
 import {
 	type ClientMessage,
 	decisionFromScope,
@@ -12,9 +13,11 @@ import {
 } from "./protocol";
 import { broadcast, send, wsState } from "./runState";
 import type { PoolEntry, SessionPool } from "./sessionPool";
+import type { TerminalSessionPool } from "./terminalSessionPool";
 
 /** Per-connection data stored on the Bun WS object. */
 export type WsData = {
+	isTerminal?: false;
 	subscribedSessionId: string;
 	/** Set by "clear" so the next "chat" spawns a fresh pool entry without
 	 *  cancelling the current subprocess. */
@@ -40,7 +43,10 @@ function resolveAgentName(agentCwd: string): string {
 	return agentCwd.split("/").filter(Boolean).pop() ?? agentCwd;
 }
 
-export function createWsHandlers(pool: SessionPool) {
+export function createWsHandlers(
+	pool: SessionPool,
+	terminalPool?: TerminalSessionPool,
+) {
 	return {
 		open(ws: ServerWebSocket<WsData>) {
 			wsState.clients.add(ws);
@@ -51,7 +57,10 @@ export function createWsHandlers(pool: SessionPool) {
 			vault.runState.addSubscriber(ws);
 
 			// Broadcast pool-wide status so client can render session list.
-			send(ws, { type: "sessions_status", sessions: pool.getSessionsStatus() });
+			send(ws, {
+				type: "sessions_status",
+				sessions: getLiveSessionsStatus(pool, terminalPool),
+			});
 
 			// Send vault session status and (if relevant) last error.
 			const status = vault.manager.getStatus();
@@ -142,7 +151,7 @@ export function createWsHandlers(pool: SessionPool) {
 				send(ws, { type: "queue_state", ...entry.manager.getQueueState() });
 				broadcast({
 					type: "sessions_status",
-					sessions: pool.getSessionsStatus(),
+					sessions: getLiveSessionsStatus(pool, terminalPool),
 				});
 				return;
 			}
@@ -173,7 +182,13 @@ export function createWsHandlers(pool: SessionPool) {
 			}
 
 			if (msg.type === "stop_session") {
-				pool.get(msg.session_id)?.manager.abort();
+				const sdkEntry = pool.get(msg.session_id);
+				if (sdkEntry) {
+					sdkEntry.manager.abort();
+				} else {
+					// Terminal session: send Ctrl+C to interrupt the running command.
+					terminalPool?.write(msg.session_id, "\x03");
+				}
 				return;
 			}
 
@@ -185,20 +200,26 @@ export function createWsHandlers(pool: SessionPool) {
 					});
 					return;
 				}
-				pool.close(msg.session_id);
-				broadcast({ type: "session_closed", session_id: msg.session_id });
-				// Re-subscribe any ws whose focused session was the one just closed.
-				const vault = pool.vaultEntry();
-				for (const client of wsState.clients) {
-					const clientWs = client as ServerWebSocket<WsData>;
-					if (clientWs.data?.subscribedSessionId === msg.session_id) {
-						vault.runState.addSubscriber(clientWs);
-						clientWs.data.subscribedSessionId = vault.sessionId;
+				const sdkEntry = pool.get(msg.session_id);
+				if (sdkEntry) {
+					pool.close(msg.session_id);
+					// Re-subscribe any chat WS clients focused on this session → vault.
+					const vault = pool.vaultEntry();
+					for (const client of wsState.clients) {
+						const clientWs = client as ServerWebSocket<WsData>;
+						if (clientWs.data?.subscribedSessionId === msg.session_id) {
+							vault.runState.addSubscriber(clientWs);
+							clientWs.data.subscribedSessionId = vault.sessionId;
+						}
 					}
+				} else {
+					// Terminal session: kill the PTY.
+					terminalPool?.close(msg.session_id);
 				}
+				broadcast({ type: "session_closed", session_id: msg.session_id });
 				broadcast({
 					type: "sessions_status",
-					sessions: pool.getSessionsStatus(),
+					sessions: getLiveSessionsStatus(pool, terminalPool),
 				});
 				return;
 			}
@@ -259,7 +280,7 @@ export function createWsHandlers(pool: SessionPool) {
 				});
 				broadcast({
 					type: "sessions_status",
-					sessions: pool.getSessionsStatus(),
+					sessions: getLiveSessionsStatus(pool, terminalPool),
 				});
 				return;
 			}
@@ -544,7 +565,7 @@ export function createWsHandlers(pool: SessionPool) {
 					chatEntry = newEntry;
 					broadcast({
 						type: "sessions_status",
-						sessions: pool.getSessionsStatus(),
+						sessions: getLiveSessionsStatus(pool, terminalPool),
 					});
 					send(ws, { type: "status", ...newEntry.manager.getStatus() });
 				}
@@ -590,7 +611,7 @@ export function createWsHandlers(pool: SessionPool) {
 							if (event.type === "status") {
 								broadcast({
 									type: "sessions_status",
-									sessions: pool.getSessionsStatus(),
+									sessions: getLiveSessionsStatus(pool, terminalPool),
 								});
 							}
 						},
@@ -617,7 +638,7 @@ export function createWsHandlers(pool: SessionPool) {
 					// Final sync — catches idle/error state after run completes.
 					broadcast({
 						type: "sessions_status",
-						sessions: pool.getSessionsStatus(),
+						sessions: getLiveSessionsStatus(pool, terminalPool),
 					});
 				}
 			}

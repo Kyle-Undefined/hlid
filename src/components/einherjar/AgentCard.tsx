@@ -26,6 +26,7 @@ export type AgentEntry = {
 	maxTurns?: string;
 	permissionMode?: string;
 	recapModel?: string;
+	interactiveMode?: boolean;
 };
 
 export type AgentProviderSettings = {
@@ -34,6 +35,7 @@ export type AgentProviderSettings = {
 	maxTurns?: string;
 	permissionMode?: string;
 	recapModel?: string;
+	interactiveMode?: boolean;
 };
 
 type EditState = {
@@ -45,6 +47,7 @@ type EditState = {
 	maxTurns: string;
 	permissionMode: string;
 	recapModel: string;
+	interactiveMode: boolean;
 };
 
 export function AgentCard({
@@ -117,6 +120,7 @@ export function AgentCard({
 					maxTurns: editing.maxTurns || undefined,
 					permissionMode: editing.permissionMode || undefined,
 					recapModel: editing.recapModel || undefined,
+					interactiveMode: editing.interactiveMode || undefined,
 				},
 			);
 			setEditing(null);
@@ -212,6 +216,7 @@ export function AgentCard({
 								maxTurns: agent.maxTurns ?? "",
 								permissionMode: agent.permissionMode ?? "",
 								recapModel: agent.recapModel ?? "",
+								interactiveMode: agent.interactiveMode ?? false,
 							})
 						}
 						title="Edit agent"
@@ -444,6 +449,27 @@ export function AgentCard({
 										</option>
 									))}
 								</select>
+							</div>
+							<div className="flex items-center gap-2">
+								<span className="text-[9px] tracking-widest text-muted-foreground/50 uppercase shrink-0 w-24">
+									Interactive mode
+								</span>
+								<label className="flex items-center gap-2 cursor-pointer">
+									<input
+										type="checkbox"
+										checked={editing.interactiveMode}
+										onChange={(e) =>
+											setEditing(
+												(s) => s && { ...s, interactiveMode: e.target.checked },
+											)
+										}
+										className="w-3.5 h-3.5 accent-primary"
+									/>
+									<span className="text-xs text-muted-foreground">
+										to not go against your &quot;programmatic&quot; usage, if
+										you desire
+									</span>
+								</label>
 							</div>
 						</div>
 					)}

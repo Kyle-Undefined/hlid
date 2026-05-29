@@ -3,7 +3,6 @@
  * session-scoped permission persistence.
  */
 
-import type { Mock } from "vitest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent, HlidConfig } from "../config";
 
@@ -2917,17 +2916,18 @@ describe("SessionManager — Slice B AgentSession reuse", () => {
 
 	it("runOneTurn calls agentSession.send() with the user message", async () => {
 		const ctl = makeLongLivedProvider();
-		let lastSendSpy: Mock | null = null;
+		const sendSpies: Array<ReturnType<typeof vi.fn>> = [];
 		const wrappedProvider: AgentProvider = {
 			providerId: "claude",
 			query(p: AgentQueryParams): AgentSession {
 				const sess = ctl.provider.query(p);
-				lastSendSpy = sess.send as ReturnType<typeof vi.fn>;
+				sendSpies.push(sess.send as ReturnType<typeof vi.fn>);
 				return sess;
 			},
 		};
 		const sm = new SessionManager(makeConfig(), makeProviders(wrappedProvider));
 		await sm.runQuery("hello world", () => {}, "sess-1");
+		const lastSendSpy = sendSpies[0];
 		expect(lastSendSpy).not.toBeNull();
 		if (!lastSendSpy) throw new Error("send spy was never assigned");
 		expect(lastSendSpy).toHaveBeenCalledTimes(1);
@@ -3326,6 +3326,8 @@ describe("SessionManager — status:running fires after initSessionContext", () 
 		);
 
 		expect(runningEvent).not.toBeNull();
-		expect(runningEvent?.turn_id).toBe("turn-abc-123");
+		expect((runningEvent as { turn_id?: string } | null)?.turn_id).toBe(
+			"turn-abc-123",
+		);
 	});
 });

@@ -61,8 +61,8 @@ export type RateLimitMessage = {
 	type: "rate_limit";
 	status: string;
 	rateLimitType?: string;
-	utilization?: number;
-	resetsAt?: number;
+	utilization?: number | null;
+	resetsAt?: number | null;
 	/** Provider that emitted this rate-limit event, e.g. "claude". */
 	providerId?: string;
 };
@@ -277,6 +277,11 @@ export type SessionStatusEntry = {
 	/** The DB chat session ID currently open in this pool session, if any. */
 	db_session_id: string | null;
 	lastLabel?: string;
+	/**
+	 * "sdk" = custom UI backed by the Claude Agent SDK (default, undefined = sdk).
+	 * "terminal" = raw PTY session running claude CLI via xterm.js.
+	 */
+	mode?: "sdk" | "terminal";
 };
 
 /**

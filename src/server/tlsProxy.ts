@@ -103,7 +103,7 @@ export function startTlsProxy(
 				const url = new URL(req.url);
 
 				if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
-					if (url.pathname === "/ws") {
+					if (url.pathname === "/ws" || url.pathname.startsWith("/ws/")) {
 						if (
 							!isAllowedOriginHeader(
 								req.headers.get("origin"),
@@ -114,7 +114,7 @@ export function startTlsProxy(
 						}
 						const upgraded = server.upgrade(req, {
 							data: {
-								wsTarget: `ws://127.0.0.1:${wsPort}/ws${url.search}`,
+								wsTarget: `ws://127.0.0.1:${wsPort}${url.pathname}${url.search}`,
 								back: null,
 								queue: [],
 							},
