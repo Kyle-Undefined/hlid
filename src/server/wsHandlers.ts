@@ -73,19 +73,19 @@ export function createWsHandlers(
 				// Replay buffered run events (chunks, tool_events, permission events)
 				// so new connections see what happened since the run started.
 				for (const msg of vault.runState.getReplayBuffer()) {
-					vault.runState.send(ws, msg);
+					send(ws, msg);
 				}
 				// Claim ownership and replay pending prompts if no owner yet (page refresh).
 				if (vault.runState.ownerWs === null) {
 					vault.runState.ownerWs = ws;
 					for (const req of vault.manager.getPendingPermissionRequests()) {
-						vault.runState.send(ws, req);
+						send(ws, req);
 					}
 					for (const q of vault.manager.getPendingAskUserQuestions()) {
-						vault.runState.send(ws, q);
+						send(ws, q);
 					}
 					for (const exit of vault.manager.getPendingPlanModeExits()) {
-						vault.runState.send(ws, exit);
+						send(ws, exit);
 					}
 				}
 			}
@@ -174,7 +174,7 @@ export function createWsHandlers(
 				send(ws, { type: "status", ...newEntry.manager.getStatus() });
 				if (newEntry.manager.isRunning()) {
 					for (const buffered of newEntry.runState.getReplayBuffer()) {
-						newEntry.runState.send(ws, buffered);
+						send(ws, buffered);
 					}
 				}
 				send(ws, { type: "queue_state", ...newEntry.manager.getQueueState() });

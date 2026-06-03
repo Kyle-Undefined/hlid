@@ -1,4 +1,5 @@
 const MODEL_LABELS: Record<string, string> = {
+	"claude-opus-4-8": "Opus 4.8",
 	"claude-opus-4-7": "Opus 4.7",
 	"claude-sonnet-4-6": "Sonnet 4.6",
 	"claude-haiku-4-5-20251001": "Haiku 4.5",

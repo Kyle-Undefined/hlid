@@ -400,6 +400,7 @@ export class ClaudeProvider implements AgentProvider {
 	readonly label = "Claude";
 
 	readonly models = [
+		{ value: "claude-opus-4-8", label: "Opus 4.8" },
 		{ value: "claude-opus-4-7", label: "Opus 4.7" },
 		{ value: "claude-sonnet-4-6", label: "Sonnet 4.6" },
 		{ value: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
@@ -417,11 +418,11 @@ export class ClaudeProvider implements AgentProvider {
 			label: "High",
 			desc: "solid reasoning, this is the default",
 		},
-		{ value: "xhigh", label: "X-High", desc: "goes deeper, Opus 4.7 only" },
+		{ value: "xhigh", label: "X-High", desc: "goes deeper, Opus only" },
 		{
 			value: "max",
 			label: "Max",
-			desc: "everything Claude has, Opus 4.7 only",
+			desc: "everything Claude has, Opus only",
 		},
 	] as const;
 

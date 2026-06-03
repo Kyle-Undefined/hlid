@@ -81,7 +81,7 @@ export type UsageUpdateMessage = {
 	// The model the CLI actually used for this inference. May differ from
 	// the configured vault model if an agent's CLAUDE.md frontmatter, slash
 	// command, or subagent overrode it. Includes the dated suffix
-	// (e.g. "claude-opus-4-7-20251001"); strip with /-\d{8}$/ to compare.
+	// (e.g. "claude-opus-4-8-20260601"); strip with /-\d{8}$/ to compare.
 	actualModel?: string;
 	// Max context window for the model used this inference. Carried forward
 	// from the most recent `result` message so the gauge can render without
