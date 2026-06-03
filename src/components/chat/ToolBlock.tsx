@@ -63,12 +63,16 @@ export function ToolBlock({
 	permissionLabel?: string;
 }) {
 	const [open, setOpen] = useState(false);
-	const pills = Object.entries(event.input ?? {}).slice(0, 3);
+	const inputEntries = Object.entries(event.input ?? {});
+	const pills = inputEntries.slice(0, 3);
+	const isReasoning = event.name === "Reasoning";
 	const hasResult = typeof event.result === "string";
 	const resultText = event.result ?? "";
 	const strippedResult = stripReadLineNumbers(resultText);
 	const renderResultAsMarkdown =
-		hasResult && !event.isError && looksLikeMarkdown(strippedResult);
+		hasResult &&
+		!event.isError &&
+		(isReasoning || looksLikeMarkdown(strippedResult));
 	const resultPreview = hasResult
 		? firstLine(resultText).slice(0, RESULT_PREVIEW_CHARS)
 		: null;
@@ -132,24 +136,32 @@ export function ToolBlock({
 			)}
 			{open && (
 				<PrivacyMask className="mx-3 mb-1.5 border border-[var(--tool-panel-border)] bg-[var(--tool-panel)]">
-					<div className="text-[11px] text-primary/60 font-mono leading-relaxed p-3 overflow-auto max-h-48 space-y-1">
-						{Object.entries(event.input ?? {}).map(([k, v]) => (
-							<div key={k} className="flex gap-1.5 min-w-0">
-								<span className="text-primary/40 shrink-0">{k}:</span>
-								{typeof v === "string" ? (
-									<span className="whitespace-pre-wrap break-words min-w-0">
-										{v}
-									</span>
-								) : (
-									<span className="whitespace-pre-wrap break-words min-w-0">
-										{JSON.stringify(v, null, 2)}
-									</span>
-								)}
-							</div>
-						))}
-					</div>
+					{inputEntries.length > 0 && (
+						<div className="text-[11px] text-primary/60 font-mono leading-relaxed p-3 overflow-auto max-h-48 space-y-1">
+							{inputEntries.map(([k, v]) => (
+								<div key={k} className="flex gap-1.5 min-w-0">
+									<span className="text-primary/40 shrink-0">{k}:</span>
+									{typeof v === "string" ? (
+										<span className="whitespace-pre-wrap break-words min-w-0">
+											{v}
+										</span>
+									) : (
+										<span className="whitespace-pre-wrap break-words min-w-0">
+											{JSON.stringify(v, null, 2)}
+										</span>
+									)}
+								</div>
+							))}
+						</div>
+					)}
 					{hasResult && (
-						<div className="border-t border-[var(--tool-panel-border)]">
+						<div
+							className={
+								inputEntries.length > 0
+									? "border-t border-[var(--tool-panel-border)]"
+									: undefined
+							}
+						>
 							<div
 								className={`text-[9px] tracking-widest uppercase px-3 pt-2 pb-1 ${
 									event.isError
@@ -157,7 +169,7 @@ export function ToolBlock({
 										: "text-muted-foreground/50"
 								}`}
 							>
-								{event.isError ? "Error" : "Result"}
+								{event.isError ? "Error" : isReasoning ? "Reasoning" : "Result"}
 							</div>
 							{renderResultAsMarkdown ? (
 								<div className="px-3 pb-3 overflow-auto max-h-64 text-[12px] text-primary/80 leading-relaxed">

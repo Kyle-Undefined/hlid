@@ -73,19 +73,19 @@ export function createWsHandlers(
 				// Replay buffered run events (chunks, tool_events, permission events)
 				// so new connections see what happened since the run started.
 				for (const msg of vault.runState.getReplayBuffer()) {
-					send(ws, msg);
+					vault.runState.send(ws, msg);
 				}
 				// Claim ownership and replay pending prompts if no owner yet (page refresh).
 				if (vault.runState.ownerWs === null) {
 					vault.runState.ownerWs = ws;
 					for (const req of vault.manager.getPendingPermissionRequests()) {
-						send(ws, req);
+						vault.runState.send(ws, req);
 					}
 					for (const q of vault.manager.getPendingAskUserQuestions()) {
-						send(ws, q);
+						vault.runState.send(ws, q);
 					}
 					for (const exit of vault.manager.getPendingPlanModeExits()) {
-						send(ws, exit);
+						vault.runState.send(ws, exit);
 					}
 				}
 			}
@@ -174,7 +174,7 @@ export function createWsHandlers(
 				send(ws, { type: "status", ...newEntry.manager.getStatus() });
 				if (newEntry.manager.isRunning()) {
 					for (const buffered of newEntry.runState.getReplayBuffer()) {
-						send(ws, buffered);
+						newEntry.runState.send(ws, buffered);
 					}
 				}
 				send(ws, { type: "queue_state", ...newEntry.manager.getQueueState() });
@@ -234,10 +234,10 @@ export function createWsHandlers(
 				if (entry.manager.isRunning() && entry.runState.ownerWs === null) {
 					entry.runState.ownerWs = ws;
 					for (const req of entry.manager.getPendingPermissionRequests()) {
-						send(ws, req);
+						entry.runState.send(ws, req);
 					}
 					for (const exit of entry.manager.getPendingPlanModeExits()) {
-						send(ws, exit);
+						entry.runState.send(ws, exit);
 					}
 				}
 				return;
@@ -563,6 +563,12 @@ export function createWsHandlers(
 					newEntry.runState.addSubscriber(ws);
 					ws.data.subscribedSessionId = newEntry.sessionId;
 					chatEntry = newEntry;
+					send(ws, {
+						type: "session_created",
+						session_id: newEntry.sessionId,
+						agent_cwd: newEntry.agentCwd,
+						agent_name: newEntry.agentName,
+					});
 					broadcast({
 						type: "sessions_status",
 						sessions: getLiveSessionsStatus(pool, terminalPool),

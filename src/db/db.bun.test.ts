@@ -38,11 +38,15 @@ import {
 	getSessionAgentCwd,
 	getSessionClaudeId,
 	getSessionLastQueryContext,
+	getSessionProviderId,
+	getSessionProviderSession,
 	getSessionsPaginated,
 	recordQuery,
 	setSessionActualModel,
 	setSessionAgentCwd,
 	setSessionClaudeId,
+	setSessionProviderId,
+	setSessionProviderSession,
 } from "./sessions";
 import {
 	clearCurrentSessionId,
@@ -174,6 +178,38 @@ describe("sessions — claude_session_id", () => {
 		await setSessionClaudeId("s1", "claude-uuid-123");
 		await setSessionClaudeId("s1", null);
 		expect(await getSessionClaudeId("s1")).toBeNull();
+	});
+});
+
+describe("sessions — provider sessions", () => {
+	beforeEach(() => freshDb());
+
+	it("persists the active provider id separately from provider session id", async () => {
+		await createSession("s1", "L", "m");
+		await setSessionProviderId("s1", "codex");
+		expect(await getSessionProviderId("s1")).toBe("codex");
+		expect(await getSessionProviderSession("s1")).toBeNull();
+	});
+
+	it("stores and gates resume ids by provider", async () => {
+		await createSession("s1", "L", "m");
+		await setSessionProviderSession("s1", "codex", "codex-thread-123");
+		expect(await getSessionProviderId("s1")).toBe("codex");
+		expect(await getSessionProviderSession("s1")).toBe("codex-thread-123");
+		expect(await getSessionProviderSession("s1", "codex")).toBe(
+			"codex-thread-123",
+		);
+		expect(await getSessionProviderSession("s1", "claude")).toBeNull();
+		expect(await getSessionClaudeId("s1")).toBeNull();
+	});
+
+	it("keeps the legacy Claude helper compatible", async () => {
+		await createSession("s1", "L", "m");
+		await setSessionClaudeId("s1", "claude-uuid-123");
+		expect(await getSessionProviderId("s1")).toBe("claude");
+		expect(await getSessionProviderSession("s1", "claude")).toBe(
+			"claude-uuid-123",
+		);
 	});
 });
 

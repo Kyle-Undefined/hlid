@@ -220,6 +220,52 @@ describe("subscribeToSession / getSubscribedSessionId", () => {
 // ── session-scoped message filtering ─────────────────────────────────────────
 
 describe("session message filtering", () => {
+	it("clear immediately detaches from the old running session until session_created", () => {
+		wsStore.subscribeToSession("old-session");
+		receive({
+			type: "status",
+			state: "running",
+			model: "claude",
+			session_id: "old-session",
+		});
+		expect(wsStore.getSnapshot().sessionState).toBe("running");
+
+		const received: unknown[] = [];
+		const unsub = wsStore.subscribeMessage((m) => received.push(m));
+		wsStore.send({ type: "clear" });
+		expect(wsStore.getSnapshot().sessionState).toBe("idle");
+
+		receive({ type: "chunk", text: "old output", session_id: "old-session" });
+		receive({
+			type: "status",
+			state: "running",
+			model: "claude",
+			session_id: "old-session",
+		});
+
+		expect(received).toHaveLength(0);
+		expect(wsStore.getSnapshot().sessionState).toBe("idle");
+		unsub();
+	});
+
+	it("session_created sets the subscribed session id for subsequent filtering", () => {
+		receive({
+			type: "session_created",
+			session_id: "session-new",
+			agent_cwd: "/vault",
+			agent_name: "Vault",
+		});
+		expect(wsStore.getSubscribedSessionId()).toBe("session-new");
+
+		const received: unknown[] = [];
+		const unsub = wsStore.subscribeMessage((m) => received.push(m));
+		receive({ type: "chunk", text: "old", session_id: "session-old" });
+		receive({ type: "chunk", text: "new", session_id: "session-new" });
+		expect(received).toHaveLength(1);
+		expect(received[0]).toMatchObject({ type: "chunk", text: "new" });
+		unsub();
+	});
+
 	it("status with no session_id is NOT filtered (backward compat)", () => {
 		wsStore.subscribeToSession("session-a");
 		receive({ type: "status", state: "running", model: "claude" });

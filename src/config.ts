@@ -45,6 +45,18 @@ const ClaudeSchema = z.object({
 	interactive_mode: z.boolean().default(false),
 });
 
+const CodexSchema = z.object({
+	model: z.string().default(""),
+	effort: z.enum(["low", "medium", "high", "xhigh", "max"]).default("medium"),
+	max_turns: z.number().int().positive().optional(),
+	permission_mode: z
+		.enum(["default", "acceptEdits", "bypassPermissions", "plan"])
+		.default("default"),
+	turn_recaps: z.boolean().default(true),
+	recap_model: z.string().optional(),
+	executable: z.string().optional(),
+});
+
 const UiSchema = z.object({
 	enter_to_submit: z.boolean().default(true),
 	hide_skills_index: z.boolean().default(true),
@@ -124,6 +136,12 @@ export const HlidConfigSchema = z.object({
 		permission_mode: "default" as const,
 		turn_recaps: true,
 		interactive_mode: false,
+	})),
+	codex: CodexSchema.default(() => ({
+		model: "",
+		effort: "medium" as const,
+		permission_mode: "default" as const,
+		turn_recaps: true,
 	})),
 	ui: UiSchema.default(() => ({
 		enter_to_submit: true,

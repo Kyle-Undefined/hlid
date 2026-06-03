@@ -141,6 +141,7 @@ let _sessionsStatus: SessionStatusEntry[] = [];
 /** UUID of the WS pool session this client is currently subscribed to.
  *  Empty string = not yet subscribed (no filtering applied — backward compat). */
 let _subscribedSessionId = "";
+const PENDING_NEW_SESSION_ID = "__hlid_pending_new_session__";
 
 // Subscriber sets — five concerns, each notified independently.
 const statusSubs = new Set<() => void>();
@@ -434,6 +435,13 @@ function connect() {
 			for (const fn of sessionsStatusSubs) fn();
 			return;
 		}
+		if (msg.type === "session_created") {
+			_subscribedSessionId = msg.session_id;
+			_activeSessionId = msg.session_id;
+			_messageBuffer = [];
+			for (const fn of statusSubs) fn();
+			return;
+		}
 
 		// ── Per-session filtering ────────────────────────────────────────────────
 		// When subscribed to a specific session, drop messages that belong to a
@@ -535,6 +543,15 @@ export function send(msg: ClientMessage): void {
 	if (msg.type === "chat") _pendingSessionToday = true;
 	if (msg.type === "chat" || msg.type === "clear") _messageBuffer = [];
 	if (msg.type === "clear") {
+		_subscribedSessionId = PENDING_NEW_SESSION_ID;
+		_activeSessionId = null;
+		_pendingSessionToday = false;
+		_pendingPermCount = 0;
+		setSnap({
+			sessionState: "idle",
+			hasPendingPermissions: false,
+			runningTurnId: null,
+		});
 		_chatQueue = [];
 		notifyQueue();
 	}

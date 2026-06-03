@@ -129,10 +129,12 @@ export class SessionManager {
 	private vaultPath!: string;
 	private permissionMode!: PermissionMode;
 	private claudeExecutable: string | undefined;
+	private codexExecutable: string | undefined;
 	// Provider session ID for the active chat. Captured from the `session_start`
 	// event on first turn, persisted per chat row, and passed back via `sessionId`
 	// on subsequent turns so the provider manages history natively.
-	private claudeSessionId: string | null = null;
+	private providerSessionId: string | null = null;
+	private providerSessionProviderId: string | null = null;
 	private permissions = new PermissionManager();
 	private askUserQuestions = new AskUserQuestionManager();
 	private planModeManager = new PlanModeManager();
@@ -197,16 +199,27 @@ export class SessionManager {
 
 	/** Apply runtime settings from config. Shared by constructor, reinitialize, and syncConfig. */
 	private applyConfig(config: HlidConfig): void {
-		this.model = config.claude.model;
-		this.effort = config.claude.effort;
-		this.maxTurns = config.claude.max_turns;
 		this.vaultPath = config.vault.path || process.env.HOME || "/";
-		this.permissionMode = config.claude.permission_mode;
-		this.turnRecaps = config.claude.turn_recaps ?? true;
-		this.recapModel = config.claude.recap_model ?? "claude-haiku-4-5";
-		this.claudeExecutable = resolveClaudeExecutable();
-		this.allowedAgentRealPaths = computeAllowedAgentRealPaths(config);
 		this.vaultProviderId = config.vault_provider ?? "claude";
+		const codexConfig = config.codex ?? {
+			model: "",
+			effort: "medium" as const,
+			permission_mode: "default" as const,
+			turn_recaps: true,
+		};
+		const providerDefaults =
+			this.vaultProviderId === "codex" ? codexConfig : config.claude;
+		this.model = providerDefaults.model;
+		this.effort = providerDefaults.effort;
+		this.maxTurns = providerDefaults.max_turns;
+		this.permissionMode = providerDefaults.permission_mode;
+		this.turnRecaps = providerDefaults.turn_recaps ?? true;
+		this.recapModel =
+			providerDefaults.recap_model ??
+			(this.vaultProviderId === "codex" ? "" : "claude-haiku-4-5");
+		this.claudeExecutable = resolveClaudeExecutable();
+		this.codexExecutable = codexConfig.executable;
+		this.allowedAgentRealPaths = computeAllowedAgentRealPaths(config);
 		// Build agentPath → providerId map from config
 		this.agentProviderMap = new Map();
 		this.agentSettingsMap = new Map();
@@ -236,7 +249,8 @@ export class SessionManager {
 		this.state = "idle";
 		this.currentSessionId = null;
 		this.currentSessionLabel = null;
-		this.claudeSessionId = null;
+		this.providerSessionId = null;
+		this.providerSessionProviderId = null;
 		this.messageSeq = 0;
 		this.sessionAllowedTools.clear();
 		db.clearCurrentSessionId().catch((e) =>
@@ -248,7 +262,16 @@ export class SessionManager {
 	// session history or conversation continuity. Safe to call when idle.
 	// Returns true if the model changed (so callers can broadcast a status update).
 	syncConfig(config: HlidConfig): boolean {
-		const modelChanged = this.model !== config.claude.model;
+		const providerId = config.vault_provider ?? "claude";
+		const codexConfig = config.codex ?? {
+			model: "",
+			effort: "medium" as const,
+			permission_mode: "default" as const,
+			turn_recaps: true,
+		};
+		const providerDefaults =
+			providerId === "codex" ? codexConfig : config.claude;
+		const modelChanged = this.model !== providerDefaults.model;
 		this.applyConfig(config);
 		return modelChanged;
 	}
@@ -279,7 +302,8 @@ export class SessionManager {
 		const ac = new AbortController();
 		const timeout = setTimeout(() => ac.abort(), 30_000);
 		try {
-			const session = this.resolveProvider().query({
+			const provider = this.resolveProvider();
+			const session = provider.query({
 				cwd: this.vaultPath,
 				signal: ac.signal,
 				permissionMode: "default",
@@ -287,7 +311,10 @@ export class SessionManager {
 				maxTurns: 1,
 				persistSession: false,
 				settingSources: ["user", "project"],
-				executable: this.claudeExecutable,
+				executable:
+					provider.providerId === "claude"
+						? this.claudeExecutable
+						: this.codexExecutable,
 				canUseTool: () =>
 					Promise.resolve({ behavior: "deny" as const, message: "probe" }),
 			});
@@ -317,7 +344,8 @@ export class SessionManager {
 		const ac = new AbortController();
 		const timeout = setTimeout(() => ac.abort(), 30_000);
 		try {
-			const session = this.resolveProvider().query({
+			const provider = this.resolveProvider();
+			const session = provider.query({
 				cwd: this.vaultPath,
 				signal: ac.signal,
 				permissionMode: "default",
@@ -325,7 +353,10 @@ export class SessionManager {
 				maxTurns: 1,
 				persistSession: false,
 				settingSources: ["user", "project"],
-				executable: this.claudeExecutable,
+				executable:
+					provider.providerId === "claude"
+						? this.claudeExecutable
+						: this.codexExecutable,
 				canUseTool: () =>
 					Promise.resolve({ behavior: "deny" as const, message: "probe" }),
 			});
@@ -413,7 +444,8 @@ export class SessionManager {
 	clearHistory(): void {
 		this.currentSessionId = null;
 		this.currentSessionLabel = null;
-		this.claudeSessionId = null;
+		this.providerSessionId = null;
+		this.providerSessionProviderId = null;
 		this.messageSeq = 0;
 		this.agentCwd = undefined;
 		this.agentMode = "cwd";
@@ -448,14 +480,17 @@ export class SessionManager {
 			this.agentCwd = undefined;
 			this.agentMode = "cwd";
 			this.sessionAllowedTools.clear();
-			const [prior, savedAgentCwd, savedClaudeId] = await Promise.all([
-				db.getSessionMessages(sessionId),
-				db.getSessionAgentCwd(sessionId),
-				db.getSessionClaudeId(sessionId),
-			]);
+			const [prior, savedAgentCwd, savedProviderId, savedProviderSessionId] =
+				await Promise.all([
+					db.getSessionMessages(sessionId),
+					db.getSessionAgentCwd(sessionId),
+					db.getSessionProviderId(sessionId),
+					db.getSessionProviderSession(sessionId),
+				]);
 			this.messageSeq = prior.length;
 			this.currentSessionId = sessionId;
-			this.claudeSessionId = savedClaudeId;
+			this.providerSessionId = savedProviderSessionId;
+			this.providerSessionProviderId = savedProviderId;
 			if (savedAgentCwd) {
 				this.agentCwd = savedAgentCwd;
 				this.agentMode = resolveAgentMode(savedAgentCwd);
@@ -501,17 +536,19 @@ export class SessionManager {
 	private handleSessionStart(
 		event: Extract<AgentEvent, { type: "session_start" }>,
 		sessionId: string | undefined,
+		provider: AgentProvider,
 	): void {
 		const newId = event.sessionId;
 		// Always update on every session_start — the provider may reassign on
 		// compaction/fork, and we want the latest valid id persisted for the next
 		// turn's resume.
-		if (newId && newId !== this.claudeSessionId) {
-			this.claudeSessionId = newId;
+		if (newId && newId !== this.providerSessionId) {
+			this.providerSessionId = newId;
+			this.providerSessionProviderId = provider.providerId;
 			if (sessionId) {
 				void db
-					.setSessionClaudeId(sessionId, newId)
-					.catch((e) => logDbError("setSessionClaudeId", e));
+					.setSessionProviderSession(sessionId, provider.providerId, newId)
+					.catch((e) => logDbError("setSessionProviderSession", e));
 			}
 		}
 	}
@@ -757,7 +794,7 @@ export class SessionManager {
 				}
 			}
 			if (event.type === "session_start") {
-				this.handleSessionStart(event, sessionId);
+				this.handleSessionStart(event, sessionId, provider);
 			} else if (event.type === "text_delta") {
 				let text = event.text;
 				// Prepend blank line when text follows a tool block so markdown renders cleanly.
@@ -1049,6 +1086,19 @@ export class SessionManager {
 		const agentSettings = this.agentCwd
 			? this.agentSettingsMap.get(this.agentCwd)
 			: undefined;
+		const resumeProviderSessionId =
+			this.providerSessionProviderId === currentProvider.providerId
+				? this.providerSessionId
+				: null;
+		if (this.providerSessionProviderId !== currentProvider.providerId) {
+			this.providerSessionId = null;
+			this.providerSessionProviderId = currentProvider.providerId;
+		}
+		if (sessionId) {
+			void db
+				.setSessionProviderId(sessionId, currentProvider.providerId)
+				.catch((e) => logDbError("setSessionProviderId", e));
+		}
 
 		const turn: TurnState = {
 			receivedAny: false,
@@ -1076,7 +1126,7 @@ export class SessionManager {
 				allowedAgentRealPaths: this.allowedAgentRealPaths,
 				agentMode: this.agentMode,
 				agentCwd: this.agentCwd,
-				claudeSessionId: this.claudeSessionId,
+				claudeSessionId: resumeProviderSessionId,
 				userMessage,
 				skillContext,
 				attachments,
@@ -1103,13 +1153,17 @@ export class SessionManager {
 				claudeExecutable: this.claudeExecutable,
 				safeAttachments,
 			});
+			const providerExecutable =
+				currentProvider.providerId === "claude"
+					? executable
+					: this.codexExecutable;
 			// Slice B: long-lived AgentSession per chat. Cache by sessionId +
 			// agentCwd so consecutive turns within the same chat reuse one
 			// underlying SDK query. Different chat or different agent →
 			// tear down + rebuild. Resume retry (rotated/wiped session) is
 			// handled inside the provider. canUseTool stays here since it
 			// references session state.
-			const desiredKey = `${sessionId ?? "ephemeral"}|${this.agentCwd ?? ""}`;
+			const desiredKey = `${currentProvider.providerId}|${sessionId ?? "ephemeral"}|${this.agentCwd ?? ""}`;
 			if (this.agentSession && this.agentSessionKey !== desiredKey) {
 				this.agentSession.cancel();
 				this.agentSession = null;
@@ -1119,7 +1173,7 @@ export class SessionManager {
 			if (!agentSession) {
 				agentSession = currentProvider.query({
 					cwd: activeCwd,
-					sessionId: this.claudeSessionId ?? undefined,
+					sessionId: resumeProviderSessionId ?? undefined,
 					additionalDirectories:
 						extraDirs.size > 0
 							? Array.from(extraDirs).map(toLogical)
@@ -1134,7 +1188,7 @@ export class SessionManager {
 						: (agentSettings?.permissionMode ?? this.permissionMode),
 					effort: agentSettings?.effort ?? this.effort,
 					maxTurns: agentSettings?.maxTurns ?? this.maxTurns,
-					executable,
+					executable: providerExecutable,
 					// Each cwd loads its own user global + project settings +
 					// local file. Vault chats see vault hooks/MCP/CLAUDE.md;
 					// agent chats see that agent's. canUseTool stays sole
@@ -1272,7 +1326,9 @@ export class SessionManager {
 								type: "permission_request" as const,
 								id: toolUseID,
 								toolName,
-								title: title ?? `Claude wants to use ${toolName}`,
+								title:
+									title ??
+									`${currentProvider.label ?? currentProvider.providerId} wants to use ${toolName}`,
 								displayName,
 								description,
 								input: input as Record<string, unknown> | undefined,
@@ -1386,6 +1442,10 @@ export class SessionManager {
 			// Fire a recap after turns with tool use (async, best-effort).
 			if (turn.hadToolEvents && this.turnRecaps && turn.lastAssistantText) {
 				const recapModel = agentSettings?.recapModel ?? this.recapModel;
+				const recapExecutable =
+					currentProvider.providerId === "claude"
+						? this.claudeExecutable
+						: this.codexExecutable;
 				void generateTurnRecap(
 					sessionId ?? null,
 					turn.lastAssistantSeq,
@@ -1394,7 +1454,7 @@ export class SessionManager {
 					turn.lastAssistantText,
 					emit,
 					this.vaultPath,
-					this.claudeExecutable,
+					recapExecutable,
 					turn.sdkSummary,
 					currentProvider,
 					recapModel,

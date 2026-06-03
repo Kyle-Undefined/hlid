@@ -187,6 +187,12 @@ export interface AgentProvider {
 		label: string;
 		desc?: string;
 	}>;
+	/** Rolling usage windows shown in Cockpit/Ledger for this provider. */
+	readonly usageWindows?: ReadonlyArray<{
+		windowId: string;
+		label: string;
+		windowSecs: number;
+	}>;
 	/** Optional availability check. Returns false + reason if provider can't run. */
 	check?(): Promise<{ available: boolean; reason?: string }>;
 	query(params: AgentQueryParams): AgentSession;

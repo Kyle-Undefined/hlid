@@ -67,6 +67,22 @@ export function writeConfig(config: HlidConfig): void {
 		lines.push(`recap_model = ${tomlVal(config.claude.recap_model)}`);
 	if (config.claude.interactive_mode) lines.push(`interactive_mode = true`);
 
+	if (config.codex) {
+		lines.push("");
+		lines.push("[codex]");
+		if (config.codex.model)
+			lines.push(`model = ${tomlVal(config.codex.model)}`);
+		lines.push(`effort = ${tomlVal(config.codex.effort)}`);
+		lines.push(`permission_mode = ${tomlVal(config.codex.permission_mode)}`);
+		lines.push(`turn_recaps = ${tomlVal(config.codex.turn_recaps)}`);
+		if (config.codex.max_turns !== undefined)
+			lines.push(`max_turns = ${tomlVal(config.codex.max_turns)}`);
+		if (config.codex.recap_model)
+			lines.push(`recap_model = ${tomlVal(config.codex.recap_model)}`);
+		if (config.codex.executable)
+			lines.push(`executable = ${tomlVal(config.codex.executable)}`);
+	}
+
 	lines.push("");
 	lines.push("[ui]");
 	lines.push(`enter_to_submit = ${tomlVal(config.ui.enter_to_submit)}`);

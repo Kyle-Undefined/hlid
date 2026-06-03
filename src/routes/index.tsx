@@ -43,6 +43,7 @@ import {
 	getCockpitStatsFn,
 	getCurrentSessionFn,
 	getMcpServersFn,
+	getProvidersFn,
 	getProviderUsagesFn,
 	getRecentSessionsFn,
 	getThirtyDayStatsFn,
@@ -55,6 +56,14 @@ import { SESSION_LABEL_LENGTH, uid } from "#/lib/utils";
 import type { RateLimitMessage, ServerMessage } from "#/server/protocol";
 
 // ─── route ───────────────────────────────────────────────────────────────────
+
+async function loadProviderUsages() {
+	const providers = await getProvidersFn();
+	const providerIds = providers.map((provider) => provider.id);
+	return getProviderUsagesFn({
+		data: providerIds.length > 0 ? providerIds : ["claude"],
+	});
+}
 
 export const Route = createFileRoute("/")({
 	loader: async () => {
@@ -76,7 +85,7 @@ export const Route = createFileRoute("/")({
 			getCockpitStatsFn(),
 			getMcpServersFn(),
 			getWeeklyStatsFn(),
-			getProviderUsagesFn({ data: ["claude"] }),
+			loadProviderUsages(),
 			getThirtyDayStatsFn(),
 			getAgentListFn(),
 			getActiveSessionRowFn(),
@@ -412,7 +421,7 @@ function CockpitPage() {
 				initial={initialProviderUsages}
 				liveQueryCount={liveStats?.queries ?? 0}
 				rateLimit={rateLimit}
-				fetchFn={() => getProviderUsagesFn({ data: ["claude"] })}
+				fetchFn={loadProviderUsages}
 				tail={<RoutinesWindowSection />}
 			/>
 

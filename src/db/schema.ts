@@ -287,6 +287,16 @@ function initSchema(db: Db): void {
 		db.run(`ALTER TABLE sessions ADD COLUMN claude_session_id TEXT`);
 	});
 
+	runMigration(db, "_migrated_sessions_provider_session", (db) => {
+		db.run(
+			`ALTER TABLE sessions ADD COLUMN provider_id TEXT NOT NULL DEFAULT 'claude'`,
+		);
+		db.run(`ALTER TABLE sessions ADD COLUMN provider_session_id TEXT`);
+		db.run(
+			`UPDATE sessions SET provider_session_id = claude_session_id WHERE claude_session_id IS NOT NULL`,
+		);
+	});
+
 	// actual_model: the model the CLI actually used (may differ from `model`
 	// when an agent's CLAUDE.md frontmatter overrides the vault default).
 	runMigration(db, "_migrated_sessions_actual_model", (db) => {

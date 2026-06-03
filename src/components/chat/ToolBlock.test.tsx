@@ -72,6 +72,24 @@ describe("ToolBlock — expanded", () => {
 		fireEvent.click(screen.getByRole("button", { expanded: false }));
 		expect(screen.getByText(/^Error$/i)).not.toBeNull();
 	});
+
+	it("renders Reasoning as prose without an empty input panel", () => {
+		render(
+			<ToolBlock
+				event={makeEvent({
+					name: "Reasoning",
+					input: {},
+					result: "Checking the repo layout before editing.",
+				})}
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { expanded: false }));
+		expect(screen.getAllByText(/^Reasoning$/i)).toHaveLength(2);
+		expect(
+			screen.getByText("Checking the repo layout before editing."),
+		).not.toBeNull();
+		expect(document.querySelector("pre")).toBeNull();
+	});
 });
 
 describe("looksLikeMarkdown", () => {

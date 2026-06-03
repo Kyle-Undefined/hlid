@@ -8,6 +8,7 @@ import type { AgentProvider, McpServerStatus } from "./agentProvider";
 import { handleAttachmentRoute } from "./attachmentRoutes";
 import { openInBrowser } from "./browser";
 import { ClaudeProvider } from "./claudeProvider";
+import { CodexProvider } from "./codexProvider";
 import { loadConfig } from "./config";
 import { handleDbRoute } from "./dbRoutes";
 import { getLiveSessionsStatus } from "./liveSessions";
@@ -79,7 +80,17 @@ if (process.execPath.endsWith(".exe") && !RESTART_MODE) {
 
 const providers = new Map<string, AgentProvider>([
 	["claude", new ClaudeProvider()],
+	["codex", new CodexProvider()],
 ]);
+for (const provider of providers.values()) {
+	if (provider.usageWindows) {
+		db.registerProvider(
+			provider.providerId,
+			provider.label ?? provider.providerId,
+			[...provider.usageWindows],
+		);
+	}
+}
 const pool = new SessionPool(config, providers);
 const ptyWorkerPath = bootstrapPtyRuntime();
 const terminalPool = new TerminalSessionPool(ptyWorkerPath, () => {

@@ -59,6 +59,7 @@ export function AddAgentPanel({
 	const modelOptions = activeProvider?.models ?? [];
 	const effortOptions = activeProvider?.effortLevels ?? [];
 	const permissionOptions = activeProvider?.permissionModes ?? [];
+	const isClaudeProvider = activeProvider?.id === "claude";
 
 	async function handleSubmit() {
 		if (!form.path.trim()) {
@@ -296,7 +297,11 @@ export function AddAgentPanel({
 									}
 									className="flex-1 bg-secondary border border-border px-2 py-1 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
 								>
-									<option value="">— default (haiku) —</option>
+									<option value="">
+										{isClaudeProvider
+											? "— default (haiku) —"
+											: "— provider default —"}
+									</option>
 									{modelOptions.map((m) => (
 										<option key={m.value} value={m.value}>
 											{m.label}

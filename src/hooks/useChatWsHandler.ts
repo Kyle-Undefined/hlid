@@ -1,6 +1,5 @@
 import { useCallback } from "react";
 import type { Action } from "#/components/chat/chatReducer";
-import * as wsStore from "#/hooks/wsStore";
 import { uid } from "#/lib/utils";
 import type { RateLimitMessage, ServerMessage } from "#/server/protocol";
 
@@ -14,14 +13,12 @@ export function useChatWsHandler({
 	pendingIdRef,
 	lastAssistantIdRef,
 	historyReadyRef,
-	sessionIdRef,
 	setRateLimit,
 }: {
 	dispatch: React.Dispatch<Action>;
 	pendingIdRef: React.MutableRefObject<string | null>;
 	lastAssistantIdRef: React.MutableRefObject<string | null>;
 	historyReadyRef: React.MutableRefObject<boolean>;
-	sessionIdRef: React.MutableRefObject<string>;
 	setRateLimit: (r: RateLimitMessage | null) => void;
 }): (msg: ServerMessage) => void {
 	// biome-ignore lint/correctness/useExhaustiveDependencies: dispatch from useReducer is stable; all other deps are refs or stable setters
@@ -31,35 +28,16 @@ export function useChatWsHandler({
 		// LOAD_HISTORY, so returning early here doesn't lose them.
 		if (!historyReadyRef.current) return;
 
-		// Cross-device: show user message from another client if it matches our session
 		if (msg.type === "rate_limit") {
 			setRateLimit(msg);
 			return;
 		}
 
-		// Gate live streaming messages when viewing a different session than the
-		// one currently running. Prevents session A's output from bleeding into
-		// session B's view when the user navigates away mid-run.
-		// user_message has its own session_id check below; rate_limit is global.
-		if (msg.type !== "user_message") {
-			const runningId = wsStore.getActiveSessionId();
-			if (
-				runningId !== null &&
-				runningId !== sessionIdRef.current &&
-				wsStore.getSnapshot().sessionState === "running"
-			) {
-				return;
-			}
-		}
-
 		if (msg.type === "user_message") {
-			if (msg.session_id === sessionIdRef.current) {
-				// Slice C: reuse the originating client's queue id (when present)
-				// so UserMsg can correlate to the chatQueue entry and render
-				// queue indicators / cancel chip without rendering the same
-				// message twice.
-				dispatch({ type: "ADD_USER", id: msg.id ?? uid(), text: msg.text });
-			}
+			// Session filtering is handled centrally in wsStore using the pool
+			// session id. This hook's sessionIdRef is the DB chat id, so filtering
+			// here would compare different id domains and drop/misroute messages.
+			dispatch({ type: "ADD_USER", id: msg.id ?? uid(), text: msg.text });
 			return;
 		}
 

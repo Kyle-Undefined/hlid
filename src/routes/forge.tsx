@@ -53,6 +53,15 @@ const TABS = [
 ] as const;
 type Tab = (typeof TABS)[number];
 
+type CodexForm = {
+	model: string;
+	effort: HlidConfig["codex"]["effort"];
+	maxTurns: string;
+	permissionMode: HlidConfig["codex"]["permission_mode"];
+	turnRecaps: boolean;
+	recapModel: string;
+};
+
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
 function SettingsPage() {
@@ -90,6 +99,17 @@ function SettingsPage() {
 		vaultProvider: initial.vault_provider ?? "claude",
 		interactiveMode: initial.claude.interactive_mode ?? false,
 	});
+	const [codex, setCodex] = useState<CodexForm>({
+		model: initial.codex.model,
+		effort: initial.codex.effort,
+		maxTurns:
+			initial.codex.max_turns !== undefined
+				? String(initial.codex.max_turns)
+				: "",
+		permissionMode: initial.codex.permission_mode,
+		turnRecaps: initial.codex.turn_recaps ?? true,
+		recapModel: initial.codex.recap_model ?? "",
+	});
 
 	const [server, setServer] = useState<ServerForm>({
 		port: String(initial.server.port),
@@ -122,7 +142,7 @@ function SettingsPage() {
 	// Stable refs to initial state — new object refs are only created when the
 	// user edits, so reference equality detects real changes without a mount guard
 	// (which breaks under React StrictMode's double-invoke).
-	const initialStateRef = useRef({ vault, claude, ui, vocab });
+	const initialStateRef = useRef({ vault, claude, codex, ui, vocab });
 	const saveRef = useRef<((requiresRestart?: boolean) => Promise<void>) | null>(
 		null,
 	);
@@ -158,6 +178,18 @@ function SettingsPage() {
 				turn_recaps: claude.turnRecaps,
 				recap_model: claude.recapModel || undefined,
 				interactive_mode: claude.interactiveMode,
+			},
+			codex: {
+				model: codex.model,
+				effort: codex.effort,
+				max_turns:
+					codex.maxTurns !== "" && !Number.isNaN(Number(codex.maxTurns))
+						? Number(codex.maxTurns)
+						: undefined,
+				permission_mode: codex.permissionMode,
+				turn_recaps: codex.turnRecaps,
+				recap_model: codex.recapModel || undefined,
+				executable: initial.codex.executable,
 			},
 			ui: {
 				enter_to_submit: ui.enterToSubmit,
@@ -208,19 +240,20 @@ function SettingsPage() {
 	}
 	saveRef.current = save;
 
-	// Auto-save vault/claude/ui/vocab changes — server settings require explicit save.
+	// Auto-save vault/provider/ui/vocab changes — server settings require explicit save.
 	useEffect(() => {
 		const init = initialStateRef.current;
 		if (
 			vault === init.vault &&
 			claude === init.claude &&
+			codex === init.codex &&
 			ui === init.ui &&
 			vocab === init.vocab
 		)
 			return;
 		const timer = setTimeout(() => void saveRef.current?.(false), 800);
 		return () => clearTimeout(timer);
-	}, [vault, claude, ui, vocab]);
+	}, [vault, claude, codex, ui, vocab]);
 
 	const showSaveButton = tab === "network";
 	const showSaveBar =
@@ -280,8 +313,45 @@ function SettingsPage() {
 				)}
 				{tab === "agent" && (
 					<ClaudeSection
-						claude={claude}
-						onChange={(p) => setClaude((s) => ({ ...s, ...p }))}
+						claude={
+							claude.vaultProvider === "codex"
+								? {
+										...codex,
+										vaultProvider: claude.vaultProvider,
+										interactiveMode: claude.interactiveMode,
+									}
+								: claude
+						}
+						onChange={(p) => {
+							if (p.vaultProvider) {
+								setClaude((s) => ({ ...s, vaultProvider: p.vaultProvider }));
+								return;
+							}
+							if (claude.vaultProvider === "codex") {
+								setCodex((s) => ({
+									...s,
+									...(p.model !== undefined ? { model: p.model } : {}),
+									...(p.effort !== undefined
+										? { effort: p.effort as CodexForm["effort"] }
+										: {}),
+									...(p.maxTurns !== undefined ? { maxTurns: p.maxTurns } : {}),
+									...(p.permissionMode !== undefined
+										? {
+												permissionMode:
+													p.permissionMode as CodexForm["permissionMode"],
+											}
+										: {}),
+									...(p.turnRecaps !== undefined
+										? { turnRecaps: p.turnRecaps }
+										: {}),
+									...(p.recapModel !== undefined
+										? { recapModel: p.recapModel }
+										: {}),
+								}));
+							} else {
+								setClaude((s) => ({ ...s, ...p }));
+							}
+						}}
 						providers={initial.providers}
 					/>
 				)}

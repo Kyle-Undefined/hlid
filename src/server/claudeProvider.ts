@@ -443,6 +443,12 @@ export class ClaudeProvider implements AgentProvider {
 		},
 	] as const;
 
+	readonly usageWindows = [
+		{ windowId: "five_hour", label: "5-HOUR", windowSecs: 5 * 3600 },
+		{ windowId: "weekly", label: "7-DAY", windowSecs: 7 * 86400 },
+		{ windowId: "weekly_sonnet", label: "SONNET", windowSecs: 7 * 86400 },
+	] as const;
+
 	async check(): Promise<{ available: boolean; reason?: string }> {
 		const exe = resolveClaudeExecutable();
 		if (exe === undefined) {

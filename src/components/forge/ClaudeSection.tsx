@@ -28,6 +28,8 @@ export function ClaudeSection({
 	const modelOptions = activeProvider?.models ?? [];
 	const effortOptions = activeProvider?.effortLevels ?? [];
 	const permissionOptions = activeProvider?.permissionModes ?? [];
+	const isClaude = claude.vaultProvider === "claude";
+	const allowsProviderDefaultModel = !isClaude;
 	// Show provider-specific settings only when the provider declares capabilities.
 	const hasProviderOptions =
 		modelOptions.length > 0 ||
@@ -69,6 +71,9 @@ export function ClaudeSection({
 								onChange={(e) => onChange({ model: e.target.value })}
 								className="w-32 sm:w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
 							>
+								{allowsProviderDefaultModel && (
+									<option value="">— provider default —</option>
+								)}
 								{modelOptions.map((m) => (
 									<option key={m.value} value={m.value}>
 										{m.label}
@@ -160,7 +165,7 @@ export function ClaudeSection({
 					)}
 					<Field
 						label="Max turns"
-						hint="max turns Claude can run, blank means no limit"
+						hint="max turns the provider can run, blank means no limit"
 					>
 						<input
 							type="number"
@@ -183,7 +188,7 @@ export function ClaudeSection({
 					</Field>
 					<Field
 						label="Turn recaps"
-						hint="generate a brief Haiku summary after turns with tool use"
+						hint="generate a brief summary after turns with tool use"
 					>
 						<label className="flex items-center gap-2 cursor-pointer">
 							<input
@@ -201,7 +206,7 @@ export function ClaudeSection({
 							onChange={(e) => onChange({ recapModel: e.target.value })}
 							className="w-32 sm:w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
 						>
-							<option value="">— default (haiku) —</option>
+							<option value="">— provider default —</option>
 							{modelOptions.map((m) => (
 								<option key={m.value} value={m.value}>
 									{m.label}
@@ -209,22 +214,24 @@ export function ClaudeSection({
 							))}
 						</select>
 					</Field>
-					<Field
-						label="Interactive mode"
-						hint="to not go against your &quot;programmatic&quot; usage, if you desire"
-					>
-						<label className="flex items-center gap-2 cursor-pointer">
-							<input
-								type="checkbox"
-								checked={claude.interactiveMode}
-								onChange={(e) =>
-									onChange({ interactiveMode: e.target.checked })
-								}
-								className="w-3.5 h-3.5 accent-primary"
-							/>
-							<span className="text-xs text-muted-foreground">enabled</span>
-						</label>
-					</Field>
+					{isClaude && (
+						<Field
+							label="Interactive mode"
+							hint="to not go against your &quot;programmatic&quot; usage, if you desire"
+						>
+							<label className="flex items-center gap-2 cursor-pointer">
+								<input
+									type="checkbox"
+									checked={claude.interactiveMode}
+									onChange={(e) =>
+										onChange({ interactiveMode: e.target.checked })
+									}
+									className="w-3.5 h-3.5 accent-primary"
+								/>
+								<span className="text-xs text-muted-foreground">enabled</span>
+							</label>
+						</Field>
+					)}
 				</>
 			)}
 		</Section>

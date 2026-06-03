@@ -26,23 +26,73 @@ export async function setSessionClaudeId(
 	sessionId: string,
 	claudeId: string | null,
 ): Promise<void> {
-	const db = await getDb();
-	db.run(`UPDATE sessions SET claude_session_id = ? WHERE id = ?`, [
-		claudeId,
-		sessionId,
-	]);
+	await setSessionProviderSession(sessionId, "claude", claudeId);
 }
 
 export async function getSessionClaudeId(
 	sessionId: string,
 ): Promise<string | null> {
+	return getSessionProviderSession(sessionId, "claude");
+}
+
+export async function setSessionProviderSession(
+	sessionId: string,
+	providerId: string,
+	providerSessionId: string | null,
+): Promise<void> {
+	const db = await getDb();
+	db.run(
+		`UPDATE sessions
+		 SET provider_id = ?, provider_session_id = ?,
+		     claude_session_id = CASE WHEN ? = 'claude' THEN ? ELSE claude_session_id END
+		 WHERE id = ?`,
+		[providerId, providerSessionId, providerId, providerSessionId, sessionId],
+	);
+}
+
+export async function getSessionProviderSession(
+	sessionId: string,
+	providerId?: string,
+): Promise<string | null> {
 	const db = await getDb();
 	const row = db
-		.query<{ claude_session_id: string | null }, [string]>(
-			`SELECT claude_session_id FROM sessions WHERE id = ?`,
+		.query<
+			{
+				provider_id: string | null;
+				provider_session_id: string | null;
+				claude_session_id: string | null;
+			},
+			[string]
+		>(
+			`SELECT provider_id, provider_session_id, claude_session_id FROM sessions WHERE id = ?`,
 		)
 		.get(sessionId);
-	return row?.claude_session_id ?? null;
+	if (!row) return null;
+	if (providerId && row.provider_id !== providerId) return null;
+	return row.provider_session_id ?? row.claude_session_id ?? null;
+}
+
+export async function setSessionProviderId(
+	sessionId: string,
+	providerId: string,
+): Promise<void> {
+	const db = await getDb();
+	db.run(`UPDATE sessions SET provider_id = ? WHERE id = ?`, [
+		providerId,
+		sessionId,
+	]);
+}
+
+export async function getSessionProviderId(
+	sessionId: string,
+): Promise<string | null> {
+	const db = await getDb();
+	const row = db
+		.query<{ provider_id: string | null }, [string]>(
+			`SELECT provider_id FROM sessions WHERE id = ?`,
+		)
+		.get(sessionId);
+	return row?.provider_id ?? null;
 }
 
 export async function setSessionActualModel(

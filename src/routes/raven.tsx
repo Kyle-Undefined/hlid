@@ -73,10 +73,16 @@ export const Route = createFileRoute("/raven")({
 		const agentConfig = (config.agents ?? []).find((a) => a.path === agent);
 		const routeInteractiveMode =
 			agentConfig?.interactive_mode ?? config.claude?.interactive_mode ?? false;
+		const liveSessions = session ? [] : await getLiveSessionsFn();
 		let resolvedSessionId = session ?? null;
 		let agentSkillContext = agent;
 		if (!resolvedSessionId && !routeInteractiveMode) {
-			resolvedSessionId = await getCurrentSessionFn();
+			const newestLiveSdk = liveSessions
+				.slice()
+				.reverse()
+				.find((s) => s.mode !== "terminal" && s.db_session_id);
+			resolvedSessionId =
+				newestLiveSdk?.db_session_id ?? (await getCurrentSessionFn());
 		}
 		if (!agentSkillContext && resolvedSessionId) {
 			agentSkillContext =
@@ -93,7 +99,6 @@ export const Route = createFileRoute("/raven")({
 			false;
 		if (!resolvedSessionId && interactiveMode) {
 			const cwd = agentSkillContext ?? config.vault.path;
-			const liveSessions = await getLiveSessionsFn();
 			const liveTerminal = liveSessions
 				.slice()
 				.reverse()
@@ -274,7 +279,6 @@ function ChatPage() {
 		pendingIdRef,
 		lastAssistantIdRef,
 		historyReadyRef,
-		sessionIdRef,
 		setRateLimit,
 	});
 

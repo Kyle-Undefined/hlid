@@ -66,12 +66,16 @@ export {
 	getSessionById,
 	getSessionClaudeId,
 	getSessionLastQueryContext,
+	getSessionProviderId,
+	getSessionProviderSession,
 	getSessionsPaginated,
 	recordQuery,
 	renameSession,
 	setSessionActualModel,
 	setSessionAgentCwd,
 	setSessionClaudeId,
+	setSessionProviderId,
+	setSessionProviderSession,
 } from "./sessions";
 // Settings
 export {
@@ -109,4 +113,5 @@ export {
 	getThirtyDayStats,
 	getUsageWindows,
 	getWeeklyStats,
+	registerProvider,
 } from "./usage";

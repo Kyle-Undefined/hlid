@@ -87,6 +87,7 @@ export function AgentCard({
 	const modelOptions = activeProvider?.models ?? [];
 	const effortOptions = activeProvider?.effortLevels ?? [];
 	const permissionOptions = activeProvider?.permissionModes ?? [];
+	const isClaudeProvider = activeProvider?.id === "claude";
 
 	async function handleToggleView() {
 		if (expanded) {
@@ -120,7 +121,10 @@ export function AgentCard({
 					maxTurns: editing.maxTurns || undefined,
 					permissionMode: editing.permissionMode || undefined,
 					recapModel: editing.recapModel || undefined,
-					interactiveMode: editing.interactiveMode || undefined,
+					interactiveMode:
+						editing.provider === "claude"
+							? editing.interactiveMode || undefined
+							: undefined,
 				},
 			);
 			setEditing(null);
@@ -442,7 +446,11 @@ export function AgentCard({
 									}
 									className="flex-1 bg-secondary border border-border px-2 py-1 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
 								>
-									<option value="">— default (haiku) —</option>
+									<option value="">
+										{isClaudeProvider
+											? "— default (haiku) —"
+											: "— provider default —"}
+									</option>
 									{modelOptions.map((m) => (
 										<option key={m.value} value={m.value}>
 											{m.label}
@@ -450,27 +458,33 @@ export function AgentCard({
 									))}
 								</select>
 							</div>
-							<div className="flex items-center gap-2">
-								<span className="text-[9px] tracking-widest text-muted-foreground/50 uppercase shrink-0 w-24">
-									Interactive mode
-								</span>
-								<label className="flex items-center gap-2 cursor-pointer">
-									<input
-										type="checkbox"
-										checked={editing.interactiveMode}
-										onChange={(e) =>
-											setEditing(
-												(s) => s && { ...s, interactiveMode: e.target.checked },
-											)
-										}
-										className="w-3.5 h-3.5 accent-primary"
-									/>
-									<span className="text-xs text-muted-foreground">
-										to not go against your &quot;programmatic&quot; usage, if
-										you desire
+							{editing.provider === "claude" && (
+								<div className="flex items-center gap-2">
+									<span className="text-[9px] tracking-widest text-muted-foreground/50 uppercase shrink-0 w-24">
+										Interactive mode
 									</span>
-								</label>
-							</div>
+									<label className="flex items-center gap-2 cursor-pointer">
+										<input
+											type="checkbox"
+											checked={editing.interactiveMode}
+											onChange={(e) =>
+												setEditing(
+													(s) =>
+														s && {
+															...s,
+															interactiveMode: e.target.checked,
+														},
+												)
+											}
+											className="w-3.5 h-3.5 accent-primary"
+										/>
+										<span className="text-xs text-muted-foreground">
+											to not go against your &quot;programmatic&quot; usage, if
+											you desire
+										</span>
+									</label>
+								</div>
+							)}
 						</div>
 					)}
 					<div className="flex items-center gap-2 pt-1">
