@@ -32,7 +32,6 @@ export function AddAgentPanel({
 	onAdd,
 	onCancel,
 	providers,
-	vaultProvider,
 }: {
 	externalAllowed: boolean;
 	onAdd: (
@@ -44,7 +43,6 @@ export function AddAgentPanel({
 	) => Promise<void>;
 	onCancel: () => void;
 	providers: ProviderInfo[];
-	vaultProvider: string;
 }) {
 	const [form, setForm] = useState<AddForm>(() => ({
 		...DEFAULT_ADD,
@@ -54,12 +52,20 @@ export function AddAgentPanel({
 	const [browseOpen, setBrowseOpen] = useState(false);
 	const [saving, setSaving] = useState(false);
 
-	// Options come from the selected provider's declared capabilities.
+	// Options come from the selected provider's declared capabilities — the
+	// provider chosen in this form, never the vault-level provider (a new
+	// agent can use a different provider than the vault default).
 	const activeProvider = providers.find((p) => p.id === form.provider);
 	const modelOptions = activeProvider?.models ?? [];
 	const effortOptions = activeProvider?.effortLevels ?? [];
 	const permissionOptions = activeProvider?.permissionModes ?? [];
 	const isClaudeProvider = activeProvider?.id === "claude";
+	// Show provider-specific settings only when the selected provider declares
+	// capabilities (mirrors ClaudeSection's gating for the vault-level form).
+	const hasProviderOptions =
+		modelOptions.length > 0 ||
+		effortOptions.length > 0 ||
+		permissionOptions.length > 0;
 
 	async function handleSubmit() {
 		if (!form.path.trim()) {
@@ -201,7 +207,7 @@ export function AddAgentPanel({
 							)}
 						</div>
 					)}
-					{form.provider === vaultProvider && (
+					{hasProviderOptions && (
 						<div className="space-y-2 pt-1">
 							<div className="flex items-center gap-2">
 								<span className="text-[9px] tracking-widest text-muted-foreground/50 uppercase shrink-0 w-24">

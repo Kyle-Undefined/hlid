@@ -58,7 +58,6 @@ export function AgentCard({
 	onSaveEdit,
 	onReadClaudemd,
 	providers,
-	vaultProvider,
 }: {
 	agent: AgentEntry;
 	onRemove: () => void;
@@ -72,7 +71,6 @@ export function AgentCard({
 	) => Promise<void>;
 	onReadClaudemd: () => Promise<string | null>;
 	providers: ProviderInfo[];
-	vaultProvider: string;
 }) {
 	const [editing, setEditing] = useState<EditState | null>(null);
 	const [expanded, setExpanded] = useState(false);
@@ -80,7 +78,11 @@ export function AgentCard({
 	const [claudemdLoaded, setClaudemdLoaded] = useState(false);
 	const [showMcp, setShowMcp] = useState(false);
 
-	// Options come from the active provider's declared capabilities.
+	// Options come from the active provider's declared capabilities — this is
+	// the provider currently selected in the edit form (or the agent's own
+	// provider before editing starts), never the vault-level provider. An
+	// agent's provider can legitimately differ from the vault provider, and
+	// its option lists must reflect its own provider regardless.
 	const activeProvider = providers.find(
 		(p) => p.id === (editing?.provider ?? agent.provider),
 	);
@@ -88,6 +90,12 @@ export function AgentCard({
 	const effortOptions = activeProvider?.effortLevels ?? [];
 	const permissionOptions = activeProvider?.permissionModes ?? [];
 	const isClaudeProvider = activeProvider?.id === "claude";
+	// Show provider-specific settings only when the selected provider declares
+	// capabilities (mirrors ClaudeSection's gating for the vault-level form).
+	const hasProviderOptions =
+		modelOptions.length > 0 ||
+		effortOptions.length > 0 ||
+		permissionOptions.length > 0;
 
 	async function handleToggleView() {
 		if (expanded) {
@@ -345,7 +353,7 @@ export function AgentCard({
 							)}
 						</div>
 					)}
-					{editing.provider === vaultProvider && (
+					{hasProviderOptions && (
 						<div className="space-y-2 pt-1">
 							<div className="flex items-center gap-2">
 								<span className="text-[9px] tracking-widest text-muted-foreground/50 uppercase shrink-0 w-24">

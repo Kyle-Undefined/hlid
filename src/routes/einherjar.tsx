@@ -119,30 +119,20 @@ const getExternalAllowedFn = createServerFn({ method: "GET" }).handler(
 
 // ─── route ───────────────────────────────────────────────────────────────────
 
-const getVaultProviderFn = createServerFn({ method: "GET" }).handler(
-	async () => {
-		const config = await getConfig();
-		return config.vault_provider ?? "claude";
-	},
-);
-
 type LoaderData = {
 	agents: AgentEntry[];
 	externalAllowed: boolean;
 	providers: ProviderInfo[];
-	vaultProvider: string;
 };
 
 export const Route = createFileRoute("/einherjar")({
 	loader: async (): Promise<LoaderData> => {
-		const [agents, externalAllowed, providers, vaultProvider] =
-			await Promise.all([
-				getAgentsFn(),
-				getExternalAllowedFn(),
-				getProvidersFn(),
-				getVaultProviderFn(),
-			]);
-		return { agents, externalAllowed, providers, vaultProvider };
+		const [agents, externalAllowed, providers] = await Promise.all([
+			getAgentsFn(),
+			getExternalAllowedFn(),
+			getProvidersFn(),
+		]);
+		return { agents, externalAllowed, providers };
 	},
 	component: EinherjarPage,
 });
@@ -154,7 +144,6 @@ function EinherjarPage() {
 		agents: initialAgents,
 		externalAllowed,
 		providers,
-		vaultProvider,
 	} = Route.useLoaderData();
 	const router = useRouter();
 	const navigate = useNavigate();
@@ -304,7 +293,6 @@ function EinherjarPage() {
 						onAdd={handleAdd}
 						onCancel={() => setShowAdd(false)}
 						providers={providers}
-						vaultProvider={vaultProvider}
 					/>
 				)}
 
@@ -325,7 +313,6 @@ function EinherjarPage() {
 								}
 								onReadClaudemd={() => readClaudemdFn({ data: agent.path })}
 								providers={providers}
-								vaultProvider={vaultProvider}
 							/>
 						))
 					)}
