@@ -415,7 +415,6 @@ function ChatPage() {
 
 	const handleSend = useCallback(() => {
 		const typed = input.trim();
-		if (!typed && pendingAttachments.length === 0) return;
 
 		const { text, skillContext } = resolveSkillPrompt(
 			activeSkill,
@@ -587,7 +586,9 @@ function ChatPage() {
 	// ─── Derived state ────────────────────────────────────────────────────────
 
 	const hasInput =
-		(input.trim().length > 0 || pendingAttachments.length > 0) &&
+		(input.trim().length > 0 ||
+			!!activeSkill ||
+			pendingAttachments.length > 0) &&
 		uploadingCount === 0 &&
 		wsStatus === "connected";
 	const canSend = hasInput && !isRunning;
