@@ -323,8 +323,9 @@ function SettingsPage() {
 								: claude
 						}
 						onChange={(p) => {
-							if (p.vaultProvider) {
-								setClaude((s) => ({ ...s, vaultProvider: p.vaultProvider }));
+							const vaultProvider = p.vaultProvider;
+							if (vaultProvider) {
+								setClaude((s) => ({ ...s, vaultProvider }));
 								return;
 							}
 							if (claude.vaultProvider === "codex") {

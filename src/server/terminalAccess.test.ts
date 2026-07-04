@@ -35,6 +35,12 @@ function makeConfig(vaultPath: string, agentPaths: string[] = []): HlidConfig {
 			turn_recaps: true,
 			interactive_mode: false,
 		},
+		codex: {
+			model: "",
+			effort: "medium",
+			permission_mode: "default",
+			turn_recaps: true,
+		},
 		ui: { enter_to_submit: true, hide_skills_index: false, theme: "tan" },
 		status_vocabulary: { active: [], planning: [], done: [] },
 		attachments: { max_bytes: 1, allowed_mimes: [] },

@@ -128,6 +128,12 @@ export function FirstRunWizard({ onComplete }: Props) {
 					turn_recaps: true,
 					interactive_mode: false,
 				},
+				codex: {
+					model: "",
+					effort: "medium" as const,
+					permission_mode: "default" as const,
+					turn_recaps: true,
+				},
 				ui: {
 					enter_to_submit: true,
 					hide_skills_index: true,

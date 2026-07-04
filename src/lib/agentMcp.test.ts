@@ -43,6 +43,12 @@ function makeConfig(agentPaths: string[] = []): HlidConfig {
 			turn_recaps: false,
 			interactive_mode: false,
 		},
+		codex: {
+			model: "",
+			effort: "medium",
+			permission_mode: "default",
+			turn_recaps: false,
+		},
 		ui: { enter_to_submit: true, hide_skills_index: false, theme: "tan" },
 		status_vocabulary: { active: [], planning: [], done: [] },
 		attachments: { max_bytes: 25 * 1024 * 1024, allowed_mimes: [] },
