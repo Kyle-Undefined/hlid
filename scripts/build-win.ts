@@ -1,7 +1,8 @@
 // Compiles src/server/index.ts into dist/builds/hlid.exe.
 // Mirrors the flags used by .github/workflows/release.yml so a local WSL
 // build matches what gets shipped. Run via `bun run build:win`, which first
-// runs `bun run build` to produce dist/client + embedded-client.ts.
+// runs `bun run build` to produce dist/client + embedded-client.ts, then runs
+// `scripts/bundle-pty-assets.ts` to embed node-pty's Windows runtime files.
 
 import { mkdirSync } from "node:fs";
 import { resolve } from "node:path";

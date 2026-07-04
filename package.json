@@ -1,7 +1,7 @@
 {
   "name": "hlid",
   "description": "Hliðskjálf - Watcher of Worlds",
-  "version": "0.0.74",
+  "version": "0.0.75",
   "private": true,
   "type": "module",
   "imports": {
@@ -12,7 +12,7 @@
     "dev:server": "bun --watch src/server/index.ts",
     "dev:all": "concurrently -n ui,server -c cyan,magenta 'bun --bun run dev' 'bun run dev:server'",
     "build": "vite build && bun scripts/embed-client.ts",
-    "build:win": "bun run build && bun scripts/build-win.ts",
+    "build:win": "bun run build && bun scripts/bundle-pty-assets.ts && bun scripts/build-win.ts",
     "postinstall": "bun scripts/embed-client.ts",
     "start": "bun src/server/index.ts",
     "preview": "vite preview",

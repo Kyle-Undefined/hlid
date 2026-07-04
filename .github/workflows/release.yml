@@ -129,6 +129,51 @@ jobs:
         shell: pwsh
         run: bun scripts/patch-subsystem.ts build/hlid.exe
 
+      - name: Smoke test hlid.exe
+        shell: pwsh
+        env:
+          HLID_SKIP_SELF_INSTALL: "1"
+        run: |
+          $ErrorActionPreference = "Stop"
+          $exe = Resolve-Path "build/hlid.exe"
+          $proc = Start-Process -FilePath $exe -ArgumentList "--background" -PassThru -WindowStyle Hidden
+          try {
+            $deadline = (Get-Date).AddSeconds(30)
+            $ok = $false
+            do {
+              Start-Sleep -Milliseconds 500
+              if ($proc.HasExited) { break }
+              try {
+                $health = Invoke-RestMethod -Uri "http://127.0.0.1:3000/api/health" -TimeoutSec 2
+                if ($health.service -eq "hlid") {
+                  $ok = $true
+                  break
+                }
+              } catch {}
+            } while ((Get-Date) -lt $deadline)
+
+            if (-not $ok) {
+              if ($proc.HasExited) {
+                Write-Host "hlid.exe exited early with code $($proc.ExitCode)"
+              } else {
+                Write-Host "hlid.exe did not become healthy before timeout"
+              }
+              Get-ChildItem -Path "build" -Filter "crash.log" -ErrorAction SilentlyContinue | ForEach-Object {
+                Write-Host "==== $($_.FullName) ===="
+                Get-Content $_.FullName -Raw
+              }
+              throw "hlid.exe smoke test failed"
+            }
+          } finally {
+            try {
+              Invoke-RestMethod -Uri "http://127.0.0.1:3000/api/lifecycle" -Method POST -ContentType "application/json" -Body '{"action":"shutdown"}' -TimeoutSec 2 | Out-Null
+              Start-Sleep -Milliseconds 800
+            } catch {}
+            if (-not $proc.HasExited) {
+              Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+            }
+          }
+
       - name: Rename for release
         shell: pwsh
         env:

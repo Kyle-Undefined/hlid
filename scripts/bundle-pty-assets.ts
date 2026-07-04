@@ -1,43 +1,53 @@
 /**
- * bundle-pty-assets.ts — run on Windows CI before `bun build --compile`.
+ * bundle-pty-assets.ts - run on Windows CI before `bun build --compile`.
  *
- * Finds all node-pty runtime files (worker, natives, lib JS) and generates
- * src/server/pty-assets.ts with Bun `with { type: "file" }` asset imports
- * so the compiled hlid.exe can extract them at runtime.
+ * Finds all node-pty runtime files (worker, natives, lib JS), copies them to
+ * neutral generated asset names, and generates src/server/pty-assets.ts with
+ * Bun `with { type: "file" }` imports so the compiled hlid.exe can extract
+ * them at runtime.
+ *
+ * The neutral asset copy matters: importing .node files directly, even with
+ * `type: "file"`, can be treated as a Node-API module load by Bun and crash
+ * the compiled exe before our startup logger is active.
  *
  * Usage: bun scripts/bundle-pty-assets.ts
  */
 
+import { createHash } from "node:crypto";
 import {
+	copyFileSync,
+	mkdirSync,
 	readdirSync,
 	readFileSync,
+	rmSync,
 	statSync,
 	writeFileSync,
 } from "node:fs";
-import { createHash } from "node:crypto";
-import { join, relative } from "node:path";
+import { basename, join, relative } from "node:path";
 
-// ── Repo root ────────────────────────────────────────────────────────────────
 const repoRoot = join(import.meta.dir, "..");
-const outFile = join(repoRoot, "src/server/pty-assets.ts");
+const srcServerDir = join(repoRoot, "src/server");
+const outFile = join(srcServerDir, "pty-assets.ts");
+const stagedDir = join(srcServerDir, "pty-embed-assets");
+const NODE_PTY_PREFIX = "node_modules/node-pty/";
 
-// ── Files to embed ───────────────────────────────────────────────────────────
+type StaticEntry = {
+	repoRel: string;
+	destKey: "workerCjs" | "packageJson";
+};
 
-/** Relative to repo root → destination key used in PTY_ASSETS */
-const STATIC_ENTRIES: Array<{ repoRel: string; destKey: string; category: "special" | "native" | "lib" }> = [
+const STATIC_ENTRIES: StaticEntry[] = [
 	{
 		repoRel: "src/server/pty-worker.cjs",
 		destKey: "workerCjs",
-		category: "special",
 	},
 	{
 		repoRel: "node_modules/node-pty/package.json",
 		destKey: "packageJson",
-		category: "special",
 	},
 ];
 
-/** Native binaries — also hashed for cache invalidation */
+/** Native binaries - also hashed for cache invalidation. */
 const NATIVE_FILES = [
 	"node_modules/node-pty/prebuilds/win32-x64/pty.node",
 	"node_modules/node-pty/prebuilds/win32-x64/conpty.node",
@@ -48,19 +58,21 @@ const NATIVE_FILES = [
 	"node_modules/node-pty/prebuilds/win32-x64/conpty/conpty.dll",
 ];
 
-/** Directories to scan for non-test JS files */
+/** Directories to scan for non-test JS files. */
 const LIB_SCAN_DIRS = [
 	"node_modules/node-pty/lib",
 	"node_modules/node-pty/lib/shared",
 	"node_modules/node-pty/lib/worker",
 ];
 
-// ── Sanitize a path to a valid TS identifier (f_ prefix) ────────────────────
+function slash(p: string): string {
+	return p.replaceAll(String.fromCharCode(92), "/");
+}
+
 function toIdent(repoRelPath: string): string {
 	return "f_" + repoRelPath.replace(/[^a-zA-Z0-9]/g, "_");
 }
 
-// ── Collect lib JS files ─────────────────────────────────────────────────────
 function collectLibFiles(): string[] {
 	const files: string[] = [];
 	for (const dir of LIB_SCAN_DIRS) {
@@ -76,16 +88,14 @@ function collectLibFiles(): string[] {
 			if (name.endsWith(".test.js") || name.endsWith(".map")) continue;
 			const absPath = join(absDir, name);
 			if (statSync(absPath).isFile()) {
-				files.push(join(dir, name).replace(/\\/g, "/"));
+				files.push(slash(join(dir, name)));
 			}
 		}
 	}
 	return files;
 }
 
-// ── Compute hash over native binary contents (sorted by dest path) ───────────
 function computeHash(nativeRepoPaths: string[]): string {
-	// Sort for deterministic ordering
 	const sorted = [...nativeRepoPaths].sort();
 	const hash = createHash("sha256");
 	for (const repoRel of sorted) {
@@ -95,105 +105,98 @@ function computeHash(nativeRepoPaths: string[]): string {
 	return hash.digest("hex");
 }
 
-// ── Build import path (relative to src/server/) ──────────────────────────────
 function toImportPath(repoRelPath: string): string {
-	// src/server/pty-assets.ts → need path from src/server/ to the file
-	const srcServerDir = join(repoRoot, "src/server");
 	const abs = join(repoRoot, repoRelPath);
-	// Use POSIX-style slashes
-	return "./" + relative(srcServerDir, abs).replace(/\\/g, "/");
+	return "./" + slash(relative(srcServerDir, abs));
 }
 
-// ── Destination key for natives map ─────────────────────────────────────────
-function nativeDestKey(repoRel: string): string {
-	// Strip "node_modules/node-pty/" prefix → e.g. "prebuilds/win32-x64/pty.node"
-	return repoRel.replace(/^node_modules\/node-pty\//, "");
+function nodePtyDestKey(repoRel: string): string {
+	return repoRel.startsWith(NODE_PTY_PREFIX)
+		? repoRel.slice(NODE_PTY_PREFIX.length)
+		: repoRel;
 }
 
-// ── Destination key for lib map ──────────────────────────────────────────────
-function libDestKey(repoRel: string): string {
-	// Strip "node_modules/node-pty/" prefix → e.g. "lib/index.js"
-	return repoRel.replace(/^node_modules\/node-pty\//, "");
+function stagedRepoRel(repoRel: string): string {
+	const hash = createHash("sha256").update(repoRel).digest("hex").slice(0, 12);
+	const safeBase = basename(repoRel).replace(/[^a-zA-Z0-9_-]/g, "_");
+	return `src/server/pty-embed-assets/${hash}-${safeBase}.asset`;
 }
 
-// ── Main ─────────────────────────────────────────────────────────────────────
+function stageAssets(repoRels: string[]): Map<string, string> {
+	rmSync(stagedDir, { recursive: true, force: true });
+	mkdirSync(stagedDir, { recursive: true });
+	const staged = new Map<string, string>();
+	for (const repoRel of repoRels) {
+		const stagedRel = stagedRepoRel(repoRel);
+		copyFileSync(join(repoRoot, repoRel), join(repoRoot, stagedRel));
+		staged.set(repoRel, stagedRel);
+	}
+	return staged;
+}
 
 const libFiles = collectLibFiles();
 const nativeRepoRels = NATIVE_FILES;
 const hash = computeHash(nativeRepoRels);
+const allRepoRels = [
+	...STATIC_ENTRIES.map((entry) => entry.repoRel),
+	...nativeRepoRels,
+	...libFiles,
+];
+const staged = stageAssets(allRepoRels);
 
-// Build all import entries: [ident, repoRel]
-const importEntries: Array<{ ident: string; repoRel: string }> = [];
-
-// Special (workerCjs, packageJson)
-for (const entry of STATIC_ENTRIES) {
-	importEntries.push({ ident: toIdent(entry.repoRel), repoRel: entry.repoRel });
-}
-
-// Natives
-for (const repoRel of nativeRepoRels) {
-	importEntries.push({ ident: toIdent(repoRel), repoRel });
-}
-
-// Lib files
-for (const repoRel of libFiles) {
-	importEntries.push({ ident: toIdent(repoRel), repoRel });
-}
-
-// ── Generate source ──────────────────────────────────────────────────────────
+const importEntries = allRepoRels.map((repoRel) => ({
+	ident: toIdent(repoRel),
+	repoRel,
+	stagedRepoRel: staged.get(repoRel),
+}));
 
 const lines: string[] = [
-	"// AUTO-GENERATED by scripts/bundle-pty-assets.ts — do not edit manually.",
+	"// AUTO-GENERATED by scripts/bundle-pty-assets.ts - do not edit manually.",
 	"// Regenerated by CI (windows-latest) before bun build --compile.",
 	"",
 ];
 
-// Import statements
-for (const { ident, repoRel } of importEntries) {
-	const importPath = toImportPath(repoRel);
-	lines.push(`import ${ident} from ${JSON.stringify(importPath)} with { type: "file" };`);
+for (const { ident, repoRel, stagedRepoRel } of importEntries) {
+	if (!stagedRepoRel) throw new Error(`Missing staged asset for ${repoRel}`);
+	const importPath = toImportPath(stagedRepoRel);
+	lines.push(
+		`import ${ident} from ${JSON.stringify(importPath)} with { type: "file" };`,
+	);
 }
 
 lines.push("");
 lines.push(`export const PTY_ASSETS_HASH = ${JSON.stringify(hash)};`);
 lines.push("");
-
-// PTY_ASSETS object
 lines.push("export const PTY_ASSETS = {");
 
-// workerCjs
 const workerIdent = toIdent("src/server/pty-worker.cjs");
-lines.push(`\tworkerCjs: ${workerIdent},`);
+lines.push(`	workerCjs: ${workerIdent},`);
 
-// packageJson
 const pkgIdent = toIdent("node_modules/node-pty/package.json");
-lines.push(`\tpackageJson: ${pkgIdent},`);
+lines.push(`	packageJson: ${pkgIdent},`);
 
-// natives
-lines.push("\tnatives: {");
+lines.push("	natives: {");
 for (const repoRel of nativeRepoRels) {
 	const ident = toIdent(repoRel);
-	const key = nativeDestKey(repoRel);
-	lines.push(`\t\t${JSON.stringify(key)}: ${ident},`);
+	const key = nodePtyDestKey(repoRel);
+	lines.push(`		${JSON.stringify(key)}: ${ident},`);
 }
-lines.push("\t},");
+lines.push("	},");
 
-// lib
-lines.push("\tlib: {");
+lines.push("	lib: {");
 for (const repoRel of libFiles) {
 	const ident = toIdent(repoRel);
-	const key = libDestKey(repoRel);
-	lines.push(`\t\t${JSON.stringify(key)}: ${ident},`);
+	const key = nodePtyDestKey(repoRel);
+	lines.push(`		${JSON.stringify(key)}: ${ident},`);
 }
-lines.push("\t},");
-
+lines.push("	},");
 lines.push("};");
 lines.push("");
 
-const source = lines.join("\n");
-writeFileSync(outFile, source, "utf8");
+writeFileSync(outFile, lines.join(String.fromCharCode(10)), "utf8");
 
 console.log(`Wrote ${outFile}`);
 console.log(`  PTY_ASSETS_HASH = ${hash}`);
+console.log(`  Staged assets: ${allRepoRels.length}`);
 console.log(`  Natives: ${nativeRepoRels.length}`);
 console.log(`  Lib files: ${libFiles.length}`);
