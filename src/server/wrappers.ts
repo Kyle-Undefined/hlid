@@ -4,36 +4,42 @@ import { join, resolve } from "node:path";
 import type { Agent } from "../config";
 import { APP_DIR, parseWslUnc } from "../lib/paths";
 
-// Wrappers live alongside hlid.config.toml so they're co-located with the
+// Wrappers live alongside hlid.config.toml so they are co-located with the
 // agent definitions that produce them.
 const WRAPPERS_DIR = resolve(APP_DIR, "wrappers");
 
-function wrapperFilename(agentPath: string): string {
+function wrapperFilename(agentPath: string, command = "claude"): string {
 	const hash = createHash("sha256")
-		.update(agentPath)
+		.update(`${command}:${agentPath}`)
 		.digest("hex")
 		.slice(0, 16);
 	return `${hash}.cmd`;
 }
 
-export function wrapperPathForAgent(agentPath: string): string {
-	return join(WRAPPERS_DIR, wrapperFilename(agentPath));
+export function wrapperPathForAgent(
+	agentPath: string,
+	command = "claude",
+): string {
+	return join(WRAPPERS_DIR, wrapperFilename(agentPath, command));
 }
 
 // WSL distro names per Microsoft are alphanumeric plus a small set of
-// punctuation. Reject anything else so attacker-controlled config can't smuggle
+// punctuation. Reject anything else so attacker-controlled config cannot smuggle
 // shell metacharacters into the generated .cmd.
 const DISTRO_RE = /^[A-Za-z0-9._-]+$/;
 
-// POSIX paths may contain spaces and most punctuation, but `"`, CR, LF, and
-// NUL would either break batch quoting or split the command line. Reject them
-// rather than try to escape — these characters are not legitimate in a path
-// users would actually pick from the WSL folder browser.
+// POSIX paths may contain spaces and most punctuation, but double quotes, CR, LF,
+// and NUL would either break batch quoting or split the command line. Reject them
+// rather than try to escape characters users would not pick from the WSL folder browser.
 export function isSafePosixPath(p: string): boolean {
 	return !/["\r\n\0]/.test(p);
 }
 
-export function wrapperContent(distro: string, posixPath: string): string {
+export function wrapperContent(
+	distro: string,
+	posixPath: string,
+	command = "claude",
+): string {
 	if (!DISTRO_RE.test(distro)) {
 		throw new Error(`Invalid WSL distro name: ${JSON.stringify(distro)}`);
 	}
@@ -42,16 +48,37 @@ export function wrapperContent(distro: string, posixPath: string): string {
 			`Unsafe characters in WSL path: ${JSON.stringify(posixPath)}`,
 		);
 	}
-	// %SystemRoot% is set by Windows for every process; safer than relying on PATH.
-	// bash -l sources the login profile (~/.profile) so user PATH additions that
-	// live there (bun, opencode, etc.) become visible to claude and every
-	// subprocess it spawns. Interactive-only setup (aliases, prompt) stays in
-	// ~/.bashrc behind the standard non-interactive guard.
-	//
-	// Single-quoted bash -c string passes through CMD unchanged; "$@" preserves arg boundaries.
+	if (!DISTRO_RE.test(command)) {
+		throw new Error(`Invalid wrapper command: ${JSON.stringify(command)}`);
+	}
+	// Build shell-sensitive characters without embedding them directly so wrappers can
+	// safely target different agent commands while preserving argument boundaries.
+	const dq = String.fromCharCode(34);
+	const bs = String.fromCharCode(92);
+	const dollar = String.fromCharCode(36);
 	return [
 		"@echo off",
-		`"%SystemRoot%\\System32\\wsl.exe" -d ${distro} --cd "${posixPath}" -- bash -l -c 'claude "$@"' -- %*`,
+		dq +
+			"%SystemRoot%" +
+			bs +
+			"System32" +
+			bs +
+			"wsl.exe" +
+			dq +
+			" -d " +
+			distro +
+			" --cd " +
+			dq +
+			posixPath +
+			dq +
+			" -- bash -l -c '" +
+			command +
+			" " +
+			dq +
+			dollar +
+			"@" +
+			dq +
+			"' -- %*",
 		"",
 	].join("\r\n");
 }
@@ -60,28 +87,29 @@ function ensureWrappersDir(): void {
 	mkdirSync(WRAPPERS_DIR, { recursive: true });
 }
 
-// Write a wrapper for one WSL agent. Returns null if the path isn't a WSL UNC
-// or if the parsed distro/path fail safety validation (caller should fall back
-// to the default Claude executable).
-export function writeWrapper(agentPath: string): string | null {
+// Write a wrapper for one WSL agent. Returns null if the path is not a WSL UNC
+// or if the parsed distro/path fail safety validation.
+export function writeWrapper(
+	agentPath: string,
+	command = "claude",
+): string | null {
 	const parsed = parseWslUnc(agentPath);
 	if (!parsed) return null;
 	let body: string;
 	try {
-		body = wrapperContent(parsed.distro, parsed.posixPath);
+		body = wrapperContent(parsed.distro, parsed.posixPath, command);
 	} catch (err) {
 		console.warn("[wrappers] refusing to write wrapper:", err);
 		return null;
 	}
 	ensureWrappersDir();
-	const target = wrapperPathForAgent(agentPath);
+	const target = wrapperPathForAgent(agentPath, command);
 	writeFileSync(target, body, "utf-8");
 	return target;
 }
 
-// Reconcile the wrappers directory with the current agent list:
-// write a wrapper for every WSL agent, remove any .cmd files that no longer
-// correspond to a registered WSL agent. Safe to call repeatedly.
+// Reconcile the wrappers directory with the current agent list. Startup sync keeps
+// Claude wrappers current; Codex wrappers are written on demand by execution context.
 export function syncWrappers(agents: Agent[]): void {
 	ensureWrappersDir();
 	const want = new Set<string>();

@@ -10,6 +10,7 @@ export type ResolveExecutionContextOptions = {
 	vaultPath: string;
 	allowedAgentRealPaths: string[];
 	claudeExecutable: string | undefined;
+	wrapperCommand?: "claude" | "codex";
 	safeAttachments: ChatAttachment[];
 };
 
@@ -30,6 +31,7 @@ export function resolveExecutionContext(opts: ResolveExecutionContextOptions): {
 		vaultPath,
 		allowedAgentRealPaths,
 		claudeExecutable,
+		wrapperCommand = "claude",
 		safeAttachments,
 	} = opts;
 
@@ -51,20 +53,20 @@ export function resolveExecutionContext(opts: ResolveExecutionContextOptions): {
 			}
 		}
 	}
-	// WSL agents run Claude inside Linux via a generated wrapper .cmd that
-	// invokes `wsl.exe -d <distro> --cd <posix> -- claude`. Native paths use
+	// WSL agents run the selected CLI inside Linux via a generated wrapper .cmd that
+	// invokes `wsl.exe -d <distro> --cd <posix> -- <command>`. Native paths use
 	// the standard Windows-side resolution. Selection is per-session based
 	// on the active cwd's form.
 	const wslParsed = parseWslUnc(activeCwd);
 	let executable = claudeExecutable;
 	if (wslParsed) {
-		const wrapper = wrapperPathForAgent(activeCwd);
+		const wrapper = wrapperPathForAgent(activeCwd, wrapperCommand);
 		if (existsSync(wrapper)) {
 			executable = wrapper;
 		} else {
 			// Defensive: regenerate if config-writer never ran or file was
 			// removed manually. Falls back to default exe on failure.
-			const written = writeWrapper(activeCwd);
+			const written = writeWrapper(activeCwd, wrapperCommand);
 			if (written) executable = written;
 		}
 	}

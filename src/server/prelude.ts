@@ -10,8 +10,6 @@
 // from a non-canonical execPath.
 import { appendFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { maybeSelfInstall } from "../lib/install";
-import { cleanupStagingDir } from "../lib/updates";
 
 if (process.execPath.endsWith(".exe")) {
 	(process.stdout as unknown as { write: () => boolean }).write = () => true;
@@ -21,29 +19,42 @@ if (process.execPath.endsWith(".exe")) {
 	// compiled exe (before the DB logger is initialised).
 	const crashLog = `${dirname(process.execPath)}\\crash.log`;
 	const stamp = () => new Date().toISOString();
-	process.on("uncaughtException", (err) => {
+	const writeCrash = (kind: string, detail: unknown) => {
 		try {
 			appendFileSync(
 				crashLog,
-				`${stamp()} uncaughtException argv=${process.argv.join(" ")}\n${err?.stack ?? err}\n\n`,
+				`${stamp()} ${kind} argv=${process.argv.join(" ")}\n${
+					detail instanceof Error
+						? (detail.stack ?? detail.message)
+						: String(detail)
+				}\n\n`,
 			);
 		} catch {}
+	};
+	process.on("uncaughtException", (err) => {
+		writeCrash("uncaughtException", err);
 		process.exit(1);
 	});
 	process.on("unhandledRejection", (reason) => {
-		try {
-			appendFileSync(
-				crashLog,
-				`${stamp()} unhandledRejection argv=${process.argv.join(" ")}\n${reason instanceof Error ? (reason.stack ?? String(reason)) : String(reason)}\n\n`,
-			);
-		} catch {}
+		writeCrash("unhandledRejection", reason);
 		process.exit(1);
 	});
 
-	await maybeSelfInstall();
-	// After maybeSelfInstall returns we're either already canonical (normal
-	// boot) or this is the relaunched canonical instance after an update
-	// took. Either way it's safe to wipe the staging dir + ack marker so a
-	// successful update doesn't leave the prior versioned exe lying around.
-	cleanupStagingDir();
+	try {
+		if (process.env.HLID_SKIP_SELF_INSTALL !== "1") {
+			const [{ maybeSelfInstall }, { cleanupStagingDir }] = await Promise.all([
+				import("../lib/install"),
+				import("../lib/updates"),
+			]);
+			await maybeSelfInstall();
+			// After maybeSelfInstall returns we're either already canonical (normal
+			// boot) or this is the relaunched canonical instance after an update
+			// took. Either way it's safe to wipe the staging dir + ack marker so a
+			// successful update doesn't leave the prior versioned exe lying around.
+			cleanupStagingDir();
+		}
+	} catch (err) {
+		writeCrash("prelude", err);
+		process.exit(1);
+	}
 }

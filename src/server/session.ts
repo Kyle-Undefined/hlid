@@ -1150,13 +1150,15 @@ export class SessionManager {
 				agentCwd: this.agentCwd,
 				vaultPath: this.vaultPath,
 				allowedAgentRealPaths: this.allowedAgentRealPaths,
-				claudeExecutable: this.claudeExecutable,
+				claudeExecutable:
+					currentProvider.providerId === "claude"
+						? this.claudeExecutable
+						: this.codexExecutable,
+				wrapperCommand:
+					currentProvider.providerId === "codex" ? "codex" : "claude",
 				safeAttachments,
 			});
-			const providerExecutable =
-				currentProvider.providerId === "claude"
-					? executable
-					: this.codexExecutable;
+			const providerExecutable = executable;
 			// Slice B: long-lived AgentSession per chat. Cache by sessionId +
 			// agentCwd so consecutive turns within the same chat reuse one
 			// underlying SDK query. Different chat or different agent →

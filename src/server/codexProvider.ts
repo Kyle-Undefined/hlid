@@ -1,5 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { resolveCodexExecutable } from "../lib/codexPath";
+import { toLogical } from "../lib/paths";
 import type {
 	AgentEvent,
 	AgentProvider,
@@ -90,6 +91,76 @@ function approvalPolicy(
 	return mode === "bypassPermissions" ? "never" : "on-request";
 }
 
+export type CodexSandboxMode =
+	| "read-only"
+	| "workspace-write"
+	| "danger-full-access";
+
+export function sandboxMode(
+	mode: AgentQueryParams["permissionMode"],
+): CodexSandboxMode {
+	if (mode === "bypassPermissions") return "danger-full-access";
+	if (mode === "plan") return "read-only";
+	return "workspace-write";
+}
+
+export type CodexSandboxPolicy =
+	| { type: "dangerFullAccess" }
+	| { type: "readOnly"; networkAccess: boolean }
+	| {
+			type: "workspaceWrite";
+			writableRoots: string[];
+			networkAccess: boolean;
+			excludeTmpdirEnvVar: boolean;
+			excludeSlashTmp: boolean;
+	  };
+
+export function codexSandboxPolicy(
+	mode: AgentQueryParams["permissionMode"],
+	writableRoots: string[],
+): CodexSandboxPolicy {
+	const sandbox = sandboxMode(mode);
+	if (sandbox === "danger-full-access") return { type: "dangerFullAccess" };
+	if (sandbox === "read-only")
+		return { type: "readOnly", networkAccess: false };
+	return {
+		type: "workspaceWrite",
+		writableRoots,
+		networkAccess: false,
+		excludeTmpdirEnvVar: false,
+		excludeSlashTmp: false,
+	};
+}
+
+export type CodexLaunchConfig = {
+	executable: string;
+	args: string[];
+	spawnCwd?: string;
+	rpcCwd: string;
+};
+
+export function codexLaunchConfig(params: {
+	cwd: string;
+	executable?: string;
+}): CodexLaunchConfig {
+	const rpcCwd = toLogical(params.cwd);
+	// rpcCwd differs from params.cwd exactly when params.cwd is a WSL UNC path
+	// (toLogical only rewrites those). In that case the executable is a
+	// generated .cmd wrapper that shells out via `wsl.exe --cd`, and cmd.exe
+	// refuses a UNC cwd, printing noise to stderr. The wrapper already sets
+	// the real Linux cwd itself, so we omit spawnCwd there.
+	const isWslUncCwd = rpcCwd !== params.cwd;
+
+	const executable = params.executable ?? resolveCodexExecutable();
+	if (!executable) throw new Error("Codex CLI not found");
+	return {
+		executable,
+		args: ["app-server", "--listen", "stdio://"],
+		...(isWslUncCwd ? {} : { spawnCwd: params.cwd }),
+		rpcCwd,
+	};
+}
+
 function maybeUsage(value: unknown): AgentEvent | null {
 	const obj = asObj(value);
 	const tokenUsage = asObj(obj.usage ?? obj.tokenUsage ?? obj.tokens);
@@ -137,6 +208,8 @@ class CodexAgentSession implements AgentSession {
 		cacheCreationTokens: 0,
 	};
 
+	private launch: CodexLaunchConfig | null = null;
+
 	constructor(private params: AgentQueryParams) {}
 
 	cancel(): void {
@@ -166,14 +239,21 @@ class CodexAgentSession implements AgentSession {
 	async send(message: string, _opts?: SendOptions): Promise<void> {
 		await this.ensureReady();
 		if (!this.threadId) throw new Error("Codex thread did not start");
+		const cwd = this.launch?.rpcCwd ?? this.params.cwd;
 		const params: Record<string, unknown> = {
 			threadId: this.threadId,
 			input: [{ type: "text", text: message, text_elements: [] }],
-			...(this.params.cwd ? { cwd: this.params.cwd } : {}),
+			...(cwd ? { cwd } : {}),
 			...(this.params.model ? { model: this.params.model } : {}),
 			...(this.params.effort ? { effort: this.params.effort } : {}),
 			...(this.params.permissionMode
-				? { approvalPolicy: approvalPolicy(this.params.permissionMode) }
+				? {
+						approvalPolicy: approvalPolicy(this.params.permissionMode),
+						sandboxPolicy: codexSandboxPolicy(
+							this.params.permissionMode,
+							this.params.additionalDirectories ?? [],
+						),
+					}
 				: {}),
 		};
 		const result = asObj(await this.request("turn/start", params));
@@ -186,7 +266,7 @@ class CodexAgentSession implements AgentSession {
 		try {
 			const result = asObj(
 				await this.request("skills/list", {
-					cwds: [this.params.cwd],
+					cwds: [this.launch?.rpcCwd ?? this.params.cwd],
 				}),
 			);
 			const skills = Array.isArray(result.skills) ? result.skills : [];
@@ -251,11 +331,14 @@ class CodexAgentSession implements AgentSession {
 	}
 
 	private async start(): Promise<void> {
-		const executable = this.params.executable ?? resolveCodexExecutable();
-		if (!executable) throw new Error("Codex CLI not found");
-
-		this.proc = spawn(executable, ["app-server", "--listen", "stdio://"], {
+		const launch = codexLaunchConfig({
 			cwd: this.params.cwd,
+			executable: this.params.executable,
+		});
+		this.launch = launch;
+
+		this.proc = spawn(launch.executable, launch.args, {
+			...(launch.spawnCwd ? { cwd: launch.spawnCwd } : {}),
 			stdio: "pipe",
 		});
 		this.proc.on("error", (err) => {
@@ -295,11 +378,14 @@ class CodexAgentSession implements AgentSession {
 		this.notify("initialized", {});
 
 		const threadParams: Record<string, unknown> = {
-			cwd: this.params.cwd,
+			cwd: launch.rpcCwd,
 			ephemeral: this.params.persistSession === false,
 			...(this.params.model ? { model: this.params.model } : {}),
 			...(this.params.permissionMode
-				? { approvalPolicy: approvalPolicy(this.params.permissionMode) }
+				? {
+						approvalPolicy: approvalPolicy(this.params.permissionMode),
+						sandbox: sandboxMode(this.params.permissionMode),
+					}
 				: {}),
 		};
 		const result = asObj(

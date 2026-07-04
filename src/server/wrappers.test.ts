@@ -99,6 +99,16 @@ describe("wrapperContent", () => {
 		const out = wrapperContent("Ubuntu", "/home/kyle");
 		expect(out).toContain("bash -l");
 	});
+
+	it("defaults to launching Claude with forwarded args", () => {
+		const out = wrapperContent("Ubuntu", "/home/kyle");
+		expect(out).toContain(`claude ${String.fromCharCode(34, 36, 64, 34)}`);
+	});
+
+	it("can launch Codex with forwarded args", () => {
+		const out = wrapperContent("Ubuntu", "/home/kyle", "codex");
+		expect(out).toContain(`codex ${String.fromCharCode(34, 36, 64, 34)}`);
+	});
 });
 
 // ── wrapperPathForAgent ───────────────────────────────────────────────────────
@@ -119,6 +129,13 @@ describe("wrapperPathForAgent", () => {
 		const a = wrapperPathForAgent("\\\\wsl$\\Ubuntu\\home\\alice");
 		const b = wrapperPathForAgent("\\\\wsl$\\Ubuntu\\home\\bob");
 		expect(a).not.toBe(b);
+	});
+
+	it("produces different paths for different commands", () => {
+		const path = "agent-path";
+		expect(wrapperPathForAgent(path, "claude")).not.toBe(
+			wrapperPathForAgent(path, "codex"),
+		);
 	});
 
 	it("filename portion is 16 hex chars + .cmd", () => {
