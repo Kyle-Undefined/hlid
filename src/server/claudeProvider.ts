@@ -1,3 +1,7 @@
+import type {
+	EffortLevel as SdkEffortLevel,
+	ModelInfo as SdkModelInfo,
+} from "@anthropic-ai/claude-agent-sdk";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { resolveClaudeExecutable } from "../lib/claudePath";
 import type {
@@ -6,6 +10,8 @@ import type {
 	AgentQueryParams,
 	AgentSession,
 	McpServerStatus,
+	ProviderEffortInfo,
+	ProviderModelInfo,
 	ProviderWindowReading,
 	SendOptions,
 	SlashCommand,
@@ -346,6 +352,54 @@ function truncateToolResult(s: string): string {
 	return `${s.slice(0, TOOL_RESULT_MAX_BYTES)}\n\n[truncated ${dropped} chars]`;
 }
 
+/** Static effortLevels label/desc text, reused by mapClaudeModels for per-model effort entries. */
+const EFFORT_TEXT: Record<string, { label: string; desc: string }> = {
+	low: { label: "Low", desc: "minimal thinking, quick turnaround" },
+	medium: { label: "Medium", desc: "some thinking, pretty balanced" },
+	high: { label: "High", desc: "solid reasoning, this is the default" },
+	xhigh: { label: "X-High", desc: "goes deeper, Opus only" },
+	max: { label: "Max", desc: "everything Claude has, Opus only" },
+};
+
+/**
+ * Pure mapper from the SDK's Query.supportedModels() ModelInfo[] shape to the
+ * provider-agnostic ProviderModelInfo[]. No isDefault — the SDK has no
+ * default-model marker.
+ */
+export function mapClaudeModels(models: SdkModelInfo[]): ProviderModelInfo[] {
+	return models.map((m) => {
+		const efforts: ProviderEffortInfo[] | undefined =
+			m.supportsEffort && m.supportedEffortLevels?.length
+				? m.supportedEffortLevels.map((value) => {
+						const text = EFFORT_TEXT[value];
+						return {
+							value,
+							label: text?.label ?? value,
+							desc: text?.desc,
+						};
+					})
+				: undefined;
+		return {
+			value: m.value,
+			label: m.displayName || m.value,
+			description: m.description,
+			efforts,
+		};
+	});
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+	return Promise.race([
+		promise,
+		new Promise<T>((_, reject) => {
+			setTimeout(
+				() => reject(new Error("Claude supportedModels() timed out")),
+				timeoutMs,
+			);
+		}),
+	]);
+}
+
 /** Parse Anthropic rate-limit utilization headers from an API response. */
 function parseAnthropicHeaders(headers: Headers): ProviderWindowReading[] {
 	const readings: ProviderWindowReading[] = [];
@@ -458,6 +512,42 @@ export class ClaudeProvider implements AgentProvider {
 		return { available: true };
 	}
 
+	/**
+	 * Live-fetch the model catalog via a throwaway SDK query — no real prompt
+	 * is ever sent; the stream stays open until abort() and canUseTool denies
+	 * everything as a defensive backstop. Falls back to the static `models`
+	 * array on failure (handled by callers).
+	 */
+	async listModels(): Promise<ProviderModelInfo[]> {
+		const exe = resolveClaudeExecutable();
+		const ac = new AbortController();
+		// biome-ignore lint/suspicious/noExplicitAny: SDK canUseTool type changed between versions
+		const denyAllCanUseTool: any = async () => ({
+			behavior: "deny",
+			message: "catalog probe",
+		});
+		const q = query({
+			prompt: (async function* (): AsyncGenerator<SdkUserMessage> {
+				// Never yields — the probe never sends a real user turn.
+				await new Promise<never>(() => {});
+			})(),
+			options: {
+				cwd: process.cwd(),
+				abortController: ac,
+				persistSession: false,
+				settingSources: [],
+				maxTurns: 1,
+				...(exe ? { pathToClaudeCodeExecutable: exe } : {}),
+				canUseTool: denyAllCanUseTool,
+			},
+		});
+		try {
+			return mapClaudeModels(await withTimeout(q.supportedModels(), 10_000));
+		} finally {
+			ac.abort();
+		}
+	}
+
 	readonly proxyConfig = {
 		envVar: "ANTHROPIC_BASE_URL",
 		windowIds: ["five_hour", "weekly", "weekly_sonnet"],
@@ -491,7 +581,7 @@ export class ClaudeProvider implements AgentProvider {
 					abortController,
 					...(params.model ? { model: params.model } : {}),
 					permissionMode: params.permissionMode ?? "default",
-					effort: params.effort ?? "medium",
+					effort: (params.effort ?? "medium") as SdkEffortLevel,
 					...(params.maxTurns !== undefined
 						? { maxTurns: params.maxTurns }
 						: {}),

@@ -12,7 +12,7 @@ vi.mock("../lib/claudePath", () => ({
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { resolveClaudeExecutable } from "../lib/claudePath";
 import type { AgentEvent, AgentQueryParams, CanUseTool } from "./agentProvider";
-import { ClaudeProvider } from "./claudeProvider";
+import { ClaudeProvider, mapClaudeModels } from "./claudeProvider";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -1227,6 +1227,190 @@ describe("ClaudeProvider capability declarations", () => {
 		for (const e of effortLevels) {
 			expect(typeof e.desc).toBe("string");
 			expect((e.desc ?? "").length).toBeGreaterThan(0);
+		}
+	});
+});
+
+// ── mapClaudeModels ───────────────────────────────────────────────────────────
+
+describe("mapClaudeModels", () => {
+	it("maps value/displayName/description and per-model efforts when supportsEffort is true", () => {
+		const result = mapClaudeModels([
+			{
+				value: "claude-opus-4-8",
+				displayName: "Opus 4.8",
+				description: "Most capable model",
+				supportsEffort: true,
+				supportedEffortLevels: ["low", "high", "max"],
+			},
+		]);
+		expect(result).toEqual([
+			{
+				value: "claude-opus-4-8",
+				label: "Opus 4.8",
+				description: "Most capable model",
+				efforts: [
+					{
+						value: "low",
+						label: "Low",
+						desc: "minimal thinking, quick turnaround",
+					},
+					{
+						value: "high",
+						label: "High",
+						desc: "solid reasoning, this is the default",
+					},
+					{
+						value: "max",
+						label: "Max",
+						desc: "everything Claude has, Opus only",
+					},
+				],
+			},
+		]);
+	});
+
+	it("omits efforts when supportsEffort is false, even if supportedEffortLevels is present", () => {
+		const result = mapClaudeModels([
+			{
+				value: "claude-haiku-4-5",
+				displayName: "Haiku 4.5",
+				description: "Fast model",
+				supportsEffort: false,
+				supportedEffortLevels: ["low", "high"],
+			},
+		]);
+		expect(result).toEqual([
+			{
+				value: "claude-haiku-4-5",
+				label: "Haiku 4.5",
+				description: "Fast model",
+				efforts: undefined,
+			},
+		]);
+	});
+
+	it("omits efforts when supportsEffort is missing", () => {
+		const result = mapClaudeModels([
+			{
+				value: "claude-sonnet-4-6",
+				displayName: "Sonnet 4.6",
+				description: "Balanced model",
+			},
+		]);
+		expect(result[0]?.efforts).toBeUndefined();
+	});
+
+	it("falls back to value when displayName is missing/empty", () => {
+		const result = mapClaudeModels([
+			{ value: "claude-x", displayName: "", description: "" },
+		]);
+		expect(result[0]?.label).toBe("claude-x");
+	});
+
+	it("never sets isDefault (SDK has no default-model marker)", () => {
+		const result = mapClaudeModels([
+			{ value: "claude-opus-4-8", displayName: "Opus 4.8", description: "" },
+		]);
+		expect(result[0]).not.toHaveProperty("isDefault");
+	});
+});
+
+// ── listModels ─────────────────────────────────────────────────────────────────
+
+describe("ClaudeProvider — listModels", () => {
+	it("calls supportedModels() on a throwaway query and maps the result", async () => {
+		const sdkModels = [
+			{
+				value: "claude-opus-4-8",
+				displayName: "Opus 4.8",
+				description: "desc",
+				supportsEffort: true,
+				supportedEffortLevels: ["low", "high"],
+			},
+		];
+		let capturedOptions: Record<string, unknown> | undefined;
+		vi.mocked(query).mockImplementationOnce(
+			({ options }: { prompt: unknown; options?: Record<string, unknown> }) => {
+				capturedOptions = options;
+				const gen = sdkGen([]);
+				gen.supportedModels = vi.fn().mockResolvedValue(sdkModels);
+				return gen;
+			},
+		);
+
+		const provider = new ClaudeProvider();
+		const models = await provider.listModels();
+
+		expect(models).toEqual([
+			{
+				value: "claude-opus-4-8",
+				label: "Opus 4.8",
+				description: "desc",
+				efforts: [
+					{
+						value: "low",
+						label: "Low",
+						desc: "minimal thinking, quick turnaround",
+					},
+					{
+						value: "high",
+						label: "High",
+						desc: "solid reasoning, this is the default",
+					},
+				],
+			},
+		]);
+		// Throwaway-query shape: ephemeral, no persistence, single turn, denies tools.
+		expect(capturedOptions?.persistSession).toBe(false);
+		expect(capturedOptions?.settingSources).toEqual([]);
+		expect(capturedOptions?.maxTurns).toBe(1);
+		const canUseTool = capturedOptions?.canUseTool as CanUseTool;
+		await expect(
+			canUseTool(
+				"Bash",
+				{},
+				{ toolUseID: "t", signal: new AbortController().signal },
+			),
+		).resolves.toEqual({ behavior: "deny", message: "catalog probe" });
+	});
+
+	it("aborts the throwaway query's AbortController when done", async () => {
+		let capturedAbortController: AbortController | undefined;
+		vi.mocked(query).mockImplementationOnce(
+			({
+				options,
+			}: {
+				prompt: unknown;
+				options?: { abortController?: AbortController };
+			}) => {
+				capturedAbortController = options?.abortController;
+				const gen = sdkGen([]);
+				gen.supportedModels = vi.fn().mockResolvedValue([]);
+				return gen;
+			},
+		);
+
+		const provider = new ClaudeProvider();
+		await provider.listModels();
+		expect(capturedAbortController?.signal.aborted).toBe(true);
+	});
+
+	it("rejects (does not swallow) when supportedModels() times out", async () => {
+		vi.useFakeTimers();
+		try {
+			vi.mocked(query).mockImplementationOnce(() => {
+				const gen = sdkGen([]);
+				gen.supportedModels = vi.fn(() => new Promise(() => {}));
+				return gen;
+			});
+			const provider = new ClaudeProvider();
+			const promise = provider.listModels();
+			const assertion = expect(promise).rejects.toThrow(/timed out/i);
+			await vi.advanceTimersByTimeAsync(10_000);
+			await assertion;
+		} finally {
+			vi.useRealTimers();
 		}
 	});
 });

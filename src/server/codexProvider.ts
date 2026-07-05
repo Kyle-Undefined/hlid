@@ -7,6 +7,8 @@ import type {
 	AgentQueryParams,
 	AgentSession,
 	McpServerStatus,
+	ProviderEffortInfo,
+	ProviderModelInfo,
 	SendOptions,
 	SlashCommand,
 } from "./agentProvider";
@@ -159,6 +161,179 @@ export function codexLaunchConfig(params: {
 		...(isWslUncCwd ? {} : { spawnCwd: params.cwd }),
 		rpcCwd,
 	};
+}
+
+/** Title-cases a raw effort value like "xhigh" -> "Xhigh" for display fallback. */
+function titleCase(value: string): string {
+	if (!value) return value;
+	return value.charAt(0).toUpperCase() + value.slice(1).toLowerCase();
+}
+
+/**
+ * Pure mapper from codex-cli's `model/list` RPC response shape to the
+ * provider-agnostic ProviderModelInfo[]. Tolerant of missing/malformed
+ * fields — entries without a usable model/id are skipped.
+ */
+export function mapCodexModels(raw: unknown): ProviderModelInfo[] {
+	const obj = asObj(raw);
+	const data = Array.isArray(obj.data) ? obj.data : [];
+	return data.flatMap((entry): ProviderModelInfo[] => {
+		const item = asObj(entry);
+		const value =
+			typeof item.model === "string"
+				? item.model
+				: typeof item.id === "string"
+					? item.id
+					: undefined;
+		if (!value) return [];
+		const label =
+			typeof item.displayName === "string" ? item.displayName : value;
+		const description =
+			typeof item.description === "string" ? item.description : undefined;
+		const hidden = item.hidden === true ? true : undefined;
+		const defaultEffort =
+			typeof item.defaultReasoningEffort === "string"
+				? item.defaultReasoningEffort
+				: undefined;
+		const rawEfforts = Array.isArray(item.supportedReasoningEfforts)
+			? item.supportedReasoningEfforts
+			: undefined;
+		const efforts: ProviderEffortInfo[] | undefined = rawEfforts?.flatMap(
+			(e): ProviderEffortInfo[] => {
+				const eObj = asObj(e);
+				const effortValue =
+					typeof eObj.reasoningEffort === "string"
+						? eObj.reasoningEffort
+						: undefined;
+				if (!effortValue) return [];
+				return [
+					{
+						value: effortValue,
+						label: titleCase(effortValue),
+						desc:
+							typeof eObj.description === "string"
+								? eObj.description
+								: undefined,
+						isDefault:
+							defaultEffort !== undefined
+								? effortValue === defaultEffort
+								: undefined,
+					},
+				];
+			},
+		);
+		return [
+			{
+				value,
+				label,
+				description,
+				isDefault: undefined,
+				hidden,
+				efforts,
+			},
+		];
+	});
+}
+
+/**
+ * One-off `model/list` RPC over a throwaway codex-cli `app-server` process.
+ * Spawns the executable, performs the initialize/initialized handshake, sends
+ * `model/list`, then kills the process. Used by CodexProvider.listModels() to
+ * live-fetch the model catalog; falls back to the static `models` array on
+ * failure (handled by callers).
+ */
+export async function fetchCodexModels(opts?: {
+	includeHidden?: boolean;
+	timeoutMs?: number;
+}): Promise<ProviderModelInfo[]> {
+	const launch = codexLaunchConfig({ cwd: process.cwd() });
+	const proc = spawn(launch.executable, launch.args, {
+		...(launch.spawnCwd ? { cwd: launch.spawnCwd } : {}),
+		stdio: "pipe",
+	});
+
+	let lineBuffer = "";
+	let nextId = 1;
+	const pending = new Map<
+		number | string,
+		{ resolve: (v: unknown) => void; reject: (e: Error) => void }
+	>();
+
+	function write(message: JsonRpcMessage): void {
+		proc.stdin.write(`${JSON.stringify(message)}\n`);
+	}
+
+	function request(method: string, params: unknown): Promise<unknown> {
+		const id = nextId++;
+		write({ id, method, params });
+		return new Promise((resolve, reject) => {
+			pending.set(id, { resolve, reject });
+		});
+	}
+
+	function notify(method: string, params: unknown): void {
+		write({ method, params });
+	}
+
+	function handleLine(line: string): void {
+		if (!line) return;
+		let msg: JsonRpcMessage;
+		try {
+			msg = JSON.parse(line) as JsonRpcMessage;
+		} catch {
+			return;
+		}
+		if (msg.id === undefined || msg.method) return;
+		const p = pending.get(msg.id);
+		if (!p) return;
+		pending.delete(msg.id);
+		if (msg.error) p.reject(new Error(msg.error.message ?? "Codex error"));
+		else p.resolve(msg.result);
+	}
+
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		const result = await new Promise<unknown>((resolve, reject) => {
+			proc.on("error", (err) => reject(err));
+			proc.on("exit", (code) => {
+				reject(new Error(`Codex app-server exited (code ${code ?? "null"})`));
+			});
+			proc.stdout.on("data", (chunk: Buffer) => {
+				lineBuffer += chunk.toString("utf8");
+				while (true) {
+					const idx = lineBuffer.indexOf("\n");
+					if (idx === -1) break;
+					const line = lineBuffer.slice(0, idx).trim();
+					lineBuffer = lineBuffer.slice(idx + 1);
+					handleLine(line);
+				}
+			});
+
+			timer = setTimeout(() => {
+				reject(new Error("Codex model/list timed out"));
+			}, opts?.timeoutMs ?? 10_000);
+
+			(async () => {
+				await request("initialize", {
+					clientInfo: { name: "hlid", title: "Hlid", version: "0.0.0" },
+					capabilities: { experimentalApi: true },
+				});
+				notify("initialized", {});
+				const modelList = await request("model/list", {
+					includeHidden: opts?.includeHidden ?? false,
+				});
+				resolve(modelList);
+			})().catch(reject);
+		});
+
+		const models = mapCodexModels(result);
+		return opts?.includeHidden
+			? models
+			: models.filter((m) => m.hidden !== true);
+	} finally {
+		if (timer) clearTimeout(timer);
+		proc.kill();
+	}
 }
 
 function maybeUsage(value: unknown): AgentEvent | null {
@@ -692,12 +867,14 @@ export class CodexProvider implements AgentProvider {
 	readonly providerId = "codex";
 	readonly label = "Codex";
 
+	/** Offline fallback for listModels() — used when the live `model/list` RPC fails. */
 	readonly models = [
 		{ value: "gpt-5.5", label: "GPT-5.5" },
 		{ value: "gpt-5.4", label: "GPT-5.4" },
 		{ value: "gpt-5.3-codex", label: "GPT-5.3 Codex (legacy)" },
 	] as const;
 
+	/** Offline fallback for listModels() effort info — used when the live `model/list` RPC fails. */
 	readonly effortLevels = [
 		{ value: "low", label: "Low", desc: "quick and light" },
 		{ value: "medium", label: "Medium", desc: "balanced default" },
@@ -732,6 +909,10 @@ export class CodexProvider implements AgentProvider {
 		const exe = resolveCodexExecutable();
 		if (!exe) return { available: false, reason: "Codex CLI not found" };
 		return { available: true };
+	}
+
+	async listModels(): Promise<ProviderModelInfo[]> {
+		return fetchCodexModels();
 	}
 
 	query(params: AgentQueryParams): AgentSession {

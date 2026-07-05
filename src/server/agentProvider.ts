@@ -36,6 +36,28 @@ export type SlashCommand = {
 	aliases?: string[];
 };
 
+/** A single effort/thinking level entry as reported by a provider's live model catalog. */
+export type ProviderEffortInfo = {
+	value: string;
+	label: string;
+	desc?: string;
+	isDefault?: boolean;
+};
+
+/**
+ * A single model entry as reported by a provider's live model catalog
+ * (AgentProvider.listModels). Strict superset of the existing static
+ * `models` item shape {value,label} — backward compatible.
+ */
+export type ProviderModelInfo = {
+	value: string;
+	label: string;
+	description?: string;
+	isDefault?: boolean;
+	hidden?: boolean;
+	efforts?: ProviderEffortInfo[];
+};
+
 export type AgentEvent =
 	| { type: "session_start"; sessionId: string }
 	| { type: "text_delta"; text: string }
@@ -110,7 +132,7 @@ export type AgentQueryParams = {
 	sessionId?: string;
 	additionalDirectories?: string[];
 	model?: string;
-	effort?: "low" | "medium" | "high" | "xhigh" | "max";
+	effort?: string;
 	maxTurns?: number;
 	permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan";
 	/** false = ephemeral session (recap queries). */
@@ -195,6 +217,8 @@ export interface AgentProvider {
 	}>;
 	/** Optional availability check. Returns false + reason if provider can't run. */
 	check?(): Promise<{ available: boolean; reason?: string }>;
+	/** Live-fetch the provider's model catalog. Falls back to the static `models` list on failure. */
+	listModels?(): Promise<ProviderModelInfo[]>;
 	query(params: AgentQueryParams): AgentSession;
 	/**
 	 * When present, the generic proxy infra will spin up an HTTP proxy for this
