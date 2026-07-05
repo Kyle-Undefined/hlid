@@ -34,7 +34,7 @@ const ServerSchema = z.object({
 
 const ClaudeSchema = z.object({
 	model: z.string().default("claude-sonnet-4-6"),
-	effort: z.enum(["low", "medium", "high", "xhigh", "max"]).default("high"),
+	effort: z.string().default("high"),
 	max_turns: z.number().int().positive().optional(),
 	permission_mode: z
 		.enum(["default", "acceptEdits", "bypassPermissions", "plan"])
@@ -47,7 +47,7 @@ const ClaudeSchema = z.object({
 
 const CodexSchema = z.object({
 	model: z.string().default(""),
-	effort: z.enum(["low", "medium", "high", "xhigh", "max"]).default("medium"),
+	effort: z.string().default("medium"),
 	max_turns: z.number().int().positive().optional(),
 	permission_mode: z
 		.enum(["default", "acceptEdits", "bypassPermissions", "plan"])
@@ -106,7 +106,7 @@ export const AgentSchema = z.object({
 	mode: z.enum(["cwd", "context"]).default("cwd"),
 	provider: z.string().optional().default("claude"),
 	model: z.string().optional(),
-	effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional(),
+	effort: z.string().optional(),
 	max_turns: z.number().int().positive().optional(),
 	permission_mode: z
 		.enum(["default", "acceptEdits", "bypassPermissions", "plan"])

@@ -110,7 +110,7 @@ type PermissionMode = "default" | "acceptEdits" | "bypassPermissions" | "plan";
 
 type AgentSettings = {
 	model?: string;
-	effort?: "low" | "medium" | "high" | "xhigh" | "max";
+	effort?: string;
 	maxTurns?: number;
 	permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan";
 	recapModel?: string;
@@ -124,7 +124,7 @@ export class SessionManager {
 	private state: SessionState = "idle";
 	private abortController: AbortController | null = null;
 	private model!: string;
-	private effort!: "low" | "medium" | "high" | "xhigh" | "max";
+	private effort!: string;
 	private maxTurns: number | undefined;
 	private vaultPath!: string;
 	private permissionMode!: PermissionMode;

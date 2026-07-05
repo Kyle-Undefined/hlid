@@ -12,6 +12,10 @@ import { ConfirmAction } from "#/components/ConfirmAction";
 import { AgentMcpSection } from "#/components/forge/McpSection";
 import { MarkdownBody } from "#/components/MarkdownBody";
 import { PrivacyMask } from "#/components/PrivacyMask";
+import {
+	effortOptionsFor,
+	modelOptions as getModelOptions,
+} from "#/lib/providerOptions";
 import type { ProviderInfo } from "#/lib/serverFns";
 
 export type AgentEntry = {
@@ -86,8 +90,8 @@ export function AgentCard({
 	const activeProvider = providers.find(
 		(p) => p.id === (editing?.provider ?? agent.provider),
 	);
-	const modelOptions = activeProvider?.models ?? [];
-	const effortOptions = activeProvider?.effortLevels ?? [];
+	const modelOptions = getModelOptions(activeProvider);
+	const effortOptions = effortOptionsFor(activeProvider, editing?.model ?? "");
 	const permissionOptions = activeProvider?.permissionModes ?? [];
 	const isClaudeProvider = activeProvider?.id === "claude";
 	// Show provider-specific settings only when the selected provider declares
@@ -361,15 +365,32 @@ export function AgentCard({
 								</span>
 								<select
 									value={editing.model}
-									onChange={(e) =>
-										setEditing((s) => s && { ...s, model: e.target.value })
-									}
+									onChange={(e) => {
+										const model = e.target.value;
+										const newEffortOptions = effortOptionsFor(
+											activeProvider,
+											model,
+										);
+										setEditing(
+											(s) =>
+												s && {
+													...s,
+													model,
+													effort:
+														s.effort !== "" &&
+														!newEffortOptions.some((o) => o.value === s.effort)
+															? ""
+															: s.effort,
+												},
+										);
+									}}
 									className="flex-1 bg-secondary border border-border px-2 py-1 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
 								>
 									<option value="">— vault default —</option>
 									{modelOptions.map((m) => (
-										<option key={m.value} value={m.value}>
+										<option key={m.value} value={m.value} title={m.description}>
 											{m.label}
+											{m.isDefault ? " (default)" : ""}
 										</option>
 									))}
 								</select>
@@ -389,6 +410,7 @@ export function AgentCard({
 									{effortOptions.map((o) => (
 										<option key={o.value} value={o.value}>
 											{o.label}
+											{o.isDefault ? " (default)" : ""}
 										</option>
 									))}
 								</select>
@@ -460,8 +482,9 @@ export function AgentCard({
 											: "— provider default —"}
 									</option>
 									{modelOptions.map((m) => (
-										<option key={m.value} value={m.value}>
+										<option key={m.value} value={m.value} title={m.description}>
 											{m.label}
+											{m.isDefault ? " (default)" : ""}
 										</option>
 									))}
 								</select>

@@ -1,4 +1,9 @@
 import type { HlidConfig } from "#/config";
+import {
+	defaultEffortFor,
+	effortOptionsFor,
+	modelOptions as getModelOptions,
+} from "#/lib/providerOptions";
 import type { ProviderInfo } from "#/lib/serverFns";
 import { Field, Section } from "./fields";
 
@@ -25,9 +30,10 @@ export function ClaudeSection({
 }) {
 	// Options come from the selected provider's declared capabilities.
 	const activeProvider = providers.find((p) => p.id === claude.vaultProvider);
-	const modelOptions = activeProvider?.models ?? [];
-	const effortOptions = activeProvider?.effortLevels ?? [];
+	const modelOptions = getModelOptions(activeProvider);
+	const effortOptions = effortOptionsFor(activeProvider, claude.model);
 	const permissionOptions = activeProvider?.permissionModes ?? [];
+	const selectedModel = modelOptions.find((m) => m.value === claude.model);
 	const isClaude = claude.vaultProvider === "claude";
 	const allowsProviderDefaultModel = !isClaude;
 	// Show provider-specific settings only when the provider declares capabilities.
@@ -66,20 +72,44 @@ export function ClaudeSection({
 				<>
 					{modelOptions.length > 0 && (
 						<Field label="Model">
-							<select
-								value={claude.model}
-								onChange={(e) => onChange({ model: e.target.value })}
-								className="w-32 sm:w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
-							>
-								{allowsProviderDefaultModel && (
-									<option value="">— provider default —</option>
+							<div>
+								<select
+									value={claude.model}
+									onChange={(e) => {
+										const model = e.target.value;
+										const newEffortOptions = effortOptionsFor(
+											activeProvider,
+											model,
+										);
+										const patch: Partial<ClaudeForm> = { model };
+										if (
+											!newEffortOptions.some((o) => o.value === claude.effort)
+										) {
+											patch.effort =
+												defaultEffortFor(activeProvider, model) ??
+												newEffortOptions[0]?.value ??
+												"";
+										}
+										onChange(patch);
+									}}
+									className="w-32 sm:w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
+								>
+									{allowsProviderDefaultModel && (
+										<option value="">— provider default —</option>
+									)}
+									{modelOptions.map((m) => (
+										<option key={m.value} value={m.value} title={m.description}>
+											{m.label}
+											{m.isDefault ? " (default)" : ""}
+										</option>
+									))}
+								</select>
+								{selectedModel?.description && (
+									<div className="text-xs text-muted-foreground mt-1 max-w-[12rem] sm:max-w-xs">
+										{selectedModel.description}
+									</div>
 								)}
-								{modelOptions.map((m) => (
-									<option key={m.value} value={m.value}>
-										{m.label}
-									</option>
-								))}
-							</select>
+							</div>
 						</Field>
 					)}
 					{effortOptions.length > 0 && (
@@ -102,15 +132,14 @@ export function ClaudeSection({
 											name="effort"
 											value={opt.value}
 											checked={claude.effort === opt.value}
-											onChange={() =>
-												onChange({
-													effort: opt.value as HlidConfig["claude"]["effort"],
-												})
-											}
+											onChange={() => onChange({ effort: opt.value })}
 											className="mt-0.5 accent-primary shrink-0"
 										/>
 										<div>
-											<div className="text-sm text-foreground">{opt.label}</div>
+											<div className="text-sm text-foreground">
+												{opt.label}
+												{opt.isDefault ? " (default)" : ""}
+											</div>
 											{opt.desc && (
 												<div className="text-xs text-muted-foreground">
 													{opt.desc}

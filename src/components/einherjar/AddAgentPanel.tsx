@@ -1,6 +1,10 @@
 import { useState } from "react";
 import type { AgentProviderSettings } from "#/components/einherjar/AgentCard";
 import { FolderBrowser } from "#/components/wizard/FolderBrowser";
+import {
+	effortOptionsFor,
+	modelOptions as getModelOptions,
+} from "#/lib/providerOptions";
 import type { ProviderInfo } from "#/lib/serverFns";
 
 type AddForm = {
@@ -56,8 +60,8 @@ export function AddAgentPanel({
 	// provider chosen in this form, never the vault-level provider (a new
 	// agent can use a different provider than the vault default).
 	const activeProvider = providers.find((p) => p.id === form.provider);
-	const modelOptions = activeProvider?.models ?? [];
-	const effortOptions = activeProvider?.effortLevels ?? [];
+	const modelOptions = getModelOptions(activeProvider);
+	const effortOptions = effortOptionsFor(activeProvider, form.model);
 	const permissionOptions = activeProvider?.permissionModes ?? [];
 	const isClaudeProvider = activeProvider?.id === "claude";
 	// Show provider-specific settings only when the selected provider declares
@@ -215,15 +219,29 @@ export function AddAgentPanel({
 								</span>
 								<select
 									value={form.model}
-									onChange={(e) =>
-										setForm((f) => ({ ...f, model: e.target.value }))
-									}
+									onChange={(e) => {
+										const model = e.target.value;
+										const newEffortOptions = effortOptionsFor(
+											activeProvider,
+											model,
+										);
+										setForm((f) => ({
+											...f,
+											model,
+											effort:
+												f.effort !== "" &&
+												!newEffortOptions.some((o) => o.value === f.effort)
+													? ""
+													: f.effort,
+										}));
+									}}
 									className="flex-1 bg-secondary border border-border px-2 py-1 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
 								>
 									<option value="">— vault default —</option>
 									{modelOptions.map((m) => (
-										<option key={m.value} value={m.value}>
+										<option key={m.value} value={m.value} title={m.description}>
 											{m.label}
+											{m.isDefault ? " (default)" : ""}
 										</option>
 									))}
 								</select>
@@ -243,6 +261,7 @@ export function AddAgentPanel({
 									{effortOptions.map((o) => (
 										<option key={o.value} value={o.value}>
 											{o.label}
+											{o.isDefault ? " (default)" : ""}
 										</option>
 									))}
 								</select>
@@ -309,8 +328,9 @@ export function AddAgentPanel({
 											: "— provider default —"}
 									</option>
 									{modelOptions.map((m) => (
-										<option key={m.value} value={m.value}>
+										<option key={m.value} value={m.value} title={m.description}>
 											{m.label}
+											{m.isDefault ? " (default)" : ""}
 										</option>
 									))}
 								</select>

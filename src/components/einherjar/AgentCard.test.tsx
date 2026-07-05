@@ -20,7 +20,17 @@ const claudeProvider: ProviderInfo = {
 	id: "claude",
 	label: "Claude",
 	available: true,
-	models: [{ value: "claude-sonnet-4-6", label: "Sonnet 4.6" }],
+	models: [
+		{ value: "claude-sonnet-4-6", label: "Sonnet 4.6" },
+		{
+			value: "claude-opus-4-1",
+			label: "Opus 4.1",
+			efforts: [
+				{ value: "low", label: "Opus Low" },
+				{ value: "high", label: "Opus High", isDefault: true },
+			],
+		},
+	],
 	effortLevels: [{ value: "high", label: "High" }],
 	permissionModes: [{ value: "default", label: "Default" }],
 };
@@ -106,5 +116,26 @@ describe("AgentCard edit options", () => {
 
 		expect(screen.getAllByText("GPT-5 Codex").length).toBeGreaterThan(0);
 		expect(screen.queryByText("Sonnet 4.6")).toBeNull();
+	});
+
+	it("updates the effort options when a model with its own efforts is selected", () => {
+		renderCard(makeAgent({ provider: "claude" }), [claudeProvider]);
+
+		fireEvent.click(screen.getByTitle("Edit agent"));
+
+		// Model has no per-model efforts yet — falls back to provider-level list.
+		expect(screen.getByText("High")).not.toBeNull();
+		expect(screen.queryByText("Opus High (default)")).toBeNull();
+
+		// Model select is the first <select> in the edit form.
+		const [modelSelect] = screen.getAllByRole("combobox");
+		fireEvent.change(modelSelect, {
+			target: { value: "claude-opus-4-1" },
+		});
+
+		// Effort options now come from the selected model's own `efforts`.
+		expect(screen.getByText("Opus Low")).not.toBeNull();
+		expect(screen.getByText("Opus High (default)")).not.toBeNull();
+		expect(screen.queryByText("High")).toBeNull();
 	});
 });
