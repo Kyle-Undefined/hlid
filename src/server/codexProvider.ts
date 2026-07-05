@@ -12,6 +12,33 @@ import type {
 	SendOptions,
 	SlashCommand,
 } from "./agentProvider";
+import type {
+	CommandExecutionRequestApprovalResponse,
+	FileChangeRequestApprovalResponse,
+	SandboxMode as GeneratedSandboxMode,
+	GrantedPermissionProfile,
+	Model,
+	ModelListParams,
+	ModelListResponse,
+	PermissionsRequestApprovalResponse,
+	ReasoningEffortOption,
+	SandboxPolicy,
+	ThreadResumeParams,
+	ThreadStartParams,
+	TurnStartParams,
+} from "./codexProtocol";
+
+/**
+ * Union of the RESPONSE shapes hlid can send back for the server-initiated
+ * approval requests it handles (item/permissions/requestApproval,
+ * item/commandExecution/requestApproval, item/fileChange/requestApproval,
+ * and the legacy execCommandApproval/applyPatchApproval methods, which share
+ * the command/file-change response shape).
+ */
+type ApprovalRequestResult =
+	| PermissionsRequestApprovalResponse
+	| CommandExecutionRequestApprovalResponse
+	| FileChangeRequestApprovalResponse;
 
 type JsonRpcMessage = {
 	id?: number | string;
@@ -93,10 +120,8 @@ function approvalPolicy(
 	return mode === "bypassPermissions" ? "never" : "on-request";
 }
 
-export type CodexSandboxMode =
-	| "read-only"
-	| "workspace-write"
-	| "danger-full-access";
+/** Alias of the vendored generated SandboxMode — kept as a named export for API stability. */
+export type CodexSandboxMode = GeneratedSandboxMode;
 
 export function sandboxMode(
 	mode: AgentQueryParams["permissionMode"],
@@ -106,16 +131,14 @@ export function sandboxMode(
 	return "workspace-write";
 }
 
-export type CodexSandboxPolicy =
-	| { type: "dangerFullAccess" }
-	| { type: "readOnly"; networkAccess: boolean }
-	| {
-			type: "workspaceWrite";
-			writableRoots: string[];
-			networkAccess: boolean;
-			excludeTmpdirEnvVar: boolean;
-			excludeSlashTmp: boolean;
-	  };
+/**
+ * Alias of the vendored generated SandboxPolicy union (adds an
+ * `externalSandbox` variant hlid never constructs, from codex-cli's
+ * managed-network sandbox feature — codexSandboxPolicy() below only ever
+ * returns one of the other three variants). Kept as a named export for API
+ * stability.
+ */
+export type CodexSandboxPolicy = SandboxPolicy;
 
 export function codexSandboxPolicy(
 	mode: AgentQueryParams["permissionMode"],
@@ -175,10 +198,12 @@ function titleCase(value: string): string {
  * fields — entries without a usable model/id are skipped.
  */
 export function mapCodexModels(raw: unknown): ProviderModelInfo[] {
-	const obj = asObj(raw);
-	const data = Array.isArray(obj.data) ? obj.data : [];
+	// Compile-time shape hint only — `raw` is still untrusted at runtime, so
+	// every field access below keeps its typeof/Array.isArray guard.
+	const parsed = asObj(raw) as Partial<ModelListResponse>;
+	const data: unknown[] = Array.isArray(parsed.data) ? parsed.data : [];
 	return data.flatMap((entry): ProviderModelInfo[] => {
-		const item = asObj(entry);
+		const item = asObj(entry) as Partial<Model>;
 		const value =
 			typeof item.model === "string"
 				? item.model
@@ -195,12 +220,14 @@ export function mapCodexModels(raw: unknown): ProviderModelInfo[] {
 			typeof item.defaultReasoningEffort === "string"
 				? item.defaultReasoningEffort
 				: undefined;
-		const rawEfforts = Array.isArray(item.supportedReasoningEfforts)
+		const rawEfforts: unknown[] | undefined = Array.isArray(
+			item.supportedReasoningEfforts,
+		)
 			? item.supportedReasoningEfforts
 			: undefined;
 		const efforts: ProviderEffortInfo[] | undefined = rawEfforts?.flatMap(
 			(e): ProviderEffortInfo[] => {
-				const eObj = asObj(e);
+				const eObj = asObj(e) as Partial<ReasoningEffortOption>;
 				const effortValue =
 					typeof eObj.reasoningEffort === "string"
 						? eObj.reasoningEffort
@@ -319,9 +346,10 @@ export async function fetchCodexModels(opts?: {
 					capabilities: { experimentalApi: true },
 				});
 				notify("initialized", {});
-				const modelList = await request("model/list", {
+				const modelListParams: ModelListParams = {
 					includeHidden: opts?.includeHidden ?? false,
-				});
+				};
+				const modelList = await request("model/list", modelListParams);
 				resolve(modelList);
 			})().catch(reject);
 		});
@@ -415,7 +443,7 @@ class CodexAgentSession implements AgentSession {
 		await this.ensureReady();
 		if (!this.threadId) throw new Error("Codex thread did not start");
 		const cwd = this.launch?.rpcCwd ?? this.params.cwd;
-		const params: Record<string, unknown> = {
+		const params: TurnStartParams = {
 			threadId: this.threadId,
 			input: [{ type: "text", text: message, text_elements: [] }],
 			...(cwd ? { cwd } : {}),
@@ -552,7 +580,7 @@ class CodexAgentSession implements AgentSession {
 		});
 		this.notify("initialized", {});
 
-		const threadParams: Record<string, unknown> = {
+		const threadParams: ThreadStartParams = {
 			cwd: launch.rpcCwd,
 			ephemeral: this.params.persistSession === false,
 			...(this.params.model ? { model: this.params.model } : {}),
@@ -568,7 +596,11 @@ class CodexAgentSession implements AgentSession {
 				? await this.request("thread/resume", {
 						threadId: this.params.sessionId,
 						...threadParams,
-					})
+						// NOTE: `ephemeral` is a ThreadStartParams-only field —
+						// ThreadResumeParams (vendored in ./codexProtocol) has no
+						// such field, so this is likely a no-op/ignored on resume.
+						// Pre-existing behavior; typed here, not changed.
+					} satisfies ThreadResumeParams & { ephemeral?: boolean | null })
 				: await this.request("thread/start", threadParams),
 		);
 		const thread = asObj(result.thread);
@@ -674,14 +706,18 @@ class CodexAgentSession implements AgentSession {
 	private allowedServerRequestResult(
 		method: string,
 		params: Record<string, unknown>,
-	): unknown {
+	): ApprovalRequestResult {
 		if (method === "item/permissions/requestApproval") {
-			return { scope: "session", permissions: params.permissions ?? {} };
+			// `params.permissions` arrives via the tolerant asObj() parse above
+			// (inbound, not compile-time checked) — cast, don't re-derive.
+			const permissions =
+				(params.permissions as GrantedPermissionProfile | undefined) ?? {};
+			return { scope: "session", permissions };
 		}
 		return { decision: "accept" };
 	}
 
-	private deniedServerRequestResult(method: string): unknown {
+	private deniedServerRequestResult(method: string): ApprovalRequestResult {
 		if (method === "item/permissions/requestApproval") {
 			return { scope: "turn", permissions: {} };
 		}

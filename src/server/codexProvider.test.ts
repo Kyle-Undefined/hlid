@@ -6,6 +6,7 @@ vi.mock("../lib/codexPath", () => ({ resolveCodexExecutable: vi.fn() }));
 
 import { spawn } from "node:child_process";
 import { resolveCodexExecutable } from "../lib/codexPath";
+import type { SandboxPolicy } from "./codexProtocol";
 import {
 	CodexProvider,
 	codexLaunchConfig,
@@ -249,6 +250,28 @@ describe("codexSandboxPolicy", () => {
 		expect(codexSandboxPolicy("acceptEdits", [])).toEqual({
 			type: "workspaceWrite",
 			writableRoots: [],
+			networkAccess: false,
+			excludeTmpdirEnvVar: false,
+			excludeSlashTmp: false,
+		});
+	});
+
+	it("returns values assignable to the vendored codex-cli SandboxPolicy type", () => {
+		// Compile-time check: if codex-cli's generated SandboxPolicy shape ever
+		// drifts (see src/server/codexProtocol/v2/SandboxPolicy.ts), `satisfies`
+		// below fails to typecheck rather than silently going stale.
+		expect(
+			codexSandboxPolicy("bypassPermissions", []) satisfies SandboxPolicy,
+		).toEqual({ type: "dangerFullAccess" });
+		expect(codexSandboxPolicy("plan", []) satisfies SandboxPolicy).toEqual({
+			type: "readOnly",
+			networkAccess: false,
+		});
+		expect(
+			codexSandboxPolicy("default", ["/vault"]) satisfies SandboxPolicy,
+		).toEqual({
+			type: "workspaceWrite",
+			writableRoots: ["/vault"],
 			networkAccess: false,
 			excludeTmpdirEnvVar: false,
 			excludeSlashTmp: false,
