@@ -12,6 +12,7 @@ import { CodexProvider } from "./codexProvider";
 import { loadConfig } from "./config";
 import { handleDbRoute } from "./dbRoutes";
 import { getLiveSessionsStatus } from "./liveSessions";
+import { createModelCatalog } from "./providerCatalog";
 import { startProviderProxy } from "./proxy";
 import { bootstrapPtyRuntime } from "./pty-bootstrap";
 import { broadcast } from "./runState";
@@ -91,6 +92,10 @@ for (const provider of providers.values()) {
 		);
 	}
 }
+// Non-blocking boot warm-up of live model catalogs (mirrors the
+// `void db.getSetting(...)` MCP status restore pattern below).
+const modelCatalog = createModelCatalog(providers);
+modelCatalog.warm();
 const pool = new SessionPool(config, providers);
 const ptyWorkerPath = bootstrapPtyRuntime();
 const terminalPool = new TerminalSessionPool(ptyWorkerPath, () => {
@@ -288,6 +293,7 @@ registerBunServer(
 			}
 
 			if (url.pathname === "/providers" && req.method === "GET") {
+				const refresh = url.searchParams.get("refresh") === "1";
 				const list = await Promise.all(
 					[...providers.values()].map(async (p) => {
 						const check = p.check
@@ -295,13 +301,17 @@ registerBunServer(
 									.check()
 									.catch(() => ({ available: false, reason: "check failed" }))
 							: null;
+						// Only force-refresh the live catalog for a provider whose CLI
+						// is actually available this request — don't refresh a provider
+						// we just found to be missing.
+						const providerRefresh = refresh && check?.available !== false;
 						return {
 							id: p.providerId,
 							label: p.label ?? p.providerId,
 							available: check?.available ?? true,
 							unavailableReason:
 								check?.available === false ? check.reason : undefined,
-							models: p.models,
+							models: await modelCatalog.modelsFor(p, providerRefresh),
 							effortLevels: p.effortLevels,
 							permissionModes: p.permissionModes,
 						};
