@@ -41,6 +41,13 @@ type Snapshot = {
 	// Reset to null only when a new run starts (state === "running") so the
 	// mismatch badge persists after the run completes.
 	actualModel: string | null;
+	/**
+	 * Chunk 6: current permission mode for the subscribed session. Session-
+	 * scoped (never persisted to hlid.config.toml) — reflects config defaults
+	 * until a `set_permission_mode` message overrides it. Null until the
+	 * first status message arrives.
+	 */
+	permissionMode: string | null;
 	hasPendingPermissions: boolean;
 	/**
 	 * Slice C: turn_id of the turn the server is currently processing
@@ -118,6 +125,7 @@ export const INITIAL_SNAPSHOT: Snapshot = {
 	sessionState: "idle",
 	model: "",
 	actualModel: null,
+	permissionMode: null,
 	hasPendingPermissions: false,
 	runningTurnId: null,
 };
@@ -304,6 +312,7 @@ function onStatus(msg: Extract<ServerMessage, { type: "status" }>): void {
 	setSnap({
 		sessionState: msg.state,
 		model: msg.model,
+		permissionMode: msg.permission_mode ?? _snap.permissionMode,
 		hasPendingPermissions: _pendingPermCount > 0,
 		runningTurnId,
 	});

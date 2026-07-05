@@ -4,6 +4,12 @@ export type StatusMessage = {
 	state: "idle" | "running" | "error";
 	model: string;
 	/**
+	 * Current permission mode for this session. Session-scoped — reflects
+	 * config defaults until a `set_permission_mode` client message overrides
+	 * it; never persisted to hlid.config.toml.
+	 */
+	permission_mode?: string;
+	/**
 	 * Slice C: when state=running, the turn_id of the turn the server is
 	 * currently processing. Lets the client distinguish "queued behind
 	 * running" from "currently running" in the chat queue UI without
@@ -456,6 +462,26 @@ export type ClientCloseSessionMessage = {
 	session_id: string;
 };
 
+/**
+ * Mid-session model switch for the subscribed session. Session-scoped only —
+ * never written to hlid.config.toml. `undefined` resets to the provider
+ * default.
+ */
+export type ClientSetModelMessage = {
+	type: "set_model";
+	model?: string;
+};
+
+/**
+ * Mid-session permission-mode switch for the subscribed session.
+ * Session-scoped only — never written to hlid.config.toml. Server rejects
+ * unrecognized modes with an `error` message.
+ */
+export type ClientSetPermissionModeMessage = {
+	type: "set_permission_mode";
+	mode: string;
+};
+
 export type ClientMessage =
 	| ClientChatMessage
 	| ClientCancelQueuedMessage
@@ -473,4 +499,6 @@ export type ClientMessage =
 	| ClientNewSessionMessage
 	| ClientSubscribeSessionMessage
 	| ClientStopSessionMessage
-	| ClientCloseSessionMessage;
+	| ClientCloseSessionMessage
+	| ClientSetModelMessage
+	| ClientSetPermissionModeMessage;

@@ -1,6 +1,7 @@
 import type {
 	EffortLevel as SdkEffortLevel,
 	ModelInfo as SdkModelInfo,
+	PermissionMode as SdkPermissionMode,
 } from "@anthropic-ai/claude-agent-sdk";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { resolveClaudeExecutable } from "../lib/claudePath";
@@ -10,12 +11,26 @@ import type {
 	AgentQueryParams,
 	AgentSession,
 	McpServerStatus,
+	ProviderAccountInfo,
 	ProviderEffortInfo,
 	ProviderModelInfo,
 	ProviderWindowReading,
 	SendOptions,
 	SlashCommand,
 } from "./agentProvider";
+
+/**
+ * Permission modes hlid's AgentQueryParams/agent-agnostic layer knows about.
+ * The SDK's PermissionMode also includes 'dontAsk' | 'auto', which hlid never
+ * sends — setPermissionMode() rejects anything outside this set with a clear
+ * error rather than silently forwarding an unsupported mode to the SDK.
+ */
+const KNOWN_PERMISSION_MODES = new Set<string>([
+	"default",
+	"acceptEdits",
+	"bypassPermissions",
+	"plan",
+]);
 
 type SdkQuery = ReturnType<typeof query>;
 
@@ -147,6 +162,51 @@ class ClaudeAgentSession implements AgentSession {
 	async supportedCommands(): Promise<SlashCommand[]> {
 		if (!this.sdkQuery) return [];
 		return this.sdkQuery.supportedCommands() as Promise<SlashCommand[]>;
+	}
+
+	/**
+	 * Mid-session model switch. Delegates to the SDK Query's setModel(), only
+	 * available once the stream is open (first send() has happened). No-op
+	 * when the SDK query hasn't been created yet — mirrors the
+	 * mcpServerStatus()/supportedCommands() null-guard pattern.
+	 */
+	async setModel(model?: string): Promise<void> {
+		if (!this.sdkQuery) return;
+		await this.sdkQuery.setModel(model);
+	}
+
+	/**
+	 * Mid-session permission-mode switch. Validates against the modes hlid's
+	 * AgentQueryParams supports before forwarding to the SDK — the SDK's
+	 * PermissionMode is a superset ('dontAsk' | 'auto' besides ours) that
+	 * hlid has no UI/config path for, so an unknown value is rejected here
+	 * rather than passed through.
+	 */
+	async setPermissionMode(mode: string): Promise<void> {
+		if (!KNOWN_PERMISSION_MODES.has(mode)) {
+			throw new Error(`Unknown permission mode: ${mode}`);
+		}
+		if (!this.sdkQuery) return;
+		await this.sdkQuery.setPermissionMode(mode as SdkPermissionMode);
+	}
+
+	/**
+	 * Account info for the authenticated session. Returns null when the SDK
+	 * query hasn't been created yet (mirrors the other optional methods'
+	 * null-guard) or when the SDK call itself fails (e.g. not logged in).
+	 */
+	async accountInfo(): Promise<ProviderAccountInfo | null> {
+		if (!this.sdkQuery) return null;
+		try {
+			const info = await this.sdkQuery.accountInfo();
+			return {
+				email: info.email,
+				organization: info.organization,
+				subscriptionType: info.subscriptionType,
+			};
+		} catch {
+			return null;
+		}
 	}
 
 	private ensureSdkQuery(): void {

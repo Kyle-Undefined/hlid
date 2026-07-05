@@ -320,6 +320,18 @@ registerBunServer(
 				return Response.json({ providers: list });
 			}
 
+			if (url.pathname === "/account" && req.method === "GET") {
+				// Ask each live pool session for account info; return the first
+				// non-null hit. Never spawns a session to answer this — only
+				// checks already-running AgentSessions (see
+				// SessionManager.getAccountInfo()).
+				for (const entry of pool.getAllEntries()) {
+					const info = await entry.manager.getAccountInfo();
+					if (info) return Response.json(info);
+				}
+				return Response.json(null);
+			}
+
 			if (url.pathname === "/mcp-status" && req.method === "GET") {
 				return Response.json(
 					pool.vaultEntry().manager.getLastMcpStatus() ?? [],

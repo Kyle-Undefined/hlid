@@ -4,7 +4,7 @@ import {
 	effortOptionsFor,
 	modelOptions as getModelOptions,
 } from "#/lib/providerOptions";
-import type { ProviderInfo } from "#/lib/serverFns";
+import type { AccountInfo, ProviderInfo } from "#/lib/serverFns";
 import { Field, Section } from "./fields";
 
 export type ClaudeForm = {
@@ -23,10 +23,13 @@ export function ClaudeSection({
 	claude,
 	onChange,
 	providers,
+	accountInfo,
 }: {
 	claude: ClaudeForm;
 	onChange: (patch: Partial<ClaudeForm>) => void;
 	providers: ProviderInfo[];
+	/** Account info for the live claude session backing the vault agent, if any. */
+	accountInfo?: AccountInfo | null;
 }) {
 	// Options come from the selected provider's declared capabilities.
 	const activeProvider = providers.find((p) => p.id === claude.vaultProvider);
@@ -44,6 +47,14 @@ export function ClaudeSection({
 
 	return (
 		<Section title="Vault Agent">
+			{accountInfo && (
+				<div className="px-4 py-2 text-xs text-muted-foreground border-b border-border/50">
+					Account: {accountInfo.email ?? "unknown"}
+					{accountInfo.subscriptionType
+						? ` · ${accountInfo.subscriptionType}`
+						: ""}
+				</div>
+			)}
 			{providers.length > 0 && (
 				<Field label="Provider" hint="provider used for vault chat">
 					<div className="flex items-center gap-2">

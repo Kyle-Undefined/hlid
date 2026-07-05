@@ -8,6 +8,7 @@ export function useWs(onMessage?: (msg: ServerMessage) => void) {
 		sessionState,
 		model,
 		actualModel,
+		permissionMode,
 		runningTurnId,
 		hasPendingPermissions,
 	} = useSyncExternalStore(
@@ -28,6 +29,7 @@ export function useWs(onMessage?: (msg: ServerMessage) => void) {
 		sessionState,
 		model,
 		actualModel,
+		permissionMode,
 		runningTurnId,
 		hasPendingPermissions,
 		send,

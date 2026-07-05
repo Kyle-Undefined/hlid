@@ -464,6 +464,37 @@ class CodexAgentSession implements AgentSession {
 		if (typeof turn.id === "string") this.activeTurnId = turn.id;
 	}
 
+	/**
+	 * Mid-session model switch. Codex has no dedicated RPC for this — instead
+	 * we mutate the params send() reads on every turn/start call (see above:
+	 * `...(this.params.model ? { model: this.params.model } : {})`), so the
+	 * NEXT turn picks up the new model. Nothing to notify codex-cli of until
+	 * then; there's no live "change model now" control message in the
+	 * app-server protocol.
+	 */
+	async setModel(model?: string): Promise<void> {
+		this.params = { ...this.params, model };
+	}
+
+	/**
+	 * Mid-session permission-mode switch. Like setModel, this only mutates
+	 * the params send() reads per turn — approvalPolicy and sandboxPolicy are
+	 * both recomputed from `this.params.permissionMode` on every turn/start
+	 * call (see send() above). The thread-level `sandbox` field passed at
+	 * thread/start (in start(), below) was derived from the ORIGINAL
+	 * permission mode and is never re-sent, but turn/start's `sandboxPolicy`
+	 * is a full policy object that codex-cli honours per-turn and takes
+	 * precedence over the thread-level default — so this mutation is
+	 * effective starting with the next turn without needing to touch the
+	 * thread.
+	 */
+	async setPermissionMode(mode: string): Promise<void> {
+		this.params = {
+			...this.params,
+			permissionMode: mode as AgentQueryParams["permissionMode"],
+		};
+	}
+
 	async supportedCommands(): Promise<SlashCommand[]> {
 		await this.ensureReady();
 		try {

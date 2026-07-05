@@ -693,6 +693,187 @@ describe("ClaudeProvider — mcpServerStatus", () => {
 	});
 });
 
+// ── setModel ──────────────────────────────────────────────────────────────────
+
+describe("ClaudeProvider — setModel", () => {
+	it("delegates setModel() to the underlying SDK query", async () => {
+		const gen = sdkGen([
+			{
+				type: "result",
+				subtype: "success",
+				total_cost_usd: 0,
+				num_turns: 1,
+				duration_ms: 100,
+				usage: { input_tokens: 10, output_tokens: 5 },
+			},
+		]);
+		gen.setModel = vi.fn().mockResolvedValue(undefined);
+		vi.mocked(query).mockReturnValueOnce(gen);
+
+		const provider = new ClaudeProvider();
+		const session = provider.query(baseParams());
+		const iter = session[Symbol.asyncIterator]();
+		await iter.next();
+
+		await session.setModel?.("claude-opus-4-8");
+		expect(gen.setModel).toHaveBeenCalledWith("claude-opus-4-8");
+	});
+
+	it("passes undefined through to reset to the provider default", async () => {
+		const gen = sdkGen([
+			{
+				type: "result",
+				subtype: "success",
+				total_cost_usd: 0,
+				num_turns: 1,
+				duration_ms: 100,
+				usage: { input_tokens: 10, output_tokens: 5 },
+			},
+		]);
+		gen.setModel = vi.fn().mockResolvedValue(undefined);
+		vi.mocked(query).mockReturnValueOnce(gen);
+
+		const provider = new ClaudeProvider();
+		const session = provider.query(baseParams());
+		const iter = session[Symbol.asyncIterator]();
+		await iter.next();
+
+		await session.setModel?.(undefined);
+		expect(gen.setModel).toHaveBeenCalledWith(undefined);
+	});
+
+	it("is a no-op when the SDK query hasn't been created yet", async () => {
+		const provider = new ClaudeProvider();
+		const session = provider.query(baseParams());
+		await expect(session.setModel?.("whatever")).resolves.toBeUndefined();
+	});
+});
+
+// ── setPermissionMode ─────────────────────────────────────────────────────────
+
+describe("ClaudeProvider — setPermissionMode", () => {
+	it("delegates setPermissionMode() to the underlying SDK query", async () => {
+		const gen = sdkGen([
+			{
+				type: "result",
+				subtype: "success",
+				total_cost_usd: 0,
+				num_turns: 1,
+				duration_ms: 100,
+				usage: { input_tokens: 10, output_tokens: 5 },
+			},
+		]);
+		gen.setPermissionMode = vi.fn().mockResolvedValue(undefined);
+		vi.mocked(query).mockReturnValueOnce(gen);
+
+		const provider = new ClaudeProvider();
+		const session = provider.query(baseParams());
+		const iter = session[Symbol.asyncIterator]();
+		await iter.next();
+
+		await session.setPermissionMode?.("acceptEdits");
+		expect(gen.setPermissionMode).toHaveBeenCalledWith("acceptEdits");
+	});
+
+	it("rejects an unknown permission mode without calling the SDK", async () => {
+		const gen = sdkGen([
+			{
+				type: "result",
+				subtype: "success",
+				total_cost_usd: 0,
+				num_turns: 1,
+				duration_ms: 100,
+				usage: { input_tokens: 10, output_tokens: 5 },
+			},
+		]);
+		gen.setPermissionMode = vi.fn().mockResolvedValue(undefined);
+		vi.mocked(query).mockReturnValueOnce(gen);
+
+		const provider = new ClaudeProvider();
+		const session = provider.query(baseParams());
+		const iter = session[Symbol.asyncIterator]();
+		await iter.next();
+
+		await expect(session.setPermissionMode?.("bogus")).rejects.toThrow(
+			"Unknown permission mode: bogus",
+		);
+		expect(gen.setPermissionMode).not.toHaveBeenCalled();
+	});
+
+	it("is a no-op when the SDK query hasn't been created yet", async () => {
+		const provider = new ClaudeProvider();
+		const session = provider.query(baseParams());
+		await expect(
+			session.setPermissionMode?.("acceptEdits"),
+		).resolves.toBeUndefined();
+	});
+});
+
+// ── accountInfo ───────────────────────────────────────────────────────────────
+
+describe("ClaudeProvider — accountInfo", () => {
+	it("maps the SDK's AccountInfo to the provider-agnostic shape", async () => {
+		const gen = sdkGen([
+			{
+				type: "result",
+				subtype: "success",
+				total_cost_usd: 0,
+				num_turns: 1,
+				duration_ms: 100,
+				usage: { input_tokens: 10, output_tokens: 5 },
+			},
+		]);
+		gen.accountInfo = vi.fn().mockResolvedValue({
+			email: "kyle@example.com",
+			organization: "Acme",
+			subscriptionType: "max",
+			tokenSource: "keychain",
+			apiProvider: "firstParty",
+		});
+		vi.mocked(query).mockReturnValueOnce(gen);
+
+		const provider = new ClaudeProvider();
+		const session = provider.query(baseParams());
+		const iter = session[Symbol.asyncIterator]();
+		await iter.next();
+
+		const info = await session.accountInfo?.();
+		expect(info).toEqual({
+			email: "kyle@example.com",
+			organization: "Acme",
+			subscriptionType: "max",
+		});
+	});
+
+	it("returns null when the SDK query hasn't been created yet", async () => {
+		const provider = new ClaudeProvider();
+		const session = provider.query(baseParams());
+		expect(await session.accountInfo?.()).toBeNull();
+	});
+
+	it("returns null when the SDK call fails", async () => {
+		const gen = sdkGen([
+			{
+				type: "result",
+				subtype: "success",
+				total_cost_usd: 0,
+				num_turns: 1,
+				duration_ms: 100,
+				usage: { input_tokens: 10, output_tokens: 5 },
+			},
+		]);
+		gen.accountInfo = vi.fn().mockRejectedValue(new Error("not logged in"));
+		vi.mocked(query).mockReturnValueOnce(gen);
+
+		const provider = new ClaudeProvider();
+		const session = provider.query(baseParams());
+		const iter = session[Symbol.asyncIterator]();
+		await iter.next();
+
+		expect(await session.accountInfo?.()).toBeNull();
+	});
+});
+
 // ── cancel ────────────────────────────────────────────────────────────────────
 
 describe("ClaudeProvider — cancel", () => {

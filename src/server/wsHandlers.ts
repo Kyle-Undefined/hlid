@@ -297,6 +297,33 @@ export function createWsHandlers(
 				return;
 			}
 
+			if (msg.type === "set_model") {
+				await entry.manager.setModel(msg.model);
+				entry.runState.broadcast({
+					type: "status",
+					...entry.manager.getStatus(),
+				});
+				return;
+			}
+
+			if (msg.type === "set_permission_mode") {
+				try {
+					await entry.manager.setPermissionMode(msg.mode);
+				} catch (err) {
+					send(ws, {
+						type: "error",
+						message:
+							err instanceof Error ? err.message : "Invalid permission mode",
+					});
+					return;
+				}
+				entry.runState.broadcast({
+					type: "status",
+					...entry.manager.getStatus(),
+				});
+				return;
+			}
+
 			if (msg.type === "sync_mcp_list") {
 				const cfg = loadConfig();
 

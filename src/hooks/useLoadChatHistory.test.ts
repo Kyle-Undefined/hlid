@@ -99,6 +99,7 @@ describe("useLoadChatHistory — initial load", () => {
 			wsStatus: "connected",
 			model: "",
 			actualModel: null,
+			permissionMode: null,
 			hasPendingPermissions: false,
 			runningTurnId: null,
 		});
@@ -153,6 +154,7 @@ describe("useLoadChatHistory — reconnect recovery", () => {
 			wsStatus: "connected",
 			model: "",
 			actualModel: null,
+			permissionMode: null,
 			hasPendingPermissions: false,
 			runningTurnId: null,
 		});
@@ -330,6 +332,7 @@ describe("useLoadChatHistory — reconnect recovery", () => {
 			wsStatus: "connected",
 			model: "",
 			actualModel: null,
+			permissionMode: null,
 			hasPendingPermissions: false,
 			runningTurnId: null,
 		});
@@ -567,6 +570,7 @@ describe("useLoadChatHistory — placeholder reuse during running turn", () => {
 			wsStatus: "connected",
 			model: "",
 			actualModel: null,
+			permissionMode: null,
 			hasPendingPermissions: false,
 			runningTurnId: null,
 		});

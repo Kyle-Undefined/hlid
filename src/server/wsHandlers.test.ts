@@ -105,6 +105,9 @@ function makeSession(overrides: Partial<SessionManager> = {}): SessionManager {
 		handlePlanModeExitResponse: vi.fn(),
 		probeMcpStatus: vi.fn().mockResolvedValue(undefined),
 		restoreMcpStatus: vi.fn(),
+		setModel: vi.fn().mockResolvedValue(undefined),
+		setPermissionMode: vi.fn().mockResolvedValue(undefined),
+		getAccountInfo: vi.fn().mockResolvedValue(null),
 		...overrides,
 	} as unknown as SessionManager;
 }
@@ -452,6 +455,91 @@ describe("message — reload_session", () => {
 		runState.ownerWs = owner;
 		await message(other as never, JSON.stringify({ type: "reload_session" }));
 		expect(session.reinitialize).toHaveBeenCalled();
+	});
+});
+
+// ── message: set_model ────────────────────────────────────────────────────────
+
+describe("message — set_model", () => {
+	it("calls manager.setModel and broadcasts the updated status", async () => {
+		const session = makeSession({
+			getStatus: vi.fn().mockReturnValue({
+				state: "idle",
+				model: "new-model",
+				permission_mode: "default",
+			}),
+		});
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+		await message(
+			ws as never,
+			JSON.stringify({ type: "set_model", model: "new-model" }),
+		);
+		expect(session.setModel).toHaveBeenCalledWith("new-model");
+		expect(runState.broadcast).toHaveBeenCalledWith({
+			type: "status",
+			state: "idle",
+			model: "new-model",
+			permission_mode: "default",
+		});
+	});
+
+	it("passes undefined through (reset to provider default)", async () => {
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+		await message(ws as never, JSON.stringify({ type: "set_model" }));
+		expect(session.setModel).toHaveBeenCalledWith(undefined);
+	});
+});
+
+// ── message: set_permission_mode ──────────────────────────────────────────────
+
+describe("message — set_permission_mode", () => {
+	it("calls manager.setPermissionMode and broadcasts the updated status", async () => {
+		const session = makeSession({
+			getStatus: vi.fn().mockReturnValue({
+				state: "idle",
+				model: "test-model",
+				permission_mode: "acceptEdits",
+			}),
+		});
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+		await message(
+			ws as never,
+			JSON.stringify({ type: "set_permission_mode", mode: "acceptEdits" }),
+		);
+		expect(session.setPermissionMode).toHaveBeenCalledWith("acceptEdits");
+		expect(runState.broadcast).toHaveBeenCalledWith({
+			type: "status",
+			state: "idle",
+			model: "test-model",
+			permission_mode: "acceptEdits",
+		});
+	});
+
+	it("sends an error and does not broadcast when the mode is rejected", async () => {
+		const session = makeSession({
+			setPermissionMode: vi
+				.fn()
+				.mockRejectedValue(new Error("Unknown permission mode: bogus")),
+		});
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+		await message(
+			ws as never,
+			JSON.stringify({ type: "set_permission_mode", mode: "bogus" }),
+		);
+		expect(lastSentTo(ws)).toEqual({
+			type: "error",
+			message: "Unknown permission mode: bogus",
+		});
+		expect(runState.broadcast).not.toHaveBeenCalled();
 	});
 });
 

@@ -36,12 +36,14 @@ import { useWs } from "#/hooks/useWs";
 import { useWsChatQueue, useWsLiveStats } from "#/hooks/useWsSelectors";
 import * as wsStore from "#/hooks/wsStore";
 import { deriveModelMismatch, fmtModel } from "#/lib/formatters";
+import { modelOptions, resolveActiveProviderId } from "#/lib/providerOptions";
 import {
 	ensureSessionFn,
 	getAgentListFn,
 	getCockpitData,
 	getCurrentSessionFn,
 	getLiveSessionsFn,
+	getProvidersFn,
 	getSessionAgentCwdFn,
 	getUsageWindowsFn,
 } from "#/lib/serverFns";
@@ -64,12 +66,14 @@ export const Route = createFileRoute("/raven")({
 	},
 	loaderDeps: ({ search: { session, agent } }) => ({ session, agent }),
 	loader: async ({ deps: { session, agent } }) => {
-		const [config, usageWindows, agentList, cockpitData] = await Promise.all([
-			getConfig(),
-			getUsageWindowsFn(),
-			getAgentListFn(),
-			getCockpitData(),
-		]);
+		const [config, usageWindows, agentList, cockpitData, providers] =
+			await Promise.all([
+				getConfig(),
+				getUsageWindowsFn(),
+				getAgentListFn(),
+				getCockpitData(),
+				getProvidersFn(),
+			]);
 		const agentConfig = (config.agents ?? []).find((a) => a.path === agent);
 		const routeInteractiveMode =
 			agentConfig?.interactive_mode ?? config.claude?.interactive_mode ?? false;
@@ -123,6 +127,7 @@ export const Route = createFileRoute("/raven")({
 			agentList,
 			vaultSkills: cockpitData.skills,
 			interactiveMode,
+			providers,
 		};
 	},
 	component: ChatPage,
@@ -140,6 +145,7 @@ function ChatPage() {
 		agentList,
 		vaultSkills,
 		interactiveMode,
+		providers,
 	} = Route.useLoaderData();
 	const navigate = useNavigate();
 	const [agentSkillContext, setAgentSkillContext] = useState(
@@ -298,8 +304,15 @@ function ChatPage() {
 		[handleWsMessage],
 	);
 
-	const { wsStatus, sessionState, model, actualModel, runningTurnId, send } =
-		useWs(handleAllMessages);
+	const {
+		wsStatus,
+		sessionState,
+		model,
+		actualModel,
+		permissionMode,
+		runningTurnId,
+		send,
+	} = useWs(handleAllMessages);
 
 	useLoadChatHistory({
 		existingSessionId,
@@ -608,6 +621,19 @@ function ChatPage() {
 		? fmtModel(effectiveActualModel)
 		: null;
 
+	// Chunk 6: mid-session model/permission switcher. Options come from the
+	// provider backing the CURRENT chat (agent-scoped if an agent skill
+	// context is active, else the vault provider) — not necessarily the same
+	// provider the vault is configured for.
+	const activeProviderId = resolveActiveProviderId(
+		agentList,
+		agentSkillContext,
+		config.vault_provider,
+	);
+	const activeProvider = providers.find((p) => p.id === activeProviderId);
+	const modelPickerOptions = modelOptions(activeProvider);
+	const permissionOptions = activeProvider?.permissionModes ?? [];
+
 	// ─── Render ───────────────────────────────────────────────────────────────
 
 	return (
@@ -726,25 +752,92 @@ function ChatPage() {
 									type="button"
 									onClick={(e) => {
 										e.stopPropagation();
-										if (modelMismatch) setShowModelPopup((v) => !v);
+										setShowModelPopup((v) => !v);
 									}}
-									className={`text-[9px] tracking-widest px-2 py-0.5 uppercase bg-background border ${
+									className={`text-[9px] tracking-widest px-2 py-0.5 uppercase bg-background border cursor-pointer transition-colors ${
 										modelMismatch
-											? "text-amber-500/80 border-amber-500/60 cursor-pointer"
-											: "text-muted-foreground/50 border-border/70 cursor-default"
+											? "text-amber-500/80 border-amber-500/60"
+											: "text-muted-foreground/50 border-border/70 hover:text-foreground/70 hover:border-primary/40"
 									}`}
 								>
 									{actualModelShort ?? modelShort}
 								</button>
-								{showModelPopup && modelMismatch && (
-									<div className="absolute bottom-full right-0 mb-1.5 bg-background border border-amber-500/40 px-3 py-2 text-[9px] tracking-widest uppercase whitespace-nowrap space-y-0.5">
-										<div>
-											<span className="text-muted-foreground/50">vault </span>
-											<span className="text-foreground/60">{modelShort}</span>
-										</div>
-										<div>
-											<span className="text-muted-foreground/50">agent </span>
-											<span className="text-amber-400">{actualModelShort}</span>
+								{showModelPopup && (
+									<div className="absolute bottom-full right-0 mb-1.5 w-56 max-w-[calc(100vw-1.5rem)] max-h-72 overflow-y-auto bg-background border border-border px-3 py-2 text-[9px] tracking-widest uppercase space-y-2">
+										{modelMismatch && (
+											<div className="space-y-0.5 pb-2 border-b border-border/50">
+												<div>
+													<span className="text-muted-foreground/50">
+														vault{" "}
+													</span>
+													<span className="text-foreground/60">
+														{modelShort}
+													</span>
+												</div>
+												<div>
+													<span className="text-muted-foreground/50">
+														agent{" "}
+													</span>
+													<span className="text-amber-400">
+														{actualModelShort}
+													</span>
+												</div>
+											</div>
+										)}
+										{modelPickerOptions.length > 0 && (
+											<div className="space-y-1">
+												<div className="text-muted-foreground/40">model</div>
+												{modelPickerOptions.map((m) => (
+													<button
+														key={m.value}
+														type="button"
+														title={m.description}
+														onClick={() => {
+															send({ type: "set_model", model: m.value });
+															setShowModelPopup(false);
+														}}
+														className={`block w-full text-left normal-case tracking-normal px-1.5 py-1 transition-colors ${
+															m.value === model
+																? "text-primary bg-primary/10"
+																: "text-foreground/70 hover:bg-accent"
+														}`}
+													>
+														{m.label}
+														{m.isDefault ? " (default)" : ""}
+													</button>
+												))}
+											</div>
+										)}
+										{permissionOptions.length > 0 && (
+											<div className="space-y-1 pt-1 border-t border-border/50">
+												<div className="text-muted-foreground/40">
+													permission
+												</div>
+												{permissionOptions.map((p) => (
+													<button
+														key={p.value}
+														type="button"
+														title={p.desc}
+														onClick={() => {
+															send({
+																type: "set_permission_mode",
+																mode: p.value,
+															});
+															setShowModelPopup(false);
+														}}
+														className={`block w-full text-left normal-case tracking-normal px-1.5 py-1 transition-colors ${
+															p.value === permissionMode
+																? "text-primary bg-primary/10"
+																: "text-foreground/70 hover:bg-accent"
+														}`}
+													>
+														{p.label}
+													</button>
+												))}
+											</div>
+										)}
+										<div className="normal-case tracking-normal text-muted-foreground/30 pt-1 border-t border-border/50">
+											session only — not saved to config
 										</div>
 									</div>
 								)}

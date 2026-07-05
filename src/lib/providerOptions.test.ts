@@ -3,6 +3,7 @@ import {
 	defaultEffortFor,
 	effortOptionsFor,
 	modelOptions,
+	resolveActiveProviderId,
 } from "./providerOptions";
 import type { ProviderInfo } from "./serverFns";
 
@@ -88,5 +89,30 @@ describe("defaultEffortFor", () => {
 
 	it("returns undefined for undefined provider", () => {
 		expect(defaultEffortFor(undefined, "anything")).toBeUndefined();
+	});
+});
+
+describe("resolveActiveProviderId", () => {
+	const agentList = [
+		{ path: "/agents/codex-agent", provider: "codex" },
+		{ path: "/agents/claude-agent", provider: "claude" },
+	];
+
+	it("returns the vault provider when no agent context is active", () => {
+		expect(resolveActiveProviderId(agentList, undefined, "claude")).toBe(
+			"claude",
+		);
+	});
+
+	it("returns the matched agent's provider when an agent context is active", () => {
+		expect(
+			resolveActiveProviderId(agentList, "/agents/codex-agent", "claude"),
+		).toBe("codex");
+	});
+
+	it("falls back to the vault provider when the agent context isn't found", () => {
+		expect(
+			resolveActiveProviderId(agentList, "/agents/unknown", "claude"),
+		).toBe("claude");
 	});
 });

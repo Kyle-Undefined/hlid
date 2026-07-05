@@ -97,6 +97,8 @@ export type AgentListItem = {
 	path: string;
 	name: string;
 	model?: string;
+	/** Provider this agent runs on, e.g. "claude" or "codex". Defaults to "claude". */
+	provider: string;
 };
 
 /** Resolves the list of configured agents with display names. */
@@ -113,9 +115,26 @@ export const getAgentListFn = createServerFn({ method: "GET" }).handler(
 						.map((w: string) => w.charAt(0).toUpperCase() + w.slice(1))
 						.join(" "),
 				...(a.model ? { model: a.model } : {}),
+				provider: a.provider ?? "claude",
 			}),
 		);
 	},
+);
+
+/** Account info for the authenticated agent backing a live claude session. */
+export type AccountInfo = {
+	email?: string;
+	organization?: string;
+	subscriptionType?: string;
+};
+
+/**
+ * Returns account info (email/org/subscription) for the first live session
+ * whose provider exposes it, or null if none is running. Never spawns a
+ * session — see GET /account in server/index.ts.
+ */
+export const getAccountInfoFn = createServerFn({ method: "GET" }).handler(() =>
+	dbJson<AccountInfo | null>("/account", null),
 );
 
 /** Returns current usage windows (5hr / weekly rate-limit data). */

@@ -4,7 +4,7 @@
  * catalog with provider-level fallback" logic so every picker (vault-level
  * ClaudeSection, per-agent AgentCard/AddAgentPanel) stays in sync.
  */
-import type { ProviderInfo } from "./serverFns";
+import type { AgentListItem, ProviderInfo } from "./serverFns";
 
 type ModelOptions = NonNullable<ProviderInfo["models"]>;
 type EffortOption = {
@@ -38,4 +38,21 @@ export function defaultEffortFor(
 ): string | undefined {
 	const model = p?.models?.find((m) => m.value === modelValue);
 	return model?.efforts?.find((e) => e.isDefault)?.value;
+}
+
+/**
+ * The providerId a chat should use right now: the agent's own provider when
+ * an agent skill context is active, else the vault's configured provider.
+ * Used by raven's model/permission switcher to pick the right ProviderInfo
+ * (models/permissionModes) out of the providers list depending on whether
+ * the user is chatting in an agent context or the vault.
+ */
+export function resolveActiveProviderId(
+	agentList: ReadonlyArray<Pick<AgentListItem, "path" | "provider">>,
+	agentSkillContext: string | undefined,
+	vaultProviderId: string,
+): string {
+	if (!agentSkillContext) return vaultProviderId;
+	const agent = agentList.find((a) => a.path === agentSkillContext);
+	return agent?.provider ?? vaultProviderId;
 }

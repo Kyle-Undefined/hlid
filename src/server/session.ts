@@ -15,6 +15,7 @@ import type {
 	AgentProvider,
 	AgentSession,
 	McpServerStatus,
+	ProviderAccountInfo,
 } from "./agentProvider";
 import { loadConfig } from "./config";
 import { resolveExecutionContext } from "./executionContext";
@@ -107,6 +108,13 @@ type QueuedTurn = {
 export type SessionState = "idle" | "running" | "error";
 
 type PermissionMode = "default" | "acceptEdits" | "bypassPermissions" | "plan";
+
+const KNOWN_PERMISSION_MODES: ReadonlySet<string> = new Set([
+	"default",
+	"acceptEdits",
+	"bypassPermissions",
+	"plan",
+]);
 
 type AgentSettings = {
 	model?: string;
@@ -276,8 +284,61 @@ export class SessionManager {
 		return modelChanged;
 	}
 
-	getStatus(): { state: SessionState; model: string } {
-		return { state: this.state, model: this.model };
+	getStatus(): {
+		state: SessionState;
+		model: string;
+		permission_mode: PermissionMode;
+	} {
+		return {
+			state: this.state,
+			model: this.model,
+			permission_mode: this.permissionMode,
+		};
+	}
+
+	/**
+	 * Mid-session model switch (Chunk 6). Session-scoped: updates the field
+	 * `runOneTurn` reads for vault chats and delegates to the live
+	 * AgentSession (if one exists) so the change is effective starting with
+	 * the very next turn instead of waiting for a fresh session. No-op on
+	 * providers whose AgentSession doesn't implement setModel (e.g. codex's
+	 * setModel always exists, but a future provider might not).
+	 * `undefined` resets to the provider default (mirrors the SDK's own
+	 * setModel(model?: string) semantics).
+	 */
+	async setModel(model?: string): Promise<void> {
+		this.model = model ?? "";
+		await this.agentSession?.setModel?.(model);
+	}
+
+	/**
+	 * Mid-session permission-mode switch (Chunk 6). Validates against the
+	 * known modes before mutating any state — an invalid mode throws rather
+	 * than silently no-op'ing so the caller (wsHandlers) can surface a clear
+	 * error to the client. Session-scoped like setModel: updates the field
+	 * `runOneTurn` reads and delegates to the live AgentSession so the
+	 * change applies starting with the next turn.
+	 */
+	async setPermissionMode(mode: string): Promise<void> {
+		if (!KNOWN_PERMISSION_MODES.has(mode)) {
+			throw new Error(`Unknown permission mode: ${mode}`);
+		}
+		this.permissionMode = mode as PermissionMode;
+		await this.agentSession?.setPermissionMode?.(mode);
+	}
+
+	/**
+	 * Account info for this session's live AgentSession, or null when there
+	 * isn't one (idle session, or the active provider doesn't expose
+	 * accountInfo — e.g. codex). Never spawns a session to answer this.
+	 */
+	async getAccountInfo(): Promise<ProviderAccountInfo | null> {
+		if (!this.agentSession?.accountInfo) return null;
+		try {
+			return await this.agentSession.accountInfo();
+		} catch {
+			return null;
+		}
 	}
 
 	getCurrentSessionId(): string | null {
@@ -1054,6 +1115,7 @@ export class SessionManager {
 				type: "status",
 				state: this.state,
 				model: this.model,
+				permission_mode: this.permissionMode,
 			});
 		}
 	}
@@ -1078,6 +1140,7 @@ export class SessionManager {
 			type: "status",
 			state: "running",
 			model: this.model,
+			permission_mode: this.permissionMode,
 			...(turnId !== undefined ? { turn_id: turnId } : {}),
 		});
 

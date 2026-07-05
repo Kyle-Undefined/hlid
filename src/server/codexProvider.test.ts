@@ -6,6 +6,7 @@ vi.mock("../lib/codexPath", () => ({ resolveCodexExecutable: vi.fn() }));
 
 import { spawn } from "node:child_process";
 import { resolveCodexExecutable } from "../lib/codexPath";
+import type { AgentQueryParams } from "./agentProvider";
 import type { SandboxPolicy } from "./codexProtocol";
 import {
 	CodexProvider,
@@ -499,5 +500,144 @@ describe("CodexProvider.listModels", () => {
 		const provider = new CodexProvider();
 		const models = await provider.listModels?.();
 		expect(models).toEqual(mapCodexModels(MODEL_LIST_FIXTURE));
+	});
+});
+
+// ── CodexAgentSession mid-session model/permission switching ──────────────────
+
+/**
+ * Fake app-server process that drives a full initialize → thread/start →
+ * turn/start handshake (unlike makeFakeProc above, which only answers
+ * initialize/model-list for the one-off fetchCodexModels probe). Every
+ * `turn/start` call gets a fresh turn id so CodexAgentSession.send() can be
+ * called repeatedly.
+ */
+function makeFakeSessionProc(): { proc: FakeProc; writes: string[] } {
+	const stdout = new EventEmitter();
+	const stderr = new EventEmitter();
+	const proc = new EventEmitter() as FakeProc;
+	const writes: string[] = [];
+	let turnCounter = 0;
+	proc.stdin = {
+		write: vi.fn((data: string) => {
+			writes.push(data);
+			const msg = JSON.parse(data) as { id?: number; method?: string };
+			queueMicrotask(() => {
+				if (msg.method === "initialize") {
+					stdout.emit(
+						"data",
+						Buffer.from(`${JSON.stringify({ id: msg.id, result: {} })}\n`),
+					);
+				} else if (
+					msg.method === "thread/start" ||
+					msg.method === "thread/resume"
+				) {
+					stdout.emit(
+						"data",
+						Buffer.from(
+							`${JSON.stringify({
+								id: msg.id,
+								result: { thread: { id: "thread-1" } },
+							})}\n`,
+						),
+					);
+				} else if (msg.method === "turn/start") {
+					turnCounter++;
+					stdout.emit(
+						"data",
+						Buffer.from(
+							`${JSON.stringify({
+								id: msg.id,
+								result: { turn: { id: `turn-${turnCounter}` } },
+							})}\n`,
+						),
+					);
+				}
+			});
+		}),
+	};
+	proc.stdout = stdout;
+	proc.stderr = stderr;
+	proc.kill = vi.fn();
+	return { proc, writes };
+}
+
+/** Extract every `turn/start` call's params from the recorded writes. */
+function turnStartParams(writes: string[]): Array<Record<string, unknown>> {
+	return writes
+		.map((w) => JSON.parse(w) as { method?: string; params?: unknown })
+		.filter((m) => m.method === "turn/start")
+		.map((m) => m.params as Record<string, unknown>);
+}
+
+function baseCodexParams(
+	overrides: Partial<AgentQueryParams> = {},
+): AgentQueryParams {
+	return {
+		cwd: "/tmp/codex-test",
+		canUseTool: vi.fn().mockResolvedValue({ behavior: "allow" }),
+		model: "gpt-5.4",
+		permissionMode: "default",
+		...overrides,
+	};
+}
+
+describe("CodexAgentSession — setModel", () => {
+	it("changes the model carried by the next turn/start call", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const provider = new CodexProvider();
+		const session = provider.query(baseCodexParams());
+
+		await session.send("hello");
+		await session.setModel?.("gpt-5.5");
+		await session.send("hello again");
+
+		const turns = turnStartParams(writes);
+		expect(turns).toHaveLength(2);
+		expect(turns[0].model).toBe("gpt-5.4");
+		expect(turns[1].model).toBe("gpt-5.5");
+	});
+
+	it("omits `model` from the next turn/start call when reset to undefined", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const provider = new CodexProvider();
+		const session = provider.query(baseCodexParams());
+
+		await session.send("hello");
+		await session.setModel?.(undefined);
+		await session.send("hello again");
+
+		const turns = turnStartParams(writes);
+		expect(turns[0].model).toBe("gpt-5.4");
+		expect(turns[1].model).toBeUndefined();
+	});
+});
+
+describe("CodexAgentSession — setPermissionMode", () => {
+	it("changes approvalPolicy and sandboxPolicy on the next turn/start call", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const provider = new CodexProvider();
+		const session = provider.query(baseCodexParams());
+
+		await session.send("hello");
+		await session.setPermissionMode?.("bypassPermissions");
+		await session.send("hello again");
+
+		const turns = turnStartParams(writes);
+		expect(turns[0].approvalPolicy).toBe("on-request");
+		expect(turns[0].sandboxPolicy).toEqual(codexSandboxPolicy("default", []));
+		expect(turns[1].approvalPolicy).toBe("never");
+		expect(turns[1].sandboxPolicy).toEqual(
+			codexSandboxPolicy("bypassPermissions", []),
+		);
 	});
 });

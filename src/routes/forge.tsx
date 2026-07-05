@@ -19,7 +19,7 @@ import type { VocabForm } from "#/components/forge/VocabSection";
 import { VocabSection } from "#/components/forge/VocabSection";
 import type { HlidConfig } from "#/config";
 import { DEFAULT_ATTACHMENTS_CONFIG, getConfig } from "#/config";
-import { getProvidersFn } from "#/lib/serverFns";
+import { getAccountInfoFn, getProvidersFn } from "#/lib/serverFns";
 import { buildVaultSection } from "#/lib/vaultConfig";
 
 // ─── Server functions ─────────────────────────────────────────────────────────
@@ -30,12 +30,13 @@ const getCwdFn = createServerFn({ method: "GET" }).handler(() => process.cwd());
 
 export const Route = createFileRoute("/forge")({
 	loader: async () => {
-		const [config, cwd, providers] = await Promise.all([
+		const [config, cwd, providers, accountInfo] = await Promise.all([
 			getConfig(),
 			getCwdFn(),
 			getProvidersFn(),
+			getAccountInfoFn(),
 		]);
-		return { ...config, cwd, providers };
+		return { ...config, cwd, providers, accountInfo };
 	},
 	component: SettingsPage,
 });
@@ -354,6 +355,7 @@ function SettingsPage() {
 							}
 						}}
 						providers={initial.providers}
+						accountInfo={initial.accountInfo}
 					/>
 				)}
 				{tab === "interface" && (

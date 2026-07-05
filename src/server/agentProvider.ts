@@ -36,6 +36,17 @@ export type SlashCommand = {
 	aliases?: string[];
 };
 
+/**
+ * Provider-agnostic account info shape — a subset of the SDK's AccountInfo
+ * (email, organization, subscriptionType only; tokenSource/apiKeySource/
+ * apiProvider are SDK-internal and not surfaced to the UI).
+ */
+export type ProviderAccountInfo = {
+	email?: string;
+	organization?: string;
+	subscriptionType?: string;
+};
+
 /** A single effort/thinking level entry as reported by a provider's live model catalog. */
 export type ProviderEffortInfo = {
 	value: string;
@@ -179,6 +190,25 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 	mcpServerStatus?(): Promise<McpServerStatus[]>;
 	/** Available on providers that expose the list of supported slash commands. */
 	supportedCommands?(): Promise<SlashCommand[]>;
+	/**
+	 * Switch the model used for subsequent turns in this already-running
+	 * session. `undefined` resets to the provider's default. No-op (absent)
+	 * on providers that can't change model mid-session.
+	 */
+	setModel?(model?: string): Promise<void>;
+	/**
+	 * Switch the permission mode used for subsequent turns in this
+	 * already-running session. No-op (absent) on providers that can't change
+	 * permission mode mid-session.
+	 */
+	setPermissionMode?(mode: string): Promise<void>;
+	/**
+	 * Fetch info about the authenticated account backing this session, or
+	 * null when unavailable (no live session, not authenticated via a
+	 * provider that exposes this, or the lookup failed). Available on
+	 * providers that expose account info.
+	 */
+	accountInfo?(): Promise<ProviderAccountInfo | null>;
 }
 
 export interface AgentProvider {

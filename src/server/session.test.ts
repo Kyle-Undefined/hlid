@@ -169,7 +169,11 @@ describe("SessionManager — initial state", () => {
 			makeConfig("model-x"),
 			makeProviders(makeProvider("Bash")),
 		);
-		expect(sm.getStatus()).toEqual({ state: "idle", model: "model-x" });
+		expect(sm.getStatus()).toEqual({
+			state: "idle",
+			model: "model-x",
+			permission_mode: "default",
+		});
 	});
 
 	it("isRunning() returns false initially", () => {
@@ -267,6 +271,140 @@ describe("SessionManager — syncConfig", () => {
 		sm.syncConfig(makeConfig("new-model"));
 		expect(sm.getStatus().state).toBe("idle");
 		expect(sm.getCurrentSessionId()).toBeNull();
+	});
+});
+
+// ── setModel / setPermissionMode / getAccountInfo ─────────────────────────────
+
+/** Build a fake single-turn AgentProvider whose session exposes the given optional methods. */
+function makeSwitchableProvider(sessionOverrides: Partial<AgentSession> = {}): {
+	provider: AgentProvider;
+	getSession: () => AgentSession | undefined;
+} {
+	let session: AgentSession | undefined;
+	const provider: AgentProvider = {
+		providerId: "claude",
+		query(): AgentSession {
+			const gen = (async function* (): AsyncGenerator<AgentEvent> {
+				yield { type: "session_start", sessionId: "sdk-session-1" };
+				yield {
+					type: "done",
+					cost: 0,
+					turns: 1,
+					durationMs: 0,
+					usage: { inputTokens: 10, outputTokens: 5 },
+				};
+			})();
+			session = {
+				[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+				cancel: vi.fn(),
+				send: vi.fn().mockResolvedValue(undefined),
+				...sessionOverrides,
+			};
+			return session;
+		},
+	};
+	return { provider, getSession: () => session };
+}
+
+describe("SessionManager — setModel", () => {
+	it("updates getStatus().model with no active AgentSession (no-op delegate)", async () => {
+		const sm = new SessionManager(
+			makeConfig("model-a"),
+			makeProviders(makeProvider("Bash")),
+		);
+		await sm.setModel("model-b");
+		expect(sm.getStatus().model).toBe("model-b");
+	});
+
+	it("resets to the provider default (empty string) when called with undefined", async () => {
+		const sm = new SessionManager(
+			makeConfig("model-a"),
+			makeProviders(makeProvider("Bash")),
+		);
+		await sm.setModel(undefined);
+		expect(sm.getStatus().model).toBe("");
+	});
+
+	it("delegates to the active AgentSession's setModel", async () => {
+		const setModel = vi.fn().mockResolvedValue(undefined);
+		const { provider, getSession } = makeSwitchableProvider({ setModel });
+		const sm = new SessionManager(
+			makeConfig("model-a"),
+			makeProviders(provider),
+		);
+		await sm.runQuery("hi", () => {}, "sess-1");
+
+		await sm.setModel("model-b");
+		expect(getSession()?.setModel).toHaveBeenCalledWith("model-b");
+		expect(sm.getStatus().model).toBe("model-b");
+	});
+});
+
+describe("SessionManager — setPermissionMode", () => {
+	it("rejects an unknown mode without mutating state", async () => {
+		const sm = new SessionManager(
+			makeConfig(),
+			makeProviders(makeProvider("Bash")),
+		);
+		await expect(sm.setPermissionMode("bogus")).rejects.toThrow(
+			"Unknown permission mode: bogus",
+		);
+		expect(sm.getStatus().permission_mode).toBe("default");
+	});
+
+	it("updates getStatus().permission_mode and delegates to the active AgentSession", async () => {
+		const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+		const { provider, getSession } = makeSwitchableProvider({
+			setPermissionMode,
+		});
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("hi", () => {}, "sess-1");
+
+		await sm.setPermissionMode("acceptEdits");
+		expect(getSession()?.setPermissionMode).toHaveBeenCalledWith("acceptEdits");
+		expect(sm.getStatus().permission_mode).toBe("acceptEdits");
+	});
+});
+
+describe("SessionManager — getAccountInfo", () => {
+	it("returns null with no active AgentSession", async () => {
+		const sm = new SessionManager(
+			makeConfig(),
+			makeProviders(makeProvider("Bash")),
+		);
+		expect(await sm.getAccountInfo()).toBeNull();
+	});
+
+	it("returns null when the active provider doesn't expose accountInfo", async () => {
+		const { provider } = makeSwitchableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("hi", () => {}, "sess-1");
+		expect(await sm.getAccountInfo()).toBeNull();
+	});
+
+	it("delegates to the active AgentSession's accountInfo", async () => {
+		const accountInfo = vi.fn().mockResolvedValue({
+			email: "kyle@example.com",
+			subscriptionType: "max",
+		});
+		const { provider } = makeSwitchableProvider({ accountInfo });
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("hi", () => {}, "sess-1");
+
+		expect(await sm.getAccountInfo()).toEqual({
+			email: "kyle@example.com",
+			subscriptionType: "max",
+		});
+	});
+
+	it("returns null when the AgentSession's accountInfo call fails", async () => {
+		const accountInfo = vi.fn().mockRejectedValue(new Error("not logged in"));
+		const { provider } = makeSwitchableProvider({ accountInfo });
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("hi", () => {}, "sess-1");
+
+		expect(await sm.getAccountInfo()).toBeNull();
 	});
 });
 
