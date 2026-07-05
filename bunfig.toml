@@ -5,13 +5,15 @@ minimumReleaseAge = 432000 # 5 days in seconds
 
 # Per-package bypass — only add a name here if a fresh release fixes a known
 # CVE we are exposed to and we accept the supply-chain trade-off.
-#   - mermaid 11.15.0 (2026-05-11) patches CVE-2026-41148/49/59 (CSS injection
+#   - mermaid 11.15.0 (2026-05-11) patched CVE-2026-41148/49/59 (CSS injection
 #     via user-supplied diagrams rendered in MermaidBlock.tsx) and CVE-2026-41150
-#     (gantt DoS). Worth bypassing the age floor.
+#     (gantt DoS). That bypass is no longer needed: we're now on mermaid 11.16.0
+#     (2026-06-25) / @mermaid-js/parser 1.2.0 (2026-06-25), both of which cleared
+#     the 5-day floor naturally by 2026-07-04. Removed "mermaid" and
+#     "@mermaid-js/parser" from the excludes below; re-add if a future release
+#     needs to bypass the floor for a CVE fix.
 #   - tailwind-merge 3.6.0 (2026-05-10) adds Tailwind v4.3 support, matching the
 #     tailwindcss version pinned in package.json.
 minimumReleaseAgeExcludes = [
-  "mermaid",
-  "@mermaid-js/parser", # transitive dep of mermaid@11.15.0
   "tailwind-merge",
 ]
