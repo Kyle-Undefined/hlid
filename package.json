@@ -28,7 +28,7 @@
     "generate-icons": "bun scripts/generate-icons.ts"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.2.138",
+    "@anthropic-ai/claude-agent-sdk": "0.3.196",
     "@tailwindcss/vite": "4.3.2",
     "@tanstack/react-router": "1.170.16",
     "@tanstack/react-router-ssr-query": "1.167.1",
@@ -88,13 +88,18 @@
     ]
   },
   "optionalDependencies": {
-    "@anthropic-ai/claude-agent-sdk-win32-x64": "0.2.138"
+    "@anthropic-ai/claude-agent-sdk-win32-x64": "0.3.196"
   },
   "overrides": {
     "fast-uri": "^3.1.2",
-    "hono": "^4.12.18",
+    "hono": "^4.12.27",
     "ip-address": "^10.2.0",
     "@anthropic-ai/sdk": "^0.91.1",
-    "dompurify": "^3.4.11"
+    "dompurify": "^3.4.11",
+    "qs": "^6.15.3",
+    "undici": "^7.28.0",
+    "@babel/core": "^7.29.7",
+    "shell-quote": "^1.9.0",
+    "esbuild": "^0.28.1"
   }
 }
