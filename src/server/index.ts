@@ -5,10 +5,11 @@ import { isAllowedOrigin, isAllowedOriginHeader } from "../lib/allowedOrigin";
 import { registerBunServer } from "../lib/lifecycle";
 import { loadToken, verifyToken } from "../lib/token";
 import type { AgentProvider, McpServerStatus } from "./agentProvider";
+import { buildApiIndex } from "./apiIndex";
 import { handleAttachmentRoute } from "./attachmentRoutes";
 import { openInBrowser } from "./browser";
 import { ClaudeProvider } from "./claudeProvider";
-import { closeAllCodexAppServers } from "./codexAppServer";
+import { closeAllCodexAppServers, listCodexAppServers } from "./codexAppServer";
 import { CodexProvider } from "./codexProvider";
 import { loadConfig } from "./config";
 import { handleDbRoute } from "./dbRoutes";
@@ -293,6 +294,27 @@ registerBunServer(
 
 			if (url.pathname === "/status") {
 				return Response.json(pool.vaultEntry().manager.getStatus());
+			}
+
+			// Machine-readable API catalog for programmatic/agent consumers.
+			if (url.pathname === "/api-index" && req.method === "GET") {
+				return Response.json(buildApiIndex(PORT, UI_PORT));
+			}
+
+			if (url.pathname === "/codex/app-servers" && req.method === "GET") {
+				return Response.json(listCodexAppServers());
+			}
+
+			// Maintenance: drop all shared codex app-servers (e.g. after a codex
+			// CLI upgrade); the next codex session/catalog fetch respawns them on
+			// the new binary. Running codex sessions are interrupted.
+			if (
+				url.pathname === "/codex/app-servers/restart" &&
+				req.method === "POST"
+			) {
+				const closed = listCodexAppServers().filter((s) => s.alive).length;
+				closeAllCodexAppServers();
+				return Response.json({ ok: true, closed });
 			}
 
 			if (url.pathname === "/providers" && req.method === "GET") {

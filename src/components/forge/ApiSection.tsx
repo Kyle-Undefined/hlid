@@ -176,9 +176,90 @@ Register the skill in the vault's skills/index.md under an appropriate section u
 ## Section Name
 | \`skill-name\` | one-line description |`;
 
+const SYSTEM_API_PROMPT = `Create a vault skill for the hlid system and maintenance API.
+
+Read \`hlid.config.toml\` to find \`server.port\`. The data API runs on that port + 1; /api/* endpoints run on the port itself.
+
+## Discovery & status (data API, port + 1)
+
+  GET  /api-index
+    — Machine-readable catalog of hlid's full HTTP surface: method, path, which port serves it, and a description per endpoint. Fetch this first to discover everything else.
+
+  GET  /status
+    — Vault session state ("idle" | "running") and active model.
+
+  GET  /providers
+    — Providers with availability, live model catalog (cached ~6h; ?refresh=1 forces a refetch), effort levels, permission modes.
+
+  GET  /account
+    — Account info (email/org/plan) from the first live session exposing it, or null.
+
+  GET  /mcp-status
+    — Last known MCP server statuses for the vault session.
+
+  GET  /db/provider-usage?providers=claude,codex
+    — Per-provider rolling usage windows: query counts, cost, live rate-limit utilization.
+
+  GET  /db/logs?limit=N
+    — Server log entries (console output is stored here in the compiled exe).
+
+  DELETE /db/logs
+    — Clear stored logs.
+
+## Codex app-server maintenance (data API, port + 1)
+
+  GET  /codex/app-servers
+    — Shared codex app-server processes: Array<{ executable, alive, threads }>.
+
+  POST /codex/app-servers/restart
+    — Kill all shared codex app-servers; they respawn lazily on next use. Run after a codex CLI upgrade so hlid picks up the new binary without a restart. Interrupts running codex sessions.
+
+## System (UI port)
+
+  GET  /api/health     — Liveness check.
+  GET  /api/version    — Running hlid version.
+  GET  /api/updates    — Check for a newer release; POST downloads and applies.
+  GET  /api/lifecycle  — Autostart status and install paths.
+  POST /api/lifecycle  — Body: { action: "install" | "uninstall" | "shutdown" | "open_install_dir" }.
+  GET  /api/tailscale  — Tailscale status for remote access.
+
+Create a skill file in the vault's skills folder (\`vault.skills\` in config). Add YAML frontmatter with \`name\` and \`description\` fields.
+
+The skill should be able to: discover the API via /api-index, check health/version/status, read provider usage and rate limits, view and clear logs, and restart codex app-servers after CLI upgrades.
+
+Register the skill in the vault's skills/index.md under an appropriate section using the pipe table format:
+## Section Name
+| \`skill-name\` | one-line description |`;
+
 // ─── API group data ───────────────────────────────────────────────────────────
 
 const API_GROUPS = [
+	{
+		id: "system",
+		label: "System API",
+		description:
+			"API discovery, server status, provider usage, logs, codex app-server maintenance, lifecycle",
+		endpoints: [
+			"GET  /api-index",
+			"GET  /status",
+			"GET  /providers",
+			"GET  /account",
+			"GET  /mcp-status",
+			"GET  /db/provider-usage?providers=",
+			"GET  /db/logs?limit=N",
+			"DELETE /db/logs",
+			"GET  /codex/app-servers",
+			"POST /codex/app-servers/restart",
+			"GET  /api/health",
+			"GET  /api/version",
+			"GET  /api/updates",
+			"POST /api/updates",
+			"GET  /api/lifecycle",
+			"POST /api/lifecycle",
+			"GET  /api/tailscale",
+		],
+		prompt: SYSTEM_API_PROMPT,
+	},
 	{
 		id: "session",
 		label: "Session API",

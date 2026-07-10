@@ -93,6 +93,11 @@ export class CodexAppServer {
 		return !this.dead;
 	}
 
+	/** Number of sessions currently attached as threads. */
+	get threadCount(): number {
+		return this.threads.size;
+	}
+
 	request(method: string, params: unknown): Promise<unknown> {
 		if (this.dead)
 			return Promise.reject(new Error("Codex app-server is not running"));
@@ -228,6 +233,22 @@ export function acquireCodexAppServer(executable: string): CodexAppServer {
 export function closeAllCodexAppServers(): void {
 	for (const server of servers.values()) server.kill();
 	servers.clear();
+}
+
+/**
+ * Snapshot of the shared app-server registry for diagnostics
+ * (GET /codex/app-servers).
+ */
+export function listCodexAppServers(): Array<{
+	executable: string;
+	alive: boolean;
+	threads: number;
+}> {
+	return [...servers.values()].map((server) => ({
+		executable: server.executable,
+		alive: server.alive,
+		threads: server.threadCount,
+	}));
 }
 
 export function __resetCodexAppServersForTesting(): void {
