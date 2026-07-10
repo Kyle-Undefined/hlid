@@ -11,7 +11,6 @@
  */
 
 import {
-	copyFileSync,
 	existsSync,
 	mkdirSync,
 	readFileSync,
@@ -24,7 +23,14 @@ import { fileURLToPath } from "node:url";
 import { PTY_ASSETS, PTY_ASSETS_HASH } from "./pty-assets";
 
 /** Return the path to pty-worker.cjs to use for spawning the PTY worker. */
-export function bootstrapPtyRuntime(): string {
+async function materializeEmbeddedFile(
+	source: string,
+	destination: string,
+): Promise<void> {
+	await Bun.write(destination, Bun.file(source));
+}
+
+export async function bootstrapPtyRuntime(): Promise<string> {
 	// Dev mode or non-Windows stub: PTY_ASSETS is null, use on-disk file.
 	if (PTY_ASSETS === null) {
 		const __filename = fileURLToPath(import.meta.url);
@@ -41,7 +47,10 @@ export function bootstrapPtyRuntime(): string {
 	if (existsSync(hashFile)) {
 		try {
 			const existingHash = readFileSync(hashFile, "utf8").trim();
-			if (existingHash === PTY_ASSETS_HASH) {
+			if (
+				existingHash === PTY_ASSETS_HASH &&
+				existsSync(join(rtDir, "pty-worker.cjs"))
+			) {
 				return join(rtDir, "pty-worker.cjs");
 			}
 		} catch {
@@ -62,10 +71,13 @@ export function bootstrapPtyRuntime(): string {
 	mkdirSync(join(tmpDir, "node_modules", "node-pty"), { recursive: true });
 
 	// ── pty-worker.cjs ───────────────────────────────────────────────────────
-	copyFileSync(PTY_ASSETS.workerCjs, join(tmpDir, "pty-worker.cjs"));
+	await materializeEmbeddedFile(
+		PTY_ASSETS.workerCjs,
+		join(tmpDir, "pty-worker.cjs"),
+	);
 
 	// ── node-pty package.json ────────────────────────────────────────────────
-	copyFileSync(
+	await materializeEmbeddedFile(
 		PTY_ASSETS.packageJson,
 		join(tmpDir, "node_modules", "node-pty", "package.json"),
 	);
@@ -79,7 +91,7 @@ export function bootstrapPtyRuntime(): string {
 	][]) {
 		const destAbs = join(tmpDir, "node_modules", "node-pty", relPath);
 		mkdirSync(dirname(destAbs), { recursive: true });
-		copyFileSync(srcPath, destAbs);
+		await materializeEmbeddedFile(srcPath, destAbs);
 	}
 
 	// ── Lib JS files ─────────────────────────────────────────────────────────
@@ -90,7 +102,7 @@ export function bootstrapPtyRuntime(): string {
 	][]) {
 		const destAbs = join(tmpDir, "node_modules", "node-pty", relPath);
 		mkdirSync(dirname(destAbs), { recursive: true });
-		copyFileSync(srcPath, destAbs);
+		await materializeEmbeddedFile(srcPath, destAbs);
 	}
 
 	// ── Write hash sentinel ───────────────────────────────────────────────────

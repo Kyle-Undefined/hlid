@@ -14,6 +14,8 @@
 			"**/vite.config.ts",
 			"!**/src/routeTree.gen.ts",
 			"!**/src/server/embedded-client.ts",
+			"!**/src/server/pty-assets.ts",
+			"!**/src/server/voice-assets.ts",
 			"!**/src/server/codexProtocol/**/*",
 			"!**/src/styles.css"
 		]

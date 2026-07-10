@@ -74,9 +74,33 @@ describe("writeConfig — section headers", () => {
 		const toml = capturedToml();
 		expect(toml).toContain("[vault]");
 		expect(toml).toContain("[server]");
+		expect(toml).toContain("[voice]");
 		expect(toml).toContain("[claude]");
 		expect(toml).toContain("[ui]");
 		expect(toml).toContain("[status_vocabulary]");
+	});
+});
+
+describe("writeConfig — voice section", () => {
+	it("writes the default desktop recording hotkey", () => {
+		writeConfig(makeConfig());
+		expect(capturedToml()).toContain('hotkey = "Alt+Shift+KeyV"');
+	});
+
+	it("allows the recording hotkey to be cleared", () => {
+		writeConfig(
+			makeConfig({
+				voice: {
+					enabled: true,
+					model: "base",
+					language: "auto",
+					auto_send: false,
+					hotkey: "",
+					max_recording_seconds: 300,
+				},
+			}),
+		);
+		expect(capturedToml()).toContain('hotkey = ""');
 	});
 });
 

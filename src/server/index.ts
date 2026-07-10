@@ -23,6 +23,8 @@ import { resolveAllowedTerminalCwd } from "./terminalAccess";
 import { TerminalSessionPool } from "./terminalSessionPool";
 import { startTlsProxy } from "./tlsProxy";
 import { startUiServer } from "./uiServer";
+import { VoiceModelManager } from "./voice";
+import { bootstrapVoiceRuntime } from "./voice-bootstrap";
 import { syncWrappers } from "./wrappers";
 import { createWsHandlers, type WsData } from "./wsHandlers";
 import {
@@ -99,7 +101,13 @@ for (const provider of providers.values()) {
 const modelCatalog = createModelCatalog(providers);
 modelCatalog.warm();
 const pool = new SessionPool(config, providers);
-const ptyWorkerPath = bootstrapPtyRuntime();
+const voice = new VoiceModelManager(
+	config.voice,
+	await bootstrapVoiceRuntime(),
+);
+voice.warmCatalog();
+void voice.initialize();
+const ptyWorkerPath = await bootstrapPtyRuntime();
 const terminalPool = new TerminalSessionPool(ptyWorkerPath, () => {
 	broadcast({
 		type: "sessions_status",
@@ -120,12 +128,14 @@ void db.getSetting("mcp_status_cache").then((cached) => {
 
 // Graceful shutdown: abort all running sessions on SIGTERM / SIGINT
 process.on("SIGTERM", () => {
+	voice.close();
 	pool.closeAll();
 	terminalPool.closeAll();
 	closeAllCodexAppServers();
 	process.exit(0);
 });
 process.on("SIGINT", () => {
+	voice.close();
 	pool.closeAll();
 	terminalPool.closeAll();
 	closeAllCodexAppServers();
@@ -343,6 +353,83 @@ registerBunServer(
 					}),
 				);
 				return Response.json({ providers: list });
+			}
+
+			if (url.pathname === "/voice" && req.method === "GET") {
+				const refresh = url.searchParams.get("refresh") === "1";
+				return Response.json({
+					status: voice.status(),
+					models: await voice.models(refresh),
+				});
+			}
+
+			if (url.pathname === "/voice/sync" && req.method === "POST") {
+				await voice.syncConfig(loadConfig().voice);
+				return Response.json({ status: voice.status() });
+			}
+
+			if (url.pathname === "/voice/download" && req.method === "POST") {
+				try {
+					const { model } = (await req.json()) as { model?: string };
+					if (!model)
+						return Response.json(
+							{ error: "model is required" },
+							{ status: 400 },
+						);
+					void voice
+						.download(model)
+						.catch((error) => console.error("[voice] download failed:", error));
+					return Response.json({ ok: true }, { status: 202 });
+				} catch (error) {
+					return Response.json(
+						{ error: (error as Error).message },
+						{ status: 400 },
+					);
+				}
+			}
+
+			if (url.pathname === "/voice/download/cancel" && req.method === "POST") {
+				voice.cancelDownload();
+				return Response.json({ ok: true });
+			}
+
+			if (url.pathname === "/voice/model" && req.method === "DELETE") {
+				try {
+					const model = url.searchParams.get("model");
+					if (!model)
+						return Response.json(
+							{ error: "model is required" },
+							{ status: 400 },
+						);
+					voice.deleteModel(model);
+					return Response.json({ ok: true });
+				} catch (error) {
+					return Response.json(
+						{ error: (error as Error).message },
+						{ status: 409 },
+					);
+				}
+			}
+
+			if (url.pathname === "/voice/transcribe" && req.method === "POST") {
+				try {
+					const form = await req.formData();
+					const audio = form.get("audio");
+					if (!(audio instanceof Blob))
+						return Response.json(
+							{ error: "audio is required" },
+							{ status: 400 },
+						);
+					const language = String(
+						form.get("language") ?? config.voice.language,
+					);
+					return Response.json(await voice.transcribe(audio, language));
+				} catch (error) {
+					return Response.json(
+						{ error: (error as Error).message },
+						{ status: 503 },
+					);
+				}
 			}
 
 			if (url.pathname === "/account" && req.method === "GET") {

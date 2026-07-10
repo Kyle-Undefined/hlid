@@ -49,6 +49,12 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 		server: "api",
 		desc: "Last known MCP server statuses for the vault session.",
 	},
+	{
+		method: "GET",
+		path: "/voice",
+		server: "api",
+		desc: "Local Whisper runtime status and cached model catalog; ?refresh=1 refreshes the catalog.",
+	},
 	// ── Codex app-server maintenance (api port) ───────────────────────────────
 	{
 		method: "GET",
@@ -221,6 +227,12 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 		path: "/api/tailscale",
 		server: "ui",
 		desc: "Tailscale status for remote access.",
+	},
+	{
+		method: "POST",
+		path: "/api/voice/transcribe",
+		server: "ui",
+		desc: "Transcribe a multipart 16 kHz WAV recording locally with the selected Whisper model.",
 	},
 	// ── Vault & agents (ui port, /api/*) ──────────────────────────────────────
 	{

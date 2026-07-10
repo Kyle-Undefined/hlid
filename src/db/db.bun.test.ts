@@ -1109,11 +1109,10 @@ describe("usage — registerProvider", () => {
 		]);
 		const snapshot = await getProviderUsage("claude");
 		expect(snapshot.providerLabel).toBe("Claude");
-		expect(snapshot.windows).toHaveLength(3); // five_hour, weekly, weekly_sonnet
+		expect(snapshot.windows).toHaveLength(2); // five_hour, weekly
 		const ids = snapshot.windows.map((w) => w.windowId);
 		expect(ids).toContain("five_hour");
 		expect(ids).toContain("weekly");
-		expect(ids).toContain("weekly_sonnet");
 	});
 });
 

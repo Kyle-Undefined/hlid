@@ -29,6 +29,7 @@ import { dbFetch, dbJson } from "#/lib/dbClient";
 import type { McpServerEntry } from "#/lib/mcp";
 import { mapMcpServer } from "#/lib/mcp";
 import type { SessionStatusEntry } from "#/server/protocol";
+import type { VoiceModelInfo, VoiceStatus } from "#/server/voice";
 
 const logClientErrorSchema = z.object({
 	message: z
@@ -92,6 +93,61 @@ export const getProvidersFn = createServerFn({ method: "GET" })
 			{ providers: [] },
 		).then((r) => r.providers),
 	);
+
+export type VoiceInfo = { status: VoiceStatus; models: VoiceModelInfo[] };
+
+export const getVoiceInfoFn = createServerFn({ method: "GET" })
+	.validator((raw) =>
+		z.object({ refresh: z.boolean().optional() }).optional().parse(raw),
+	)
+	.handler(({ data }) =>
+		dbJson<VoiceInfo>(`/voice${data?.refresh ? "?refresh=1" : ""}`, {
+			status: {
+				state: "unavailable",
+				model: "",
+				error: "voice service unavailable",
+			},
+			models: [],
+		}),
+	);
+
+export const startVoiceDownloadFn = createServerFn({ method: "POST" })
+	.validator((model: string) => z.string().min(1).parse(model))
+	.handler(async ({ data }) => {
+		const response = await dbFetch("/voice/download", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ model: data }),
+		});
+		if (!response.ok)
+			throw new Error(
+				((await response.json()) as { error?: string }).error ??
+					"download failed",
+			);
+		return { ok: true };
+	});
+
+export const cancelVoiceDownloadFn = createServerFn({ method: "POST" }).handler(
+	async () => {
+		await dbFetch("/voice/download/cancel", { method: "POST" });
+		return { ok: true };
+	},
+);
+
+export const deleteVoiceModelFn = createServerFn({ method: "POST" })
+	.validator((model: string) => z.string().min(1).parse(model))
+	.handler(async ({ data }) => {
+		const response = await dbFetch(
+			`/voice/model?model=${encodeURIComponent(data)}`,
+			{ method: "DELETE" },
+		);
+		if (!response.ok)
+			throw new Error(
+				((await response.json()) as { error?: string }).error ??
+					"delete failed",
+			);
+		return { ok: true };
+	});
 
 export type AgentListItem = {
 	path: string;

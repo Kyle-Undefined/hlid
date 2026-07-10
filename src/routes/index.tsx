@@ -3,7 +3,7 @@ import {
 	useNavigate,
 	useRouter,
 } from "@tanstack/react-router";
-import { Paperclip } from "lucide-react";
+import { Mic, Paperclip, Square, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AgentSelect } from "#/components/AgentSelect";
 import { AttachmentStrip } from "#/components/AttachmentStrip";
@@ -32,6 +32,7 @@ import type { AggStats, SessionRow, ThirtyDayStats, WeeklyStats } from "#/db";
 import { useFileUpload } from "#/hooks/useFileUpload";
 import { useMergedSkills } from "#/hooks/useMergedSkills";
 import { useSlashPicker } from "#/hooks/useSlashPicker";
+import { useVoiceInput } from "#/hooks/useVoiceInput";
 import { useWs } from "#/hooks/useWs";
 import { useWsLiveStats } from "#/hooks/useWsSelectors";
 import * as wsStore from "#/hooks/wsStore";
@@ -47,12 +48,14 @@ import {
 	getProviderUsagesFn,
 	getRecentSessionsFn,
 	getThirtyDayStatsFn,
+	getVoiceInfoFn,
 	getWeeklyStatsFn,
 } from "#/lib/serverFns";
 import { resolveSessionId } from "#/lib/sessionRouting";
 import { resolveSkillPrompt } from "#/lib/skillPrompt";
 import { groupSkills, type Skill } from "#/lib/skills";
 import { SESSION_LABEL_LENGTH, uid } from "#/lib/utils";
+import { displayVoiceHotkey } from "#/lib/voiceHotkey";
 import type { RateLimitMessage, ServerMessage } from "#/server/protocol";
 
 // ─── route ───────────────────────────────────────────────────────────────────
@@ -78,6 +81,7 @@ export const Route = createFileRoute("/")({
 			thirtyDayStats,
 			agentList,
 			activeSession,
+			voiceInfo,
 		] = await Promise.all([
 			getConfig(),
 			getCockpitData(),
@@ -89,6 +93,7 @@ export const Route = createFileRoute("/")({
 			getThirtyDayStatsFn(),
 			getAgentListFn(),
 			getActiveSessionRowFn(),
+			getVoiceInfoFn(),
 		]);
 		return {
 			config,
@@ -101,6 +106,7 @@ export const Route = createFileRoute("/")({
 			thirtyDayStats,
 			agentList,
 			activeSession,
+			voiceInfo,
 		};
 	},
 	component: CockpitPage,
@@ -118,6 +124,7 @@ function CockpitPage() {
 		thirtyDayStats: initialThirtyDayStats,
 		agentList,
 		activeSession,
+		voiceInfo: initialVoiceInfo,
 	} = Route.useLoaderData();
 	const router = useRouter();
 	const navigate = useNavigate();
@@ -238,6 +245,25 @@ function CockpitPage() {
 		close: pickerClose,
 	} = useSlashPicker(prompt, allSkills, activeSkill);
 
+	const voice = useVoiceInput({
+		config: config.voice,
+		initialInfo: initialVoiceInfo,
+		onTranscription: (text) => {
+			if (config.voice.auto_send) {
+				void handleRun(text);
+				return;
+			}
+			const el = textareaRef.current;
+			const start = el?.selectionStart ?? prompt.length;
+			const end = el?.selectionEnd ?? prompt.length;
+			const before = prompt.slice(0, start);
+			const after = prompt.slice(end);
+			const separator = before && !/\s$/.test(before) ? " " : "";
+			setPrompt(`${before}${separator}${text}${after}`);
+			requestAnimationFrame(() => textareaRef.current?.focus());
+		},
+	});
+
 	// biome-ignore lint/correctness/useExhaustiveDependencies: prompt length triggers resize
 	useEffect(() => {
 		const el = textareaRef.current;
@@ -277,8 +303,8 @@ function CockpitPage() {
 		setActiveSkill(null);
 	}
 
-	async function handleRun() {
-		const typed = prompt.trim();
+	async function handleRun(overrideText?: string) {
+		const typed = (overrideText ?? prompt).trim();
 		const { text, skillContext } = resolveSkillPrompt(
 			activeSkill,
 			typed,
@@ -493,6 +519,24 @@ function CockpitPage() {
 								onRemove={removePending}
 								className="px-3 py-2"
 							/>
+							{voice.error && (
+								<div
+									className="px-3 py-2 flex items-start gap-3 border-b border-destructive/30 bg-destructive/5"
+									role="alert"
+								>
+									<div className="flex-1 text-[10px] text-destructive/80 leading-relaxed">
+										voice transcription failed: {voice.error}
+									</div>
+									<button
+										type="button"
+										onClick={voice.clearError}
+										className="text-destructive/50 hover:text-destructive transition-colors shrink-0"
+										aria-label="Dismiss voice error"
+									>
+										<X className="w-3 h-3" />
+									</button>
+								</div>
+							)}
 							<div className="flex items-start">
 								<span className="text-primary text-sm px-3 py-2.5 shrink-0 select-none">
 									›
@@ -566,13 +610,17 @@ function CockpitPage() {
 									}
 									rows={3}
 									placeholder={
-										!isConnected
-											? "server offline…"
-											: activeSkill
-												? "add context… (optional)"
-												: "type a prompt, or pick a skill below"
+										voice.phase === "recording"
+											? `recording… ${voice.seconds}s`
+											: voice.phase === "transcribing"
+												? "transcribing locally…"
+												: !isConnected
+													? "server offline…"
+													: activeSkill
+														? "add context… (optional)"
+														: "type a prompt, or pick a skill below"
 									}
-									disabled={!isConnected}
+									disabled={!isConnected || voice.phase === "transcribing"}
 									className={`flex-1 resize-none bg-transparent py-2.5 pr-3 text-sm text-foreground focus:outline-none disabled:opacity-30 overflow-hidden min-h-[72px] ${!isConnected ? "placeholder:text-foreground/50" : "placeholder:text-muted-foreground/25"}`}
 								/>
 							</div>
@@ -608,6 +656,51 @@ function CockpitPage() {
 									>
 										<Paperclip className="w-3.5 h-3.5" />
 									</button>
+									<button
+										type="button"
+										onClick={() => {
+											if (voice.phase === "recording") voice.stop();
+											else void voice.start();
+										}}
+										onFocus={voice.refresh}
+										disabled={
+											!isConnected ||
+											(!voice.ready && voice.phase !== "recording") ||
+											voice.phase === "transcribing"
+										}
+										className={`transition-colors shrink-0 disabled:opacity-30 ${voice.phase === "recording" ? "text-destructive" : "text-muted-foreground/45 hover:text-muted-foreground"}`}
+										aria-label={
+											voice.phase === "recording"
+												? "Stop recording"
+												: "Start voice input"
+										}
+										title={
+											!config.voice.enabled
+												? "Enable voice in Forge"
+												: voice.status.state !== "ready"
+													? `Voice ${voice.status.state}`
+													: config.voice.hotkey
+														? `Voice input (${displayVoiceHotkey(config.voice.hotkey)})`
+														: "Start voice input"
+										}
+									>
+										{voice.phase === "recording" ? (
+											<Square className="w-3.5 h-3.5 fill-current" />
+										) : (
+											<Mic className="w-3.5 h-3.5" />
+										)}
+									</button>
+									{voice.phase === "recording" && (
+										<button
+											type="button"
+											onClick={voice.cancel}
+											className="text-muted-foreground/45 hover:text-muted-foreground"
+											aria-label="Cancel recording"
+											title="Cancel recording"
+										>
+											<X className="w-3.5 h-3.5" />
+										</button>
+									)}
 									{agentList.length > 0 && (
 										<div className="hidden md:flex items-baseline gap-1.5">
 											<AgentSelect
@@ -666,7 +759,7 @@ function CockpitPage() {
 									)}
 									<button
 										type="button"
-										onClick={handleRun}
+										onClick={() => void handleRun()}
 										disabled={!canRun}
 										className="px-3 py-1 bg-primary text-primary-foreground text-[10px] tracking-widest font-bold hover:opacity-90 transition-opacity disabled:opacity-25 uppercase"
 									>

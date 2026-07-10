@@ -100,6 +100,29 @@ const AttachmentsSchema = z.object({
 		.default(DEFAULT_ATTACHMENTS_CONFIG.allowed_mimes),
 });
 
+export const DEFAULT_VOICE_CONFIG = {
+	enabled: false,
+	model: "",
+	language: "auto",
+	auto_send: false,
+	hotkey: "Alt+Shift+KeyV",
+	max_recording_seconds: 300,
+};
+
+const VoiceSchema = z.object({
+	enabled: z.boolean().default(DEFAULT_VOICE_CONFIG.enabled),
+	model: z.string().default(DEFAULT_VOICE_CONFIG.model),
+	language: z.string().min(1).default(DEFAULT_VOICE_CONFIG.language),
+	auto_send: z.boolean().default(DEFAULT_VOICE_CONFIG.auto_send),
+	hotkey: z.string().default(DEFAULT_VOICE_CONFIG.hotkey),
+	max_recording_seconds: z
+		.number()
+		.int()
+		.min(1)
+		.max(1800)
+		.default(DEFAULT_VOICE_CONFIG.max_recording_seconds),
+});
+
 export const AgentSchema = z.object({
 	path: z.string(),
 	name: z.string().optional(),
@@ -154,6 +177,7 @@ export const HlidConfigSchema = z.object({
 		done: ["Done", "Complete", "Archived"],
 	})),
 	attachments: AttachmentsSchema.default(DEFAULT_ATTACHMENTS_CONFIG),
+	voice: VoiceSchema.default(DEFAULT_VOICE_CONFIG),
 	agents: z.array(AgentSchema).default([]),
 	vault_provider: z.string().default("claude"),
 });

@@ -44,6 +44,14 @@ function makeConfig(vaultPath: string, agentPaths: string[] = []): HlidConfig {
 		ui: { enter_to_submit: true, hide_skills_index: false, theme: "tan" },
 		status_vocabulary: { active: [], planning: [], done: [] },
 		attachments: { max_bytes: 1, allowed_mimes: [] },
+		voice: {
+			enabled: false,
+			model: "",
+			language: "auto",
+			auto_send: false,
+			hotkey: "Alt+Shift+KeyV",
+			max_recording_seconds: 300,
+		},
 		vault_provider: "claude",
 		agents: agentPaths.map((path) => ({
 			path,

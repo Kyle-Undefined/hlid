@@ -1,7 +1,9 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
+	Mic,
 	Paperclip,
 	ShieldCheck,
+	Square,
 	SquarePen,
 	TerminalIcon,
 	X,
@@ -32,6 +34,7 @@ import { useFileUpload } from "#/hooks/useFileUpload";
 import { useLoadChatHistory } from "#/hooks/useLoadChatHistory";
 import { useMergedSkills } from "#/hooks/useMergedSkills";
 import { useSlashPicker } from "#/hooks/useSlashPicker";
+import { useVoiceInput } from "#/hooks/useVoiceInput";
 import { useWs } from "#/hooks/useWs";
 import { useWsChatQueue, useWsLiveStats } from "#/hooks/useWsSelectors";
 import * as wsStore from "#/hooks/wsStore";
@@ -46,10 +49,12 @@ import {
 	getProvidersFn,
 	getProviderUsagesFn,
 	getSessionAgentCwdFn,
+	getVoiceInfoFn,
 } from "#/lib/serverFns";
 import { resolveSkillPrompt } from "#/lib/skillPrompt";
 import type { Skill } from "#/lib/skills";
 import { uid } from "#/lib/utils";
+import { displayVoiceHotkey } from "#/lib/voiceHotkey";
 import { decisionFromScope, type RateLimitMessage } from "#/server/protocol";
 
 // ─── route ───────────────────────────────────────────────────────────────────
@@ -75,14 +80,21 @@ export const Route = createFileRoute("/raven")({
 	},
 	loaderDeps: ({ search: { session, agent } }) => ({ session, agent }),
 	loader: async ({ deps: { session, agent } }) => {
-		const [config, providerUsages, agentList, cockpitData, providers] =
-			await Promise.all([
-				getConfig(),
-				loadProviderUsages(),
-				getAgentListFn(),
-				getCockpitData(),
-				getProvidersFn(),
-			]);
+		const [
+			config,
+			providerUsages,
+			agentList,
+			cockpitData,
+			providers,
+			voiceInfo,
+		] = await Promise.all([
+			getConfig(),
+			loadProviderUsages(),
+			getAgentListFn(),
+			getCockpitData(),
+			getProvidersFn(),
+			getVoiceInfoFn(),
+		]);
 		const agentConfig = (config.agents ?? []).find((a) => a.path === agent);
 		const routeInteractiveMode =
 			agentConfig?.interactive_mode ?? config.claude?.interactive_mode ?? false;
@@ -137,6 +149,7 @@ export const Route = createFileRoute("/raven")({
 			vaultSkills: cockpitData.skills,
 			interactiveMode,
 			providers,
+			voiceInfo,
 		};
 	},
 	component: ChatPage,
@@ -155,6 +168,7 @@ function ChatPage() {
 		vaultSkills,
 		interactiveMode,
 		providers,
+		voiceInfo: initialVoiceInfo,
 	} = Route.useLoaderData();
 	const navigate = useNavigate();
 	const [agentSkillContext, setAgentSkillContext] = useState(
@@ -435,70 +449,92 @@ function ChatPage() {
 		[send],
 	);
 
-	const handleSend = useCallback(() => {
-		const typed = input.trim();
+	const handleSend = useCallback(
+		(overrideText?: string) => {
+			const typed = (overrideText ?? input).trim();
 
-		const { text, skillContext } = resolveSkillPrompt(
-			activeSkill,
-			typed,
-			allSkills,
-		);
-		if (!text && pendingAttachments.length === 0) return;
+			const { text, skillContext } = resolveSkillPrompt(
+				activeSkill,
+				typed,
+				allSkills,
+			);
+			if (!text && pendingAttachments.length === 0) return;
 
-		if (sessionState === "running") {
-			wsStore.enqueueChat({
-				id: uid(),
+			if (sessionState === "running") {
+				wsStore.enqueueChat({
+					id: uid(),
+					text,
+					session_id: sessionId,
+					skill_context: skillContext,
+					attachments:
+						pendingAttachments.length > 0 ? [...pendingAttachments] : undefined,
+					agent_cwd: agentSkillContext ?? undefined,
+				});
+				clearDraft();
+				setInput("");
+				setActiveSkill(null);
+				clearPendingAttachments();
+				return;
+			}
+
+			atBottomRef.current = true;
+			const id = uid();
+			const attachments = pendingAttachments;
+			dispatch({ type: "ADD_USER", id, text, attachments });
+			const agentCwdToSend =
+				agentSkillContext && !agentContextSentRef.current
+					? agentSkillContext
+					: undefined;
+			if (agentCwdToSend) agentContextSentRef.current = true;
+			wsStore.setActiveSessionId(sessionId);
+			send({
+				type: "chat",
 				text,
 				session_id: sessionId,
 				skill_context: skillContext,
-				attachments:
-					pendingAttachments.length > 0 ? [...pendingAttachments] : undefined,
-				agent_cwd: agentSkillContext ?? undefined,
+				attachments: attachments.length > 0 ? attachments : undefined,
+				agent_cwd: agentCwdToSend,
+				plan_mode: planMode || undefined,
 			});
 			clearDraft();
 			setInput("");
 			setActiveSkill(null);
 			clearPendingAttachments();
-			return;
-		}
+		},
+		[
+			input,
+			setInput,
+			activeSkill,
+			allSkills,
+			sessionState,
+			send,
+			sessionId,
+			pendingAttachments,
+			agentSkillContext,
+			clearDraft,
+			clearPendingAttachments,
+			planMode,
+		],
+	);
 
-		atBottomRef.current = true;
-		const id = uid();
-		const attachments = pendingAttachments;
-		dispatch({ type: "ADD_USER", id, text, attachments });
-		const agentCwdToSend =
-			agentSkillContext && !agentContextSentRef.current
-				? agentSkillContext
-				: undefined;
-		if (agentCwdToSend) agentContextSentRef.current = true;
-		wsStore.setActiveSessionId(sessionId);
-		send({
-			type: "chat",
-			text,
-			session_id: sessionId,
-			skill_context: skillContext,
-			attachments: attachments.length > 0 ? attachments : undefined,
-			agent_cwd: agentCwdToSend,
-			plan_mode: planMode || undefined,
-		});
-		clearDraft();
-		setInput("");
-		setActiveSkill(null);
-		clearPendingAttachments();
-	}, [
-		input,
-		setInput,
-		activeSkill,
-		allSkills,
-		sessionState,
-		send,
-		sessionId,
-		pendingAttachments,
-		agentSkillContext,
-		clearDraft,
-		clearPendingAttachments,
-		planMode,
-	]);
+	const voice = useVoiceInput({
+		config: config.voice,
+		initialInfo: initialVoiceInfo,
+		onTranscription: (text) => {
+			if (config.voice.auto_send) {
+				handleSend(text);
+				return;
+			}
+			const el = textareaRef.current;
+			const start = el?.selectionStart ?? input.length;
+			const end = el?.selectionEnd ?? input.length;
+			const before = input.slice(0, start);
+			const after = input.slice(end);
+			const separator = before && !/\s$/.test(before) ? " " : "";
+			setInput(`${before}${separator}${text}${after}`);
+			requestAnimationFrame(() => textareaRef.current?.focus());
+		},
+	});
 
 	const handleCancelQueued = useCallback(
 		(id: string) => {
@@ -928,6 +964,24 @@ function ChatPage() {
 								uploadError={uploadError}
 								onRemove={removePending}
 							/>
+							{voice.error && (
+								<div
+									className="px-4 py-2 flex items-start gap-3 border-b border-destructive/30 bg-destructive/5"
+									role="alert"
+								>
+									<div className="flex-1 text-[10px] text-destructive/80 leading-relaxed">
+										voice transcription failed: {voice.error}
+									</div>
+									<button
+										type="button"
+										onClick={voice.clearError}
+										className="text-destructive/50 hover:text-destructive transition-colors shrink-0"
+										aria-label="Dismiss voice error"
+									>
+										<X className="w-3 h-3" />
+									</button>
+								</div>
+							)}
 							{messages.length === 0 && (
 								<div className="flex items-center gap-3 px-4 py-1.5 border-b border-border/40">
 									{agentList.length > 0 && (
@@ -979,6 +1033,51 @@ function ChatPage() {
 								>
 									<Paperclip className="w-3.5 h-3.5" />
 								</button>
+								<button
+									type="button"
+									onClick={() => {
+										if (voice.phase === "recording") voice.stop();
+										else void voice.start();
+									}}
+									onFocus={voice.refresh}
+									disabled={
+										wsStatus !== "connected" ||
+										(!voice.ready && voice.phase !== "recording") ||
+										voice.phase === "transcribing"
+									}
+									className={`px-2 py-3 transition-colors shrink-0 disabled:opacity-30 ${voice.phase === "recording" ? "text-destructive" : "text-muted-foreground/45 hover:text-muted-foreground"}`}
+									aria-label={
+										voice.phase === "recording"
+											? "Stop recording"
+											: "Start voice input"
+									}
+									title={
+										!config.voice.enabled
+											? "Enable voice in Forge"
+											: voice.status.state !== "ready"
+												? `Voice ${voice.status.state}`
+												: config.voice.hotkey
+													? `Voice input (${displayVoiceHotkey(config.voice.hotkey)})`
+													: "Start voice input"
+									}
+								>
+									{voice.phase === "recording" ? (
+										<Square className="w-3.5 h-3.5 fill-current" />
+									) : (
+										<Mic className="w-3.5 h-3.5" />
+									)}
+								</button>
+								{voice.phase === "recording" && (
+									<button
+										type="button"
+										onClick={voice.cancel}
+										className="px-1 py-3 text-muted-foreground/45 hover:text-muted-foreground"
+										aria-label="Cancel recording"
+										title="Cancel recording"
+									>
+										<X className="w-3.5 h-3.5" />
+									</button>
+								)}
 								<textarea
 									ref={textareaRef}
 									value={input}
@@ -1048,17 +1147,30 @@ function ChatPage() {
 									}
 									rows={1}
 									placeholder={
-										wsStatus !== "connected"
-											? "connecting…"
-											: activeSkill
-												? `add context for /${activeSkill.name}… (optional)`
-												: isRunning
-													? "type to queue next…"
-													: "speak to the watcher…"
+										voice.phase === "recording"
+											? `recording… ${voice.seconds}s`
+											: voice.phase === "transcribing"
+												? "transcribing locally…"
+												: wsStatus !== "connected"
+													? "connecting…"
+													: activeSkill
+														? `add context for /${activeSkill.name}… (optional)`
+														: isRunning
+															? "type to queue next…"
+															: "speak to the watcher…"
 									}
-									disabled={wsStatus !== "connected"}
+									disabled={
+										wsStatus !== "connected" || voice.phase === "transcribing"
+									}
 									className={`flex-1 resize-none bg-transparent py-3 pr-2 text-sm text-foreground focus:outline-none disabled:opacity-30 overflow-y-hidden min-h-[60px] md:min-h-[120px] ${wsStatus !== "connected" ? "placeholder:text-foreground/50" : "placeholder:text-muted-foreground/35"}`}
 								/>
+								<span className="sr-only" aria-live="polite">
+									{voice.phase === "recording"
+										? `Recording, ${voice.seconds} seconds`
+										: voice.phase === "transcribing"
+											? "Transcribing audio locally"
+											: (voice.error ?? "")}
+								</span>
 								{isRunning && (
 									<button
 										type="button"
@@ -1072,7 +1184,7 @@ function ChatPage() {
 								{isRunning ? (
 									<button
 										type="button"
-										onClick={handleSend}
+										onClick={() => handleSend()}
 										disabled={!canQueue}
 										className="px-4 py-3 text-[10px] tracking-widest text-primary/70 hover:text-primary disabled:text-muted-foreground/35 transition-colors shrink-0 uppercase font-bold"
 										aria-label="Queue message"
@@ -1082,7 +1194,7 @@ function ChatPage() {
 								) : (
 									<button
 										type="button"
-										onClick={handleSend}
+										onClick={() => handleSend()}
 										disabled={!canSend}
 										className="px-4 py-3 text-[10px] tracking-widest text-primary/70 hover:text-primary disabled:text-muted-foreground/35 transition-colors shrink-0 uppercase font-bold"
 										aria-label="Send"

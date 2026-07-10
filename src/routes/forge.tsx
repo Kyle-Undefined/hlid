@@ -17,9 +17,14 @@ import type { VaultForm } from "#/components/forge/VaultSection";
 import { VaultSection } from "#/components/forge/VaultSection";
 import type { VocabForm } from "#/components/forge/VocabSection";
 import { VocabSection } from "#/components/forge/VocabSection";
+import { type VoiceForm, VoiceSection } from "#/components/forge/VoiceSection";
 import type { HlidConfig } from "#/config";
 import { DEFAULT_ATTACHMENTS_CONFIG, getConfig } from "#/config";
-import { getAccountInfoFn, getProvidersFn } from "#/lib/serverFns";
+import {
+	getAccountInfoFn,
+	getProvidersFn,
+	getVoiceInfoFn,
+} from "#/lib/serverFns";
 import { buildVaultSection } from "#/lib/vaultConfig";
 
 // ─── Server functions ─────────────────────────────────────────────────────────
@@ -30,13 +35,14 @@ const getCwdFn = createServerFn({ method: "GET" }).handler(() => process.cwd());
 
 export const Route = createFileRoute("/forge")({
 	loader: async () => {
-		const [config, cwd, providers, accountInfo] = await Promise.all([
+		const [config, cwd, providers, accountInfo, voiceInfo] = await Promise.all([
 			getConfig(),
 			getCwdFn(),
 			getProvidersFn(),
 			getAccountInfoFn(),
+			getVoiceInfoFn(),
 		]);
-		return { ...config, cwd, providers, accountInfo };
+		return { ...config, cwd, providers, accountInfo, voiceInfo };
 	},
 	component: SettingsPage,
 });
@@ -48,6 +54,7 @@ const TABS = [
 	"network",
 	"vault",
 	"agent",
+	"voice",
 	"interface",
 	"logs",
 	"api",
@@ -111,6 +118,7 @@ function SettingsPage() {
 		turnRecaps: initial.codex.turn_recaps ?? true,
 		recapModel: initial.codex.recap_model ?? "",
 	});
+	const [voice, setVoice] = useState<VoiceForm>(initial.voice);
 
 	const [server, setServer] = useState<ServerForm>({
 		port: String(initial.server.port),
@@ -143,7 +151,7 @@ function SettingsPage() {
 	// Stable refs to initial state — new object refs are only created when the
 	// user edits, so reference equality detects real changes without a mount guard
 	// (which breaks under React StrictMode's double-invoke).
-	const initialStateRef = useRef({ vault, claude, codex, ui, vocab });
+	const initialStateRef = useRef({ vault, claude, codex, voice, ui, vocab });
 	const saveRef = useRef<((requiresRestart?: boolean) => Promise<void>) | null>(
 		null,
 	);
@@ -213,6 +221,7 @@ function SettingsPage() {
 					.filter(Boolean),
 			},
 			attachments: initial.attachments ?? DEFAULT_ATTACHMENTS_CONFIG,
+			voice,
 			agents: initial.agents ?? [],
 		};
 
@@ -248,13 +257,14 @@ function SettingsPage() {
 			vault === init.vault &&
 			claude === init.claude &&
 			codex === init.codex &&
+			voice === init.voice &&
 			ui === init.ui &&
 			vocab === init.vocab
 		)
 			return;
 		const timer = setTimeout(() => void saveRef.current?.(false), 800);
 		return () => clearTimeout(timer);
-	}, [vault, claude, codex, ui, vocab]);
+	}, [vault, claude, codex, voice, ui, vocab]);
 
 	const showSaveButton = tab === "network";
 	const showSaveBar =
@@ -360,6 +370,13 @@ function SettingsPage() {
 				)}
 				{tab === "interface" && (
 					<UiSection ui={ui} onChange={(p) => setUi((s) => ({ ...s, ...p }))} />
+				)}
+				{tab === "voice" && (
+					<VoiceSection
+						voice={voice}
+						onChange={(p) => setVoice((s) => ({ ...s, ...p }))}
+						initialInfo={initial.voiceInfo}
+					/>
 				)}
 				{tab === "logs" && <EventLogSection />}
 				{tab === "api" && <ApiSection />}

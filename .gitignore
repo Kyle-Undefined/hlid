@@ -20,5 +20,8 @@ hlid.config.toml
 .vscode
 src/server/embedded-client.ts
 src/server/pty-embed-assets/
+src/server/whisper-embed-assets/
+vendor/whisper/
+whisper.zip
 build
 .hlid/

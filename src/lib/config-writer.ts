@@ -1,5 +1,5 @@
 import { writeFileSync } from "node:fs";
-import type { HlidConfig } from "../config";
+import { DEFAULT_VOICE_CONFIG, type HlidConfig } from "../config";
 import { setConfigCache } from "../server/config";
 import { syncWrappers } from "../server/wrappers";
 import { CONFIG_PATH } from "./paths";
@@ -54,6 +54,16 @@ export function writeConfig(config: HlidConfig): void {
 		lines.push(`local_network_access = true`);
 	if (config.server.allow_external_agents)
 		lines.push(`allow_external_agents = true`);
+
+	const voice = config.voice ?? DEFAULT_VOICE_CONFIG;
+	lines.push("");
+	lines.push("[voice]");
+	lines.push(`enabled = ${tomlVal(voice.enabled)}`);
+	lines.push(`model = ${tomlVal(voice.model)}`);
+	lines.push(`language = ${tomlVal(voice.language)}`);
+	lines.push(`auto_send = ${tomlVal(voice.auto_send)}`);
+	lines.push(`hotkey = ${tomlVal(voice.hotkey)}`);
+	lines.push(`max_recording_seconds = ${tomlVal(voice.max_recording_seconds)}`);
 
 	lines.push("");
 	lines.push("[claude]");

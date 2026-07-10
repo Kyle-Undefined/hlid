@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { HlidConfig } from "#/config";
-import { DEFAULT_ATTACHMENTS_CONFIG } from "#/config";
+import { DEFAULT_ATTACHMENTS_CONFIG, DEFAULT_VOICE_CONFIG } from "#/config";
 import { getProvidersFn, type ProviderInfo } from "#/lib/serverFns";
 import { buildVaultSection } from "#/lib/vaultConfig";
 import type { StructureState } from "./WizardSteps";
@@ -145,6 +145,7 @@ export function FirstRunWizard({ onComplete }: Props) {
 					done: ["Done", "Complete", "Archived"],
 				},
 				attachments: DEFAULT_ATTACHMENTS_CONFIG,
+				voice: DEFAULT_VOICE_CONFIG,
 				agents: [],
 				vault_provider: "claude",
 			};

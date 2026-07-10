@@ -7,3 +7,11 @@ memory = ""
 [server]
 port = 3000
 host = "0.0.0.0"
+
+[voice]
+enabled = false
+model = ""
+language = "auto"
+auto_send = false
+hotkey = "Alt+Shift+KeyV"
+max_recording_seconds = 300

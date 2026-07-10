@@ -24,6 +24,7 @@ import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as ApiConfigRouteImport } from './routes/api/config'
 import { Route as ApiBrowseRouteImport } from './routes/api/browse'
 import { Route as ApiAgentsIndexRouteImport } from './routes/api/agents/index'
+import { Route as ApiVoiceTranscribeRouteImport } from './routes/api/voice/transcribe'
 import { Route as ApiVaultSkillsRouteImport } from './routes/api/vault/skills'
 import { Route as ApiVaultMemoryRouteImport } from './routes/api/vault/memory'
 import { Route as ApiMcpVaultRouteImport } from './routes/api/mcp/vault'
@@ -111,6 +112,11 @@ const ApiAgentsIndexRoute = ApiAgentsIndexRouteImport.update({
   path: '/api/agents/',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiVoiceTranscribeRoute = ApiVoiceTranscribeRouteImport.update({
+  id: '/api/voice/transcribe',
+  path: '/api/voice/transcribe',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiVaultSkillsRoute = ApiVaultSkillsRouteImport.update({
   id: '/api/vault/skills',
   path: '/api/vault/skills',
@@ -190,6 +196,7 @@ export interface FileRoutesByFullPath {
   '/api/mcp/vault': typeof ApiMcpVaultRouteWithChildren
   '/api/vault/memory': typeof ApiVaultMemoryRoute
   '/api/vault/skills': typeof ApiVaultSkillsRoute
+  '/api/voice/transcribe': typeof ApiVoiceTranscribeRoute
   '/api/agents/': typeof ApiAgentsIndexRoute
   '/api/attachments/$id/raw': typeof ApiAttachmentsIdRawRoute
   '/api/mcp/agent/toggle': typeof ApiMcpAgentToggleRoute
@@ -218,6 +225,7 @@ export interface FileRoutesByTo {
   '/api/mcp/vault': typeof ApiMcpVaultRouteWithChildren
   '/api/vault/memory': typeof ApiVaultMemoryRoute
   '/api/vault/skills': typeof ApiVaultSkillsRoute
+  '/api/voice/transcribe': typeof ApiVoiceTranscribeRoute
   '/api/agents': typeof ApiAgentsIndexRoute
   '/api/attachments/$id/raw': typeof ApiAttachmentsIdRawRoute
   '/api/mcp/agent/toggle': typeof ApiMcpAgentToggleRoute
@@ -247,6 +255,7 @@ export interface FileRoutesById {
   '/api/mcp/vault': typeof ApiMcpVaultRouteWithChildren
   '/api/vault/memory': typeof ApiVaultMemoryRoute
   '/api/vault/skills': typeof ApiVaultSkillsRoute
+  '/api/voice/transcribe': typeof ApiVoiceTranscribeRoute
   '/api/agents/': typeof ApiAgentsIndexRoute
   '/api/attachments/$id/raw': typeof ApiAttachmentsIdRawRoute
   '/api/mcp/agent/toggle': typeof ApiMcpAgentToggleRoute
@@ -277,6 +286,7 @@ export interface FileRouteTypes {
     | '/api/mcp/vault'
     | '/api/vault/memory'
     | '/api/vault/skills'
+    | '/api/voice/transcribe'
     | '/api/agents/'
     | '/api/attachments/$id/raw'
     | '/api/mcp/agent/toggle'
@@ -305,6 +315,7 @@ export interface FileRouteTypes {
     | '/api/mcp/vault'
     | '/api/vault/memory'
     | '/api/vault/skills'
+    | '/api/voice/transcribe'
     | '/api/agents'
     | '/api/attachments/$id/raw'
     | '/api/mcp/agent/toggle'
@@ -333,6 +344,7 @@ export interface FileRouteTypes {
     | '/api/mcp/vault'
     | '/api/vault/memory'
     | '/api/vault/skills'
+    | '/api/voice/transcribe'
     | '/api/agents/'
     | '/api/attachments/$id/raw'
     | '/api/mcp/agent/toggle'
@@ -362,6 +374,7 @@ export interface RootRouteChildren {
   ApiMcpVaultRoute: typeof ApiMcpVaultRouteWithChildren
   ApiVaultMemoryRoute: typeof ApiVaultMemoryRoute
   ApiVaultSkillsRoute: typeof ApiVaultSkillsRoute
+  ApiVoiceTranscribeRoute: typeof ApiVoiceTranscribeRoute
   ApiAgentsIndexRoute: typeof ApiAgentsIndexRoute
 }
 
@@ -470,6 +483,13 @@ declare module '@tanstack/react-router' {
       path: '/api/agents'
       fullPath: '/api/agents/'
       preLoaderRoute: typeof ApiAgentsIndexRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/voice/transcribe': {
+      id: '/api/voice/transcribe'
+      path: '/api/voice/transcribe'
+      fullPath: '/api/voice/transcribe'
+      preLoaderRoute: typeof ApiVoiceTranscribeRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/vault/skills': {
@@ -610,6 +630,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiMcpVaultRoute: ApiMcpVaultRouteWithChildren,
   ApiVaultMemoryRoute: ApiVaultMemoryRoute,
   ApiVaultSkillsRoute: ApiVaultSkillsRoute,
+  ApiVoiceTranscribeRoute: ApiVoiceTranscribeRoute,
   ApiAgentsIndexRoute: ApiAgentsIndexRoute,
 }
 export const routeTree = rootRouteImport

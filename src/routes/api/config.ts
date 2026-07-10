@@ -2,6 +2,7 @@ import { statSync } from "node:fs";
 import { createFileRoute } from "@tanstack/react-router";
 import { HlidConfigSchema } from "#/config";
 import { writeConfig } from "#/lib/config-writer";
+import { dbFetch } from "#/lib/dbClient";
 import { forbiddenResponse } from "#/lib/originGate";
 import { loadConfig } from "#/server/config";
 
@@ -39,6 +40,7 @@ export const Route = createFileRoute("/api/config")({
 						}
 					}
 					writeConfig(config);
+					void dbFetch("/voice/sync", { method: "POST" }).catch(() => {});
 					return Response.json({ ok: true });
 				} catch (err) {
 					const msg = err instanceof Error ? err.message : "Invalid config";

@@ -1,61 +1,82 @@
-// Compiles src/server/index.ts into dist/builds/hlid.exe.
-// Mirrors the flags used by .github/workflows/release.yml so a local WSL
-// build matches what gets shipped. Run via `bun run build:win`, which first
-// runs `bun run build` to produce dist/client + embedded-client.ts, then runs
-// `scripts/bundle-pty-assets.ts` to embed node-pty's Windows runtime files.
+// Compile src/server/index.ts into a Windows executable. The PTY and Whisper
+// generators write ignored build artifacts; this build redirects the stable
+// development stubs to those generated modules without touching tracked files.
 
-import { mkdirSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, mkdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import type { BunPlugin } from "bun";
 import pkg from "../package.json" with { type: "json" };
 
 const root = resolve(import.meta.dir, "..");
-const outDir = resolve(root, "dist", "builds");
-mkdirSync(outDir, { recursive: true });
+const outfile = resolve(
+	root,
+	process.env.HLID_BUILD_OUTFILE ?? "dist/builds/hlid.exe",
+);
+const ptyAssets = resolve(
+	root,
+	"build/embed-assets/pty/pty-assets.generated.js",
+);
+const voiceAssets = resolve(
+	root,
+	"build/embed-assets/whisper/voice-assets.generated.js",
+);
 
-// Windows metadata flags (--windows-hide-console, --windows-icon, etc.) only
-// work when bun is running on Windows. From WSL/Linux we cross-compile a working
-// exe but skip those flags. CI (.github/workflows/release.yml) runs on Windows
-// and applies the full metadata for shipped releases.
-const onWindows = process.platform === "win32";
+for (const generated of [ptyAssets, voiceAssets]) {
+	if (!existsSync(generated)) {
+		throw new Error(
+			`Missing generated asset module ${generated}. Run bun run build:win so the asset generators run first.`,
+		);
+	}
+}
+mkdirSync(dirname(outfile), { recursive: true });
 
-// bun --windows-version requires a 4-part numeric version. Strip any prerelease
-// suffix and pad with .0 until we have four segments.
+const assetRedirectPlugin: BunPlugin = {
+	name: "hlid-embedded-runtime-assets",
+	setup(build) {
+		build.onResolve({ filter: /^\.\/pty-assets$/ }, () => ({
+			path: ptyAssets,
+		}));
+		build.onResolve({ filter: /^\.\/voice-assets$/ }, () => ({
+			path: voiceAssets,
+		}));
+	},
+};
+
 const clean = pkg.version.replace(/-.*$/, "");
 const parts = clean.split(".");
 while (parts.length < 4) parts.push("0");
 const winVersion = parts.slice(0, 4).join(".");
+const onWindows = process.platform === "win32";
 
-const args = [
-	"build",
-	"--compile",
-	"--target=bun-windows-x64",
-	...(onWindows
-		? [
-				"--windows-hide-console",
-				"--windows-icon=public/favicon.ico",
-				"--windows-title=Hlid",
-				"--windows-publisher=kyleundefined",
-				`--windows-version=${winVersion}`,
-				"--windows-description=Hlidskjalf - Watcher of Worlds",
-			]
-		: []),
-	`--outfile=${resolve(outDir, "hlid.exe")}`,
-	"src/server/index.ts",
-];
-
-const proc = Bun.spawn(["bun", ...args], {
-	cwd: root,
-	stdout: "inherit",
-	stderr: "inherit",
+const result = await Bun.build({
+	entrypoints: [resolve(root, "src/server/index.ts")],
+	plugins: [assetRedirectPlugin],
+	compile: {
+		target: "bun-windows-x64",
+		outfile,
+		...(onWindows
+			? {
+					windows: {
+						hideConsole: true,
+						icon: resolve(root, "public/favicon.ico"),
+						title: "Hlid",
+						publisher: "kyleundefined",
+						version: winVersion,
+						description: "Hlidskjalf - Watcher of Worlds",
+					},
+				}
+			: {}),
+	},
 });
-const code = await proc.exited;
-if (code !== 0) process.exit(code);
 
-// bun's --windows-hide-console silently doesn't flip the PE subsystem byte
-// (verified empirically: every release exe shipped with subsystem=3/CUI),
-// so a blank console window pops on launch. Patch it directly.
-const exePath = resolve(outDir, "hlid.exe");
-const patch = Bun.spawn(["bun", "scripts/patch-subsystem.ts", exePath], {
+if (!result.success) {
+	for (const log of result.logs) console.error(log);
+	process.exit(1);
+}
+
+// Bun's hideConsole option has historically left the PE subsystem as CUI, so
+// retain the explicit patch that guarantees a GUI executable.
+const patch = Bun.spawn(["bun", "scripts/patch-subsystem.ts", outfile], {
 	cwd: root,
 	stdout: "inherit",
 	stderr: "inherit",
@@ -63,5 +84,7 @@ const patch = Bun.spawn(["bun", "scripts/patch-subsystem.ts", exePath], {
 const patchCode = await patch.exited;
 if (patchCode !== 0) process.exit(patchCode);
 
-const meta = onWindows ? `windows-version ${winVersion}` : "no metadata (cross-compile)";
-console.log(`Built dist/builds/hlid.exe (${meta})`);
+const meta = onWindows
+	? `windows-version ${winVersion}`
+	: "no metadata (cross-compile)";
+console.log(`Built ${outfile} (${meta})`);

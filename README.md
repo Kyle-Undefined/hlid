@@ -76,6 +76,14 @@ Routes are named after Norse concepts; the sidebar uses the labels in caps.
 - **LEDGER** (`/ledger`): token usage, cache hit rate, cost per query, context window usage. Also tracks provider rate limit windows (5-hour, 7-day, Sonnet weekly for Anthropic) and shows you utilization percentage and a reset countdown, so you're not just guessing when capacity comes back. Ability to rename sessions from the default first part of the chat.
 - **FORGE** (`/forge`): vault config, agent model and permissions, server config, autostart, restart/shutdown, Tailscale status, session reload. Also has a live logs viewer, session cleanup by age, and a full MCP management panel (covered below).
 
+## Voice input
+
+Raven can transcribe microphone input locally with Whisper. Open the **VOICE** tab in Forge, download a model, select it, and enable voice. The selected model loads when Hlid starts and remains loaded for fast repeated use. Changing the selection hot-loads the new model without restarting Hlid.
+
+Tap the microphone in Raven or Cockpit to begin recording and tap stop when finished. On desktop, the configurable recording hotkey (default `Alt+Shift+V`) toggles the same start/stop control. By default the transcription is inserted into the editable draft; Forge can instead configure it to send immediately. Audio is converted to mono 16 kHz WAV in the browser, transcribed on the machine running Hlid, and is not saved as an attachment or database record.
+
+Remote microphone capture requires a secure browser context, such as Hlid's configured TLS endpoint over Tailscale. Model files are explicit downloads stored under the operating system's Hlid application-data directory. Version one bundles the CPU runtime and supports automatic language detection or a fixed language override.
+
 ## Attachments
 
 Files uploaded in `RAVEN` are either ephemeral (scoped to the current session) or vault attachments (persistent). Default upload limit is 25 MB. Allowed types out of the box: images, PDF, plain text, markdown, CSV, and JSON. Both limits are configurable in `hlid.config.toml` under `[attachments]`.
