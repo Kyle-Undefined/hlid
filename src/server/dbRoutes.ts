@@ -3,6 +3,7 @@ import { clampInt } from "../lib/utils";
 import { unlinkPaths } from "./attachments";
 import { getLiveSessionsStatus, hasLiveTerminalSession } from "./liveSessions";
 import { getWindowMark } from "./proxy";
+import { broadcast } from "./runState";
 import type { SessionPool } from "./sessionPool";
 import type { TerminalSessionPool } from "./terminalSessionPool";
 
@@ -31,6 +32,19 @@ export async function handleDbRoute(
 			return new Response("Missing label", { status: 400 });
 		await db.renameSession(id, body.label);
 		terminalPool?.setSessionLabel(id, body.label);
+		// Live pool entries cache the label in-memory — sync + rebroadcast so
+		// the ledger ACTIVE tab reflects the rename without a restart.
+		if (pool) {
+			for (const entry of pool.getAllEntries()) {
+				if (entry.manager.getCurrentSessionId() === id) {
+					entry.manager.setSessionLabel(body.label);
+				}
+			}
+		}
+		broadcast({
+			type: "sessions_status",
+			sessions: getLiveSessionsStatus(pool, terminalPool),
+		});
 		return Response.json({ ok: true });
 	}
 

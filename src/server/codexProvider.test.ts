@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("node:child_process", () => ({ spawn: vi.fn() }));
 vi.mock("../lib/codexPath", () => ({ resolveCodexExecutable: vi.fn() }));
@@ -7,6 +7,7 @@ vi.mock("../lib/codexPath", () => ({ resolveCodexExecutable: vi.fn() }));
 import { spawn } from "node:child_process";
 import { resolveCodexExecutable } from "../lib/codexPath";
 import type { AgentQueryParams } from "./agentProvider";
+import { __resetCodexAppServersForTesting } from "./codexAppServer";
 import type { SandboxPolicy } from "./codexProtocol";
 import {
 	CodexProvider,
@@ -139,9 +140,11 @@ describe("CodexProvider capability declarations", () => {
 		const models = p.models ?? [];
 		expect(models.length).toBeGreaterThan(0);
 		expect(models.map((m) => m.value)).toEqual([
+			"gpt-5.6-sol",
+			"gpt-5.6-terra",
+			"gpt-5.6-luna",
 			"gpt-5.5",
 			"gpt-5.4",
-			"gpt-5.3-codex",
 		]);
 		for (const m of models) {
 			expect(typeof m.value).toBe("string");
@@ -151,7 +154,7 @@ describe("CodexProvider capability declarations", () => {
 });
 
 describe("codexLaunchConfig", () => {
-	it("uses the provided executable and app-server arguments", () => {
+	it("uses the provided executable and passes the cwd through as rpcCwd", () => {
 		const cfg = codexLaunchConfig({
 			cwd: "/home/kyle/development/repos/hlid",
 			executable: "/home/kyle/.bun/bin/codex",
@@ -159,50 +162,37 @@ describe("codexLaunchConfig", () => {
 
 		expect(cfg).toEqual({
 			executable: "/home/kyle/.bun/bin/codex",
-			args: ["app-server", "--listen", "stdio://"],
-			spawnCwd: "/home/kyle/development/repos/hlid",
 			rpcCwd: "/home/kyle/development/repos/hlid",
 		});
 	});
 
-	it("omits spawnCwd for a WSL UNC cwd, translating rpcCwd to the POSIX path", () => {
+	it("translates a WSL UNC cwd to the POSIX rpcCwd", () => {
 		const cfg = codexLaunchConfig({
 			cwd: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\x",
 			executable: "/home/kyle/.bun/bin/codex",
 		});
 
 		// parseWslUnc/toLogical only rewrite WSL UNC paths on win32 — on
-		// Linux/macOS CI this cwd passes through unchanged, so spawnCwd stays.
+		// Linux/macOS CI this cwd passes through unchanged.
 		// Match the guarding style used in src/lib/paths.test.ts.
 		if (process.platform === "win32") {
-			expect(cfg).toEqual({
-				executable: "/home/kyle/.bun/bin/codex",
-				args: ["app-server", "--listen", "stdio://"],
-				rpcCwd: "/home/kyle/x",
-			});
-			expect(cfg).not.toHaveProperty("spawnCwd");
+			expect(cfg.rpcCwd).toBe("/home/kyle/x");
 		} else {
 			expect(cfg.rpcCwd).toBe("\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\x");
-			expect(cfg.spawnCwd).toBe(
-				"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\x",
-			);
 		}
 	});
 
-	it("keeps spawnCwd for a plain Windows or POSIX cwd", () => {
+	it("keeps a plain Windows or POSIX cwd unchanged", () => {
 		const cfg = codexLaunchConfig({
 			cwd: "C:\\Users\\kyle\\project",
 			executable: "codex.exe",
 		});
-
-		expect(cfg.spawnCwd).toBe("C:\\Users\\kyle\\project");
 		expect(cfg.rpcCwd).toBe("C:\\Users\\kyle\\project");
 
 		const posixCfg = codexLaunchConfig({
 			cwd: "/home/kyle/project",
 			executable: "/home/kyle/.bun/bin/codex",
 		});
-		expect(posixCfg.spawnCwd).toBe("/home/kyle/project");
 		expect(posixCfg.rpcCwd).toBe("/home/kyle/project");
 	});
 });
@@ -371,6 +361,13 @@ describe("mapCodexModels", () => {
 });
 
 describe("fetchCodexModels", () => {
+	// The app-server connection registry is module-level state shared across
+	// sessions by design — reset it so each test's fake proc is the one the
+	// lazily-acquired connection binds to.
+	beforeEach(() => {
+		__resetCodexAppServersForTesting();
+	});
+
 	it("performs initialize -> initialized -> model/list handshake and maps the result", async () => {
 		const { proc, writes } = makeFakeProc();
 		vi.mocked(spawn).mockReturnValue(proc as never);
@@ -384,7 +381,8 @@ describe("fetchCodexModels", () => {
 			"model/list",
 		]);
 		expect(models).toEqual(mapCodexModels(MODEL_LIST_FIXTURE));
-		expect(proc.kill).toHaveBeenCalled();
+		// The shared app-server stays alive for reuse — never killed per call.
+		expect(proc.kill).not.toHaveBeenCalled();
 	});
 
 	it("passes includeHidden through to the model/list RPC params", async () => {
@@ -457,7 +455,7 @@ describe("fetchCodexModels", () => {
 		expect(models.map((m) => m.value).sort()).toEqual(["secret", "visible"]);
 	});
 
-	it("rejects and kills the process on timeout", async () => {
+	it("rejects on timeout without killing the shared app-server", async () => {
 		const { proc } = makeFakeProc({ silent: true });
 		vi.mocked(spawn).mockReturnValue(proc as never);
 		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
@@ -465,7 +463,7 @@ describe("fetchCodexModels", () => {
 		await expect(fetchCodexModels({ timeoutMs: 20 })).rejects.toThrow(
 			/timed out/i,
 		);
-		expect(proc.kill).toHaveBeenCalled();
+		expect(proc.kill).not.toHaveBeenCalled();
 	});
 
 	it("rejects when the process emits an error event", async () => {
@@ -476,7 +474,6 @@ describe("fetchCodexModels", () => {
 		const promise = fetchCodexModels({ timeoutMs: 5000 });
 		proc.emit("error", new Error("spawn failed"));
 		await expect(promise).rejects.toThrow("spawn failed");
-		expect(proc.kill).toHaveBeenCalled();
 	});
 
 	it("rejects when the process exits unexpectedly", async () => {
@@ -487,11 +484,14 @@ describe("fetchCodexModels", () => {
 		const promise = fetchCodexModels({ timeoutMs: 5000 });
 		proc.emit("exit", 1);
 		await expect(promise).rejects.toThrow(/exited/i);
-		expect(proc.kill).toHaveBeenCalled();
 	});
 });
 
 describe("CodexProvider.listModels", () => {
+	beforeEach(() => {
+		__resetCodexAppServersForTesting();
+	});
+
 	it("delegates to fetchCodexModels", async () => {
 		const { proc } = makeFakeProc();
 		vi.mocked(spawn).mockReturnValue(proc as never);
@@ -583,6 +583,10 @@ function baseCodexParams(
 }
 
 describe("CodexAgentSession — setModel", () => {
+	beforeEach(() => {
+		__resetCodexAppServersForTesting();
+	});
+
 	it("changes the model carried by the next turn/start call", async () => {
 		const { proc, writes } = makeFakeSessionProc();
 		vi.mocked(spawn).mockReturnValue(proc as never);
@@ -620,6 +624,10 @@ describe("CodexAgentSession — setModel", () => {
 });
 
 describe("CodexAgentSession — setPermissionMode", () => {
+	beforeEach(() => {
+		__resetCodexAppServersForTesting();
+	});
+
 	it("changes approvalPolicy and sandboxPolicy on the next turn/start call", async () => {
 		const { proc, writes } = makeFakeSessionProc();
 		vi.mocked(spawn).mockReturnValue(proc as never);

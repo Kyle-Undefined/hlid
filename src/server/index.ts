@@ -8,6 +8,7 @@ import type { AgentProvider, McpServerStatus } from "./agentProvider";
 import { handleAttachmentRoute } from "./attachmentRoutes";
 import { openInBrowser } from "./browser";
 import { ClaudeProvider } from "./claudeProvider";
+import { closeAllCodexAppServers } from "./codexAppServer";
 import { CodexProvider } from "./codexProvider";
 import { loadConfig } from "./config";
 import { handleDbRoute } from "./dbRoutes";
@@ -120,11 +121,13 @@ void db.getSetting("mcp_status_cache").then((cached) => {
 process.on("SIGTERM", () => {
 	pool.closeAll();
 	terminalPool.closeAll();
+	closeAllCodexAppServers();
 	process.exit(0);
 });
 process.on("SIGINT", () => {
 	pool.closeAll();
 	terminalPool.closeAll();
+	closeAllCodexAppServers();
 	process.exit(0);
 });
 

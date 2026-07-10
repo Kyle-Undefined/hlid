@@ -1,6 +1,6 @@
 // AUTO-GENERATED — vendored from codex-cli's `codex app-server generate-ts`.
-// CLI version: codex-cli 0.142.4 (pinned to 0.142.4 in scripts/generate-codex-types.ts)
-// Generated: 2026-07-05
+// CLI version: codex-cli 0.144.1 (pinned to 0.144.1 in scripts/generate-codex-types.ts)
+// Generated: 2026-07-10
 // Regenerate via `bun scripts/generate-codex-types.ts`; version bumps are
 // deliberate manual updates, not run automatically on every build.
 

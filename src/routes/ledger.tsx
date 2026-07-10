@@ -118,7 +118,7 @@ const getStatsDataFn = createServerFn({ method: "GET" }).handler(async () => {
 });
 
 const getSessionsPageFn = createServerFn({ method: "POST" })
-	.inputValidator((data: { page: number; size: number }) => data)
+	.validator((data: { page: number; size: number }) => data)
 	.handler(({ data }) =>
 		dbJson<{ sessions: SessionRow[]; total: number }>(
 			`/db/sessions?page=${data.page}&size=${data.size}`,
@@ -127,7 +127,7 @@ const getSessionsPageFn = createServerFn({ method: "POST" })
 	);
 
 const deleteSessionFn = createServerFn({ method: "POST" })
-	.inputValidator((data: { id: string }) => data)
+	.validator((data: { id: string }) => data)
 	.handler(async ({ data }) => {
 		const res = await dbFetch(`/db/session?id=${data.id}`, {
 			method: "DELETE",
@@ -136,7 +136,7 @@ const deleteSessionFn = createServerFn({ method: "POST" })
 	});
 
 const renameSessionFn = createServerFn({ method: "POST" })
-	.inputValidator((data: { id: string; label: string }) => data)
+	.validator((data: { id: string; label: string }) => data)
 	.handler(async ({ data }) => {
 		const res = await dbFetch(`/db/session?id=${data.id}`, {
 			method: "PATCH",
@@ -147,7 +147,7 @@ const renameSessionFn = createServerFn({ method: "POST" })
 	});
 
 const cleanupSessionsFn = createServerFn({ method: "POST" })
-	.inputValidator((data: { days: number }) => data)
+	.validator((data: { days: number }) => data)
 	.handler(async ({ data }) => {
 		const res = await dbFetch(
 			`/db/sessions/cleanup?older_than_days=${data.days}`,

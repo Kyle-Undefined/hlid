@@ -64,7 +64,7 @@ const getAgentsFn = createServerFn({ method: "GET" }).handler(
 );
 
 const validateAgentPathFn = createServerFn({ method: "GET" })
-	.inputValidator((agentPath: string) => agentPath)
+	.validator((agentPath: string) => agentPath)
 	.handler(async ({ data: agentPath }) => {
 		const config = await getConfig();
 		const resolved = resolve(expandTilde(agentPath));
@@ -89,14 +89,14 @@ const validateAgentPathFn = createServerFn({ method: "GET" })
 	});
 
 const saveAgentsFn = createServerFn({ method: "POST" })
-	.inputValidator((data: Agent[]) => data)
+	.validator((data: Agent[]) => data)
 	.handler(async ({ data: agentList }) => {
 		const config = await getConfig();
 		writeConfig({ ...config, agents: agentList });
 	});
 
 const readClaudemdFn = createServerFn({ method: "GET" })
-	.inputValidator((agentPath: string) => agentPath)
+	.validator((agentPath: string) => agentPath)
 	.handler(async ({ data: agentPath }) => {
 		const config = await getConfig();
 		const allowedPaths = (config.agents ?? []).map((a) =>

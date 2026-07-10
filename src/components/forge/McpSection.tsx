@@ -61,7 +61,7 @@ const writeVaultMcpSchema = z.object({
 });
 
 export const writeVaultMcpFn = createServerFn({ method: "POST" })
-	.inputValidator(
+	.validator(
 		(raw): { servers: Record<string, VaultMcpConfig> } =>
 			writeVaultMcpSchema.parse(raw) as {
 				servers: Record<string, VaultMcpConfig>;
@@ -85,7 +85,7 @@ const toggleVaultMcpSchema = z.object({
 });
 
 export const toggleVaultMcpFn = createServerFn({ method: "POST" })
-	.inputValidator((raw) => toggleVaultMcpSchema.parse(raw))
+	.validator((raw) => toggleVaultMcpSchema.parse(raw))
 	.handler(async ({ data }) => {
 		const { readFileSync, writeFileSync, mkdirSync } = await import("node:fs");
 		const { join } = await import("node:path");
@@ -136,7 +136,7 @@ export const getLiveMcpStatusFn = createServerFn({ method: "GET" }).handler(
 // ─── Agent-scoped server functions ───────────────────────────────────────────
 
 export const getAgentMcpFn = createServerFn({ method: "GET" })
-	.inputValidator((raw) => z.string().parse(raw))
+	.validator((raw) => z.string().parse(raw))
 	.handler(async ({ data: agentPath }) => {
 		const { readFileSync } = await import("node:fs");
 		const { join, resolve } = await import("node:path");
@@ -188,7 +188,7 @@ const writeAgentMcpSchema = z.object({
 });
 
 export const writeAgentMcpFn = createServerFn({ method: "POST" })
-	.inputValidator(
+	.validator(
 		(raw): { agentPath: string; servers: Record<string, VaultMcpConfig> } =>
 			writeAgentMcpSchema.parse(raw) as {
 				agentPath: string;
@@ -221,7 +221,7 @@ const toggleAgentMcpSchema = z.object({
 });
 
 export const toggleAgentMcpFn = createServerFn({ method: "POST" })
-	.inputValidator((raw) => toggleAgentMcpSchema.parse(raw))
+	.validator((raw) => toggleAgentMcpSchema.parse(raw))
 	.handler(async ({ data }) => {
 		const { readFileSync, writeFileSync, mkdirSync } = await import("node:fs");
 		const { join, resolve } = await import("node:path");

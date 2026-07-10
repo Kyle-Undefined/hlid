@@ -43,7 +43,7 @@ const logClientErrorSchema = z.object({
 
 /** Write a client-side error to the server event log. Fire-and-forget from ErrorBoundary. */
 export const logClientErrorFn = createServerFn({ method: "POST" })
-	.inputValidator((raw) => logClientErrorSchema.parse(raw))
+	.validator((raw) => logClientErrorSchema.parse(raw))
 	.handler(async ({ data }) => {
 		const { appendLog } = await import("#/db");
 		await appendLog("error", "ui", data.message, {
@@ -83,7 +83,7 @@ export type ProviderInfo = {
 
 /** Returns the list of compiled-in providers with availability status. */
 export const getProvidersFn = createServerFn({ method: "GET" })
-	.inputValidator((raw) =>
+	.validator((raw) =>
 		z.object({ refresh: z.boolean().optional() }).optional().parse(raw),
 	)
 	.handler(({ data }) =>
@@ -144,7 +144,7 @@ export const getUsageWindowsFn = createServerFn({ method: "GET" }).handler(() =>
 
 /** Returns provider-aware usage snapshots for the given provider IDs. */
 export const getProviderUsagesFn = createServerFn({ method: "GET" })
-	.inputValidator((raw) => {
+	.validator((raw) => {
 		const ids = Array.isArray(raw) ? (raw as string[]) : ["claude"];
 		return ids.filter((id): id is string => typeof id === "string");
 	})
@@ -188,7 +188,7 @@ export type EnrichedMessageRow = MessageRow & {
 };
 
 export const getSessionDataFn = createServerFn({ method: "GET" })
-	.inputValidator((raw) =>
+	.validator((raw) =>
 		z
 			.string()
 			.refine((s) => s.trim().length > 0, "sessionId must be non-empty")
@@ -202,7 +202,7 @@ export const getSessionDataFn = createServerFn({ method: "GET" })
 	);
 
 export const getSessionAgentCwdFn = createServerFn({ method: "GET" })
-	.inputValidator((sessionId: string) => sessionId)
+	.validator((sessionId: string) => sessionId)
 	.handler(async ({ data: sessionId }) => {
 		try {
 			const { getSessionAgentCwd } = await import("#/db");
@@ -213,7 +213,7 @@ export const getSessionAgentCwdFn = createServerFn({ method: "GET" })
 	});
 
 export const getSessionPermissionsFn = createServerFn({ method: "GET" })
-	.inputValidator((sessionId: string) => sessionId)
+	.validator((sessionId: string) => sessionId)
 	.handler(({ data: sessionId }) =>
 		dbJson<PermissionEventRow[]>(
 			`/db/session-permissions?session_id=${encodeURIComponent(sessionId)}`,
@@ -230,7 +230,7 @@ export type SessionPlanProposalRow = {
 };
 
 export const getSessionPlanProposalsFn = createServerFn({ method: "GET" })
-	.inputValidator((sessionId: string) => sessionId)
+	.validator((sessionId: string) => sessionId)
 	.handler(({ data: sessionId }) =>
 		dbJson<SessionPlanProposalRow[]>(
 			`/db/session-plan-proposals?session_id=${encodeURIComponent(sessionId)}`,
@@ -248,7 +248,7 @@ export type SessionAskUserQuestionRow = {
 };
 
 export const getSessionAskUserQuestionsFn = createServerFn({ method: "GET" })
-	.inputValidator((sessionId: string) => sessionId)
+	.validator((sessionId: string) => sessionId)
 	.handler(({ data: sessionId }) =>
 		dbJson<SessionAskUserQuestionRow[]>(
 			`/db/session-ask-user-questions?session_id=${encodeURIComponent(sessionId)}`,
@@ -257,7 +257,7 @@ export const getSessionAskUserQuestionsFn = createServerFn({ method: "GET" })
 	);
 
 export const getSessionContextFn = createServerFn({ method: "GET" })
-	.inputValidator((sessionId: string) => sessionId)
+	.validator((sessionId: string) => sessionId)
 	.handler(({ data: sessionId }) =>
 		dbJson<{
 			context_window: number | null;
@@ -419,7 +419,7 @@ export const getActivityStatsFn = createServerFn({ method: "GET" }).handler(
 );
 
 export const getToolErrorsFn = createServerFn({ method: "GET" })
-	.inputValidator((raw) => z.string().min(1).parse(raw))
+	.validator((raw) => z.string().min(1).parse(raw))
 	.handler(async ({ data: toolName }) => {
 		const { getToolErrors } = await import("#/db");
 		return getToolErrors(toolName, 10);
@@ -503,7 +503,7 @@ export const getMcpServersFn = createServerFn({ method: "GET" }).handler(
  * Used by TerminalView to pass --resume to the CLI when switching to terminal mode.
  */
 export const getSessionClaudeIdFn = createServerFn({ method: "GET" })
-	.inputValidator((sessionId: string) => sessionId)
+	.validator((sessionId: string) => sessionId)
 	.handler(async ({ data: sessionId }) => {
 		try {
 			const { getSessionClaudeId } = await import("#/db");
@@ -519,7 +519,7 @@ export const getSessionClaudeIdFn = createServerFn({ method: "GET" })
  * the Ledger shows an entry and resume works when switching back to custom UI.
  */
 export const ensureSessionFn = createServerFn({ method: "POST" })
-	.inputValidator((raw) => {
+	.validator((raw) => {
 		const { id, label, model } = raw as {
 			id: string;
 			label: string;

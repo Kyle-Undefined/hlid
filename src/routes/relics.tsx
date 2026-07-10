@@ -28,7 +28,7 @@ type ListResult = {
 };
 
 const listAttachmentsFn = createServerFn({ method: "POST" })
-	.inputValidator(
+	.validator(
 		(data: {
 			search?: string;
 			session_id?: string;

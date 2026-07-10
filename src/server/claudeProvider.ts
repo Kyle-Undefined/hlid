@@ -512,6 +512,8 @@ function parseAnthropicHeaders(headers: Headers): ProviderWindowReading[] {
 export class ClaudeProvider implements AgentProvider {
 	readonly providerId = "claude";
 	readonly label = "Claude";
+	// The SDK's streaming-input query is lazy — probes must send a turn first.
+	readonly probeRequiresTurn = true;
 
 	readonly models = [
 		{ value: "claude-opus-4-8", label: "Opus 4.8" },
@@ -558,10 +560,10 @@ export class ClaudeProvider implements AgentProvider {
 		},
 	] as const;
 
+	// Anthropic retired the Sonnet-only weekly limit — no weekly_sonnet window.
 	readonly usageWindows = [
 		{ windowId: "five_hour", label: "5-HOUR", windowSecs: 5 * 3600 },
 		{ windowId: "weekly", label: "7-DAY", windowSecs: 7 * 86400 },
-		{ windowId: "weekly_sonnet", label: "SONNET", windowSecs: 7 * 86400 },
 	] as const;
 
 	async check(): Promise<{ available: boolean; reason?: string }> {

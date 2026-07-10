@@ -1,4 +1,3 @@
-import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { resolveCodexExecutable } from "../lib/codexPath";
 import { toLogical } from "../lib/paths";
 import type {
@@ -12,6 +11,7 @@ import type {
 	SendOptions,
 	SlashCommand,
 } from "./agentProvider";
+import { acquireCodexAppServer, type CodexAppServer } from "./codexAppServer";
 import type {
 	CommandExecutionRequestApprovalResponse,
 	FileChangeRequestApprovalResponse,
@@ -21,6 +21,7 @@ import type {
 	ModelListParams,
 	ModelListResponse,
 	PermissionsRequestApprovalResponse,
+	RateLimitSnapshot,
 	ReasoningEffortOption,
 	SandboxPolicy,
 	ThreadResumeParams,
@@ -39,14 +40,6 @@ type ApprovalRequestResult =
 	| PermissionsRequestApprovalResponse
 	| CommandExecutionRequestApprovalResponse
 	| FileChangeRequestApprovalResponse;
-
-type JsonRpcMessage = {
-	id?: number | string;
-	method?: string;
-	params?: unknown;
-	result?: unknown;
-	error?: { message?: string };
-};
 
 class AsyncQueue<T> {
 	private values: T[] = [];
@@ -159,8 +152,6 @@ export function codexSandboxPolicy(
 
 export type CodexLaunchConfig = {
 	executable: string;
-	args: string[];
-	spawnCwd?: string;
 	rpcCwd: string;
 };
 
@@ -168,21 +159,15 @@ export function codexLaunchConfig(params: {
 	cwd: string;
 	executable?: string;
 }): CodexLaunchConfig {
-	const rpcCwd = toLogical(params.cwd);
-	// rpcCwd differs from params.cwd exactly when params.cwd is a WSL UNC path
-	// (toLogical only rewrites those). In that case the executable is a
-	// generated .cmd wrapper that shells out via `wsl.exe --cd`, and cmd.exe
-	// refuses a UNC cwd, printing noise to stderr. The wrapper already sets
-	// the real Linux cwd itself, so we omit spawnCwd there.
-	const isWslUncCwd = rpcCwd !== params.cwd;
-
+	// The shared app-server process is spawned without a cwd (see
+	// codexAppServer.ts) — the session's working directory travels as rpcCwd
+	// in thread/start and turn/start instead. toLogical rewrites WSL UNC
+	// paths to the POSIX path the in-WSL codex expects.
 	const executable = params.executable ?? resolveCodexExecutable();
 	if (!executable) throw new Error("Codex CLI not found");
 	return {
 		executable,
-		args: ["app-server", "--listen", "stdio://"],
-		...(isWslUncCwd ? {} : { spawnCwd: params.cwd }),
-		rpcCwd,
+		rpcCwd: toLogical(params.cwd),
 	};
 }
 
@@ -263,96 +248,34 @@ export function mapCodexModels(raw: unknown): ProviderModelInfo[] {
 }
 
 /**
- * One-off `model/list` RPC over a throwaway codex-cli `app-server` process.
- * Spawns the executable, performs the initialize/initialized handshake, sends
- * `model/list`, then kills the process. Used by CodexProvider.listModels() to
- * live-fetch the model catalog; falls back to the static `models` array on
- * failure (handled by callers).
+ * `model/list` RPC over the shared codex app-server connection (see
+ * codexAppServer.ts — no per-call process spawn). Used by
+ * CodexProvider.listModels() to live-fetch the model catalog; falls back to
+ * the static `models` array on failure (handled by callers).
  */
 export async function fetchCodexModels(opts?: {
 	includeHidden?: boolean;
 	timeoutMs?: number;
 }): Promise<ProviderModelInfo[]> {
 	const launch = codexLaunchConfig({ cwd: process.cwd() });
-	const proc = spawn(launch.executable, launch.args, {
-		...(launch.spawnCwd ? { cwd: launch.spawnCwd } : {}),
-		stdio: "pipe",
-	});
-
-	let lineBuffer = "";
-	let nextId = 1;
-	const pending = new Map<
-		number | string,
-		{ resolve: (v: unknown) => void; reject: (e: Error) => void }
-	>();
-
-	function write(message: JsonRpcMessage): void {
-		proc.stdin.write(`${JSON.stringify(message)}\n`);
-	}
-
-	function request(method: string, params: unknown): Promise<unknown> {
-		const id = nextId++;
-		write({ id, method, params });
-		return new Promise((resolve, reject) => {
-			pending.set(id, { resolve, reject });
-		});
-	}
-
-	function notify(method: string, params: unknown): void {
-		write({ method, params });
-	}
-
-	function handleLine(line: string): void {
-		if (!line) return;
-		let msg: JsonRpcMessage;
-		try {
-			msg = JSON.parse(line) as JsonRpcMessage;
-		} catch {
-			return;
-		}
-		if (msg.id === undefined || msg.method) return;
-		const p = pending.get(msg.id);
-		if (!p) return;
-		pending.delete(msg.id);
-		if (msg.error) p.reject(new Error(msg.error.message ?? "Codex error"));
-		else p.resolve(msg.result);
-	}
+	const conn = acquireCodexAppServer(launch.executable);
 
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
-		const result = await new Promise<unknown>((resolve, reject) => {
-			proc.on("error", (err) => reject(err));
-			proc.on("exit", (code) => {
-				reject(new Error(`Codex app-server exited (code ${code ?? "null"})`));
-			});
-			proc.stdout.on("data", (chunk: Buffer) => {
-				lineBuffer += chunk.toString("utf8");
-				while (true) {
-					const idx = lineBuffer.indexOf("\n");
-					if (idx === -1) break;
-					const line = lineBuffer.slice(0, idx).trim();
-					lineBuffer = lineBuffer.slice(idx + 1);
-					handleLine(line);
-				}
-			});
-
-			timer = setTimeout(() => {
-				reject(new Error("Codex model/list timed out"));
-			}, opts?.timeoutMs ?? 10_000);
-
+		const result = await Promise.race([
 			(async () => {
-				await request("initialize", {
-					clientInfo: { name: "hlid", title: "Hlid", version: "0.0.0" },
-					capabilities: { experimentalApi: true },
-				});
-				notify("initialized", {});
+				await conn.ready;
 				const modelListParams: ModelListParams = {
 					includeHidden: opts?.includeHidden ?? false,
 				};
-				const modelList = await request("model/list", modelListParams);
-				resolve(modelList);
-			})().catch(reject);
-		});
+				return conn.request("model/list", modelListParams);
+			})(),
+			new Promise<never>((_, reject) => {
+				timer = setTimeout(() => {
+					reject(new Error("Codex model/list timed out"));
+				}, opts?.timeoutMs ?? 10_000);
+			}),
+		]);
 
 		const models = mapCodexModels(result);
 		return opts?.includeHidden
@@ -360,13 +283,14 @@ export async function fetchCodexModels(opts?: {
 			: models.filter((m) => m.hidden !== true);
 	} finally {
 		if (timer) clearTimeout(timer);
-		proc.kill();
 	}
 }
 
 function maybeUsage(value: unknown): AgentEvent | null {
 	const obj = asObj(value);
 	const tokenUsage = asObj(obj.usage ?? obj.tokenUsage ?? obj.tokens);
+	// ThreadTokenUsage carries the serving model's real context window.
+	const contextWindow = Number(tokenUsage.modelContextWindow) || undefined;
 	const usage = asObj(tokenUsage.last ?? tokenUsage.total ?? tokenUsage);
 	const input =
 		Number(usage.inputTokens ?? usage.input_tokens ?? usage.input) || 0;
@@ -377,6 +301,7 @@ function maybeUsage(value: unknown): AgentEvent | null {
 		type: "usage",
 		inputTokens: input,
 		outputTokens: output,
+		contextWindow,
 		cacheReadTokens:
 			Number(usage.cacheReadTokens ?? usage.cache_read_input_tokens) ||
 			Number(usage.cachedInputTokens) ||
@@ -389,18 +314,13 @@ function maybeUsage(value: unknown): AgentEvent | null {
 }
 
 class CodexAgentSession implements AgentSession {
-	private proc: ChildProcessWithoutNullStreams | null = null;
-	private nextId = 1;
-	private pending = new Map<
-		number | string,
-		{ resolve: (v: unknown) => void; reject: (e: Error) => void }
-	>();
+	private conn: CodexAppServer | null = null;
 	private events = new AsyncQueue<AgentEvent>();
 	private ready: Promise<void> | null = null;
 	private threadId: string | null = null;
 	private activeTurnId: string | null = null;
 	private canceled = false;
-	private lineBuffer = "";
+	private endAfterTurn = false;
 	private streamedAgentMessageIds = new Set<string>();
 	private emittedReasoningIds = new Set<string>();
 	private sawUnidentifiedAgentMessageDelta = false;
@@ -418,16 +338,29 @@ class CodexAgentSession implements AgentSession {
 	cancel(): void {
 		this.canceled = true;
 		this.events.close();
-		for (const pending of this.pending.values()) {
-			pending.reject(new Error("Codex session cancelled"));
+		// The app-server is shared — never kill the process. Interrupt any
+		// running turn and detach this session's thread from event routing.
+		if (this.conn && this.threadId) {
+			if (this.activeTurnId) {
+				void this.conn
+					.request("turn/interrupt", {
+						threadId: this.threadId,
+						turnId: this.activeTurnId,
+					})
+					.catch(() => {});
+			}
+			this.conn.detachThread(this.threadId);
 		}
-		this.pending.clear();
-		this.proc?.kill();
-		this.proc = null;
+		this.conn = null;
 	}
 
 	closeInput(): void {
-		this.proc?.stdin.end();
+		// One-shot callers (recap) use this as "no more sends coming". With a
+		// shared app-server there is no per-session stdin to EOF — instead the
+		// event stream is closed once the in-flight turn completes (see the
+		// turn/completed handler), which ends the caller's for-await loop.
+		this.endAfterTurn = true;
+		if (this.activeTurnId === null) this.events.close();
 	}
 
 	async interrupt(): Promise<void> {
@@ -570,29 +503,8 @@ class CodexAgentSession implements AgentSession {
 			executable: this.params.executable,
 		});
 		this.launch = launch;
-
-		this.proc = spawn(launch.executable, launch.args, {
-			...(launch.spawnCwd ? { cwd: launch.spawnCwd } : {}),
-			stdio: "pipe",
-		});
-		this.proc.on("error", (err) => {
-			this.events.push({
-				type: "local_command_output",
-				content: `Codex app-server error: ${err.message}`,
-			});
-			this.failProcess(err);
-		});
-		this.proc.stdout.on("data", (chunk) => this.onStdout(chunk));
-		this.proc.stderr.on("data", (chunk) => {
-			const text = chunk.toString("utf8");
-			if (text.trim())
-				this.events.push({ type: "local_command_output", content: text });
-		});
-		this.proc.on("exit", () => {
-			if (!this.canceled) {
-				this.failProcess(new Error("Codex app-server exited"));
-			}
-		});
+		const conn = acquireCodexAppServer(launch.executable);
+		this.conn = conn;
 		if (this.params.signal) {
 			if (this.params.signal.aborted) this.cancel();
 			else
@@ -600,16 +512,7 @@ class CodexAgentSession implements AgentSession {
 					once: true,
 				});
 		}
-
-		await this.request("initialize", {
-			clientInfo: {
-				name: "hlid",
-				title: "Hlid",
-				version: "0.0.0",
-			},
-			capabilities: { experimentalApi: true },
-		});
-		this.notify("initialized", {});
+		await conn.ready;
 
 		const threadParams: ThreadStartParams = {
 			cwd: launch.rpcCwd,
@@ -639,99 +542,91 @@ class CodexAgentSession implements AgentSession {
 			throw new Error("Codex thread start did not return a thread id");
 		}
 		this.threadId = thread.id;
+		if (this.canceled) return;
+		conn.attachThread(thread.id, {
+			onNotification: (method, params) =>
+				this.handleNotification(method, params),
+			onRequest: (method, params) => this.handleServerRequest(method, params),
+			onExit: (err) => {
+				if (this.canceled) return;
+				this.events.push({
+					type: "local_command_output",
+					content: `Codex app-server error: ${err.message}`,
+				});
+				this.events.close();
+			},
+		});
 		this.events.push({ type: "session_start", sessionId: thread.id });
+
+		// Seed usage windows immediately; rolling account/rateLimits/updated
+		// notifications keep them fresh during turns.
+		void conn
+			.request("account/rateLimits/read", undefined)
+			.then((res) => this.emitRateLimits(asObj(res).rateLimits))
+			.catch(() => {});
+	}
+
+	/**
+	 * Map a codex RateLimitSnapshot (primary/secondary RateLimitWindow) onto
+	 * hlid rate_limit events. Window identity comes from windowDurationMins —
+	 * codex reports a rolling ~5h primary and ~7d secondary; ≤24h maps to
+	 * five_hour, longer to weekly (matching CodexProvider.usageWindows).
+	 */
+	private emitRateLimits(raw: unknown): void {
+		// Inbound payload — cast for shape hints, keep runtime guards.
+		const snapshot = asObj(raw) as Partial<RateLimitSnapshot>;
+		for (const [win, fallbackId] of [
+			[snapshot.primary, "five_hour"],
+			[snapshot.secondary, "weekly"],
+		] as const) {
+			const w = asObj(win);
+			if (typeof w.usedPercent !== "number") continue;
+			const mins =
+				typeof w.windowDurationMins === "number" ? w.windowDurationMins : null;
+			const windowId =
+				mins == null ? fallbackId : mins <= 24 * 60 ? "five_hour" : "weekly";
+			const rawReset = typeof w.resetsAt === "number" ? w.resetsAt : null;
+			// Observed epoch seconds; normalize defensively if it ever turns ms.
+			const resetsAt =
+				rawReset != null && rawReset > 1e12
+					? Math.round(rawReset / 1000)
+					: rawReset;
+			this.events.push({
+				type: "rate_limit",
+				status: "ok",
+				rateLimitType: windowId,
+				utilization: w.usedPercent / 100,
+				resetsAt,
+			});
+		}
 	}
 
 	private request(method: string, params: unknown): Promise<unknown> {
-		const id = this.nextId++;
-		this.write({ id, method, params });
-		return new Promise((resolve, reject) => {
-			this.pending.set(id, { resolve, reject });
-		});
+		if (!this.conn) throw new Error("Codex app-server is not running");
+		return this.conn.request(method, params);
 	}
 
-	private notify(method: string, params: unknown): void {
-		this.write({ method, params });
-	}
-
-	private write(message: JsonRpcMessage): void {
-		if (!this.proc) throw new Error("Codex app-server is not running");
-		this.proc.stdin.write(`${JSON.stringify(message)}\n`);
-	}
-
-	private failProcess(err: Error): void {
-		this.events.close();
-		for (const pending of this.pending.values()) {
-			pending.reject(err);
-		}
-		this.pending.clear();
-		this.proc = null;
-	}
-
-	private onStdout(chunk: Buffer): void {
-		this.lineBuffer += chunk.toString("utf8");
-		while (true) {
-			const idx = this.lineBuffer.indexOf("\n");
-			if (idx === -1) break;
-			const line = this.lineBuffer.slice(0, idx).trim();
-			this.lineBuffer = this.lineBuffer.slice(idx + 1);
-			if (!line) continue;
-			try {
-				this.handleMessage(JSON.parse(line) as JsonRpcMessage);
-			} catch {
-				this.events.push({ type: "local_command_output", content: line });
-			}
-		}
-	}
-
-	private handleMessage(msg: JsonRpcMessage): void {
-		if (msg.id !== undefined && !msg.method) {
-			const pending = this.pending.get(msg.id);
-			if (!pending) return;
-			this.pending.delete(msg.id);
-			if (msg.error)
-				pending.reject(new Error(msg.error.message ?? "Codex error"));
-			else pending.resolve(msg.result);
-			return;
-		}
-		if (msg.id !== undefined && msg.method) {
-			void this.handleServerRequest(msg);
-			return;
-		}
-		if (msg.method) this.handleNotification(msg.method, msg.params);
-	}
-
-	private async handleServerRequest(msg: JsonRpcMessage): Promise<void> {
-		if (msg.id === undefined || !msg.method) return;
-		const params = asObj(msg.params);
+	private async handleServerRequest(
+		method: string,
+		rawParams: unknown,
+	): Promise<unknown> {
+		const params = asObj(rawParams);
 		if (typeof this.params.canUseTool !== "function") {
-			this.write({
-				id: msg.id,
-				result: this.deniedServerRequestResult(msg.method),
-			});
-			return;
+			return this.deniedServerRequestResult(method);
 		}
-		try {
-			const itemId = String(params.itemId ?? params.approvalId ?? msg.id);
-			const decision = await this.params.canUseTool(msg.method, params, {
-				toolUseID: itemId,
-				signal: this.params.signal ?? new AbortController().signal,
-				title: "Codex wants approval",
-				displayName: msg.method,
-				description:
-					typeof params.reason === "string" ? params.reason : undefined,
-			});
-			const allowed = decision.behavior === "allow";
-			const result = allowed
-				? this.allowedServerRequestResult(msg.method, params)
-				: this.deniedServerRequestResult(msg.method);
-			this.write({ id: msg.id, result });
-		} catch (err) {
-			this.write({
-				id: msg.id,
-				error: { message: err instanceof Error ? err.message : String(err) },
-			});
-		}
+		const itemId = String(params.itemId ?? params.approvalId ?? "approval");
+		const decision = await this.params.canUseTool(method, params, {
+			toolUseID: itemId,
+			signal: this.params.signal ?? new AbortController().signal,
+			title: "Codex wants approval",
+			displayName: method,
+			description:
+				typeof params.reason === "string" ? params.reason : undefined,
+		});
+		const allowed = decision.behavior === "allow";
+		return allowed
+			? this.allowedServerRequestResult(method, params)
+			: this.deniedServerRequestResult(method);
 	}
 
 	private allowedServerRequestResult(
@@ -872,6 +767,10 @@ class CodexAgentSession implements AgentSession {
 			}
 			return;
 		}
+		if (method === "account/rateLimits/updated") {
+			this.emitRateLimits(obj.rateLimits);
+			return;
+		}
 		if (method === "thread/tokenUsage/updated") {
 			const usage = maybeUsage(params);
 			if (usage?.type === "usage") {
@@ -926,6 +825,12 @@ class CodexAgentSession implements AgentSession {
 					cacheCreationTokens: this.lastUsage.cacheCreationTokens,
 				},
 			});
+			// closeInput() was called — no more sends coming, so end the event
+			// stream (and stop routing this thread) now that the turn is done.
+			if (this.endAfterTurn) {
+				if (this.conn && this.threadId) this.conn.detachThread(this.threadId);
+				this.events.close();
+			}
 		}
 	}
 }
@@ -936,9 +841,11 @@ export class CodexProvider implements AgentProvider {
 
 	/** Offline fallback for listModels() — used when the live `model/list` RPC fails. */
 	readonly models = [
+		{ value: "gpt-5.6-sol", label: "GPT-5.6-Sol" },
+		{ value: "gpt-5.6-terra", label: "GPT-5.6-Terra" },
+		{ value: "gpt-5.6-luna", label: "GPT-5.6-Luna" },
 		{ value: "gpt-5.5", label: "GPT-5.5" },
 		{ value: "gpt-5.4", label: "GPT-5.4" },
-		{ value: "gpt-5.3-codex", label: "GPT-5.3 Codex (legacy)" },
 	] as const;
 
 	/** Offline fallback for listModels() effort info — used when the live `model/list` RPC fails. */

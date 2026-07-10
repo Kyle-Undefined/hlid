@@ -88,6 +88,8 @@ export type AgentEvent =
 			cacheReadTokens?: number;
 			cacheCreationTokens?: number;
 			model?: string;
+			/** Context window of the model serving this turn, when the provider reports it. */
+			contextWindow?: number;
 	  }
 	| {
 			type: "rate_limit";
@@ -245,6 +247,14 @@ export interface AgentProvider {
 		label: string;
 		windowSecs: number;
 	}>;
+	/**
+	 * True when mcpServerStatus()/supportedCommands() need a real assistant
+	 * turn first to initialize the underlying session (the Claude SDK's
+	 * streaming-input query is lazy until the first send()). Providers that
+	 * can answer these over a plain RPC connection (codex app-server) leave
+	 * this unset so probes never spend a turn.
+	 */
+	readonly probeRequiresTurn?: boolean;
 	/** Optional availability check. Returns false + reason if provider can't run. */
 	check?(): Promise<{ available: boolean; reason?: string }>;
 	/** Live-fetch the provider's model catalog. Falls back to the static `models` list on failure. */

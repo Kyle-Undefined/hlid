@@ -220,7 +220,6 @@ const providerWindows = new Map<string, ProviderWindowDef[]>([
 		[
 			{ windowId: "five_hour", label: "5-HOUR", windowSecs: 5 * 3600 },
 			{ windowId: "weekly", label: "7-DAY", windowSecs: 7 * 86400 },
-			{ windowId: "weekly_sonnet", label: "SONNET", windowSecs: 7 * 86400 },
 		],
 	],
 ]);

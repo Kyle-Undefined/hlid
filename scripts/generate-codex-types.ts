@@ -25,7 +25,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, normalize } from "node:path";
 
-const CLI_VERSION_PIN = "0.142.4";
+const CLI_VERSION_PIN = "0.144.1";
 
 const root = join(import.meta.dir, "..");
 const outDir = join(root, "src", "server", "codexProtocol");
@@ -71,6 +71,9 @@ const SEEDS: Array<[name: string, relPath: string]> = [
 	// barrel-exporting them saves a deep import path at the call site.
 	["ReasoningEffortOption", "v2/ReasoningEffortOption.ts"],
 	["GrantedPermissionProfile", "v2/GrantedPermissionProfile.ts"],
+	// Carried by account/rateLimits/updated notifications and the
+	// account/rateLimits/read response — parsed for usage-window tracking.
+	["RateLimitSnapshot", "v2/RateLimitSnapshot.ts"],
 ];
 
 async function run(cmd: string[], opts?: { cwd?: string }): Promise<string> {

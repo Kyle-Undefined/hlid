@@ -8,7 +8,7 @@ import { Section } from "./fields";
 // ─── Server functions ─────────────────────────────────────────────────────────
 
 export const getLogsFn = createServerFn({ method: "GET" })
-	.inputValidator(
+	.validator(
 		(raw: unknown) => raw as { page: number; size: number; level: string },
 	)
 	.handler(async ({ data }) => {

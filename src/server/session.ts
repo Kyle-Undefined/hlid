@@ -349,6 +349,11 @@ export class SessionManager {
 		return this.currentSessionLabel;
 	}
 
+	/** Sync the in-memory label after a DB rename so live status shows it. */
+	setSessionLabel(label: string): void {
+		this.currentSessionLabel = label;
+	}
+
 	getLastMcpStatus(): McpServerStatus[] | null {
 		return this.lastMcpStatus;
 	}
@@ -379,17 +384,26 @@ export class SessionManager {
 				canUseTool: () =>
 					Promise.resolve({ behavior: "deny" as const, message: "probe" }),
 			});
-			// Slice B: streaming-input mode is lazy — the SDK query won't
-			// open until first send(). A trivial "." kicks off init so
-			// mcpServerStatus() has a query to query against; canUseTool
-			// denies any tool call so the SDK exits quickly.
-			await session.send(".");
-			for await (const _ of session) {
+			if (provider.probeRequiresTurn) {
+				// Slice B: streaming-input mode is lazy — the SDK query won't
+				// open until first send(). A trivial "." kicks off init so
+				// mcpServerStatus() has a query to query against; canUseTool
+				// denies any tool call so the SDK exits quickly.
+				await session.send(".");
+				for await (const _ of session) {
+					const statuses = (await session.mcpServerStatus?.()) ?? [];
+					this.lastMcpStatus = statuses;
+					emit({ type: "mcp_status", servers: statuses.map(mapMcpServer) });
+					session.cancel();
+					break;
+				}
+			} else {
+				// Providers like codex answer this over a plain RPC — no turn,
+				// no tokens spent.
 				const statuses = (await session.mcpServerStatus?.()) ?? [];
 				this.lastMcpStatus = statuses;
 				emit({ type: "mcp_status", servers: statuses.map(mapMcpServer) });
 				session.cancel();
-				break;
 			}
 		} catch {
 			// abort errors expected
@@ -421,12 +435,18 @@ export class SessionManager {
 				canUseTool: () =>
 					Promise.resolve({ behavior: "deny" as const, message: "probe" }),
 			});
-			await session.send(".");
-			for await (const _ of session) {
+			if (provider.probeRequiresTurn) {
+				await session.send(".");
+				for await (const _ of session) {
+					const commands = (await session.supportedCommands?.()) ?? [];
+					emit({ type: "slash_commands", commands });
+					session.cancel();
+					break;
+				}
+			} else {
 				const commands = (await session.supportedCommands?.()) ?? [];
 				emit({ type: "slash_commands", commands });
 				session.cancel();
-				break;
 			}
 		} catch {
 			// abort errors expected
@@ -692,7 +712,8 @@ export class SessionManager {
 			cache_creation_tokens: event.usage?.cacheCreationTokens ?? 0,
 			duration_ms: event.durationMs,
 			turns: event.turns,
-			context_window: primaryModel?.contextWindow ?? null,
+			context_window:
+				primaryModel?.contextWindow ?? turn.lastKnownContextWindow ?? null,
 			stop_reason: event.stopReason ?? null,
 			tokens_in_context: tokensInContext,
 		};
@@ -952,6 +973,11 @@ export class SessionManager {
 					cache_creation_input_tokens: event.cacheCreationTokens,
 				};
 				turn.lastActualModel = event.model ?? null;
+				// Providers that report the model's real context window per usage
+				// tick (codex) keep the gauge accurate without waiting for done.
+				if (event.contextWindow) {
+					turn.lastKnownContextWindow = event.contextWindow;
+				}
 				// Stream per-turn usage so context gauge updates without waiting for done.
 				emit({
 					type: "usage_update",

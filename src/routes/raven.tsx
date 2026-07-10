@@ -23,7 +23,7 @@ import { PrivacyMask } from "#/components/PrivacyMask";
 import { TerminalView } from "#/components/TerminalView";
 import {
 	ContextWindowSection,
-	UsageWindowsPanel,
+	ProviderUsageStrip,
 } from "#/components/UsageWindowsPanel";
 import { getConfig } from "#/config";
 import { useChatWsHandler } from "#/hooks/useChatWsHandler";
@@ -44,8 +44,8 @@ import {
 	getCurrentSessionFn,
 	getLiveSessionsFn,
 	getProvidersFn,
+	getProviderUsagesFn,
 	getSessionAgentCwdFn,
-	getUsageWindowsFn,
 } from "#/lib/serverFns";
 import { resolveSkillPrompt } from "#/lib/skillPrompt";
 import type { Skill } from "#/lib/skills";
@@ -53,6 +53,15 @@ import { uid } from "#/lib/utils";
 import { decisionFromScope, type RateLimitMessage } from "#/server/protocol";
 
 // ─── route ───────────────────────────────────────────────────────────────────
+
+/** Provider-aware usage snapshots for every configured provider (mirrors cockpit). */
+async function loadProviderUsages() {
+	const providers = await getProvidersFn();
+	const providerIds = providers.map((provider) => provider.id);
+	return getProviderUsagesFn({
+		data: providerIds.length > 0 ? providerIds : ["claude"],
+	});
+}
 
 export const Route = createFileRoute("/raven")({
 	validateSearch: (
@@ -66,10 +75,10 @@ export const Route = createFileRoute("/raven")({
 	},
 	loaderDeps: ({ search: { session, agent } }) => ({ session, agent }),
 	loader: async ({ deps: { session, agent } }) => {
-		const [config, usageWindows, agentList, cockpitData, providers] =
+		const [config, providerUsages, agentList, cockpitData, providers] =
 			await Promise.all([
 				getConfig(),
-				getUsageWindowsFn(),
+				loadProviderUsages(),
 				getAgentListFn(),
 				getCockpitData(),
 				getProvidersFn(),
@@ -122,7 +131,7 @@ export const Route = createFileRoute("/raven")({
 			// true = session came from URL param (explicit open/resume)
 			// false = session resolved via getCurrentSessionFn (implicit resume on fresh nav)
 			isExplicitSession: !!session,
-			usageWindows,
+			providerUsages,
 			agentSkillContext,
 			agentList,
 			vaultSkills: cockpitData.skills,
@@ -140,7 +149,7 @@ function ChatPage() {
 		config,
 		existingSessionId,
 		isExplicitSession,
-		usageWindows: initialUsageWindows,
+		providerUsages: initialProviderUsages,
 		agentSkillContext: initialAgentSkillContext,
 		agentList,
 		vaultSkills,
@@ -638,11 +647,11 @@ function ChatPage() {
 
 	return (
 		<div className="h-full flex flex-col">
-			<UsageWindowsPanel
-				initial={initialUsageWindows}
+			<ProviderUsageStrip
+				initial={initialProviderUsages}
 				liveQueryCount={liveStats?.queries ?? 0}
 				rateLimit={rateLimit}
-				fetchFn={getUsageWindowsFn}
+				fetchFn={loadProviderUsages}
 				tail={<ContextWindowSection stats={liveStats} />}
 			/>
 
