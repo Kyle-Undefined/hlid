@@ -8,7 +8,7 @@ import type { SessionStatusEntry } from "../../server/protocol";
  */
 export function sessionEntryDotClass(s: SessionStatusEntry): string {
 	if (s.state === "error") return "bg-destructive";
-	if (s.hasPendingPermissions) return "bg-orange-500 animate-pulse";
+	if (s.hasPendingPermissions) return "bg-status-warning animate-pulse";
 	if (s.state === "running") return "bg-primary animate-pulse";
 	return "bg-muted-foreground/40";
 }
@@ -31,9 +31,9 @@ function aggregateDotClass(
 		agg.state !== "idle" || agg.runningCount > 0 ? agg.state : fallbackState;
 	const pending = agg.pendingPermissions || fallbackPending;
 	if (state === "error") return "bg-destructive";
-	if (pending) return "bg-orange-500 animate-pulse";
+	if (pending) return "bg-status-warning animate-pulse";
 	if (state === "running") return "bg-primary animate-pulse";
-	return "bg-green-600";
+	return "bg-status-success";
 }
 
 export function useSystemStatusIndicator() {

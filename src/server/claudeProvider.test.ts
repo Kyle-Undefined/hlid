@@ -12,7 +12,11 @@ vi.mock("../lib/claudePath", () => ({
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { resolveClaudeExecutable } from "../lib/claudePath";
 import type { AgentEvent, AgentQueryParams, CanUseTool } from "./agentProvider";
-import { ClaudeProvider, mapClaudeModels } from "./claudeProvider";
+import {
+	ClaudeProvider,
+	mapClaudeModels,
+	mapClaudeUsageWindows,
+} from "./claudeProvider";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -338,6 +342,36 @@ describe("ClaudeProvider — event mapping", () => {
 			status: "warn",
 			rateLimitType: "five_hour",
 			utilization: 0.8,
+		});
+	});
+
+	it("normalizes percentage rate-limit events for the live usage bar", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "rate_limit_event",
+					rate_limit_info: {
+						status: "warn",
+						rateLimitType: "five_hour",
+						utilization: 73,
+						resetsAt: "2026-07-12T00:00:00Z",
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 10, output_tokens: 5 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		expect(events.find((event) => event.type === "rate_limit")).toMatchObject({
+			rateLimitType: "five_hour",
+			utilization: 0.73,
 		});
 	});
 
@@ -800,12 +834,131 @@ describe("ClaudeProvider — setPermissionMode", () => {
 		expect(gen.setPermissionMode).not.toHaveBeenCalled();
 	});
 
+	it("keeps Claude in default mode when Umbod owns bypass approvals", async () => {
+		const gen = sdkGen([
+			{
+				type: "result",
+				subtype: "success",
+				total_cost_usd: 0,
+				num_turns: 1,
+				duration_ms: 100,
+				usage: { input_tokens: 10, output_tokens: 5 },
+			},
+		]);
+		gen.setPermissionMode = vi.fn().mockResolvedValue(undefined);
+		vi.mocked(query).mockReturnValueOnce(gen);
+
+		const session = new ClaudeProvider().query(
+			baseParams({
+				permissionMode: "bypassPermissions",
+				policyEnforced: true,
+			}),
+		);
+		await session[Symbol.asyncIterator]().next();
+
+		await session.setPermissionMode?.("bypassPermissions");
+		expect(gen.setPermissionMode).toHaveBeenCalledWith("default");
+	});
+
 	it("is a no-op when the SDK query hasn't been created yet", async () => {
 		const provider = new ClaudeProvider();
 		const session = provider.query(baseParams());
 		await expect(
 			session.setPermissionMode?.("acceptEdits"),
 		).resolves.toBeUndefined();
+	});
+});
+
+// ── usageWindows ─────────────────────────────────────────────────────────────
+
+describe("ClaudeProvider — usageWindows", () => {
+	it("maps structured plan usage percentages into provider windows", async () => {
+		const gen = sdkGen([
+			{
+				type: "result",
+				subtype: "success",
+				total_cost_usd: 0,
+				num_turns: 1,
+				duration_ms: 100,
+				usage: { input_tokens: 10, output_tokens: 5 },
+			},
+		]);
+		gen.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET = vi
+			.fn()
+			.mockResolvedValue({
+				rate_limits_available: true,
+				rate_limits: {
+					five_hour: {
+						utilization: 42.5,
+						resets_at: "2026-07-12T00:00:00Z",
+					},
+					seven_day: { utilization: 7, resets_at: null },
+				},
+			});
+		vi.mocked(query).mockReturnValueOnce(gen);
+
+		const session = new ClaudeProvider().query(baseParams());
+		await session[Symbol.asyncIterator]().next();
+
+		await expect(session.usageWindows?.()).resolves.toEqual([
+			{
+				windowId: "five_hour",
+				label: "5-HOUR",
+				utilization: 0.425,
+				remaining: null,
+				limit: null,
+				resetsAt: 1_783_814_400,
+			},
+			{
+				windowId: "weekly",
+				label: "7-DAY",
+				utilization: 0.07,
+				remaining: null,
+				limit: null,
+				resetsAt: null,
+			},
+		]);
+	});
+
+	it("returns no windows when plan rate limits are unavailable", () => {
+		expect(
+			mapClaudeUsageWindows({
+				rate_limits_available: false,
+				rate_limits: null,
+			}),
+		).toEqual([]);
+	});
+
+	it("ignores null utilization instead of erasing a prior reading", () => {
+		expect(
+			mapClaudeUsageWindows({
+				rate_limits_available: true,
+				rate_limits: {
+					five_hour: { utilization: null, resets_at: null },
+				},
+			}),
+		).toEqual([]);
+	});
+
+	it("falls back cleanly when the experimental SDK lookup fails", async () => {
+		const gen = sdkGen([
+			{
+				type: "result",
+				subtype: "success",
+				total_cost_usd: 0,
+				num_turns: 1,
+				duration_ms: 100,
+				usage: { input_tokens: 10, output_tokens: 5 },
+			},
+		]);
+		gen.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET = vi
+			.fn()
+			.mockRejectedValue(new Error("not available"));
+		vi.mocked(query).mockReturnValueOnce(gen);
+
+		const session = new ClaudeProvider().query(baseParams());
+		await session[Symbol.asyncIterator]().next();
+		await expect(session.usageWindows?.()).resolves.toEqual([]);
 	});
 });
 
@@ -1145,6 +1298,16 @@ describe("ClaudeProvider — providerId + proxyConfig", () => {
 		expect(result[0]?.utilization).toBeCloseTo(0.73);
 	});
 
+	it("parseHeaders accepts HTTP-date reset timestamps", () => {
+		const provider = new ClaudeProvider();
+		const headers = new Headers({
+			"anthropic-ratelimit-unified-5h-utilization": "0.73",
+			"anthropic-ratelimit-unified-5h-reset": "Sun, 12 Jul 2026 00:00:00 GMT",
+		});
+		const result = provider.proxyConfig.parseHeaders(headers);
+		expect(result[0]?.resetsAt).toBe(1_783_814_400);
+	});
+
 	it("parseHeaders extracts 7-day and sonnet windows when present", () => {
 		const provider = new ClaudeProvider();
 		const headers = new Headers({
@@ -1365,6 +1528,75 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 		]();
 		const result = await iter.next();
 		expect((result.value as { priority?: string }).priority).toBe("next");
+	});
+
+	it("preserves filesystem hooks when internal policy enforcement is active", async () => {
+		let capturedOptions: Record<string, unknown> | undefined;
+		vi.mocked(query).mockImplementationOnce(
+			({ options }: { prompt: unknown; options?: Record<string, unknown> }) => {
+				capturedOptions = options;
+				return sdkGen([]);
+			},
+		);
+
+		const session = new ClaudeProvider().query(
+			baseParams({ policyEnforced: true }),
+		);
+		for await (const _event of session) {
+			// Drain the mock session so query() is initialized.
+		}
+
+		expect(capturedOptions).not.toHaveProperty("settings");
+		expect(capturedOptions?.canUseTool).toBeTypeOf("function");
+	});
+
+	it("keeps hooks and canUseTool authoritative in bypassPermissions mode", async () => {
+		let capturedOptions: Record<string, unknown> | undefined;
+		const canUseTool = vi.fn().mockResolvedValue({ behavior: "allow" });
+		vi.mocked(query).mockImplementationOnce(
+			({ options }: { prompt: unknown; options?: Record<string, unknown> }) => {
+				capturedOptions = options;
+				return sdkGen([]);
+			},
+		);
+
+		const session = new ClaudeProvider().query(
+			baseParams({
+				permissionMode: "bypassPermissions",
+				policyEnforced: true,
+				canUseTool,
+			}),
+		);
+		for await (const _event of session) {
+			// Drain the mock session so query() is initialized.
+		}
+
+		expect(capturedOptions).not.toHaveProperty("settings");
+		expect(capturedOptions?.settingSources).toEqual([
+			"user",
+			"project",
+			"local",
+		]);
+		expect(capturedOptions?.permissionMode).toBe("default");
+		expect(capturedOptions?.allowDangerouslySkipPermissions).toBe(false);
+		expect(capturedOptions?.canUseTool).toBe(canUseTool);
+	});
+
+	it("preserves normal Claude hooks without internal policy enforcement", async () => {
+		let capturedOptions: Record<string, unknown> | undefined;
+		vi.mocked(query).mockImplementationOnce(
+			({ options }: { prompt: unknown; options?: Record<string, unknown> }) => {
+				capturedOptions = options;
+				return sdkGen([]);
+			},
+		);
+
+		const session = new ClaudeProvider().query(baseParams());
+		for await (const _event of session) {
+			// Drain the mock session so query() is initialized.
+		}
+
+		expect(capturedOptions).not.toHaveProperty("settings");
 	});
 });
 

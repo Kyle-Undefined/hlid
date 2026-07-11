@@ -1,5 +1,5 @@
 import { ChevronDown, ChevronRight, FileCode } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { MarkdownBody } from "#/components/MarkdownBody";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { PlanProposalMessage } from "./chatReducer";
@@ -33,6 +33,12 @@ export function PlanCard({
 	const [modalOpen, setModalOpen] = useState(
 		() => message.decision === "pending" && Boolean(message.htmlRelicId),
 	);
+
+	useEffect(() => {
+		if (message.decision === "pending" && message.htmlRelicId) {
+			setModalOpen(true);
+		}
+	}, [message.decision, message.htmlRelicId]);
 
 	if (message.decision !== "pending") {
 		const label = RESOLVED_LABEL[message.decision];

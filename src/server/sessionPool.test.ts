@@ -19,6 +19,8 @@ const mockInstances: {
 	abort: ReturnType<typeof vi.fn>;
 	getStatus: ReturnType<typeof vi.fn>;
 	getPendingPermissionRequests: ReturnType<typeof vi.fn>;
+	getPendingAskUserQuestions: ReturnType<typeof vi.fn>;
+	getPendingPlanModeExits: ReturnType<typeof vi.fn>;
 	getCurrentSessionId: ReturnType<typeof vi.fn>;
 	getSessionLabel: ReturnType<typeof vi.fn>;
 	isRunning: ReturnType<typeof vi.fn>;
@@ -33,6 +35,8 @@ vi.mock("./session", () => ({
 				.fn()
 				.mockReturnValue({ state: "idle", model: "claude-test" }),
 			getPendingPermissionRequests: vi.fn().mockReturnValue([]),
+			getPendingAskUserQuestions: vi.fn().mockReturnValue([]),
+			getPendingPlanModeExits: vi.fn().mockReturnValue([]),
 			getCurrentSessionId: vi.fn().mockReturnValue(null),
 			getSessionLabel: vi.fn().mockReturnValue(null),
 			isRunning: vi.fn().mockReturnValue(false),
@@ -399,6 +403,16 @@ describe("SessionPool.getSessionsStatus", () => {
 
 		const [s] = pool.getSessionsStatus();
 		expect(s.hasPendingPermissions).toBe(false);
+	});
+
+	it("includes pending plan approvals in the interaction status", () => {
+		const pool = makePool();
+		pool.create("/code/proj", "Agent");
+		mockInstances[0]?.getPendingPlanModeExits.mockReturnValue([
+			{ type: "plan_mode_exit", id: "plan-1", input: { plan: "Plan" } },
+		]);
+
+		expect(pool.getSessionsStatus()[0]?.hasPendingPermissions).toBe(true);
 	});
 
 	it("removes closed sessions from status", () => {

@@ -381,7 +381,24 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 					content: action.content,
 				},
 			];
-		case "ADD_PLAN_PROPOSAL":
+		case "ADD_PLAN_PROPOSAL": {
+			const existing = state.find(
+				(m) => m.id === action.id && m.role === "plan_proposal",
+			);
+			if (existing) {
+				return state.map((m) =>
+					m.id === action.id && m.role === "plan_proposal"
+						? {
+								...m,
+								plan: action.plan,
+								decision: "pending",
+								...(action.htmlRelicId
+									? { htmlRelicId: action.htmlRelicId }
+									: {}),
+							}
+						: m,
+				);
+			}
 			return [
 				...state,
 				{
@@ -392,6 +409,7 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 					...(action.htmlRelicId ? { htmlRelicId: action.htmlRelicId } : {}),
 				},
 			];
+		}
 		case "RESOLVE_PLAN_PROPOSAL": {
 			const exists = state.some(
 				(m) => m.id === action.id && m.role === "plan_proposal",

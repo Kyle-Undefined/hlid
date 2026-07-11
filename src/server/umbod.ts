@@ -14,6 +14,61 @@ let instance: Umbod | null = null;
 let instancePath: string | null = null;
 let hookServer: ReturnType<typeof Bun.serve> | null = null;
 
+type HookApprovalHandler = (
+	call: ToolCall,
+	reason: string,
+) => Promise<Exclude<ApprovalDecision, "approve">>;
+
+const hookApprovalHandlers = new Map<string, HookApprovalHandler>();
+type RoutedHookDecision = {
+	key: string;
+	agent: string;
+	workingDirectory: string;
+	decision: "allow" | "block";
+	expiresAt: number;
+};
+
+const routedHookDecisions = new Map<string, RoutedHookDecision>();
+const routedHookDecisionQueue: RoutedHookDecision[] = [];
+
+function routedDecisionKey(agent: string, toolUseId: string): string {
+	return `${agent}:${toolUseId}`;
+}
+
+export function registerUmbodApprovalSession(
+	providerSessionId: string,
+	handler: HookApprovalHandler,
+): () => void {
+	hookApprovalHandlers.set(providerSessionId, handler);
+	return () => {
+		if (hookApprovalHandlers.get(providerSessionId) === handler)
+			hookApprovalHandlers.delete(providerSessionId);
+	};
+}
+
+async function routeHookApproval(
+	call: ToolCall,
+	reason: string,
+): Promise<Exclude<ApprovalDecision, "approve">> {
+	const handler = call.sessionId
+		? hookApprovalHandlers.get(call.sessionId)
+		: undefined;
+	if (!handler) return "block";
+	const decision = await handler(call, reason);
+	if (call.toolUseId) {
+		const routed = {
+			key: routedDecisionKey(call.agent, call.toolUseId),
+			agent: call.agent,
+			workingDirectory: call.workingDirectory ?? "",
+			decision,
+			expiresAt: Date.now() + 60_000,
+		};
+		routedHookDecisions.set(routed.key, routed);
+		routedHookDecisionQueue.push(routed);
+	}
+	return decision;
+}
+
 async function getUmbod(): Promise<Umbod | null> {
 	const config = loadConfig()?.umbod ?? {
 		enabled: false,
@@ -29,6 +84,7 @@ async function getUmbod(): Promise<Umbod | null> {
 		manifest,
 		dbPath: resolve(APP_DIR, "umbod.hlid.db"),
 		sessionLogSources: [{ agent: "claude" }, { agent: "codex" }],
+		approvalPrompt: routeHookApproval,
 	});
 	instancePath = path;
 	return instance;
@@ -40,9 +96,12 @@ export async function bootstrapUmbod(): Promise<void> {
 	hookServer = Bun.serve({
 		hostname: umbod.manifest.server.host,
 		port: umbod.manifest.server.port,
-		fetch(request) {
+		async fetch(request) {
+			// Resolve the current engine per request so policy saves can replace it
+			// without tearing down and rebinding the HTTP listener.
+			const current = await getUmbod();
 			return (
-				umbod.fetch(request) ??
+				current?.fetch(request) ??
 				Response.json({ ok: false, error: "Not found" }, { status: 404 })
 			);
 		},
@@ -66,6 +125,36 @@ export async function authorizeHlidTool(options: {
 	policyDecision: ApprovalDecision;
 	reason?: string;
 } | null> {
+	const now = Date.now();
+	for (let i = routedHookDecisionQueue.length - 1; i >= 0; i--) {
+		const candidate = routedHookDecisionQueue[i];
+		if (candidate.expiresAt >= now) continue;
+		routedHookDecisionQueue.splice(i, 1);
+		if (routedHookDecisions.get(candidate.key) === candidate)
+			routedHookDecisions.delete(candidate.key);
+	}
+	const key = routedDecisionKey(options.agent, options.toolUseId);
+	let routed = routedHookDecisions.get(key);
+	if (!routed) {
+		const index = routedHookDecisionQueue.findIndex(
+			(candidate) =>
+				candidate.agent === options.agent &&
+				candidate.workingDirectory === options.cwd,
+		);
+		if (index >= 0) routed = routedHookDecisionQueue[index];
+	}
+	if (routed) {
+		routedHookDecisions.delete(routed.key);
+		const queueIndex = routedHookDecisionQueue.indexOf(routed);
+		if (queueIndex >= 0) routedHookDecisionQueue.splice(queueIndex, 1);
+		if (routed.expiresAt >= now) {
+			return {
+				decision: routed.decision,
+				policyDecision: "approve",
+				reason: "Resolved through the provider hook",
+			};
+		}
+	}
 	const umbod = await getUmbod();
 	if (!umbod) return null;
 	const inputs =
@@ -144,7 +233,10 @@ export async function umbodHookArtifacts(
 ): Promise<unknown[]> {
 	const { findAdapterById } = await import("@umbod/core");
 	const umbod = await getUmbod();
-	const timeoutSeconds = umbod?.manifest.env.timeout ?? 300;
+	const configuredTimeout = umbod?.manifest.env.timeout ?? 300;
+	// Agent hook formats do not consistently accept Umbod's `0 = disabled`
+	// convention. Use the same one-day fallback Codex uses for every adapter.
+	const timeoutSeconds = configuredTimeout === 0 ? 86_400 : configuredTimeout;
 	const isWsl = target === "wsl";
 	const outputDir = isWsl ? "~/.umbod" : resolve(APP_DIR, "umbod-hooks");
 	return agents.map((agent) => {
@@ -182,7 +274,13 @@ export async function saveUmbodManifest(source: string): Promise<void> {
 	try {
 		await loadManifest(temporary);
 		await rename(temporary, path);
-		closeUmbod();
+		// Keep the embedded HTTP listener alive. Rebinding the same port
+		// immediately after stop() races Windows socket release and can fail with
+		// EADDRINUSE. The listener resolves this replacement engine per request.
+		instance?.close();
+		instance = null;
+		instancePath = null;
+		await getUmbod();
 	} catch (error) {
 		await Bun.file(temporary)
 			.delete()

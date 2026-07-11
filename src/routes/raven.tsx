@@ -530,6 +530,7 @@ function useRavenActions({
 			feedback?: string,
 		) => {
 			dispatch({ type: "RESOLVE_PLAN_PROPOSAL", id, decision });
+			if (decision !== "edited") setPlanMode(false);
 			if (decision === "edited") {
 				send({
 					type: "plan_mode_exit_response",
@@ -541,7 +542,7 @@ function useRavenActions({
 				send({ type: "plan_mode_exit_response", id, decision });
 			}
 		},
-		[send, dispatch],
+		[send, dispatch, setPlanMode],
 	);
 
 	const handleSend = useCallback(
@@ -1320,48 +1321,46 @@ function ChatInputNotices({
 					</button>
 				</div>
 			)}
-			{messages.length === 0 && (
-				<div className="flex items-center gap-3 px-4 py-1.5 border-b border-border/40">
-					{agentList.length > 0 && (
-						<AgentSelect
-							agents={agentList}
-							value={agentSkillContext ?? ""}
-							onChange={(val) => {
-								setAgentSkillContext(val || undefined);
-								agentContextSentRef.current = false;
-							}}
-						/>
-					)}
+			<div className="flex items-center gap-3 px-4 py-1.5 border-b border-border/40">
+				{messages.length === 0 && agentList.length > 0 && (
+					<AgentSelect
+						agents={agentList}
+						value={agentSkillContext ?? ""}
+						onChange={(val) => {
+							setAgentSkillContext(val || undefined);
+							agentContextSentRef.current = false;
+						}}
+					/>
+				)}
+				<button
+					type="button"
+					onClick={() => setPlanMode((v) => !v)}
+					title="Enable plan mode — the agent plans before acting"
+					className={`flex items-center gap-1.5 text-[9px] tracking-widest uppercase transition-colors shrink-0 ${
+						planMode
+							? "text-primary border-b border-primary/50"
+							: "text-muted-foreground/40 hover:text-muted-foreground/70"
+					}`}
+				>
+					<ShieldCheck className="w-3 h-3" />
+					plan
+				</button>
+				{planMode && (
 					<button
 						type="button"
-						onClick={() => setPlanMode((v) => !v)}
-						title="Enable plan mode — the agent plans before acting"
+						onClick={() => setPlanHtml((v) => !v)}
+						title="Render the plan as a styled HTML page shown in a modal"
 						className={`flex items-center gap-1.5 text-[9px] tracking-widest uppercase transition-colors shrink-0 ${
-							planMode
+							planHtml
 								? "text-primary border-b border-primary/50"
 								: "text-muted-foreground/40 hover:text-muted-foreground/70"
 						}`}
 					>
-						<ShieldCheck className="w-3 h-3" />
-						plan
+						<FileCode className="w-3 h-3" />
+						html
 					</button>
-					{planMode && (
-						<button
-							type="button"
-							onClick={() => setPlanHtml((v) => !v)}
-							title="Render the plan as a styled HTML page shown in a modal"
-							className={`flex items-center gap-1.5 text-[9px] tracking-widest uppercase transition-colors shrink-0 ${
-								planHtml
-									? "text-primary border-b border-primary/50"
-									: "text-muted-foreground/40 hover:text-muted-foreground/70"
-							}`}
-						>
-							<FileCode className="w-3 h-3" />
-							html
-						</button>
-					)}
-				</div>
-			)}
+				)}
+			</div>
 		</>
 	);
 }

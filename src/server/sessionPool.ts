@@ -142,6 +142,8 @@ export class SessionPool {
 		for (const entry of this.entries.values()) {
 			const { state, model } = entry.manager.getStatus();
 			const pendingPerms = entry.manager.getPendingPermissionRequests();
+			const pendingQuestions = entry.manager.getPendingAskUserQuestions();
+			const pendingPlans = entry.manager.getPendingPlanModeExits();
 			const sessionLabel = entry.manager.getSessionLabel();
 			statuses.push({
 				session_id: entry.sessionId,
@@ -149,7 +151,10 @@ export class SessionPool {
 				agent_name: entry.agentName,
 				state,
 				model,
-				hasPendingPermissions: pendingPerms.length > 0,
+				hasPendingPermissions:
+					pendingPerms.length > 0 ||
+					pendingQuestions.length > 0 ||
+					pendingPlans.length > 0,
 				hasDbSession: entry.manager.getCurrentSessionId() !== null,
 				db_session_id: entry.manager.getCurrentSessionId(),
 				...(sessionLabel !== null ? { lastLabel: sessionLabel } : {}),

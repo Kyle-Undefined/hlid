@@ -182,6 +182,27 @@ describe("getSessionsStatus", () => {
 	});
 });
 
+describe("pending interaction status", () => {
+	it("does not turn idle-green before a plan interaction resolves", () => {
+		receive({
+			type: "plan_mode_exit",
+			id: "plan-1",
+			input: { plan: "Plan" },
+		});
+		expect(wsStore.getSnapshot().hasPendingPermissions).toBe(true);
+
+		receive({ type: "status", state: "idle", model: "codex" });
+		expect(wsStore.getSnapshot().hasPendingPermissions).toBe(true);
+
+		receive({
+			type: "plan_mode_exit_resolved",
+			id: "plan-1",
+			decision: "approved",
+		});
+		expect(wsStore.getSnapshot().hasPendingPermissions).toBe(false);
+	});
+});
+
 // ── subscribeToSession / getSubscribedSessionId ───────────────────────────────
 
 describe("subscribeToSession / getSubscribedSessionId", () => {

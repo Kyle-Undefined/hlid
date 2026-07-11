@@ -118,6 +118,8 @@ describe("chat submission policy", () => {
 				skill_context: "/skills/review.md",
 				attachments: [attachment],
 				agent_cwd: "/agents/reviewer",
+				plan_mode: true,
+				plan_html: true,
 			},
 		});
 	});

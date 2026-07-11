@@ -24,6 +24,8 @@ export type QueuedChatMessage = {
 	skill_context?: string;
 	agent_cwd?: string;
 	attachments?: ChatAttachment[];
+	plan_mode?: boolean;
+	plan_html?: boolean;
 	/**
 	 * Internal flag set after the message has been delivered to the server.
 	 * Items remain in the queue (for UI display of in-flight turns) until
@@ -201,6 +203,8 @@ function sendChatToServer(msg: QueuedChatMessage): boolean {
 	if (msg.attachments && msg.attachments.length > 0) {
 		payload.attachments = msg.attachments;
 	}
+	if (msg.plan_mode) payload.plan_mode = true;
+	if (msg.plan_html) payload.plan_html = true;
 	try {
 		_ws.send(JSON.stringify(payload));
 		return true;
@@ -290,10 +294,11 @@ function onStatus(msg: Extract<ServerMessage, { type: "status" }>): void {
 	// changes when the actual model actually changes. handleClear calls
 	// seedActualModel(null) explicitly for true new-session resets.
 	//
-	// Only reset the pending permission count when the session reaches a
-	// terminal state. Resetting on every status message (including "running")
-	// would drop permission requests that arrived mid-run.
-	if (msg.state === "idle" || msg.state === "error") {
+	// Pending interactions own their lifecycle through their resolved events.
+	// An idle status can race with plan artifact preparation or modal delivery;
+	// clearing here would incorrectly flash the status green. Errors terminate
+	// the interaction and can safely clear it.
+	if (msg.state === "error") {
 		_pendingPermCount = 0;
 	}
 	// Slice C: track the running turn_id so MessageList can render the

@@ -22,12 +22,17 @@ export type BuildPromptOptions = {
  * Injected per turn when plan mode + the HTML-plans toggle are both on.
  */
 export function buildPlanHtmlInstructions(planHtmlPath: string): string {
+	const logicalPlanHtmlPath = toLogical(planHtmlPath);
 	return `## HTML plan documents
+
+This is a planning-only turn. Explore and design the solution, but do not
+implement it or modify project files. The single exception is the HTML plan
+document described below.
 
 When you are ready to present a plan for approval, FIRST write a single
 self-contained HTML document of the plan to exactly this path:
 
-  ${planHtmlPath}
+  ${logicalPlanHtmlPath}
 
 Requirements:
 - One file, fully self-contained: inline <style> and (optional) inline

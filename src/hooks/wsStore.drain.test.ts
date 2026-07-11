@@ -53,6 +53,25 @@ describe("wsStore — Slice A: immediate-send drain", () => {
 		});
 	});
 
+	it("preserves plan and HTML flags when a Raven turn is queued", () => {
+		wsStore.enqueueChat({
+			id: "plan-1",
+			text: "make a plan",
+			session_id: "s1",
+			plan_mode: true,
+			plan_html: true,
+		});
+
+		const sent = currentWs.send.mock.calls
+			.map((call) => JSON.parse(call[0] as string))
+			.find((message) => message.type === "chat");
+		expect(sent).toMatchObject({
+			turn_id: "plan-1",
+			plan_mode: true,
+			plan_html: true,
+		});
+	});
+
 	it("enqueueChat retains the item in the client queue after sending", () => {
 		wsStore.enqueueChat({ id: "m1", text: "hello", session_id: "s1" });
 		expect(wsStore.getQueue()).toHaveLength(1);

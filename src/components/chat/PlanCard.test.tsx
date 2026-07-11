@@ -1,13 +1,31 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as privacyStore from "#/hooks/privacyStore";
 import type { PlanProposalMessage } from "./chatReducer";
 import { PlanCard } from "./PlanCard";
 
-afterEach(cleanup);
+afterEach(() => {
+	cleanup();
+	vi.unstubAllGlobals();
+});
 beforeEach(() => {
 	privacyStore.__resetForTesting();
+	vi.stubGlobal(
+		"fetch",
+		vi.fn().mockResolvedValue(
+			new Response("<h1>Plan</h1>", {
+				status: 200,
+				headers: { "content-type": "text/html" },
+			}),
+		),
+	);
 });
 
 function makeMsg(
@@ -71,7 +89,7 @@ describe("PlanCard — pending", () => {
 		expect(onDecide).toHaveBeenCalledWith("pp1", "edited", "swap step 1");
 	});
 
-	it("opens an HTML plan in the sandboxed modal and shares its decisions", () => {
+	it("loads an HTML plan into the sandboxed modal and shares its decisions", async () => {
 		const onDecide = vi.fn();
 		render(
 			<PlanCard
@@ -79,14 +97,19 @@ describe("PlanCard — pending", () => {
 				onDecide={onDecide}
 			/>,
 		);
-		const frame = screen.getByTitle("Plan document");
-		expect(frame.getAttribute("src")).toBe("/api/attachments/att-html/raw");
+		const frame = await screen.findByTitle("Plan document");
+		expect(fetch).toHaveBeenCalledWith(
+			"/api/attachments/att-html/raw",
+			expect.objectContaining({ cache: "no-store" }),
+		);
+		expect(frame.getAttribute("srcdoc")).toContain("<h1>Plan</h1>");
 		expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
 		fireEvent.click(
 			screen.getAllByRole("button", { name: /approve plan/i })[1],
 		);
 		expect(onDecide).toHaveBeenCalledWith("pp1", "approved");
 		expect(screen.queryByRole("dialog", { name: "Plan document" })).toBeNull();
+		await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
 	});
 });
 

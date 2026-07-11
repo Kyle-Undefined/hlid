@@ -1,5 +1,6 @@
-import { realpathSync } from "node:fs";
-import { resolve as resolvePath } from "node:path";
+import { mkdirSync, realpathSync } from "node:fs";
+import { dirname, resolve as resolvePath } from "node:path";
+import type { ToolCall } from "@umbod/core";
 import type { HlidConfig } from "../config";
 import * as db from "../db";
 import { resolveClaudeExecutable } from "../lib/claudePath";
@@ -37,10 +38,10 @@ import type {
 	ServerMessage,
 } from "./protocol";
 import { mapMcpServer } from "./protocol";
-import { updateWindowMark } from "./proxy";
+import { applyReading, updateWindowMark } from "./proxy";
 import { generateTurnRecap } from "./recap";
 import { SessionTurnQueue } from "./sessionTurnQueue";
-import { authorizeHlidTool } from "./umbod";
+import { authorizeHlidTool, registerUmbodApprovalSession } from "./umbod";
 
 /** Fallback context window size when the SDK omits it from result metadata. */
 const DEFAULT_CONTEXT_WINDOW = 200_000;
@@ -170,7 +171,7 @@ function buildAgentQueryParams(options: {
 		policyEnforced: loadConfig()?.umbod?.enabled ?? false,
 		...(options.planMode ? { implementationPermissionMode } : {}),
 		...(options.planMode && options.planHtmlPath
-			? { planHtmlPath: options.planHtmlPath }
+			? { planHtmlPath: toLogical(options.planHtmlPath) }
 			: {}),
 		effort: options.agentSettings?.effort ?? options.defaultEffort,
 		maxTurns: options.agentSettings?.maxTurns ?? options.defaultMaxTurns,
@@ -280,6 +281,7 @@ export class SessionManager {
 	// on subsequent turns so the provider manages history natively.
 	private providerSessionId: string | null = null;
 	private providerSessionProviderId: string | null = null;
+	private unregisterUmbodApprovalSession: (() => void) | null = null;
 	private permissions = new PermissionManager();
 	private askUserQuestions = new AskUserQuestionManager();
 	private planModeManager = new PlanModeManager();
@@ -543,6 +545,8 @@ export class SessionManager {
 	}
 
 	abort(): void {
+		this.unregisterUmbodApprovalSession?.();
+		this.unregisterUmbodApprovalSession = null;
 		this.permissions.clearAll();
 		this.askUserQuestions.clearAll();
 		this.planModeManager.clearAll();
@@ -604,6 +608,8 @@ export class SessionManager {
 	}
 
 	clearHistory(): void {
+		this.unregisterUmbodApprovalSession?.();
+		this.unregisterUmbodApprovalSession = null;
 		this.currentSessionId = null;
 		this.currentSessionLabel = null;
 		this.providerSessionId = null;
@@ -698,20 +704,72 @@ export class SessionManager {
 		event: Extract<AgentEvent, { type: "session_start" }>,
 		sessionId: string | undefined,
 		provider: AgentProvider,
+		emit: (msg: ServerMessage) => void,
 	): void {
 		const newId = event.sessionId;
 		// Always update on every session_start — the provider may reassign on
 		// compaction/fork, and we want the latest valid id persisted for the next
 		// turn's resume.
-		if (newId && newId !== this.providerSessionId) {
-			this.providerSessionId = newId;
-			this.providerSessionProviderId = provider.providerId;
-			if (sessionId) {
-				void db
-					.setSessionProviderSession(sessionId, provider.providerId, newId)
-					.catch((e) => logDbError("setSessionProviderSession", e));
+		if (newId) {
+			if (newId !== this.providerSessionId) {
+				this.providerSessionId = newId;
+				this.providerSessionProviderId = provider.providerId;
+				if (sessionId) {
+					void db
+						.setSessionProviderSession(sessionId, provider.providerId, newId)
+						.catch((e) => logDbError("setSessionProviderSession", e));
+				}
 			}
+			this.unregisterUmbodApprovalSession?.();
+			this.unregisterUmbodApprovalSession = registerUmbodApprovalSession(
+				newId,
+				(call, reason) =>
+					this.promptForHookApproval(call, reason, provider, emit),
+			);
 		}
+	}
+
+	private promptForHookApproval(
+		call: ToolCall,
+		reason: string,
+		provider: AgentProvider,
+		emit: (msg: ServerMessage) => void,
+	): Promise<"allow" | "block"> {
+		const toolUseID = call.toolUseId ?? `umbod-${Date.now()}`;
+		const toolName = call.tool;
+		const request = {
+			type: "permission_request" as const,
+			id: toolUseID,
+			toolName,
+			title: `${provider.label ?? provider.providerId} wants to use ${toolName}`,
+			description: reason,
+			input: call.inputs,
+		};
+		return new Promise((finish) => {
+			if (this.sessionAllowedTools.has(toolName)) {
+				finish("allow");
+				return;
+			}
+			this.permissions.register(toolUseID, request, (approved, saveScope) => {
+				if (approved && saveScope === "session")
+					this.sessionAllowedTools.add(toolName);
+				if (approved && saveScope === "local") {
+					try {
+						persistAlwaysAllowedTool(
+							call.workingDirectory ?? this.vaultPath,
+							toolName,
+						);
+					} catch (error) {
+						console.error(
+							"[session] failed to write always-allow rule:",
+							error,
+						);
+					}
+				}
+				finish(approved ? "allow" : "block");
+			});
+			emit(request);
+		});
 	}
 
 	/** Handle rate_limit event: emit and persist utilization to DB settings. */
@@ -1044,7 +1102,7 @@ export class SessionManager {
 	): Promise<boolean> {
 		switch (event.type) {
 			case "session_start":
-				this.handleSessionStart(event, sessionId, provider);
+				this.handleSessionStart(event, sessionId, provider, emit);
 				break;
 			case "text_delta":
 				this.handleTextDelta(event, turn, sessionId, emit);
@@ -1220,7 +1278,6 @@ export class SessionManager {
 		provider: AgentProvider,
 		activeCwd: string,
 		sessionId: string | undefined,
-		configuredPermissionMode: PermissionMode,
 		emit: (msg: ServerMessage) => void,
 	): CanUseTool {
 		return (toolName, input, { toolUseID, title, displayName, description }) =>
@@ -1276,7 +1333,8 @@ export class SessionManager {
 					this.planHtmlPath &&
 					(toolName === "Write" || toolName === "Edit") &&
 					typeof passInput.file_path === "string" &&
-					resolvePath(passInput.file_path) === this.planHtmlPath
+					(resolvePath(passInput.file_path) === this.planHtmlPath ||
+						passInput.file_path === toLogical(this.planHtmlPath))
 				) {
 					resolve({ behavior: "allow", updatedInput: passInput });
 					return;
@@ -1288,6 +1346,17 @@ export class SessionManager {
 							? passInput.plan
 							: JSON.stringify(passInput.plan ?? "");
 					const planSeq = this.messageSeq++;
+					// Keep Raven visibly active while the HTML artifact is validated,
+					// copied, linked, and persisted before the proposal can be shown.
+					emit({
+						type: "status",
+						state: "running",
+						model: this.model,
+						permission_mode: this.permissionMode,
+						...(this.currentTurnId !== undefined
+							? { turn_id: this.currentTurnId }
+							: {}),
+					});
 					void (async () => {
 						let htmlRelicId: string | null = null;
 						if (this.planHtmlPath && this.planHtmlStorageRoot && sessionId) {
@@ -1346,6 +1415,17 @@ export class SessionManager {
 								}
 							},
 						);
+						// Re-broadcast after registration so pool-wide status includes the
+						// pending plan interaction before the modal event arrives.
+						emit({
+							type: "status",
+							state: "running",
+							model: this.model,
+							permission_mode: this.permissionMode,
+							...(this.currentTurnId !== undefined
+								? { turn_id: this.currentTurnId }
+								: {}),
+						});
 						if (htmlRelicId) {
 							emit({
 								type: "attachment_created",
@@ -1411,7 +1491,10 @@ export class SessionManager {
 					cwd: activeCwd,
 					sessionId,
 					toolUseId: toolUseID,
-					bypassApproval: configuredPermissionMode === "bypassPermissions",
+					// Once Umbod is enabled it is the policy authority. Provider-level
+					// bypassPermissions must not turn an Umbod `approve` decision into a
+					// silent allow; the approval still belongs in the originating chat.
+					bypassApproval: false,
 					prompt: (reason) => prompt(reason),
 				})
 					.then(async (policy) => {
@@ -1462,6 +1545,14 @@ export class SessionManager {
 			`plan-${sessionId}.html`,
 		);
 		if (!pathStartsWith(storageRoot, path)) {
+			this.planHtmlPath = null;
+			this.planHtmlStorageRoot = null;
+			return;
+		}
+		try {
+			mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+		} catch (error) {
+			console.warn("[session] could not prepare HTML plan directory:", error);
 			this.planHtmlPath = null;
 			this.planHtmlStorageRoot = null;
 			return;
@@ -1536,7 +1627,6 @@ export class SessionManager {
 					provider,
 					activeCwd,
 					sessionId,
-					configuredPermissionMode,
 					emit,
 				),
 			}),
@@ -1600,6 +1690,22 @@ export class SessionManager {
 			provider,
 			agentSettings?.recapModel ?? this.recapModel,
 		).catch(() => {});
+	}
+
+	private async refreshProviderUsage(
+		agentSession: AgentSession,
+		provider: AgentProvider,
+	): Promise<void> {
+		if (!agentSession.usageWindows) return;
+		try {
+			const readings = await agentSession.usageWindows();
+			for (const reading of readings) {
+				applyReading(provider.providerId, reading);
+			}
+		} catch {
+			// Usage enrichment is best-effort and must never fail an otherwise
+			// successful agent turn.
+		}
 	}
 
 	private async runOneTurn(...args: RunQueryArgs): Promise<void> {
@@ -1683,6 +1789,14 @@ export class SessionManager {
 				planMode,
 				emit,
 			});
+			const configuredPermissionMode =
+				agentSettings?.permissionMode ?? this.permissionMode;
+			await agentSession.setPermissionMode?.(
+				planMode ? "plan" : configuredPermissionMode,
+			);
+			agentSession.setPlanHtmlPath?.(
+				this.planHtmlPath ? toLogical(this.planHtmlPath) : undefined,
+			);
 
 			// Slice B: deliver this turn's user message via send() rather than
 			// passing it as a one-shot prompt. The long-lived stream pushes it
@@ -1697,6 +1811,7 @@ export class SessionManager {
 				turn,
 				currentProvider,
 			);
+			await this.refreshProviderUsage(agentSession, currentProvider);
 
 			// Per-turn success: drainTurnQueue settles the final session state
 			// after the queue empties. Successful turns leave state alone so the

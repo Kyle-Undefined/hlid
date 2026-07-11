@@ -48,6 +48,8 @@
   /* chart error accent — brighter than --destructive (#963232) so error
      bars stay readable on the near-black chart background */
   --chart-error: #ef4444;
+  --status-success: #22c55e;
+  --status-warning: #f59e0b;
   /* tool block expanded panel, sky blue inset */
   --tool-panel: #071825;
   --tool-panel-border: #1a5580;
@@ -87,6 +89,8 @@ html[data-theme="tan"] {
   --data: #8c4e35;
   /* chart error accent — warmer red tuned for the tan card background */
   --chart-error: #c0392b;
+  --status-success: #3f7d44;
+  --status-warning: #a65f00;
   --tool-panel: #e9ddc8;
   --tool-panel-border: #c5a882;
   /* chat message text colors */
@@ -113,6 +117,8 @@ html[data-theme="tan"] {
   --color-accent-foreground: var(--accent-foreground);
   --color-destructive: var(--destructive);
   --color-destructive-foreground: var(--destructive-foreground);
+  --color-status-success: var(--status-success);
+  --color-status-warning: var(--status-warning);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);

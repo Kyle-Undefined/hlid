@@ -298,6 +298,7 @@ describe("buildPrompt — planHtmlInstructions", () => {
 		);
 		expect(prompt).toContain("hello");
 		expect(prompt).toContain("HTML plan documents");
+		expect(prompt).toContain("This is a planning-only turn");
 		expect(prompt).toContain("/x/plan.html");
 	});
 

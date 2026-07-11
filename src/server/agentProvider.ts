@@ -202,6 +202,12 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 	/** Available on providers that expose the list of supported slash commands. */
 	supportedCommands?(): Promise<SlashCommand[]>;
 	/**
+	 * Fetch the provider's current subscription/rate-limit windows. Unlike
+	 * passive rate-limit events, this can return a reading even when the
+	 * provider has not crossed a warning threshold during the current turn.
+	 */
+	usageWindows?(): Promise<ProviderWindowReading[]>;
+	/**
 	 * Switch the model used for subsequent turns in this already-running
 	 * session. `undefined` resets to the provider's default. No-op (absent)
 	 * on providers that can't change model mid-session.
@@ -213,6 +219,8 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 	 * permission mode mid-session.
 	 */
 	setPermissionMode?(mode: string): Promise<void>;
+	/** Update the per-turn HTML plan handoff without recreating the conversation. */
+	setPlanHtmlPath?(path: string | undefined): void;
 	/**
 	 * Fetch info about the authenticated account backing this session, or
 	 * null when unavailable (no live session, not authenticated via a

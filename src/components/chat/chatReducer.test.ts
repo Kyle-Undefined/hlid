@@ -281,6 +281,35 @@ describe("ADD_PLAN_PROPOSAL", () => {
 		if (msg.role !== "plan_proposal") throw new Error("wrong role");
 		expect(msg.htmlRelicId).toBeUndefined();
 	});
+
+	it("merges a replayed live HTML proposal into its pending history card", () => {
+		const history = reducer(empty(), {
+			type: "LOAD_HISTORY",
+			items: [
+				{
+					kind: "plan_proposal",
+					id: "pp1",
+					plan: "Saved plan",
+					decision: "pending",
+					html_attachment_id: null,
+				},
+			],
+		});
+		const state = reducer(history, {
+			type: "ADD_PLAN_PROPOSAL",
+			id: "pp1",
+			plan: "Live plan",
+			htmlRelicId: "att-live",
+		});
+
+		expect(state).toHaveLength(1);
+		expect(state[0]).toMatchObject({
+			role: "plan_proposal",
+			plan: "Live plan",
+			decision: "pending",
+			htmlRelicId: "att-live",
+		});
+	});
 });
 
 describe("LOAD_HISTORY — HTML plan", () => {

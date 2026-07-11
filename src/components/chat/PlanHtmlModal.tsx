@@ -1,5 +1,5 @@
 import { X } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { PlanDecisionBar } from "./PlanDecisionBar";
 
@@ -31,10 +31,53 @@ export function PlanHtmlModal({
 	onClose: () => void;
 } & (DecisionProps | ReadOnlyProps)) {
 	const dialogRef = useRef<HTMLDivElement>(null);
+	const [html, setHtml] = useState<string | null>(null);
+	const [loadError, setLoadError] = useState(false);
 
 	useEffect(() => {
 		dialogRef.current?.focus();
 	}, []);
+
+	useEffect(() => {
+		const controller = new AbortController();
+		let retryTimer: ReturnType<typeof setTimeout> | null = null;
+		const load = async () => {
+			for (
+				let attempt = 0;
+				attempt < 5 && !controller.signal.aborted;
+				attempt++
+			) {
+				try {
+					const response = await fetch(`/api/attachments/${relicId}/raw`, {
+						cache: "no-store",
+						credentials: "same-origin",
+						signal: controller.signal,
+					});
+					if (response.ok) {
+						const body = await response.text();
+						const csp = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data:">`;
+						setHtml(`${csp}${body}`);
+						setLoadError(false);
+						return;
+					}
+				} catch (error) {
+					if (controller.signal.aborted) return;
+					if (attempt === 4) console.warn("Plan HTML load failed:", error);
+				}
+				if (attempt < 4) {
+					await new Promise<void>((resolve) => {
+						retryTimer = setTimeout(resolve, 150 * (attempt + 1));
+					});
+				}
+			}
+			if (!controller.signal.aborted) setLoadError(true);
+		};
+		void load();
+		return () => {
+			controller.abort();
+			if (retryTimer) clearTimeout(retryTimer);
+		};
+	}, [relicId]);
 
 	return createPortal(
 		// biome-ignore lint/a11y/useKeyWithClickEvents: backdrop Escape handled by inner dialog
@@ -68,13 +111,19 @@ export function PlanHtmlModal({
 						<X className="w-4 h-4" />
 					</button>
 				</div>
-				<iframe
-					src={`/api/attachments/${relicId}/raw`}
-					title="Plan document"
-					sandbox="allow-scripts"
-					referrerPolicy="no-referrer"
-					className="w-full h-[70vh] bg-white border-0"
-				/>
+				{html ? (
+					<iframe
+						srcDoc={html}
+						title="Plan document"
+						sandbox="allow-scripts"
+						referrerPolicy="no-referrer"
+						className="w-full h-[70vh] bg-white border-0"
+					/>
+				) : (
+					<div className="w-full h-[70vh] bg-white text-black/60 flex items-center justify-center text-xs tracking-widest uppercase">
+						{loadError ? "Plan document unavailable" : "Loading plan…"}
+					</div>
+				)}
 				{!decision.readOnly && (
 					<PlanDecisionBar
 						feedback={decision.feedback}

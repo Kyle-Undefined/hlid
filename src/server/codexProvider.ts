@@ -1,3 +1,4 @@
+import { dirname } from "node:path";
 import { resolveCodexExecutable } from "../lib/codexPath";
 import { toLogical } from "../lib/paths";
 import type {
@@ -40,6 +41,19 @@ type ApprovalRequestResult =
 	| PermissionsRequestApprovalResponse
 	| CommandExecutionRequestApprovalResponse
 	| FileChangeRequestApprovalResponse;
+
+type CodexCollaborationMode = {
+	mode: "plan" | "default";
+	settings: {
+		model: string;
+		reasoning_effort: string | null;
+		developer_instructions: null;
+	};
+};
+
+type TurnStartParamsWithCollaboration = TurnStartParams & {
+	collaborationMode: CodexCollaborationMode;
+};
 
 class AsyncQueue<T> {
 	private values: T[] = [];
@@ -172,9 +186,19 @@ export type CodexSandboxPolicy = SandboxPolicy;
 export function codexSandboxPolicy(
 	mode: AgentQueryParams["permissionMode"],
 	writableRoots: string[],
+	planHtmlPath?: string,
 ): CodexSandboxPolicy {
 	const sandbox = sandboxMode(mode);
 	if (sandbox === "danger-full-access") return { type: "dangerFullAccess" };
+	if (sandbox === "read-only" && planHtmlPath) {
+		return {
+			type: "workspaceWrite",
+			writableRoots: [dirname(planHtmlPath)],
+			networkAccess: false,
+			excludeTmpdirEnvVar: true,
+			excludeSlashTmp: true,
+		};
+	}
 	if (sandbox === "read-only")
 		return { type: "readOnly", networkAccess: false };
 	return {
@@ -363,6 +387,7 @@ class CodexAgentSession implements AgentSession {
 	private startedItems = new Map<string, Record<string, unknown>>();
 	private approvedHtmlPlanItemId: string | null = null;
 	private htmlPlanReady = false;
+	private nativePlanText = "";
 	private lastUsage = {
 		inputTokens: 0,
 		outputTokens: 0,
@@ -415,9 +440,23 @@ class CodexAgentSession implements AgentSession {
 		await this.ensureReady();
 		if (!this.threadId) throw new Error("Codex thread did not start");
 		const cwd = this.launch?.rpcCwd ?? this.params.cwd;
-		const params: TurnStartParams = {
+		const params: TurnStartParamsWithCollaboration = {
 			threadId: this.threadId,
 			input: [{ type: "text", text: message, text_elements: [] }],
+			collaborationMode: {
+				// Native Codex Plan Mode forbids every write at the instruction layer,
+				// even when the sandbox grants the HTML plan directory. HTML plans use
+				// Hlið-managed planning while plain Markdown plans stay native.
+				mode:
+					this.params.permissionMode === "plan" && !this.params.planHtmlPath
+						? "plan"
+						: "default",
+				settings: {
+					model: this.params.model ?? "",
+					reasoning_effort: this.params.effort ?? null,
+					developer_instructions: null,
+				},
+			},
 			...(cwd ? { cwd } : {}),
 			...(this.params.model ? { model: this.params.model } : {}),
 			...(this.params.effort ? { effort: this.params.effort } : {}),
@@ -427,8 +466,9 @@ class CodexAgentSession implements AgentSession {
 							effectivePermissionMode(this.params),
 						),
 						sandboxPolicy: codexSandboxPolicy(
-							effectivePermissionMode(this.params),
+							this.params.permissionMode,
 							this.params.additionalDirectories ?? [],
+							this.params.planHtmlPath,
 						),
 					}
 				: {}),
@@ -463,10 +503,18 @@ class CodexAgentSession implements AgentSession {
 	 * thread.
 	 */
 	async setPermissionMode(mode: string): Promise<void> {
+		const permissionMode = mode as AgentQueryParams["permissionMode"];
 		this.params = {
 			...this.params,
-			permissionMode: mode as AgentQueryParams["permissionMode"],
+			permissionMode,
+			...(permissionMode === "plan" && this.params.permissionMode !== "plan"
+				? { implementationPermissionMode: this.params.permissionMode }
+				: {}),
 		};
+	}
+
+	setPlanHtmlPath(path: string | undefined): void {
+		this.params = { ...this.params, planHtmlPath: path };
 	}
 
 	async supportedCommands(): Promise<SlashCommand[]> {
@@ -564,7 +612,7 @@ class CodexAgentSession implements AgentSession {
 						approvalPolicy: approvalPolicy(
 							effectivePermissionMode(this.params),
 						),
-						sandbox: sandboxMode(effectivePermissionMode(this.params)),
+						sandbox: sandboxMode(this.params.permissionMode),
 					}
 				: {}),
 		};
@@ -654,6 +702,9 @@ class CodexAgentSession implements AgentSession {
 		rawParams: unknown,
 	): Promise<unknown> {
 		const params = asObj(rawParams);
+		if (method === "item/tool/requestUserInput") {
+			return this.handleRequestUserInput(params);
+		}
 		if (!this.params.policyEnforced && autoApprovesPermissions(this.params)) {
 			return this.allowedServerRequestResult(method, params);
 		}
@@ -691,6 +742,41 @@ class CodexAgentSession implements AgentSession {
 			: this.deniedServerRequestResult(method);
 	}
 
+	private async handleRequestUserInput(
+		params: Record<string, unknown>,
+	): Promise<{ answers: Record<string, { answers: string[] }> }> {
+		if (typeof this.params.canUseTool !== "function") return { answers: {} };
+		const itemId = String(params.itemId ?? "request-user-input");
+		const decision = await this.params.canUseTool("AskUserQuestion", params, {
+			toolUseID: itemId,
+			signal: this.params.signal ?? new AbortController().signal,
+			title: "Codex needs your input",
+			displayName: "request_user_input",
+		});
+		if (decision.behavior !== "allow") return { answers: {} };
+
+		const updatedAnswers = asObj(asObj(decision.updatedInput).answers);
+		const answers: Record<string, { answers: string[] }> = {};
+		for (const rawQuestion of Array.isArray(params.questions)
+			? params.questions
+			: []) {
+			const question = asObj(rawQuestion);
+			const id = typeof question.id === "string" ? question.id : "";
+			const text =
+				typeof question.question === "string" ? question.question : "";
+			if (!id || !text) continue;
+			const value = updatedAnswers[text];
+			answers[id] = {
+				answers: Array.isArray(value)
+					? value.filter((item): item is string => typeof item === "string")
+					: typeof value === "string" && value
+						? [value]
+						: [],
+			};
+		}
+		return { answers };
+	}
+
 	private allowedServerRequestResult(
 		method: string,
 		params: Record<string, unknown>,
@@ -719,6 +805,7 @@ class CodexAgentSession implements AgentSession {
 		this.startedItems.clear();
 		this.approvedHtmlPlanItemId = null;
 		this.htmlPlanReady = false;
+		this.nativePlanText = "";
 	}
 
 	private handleThreadStarted(obj: Record<string, unknown>): void {
@@ -812,6 +899,10 @@ class CodexAgentSession implements AgentSession {
 			this.emitReasoning(item);
 			return;
 		}
+		if (type === "plan") {
+			this.nativePlanText = textFromUnknown(item.text);
+			return;
+		}
 		if (type === "userMessage" || !type) return;
 		this.events.push({
 			type: "tool_result",
@@ -855,13 +946,15 @@ class CodexAgentSession implements AgentSession {
 		const turn = asObj(obj.turn);
 		this.recordUsage(maybeUsage(turn) ?? maybeUsage(params));
 		this.activeTurnId = null;
-		if (
-			this.params.permissionMode === "plan" &&
-			(this.htmlPlanReady || this.params.planHtmlPath)
-		) {
+		if (this.params.permissionMode === "plan") {
+			const plan =
+				this.nativePlanText ||
+				(this.htmlPlanReady || this.params.planHtmlPath
+					? "HTML plan ready for review."
+					: "Codex completed its plan.");
 			const planDecision = await this.params.canUseTool(
 				"ExitPlanMode",
-				{ plan: "HTML plan ready for review." },
+				{ plan },
 				{
 					toolUseID: `codex-plan-${String(turn.id ?? "turn")}`,
 					signal: this.params.signal ?? new AbortController().signal,

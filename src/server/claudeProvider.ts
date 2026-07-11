@@ -1,4 +1,5 @@
 import type {
+	SDKControlGetUsageResponse,
 	SDKMessage,
 	EffortLevel as SdkEffortLevel,
 	ModelInfo as SdkModelInfo,
@@ -33,7 +34,70 @@ const KNOWN_PERMISSION_MODES = new Set<string>([
 	"plan",
 ]);
 
+function effectiveSdkPermissionMode(
+	mode: AgentQueryParams["permissionMode"],
+	policyEnforced: boolean,
+): SdkPermissionMode {
+	// When Umbod is enabled it owns tool authorization. Claude must stay in its
+	// ordinary SDK mode; forwarding bypassPermissions would require the process
+	// to have been launched with --dangerously-skip-permissions and fails on the
+	// second turn of an otherwise healthy long-lived session.
+	return policyEnforced && mode === "bypassPermissions"
+		? "default"
+		: (mode ?? "default");
+}
+
 type SdkQuery = ReturnType<typeof query>;
+
+type ClaudeUsageWindow = {
+	utilization: number | null;
+	resets_at: string | null;
+};
+
+function usageResetTime(value: string | null | undefined): number | null {
+	if (!value) return null;
+	const millis = Date.parse(value);
+	return Number.isFinite(millis) ? Math.floor(millis / 1000) : null;
+}
+
+function mapUsageWindow(
+	window: ClaudeUsageWindow | null | undefined,
+	windowId: string,
+	label: string,
+): ProviderWindowReading[] {
+	const raw = window?.utilization;
+	if (typeof raw !== "number" || !Number.isFinite(raw)) return [];
+	return [
+		{
+			windowId,
+			label,
+			// The structured Claude usage API documents utilization as 0-100.
+			utilization: Math.min(Math.max(raw / 100, 0), 1),
+			remaining: null,
+			limit: null,
+			resetsAt: usageResetTime(window?.resets_at),
+		},
+	];
+}
+
+/** Normalize Claude's structured /usage response into Hlid window readings. */
+export function mapClaudeUsageWindows(
+	response: Pick<
+		SDKControlGetUsageResponse,
+		"rate_limits_available" | "rate_limits"
+	>,
+): ProviderWindowReading[] {
+	if (!response.rate_limits_available || !response.rate_limits) return [];
+	return [
+		...mapUsageWindow(response.rate_limits.five_hour, "five_hour", "5-HOUR"),
+		...mapUsageWindow(response.rate_limits.seven_day, "weekly", "7-DAY"),
+		...mapUsageWindow(
+			response.rate_limits.seven_day_sonnet,
+			"weekly_sonnet",
+			"SONNET",
+		),
+	];
+}
 
 // SDKUserMessage shape per @anthropic-ai/claude-agent-sdk's sdk.d.ts. Kept
 // minimal here to avoid pulling the deep SDK type — the SDK accepts any
@@ -198,13 +262,17 @@ function translateRateLimitMessage(
 	hadText: boolean,
 ): EventTranslation {
 	const info = message.rate_limit_info;
+	const utilization =
+		info.utilization != null && info.utilization >= 1
+			? info.utilization / 100
+			: info.utilization;
 	return {
 		events: [
 			{
 				type: "rate_limit",
 				status: info.status,
 				rateLimitType: info.rateLimitType,
-				utilization: info.utilization,
+				utilization,
 				resetsAt: rateLimitResetTime(info.resetsAt),
 			},
 		],
@@ -292,6 +360,7 @@ class ClaudeAgentSession implements AgentSession {
 		) => SdkQuery,
 		abortController: AbortController,
 		resumeId: string | undefined,
+		private readonly policyEnforced: boolean,
 	) {
 		this.makeQuery = makeQuery;
 		this.abortController = abortController;
@@ -335,6 +404,19 @@ class ClaudeAgentSession implements AgentSession {
 		return this.sdkQuery.supportedCommands() as Promise<SlashCommand[]>;
 	}
 
+	async usageWindows(): Promise<ProviderWindowReading[]> {
+		if (!this.sdkQuery) return [];
+		try {
+			const usage =
+				await this.sdkQuery.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET();
+			return mapClaudeUsageWindows(usage);
+		} catch {
+			// API-key/Bedrock/Vertex sessions and older Claude builds may not expose
+			// subscription limits. Header/event tracking remains the fallback.
+			return [];
+		}
+	}
+
 	/**
 	 * Mid-session model switch. Delegates to the SDK Query's setModel(), only
 	 * available once the stream is open (first send() has happened). No-op
@@ -358,7 +440,12 @@ class ClaudeAgentSession implements AgentSession {
 			throw new Error(`Unknown permission mode: ${mode}`);
 		}
 		if (!this.sdkQuery) return;
-		await this.sdkQuery.setPermissionMode(mode as SdkPermissionMode);
+		await this.sdkQuery.setPermissionMode(
+			effectiveSdkPermissionMode(
+				mode as AgentQueryParams["permissionMode"],
+				this.policyEnforced,
+			),
+		);
 	}
 
 	/**
@@ -524,8 +611,12 @@ function parseAnthropicHeaders(headers: Headers): ProviderWindowReading[] {
 
 	function toUnix(s: string | null): number | null {
 		if (!s) return null;
-		const t = parseInt(s, 10);
-		return Number.isFinite(t) ? t : null;
+		if (/^\d+$/.test(s.trim())) {
+			const seconds = Number(s);
+			return Number.isFinite(seconds) ? seconds : null;
+		}
+		const millis = Date.parse(s);
+		return Number.isFinite(millis) ? Math.floor(millis / 1000) : null;
 	}
 
 	const windows = [
@@ -700,11 +791,10 @@ export class ClaudeProvider implements AgentProvider {
 						: {}),
 					abortController,
 					...(params.model ? { model: params.model } : {}),
-					permissionMode:
-						params.policyEnforced &&
-						params.permissionMode === "bypassPermissions"
-							? "default"
-							: (params.permissionMode ?? "default"),
+					permissionMode: effectiveSdkPermissionMode(
+						params.permissionMode,
+						params.policyEnforced ?? false,
+					),
 					effort: (params.effort ?? "medium") as SdkEffortLevel,
 					...(params.maxTurns !== undefined
 						? { maxTurns: params.maxTurns }
@@ -723,6 +813,11 @@ export class ClaudeProvider implements AgentProvider {
 				},
 			});
 
-		return new ClaudeAgentSession(makeQuery, abortController, params.sessionId);
+		return new ClaudeAgentSession(
+			makeQuery,
+			abortController,
+			params.sessionId,
+			params.policyEnforced ?? false,
+		);
 	}
 }

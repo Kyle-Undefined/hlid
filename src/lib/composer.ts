@@ -95,6 +95,8 @@ export function prepareChatSubmission(input: {
 				skill_context: input.skillContext,
 				attachments,
 				agent_cwd: input.agentCwd,
+				plan_mode: input.planMode || undefined,
+				plan_html: (input.planMode && input.planHtml) || undefined,
 			},
 		};
 	}

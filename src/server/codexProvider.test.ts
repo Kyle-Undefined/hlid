@@ -230,6 +230,22 @@ describe("codexSandboxPolicy", () => {
 		});
 	});
 
+	it("makes only the HTML plan directory an explicit writable root", () => {
+		expect(
+			codexSandboxPolicy(
+				"plan",
+				["/unrelated"],
+				"/vault/.hlid/plans/plan-session.html",
+			),
+		).toEqual({
+			type: "workspaceWrite",
+			writableRoots: ["/vault/.hlid/plans"],
+			networkAccess: false,
+			excludeTmpdirEnvVar: true,
+			excludeSlashTmp: true,
+		});
+	});
+
 	it("maps default/acceptEdits to workspaceWrite, passing through writableRoots", () => {
 		expect(codexSandboxPolicy("default", ["/vault", "/agent"])).toEqual({
 			type: "workspaceWrite",
@@ -383,6 +399,20 @@ describe("fetchCodexModels", () => {
 		expect(models).toEqual(mapCodexModels(MODEL_LIST_FIXTURE));
 		// The shared app-server stays alive for reuse — never killed per call.
 		expect(proc.kill).not.toHaveBeenCalled();
+	});
+
+	it("leaves Codex hooks enabled for the catalog-only app server", async () => {
+		const { proc } = makeFakeProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		await fetchCodexModels();
+
+		expect(spawn).toHaveBeenCalledWith(
+			"/usr/bin/codex",
+			["app-server", "--listen", "stdio://"],
+			expect.any(Object),
+		);
 	});
 
 	it("passes includeHidden through to the model/list RPC params", async () => {
@@ -666,6 +696,31 @@ describe("CodexAgentSession — setPermissionMode", () => {
 		expect(turns[1].sandboxPolicy).toEqual(
 			codexSandboxPolicy("bypassPermissions", []),
 		);
+		expect(turns[0].collaborationMode).toMatchObject({ mode: "default" });
+		expect(turns[1].collaborationMode).toMatchObject({ mode: "default" });
+	});
+
+	it("switches Codex collaboration mode into and out of plan mode", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(baseCodexParams());
+
+		await session.setPermissionMode?.("plan");
+		await session.send("plan this");
+		await session.setPermissionMode?.("default");
+		await session.send("implement this");
+
+		const turns = turnStartParams(writes);
+		expect(turns[0].collaborationMode).toEqual({
+			mode: "plan",
+			settings: {
+				model: "gpt-5.4",
+				reasoning_effort: null,
+				developer_instructions: null,
+			},
+		});
+		expect(turns[1].collaborationMode).toMatchObject({ mode: "default" });
 	});
 });
 
@@ -835,6 +890,82 @@ describe("CodexAgentSession — notifications", () => {
 		session.cancel();
 	});
 
+	it("keeps inherited hooks enabled under internal policy enforcement", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const session = new CodexProvider().query(
+			baseCodexParams({ policyEnforced: true }),
+		);
+		await session.send("hello");
+
+		expect(spawn).toHaveBeenCalledWith(
+			"/usr/bin/codex",
+			["app-server", "--listen", "stdio://"],
+			expect.any(Object),
+		);
+		session.cancel();
+	});
+
+	it("routes request_user_input through the shared question UI and maps answers", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const canUseTool = vi.fn().mockResolvedValue({
+			behavior: "allow",
+			updatedInput: {
+				answers: { "Choose a database": "SQLite" },
+			},
+		});
+		const session = new CodexProvider().query(baseCodexParams({ canUseTool }));
+		await session.send("ask me");
+
+		proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: 78,
+					method: "item/tool/requestUserInput",
+					params: {
+						threadId: "thread-1",
+						turnId: "turn-1",
+						itemId: "ask-1",
+						questions: [
+							{
+								id: "database",
+								header: "Database",
+								question: "Choose a database",
+								options: [
+									{ label: "SQLite", description: "Local" },
+									{ label: "Postgres", description: "Server" },
+								],
+							},
+						],
+					},
+				})}\n`,
+			),
+		);
+
+		await vi.waitFor(() => {
+			expect(canUseTool).toHaveBeenCalledWith(
+				"AskUserQuestion",
+				expect.objectContaining({ itemId: "ask-1" }),
+				expect.objectContaining({
+					toolUseID: "ask-1",
+					displayName: "request_user_input",
+				}),
+			);
+			const response = writes
+				.map((line) => JSON.parse(line))
+				.find((message) => message.id === 78);
+			expect(response?.result).toEqual({
+				answers: { database: { answers: ["SQLite"] } },
+			});
+		});
+		session.cancel();
+	});
+
 	it("auto-approves app-server requests while a bypassPermissions session is planning", async () => {
 		const { proc, writes } = makeFakeSessionProc();
 		vi.mocked(spawn).mockReturnValue(proc as never);
@@ -850,7 +981,7 @@ describe("CodexAgentSession — notifications", () => {
 		await session.send("run it");
 		expect(turnStartParams(writes)[0]).toMatchObject({
 			approvalPolicy: "never",
-			sandboxPolicy: { type: "dangerFullAccess" },
+			sandboxPolicy: { type: "readOnly", networkAccess: false },
 		});
 		proc.stdout.emit(
 			"data",
@@ -873,7 +1004,7 @@ describe("CodexAgentSession — notifications", () => {
 	});
 
 	it("presents an HTML-enabled plan even when no file approval was requested", async () => {
-		const { proc } = makeFakeSessionProc();
+		const { proc, writes } = makeFakeSessionProc();
 		vi.mocked(spawn).mockReturnValue(proc as never);
 		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
 		const canUseTool = vi.fn().mockResolvedValue({
@@ -890,6 +1021,12 @@ describe("CodexAgentSession — notifications", () => {
 		);
 		const events = session[Symbol.asyncIterator]();
 		await session.send("make a plan");
+		expect(turnStartParams(writes)[0].collaborationMode).toMatchObject({
+			mode: "default",
+		});
+		expect(turnStartParams(writes)[0].sandboxPolicy).toEqual(
+			codexSandboxPolicy("plan", [], "/vault/.hlid/plans/plan-session.html"),
+		);
 		await nextSessionEvent(events);
 		emitSessionNotification(proc, "turn/started", {
 			threadId: "thread-1",
@@ -904,6 +1041,50 @@ describe("CodexAgentSession — notifications", () => {
 				"ExitPlanMode",
 				{ plan: "HTML plan ready for review." },
 				expect.objectContaining({ toolUseID: "codex-plan-turn-1" }),
+			);
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({ type: "done" });
+		session.cancel();
+	});
+
+	it("presents the native Codex plan when HTML plans are disabled", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const canUseTool = vi.fn().mockResolvedValue({
+			behavior: "deny",
+			message: "Plan was cancelled by the user.",
+		});
+		const session = new CodexProvider().query(
+			baseCodexParams({ permissionMode: "plan", canUseTool }),
+		);
+		const events = session[Symbol.asyncIterator]();
+		await session.send("make a plan");
+		await nextSessionEvent(events);
+		emitSessionNotification(proc, "turn/started", {
+			threadId: "thread-1",
+			turn: { id: "turn-native" },
+		});
+		emitSessionNotification(proc, "item/completed", {
+			threadId: "thread-1",
+			item: {
+				id: "plan-1",
+				type: "plan",
+				text: "## Native plan\n\n1. Implement it.",
+			},
+		});
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: { id: "turn-native", status: "completed" },
+		});
+
+		await vi.waitFor(() => {
+			expect(canUseTool).toHaveBeenCalledWith(
+				"ExitPlanMode",
+				{ plan: "## Native plan\n\n1. Implement it." },
+				expect.objectContaining({
+					toolUseID: "codex-plan-turn-native",
+				}),
 			);
 		});
 		expect(await nextSessionEvent(events)).toMatchObject({ type: "done" });
@@ -978,6 +1159,7 @@ describe("CodexAgentSession — notifications", () => {
 		const implementationTurn = turnStartParams(writes)[1];
 		expect(implementationTurn).toMatchObject({
 			approvalPolicy: "on-request",
+			collaborationMode: { mode: "default" },
 			sandboxPolicy: codexSandboxPolicy("default", []),
 		});
 		expect(implementationTurn.input).toEqual([

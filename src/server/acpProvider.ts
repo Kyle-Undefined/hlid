@@ -439,6 +439,10 @@ class AcpSession implements AgentSession {
 		}
 	}
 
+	setPlanHtmlPath(path: string | undefined): void {
+		this.params.planHtmlPath = path;
+	}
+
 	[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
 		return { next: () => this.events.next() };
 	}

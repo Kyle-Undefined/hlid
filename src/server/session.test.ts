@@ -49,6 +49,10 @@ vi.mock("../db", () => ({
 vi.mock("./recap", () => ({
 	generateTurnRecap: vi.fn().mockResolvedValue(undefined),
 }));
+vi.mock("./umbod", () => ({
+	authorizeHlidTool: vi.fn().mockResolvedValue(null),
+	registerUmbodApprovalSession: vi.fn(() => vi.fn()),
+}));
 vi.mock("./executionContext", () => ({
 	resolveExecutionContext: vi.fn().mockReturnValue({
 		activeCwd: "/tmp/hlid-test-cwd",
@@ -57,6 +61,7 @@ vi.mock("./executionContext", () => ({
 	}),
 }));
 vi.mock("./promptBuilder", () => ({
+	buildPlanHtmlInstructions: vi.fn((path: string) => `HTML plan: ${path}`),
 	buildPrompt: vi.fn().mockReturnValue({
 		prompt: "test prompt",
 		safeAttachments: [],
@@ -91,6 +96,7 @@ import type { RateLimitMessage, ServerMessage } from "./protocol";
 import { getWindowMark } from "./proxy";
 import { generateTurnRecap } from "./recap";
 import { SessionManager } from "./session";
+import { authorizeHlidTool, registerUmbodApprovalSession } from "./umbod";
 
 // Bun doesn't support waitFor() — poll until assertion passes or timeout
 async function waitFor(fn: () => void, timeout = 1000): Promise<void> {
@@ -208,6 +214,63 @@ describe("SessionManager — initial state", () => {
 			makeProviders(makeProvider("Bash")),
 		);
 		expect(sm.getPendingPermissionRequests()).toEqual([]);
+	});
+});
+
+describe("SessionManager — Umbod hook approval routing", () => {
+	it("registers the provider session and emits hook approvals into chat", async () => {
+		const provider: AgentProvider = {
+			providerId: "codex",
+			query(): AgentSession {
+				return {
+					async *[Symbol.asyncIterator]() {
+						yield { type: "session_start", sessionId: "codex-thread-1" };
+						yield {
+							type: "done",
+							cost: 0,
+							turns: 1,
+							durationMs: 0,
+							usage: { inputTokens: 1, outputTokens: 1 },
+						};
+					},
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+				};
+			},
+		};
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("hello", (event) => emitted.push(event), "db-session");
+		const handler = vi
+			.mocked(registerUmbodApprovalSession)
+			.mock.calls.at(-1)?.[1];
+		expect(handler).toBeTypeOf("function");
+
+		const approval = handler?.(
+			{
+				agent: "codex",
+				tool: "Bash",
+				command: "git status",
+				inputs: { command: "git status" },
+				workingDirectory: "/tmp/project",
+				timestamp: new Date().toISOString(),
+				sessionId: "codex-thread-1",
+				toolUseId: "hook-tool-1",
+			},
+			"matched approval rule",
+		);
+		await waitFor(() =>
+			expect(sm.getPendingPermissionRequests()).toHaveLength(1),
+		);
+		expect(emitted).toContainEqual(
+			expect.objectContaining({
+				type: "permission_request",
+				id: "hook-tool-1",
+				description: "matched approval rule",
+			}),
+		);
+		sm.handlePermissionResponse("hook-tool-1", true);
+		await expect(approval).resolves.toBe("allow");
 	});
 });
 
@@ -340,6 +403,88 @@ describe("SessionManager — setModel", () => {
 		await sm.setModel("model-b");
 		expect(getSession()?.setModel).toHaveBeenCalledWith("model-b");
 		expect(sm.getStatus().model).toBe("model-b");
+	});
+});
+
+describe("SessionManager — per-turn plan mode", () => {
+	it("synchronizes plan mode on a cached provider session", async () => {
+		const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+		const setPlanHtmlPath = vi.fn();
+		const { provider } = makeSwitchableProvider({
+			setPermissionMode,
+			setPlanHtmlPath,
+		});
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await sm.runQuery(
+			"plan this",
+			() => {},
+			"session-plan-toggle",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			true,
+			true,
+		);
+		await sm.runQuery(
+			"continue normally",
+			() => {},
+			"session-plan-toggle",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			false,
+		);
+
+		expect(setPermissionMode).toHaveBeenNthCalledWith(1, "plan");
+		expect(setPermissionMode).toHaveBeenNthCalledWith(2, "default");
+		expect(setPlanHtmlPath).toHaveBeenNthCalledWith(
+			1,
+			"/tmp/hlid-test-vault/.hlid/plans/plan-session-plan-toggle.html",
+		);
+		expect(setPlanHtmlPath).toHaveBeenNthCalledWith(2, undefined);
+	});
+});
+
+describe("SessionManager — provider usage refresh", () => {
+	it("refreshes and stores structured usage after a successful turn", async () => {
+		const usageWindows = vi.fn().mockResolvedValue([
+			{
+				windowId: "five_hour",
+				label: "5-HOUR",
+				utilization: 0.42,
+				remaining: null,
+				limit: null,
+				resetsAt: 1_900_000_000,
+			},
+		]);
+		const { provider } = makeSwitchableProvider({ usageWindows });
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await sm.runQuery("hello", () => {}, "usage-refresh-session");
+
+		expect(usageWindows).toHaveBeenCalledOnce();
+		expect(getWindowMark("claude", "five_hour")).toMatchObject({
+			utilization: 0.42,
+			resetsAt: 1_900_000_000,
+		});
+		expect(dbMock.saveSetting).toHaveBeenCalledWith(
+			"rl_claude_five_hour",
+			expect.stringContaining('"utilization":0.42'),
+		);
+	});
+
+	it("does not fail a successful turn when usage refresh rejects", async () => {
+		const usageWindows = vi.fn().mockRejectedValue(new Error("unsupported"));
+		const { provider } = makeSwitchableProvider({ usageWindows });
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await expect(
+			sm.runQuery("hello", () => {}, "usage-refresh-fallback"),
+		).resolves.toBeUndefined();
+		expect(sm.getStatus().state).toBe("idle");
 	});
 });
 
@@ -1006,6 +1151,38 @@ describe("SessionManager — AskUserQuestion", () => {
 // ── Session-scoped permission persistence ──────────────────────────────────────
 
 describe("SessionManager — session-scoped permission persistence", () => {
+	it("routes an Umbod approve decision to chat even in bypassPermissions mode", async () => {
+		vi.mocked(authorizeHlidTool).mockImplementationOnce(async (options) => {
+			expect(options.bypassApproval).toBe(false);
+			const decision = await options.prompt("matched approval rule");
+			return {
+				decision,
+				policyDecision: "approve",
+				reason: "matched approval rule",
+			};
+		});
+
+		const config = makeConfig();
+		config.claude.permission_mode = "bypassPermissions";
+		const sm = new SessionManager(config, makeProviders(makeProvider("Bash")));
+		const emitted: ServerMessage[] = [];
+		const turn = sm.runQuery("hello", (event) => emitted.push(event), "sess-1");
+
+		await waitFor(() =>
+			expect(sm.getPendingPermissionRequests()).toHaveLength(1),
+		);
+		expect(emitted).toContainEqual(
+			expect.objectContaining({
+				type: "permission_request",
+				id: "tid-1",
+				description: "matched approval rule",
+			}),
+		);
+
+		sm.handlePermissionResponse("tid-1", true);
+		await turn;
+	});
+
 	it("session approval: same tool auto-approved on next turn without prompting", async () => {
 		let callCount = 0;
 		const multiTurnProvider: AgentProvider = {

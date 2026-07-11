@@ -159,6 +159,9 @@ const config = defineConfig({
 	server: {
 		host: bindHost(serverCfg.local_network_access ?? false),
 		allowedHosts: true,
+		// Plans and attachment relics are runtime data. Watching their short-lived
+		// create/move/delete cycle reloads Raven while the HTML modal is opening.
+		watch: { ignored: ["**/.hlid/**"] },
 		...(tls
 			? {
 					https: { cert: tls.cert, key: tls.key, ALPNProtocols: ["http/1.1"] },
