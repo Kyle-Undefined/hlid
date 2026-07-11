@@ -14,6 +14,7 @@ export default defineConfig({
 		coverage: {
 			provider: "istanbul",
 			reporter: ["text", "json", "json-summary", "html"],
+			reportsDirectory: "coverage/vitest",
 			include: ["src/**/*.{ts,tsx}"],
 			exclude: [
 				"src/**/*.test.{ts,tsx}",

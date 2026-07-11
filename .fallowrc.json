@@ -13,7 +13,10 @@
 	],
 	"ignoreDependencies": [
 		"@anthropic-ai/claude-agent-sdk-win32-x64",
-		"png-to-ico"
+		"png-to-ico",
+		"istanbul-lib-coverage",
+		"istanbul-lib-report",
+		"istanbul-reports"
 	],
 	"ignoreExports": [
 		{
