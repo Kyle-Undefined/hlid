@@ -102,16 +102,26 @@ export function writeWrapper(
 		console.warn("[wrappers] refusing to write wrapper:", err);
 		return null;
 	}
-	ensureWrappersDir();
-	const target = wrapperPathForAgent(agentPath, command);
-	writeFileSync(target, body, "utf-8");
-	return target;
+	try {
+		ensureWrappersDir();
+		const target = wrapperPathForAgent(agentPath, command);
+		writeFileSync(target, body, "utf-8");
+		return target;
+	} catch (err) {
+		console.warn("[wrappers] failed to write wrapper:", err);
+		return null;
+	}
 }
 
 // Reconcile the wrappers directory with the current agent list. Startup sync keeps
 // Claude wrappers current; Codex wrappers are written on demand by execution context.
 export function syncWrappers(agents: Agent[]): void {
-	ensureWrappersDir();
+	try {
+		ensureWrappersDir();
+	} catch (err) {
+		console.warn("[wrappers] failed to create wrapper directory:", err);
+		return;
+	}
 	const want = new Set<string>();
 	for (const agent of agents) {
 		const parsed = parseWslUnc(agent.path);
@@ -125,7 +135,11 @@ export function syncWrappers(agents: Agent[]): void {
 		}
 		const filename = wrapperFilename(agent.path);
 		want.add(filename);
-		writeFileSync(join(WRAPPERS_DIR, filename), body, "utf-8");
+		try {
+			writeFileSync(join(WRAPPERS_DIR, filename), body, "utf-8");
+		} catch (err) {
+			console.warn("[wrappers] failed to update wrapper:", agent.path, err);
+		}
 	}
 	let existing: string[];
 	try {

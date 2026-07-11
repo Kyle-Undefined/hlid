@@ -178,7 +178,15 @@ export function useCockpitRun(options: CockpitRunOptions) {
 		);
 		if (!text || options.wsStatus !== "connected") return;
 		options.setRunError(null);
-		const sessionId = await resolveRunSession(options);
+		let sessionId: string;
+		try {
+			sessionId = await resolveRunSession(options);
+		} catch (error) {
+			options.setRunError(
+				error instanceof Error ? error.message : "Could not start run",
+			);
+			return;
+		}
 		options.attachSessionIdRef.current = null;
 		const attachments = options.pendingAttachments;
 		options.clearPendingAttachments();

@@ -1,10 +1,24 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SessionRow, ThirtyDayStats, WeeklyStats } from "#/db";
+import * as wsStore from "#/hooks/wsStore";
+import { getCurrentSessionFn, getRecentSessionsFn } from "#/lib/serverFns";
 import {
 	incrementThirtyDayStats,
 	incrementWeeklyStats,
 	prependPendingRun,
+	useCockpitRun,
 } from "./useCockpitRun";
+
+vi.mock("#/lib/serverFns", () => ({
+	getCurrentSessionFn: vi.fn(),
+	getRecentSessionsFn: vi.fn(),
+}));
+
+vi.mock("#/hooks/wsStore", () => ({
+	enqueueChat: vi.fn(),
+	resetLiveStats: vi.fn(),
+	setPendingPrompt: vi.fn(),
+}));
 
 function session(id: string): SessionRow {
 	return {
@@ -20,6 +34,34 @@ function session(id: string): SessionRow {
 		total_cache_read_tokens: 0,
 		total_cache_creation_tokens: 0,
 		total_turns: 0,
+	};
+}
+
+function runOptions(
+	overrides: Partial<Parameters<typeof useCockpitRun>[0]> = {},
+): Parameters<typeof useCockpitRun>[0] {
+	return {
+		prompt: "ship the fix",
+		activeSkill: null,
+		allSkills: [],
+		wsStatus: "connected",
+		sameSession: true,
+		attachSessionIdRef: { current: "attached-session" },
+		pendingAttachments: [],
+		clearPendingAttachments: vi.fn(),
+		isRunning: false,
+		selectedAgentPath: "/agent",
+		background: false,
+		model: "gpt-5.5",
+		send: vi.fn(),
+		setRunError: vi.fn(),
+		setPrompt: vi.fn(),
+		setActiveSkill: vi.fn(),
+		setRecentRuns: vi.fn(),
+		setThirtyDayStats: vi.fn(),
+		setWeeklyStats: vi.fn(),
+		navigateToRaven: vi.fn(),
+		...overrides,
 	};
 }
 
@@ -72,5 +114,69 @@ describe("cockpit optimistic activity", () => {
 				model: null,
 			}),
 		).toBe(runs);
+	});
+});
+
+describe("cockpit run controller", () => {
+	it("surfaces session lookup failures without consuming composer state", async () => {
+		vi.mocked(getCurrentSessionFn).mockRejectedValueOnce(
+			new Error("session service unavailable"),
+		);
+		const options = runOptions({
+			pendingAttachments: [{ id: "attachment-1" }] as never,
+		});
+
+		await expect(useCockpitRun(options)()).resolves.toBeUndefined();
+
+		expect(options.setRunError).toHaveBeenLastCalledWith(
+			"session service unavailable",
+		);
+		expect(options.attachSessionIdRef.current).toBe("attached-session");
+		expect(options.clearPendingAttachments).not.toHaveBeenCalled();
+		expect(options.setPrompt).not.toHaveBeenCalled();
+		expect(options.send).not.toHaveBeenCalled();
+	});
+
+	it("falls back to a recent session and starts a foreground run", async () => {
+		vi.mocked(getCurrentSessionFn).mockResolvedValueOnce(null);
+		vi.mocked(getRecentSessionsFn).mockResolvedValueOnce([
+			session("recent-session"),
+		]);
+		const options = runOptions();
+
+		await useCockpitRun(options)();
+
+		expect(options.send).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "chat",
+				text: "ship the fix",
+				session_id: "recent-session",
+				agent_cwd: "/agent",
+			}),
+		);
+		expect(options.clearPendingAttachments).toHaveBeenCalledOnce();
+		expect(options.setPrompt).toHaveBeenCalledWith("");
+		expect(wsStore.setPendingPrompt).toHaveBeenCalledWith("ship the fix");
+		expect(options.navigateToRaven).toHaveBeenCalledWith(
+			"recent-session",
+			"/agent",
+		);
+	});
+
+	it("queues into a running session without optimistic activity updates", async () => {
+		vi.mocked(getCurrentSessionFn).mockResolvedValueOnce("active-session");
+		const options = runOptions({ isRunning: true, background: true });
+
+		await useCockpitRun(options)();
+
+		expect(wsStore.enqueueChat).toHaveBeenCalledWith(
+			expect.objectContaining({
+				text: "ship the fix",
+				session_id: "active-session",
+			}),
+		);
+		expect(options.send).not.toHaveBeenCalled();
+		expect(options.setRecentRuns).not.toHaveBeenCalled();
+		expect(options.navigateToRaven).not.toHaveBeenCalled();
 	});
 });

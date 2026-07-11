@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
 	type McpServerEntry,
 	mapMcpServer,
@@ -61,15 +61,40 @@ export function useCockpitLiveData(initial: InitialCockpitLiveData) {
 	>([]);
 	const [runError, setRunError] = useState<string | null>(null);
 	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
+	const refreshGenerationRef = useRef(0);
 
 	const ws = useWs((message: ServerMessage) => {
 		if (message.type === "done") {
 			setRunError(null);
-			getRecentSessionsFn().then(setRecentRuns);
-			getCockpitStatsFn().then((data) => setAgg(data.agg));
-			getWeeklyStatsFn().then(setWeeklyStats);
-			getThirtyDayStatsFn().then(setThirtyDayStats);
-			getActiveSessionRowFn().then(setLiveActiveSession);
+			const generation = ++refreshGenerationRef.current;
+			void getRecentSessionsFn()
+				.then((runs) => {
+					if (generation === refreshGenerationRef.current) setRecentRuns(runs);
+				})
+				.catch(() => {});
+			void getCockpitStatsFn()
+				.then((data) => {
+					if (generation === refreshGenerationRef.current) setAgg(data.agg);
+				})
+				.catch(() => {});
+			void getWeeklyStatsFn()
+				.then((stats) => {
+					if (generation === refreshGenerationRef.current)
+						setWeeklyStats(stats);
+				})
+				.catch(() => {});
+			void getThirtyDayStatsFn()
+				.then((stats) => {
+					if (generation === refreshGenerationRef.current)
+						setThirtyDayStats(stats);
+				})
+				.catch(() => {});
+			void getActiveSessionRowFn()
+				.then((session) => {
+					if (generation === refreshGenerationRef.current)
+						setLiveActiveSession(session);
+				})
+				.catch(() => {});
 		}
 		if (message.type === "error") setRunError(message.message);
 		if (message.type === "rate_limit") setRateLimit(message);
@@ -88,11 +113,14 @@ export function useCockpitLiveData(initial: InitialCockpitLiveData) {
 
 	useEffect(() => {
 		let active = true;
-		void getActiveSessionRowFn().then((session) => {
-			if (active) setLiveActiveSession(session);
-		});
+		void getActiveSessionRowFn()
+			.then((session) => {
+				if (active) setLiveActiveSession(session);
+			})
+			.catch(() => {});
 		return () => {
 			active = false;
+			refreshGenerationRef.current++;
 		};
 	}, []);
 

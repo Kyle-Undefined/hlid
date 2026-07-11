@@ -1,14 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
+import { parseJsonAction } from "#/lib/actionRequest";
 import { forbiddenResponse } from "#/lib/originGate";
 import { applyUpdate, downloadUpdate, getStatus } from "#/lib/updates";
 
 const ACTIONS = ["check", "download", "apply"] as const;
-type Action = (typeof ACTIONS)[number];
-
-function isAction(v: unknown): v is Action {
-	return typeof v === "string" && (ACTIONS as readonly string[]).includes(v);
-}
-
 type UpdateOperations = {
 	forbidden: (request: Request) => Response | null;
 	getStatus: typeof getStatus;
@@ -43,28 +38,11 @@ export function createUpdateRequestHandlers(operations: UpdateOperations) {
 			const forbidden = operations.forbidden(request);
 			if (forbidden) return forbidden;
 
-			let body: { action?: unknown };
-			try {
-				body = (await request.json()) as { action?: unknown };
-			} catch {
-				return Response.json(
-					{ ok: false, error: "invalid json" },
-					{ status: 400 },
-				);
-			}
-
-			if (!isAction(body.action)) {
-				return Response.json(
-					{
-						ok: false,
-						error: `action must be one of: ${ACTIONS.join(", ")}`,
-					},
-					{ status: 400 },
-				);
-			}
+			const parsed = await parseJsonAction(request, ACTIONS, "invalid json");
+			if (parsed instanceof Response) return parsed;
 
 			try {
-				switch (body.action) {
+				switch (parsed.action) {
 					case "check":
 						return Response.json({
 							ok: true,

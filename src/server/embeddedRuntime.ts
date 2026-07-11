@@ -10,7 +10,22 @@ export function replaceRuntimeDirectory(
 		const code = (error as NodeJS.ErrnoException).code;
 		if (code !== "ENOTEMPTY" && code !== "EPERM" && code !== "EEXIST")
 			throw error;
-		rmSync(runtimeDir, { recursive: true, force: true });
-		renameSync(tempDir, runtimeDir);
+		const backupDir = `${runtimeDir}.bak`;
+		rmSync(backupDir, { recursive: true, force: true });
+		renameSync(runtimeDir, backupDir);
+		try {
+			renameSync(tempDir, runtimeDir);
+		} catch (replacementError) {
+			try {
+				renameSync(backupDir, runtimeDir);
+			} catch (rollbackError) {
+				throw new AggregateError(
+					[replacementError, rollbackError],
+					"runtime replacement and rollback failed",
+				);
+			}
+			throw replacementError;
+		}
+		rmSync(backupDir, { recursive: true, force: true });
 	}
 }

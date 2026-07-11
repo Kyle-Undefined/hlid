@@ -51,6 +51,7 @@ export function usePullToRefresh(
 	const currentPullRef = useRef(0);
 	const activeRef = useRef(false);
 	const refreshingRef = useRef(false);
+	const reloadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
 	useEffect(() => {
 		const container = containerRef.current;
@@ -105,7 +106,10 @@ export function usePullToRefresh(
 				refreshingRef.current = true;
 				setIsRefreshing(true);
 				// Small delay lets the spin animation render before reload.
-				setTimeout(() => window.location.reload(), 500);
+				reloadTimerRef.current = setTimeout(
+					() => window.location.reload(),
+					500,
+				);
 			} else {
 				currentPullRef.current = 0;
 				setPullY(0);
@@ -122,6 +126,8 @@ export function usePullToRefresh(
 			container.removeEventListener("touchmove", onTouchMove);
 			container.removeEventListener("touchend", onRelease);
 			container.removeEventListener("touchcancel", onRelease);
+			if (reloadTimerRef.current) clearTimeout(reloadTimerRef.current);
+			reloadTimerRef.current = null;
 		};
 	}, [containerRef]);
 

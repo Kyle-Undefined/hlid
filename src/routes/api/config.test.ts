@@ -1,8 +1,17 @@
+import { statSync } from "node:fs";
+import { homedir } from "node:os";
+import { resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { handleGetConfig } from "./config";
+import { HlidConfigSchema } from "#/config";
+import { writeConfig } from "#/lib/config-writer";
+import { dbFetch } from "#/lib/dbClient";
+import { handleGetConfig, handlePostConfig } from "./config";
 
 vi.mock("#/server/config", () => ({ loadConfig: vi.fn() }));
 vi.mock("#/lib/originGate", () => ({ forbiddenResponse: vi.fn(() => null) }));
+vi.mock("#/lib/config-writer", () => ({ writeConfig: vi.fn() }));
+vi.mock("#/lib/dbClient", () => ({ dbFetch: vi.fn() }));
+vi.mock("node:fs", () => ({ statSync: vi.fn() }));
 
 const { loadConfig } = await import("#/server/config");
 const { forbiddenResponse } = await import("#/lib/originGate");
@@ -14,10 +23,19 @@ function makeRequest(url = "http://localhost/api/config"): Request {
 	return new Request(url, { method: "GET" });
 }
 
+function post(body: unknown): Request {
+	return new Request("http://localhost/api/config", {
+		method: "POST",
+		headers: { "content-type": "application/json" },
+		body: JSON.stringify(body),
+	});
+}
+
 describe("GET /api/config — handleGetConfig", () => {
 	beforeEach(() => {
 		vi.resetAllMocks();
 		mockForbiddenResponse.mockReturnValue(null);
+		vi.mocked(dbFetch).mockResolvedValue(new Response());
 	});
 
 	it("returns 200 with full config as JSON", async () => {
@@ -33,5 +51,72 @@ describe("GET /api/config — handleGetConfig", () => {
 		mockForbiddenResponse.mockReturnValue(forbidden);
 		const res = await handleGetConfig(makeRequest());
 		expect(res.status).toBe(403);
+	});
+});
+
+describe("POST /api/config — handlePostConfig", () => {
+	beforeEach(() => {
+		vi.resetAllMocks();
+		mockForbiddenResponse.mockReturnValue(null);
+		vi.mocked(dbFetch).mockResolvedValue(new Response());
+	});
+
+	it("expands a tilde vault path before validation and persists the config", async () => {
+		vi.mocked(statSync).mockReturnValue({ isDirectory: () => true } as never);
+		const config = HlidConfigSchema.parse({ vault: { path: "~/vault" } });
+
+		const response = await handlePostConfig(post(config));
+
+		expect(response.status).toBe(200);
+		expect(statSync).toHaveBeenCalledWith(resolve(homedir(), "vault"));
+		expect(writeConfig).toHaveBeenCalledWith(config);
+		expect(dbFetch).toHaveBeenCalledWith("/voice/sync", { method: "POST" });
+	});
+
+	it.each([
+		["a missing path", new Error("ENOENT"), "vault.path does not exist"],
+		[
+			"a non-directory path",
+			{ isDirectory: () => false },
+			"vault.path is not a directory",
+		],
+	])("rejects %s without persisting", async (_label, result, error) => {
+		if (result instanceof Error)
+			vi.mocked(statSync).mockImplementation(() => {
+				throw result;
+			});
+		else vi.mocked(statSync).mockReturnValue(result as never);
+		const response = await handlePostConfig(
+			post(HlidConfigSchema.parse({ vault: { path: "/vault" } })),
+		);
+
+		expect(response.status).toBe(400);
+		expect(await response.json()).toEqual({ error });
+		expect(writeConfig).not.toHaveBeenCalled();
+	});
+
+	it("returns a server error when persistence fails", async () => {
+		vi.mocked(writeConfig).mockImplementationOnce(() => {
+			throw new Error("disk full");
+		});
+		const response = await handlePostConfig(post(HlidConfigSchema.parse({})));
+
+		expect(response.status).toBe(500);
+		expect(await response.json()).toEqual({ error: "Failed to write config" });
+		expect(dbFetch).not.toHaveBeenCalled();
+	});
+
+	it("rejects malformed JSON and blocked origins before persistence", async () => {
+		const malformed = new Request("http://localhost/api/config", {
+			method: "POST",
+			body: "{",
+		});
+		expect((await handlePostConfig(malformed)).status).toBe(400);
+
+		mockForbiddenResponse.mockReturnValue(
+			new Response("Forbidden", { status: 403 }),
+		);
+		expect((await handlePostConfig(post({}))).status).toBe(403);
+		expect(writeConfig).not.toHaveBeenCalled();
 	});
 });
