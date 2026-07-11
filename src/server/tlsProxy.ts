@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { isAllowedOrigin, isAllowedOriginHeader } from "../lib/allowedOrigin";
 import { registerBunServer } from "../lib/lifecycle";
 import { isPublicPath } from "../lib/publicPath";
+import { isDocumentNavigationRequest } from "../lib/uiRequestSecurity";
 import { authenticateRequest } from "./auth";
 import { createConcurrencyGate, readRequestBodyLimited } from "./requestLimits";
 
@@ -54,7 +55,16 @@ export function createTlsHttpForwarder({
 	return async (req, peerIp) => {
 		const url = new URL(req.url);
 		if (!isPublicPath(url.pathname) && !(await authenticate(req))) {
-			return new Response("Unauthorized", { status: 401 });
+			if (isDocumentNavigationRequest(req)) {
+				return new Response(null, {
+					status: 302,
+					headers: { location: "/login", "cache-control": "no-store" },
+				});
+			}
+			return Response.json(
+				{ error: "Unauthorized" },
+				{ status: 401, headers: { "cache-control": "no-store" } },
+			);
 		}
 
 		const hasBody = req.method !== "GET" && req.method !== "HEAD";

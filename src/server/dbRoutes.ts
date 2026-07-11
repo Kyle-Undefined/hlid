@@ -65,6 +65,7 @@ const DB_GET_HANDLERS: Record<string, DbGetHandler> = {
 	"/db/provider-usage": ({ url }) => getProviderUsage(url),
 	"/db/attachments": ({ url }) => getAttachments(url),
 	"/db/logs": ({ url }) => getLogs(url),
+	"/db/storage": async () => Response.json(await db.getStorageStats()),
 	"/db/live-sessions": ({ pool, terminalPool }) =>
 		Response.json(getLiveSessionsStatus(pool, terminalPool)),
 };
@@ -321,6 +322,8 @@ async function handlePostRoute(
 	context: DbRouteContext,
 ): Promise<Response | null> {
 	switch (context.url.pathname) {
+		case "/db/storage/optimize":
+			return Response.json(await db.optimizeStorage());
 		case "/db/sessions/cleanup":
 			return cleanupSessions(context);
 		case "/db/live-sessions/stop":

@@ -14,6 +14,7 @@ import { makeMockWs, WS_STATES } from "./wsStore.test-utils";
 let wsCtorSpy: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
+	vi.useFakeTimers();
 	// Fresh mock WS that is immediately OPEN (simulates successful connect)
 	const mockWs = makeMockWs(WS_STATES.OPEN);
 	// biome-ignore lint/complexity/useArrowFunction: constructor mock for Vitest 4
@@ -29,6 +30,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	vi.useRealTimers();
 	vi.unstubAllGlobals();
 });
 
@@ -73,5 +75,41 @@ describe("wsStore — visibilitychange reconnect", () => {
 	it("does nothing when page becomes hidden", () => {
 		setVisibility("hidden");
 		expect(wsCtorSpy).not.toHaveBeenCalled();
+	});
+
+	it("backs off repeated failed reconnects and caps the delay", () => {
+		setVisibility("visible");
+		let socket = wsCtorSpy.mock.results[0].value;
+		socket.readyState = WS_STATES.CLOSED;
+		socket.onclose?.();
+
+		vi.advanceTimersByTime(2_999);
+		expect(wsCtorSpy).toHaveBeenCalledTimes(1);
+		vi.advanceTimersByTime(1);
+		expect(wsCtorSpy).toHaveBeenCalledTimes(2);
+
+		for (const delay of [6_000, 12_000, 24_000, 30_000, 30_000]) {
+			socket = wsCtorSpy.mock.results.at(-1)?.value;
+			socket.readyState = WS_STATES.CLOSED;
+			socket.onclose?.();
+			vi.advanceTimersByTime(delay - 1);
+			const calls = wsCtorSpy.mock.calls.length;
+			vi.advanceTimersByTime(1);
+			expect(wsCtorSpy).toHaveBeenCalledTimes(calls + 1);
+		}
+	});
+
+	it("cancels a pending reconnect while hidden and reconnects on visibility", () => {
+		setVisibility("visible");
+		const socket = wsCtorSpy.mock.results[0].value;
+		socket.readyState = WS_STATES.CLOSED;
+		socket.onclose?.();
+
+		setVisibility("hidden");
+		vi.advanceTimersByTime(60_000);
+		expect(wsCtorSpy).toHaveBeenCalledTimes(1);
+
+		setVisibility("visible");
+		expect(wsCtorSpy).toHaveBeenCalledTimes(2);
 	});
 });

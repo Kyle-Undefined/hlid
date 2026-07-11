@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { QueuedChatMessage } from "#/hooks/wsStore";
 import { approvedLabel } from "#/server/protocol";
 import { AskUserQuestionCard } from "./AskUserQuestionCard";
@@ -7,6 +7,8 @@ import type { ChatMessage } from "./chatReducer";
 import { PermissionCard } from "./PermissionCard";
 import { PlanCard, type PlanDecision } from "./PlanCard";
 import { UserMsg, type UserMsgQueueState } from "./UserMsg";
+
+const HISTORY_RENDER_PAGE_SIZE = 200;
 
 /**
  * Renders the full message thread: history, permission cards, queued messages,
@@ -50,6 +52,18 @@ export function MessageList({
 	handlePromoteQueued: (id: string) => void;
 	bottomRef: React.MutableRefObject<HTMLDivElement | null>;
 }) {
+	const [visibleHistoryCount, setVisibleHistoryCount] = useState(
+		HISTORY_RENDER_PAGE_SIZE,
+	);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: changing sessions resets the bounded render window
+	useEffect(() => {
+		setVisibleHistoryCount(HISTORY_RENDER_PAGE_SIZE);
+	}, [sessionId]);
+	const hiddenHistoryCount = Math.max(0, messages.length - visibleHistoryCount);
+	const visibleMessages = useMemo(
+		() => messages.slice(hiddenHistoryCount),
+		[messages, hiddenHistoryCount],
+	);
 	// Approved permissions render as a chip under the matching tool block
 	// (matched by toolUseID === ToolEvent.id) instead of a separate row, so a
 	// long run of approvals doesn't stack up above each tool call.
@@ -107,7 +121,22 @@ export function MessageList({
 
 	return (
 		<>
-			{messages.map((m) => {
+			{hiddenHistoryCount > 0 && (
+				<div className="flex justify-center px-4 py-3">
+					<button
+						type="button"
+						onClick={() =>
+							setVisibleHistoryCount((count) =>
+								Math.min(messages.length, count + HISTORY_RENDER_PAGE_SIZE),
+							)
+						}
+						className="border border-border px-3 py-1.5 text-[10px] tracking-widest text-muted-foreground uppercase transition-colors hover:bg-accent hover:text-foreground"
+					>
+						Load {Math.min(HISTORY_RENDER_PAGE_SIZE, hiddenHistoryCount)} older
+					</button>
+				</div>
+			)}
+			{visibleMessages.map((m) => {
 				if (m.role === "user") {
 					return (
 						<UserMsg

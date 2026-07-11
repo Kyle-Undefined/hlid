@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { AcpSection } from "#/components/forge/AcpSection";
 import { ApiSection } from "#/components/forge/ApiSection";
 import { ClaudeSection } from "#/components/forge/ClaudeSection";
@@ -18,39 +18,78 @@ import type {
 	SettingsInitial,
 } from "#/hooks/useSettingsForm";
 
-const TABS = [
-	"general",
-	"network",
-	"security",
-	"vault",
-	"agent",
-	"voice",
-	"interface",
-	"logs",
-	"api",
+const CATEGORIES = [
+	{
+		id: "overview",
+		label: "Overview",
+		description: "Updates, installation, startup, and storage",
+		keywords: "version install location launch login database attachments",
+		group: "primary",
+	},
+	{
+		id: "workspace",
+		label: "Workspace",
+		description: "Vault identity, folders, and status vocabulary",
+		keywords: "vault identity path folder mappings statuses",
+		group: "primary",
+	},
+	{
+		id: "agents",
+		label: "Agents",
+		description: "Provider, model, permissions, limits, and recaps",
+		keywords: "provider model effort permissions turns recaps account",
+		group: "primary",
+	},
+	{
+		id: "access",
+		label: "Access",
+		description: "Network, TLS, passwords, and trusted devices",
+		keywords: "port local network tailscale tls password trusted devices",
+		group: "primary",
+	},
+	{
+		id: "experience",
+		label: "Experience",
+		description: "Themes, input, voice, and privacy",
+		keywords: "theme mobile enter skills plans whisper microphone demo",
+		group: "primary",
+	},
+	{
+		id: "integrations",
+		label: "Integrations",
+		description: "MCP servers, external agents, and ACP",
+		keywords: "mcp servers external agents acp catalog integrations",
+		group: "secondary",
+	},
+	{
+		id: "developer",
+		label: "Developer",
+		description: "Event log and API reference",
+		keywords: "events logs api diagnostics endpoints",
+		group: "secondary",
+	},
+	{
+		id: "advanced",
+		label: "Advanced",
+		description: "Maintenance and session lifecycle",
+		keywords: "optimize database reload session shutdown danger",
+		group: "secondary",
+	},
 ] as const;
-type Tab = (typeof TABS)[number];
+type Category = (typeof CATEGORIES)[number]["id"];
+type DeveloperView = "events" | "api";
 
-function TabNavigation({
-	tab,
-	onChange,
+function PageIntro({
+	title,
+	description,
 }: {
-	tab: Tab;
-	onChange: (tab: Tab) => void;
+	title: string;
+	description: string;
 }) {
 	return (
-		<div className="flex flex-wrap border-b border-border shrink-0">
-			{TABS.map((item) => (
-				<button
-					key={item}
-					type="button"
-					onClick={() => onChange(item)}
-					aria-pressed={tab === item}
-					className={`px-5 py-2.5 text-[10px] tracking-widest uppercase transition-colors border-b-2 -mb-px ${tab === item ? "border-primary text-primary" : "border-transparent text-muted-foreground hover:text-foreground"}`}
-				>
-					{item}
-				</button>
-			))}
+		<div className="space-y-1">
+			<h2 className="text-lg font-medium">{title}</h2>
+			<p className="text-xs text-muted-foreground">{description}</p>
 		</div>
 	);
 }
@@ -71,127 +110,223 @@ function AgentSettings({
 				}
 			: state.claude;
 	return (
-		<>
-			<ClaudeSection
-				claude={agentForm}
-				onChange={state.changeClaude}
-				providers={initial.providers}
-				accountInfo={initial.accountInfo}
-			/>
-			<AcpSection
-				initialCatalog={initial.acpCatalog}
-				value={state.acpAgents}
-				onChange={state.setAcpAgents}
-			/>
-		</>
+		<ClaudeSection
+			claude={agentForm}
+			onChange={state.changeClaude}
+			providers={initial.providers}
+			accountInfo={initial.accountInfo}
+		/>
 	);
 }
 
-function SettingsTabContent({
-	tab,
+function CategoryContent({
+	category,
 	state,
 	initial,
+	showCatalog,
+	onShowCatalog,
+	developerView,
+	onDeveloperView,
 }: {
-	tab: Tab;
+	category: Category;
 	state: SettingsFormState;
 	initial: SettingsInitial;
+	showCatalog: boolean;
+	onShowCatalog: (show: boolean) => void;
+	developerView: DeveloperView;
+	onDeveloperView: (view: DeveloperView) => void;
 }) {
-	switch (tab) {
-		case "general":
+	if (category === "integrations" && showCatalog)
+		return (
+			<>
+				<button
+					type="button"
+					onClick={() => onShowCatalog(false)}
+					className="text-[10px] tracking-widest uppercase text-muted-foreground hover:text-foreground"
+				>
+					← Integrations
+				</button>
+				<PageIntro
+					title="ACP Agent Catalog"
+					description="Discover and configure Agent Client Protocol integrations."
+				/>
+				<AcpSection
+					initialCatalog={initial.acpCatalog}
+					value={state.acpAgents}
+					onChange={state.setAcpAgents}
+				/>
+			</>
+		);
+	switch (category) {
+		case "overview":
 			return (
 				<>
+					<PageIntro
+						title="Overview"
+						description="Keep Hlið current and understand how this installation is running."
+					/>
 					<UpdatesSection />
-					<SystemSection />
-					<SessionSection />
+					<SystemSection view="overview" />
 				</>
 			);
-		case "network":
-			return (
-				<NetworkSection
-					server={state.server}
-					onChange={(patch) =>
-						state.setServer((server) => ({ ...server, ...patch }))
-					}
-					cwd={initial.cwd}
-				/>
-			);
-		case "security":
-			return <SecuritySection />;
-		case "vault":
+		case "workspace":
 			return (
 				<>
+					<PageIntro
+						title="Workspace"
+						description="Define the vault Hlið works in and the vocabulary it uses."
+					/>
 					<VaultSection
 						vault={state.vault}
-						onChange={(patch) =>
-							state.setVault((vault) => ({ ...vault, ...patch }))
-						}
+						onChange={(patch) => state.setVault((v) => ({ ...v, ...patch }))}
 					/>
 					<VocabSection
 						vocab={state.vocab}
-						onChange={(patch) =>
-							state.setVocab((vocab) => ({ ...vocab, ...patch }))
-						}
+						onChange={(patch) => state.setVocab((v) => ({ ...v, ...patch }))}
 					/>
-					<McpSection vaultPath={state.vault.path} />
 				</>
 			);
-		case "agent":
-			return <AgentSettings state={state} initial={initial} />;
-		case "voice":
+		case "agents":
 			return (
-				<VoiceSection
-					voice={state.voice}
-					onChange={(patch) =>
-						state.setVoice((voice) => ({ ...voice, ...patch }))
-					}
-					initialInfo={initial.voiceInfo}
-				/>
+				<>
+					<PageIntro
+						title="Agents"
+						description="Choose the default provider and control how agents work."
+					/>
+					<AgentSettings state={state} initial={initial} />
+				</>
 			);
-		case "interface":
+		case "access":
 			return (
-				<UiSection
-					ui={state.ui}
-					onChange={(patch) => state.setUi((ui) => ({ ...ui, ...patch }))}
-				/>
+				<>
+					<PageIntro
+						title="Access"
+						description="Control where Hlið is reachable and who can sign in."
+					/>
+					<NetworkSection
+						server={state.server}
+						onChange={(patch) => state.setServer((s) => ({ ...s, ...patch }))}
+						cwd={initial.cwd}
+					/>
+					<SecuritySection />
+				</>
 			);
-		case "logs":
-			return <EventLogSection />;
-		case "api":
-			return <ApiSection />;
+		case "experience":
+			return (
+				<>
+					<PageIntro
+						title="Experience"
+						description="Tune appearance, input behavior, voice, and presentation privacy."
+					/>
+					<UiSection
+						ui={state.ui}
+						onChange={(patch) => state.setUi((ui) => ({ ...ui, ...patch }))}
+					/>
+					<VoiceSection
+						voice={state.voice}
+						onChange={(patch) =>
+							state.setVoice((voice) => ({ ...voice, ...patch }))
+						}
+						initialInfo={initial.voiceInfo}
+					/>
+					<SessionSection view="privacy" />
+				</>
+			);
+		case "integrations":
+			return (
+				<>
+					<PageIntro
+						title="Integrations"
+						description="Connect tools and agents without crowding core agent settings."
+					/>
+					<McpSection vaultPath={state.vault.path} />
+					<div className="border border-border bg-card p-4 flex items-center justify-between gap-4">
+						<div>
+							<div className="text-sm">ACP Agent Catalog</div>
+							<p className="text-xs text-muted-foreground mt-0.5">
+								Browse and configure Agent Client Protocol integrations on their
+								own screen.
+							</p>
+						</div>
+						<button
+							type="button"
+							onClick={() => onShowCatalog(true)}
+							className="shrink-0 px-3 py-1.5 border border-border text-[10px] tracking-widest uppercase hover:bg-accent"
+						>
+							Open catalog
+						</button>
+					</div>
+				</>
+			);
+		case "developer":
+			return (
+				<>
+					<PageIntro
+						title="Developer"
+						description="Inspect runtime activity and the local API surface."
+					/>
+					<div
+						className="inline-flex border border-border bg-card p-1"
+						role="tablist"
+						aria-label="Developer tools"
+					>
+						{(
+							[
+								["events", "Event Log"],
+								["api", "API Reference"],
+							] as const
+						).map(([view, label]) => (
+							<button
+								key={view}
+								type="button"
+								role="tab"
+								onClick={() => onDeveloperView(view)}
+								aria-selected={developerView === view}
+								className={`px-3 py-1.5 text-[10px] tracking-widest uppercase transition-colors ${
+									developerView === view
+										? "bg-primary/10 text-primary"
+										: "text-muted-foreground hover:bg-accent hover:text-foreground"
+								}`}
+							>
+								{label}
+							</button>
+						))}
+					</div>
+					{developerView === "events" ? <EventLogSection /> : <ApiSection />}
+				</>
+			);
+		case "advanced":
+			return (
+				<>
+					<PageIntro
+						title="Advanced"
+						description="Maintenance and lifecycle actions. Review destructive actions carefully."
+					/>
+					<SystemSection view="advanced" />
+					<SessionSection view="advanced" />
+				</>
+			);
 	}
 }
 
-function SaveBar({
-	state,
-	showButton,
-}: {
-	state: SettingsFormState;
-	showButton: boolean;
-}) {
-	const show = showButton || state.savedMsg !== null || state.error !== null;
-	if (!show) return null;
+function SaveStatus({ state }: { state: SettingsFormState }) {
 	return (
-		<div className="shrink-0 border-t border-border bg-background/95 px-5 py-3 flex items-center justify-between gap-4">
-			<div className="text-xs tracking-wider">
-				{state.error && <span className="text-destructive">{state.error}</span>}
-				{state.savedMsg === "saved" && (
-					<span className="text-green-500">Changes saved.</span>
-				)}
-				{state.savedMsg === "restart" && (
-					<span className="text-green-500">
-						Changes saved. Restart required.
-					</span>
-				)}
-			</div>
-			{showButton && (
-				<button
-					type="button"
-					onClick={() => void state.save(true)}
-					disabled={state.saving}
-					className="px-4 py-2 bg-primary text-primary-foreground text-[10px] tracking-widest font-bold hover:opacity-90 transition-opacity disabled:opacity-50 uppercase"
-				>
-					{state.saving ? "SAVING…" : "SAVE CHANGES"}
-				</button>
+		<div
+			className="min-h-5 text-[10px] tracking-wider uppercase"
+			aria-live="polite"
+		>
+			{state.saving && <span className="text-muted-foreground">Saving…</span>}
+			{state.error && <span className="text-destructive">{state.error}</span>}
+			{state.savedMsg === "saved" && (
+				<span className="text-green-500">Saved</span>
+			)}
+			{state.savedMsg === "restart" && (
+				<span className="inline-flex items-center gap-2 text-amber-500">
+					<span className="border border-amber-500/40 px-1.5 py-0.5">
+						Restart required
+					</span>{" "}
+					Changes saved
+				</span>
 			)}
 		</div>
 	);
@@ -204,20 +339,92 @@ export function ForgeSettings({
 	initial: SettingsInitial;
 	state: SettingsFormState;
 }) {
-	const [tab, setTab] = useState<Tab>("general");
-	const showSaveButton = tab === "network";
-	const showSaveBar =
-		showSaveButton ||
-		(tab !== "logs" &&
-			tab !== "general" &&
-			(state.savedMsg !== null || state.error !== null));
+	const [category, setCategory] = useState<Category>("overview");
+	const [search, setSearch] = useState("");
+	const [showCatalog, setShowCatalog] = useState(false);
+	const [developerView, setDeveloperView] = useState<DeveloperView>("events");
+	const shown = useMemo(() => {
+		const q = search.trim().toLowerCase();
+		return q
+			? CATEGORIES.filter((item) =>
+					`${item.label} ${item.description} ${item.keywords}`
+						.toLowerCase()
+						.includes(q),
+				)
+			: CATEGORIES;
+	}, [search]);
+	function choose(next: Category) {
+		setCategory(next);
+		setShowCatalog(false);
+	}
 	return (
-		<div className="flex flex-col h-full">
-			<TabNavigation tab={tab} onChange={setTab} />
-			<div className="flex-1 overflow-auto p-5 space-y-6">
-				<SettingsTabContent tab={tab} state={state} initial={initial} />
+		<div className="flex h-full min-h-0">
+			<aside
+				className="hidden md:flex w-52 shrink-0 border-r border-border bg-card/30 p-3 flex-col gap-1 overflow-auto"
+				aria-label="Forge categories"
+			>
+				{(["primary", "secondary"] as const).map((group, index) => (
+					<div
+						key={group}
+						className={index ? "mt-3 pt-3 border-t border-border" : ""}
+					>
+						{shown
+							.filter((item) => item.group === group)
+							.map((item) => (
+								<button
+									key={item.id}
+									type="button"
+									onClick={() => choose(item.id)}
+									aria-pressed={category === item.id}
+									className={`w-full px-3 py-2 text-left text-xs transition-colors ${category === item.id ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-accent hover:text-foreground"}`}
+								>
+									{item.label}
+								</button>
+							))}
+					</div>
+				))}
+			</aside>
+			<div className="flex-1 min-w-0 flex flex-col">
+				<header className="sticky top-0 z-20 shrink-0 border-b border-border bg-background/95 backdrop-blur px-4 py-3">
+					<div className="max-w-[1000px] mx-auto flex items-center gap-3">
+						<div className="text-[10px] tracking-[0.2em] uppercase shrink-0">
+							Forge
+						</div>
+						<select
+							value={category}
+							onChange={(e) => choose(e.target.value as Category)}
+							className="md:hidden min-w-0 bg-secondary border border-border px-2 py-1.5 text-xs"
+						>
+							{CATEGORIES.map((item) => (
+								<option key={item.id} value={item.id}>
+									{item.label}
+								</option>
+							))}
+						</select>
+						<input
+							value={search}
+							onChange={(e) => setSearch(e.target.value)}
+							placeholder="Search settings"
+							aria-label="Search settings"
+							className="ml-auto w-full max-w-sm bg-secondary border border-border px-3 py-1.5 text-xs focus:outline-none focus:border-primary/50"
+						/>
+						<SaveStatus state={state} />
+					</div>
+				</header>
+				<main className="flex-1 overflow-auto">
+					<div className="max-w-[1000px] mx-auto p-4 sm:p-6 space-y-6">
+						<CategoryContent
+							category={category}
+							state={state}
+							initial={initial}
+							showCatalog={showCatalog}
+							onShowCatalog={setShowCatalog}
+							developerView={developerView}
+							onDeveloperView={setDeveloperView}
+						/>
+					</div>
+				</main>
 			</div>
-			{showSaveBar && <SaveBar state={state} showButton={showSaveButton} />}
 		</div>
 	);
 }

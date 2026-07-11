@@ -10,6 +10,8 @@ import type { SessionState } from "../server/session";
 // so tests running in Node.js (where WebSocket may be undefined) don't throw.
 const WS_CONNECTING = 0;
 const WS_OPEN = 1;
+const RECONNECT_BASE_MS = 3_000;
+const RECONNECT_MAX_MS = 30_000;
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -132,6 +134,8 @@ export const INITIAL_SNAPSHOT: Snapshot = {
 
 let _snap: Snapshot = { ...INITIAL_SNAPSHOT };
 let _ws: WebSocket | null = null;
+let _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+let _reconnectAttempts = 0;
 let _liveStats: LiveStats = loadPersistedStats() ?? { ...EMPTY_STATS };
 // Buffers in-flight chunks/tool_events for the current run so they survive SPA navigation.
 // Always written (even when subscribers exist), cleared on run end or new run start.
@@ -475,6 +479,26 @@ function handleSocketMessage(event: MessageEvent): void {
 	for (const subscriber of messageSubs) subscriber(msg);
 }
 
+function clearReconnectTimer(): void {
+	if (_reconnectTimer === null) return;
+	clearTimeout(_reconnectTimer);
+	_reconnectTimer = null;
+}
+
+function scheduleReconnect(): void {
+	if (_reconnectTimer !== null || document.visibilityState !== "visible")
+		return;
+	const delay = Math.min(
+		RECONNECT_BASE_MS * 2 ** _reconnectAttempts,
+		RECONNECT_MAX_MS,
+	);
+	_reconnectAttempts++;
+	_reconnectTimer = setTimeout(() => {
+		_reconnectTimer = null;
+		connect();
+	}, delay);
+}
+
 function connect() {
 	if (typeof window === "undefined") return;
 	if (_ws && (_ws.readyState === WS_CONNECTING || _ws.readyState === WS_OPEN)) {
@@ -491,6 +515,8 @@ function connect() {
 	setSnap({ wsStatus: "connecting" });
 
 	_ws.onopen = () => {
+		clearReconnectTimer();
+		_reconnectAttempts = 0;
 		setSnap({ wsStatus: "connected" });
 		// Flush any items enqueued while the connection was down. Already-sent
 		// items are skipped via the _sent flag.
@@ -499,7 +525,7 @@ function connect() {
 	_ws.onerror = () => setSnap({ wsStatus: "disconnected" });
 	_ws.onclose = () => {
 		setSnap({ wsStatus: "disconnected" });
-		setTimeout(connect, 3000);
+		scheduleReconnect();
 	};
 	_ws.onmessage = handleSocketMessage;
 }
@@ -516,7 +542,11 @@ function connect() {
  */
 function handleVisibilityChange(): void {
 	if (typeof document === "undefined") return;
-	if (document.visibilityState !== "visible") return;
+	if (document.visibilityState !== "visible") {
+		clearReconnectTimer();
+		return;
+	}
+	clearReconnectTimer();
 	connect();
 }
 
@@ -793,8 +823,10 @@ export function getAggregateNavStatus(): AggregateNavStatus {
 
 /** @internal — resets all module state to initial values; for testing only. */
 export function __resetForTesting(): void {
+	clearReconnectTimer();
 	_snap = { ...INITIAL_SNAPSHOT };
 	_ws = null;
+	_reconnectAttempts = 0;
 	_liveStats = { ...EMPTY_STATS };
 	_messageBuffer = [];
 	_bufferingEnabled = true;

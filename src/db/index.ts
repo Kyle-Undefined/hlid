@@ -28,6 +28,8 @@ export {
 } from "./attachments";
 // Event log
 export { appendLog, clearLogs, getLogs } from "./logs";
+export type { StorageStats } from "./maintenance";
+export { getStorageStats, optimizeStorage } from "./maintenance";
 // Messages & tool events
 export {
 	appendAskUserQuestion,

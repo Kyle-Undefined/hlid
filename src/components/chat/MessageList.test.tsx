@@ -9,7 +9,7 @@
  * queued turn — so the message would vanish until processed. MessageList
  * now re-surfaces queue items not in the transcript.
  */
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as privacyStore from "#/hooks/privacyStore";
 import type { QueuedChatMessage } from "#/hooks/wsStore";
@@ -151,5 +151,22 @@ describe("MessageList — orphan queue rendering", () => {
 		});
 		expect(screen.getAllByText("only msg")).toHaveLength(1);
 		expect(screen.queryByText(/^Q\d/)).toBeNull();
+	});
+});
+
+describe("MessageList — bounded history rendering", () => {
+	it("renders the latest 200 messages and reveals older history", () => {
+		const messages = Array.from({ length: 201 }, (_, index) =>
+			userMsg(`u${index}`, `message ${index}`),
+		);
+		renderList({ messages });
+
+		expect(screen.queryByText("message 0")).toBeNull();
+		expect(screen.getByText("message 1")).toBeTruthy();
+		expect(screen.getByText("message 200")).toBeTruthy();
+
+		fireEvent.click(screen.getByRole("button", { name: "Load 1 older" }));
+		expect(screen.getByText("message 0")).toBeTruthy();
+		expect(screen.queryByRole("button", { name: /load .* older/i })).toBeNull();
 	});
 });

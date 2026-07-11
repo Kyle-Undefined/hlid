@@ -10,6 +10,14 @@ export type UiSecurityDependencies = {
 	authenticate(request: Request): Promise<boolean>;
 };
 
+export function isDocumentNavigationRequest(request: Request): boolean {
+	return (
+		request.method === "GET" &&
+		(request.headers.get("accept")?.includes("text/html") ?? false) &&
+		request.headers.get("x-tsr-serverfn") !== "true"
+	);
+}
+
 /**
  * Decide whether a UI/server-function request may reach TanStack Start.
  * Transport-specific dependency loading stays in start.ts; the security policy
@@ -52,11 +60,7 @@ export async function uiSecurityRejection(
 	}
 	if (isPublicPath(pathname) || authenticated) return null;
 
-	const wantsDocument =
-		request.method === "GET" &&
-		(request.headers.get("accept")?.includes("text/html") ?? false) &&
-		request.headers.get("x-tsr-serverfn") !== "true";
-	if (wantsDocument) {
+	if (isDocumentNavigationRequest(request)) {
 		return new Response(null, {
 			status: 302,
 			headers: { location: "/login", "cache-control": "no-store" },

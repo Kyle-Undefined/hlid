@@ -102,14 +102,14 @@ export function useVoiceInput({
 
 	useEffect(() => {
 		if (phase !== "recording") return;
-		const started = Date.now() - seconds * 1000;
+		const started = Date.now();
 		const timer = setInterval(() => {
 			const elapsed = Math.floor((Date.now() - started) / 1000);
 			setSeconds(elapsed);
 			if (elapsed >= config.max_recording_seconds) recorderRef.current?.stop();
 		}, 250);
 		return () => clearInterval(timer);
-	}, [phase, seconds, config.max_recording_seconds]);
+	}, [phase, config.max_recording_seconds]);
 
 	useEffect(
 		() => () => {

@@ -33,6 +33,38 @@ function forwarder(
 }
 
 describe("TLS HTTP proxy limits", () => {
+	it("redirects an unauthenticated document request to login", async () => {
+		const forward = vi.fn(async () => new Response("unexpected"));
+		const handle = forwarder({
+			authenticate: async () => false,
+			forward,
+		});
+		const response = await handle(
+			new Request("https://hlid.test/", {
+				headers: { accept: "text/html,application/xhtml+xml" },
+			}),
+		);
+
+		expect(response.status).toBe(302);
+		expect(response.headers.get("location")).toBe("/login");
+		expect(response.headers.get("cache-control")).toBe("no-store");
+		expect(forward).not.toHaveBeenCalled();
+	});
+
+	it("keeps unauthenticated server-function requests as JSON 401 responses", async () => {
+		const response = await forwarder({ authenticate: async () => false })(
+			new Request("https://hlid.test/", {
+				headers: {
+					accept: "text/html",
+					"x-tsr-serverfn": "true",
+				},
+			}),
+		);
+
+		expect(response.status).toBe(401);
+		expect(await response.json()).toEqual({ error: "Unauthorized" });
+	});
+
 	it("authenticates private paths before reading or forwarding their bodies", async () => {
 		const forward = vi.fn(async () => new Response("unexpected"));
 		const handle = forwarder({

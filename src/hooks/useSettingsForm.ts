@@ -86,13 +86,19 @@ export function useSettingsForm(
 			voice === initialForms.voice &&
 			ui === initialForms.ui &&
 			vocab === initialForms.vocab &&
-			acpAgents === initialForms.acpAgents
+			acpAgents === initialForms.acpAgents &&
+			server === initialForms.server
 		) {
 			return;
 		}
-		const timer = setTimeout(() => void saveRef.current?.(false), 800);
+		const requiresRestart =
+			server !== initialForms.server || acpAgents !== initialForms.acpAgents;
+		const timer = setTimeout(
+			() => void saveRef.current?.(requiresRestart),
+			800,
+		);
 		return () => clearTimeout(timer);
-	}, [vault, claude, codex, voice, ui, vocab, acpAgents, initialForms]);
+	}, [vault, claude, codex, voice, ui, vocab, acpAgents, server, initialForms]);
 
 	const changeClaude = (patch: Partial<ClaudeForm>) => {
 		const next = applyAgentFormPatch(claude, codex, patch);

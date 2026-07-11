@@ -1,5 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmAction } from "#/components/ConfirmAction";
+import {
+	getStorageStatsFn,
+	optimizeStorageFn,
+	type StorageStats,
+} from "#/lib/serverFns";
 import { Field, Section } from "./fields";
 
 type InstallPaths = {
@@ -17,10 +22,27 @@ type LifecycleState = {
 	install?: InstallPaths;
 };
 
-export function SystemSection() {
+function formatBytes(bytes: number): string {
+	if (bytes < 1024) return `${bytes} B`;
+	const units = ["KiB", "MiB", "GiB", "TiB"];
+	let value = bytes / 1024;
+	let unit = units[0];
+	for (let i = 1; i < units.length && value >= 1024; i++) {
+		value /= 1024;
+		unit = units[i];
+	}
+	return `${value.toFixed(value >= 10 ? 1 : 2)} ${unit}`;
+}
+
+export function SystemSection({
+	view = "all",
+}: {
+	view?: "all" | "overview" | "advanced";
+}) {
 	const [autostart, setAutostart] = useState<LifecycleState | null>(null);
+	const [storage, setStorage] = useState<StorageStats | null>(null);
 	const [busy, setBusy] = useState<
-		null | "toggle" | "shutdown" | "open_install_dir"
+		null | "toggle" | "shutdown" | "open_install_dir" | "optimize"
 	>(null);
 	const [error, setError] = useState<string | null>(null);
 
@@ -44,7 +66,22 @@ export function SystemSection() {
 
 	useEffect(() => {
 		void refresh();
+		void getStorageStatsFn()
+			.then(setStorage)
+			.catch(() => {});
 	}, [refresh]);
+
+	async function optimizeStorage() {
+		setError(null);
+		setBusy("optimize");
+		try {
+			setStorage(await optimizeStorageFn());
+		} catch (e) {
+			setError(e instanceof Error ? e.message : "Storage optimization failed");
+		} finally {
+			setBusy(null);
+		}
+	}
 
 	async function post(
 		action: "install" | "uninstall" | "shutdown" | "open_install_dir",
@@ -106,71 +143,172 @@ export function SystemSection() {
 	const install = autostart?.install;
 
 	return (
-		<Section title="System">
-			{install && (
-				<Field label="Install location" hint={install.dir}>
-					<button
-						type="button"
-						onClick={() => {
-							void openInstallDir();
-						}}
-						disabled={busy === "open_install_dir" || !supported}
-						title={
-							supported ? "open install folder in Explorer" : "Windows only"
+		<>
+			{view !== "advanced" && (
+				<Section title="Installation and startup">
+					{install && (
+						<Field label="Install location" hint={install.dir}>
+							<button
+								type="button"
+								onClick={() => {
+									void openInstallDir();
+								}}
+								disabled={busy === "open_install_dir" || !supported}
+								title={
+									supported ? "open install folder in Explorer" : "Windows only"
+								}
+								className="text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors uppercase disabled:opacity-40"
+							>
+								{busy === "open_install_dir" ? "OPENING…" : "OPEN"}
+							</button>
+						</Field>
+					)}
+					<Field
+						label="Launch on login"
+						hint={
+							autostart === null
+								? "checking…"
+								: !supported
+									? "Windows only"
+									: enabled
+										? "starts in background when you sign in"
+										: "off; Hlid won't start automatically"
 						}
-						className="text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors uppercase disabled:opacity-40"
 					>
-						{busy === "open_install_dir" ? "OPENING…" : "OPEN"}
-					</button>
-				</Field>
+						<label className="flex items-center gap-2 cursor-pointer">
+							<input
+								type="checkbox"
+								checked={enabled}
+								disabled={!supported || busy === "toggle"}
+								onChange={() => {
+									void toggleAutostart();
+								}}
+								className="accent-primary w-3.5 h-3.5"
+							/>
+							<span className="text-xs text-muted-foreground">
+								{enabled ? "on" : "off"}
+							</span>
+						</label>
+					</Field>
+					{view === "all" && (
+						<Field label="Shutdown" hint="exit Hlid completely">
+							<ConfirmAction
+								label="shutdown?"
+								onConfirm={() => void doShutdown()}
+								className="shrink-0"
+								trigger={(open) => (
+									<button
+										type="button"
+										onClick={open}
+										disabled={busy !== null}
+										className="text-[10px] tracking-widest px-3 py-1.5 border border-destructive/40 text-destructive/80 hover:text-destructive hover:bg-destructive/10 transition-colors uppercase disabled:opacity-40"
+									>
+										{busy === "shutdown" ? "STOPPING…" : "SHUTDOWN"}
+									</button>
+								)}
+							/>
+						</Field>
+					)}
+					{error && (
+						<div className="px-4 py-2 text-xs text-destructive/80">{error}</div>
+					)}
+				</Section>
 			)}
-			<Field
-				label="Launch on login"
-				hint={
-					autostart === null
-						? "checking…"
-						: !supported
-							? "Windows only"
-							: enabled
-								? "starts in background when you sign in"
-								: "off; Hlid won't start automatically"
-				}
-			>
-				<label className="flex items-center gap-2 cursor-pointer">
-					<input
-						type="checkbox"
-						checked={enabled}
-						disabled={!supported || busy === "toggle"}
-						onChange={() => {
-							void toggleAutostart();
-						}}
-						className="accent-primary w-3.5 h-3.5"
-					/>
-					<span className="text-xs text-muted-foreground">
-						{enabled ? "on" : "off"}
-					</span>
-				</label>
-			</Field>
-			<Field label="Shutdown" hint="exit Hlid completely">
-				<ConfirmAction
-					label="shutdown?"
-					onConfirm={() => void doShutdown()}
-					className="shrink-0"
-					trigger={(open) => (
+			{view !== "advanced" && (
+				<Section title="Storage summary">
+					<Field
+						label="Database"
+						hint={
+							storage
+								? `${storage.sessions.toLocaleString()} sessions · ${storage.messages.toLocaleString()} messages · ${storage.usageQueries.toLocaleString()} usage rows`
+								: "checking…"
+						}
+					>
+						<span className="text-xs tabular-nums text-muted-foreground">
+							{storage ? formatBytes(storage.databaseBytes) : "—"}
+						</span>
+					</Field>
+					<Field
+						label="Write-ahead log"
+						hint={
+							storage?.reclaimableBytes
+								? `${formatBytes(storage.reclaimableBytes)} reusable inside database`
+								: "SQLite WAL and reusable page space"
+						}
+					>
+						<span className="text-xs tabular-nums text-muted-foreground">
+							{storage ? formatBytes(storage.walBytes) : "—"}
+						</span>
+					</Field>
+					<Field
+						label="Tracked attachments"
+						hint={
+							storage
+								? `${storage.trackedAttachments.toLocaleString()} files`
+								: "checking…"
+						}
+					>
+						<span className="text-xs tabular-nums text-muted-foreground">
+							{storage ? formatBytes(storage.trackedAttachmentBytes) : "—"}
+						</span>
+					</Field>
+					{view === "all" && (
+						<Field
+							label="Optimize database"
+							hint="checkpoint WAL and refresh SQLite query statistics"
+						>
+							<button
+								type="button"
+								disabled={busy !== null}
+								onClick={() => void optimizeStorage()}
+								className="text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors uppercase disabled:opacity-40"
+							>
+								{busy === "optimize" ? "OPTIMIZING…" : "OPTIMIZE"}
+							</button>
+						</Field>
+					)}
+				</Section>
+			)}
+			{view === "advanced" && (
+				<Section
+					title="Danger zone"
+					description="Maintenance and lifecycle actions can interrupt active work."
+				>
+					<Field
+						label="Optimize database"
+						hint="checkpoint WAL and refresh SQLite query statistics"
+					>
 						<button
 							type="button"
-							onClick={open}
 							disabled={busy !== null}
-							className="text-[10px] tracking-widest px-3 py-1.5 border border-destructive/40 text-destructive/80 hover:text-destructive hover:bg-destructive/10 transition-colors uppercase disabled:opacity-40"
+							onClick={() => void optimizeStorage()}
+							className="text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors uppercase disabled:opacity-40"
 						>
-							{busy === "shutdown" ? "STOPPING…" : "SHUTDOWN"}
+							{busy === "optimize" ? "OPTIMIZING…" : "OPTIMIZE"}
 						</button>
+					</Field>
+					<Field label="Shutdown" hint="exit Hlið completely">
+						<ConfirmAction
+							label="shutdown?"
+							onConfirm={() => void doShutdown()}
+							className="shrink-0"
+							trigger={(open) => (
+								<button
+									type="button"
+									onClick={open}
+									disabled={busy !== null}
+									className="text-[10px] tracking-widest px-3 py-1.5 border border-destructive/40 text-destructive/80 hover:text-destructive hover:bg-destructive/10 transition-colors uppercase disabled:opacity-40"
+								>
+									{busy === "shutdown" ? "STOPPING…" : "SHUTDOWN"}
+								</button>
+							)}
+						/>
+					</Field>
+					{error && (
+						<div className="px-4 py-2 text-xs text-destructive/80">{error}</div>
 					)}
-				/>
-			</Field>
-			{error && (
-				<div className="px-4 py-2 text-xs text-destructive/80">{error}</div>
+				</Section>
 			)}
-		</Section>
+		</>
 	);
 }

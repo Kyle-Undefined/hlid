@@ -69,8 +69,32 @@ export function ProviderUsageStrip({
 	}, [liveQueryCount]);
 
 	useEffect(() => {
-		const id = setInterval(() => refreshRef.current(), 60_000);
-		return () => clearInterval(id);
+		let id: ReturnType<typeof setInterval> | null = null;
+
+		const stopPolling = () => {
+			if (id === null) return;
+			clearInterval(id);
+			id = null;
+		};
+		const startPolling = () => {
+			if (id !== null || document.visibilityState !== "visible") return;
+			id = setInterval(() => refreshRef.current(), 60_000);
+		};
+		const handleVisibilityChange = () => {
+			if (document.visibilityState === "visible") {
+				refreshRef.current();
+				startPolling();
+			} else {
+				stopPolling();
+			}
+		};
+
+		startPolling();
+		document.addEventListener("visibilitychange", handleVisibilityChange);
+		return () => {
+			stopPolling();
+			document.removeEventListener("visibilitychange", handleVisibilityChange);
+		};
 	}, []);
 
 	useEffect(() => {
