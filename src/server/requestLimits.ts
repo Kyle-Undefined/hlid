@@ -4,7 +4,7 @@ const MIB = 1024 * 1024;
 // allowance small and explicit so the accepted body cannot grow without the
 // underlying file limit changing too.
 export const MULTIPART_OVERHEAD_BYTES = MIB;
-export const MAX_VOICE_AUDIO_BYTES = 100 * MIB;
+const MAX_VOICE_AUDIO_BYTES = 100 * MIB;
 export const MAX_VOICE_BODY_BYTES =
 	MAX_VOICE_AUDIO_BYTES + MULTIPART_OVERHEAD_BYTES;
 

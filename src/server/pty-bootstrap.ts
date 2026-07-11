@@ -14,12 +14,12 @@ import {
 	existsSync,
 	mkdirSync,
 	readFileSync,
-	renameSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { replaceRuntimeDirectory } from "./embeddedRuntime";
 import { PTY_ASSETS, PTY_ASSETS_HASH } from "./pty-assets";
 
 /** Return the path to pty-worker.cjs to use for spawning the PTY worker. */
@@ -28,6 +28,31 @@ async function materializeEmbeddedFile(
 	destination: string,
 ): Promise<void> {
 	await Bun.write(destination, Bun.file(source));
+}
+
+function existingPtyRuntime(rtDir: string): string | null {
+	const workerPath = join(rtDir, "pty-worker.cjs");
+	const hashFile = join(rtDir, ".hash");
+	if (!existsSync(hashFile)) return null;
+	try {
+		const current = readFileSync(hashFile, "utf8").trim();
+		return current === PTY_ASSETS_HASH && existsSync(workerPath)
+			? workerPath
+			: null;
+	} catch {
+		return null;
+	}
+}
+
+async function materializeAssetMap(
+	assets: Record<string, string>,
+	destinationRoot: string,
+): Promise<void> {
+	for (const [relativePath, sourcePath] of Object.entries(assets)) {
+		const destination = join(destinationRoot, relativePath);
+		mkdirSync(dirname(destination), { recursive: true });
+		await materializeEmbeddedFile(sourcePath, destination);
+	}
 }
 
 export async function bootstrapPtyRuntime(): Promise<string> {
@@ -41,22 +66,8 @@ export async function bootstrapPtyRuntime(): Promise<string> {
 	const localAppData =
 		process.env.LOCALAPPDATA ?? "C:\\Users\\Default\\AppData\\Local";
 	const rtDir = join(localAppData, "hlid", "pty-rt");
-	const hashFile = join(rtDir, ".hash");
-
-	// Check if already extracted and up-to-date.
-	if (existsSync(hashFile)) {
-		try {
-			const existingHash = readFileSync(hashFile, "utf8").trim();
-			if (
-				existingHash === PTY_ASSETS_HASH &&
-				existsSync(join(rtDir, "pty-worker.cjs"))
-			) {
-				return join(rtDir, "pty-worker.cjs");
-			}
-		} catch {
-			// If we can't read the hash file, proceed with re-extraction.
-		}
-	}
+	const existingRuntime = existingPtyRuntime(rtDir);
+	if (existingRuntime) return existingRuntime;
 
 	// Extract atomically to a temp dir, then rename into place.
 	const tmpDir = `${rtDir}.tmp`;
@@ -82,28 +93,9 @@ export async function bootstrapPtyRuntime(): Promise<string> {
 		join(tmpDir, "node_modules", "node-pty", "package.json"),
 	);
 
-	// ── Native binaries (.node / .dll / .exe) ────────────────────────────────
-	// Keys are relative paths like "prebuilds/win32-x64/pty.node"
-	// or "prebuilds/win32-x64/conpty/OpenConsole.exe".
-	for (const [relPath, srcPath] of Object.entries(PTY_ASSETS.natives) as [
-		string,
-		string,
-	][]) {
-		const destAbs = join(tmpDir, "node_modules", "node-pty", relPath);
-		mkdirSync(dirname(destAbs), { recursive: true });
-		await materializeEmbeddedFile(srcPath, destAbs);
-	}
-
-	// ── Lib JS files ─────────────────────────────────────────────────────────
-	// Keys are relative paths like "lib/index.js" or "lib/shared/conout.js".
-	for (const [relPath, srcPath] of Object.entries(PTY_ASSETS.lib) as [
-		string,
-		string,
-	][]) {
-		const destAbs = join(tmpDir, "node_modules", "node-pty", relPath);
-		mkdirSync(dirname(destAbs), { recursive: true });
-		await materializeEmbeddedFile(srcPath, destAbs);
-	}
+	const nodePtyDir = join(tmpDir, "node_modules", "node-pty");
+	await materializeAssetMap(PTY_ASSETS.natives, nodePtyDir);
+	await materializeAssetMap(PTY_ASSETS.lib, nodePtyDir);
 
 	// ── Write hash sentinel ───────────────────────────────────────────────────
 	writeFileSync(join(tmpDir, ".hash"), PTY_ASSETS_HASH, "utf8");
@@ -111,17 +103,7 @@ export async function bootstrapPtyRuntime(): Promise<string> {
 	// ── Atomic swap: rename tmpDir → rtDir ───────────────────────────────────
 	// Windows does not support atomic rename over an existing directory,
 	// so we remove rtDir first if it exists.
-	try {
-		renameSync(tmpDir, rtDir);
-	} catch (err) {
-		const code = (err as NodeJS.ErrnoException)?.code;
-		if (code === "ENOTEMPTY" || code === "EPERM" || code === "EEXIST") {
-			rmSync(rtDir, { recursive: true, force: true });
-			renameSync(tmpDir, rtDir);
-		} else {
-			throw err;
-		}
-	}
+	replaceRuntimeDirectory(tmpDir, rtDir);
 
 	return join(rtDir, "pty-worker.cjs");
 }

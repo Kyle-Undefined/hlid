@@ -1,9 +1,11 @@
 import "./prelude";
-import type { ServerWebSocket } from "bun";
+import type { Server, ServerWebSocket } from "bun";
 import * as db from "../db";
 import { isAllowedOrigin, isAllowedOriginHeader } from "../lib/allowedOrigin";
 import { registerBunServer } from "../lib/lifecycle";
 import { loadToken } from "../lib/token";
+import { AcpProvider, inspectAcpAgent } from "./acpProvider";
+import { AcpRegistry } from "./acpRegistry";
 import type { AgentProvider, McpServerStatus } from "./agentProvider";
 import { buildApiIndex } from "./apiIndex";
 import { handleAttachmentRoute } from "./attachmentRoutes";
@@ -102,10 +104,27 @@ if (process.execPath.endsWith(".exe") && !RESTART_MODE) {
 	}
 }
 
+const acpRegistry = new AcpRegistry();
+const acpCatalog = await acpRegistry.catalog(config);
 const providers = new Map<string, AgentProvider>([
 	["claude", new ClaudeProvider()],
 	["codex", new CodexProvider()],
 ]);
+for (const item of acpCatalog.filter((candidate) => candidate.enabled)) {
+	const configured = (config.acp_agents ?? []).find(
+		(agent) => agent.id === item.id,
+	);
+	providers.set(
+		item.providerId,
+		new AcpProvider({
+			id: item.providerId,
+			label: item.name,
+			command: item.command,
+			args: item.args,
+			env: { ...item.env, ...configured?.env },
+		}),
+	);
+}
 for (const provider of providers.values()) {
 	if (provider.usageWindows) {
 		db.registerProvider(
@@ -211,6 +230,338 @@ const tlsConfig =
 			}
 		: {};
 
+type AppServer = Server<WsData | TerminalWsData>;
+
+async function upgradeTerminalWebSocket(
+	req: Request,
+	server: AppServer,
+	url: URL,
+): Promise<Response | undefined> {
+	const sessionId = url.searchParams.get("session_id") ?? "";
+	const requestedCwd = url.searchParams.get("cwd") ?? config.vault.path;
+	const cwd = resolveAllowedTerminalCwd(config, requestedCwd);
+	if (!cwd) return new Response("Forbidden", { status: 403 });
+
+	let label: string | null = null;
+	if (sessionId) {
+		await db.createSession(sessionId, "Terminal session", "claude-cli");
+		label = (await db.getSessionById(sessionId))?.label ?? "Terminal session";
+	}
+	const { cols, rows } = parseInitialTerminalDimensions(
+		url.searchParams.get("cols"),
+		url.searchParams.get("rows"),
+	);
+	let claudeSessionId: string | null = null;
+	if (sessionId) {
+		try {
+			claudeSessionId = await db.getSessionClaudeId(sessionId);
+		} catch {
+			// Continue without resume.
+		}
+	}
+	if (
+		server.upgrade(req, {
+			data: {
+				isTerminal: true,
+				sessionId,
+				cwd,
+				label,
+				cols,
+				rows,
+				claudeSessionId,
+			},
+		})
+	) {
+		return undefined;
+	}
+	return new Response("WebSocket upgrade required", { status: 426 });
+}
+
+async function handleWebSocketRoute(
+	req: Request,
+	server: AppServer,
+	url: URL,
+	peerIp: string | undefined,
+): Promise<Response | undefined | null> {
+	if (url.pathname !== "/ws" && url.pathname !== "/ws/terminal") return null;
+	if (
+		!isAllowedOriginHeader(
+			req.headers.get("origin"),
+			config.server.local_network_access,
+		)
+	) {
+		return new Response("Forbidden", { status: 403 });
+	}
+	if (!(await authorizeServiceRequest(req, peerIp, SERVER_TOKEN))) {
+		return new Response("Unauthorized", { status: 401 });
+	}
+	if (url.pathname === "/ws/terminal") {
+		return upgradeTerminalWebSocket(req, server, url);
+	}
+	if (
+		server.upgrade(req, {
+			data: { isTerminal: false, subscribedSessionId: "" },
+		})
+	) {
+		return undefined;
+	}
+	return new Response("WebSocket upgrade required", { status: 426 });
+}
+
+function handleCodexRoute(url: URL, req: Request): Response | null {
+	if (url.pathname === "/codex/app-servers" && req.method === "GET") {
+		return Response.json(listCodexAppServers());
+	}
+	if (url.pathname !== "/codex/app-servers/restart" || req.method !== "POST") {
+		return null;
+	}
+	const closed = listCodexAppServers().filter((server) => server.alive).length;
+	closeAllCodexAppServers();
+	return Response.json({ ok: true, closed });
+}
+
+async function handleProviderRoute(url: URL, req: Request) {
+	if (url.pathname !== "/providers" || req.method !== "GET") return null;
+	const refresh = url.searchParams.get("refresh") === "1";
+	const list = await Promise.all(
+		[...providers.values()].map(async (provider) => {
+			const check = provider.check
+				? await provider
+						.check()
+						.catch(() => ({ available: false, reason: "check failed" }))
+				: null;
+			const providerRefresh = refresh && check?.available !== false;
+			return {
+				id: provider.providerId,
+				label: provider.label ?? provider.providerId,
+				available: check?.available ?? true,
+				unavailableReason:
+					check?.available === false ? check.reason : undefined,
+				models: await modelCatalog.modelsFor(provider, providerRefresh),
+				effortLevels: provider.effortLevels,
+				permissionModes: provider.permissionModes,
+			};
+		}),
+	);
+	return Response.json({ providers: list });
+}
+
+async function authenticateAcpAgent(req: Request): Promise<Response> {
+	const body = (await req.json().catch(() => null)) as {
+		id?: string;
+		methodId?: string;
+	} | null;
+	if (!body?.id) {
+		return Response.json({ error: "id is required" }, { status: 400 });
+	}
+	const item = (await acpRegistry.catalog(loadConfig())).find(
+		(candidate) => candidate.id === body.id && candidate.enabled,
+	);
+	if (!item) {
+		return Response.json(
+			{ error: "ACP agent is not enabled" },
+			{ status: 404 },
+		);
+	}
+	if (!item.available) {
+		return Response.json({ error: item.unavailableReason }, { status: 409 });
+	}
+	const configured = (loadConfig().acp_agents ?? []).find(
+		(agent) => agent.id === item.id,
+	);
+	const initialized = await inspectAcpAgent(
+		{
+			id: item.providerId,
+			label: item.name,
+			command: item.command,
+			args: item.args,
+			env: { ...item.env, ...configured?.env },
+		},
+		body.methodId,
+	);
+	return Response.json({
+		authMethods: initialized.authMethods ?? [],
+		agentInfo: initialized.agentInfo ?? null,
+	});
+}
+
+async function handleAcpRoute(url: URL, req: Request) {
+	if (url.pathname === "/acp/registry" && req.method === "GET") {
+		const refresh = url.searchParams.get("refresh") === "1";
+		return Response.json({
+			agents: await acpRegistry.catalog(loadConfig(), refresh),
+		});
+	}
+	if (url.pathname === "/acp/authenticate" && req.method === "POST") {
+		return authenticateAcpAgent(req);
+	}
+	return null;
+}
+
+async function downloadVoiceModel(req: Request): Promise<Response> {
+	try {
+		const { model } = (await req.json()) as { model?: string };
+		if (!model) {
+			return Response.json({ error: "model is required" }, { status: 400 });
+		}
+		void voice
+			.download(model)
+			.catch((error) => console.error("[voice] download failed:", error));
+		return Response.json({ ok: true }, { status: 202 });
+	} catch (error) {
+		return Response.json({ error: (error as Error).message }, { status: 400 });
+	}
+}
+
+function deleteVoiceModel(url: URL): Response {
+	try {
+		const model = url.searchParams.get("model");
+		if (!model) {
+			return Response.json({ error: "model is required" }, { status: 400 });
+		}
+		voice.deleteModel(model);
+		return Response.json({ ok: true });
+	} catch (error) {
+		return Response.json({ error: (error as Error).message }, { status: 409 });
+	}
+}
+
+async function transcribeVoice(req: Request): Promise<Response> {
+	if (contentLengthExceeds(req, MAX_VOICE_BODY_BYTES)) {
+		return payloadTooLarge(MAX_VOICE_BODY_BYTES);
+	}
+	if (activeVoiceRequests >= MAX_ACTIVE_VOICE_REQUESTS) {
+		return Response.json(
+			{ error: "voice transcription capacity reached" },
+			{ status: 429, headers: { "retry-after": "1" } },
+		);
+	}
+	activeVoiceRequests++;
+	try {
+		const form = await req.formData();
+		const audio = form.get("audio");
+		if (!(audio instanceof Blob)) {
+			return Response.json({ error: "audio is required" }, { status: 400 });
+		}
+		const language = String(form.get("language") ?? config.voice.language);
+		return Response.json(await voice.transcribe(audio, language));
+	} catch (error) {
+		return Response.json({ error: (error as Error).message }, { status: 503 });
+	} finally {
+		activeVoiceRequests--;
+	}
+}
+
+type ServerRouteHandler = (
+	url: URL,
+	request: Request,
+) => Response | Promise<Response>;
+
+const VOICE_ROUTE_HANDLERS: Record<string, ServerRouteHandler> = {
+	"GET /voice": async (url) => {
+		const refresh = url.searchParams.get("refresh") === "1";
+		return Response.json({
+			status: voice.status(),
+			models: await voice.models(refresh),
+		});
+	},
+	"POST /voice/sync": async () => {
+		await voice.syncConfig(loadConfig().voice);
+		return Response.json({ status: voice.status() });
+	},
+	"POST /voice/download": (_url, request) => downloadVoiceModel(request),
+	"POST /voice/download/cancel": async () => {
+		voice.cancelDownload();
+		return Response.json({ ok: true });
+	},
+	"DELETE /voice/model": (url) => deleteVoiceModel(url),
+	"POST /voice/transcribe": (_url, request) => transcribeVoice(request),
+};
+
+async function handleVoiceRoute(url: URL, req: Request) {
+	const handler = VOICE_ROUTE_HANDLERS[`${req.method} ${url.pathname}`];
+	return handler ? handler(url, req) : null;
+}
+
+async function handleAccountRoute(url: URL, req: Request) {
+	if (url.pathname !== "/account" || req.method !== "GET") return null;
+	for (const entry of pool.getAllEntries()) {
+		const info = await entry.manager.getAccountInfo();
+		if (info) return Response.json(info);
+	}
+	return Response.json(null);
+}
+
+async function firstRouteResponse(
+	handlers: Array<() => Response | null | Promise<Response | null>>,
+): Promise<Response | null> {
+	for (const handler of handlers) {
+		const response = await handler();
+		if (response) return response;
+	}
+	return null;
+}
+
+async function handleAuthenticatedRoute(url: URL, req: Request) {
+	if (url.pathname === "/status") {
+		return Response.json(pool.vaultEntry().manager.getStatus());
+	}
+	if (url.pathname === "/api-index" && req.method === "GET") {
+		return Response.json(buildApiIndex(PORT, UI_PORT));
+	}
+	const response = await firstRouteResponse([
+		() => handleCodexRoute(url, req),
+		() => handleProviderRoute(url, req),
+		() => handleAcpRoute(url, req),
+		() => handleVoiceRoute(url, req),
+		() => handleAccountRoute(url, req),
+	]);
+	if (response) return response;
+	if (url.pathname === "/mcp-status" && req.method === "GET") {
+		return Response.json(pool.vaultEntry().manager.getLastMcpStatus() ?? []);
+	}
+	const dbResult = await handleDbRoute(url, req, pool, terminalPool);
+	if (dbResult) return dbResult;
+	const attachmentResult = await handleAttachmentRoute(url, req, config);
+	if (attachmentResult) return attachmentResult;
+	return new Response("Not found", { status: 404 });
+}
+
+async function handleServerFetch(
+	req: Request,
+	server: AppServer,
+): Promise<Response | undefined> {
+	const url = new URL(req.url);
+	const peerIp = server.requestIP(req)?.address;
+	if (!isAllowedOrigin(peerIp, config.server.local_network_access)) {
+		return new Response("Forbidden", { status: 403 });
+	}
+	if (
+		req.method !== "GET" &&
+		req.method !== "HEAD" &&
+		!isAllowedOriginHeader(
+			req.headers.get("origin"),
+			config.server.local_network_access,
+		)
+	) {
+		return new Response("Forbidden", { status: 403 });
+	}
+	const websocketResponse = await handleWebSocketRoute(
+		req,
+		server,
+		url,
+		peerIp,
+	);
+	if (websocketResponse !== null) return websocketResponse;
+	if (!(await authorizeServiceRequest(req, peerIp, SERVER_TOKEN))) {
+		return Response.json(
+			{ error: "Unauthorized" },
+			{ status: 401, headers: { "cache-control": "no-store" } },
+		);
+	}
+	return handleAuthenticatedRoute(url, req);
+}
+
 registerBunServer(
 	Bun.serve<WsData | TerminalWsData>({
 		port: PORT,
@@ -221,279 +572,7 @@ registerBunServer(
 		),
 		...tlsConfig,
 
-		async fetch(req, server) {
-			const url = new URL(req.url);
-			const peerIp = server.requestIP(req)?.address;
-
-			if (!isAllowedOrigin(peerIp, config.server.local_network_access)) {
-				return new Response("Forbidden", { status: 403 });
-			}
-
-			// C3: For state-mutating requests, reject cross-origin Origin headers.
-			// Server fn calls from TanStack Start have no Origin header and are allowed.
-			if (
-				req.method !== "GET" &&
-				req.method !== "HEAD" &&
-				!isAllowedOriginHeader(
-					req.headers.get("origin"),
-					config.server.local_network_access,
-				)
-			) {
-				return new Response("Forbidden", { status: 403 });
-			}
-
-			if (url.pathname === "/ws") {
-				// C2: Reject cross-origin WS connections (prevents drive-by chat execution)
-				if (
-					!isAllowedOriginHeader(
-						req.headers.get("origin"),
-						config.server.local_network_access,
-					)
-				) {
-					return new Response("Forbidden", { status: 403 });
-				}
-				if (!(await authorizeServiceRequest(req, peerIp, SERVER_TOKEN))) {
-					return new Response("Unauthorized", { status: 401 });
-				}
-				if (
-					server.upgrade(req, {
-						data: { isTerminal: false, subscribedSessionId: "" },
-					})
-				)
-					return undefined;
-				return new Response("WebSocket upgrade required", { status: 426 });
-			}
-
-			if (url.pathname === "/ws/terminal") {
-				// Same security checks as /ws
-				if (
-					!isAllowedOriginHeader(
-						req.headers.get("origin"),
-						config.server.local_network_access,
-					)
-				) {
-					return new Response("Forbidden", { status: 403 });
-				}
-				if (!(await authorizeServiceRequest(req, peerIp, SERVER_TOKEN))) {
-					return new Response("Unauthorized", { status: 401 });
-				}
-				const sessionId = url.searchParams.get("session_id") ?? "";
-				const requestedCwd = url.searchParams.get("cwd") ?? config.vault.path;
-				const cwd = resolveAllowedTerminalCwd(config, requestedCwd);
-				if (!cwd) {
-					return new Response("Forbidden", { status: 403 });
-				}
-				let label: string | null = null;
-				if (sessionId) {
-					await db.createSession(sessionId, "Terminal session", "claude-cli");
-					label =
-						(await db.getSessionById(sessionId))?.label ?? "Terminal session";
-				}
-				const { cols, rows } = parseInitialTerminalDimensions(
-					url.searchParams.get("cols"),
-					url.searchParams.get("rows"),
-				);
-				// Look up claude_session_id for --resume
-				let claudeSessionId: string | null = null;
-				if (sessionId) {
-					try {
-						claudeSessionId = await db.getSessionClaudeId(sessionId);
-					} catch {
-						// Continue without resume
-					}
-				}
-				if (
-					server.upgrade(req, {
-						data: {
-							isTerminal: true,
-							sessionId,
-							cwd,
-							label,
-							cols,
-							rows,
-							claudeSessionId,
-						},
-					})
-				)
-					return undefined;
-				return new Response("WebSocket upgrade required", { status: 426 });
-			}
-
-			if (!(await authorizeServiceRequest(req, peerIp, SERVER_TOKEN))) {
-				return Response.json(
-					{ error: "Unauthorized" },
-					{ status: 401, headers: { "cache-control": "no-store" } },
-				);
-			}
-
-			if (url.pathname === "/status") {
-				return Response.json(pool.vaultEntry().manager.getStatus());
-			}
-
-			// Machine-readable API catalog for programmatic/agent consumers.
-			if (url.pathname === "/api-index" && req.method === "GET") {
-				return Response.json(buildApiIndex(PORT, UI_PORT));
-			}
-
-			if (url.pathname === "/codex/app-servers" && req.method === "GET") {
-				return Response.json(listCodexAppServers());
-			}
-
-			// Maintenance: drop all shared codex app-servers (e.g. after a codex
-			// CLI upgrade); the next codex session/catalog fetch respawns them on
-			// the new binary. Running codex sessions are interrupted.
-			if (
-				url.pathname === "/codex/app-servers/restart" &&
-				req.method === "POST"
-			) {
-				const closed = listCodexAppServers().filter((s) => s.alive).length;
-				closeAllCodexAppServers();
-				return Response.json({ ok: true, closed });
-			}
-
-			if (url.pathname === "/providers" && req.method === "GET") {
-				const refresh = url.searchParams.get("refresh") === "1";
-				const list = await Promise.all(
-					[...providers.values()].map(async (p) => {
-						const check = p.check
-							? await p
-									.check()
-									.catch(() => ({ available: false, reason: "check failed" }))
-							: null;
-						// Only force-refresh the live catalog for a provider whose CLI
-						// is actually available this request — don't refresh a provider
-						// we just found to be missing.
-						const providerRefresh = refresh && check?.available !== false;
-						return {
-							id: p.providerId,
-							label: p.label ?? p.providerId,
-							available: check?.available ?? true,
-							unavailableReason:
-								check?.available === false ? check.reason : undefined,
-							models: await modelCatalog.modelsFor(p, providerRefresh),
-							effortLevels: p.effortLevels,
-							permissionModes: p.permissionModes,
-						};
-					}),
-				);
-				return Response.json({ providers: list });
-			}
-
-			if (url.pathname === "/voice" && req.method === "GET") {
-				const refresh = url.searchParams.get("refresh") === "1";
-				return Response.json({
-					status: voice.status(),
-					models: await voice.models(refresh),
-				});
-			}
-
-			if (url.pathname === "/voice/sync" && req.method === "POST") {
-				await voice.syncConfig(loadConfig().voice);
-				return Response.json({ status: voice.status() });
-			}
-
-			if (url.pathname === "/voice/download" && req.method === "POST") {
-				try {
-					const { model } = (await req.json()) as { model?: string };
-					if (!model)
-						return Response.json(
-							{ error: "model is required" },
-							{ status: 400 },
-						);
-					void voice
-						.download(model)
-						.catch((error) => console.error("[voice] download failed:", error));
-					return Response.json({ ok: true }, { status: 202 });
-				} catch (error) {
-					return Response.json(
-						{ error: (error as Error).message },
-						{ status: 400 },
-					);
-				}
-			}
-
-			if (url.pathname === "/voice/download/cancel" && req.method === "POST") {
-				voice.cancelDownload();
-				return Response.json({ ok: true });
-			}
-
-			if (url.pathname === "/voice/model" && req.method === "DELETE") {
-				try {
-					const model = url.searchParams.get("model");
-					if (!model)
-						return Response.json(
-							{ error: "model is required" },
-							{ status: 400 },
-						);
-					voice.deleteModel(model);
-					return Response.json({ ok: true });
-				} catch (error) {
-					return Response.json(
-						{ error: (error as Error).message },
-						{ status: 409 },
-					);
-				}
-			}
-
-			if (url.pathname === "/voice/transcribe" && req.method === "POST") {
-				if (contentLengthExceeds(req, MAX_VOICE_BODY_BYTES)) {
-					return payloadTooLarge(MAX_VOICE_BODY_BYTES);
-				}
-				if (activeVoiceRequests >= MAX_ACTIVE_VOICE_REQUESTS) {
-					return Response.json(
-						{ error: "voice transcription capacity reached" },
-						{ status: 429, headers: { "retry-after": "1" } },
-					);
-				}
-				activeVoiceRequests++;
-				try {
-					const form = await req.formData();
-					const audio = form.get("audio");
-					if (!(audio instanceof Blob))
-						return Response.json(
-							{ error: "audio is required" },
-							{ status: 400 },
-						);
-					const language = String(
-						form.get("language") ?? config.voice.language,
-					);
-					return Response.json(await voice.transcribe(audio, language));
-				} catch (error) {
-					return Response.json(
-						{ error: (error as Error).message },
-						{ status: 503 },
-					);
-				} finally {
-					activeVoiceRequests--;
-				}
-			}
-
-			if (url.pathname === "/account" && req.method === "GET") {
-				// Ask each live pool session for account info; return the first
-				// non-null hit. Never spawns a session to answer this — only
-				// checks already-running AgentSessions (see
-				// SessionManager.getAccountInfo()).
-				for (const entry of pool.getAllEntries()) {
-					const info = await entry.manager.getAccountInfo();
-					if (info) return Response.json(info);
-				}
-				return Response.json(null);
-			}
-
-			if (url.pathname === "/mcp-status" && req.method === "GET") {
-				return Response.json(
-					pool.vaultEntry().manager.getLastMcpStatus() ?? [],
-				);
-			}
-
-			const dbResult = await handleDbRoute(url, req, pool, terminalPool);
-			if (dbResult) return dbResult;
-
-			const attResult = await handleAttachmentRoute(url, req, config);
-			if (attResult) return attResult;
-
-			return new Response("Not found", { status: 404 });
-		},
+		fetch: handleServerFetch,
 
 		websocket: (() => {
 			const chatHandlers = createWsHandlers(pool, terminalPool);

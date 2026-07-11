@@ -26,7 +26,7 @@ export function UtilBar({ value, max }: { value: number; max: number }) {
 const DAY_LABELS = ["S", "M", "T", "W", "T", "F", "S"] as const;
 const DAY_KEYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"] as const;
 
-export function WeekBarGraph({ days }: { days: number[] }) {
+function WeekBarGraph({ days }: { days: number[] }) {
 	if (days.length !== 7) {
 		console.error(`WeekBarGraph expects 7 days, got ${days.length}`);
 		return null;
@@ -68,7 +68,7 @@ export function WeekBarGraph({ days }: { days: number[] }) {
 
 // ─── RunList ──────────────────────────────────────────────────────────────────
 
-export function RunList({
+function RunList({
 	runs,
 	onRunClick,
 }: {
@@ -113,7 +113,7 @@ export function RunList({
 
 // ─── ViewAllLink ──────────────────────────────────────────────────────────────
 
-export function ViewAllLink() {
+function ViewAllLink() {
 	const navigate = useNavigate();
 	return (
 		<div className="px-4 py-2 border-t border-border/30">

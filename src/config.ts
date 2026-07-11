@@ -139,6 +139,13 @@ export const AgentSchema = z.object({
 	interactive_mode: z.boolean().optional(),
 });
 
+const AcpAgentSchema = z.object({
+	id: z.string().min(1),
+	executable: z.string().optional(),
+	args: z.array(z.string()).optional(),
+	env: z.record(z.string(), z.string()).optional(),
+});
+
 export type Agent = z.infer<typeof AgentSchema>;
 
 export const HlidConfigSchema = z.object({
@@ -179,6 +186,7 @@ export const HlidConfigSchema = z.object({
 	attachments: AttachmentsSchema.default(DEFAULT_ATTACHMENTS_CONFIG),
 	voice: VoiceSchema.default(DEFAULT_VOICE_CONFIG),
 	agents: z.array(AgentSchema).default([]),
+	acp_agents: z.array(AcpAgentSchema).optional(),
 	vault_provider: z.string().default("claude"),
 });
 

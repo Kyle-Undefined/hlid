@@ -1,4 +1,5 @@
 import type {
+	SDKMessage,
 	EffortLevel as SdkEffortLevel,
 	ModelInfo as SdkModelInfo,
 	PermissionMode as SdkPermissionMode,
@@ -98,6 +99,176 @@ function buildSdkUserMessage(
 		parent_tool_use_id: null,
 		priority,
 	};
+}
+
+type EventTranslation = {
+	events: AgentEvent[];
+	hadText: boolean;
+};
+
+function translateSystemMessage(
+	message: Extract<SDKMessage, { type: "system" }>,
+	hadText: boolean,
+): EventTranslation {
+	if (message.subtype === "init") {
+		return {
+			events: [{ type: "session_start", sessionId: message.session_id }],
+			hadText,
+		};
+	}
+	if ((message as { subtype: string }).subtype === "local_command_output") {
+		return {
+			events: [
+				{
+					type: "local_command_output",
+					content: (message as { content: string }).content,
+				},
+			],
+			hadText,
+		};
+	}
+	return { events: [], hadText };
+}
+
+function translateUserMessage(
+	message: Extract<SDKMessage, { type: "user" }>,
+	hadText: boolean,
+): EventTranslation {
+	const content = (message as { message?: { content?: unknown } }).message
+		?.content;
+	if (!Array.isArray(content)) return { events: [], hadText };
+	const events = content.flatMap((block: Record<string, unknown>) => {
+		if (block.type !== "tool_result") return [];
+		const text = normalizeToolResultContent(block.content);
+		return [
+			{
+				type: "tool_result" as const,
+				toolId: String(block.tool_use_id ?? ""),
+				content: truncateToolResult(text),
+				...(block.is_error === true ? { isError: true } : {}),
+			},
+		];
+	});
+	return { events, hadText };
+}
+
+function translateAssistantMessage(
+	message: Extract<SDKMessage, { type: "assistant" }>,
+	hadText: boolean,
+): EventTranslation {
+	const events: AgentEvent[] = [];
+	const usage = message.message.usage;
+	if (usage) {
+		events.push({
+			type: "usage",
+			inputTokens: usage.input_tokens,
+			outputTokens: usage.output_tokens,
+			cacheReadTokens: usage.cache_read_input_tokens ?? undefined,
+			cacheCreationTokens: usage.cache_creation_input_tokens ?? undefined,
+			model: message.message.model,
+		});
+	}
+	let nextHadText = hadText;
+	for (const block of message.message.content) {
+		if (block.type === "text") {
+			nextHadText = true;
+			events.push({ type: "text_delta", text: block.text });
+		} else if (block.type === "tool_use") {
+			events.push({
+				type: "tool_start",
+				toolId: block.id,
+				name: block.name,
+				input: block.input,
+			});
+		}
+	}
+	return { events, hadText: nextHadText };
+}
+
+function rateLimitResetTime(value: number | string | undefined): number | null {
+	if (typeof value === "number") return value;
+	if (typeof value === "string") {
+		return Math.floor(new Date(value).getTime() / 1000);
+	}
+	return null;
+}
+
+function translateRateLimitMessage(
+	message: Extract<SDKMessage, { type: "rate_limit_event" }>,
+	hadText: boolean,
+): EventTranslation {
+	const info = message.rate_limit_info;
+	return {
+		events: [
+			{
+				type: "rate_limit",
+				status: info.status,
+				rateLimitType: info.rateLimitType,
+				utilization: info.utilization,
+				resetsAt: rateLimitResetTime(info.resetsAt),
+			},
+		],
+		hadText,
+	};
+}
+
+function resultUsage(
+	message: Extract<SDKMessage, { type: "result" }>,
+): Extract<AgentEvent, { type: "done" }>["usage"] {
+	if (!message.usage) return undefined;
+	return {
+		inputTokens: message.usage.input_tokens,
+		outputTokens: message.usage.output_tokens,
+		cacheReadTokens: message.usage.cache_read_input_tokens ?? undefined,
+		cacheCreationTokens: message.usage.cache_creation_input_tokens ?? undefined,
+	};
+}
+
+function translateResultMessage(
+	message: Extract<SDKMessage, { type: "result" }>,
+	hadText: boolean,
+): EventTranslation {
+	const events: AgentEvent[] = [];
+	if (!hadText && message.subtype === "success" && message.result) {
+		events.push({ type: "text_delta", text: message.result });
+	}
+	events.push({
+		type: "done",
+		cost: message.total_cost_usd,
+		turns: message.num_turns,
+		durationMs: message.duration_ms ?? 0,
+		stopReason: message.stop_reason ?? undefined,
+		modelUsage: message.modelUsage as
+			| Record<string, { contextWindow: number; maxOutputTokens: number }>
+			| undefined,
+		usage: resultUsage(message),
+	});
+	return { events, hadText: false };
+}
+
+function translateSdkMessage(
+	message: SDKMessage,
+	hadText: boolean,
+): EventTranslation {
+	switch (message.type) {
+		case "system":
+			return translateSystemMessage(message, hadText);
+		case "user":
+			return translateUserMessage(message, hadText);
+		case "assistant":
+			return translateAssistantMessage(message, hadText);
+		case "tool_use_summary":
+			return {
+				events: [{ type: "summary", text: message.summary }],
+				hadText,
+			};
+		case "rate_limit_event":
+			return translateRateLimitMessage(message, hadText);
+		case "result":
+			return translateResultMessage(message, hadText);
+		default:
+			return { events: [], hadText };
+	}
 }
 
 class ClaudeAgentSession implements AgentSession {
@@ -270,122 +441,9 @@ class ClaudeAgentSession implements AgentSession {
 		let hadText = false;
 		for await (const message of sdkQuery) {
 			this.receivedAnyEvent = true;
-
-			if (message.type === "system" && message.subtype === "init") {
-				yield { type: "session_start", sessionId: message.session_id };
-				continue;
-			}
-
-			if (
-				message.type === "system" &&
-				(message as { subtype: string }).subtype === "local_command_output"
-			) {
-				yield {
-					type: "local_command_output",
-					content: (message as { content: string }).content,
-				};
-				continue;
-			}
-
-			if (message.type === "user") {
-				const content = (message as { message?: { content?: unknown } }).message
-					?.content;
-				if (Array.isArray(content)) {
-					for (const block of content as Array<Record<string, unknown>>) {
-						if (block.type !== "tool_result") continue;
-						const text = normalizeToolResultContent(block.content);
-						const truncated = truncateToolResult(text);
-						yield {
-							type: "tool_result",
-							toolId: String(block.tool_use_id ?? ""),
-							content: truncated,
-							...(block.is_error === true ? { isError: true } : {}),
-						};
-					}
-				}
-				continue;
-			}
-
-			if (message.type === "assistant") {
-				if (message.message.usage) {
-					const u = message.message.usage;
-					yield {
-						type: "usage",
-						inputTokens: u.input_tokens,
-						outputTokens: u.output_tokens,
-						cacheReadTokens: u.cache_read_input_tokens ?? undefined,
-						cacheCreationTokens: u.cache_creation_input_tokens ?? undefined,
-						model: message.message.model,
-					};
-				}
-				for (const block of message.message.content) {
-					if (block.type === "text") {
-						hadText = true;
-						yield { type: "text_delta", text: block.text };
-					} else if (block.type === "tool_use") {
-						yield {
-							type: "tool_start",
-							toolId: block.id,
-							name: block.name,
-							input: block.input,
-						};
-					}
-				}
-				continue;
-			}
-
-			if (message.type === "tool_use_summary") {
-				yield { type: "summary", text: message.summary };
-				continue;
-			}
-
-			if (message.type === "rate_limit_event") {
-				const info = message.rate_limit_info;
-				yield {
-					type: "rate_limit",
-					status: info.status,
-					rateLimitType: info.rateLimitType,
-					utilization: info.utilization,
-					resetsAt:
-						typeof info.resetsAt === "number"
-							? info.resetsAt
-							: typeof info.resetsAt === "string"
-								? Math.floor(new Date(info.resetsAt).getTime() / 1000)
-								: null,
-				};
-				continue;
-			}
-
-			if (message.type === "result") {
-				if (!hadText && message.subtype === "success" && message.result) {
-					yield { type: "text_delta", text: message.result };
-				}
-				yield {
-					type: "done",
-					cost: message.total_cost_usd,
-					turns: message.num_turns,
-					durationMs: message.duration_ms ?? 0,
-					stopReason: message.stop_reason ?? undefined,
-					modelUsage: message.modelUsage as
-						| Record<string, { contextWindow: number; maxOutputTokens: number }>
-						| undefined,
-					usage: message.usage
-						? {
-								inputTokens: message.usage.input_tokens,
-								outputTokens: message.usage.output_tokens,
-								cacheReadTokens:
-									message.usage.cache_read_input_tokens ?? undefined,
-								cacheCreationTokens:
-									message.usage.cache_creation_input_tokens ?? undefined,
-							}
-						: undefined,
-				};
-				// Reset hadText so the next turn's tracking starts fresh. The
-				// generator continues iterating the same SDK query for subsequent
-				// turns; consumers break on `done` to release control between
-				// turns and resume iteration on the next runOneTurn.
-				hadText = false;
-			}
+			const translation = translateSdkMessage(message, hadText);
+			hadText = translation.hadText;
+			yield* translation.events;
 		}
 	}
 }

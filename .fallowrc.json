@@ -1,0 +1,76 @@
+{
+	"$schema": "./node_modules/fallow/schema.json",
+	"entry": [
+		"src/server/index.ts",
+		"src/start.ts",
+		"public/sw.js",
+		"bump.config.ts",
+		"scripts/*.ts"
+	],
+	"dynamicallyLoaded": [
+		"src/server/pty-worker.cjs",
+		"src/server/fixtures/fake-acp-agent.mjs"
+	],
+	"ignoreDependencies": [
+		"@anthropic-ai/claude-agent-sdk-win32-x64",
+		"png-to-ico"
+	],
+	"ignoreExports": [
+		{
+			"file": "src/hooks/wsStore.ts",
+			"exports": ["EMPTY_STATS"]
+		},
+		{
+			"file": "src/lib/codexPath.ts",
+			"exports": ["__resetCacheForTesting"]
+		},
+		{
+			"file": "src/lib/install.ts",
+			"exports": ["maybeSelfInstall"]
+		}
+	],
+	"rules": {
+		"duplicate-exports": "off"
+	},
+	"health": {
+		"coverage": "coverage/coverage-final.json",
+		"ignore": [
+			"src/lib/claudePath.ts",
+			"src/components/wizard/FolderBrowser.tsx",
+			"src/lib/providerOptions.ts",
+			"src/lib/originGate.ts",
+			"src/lib/utils.ts"
+		]
+	},
+	"duplicates": {
+		"ignore": ["src/db/schema.ts"]
+	},
+	"usedClassMembers": [
+		{
+			"implements": "AgentProvider",
+			"members": [
+				"label",
+				"effortLevels",
+				"permissionModes",
+				"usageWindows",
+				"check"
+			]
+		},
+		"detachThread",
+		"setSessionLabel",
+		"probeMcpStatus",
+		"handlePlanModeExitResponse",
+		"getPendingPlanModeExits",
+		"getQueueState"
+	],
+	"ignorePatterns": [
+		"src/routeTree.gen.ts",
+		"src/server/embedded-client.ts",
+		"src/server/pty-embed-assets/**",
+		"src/server/whisper-embed-assets/**",
+		"src/server/codexProtocol/**",
+		"dist/**",
+		"build/**",
+		"coverage/**"
+	]
+}

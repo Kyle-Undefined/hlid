@@ -17,131 +17,192 @@ function tomlVal(value: unknown): string {
 	return JSON.stringify(value);
 }
 
+function tomlInlineTable(value: Record<string, string>): string {
+	return `{ ${Object.entries(value)
+		.map(([key, item]) => `${JSON.stringify(key)} = ${tomlVal(item)}`)
+		.join(", ")} }`;
+}
+
+function section(name: string, entries: string[]): string[] {
+	return [`[${name}]`, ...entries];
+}
+
+function optionalEntry(
+	key: string,
+	value: unknown,
+	include = value !== undefined && value !== "",
+): string[] {
+	return include ? [`${key} = ${tomlVal(value)}`] : [];
+}
+
+function serializeVault(config: HlidConfig["vault"]): string[] {
+	return section("vault", [
+		`name = ${tomlVal(config.name)}`,
+		`path = ${tomlVal(config.path)}`,
+		...optionalEntry("style", config.style),
+		...optionalEntry("inbox", config.inbox),
+		...optionalEntry("projects", config.projects),
+		...optionalEntry("areas", config.areas),
+		...optionalEntry("resources", config.resources),
+		...optionalEntry("archive", config.archive),
+		...optionalEntry("raw", config.raw),
+		...optionalEntry("wiki_folder", config.wiki_folder),
+		...optionalEntry("skills", config.skills),
+		...optionalEntry("memory", config.memory),
+		...optionalEntry("outputs", config.outputs),
+		`delete_vault_attachments = ${tomlVal(config.delete_vault_attachments)}`,
+	]);
+}
+
+function serializeServer(config: HlidConfig["server"]): string[] {
+	return section("server", [
+		`port = ${tomlVal(config.port)}`,
+		...optionalEntry("tls_cert_path", config.tls_cert_path),
+		...optionalEntry("tls_key_path", config.tls_key_path),
+		...optionalEntry("tls_proxy_port", config.tls_proxy_port),
+		...optionalEntry("local_network_access", true, config.local_network_access),
+		...optionalEntry(
+			"allow_external_agents",
+			true,
+			config.allow_external_agents,
+		),
+	]);
+}
+
+function serializeVoice(config: HlidConfig["voice"]): string[] {
+	const voice = config ?? DEFAULT_VOICE_CONFIG;
+	return section("voice", [
+		`enabled = ${tomlVal(voice.enabled)}`,
+		`model = ${tomlVal(voice.model)}`,
+		`language = ${tomlVal(voice.language)}`,
+		`auto_send = ${tomlVal(voice.auto_send)}`,
+		`hotkey = ${tomlVal(voice.hotkey)}`,
+		`max_recording_seconds = ${tomlVal(voice.max_recording_seconds)}`,
+	]);
+}
+
+function serializeClaude(config: HlidConfig["claude"]): string[] {
+	return section("claude", [
+		`model = ${tomlVal(config.model)}`,
+		`effort = ${tomlVal(config.effort)}`,
+		`permission_mode = ${tomlVal(config.permission_mode)}`,
+		`turn_recaps = ${tomlVal(config.turn_recaps)}`,
+		...optionalEntry("max_turns", config.max_turns),
+		...optionalEntry("recap_model", config.recap_model),
+		...optionalEntry("interactive_mode", true, config.interactive_mode),
+	]);
+}
+
+function serializeCodex(config: NonNullable<HlidConfig["codex"]>): string[] {
+	return section("codex", [
+		...optionalEntry("model", config.model),
+		`effort = ${tomlVal(config.effort)}`,
+		`permission_mode = ${tomlVal(config.permission_mode)}`,
+		`turn_recaps = ${tomlVal(config.turn_recaps)}`,
+		...optionalEntry("max_turns", config.max_turns),
+		...optionalEntry("recap_model", config.recap_model),
+		...optionalEntry("executable", config.executable),
+	]);
+}
+
+function serializeUi(config: HlidConfig["ui"]): string[] {
+	return section("ui", [
+		`enter_to_submit = ${tomlVal(config.enter_to_submit)}`,
+		`hide_skills_index = ${tomlVal(config.hide_skills_index)}`,
+		`theme = ${tomlVal(config.theme)}`,
+		...optionalEntry("mobile_theme", config.mobile_theme),
+	]);
+}
+
+function serializeStatusVocabulary(
+	config: HlidConfig["status_vocabulary"],
+): string[] {
+	return section("status_vocabulary", [
+		`active = ${tomlVal(config.active)}`,
+		`planning = ${tomlVal(config.planning)}`,
+		`done = ${tomlVal(config.done)}`,
+	]);
+}
+
+function serializeAttachments(config: HlidConfig["attachments"]): string[] {
+	const attachments = config ?? DEFAULT_ATTACHMENTS_CONFIG;
+	return section("attachments", [
+		`max_bytes = ${tomlVal(attachments.max_bytes)}`,
+		`allowed_mimes = ${tomlVal(attachments.allowed_mimes)}`,
+	]);
+}
+
+function serializeAgent(
+	agent: NonNullable<HlidConfig["agents"]>[number],
+): string[] {
+	return [
+		"[[agents]]",
+		`path = ${tomlVal(agent.path)}`,
+		...optionalEntry("name", agent.name),
+		...optionalEntry(
+			"mode",
+			agent.mode,
+			agent.mode !== undefined && agent.mode !== "cwd",
+		),
+		...optionalEntry(
+			"provider",
+			agent.provider,
+			agent.provider !== undefined && agent.provider !== "claude",
+		),
+		...optionalEntry("model", agent.model),
+		...optionalEntry("effort", agent.effort),
+		...optionalEntry("max_turns", agent.max_turns),
+		...optionalEntry("permission_mode", agent.permission_mode),
+		...optionalEntry("recap_model", agent.recap_model),
+		...optionalEntry(
+			"interactive_mode",
+			agent.interactive_mode,
+			agent.interactive_mode !== undefined,
+		),
+	];
+}
+
+function serializeAcpAgent(
+	agent: NonNullable<HlidConfig["acp_agents"]>[number],
+): string[] {
+	return [
+		"[[acp_agents]]",
+		`id = ${tomlVal(agent.id)}`,
+		...optionalEntry("executable", agent.executable),
+		...optionalEntry("args", agent.args),
+		...(agent.env ? [`env = ${tomlInlineTable(agent.env)}`] : []),
+	];
+}
+
 /** Serialize the complete public config schema to TOML. Kept pure so schema
  * round-trip tests can catch fields accidentally omitted by future changes. */
 export function serializeConfig(config: HlidConfig): string {
-	const lines: string[] = [];
+	const lines = [
+		...optionalEntry(
+			"vault_provider",
+			config.vault_provider,
+			config.vault_provider !== undefined && config.vault_provider !== "claude",
+		),
+		...serializeVault(config.vault),
+		"",
+		...serializeServer(config.server),
+		"",
+		...serializeVoice(config.voice),
+		"",
+		...serializeClaude(config.claude),
+		...(config.codex ? ["", ...serializeCodex(config.codex)] : []),
+		"",
+		...serializeUi(config.ui),
+		"",
+		...serializeStatusVocabulary(config.status_vocabulary),
+		"",
+		...serializeAttachments(config.attachments),
+	];
 
-	if (config.vault_provider && config.vault_provider !== "claude")
-		lines.push(`vault_provider = ${tomlVal(config.vault_provider)}`);
-
-	lines.push("[vault]");
-	lines.push(`name = ${tomlVal(config.vault.name)}`);
-	lines.push(`path = ${tomlVal(config.vault.path)}`);
-	if (config.vault.style) lines.push(`style = ${tomlVal(config.vault.style)}`);
-	if (config.vault.inbox) lines.push(`inbox = ${tomlVal(config.vault.inbox)}`);
-	if (config.vault.projects)
-		lines.push(`projects = ${tomlVal(config.vault.projects)}`);
-	if (config.vault.areas) lines.push(`areas = ${tomlVal(config.vault.areas)}`);
-	if (config.vault.resources)
-		lines.push(`resources = ${tomlVal(config.vault.resources)}`);
-	if (config.vault.archive)
-		lines.push(`archive = ${tomlVal(config.vault.archive)}`);
-	if (config.vault.raw) lines.push(`raw = ${tomlVal(config.vault.raw)}`);
-	if (config.vault.wiki_folder)
-		lines.push(`wiki_folder = ${tomlVal(config.vault.wiki_folder)}`);
-	if (config.vault.skills)
-		lines.push(`skills = ${tomlVal(config.vault.skills)}`);
-	if (config.vault.memory)
-		lines.push(`memory = ${tomlVal(config.vault.memory)}`);
-	if (config.vault.outputs)
-		lines.push(`outputs = ${tomlVal(config.vault.outputs)}`);
-	lines.push(
-		`delete_vault_attachments = ${tomlVal(config.vault.delete_vault_attachments)}`,
-	);
-
-	lines.push("");
-	lines.push("[server]");
-	lines.push(`port = ${tomlVal(config.server.port)}`);
-	if (config.server.tls_cert_path)
-		lines.push(`tls_cert_path = ${tomlVal(config.server.tls_cert_path)}`);
-	if (config.server.tls_key_path)
-		lines.push(`tls_key_path = ${tomlVal(config.server.tls_key_path)}`);
-	if (config.server.tls_proxy_port !== undefined)
-		lines.push(`tls_proxy_port = ${tomlVal(config.server.tls_proxy_port)}`);
-	if (config.server.local_network_access)
-		lines.push(`local_network_access = true`);
-	if (config.server.allow_external_agents)
-		lines.push(`allow_external_agents = true`);
-
-	const voice = config.voice ?? DEFAULT_VOICE_CONFIG;
-	lines.push("");
-	lines.push("[voice]");
-	lines.push(`enabled = ${tomlVal(voice.enabled)}`);
-	lines.push(`model = ${tomlVal(voice.model)}`);
-	lines.push(`language = ${tomlVal(voice.language)}`);
-	lines.push(`auto_send = ${tomlVal(voice.auto_send)}`);
-	lines.push(`hotkey = ${tomlVal(voice.hotkey)}`);
-	lines.push(`max_recording_seconds = ${tomlVal(voice.max_recording_seconds)}`);
-
-	lines.push("");
-	lines.push("[claude]");
-	lines.push(`model = ${tomlVal(config.claude.model)}`);
-	lines.push(`effort = ${tomlVal(config.claude.effort)}`);
-	lines.push(`permission_mode = ${tomlVal(config.claude.permission_mode)}`);
-	lines.push(`turn_recaps = ${tomlVal(config.claude.turn_recaps)}`);
-	if (config.claude.max_turns !== undefined)
-		lines.push(`max_turns = ${tomlVal(config.claude.max_turns)}`);
-	if (config.claude.recap_model)
-		lines.push(`recap_model = ${tomlVal(config.claude.recap_model)}`);
-	if (config.claude.interactive_mode) lines.push(`interactive_mode = true`);
-
-	if (config.codex) {
-		lines.push("");
-		lines.push("[codex]");
-		if (config.codex.model)
-			lines.push(`model = ${tomlVal(config.codex.model)}`);
-		lines.push(`effort = ${tomlVal(config.codex.effort)}`);
-		lines.push(`permission_mode = ${tomlVal(config.codex.permission_mode)}`);
-		lines.push(`turn_recaps = ${tomlVal(config.codex.turn_recaps)}`);
-		if (config.codex.max_turns !== undefined)
-			lines.push(`max_turns = ${tomlVal(config.codex.max_turns)}`);
-		if (config.codex.recap_model)
-			lines.push(`recap_model = ${tomlVal(config.codex.recap_model)}`);
-		if (config.codex.executable)
-			lines.push(`executable = ${tomlVal(config.codex.executable)}`);
-	}
-
-	lines.push("");
-	lines.push("[ui]");
-	lines.push(`enter_to_submit = ${tomlVal(config.ui.enter_to_submit)}`);
-	lines.push(`hide_skills_index = ${tomlVal(config.ui.hide_skills_index)}`);
-	lines.push(`theme = ${tomlVal(config.ui.theme)}`);
-	if (config.ui.mobile_theme)
-		lines.push(`mobile_theme = ${tomlVal(config.ui.mobile_theme)}`);
-
-	lines.push("");
-	lines.push("[status_vocabulary]");
-	lines.push(`active = ${tomlVal(config.status_vocabulary.active)}`);
-	lines.push(`planning = ${tomlVal(config.status_vocabulary.planning)}`);
-	lines.push(`done = ${tomlVal(config.status_vocabulary.done)}`);
-
-	const attachments = config.attachments ?? DEFAULT_ATTACHMENTS_CONFIG;
-	lines.push("");
-	lines.push("[attachments]");
-	lines.push(`max_bytes = ${tomlVal(attachments.max_bytes)}`);
-	lines.push(`allowed_mimes = ${tomlVal(attachments.allowed_mimes)}`);
-
-	for (const agent of config.agents ?? []) {
-		lines.push("");
-		lines.push("[[agents]]");
-		lines.push(`path = ${tomlVal(agent.path)}`);
-		if (agent.name) lines.push(`name = ${tomlVal(agent.name)}`);
-		if (agent.mode && agent.mode !== "cwd")
-			lines.push(`mode = ${tomlVal(agent.mode)}`);
-		if (agent.provider && agent.provider !== "claude")
-			lines.push(`provider = ${tomlVal(agent.provider)}`);
-		if (agent.model) lines.push(`model = ${tomlVal(agent.model)}`);
-		if (agent.effort) lines.push(`effort = ${tomlVal(agent.effort)}`);
-		if (agent.max_turns !== undefined)
-			lines.push(`max_turns = ${tomlVal(agent.max_turns)}`);
-		if (agent.permission_mode)
-			lines.push(`permission_mode = ${tomlVal(agent.permission_mode)}`);
-		if (agent.recap_model)
-			lines.push(`recap_model = ${tomlVal(agent.recap_model)}`);
-		if (agent.interactive_mode !== undefined)
-			lines.push(`interactive_mode = ${tomlVal(agent.interactive_mode)}`);
-	}
+	for (const agent of config.agents ?? [])
+		lines.push("", ...serializeAgent(agent));
+	for (const agent of config.acp_agents ?? [])
+		lines.push("", ...serializeAcpAgent(agent));
 
 	return `${lines.join("\n")}\n`;
 }

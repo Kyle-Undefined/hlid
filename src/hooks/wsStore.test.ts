@@ -232,13 +232,6 @@ describe("wsStore state management", () => {
 			expect(fn).not.toHaveBeenCalled();
 		});
 
-		it("setActiveSessionId + resetLiveStats clears activeSessionId", () => {
-			store.setActiveSessionId("sess-1");
-			store.resetLiveStats(); // should clear activeSessionId internally
-			// No public getter for activeSessionId; verify via resetLiveStats not throwing
-			expect(store.getLiveStats()).toEqual(store.EMPTY_STATS);
-		});
-
 		it("seedContextStats does not overwrite values already set", () => {
 			// First seed on clean state (both fields null) — should apply
 			store.seedContextStats(200_000, 50_000);

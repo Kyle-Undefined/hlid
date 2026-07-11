@@ -76,6 +76,18 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 	},
 	{
 		method: "GET",
+		path: "/acp/registry",
+		server: "api",
+		desc: "Cached official ACP agent catalog and local availability; ?refresh=1 forces refresh.",
+	},
+	{
+		method: "POST",
+		path: "/acp/authenticate",
+		server: "api",
+		desc: 'Inspect or authenticate an enabled ACP agent. Body: {"id": string, "methodId"?: string}.',
+	},
+	{
+		method: "GET",
 		path: "/account",
 		server: "api",
 		desc: "Account info (email/org/plan) from the first live session exposing it; null when none.",

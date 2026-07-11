@@ -8,7 +8,7 @@ import { Section } from "./fields";
 
 // ─── Server functions ─────────────────────────────────────────────────────────
 
-export const getLogsFn = createServerFn({ method: "GET" })
+const getLogsFn = createServerFn({ method: "GET" })
 	.validator((raw) => eventLogQuerySchema.parse(raw))
 	.handler(async ({ data }) => {
 		const params = new URLSearchParams({
@@ -27,15 +27,13 @@ export const getLogsFn = createServerFn({ method: "GET" })
 		}>;
 	});
 
-export const clearLogsFn = createServerFn({ method: "POST" }).handler(
-	async () => {
-		await requireDbOk(
-			await dbFetch("/db/logs", { method: "DELETE" }),
-			"clear event logs",
-		);
-		return { ok: true };
-	},
-);
+const clearLogsFn = createServerFn({ method: "POST" }).handler(async () => {
+	await requireDbOk(
+		await dbFetch("/db/logs", { method: "DELETE" }),
+		"clear event logs",
+	);
+	return { ok: true };
+});
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -117,14 +115,134 @@ function LogEntryRow({ entry }: { entry: LogRow }) {
 	);
 }
 
+type EventLogData = {
+	logs: LogRow[];
+	total: number;
+	counts: LogCounts;
+};
+
+function LevelTabs({
+	activeTab,
+	counts,
+	total,
+	onChange,
+	onClear,
+}: {
+	activeTab: LevelTab;
+	counts: LogCounts;
+	total: number;
+	onChange: (tab: LevelTab) => void;
+	onClear: () => void;
+}) {
+	return (
+		<div className="border-b border-border">
+			<div className="flex items-center justify-between px-4 py-2">
+				<div className="flex items-center gap-3">
+					{LEVEL_TABS.map((tab) => {
+						const count =
+							tab === "all"
+								? counts.error + counts.warn + counts.info
+								: counts[tab];
+						return (
+							<button
+								key={tab}
+								type="button"
+								onClick={() => onChange(tab)}
+								className={`text-[9px] tracking-widest uppercase transition-colors ${activeTab === tab ? "text-foreground" : "text-muted-foreground/40 hover:text-muted-foreground/70"}`}
+							>
+								{tab}
+								{count > 0 && (
+									<span className="ml-1 tabular-nums text-muted-foreground/40">
+										{count}
+									</span>
+								)}
+							</button>
+						);
+					})}
+				</div>
+				{total > 0 && (
+					<ConfirmAction
+						label="clear all?"
+						onConfirm={onClear}
+						trigger={(open) => (
+							<button
+								type="button"
+								onClick={open}
+								className="text-[8px] tracking-widest text-muted-foreground/30 hover:text-muted-foreground/60 uppercase transition-colors"
+							>
+								clear
+							</button>
+						)}
+					/>
+				)}
+			</div>
+		</div>
+	);
+}
+
+function EventLogBody({
+	loading,
+	data,
+}: {
+	loading: boolean;
+	data: EventLogData | null;
+}) {
+	if (loading)
+		return (
+			<div className="px-4 py-6 text-center text-[9px] tracking-widest text-muted-foreground/50">
+				loading…
+			</div>
+		);
+	if (!data || data.logs.length === 0)
+		return (
+			<div className="px-4 py-6 text-center text-[9px] tracking-widest text-muted-foreground/30">
+				no logs
+			</div>
+		);
+	return data.logs.map((entry) => <LogEntryRow key={entry.id} entry={entry} />);
+}
+
+function EventLogPagination({
+	page,
+	totalPages,
+	loading,
+	onPageChange,
+}: {
+	page: number;
+	totalPages: number;
+	loading: boolean;
+	onPageChange: (page: number) => void;
+}) {
+	if (totalPages <= 1) return null;
+	return (
+		<div className="px-4 py-2.5 border-t border-border flex items-center justify-between">
+			<button
+				type="button"
+				disabled={page <= 1 || loading}
+				onClick={() => onPageChange(page - 1)}
+				className="text-[9px] tracking-widest text-muted-foreground/40 hover:text-foreground disabled:opacity-20 uppercase transition-colors"
+			>
+				← prev
+			</button>
+			<span className="text-[9px] tabular-nums text-muted-foreground/30">
+				{page} / {totalPages}
+			</span>
+			<button
+				type="button"
+				disabled={page >= totalPages || loading}
+				onClick={() => onPageChange(page + 1)}
+				className="text-[9px] tracking-widest text-muted-foreground/40 hover:text-foreground disabled:opacity-20 uppercase transition-colors"
+			>
+				next →
+			</button>
+		</div>
+	);
+}
+
 export function EventLogSection() {
 	const [activeTab, setActiveTab] = useState<LevelTab>("all");
 	const [page, setPage] = useState(1);
-	const [data, setData] = useState<{
-		logs: LogRow[];
-		total: number;
-		counts: LogCounts;
-	} | null>(null);
+	const [data, setData] = useState<EventLogData | null>(null);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
@@ -176,88 +294,20 @@ export function EventLogSection() {
 					{error}
 				</div>
 			)}
-			<div className="border-b border-border">
-				<div className="flex items-center justify-between px-4 py-2">
-					<div className="flex items-center gap-3">
-						{LEVEL_TABS.map((tab) => {
-							const count =
-								tab === "all"
-									? counts.error + counts.warn + counts.info
-									: (counts[tab as LogLevel] ?? 0);
-							return (
-								<button
-									key={tab}
-									type="button"
-									onClick={() => handleTabChange(tab)}
-									className={`text-[9px] tracking-widest uppercase transition-colors ${
-										activeTab === tab
-											? "text-foreground"
-											: "text-muted-foreground/40 hover:text-muted-foreground/70"
-									}`}
-								>
-									{tab}
-									{count > 0 && (
-										<span className="ml-1 tabular-nums text-muted-foreground/40">
-											{count}
-										</span>
-									)}
-								</button>
-							);
-						})}
-					</div>
-					{total > 0 && (
-						<ConfirmAction
-							label="clear all?"
-							onConfirm={handleClear}
-							trigger={(open) => (
-								<button
-									type="button"
-									onClick={open}
-									className="text-[8px] tracking-widest text-muted-foreground/30 hover:text-muted-foreground/60 uppercase transition-colors"
-								>
-									clear
-								</button>
-							)}
-						/>
-					)}
-				</div>
-			</div>
-
-			{loading ? (
-				<div className="px-4 py-6 text-center text-[9px] tracking-widest text-muted-foreground/50">
-					loading…
-				</div>
-			) : !data || data.logs.length === 0 ? (
-				<div className="px-4 py-6 text-center text-[9px] tracking-widest text-muted-foreground/30">
-					no logs
-				</div>
-			) : (
-				data.logs.map((entry) => <LogEntryRow key={entry.id} entry={entry} />)
-			)}
-
-			{totalPages > 1 && (
-				<div className="px-4 py-2.5 border-t border-border flex items-center justify-between">
-					<button
-						type="button"
-						disabled={page <= 1 || loading}
-						onClick={() => setPage((p) => p - 1)}
-						className="text-[9px] tracking-widest text-muted-foreground/40 hover:text-foreground disabled:opacity-20 uppercase transition-colors"
-					>
-						← prev
-					</button>
-					<span className="text-[9px] tabular-nums text-muted-foreground/30">
-						{page} / {totalPages}
-					</span>
-					<button
-						type="button"
-						disabled={page >= totalPages || loading}
-						onClick={() => setPage((p) => p + 1)}
-						className="text-[9px] tracking-widest text-muted-foreground/40 hover:text-foreground disabled:opacity-20 uppercase transition-colors"
-					>
-						next →
-					</button>
-				</div>
-			)}
+			<LevelTabs
+				activeTab={activeTab}
+				counts={counts}
+				total={total}
+				onChange={handleTabChange}
+				onClear={() => void handleClear()}
+			/>
+			<EventLogBody loading={loading} data={data} />
+			<EventLogPagination
+				page={page}
+				totalPages={totalPages}
+				loading={loading}
+				onPageChange={setPage}
+			/>
 		</Section>
 	);
 }

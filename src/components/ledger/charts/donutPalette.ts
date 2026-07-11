@@ -3,9 +3,7 @@
  * (see src/styles.css), so we vary opacity to get visually distinct slices
  * without inventing new color tokens.
  */
-export const SLICE_OPACITY = [
-	1, 0.78, 0.6, 0.46, 0.36, 0.28, 0.22, 0.16,
-] as const;
+const SLICE_OPACITY = [1, 0.78, 0.6, 0.46, 0.36, 0.28, 0.22, 0.16] as const;
 
 export function sliceOpacity(i: number): number {
 	// Defensive: non-integer or negative indices are out-of-contract but still

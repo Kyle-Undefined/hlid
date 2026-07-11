@@ -22,10 +22,8 @@ import { TopToolsChart } from "#/components/ledger/charts/TopToolsChart";
 import type { StatBundle } from "#/components/ledger/LedgerStats";
 import { StatCell, StatRows } from "#/components/ledger/LedgerStats";
 import { SessionsLedger } from "#/components/ledger/SessionsLedger";
-import {
-	ContextWindowSection,
-	ProviderUsageStrip,
-} from "#/components/UsageWindowsPanel";
+import { ProviderUsageStrip } from "#/components/usage/ProviderUsageStrip";
+import { ContextWindowSection } from "#/components/usage/UsageWindowSections";
 import type {
 	AggStats,
 	AggWindow,
@@ -58,11 +56,11 @@ import type { RateLimitMessage, ServerMessage } from "#/server/protocol";
 
 // ─── search param helper (exported for tests) ────────────────────────────────
 
-export const VALID_PAGE_SIZES = [10, 20, 50, 100] as const;
+const VALID_PAGE_SIZES = [10, 20, 50, 100] as const;
 export type PageSize = (typeof VALID_PAGE_SIZES)[number];
 const DEFAULT_PAGE_SIZE: PageSize = 20;
 
-export function isValidSize(n: number): n is PageSize {
+function isValidSize(n: number): n is PageSize {
 	return (VALID_PAGE_SIZES as readonly number[]).includes(n);
 }
 
@@ -210,6 +208,118 @@ export const Route = createFileRoute("/ledger")({
 });
 
 // ─── page ─────────────────────────────────────────────────────────────────────
+
+type ActiveStat = { value: string; sub?: string; dim?: boolean };
+
+function activeCostStat(
+	stats: LiveStats,
+	activeSession: SessionRow | null,
+): ActiveStat {
+	if (stats.queries > 0) {
+		return {
+			value: `$${stats.cost.toFixed(4)}`,
+			sub: `$${(stats.cost / stats.queries).toFixed(4)}/query`,
+		};
+	}
+	if (activeSession) {
+		return {
+			value: `$${activeSession.total_cost.toFixed(4)}`,
+			sub:
+				activeSession.query_count > 0
+					? `$${(activeSession.total_cost / activeSession.query_count).toFixed(4)}/query`
+					: undefined,
+		};
+	}
+	return { value: "--", dim: true };
+}
+
+function activeQueryStat(
+	stats: LiveStats,
+	activeSession: SessionRow | null,
+): ActiveStat {
+	if (stats.queries > 0) {
+		return { value: String(stats.queries), sub: `${stats.turns} turns` };
+	}
+	if (activeSession) {
+		return {
+			value: String(activeSession.query_count),
+			sub:
+				activeSession.total_turns > 0
+					? `${activeSession.total_turns} turns`
+					: undefined,
+		};
+	}
+	return { value: "--", dim: true };
+}
+
+function activeTokenStat(
+	stats: LiveStats,
+	activeSession: SessionRow | null,
+): ActiveStat {
+	if (stats.queries > 0) {
+		const cached = stats.cache_read_tokens + stats.cache_creation_tokens;
+		return {
+			value: fmt(stats.input_tokens + stats.output_tokens),
+			sub: cached > 0 ? `${fmt(cached)} cached` : undefined,
+		};
+	}
+	if (activeSession) {
+		const cached =
+			activeSession.total_cache_read_tokens +
+			activeSession.total_cache_creation_tokens;
+		return {
+			value: fmt(
+				activeSession.total_input_tokens + activeSession.total_output_tokens,
+			),
+			sub: cached > 0 ? `${fmt(cached)} cached` : undefined,
+		};
+	}
+	return { value: "--", dim: true };
+}
+
+function activeModelStat(
+	model: string,
+	actualModel: string | null,
+	activeSession: SessionRow | null,
+): ActiveStat {
+	const liveModel = actualModel || model;
+	if (liveModel) return { value: fmtModel(liveModel) };
+	if (activeSession?.model) return { value: fmtModel(activeSession.model) };
+	return { value: "--", dim: true };
+}
+
+function ActiveSessionStatGrid({
+	stats,
+	activeSession,
+	model,
+	actualModel,
+}: {
+	stats: LiveStats;
+	activeSession: SessionRow | null;
+	model: string;
+	actualModel: string | null;
+}) {
+	const cost = activeCostStat(stats, activeSession);
+	const queries = activeQueryStat(stats, activeSession);
+	const tokens = activeTokenStat(stats, activeSession);
+	const activeModel = activeModelStat(model, actualModel, activeSession);
+	return (
+		<div className="grid grid-cols-2 sm:grid-cols-4 border-b border-border">
+			<div className="border-r border-b sm:border-b-0 border-border">
+				<StatCell label="COST" {...cost} />
+			</div>
+			<div className="border-b sm:border-b-0 sm:border-r border-border">
+				<StatCell label="QUERIES" {...queries} />
+			</div>
+			<div className="border-r border-border">
+				<StatCell label="TOKENS" {...tokens} />
+			</div>
+			<div>
+				<StatCell label="MODEL" {...activeModel} />
+			</div>
+		</div>
+	);
+}
 
 function StatsPage() {
 	const {
@@ -499,88 +609,12 @@ function StatsPage() {
 			)}
 
 			<div className="flex-1 overflow-auto">
-				{/* Active session stat grid — scrolls with content */}
-				<div className="grid grid-cols-2 sm:grid-cols-4 border-b border-border">
-					<div className="border-r border-b sm:border-b-0 border-border">
-						<StatCell
-							label="COST"
-							value={
-								stats.queries > 0
-									? `$${stats.cost.toFixed(4)}`
-									: activeSessionData
-										? `$${activeSessionData.total_cost.toFixed(4)}`
-										: "--"
-							}
-							sub={
-								stats.queries > 0
-									? `$${(stats.cost / stats.queries).toFixed(4)}/query`
-									: activeSessionData && activeSessionData.query_count > 0
-										? `$${(activeSessionData.total_cost / activeSessionData.query_count).toFixed(4)}/query`
-										: undefined
-							}
-							dim={stats.queries === 0 && !activeSessionData}
-						/>
-					</div>
-					<div className="border-b sm:border-b-0 sm:border-r border-border">
-						<StatCell
-							label="QUERIES"
-							value={
-								stats.queries > 0
-									? String(stats.queries)
-									: activeSessionData
-										? String(activeSessionData.query_count)
-										: "--"
-							}
-							sub={
-								stats.queries > 0
-									? `${stats.turns} turns`
-									: activeSessionData && activeSessionData.total_turns > 0
-										? `${activeSessionData.total_turns} turns`
-										: undefined
-							}
-							dim={stats.queries === 0 && !activeSessionData}
-						/>
-					</div>
-					<div className="border-r border-border">
-						<StatCell
-							label="TOKENS"
-							value={
-								stats.queries > 0
-									? fmt(stats.input_tokens + stats.output_tokens)
-									: activeSessionData
-										? fmt(
-												activeSessionData.total_input_tokens +
-													activeSessionData.total_output_tokens,
-											)
-										: "--"
-							}
-							sub={
-								stats.cache_read_tokens + stats.cache_creation_tokens > 0
-									? `${fmt(stats.cache_read_tokens + stats.cache_creation_tokens)} cached`
-									: activeSessionData &&
-											activeSessionData.total_cache_read_tokens +
-												activeSessionData.total_cache_creation_tokens >
-												0
-										? `${fmt(activeSessionData.total_cache_read_tokens + activeSessionData.total_cache_creation_tokens)} cached`
-										: undefined
-							}
-							dim={stats.queries === 0 && !activeSessionData}
-						/>
-					</div>
-					<div>
-						<StatCell
-							label="MODEL"
-							value={
-								(actualModel ?? model)
-									? fmtModel((actualModel ?? model) as string)
-									: activeSessionData?.model
-										? fmtModel(activeSessionData.model)
-										: "--"
-							}
-							dim={!actualModel && !model && !activeSessionData?.model}
-						/>
-					</div>
-				</div>
+				<ActiveSessionStatGrid
+					stats={stats}
+					activeSession={activeSessionData}
+					model={model}
+					actualModel={actualModel}
+				/>
 
 				{tab === "stats" ? (
 					<StatsTab

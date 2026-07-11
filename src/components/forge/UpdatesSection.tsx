@@ -26,6 +26,180 @@ function relativeTime(epochMs: number | null | undefined): string {
 	return `${Math.floor(diff / 86_400_000)}d ago`;
 }
 
+function updateHint(
+	status: UpdateStatus | null,
+	fetchError: string | null,
+): string {
+	if (fetchError) return `error: ${fetchError}`;
+	if (!status) return "loading…";
+	if (status.available && status.latest)
+		return `update available: v${status.latest}`;
+	return "you're on the latest version";
+}
+
+function VersionField({
+	status,
+	fetchError,
+	onRefresh,
+}: {
+	status: UpdateStatus | null;
+	fetchError: string | null;
+	onRefresh: () => void;
+}) {
+	if (fetchError) {
+		return (
+			<Field label="Version" hint={updateHint(status, fetchError)}>
+				<button
+					type="button"
+					onClick={onRefresh}
+					className="text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors uppercase"
+				>
+					RETRY
+				</button>
+			</Field>
+		);
+	}
+	return (
+		<Field label="Version" hint={updateHint(status, null)}>
+			<span className="text-xs font-mono text-muted-foreground">
+				v{status?.current ?? "—"}
+				{status?.available && status.latest && (
+					<span className="text-foreground"> → v{status.latest}</span>
+				)}
+			</span>
+		</Field>
+	);
+}
+
+function UpdateApplyFields({
+	status,
+	state,
+	busy,
+	onDownload,
+	onLaunch,
+}: {
+	status: UpdateStatus | null;
+	state: ApplyState;
+	busy: boolean;
+	onDownload: () => void;
+	onLaunch: (version: string) => void;
+}) {
+	if (state.phase === "downloaded") {
+		return (
+			<Field
+				label="Launch installer"
+				hint="opens the new exe via Windows shell — accept the SmartScreen prompt to install"
+			>
+				<button
+					type="button"
+					onClick={() => onLaunch(state.targetVersion)}
+					className="text-[10px] tracking-widest px-3 py-1.5 border border-primary/40 text-primary hover:bg-primary/10 transition-colors uppercase"
+				>
+					LAUNCH v{state.targetVersion}
+				</button>
+			</Field>
+		);
+	}
+	if (!status?.available) return null;
+	return (
+		<Field label="Download update" hint="fetches and verifies the new exe">
+			<button
+				type="button"
+				onClick={onDownload}
+				disabled={busy}
+				className="text-[10px] tracking-widest px-3 py-1.5 border border-primary/40 text-primary hover:bg-primary/10 transition-colors uppercase disabled:opacity-40"
+			>
+				{state.phase === "downloading" ? "DOWNLOADING…" : "DOWNLOAD"}
+			</button>
+		</Field>
+	);
+}
+
+function UpdateNotices({
+	status,
+	state,
+}: {
+	status: UpdateStatus | null;
+	state: ApplyState;
+}) {
+	if (state.phase === "launching") {
+		return (
+			<div className="px-4 py-2 text-xs text-muted-foreground">
+				launching v{state.targetVersion} — accept the SmartScreen prompt if it
+				appears. page will reload when the new version is up.
+			</div>
+		);
+	}
+	if (state.phase === "error") {
+		return (
+			<div className="px-4 py-2 text-xs text-destructive/80">
+				{state.message}
+			</div>
+		);
+	}
+	return status?.error ? (
+		<div className="px-4 py-2 text-xs text-muted-foreground/70">
+			last check: {status.error}
+		</div>
+	) : null;
+}
+
+function UpdatesView({
+	status,
+	state,
+	fetchError,
+	onRefresh,
+	onCheck,
+	onDownload,
+	onLaunch,
+}: {
+	status: UpdateStatus | null;
+	state: ApplyState;
+	fetchError: string | null;
+	onRefresh: () => void;
+	onCheck: () => void;
+	onDownload: () => void;
+	onLaunch: (version: string) => void;
+}) {
+	const busy = state.phase !== "idle" && state.phase !== "error";
+	return (
+		<Section title="Updates">
+			<VersionField
+				status={status}
+				fetchError={fetchError}
+				onRefresh={onRefresh}
+			/>
+
+			<Field
+				label="Check for updates"
+				hint={
+					status?.lastCheckedAt
+						? `last checked ${relativeTime(status.lastCheckedAt)}`
+						: "never checked"
+				}
+			>
+				<button
+					type="button"
+					onClick={onCheck}
+					disabled={busy}
+					className="text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors uppercase disabled:opacity-40"
+				>
+					{state.phase === "checking" ? "CHECKING…" : "CHECK"}
+				</button>
+			</Field>
+
+			<UpdateApplyFields
+				status={status}
+				state={state}
+				busy={busy}
+				onDownload={onDownload}
+				onLaunch={onLaunch}
+			/>
+			<UpdateNotices status={status} state={state} />
+		</Section>
+	);
+}
+
 export function UpdatesSection() {
 	const [status, setStatus] = useState<UpdateStatus | null>(null);
 	const [state, setState] = useState<ApplyState>({ phase: "idle" });
@@ -158,115 +332,15 @@ export function UpdatesSection() {
 		// takes over and reloads when the new version answers.
 	}
 
-	const current = status?.current ?? "—";
-	const latest = status?.latest;
-	const available = status?.available ?? false;
-
 	return (
-		<Section title="Updates">
-			<Field
-				label="Version"
-				hint={
-					fetchError
-						? `error: ${fetchError}`
-						: status === null
-							? "loading…"
-							: available && latest
-								? `update available: v${latest}`
-								: "you're on the latest version"
-				}
-			>
-				{fetchError ? (
-					<button
-						type="button"
-						onClick={() => void refresh()}
-						className="text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors uppercase"
-					>
-						RETRY
-					</button>
-				) : (
-					<span className="text-xs font-mono text-muted-foreground">
-						v{current}
-						{available && latest ? (
-							<>
-								{" "}
-								<span className="text-foreground">→ v{latest}</span>
-							</>
-						) : null}
-					</span>
-				)}
-			</Field>
-
-			<Field
-				label="Check for updates"
-				hint={
-					status?.lastCheckedAt
-						? `last checked ${relativeTime(status.lastCheckedAt)}`
-						: "never checked"
-				}
-			>
-				<button
-					type="button"
-					onClick={() => {
-						void checkNow();
-					}}
-					disabled={state.phase !== "idle" && state.phase !== "error"}
-					className="text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors uppercase disabled:opacity-40"
-				>
-					{state.phase === "checking" ? "CHECKING…" : "CHECK"}
-				</button>
-			</Field>
-
-			{available && state.phase !== "downloaded" && (
-				<Field label="Download update" hint="fetches and verifies the new exe">
-					<button
-						type="button"
-						onClick={() => {
-							void downloadOnly();
-						}}
-						disabled={state.phase !== "idle" && state.phase !== "error"}
-						className="text-[10px] tracking-widest px-3 py-1.5 border border-primary/40 text-primary hover:bg-primary/10 transition-colors uppercase disabled:opacity-40"
-					>
-						{state.phase === "downloading" ? "DOWNLOADING…" : "DOWNLOAD"}
-					</button>
-				</Field>
-			)}
-
-			{state.phase === "downloaded" && (
-				<Field
-					label="Launch installer"
-					hint="opens the new exe via Windows shell — accept the SmartScreen prompt to install"
-				>
-					<button
-						type="button"
-						onClick={() => {
-							void launchStaged(state.targetVersion);
-						}}
-						disabled={state.phase !== "downloaded"}
-						className="text-[10px] tracking-widest px-3 py-1.5 border border-primary/40 text-primary hover:bg-primary/10 transition-colors uppercase disabled:opacity-40"
-					>
-						LAUNCH v{state.targetVersion}
-					</button>
-				</Field>
-			)}
-
-			{state.phase === "launching" && (
-				<div className="px-4 py-2 text-xs text-muted-foreground">
-					launching v{state.targetVersion} — accept the SmartScreen prompt if it
-					appears. page will reload when the new version is up.
-				</div>
-			)}
-
-			{state.phase === "error" && (
-				<div className="px-4 py-2 text-xs text-destructive/80">
-					{state.message}
-				</div>
-			)}
-			{status?.error && state.phase !== "error" && (
-				<div className="px-4 py-2 text-xs text-muted-foreground/70">
-					last check: {status.error}
-				</div>
-			)}
-		</Section>
+		<UpdatesView
+			status={status}
+			state={state}
+			fetchError={fetchError}
+			onRefresh={() => void refresh()}
+			onCheck={() => void checkNow()}
+			onDownload={() => void downloadOnly()}
+			onLaunch={(version) => void launchStaged(version)}
+		/>
 	);
 }

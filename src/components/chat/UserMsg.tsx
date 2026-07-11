@@ -34,11 +34,7 @@ export function UserMsg({
 	const { copy, copied } = useCopyToClipboard();
 	const isQueued = queueState?.kind === "queued";
 	const isRunning = queueState?.kind === "running";
-	const label = isRunning
-		? "RUN"
-		: isQueued
-			? `Q${queueState.index + 1}`
-			: "ME";
+	const label = isRunning ? "ME" : isQueued ? `Q${queueState.index + 1}` : "ME";
 	return (
 		<div className="group flex items-start justify-end gap-3 py-3 border-b border-border/40">
 			<div

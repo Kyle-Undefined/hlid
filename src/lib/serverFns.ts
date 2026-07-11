@@ -22,7 +22,6 @@ import type {
 	ThirtyDayStats,
 	ToolEventRow,
 	TopToolCall,
-	UsageWindows,
 	WeeklyStats,
 } from "#/db";
 import { dbFetch, dbJson, requireDbOk } from "#/lib/dbClient";
@@ -92,8 +91,62 @@ export const getProvidersFn = createServerFn({ method: "GET" })
 		dbJson<{ providers: ProviderInfo[] }>(
 			`/providers${data?.refresh ? "?refresh=1" : ""}`,
 			{ providers: [] },
-		).then((r) => r.providers),
+		).then((response) => response.providers),
 	);
+
+export type AcpCatalogItem = {
+	id: string;
+	name: string;
+	version: string;
+	description: string;
+	providerId: string;
+	enabled: boolean;
+	available: boolean;
+	unavailableReason?: string;
+	command: string;
+	args: string[];
+	env: Record<string, string>;
+	installGuidance: string;
+	repository?: string;
+	website?: string;
+};
+
+export type AcpAuthMethod = {
+	id: string;
+	name: string;
+	type?: "env_var" | "terminal";
+	description?: string | null;
+	link?: string | null;
+	args?: string[];
+	vars?: Array<{ name: string; label?: string | null; secret?: boolean }>;
+};
+
+export const getAcpRegistryFn = createServerFn({ method: "GET" })
+	.validator((raw) =>
+		z.object({ refresh: z.boolean().optional() }).optional().parse(raw),
+	)
+	.handler(({ data }) =>
+		dbJson<{ agents: AcpCatalogItem[] }>(
+			`/acp/registry${data?.refresh ? "?refresh=1" : ""}`,
+			{ agents: [] },
+		).then((response) => response.agents),
+	);
+
+export const authenticateAcpFn = createServerFn({ method: "POST" })
+	.validator((raw) =>
+		z
+			.object({ id: z.string().min(1), methodId: z.string().optional() })
+			.parse(raw),
+	)
+	.handler(async ({ data }) => {
+		const response = await dbFetch("/acp/authenticate", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(data),
+		});
+		await requireDbOk(response, "inspect ACP authentication");
+		return (await response.json()) as { authMethods: AcpAuthMethod[] };
+	});
 
 export type VoiceInfo = { status: VoiceStatus; models: VoiceModelInfo[] };
 
@@ -192,11 +245,6 @@ export const getAccountInfoFn = createServerFn({ method: "GET" }).handler(() =>
 	dbJson<AccountInfo | null>("/account", null),
 );
 
-/** Returns current usage windows (5hr / weekly rate-limit data). */
-export const getUsageWindowsFn = createServerFn({ method: "GET" }).handler(() =>
-	dbJson<UsageWindows | null>("/db/usage-windows", null),
-);
-
 /** Returns provider-aware usage snapshots for the given provider IDs. */
 export const getProviderUsagesFn = createServerFn({ method: "GET" })
 	.validator((raw) => {
@@ -211,7 +259,7 @@ export const getProviderUsagesFn = createServerFn({ method: "GET" })
 		);
 	});
 
-export function providerUsageIds(providers: ProviderInfo[]): string[] {
+function providerUsageIds(providers: ProviderInfo[]): string[] {
 	const ids = providers.map((provider) => provider.id);
 	return ids.length > 0 ? ids : ["claude"];
 }
@@ -251,7 +299,7 @@ export const getLiveSessionsFn = createServerFn({ method: "GET" }).handler(() =>
 
 // ─── Session-specific fns (used by /raven) ───────────────────────────────────
 
-export type EnrichedMessageRow = MessageRow & {
+type EnrichedMessageRow = MessageRow & {
 	toolEvents?: ToolEventRow[];
 	attachments?: AttachmentRow[];
 };
@@ -286,7 +334,7 @@ export const getSessionPermissionsFn = createServerFn({ method: "GET" })
 		),
 	);
 
-export type SessionPlanProposalRow = {
+type SessionPlanProposalRow = {
 	proposal_id: string;
 	seq: number;
 	plan: string;
@@ -303,7 +351,7 @@ export const getSessionPlanProposalsFn = createServerFn({ method: "GET" })
 		),
 	);
 
-export type SessionAskUserQuestionRow = {
+type SessionAskUserQuestionRow = {
 	request_id: string;
 	seq: number;
 	questions_json: string;
@@ -471,7 +519,7 @@ const EMPTY_LATENCY_BUCKETS = [
 	{ label: "60k+", count: 0 },
 ];
 
-export const EMPTY_ACTIVITY: ActivityStats = {
+const EMPTY_ACTIVITY: ActivityStats = {
 	topTools: [],
 	hourOfDay: Array.from({ length: 24 }, (_, hour) => ({ hour, count: 0 })),
 	latency: { buckets: EMPTY_LATENCY_BUCKETS, p50: 0, p95: 0, total: 0 },
@@ -562,17 +610,6 @@ export const getMcpServersFn = createServerFn({ method: "GET" }).handler(
 );
 
 // ─── Terminal mode fns ────────────────────────────────────────────────────────
-
-/**
- * Look up the claude_session_id stored for a given hlid DB session.
- * Used by TerminalView to pass --resume to the CLI when switching to terminal mode.
- */
-export const getSessionClaudeIdFn = createServerFn({ method: "GET" })
-	.validator((raw) => sessionIdSchema.parse(raw))
-	.handler(async ({ data: sessionId }) => {
-		const { getSessionClaudeId } = await import("#/db");
-		return getSessionClaudeId(sessionId);
-	});
 
 /**
  * Ensure a DB session row exists for the given session ID.

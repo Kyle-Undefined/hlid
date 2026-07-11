@@ -53,56 +53,65 @@ const FIELD_LABELS: Record<VaultFolderKey, string> = {
 	outputs: "OUTPUTS",
 };
 
+type VaultConfig = Awaited<ReturnType<typeof getConfig>>["vault"];
+
+function scanConfiguredFolder<T>(
+	vault: VaultConfig,
+	key: VaultFolderKey,
+	scan: (root: string, folder: string) => T,
+	fallback: T,
+): T {
+	const folder = vault[key];
+	return vault.path && typeof folder === "string"
+		? scan(vault.path, folder)
+		: fallback;
+}
+
+function configuredVaultTabs(vault: VaultConfig) {
+	const fieldOrder = vault.style === "wiki" ? WIKI_ORDER : PARA_ORDER;
+	return fieldOrder
+		.filter((key) => Boolean(vault[key]))
+		.map((key) => ({ id: key, label: FIELD_LABELS[key] }));
+}
+
 const getVaultData = createServerFn({ method: "GET" }).handler(async () => {
 	const [config, { scanProjects, scanSkills, scanMemory, scanFolderGroups }] =
 		await Promise.all([getConfig(), import("#/lib/vault")]);
 	const { vault, status_vocabulary } = config;
 
-	const isWiki = vault.style === "wiki";
-	const fieldOrder = isWiki ? WIKI_ORDER : PARA_ORDER;
-
-	const tabConfig = fieldOrder
-		.filter((key) => !!vault[key])
-		.map((key) => ({ id: key, label: FIELD_LABELS[key] }));
-
-	const projects =
-		vault.path && vault.projects
-			? scanProjects(vault.path, vault.projects, status_vocabulary)
-			: [];
-
-	const wikiPages =
-		vault.path && vault.wiki_folder
-			? scanProjects(vault.path, vault.wiki_folder, status_vocabulary)
-			: [];
-
-	const { skills, sectionOrder } =
-		vault.path && vault.skills
-			? scanSkills(vault.path, vault.skills, config.ui.hide_skills_index)
-			: { skills: [], sectionOrder: [] };
-
-	const memory =
-		vault.path && vault.memory ? scanMemory(vault.path, vault.memory) : [];
-
-	const inbox =
-		vault.path && vault.inbox ? scanMemory(vault.path, vault.inbox) : [];
-
-	const raw = vault.path && vault.raw ? scanMemory(vault.path, vault.raw) : [];
-
-	const areas =
-		vault.path && vault.areas ? scanFolderGroups(vault.path, vault.areas) : [];
-
-	const resources =
-		vault.path && vault.resources
-			? scanFolderGroups(vault.path, vault.resources)
-			: [];
-
-	const archive =
-		vault.path && vault.archive
-			? scanProjects(vault.path, vault.archive, status_vocabulary)
-			: [];
-
-	const outputs =
-		vault.path && vault.outputs ? scanMemory(vault.path, vault.outputs) : [];
+	const tabConfig = configuredVaultTabs(vault);
+	const scanProjectFolder = (root: string, folder: string) =>
+		scanProjects(root, folder, status_vocabulary);
+	const projects = scanConfiguredFolder(
+		vault,
+		"projects",
+		scanProjectFolder,
+		[],
+	);
+	const wikiPages = scanConfiguredFolder(
+		vault,
+		"wiki_folder",
+		scanProjectFolder,
+		[],
+	);
+	const { skills, sectionOrder } = scanConfiguredFolder(
+		vault,
+		"skills",
+		(root, folder) => scanSkills(root, folder, config.ui.hide_skills_index),
+		{ skills: [], sectionOrder: [] },
+	);
+	const memory = scanConfiguredFolder(vault, "memory", scanMemory, []);
+	const inbox = scanConfiguredFolder(vault, "inbox", scanMemory, []);
+	const raw = scanConfiguredFolder(vault, "raw", scanMemory, []);
+	const areas = scanConfiguredFolder(vault, "areas", scanFolderGroups, []);
+	const resources = scanConfiguredFolder(
+		vault,
+		"resources",
+		scanFolderGroups,
+		[],
+	);
+	const archive = scanConfiguredFolder(vault, "archive", scanProjectFolder, []);
+	const outputs = scanConfiguredFolder(vault, "outputs", scanMemory, []);
 
 	return {
 		tabConfig,

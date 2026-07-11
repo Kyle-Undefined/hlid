@@ -5,117 +5,56 @@ import {
 	toggleAgentMcpFile,
 	writeAgentMcpFile,
 } from "#/lib/agentMcp";
-import { forbiddenResponse } from "#/lib/originGate";
 import { loadConfig } from "#/server/config";
+import {
+	handleMcpGet,
+	handleMcpMutation,
+	parseServers,
+	parseToggle,
+} from "./-mcpRouteHelpers";
 
-// ─── Handlers (exported for unit tests) ──────────────────────────────────────
-
-export async function handleGetAgentMcp(request: Request): Promise<Response> {
-	const forbidden = forbiddenResponse(request);
-	if (forbidden) return forbidden;
-
-	const url = new URL(request.url);
-	const agentPath = url.searchParams.get("path");
-	if (!agentPath) {
-		return Response.json({ error: "Missing path param" }, { status: 400 });
+function resolveAgentPath(agentPath: unknown): string | Response {
+	if (typeof agentPath !== "string" || !agentPath) {
+		return Response.json({ error: "Missing agentPath" }, { status: 400 });
 	}
-
-	const config = loadConfig();
-	let resolvedPath: string;
 	try {
-		resolvedPath = resolveAuthorizedAgentPath(agentPath, config);
+		return resolveAuthorizedAgentPath(agentPath, loadConfig());
 	} catch {
 		return Response.json({ error: "Unauthorized" }, { status: 403 });
 	}
-
-	try {
-		return Response.json(readAgentMcpFile(resolvedPath));
-	} catch (err) {
-		const msg = err instanceof Error ? err.message : "Internal error";
-		return Response.json({ error: msg }, { status: 500 });
-	}
 }
 
-export async function handlePostAgentMcp(request: Request): Promise<Response> {
-	const forbidden = forbiddenResponse(request);
-	if (forbidden) return forbidden;
-
-	try {
-		const body = (await request.json()) as {
-			agentPath?: string;
-			servers?: Record<string, unknown>;
-		};
-
-		if (!body.agentPath) {
-			return Response.json({ error: "Missing agentPath" }, { status: 400 });
-		}
-
-		const config = loadConfig();
-		let resolvedPath: string;
-		try {
-			resolvedPath = resolveAuthorizedAgentPath(body.agentPath, config);
-		} catch {
-			return Response.json({ error: "Unauthorized" }, { status: 403 });
-		}
-
-		if (typeof body.servers !== "object" || body.servers === null) {
-			return Response.json(
-				{ error: "Invalid body: servers required" },
-				{ status: 400 },
-			);
-		}
-
-		writeAgentMcpFile(resolvedPath, body.servers);
-		return Response.json({ ok: true });
-	} catch (err) {
-		const msg = err instanceof Error ? err.message : "Bad request";
-		return Response.json({ error: msg }, { status: 400 });
-	}
+export function handleGetAgentMcp(request: Request): Promise<Response> {
+	return handleMcpGet(
+		request,
+		(req) => {
+			const agentPath = new URL(req.url).searchParams.get("path");
+			if (!agentPath) {
+				return Response.json({ error: "Missing path param" }, { status: 400 });
+			}
+			return resolveAgentPath(agentPath);
+		},
+		readAgentMcpFile,
+	);
 }
 
-export async function handleToggleAgentMcp(
-	request: Request,
-): Promise<Response> {
-	const forbidden = forbiddenResponse(request);
-	if (forbidden) return forbidden;
-
-	try {
-		const body = (await request.json()) as {
-			agentPath?: string;
-			name?: string;
-			disabled?: boolean;
-		};
-
-		if (!body.agentPath) {
-			return Response.json({ error: "Missing agentPath" }, { status: 400 });
-		}
-
-		const config = loadConfig();
-		let resolvedPath: string;
-		try {
-			resolvedPath = resolveAuthorizedAgentPath(body.agentPath, config);
-		} catch {
-			return Response.json({ error: "Unauthorized" }, { status: 403 });
-		}
-
-		if (typeof body.name !== "string" || typeof body.disabled !== "boolean") {
-			return Response.json(
-				{
-					error: "Invalid body: name (string) and disabled (boolean) required",
-				},
-				{ status: 400 },
-			);
-		}
-
-		toggleAgentMcpFile(resolvedPath, body.name, body.disabled);
-		return Response.json({ ok: true });
-	} catch (err) {
-		const msg = err instanceof Error ? err.message : "Bad request";
-		return Response.json({ error: msg }, { status: 400 });
-	}
+export function handlePostAgentMcp(request: Request): Promise<Response> {
+	return handleMcpMutation(
+		request,
+		(body) => resolveAgentPath(body.agentPath),
+		parseServers,
+		writeAgentMcpFile,
+	);
 }
 
-// ─── Route ───────────────────────────────────────────────────────────────────
+export function handleToggleAgentMcp(request: Request): Promise<Response> {
+	return handleMcpMutation(
+		request,
+		(body) => resolveAgentPath(body.agentPath),
+		parseToggle,
+		(path, toggle) => toggleAgentMcpFile(path, toggle.name, toggle.disabled),
+	);
+}
 
 export const Route = createFileRoute("/api/mcp/agent")({
 	server: {

@@ -32,6 +32,43 @@ function tailscaleSetupPrompt(cwd: string) {
 	return `Help me set up Tailscale for hlid. My current working directory is \`${cwd}\`. Detect if Tailscale is installed and walk me through install for my OS if not. Then help me run \`tailscale up\` to authenticate. Store the TLS certs in the OS user data directory: on Windows use \`%LOCALAPPDATA%\\hlid\\\` (AppData\\Local — not ProgramData). Run \`tailscale cert <my-magicdns-hostname>\` there. Update tls_cert_path and tls_key_path in hlid.config.toml. When done, tell me to restart hlid.`;
 }
 
+function availabilityLabel(value: boolean | null): string {
+	if (value === null) return "checking…";
+	return value ? "yes" : "not detected";
+}
+
+function authenticationLabel(value: boolean | null): string {
+	if (value === null) return "?";
+	return value ? "yes" : "no";
+}
+
+function authenticationHint(status: TailscaleStatus | null) {
+	if (status?.state === "NeedsLogin") return "run `tailscale up` to log in";
+	if (status?.state && status.state !== "Running")
+		return `state: ${status.state}`;
+	return undefined;
+}
+
+function tailscaleUrl(status: TailscaleStatus | null, server: ServerForm) {
+	if (status?.state !== "Running" || !status.magicDNS) return null;
+	if (!server.tlsCertPath || !server.tlsKeyPath || !server.localNetworkAccess)
+		return null;
+	return `https://${status.magicDNS}:${Number(server.tlsProxyPort) || 3443}`;
+}
+
+function tailscaleView(status: TailscaleStatus | null, server: ServerForm) {
+	const installed = status?.installed ?? null;
+	const authenticated = status ? status.state === "Running" : null;
+	return {
+		installed,
+		authenticated,
+		installedLabel: availabilityLabel(installed),
+		authenticatedLabel: authenticationLabel(authenticated),
+		authHint: authenticationHint(status),
+		url: tailscaleUrl(status, server),
+	};
+}
+
 export function NetworkSection({
 	server,
 	onChange,
@@ -65,17 +102,14 @@ export function NetworkSection({
 		void refresh();
 	}, [refresh]);
 
-	const installed = status?.installed ?? null;
-	const authed = status?.state === "Running" ? true : status ? false : null;
-	const certsConfigured = Boolean(server.tlsCertPath && server.tlsKeyPath);
-	const reachable =
-		status?.state === "Running" &&
-		status.magicDNS &&
-		certsConfigured &&
-		server.localNetworkAccess;
-	const url = reachable
-		? `https://${status.magicDNS}:${Number(server.tlsProxyPort) || 3443}`
-		: null;
+	const {
+		installed,
+		authenticated,
+		installedLabel,
+		authenticatedLabel,
+		authHint,
+		url,
+	} = tailscaleView(status, server);
 
 	function startSetup() {
 		void navigate({
@@ -136,11 +170,7 @@ export function NetworkSection({
 				<div className="flex items-center gap-3">
 					<StatusDot ok={installed} />
 					<span className="text-xs text-muted-foreground">
-						{installed === null
-							? "checking…"
-							: installed
-								? "yes"
-								: "not detected"}
+						{installedLabel}
 					</span>
 					{installed === false && (
 						<button
@@ -168,20 +198,11 @@ export function NetworkSection({
 				</div>
 			</Field>
 			{installed && (
-				<Field
-					label="Authenticated"
-					hint={
-						status?.state === "NeedsLogin"
-							? "run `tailscale up` to log in"
-							: status?.state && status.state !== "Running"
-								? `state: ${status.state}`
-								: undefined
-					}
-				>
+				<Field label="Authenticated" hint={authHint}>
 					<div className="flex items-center gap-3">
-						<StatusDot ok={authed} />
+						<StatusDot ok={authenticated} />
 						<span className="text-xs text-muted-foreground">
-							{authed === null ? "?" : authed ? "yes" : "no"}
+							{authenticatedLabel}
 						</span>
 					</div>
 				</Field>

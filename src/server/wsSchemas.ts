@@ -117,7 +117,7 @@ const terminalResizeSchema = z.strictObject({
 
 export type TerminalDimensions = { cols: number; rows: number };
 
-export function clampTerminalDimensions(
+function clampTerminalDimensions(
 	cols: number,
 	rows: number,
 ): TerminalDimensions {

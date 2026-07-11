@@ -650,187 +650,184 @@ class CodexAgentSession implements AgentSession {
 		return { decision: "decline" };
 	}
 
+	private resetTurnTracking(): void {
+		this.streamedAgentMessageIds.clear();
+		this.emittedReasoningIds.clear();
+		this.sawUnidentifiedAgentMessageDelta = false;
+	}
+
+	private handleThreadStarted(obj: Record<string, unknown>): void {
+		const id = asObj(obj.thread).id;
+		if (typeof id !== "string") return;
+		this.threadId = id;
+		this.events.push({ type: "session_start", sessionId: id });
+	}
+
+	private handleTurnStarted(obj: Record<string, unknown>): void {
+		const id = asObj(obj.turn).id;
+		if (typeof id === "string") this.activeTurnId = id;
+		this.resetTurnTracking();
+	}
+
+	private handleAgentMessageDelta(obj: Record<string, unknown>): void {
+		const text = textFromUnknown(obj.delta ?? obj.text ?? obj.content);
+		if (!text) return;
+		const itemId = String(obj.itemId ?? obj.id ?? "");
+		if (itemId) this.streamedAgentMessageIds.add(itemId);
+		else this.sawUnidentifiedAgentMessageDelta = true;
+		this.events.push({ type: "text_delta", text });
+	}
+
+	private handleCommandOutputDelta(obj: Record<string, unknown>): void {
+		const encoded = obj.deltaBase64;
+		if (typeof encoded !== "string") return;
+		this.events.push({
+			type: "local_command_output",
+			content: Buffer.from(encoded, "base64").toString("utf8"),
+		});
+	}
+
+	private emitReasoning(item: Record<string, unknown>): void {
+		const text = codexReasoningText(item);
+		const id = String(item.id ?? `reasoning-${this.activeTurnId ?? "turn"}`);
+		if (!text || this.emittedReasoningIds.has(id)) return;
+		this.emittedReasoningIds.add(id);
+		this.events.push({
+			type: "tool_start",
+			toolId: id,
+			name: "Reasoning",
+			input: {},
+		});
+		this.events.push({ type: "tool_result", toolId: id, content: text });
+	}
+
+	private handleItemStarted(obj: Record<string, unknown>): void {
+		const item = asObj(obj.item);
+		const type = String(item.type ?? "tool");
+		if (type === "agentMessage" || type === "userMessage") return;
+		if (type === "reasoning") {
+			this.emitReasoning(item);
+			return;
+		}
+		this.events.push({
+			type: "tool_start",
+			toolId: String(item.id ?? type),
+			name: type,
+			input: item,
+		});
+	}
+
+	private handleCompletedAgentMessage(item: Record<string, unknown>): void {
+		const itemId = String(item.id ?? "");
+		const alreadyStreamed = itemId
+			? this.streamedAgentMessageIds.has(itemId)
+			: this.sawUnidentifiedAgentMessageDelta;
+		if (alreadyStreamed) return;
+		const text = textFromUnknown(item.text ?? item.content);
+		if (text) this.events.push({ type: "text_delta", text });
+	}
+
+	private handleItemCompleted(obj: Record<string, unknown>): void {
+		const item = asObj(obj.item);
+		const type = String(item.type ?? "");
+		if (type === "agentMessage") {
+			this.handleCompletedAgentMessage(item);
+			return;
+		}
+		if (type === "reasoning") {
+			this.emitReasoning(item);
+			return;
+		}
+		if (type === "userMessage" || !type) return;
+		this.events.push({
+			type: "tool_result",
+			toolId: String(item.id ?? type),
+			content: JSON.stringify(item),
+		});
+	}
+
+	private recordUsage(usage: AgentEvent | null): void {
+		if (usage?.type !== "usage") return;
+		this.lastUsage = {
+			inputTokens: usage.inputTokens,
+			outputTokens: usage.outputTokens,
+			cacheReadTokens: usage.cacheReadTokens ?? 0,
+			cacheCreationTokens: usage.cacheCreationTokens ?? 0,
+		};
+	}
+
+	private handleTokenUsageUpdated(params: unknown): void {
+		const usage = maybeUsage(params);
+		if (usage?.type !== "usage") return;
+		this.recordUsage(usage);
+		this.events.push(usage);
+	}
+
+	private handleMcpStartupStatus(obj: Record<string, unknown>): void {
+		const servers = Array.isArray(obj.servers) ? obj.servers : [];
+		this.events.push({
+			type: "mcp_status",
+			servers: servers.flatMap((server) => {
+				const name = String(asObj(server).name ?? "");
+				return name ? [{ name, status: "pending" as const }] : [];
+			}),
+		});
+	}
+
+	private handleTurnCompleted(
+		obj: Record<string, unknown>,
+		params: unknown,
+	): void {
+		const turn = asObj(obj.turn);
+		this.recordUsage(maybeUsage(turn) ?? maybeUsage(params));
+		this.activeTurnId = null;
+		this.resetTurnTracking();
+		this.events.push({
+			type: "done",
+			cost: 0,
+			turns: 1,
+			durationMs: 0,
+			stopReason: typeof turn.status === "string" ? turn.status : undefined,
+			usage: { ...this.lastUsage },
+		});
+		if (!this.endAfterTurn) return;
+		if (this.conn && this.threadId) this.conn.detachThread(this.threadId);
+		this.events.close();
+	}
+
 	private handleNotification(method: string, params: unknown): void {
 		const obj = asObj(params);
-		if (method === "thread/started") {
-			const id = asObj(obj.thread).id;
-			if (typeof id === "string") {
-				this.threadId = id;
-				this.events.push({ type: "session_start", sessionId: id });
-			}
-			return;
-		}
-		if (method === "turn/started") {
-			const id = asObj(obj.turn).id;
-			if (typeof id === "string") this.activeTurnId = id;
-			this.streamedAgentMessageIds.clear();
-			this.emittedReasoningIds.clear();
-			this.sawUnidentifiedAgentMessageDelta = false;
-			return;
-		}
-		if (method === "item/agentMessage/delta") {
-			const text = textFromUnknown(obj.delta ?? obj.text ?? obj.content);
-			if (text) {
-				const itemId = String(obj.itemId ?? obj.id ?? "");
-				if (itemId) this.streamedAgentMessageIds.add(itemId);
-				else this.sawUnidentifiedAgentMessageDelta = true;
-				this.events.push({ type: "text_delta", text });
-			}
-			return;
-		}
-		if (method === "item/commandExecution/outputDelta") {
-			const encoded = obj.deltaBase64;
-			if (typeof encoded === "string") {
-				this.events.push({
-					type: "local_command_output",
-					content: Buffer.from(encoded, "base64").toString("utf8"),
-				});
-			}
-			return;
-		}
-		if (method === "item/started") {
-			const item = asObj(obj.item);
-			const type = String(item.type ?? "tool");
-			if (type === "agentMessage" || type === "userMessage") return;
-			if (type === "reasoning") {
-				const text = codexReasoningText(item);
-				const id = String(
-					item.id ?? `reasoning-${this.activeTurnId ?? "turn"}`,
-				);
-				if (text && !this.emittedReasoningIds.has(id)) {
-					this.emittedReasoningIds.add(id);
-					this.events.push({
-						type: "tool_start",
-						toolId: id,
-						name: "Reasoning",
-						input: {},
-					});
-					this.events.push({
-						type: "tool_result",
-						toolId: id,
-						content: text,
-					});
-				}
-				return;
-			}
-			this.events.push({
-				type: "tool_start",
-				toolId: String(item.id ?? type),
-				name: type,
-				input: item,
-			});
-			return;
-		}
-		if (method === "item/completed") {
-			const item = asObj(obj.item);
-			const type = String(item.type ?? "");
-			if (type === "agentMessage") {
-				const itemId = String(item.id ?? "");
-				const alreadyStreamed = itemId
-					? this.streamedAgentMessageIds.has(itemId)
-					: this.sawUnidentifiedAgentMessageDelta;
-				if (!alreadyStreamed) {
-					const text = textFromUnknown(item.text ?? item.content);
-					if (text) this.events.push({ type: "text_delta", text });
-				}
-				return;
-			}
-			if (type === "userMessage" || type === "reasoning") {
-				if (type === "reasoning") {
-					const text = codexReasoningText(item);
-					const id = String(
-						item.id ?? `reasoning-${this.activeTurnId ?? "turn"}`,
-					);
-					if (text && !this.emittedReasoningIds.has(id)) {
-						this.emittedReasoningIds.add(id);
-						this.events.push({
-							type: "tool_start",
-							toolId: id,
-							name: "Reasoning",
-							input: {},
-						});
-						this.events.push({
-							type: "tool_result",
-							toolId: id,
-							content: text,
-						});
-					}
-				}
-				return;
-			}
-			if (type) {
-				this.events.push({
-					type: "tool_result",
-					toolId: String(item.id ?? type),
-					content: JSON.stringify(item),
-				});
-			}
-			return;
-		}
-		if (method === "account/rateLimits/updated") {
-			this.emitRateLimits(obj.rateLimits);
-			return;
-		}
-		if (method === "thread/tokenUsage/updated") {
-			const usage = maybeUsage(params);
-			if (usage?.type === "usage") {
-				this.lastUsage = {
-					inputTokens: usage.inputTokens,
-					outputTokens: usage.outputTokens,
-					cacheReadTokens: usage.cacheReadTokens ?? 0,
-					cacheCreationTokens: usage.cacheCreationTokens ?? 0,
-				};
-				this.events.push(usage);
-			}
-			return;
-		}
-		if (method === "mcpServer/startupStatus/updated") {
-			const servers = Array.isArray(obj.servers) ? obj.servers : [];
-			this.events.push({
-				type: "mcp_status",
-				servers: servers.flatMap((server) => {
-					const s = asObj(server);
-					const name = String(s.name ?? "");
-					if (!name) return [];
-					return [{ name, status: "pending" as const }];
-				}),
-			});
-			return;
-		}
-		if (method === "turn/completed") {
-			const turn = asObj(obj.turn);
-			const usage = maybeUsage(turn) ?? maybeUsage(params);
-			if (usage?.type === "usage") {
-				this.lastUsage = {
-					inputTokens: usage.inputTokens,
-					outputTokens: usage.outputTokens,
-					cacheReadTokens: usage.cacheReadTokens ?? 0,
-					cacheCreationTokens: usage.cacheCreationTokens ?? 0,
-				};
-			}
-			this.activeTurnId = null;
-			this.streamedAgentMessageIds.clear();
-			this.emittedReasoningIds.clear();
-			this.sawUnidentifiedAgentMessageDelta = false;
-			this.events.push({
-				type: "done",
-				cost: 0,
-				turns: 1,
-				durationMs: 0,
-				stopReason: typeof turn.status === "string" ? turn.status : undefined,
-				usage: {
-					inputTokens: this.lastUsage.inputTokens,
-					outputTokens: this.lastUsage.outputTokens,
-					cacheReadTokens: this.lastUsage.cacheReadTokens,
-					cacheCreationTokens: this.lastUsage.cacheCreationTokens,
-				},
-			});
-			// closeInput() was called — no more sends coming, so end the event
-			// stream (and stop routing this thread) now that the turn is done.
-			if (this.endAfterTurn) {
-				if (this.conn && this.threadId) this.conn.detachThread(this.threadId);
-				this.events.close();
-			}
+		switch (method) {
+			case "thread/started":
+				this.handleThreadStarted(obj);
+				break;
+			case "turn/started":
+				this.handleTurnStarted(obj);
+				break;
+			case "item/agentMessage/delta":
+				this.handleAgentMessageDelta(obj);
+				break;
+			case "item/commandExecution/outputDelta":
+				this.handleCommandOutputDelta(obj);
+				break;
+			case "item/started":
+				this.handleItemStarted(obj);
+				break;
+			case "item/completed":
+				this.handleItemCompleted(obj);
+				break;
+			case "account/rateLimits/updated":
+				this.emitRateLimits(obj.rateLimits);
+				break;
+			case "thread/tokenUsage/updated":
+				this.handleTokenUsageUpdated(params);
+				break;
+			case "mcpServer/startupStatus/updated":
+				this.handleMcpStartupStatus(obj);
+				break;
+			case "turn/completed":
+				this.handleTurnCompleted(obj, params);
+				break;
 		}
 	}
 }

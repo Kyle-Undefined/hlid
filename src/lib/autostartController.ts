@@ -2,7 +2,7 @@ const REG_KEY = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const REG_VALUE_NAME = "Hlid";
 
 export type CommandResult = { stdout: string; stderr: string; code: number };
-export type AutostartResult =
+type AutostartResult =
 	| { ok: true; data?: unknown }
 	| { ok: false; error: string };
 

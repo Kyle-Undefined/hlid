@@ -1,6 +1,6 @@
 import { win32 } from "node:path";
 
-export const INSTALL_DATA_FILES = [
+const INSTALL_DATA_FILES = [
 	"hlid.config.toml",
 	"hlid.db",
 	"hlid.db-shm",

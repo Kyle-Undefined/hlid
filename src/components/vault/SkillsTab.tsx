@@ -2,7 +2,7 @@ import { ChevronDown, ChevronRight, Play } from "lucide-react";
 import { useState } from "react";
 import { MarkdownBody } from "#/components/MarkdownBody";
 import { PrivacyMask } from "#/components/PrivacyMask";
-import type { Skill } from "#/lib/vault";
+import { groupSkills, type Skill } from "#/lib/skills";
 
 // ─── SkillCard ────────────────────────────────────────────────────────────────
 
@@ -66,29 +66,6 @@ function SkillCard({
 			)}
 		</div>
 	);
-}
-
-// ─── groupSkills ──────────────────────────────────────────────────────────────
-
-function groupSkills(
-	skills: Skill[],
-	sectionOrder: string[],
-): { section: string | null; skills: Skill[] }[] {
-	const groups: { section: string | null; skills: Skill[] }[] = [];
-	const seen = new Set<string>();
-
-	for (const sec of sectionOrder) {
-		const members = skills.filter((s) => s.section === sec);
-		if (members.length === 0) continue;
-		groups.push({ section: sec, skills: members });
-		for (const s of members) seen.add(s.file);
-	}
-
-	const unsectioned = skills.filter((s) => !seen.has(s.file));
-	if (unsectioned.length > 0)
-		groups.push({ section: null, skills: unsectioned });
-
-	return groups;
 }
 
 // ─── SkillsTab ────────────────────────────────────────────────────────────────

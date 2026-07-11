@@ -62,8 +62,11 @@ jobs:
       - name: Biome check
         run: bun run check
 
-      - name: Tests (Vitest — Node)
-        run: bun run test
+      - name: Tests and coverage thresholds
+        run: bun run test:coverage
+
+      - name: Fallow analysis
+        run: bun run analyze:full
 
       - name: Tests (Bun — DB)
         run: bun run test:db

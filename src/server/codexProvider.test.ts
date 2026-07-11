@@ -6,7 +6,7 @@ vi.mock("../lib/codexPath", () => ({ resolveCodexExecutable: vi.fn() }));
 
 import { spawn } from "node:child_process";
 import { resolveCodexExecutable } from "../lib/codexPath";
-import type { AgentQueryParams } from "./agentProvider";
+import type { AgentEvent, AgentQueryParams } from "./agentProvider";
 import { __resetCodexAppServersForTesting } from "./codexAppServer";
 import type { SandboxPolicy } from "./codexProtocol";
 import {
@@ -570,6 +570,25 @@ function turnStartParams(writes: string[]): Array<Record<string, unknown>> {
 		.map((m) => m.params as Record<string, unknown>);
 }
 
+function emitSessionNotification(
+	proc: FakeProc,
+	method: string,
+	params: Record<string, unknown>,
+): void {
+	proc.stdout.emit(
+		"data",
+		Buffer.from(`${JSON.stringify({ method, params })}\n`),
+	);
+}
+
+async function nextSessionEvent(
+	iterator: AsyncIterator<AgentEvent>,
+): Promise<AgentEvent> {
+	const result = await iterator.next();
+	if (result.done) throw new Error("Codex session event stream ended early");
+	return result.value;
+}
+
 function baseCodexParams(
 	overrides: Partial<AgentQueryParams> = {},
 ): AgentQueryParams {
@@ -647,5 +666,144 @@ describe("CodexAgentSession — setPermissionMode", () => {
 		expect(turns[1].sandboxPolicy).toEqual(
 			codexSandboxPolicy("bypassPermissions", []),
 		);
+	});
+});
+
+describe("CodexAgentSession — notifications", () => {
+	beforeEach(() => {
+		__resetCodexAppServersForTesting();
+	});
+
+	it("maps inbound notification families and deduplicates streamed content", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const session = new CodexProvider().query(baseCodexParams());
+		const events = session[Symbol.asyncIterator]();
+		await session.send("hello");
+
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "session_start",
+			sessionId: "thread-1",
+		});
+
+		emitSessionNotification(proc, "turn/started", {
+			threadId: "thread-1",
+			turn: { id: "turn-1" },
+		});
+		emitSessionNotification(proc, "item/agentMessage/delta", {
+			threadId: "thread-1",
+			itemId: "message-1",
+			delta: "Streamed response",
+		});
+		emitSessionNotification(proc, "item/completed", {
+			threadId: "thread-1",
+			item: {
+				id: "message-1",
+				type: "agentMessage",
+				text: "Streamed response",
+			},
+		});
+		emitSessionNotification(proc, "item/completed", {
+			threadId: "thread-1",
+			item: {
+				id: "message-2",
+				type: "agentMessage",
+				text: "Fallback response",
+			},
+		});
+		emitSessionNotification(proc, "item/started", {
+			threadId: "thread-1",
+			item: { id: "reason-1", type: "reasoning", summary: "Checked state" },
+		});
+		emitSessionNotification(proc, "item/completed", {
+			threadId: "thread-1",
+			item: { id: "reason-1", type: "reasoning", summary: "Checked state" },
+		});
+		emitSessionNotification(proc, "item/commandExecution/outputDelta", {
+			threadId: "thread-1",
+			deltaBase64: Buffer.from("command output").toString("base64"),
+		});
+		emitSessionNotification(proc, "account/rateLimits/updated", {
+			rateLimits: {
+				primary: { usedPercent: 25, windowDurationMins: 300, resetsAt: 42 },
+			},
+		});
+		emitSessionNotification(proc, "mcpServer/startupStatus/updated", {
+			servers: [{ name: "filesystem" }, { status: "ignored-without-name" }],
+		});
+		emitSessionNotification(proc, "thread/tokenUsage/updated", {
+			threadId: "thread-1",
+			usage: {
+				inputTokens: 12,
+				outputTokens: 7,
+				cacheReadTokens: 3,
+				modelContextWindow: 128_000,
+			},
+		});
+		session.closeInput?.();
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: { id: "turn-1", status: "completed" },
+		});
+
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "text_delta",
+			text: "Streamed response",
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "text_delta",
+			text: "Fallback response",
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "tool_start",
+			toolId: "reason-1",
+			name: "Reasoning",
+			input: {},
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "tool_result",
+			toolId: "reason-1",
+			content: "Checked state",
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "local_command_output",
+			content: "command output",
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "rate_limit",
+			status: "ok",
+			rateLimitType: "five_hour",
+			utilization: 0.25,
+			resetsAt: 42,
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "mcp_status",
+			servers: [{ name: "filesystem", status: "pending" }],
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "usage",
+			inputTokens: 12,
+			outputTokens: 7,
+			contextWindow: 128_000,
+			cacheReadTokens: 3,
+			cacheCreationTokens: undefined,
+			model: undefined,
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "done",
+			cost: 0,
+			turns: 1,
+			durationMs: 0,
+			stopReason: "completed",
+			usage: {
+				inputTokens: 12,
+				outputTokens: 7,
+				cacheReadTokens: 3,
+				cacheCreationTokens: 0,
+			},
+		});
+		expect(await events.next()).toEqual({ value: undefined, done: true });
 	});
 });

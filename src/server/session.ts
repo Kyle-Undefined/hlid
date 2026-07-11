@@ -13,6 +13,7 @@ import type {
 	AgentEvent,
 	AgentProvider,
 	AgentSession,
+	CanUseTool,
 	McpServerStatus,
 	ProviderAccountInfo,
 } from "./agentProvider";
@@ -170,11 +171,6 @@ export class SessionManager {
 	constructor(config: HlidConfig, providers: Map<string, AgentProvider>) {
 		this.providers = providers;
 		this.applyConfig(config);
-	}
-
-	/** Returns all registered providers for use by callers (e.g. proxy startup). */
-	getAllProviders(): AgentProvider[] {
-		return [...this.providers.values()];
 	}
 
 	/**
@@ -356,7 +352,9 @@ export class SessionManager {
 		this.lastMcpStatus = statuses;
 	}
 
-	async probeMcpStatus(emit: (msg: ServerMessage) => void): Promise<void> {
+	private async runProbe(
+		inspect: (session: AgentSession) => Promise<void>,
+	): Promise<void> {
 		if (this.probing || this.state === "running") return;
 		this.probing = true;
 		const ac = new AbortController();
@@ -379,75 +377,36 @@ export class SessionManager {
 					Promise.resolve({ behavior: "deny" as const, message: "probe" }),
 			});
 			if (provider.probeRequiresTurn) {
-				// Slice B: streaming-input mode is lazy — the SDK query won't
-				// open until first send(). A trivial "." kicks off init so
-				// mcpServerStatus() has a query to query against; canUseTool
-				// denies any tool call so the SDK exits quickly.
 				await session.send(".");
 				for await (const _ of session) {
-					const statuses = (await session.mcpServerStatus?.()) ?? [];
-					this.lastMcpStatus = statuses;
-					emit({ type: "mcp_status", servers: statuses.map(mapMcpServer) });
-					session.cancel();
+					await inspect(session);
 					break;
 				}
 			} else {
-				// Providers like codex answer this over a plain RPC — no turn,
-				// no tokens spent.
-				const statuses = (await session.mcpServerStatus?.()) ?? [];
-				this.lastMcpStatus = statuses;
-				emit({ type: "mcp_status", servers: statuses.map(mapMcpServer) });
-				session.cancel();
+				await inspect(session);
 			}
+			session.cancel();
 		} catch {
-			// abort errors expected
+			// Abort errors are expected when a probe reaches its time limit.
 		} finally {
 			clearTimeout(timeout);
 			this.probing = false;
 		}
 	}
 
+	async probeMcpStatus(emit: (msg: ServerMessage) => void): Promise<void> {
+		await this.runProbe(async (session) => {
+			const statuses = (await session.mcpServerStatus?.()) ?? [];
+			this.lastMcpStatus = statuses;
+			emit({ type: "mcp_status", servers: statuses.map(mapMcpServer) });
+		});
+	}
+
 	async probeSlashCommands(emit: (msg: ServerMessage) => void): Promise<void> {
-		if (this.probing || this.state === "running") return;
-		this.probing = true;
-		const ac = new AbortController();
-		const timeout = setTimeout(() => ac.abort(), 30_000);
-		try {
-			const provider = this.resolveProvider();
-			const session = provider.query({
-				cwd: this.vaultPath,
-				signal: ac.signal,
-				permissionMode: "default",
-				effort: "low",
-				maxTurns: 1,
-				persistSession: false,
-				settingSources: ["user", "project"],
-				executable:
-					provider.providerId === "claude"
-						? this.claudeExecutable
-						: this.codexExecutable,
-				canUseTool: () =>
-					Promise.resolve({ behavior: "deny" as const, message: "probe" }),
-			});
-			if (provider.probeRequiresTurn) {
-				await session.send(".");
-				for await (const _ of session) {
-					const commands = (await session.supportedCommands?.()) ?? [];
-					emit({ type: "slash_commands", commands });
-					session.cancel();
-					break;
-				}
-			} else {
-				const commands = (await session.supportedCommands?.()) ?? [];
-				emit({ type: "slash_commands", commands });
-				session.cancel();
-			}
-		} catch {
-			// abort errors expected
-		} finally {
-			clearTimeout(timeout);
-			this.probing = false;
-		}
+		await this.runProbe(async (session) => {
+			const commands = (await session.supportedCommands?.()) ?? [];
+			emit({ type: "slash_commands", commands });
+		});
 	}
 
 	isRunning(): boolean {
@@ -675,6 +634,74 @@ export class SessionManager {
 		}
 	}
 
+	private async persistAssistantMessage(
+		sessionId: string,
+		turn: TurnState,
+	): Promise<number> {
+		const reused = turn.reservedAssistantSeq != null;
+		const assistantSeq = turn.reservedAssistantSeq ?? this.messageSeq++;
+		if (turn.textWriteTimer) {
+			clearTimeout(turn.textWriteTimer);
+			turn.textWriteTimer = null;
+		}
+		turn.textWriteDirty = false;
+		if (reused) {
+			await db.setMessageText(sessionId, assistantSeq, turn.assistantText);
+		} else {
+			await db.appendMessage(
+				sessionId,
+				assistantSeq,
+				"assistant",
+				turn.assistantText,
+			);
+		}
+		return assistantSeq;
+	}
+
+	private persistPendingToolEvents(
+		sessionId: string,
+		assistantSeq: number,
+		turn: TurnState,
+		operationSuffix: string,
+	): void {
+		for (const toolEvent of turn.pendingToolEvents) {
+			const result = turn.pendingToolResults.get(toolEvent.toolId);
+			if (turn.persistedToolIds.has(toolEvent.toolId)) {
+				if (result) {
+					db.setToolEventResult(
+						sessionId,
+						toolEvent.toolId,
+						result.content,
+						result.isError,
+					).catch((error) =>
+						logDbError(`setToolEventResult (${operationSuffix})`, error),
+					);
+				}
+				continue;
+			}
+			db.appendToolEvent(
+				sessionId,
+				assistantSeq,
+				toolEvent.toolId,
+				toolEvent.name,
+				toolEvent.input,
+			)
+				.then(() => {
+					if (result) {
+						return db.setToolEventResult(
+							sessionId,
+							toolEvent.toolId,
+							result.content,
+							result.isError,
+						);
+					}
+				})
+				.catch((error) =>
+					logDbError(`appendToolEvent (${operationSuffix})`, error),
+				);
+		}
+	}
+
 	/** Handle done event: persist query + assistant message to DB, emit done. */
 	private async handleDone(
 		event: Extract<AgentEvent, { type: "done" }>,
@@ -718,64 +745,12 @@ export class SessionManager {
 			}
 			if (turn.assistantText) {
 				turn.lastAssistantText = turn.assistantText;
-				// Reuse the seq reserved at first tool_start so live-persisted
-				// tool_event rows correctly link to this assistant message. If no
-				// tools ran this turn, allocate a fresh seq now.
-				const reused = turn.reservedAssistantSeq != null;
-				const assistantSeq = turn.reservedAssistantSeq ?? this.messageSeq++;
+				const assistantSeq = await this.persistAssistantMessage(
+					sessionId,
+					turn,
+				);
 				turn.lastAssistantSeq = assistantSeq;
-				// Cancel any pending throttled text write — done writes the final
-				// text authoritatively below.
-				if (turn.textWriteTimer) {
-					clearTimeout(turn.textWriteTimer);
-					turn.textWriteTimer = null;
-				}
-				turn.textWriteDirty = false;
-				if (reused) {
-					await db.setMessageText(sessionId, assistantSeq, turn.assistantText);
-				} else {
-					await db.appendMessage(
-						sessionId,
-						assistantSeq,
-						"assistant",
-						turn.assistantText,
-					);
-				}
-				for (const te of turn.pendingToolEvents) {
-					const result = turn.pendingToolResults.get(te.toolId);
-					if (turn.persistedToolIds.has(te.toolId)) {
-						// Already inserted live on tool_start. Just write the result
-						// if it didn't land at tool_result time (e.g., race or no
-						// tool_result event for this tool — defensive).
-						if (result) {
-							db.setToolEventResult(
-								sessionId,
-								te.toolId,
-								result.content,
-								result.isError,
-							).catch((e) => logDbError("setToolEventResult (done)", e));
-						}
-						continue;
-					}
-					db.appendToolEvent(
-						sessionId,
-						assistantSeq,
-						te.toolId,
-						te.name,
-						te.input,
-					)
-						.then(() => {
-							if (result) {
-								return db.setToolEventResult(
-									sessionId,
-									te.toolId,
-									result.content,
-									result.isError,
-								);
-							}
-						})
-						.catch((e) => logDbError("appendToolEvent", e));
-				}
+				this.persistPendingToolEvents(sessionId, assistantSeq, turn, "done");
 				turn.lastTurnToolEvents = [...turn.pendingToolEvents];
 				turn.pendingToolEvents.length = 0;
 				turn.pendingToolResults.clear();
@@ -845,6 +820,158 @@ export class SessionManager {
 		return seq;
 	}
 
+	private handleTextDelta(
+		event: Extract<AgentEvent, { type: "text_delta" }>,
+		turn: TurnState,
+		sessionId: string | undefined,
+		emit: (msg: ServerMessage) => void,
+	): void {
+		const text =
+			turn.lastBlockType === "tool_use" &&
+			event.text &&
+			!event.text.startsWith("\n")
+				? `\n\n${event.text}`
+				: event.text;
+		turn.assistantText += text;
+		emit({ type: "chunk", text });
+		if (sessionId) {
+			this.ensureAssistantRow(turn, sessionId);
+			this.scheduleTextWrite(turn, sessionId);
+		}
+		turn.lastBlockType = "text";
+	}
+
+	private handleToolStart(
+		event: Extract<AgentEvent, { type: "tool_start" }>,
+		turn: TurnState,
+		sessionId: string | undefined,
+		emit: (msg: ServerMessage) => void,
+	): void {
+		turn.hadToolEvents = true;
+		if (event.name === "ExitPlanMode") {
+			turn.lastBlockType = "tool_use";
+			return;
+		}
+		turn.pendingToolEvents.push({
+			toolId: event.toolId,
+			name: event.name,
+			input: event.input,
+		});
+		emit({
+			type: "tool_event",
+			id: event.toolId,
+			name: event.name,
+			input: event.input,
+		});
+		if (sessionId) {
+			const seq = this.ensureAssistantRow(turn, sessionId);
+			const toolId = event.toolId;
+			void db
+				.appendToolEvent(sessionId, seq, toolId, event.name, event.input)
+				.then(() => turn.persistedToolIds.add(toolId))
+				.catch((e) => logDbError("appendToolEvent (live)", e));
+		}
+		turn.lastBlockType = "tool_use";
+	}
+
+	private handleToolResult(
+		event: Extract<AgentEvent, { type: "tool_result" }>,
+		turn: TurnState,
+		sessionId: string | undefined,
+		emit: (msg: ServerMessage) => void,
+	): void {
+		emit({
+			type: "tool_result",
+			id: event.toolId,
+			content: event.content,
+			...(event.isError ? { isError: true } : {}),
+		});
+		turn.pendingToolResults.set(event.toolId, {
+			content: event.content,
+			isError: event.isError === true,
+		});
+		if (sessionId && turn.persistedToolIds.has(event.toolId)) {
+			void db
+				.setToolEventResult(
+					sessionId,
+					event.toolId,
+					event.content,
+					event.isError === true,
+				)
+				.catch((e) => logDbError("setToolEventResult (live)", e));
+		}
+	}
+
+	private handleUsage(
+		event: Extract<AgentEvent, { type: "usage" }>,
+		turn: TurnState,
+		emit: (msg: ServerMessage) => void,
+	): void {
+		const cacheRead = event.cacheReadTokens ?? 0;
+		const cacheCreation = event.cacheCreationTokens ?? 0;
+		turn.lastTurnUsage = {
+			input_tokens: event.inputTokens,
+			cache_read_input_tokens: event.cacheReadTokens,
+			cache_creation_input_tokens: event.cacheCreationTokens,
+		};
+		turn.lastActualModel = event.model ?? null;
+		if (event.contextWindow) turn.lastKnownContextWindow = event.contextWindow;
+		emit({
+			type: "usage_update",
+			input_tokens: event.inputTokens,
+			output_tokens: event.outputTokens,
+			cache_read_tokens: cacheRead,
+			cache_creation_tokens: cacheCreation,
+			tokens_in_context: event.inputTokens + cacheRead + cacheCreation,
+			actualModel: event.model,
+			context_window: turn.lastKnownContextWindow ?? DEFAULT_CONTEXT_WINDOW,
+		});
+	}
+
+	private async handleConversationEvent(
+		event: AgentEvent,
+		sessionId: string | undefined,
+		emit: (msg: ServerMessage) => void,
+		turn: TurnState,
+		provider: AgentProvider,
+	): Promise<boolean> {
+		switch (event.type) {
+			case "session_start":
+				this.handleSessionStart(event, sessionId, provider);
+				break;
+			case "text_delta":
+				this.handleTextDelta(event, turn, sessionId, emit);
+				break;
+			case "tool_start":
+				this.handleToolStart(event, turn, sessionId, emit);
+				break;
+			case "tool_result":
+				this.handleToolResult(event, turn, sessionId, emit);
+				break;
+			case "usage":
+				this.handleUsage(event, turn, emit);
+				break;
+			case "summary":
+				turn.sdkSummary = event.text;
+				emit({ type: "tool_use_summary", summary: event.text });
+				break;
+			case "rate_limit":
+				this.handleRateLimit(event, emit, provider);
+				break;
+			case "local_command_output":
+				emit({ type: "local_command_output", content: event.content });
+				break;
+			case "mcp_status":
+				this.lastMcpStatus = event.servers;
+				emit({ type: "mcp_status", servers: event.servers.map(mapMcpServer) });
+				break;
+			case "done":
+				await this.handleDone(event, turn, sessionId, emit, provider);
+				return true;
+		}
+		return false;
+	}
+
 	private async iterateConversation(
 		session: AgentSession,
 		sessionId: string | undefined,
@@ -867,137 +994,16 @@ export class SessionManager {
 						.catch(() => {});
 				}
 			}
-			if (event.type === "session_start") {
-				this.handleSessionStart(event, sessionId, provider);
-			} else if (event.type === "text_delta") {
-				let text = event.text;
-				// Prepend blank line when text follows a tool block so markdown renders cleanly.
-				if (
-					turn.lastBlockType === "tool_use" &&
-					text &&
-					!text.startsWith("\n")
-				) {
-					text = `\n\n${text}`;
-				}
-				turn.assistantText += text;
-				emit({ type: "chunk", text });
-				// Stream the accumulated text to DB so the front end is a thin
-				// viewer: nav-away/back during a turn rehydrates the partial text
-				// from the DB instead of relying on the unmount-time buffer. Writes
-				// are coalesced into ~150ms windows to bound I/O across long turns
-				// (rewriting the full text column on every chunk would be O(N²)
-				// bytes written).
-				if (sessionId) {
-					this.ensureAssistantRow(turn, sessionId);
-					this.scheduleTextWrite(turn, sessionId);
-				}
-				turn.lastBlockType = "text";
-			} else if (event.type === "tool_start") {
-				turn.hadToolEvents = true;
-				// ExitPlanMode renders as a dedicated PlanCard via plan_mode_exit
-				// (emitted from canUseTool). Skip both the tool_event broadcast and
-				// the pendingToolEvents persistence path so the chat doesn't show
-				// both a tool block and a plan card. Real ExitPlanMode tools never
-				// run to completion until the user approves anyway.
-				if (event.name === "ExitPlanMode") {
-					turn.lastBlockType = "tool_use";
-					continue;
-				}
-				turn.pendingToolEvents.push({
-					toolId: event.toolId,
-					name: event.name,
-					input: event.input,
-				});
-				emit({
-					type: "tool_event",
-					id: event.toolId,
-					name: event.name,
-					input: event.input,
-				});
-				// Persist live so SPA nav / browser refresh during a running query
-				// can show the call once history reloads (DB is the source of truth
-				// when the in-page reducer state is gone). Reserve the assistant_seq
-				// once per turn; the assistant message row is written at done with
-				// the same seq.
-				if (sessionId) {
-					const seq = this.ensureAssistantRow(turn, sessionId);
-					const toolId = event.toolId;
-					void db
-						.appendToolEvent(sessionId, seq, toolId, event.name, event.input)
-						.then(() => {
-							// Mark persisted only after the INSERT succeeded so handleDone
-							// won't skip a re-insert when this row never landed.
-							turn.persistedToolIds.add(toolId);
-						})
-						.catch((e) => logDbError("appendToolEvent (live)", e));
-				}
-				turn.lastBlockType = "tool_use";
-			} else if (event.type === "tool_result") {
-				emit({
-					type: "tool_result",
-					id: event.toolId,
-					content: event.content,
-					...(event.isError ? { isError: true } : {}),
-				});
-				turn.pendingToolResults.set(event.toolId, {
-					content: event.content,
-					isError: event.isError === true,
-				});
-				// Persist result if the tool_event row is in flight. Both the
-				// INSERT (live) and this UPDATE go through Bun's serialized DB
-				// queue, so the UPDATE always observes the row.
-				if (sessionId && turn.persistedToolIds.has(event.toolId)) {
-					void db
-						.setToolEventResult(
-							sessionId,
-							event.toolId,
-							event.content,
-							event.isError === true,
-						)
-						.catch((e) => logDbError("setToolEventResult (live)", e));
-				}
-			} else if (event.type === "usage") {
-				const cacheRead = event.cacheReadTokens ?? 0;
-				const cacheCreation = event.cacheCreationTokens ?? 0;
-				turn.lastTurnUsage = {
-					input_tokens: event.inputTokens,
-					cache_read_input_tokens: event.cacheReadTokens,
-					cache_creation_input_tokens: event.cacheCreationTokens,
-				};
-				turn.lastActualModel = event.model ?? null;
-				// Providers that report the model's real context window per usage
-				// tick (codex) keep the gauge accurate without waiting for done.
-				if (event.contextWindow) {
-					turn.lastKnownContextWindow = event.contextWindow;
-				}
-				// Stream per-turn usage so context gauge updates without waiting for done.
-				emit({
-					type: "usage_update",
-					input_tokens: event.inputTokens,
-					output_tokens: event.outputTokens,
-					cache_read_tokens: cacheRead,
-					cache_creation_tokens: cacheCreation,
-					tokens_in_context: event.inputTokens + cacheRead + cacheCreation,
-					actualModel: event.model,
-					context_window: turn.lastKnownContextWindow ?? DEFAULT_CONTEXT_WINDOW,
-				});
-			} else if (event.type === "summary") {
-				turn.sdkSummary = event.text;
-				emit({ type: "tool_use_summary", summary: event.text });
-			} else if (event.type === "rate_limit") {
-				this.handleRateLimit(event, emit, provider);
-			} else if (event.type === "local_command_output") {
-				emit({ type: "local_command_output", content: event.content });
-			} else if (event.type === "mcp_status") {
-				this.lastMcpStatus = event.servers;
-				emit({ type: "mcp_status", servers: event.servers.map(mapMcpServer) });
-			} else if (event.type === "done") {
-				await this.handleDone(event, turn, sessionId, emit, provider);
-				// Slice B: long-lived session — break at the turn boundary so
-				// runOneTurn returns; the iterator stays open for the next
-				// runQuery to resume.
+			if (
+				await this.handleConversationEvent(
+					event,
+					sessionId,
+					emit,
+					turn,
+					provider,
+				)
+			)
 				return;
-			}
 		}
 	}
 
@@ -1124,6 +1130,257 @@ export class SessionManager {
 		}
 	}
 
+	private createToolPermissionHandler(
+		provider: AgentProvider,
+		activeCwd: string,
+		sessionId: string | undefined,
+		emit: (msg: ServerMessage) => void,
+	): CanUseTool {
+		return (toolName, input, { toolUseID, title, displayName, description }) =>
+			new Promise((resolve) => {
+				const passInput = input as Record<string, unknown>;
+				if (toolName === "AskUserQuestion") {
+					const { questions } = parseAskUserQuestion(passInput, title);
+					const request = {
+						type: "ask_user_question" as const,
+						id: toolUseID,
+						questions,
+					};
+					if (sessionId) {
+						void db
+							.appendAskUserQuestion(
+								sessionId,
+								toolUseID,
+								this.messageSeq++,
+								JSON.stringify(questions),
+							)
+							.catch((error) => logDbError("appendAskUserQuestion", error));
+					} else {
+						this.messageSeq++;
+					}
+					this.askUserQuestions.register(
+						toolUseID,
+						request,
+						(answers, notes) => {
+							const existing =
+								(passInput.answers as Record<string, string>) ?? {};
+							const sdkAnswers: Record<string, string> = { ...existing };
+							for (const [question, picks] of Object.entries(answers)) {
+								const note = notes?.[question]?.trim();
+								sdkAnswers[question] = note
+									? `${picks.join(", ")}\n\nNotes: ${note}`
+									: picks.join(", ");
+							}
+							resolve({
+								behavior: "allow",
+								updatedInput: { ...passInput, answers: sdkAnswers },
+							});
+						},
+					);
+					emit(request);
+					return;
+				}
+
+				if (toolName === "ExitPlanMode") {
+					const request = {
+						type: "plan_mode_exit" as const,
+						id: toolUseID,
+						input: passInput,
+					};
+					const planText =
+						typeof passInput.plan === "string"
+							? passInput.plan
+							: JSON.stringify(passInput.plan ?? "");
+					const planSeq = this.messageSeq++;
+					if (sessionId) {
+						void db
+							.appendPlanProposal(
+								sessionId,
+								toolUseID,
+								planSeq,
+								planText,
+								"pending",
+							)
+							.catch((error) => logDbError("appendPlanProposal", error));
+					}
+					this.planModeManager.register(
+						toolUseID,
+						request,
+						(decision, feedback) => {
+							if (sessionId) {
+								void db
+									.setPlanProposalDecision(sessionId, toolUseID, decision)
+									.catch((error) =>
+										logDbError("setPlanProposalDecision", error),
+									);
+							}
+							if (decision === "approved") {
+								resolve({ behavior: "allow", updatedInput: passInput });
+							} else {
+								resolve({
+									behavior: "deny",
+									message:
+										decision === "edited"
+											? `User requested changes to the plan:\n\n${feedback ?? ""}`
+											: "Plan was cancelled by the user.",
+								});
+							}
+						},
+					);
+					emit(request);
+					return;
+				}
+
+				if (this.sessionAllowedTools.has(toolName)) {
+					resolve({ behavior: "allow", updatedInput: passInput });
+					return;
+				}
+
+				const request = {
+					type: "permission_request" as const,
+					id: toolUseID,
+					toolName,
+					title:
+						title ??
+						`${provider.label ?? provider.providerId} wants to use ${toolName}`,
+					displayName,
+					description,
+					input: input as Record<string, unknown> | undefined,
+				};
+				this.permissions.register(
+					toolUseID,
+					request,
+					(approved, saveScope, denyMessage) => {
+						this.permissions.delete(toolUseID);
+						if (!approved) {
+							resolve({
+								behavior: "deny",
+								message: denyMessage ?? "Denied by user",
+							});
+							return;
+						}
+						if (saveScope === "session") this.sessionAllowedTools.add(toolName);
+						if (saveScope === "local") {
+							try {
+								persistAlwaysAllowedTool(activeCwd, toolName);
+							} catch (error) {
+								console.error(
+									"[session] failed to write always-allow rule:",
+									error,
+								);
+							}
+						}
+						resolve({ behavior: "allow", updatedInput: passInput });
+					},
+				);
+				emit(request);
+			});
+	}
+
+	private async persistUserMessage(
+		sessionId: string | undefined,
+		userMessage: string,
+		attachments: ChatAttachment[],
+	): Promise<void> {
+		const userSeq = this.messageSeq++;
+		if (!sessionId) return;
+		await db.appendMessage(sessionId, userSeq, "user", userMessage);
+		for (const attachment of attachments) {
+			await db
+				.linkAttachmentToMessage(attachment.id, sessionId, userSeq)
+				.catch((error) => {
+					console.error("[session] linkAttachmentToMessage failed:", error);
+				});
+		}
+	}
+
+	private getOrCreateAgentSession(options: {
+		provider: AgentProvider;
+		sessionId: string | undefined;
+		resumeProviderSessionId: string | null;
+		activeCwd: string;
+		extraDirs: Set<string>;
+		executable: string | undefined;
+		agentSettings: AgentSettings | undefined;
+		planMode: boolean | undefined;
+		emit: (msg: ServerMessage) => void;
+	}): AgentSession {
+		const {
+			provider,
+			sessionId,
+			resumeProviderSessionId,
+			activeCwd,
+			extraDirs,
+			executable,
+			agentSettings,
+			planMode,
+			emit,
+		} = options;
+		const desiredKey = `${provider.providerId}|${sessionId ?? "ephemeral"}|${this.agentCwd ?? ""}`;
+		if (this.agentSession && this.agentSessionKey !== desiredKey) {
+			this.agentSession.cancel();
+			this.agentSession = null;
+			this.agentSessionKey = null;
+		}
+		if (this.agentSession) return this.agentSession;
+
+		const session = provider.query({
+			cwd: activeCwd,
+			sessionId: resumeProviderSessionId ?? undefined,
+			additionalDirectories:
+				extraDirs.size > 0 ? Array.from(extraDirs).map(toLogical) : undefined,
+			signal: this.abortController?.signal,
+			model: agentSettings?.model ?? (this.agentCwd ? undefined : this.model),
+			permissionMode: planMode
+				? "plan"
+				: (agentSettings?.permissionMode ?? this.permissionMode),
+			effort: agentSettings?.effort ?? this.effort,
+			maxTurns: agentSettings?.maxTurns ?? this.maxTurns,
+			executable,
+			settingSources: ["user", "project", "local"],
+			canUseTool: this.createToolPermissionHandler(
+				provider,
+				activeCwd,
+				sessionId,
+				emit,
+			),
+		});
+		this.agentSession = session;
+		this.agentSessionKey = desiredKey;
+		return session;
+	}
+
+	private scheduleTurnRecap(options: {
+		turn: TurnState;
+		sessionId: string | undefined;
+		userMessage: string;
+		emit: (msg: ServerMessage) => void;
+		provider: AgentProvider;
+		agentSettings: AgentSettings | undefined;
+	}): void {
+		const { turn, sessionId, userMessage, emit, provider, agentSettings } =
+			options;
+		if (!turn.hadToolEvents || !this.turnRecaps || !turn.lastAssistantText)
+			return;
+		const executable =
+			provider.providerId === "claude"
+				? this.claudeExecutable
+				: this.codexExecutable;
+		void generateTurnRecap(
+			sessionId ?? null,
+			turn.lastAssistantSeq,
+			userMessage,
+			turn.lastTurnToolEvents,
+			turn.lastAssistantText,
+			emit,
+			this.vaultPath,
+			executable,
+			turn.sdkSummary,
+			provider,
+			agentSettings?.recapModel ?? this.recapModel,
+		).catch(() => {});
+	}
+
 	private async runOneTurn(
 		userMessage: string,
 		emit: (msg: ServerMessage) => void,
@@ -1200,17 +1457,7 @@ export class SessionManager {
 			});
 			// With `resume`, the CLI maintains conversation state on its end. We
 			// send only the new user turn — no transcript replay.
-			const userSeq = this.messageSeq++;
-			if (sessionId) {
-				await db.appendMessage(sessionId, userSeq, "user", userMessage);
-				for (const a of safeAttachments) {
-					await db
-						.linkAttachmentToMessage(a.id, sessionId, userSeq)
-						.catch((e) => {
-							console.error("[session] linkAttachmentToMessage failed:", e);
-						});
-				}
-			}
+			await this.persistUserMessage(sessionId, userMessage, safeAttachments);
 
 			const { activeCwd, extraDirs, executable } = resolveExecutionContext({
 				agentMode: this.agentMode,
@@ -1225,230 +1472,17 @@ export class SessionManager {
 					currentProvider.providerId === "codex" ? "codex" : "claude",
 				safeAttachments,
 			});
-			const providerExecutable = executable;
-			// Slice B: long-lived AgentSession per chat. Cache by sessionId +
-			// agentCwd so consecutive turns within the same chat reuse one
-			// underlying SDK query. Different chat or different agent →
-			// tear down + rebuild. Resume retry (rotated/wiped session) is
-			// handled inside the provider. canUseTool stays here since it
-			// references session state.
-			const desiredKey = `${currentProvider.providerId}|${sessionId ?? "ephemeral"}|${this.agentCwd ?? ""}`;
-			if (this.agentSession && this.agentSessionKey !== desiredKey) {
-				this.agentSession.cancel();
-				this.agentSession = null;
-				this.agentSessionKey = null;
-			}
-			let agentSession = this.agentSession;
-			if (!agentSession) {
-				agentSession = currentProvider.query({
-					cwd: activeCwd,
-					sessionId: resumeProviderSessionId ?? undefined,
-					additionalDirectories:
-						extraDirs.size > 0
-							? Array.from(extraDirs).map(toLogical)
-							: undefined,
-					signal: this.abortController?.signal,
-					// Vault sessions use the configured model. Agent sessions use agent-specific
-					// model override when set, or defer to CLAUDE.md when no override.
-					model:
-						agentSettings?.model ?? (this.agentCwd ? undefined : this.model),
-					permissionMode: planMode
-						? "plan"
-						: (agentSettings?.permissionMode ?? this.permissionMode),
-					effort: agentSettings?.effort ?? this.effort,
-					maxTurns: agentSettings?.maxTurns ?? this.maxTurns,
-					executable: providerExecutable,
-					// Each cwd loads its own user global + project settings +
-					// local file. Vault chats see vault hooks/MCP/CLAUDE.md;
-					// agent chats see that agent's. canUseTool stays sole
-					// permission authority as long as settings files contain
-					// only allow-rules written by Hlid (no permissions.deny,
-					// no PreToolUse hooks).
-					settingSources: ["user", "project", "local"],
-					canUseTool: (
-						toolName,
-						input,
-						{ toolUseID, title, displayName, description },
-					) =>
-						new Promise((resolve) => {
-							const passInput = input as Record<string, unknown>;
-
-							// AskUserQuestion: surface options to UI, auto-allow on selection.
-							// Never shows as a permission prompt — the user picks from the
-							// supplied options and that choice is injected as the tool answer.
-							if (toolName === "AskUserQuestion") {
-								const { questions } = parseAskUserQuestion(passInput, title);
-								const askReq = {
-									type: "ask_user_question" as const,
-									id: toolUseID,
-									questions,
-								};
-								const askSeq = this.messageSeq++;
-								if (sessionId) {
-									void db
-										.appendAskUserQuestion(
-											sessionId,
-											toolUseID,
-											askSeq,
-											JSON.stringify(questions),
-										)
-										.catch((e) => logDbError("appendAskUserQuestion", e));
-								}
-								this.askUserQuestions.register(
-									toolUseID,
-									askReq,
-									(answers, notes) => {
-										// SDK contract: AskUserQuestionOutput.answers is keyed by
-										// question text and string-valued (multi-select answers are
-										// comma-separated). A flat `answer` field caused the SDK to
-										// fall back to a default option (often the last).
-										const existing =
-											(passInput.answers as Record<string, string>) ?? {};
-										const sdkAnswers: Record<string, string> = { ...existing };
-										for (const [q, picks] of Object.entries(answers)) {
-											const note = notes?.[q]?.trim();
-											sdkAnswers[q] = note
-												? `${picks.join(", ")}\n\nNotes: ${note}`
-												: picks.join(", ");
-										}
-										resolve({
-											behavior: "allow" as const,
-											updatedInput: {
-												...passInput,
-												answers: sdkAnswers,
-											},
-										});
-									},
-								);
-								emit(askReq);
-								return;
-							}
-
-							// ExitPlanMode: surface plan approval UI to user.
-							// Approve → Claude exits plan mode and implements.
-							// Edit → deny with feedback so Claude revises the plan.
-							// Cancel → deny so Claude stops.
-							if (toolName === "ExitPlanMode") {
-								const exitReq = {
-									type: "plan_mode_exit" as const,
-									id: toolUseID,
-									input: passInput,
-								};
-								const planText =
-									typeof passInput.plan === "string"
-										? passInput.plan
-										: JSON.stringify(passInput.plan ?? "");
-								const planSeq = this.messageSeq++;
-								if (sessionId) {
-									void db
-										.appendPlanProposal(
-											sessionId,
-											toolUseID,
-											planSeq,
-											planText,
-											"pending",
-										)
-										.catch((e) => logDbError("appendPlanProposal", e));
-								}
-								this.planModeManager.register(
-									toolUseID,
-									exitReq,
-									(decision, feedback) => {
-										if (sessionId) {
-											void db
-												.setPlanProposalDecision(sessionId, toolUseID, decision)
-												.catch((e) => logDbError("setPlanProposalDecision", e));
-										}
-										if (decision === "approved") {
-											resolve({
-												behavior: "allow" as const,
-												updatedInput: passInput,
-											});
-										} else if (decision === "edited") {
-											resolve({
-												behavior: "deny" as const,
-												message: `User requested changes to the plan:\n\n${feedback ?? ""}`,
-											});
-										} else {
-											resolve({
-												behavior: "deny" as const,
-												message: "Plan was cancelled by the user.",
-											});
-										}
-									},
-								);
-								emit(exitReq);
-								return;
-							}
-
-							// Session-approved: auto-allow without prompting.
-							// Survives provider subprocess restarts since we track it ourselves.
-							if (this.sessionAllowedTools.has(toolName)) {
-								resolve({
-									behavior: "allow" as const,
-									updatedInput: passInput,
-								});
-								return;
-							}
-
-							const permReq = {
-								type: "permission_request" as const,
-								id: toolUseID,
-								toolName,
-								title:
-									title ??
-									`${currentProvider.label ?? currentProvider.providerId} wants to use ${toolName}`,
-								displayName,
-								description,
-								input: input as Record<string, unknown> | undefined,
-							};
-							// Provider runtime requires `updatedInput` on the allow branch even
-							// though the type marks it optional. Pass the original input unchanged
-							// as a no-op so the tool runs as requested.
-							this.permissions.register(
-								toolUseID,
-								permReq,
-								(approved, saveScope, denyMessage) => {
-									this.permissions.delete(toolUseID);
-									if (!approved) {
-										resolve({
-											behavior: "deny" as const,
-											message: denyMessage ?? "Denied by user",
-										});
-									} else if (saveScope === "session") {
-										// Track in our own set so it survives provider subprocess restarts.
-										this.sessionAllowedTools.add(toolName);
-										resolve({
-											behavior: "allow" as const,
-											updatedInput: passInput,
-										});
-									} else if (saveScope === "local") {
-										try {
-											persistAlwaysAllowedTool(activeCwd, toolName);
-										} catch (e) {
-											console.error(
-												"[session] failed to write always-allow rule:",
-												e,
-											);
-										}
-										resolve({
-											behavior: "allow" as const,
-											updatedInput: passInput,
-										});
-									} else {
-										resolve({
-											behavior: "allow" as const,
-											updatedInput: passInput,
-										});
-									}
-								},
-							);
-							emit(permReq);
-						}),
-				});
-				this.agentSession = agentSession;
-				this.agentSessionKey = desiredKey;
-			}
+			const agentSession = this.getOrCreateAgentSession({
+				provider: currentProvider,
+				sessionId,
+				resumeProviderSessionId,
+				activeCwd,
+				extraDirs,
+				executable,
+				agentSettings,
+				planMode,
+				emit,
+			});
 
 			// Slice B: deliver this turn's user message via send() rather than
 			// passing it as a one-shot prompt. The long-lived stream pushes it
@@ -1468,27 +1502,14 @@ export class SessionManager {
 			// after the queue empties. Successful turns leave state alone so the
 			// drain loop sees "running" → resets to "idle" at end.
 
-			// Fire a recap after turns with tool use (async, best-effort).
-			if (turn.hadToolEvents && this.turnRecaps && turn.lastAssistantText) {
-				const recapModel = agentSettings?.recapModel ?? this.recapModel;
-				const recapExecutable =
-					currentProvider.providerId === "claude"
-						? this.claudeExecutable
-						: this.codexExecutable;
-				void generateTurnRecap(
-					sessionId ?? null,
-					turn.lastAssistantSeq,
-					userMessage,
-					turn.lastTurnToolEvents,
-					turn.lastAssistantText,
-					emit,
-					this.vaultPath,
-					recapExecutable,
-					turn.sdkSummary,
-					currentProvider,
-					recapModel,
-				).catch(() => {});
-			}
+			this.scheduleTurnRecap({
+				turn,
+				sessionId,
+				userMessage,
+				emit,
+				provider: currentProvider,
+				agentSettings,
+			});
 		} catch (err) {
 			this.state = "error";
 			const msg = err instanceof Error ? err.message : "Unknown error";
@@ -1506,70 +1527,22 @@ export class SessionManager {
 			this.agentSession = null;
 			this.agentSessionKey = null;
 		} finally {
-			// Persist any remaining assistant text (error/abort path. Result block clears it on success)
-			if (turn.assistantText) {
-				if (sessionId) {
-					const reused = turn.reservedAssistantSeq != null;
-					const assistantSeq = turn.reservedAssistantSeq ?? this.messageSeq++;
-					if (turn.textWriteTimer) {
-						clearTimeout(turn.textWriteTimer);
-						turn.textWriteTimer = null;
-					}
-					turn.textWriteDirty = false;
-					try {
-						if (reused) {
-							await db.setMessageText(
-								sessionId,
-								assistantSeq,
-								turn.assistantText,
-							);
-						} else {
-							await db.appendMessage(
-								sessionId,
-								assistantSeq,
-								"assistant",
-								turn.assistantText,
-							);
-						}
-						for (const te of turn.pendingToolEvents) {
-							const result = turn.pendingToolResults.get(te.toolId);
-							if (turn.persistedToolIds.has(te.toolId)) {
-								if (result) {
-									db.setToolEventResult(
-										sessionId,
-										te.toolId,
-										result.content,
-										result.isError,
-									).catch((e) => logDbError("setToolEventResult (finally)", e));
-								}
-								continue;
-							}
-							db.appendToolEvent(
-								sessionId,
-								assistantSeq,
-								te.toolId,
-								te.name,
-								te.input,
-							)
-								.then(() => {
-									if (result) {
-										return db.setToolEventResult(
-											sessionId,
-											te.toolId,
-											result.content,
-											result.isError,
-										);
-									}
-								})
-								.catch((e) => logDbError("appendToolEvent (finally)", e));
-						}
-					} catch (e) {
-						logDbError("appendMessage (assistant)", e);
-					}
+			// Persist any remaining assistant text (the success path clears it).
+			if (turn.assistantText && sessionId) {
+				try {
+					const assistantSeq = await this.persistAssistantMessage(
+						sessionId,
+						turn,
+					);
+					this.persistPendingToolEvents(
+						sessionId,
+						assistantSeq,
+						turn,
+						"finally",
+					);
+				} catch (error) {
+					logDbError("appendMessage (assistant)", error);
 				}
-				// Without a sessionId there's nowhere to persist orphaned
-				// assistant text. The CLI's own session record (managed via
-				// `resume`) holds the model-side context regardless.
 			}
 			// drainTurnQueue handles the final status emit + abortController
 			// reset after the queue fully drains. We intentionally do not emit

@@ -43,9 +43,7 @@ function writeJsonAtomic(path: string, value: unknown): void {
 	}
 }
 
-export function readProjectLocalSettings(
-	projectPath: string,
-): ProjectLocalSettings {
+function readProjectLocalSettings(projectPath: string): ProjectLocalSettings {
 	return readJsonFile(
 		join(projectPath, ".claude", "settings.local.json"),
 	) as ProjectLocalSettings;

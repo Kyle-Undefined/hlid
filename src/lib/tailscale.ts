@@ -1,6 +1,8 @@
 // Detect Tailscale install + auth state via the local CLI.
 // Used by /api/tailscale to drive the setup widget in forge.
 
+import { runCapturedProcess } from "./process";
+
 const WIN_FALLBACK = "C:\\Program Files\\Tailscale\\tailscale.exe";
 
 type TailscaleStatusRaw = {
@@ -49,21 +51,7 @@ async function runTailscale(
 	args: string[],
 ): Promise<{ stdout: string; stderr: string; code: number } | null> {
 	try {
-		const proc = Bun.spawn([binary, ...args], {
-			stdout: "pipe",
-			stderr: "pipe",
-			windowsHide: true,
-		});
-		// Drain pipes concurrently with awaiting exit so a noisy child can't
-		// deadlock waiting for someone to read.
-		const stdoutP = new Response(proc.stdout).text();
-		const stderrP = new Response(proc.stderr).text();
-		const [stdout, stderr, code] = await Promise.all([
-			stdoutP,
-			stderrP,
-			proc.exited,
-		]);
-		return { stdout, stderr, code };
+		return await runCapturedProcess([binary, ...args]);
 	} catch {
 		return null;
 	}

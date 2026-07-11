@@ -129,7 +129,7 @@ async function writeUnique(
 	}
 }
 
-export type UploadResult = {
+type UploadResult = {
 	id: string;
 	session_id: string | null;
 	kind: db.AttachmentKind;

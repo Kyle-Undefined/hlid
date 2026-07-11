@@ -40,7 +40,7 @@ Quick reference for all vault skills. Load the full `SKILL.md` only on match.
 
 - `Bun` server, single-binary compile (`bun build --compile`) with the Vite client embedded into the executable
 - `TanStack Start` + `TanStack Router` for the web UI
-- Provider-agnostic `AgentProvider` interface for the persistent vault session; supports the Claude Agent SDK (`@anthropic-ai/claude-agent-sdk`)
+- Provider-agnostic `AgentProvider` interface for persistent vault sessions; native Claude and Codex integrations plus any installed Agent Client Protocol agent
 - WebSockets for real-time streaming and tool use visibility
 - `SQLite` for session and settings storage
 - Tailscale for remote access (no cloud needed)
@@ -63,6 +63,20 @@ Everything lives in `hlid.config.toml` at the project root. Vault paths (inbox, 
 See `hlid.config.example.toml` for a minimal starting point. Most settings hot-reload while the server is running. Vault path and MCP changes need a session reload, which you can trigger from `FORGE`.
 
 Turn recaps (`claude.turn_recaps`) are on by default. They mimic the CLI recap feature: a small recap model generates a one-sentence summary enriched with the SDK's built-in turn summary and a list of tools used during the turn.
+
+### Agent Client Protocol agents
+
+The Agent tab in `FORGE` loads the cached official ACP registry and highlights
+OpenCode and the Pi ACP adapter. Search the catalog, follow the platform-specific
+installation guidance, enable an installed agent, and restart Hlid. Enabled
+agents appear alongside Claude and Codex as `acp:<registry-id>` providers.
+
+Hlid never executes registry installation commands and never stores provider
+credentials. It displays each agent's advertised authentication methods; agent-
+managed authentication can be started from Forge, while terminal and environment-
+variable methods show the command or variable names to configure. The last good
+registry response is persisted, with bundled OpenCode and Pi entries available
+offline.
 
 ## Pages
 
@@ -101,6 +115,11 @@ Drop a `.mcp.json` in your vault root and `FORGE` picks it up. Each server shows
 ```bash
 bun run build
 ```
+
+Repository validation uses `bun run check` for Biome plus `tsc --noEmit`. Graph
+analysis is available through `bun run analyze` (changed-code audit) and
+`bun run analyze:full`; the full Fallow gate runs in validation and release CI
+after coverage generation.
 
 Runs `vite build`, then `scripts/embed-client.ts` walks `dist/client` and emits `src/server/embedded-client.ts`; every static asset becomes a `with { type: "file" }` import so `bun build --compile` bakes the bytes into the executable. No sibling `dist/` folder needed at runtime.
 

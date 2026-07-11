@@ -18,7 +18,7 @@ export async function saveSetting(key: string, value: string): Promise<void> {
 	);
 }
 
-export async function deleteSetting(key: string): Promise<void> {
+async function deleteSetting(key: string): Promise<void> {
 	const db = await getDb();
 	await db.run(`DELETE FROM settings WHERE key = ?`, [key]);
 }

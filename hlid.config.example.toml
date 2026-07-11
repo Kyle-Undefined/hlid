@@ -15,3 +15,14 @@ language = "auto"
 auto_send = false
 hotkey = "Alt+Shift+KeyV"
 max_recording_seconds = 300
+
+# Enable installed Agent Client Protocol agents from Forge. Installation
+# guidance is shown there; Hlid never runs installer commands automatically.
+# [[acp_agents]]
+# id = "opencode"
+# executable = "opencode"
+# args = ["acp"]
+#
+# [[acp_agents]]
+# id = "pi-acp"
+# executable = "pi-acp"

@@ -1,5 +1,5 @@
 import { Link } from "@tanstack/react-router";
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useState } from "react";
 import { version } from "../../../package.json";
 import {
 	fetchUpdateStatus,
@@ -7,35 +7,12 @@ import {
 	subscribeUpdateStatus,
 	type UpdateStatus,
 } from "../../hooks/updateStore";
-import * as wsStore from "../../hooks/wsStore";
 import { LockButton } from "../auth/LockButton";
 import { NAV_ITEMS } from "./items";
-import { aggregateDotClass } from "./SystemStatusDot";
+import { useSystemStatusIndicator } from "./SystemStatusDot";
 
 export function Sidebar() {
-	const { wsStatus, sessionState, hasPendingPermissions } =
-		useSyncExternalStore(
-			wsStore.subscribeStatus,
-			wsStore.getSnapshot,
-			() => wsStore.INITIAL_SNAPSHOT,
-		);
-
-	const agg = useSyncExternalStore(
-		wsStore.subscribeSessionsStatus,
-		wsStore.getAggregateNavStatus,
-		() => ({
-			state: "idle" as const,
-			runningCount: 0,
-			pendingPermissions: false,
-		}),
-	);
-
-	const dot = aggregateDotClass(
-		wsStatus,
-		agg,
-		sessionState,
-		hasPendingPermissions,
-	);
+	const { agg, dotClass: dot } = useSystemStatusIndicator();
 
 	const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
 	useEffect(() => {

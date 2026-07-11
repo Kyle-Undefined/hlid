@@ -6,9 +6,9 @@
  *
  * Callers are responsible for authorising the agentPath before calling.
  */
-import { realpathSync } from "node:fs";
-import { basename, resolve } from "node:path";
-import type { HlidConfig } from "../config";
+import { existsSync, realpathSync } from "node:fs";
+import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import type { Agent, HlidConfig } from "../config";
 import { expandTilde, samePath } from "./paths";
 import {
 	readProjectMcpFile,
@@ -22,12 +22,53 @@ import {
  * Derive a human-readable display name from an agent directory path.
  * e.g. "/projects/my-cool_agent" → "My Cool Agent"
  */
-export function deriveAgentName(p: string): string {
+function deriveAgentName(p: string): string {
 	return basename(p)
 		.split(/[-_\s]+/)
 		.filter(Boolean)
 		.map((w) => w.charAt(0).toUpperCase() + w.slice(1))
 		.join(" ");
+}
+
+export function agentConfigToEntry(agent: Agent) {
+	const resolved = expandTilde(agent.path);
+	return {
+		path: agent.path,
+		name: agent.name ?? deriveAgentName(resolved),
+		mode: agent.mode ?? "cwd",
+		provider: agent.provider ?? "claude",
+		hasClaudemd: existsSync(join(resolved, "CLAUDE.md")),
+		dirExists: existsSync(resolved),
+		model: agent.model,
+		effort: agent.effort,
+		maxTurns:
+			agent.max_turns !== undefined ? String(agent.max_turns) : undefined,
+		permissionMode: agent.permission_mode,
+		recapModel: agent.recap_model,
+		interactiveMode: agent.interactive_mode,
+	};
+}
+
+export function inspectAgentPath(agentPath: string, config: HlidConfig) {
+	const resolvedPath = resolve(expandTilde(agentPath));
+	const vaultPath = config.vault.path
+		? resolve(expandTilde(config.vault.path))
+		: "";
+	const relativeToVault = vaultPath ? relative(vaultPath, resolvedPath) : "";
+	const inVault = Boolean(
+		vaultPath &&
+			(samePath(resolvedPath, vaultPath) ||
+				(!relativeToVault.startsWith("..") && !isAbsolute(relativeToVault))),
+	);
+
+	return {
+		dirExists: existsSync(resolvedPath),
+		hasClaudemd: existsSync(join(resolvedPath, "CLAUDE.md")),
+		suggestedName: deriveAgentName(resolvedPath),
+		inVault,
+		externalAllowed: config.server.allow_external_agents,
+		resolvedPath,
+	};
 }
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────

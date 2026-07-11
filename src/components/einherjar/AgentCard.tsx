@@ -9,13 +9,10 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 import { ConfirmAction } from "#/components/ConfirmAction";
+import { AgentConfigurationFields } from "#/components/einherjar/AgentConfigurationFields";
 import { AgentMcpSection } from "#/components/forge/McpSection";
 import { MarkdownBody } from "#/components/MarkdownBody";
 import { PrivacyMask } from "#/components/PrivacyMask";
-import {
-	effortOptionsFor,
-	modelOptions as getModelOptions,
-} from "#/lib/providerOptions";
 import type { ProviderInfo } from "#/lib/serverFns";
 
 export type AgentEntry = {
@@ -54,6 +51,20 @@ type EditState = {
 	interactiveMode: boolean;
 };
 
+function editStateFromAgent(agent: AgentEntry): EditState {
+	return {
+		name: agent.name,
+		mode: agent.mode,
+		provider: agent.provider,
+		model: agent.model ?? "",
+		effort: agent.effort ?? "",
+		maxTurns: agent.maxTurns ?? "",
+		permissionMode: agent.permissionMode ?? "",
+		recapModel: agent.recapModel ?? "",
+		interactiveMode: agent.interactiveMode ?? false,
+	};
+}
+
 export function AgentCard({
 	agent,
 	onRemove,
@@ -81,25 +92,6 @@ export function AgentCard({
 	const [claudemdContent, setClaudemdContent] = useState<string | null>(null);
 	const [claudemdLoaded, setClaudemdLoaded] = useState(false);
 	const [showMcp, setShowMcp] = useState(false);
-
-	// Options come from the active provider's declared capabilities — this is
-	// the provider currently selected in the edit form (or the agent's own
-	// provider before editing starts), never the vault-level provider. An
-	// agent's provider can legitimately differ from the vault provider, and
-	// its option lists must reflect its own provider regardless.
-	const activeProvider = providers.find(
-		(p) => p.id === (editing?.provider ?? agent.provider),
-	);
-	const modelOptions = getModelOptions(activeProvider);
-	const effortOptions = effortOptionsFor(activeProvider, editing?.model ?? "");
-	const permissionOptions = activeProvider?.permissionModes ?? [];
-	const isClaudeProvider = activeProvider?.id === "claude";
-	// Show provider-specific settings only when the selected provider declares
-	// capabilities (mirrors ClaudeSection's gating for the vault-level form).
-	const hasProviderOptions =
-		modelOptions.length > 0 ||
-		effortOptions.length > 0 ||
-		permissionOptions.length > 0;
 
 	async function handleToggleView() {
 		if (expanded) {
@@ -222,19 +214,7 @@ export function AgentCard({
 					</button>
 					<button
 						type="button"
-						onClick={() =>
-							setEditing({
-								name: agent.name,
-								mode: agent.mode,
-								provider: agent.provider,
-								model: agent.model ?? "",
-								effort: agent.effort ?? "",
-								maxTurns: agent.maxTurns ?? "",
-								permissionMode: agent.permissionMode ?? "",
-								recapModel: agent.recapModel ?? "",
-								interactiveMode: agent.interactiveMode ?? false,
-							})
-						}
+						onClick={() => setEditing(editStateFromAgent(agent))}
 						title="Edit agent"
 						className="w-9 h-9 flex items-center justify-center text-muted-foreground/40 hover:text-primary transition-colors"
 					>
@@ -289,235 +269,14 @@ export function AgentCard({
 						placeholder="Display name"
 						className="w-full bg-secondary border border-border px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
 					/>
-					<div className="flex items-center gap-2 flex-wrap">
-						<span className="text-[9px] tracking-widest text-muted-foreground/50 uppercase shrink-0">
-							Mode
-						</span>
-						<div className="flex border border-border">
-							<button
-								type="button"
-								onClick={() => setEditing((s) => s && { ...s, mode: "cwd" })}
-								className={`text-[10px] tracking-widest px-2.5 py-1 uppercase transition-colors ${
-									editing.mode === "cwd"
-										? "bg-primary/10 text-primary"
-										: "text-muted-foreground/60 hover:text-foreground"
-								}`}
-							>
-								CWD
-							</button>
-							<button
-								type="button"
-								onClick={() =>
-									setEditing((s) => s && { ...s, mode: "context" })
-								}
-								className={`text-[10px] tracking-widest px-2.5 py-1 uppercase transition-colors border-l border-border ${
-									editing.mode === "context"
-										? "bg-primary/10 text-primary"
-										: "text-muted-foreground/60 hover:text-foreground"
-								}`}
-							>
-								CONTEXT
-							</button>
-						</div>
-						<span className="text-[9px] text-muted-foreground/40 leading-snug">
-							{editing.mode === "cwd"
-								? "claude runs in agent's directory"
-								: "claude stays in vault, loads CLAUDE.md as persona"}
-						</span>
-					</div>
-					{providers.length > 0 && (
-						<div className="flex items-center gap-2">
-							<span className="text-[9px] tracking-widest text-muted-foreground/50 uppercase shrink-0">
-								Provider
-							</span>
-							<div className="flex border border-border">
-								{providers.map((p, i) => (
-									<button
-										key={p.id}
-										type="button"
-										onClick={() =>
-											setEditing((s) => s && { ...s, provider: p.id })
-										}
-										className={`text-[10px] tracking-widest px-2.5 py-1 uppercase transition-colors ${i > 0 ? "border-l border-border" : ""} ${
-											editing.provider === p.id
-												? "bg-primary/10 text-primary"
-												: "text-muted-foreground/60 hover:text-foreground"
-										}`}
-									>
-										{p.label}
-									</button>
-								))}
-							</div>
-							{providers.find((p) => p.id === editing.provider)?.available ===
-								false && (
-								<span className="text-[9px] text-destructive/70">
-									{providers.find((p) => p.id === editing.provider)
-										?.unavailableReason ?? "unavailable"}
-								</span>
-							)}
-						</div>
-					)}
-					{hasProviderOptions && (
-						<div className="space-y-2 pt-1">
-							<div className="flex items-center gap-2">
-								<span className="text-[9px] tracking-widest text-muted-foreground/50 uppercase shrink-0 w-24">
-									Model
-								</span>
-								<select
-									value={editing.model}
-									onChange={(e) => {
-										const model = e.target.value;
-										const newEffortOptions = effortOptionsFor(
-											activeProvider,
-											model,
-										);
-										setEditing(
-											(s) =>
-												s && {
-													...s,
-													model,
-													effort:
-														s.effort !== "" &&
-														!newEffortOptions.some((o) => o.value === s.effort)
-															? ""
-															: s.effort,
-												},
-										);
-									}}
-									className="flex-1 bg-secondary border border-border px-2 py-1 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
-								>
-									<option value="">— vault default —</option>
-									{modelOptions.map((m) => (
-										<option key={m.value} value={m.value} title={m.description}>
-											{m.label}
-											{m.isDefault ? " (default)" : ""}
-										</option>
-									))}
-								</select>
-							</div>
-							<div className="flex items-center gap-2">
-								<span className="text-[9px] tracking-widest text-muted-foreground/50 uppercase shrink-0 w-24">
-									Effort
-								</span>
-								<select
-									value={editing.effort}
-									onChange={(e) =>
-										setEditing((s) => s && { ...s, effort: e.target.value })
-									}
-									className="flex-1 bg-secondary border border-border px-2 py-1 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
-								>
-									<option value="">— vault default —</option>
-									{effortOptions.map((o) => (
-										<option key={o.value} value={o.value}>
-											{o.label}
-											{o.isDefault ? " (default)" : ""}
-										</option>
-									))}
-								</select>
-							</div>
-							<div className="flex items-center gap-2">
-								<span className="text-[9px] tracking-widest text-muted-foreground/50 uppercase shrink-0 w-24">
-									Permissions
-								</span>
-								<select
-									value={editing.permissionMode}
-									onChange={(e) =>
-										setEditing(
-											(s) => s && { ...s, permissionMode: e.target.value },
-										)
-									}
-									className="flex-1 bg-secondary border border-border px-2 py-1 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
-								>
-									<option value="">— vault default —</option>
-									{permissionOptions.map((o) => (
-										<option key={o.value} value={o.value}>
-											{o.label}
-										</option>
-									))}
-								</select>
-							</div>
-							<div className="flex items-center gap-2">
-								<span className="text-[9px] tracking-widest text-muted-foreground/50 uppercase shrink-0 w-24">
-									Max turns
-								</span>
-								<input
-									type="number"
-									min={1}
-									value={editing.maxTurns}
-									onChange={(e) => {
-										const raw = e.target.value;
-										if (raw === "") {
-											setEditing((s) => s && { ...s, maxTurns: "" });
-										} else {
-											const n = parseInt(raw, 10);
-											setEditing(
-												(s) =>
-													s && {
-														...s,
-														maxTurns: Number.isFinite(n)
-															? String(Math.max(1, n))
-															: "",
-													},
-											);
-										}
-									}}
-									placeholder="vault default"
-									className="flex-1 bg-secondary border border-border px-2 py-1 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
-								/>
-							</div>
-							<div className="flex items-center gap-2">
-								<span className="text-[9px] tracking-widest text-muted-foreground/50 uppercase shrink-0 w-24">
-									Recap model
-								</span>
-								<select
-									value={editing.recapModel}
-									onChange={(e) =>
-										setEditing((s) => s && { ...s, recapModel: e.target.value })
-									}
-									className="flex-1 bg-secondary border border-border px-2 py-1 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
-								>
-									<option value="">
-										{isClaudeProvider
-											? "— default (haiku) —"
-											: "— provider default —"}
-									</option>
-									{modelOptions.map((m) => (
-										<option key={m.value} value={m.value} title={m.description}>
-											{m.label}
-											{m.isDefault ? " (default)" : ""}
-										</option>
-									))}
-								</select>
-							</div>
-							{editing.provider === "claude" && (
-								<div className="flex items-center gap-2">
-									<span className="text-[9px] tracking-widest text-muted-foreground/50 uppercase shrink-0 w-24">
-										Interactive mode
-									</span>
-									<label className="flex items-center gap-2 cursor-pointer">
-										<input
-											type="checkbox"
-											checked={editing.interactiveMode}
-											onChange={(e) =>
-												setEditing(
-													(s) =>
-														s && {
-															...s,
-															interactiveMode: e.target.checked,
-														},
-												)
-											}
-											className="w-3.5 h-3.5 accent-primary"
-										/>
-										<span className="text-xs text-muted-foreground">
-											to not go against your &quot;programmatic&quot; usage, if
-											you desire
-										</span>
-									</label>
-								</div>
-							)}
-						</div>
-					)}
+					<AgentConfigurationFields
+						value={editing}
+						providers={providers}
+						includeInteractive
+						onChange={(patch) =>
+							setEditing((current) => current && { ...current, ...patch })
+						}
+					/>
 					<div className="flex items-center gap-2 pt-1">
 						<button
 							type="button"

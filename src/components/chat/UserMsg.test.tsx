@@ -26,6 +26,12 @@ beforeEach(() => {
 });
 
 describe("UserMsg", () => {
+	it("keeps the normal ME label while a promoted queued message is running", () => {
+		render(<UserMsg message={makeMsg()} queueState={{ kind: "running" }} />);
+		expect(screen.getByText("ME")).toBeTruthy();
+		expect(screen.queryByText("RUN")).toBeNull();
+	});
+
 	describe("CopyButton mobile visibility", () => {
 		it("copy button has [@media(hover:none)]:opacity-100 class so it shows on touch devices", () => {
 			render(<UserMsg message={makeMsg()} />);

@@ -1,11 +1,8 @@
-import { existsSync } from "node:fs";
-import { join } from "node:path";
 import { createFileRoute } from "@tanstack/react-router";
 import { AgentSchema } from "#/config";
-import { deriveAgentName } from "#/lib/agentMcp";
+import { agentConfigToEntry } from "#/lib/agentMcp";
 import { writeConfig } from "#/lib/config-writer";
 import { forbiddenResponse } from "#/lib/originGate";
-import { expandTilde } from "#/lib/paths";
 import { loadConfig } from "#/server/config";
 
 // ─── Handlers (exported for unit tests) ──────────────────────────────────────
@@ -15,23 +12,7 @@ export async function handleGetAgents(request: Request): Promise<Response> {
 	if (forbidden) return forbidden;
 
 	const config = loadConfig();
-	const agents = (config.agents ?? []).map((agent) => {
-		const resolved = expandTilde(agent.path);
-		return {
-			path: agent.path,
-			name: agent.name ?? deriveAgentName(resolved),
-			mode: agent.mode ?? "cwd",
-			provider: agent.provider ?? "claude",
-			hasClaudemd: existsSync(join(resolved, "CLAUDE.md")),
-			dirExists: existsSync(resolved),
-			model: agent.model,
-			effort: agent.effort,
-			maxTurns:
-				agent.max_turns !== undefined ? String(agent.max_turns) : undefined,
-			permissionMode: agent.permission_mode,
-			recapModel: agent.recap_model,
-		};
-	});
+	const agents = (config.agents ?? []).map(agentConfigToEntry);
 
 	return Response.json(agents);
 }

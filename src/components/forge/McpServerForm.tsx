@@ -1,5 +1,6 @@
 import {
 	type Dispatch,
+	type ReactNode,
 	type SetStateAction,
 	useEffect,
 	useRef,
@@ -37,7 +38,7 @@ export type ServerFormFields = {
 	headers: string;
 };
 
-export const DEFAULT_FORM: ServerFormFields = {
+const DEFAULT_FORM: ServerFormFields = {
 	type: "stdio",
 	command: "",
 	args: "",
@@ -244,6 +245,68 @@ function McpServerFormBody({
 	);
 }
 
+function McpServerTypeSelect({
+	form,
+	setForm,
+}: {
+	form: ServerFormFields;
+	setForm: Dispatch<SetStateAction<ServerFormFields>>;
+}) {
+	return (
+		<select
+			value={form.type}
+			onChange={(event) =>
+				setForm((current) => ({
+					...current,
+					type: event.target.value as ServerFormFields["type"],
+				}))
+			}
+			className="bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
+		>
+			<option value="stdio">stdio</option>
+			<option value="http">http</option>
+			<option value="sse">sse</option>
+		</select>
+	);
+}
+
+function McpServerFormActions({
+	error,
+	onCancel,
+	onSubmit,
+	isSubmitting,
+	children,
+}: {
+	error: string | null;
+	onCancel: () => void;
+	onSubmit: () => void;
+	isSubmitting: boolean;
+	children: ReactNode;
+}) {
+	return (
+		<>
+			{error && <div className="text-xs text-destructive">{error}</div>}
+			<div className="flex gap-2 justify-end pt-1">
+				<button
+					type="button"
+					onClick={onCancel}
+					className="text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:bg-accent transition-colors uppercase"
+				>
+					CANCEL
+				</button>
+				<button
+					type="button"
+					onClick={onSubmit}
+					disabled={isSubmitting}
+					className="text-[10px] tracking-widest px-3 py-1.5 border border-primary/40 text-primary hover:bg-primary/10 transition-colors uppercase disabled:opacity-50"
+				>
+					{children}
+				</button>
+			</div>
+		</>
+	);
+}
+
 // ─── EditMcpServerForm ────────────────────────────────────────────────────────
 
 export function EditMcpServerForm({
@@ -295,42 +358,17 @@ export function EditMcpServerForm({
 				<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
 					Edit: {serverName}
 				</div>
-				<select
-					value={form.type}
-					onChange={(e) =>
-						setForm((f) => ({
-							...f,
-							type: e.target.value as "stdio" | "http" | "sse",
-						}))
-					}
-					className="bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
-				>
-					<option value="stdio">stdio</option>
-					<option value="http">http</option>
-					<option value="sse">sse</option>
-				</select>
+				<McpServerTypeSelect form={form} setForm={setForm} />
 			</div>
 			<McpServerFormBody form={form} setForm={setForm} />
-			{(formError ?? opError) && (
-				<div className="text-xs text-destructive">{formError ?? opError}</div>
-			)}
-			<div className="flex gap-2 justify-end pt-1">
-				<button
-					type="button"
-					onClick={onCancel}
-					className="text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:bg-accent transition-colors uppercase"
-				>
-					CANCEL
-				</button>
-				<button
-					type="button"
-					onClick={() => void handleSave()}
-					disabled={isSaving}
-					className="text-[10px] tracking-widest px-3 py-1.5 border border-primary/40 text-primary hover:bg-primary/10 transition-colors uppercase disabled:opacity-50"
-				>
-					{isSaving ? "SAVING…" : "SAVE"}
-				</button>
-			</div>
+			<McpServerFormActions
+				error={formError ?? opError}
+				onCancel={onCancel}
+				onSubmit={() => void handleSave()}
+				isSubmitting={isSaving}
+			>
+				{isSaving ? "SAVING…" : "SAVE"}
+			</McpServerFormActions>
 		</div>
 	);
 }
@@ -406,43 +444,18 @@ export function AddMcpServerForm({
 					<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
 						Type
 					</div>
-					<select
-						value={form.type}
-						onChange={(e) =>
-							setForm((f) => ({
-								...f,
-								type: e.target.value as "stdio" | "http" | "sse",
-							}))
-						}
-						className="bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
-					>
-						<option value="stdio">stdio</option>
-						<option value="http">http</option>
-						<option value="sse">sse</option>
-					</select>
+					<McpServerTypeSelect form={form} setForm={setForm} />
 				</div>
 			</div>
 			<McpServerFormBody form={form} setForm={setForm} />
-			{(formError ?? opError) && (
-				<div className="text-xs text-destructive">{formError ?? opError}</div>
-			)}
-			<div className="flex gap-2 justify-end pt-1">
-				<button
-					type="button"
-					onClick={onCancel}
-					className="text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:bg-accent transition-colors uppercase"
-				>
-					CANCEL
-				</button>
-				<button
-					type="button"
-					onClick={() => void handleAdd()}
-					disabled={isAdding}
-					className="text-[10px] tracking-widest px-3 py-1.5 border border-primary/40 text-primary hover:bg-primary/10 transition-colors uppercase disabled:opacity-50"
-				>
-					{isAdding ? "ADDING…" : "ADD"}
-				</button>
-			</div>
+			<McpServerFormActions
+				error={formError ?? opError}
+				onCancel={onCancel}
+				onSubmit={() => void handleAdd()}
+				isSubmitting={isAdding}
+			>
+				{isAdding ? "ADDING…" : "ADD"}
+			</McpServerFormActions>
 		</div>
 	);
 }

@@ -3,51 +3,43 @@ import {
 	useNavigate,
 	useRouter,
 } from "@tanstack/react-router";
-import { Mic, Paperclip, Square, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AgentSelect } from "#/components/AgentSelect";
-import { AttachmentStrip } from "#/components/AttachmentStrip";
+import {
+	CockpitHeader,
+	CockpitRunError,
+	CockpitSkills,
+} from "#/components/cockpit/CockpitContent";
+import {
+	type ActiveCockpitSkill,
+	CockpitPrompt,
+} from "#/components/cockpit/CockpitPrompt";
 import {
 	MobileRunsPanel,
 	RecentRunsSidebar,
 } from "#/components/cockpit/CockpitSidebar";
-import {
-	McpPanel,
-	type McpServerEntry,
-	mapMcpServer,
-} from "#/components/cockpit/McpPanel";
+import { McpPanel } from "#/components/cockpit/McpPanel";
 import { MobileContextBand } from "#/components/cockpit/MobileContextBand";
 import { MobileStatsPanel } from "#/components/cockpit/MobileStatsPanel";
-import { SkillCard } from "#/components/cockpit/SkillCard";
-import { SlashPicker } from "#/components/cockpit/SlashPicker";
 import { ThirtyDayGraph } from "#/components/cockpit/ThirtyDayGraph";
 import { PrivacyMask } from "#/components/PrivacyMask";
-import {
-	ProviderUsageStrip,
-	RoutinesWindowSection,
-} from "#/components/UsageWindowsPanel";
+import { ProviderUsageStrip } from "#/components/usage/ProviderUsageStrip";
+import { RoutinesWindowSection } from "#/components/usage/UsageWindowSections";
 import { FirstRunWizard } from "#/components/wizard/FirstRunWizard";
 import { getConfig } from "#/config";
-import type { AggStats, SessionRow, ThirtyDayStats, WeeklyStats } from "#/db";
+import { useCockpitLiveData } from "#/hooks/useCockpitLiveData";
+import { useCockpitRun } from "#/hooks/useCockpitRun";
 import { useFileUpload } from "#/hooks/useFileUpload";
 import { useMergedSkills } from "#/hooks/useMergedSkills";
 import { useSlashPicker } from "#/hooks/useSlashPicker";
 import { useVoiceInput } from "#/hooks/useVoiceInput";
-import { useWs } from "#/hooks/useWs";
 import { useWsLiveStats } from "#/hooks/useWsSelectors";
-import * as wsStore from "#/hooks/wsStore";
-import {
-	composerKeyAction,
-	insertAtSelection,
-	resizeComposer,
-} from "#/lib/composer";
+import { insertAtSelection, resizeComposer } from "#/lib/composer";
 import { fmtModel } from "#/lib/formatters";
 import {
 	getActiveSessionRowFn,
 	getAgentListFn,
 	getCockpitData,
 	getCockpitStatsFn,
-	getCurrentSessionFn,
 	getMcpServersFn,
 	getRecentSessionsFn,
 	getThirtyDayStatsFn,
@@ -55,12 +47,7 @@ import {
 	getWeeklyStatsFn,
 	loadProviderUsages,
 } from "#/lib/serverFns";
-import { resolveSessionId } from "#/lib/sessionRouting";
-import { resolveSkillPrompt } from "#/lib/skillPrompt";
 import { groupSkills, type Skill } from "#/lib/skills";
-import { SESSION_LABEL_LENGTH, uid } from "#/lib/utils";
-import { displayVoiceHotkey } from "#/lib/voiceHotkey";
-import type { RateLimitMessage, ServerMessage } from "#/server/protocol";
 
 // ─── route ───────────────────────────────────────────────────────────────────
 
@@ -127,94 +114,39 @@ function CockpitPage() {
 	const liveStats = useWsLiveStats();
 	const [prompt, setPrompt] = useState("");
 	const [selectedAgentPath, setSelectedAgentPath] = useState("");
-	const [activeSkill, setActiveSkill] = useState<{
-		name: string;
-		section?: string;
-		filePath: string;
-	} | null>(null);
+	const [activeSkill, setActiveSkill] = useState<ActiveCockpitSkill | null>(
+		null,
+	);
 	const [background, setBackground] = useState(false);
 	const [sameSession, setSameSession] = useState(false);
-	const [recentRuns, setRecentRuns] = useState<SessionRow[]>(recentSessions);
-	const [agg, setAgg] = useState<AggStats>(statsData.agg);
-	const [weeklyStats, setWeeklyStats] = useState<WeeklyStats>(() => {
-		if (!wsStore.getPendingSessionToday()) return initialWeeklyStats;
-		const dow = new Date().getDay();
-		const days = [...initialWeeklyStats.days];
-		days[dow] = (days[dow] ?? 0) + 1;
-		return { total: initialWeeklyStats.total + 1, days };
-	});
-	const [thirtyDayStats, setThirtyDayStats] = useState<ThirtyDayStats>(() => {
-		if (!wsStore.getPendingSessionToday()) return initialThirtyDayStats;
-		const today = new Date().toISOString().slice(0, 10);
-		const hasToday = initialThirtyDayStats.days.some((d) => d.date === today);
-		return {
-			total: initialThirtyDayStats.total + 1,
-			days: hasToday
-				? initialThirtyDayStats.days.map((d) =>
-						d.date === today ? { ...d, count: d.count + 1 } : d,
-					)
-				: [...initialThirtyDayStats.days, { date: today, count: 1 }],
-		};
-	});
-	const [liveActiveSession, setLiveActiveSession] = useState<SessionRow | null>(
-		activeSession,
-	);
-	const [mcpServers, setMcpServers] =
-		useState<McpServerEntry[]>(initialMcpServers);
-	const [sdkSlashCommands, setSdkSlashCommands] = useState<
-		Array<{
-			name: string;
-			description: string;
-			argumentHint: string;
-			aliases?: string[];
-		}>
-	>([]);
-	const [runError, setRunError] = useState<string | null>(null);
-	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const fileInputRef = useRef<HTMLInputElement>(null);
-
-	const { wsStatus, sessionState, model, send } = useWs(
-		(msg: ServerMessage) => {
-			if (msg.type === "done") {
-				setRunError(null);
-				getRecentSessionsFn().then(setRecentRuns);
-				getCockpitStatsFn().then((d) => setAgg(d.agg));
-				getWeeklyStatsFn().then(setWeeklyStats);
-				getThirtyDayStatsFn().then(setThirtyDayStats);
-				getActiveSessionRowFn().then(setLiveActiveSession);
-			}
-			if (msg.type === "error") {
-				setRunError(msg.message);
-			}
-			if (msg.type === "rate_limit") {
-				setRateLimit(msg);
-			}
-			if (msg.type === "mcp_status") {
-				setMcpServers(msg.servers.map(mapMcpServer));
-			}
-			if (msg.type === "slash_commands") {
-				setSdkSlashCommands(msg.commands);
-			}
-		},
-	);
-
-	useEffect(() => {
-		send({ type: "sync_mcp_list" });
-		send({ type: "probe_slash_commands" });
-	}, [send]);
-
-	// Refresh active session on mount — router cache may serve stale loader data
-	// when user navigates back to / after a session completed elsewhere.
-	useEffect(() => {
-		let active = true;
-		void getActiveSessionRowFn().then((s) => {
-			if (active) setLiveActiveSession(s);
-		});
-		return () => {
-			active = false;
-		};
-	}, []);
+	const {
+		wsStatus,
+		sessionState,
+		model,
+		send,
+		recentRuns,
+		setRecentRuns,
+		agg,
+		weeklyStats,
+		setWeeklyStats,
+		thirtyDayStats,
+		setThirtyDayStats,
+		liveActiveSession,
+		mcpServers,
+		sdkSlashCommands,
+		runError,
+		setRunError,
+		rateLimit,
+	} = useCockpitLiveData({
+		recentSessions,
+		agg: statsData.agg,
+		weeklyStats: initialWeeklyStats,
+		thirtyDayStats: initialThirtyDayStats,
+		activeSession,
+		mcpServers: initialMcpServers,
+	});
 
 	const {
 		pendingAttachments,
@@ -240,6 +172,33 @@ function CockpitPage() {
 		navigate: pickerNavigate,
 		close: pickerClose,
 	} = useSlashPicker(prompt, allSkills, activeSkill);
+	const isConnected = wsStatus === "connected";
+	const isRunning = isConnected && sessionState === "running";
+	const canRun = (!!activeSkill || prompt.trim().length > 0) && isConnected;
+	const handleRun = useCockpitRun({
+		prompt,
+		activeSkill,
+		allSkills,
+		wsStatus,
+		sameSession,
+		attachSessionIdRef,
+		pendingAttachments,
+		clearPendingAttachments,
+		isRunning,
+		selectedAgentPath,
+		background,
+		model,
+		send,
+		setRunError,
+		setPrompt,
+		setActiveSkill,
+		setRecentRuns,
+		setThirtyDayStats,
+		setWeeklyStats,
+		navigateToRaven: (sessionId, agent) => {
+			navigate({ to: "/raven", search: { session: sessionId, agent } });
+		},
+	});
 
 	const voice = useVoiceInput({
 		config: config.voice,
@@ -293,144 +252,11 @@ function CockpitPage() {
 		setActiveSkill(null);
 	}
 
-	async function handleRun(overrideText?: string) {
-		const typed = (overrideText ?? prompt).trim();
-		const { text, skillContext } = resolveSkillPrompt(
-			activeSkill,
-			typed,
-			allSkills,
-		);
-		if (!text || wsStatus !== "connected") return;
-		setRunError(null);
-		// Resolve session: same-session → prefer active, then most recent from DB,
-		// then new; unchecked → always new (attachment pre-selection takes priority)
-		const currentId = sameSession ? await getCurrentSessionFn() : null;
-		const mostRecentId =
-			sameSession && !currentId
-				? (await getRecentSessionsFn())[0]?.id
-				: undefined;
-		const sessionId = resolveSessionId({
-			sameSession,
-			currentId,
-			mostRecentId,
-			attachedId: attachSessionIdRef.current,
-			newId: uid(),
-		});
-		attachSessionIdRef.current = null;
-		const attachments = pendingAttachments;
-		clearPendingAttachments();
-
-		if (isRunning) {
-			wsStore.enqueueChat({
-				id: uid(),
-				text,
-				session_id: sessionId,
-				skill_context: skillContext,
-				agent_cwd: selectedAgentPath || undefined,
-				attachments: attachments.length > 0 ? attachments : undefined,
-			});
-			setPrompt("");
-			setActiveSkill(null);
-			if (!background) {
-				navigate({
-					to: "/raven",
-					search: {
-						session: sessionId,
-						agent: selectedAgentPath || undefined,
-					},
-				});
-			}
-			return;
-		}
-
-		if (!sameSession) wsStore.resetLiveStats();
-		wsStore.setActiveSessionId(sessionId);
-		send({
-			type: "chat",
-			text,
-			session_id: sessionId,
-			skill_context: skillContext,
-			agent_cwd: selectedAgentPath || undefined,
-			attachments: attachments.length > 0 ? attachments : undefined,
-		});
-		if (!sameSession) {
-			setRecentRuns((prev) => {
-				const already = prev.some((r) => r.id === sessionId);
-				if (already) return prev;
-				const pending: SessionRow = {
-					id: sessionId,
-					label: text.slice(0, SESSION_LABEL_LENGTH).toUpperCase(),
-					model: model ?? null,
-					started_at: Math.floor(Date.now() / 1000),
-					ended_at: null,
-					query_count: 0,
-					total_cost: 0,
-					total_input_tokens: 0,
-					total_output_tokens: 0,
-					total_cache_read_tokens: 0,
-					total_cache_creation_tokens: 0,
-					total_turns: 0,
-				};
-				return [pending, ...prev].slice(0, 5);
-			});
-			const today = new Date().toISOString().slice(0, 10);
-			setThirtyDayStats((prev) => {
-				const hasToday = prev.days.some((d) => d.date === today);
-				return {
-					total: prev.total + 1,
-					days: hasToday
-						? prev.days.map((d) =>
-								d.date === today ? { ...d, count: d.count + 1 } : d,
-							)
-						: [...prev.days, { date: today, count: 1 }],
-				};
-			});
-			setWeeklyStats((prev) => {
-				const dow = new Date().getDay();
-				const days = [...prev.days];
-				days[dow] = (days[dow] ?? 0) + 1;
-				return { total: prev.total + 1, days };
-			});
-		}
-		setPrompt("");
-		setActiveSkill(null);
-		if (!background) {
-			wsStore.setPendingPrompt(text);
-			navigate({
-				to: "/raven",
-				search: {
-					session: sessionId,
-					agent: selectedAgentPath || undefined,
-				},
-			});
-		}
-	}
-
-	const isConnected = wsStatus === "connected";
-	const isRunning = isConnected && sessionState === "running";
-	const canRun = (!!activeSkill || prompt.trim().length > 0) && isConnected;
-
 	const modelShort = model ? fmtModel(model) : null;
 
 	return (
 		<div className="flex flex-col md:h-full">
-			{/* Header strip */}
-			<div className="flex items-center gap-3 px-5 py-3 border-b border-border shrink-0">
-				<PrivacyMask
-					inline
-					className="text-[11px] tracking-widest text-primary uppercase"
-				>
-					{config.vault.name || "HLID"}
-				</PrivacyMask>
-				{modelShort && (
-					<>
-						<span className="text-muted-foreground/25">·</span>
-						<span className="text-[10px] tracking-widest text-muted-foreground/40">
-							{modelShort}
-						</span>
-					</>
-				)}
-			</div>
+			<CockpitHeader config={config} modelShort={modelShort} />
 
 			{/* Usage windows */}
 			<ProviderUsageStrip
@@ -468,320 +294,50 @@ function CockpitPage() {
 			<div className="flex md:flex-1 md:overflow-hidden">
 				{/* Main column */}
 				<div className="flex flex-col flex-1 md:overflow-auto">
-					{/* Prompt area */}
-					<div className="p-4 border-b border-border space-y-2 shrink-0">
-						<div className="flex items-center justify-between mb-1">
-							<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
-								PROMPT
-								{activeSkill && (
-									<span className="text-primary/50 ml-2">
-										· {activeSkill.name}
-									</span>
-								)}
-							</div>
-						</div>
+					<CockpitPrompt
+						config={config}
+						prompt={prompt}
+						setPrompt={setPrompt}
+						activeSkill={activeSkill}
+						isConnected={isConnected}
+						isRunning={isRunning}
+						canRun={canRun}
+						selectedAgentPath={selectedAgentPath}
+						setSelectedAgentPath={setSelectedAgentPath}
+						agentList={agentList}
+						background={background}
+						setBackground={setBackground}
+						sameSession={sameSession}
+						setSameSession={setSameSession}
+						textareaRef={textareaRef}
+						fileInputRef={fileInputRef}
+						upload={{
+							pendingAttachments,
+							uploadingCount,
+							uploadError,
+							uploadFiles,
+							removePending,
+						}}
+						voice={voice}
+						picker={{
+							open: pickerOpen,
+							items: pickerItems,
+							index: pickerIndex,
+							navigate: pickerNavigate,
+							close: pickerClose,
+						}}
+						onSkillSelect={handleSkillSelect}
+						onClear={handleClear}
+						onRun={() => void handleRun()}
+					/>
 
-						<section
-							aria-label="Prompt input area"
-							className={`relative border bg-card transition-colors ${isConnected ? "border-border focus-within:border-primary/30" : "border-border/40"}`}
-							onDragOver={(e) => {
-								if (e.dataTransfer?.types?.includes("Files"))
-									e.preventDefault();
-							}}
-							onDrop={(e) => {
-								if (e.dataTransfer?.files?.length) {
-									e.preventDefault();
-									void uploadFiles(e.dataTransfer.files);
-								}
-							}}
-						>
-							{pickerOpen && (
-								<SlashPicker
-									items={pickerItems}
-									selectedIndex={pickerIndex}
-									onSelect={handleSkillSelect}
-								/>
-							)}
-							<AttachmentStrip
-								attachments={pendingAttachments}
-								uploadingCount={uploadingCount}
-								uploadError={uploadError}
-								onRemove={removePending}
-								className="px-3 py-2"
-							/>
-							{voice.error && (
-								<div
-									className="px-3 py-2 flex items-start gap-3 border-b border-destructive/30 bg-destructive/5"
-									role="alert"
-								>
-									<div className="flex-1 text-[10px] text-destructive/80 leading-relaxed">
-										voice transcription failed: {voice.error}
-									</div>
-									<button
-										type="button"
-										onClick={voice.clearError}
-										className="text-destructive/50 hover:text-destructive transition-colors shrink-0"
-										aria-label="Dismiss voice error"
-									>
-										<X className="w-3 h-3" />
-									</button>
-								</div>
-							)}
-							<div className="flex items-start">
-								<span className="text-primary text-sm px-3 py-2.5 shrink-0 select-none">
-									›
-								</span>
-								<textarea
-									ref={textareaRef}
-									value={prompt}
-									onChange={(e) => {
-										setPrompt(e.target.value);
-									}}
-									onKeyDown={(e) => {
-										const isTouch =
-											typeof window !== "undefined" &&
-											window.matchMedia("(pointer: coarse)").matches;
-										const action = composerKeyAction({
-											key: e.key,
-											shiftKey: e.shiftKey,
-											metaKey: e.metaKey,
-											ctrlKey: e.ctrlKey,
-											pickerOpen,
-											isTouch,
-											enterToSubmit: config.ui.enter_to_submit,
-										});
-										if (!action) return;
-										e.preventDefault();
-										if (action === "picker-next") pickerNavigate(1);
-										if (action === "picker-previous") pickerNavigate(-1);
-										if (action === "picker-close") pickerClose();
-										if (action === "picker-select" && pickerItems.length > 0)
-											handleSkillSelect(pickerItems[pickerIndex]);
-										if (action === "submit") handleRun();
-									}}
-									role="combobox"
-									aria-expanded={pickerOpen}
-									aria-controls="slash-picker"
-									aria-autocomplete="list"
-									aria-activedescendant={
-										pickerOpen ? `slash-picker-opt-${pickerIndex}` : undefined
-									}
-									rows={3}
-									placeholder={
-										voice.phase === "recording"
-											? `recording… ${voice.seconds}s`
-											: voice.phase === "transcribing"
-												? "transcribing locally…"
-												: !isConnected
-													? "server offline…"
-													: activeSkill
-														? "add context… (optional)"
-														: "type a prompt, or pick a skill below"
-									}
-									disabled={!isConnected || voice.phase === "transcribing"}
-									className={`flex-1 resize-none bg-transparent py-2.5 pr-3 text-sm text-foreground focus:outline-none disabled:opacity-30 overflow-hidden min-h-[72px] ${!isConnected ? "placeholder:text-foreground/50" : "placeholder:text-muted-foreground/25"}`}
-								/>
-							</div>
-							{agentList.length > 0 && (
-								<div className="md:hidden flex items-baseline gap-2 px-3 py-1.5 border-t border-border/60">
-									<AgentSelect
-										agents={agentList}
-										value={selectedAgentPath}
-										onChange={setSelectedAgentPath}
-										fullWidth
-									/>
-								</div>
-							)}
-							<div className="flex items-center justify-between px-3 py-2 border-t border-border/60">
-								<div className="flex items-center gap-3">
-									<input
-										ref={fileInputRef}
-										type="file"
-										multiple
-										className="hidden"
-										onChange={(e) => {
-											if (e.target.files) void uploadFiles(e.target.files);
-											e.target.value = "";
-										}}
-									/>
-									<button
-										type="button"
-										onClick={() => fileInputRef.current?.click()}
-										disabled={!isConnected}
-										className="text-muted-foreground/45 hover:text-muted-foreground transition-colors shrink-0 disabled:opacity-30"
-										aria-label="Attach file"
-										title="Attach file"
-									>
-										<Paperclip className="w-3.5 h-3.5" />
-									</button>
-									<button
-										type="button"
-										onClick={() => {
-											if (voice.phase === "recording") voice.stop();
-											else void voice.start();
-										}}
-										onFocus={voice.refresh}
-										disabled={
-											!isConnected ||
-											(!voice.ready && voice.phase !== "recording") ||
-											voice.phase === "transcribing"
-										}
-										className={`transition-colors shrink-0 disabled:opacity-30 ${voice.phase === "recording" ? "text-destructive" : "text-muted-foreground/45 hover:text-muted-foreground"}`}
-										aria-label={
-											voice.phase === "recording"
-												? "Stop recording"
-												: "Start voice input"
-										}
-										title={
-											!config.voice.enabled
-												? "Enable voice in Forge"
-												: voice.status.state !== "ready"
-													? `Voice ${voice.status.state}`
-													: config.voice.hotkey
-														? `Voice input (${displayVoiceHotkey(config.voice.hotkey)})`
-														: "Start voice input"
-										}
-									>
-										{voice.phase === "recording" ? (
-											<Square className="w-3.5 h-3.5 fill-current" />
-										) : (
-											<Mic className="w-3.5 h-3.5" />
-										)}
-									</button>
-									{voice.phase === "recording" && (
-										<button
-											type="button"
-											onClick={voice.cancel}
-											className="text-muted-foreground/45 hover:text-muted-foreground"
-											aria-label="Cancel recording"
-											title="Cancel recording"
-										>
-											<X className="w-3.5 h-3.5" />
-										</button>
-									)}
-									{agentList.length > 0 && (
-										<div className="hidden md:flex items-baseline gap-1.5">
-											<AgentSelect
-												agents={agentList}
-												value={selectedAgentPath}
-												onChange={setSelectedAgentPath}
-											/>
-										</div>
-									)}
-									<label className="flex items-center gap-1.5 cursor-pointer select-none group">
-										<input
-											type="checkbox"
-											checked={background}
-											onChange={(e) => setBackground(e.target.checked)}
-											className="sr-only"
-										/>
-										<span
-											className={`w-3 h-3 border flex items-center justify-center shrink-0 transition-colors ${background ? "border-primary bg-primary/20" : "border-border bg-secondary group-hover:border-primary/40"}`}
-										>
-											{background && (
-												<span className="w-1.5 h-1.5 bg-primary block" />
-											)}
-										</span>
-										<span className="text-[9px] tracking-wider text-muted-foreground/40 uppercase">
-											Background
-										</span>
-									</label>
-									<label className="flex items-center gap-1.5 cursor-pointer select-none group">
-										<input
-											type="checkbox"
-											checked={sameSession}
-											onChange={(e) => setSameSession(e.target.checked)}
-											className="sr-only"
-										/>
-										<span
-											className={`w-3 h-3 border flex items-center justify-center shrink-0 transition-colors ${sameSession ? "border-primary bg-primary/20" : "border-border bg-secondary group-hover:border-primary/40"}`}
-										>
-											{sameSession && (
-												<span className="w-1.5 h-1.5 bg-primary block" />
-											)}
-										</span>
-										<span className="text-[9px] tracking-wider text-muted-foreground/40 uppercase">
-											Same Session
-										</span>
-									</label>
-								</div>
-								<div className="flex gap-2">
-									{(prompt || activeSkill) && (
-										<button
-											type="button"
-											onClick={handleClear}
-											className="px-3 py-1 border border-border text-[10px] tracking-widest text-muted-foreground/50 hover:text-foreground hover:border-border/80 transition-colors uppercase"
-										>
-											CLEAR
-										</button>
-									)}
-									<button
-										type="button"
-										onClick={() => void handleRun()}
-										disabled={!canRun}
-										className="px-3 py-1 bg-primary text-primary-foreground text-[10px] tracking-widest font-bold hover:opacity-90 transition-opacity disabled:opacity-25 uppercase"
-									>
-										{isRunning ? "QUEUE →" : "RUN →"}
-									</button>
-								</div>
-							</div>
-						</section>
-					</div>
-
-					{/* Background run error */}
-					{runError && (
-						<div className="px-4 py-2 border-b border-destructive/20 bg-destructive/5 shrink-0">
-							<span className="text-[10px] tracking-wider text-destructive/80">
-								ERR: {runError}
-							</span>
-						</div>
-					)}
-
-					{/* Skills */}
-					{data.skills.length > 0 ? (
-						<div className="p-4 grid grid-cols-1 md:grid-cols-[repeat(auto-fill,minmax(240px,1fr))] gap-x-4 gap-y-5">
-							{skillGroups.map((g) => (
-								<div
-									key={g.section ?? "__unsectioned__"}
-									className="space-y-2 min-w-0"
-								>
-									<div className="flex items-center gap-2">
-										<span className="w-1.5 h-1.5 rounded-full bg-primary/40 shrink-0" />
-										<PrivacyMask
-											inline
-											className="text-[10px] tracking-widest text-muted-foreground uppercase"
-										>
-											{g.section ?? "SKILLS"}
-										</PrivacyMask>
-										<span className="text-[10px] text-muted-foreground/50">
-											{g.skills.length}
-										</span>
-									</div>
-									<div className="grid grid-cols-2 gap-2 md:grid-cols-1">
-										{g.skills.map((skill) => (
-											<SkillCard
-												key={skill.file}
-												skill={skill}
-												active={activeSkill?.name === skill.name}
-												onSelect={(s) => handleSkillSelect(s)}
-											/>
-										))}
-									</div>
-								</div>
-							))}
-						</div>
-					) : (
-						<div className="flex-1 flex items-center justify-center">
-							<div className="text-center space-y-2">
-								<div className="text-[10px] tracking-widest text-muted-foreground/30 uppercase">
-									no skills yet
-								</div>
-								<div className="text-[9px] tracking-wider text-muted-foreground/20">
-									drop .md files into your vault skills folder
-								</div>
-							</div>
-						</div>
-					)}
+					<CockpitRunError error={runError} />
+					<CockpitSkills
+						hasSkills={data.skills.length > 0}
+						groups={skillGroups}
+						activeSkill={activeSkill}
+						onSelect={handleSkillSelect}
+					/>
 				</div>
 
 				{/* Recent runs sidebar, desktop only */}

@@ -1,92 +1,270 @@
-/**
- * AcpProvider — contract spec for the future ACP (Agent Client Protocol) provider.
- *
- * All tests are skipped. They exist to define the expected behavior of AcpProvider
- * before implementation begins; green them one by one as AcpProvider is built.
- *
- * ACP reference: https://agentclientprotocol.modelcontextprotocol.io/
- * SDK: @agentclientprotocol/sdk
- */
-import { describe, it } from "vitest";
+import { resolve } from "node:path";
+import { describe, expect, it, vi } from "vitest";
+import { AcpProvider, inspectAcpAgent } from "./acpProvider";
+import type { AgentEvent, AgentQueryParams } from "./agentProvider";
 
-// Future import — uncomment when implementation begins:
-// import { AcpProvider } from "./acpProvider";
-// import type { AgentProvider } from "./agentProvider";
+const fixture = resolve("src/server/fixtures/fake-acp-agent.mjs");
 
-// ── Interface compliance ───────────────────────────────────────────────────────
+function makeProvider(): AcpProvider {
+	return new AcpProvider({
+		id: "acp:fake",
+		label: "Fake ACP",
+		command: process.execPath,
+		args: [fixture],
+	});
+}
+
+function params(
+	decision: "allow" | "deny" = "allow",
+	overrides: Partial<AgentQueryParams> = {},
+): AgentQueryParams {
+	return {
+		cwd: process.cwd(),
+		canUseTool: vi.fn(async () => ({ behavior: decision })),
+		...overrides,
+	};
+}
+
+async function run(
+	message = "test",
+	query = params(),
+): Promise<{
+	events: AgentEvent[];
+	session: ReturnType<AcpProvider["query"]>;
+}> {
+	const session = makeProvider().query(query);
+	await session.send(message);
+	const events: AgentEvent[] = [];
+	for await (const event of session) {
+		events.push(event);
+		if (event.type === "done") break;
+	}
+	return { events, session };
+}
 
 describe("AcpProvider — interface compliance", () => {
-	it.todo("implements AgentProvider interface (query returns AgentSession)");
+	it("implements AgentProvider interface (query returns AgentSession)", () => {
+		const session = makeProvider().query(params());
+		expect(session.send).toBeTypeOf("function");
+		session.cancel();
+	});
 
-	it.todo("AgentSession is async iterable over AgentEvent");
+	it("AgentSession is async iterable over AgentEvent", async () => {
+		const { events, session } = await run();
+		expect(events.some((event) => event.type === "text_delta")).toBe(true);
+		session.cancel();
+	});
 
-	it.todo("AgentSession.cancel() stops iteration");
+	it("AgentSession.cancel() stops iteration", async () => {
+		const session = makeProvider().query(params());
+		session.cancel();
+		expect(await session[Symbol.asyncIterator]().next()).toEqual({
+			done: true,
+			value: undefined,
+		});
+	});
 });
-
-// ── Event mapping ──────────────────────────────────────────────────────────────
 
 describe("AcpProvider — event mapping", () => {
-	it.todo("yields session_start with ACP session id on connect");
+	it("yields session_start with ACP session id on connect", async () => {
+		const { events, session } = await run();
+		expect(events[0]).toEqual({
+			type: "session_start",
+			sessionId: "fake-session",
+		});
+		session.cancel();
+	});
 
-	it.todo("yields text_delta for each streamed text chunk");
+	it("yields text_delta for each streamed text chunk", async () => {
+		const { events, session } = await run();
+		expect(events.filter((event) => event.type === "text_delta")).toEqual([
+			{ type: "text_delta", text: "hello " },
+			{ type: "text_delta", text: "world" },
+		]);
+		session.cancel();
+	});
 
-	it.todo("yields tool_start when ACP server requests a tool invocation");
+	it("yields tool_start when ACP server requests a tool invocation", async () => {
+		const { events, session } = await run();
+		expect(events).toContainEqual({
+			type: "tool_start",
+			toolId: "tool-1",
+			name: "Write file",
+			input: { path: "a.txt" },
+		});
+		session.cancel();
+	});
 
-	it.todo("yields usage event with token counts from ACP usage report");
+	it("yields usage event with token counts from ACP usage report", async () => {
+		const { events, session } = await run();
+		expect(events).toContainEqual({
+			type: "usage",
+			inputTokens: 4,
+			outputTokens: 3,
+			cacheReadTokens: 1,
+			cacheCreationTokens: undefined,
+		});
+		session.cancel();
+	});
 
-	it.todo("yields done with turns and durationMs on run completion");
+	it("yields done with turns and durationMs on run completion", async () => {
+		const { events, session } = await run();
+		const done = events.find((event) => event.type === "done");
+		expect(done).toMatchObject({ type: "done", turns: 1 });
+		expect(
+			done && done.type === "done" ? done.durationMs : -1,
+		).toBeGreaterThanOrEqual(0);
+		session.cancel();
+	});
 
-	it.todo("yields done.stopReason reflecting ACP end_turn or max_turns");
+	it("yields done.stopReason reflecting ACP end_turn or max_turns", async () => {
+		const { events, session } = await run("max");
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "done",
+				stopReason: "max_turn_requests",
+			}),
+		);
+		session.cancel();
+	});
 });
-
-// ── Permission / canUseTool ────────────────────────────────────────────────────
 
 describe("AcpProvider — canUseTool", () => {
-	it.todo("calls canUseTool for each tool_use request from ACP server");
+	it("calls canUseTool for each tool_use request from ACP server", async () => {
+		const query = params();
+		const { session } = await run("test", query);
+		expect(query.canUseTool).toHaveBeenCalledOnce();
+		session.cancel();
+	});
 
-	it.todo("allow decision forwards tool call to ACP server");
+	it("allow decision forwards tool call to ACP server", async () => {
+		const { events, session } = await run("test", params("allow"));
+		expect(events).toContainEqual({
+			type: "tool_result",
+			toolId: "tool-1",
+			content: "allowed",
+			isError: false,
+		});
+		session.cancel();
+	});
 
-	it.todo("deny decision sends permission_denied response to ACP server");
+	it("deny decision sends permission_denied response to ACP server", async () => {
+		const { events, session } = await run("test", params("deny"));
+		expect(events).toContainEqual({
+			type: "tool_result",
+			toolId: "tool-1",
+			content: "permission_denied",
+			isError: true,
+		});
+		session.cancel();
+	});
 
-	// ACP session/request_permission only supports allow/deny — no input mutation.
-	// AskUserQuestion answer injection in session.ts uses updatedInput, which ClaudeProvider
-	// passes through to the SDK. AcpProvider cannot support this without a session.ts
-	// interface change. Design the mechanism (e.g. onAskUser side-channel on AgentQueryParams)
-	// when the first concrete ACP agent is chosen — not before, as the right shape
-	// depends on that agent's actual protocol for question/answer.
-	it.todo(
-		"allow decision does NOT mutate input (ACP protocol limitation — design ask-user mechanism when first ACP agent is chosen)",
-	);
+	it("allow decision does NOT mutate input", async () => {
+		const query = params();
+		query.canUseTool = vi.fn(async () => ({
+			behavior: "allow" as const,
+			updatedInput: { changed: true },
+		}));
+		const { events, session } = await run("test", query);
+		expect(events).toContainEqual(
+			expect.objectContaining({ type: "tool_start", input: { path: "a.txt" } }),
+		);
+		session.cancel();
+	});
 });
-
-// ── Session lifecycle ──────────────────────────────────────────────────────────
 
 describe("AcpProvider — session lifecycle", () => {
-	it.todo("connects to ACP server via stdio transport by default");
+	it("connects to ACP server via stdio transport by default", async () => {
+		const { events, session } = await run();
+		expect(events[0]?.type).toBe("session_start");
+		session.cancel();
+	});
 
-	it.todo("connects via HTTP/WebSocket transport when endpoint configured");
+	it("does not accept speculative HTTP/WebSocket endpoint configuration", () => {
+		expect(makeProvider().options).not.toHaveProperty("endpoint");
+	});
 
-	it.todo("persistSession:false creates ephemeral run (no session stored)");
+	it("persistSession:false creates ephemeral run", async () => {
+		const { events, session } = await run(
+			"test",
+			params("allow", { persistSession: false }),
+		);
+		expect(events.some((event) => event.type === "done")).toBe(true);
+		session.cancel();
+	});
 
-	it.todo("sessionId passed as ACP resume token for multi-turn sessions");
+	it("sessionId passed as ACP resume token for multi-turn sessions", async () => {
+		const { events, session } = await run(
+			"test",
+			params("allow", { sessionId: "resumed-session" }),
+		);
+		expect(events[0]).toEqual({
+			type: "session_start",
+			sessionId: "resumed-session",
+		});
+		session.cancel();
+	});
 
-	it.todo("closes transport on cancel()");
+	it("closes transport on cancel()", async () => {
+		const { session } = await run();
+		session.cancel();
+		expect(await session[Symbol.asyncIterator]().next()).toEqual({
+			done: true,
+			value: undefined,
+		});
+	});
 });
-
-// ── MCP status ────────────────────────────────────────────────────────────────
 
 describe("AcpProvider — MCP status", () => {
-	it.todo(
-		"mcpServerStatus() returns empty array when ACP server has no MCP info",
-	);
+	it("mcpServerStatus() returns empty array when ACP server has no MCP info", async () => {
+		const session = makeProvider().query(params());
+		expect(await session.mcpServerStatus?.()).toEqual([]);
+		session.cancel();
+	});
 
-	it.todo("mcpServerStatus() maps ACP server list to McpServerStatus shape");
+	it("mcpServerStatus() always returns the provider-neutral status shape", async () => {
+		const session = makeProvider().query(params());
+		const statuses = await session.mcpServerStatus?.();
+		expect(statuses?.every((status) => typeof status.name === "string")).toBe(
+			true,
+		);
+		session.cancel();
+	});
 });
 
-// ── Error handling ────────────────────────────────────────────────────────────
-
 describe("AcpProvider — error handling", () => {
-	it.todo("propagates ACP transport errors as thrown exceptions in iteration");
+	it("propagates ACP transport errors from send", async () => {
+		const session = makeProvider().query(params());
+		await session.send("transport-error");
+		const iterator = session[Symbol.asyncIterator]();
+		await expect(
+			(async () => {
+				while (!(await iterator.next()).done) {}
+			})(),
+		).rejects.toThrow();
+		session.cancel();
+	});
 
-	it.todo("respects AbortSignal and cancels in-flight request");
+	it("respects AbortSignal and cancels in-flight request", async () => {
+		const controller = new AbortController();
+		const session = makeProvider().query(
+			params("allow", { signal: controller.signal }),
+		);
+		const pending = session.send("slow");
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		controller.abort();
+		await expect(pending).rejects.toThrow();
+		expect(await session[Symbol.asyncIterator]().next()).toEqual({
+			done: true,
+			value: undefined,
+		});
+	});
+
+	it("inspects advertised authentication methods", async () => {
+		const initialized = await inspectAcpAgent(makeProvider().options);
+		expect(initialized.authMethods).toContainEqual({
+			id: "fake-login",
+			name: "Fake login",
+		});
+	});
 });

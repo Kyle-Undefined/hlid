@@ -8,6 +8,16 @@ import type {
 	WeeklyStats,
 } from "./types";
 
+function currentResetTimestamp(value: unknown): number | null {
+	const timestamp =
+		typeof value === "number"
+			? value
+			: typeof value === "string"
+				? Number(value)
+				: null;
+	return timestamp != null && timestamp >= Date.now() / 1000 ? timestamp : null;
+}
+
 export async function getAggregatedStats(): Promise<AggStats> {
 	const db = await getDb();
 
@@ -162,13 +172,8 @@ export async function getUsageWindows(): Promise<UsageWindows> {
 			const parsed = JSON.parse(row.value) as unknown;
 			if (typeof parsed !== "object" || parsed === null) return NULL_RL;
 			const obj = parsed as Record<string, unknown>;
-			const resetsAt =
-				typeof obj.resetsAt === "number"
-					? obj.resetsAt
-					: typeof obj.resetsAt === "string"
-						? Number(obj.resetsAt)
-						: null;
-			if (resetsAt != null && resetsAt < Date.now() / 1000) return NULL_RL;
+			const resetsAt = currentResetTimestamp(obj.resetsAt);
+			if (obj.resetsAt != null && resetsAt == null) return NULL_RL;
 			return {
 				utilization:
 					typeof obj.utilization === "number" ? obj.utilization : null,
@@ -283,13 +288,8 @@ export async function getProviderUsage(
 			const parsed = JSON.parse(row.value) as unknown;
 			if (typeof parsed !== "object" || parsed === null) return {};
 			const obj = parsed as Record<string, unknown>;
-			const resetsAt =
-				typeof obj.resetsAt === "number"
-					? obj.resetsAt
-					: typeof obj.resetsAt === "string"
-						? Number(obj.resetsAt)
-						: null;
-			if (resetsAt != null && resetsAt < Date.now() / 1000) return {};
+			const resetsAt = currentResetTimestamp(obj.resetsAt);
+			if (obj.resetsAt != null && resetsAt == null) return {};
 			return {
 				utilization:
 					typeof obj.utilization === "number" ? obj.utilization : null,

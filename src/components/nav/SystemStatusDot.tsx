@@ -14,29 +14,10 @@ export function sessionEntryDotClass(s: SessionStatusEntry): string {
 }
 
 /**
- * Tailwind class for the connection/session status dot, given the
- * three relevant pieces of state. Shared by the mobile BottomNav dot
- * and the desktop Sidebar header dot so they always agree.
- */
-export function statusDotClass(
-	wsStatus: wsStore.WsStatus,
-	sessionState: "idle" | "running" | "error",
-	hasPendingPermissions: boolean,
-): string {
-	if (wsStatus === "disconnected" || wsStatus === "connecting") {
-		return "bg-muted-foreground/25";
-	}
-	if (sessionState === "error") return "bg-destructive";
-	if (hasPendingPermissions) return "bg-orange-500 animate-pulse";
-	if (sessionState === "running") return "bg-primary animate-pulse";
-	return "bg-green-600";
-}
-
-/**
  * Aggregate dot class derived from pool-wide sessions_status.
  * Falls back to per-session state when no sessions are in the pool.
  */
-export function aggregateDotClass(
+function aggregateDotClass(
 	wsStatus: wsStore.WsStatus,
 	agg: wsStore.AggregateNavStatus,
 	fallbackState: "idle" | "running" | "error",
@@ -55,7 +36,7 @@ export function aggregateDotClass(
 	return "bg-green-600";
 }
 
-export function WsStatusDot() {
+export function useSystemStatusIndicator() {
 	const { wsStatus, sessionState, hasPendingPermissions } =
 		useSyncExternalStore(
 			wsStore.subscribeStatus,
@@ -73,12 +54,23 @@ export function WsStatusDot() {
 		}),
 	);
 
-	const dotClass = aggregateDotClass(
+	return {
 		wsStatus,
-		agg,
 		sessionState,
 		hasPendingPermissions,
-	);
+		agg,
+		dotClass: aggregateDotClass(
+			wsStatus,
+			agg,
+			sessionState,
+			hasPendingPermissions,
+		),
+	};
+}
+
+export function WsStatusDot() {
+	const { wsStatus, sessionState, hasPendingPermissions, agg, dotClass } =
+		useSystemStatusIndicator();
 
 	const statusLabel = (() => {
 		if (wsStatus === "disconnected" || wsStatus === "connecting")

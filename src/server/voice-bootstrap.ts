@@ -2,11 +2,11 @@ import {
 	existsSync,
 	mkdirSync,
 	readFileSync,
-	renameSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { replaceRuntimeDirectory } from "./embeddedRuntime";
 import { WHISPER_ASSETS, WHISPER_ASSETS_HASH } from "./voice-assets";
 
 const RUNTIME_LAYOUT_VERSION = "wav-shim-v2";
@@ -44,6 +44,20 @@ async function materializeEmbeddedFile(
 	await Bun.write(destination, Bun.file(source));
 }
 
+function existingVoiceRuntime(
+	directory: string,
+	runtimeHash: string,
+): string | null {
+	const executable = join(directory, "whisper-server.exe");
+	const hashFile = join(directory, ".hash");
+	if (!existsSync(hashFile)) return null;
+	return readFileSync(hashFile, "utf8").trim() === runtimeHash &&
+		existsSync(executable) &&
+		existsSync(join(directory, "ffmpeg.cmd"))
+		? executable
+		: null;
+}
+
 export async function bootstrapVoiceRuntime(): Promise<string | null> {
 	const override = process.env.HLID_WHISPER_SERVER;
 	if (override) return override;
@@ -51,16 +65,9 @@ export async function bootstrapVoiceRuntime(): Promise<string | null> {
 	const local =
 		process.env.LOCALAPPDATA ?? "C:\\Users\\Default\\AppData\\Local";
 	const dir = join(local, "hlid", "whisper-rt");
-	const hashFile = join(dir, ".hash");
 	const runtimeHash = `${WHISPER_ASSETS_HASH}-${RUNTIME_LAYOUT_VERSION}`;
-	if (
-		existsSync(hashFile) &&
-		readFileSync(hashFile, "utf8").trim() === runtimeHash &&
-		existsSync(join(dir, "whisper-server.exe")) &&
-		existsSync(join(dir, "ffmpeg.cmd"))
-	) {
-		return join(dir, "whisper-server.exe");
-	}
+	const existingRuntime = existingVoiceRuntime(dir, runtimeHash);
+	if (existingRuntime) return existingRuntime;
 	const tempDir = `${dir}.tmp`;
 	rmSync(tempDir, { recursive: true, force: true });
 	mkdirSync(tempDir, { recursive: true });
@@ -71,15 +78,6 @@ export async function bootstrapVoiceRuntime(): Promise<string | null> {
 	}
 	writeFileSync(join(tempDir, "ffmpeg.cmd"), FFMPEG_WAV_SHIM, "utf8");
 	writeFileSync(join(tempDir, ".hash"), runtimeHash, "utf8");
-	try {
-		renameSync(tempDir, dir);
-	} catch (error) {
-		const code = (error as NodeJS.ErrnoException).code;
-		if (code !== "ENOTEMPTY" && code !== "EPERM" && code !== "EEXIST") {
-			throw error;
-		}
-		rmSync(dir, { recursive: true, force: true });
-		renameSync(tempDir, dir);
-	}
+	replaceRuntimeDirectory(tempDir, dir);
 	return join(dir, "whisper-server.exe");
 }

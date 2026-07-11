@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import {
 	createFileRoute,
 	useNavigate,
@@ -16,6 +16,7 @@ import type {
 import { AgentCard, AgentEmptyState } from "#/components/einherjar/AgentCard";
 import type { Agent } from "#/config";
 import { getConfig } from "#/config";
+import { agentConfigToEntry, inspectAgentPath } from "#/lib/agentMcp";
 import { writeConfig } from "#/lib/config-writer";
 import { expandTilde, samePath } from "#/lib/paths";
 import { agentListSchema, agentPathSchema } from "#/lib/serverFnSchemas";
@@ -33,34 +34,10 @@ const VALID_PERMISSION_MODES: string[] = [
 
 // ─── server fns ──────────────────────────────────────────────────────────────
 
-function deriveAgentName(p: string): string {
-	return basename(p)
-		.split(/[-_\s]+/)
-		.map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-		.join(" ");
-}
-
 const getAgentsFn = createServerFn({ method: "GET" }).handler(
 	async (): Promise<AgentEntry[]> => {
 		const config = await getConfig();
-		return (config.agents ?? []).map((agent) => {
-			const resolved = expandTilde(agent.path);
-			return {
-				path: agent.path,
-				name: agent.name ?? deriveAgentName(resolved),
-				mode: agent.mode ?? "cwd",
-				provider: agent.provider ?? "claude",
-				hasClaudemd: existsSync(join(resolved, "CLAUDE.md")),
-				dirExists: existsSync(resolved),
-				model: agent.model,
-				effort: agent.effort,
-				maxTurns:
-					agent.max_turns !== undefined ? String(agent.max_turns) : undefined,
-				permissionMode: agent.permission_mode,
-				recapModel: agent.recap_model,
-				interactiveMode: agent.interactive_mode,
-			};
-		});
+		return (config.agents ?? []).map(agentConfigToEntry);
 	},
 );
 
@@ -68,25 +45,7 @@ const validateAgentPathFn = createServerFn({ method: "GET" })
 	.validator((raw) => agentPathSchema.parse(raw))
 	.handler(async ({ data: agentPath }) => {
 		const config = await getConfig();
-		const resolved = resolve(expandTilde(agentPath));
-		const vaultPath = config.vault.path
-			? resolve(expandTilde(config.vault.path))
-			: "";
-		let inVault = false;
-		if (vaultPath) {
-			const rel = relative(vaultPath, resolved);
-			inVault =
-				samePath(resolved, vaultPath) ||
-				(!rel.startsWith("..") && !isAbsolute(rel));
-		}
-		return {
-			dirExists: existsSync(resolved),
-			hasClaudemd: existsSync(join(resolved, "CLAUDE.md")),
-			suggestedName: deriveAgentName(resolved),
-			inVault,
-			externalAllowed: config.server.allow_external_agents,
-			resolvedPath: resolved,
-		};
+		return inspectAgentPath(agentPath, config);
 	});
 
 const saveAgentsFn = createServerFn({ method: "POST" })

@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { ProviderUsageSnapshot, UsageWindow, UsageWindows } from "#/db";
 import {
+	applyRateLimitToSnapshot,
 	applyRateLimitToWindowData,
+	mergeFreshProviderSnapshots,
 	mergeProviderSnapshot,
 	mergeUsageWindows,
-} from "./UsageWindowsPanel";
+	providerWindowUsage,
+} from "#/lib/usageWindows";
 
 function makeWindows(
 	utilization: number | null,
@@ -277,5 +280,87 @@ describe("mergeProviderSnapshot", () => {
 		const fresh = makeSnapshot(0.1, FUTURE_FAR);
 		const result = mergeProviderSnapshot(fresh, undefined, null);
 		expect(result.windows[0].utilization).toBe(0.1);
+	});
+
+	it("applies matching live rate limits without changing other providers", () => {
+		const claude = makeSnapshot(0.1, FUTURE_NEAR);
+		const codex = { ...makeSnapshot(0.2, FUTURE_NEAR), providerId: "codex" };
+		const rateLimit = {
+			type: "rate_limit" as const,
+			status: "ok" as const,
+			providerId: "claude",
+			rateLimitType: "weekly",
+			utilization: 0.75,
+			resetsAt: FUTURE_FAR,
+		};
+
+		expect(
+			applyRateLimitToSnapshot(claude, rateLimit).windows[0],
+		).toMatchObject({
+			utilization: 0.75,
+			resetsAt: FUTURE_FAR,
+		});
+		expect(applyRateLimitToSnapshot(codex, rateLimit)).toBe(codex);
+	});
+
+	it("merges each refreshed provider against its matching previous snapshot", () => {
+		const previous = [
+			makeSnapshot(0.2, FUTURE_NEAR),
+			{ ...makeSnapshot(0.4, FUTURE_NEAR), providerId: "codex" },
+		];
+		const fresh = [
+			makeSnapshot(null, FUTURE_NEAR),
+			{ ...makeSnapshot(0.1, FUTURE_FAR), providerId: "codex" },
+		];
+
+		const merged = mergeFreshProviderSnapshots(fresh, previous);
+		expect(merged[0].windows[0].utilization).toBe(0.2);
+		expect(merged[1].windows[0].utilization).toBe(0.1);
+	});
+});
+
+describe("providerWindowUsage", () => {
+	const base = {
+		windowId: "weekly",
+		label: "7-DAY",
+		windowSecs: 604_800,
+		tokens: 0,
+		queries: 0,
+		sessions: 0,
+		cost: 0,
+		resetsAt: null,
+	};
+
+	it("formats direct utilization", () => {
+		expect(
+			providerWindowUsage({
+				...base,
+				utilization: 0.425,
+				remaining: null,
+				limit: null,
+			}),
+		).toEqual({ percentage: 42.5, label: "42%" });
+	});
+
+	it("derives utilization from remaining capacity", () => {
+		expect(
+			providerWindowUsage({
+				...base,
+				utilization: null,
+				remaining: 25,
+				limit: 100,
+			}),
+		).toEqual({ percentage: 75, label: "25 left" });
+	});
+
+	it("returns an empty display without usable limits", () => {
+		expect(
+			providerWindowUsage({
+				...base,
+				utilization: null,
+				remaining: null,
+				limit: null,
+			}),
+		).toEqual({ percentage: null, label: null });
 	});
 });

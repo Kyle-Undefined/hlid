@@ -12,8 +12,8 @@ export default defineConfig({
 		// DB tests require bun:sqlite — run with `bun run test:db` instead
 		exclude: ["src/**/*.bun.test.ts"],
 		coverage: {
-			provider: "v8",
-			reporter: ["text", "json-summary", "html"],
+			provider: "istanbul",
+			reporter: ["text", "json", "json-summary", "html"],
 			include: ["src/**/*.{ts,tsx}"],
 			exclude: [
 				"src/**/*.test.{ts,tsx}",

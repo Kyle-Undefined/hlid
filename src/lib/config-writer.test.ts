@@ -85,6 +85,14 @@ describe("writeConfig — persistence invariants", () => {
 				allowed_mimes: ["image/png", "application/x-custom"],
 			},
 			agents: [{ path: "/agent", interactive_mode: false }],
+			acp_agents: [
+				{
+					id: "opencode",
+					executable: "/opt/opencode",
+					args: ["acp"],
+					env: { API_URL: "https://example.test:8443/path" },
+				},
+			],
 		});
 
 		const reparsed = HlidConfigSchema.parse(parse(serializeConfig(config)));

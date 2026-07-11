@@ -2,7 +2,6 @@
 
 export type {
 	HourOfDayBucket,
-	LatencyBucket,
 	LatencyDistribution,
 	ModelSplitEntry,
 	StopReasonEntry,
@@ -11,7 +10,6 @@ export type {
 } from "./activity";
 // Activity (charts aggregations)
 export {
-	DURATION_BUCKETS_MS,
 	getHourOfDayActivity,
 	getLatencyDistribution,
 	getModelSplit,
@@ -30,7 +28,6 @@ export {
 } from "./attachments";
 // Event log
 export { appendLog, clearLogs, getLogs } from "./logs";
-export type { AskUserQuestionRow, PlanProposalRow } from "./messages";
 // Messages & tool events
 export {
 	appendAskUserQuestion,
@@ -52,7 +49,6 @@ export {
 	getSessionPermissionEvents,
 	recordPermissionEvent,
 } from "./permissions";
-export type { Db } from "./schema";
 // Schema / DB handle
 export { getDb } from "./schema";
 // Sessions
@@ -73,7 +69,6 @@ export {
 	renameSession,
 	setSessionActualModel,
 	setSessionAgentCwd,
-	setSessionClaudeId,
 	setSessionProviderId,
 	setSessionProviderSession,
 } from "./sessions";
@@ -89,7 +84,6 @@ export type {
 	AggStats,
 	AggWindow,
 	AttachmentKind,
-	AttachmentListFilter,
 	AttachmentRow,
 	LogCounts,
 	LogLevel,

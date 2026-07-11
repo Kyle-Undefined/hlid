@@ -9,7 +9,7 @@ import { parseFrontmatter } from "./frontmatter";
 import { pathStartsWith } from "./paths";
 import type { Skill } from "./skills";
 
-export type { Skill, SkillGroup } from "./skills";
+export type { Skill } from "./skills";
 
 export type ProjectNode = {
 	name: string;
@@ -85,6 +85,109 @@ function assertContained(base: string, joined: string): void {
 	}
 }
 
+function projectFromMarkdown(options: {
+	fullPath: string;
+	file: string;
+	fallbackTitle: string;
+	vocab: StatusVocabulary;
+	isFolder: boolean;
+	children?: ProjectNode[];
+}): Project {
+	const { fullPath, file, fallbackTitle, vocab, isFolder, children } = options;
+	try {
+		const raw = readFileSync(fullPath, "utf-8");
+		const { data, content } = parseFrontmatter(raw);
+		const rawStatus = String(data.status ?? "");
+		return {
+			file,
+			title: (data.title as string | undefined) ?? fallbackTitle,
+			status: classifyStatus(rawStatus, vocab),
+			rawStatus,
+			tags: Array.isArray(data.tags) ? (data.tags as string[]) : [],
+			created: data.created as string | undefined,
+			modified: data.modified as string | undefined,
+			isFolder,
+			content: content || undefined,
+			children,
+		};
+	} catch {
+		return {
+			file,
+			title: fallbackTitle,
+			status: "unknown",
+			rawStatus: "",
+			tags: [],
+			isFolder,
+			children,
+		};
+	}
+}
+
+function findFolderMainFile(
+	directory: string,
+	folderName: string,
+): string | null {
+	let files: string[];
+	try {
+		files = readdirSync(directory).filter((file) => file.endsWith(".md"));
+	} catch {
+		return null;
+	}
+	return (
+		files.find((file) => file.toLowerCase() === "index.md") ??
+		files.find((file) => file.replace(/\.md$/, "") === folderName) ??
+		files[0] ??
+		null
+	);
+}
+
+function scanProjectFolder(
+	fullPath: string,
+	folderName: string,
+	projectsDirectory: string,
+	vocab: StatusVocabulary,
+): Project | undefined {
+	const mainFile = findFolderMainFile(fullPath, folderName);
+	if (!mainFile) return undefined;
+	const relativeMainPath = join(folderName, mainFile);
+	const children = buildNodes(fullPath, projectsDirectory).filter(
+		(node) => node.path !== relativeMainPath,
+	);
+	return projectFromMarkdown({
+		fullPath: join(fullPath, mainFile),
+		file: relativeMainPath,
+		fallbackTitle: folderName,
+		vocab,
+		isFolder: true,
+		children: children.length > 0 ? children : undefined,
+	});
+}
+
+function scanProjectEntry(
+	projectsDirectory: string,
+	entry: string,
+	vocab: StatusVocabulary,
+): Project | undefined {
+	const fullPath = join(projectsDirectory, entry);
+	try {
+		const stat = lstatSync(fullPath);
+		if (stat.isSymbolicLink()) return undefined;
+		if (stat.isDirectory()) {
+			return scanProjectFolder(fullPath, entry, projectsDirectory, vocab);
+		}
+		if (!entry.endsWith(".md")) return undefined;
+		return projectFromMarkdown({
+			fullPath,
+			file: entry,
+			fallbackTitle: entry.replace(/\.md$/, ""),
+			vocab,
+			isFolder: false,
+		});
+	} catch {
+		return undefined;
+	}
+}
+
 export function scanProjects(
 	vaultPath: string,
 	projectsFolder: string,
@@ -100,104 +203,10 @@ export function scanProjects(
 		return [];
 	}
 
-	const projects: Project[] = [];
-
-	for (const entry of entries) {
-		const full = join(dir, entry);
-		try {
-			const stat = lstatSync(full);
-			if (stat.isSymbolicLink()) continue;
-
-			if (stat.isDirectory()) {
-				let innerEntries: string[];
-				try {
-					innerEntries = readdirSync(full);
-				} catch {
-					continue;
-				}
-				const mdFiles = innerEntries.filter((f) => f.endsWith(".md"));
-				const mainFile =
-					mdFiles.find((f) => f.toLowerCase() === "index.md") ??
-					mdFiles.find((f) => f.replace(/\.md$/, "") === entry) ??
-					mdFiles[0] ??
-					null;
-
-				if (!mainFile) continue;
-
-				const mainFullPath = join(full, mainFile);
-				const mainRelPath = join(entry, mainFile);
-
-				let title = entry;
-				let rawStatus = "";
-				let tags: string[] = [];
-				let created: string | undefined;
-				let modified: string | undefined;
-				let content: string | undefined;
-
-				try {
-					const raw = readFileSync(mainFullPath, "utf-8");
-					const parsed = parseFrontmatter(raw);
-					rawStatus = String(parsed.data.status ?? "");
-					title = (parsed.data.title as string | undefined) ?? entry;
-					tags = Array.isArray(parsed.data.tags)
-						? (parsed.data.tags as string[])
-						: [];
-					created = parsed.data.created as string | undefined;
-					modified = parsed.data.modified as string | undefined;
-					content = parsed.content || undefined;
-				} catch {
-					// use defaults
-				}
-
-				const allChildren = buildNodes(full, dir);
-				const children = allChildren.filter((n) => n.path !== mainRelPath);
-
-				projects.push({
-					file: mainRelPath,
-					title,
-					status: classifyStatus(rawStatus, vocab),
-					rawStatus,
-					tags,
-					created,
-					modified,
-					isFolder: true,
-					content,
-					children: children.length > 0 ? children : undefined,
-				});
-			} else if (entry.endsWith(".md")) {
-				try {
-					const raw = readFileSync(full, "utf-8");
-					const { data, content } = parseFrontmatter(raw);
-					const rawStatus = String(data.status ?? "");
-					projects.push({
-						file: entry,
-						title:
-							(data.title as string | undefined) ?? entry.replace(/\.md$/, ""),
-						status: classifyStatus(rawStatus, vocab),
-						rawStatus,
-						tags: Array.isArray(data.tags) ? (data.tags as string[]) : [],
-						created: data.created as string | undefined,
-						modified: data.modified as string | undefined,
-						isFolder: false,
-						content: content || undefined,
-					});
-				} catch {
-					projects.push({
-						file: entry,
-						title: entry.replace(/\.md$/, ""),
-						status: "unknown" as const,
-						rawStatus: "",
-						tags: [],
-						isFolder: false,
-					});
-				}
-			}
-		} catch {
-			// skip unreadable entries
-		}
-	}
-
-	return projects;
+	return entries.flatMap((entry) => {
+		const project = scanProjectEntry(dir, entry, vocab);
+		return project ? [project] : [];
+	});
 }
 
 function parseSectionMap(indexPath: string): {

@@ -4,6 +4,7 @@
 import { dirname } from "node:path";
 import { createAutostartController } from "./autostartController";
 import { canonicalExePath, canonicalInstallDir } from "./install";
+import { runCapturedProcess } from "./process";
 
 export type LifecycleResult =
 	| { ok: true; data?: unknown }
@@ -57,26 +58,20 @@ export async function openInstallDir(): Promise<LifecycleResult> {
 async function ps(
 	command: string,
 ): Promise<{ stdout: string; stderr: string; code: number }> {
-	const proc = Bun.spawn(
-		[
-			"powershell.exe",
-			"-NoProfile",
-			"-NonInteractive",
-			"-WindowStyle",
-			"Hidden",
-			"-Command",
-			command,
-		],
-		{ stdout: "pipe", stderr: "pipe", windowsHide: true },
-	);
-	const stdoutP = new Response(proc.stdout).text();
-	const stderrP = new Response(proc.stderr).text();
-	const [stdout, stderr, code] = await Promise.all([
-		stdoutP,
-		stderrP,
-		proc.exited,
+	const result = await runCapturedProcess([
+		"powershell.exe",
+		"-NoProfile",
+		"-NonInteractive",
+		"-WindowStyle",
+		"Hidden",
+		"-Command",
+		command,
 	]);
-	return { stdout: stdout.trim(), stderr: stderr.trim(), code };
+	return {
+		stdout: result.stdout.trim(),
+		stderr: result.stderr.trim(),
+		code: result.code,
+	};
 }
 
 const autostart = createAutostartController({

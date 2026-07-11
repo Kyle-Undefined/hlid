@@ -37,9 +37,11 @@ vi.mock("#/components/PrivacyMask", () => ({
 	PrivacyMask: ({ children }: { children: React.ReactNode }) => children,
 }));
 vi.mock("#/components/TerminalView", () => ({ TerminalView: () => null }));
-vi.mock("#/components/UsageWindowsPanel", () => ({
-	ContextWindowSection: () => null,
+vi.mock("#/components/usage/ProviderUsageStrip", () => ({
 	ProviderUsageStrip: () => null,
+}));
+vi.mock("#/components/usage/UsageWindowSections", () => ({
+	ContextWindowSection: () => null,
 }));
 
 vi.mock("#/hooks/useChatWsHandler", () => ({
@@ -92,7 +94,6 @@ vi.mock("#/hooks/wsStore", () => ({
 	subscribeSessionsStatus: () => () => {},
 	getSessionsStatus: () => state.sessions,
 	enqueueChat: state.enqueueChat,
-	setActiveSessionId: vi.fn(),
 	removeFromQueue: vi.fn(),
 	promoteQueued: vi.fn(),
 	resetLiveStats: vi.fn(),

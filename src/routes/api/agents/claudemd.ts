@@ -2,21 +2,15 @@ import { readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createFileRoute } from "@tanstack/react-router";
 import { validateAgentPath } from "#/lib/agentMcp";
-import { forbiddenResponse } from "#/lib/originGate";
 import { expandTilde } from "#/lib/paths";
 import { loadConfig } from "#/server/config";
+import { getAgentPath } from "./-agentRouteHelpers";
 
 // ─── Handler (exported for unit tests) ───────────────────────────────────────
 
 export async function handleGetClaudeMd(request: Request): Promise<Response> {
-	const forbidden = forbiddenResponse(request);
-	if (forbidden) return forbidden;
-
-	const url = new URL(request.url);
-	const agentPath = url.searchParams.get("path");
-	if (!agentPath) {
-		return Response.json({ error: "Missing path param" }, { status: 400 });
-	}
+	const agentPath = getAgentPath(request);
+	if (agentPath instanceof Response) return agentPath;
 
 	const config = loadConfig();
 	try {

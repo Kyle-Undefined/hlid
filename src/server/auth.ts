@@ -17,9 +17,9 @@ export const AUTH_PATH = resolve(
 	process.env.HLID_AUTH_PATH ?? APP_DIR,
 	"auth.json",
 );
-export const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
-export const MIN_PASSWORD_LENGTH = 12;
-export const MAX_PASSWORD_LENGTH = 256;
+const SESSION_MAX_AGE_SECONDS = 30 * 24 * 60 * 60;
+const MIN_PASSWORD_LENGTH = 12;
+const MAX_PASSWORD_LENGTH = 256;
 
 type CredentialFile = { version: 1; passwordHash: string };
 export type AuthState = "setup-required" | "locked" | "authenticated";

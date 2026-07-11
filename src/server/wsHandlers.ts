@@ -45,6 +45,567 @@ function resolveAgentName(agentCwd: string): string {
 	return agentCwd.split("/").filter(Boolean).pop() ?? agentCwd;
 }
 
+type MessageOf<T extends ClientMessage["type"]> = Extract<
+	ClientMessage,
+	{ type: T }
+>;
+
+interface MessageContext {
+	ws: ServerWebSocket<WsData>;
+	pool: SessionPool;
+	terminalPool?: TerminalSessionPool;
+}
+
+function broadcastSessionsStatus({ pool, terminalPool }: MessageContext): void {
+	broadcast({
+		type: "sessions_status",
+		sessions: getLiveSessionsStatus(pool, terminalPool),
+	});
+}
+
+function createPoolEntry(
+	context: MessageContext,
+	agentCwd: string,
+	agentName: string,
+): PoolEntry | null {
+	try {
+		return context.pool.create(agentCwd, agentName);
+	} catch (error) {
+		send(context.ws, {
+			type: "error",
+			message:
+				error instanceof Error ? error.message : "Failed to create session",
+		});
+		return null;
+	}
+}
+
+function subscribeToEntry(
+	{ ws, pool }: MessageContext,
+	entry: PoolEntry,
+): void {
+	pool.get(ws.data.subscribedSessionId)?.runState.removeSubscriber(ws);
+	entry.runState.addSubscriber(ws);
+	ws.data.subscribedSessionId = entry.sessionId;
+}
+
+function sendSessionCreated({ ws }: MessageContext, entry: PoolEntry): void {
+	send(ws, {
+		type: "session_created",
+		session_id: entry.sessionId,
+		agent_cwd: entry.agentCwd,
+		agent_name: entry.agentName,
+	});
+}
+
+function handleNewSession(
+	context: MessageContext,
+	msg: MessageOf<"new_session">,
+): void {
+	const vault = context.pool.vaultEntry();
+	const entry = createPoolEntry(
+		context,
+		msg.agent_cwd ?? vault.agentCwd,
+		msg.agent_name ?? vault.agentName,
+	);
+	if (!entry) return;
+	subscribeToEntry(context, entry);
+	sendSessionCreated(context, entry);
+	send(context.ws, { type: "status", ...entry.manager.getStatus() });
+	send(context.ws, { type: "queue_state", ...entry.manager.getQueueState() });
+	broadcastSessionsStatus(context);
+}
+
+function handleSubscribeSession(
+	{ ws, pool }: MessageContext,
+	msg: MessageOf<"subscribe_session">,
+): void {
+	ws.data.pendingNewSession = false;
+	pool.get(ws.data.subscribedSessionId)?.runState.removeSubscriber(ws);
+	const entry = pool.get(msg.session_id) ?? pool.vaultEntry();
+	entry.runState.addSubscriber(ws);
+	ws.data.subscribedSessionId = entry.sessionId;
+	send(ws, { type: "status", ...entry.manager.getStatus() });
+	if (entry.manager.isRunning()) {
+		for (const buffered of entry.runState.getReplayBuffer()) send(ws, buffered);
+	}
+	send(ws, { type: "queue_state", ...entry.manager.getQueueState() });
+}
+
+function handleStopSession(
+	{ pool, terminalPool }: MessageContext,
+	msg: MessageOf<"stop_session">,
+): void {
+	const entry = pool.get(msg.session_id);
+	if (entry) entry.manager.abort();
+	else terminalPool?.write(msg.session_id, "\x03");
+}
+
+function resubscribeClosedSessionClients(
+	pool: SessionPool,
+	sessionId: string,
+): void {
+	const vault = pool.vaultEntry();
+	for (const client of wsState.clients) {
+		const clientWs = client as ServerWebSocket<WsData>;
+		if (clientWs.data?.subscribedSessionId !== sessionId) continue;
+		vault.runState.addSubscriber(clientWs);
+		clientWs.data.subscribedSessionId = vault.sessionId;
+	}
+}
+
+function handleCloseSession(
+	context: MessageContext,
+	msg: MessageOf<"close_session">,
+): void {
+	const { ws, pool, terminalPool } = context;
+	if (msg.session_id === pool.vaultSessionId()) {
+		send(ws, { type: "error", message: "Cannot close the vault session" });
+		return;
+	}
+	if (pool.get(msg.session_id)) {
+		pool.close(msg.session_id);
+		resubscribeClosedSessionClients(pool, msg.session_id);
+	} else {
+		terminalPool?.close(msg.session_id);
+	}
+	broadcast({ type: "session_closed", session_id: msg.session_id });
+	broadcastSessionsStatus(context);
+}
+
+function handleRoutingMessage(
+	context: MessageContext,
+	msg: ClientMessage,
+): boolean {
+	switch (msg.type) {
+		case "new_session":
+			handleNewSession(context, msg);
+			return true;
+		case "subscribe_session":
+			handleSubscribeSession(context, msg);
+			return true;
+		case "stop_session":
+			handleStopSession(context, msg);
+			return true;
+		case "close_session":
+			handleCloseSession(context, msg);
+			return true;
+		default:
+			return false;
+	}
+}
+
+function handleSync(ws: ServerWebSocket<WsData>, entry: PoolEntry): void {
+	send(ws, { type: "status", ...entry.manager.getStatus() });
+	send(ws, { type: "queue_state", ...entry.manager.getQueueState() });
+	if (!entry.manager.isRunning() || entry.runState.ownerWs !== null) return;
+	entry.runState.ownerWs = ws;
+	for (const request of entry.manager.getPendingPermissionRequests())
+		entry.runState.send(ws, request);
+	for (const exit of entry.manager.getPendingPlanModeExits())
+		entry.runState.send(ws, exit);
+}
+
+function handleReloadSession(
+	pool: SessionPool,
+	terminalPool: TerminalSessionPool | undefined,
+	entry: PoolEntry,
+): void {
+	const fresh = loadConfig();
+	entry.manager.reinitialize(fresh);
+	pool.syncConfig(fresh);
+	entry.runState.clearError();
+	entry.runState.broadcast({ type: "status", ...entry.manager.getStatus() });
+	broadcast({
+		type: "sessions_status",
+		sessions: getLiveSessionsStatus(pool, terminalPool),
+	});
+}
+
+async function handlePermissionMode(
+	ws: ServerWebSocket<WsData>,
+	entry: PoolEntry,
+	msg: MessageOf<"set_permission_mode">,
+): Promise<void> {
+	try {
+		await entry.manager.setPermissionMode(msg.mode);
+	} catch (error) {
+		send(ws, {
+			type: "error",
+			message:
+				error instanceof Error ? error.message : "Invalid permission mode",
+		});
+		return;
+	}
+	entry.runState.broadcast({ type: "status", ...entry.manager.getStatus() });
+}
+
+function readAgentServers(resolvedAgent: string) {
+	try {
+		return readAgentMcpFile(resolvedAgent).servers;
+	} catch {
+		return [];
+	}
+}
+
+function syncAgentMcpList(ws: ServerWebSocket<WsData>, agentCwd: string): void {
+	const config = loadConfig();
+	let resolvedAgent: string;
+	try {
+		resolvedAgent = realpathSync(expandTilde(agentCwd));
+	} catch {
+		return;
+	}
+	if (!isAllowedAgentPath(computeAllowedAgentRealPaths(config), resolvedAgent))
+		return;
+	const servers = readAgentServers(resolvedAgent).map(({ name, disabled }) =>
+		mapMcpServer({
+			name,
+			status: disabled ? "disabled" : "pending",
+			scope: "project",
+		}),
+	);
+	send(ws, { type: "mcp_status", servers, agent_cwd: resolvedAgent });
+}
+
+function readVaultServers(vaultPath: string) {
+	try {
+		return readVaultMcpFile(vaultPath).servers;
+	} catch {
+		return [];
+	}
+}
+
+function syncVaultMcpList(pool: SessionPool): void {
+	const config = loadConfig();
+	if (!config.vault.path) return;
+	const cached = pool.vaultEntry().manager.getLastMcpStatus() ?? [];
+	const cachedByName = new Map(cached.map((server) => [server.name, server]));
+	const preserved = cached
+		.filter((server) => server.scope !== "project")
+		.map(mapMcpServer);
+	const vault = readVaultServers(config.vault.path).map(
+		({ name, disabled }) => {
+			const known = cachedByName.get(name);
+			return mapMcpServer({
+				name,
+				status: disabled ? "disabled" : (known?.status ?? "pending"),
+				scope: "project",
+				error: disabled ? undefined : known?.error,
+			});
+		},
+	);
+	broadcast({ type: "mcp_status", servers: [...preserved, ...vault] });
+}
+
+function handlePermissionResponse(
+	entry: PoolEntry,
+	msg: MessageOf<"permission_response">,
+): void {
+	const pending = entry.manager
+		.getPendingPermissionRequests()
+		.find((request) => request.id === msg.id);
+	if (!pending) return;
+	entry.manager.handlePermissionResponse(
+		msg.id,
+		msg.approved,
+		msg.saveScope,
+		msg.denyMessage,
+	);
+	const decision = decisionFromScope(msg.approved, msg.saveScope);
+	entry.runState.broadcast({
+		type: "permission_resolved",
+		id: msg.id,
+		toolName: pending.toolName,
+		displayName: pending.displayName,
+		decision,
+	});
+	const sessionId = entry.manager.getCurrentSessionId();
+	if (!sessionId) return;
+	void db
+		.recordPermissionEvent(
+			sessionId,
+			msg.id,
+			pending.toolName,
+			pending.displayName,
+			decision,
+		)
+		.catch((error) => {
+			console.error("[db] recordPermissionEvent failed:", error);
+		});
+}
+
+function handleAskUserQuestionResponse(
+	entry: PoolEntry,
+	msg: MessageOf<"ask_user_question_response">,
+): void {
+	entry.manager.handleAskUserQuestionResponse(msg.id, msg.answers, msg.notes);
+	entry.runState.broadcast({
+		type: "ask_user_question_resolved",
+		id: msg.id,
+		answers: msg.answers,
+		...(msg.notes !== undefined ? { notes: msg.notes } : {}),
+	});
+	const sessionId = entry.manager.getCurrentSessionId();
+	if (!sessionId) return;
+	void db
+		.setAskUserQuestionResolution(
+			sessionId,
+			msg.id,
+			JSON.stringify(msg.answers),
+			msg.notes !== undefined ? JSON.stringify(msg.notes) : null,
+		)
+		.catch((error) => {
+			console.error("[db] setAskUserQuestionResolution failed:", error);
+		});
+}
+
+function handlePlanModeExitResponse(
+	entry: PoolEntry,
+	msg: MessageOf<"plan_mode_exit_response">,
+): void {
+	entry.manager.handlePlanModeExitResponse(
+		msg.id,
+		msg.decision,
+		msg.decision === "edited" ? msg.feedback : undefined,
+	);
+	entry.runState.broadcast({
+		type: "plan_mode_exit_resolved",
+		id: msg.id,
+		decision: msg.decision,
+	});
+}
+
+function reuseExistingChatEntry(
+	context: MessageContext,
+	entry: PoolEntry,
+	sessionId: string | undefined,
+): PoolEntry {
+	if (!sessionId || entry.manager.getCurrentSessionId() === sessionId)
+		return entry;
+	const existing = context.pool.findByDbSessionId(sessionId);
+	if (!existing || existing.sessionId === entry.sessionId) return entry;
+	entry.runState.removeSubscriber(context.ws);
+	existing.runState.addSubscriber(context.ws);
+	context.ws.data.subscribedSessionId = existing.sessionId;
+	return existing;
+}
+
+function shouldCreateChatEntry(
+	entry: PoolEntry,
+	chatEntry: PoolEntry,
+	msg: MessageOf<"chat">,
+	needsNewSession: boolean,
+): boolean {
+	if (chatEntry !== entry) return false;
+	if (entry.manager.isRunning() && !needsNewSession) return false;
+	return (
+		entry.manager.getCurrentSessionId() === null ||
+		(msg.agent_cwd !== undefined && msg.agent_cwd !== entry.agentCwd) ||
+		(msg.session_id !== undefined &&
+			msg.session_id !== entry.manager.getCurrentSessionId()) ||
+		needsNewSession
+	);
+}
+
+function resolveChatEntry(
+	context: MessageContext,
+	entry: PoolEntry,
+	msg: MessageOf<"chat">,
+): PoolEntry | null {
+	const needsNewSession = context.ws.data.pendingNewSession === true;
+	if (needsNewSession) context.ws.data.pendingNewSession = false;
+	const reused = reuseExistingChatEntry(context, entry, msg.session_id);
+	if (!shouldCreateChatEntry(entry, reused, msg, needsNewSession))
+		return reused;
+	const targetCwd = msg.agent_cwd ?? context.pool.vaultEntry().agentCwd;
+	const created = createPoolEntry(
+		context,
+		targetCwd,
+		resolveAgentName(targetCwd),
+	);
+	if (!created) return null;
+	subscribeToEntry(context, created);
+	sendSessionCreated(context, created);
+	broadcastSessionsStatus(context);
+	send(context.ws, { type: "status", ...created.manager.getStatus() });
+	return created;
+}
+
+function broadcastUserMessage(
+	ws: ServerWebSocket<WsData>,
+	entry: PoolEntry,
+	msg: MessageOf<"chat">,
+): void {
+	const data = JSON.stringify({
+		type: "user_message",
+		text: msg.text,
+		session_id: entry.sessionId,
+		...(msg.turn_id !== undefined ? { id: msg.turn_id } : {}),
+	});
+	for (const client of wsState.clients) {
+		if (client === ws) continue;
+		const clientWs = client as ServerWebSocket<WsData>;
+		if (clientWs.data?.subscribedSessionId === entry.sessionId)
+			clientWs.send(data);
+	}
+}
+
+function claimChatOwnership(
+	ws: ServerWebSocket<WsData>,
+	entry: PoolEntry,
+): void {
+	entry.runState.ownerWs = ws;
+	entry.runState.inFlightChatCount.set(
+		ws,
+		(entry.runState.inFlightChatCount.get(ws) ?? 0) + 1,
+	);
+}
+
+function releaseChatOwnership(
+	ws: ServerWebSocket<WsData>,
+	entry: PoolEntry,
+): void {
+	const remaining = (entry.runState.inFlightChatCount.get(ws) ?? 1) - 1;
+	if (remaining > 0) {
+		entry.runState.inFlightChatCount.set(ws, remaining);
+		return;
+	}
+	entry.runState.inFlightChatCount.delete(ws);
+	if (entry.runState.ownerWs === ws) entry.runState.ownerWs = null;
+}
+
+async function runChatQuery(
+	context: MessageContext,
+	entry: PoolEntry,
+	msg: MessageOf<"chat">,
+): Promise<void> {
+	try {
+		const modelChanged = entry.manager.syncConfig(loadConfig());
+		if (modelChanged)
+			entry.runState.broadcast({
+				type: "status",
+				...entry.manager.getStatus(),
+			});
+		await entry.manager.runQuery(
+			msg.text,
+			(event) => {
+				entry.runState.broadcast(event);
+				if (event.type === "status") broadcastSessionsStatus(context);
+			},
+			msg.session_id,
+			msg.skill_context,
+			msg.attachments,
+			msg.agent_cwd,
+			msg.turn_id,
+			msg.plan_mode,
+		);
+	} catch (error) {
+		send(context.ws, {
+			type: "error",
+			message: error instanceof Error ? error.message : "Unknown error",
+		});
+	} finally {
+		releaseChatOwnership(context.ws, entry);
+		broadcastSessionsStatus(context);
+	}
+}
+
+async function handleChat(
+	context: MessageContext,
+	entry: PoolEntry,
+	msg: MessageOf<"chat">,
+): Promise<void> {
+	if (typeof msg.text !== "string" || !msg.text.trim()) {
+		send(context.ws, { type: "error", message: "Invalid message" });
+		return;
+	}
+	const chatEntry = resolveChatEntry(context, entry, msg);
+	if (!chatEntry) return;
+	broadcastUserMessage(context.ws, chatEntry, msg);
+	claimChatOwnership(context.ws, chatEntry);
+	await runChatQuery(context, chatEntry, msg);
+}
+
+async function handleSessionMessage(
+	context: MessageContext,
+	entry: PoolEntry,
+	msg: ClientMessage,
+): Promise<void> {
+	switch (msg.type) {
+		case "sync":
+			handleSync(context.ws, entry);
+			return;
+		case "abort":
+			entry.manager.abort();
+			return;
+		case "cancel_queued":
+			entry.manager.cancelQueued(msg.turn_id);
+			return;
+		case "promote_queued":
+			entry.manager.promoteQueued(msg.turn_id);
+			return;
+		case "clear":
+			context.ws.data.pendingNewSession = true;
+			entry.runState.clearError();
+			return;
+		case "reload_session":
+			handleReloadSession(context.pool, context.terminalPool, entry);
+			return;
+		case "probe_mcp":
+			void entry.manager.probeMcpStatus((event) =>
+				entry.runState.broadcast(event),
+			);
+			return;
+		case "probe_slash_commands":
+			void entry.manager.probeSlashCommands((event) =>
+				entry.runState.broadcast(event),
+			);
+			return;
+		case "set_model":
+			await entry.manager.setModel(msg.model);
+			entry.runState.broadcast({
+				type: "status",
+				...entry.manager.getStatus(),
+			});
+			return;
+		case "set_permission_mode":
+			await handlePermissionMode(context.ws, entry, msg);
+			return;
+		case "sync_mcp_list":
+			if (msg.agent_cwd) syncAgentMcpList(context.ws, msg.agent_cwd);
+			else syncVaultMcpList(context.pool);
+			return;
+		case "permission_response":
+			handlePermissionResponse(entry, msg);
+			return;
+		case "ask_user_question_response":
+			handleAskUserQuestionResponse(entry, msg);
+			return;
+		case "plan_mode_exit_response":
+			handlePlanModeExitResponse(entry, msg);
+			return;
+		case "chat":
+			await handleChat(context, entry, msg);
+	}
+}
+
+async function handleMessage(
+	context: MessageContext,
+	raw: string | Buffer,
+): Promise<void> {
+	const msg = parseClientMessage(raw.toString());
+	if (!msg) {
+		send(context.ws, { type: "error", message: "Invalid JSON" });
+		return;
+	}
+	if (handleRoutingMessage(context, msg)) return;
+	const entry =
+		context.pool.get(context.ws.data.subscribedSessionId) ??
+		context.pool.vaultEntry();
+	await handleSessionMessage(context, entry, msg);
+}
+
 export function createWsHandlers(
 	pool: SessionPool,
 	terminalPool?: TerminalSessionPool,
@@ -112,529 +673,8 @@ export function createWsHandlers(
 			}
 		},
 
-		async message(ws: ServerWebSocket<WsData>, raw: string | Buffer) {
-			const msg: ClientMessage | null = parseClientMessage(raw.toString());
-			if (!msg) {
-				send(ws, { type: "error", message: "Invalid JSON" });
-				return;
-			}
-
-			// ── Multi-session routing messages ──────────────────────────────────
-
-			if (msg.type === "new_session") {
-				const vault = pool.vaultEntry();
-				const agentCwd = msg.agent_cwd ?? vault.agentCwd;
-				const agentName = msg.agent_name ?? vault.agentName;
-				let entry: PoolEntry;
-				try {
-					entry = pool.create(agentCwd, agentName);
-				} catch (err) {
-					send(ws, {
-						type: "error",
-						message:
-							err instanceof Error ? err.message : "Failed to create session",
-					});
-					return;
-				}
-				// Subscribe the requesting WS to the new session.
-				const oldEntry = pool.get(ws.data.subscribedSessionId);
-				if (oldEntry) oldEntry.runState.removeSubscriber(ws);
-				entry.runState.addSubscriber(ws);
-				ws.data.subscribedSessionId = entry.sessionId;
-				send(ws, {
-					type: "session_created",
-					session_id: entry.sessionId,
-					agent_cwd: entry.agentCwd,
-					agent_name: entry.agentName,
-				});
-				send(ws, { type: "status", ...entry.manager.getStatus() });
-				send(ws, { type: "queue_state", ...entry.manager.getQueueState() });
-				broadcast({
-					type: "sessions_status",
-					sessions: getLiveSessionsStatus(pool, terminalPool),
-				});
-				return;
-			}
-
-			if (msg.type === "subscribe_session") {
-				// Cancel any pending "new session" intent — user is explicitly
-				// navigating to an existing session instead.
-				ws.data.pendingNewSession = false;
-				// Unsubscribe from current session.
-				const oldEntry = pool.get(ws.data.subscribedSessionId);
-				if (oldEntry) {
-					oldEntry.runState.removeSubscriber(ws);
-				}
-				// Subscribe to requested session (fall back to vault if not found).
-				const newEntry = pool.get(msg.session_id) ?? pool.vaultEntry();
-				newEntry.runState.addSubscriber(ws);
-				ws.data.subscribedSessionId = newEntry.sessionId;
-
-				// Send new session's current state.
-				send(ws, { type: "status", ...newEntry.manager.getStatus() });
-				if (newEntry.manager.isRunning()) {
-					for (const buffered of newEntry.runState.getReplayBuffer()) {
-						send(ws, buffered);
-					}
-				}
-				send(ws, { type: "queue_state", ...newEntry.manager.getQueueState() });
-				return;
-			}
-
-			if (msg.type === "stop_session") {
-				const sdkEntry = pool.get(msg.session_id);
-				if (sdkEntry) {
-					sdkEntry.manager.abort();
-				} else {
-					// Terminal session: send Ctrl+C to interrupt the running command.
-					terminalPool?.write(msg.session_id, "\x03");
-				}
-				return;
-			}
-
-			if (msg.type === "close_session") {
-				if (msg.session_id === pool.vaultSessionId()) {
-					send(ws, {
-						type: "error",
-						message: "Cannot close the vault session",
-					});
-					return;
-				}
-				const sdkEntry = pool.get(msg.session_id);
-				if (sdkEntry) {
-					pool.close(msg.session_id);
-					// Re-subscribe any chat WS clients focused on this session → vault.
-					const vault = pool.vaultEntry();
-					for (const client of wsState.clients) {
-						const clientWs = client as ServerWebSocket<WsData>;
-						if (clientWs.data?.subscribedSessionId === msg.session_id) {
-							vault.runState.addSubscriber(clientWs);
-							clientWs.data.subscribedSessionId = vault.sessionId;
-						}
-					}
-				} else {
-					// Terminal session: kill the PTY.
-					terminalPool?.close(msg.session_id);
-				}
-				broadcast({ type: "session_closed", session_id: msg.session_id });
-				broadcast({
-					type: "sessions_status",
-					sessions: getLiveSessionsStatus(pool, terminalPool),
-				});
-				return;
-			}
-
-			// ── Per-session handlers — resolved against the subscribed session ──
-
-			const entry = pool.get(ws.data.subscribedSessionId) ?? pool.vaultEntry();
-
-			if (msg.type === "sync") {
-				send(ws, { type: "status", ...entry.manager.getStatus() });
-				send(ws, { type: "queue_state", ...entry.manager.getQueueState() });
-				if (entry.manager.isRunning() && entry.runState.ownerWs === null) {
-					entry.runState.ownerWs = ws;
-					for (const req of entry.manager.getPendingPermissionRequests()) {
-						entry.runState.send(ws, req);
-					}
-					for (const exit of entry.manager.getPendingPlanModeExits()) {
-						entry.runState.send(ws, exit);
-					}
-				}
-				return;
-			}
-
-			if (msg.type === "abort") {
-				entry.manager.abort();
-				return;
-			}
-
-			if (msg.type === "cancel_queued") {
-				entry.manager.cancelQueued(msg.turn_id);
-				return;
-			}
-
-			if (msg.type === "promote_queued") {
-				entry.manager.promoteQueued(msg.turn_id);
-				return;
-			}
-
-			if (msg.type === "clear") {
-				// Flag the next "chat" to spawn a fresh pool entry instead of
-				// continuing in this one. We intentionally do NOT call
-				// clearHistory() here — that would cancel the existing subprocess.
-				// The current pool entry stays alive so it remains visible on the
-				// ledger and can finish any in-flight work.
-				ws.data.pendingNewSession = true;
-				entry.runState.clearError();
-				return;
-			}
-
-			if (msg.type === "reload_session") {
-				const fresh = loadConfig();
-				entry.manager.reinitialize(fresh);
-				pool.syncConfig(fresh);
-				entry.runState.clearError();
-				entry.runState.broadcast({
-					type: "status",
-					...entry.manager.getStatus(),
-				});
-				broadcast({
-					type: "sessions_status",
-					sessions: getLiveSessionsStatus(pool, terminalPool),
-				});
-				return;
-			}
-
-			if (msg.type === "probe_mcp") {
-				void entry.manager.probeMcpStatus((e) => entry.runState.broadcast(e));
-				return;
-			}
-
-			if (msg.type === "probe_slash_commands") {
-				void entry.manager.probeSlashCommands((e) =>
-					entry.runState.broadcast(e),
-				);
-				return;
-			}
-
-			if (msg.type === "set_model") {
-				await entry.manager.setModel(msg.model);
-				entry.runState.broadcast({
-					type: "status",
-					...entry.manager.getStatus(),
-				});
-				return;
-			}
-
-			if (msg.type === "set_permission_mode") {
-				try {
-					await entry.manager.setPermissionMode(msg.mode);
-				} catch (err) {
-					send(ws, {
-						type: "error",
-						message:
-							err instanceof Error ? err.message : "Invalid permission mode",
-					});
-					return;
-				}
-				entry.runState.broadcast({
-					type: "status",
-					...entry.manager.getStatus(),
-				});
-				return;
-			}
-
-			if (msg.type === "sync_mcp_list") {
-				const cfg = loadConfig();
-
-				// ── agent-cwd branch: send only to requesting client ──────────────
-				if (msg.agent_cwd) {
-					// Validate that the requested path is a registered agent
-					const allowedRealPaths = computeAllowedAgentRealPaths(cfg);
-					let resolvedAgent: string;
-					try {
-						resolvedAgent = realpathSync(expandTilde(msg.agent_cwd));
-					} catch {
-						return; // path doesn't exist — silently ignore
-					}
-					if (!isAllowedAgentPath(allowedRealPaths, resolvedAgent)) return;
-
-					let agentServers: ReturnType<typeof readAgentMcpFile>["servers"] = [];
-					try {
-						agentServers = readAgentMcpFile(resolvedAgent).servers;
-					} catch {}
-
-					const mappedAgentServers = agentServers.map(({ name, disabled }) => {
-						if (disabled)
-							return mapMcpServer({
-								name,
-								status: "disabled",
-								scope: "project",
-							});
-						return mapMcpServer({
-							name,
-							status: "pending",
-							scope: "project",
-						});
-					});
-					// Use send (not broadcast) — agent MCP is a per-client view,
-					// not shared session state. Tag with agent_cwd so the vault
-					// McpSection can ignore it.
-					send(ws, {
-						type: "mcp_status",
-						servers: mappedAgentServers,
-						agent_cwd: resolvedAgent,
-					});
-					return;
-				}
-
-				// ── vault branch: broadcast to all clients (existing behaviour) ───
-				if (!cfg.vault.path) return;
-				const vaultEntry = pool.vaultEntry();
-				let vaultServers: ReturnType<typeof readVaultMcpFile>["servers"] = [];
-				try {
-					vaultServers = readVaultMcpFile(cfg.vault.path).servers;
-				} catch {}
-				const cachedList = vaultEntry.manager.getLastMcpStatus() ?? [];
-				const cachedMap = new Map(cachedList.map((s) => [s.name, s]));
-				// Preserve cloud/global entries from cache unchanged
-				const preserved = cachedList
-					.filter((s) => s.scope !== "project")
-					.map(mapMcpServer);
-				// Vault entries: current .mcp.json + cached status
-				const vault = vaultServers.map(({ name, disabled }) => {
-					if (disabled)
-						return mapMcpServer({ name, status: "disabled", scope: "project" });
-					const c = cachedMap.get(name);
-					return mapMcpServer({
-						name,
-						status: c?.status ?? "pending",
-						scope: "project",
-						error: c?.error,
-					});
-				});
-				broadcast({ type: "mcp_status", servers: [...preserved, ...vault] });
-				return;
-			}
-
-			if (msg.type === "permission_response") {
-				const pending = entry.manager
-					.getPendingPermissionRequests()
-					.find((r) => r.id === msg.id);
-				if (pending) {
-					entry.manager.handlePermissionResponse(
-						msg.id,
-						msg.approved,
-						msg.saveScope,
-						msg.denyMessage,
-					);
-					const decision = decisionFromScope(msg.approved, msg.saveScope);
-					entry.runState.broadcast({
-						type: "permission_resolved",
-						id: msg.id,
-						toolName: pending.toolName,
-						displayName: pending.displayName,
-						decision,
-					});
-					const currentSessionId = entry.manager.getCurrentSessionId();
-					if (currentSessionId) {
-						void db
-							.recordPermissionEvent(
-								currentSessionId,
-								msg.id,
-								pending.toolName,
-								pending.displayName,
-								decision,
-							)
-							.catch((e) => {
-								console.error("[db] recordPermissionEvent failed:", e);
-							});
-					}
-				}
-				return;
-			}
-
-			if (msg.type === "ask_user_question_response") {
-				entry.manager.handleAskUserQuestionResponse(
-					msg.id,
-					msg.answers,
-					msg.notes,
-				);
-				entry.runState.broadcast({
-					type: "ask_user_question_resolved",
-					id: msg.id,
-					answers: msg.answers,
-					...(msg.notes !== undefined ? { notes: msg.notes } : {}),
-				});
-				const aukSessionId = entry.manager.getCurrentSessionId();
-				if (aukSessionId) {
-					void db
-						.setAskUserQuestionResolution(
-							aukSessionId,
-							msg.id,
-							JSON.stringify(msg.answers),
-							msg.notes !== undefined ? JSON.stringify(msg.notes) : null,
-						)
-						.catch((e) => {
-							console.error("[db] setAskUserQuestionResolution failed:", e);
-						});
-				}
-				return;
-			}
-
-			if (msg.type === "plan_mode_exit_response") {
-				entry.manager.handlePlanModeExitResponse(
-					msg.id,
-					msg.decision,
-					msg.decision === "edited" ? msg.feedback : undefined,
-				);
-				entry.runState.broadcast({
-					type: "plan_mode_exit_resolved",
-					id: msg.id,
-					decision: msg.decision,
-				});
-				return;
-			}
-
-			if (msg.type === "chat") {
-				if (typeof msg.text !== "string" || !msg.text.trim()) {
-					send(ws, { type: "error", message: "Invalid message" });
-					return;
-				}
-
-				// Auto-create a new pool session for a fresh chat. Triggers when:
-				//   (a) current session has no DB history yet (fresh / after clear), OR
-				//   (b) user switched to a different agent (msg.agent_cwd !== entry's cwd)
-				//       while the session is idle — e.g. picking a new agent without
-				//       pressing "New Chat" first.
-				// Follow-up messages in an ongoing conversation continue in the same
-				// pool session via the turn queue (isRunning guard keeps them there).
-				//
-				// When no agent_cwd is specified, default to vault — NOT entry.agentCwd.
-				// This ensures that after "New Chat" (which flags pendingNewSession but
-				// keeps the WS subscribed to the previous pool entry), the next submit
-				// creates a vault session rather than silently inheriting the agent dir.
-				const targetCwd = msg.agent_cwd ?? pool.vaultEntry().agentCwd;
-				const agentSwitched =
-					msg.agent_cwd !== undefined && msg.agent_cwd !== entry.agentCwd;
-				// Resuming a different DB session — msg.session_id is the DB chat ID
-				// the client wants to continue. If it differs from what the current pool
-				// entry is tracking (or entry has no DB session), we need a fresh pool
-				// entry so the resumed session gets its own subprocess and history.
-				const resumingDifferentDbSession =
-					msg.session_id !== undefined &&
-					msg.session_id !== entry.manager.getCurrentSessionId();
-				// "New Chat" sets this flag so we spawn a fresh entry without
-				// disturbing the current subprocess.
-				const needsNewSession = ws.data.pendingNewSession === true;
-				if (needsNewSession) ws.data.pendingNewSession = false;
-				let chatEntry = entry;
-
-				// Before auto-creating, check if an existing pool entry already owns
-				// this DB session (e.g. after back-navigation to a previous chat).
-				// Reuse it instead of spawning a duplicate subprocess.
-				if (
-					msg.session_id &&
-					entry.manager.getCurrentSessionId() !== msg.session_id
-				) {
-					const existingEntry = pool.findByDbSessionId(msg.session_id);
-					if (existingEntry && existingEntry.sessionId !== entry.sessionId) {
-						entry.runState.removeSubscriber(ws);
-						existingEntry.runState.addSubscriber(ws);
-						ws.data.subscribedSessionId = existingEntry.sessionId;
-						chatEntry = existingEntry;
-					}
-				}
-
-				if (
-					chatEntry === entry &&
-					(!entry.manager.isRunning() || needsNewSession) &&
-					(entry.manager.getCurrentSessionId() === null ||
-						agentSwitched ||
-						resumingDifferentDbSession ||
-						needsNewSession)
-				) {
-					const agentName = resolveAgentName(targetCwd);
-					let newEntry: PoolEntry;
-					try {
-						newEntry = pool.create(targetCwd, agentName);
-					} catch (err) {
-						send(ws, {
-							type: "error",
-							message:
-								err instanceof Error ? err.message : "Failed to create session",
-						});
-						return;
-					}
-					entry.runState.removeSubscriber(ws);
-					newEntry.runState.addSubscriber(ws);
-					ws.data.subscribedSessionId = newEntry.sessionId;
-					chatEntry = newEntry;
-					send(ws, {
-						type: "session_created",
-						session_id: newEntry.sessionId,
-						agent_cwd: newEntry.agentCwd,
-						agent_name: newEntry.agentName,
-					});
-					broadcast({
-						type: "sessions_status",
-						sessions: getLiveSessionsStatus(pool, terminalPool),
-					});
-					send(ws, { type: "status", ...newEntry.manager.getStatus() });
-				}
-
-				// Echo user prompt to all OTHER clients subscribed to this session.
-				// Use chatEntry.sessionId (pool UUID) so client-side session filtering works.
-				const userEventData = JSON.stringify({
-					type: "user_message",
-					text: msg.text,
-					session_id: chatEntry.sessionId,
-					...(msg.turn_id !== undefined ? { id: msg.turn_id } : {}),
-				});
-				for (const client of wsState.clients) {
-					if (client === ws) continue;
-					const clientWs = client as ServerWebSocket<WsData>;
-					if (clientWs.data?.subscribedSessionId === chatEntry.sessionId) {
-						clientWs.send(userEventData);
-					}
-				}
-
-				chatEntry.runState.ownerWs = ws;
-				// Track in-flight chats per ws so ownership only releases when this
-				// ws's last queued chat completes.
-				chatEntry.runState.inFlightChatCount.set(
-					ws,
-					(chatEntry.runState.inFlightChatCount.get(ws) ?? 0) + 1,
-				);
-				try {
-					// Pick up config changes without requiring a server restart.
-					const modelChanged = chatEntry.manager.syncConfig(loadConfig());
-					if (modelChanged) {
-						chatEntry.runState.broadcast({
-							type: "status",
-							...chatEntry.manager.getStatus(),
-						});
-					}
-					await chatEntry.manager.runQuery(
-						msg.text,
-						(event) => {
-							chatEntry.runState.broadcast(event);
-							// Propagate per-session state transitions to all clients'
-							// session lists so LEDGER dots update live.
-							if (event.type === "status") {
-								broadcast({
-									type: "sessions_status",
-									sessions: getLiveSessionsStatus(pool, terminalPool),
-								});
-							}
-						},
-						msg.session_id,
-						msg.skill_context,
-						msg.attachments,
-						msg.agent_cwd,
-						msg.turn_id,
-						msg.plan_mode,
-					);
-				} catch (err) {
-					const message = err instanceof Error ? err.message : "Unknown error";
-					send(ws, { type: "error", message });
-				} finally {
-					const remaining =
-						(chatEntry.runState.inFlightChatCount.get(ws) ?? 1) - 1;
-					if (remaining <= 0) {
-						chatEntry.runState.inFlightChatCount.delete(ws);
-						if (chatEntry.runState.ownerWs === ws)
-							chatEntry.runState.ownerWs = null;
-					} else {
-						chatEntry.runState.inFlightChatCount.set(ws, remaining);
-					}
-					// Final sync — catches idle/error state after run completes.
-					broadcast({
-						type: "sessions_status",
-						sessions: getLiveSessionsStatus(pool, terminalPool),
-					});
-				}
-			}
+		message(ws: ServerWebSocket<WsData>, raw: string | Buffer) {
+			return handleMessage({ ws, pool, terminalPool }, raw);
 		},
 	};
 }

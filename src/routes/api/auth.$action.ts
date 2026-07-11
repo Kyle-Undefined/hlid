@@ -52,6 +52,114 @@ function errorResponse(error: unknown, fallback: string): Response {
 	);
 }
 
+async function authenticatedResponse(
+	request: Request,
+	secure: boolean,
+): Promise<Response> {
+	const token = await createSession(
+		request.headers.get("user-agent") ?? undefined,
+	);
+	return json({ ok: true }, 200, {
+		"set-cookie": sessionCookie(token, secure),
+	});
+}
+
+async function setupResponse(
+	request: Request,
+	peerIp: string,
+	secure: boolean,
+): Promise<Response> {
+	if (!isLoopback(peerIp)) {
+		return json({ error: "Initial setup requires the Hlid machine" }, 403);
+	}
+	try {
+		await createInitialPassword(await bodyPassword(request));
+		return await authenticatedResponse(request, secure);
+	} catch (error) {
+		return errorResponse(error, "Setup failed");
+	}
+}
+
+function rateLimitResponse(peerIp: string): Response | null {
+	const retryAfter = loginRetryAfterSeconds(peerIp);
+	if (retryAfter <= 0) return null;
+	return json({ error: "Too many attempts. Try again later." }, 429, {
+		"retry-after": String(retryAfter),
+	});
+}
+
+async function loginResponse(
+	request: Request,
+	peerIp: string,
+	secure: boolean,
+): Promise<Response> {
+	if (!isLoopback(peerIp) && !secure) {
+		return json({ error: "Remote login requires HTTPS" }, 400);
+	}
+	const limited = rateLimitResponse(peerIp);
+	if (limited) return limited;
+	let password: string;
+	try {
+		password = await bodyPassword(request);
+	} catch (error) {
+		return errorResponse(error, "Invalid request");
+	}
+	if (!(await verifyLogin(password, peerIp))) {
+		return json({ error: "Invalid password" }, 401);
+	}
+	return authenticatedResponse(request, secure);
+}
+
+async function changePasswordResponse(
+	request: Request,
+	peerIp: string,
+	secure: boolean,
+): Promise<Response> {
+	const limited = rateLimitResponse(peerIp);
+	if (limited) return limited;
+	try {
+		const body = (await bodyJson(request)) as {
+			currentPassword?: unknown;
+			newPassword?: unknown;
+		};
+		const currentPassword =
+			typeof body.currentPassword === "string" ? body.currentPassword : "";
+		const newPassword =
+			typeof body.newPassword === "string" ? body.newPassword : "";
+		if (!(await changePassword(currentPassword, newPassword, peerIp))) {
+			return json({ error: "Invalid current password" }, 401);
+		}
+		return json({ ok: true }, 200, {
+			"set-cookie": clearSessionCookie(secure),
+		});
+	} catch (error) {
+		return errorResponse(error, "Password change failed");
+	}
+}
+
+async function authenticatedActionResponse(
+	action: string,
+	request: Request,
+	peerIp: string,
+	secure: boolean,
+): Promise<Response> {
+	switch (action) {
+		case "logout":
+			await revokeSession(readCookie(request));
+			break;
+		case "revoke-all":
+			await revokeAllSessions();
+			break;
+		case "change-password":
+			return changePasswordResponse(request, peerIp, secure);
+		default:
+			return json({ error: "Not found" }, 404);
+	}
+	return json({ ok: true }, 200, {
+		"set-cookie": clearSessionCookie(secure),
+	});
+}
+
 export const Route = createFileRoute("/api/auth/$action")({
 	server: {
 		handlers: {
@@ -75,101 +183,22 @@ export const Route = createFileRoute("/api/auth/$action")({
 					effectivePeerIp(request, directPeerIp, loadToken()) ?? "";
 				const secure = isSecureRequest(request, directPeerIp);
 
-				if (params.action === "setup") {
-					if (!isLoopback(peerIp)) {
-						return json(
-							{ error: "Initial setup requires the Hlid machine" },
-							403,
-						);
-					}
-					try {
-						await createInitialPassword(await bodyPassword(request));
-						const token = await createSession(
-							request.headers.get("user-agent") ?? undefined,
-						);
-						return json({ ok: true }, 200, {
-							"set-cookie": sessionCookie(token, secure),
-						});
-					} catch (error) {
-						return errorResponse(error, "Setup failed");
-					}
-				}
+				if (params.action === "setup")
+					return setupResponse(request, peerIp, secure);
 
-				if (params.action === "login") {
-					if (!isLoopback(peerIp) && !secure) {
-						return json({ error: "Remote login requires HTTPS" }, 400);
-					}
-					const retryAfter = loginRetryAfterSeconds(peerIp);
-					if (retryAfter > 0) {
-						return json({ error: "Too many attempts. Try again later." }, 429, {
-							"retry-after": String(retryAfter),
-						});
-					}
-					let password = "";
-					try {
-						password = await bodyPassword(request);
-					} catch (error) {
-						return errorResponse(error, "Invalid request");
-					}
-					if (!(await verifyLogin(password, peerIp))) {
-						return json({ error: "Invalid password" }, 401);
-					}
-					const token = await createSession(
-						request.headers.get("user-agent") ?? undefined,
-					);
-					return json({ ok: true }, 200, {
-						"set-cookie": sessionCookie(token, secure),
-					});
-				}
+				if (params.action === "login")
+					return loginResponse(request, peerIp, secure);
 
 				if ((await authState(request)) !== "authenticated") {
 					return json({ error: "Unauthorized" }, 401);
 				}
 
-				if (params.action === "logout") {
-					await revokeSession(readCookie(request));
-					return json({ ok: true }, 200, {
-						"set-cookie": clearSessionCookie(secure),
-					});
-				}
-
-				if (params.action === "revoke-all") {
-					await revokeAllSessions();
-					return json({ ok: true }, 200, {
-						"set-cookie": clearSessionCookie(secure),
-					});
-				}
-
-				if (params.action === "change-password") {
-					const retryAfter = loginRetryAfterSeconds(peerIp);
-					if (retryAfter > 0) {
-						return json({ error: "Too many attempts. Try again later." }, 429, {
-							"retry-after": String(retryAfter),
-						});
-					}
-					try {
-						const body = (await bodyJson(request)) as {
-							currentPassword?: unknown;
-							newPassword?: unknown;
-						};
-						const changed = await changePassword(
-							typeof body.currentPassword === "string"
-								? body.currentPassword
-								: "",
-							typeof body.newPassword === "string" ? body.newPassword : "",
-							peerIp,
-						);
-						if (!changed)
-							return json({ error: "Invalid current password" }, 401);
-						return json({ ok: true }, 200, {
-							"set-cookie": clearSessionCookie(secure),
-						});
-					} catch (error) {
-						return errorResponse(error, "Password change failed");
-					}
-				}
-
-				return json({ error: "Not found" }, 404);
+				return authenticatedActionResponse(
+					params.action,
+					request,
+					peerIp,
+					secure,
+				);
 			},
 		},
 	},

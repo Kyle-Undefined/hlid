@@ -133,7 +133,6 @@ export const INITIAL_SNAPSHOT: Snapshot = {
 let _snap: Snapshot = { ...INITIAL_SNAPSHOT };
 let _ws: WebSocket | null = null;
 let _liveStats: LiveStats = loadPersistedStats() ?? { ...EMPTY_STATS };
-let _activeSessionId: string | null = null;
 // Buffers in-flight chunks/tool_events for the current run so they survive SPA navigation.
 // Always written (even when subscribers exist), cleared on run end or new run start.
 let _messageBuffer: ServerMessage[] = [];
@@ -183,7 +182,6 @@ function sendChatToServer(msg: QueuedChatMessage): boolean {
 	};
 	for (const fn of messageSubs) fn(userEvent);
 	_pendingSessionToday = true;
-	_activeSessionId = msg.session_id;
 	_messageBuffer = [];
 	const payload: Record<string, unknown> = {
 		type: "chat",
@@ -348,7 +346,7 @@ function onUsageUpdate(
 function onDone(msg: Extract<ServerMessage, { type: "done" }>): boolean {
 	_pendingSessionToday = false;
 	// Note: stale-session filtering is handled by the per-session filter in
-	// onmessage (_subscribedSessionId gate). Do not gate on _activeSessionId
+	// onmessage (_subscribedSessionId gate).
 	// here — that's a DB session ID and doesn't match the pool UUID carried by
 	// done events broadcast from entry.runState.broadcast().
 	// Slice C: pop the queue item matching this done's turn_id. Match by
@@ -382,6 +380,101 @@ function onDone(msg: Extract<ServerMessage, { type: "done" }>): boolean {
 	return true;
 }
 
+function handleGlobalMessage(msg: ServerMessage): boolean {
+	switch (msg.type) {
+		case "sessions_status":
+			_sessionsStatus = msg.sessions;
+			recomputeAggregateNavStatus();
+			for (const subscriber of sessionsStatusSubs) subscriber();
+			return true;
+		case "session_closed":
+			_sessionsStatus = _sessionsStatus.filter(
+				(session) => session.session_id !== msg.session_id,
+			);
+			recomputeAggregateNavStatus();
+			for (const subscriber of sessionsStatusSubs) subscriber();
+			return true;
+		case "session_created":
+			_subscribedSessionId = msg.session_id;
+			_messageBuffer = [];
+			for (const subscriber of statusSubs) subscriber();
+			return true;
+		default:
+			return false;
+	}
+}
+
+function isMessageFromAnotherSession(msg: ServerMessage): boolean {
+	const messageSessionId = (msg as { session_id?: string }).session_id;
+	return (
+		_subscribedSessionId !== "" &&
+		messageSessionId !== undefined &&
+		messageSessionId !== _subscribedSessionId
+	);
+}
+
+function applySessionMessage(msg: ServerMessage): boolean {
+	switch (msg.type) {
+		case "status":
+			onStatus(msg);
+			break;
+		case "permission_request":
+		case "ask_user_question":
+		case "plan_mode_exit":
+			onPermissionRequest();
+			break;
+		case "permission_resolved":
+		case "ask_user_question_resolved":
+		case "plan_mode_exit_resolved":
+			onPermissionResolved();
+			break;
+		case "usage_update":
+			onUsageUpdate(msg);
+			break;
+		case "done":
+			return onDone(msg);
+		case "queue_state":
+			reconcileQueueState(msg.pending_turn_ids, msg.running_turn_id);
+			break;
+	}
+	return true;
+}
+
+const BUFFERED_MESSAGE_TYPES: ReadonlySet<ServerMessage["type"]> = new Set([
+	"chunk",
+	"tool_event",
+	"tool_result",
+	"permission_request",
+	"permission_resolved",
+	"ask_user_question",
+	"ask_user_question_resolved",
+	"plan_mode_exit",
+	"plan_mode_exit_resolved",
+]);
+
+function updateMessageBuffer(msg: ServerMessage): void {
+	if (BUFFERED_MESSAGE_TYPES.has(msg.type)) {
+		if (_bufferingEnabled) _messageBuffer.push(msg);
+		return;
+	}
+	if (msg.type !== "done" && msg.type !== "error") return;
+	if (!_bufferingEnabled) _messageBuffer = [];
+	if (msg.type === "error") _pendingSessionToday = false;
+}
+
+function handleSocketMessage(event: MessageEvent): void {
+	let msg: ServerMessage;
+	try {
+		msg = JSON.parse(event.data as string) as ServerMessage;
+	} catch {
+		return;
+	}
+	if (handleGlobalMessage(msg) || isMessageFromAnotherSession(msg)) return;
+	if (!applySessionMessage(msg)) return;
+	updateMessageBuffer(msg);
+	for (const subscriber of messageSubs) subscriber(msg);
+}
+
 function connect() {
 	if (typeof window === "undefined") return;
 	if (_ws && (_ws.readyState === WS_CONNECTING || _ws.readyState === WS_OPEN)) {
@@ -408,91 +501,7 @@ function connect() {
 		setSnap({ wsStatus: "disconnected" });
 		setTimeout(connect, 3000);
 	};
-	_ws.onmessage = (e: MessageEvent) => {
-		let msg: ServerMessage;
-		try {
-			msg = JSON.parse(e.data as string) as ServerMessage;
-		} catch {
-			return;
-		}
-
-		// ── Multi-session global handlers (never filtered) ──────────────────────
-		if (msg.type === "sessions_status") {
-			_sessionsStatus = msg.sessions;
-			recomputeAggregateNavStatus();
-			for (const fn of sessionsStatusSubs) fn();
-			// sessions_status is a global broadcast — do not fall through to
-			// per-session handling below.
-			return;
-		}
-		if (msg.type === "session_closed") {
-			_sessionsStatus = _sessionsStatus.filter(
-				(s) => s.session_id !== msg.session_id,
-			);
-			recomputeAggregateNavStatus();
-			for (const fn of sessionsStatusSubs) fn();
-			return;
-		}
-		if (msg.type === "session_created") {
-			_subscribedSessionId = msg.session_id;
-			_activeSessionId = msg.session_id;
-			_messageBuffer = [];
-			for (const fn of statusSubs) fn();
-			return;
-		}
-
-		// ── Per-session filtering ────────────────────────────────────────────────
-		// When subscribed to a specific session, drop messages that belong to a
-		// different session. Messages without a session_id tag are always processed
-		// (backward compat with single-session servers).
-		const msgSessionId = (msg as { session_id?: string }).session_id;
-		if (
-			_subscribedSessionId !== "" &&
-			msgSessionId !== undefined &&
-			msgSessionId !== _subscribedSessionId
-		) {
-			return;
-		}
-
-		if (msg.type === "status") onStatus(msg);
-		if (msg.type === "permission_request") onPermissionRequest();
-		if (msg.type === "permission_resolved") onPermissionResolved();
-		// ask_user_question and plan_mode_exit require user input — show same
-		// orange dot as a pending permission so the agent icon signals clearly.
-		if (msg.type === "ask_user_question") onPermissionRequest();
-		if (msg.type === "ask_user_question_resolved") onPermissionResolved();
-		if (msg.type === "plan_mode_exit") onPermissionRequest();
-		if (msg.type === "plan_mode_exit_resolved") onPermissionResolved();
-		if (msg.type === "usage_update") onUsageUpdate(msg);
-		if (msg.type === "done" && !onDone(msg)) return;
-		if (msg.type === "queue_state") {
-			reconcileQueueState(msg.pending_turn_ids, msg.running_turn_id);
-		}
-		// Buffer in-flight events while buffering is enabled (before history loads,
-		// or during SPA nav with component unmounted). Disabled after history drains
-		// so the buffer doesn't grow during a live session.
-		if (
-			msg.type === "chunk" ||
-			msg.type === "tool_event" ||
-			msg.type === "tool_result" ||
-			msg.type === "permission_request" ||
-			msg.type === "permission_resolved" ||
-			msg.type === "ask_user_question" ||
-			msg.type === "ask_user_question_resolved" ||
-			msg.type === "plan_mode_exit" ||
-			msg.type === "plan_mode_exit_resolved"
-		) {
-			if (_bufferingEnabled) _messageBuffer.push(msg);
-		} else if (msg.type === "done" || msg.type === "error") {
-			// Only clear the buffer in live mode. When buffering is enabled (history
-			// still loading), preserve the buffer so a fast-completing query doesn't
-			// lose its streamed chunks before history finishes loading. The component
-			// will clear or drain the buffer once LOAD_HISTORY completes.
-			if (!_bufferingEnabled) _messageBuffer = [];
-			if (msg.type === "error") _pendingSessionToday = false;
-		}
-		for (const fn of messageSubs) fn(msg);
-	};
+	_ws.onmessage = handleSocketMessage;
 }
 
 /**
@@ -522,11 +531,6 @@ export function getSnapshot(): Snapshot {
 	return _snap;
 }
 
-/** The session_id most recently sent to the server (null until first message). */
-export function getActiveSessionId(): string | null {
-	return _activeSessionId;
-}
-
 export function subscribeStatus(fn: () => void): () => void {
 	statusSubs.add(fn);
 	return () => statusSubs.delete(fn);
@@ -542,7 +546,6 @@ export function send(msg: ClientMessage): void {
 	if (msg.type === "chat" || msg.type === "clear") _messageBuffer = [];
 	if (msg.type === "clear") {
 		_subscribedSessionId = PENDING_NEW_SESSION_ID;
-		_activeSessionId = null;
 		_pendingSessionToday = false;
 		_pendingPermCount = 0;
 		setSnap({
@@ -592,13 +595,8 @@ export function subscribeStats(fn: () => void): () => void {
 
 export function resetLiveStats(): void {
 	_liveStats = { ...EMPTY_STATS };
-	_activeSessionId = null;
 	clearPersistedStats();
 	for (const fn of statsSubs) fn();
-}
-
-export function setActiveSessionId(id: string): void {
-	_activeSessionId = id;
 }
 
 export function getPendingSessionToday(): boolean {
@@ -798,7 +796,6 @@ export function __resetForTesting(): void {
 	_snap = { ...INITIAL_SNAPSHOT };
 	_ws = null;
 	_liveStats = { ...EMPTY_STATS };
-	_activeSessionId = null;
 	_messageBuffer = [];
 	_bufferingEnabled = true;
 	_pendingPermCount = 0;
