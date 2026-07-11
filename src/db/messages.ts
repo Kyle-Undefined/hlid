@@ -92,12 +92,13 @@ export async function appendPlanProposal(
 	seq: number,
 	plan: string,
 	decision: string,
+	htmlAttachmentId?: string | null,
 ): Promise<void> {
 	const db = await getDb();
 	db.run(
-		`INSERT INTO plan_proposals (session_id, proposal_id, seq, plan, decision, timestamp) VALUES (?, ?, ?, ?, ?, unixepoch())
+		`INSERT INTO plan_proposals (session_id, proposal_id, seq, plan, decision, html_attachment_id, timestamp) VALUES (?, ?, ?, ?, ?, ?, unixepoch())
      ON CONFLICT(proposal_id) DO UPDATE SET decision = excluded.decision`,
-		[sessionId, proposalId, seq, plan, decision],
+		[sessionId, proposalId, seq, plan, decision, htmlAttachmentId ?? null],
 	);
 }
 
@@ -123,6 +124,7 @@ export type PlanProposalRow = {
 	seq: number;
 	plan: string;
 	decision: string;
+	html_attachment_id: string | null;
 	timestamp: number;
 };
 
@@ -132,7 +134,7 @@ export async function getSessionPlanProposals(
 	const db = await getDb();
 	return db
 		.query<PlanProposalRow, [string]>(
-			`SELECT proposal_id, seq, plan, decision, timestamp FROM plan_proposals WHERE session_id = ? ORDER BY seq ASC`,
+			`SELECT proposal_id, seq, plan, decision, html_attachment_id, timestamp FROM plan_proposals WHERE session_id = ? ORDER BY seq ASC`,
 		)
 		.all(sessionId);
 }

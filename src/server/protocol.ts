@@ -207,6 +207,8 @@ export type PlanModeExitMessage = {
 	id: string;
 	/** Raw ExitPlanMode input from Claude — contains allowedPrompts and any extra fields. */
 	input: Record<string, unknown>;
+	/** Attachment id of the ingested HTML plan document, when the agent produced one. */
+	html_relic_id?: string;
 };
 
 export type PlanModeExitResolvedMessage = {
@@ -363,6 +365,8 @@ export type ClientChatMessage = {
 	turn_id?: string;
 	/** Enable plan mode for this session (only effective on first turn). */
 	plan_mode?: boolean;
+	/** With plan_mode: ask the agent to render its plan as an HTML document. */
+	plan_html?: boolean;
 };
 
 export type ClientCancelQueuedMessage = {

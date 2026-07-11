@@ -70,6 +70,24 @@ describe("PlanCard — pending", () => {
 		fireEvent.keyDown(ta, { key: "Enter", shiftKey: false });
 		expect(onDecide).toHaveBeenCalledWith("pp1", "edited", "swap step 1");
 	});
+
+	it("opens an HTML plan in the sandboxed modal and shares its decisions", () => {
+		const onDecide = vi.fn();
+		render(
+			<PlanCard
+				message={makeMsg({ htmlRelicId: "att-html" })}
+				onDecide={onDecide}
+			/>,
+		);
+		const frame = screen.getByTitle("Plan document");
+		expect(frame.getAttribute("src")).toBe("/api/attachments/att-html/raw");
+		expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
+		fireEvent.click(
+			screen.getAllByRole("button", { name: /approve plan/i })[1],
+		);
+		expect(onDecide).toHaveBeenCalledWith("pp1", "approved");
+		expect(screen.queryByRole("dialog", { name: "Plan document" })).toBeNull();
+	});
 });
 
 describe("PlanCard — resolved", () => {
@@ -103,6 +121,20 @@ describe("PlanCard — resolved", () => {
 		);
 		fireEvent.click(screen.getByRole("button"));
 		expect(screen.getByText("Refactor")).not.toBeNull();
+	});
+
+	it("resolved HTML plans reopen in a read-only modal", () => {
+		render(
+			<PlanCard
+				message={makeMsg({ decision: "approved", htmlRelicId: "att-html" })}
+				onDecide={vi.fn()}
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: /view html/i }));
+		expect(
+			screen.getByRole("dialog", { name: "Plan document" }),
+		).not.toBeNull();
+		expect(screen.queryByRole("button", { name: /approve plan/i })).toBeNull();
 	});
 
 	it("renders cancelled label", () => {

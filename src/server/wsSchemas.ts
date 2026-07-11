@@ -36,6 +36,7 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 		attachments: z.array(attachment).max(32).optional(),
 		turn_id: id.optional(),
 		plan_mode: z.boolean().optional(),
+		plan_html: z.boolean().optional(),
 	}),
 	z.strictObject({ type: z.literal("cancel_queued"), turn_id: id }),
 	z.strictObject({ type: z.literal("promote_queued"), turn_id: id }),

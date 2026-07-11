@@ -390,4 +390,11 @@ function initSchema(db: Db): void {
 			`UPDATE settings SET key = 'rl_claude_weekly_sonnet' WHERE key = 'rl_weekly_sonnet'`,
 		);
 	});
+
+	// html_attachment_id: links a plan proposal to the ingested HTML plan relic
+	// (attachments row) so the modal viewer survives reload. NULL for markdown-only
+	// proposals.
+	runMigration(db, "_migrated_plan_proposals_html_attachment", (db) => {
+		db.run(`ALTER TABLE plan_proposals ADD COLUMN html_attachment_id TEXT`);
+	});
 }

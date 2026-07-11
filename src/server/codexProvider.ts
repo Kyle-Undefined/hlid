@@ -91,6 +91,25 @@ function textFromUnknown(value: unknown): string {
 	return typeof obj.text === "string" ? obj.text : "";
 }
 
+function filePathFromItem(value: unknown): string | null {
+	const obj = asObj(value);
+	for (const key of ["file_path", "filePath", "path"]) {
+		if (typeof obj[key] === "string") return obj[key];
+	}
+	for (const collection of [obj.changes, obj.files]) {
+		if (!Array.isArray(collection)) continue;
+		for (const entry of collection) {
+			const path = filePathFromItem(entry);
+			if (path) return path;
+		}
+	}
+	return null;
+}
+
+function isHtmlPlanPath(path: string): boolean {
+	return /(?:^|[\\/])\.hlid[\\/]plans[\\/]plan-[^\\/]+\.html$/i.test(path);
+}
+
 export function codexReasoningText(item: unknown): string {
 	const obj = asObj(item);
 	const candidates = [
@@ -111,6 +130,23 @@ function approvalPolicy(
 	mode: AgentQueryParams["permissionMode"],
 ): "on-request" | "never" {
 	return mode === "bypassPermissions" ? "never" : "on-request";
+}
+
+function autoApprovesPermissions(params: AgentQueryParams): boolean {
+	return (
+		params.permissionMode === "bypassPermissions" ||
+		(params.permissionMode === "plan" &&
+			params.implementationPermissionMode === "bypassPermissions")
+	);
+}
+
+function effectivePermissionMode(
+	params: AgentQueryParams,
+): AgentQueryParams["permissionMode"] {
+	return params.permissionMode === "plan" &&
+		params.implementationPermissionMode === "bypassPermissions"
+		? "bypassPermissions"
+		: params.permissionMode;
 }
 
 /** Alias of the vendored generated SandboxMode — kept as a named export for API stability. */
@@ -324,6 +360,9 @@ class CodexAgentSession implements AgentSession {
 	private streamedAgentMessageIds = new Set<string>();
 	private emittedReasoningIds = new Set<string>();
 	private sawUnidentifiedAgentMessageDelta = false;
+	private startedItems = new Map<string, Record<string, unknown>>();
+	private approvedHtmlPlanItemId: string | null = null;
+	private htmlPlanReady = false;
 	private lastUsage = {
 		inputTokens: 0,
 		outputTokens: 0,
@@ -384,9 +423,11 @@ class CodexAgentSession implements AgentSession {
 			...(this.params.effort ? { effort: this.params.effort } : {}),
 			...(this.params.permissionMode
 				? {
-						approvalPolicy: approvalPolicy(this.params.permissionMode),
+						approvalPolicy: approvalPolicy(
+							effectivePermissionMode(this.params),
+						),
 						sandboxPolicy: codexSandboxPolicy(
-							this.params.permissionMode,
+							effectivePermissionMode(this.params),
 							this.params.additionalDirectories ?? [],
 						),
 					}
@@ -520,8 +561,10 @@ class CodexAgentSession implements AgentSession {
 			...(this.params.model ? { model: this.params.model } : {}),
 			...(this.params.permissionMode
 				? {
-						approvalPolicy: approvalPolicy(this.params.permissionMode),
-						sandbox: sandboxMode(this.params.permissionMode),
+						approvalPolicy: approvalPolicy(
+							effectivePermissionMode(this.params),
+						),
+						sandbox: sandboxMode(effectivePermissionMode(this.params)),
 					}
 				: {}),
 		};
@@ -611,11 +654,22 @@ class CodexAgentSession implements AgentSession {
 		rawParams: unknown,
 	): Promise<unknown> {
 		const params = asObj(rawParams);
+		if (autoApprovesPermissions(this.params)) {
+			return this.allowedServerRequestResult(method, params);
+		}
 		if (typeof this.params.canUseTool !== "function") {
 			return this.deniedServerRequestResult(method);
 		}
 		const itemId = String(params.itemId ?? params.approvalId ?? "approval");
-		const decision = await this.params.canUseTool(method, params, {
+		const startedItem = this.startedItems.get(itemId);
+		const filePath =
+			method === "item/fileChange/requestApproval" ||
+			method === "applyPatchApproval"
+				? (filePathFromItem(startedItem) ?? filePathFromItem(params))
+				: null;
+		const toolName = filePath ? "Write" : method;
+		const toolInput = filePath ? { file_path: filePath } : params;
+		const decision = await this.params.canUseTool(toolName, toolInput, {
 			toolUseID: itemId,
 			signal: this.params.signal ?? new AbortController().signal,
 			title: "Codex wants approval",
@@ -624,6 +678,14 @@ class CodexAgentSession implements AgentSession {
 				typeof params.reason === "string" ? params.reason : undefined,
 		});
 		const allowed = decision.behavior === "allow";
+		if (
+			allowed &&
+			this.params.permissionMode === "plan" &&
+			filePath &&
+			isHtmlPlanPath(filePath)
+		) {
+			this.approvedHtmlPlanItemId = itemId;
+		}
 		return allowed
 			? this.allowedServerRequestResult(method, params)
 			: this.deniedServerRequestResult(method);
@@ -654,6 +716,9 @@ class CodexAgentSession implements AgentSession {
 		this.streamedAgentMessageIds.clear();
 		this.emittedReasoningIds.clear();
 		this.sawUnidentifiedAgentMessageDelta = false;
+		this.startedItems.clear();
+		this.approvedHtmlPlanItemId = null;
+		this.htmlPlanReady = false;
 	}
 
 	private handleThreadStarted(obj: Record<string, unknown>): void {
@@ -704,16 +769,23 @@ class CodexAgentSession implements AgentSession {
 	private handleItemStarted(obj: Record<string, unknown>): void {
 		const item = asObj(obj.item);
 		const type = String(item.type ?? "tool");
+		const itemId = String(item.id ?? type);
+		this.startedItems.set(itemId, item);
 		if (type === "agentMessage" || type === "userMessage") return;
 		if (type === "reasoning") {
 			this.emitReasoning(item);
 			return;
 		}
+		const toolName = String(
+			item.tool ?? item.toolName ?? item.name ?? item.command ?? type,
+		);
+		const input =
+			item.arguments ?? item.input ?? item.rawInput ?? item.params ?? item;
 		this.events.push({
 			type: "tool_start",
-			toolId: String(item.id ?? type),
-			name: type,
-			input: item,
+			toolId: itemId,
+			name: toolName,
+			input,
 		});
 	}
 
@@ -730,6 +802,8 @@ class CodexAgentSession implements AgentSession {
 	private handleItemCompleted(obj: Record<string, unknown>): void {
 		const item = asObj(obj.item);
 		const type = String(item.type ?? "");
+		const itemId = String(item.id ?? type);
+		if (itemId === this.approvedHtmlPlanItemId) this.htmlPlanReady = true;
 		if (type === "agentMessage") {
 			this.handleCompletedAgentMessage(item);
 			return;
@@ -774,13 +848,48 @@ class CodexAgentSession implements AgentSession {
 		});
 	}
 
-	private handleTurnCompleted(
+	private async handleTurnCompleted(
 		obj: Record<string, unknown>,
 		params: unknown,
-	): void {
+	): Promise<void> {
 		const turn = asObj(obj.turn);
 		this.recordUsage(maybeUsage(turn) ?? maybeUsage(params));
 		this.activeTurnId = null;
+		if (
+			this.params.permissionMode === "plan" &&
+			(this.htmlPlanReady || this.params.planHtmlPath)
+		) {
+			const planDecision = await this.params.canUseTool(
+				"ExitPlanMode",
+				{ plan: "HTML plan ready for review." },
+				{
+					toolUseID: `codex-plan-${String(turn.id ?? "turn")}`,
+					signal: this.params.signal ?? new AbortController().signal,
+					title: "Codex completed its plan",
+				},
+			);
+			if (
+				planDecision.behavior === "deny" &&
+				planDecision.message?.startsWith("User requested changes to the plan:")
+			) {
+				this.resetTurnTracking();
+				await this.send(
+					`${planDecision.message}\n\nRevise the plan accordingly. If an HTML plan path was specified earlier, replace that document with the revised plan and present it for approval again.`,
+				);
+				return;
+			}
+			if (planDecision.behavior === "allow") {
+				this.params = {
+					...this.params,
+					permissionMode: this.params.implementationPermissionMode ?? "default",
+				};
+				this.resetTurnTracking();
+				await this.send(
+					"The user approved the plan. Implement it now, including the validation described in the plan. Do not create another plan unless implementation reveals a material blocker that requires user input.",
+				);
+				return;
+			}
+		}
 		this.resetTurnTracking();
 		this.events.push({
 			type: "done",
@@ -826,7 +935,7 @@ class CodexAgentSession implements AgentSession {
 				this.handleMcpStartupStatus(obj);
 				break;
 			case "turn/completed":
-				this.handleTurnCompleted(obj, params);
+				void this.handleTurnCompleted(obj, params);
 				break;
 		}
 	}

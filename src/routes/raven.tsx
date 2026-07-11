@@ -1,5 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
+	FileCode,
 	Mic,
 	Paperclip,
 	ShieldCheck,
@@ -448,6 +449,7 @@ function useRavenActions({
 	allSkills,
 	planMode,
 	setPlanMode,
+	planHtml,
 	session,
 	runtime,
 	upload,
@@ -464,6 +466,7 @@ function useRavenActions({
 	allSkills: ReturnType<typeof useMergedSkills>;
 	planMode: boolean;
 	setPlanMode: Dispatch<SetStateAction<boolean>>;
+	planHtml: boolean;
 	session: ReturnType<typeof useRavenSessionIdentity>;
 	runtime: ReturnType<typeof useRavenChatRuntime>;
 	upload: ReturnType<typeof useFileUpload>;
@@ -585,6 +588,7 @@ function useRavenActions({
 				attachments: attachments.length > 0 ? attachments : undefined,
 				agent_cwd: agentCwdToSend,
 				plan_mode: planMode || undefined,
+				plan_html: (planMode && planHtml) || undefined,
 			});
 			clearDraft();
 			setInput("");
@@ -604,6 +608,7 @@ function useRavenActions({
 			clearDraft,
 			clearPendingAttachments,
 			planMode,
+			planHtml,
 			dispatch,
 			atBottomRef,
 			agentContextSentRef,
@@ -828,6 +833,7 @@ export function ChatPage() {
 	const upload = useFileUpload({ agentCwd: agentSkillContext, sessionId });
 	const { pendingAttachments, uploadingCount } = upload;
 	const [planMode, setPlanMode] = useState(false);
+	const [planHtml, setPlanHtml] = useState(config.ui.html_plans ?? false);
 	const [dragOver, setDragOver] = useState(false);
 	const [showModelPopup, setShowModelPopup] = useState(false);
 	const viewport = useRavenViewport({
@@ -877,6 +883,7 @@ export function ChatPage() {
 		allSkills,
 		planMode,
 		setPlanMode,
+		planHtml,
 		session,
 		runtime,
 		upload,
@@ -921,6 +928,8 @@ export function ChatPage() {
 		activeSkill,
 		planMode,
 		setPlanMode,
+		planHtml,
+		setPlanHtml,
 		dragOver,
 		setDragOver,
 		showModelPopup,
@@ -1259,6 +1268,8 @@ function ChatInputNotices({
 	voice,
 	planMode,
 	setPlanMode,
+	planHtml,
+	setPlanHtml,
 }: ChatComposerProps) {
 	const { agentSkillContext, setAgentSkillContext, agentContextSentRef } =
 		session;
@@ -1337,7 +1348,7 @@ function ChatInputNotices({
 					<button
 						type="button"
 						onClick={() => setPlanMode((v) => !v)}
-						title="Enable plan mode — Claude plans before acting"
+						title="Enable plan mode — the agent plans before acting"
 						className={`flex items-center gap-1.5 text-[9px] tracking-widest uppercase transition-colors shrink-0 ${
 							planMode
 								? "text-primary border-b border-primary/50"
@@ -1347,6 +1358,21 @@ function ChatInputNotices({
 						<ShieldCheck className="w-3 h-3" />
 						plan
 					</button>
+					{planMode && (
+						<button
+							type="button"
+							onClick={() => setPlanHtml((v) => !v)}
+							title="Render the plan as a styled HTML page shown in a modal"
+							className={`flex items-center gap-1.5 text-[9px] tracking-widest uppercase transition-colors shrink-0 ${
+								planHtml
+									? "text-primary border-b border-primary/50"
+									: "text-muted-foreground/40 hover:text-muted-foreground/70"
+							}`}
+						>
+							<FileCode className="w-3 h-3" />
+							html
+						</button>
+					)}
 				</div>
 			)}
 		</>
@@ -1615,6 +1641,8 @@ interface ChatComposerProps {
 	activeSkill: ActiveRavenSkill | null;
 	planMode: boolean;
 	setPlanMode: Dispatch<SetStateAction<boolean>>;
+	planHtml: boolean;
+	setPlanHtml: Dispatch<SetStateAction<boolean>>;
 	dragOver: boolean;
 	setDragOver: Dispatch<SetStateAction<boolean>>;
 	showModelPopup: boolean;

@@ -1,8 +1,9 @@
 import { realpathSync } from "node:fs";
+import { resolve as resolvePath } from "node:path";
 import type { HlidConfig } from "../config";
 import * as db from "../db";
 import { resolveClaudeExecutable } from "../lib/claudePath";
-import { expandTilde, toLogical } from "../lib/paths";
+import { expandTilde, pathStartsWith, toLogical } from "../lib/paths";
 import { SESSION_LABEL_LENGTH } from "../lib/utils";
 import {
 	computeAllowedAgentRealPaths,
@@ -17,6 +18,7 @@ import type {
 	McpServerStatus,
 	ProviderAccountInfo,
 } from "./agentProvider";
+import { ingestPlanHtml } from "./attachments";
 import { loadConfig } from "./config";
 import { resolveExecutionContext } from "./executionContext";
 import { parseAskUserQuestion } from "./parseAskUserQuestion";
@@ -26,7 +28,7 @@ import {
 	PermissionManager,
 	PlanModeManager,
 } from "./permissions";
-import { buildPrompt } from "./promptBuilder";
+import { buildPlanHtmlInstructions, buildPrompt } from "./promptBuilder";
 import type {
 	AskUserQuestionAnswers,
 	AskUserQuestionNotes,
@@ -98,6 +100,7 @@ type RunQueryArgs = [
 	agentCwd?: string,
 	turnId?: string,
 	planMode?: boolean,
+	planHtml?: boolean,
 ];
 
 export type SessionState = "idle" | "running" | "error";
@@ -141,6 +144,11 @@ export class SessionManager {
 	private permissions = new PermissionManager();
 	private askUserQuestions = new AskUserQuestionManager();
 	private planModeManager = new PlanModeManager();
+	// Deterministic path the agent is asked to write its HTML plan to (plan
+	// mode + html_plans on). Set per turn in runOneTurn; the storage root pairs
+	// with it for relic ingestion at the ExitPlanMode intercept.
+	private planHtmlPath: string | null = null;
+	private planHtmlStorageRoot: string | null = null;
 	/** Tools approved for the entire hlid session (survives provider subprocess restarts). */
 	private sessionAllowedTools = new Set<string>();
 	private currentSessionId: string | null = null;
@@ -1023,6 +1031,7 @@ export class SessionManager {
 		agentCwd?: string,
 		turnId?: string,
 		planMode?: boolean,
+		planHtml?: boolean,
 	): Promise<void> {
 		const completion = this.turnQueue.enqueue(
 			[
@@ -1034,6 +1043,7 @@ export class SessionManager {
 				agentCwd,
 				turnId,
 				planMode,
+				planHtml,
 			],
 			turnId,
 		);
@@ -1181,53 +1191,93 @@ export class SessionManager {
 					return;
 				}
 
+				// Plan-mode HTML handoff: the agent is instructed to write its plan
+				// document to exactly this.planHtmlPath, so that one write is
+				// pre-approved (plan mode otherwise routes writes through the
+				// permission card).
+				if (
+					this.planHtmlPath &&
+					(toolName === "Write" || toolName === "Edit") &&
+					typeof passInput.file_path === "string" &&
+					resolvePath(passInput.file_path) === this.planHtmlPath
+				) {
+					resolve({ behavior: "allow", updatedInput: passInput });
+					return;
+				}
+
 				if (toolName === "ExitPlanMode") {
-					const request = {
-						type: "plan_mode_exit" as const,
-						id: toolUseID,
-						input: passInput,
-					};
 					const planText =
 						typeof passInput.plan === "string"
 							? passInput.plan
 							: JSON.stringify(passInput.plan ?? "");
 					const planSeq = this.messageSeq++;
-					if (sessionId) {
-						void db
-							.appendPlanProposal(
+					void (async () => {
+						let htmlRelicId: string | null = null;
+						if (this.planHtmlPath && this.planHtmlStorageRoot && sessionId) {
+							htmlRelicId = await ingestPlanHtml({
+								sourcePath: this.planHtmlPath,
+								plansDir: resolvePath(
+									this.planHtmlStorageRoot,
+									".hlid",
+									"plans",
+								),
+								storageRoot: this.planHtmlStorageRoot,
 								sessionId,
-								toolUseID,
 								planSeq,
-								planText,
-								"pending",
-							)
-							.catch((error) => logDbError("appendPlanProposal", error));
-					}
-					this.planModeManager.register(
-						toolUseID,
-						request,
-						(decision, feedback) => {
-							if (sessionId) {
-								void db
-									.setPlanProposalDecision(sessionId, toolUseID, decision)
-									.catch((error) =>
-										logDbError("setPlanProposalDecision", error),
-									);
-							}
-							if (decision === "approved") {
-								resolve({ behavior: "allow", updatedInput: passInput });
-							} else {
-								resolve({
-									behavior: "deny",
-									message:
-										decision === "edited"
-											? `User requested changes to the plan:\n\n${feedback ?? ""}`
-											: "Plan was cancelled by the user.",
-								});
-							}
-						},
-					);
-					emit(request);
+								maxBytes: loadConfig().attachments.max_bytes,
+							});
+						}
+						const request = {
+							type: "plan_mode_exit" as const,
+							id: toolUseID,
+							input: passInput,
+							...(htmlRelicId ? { html_relic_id: htmlRelicId } : {}),
+						};
+						if (sessionId) {
+							void db
+								.appendPlanProposal(
+									sessionId,
+									toolUseID,
+									planSeq,
+									planText,
+									"pending",
+									htmlRelicId,
+								)
+								.catch((error) => logDbError("appendPlanProposal", error));
+						}
+						this.planModeManager.register(
+							toolUseID,
+							request,
+							(decision, feedback) => {
+								if (sessionId) {
+									void db
+										.setPlanProposalDecision(sessionId, toolUseID, decision)
+										.catch((error) =>
+											logDbError("setPlanProposalDecision", error),
+										);
+								}
+								if (decision === "approved") {
+									resolve({ behavior: "allow", updatedInput: passInput });
+								} else {
+									resolve({
+										behavior: "deny",
+										message:
+											decision === "edited"
+												? `User requested changes to the plan:\n\n${feedback ?? ""}`
+												: "Plan was cancelled by the user.",
+									});
+								}
+							},
+						);
+						if (htmlRelicId) {
+							emit({
+								type: "attachment_created",
+								id: htmlRelicId,
+								kind: "ephemeral",
+							});
+						}
+						emit(request);
+					})();
 					return;
 				}
 
@@ -1277,6 +1327,39 @@ export class SessionManager {
 			});
 	}
 
+	/**
+	 * Arm or clear the HTML-plan handoff path for this turn. When armed, the
+	 * prompt gains buildPlanHtmlInstructions(path), the Write/Edit permission
+	 * handler auto-allows that exact path, and the ExitPlanMode intercept
+	 * ingests the file as an ephemeral relic.
+	 */
+	private syncPlanHtmlPath(
+		enabled: boolean,
+		sessionId: string | undefined,
+	): void {
+		if (!enabled || !sessionId) {
+			this.planHtmlPath = null;
+			this.planHtmlStorageRoot = null;
+			return;
+		}
+		const storageRoot = resolvePath(
+			expandTilde(this.agentCwd ?? this.vaultPath),
+		);
+		const path = resolvePath(
+			storageRoot,
+			".hlid",
+			"plans",
+			`plan-${sessionId}.html`,
+		);
+		if (!pathStartsWith(storageRoot, path)) {
+			this.planHtmlPath = null;
+			this.planHtmlStorageRoot = null;
+			return;
+		}
+		this.planHtmlPath = path;
+		this.planHtmlStorageRoot = storageRoot;
+	}
+
 	private async persistUserMessage(
 		sessionId: string | undefined,
 		userMessage: string,
@@ -1323,6 +1406,12 @@ export class SessionManager {
 			this.agentSessionKey = null;
 		}
 		if (this.agentSession) return this.agentSession;
+		const configuredPermissionMode =
+			agentSettings?.permissionMode ?? this.permissionMode;
+		const implementationPermissionMode =
+			configuredPermissionMode === "plan"
+				? "default"
+				: configuredPermissionMode;
 
 		const session = provider.query({
 			cwd: activeCwd,
@@ -1331,9 +1420,11 @@ export class SessionManager {
 				extraDirs.size > 0 ? Array.from(extraDirs).map(toLogical) : undefined,
 			signal: this.abortController?.signal,
 			model: agentSettings?.model ?? (this.agentCwd ? undefined : this.model),
-			permissionMode: planMode
-				? "plan"
-				: (agentSettings?.permissionMode ?? this.permissionMode),
+			permissionMode: planMode ? "plan" : configuredPermissionMode,
+			...(planMode ? { implementationPermissionMode } : {}),
+			...(planMode && this.planHtmlPath
+				? { planHtmlPath: this.planHtmlPath }
+				: {}),
 			effort: agentSettings?.effort ?? this.effort,
 			maxTurns: agentSettings?.maxTurns ?? this.maxTurns,
 			executable,
@@ -1390,9 +1481,11 @@ export class SessionManager {
 		agentCwd?: string,
 		turnId?: string,
 		planMode?: boolean,
+		planHtml?: boolean,
 	): Promise<void> {
 		this.currentTurnId = turnId;
 		await this.initSessionContext(sessionId, agentCwd, userMessage);
+		this.syncPlanHtmlPath(Boolean(planMode && planHtml), sessionId);
 
 		// Slice C: emit status=running AFTER initSessionContext so getCurrentSessionId()
 		// is non-null when clients receive this event. This lets the ledger detect new
@@ -1454,6 +1547,13 @@ export class SessionManager {
 				userMessage,
 				skillContext,
 				attachments,
+				...(this.planHtmlPath
+					? {
+							planHtmlInstructions: buildPlanHtmlInstructions(
+								this.planHtmlPath,
+							),
+						}
+					: {}),
 			});
 			// With `resume`, the CLI maintains conversation state on its end. We
 			// send only the new user turn — no transcript replay.

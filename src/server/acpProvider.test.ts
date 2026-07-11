@@ -65,6 +65,72 @@ describe("AcpProvider — interface compliance", () => {
 	});
 });
 
+describe("AcpProvider — plan mode", () => {
+	it("selects an ACP agent's advertised plan session mode", async () => {
+		const { events, session } = await run(
+			"report-mode",
+			params("allow", { permissionMode: "plan" }),
+		);
+		expect(events).toContainEqual({ type: "text_delta", text: "plan" });
+		session.cancel();
+	});
+
+	it("hands an HTML plan through approval and continues in implementation mode", async () => {
+		const canUseTool = vi.fn(async () => ({ behavior: "allow" as const }));
+		const { events, session } = await run(
+			"html-plan",
+			params("allow", {
+				permissionMode: "plan",
+				implementationPermissionMode: "bypassPermissions",
+				canUseTool,
+			}),
+		);
+		expect(canUseTool).toHaveBeenCalledWith(
+			"Write",
+			{ file_path: "/vault/.hlid/plans/plan-fake.html" },
+			expect.objectContaining({ toolUseID: "tool-1" }),
+		);
+		expect(canUseTool).toHaveBeenCalledWith(
+			"ExitPlanMode",
+			{ plan: "HTML plan ready for review." },
+			expect.objectContaining({ title: "Fake ACP completed its plan" }),
+		);
+		expect(events).toContainEqual({ type: "text_delta", text: "implemented" });
+		session.cancel();
+	});
+});
+
+describe("AcpProvider — permission modes", () => {
+	it("selects an allow option without prompting Hlid in bypassPermissions", async () => {
+		const canUseTool = vi.fn();
+		const { events, session } = await run(
+			"test",
+			params("deny", { permissionMode: "bypassPermissions", canUseTool }),
+		);
+		expect(canUseTool).not.toHaveBeenCalled();
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "tool_result",
+				toolId: "tool-1",
+				content: "allowed",
+			}),
+		);
+		session.cancel();
+	});
+
+	it("applies a mid-session switch to bypassPermissions", async () => {
+		const canUseTool = vi.fn();
+		const session = makeProvider().query(params("deny", { canUseTool }));
+		await session.setPermissionMode?.("bypassPermissions");
+		await session.send("test");
+		for await (const event of session) {
+			if (event.type === "done") break;
+		}
+		expect(canUseTool).not.toHaveBeenCalled();
+		session.cancel();
+	});
+});
+
 describe("AcpProvider — event mapping", () => {
 	it("yields session_start with ACP session id on connect", async () => {
 		const { events, session } = await run();
@@ -91,6 +157,25 @@ describe("AcpProvider — event mapping", () => {
 			toolId: "tool-1",
 			name: "Write file",
 			input: { path: "a.txt" },
+		});
+		session.cancel();
+	});
+
+	it("maps native ACP plans onto the shared tool-use timeline", async () => {
+		const { events, session } = await run("plan-update");
+		const plan = [
+			{ content: "Research", priority: "high", status: "in_progress" },
+		];
+		expect(events).toContainEqual({
+			type: "tool_start",
+			toolId: "acp-plan",
+			name: "UpdatePlan",
+			input: { plan },
+		});
+		expect(events).toContainEqual({
+			type: "tool_result",
+			toolId: "acp-plan",
+			content: JSON.stringify(plan),
 		});
 		session.cancel();
 	});

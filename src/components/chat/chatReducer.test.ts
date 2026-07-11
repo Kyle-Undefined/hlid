@@ -258,6 +258,50 @@ describe("ADD_PLAN_PROPOSAL", () => {
 		expect(msg.plan).toBe("## Steps\n1. do x");
 		expect(msg.decision).toBe("pending");
 	});
+
+	it("carries htmlRelicId when the agent produced an HTML plan", () => {
+		const state = reducer(empty(), {
+			type: "ADD_PLAN_PROPOSAL",
+			id: "pp1",
+			plan: "## Steps\n1. do x",
+			htmlRelicId: "att-1",
+		});
+		const msg = state[0];
+		if (msg.role !== "plan_proposal") throw new Error("wrong role");
+		expect(msg.htmlRelicId).toBe("att-1");
+	});
+
+	it("omits htmlRelicId when not provided", () => {
+		const state = reducer(empty(), {
+			type: "ADD_PLAN_PROPOSAL",
+			id: "pp1",
+			plan: "do x",
+		});
+		const msg = state[0];
+		if (msg.role !== "plan_proposal") throw new Error("wrong role");
+		expect(msg.htmlRelicId).toBeUndefined();
+	});
+});
+
+describe("LOAD_HISTORY — HTML plan", () => {
+	it("hydrates a saved plan's HTML attachment id", () => {
+		const state = reducer(empty(), {
+			type: "LOAD_HISTORY",
+			items: [
+				{
+					kind: "plan_proposal",
+					id: "pp-history",
+					plan: "Saved plan",
+					decision: "approved",
+					html_attachment_id: "att-history",
+				},
+			],
+		});
+		expect(state[0]).toMatchObject({
+			role: "plan_proposal",
+			htmlRelicId: "att-history",
+		});
+	});
 });
 
 // ── RESOLVE_PLAN_PROPOSAL ─────────────────────────────────────────────────────

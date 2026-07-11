@@ -62,6 +62,8 @@ const UiSchema = z.object({
 	hide_skills_index: z.boolean().default(true),
 	theme: z.enum(["dark", "tan"]).default("tan"),
 	mobile_theme: z.enum(["dark", "tan"]).optional(),
+	/** Default for the per-session HTML-plans toggle in plan mode. */
+	html_plans: z.boolean().default(false),
 });
 
 const StatusVocabularySchema = z.object({
@@ -177,6 +179,7 @@ export const HlidConfigSchema = z.object({
 		enter_to_submit: true,
 		hide_skills_index: true,
 		theme: "tan" as const,
+		html_plans: false,
 	})),
 	status_vocabulary: StatusVocabularySchema.default(() => ({
 		active: ["Active", "In Progress"],

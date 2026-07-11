@@ -14,6 +14,7 @@ describe("settings form conversion", () => {
 			codex: { max_turns: 8 },
 			server: { port: 4000, tls_proxy_port: 4443 },
 			status_vocabulary: { active: ["Doing"], planning: [], done: ["Done"] },
+			ui: { html_plans: true },
 		});
 		const forms = createSettingsForms(initial);
 
@@ -24,6 +25,7 @@ describe("settings form conversion", () => {
 		});
 		expect(forms.codex.maxTurns).toBe("8");
 		expect(forms.server).toMatchObject({ port: "4000", tlsProxyPort: "4443" });
+		expect(forms.ui.htmlPlans).toBe(true);
 		expect(forms.vocab).toEqual({
 			active: "Doing",
 			planning: "",
@@ -61,7 +63,7 @@ describe("settings form conversion", () => {
 			planning: "Planning",
 			done: "Done, Complete",
 		};
-		forms.ui = { ...forms.ui, mobileTheme: "same" };
+		forms.ui = { ...forms.ui, mobileTheme: "same", htmlPlans: true };
 
 		const config = buildSettingsConfig(initial, forms, false);
 		expect(config.claude.max_turns).toBeUndefined();
@@ -72,6 +74,12 @@ describe("settings form conversion", () => {
 			done: ["Done", "Complete"],
 		});
 		expect(config.ui.mobile_theme).toBeUndefined();
+		expect(config.ui.html_plans).toBe(true);
+	});
+
+	it("defaults HTML plans off when the setting is absent", () => {
+		const forms = createSettingsForms(HlidConfigSchema.parse({}));
+		expect(forms.ui.htmlPlans).toBe(false);
 	});
 });
 

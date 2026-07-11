@@ -1756,8 +1756,34 @@ describe("SessionManager — per-agent settings", () => {
 			true,
 		);
 		expect(captured.params?.permissionMode).toBe("plan");
+		expect(captured.params?.implementationPermissionMode).toBe("default");
 		// config-level default remains unchanged
 		expect(config.claude.permission_mode).toBe("default");
+	});
+
+	it("preserves auto-approve all as the post-plan implementation mode", async () => {
+		const { provider, captured } = makeCaptureProvider("codex");
+		const base = makeConfig();
+		const config: HlidConfig = {
+			...base,
+			vault_provider: "codex",
+			codex: { ...base.codex, permission_mode: "bypassPermissions" },
+		};
+		const sm = new SessionManager(config, makeProviders(provider));
+		await sm.runQuery(
+			"hello",
+			() => {},
+			"sess-plan-bypass",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			true,
+		);
+		expect(captured.params?.permissionMode).toBe("plan");
+		expect(captured.params?.implementationPermissionMode).toBe(
+			"bypassPermissions",
+		);
 	});
 
 	it("agent query uses agent-specific maxTurns when configured", async () => {

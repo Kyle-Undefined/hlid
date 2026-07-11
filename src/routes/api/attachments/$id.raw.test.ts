@@ -42,6 +42,27 @@ describe("raw attachment route adapter", () => {
 		expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
 	});
 
+	it("forwards the content-security-policy header for HTML plan relics", async () => {
+		mockDbFetch.mockResolvedValue(
+			new Response("<h1>plan</h1>", {
+				headers: {
+					"content-type": "text/html",
+					"content-security-policy":
+						"sandbox allow-scripts; default-src 'none'",
+				},
+			}),
+		);
+
+		const response = await handleRawAttachment(
+			new Request("http://localhost/api/attachments/relic-1/raw"),
+			"relic-1",
+		);
+
+		expect(response.headers.get("content-security-policy")).toBe(
+			"sandbox allow-scripts; default-src 'none'",
+		);
+	});
+
 	it("applies the browser-facing origin gate first", async () => {
 		mockForbidden.mockReturnValue(new Response("Forbidden", { status: 403 }));
 

@@ -154,7 +154,7 @@ export function MessageList({
 					return (
 						<div
 							key={m.id}
-							className="px-4 py-2 font-mono text-xs text-muted-foreground whitespace-pre-wrap border-l-2 border-primary/20 ml-4"
+							className="min-w-0 max-w-full overflow-hidden break-all px-4 py-2 font-mono text-xs text-muted-foreground whitespace-pre-wrap border-l-2 border-primary/20 ml-4"
 						>
 							{m.content}
 						</div>

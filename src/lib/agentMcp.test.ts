@@ -49,7 +49,12 @@ function makeConfig(agentPaths: string[] = []): HlidConfig {
 			permission_mode: "default",
 			turn_recaps: false,
 		},
-		ui: { enter_to_submit: true, hide_skills_index: false, theme: "tan" },
+		ui: {
+			enter_to_submit: true,
+			hide_skills_index: false,
+			theme: "tan",
+			html_plans: false,
+		},
 		status_vocabulary: { active: [], planning: [], done: [] },
 		attachments: { max_bytes: 25 * 1024 * 1024, allowed_mimes: [] },
 		voice: {

@@ -339,6 +339,7 @@ type SessionPlanProposalRow = {
 	seq: number;
 	plan: string;
 	decision: string;
+	html_attachment_id: string | null;
 	timestamp: number;
 };
 

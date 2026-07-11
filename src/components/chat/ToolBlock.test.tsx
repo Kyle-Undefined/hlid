@@ -31,6 +31,25 @@ describe("ToolBlock — collapsed", () => {
 		expect(screen.getByText(/command:/)).not.toBeNull();
 	});
 
+	it("constrains long unbroken command pills to the tool row width", () => {
+		render(
+			<ToolBlock
+				event={makeEvent({ input: { command: "x".repeat(2_000) } })}
+			/>,
+		);
+		const button = screen.getByRole("button");
+		const pill = screen.getByText(/command:/);
+		expect(button.className).toContain("min-w-0");
+		expect(button.className).toContain("overflow-hidden");
+		expect(pill.className).toContain("max-w-full");
+		expect(pill.className).toContain("truncate");
+		expect(pill.textContent?.length).toBeLessThan(200);
+		fireEvent.click(button);
+		const expandedValue = screen.getAllByText("x".repeat(2_000)).at(-1);
+		expect(expandedValue?.className).toContain("flex-1");
+		expect(expandedValue?.className).toContain("break-all");
+	});
+
 	it("shows result preview line when result is present", () => {
 		render(<ToolBlock event={makeEvent({ result: "file1\nfile2\nfile3" })} />);
 		expect(screen.getByText("file1")).not.toBeNull();

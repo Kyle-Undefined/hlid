@@ -1,14 +1,10 @@
-import {
-	Check,
-	ChevronDown,
-	ChevronRight,
-	CornerDownLeft,
-	X,
-} from "lucide-react";
+import { ChevronDown, ChevronRight, FileCode } from "lucide-react";
 import { useState } from "react";
 import { MarkdownBody } from "#/components/MarkdownBody";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { PlanProposalMessage } from "./chatReducer";
+import { PlanDecisionBar } from "./PlanDecisionBar";
+import { PlanHtmlModal } from "./PlanHtmlModal";
 
 export type PlanDecision = "approved" | "edited" | "cancelled";
 
@@ -21,6 +17,10 @@ const RESOLVED_LABEL: Record<
 	cancelled: "PLAN CANCELLED",
 };
 
+/**
+ * Cancel / Approve / Revise controls shared by the inline PlanCard and
+ * PlanHtmlModal — kept as one component so the two surfaces never drift.
+ */
 export function PlanCard({
 	message,
 	onDecide,
@@ -30,6 +30,9 @@ export function PlanCard({
 }) {
 	const [feedback, setFeedback] = useState("");
 	const [expanded, setExpanded] = useState(false);
+	const [modalOpen, setModalOpen] = useState(
+		() => message.decision === "pending" && Boolean(message.htmlRelicId),
+	);
 
 	if (message.decision !== "pending") {
 		const label = RESOLVED_LABEL[message.decision];
@@ -62,32 +65,51 @@ export function PlanCard({
 		// Approved / cancelled: collapsed by default, expandable on click.
 		return (
 			<div className="py-2 border-b border-border/40">
-				<button
-					type="button"
-					onClick={() => setExpanded((v) => !v)}
-					aria-label={expanded ? "Collapse plan" : "Expand plan"}
-					className="flex items-center gap-2 px-3 w-full text-left"
-				>
-					<span className="w-3 shrink-0 text-muted-foreground/30">
-						{expanded ? (
-							<ChevronDown className="w-3 h-3" />
-						) : (
-							<ChevronRight className="w-3 h-3" />
-						)}
-					</span>
-					<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase">
-						PLAN
-					</span>
-					<span
-						className={`text-[9px] tracking-widest uppercase ${labelColor}`}
+				<div className="flex items-center gap-2 px-3">
+					<button
+						type="button"
+						onClick={() => setExpanded((v) => !v)}
+						aria-label={expanded ? "Collapse plan" : "Expand plan"}
+						className="flex items-center gap-2 flex-1 text-left"
 					>
-						{label}
-					</span>
-				</button>
+						<span className="w-3 shrink-0 text-muted-foreground/30">
+							{expanded ? (
+								<ChevronDown className="w-3 h-3" />
+							) : (
+								<ChevronRight className="w-3 h-3" />
+							)}
+						</span>
+						<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase">
+							PLAN
+						</span>
+						<span
+							className={`text-[9px] tracking-widest uppercase ${labelColor}`}
+						>
+							{label}
+						</span>
+					</button>
+					{message.htmlRelicId && (
+						<button
+							type="button"
+							onClick={() => setModalOpen(true)}
+							className="flex items-center gap-1 text-[9px] tracking-widest text-muted-foreground/50 hover:text-foreground uppercase"
+						>
+							<FileCode className="w-3 h-3" />
+							VIEW HTML
+						</button>
+					)}
+				</div>
 				{expanded && (
 					<PrivacyMask className="text-sm text-foreground/65 leading-relaxed pr-4 px-8 pt-2 opacity-70">
 						<MarkdownBody content={message.plan} />
 					</PrivacyMask>
+				)}
+				{modalOpen && message.htmlRelicId && (
+					<PlanHtmlModal
+						relicId={message.htmlRelicId}
+						readOnly
+						onClose={() => setModalOpen(false)}
+					/>
 				)}
 			</div>
 		);
@@ -98,6 +120,51 @@ export function PlanCard({
 		if (!msg) return;
 		onDecide(message.id, "edited", msg);
 	};
+	const cancel = () => onDecide(message.id, "cancelled");
+	const approve = () => onDecide(message.id, "approved");
+
+	if (message.htmlRelicId) {
+		return (
+			<div className="flex gap-0 py-3">
+				<div className="w-12 shrink-0 text-[9px] tracking-widest text-primary/60 pt-0.5 uppercase">
+					PLAN
+				</div>
+				<div className="flex-1 min-w-0 border border-border bg-card">
+					<div className="px-4 py-3 border-b border-border flex items-center justify-between gap-2">
+						<div className="text-[9px] tracking-widest text-muted-foreground/65 uppercase">
+							PROPOSED PLAN (HTML)
+						</div>
+						<button
+							type="button"
+							onClick={() => setModalOpen(true)}
+							className="flex items-center gap-1.5 text-[10px] tracking-widest text-primary/80 hover:text-primary uppercase"
+						>
+							<FileCode className="w-3 h-3" />
+							VIEW PLAN
+						</button>
+					</div>
+					<PlanDecisionBar
+						feedback={feedback}
+						onFeedbackChange={setFeedback}
+						onCancel={cancel}
+						onApprove={approve}
+						onRevise={submitEdit}
+					/>
+				</div>
+				{modalOpen && (
+					<PlanHtmlModal
+						relicId={message.htmlRelicId}
+						feedback={feedback}
+						onFeedbackChange={setFeedback}
+						onCancel={cancel}
+						onApprove={approve}
+						onRevise={submitEdit}
+						onClose={() => setModalOpen(false)}
+					/>
+				)}
+			</div>
+		);
+	}
 
 	return (
 		<div className="flex gap-0 py-3">
@@ -113,52 +180,13 @@ export function PlanCard({
 						<MarkdownBody content={message.plan} />
 					</PrivacyMask>
 				</div>
-				<div className="grid grid-cols-2 sm:grid-cols-3">
-					<button
-						type="button"
-						onClick={() => onDecide(message.id, "cancelled")}
-						aria-label="Cancel plan"
-						className="min-w-0 flex items-center justify-center gap-1.5 sm:gap-2 px-1 py-2 text-[10px] tracking-widest text-destructive/70 hover:bg-destructive/5 transition-colors uppercase border-b border-r border-border sm:border-b-0"
-					>
-						<X className="w-3 h-3 shrink-0" />
-						CANCEL
-					</button>
-					<button
-						type="button"
-						onClick={() => onDecide(message.id, "approved")}
-						aria-label="Approve plan"
-						className="min-w-0 flex items-center justify-center gap-1.5 sm:gap-2 px-1 py-2 text-[10px] tracking-widest text-green-500/70 hover:bg-green-500/5 transition-colors uppercase border-b border-border sm:border-b-0 sm:border-l"
-					>
-						<Check className="w-3 h-3 shrink-0" />
-						APPROVE
-					</button>
-					<button
-						type="button"
-						onClick={submitEdit}
-						disabled={!feedback.trim()}
-						aria-label="Send revisions"
-						className="col-span-2 sm:col-span-1 min-w-0 flex items-center justify-center gap-1.5 sm:gap-2 px-1 py-2 text-[10px] tracking-widest text-amber-500/80 hover:bg-amber-500/5 disabled:opacity-30 disabled:hover:bg-transparent transition-colors uppercase sm:border-l border-border"
-					>
-						<CornerDownLeft className="w-3 h-3 shrink-0" />
-						REVISE
-					</button>
-				</div>
-				<div className="flex items-stretch border-t border-border">
-					<textarea
-						aria-label="Plan revision feedback"
-						value={feedback}
-						onChange={(e) => setFeedback(e.target.value)}
-						onKeyDown={(e) => {
-							if (e.key === "Enter" && !e.shiftKey) {
-								e.preventDefault();
-								submitEdit();
-							}
-						}}
-						placeholder="Suggest revisions to the plan…"
-						rows={1}
-						className="flex-1 resize-none bg-transparent px-3 py-2 text-xs text-foreground/80 placeholder:text-muted-foreground/40 outline-none font-mono"
-					/>
-				</div>
+				<PlanDecisionBar
+					feedback={feedback}
+					onFeedbackChange={setFeedback}
+					onCancel={cancel}
+					onApprove={approve}
+					onRevise={submitEdit}
+				/>
 			</div>
 		</div>
 	);

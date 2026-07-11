@@ -89,6 +89,7 @@ export function buildFirstRunConfig(s: StructureState): HlidConfig {
 			enter_to_submit: true,
 			hide_skills_index: true,
 			theme: s.theme,
+			html_plans: false,
 		},
 		status_vocabulary: {
 			active: ["Active", "In Progress"],

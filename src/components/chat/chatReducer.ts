@@ -57,6 +57,8 @@ export type PlanProposalMessage = {
 	role: "plan_proposal";
 	plan: string;
 	decision: PlanProposalDecision;
+	/** Attachment id of the HTML plan relic, when the agent rendered one. */
+	htmlRelicId?: string;
 };
 
 export type LocalCommandOutputChatMessage = {
@@ -112,7 +114,12 @@ export type Action =
 			content: string;
 			isError?: boolean;
 	  }
-	| { type: "ADD_PLAN_PROPOSAL"; id: string; plan: string }
+	| {
+			type: "ADD_PLAN_PROPOSAL";
+			id: string;
+			plan: string;
+			htmlRelicId?: string;
+	  }
 	| {
 			type: "RESOLVE_PLAN_PROPOSAL";
 			id: string;
@@ -158,6 +165,7 @@ export type Action =
 						id: string;
 						plan: string;
 						decision: string;
+						html_attachment_id?: string | null;
 				  }
 				| {
 						kind: "ask_user_question";
@@ -292,6 +300,7 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 					role: "plan_proposal" as const,
 					plan: action.plan,
 					decision: "pending" as const,
+					...(action.htmlRelicId ? { htmlRelicId: action.htmlRelicId } : {}),
 				},
 			];
 		case "RESOLVE_PLAN_PROPOSAL": {
@@ -395,6 +404,9 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 						role: "plan_proposal",
 						plan: item.plan,
 						decision,
+						...(item.html_attachment_id
+							? { htmlRelicId: item.html_attachment_id }
+							: {}),
 					};
 				}
 				if (item.kind === "permission") {

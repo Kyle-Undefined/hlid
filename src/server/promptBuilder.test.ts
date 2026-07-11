@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { BuildPromptOptions } from "./promptBuilder";
-import { buildPrompt } from "./promptBuilder";
+import { buildPlanHtmlInstructions, buildPrompt } from "./promptBuilder";
 
 let tmp: string;
 
@@ -286,5 +286,45 @@ describe("buildPrompt — context mode persona", () => {
 			}),
 		);
 		expect(prompt).not.toContain("adopt its persona");
+	});
+});
+
+// ── plan HTML instructions ────────────────────────────────────────────────────
+
+describe("buildPrompt — planHtmlInstructions", () => {
+	it("appends the instruction block when set", () => {
+		const { prompt } = buildPrompt(
+			base({ planHtmlInstructions: buildPlanHtmlInstructions("/x/plan.html") }),
+		);
+		expect(prompt).toContain("hello");
+		expect(prompt).toContain("HTML plan documents");
+		expect(prompt).toContain("/x/plan.html");
+	});
+
+	it("omits the block entirely when unset", () => {
+		const { prompt } = buildPrompt(base());
+		expect(prompt).not.toContain("HTML plan documents");
+	});
+
+	it("appends after the skill-context block too", () => {
+		const skillFile = join(tmp, "skills", "s.md");
+		mkdirSync(join(tmp, "skills"), { recursive: true });
+		writeFileSync(skillFile, "# Skill");
+		const { prompt } = buildPrompt(
+			base({
+				skillContext: skillFile,
+				planHtmlInstructions: buildPlanHtmlInstructions("/x/plan.html"),
+			}),
+		);
+		expect(prompt).toContain("Please read the skill file");
+		expect(prompt).toContain("HTML plan documents");
+	});
+});
+
+describe("buildPlanHtmlInstructions", () => {
+	it("embeds the given path verbatim", () => {
+		const text = buildPlanHtmlInstructions("/tmp/foo/plan-1.html");
+		expect(text).toContain("/tmp/foo/plan-1.html");
+		expect(text).toContain("ExitPlanMode");
 	});
 });

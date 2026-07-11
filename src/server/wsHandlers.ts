@@ -499,6 +499,7 @@ async function runChatQuery(
 			msg.agent_cwd,
 			msg.turn_id,
 			msg.plan_mode,
+			msg.plan_html,
 		);
 	} catch (error) {
 		send(context.ws, {

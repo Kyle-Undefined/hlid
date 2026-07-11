@@ -70,7 +70,9 @@ function RelicPreview({ id, mime }: { id: string; mime: string }) {
 	const [err, setErr] = useState<string | null>(null);
 
 	const isImage = mime.startsWith("image/");
-	const isText = mime.startsWith("text/") || mime === "application/json";
+	const isHtml = mime === "text/html";
+	const isText =
+		(mime.startsWith("text/") && !isHtml) || mime === "application/json";
 	const isPdf = mime === "application/pdf";
 
 	useEffect(() => {
@@ -107,6 +109,17 @@ function RelicPreview({ id, mime }: { id: string; mime: string }) {
 				src={`/api/attachments/${id}/raw`}
 				className="w-full h-96 border-0"
 				title="pdf preview"
+			/>
+		);
+	}
+	if (isHtml) {
+		return (
+			<iframe
+				src={`/api/attachments/${id}/raw`}
+				sandbox="allow-scripts"
+				referrerPolicy="no-referrer"
+				className="w-full h-96 bg-white border-0"
+				title="html preview"
 			/>
 		);
 	}

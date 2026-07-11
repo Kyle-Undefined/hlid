@@ -772,6 +772,7 @@ describe("message — chat routing (pool)", () => {
 			undefined,
 			undefined,
 			undefined,
+			undefined,
 		);
 		expect(vault.manager.runQuery).not.toHaveBeenCalled();
 		// sessions_status broadcast after create

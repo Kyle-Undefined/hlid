@@ -5,10 +5,18 @@ import { PrivacyMask } from "#/components/PrivacyMask";
 import type { ToolEventMessage } from "#/server/protocol";
 
 const RESULT_PREVIEW_CHARS = 120;
+const INPUT_PREVIEW_CHARS = 140;
 
 function firstLine(text: string): string {
 	const nl = text.indexOf("\n");
 	return nl === -1 ? text : text.slice(0, nl);
+}
+
+function inputPreview(value: unknown): string {
+	const text = typeof value === "string" ? value : JSON.stringify(value);
+	return text.length <= INPUT_PREVIEW_CHARS
+		? text
+		: `${text.slice(0, INPUT_PREVIEW_CHARS)}…`;
 }
 
 /**
@@ -78,12 +86,12 @@ export function ToolBlock({
 		: null;
 
 	return (
-		<div className="my-0.5">
+		<div className="my-0.5 min-w-0 max-w-full overflow-hidden">
 			<button
 				type="button"
 				onClick={() => setOpen(!open)}
 				aria-expanded={open}
-				className="flex items-center gap-2.5 w-full px-3 py-1.5 group hover:bg-primary/[0.03] transition-colors text-left"
+				className="flex items-center gap-2.5 w-full min-w-0 max-w-full overflow-hidden px-3 py-1.5 group hover:bg-primary/[0.03] transition-colors text-left"
 			>
 				<ChevronRight
 					className={`w-3 h-3 shrink-0 text-primary/50 group-hover:text-primary/80 transition-transform duration-150 ${open ? "rotate-90" : ""}`}
@@ -94,13 +102,13 @@ export function ToolBlock({
 				>
 					{event.name}
 				</PrivacyMask>
-				<PrivacyMask className="flex gap-1.5 flex-wrap">
+				<PrivacyMask className="flex flex-1 min-w-0 max-w-full gap-1.5 flex-nowrap overflow-hidden">
 					{pills.map(([k, v]) => (
 						<span
 							key={k}
-							className="text-[9px] tracking-wide border border-primary/20 text-primary/50 px-1.5 py-0.5 font-mono break-all"
+							className="block min-w-0 max-w-full truncate whitespace-nowrap text-[9px] tracking-wide border border-primary/20 text-primary/50 px-1.5 py-0.5 font-mono overflow-hidden"
 						>
-							{k}: {typeof v === "string" ? v : JSON.stringify(v)}
+							{k}: {inputPreview(v)}
 						</span>
 					))}
 				</PrivacyMask>
@@ -135,18 +143,18 @@ export function ToolBlock({
 				</div>
 			)}
 			{open && (
-				<PrivacyMask className="mx-3 mb-1.5 border border-[var(--tool-panel-border)] bg-[var(--tool-panel)]">
+				<PrivacyMask className="mx-3 mb-1.5 min-w-0 max-w-[calc(100%_-_1.5rem)] overflow-hidden border border-[var(--tool-panel-border)] bg-[var(--tool-panel)]">
 					{inputEntries.length > 0 && (
-						<div className="text-[11px] text-primary/60 font-mono leading-relaxed p-3 overflow-auto max-h-48 space-y-1">
+						<div className="min-w-0 max-w-full text-[11px] text-primary/60 font-mono leading-relaxed p-3 overflow-y-auto overflow-x-hidden max-h-48 space-y-1">
 							{inputEntries.map(([k, v]) => (
 								<div key={k} className="flex gap-1.5 min-w-0">
 									<span className="text-primary/40 shrink-0">{k}:</span>
 									{typeof v === "string" ? (
-										<span className="whitespace-pre-wrap break-words min-w-0">
+										<span className="flex-1 min-w-0 max-w-full whitespace-pre-wrap break-all overflow-hidden">
 											{v}
 										</span>
 									) : (
-										<span className="whitespace-pre-wrap break-words min-w-0">
+										<span className="flex-1 min-w-0 max-w-full whitespace-pre-wrap break-all overflow-hidden">
 											{JSON.stringify(v, null, 2)}
 										</span>
 									)}

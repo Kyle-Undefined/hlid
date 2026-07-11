@@ -806,4 +806,256 @@ describe("CodexAgentSession — notifications", () => {
 		});
 		expect(await events.next()).toEqual({ value: undefined, done: true });
 	});
+
+	it("uses Codex item tool metadata instead of the generic item type", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const session = new CodexProvider().query(baseCodexParams());
+		const events = session[Symbol.asyncIterator]();
+		await session.send("hello");
+		await nextSessionEvent(events);
+		emitSessionNotification(proc, "item/started", {
+			threadId: "thread-1",
+			item: {
+				id: "mcp-1",
+				type: "mcpToolCall",
+				tool: "update_plan",
+				arguments: { plan: [{ step: "Research", status: "in_progress" }] },
+			},
+		});
+
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "tool_start",
+			toolId: "mcp-1",
+			name: "update_plan",
+			input: { plan: [{ step: "Research", status: "in_progress" }] },
+		});
+		session.cancel();
+	});
+
+	it("auto-approves app-server requests while a bypassPermissions session is planning", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const canUseTool = vi.fn();
+		const session = new CodexProvider().query(
+			baseCodexParams({
+				permissionMode: "plan",
+				implementationPermissionMode: "bypassPermissions",
+				canUseTool,
+			}),
+		);
+		await session.send("run it");
+		expect(turnStartParams(writes)[0]).toMatchObject({
+			approvalPolicy: "never",
+			sandboxPolicy: { type: "dangerFullAccess" },
+		});
+		proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: 77,
+					method: "item/commandExecution/requestApproval",
+					params: { threadId: "thread-1", itemId: "command-1" },
+				})}\n`,
+			),
+		);
+		await vi.waitFor(() => {
+			const response = writes
+				.map((line) => JSON.parse(line))
+				.find((message) => message.id === 77);
+			expect(response?.result).toEqual({ decision: "accept" });
+		});
+		expect(canUseTool).not.toHaveBeenCalled();
+		session.cancel();
+	});
+
+	it("presents an HTML-enabled plan even when no file approval was requested", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const canUseTool = vi.fn().mockResolvedValue({
+			behavior: "deny",
+			message: "Plan was cancelled by the user.",
+		});
+		const session = new CodexProvider().query(
+			baseCodexParams({
+				permissionMode: "plan",
+				implementationPermissionMode: "bypassPermissions",
+				planHtmlPath: "/vault/.hlid/plans/plan-session.html",
+				canUseTool,
+			}),
+		);
+		const events = session[Symbol.asyncIterator]();
+		await session.send("make a plan");
+		await nextSessionEvent(events);
+		emitSessionNotification(proc, "turn/started", {
+			threadId: "thread-1",
+			turn: { id: "turn-1" },
+		});
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: { id: "turn-1", status: "completed" },
+		});
+		await vi.waitFor(() => {
+			expect(canUseTool).toHaveBeenCalledWith(
+				"ExitPlanMode",
+				{ plan: "HTML plan ready for review." },
+				expect.objectContaining({ toolUseID: "codex-plan-turn-1" }),
+			);
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({ type: "done" });
+		session.cancel();
+	});
+
+	it("starts implementation outside read-only mode after plan approval", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const canUseTool = vi.fn().mockResolvedValue({ behavior: "allow" });
+		const session = new CodexProvider().query(
+			baseCodexParams({ permissionMode: "plan", canUseTool }),
+		);
+		const events = session[Symbol.asyncIterator]();
+		await session.send("make a plan");
+		await nextSessionEvent(events);
+
+		emitSessionNotification(proc, "turn/started", {
+			threadId: "thread-1",
+			turn: { id: "turn-1" },
+		});
+		emitSessionNotification(proc, "item/started", {
+			threadId: "thread-1",
+			item: {
+				id: "change-1",
+				type: "fileChange",
+				changes: [{ path: "/vault/.hlid/plans/plan-session.html" }],
+			},
+		});
+		await nextSessionEvent(events);
+		proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: 99,
+					method: "item/fileChange/requestApproval",
+					params: {
+						threadId: "thread-1",
+						itemId: "change-1",
+						reason: "write plan",
+					},
+				})}\n`,
+			),
+		);
+		await vi.waitFor(() => {
+			expect(canUseTool).toHaveBeenCalledWith(
+				"Write",
+				{ file_path: "/vault/.hlid/plans/plan-session.html" },
+				expect.objectContaining({ toolUseID: "change-1" }),
+			);
+			expect(writes.some((line) => JSON.parse(line).id === 99)).toBe(true);
+		});
+
+		emitSessionNotification(proc, "item/completed", {
+			threadId: "thread-1",
+			item: { id: "change-1", type: "fileChange" },
+		});
+		await nextSessionEvent(events);
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: { id: "turn-1", status: "completed" },
+		});
+		await vi.waitFor(() => {
+			expect(canUseTool).toHaveBeenCalledWith(
+				"ExitPlanMode",
+				{ plan: "HTML plan ready for review." },
+				expect.objectContaining({ toolUseID: "codex-plan-turn-1" }),
+			);
+		});
+		await vi.waitFor(() => expect(turnStartParams(writes)).toHaveLength(2));
+		const implementationTurn = turnStartParams(writes)[1];
+		expect(implementationTurn).toMatchObject({
+			approvalPolicy: "on-request",
+			sandboxPolicy: codexSandboxPolicy("default", []),
+		});
+		expect(implementationTurn.input).toEqual([
+			expect.objectContaining({
+				type: "text",
+				text: expect.stringContaining("approved the plan"),
+			}),
+		]);
+		session.cancel();
+	});
+
+	it("starts another plan turn with revision feedback", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const canUseTool = vi.fn(async (name: string) =>
+			name === "ExitPlanMode"
+				? {
+						behavior: "deny" as const,
+						message:
+							"User requested changes to the plan:\n\nAdd a validation step.",
+					}
+				: { behavior: "allow" as const },
+		);
+		const session = new CodexProvider().query(
+			baseCodexParams({ permissionMode: "plan", canUseTool }),
+		);
+		const events = session[Symbol.asyncIterator]();
+		await session.send("make a plan");
+		await nextSessionEvent(events);
+		emitSessionNotification(proc, "turn/started", {
+			threadId: "thread-1",
+			turn: { id: "turn-1" },
+		});
+		emitSessionNotification(proc, "item/started", {
+			threadId: "thread-1",
+			item: {
+				id: "change-1",
+				type: "fileChange",
+				changes: [{ path: "/vault/.hlid/plans/plan-session.html" }],
+			},
+		});
+		await nextSessionEvent(events);
+		proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: 100,
+					method: "item/fileChange/requestApproval",
+					params: { threadId: "thread-1", itemId: "change-1" },
+				})}\n`,
+			),
+		);
+		await vi.waitFor(() =>
+			expect(canUseTool).toHaveBeenCalledWith(
+				"Write",
+				expect.anything(),
+				expect.anything(),
+			),
+		);
+		emitSessionNotification(proc, "item/completed", {
+			threadId: "thread-1",
+			item: { id: "change-1", type: "fileChange" },
+		});
+		await nextSessionEvent(events);
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: { id: "turn-1", status: "completed" },
+		});
+
+		await vi.waitFor(() => expect(turnStartParams(writes)).toHaveLength(2));
+		const revisionTurn = turnStartParams(writes)[1];
+		expect(revisionTurn.input).toEqual([
+			expect.objectContaining({
+				type: "text",
+				text: expect.stringContaining("Add a validation step."),
+			}),
+		]);
+		session.cancel();
+	});
 });

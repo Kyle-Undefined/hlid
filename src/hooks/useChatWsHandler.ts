@@ -60,6 +60,7 @@ function dispatchImmediateMessage(
 				type: "ADD_PLAN_PROPOSAL",
 				id: msg.id,
 				plan: planText(msg.input),
+				...(msg.html_relic_id ? { htmlRelicId: msg.html_relic_id } : {}),
 			});
 			return true;
 		case "plan_mode_exit_resolved":

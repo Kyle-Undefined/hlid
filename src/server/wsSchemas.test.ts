@@ -53,6 +53,24 @@ describe("chat WebSocket runtime schema", () => {
 			parseClientMessage(JSON.stringify({ type: "chat", text: "hello" })),
 		).toEqual({ type: "chat", text: "hello" });
 	});
+
+	it("accepts plan_mode and plan_html flags", () => {
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "chat",
+					text: "hello",
+					plan_mode: true,
+					plan_html: true,
+				}),
+			),
+		).toEqual({
+			type: "chat",
+			text: "hello",
+			plan_mode: true,
+			plan_html: true,
+		});
+	});
 });
 
 describe("terminal WebSocket runtime schema", () => {

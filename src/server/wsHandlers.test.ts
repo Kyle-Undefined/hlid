@@ -657,6 +657,7 @@ describe("message — chat", () => {
 			undefined,
 			undefined,
 			undefined,
+			undefined,
 		);
 	});
 
@@ -682,6 +683,35 @@ describe("message — chat", () => {
 			undefined,
 			undefined,
 			undefined,
+			true,
+			undefined,
+		);
+	});
+
+	it("forwards plan_html flag to session.runQuery", async () => {
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "chat",
+				text: "hello",
+				session_id: "sess-1",
+				plan_mode: true,
+				plan_html: true,
+			}),
+		);
+		expect(session.runQuery).toHaveBeenCalledWith(
+			"hello",
+			expect.any(Function),
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			true,
 			true,
 		);
 	});

@@ -82,6 +82,7 @@ function mapSessionRows(
 		id: p.proposal_id,
 		plan: p.plan,
 		decision: p.decision,
+		html_attachment_id: p.html_attachment_id,
 	}));
 	const askItems = aukRows.map((a) => ({
 		kind: "ask_user_question" as const,

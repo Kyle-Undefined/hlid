@@ -23,11 +23,25 @@ agent({ name: "hlid-fake-agent" })
 	.onRequest("authenticate", () => ({}))
 	.onRequest("session/new", () => {
 		const sessionId = "fake-session";
-		sessions.set(sessionId, { cancelled: false });
-		return { sessionId };
+		sessions.set(sessionId, { cancelled: false, mode: "code" });
+		return {
+			sessionId,
+			modes: {
+				currentModeId: "code",
+				availableModes: [
+					{ id: "code", name: "Code" },
+					{ id: "plan", name: "Plan" },
+				],
+			},
+		};
 	})
 	.onRequest("session/load", ({ params }) => {
 		sessions.set(params.sessionId, { cancelled: false });
+		return {};
+	})
+	.onRequest("session/set_mode", ({ params }) => {
+		const session = sessions.get(params.sessionId);
+		if (session) session.mode = params.modeId;
 		return {};
 	})
 	.onNotification("session/cancel", ({ params }) => {
@@ -43,6 +57,41 @@ agent({ name: "hlid-fake-agent" })
 				await new Promise((resolve) => setTimeout(resolve, 5));
 			}
 			return { stopReason: "cancelled" };
+		}
+		if (text === "report-mode") {
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "agent_message_chunk",
+					content: {
+						type: "text",
+						text: sessions.get(params.sessionId)?.mode ?? "unknown",
+					},
+				},
+			});
+			return { stopReason: "end_turn" };
+		}
+		if (text === "plan-update") {
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "plan",
+					entries: [
+						{ content: "Research", priority: "high", status: "in_progress" },
+					],
+				},
+			});
+			return { stopReason: "end_turn" };
+		}
+		if (text.startsWith("The user approved the plan.")) {
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "agent_message_chunk",
+					content: { type: "text", text: "implemented" },
+				},
+			});
+			return { stopReason: "end_turn" };
 		}
 		await client.notify(methods.client.session.update, {
 			sessionId: params.sessionId,
@@ -71,7 +120,10 @@ agent({ name: "hlid-fake-agent" })
 			toolCallId: "tool-1",
 			title: "Write file",
 			kind: "edit",
-			rawInput: { path: "a.txt" },
+			rawInput: {
+				path:
+					text === "html-plan" ? "/vault/.hlid/plans/plan-fake.html" : "a.txt",
+			},
 		};
 		await client.notify(methods.client.session.update, {
 			sessionId: params.sessionId,

@@ -56,18 +56,18 @@ export function PermissionCard({
 		: undefined;
 
 	return (
-		<div className="flex gap-0">
+		<div className="flex w-full min-w-0 max-w-full overflow-hidden gap-0">
 			<div className="w-12 shrink-0 text-[9px] tracking-widest text-primary/60 pt-0.5 uppercase">
 				PERM
 			</div>
 			<div className="flex-1 min-w-0 border border-border bg-card">
-				<div className="px-4 py-3 border-b border-border">
+				<div className="min-w-0 max-w-full overflow-hidden px-4 py-3 border-b border-border">
 					<div className="text-[9px] tracking-widest text-muted-foreground/65 uppercase mb-1">
 						PERMISSION REQUEST
 					</div>
 					<div className="text-sm text-foreground">{message.title}</div>
 					{inputPreview && (
-						<div className="mt-2 px-2 py-1.5 bg-secondary/60 border border-border font-mono text-[11px] text-foreground/80 whitespace-pre-wrap break-all overflow-x-hidden">
+						<div className="min-w-0 max-w-full mt-2 px-2 py-1.5 bg-secondary/60 border border-border font-mono text-[11px] text-foreground/80 whitespace-pre-wrap break-all overflow-hidden">
 							{inputPreview}
 						</div>
 					)}

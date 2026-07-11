@@ -129,6 +129,7 @@ function createUiForm(initial: HlidConfig): UiForm {
 		mobileTheme: initial.ui.mobile_theme ?? "same",
 		enterToSubmit: initial.ui.enter_to_submit,
 		hideSkillsIndex: initial.ui.hide_skills_index,
+		htmlPlans: initial.ui.html_plans ?? false,
 	};
 }
 
@@ -215,6 +216,7 @@ export function buildSettingsConfig(
 			theme: forms.ui.theme,
 			mobile_theme:
 				forms.ui.mobileTheme === "same" ? undefined : forms.ui.mobileTheme,
+			html_plans: forms.ui.htmlPlans,
 		},
 		status_vocabulary: {
 			active: vocabularyValues(forms.vocab.active),

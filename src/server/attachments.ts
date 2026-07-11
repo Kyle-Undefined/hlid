@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import {
+	lstat,
 	mkdir,
 	readdir,
 	readFile,
+	realpath,
 	rmdir,
 	unlink,
 	writeFile,
@@ -264,6 +266,20 @@ export async function handleUpload(
 	return Response.json(result);
 }
 
+// HTML attachments (plan documents) render in sandboxed iframes. The CSP
+// sandbox directive gives the document an opaque origin even when navigated
+// to directly, so its scripts can never reach hlid cookies or APIs; the
+// fetch directives block all network egress (plan docs are self-contained).
+const HTML_ATTACHMENT_CSP = [
+	"sandbox allow-scripts",
+	"default-src 'none'",
+	"style-src 'unsafe-inline'",
+	"script-src 'unsafe-inline'",
+	"img-src data: blob:",
+	"font-src data:",
+	"media-src data:",
+].join("; ");
+
 export async function serveAttachment(id: string): Promise<Response> {
 	const row = await db.getAttachment(id);
 	if (!row) return new Response("Not found", { status: 404 });
@@ -278,8 +294,81 @@ export async function serveAttachment(id: string): Promise<Response> {
 			"content-type": row.mime,
 			"content-disposition": `inline; filename="${safeName}"; filename*=UTF-8''${encodedName}`,
 			"x-content-type-options": "nosniff",
+			...(row.mime === "text/html"
+				? { "content-security-policy": HTML_ATTACHMENT_CSP }
+				: {}),
 		},
 	});
+}
+
+const PLAN_HTML_MAX_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Ingest an agent-written HTML plan document as an ephemeral attachment.
+ * Validates the source file (regular file, size cap, resolved path contained
+ * in plansDir), copies it into the session's attachment dir, records the DB
+ * row, and unlinks the source. Returns the attachment id, or null on any
+ * failure — callers fall back to the markdown plan silently.
+ */
+export async function ingestPlanHtml(opts: {
+	sourcePath: string;
+	plansDir: string;
+	storageRoot: string;
+	sessionId: string;
+	planSeq: number;
+	maxBytes: number;
+}): Promise<string | null> {
+	try {
+		const stat = await lstat(opts.sourcePath);
+		if (!stat.isFile()) return null;
+		const cap = Math.min(opts.maxBytes, PLAN_HTML_MAX_BYTES);
+		if (stat.size === 0 || stat.size > cap) {
+			console.warn(
+				`[attachments] plan html rejected: size ${stat.size} outside (0, ${cap}]`,
+			);
+			return null;
+		}
+		const real = await realpath(opts.sourcePath);
+		if (!pathStartsWith(resolve(opts.plansDir), real)) {
+			console.warn(
+				`[attachments] plan html rejected: ${real} escapes ${opts.plansDir}`,
+			);
+			return null;
+		}
+
+		const buf = Buffer.from(await readFile(real));
+		const targetDir = resolve(
+			opts.storageRoot,
+			".hlid",
+			"attachments",
+			sanitizeFilename(opts.sessionId),
+		);
+		ensureWithin(resolve(opts.storageRoot), targetDir);
+		await mkdir(targetDir, { recursive: true });
+		const finalPath = await writeUnique(
+			targetDir,
+			`plan-${opts.planSeq}.html`,
+			buf,
+		);
+
+		const id = randomUUID();
+		await db.createAttachment({
+			id,
+			session_id: opts.sessionId,
+			kind: "ephemeral",
+			filename: basename(finalPath),
+			path: finalPath,
+			mime: "text/html",
+			size_bytes: buf.byteLength,
+			sha256: createHash("sha256").update(buf).digest("hex"),
+		});
+		await db.linkAttachmentToMessage(id, opts.sessionId, opts.planSeq);
+		await unlink(real).catch(() => {});
+		return id;
+	} catch (err) {
+		console.warn("[attachments] plan html ingestion failed:", err);
+		return null;
+	}
 }
 
 export async function removeAttachment(

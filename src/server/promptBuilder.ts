@@ -12,7 +12,38 @@ export type BuildPromptOptions = {
 	userMessage: string;
 	skillContext: string | undefined;
 	attachments: ChatAttachment[] | undefined;
+	/** Plan-mode HTML instructions (from buildPlanHtmlInstructions), appended after the user message. */
+	planHtmlInstructions?: string;
 };
+
+/**
+ * Instruction block asking the agent to render its plan as a self-contained
+ * HTML document at a server-chosen path before presenting it for approval.
+ * Injected per turn when plan mode + the HTML-plans toggle are both on.
+ */
+export function buildPlanHtmlInstructions(planHtmlPath: string): string {
+	return `## HTML plan documents
+
+When you are ready to present a plan for approval, FIRST write a single
+self-contained HTML document of the plan to exactly this path:
+
+  ${planHtmlPath}
+
+Requirements:
+- One file, fully self-contained: inline <style> and (optional) inline
+  <script> only. No external URLs, no CDN links, no remote images/fonts
+  (use data: URIs if needed). The page renders in a sandboxed iframe with
+  all network access blocked.
+- Present the plan attractively: title, overview, ordered steps, files to
+  change, risks. Light-background styling; readable at ~900px wide.
+- Keep it under 2 MB.
+
+THEN present the plan for approval as usual (e.g. call ExitPlanMode) with
+the complete plan in markdown (it is the fallback if the HTML cannot be
+shown). If writing the HTML file fails for any reason, skip it and present
+the plan anyway. If the user requests revisions, overwrite the same file
+with the revised plan before presenting again.`;
+}
 
 /**
  * Validates and builds the prompt string for the SDK query.
@@ -32,6 +63,7 @@ export function buildPrompt(opts: BuildPromptOptions): {
 		userMessage,
 		skillContext,
 		attachments,
+		planHtmlInstructions,
 	} = opts;
 
 	// For vault skills: skillContext is the absolute file path.
@@ -89,8 +121,11 @@ export function buildPrompt(opts: BuildPromptOptions): {
 		existsSync(join(agentCwd, "CLAUDE.md"))
 			? `Please read \`${toLogical(agentCwd)}/CLAUDE.md\` and adopt its persona/instructions for this conversation.\n\n`
 			: "";
+	const planHtmlBlock = planHtmlInstructions
+		? `\n\n${planHtmlInstructions}`
+		: "";
 	const prompt = safeSkillContext
-		? `${personaBlock}${attachmentBlock}Please read the skill file at \`${toLogical(safeSkillContext)}\` and follow its instructions.\n\nUser: ${userMessage || "(no additional input)"}`
-		: `${personaBlock}${attachmentBlock}${userMessage}`;
+		? `${personaBlock}${attachmentBlock}Please read the skill file at \`${toLogical(safeSkillContext)}\` and follow its instructions.\n\nUser: ${userMessage || "(no additional input)"}${planHtmlBlock}`
+		: `${personaBlock}${attachmentBlock}${userMessage}${planHtmlBlock}`;
 	return { prompt, safeAttachments };
 }

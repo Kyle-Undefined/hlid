@@ -148,6 +148,13 @@ export type AgentQueryParams = {
 	effort?: string;
 	maxTurns?: number;
 	permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan";
+	/** Permission mode to restore after a provider-specific plan is approved. */
+	implementationPermissionMode?:
+		| "default"
+		| "acceptEdits"
+		| "bypassPermissions";
+	/** Exact server-owned HTML plan path when the HTML handoff is enabled. */
+	planHtmlPath?: string;
 	/** false = ephemeral session (recap queries). */
 	persistSession?: boolean;
 	signal?: AbortSignal;

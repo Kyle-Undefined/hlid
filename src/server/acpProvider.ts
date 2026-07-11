@@ -7,6 +7,7 @@ import {
 	type InitializeResponse,
 	ndJsonStream,
 	PROTOCOL_VERSION,
+	type SessionModeState,
 	type SessionUpdate,
 } from "@agentclientprotocol/sdk";
 import type {
@@ -71,44 +72,92 @@ function textFromContent(content: ContentBlock): string | null {
 	return content.type === "text" ? content.text : null;
 }
 
-function eventFromUpdate(update: SessionUpdate): AgentEvent | null {
+function eventsFromUpdate(update: SessionUpdate): AgentEvent[] {
 	switch (update.sessionUpdate) {
 		case "agent_message_chunk": {
 			const text = textFromContent(update.content);
-			return text == null ? null : { type: "text_delta", text };
+			return text == null ? [] : [{ type: "text_delta", text }];
 		}
 		case "agent_thought_chunk": {
 			const text = textFromContent(update.content);
-			return text == null ? null : { type: "summary", text };
+			return text == null ? [] : [{ type: "summary", text }];
 		}
 		case "tool_call":
-			return {
-				type: "tool_start",
-				toolId: update.toolCallId,
-				name: update.title,
-				input: update.rawInput ?? null,
-			};
+			return [
+				{
+					type: "tool_start",
+					toolId: update.toolCallId,
+					name: update.title,
+					input: update.rawInput ?? null,
+				},
+			];
 		case "tool_call_update":
 			if (update.status !== "completed" && update.status !== "failed")
-				return null;
-			return {
-				type: "tool_result",
-				toolId: update.toolCallId,
-				content:
-					typeof update.rawOutput === "string"
-						? update.rawOutput
-						: JSON.stringify(update.rawOutput ?? update.content ?? ""),
-				isError: update.status === "failed",
-			};
-		case "plan":
-			return { type: "summary", text: JSON.stringify(update.entries) };
-		case "plan_update":
-			return { type: "summary", text: JSON.stringify(update.plan) };
+				return [];
+			return [
+				{
+					type: "tool_result",
+					toolId: update.toolCallId,
+					content:
+						typeof update.rawOutput === "string"
+							? update.rawOutput
+							: JSON.stringify(update.rawOutput ?? update.content ?? ""),
+					isError: update.status === "failed",
+				},
+			];
+		case "plan": {
+			const toolId = "acp-plan";
+			return [
+				{
+					type: "tool_start",
+					toolId,
+					name: "UpdatePlan",
+					input: { plan: update.entries },
+				},
+				{
+					type: "tool_result",
+					toolId,
+					content: JSON.stringify(update.entries),
+				},
+			];
+		}
+		case "plan_update": {
+			const toolId = `acp-plan-${update.plan.id}`;
+			return [
+				{ type: "tool_start", toolId, name: "UpdatePlan", input: update.plan },
+				{ type: "tool_result", toolId, content: JSON.stringify(update.plan) },
+			];
+		}
 		case "usage_update":
-			return null;
+			return [];
 		default:
-			return null;
+			return [];
 	}
+}
+
+function planModeId(modes: SessionModeState | null | undefined): string | null {
+	if (!modes) return null;
+	const exact = modes.availableModes.find((mode) =>
+		[mode.id, mode.name].some((value) => value.toLowerCase() === "plan"),
+	);
+	if (exact) return exact.id;
+	const architectural = modes.availableModes.find((mode) =>
+		[mode.id, mode.name].some((value) => /architect|planning/i.test(value)),
+	);
+	return architectural?.id ?? null;
+}
+
+function filePathFromToolInput(value: unknown): string | null {
+	if (!value || typeof value !== "object") return null;
+	const input = value as Record<string, unknown>;
+	for (const key of ["file_path", "filePath", "path"]) {
+		if (typeof input[key] === "string") return input[key];
+	}
+	return null;
+}
+
+function isHtmlPlanPath(path: string): boolean {
+	return /(?:^|[\\/])\.hlid[\\/]plans[\\/]plan-[^\\/]+\.html$/i.test(path);
 }
 
 class AcpSession implements AgentSession {
@@ -123,6 +172,9 @@ class AcpSession implements AgentSession {
 	private closeAfterTurn = false;
 	private canDeleteSession = false;
 	private canCloseSession = false;
+	private implementationModeId: string | null = null;
+	private approvedHtmlPlanToolIds = new Set<string>();
+	private htmlPlanReady = false;
 
 	constructor(
 		private readonly options: AcpProviderOptions,
@@ -164,16 +216,30 @@ class AcpSession implements AgentSession {
 
 		const client: Client = {
 			requestPermission: async ({ toolCall, options }) => {
-				const decision = await this.params.canUseTool(
-					toolCall.title ?? "ACP tool",
-					toolCall.rawInput ?? null,
-					{
-						toolUseID: toolCall.toolCallId,
-						signal: this.params.signal ?? new AbortController().signal,
-						title: toolCall.title ?? undefined,
-					},
-				);
+				const filePath = filePathFromToolInput(toolCall.rawInput);
+				const decision =
+					this.params.permissionMode === "bypassPermissions"
+						? { behavior: "allow" as const }
+						: await this.params.canUseTool(
+								filePath ? "Write" : (toolCall.title ?? "ACP tool"),
+								filePath
+									? { file_path: filePath }
+									: (toolCall.rawInput ?? null),
+								{
+									toolUseID: toolCall.toolCallId,
+									signal: this.params.signal ?? new AbortController().signal,
+									title: toolCall.title ?? undefined,
+								},
+							);
 				const allowed = decision.behavior === "allow";
+				if (
+					allowed &&
+					this.params.permissionMode === "plan" &&
+					filePath &&
+					isHtmlPlanPath(filePath)
+				) {
+					this.approvedHtmlPlanToolIds.add(toolCall.toolCallId);
+				}
 				const option = options.find((item) =>
 					allowed
 						? item.kind.startsWith("allow")
@@ -191,8 +257,14 @@ class AcpSession implements AgentSession {
 						argumentHint: command.input?.hint ?? "",
 					}));
 				}
-				const event = eventFromUpdate(update);
-				if (event) this.events.push(event);
+				if (
+					update.sessionUpdate === "tool_call_update" &&
+					update.status === "completed" &&
+					this.approvedHtmlPlanToolIds.has(update.toolCallId)
+				) {
+					this.htmlPlanReady = true;
+				}
+				for (const event of eventsFromUpdate(update)) this.events.push(event);
 			},
 		};
 		const stream = ndJsonStream(
@@ -203,7 +275,7 @@ class AcpSession implements AgentSession {
 		this.connection = connection;
 		const initialized = await connection.initialize({
 			protocolVersion: PROTOCOL_VERSION,
-			clientCapabilities: {},
+			clientCapabilities: { plan: {} },
 			clientInfo: { name: "Hlid", version: "1" },
 		});
 		this.canDeleteSession = Boolean(
@@ -213,13 +285,15 @@ class AcpSession implements AgentSession {
 			initialized.agentCapabilities?.sessionCapabilities?.close,
 		);
 		if (this.cancelled) return;
+		let modes: SessionModeState | null | undefined;
 		if (this.params.sessionId && initialized.agentCapabilities?.loadSession) {
-			await connection.loadSession({
+			const loaded = await connection.loadSession({
 				sessionId: this.params.sessionId,
 				cwd: this.params.cwd,
 				additionalDirectories: this.params.additionalDirectories,
 				mcpServers: [],
 			});
+			modes = loaded.modes;
 			this.sessionId = this.params.sessionId;
 		} else {
 			const created = await connection.newSession({
@@ -228,6 +302,18 @@ class AcpSession implements AgentSession {
 				mcpServers: [],
 			});
 			this.sessionId = created.sessionId;
+			modes = created.modes;
+		}
+		if (this.params.permissionMode === "plan") {
+			const modeId = planModeId(modes);
+			this.implementationModeId =
+				modes?.currentModeId === modeId
+					? (modes.availableModes.find((mode) => mode.id !== modeId)?.id ??
+						null)
+					: (modes?.currentModeId ?? null);
+			if (modeId && modes?.currentModeId !== modeId) {
+				await connection.setSessionMode({ sessionId: this.sessionId, modeId });
+			}
 		}
 		this.events.push({ type: "session_start", sessionId: this.sessionId });
 	}
@@ -240,6 +326,8 @@ class AcpSession implements AgentSession {
 
 	private async runPrompt(message: string): Promise<void> {
 		if (!this.connection || !this.sessionId) return;
+		this.approvedHtmlPlanToolIds.clear();
+		this.htmlPlanReady = false;
 		const started = Date.now();
 		const response = await this.connection.prompt({
 			sessionId: this.sessionId,
@@ -254,6 +342,43 @@ class AcpSession implements AgentSession {
 				cacheReadTokens: response.usage.cachedReadTokens ?? undefined,
 				cacheCreationTokens: response.usage.cachedWriteTokens ?? undefined,
 			});
+		}
+		if (
+			this.params.permissionMode === "plan" &&
+			(this.htmlPlanReady || this.params.planHtmlPath)
+		) {
+			const decision = await this.params.canUseTool(
+				"ExitPlanMode",
+				{ plan: "HTML plan ready for review." },
+				{
+					toolUseID: `acp-plan-${this.sessionId}-${this.turns}`,
+					signal: this.params.signal ?? new AbortController().signal,
+					title: `${this.options.label} completed its plan`,
+				},
+			);
+			if (
+				decision.behavior === "deny" &&
+				decision.message?.startsWith("User requested changes to the plan:")
+			) {
+				await this.runPrompt(
+					`${decision.message}\n\nRevise the plan accordingly. Replace the HTML plan document specified earlier and present it for approval again.`,
+				);
+				return;
+			}
+			if (decision.behavior === "allow") {
+				this.params.permissionMode =
+					this.params.implementationPermissionMode ?? "default";
+				if (this.implementationModeId) {
+					await this.connection.setSessionMode({
+						sessionId: this.sessionId,
+						modeId: this.implementationModeId,
+					});
+				}
+				await this.runPrompt(
+					"The user approved the plan. Implement it now, including its validation steps.",
+				);
+				return;
+			}
 		}
 		this.events.push({
 			type: "done",
@@ -300,6 +425,17 @@ class AcpSession implements AgentSession {
 
 	async supportedCommands(): Promise<SlashCommand[]> {
 		return this.commands;
+	}
+
+	async setPermissionMode(mode: string): Promise<void> {
+		if (
+			mode === "default" ||
+			mode === "acceptEdits" ||
+			mode === "bypassPermissions" ||
+			mode === "plan"
+		) {
+			this.params.permissionMode = mode;
+		}
 	}
 
 	[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {

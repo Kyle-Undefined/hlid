@@ -23,7 +23,7 @@ export function AssistantMsg({
 }) {
 	const { copy, copied } = useCopyToClipboard();
 	return (
-		<div className="group py-3 border-b border-border/40 space-y-1.5">
+		<div className="group w-full min-w-0 max-w-full overflow-hidden py-3 border-b border-border/40 space-y-1.5">
 			{message.toolEvents.map((e) => (
 				<ToolBlock
 					key={e.id}

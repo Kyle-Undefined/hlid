@@ -7,6 +7,7 @@ export type UiForm = {
 	mobileTheme: "dark" | "tan" | "same";
 	enterToSubmit: boolean;
 	hideSkillsIndex: boolean;
+	htmlPlans: boolean;
 };
 
 const MOBILE_THEME_OPTIONS = [
@@ -114,6 +115,22 @@ export function UiSection({
 					/>
 					<span className="text-xs text-muted-foreground">
 						{ui.hideSkillsIndex ? "on" : "off"}
+					</span>
+				</label>
+			</Field>
+			<Field
+				label="HTML plans"
+				hint="default for the per-session toggle; in plan mode the agent renders its plan as a styled page shown in a modal"
+			>
+				<label className="flex items-center gap-2 cursor-pointer">
+					<input
+						type="checkbox"
+						checked={ui.htmlPlans}
+						onChange={(e) => onChange({ htmlPlans: e.target.checked })}
+						className="accent-primary w-3.5 h-3.5"
+					/>
+					<span className="text-xs text-muted-foreground">
+						{ui.htmlPlans ? "on" : "off"}
 					</span>
 				</label>
 			</Field>

@@ -10,6 +10,7 @@ const FORWARDED_HEADERS = [
 	"etag",
 	"last-modified",
 	"x-content-type-options",
+	"content-security-policy",
 ] as const;
 
 export async function handleRawAttachment(
