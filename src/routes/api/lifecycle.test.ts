@@ -4,6 +4,7 @@ import {
 	getInstallPaths,
 	installAutostart,
 	openInstallDir,
+	restart,
 	shutdown,
 	uninstallAutostart,
 } from "#/lib/lifecycle";
@@ -15,6 +16,7 @@ vi.mock("#/lib/lifecycle", () => ({
 	getInstallPaths: vi.fn(),
 	installAutostart: vi.fn(),
 	openInstallDir: vi.fn(),
+	restart: vi.fn(),
 	shutdown: vi.fn(),
 	uninstallAutostart: vi.fn(),
 }));
@@ -81,6 +83,13 @@ describe("lifecycle route handlers", () => {
 		const response = await handlePostLifecycle(request("shutdown"));
 		expect(response.status).toBe(200);
 		expect(shutdown).toHaveBeenCalledOnce();
+	});
+
+	it("dispatches restart synchronously", async () => {
+		vi.mocked(restart).mockReturnValueOnce({ ok: true });
+		const response = await handlePostLifecycle(request("restart"));
+		expect(response.status).toBe(200);
+		expect(restart).toHaveBeenCalledOnce();
 	});
 
 	it("rejects malformed JSON and unknown actions", async () => {

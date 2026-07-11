@@ -123,6 +123,33 @@ describe("SystemSection", () => {
 		expect(screen.getByText("OPTIMIZE")).not.toBeNull();
 	});
 
+	it("places restart above shutdown and posts the restart action", async () => {
+		const actions: string[] = [];
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+				if (!init?.method)
+					return jsonResponse({
+						ok: true,
+						data: { enabled: false, supported: true },
+					});
+				actions.push(JSON.parse(String(init.body)).action as string);
+				return jsonResponse({ ok: true });
+			}),
+		);
+		render(<SystemSection view="advanced" />);
+
+		const restart = screen.getByText("RESTART");
+		const shutdown = screen.getByText("SHUTDOWN");
+		expect(
+			restart.compareDocumentPosition(shutdown) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		fireEvent.click(restart);
+		fireEvent.click(screen.getByText("confirm"));
+		await waitFor(() => expect(actions).toContain("restart"));
+	});
+
 	it("shows lifecycle POST failures instead of reporting shutdown success", async () => {
 		const fetchMock = vi.fn(
 			async (_input: RequestInfo | URL, init?: RequestInit) =>

@@ -7,6 +7,22 @@ function RouterError({ error, reset }: { error: Error; reset: () => void }) {
 	return <ErrorFallback error={error} reset={reset} />;
 }
 
+function NotFound() {
+	return (
+		<div className="grid min-h-full place-items-center p-6 text-center">
+			<div className="space-y-3">
+				<h1 className="text-xl font-medium">Page not found</h1>
+				<p className="text-sm text-muted-foreground">
+					The requested Hlið page does not exist.
+				</p>
+				<a href="/" className="text-sm text-primary hover:underline">
+					Return to Hlið
+				</a>
+			</div>
+		</div>
+	);
+}
+
 export function getRouter() {
 	installAuthRedirect();
 	const router = createTanStackRouter({
@@ -16,6 +32,7 @@ export function getRouter() {
 		defaultPreloadStaleTime: 30_000,
 		defaultStaleTime: 30_000,
 		defaultErrorComponent: RouterError,
+		defaultNotFoundComponent: NotFound,
 	});
 
 	return router;

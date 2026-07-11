@@ -125,6 +125,11 @@ const VoiceSchema = z.object({
 		.default(DEFAULT_VOICE_CONFIG.max_recording_seconds),
 });
 
+const UmbodSchema = z.object({
+	enabled: z.boolean().default(false),
+	manifest_path: z.string().default("umbod.toml"),
+});
+
 export const AgentSchema = z.object({
 	path: z.string(),
 	name: z.string().optional(),
@@ -188,6 +193,10 @@ export const HlidConfigSchema = z.object({
 	})),
 	attachments: AttachmentsSchema.default(DEFAULT_ATTACHMENTS_CONFIG),
 	voice: VoiceSchema.default(DEFAULT_VOICE_CONFIG),
+	umbod: UmbodSchema.default(() => ({
+		enabled: false,
+		manifest_path: "umbod.toml",
+	})),
 	agents: z.array(AgentSchema).default([]),
 	acp_agents: z.array(AcpAgentSchema).optional(),
 	vault_provider: z.string().default("claude"),

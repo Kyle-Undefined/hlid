@@ -148,6 +148,8 @@ export type AgentQueryParams = {
 	effort?: string;
 	maxTurns?: number;
 	permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan";
+	/** A host policy layer must see calls even when interactive prompts are bypassed. */
+	policyEnforced?: boolean;
 	/** Permission mode to restore after a provider-specific plan is approved. */
 	implementationPermissionMode?:
 		| "default"

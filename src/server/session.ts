@@ -40,6 +40,7 @@ import { mapMcpServer } from "./protocol";
 import { updateWindowMark } from "./proxy";
 import { generateTurnRecap } from "./recap";
 import { SessionTurnQueue } from "./sessionTurnQueue";
+import { authorizeHlidTool } from "./umbod";
 
 /** Fallback context window size when the SDK omits it from result metadata. */
 const DEFAULT_CONTEXT_WINDOW = 200_000;
@@ -166,6 +167,7 @@ function buildAgentQueryParams(options: {
 		permissionMode: options.planMode
 			? "plan"
 			: options.configuredPermissionMode,
+		policyEnforced: loadConfig()?.umbod?.enabled ?? false,
 		...(options.planMode ? { implementationPermissionMode } : {}),
 		...(options.planMode && options.planHtmlPath
 			? { planHtmlPath: options.planHtmlPath }
@@ -1218,6 +1220,7 @@ export class SessionManager {
 		provider: AgentProvider,
 		activeCwd: string,
 		sessionId: string | undefined,
+		configuredPermissionMode: PermissionMode,
 		emit: (msg: ServerMessage) => void,
 	): CanUseTool {
 		return (toolName, input, { toolUseID, title, displayName, description }) =>
@@ -1355,11 +1358,6 @@ export class SessionManager {
 					return;
 				}
 
-				if (this.sessionAllowedTools.has(toolName)) {
-					resolve({ behavior: "allow", updatedInput: passInput });
-					return;
-				}
-
 				const request = {
 					type: "permission_request" as const,
 					id: toolUseID,
@@ -1371,33 +1369,71 @@ export class SessionManager {
 					description,
 					input: input as Record<string, unknown> | undefined,
 				};
-				this.permissions.register(
-					toolUseID,
-					request,
-					(approved, saveScope, denyMessage) => {
-						this.permissions.delete(toolUseID);
-						if (!approved) {
-							resolve({
-								behavior: "deny",
-								message: denyMessage ?? "Denied by user",
-							});
+				let denyMessage: string | undefined;
+				const prompt = (reason?: string) =>
+					new Promise<"allow" | "block">((finish) => {
+						if (this.sessionAllowedTools.has(toolName)) {
+							finish("allow");
 							return;
 						}
-						if (saveScope === "session") this.sessionAllowedTools.add(toolName);
-						if (saveScope === "local") {
-							try {
-								persistAlwaysAllowedTool(activeCwd, toolName);
-							} catch (error) {
-								console.error(
-									"[session] failed to write always-allow rule:",
-									error,
-								);
-							}
-						}
-						resolve({ behavior: "allow", updatedInput: passInput });
-					},
-				);
-				emit(request);
+						this.permissions.register(
+							toolUseID,
+							{ ...request, description: reason ?? request.description },
+							(approved, saveScope, customDenyMessage) => {
+								this.permissions.delete(toolUseID);
+								if (!approved) {
+									denyMessage = customDenyMessage;
+									finish("block");
+									return;
+								}
+								if (saveScope === "session")
+									this.sessionAllowedTools.add(toolName);
+								if (saveScope === "local") {
+									try {
+										persistAlwaysAllowedTool(activeCwd, toolName);
+									} catch (error) {
+										console.error(
+											"[session] failed to write always-allow rule:",
+											error,
+										);
+									}
+								}
+								finish("allow");
+							},
+						);
+						emit({ ...request, description: reason ?? request.description });
+					});
+
+				void authorizeHlidTool({
+					agent: provider.providerId,
+					tool: toolName,
+					input,
+					cwd: activeCwd,
+					sessionId,
+					toolUseId: toolUseID,
+					bypassApproval: configuredPermissionMode === "bypassPermissions",
+					prompt: (reason) => prompt(reason),
+				})
+					.then(async (policy) => {
+						const decision = policy?.decision ?? (await prompt());
+						resolve(
+							decision === "allow"
+								? { behavior: "allow", updatedInput: passInput }
+								: {
+										behavior: "deny",
+										message:
+											policy?.policyDecision === "block"
+												? policy.reason
+												: (denyMessage ?? "Denied by user"),
+									},
+						);
+					})
+					.catch((error) => {
+						resolve({
+							behavior: "deny",
+							message: `Umbod policy error: ${error instanceof Error ? error.message : String(error)}`,
+						});
+					});
 			});
 	}
 
@@ -1500,6 +1536,7 @@ export class SessionManager {
 					provider,
 					activeCwd,
 					sessionId,
+					configuredPermissionMode,
 					emit,
 				),
 			}),

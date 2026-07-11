@@ -218,7 +218,8 @@ class AcpSession implements AgentSession {
 			requestPermission: async ({ toolCall, options }) => {
 				const filePath = filePathFromToolInput(toolCall.rawInput);
 				const decision =
-					this.params.permissionMode === "bypassPermissions"
+					this.params.permissionMode === "bypassPermissions" &&
+					!this.params.policyEnforced
 						? { behavior: "allow" as const }
 						: await this.params.canUseTool(
 								filePath ? "Write" : (toolCall.title ?? "ACP tool"),

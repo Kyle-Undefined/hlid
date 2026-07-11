@@ -220,7 +220,7 @@ Read \`hlid.config.toml\` to find \`server.port\`. The data API runs on that por
   GET  /api/version    — Running hlid version.
   GET  /api/updates    — Check for a newer release; POST downloads and applies.
   GET  /api/lifecycle  — Autostart status and install paths.
-  POST /api/lifecycle  — Body: { action: "install" | "uninstall" | "shutdown" | "open_install_dir" }.
+  POST /api/lifecycle  — Body: { action: "install" | "uninstall" | "restart" | "shutdown" | "open_install_dir" }.
   GET  /api/tailscale  — Tailscale status for remote access.
 
 Create a skill file in the vault's skills folder (\`vault.skills\` in config). Add YAML frontmatter with \`name\` and \`description\` fields.

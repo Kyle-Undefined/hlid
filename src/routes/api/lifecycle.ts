@@ -5,6 +5,7 @@ import {
 	getInstallPaths,
 	installAutostart,
 	openInstallDir,
+	restart,
 	shutdown,
 	uninstallAutostart,
 } from "#/lib/lifecycle";
@@ -14,6 +15,7 @@ const ACTIONS = [
 	"install",
 	"uninstall",
 	"shutdown",
+	"restart",
 	"open_install_dir",
 ] as const;
 export async function handleGetLifecycle(request: Request): Promise<Response> {
@@ -49,6 +51,8 @@ export async function handlePostLifecycle(request: Request): Promise<Response> {
 				return Response.json(await uninstallAutostart());
 			case "shutdown":
 				return Response.json(shutdown());
+			case "restart":
+				return Response.json(restart());
 			case "open_install_dir":
 				return Response.json(await openInstallDir());
 		}

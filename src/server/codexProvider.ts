@@ -654,7 +654,7 @@ class CodexAgentSession implements AgentSession {
 		rawParams: unknown,
 	): Promise<unknown> {
 		const params = asObj(rawParams);
-		if (autoApprovesPermissions(this.params)) {
+		if (!this.params.policyEnforced && autoApprovesPermissions(this.params)) {
 			return this.allowedServerRequestResult(method, params);
 		}
 		if (typeof this.params.canUseTool !== "function") {

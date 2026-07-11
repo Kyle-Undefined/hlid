@@ -1,7 +1,10 @@
 // Lifecycle operations: autostart, shutdown, install location.
 // Single source of truth. UI endpoints in src/routes/api/lifecycle.ts call these.
 
-import { dirname } from "node:path";
+import { spawn } from "node:child_process";
+import { writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { basename, dirname } from "node:path";
 import { createAutostartController } from "./autostartController";
 import { canonicalExePath, canonicalInstallDir } from "./install";
 import { runCapturedProcess } from "./process";
@@ -113,5 +116,95 @@ export function shutdown(): LifecycleResult {
 	// calling stop(true) first can block the event loop on Windows when SSE or
 	// WS connections are active, preventing this timer from ever firing.
 	setTimeout(() => process.exit(0), 250);
+	return { ok: true };
+}
+
+export function restart(): LifecycleResult {
+	// Spawn a replacement after the response has flushed. On Windows an
+	// external PowerShell trampoline must own the relaunch: children spawned
+	// directly by the compiled Bun process are not guaranteed to survive its
+	// exit even when detached.
+	setTimeout(() => {
+		const runtime = basename(process.execPath).toLowerCase();
+		const compiled = runtime !== "bun" && runtime !== "bun.exe";
+		const appArgs = compiled
+			? ["--restart", "--background", `--restart-parent=${process.pid}`]
+			: [
+					...process.argv
+						.slice(1)
+						.filter(
+							(arg) =>
+								arg !== "--restart" && !arg.startsWith("--restart-parent="),
+						),
+					"--restart",
+					`--restart-parent=${process.pid}`,
+				];
+		if (process.platform === "win32") {
+			const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
+			const vbsQuote = (value: string) => value.replaceAll('"', '""');
+			const command = [process.execPath, ...appArgs]
+				.map((value) => `"${value.replaceAll('"', '\\"')}"`)
+				.join(" ");
+			const waiterPath = `${tmpdir()}\\hlid-restart-${process.pid}-${Date.now()}.vbs`;
+			const waiterScript = [
+				`Set wmi = GetObject("winmgmts:\\\\.\\root\\cimv2")`,
+				`Do While wmi.ExecQuery("SELECT ProcessId FROM Win32_Process WHERE ProcessId = ${process.pid}").Count > 0`,
+				`  WScript.Sleep 100`,
+				`Loop`,
+				`Set shell = CreateObject("WScript.Shell")`,
+				`shell.CurrentDirectory = "${vbsQuote(process.cwd())}"`,
+				`shell.Run "${vbsQuote(command)}", 0, False`,
+				`CreateObject("Scripting.FileSystemObject").DeleteFile WScript.ScriptFullName, True`,
+			].join("\r\n");
+			writeFileSync(waiterPath, waiterScript, {
+				encoding: "utf8",
+				mode: 0o600,
+			});
+			const waiterCommand = `wscript.exe //B //NoLogo "${waiterPath}"`;
+			// Ask WMI to create the waiter so it is owned by the Windows service
+			// host, not by HLID's Bun process/job. wscript.exe is a GUI process, so
+			// neither the waiter nor the restarted Hlid allocates a console window.
+			const brokerScript = [
+				`$startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly`,
+				`$startup.ShowWindow = 0`,
+				`$result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = ${quote(waiterCommand)}; ProcessStartupInformation = $startup }`,
+				`if ($result.ReturnValue -ne 0) { exit $result.ReturnValue }`,
+			].join("; ");
+			const brokerEncoded = Buffer.from(brokerScript, "utf16le").toString(
+				"base64",
+			);
+			const broker = spawn(
+				"powershell.exe",
+				[
+					"-NoProfile",
+					"-NonInteractive",
+					"-WindowStyle",
+					"Hidden",
+					"-EncodedCommand",
+					brokerEncoded,
+				],
+				{
+					cwd: process.cwd(),
+					stdio: "ignore",
+					windowsHide: true,
+				},
+			);
+			broker.once("exit", (code) => {
+				// Never kill the working server unless Windows confirmed that the
+				// independent waiter was created successfully.
+				if (code === 0) process.exit(0);
+			});
+			return;
+		}
+
+		const child = spawn(process.execPath, appArgs, {
+			cwd: process.cwd(),
+			detached: true,
+			stdio: "ignore",
+			windowsHide: true,
+		});
+		child.unref();
+		process.exit(0);
+	}, 250);
 	return { ok: true };
 }

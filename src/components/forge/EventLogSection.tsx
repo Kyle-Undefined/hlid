@@ -66,13 +66,7 @@ function LogEntryRow({ entry }: { entry: LogRow }) {
 	});
 	return (
 		<div className="border-b border-border last:border-0">
-			<button
-				type="button"
-				onClick={() => entry.detail != null && setExpanded((p) => !p)}
-				tabIndex={entry.detail != null ? undefined : -1}
-				aria-expanded={entry.detail != null ? expanded : undefined}
-				className={`w-full flex items-start gap-3 px-4 py-2.5 text-left ${entry.detail != null ? "hover:bg-accent/20 cursor-pointer" : "cursor-default"} transition-colors`}
-			>
+			<div className="w-full flex items-start gap-3 px-4 py-2.5 text-left transition-colors hover:bg-accent/20">
 				<span className="text-[9px] tabular-nums text-muted-foreground/40 shrink-0 pt-0.5 w-16 sm:w-28">
 					<span className="sm:hidden">{tsShort}</span>
 					<span className="hidden sm:inline">{tsFull}</span>
@@ -85,18 +79,26 @@ function LogEntryRow({ entry }: { entry: LogRow }) {
 				<span className="hidden sm:inline text-[9px] tracking-widest text-muted-foreground/50 uppercase shrink-0 w-14 pt-0.5">
 					{entry.source}
 				</span>
-				<span className="text-xs text-foreground/80 flex-1 min-w-0 break-words">
+				<span className="select-text cursor-text text-xs text-foreground/80 flex-1 min-w-0 break-words">
 					{entry.message}
 				</span>
 				{entry.detail != null && (
-					<span className="text-[9px] text-muted-foreground/30 shrink-0">
+					<button
+						type="button"
+						onClick={() => setExpanded((p) => !p)}
+						aria-expanded={expanded}
+						aria-label={
+							expanded ? "Collapse log details" : "Expand log details"
+						}
+						className="p-1 text-[9px] text-muted-foreground/40 hover:text-foreground shrink-0"
+					>
 						{expanded ? "▲" : "▼"}
-					</span>
+					</button>
 				)}
-			</button>
+			</div>
 			{expanded && entry.detail != null && (
 				<div className="px-4 pb-2.5">
-					<pre className="text-[10px] font-mono text-muted-foreground bg-secondary p-2 overflow-x-auto whitespace-pre-wrap break-all">
+					<pre className="select-text cursor-text text-[10px] font-mono text-muted-foreground bg-secondary p-2 overflow-x-auto whitespace-pre-wrap break-all">
 						{(() => {
 							try {
 								return JSON.stringify(

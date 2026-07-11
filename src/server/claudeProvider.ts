@@ -700,7 +700,11 @@ export class ClaudeProvider implements AgentProvider {
 						: {}),
 					abortController,
 					...(params.model ? { model: params.model } : {}),
-					permissionMode: params.permissionMode ?? "default",
+					permissionMode:
+						params.policyEnforced &&
+						params.permissionMode === "bypassPermissions"
+							? "default"
+							: (params.permissionMode ?? "default"),
 					effort: (params.effort ?? "medium") as SdkEffortLevel,
 					...(params.maxTurns !== undefined
 						? { maxTurns: params.maxTurns }
@@ -709,7 +713,8 @@ export class ClaudeProvider implements AgentProvider {
 						? { pathToClaudeCodeExecutable: params.executable }
 						: {}),
 					allowDangerouslySkipPermissions:
-						params.permissionMode === "bypassPermissions",
+						params.permissionMode === "bypassPermissions" &&
+						!params.policyEnforced,
 					settingSources: params.settingSources ?? ["user", "project", "local"],
 					...(resumeId !== undefined ? { resume: resumeId } : {}),
 					...(params.persistSession === false ? { persistSession: false } : {}),

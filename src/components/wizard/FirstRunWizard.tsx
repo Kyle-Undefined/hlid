@@ -98,6 +98,7 @@ export function buildFirstRunConfig(s: StructureState): HlidConfig {
 		},
 		attachments: DEFAULT_ATTACHMENTS_CONFIG,
 		voice: DEFAULT_VOICE_CONFIG,
+		umbod: { enabled: false, manifest_path: "umbod.toml" },
 		agents: [],
 		vault_provider: "claude",
 	};

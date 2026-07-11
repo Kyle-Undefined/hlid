@@ -65,6 +65,7 @@ function makeConfig(agentPaths: string[] = []): HlidConfig {
 			hotkey: "Alt+Shift+KeyV",
 			max_recording_seconds: 300,
 		},
+		umbod: { enabled: false, manifest_path: "umbod.toml" },
 		vault_provider: "claude",
 		agents: agentPaths.map((p) => ({
 			path: p,

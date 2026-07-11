@@ -86,11 +86,42 @@ function ShutdownAction({
 	);
 }
 
+function RestartAction({
+	busy,
+	onRestart,
+}: {
+	busy: boolean;
+	onRestart: () => void;
+}) {
+	return (
+		<Field
+			label="Restart"
+			hint="restart Hlið and apply pending configuration changes"
+		>
+			<ConfirmAction
+				label="restart?"
+				onConfirm={onRestart}
+				className="shrink-0"
+				trigger={(open) => (
+					<button
+						type="button"
+						onClick={open}
+						disabled={busy}
+						className="text-[10px] tracking-widest px-3 py-1.5 border border-amber-500/40 text-amber-500 hover:bg-amber-500/10 transition-colors uppercase disabled:opacity-40"
+					>
+						{busy ? "RESTARTING…" : "RESTART"}
+					</button>
+				)}
+			/>
+		</Field>
+	);
+}
+
 function useSystemMaintenance() {
 	const [autostart, setAutostart] = useState<LifecycleState | null>(null);
 	const [storage, setStorage] = useState<StorageStats | null>(null);
 	const [busy, setBusy] = useState<
-		null | "toggle" | "shutdown" | "open_install_dir" | "optimize"
+		null | "toggle" | "restart" | "shutdown" | "open_install_dir" | "optimize"
 	>(null);
 	const [error, setError] = useState<string | null>(null);
 
@@ -120,7 +151,12 @@ function useSystemMaintenance() {
 	}, [refresh]);
 
 	async function post(
-		action: "install" | "uninstall" | "shutdown" | "open_install_dir",
+		action:
+			| "install"
+			| "uninstall"
+			| "restart"
+			| "shutdown"
+			| "open_install_dir",
 	) {
 		const res = await fetch("/api/lifecycle", {
 			method: "POST",
@@ -134,7 +170,7 @@ function useSystemMaintenance() {
 	}
 
 	async function runLifecycleAction(
-		action: "shutdown" | "open_install_dir",
+		action: "restart" | "shutdown" | "open_install_dir",
 		fallback: string,
 	) {
 		setError(null);
@@ -189,6 +225,7 @@ function useSystemMaintenance() {
 		openInstallDir: () =>
 			runLifecycleAction("open_install_dir", "Failed to open folder"),
 		doShutdown: () => runLifecycleAction("shutdown", "Shutdown failed"),
+		doRestart: () => runLifecycleAction("restart", "Restart failed"),
 	};
 }
 
@@ -206,6 +243,7 @@ export function SystemSection({
 		toggleAutostart,
 		openInstallDir,
 		doShutdown,
+		doRestart,
 	} = useSystemMaintenance();
 
 	const supported = autostart?.supported ?? false;
@@ -318,22 +356,30 @@ export function SystemSection({
 				</Section>
 			)}
 			{view === "advanced" && (
-				<Section
-					title="Danger zone"
-					description="Maintenance and lifecycle actions can interrupt active work."
-				>
-					<OptimizeStorageAction
-						busy={busy !== null}
-						onOptimize={() => void optimizeStorage()}
-					/>
-					<ShutdownAction
-						busy={busy !== null}
-						onShutdown={() => void doShutdown()}
-					/>
-					{error && (
-						<div className="px-4 py-2 text-xs text-destructive/80">{error}</div>
-					)}
-				</Section>
+				<div id="lifecycle-controls" className="scroll-mt-20">
+					<Section
+						title="Danger zone"
+						description="Maintenance and lifecycle actions can interrupt active work."
+					>
+						<OptimizeStorageAction
+							busy={busy !== null}
+							onOptimize={() => void optimizeStorage()}
+						/>
+						<RestartAction
+							busy={busy !== null}
+							onRestart={() => void doRestart()}
+						/>
+						<ShutdownAction
+							busy={busy !== null}
+							onShutdown={() => void doShutdown()}
+						/>
+						{error && (
+							<div className="px-4 py-2 text-xs text-destructive/80">
+								{error}
+							</div>
+						)}
+					</Section>
+				</div>
 			)}
 		</>
 	);

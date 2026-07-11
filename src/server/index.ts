@@ -37,6 +37,7 @@ import { TerminalSessionPool } from "./terminalSessionPool";
 import { createTerminalUpgradeHandler } from "./terminalUpgrade";
 import { startTlsProxy } from "./tlsProxy";
 import { startUiServer } from "./uiServer";
+import { bootstrapUmbod, closeUmbod } from "./umbod";
 import { VoiceModelManager } from "./voice";
 import { bootstrapVoiceRuntime } from "./voice-bootstrap";
 import { syncWrappers } from "./wrappers";
@@ -80,8 +81,34 @@ if (process.execPath.endsWith(".exe")) {
 const RESTART_MODE = process.argv.includes("--restart");
 const BACKGROUND_MODE = RESTART_MODE || process.argv.includes("--background");
 
+const restartParentArg = process.argv.find((arg) =>
+	arg.startsWith("--restart-parent="),
+);
+if (restartParentArg) {
+	const parentPid = Number(restartParentArg.slice("--restart-parent=".length));
+	const deadline = Date.now() + 30_000;
+	while (
+		Number.isInteger(parentPid) &&
+		parentPid > 0 &&
+		Date.now() < deadline
+	) {
+		try {
+			process.kill(parentPid, 0);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+		} catch {
+			break;
+		}
+	}
+}
+
 const config = loadConfig();
 syncWrappers(config.agents ?? []);
+await bootstrapUmbod().catch((error) => {
+	console.error(
+		"[umbod] failed to initialize:",
+		error instanceof Error ? error.message : String(error),
+	);
+});
 
 // Bind localhost-only by default. Opt-in to LAN/Tailscale exposure via
 // `local_network_access = true` in hlid.config.toml (requires restart).
@@ -174,6 +201,7 @@ process.on("SIGTERM", () => {
 	pool.closeAll();
 	terminalPool.closeAll();
 	closeAllCodexAppServers();
+	closeUmbod();
 	process.exit(0);
 });
 process.on("SIGINT", () => {
@@ -181,6 +209,7 @@ process.on("SIGINT", () => {
 	pool.closeAll();
 	terminalPool.closeAll();
 	closeAllCodexAppServers();
+	closeUmbod();
 	process.exit(0);
 });
 

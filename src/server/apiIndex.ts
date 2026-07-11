@@ -257,7 +257,7 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 		method: "POST",
 		path: "/api/lifecycle",
 		server: "ui",
-		desc: 'Body: {"action": "install"|"uninstall"|"shutdown"|"open_install_dir"} — autostart management and server shutdown.',
+		desc: 'Body: {"action": "install"|"uninstall"|"restart"|"shutdown"|"open_install_dir"} — autostart and process lifecycle management.',
 	},
 	{
 		method: "GET",

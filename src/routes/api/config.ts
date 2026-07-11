@@ -39,6 +39,19 @@ export async function handlePostConfig(request: Request): Promise<Response> {
 			);
 		}
 	}
+	if (config.umbod.enabled) {
+		try {
+			const { ensureUmbodManifest } = await import("#/server/umbod");
+			await ensureUmbodManifest(config.umbod.manifest_path);
+		} catch (error) {
+			return Response.json(
+				{
+					error: `Invalid Umbod manifest: ${error instanceof Error ? error.message : String(error)}`,
+				},
+				{ status: 400 },
+			);
+		}
+	}
 	try {
 		writeConfig(config);
 	} catch {

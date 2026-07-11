@@ -9,6 +9,7 @@ import { SecuritySection } from "#/components/forge/SecuritySection";
 import { SessionSection } from "#/components/forge/SessionSection";
 import { SystemSection } from "#/components/forge/SystemSection";
 import { UiSection } from "#/components/forge/UiSection";
+import { UmbodSection } from "#/components/forge/UmbodSection";
 import { UpdatesSection } from "#/components/forge/UpdatesSection";
 import { VaultSection } from "#/components/forge/VaultSection";
 import { VocabSection } from "#/components/forge/VocabSection";
@@ -125,6 +126,8 @@ function CategoryContent({
 	initial,
 	showCatalog,
 	onShowCatalog,
+	showUmbod,
+	onShowUmbod,
 	developerView,
 	onDeveloperView,
 }: {
@@ -133,6 +136,8 @@ function CategoryContent({
 	initial: SettingsInitial;
 	showCatalog: boolean;
 	onShowCatalog: (show: boolean) => void;
+	showUmbod: boolean;
+	onShowUmbod: (show: boolean) => void;
 	developerView: DeveloperView;
 	onDeveloperView: (view: DeveloperView) => void;
 }) {
@@ -155,6 +160,23 @@ function CategoryContent({
 					value={state.acpAgents}
 					onChange={state.setAcpAgents}
 				/>
+			</>
+		);
+	if (category === "integrations" && showUmbod)
+		return (
+			<>
+				<button
+					type="button"
+					onClick={() => onShowUmbod(false)}
+					className="text-[10px] tracking-widest uppercase text-muted-foreground hover:text-foreground"
+				>
+					← Integrations
+				</button>
+				<PageIntro
+					title="Umbod"
+					description="Configure policy, generate hooks, and inspect tool-call decisions."
+				/>
+				<UmbodSection value={state.umbod} onChange={state.setUmbod} />
 			</>
 		);
 	switch (category) {
@@ -242,6 +264,21 @@ function CategoryContent({
 					<McpSection vaultPath={state.vault.path} />
 					<div className="border border-border bg-card p-4 flex items-center justify-between gap-4">
 						<div>
+							<div className="text-sm">Umbod policy</div>
+							<p className="text-xs text-muted-foreground mt-0.5">
+								Configure enforcement, generate hooks, and inspect tool calls.
+							</p>
+						</div>
+						<button
+							type="button"
+							onClick={() => onShowUmbod(true)}
+							className="shrink-0 px-3 py-1.5 border border-border text-[10px] tracking-widest uppercase hover:bg-accent"
+						>
+							Open Umbod
+						</button>
+					</div>
+					<div className="border border-border bg-card p-4 flex items-center justify-between gap-4">
+						<div>
 							<div className="text-sm">ACP Agent Catalog</div>
 							<p className="text-xs text-muted-foreground mt-0.5">
 								Browse and configure Agent Client Protocol integrations on their
@@ -309,7 +346,13 @@ function CategoryContent({
 	}
 }
 
-function SaveStatus({ state }: { state: SettingsFormState }) {
+function SaveStatus({
+	state,
+	onRestartRequired,
+}: {
+	state: SettingsFormState;
+	onRestartRequired: () => void;
+}) {
 	return (
 		<div
 			className="min-h-5 text-[10px] tracking-wider uppercase"
@@ -322,9 +365,13 @@ function SaveStatus({ state }: { state: SettingsFormState }) {
 			)}
 			{state.savedMsg === "restart" && (
 				<span className="inline-flex items-center gap-2 text-amber-500">
-					<span className="border border-amber-500/40 px-1.5 py-0.5">
+					<button
+						type="button"
+						onClick={onRestartRequired}
+						className="border border-amber-500/40 px-1.5 py-0.5 hover:bg-amber-500/10"
+					>
 						Restart required
-					</span>{" "}
+					</button>{" "}
 					Changes saved
 				</span>
 			)}
@@ -342,6 +389,7 @@ export function ForgeSettings({
 	const [category, setCategory] = useState<Category>("overview");
 	const [search, setSearch] = useState("");
 	const [showCatalog, setShowCatalog] = useState(false);
+	const [showUmbod, setShowUmbod] = useState(false);
 	const [developerView, setDeveloperView] = useState<DeveloperView>("events");
 	const shown = useMemo(() => {
 		const q = search.trim().toLowerCase();
@@ -356,6 +404,15 @@ export function ForgeSettings({
 	function choose(next: Category) {
 		setCategory(next);
 		setShowCatalog(false);
+		setShowUmbod(false);
+	}
+	function showRestartControls() {
+		choose("advanced");
+		setTimeout(() => {
+			document
+				.getElementById("lifecycle-controls")
+				?.scrollIntoView({ behavior: "smooth", block: "start" });
+		}, 0);
 	}
 	return (
 		<div className="flex h-full min-h-0">
@@ -386,14 +443,14 @@ export function ForgeSettings({
 			</aside>
 			<div className="flex-1 min-w-0 flex flex-col">
 				<header className="sticky top-0 z-20 shrink-0 border-b border-border bg-background/95 backdrop-blur px-4 py-3">
-					<div className="max-w-[1000px] mx-auto flex items-center gap-3">
+					<div className="max-w-[1000px] mx-auto grid grid-cols-[auto_minmax(0,1fr)] items-center gap-2 md:flex md:gap-3">
 						<div className="text-[10px] tracking-[0.2em] uppercase shrink-0">
 							Forge
 						</div>
 						<select
 							value={category}
 							onChange={(e) => choose(e.target.value as Category)}
-							className="md:hidden min-w-0 bg-secondary border border-border px-2 py-1.5 text-xs"
+							className="md:hidden w-full min-w-0 bg-secondary border border-border px-2 py-1.5 text-xs"
 						>
 							{CATEGORIES.map((item) => (
 								<option key={item.id} value={item.id}>
@@ -406,9 +463,9 @@ export function ForgeSettings({
 							onChange={(e) => setSearch(e.target.value)}
 							placeholder="Search settings"
 							aria-label="Search settings"
-							className="ml-auto w-full max-w-sm bg-secondary border border-border px-3 py-1.5 text-xs focus:outline-none focus:border-primary/50"
+							className="col-span-2 row-start-2 w-full bg-secondary border border-border px-3 py-1.5 text-xs focus:outline-none focus:border-primary/50 md:col-span-1 md:row-auto md:ml-auto md:max-w-sm"
 						/>
-						<SaveStatus state={state} />
+						<SaveStatus state={state} onRestartRequired={showRestartControls} />
 					</div>
 				</header>
 				<main className="flex-1 overflow-auto">
@@ -419,6 +476,8 @@ export function ForgeSettings({
 							initial={initial}
 							showCatalog={showCatalog}
 							onShowCatalog={setShowCatalog}
+							showUmbod={showUmbod}
+							onShowUmbod={setShowUmbod}
 							developerView={developerView}
 							onDeveloperView={setDeveloperView}
 						/>

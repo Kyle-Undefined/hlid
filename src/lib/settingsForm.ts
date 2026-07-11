@@ -26,6 +26,7 @@ export type SettingsForms = {
 	ui: UiForm;
 	vocab: VocabForm;
 	acpAgents: NonNullable<HlidConfig["acp_agents"]>;
+	umbod: HlidConfig["umbod"];
 };
 
 export function applyAgentFormPatch(
@@ -148,6 +149,7 @@ export function createSettingsForms(initial: HlidConfig): SettingsForms {
 		codex: createCodexForm(initial),
 		voice: initial.voice,
 		acpAgents: initial.acp_agents ?? [],
+		umbod: initial.umbod,
 		server: createServerForm(initial),
 		ui: createUiForm(initial),
 		vocab: createVocabForm(initial),
@@ -225,6 +227,7 @@ export function buildSettingsConfig(
 		},
 		attachments: initial.attachments ?? DEFAULT_ATTACHMENTS_CONFIG,
 		voice: forms.voice,
+		umbod: forms.umbod,
 		agents: initial.agents ?? [],
 		acp_agents: forms.acpAgents,
 	};

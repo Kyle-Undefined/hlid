@@ -19,6 +19,7 @@ import { Route as EinherjarRouteImport } from './routes/einherjar'
 import { Route as IndexRouteImport } from './routes/index'
 import { Route as ApiVersionRouteImport } from './routes/api/version'
 import { Route as ApiUpdatesRouteImport } from './routes/api/updates'
+import { Route as ApiUmbodRouteImport } from './routes/api/umbod'
 import { Route as ApiTailscaleRouteImport } from './routes/api/tailscale'
 import { Route as ApiLifecycleRouteImport } from './routes/api/lifecycle'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
@@ -87,6 +88,11 @@ const ApiVersionRoute = ApiVersionRouteImport.update({
 const ApiUpdatesRoute = ApiUpdatesRouteImport.update({
   id: '/api/updates',
   path: '/api/updates',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiUmbodRoute = ApiUmbodRouteImport.update({
+  id: '/api/umbod',
+  path: '/api/umbod',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiTailscaleRoute = ApiTailscaleRouteImport.update({
@@ -199,6 +205,7 @@ export interface FileRoutesByFullPath {
   '/api/health': typeof ApiHealthRoute
   '/api/lifecycle': typeof ApiLifecycleRoute
   '/api/tailscale': typeof ApiTailscaleRoute
+  '/api/umbod': typeof ApiUmbodRoute
   '/api/updates': typeof ApiUpdatesRoute
   '/api/version': typeof ApiVersionRoute
   '/api/agents/claudemd': typeof ApiAgentsClaudemdRoute
@@ -230,6 +237,7 @@ export interface FileRoutesByTo {
   '/api/health': typeof ApiHealthRoute
   '/api/lifecycle': typeof ApiLifecycleRoute
   '/api/tailscale': typeof ApiTailscaleRoute
+  '/api/umbod': typeof ApiUmbodRoute
   '/api/updates': typeof ApiUpdatesRoute
   '/api/version': typeof ApiVersionRoute
   '/api/agents/claudemd': typeof ApiAgentsClaudemdRoute
@@ -262,6 +270,7 @@ export interface FileRoutesById {
   '/api/health': typeof ApiHealthRoute
   '/api/lifecycle': typeof ApiLifecycleRoute
   '/api/tailscale': typeof ApiTailscaleRoute
+  '/api/umbod': typeof ApiUmbodRoute
   '/api/updates': typeof ApiUpdatesRoute
   '/api/version': typeof ApiVersionRoute
   '/api/agents/claudemd': typeof ApiAgentsClaudemdRoute
@@ -295,6 +304,7 @@ export interface FileRouteTypes {
     | '/api/health'
     | '/api/lifecycle'
     | '/api/tailscale'
+    | '/api/umbod'
     | '/api/updates'
     | '/api/version'
     | '/api/agents/claudemd'
@@ -326,6 +336,7 @@ export interface FileRouteTypes {
     | '/api/health'
     | '/api/lifecycle'
     | '/api/tailscale'
+    | '/api/umbod'
     | '/api/updates'
     | '/api/version'
     | '/api/agents/claudemd'
@@ -357,6 +368,7 @@ export interface FileRouteTypes {
     | '/api/health'
     | '/api/lifecycle'
     | '/api/tailscale'
+    | '/api/umbod'
     | '/api/updates'
     | '/api/version'
     | '/api/agents/claudemd'
@@ -389,6 +401,7 @@ export interface RootRouteChildren {
   ApiHealthRoute: typeof ApiHealthRoute
   ApiLifecycleRoute: typeof ApiLifecycleRoute
   ApiTailscaleRoute: typeof ApiTailscaleRoute
+  ApiUmbodRoute: typeof ApiUmbodRoute
   ApiUpdatesRoute: typeof ApiUpdatesRoute
   ApiVersionRoute: typeof ApiVersionRoute
   ApiAgentsClaudemdRoute: typeof ApiAgentsClaudemdRoute
@@ -474,6 +487,13 @@ declare module '@tanstack/react-router' {
       path: '/api/updates'
       fullPath: '/api/updates'
       preLoaderRoute: typeof ApiUpdatesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/umbod': {
+      id: '/api/umbod'
+      path: '/api/umbod'
+      fullPath: '/api/umbod'
+      preLoaderRoute: typeof ApiUmbodRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/tailscale': {
@@ -661,6 +681,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiHealthRoute: ApiHealthRoute,
   ApiLifecycleRoute: ApiLifecycleRoute,
   ApiTailscaleRoute: ApiTailscaleRoute,
+  ApiUmbodRoute: ApiUmbodRoute,
   ApiUpdatesRoute: ApiUpdatesRoute,
   ApiVersionRoute: ApiVersionRoute,
   ApiAgentsClaudemdRoute: ApiAgentsClaudemdRoute,

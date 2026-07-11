@@ -41,6 +41,7 @@ export function useSettingsForm(
 	const [codex, setCodex] = useState(initialForms.codex);
 	const [voice, setVoice] = useState(initialForms.voice);
 	const [acpAgents, setAcpAgents] = useState(initialForms.acpAgents);
+	const [umbod, setUmbod] = useState(initialForms.umbod);
 	const [server, setServer] = useState(initialForms.server);
 	const [ui, setUi] = useState(initialForms.ui);
 	const [vocab, setVocab] = useState(initialForms.vocab);
@@ -62,7 +63,7 @@ export function useSettingsForm(
 		setSavedMsg(null);
 		const config = buildSettingsConfig(
 			initial,
-			{ vault, claude, codex, voice, server, ui, vocab, acpAgents },
+			{ vault, claude, codex, voice, server, ui, vocab, acpAgents, umbod },
 			requiresRestart,
 		);
 		try {
@@ -92,12 +93,15 @@ export function useSettingsForm(
 			ui === initialForms.ui &&
 			vocab === initialForms.vocab &&
 			acpAgents === initialForms.acpAgents &&
+			umbod === initialForms.umbod &&
 			server === initialForms.server
 		) {
 			return;
 		}
 		const requiresRestart =
-			server !== initialForms.server || acpAgents !== initialForms.acpAgents;
+			server !== initialForms.server ||
+			acpAgents !== initialForms.acpAgents ||
+			umbod !== initialForms.umbod;
 		saveTimerRef.current = setTimeout(
 			() => void saveRef.current?.(requiresRestart),
 			800,
@@ -106,7 +110,18 @@ export function useSettingsForm(
 			if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
 			saveTimerRef.current = null;
 		};
-	}, [vault, claude, codex, voice, ui, vocab, acpAgents, server, initialForms]);
+	}, [
+		vault,
+		claude,
+		codex,
+		voice,
+		ui,
+		vocab,
+		acpAgents,
+		umbod,
+		server,
+		initialForms,
+	]);
 
 	const changeClaude = (patch: Partial<ClaudeForm>) => {
 		const next = applyAgentFormPatch(claude, codex, patch);
@@ -124,6 +139,8 @@ export function useSettingsForm(
 		setVoice,
 		acpAgents,
 		setAcpAgents,
+		umbod,
+		setUmbod,
 		server,
 		setServer,
 		ui,

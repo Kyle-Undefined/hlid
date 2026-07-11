@@ -81,6 +81,14 @@ function serializeVoice(config: HlidConfig["voice"]): string[] {
 	]);
 }
 
+function serializeUmbod(config: HlidConfig["umbod"]): string[] {
+	const value = config ?? { enabled: false, manifest_path: "umbod.toml" };
+	return section("umbod", [
+		`enabled = ${tomlVal(value.enabled)}`,
+		`manifest_path = ${tomlVal(value.manifest_path)}`,
+	]);
+}
+
 function serializeClaude(config: HlidConfig["claude"]): string[] {
 	return section("claude", [
 		`model = ${tomlVal(config.model)}`,
@@ -189,6 +197,8 @@ export function serializeConfig(config: HlidConfig): string {
 		...serializeServer(config.server),
 		"",
 		...serializeVoice(config.voice),
+		"",
+		...serializeUmbod(config.umbod),
 		"",
 		...serializeClaude(config.claude),
 		...(config.codex ? ["", ...serializeCodex(config.codex)] : []),
