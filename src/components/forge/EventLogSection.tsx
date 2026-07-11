@@ -2,28 +2,24 @@ import { createServerFn } from "@tanstack/react-start";
 import { useCallback, useEffect, useState } from "react";
 import { ConfirmAction } from "#/components/ConfirmAction";
 import type { LogCounts, LogLevel, LogRow } from "#/db";
-import { dbFetch } from "#/lib/dbClient";
+import { dbFetch, requireDbOk } from "#/lib/dbClient";
+import { eventLogQuerySchema } from "#/lib/serverFnSchemas";
 import { Section } from "./fields";
 
 // ─── Server functions ─────────────────────────────────────────────────────────
 
 export const getLogsFn = createServerFn({ method: "GET" })
-	.validator(
-		(raw: unknown) => raw as { page: number; size: number; level: string },
-	)
+	.validator((raw) => eventLogQuerySchema.parse(raw))
 	.handler(async ({ data }) => {
 		const params = new URLSearchParams({
 			page: String(data.page),
 			size: String(data.size),
 			level: data.level,
 		});
-		const res = await dbFetch(`/db/logs?${params}`);
-		if (!res.ok)
-			return {
-				logs: [] as LogRow[],
-				total: 0,
-				counts: { error: 0, warn: 0, info: 0 } as LogCounts,
-			};
+		const res = await requireDbOk(
+			await dbFetch(`/db/logs?${params}`),
+			"load event logs",
+		);
 		return res.json() as Promise<{
 			logs: LogRow[];
 			total: number;
@@ -33,8 +29,10 @@ export const getLogsFn = createServerFn({ method: "GET" })
 
 export const clearLogsFn = createServerFn({ method: "POST" }).handler(
 	async () => {
-		const res = await dbFetch("/db/logs", { method: "DELETE" });
-		if (!res.ok) throw new Error(`Failed to clear logs: ${res.status}`);
+		await requireDbOk(
+			await dbFetch("/db/logs", { method: "DELETE" }),
+			"clear event logs",
+		);
 		return { ok: true };
 	},
 );
@@ -128,16 +126,18 @@ export function EventLogSection() {
 		counts: LogCounts;
 	} | null>(null);
 	const [loading, setLoading] = useState(false);
+	const [error, setError] = useState<string | null>(null);
 
 	const load = useCallback(async (tab: LevelTab, p: number) => {
 		setLoading(true);
+		setError(null);
 		try {
 			const result = await getLogsFn({
 				data: { page: p, size: LOG_PAGE_SIZE, level: tab },
 			});
 			setData(result);
 		} catch (err) {
-			console.error("[logs] load failed:", err);
+			setError(err instanceof Error ? err.message : "Failed to load logs");
 		} finally {
 			setLoading(false);
 		}
@@ -171,6 +171,11 @@ export function EventLogSection() {
 
 	return (
 		<Section title="Event Log">
+			{error && (
+				<div role="alert" className="mb-3 text-xs text-destructive">
+					{error}
+				</div>
+			)}
 			<div className="border-b border-border">
 				<div className="flex items-center justify-between px-4 py-2">
 					<div className="flex items-center gap-3">

@@ -1,0 +1,61 @@
+import { describe, expect, it } from "vitest";
+import {
+	composerKeyAction,
+	insertAtSelection,
+	resizeComposer,
+} from "./composer";
+
+const key = (
+	overrides: Partial<Parameters<typeof composerKeyAction>[0]> = {},
+) =>
+	composerKeyAction({
+		key: "x",
+		shiftKey: false,
+		metaKey: false,
+		ctrlKey: false,
+		pickerOpen: false,
+		isTouch: false,
+		enterToSubmit: true,
+		...overrides,
+	});
+
+describe("composer keyboard decisions", () => {
+	it("routes picker navigation before submission", () => {
+		expect(key({ key: "ArrowDown", pickerOpen: true })).toBe("picker-next");
+		expect(key({ key: "ArrowUp", pickerOpen: true })).toBe("picker-previous");
+		expect(key({ key: "Escape", pickerOpen: true })).toBe("picker-close");
+		expect(key({ key: "Tab", pickerOpen: true })).toBe("picker-select");
+		expect(key({ key: "Enter", pickerOpen: true })).toBe("picker-select");
+	});
+
+	it("submits keyboard shortcuts consistently", () => {
+		expect(key({ key: "Enter", ctrlKey: true, isTouch: true })).toBe("submit");
+		expect(key({ key: "Enter", metaKey: true, isTouch: true })).toBe("submit");
+		expect(key({ key: "Enter" })).toBe("submit");
+		expect(key({ key: "Enter", shiftKey: true })).toBeNull();
+		expect(key({ key: "Enter", isTouch: true })).toBeNull();
+		expect(key({ key: "Enter", enterToSubmit: false })).toBeNull();
+	});
+});
+
+describe("composer text behavior", () => {
+	it("inserts transcription at the selection with a separating space", () => {
+		expect(insertAtSelection("hello world", "brave", 5, 5)).toBe(
+			"hello brave world",
+		);
+		expect(insertAtSelection("hello old world", "new", 6, 9)).toBe(
+			"hello new world",
+		);
+	});
+
+	it("appends without introducing duplicate whitespace", () => {
+		expect(insertAtSelection("hello ", "world")).toBe("hello world");
+		expect(insertAtSelection("", "hello")).toBe("hello");
+	});
+
+	it("resizes through one bounded helper", () => {
+		const element = { scrollHeight: 500, style: { height: "10px" } };
+		resizeComposer(element, 280);
+		expect(element.style.height).toBe("280px");
+	});
+});

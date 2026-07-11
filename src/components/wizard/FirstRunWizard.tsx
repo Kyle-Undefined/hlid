@@ -18,10 +18,14 @@ type Step = "welcome" | "vault" | "structure" | "primer" | "done";
 
 const STEPS: Step[] = ["welcome", "vault", "structure", "primer", "done"];
 
-function detect(entries: Entry[]): Partial<StructureState> {
+export function detectVaultStructure(
+	entries: Entry[],
+): Partial<StructureState> {
 	const find = (patterns: string[]) =>
-		entries.find((e) =>
-			patterns.some((p) => e.name.toLowerCase().includes(p.toLowerCase())),
+		entries.find(
+			(e) =>
+				e.isDirectory &&
+				patterns.some((p) => e.name.toLowerCase().includes(p.toLowerCase())),
 		)?.name;
 
 	const wikiFolder = find(["wiki"]);
@@ -45,6 +49,64 @@ function detect(entries: Entry[]): Partial<StructureState> {
 	};
 }
 
+export function buildFirstRunConfig(s: StructureState): HlidConfig {
+	return {
+		vault: buildVaultSection({
+			name: s.vaultName,
+			path: s.vaultPath,
+			style: s.vaultStyle,
+			inbox: s.inbox,
+			projects: s.projects,
+			areas: s.areas,
+			resources: s.resources,
+			archive: s.archive,
+			raw: s.rawFolder,
+			wikiFolder: s.wikiFolder,
+			outputs: s.outputs,
+			skills: s.skills,
+			memory: s.memory,
+		}),
+		server: {
+			port: 3000,
+			tls_proxy_port: 3443,
+			local_network_access: false,
+			allow_external_agents: false,
+		},
+		claude: {
+			model: "claude-sonnet-4-6",
+			effort: "high",
+			permission_mode: s.permissionMode,
+			turn_recaps: true,
+			interactive_mode: false,
+		},
+		codex: {
+			model: "",
+			effort: "medium",
+			permission_mode: "default",
+			turn_recaps: true,
+		},
+		ui: {
+			enter_to_submit: true,
+			hide_skills_index: true,
+			theme: s.theme,
+		},
+		status_vocabulary: {
+			active: ["Active", "In Progress"],
+			planning: ["Planning", "Ideas"],
+			done: ["Done", "Complete", "Archived"],
+		},
+		attachments: DEFAULT_ATTACHMENTS_CONFIG,
+		voice: DEFAULT_VOICE_CONFIG,
+		agents: [],
+		vault_provider: "claude",
+	};
+}
+
+export function vaultNameFromPath(path: string): string | null {
+	const parts = path.split(/[\\/]/).filter(Boolean);
+	return parts.at(-1) ?? null;
+}
+
 type Props = {
 	onComplete: () => void;
 };
@@ -52,6 +114,7 @@ type Props = {
 export function FirstRunWizard({ onComplete }: Props) {
 	const [step, setStep] = useState<Step>("welcome");
 	const [saving, setSaving] = useState(false);
+	const [saveError, setSaveError] = useState<string | null>(null);
 	const [providers, setProviders] = useState<ProviderInfo[]>([]);
 	const [structure, setStructure] = useState<StructureState>({
 		vaultName: "My Vault",
@@ -84,12 +147,11 @@ export function FirstRunWizard({ onComplete }: Props) {
 		fetch(`/api/browse?path=${encodeURIComponent(structure.vaultPath)}`)
 			.then((r) => r.json())
 			.then((data: { entries: Entry[]; path: string }) => {
-				const detected = detect(data.entries);
-				const parts = data.path.split("/").filter(Boolean);
+				const detected = detectVaultStructure(data.entries);
 				setStructure((s) => ({
 					...s,
 					...detected,
-					vaultName: parts.length > 0 ? parts[parts.length - 1] : s.vaultName,
+					vaultName: vaultNameFromPath(data.path) ?? s.vaultName,
 				}));
 			})
 			.catch(() => {});
@@ -97,58 +159,9 @@ export function FirstRunWizard({ onComplete }: Props) {
 
 	async function save() {
 		setSaving(true);
+		setSaveError(null);
 		try {
-			const s = structure;
-			const config: HlidConfig = {
-				vault: buildVaultSection({
-					name: s.vaultName,
-					path: s.vaultPath,
-					style: s.vaultStyle,
-					inbox: s.inbox,
-					projects: s.projects,
-					areas: s.areas,
-					resources: s.resources,
-					archive: s.archive,
-					raw: s.rawFolder,
-					wikiFolder: s.wikiFolder,
-					outputs: s.outputs,
-					skills: s.skills,
-					memory: s.memory,
-				}),
-				server: {
-					port: 3000,
-					tls_proxy_port: 3443,
-					local_network_access: false,
-					allow_external_agents: false,
-				},
-				claude: {
-					model: "claude-sonnet-4-6",
-					effort: "high" as const,
-					permission_mode: s.permissionMode,
-					turn_recaps: true,
-					interactive_mode: false,
-				},
-				codex: {
-					model: "",
-					effort: "medium" as const,
-					permission_mode: "default" as const,
-					turn_recaps: true,
-				},
-				ui: {
-					enter_to_submit: true,
-					hide_skills_index: true,
-					theme: s.theme,
-				},
-				status_vocabulary: {
-					active: ["Active", "In Progress"],
-					planning: ["Planning", "Ideas"],
-					done: ["Done", "Complete", "Archived"],
-				},
-				attachments: DEFAULT_ATTACHMENTS_CONFIG,
-				voice: DEFAULT_VOICE_CONFIG,
-				agents: [],
-				vault_provider: "claude",
-			};
+			const config = buildFirstRunConfig(structure);
 
 			const res = await fetch("/api/config", {
 				method: "POST",
@@ -156,9 +169,13 @@ export function FirstRunWizard({ onComplete }: Props) {
 				body: JSON.stringify(config),
 			});
 
-			if (!res.ok) throw new Error("Save failed");
+			if (!res.ok) {
+				const detail = await res.text().catch(() => "");
+				throw new Error(detail || `Save failed (${res.status})`);
+			}
 			setStep("primer");
-		} catch {
+		} catch (error) {
+			setSaveError(error instanceof Error ? error.message : "Save failed");
 			setSaving(false);
 		}
 	}
@@ -179,6 +196,14 @@ export function FirstRunWizard({ onComplete }: Props) {
 				</div>
 
 				<div className="flex-1 overflow-y-auto p-4 sm:p-6">
+					{saveError && (
+						<div
+							className="mb-4 rounded border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive"
+							role="alert"
+						>
+							{saveError}
+						</div>
+					)}
 					{step === "welcome" && (
 						<WelcomeStep onNext={() => setStep("vault")} />
 					)}

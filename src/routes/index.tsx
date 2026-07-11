@@ -36,6 +36,11 @@ import { useVoiceInput } from "#/hooks/useVoiceInput";
 import { useWs } from "#/hooks/useWs";
 import { useWsLiveStats } from "#/hooks/useWsSelectors";
 import * as wsStore from "#/hooks/wsStore";
+import {
+	composerKeyAction,
+	insertAtSelection,
+	resizeComposer,
+} from "#/lib/composer";
 import { fmtModel } from "#/lib/formatters";
 import {
 	getActiveSessionRowFn,
@@ -44,12 +49,11 @@ import {
 	getCockpitStatsFn,
 	getCurrentSessionFn,
 	getMcpServersFn,
-	getProvidersFn,
-	getProviderUsagesFn,
 	getRecentSessionsFn,
 	getThirtyDayStatsFn,
 	getVoiceInfoFn,
 	getWeeklyStatsFn,
+	loadProviderUsages,
 } from "#/lib/serverFns";
 import { resolveSessionId } from "#/lib/sessionRouting";
 import { resolveSkillPrompt } from "#/lib/skillPrompt";
@@ -59,14 +63,6 @@ import { displayVoiceHotkey } from "#/lib/voiceHotkey";
 import type { RateLimitMessage, ServerMessage } from "#/server/protocol";
 
 // ─── route ───────────────────────────────────────────────────────────────────
-
-async function loadProviderUsages() {
-	const providers = await getProvidersFn();
-	const providerIds = providers.map((provider) => provider.id);
-	return getProviderUsagesFn({
-		data: providerIds.length > 0 ? providerIds : ["claude"],
-	});
-}
 
 export const Route = createFileRoute("/")({
 	loader: async () => {
@@ -256,20 +252,14 @@ function CockpitPage() {
 			const el = textareaRef.current;
 			const start = el?.selectionStart ?? prompt.length;
 			const end = el?.selectionEnd ?? prompt.length;
-			const before = prompt.slice(0, start);
-			const after = prompt.slice(end);
-			const separator = before && !/\s$/.test(before) ? " " : "";
-			setPrompt(`${before}${separator}${text}${after}`);
+			setPrompt(insertAtSelection(prompt, text, start, end));
 			requestAnimationFrame(() => textareaRef.current?.focus());
 		},
 	});
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: prompt length triggers resize
 	useEffect(() => {
-		const el = textareaRef.current;
-		if (!el) return;
-		el.style.height = "auto";
-		el.style.height = `${Math.min(el.scrollHeight, 280)}px`;
+		resizeComposer(textareaRef.current, 280);
 	}, [prompt]);
 
 	// Focus textarea after skill activation (useEffect avoids setTimeout race)
@@ -548,58 +538,26 @@ function CockpitPage() {
 										setPrompt(e.target.value);
 									}}
 									onKeyDown={(e) => {
-										// Slash picker navigation — intercept before run handlers
-										if (pickerOpen) {
-											if (e.key === "ArrowDown") {
-												e.preventDefault();
-												pickerNavigate(1);
-												return;
-											}
-											if (e.key === "ArrowUp") {
-												e.preventDefault();
-												pickerNavigate(-1);
-												return;
-											}
-											if (e.key === "Escape") {
-												e.preventDefault();
-												pickerClose();
-												return;
-											}
-											if (e.key === "Tab") {
-												e.preventDefault();
-												if (pickerItems.length > 0)
-													handleSkillSelect(pickerItems[pickerIndex]);
-												return;
-											}
-											if (
-												e.key === "Enter" &&
-												!e.shiftKey &&
-												!e.metaKey &&
-												!e.ctrlKey
-											) {
-												e.preventDefault();
-												if (pickerItems.length > 0)
-													handleSkillSelect(pickerItems[pickerIndex]);
-												return;
-											}
-										}
-										if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-											e.preventDefault();
-											handleRun();
-											return;
-										}
 										const isTouch =
 											typeof window !== "undefined" &&
 											window.matchMedia("(pointer: coarse)").matches;
-										if (
-											e.key === "Enter" &&
-											!e.shiftKey &&
-											!isTouch &&
-											config.ui.enter_to_submit
-										) {
-											e.preventDefault();
-											handleRun();
-										}
+										const action = composerKeyAction({
+											key: e.key,
+											shiftKey: e.shiftKey,
+											metaKey: e.metaKey,
+											ctrlKey: e.ctrlKey,
+											pickerOpen,
+											isTouch,
+											enterToSubmit: config.ui.enter_to_submit,
+										});
+										if (!action) return;
+										e.preventDefault();
+										if (action === "picker-next") pickerNavigate(1);
+										if (action === "picker-previous") pickerNavigate(-1);
+										if (action === "picker-close") pickerClose();
+										if (action === "picker-select" && pickerItems.length > 0)
+											handleSkillSelect(pickerItems[pickerIndex]);
+										if (action === "submit") handleRun();
 									}}
 									role="combobox"
 									aria-expanded={pickerOpen}

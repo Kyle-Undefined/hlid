@@ -28,108 +28,103 @@ function unrestrictedPath(reqPath: string): string | null {
 	}
 }
 
+export async function handleBrowseRequest(request: Request): Promise<Response> {
+	const forbidden = forbiddenResponse(request);
+	if (forbidden) return forbidden;
+
+	const config = loadConfig();
+	const vaultPath = config.vault?.path;
+	const url = new URL(request.url);
+
+	if (url.searchParams.get("wsl") === "1") {
+		try {
+			const raw = execFileSync("wsl", ["-e", "sh", "-c", "wslpath -w ~"], {
+				encoding: "utf-8",
+				timeout: 5000,
+				windowsHide: true,
+			}).trim();
+			if (!raw.startsWith("\\\\")) throw new Error("unexpected");
+			return Response.json({ wslHome: raw });
+		} catch {
+			return Response.json({ error: "WSL not available" }, { status: 404 });
+		}
+	}
+
+	const externalRequested = url.searchParams.get("external") === "1";
+	const externalAllowed =
+		externalRequested && config.server.allow_external_agents;
+
+	let defaultRoot: string;
+	let safed: string | null;
+	if (externalAllowed) {
+		try {
+			defaultRoot = realpathSync(homedir());
+		} catch {
+			return Response.json(
+				{ error: "Home directory not accessible" },
+				{ status: 500 },
+			);
+		}
+		const raw = url.searchParams.get("path") ?? defaultRoot;
+		safed = unrestrictedPath(raw);
+	} else {
+		// First-run / no vault: allow browsing under the user's home directory so
+		// the wizard's FolderBrowser can pick a vault before one is configured.
+		let allowedRoots: string[];
+		if (!vaultPath) {
+			try {
+				defaultRoot = realpathSync(homedir());
+			} catch {
+				return Response.json(
+					{ error: "Home directory not accessible" },
+					{ status: 500 },
+				);
+			}
+			allowedRoots = [defaultRoot];
+		} else {
+			try {
+				defaultRoot = realpathSync(expandTilde(vaultPath));
+				statSync(defaultRoot); // must exist
+			} catch {
+				return Response.json(
+					{ error: "Vault path not accessible" },
+					{ status: 400 },
+				);
+			}
+			allowedRoots = [defaultRoot];
+		}
+		const raw = url.searchParams.get("path") ?? defaultRoot;
+		safed = safePath(raw, allowedRoots);
+	}
+
+	if (!safed) {
+		return Response.json({ error: "Access denied" }, { status: 403 });
+	}
+
+	try {
+		const entries = readdirSync(safed, { withFileTypes: true });
+		return Response.json({
+			path: safed,
+			entries: entries
+				.filter((e) => !e.name.startsWith("."))
+				.map((e) => ({
+					name: e.name,
+					isDirectory: e.isDirectory(),
+				}))
+				.sort((a, b) => {
+					if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+					return a.name.localeCompare(b.name);
+				}),
+		});
+	} catch {
+		return Response.json({ error: "Cannot read directory" }, { status: 400 });
+	}
+}
+
 export const Route = createFileRoute("/api/browse")({
 	server: {
 		handlers: {
-			GET: async ({ request }) => {
-				const forbidden = forbiddenResponse(request);
-				if (forbidden) return forbidden;
-
-				const config = loadConfig();
-				const vaultPath = config.vault?.path;
-				const url = new URL(request.url);
-
-				if (url.searchParams.get("wsl") === "1") {
-					try {
-						const raw = execFileSync(
-							"wsl",
-							["-e", "sh", "-c", "wslpath -w ~"],
-							{ encoding: "utf-8", timeout: 5000, windowsHide: true },
-						).trim();
-						if (!raw.startsWith("\\\\")) throw new Error("unexpected");
-						return Response.json({ wslHome: raw });
-					} catch {
-						return Response.json(
-							{ error: "WSL not available" },
-							{ status: 404 },
-						);
-					}
-				}
-
-				const externalRequested = url.searchParams.get("external") === "1";
-				const externalAllowed =
-					externalRequested && config.server.allow_external_agents;
-
-				let defaultRoot: string;
-				let safed: string | null;
-				if (externalAllowed) {
-					try {
-						defaultRoot = realpathSync(homedir());
-					} catch {
-						return Response.json(
-							{ error: "Home directory not accessible" },
-							{ status: 500 },
-						);
-					}
-					const raw = url.searchParams.get("path") ?? defaultRoot;
-					safed = unrestrictedPath(raw);
-				} else {
-					// First-run / no vault: allow browsing under the user's home directory so
-					// the wizard's FolderBrowser can pick a vault before one is configured.
-					let allowedRoots: string[];
-					if (!vaultPath) {
-						try {
-							defaultRoot = realpathSync(homedir());
-						} catch {
-							return Response.json(
-								{ error: "Home directory not accessible" },
-								{ status: 500 },
-							);
-						}
-						allowedRoots = [defaultRoot];
-					} else {
-						try {
-							defaultRoot = realpathSync(expandTilde(vaultPath));
-							statSync(defaultRoot); // must exist
-						} catch {
-							return Response.json(
-								{ error: "Vault path not accessible" },
-								{ status: 400 },
-							);
-						}
-						allowedRoots = [defaultRoot];
-					}
-					const raw = url.searchParams.get("path") ?? defaultRoot;
-					safed = safePath(raw, allowedRoots);
-				}
-
-				if (!safed) {
-					return Response.json({ error: "Access denied" }, { status: 403 });
-				}
-
-				try {
-					const entries = readdirSync(safed, { withFileTypes: true });
-					return Response.json({
-						path: safed,
-						entries: entries
-							.filter((e) => !e.name.startsWith("."))
-							.map((e) => ({
-								name: e.name,
-								isDirectory: e.isDirectory(),
-							}))
-							.sort((a, b) => {
-								if (a.isDirectory !== b.isDirectory)
-									return a.isDirectory ? -1 : 1;
-								return a.name.localeCompare(b.name);
-							}),
-					});
-				} catch {
-					return Response.json(
-						{ error: "Cannot read directory" },
-						{ status: 400 },
-					);
-				}
-			},
+			GET: ({ request }) => handleBrowseRequest(request),
 		},
 	},
 });

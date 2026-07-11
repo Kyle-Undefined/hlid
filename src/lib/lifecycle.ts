@@ -2,10 +2,8 @@
 // Single source of truth. UI endpoints in src/routes/api/lifecycle.ts call these.
 
 import { dirname } from "node:path";
+import { createAutostartController } from "./autostartController";
 import { canonicalExePath, canonicalInstallDir } from "./install";
-
-const REG_KEY = "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
-const REG_VALUE_NAME = "Hlid";
 
 export type LifecycleResult =
 	| { ok: true; data?: unknown }
@@ -81,68 +79,22 @@ async function ps(
 	return { stdout: stdout.trim(), stderr: stderr.trim(), code };
 }
 
-// Autostart status is read from the registry via PowerShell. Even with
-// windowsHide, that's a heavy spawn for every UI page load. Cache the result
-// in-process and only re-shell when install/uninstall mutates it.
-let autostartCache: LifecycleResult | null = null;
-
-function invalidateAutostartCache(): void {
-	autostartCache = null;
-}
+const autostart = createAutostartController({
+	isWindows,
+	execPath: () => process.execPath,
+	runPowerShell: ps,
+});
 
 export async function getAutostart(): Promise<LifecycleResult> {
-	if (!isWindows())
-		return { ok: true, data: { enabled: false, supported: false } };
-	if (autostartCache) return autostartCache;
-	const { stdout, code } = await ps(
-		`(Get-ItemProperty -Path '${REG_KEY}' -Name '${REG_VALUE_NAME}' -ErrorAction SilentlyContinue).'${REG_VALUE_NAME}'`,
-	);
-	const result: LifecycleResult =
-		code !== 0 || !stdout
-			? { ok: true, data: { enabled: false, supported: true } }
-			: { ok: true, data: { enabled: true, supported: true, path: stdout } };
-	autostartCache = result;
-	return result;
+	return autostart.get();
 }
 
 export async function installAutostart(): Promise<LifecycleResult> {
-	if (!isWindows())
-		return { ok: false, error: "Autostart only supported on Windows" };
-	const exePath = process.execPath;
-	if (!exePath.endsWith(".exe")) {
-		return {
-			ok: false,
-			error: "Cannot install autostart in dev mode (not running from .exe)",
-		};
-	}
-	const command = `"${exePath}" --background`;
-	// Escape single quotes for PowerShell single-quoted string.
-	const escaped = command.replace(/'/g, "''");
-	const { code, stdout, stderr } = await ps(
-		`Set-ItemProperty -Path '${REG_KEY}' -Name '${REG_VALUE_NAME}' -Value '${escaped}' -Type String`,
-	);
-	if (code !== 0)
-		return {
-			ok: false,
-			error: `registry write failed: ${`${stdout}\n${stderr}`.trim()}`,
-		};
-	invalidateAutostartCache();
-	return { ok: true, data: { command } };
+	return autostart.install();
 }
 
 export async function uninstallAutostart(): Promise<LifecycleResult> {
-	if (!isWindows())
-		return { ok: false, error: "Autostart only supported on Windows" };
-	const { code, stdout, stderr } = await ps(
-		`Remove-ItemProperty -Path '${REG_KEY}' -Name '${REG_VALUE_NAME}' -ErrorAction SilentlyContinue`,
-	);
-	if (code !== 0)
-		return {
-			ok: false,
-			error: `registry delete failed: ${`${stdout}\n${stderr}`.trim()}`,
-		};
-	invalidateAutostartCache();
-	return { ok: true };
+	return autostart.uninstall();
 }
 
 type BunServer = { stop(force?: boolean): void };

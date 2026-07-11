@@ -1,6 +1,22 @@
 import { getConfig } from "#/config";
 
 let _base: string | null = null;
+const SOFT_FAILURE_DEDUP_MS = 30_000;
+const softFailureTimes = new Map<string, number>();
+
+function describeError(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+function reportSoftFailure(path: string, reason: string): void {
+	const key = `${path}:${reason}`;
+	const now = Date.now();
+	const last = softFailureTimes.get(key) ?? 0;
+	if (now - last < SOFT_FAILURE_DEDUP_MS) return;
+	if (softFailureTimes.size >= 200) softFailureTimes.clear();
+	softFailureTimes.set(key, now);
+	console.warn(`[internal-api] ${path} unavailable: ${reason}`);
+}
 
 async function getBase(): Promise<string> {
 	if (!_base) {
@@ -25,6 +41,33 @@ export async function dbFetch(
 	return fetch(`${base}${path}`, { ...init, headers });
 }
 
+export class InternalApiError extends Error {
+	readonly status: number;
+
+	constructor(operation: string, status: number, detail?: string) {
+		super(
+			`${operation} failed (${status})${detail ? `: ${detail.slice(0, 500)}` : ""}`,
+		);
+		this.name = "InternalApiError";
+		this.status = status;
+	}
+}
+
+/** Require a successful internal API response for a mutation. */
+export async function requireDbOk(
+	response: Response,
+	operation: string,
+): Promise<Response> {
+	if (response.ok) return response;
+	let detail = "";
+	try {
+		detail = (await response.text()).trim();
+	} catch {
+		// The status and operation still provide a useful failure.
+	}
+	throw new InternalApiError(operation, response.status, detail);
+}
+
 /**
  * GET JSON from the data API. Returns `fallback` on any failure
  * (network error, non-OK response, malformed JSON). Used by the
@@ -34,9 +77,24 @@ export async function dbFetch(
 export async function dbJson<T>(path: string, fallback: T): Promise<T> {
 	try {
 		const res = await dbFetch(path);
-		if (!res.ok) return fallback;
-		return (await res.json()) as T;
-	} catch {
+		if (!res.ok) {
+			reportSoftFailure(path, `HTTP ${res.status}`);
+			return fallback;
+		}
+		try {
+			return (await res.json()) as T;
+		} catch (error) {
+			reportSoftFailure(path, `invalid JSON: ${describeError(error)}`);
+			return fallback;
+		}
+	} catch (error) {
+		reportSoftFailure(path, describeError(error));
 		return fallback;
 	}
+}
+
+/** @internal */
+export function resetDbClientForTesting(): void {
+	_base = null;
+	softFailureTimes.clear();
 }

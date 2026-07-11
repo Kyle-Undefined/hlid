@@ -38,6 +38,11 @@ import { useVoiceInput } from "#/hooks/useVoiceInput";
 import { useWs } from "#/hooks/useWs";
 import { useWsChatQueue, useWsLiveStats } from "#/hooks/useWsSelectors";
 import * as wsStore from "#/hooks/wsStore";
+import {
+	composerKeyAction,
+	insertAtSelection,
+	resizeComposer,
+} from "#/lib/composer";
 import { deriveModelMismatch, fmtModel } from "#/lib/formatters";
 import { modelOptions, resolveActiveProviderId } from "#/lib/providerOptions";
 import {
@@ -47,9 +52,9 @@ import {
 	getCurrentSessionFn,
 	getLiveSessionsFn,
 	getProvidersFn,
-	getProviderUsagesFn,
 	getSessionAgentCwdFn,
 	getVoiceInfoFn,
+	loadProviderUsages,
 } from "#/lib/serverFns";
 import { resolveSkillPrompt } from "#/lib/skillPrompt";
 import type { Skill } from "#/lib/skills";
@@ -58,15 +63,6 @@ import { displayVoiceHotkey } from "#/lib/voiceHotkey";
 import { decisionFromScope, type RateLimitMessage } from "#/server/protocol";
 
 // ─── route ───────────────────────────────────────────────────────────────────
-
-/** Provider-aware usage snapshots for every configured provider (mirrors cockpit). */
-async function loadProviderUsages() {
-	const providers = await getProvidersFn();
-	const providerIds = providers.map((provider) => provider.id);
-	return getProviderUsagesFn({
-		data: providerIds.length > 0 ? providerIds : ["claude"],
-	});
-}
 
 export const Route = createFileRoute("/raven")({
 	validateSearch: (
@@ -80,21 +76,15 @@ export const Route = createFileRoute("/raven")({
 	},
 	loaderDeps: ({ search: { session, agent } }) => ({ session, agent }),
 	loader: async ({ deps: { session, agent } }) => {
-		const [
-			config,
-			providerUsages,
-			agentList,
-			cockpitData,
-			providers,
-			voiceInfo,
-		] = await Promise.all([
-			getConfig(),
-			loadProviderUsages(),
-			getAgentListFn(),
-			getCockpitData(),
-			getProvidersFn(),
-			getVoiceInfoFn(),
-		]);
+		const [config, agentList, cockpitData, providers, voiceInfo] =
+			await Promise.all([
+				getConfig(),
+				getAgentListFn(),
+				getCockpitData(),
+				getProvidersFn(),
+				getVoiceInfoFn(),
+			]);
+		const providerUsages = await loadProviderUsages(providers);
 		const agentConfig = (config.agents ?? []).find((a) => a.path === agent);
 		const routeInteractiveMode =
 			agentConfig?.interactive_mode ?? config.claude?.interactive_mode ?? false;
@@ -157,7 +147,7 @@ export const Route = createFileRoute("/raven")({
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
-function ChatPage() {
+export function ChatPage() {
 	const {
 		config,
 		existingSessionId,
@@ -528,10 +518,7 @@ function ChatPage() {
 			const el = textareaRef.current;
 			const start = el?.selectionStart ?? input.length;
 			const end = el?.selectionEnd ?? input.length;
-			const before = input.slice(0, start);
-			const after = input.slice(end);
-			const separator = before && !/\s$/.test(before) ? " " : "";
-			setInput(`${before}${separator}${text}${after}`);
+			setInput(insertAtSelection(input, text, start, end));
 			requestAnimationFrame(() => textareaRef.current?.focus());
 		},
 	});
@@ -617,11 +604,8 @@ function ChatPage() {
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: input length triggers resize
 	useEffect(() => {
-		const el = textareaRef.current;
-		if (!el) return;
 		const maxH = window.innerWidth < 768 ? 240 : 480;
-		el.style.height = "auto";
-		el.style.height = `${Math.min(el.scrollHeight, maxH)}px`;
+		resizeComposer(textareaRef.current, maxH);
 	}, [input]);
 
 	// ─── Model popup dismiss ──────────────────────────────────────────────────
@@ -1090,53 +1074,26 @@ function ChatPage() {
 										}
 									}}
 									onKeyDown={(e) => {
-										// Slash picker navigation — intercept before send handler
-										if (pickerOpen) {
-											if (e.key === "ArrowDown") {
-												e.preventDefault();
-												pickerNavigate(1);
-												return;
-											}
-											if (e.key === "ArrowUp") {
-												e.preventDefault();
-												pickerNavigate(-1);
-												return;
-											}
-											if (e.key === "Escape") {
-												e.preventDefault();
-												pickerClose();
-												return;
-											}
-											if (e.key === "Tab") {
-												e.preventDefault();
-												if (pickerItems.length > 0)
-													handleSkillSelect(pickerItems[pickerIndex]);
-												return;
-											}
-											if (
-												e.key === "Enter" &&
-												!e.shiftKey &&
-												!e.metaKey &&
-												!e.ctrlKey
-											) {
-												e.preventDefault();
-												if (pickerItems.length > 0)
-													handleSkillSelect(pickerItems[pickerIndex]);
-												return;
-											}
-										}
 										const isTouch =
 											typeof window !== "undefined" &&
 											window.matchMedia("(pointer: coarse)").matches;
-										if (
-											e.key === "Enter" &&
-											!e.shiftKey &&
-											!isTouch &&
-											config.ui.enter_to_submit
-										) {
-											e.preventDefault();
-											handleSend();
-										}
+										const action = composerKeyAction({
+											key: e.key,
+											shiftKey: e.shiftKey,
+											metaKey: e.metaKey,
+											ctrlKey: e.ctrlKey,
+											pickerOpen,
+											isTouch,
+											enterToSubmit: config.ui.enter_to_submit,
+										});
+										if (!action) return;
+										e.preventDefault();
+										if (action === "picker-next") pickerNavigate(1);
+										if (action === "picker-previous") pickerNavigate(-1);
+										if (action === "picker-close") pickerClose();
+										if (action === "picker-select" && pickerItems.length > 0)
+											handleSkillSelect(pickerItems[pickerIndex]);
+										if (action === "submit") handleSend();
 									}}
 									role="combobox"
 									aria-expanded={pickerOpen}

@@ -1,33 +1,35 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { getConfig } from "#/config";
+import { dbFetch } from "#/lib/dbClient";
 import { forbiddenResponse } from "#/lib/originGate";
+
+export async function handleDeleteAttachment(
+	request: Request,
+	id: string,
+): Promise<Response> {
+	const forbidden = forbiddenResponse(request);
+	if (forbidden) return forbidden;
+	const url = new URL(request.url);
+	try {
+		const res = await dbFetch(
+			`/api/attachments/${encodeURIComponent(id)}${url.search}`,
+			{ method: "DELETE" },
+		);
+		return new Response(res.body, {
+			status: res.status,
+			headers: {
+				"content-type": res.headers.get("content-type") ?? "application/json",
+			},
+		});
+	} catch {
+		return Response.json({ error: "upstream_unavailable" }, { status: 502 });
+	}
+}
 
 export const Route = createFileRoute("/api/attachments/$id")({
 	server: {
 		handlers: {
-			DELETE: async ({ request, params }) => {
-				const forbidden = forbiddenResponse(request);
-				if (forbidden) return forbidden;
-				const { server } = await getConfig();
-				const url = new URL(request.url);
-				const qs = url.search;
-				const target = `http://127.0.0.1:${server.port + 1}/api/attachments/${encodeURIComponent(params.id)}${qs}`;
-				try {
-					const res = await fetch(target, { method: "DELETE" });
-					return new Response(res.body, {
-						status: res.status,
-						headers: {
-							"content-type":
-								res.headers.get("content-type") ?? "application/json",
-						},
-					});
-				} catch {
-					return Response.json(
-						{ error: "upstream_unavailable" },
-						{ status: 502 },
-					);
-				}
-			},
+			DELETE: ({ request, params }) =>
+				handleDeleteAttachment(request, params.id),
 		},
 	},
 });

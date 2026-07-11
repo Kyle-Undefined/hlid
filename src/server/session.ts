@@ -35,6 +35,7 @@ import type {
 import { mapMcpServer } from "./protocol";
 import { updateWindowMark } from "./proxy";
 import { generateTurnRecap } from "./recap";
+import { SessionTurnQueue } from "./sessionTurnQueue";
 
 /** Fallback context window size when the SDK omits it from result metadata. */
 const DEFAULT_CONTEXT_WINDOW = 200_000;
@@ -98,13 +99,6 @@ type RunQueryArgs = [
 	planMode?: boolean,
 ];
 
-type QueuedTurn = {
-	args: RunQueryArgs;
-	turnId?: string;
-	resolve: () => void;
-	reject: (err: Error) => void;
-};
-
 export type SessionState = "idle" | "running" | "error";
 
 type PermissionMode = "default" | "acceptEdits" | "bypassPermissions" | "plan";
@@ -161,7 +155,7 @@ export class SessionManager {
 	// Slice A: re-entrant runQuery. Concurrent calls (typed-while-running) are
 	// queued FIFO and drained serially. State stays "running" until the queue
 	// fully drains.
-	private turnQueue: QueuedTurn[] = [];
+	private turnQueue = new SessionTurnQueue<RunQueryArgs>();
 	private isDraining = false;
 	// Slice B: long-lived AgentSession per chat. Cached by chat-scoped key so
 	// consecutive turns reuse one provider.query() invocation. Tear down on
@@ -466,8 +460,7 @@ export class SessionManager {
 		this.planModeManager.clearAll();
 		// Drop queued turns so abort cancels everything in flight, not just
 		// the currently running turn.
-		const dropped = this.turnQueue.splice(0);
-		for (const t of dropped) t.resolve();
+		this.turnQueue.resolveAll();
 		this.abortController?.abort();
 		// Slice B: tear down the long-lived AgentSession so the next runQuery
 		// rebuilds the SDK stream from scratch.
@@ -534,8 +527,7 @@ export class SessionManager {
 		this.askUserQuestions.clearAll();
 		this.planModeManager.clearAll();
 		// Drop any queued (not-yet-started) turns silently.
-		const dropped = this.turnQueue.splice(0);
-		for (const t of dropped) t.resolve();
+		this.turnQueue.resolveAll();
 		// Slice B: tear down the AgentSession (cancels any running turn) so the
 		// next runQuery starts a fresh SDK stream for the new chat.
 		this.agentSession?.cancel();
@@ -1026,24 +1018,21 @@ export class SessionManager {
 		turnId?: string,
 		planMode?: boolean,
 	): Promise<void> {
-		return new Promise<void>((resolve, reject) => {
-			this.turnQueue.push({
-				args: [
-					userMessage,
-					emit,
-					sessionId,
-					skillContext,
-					attachments,
-					agentCwd,
-					turnId,
-					planMode,
-				],
+		const completion = this.turnQueue.enqueue(
+			[
+				userMessage,
+				emit,
+				sessionId,
+				skillContext,
+				attachments,
+				agentCwd,
 				turnId,
-				resolve,
-				reject,
-			});
-			if (!this.isDraining) void this.drainTurnQueue();
-		});
+				planMode,
+			],
+			turnId,
+		);
+		if (!this.isDraining) void this.drainTurnQueue();
+		return completion;
 	}
 
 	/**
@@ -1064,20 +1053,14 @@ export class SessionManager {
 		running_turn_id: string | null;
 	} {
 		return {
-			pending_turn_ids: this.turnQueue
-				.map((t) => t.turnId)
-				.filter((id): id is string => id !== undefined),
+			pending_turn_ids: this.turnQueue.pendingTurnIds(),
 			running_turn_id:
 				this.state === "running" ? (this.currentTurnId ?? null) : null,
 		};
 	}
 
 	cancelQueued(turnId: string): boolean {
-		const idx = this.turnQueue.findIndex((t) => t.turnId === turnId);
-		if (idx === -1) return false;
-		const [removed] = this.turnQueue.splice(idx, 1);
-		removed.resolve();
-		return true;
+		return this.turnQueue.cancel(turnId);
 	}
 
 	/**
@@ -1089,12 +1072,7 @@ export class SessionManager {
 	 * in the same session.
 	 */
 	promoteQueued(turnId: string): boolean {
-		const idx = this.turnQueue.findIndex((t) => t.turnId === turnId);
-		if (idx === -1) return false;
-		if (idx > 0) {
-			const [promoted] = this.turnQueue.splice(idx, 1);
-			this.turnQueue.unshift(promoted);
-		}
+		if (!this.turnQueue.promote(turnId)) return false;
 		// Interrupt current — drain loop's await iterateConversation returns,
 		// drain proceeds to the next queue head (the promoted turn).
 		void this.agentSession?.interrupt?.();
@@ -1108,7 +1086,7 @@ export class SessionManager {
 		// Initialize the abortController once for the whole drain. Status
 		// running is emitted PER ITERATION below (with turn_id) so the client
 		// can distinguish "queued behind" from "currently running."
-		const head = this.turnQueue[0];
+		const head = this.turnQueue.peek();
 		if (head && this.state !== "running") {
 			this.state = "running";
 			this.abortController = new AbortController();

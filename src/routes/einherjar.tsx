@@ -18,6 +18,7 @@ import type { Agent } from "#/config";
 import { getConfig } from "#/config";
 import { writeConfig } from "#/lib/config-writer";
 import { expandTilde, samePath } from "#/lib/paths";
+import { agentListSchema, agentPathSchema } from "#/lib/serverFnSchemas";
 import type { ProviderInfo } from "#/lib/serverFns";
 import { getProvidersFn } from "#/lib/serverFns";
 import { uid } from "#/lib/utils";
@@ -64,7 +65,7 @@ const getAgentsFn = createServerFn({ method: "GET" }).handler(
 );
 
 const validateAgentPathFn = createServerFn({ method: "GET" })
-	.validator((agentPath: string) => agentPath)
+	.validator((raw) => agentPathSchema.parse(raw))
 	.handler(async ({ data: agentPath }) => {
 		const config = await getConfig();
 		const resolved = resolve(expandTilde(agentPath));
@@ -89,14 +90,14 @@ const validateAgentPathFn = createServerFn({ method: "GET" })
 	});
 
 const saveAgentsFn = createServerFn({ method: "POST" })
-	.validator((data: Agent[]) => data)
+	.validator((raw) => agentListSchema.parse(raw))
 	.handler(async ({ data: agentList }) => {
 		const config = await getConfig();
 		writeConfig({ ...config, agents: agentList });
 	});
 
 const readClaudemdFn = createServerFn({ method: "GET" })
-	.validator((agentPath: string) => agentPath)
+	.validator((raw) => agentPathSchema.parse(raw))
 	.handler(async ({ data: agentPath }) => {
 		const config = await getConfig();
 		const allowedPaths = (config.agents ?? []).map((a) =>

@@ -15,13 +15,13 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
+import {
+	migrateInstallData,
+	selectLegacyInstallDir,
+	waitForCondition,
+	windowsPathEquals,
+} from "./windowsInstallPolicy";
 
-const DATA_FILES = [
-	"hlid.config.toml",
-	"hlid.db",
-	"hlid.db-shm",
-	"hlid.db-wal",
-] as const;
 const HEALTH_PROBE_TIMEOUT_MS = 800;
 const SHUTDOWN_WAIT_TIMEOUT_MS = 10_000;
 const FILE_UNLOCK_TIMEOUT_MS = 10_000;
@@ -34,11 +34,6 @@ export function canonicalInstallDir(): string {
 
 export function canonicalExePath(): string {
 	return join(canonicalInstallDir(), "hlid.exe");
-}
-
-function pathEq(a: string, b: string): boolean {
-	const norm = (p: string) => p.toLowerCase().replace(/\//g, "\\");
-	return norm(a) === norm(b);
 }
 
 // True only if /api/health responds with our service marker. Plain port-open
@@ -77,11 +72,12 @@ async function postShutdown(port: number): Promise<void> {
 // release its WAL/lock. Without this wait, copyFileSync of hlid.db hits
 // EBUSY and the user loses data on first migration.
 async function waitForExit(port: number, timeoutMs: number): Promise<void> {
-	const deadline = Date.now() + timeoutMs;
-	while (Date.now() < deadline) {
-		if (!(await isRunning(port))) return;
-		await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-	}
+	const exited = await waitForCondition(
+		async () => !(await isRunning(port)),
+		timeoutMs,
+		{ intervalMs: POLL_INTERVAL_MS },
+	);
+	if (!exited) throw new Error(`Hlid on port ${port} did not exit in time`);
 }
 
 // Best-effort port lookup from a config file. Avoids importing the full
@@ -102,16 +98,20 @@ async function readPortFromConfig(dir: string): Promise<number> {
 }
 
 async function waitForUnlock(file: string, timeoutMs: number): Promise<void> {
-	const deadline = Date.now() + timeoutMs;
-	while (Date.now() < deadline) {
-		try {
-			const fd = openSync(file, "r+");
-			closeSync(fd);
-			return;
-		} catch {
-			await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
-		}
-	}
+	const unlocked = await waitForCondition(
+		() => {
+			try {
+				const fd = openSync(file, "r+");
+				closeSync(fd);
+				return true;
+			} catch {
+				return false;
+			}
+		},
+		timeoutMs,
+		{ intervalMs: POLL_INTERVAL_MS },
+	);
+	if (!unlocked) throw new Error(`Timed out waiting for ${file} to unlock`);
 }
 
 async function runPs(command: string): Promise<string> {
@@ -164,13 +164,6 @@ async function refreshShellIconCache(): Promise<void> {
 	} catch {}
 }
 
-function parseExeFromCommand(cmd: string): string | null {
-	const quoted = cmd.match(/^"([^"]+)"/);
-	if (quoted) return quoted[1];
-	const bare = cmd.match(/^(\S+)/);
-	return bare ? bare[1] : null;
-}
-
 // Drop a Start Menu shortcut so users can find Hlid without hunting through
 // AppData. Click → relaunches the canonical exe; the existing port-probe in
 // index.ts detects a running instance and pops the browser instead of double-
@@ -205,7 +198,7 @@ export async function maybeSelfInstall(): Promise<void> {
 	if (!process.execPath.toLowerCase().endsWith(".exe")) return;
 
 	const canonical = canonicalExePath();
-	if (pathEq(process.execPath, canonical)) return;
+	if (windowsPathEquals(process.execPath, canonical)) return;
 
 	const canonicalDir = dirname(canonical);
 	const versionedDir = dirname(process.execPath);
@@ -214,13 +207,11 @@ export async function maybeSelfInstall(): Promise<void> {
 	// Prefer the path stored in the autostart registry entry; fall back to
 	// the directory the versioned exe is being run from.
 	const autostartCmd = await readAutostartCommand();
-	const autostartExe = autostartCmd ? parseExeFromCommand(autostartCmd) : null;
-	let legacyDir: string | null = null;
-	if (autostartExe && existsSync(autostartExe)) {
-		legacyDir = dirname(autostartExe);
-	} else if (existsSync(join(versionedDir, "hlid.db"))) {
-		legacyDir = versionedDir;
-	}
+	const legacyDir = selectLegacyInstallDir({
+		autostartCommand: autostartCmd,
+		versionedDir,
+		exists: existsSync,
+	});
 
 	// Shut down any running instance (canonical or legacy) so files unlock.
 	// Wait for the process to actually exit before continuing — sending the
@@ -240,18 +231,12 @@ export async function maybeSelfInstall(): Promise<void> {
 	mkdirSync(canonicalDir, { recursive: true });
 
 	// First-time migration: copy data files from legacy dir → canonical.
-	if (legacyDir && !pathEq(legacyDir, canonicalDir)) {
-		const canonicalHasDb = existsSync(join(canonicalDir, "hlid.db"));
-		if (!canonicalHasDb) {
-			for (const name of DATA_FILES) {
-				const src = join(legacyDir, name);
-				if (!existsSync(src)) continue;
-				try {
-					copyFileSync(src, join(canonicalDir, name));
-				} catch {}
-			}
-		}
-	}
+	migrateInstallData({
+		legacyDir,
+		canonicalDir,
+		exists: existsSync,
+		copy: copyFileSync,
+	});
 
 	// Replace the canonical exe with the version we're running.
 	if (existsSync(canonical)) {

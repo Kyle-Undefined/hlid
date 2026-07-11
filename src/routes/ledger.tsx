@@ -37,8 +37,14 @@ import { useWs } from "#/hooks/useWs";
 import { useWsLiveStats } from "#/hooks/useWsSelectors";
 import type { LiveStats } from "#/hooks/wsStore";
 import * as wsStore from "#/hooks/wsStore";
-import { dbFetch, dbJson } from "#/lib/dbClient";
+import { dbFetch, dbJson, requireDbOk } from "#/lib/dbClient";
 import { fmt, fmtModel } from "#/lib/formatters";
+import {
+	sessionCleanupSchema,
+	sessionDeleteSchema,
+	sessionPageSchema,
+	sessionRenameSchema,
+} from "#/lib/serverFnSchemas";
 import type { ActivityStats } from "#/lib/serverFns";
 import {
 	EMPTY_AGG,
@@ -118,7 +124,7 @@ const getStatsDataFn = createServerFn({ method: "GET" }).handler(async () => {
 });
 
 const getSessionsPageFn = createServerFn({ method: "POST" })
-	.validator((data: { page: number; size: number }) => data)
+	.validator((raw) => sessionPageSchema.parse(raw))
 	.handler(({ data }) =>
 		dbJson<{ sessions: SessionRow[]; total: number }>(
 			`/db/sessions?page=${data.page}&size=${data.size}`,
@@ -127,33 +133,40 @@ const getSessionsPageFn = createServerFn({ method: "POST" })
 	);
 
 const deleteSessionFn = createServerFn({ method: "POST" })
-	.validator((data: { id: string }) => data)
+	.validator((raw) => sessionDeleteSchema.parse(raw))
 	.handler(async ({ data }) => {
-		const res = await dbFetch(`/db/session?id=${data.id}`, {
-			method: "DELETE",
-		});
-		return { ok: res.ok };
+		await requireDbOk(
+			await dbFetch(`/db/session?id=${encodeURIComponent(data.id)}`, {
+				method: "DELETE",
+			}),
+			"delete session",
+		);
+		return { ok: true };
 	});
 
 const renameSessionFn = createServerFn({ method: "POST" })
-	.validator((data: { id: string; label: string }) => data)
+	.validator((raw) => sessionRenameSchema.parse(raw))
 	.handler(async ({ data }) => {
-		const res = await dbFetch(`/db/session?id=${data.id}`, {
-			method: "PATCH",
-			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ label: data.label }),
-		});
-		return { ok: res.ok };
+		await requireDbOk(
+			await dbFetch(`/db/session?id=${encodeURIComponent(data.id)}`, {
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ label: data.label }),
+			}),
+			"rename session",
+		);
+		return { ok: true };
 	});
 
 const cleanupSessionsFn = createServerFn({ method: "POST" })
-	.validator((data: { days: number }) => data)
+	.validator((raw) => sessionCleanupSchema.parse(raw))
 	.handler(async ({ data }) => {
-		const res = await dbFetch(
-			`/db/sessions/cleanup?older_than_days=${data.days}`,
-			{ method: "POST" },
+		const res = await requireDbOk(
+			await dbFetch(`/db/sessions/cleanup?older_than_days=${data.days}`, {
+				method: "POST",
+			}),
+			"clean up sessions",
 		);
-		if (!res.ok) return { deleted: 0 };
 		return res.json() as Promise<{ deleted: number }>;
 	});
 
@@ -217,6 +230,7 @@ function StatsPage() {
 	});
 	const stats = useWsLiveStats();
 	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
+	const [mutationError, setMutationError] = useState<string | null>(null);
 
 	// ── Active sessions (multi-session pool status) ───────────────────────────
 	const sessionsStatus = useSyncExternalStore(
@@ -393,38 +407,56 @@ function StatsPage() {
 	}
 
 	async function handleDeleteSession(id: string) {
+		setMutationError(null);
 		const wasLastOnPage = sessionsData.sessions.length <= 1;
 		setDeletedIds((prev) => new Set(prev).add(id));
-		const result = await deleteSessionFn({ data: { id } });
-		if (!result.ok) {
+		try {
+			await deleteSessionFn({ data: { id } });
+			if (wasLastOnPage && page > 1) {
+				navigate({
+					to: "/ledger",
+					search: { tab: "sessions", page: page - 1, size },
+				});
+			}
+		} catch (error) {
 			setDeletedIds((prev) => {
 				const next = new Set(prev);
 				next.delete(id);
 				return next;
 			});
-		} else if (wasLastOnPage && page > 1) {
-			navigate({
-				to: "/ledger",
-				search: { tab: "sessions", page: page - 1, size },
-			});
+			setMutationError(
+				error instanceof Error ? error.message : "Failed to delete session",
+			);
 		}
 	}
 
 	async function handleRenameSession(id: string, label: string) {
+		setMutationError(null);
 		setRenamedLabels((prev) => new Map(prev).set(id, label));
-		const result = await renameSessionFn({ data: { id, label } });
-		if (!result.ok) {
+		try {
+			await renameSessionFn({ data: { id, label } });
+		} catch (error) {
 			setRenamedLabels((prev) => {
 				const next = new Map(prev);
 				next.delete(id);
 				return next;
 			});
+			setMutationError(
+				error instanceof Error ? error.message : "Failed to rename session",
+			);
 		}
 	}
 
 	async function handleCleanup(days: number) {
-		await cleanupSessionsFn({ data: { days } });
-		navigate({ to: "/ledger", search: { tab: "sessions", page: 1, size } });
+		setMutationError(null);
+		try {
+			await cleanupSessionsFn({ data: { days } });
+			navigate({ to: "/ledger", search: { tab: "sessions", page: 1, size } });
+		} catch (error) {
+			setMutationError(
+				error instanceof Error ? error.message : "Failed to clean up sessions",
+			);
+		}
 	}
 
 	const { agg } = statsDataState;
@@ -457,6 +489,14 @@ function StatsPage() {
 					</button>
 				))}
 			</div>
+			{mutationError && (
+				<div
+					className="border-b border-destructive/30 bg-destructive/5 px-4 py-2 text-xs text-destructive"
+					role="alert"
+				>
+					{mutationError}
+				</div>
+			)}
 
 			<div className="flex-1 overflow-auto">
 				{/* Active session stat grid — scrolls with content */}

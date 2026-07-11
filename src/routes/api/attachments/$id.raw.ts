@@ -1,27 +1,40 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { getConfig } from "#/config";
+import { dbFetch } from "#/lib/dbClient";
 import { forbiddenResponse } from "#/lib/originGate";
+
+const FORWARDED_HEADERS = [
+	"content-type",
+	"content-disposition",
+	"content-length",
+	"cache-control",
+	"etag",
+	"last-modified",
+	"x-content-type-options",
+] as const;
+
+export async function handleRawAttachment(
+	request: Request,
+	id: string,
+): Promise<Response> {
+	const forbidden = forbiddenResponse(request);
+	if (forbidden) return forbidden;
+	try {
+		const res = await dbFetch(`/api/attachments/${encodeURIComponent(id)}/raw`);
+		const headers = new Headers();
+		for (const name of FORWARDED_HEADERS) {
+			const value = res.headers.get(name);
+			if (value) headers.set(name, value);
+		}
+		return new Response(res.body, { status: res.status, headers });
+	} catch {
+		return new Response("Upstream unavailable", { status: 502 });
+	}
+}
 
 export const Route = createFileRoute("/api/attachments/$id/raw")({
 	server: {
 		handlers: {
-			GET: async ({ request, params }) => {
-				const forbidden = forbiddenResponse(request);
-				if (forbidden) return forbidden;
-				const { server } = await getConfig();
-				const target = `http://127.0.0.1:${server.port + 1}/api/attachments/${encodeURIComponent(params.id)}/raw`;
-				try {
-					const res = await fetch(target);
-					const headers = new Headers();
-					const ct = res.headers.get("content-type");
-					const cd = res.headers.get("content-disposition");
-					if (ct) headers.set("content-type", ct);
-					if (cd) headers.set("content-disposition", cd);
-					return new Response(res.body, { status: res.status, headers });
-				} catch {
-					return new Response("Upstream unavailable", { status: 502 });
-				}
-			},
+			GET: ({ request, params }) => handleRawAttachment(request, params.id),
 		},
 	},
 });

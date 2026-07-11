@@ -25,9 +25,10 @@ import type {
 	UsageWindows,
 	WeeklyStats,
 } from "#/db";
-import { dbFetch, dbJson } from "#/lib/dbClient";
+import { dbFetch, dbJson, requireDbOk } from "#/lib/dbClient";
 import type { McpServerEntry } from "#/lib/mcp";
 import { mapMcpServer } from "#/lib/mcp";
+import { sessionIdSchema, terminalSessionSchema } from "#/lib/serverFnSchemas";
 import type { SessionStatusEntry } from "#/server/protocol";
 import type { VoiceModelInfo, VoiceStatus } from "#/server/voice";
 
@@ -114,22 +115,23 @@ export const getVoiceInfoFn = createServerFn({ method: "GET" })
 export const startVoiceDownloadFn = createServerFn({ method: "POST" })
 	.validator((model: string) => z.string().min(1).parse(model))
 	.handler(async ({ data }) => {
-		const response = await dbFetch("/voice/download", {
-			method: "POST",
-			headers: { "content-type": "application/json" },
-			body: JSON.stringify({ model: data }),
-		});
-		if (!response.ok)
-			throw new Error(
-				((await response.json()) as { error?: string }).error ??
-					"download failed",
-			);
+		await requireDbOk(
+			await dbFetch("/voice/download", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({ model: data }),
+			}),
+			"start voice model download",
+		);
 		return { ok: true };
 	});
 
 export const cancelVoiceDownloadFn = createServerFn({ method: "POST" }).handler(
 	async () => {
-		await dbFetch("/voice/download/cancel", { method: "POST" });
+		await requireDbOk(
+			await dbFetch("/voice/download/cancel", { method: "POST" }),
+			"cancel voice model download",
+		);
 		return { ok: true };
 	},
 );
@@ -137,15 +139,12 @@ export const cancelVoiceDownloadFn = createServerFn({ method: "POST" }).handler(
 export const deleteVoiceModelFn = createServerFn({ method: "POST" })
 	.validator((model: string) => z.string().min(1).parse(model))
 	.handler(async ({ data }) => {
-		const response = await dbFetch(
-			`/voice/model?model=${encodeURIComponent(data)}`,
-			{ method: "DELETE" },
+		await requireDbOk(
+			await dbFetch(`/voice/model?model=${encodeURIComponent(data)}`, {
+				method: "DELETE",
+			}),
+			"delete voice model",
 		);
-		if (!response.ok)
-			throw new Error(
-				((await response.json()) as { error?: string }).error ??
-					"delete failed",
-			);
 		return { ok: true };
 	});
 
@@ -212,6 +211,20 @@ export const getProviderUsagesFn = createServerFn({ method: "GET" })
 		);
 	});
 
+export function providerUsageIds(providers: ProviderInfo[]): string[] {
+	const ids = providers.map((provider) => provider.id);
+	return ids.length > 0 ? ids : ["claude"];
+}
+
+export function loadProviderUsages(providers?: ProviderInfo[]) {
+	if (providers) {
+		return getProviderUsagesFn({ data: providerUsageIds(providers) });
+	}
+	return getProvidersFn().then((loaded) =>
+		getProviderUsagesFn({ data: providerUsageIds(loaded) }),
+	);
+}
+
 /** Returns the session_id of the currently active/last session, or null. */
 export const getCurrentSessionFn = createServerFn({ method: "GET" }).handler(
 	async () => {
@@ -258,18 +271,14 @@ export const getSessionDataFn = createServerFn({ method: "GET" })
 	);
 
 export const getSessionAgentCwdFn = createServerFn({ method: "GET" })
-	.validator((sessionId: string) => sessionId)
+	.validator((raw) => sessionIdSchema.parse(raw))
 	.handler(async ({ data: sessionId }) => {
-		try {
-			const { getSessionAgentCwd } = await import("#/db");
-			return await getSessionAgentCwd(sessionId);
-		} catch {
-			return null as string | null;
-		}
+		const { getSessionAgentCwd } = await import("#/db");
+		return getSessionAgentCwd(sessionId);
 	});
 
 export const getSessionPermissionsFn = createServerFn({ method: "GET" })
-	.validator((sessionId: string) => sessionId)
+	.validator((raw) => sessionIdSchema.parse(raw))
 	.handler(({ data: sessionId }) =>
 		dbJson<PermissionEventRow[]>(
 			`/db/session-permissions?session_id=${encodeURIComponent(sessionId)}`,
@@ -286,7 +295,7 @@ export type SessionPlanProposalRow = {
 };
 
 export const getSessionPlanProposalsFn = createServerFn({ method: "GET" })
-	.validator((sessionId: string) => sessionId)
+	.validator((raw) => sessionIdSchema.parse(raw))
 	.handler(({ data: sessionId }) =>
 		dbJson<SessionPlanProposalRow[]>(
 			`/db/session-plan-proposals?session_id=${encodeURIComponent(sessionId)}`,
@@ -304,7 +313,7 @@ export type SessionAskUserQuestionRow = {
 };
 
 export const getSessionAskUserQuestionsFn = createServerFn({ method: "GET" })
-	.validator((sessionId: string) => sessionId)
+	.validator((raw) => sessionIdSchema.parse(raw))
 	.handler(({ data: sessionId }) =>
 		dbJson<SessionAskUserQuestionRow[]>(
 			`/db/session-ask-user-questions?session_id=${encodeURIComponent(sessionId)}`,
@@ -313,7 +322,7 @@ export const getSessionAskUserQuestionsFn = createServerFn({ method: "GET" })
 	);
 
 export const getSessionContextFn = createServerFn({ method: "GET" })
-	.validator((sessionId: string) => sessionId)
+	.validator((raw) => sessionIdSchema.parse(raw))
 	.handler(({ data: sessionId }) =>
 		dbJson<{
 			context_window: number | null;
@@ -559,14 +568,10 @@ export const getMcpServersFn = createServerFn({ method: "GET" }).handler(
  * Used by TerminalView to pass --resume to the CLI when switching to terminal mode.
  */
 export const getSessionClaudeIdFn = createServerFn({ method: "GET" })
-	.validator((sessionId: string) => sessionId)
+	.validator((raw) => sessionIdSchema.parse(raw))
 	.handler(async ({ data: sessionId }) => {
-		try {
-			const { getSessionClaudeId } = await import("#/db");
-			return await getSessionClaudeId(sessionId);
-		} catch {
-			return null as string | null;
-		}
+		const { getSessionClaudeId } = await import("#/db");
+		return getSessionClaudeId(sessionId);
 	});
 
 /**
@@ -575,19 +580,8 @@ export const getSessionClaudeIdFn = createServerFn({ method: "GET" })
  * the Ledger shows an entry and resume works when switching back to custom UI.
  */
 export const ensureSessionFn = createServerFn({ method: "POST" })
-	.validator((raw) => {
-		const { id, label, model } = raw as {
-			id: string;
-			label: string;
-			model: string;
-		};
-		return { id, label, model };
-	})
+	.validator((raw) => terminalSessionSchema.parse(raw))
 	.handler(async ({ data: { id, label, model } }) => {
-		try {
-			const { createSession } = await import("#/db");
-			await createSession(id, label, model);
-		} catch {
-			// OR IGNORE — session may already exist
-		}
+		const { createSession } = await import("#/db");
+		await createSession(id, label, model);
 	});
