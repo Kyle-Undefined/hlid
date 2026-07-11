@@ -27,6 +27,15 @@ type ListResult = {
 	total_bytes: number;
 };
 
+type ListAttachments = (input: {
+	data: {
+		search?: string;
+		session_id?: string;
+		limit: number;
+		offset: number;
+	};
+}) => Promise<ListResult>;
+
 const listAttachmentsFn = createServerFn({ method: "POST" })
 	.validator(
 		(data: {
@@ -55,8 +64,12 @@ export const Route = createFileRoute("/relics")({
 		return { initial };
 	},
 	staleTime: 0,
-	component: AttachmentsPage,
+	component: RelicsRoutePage,
 });
+
+function RelicsRoutePage() {
+	return <AttachmentsPage initial={Route.useLoaderData().initial} />;
+}
 
 function formatDate(unix: number): string {
 	return new Date(unix * 1000).toLocaleString();
@@ -64,7 +77,7 @@ function formatDate(unix: number): string {
 
 const PAGE_SIZE = 50;
 
-function RelicPreview({ id, mime }: { id: string; mime: string }) {
+export function RelicPreview({ id, mime }: { id: string; mime: string }) {
 	const [text, setText] = useState<string | null>(null);
 	const [loading, setLoading] = useState(false);
 	const [err, setErr] = useState<string | null>(null);
@@ -143,8 +156,32 @@ function RelicPreview({ id, mime }: { id: string; mime: string }) {
 	);
 }
 
-function AttachmentsPage() {
-	const { initial } = Route.useLoaderData();
+export async function deleteRelicRows(
+	ids: Iterable<string>,
+	rows: AttachmentRow[],
+	request: typeof fetch = fetch,
+): Promise<string[]> {
+	const failures: string[] = [];
+	for (const id of ids) {
+		const row = rows.find((candidate) => candidate.id === id);
+		if (!row) continue;
+		const response = await request(`/api/attachments/${row.id}`, {
+			method: "DELETE",
+		});
+		if (!response.ok) failures.push(row.filename);
+	}
+	return failures;
+}
+
+export function AttachmentsPage({
+	initial,
+	listAttachments = listAttachmentsFn as ListAttachments,
+	request = fetch,
+}: {
+	initial: ListResult;
+	listAttachments?: ListAttachments;
+	request?: typeof fetch;
+}) {
 	const [rows, setRows] = useState<AttachmentRow[]>(initial.rows);
 	const [total, setTotal] = useState(initial.total);
 	const [totalBytes, setTotalBytes] = useState(initial.total_bytes);
@@ -172,7 +209,7 @@ function AttachmentsPage() {
 			setBusy(true);
 			setError(null);
 			try {
-				const res = await listAttachmentsFn({
+				const res = await listAttachments({
 					data: {
 						search: nextSearch.trim() || undefined,
 						limit: PAGE_SIZE,
@@ -190,7 +227,7 @@ function AttachmentsPage() {
 				setBusy(false);
 			}
 		},
-		[search],
+		[search, listAttachments],
 	);
 
 	const handleWsMessage = useCallback(
@@ -219,15 +256,11 @@ function AttachmentsPage() {
 	};
 
 	const deleteOne = async (id: string) => {
-		const row = rows.find((r) => r.id === id);
-		if (!row) return;
 		setBusy(true);
 		try {
-			const res = await fetch(`/api/attachments/${row.id}`, {
-				method: "DELETE",
-			});
-			if (!res.ok) {
-				setError(`delete failed (${res.status})`);
+			const failures = await deleteRelicRows([id], rows, request);
+			if (failures.length > 0) {
+				setError(`Delete failed: ${failures.join(", ")}`);
 				return;
 			}
 			await reload(page);
@@ -241,18 +274,10 @@ function AttachmentsPage() {
 		if (ids.length === 0) return;
 		setBusy(true);
 		try {
-			const failures: string[] = [];
-			for (const id of ids) {
-				const row = rows.find((r) => r.id === id);
-				if (!row) continue;
-				const res = await fetch(`/api/attachments/${row.id}`, {
-					method: "DELETE",
-				});
-				if (!res.ok) failures.push(row.filename);
-			}
+			const failures = await deleteRelicRows(ids, rows, request);
+			await reload(page);
 			if (failures.length > 0)
 				setError(`Delete failed: ${failures.join(", ")}`);
-			await reload(page);
 		} finally {
 			setBusy(false);
 		}
