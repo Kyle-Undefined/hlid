@@ -47,11 +47,16 @@ export function useSettingsForm(
 	const [saving, setSaving] = useState(false);
 	const [savedMsg, setSavedMsg] = useState<"saved" | "restart" | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const saveRef = useRef<((requiresRestart?: boolean) => Promise<void>) | null>(
 		null,
 	);
 
 	async function save(requiresRestart = false) {
+		if (saveTimerRef.current) {
+			clearTimeout(saveTimerRef.current);
+			saveTimerRef.current = null;
+		}
 		setSaving(true);
 		setError(null);
 		setSavedMsg(null);
@@ -93,11 +98,14 @@ export function useSettingsForm(
 		}
 		const requiresRestart =
 			server !== initialForms.server || acpAgents !== initialForms.acpAgents;
-		const timer = setTimeout(
+		saveTimerRef.current = setTimeout(
 			() => void saveRef.current?.(requiresRestart),
 			800,
 		);
-		return () => clearTimeout(timer);
+		return () => {
+			if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+			saveTimerRef.current = null;
+		};
 	}, [vault, claude, codex, voice, ui, vocab, acpAgents, server, initialForms]);
 
 	const changeClaude = (patch: Partial<ClaudeForm>) => {

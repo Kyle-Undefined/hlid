@@ -229,16 +229,21 @@ export async function handleUpload(
 	const sha256 = createHash("sha256").update(buf).digest("hex");
 	const id = randomUUID();
 
-	await db.createAttachment({
-		id,
-		session_id: sessionIdStr,
-		kind,
-		filename: basename(finalPath),
-		path: finalPath,
-		mime,
-		size_bytes: buf.byteLength,
-		sha256,
-	});
+	try {
+		await db.createAttachment({
+			id,
+			session_id: sessionIdStr,
+			kind,
+			filename: basename(finalPath),
+			path: finalPath,
+			mime,
+			size_bytes: buf.byteLength,
+			sha256,
+		});
+	} catch (error) {
+		await unlink(finalPath).catch(() => {});
+		throw error;
+	}
 
 	let gitignoreSuggestion: UploadResult["gitignore_suggestion"];
 	if (agentRoot) {
@@ -318,6 +323,8 @@ export async function ingestPlanHtml(opts: {
 	planSeq: number;
 	maxBytes: number;
 }): Promise<string | null> {
+	let finalPath: string | null = null;
+	let createdId: string | null = null;
 	try {
 		const stat = await lstat(opts.sourcePath);
 		if (!stat.isFile()) return null;
@@ -345,11 +352,7 @@ export async function ingestPlanHtml(opts: {
 		);
 		ensureWithin(resolve(opts.storageRoot), targetDir);
 		await mkdir(targetDir, { recursive: true });
-		const finalPath = await writeUnique(
-			targetDir,
-			`plan-${opts.planSeq}.html`,
-			buf,
-		);
+		finalPath = await writeUnique(targetDir, `plan-${opts.planSeq}.html`, buf);
 
 		const id = randomUUID();
 		await db.createAttachment({
@@ -362,10 +365,18 @@ export async function ingestPlanHtml(opts: {
 			size_bytes: buf.byteLength,
 			sha256: createHash("sha256").update(buf).digest("hex"),
 		});
-		await db.linkAttachmentToMessage(id, opts.sessionId, opts.planSeq);
+		createdId = id;
+		const linked = await db.linkAttachmentToMessage(
+			id,
+			opts.sessionId,
+			opts.planSeq,
+		);
+		if (!linked) throw new Error("plan attachment could not be linked");
 		await unlink(real).catch(() => {});
 		return id;
 	} catch (err) {
+		if (createdId) await db.deleteAttachment(createdId).catch(() => {});
+		if (finalPath) await unlink(finalPath).catch(() => {});
 		console.warn("[attachments] plan html ingestion failed:", err);
 		return null;
 	}

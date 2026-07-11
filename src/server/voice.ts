@@ -477,7 +477,13 @@ export class VoiceModelManager {
 			throw new Error("voice model is not ready");
 		if (this.pendingTranscriptions >= 2)
 			throw new Error("voice transcription queue is full");
-		await validateVoiceRecording(audio, this.config.max_recording_seconds);
+		this.pendingTranscriptions++;
+		try {
+			await validateVoiceRecording(audio, this.config.max_recording_seconds);
+		} catch (error) {
+			this.pendingTranscriptions--;
+			throw error;
+		}
 		const run = async () => {
 			const started = performance.now();
 			const form = new FormData();
@@ -508,7 +514,6 @@ export class VoiceModelManager {
 				durationMs: Math.round(performance.now() - started),
 			};
 		};
-		this.pendingTranscriptions++;
 		const result = this.transcription.then(run, run);
 		this.transcription = result.then(
 			() => undefined,

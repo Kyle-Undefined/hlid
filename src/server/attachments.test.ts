@@ -392,6 +392,22 @@ describe("handleUpload — successful upload", () => {
 		expect(db.createAttachment).toHaveBeenCalledOnce();
 	});
 
+	it("removes the written file when persistence fails", async () => {
+		vi.mocked(db.createAttachment).mockRejectedValueOnce(
+			new Error("database unavailable"),
+		);
+		const config = makeConfig();
+		const form = makeFormData(
+			new File(["data"], "orphan.txt", { type: "text/plain" }),
+		);
+
+		await expect(handleUpload(makeRequest(form), config)).rejects.toThrow(
+			"database unavailable",
+		);
+		const writtenPath = vi.mocked(db.createAttachment).mock.calls[0]?.[0].path;
+		expect(unlink).toHaveBeenCalledWith(writtenPath);
+	});
+
 	it("creates the target directory", async () => {
 		const config = makeConfig();
 		const form = makeFormData(new File(["x"], "f.txt", { type: "text/plain" }));

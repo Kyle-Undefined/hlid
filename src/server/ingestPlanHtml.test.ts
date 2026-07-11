@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 vi.mock("../db", () => ({
 	createAttachment: vi.fn().mockResolvedValue(undefined),
 	linkAttachmentToMessage: vi.fn().mockResolvedValue(true),
+	deleteAttachment: vi.fn().mockResolvedValue(null),
 }));
 
 const fsState = {
@@ -116,5 +117,37 @@ describe("ingestPlanHtml — rejections fall back to null", () => {
 		vi.mocked(lstat).mockRejectedValueOnce(new Error("ENOENT"));
 		const id = await ingestPlanHtml(baseOpts);
 		expect(id).toBeNull();
+	});
+
+	it("removes the copied file when attachment persistence fails", async () => {
+		vi.mocked(db.createAttachment).mockRejectedValueOnce(
+			new Error("database unavailable"),
+		);
+
+		await expect(ingestPlanHtml(baseOpts)).resolves.toBeNull();
+		expect(unlink).toHaveBeenCalledWith(
+			"/agent/.hlid/attachments/sess-1/plan-3.html",
+		);
+		expect(db.deleteAttachment).not.toHaveBeenCalled();
+		expect(unlink).not.toHaveBeenCalledWith(fsState.realpathResult);
+	});
+
+	it.each([
+		[
+			"a rejected link",
+			() => Promise.reject(new Error("database unavailable")),
+		],
+		["a missing attachment row", () => Promise.resolve(false)],
+	])("rolls back the DB row and copied file after %s", async (_label, link) => {
+		vi.mocked(db.linkAttachmentToMessage).mockImplementationOnce(link);
+
+		await expect(ingestPlanHtml(baseOpts)).resolves.toBeNull();
+		expect(db.deleteAttachment).toHaveBeenCalledWith(
+			"00000000-0000-0000-0000-000000000042",
+		);
+		expect(unlink).toHaveBeenCalledWith(
+			"/agent/.hlid/attachments/sess-1/plan-3.html",
+		);
+		expect(unlink).not.toHaveBeenCalledWith(fsState.realpathResult);
 	});
 });

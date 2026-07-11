@@ -1,4 +1,10 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -116,6 +122,24 @@ describe.sequential("VoiceModelManager load lifecycle", () => {
 			executable,
 		);
 		return { health, loading: manager.load("tiny"), manager, process, spawn };
+	}
+
+	async function readyManager() {
+		const process = fakeProcess();
+		const spawn = vi.fn().mockReturnValue(process);
+		vi.stubGlobal("Bun", {
+			spawn,
+			sleep: vi.fn().mockResolvedValue(undefined),
+		});
+		vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(
+			new Response(null, { status: 200 }),
+		);
+		const manager = new VoiceModelManager(
+			{ ...DEFAULT_VOICE_CONFIG, enabled: true, model: "tiny" },
+			executable,
+		);
+		await manager.load("tiny");
+		return { manager, process, spawn };
 	}
 
 	beforeEach(() => {
@@ -246,5 +270,120 @@ describe.sequential("VoiceModelManager load lifecycle", () => {
 		health.resolve(new Response(null, { status: 200 }));
 		await loading;
 		expect(manager.status().state).not.toBe("ready");
+	});
+
+	it("removes a partial model and resets download state after checksum failure", async () => {
+		vi.spyOn(globalThis, "fetch").mockImplementation(
+			async () =>
+				new Response("not the reviewed model", {
+					status: 200,
+					headers: { "content-length": "22" },
+				}),
+		);
+		const manager = new VoiceModelManager(DEFAULT_VOICE_CONFIG, null);
+		const partial = join(
+			dataHome,
+			"hlid",
+			"voice",
+			"models",
+			"ggml-tiny.bin.part",
+		);
+
+		await expect(manager.download("tiny")).rejects.toThrow(
+			"model checksum mismatch",
+		);
+		expect(existsSync(partial)).toBe(false);
+		expect(manager.status().download).toBeUndefined();
+		expect(manager.status().error).toBe("model checksum mismatch");
+		await expect(manager.download("tiny")).rejects.toThrow(
+			"model checksum mismatch",
+		);
+	});
+
+	it("cancels an active download, cleans up, and permits a later attempt", async () => {
+		const fetchMock = vi
+			.spyOn(globalThis, "fetch")
+			.mockImplementationOnce((_input, init) => {
+				return new Promise<Response>((_resolve, reject) => {
+					init?.signal?.addEventListener("abort", () =>
+						reject(new DOMException("cancelled", "AbortError")),
+					);
+				});
+			})
+			.mockResolvedValueOnce(new Response("still invalid", { status: 200 }));
+		const manager = new VoiceModelManager(DEFAULT_VOICE_CONFIG, null);
+		const active = manager.download("tiny");
+
+		await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+		await expect(manager.download("base")).rejects.toThrow(
+			"another model download is active",
+		);
+		manager.cancelDownload();
+		await expect(active).rejects.toThrow("cancelled");
+		expect(manager.status().download).toBeUndefined();
+		await expect(manager.download("tiny")).rejects.toThrow(
+			"model checksum mismatch",
+		);
+	});
+
+	it("serializes transcription, enforces the queue limit, and recovers from failure", async () => {
+		const { manager } = await readyManager();
+		const firstResponse = deferred<Response>();
+		const fetchMock = vi.mocked(globalThis.fetch);
+		fetchMock.mockReset();
+		fetchMock
+			.mockReturnValueOnce(firstResponse.promise)
+			.mockResolvedValueOnce(
+				new Response("runtime unavailable", { status: 503 }),
+			)
+			.mockResolvedValueOnce(
+				Response.json({ text: "  recovered text  ", language: "en" }),
+			);
+
+		const first = manager.transcribe(wavBlob(16_000), "auto");
+		const second = manager.transcribe(wavBlob(16_000), "en");
+		await expect(manager.transcribe(wavBlob(16_000), "auto")).rejects.toThrow(
+			"voice transcription queue is full",
+		);
+		await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+
+		firstResponse.resolve(Response.json({ text: " first " }));
+		await expect(first).resolves.toMatchObject({ text: "first" });
+		await expect(second).rejects.toThrow(
+			"transcription failed: HTTP 503 runtime unavailable",
+		);
+
+		await expect(
+			manager.transcribe(wavBlob(16_000), "en"),
+		).resolves.toMatchObject({ text: "recovered text", language: "en" });
+		const inferenceCalls = fetchMock.mock.calls;
+		expect(inferenceCalls[0]?.[1]).toMatchObject({ method: "POST" });
+		const secondBody = inferenceCalls[1]?.[1]?.body as FormData;
+		expect(secondBody.get("language")).toBe("en");
+		manager.close();
+	});
+
+	it("releases queue capacity after validation and response parsing failures", async () => {
+		const { manager } = await readyManager();
+		const fetchMock = vi.mocked(globalThis.fetch);
+		fetchMock.mockReset();
+		fetchMock
+			.mockResolvedValueOnce(
+				new Response("not json", {
+					status: 200,
+					headers: { "content-type": "application/json" },
+				}),
+			)
+			.mockResolvedValueOnce(Response.json({ text: "usable again" }));
+
+		await expect(
+			manager.transcribe(new Blob([new Uint8Array(8)]), "auto"),
+		).rejects.toThrow("audio must be a WAV recording");
+		await expect(manager.transcribe(wavBlob(16_000), "auto")).rejects.toThrow();
+		await expect(
+			manager.transcribe(wavBlob(16_000), "auto"),
+		).resolves.toMatchObject({ text: "usable again" });
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		manager.close();
 	});
 });

@@ -91,6 +91,9 @@ export function useVoiceInput({
 	const streamRef = useRef<MediaStream | null>(null);
 	const chunksRef = useRef<Blob[]>([]);
 	const cancelRef = useRef(false);
+	const startGenerationRef = useRef(0);
+	const startingRef = useRef(false);
+	const mountedRef = useRef(true);
 	const callbackRef = useRef(onTranscription);
 	callbackRef.current = onTranscription;
 
@@ -111,17 +114,24 @@ export function useVoiceInput({
 		return () => clearInterval(timer);
 	}, [phase, config.max_recording_seconds]);
 
-	useEffect(
-		() => () => {
+	useEffect(() => {
+		mountedRef.current = true;
+		return () => {
+			mountedRef.current = false;
+			startGenerationRef.current++;
+			startingRef.current = false;
 			recorderRef.current?.stop();
 			streamRef.current?.getTracks().forEach((track) => {
 				track.stop();
 			});
-		},
-		[],
-	);
+		};
+	}, []);
 
 	const start = useCallback(async () => {
+		if (startingRef.current || recorderRef.current?.state === "recording")
+			return;
+		startingRef.current = true;
+		const generation = ++startGenerationRef.current;
 		setError(null);
 		cancelRef.current = false;
 		try {
@@ -134,6 +144,12 @@ export function useVoiceInput({
 					noiseSuppression: true,
 				},
 			});
+			if (!mountedRef.current || generation !== startGenerationRef.current) {
+				stream.getTracks().forEach((track) => {
+					track.stop();
+				});
+				return;
+			}
 			streamRef.current = stream;
 			chunksRef.current = [];
 			const recorder = new MediaRecorder(stream);
@@ -171,8 +187,13 @@ export function useVoiceInput({
 			setSeconds(0);
 			setPhase("recording");
 		} catch (e) {
+			if (!mountedRef.current || generation !== startGenerationRef.current)
+				return;
 			setError(e instanceof Error ? e.message : "microphone unavailable");
 			setPhase("error");
+		} finally {
+			if (generation === startGenerationRef.current)
+				startingRef.current = false;
 		}
 	}, [config.language]);
 
@@ -203,6 +224,8 @@ export function useVoiceInput({
 
 	const cancel = useCallback(() => {
 		cancelRef.current = true;
+		startGenerationRef.current++;
+		startingRef.current = false;
 		recorderRef.current?.stop();
 	}, []);
 	const refresh = useCallback(() => void getVoiceInfoFn().then(setInfo), []);
