@@ -9,6 +9,7 @@
  */
 import type { ServerWebSocket } from "bun";
 import type { TerminalSessionPool } from "./terminalSessionPool";
+import { parseTerminalResize } from "./wsSchemas";
 
 export interface TerminalWsData {
 	isTerminal: true;
@@ -40,17 +41,9 @@ export function createTerminalWsHandlers(pool: TerminalSessionPool) {
 
 			if (typeof data === "string") {
 				// Control frame — parse JSON
-				try {
-					const msg = JSON.parse(data) as {
-						type: string;
-						cols?: number;
-						rows?: number;
-					};
-					if (msg.type === "resize" && msg.cols && msg.rows) {
-						pool.resize(sessionId, msg.cols, msg.rows);
-					}
-				} catch {
-					// Ignore malformed frames
+				const dimensions = parseTerminalResize(data);
+				if (dimensions) {
+					pool.resize(sessionId, dimensions.cols, dimensions.rows);
 				}
 			} else {
 				// Binary frame — raw keystrokes/paste → PTY stdin

@@ -2,6 +2,7 @@ import { X509Certificate } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { isAllowedOrigin, isAllowedOriginHeader } from "../lib/allowedOrigin";
 import { registerBunServer } from "../lib/lifecycle";
+import { authenticateRequest } from "./auth";
 
 type WsData = {
 	wsTarget: string;
@@ -11,7 +12,15 @@ type WsData = {
 
 const MAX_WS_QUEUE = 100;
 
-const SKIP_REQ = new Set(["host", "connection", "keep-alive"]);
+const SKIP_REQ = new Set([
+	"host",
+	"connection",
+	"keep-alive",
+	"x-hlid-internal",
+	"x-hlid-proxy-token",
+	"x-hlid-forwarded-proto",
+	"x-hlid-forwarded-client-ip",
+]);
 const SKIP_RES = new Set(["connection", "keep-alive", "transfer-encoding"]);
 
 export function startTlsProxy(
@@ -22,6 +31,7 @@ export function startTlsProxy(
 	certPath: string,
 	keyPath: string,
 	localNetworkAccess: boolean,
+	internalToken: string,
 ): void {
 	const certBuf = readFileSync(certPath);
 	const x509 = new X509Certificate(certBuf);
@@ -41,7 +51,13 @@ export function startTlsProxy(
 			websocket: {
 				open(ws) {
 					ws.data.queue = [];
-					const back = new WebSocket(ws.data.wsTarget);
+					const BunWebSocket = WebSocket as unknown as new (
+						url: string,
+						options: { headers: Record<string, string> },
+					) => WebSocket;
+					const back = new BunWebSocket(ws.data.wsTarget, {
+						headers: { "x-hlid-internal": internalToken },
+					});
 					ws.data.back = back;
 					const connectTimeout = setTimeout(() => {
 						if (back.readyState === WebSocket.CONNECTING) {
@@ -94,9 +110,8 @@ export function startTlsProxy(
 				},
 			},
 			async fetch(req, server) {
-				if (
-					!isAllowedOrigin(server.requestIP(req)?.address, localNetworkAccess)
-				) {
+				const peerIp = server.requestIP(req)?.address;
+				if (!isAllowedOrigin(peerIp, localNetworkAccess)) {
 					return new Response("Forbidden", { status: 403 });
 				}
 
@@ -111,6 +126,9 @@ export function startTlsProxy(
 							)
 						) {
 							return new Response("Forbidden", { status: 403 });
+						}
+						if (!(await authenticateRequest(req))) {
+							return new Response("Unauthorized", { status: 401 });
 						}
 						const upgraded = server.upgrade(req, {
 							data: {
@@ -130,6 +148,9 @@ export function startTlsProxy(
 				for (const [k, v] of req.headers.entries()) {
 					if (!SKIP_REQ.has(k.toLowerCase())) fwdHeaders.set(k, v);
 				}
+				fwdHeaders.set("x-hlid-forwarded-proto", "https");
+				fwdHeaders.set("x-hlid-forwarded-client-ip", peerIp ?? "");
+				fwdHeaders.set("x-hlid-proxy-token", internalToken);
 
 				// Buffer body before forwarding — avoids stream-abort propagation when
 				// the browser cancels an in-flight request mid-proxy (e.g. quick nav).

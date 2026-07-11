@@ -1,5 +1,6 @@
 import { X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 export function ImageViewerModal({
 	src,
@@ -75,10 +76,19 @@ export function ClickableImage({
 	const [open, setOpen] = useState(false);
 	return (
 		<>
-			<button
-				type="button"
+			{/* A semantic button is invalid inside Markdown's paragraph element. */}
+			{/* biome-ignore lint/a11y/useSemanticElements: inline interactive image must remain phrasing content */}
+			<span
+				role="button"
+				tabIndex={0}
 				className={`cursor-zoom-in p-0 border-0 bg-transparent${className ? ` ${className}` : ""}`}
 				onClick={(e) => {
+					e.preventDefault();
+					e.stopPropagation();
+					setOpen(true);
+				}}
+				onKeyDown={(e) => {
+					if (e.key !== "Enter" && e.key !== " ") return;
 					e.preventDefault();
 					e.stopPropagation();
 					setOpen(true);
@@ -86,10 +96,16 @@ export function ClickableImage({
 				aria-label={`View ${alt || "image"}`}
 			>
 				<img src={src} alt={alt} className="block max-w-full" />
-			</button>
-			{open && (
-				<ImageViewerModal src={src} alt={alt} onClose={() => setOpen(false)} />
-			)}
+			</span>
+			{open &&
+				createPortal(
+					<ImageViewerModal
+						src={src}
+						alt={alt}
+						onClose={() => setOpen(false)}
+					/>,
+					document.body,
+				)}
 		</>
 	);
 }

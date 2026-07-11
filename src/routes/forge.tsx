@@ -8,6 +8,7 @@ import { EventLogSection } from "#/components/forge/EventLogSection";
 import { McpSection } from "#/components/forge/McpSection";
 import type { ServerForm } from "#/components/forge/NetworkSection";
 import { NetworkSection } from "#/components/forge/NetworkSection";
+import { SecuritySection } from "#/components/forge/SecuritySection";
 import { SessionSection } from "#/components/forge/SessionSection";
 import { SystemSection } from "#/components/forge/SystemSection";
 import type { UiForm } from "#/components/forge/UiSection";
@@ -52,6 +53,7 @@ export const Route = createFileRoute("/forge")({
 const TABS = [
 	"general",
 	"network",
+	"security",
 	"vault",
 	"agent",
 	"voice",
@@ -309,6 +311,7 @@ function SettingsPage() {
 						cwd={initial.cwd}
 					/>
 				)}
+				{tab === "security" && <SecuritySection />}
 				{tab === "vault" && (
 					<>
 						<VaultSection

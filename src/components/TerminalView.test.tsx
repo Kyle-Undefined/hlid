@@ -27,7 +27,10 @@ function makeMockTerminal() {
 let mockTerminal = makeMockTerminal();
 
 vi.mock("@xterm/xterm", () => ({
-	Terminal: vi.fn(() => mockTerminal),
+	// biome-ignore lint/complexity/useArrowFunction: constructor mock for Vitest 4
+	Terminal: vi.fn(function () {
+		return mockTerminal;
+	}),
 }));
 
 // ── mock @xterm/addon-fit ─────────────────────────────────────────────────────
@@ -42,7 +45,10 @@ function makeMockFitAddon() {
 let mockFitAddon = makeMockFitAddon();
 
 vi.mock("@xterm/addon-fit", () => ({
-	FitAddon: vi.fn(() => mockFitAddon),
+	// biome-ignore lint/complexity/useArrowFunction: constructor mock for Vitest 4
+	FitAddon: vi.fn(function () {
+		return mockFitAddon;
+	}),
 }));
 
 // ── mock WebSocket ────────────────────────────────────────────────────────────
@@ -61,7 +67,8 @@ function makeMockWs() {
 
 let mockWsInstance = makeMockWs();
 
-const WebSocketMock = vi.fn().mockImplementation(() => {
+// biome-ignore lint/complexity/useArrowFunction: constructor mock for Vitest 4
+const WebSocketMock = vi.fn().mockImplementation(function () {
 	mockWsInstance = makeMockWs();
 	return mockWsInstance;
 });
@@ -73,7 +80,8 @@ Object.assign(WebSocketMock, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
 
 // Also stub ResizeObserver so jsdom doesn't throw
 let capturedRoCallback: ((entries: unknown[]) => void) | null = null;
-const mockResizeObserver = vi.fn().mockImplementation((cb) => {
+// biome-ignore lint/complexity/useArrowFunction: constructor mock for Vitest 4
+const mockResizeObserver = vi.fn().mockImplementation(function (cb) {
 	capturedRoCallback = cb;
 	return {
 		observe: vi.fn(),
@@ -113,17 +121,12 @@ describe("TerminalView — WS URL construction", () => {
 	});
 	afterEach(cleanup);
 
-	it("connects with correct token, session_id, and cwd params", () => {
+	it("connects with session_id and cwd params without exposing auth in the URL", () => {
 		render(
-			<TerminalView
-				sessionId="sess-123"
-				cwd="/home/user/proj"
-				token="mytoken"
-				active={true}
-			/>,
+			<TerminalView sessionId="sess-123" cwd="/home/user/proj" active={true} />,
 		);
 		const url = getLastWsUrl();
-		expect(url).toContain("token=mytoken");
+		expect(url).not.toContain("token=");
 		expect(url).toContain("session_id=sess-123");
 		expect(url).toContain("cwd=");
 	});

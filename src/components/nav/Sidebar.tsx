@@ -8,6 +8,7 @@ import {
 	type UpdateStatus,
 } from "../../hooks/updateStore";
 import * as wsStore from "../../hooks/wsStore";
+import { LockButton } from "../auth/LockButton";
 import { NAV_ITEMS } from "./items";
 import { aggregateDotClass } from "./SystemStatusDot";
 
@@ -97,6 +98,9 @@ export function Sidebar() {
 					</Link>
 				))}
 			</nav>
+			<div className="border-t border-sidebar-border">
+				<LockButton />
+			</div>
 		</aside>
 	);
 }

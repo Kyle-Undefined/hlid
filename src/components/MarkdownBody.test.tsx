@@ -30,9 +30,17 @@ vi.mock("highlight.js/lib/common", () => {
 
 import { MarkdownBody } from "./MarkdownBody";
 
-afterEach(cleanup);
+let consoleError: ReturnType<typeof vi.spyOn>;
+
+afterEach(() => {
+	cleanup();
+	consoleError.mockRestore();
+});
 
 beforeEach(() => {
+	consoleError = vi.spyOn(console, "error").mockImplementation((...args) => {
+		throw new Error(`Unexpected console.error: ${args.join(" ")}`);
+	});
 	Object.defineProperty(navigator, "clipboard", {
 		value: { writeText: vi.fn().mockResolvedValue(undefined) },
 		configurable: true,

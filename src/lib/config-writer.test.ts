@@ -7,6 +7,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // ── mocks ─────────────────────────────────────────────────────────────────────
 
 vi.mock("node:fs", () => ({
+	renameSync: vi.fn(),
+	rmSync: vi.fn(),
 	writeFileSync: vi.fn(),
 }));
 
@@ -16,11 +18,13 @@ vi.mock("../server/wrappers", () => ({
 
 // ── imports after mocks ───────────────────────────────────────────────────────
 
-import { writeFileSync } from "node:fs";
-import type { HlidConfig } from "../config";
-import { writeConfig } from "./config-writer";
+import { renameSync, writeFileSync } from "node:fs";
+import { parse } from "smol-toml";
+import { type HlidConfig, HlidConfigSchema } from "../config";
+import { serializeConfig, writeConfig } from "./config-writer";
 
 const mockWrite = vi.mocked(writeFileSync);
+const mockRename = vi.mocked(renameSync);
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -64,6 +68,42 @@ function capturedToml(): string {
 
 beforeEach(() => {
 	mockWrite.mockClear();
+	mockRename.mockClear();
+});
+
+describe("writeConfig — persistence invariants", () => {
+	it("round-trips every schema field, including attachment policy", () => {
+		const config = HlidConfigSchema.parse({
+			vault: {
+				name: "Round trip",
+				path: "/vault",
+				style: "wiki",
+				delete_vault_attachments: true,
+			},
+			attachments: {
+				max_bytes: 123456,
+				allowed_mimes: ["image/png", "application/x-custom"],
+			},
+			agents: [{ path: "/agent", interactive_mode: false }],
+		});
+
+		const reparsed = HlidConfigSchema.parse(parse(serializeConfig(config)));
+		expect(reparsed).toEqual(config);
+	});
+
+	it("writes to a private temporary file before atomically renaming it", () => {
+		writeConfig(makeConfig());
+		const temporaryPath = mockWrite.mock.calls[0][0] as string;
+		expect(temporaryPath).toMatch(/hlid\.config\.toml\.\d+\.\d+\.tmp$/);
+		expect(mockWrite.mock.calls[0][2]).toEqual({
+			encoding: "utf-8",
+			mode: 0o600,
+		});
+		expect(mockRename).toHaveBeenCalledWith(
+			temporaryPath,
+			expect.stringMatching(/hlid\.config\.toml$/),
+		);
+	});
 });
 
 // ── section headers ───────────────────────────────────────────────────────────
@@ -135,6 +175,7 @@ describe("writeConfig — vault section", () => {
 		expect(toml).toContain('projects = "projects"');
 		expect(toml).toContain('skills = "skills"');
 		expect(toml).toContain('memory = "memory"');
+		expect(toml).toContain("delete_vault_attachments = false");
 	});
 
 	it("omits optional vault fields when absent", () => {

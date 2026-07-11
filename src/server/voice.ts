@@ -3,11 +3,12 @@ import {
 	createWriteStream,
 	existsSync,
 	mkdirSync,
+	realpathSync,
 	renameSync,
 	rmSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import type { HlidConfig } from "../config";
@@ -121,8 +122,32 @@ function voiceDataDir(): string {
 	);
 }
 
+function modelDefinition(id: string): ModelDef {
+	const def = MODEL_DEFS.find((candidate) => candidate.id === id);
+	if (!def) throw new Error("unknown voice model");
+	return def;
+}
+
 function modelPath(id: string): string {
-	return join(voiceDataDir(), "models", `ggml-${id}.bin`);
+	modelDefinition(id);
+	const modelsDir = resolve(voiceDataDir(), "models");
+	const candidate = resolve(modelsDir, `ggml-${id}.bin`);
+	const rel = relative(modelsDir, candidate);
+	if (rel.startsWith("..") || isAbsolute(rel)) {
+		throw new Error("voice model path escaped models directory");
+	}
+	return candidate;
+}
+
+function canonicalInstalledModelPath(id: string): string {
+	const candidate = modelPath(id);
+	const root = realpathSync(resolve(voiceDataDir(), "models"));
+	const canonical = realpathSync(candidate);
+	const rel = relative(root, canonical);
+	if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
+		throw new Error("voice model path escaped models directory");
+	}
+	return canonical;
 }
 
 function catalogValues(): VoiceModelInfo[] {
@@ -160,6 +185,7 @@ export class VoiceModelManager {
 	private statusValue: VoiceStatus;
 	private downloadAbort: AbortController | null = null;
 	private transcription: Promise<unknown> = Promise.resolve();
+	private pendingTranscriptions = 0;
 
 	constructor(
 		config: HlidConfig["voice"],
@@ -187,7 +213,11 @@ export class VoiceModelManager {
 
 	async initialize(): Promise<void> {
 		if (!this.config.enabled) return;
-		if (!this.config.model || !existsSync(modelPath(this.config.model))) {
+		if (
+			!this.config.model ||
+			!MODEL_DEFS.some((model) => model.id === this.config.model) ||
+			!existsSync(modelPath(this.config.model))
+		) {
 			this.statusValue = { state: "unconfigured", model: this.config.model };
 			return;
 		}
@@ -202,7 +232,11 @@ export class VoiceModelManager {
 			this.statusValue = { state: "disabled", model: config.model };
 			return;
 		}
-		if (!config.model || !existsSync(modelPath(config.model))) {
+		if (
+			!config.model ||
+			!MODEL_DEFS.some((model) => model.id === config.model) ||
+			!existsSync(modelPath(config.model))
+		) {
 			this.statusValue = { state: "unconfigured", model: config.model };
 			return;
 		}
@@ -225,12 +259,25 @@ export class VoiceModelManager {
 	}
 
 	async load(model: string): Promise<void> {
+		modelDefinition(model);
 		const executable = this.executable();
 		if (!executable) {
 			this.statusValue = {
 				state: "unavailable",
 				model,
 				error: "whisper runtime is not installed",
+			};
+			return;
+		}
+		let installedModel: string;
+		try {
+			installedModel = canonicalInstalledModelPath(model);
+		} catch (error) {
+			this.statusValue = {
+				state: "error",
+				model,
+				loadedModel: this.runtime?.model,
+				error: (error as Error).message,
 			};
 			return;
 		}
@@ -251,7 +298,7 @@ export class VoiceModelManager {
 				"--port",
 				String(port),
 				"--model",
-				modelPath(model),
+				installedModel,
 				"--convert",
 				"--tmp-dir",
 				tempDir,
@@ -295,8 +342,7 @@ export class VoiceModelManager {
 	}
 
 	async download(model: string): Promise<void> {
-		const def = MODEL_DEFS.find((m) => m.id === model);
-		if (!def) throw new Error("unknown voice model");
+		const def = modelDefinition(model);
 		if (this.downloadAbort) throw new Error("another model download is active");
 		mkdirSync(join(voiceDataDir(), "models"), { recursive: true });
 		const dest = modelPath(model);
@@ -348,9 +394,12 @@ export class VoiceModelManager {
 	}
 
 	deleteModel(model: string): void {
+		modelDefinition(model);
 		if (this.runtime?.model === model)
 			throw new Error("cannot delete the loaded model");
-		rmSync(modelPath(model), { force: true });
+		const candidate = modelPath(model);
+		if (!existsSync(candidate)) return;
+		rmSync(canonicalInstalledModelPath(model), { force: true });
 	}
 
 	async transcribe(
@@ -359,6 +408,8 @@ export class VoiceModelManager {
 	): Promise<{ text: string; language?: string; durationMs: number }> {
 		if (!this.runtime || this.statusValue.state !== "ready")
 			throw new Error("voice model is not ready");
+		if (this.pendingTranscriptions >= 2)
+			throw new Error("voice transcription queue is full");
 		if (audio.size > 100 * MIB) throw new Error("audio exceeds 100 MiB limit");
 		const header = new DataView(await audio.slice(0, 44).arrayBuffer());
 		if (
@@ -405,12 +456,17 @@ export class VoiceModelManager {
 				durationMs: Math.round(performance.now() - started),
 			};
 		};
+		this.pendingTranscriptions++;
 		const result = this.transcription.then(run, run);
 		this.transcription = result.then(
 			() => undefined,
 			() => undefined,
 		);
-		return result;
+		try {
+			return await result;
+		} finally {
+			this.pendingTranscriptions--;
+		}
 	}
 
 	close(): void {

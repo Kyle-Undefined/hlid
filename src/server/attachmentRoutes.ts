@@ -3,6 +3,9 @@ import { handleUpload, removeAttachment, serveAttachment } from "./attachments";
 import { loadConfig } from "./config";
 import { broadcast } from "./runState";
 
+const MAX_CONCURRENT_UPLOADS = 4;
+let activeUploads = 0;
+
 /**
  * Handles all /api/attachments/* routes. Returns null if the path doesn't
  * match, allowing the caller to fall through to the next handler.
@@ -26,13 +29,24 @@ export async function handleAttachmentRoute(
 				err,
 			);
 		}
-		return handleUpload(req, uploadConfig, async (id, kind) => {
-			try {
-				await broadcast({ type: "attachment_created", id, kind });
-			} catch (err) {
-				console.warn("[attachments] broadcast failed:", err);
-			}
-		});
+		if (activeUploads >= MAX_CONCURRENT_UPLOADS) {
+			return Response.json(
+				{ error: "upload_capacity_reached" },
+				{ status: 429, headers: { "retry-after": "1" } },
+			);
+		}
+		activeUploads++;
+		try {
+			return await handleUpload(req, uploadConfig, async (id, kind) => {
+				try {
+					await broadcast({ type: "attachment_created", id, kind });
+				} catch (err) {
+					console.warn("[attachments] broadcast failed:", err);
+				}
+			});
+		} finally {
+			activeUploads--;
+		}
 	}
 
 	const rawMatch = url.pathname.match(

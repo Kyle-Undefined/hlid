@@ -17,7 +17,8 @@
 			"!**/src/server/pty-assets.ts",
 			"!**/src/server/voice-assets.ts",
 			"!**/src/server/codexProtocol/**/*",
-			"!**/src/styles.css"
+			"!**/src/styles.css",
+			"!**/coverage/**/*"
 		]
 	},
 	"formatter": {

@@ -1,4 +1,5 @@
 import { Link } from "@tanstack/react-router";
+import { LockButton } from "../auth/LockButton";
 import { NAV_ITEMS } from "./items";
 import { WsStatusDot } from "./SystemStatusDot";
 
@@ -7,11 +8,14 @@ const BASE =
 
 export function BottomNav() {
 	return (
-		<nav className="shrink-0 md:hidden bg-sidebar border-t border-sidebar-border relative">
+		<nav
+			aria-label="Primary navigation"
+			className="fixed inset-x-0 bottom-0 z-30 md:hidden bg-sidebar border-t border-sidebar-border"
+		>
 			<div className="absolute top-1.5 right-2 z-10">
 				<WsStatusDot />
 			</div>
-			<div className="flex safe-area-inset-bottom">
+			<div className="flex pb-[env(safe-area-inset-bottom)]">
 				{NAV_ITEMS.map(({ to, label, icon: Icon, exact }) => (
 					<Link
 						key={to}
@@ -24,6 +28,7 @@ export function BottomNav() {
 						<span className="text-[9px] tracking-widest">{label}</span>
 					</Link>
 				))}
+				<LockButton mobile />
 			</div>
 		</nav>
 	);

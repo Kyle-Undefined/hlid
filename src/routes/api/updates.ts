@@ -41,12 +41,9 @@ export const Route = createFileRoute("/api/updates")({
 				const forbidden = forbiddenResponse(request);
 				if (forbidden) return forbidden;
 
-				let body: { action?: unknown; stagedExe?: unknown };
+				let body: { action?: unknown };
 				try {
-					body = (await request.json()) as {
-						action?: unknown;
-						stagedExe?: unknown;
-					};
+					body = (await request.json()) as { action?: unknown };
 				} catch {
 					return Response.json(
 						{ ok: false, error: "invalid json" },
@@ -77,14 +74,7 @@ export const Route = createFileRoute("/api/updates")({
 							return Response.json(result);
 						}
 						case "apply": {
-							if (typeof body.stagedExe !== "string" || !body.stagedExe) {
-								return Response.json(
-									{ ok: false, error: "stagedExe path required" },
-									{ status: 400 },
-								);
-							}
-							const stagedExe = body.stagedExe;
-							const result = await single(() => applyUpdate(stagedExe));
+							const result = await single(() => applyUpdate());
 							return Response.json(result);
 						}
 					}

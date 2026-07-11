@@ -18,6 +18,43 @@ export type ApiEndpoint = {
 };
 
 export const API_ENDPOINTS: ApiEndpoint[] = [
+	// ── Authentication (UI port) ──────────────────────────────────────────────
+	{
+		method: "GET",
+		path: "/api/auth/status",
+		server: "ui",
+		desc: "Public authentication state: setup-required, locked, or authenticated.",
+	},
+	{
+		method: "POST",
+		path: "/api/auth/setup",
+		server: "ui",
+		desc: "Create the first app password from loopback only.",
+	},
+	{
+		method: "POST",
+		path: "/api/auth/login",
+		server: "ui",
+		desc: "Unlock a browser; remote requests require HTTPS.",
+	},
+	{
+		method: "POST",
+		path: "/api/auth/logout",
+		server: "ui",
+		desc: "Revoke the current trusted-device session.",
+	},
+	{
+		method: "POST",
+		path: "/api/auth/change-password",
+		server: "ui",
+		desc: "Change the app password and revoke every trusted device.",
+	},
+	{
+		method: "POST",
+		path: "/api/auth/revoke-all",
+		server: "ui",
+		desc: "Revoke every trusted-device session.",
+	},
 	// ── Discovery / status (api port) ─────────────────────────────────────────
 	{
 		method: "GET",

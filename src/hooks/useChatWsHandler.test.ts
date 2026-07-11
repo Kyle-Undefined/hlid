@@ -8,6 +8,8 @@
 // @vitest-environment jsdom
 import { renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { Action } from "#/components/chat/chatReducer";
+import type { RateLimitMessage } from "#/server/protocol";
 
 vi.mock("#/lib/utils", () => ({
 	uid: vi.fn().mockReturnValue("test-uid"),
@@ -27,8 +29,10 @@ function makeRefs() {
 // ── local_command_output ───────────────────────────────────────────────────────
 
 describe("useChatWsHandler — local_command_output", () => {
-	let dispatch: ReturnType<typeof vi.fn>;
-	let setRateLimit: ReturnType<typeof vi.fn>;
+	let dispatch: ReturnType<typeof vi.fn<(action: Action) => void>>;
+	let setRateLimit: ReturnType<
+		typeof vi.fn<(rateLimit: RateLimitMessage | null) => void>
+	>;
 
 	beforeEach(() => {
 		dispatch = vi.fn();

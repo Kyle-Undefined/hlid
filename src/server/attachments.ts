@@ -12,6 +12,11 @@ import { basename, dirname, extname, join, resolve } from "node:path";
 import type { HlidConfig } from "../config";
 import * as db from "../db";
 import { expandTilde, pathStartsWith, samePath } from "../lib/paths";
+import {
+	contentLengthExceeds,
+	MULTIPART_OVERHEAD_BYTES,
+	payloadTooLarge,
+} from "./requestLimits";
 
 function resolveRegisteredAgent(
 	config: HlidConfig,
@@ -142,6 +147,10 @@ export async function handleUpload(
 	config: HlidConfig,
 	onUploaded?: (id: string, kind: "ephemeral") => void,
 ): Promise<Response> {
+	const maxBodyBytes = config.attachments.max_bytes + MULTIPART_OVERHEAD_BYTES;
+	if (contentLengthExceeds(req, maxBodyBytes)) {
+		return payloadTooLarge(maxBodyBytes);
+	}
 	const vaultPath = config.vault.path;
 	if (!vaultPath) {
 		return new Response("Vault path not configured", { status: 400 });

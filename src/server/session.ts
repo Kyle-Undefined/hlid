@@ -1,5 +1,4 @@
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { realpathSync } from "node:fs";
 import type { HlidConfig } from "../config";
 import * as db from "../db";
 import { resolveClaudeExecutable } from "../lib/claudePath";
@@ -20,6 +19,7 @@ import type {
 import { loadConfig } from "./config";
 import { resolveExecutionContext } from "./executionContext";
 import { parseAskUserQuestion } from "./parseAskUserQuestion";
+import { persistAlwaysAllowedTool } from "./permissionStore";
 import {
 	AskUserQuestionManager,
 	PermissionManager,
@@ -1445,48 +1445,8 @@ export class SessionManager {
 											updatedInput: passInput,
 										});
 									} else if (saveScope === "local") {
-										// Write to settings.local.json (gitignored, user-specific).
-										// Loaded by the provider via settingSources "local" so the next
-										// subprocess picks up the rule automatically.
 										try {
-											const settingsPath = join(
-												activeCwd,
-												".claude",
-												"settings.local.json",
-											);
-											let settings: {
-												permissions?: {
-													allow?: string[];
-													deny?: string[];
-												};
-											} = {};
-											try {
-												settings = JSON.parse(
-													readFileSync(settingsPath, "utf8"),
-												);
-											} catch (e) {
-												if ((e as NodeJS.ErrnoException).code !== "ENOENT") {
-													console.error(
-														"[session] Failed to parse settings.local.json:",
-														e,
-													);
-												}
-											}
-											const allow = settings.permissions?.allow ?? [];
-											if (!allow.includes(toolName)) {
-												settings.permissions = {
-													...settings.permissions,
-													allow: [...allow, toolName],
-												};
-												mkdirSync(join(activeCwd, ".claude"), {
-													recursive: true,
-												});
-												writeFileSync(
-													settingsPath,
-													`${JSON.stringify(settings, null, 2)}\n`,
-													"utf8",
-												);
-											}
+											persistAlwaysAllowedTool(activeCwd, toolName);
 										} catch (e) {
 											console.error(
 												"[session] failed to write always-allow rule:",

@@ -12,8 +12,11 @@ import { appendFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 if (process.execPath.endsWith(".exe")) {
-	(process.stdout as unknown as { write: () => boolean }).write = () => true;
-	(process.stderr as unknown as { write: () => boolean }).write = () => true;
+	const authReset = process.argv[2] === "auth" && process.argv[3] === "reset";
+	if (!authReset) {
+		(process.stdout as unknown as { write: () => boolean }).write = () => true;
+		(process.stderr as unknown as { write: () => boolean }).write = () => true;
+	}
 
 	// Write crashes to a plain file so we can diagnose silent exits in the
 	// compiled exe (before the DB logger is initialised).

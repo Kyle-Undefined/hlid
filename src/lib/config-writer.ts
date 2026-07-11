@@ -1,5 +1,9 @@
-import { writeFileSync } from "node:fs";
-import { DEFAULT_VOICE_CONFIG, type HlidConfig } from "../config";
+import { renameSync, rmSync, writeFileSync } from "node:fs";
+import {
+	DEFAULT_ATTACHMENTS_CONFIG,
+	DEFAULT_VOICE_CONFIG,
+	type HlidConfig,
+} from "../config";
 import { setConfigCache } from "../server/config";
 import { syncWrappers } from "../server/wrappers";
 import { CONFIG_PATH } from "./paths";
@@ -13,7 +17,9 @@ function tomlVal(value: unknown): string {
 	return JSON.stringify(value);
 }
 
-export function writeConfig(config: HlidConfig): void {
+/** Serialize the complete public config schema to TOML. Kept pure so schema
+ * round-trip tests can catch fields accidentally omitted by future changes. */
+export function serializeConfig(config: HlidConfig): string {
 	const lines: string[] = [];
 
 	if (config.vault_provider && config.vault_provider !== "claude")
@@ -40,6 +46,9 @@ export function writeConfig(config: HlidConfig): void {
 		lines.push(`memory = ${tomlVal(config.vault.memory)}`);
 	if (config.vault.outputs)
 		lines.push(`outputs = ${tomlVal(config.vault.outputs)}`);
+	lines.push(
+		`delete_vault_attachments = ${tomlVal(config.vault.delete_vault_attachments)}`,
+	);
 
 	lines.push("");
 	lines.push("[server]");
@@ -107,6 +116,12 @@ export function writeConfig(config: HlidConfig): void {
 	lines.push(`planning = ${tomlVal(config.status_vocabulary.planning)}`);
 	lines.push(`done = ${tomlVal(config.status_vocabulary.done)}`);
 
+	const attachments = config.attachments ?? DEFAULT_ATTACHMENTS_CONFIG;
+	lines.push("");
+	lines.push("[attachments]");
+	lines.push(`max_bytes = ${tomlVal(attachments.max_bytes)}`);
+	lines.push(`allowed_mimes = ${tomlVal(attachments.allowed_mimes)}`);
+
 	for (const agent of config.agents ?? []) {
 		lines.push("");
 		lines.push("[[agents]]");
@@ -128,7 +143,25 @@ export function writeConfig(config: HlidConfig): void {
 			lines.push(`interactive_mode = ${tomlVal(agent.interactive_mode)}`);
 	}
 
-	writeFileSync(CONFIG_PATH, `${lines.join("\n")}\n`, "utf-8");
+	return `${lines.join("\n")}\n`;
+}
+
+export function writeConfig(config: HlidConfig): void {
+	const temporaryPath = `${CONFIG_PATH}.${process.pid}.${Date.now()}.tmp`;
+	try {
+		writeFileSync(temporaryPath, serializeConfig(config), {
+			encoding: "utf-8",
+			mode: 0o600,
+		});
+		renameSync(temporaryPath, CONFIG_PATH);
+	} catch (error) {
+		try {
+			rmSync(temporaryPath, { force: true });
+		} catch {
+			// Preserve the original write/rename error.
+		}
+		throw error;
+	}
 	setConfigCache(config);
 	syncWrappers(config.agents ?? []);
 }

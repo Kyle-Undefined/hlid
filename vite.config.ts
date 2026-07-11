@@ -78,6 +78,30 @@ function ipGatePlugin(allowLocalNetwork: boolean): Plugin {
 	};
 }
 
+function chunkBudgetPlugin(): Plugin {
+	const generalLimit = 500 * 1024;
+	const lazyMermaidParserLimit = 700 * 1024;
+	return {
+		name: "hlid-chunk-budget",
+		apply: "build",
+		generateBundle(_options, bundle) {
+			for (const output of Object.values(bundle)) {
+				if (output.type !== "chunk") continue;
+				const bytes = Buffer.byteLength(output.code);
+				if (bytes <= generalLimit) continue;
+				const isLazyMermaidParser =
+					output.name.startsWith("mermaid-vendor") &&
+					bytes <= lazyMermaidParserLimit;
+				if (!isLazyMermaidParser) {
+					this.error(
+						`${output.fileName} is ${Math.ceil(bytes / 1024)} KiB; client chunks must stay at or below 500 KiB`,
+					);
+				}
+			}
+		},
+	};
+}
+
 // TLS only when HLID_TLS=1. Cert is valid for Tailscale host, not localhost.
 const serverCfg = loadServerConfig();
 const tls = /^1|true$/i.test(process.env.HLID_TLS ?? "")
@@ -86,11 +110,48 @@ const tls = /^1|true$/i.test(process.env.HLID_TLS ?? "")
 
 const config = defineConfig({
 	resolve: { tsconfigPaths: true },
+	build: {
+		// One feature-gated Langium parser chunk from Mermaid cannot be split at
+		// module boundaries. The custom budget plugin below caps that exception at
+		// 700 KiB while enforcing 500 KiB for every other client chunk.
+		chunkSizeWarningLimit: 700,
+		rolldownOptions: {
+			output: {
+				strictExecutionOrder: true,
+				// Keep large third-party graphs independently cacheable and below the
+				// mobile parse-cost budget without coupling application modules by hand.
+				codeSplitting: {
+					groups: [
+						{
+							name: "mermaid-vendor",
+							test: /node_modules[\\/](?:mermaid|@mermaid-js)/,
+							maxSize: 300 * 1024,
+							includeDependenciesRecursively: false,
+							priority: 10,
+						},
+						{
+							name: "large-vendor",
+							test: /node_modules/,
+							minSize: 100 * 1024,
+							maxSize: 350 * 1024,
+							entriesAware: true,
+						},
+					],
+				},
+			},
+		},
+	},
 	plugins: [
+		chunkBudgetPlugin(),
 		ipGatePlugin(serverCfg.local_network_access ?? false),
 		tailwindcss(),
 		tanstackStart({
-			spa: { enabled: true, prerender: { enabled: false } },
+			// The unauthenticated login route is the only safe static SPA shell.
+			spa: {
+				enabled: true,
+				maskPath: "/login",
+				prerender: { headers: { "x-hlid-login-shell": "build" } },
+			},
 			router: { routeFileIgnorePattern: "\\.test\\.(ts|tsx)$" },
 		}),
 		viteReact(),

@@ -14,6 +14,7 @@ import {
 import { broadcast, send, wsState } from "./runState";
 import type { PoolEntry, SessionPool } from "./sessionPool";
 import type { TerminalSessionPool } from "./terminalSessionPool";
+import { parseClientMessage } from "./wsSchemas";
 
 /** Per-connection data stored on the Bun WS object. */
 export type WsData = {
@@ -111,10 +112,8 @@ export function createWsHandlers(
 		},
 
 		async message(ws: ServerWebSocket<WsData>, raw: string | Buffer) {
-			let msg: ClientMessage;
-			try {
-				msg = JSON.parse(raw.toString()) as ClientMessage;
-			} catch {
+			const msg: ClientMessage | null = parseClientMessage(raw.toString());
+			if (!msg) {
 				send(ws, { type: "error", message: "Invalid JSON" });
 				return;
 			}

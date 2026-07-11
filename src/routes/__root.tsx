@@ -1,36 +1,36 @@
-import { createRootRoute, HeadContent, Scripts } from "@tanstack/react-router";
-import { createServerFn } from "@tanstack/react-start";
+import {
+	createRootRoute,
+	HeadContent,
+	Scripts,
+	useRouterState,
+} from "@tanstack/react-router";
 import { useEffect, useRef } from "react";
 import { ErrorBoundary } from "#/components/ErrorBoundary";
 import { BottomNav } from "#/components/nav/BottomNav";
 import { Sidebar } from "#/components/nav/Sidebar";
 import { PullToRefreshIndicator } from "#/components/PullToRefreshIndicator";
 import { UpdateBanner } from "#/components/UpdateBanner";
-import { getConfig } from "#/config";
 import * as privacyStore from "#/hooks/privacyStore";
 import { usePullToRefresh } from "#/hooks/usePullToRefresh";
 import { logClientErrorFn } from "#/lib/serverFns";
 
 import appCss from "../styles.css?url";
 
-const getHlidToken = createServerFn({ method: "GET" }).handler(async () => {
-	const { loadToken } = await import("#/lib/token");
-	return loadToken();
-});
-
 export const Route = createRootRoute({
-	loader: async () => {
-		const [config, token] = await Promise.all([getConfig(), getHlidToken()]);
+	loader: () => {
 		return {
-			theme: config.ui.theme,
-			mobileTheme: config.ui.mobile_theme,
-			token,
+			theme: "tan" as const,
+			mobileTheme: undefined,
 		};
 	},
 	head: () => ({
 		meta: [
 			{ charSet: "utf-8" },
-			{ name: "viewport", content: "width=device-width, initial-scale=1" },
+			{
+				name: "viewport",
+				content:
+					"width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content",
+			},
 			{ title: "Hliðskjálf" },
 			{ name: "theme-color", content: "#0f0f12" },
 			{ name: "mobile-web-app-capable", content: "yes" },
@@ -67,6 +67,60 @@ function SyncPrivacyStore() {
 	return null;
 }
 
+function SyncThemeFromConfig() {
+	useEffect(() => {
+		fetch("/api/config", { cache: "no-store" })
+			.then((response) => (response.ok ? response.json() : null))
+			.then(
+				(
+					config: {
+						ui?: { theme?: "dark" | "tan"; mobile_theme?: "dark" | "tan" };
+					} | null,
+				) => {
+					if (!config?.ui?.theme) return;
+					const selected =
+						config.ui.mobile_theme &&
+						window.matchMedia("(pointer: coarse)").matches
+							? config.ui.mobile_theme
+							: config.ui.theme;
+					localStorage.setItem("hlid-theme", selected);
+					document.documentElement.dataset.theme = selected;
+					document.documentElement.className = selected;
+				},
+			)
+			.catch(() => {});
+	}, []);
+	return null;
+}
+
+function AuthSessionGuard() {
+	useEffect(() => {
+		let active = true;
+		const check = () => {
+			fetch("/api/auth/status", { cache: "no-store" })
+				.then((response) => (response.ok ? response.json() : null))
+				.then((status: { state?: string } | null) => {
+					if (active && status && status.state !== "authenticated") {
+						window.location.replace("/login");
+					}
+				})
+				.catch(() => {});
+		};
+		check();
+		const onVisible = () => {
+			if (document.visibilityState === "visible") check();
+		};
+		window.addEventListener("focus", check);
+		document.addEventListener("visibilitychange", onVisible);
+		return () => {
+			active = false;
+			window.removeEventListener("focus", check);
+			document.removeEventListener("visibilitychange", onVisible);
+		};
+	}, []);
+	return null;
+}
+
 function RegisterErrorLogger() {
 	useEffect(() => {
 		const handler = (e: PromiseRejectionEvent) => {
@@ -82,13 +136,16 @@ function RegisterErrorLogger() {
 }
 
 function RootDocument({ children }: { children: React.ReactNode }) {
-	const { theme, mobileTheme, token } = Route.useLoaderData();
+	const { theme, mobileTheme } = Route.useLoaderData();
+	const pathname = useRouterState({
+		select: (state) => state.location.pathname,
+	});
 	const wrapperRef = useRef<HTMLDivElement>(null);
 	const { pullY, isRefreshing } = usePullToRefresh(wrapperRef);
 
 	// JSON.stringify on enum strings ("dark"|"tan"|"same") is XSS-safe.
 	// Runs before first paint to prevent flash when mobile theme differs from desktop.
-	const themeInitScript = `(function(){var t=${JSON.stringify(theme)},m=${JSON.stringify(mobileTheme ?? null)};if(m&&m!=="same"&&window.matchMedia("(pointer: coarse)").matches)t=m;document.documentElement.setAttribute("data-theme",t);document.documentElement.className=t;})();`;
+	const themeInitScript = `(function(){var t=${JSON.stringify(theme)},m=${JSON.stringify(mobileTheme ?? null)};try{var s=localStorage.getItem("hlid-theme");if(s==="dark"||s==="tan")t=s;}catch(e){}if(m&&m!=="same"&&window.matchMedia("(pointer: coarse)").matches)t=m;document.documentElement.setAttribute("data-theme",t);document.documentElement.className=t;})();`;
 
 	return (
 		// suppressHydrationWarning: inline script mutates data-theme/className before
@@ -102,34 +159,46 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 			<head>
 				{/* biome-ignore lint/security/noDangerouslySetInnerHtml: theme init script built from JSON.stringify on enum values, no user input */}
 				<script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
-				<meta name="hlid-token" content={token} />
 				<HeadContent />
 			</head>
 			<body>
-				<div className="flex h-dvh overflow-hidden bg-background text-foreground">
-					<ErrorBoundary>
-						<Sidebar />
-					</ErrorBoundary>
-					<div
-						ref={wrapperRef}
-						className="flex-1 flex flex-col min-h-0 overflow-hidden relative"
-					>
-						<PullToRefreshIndicator pullY={pullY} isRefreshing={isRefreshing} />
+				{pathname === "/login" || pathname === "/login/" ? (
+					children
+				) : (
+					<div className="flex h-dvh overflow-hidden bg-background text-foreground">
 						<ErrorBoundary>
-							<UpdateBanner />
+							<Sidebar />
 						</ErrorBoundary>
-						<main className="flex-1 min-h-0 overflow-auto overscroll-y-contain">
-							{children}
-						</main>
-						<ErrorBoundary>
-							<BottomNav />
-						</ErrorBoundary>
+						<div
+							ref={wrapperRef}
+							className="flex-1 flex flex-col min-h-0 overflow-hidden relative"
+						>
+							<PullToRefreshIndicator
+								pullY={pullY}
+								isRefreshing={isRefreshing}
+							/>
+							<ErrorBoundary>
+								<UpdateBanner />
+							</ErrorBoundary>
+							<main className="flex-1 min-h-0 overflow-auto overscroll-y-contain pb-[calc(3.25rem+env(safe-area-inset-bottom))] md:pb-0">
+								{children}
+							</main>
+							<ErrorBoundary>
+								<BottomNav />
+							</ErrorBoundary>
+						</div>
 					</div>
-				</div>
+				)}
 				<Scripts />
-				<RegisterSW />
-				<SyncPrivacyStore />
-				<RegisterErrorLogger />
+				{pathname !== "/login" && pathname !== "/login/" && (
+					<>
+						<AuthSessionGuard key={pathname} />
+						<RegisterSW />
+						<SyncThemeFromConfig />
+						<SyncPrivacyStore />
+						<RegisterErrorLogger />
+					</>
+				)}
 			</body>
 		</html>
 	);

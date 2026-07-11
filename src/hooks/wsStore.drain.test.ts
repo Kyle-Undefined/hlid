@@ -16,7 +16,10 @@ let wsCtorSpy: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
 	currentWs = makeMockWs(WS_STATES.OPEN);
-	wsCtorSpy = vi.fn().mockImplementation(() => currentWs);
+	// biome-ignore lint/complexity/useArrowFunction: constructor mock for Vitest 4
+	wsCtorSpy = vi.fn().mockImplementation(function () {
+		return currentWs;
+	});
 	vi.stubGlobal("WebSocket", Object.assign(wsCtorSpy, WS_STATES));
 	wsStore.__resetForTesting();
 	// Bring the store's internal _ws up to OPEN by triggering a visibility

@@ -14,6 +14,7 @@ __unconfig*
 todos.json
 hlid.db
 hlid.db-*
+auth.json
 .cta.json
 logs/
 hlid.config.toml
@@ -24,4 +25,6 @@ src/server/whisper-embed-assets/
 vendor/whisper/
 whisper.zip
 build
+coverage
 .hlid/
+reports

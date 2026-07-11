@@ -18,7 +18,13 @@ beforeEach(() => {
 	currentWs = makeMockWs(WS_STATES.OPEN);
 	vi.stubGlobal(
 		"WebSocket",
-		Object.assign(vi.fn().mockReturnValue(currentWs), WS_STATES),
+		Object.assign(
+			// biome-ignore lint/complexity/useArrowFunction: constructor mock for Vitest 4
+			vi.fn().mockImplementation(function () {
+				return currentWs;
+			}),
+			WS_STATES,
+		),
 	);
 	wsStore.__resetForTesting();
 	// Bring _ws to OPEN by dispatching visibilitychange

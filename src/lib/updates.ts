@@ -8,7 +8,7 @@
 //      streams the versioned exe + checksums file into the staging dir,
 //      then verifyChecksum() validates the binary's SHA-256.
 //   3. UI hits POST /api/updates {action:"apply"} → applyUpdate() opens
-//      the staged exe via the Windows shell (`explorer.exe <path>`), the
+//      the server-held, reverified staged exe via the Windows shell, the
 //      same code path as a user double-clicking the file in Explorer.
 //      The running canonical stays up. The staged exe — once the user
 //      clicks through any SmartScreen prompt — runs maybeSelfInstall,
@@ -37,11 +37,12 @@ import {
 	existsSync,
 	mkdirSync,
 	readdirSync,
+	realpathSync,
 	rmSync,
 	unlinkSync,
 } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { canonicalInstallDir } from "./install";
@@ -84,6 +85,17 @@ type ReleaseResponse = {
 	prerelease?: boolean;
 	assets: ReleaseAsset[];
 };
+
+type VerifiedArtifact = {
+	path: string;
+	digest: string;
+	version: string;
+};
+
+// This capability is intentionally held only by the server process. The HTTP
+// client may ask to apply the most recently verified download, but it cannot
+// select a filesystem path for execution.
+let verifiedArtifact: VerifiedArtifact | null = null;
 
 function stagingDir(): string {
 	return join(canonicalInstallDir(), "updates");
@@ -336,8 +348,9 @@ function checksumFor(text: string, filename: string): string | null {
 }
 
 export async function downloadUpdate(): Promise<
-	ActionResult<{ stagedExe: string; version: string }>
+	ActionResult<{ version: string }>
 > {
+	verifiedArtifact = null;
 	const cache = await readCache();
 	if (
 		!cache.latestVersion ||
@@ -403,18 +416,54 @@ export async function downloadUpdate(): Promise<
 			error: `checksum mismatch (expected ${expected.slice(0, 12)}…, got ${actual.slice(0, 12)}…)`,
 		};
 	}
+	verifiedArtifact = {
+		path: exePath,
+		digest: expected,
+		version: cache.latestVersion,
+	};
 
 	return {
 		ok: true,
-		data: { stagedExe: exePath, version: cache.latestVersion },
+		data: { version: cache.latestVersion },
 	};
 }
 
-export async function applyUpdate(
-	stagedExe: string,
-): Promise<ActionResult<{ version: string | null }>> {
-	if (!existsSync(stagedExe)) {
+export async function applyUpdate(): Promise<
+	ActionResult<{ version: string }>
+> {
+	const artifact = verifiedArtifact;
+	if (!artifact) {
+		return { ok: false, error: "no verified staged update; re-download" };
+	}
+	if (!existsSync(artifact.path)) {
+		verifiedArtifact = null;
 		return { ok: false, error: "staged exe missing; re-download" };
+	}
+
+	let stagedExe: string;
+	try {
+		const root = realpathSync(stagingDir());
+		stagedExe = realpathSync(artifact.path);
+		const rel = relative(root, stagedExe);
+		if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
+			verifiedArtifact = null;
+			return { ok: false, error: "staged exe escaped update directory" };
+		}
+		// Resolve once more to make the intended canonical containment explicit
+		// before handing the path to the platform shell.
+		if (resolve(root, rel) !== stagedExe) {
+			verifiedArtifact = null;
+			return { ok: false, error: "invalid staged exe path" };
+		}
+	} catch {
+		verifiedArtifact = null;
+		return { ok: false, error: "staged exe missing; re-download" };
+	}
+
+	const actual = await sha256Of(stagedExe).catch(() => null);
+	if (actual !== artifact.digest) {
+		verifiedArtifact = null;
+		return { ok: false, error: "staged exe checksum changed; re-download" };
 	}
 
 	// Open the staged exe via Windows shell — same code path as the user
@@ -438,14 +487,14 @@ export async function applyUpdate(
 		return { ok: false, error: `failed to launch: ${(e as Error).message}` };
 	}
 
-	const cache = await readCache().catch(() => null);
-	return { ok: true, data: { version: cache?.latestVersion ?? null } };
+	return { ok: true, data: { version: artifact.version } };
 }
 
 // Best-effort cleanup of the staging dir. Called on boot, after the new
 // canonical instance is up, so a successful update doesn't leave the prior
 // versioned exe + checksums file lying around forever.
 export function cleanupStagingDir(): void {
+	verifiedArtifact = null;
 	const dir = stagingDir();
 	try {
 		if (existsSync(dir)) {

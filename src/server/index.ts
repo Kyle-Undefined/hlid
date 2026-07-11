@@ -3,10 +3,11 @@ import type { ServerWebSocket } from "bun";
 import * as db from "../db";
 import { isAllowedOrigin, isAllowedOriginHeader } from "../lib/allowedOrigin";
 import { registerBunServer } from "../lib/lifecycle";
-import { loadToken, verifyToken } from "../lib/token";
+import { loadToken } from "../lib/token";
 import type { AgentProvider, McpServerStatus } from "./agentProvider";
 import { buildApiIndex } from "./apiIndex";
 import { handleAttachmentRoute } from "./attachmentRoutes";
+import { authorizeServiceRequest, resetAuthentication } from "./auth";
 import { openInBrowser } from "./browser";
 import { ClaudeProvider } from "./claudeProvider";
 import { closeAllCodexAppServers, listCodexAppServers } from "./codexAppServer";
@@ -17,6 +18,12 @@ import { getLiveSessionsStatus } from "./liveSessions";
 import { createModelCatalog } from "./providerCatalog";
 import { startProviderProxy } from "./proxy";
 import { bootstrapPtyRuntime } from "./pty-bootstrap";
+import {
+	contentLengthExceeds,
+	MAX_VOICE_BODY_BYTES,
+	MULTIPART_OVERHEAD_BYTES,
+	payloadTooLarge,
+} from "./requestLimits";
 import { broadcast } from "./runState";
 import { SessionPool } from "./sessionPool";
 import { resolveAllowedTerminalCwd } from "./terminalAccess";
@@ -31,6 +38,18 @@ import {
 	createTerminalWsHandlers,
 	type TerminalWsData,
 } from "./wsHandlers.terminal";
+import {
+	MAX_WS_PAYLOAD_BYTES,
+	parseInitialTerminalDimensions,
+} from "./wsSchemas";
+
+if (process.argv[2] === "auth" && process.argv[3] === "reset") {
+	await resetAuthentication();
+	console.log(
+		"Hlid authentication reset. Restart Hlid to create a new password.",
+	);
+	process.exit(0);
+}
 
 // In a compiled exe (--windows-hide-console), any write to stdout/stderr causes
 // Bun to call AllocConsole(), making Windows show a console window. Redirect
@@ -115,6 +134,8 @@ const terminalPool = new TerminalSessionPool(ptyWorkerPath, () => {
 	});
 });
 const SERVER_TOKEN = loadToken();
+const MAX_ACTIVE_VOICE_REQUESTS = 2;
+let activeVoiceRequests = 0;
 
 // Restore cached MCP status from previous run so cockpit shows servers before first query
 void db.getSetting("mcp_status_cache").then((cached) => {
@@ -194,17 +215,17 @@ registerBunServer(
 	Bun.serve<WsData | TerminalWsData>({
 		port: PORT,
 		hostname: BIND_HOST,
+		maxRequestBodySize: Math.max(
+			MAX_VOICE_BODY_BYTES,
+			config.attachments.max_bytes + MULTIPART_OVERHEAD_BYTES,
+		),
 		...tlsConfig,
 
 		async fetch(req, server) {
 			const url = new URL(req.url);
+			const peerIp = server.requestIP(req)?.address;
 
-			if (
-				!isAllowedOrigin(
-					server.requestIP(req)?.address,
-					config.server.local_network_access,
-				)
-			) {
+			if (!isAllowedOrigin(peerIp, config.server.local_network_access)) {
 				return new Response("Forbidden", { status: 403 });
 			}
 
@@ -231,7 +252,7 @@ registerBunServer(
 				) {
 					return new Response("Forbidden", { status: 403 });
 				}
-				if (!verifyToken(url.searchParams.get("token"), SERVER_TOKEN)) {
+				if (!(await authorizeServiceRequest(req, peerIp, SERVER_TOKEN))) {
 					return new Response("Unauthorized", { status: 401 });
 				}
 				if (
@@ -253,7 +274,7 @@ registerBunServer(
 				) {
 					return new Response("Forbidden", { status: 403 });
 				}
-				if (!verifyToken(url.searchParams.get("token"), SERVER_TOKEN)) {
+				if (!(await authorizeServiceRequest(req, peerIp, SERVER_TOKEN))) {
 					return new Response("Unauthorized", { status: 401 });
 				}
 				const sessionId = url.searchParams.get("session_id") ?? "";
@@ -268,13 +289,9 @@ registerBunServer(
 					label =
 						(await db.getSessionById(sessionId))?.label ?? "Terminal session";
 				}
-				const cols = Math.max(
-					1,
-					parseInt(url.searchParams.get("cols") ?? "80", 10),
-				);
-				const rows = Math.max(
-					1,
-					parseInt(url.searchParams.get("rows") ?? "24", 10),
+				const { cols, rows } = parseInitialTerminalDimensions(
+					url.searchParams.get("cols"),
+					url.searchParams.get("rows"),
 				);
 				// Look up claude_session_id for --resume
 				let claudeSessionId: string | null = null;
@@ -300,6 +317,13 @@ registerBunServer(
 				)
 					return undefined;
 				return new Response("WebSocket upgrade required", { status: 426 });
+			}
+
+			if (!(await authorizeServiceRequest(req, peerIp, SERVER_TOKEN))) {
+				return Response.json(
+					{ error: "Unauthorized" },
+					{ status: 401, headers: { "cache-control": "no-store" } },
+				);
 			}
 
 			if (url.pathname === "/status") {
@@ -412,6 +436,16 @@ registerBunServer(
 			}
 
 			if (url.pathname === "/voice/transcribe" && req.method === "POST") {
+				if (contentLengthExceeds(req, MAX_VOICE_BODY_BYTES)) {
+					return payloadTooLarge(MAX_VOICE_BODY_BYTES);
+				}
+				if (activeVoiceRequests >= MAX_ACTIVE_VOICE_REQUESTS) {
+					return Response.json(
+						{ error: "voice transcription capacity reached" },
+						{ status: 429, headers: { "retry-after": "1" } },
+					);
+				}
+				activeVoiceRequests++;
 				try {
 					const form = await req.formData();
 					const audio = form.get("audio");
@@ -429,6 +463,8 @@ registerBunServer(
 						{ error: (error as Error).message },
 						{ status: 503 },
 					);
+				} finally {
+					activeVoiceRequests--;
 				}
 			}
 
@@ -469,6 +505,7 @@ registerBunServer(
 			const isTerminalWs = (ws: AppWs): ws is TerminalWs =>
 				"isTerminal" in ws.data && ws.data.isTerminal === true;
 			return {
+				maxPayloadLength: MAX_WS_PAYLOAD_BYTES,
 				open(ws: AppWs) {
 					if (isTerminalWs(ws)) termHandlers.open(ws);
 					else chatHandlers.open(ws);
@@ -500,5 +537,6 @@ if (config.server.tls_cert_path && config.server.tls_key_path) {
 		config.server.tls_cert_path,
 		config.server.tls_key_path,
 		config.server.local_network_access,
+		SERVER_TOKEN,
 	);
 }

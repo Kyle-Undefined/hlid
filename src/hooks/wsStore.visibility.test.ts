@@ -16,7 +16,10 @@ let wsCtorSpy: ReturnType<typeof vi.fn>;
 beforeEach(() => {
 	// Fresh mock WS that is immediately OPEN (simulates successful connect)
 	const mockWs = makeMockWs(WS_STATES.OPEN);
-	wsCtorSpy = vi.fn().mockReturnValue(mockWs);
+	// biome-ignore lint/complexity/useArrowFunction: constructor mock for Vitest 4
+	wsCtorSpy = vi.fn().mockImplementation(function () {
+		return mockWs;
+	});
 	vi.stubGlobal("WebSocket", Object.assign(wsCtorSpy, WS_STATES));
 
 	// Reset all module state; _ws becomes null

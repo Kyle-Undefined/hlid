@@ -6,7 +6,7 @@
  *
  * Callers are responsible for authorising the agentPath before calling.
  */
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import type { HlidConfig } from "../config";
 import { expandTilde, samePath } from "./paths";
@@ -31,14 +31,31 @@ export function deriveAgentName(p: string): string {
  * Validate that agentPath refers to a registered agent in config.
  * Throws "Unauthorized" if the path is not in config.agents.
  */
-export function validateAgentPath(agentPath: string, config: HlidConfig): void {
-	const allowedPaths = (config.agents ?? []).map((a) =>
-		resolve(expandTilde(a.path)),
-	);
-	const requested = resolve(expandTilde(agentPath));
+export function resolveAuthorizedAgentPath(
+	agentPath: string,
+	config: HlidConfig,
+): string {
+	let requested: string;
+	try {
+		requested = realpathSync(resolve(expandTilde(agentPath)));
+	} catch {
+		throw new Error("Unauthorized");
+	}
+	const allowedPaths = (config.agents ?? []).flatMap((agent) => {
+		try {
+			return [realpathSync(resolve(expandTilde(agent.path)))];
+		} catch {
+			return [];
+		}
+	});
 	if (!allowedPaths.some((p) => samePath(p, requested))) {
 		throw new Error("Unauthorized");
 	}
+	return requested;
+}
+
+export function validateAgentPath(agentPath: string, config: HlidConfig): void {
+	resolveAuthorizedAgentPath(agentPath, config);
 }
 
 // ─── Read helper ─────────────────────────────────────────────────────────────

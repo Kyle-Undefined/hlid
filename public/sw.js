@@ -1,4 +1,4 @@
-const CACHE = "hlid-v2";
+const CACHE = "hlid-v3";
 const STATIC_EXTS = [".js", ".css", ".png", ".svg", ".ico", ".woff2"];
 
 self.addEventListener("install", () => {

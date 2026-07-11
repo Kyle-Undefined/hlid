@@ -17,29 +17,17 @@ import { useEffect, useRef, useState } from "react";
 export interface TerminalViewProps {
 	sessionId: string;
 	cwd: string;
-	/** Auth token for the WS connection. If omitted, read from meta[name="hlid-token"]. */
-	token?: string;
 	active: boolean;
 	/** Called when the user wants to start a new terminal session after the current one exits. */
 	onNewSession?: () => void;
 }
 
-function readHlidToken(): string {
-	return (
-		document
-			.querySelector('meta[name="hlid-token"]')
-			?.getAttribute("content") ?? ""
-	);
-}
-
 export function TerminalView({
 	sessionId,
 	cwd,
-	token: tokenProp,
 	active,
 	onNewSession,
 }: TerminalViewProps) {
-	const token = tokenProp ?? readHlidToken();
 	const containerRef = useRef<HTMLDivElement>(null);
 	const termRef = useRef<Terminal | null>(null);
 	const wsRef = useRef<WebSocket | null>(null);
@@ -102,7 +90,6 @@ export function TerminalView({
 				? `${wsProto}//${location.host}/ws/terminal`
 				: `${wsProto}//${location.hostname}:${Number(location.port) + 1}/ws/terminal`;
 		const url = new URL(wsBase);
-		url.searchParams.set("token", token);
 		url.searchParams.set("session_id", sessionId);
 		url.searchParams.set("cwd", cwd);
 		url.searchParams.set("cols", String(cols));
@@ -178,7 +165,7 @@ export function TerminalView({
 			termRef.current = null;
 			fitRef.current = null;
 		};
-	}, [active, sessionId, cwd, token]);
+	}, [active, sessionId, cwd]);
 
 	// ── Render ────────────────────────────────────────────────────────────────
 

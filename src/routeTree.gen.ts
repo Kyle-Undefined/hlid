@@ -12,6 +12,7 @@ import { Route as rootRouteImport } from './routes/__root'
 import { Route as VaultRouteImport } from './routes/vault'
 import { Route as RelicsRouteImport } from './routes/relics'
 import { Route as RavenRouteImport } from './routes/raven'
+import { Route as LoginRouteImport } from './routes/login'
 import { Route as LedgerRouteImport } from './routes/ledger'
 import { Route as ForgeRouteImport } from './routes/forge'
 import { Route as EinherjarRouteImport } from './routes/einherjar'
@@ -29,6 +30,7 @@ import { Route as ApiVaultSkillsRouteImport } from './routes/api/vault/skills'
 import { Route as ApiVaultMemoryRouteImport } from './routes/api/vault/memory'
 import { Route as ApiMcpVaultRouteImport } from './routes/api/mcp/vault'
 import { Route as ApiMcpAgentRouteImport } from './routes/api/mcp/agent'
+import { Route as ApiAuthActionRouteImport } from './routes/api/auth.$action'
 import { Route as ApiAttachmentsUploadRouteImport } from './routes/api/attachments/upload'
 import { Route as ApiAttachmentsIdRouteImport } from './routes/api/attachments/$id'
 import { Route as ApiAgentsValidateRouteImport } from './routes/api/agents/validate'
@@ -50,6 +52,11 @@ const RelicsRoute = RelicsRouteImport.update({
 const RavenRoute = RavenRouteImport.update({
   id: '/raven',
   path: '/raven',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const LoginRoute = LoginRouteImport.update({
+  id: '/login',
+  path: '/login',
   getParentRoute: () => rootRouteImport,
 } as any)
 const LedgerRoute = LedgerRouteImport.update({
@@ -137,6 +144,11 @@ const ApiMcpAgentRoute = ApiMcpAgentRouteImport.update({
   path: '/api/mcp/agent',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiAuthActionRoute = ApiAuthActionRouteImport.update({
+  id: '/api/auth/$action',
+  path: '/api/auth/$action',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiAttachmentsUploadRoute = ApiAttachmentsUploadRouteImport.update({
   id: '/api/attachments/upload',
   path: '/api/attachments/upload',
@@ -178,6 +190,7 @@ export interface FileRoutesByFullPath {
   '/einherjar': typeof EinherjarRoute
   '/forge': typeof ForgeRoute
   '/ledger': typeof LedgerRoute
+  '/login': typeof LoginRoute
   '/raven': typeof RavenRoute
   '/relics': typeof RelicsRoute
   '/vault': typeof VaultRoute
@@ -192,6 +205,7 @@ export interface FileRoutesByFullPath {
   '/api/agents/validate': typeof ApiAgentsValidateRoute
   '/api/attachments/$id': typeof ApiAttachmentsIdRouteWithChildren
   '/api/attachments/upload': typeof ApiAttachmentsUploadRoute
+  '/api/auth/$action': typeof ApiAuthActionRoute
   '/api/mcp/agent': typeof ApiMcpAgentRouteWithChildren
   '/api/mcp/vault': typeof ApiMcpVaultRouteWithChildren
   '/api/vault/memory': typeof ApiVaultMemoryRoute
@@ -207,6 +221,7 @@ export interface FileRoutesByTo {
   '/einherjar': typeof EinherjarRoute
   '/forge': typeof ForgeRoute
   '/ledger': typeof LedgerRoute
+  '/login': typeof LoginRoute
   '/raven': typeof RavenRoute
   '/relics': typeof RelicsRoute
   '/vault': typeof VaultRoute
@@ -221,6 +236,7 @@ export interface FileRoutesByTo {
   '/api/agents/validate': typeof ApiAgentsValidateRoute
   '/api/attachments/$id': typeof ApiAttachmentsIdRouteWithChildren
   '/api/attachments/upload': typeof ApiAttachmentsUploadRoute
+  '/api/auth/$action': typeof ApiAuthActionRoute
   '/api/mcp/agent': typeof ApiMcpAgentRouteWithChildren
   '/api/mcp/vault': typeof ApiMcpVaultRouteWithChildren
   '/api/vault/memory': typeof ApiVaultMemoryRoute
@@ -237,6 +253,7 @@ export interface FileRoutesById {
   '/einherjar': typeof EinherjarRoute
   '/forge': typeof ForgeRoute
   '/ledger': typeof LedgerRoute
+  '/login': typeof LoginRoute
   '/raven': typeof RavenRoute
   '/relics': typeof RelicsRoute
   '/vault': typeof VaultRoute
@@ -251,6 +268,7 @@ export interface FileRoutesById {
   '/api/agents/validate': typeof ApiAgentsValidateRoute
   '/api/attachments/$id': typeof ApiAttachmentsIdRouteWithChildren
   '/api/attachments/upload': typeof ApiAttachmentsUploadRoute
+  '/api/auth/$action': typeof ApiAuthActionRoute
   '/api/mcp/agent': typeof ApiMcpAgentRouteWithChildren
   '/api/mcp/vault': typeof ApiMcpVaultRouteWithChildren
   '/api/vault/memory': typeof ApiVaultMemoryRoute
@@ -268,6 +286,7 @@ export interface FileRouteTypes {
     | '/einherjar'
     | '/forge'
     | '/ledger'
+    | '/login'
     | '/raven'
     | '/relics'
     | '/vault'
@@ -282,6 +301,7 @@ export interface FileRouteTypes {
     | '/api/agents/validate'
     | '/api/attachments/$id'
     | '/api/attachments/upload'
+    | '/api/auth/$action'
     | '/api/mcp/agent'
     | '/api/mcp/vault'
     | '/api/vault/memory'
@@ -297,6 +317,7 @@ export interface FileRouteTypes {
     | '/einherjar'
     | '/forge'
     | '/ledger'
+    | '/login'
     | '/raven'
     | '/relics'
     | '/vault'
@@ -311,6 +332,7 @@ export interface FileRouteTypes {
     | '/api/agents/validate'
     | '/api/attachments/$id'
     | '/api/attachments/upload'
+    | '/api/auth/$action'
     | '/api/mcp/agent'
     | '/api/mcp/vault'
     | '/api/vault/memory'
@@ -326,6 +348,7 @@ export interface FileRouteTypes {
     | '/einherjar'
     | '/forge'
     | '/ledger'
+    | '/login'
     | '/raven'
     | '/relics'
     | '/vault'
@@ -340,6 +363,7 @@ export interface FileRouteTypes {
     | '/api/agents/validate'
     | '/api/attachments/$id'
     | '/api/attachments/upload'
+    | '/api/auth/$action'
     | '/api/mcp/agent'
     | '/api/mcp/vault'
     | '/api/vault/memory'
@@ -356,6 +380,7 @@ export interface RootRouteChildren {
   EinherjarRoute: typeof EinherjarRoute
   ForgeRoute: typeof ForgeRoute
   LedgerRoute: typeof LedgerRoute
+  LoginRoute: typeof LoginRoute
   RavenRoute: typeof RavenRoute
   RelicsRoute: typeof RelicsRoute
   VaultRoute: typeof VaultRoute
@@ -370,6 +395,7 @@ export interface RootRouteChildren {
   ApiAgentsValidateRoute: typeof ApiAgentsValidateRoute
   ApiAttachmentsIdRoute: typeof ApiAttachmentsIdRouteWithChildren
   ApiAttachmentsUploadRoute: typeof ApiAttachmentsUploadRoute
+  ApiAuthActionRoute: typeof ApiAuthActionRoute
   ApiMcpAgentRoute: typeof ApiMcpAgentRouteWithChildren
   ApiMcpVaultRoute: typeof ApiMcpVaultRouteWithChildren
   ApiVaultMemoryRoute: typeof ApiVaultMemoryRoute
@@ -399,6 +425,13 @@ declare module '@tanstack/react-router' {
       path: '/raven'
       fullPath: '/raven'
       preLoaderRoute: typeof RavenRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/login': {
+      id: '/login'
+      path: '/login'
+      fullPath: '/login'
+      preLoaderRoute: typeof LoginRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/ledger': {
@@ -520,6 +553,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiMcpAgentRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/auth/$action': {
+      id: '/api/auth/$action'
+      path: '/api/auth/$action'
+      fullPath: '/api/auth/$action'
+      preLoaderRoute: typeof ApiAuthActionRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/attachments/upload': {
       id: '/api/attachments/upload'
       path: '/api/attachments/upload'
@@ -612,6 +652,7 @@ const rootRouteChildren: RootRouteChildren = {
   EinherjarRoute: EinherjarRoute,
   ForgeRoute: ForgeRoute,
   LedgerRoute: LedgerRoute,
+  LoginRoute: LoginRoute,
   RavenRoute: RavenRoute,
   RelicsRoute: RelicsRoute,
   VaultRoute: VaultRoute,
@@ -626,6 +667,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAgentsValidateRoute: ApiAgentsValidateRoute,
   ApiAttachmentsIdRoute: ApiAttachmentsIdRouteWithChildren,
   ApiAttachmentsUploadRoute: ApiAttachmentsUploadRoute,
+  ApiAuthActionRoute: ApiAuthActionRoute,
   ApiMcpAgentRoute: ApiMcpAgentRouteWithChildren,
   ApiMcpVaultRoute: ApiMcpVaultRouteWithChildren,
   ApiVaultMemoryRoute: ApiVaultMemoryRoute,
@@ -638,10 +680,11 @@ export const routeTree = rootRouteImport
   ._addFileTypes<FileRouteTypes>()
 
 import type { getRouter } from './router.tsx'
-import type { createStart } from '@tanstack/react-start'
+import type { startInstance } from './start.ts'
 declare module '@tanstack/react-start' {
   interface Register {
     ssr: true
     router: Awaited<ReturnType<typeof getRouter>>
+    config: Awaited<ReturnType<typeof startInstance.getOptions>>
   }
 }

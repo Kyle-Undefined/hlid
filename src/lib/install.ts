@@ -59,9 +59,13 @@ async function isRunning(port: number): Promise<boolean> {
 
 async function postShutdown(port: number): Promise<void> {
 	try {
+		const { loadToken } = await import("./token");
 		await fetch(`http://127.0.0.1:${port}/api/lifecycle`, {
 			method: "POST",
-			headers: { "Content-Type": "application/json" },
+			headers: {
+				"Content-Type": "application/json",
+				"x-hlid-internal": loadToken(),
+			},
 			body: JSON.stringify({ action: "shutdown" }),
 			signal: AbortSignal.timeout(2000),
 		});

@@ -54,7 +54,7 @@ bun run dev:all
 
 `dev:all` runs three processes concurrently: the Vite UI, the Bun API/WS server, and the TLS proxy (only if cert/key paths are configured in `hlid.config.toml`).
 
-First launch opens a setup wizard. Pick your vault folder; `Hlid` scans it and pre-fills the detected structure; you confirm. Config writes to `hlid.config.toml`.
+First launch asks you to create an app password from the Hlid machine, then opens the setup wizard. Pick your vault folder; `Hlid` scans it and pre-fills the detected structure; you confirm. Config writes to `hlid.config.toml`.
 
 ## Config
 
@@ -116,6 +116,18 @@ Managed from `FORGE`. Install/uninstall writes `HKCU\Software\Microsoft\Windows\
 
 ## Auth
 
-Tailscale is the auth layer. `Hlid` binds to `0.0.0.0` so it's reachable from any device on your tailnet. The TLS proxy and HTTP server gate requests through `lib/allowedOrigin.ts`: by default only localhost and Tailscale CGNAT (`100.64.0.0/10`) are allowed; flip `server.local_network_access = true` in config to also accept RFC1918 ranges.
+Hlid requires a single-owner app password on localhost and remote devices. The first password can be created only from the Hlid machine. Passwords are stored as Argon2id hashes; successful unlocks create an opaque, HttpOnly trusted-device session with a fixed 30-day lifetime. Use **LOCK** to revoke the current browser, or Forge → Security to change the password or revoke every device.
 
-A per-install token (`lib/token.ts`) is embedded in the page head and sent on WebSocket connect to gate the streaming session. `FORGE` shows live Tailscale state (binary detected, backend state, MagicDNS name, IPs) via the local `tailscale` CLI.
+Remote password login is accepted only over HTTPS. Tailscale and the IP/origin allowlist remain defense in depth: by default only localhost and Tailscale CGNAT (`100.64.0.0/10`) are allowed; flip `server.local_network_access = true` in config to also accept RFC1918 ranges. HTTP, server functions, direct API routes, chat WebSockets, and terminal WebSockets all enforce the same server-side session.
+
+If the password is lost, run this on the Hlid machine and restart the app:
+
+```bash
+# packaged Windows app
+hlid.exe auth reset
+
+# source checkout
+bun src/server/index.ts auth reset
+```
+
+Resetting authentication deletes the credential and every trusted-device session; it does not change vault data or application configuration. `FORGE` shows live Tailscale state (binary detected, backend state, MagicDNS name, IPs) via the local `tailscale` CLI.

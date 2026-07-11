@@ -13,7 +13,7 @@ type ApplyState =
 	| { phase: "idle" }
 	| { phase: "checking" }
 	| { phase: "downloading" }
-	| { phase: "downloaded"; stagedExe: string; targetVersion: string }
+	| { phase: "downloaded"; targetVersion: string }
 	| { phase: "launching"; targetVersion: string }
 	| { phase: "error"; message: string };
 
@@ -88,12 +88,11 @@ export function UpdatesSection() {
 
 	async function postAction(
 		action: "check" | "download" | "apply",
-		extra?: Record<string, unknown>,
 	): Promise<{ ok: boolean; data?: unknown; error?: string }> {
 		const res = await fetch("/api/updates", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ action, ...(extra ?? {}) }),
+			body: JSON.stringify({ action }),
 		});
 		return (await res.json()) as {
 			ok: boolean;
@@ -118,8 +117,8 @@ export function UpdatesSection() {
 	// Download + checksum-verify the new exe, then surface a "Launch" button.
 	// We don't auto-launch because Windows SmartScreen only renders its
 	// "More info → Run anyway" prompt when the launch comes from an
-	// interactive shell context. Routing the launch through `explorer.exe
-	// <stagedExe>` (server-side) on a user click is what gets the prompt
+	// interactive shell context. Routing the server-held verified artifact
+	// through `explorer.exe` on a user click is what gets the prompt
 	// in front of the user; a programmatic spawn is silently suppressed
 	// for unsigned binaries with no SmartScreen reputation.
 	async function downloadOnly() {
@@ -131,25 +130,24 @@ export function UpdatesSection() {
 			setState({ phase: "error", message: dl.error ?? "download failed" });
 			return;
 		}
-		const data = dl.data as { stagedExe: string; version: string } | undefined;
-		if (!data?.stagedExe || !data?.version) {
+		const data = dl.data as { version: string } | undefined;
+		if (!data?.version) {
 			setState({
 				phase: "error",
-				message: "incomplete download response (missing stagedExe or version)",
+				message: "incomplete download response (missing version)",
 			});
 			return;
 		}
 		setState({
 			phase: "downloaded",
-			stagedExe: data.stagedExe,
 			targetVersion: data.version,
 		});
 	}
 
-	async function launchStaged(stagedExe: string, targetVersion: string) {
+	async function launchStaged(targetVersion: string) {
 		launchingStartVersionRef.current = status?.current ?? null;
 		setState({ phase: "launching", targetVersion });
-		const ap = await postAction("apply", { stagedExe }).catch(
+		const ap = await postAction("apply").catch(
 			(e) => ({ ok: false, error: String(e) }) as const,
 		);
 		if (!ap.ok) {
@@ -242,7 +240,7 @@ export function UpdatesSection() {
 					<button
 						type="button"
 						onClick={() => {
-							void launchStaged(state.stagedExe, state.targetVersion);
+							void launchStaged(state.targetVersion);
 						}}
 						disabled={state.phase !== "downloaded"}
 						className="text-[10px] tracking-widest px-3 py-1.5 border border-primary/40 text-primary hover:bg-primary/10 transition-colors uppercase disabled:opacity-40"

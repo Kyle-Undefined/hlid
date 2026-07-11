@@ -1,11 +1,11 @@
 import { lstatSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
-import matter from "gray-matter";
 import {
 	classifyStatus,
 	type ProjectStatus,
 	type StatusVocabulary,
 } from "#/lib/classify";
+import { parseFrontmatter } from "./frontmatter";
 import { pathStartsWith } from "./paths";
 import type { Skill } from "./skills";
 
@@ -55,7 +55,7 @@ function buildNodes(dir: string, baseDir: string): ProjectNode[] {
 				});
 			} else if (entry.endsWith(".md")) {
 				const raw = readFileSync(full, "utf-8");
-				const { content } = matter(raw);
+				const { content } = parseFrontmatter(raw);
 				nodes.push({
 					name: entry.replace(/\.md$/, ""),
 					path,
@@ -136,7 +136,7 @@ export function scanProjects(
 
 				try {
 					const raw = readFileSync(mainFullPath, "utf-8");
-					const parsed = matter(raw);
+					const parsed = parseFrontmatter(raw);
 					rawStatus = String(parsed.data.status ?? "");
 					title = (parsed.data.title as string | undefined) ?? entry;
 					tags = Array.isArray(parsed.data.tags)
@@ -167,7 +167,7 @@ export function scanProjects(
 			} else if (entry.endsWith(".md")) {
 				try {
 					const raw = readFileSync(full, "utf-8");
-					const { data, content } = matter(raw);
+					const { data, content } = parseFrontmatter(raw);
 					const rawStatus = String(data.status ?? "");
 					projects.push({
 						file: entry,
@@ -283,7 +283,7 @@ export function scanSkills(
 	const skills = skillFiles.map(({ file, fullPath }) => {
 		try {
 			const raw = readFileSync(fullPath, "utf-8");
-			const { data, content } = matter(raw);
+			const { data, content } = parseFrontmatter(raw);
 			const name =
 				(data.name as string | undefined) ??
 				file.split(sep)[0].replace(/\.md$/, "");
@@ -344,7 +344,7 @@ function walkMd(dir: string, root: string): MemoryFile[] {
 			} else if (entry.endsWith(".md")) {
 				const rel = relative(root, full);
 				const raw = readFileSync(full, "utf-8");
-				const { content } = matter(raw);
+				const { content } = parseFrontmatter(raw);
 				results.push({ path: rel, name: entry.replace(/\.md$/, ""), content });
 			}
 		} catch {
@@ -400,7 +400,7 @@ export function scanFolderGroups(
 				groups.push({ name: entry, children: buildNodes(full, full) });
 			} else if (entry.endsWith(".md")) {
 				const raw = readFileSync(full, "utf-8");
-				const { content } = matter(raw);
+				const { content } = parseFrontmatter(raw);
 				looseFiles.push({
 					name: entry.replace(/\.md$/, ""),
 					path: entry,

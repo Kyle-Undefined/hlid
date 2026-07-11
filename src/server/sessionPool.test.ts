@@ -25,7 +25,8 @@ const mockInstances: {
 }[] = [];
 
 vi.mock("./session", () => ({
-	SessionManager: vi.fn().mockImplementation(() => {
+	// biome-ignore lint/complexity/useArrowFunction: constructor mock for Vitest 4
+	SessionManager: vi.fn().mockImplementation(function () {
 		const instance = {
 			abort: vi.fn(),
 			getStatus: vi

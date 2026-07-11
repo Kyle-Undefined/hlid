@@ -130,6 +130,22 @@ describe("handleUpload — request validation", () => {
 // ── handleUpload — size limit ─────────────────────────────────────────────────
 
 describe("handleUpload — size limit", () => {
+	it("rejects an oversized declared body before multipart parsing", async () => {
+		const config = makeConfig();
+		const formData = vi.fn();
+		const req = {
+			headers: new Headers({
+				"content-length": String(
+					config.attachments.max_bytes + 1024 * 1024 + 1,
+				),
+			}),
+			formData,
+		} as unknown as Request;
+		const res = await handleUpload(req, config);
+		expect(res.status).toBe(413);
+		expect(formData).not.toHaveBeenCalled();
+	});
+
 	it("returns 413 when file exceeds max_bytes", async () => {
 		const config = makeConfig();
 		const oversize = new Uint8Array(config.attachments.max_bytes + 1);

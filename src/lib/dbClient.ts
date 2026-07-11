@@ -19,7 +19,10 @@ export async function dbFetch(
 	init?: RequestInit,
 ): Promise<Response> {
 	const base = await getBase();
-	return fetch(`${base}${path}`, init);
+	const { loadToken } = await import("./token");
+	const headers = new Headers(init?.headers);
+	headers.set("x-hlid-internal", loadToken());
+	return fetch(`${base}${path}`, { ...init, headers });
 }
 
 /**

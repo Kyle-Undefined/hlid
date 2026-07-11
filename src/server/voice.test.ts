@@ -27,4 +27,14 @@ describe("VoiceModelManager", () => {
 			models.every((model) => model.downloadUrl.startsWith("https://")),
 		).toBe(true);
 	});
+
+	it("rejects delete and load operations outside the reviewed model manifest", async () => {
+		const manager = new VoiceModelManager(DEFAULT_VOICE_CONFIG, null);
+		expect(() => manager.deleteModel("x/../../../../target")).toThrow(
+			"unknown voice model",
+		);
+		await expect(manager.load("x/../../../../target")).rejects.toThrow(
+			"unknown voice model",
+		);
+	});
 });

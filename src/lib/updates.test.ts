@@ -12,6 +12,8 @@
  *   - beforeEach: re-applies the default return values that resetAllMocks
  *     would otherwise strip.
  */
+
+import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ── module mocks (hoisted) ────────────────────────────────────────────────────
@@ -34,6 +36,7 @@ vi.mock("node:fs", () => ({
 	existsSync: vi.fn(),
 	mkdirSync: vi.fn(),
 	readdirSync: vi.fn(),
+	realpathSync: vi.fn(),
 	rmSync: vi.fn(),
 	unlinkSync: vi.fn(),
 }));
@@ -52,12 +55,18 @@ import {
 	existsSync,
 	mkdirSync,
 	readdirSync,
+	realpathSync,
 	rmSync,
 	unlinkSync,
 } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
 import { canonicalInstallDir } from "./install";
-import { cleanupStagingDir, downloadUpdate, getStatus } from "./updates";
+import {
+	applyUpdate,
+	cleanupStagingDir,
+	downloadUpdate,
+	getStatus,
+} from "./updates";
 
 // ── global test fixtures ──────────────────────────────────────────────────────
 
@@ -71,6 +80,7 @@ beforeEach(() => {
 	vi.mocked(existsSync).mockReturnValue(false);
 	vi.mocked(mkdirSync).mockReturnValue(undefined as never);
 	vi.mocked(readdirSync).mockReturnValue([] as never);
+	vi.mocked(realpathSync).mockImplementation((path) => String(path));
 	vi.mocked(rmSync).mockReturnValue(undefined);
 	vi.mocked(unlinkSync).mockReturnValue(undefined);
 });
@@ -389,6 +399,53 @@ describe("getStatus — cache file edge cases", () => {
 // ── downloadUpdate — early exits ──────────────────────────────────────────────
 
 describe("downloadUpdate — early exits", () => {
+	it("cannot apply a caller-selected path without a server-verified artifact", async () => {
+		const result = await (
+			applyUpdate as unknown as (
+				ignoredPath: string,
+			) => ReturnType<typeof applyUpdate>
+		)("/tmp/caller-selected.exe");
+		expect(result).toEqual({
+			ok: false,
+			error: "no verified staged update; re-download",
+		});
+	});
+
+	it("revalidates the server-held artifact checksum immediately before apply", async () => {
+		const filename = "hlid-v2.0.0-windows-x64.exe";
+		const verifiedBytes = Buffer.from("verified release");
+		const digest = createHash("sha256").update(verifiedBytes).digest("hex");
+		vi.mocked(readFile)
+			.mockResolvedValueOnce(makeCacheJson("2.0.0") as never)
+			.mockResolvedValueOnce(`${digest}  ${filename}\n` as never)
+			.mockResolvedValueOnce(verifiedBytes as never);
+		vi.stubGlobal(
+			"fetch",
+			vi
+				.fn()
+				.mockResolvedValueOnce({
+					ok: true,
+					status: 200,
+					body: new ReadableStream<Uint8Array>(),
+				})
+				.mockResolvedValueOnce({
+					ok: true,
+					status: 200,
+					body: new ReadableStream<Uint8Array>(),
+				}),
+		);
+
+		expect((await downloadUpdate()).ok).toBe(true);
+		vi.mocked(existsSync).mockReturnValue(true);
+		vi.mocked(readFile).mockResolvedValueOnce(Buffer.from("tampered") as never);
+
+		const result = await applyUpdate();
+		expect(result).toEqual({
+			ok: false,
+			error: "staged exe checksum changed; re-download",
+		});
+	});
+
 	it("returns error when cache has no update info", async () => {
 		vi.mocked(readFile).mockResolvedValueOnce(
 			JSON.stringify({

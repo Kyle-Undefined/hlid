@@ -1,5 +1,6 @@
 import { createRouter as createTanStackRouter } from "@tanstack/react-router";
 import { ErrorFallback } from "./components/ErrorBoundary";
+import { installAuthRedirect } from "./lib/authClient";
 import { routeTree } from "./routeTree.gen";
 
 function RouterError({ error, reset }: { error: Error; reset: () => void }) {
@@ -7,6 +8,7 @@ function RouterError({ error, reset }: { error: Error; reset: () => void }) {
 }
 
 export function getRouter() {
+	installAuthRedirect();
 	const router = createTanStackRouter({
 		routeTree,
 		scrollRestoration: true,
