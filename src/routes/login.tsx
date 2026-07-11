@@ -21,7 +21,7 @@ function applyTheme(status: AuthStatus): void {
 
 export const Route = createFileRoute("/login")({ component: LoginPage });
 
-function LoginPage() {
+export function LoginPage() {
 	const navigate = useNavigate();
 	const [state, setState] = useState<AuthState | null>(null);
 	const [password, setPassword] = useState("");
@@ -115,11 +115,15 @@ function LoginPage() {
 									: "This device will remain trusted for 30 days."}
 							</p>
 						</div>
-						<label className="block space-y-1.5">
-							<span className="text-[10px] tracking-widest uppercase text-muted-foreground">
+						<div className="space-y-1.5">
+							<label
+								htmlFor="app-password"
+								className="block text-[10px] tracking-widest uppercase text-muted-foreground"
+							>
 								Password
-							</span>
+							</label>
 							<input
+								id="app-password"
 								type="password"
 								value={password}
 								onChange={(event) => setPassword(event.target.value)}
@@ -130,24 +134,44 @@ function LoginPage() {
 								}
 								minLength={12}
 								maxLength={256}
+								required
+								aria-describedby={
+									state === "setup-required"
+										? "new-password-requirements"
+										: undefined
+								}
 								className="w-full bg-secondary border border-border px-3 py-2 text-sm focus:outline-none focus:border-primary/60"
 							/>
-						</label>
-						{state === "setup-required" && (
-							<label className="block space-y-1.5">
-								<span className="text-[10px] tracking-widest uppercase text-muted-foreground">
-									Confirm password
+							{state === "setup-required" && (
+								<span
+									id="new-password-requirements"
+									className="block text-xs text-muted-foreground leading-relaxed"
+								>
+									Use 12 to 256 characters. There are no uppercase, number, or
+									symbol requirements.
 								</span>
+							)}
+						</div>
+						{state === "setup-required" && (
+							<div className="space-y-1.5">
+								<label
+									htmlFor="confirm-app-password"
+									className="block text-[10px] tracking-widest uppercase text-muted-foreground"
+								>
+									Confirm password
+								</label>
 								<input
+									id="confirm-app-password"
 									type="password"
 									value={confirm}
 									onChange={(event) => setConfirm(event.target.value)}
 									autoComplete="new-password"
 									minLength={12}
 									maxLength={256}
+									required
 									className="w-full bg-secondary border border-border px-3 py-2 text-sm focus:outline-none focus:border-primary/60"
 								/>
-							</label>
+							</div>
 						)}
 						{error && (
 							<p role="alert" className="text-xs text-destructive">

@@ -1,6 +1,24 @@
-import { describe, expect, it, vi } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_VOICE_CONFIG } from "../config";
 import { VoiceModelManager } from "./voice";
+
+function deferred<T>() {
+	let resolve!: (value: T) => void;
+	const promise = new Promise<T>((done) => {
+		resolve = done;
+	});
+	return { promise, resolve };
+}
+
+function fakeProcess() {
+	return {
+		exitCode: null,
+		kill: vi.fn(),
+	};
+}
 
 describe("VoiceModelManager", () => {
 	it("stays disabled without affecting server startup", async () => {
@@ -36,5 +54,156 @@ describe("VoiceModelManager", () => {
 		await expect(manager.load("x/../../../../target")).rejects.toThrow(
 			"unknown voice model",
 		);
+	});
+});
+
+describe.sequential("VoiceModelManager load lifecycle", () => {
+	let dataHome: string;
+	let executable: string;
+
+	function startPendingLoad() {
+		const health = deferred<Response>();
+		const process = fakeProcess();
+		const spawn = vi.fn().mockReturnValue(process);
+		vi.stubGlobal("Bun", {
+			spawn,
+			sleep: vi.fn().mockResolvedValue(undefined),
+		});
+		vi.spyOn(globalThis, "fetch").mockReturnValue(health.promise);
+		const manager = new VoiceModelManager(
+			{ ...DEFAULT_VOICE_CONFIG, enabled: true, model: "tiny" },
+			executable,
+		);
+		return { health, loading: manager.load("tiny"), manager, process, spawn };
+	}
+
+	beforeEach(() => {
+		dataHome = mkdtempSync(join(tmpdir(), "hlid-voice-"));
+		vi.stubEnv("XDG_DATA_HOME", dataHome);
+		const models = join(dataHome, "hlid", "voice", "models");
+		mkdirSync(models, { recursive: true });
+		writeFileSync(join(models, "ggml-tiny.bin"), "tiny");
+		writeFileSync(join(models, "ggml-base.bin"), "base");
+		executable = join(dataHome, "whisper-server.exe");
+		writeFileSync(executable, "runtime");
+	});
+
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		vi.unstubAllEnvs();
+		vi.restoreAllMocks();
+		rmSync(dataHome, { recursive: true, force: true });
+	});
+
+	it("keeps the newer model when an older health check completes last", async () => {
+		const tinyHealth = deferred<Response>();
+		const baseHealth = deferred<Response>();
+		const tinyProcess = fakeProcess();
+		const baseProcess = fakeProcess();
+		const spawn = vi
+			.fn()
+			.mockReturnValueOnce(tinyProcess)
+			.mockReturnValueOnce(baseProcess);
+		vi.stubGlobal("Bun", {
+			spawn,
+			sleep: vi.fn().mockResolvedValue(undefined),
+		});
+		vi.spyOn(Math, "random").mockReturnValueOnce(0).mockReturnValueOnce(0.5);
+		vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+			const url = String(input);
+			if (url === "http://127.0.0.1:18000/") return tinyHealth.promise;
+			if (url === "http://127.0.0.1:20000/") return baseHealth.promise;
+			throw new Error(`unexpected fetch: ${url}`);
+		});
+
+		const manager = new VoiceModelManager(
+			{ ...DEFAULT_VOICE_CONFIG, enabled: true, model: "tiny" },
+			executable,
+		);
+		const loadingTiny = manager.load("tiny");
+		await vi.waitFor(() => expect(spawn).toHaveBeenCalledTimes(1));
+		const loadingBase = manager.syncConfig({
+			...DEFAULT_VOICE_CONFIG,
+			enabled: true,
+			model: "base",
+		});
+		await vi.waitFor(() => expect(spawn).toHaveBeenCalledTimes(2));
+
+		baseHealth.resolve(new Response(null, { status: 200 }));
+		await loadingBase;
+		tinyHealth.resolve(new Response(null, { status: 200 }));
+		await loadingTiny;
+
+		expect(manager.status()).toEqual({
+			state: "ready",
+			model: "base",
+			loadedModel: "base",
+		});
+		expect(tinyProcess.kill).toHaveBeenCalled();
+		expect(baseProcess.kill).not.toHaveBeenCalled();
+		manager.close();
+	});
+
+	it("keeps a healthy model active when its replacement fails", async () => {
+		const tinyProcess = fakeProcess();
+		const failedBaseProcess = { ...fakeProcess(), exitCode: 17 };
+		const spawn = vi
+			.fn()
+			.mockReturnValueOnce(tinyProcess)
+			.mockReturnValueOnce(failedBaseProcess);
+		vi.stubGlobal("Bun", {
+			spawn,
+			sleep: vi.fn().mockResolvedValue(undefined),
+		});
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(null, { status: 200 }),
+		);
+		const manager = new VoiceModelManager(
+			{ ...DEFAULT_VOICE_CONFIG, enabled: true, model: "tiny" },
+			executable,
+		);
+
+		await manager.load("tiny");
+		await manager.syncConfig({
+			...DEFAULT_VOICE_CONFIG,
+			enabled: true,
+			model: "base",
+		});
+
+		expect(manager.status()).toEqual({
+			state: "ready",
+			model: "base",
+			loadedModel: "tiny",
+			error: "runtime exited with code 17",
+		});
+		expect(tinyProcess.kill).not.toHaveBeenCalled();
+		expect(failedBaseProcess.kill).toHaveBeenCalled();
+		manager.close();
+	});
+
+	it("kills an in-flight load and cannot resurrect it after disable", async () => {
+		const { health, loading, manager, process, spawn } = startPendingLoad();
+		await vi.waitFor(() => expect(spawn).toHaveBeenCalledOnce());
+		await manager.syncConfig({
+			...DEFAULT_VOICE_CONFIG,
+			enabled: false,
+			model: "tiny",
+		});
+
+		expect(process.kill).toHaveBeenCalled();
+		health.resolve(new Response(null, { status: 200 }));
+		await loading;
+		expect(manager.status()).toEqual({ state: "disabled", model: "tiny" });
+	});
+
+	it("kills an in-flight load and cannot resurrect it after close", async () => {
+		const { health, loading, manager, process, spawn } = startPendingLoad();
+		await vi.waitFor(() => expect(spawn).toHaveBeenCalledOnce());
+		manager.close();
+
+		expect(process.kill).toHaveBeenCalled();
+		health.resolve(new Response(null, { status: 200 }));
+		await loading;
+		expect(manager.status().state).not.toBe("ready");
 	});
 });

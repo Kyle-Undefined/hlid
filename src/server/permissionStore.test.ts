@@ -8,6 +8,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { toggleProjectMcpFile } from "../lib/projectMcp";
 import { persistAlwaysAllowedTool } from "./permissionStore";
 
 describe("persistAlwaysAllowedTool", () => {
@@ -48,5 +49,17 @@ describe("persistAlwaysAllowedTool", () => {
 				deny: ["WebFetch"],
 			},
 		});
+	});
+
+	it("preserves MCP and permission changes through the shared settings repository", () => {
+		toggleProjectMcpFile(cwd, "filesystem", true);
+		persistAlwaysAllowedTool(cwd, "Bash");
+		toggleProjectMcpFile(cwd, "filesystem", false);
+
+		const settings = JSON.parse(
+			readFileSync(join(cwd, ".claude", "settings.local.json"), "utf8"),
+		);
+		expect(settings.disabledMcpjsonServers).toEqual([]);
+		expect(settings.permissions.allow).toEqual(["Bash"]);
 	});
 });

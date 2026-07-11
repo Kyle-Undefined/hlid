@@ -58,4 +58,26 @@ describe("server-side authentication lifecycle", () => {
 		await auth.resetAuthentication();
 		expect(auth.hasCredential()).toBe(false);
 	});
+
+	test("orphaned sessions cannot authenticate or survive replacement setup", async () => {
+		await auth.createInitialPassword("first password lifecycle");
+		const orphanedToken = await auth.createSession("orphaned browser");
+		expect(await auth.validateSessionToken(orphanedToken)).toBe(true);
+
+		// Simulate a manual auth.json deletion without the supported reset command.
+		rmSync(auth.AUTH_PATH, { force: true });
+		expect(auth.hasCredential()).toBe(false);
+		expect(await auth.validateSessionToken(orphanedToken)).toBe(false);
+		expect(
+			await auth.authenticateRequest(
+				new Request("http://localhost", {
+					headers: { cookie: `${auth.AUTH_COOKIE}=${orphanedToken}` },
+				}),
+			),
+		).toBe(false);
+
+		await auth.createInitialPassword("replacement password lifecycle");
+		expect(await auth.validateSessionToken(orphanedToken)).toBe(false);
+		await auth.resetAuthentication();
+	});
 });

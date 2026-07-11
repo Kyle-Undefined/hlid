@@ -6,10 +6,15 @@
  *
  * Callers are responsible for authorising the agentPath before calling.
  */
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { realpathSync } from "node:fs";
+import { basename, resolve } from "node:path";
 import type { HlidConfig } from "../config";
 import { expandTilde, samePath } from "./paths";
+import {
+	readProjectMcpFile,
+	toggleProjectMcpFile,
+	writeProjectMcpFile,
+} from "./projectMcp";
 
 // ─── Name helper ─────────────────────────────────────────────────────────────
 
@@ -69,36 +74,7 @@ export function validateAgentPath(agentPath: string, config: HlidConfig): void {
 export function readAgentMcpFile(resolvedPath: string): {
 	servers: Array<{ name: string; config: unknown; disabled: boolean }>;
 } {
-	let mcpMap: Record<string, unknown> = {};
-	try {
-		const raw = readFileSync(join(resolvedPath, ".mcp.json"), "utf8");
-		mcpMap =
-			(JSON.parse(raw) as { mcpServers?: Record<string, unknown> })
-				.mcpServers ?? {};
-	} catch (e) {
-		if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-	}
-
-	let disabled: string[] = [];
-	try {
-		const raw = readFileSync(
-			join(resolvedPath, ".claude", "settings.local.json"),
-			"utf8",
-		);
-		disabled =
-			(JSON.parse(raw) as { disabledMcpjsonServers?: string[] })
-				.disabledMcpjsonServers ?? [];
-	} catch (e) {
-		if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-	}
-
-	return {
-		servers: Object.entries(mcpMap).map(([name, config]) => ({
-			name,
-			config,
-			disabled: disabled.includes(name),
-		})),
-	};
+	return readProjectMcpFile(resolvedPath);
 }
 
 // ─── Write helpers ────────────────────────────────────────────────────────────
@@ -111,11 +87,7 @@ export function writeAgentMcpFile(
 	agentPath: string,
 	servers: Record<string, unknown>,
 ): void {
-	writeFileSync(
-		join(agentPath, ".mcp.json"),
-		JSON.stringify({ mcpServers: servers }, null, 2),
-		"utf8",
-	);
+	writeProjectMcpFile(agentPath, servers);
 }
 
 /**
@@ -129,24 +101,5 @@ export function toggleAgentMcpFile(
 	name: string,
 	disabled: boolean,
 ): void {
-	const settingsPath = join(agentPath, ".claude", "settings.local.json");
-	let settings: Record<string, unknown> = {};
-	try {
-		settings = JSON.parse(readFileSync(settingsPath, "utf8")) as Record<
-			string,
-			unknown
-		>;
-	} catch (e) {
-		if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-	}
-
-	const disabledSet = new Set<string>(
-		(settings.disabledMcpjsonServers as string[] | undefined) ?? [],
-	);
-	if (disabled) disabledSet.add(name);
-	else disabledSet.delete(name);
-	settings.disabledMcpjsonServers = [...disabledSet];
-
-	mkdirSync(join(agentPath, ".claude"), { recursive: true });
-	writeFileSync(settingsPath, JSON.stringify(settings, null, 2), "utf8");
+	toggleProjectMcpFile(agentPath, name, disabled);
 }

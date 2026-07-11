@@ -1,13 +1,11 @@
-import { resolve } from "node:path";
 import { createFileRoute } from "@tanstack/react-router";
 import {
 	readAgentMcpFile,
+	resolveAuthorizedAgentPath,
 	toggleAgentMcpFile,
-	validateAgentPath,
 	writeAgentMcpFile,
 } from "#/lib/agentMcp";
 import { forbiddenResponse } from "#/lib/originGate";
-import { expandTilde } from "#/lib/paths";
 import { loadConfig } from "#/server/config";
 
 // ─── Handlers (exported for unit tests) ──────────────────────────────────────
@@ -23,13 +21,13 @@ export async function handleGetAgentMcp(request: Request): Promise<Response> {
 	}
 
 	const config = loadConfig();
+	let resolvedPath: string;
 	try {
-		validateAgentPath(agentPath, config);
+		resolvedPath = resolveAuthorizedAgentPath(agentPath, config);
 	} catch {
 		return Response.json({ error: "Unauthorized" }, { status: 403 });
 	}
 
-	const resolvedPath = resolve(expandTilde(agentPath));
 	try {
 		return Response.json(readAgentMcpFile(resolvedPath));
 	} catch (err) {
@@ -53,8 +51,9 @@ export async function handlePostAgentMcp(request: Request): Promise<Response> {
 		}
 
 		const config = loadConfig();
+		let resolvedPath: string;
 		try {
-			validateAgentPath(body.agentPath, config);
+			resolvedPath = resolveAuthorizedAgentPath(body.agentPath, config);
 		} catch {
 			return Response.json({ error: "Unauthorized" }, { status: 403 });
 		}
@@ -66,7 +65,6 @@ export async function handlePostAgentMcp(request: Request): Promise<Response> {
 			);
 		}
 
-		const resolvedPath = resolve(expandTilde(body.agentPath));
 		writeAgentMcpFile(resolvedPath, body.servers);
 		return Response.json({ ok: true });
 	} catch (err) {
@@ -93,8 +91,9 @@ export async function handleToggleAgentMcp(
 		}
 
 		const config = loadConfig();
+		let resolvedPath: string;
 		try {
-			validateAgentPath(body.agentPath, config);
+			resolvedPath = resolveAuthorizedAgentPath(body.agentPath, config);
 		} catch {
 			return Response.json({ error: "Unauthorized" }, { status: 403 });
 		}
@@ -108,7 +107,6 @@ export async function handleToggleAgentMcp(
 			);
 		}
 
-		const resolvedPath = resolve(expandTilde(body.agentPath));
 		toggleAgentMcpFile(resolvedPath, body.name, body.disabled);
 		return Response.json({ ok: true });
 	} catch (err) {

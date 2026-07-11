@@ -538,5 +538,9 @@ if (config.server.tls_cert_path && config.server.tls_key_path) {
 		config.server.tls_key_path,
 		config.server.local_network_access,
 		SERVER_TOKEN,
+		Math.max(
+			MAX_VOICE_BODY_BYTES,
+			config.attachments.max_bytes + MULTIPART_OVERHEAD_BYTES,
+		),
 	);
 }

@@ -4,7 +4,11 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
 	test: {
 		environment: "node",
-		include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
+		include: [
+			"src/**/*.test.ts",
+			"src/**/*.test.tsx",
+			"scripts/**/*.test.ts",
+		],
 		// DB tests require bun:sqlite — run with `bun run test:db` instead
 		exclude: ["src/**/*.bun.test.ts"],
 		coverage: {

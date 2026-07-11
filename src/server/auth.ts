@@ -198,6 +198,10 @@ export async function createInitialPassword(password: string): Promise<void> {
 		}
 		throw error;
 	}
+	// A manually removed credential can leave trusted-device rows behind. They
+	// belong to the previous password lifecycle and must never become valid again
+	// when a replacement credential is created.
+	await revokeAllSessions();
 }
 
 export async function createSession(deviceLabel?: string): Promise<string> {
@@ -222,6 +226,9 @@ export async function createSession(deviceLabel?: string): Promise<string> {
 export async function validateSessionToken(
 	token: string | null | undefined,
 ): Promise<boolean> {
+	// A session is meaningful only while the credential that issued it exists.
+	// This also prevents /login <-> / redirect loops after auth.json is removed.
+	if (!hasCredential()) return false;
 	if (!token || token.length > 256) return false;
 	const now = Math.floor(Date.now() / 1000);
 	const hash = tokenHash(token);

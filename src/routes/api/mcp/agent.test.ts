@@ -8,7 +8,7 @@ import {
 vi.mock("#/server/config", () => ({ loadConfig: vi.fn() }));
 vi.mock("#/lib/originGate", () => ({ forbiddenResponse: vi.fn(() => null) }));
 vi.mock("#/lib/agentMcp", () => ({
-	validateAgentPath: vi.fn(),
+	resolveAuthorizedAgentPath: vi.fn(),
 	readAgentMcpFile: vi.fn(),
 	writeAgentMcpFile: vi.fn(),
 	toggleAgentMcpFile: vi.fn(),
@@ -17,7 +17,7 @@ vi.mock("#/lib/agentMcp", () => ({
 const { loadConfig } = await import("#/server/config");
 const { forbiddenResponse } = await import("#/lib/originGate");
 const {
-	validateAgentPath,
+	resolveAuthorizedAgentPath,
 	readAgentMcpFile,
 	writeAgentMcpFile,
 	toggleAgentMcpFile,
@@ -25,7 +25,7 @@ const {
 
 const mockLoadConfig = vi.mocked(loadConfig);
 const mockForbiddenResponse = vi.mocked(forbiddenResponse);
-const mockValidate = vi.mocked(validateAgentPath);
+const mockResolve = vi.mocked(resolveAuthorizedAgentPath);
 const mockRead = vi.mocked(readAgentMcpFile);
 const mockWrite = vi.mocked(writeAgentMcpFile);
 const mockToggle = vi.mocked(toggleAgentMcpFile);
@@ -50,6 +50,7 @@ beforeEach(() => {
 	vi.resetAllMocks();
 	mockForbiddenResponse.mockReturnValue(null);
 	mockLoadConfig.mockReturnValue({ agents: [{ path: AGENT_PATH }] } as never);
+	mockResolve.mockReturnValue(AGENT_PATH);
 });
 
 // ─── GET ─────────────────────────────────────────────────────────────────────
@@ -60,8 +61,8 @@ describe("handleGetAgentMcp", () => {
 		expect(res.status).toBe(400);
 	});
 
-	it("returns 403 when validateAgentPath throws Unauthorized", async () => {
-		mockValidate.mockImplementation(() => {
+	it("returns 403 when path resolution throws Unauthorized", async () => {
+		mockResolve.mockImplementation(() => {
 			throw new Error("Unauthorized");
 		});
 		const res = await handleGetAgentMcp(getReq(AGENT_PATH));
@@ -69,7 +70,6 @@ describe("handleGetAgentMcp", () => {
 	});
 
 	it("delegates to readAgentMcpFile and returns servers", async () => {
-		mockValidate.mockReturnValue(undefined);
 		const servers = [{ name: "fs", config: {}, disabled: false }];
 		mockRead.mockReturnValue({ servers });
 		const res = await handleGetAgentMcp(getReq(AGENT_PATH));
@@ -94,7 +94,7 @@ describe("handlePostAgentMcp", () => {
 	});
 
 	it("returns 403 when path is unauthorized", async () => {
-		mockValidate.mockImplementation(() => {
+		mockResolve.mockImplementation(() => {
 			throw new Error("Unauthorized");
 		});
 		const res = await handlePostAgentMcp(
@@ -104,7 +104,6 @@ describe("handlePostAgentMcp", () => {
 	});
 
 	it("delegates to writeAgentMcpFile and returns ok", async () => {
-		mockValidate.mockReturnValue(undefined);
 		const servers = { filesystem: { command: "npx" } };
 		const res = await handlePostAgentMcp(
 			postReq({ agentPath: AGENT_PATH, servers }),
@@ -126,7 +125,7 @@ describe("handleToggleAgentMcp", () => {
 	});
 
 	it("returns 403 when path is unauthorized", async () => {
-		mockValidate.mockImplementation(() => {
+		mockResolve.mockImplementation(() => {
 			throw new Error("Unauthorized");
 		});
 		const res = await handleToggleAgentMcp(
@@ -136,7 +135,6 @@ describe("handleToggleAgentMcp", () => {
 	});
 
 	it("delegates to toggleAgentMcpFile and returns ok", async () => {
-		mockValidate.mockReturnValue(undefined);
 		const res = await handleToggleAgentMcp(
 			postReq({ agentPath: AGENT_PATH, name: "filesystem", disabled: false }),
 		);

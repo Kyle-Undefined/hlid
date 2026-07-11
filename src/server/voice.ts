@@ -179,9 +179,16 @@ type Runtime = {
 	model: string;
 };
 
+type LoadingRuntime = Runtime & {
+	abort: AbortController;
+	generation: number;
+};
+
 export class VoiceModelManager {
 	private config: HlidConfig["voice"];
 	private runtime: Runtime | null = null;
+	private loadingRuntime: LoadingRuntime | null = null;
+	private loadGeneration = 0;
 	private statusValue: VoiceStatus;
 	private downloadAbort: AbortController | null = null;
 	private transcription: Promise<unknown> = Promise.resolve();
@@ -237,6 +244,7 @@ export class VoiceModelManager {
 			!MODEL_DEFS.some((model) => model.id === config.model) ||
 			!existsSync(modelPath(config.model))
 		) {
+			this.cancelLoading();
 			this.statusValue = { state: "unconfigured", model: config.model };
 			return;
 		}
@@ -258,8 +266,25 @@ export class VoiceModelManager {
 		return existsSync(besideExe) ? besideExe : null;
 	}
 
+	private cancelLoading(): void {
+		this.loadGeneration++;
+		this.loadingRuntime?.abort.abort();
+		this.loadingRuntime?.process.kill();
+		this.loadingRuntime = null;
+	}
+
+	private beginLoad(): number {
+		this.cancelLoading();
+		return this.loadGeneration;
+	}
+
+	private isCurrentLoad(generation: number): boolean {
+		return this.loadingRuntime?.generation === generation;
+	}
+
 	async load(model: string): Promise<void> {
 		modelDefinition(model);
+		const generation = this.beginLoad();
 		const executable = this.executable();
 		if (!executable) {
 			this.statusValue = {
@@ -312,32 +337,53 @@ export class VoiceModelManager {
 				windowsHide: true,
 			},
 		);
+		const abort = new AbortController();
+		this.loadingRuntime = { process: proc, port, model, abort, generation };
 		try {
 			const deadline = Date.now() + 120_000;
 			while (Date.now() < deadline) {
+				if (!this.isCurrentLoad(generation)) {
+					proc.kill();
+					return;
+				}
 				if (proc.exitCode !== null)
 					throw new Error(`runtime exited with code ${proc.exitCode}`);
 				try {
 					const res = await fetch(`http://127.0.0.1:${port}/`, {
-						signal: AbortSignal.timeout(500),
+						signal: AbortSignal.any([abort.signal, AbortSignal.timeout(500)]),
 					});
+					if (!this.isCurrentLoad(generation)) {
+						proc.kill();
+						return;
+					}
 					if (res.ok) break;
 				} catch {}
+				if (!this.isCurrentLoad(generation)) {
+					proc.kill();
+					return;
+				}
 				await Bun.sleep(200);
 			}
 			if (Date.now() >= deadline) throw new Error("model load timed out");
+			if (!this.isCurrentLoad(generation)) {
+				proc.kill();
+				return;
+			}
 			const old = this.runtime;
 			this.runtime = { process: proc, port, model };
 			old?.process.kill();
 			this.statusValue = { state: "ready", model, loadedModel: model };
 		} catch (error) {
 			proc.kill();
+			if (!this.isCurrentLoad(generation)) return;
 			this.statusValue = {
 				state: this.runtime ? "ready" : "error",
 				model,
 				loadedModel: this.runtime?.model,
 				error: (error as Error).message,
 			};
+		} finally {
+			if (this.isCurrentLoad(generation)) this.loadingRuntime = null;
 		}
 	}
 
@@ -471,6 +517,7 @@ export class VoiceModelManager {
 
 	close(): void {
 		this.downloadAbort?.abort();
+		this.cancelLoading();
 		this.runtime?.process.kill();
 		this.runtime = null;
 	}

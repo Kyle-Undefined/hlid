@@ -71,6 +71,8 @@ vi.mock("node:fs", () => ({
 		return "{}";
 	}),
 	writeFileSync: vi.fn(),
+	renameSync: vi.fn(),
+	rmSync: vi.fn(),
 	realpathSync: vi.fn((p: string) => p),
 }));
 
@@ -1272,9 +1274,13 @@ describe("SessionManager — session-scoped permission persistence", () => {
 		await turn1;
 
 		expect(vi.mocked(fsMock.writeFileSync)).toHaveBeenCalledWith(
-			expect.stringContaining(".claude/settings.local.json"),
+			expect.stringContaining(".claude/settings.local.json."),
 			expect.stringContaining('"Bash"'),
-			"utf8",
+			expect.objectContaining({ encoding: "utf8", mode: 0o600 }),
+		);
+		expect(vi.mocked(fsMock.renameSync)).toHaveBeenCalledWith(
+			expect.stringContaining(".claude/settings.local.json."),
+			expect.stringContaining(".claude/settings.local.json"),
 		);
 		const calls = vi.mocked(fsMock.writeFileSync).mock.calls;
 		expect(

@@ -1,8 +1,9 @@
-import { readFileSync, realpathSync } from "node:fs";
-import { join } from "node:path";
+import { realpathSync } from "node:fs";
 import type { ServerWebSocket } from "bun";
 import * as db from "../db";
+import { readAgentMcpFile } from "../lib/agentMcp";
 import { expandTilde } from "../lib/paths";
+import { readVaultMcpFile } from "../lib/vaultMcp";
 import { computeAllowedAgentRealPaths, isAllowedAgentPath } from "./agentPaths";
 import { loadConfig } from "./config";
 import { getLiveSessionsStatus } from "./liveSessions";
@@ -338,33 +339,13 @@ export function createWsHandlers(
 					}
 					if (!isAllowedAgentPath(allowedRealPaths, resolvedAgent)) return;
 
-					let agentNames = new Set<string>();
+					let agentServers: ReturnType<typeof readAgentMcpFile>["servers"] = [];
 					try {
-						agentNames = new Set(
-							Object.keys(
-								(
-									JSON.parse(
-										readFileSync(join(resolvedAgent, ".mcp.json"), "utf8"),
-									) as { mcpServers?: Record<string, unknown> }
-								).mcpServers ?? {},
-							),
-						);
-					} catch {}
-					let agentDisabled: string[] = [];
-					try {
-						agentDisabled =
-							(
-								JSON.parse(
-									readFileSync(
-										join(resolvedAgent, ".claude", "settings.local.json"),
-										"utf8",
-									),
-								) as { disabledMcpjsonServers?: string[] }
-							).disabledMcpjsonServers ?? [];
+						agentServers = readAgentMcpFile(resolvedAgent).servers;
 					} catch {}
 
-					const agentServers = [...agentNames].map((name) => {
-						if (agentDisabled.includes(name))
+					const mappedAgentServers = agentServers.map(({ name, disabled }) => {
+						if (disabled)
 							return mapMcpServer({
 								name,
 								status: "disabled",
@@ -381,7 +362,7 @@ export function createWsHandlers(
 					// McpSection can ignore it.
 					send(ws, {
 						type: "mcp_status",
-						servers: agentServers,
+						servers: mappedAgentServers,
 						agent_cwd: resolvedAgent,
 					});
 					return;
@@ -390,29 +371,9 @@ export function createWsHandlers(
 				// ── vault branch: broadcast to all clients (existing behaviour) ───
 				if (!cfg.vault.path) return;
 				const vaultEntry = pool.vaultEntry();
-				let vaultNames = new Set<string>();
+				let vaultServers: ReturnType<typeof readVaultMcpFile>["servers"] = [];
 				try {
-					vaultNames = new Set(
-						Object.keys(
-							(
-								JSON.parse(
-									readFileSync(join(cfg.vault.path, ".mcp.json"), "utf8"),
-								) as { mcpServers?: Record<string, unknown> }
-							).mcpServers ?? {},
-						),
-					);
-				} catch {}
-				let disabled: string[] = [];
-				try {
-					disabled =
-						(
-							JSON.parse(
-								readFileSync(
-									join(cfg.vault.path, ".claude", "settings.local.json"),
-									"utf8",
-								),
-							) as { disabledMcpjsonServers?: string[] }
-						).disabledMcpjsonServers ?? [];
+					vaultServers = readVaultMcpFile(cfg.vault.path).servers;
 				} catch {}
 				const cachedList = vaultEntry.manager.getLastMcpStatus() ?? [];
 				const cachedMap = new Map(cachedList.map((s) => [s.name, s]));
@@ -421,8 +382,8 @@ export function createWsHandlers(
 					.filter((s) => s.scope !== "project")
 					.map(mapMcpServer);
 				// Vault entries: current .mcp.json + cached status
-				const vault = [...vaultNames].map((name) => {
-					if (disabled.includes(name))
+				const vault = vaultServers.map(({ name, disabled }) => {
+					if (disabled)
 						return mapMcpServer({ name, status: "disabled", scope: "project" });
 					const c = cachedMap.get(name);
 					return mapMcpServer({
