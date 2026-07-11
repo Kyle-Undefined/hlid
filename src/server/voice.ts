@@ -107,6 +107,27 @@ const MODEL_DEFS: ModelDef[] = [
 
 const HF_BASE = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
 
+export async function validateVoiceRecording(
+	audio: Blob,
+	maxRecordingSeconds: number,
+): Promise<void> {
+	if (audio.size > 100 * MIB) throw new Error("audio exceeds 100 MiB limit");
+	const header = new DataView(await audio.slice(0, 44).arrayBuffer());
+	if (
+		header.byteLength < 44 ||
+		header.getUint32(0, false) !== 0x52494646 ||
+		header.getUint32(8, false) !== 0x57415645
+	) {
+		throw new Error("audio must be a WAV recording");
+	}
+	const bytesPerSecond = header.getUint32(28, true);
+	if (!bytesPerSecond) throw new Error("invalid WAV byte rate");
+	const durationSeconds = Math.max(0, audio.size - 44) / bytesPerSecond;
+	if (durationSeconds > maxRecordingSeconds + 1) {
+		throw new Error(`recording exceeds ${maxRecordingSeconds} second limit`);
+	}
+}
+
 function voiceDataDir(): string {
 	if (process.platform === "win32") {
 		return join(
@@ -456,22 +477,7 @@ export class VoiceModelManager {
 			throw new Error("voice model is not ready");
 		if (this.pendingTranscriptions >= 2)
 			throw new Error("voice transcription queue is full");
-		if (audio.size > 100 * MIB) throw new Error("audio exceeds 100 MiB limit");
-		const header = new DataView(await audio.slice(0, 44).arrayBuffer());
-		if (
-			header.byteLength < 44 ||
-			header.getUint32(0, false) !== 0x52494646 ||
-			header.getUint32(8, false) !== 0x57415645
-		)
-			throw new Error("audio must be a WAV recording");
-		const bytesPerSecond = header.getUint32(28, true);
-		if (!bytesPerSecond) throw new Error("invalid WAV byte rate");
-		const durationSeconds = Math.max(0, audio.size - 44) / bytesPerSecond;
-		if (durationSeconds > this.config.max_recording_seconds + 1) {
-			throw new Error(
-				`recording exceeds ${this.config.max_recording_seconds} second limit`,
-			);
-		}
+		await validateVoiceRecording(audio, this.config.max_recording_seconds);
 		const run = async () => {
 			const started = performance.now();
 			const form = new FormData();

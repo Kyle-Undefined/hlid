@@ -43,6 +43,7 @@ import * as wsStore from "#/hooks/wsStore";
 import {
 	composerKeyAction,
 	insertAtSelection,
+	prepareChatSubmission,
 	resizeComposer,
 } from "#/lib/composer";
 import { deriveModelMismatch, fmtModel } from "#/lib/formatters";
@@ -552,44 +553,30 @@ function useRavenActions({
 				typed,
 				allSkills,
 			);
-			if (!text && pendingAttachments.length === 0) return;
-
-			if (sessionState === "running") {
-				wsStore.enqueueChat({
-					id: uid(),
-					text,
-					session_id: sessionId,
-					skill_context: skillContext,
-					attachments:
-						pendingAttachments.length > 0 ? [...pendingAttachments] : undefined,
-					agent_cwd: agentSkillContext ?? undefined,
-				});
-				clearDraft();
-				setInput("");
-				setActiveSkill(null);
-				clearPendingAttachments();
-				return;
-			}
-
-			atBottomRef.current = true;
 			const id = uid();
-			const attachments = pendingAttachments;
-			dispatch({ type: "ADD_USER", id, text, attachments });
-			const agentCwdToSend =
-				agentSkillContext && !agentContextSentRef.current
-					? agentSkillContext
-					: undefined;
-			if (agentCwdToSend) agentContextSentRef.current = true;
-			send({
-				type: "chat",
+			const submission = prepareChatSubmission({
+				id,
 				text,
-				session_id: sessionId,
-				skill_context: skillContext,
-				attachments: attachments.length > 0 ? attachments : undefined,
-				agent_cwd: agentCwdToSend,
-				plan_mode: planMode || undefined,
-				plan_html: (planMode && planHtml) || undefined,
+				sessionId,
+				running: sessionState === "running",
+				skillContext,
+				attachments: pendingAttachments,
+				agentCwd: agentSkillContext ?? undefined,
+				agentContextAlreadySent: agentContextSentRef.current,
+				planMode,
+				planHtml,
 			});
+			if (!submission) return;
+
+			if (submission.kind === "queued") {
+				wsStore.enqueueChat(submission.message);
+			} else {
+				atBottomRef.current = true;
+				dispatch({ type: "ADD_USER", ...submission.user });
+				if (submission.marksAgentContextSent)
+					agentContextSentRef.current = true;
+				send(submission.message);
+			}
 			clearDraft();
 			setInput("");
 			setActiveSkill(null);

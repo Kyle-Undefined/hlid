@@ -3,7 +3,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_VOICE_CONFIG } from "../config";
-import { VoiceModelManager } from "./voice";
+import { VoiceModelManager, validateVoiceRecording } from "./voice";
+
+function wavBlob(payloadBytes: number, bytesPerSecond = 16_000): Blob {
+	const bytes = new Uint8Array(44 + payloadBytes);
+	const view = new DataView(bytes.buffer);
+	view.setUint32(0, 0x52494646, false);
+	view.setUint32(8, 0x57415645, false);
+	view.setUint32(28, bytesPerSecond, true);
+	return new Blob([bytes], { type: "audio/wav" });
+}
 
 function deferred<T>() {
 	let resolve!: (value: T) => void;
@@ -53,6 +62,38 @@ describe("VoiceModelManager", () => {
 		);
 		await expect(manager.load("x/../../../../target")).rejects.toThrow(
 			"unknown voice model",
+		);
+	});
+});
+
+describe("validateVoiceRecording", () => {
+	it("accepts a structurally valid recording within the duration limit", async () => {
+		await expect(validateVoiceRecording(wavBlob(160_000), 10)).resolves.toBe(
+			undefined,
+		);
+	});
+
+	it.each([
+		["a truncated header", new Blob([new Uint8Array(20)])],
+		["a non-WAV header", new Blob([new Uint8Array(44)])],
+	])("rejects %s", async (_label, audio) => {
+		await expect(validateVoiceRecording(audio, 10)).rejects.toThrow(
+			"audio must be a WAV recording",
+		);
+	});
+
+	it("rejects a zero byte rate before calculating duration", async () => {
+		await expect(validateVoiceRecording(wavBlob(1, 0), 10)).rejects.toThrow(
+			"invalid WAV byte rate",
+		);
+	});
+
+	it("allows the one-second encoding tolerance and rejects beyond it", async () => {
+		await expect(validateVoiceRecording(wavBlob(176_000), 10)).resolves.toBe(
+			undefined,
+		);
+		await expect(validateVoiceRecording(wavBlob(176_001), 10)).rejects.toThrow(
+			"recording exceeds 10 second limit",
 		);
 	});
 });

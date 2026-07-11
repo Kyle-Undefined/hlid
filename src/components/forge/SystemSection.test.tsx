@@ -9,9 +9,30 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SystemSection } from "./SystemSection";
 
+const serverFns = vi.hoisted(() => ({
+	getStorageStatsFn: vi.fn().mockResolvedValue({
+		databaseBytes: 1024,
+		walBytes: 0,
+		reclaimableBytes: 0,
+		trackedAttachmentBytes: 0,
+		trackedAttachments: 0,
+		sessions: 1,
+		messages: 2,
+		usageQueries: 3,
+	}),
+	optimizeStorageFn: vi.fn(),
+}));
+
+vi.mock("#/lib/serverFns", async (importOriginal) => ({
+	...(await importOriginal<typeof import("#/lib/serverFns")>()),
+	...serverFns,
+}));
+
 afterEach(() => {
 	cleanup();
 	vi.unstubAllGlobals();
+	serverFns.getStorageStatsFn.mockClear();
+	serverFns.optimizeStorageFn.mockReset();
 });
 
 function jsonResponse(data: unknown, ok = true, status = 200) {
@@ -80,5 +101,44 @@ describe("SystemSection", () => {
 		fetchMock.mockResolvedValueOnce(jsonResponse({}, false, 500));
 		render(<SystemSection />);
 		await screen.findByText("Failed to load lifecycle state");
+	});
+
+	it("surfaces maintenance failures and restores the optimize action", async () => {
+		serverFns.optimizeStorageFn.mockRejectedValueOnce(
+			new Error("database is busy"),
+		);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue(
+				jsonResponse({
+					ok: true,
+					data: { enabled: false, supported: true },
+				}),
+			),
+		);
+		render(<SystemSection view="advanced" />);
+
+		fireEvent.click(screen.getByText("OPTIMIZE"));
+		await screen.findByText("database is busy");
+		expect(screen.getByText("OPTIMIZE")).not.toBeNull();
+	});
+
+	it("shows lifecycle POST failures instead of reporting shutdown success", async () => {
+		const fetchMock = vi.fn(
+			async (_input: RequestInfo | URL, init?: RequestInit) =>
+				init?.method
+					? jsonResponse({}, false, 503)
+					: jsonResponse({
+							ok: true,
+							data: { enabled: false, supported: true },
+						}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+		render(<SystemSection view="advanced" />);
+
+		fireEvent.click(screen.getByText("SHUTDOWN"));
+		fireEvent.click(screen.getByText("confirm"));
+		await screen.findByText("Request failed with status 503");
+		expect(screen.getByText("SHUTDOWN")).not.toBeNull();
 	});
 });

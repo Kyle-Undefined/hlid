@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
+import { cacheHitPct } from "#/components/ledger/LedgerStats";
 import {
-	cacheHitPct,
 	filterOptimisticIds,
 	filterOptimisticLabels,
 	parseLedgerSearch,
-} from "./ledger";
+} from "#/lib/ledgerState";
 
 // ─── cacheHitPct ─────────────────────────────────────────────────────────────
 

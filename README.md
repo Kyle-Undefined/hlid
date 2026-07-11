@@ -116,10 +116,12 @@ Drop a `.mcp.json` in your vault root and `FORGE` picks it up. Each server shows
 bun run build
 ```
 
-Repository validation uses `bun run check` for Biome plus `tsc --noEmit`. Graph
-analysis is available through `bun run analyze` (changed-code audit) and
-`bun run analyze:full`; the full Fallow gate runs in validation and release CI
-after coverage generation.
+Repository validation uses `bun run validate` to run Biome, `tsc --noEmit`,
+tests with coverage, and the full Fallow graph-analysis gate in the required
+order. `bun run check` runs only the fast static checks. Graph analysis is also
+available separately through `bun run analyze` (changed-code audit) and
+`bun run analyze:full`; every Fallow phase explicitly uses the stricter
+production graph so local, validation, and release results stay comparable.
 
 Runs `vite build`, then `scripts/embed-client.ts` walks `dist/client` and emits `src/server/embedded-client.ts`; every static asset becomes a `with { type: "file" }` import so `bun build --compile` bakes the bytes into the executable. No sibling `dist/` folder needed at runtime.
 

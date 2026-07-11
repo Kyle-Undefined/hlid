@@ -22,13 +22,14 @@
 "use strict";
 
 const nodePty = require("node-pty");
+const { createPtyInputParser } = require("./ptyInputParser.cjs");
 
 // ── Read config JSON line from stdin ──────────────────────────────────────────
 
 let configBuf = Buffer.alloc(0);
 let configured = false;
 let pty = null;
-let pendingInput = []; // binary frames received before config parsed
+const inputParser = createPtyInputParser(() => pty);
 
 process.stdin.on("data", (chunk) => {
 	if (!configured) {
@@ -43,10 +44,10 @@ process.stdin.on("data", (chunk) => {
 		startPty(opts);
 
 		// Process any binary data that arrived with or after the config line
-		if (rest.length > 0) handleInput(rest);
+		if (rest.length > 0) inputParser.handleInput(rest);
 		return;
 	}
-	handleInput(chunk);
+	inputParser.handleInput(chunk);
 });
 
 // ── PTY spawn ─────────────────────────────────────────────────────────────────
@@ -77,49 +78,10 @@ function startPty(opts) {
 	});
 
 	// Flush any input queued before PTY was ready
-	for (const buf of pendingInput) handleInput(buf);
-	pendingInput = [];
+	inputParser.flushPending();
 }
 
 // ── Input framing parser ──────────────────────────────────────────────────────
-
-let inputBuf = Buffer.alloc(0);
-
-function handleInput(chunk) {
-	if (!pty) {
-		pendingInput.push(chunk);
-		return;
-	}
-	inputBuf = Buffer.concat([inputBuf, chunk]);
-	while (inputBuf.length > 0) {
-		const type = inputBuf[0];
-		if (type === 0x01) {
-			// write: need 5-byte header + length bytes
-			if (inputBuf.length < 5) break;
-			const len = inputBuf.readUInt32BE(1);
-			if (inputBuf.length < 5 + len) break;
-			const data = inputBuf.slice(5, 5 + len);
-			pty.write(new TextDecoder().decode(data));
-			inputBuf = inputBuf.slice(5 + len);
-		} else if (type === 0x02) {
-			// resize: 4-byte payload (2 cols + 2 rows)
-			if (inputBuf.length < 5) break;
-			const cols = inputBuf.readUInt16BE(1);
-			const rows = inputBuf.readUInt16BE(3);
-			try {
-				pty.resize(cols, rows);
-			} catch {}
-			inputBuf = inputBuf.slice(5);
-		} else if (type === 0x03) {
-			// kill
-			pty.kill();
-			inputBuf = inputBuf.slice(1);
-		} else {
-			// unknown type — skip byte to re-sync
-			inputBuf = inputBuf.slice(1);
-		}
-	}
-}
 
 process.on("SIGTERM", () => {
 	if (pty) pty.kill();

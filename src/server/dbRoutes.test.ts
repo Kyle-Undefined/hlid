@@ -9,12 +9,14 @@ import type { SessionRow } from "../db";
 
 // vi.mock factories are hoisted before module-level code, so vars referenced
 // inside them must also be hoisted via vi.hoisted().
-const { mockGetSessionById } = vi.hoisted(() => ({
+const { mockGetSessionById, mockListAttachments } = vi.hoisted(() => ({
 	mockGetSessionById: vi.fn(),
+	mockListAttachments: vi.fn(),
 }));
 
 vi.mock("../db", () => ({
 	getSessionById: mockGetSessionById,
+	listAttachments: mockListAttachments,
 }));
 
 // dbRoutes also imports from ./attachments and ./proxy — stub them out.
@@ -50,7 +52,7 @@ function makePool(
 
 // ── import after mocks ────────────────────────────────────────────────────────
 
-import { handleDbRoute } from "./dbRoutes";
+import { handleDbRoute, parseAttachmentListFilter } from "./dbRoutes";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -139,6 +141,82 @@ describe("handleDbRoute — /db/session-row", () => {
 
 		expect(res).toBeNull();
 		expect(mockGetSessionById).not.toHaveBeenCalled();
+	});
+});
+
+describe("handleDbRoute — GET /db/attachments", () => {
+	it.each([
+		"ephemeral",
+		"vault",
+	] as const)("accepts the %s attachment kind", (kind) => {
+		expect(
+			parseAttachmentListFilter(makeUrl("/db/attachments", { kind })),
+		).toMatchObject({ kind });
+	});
+
+	it("maps valid filters and bounds pagination before querying the database", async () => {
+		mockListAttachments.mockResolvedValue({
+			rows: [],
+			total: 0,
+			total_bytes: 0,
+		});
+		const url = makeUrl("/db/attachments", {
+			kind: "vault",
+			session_id: "session-1",
+			search: "report_100%",
+			since: "100",
+			until: "200",
+			limit: "9999",
+			offset: "-4",
+		});
+
+		const response = await handleDbRoute(url, makeRequest());
+
+		expect(response?.status).toBe(200);
+		expect(mockListAttachments).toHaveBeenCalledWith({
+			kind: "vault",
+			sessionId: "session-1",
+			search: "report_100%",
+			since: 100,
+			until: 200,
+			limit: 100,
+			offset: 0,
+		});
+		expect(await response?.json()).toEqual({
+			rows: [],
+			total: 0,
+			total_bytes: 0,
+		});
+	});
+
+	it("ignores unknown kinds and invalid timestamps while applying defaults", () => {
+		expect(
+			parseAttachmentListFilter(
+				makeUrl("/db/attachments", {
+					kind: "external",
+					since: "not-a-number",
+					until: "NaN",
+					limit: "invalid",
+					offset: "invalid",
+				}),
+			),
+		).toEqual({
+			kind: undefined,
+			sessionId: undefined,
+			search: undefined,
+			since: undefined,
+			until: undefined,
+			limit: 100,
+			offset: 0,
+		});
+	});
+
+	it("does not convert a database failure into an empty result", async () => {
+		const failure = new Error("attachment database unavailable");
+		mockListAttachments.mockRejectedValue(failure);
+		await expect(
+			handleDbRoute(makeUrl("/db/attachments"), makeRequest()),
+		).rejects.toThrow(failure);
 	});
 });
 

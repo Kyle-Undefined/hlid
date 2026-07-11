@@ -9,81 +9,90 @@ function isAction(v: unknown): v is Action {
 	return typeof v === "string" && (ACTIONS as readonly string[]).includes(v);
 }
 
-// In-flight POST guard. Two concurrent "apply"s would race on the staged
-// exe and the spawn handoff. The cost of a second user click is real on
-// FORGE: an action coalescing here is much cleaner than refunding the
-// child process state after the fact.
-let inFlight: Promise<unknown> | null = null;
-async function single<T>(fn: () => Promise<T>): Promise<T> {
-	if (inFlight) {
-		throw new Error("update action already in progress");
+type UpdateOperations = {
+	forbidden: (request: Request) => Response | null;
+	getStatus: typeof getStatus;
+	download: typeof downloadUpdate;
+	apply: typeof applyUpdate;
+};
+
+export function createUpdateRequestHandlers(operations: UpdateOperations) {
+	// In-flight POST guard. Two concurrent "apply"s would race on the staged
+	// exe and the spawn handoff. Keep this state scoped to one handler set so
+	// tests and future server instances cannot leak action state across owners.
+	let inFlight: Promise<unknown> | null = null;
+	async function single<T>(fn: () => Promise<T>): Promise<T> {
+		if (inFlight) throw new Error("update action already in progress");
+		const pending = fn();
+		inFlight = pending;
+		try {
+			return await pending;
+		} finally {
+			inFlight = null;
+		}
 	}
-	const p = (async () => fn())();
-	inFlight = p;
-	try {
-		return await p;
-	} finally {
-		inFlight = null;
-	}
+
+	return {
+		GET: async ({ request }: { request: Request }) => {
+			const forbidden = operations.forbidden(request);
+			if (forbidden) return forbidden;
+			const status = await operations.getStatus();
+			return Response.json({ ok: true, data: status });
+		},
+		POST: async ({ request }: { request: Request }) => {
+			const forbidden = operations.forbidden(request);
+			if (forbidden) return forbidden;
+
+			let body: { action?: unknown };
+			try {
+				body = (await request.json()) as { action?: unknown };
+			} catch {
+				return Response.json(
+					{ ok: false, error: "invalid json" },
+					{ status: 400 },
+				);
+			}
+
+			if (!isAction(body.action)) {
+				return Response.json(
+					{
+						ok: false,
+						error: `action must be one of: ${ACTIONS.join(", ")}`,
+					},
+					{ status: 400 },
+				);
+			}
+
+			try {
+				switch (body.action) {
+					case "check":
+						return Response.json({
+							ok: true,
+							data: await single(() => operations.getStatus({ force: true })),
+						});
+					case "download":
+						return Response.json(await single(operations.download));
+					case "apply":
+						return Response.json(await single(operations.apply));
+				}
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				const status = message.includes("already in progress") ? 409 : 500;
+				return Response.json({ ok: false, error: message }, { status });
+			}
+		},
+	};
 }
+
+const handlers = createUpdateRequestHandlers({
+	forbidden: forbiddenResponse,
+	getStatus,
+	download: downloadUpdate,
+	apply: applyUpdate,
+});
 
 export const Route = createFileRoute("/api/updates")({
 	server: {
-		handlers: {
-			GET: async ({ request }) => {
-				const forbidden = forbiddenResponse(request);
-				if (forbidden) return forbidden;
-				// Cache-only read: respects 24h TTL, only hits GitHub when stale.
-				const status = await getStatus();
-				return Response.json({ ok: true, data: status });
-			},
-			POST: async ({ request }) => {
-				const forbidden = forbiddenResponse(request);
-				if (forbidden) return forbidden;
-
-				let body: { action?: unknown };
-				try {
-					body = (await request.json()) as { action?: unknown };
-				} catch {
-					return Response.json(
-						{ ok: false, error: "invalid json" },
-						{ status: 400 },
-					);
-				}
-
-				if (!isAction(body.action)) {
-					return Response.json(
-						{
-							ok: false,
-							error: `action must be one of: ${ACTIONS.join(", ")}`,
-						},
-						{ status: 400 },
-					);
-				}
-
-				try {
-					switch (body.action) {
-						case "check": {
-							// Manual check: bypass the 24h cache. The user clicked,
-							// they want a live answer.
-							const status = await single(() => getStatus({ force: true }));
-							return Response.json({ ok: true, data: status });
-						}
-						case "download": {
-							const result = await single(() => downloadUpdate());
-							return Response.json(result);
-						}
-						case "apply": {
-							const result = await single(() => applyUpdate());
-							return Response.json(result);
-						}
-					}
-				} catch (e) {
-					const message = e instanceof Error ? e.message : String(e);
-					const status = message.includes("already in progress") ? 409 : 500;
-					return Response.json({ ok: false, error: message }, { status });
-				}
-			},
-		},
+		handlers,
 	},
 });

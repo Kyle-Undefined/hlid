@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { isAllowedOrigin, isAllowedOriginHeader } from "../lib/allowedOrigin";
 import { registerBunServer } from "../lib/lifecycle";
 import { isPublicPath } from "../lib/publicPath";
-import { isDocumentNavigationRequest } from "../lib/uiRequestSecurity";
+import { unauthenticatedResponse } from "../lib/uiRequestSecurity";
 import { authenticateRequest } from "./auth";
 import { createConcurrencyGate, readRequestBodyLimited } from "./requestLimits";
 
@@ -37,6 +37,67 @@ type HttpForwarderOptions = {
 	forward?: (input: string, init: RequestInit) => Promise<Response>;
 };
 
+function buildForwardHeaders(
+	request: Request,
+	peerIp: string | undefined,
+	internalToken: string,
+): Headers {
+	const headers = new Headers();
+	for (const [key, value] of request.headers.entries()) {
+		if (!SKIP_REQ.has(key.toLowerCase())) headers.set(key, value);
+	}
+	headers.set("x-hlid-forwarded-proto", "https");
+	headers.set("x-hlid-forwarded-client-ip", peerIp ?? "");
+	headers.set("x-hlid-proxy-token", internalToken);
+	return headers;
+}
+
+function proxyResponse(upstream: Response): Response {
+	const headers = new Headers();
+	for (const [key, value] of upstream.headers.entries()) {
+		if (SKIP_RES.has(key.toLowerCase())) continue;
+		if (key.toLowerCase() === "set-cookie") headers.append(key, value);
+		else headers.set(key, value);
+	}
+	return new Response(upstream.body, {
+		status: upstream.status,
+		statusText: upstream.statusText,
+		headers,
+	});
+}
+
+function isExpectedUpstreamFailure(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	return (
+		message.includes("abort") ||
+		message.includes("Abort") ||
+		message.includes("ConnectionRefused") ||
+		message.includes("ECONNREFUSED") ||
+		(error instanceof Error &&
+			"code" in error &&
+			(error as NodeJS.ErrnoException).code === "ConnectionRefused")
+	);
+}
+
+async function forwardRequest(
+	forward: NonNullable<HttpForwarderOptions["forward"]>,
+	input: string,
+	init: RequestInit,
+): Promise<Response> {
+	const controller = new AbortController();
+	const timeoutId = setTimeout(() => controller.abort(), 30_000);
+	try {
+		return await forward(input, { ...init, signal: controller.signal });
+	} catch (error) {
+		if (!isExpectedUpstreamFailure(error)) {
+			console.error("[tlsProxy] upstream fetch failed:", error);
+		}
+		return new Response("Service Unavailable", { status: 503 });
+	} finally {
+		clearTimeout(timeoutId);
+	}
+}
+
 /**
  * Build the bounded HTTP half of the TLS proxy. Authentication and admission
  * happen before any body bytes are read, which keeps untrusted requests from
@@ -55,16 +116,7 @@ export function createTlsHttpForwarder({
 	return async (req, peerIp) => {
 		const url = new URL(req.url);
 		if (!isPublicPath(url.pathname) && !(await authenticate(req))) {
-			if (isDocumentNavigationRequest(req)) {
-				return new Response(null, {
-					status: 302,
-					headers: { location: "/login", "cache-control": "no-store" },
-				});
-			}
-			return Response.json(
-				{ error: "Unauthorized" },
-				{ status: 401, headers: { "cache-control": "no-store" } },
-			);
+			return unauthenticatedResponse(req);
 		}
 
 		const hasBody = req.method !== "GET" && req.method !== "HEAD";
@@ -91,60 +143,16 @@ export function createTlsHttpForwarder({
 				}
 			}
 
-			const fwdHeaders = new Headers();
-			for (const [k, v] of req.headers.entries()) {
-				if (!SKIP_REQ.has(k.toLowerCase())) fwdHeaders.set(k, v);
-			}
-			fwdHeaders.set("x-hlid-forwarded-proto", "https");
-			fwdHeaders.set("x-hlid-forwarded-client-ip", peerIp ?? "");
-			fwdHeaders.set("x-hlid-proxy-token", internalToken);
-
-			let upstream: Response;
-			const controller = new AbortController();
-			const timeoutId = setTimeout(() => controller.abort(), 30_000);
-			try {
-				upstream = await forward(
-					`http://127.0.0.1:${uiPort}${url.pathname}${url.search}`,
-					{
-						method: req.method,
-						headers: fwdHeaders,
-						body,
-						signal: controller.signal,
-					},
-				);
-			} catch (err) {
-				const msg = err instanceof Error ? err.message : String(err);
-				const isExpected =
-					msg.includes("abort") ||
-					msg.includes("Abort") ||
-					msg.includes("ConnectionRefused") ||
-					msg.includes("ECONNREFUSED") ||
-					(err instanceof Error &&
-						"code" in err &&
-						(err as NodeJS.ErrnoException).code === "ConnectionRefused");
-				if (!isExpected) {
-					console.error("[tlsProxy] upstream fetch failed:", err);
-				}
-				return new Response("Service Unavailable", { status: 503 });
-			} finally {
-				clearTimeout(timeoutId);
-			}
-
-			const resHeaders = new Headers();
-			for (const [k, v] of upstream.headers.entries()) {
-				if (SKIP_RES.has(k.toLowerCase())) continue;
-				if (k.toLowerCase() === "set-cookie") {
-					resHeaders.append(k, v);
-				} else {
-					resHeaders.set(k, v);
-				}
-			}
-
-			return new Response(upstream.body, {
-				status: upstream.status,
-				statusText: upstream.statusText,
-				headers: resHeaders,
-			});
+			const upstream = await forwardRequest(
+				forward,
+				`http://127.0.0.1:${uiPort}${url.pathname}${url.search}`,
+				{
+					method: req.method,
+					headers: buildForwardHeaders(req, peerIp, internalToken),
+					body,
+				},
+			);
+			return proxyResponse(upstream);
 		} finally {
 			release();
 		}

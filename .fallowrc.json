@@ -27,14 +27,60 @@
 		{
 			"file": "src/lib/install.ts",
 			"exports": ["maybeSelfInstall"]
+		},
+		{
+			"file": "src/db/activity.ts",
+			"exports": ["DURATION_BUCKETS_MS"]
+		},
+		{
+			"file": "src/db/schema.ts",
+			"exports": ["setDbForTest"]
+		},
+		{
+			"file": "src/db/sessions.ts",
+			"exports": ["setSessionClaudeId"]
+		},
+		{
+			"file": "src/hooks/updateStore.ts",
+			"exports": ["setUpdateStatus"]
+		},
+		{
+			"file": "src/hooks/wsStore.ts",
+			"exports": ["subscribeToSession", "getSubscribedSessionId"]
+		},
+		{
+			"file": "src/lib/updates.ts",
+			"exports": ["cleanupStagingDir"]
+		},
+		{
+			"file": "src/lib/usageWindows.ts",
+			"exports": ["applyRateLimitToWindowData", "mergeUsageWindows"]
+		},
+		{
+			"file": "src/lib/vault.ts",
+			"exports": ["scanFolderGroups"]
+		},
+		{
+			"file": "src/server/codexAppServer.ts",
+			"exports": ["__resetCodexAppServersForTesting"]
+		},
+		{
+			"file": "src/server/runState.ts",
+			"exports": ["getRunBuffer"]
+		},
+		{
+			"file": "src/db/index.ts",
+			"exports": ["UsageWindow"]
 		}
 	],
 	"rules": {
 		"duplicate-exports": "off"
 	},
+	"ignoreExportsUsedInFile": true,
 	"health": {
 		"coverage": "coverage/coverage-final.json",
 		"ignore": [
+			"src/hooks/wsStore.test-utils.ts",
 			"src/lib/claudePath.ts",
 			"src/components/wizard/FolderBrowser.tsx",
 			"src/lib/providerOptions.ts",
@@ -45,6 +91,7 @@
 	"duplicates": {
 		"ignore": ["src/db/schema.ts"]
 	},
+	"production": true,
 	"usedClassMembers": [
 		{
 			"implements": "AgentProvider",
@@ -62,8 +109,39 @@
 		"handlePlanModeExitResponse",
 		"getPendingPlanModeExits",
 		"getQueueState"
+		,"proxyConfig"
+		,"write"
+		,"resize"
+		,"kill"
+		,"addSubscriber"
+		,"removeSubscriber"
+		,"getSubscriberCount"
+		,"broadcast"
+		,"send"
+		,"getReplayBuffer"
+		,"clearError"
+		,"reinitialize"
+		,"syncConfig"
+		,"setModel"
+		,"setPermissionMode"
+		,"getAccountInfo"
+		,"getLastMcpStatus"
+		,"restoreMcpStatus"
+		,"probeSlashCommands"
+		,"isRunning"
+		,"handlePermissionResponse"
+		,"getPendingAskUserQuestions"
+		,"handleAskUserQuestionResponse"
+		,"clearHistory"
+		,"runQuery"
+		,"cancelQueued"
+		,"promoteQueued"
+		,"getSessionsStatus"
+		,"getSize"
+		,"findByDbSessionId"
 	],
 	"ignorePatterns": [
+		"src/hooks/wsStore.test-utils.ts",
 		"src/routeTree.gen.ts",
 		"src/server/embedded-client.ts",
 		"src/server/pty-embed-assets/**",

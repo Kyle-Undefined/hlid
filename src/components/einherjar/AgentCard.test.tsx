@@ -56,18 +56,22 @@ function makeAgent(overrides: Partial<AgentEntry> = {}): AgentEntry {
 	};
 }
 
-function renderCard(agent: AgentEntry, providers: ProviderInfo[]) {
-	return render(
-		<AgentCard
-			agent={agent}
-			onRemove={vi.fn()}
-			onModeChange={vi.fn()}
-			onChat={vi.fn()}
-			onSaveEdit={vi.fn().mockResolvedValue(undefined)}
-			onReadClaudemd={vi.fn().mockResolvedValue(null)}
-			providers={providers}
-		/>,
-	);
+function renderCard(
+	agent: AgentEntry,
+	providers: ProviderInfo[],
+	overrides: Partial<React.ComponentProps<typeof AgentCard>> = {},
+) {
+	const props: React.ComponentProps<typeof AgentCard> = {
+		agent,
+		onRemove: vi.fn(),
+		onModeChange: vi.fn(),
+		onChat: vi.fn(),
+		onSaveEdit: vi.fn().mockResolvedValue(undefined),
+		onReadClaudemd: vi.fn().mockResolvedValue(null),
+		providers,
+		...overrides,
+	};
+	return render(<AgentCard {...props} />);
 }
 
 describe("AgentCard edit options", () => {
@@ -137,5 +141,79 @@ describe("AgentCard edit options", () => {
 		expect(screen.getByText("Opus Low")).not.toBeNull();
 		expect(screen.getByText("Opus High (default)")).not.toBeNull();
 		expect(screen.queryByText("High")).toBeNull();
+	});
+
+	it("keeps the editor open when saving fails", async () => {
+		const onSaveEdit = vi.fn().mockRejectedValue(new Error("save failed"));
+		const consoleError = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => {});
+		renderCard(makeAgent(), [claudeProvider], { onSaveEdit });
+
+		fireEvent.click(screen.getByTitle("Edit agent"));
+		fireEvent.change(screen.getByPlaceholderText("Display name"), {
+			target: { value: "Renamed" },
+		});
+		fireEvent.click(screen.getByText("SAVE"));
+
+		await screen.findByText("Edit Agent");
+		expect(onSaveEdit).toHaveBeenCalledWith(
+			"Renamed",
+			"cwd",
+			"claude",
+			expect.any(Object),
+		);
+		expect(consoleError).toHaveBeenCalled();
+		consoleError.mockRestore();
+	});
+
+	it("cancels edits without persisting them", () => {
+		const onSaveEdit = vi.fn().mockResolvedValue(undefined);
+		renderCard(makeAgent(), [claudeProvider], { onSaveEdit });
+
+		fireEvent.click(screen.getByTitle("Edit agent"));
+		fireEvent.change(screen.getByPlaceholderText("Display name"), {
+			target: { value: "Discard me" },
+		});
+		fireEvent.click(screen.getByText("CANCEL"));
+
+		expect(screen.queryByText("Edit Agent")).toBeNull();
+		expect(onSaveEdit).not.toHaveBeenCalled();
+	});
+
+	it("requires confirmation before removing the agent", () => {
+		const onRemove = vi.fn();
+		renderCard(makeAgent(), [claudeProvider], { onRemove });
+
+		fireEvent.click(screen.getByText("×"));
+		expect(onRemove).not.toHaveBeenCalled();
+		fireEvent.click(screen.getByText("confirm"));
+		expect(onRemove).toHaveBeenCalledOnce();
+	});
+
+	it("keeps CLAUDE.md expansion usable when loading fails", async () => {
+		const onReadClaudemd = vi.fn().mockRejectedValue(new Error("read failed"));
+		renderCard(makeAgent({ hasClaudemd: true }), [claudeProvider], {
+			onReadClaudemd,
+		});
+
+		fireEvent.click(screen.getByLabelText("Expand CLAUDE.md"));
+		await screen.findByLabelText("Collapse CLAUDE.md");
+		fireEvent.click(screen.getByLabelText("Collapse CLAUDE.md"));
+		fireEvent.click(screen.getByLabelText("Expand CLAUDE.md"));
+
+		expect(onReadClaudemd).toHaveBeenCalledOnce();
+	});
+
+	it("delegates mode and chat actions without changing persisted props", () => {
+		const onModeChange = vi.fn();
+		const onChat = vi.fn();
+		renderCard(makeAgent(), [claudeProvider], { onModeChange, onChat });
+
+		fireEvent.click(screen.getByText("CTX"));
+		fireEvent.click(screen.getByTitle("Chat with agent"));
+
+		expect(onModeChange).toHaveBeenCalledWith("context");
+		expect(onChat).toHaveBeenCalledOnce();
 	});
 });

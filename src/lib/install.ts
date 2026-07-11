@@ -193,24 +193,46 @@ async function createStartMenuShortcut(canonical: string): Promise<void> {
 	await runPs(cmd);
 }
 
-export async function maybeSelfInstall(): Promise<void> {
-	if (process.platform !== "win32") return;
-	if (!process.execPath.toLowerCase().endsWith(".exe")) return;
+type SelfInstallOperations = {
+	platform: string;
+	execPath: string;
+	canonicalPath: string;
+	exists: (path: string) => boolean;
+	readAutostart: () => Promise<string | null>;
+	readPort: (dir: string) => Promise<number>;
+	isRunning: (port: number) => Promise<boolean>;
+	shutdown: (port: number) => Promise<void>;
+	waitForExit: (port: number) => Promise<void>;
+	mkdir: (dir: string) => void;
+	migrate: (legacyDir: string | null, canonicalDir: string) => void;
+	waitForUnlock: (path: string) => Promise<void>;
+	copyExecutable: (source: string, destination: string) => void;
+	writeAutostart: (canonicalPath: string) => Promise<void>;
+	createShortcut: (canonicalPath: string) => Promise<void>;
+	refreshIconCache: () => Promise<void>;
+	sleepBeforeRestart: () => Promise<void>;
+	restart: (canonicalPath: string) => void;
+	exit: () => void;
+};
 
-	const canonical = canonicalExePath();
-	if (windowsPathEquals(process.execPath, canonical)) return;
+export async function runSelfInstall(
+	operations: SelfInstallOperations,
+): Promise<void> {
+	if (operations.platform !== "win32") return;
+	if (!operations.execPath.toLowerCase().endsWith(".exe")) return;
+	if (windowsPathEquals(operations.execPath, operations.canonicalPath)) return;
 
-	const canonicalDir = dirname(canonical);
-	const versionedDir = dirname(process.execPath);
+	const canonicalDir = dirname(operations.canonicalPath);
+	const versionedDir = dirname(operations.execPath);
 
 	// Find the legacy install dir (where existing config/db live, if any).
 	// Prefer the path stored in the autostart registry entry; fall back to
 	// the directory the versioned exe is being run from.
-	const autostartCmd = await readAutostartCommand();
+	const autostartCmd = await operations.readAutostart();
 	const legacyDir = selectLegacyInstallDir({
 		autostartCommand: autostartCmd,
 		versionedDir,
-		exists: existsSync,
+		exists: operations.exists,
 	});
 
 	// Shut down any running instance (canonical or legacy) so files unlock.
@@ -218,55 +240,85 @@ export async function maybeSelfInstall(): Promise<void> {
 	// POST is acked synchronously but exit is delayed ~250ms, and SQLite
 	// needs that time to release WAL locks on hlid.db.
 	const dirsToCheck = new Set<string>();
-	if (existsSync(canonical)) dirsToCheck.add(canonicalDir);
+	if (operations.exists(operations.canonicalPath))
+		dirsToCheck.add(canonicalDir);
 	if (legacyDir && legacyDir !== canonicalDir) dirsToCheck.add(legacyDir);
 	for (const dir of dirsToCheck) {
-		const port = await readPortFromConfig(dir);
-		if (await isRunning(port)) {
-			await postShutdown(port);
-			await waitForExit(port, SHUTDOWN_WAIT_TIMEOUT_MS);
+		const port = await operations.readPort(dir);
+		if (await operations.isRunning(port)) {
+			await operations.shutdown(port);
+			await operations.waitForExit(port);
 		}
 	}
 
-	mkdirSync(canonicalDir, { recursive: true });
+	operations.mkdir(canonicalDir);
 
 	// First-time migration: copy data files from legacy dir → canonical.
-	migrateInstallData({
-		legacyDir,
-		canonicalDir,
-		exists: existsSync,
-		copy: copyFileSync,
-	});
+	operations.migrate(legacyDir, canonicalDir);
 
 	// Replace the canonical exe with the version we're running.
-	if (existsSync(canonical)) {
-		await waitForUnlock(canonical, FILE_UNLOCK_TIMEOUT_MS);
+	if (operations.exists(operations.canonicalPath)) {
+		await operations.waitForUnlock(operations.canonicalPath);
 	}
-	copyFileSync(process.execPath, canonical);
+	operations.copyExecutable(operations.execPath, operations.canonicalPath);
 
 	// Re-point autostart at the canonical path if it was previously set.
-	if (autostartCmd) await writeAutostart(canonical);
+	if (autostartCmd) await operations.writeAutostart(operations.canonicalPath);
 
 	// Drop / refresh a Start Menu shortcut so the user can find the app
 	// without digging through AppData.
-	await createStartMenuShortcut(canonical);
+	await operations.createShortcut(operations.canonicalPath);
 
 	// Tell the shell to invalidate its icon cache so the new exe's icon
 	// shows up immediately instead of inheriting whatever was at this path
 	// before (the Bun icon from a prior WSL test build, etc).
-	await refreshShellIconCache();
+	await operations.refreshIconCache();
 
 	// Give the OS a moment to fully release socket handles after the old
 	// canonical's process.exit fires (250ms timer). Without this, the new
 	// canonical can race the OS cleanup and fail to bind port 3000.
-	await new Promise((r) => setTimeout(r, 1000));
+	await operations.sleepBeforeRestart();
 
 	// Relaunch from the canonical location. --restart tells the new canonical to
 	// skip the running-instance probe (it knows the old instance was replaced).
-	Bun.spawn([canonical, "--restart"], {
-		stdio: ["ignore", "ignore", "ignore"],
-		detached: true,
-		windowsHide: true,
+	operations.restart(operations.canonicalPath);
+	operations.exit();
+}
+
+export async function maybeSelfInstall(): Promise<void> {
+	await runSelfInstall({
+		platform: process.platform,
+		execPath: process.execPath,
+		canonicalPath: canonicalExePath(),
+		exists: existsSync,
+		readAutostart: readAutostartCommand,
+		readPort: readPortFromConfig,
+		isRunning,
+		shutdown: postShutdown,
+		waitForExit: (port) => waitForExit(port, SHUTDOWN_WAIT_TIMEOUT_MS),
+		mkdir: (dir) => mkdirSync(dir, { recursive: true }),
+		migrate: (legacyDir, canonicalDir) => {
+			migrateInstallData({
+				legacyDir,
+				canonicalDir,
+				exists: existsSync,
+				copy: copyFileSync,
+			});
+		},
+		waitForUnlock: (path) => waitForUnlock(path, FILE_UNLOCK_TIMEOUT_MS),
+		copyExecutable: copyFileSync,
+		writeAutostart,
+		createShortcut: createStartMenuShortcut,
+		refreshIconCache: refreshShellIconCache,
+		sleepBeforeRestart: () =>
+			new Promise((resolve) => setTimeout(resolve, 1000)),
+		restart: (canonicalPath) => {
+			Bun.spawn([canonicalPath, "--restart"], {
+				stdio: ["ignore", "ignore", "ignore"],
+				detached: true,
+				windowsHide: true,
+			});
+		},
+		exit: () => process.exit(0),
 	});
-	process.exit(0);
 }

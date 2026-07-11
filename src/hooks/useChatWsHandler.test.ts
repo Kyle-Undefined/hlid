@@ -9,7 +9,7 @@
 import { renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Action } from "#/components/chat/chatReducer";
-import type { RateLimitMessage } from "#/server/protocol";
+import type { RateLimitMessage, ServerMessage } from "#/server/protocol";
 
 vi.mock("#/lib/utils", () => ({
 	uid: vi.fn().mockReturnValue("test-uid"),
@@ -24,6 +24,25 @@ function makeRefs() {
 		historyReadyRef: { current: true },
 		sessionIdRef: { current: "session-1" },
 	};
+}
+
+function renderHandler(
+	options: {
+		historyReady?: boolean;
+		pendingId?: string | null;
+		lastAssistantId?: string | null;
+	} = {},
+) {
+	const dispatch = vi.fn<(action: Action) => void>();
+	const setRateLimit = vi.fn<(rateLimit: RateLimitMessage | null) => void>();
+	const refs = makeRefs();
+	refs.historyReadyRef.current = options.historyReady ?? true;
+	refs.pendingIdRef.current = options.pendingId ?? null;
+	refs.lastAssistantIdRef.current = options.lastAssistantId ?? null;
+	const { result } = renderHook(() =>
+		useChatWsHandler({ dispatch, ...refs, setRateLimit }),
+	);
+	return { handler: result.current, dispatch, setRateLimit, refs };
 }
 
 // ── local_command_output ───────────────────────────────────────────────────────
@@ -118,5 +137,195 @@ describe("useChatWsHandler — session id domains", () => {
 			cost: null,
 		});
 		expect(refs.pendingIdRef.current).toBeNull();
+	});
+});
+
+describe("useChatWsHandler — immediate messages", () => {
+	it("stores rate limits without dispatching a chat action", () => {
+		const { handler, dispatch, setRateLimit } = renderHandler();
+		const message = {
+			type: "rate_limit",
+			provider: "claude",
+			windows: [],
+		} as unknown as RateLimitMessage;
+		handler(message);
+		expect(setRateLimit).toHaveBeenCalledWith(message);
+		expect(dispatch).not.toHaveBeenCalled();
+	});
+
+	it.each<[ServerMessage, Action]>([
+		[
+			{ type: "user_message", id: "user-1", text: "hello" },
+			{ type: "ADD_USER", id: "user-1", text: "hello" },
+		],
+		[
+			{
+				type: "permission_resolved",
+				id: "permission-1",
+				toolName: "Bash",
+				displayName: "Run command",
+				decision: "approved",
+			},
+			{
+				type: "RESOLVE_OR_ADD_PERMISSION",
+				id: "permission-1",
+				toolName: "Bash",
+				displayName: "Run command",
+				decision: "approved",
+			},
+		],
+		[
+			{
+				type: "ask_user_question_resolved",
+				id: "question-1",
+				answers: { choice: ["yes"] },
+				notes: { choice: "because" },
+			},
+			{
+				type: "RESOLVE_ASK_USER_QUESTION",
+				id: "question-1",
+				answers: { choice: ["yes"] },
+				notes: { choice: "because" },
+			},
+		],
+		[
+			{
+				type: "plan_mode_exit_resolved",
+				id: "plan-1",
+				decision: "approved",
+			},
+			{
+				type: "RESOLVE_PLAN_PROPOSAL",
+				id: "plan-1",
+				decision: "approved",
+			},
+		],
+		[
+			{
+				type: "tool_result",
+				id: "tool-1",
+				content: "failed",
+				isError: true,
+			},
+			{
+				type: "ADD_TOOL_RESULT",
+				toolUseId: "tool-1",
+				content: "failed",
+				isError: true,
+			},
+		],
+	])("maps $type to its reducer action", (message, action) => {
+		const { handler, dispatch } = renderHandler({ pendingId: "assistant-1" });
+		handler(message);
+		expect(dispatch).toHaveBeenCalledOnce();
+		expect(dispatch).toHaveBeenCalledWith(action);
+	});
+
+	it("preserves structured plan text and its optional HTML relic", () => {
+		const { handler, dispatch } = renderHandler();
+		handler({
+			type: "plan_mode_exit",
+			id: "plan-1",
+			input: { plan: { steps: ["one", "two"] } },
+			html_relic_id: "relic-1",
+		});
+		expect(dispatch).toHaveBeenCalledWith({
+			type: "ADD_PLAN_PROPOSAL",
+			id: "plan-1",
+			plan: JSON.stringify({ steps: ["one", "two"] }),
+			htmlRelicId: "relic-1",
+		});
+	});
+});
+
+describe("useChatWsHandler — assistant lifecycle", () => {
+	it("creates one pending assistant and appends every streamed chunk to it", () => {
+		const { handler, dispatch, refs } = renderHandler();
+		handler({ type: "chunk", text: "first" });
+		handler({ type: "chunk", text: " second" });
+		expect(refs.pendingIdRef.current).toBe("test-uid");
+		expect(dispatch.mock.calls).toEqual([
+			[{ type: "ADD_ASSISTANT", id: "test-uid" }],
+			[{ type: "APPEND_CHUNK", id: "test-uid", text: "first" }],
+			[{ type: "APPEND_CHUNK", id: "test-uid", text: " second" }],
+		]);
+	});
+
+	it("anchors a running status to its turn id", () => {
+		const { handler, dispatch, refs } = renderHandler();
+		handler({
+			type: "status",
+			state: "running",
+			model: "model",
+			turn_id: "user-1",
+		});
+		expect(refs.pendingIdRef.current).toBe("test-uid");
+		expect(dispatch).toHaveBeenCalledWith({
+			type: "ADD_ASSISTANT",
+			id: "test-uid",
+			afterUserId: "user-1",
+		});
+	});
+
+	it("completes the active assistant and makes it the recap fallback", () => {
+		const { handler, dispatch, refs } = renderHandler({
+			pendingId: "assistant-1",
+		});
+		handler({
+			type: "done",
+			cost: 0.25,
+			turns: 1,
+			duration_ms: 1,
+			input_tokens: 1,
+			output_tokens: 1,
+			cache_read_tokens: 0,
+			cache_creation_tokens: 0,
+			context_window: null,
+			max_output_tokens: null,
+			stop_reason: null,
+			tokens_in_context: null,
+		});
+		expect(dispatch).toHaveBeenCalledWith({
+			type: "DONE",
+			id: "assistant-1",
+			cost: 0.25,
+		});
+		expect(refs.pendingIdRef.current).toBeNull();
+		expect(refs.lastAssistantIdRef.current).toBe("assistant-1");
+	});
+
+	it("turns an error into visible output and closes the pending assistant", () => {
+		const { handler, dispatch, refs } = renderHandler({
+			pendingId: "assistant-1",
+		});
+		handler({ type: "error", message: "connection lost" });
+		expect(dispatch.mock.calls).toEqual([
+			[
+				{
+					type: "APPEND_CHUNK",
+					id: "assistant-1",
+					text: "\n\n[ERROR: connection lost]",
+				},
+			],
+			[{ type: "DONE", id: "assistant-1", cost: null }],
+		]);
+		expect(refs.pendingIdRef.current).toBeNull();
+	});
+
+	it.each([
+		[
+			"pending",
+			{ pendingId: "pending-1", lastAssistantId: "last-1" },
+			"pending-1",
+		],
+		["last", { pendingId: null, lastAssistantId: "last-1" }, "last-1"],
+	] as const)("attaches a tool summary to the %s assistant", (_label, refs, id) => {
+		const { handler, dispatch } = renderHandler(refs);
+		handler({ type: "tool_use_summary", summary: "inspected files" });
+		expect(dispatch).toHaveBeenCalledWith({
+			type: "SET_RECAP",
+			id,
+			recap: "inspected files",
+		});
 	});
 });

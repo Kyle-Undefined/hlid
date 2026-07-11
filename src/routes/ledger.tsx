@@ -31,12 +31,18 @@ import type {
 	SessionRow,
 	ThirtyDayStats,
 } from "#/db";
+import { useLedgerSessionMutations } from "#/hooks/useLedgerSessionMutations";
 import { useWs } from "#/hooks/useWs";
 import { useWsLiveStats } from "#/hooks/useWsSelectors";
 import type { LiveStats } from "#/hooks/wsStore";
 import * as wsStore from "#/hooks/wsStore";
 import { dbFetch, dbJson, requireDbOk } from "#/lib/dbClient";
 import { fmt, fmtModel } from "#/lib/formatters";
+import {
+	isValidSize,
+	parseLedgerSearch,
+	VALID_PAGE_SIZES,
+} from "#/lib/ledgerState";
 import {
 	sessionCleanupSchema,
 	sessionDeleteSchema,
@@ -53,66 +59,6 @@ import {
 	getThirtyDayStatsFn,
 } from "#/lib/serverFns";
 import type { RateLimitMessage, ServerMessage } from "#/server/protocol";
-
-// ─── search param helper (exported for tests) ────────────────────────────────
-
-const VALID_PAGE_SIZES = [10, 20, 50, 100] as const;
-export type PageSize = (typeof VALID_PAGE_SIZES)[number];
-const DEFAULT_PAGE_SIZE: PageSize = 20;
-
-function isValidSize(n: number): n is PageSize {
-	return (VALID_PAGE_SIZES as readonly number[]).includes(n);
-}
-
-export function parseLedgerSearch(search: Record<string, unknown>): {
-	tab: "stats" | "sessions";
-	page: number;
-	size: PageSize;
-} {
-	const tab = search.tab === "stats" ? "stats" : "sessions";
-	const page =
-		typeof search.page === "number" ? Math.max(1, Math.floor(search.page)) : 1;
-	const sizeRaw =
-		typeof search.size === "number"
-			? Math.floor(search.size)
-			: DEFAULT_PAGE_SIZE;
-	const size: PageSize = isValidSize(sizeRaw) ? sizeRaw : DEFAULT_PAGE_SIZE;
-	return { tab, page, size };
-}
-
-// ─── optimistic-state filter helpers (exported for tests) ────────────────────
-
-/**
- * Retain only IDs that are still present in the server response.
- * - ID still in `freshIds` → delete not yet confirmed, keep hiding it
- * - ID gone from `freshIds` → server processed the delete, safe to drop
- * Returns `prev` unchanged (same reference) when nothing was evicted.
- */
-export function filterOptimisticIds(
-	prev: Set<string>,
-	freshIds: Set<string>,
-): Set<string> {
-	if (prev.size === 0) return prev;
-	const next = new Set([...prev].filter((id) => freshIds.has(id)));
-	return next.size === prev.size ? prev : next;
-}
-
-/**
- * Retain only label overrides for IDs still present in the server response.
- * Returns `prev` unchanged (same reference) when nothing was evicted.
- */
-export function filterOptimisticLabels(
-	prev: Map<string, string>,
-	freshIds: Set<string>,
-): Map<string, string> {
-	if (prev.size === 0) return prev;
-	const next = new Map([...prev].filter(([id]) => freshIds.has(id)));
-	return next.size === prev.size ? prev : next;
-}
-
-// Re-exported from LedgerStats so existing tests (and any external imports)
-// continue to resolve cacheHitPct via this module path.
-export { cacheHitPct } from "#/components/ledger/LedgerStats";
 
 // ─── server fns ──────────────────────────────────────────────────────────────
 
@@ -340,8 +286,6 @@ function StatsPage() {
 	});
 	const stats = useWsLiveStats();
 	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
-	const [mutationError, setMutationError] = useState<string | null>(null);
-
 	// ── Active sessions (multi-session pool status) ───────────────────────────
 	const sessionsStatus = useSyncExternalStore(
 		wsStore.subscribeSessionsStatus,
@@ -353,6 +297,38 @@ function StatsPage() {
 	const [statsDataState, setStatsDataState] = useState(statsData);
 
 	const [sessionPage, setSessionPage] = useState(initialSessions);
+	const mutationDependencies = useMemo(
+		() => ({
+			deleteSession: async (id: string) => {
+				await deleteSessionFn({ data: { id } });
+			},
+			renameSession: async (id: string, label: string) => {
+				await renameSessionFn({ data: { id, label } });
+			},
+			cleanupSessions: async (days: number) => {
+				await cleanupSessionsFn({ data: { days } });
+			},
+			navigateToPage: (nextPage: number) => {
+				navigate({
+					to: "/ledger",
+					search: { tab: "sessions" as const, page: nextPage, size },
+				});
+			},
+		}),
+		[navigate, size],
+	);
+	const {
+		sessionsData,
+		mutationError,
+		reconcile: reconcileSessionMutations,
+		deleteSession: handleDeleteSession,
+		renameSession: handleRenameSession,
+		cleanupSessions: handleCleanup,
+	} = useLedgerSessionMutations({
+		page,
+		sessionPage,
+		dependencies: mutationDependencies,
+	});
 	// Mutate refs during render so they're always current before any event
 	// handler fires. useEffect would lag by one render cycle, causing
 	// refreshSessions to fetch with stale page/size if a `done` event arrives
@@ -387,10 +363,8 @@ function StatsPage() {
 		// Only evict optimistic state for entries confirmed gone by the server.
 		// Blanket-clearing would re-show a session the user just deleted if a
 		// background `done` event fires before the delete RPC resolves.
-		const freshIds = new Set(fresh.sessions.map((s) => s.id));
-		setDeletedIds((prev) => filterOptimisticIds(prev, freshIds));
-		setRenamedLabels((prev) => filterOptimisticLabels(prev, freshIds));
-	}, []);
+		reconcileSessionMutations(fresh);
+	}, [reconcileSessionMutations]);
 
 	// Refresh DB session list when:
 	//   (a) any pool session completes a turn (running→idle/error), or
@@ -470,30 +444,6 @@ function StatsPage() {
 		};
 	}, []);
 
-	const [deletedIds, setDeletedIds] = useState<Set<string>>(new Set());
-	const [renamedLabels, setRenamedLabels] = useState<Map<string, string>>(
-		new Map(),
-	);
-
-	// biome-ignore lint/correctness/useExhaustiveDependencies: reset on page nav
-	useEffect(() => {
-		setDeletedIds(new Set());
-		setRenamedLabels(new Map());
-	}, [page]);
-
-	const sessionsData = useMemo(
-		() => ({
-			sessions: sessionPage.sessions
-				.filter((s) => !deletedIds.has(s.id))
-				.map((s) =>
-					renamedLabels.has(s.id)
-						? { ...s, label: renamedLabels.get(s.id) as string }
-						: s,
-				),
-			total: sessionPage.total - deletedIds.size,
-		}),
-		[sessionPage, deletedIds, renamedLabels],
-	);
 	const totalPages = Math.max(1, Math.ceil(sessionsData.total / size));
 
 	function onPageChange(p: number) {
@@ -514,59 +464,6 @@ function StatsPage() {
 			to: "/ledger",
 			search: { tab: "sessions", page: 1, size: nextSize },
 		});
-	}
-
-	async function handleDeleteSession(id: string) {
-		setMutationError(null);
-		const wasLastOnPage = sessionsData.sessions.length <= 1;
-		setDeletedIds((prev) => new Set(prev).add(id));
-		try {
-			await deleteSessionFn({ data: { id } });
-			if (wasLastOnPage && page > 1) {
-				navigate({
-					to: "/ledger",
-					search: { tab: "sessions", page: page - 1, size },
-				});
-			}
-		} catch (error) {
-			setDeletedIds((prev) => {
-				const next = new Set(prev);
-				next.delete(id);
-				return next;
-			});
-			setMutationError(
-				error instanceof Error ? error.message : "Failed to delete session",
-			);
-		}
-	}
-
-	async function handleRenameSession(id: string, label: string) {
-		setMutationError(null);
-		setRenamedLabels((prev) => new Map(prev).set(id, label));
-		try {
-			await renameSessionFn({ data: { id, label } });
-		} catch (error) {
-			setRenamedLabels((prev) => {
-				const next = new Map(prev);
-				next.delete(id);
-				return next;
-			});
-			setMutationError(
-				error instanceof Error ? error.message : "Failed to rename session",
-			);
-		}
-	}
-
-	async function handleCleanup(days: number) {
-		setMutationError(null);
-		try {
-			await cleanupSessionsFn({ data: { days } });
-			navigate({ to: "/ledger", search: { tab: "sessions", page: 1, size } });
-		} catch (error) {
-			setMutationError(
-				error instanceof Error ? error.message : "Failed to clean up sessions",
-			);
-		}
 	}
 
 	const { agg } = statsDataState;

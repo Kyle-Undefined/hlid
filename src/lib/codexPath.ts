@@ -1,35 +1,41 @@
 import { existsSync } from "node:fs";
-import { delimiter, join } from "node:path";
+import { delimiter, join, win32 } from "node:path";
 
 let _cached: string | undefined;
 let _resolved = false;
 
-export function resolveCodexExecutable(): string | undefined {
-	if (_resolved) return _cached;
+export function findCodexExecutable(input: {
+	platform: string;
+	override?: string;
+	path?: string;
+	pathDelimiter?: string;
+	exists: (path: string) => boolean;
+}): string | undefined {
+	if (input.override && input.exists(input.override)) return input.override;
 
-	const env = process.env.HLID_CODEX_EXE;
-	if (env && existsSync(env)) {
-		_cached = env;
-		_resolved = true;
-		return _cached;
-	}
-
-	const exeNames =
-		process.platform === "win32" ? ["codex.exe", "codex.cmd"] : ["codex"];
-	const pathDirs = (process.env.PATH ?? "").split(delimiter);
-	for (const dir of pathDirs) {
+	const windows = input.platform === "win32";
+	const exeNames = windows ? ["codex.exe", "codex.cmd"] : ["codex"];
+	const pathDelimiter = input.pathDelimiter ?? (windows ? ";" : ":");
+	const joinPath = windows ? win32.join : join;
+	for (const dir of (input.path ?? "").split(pathDelimiter)) {
 		if (!dir) continue;
 		for (const exeName of exeNames) {
-			const candidate = join(dir, exeName);
-			if (existsSync(candidate)) {
-				_cached = candidate;
-				_resolved = true;
-				return _cached;
-			}
+			const candidate = joinPath(dir, exeName);
+			if (input.exists(candidate)) return candidate;
 		}
 	}
+	return undefined;
+}
 
-	_cached = undefined;
+export function resolveCodexExecutable(): string | undefined {
+	if (_resolved) return _cached;
+	_cached = findCodexExecutable({
+		platform: process.platform,
+		override: process.env.HLID_CODEX_EXE,
+		path: process.env.PATH,
+		pathDelimiter: delimiter,
+		exists: existsSync,
+	});
 	_resolved = true;
 	return _cached;
 }

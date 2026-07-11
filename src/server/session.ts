@@ -13,6 +13,7 @@ import {
 import type {
 	AgentEvent,
 	AgentProvider,
+	AgentQueryParams,
 	AgentSession,
 	CanUseTool,
 	McpServerStatus,
@@ -122,6 +123,142 @@ type AgentSettings = {
 	recapModel?: string;
 };
 
+function configuredAgentSettings(
+	agent: NonNullable<HlidConfig["agents"]>[number],
+): AgentSettings | null {
+	const settings: AgentSettings = {};
+	if (agent.model) settings.model = agent.model;
+	if (agent.effort) settings.effort = agent.effort;
+	if (agent.max_turns) settings.maxTurns = agent.max_turns;
+	if (agent.permission_mode) settings.permissionMode = agent.permission_mode;
+	if (agent.recap_model) settings.recapModel = agent.recap_model;
+	return Object.keys(settings).length > 0 ? settings : null;
+}
+
+function buildAgentQueryParams(options: {
+	activeCwd: string;
+	resumeProviderSessionId: string | null;
+	extraDirs: Set<string>;
+	signal: AbortSignal | undefined;
+	agentSettings: AgentSettings | undefined;
+	defaultModel: string | undefined;
+	configuredPermissionMode: PermissionMode;
+	planMode: boolean | undefined;
+	planHtmlPath: string | null;
+	defaultEffort: string | undefined;
+	defaultMaxTurns: number | undefined;
+	executable: string | undefined;
+	canUseTool: CanUseTool;
+}): AgentQueryParams {
+	const implementationPermissionMode =
+		options.configuredPermissionMode === "plan"
+			? "default"
+			: options.configuredPermissionMode;
+	return {
+		cwd: options.activeCwd,
+		sessionId: options.resumeProviderSessionId ?? undefined,
+		additionalDirectories:
+			options.extraDirs.size > 0
+				? Array.from(options.extraDirs).map(toLogical)
+				: undefined,
+		signal: options.signal,
+		model: options.agentSettings?.model ?? options.defaultModel,
+		permissionMode: options.planMode
+			? "plan"
+			: options.configuredPermissionMode,
+		...(options.planMode ? { implementationPermissionMode } : {}),
+		...(options.planMode && options.planHtmlPath
+			? { planHtmlPath: options.planHtmlPath }
+			: {}),
+		effort: options.agentSettings?.effort ?? options.defaultEffort,
+		maxTurns: options.agentSettings?.maxTurns ?? options.defaultMaxTurns,
+		executable: options.executable,
+		settingSources: ["user", "project", "local"],
+		canUseTool: options.canUseTool,
+	};
+}
+
+function buildQueryData(
+	event: Extract<AgentEvent, { type: "done" }>,
+	turn: TurnState,
+): {
+	queryData: db.QueryData;
+	primaryModel:
+		| { contextWindow?: number; maxOutputTokens?: number }
+		| undefined;
+	tokensInContext: number | null;
+} {
+	const primaryModel = event.modelUsage
+		? Object.values(event.modelUsage)[0]
+		: undefined;
+	if (primaryModel?.contextWindow) {
+		turn.lastKnownContextWindow = primaryModel.contextWindow;
+	}
+	const tokensInContext = turn.lastTurnUsage
+		? turn.lastTurnUsage.input_tokens +
+			(turn.lastTurnUsage.cache_read_input_tokens ?? 0) +
+			(turn.lastTurnUsage.cache_creation_input_tokens ?? 0)
+		: null;
+	return {
+		primaryModel,
+		tokensInContext,
+		queryData: {
+			cost: event.cost ?? 0,
+			input_tokens: event.usage?.inputTokens ?? 0,
+			output_tokens: event.usage?.outputTokens ?? 0,
+			cache_read_tokens: event.usage?.cacheReadTokens ?? 0,
+			cache_creation_tokens: event.usage?.cacheCreationTokens ?? 0,
+			duration_ms: event.durationMs,
+			turns: event.turns,
+			context_window:
+				primaryModel?.contextWindow ?? turn.lastKnownContextWindow ?? null,
+			stop_reason: event.stopReason ?? null,
+			tokens_in_context: tokensInContext,
+		},
+	};
+}
+
+function buildAgentMaps(config: HlidConfig): {
+	providers: Map<string, string>;
+	settings: Map<string, AgentSettings>;
+} {
+	const providers = new Map<string, string>();
+	const settings = new Map<string, AgentSettings>();
+	for (const agent of config.agents ?? []) {
+		try {
+			const realPath = realpathSync(expandTilde(agent.path));
+			providers.set(realPath, agent.provider ?? "claude");
+			const agentSettings = configuredAgentSettings(agent);
+			if (agentSettings) settings.set(realPath, agentSettings);
+		} catch {
+			// Paths may not exist yet; they become available on the next config sync.
+		}
+	}
+	return { providers, settings };
+}
+
+function createTurnState(): TurnState {
+	return {
+		receivedAny: false,
+		assistantText: "",
+		lastAssistantText: "",
+		lastBlockType: null,
+		lastActualModel: null,
+		lastTurnUsage: null,
+		lastKnownContextWindow: null,
+		hadToolEvents: false,
+		lastAssistantSeq: -1,
+		pendingToolEvents: [],
+		pendingToolResults: new Map(),
+		reservedAssistantSeq: null,
+		persistedToolIds: new Set(),
+		textWriteTimer: null,
+		textWriteDirty: false,
+		lastTurnToolEvents: [],
+		sdkSummary: null,
+	};
+}
+
 export class SessionManager {
 	private providers: Map<string, AgentProvider>;
 	private vaultProviderId!: string;
@@ -226,27 +363,9 @@ export class SessionManager {
 		this.claudeExecutable = resolveClaudeExecutable();
 		this.codexExecutable = codexConfig.executable;
 		this.allowedAgentRealPaths = computeAllowedAgentRealPaths(config);
-		// Build agentPath → providerId map from config
-		this.agentProviderMap = new Map();
-		this.agentSettingsMap = new Map();
-		for (const agent of config.agents ?? []) {
-			try {
-				const realPath = realpathSync(expandTilde(agent.path));
-				this.agentProviderMap.set(realPath, agent.provider ?? "claude");
-				const settings: AgentSettings = {};
-				if (agent.model) settings.model = agent.model;
-				if (agent.effort) settings.effort = agent.effort;
-				if (agent.max_turns) settings.maxTurns = agent.max_turns;
-				if (agent.permission_mode)
-					settings.permissionMode = agent.permission_mode;
-				if (agent.recap_model) settings.recapModel = agent.recap_model;
-				if (Object.keys(settings).length > 0) {
-					this.agentSettingsMap.set(realPath, settings);
-				}
-			} catch {
-				// path doesn't exist yet — best-effort, skip
-			}
-		}
+		const agentMaps = buildAgentMaps(config);
+		this.agentProviderMap = agentMaps.providers;
+		this.agentSettingsMap = agentMaps.settings;
 	}
 
 	reinitialize(config: HlidConfig): void {
@@ -718,32 +837,10 @@ export class SessionManager {
 		emit: (msg: ServerMessage) => void,
 		provider: AgentProvider,
 	): Promise<void> {
-		const primaryModel = event.modelUsage
-			? Object.values(event.modelUsage)[0]
-			: undefined;
-		// Persist so subsequent usage_update events can carry context_window
-		// to the gauge without waiting for the next done.
-		if (primaryModel?.contextWindow) {
-			turn.lastKnownContextWindow = primaryModel.contextWindow;
-		}
-		const tokensInContext = turn.lastTurnUsage
-			? turn.lastTurnUsage.input_tokens +
-				(turn.lastTurnUsage.cache_read_input_tokens ?? 0) +
-				(turn.lastTurnUsage.cache_creation_input_tokens ?? 0)
-			: null;
-		const queryData: db.QueryData = {
-			cost: event.cost ?? 0,
-			input_tokens: event.usage?.inputTokens ?? 0,
-			output_tokens: event.usage?.outputTokens ?? 0,
-			cache_read_tokens: event.usage?.cacheReadTokens ?? 0,
-			cache_creation_tokens: event.usage?.cacheCreationTokens ?? 0,
-			duration_ms: event.durationMs,
-			turns: event.turns,
-			context_window:
-				primaryModel?.contextWindow ?? turn.lastKnownContextWindow ?? null,
-			stop_reason: event.stopReason ?? null,
-			tokens_in_context: tokensInContext,
-		};
+		const { primaryModel, tokensInContext, queryData } = buildQueryData(
+			event,
+			turn,
+		);
 		if (sessionId) {
 			await db.recordQuery(sessionId, queryData, provider.providerId);
 			if (turn.lastActualModel) {
@@ -1022,31 +1119,8 @@ export class SessionManager {
 	 * drained (mirrors CLI behavior — typed-while-running messages are accepted
 	 * and processed at the next turn boundary).
 	 */
-	async runQuery(
-		userMessage: string,
-		emit: (msg: ServerMessage) => void,
-		sessionId?: string,
-		skillContext?: string,
-		attachments?: ChatAttachment[],
-		agentCwd?: string,
-		turnId?: string,
-		planMode?: boolean,
-		planHtml?: boolean,
-	): Promise<void> {
-		const completion = this.turnQueue.enqueue(
-			[
-				userMessage,
-				emit,
-				sessionId,
-				skillContext,
-				attachments,
-				agentCwd,
-				turnId,
-				planMode,
-				planHtml,
-			],
-			turnId,
-		);
+	async runQuery(...args: RunQueryArgs): Promise<void> {
+		const completion = this.turnQueue.enqueue(args, args[6]);
 		if (!this.isDraining) void this.drainTurnQueue();
 		return completion;
 	}
@@ -1408,37 +1482,56 @@ export class SessionManager {
 		if (this.agentSession) return this.agentSession;
 		const configuredPermissionMode =
 			agentSettings?.permissionMode ?? this.permissionMode;
-		const implementationPermissionMode =
-			configuredPermissionMode === "plan"
-				? "default"
-				: configuredPermissionMode;
-
-		const session = provider.query({
-			cwd: activeCwd,
-			sessionId: resumeProviderSessionId ?? undefined,
-			additionalDirectories:
-				extraDirs.size > 0 ? Array.from(extraDirs).map(toLogical) : undefined,
-			signal: this.abortController?.signal,
-			model: agentSettings?.model ?? (this.agentCwd ? undefined : this.model),
-			permissionMode: planMode ? "plan" : configuredPermissionMode,
-			...(planMode ? { implementationPermissionMode } : {}),
-			...(planMode && this.planHtmlPath
-				? { planHtmlPath: this.planHtmlPath }
-				: {}),
-			effort: agentSettings?.effort ?? this.effort,
-			maxTurns: agentSettings?.maxTurns ?? this.maxTurns,
-			executable,
-			settingSources: ["user", "project", "local"],
-			canUseTool: this.createToolPermissionHandler(
-				provider,
+		const session = provider.query(
+			buildAgentQueryParams({
 				activeCwd,
-				sessionId,
-				emit,
-			),
-		});
+				resumeProviderSessionId,
+				extraDirs,
+				signal: this.abortController?.signal,
+				agentSettings,
+				defaultModel: this.agentCwd ? undefined : this.model,
+				configuredPermissionMode,
+				planMode,
+				planHtmlPath: this.planHtmlPath,
+				defaultEffort: this.effort,
+				defaultMaxTurns: this.maxTurns,
+				executable,
+				canUseTool: this.createToolPermissionHandler(
+					provider,
+					activeCwd,
+					sessionId,
+					emit,
+				),
+			}),
+		);
 		this.agentSession = session;
 		this.agentSessionKey = desiredKey;
 		return session;
+	}
+
+	private prepareProviderForTurn(sessionId: string | undefined): {
+		provider: AgentProvider;
+		agentSettings: AgentSettings | undefined;
+		resumeProviderSessionId: string | null;
+	} {
+		const provider = this.resolveProvider(this.agentCwd);
+		const agentSettings = this.agentCwd
+			? this.agentSettingsMap.get(this.agentCwd)
+			: undefined;
+		const sameProvider = this.providerSessionProviderId === provider.providerId;
+		const resumeProviderSessionId = sameProvider
+			? this.providerSessionId
+			: null;
+		if (!sameProvider) {
+			this.providerSessionId = null;
+			this.providerSessionProviderId = provider.providerId;
+		}
+		if (sessionId) {
+			void db
+				.setSessionProviderId(sessionId, provider.providerId)
+				.catch((error) => logDbError("setSessionProviderId", error));
+		}
+		return { provider, agentSettings, resumeProviderSessionId };
 	}
 
 	private scheduleTurnRecap(options: {
@@ -1472,17 +1565,18 @@ export class SessionManager {
 		).catch(() => {});
 	}
 
-	private async runOneTurn(
-		userMessage: string,
-		emit: (msg: ServerMessage) => void,
-		sessionId?: string,
-		skillContext?: string,
-		attachments?: ChatAttachment[],
-		agentCwd?: string,
-		turnId?: string,
-		planMode?: boolean,
-		planHtml?: boolean,
-	): Promise<void> {
+	private async runOneTurn(...args: RunQueryArgs): Promise<void> {
+		const [
+			userMessage,
+			emit,
+			sessionId,
+			skillContext,
+			attachments,
+			agentCwd,
+			turnId,
+			planMode,
+			planHtml,
+		] = args;
 		this.currentTurnId = turnId;
 		await this.initSessionContext(sessionId, agentCwd, userMessage);
 		this.syncPlanHtmlPath(Boolean(planMode && planHtml), sessionId);
@@ -1499,43 +1593,12 @@ export class SessionManager {
 		});
 
 		// Resolve provider after initSessionContext so this.agentCwd is final.
-		const currentProvider = this.resolveProvider(this.agentCwd);
-		const agentSettings = this.agentCwd
-			? this.agentSettingsMap.get(this.agentCwd)
-			: undefined;
-		const resumeProviderSessionId =
-			this.providerSessionProviderId === currentProvider.providerId
-				? this.providerSessionId
-				: null;
-		if (this.providerSessionProviderId !== currentProvider.providerId) {
-			this.providerSessionId = null;
-			this.providerSessionProviderId = currentProvider.providerId;
-		}
-		if (sessionId) {
-			void db
-				.setSessionProviderId(sessionId, currentProvider.providerId)
-				.catch((e) => logDbError("setSessionProviderId", e));
-		}
-
-		const turn: TurnState = {
-			receivedAny: false,
-			assistantText: "",
-			lastAssistantText: "",
-			lastBlockType: null,
-			lastActualModel: null,
-			lastTurnUsage: null,
-			lastKnownContextWindow: null,
-			hadToolEvents: false,
-			lastAssistantSeq: -1,
-			pendingToolEvents: [],
-			pendingToolResults: new Map(),
-			reservedAssistantSeq: null,
-			persistedToolIds: new Set(),
-			textWriteTimer: null,
-			textWriteDirty: false,
-			lastTurnToolEvents: [],
-			sdkSummary: null,
-		};
+		const {
+			provider: currentProvider,
+			agentSettings,
+			resumeProviderSessionId,
+		} = this.prepareProviderForTurn(sessionId);
+		const turn = createTurnState();
 
 		try {
 			const { prompt, safeAttachments } = buildPrompt({

@@ -59,14 +59,8 @@ jobs:
       - name: Audit production dependencies
         run: bun audit --audit-level=high --prod
 
-      - name: Biome check
-        run: bun run check
-
-      - name: Tests and coverage thresholds
-        run: bun run test:coverage
-
-      - name: Fallow analysis
-        run: bun run analyze:full
+      - name: Static checks, tests, coverage, and Fallow analysis
+        run: bun run validate
 
       - name: Tests (Bun — DB)
         run: bun run test:db

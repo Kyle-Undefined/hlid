@@ -1,15 +1,24 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({ navigate: vi.fn() }));
 
 vi.mock("@tanstack/react-router", () => ({
 	createFileRoute: () => (options: unknown) => options,
-	useNavigate: () => vi.fn(),
+	useNavigate: () => mocks.navigate,
 }));
 
 const { LoginPage } = await import("./login");
 
 beforeEach(() => {
+	mocks.navigate.mockReset();
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async () =>
@@ -41,5 +50,62 @@ describe("first-run password setup", () => {
 			screen.getByLabelText("Confirm password").hasAttribute("required"),
 		).toBe(true);
 		await waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+	});
+
+	it("rejects mismatched passwords without sending setup credentials", async () => {
+		render(<LoginPage />);
+		await screen.findByRole("heading", { name: "Create app password" });
+		fireEvent.change(screen.getByLabelText("Password"), {
+			target: { value: "long-enough-password" },
+		});
+		fireEvent.change(screen.getByLabelText("Confirm password"), {
+			target: { value: "different-password" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Set password" }));
+		expect((await screen.findByRole("alert")).textContent).toBe(
+			"Passwords do not match",
+		);
+		expect(fetch).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe("existing password login", () => {
+	it("shows an API error and allows another attempt", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi
+				.fn()
+				.mockResolvedValueOnce(
+					Response.json({ state: "unauthenticated", theme: "dark" }),
+				)
+				.mockResolvedValueOnce(
+					Response.json({ error: "Invalid password" }, { status: 401 }),
+				),
+		);
+		render(<LoginPage />);
+		await screen.findByRole("heading", { name: "Unlock Hlid" });
+		fireEvent.change(screen.getByLabelText("Password"), {
+			target: { value: "long-enough-password" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Unlock" }));
+		expect((await screen.findByRole("alert")).textContent).toBe(
+			"Invalid password",
+		);
+		expect(
+			(screen.getByRole("button", { name: "Unlock" }) as HTMLButtonElement)
+				.disabled,
+		).toBe(false);
+		expect(mocks.navigate).not.toHaveBeenCalled();
+	});
+
+	it("reports status lookup failures", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async () => new Response("down", { status: 503 })),
+		);
+		render(<LoginPage />);
+		expect((await screen.findByRole("alert")).textContent).toBe(
+			"Unable to check authentication",
+		);
 	});
 });

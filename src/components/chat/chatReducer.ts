@@ -189,6 +189,116 @@ export type Action =
 	  }
 	| { type: "CLEAR" };
 
+type HistoryItem = Extract<Action, { type: "LOAD_HISTORY" }>["items"][number];
+
+const VALID_PERMISSION_DECISIONS = new Set<PermissionMessage["decision"]>([
+	"pending",
+	"approved",
+	"approved_session",
+	"approved_always",
+	"denied",
+]);
+const VALID_PLAN_DECISIONS = new Set<PlanProposalDecision>([
+	"pending",
+	"approved",
+	"edited",
+	"cancelled",
+]);
+
+function promoteUser(
+	state: ChatMessage[],
+	turnId: string,
+	pendingTurnIds: string[],
+): ChatMessage[] {
+	const promotedIdx = state.findIndex(
+		(message) => message.id === turnId && message.role === "user",
+	);
+	if (promotedIdx === -1) return state;
+	const targetIdx = state.findIndex(
+		(message) =>
+			message.role === "user" &&
+			message.id !== turnId &&
+			pendingTurnIds.includes(message.id),
+	);
+	if (targetIdx === -1 || targetIdx >= promotedIdx) return state;
+	const promoted = state[promotedIdx];
+	const without = [
+		...state.slice(0, promotedIdx),
+		...state.slice(promotedIdx + 1),
+	];
+	return [
+		...without.slice(0, targetIdx),
+		promoted,
+		...without.slice(targetIdx),
+	];
+}
+
+function historyItemToMessage(item: HistoryItem): ChatMessage {
+	if (item.kind === "ask_user_question") {
+		return {
+			id: item.id,
+			role: "ask_user_question",
+			questions: item.questions,
+			answers: item.answers,
+			...(item.notes !== undefined ? { notes: item.notes } : {}),
+		};
+	}
+	if (item.kind === "plan_proposal") {
+		return {
+			id: item.id,
+			role: "plan_proposal",
+			plan: item.plan,
+			decision: VALID_PLAN_DECISIONS.has(item.decision as PlanProposalDecision)
+				? (item.decision as PlanProposalDecision)
+				: "pending",
+			...(item.html_attachment_id
+				? { htmlRelicId: item.html_attachment_id }
+				: {}),
+		};
+	}
+	if (item.kind === "permission") {
+		return {
+			id: item.tool_id,
+			role: "permission",
+			toolName: item.tool_name,
+			title: "",
+			displayName: item.display_name ?? undefined,
+			decision: VALID_PERMISSION_DECISIONS.has(
+				item.decision as PermissionMessage["decision"],
+			)
+				? (item.decision as PermissionMessage["decision"])
+				: "pending",
+		};
+	}
+	if (item.role === "user") {
+		return {
+			id: item.id,
+			role: "user",
+			text: item.text,
+			attachments: item.attachments,
+		};
+	}
+	if (item.role === "assistant") {
+		return {
+			id: item.id,
+			role: "assistant",
+			text: item.text,
+			toolEvents: item.toolEvents ?? [],
+			streaming: false,
+			cost: null,
+			recap: item.recap ?? undefined,
+		};
+	}
+	return {
+		id: item.id,
+		role: "assistant",
+		text: typeof item.text === "string" ? item.text : "",
+		toolEvents: [],
+		streaming: false,
+		cost: null,
+	};
+}
+
 export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 	switch (action.type) {
 		case "ADD_USER":
@@ -204,28 +314,7 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 		case "REMOVE_USER":
 			return state.filter((m) => !(m.id === action.id && m.role === "user"));
 		case "PROMOTE_USER": {
-			const { turnId, pendingTurnIds } = action;
-			const promotedIdx = state.findIndex(
-				(m) => m.id === turnId && m.role === "user",
-			);
-			if (promotedIdx === -1) return state;
-			// Find earliest pending-and-not-promoted user msg → that's where
-			// the promoted msg should land (right before it).
-			const targetIdx = state.findIndex(
-				(m) =>
-					m.role === "user" && m.id !== turnId && pendingTurnIds.includes(m.id),
-			);
-			if (targetIdx === -1 || targetIdx >= promotedIdx) return state;
-			const promoted = state[promotedIdx];
-			const without = [
-				...state.slice(0, promotedIdx),
-				...state.slice(promotedIdx + 1),
-			];
-			return [
-				...without.slice(0, targetIdx),
-				promoted,
-				...without.slice(targetIdx),
-			];
+			return promoteUser(state, action.turnId, action.pendingTurnIds);
 		}
 		case "ADD_ASSISTANT": {
 			const placeholder: ChatMessage = {
@@ -369,91 +458,8 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 				},
 			];
 		}
-		case "LOAD_HISTORY": {
-			const validDecisions = new Set<PermissionMessage["decision"]>([
-				"pending",
-				"approved",
-				"approved_session",
-				"approved_always",
-				"denied",
-			]);
-			const validPlanDecisions = new Set<PlanProposalDecision>([
-				"pending",
-				"approved",
-				"edited",
-				"cancelled",
-			]);
-			return action.items.map((item): ChatMessage => {
-				if (item.kind === "ask_user_question") {
-					return {
-						id: item.id,
-						role: "ask_user_question",
-						questions: item.questions,
-						answers: item.answers,
-						...(item.notes !== undefined ? { notes: item.notes } : {}),
-					};
-				}
-				if (item.kind === "plan_proposal") {
-					const decision = validPlanDecisions.has(
-						item.decision as PlanProposalDecision,
-					)
-						? (item.decision as PlanProposalDecision)
-						: "pending";
-					return {
-						id: item.id,
-						role: "plan_proposal",
-						plan: item.plan,
-						decision,
-						...(item.html_attachment_id
-							? { htmlRelicId: item.html_attachment_id }
-							: {}),
-					};
-				}
-				if (item.kind === "permission") {
-					const decision = validDecisions.has(
-						item.decision as PermissionMessage["decision"],
-					)
-						? (item.decision as PermissionMessage["decision"])
-						: "pending";
-					return {
-						id: item.tool_id,
-						role: "permission",
-						toolName: item.tool_name,
-						title: "",
-						displayName: item.display_name ?? undefined,
-						decision,
-					};
-				}
-				if (item.role === "user") {
-					return {
-						id: item.id,
-						role: "user",
-						text: item.text,
-						attachments: item.attachments,
-					};
-				}
-				if (item.role === "assistant") {
-					return {
-						id: item.id,
-						role: "assistant",
-						text: item.text,
-						toolEvents: item.toolEvents ?? [],
-						streaming: false,
-						cost: null,
-						recap: item.recap ?? undefined,
-					};
-				}
-				// Unknown role — normalize to assistant to avoid silent breakage
-				return {
-					id: item.id,
-					role: "assistant",
-					text: typeof item.text === "string" ? item.text : "",
-					toolEvents: [],
-					streaming: false,
-					cost: null,
-				};
-			});
-		}
+		case "LOAD_HISTORY":
+			return action.items.map(historyItemToMessage);
 		case "ADD_ASK_USER_QUESTION": {
 			// Dedup: LOAD_HISTORY may have already hydrated this id from DB. The
 			// WS server also re-emits pending questions on reconnect (see

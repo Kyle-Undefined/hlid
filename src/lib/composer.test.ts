@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	composerKeyAction,
 	insertAtSelection,
+	prepareChatSubmission,
 	resizeComposer,
 } from "./composer";
 
@@ -57,5 +58,106 @@ describe("composer text behavior", () => {
 		const element = { scrollHeight: 500, style: { height: "10px" } };
 		resizeComposer(element, 280);
 		expect(element.style.height).toBe("280px");
+	});
+});
+
+const attachment = {
+	id: "attachment-1",
+	path: "/tmp/file.txt",
+	filename: "file.txt",
+	mime: "text/plain",
+	kind: "ephemeral",
+};
+
+function submission(
+	overrides: Partial<Parameters<typeof prepareChatSubmission>[0]> = {},
+) {
+	return prepareChatSubmission({
+		id: "turn-1",
+		text: "hello",
+		sessionId: "session-1",
+		running: false,
+		attachments: [],
+		agentContextAlreadySent: false,
+		planMode: false,
+		planHtml: false,
+		...overrides,
+	});
+}
+
+describe("chat submission policy", () => {
+	it("does not submit empty text without attachments", () => {
+		expect(submission({ text: "" })).toBeNull();
+	});
+
+	it("allows an attachment-only immediate submission", () => {
+		const result = submission({ text: "", attachments: [attachment] });
+		expect(result).toMatchObject({
+			kind: "immediate",
+			user: { text: "", attachments: [attachment] },
+			message: { type: "chat", attachments: [attachment] },
+		});
+	});
+
+	it("builds a queued message with skill, attachment, and agent context", () => {
+		expect(
+			submission({
+				running: true,
+				skillContext: "/skills/review.md",
+				attachments: [attachment],
+				agentCwd: "/agents/reviewer",
+				planMode: true,
+				planHtml: true,
+			}),
+		).toEqual({
+			kind: "queued",
+			message: {
+				id: "turn-1",
+				text: "hello",
+				session_id: "session-1",
+				skill_context: "/skills/review.md",
+				attachments: [attachment],
+				agent_cwd: "/agents/reviewer",
+			},
+		});
+	});
+
+	it("sends agent context once and enables HTML only with plan mode", () => {
+		const first = submission({
+			agentCwd: "/agents/reviewer",
+			planMode: true,
+			planHtml: true,
+		});
+		expect(first).toMatchObject({
+			kind: "immediate",
+			marksAgentContextSent: true,
+			message: {
+				agent_cwd: "/agents/reviewer",
+				plan_mode: true,
+				plan_html: true,
+			},
+		});
+
+		const later = submission({
+			agentCwd: "/agents/reviewer",
+			agentContextAlreadySent: true,
+			planHtml: true,
+		});
+		expect(later).toMatchObject({
+			kind: "immediate",
+			marksAgentContextSent: false,
+			message: {
+				agent_cwd: undefined,
+				plan_mode: undefined,
+				plan_html: undefined,
+			},
+		});
+	});
+
+	it("does not attach empty arrays to the wire message", () => {
+		expect(submission()).toMatchObject({
+			kind: "immediate",
+			message: { attachments: undefined, skill_context: undefined },
+		});
 	});
 });

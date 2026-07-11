@@ -1,7 +1,7 @@
 {
   "name": "hlid",
   "description": "Hliðskjálf - Watcher of Worlds",
-  "version": "0.0.84",
+  "version": "0.0.85",
   "private": true,
   "type": "module",
   "imports": {
@@ -26,8 +26,9 @@
     "check:biome": "biome check",
     "typecheck": "tsc --noEmit",
     "check": "bun run check:biome && bun run typecheck",
-		"analyze": "fallow dead-code --summary --changed-since origin/main && fallow health --summary --changed-since origin/main --min-score 85 && fallow dupes --summary --changed-since origin/main --threshold 0.5",
-		"analyze:full": "fallow dead-code --summary && fallow health --summary --min-score 85 && fallow dupes --summary --threshold 0.5",
+    "analyze": "fallow dead-code --production --summary --fail-on-issues --changed-since origin/main && fallow health --production --coverage coverage/coverage-final.json --score --changed-since origin/main --min-score 87 && fallow dupes --production --summary --changed-since origin/main --threshold 0.5",
+    "analyze:full": "fallow dead-code --production --summary --fail-on-issues && fallow health --production --coverage coverage/coverage-final.json --score --min-score 87 && fallow dupes --production --summary --threshold 0.5",
+    "validate": "bun run check && bun run test:coverage && bun run analyze:full",
     "stage": "biome format --write && biome lint --fix && biome check --fix",
     "version:bump": "bumpp --quiet",
     "generate-icons": "bun scripts/generate-icons.ts"

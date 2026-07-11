@@ -9,7 +9,7 @@ function makeProvider(): AcpProvider {
 	return new AcpProvider({
 		id: "acp:fake",
 		label: "Fake ACP",
-		command: process.execPath,
+		command: "bun",
 		args: [fixture],
 	});
 }

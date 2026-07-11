@@ -196,4 +196,45 @@ describe("TLS HTTP proxy limits", () => {
 		finish?.();
 		expect((await next).status).toBe(200);
 	});
+
+	it("forwards safe headers and adds authenticated proxy metadata", async () => {
+		const forward = vi.fn(
+			async (_input: string, _init: RequestInit) =>
+				new Response("ok", {
+					status: 201,
+					headers: { "x-upstream": "yes", connection: "close" },
+				}),
+		);
+		const response = await forwarder({ forward })(
+			new Request("https://hlid.test/api/private?q=1", {
+				headers: {
+					"x-custom": "kept",
+					"x-hlid-proxy-token": "attacker",
+				},
+			}),
+			"192.0.2.5",
+		);
+		const [target, init] = forward.mock.calls[0];
+		const headers = new Headers(init.headers);
+		expect(target).toBe("http://127.0.0.1:3000/api/private?q=1");
+		expect(headers.get("x-custom")).toBe("kept");
+		expect(headers.get("x-hlid-proxy-token")).toBe("internal-secret");
+		expect(headers.get("x-hlid-forwarded-proto")).toBe("https");
+		expect(headers.get("x-hlid-forwarded-client-ip")).toBe("192.0.2.5");
+		expect(response.status).toBe(201);
+		expect(response.headers.get("x-upstream")).toBe("yes");
+		expect(response.headers.has("connection")).toBe(false);
+	});
+
+	it("maps upstream connection failures to service unavailable", async () => {
+		const response = await forwarder({
+			forward: async () => {
+				const error = new Error("connect failed") as NodeJS.ErrnoException;
+				error.code = "ConnectionRefused";
+				throw error;
+			},
+		})(new Request("https://hlid.test/api/private"));
+		expect(response.status).toBe(503);
+		expect(await response.text()).toBe("Service Unavailable");
+	});
 });

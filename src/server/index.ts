@@ -27,9 +27,14 @@ import {
 	payloadTooLarge,
 } from "./requestLimits";
 import { broadcast } from "./runState";
+import {
+	createAuthenticatedRouteHandler,
+	createServerRequestPolicy,
+} from "./serverRequestPolicy";
 import { SessionPool } from "./sessionPool";
 import { resolveAllowedTerminalCwd } from "./terminalAccess";
 import { TerminalSessionPool } from "./terminalSessionPool";
+import { createTerminalUpgradeHandler } from "./terminalUpgrade";
 import { startTlsProxy } from "./tlsProxy";
 import { startUiServer } from "./uiServer";
 import { VoiceModelManager } from "./voice";
@@ -40,10 +45,7 @@ import {
 	createTerminalWsHandlers,
 	type TerminalWsData,
 } from "./wsHandlers.terminal";
-import {
-	MAX_WS_PAYLOAD_BYTES,
-	parseInitialTerminalDimensions,
-} from "./wsSchemas";
+import { MAX_WS_PAYLOAD_BYTES } from "./wsSchemas";
 
 if (process.argv[2] === "auth" && process.argv[3] === "reset") {
 	await resetAuthentication();
@@ -232,50 +234,16 @@ const tlsConfig =
 
 type AppServer = Server<WsData | TerminalWsData>;
 
-async function upgradeTerminalWebSocket(
-	req: Request,
-	server: AppServer,
-	url: URL,
-): Promise<Response | undefined> {
-	const sessionId = url.searchParams.get("session_id") ?? "";
-	const requestedCwd = url.searchParams.get("cwd") ?? config.vault.path;
-	const cwd = resolveAllowedTerminalCwd(config, requestedCwd);
-	if (!cwd) return new Response("Forbidden", { status: 403 });
-
-	let label: string | null = null;
-	if (sessionId) {
+const upgradeTerminalWebSocket = createTerminalUpgradeHandler({
+	defaultCwd: config.vault.path,
+	resolveCwd: (requestedCwd) => resolveAllowedTerminalCwd(config, requestedCwd),
+	createSession: async (sessionId) => {
 		await db.createSession(sessionId, "Terminal session", "claude-cli");
-		label = (await db.getSessionById(sessionId))?.label ?? "Terminal session";
-	}
-	const { cols, rows } = parseInitialTerminalDimensions(
-		url.searchParams.get("cols"),
-		url.searchParams.get("rows"),
-	);
-	let claudeSessionId: string | null = null;
-	if (sessionId) {
-		try {
-			claudeSessionId = await db.getSessionClaudeId(sessionId);
-		} catch {
-			// Continue without resume.
-		}
-	}
-	if (
-		server.upgrade(req, {
-			data: {
-				isTerminal: true,
-				sessionId,
-				cwd,
-				label,
-				cols,
-				rows,
-				claudeSessionId,
-			},
-		})
-	) {
-		return undefined;
-	}
-	return new Response("WebSocket upgrade required", { status: 426 });
-}
+	},
+	getSessionLabel: async (sessionId) =>
+		(await db.getSessionById(sessionId))?.label ?? null,
+	getResumeId: db.getSessionClaudeId,
+});
 
 async function handleWebSocketRoute(
 	req: Request,
@@ -296,7 +264,9 @@ async function handleWebSocketRoute(
 		return new Response("Unauthorized", { status: 401 });
 	}
 	if (url.pathname === "/ws/terminal") {
-		return upgradeTerminalWebSocket(req, server, url);
+		return upgradeTerminalWebSocket(url, (data) =>
+			server.upgrade(req, { data }),
+		);
 	}
 	if (
 		server.upgrade(req, {
@@ -492,74 +462,39 @@ async function handleAccountRoute(url: URL, req: Request) {
 	return Response.json(null);
 }
 
-async function firstRouteResponse(
-	handlers: Array<() => Response | null | Promise<Response | null>>,
-): Promise<Response | null> {
-	for (const handler of handlers) {
-		const response = await handler();
-		if (response) return response;
-	}
-	return null;
-}
+const handleAuthenticatedRoute = createAuthenticatedRouteHandler({
+	getStatus: () => pool.vaultEntry().manager.getStatus(),
+	getApiIndex: () => buildApiIndex(PORT, UI_PORT),
+	orderedHandlers: [
+		handleCodexRoute,
+		handleProviderRoute,
+		handleAcpRoute,
+		handleVoiceRoute,
+		handleAccountRoute,
+	],
+	getMcpStatus: () => pool.vaultEntry().manager.getLastMcpStatus() ?? [],
+	handleDb: (url, req) => handleDbRoute(url, req, pool, terminalPool),
+	handleAttachment: (url, req) => handleAttachmentRoute(url, req, config),
+});
 
-async function handleAuthenticatedRoute(url: URL, req: Request) {
-	if (url.pathname === "/status") {
-		return Response.json(pool.vaultEntry().manager.getStatus());
-	}
-	if (url.pathname === "/api-index" && req.method === "GET") {
-		return Response.json(buildApiIndex(PORT, UI_PORT));
-	}
-	const response = await firstRouteResponse([
-		() => handleCodexRoute(url, req),
-		() => handleProviderRoute(url, req),
-		() => handleAcpRoute(url, req),
-		() => handleVoiceRoute(url, req),
-		() => handleAccountRoute(url, req),
-	]);
-	if (response) return response;
-	if (url.pathname === "/mcp-status" && req.method === "GET") {
-		return Response.json(pool.vaultEntry().manager.getLastMcpStatus() ?? []);
-	}
-	const dbResult = await handleDbRoute(url, req, pool, terminalPool);
-	if (dbResult) return dbResult;
-	const attachmentResult = await handleAttachmentRoute(url, req, config);
-	if (attachmentResult) return attachmentResult;
-	return new Response("Not found", { status: 404 });
-}
+const handleServerRequest = createServerRequestPolicy<AppServer>({
+	isPeerAllowed: (address) =>
+		isAllowedOrigin(address, config.server.local_network_access),
+	isMutationOriginAllowed: (origin) =>
+		isAllowedOriginHeader(origin, config.server.local_network_access),
+	handleWebSocket: (request, url, address, server) =>
+		handleWebSocketRoute(request, server, url, address),
+	authorize: (request, address) =>
+		authorizeServiceRequest(request, address, SERVER_TOKEN),
+	handleAuthenticated: handleAuthenticatedRoute,
+});
 
 async function handleServerFetch(
 	req: Request,
 	server: AppServer,
 ): Promise<Response | undefined> {
-	const url = new URL(req.url);
 	const peerIp = server.requestIP(req)?.address;
-	if (!isAllowedOrigin(peerIp, config.server.local_network_access)) {
-		return new Response("Forbidden", { status: 403 });
-	}
-	if (
-		req.method !== "GET" &&
-		req.method !== "HEAD" &&
-		!isAllowedOriginHeader(
-			req.headers.get("origin"),
-			config.server.local_network_access,
-		)
-	) {
-		return new Response("Forbidden", { status: 403 });
-	}
-	const websocketResponse = await handleWebSocketRoute(
-		req,
-		server,
-		url,
-		peerIp,
-	);
-	if (websocketResponse !== null) return websocketResponse;
-	if (!(await authorizeServiceRequest(req, peerIp, SERVER_TOKEN))) {
-		return Response.json(
-			{ error: "Unauthorized" },
-			{ status: 401, headers: { "cache-control": "no-store" } },
-		);
-	}
-	return handleAuthenticatedRoute(url, req);
+	return handleServerRequest(req, peerIp, server);
 }
 
 registerBunServer(

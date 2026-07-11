@@ -1,3 +1,6 @@
+import type { QueuedChatMessage } from "#/hooks/wsStore";
+import type { ChatAttachment, ClientChatMessage } from "#/server/protocol";
+
 export type ComposerKeyAction =
 	| "picker-next"
 	| "picker-previous"
@@ -56,4 +59,63 @@ export function resizeComposer(
 	if (!element) return;
 	element.style.height = "auto";
 	element.style.height = `${Math.min(element.scrollHeight, maxHeight)}px`;
+}
+
+export type ChatSubmission =
+	| { kind: "queued"; message: QueuedChatMessage }
+	| {
+			kind: "immediate";
+			user: { id: string; text: string; attachments: ChatAttachment[] };
+			message: ClientChatMessage;
+			marksAgentContextSent: boolean;
+	  };
+
+export function prepareChatSubmission(input: {
+	id: string;
+	text: string;
+	sessionId: string;
+	running: boolean;
+	skillContext?: string;
+	attachments: ChatAttachment[];
+	agentCwd?: string;
+	agentContextAlreadySent: boolean;
+	planMode: boolean;
+	planHtml: boolean;
+}): ChatSubmission | null {
+	if (!input.text && input.attachments.length === 0) return null;
+	const attachments =
+		input.attachments.length > 0 ? [...input.attachments] : undefined;
+	if (input.running) {
+		return {
+			kind: "queued",
+			message: {
+				id: input.id,
+				text: input.text,
+				session_id: input.sessionId,
+				skill_context: input.skillContext,
+				attachments,
+				agent_cwd: input.agentCwd,
+			},
+		};
+	}
+
+	const agentCwd =
+		input.agentCwd && !input.agentContextAlreadySent
+			? input.agentCwd
+			: undefined;
+	return {
+		kind: "immediate",
+		user: { id: input.id, text: input.text, attachments: input.attachments },
+		message: {
+			type: "chat",
+			text: input.text,
+			session_id: input.sessionId,
+			skill_context: input.skillContext,
+			attachments,
+			agent_cwd: agentCwd,
+			plan_mode: input.planMode || undefined,
+			plan_html: (input.planMode && input.planHtml) || undefined,
+		},
+		marksAgentContextSent: agentCwd !== undefined,
+	};
 }

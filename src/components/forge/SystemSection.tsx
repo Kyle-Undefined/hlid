@@ -34,11 +34,59 @@ function formatBytes(bytes: number): string {
 	return `${value.toFixed(value >= 10 ? 1 : 2)} ${unit}`;
 }
 
-export function SystemSection({
-	view = "all",
+function OptimizeStorageAction({
+	busy,
+	onOptimize,
 }: {
-	view?: "all" | "overview" | "advanced";
+	busy: boolean;
+	onOptimize: () => void;
 }) {
+	return (
+		<Field
+			label="Optimize database"
+			hint="checkpoint WAL and refresh SQLite query statistics"
+		>
+			<button
+				type="button"
+				disabled={busy}
+				onClick={onOptimize}
+				className="text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors uppercase disabled:opacity-40"
+			>
+				{busy ? "OPTIMIZING…" : "OPTIMIZE"}
+			</button>
+		</Field>
+	);
+}
+
+function ShutdownAction({
+	busy,
+	onShutdown,
+}: {
+	busy: boolean;
+	onShutdown: () => void;
+}) {
+	return (
+		<Field label="Shutdown" hint="exit Hlið completely">
+			<ConfirmAction
+				label="shutdown?"
+				onConfirm={onShutdown}
+				className="shrink-0"
+				trigger={(open) => (
+					<button
+						type="button"
+						onClick={open}
+						disabled={busy}
+						className="text-[10px] tracking-widest px-3 py-1.5 border border-destructive/40 text-destructive/80 hover:text-destructive hover:bg-destructive/10 transition-colors uppercase disabled:opacity-40"
+					>
+						{busy ? "STOPPING…" : "SHUTDOWN"}
+					</button>
+				)}
+			/>
+		</Field>
+	);
+}
+
+function useSystemMaintenance() {
 	const [autostart, setAutostart] = useState<LifecycleState | null>(null);
 	const [storage, setStorage] = useState<StorageStats | null>(null);
 	const [busy, setBusy] = useState<
@@ -53,13 +101,13 @@ export function SystemSection({
 				setError("Failed to load lifecycle state");
 				return;
 			}
-			const j = (await res.json()) as {
+			const response = (await res.json()) as {
 				ok: boolean;
 				data?: LifecycleState;
 			};
-			if (j.ok && j.data) setAutostart(j.data);
-		} catch (e) {
-			console.error("[lifecycle] Failed to fetch status:", e);
+			if (response.ok && response.data) setAutostart(response.data);
+		} catch (cause) {
+			console.error("[lifecycle] Failed to fetch status:", cause);
 			setError("Failed to load lifecycle state");
 		}
 	}, []);
@@ -70,18 +118,6 @@ export function SystemSection({
 			.then(setStorage)
 			.catch(() => {});
 	}, [refresh]);
-
-	async function optimizeStorage() {
-		setError(null);
-		setBusy("optimize");
-		try {
-			setStorage(await optimizeStorageFn());
-		} catch (e) {
-			setError(e instanceof Error ? e.message : "Storage optimization failed");
-		} finally {
-			setBusy(null);
-		}
-	}
 
 	async function post(
 		action: "install" | "uninstall" | "shutdown" | "open_install_dir",
@@ -97,14 +133,20 @@ export function SystemSection({
 		return (await res.json()) as { ok: boolean; error?: string };
 	}
 
-	async function openInstallDir() {
+	async function runLifecycleAction(
+		action: "shutdown" | "open_install_dir",
+		fallback: string,
+	) {
 		setError(null);
-		setBusy("open_install_dir");
-		const r = await post("open_install_dir").catch(
-			(e) => ({ ok: false, error: String(e) }) as const,
-		);
-		if (!r.ok) setError(r.error ?? "Failed to open folder");
-		setBusy(null);
+		setBusy(action);
+		try {
+			const result = await post(action).catch(
+				(cause) => ({ ok: false, error: String(cause) }) as const,
+			);
+			if (!result.ok) setError(result.error ?? fallback);
+		} finally {
+			setBusy(null);
+		}
 	}
 
 	async function toggleAutostart() {
@@ -113,30 +155,58 @@ export function SystemSection({
 		setBusy("toggle");
 		try {
 			const action = autostart.enabled ? "uninstall" : "install";
-			const r = await post(action).catch(
-				(e) => ({ ok: false, error: String(e) }) as const,
+			const result = await post(action).catch(
+				(cause) => ({ ok: false, error: String(cause) }) as const,
 			);
-			if (!r.ok) setError(r.error ?? "Failed");
+			if (!result.ok) setError(result.error ?? "Failed");
 			await refresh();
 		} finally {
 			setBusy(null);
 		}
 	}
 
-	async function doShutdown() {
+	async function optimizeStorage() {
 		setError(null);
-		setBusy("shutdown");
+		setBusy("optimize");
 		try {
-			const r = await post("shutdown").catch(
-				(e) => ({ ok: false, error: String(e) }) as const,
+			setStorage(await optimizeStorageFn());
+		} catch (cause) {
+			setError(
+				cause instanceof Error ? cause.message : "Storage optimization failed",
 			);
-			if (!r.ok) {
-				setError(r.error ?? "Shutdown failed");
-			}
 		} finally {
 			setBusy(null);
 		}
 	}
+
+	return {
+		autostart,
+		storage,
+		busy,
+		error,
+		optimizeStorage,
+		toggleAutostart,
+		openInstallDir: () =>
+			runLifecycleAction("open_install_dir", "Failed to open folder"),
+		doShutdown: () => runLifecycleAction("shutdown", "Shutdown failed"),
+	};
+}
+
+export function SystemSection({
+	view = "all",
+}: {
+	view?: "all" | "overview" | "advanced";
+}) {
+	const {
+		autostart,
+		storage,
+		busy,
+		error,
+		optimizeStorage,
+		toggleAutostart,
+		openInstallDir,
+		doShutdown,
+	} = useSystemMaintenance();
 
 	const supported = autostart?.supported ?? false;
 	const enabled = autostart?.enabled ?? false;
@@ -191,23 +261,10 @@ export function SystemSection({
 						</label>
 					</Field>
 					{view === "all" && (
-						<Field label="Shutdown" hint="exit Hlid completely">
-							<ConfirmAction
-								label="shutdown?"
-								onConfirm={() => void doShutdown()}
-								className="shrink-0"
-								trigger={(open) => (
-									<button
-										type="button"
-										onClick={open}
-										disabled={busy !== null}
-										className="text-[10px] tracking-widest px-3 py-1.5 border border-destructive/40 text-destructive/80 hover:text-destructive hover:bg-destructive/10 transition-colors uppercase disabled:opacity-40"
-									>
-										{busy === "shutdown" ? "STOPPING…" : "SHUTDOWN"}
-									</button>
-								)}
-							/>
-						</Field>
+						<ShutdownAction
+							busy={busy !== null}
+							onShutdown={() => void doShutdown()}
+						/>
 					)}
 					{error && (
 						<div className="px-4 py-2 text-xs text-destructive/80">{error}</div>
@@ -253,19 +310,10 @@ export function SystemSection({
 						</span>
 					</Field>
 					{view === "all" && (
-						<Field
-							label="Optimize database"
-							hint="checkpoint WAL and refresh SQLite query statistics"
-						>
-							<button
-								type="button"
-								disabled={busy !== null}
-								onClick={() => void optimizeStorage()}
-								className="text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors uppercase disabled:opacity-40"
-							>
-								{busy === "optimize" ? "OPTIMIZING…" : "OPTIMIZE"}
-							</button>
-						</Field>
+						<OptimizeStorageAction
+							busy={busy !== null}
+							onOptimize={() => void optimizeStorage()}
+						/>
 					)}
 				</Section>
 			)}
@@ -274,36 +322,14 @@ export function SystemSection({
 					title="Danger zone"
 					description="Maintenance and lifecycle actions can interrupt active work."
 				>
-					<Field
-						label="Optimize database"
-						hint="checkpoint WAL and refresh SQLite query statistics"
-					>
-						<button
-							type="button"
-							disabled={busy !== null}
-							onClick={() => void optimizeStorage()}
-							className="text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors uppercase disabled:opacity-40"
-						>
-							{busy === "optimize" ? "OPTIMIZING…" : "OPTIMIZE"}
-						</button>
-					</Field>
-					<Field label="Shutdown" hint="exit Hlið completely">
-						<ConfirmAction
-							label="shutdown?"
-							onConfirm={() => void doShutdown()}
-							className="shrink-0"
-							trigger={(open) => (
-								<button
-									type="button"
-									onClick={open}
-									disabled={busy !== null}
-									className="text-[10px] tracking-widest px-3 py-1.5 border border-destructive/40 text-destructive/80 hover:text-destructive hover:bg-destructive/10 transition-colors uppercase disabled:opacity-40"
-								>
-									{busy === "shutdown" ? "STOPPING…" : "SHUTDOWN"}
-								</button>
-							)}
-						/>
-					</Field>
+					<OptimizeStorageAction
+						busy={busy !== null}
+						onOptimize={() => void optimizeStorage()}
+					/>
+					<ShutdownAction
+						busy={busy !== null}
+						onShutdown={() => void doShutdown()}
+					/>
 					{error && (
 						<div className="px-4 py-2 text-xs text-destructive/80">{error}</div>
 					)}

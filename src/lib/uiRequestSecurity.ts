@@ -18,6 +18,19 @@ export function isDocumentNavigationRequest(request: Request): boolean {
 	);
 }
 
+export function unauthenticatedResponse(request: Request): Response {
+	if (isDocumentNavigationRequest(request)) {
+		return new Response(null, {
+			status: 302,
+			headers: { location: "/login", "cache-control": "no-store" },
+		});
+	}
+	return Response.json(
+		{ error: "Unauthorized" },
+		{ status: 401, headers: { "cache-control": "no-store" } },
+	);
+}
+
 /**
  * Decide whether a UI/server-function request may reach TanStack Start.
  * Transport-specific dependency loading stays in start.ts; the security policy
@@ -60,14 +73,5 @@ export async function uiSecurityRejection(
 	}
 	if (isPublicPath(pathname) || authenticated) return null;
 
-	if (isDocumentNavigationRequest(request)) {
-		return new Response(null, {
-			status: 302,
-			headers: { location: "/login", "cache-control": "no-store" },
-		});
-	}
-	return Response.json(
-		{ error: "Unauthorized" },
-		{ status: 401, headers: { "cache-control": "no-store" } },
-	);
+	return unauthenticatedResponse(request);
 }

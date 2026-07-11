@@ -10,6 +10,24 @@ import type { SessionStatusEntry } from "#/server/protocol";
 
 const THIRTY_DAYS_S = 30 * 86_400;
 
+export function sessionDisplayUsage(
+	session: SessionRow,
+	isActive: boolean,
+	liveStats?: LiveStats,
+): { cost: number; tokens: number } {
+	if (isActive && liveStats && liveStats.queries > 0) {
+		return {
+			cost: liveStats.cost,
+			tokens: liveStats.input_tokens + liveStats.output_tokens,
+		};
+	}
+	return {
+		cost: session.total_cost ?? 0,
+		tokens:
+			(session.total_input_tokens ?? 0) + (session.total_output_tokens ?? 0),
+	};
+}
+
 function SessionItem({
 	session,
 	onDelete,
@@ -30,6 +48,7 @@ function SessionItem({
 	const [editing, setEditing] = useState(false);
 	const [editValue, setEditValue] = useState("");
 	const inputRef = useRef<HTMLInputElement>(null);
+	const usage = sessionDisplayUsage(session, Boolean(isActive), liveStats);
 
 	function startEdit() {
 		setEditValue(session.label ?? "");
@@ -106,20 +125,10 @@ function SessionItem({
 					</div>
 					<div className="text-right shrink-0">
 						<PrivacyMask className="text-[11px] tabular-nums text-[var(--data)]/70">
-							$
-							{(isActive && liveStats && liveStats.queries > 0
-								? liveStats.cost
-								: (session.total_cost ?? 0)
-							).toFixed(4)}
+							${usage.cost.toFixed(4)}
 						</PrivacyMask>
 						<PrivacyMask className="text-[9px] tabular-nums text-muted-foreground/40 mt-0.5">
-							{fmt(
-								isActive && liveStats && liveStats.queries > 0
-									? liveStats.input_tokens + liveStats.output_tokens
-									: (session.total_input_tokens ?? 0) +
-											(session.total_output_tokens ?? 0),
-							)}{" "}
-							tok
+							{fmt(usage.tokens)} tok
 						</PrivacyMask>
 					</div>
 				</button>

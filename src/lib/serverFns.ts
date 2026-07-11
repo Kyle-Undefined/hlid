@@ -42,6 +42,12 @@ const logClientErrorSchema = z.object({
 		.optional(),
 });
 
+const optionalRefreshSchema = z
+	.object({ refresh: z.boolean().optional() })
+	.optional();
+const parseOptionalRefresh = (raw: unknown) => optionalRefreshSchema.parse(raw);
+const parseModelName = (raw: string) => z.string().min(1).parse(raw);
+
 /** Write a client-side error to the server event log. Fire-and-forget from ErrorBoundary. */
 export const logClientErrorFn = createServerFn({ method: "POST" })
 	.validator((raw) => logClientErrorSchema.parse(raw))
@@ -84,9 +90,7 @@ export type ProviderInfo = {
 
 /** Returns the list of compiled-in providers with availability status. */
 export const getProvidersFn = createServerFn({ method: "GET" })
-	.validator((raw) =>
-		z.object({ refresh: z.boolean().optional() }).optional().parse(raw),
-	)
+	.validator(parseOptionalRefresh)
 	.handler(({ data }) =>
 		dbJson<{ providers: ProviderInfo[] }>(
 			`/providers${data?.refresh ? "?refresh=1" : ""}`,
@@ -122,9 +126,7 @@ export type AcpAuthMethod = {
 };
 
 export const getAcpRegistryFn = createServerFn({ method: "GET" })
-	.validator((raw) =>
-		z.object({ refresh: z.boolean().optional() }).optional().parse(raw),
-	)
+	.validator(parseOptionalRefresh)
 	.handler(({ data }) =>
 		dbJson<{ agents: AcpCatalogItem[] }>(
 			`/acp/registry${data?.refresh ? "?refresh=1" : ""}`,
@@ -151,9 +153,7 @@ export const authenticateAcpFn = createServerFn({ method: "POST" })
 export type VoiceInfo = { status: VoiceStatus; models: VoiceModelInfo[] };
 
 export const getVoiceInfoFn = createServerFn({ method: "GET" })
-	.validator((raw) =>
-		z.object({ refresh: z.boolean().optional() }).optional().parse(raw),
-	)
+	.validator(parseOptionalRefresh)
 	.handler(({ data }) =>
 		dbJson<VoiceInfo>(`/voice${data?.refresh ? "?refresh=1" : ""}`, {
 			status: {
@@ -166,7 +166,7 @@ export const getVoiceInfoFn = createServerFn({ method: "GET" })
 	);
 
 export const startVoiceDownloadFn = createServerFn({ method: "POST" })
-	.validator((model: string) => z.string().min(1).parse(model))
+	.validator(parseModelName)
 	.handler(async ({ data }) => {
 		await requireDbOk(
 			await dbFetch("/voice/download", {
@@ -190,7 +190,7 @@ export const cancelVoiceDownloadFn = createServerFn({ method: "POST" }).handler(
 );
 
 export const deleteVoiceModelFn = createServerFn({ method: "POST" })
-	.validator((model: string) => z.string().min(1).parse(model))
+	.validator(parseModelName)
 	.handler(async ({ data }) => {
 		await requireDbOk(
 			await dbFetch(`/voice/model?model=${encodeURIComponent(data)}`, {
@@ -359,6 +359,9 @@ export const getSessionPermissionsFn = createServerFn({ method: "GET" })
 		),
 	);
 
+const getSessionRows = <T>(path: string, sessionId: string) =>
+	dbJson<T[]>(`${path}?session_id=${encodeURIComponent(sessionId)}`, []);
+
 type SessionPlanProposalRow = {
 	proposal_id: string;
 	seq: number;
@@ -371,9 +374,9 @@ type SessionPlanProposalRow = {
 export const getSessionPlanProposalsFn = createServerFn({ method: "GET" })
 	.validator((raw) => sessionIdSchema.parse(raw))
 	.handler(({ data: sessionId }) =>
-		dbJson<SessionPlanProposalRow[]>(
-			`/db/session-plan-proposals?session_id=${encodeURIComponent(sessionId)}`,
-			[],
+		getSessionRows<SessionPlanProposalRow>(
+			"/db/session-plan-proposals",
+			sessionId,
 		),
 	);
 
@@ -389,9 +392,9 @@ type SessionAskUserQuestionRow = {
 export const getSessionAskUserQuestionsFn = createServerFn({ method: "GET" })
 	.validator((raw) => sessionIdSchema.parse(raw))
 	.handler(({ data: sessionId }) =>
-		dbJson<SessionAskUserQuestionRow[]>(
-			`/db/session-ask-user-questions?session_id=${encodeURIComponent(sessionId)}`,
-			[],
+		getSessionRows<SessionAskUserQuestionRow>(
+			"/db/session-ask-user-questions",
+			sessionId,
 		),
 	);
 

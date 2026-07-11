@@ -1,4 +1,5 @@
 import * as db from "../db";
+import type { AttachmentListFilter } from "../db/types";
 import { clampInt } from "../lib/utils";
 import { unlinkPaths } from "./attachments";
 import { getLiveSessionsStatus, hasLiveTerminalSession } from "./liveSessions";
@@ -263,7 +264,7 @@ async function getProviderUsage(url: URL): Promise<Response> {
 	return Response.json(snapshots);
 }
 
-async function getAttachments(url: URL): Promise<Response> {
+export function parseAttachmentListFilter(url: URL): AttachmentListFilter {
 	const kindParam = url.searchParams.get("kind");
 	const kind =
 		kindParam === "ephemeral" || kindParam === "vault" ? kindParam : undefined;
@@ -275,7 +276,7 @@ async function getAttachments(url: URL): Promise<Response> {
 	const until = untilParam !== null ? Number(untilParam) : undefined;
 	const limit = clampInt(url.searchParams.get("limit"), 100, 1, 500);
 	const offset = clampInt(url.searchParams.get("offset"), 0, 0);
-	const result = await db.listAttachments({
+	return {
 		kind,
 		sessionId,
 		search,
@@ -283,7 +284,11 @@ async function getAttachments(url: URL): Promise<Response> {
 		until: until !== undefined && !Number.isNaN(until) ? until : undefined,
 		limit,
 		offset,
-	});
+	};
+}
+
+async function getAttachments(url: URL): Promise<Response> {
+	const result = await db.listAttachments(parseAttachmentListFilter(url));
 	return Response.json(result);
 }
 
@@ -348,14 +353,20 @@ async function cleanupSessions({
 	return Response.json({ deleted: count });
 }
 
+async function readLiveSessionId(req: Request): Promise<string | Response> {
+	const body = await req.json().catch(() => null);
+	return (
+		body?.session_id ?? new Response("Missing session_id", { status: 400 })
+	);
+}
+
 async function stopLiveSession({
 	req,
 	pool,
 	terminalPool,
 }: DbRouteContext): Promise<Response> {
-	const body = await req.json().catch(() => null);
-	const id = body?.session_id;
-	if (!id) return new Response("Missing session_id", { status: 400 });
+	const id = await readLiveSessionId(req);
+	if (id instanceof Response) return id;
 	const entry = pool?.get(id);
 	if (entry) {
 		entry.manager.abort();
@@ -372,9 +383,8 @@ async function closeLiveSession({
 	pool,
 	terminalPool,
 }: DbRouteContext): Promise<Response> {
-	const body = await req.json().catch(() => null);
-	const id = body?.session_id;
-	if (!id) return new Response("Missing session_id", { status: 400 });
+	const id = await readLiveSessionId(req);
+	if (id instanceof Response) return id;
 	const entry = pool?.get(id);
 	const terminalExists = hasLiveTerminalSession(terminalPool, id);
 	if (!entry && !terminalExists)

@@ -85,6 +85,16 @@ function assertContained(base: string, joined: string): void {
 	}
 }
 
+function readDirectoryEntry(dir: string, entry: string) {
+	const full = join(dir, entry);
+	try {
+		const stat = lstatSync(full);
+		return stat.isSymbolicLink() ? null : { full, stat };
+	} catch {
+		return null;
+	}
+}
+
 function projectFromMarkdown(options: {
 	fullPath: string;
 	file: string;
@@ -258,10 +268,10 @@ export function scanSkills(
 	let indexPath: string | null = null;
 
 	for (const entry of entries) {
-		const full = join(dir, entry);
+		const item = readDirectoryEntry(dir, entry);
+		if (!item) continue;
+		const { full, stat } = item;
 		try {
-			const stat = lstatSync(full);
-			if (stat.isSymbolicLink()) continue;
 			if (stat.isDirectory()) {
 				// skill folder, find the .md file directly inside (one level only)
 				const inner = readdirSync(full).filter((f) => f.endsWith(".md"));
@@ -400,11 +410,10 @@ export function scanFolderGroups(
 	const looseFiles: ProjectNode[] = [];
 
 	for (const entry of entries) {
-		const full = join(dir, entry);
+		const item = readDirectoryEntry(dir, entry);
+		if (!item) continue;
+		const { full, stat } = item;
 		try {
-			const stat = lstatSync(full);
-			if (stat.isSymbolicLink()) continue;
-
 			if (stat.isDirectory()) {
 				groups.push({ name: entry, children: buildNodes(full, full) });
 			} else if (entry.endsWith(".md")) {
