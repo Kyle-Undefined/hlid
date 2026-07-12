@@ -267,37 +267,16 @@ function ActiveSessionStatGrid({
 	);
 }
 
-function StatsPage() {
-	const {
-		statsData,
-		initialSessions,
-		page,
-		size,
-		thirtyDayStats,
-		providerUsages,
-		providerIds,
-		activeSession,
-		activity,
-	} = Route.useLoaderData();
-	const { tab } = Route.useSearch();
-	const navigate = useNavigate();
-	const isRouterLoading = useRouterState({
-		select: (s) => s.status === "pending",
-	});
-	const stats = useWsLiveStats();
-	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
-	// ── Active sessions (multi-session pool status) ───────────────────────────
-	const sessionsStatus = useSyncExternalStore(
-		wsStore.subscribeSessionsStatus,
-		wsStore.getSessionsStatus,
-		() => [],
-	);
+type LedgerNavigate = ReturnType<typeof useNavigate>;
+type PageSize = (typeof VALID_PAGE_SIZES)[number];
 
-	const [activeSessionData, setActiveSessionData] = useState(activeSession);
-	const [statsDataState, setStatsDataState] = useState(statsData);
-
-	const [sessionPage, setSessionPage] = useState(initialSessions);
-	const mutationDependencies = useMemo(
+function useLedgerMutations(
+	page: number,
+	sessionPage: Awaited<ReturnType<typeof getSessionsPageFn>>,
+	navigate: LedgerNavigate,
+	size: PageSize,
+) {
+	const dependencies = useMemo(
 		() => ({
 			deleteSession: async (id: string) => {
 				await deleteSessionFn({ data: { id } });
@@ -317,18 +296,21 @@ function StatsPage() {
 		}),
 		[navigate, size],
 	);
-	const {
-		sessionsData,
-		mutationError,
-		reconcile: reconcileSessionMutations,
-		deleteSession: handleDeleteSession,
-		renameSession: handleRenameSession,
-		cleanupSessions: handleCleanup,
-	} = useLedgerSessionMutations({
-		page,
-		sessionPage,
-		dependencies: mutationDependencies,
-	});
+	return useLedgerSessionMutations({ page, sessionPage, dependencies });
+}
+
+function useSessionListSync({
+	page,
+	size,
+	initialSessions,
+	reconcile,
+}: {
+	page: number;
+	size: PageSize;
+	initialSessions: Awaited<ReturnType<typeof getSessionsPageFn>>;
+	reconcile: (fresh: Awaited<ReturnType<typeof getSessionsPageFn>>) => void;
+}) {
+	const [sessionPage, setSessionPage] = useState(initialSessions);
 	// Mutate refs during render so they're always current before any event
 	// handler fires. useEffect would lag by one render cycle, causing
 	// refreshSessions to fetch with stale page/size if a `done` event arrives
@@ -363,13 +345,20 @@ function StatsPage() {
 		// Only evict optimistic state for entries confirmed gone by the server.
 		// Blanket-clearing would re-show a session the user just deleted if a
 		// background `done` event fires before the delete RPC resolves.
-		reconcileSessionMutations(fresh);
-	}, [reconcileSessionMutations]);
+		reconcile(fresh);
+	}, [reconcile]);
 
-	// Refresh DB session list when:
-	//   (a) any pool session completes a turn (running→idle/error), or
-	//   (b) a brand-new db_session_id appears that wasn't seen before
-	//       (new chat just wrote its first DB row via initSessionContext).
+	return { sessionPage, refreshSessions };
+}
+
+// Refresh DB session list when:
+//   (a) any pool session completes a turn (running→idle/error), or
+//   (b) a brand-new db_session_id appears that wasn't seen before
+//       (new chat just wrote its first DB row via initSessionContext).
+function useSessionStatusRefresh(
+	sessionsStatus: ReturnType<typeof wsStore.getSessionsStatus>,
+	refreshSessions: () => Promise<void>,
+) {
 	const prevSessionStatesRef = useRef<
 		Map<string, "idle" | "running" | "error">
 	>(new Map());
@@ -399,6 +388,18 @@ function StatsPage() {
 		);
 		if (shouldRefresh) void refreshSessions();
 	}, [sessionsStatus, refreshSessions]);
+}
+
+/** Live data driven by WS events: rate limit, active session row, agg stats. */
+function useLedgerLiveData(
+	refreshSessions: () => Promise<void>,
+	initialActiveSession: SessionRow | null,
+	initialStatsData: { agg: AggStats },
+) {
+	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
+	const [activeSessionData, setActiveSessionData] =
+		useState(initialActiveSession);
+	const [statsDataState, setStatsDataState] = useState(initialStatsData);
 
 	const {
 		model,
@@ -444,7 +445,79 @@ function StatsPage() {
 		};
 	}, []);
 
-	const totalPages = Math.max(1, Math.ceil(sessionsData.total / size));
+	return {
+		rateLimit,
+		activeSessionData,
+		statsDataState,
+		model,
+		actualModel,
+		handleStopSession,
+		handleCloseSession,
+	};
+}
+
+function LedgerTabBar({
+	tab,
+	page,
+	size,
+	navigate,
+}: {
+	tab: "stats" | "sessions";
+	page: number;
+	size: PageSize;
+	navigate: LedgerNavigate;
+}) {
+	function switchTab(next: "stats" | "sessions") {
+		if (next === "sessions") {
+			navigate({ to: "/ledger", search: { tab: next, page: 1, size } });
+		} else {
+			navigate({ to: "/ledger", search: { tab: next, page, size } });
+		}
+	}
+	return (
+		<div className="flex flex-wrap border-b border-border shrink-0">
+			{(["sessions", "stats"] as const).map((t) => (
+				<button
+					key={t}
+					type="button"
+					onClick={() => switchTab(t)}
+					aria-pressed={tab === t}
+					className={`px-5 py-2.5 text-[10px] tracking-widest uppercase transition-colors border-b-2 -mb-px ${
+						tab === t
+							? "border-primary text-primary"
+							: "border-transparent text-muted-foreground hover:text-foreground"
+					}`}
+				>
+					{t}
+				</button>
+			))}
+		</div>
+	);
+}
+
+function SessionsTab({
+	sessionsStatus,
+	live,
+	mutations,
+	page,
+	size,
+	navigate,
+	loading,
+	liveStats,
+}: {
+	sessionsStatus: ReturnType<typeof wsStore.getSessionsStatus>;
+	live: ReturnType<typeof useLedgerLiveData>;
+	mutations: ReturnType<typeof useLedgerMutations>;
+	page: number;
+	size: PageSize;
+	navigate: LedgerNavigate;
+	loading: boolean;
+	liveStats: LiveStats;
+}) {
+	const totalPages = Math.max(
+		1,
+		Math.ceil(mutations.sessionsData.total / size),
+	);
 
 	function onPageChange(p: number) {
 		const clamped = Math.max(1, Math.min(totalPages, p));
@@ -466,100 +539,135 @@ function StatsPage() {
 		});
 	}
 
-	const { agg } = statsDataState;
+	return (
+		<div>
+			{sessionsStatus.length > 0 && (
+				<div className="border-b border-border">
+					<ActiveSessionsPanel
+						sessions={sessionsStatus}
+						onStop={live.handleStopSession}
+						onClose={live.handleCloseSession}
+					/>
+				</div>
+			)}
+			<div className="p-5">
+				<SessionsLedger
+					data={mutations.sessionsData}
+					page={page}
+					pageSize={size}
+					pageSizeOptions={VALID_PAGE_SIZES}
+					totalPages={totalPages}
+					loading={loading}
+					onPageChange={onPageChange}
+					onPageSizeChange={onPageSizeChange}
+					onDelete={mutations.deleteSession}
+					onRename={mutations.renameSession}
+					onNavigate={(id) =>
+						navigate({
+							to: "/raven",
+							search: { session: id, agent: undefined },
+						})
+					}
+					onCleanup={mutations.cleanupSessions}
+					activeSessionId={live.activeSessionData?.id}
+					sessionsStatus={sessionsStatus}
+					liveStats={liveStats}
+				/>
+			</div>
+		</div>
+	);
+}
 
-	function switchTab(next: "stats" | "sessions") {
-		if (next === "sessions") {
-			navigate({ to: "/ledger", search: { tab: next, page: 1, size } });
-		} else {
-			navigate({ to: "/ledger", search: { tab: next, page, size } });
-		}
-	}
+function StatsPage() {
+	const {
+		statsData,
+		initialSessions,
+		page,
+		size,
+		thirtyDayStats,
+		providerUsages,
+		providerIds,
+		activeSession,
+		activity,
+	} = Route.useLoaderData();
+	const { tab } = Route.useSearch();
+	const navigate = useNavigate();
+	const isRouterLoading = useRouterState({
+		select: (s) => s.status === "pending",
+	});
+	const stats = useWsLiveStats();
+	// ── Active sessions (multi-session pool status) ───────────────────────────
+	const sessionsStatus = useSyncExternalStore(
+		wsStore.subscribeSessionsStatus,
+		wsStore.getSessionsStatus,
+		() => [],
+	);
+
+	// sessionPage state lives in useSessionListSync; the mutations hook layers
+	// optimistic edits over it. refreshSessions must reconcile those edits after
+	// each fetch, but mutations needs sessionPage from the sync hook — the ref
+	// breaks that cycle without re-creating refreshSessions every render.
+	const mutationsRef = useRef<ReturnType<typeof useLedgerMutations> | null>(
+		null,
+	);
+	const reconcile = useCallback(
+		(fresh: Awaited<ReturnType<typeof getSessionsPageFn>>) =>
+			mutationsRef.current?.reconcile(fresh),
+		[],
+	);
+	const { sessionPage, refreshSessions } = useSessionListSync({
+		page,
+		size,
+		initialSessions,
+		reconcile,
+	});
+	const mutations = useLedgerMutations(page, sessionPage, navigate, size);
+	mutationsRef.current = mutations;
+	useSessionStatusRefresh(sessionsStatus, refreshSessions);
+	const live = useLedgerLiveData(refreshSessions, activeSession, statsData);
 
 	return (
 		<div className="flex flex-col h-full">
-			{/* Tab bar */}
-			<div className="flex flex-wrap border-b border-border shrink-0">
-				{(["sessions", "stats"] as const).map((t) => (
-					<button
-						key={t}
-						type="button"
-						onClick={() => switchTab(t)}
-						aria-pressed={tab === t}
-						className={`px-5 py-2.5 text-[10px] tracking-widest uppercase transition-colors border-b-2 -mb-px ${
-							tab === t
-								? "border-primary text-primary"
-								: "border-transparent text-muted-foreground hover:text-foreground"
-						}`}
-					>
-						{t}
-					</button>
-				))}
-			</div>
-			{mutationError && (
+			<LedgerTabBar tab={tab} page={page} size={size} navigate={navigate} />
+			{mutations.mutationError && (
 				<div
 					className="border-b border-destructive/30 bg-destructive/5 px-4 py-2 text-xs text-destructive"
 					role="alert"
 				>
-					{mutationError}
+					{mutations.mutationError}
 				</div>
 			)}
 
 			<div className="flex-1 overflow-auto">
 				<ActiveSessionStatGrid
 					stats={stats}
-					activeSession={activeSessionData}
-					model={model}
-					actualModel={actualModel}
+					activeSession={live.activeSessionData}
+					model={live.model}
+					actualModel={live.actualModel}
 				/>
 
 				{tab === "stats" ? (
 					<StatsTab
-						agg={agg}
+						agg={live.statsDataState.agg}
 						stats={stats}
-						rateLimit={rateLimit}
+						rateLimit={live.rateLimit}
 						providerUsages={providerUsages}
 						providerIds={providerIds}
 						thirtyDayStats={thirtyDayStats}
-						activeSession={activeSessionData}
+						activeSession={live.activeSessionData}
 						activity={activity}
 					/>
 				) : (
-					<div>
-						{sessionsStatus.length > 0 && (
-							<div className="border-b border-border">
-								<ActiveSessionsPanel
-									sessions={sessionsStatus}
-									onStop={handleStopSession}
-									onClose={handleCloseSession}
-								/>
-							</div>
-						)}
-						<div className="p-5">
-							<SessionsLedger
-								data={sessionsData}
-								page={page}
-								pageSize={size}
-								pageSizeOptions={VALID_PAGE_SIZES}
-								totalPages={totalPages}
-								loading={isRouterLoading}
-								onPageChange={onPageChange}
-								onPageSizeChange={onPageSizeChange}
-								onDelete={handleDeleteSession}
-								onRename={handleRenameSession}
-								onNavigate={(id) =>
-									navigate({
-										to: "/raven",
-										search: { session: id, agent: undefined },
-									})
-								}
-								onCleanup={handleCleanup}
-								activeSessionId={activeSessionData?.id}
-								sessionsStatus={sessionsStatus}
-								liveStats={stats}
-							/>
-						</div>
-					</div>
+					<SessionsTab
+						sessionsStatus={sessionsStatus}
+						live={live}
+						mutations={mutations}
+						page={page}
+						size={size}
+						navigate={navigate}
+						loading={isRouterLoading}
+						liveStats={stats}
+					/>
 				)}
 			</div>
 		</div>
