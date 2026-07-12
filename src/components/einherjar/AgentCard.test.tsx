@@ -11,7 +11,7 @@
  */
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ProviderInfo } from "#/lib/serverFns";
+import type { ProviderInfo } from "#/lib/providerTypes";
 import { AgentCard, type AgentEntry } from "./AgentCard";
 
 afterEach(cleanup);
@@ -50,7 +50,7 @@ function makeAgent(overrides: Partial<AgentEntry> = {}): AgentEntry {
 		name: "Foo",
 		mode: "cwd",
 		provider: "claude",
-		hasClaudemd: false,
+		instructionFile: null,
 		dirExists: true,
 		...overrides,
 	};
@@ -67,7 +67,7 @@ function renderCard(
 		onModeChange: vi.fn(),
 		onChat: vi.fn(),
 		onSaveEdit: vi.fn().mockResolvedValue(undefined),
-		onReadClaudemd: vi.fn().mockResolvedValue(null),
+		onReadInstructions: vi.fn().mockResolvedValue(null),
 		providers,
 		...overrides,
 	};
@@ -191,18 +191,20 @@ describe("AgentCard edit options", () => {
 		expect(onRemove).toHaveBeenCalledOnce();
 	});
 
-	it("keeps CLAUDE.md expansion usable when loading fails", async () => {
-		const onReadClaudemd = vi.fn().mockRejectedValue(new Error("read failed"));
-		renderCard(makeAgent({ hasClaudemd: true }), [claudeProvider], {
-			onReadClaudemd,
+	it("keeps instruction expansion usable when loading fails", async () => {
+		const onReadInstructions = vi
+			.fn()
+			.mockRejectedValue(new Error("read failed"));
+		renderCard(makeAgent({ instructionFile: "AGENTS.md" }), [claudeProvider], {
+			onReadInstructions,
 		});
 
-		fireEvent.click(screen.getByLabelText("Expand CLAUDE.md"));
-		await screen.findByLabelText("Collapse CLAUDE.md");
-		fireEvent.click(screen.getByLabelText("Collapse CLAUDE.md"));
-		fireEvent.click(screen.getByLabelText("Expand CLAUDE.md"));
+		fireEvent.click(screen.getByLabelText("Expand AGENTS.md"));
+		await screen.findByLabelText("Collapse AGENTS.md");
+		fireEvent.click(screen.getByLabelText("Collapse AGENTS.md"));
+		fireEvent.click(screen.getByLabelText("Expand AGENTS.md"));
 
-		expect(onReadClaudemd).toHaveBeenCalledOnce();
+		expect(onReadInstructions).toHaveBeenCalledOnce();
 	});
 
 	it("delegates mode and chat actions without changing persisted props", () => {

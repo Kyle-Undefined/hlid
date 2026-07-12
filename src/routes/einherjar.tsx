@@ -1,10 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
-import {
-	createFileRoute,
-	useNavigate,
-	useRouter,
-} from "@tanstack/react-router";
+import { resolve } from "node:path";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import { Plus } from "lucide-react";
 import { useState } from "react";
@@ -14,23 +9,16 @@ import type {
 	AgentProviderSettings,
 } from "#/components/einherjar/AgentCard";
 import { AgentCard, AgentEmptyState } from "#/components/einherjar/AgentCard";
-import type { Agent } from "#/config";
 import { getConfig } from "#/config";
+import { readAgentInstructions } from "#/lib/agentInstructions";
 import { agentConfigToEntry, inspectAgentPath } from "#/lib/agentMcp";
 import { writeConfig } from "#/lib/config-writer";
 import { expandTilde, samePath } from "#/lib/paths";
+import type { ProviderInfo } from "#/lib/providerTypes";
 import { agentListSchema, agentPathSchema } from "#/lib/serverFnSchemas";
-import type { ProviderInfo } from "#/lib/serverFns";
-import { getProvidersFn } from "#/lib/serverFns";
+import { getProvidersFn } from "#/lib/serverFns/providers";
 import { uid } from "#/lib/utils";
-
-const VALID_EFFORTS: string[] = ["low", "medium", "high", "xhigh", "max"];
-const VALID_PERMISSION_MODES: string[] = [
-	"default",
-	"acceptEdits",
-	"bypassPermissions",
-	"plan",
-];
+import { useAgentRoster } from "./-useAgentRoster";
 
 // ─── server fns ──────────────────────────────────────────────────────────────
 
@@ -55,7 +43,7 @@ const saveAgentsFn = createServerFn({ method: "POST" })
 		writeConfig({ ...config, agents: agentList });
 	});
 
-const readClaudemdFn = createServerFn({ method: "GET" })
+const readAgentInstructionsFn = createServerFn({ method: "GET" })
 	.validator((raw) => agentPathSchema.parse(raw))
 	.handler(async ({ data: agentPath }) => {
 		const config = await getConfig();
@@ -65,9 +53,7 @@ const readClaudemdFn = createServerFn({ method: "GET" })
 		const requested = resolve(expandTilde(agentPath));
 		if (!allowedPaths.some((p) => samePath(p, requested)))
 			throw new Error("Unauthorized");
-		const claudemdPath = join(requested, "CLAUDE.md");
-		if (!existsSync(claudemdPath)) return null;
-		return readFileSync(claudemdPath, "utf-8");
+		return readAgentInstructions(requested);
 	});
 
 const getExternalAllowedFn = createServerFn({ method: "GET" }).handler(
@@ -105,114 +91,25 @@ function EinherjarPage() {
 		externalAllowed,
 		providers,
 	} = Route.useLoaderData();
-	const router = useRouter();
 	const navigate = useNavigate();
 
-	const [agents, setAgents] = useState<AgentEntry[]>(initialAgents);
+	const { agents, handleRemove, handleModeChange, handleSaveEdit, handleAdd } =
+		useAgentRoster({
+			initialAgents,
+			saveAgentsFn,
+			validateAgentPathFn,
+			getAgentsFn,
+		});
 	const [showAdd, setShowAdd] = useState(false);
 
-	function agentEntryToConfig(a: AgentEntry): Agent {
-		return {
-			path: a.path,
-			name: a.name,
-			mode: a.mode,
-			provider: a.provider,
-			model: a.model || undefined,
-			effort:
-				a.effort != null && VALID_EFFORTS.includes(a.effort)
-					? (a.effort as Agent["effort"])
-					: undefined,
-			max_turns: (() => {
-				const parsed = parseInt(a.maxTurns ?? "", 10);
-				return !Number.isNaN(parsed) ? parsed : undefined;
-			})(),
-			permission_mode:
-				a.permissionMode != null &&
-				VALID_PERMISSION_MODES.includes(a.permissionMode)
-					? (a.permissionMode as Agent["permission_mode"])
-					: undefined,
-			recap_model: a.recapModel || undefined,
-			interactive_mode: a.interactiveMode || undefined,
-		};
-	}
-
-	async function handleRemove(path: string) {
-		const next = agents.filter((a) => a.path !== path);
-		await saveAgentsFn({ data: next.map(agentEntryToConfig) });
-		setAgents(next);
-		await router.invalidate();
-	}
-
-	async function handleModeChange(path: string, mode: "cwd" | "context") {
-		const prevAgents = agents;
-		const next = agents.map((a) => (a.path === path ? { ...a, mode } : a));
-		setAgents(next);
-		try {
-			await saveAgentsFn({ data: next.map(agentEntryToConfig) });
-			await router.invalidate();
-		} catch {
-			setAgents(prevAgents);
-		}
-	}
-
-	async function handleSaveEdit(
-		originalPath: string,
-		name: string,
-		mode: "cwd" | "context",
-		provider: string,
-		settings: AgentProviderSettings,
-	) {
-		const prevAgents = agents;
-		const next = agents.map((a) =>
-			a.path === originalPath ? { ...a, name, mode, provider, ...settings } : a,
-		);
-		setAgents(next);
-		try {
-			await saveAgentsFn({ data: next.map(agentEntryToConfig) });
-			await router.invalidate();
-		} catch {
-			setAgents(prevAgents);
-			throw new Error("Failed to save");
-		}
-	}
-
-	async function handleAdd(
+	async function handleAddSubmit(
 		path: string,
 		name: string,
 		mode: "cwd" | "context",
 		provider: string,
 		settings: AgentProviderSettings,
 	) {
-		if (agents.some((a) => a.path === path)) {
-			throw new Error("Agent already added");
-		}
-		const validation = await validateAgentPathFn({ data: path });
-		if (!validation.dirExists) {
-			throw new Error("Directory not found");
-		}
-		if (!validation.inVault && !validation.externalAllowed) {
-			throw new Error(
-				"Directory outside vault. Enable 'Allow external agents' in Server settings.",
-			);
-		}
-		const resolvedName = name || validation.suggestedName;
-		const newEntry: AgentEntry = {
-			path,
-			name: resolvedName,
-			mode,
-			provider,
-			hasClaudemd: false,
-			dirExists: true,
-			...settings,
-		};
-		const next: Agent[] = [
-			...agents.map(agentEntryToConfig),
-			agentEntryToConfig(newEntry),
-		];
-		await saveAgentsFn({ data: next });
-		await router.invalidate();
-		const refreshed = await getAgentsFn();
-		setAgents(refreshed);
+		await handleAdd(path, name, mode, provider, settings);
 		setShowAdd(false);
 	}
 
@@ -250,7 +147,7 @@ function EinherjarPage() {
 				{showAdd && (
 					<AddAgentPanel
 						externalAllowed={externalAllowed}
-						onAdd={handleAdd}
+						onAdd={handleAddSubmit}
 						onCancel={() => setShowAdd(false)}
 						providers={providers}
 					/>
@@ -271,7 +168,9 @@ function EinherjarPage() {
 								onSaveEdit={(name, mode, provider, settings) =>
 									handleSaveEdit(agent.path, name, mode, provider, settings)
 								}
-								onReadClaudemd={() => readClaudemdFn({ data: agent.path })}
+								onReadInstructions={() =>
+									readAgentInstructionsFn({ data: agent.path })
+								}
 								providers={providers}
 							/>
 						))

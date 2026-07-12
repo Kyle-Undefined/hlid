@@ -4,8 +4,8 @@ import {
 	AgentConfigurationFields,
 	type AgentConfigurationValue,
 } from "#/components/einherjar/AgentConfigurationFields";
-import { FolderBrowser } from "#/components/wizard/FolderBrowser";
-import type { ProviderInfo } from "#/lib/serverFns";
+import type { ProviderInfo } from "#/lib/providerTypes";
+import { AgentFolderBrowseModal } from "./AgentFolderBrowseModal";
 
 type AddForm = AgentConfigurationValue & { path: string; name: string };
 
@@ -168,42 +168,16 @@ export function AddAgentPanel({
 			</form>
 
 			{browseOpen && (
-				<div className="fixed inset-0 z-50 bg-background/90 backdrop-blur-sm flex items-center justify-center p-4">
-					<div
-						role="dialog"
-						aria-modal="true"
-						aria-labelledby="browse-agent-dialog-title"
-						className="w-full max-w-md bg-card border border-border shadow-2xl p-5 space-y-4"
-						onKeyDown={(event) => {
-							if (event.key === "Escape") setBrowseOpen(false);
-						}}
-					>
-						<div className="flex items-center justify-between">
-							<div
-								id="browse-agent-dialog-title"
-								className="text-[10px] tracking-widest text-muted-foreground uppercase"
-							>
-								SELECT AGENT DIRECTORY
-							</div>
-							<button
-								type="button"
-								onClick={() => setBrowseOpen(false)}
-								className="text-[10px] tracking-widest text-muted-foreground hover:text-foreground transition-colors uppercase"
-							>
-								CANCEL
-							</button>
-						</div>
-						<FolderBrowser
-							initialPath={form.path || undefined}
-							external={externalAllowed}
-							onSelect={(path) => {
-								setForm((current) => ({ ...current, path }));
-								setBrowseOpen(false);
-								setError(null);
-							}}
-						/>
-					</div>
-				</div>
+				<AgentFolderBrowseModal
+					initialPath={form.path || undefined}
+					externalAllowed={externalAllowed}
+					onSelect={(path) => {
+						setForm((current) => ({ ...current, path }));
+						setBrowseOpen(false);
+						setError(null);
+					}}
+					onClose={() => setBrowseOpen(false)}
+				/>
 			)}
 		</>
 	);
