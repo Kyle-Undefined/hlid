@@ -3,12 +3,9 @@ import { createServerFn } from "@tanstack/react-start";
 import { ForgeSettings } from "#/components/forge/ForgeSettings";
 import { getConfig } from "#/config";
 import { useSettingsForm } from "#/hooks/useSettingsForm";
-import {
-	getAccountInfoFn,
-	getAcpRegistryFn,
-	getProvidersFn,
-	getVoiceInfoFn,
-} from "#/lib/serverFns";
+import { getAcpRegistryFn } from "#/lib/serverFns/acp";
+import { getAccountInfoFn, getProvidersFn } from "#/lib/serverFns/providers";
+import { getVoiceInfoFn } from "#/lib/serverFns/voice";
 
 const getCwdFn = createServerFn({ method: "GET" }).handler(() => process.cwd());
 

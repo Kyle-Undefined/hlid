@@ -5,7 +5,8 @@ import {
 	DEFAULT_AUTO_SLEEP_CONFIG,
 	DEFAULT_VOICE_CONFIG,
 } from "#/config";
-import { getProvidersFn, type ProviderInfo } from "#/lib/serverFns";
+import type { ProviderInfo } from "#/lib/providerTypes";
+import { getProvidersFn } from "#/lib/serverFns/providers";
 import { buildVaultSection } from "#/lib/vaultConfig";
 import type { StructureState } from "./WizardSteps";
 import {

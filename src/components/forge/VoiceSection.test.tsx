@@ -16,14 +16,14 @@ const server = vi.hoisted(() => ({
 	deleteModel: vi.fn(),
 }));
 
-vi.mock("#/lib/serverFns", () => ({
+vi.mock("#/lib/serverFns/voice", () => ({
 	getVoiceInfoFn: server.getInfo,
 	startVoiceDownloadFn: server.startDownload,
 	cancelVoiceDownloadFn: server.cancelDownload,
 	deleteVoiceModelFn: server.deleteModel,
 }));
 
-import type { VoiceInfo } from "#/lib/serverFns";
+import type { VoiceInfo } from "#/lib/serverFns/voice";
 import { VoiceSection } from "./VoiceSection";
 
 const baseInfo: VoiceInfo = {

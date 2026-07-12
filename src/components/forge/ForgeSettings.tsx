@@ -122,6 +122,279 @@ function AgentSettings({
 	);
 }
 
+function AcpCatalogPage({
+	state,
+	initial,
+	onBack,
+}: {
+	state: SettingsFormState;
+	initial: SettingsInitial;
+	onBack: () => void;
+}) {
+	return (
+		<>
+			<button
+				type="button"
+				onClick={onBack}
+				className="text-[10px] tracking-widest uppercase text-muted-foreground hover:text-foreground"
+			>
+				← Integrations
+			</button>
+			<PageIntro
+				title="ACP Agent Catalog"
+				description="Discover and configure Agent Client Protocol integrations."
+			/>
+			<AcpSection
+				initialCatalog={initial.acpCatalog}
+				value={state.acpAgents}
+				onChange={state.setAcpAgents}
+			/>
+		</>
+	);
+}
+
+function UmbodPage({
+	state,
+	onBack,
+}: {
+	state: SettingsFormState;
+	onBack: () => void;
+}) {
+	return (
+		<>
+			<button
+				type="button"
+				onClick={onBack}
+				className="text-[10px] tracking-widest uppercase text-muted-foreground hover:text-foreground"
+			>
+				← Integrations
+			</button>
+			<PageIntro
+				title="Umbod"
+				description="Configure policy, generate hooks, and inspect tool-call decisions."
+			/>
+			<UmbodSection value={state.umbod} onChange={state.setUmbod} />
+		</>
+	);
+}
+
+function OverviewCategory() {
+	return (
+		<>
+			<PageIntro
+				title="Overview"
+				description="Keep Hlið current and understand how this installation is running."
+			/>
+			<UpdatesSection />
+			<SystemSection view="overview" />
+		</>
+	);
+}
+
+function WorkspaceCategory({ state }: { state: SettingsFormState }) {
+	return (
+		<>
+			<PageIntro
+				title="Workspace"
+				description="Define the vault Hlið works in and the vocabulary it uses."
+			/>
+			<VaultSection
+				vault={state.vault}
+				onChange={(patch) => state.setVault((v) => ({ ...v, ...patch }))}
+			/>
+			<VocabSection
+				vocab={state.vocab}
+				onChange={(patch) => state.setVocab((v) => ({ ...v, ...patch }))}
+			/>
+		</>
+	);
+}
+
+function AgentsCategory({
+	state,
+	initial,
+}: {
+	state: SettingsFormState;
+	initial: SettingsInitial;
+}) {
+	return (
+		<>
+			<PageIntro
+				title="Agents"
+				description="Choose the default provider and control how agents work."
+			/>
+			<AgentSettings state={state} initial={initial} />
+			<AutoSleepSection
+				value={state.autoSleep}
+				onChange={(patch) =>
+					state.setAutoSleep((form) => ({ ...form, ...patch }))
+				}
+			/>
+		</>
+	);
+}
+
+function AccessCategory({
+	state,
+	initial,
+}: {
+	state: SettingsFormState;
+	initial: SettingsInitial;
+}) {
+	return (
+		<>
+			<PageIntro
+				title="Access"
+				description="Control where Hlið is reachable and who can sign in."
+			/>
+			<NetworkSection
+				server={state.server}
+				onChange={(patch) => state.setServer((s) => ({ ...s, ...patch }))}
+				cwd={initial.cwd}
+			/>
+			<SecuritySection />
+		</>
+	);
+}
+
+function ExperienceCategory({
+	state,
+	initial,
+}: {
+	state: SettingsFormState;
+	initial: SettingsInitial;
+}) {
+	return (
+		<>
+			<PageIntro
+				title="Experience"
+				description="Tune appearance, input behavior, voice, and presentation privacy."
+			/>
+			<UiSection
+				ui={state.ui}
+				onChange={(patch) => state.setUi((ui) => ({ ...ui, ...patch }))}
+			/>
+			<VoiceSection
+				voice={state.voice}
+				onChange={(patch) =>
+					state.setVoice((voice) => ({ ...voice, ...patch }))
+				}
+				initialInfo={initial.voiceInfo}
+			/>
+			<SessionSection view="privacy" />
+		</>
+	);
+}
+
+function IntegrationsCategory({
+	state,
+	onShowUmbod,
+	onShowCatalog,
+}: {
+	state: SettingsFormState;
+	onShowUmbod: () => void;
+	onShowCatalog: () => void;
+}) {
+	return (
+		<>
+			<PageIntro
+				title="Integrations"
+				description="Connect tools and agents without crowding core agent settings."
+			/>
+			<McpSection vaultPath={state.vault.path} />
+			<div className="border border-border bg-card p-4 flex items-center justify-between gap-4">
+				<div>
+					<div className="text-sm">Umbod policy</div>
+					<p className="text-xs text-muted-foreground mt-0.5">
+						Configure enforcement, generate hooks, and inspect tool calls.
+					</p>
+				</div>
+				<button
+					type="button"
+					onClick={onShowUmbod}
+					className="shrink-0 px-3 py-1.5 border border-border text-[10px] tracking-widest uppercase hover:bg-accent"
+				>
+					Open Umbod
+				</button>
+			</div>
+			<div className="border border-border bg-card p-4 flex items-center justify-between gap-4">
+				<div>
+					<div className="text-sm">ACP Agent Catalog</div>
+					<p className="text-xs text-muted-foreground mt-0.5">
+						Browse and configure Agent Client Protocol integrations on their own
+						screen.
+					</p>
+				</div>
+				<button
+					type="button"
+					onClick={onShowCatalog}
+					className="shrink-0 px-3 py-1.5 border border-border text-[10px] tracking-widest uppercase hover:bg-accent"
+				>
+					Open catalog
+				</button>
+			</div>
+		</>
+	);
+}
+
+function DeveloperCategory({
+	developerView,
+	onDeveloperView,
+}: {
+	developerView: DeveloperView;
+	onDeveloperView: (view: DeveloperView) => void;
+}) {
+	return (
+		<>
+			<PageIntro
+				title="Developer"
+				description="Inspect runtime activity and the local API surface."
+			/>
+			<div
+				className="inline-flex border border-border bg-card p-1"
+				role="tablist"
+				aria-label="Developer tools"
+			>
+				{(
+					[
+						["events", "Event Log"],
+						["api", "API Reference"],
+					] as const
+				).map(([view, label]) => (
+					<button
+						key={view}
+						type="button"
+						role="tab"
+						onClick={() => onDeveloperView(view)}
+						aria-selected={developerView === view}
+						className={`px-3 py-1.5 text-[10px] tracking-widest uppercase transition-colors ${
+							developerView === view
+								? "bg-primary/10 text-primary"
+								: "text-muted-foreground hover:bg-accent hover:text-foreground"
+						}`}
+					>
+						{label}
+					</button>
+				))}
+			</div>
+			{developerView === "events" ? <EventLogSection /> : <ApiSection />}
+		</>
+	);
+}
+
+function AdvancedCategory() {
+	return (
+		<>
+			<PageIntro
+				title="Advanced"
+				description="Maintenance and lifecycle actions. Review destructive actions carefully."
+			/>
+			<SystemSection view="advanced" />
+			<SessionSection view="advanced" />
+		</>
+	);
+}
+
 function CategoryContent({
 	category,
 	state,
@@ -145,212 +418,42 @@ function CategoryContent({
 }) {
 	if (category === "integrations" && showCatalog)
 		return (
-			<>
-				<button
-					type="button"
-					onClick={() => onShowCatalog(false)}
-					className="text-[10px] tracking-widest uppercase text-muted-foreground hover:text-foreground"
-				>
-					← Integrations
-				</button>
-				<PageIntro
-					title="ACP Agent Catalog"
-					description="Discover and configure Agent Client Protocol integrations."
-				/>
-				<AcpSection
-					initialCatalog={initial.acpCatalog}
-					value={state.acpAgents}
-					onChange={state.setAcpAgents}
-				/>
-			</>
+			<AcpCatalogPage
+				state={state}
+				initial={initial}
+				onBack={() => onShowCatalog(false)}
+			/>
 		);
 	if (category === "integrations" && showUmbod)
-		return (
-			<>
-				<button
-					type="button"
-					onClick={() => onShowUmbod(false)}
-					className="text-[10px] tracking-widest uppercase text-muted-foreground hover:text-foreground"
-				>
-					← Integrations
-				</button>
-				<PageIntro
-					title="Umbod"
-					description="Configure policy, generate hooks, and inspect tool-call decisions."
-				/>
-				<UmbodSection value={state.umbod} onChange={state.setUmbod} />
-			</>
-		);
+		return <UmbodPage state={state} onBack={() => onShowUmbod(false)} />;
 	switch (category) {
 		case "overview":
-			return (
-				<>
-					<PageIntro
-						title="Overview"
-						description="Keep Hlið current and understand how this installation is running."
-					/>
-					<UpdatesSection />
-					<SystemSection view="overview" />
-				</>
-			);
+			return <OverviewCategory />;
 		case "workspace":
-			return (
-				<>
-					<PageIntro
-						title="Workspace"
-						description="Define the vault Hlið works in and the vocabulary it uses."
-					/>
-					<VaultSection
-						vault={state.vault}
-						onChange={(patch) => state.setVault((v) => ({ ...v, ...patch }))}
-					/>
-					<VocabSection
-						vocab={state.vocab}
-						onChange={(patch) => state.setVocab((v) => ({ ...v, ...patch }))}
-					/>
-				</>
-			);
+			return <WorkspaceCategory state={state} />;
 		case "agents":
-			return (
-				<>
-					<PageIntro
-						title="Agents"
-						description="Choose the default provider and control how agents work."
-					/>
-					<AgentSettings state={state} initial={initial} />
-					<AutoSleepSection
-						value={state.autoSleep}
-						onChange={(patch) =>
-							state.setAutoSleep((form) => ({ ...form, ...patch }))
-						}
-					/>
-				</>
-			);
+			return <AgentsCategory state={state} initial={initial} />;
 		case "access":
-			return (
-				<>
-					<PageIntro
-						title="Access"
-						description="Control where Hlið is reachable and who can sign in."
-					/>
-					<NetworkSection
-						server={state.server}
-						onChange={(patch) => state.setServer((s) => ({ ...s, ...patch }))}
-						cwd={initial.cwd}
-					/>
-					<SecuritySection />
-				</>
-			);
+			return <AccessCategory state={state} initial={initial} />;
 		case "experience":
-			return (
-				<>
-					<PageIntro
-						title="Experience"
-						description="Tune appearance, input behavior, voice, and presentation privacy."
-					/>
-					<UiSection
-						ui={state.ui}
-						onChange={(patch) => state.setUi((ui) => ({ ...ui, ...patch }))}
-					/>
-					<VoiceSection
-						voice={state.voice}
-						onChange={(patch) =>
-							state.setVoice((voice) => ({ ...voice, ...patch }))
-						}
-						initialInfo={initial.voiceInfo}
-					/>
-					<SessionSection view="privacy" />
-				</>
-			);
+			return <ExperienceCategory state={state} initial={initial} />;
 		case "integrations":
 			return (
-				<>
-					<PageIntro
-						title="Integrations"
-						description="Connect tools and agents without crowding core agent settings."
-					/>
-					<McpSection vaultPath={state.vault.path} />
-					<div className="border border-border bg-card p-4 flex items-center justify-between gap-4">
-						<div>
-							<div className="text-sm">Umbod policy</div>
-							<p className="text-xs text-muted-foreground mt-0.5">
-								Configure enforcement, generate hooks, and inspect tool calls.
-							</p>
-						</div>
-						<button
-							type="button"
-							onClick={() => onShowUmbod(true)}
-							className="shrink-0 px-3 py-1.5 border border-border text-[10px] tracking-widest uppercase hover:bg-accent"
-						>
-							Open Umbod
-						</button>
-					</div>
-					<div className="border border-border bg-card p-4 flex items-center justify-between gap-4">
-						<div>
-							<div className="text-sm">ACP Agent Catalog</div>
-							<p className="text-xs text-muted-foreground mt-0.5">
-								Browse and configure Agent Client Protocol integrations on their
-								own screen.
-							</p>
-						</div>
-						<button
-							type="button"
-							onClick={() => onShowCatalog(true)}
-							className="shrink-0 px-3 py-1.5 border border-border text-[10px] tracking-widest uppercase hover:bg-accent"
-						>
-							Open catalog
-						</button>
-					</div>
-				</>
+				<IntegrationsCategory
+					state={state}
+					onShowUmbod={() => onShowUmbod(true)}
+					onShowCatalog={() => onShowCatalog(true)}
+				/>
 			);
 		case "developer":
 			return (
-				<>
-					<PageIntro
-						title="Developer"
-						description="Inspect runtime activity and the local API surface."
-					/>
-					<div
-						className="inline-flex border border-border bg-card p-1"
-						role="tablist"
-						aria-label="Developer tools"
-					>
-						{(
-							[
-								["events", "Event Log"],
-								["api", "API Reference"],
-							] as const
-						).map(([view, label]) => (
-							<button
-								key={view}
-								type="button"
-								role="tab"
-								onClick={() => onDeveloperView(view)}
-								aria-selected={developerView === view}
-								className={`px-3 py-1.5 text-[10px] tracking-widest uppercase transition-colors ${
-									developerView === view
-										? "bg-primary/10 text-primary"
-										: "text-muted-foreground hover:bg-accent hover:text-foreground"
-								}`}
-							>
-								{label}
-							</button>
-						))}
-					</div>
-					{developerView === "events" ? <EventLogSection /> : <ApiSection />}
-				</>
+				<DeveloperCategory
+					developerView={developerView}
+					onDeveloperView={onDeveloperView}
+				/>
 			);
 		case "advanced":
-			return (
-				<>
-					<PageIntro
-						title="Advanced"
-						description="Maintenance and lifecycle actions. Review destructive actions carefully."
-					/>
-					<SystemSection view="advanced" />
-					<SessionSection view="advanced" />
-				</>
-			);
+			return <AdvancedCategory />;
 	}
 }
 

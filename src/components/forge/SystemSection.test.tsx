@@ -23,8 +23,8 @@ const serverFns = vi.hoisted(() => ({
 	optimizeStorageFn: vi.fn(),
 }));
 
-vi.mock("#/lib/serverFns", async (importOriginal) => ({
-	...(await importOriginal<typeof import("#/lib/serverFns")>()),
+vi.mock("#/lib/serverFns/storage", async (importOriginal) => ({
+	...(await importOriginal<typeof import("#/lib/serverFns/storage")>()),
 	...serverFns,
 }));
 

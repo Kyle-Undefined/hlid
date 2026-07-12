@@ -4,7 +4,7 @@ import {
 	getStorageStatsFn,
 	optimizeStorageFn,
 	type StorageStats,
-} from "#/lib/serverFns";
+} from "#/lib/serverFns/storage";
 import { Field, Section } from "./fields";
 
 type InstallPaths = {

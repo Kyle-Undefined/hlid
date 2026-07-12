@@ -139,21 +139,21 @@ All endpoints are served at http://localhost:3000.
 
 Endpoints:
   GET  /api/agents
-    — Returns: Array<{ path, name, mode, provider, hasClaudemd, dirExists, model?, effort?, maxTurns?, permissionMode?, recapModel? }>
+    — Returns: Array<{ path, name, mode, provider, instructionFile, dirExists, model?, effort?, maxTurns?, permissionMode?, recapModel? }>
 
   POST /api/agents
     — Body: Agent[]  (full replacement array)
     — Saves the entire agents list to hlid.config.toml
 
   GET  /api/agents/validate?path={agentPath}
-    — Returns: { dirExists, hasClaudemd, suggestedName, inVault, externalAllowed, resolvedPath }
+    — Returns: { dirExists, instructionFile, suggestedName, inVault, externalAllowed, resolvedPath }
     — Validates a filesystem path as a potential agent
 
   GET  /api/agents/claudemd?path={agentPath}
-    — Returns: { content: string | null }
-    — Reads the agent's CLAUDE.md file (path must be a registered agent)
+    — Returns: { filename: "AGENTS.md" | "CLAUDE.md" | null, content: string | null }
+    — Reads the agent's context instruction file (path must be a registered agent)
 
-Create a skill file in the vault's skills folder (\`vault.skills\` in config). Add YAML frontmatter with \`name\` and \`description\` fields. Include examples for listing agents and reading CLAUDE.md.
+Create a skill file in the vault's skills folder (\`vault.skills\` in config). Add YAML frontmatter with \`name\` and \`description\` fields. Include examples for listing agents and reading its AGENTS.md or CLAUDE.md instructions.
 
 Register the skill in the vault's skills/index.md under an appropriate section using the pipe table format:
 ## Section Name
@@ -306,7 +306,7 @@ const API_GROUPS = [
 	{
 		id: "agents",
 		label: "Agent API",
-		description: "List, save, validate agents and read CLAUDE.md",
+		description: "List, save, validate agents and read context instructions",
 		endpoints: [
 			"GET  /api/agents",
 			"POST /api/agents",

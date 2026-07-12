@@ -5,7 +5,8 @@ import {
 	type AcpCatalogItem,
 	authenticateAcpFn,
 	getAcpRegistryFn,
-} from "#/lib/serverFns";
+} from "#/lib/serverFns/acp";
+import { AcpAgentCard } from "./AcpAgentCard";
 import { Section } from "./fields";
 
 export function AcpSection({
@@ -100,124 +101,18 @@ export function AcpSection({
 				</p>
 				{error && <p className="text-xs text-destructive">{error}</p>}
 			</div>
-			{shown.map((item) => {
-				const configured = value.find((candidate) => candidate.id === item.id);
-				const enabled = Boolean(configured);
-				return (
-					<div key={item.id} className="px-4 py-3 space-y-2">
-						<div className="flex items-start justify-between gap-4">
-							<div className="min-w-0">
-								<div className="text-sm">
-									{item.name}{" "}
-									<span className="text-[9px] text-muted-foreground">
-										{item.version}
-									</span>
-								</div>
-								<p className="text-xs text-muted-foreground">
-									{item.description}
-								</p>
-							</div>
-							<button
-								type="button"
-								onClick={() => toggle(item)}
-								className="px-2 py-1 border border-border text-[10px] uppercase"
-							>
-								{enabled ? "Disable" : "Enable"}
-							</button>
-						</div>
-						<div className="text-[10px] font-mono text-muted-foreground break-all">
-							{item.available
-								? `${item.command} ${item.args.join(" ")} · ready`
-								: item.installGuidance}
-						</div>
-						{configured && (
-							<div className="grid sm:grid-cols-2 gap-2">
-								<label className="text-[9px] tracking-widest text-muted-foreground uppercase">
-									Executable override
-									<input
-										value={configured.executable ?? ""}
-										onChange={(event) =>
-											updateOverride(item.id, {
-												executable: event.target.value || undefined,
-											})
-										}
-										placeholder={item.command || "full command path"}
-										className="mt-1 w-full bg-secondary border border-border px-2 py-1 text-xs font-mono normal-case"
-									/>
-								</label>
-								<label className="text-[9px] tracking-widest text-muted-foreground uppercase">
-									Arguments override
-									<input
-										value={configured.args?.join(" ") ?? ""}
-										onChange={(event) =>
-											updateOverride(item.id, {
-												args: event.target.value.trim()
-													? event.target.value.trim().split(/\s+/)
-													: undefined,
-											})
-										}
-										placeholder={item.args.join(" ")}
-										className="mt-1 w-full bg-secondary border border-border px-2 py-1 text-xs font-mono normal-case"
-									/>
-								</label>
-							</div>
-						)}
-						{enabled && item.available && (
-							<button
-								type="button"
-								disabled={busy === item.id}
-								onClick={() => void inspect(item)}
-								className="text-[10px] text-primary uppercase"
-							>
-								{busy === item.id ? "Checking…" : "Authentication options"}
-							</button>
-						)}
-						{auth[item.id]?.map((method) => (
-							<div
-								key={method.id}
-								className="border border-border p-2 text-xs space-y-1"
-							>
-								<div>{method.name}</div>
-								{method.description && (
-									<div className="text-muted-foreground">
-										{method.description}
-									</div>
-								)}
-								{method.vars && (
-									<div className="font-mono text-[10px]">
-										Required environment:{" "}
-										{method.vars.map((variable) => variable.name).join(", ")}
-									</div>
-								)}
-								{method.type === "terminal" && (
-									<div className="font-mono text-[10px]">
-										Run: {item.command} {(method.args ?? []).join(" ")}
-									</div>
-								)}
-								{method.link && (
-									<a
-										href={method.link}
-										target="_blank"
-										rel="noreferrer"
-										className="text-primary"
-									>
-										Open credential page
-									</a>
-								)}
-								{!method.type && (
-									<button
-										type="button"
-										onClick={() => void inspect(item, method.id)}
-										className="text-primary uppercase"
-									>
-										Authenticate
-									</button>
-								)}
-							</div>
-						))}
-					</div>
-				);
-			})}
+			{shown.map((item) => (
+				<AcpAgentCard
+					key={item.id}
+					item={item}
+					configured={value.find((candidate) => candidate.id === item.id)}
+					busy={busy === item.id}
+					authMethods={auth[item.id]}
+					onToggle={() => toggle(item)}
+					onUpdateOverride={(patch) => updateOverride(item.id, patch)}
+					onInspect={(methodId) => void inspect(item, methodId)}
+				/>
+			))}
 		</Section>
 	);
 }

@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import type { ClaudeForm } from "#/components/forge/ClaudeSection";
 import type { HlidConfig } from "#/config";
+import type { getAcpRegistryFn } from "#/lib/serverFns/acp";
 import type {
 	getAccountInfoFn,
-	getAcpRegistryFn,
 	getProvidersFn,
-	getVoiceInfoFn,
-} from "#/lib/serverFns";
+} from "#/lib/serverFns/providers";
+import type { getVoiceInfoFn } from "#/lib/serverFns/voice";
 import {
 	applyAgentFormPatch,
 	buildSettingsConfig,

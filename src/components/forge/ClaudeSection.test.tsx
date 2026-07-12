@@ -7,7 +7,7 @@
  */
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ProviderInfo } from "#/lib/serverFns";
+import type { ProviderInfo } from "#/lib/providerTypes";
 import { type ClaudeForm, ClaudeSection } from "./ClaudeSection";
 
 afterEach(cleanup);

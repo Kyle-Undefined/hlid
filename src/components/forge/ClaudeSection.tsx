@@ -4,7 +4,7 @@ import {
 	effortOptionsFor,
 	modelOptions as getModelOptions,
 } from "#/lib/providerOptions";
-import type { AccountInfo, ProviderInfo } from "#/lib/serverFns";
+import type { AccountInfo, ProviderInfo } from "#/lib/providerTypes";
 import { Field, Section } from "./fields";
 
 export type ClaudeForm = {

@@ -190,6 +190,199 @@ export type StructureState = {
 	theme: "dark" | "tan";
 };
 
+/** Grid of radio-selectable cards (sr-only input, styled label) sharing one name group. */
+function RadioCardGrid<T extends string>({
+	name,
+	label,
+	value,
+	options,
+	onChange,
+}: {
+	name: string;
+	label: string;
+	value: T;
+	options: readonly { value: T; label: string; desc: string }[];
+	onChange: (v: T) => void;
+}) {
+	return (
+		<div className="space-y-2">
+			<p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+				{label}
+			</p>
+			<div className="grid grid-cols-2 gap-2">
+				{options.map((opt) => (
+					<label
+						key={opt.value}
+						className={`flex flex-col gap-1 p-3 rounded-lg border cursor-pointer transition-colors ${
+							value === opt.value
+								? "border-primary bg-primary/5"
+								: "border-border hover:bg-accent"
+						}`}
+					>
+						<input
+							type="radio"
+							name={name}
+							value={opt.value}
+							checked={value === opt.value}
+							onChange={() => onChange(opt.value)}
+							className="sr-only"
+						/>
+						<span className="text-sm font-medium text-foreground">
+							{opt.label}
+						</span>
+						<span className="text-xs text-muted-foreground">{opt.desc}</span>
+					</label>
+				))}
+			</div>
+		</div>
+	);
+}
+
+function VaultFoldersFields({
+	state,
+	onChange,
+}: {
+	state: StructureState;
+	onChange: (patch: Partial<StructureState>) => void;
+}) {
+	return (
+		<div className="space-y-3">
+			<Field
+				label="Vault name"
+				value={state.vaultName}
+				onChange={(v) => onChange({ vaultName: v })}
+			/>
+			{state.vaultStyle === "para" ? (
+				<>
+					<FolderRow
+						label="Inbox folder"
+						value={state.inbox}
+						onChange={(v) => onChange({ inbox: v })}
+						basePath={state.vaultPath}
+						placeholder="e.g. 00 Inbox"
+					/>
+					<FolderRow
+						label="Projects folder"
+						value={state.projects}
+						onChange={(v) => onChange({ projects: v })}
+						basePath={state.vaultPath}
+						placeholder="e.g. 10 Projects"
+					/>
+					<FolderRow
+						label="Areas folder"
+						value={state.areas}
+						onChange={(v) => onChange({ areas: v })}
+						basePath={state.vaultPath}
+						placeholder="e.g. 20 Areas"
+					/>
+					<FolderRow
+						label="Resources folder"
+						value={state.resources}
+						onChange={(v) => onChange({ resources: v })}
+						basePath={state.vaultPath}
+						placeholder="e.g. 30 Resources"
+					/>
+					<FolderRow
+						label="Archive folder"
+						value={state.archive}
+						onChange={(v) => onChange({ archive: v })}
+						basePath={state.vaultPath}
+						placeholder="e.g. 40 Archive"
+					/>
+				</>
+			) : (
+				<>
+					<FolderRow
+						label="Raw folder"
+						value={state.rawFolder}
+						onChange={(v) => onChange({ rawFolder: v })}
+						basePath={state.vaultPath}
+						placeholder="raw"
+					/>
+					<FolderRow
+						label="Wiki folder"
+						value={state.wikiFolder}
+						onChange={(v) => onChange({ wikiFolder: v })}
+						basePath={state.vaultPath}
+						placeholder="wiki"
+					/>
+					<FolderRow
+						label="Outputs folder"
+						value={state.outputs}
+						onChange={(v) => onChange({ outputs: v })}
+						basePath={state.vaultPath}
+						placeholder="outputs"
+					/>
+				</>
+			)}
+			<FolderRow
+				label="Skills folder"
+				value={state.skills}
+				onChange={(v) => onChange({ skills: v })}
+				basePath={state.vaultPath}
+				placeholder="_munin/skills"
+			/>
+			<FolderRow
+				label="Memory folder"
+				value={state.memory}
+				onChange={(v) => onChange({ memory: v })}
+				basePath={state.vaultPath}
+				placeholder="_munin/memory"
+			/>
+		</div>
+	);
+}
+
+function PermissionModePicker({
+	value,
+	onChange,
+	options,
+}: {
+	value: StructureState["permissionMode"];
+	onChange: (v: StructureState["permissionMode"]) => void;
+	options: ReadonlyArray<{ value: string; label: string; desc?: string }>;
+}) {
+	if (options.length === 0) return null;
+	return (
+		<div className="space-y-2">
+			<p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
+				Claude's authority
+			</p>
+			<div className="space-y-1.5">
+				{options.map((opt) => (
+					<label
+						key={opt.value}
+						className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
+							value === opt.value
+								? "border-primary bg-primary/5"
+								: "border-border hover:bg-accent"
+						}`}
+					>
+						<input
+							type="radio"
+							name="permission"
+							value={opt.value}
+							checked={value === opt.value}
+							onChange={() =>
+								onChange(opt.value as StructureState["permissionMode"])
+							}
+							className="mt-0.5 accent-primary shrink-0"
+						/>
+						<div>
+							<div className="text-sm font-medium text-foreground">
+								{opt.label}
+							</div>
+							{opt.desc && (
+								<div className="text-xs text-muted-foreground">{opt.desc}</div>
+							)}
+						</div>
+					</label>
+				))}
+			</div>
+		</div>
+	);
+}
+
 export function StructureStep({
 	state,
 	saving,
@@ -221,196 +414,29 @@ export function StructureStep({
 				</p>
 			</div>
 
-			<div className="space-y-2">
-				<p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-					Vault style
-				</p>
-				<div className="grid grid-cols-2 gap-2">
-					{VAULT_STYLE_OPTIONS.map((opt) => (
-						<label
-							key={opt.value}
-							className={`flex flex-col gap-1 p-3 rounded-lg border cursor-pointer transition-colors ${
-								state.vaultStyle === opt.value
-									? "border-primary bg-primary/5"
-									: "border-border hover:bg-accent"
-							}`}
-						>
-							<input
-								type="radio"
-								name="vaultStyle"
-								value={opt.value}
-								checked={state.vaultStyle === opt.value}
-								onChange={() => onChange({ vaultStyle: opt.value })}
-								className="sr-only"
-							/>
-							<span className="text-sm font-medium text-foreground">
-								{opt.label}
-							</span>
-							<span className="text-xs text-muted-foreground">{opt.desc}</span>
-						</label>
-					))}
-				</div>
-			</div>
+			<RadioCardGrid
+				name="vaultStyle"
+				label="Vault style"
+				value={state.vaultStyle}
+				options={VAULT_STYLE_OPTIONS}
+				onChange={(vaultStyle) => onChange({ vaultStyle })}
+			/>
 
-			<div className="space-y-3">
-				<Field
-					label="Vault name"
-					value={state.vaultName}
-					onChange={(v) => onChange({ vaultName: v })}
-				/>
-				{state.vaultStyle === "para" ? (
-					<>
-						<FolderRow
-							label="Inbox folder"
-							value={state.inbox}
-							onChange={(v) => onChange({ inbox: v })}
-							basePath={state.vaultPath}
-							placeholder="e.g. 00 Inbox"
-						/>
-						<FolderRow
-							label="Projects folder"
-							value={state.projects}
-							onChange={(v) => onChange({ projects: v })}
-							basePath={state.vaultPath}
-							placeholder="e.g. 10 Projects"
-						/>
-						<FolderRow
-							label="Areas folder"
-							value={state.areas}
-							onChange={(v) => onChange({ areas: v })}
-							basePath={state.vaultPath}
-							placeholder="e.g. 20 Areas"
-						/>
-						<FolderRow
-							label="Resources folder"
-							value={state.resources}
-							onChange={(v) => onChange({ resources: v })}
-							basePath={state.vaultPath}
-							placeholder="e.g. 30 Resources"
-						/>
-						<FolderRow
-							label="Archive folder"
-							value={state.archive}
-							onChange={(v) => onChange({ archive: v })}
-							basePath={state.vaultPath}
-							placeholder="e.g. 40 Archive"
-						/>
-					</>
-				) : (
-					<>
-						<FolderRow
-							label="Raw folder"
-							value={state.rawFolder}
-							onChange={(v) => onChange({ rawFolder: v })}
-							basePath={state.vaultPath}
-							placeholder="raw"
-						/>
-						<FolderRow
-							label="Wiki folder"
-							value={state.wikiFolder}
-							onChange={(v) => onChange({ wikiFolder: v })}
-							basePath={state.vaultPath}
-							placeholder="wiki"
-						/>
-						<FolderRow
-							label="Outputs folder"
-							value={state.outputs}
-							onChange={(v) => onChange({ outputs: v })}
-							basePath={state.vaultPath}
-							placeholder="outputs"
-						/>
-					</>
-				)}
-				<FolderRow
-					label="Skills folder"
-					value={state.skills}
-					onChange={(v) => onChange({ skills: v })}
-					basePath={state.vaultPath}
-					placeholder="_munin/skills"
-				/>
-				<FolderRow
-					label="Memory folder"
-					value={state.memory}
-					onChange={(v) => onChange({ memory: v })}
-					basePath={state.vaultPath}
-					placeholder="_munin/memory"
-				/>
-			</div>
+			<VaultFoldersFields state={state} onChange={onChange} />
 
-			{permissionOptions.length > 0 && (
-				<div className="space-y-2">
-					<p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-						Claude's authority
-					</p>
-					<div className="space-y-1.5">
-						{permissionOptions.map((opt) => (
-							<label
-								key={opt.value}
-								className={`flex items-start gap-3 p-3 rounded-lg border cursor-pointer transition-colors ${
-									state.permissionMode === opt.value
-										? "border-primary bg-primary/5"
-										: "border-border hover:bg-accent"
-								}`}
-							>
-								<input
-									type="radio"
-									name="permission"
-									value={opt.value}
-									checked={state.permissionMode === opt.value}
-									onChange={() =>
-										onChange({
-											permissionMode:
-												opt.value as StructureState["permissionMode"],
-										})
-									}
-									className="mt-0.5 accent-primary shrink-0"
-								/>
-								<div>
-									<div className="text-sm font-medium text-foreground">
-										{opt.label}
-									</div>
-									{opt.desc && (
-										<div className="text-xs text-muted-foreground">
-											{opt.desc}
-										</div>
-									)}
-								</div>
-							</label>
-						))}
-					</div>
-				</div>
-			)}
+			<PermissionModePicker
+				value={state.permissionMode}
+				onChange={(permissionMode) => onChange({ permissionMode })}
+				options={permissionOptions}
+			/>
 
-			<div className="space-y-2">
-				<p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-					Theme
-				</p>
-				<div className="grid grid-cols-2 gap-2">
-					{THEME_OPTIONS.map((opt) => (
-						<label
-							key={opt.value}
-							className={`flex flex-col gap-1 p-3 rounded-lg border cursor-pointer transition-colors ${
-								state.theme === opt.value
-									? "border-primary bg-primary/5"
-									: "border-border hover:bg-accent"
-							}`}
-						>
-							<input
-								type="radio"
-								name="theme"
-								value={opt.value}
-								checked={state.theme === opt.value}
-								onChange={() => onChange({ theme: opt.value })}
-								className="sr-only"
-							/>
-							<span className="text-sm font-medium text-foreground">
-								{opt.label}
-							</span>
-							<span className="text-xs text-muted-foreground">{opt.desc}</span>
-						</label>
-					))}
-				</div>
-			</div>
+			<RadioCardGrid
+				name="theme"
+				label="Theme"
+				value={state.theme}
+				options={THEME_OPTIONS}
+				onChange={(theme) => onChange({ theme })}
+			/>
 
 			<div className="flex gap-2">
 				<button

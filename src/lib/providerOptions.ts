@@ -4,7 +4,8 @@
  * catalog with provider-level fallback" logic so every picker (vault-level
  * ClaudeSection, per-agent AgentCard/AddAgentPanel) stays in sync.
  */
-import type { AgentListItem, ProviderInfo } from "./serverFns";
+import type { ProviderInfo } from "./providerTypes";
+import type { AgentListItem } from "./serverFns/agents";
 
 type ModelOptions = NonNullable<ProviderInfo["models"]>;
 type EffortOption = {

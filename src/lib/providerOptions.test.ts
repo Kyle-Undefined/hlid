@@ -5,7 +5,7 @@ import {
 	modelOptions,
 	resolveActiveProviderId,
 } from "./providerOptions";
-import type { ProviderInfo } from "./serverFns";
+import type { ProviderInfo } from "./providerTypes";
 
 const provider: ProviderInfo = {
 	id: "claude",
