@@ -7,8 +7,9 @@
  * Callers are responsible for authorising the agentPath before calling.
  */
 import { existsSync, realpathSync } from "node:fs";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, isAbsolute, relative, resolve } from "node:path";
 import type { Agent, HlidConfig } from "../config";
+import { findAgentInstructionFile } from "./agentInstructions";
 import { expandTilde, samePath } from "./paths";
 import {
 	readProjectMcpFile,
@@ -37,7 +38,7 @@ export function agentConfigToEntry(agent: Agent) {
 		name: agent.name ?? deriveAgentName(resolved),
 		mode: agent.mode ?? "cwd",
 		provider: agent.provider ?? "claude",
-		hasClaudemd: existsSync(join(resolved, "CLAUDE.md")),
+		instructionFile: findAgentInstructionFile(resolved),
 		dirExists: existsSync(resolved),
 		model: agent.model,
 		effort: agent.effort,
@@ -63,7 +64,7 @@ export function inspectAgentPath(agentPath: string, config: HlidConfig) {
 
 	return {
 		dirExists: existsSync(resolvedPath),
-		hasClaudemd: existsSync(join(resolvedPath, "CLAUDE.md")),
+		instructionFile: findAgentInstructionFile(resolvedPath),
 		suggestedName: deriveAgentName(resolvedPath),
 		inVault,
 		externalAllowed: config.server.allow_external_agents,

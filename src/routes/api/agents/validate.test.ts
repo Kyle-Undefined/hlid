@@ -43,15 +43,22 @@ describe("handleValidateAgentPath", () => {
 		expect(body.dirExists).toBe(false);
 	});
 
-	it("returns hasClaudemd=true when CLAUDE.md present", async () => {
+	it("returns instructionFile when CLAUDE.md is present", async () => {
 		mockExistsSync.mockImplementation((p) => String(p).endsWith("CLAUDE.md"));
 		const res = await handleValidateAgentPath(getReq("/agents/proj"));
 		const body = (await res.json()) as {
-			hasClaudemd: boolean;
+			instructionFile: string | null;
 			dirExists: boolean;
 		};
-		expect(body.hasClaudemd).toBe(true);
+		expect(body.instructionFile).toBe("CLAUDE.md");
 		expect(body.dirExists).toBe(false); // dir itself not found
+	});
+
+	it("returns instructionFile when only AGENTS.md is present", async () => {
+		mockExistsSync.mockImplementation((p) => String(p).endsWith("AGENTS.md"));
+		const res = await handleValidateAgentPath(getReq("/agents/proj"));
+		const body = (await res.json()) as { instructionFile: string | null };
+		expect(body.instructionFile).toBe("AGENTS.md");
 	});
 
 	it("derives suggestedName from path", async () => {

@@ -3,12 +3,12 @@ import {
 	chmodSync,
 	mkdirSync,
 	readFileSync,
-	renameSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { getDb } from "../db";
+import { writeFileAtomicSync } from "../lib/atomicFile";
 import { APP_DIR } from "../lib/paths";
 import { verifyToken } from "../lib/token";
 
@@ -53,20 +53,13 @@ function writeCredential(value: CredentialFile, firstSetup: boolean): void {
 		});
 		return;
 	}
-	const temporary = `${AUTH_PATH}.${process.pid}.${Date.now()}.tmp`;
+	writeFileAtomicSync(AUTH_PATH, JSON.stringify(value), {
+		encoding: "utf8",
+		mode: 0o600,
+	});
 	try {
-		writeFileSync(temporary, JSON.stringify(value), {
-			encoding: "utf8",
-			mode: 0o600,
-		});
-		renameSync(temporary, AUTH_PATH);
-		try {
-			chmodSync(AUTH_PATH, 0o600);
-		} catch {}
-	} catch (error) {
-		rmSync(temporary, { force: true });
-		throw error;
-	}
+		chmodSync(AUTH_PATH, 0o600);
+	} catch {}
 }
 
 function validatePassword(password: string): void {

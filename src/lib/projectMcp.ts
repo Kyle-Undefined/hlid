@@ -1,12 +1,6 @@
-import { randomUUID } from "node:crypto";
-import {
-	mkdirSync,
-	readFileSync,
-	renameSync,
-	rmSync,
-	writeFileSync,
-} from "node:fs";
-import { dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+import { writeFileAtomicSync } from "./atomicFile";
 
 export type ProjectMcpServer = {
 	name: string;
@@ -29,18 +23,11 @@ function readJsonFile(path: string): Record<string, unknown> {
 }
 
 function writeJsonAtomic(path: string, value: unknown): void {
-	mkdirSync(dirname(path), { recursive: true });
-	const temporary = `${path}.${process.pid}.${randomUUID()}.tmp`;
-	try {
-		writeFileSync(temporary, `${JSON.stringify(value, null, 2)}\n`, {
-			encoding: "utf8",
-			mode: 0o600,
-		});
-		renameSync(temporary, path);
-	} catch (error) {
-		rmSync(temporary, { force: true });
-		throw error;
-	}
+	writeFileAtomicSync(path, `${JSON.stringify(value, null, 2)}\n`, {
+		encoding: "utf8",
+		mode: 0o600,
+		createParent: true,
+	});
 }
 
 function readProjectLocalSettings(projectPath: string): ProjectLocalSettings {

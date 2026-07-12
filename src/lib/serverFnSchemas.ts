@@ -1,6 +1,18 @@
 import { z } from "zod";
 import { AgentSchema } from "#/config";
 
+export const optionalRefreshSchema = z
+	.object({ refresh: z.boolean().optional() })
+	.optional();
+
+/** Appends `?refresh=1` when the caller requested a cache bypass. */
+export function withRefreshQuery(
+	path: string,
+	data: { refresh?: boolean } | undefined,
+): string {
+	return `${path}${data?.refresh ? "?refresh=1" : ""}`;
+}
+
 export const sessionIdSchema = z
 	.string()
 	.trim()

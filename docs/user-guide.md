@@ -127,10 +127,12 @@ names and old session records.
 
 ### Einherjar
 
-**EINHERJAR** registers other agent directories. A `context` entry loads a
-`CLAUDE.md` personality overlay while keeping the vault as the working
-directory. A `cwd` entry runs the agent from the registered directory. Paths
-outside the vault require the external-agent option in Forge.
+**EINHERJAR** registers other agent directories. A `context` entry loads either
+`AGENTS.md` or `CLAUDE.md` as a personality/instruction overlay while keeping
+the vault as the working directory. When both exist, `AGENTS.md` takes
+precedence because it is the provider-neutral ACP contract; `CLAUDE.md` remains
+the compatibility fallback. A `cwd` entry runs the agent from the registered
+directory. Paths outside the vault require the external-agent option in Forge.
 
 ### Forge
 

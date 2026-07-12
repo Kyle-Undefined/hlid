@@ -4,8 +4,9 @@ import * as db from "../db";
 import { isAllowedOrigin, isAllowedOriginHeader } from "../lib/allowedOrigin";
 import { registerBunServer } from "../lib/lifecycle";
 import { loadToken } from "../lib/token";
-import { AcpProvider, inspectAcpAgent } from "./acpProvider";
+import { AcpProvider } from "./acpProvider";
 import { AcpRegistry } from "./acpRegistry";
+import { createAcpRouteHandler } from "./acpRoutes";
 import type { AgentProvider, McpServerStatus } from "./agentProvider";
 import { buildApiIndex } from "./apiIndex";
 import { handleAttachmentRoute } from "./attachmentRoutes";
@@ -134,6 +135,10 @@ if (process.execPath.endsWith(".exe") && !RESTART_MODE) {
 }
 
 const acpRegistry = new AcpRegistry();
+const handleAcpRoute = createAcpRouteHandler({
+	registry: acpRegistry,
+	loadConfig,
+});
 const acpCatalog = await acpRegistry.catalog(config);
 const providers = new Map<string, AgentProvider>([
 	["claude", new ClaudeProvider()],
@@ -343,58 +348,6 @@ async function handleProviderRoute(url: URL, req: Request) {
 		}),
 	);
 	return Response.json({ providers: list });
-}
-
-async function authenticateAcpAgent(req: Request): Promise<Response> {
-	const body = (await req.json().catch(() => null)) as {
-		id?: string;
-		methodId?: string;
-	} | null;
-	if (!body?.id) {
-		return Response.json({ error: "id is required" }, { status: 400 });
-	}
-	const item = (await acpRegistry.catalog(loadConfig())).find(
-		(candidate) => candidate.id === body.id && candidate.enabled,
-	);
-	if (!item) {
-		return Response.json(
-			{ error: "ACP agent is not enabled" },
-			{ status: 404 },
-		);
-	}
-	if (!item.available) {
-		return Response.json({ error: item.unavailableReason }, { status: 409 });
-	}
-	const configured = (loadConfig().acp_agents ?? []).find(
-		(agent) => agent.id === item.id,
-	);
-	const initialized = await inspectAcpAgent(
-		{
-			id: item.providerId,
-			label: item.name,
-			command: item.command,
-			args: item.args,
-			env: { ...item.env, ...configured?.env },
-		},
-		body.methodId,
-	);
-	return Response.json({
-		authMethods: initialized.authMethods ?? [],
-		agentInfo: initialized.agentInfo ?? null,
-	});
-}
-
-async function handleAcpRoute(url: URL, req: Request) {
-	if (url.pathname === "/acp/registry" && req.method === "GET") {
-		const refresh = url.searchParams.get("refresh") === "1";
-		return Response.json({
-			agents: await acpRegistry.catalog(loadConfig(), refresh),
-		});
-	}
-	if (url.pathname === "/acp/authenticate" && req.method === "POST") {
-		return authenticateAcpAgent(req);
-	}
-	return null;
 }
 
 async function downloadVoiceModel(req: Request): Promise<Response> {

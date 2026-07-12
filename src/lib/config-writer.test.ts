@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // ── mocks ─────────────────────────────────────────────────────────────────────
 
 vi.mock("node:fs", () => ({
+	mkdirSync: vi.fn(),
 	renameSync: vi.fn(),
 	rmSync: vi.fn(),
 	writeFileSync: vi.fn(),

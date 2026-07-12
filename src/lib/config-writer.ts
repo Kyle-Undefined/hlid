@@ -1,4 +1,3 @@
-import { renameSync, rmSync, writeFileSync } from "node:fs";
 import {
 	DEFAULT_ATTACHMENTS_CONFIG,
 	DEFAULT_AUTO_SLEEP_CONFIG,
@@ -7,6 +6,7 @@ import {
 } from "../config";
 import { setConfigCache } from "../server/config";
 import { syncWrappers } from "../server/wrappers";
+import { writeFileAtomicSync } from "./atomicFile";
 import { CONFIG_PATH } from "./paths";
 
 function tomlVal(value: unknown): string {
@@ -232,21 +232,10 @@ export function serializeConfig(config: HlidConfig): string {
 }
 
 export function writeConfig(config: HlidConfig): void {
-	const temporaryPath = `${CONFIG_PATH}.${process.pid}.${Date.now()}.tmp`;
-	try {
-		writeFileSync(temporaryPath, serializeConfig(config), {
-			encoding: "utf-8",
-			mode: 0o600,
-		});
-		renameSync(temporaryPath, CONFIG_PATH);
-	} catch (error) {
-		try {
-			rmSync(temporaryPath, { force: true });
-		} catch {
-			// Preserve the original write/rename error.
-		}
-		throw error;
-	}
+	writeFileAtomicSync(CONFIG_PATH, serializeConfig(config), {
+		encoding: "utf-8",
+		mode: 0o600,
+	});
 	setConfigCache(config);
 	syncWrappers(config.agents ?? []);
 }
