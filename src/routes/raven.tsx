@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
 	FileCode,
+	MessageSquare,
 	Mic,
 	Paperclip,
 	ShieldCheck,
@@ -852,6 +853,15 @@ export function ChatPage() {
 	const { pendingAttachments, uploadingCount } = upload;
 	const [planMode, setPlanMode] = useState(false);
 	const [planHtml, setPlanHtml] = useState(config.ui.html_plans ?? false);
+	const [terminalOpen, setTerminalOpen] = useState(false);
+	const [shellTab, setShellTab] = useState<"chat" | "terminal">("chat");
+	const handleToggleTerminal = useCallback(() => {
+		setTerminalOpen((open) => {
+			const next = !open;
+			setShellTab(next ? "terminal" : "chat");
+			return next;
+		});
+	}, []);
 	const [dragOver, setDragOver] = useState(false);
 	const [showModelPopup, setShowModelPopup] = useState(false);
 	const viewport = useRavenViewport({
@@ -948,6 +958,8 @@ export function ChatPage() {
 		setPlanMode,
 		planHtml,
 		setPlanHtml,
+		terminalOpen,
+		onToggleTerminal: handleToggleTerminal,
 		dragOver,
 		setDragOver,
 		showModelPopup,
@@ -972,6 +984,9 @@ export function ChatPage() {
 			liveStats={liveStats}
 			rateLimit={rateLimit}
 			interactiveMode={interactiveMode}
+			terminalOpen={terminalOpen}
+			shellTab={shellTab}
+			setShellTab={setShellTab}
 			session={session}
 			runtime={runtime}
 			chatQueue={chatQueue}
@@ -994,6 +1009,9 @@ interface ChatPageContentProps {
 	liveStats: ReturnType<typeof useWsLiveStats>;
 	rateLimit: RateLimitMessage | null;
 	interactiveMode: boolean;
+	terminalOpen: boolean;
+	shellTab: "chat" | "terminal";
+	setShellTab: Dispatch<SetStateAction<"chat" | "terminal">>;
 	session: ReturnType<typeof useRavenSessionIdentity>;
 	runtime: ReturnType<typeof useRavenChatRuntime>;
 	chatQueue: ReturnType<typeof useWsChatQueue>;
@@ -1010,7 +1028,16 @@ interface ChatPageContentProps {
 }
 
 function ChatPageContent(props: ChatPageContentProps) {
-	const { initialProviderUsages, liveStats, rateLimit, composerProps } = props;
+	const {
+		initialProviderUsages,
+		liveStats,
+		rateLimit,
+		composerProps,
+		interactiveMode,
+		terminalOpen,
+		shellTab,
+		setShellTab,
+	} = props;
 	return (
 		<div className="h-full min-h-0 flex flex-col overflow-hidden">
 			<ProviderUsageStrip
@@ -1022,9 +1049,84 @@ function ChatPageContent(props: ChatPageContentProps) {
 			/>
 
 			<RavenTerminalPane {...props} />
+			{!interactiveMode && terminalOpen && (
+				<RavenShellTabBar activeTab={shellTab} setActiveTab={setShellTab} />
+			)}
 			<RavenMessagePane {...props} />
+			{!interactiveMode && <RavenShellPane {...props} />}
 
 			<ChatComposer {...composerProps} />
+		</div>
+	);
+}
+
+/** Mobile-only Chat/Terminal tab switch — desktop gets a split panel instead (chunk 4). */
+function RavenShellTabBar({
+	activeTab,
+	setActiveTab,
+}: {
+	activeTab: "chat" | "terminal";
+	setActiveTab: Dispatch<SetStateAction<"chat" | "terminal">>;
+}) {
+	return (
+		<div className="md:hidden flex shrink-0 border-b border-border/40">
+			<button
+				type="button"
+				onClick={() => setActiveTab("chat")}
+				className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-[10px] tracking-widest uppercase transition-colors ${
+					activeTab === "chat"
+						? "text-primary border-b border-primary"
+						: "text-muted-foreground/40"
+				}`}
+			>
+				<MessageSquare className="w-3.5 h-3.5" />
+				chat
+			</button>
+			<button
+				type="button"
+				onClick={() => setActiveTab("terminal")}
+				className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-[10px] tracking-widest uppercase transition-colors ${
+					activeTab === "terminal"
+						? "text-primary border-b border-primary"
+						: "text-muted-foreground/40"
+				}`}
+			>
+				<TerminalIcon className="w-3.5 h-3.5" />
+				terminal
+			</button>
+		</div>
+	);
+}
+
+/**
+ * Mobile dev-shell pane — mounts a real login shell (/ws/shell) only while
+ * terminalOpen, and only once toggled on (nothing spins up until then).
+ * Stays mounted across Chat/Terminal tab swaps (only `active` toggles, via
+ * CSS visibility) so the session survives switching tabs; unmounting this
+ * component — terminalOpen flipping false — is what kills the PTY, via
+ * terminateOnDisconnect.
+ */
+function RavenShellPane({
+	config,
+	terminalOpen,
+	shellTab,
+	session,
+}: ChatPageContentProps) {
+	const { agentSkillContext, sessionId } = session;
+	if (!terminalOpen || !sessionId) return null;
+	return (
+		<div
+			className={`md:hidden flex-1 overflow-hidden ${
+				shellTab === "terminal" ? "flex" : "hidden"
+			}`}
+		>
+			<TerminalView
+				sessionId={sessionId}
+				cwd={agentSkillContext ?? config.vault.path}
+				wsPath="/ws/shell"
+				active={shellTab === "terminal"}
+				terminateOnDisconnect
+			/>
 		</div>
 	);
 }
@@ -1075,6 +1177,8 @@ function RavenTerminalPane({
 
 function RavenMessagePane({
 	interactiveMode,
+	terminalOpen,
+	shellTab,
 	session,
 	runtime,
 	chatQueue,
@@ -1091,13 +1195,18 @@ function RavenMessagePane({
 		handleCancelQueued,
 		handlePromoteQueued,
 	} = actions;
+	// Below md, the Terminal tab fully replaces chat (RavenShellTabBar); md+
+	// always shows chat regardless (desktop split panel is chunk 4).
+	const mobileHideChat = terminalOpen && shellTab === "terminal";
 	return (
 		<>
 			{/* Messages, inner min-h-full + justify-end anchors messages to bottom */}
 			{!interactiveMode && (
 				<div
 					ref={scrollRef}
-					className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden"
+					className={`flex-1 min-h-0 overflow-y-auto overflow-x-hidden ${
+						mobileHideChat ? "hidden md:block" : ""
+					}`}
 				>
 					<div className="min-h-full flex flex-col justify-end px-5 pt-2 pb-7 min-w-0">
 						{messages.length === 0 ? (
@@ -1288,6 +1397,8 @@ function ChatInputNotices({
 	setPlanMode,
 	planHtml,
 	setPlanHtml,
+	terminalOpen,
+	onToggleTerminal,
 }: ChatComposerProps) {
 	const { agentSkillContext, setAgentSkillContext, agentContextSentRef } =
 		session;
@@ -1390,6 +1501,19 @@ function ChatInputNotices({
 						html
 					</button>
 				)}
+				<button
+					type="button"
+					onClick={onToggleTerminal}
+					title="Open a real terminal in this project — for running dev servers or recovering from things the agent can't fix"
+					className={`flex items-center gap-1.5 text-[9px] tracking-widest uppercase transition-colors shrink-0 ${
+						terminalOpen
+							? "text-primary border-b border-primary/50"
+							: "text-muted-foreground/40 hover:text-muted-foreground/70"
+					}`}
+				>
+					<TerminalIcon className="w-3 h-3" />
+					terminal
+				</button>
 			</div>
 		</>
 	);
@@ -1659,6 +1783,8 @@ interface ChatComposerProps {
 	setPlanMode: Dispatch<SetStateAction<boolean>>;
 	planHtml: boolean;
 	setPlanHtml: Dispatch<SetStateAction<boolean>>;
+	terminalOpen: boolean;
+	onToggleTerminal: () => void;
 	dragOver: boolean;
 	setDragOver: Dispatch<SetStateAction<boolean>>;
 	showModelPopup: boolean;

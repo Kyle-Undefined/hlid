@@ -131,10 +131,17 @@ describe("TerminalView — WS URL construction", () => {
 		expect(url).toContain("cwd=");
 	});
 
-	it("connects to /ws/terminal path", () => {
+	it("connects to /ws/terminal path by default", () => {
 		render(<TerminalView {...defaultProps()} />);
 		const url = getLastWsUrl();
 		expect(url).toContain("/ws/terminal");
+	});
+
+	it("connects to a custom wsPath when provided", () => {
+		render(<TerminalView {...defaultProps({ wsPath: "/ws/shell" })} />);
+		const url = getLastWsUrl();
+		expect(url).toContain("/ws/shell");
+		expect(url).not.toContain("/ws/terminal");
 	});
 });
 
@@ -251,6 +258,57 @@ describe("TerminalView — active prop", () => {
 
 		expect(ws.close).toHaveBeenCalled();
 		expect(mockTerminal.dispose).toHaveBeenCalled();
+	});
+
+	it("active=false without terminateOnDisconnect → no terminate frame sent", () => {
+		const { rerender } = render(
+			<TerminalView {...defaultProps({ active: true })} />,
+		);
+		const ws = mockWsInstance;
+
+		rerender(<TerminalView {...defaultProps({ active: false })} />);
+
+		const terminateSent = ws.send.mock.calls.some((c) => {
+			try {
+				return JSON.parse(c[0] as string)?.type === "terminate";
+			} catch {
+				return false;
+			}
+		});
+		expect(terminateSent).toBe(false);
+		expect(ws.close).toHaveBeenCalled();
+	});
+
+	it("active=false with terminateOnDisconnect → sends terminate frame before closing", () => {
+		const { rerender } = render(
+			<TerminalView
+				{...defaultProps({ active: true, terminateOnDisconnect: true })}
+			/>,
+		);
+		const ws = mockWsInstance;
+
+		rerender(
+			<TerminalView
+				{...defaultProps({ active: false, terminateOnDisconnect: true })}
+			/>,
+		);
+
+		expect(ws.send).toHaveBeenCalledWith(JSON.stringify({ type: "terminate" }));
+		expect(ws.close).toHaveBeenCalled();
+	});
+
+	it("unmount with terminateOnDisconnect → sends terminate frame before closing", () => {
+		const { unmount } = render(
+			<TerminalView
+				{...defaultProps({ active: true, terminateOnDisconnect: true })}
+			/>,
+		);
+		const ws = mockWsInstance;
+
+		unmount();
+
+		expect(ws.send).toHaveBeenCalledWith(JSON.stringify({ type: "terminate" }));
+		expect(ws.close).toHaveBeenCalled();
 	});
 
 	it("active=true after false → reconnects with new WS", () => {

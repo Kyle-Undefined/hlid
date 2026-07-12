@@ -1,13 +1,14 @@
 /**
- * TerminalView — renders the Claude CLI inside an xterm.js terminal.
+ * TerminalView — renders a PTY session inside an xterm.js terminal.
  *
- * Connects to /ws/terminal and bridges:
+ * Connects to `wsPath` (default /ws/terminal, the claude CLI PTY — pass
+ * /ws/shell for a real login shell) and bridges:
  *   WS binary frames → terminal.write()  (PTY output → render)
  *   terminal input   → WS binary frames  (keystrokes → PTY stdin)
  *   ResizeObserver   → WS resize frame + fitAddon.fit()
  *
- * The PTY process stays alive in TerminalSessionPool even when active=false,
- * so switching Raven sessions and returning replays the ring buffer.
+ * The PTY process stays alive server-side even when active=false, so
+ * switching away and returning replays the ring buffer.
  */
 import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
@@ -20,6 +21,7 @@ import { TerminalExitedOverlay } from "./TerminalExitedOverlay";
  * HTTPS; explicit backend port (frontend port + 1) in plain HTTP dev mode.
  */
 function buildTerminalWsUrl(
+	wsPath: string,
 	sessionId: string,
 	cwd: string,
 	cols: number,
@@ -28,8 +30,8 @@ function buildTerminalWsUrl(
 	const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
 	const wsBase =
 		location.protocol === "https:"
-			? `${wsProto}//${location.host}/ws/terminal`
-			: `${wsProto}//${location.hostname}:${Number(location.port) + 1}/ws/terminal`;
+			? `${wsProto}//${location.host}${wsPath}`
+			: `${wsProto}//${location.hostname}:${Number(location.port) + 1}${wsPath}`;
 	const url = new URL(wsBase);
 	url.searchParams.set("session_id", sessionId);
 	url.searchParams.set("cwd", cwd);
@@ -38,10 +40,35 @@ function buildTerminalWsUrl(
 	return url;
 }
 
+/** Closes a PTY WS, sending {type:"terminate"} first when the ref says to. */
+function closeWs(
+	ws: WebSocket | null,
+	terminateOnDisconnectRef: { current: boolean },
+): void {
+	if (
+		terminateOnDisconnectRef.current &&
+		ws &&
+		ws.readyState === WebSocket.OPEN
+	) {
+		ws.send(JSON.stringify({ type: "terminate" }));
+	}
+	ws?.close();
+}
+
 export interface TerminalViewProps {
 	sessionId: string;
 	cwd: string;
 	active: boolean;
+	/** WS route to connect to. Defaults to /ws/terminal (the claude CLI PTY). */
+	wsPath?: string;
+	/**
+	 * Send {type:"terminate"} before closing so the server kills the PTY
+	 * immediately instead of idling out. Used when this mount's unmount means
+	 * the user explicitly closed the session (e.g. the Raven dev-terminal
+	 * toggle) — not for a routine active=false pause where the PTY should
+	 * keep running server-side (e.g. switching Chat/Terminal tabs).
+	 */
+	terminateOnDisconnect?: boolean;
 	/** Called when the user wants to start a new terminal session after the current one exits. */
 	onNewSession?: () => void;
 }
@@ -50,6 +77,8 @@ export function TerminalView({
 	sessionId,
 	cwd,
 	active,
+	wsPath = "/ws/terminal",
+	terminateOnDisconnect = false,
 	onNewSession,
 }: TerminalViewProps) {
 	const containerRef = useRef<HTMLDivElement>(null);
@@ -60,12 +89,19 @@ export function TerminalView({
 		{ code?: number; wsError?: boolean } | false
 	>(false);
 
+	// Latest-value ref so effect cleanups (which close over a stale render)
+	// always see the current terminateOnDisconnect, even when it flips in the
+	// same commit that unmounts this component.
+	const terminateOnDisconnectRef = useRef(terminateOnDisconnect);
+	terminateOnDisconnectRef.current = terminateOnDisconnect;
+
 	// ── Connect / disconnect based on `active` ────────────────────────────────
 
 	useEffect(() => {
 		if (!active) {
-			// Tear down WS and terminal when inactive (PTY stays alive server-side).
-			wsRef.current?.close();
+			// Tear down WS and terminal when inactive (PTY stays alive server-side
+			// unless terminateOnDisconnect is set).
+			closeWs(wsRef.current, terminateOnDisconnectRef);
 			wsRef.current = null;
 			termRef.current?.dispose();
 			termRef.current = null;
@@ -104,7 +140,7 @@ export function TerminalView({
 		const cols = dims.cols ?? 80;
 		const rows = dims.rows ?? 24;
 
-		const url = buildTerminalWsUrl(sessionId, cwd, cols, rows);
+		const url = buildTerminalWsUrl(wsPath, sessionId, cwd, cols, rows);
 		const ws = new WebSocket(url.toString());
 		ws.binaryType = "arraybuffer";
 		wsRef.current = ws;
@@ -169,13 +205,13 @@ export function TerminalView({
 			// setExited(true) and override the setExited(false) in the next effect run.
 			ws.onerror = null;
 			ws.onclose = null;
-			ws.close();
+			closeWs(ws, terminateOnDisconnectRef);
 			term.dispose();
 			wsRef.current = null;
 			termRef.current = null;
 			fitRef.current = null;
 		};
-	}, [active, sessionId, cwd]);
+	}, [active, sessionId, cwd, wsPath]);
 
 	// ── Render ────────────────────────────────────────────────────────────────
 
