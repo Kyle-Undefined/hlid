@@ -28,7 +28,7 @@ const IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 // biome-ignore lint/suspicious/noExplicitAny: Bun WS data shape varies
 type AnyWs = ServerWebSocket<any>;
 
-class RingBuffer {
+export class RingBuffer {
 	private buf: Buffer;
 	private len = 0; // total bytes written (for pointer math)
 	private cap: number;

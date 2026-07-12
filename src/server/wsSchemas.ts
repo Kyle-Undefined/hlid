@@ -143,6 +143,22 @@ export function parseTerminalResize(raw: string): TerminalDimensions | null {
 		: null;
 }
 
+const terminalTerminateSchema = z.strictObject({
+	type: z.literal("terminate"),
+});
+
+/** Explicit "toggle off" control frame — kills the PTY immediately, bypassing the idle timer. */
+export function parseTerminalTerminate(raw: string): boolean {
+	if (Buffer.byteLength(raw, "utf8") > 1024) return false;
+	let value: unknown;
+	try {
+		value = JSON.parse(raw);
+	} catch {
+		return false;
+	}
+	return terminalTerminateSchema.safeParse(value).success;
+}
+
 export function parseInitialTerminalDimensions(
 	cols: string | null,
 	rows: string | null,

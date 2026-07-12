@@ -33,6 +33,8 @@ import {
 	createServerRequestPolicy,
 } from "./serverRequestPolicy";
 import { SessionPool } from "./sessionPool";
+import { ShellSessionPool } from "./shellSessionPool";
+import { createShellUpgradeHandler } from "./shellUpgrade";
 import { resolveAllowedTerminalCwd } from "./terminalAccess";
 import { TerminalSessionPool } from "./terminalSessionPool";
 import { createTerminalUpgradeHandler } from "./terminalUpgrade";
@@ -43,6 +45,7 @@ import { VoiceModelManager } from "./voice";
 import { bootstrapVoiceRuntime } from "./voice-bootstrap";
 import { syncWrappers } from "./wrappers";
 import { createWsHandlers, type WsData } from "./wsHandlers";
+import { createShellWsHandlers, type ShellWsData } from "./wsHandlers.shell";
 import {
 	createTerminalWsHandlers,
 	type TerminalWsData,
@@ -186,6 +189,7 @@ const terminalPool = new TerminalSessionPool(ptyWorkerPath, () => {
 		sessions: getLiveSessionsStatus(pool, terminalPool),
 	});
 });
+const shellPool = new ShellSessionPool(ptyWorkerPath);
 const SERVER_TOKEN = loadToken();
 const MAX_ACTIVE_VOICE_REQUESTS = 2;
 let activeVoiceRequests = 0;
@@ -205,6 +209,7 @@ process.on("SIGTERM", () => {
 	voice.close();
 	pool.closeAll();
 	terminalPool.closeAll();
+	shellPool.closeAll();
 	closeAllCodexAppServers();
 	closeUmbod();
 	process.exit(0);
@@ -213,6 +218,7 @@ process.on("SIGINT", () => {
 	voice.close();
 	pool.closeAll();
 	terminalPool.closeAll();
+	shellPool.closeAll();
 	closeAllCodexAppServers();
 	closeUmbod();
 	process.exit(0);
@@ -266,7 +272,7 @@ const tlsConfig =
 			}
 		: {};
 
-type AppServer = Server<WsData | TerminalWsData>;
+type AppServer = Server<WsData | TerminalWsData | ShellWsData>;
 
 const upgradeTerminalWebSocket = createTerminalUpgradeHandler({
 	defaultCwd: config.vault.path,
@@ -279,13 +285,23 @@ const upgradeTerminalWebSocket = createTerminalUpgradeHandler({
 	getResumeId: db.getSessionClaudeId,
 });
 
+const upgradeShellWebSocket = createShellUpgradeHandler({
+	defaultCwd: config.vault.path,
+	resolveCwd: (requestedCwd) => resolveAllowedTerminalCwd(config, requestedCwd),
+});
+
 async function handleWebSocketRoute(
 	req: Request,
 	server: AppServer,
 	url: URL,
 	peerIp: string | undefined,
 ): Promise<Response | undefined | null> {
-	if (url.pathname !== "/ws" && url.pathname !== "/ws/terminal") return null;
+	if (
+		url.pathname !== "/ws" &&
+		url.pathname !== "/ws/terminal" &&
+		url.pathname !== "/ws/shell"
+	)
+		return null;
 	if (
 		!isAllowedOriginHeader(
 			req.headers.get("origin"),
@@ -301,6 +317,9 @@ async function handleWebSocketRoute(
 		return upgradeTerminalWebSocket(url, (data) =>
 			server.upgrade(req, { data }),
 		);
+	}
+	if (url.pathname === "/ws/shell") {
+		return upgradeShellWebSocket(url, (data) => server.upgrade(req, { data }));
 	}
 	if (
 		server.upgrade(req, {
@@ -480,7 +499,7 @@ async function handleServerFetch(
 }
 
 registerBunServer(
-	Bun.serve<WsData | TerminalWsData>({
+	Bun.serve<WsData | TerminalWsData | ShellWsData>({
 		port: PORT,
 		hostname: BIND_HOST,
 		maxRequestBodySize: Math.max(
@@ -494,24 +513,31 @@ registerBunServer(
 		websocket: (() => {
 			const chatHandlers = createWsHandlers(pool, terminalPool);
 			const termHandlers = createTerminalWsHandlers(terminalPool);
+			const shellHandlers = createShellWsHandlers(shellPool);
 			type ChatWs = Parameters<typeof chatHandlers.open>[0];
 			type TerminalWs = ServerWebSocket<TerminalWsData>;
-			type AppWs = ChatWs | TerminalWs;
+			type ShellWs = ServerWebSocket<ShellWsData>;
+			type AppWs = ChatWs | TerminalWs | ShellWs;
 			type WsMessage = Parameters<typeof chatHandlers.message>[1];
 			const isTerminalWs = (ws: AppWs): ws is TerminalWs =>
 				"isTerminal" in ws.data && ws.data.isTerminal === true;
+			const isShellWs = (ws: AppWs): ws is ShellWs =>
+				"isShell" in ws.data && ws.data.isShell === true;
 			return {
 				maxPayloadLength: MAX_WS_PAYLOAD_BYTES,
 				open(ws: AppWs) {
 					if (isTerminalWs(ws)) termHandlers.open(ws);
+					else if (isShellWs(ws)) shellHandlers.open(ws);
 					else chatHandlers.open(ws);
 				},
 				message(ws: AppWs, data: WsMessage) {
 					if (isTerminalWs(ws)) termHandlers.message(ws, data);
+					else if (isShellWs(ws)) shellHandlers.message(ws, data);
 					else chatHandlers.message(ws, data);
 				},
 				close(ws: AppWs) {
 					if (isTerminalWs(ws)) termHandlers.close(ws);
+					else if (isShellWs(ws)) shellHandlers.close(ws);
 					else chatHandlers.close(ws);
 				},
 			};
