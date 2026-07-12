@@ -55,6 +55,15 @@ function runMigration(db: Db, name: string, fn: (db: Db) => void): void {
 
 function initSchema(db: Db): void {
 	db.run("PRAGMA foreign_keys = ON");
+	createSystemTables(db);
+	createSessionTables(db);
+	createTelemetryTables(db);
+	createAttachmentTables(db);
+	migrateAttachmentsDropFk(db);
+	applyMigrations(db);
+}
+
+function createSystemTables(db: Db): void {
 	db.run(`
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
@@ -81,6 +90,9 @@ function initSchema(db: Db): void {
       updated_at INTEGER DEFAULT (unixepoch())
     )
   `);
+}
+
+function createSessionTables(db: Db): void {
 	db.run(`
     CREATE TABLE IF NOT EXISTS sessions (
       id TEXT PRIMARY KEY,
@@ -129,6 +141,9 @@ function initSchema(db: Db): void {
 	db.run(
 		`CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id)`,
 	);
+}
+
+function createTelemetryTables(db: Db): void {
 	db.run(`
     CREATE TABLE IF NOT EXISTS tool_events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -198,6 +213,9 @@ function initSchema(db: Db): void {
 	db.run(
 		`CREATE INDEX IF NOT EXISTS idx_event_log_level_ts ON event_log(level, timestamp DESC)`,
 	);
+}
+
+function createAttachmentTables(db: Db): void {
 	db.run(`
     CREATE TABLE IF NOT EXISTS attachments (
       id TEXT PRIMARY KEY,
@@ -221,7 +239,10 @@ function initSchema(db: Db): void {
 	db.run(
 		`CREATE INDEX IF NOT EXISTS idx_attachments_created ON attachments(created_at DESC)`,
 	);
+}
 
+/** One-off rebuild dropping the old sessions FK from attachments. */
+function migrateAttachmentsDropFk(db: Db): void {
 	const fkMigrated = db
 		.query<{ value: string }, [string]>(
 			`SELECT value FROM settings WHERE key = ?`,
@@ -266,7 +287,10 @@ function initSchema(db: Db): void {
 			["_migrated_attachments_no_fk", "1"],
 		);
 	}
+}
 
+/** Append-only migration ledger; each entry runs once, in order. */
+function applyMigrations(db: Db): void {
 	runMigration(db, "_migrated_usage_tables", (db) => {
 		db.run(`
       INSERT OR IGNORE INTO usage_daily (date, cost, queries, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, turns)

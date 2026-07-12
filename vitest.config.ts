@@ -15,7 +15,7 @@ export default defineConfig({
 			provider: "istanbul",
 			reporter: ["text", "json", "json-summary", "html"],
 			reportsDirectory: "coverage/vitest",
-			include: ["src/**/*.{ts,tsx}"],
+			include: ["src/**/*.{ts,tsx}", "src/server/ptyInputParser.cjs"],
 			exclude: [
 				"src/**/*.test.{ts,tsx}",
 				"src/**/*.bun.test.ts",

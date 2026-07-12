@@ -1,8 +1,8 @@
-import { createRequire } from "node:module";
 import { describe, expect, it, vi } from "vitest";
-
-const require = createRequire(import.meta.url);
-const { createPtyInputParser } = require("./ptyInputParser.cjs");
+// Import through the vite pipeline (not createRequire) so istanbul instruments
+// the CJS module and its coverage lands in the report.
+// @ts-expect-error — plain CJS module without type declarations
+import { createPtyInputParser } from "./ptyInputParser.cjs";
 
 function writeFrame(text: string): Buffer {
 	const payload = Buffer.from(text);
