@@ -28,7 +28,7 @@ vi.mock("#/hooks/wsStore", () => ({
 	resetLiveStats: vi.fn(),
 }));
 
-vi.mock("#/lib/serverFns", () => ({
+vi.mock("#/lib/serverFns/sessions", () => ({
 	getSessionDataFn: vi.fn(),
 	getSessionContextFn: vi.fn(),
 	getSessionPermissionsFn: vi.fn(),
@@ -49,7 +49,7 @@ import {
 	getSessionDataFn,
 	getSessionPermissionsFn,
 	getSessionPlanProposalsFn,
-} from "#/lib/serverFns";
+} from "#/lib/serverFns/sessions";
 import { useLoadChatHistory } from "./useLoadChatHistory";
 
 // ── helpers ───────────────────────────────────────────────────────────────────

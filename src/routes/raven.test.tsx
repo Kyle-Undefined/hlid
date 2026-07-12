@@ -7,6 +7,7 @@ const state = vi.hoisted(() => ({
 	search: {} as Record<string, unknown>,
 	navigate: vi.fn(),
 	send: vi.fn(),
+	subscribeToSession: vi.fn(),
 	enqueueChat: vi.fn(),
 	sessionState: "idle" as "idle" | "running" | "error",
 	sessions: [] as unknown[],
@@ -93,6 +94,7 @@ vi.mock("#/hooks/useWsSelectors", () => ({
 vi.mock("#/hooks/wsStore", () => ({
 	subscribeSessionsStatus: () => () => {},
 	getSessionsStatus: () => state.sessions,
+	subscribeToSession: state.subscribeToSession,
 	enqueueChat: state.enqueueChat,
 	removeFromQueue: vi.fn(),
 	promoteQueued: vi.fn(),
@@ -101,16 +103,24 @@ vi.mock("#/hooks/wsStore", () => ({
 	clearMessageBuffer: vi.fn(),
 	clearChatQueue: vi.fn(),
 }));
-vi.mock("#/lib/serverFns", () => ({
+vi.mock("#/lib/serverFns/sessions", () => ({
 	ensureSessionFn: vi.fn(),
-	getAgentListFn: vi.fn(),
-	getCockpitData: vi.fn(),
 	getCurrentSessionFn: vi.fn(),
 	getLiveSessionsFn: vi.fn(),
-	getProvidersFn: vi.fn(),
 	getSessionAgentCwdFn: vi.fn(),
-	getVoiceInfoFn: vi.fn(),
+}));
+vi.mock("#/lib/serverFns/agents", () => ({
+	getAgentListFn: vi.fn(),
+}));
+vi.mock("#/lib/serverFns/cockpit", () => ({
+	getCockpitData: vi.fn(),
+}));
+vi.mock("#/lib/serverFns/providers", () => ({
+	getProvidersFn: vi.fn(),
 	loadProviderUsages: vi.fn(),
+}));
+vi.mock("#/lib/serverFns/voice", () => ({
+	getVoiceInfoFn: vi.fn(),
 }));
 
 import { ChatPage } from "./raven";
@@ -154,6 +164,26 @@ beforeEach(() => {
 });
 
 describe("Raven composed submission behavior", () => {
+	it("binds a database transcript to its matching live pool session", () => {
+		state.loaderData = {
+			...state.loaderData,
+			existingSessionId: "db-session",
+			isExplicitSession: true,
+		};
+		state.sessions = [
+			{
+				session_id: "pool-session",
+				db_session_id: "db-session",
+				mode: "chat",
+				state: "running",
+			},
+		];
+
+		render(<ChatPage />);
+
+		expect(state.subscribeToSession).toHaveBeenCalledWith("pool-session");
+	});
+
 	it("sends an idle message through the WebSocket boundary", () => {
 		render(<ChatPage />);
 		fireEvent.change(screen.getByRole("combobox"), {

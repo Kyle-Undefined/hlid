@@ -12,7 +12,7 @@ import { PullToRefreshIndicator } from "#/components/PullToRefreshIndicator";
 import { UpdateBanner } from "#/components/UpdateBanner";
 import * as privacyStore from "#/hooks/privacyStore";
 import { usePullToRefresh } from "#/hooks/usePullToRefresh";
-import { logClientErrorFn } from "#/lib/serverFns";
+import { logClientErrorFn } from "#/lib/serverFns/logging";
 
 import appCss from "../styles.css?url";
 

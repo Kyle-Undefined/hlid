@@ -233,6 +233,25 @@ function promoteUser(
 	];
 }
 
+/**
+ * Replace the message matching id+role via `patch`. Returns the original
+ * array (same reference, no re-render) when nothing matched.
+ */
+function patchMessage<R extends ChatMessage["role"]>(
+	state: ChatMessage[],
+	id: string,
+	role: R,
+	patch: (message: Extract<ChatMessage, { role: R }>) => ChatMessage,
+): ChatMessage[] {
+	let touched = false;
+	const next = state.map((message) => {
+		if (message.id !== id || message.role !== role) return message;
+		touched = true;
+		return patch(message as Extract<ChatMessage, { role: R }>);
+	});
+	return touched ? next : state;
+}
+
 function historyItemToMessage(item: HistoryItem): ChatMessage {
 	if (item.kind === "ask_user_question") {
 		return {
@@ -340,16 +359,15 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 			return [...state, placeholder];
 		}
 		case "APPEND_CHUNK":
-			return state.map((m) => {
-				if (m.id !== action.id || m.role !== "assistant") return m;
-				return { ...m, text: m.text + action.text };
-			});
+			return patchMessage(state, action.id, "assistant", (m) => ({
+				...m,
+				text: m.text + action.text,
+			}));
 		case "ADD_TOOL_EVENT":
-			return state.map((m) =>
-				m.id === action.id && m.role === "assistant"
-					? { ...m, toolEvents: [...m.toolEvents, action.event] }
-					: m,
-			);
+			return patchMessage(state, action.id, "assistant", (m) => ({
+				...m,
+				toolEvents: [...m.toolEvents, action.event],
+			}));
 		case "ADD_TOOL_RESULT": {
 			let matched = false;
 			const next = state.map((m) => {
@@ -382,23 +400,13 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 				},
 			];
 		case "ADD_PLAN_PROPOSAL": {
-			const existing = state.find(
-				(m) => m.id === action.id && m.role === "plan_proposal",
-			);
-			if (existing) {
-				return state.map((m) =>
-					m.id === action.id && m.role === "plan_proposal"
-						? {
-								...m,
-								plan: action.plan,
-								decision: "pending",
-								...(action.htmlRelicId
-									? { htmlRelicId: action.htmlRelicId }
-									: {}),
-							}
-						: m,
-				);
-			}
+			const patched = patchMessage(state, action.id, "plan_proposal", (m) => ({
+				...m,
+				plan: action.plan,
+				decision: "pending",
+				...(action.htmlRelicId ? { htmlRelicId: action.htmlRelicId } : {}),
+			}));
+			if (patched !== state) return patched;
 			return [
 				...state,
 				{
@@ -410,29 +418,22 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 				},
 			];
 		}
-		case "RESOLVE_PLAN_PROPOSAL": {
-			const exists = state.some(
-				(m) => m.id === action.id && m.role === "plan_proposal",
-			);
-			if (!exists) return state;
-			return state.map((m) =>
-				m.id === action.id && m.role === "plan_proposal"
-					? { ...m, decision: action.decision }
-					: m,
-			);
-		}
+		case "RESOLVE_PLAN_PROPOSAL":
+			return patchMessage(state, action.id, "plan_proposal", (m) => ({
+				...m,
+				decision: action.decision,
+			}));
 		case "DONE":
-			return state.map((m) =>
-				m.id === action.id && m.role === "assistant"
-					? { ...m, streaming: false, cost: action.cost }
-					: m,
-			);
+			return patchMessage(state, action.id, "assistant", (m) => ({
+				...m,
+				streaming: false,
+				cost: action.cost,
+			}));
 		case "SET_RECAP":
-			return state.map((m) =>
-				m.id === action.id && m.role === "assistant"
-					? { ...m, recap: action.recap }
-					: m,
-			);
+			return patchMessage(state, action.id, "assistant", (m) => ({
+				...m,
+				recap: action.recap,
+			}));
 		case "ADD_PERMISSION":
 			return [
 				...state,
@@ -448,22 +449,16 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 				},
 			];
 		case "RESOLVE_PERMISSION":
-			return state.map((m) =>
-				m.id === action.id && m.role === "permission"
-					? { ...m, decision: action.decision }
-					: m,
-			);
+			return patchMessage(state, action.id, "permission", (m) => ({
+				...m,
+				decision: action.decision,
+			}));
 		case "RESOLVE_OR_ADD_PERMISSION": {
-			const exists = state.some(
-				(m) => m.id === action.id && m.role === "permission",
-			);
-			if (exists) {
-				return state.map((m) =>
-					m.id === action.id && m.role === "permission"
-						? { ...m, decision: action.decision }
-						: m,
-				);
-			}
+			const patched = patchMessage(state, action.id, "permission", (m) => ({
+				...m,
+				decision: action.decision,
+			}));
+			if (patched !== state) return patched;
 			return [
 				...state,
 				{
@@ -498,15 +493,11 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 			];
 		}
 		case "RESOLVE_ASK_USER_QUESTION":
-			return state.map((m) =>
-				m.id === action.id && m.role === "ask_user_question"
-					? {
-							...m,
-							answers: action.answers,
-							...(action.notes !== undefined ? { notes: action.notes } : {}),
-						}
-					: m,
-			);
+			return patchMessage(state, action.id, "ask_user_question", (m) => ({
+				...m,
+				answers: action.answers,
+				...(action.notes !== undefined ? { notes: action.notes } : {}),
+			}));
 		case "CLEAR":
 			return [];
 		default:

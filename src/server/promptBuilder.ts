@@ -1,5 +1,6 @@
-import { existsSync, realpathSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { realpathSync } from "node:fs";
+import { resolve } from "node:path";
+import { findAgentInstructionFile } from "../lib/agentInstructions";
 import { pathStartsWith, toLogical } from "../lib/paths";
 import type { ChatAttachment } from "./protocol";
 
@@ -119,12 +120,13 @@ export function buildPrompt(opts: BuildPromptOptions): {
 	// messageSeq > 0 but claudeSessionId is still null). This guarantees
 	// the persona lands on the very turn that establishes the CLI-side
 	// session that subsequent turns will resume.
+	const instructionFile =
+		agentMode === "context" && agentCwd && claudeSessionId === null
+			? findAgentInstructionFile(agentCwd)
+			: null;
 	const personaBlock =
-		agentMode === "context" &&
-		agentCwd &&
-		claudeSessionId === null &&
-		existsSync(join(agentCwd, "CLAUDE.md"))
-			? `Please read \`${toLogical(agentCwd)}/CLAUDE.md\` and adopt its persona/instructions for this conversation.\n\n`
+		agentCwd && instructionFile
+			? `Please read \`${toLogical(agentCwd)}/${instructionFile}\` and adopt its persona/instructions for this conversation.\n\n`
 			: "";
 	const planHtmlBlock = planHtmlInstructions
 		? `\n\n${planHtmlInstructions}`

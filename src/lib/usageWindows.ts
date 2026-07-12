@@ -108,6 +108,8 @@ export function applyRateLimitToSnapshot(
 				? {
 						...window,
 						utilization,
+						remaining: rateLimit.remaining ?? window.remaining,
+						limit: rateLimit.limit ?? window.limit,
 						resetsAt: rateLimit.resetsAt ?? window.resetsAt,
 					}
 				: window,

@@ -47,6 +47,8 @@ export function ProviderUsageStrip({
 		() => snapshots.map((snapshot) => snapshot.providerId),
 		[snapshots],
 	);
+	const providerIdsRef = useRef(providerIds);
+	providerIdsRef.current = providerIds;
 	const [activeProvider, setActiveProvider] = useState(() =>
 		initialProvider(providerIds),
 	);
@@ -102,10 +104,17 @@ export function ProviderUsageStrip({
 		setSnapshots((previous) =>
 			previous.map((snapshot) => applyRateLimitToSnapshot(snapshot, rateLimit)),
 		);
-		if (rateLimit.providerId && providerIds.includes(rateLimit.providerId)) {
+		if (
+			rateLimit.providerId &&
+			providerIdsRef.current.includes(rateLimit.providerId)
+		) {
 			setActiveProvider(rateLimit.providerId);
 		}
-	}, [rateLimit, providerIds]);
+		// Re-read the authoritative query cost/token totals after the provider
+		// window event. The server persists structured window data before done,
+		// so this single refresh keeps every figure in the cell coherent.
+		refreshRef.current();
+	}, [rateLimit]);
 
 	const selectProvider = (providerId: string) => {
 		setActiveProvider(providerId);
@@ -113,7 +122,7 @@ export function ProviderUsageStrip({
 	};
 
 	return (
-		<div className="border-b border-border shrink-0">
+		<div className="border-b border-border shrink-0 overflow-hidden">
 			{snapshots.length > 1 && (
 				<div className="flex items-center gap-1 px-3 pt-1.5 pb-0 border-b border-border/30">
 					{snapshots.map((snapshot) => (

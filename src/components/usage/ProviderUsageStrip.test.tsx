@@ -42,6 +42,35 @@ afterEach(() => {
 });
 
 describe("ProviderUsageStrip polling", () => {
+	it("refreshes authoritative totals when a live window reading arrives", () => {
+		const fetchFn = vi.fn().mockResolvedValue(initial);
+		const view = render(
+			<ProviderUsageStrip
+				initial={initial}
+				liveQueryCount={0}
+				rateLimit={null}
+				fetchFn={fetchFn}
+			/>,
+		);
+
+		view.rerender(
+			<ProviderUsageStrip
+				initial={initial}
+				liveQueryCount={0}
+				rateLimit={{
+					type: "rate_limit",
+					status: "allowed",
+					providerId: "claude",
+					rateLimitType: "five_hour",
+					utilization: 0.2,
+				}}
+				fetchFn={fetchFn}
+			/>,
+		);
+
+		expect(fetchFn).toHaveBeenCalledOnce();
+	});
+
 	it("refreshes every minute while the page is visible", () => {
 		const fetchFn = renderStrip();
 

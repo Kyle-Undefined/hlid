@@ -358,6 +358,23 @@ describe("applyReading", () => {
 		expect(getWindowMark("ar", "first_call")?.utilization).toBeCloseTo(0.5);
 		expect(db.saveSetting).toHaveBeenCalledOnce();
 		expect(broadcast).toHaveBeenCalledOnce();
+		expect(broadcast).toHaveBeenCalledWith(
+			expect.objectContaining({
+				remaining: undefined,
+				limit: undefined,
+			}),
+		);
+	});
+
+	it("broadcasts remaining and limit with a structured window reading", () => {
+		vi.mocked(broadcast).mockClear();
+		void applyReading(
+			"ar",
+			makeReading({ windowId: "full_reading", remaining: 240, limit: 1_000 }),
+		);
+		expect(broadcast).toHaveBeenCalledWith(
+			expect.objectContaining({ remaining: 240, limit: 1_000 }),
+		);
 	});
 
 	it("lower utilization replaces higher within same window (external reset)", () => {

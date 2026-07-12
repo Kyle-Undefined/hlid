@@ -512,7 +512,25 @@ describe("message — subscribe_session", () => {
 		expect(calls.some((c) => c[1].type === "chunk")).toBe(true);
 	});
 
-	it("falls back to vault when session_id not found", async () => {
+	it("resolves a database session id to its live pool entry", async () => {
+		const vault = makeEntry("vault-id");
+		const other = makeEntry("other-id");
+		const pool = makePool(vault);
+		pool.get.mockImplementation((id: string) =>
+			id === "vault-id" ? vault : undefined,
+		);
+		pool.findByDbSessionId.mockReturnValue(other);
+		const { message } = createWsHandlers(pool);
+		const ws = makeWs("vault-id");
+		await message(
+			ws as never,
+			JSON.stringify({ type: "subscribe_session", session_id: "db-id" }),
+		);
+		expect(other.runState.addSubscriber).toHaveBeenCalledWith(ws);
+		expect(ws.data.subscribedSessionId).toBe("other-id");
+	});
+
+	it("detaches from live sessions when session_id is not found", async () => {
 		const vault = makeEntry("vault-id");
 		const pool = makePool(vault);
 		pool.get.mockReturnValue(undefined);
@@ -522,8 +540,12 @@ describe("message — subscribe_session", () => {
 			ws as never,
 			JSON.stringify({ type: "subscribe_session", session_id: "ghost-id" }),
 		);
-		expect(vault.runState.addSubscriber).toHaveBeenCalledWith(ws);
-		expect(ws.data.subscribedSessionId).toBe("vault-id");
+		expect(vault.runState.addSubscriber).not.toHaveBeenCalled();
+		expect(ws.data.subscribedSessionId).toBe("ghost-id");
+		expect(mockSend).toHaveBeenCalledWith(
+			ws,
+			expect.objectContaining({ type: "status", state: "idle" }),
+		);
 	});
 });
 

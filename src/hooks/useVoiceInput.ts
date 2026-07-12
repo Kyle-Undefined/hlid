@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { HlidConfig } from "#/config";
-import { getVoiceInfoFn, type VoiceInfo } from "#/lib/serverFns";
+import { getVoiceInfoFn, type VoiceInfo } from "#/lib/serverFns/voice";
 import { matchesVoiceHotkey } from "#/lib/voiceHotkey";
 
 type VoicePhase = "idle" | "recording" | "transcribing" | "error";

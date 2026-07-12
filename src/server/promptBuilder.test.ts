@@ -227,6 +227,43 @@ describe("buildPrompt — context mode persona", () => {
 		}
 	});
 
+	it("injects AGENTS.md when it is the available context instruction file", () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "agent-ctx-agents-"));
+		writeFileSync(join(agentDir, "AGENTS.md"), "# Persona");
+		try {
+			const { prompt } = buildPrompt(
+				base({
+					agentMode: "context",
+					agentCwd: agentDir,
+					claudeSessionId: null,
+				}),
+			);
+			expect(prompt).toContain("AGENTS.md");
+			expect(prompt).toContain("adopt its persona");
+		} finally {
+			rmSync(agentDir, { recursive: true, force: true });
+		}
+	});
+
+	it("prefers AGENTS.md when both context instruction files exist", () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "agent-ctx-both-"));
+		writeFileSync(join(agentDir, "AGENTS.md"), "# Generic persona");
+		writeFileSync(join(agentDir, "CLAUDE.md"), "# Existing persona");
+		try {
+			const { prompt } = buildPrompt(
+				base({
+					agentMode: "context",
+					agentCwd: agentDir,
+					claudeSessionId: null,
+				}),
+			);
+			expect(prompt).toContain("AGENTS.md");
+			expect(prompt).not.toContain("CLAUDE.md");
+		} finally {
+			rmSync(agentDir, { recursive: true, force: true });
+		}
+	});
+
 	it("skips persona preamble when claudeSessionId is set (resume = already established)", () => {
 		const agentDir = mkdtempSync(join(tmpdir(), "agent-ctx-resume-"));
 		writeFileSync(join(agentDir, "CLAUDE.md"), "# Persona");
@@ -244,7 +281,7 @@ describe("buildPrompt — context mode persona", () => {
 		}
 	});
 
-	it("skips persona preamble when CLAUDE.md does not exist", () => {
+	it("skips persona preamble when no instruction file exists", () => {
 		const agentDir = mkdtempSync(join(tmpdir(), "agent-no-claude-md-"));
 		try {
 			const { prompt } = buildPrompt(

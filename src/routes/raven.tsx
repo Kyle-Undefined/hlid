@@ -48,17 +48,16 @@ import {
 } from "#/lib/composer";
 import { deriveModelMismatch, fmtModel } from "#/lib/formatters";
 import { modelOptions, resolveActiveProviderId } from "#/lib/providerOptions";
+import { getAgentListFn } from "#/lib/serverFns/agents";
+import { getCockpitData } from "#/lib/serverFns/cockpit";
+import { getProvidersFn, loadProviderUsages } from "#/lib/serverFns/providers";
 import {
 	ensureSessionFn,
-	getAgentListFn,
-	getCockpitData,
 	getCurrentSessionFn,
 	getLiveSessionsFn,
-	getProvidersFn,
 	getSessionAgentCwdFn,
-	getVoiceInfoFn,
-	loadProviderUsages,
-} from "#/lib/serverFns";
+} from "#/lib/serverFns/sessions";
+import { getVoiceInfoFn } from "#/lib/serverFns/voice";
 import { resolveSkillPrompt } from "#/lib/skillPrompt";
 import type { Skill } from "#/lib/skills";
 import { uid } from "#/lib/utils";
@@ -229,6 +228,15 @@ function useRavenSessionIdentity({
 	useEffect(() => {
 		sessionIdRef.current = sessionId;
 	}, [sessionId]);
+
+	useEffect(() => {
+		if (!sessionId || interactiveMode) return;
+		const liveSession = sessionsStatus.find(
+			(session) =>
+				session.session_id === sessionId || session.db_session_id === sessionId,
+		);
+		wsStore.subscribeToSession(liveSession?.session_id ?? sessionId);
+	}, [interactiveMode, sessionId, sessionsStatus]);
 
 	useEffect(() => {
 		if (!interactiveMode || existingSessionId || sessionId) return;
@@ -1004,7 +1012,7 @@ interface ChatPageContentProps {
 function ChatPageContent(props: ChatPageContentProps) {
 	const { initialProviderUsages, liveStats, rateLimit, composerProps } = props;
 	return (
-		<div className="h-full flex flex-col">
+		<div className="h-full min-h-0 flex flex-col overflow-hidden">
 			<ProviderUsageStrip
 				initial={initialProviderUsages}
 				liveQueryCount={liveStats?.queries ?? 0}
@@ -1089,7 +1097,7 @@ function RavenMessagePane({
 			{!interactiveMode && (
 				<div
 					ref={scrollRef}
-					className="flex-1 overflow-y-auto overflow-x-hidden"
+					className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden"
 				>
 					<div className="min-h-full flex flex-col justify-end px-5 pt-2 pb-7 min-w-0">
 						{messages.length === 0 ? (
@@ -1393,7 +1401,7 @@ function ChatInputControls(props: ChatComposerProps) {
 	const { uploadFiles } = upload;
 	const { fileInputRef } = viewport;
 	return (
-		<div className="flex items-start">
+		<div className="flex min-w-0 items-start">
 			<span className="text-primary text-sm px-4 py-3 shrink-0 select-none">
 				›
 			</span>
@@ -1563,7 +1571,7 @@ function ChatTextarea(props: ChatComposerProps) {
 					isRunning,
 				)}
 				disabled={wsStatus !== "connected" || voice.phase === "transcribing"}
-				className={`flex-1 resize-none bg-transparent py-3 pr-2 text-sm text-foreground focus:outline-none disabled:opacity-30 overflow-y-hidden min-h-[60px] md:min-h-[120px] ${wsStatus !== "connected" ? "placeholder:text-foreground/50" : "placeholder:text-muted-foreground/35"}`}
+				className={`flex-1 min-w-0 resize-none bg-transparent py-3 pr-2 text-sm text-foreground focus:outline-none disabled:opacity-30 overflow-y-hidden min-h-[60px] md:min-h-[120px] ${wsStatus !== "connected" ? "placeholder:text-foreground/50" : "placeholder:text-muted-foreground/35"}`}
 			/>
 			<span className="sr-only" aria-live="polite">
 				{voiceAnnouncement(voice)}
@@ -1586,7 +1594,7 @@ function ChatActionButtons({
 				<button
 					type="button"
 					onClick={() => send({ type: "abort" })}
-					className="px-4 py-3 text-[10px] tracking-widest text-destructive/70 hover:text-destructive transition-colors shrink-0 uppercase font-bold"
+					className="px-2.5 md:px-4 py-3 text-[10px] tracking-widest text-destructive/70 hover:text-destructive transition-colors shrink-0 uppercase font-bold"
 					aria-label="Abort"
 				>
 					STOP
@@ -1597,7 +1605,7 @@ function ChatActionButtons({
 					type="button"
 					onClick={() => handleSend()}
 					disabled={!canQueue}
-					className="px-4 py-3 text-[10px] tracking-widest text-primary/70 hover:text-primary disabled:text-muted-foreground/35 transition-colors shrink-0 uppercase font-bold"
+					className="px-2.5 md:px-4 py-3 text-[10px] tracking-widest text-primary/70 hover:text-primary disabled:text-muted-foreground/35 transition-colors shrink-0 uppercase font-bold"
 					aria-label="Queue message"
 				>
 					QUEUE

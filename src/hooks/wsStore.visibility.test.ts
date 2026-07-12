@@ -61,15 +61,17 @@ describe("wsStore — visibilitychange reconnect", () => {
 		expect(wsStore.getSnapshot().wsStatus).toBe("connecting");
 	});
 
-	it("does NOT create a new WebSocket if WS is already open", () => {
+	it("recreates an apparently open WebSocket when the page resumes", () => {
 		// First visibility event: connect() fires → mockWs (readyState=OPEN) assigned
 		setVisibility("visible");
 		expect(wsCtorSpy).toHaveBeenCalledOnce();
+		const firstSocket = wsCtorSpy.mock.results[0].value;
 
-		// Second visibility event: WS is OPEN → connect() guard returns early
+		// Second visibility event: mobile may report OPEN for a dead socket.
 		wsCtorSpy.mockClear();
 		setVisibility("visible");
-		expect(wsCtorSpy).not.toHaveBeenCalled();
+		expect(firstSocket.close).toHaveBeenCalled();
+		expect(wsCtorSpy).toHaveBeenCalledOnce();
 	});
 
 	it("does nothing when page becomes hidden", () => {

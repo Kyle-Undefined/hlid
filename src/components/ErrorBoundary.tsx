@@ -1,5 +1,5 @@
 import { Component, type ReactNode } from "react";
-import { logClientErrorFn } from "#/lib/serverFns";
+import { logClientErrorFn } from "#/lib/serverFns/logging";
 
 // ─── Shared fallback UI ───────────────────────────────────────────────────────
 

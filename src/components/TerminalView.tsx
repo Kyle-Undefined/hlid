@@ -13,6 +13,30 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useEffect, useRef, useState } from "react";
+import { TerminalExitedOverlay } from "./TerminalExitedOverlay";
+
+/**
+ * Builds the /ws/terminal URL. Same-origin (proxy routes to backend) under
+ * HTTPS; explicit backend port (frontend port + 1) in plain HTTP dev mode.
+ */
+function buildTerminalWsUrl(
+	sessionId: string,
+	cwd: string,
+	cols: number,
+	rows: number,
+): URL {
+	const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
+	const wsBase =
+		location.protocol === "https:"
+			? `${wsProto}//${location.host}/ws/terminal`
+			: `${wsProto}//${location.hostname}:${Number(location.port) + 1}/ws/terminal`;
+	const url = new URL(wsBase);
+	url.searchParams.set("session_id", sessionId);
+	url.searchParams.set("cwd", cwd);
+	url.searchParams.set("cols", String(cols));
+	url.searchParams.set("rows", String(rows));
+	return url;
+}
 
 export interface TerminalViewProps {
 	sessionId: string;
@@ -80,21 +104,7 @@ export function TerminalView({
 		const cols = dims.cols ?? 80;
 		const rows = dims.rows ?? 24;
 
-		// Build WS URL
-		// When behind TLS proxy (HTTPS), use same-origin so the proxy can route
-		// /ws/terminal → backend WS port. In plain HTTP dev mode, WS backend
-		// sits on port+1 (e.g. 3001 when Vite is on 3000).
-		const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
-		const wsBase =
-			location.protocol === "https:"
-				? `${wsProto}//${location.host}/ws/terminal`
-				: `${wsProto}//${location.hostname}:${Number(location.port) + 1}/ws/terminal`;
-		const url = new URL(wsBase);
-		url.searchParams.set("session_id", sessionId);
-		url.searchParams.set("cwd", cwd);
-		url.searchParams.set("cols", String(cols));
-		url.searchParams.set("rows", String(rows));
-
+		const url = buildTerminalWsUrl(sessionId, cwd, cols, rows);
 		const ws = new WebSocket(url.toString());
 		ws.binaryType = "arraybuffer";
 		wsRef.current = ws;
@@ -177,27 +187,7 @@ export function TerminalView({
 				style={{ background: "#0d0d0d" }}
 			/>
 			{exited && (
-				<div className="absolute inset-0 flex items-center justify-center bg-black/60">
-					<div className="rounded-lg border border-stone-700 bg-stone-900 px-6 py-4 text-center">
-						<p className="text-sm text-stone-300">Session ended</p>
-						<p className="mt-1 text-xs text-stone-500">
-							{exited.wsError
-								? "Could not connect to terminal server."
-								: exited.code !== undefined
-									? `Claude CLI exited (code ${exited.code}).`
-									: "The Claude CLI process has exited."}
-						</p>
-						{onNewSession && (
-							<button
-								type="button"
-								onClick={onNewSession}
-								className="mt-3 rounded border border-stone-600 bg-stone-800 px-3 py-1.5 text-xs text-stone-300 hover:border-stone-500 hover:bg-stone-700 hover:text-stone-100 transition-colors"
-							>
-								New Session
-							</button>
-						)}
-					</div>
-				</div>
+				<TerminalExitedOverlay exited={exited} onNewSession={onNewSession} />
 			)}
 		</div>
 	);

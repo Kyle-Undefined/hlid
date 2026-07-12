@@ -68,6 +68,8 @@ export type RateLimitMessage = {
 	status: string;
 	rateLimitType?: string;
 	utilization?: number | null;
+	remaining?: number | null;
+	limit?: number | null;
 	resetsAt?: number | null;
 	/** Provider that emitted this rate-limit event, e.g. "claude". */
 	providerId?: string;

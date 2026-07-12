@@ -56,14 +56,14 @@ export function updateWindowMark(
 export function applyReading(
 	providerId: string,
 	reading: ProviderWindowReading,
-): void {
+): Promise<void> {
 	const key = markKey(providerId, reading.windowId);
 	const current = windowHighMark.get(key);
 	const newWindow = !current || current.resetsAt !== reading.resetsAt;
 
 	// Skip pure no-data events within an unchanged window.
 	if (!newWindow && reading.utilization == null && reading.remaining == null)
-		return;
+		return Promise.resolve();
 
 	const next: WindowMark = {
 		utilization: reading.utilization,
@@ -74,7 +74,7 @@ export function applyReading(
 
 	// DB write fires on every valid reading — single INSERT OR REPLACE on a
 	// fixed settings row; negligible overhead relative to a proxy round-trip.
-	void db.saveSetting(
+	const persisted = db.saveSetting(
 		dbSettingKey(providerId, reading.windowId),
 		JSON.stringify({
 			utilization: reading.utilization,
@@ -92,16 +92,19 @@ export function applyReading(
 		current.utilization !== next.utilization ||
 		current.remaining !== next.remaining ||
 		current.resetsAt !== next.resetsAt;
-	if (!changed) return;
+	if (!changed) return persisted;
 
 	broadcast({
 		type: "rate_limit",
 		status: "allowed",
 		rateLimitType: reading.windowId,
 		utilization: reading.utilization ?? undefined,
+		remaining: reading.remaining ?? undefined,
+		limit: reading.limit ?? undefined,
 		resetsAt: reading.resetsAt ?? undefined,
 		providerId,
 	});
+	return persisted;
 }
 
 /** Seed in-memory high-water marks from DB on cold start. */
@@ -164,7 +167,7 @@ export async function startProviderProxy(
 					return new Response("upstream error", { status: 502 });
 				}
 				const readings = proxyConfig.parseHeaders(upstream.headers);
-				for (const r of readings) applyReading(provider.providerId, r);
+				for (const r of readings) void applyReading(provider.providerId, r);
 				const responseHeaders = new Headers(upstream.headers);
 				responseHeaders.delete("content-encoding");
 				responseHeaders.delete("content-length");

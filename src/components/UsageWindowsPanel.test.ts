@@ -291,6 +291,8 @@ describe("mergeProviderSnapshot", () => {
 			providerId: "claude",
 			rateLimitType: "weekly",
 			utilization: 0.75,
+			remaining: 250,
+			limit: 1_000,
 			resetsAt: FUTURE_FAR,
 		};
 
@@ -298,6 +300,8 @@ describe("mergeProviderSnapshot", () => {
 			applyRateLimitToSnapshot(claude, rateLimit).windows[0],
 		).toMatchObject({
 			utilization: 0.75,
+			remaining: 250,
+			limit: 1_000,
 			resetsAt: FUTURE_FAR,
 		});
 		expect(applyRateLimitToSnapshot(codex, rateLimit)).toBe(codex);

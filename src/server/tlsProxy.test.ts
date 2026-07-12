@@ -237,4 +237,36 @@ describe("TLS HTTP proxy limits", () => {
 		expect(response.status).toBe(503);
 		expect(await response.text()).toBe("Service Unavailable");
 	});
+
+	it("keeps the Tailscale voice forward alive beyond the default timeout", async () => {
+		vi.useFakeTimers();
+		try {
+			let resolveForward: ((response: Response) => void) | undefined;
+			let forwardedSignal: AbortSignal | undefined;
+			const forward = vi.fn(
+				(_input: string, init: RequestInit) =>
+					new Promise<Response>((resolve, reject) => {
+						resolveForward = resolve;
+						forwardedSignal = init.signal ?? undefined;
+						forwardedSignal?.addEventListener("abort", () =>
+							reject(forwardedSignal?.reason),
+						);
+					}),
+			);
+			const pending = forwarder({ forward })(
+				request("/api/voice/transcribe", "audio"),
+			);
+			await vi.waitFor(() => expect(forward).toHaveBeenCalledOnce());
+
+			await vi.advanceTimersByTimeAsync(60_000);
+			expect(forwardedSignal?.aborted).toBe(false);
+			resolveForward?.(Response.json({ text: "done" }));
+
+			const response = await pending;
+			expect(response.status).toBe(200);
+			expect(await response.json()).toEqual({ text: "done" });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });

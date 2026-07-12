@@ -16,6 +16,9 @@ type WsData = {
 const MAX_WS_QUEUE = 100;
 const MAX_BUFFERED_FORWARDS = 16;
 export const MAX_TLS_PUBLIC_BODY_BYTES = 2 * 1024;
+const DEFAULT_FORWARD_TIMEOUT_MS = 30_000;
+const VOICE_FORWARD_TIMEOUT_MS = 70_000;
+const TLS_IDLE_TIMEOUT_SECONDS = 75;
 
 const SKIP_REQ = new Set([
 	"host",
@@ -83,9 +86,10 @@ async function forwardRequest(
 	forward: NonNullable<HttpForwarderOptions["forward"]>,
 	input: string,
 	init: RequestInit,
+	timeoutMs: number,
 ): Promise<Response> {
 	const controller = new AbortController();
-	const timeoutId = setTimeout(() => controller.abort(), 30_000);
+	const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 	try {
 		return await forward(input, { ...init, signal: controller.signal });
 	} catch (error) {
@@ -151,6 +155,9 @@ export function createTlsHttpForwarder({
 					headers: buildForwardHeaders(req, peerIp, internalToken),
 					body,
 				},
+				url.pathname === "/api/voice/transcribe"
+					? VOICE_FORWARD_TIMEOUT_MS
+					: DEFAULT_FORWARD_TIMEOUT_MS,
 			);
 			return proxyResponse(upstream);
 		} finally {
@@ -185,7 +192,9 @@ export function startTlsProxy(
 		Bun.serve<WsData>({
 			port: tlsPort,
 			hostname: bindHost,
-			idleTimeout: 35,
+			// Local Whisper may legitimately take up to 60 seconds. Keep the public
+			// Tailscale connection alive long enough to return that response.
+			idleTimeout: TLS_IDLE_TIMEOUT_SECONDS,
 			maxRequestBodySize: maxBodyBytes,
 			tls: {
 				cert: Bun.file(certPath),

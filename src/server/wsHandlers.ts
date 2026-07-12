@@ -122,7 +122,25 @@ function handleSubscribeSession(
 ): void {
 	ws.data.pendingNewSession = false;
 	pool.get(ws.data.subscribedSessionId)?.runState.removeSubscriber(ws);
-	const entry = pool.get(msg.session_id) ?? pool.vaultEntry();
+	const entry =
+		pool.get(msg.session_id) ?? pool.findByDbSessionId(msg.session_id);
+	if (!entry) {
+		// Keep archived/unknown DB sessions detached from every live pool entry.
+		// Falling back to the vault here leaks the vault's in-flight events into
+		// whichever transcript Raven is displaying.
+		ws.data.subscribedSessionId = msg.session_id;
+		send(ws, {
+			type: "status",
+			state: "idle",
+			model: pool.vaultEntry().manager.getStatus().model,
+		});
+		send(ws, {
+			type: "queue_state",
+			pending_turn_ids: [],
+			running_turn_id: null,
+		});
+		return;
+	}
 	entry.runState.addSubscriber(ws);
 	ws.data.subscribedSessionId = entry.sessionId;
 	send(ws, { type: "status", ...entry.manager.getStatus() });

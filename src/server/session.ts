@@ -16,6 +16,7 @@ import type {
 	AgentProvider,
 	AgentQueryParams,
 	AgentSession,
+	AgentToolDecision,
 	CanUseTool,
 	McpServerStatus,
 	ProviderAccountInfo,
@@ -1178,6 +1179,9 @@ export class SessionManager {
 						.catch(() => {});
 				}
 			}
+			if (event.type === "done") {
+				await this.refreshProviderUsage(session, provider);
+			}
 			if (
 				await this.handleConversationEvent(
 					event,
@@ -1369,252 +1373,321 @@ export class SessionManager {
 			new Promise((resolve) => {
 				const passInput = input as Record<string, unknown>;
 				if (toolName === "AskUserQuestion") {
-					const { questions } = parseAskUserQuestion(passInput, title);
-					const request = {
-						type: "ask_user_question" as const,
-						id: toolUseID,
-						questions,
-					};
-					if (sessionId) {
-						void db
-							.appendAskUserQuestion(
-								sessionId,
-								toolUseID,
-								this.messageSeq++,
-								JSON.stringify(questions),
-							)
-							.catch((error) => logDbError("appendAskUserQuestion", error));
-					} else {
-						this.messageSeq++;
-					}
-					this.askUserQuestions.register(
+					this.interceptAskUserQuestion(
+						passInput,
 						toolUseID,
-						request,
-						(answers, notes) => {
-							const existing =
-								(passInput.answers as Record<string, string>) ?? {};
-							const sdkAnswers: Record<string, string> = { ...existing };
-							for (const [question, picks] of Object.entries(answers)) {
-								const note = notes?.[question]?.trim();
-								sdkAnswers[question] = note
-									? `${picks.join(", ")}\n\nNotes: ${note}`
-									: picks.join(", ");
-							}
-							resolve({
-								behavior: "allow",
-								updatedInput: { ...passInput, answers: sdkAnswers },
-							});
-						},
+						title,
+						sessionId,
+						emit,
+						resolve,
 					);
-					emit(request);
 					return;
 				}
-
-				// Plan-mode HTML handoff: the agent is instructed to write its plan
-				// document to exactly this.planHtmlPath, so that one write is
-				// pre-approved (plan mode otherwise routes writes through the
-				// permission card).
-				if (
-					this.planHtmlPath &&
-					(toolName === "Write" || toolName === "Edit") &&
-					typeof passInput.file_path === "string" &&
-					(resolvePath(passInput.file_path) === this.planHtmlPath ||
-						passInput.file_path === toLogical(this.planHtmlPath))
-				) {
+				if (this.isPreApprovedPlanWrite(toolName, passInput)) {
 					resolve({ behavior: "allow", updatedInput: passInput });
 					return;
 				}
-
 				if (toolName === "ExitPlanMode") {
-					const planText =
-						typeof passInput.plan === "string"
-							? passInput.plan
-							: JSON.stringify(passInput.plan ?? "");
-					const planSeq = this.messageSeq++;
-					// Keep Raven visibly active while the HTML artifact is validated,
-					// copied, linked, and persisted before the proposal can be shown.
-					emit({
-						type: "status",
-						state: "running",
-						model: this.model,
-						permission_mode: this.permissionMode,
-						...(this.currentTurnId !== undefined
-							? { turn_id: this.currentTurnId }
-							: {}),
-					});
-					void (async () => {
-						let htmlRelicId: string | null = null;
-						if (this.planHtmlPath && this.planHtmlStorageRoot && sessionId) {
-							htmlRelicId = await ingestPlanHtml({
-								sourcePath: this.planHtmlPath,
-								plansDir: resolvePath(
-									this.planHtmlStorageRoot,
-									".hlid",
-									"plans",
-								),
-								storageRoot: this.planHtmlStorageRoot,
-								sessionId,
-								planSeq,
-								maxBytes: loadConfig().attachments.max_bytes,
-							});
-						}
-						const request = {
-							type: "plan_mode_exit" as const,
-							id: toolUseID,
-							input: passInput,
-							...(htmlRelicId ? { html_relic_id: htmlRelicId } : {}),
-						};
-						if (sessionId) {
-							void db
-								.appendPlanProposal(
-									sessionId,
-									toolUseID,
-									planSeq,
-									planText,
-									"pending",
-									htmlRelicId,
-								)
-								.catch((error) => logDbError("appendPlanProposal", error));
-						}
-						this.planModeManager.register(
-							toolUseID,
-							request,
-							(decision, feedback) => {
-								if (sessionId) {
-									void db
-										.setPlanProposalDecision(sessionId, toolUseID, decision)
-										.catch((error) =>
-											logDbError("setPlanProposalDecision", error),
-										);
-								}
-								if (decision === "approved") {
-									resolve({ behavior: "allow", updatedInput: passInput });
-								} else {
-									resolve({
-										behavior: "deny",
-										message:
-											decision === "edited"
-												? `User requested changes to the plan:\n\n${feedback ?? ""}`
-												: "Plan was cancelled by the user.",
-									});
-								}
-							},
-						);
-						// Re-broadcast after registration so pool-wide status includes the
-						// pending plan interaction before the modal event arrives.
-						emit({
-							type: "status",
-							state: "running",
-							model: this.model,
-							permission_mode: this.permissionMode,
-							...(this.currentTurnId !== undefined
-								? { turn_id: this.currentTurnId }
-								: {}),
-						});
-						if (htmlRelicId) {
-							emit({
-								type: "attachment_created",
-								id: htmlRelicId,
-								kind: "ephemeral",
-							});
-						}
-						emit(request);
-					})();
+					this.interceptExitPlanMode(
+						passInput,
+						toolUseID,
+						sessionId,
+						emit,
+						resolve,
+					);
 					return;
 				}
-
-				const request = {
-					type: "permission_request" as const,
-					id: toolUseID,
+				this.resolveToolPermission({
+					provider,
+					activeCwd,
+					sessionId,
+					emit,
 					toolName,
-					title:
-						title ??
-						`${provider.label ?? provider.providerId} wants to use ${toolName}`,
+					toolUseID,
+					title,
 					displayName,
 					description,
-					input: input as Record<string, unknown> | undefined,
-				};
-				let denyMessage: string | undefined;
-				const prompt = (reason?: string) =>
-					new Promise<"allow" | "block">((finish) => {
-						if (this.sessionAllowedTools.has(toolName)) {
-							finish("allow");
-							return;
-						}
-						this.permissions.register(
-							toolUseID,
-							{ ...request, description: reason ?? request.description },
-							(approved, saveScope, customDenyMessage) => {
-								this.permissions.delete(toolUseID);
-								if (!approved) {
-									denyMessage = customDenyMessage;
-									finish("block");
-									return;
-								}
-								if (saveScope === "session")
-									this.sessionAllowedTools.add(toolName);
-								if (saveScope === "local") {
-									try {
-										persistAlwaysAllowedTool(activeCwd, toolName);
-									} catch (error) {
-										console.error(
-											"[session] failed to write always-allow rule:",
-											error,
-										);
-									}
-								}
-								finish("allow");
-							},
-						);
-						emit({ ...request, description: reason ?? request.description });
-					});
+					passInput,
+					resolve,
+				});
+			});
+	}
 
-				// Usage gate BEFORE the policy/permission pipeline so no permission
-				// card is ever shown into a sleeping session, and any resolution
-				// (allow or deny both resume the model = spend) waits for the window.
-				void this.gateOnUsage(provider, emit)
-					.then((gate) => {
-						if (gate === "aborted") {
-							resolve({
-								behavior: "deny",
-								message: "Aborted while sleeping on usage limit",
-							});
-							return;
-						}
-						return authorizeHlidTool({
-							agent: provider.providerId,
-							tool: toolName,
-							input,
-							cwd: activeCwd,
-							sessionId,
-							toolUseId: toolUseID,
-							// Once Umbod is enabled it is the policy authority. Provider-level
-							// bypassPermissions must not turn an Umbod `approve` decision into a
-							// silent allow; the approval still belongs in the originating chat.
-							bypassApproval: false,
-							prompt: (reason) => prompt(reason),
-						}).then(async (policy) => {
-							const decision = policy?.decision ?? (await prompt());
-							resolve(
-								decision === "allow"
-									? { behavior: "allow", updatedInput: passInput }
-									: {
-											behavior: "deny",
-											message:
-												policy?.policyDecision === "block"
-													? policy.reason
-													: (denyMessage ?? "Denied by user"),
-										},
-							);
-						});
-					})
-					.catch((error) => {
+	/** AskUserQuestion never shows a permission card: persist the questions, emit the modal, and resolve with the user's answers merged into the tool input. */
+	private interceptAskUserQuestion(
+		passInput: Record<string, unknown>,
+		toolUseID: string,
+		title: string | undefined,
+		sessionId: string | undefined,
+		emit: (msg: ServerMessage) => void,
+		resolve: (decision: AgentToolDecision) => void,
+	): void {
+		const { questions } = parseAskUserQuestion(passInput, title);
+		const request = {
+			type: "ask_user_question" as const,
+			id: toolUseID,
+			questions,
+		};
+		if (sessionId) {
+			void db
+				.appendAskUserQuestion(
+					sessionId,
+					toolUseID,
+					this.messageSeq++,
+					JSON.stringify(questions),
+				)
+				.catch((error) => logDbError("appendAskUserQuestion", error));
+		} else {
+			this.messageSeq++;
+		}
+		this.askUserQuestions.register(toolUseID, request, (answers, notes) => {
+			const existing = (passInput.answers as Record<string, string>) ?? {};
+			const sdkAnswers: Record<string, string> = { ...existing };
+			for (const [question, picks] of Object.entries(answers)) {
+				const note = notes?.[question]?.trim();
+				sdkAnswers[question] = note
+					? `${picks.join(", ")}\n\nNotes: ${note}`
+					: picks.join(", ");
+			}
+			resolve({
+				behavior: "allow",
+				updatedInput: { ...passInput, answers: sdkAnswers },
+			});
+		});
+		emit(request);
+	}
+
+	/**
+	 * Plan-mode HTML handoff: the agent is instructed to write its plan
+	 * document to exactly this.planHtmlPath, so that one write is
+	 * pre-approved (plan mode otherwise routes writes through the
+	 * permission card).
+	 */
+	private isPreApprovedPlanWrite(
+		toolName: string,
+		passInput: Record<string, unknown>,
+	): boolean {
+		return Boolean(
+			this.planHtmlPath &&
+				(toolName === "Write" || toolName === "Edit") &&
+				typeof passInput.file_path === "string" &&
+				(resolvePath(passInput.file_path) === this.planHtmlPath ||
+					passInput.file_path === toLogical(this.planHtmlPath)),
+		);
+	}
+
+	/** ExitPlanMode becomes a plan proposal: ingest the HTML artifact, persist the proposal, and resolve allow/deny from the user's decision on the plan card. */
+	private interceptExitPlanMode(
+		passInput: Record<string, unknown>,
+		toolUseID: string,
+		sessionId: string | undefined,
+		emit: (msg: ServerMessage) => void,
+		resolve: (decision: AgentToolDecision) => void,
+	): void {
+		const planText =
+			typeof passInput.plan === "string"
+				? passInput.plan
+				: JSON.stringify(passInput.plan ?? "");
+		const planSeq = this.messageSeq++;
+		// Keep Raven visibly active while the HTML artifact is validated,
+		// copied, linked, and persisted before the proposal can be shown.
+		this.emitRunningStatus(emit);
+		void (async () => {
+			let htmlRelicId: string | null = null;
+			if (this.planHtmlPath && this.planHtmlStorageRoot && sessionId) {
+				htmlRelicId = await ingestPlanHtml({
+					sourcePath: this.planHtmlPath,
+					plansDir: resolvePath(this.planHtmlStorageRoot, ".hlid", "plans"),
+					storageRoot: this.planHtmlStorageRoot,
+					sessionId,
+					planSeq,
+					maxBytes: loadConfig().attachments.max_bytes,
+				});
+			}
+			const request = {
+				type: "plan_mode_exit" as const,
+				id: toolUseID,
+				input: passInput,
+				...(htmlRelicId ? { html_relic_id: htmlRelicId } : {}),
+			};
+			if (sessionId) {
+				void db
+					.appendPlanProposal(
+						sessionId,
+						toolUseID,
+						planSeq,
+						planText,
+						"pending",
+						htmlRelicId,
+					)
+					.catch((error) => logDbError("appendPlanProposal", error));
+			}
+			this.planModeManager.register(
+				toolUseID,
+				request,
+				(decision, feedback) => {
+					if (sessionId) {
+						void db
+							.setPlanProposalDecision(sessionId, toolUseID, decision)
+							.catch((error) => logDbError("setPlanProposalDecision", error));
+					}
+					if (decision === "approved") {
+						resolve({ behavior: "allow", updatedInput: passInput });
+					} else {
 						resolve({
 							behavior: "deny",
-							message: `Umbod policy error: ${error instanceof Error ? error.message : String(error)}`,
+							message:
+								decision === "edited"
+									? `User requested changes to the plan:\n\n${feedback ?? ""}`
+									: "Plan was cancelled by the user.",
 						});
-					});
+					}
+				},
+			);
+			// Re-broadcast after registration so pool-wide status includes the
+			// pending plan interaction before the modal event arrives.
+			this.emitRunningStatus(emit);
+			if (htmlRelicId) {
+				emit({
+					type: "attachment_created",
+					id: htmlRelicId,
+					kind: "ephemeral",
+				});
+			}
+			emit(request);
+		})();
+	}
+
+	/** Generic tool path: usage gate, then Umbod policy, then (if the policy defers) the interactive permission card. */
+	private resolveToolPermission(options: {
+		provider: AgentProvider;
+		activeCwd: string;
+		sessionId: string | undefined;
+		emit: (msg: ServerMessage) => void;
+		toolName: string;
+		toolUseID: string;
+		title: string | undefined;
+		displayName: string | undefined;
+		description: string | undefined;
+		passInput: Record<string, unknown>;
+		resolve: (decision: AgentToolDecision) => void;
+	}): void {
+		const {
+			provider,
+			activeCwd,
+			sessionId,
+			emit,
+			toolName,
+			toolUseID,
+			title,
+			displayName,
+			description,
+			passInput,
+			resolve,
+		} = options;
+		const request = {
+			type: "permission_request" as const,
+			id: toolUseID,
+			toolName,
+			title:
+				title ??
+				`${provider.label ?? provider.providerId} wants to use ${toolName}`,
+			displayName,
+			description,
+			input: passInput as Record<string, unknown> | undefined,
+		};
+		let denyMessage: string | undefined;
+		const prompt = (reason?: string) =>
+			new Promise<"allow" | "block">((finish) => {
+				if (this.sessionAllowedTools.has(toolName)) {
+					finish("allow");
+					return;
+				}
+				this.permissions.register(
+					toolUseID,
+					{ ...request, description: reason ?? request.description },
+					(approved, saveScope, customDenyMessage) => {
+						this.permissions.delete(toolUseID);
+						if (!approved) {
+							denyMessage = customDenyMessage;
+							finish("block");
+							return;
+						}
+						if (saveScope === "session") this.sessionAllowedTools.add(toolName);
+						if (saveScope === "local") {
+							try {
+								persistAlwaysAllowedTool(activeCwd, toolName);
+							} catch (error) {
+								console.error(
+									"[session] failed to write always-allow rule:",
+									error,
+								);
+							}
+						}
+						finish("allow");
+					},
+				);
+				emit({ ...request, description: reason ?? request.description });
 			});
+
+		// Usage gate BEFORE the policy/permission pipeline so no permission
+		// card is ever shown into a sleeping session, and any resolution
+		// (allow or deny both resume the model = spend) waits for the window.
+		void this.gateOnUsage(provider, emit)
+			.then((gate) => {
+				if (gate === "aborted") {
+					resolve({
+						behavior: "deny",
+						message: "Aborted while sleeping on usage limit",
+					});
+					return;
+				}
+				return authorizeHlidTool({
+					agent: provider.providerId,
+					tool: toolName,
+					input: passInput,
+					cwd: activeCwd,
+					sessionId,
+					toolUseId: toolUseID,
+					// Once Umbod is enabled it is the policy authority. Provider-level
+					// bypassPermissions must not turn an Umbod `approve` decision into a
+					// silent allow; the approval still belongs in the originating chat.
+					bypassApproval: false,
+					prompt: (reason) => prompt(reason),
+				}).then(async (policy) => {
+					const decision = policy?.decision ?? (await prompt());
+					resolve(
+						decision === "allow"
+							? { behavior: "allow", updatedInput: passInput }
+							: {
+									behavior: "deny",
+									message:
+										policy?.policyDecision === "block"
+											? policy.reason
+											: (denyMessage ?? "Denied by user"),
+								},
+					);
+				});
+			})
+			.catch((error) => {
+				resolve({
+					behavior: "deny",
+					message: `Umbod policy error: ${error instanceof Error ? error.message : String(error)}`,
+				});
+			});
+	}
+
+	/** Emit the running-status heartbeat for the current turn. */
+	private emitRunningStatus(emit: (msg: ServerMessage) => void): void {
+		emit({
+			type: "status",
+			state: "running",
+			model: this.model,
+			permission_mode: this.permissionMode,
+			...(this.currentTurnId !== undefined
+				? { turn_id: this.currentTurnId }
+				: {}),
+		});
 	}
 
 	/**
@@ -1796,9 +1869,9 @@ export class SessionManager {
 		if (!agentSession.usageWindows) return;
 		try {
 			const readings = await agentSession.usageWindows();
-			for (const reading of readings) {
-				applyReading(provider.providerId, reading);
-			}
+			await Promise.all(
+				readings.map((reading) => applyReading(provider.providerId, reading)),
+			);
 		} catch {
 			// Usage enrichment is best-effort and must never fail an otherwise
 			// successful agent turn.
@@ -1824,13 +1897,7 @@ export class SessionManager {
 		// Slice C: emit status=running AFTER initSessionContext so getCurrentSessionId()
 		// is non-null when clients receive this event. This lets the ledger detect new
 		// sessions immediately via the non-null db_session_id in sessions_status broadcasts.
-		emit({
-			type: "status",
-			state: "running",
-			model: this.model,
-			permission_mode: this.permissionMode,
-			...(turnId !== undefined ? { turn_id: turnId } : {}),
-		});
+		this.emitRunningStatus(emit);
 
 		// Resolve provider after initSessionContext so this.agentCwd is final.
 		const {
@@ -1913,8 +1980,6 @@ export class SessionManager {
 				turn,
 				currentProvider,
 			);
-			await this.refreshProviderUsage(agentSession, currentProvider);
-
 			// Per-turn success: drainTurnQueue settles the final session state
 			// after the queue empties. Successful turns leave state alone so the
 			// drain loop sees "running" → resets to "idle" at end.

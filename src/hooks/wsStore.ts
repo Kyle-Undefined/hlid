@@ -562,6 +562,14 @@ function connect() {
 		clearReconnectTimer();
 		_reconnectAttempts = 0;
 		setSnap({ wsStatus: "connected" });
+		if (_subscribedSessionId) {
+			_ws?.send(
+				JSON.stringify({
+					type: "subscribe_session",
+					session_id: _subscribedSessionId,
+				}),
+			);
+		}
 		// Flush any items enqueued while the connection was down. Already-sent
 		// items are skipped via the _sent flag.
 		drainPendingToServer();
@@ -591,6 +599,14 @@ function handleVisibilityChange(): void {
 		return;
 	}
 	clearReconnectTimer();
+	// Mobile browsers can retain an OPEN readyState for a socket that the OS
+	// discarded while the app was backgrounded. Recreate it on resume so the
+	// transcript can catch up, then onopen restores the focused session.
+	if (_ws?.readyState === WS_OPEN) {
+		_ws.onclose = null;
+		_ws.close();
+		_ws = null;
+	}
 	connect();
 }
 

@@ -242,6 +242,19 @@ describe("subscribeToSession / getSubscribedSessionId", () => {
 		wsStore.subscribeToSession("session-b");
 		expect(wsStore.getSubscribedSessionId()).toBe("session-b");
 	});
+
+	it("restores the focused session when a socket reconnects", () => {
+		wsStore.subscribeToSession("session-a");
+		currentWs.send.mockClear();
+		currentWs.onopen?.();
+
+		expect(currentWs.send).toHaveBeenCalledWith(
+			JSON.stringify({
+				type: "subscribe_session",
+				session_id: "session-a",
+			}),
+		);
+	});
 });
 
 // ── session-scoped message filtering ─────────────────────────────────────────

@@ -2,9 +2,9 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("#/lib/serverFns", () => ({ getVoiceInfoFn: vi.fn() }));
+vi.mock("#/lib/serverFns/voice", () => ({ getVoiceInfoFn: vi.fn() }));
 
-import { getVoiceInfoFn } from "#/lib/serverFns";
+import { getVoiceInfoFn } from "#/lib/serverFns/voice";
 import { useVoiceInput } from "./useVoiceInput";
 
 const readyInfo = {
