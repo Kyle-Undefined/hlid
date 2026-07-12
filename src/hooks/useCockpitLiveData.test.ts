@@ -3,13 +3,13 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useWs } from "#/hooks/useWs";
 import * as wsStore from "#/hooks/wsStore";
+import { getActiveSessionRowFn } from "#/lib/serverFns/sessions";
 import {
-	getActiveSessionRowFn,
 	getCockpitStatsFn,
 	getRecentSessionsFn,
 	getThirtyDayStatsFn,
 	getWeeklyStatsFn,
-} from "#/lib/serverFns";
+} from "#/lib/serverFns/stats";
 import type { ServerMessage } from "#/server/protocol";
 import { useCockpitLiveData } from "./useCockpitLiveData";
 
@@ -24,8 +24,11 @@ vi.mock("#/hooks/useWs", () => ({
 
 vi.mock("#/hooks/wsStore", () => ({ getPendingSessionToday: vi.fn() }));
 
-vi.mock("#/lib/serverFns", () => ({
+vi.mock("#/lib/serverFns/sessions", () => ({
 	getActiveSessionRowFn: vi.fn(),
+}));
+
+vi.mock("#/lib/serverFns/stats", () => ({
 	getCockpitStatsFn: vi.fn(),
 	getRecentSessionsFn: vi.fn(),
 	getThirtyDayStatsFn: vi.fn(),

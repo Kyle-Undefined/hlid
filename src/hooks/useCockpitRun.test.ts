@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SessionRow, ThirtyDayStats, WeeklyStats } from "#/db";
 import * as wsStore from "#/hooks/wsStore";
-import { getCurrentSessionFn, getRecentSessionsFn } from "#/lib/serverFns";
+import { getCurrentSessionFn } from "#/lib/serverFns/sessions";
+import { getRecentSessionsFn } from "#/lib/serverFns/stats";
 import {
 	incrementThirtyDayStats,
 	incrementWeeklyStats,
@@ -9,8 +10,11 @@ import {
 	useCockpitRun,
 } from "./useCockpitRun";
 
-vi.mock("#/lib/serverFns", () => ({
+vi.mock("#/lib/serverFns/sessions", () => ({
 	getCurrentSessionFn: vi.fn(),
+}));
+
+vi.mock("#/lib/serverFns/stats", () => ({
 	getRecentSessionsFn: vi.fn(),
 }));
 

@@ -7,7 +7,7 @@ import type { getConfig } from "#/config";
 import type { useFileUpload } from "#/hooks/useFileUpload";
 import type { useVoiceInput } from "#/hooks/useVoiceInput";
 import { type ComposerKeyAction, composerKeyAction } from "#/lib/composer";
-import type { getAgentListFn } from "#/lib/serverFns";
+import type { getAgentListFn } from "#/lib/serverFns/agents";
 import type { Skill } from "#/lib/skills";
 import { displayVoiceHotkey } from "#/lib/voiceHotkey";
 

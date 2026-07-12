@@ -49,15 +49,14 @@ import {
 	sessionPageSchema,
 	sessionRenameSchema,
 } from "#/lib/serverFnSchemas";
-import type { ActivityStats } from "#/lib/serverFns";
+import { getProvidersFn, getProviderUsagesFn } from "#/lib/serverFns/providers";
+import { getActiveSessionRowFn } from "#/lib/serverFns/sessions";
+import type { ActivityStats } from "#/lib/serverFns/stats";
 import {
 	EMPTY_AGG,
-	getActiveSessionRowFn,
 	getActivityStatsFn,
-	getProvidersFn,
-	getProviderUsagesFn,
 	getThirtyDayStatsFn,
-} from "#/lib/serverFns";
+} from "#/lib/serverFns/stats";
 import type { RateLimitMessage, ServerMessage } from "#/server/protocol";
 
 // ─── server fns ──────────────────────────────────────────────────────────────

@@ -35,18 +35,18 @@ import { useVoiceInput } from "#/hooks/useVoiceInput";
 import { useWsLiveStats } from "#/hooks/useWsSelectors";
 import { insertAtSelection, resizeComposer } from "#/lib/composer";
 import { fmtModel } from "#/lib/formatters";
+import { getAgentListFn } from "#/lib/serverFns/agents";
+import { getCockpitData } from "#/lib/serverFns/cockpit";
+import { getMcpServersFn } from "#/lib/serverFns/mcp";
+import { loadProviderUsages } from "#/lib/serverFns/providers";
+import { getActiveSessionRowFn } from "#/lib/serverFns/sessions";
 import {
-	getActiveSessionRowFn,
-	getAgentListFn,
-	getCockpitData,
 	getCockpitStatsFn,
-	getMcpServersFn,
 	getRecentSessionsFn,
 	getThirtyDayStatsFn,
-	getVoiceInfoFn,
 	getWeeklyStatsFn,
-	loadProviderUsages,
-} from "#/lib/serverFns";
+} from "#/lib/serverFns/stats";
+import { getVoiceInfoFn } from "#/lib/serverFns/voice";
 import { groupSkills, type Skill } from "#/lib/skills";
 
 // ─── route ───────────────────────────────────────────────────────────────────

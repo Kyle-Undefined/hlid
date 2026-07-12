@@ -2,7 +2,7 @@ import { X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { Bar, BarChart, Cell, Tooltip, XAxis, YAxis } from "recharts";
 import type { ToolErrorEntry, TopToolCall } from "#/db";
-import { getToolErrorsFn } from "#/lib/serverFns";
+import { getToolErrorsFn } from "#/lib/serverFns/stats";
 import { ChartCard } from "../ChartCard";
 
 const AXIS_TICK = {

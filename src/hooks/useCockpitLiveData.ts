@@ -10,13 +10,13 @@ import {
 } from "#/hooks/useCockpitRun";
 import { useWs } from "#/hooks/useWs";
 import * as wsStore from "#/hooks/wsStore";
+import { getActiveSessionRowFn } from "#/lib/serverFns/sessions";
 import {
-	getActiveSessionRowFn,
 	getCockpitStatsFn,
 	getRecentSessionsFn,
 	getThirtyDayStatsFn,
 	getWeeklyStatsFn,
-} from "#/lib/serverFns";
+} from "#/lib/serverFns/stats";
 import type { RateLimitMessage, ServerMessage } from "#/server/protocol";
 
 type InitialCockpitLiveData = {
