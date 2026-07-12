@@ -1099,12 +1099,13 @@ function RavenShellTabBar({
 }
 
 /**
- * Mobile dev-shell pane — mounts a real login shell (/ws/shell) only while
- * terminalOpen, and only once toggled on (nothing spins up until then).
- * Stays mounted across Chat/Terminal tab swaps (only `active` toggles, via
- * CSS visibility) so the session survives switching tabs; unmounting this
- * component — terminalOpen flipping false — is what kills the PTY, via
- * terminateOnDisconnect.
+ * Dev-shell pane — mounts a real login shell (/ws/shell), once, only while
+ * terminalOpen (nothing spins up until toggled on). A single TerminalView
+ * stays connected the whole time terminalOpen is true — below md it's
+ * CSS-shown/hidden by the Chat/Terminal tab bar; at md+ it's always visible
+ * as a fixed-height panel under the chat, alongside the chat rather than
+ * swapped with it. Unmounting this component — terminalOpen flipping false —
+ * is what kills the PTY, via terminateOnDisconnect.
  */
 function RavenShellPane({
 	config,
@@ -1116,15 +1117,15 @@ function RavenShellPane({
 	if (!terminalOpen || !sessionId) return null;
 	return (
 		<div
-			className={`md:hidden flex-1 overflow-hidden ${
+			className={`${
 				shellTab === "terminal" ? "flex" : "hidden"
-			}`}
+			} md:flex flex-1 md:flex-none md:h-64 overflow-hidden md:border-t md:border-border/40`}
 		>
 			<TerminalView
 				sessionId={sessionId}
 				cwd={agentSkillContext ?? config.vault.path}
 				wsPath="/ws/shell"
-				active={shellTab === "terminal"}
+				active={true}
 				terminateOnDisconnect
 			/>
 		</div>
