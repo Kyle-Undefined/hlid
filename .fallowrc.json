@@ -110,6 +110,7 @@
 				"check"
 			]
 		},
+		"attachThread",
 		"detachThread",
 		"setSessionLabel",
 		"probeMcpStatus",

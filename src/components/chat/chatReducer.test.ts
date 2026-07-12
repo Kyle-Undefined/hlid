@@ -242,6 +242,40 @@ describe("ADD_TOOL_RESULT", () => {
 	});
 });
 
+describe("UPDATE_TOOL_EVENT", () => {
+	it("replaces the subagent snapshot on the matching tool event", () => {
+		let state = reducer(withAssistant("a1"), {
+			type: "ADD_TOOL_EVENT",
+			id: "a1",
+			event: {
+				type: "tool_event",
+				id: "spawn-1",
+				name: "spawn_agent",
+				input: {},
+			},
+		});
+		state = reducer(state, {
+			type: "UPDATE_TOOL_EVENT",
+			toolUseId: "spawn-1",
+			subagent: {
+				provider: "codex",
+				agentId: "child-1",
+				status: "running",
+				startedAtMs: 1000,
+				currentStep: "Inspecting files",
+			},
+		});
+		const message = state[0];
+		if (message.role === "assistant") {
+			expect(message.toolEvents[0].subagent).toMatchObject({
+				agentId: "child-1",
+				status: "running",
+				currentStep: "Inspecting files",
+			});
+		}
+	});
+});
+
 // ── ADD_PLAN_PROPOSAL ─────────────────────────────────────────────────────────
 
 describe("ADD_PLAN_PROPOSAL", () => {

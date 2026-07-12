@@ -85,6 +85,13 @@ function dispatchImmediateMessage(
 				...(msg.isError !== undefined ? { isError: msg.isError } : {}),
 			});
 			return true;
+		case "tool_update":
+			dispatch({
+				type: "UPDATE_TOOL_EVENT",
+				toolUseId: msg.id,
+				subagent: msg.subagent,
+			});
+			return true;
 		default:
 			return false;
 	}

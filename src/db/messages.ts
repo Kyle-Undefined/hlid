@@ -1,3 +1,4 @@
+import type { SubagentSnapshot } from "../server/agentProvider";
 import { getDb } from "./schema";
 import type { MessageRow, ToolEventRow } from "./types";
 
@@ -54,18 +55,37 @@ export async function appendToolEvent(
 	toolId: string,
 	name: string,
 	input: unknown,
+	subagent?: SubagentSnapshot,
 ): Promise<void> {
 	const db = await getDb();
 	db.run(
-		`INSERT INTO tool_events (session_id, assistant_seq, tool_id, name, input_json) VALUES (?, ?, ?, ?, ?)`,
+		`INSERT INTO tool_events (session_id, assistant_seq, tool_id, name, input_json, subagent_json) VALUES (?, ?, ?, ?, ?, ?)`,
 		[
 			sessionId,
 			assistantSeq,
 			toolId,
 			name,
 			input !== undefined ? JSON.stringify(input) : null,
+			subagent ? JSON.stringify(subagent) : null,
 		],
 	);
+}
+
+export async function setToolEventSubagent(
+	sessionId: string,
+	toolId: string,
+	subagent: SubagentSnapshot,
+): Promise<void> {
+	const db = await getDb();
+	const { changes } = db.run(
+		`UPDATE tool_events SET subagent_json = ? WHERE session_id = ? AND tool_id = ?`,
+		[JSON.stringify(subagent), sessionId, toolId],
+	);
+	if (changes === 0) {
+		throw new Error(
+			`setToolEventSubagent: no row found for session=${sessionId} tool_id=${toolId}`,
+		);
+	}
 }
 
 export async function setToolEventResult(

@@ -862,6 +862,89 @@ describe("CodexAgentSession — notifications", () => {
 		expect(await events.next()).toEqual({ value: undefined, done: true });
 	});
 
+	it("keeps a spawn card live through child-thread activity and completion", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const session = new CodexProvider().query(baseCodexParams());
+		const events = session[Symbol.asyncIterator]();
+		await session.send("delegate this");
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "session_start",
+			sessionId: "thread-1",
+		});
+
+		emitSessionNotification(proc, "item/started", {
+			threadId: "thread-1",
+			startedAtMs: 1000,
+			item: {
+				id: "spawn-1",
+				type: "collabAgentToolCall",
+				tool: "spawnAgent",
+				prompt: "Inspect auth",
+				model: "gpt-5.4",
+				reasoningEffort: "medium",
+			},
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "tool_start",
+			toolId: "spawn-1",
+			name: "spawn_agent",
+			subagent: {
+				agentId: "spawn-1",
+				prompt: "Inspect auth",
+				status: "pending",
+				startedAtMs: 1000,
+			},
+		});
+
+		emitSessionNotification(proc, "item/completed", {
+			threadId: "thread-1",
+			item: {
+				id: "spawn-1",
+				type: "collabAgentToolCall",
+				tool: "spawnAgent",
+				receiverThreadIds: ["child-1"],
+				agentsStates: { "child-1": { status: "running", message: null } },
+			},
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "tool_update",
+			toolId: "spawn-1",
+			subagent: { agentId: "child-1", status: "running" },
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "tool_result",
+			toolId: "spawn-1",
+		});
+
+		emitSessionNotification(proc, "item/started", {
+			threadId: "child-1",
+			item: {
+				id: "command-1",
+				type: "commandExecution",
+				command: "rg auth src",
+			},
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "tool_update",
+			toolId: "spawn-1",
+			subagent: { status: "running", currentStep: "Running rg auth src" },
+		});
+
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "child-1",
+			completedAtMs: 7000,
+			turn: { id: "child-turn", status: "completed" },
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "tool_update",
+			toolId: "spawn-1",
+			subagent: { status: "completed", endedAtMs: 7000 },
+		});
+	});
+
 	it("attributes rateLimitReachedType to the most-utilized window", async () => {
 		const { proc } = makeFakeSessionProc();
 		vi.mocked(spawn).mockReturnValue(proc as never);

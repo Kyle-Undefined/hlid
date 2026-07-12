@@ -214,6 +214,28 @@ describe("useChatWsHandler — immediate messages", () => {
 				isError: true,
 			},
 		],
+		[
+			{
+				type: "tool_update",
+				id: "spawn-1",
+				subagent: {
+					provider: "codex",
+					agentId: "child-1",
+					status: "running",
+					startedAtMs: 1000,
+				},
+			},
+			{
+				type: "UPDATE_TOOL_EVENT",
+				toolUseId: "spawn-1",
+				subagent: {
+					provider: "codex",
+					agentId: "child-1",
+					status: "running",
+					startedAtMs: 1000,
+				},
+			},
+		],
 	])("maps $type to its reducer action", (message, action) => {
 		const { handler, dispatch } = renderHandler({ pendingId: "assistant-1" });
 		handler(message);

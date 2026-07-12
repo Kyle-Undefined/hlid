@@ -23,6 +23,7 @@ import {
 	getSessionToolEvents,
 	setAskUserQuestionResolution,
 	setMessageRecap,
+	setToolEventSubagent,
 } from "./messages";
 import {
 	getSessionPermissionEvents,
@@ -350,6 +351,32 @@ describe("tool events", () => {
 		expect(events[0].input_json).toBe(
 			JSON.stringify({ file_path: "/etc/hosts" }),
 		);
+	});
+
+	it("stores and updates the normalized subagent snapshot", async () => {
+		await createSession("s1", "L", "m");
+		await appendMessage("s1", 0, "assistant", "");
+		const started = {
+			provider: "codex" as const,
+			agentId: "spawn-1",
+			status: "pending" as const,
+			startedAtMs: 1000,
+		};
+		await appendToolEvent("s1", 0, "spawn-1", "spawn_agent", {}, started);
+		await setToolEventSubagent("s1", "spawn-1", {
+			...started,
+			agentId: "child-1",
+			status: "completed",
+			endedAtMs: 5000,
+		});
+		const events = await getSessionToolEvents("s1");
+		expect(JSON.parse(events[0].subagent_json ?? "{}")).toEqual({
+			provider: "codex",
+			agentId: "child-1",
+			status: "completed",
+			startedAtMs: 1000,
+			endedAtMs: 5000,
+		});
 	});
 });
 

@@ -29,6 +29,7 @@ vi.mock("../db", () => ({
 	setMessageText: vi.fn().mockResolvedValue(undefined),
 	setMessageRecap: vi.fn().mockResolvedValue(undefined),
 	setToolEventResult: vi.fn().mockResolvedValue(undefined),
+	setToolEventSubagent: vi.fn().mockResolvedValue(undefined),
 	appendLog: vi.fn().mockResolvedValue(undefined),
 	createSession: vi.fn().mockResolvedValue(undefined),
 	recordQuery: vi.fn().mockResolvedValue(undefined),
@@ -2066,7 +2067,9 @@ describe("SessionManager — live tool_event persistence", () => {
 		vi.mocked(dbMock.appendMessage).mockClear();
 		vi.mocked(dbMock.appendToolEvent).mockClear();
 		vi.mocked(dbMock.setToolEventResult).mockClear();
+		vi.mocked(dbMock.setToolEventSubagent).mockClear();
 		vi.mocked(dbMock.setMessageText).mockClear();
+		vi.mocked(dbMock.appendToolEvent).mockResolvedValue(undefined);
 	});
 
 	it("inserts assistant placeholder + tool_event row on first tool_start (before done)", async () => {
@@ -2171,6 +2174,71 @@ describe("SessionManager — live tool_event persistence", () => {
 			);
 		});
 		release();
+		await runPromise;
+	});
+
+	it("persists the latest subagent snapshot when an update races the tool insert", async () => {
+		let releaseTurn!: () => void;
+		const turnGate = new Promise<void>((resolve) => {
+			releaseTurn = resolve;
+		});
+		let releaseInsert!: () => void;
+		vi.mocked(dbMock.appendToolEvent).mockImplementationOnce(
+			() =>
+				new Promise<void>((resolve) => {
+					releaseInsert = resolve;
+				}),
+		);
+		const started = {
+			provider: "codex" as const,
+			agentId: "spawn-1",
+			prompt: "Inspect auth",
+			status: "pending" as const,
+			startedAtMs: 1000,
+		};
+		const running = {
+			...started,
+			agentId: "child-1",
+			status: "running" as const,
+			currentStep: "Reading files",
+		};
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{ type: "session_start", sessionId: "sdk-subagent" },
+				{
+					type: "tool_start",
+					toolId: "spawn-tool",
+					name: "spawn_agent",
+					input: { prompt: "Inspect auth" },
+					subagent: started,
+				},
+				{ type: "tool_update", toolId: "spawn-tool", subagent: running },
+			],
+			turnGate,
+		);
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const runPromise = sm.runQuery(
+			"delegate",
+			(message) => emitted.push(message),
+			"sess-subagent",
+		);
+		await gateReached;
+		expect(emitted).toContainEqual({
+			type: "tool_update",
+			id: "spawn-tool",
+			subagent: running,
+		});
+		expect(dbMock.setToolEventSubagent).not.toHaveBeenCalled();
+		releaseInsert();
+		await waitFor(() => {
+			expect(dbMock.setToolEventSubagent).toHaveBeenCalledWith(
+				"sess-subagent",
+				"spawn-tool",
+				running,
+			);
+		});
+		releaseTurn();
 		await runPromise;
 	});
 

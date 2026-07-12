@@ -11,9 +11,17 @@ import type {
 	ProviderModelInfo,
 	SendOptions,
 	SlashCommand,
+	SubagentSnapshot,
 } from "./agentProvider";
-import { acquireCodexAppServer, type CodexAppServer } from "./codexAppServer";
+import {
+	acquireCodexAppServer,
+	type CodexAppServer,
+	type ThreadHandler,
+} from "./codexAppServer";
 import type {
+	CollabAgentState,
+	CollabAgentStatus,
+	CollabAgentTool,
 	CommandExecutionRequestApprovalResponse,
 	FileChangeRequestApprovalResponse,
 	SandboxMode as GeneratedSandboxMode,
@@ -25,6 +33,7 @@ import type {
 	RateLimitSnapshot,
 	ReasoningEffortOption,
 	SandboxPolicy,
+	SubAgentActivityKind,
 	ThreadResumeParams,
 	ThreadStartParams,
 	TurnStartParams,
@@ -122,6 +131,49 @@ function filePathFromItem(value: unknown): string | null {
 
 function isHtmlPlanPath(path: string): boolean {
 	return /(?:^|[\\/])\.hlid[\\/]plans[\\/]plan-[^\\/]+\.html$/i.test(path);
+}
+
+function codexSubagentStatus(
+	value: CollabAgentStatus | null | undefined,
+	previous?: SubagentSnapshot["status"],
+): SubagentSnapshot["status"] {
+	switch (String(value ?? "")) {
+		case "pendingInit":
+			return "pending";
+		case "running":
+			return "running";
+		case "completed":
+			return "completed";
+		case "errored":
+		case "notFound":
+			return "failed";
+		case "interrupted":
+			return "interrupted";
+		case "shutdown":
+			return previous === "completed" ? "completed" : "interrupted";
+		default:
+			return previous ?? "running";
+	}
+}
+
+function codexChildStep(item: Record<string, unknown>): string {
+	const type = String(item.type ?? "activity");
+	if (type === "commandExecution") {
+		const command = typeof item.command === "string" ? item.command : "command";
+		return `Running ${command.slice(0, 120)}`;
+	}
+	if (type === "fileChange") return "Applying file changes";
+	if (type === "mcpToolCall") {
+		return `Calling ${String(item.tool ?? item.server ?? "MCP tool")}`;
+	}
+	if (type === "webSearch") return "Searching the web";
+	if (type === "reasoning") return "Reasoning";
+	return `Working on ${type.replace(/([a-z])([A-Z])/g, "$1 $2").toLowerCase()}`;
+}
+
+function shortStep(value: unknown): string | undefined {
+	const text = textFromUnknown(value).replace(/\s+/g, " ").trim();
+	return text ? text.slice(0, 240) : undefined;
 }
 
 export function codexReasoningText(item: unknown): string {
@@ -385,6 +437,10 @@ class CodexAgentSession implements AgentSession {
 	private emittedReasoningIds = new Set<string>();
 	private sawUnidentifiedAgentMessageDelta = false;
 	private startedItems = new Map<string, Record<string, unknown>>();
+	private attachedThreadIds = new Set<string>();
+	private subagentByThread = new Map<string, string>();
+	private subagentSnapshots = new Map<string, SubagentSnapshot>();
+	private threadHandler: ThreadHandler | null = null;
 	private approvedHtmlPlanItemId: string | null = null;
 	private htmlPlanReady = false;
 	private nativePlanText = "";
@@ -413,7 +469,10 @@ class CodexAgentSession implements AgentSession {
 					})
 					.catch(() => {});
 			}
-			this.conn.detachThread(this.threadId);
+			for (const threadId of this.attachedThreadIds) {
+				this.conn.detachThread(threadId);
+			}
+			this.attachedThreadIds.clear();
 		}
 		this.conn = null;
 	}
@@ -634,7 +693,7 @@ class CodexAgentSession implements AgentSession {
 		}
 		this.threadId = thread.id;
 		if (this.canceled) return;
-		conn.attachThread(thread.id, {
+		this.threadHandler = {
 			onNotification: (method, params) =>
 				this.handleNotification(method, params),
 			onRequest: (method, params) => this.handleServerRequest(method, params),
@@ -646,7 +705,8 @@ class CodexAgentSession implements AgentSession {
 				});
 				this.events.close();
 			},
-		});
+		};
+		this.attachThread(thread.id);
 		this.events.push({ type: "session_start", sessionId: thread.id });
 
 		// Seed usage windows immediately; rolling account/rateLimits/updated
@@ -655,6 +715,18 @@ class CodexAgentSession implements AgentSession {
 			.request("account/rateLimits/read", undefined)
 			.then((res) => this.emitRateLimits(asObj(res).rateLimits))
 			.catch(() => {});
+	}
+
+	private attachThread(threadId: string): void {
+		if (
+			!this.conn ||
+			!this.threadHandler ||
+			this.attachedThreadIds.has(threadId)
+		) {
+			return;
+		}
+		this.conn.attachThread(threadId, this.threadHandler);
+		this.attachedThreadIds.add(threadId);
 	}
 
 	/**
@@ -891,6 +963,18 @@ class CodexAgentSession implements AgentSession {
 		const item = asObj(obj.item);
 		const type = String(item.type ?? "tool");
 		const itemId = String(item.id ?? type);
+		const notificationThreadId = String(obj.threadId ?? this.threadId ?? "");
+		if (notificationThreadId && notificationThreadId !== this.threadId) {
+			this.updateSubagentFromChild(notificationThreadId, {
+				currentStep: codexChildStep(item),
+				status: "running",
+			});
+			return;
+		}
+		if (type === "subAgentActivity") {
+			this.handleSubagentActivity(item);
+			return;
+		}
 		this.startedItems.set(itemId, item);
 		if (type === "agentMessage" || type === "userMessage") return;
 		if (type === "reasoning") {
@@ -902,12 +986,116 @@ class CodexAgentSession implements AgentSession {
 		);
 		const input =
 			item.arguments ?? item.input ?? item.rawInput ?? item.params ?? item;
+		const collabTool = item.tool as CollabAgentTool | undefined;
+		if (type === "collabAgentToolCall" && collabTool === "spawnAgent") {
+			const prompt = typeof item.prompt === "string" ? item.prompt : undefined;
+			const subagent: SubagentSnapshot = {
+				provider: "codex",
+				agentId: itemId,
+				...(prompt ? { prompt, currentStep: "Starting subagent" } : {}),
+				...(typeof item.model === "string" ? { model: item.model } : {}),
+				...(typeof item.reasoningEffort === "string"
+					? { effort: item.reasoningEffort }
+					: {}),
+				status: "pending",
+				startedAtMs:
+					typeof obj.startedAtMs === "number" ? obj.startedAtMs : Date.now(),
+			};
+			this.subagentSnapshots.set(itemId, subagent);
+			this.events.push({
+				type: "tool_start",
+				toolId: itemId,
+				name: "spawn_agent",
+				input: prompt ? { prompt } : input,
+				subagent,
+			});
+			return;
+		}
 		this.events.push({
 			type: "tool_start",
 			toolId: itemId,
 			name: toolName,
 			input,
 		});
+	}
+
+	private emitSubagentUpdate(toolId: string, subagent: SubagentSnapshot): void {
+		this.subagentSnapshots.set(toolId, subagent);
+		this.events.push({ type: "tool_update", toolId, subagent });
+	}
+
+	private updateSubagentFromChild(
+		threadId: string,
+		patch: Partial<SubagentSnapshot>,
+	): void {
+		const toolId = this.subagentByThread.get(threadId);
+		if (!toolId) return;
+		const current = this.subagentSnapshots.get(toolId);
+		if (!current) return;
+		this.emitSubagentUpdate(toolId, {
+			...current,
+			...patch,
+			agentId: threadId,
+		});
+	}
+
+	private handleSubagentActivity(item: Record<string, unknown>): void {
+		const threadId = String(item.agentThreadId ?? "");
+		if (!threadId) return;
+		const kind = item.kind as SubAgentActivityKind | undefined;
+		this.attachThread(threadId);
+		this.updateSubagentFromChild(threadId, {
+			...(typeof item.agentPath === "string" ? { label: item.agentPath } : {}),
+			status: kind === "interrupted" ? "interrupted" : "running",
+			currentStep:
+				kind === "interacted"
+					? "Communicating with the parent agent"
+					: kind === "interrupted"
+						? "Subagent interrupted"
+						: "Subagent started",
+			...(kind === "interrupted" ? { endedAtMs: Date.now() } : {}),
+		});
+	}
+
+	private mergeCollabAgentStates(item: Record<string, unknown>): void {
+		const receiverThreadIds = Array.isArray(item.receiverThreadIds)
+			? item.receiverThreadIds.filter(
+					(value): value is string =>
+						typeof value === "string" && value.length > 0,
+				)
+			: [];
+		const agentsStates = asObj(item.agentsStates) as Record<
+			string,
+			Partial<CollabAgentState>
+		>;
+		const sourceToolId = String(item.id ?? "");
+		const sourceSnapshot = this.subagentSnapshots.get(sourceToolId);
+		const collabTool = item.tool as CollabAgentTool | undefined;
+		for (const threadId of receiverThreadIds) {
+			if (sourceSnapshot && collabTool === "spawnAgent") {
+				this.subagentByThread.set(threadId, sourceToolId);
+				this.attachThread(threadId);
+			}
+			const spawnToolId = this.subagentByThread.get(threadId);
+			if (!spawnToolId) continue;
+			const current = this.subagentSnapshots.get(spawnToolId);
+			if (!current) continue;
+			const state = agentsStates[threadId] ?? {};
+			const status = codexSubagentStatus(state.status, current.status);
+			const terminal =
+				status === "completed" ||
+				status === "failed" ||
+				status === "interrupted";
+			const message =
+				typeof state.message === "string" ? state.message : undefined;
+			this.emitSubagentUpdate(spawnToolId, {
+				...current,
+				agentId: threadId,
+				status,
+				...(message ? { currentStep: message.slice(0, 240) } : {}),
+				...(terminal ? { endedAtMs: Date.now() } : {}),
+			});
+		}
 	}
 
 	private handleCompletedAgentMessage(item: Record<string, unknown>): void {
@@ -924,6 +1112,20 @@ class CodexAgentSession implements AgentSession {
 		const item = asObj(obj.item);
 		const type = String(item.type ?? "");
 		const itemId = String(item.id ?? type);
+		const notificationThreadId = String(obj.threadId ?? this.threadId ?? "");
+		if (notificationThreadId && notificationThreadId !== this.threadId) {
+			if (type === "agentMessage") {
+				const currentStep = shortStep(item.text ?? item.content);
+				if (currentStep) {
+					this.updateSubagentFromChild(notificationThreadId, { currentStep });
+				}
+			}
+			return;
+		}
+		if (type === "subAgentActivity") {
+			this.handleSubagentActivity(item);
+			return;
+		}
 		if (itemId === this.approvedHtmlPlanItemId) this.htmlPlanReady = true;
 		if (type === "agentMessage") {
 			this.handleCompletedAgentMessage(item);
@@ -938,6 +1140,7 @@ class CodexAgentSession implements AgentSession {
 			return;
 		}
 		if (type === "userMessage" || !type) return;
+		if (type === "collabAgentToolCall") this.mergeCollabAgentStates(item);
 		this.events.push({
 			type: "tool_result",
 			toolId: String(item.id ?? type),
@@ -1031,20 +1234,43 @@ class CodexAgentSession implements AgentSession {
 		this.events.close();
 	}
 
+	private handleChildTurnCompleted(obj: Record<string, unknown>): void {
+		const threadId = String(obj.threadId ?? "");
+		if (!threadId || threadId === this.threadId) return;
+		const turn = asObj(obj.turn);
+		const rawStatus = String(turn.status ?? "completed");
+		const status: SubagentSnapshot["status"] =
+			rawStatus === "failed" || rawStatus === "errored"
+				? "failed"
+				: rawStatus === "interrupted" || rawStatus === "cancelled"
+					? "interrupted"
+					: "completed";
+		this.updateSubagentFromChild(threadId, {
+			status,
+			endedAtMs:
+				typeof obj.completedAtMs === "number" ? obj.completedAtMs : Date.now(),
+		});
+	}
+
 	private handleNotification(method: string, params: unknown): void {
 		const obj = asObj(params);
+		const notificationThreadId = String(
+			obj.threadId ?? asObj(obj.thread).id ?? "",
+		);
+		const childNotification =
+			notificationThreadId.length > 0 && notificationThreadId !== this.threadId;
 		switch (method) {
 			case "thread/started":
-				this.handleThreadStarted(obj);
+				if (!childNotification) this.handleThreadStarted(obj);
 				break;
 			case "turn/started":
-				this.handleTurnStarted(obj);
+				if (!childNotification) this.handleTurnStarted(obj);
 				break;
 			case "item/agentMessage/delta":
-				this.handleAgentMessageDelta(obj);
+				if (!childNotification) this.handleAgentMessageDelta(obj);
 				break;
 			case "item/commandExecution/outputDelta":
-				this.handleCommandOutputDelta(obj);
+				if (!childNotification) this.handleCommandOutputDelta(obj);
 				break;
 			case "item/started":
 				this.handleItemStarted(obj);
@@ -1056,13 +1282,14 @@ class CodexAgentSession implements AgentSession {
 				this.emitRateLimits(obj.rateLimits);
 				break;
 			case "thread/tokenUsage/updated":
-				this.handleTokenUsageUpdated(params);
+				if (!childNotification) this.handleTokenUsageUpdated(params);
 				break;
 			case "mcpServer/startupStatus/updated":
 				this.handleMcpStartupStatus(obj);
 				break;
 			case "turn/completed":
-				void this.handleTurnCompleted(obj, params);
+				if (childNotification) this.handleChildTurnCompleted(obj);
+				else void this.handleTurnCompleted(obj, params);
 				break;
 		}
 	}

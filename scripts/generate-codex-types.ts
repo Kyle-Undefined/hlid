@@ -74,6 +74,10 @@ const SEEDS: Array<[name: string, relPath: string]> = [
 	// Carried by account/rateLimits/updated notifications and the
 	// account/rateLimits/read response — parsed for usage-window tracking.
 	["RateLimitSnapshot", "v2/RateLimitSnapshot.ts"],
+	["CollabAgentTool", "v2/CollabAgentTool.ts"],
+	["CollabAgentState", "v2/CollabAgentState.ts"],
+	["CollabAgentStatus", "v2/CollabAgentStatus.ts"],
+	["SubAgentActivityKind", "v2/SubAgentActivityKind.ts"],
 ];
 
 async function run(cmd: string[], opts?: { cwd?: string }): Promise<string> {

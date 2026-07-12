@@ -352,6 +352,10 @@ function applyMigrations(db: Db): void {
 		db.run(`ALTER TABLE tool_events ADD COLUMN is_error INTEGER`);
 	});
 
+	runMigration(db, "_migrated_tool_events_subagent", (db) => {
+		db.run(`ALTER TABLE tool_events ADD COLUMN subagent_json TEXT`);
+	});
+
 	runMigration(db, "_migrated_plan_proposals_table", (db) => {
 		db.run(`
       CREATE TABLE IF NOT EXISTS plan_proposals (

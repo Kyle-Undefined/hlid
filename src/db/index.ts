@@ -45,6 +45,7 @@ export {
 	setMessageText,
 	setPlanProposalDecision,
 	setToolEventResult,
+	setToolEventSubagent,
 } from "./messages";
 // Permissions
 export {

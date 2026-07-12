@@ -69,11 +69,48 @@ export type ProviderModelInfo = {
 	efforts?: ProviderEffortInfo[];
 };
 
+export type SubagentStatus =
+	| "pending"
+	| "running"
+	| "paused"
+	| "completed"
+	| "failed"
+	| "interrupted";
+
+/** Provider-neutral snapshot rendered inside the originating spawn tool call. */
+export type SubagentSnapshot = {
+	provider: "codex" | "claude";
+	agentId: string;
+	taskId?: string;
+	label?: string;
+	prompt?: string;
+	description?: string;
+	model?: string;
+	effort?: string;
+	status: SubagentStatus;
+	currentStep?: string;
+	lastTool?: string;
+	startedAtMs: number;
+	endedAtMs?: number;
+	usage?: {
+		totalTokens?: number;
+		toolUses?: number;
+		durationMs?: number;
+	};
+};
+
 export type AgentEvent =
 	| { type: "session_start"; sessionId: string }
 	| { type: "text_delta"; text: string }
 	| { type: "local_command_output"; content: string }
-	| { type: "tool_start"; toolId: string; name: string; input: unknown }
+	| {
+			type: "tool_start";
+			toolId: string;
+			name: string;
+			input: unknown;
+			subagent?: SubagentSnapshot;
+	  }
+	| { type: "tool_update"; toolId: string; subagent: SubagentSnapshot }
 	| {
 			type: "tool_result";
 			toolId: string;

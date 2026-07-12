@@ -8,6 +8,7 @@ import {
 	getSessionPlanProposalsFn,
 } from "#/lib/serverFns/sessions";
 import { uid } from "#/lib/utils";
+import type { SubagentSnapshot } from "#/server/agentProvider";
 import type {
 	AskQuestion,
 	AskUserQuestionAnswers,
@@ -56,6 +57,14 @@ function mapSessionRows(
 			})(),
 			...(te.result_text != null ? { result: te.result_text } : {}),
 			...(te.is_error != null ? { isError: te.is_error === 1 } : {}),
+			...(te.subagent_json
+				? {
+						subagent: safeParseJson<SubagentSnapshot | undefined>(
+							te.subagent_json,
+							undefined,
+						),
+					}
+				: {}),
 		})),
 		attachments: r.attachments?.map((a) => ({
 			id: a.id,
@@ -154,7 +163,9 @@ function drainBufferDeduped(
 	for (const msg of wsStore.drainMessageBuffer()) {
 		if (msg.type === "chunk") continue;
 		if (
-			(msg.type === "tool_event" || msg.type === "tool_result") &&
+			(msg.type === "tool_event" ||
+				msg.type === "tool_update" ||
+				msg.type === "tool_result") &&
 			knownToolIds.has(msg.id)
 		) {
 			continue;

@@ -32,6 +32,7 @@ export type ToolEventRow = {
 	input_json: string;
 	result_text: string | null;
 	is_error: number | null;
+	subagent_json?: string | null;
 };
 
 export type QueryData = {

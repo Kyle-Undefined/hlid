@@ -109,6 +109,11 @@ export type Action =
 	| { type: "APPEND_CHUNK"; id: string; text: string }
 	| { type: "ADD_TOOL_EVENT"; id: string; event: ToolEventMessage }
 	| {
+			type: "UPDATE_TOOL_EVENT";
+			toolUseId: string;
+			subagent: NonNullable<ToolEventMessage["subagent"]>;
+	  }
+	| {
 			type: "ADD_TOOL_RESULT";
 			toolUseId: string;
 			content: string;
@@ -368,6 +373,21 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 				...m,
 				toolEvents: [...m.toolEvents, action.event],
 			}));
+		case "UPDATE_TOOL_EVENT": {
+			let matched = false;
+			const next = state.map((m) => {
+				if (m.role !== "assistant") return m;
+				let touched = false;
+				const toolEvents = m.toolEvents.map((te) => {
+					if (te.id !== action.toolUseId) return te;
+					matched = true;
+					touched = true;
+					return { ...te, subagent: action.subagent };
+				});
+				return touched ? { ...m, toolEvents } : m;
+			});
+			return matched ? next : state;
+		}
 		case "ADD_TOOL_RESULT": {
 			let matched = false;
 			const next = state.map((m) => {

@@ -20,6 +20,7 @@ import type {
 	CanUseTool,
 	McpServerStatus,
 	ProviderAccountInfo,
+	SubagentSnapshot,
 } from "./agentProvider";
 import { ingestPlanHtml } from "./attachments";
 import { loadConfig } from "./config";
@@ -77,8 +78,14 @@ type TurnState = {
 	lastKnownContextWindow: number | null;
 	hadToolEvents: boolean;
 	lastAssistantSeq: number;
-	pendingToolEvents: { toolId: string; name: string; input: unknown }[];
+	pendingToolEvents: {
+		toolId: string;
+		name: string;
+		input: unknown;
+		subagent?: SubagentSnapshot;
+	}[];
 	pendingToolResults: Map<string, { content: string; isError: boolean }>;
+	pendingToolUpdates: Map<string, SubagentSnapshot>;
 	/**
 	 * Reserved seq for the assistant message of this turn. Allocated lazily on
 	 * the first text_delta or tool_start so live writes (text streaming, tool
@@ -261,6 +268,7 @@ function createTurnState(): TurnState {
 		lastAssistantSeq: -1,
 		pendingToolEvents: [],
 		pendingToolResults: new Map(),
+		pendingToolUpdates: new Map(),
 		reservedAssistantSeq: null,
 		persistedToolIds: new Set(),
 		textWriteTimer: null,
@@ -873,6 +881,8 @@ export class SessionManager {
 	): void {
 		for (const toolEvent of turn.pendingToolEvents) {
 			const result = turn.pendingToolResults.get(toolEvent.toolId);
+			const subagent =
+				turn.pendingToolUpdates.get(toolEvent.toolId) ?? toolEvent.subagent;
 			if (turn.persistedToolIds.has(toolEvent.toolId)) {
 				if (result) {
 					db.setToolEventResult(
@@ -884,22 +894,45 @@ export class SessionManager {
 						logDbError(`setToolEventResult (${operationSuffix})`, error),
 					);
 				}
+				if (subagent) {
+					db.setToolEventSubagent(sessionId, toolEvent.toolId, subagent).catch(
+						(error) =>
+							logDbError(`setToolEventSubagent (${operationSuffix})`, error),
+					);
+				}
 				continue;
 			}
-			db.appendToolEvent(
-				sessionId,
-				assistantSeq,
-				toolEvent.toolId,
-				toolEvent.name,
-				toolEvent.input,
-			)
-				.then(() => {
+			const append = subagent
+				? db.appendToolEvent(
+						sessionId,
+						assistantSeq,
+						toolEvent.toolId,
+						toolEvent.name,
+						toolEvent.input,
+						subagent,
+					)
+				: db.appendToolEvent(
+						sessionId,
+						assistantSeq,
+						toolEvent.toolId,
+						toolEvent.name,
+						toolEvent.input,
+					);
+			append
+				.then(async () => {
 					if (result) {
-						return db.setToolEventResult(
+						await db.setToolEventResult(
 							sessionId,
 							toolEvent.toolId,
 							result.content,
 							result.isError,
+						);
+					}
+					if (subagent) {
+						await db.setToolEventSubagent(
+							sessionId,
+							toolEvent.toolId,
+							subagent,
 						);
 					}
 				})
@@ -939,6 +972,7 @@ export class SessionManager {
 				turn.lastTurnToolEvents = [...turn.pendingToolEvents];
 				turn.pendingToolEvents.length = 0;
 				turn.pendingToolResults.clear();
+				turn.pendingToolUpdates.clear();
 				turn.persistedToolIds.clear();
 				turn.reservedAssistantSeq = null;
 				turn.assistantText = "";
@@ -1041,22 +1075,56 @@ export class SessionManager {
 			toolId: event.toolId,
 			name: event.name,
 			input: event.input,
+			...(event.subagent ? { subagent: event.subagent } : {}),
 		});
 		emit({
 			type: "tool_event",
 			id: event.toolId,
 			name: event.name,
 			input: event.input,
+			...(event.subagent ? { subagent: event.subagent } : {}),
 		});
 		if (sessionId) {
 			const seq = this.ensureAssistantRow(turn, sessionId);
 			const toolId = event.toolId;
-			void db
-				.appendToolEvent(sessionId, seq, toolId, event.name, event.input)
-				.then(() => turn.persistedToolIds.add(toolId))
+			const append = event.subagent
+				? db.appendToolEvent(
+						sessionId,
+						seq,
+						toolId,
+						event.name,
+						event.input,
+						event.subagent,
+					)
+				: db.appendToolEvent(sessionId, seq, toolId, event.name, event.input);
+			void append
+				.then(async () => {
+					turn.persistedToolIds.add(toolId);
+					const latest = turn.pendingToolUpdates.get(toolId);
+					if (latest) await db.setToolEventSubagent(sessionId, toolId, latest);
+				})
 				.catch((e) => logDbError("appendToolEvent (live)", e));
 		}
 		turn.lastBlockType = "tool_use";
+	}
+
+	private handleToolUpdate(
+		event: Extract<AgentEvent, { type: "tool_update" }>,
+		turn: TurnState,
+		sessionId: string | undefined,
+		emit: (msg: ServerMessage) => void,
+	): void {
+		turn.pendingToolUpdates.set(event.toolId, event.subagent);
+		const pending = turn.pendingToolEvents.find(
+			(toolEvent) => toolEvent.toolId === event.toolId,
+		);
+		if (pending) pending.subagent = event.subagent;
+		emit({ type: "tool_update", id: event.toolId, subagent: event.subagent });
+		if (sessionId && turn.persistedToolIds.has(event.toolId)) {
+			void db
+				.setToolEventSubagent(sessionId, event.toolId, event.subagent)
+				.catch((e) => logDbError("setToolEventSubagent (live)", e));
+		}
 	}
 
 	private handleToolResult(
@@ -1130,6 +1198,9 @@ export class SessionManager {
 			case "tool_start":
 				this.handleToolStart(event, turn, sessionId, emit);
 				break;
+			case "tool_update":
+				this.handleToolUpdate(event, turn, sessionId, emit);
+				break;
 			case "tool_result":
 				this.handleToolResult(event, turn, sessionId, emit);
 				break;
@@ -1192,6 +1263,30 @@ export class SessionManager {
 				)
 			)
 				return;
+		}
+		for (const [toolId, subagent] of turn.pendingToolUpdates) {
+			if (
+				subagent.status !== "pending" &&
+				subagent.status !== "running" &&
+				subagent.status !== "paused"
+			) {
+				continue;
+			}
+			this.handleToolUpdate(
+				{
+					type: "tool_update",
+					toolId,
+					subagent: {
+						...subagent,
+						status: "interrupted",
+						currentStep: "Provider session ended before the subagent completed",
+						endedAtMs: Date.now(),
+					},
+				},
+				turn,
+				sessionId,
+				emit,
+			);
 		}
 	}
 

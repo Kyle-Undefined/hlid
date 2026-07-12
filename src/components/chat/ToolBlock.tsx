@@ -2,6 +2,7 @@ import { AlertTriangle, Check, ChevronRight } from "lucide-react";
 import { useState } from "react";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { ToolEventMessage } from "#/server/protocol";
+import { SubagentToolBlock } from "./SubagentToolBlock";
 import { ToolBlockExpandedPanel } from "./ToolBlockExpandedPanel";
 
 const RESULT_PREVIEW_CHARS = 120;
@@ -71,6 +72,9 @@ export function ToolBlock({
 	permissionLabel?: string;
 }) {
 	const [open, setOpen] = useState(false);
+	if (event.subagent) {
+		return <SubagentToolBlock subagent={event.subagent} />;
+	}
 	const inputEntries = Object.entries(event.input ?? {});
 	const pills = inputEntries.slice(0, 3);
 	const isReasoning = event.name === "Reasoning";

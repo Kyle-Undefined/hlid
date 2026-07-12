@@ -1,3 +1,5 @@
+import type { SubagentSnapshot } from "./agentProvider";
+
 // Server → client messages
 export type StatusMessage = {
 	type: "status";
@@ -31,6 +33,13 @@ export type ToolEventMessage = {
 	/** Populated client-side once a matching tool_result arrives or from history. */
 	result?: string;
 	isError?: boolean;
+	subagent?: SubagentSnapshot;
+};
+
+export type ToolUpdateMessage = {
+	type: "tool_update";
+	id: string;
+	subagent: SubagentSnapshot;
 };
 
 export type ToolResultMessage = {
@@ -337,6 +346,7 @@ export type ServerMessage =
 	| StatusMessage
 	| ChunkMessage
 	| ToolEventMessage
+	| ToolUpdateMessage
 	| ToolResultMessage
 	| DoneMessage
 	| RateLimitMessage

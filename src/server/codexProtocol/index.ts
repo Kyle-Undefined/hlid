@@ -23,3 +23,7 @@ export type { PermissionsRequestApprovalResponse } from "./v2/PermissionsRequest
 export type { ReasoningEffortOption } from "./v2/ReasoningEffortOption";
 export type { GrantedPermissionProfile } from "./v2/GrantedPermissionProfile";
 export type { RateLimitSnapshot } from "./v2/RateLimitSnapshot";
+export type { CollabAgentTool } from "./v2/CollabAgentTool";
+export type { CollabAgentState } from "./v2/CollabAgentState";
+export type { CollabAgentStatus } from "./v2/CollabAgentStatus";
+export type { SubAgentActivityKind } from "./v2/SubAgentActivityKind";

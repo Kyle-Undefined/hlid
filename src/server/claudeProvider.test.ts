@@ -142,6 +142,156 @@ describe("ClaudeProvider — event mapping", () => {
 		]);
 	});
 
+	it("merges Claude task lifecycle updates into the originating subagent tool", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "assistant",
+					message: {
+						content: [
+							{
+								type: "tool_use",
+								id: "agent-tool-1",
+								name: "Agent",
+								input: { prompt: "Inspect auth" },
+							},
+						],
+						usage: { input_tokens: 10, output_tokens: 5 },
+					},
+				},
+				{
+					type: "system",
+					subtype: "task_started",
+					task_id: "task-1",
+					tool_use_id: "agent-tool-1",
+					task_type: "subagent",
+					subagent_type: "Explore",
+					description: "Inspecting authentication",
+					prompt: "Inspect auth",
+					session_id: "sid",
+					uuid: "u1",
+				},
+				{
+					type: "system",
+					subtype: "task_progress",
+					task_id: "task-1",
+					description: "Inspecting authentication",
+					last_tool_name: "Read",
+					usage: { total_tokens: 1200, tool_uses: 3, duration_ms: 4200 },
+					session_id: "sid",
+					uuid: "u2",
+				},
+				{
+					type: "system",
+					subtype: "task_notification",
+					task_id: "task-1",
+					status: "completed",
+					output_file: "/tmp/result",
+					summary: "Authentication inspection complete",
+					usage: { total_tokens: 1800, tool_uses: 5, duration_ms: 6500 },
+					session_id: "sid",
+					uuid: "u3",
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 10, output_tokens: 5 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		const lifecycle = events.filter(
+			(event) => event.type === "tool_start" || event.type === "tool_update",
+		);
+		expect(lifecycle[0]).toMatchObject({
+			type: "tool_start",
+			toolId: "agent-tool-1",
+			name: "Agent",
+		});
+		expect(lifecycle[1]).toMatchObject({
+			type: "tool_update",
+			toolId: "agent-tool-1",
+			subagent: {
+				provider: "claude",
+				agentId: "task-1",
+				label: "Explore",
+				prompt: "Inspect auth",
+				status: "running",
+			},
+		});
+		expect(lifecycle[2]).toMatchObject({
+			type: "tool_update",
+			subagent: {
+				currentStep: "Using Read",
+				lastTool: "Read",
+				usage: { totalTokens: 1200, toolUses: 3, durationMs: 4200 },
+			},
+		});
+		expect(lifecycle[3]).toMatchObject({
+			type: "tool_update",
+			subagent: {
+				status: "completed",
+				currentStep: "Authentication inspection complete",
+				usage: { totalTokens: 1800, toolUses: 5, durationMs: 6500 },
+			},
+		});
+	});
+
+	it("decorates the tool start when task_started arrives first", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "system",
+					subtype: "task_started",
+					task_id: "task-early",
+					tool_use_id: "agent-early",
+					task_type: "subagent",
+					description: "Starting early",
+					prompt: "Inspect routing",
+					session_id: "sid",
+					uuid: "u1",
+				},
+				{
+					type: "assistant",
+					message: {
+						content: [
+							{
+								type: "tool_use",
+								id: "agent-early",
+								name: "Agent",
+								input: { prompt: "Inspect routing" },
+							},
+						],
+						usage: { input_tokens: 1, output_tokens: 1 },
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 1,
+					usage: { input_tokens: 1, output_tokens: 1 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		expect(events.find((event) => event.type === "tool_start")).toMatchObject({
+			type: "tool_start",
+			toolId: "agent-early",
+			subagent: {
+				agentId: "task-early",
+				prompt: "Inspect routing",
+				status: "running",
+			},
+		});
+	});
+
 	it("yields tool_result for user tool_result content blocks (string)", async () => {
 		vi.mocked(query).mockReturnValueOnce(
 			sdkGen([

@@ -19,6 +19,7 @@ import type {
 	ProviderWindowReading,
 	SendOptions,
 	SlashCommand,
+	SubagentSnapshot,
 } from "./agentProvider";
 
 /**
@@ -170,9 +171,214 @@ type EventTranslation = {
 	hadText: boolean;
 };
 
+type ClaudeTaskMessage = Extract<SDKMessage, { type: "system" }> &
+	Record<string, unknown>;
+
+class ClaudeSubagentTracker {
+	private snapshots = new Map<string, SubagentSnapshot>();
+	private toolIds = new Map<string, string>();
+
+	snapshotForTool(toolId: string): SubagentSnapshot | undefined {
+		for (const [taskId, mappedToolId] of this.toolIds) {
+			if (mappedToolId === toolId) return this.snapshots.get(taskId);
+		}
+		return undefined;
+	}
+
+	handleSystem(message: ClaudeTaskMessage): AgentEvent[] {
+		const subtype = String(message.subtype ?? "");
+		if (subtype === "task_started") return this.handleStarted(message);
+		if (subtype === "task_progress") return this.handleProgress(message);
+		if (subtype === "task_updated") return this.handleUpdated(message);
+		if (subtype === "task_notification")
+			return this.handleNotification(message);
+		return [];
+	}
+
+	handleToolProgress(
+		message: Extract<SDKMessage, { type: "tool_progress" }>,
+	): AgentEvent[] {
+		if (!message.task_id) return [];
+		const current = this.snapshots.get(message.task_id);
+		const toolId = this.toolIds.get(message.task_id);
+		if (!current || !toolId) return [];
+		const subagent: SubagentSnapshot = {
+			...current,
+			lastTool: message.tool_name,
+			currentStep: `Using ${message.tool_name}`,
+			usage: {
+				...current.usage,
+				durationMs: Math.round(message.elapsed_time_seconds * 1000),
+			},
+		};
+		this.snapshots.set(message.task_id, subagent);
+		return [{ type: "tool_update", toolId, subagent }];
+	}
+
+	private handleStarted(message: ClaudeTaskMessage): AgentEvent[] {
+		const taskId = String(message.task_id ?? "");
+		const isSubagent =
+			message.task_type === "subagent" ||
+			typeof message.subagent_type === "string";
+		if (!taskId || !isSubagent || message.skip_transcript === true) return [];
+		const originatingToolId =
+			typeof message.tool_use_id === "string" && message.tool_use_id
+				? message.tool_use_id
+				: `claude-task-${taskId}`;
+		const prompt =
+			typeof message.prompt === "string" ? message.prompt : undefined;
+		const description =
+			typeof message.description === "string" ? message.description : undefined;
+		const subagent: SubagentSnapshot = {
+			provider: "claude",
+			agentId: taskId,
+			taskId,
+			...(typeof message.subagent_type === "string"
+				? { label: message.subagent_type }
+				: {}),
+			...(prompt ? { prompt } : {}),
+			...(description ? { description, currentStep: description } : {}),
+			status: "running",
+			startedAtMs: Date.now(),
+		};
+		this.snapshots.set(taskId, subagent);
+		this.toolIds.set(taskId, originatingToolId);
+		if (typeof message.tool_use_id === "string" && message.tool_use_id) {
+			return [{ type: "tool_update", toolId: originatingToolId, subagent }];
+		}
+		return [
+			{
+				type: "tool_start",
+				toolId: originatingToolId,
+				name: "Subagent",
+				input: prompt ? { prompt } : {},
+				subagent,
+			},
+		];
+	}
+
+	private handleProgress(message: ClaudeTaskMessage): AgentEvent[] {
+		const taskId = String(message.task_id ?? "");
+		const current = this.snapshots.get(taskId);
+		const toolId = this.toolIds.get(taskId);
+		if (!current || !toolId) return [];
+		const usage = message.usage as
+			| { total_tokens?: number; tool_uses?: number; duration_ms?: number }
+			| undefined;
+		const summary =
+			typeof message.summary === "string" ? message.summary : undefined;
+		const description =
+			typeof message.description === "string"
+				? message.description
+				: current.description;
+		const lastTool =
+			typeof message.last_tool_name === "string"
+				? message.last_tool_name
+				: current.lastTool;
+		const subagent: SubagentSnapshot = {
+			...current,
+			...(description ? { description } : {}),
+			...(lastTool ? { lastTool } : {}),
+			currentStep:
+				summary ??
+				(lastTool ? `Using ${lastTool}` : (description ?? current.currentStep)),
+			usage: {
+				...current.usage,
+				...(typeof usage?.total_tokens === "number"
+					? { totalTokens: usage.total_tokens }
+					: {}),
+				...(typeof usage?.tool_uses === "number"
+					? { toolUses: usage.tool_uses }
+					: {}),
+				...(typeof usage?.duration_ms === "number"
+					? { durationMs: usage.duration_ms }
+					: {}),
+			},
+		};
+		this.snapshots.set(taskId, subagent);
+		return [{ type: "tool_update", toolId, subagent }];
+	}
+
+	private handleUpdated(message: ClaudeTaskMessage): AgentEvent[] {
+		const taskId = String(message.task_id ?? "");
+		const current = this.snapshots.get(taskId);
+		const toolId = this.toolIds.get(taskId);
+		if (!current || !toolId) return [];
+		const patch = (message.patch ?? {}) as Record<string, unknown>;
+		const rawStatus = String(patch.status ?? "");
+		const status: SubagentSnapshot["status"] =
+			rawStatus === "completed"
+				? "completed"
+				: rawStatus === "failed" || rawStatus === "killed"
+					? "failed"
+					: rawStatus === "paused"
+						? "paused"
+						: rawStatus === "pending"
+							? "pending"
+							: "running";
+		const terminal = status === "completed" || status === "failed";
+		const subagent: SubagentSnapshot = {
+			...current,
+			status,
+			...(typeof patch.description === "string"
+				? { description: patch.description, currentStep: patch.description }
+				: {}),
+			...(typeof patch.error === "string" ? { currentStep: patch.error } : {}),
+			...(terminal
+				? {
+						endedAtMs:
+							typeof patch.end_time === "number" ? patch.end_time : Date.now(),
+					}
+				: {}),
+		};
+		this.snapshots.set(taskId, subagent);
+		return [{ type: "tool_update", toolId, subagent }];
+	}
+
+	private handleNotification(message: ClaudeTaskMessage): AgentEvent[] {
+		const taskId = String(message.task_id ?? "");
+		const current = this.snapshots.get(taskId);
+		const toolId = this.toolIds.get(taskId);
+		if (!current || !toolId) return [];
+		const rawStatus = String(message.status ?? "");
+		const status: SubagentSnapshot["status"] =
+			rawStatus === "completed"
+				? "completed"
+				: rawStatus === "stopped"
+					? "interrupted"
+					: "failed";
+		const usage = message.usage as
+			| { total_tokens?: number; tool_uses?: number; duration_ms?: number }
+			| undefined;
+		const summary =
+			typeof message.summary === "string" ? message.summary : undefined;
+		const subagent: SubagentSnapshot = {
+			...current,
+			status,
+			...(summary ? { currentStep: summary } : {}),
+			endedAtMs: Date.now(),
+			usage: {
+				...current.usage,
+				...(typeof usage?.total_tokens === "number"
+					? { totalTokens: usage.total_tokens }
+					: {}),
+				...(typeof usage?.tool_uses === "number"
+					? { toolUses: usage.tool_uses }
+					: {}),
+				...(typeof usage?.duration_ms === "number"
+					? { durationMs: usage.duration_ms }
+					: {}),
+			},
+		};
+		this.snapshots.set(taskId, subagent);
+		return [{ type: "tool_update", toolId, subagent }];
+	}
+}
+
 function translateSystemMessage(
 	message: Extract<SDKMessage, { type: "system" }>,
 	hadText: boolean,
+	tracker: ClaudeSubagentTracker,
 ): EventTranslation {
 	if (message.subtype === "init") {
 		return {
@@ -191,6 +397,8 @@ function translateSystemMessage(
 			hadText,
 		};
 	}
+	const taskEvents = tracker.handleSystem(message as ClaudeTaskMessage);
+	if (taskEvents.length > 0) return { events: taskEvents, hadText };
 	return { events: [], hadText };
 }
 
@@ -219,6 +427,7 @@ function translateUserMessage(
 function translateAssistantMessage(
 	message: Extract<SDKMessage, { type: "assistant" }>,
 	hadText: boolean,
+	tracker: ClaudeSubagentTracker,
 ): EventTranslation {
 	const events: AgentEvent[] = [];
 	const usage = message.message.usage;
@@ -238,11 +447,13 @@ function translateAssistantMessage(
 			nextHadText = true;
 			events.push({ type: "text_delta", text: block.text });
 		} else if (block.type === "tool_use") {
+			const subagent = tracker.snapshotForTool(block.id);
 			events.push({
 				type: "tool_start",
 				toolId: block.id,
 				name: block.name,
 				input: block.input,
+				...(subagent ? { subagent } : {}),
 			});
 		}
 	}
@@ -317,19 +528,22 @@ function translateResultMessage(
 function translateSdkMessage(
 	message: SDKMessage,
 	hadText: boolean,
+	tracker: ClaudeSubagentTracker,
 ): EventTranslation {
 	switch (message.type) {
 		case "system":
-			return translateSystemMessage(message, hadText);
+			return translateSystemMessage(message, hadText, tracker);
 		case "user":
 			return translateUserMessage(message, hadText);
 		case "assistant":
-			return translateAssistantMessage(message, hadText);
+			return translateAssistantMessage(message, hadText, tracker);
 		case "tool_use_summary":
 			return {
 				events: [{ type: "summary", text: message.summary }],
 				hadText,
 			};
+		case "tool_progress":
+			return { events: tracker.handleToolProgress(message), hadText };
 		case "rate_limit_event":
 			return translateRateLimitMessage(message, hadText);
 		case "result":
@@ -352,6 +566,7 @@ class ClaudeAgentSession implements AgentSession {
 	private firstSend: SdkUserMessage | null = null;
 	private receivedAnyEvent = false;
 	private retriedWithoutResume = false;
+	private subagents = new ClaudeSubagentTracker();
 
 	constructor(
 		makeQuery: (
@@ -528,7 +743,7 @@ class ClaudeAgentSession implements AgentSession {
 		let hadText = false;
 		for await (const message of sdkQuery) {
 			this.receivedAnyEvent = true;
-			const translation = translateSdkMessage(message, hadText);
+			const translation = translateSdkMessage(message, hadText, this.subagents);
 			hadText = translation.hadText;
 			yield* translation.events;
 		}
