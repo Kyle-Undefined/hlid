@@ -439,24 +439,7 @@ function useRavenViewport({
 }
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
-function useRavenActions({
-	config,
-	initialVoiceInfo,
-	input,
-	setInput,
-	clearDraft,
-	activeSkill,
-	setActiveSkill,
-	allSkills,
-	planMode,
-	setPlanMode,
-	planHtml,
-	session,
-	runtime,
-	upload,
-	viewport,
-	chatQueue,
-}: {
+type RavenActionProps = {
 	config: RavenConfig;
 	initialVoiceInfo: Awaited<ReturnType<typeof getVoiceInfoFn>>;
 	input: string;
@@ -473,23 +456,11 @@ function useRavenActions({
 	upload: ReturnType<typeof useFileUpload>;
 	viewport: ReturnType<typeof useRavenViewport>;
 	chatQueue: ReturnType<typeof useWsChatQueue>;
-}) {
-	const {
-		agentSkillContext,
-		setAgentSkillContext,
-		agentContextSentRef,
-		sessionId,
-		setSessionId,
-		sessionIdRef,
-	} = session;
-	const { sessionState, send, dispatch, pendingIdRef, lastAssistantIdRef } =
-		runtime;
-	const {
-		pendingAttachments,
-		clearPending: clearPendingAttachments,
-		setPendingAttachments,
-	} = upload;
-	const { atBottomRef, textareaRef } = viewport;
+};
+
+/** Permission / question / plan-proposal card decisions. */
+function useRavenDecisionActions({ runtime, setPlanMode }: RavenActionProps) {
+	const { send, dispatch } = runtime;
 
 	const handleDecide = useCallback(
 		(
@@ -545,7 +516,27 @@ function useRavenActions({
 		[send, dispatch, setPlanMode],
 	);
 
-	const handleSend = useCallback(
+	return { handleDecide, handleSubmitAnswers, handlePlanDecide };
+}
+
+function useRavenSend(props: RavenActionProps) {
+	const {
+		input,
+		setInput,
+		clearDraft,
+		activeSkill,
+		setActiveSkill,
+		allSkills,
+		planMode,
+		planHtml,
+	} = props;
+	const { agentSkillContext, agentContextSentRef, sessionId } = props.session;
+	const { sessionState, send, dispatch } = props.runtime;
+	const { pendingAttachments, clearPending: clearPendingAttachments } =
+		props.upload;
+	const { atBottomRef } = props.viewport;
+
+	return useCallback(
 		(overrideText?: string) => {
 			const typed = (overrideText ?? input).trim();
 
@@ -603,8 +594,15 @@ function useRavenActions({
 			setActiveSkill,
 		],
 	);
+}
 
-	const voice = useVoiceInput({
+function useRavenVoice(
+	props: RavenActionProps,
+	handleSend: (overrideText?: string) => void,
+) {
+	const { config, initialVoiceInfo, input, setInput } = props;
+	const { textareaRef } = props.viewport;
+	return useVoiceInput({
 		config: config.voice,
 		initialInfo: initialVoiceInfo,
 		onTranscription: (text) => {
@@ -619,6 +617,12 @@ function useRavenActions({
 			requestAnimationFrame(() => textareaRef.current?.focus());
 		},
 	});
+}
+
+function useRavenQueueActions(props: RavenActionProps) {
+	const { input, setInput, chatQueue } = props;
+	const { dispatch } = props.runtime;
+	const { pendingAttachments, setPendingAttachments } = props.upload;
 
 	const handleCancelQueued = useCallback(
 		(id: string) => {
@@ -662,7 +666,20 @@ function useRavenActions({
 		[chatQueue, dispatch],
 	);
 
-	const handleClear = useCallback(() => {
+	return { handleCancelQueued, handlePromoteQueued };
+}
+
+function useRavenClear(props: RavenActionProps) {
+	const { clearDraft, setPlanMode } = props;
+	const {
+		setAgentSkillContext,
+		agentContextSentRef,
+		setSessionId,
+		sessionIdRef,
+	} = props.session;
+	const { send, dispatch, pendingIdRef, lastAssistantIdRef } = props.runtime;
+
+	return useCallback(() => {
 		setPlanMode(false);
 		clearDraft();
 		pendingIdRef.current = null;
@@ -693,15 +710,20 @@ function useRavenActions({
 		setAgentSkillContext,
 		setPlanMode,
 	]);
+}
+
+function useRavenActions(props: RavenActionProps) {
+	const decisions = useRavenDecisionActions(props);
+	const handleSend = useRavenSend(props);
+	const voice = useRavenVoice(props, handleSend);
+	const queue = useRavenQueueActions(props);
+	const handleClear = useRavenClear(props);
 
 	return {
 		voice,
-		handleDecide,
-		handleSubmitAnswers,
-		handlePlanDecide,
+		...decisions,
 		handleSend,
-		handleCancelQueued,
-		handlePromoteQueued,
+		...queue,
 		handleClear,
 	};
 }
