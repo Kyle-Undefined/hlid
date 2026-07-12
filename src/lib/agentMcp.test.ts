@@ -66,6 +66,12 @@ function makeConfig(agentPaths: string[] = []): HlidConfig {
 			max_recording_seconds: 300,
 		},
 		umbod: { enabled: false, manifest_path: "umbod.toml" },
+		auto_sleep: {
+			enabled: false,
+			threshold: 0.95,
+			max_sleep_minutes: 360,
+			resume_buffer_seconds: 60,
+		},
 		vault_provider: "claude",
 		agents: agentPaths.map((p) => ({
 			path: p,

@@ -3,7 +3,7 @@
  * session-scoped permission persistence.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Agent, HlidConfig } from "../config";
 
 // ── module mocks (hoisted) ────────────────────────────────────────────────────
@@ -92,11 +92,17 @@ import type {
 	AgentQueryParams,
 	AgentSession,
 } from "./agentProvider";
+import { loadConfig } from "./config";
 import type { RateLimitMessage, ServerMessage } from "./protocol";
 import { getWindowMark } from "./proxy";
 import { generateTurnRecap } from "./recap";
 import { SessionManager } from "./session";
 import { authorizeHlidTool, registerUmbodApprovalSession } from "./umbod";
+import {
+	evaluateSleep,
+	reportRateLimitSignal,
+	_resetForTests as resetUsageGate,
+} from "./usageGate";
 
 // Bun doesn't support waitFor() — poll until assertion passes or timeout
 async function waitFor(fn: () => void, timeout = 1000): Promise<void> {
@@ -3680,5 +3686,223 @@ describe("SessionManager — status:running fires after initSessionContext", () 
 		expect((runningEvent as { turn_id?: string } | null)?.turn_id).toBe(
 			"turn-abc-123",
 		);
+	});
+});
+
+// ── auto-sleep gates ──────────────────────────────────────────────────────────
+
+describe("SessionManager — auto-sleep gates", () => {
+	const AUTO_SLEEP = {
+		enabled: true,
+		threshold: 0.95,
+		max_sleep_minutes: 360,
+		resume_buffer_seconds: 0,
+	};
+
+	function sleepConfig(): HlidConfig {
+		return { ...makeConfig(), auto_sleep: AUTO_SLEEP } as HlidConfig;
+	}
+
+	function epochNow(): number {
+		return Math.floor(Date.now() / 1000);
+	}
+
+	/** Provider that completes immediately (no tool permission gate). */
+	function makeImmediateProvider(): AgentProvider {
+		return {
+			providerId: "claude",
+			query(): ReturnType<AgentProvider["query"]> {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-sleep" };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+	}
+
+	beforeEach(() => {
+		vi.mocked(loadConfig).mockReturnValue(sleepConfig());
+	});
+
+	afterEach(() => {
+		resetUsageGate();
+		vi.mocked(loadConfig).mockReset();
+	});
+
+	it("turn gate holds dispatch until the hard limit expires, emitting sleeping/resumed", async () => {
+		// Hard limit that lifts in ~1s (buffer 0).
+		reportRateLimitSignal("claude", "five_hour", "rejected", epochNow() + 1);
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(
+			makeConfig(),
+			makeProviders(makeImmediateProvider()),
+		);
+		await sm.runQuery("hi", (m) => emitted.push(m), "sleep-turn");
+
+		const sleeps = emitted.filter((m) => m.type === "agent_sleep");
+		expect(sleeps[0]).toMatchObject({
+			state: "sleeping",
+			providerId: "claude",
+			reason: "limit_reached",
+			windowId: "five_hour",
+		});
+		expect(sleeps.at(-1)).toMatchObject({ state: "resumed", cause: "reset" });
+		// The turn ran to completion after the wake.
+		expect(emitted.some((m) => m.type === "done")).toBe(true);
+	});
+
+	it("abort during a turn-gate sleep cancels without dispatching", async () => {
+		reportRateLimitSignal("claude", "five_hour", "rejected", epochNow() + 3600);
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(
+			makeConfig(),
+			makeProviders(makeImmediateProvider()),
+		);
+		const turn = sm.runQuery("hi", (m) => emitted.push(m), "sleep-abort");
+		await waitFor(() =>
+			expect(
+				emitted.some((m) => m.type === "agent_sleep" && m.state === "sleeping"),
+			).toBe(true),
+		);
+		sm.abort();
+		await turn;
+
+		expect(emitted).toContainEqual(
+			expect.objectContaining({ type: "agent_sleep", cause: "aborted" }),
+		);
+		// Provider never ran: no session_start / done.
+		expect(emitted.some((m) => m.type === "done")).toBe(false);
+		expect(sm.getSleepState()).toBeNull();
+	});
+
+	it("tool gate defers the permission pipeline until skipSleep, so no card shows while sleeping", async () => {
+		const emitted: ServerMessage[] = [];
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-toolgate" };
+					// Consumed (and fed to reportRateLimitSignal) before the next
+					// generator step, so the hard limit is set before canUseTool.
+					yield {
+						type: "rate_limit",
+						status: "rejected",
+						rateLimitType: "five_hour",
+						resetsAt: epochNow() + 3600,
+					};
+					await params.canUseTool(
+						"Bash",
+						{},
+						{
+							toolUseID: "tid-sleep",
+							signal: new AbortController().signal,
+							title: undefined,
+							displayName: undefined,
+							description: undefined,
+						},
+					);
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const turn = sm.runQuery("hi", (m) => emitted.push(m), "sleep-tool");
+
+		await waitFor(() =>
+			expect(
+				emitted.some((m) => m.type === "agent_sleep" && m.state === "sleeping"),
+			).toBe(true),
+		);
+		// Sleeping at the tool gate: the permission card must not have appeared.
+		expect(emitted.some((m) => m.type === "permission_request")).toBe(false);
+
+		sm.skipSleep();
+		await waitFor(() =>
+			expect(emitted.some((m) => m.type === "permission_request")).toBe(true),
+		);
+		expect(emitted).toContainEqual(
+			expect.objectContaining({ type: "agent_sleep", cause: "skipped" }),
+		);
+		sm.handlePermissionResponse("tid-sleep", true);
+		await turn;
+		expect(emitted.some((m) => m.type === "done")).toBe(true);
+	});
+
+	it("handleRateLimit registers provider hard limits for the gate", async () => {
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-rl" };
+					yield {
+						type: "rate_limit",
+						status: "rejected",
+						rateLimitType: "five_hour",
+						resetsAt: epochNow() + 3600,
+					};
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("hi", () => {}, "sleep-register");
+		expect(evaluateSleep("claude", AUTO_SLEEP)).toMatchObject({
+			reason: "limit_reached",
+		});
+	});
+
+	it("getSleepState() exposes the banner for sync replay while sleeping", async () => {
+		reportRateLimitSignal("claude", "five_hour", "rejected", epochNow() + 3600);
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(
+			makeConfig(),
+			makeProviders(makeImmediateProvider()),
+		);
+		const turn = sm.runQuery("hi", (m) => emitted.push(m), "sleep-replay");
+		await waitFor(() =>
+			expect(sm.getSleepState()).toMatchObject({
+				type: "agent_sleep",
+				state: "sleeping",
+			}),
+		);
+		sm.skipSleep();
+		await turn;
+		expect(sm.getSleepState()).toBeNull();
 	});
 });

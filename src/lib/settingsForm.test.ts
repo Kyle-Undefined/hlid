@@ -81,6 +81,41 @@ describe("settings form conversion", () => {
 		const forms = createSettingsForms(HlidConfigSchema.parse({}));
 		expect(forms.ui.htmlPlans).toBe(false);
 	});
+
+	it("round-trips auto-sleep through the percent form", () => {
+		const initial = HlidConfigSchema.parse({
+			auto_sleep: { enabled: true, threshold: 0.4, max_sleep_minutes: 120 },
+		});
+		const forms = createSettingsForms(initial);
+		expect(forms.autoSleep).toEqual({
+			enabled: true,
+			thresholdPercent: "40",
+			maxSleepMinutes: "120",
+			resumeBufferSeconds: "60",
+		});
+
+		expect(buildSettingsConfig(initial, forms, false).auto_sleep).toEqual(
+			initial.auto_sleep,
+		);
+	});
+
+	it("clamps and defaults invalid auto-sleep values", () => {
+		const initial = HlidConfigSchema.parse({});
+		const forms = createSettingsForms(initial);
+		forms.autoSleep = {
+			enabled: true,
+			thresholdPercent: "250",
+			maxSleepMinutes: "not-a-number",
+			resumeBufferSeconds: "",
+		};
+
+		expect(buildSettingsConfig(initial, forms, false).auto_sleep).toEqual({
+			enabled: true,
+			threshold: 1,
+			max_sleep_minutes: 360,
+			resume_buffer_seconds: 60,
+		});
+	});
 });
 
 describe("agent form routing", () => {

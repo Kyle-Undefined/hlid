@@ -11,6 +11,7 @@ export function useWs(onMessage?: (msg: ServerMessage) => void) {
 		permissionMode,
 		runningTurnId,
 		hasPendingPermissions,
+		sleepState,
 	} = useSyncExternalStore(
 		wsStore.subscribeStatus,
 		wsStore.getSnapshot,
@@ -32,6 +33,7 @@ export function useWs(onMessage?: (msg: ServerMessage) => void) {
 		permissionMode,
 		runningTurnId,
 		hasPendingPermissions,
+		sleepState,
 		send,
 	};
 }

@@ -5,7 +5,10 @@ import type { VaultForm } from "#/components/forge/VaultSection";
 import type { VocabForm } from "#/components/forge/VocabSection";
 import type { VoiceForm } from "#/components/forge/VoiceSection";
 import type { HlidConfig } from "#/config";
-import { DEFAULT_ATTACHMENTS_CONFIG } from "#/config";
+import {
+	DEFAULT_ATTACHMENTS_CONFIG,
+	DEFAULT_AUTO_SLEEP_CONFIG,
+} from "#/config";
 import { buildVaultSection } from "#/lib/vaultConfig";
 
 export type CodexForm = {
@@ -15,6 +18,14 @@ export type CodexForm = {
 	permissionMode: HlidConfig["codex"]["permission_mode"];
 	turnRecaps: boolean;
 	recapModel: string;
+};
+
+export type AutoSleepForm = {
+	enabled: boolean;
+	/** Percent 1–100; stored in config as a 0.01–1 fraction. */
+	thresholdPercent: string;
+	maxSleepMinutes: string;
+	resumeBufferSeconds: string;
 };
 
 export type SettingsForms = {
@@ -27,6 +38,7 @@ export type SettingsForms = {
 	vocab: VocabForm;
 	acpAgents: NonNullable<HlidConfig["acp_agents"]>;
 	umbod: HlidConfig["umbod"];
+	autoSleep: AutoSleepForm;
 };
 
 export function applyAgentFormPatch(
@@ -134,6 +146,15 @@ function createUiForm(initial: HlidConfig): UiForm {
 	};
 }
 
+function createAutoSleepForm(initial: HlidConfig): AutoSleepForm {
+	return {
+		enabled: initial.auto_sleep.enabled,
+		thresholdPercent: String(Math.round(initial.auto_sleep.threshold * 100)),
+		maxSleepMinutes: String(initial.auto_sleep.max_sleep_minutes),
+		resumeBufferSeconds: String(initial.auto_sleep.resume_buffer_seconds),
+	};
+}
+
 function createVocabForm(initial: HlidConfig): VocabForm {
 	return {
 		active: initial.status_vocabulary.active.join(", "),
@@ -150,6 +171,7 @@ export function createSettingsForms(initial: HlidConfig): SettingsForms {
 		voice: initial.voice,
 		acpAgents: initial.acp_agents ?? [],
 		umbod: initial.umbod,
+		autoSleep: createAutoSleepForm(initial),
 		server: createServerForm(initial),
 		ui: createUiForm(initial),
 		vocab: createVocabForm(initial),
@@ -167,6 +189,43 @@ function vocabularyValues(value: string): string[] {
 		.split(",")
 		.map((item) => item.trim())
 		.filter(Boolean);
+}
+
+/** Parse to an integer clamped to [min, max]; fall back when not a number. */
+function boundedInt(
+	value: string,
+	min: number,
+	max: number,
+	fallback: number,
+): number {
+	const parsed = Number(value);
+	if (value.trim() === "" || !Number.isFinite(parsed)) return fallback;
+	return Math.min(max, Math.max(min, Math.round(parsed)));
+}
+
+function autoSleepConfig(form: AutoSleepForm): HlidConfig["auto_sleep"] {
+	return {
+		enabled: form.enabled,
+		threshold:
+			boundedInt(
+				form.thresholdPercent,
+				1,
+				100,
+				DEFAULT_AUTO_SLEEP_CONFIG.threshold * 100,
+			) / 100,
+		max_sleep_minutes: boundedInt(
+			form.maxSleepMinutes,
+			1,
+			1440,
+			DEFAULT_AUTO_SLEEP_CONFIG.max_sleep_minutes,
+		),
+		resume_buffer_seconds: boundedInt(
+			form.resumeBufferSeconds,
+			0,
+			600,
+			DEFAULT_AUTO_SLEEP_CONFIG.resume_buffer_seconds,
+		),
+	};
 }
 
 function serverConfig(
@@ -228,6 +287,7 @@ export function buildSettingsConfig(
 		attachments: initial.attachments ?? DEFAULT_ATTACHMENTS_CONFIG,
 		voice: forms.voice,
 		umbod: forms.umbod,
+		auto_sleep: autoSleepConfig(forms.autoSleep),
 		agents: initial.agents ?? [],
 		acp_agents: forms.acpAgents,
 	};

@@ -41,6 +41,7 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 	z.strictObject({ type: z.literal("cancel_queued"), turn_id: id }),
 	z.strictObject({ type: z.literal("promote_queued"), turn_id: id }),
 	noFields("abort"),
+	noFields("skip_sleep"),
 	noFields("clear"),
 	noFields("reload_session"),
 	z.strictObject({

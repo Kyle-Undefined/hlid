@@ -862,6 +862,104 @@ describe("CodexAgentSession — notifications", () => {
 		expect(await events.next()).toEqual({ value: undefined, done: true });
 	});
 
+	it("attributes rateLimitReachedType to the most-utilized window", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const session = new CodexProvider().query(baseCodexParams());
+		const events = session[Symbol.asyncIterator]();
+		await session.send("hello");
+		await nextSessionEvent(events); // session_start
+
+		// five_hour most utilized → it gets the rejection; weekly stays ok.
+		emitSessionNotification(proc, "account/rateLimits/updated", {
+			rateLimits: {
+				rateLimitReachedType: "rate_limit_reached",
+				primary: { usedPercent: 100, windowDurationMins: 300, resetsAt: 42 },
+				secondary: {
+					usedPercent: 30,
+					windowDurationMins: 10_080,
+					resetsAt: 99,
+				},
+			},
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "rate_limit",
+			status: "rejected",
+			rateLimitType: "five_hour",
+			utilization: 1,
+			resetsAt: 42,
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "rate_limit",
+			status: "ok",
+			rateLimitType: "weekly",
+			utilization: 0.3,
+			resetsAt: 99,
+		});
+
+		// weekly most utilized → rejection lands there, not on five_hour.
+		emitSessionNotification(proc, "account/rateLimits/updated", {
+			rateLimits: {
+				rateLimitReachedType: "workspace_owner_usage_limit_reached",
+				primary: { usedPercent: 60, windowDurationMins: 300, resetsAt: 42 },
+				secondary: {
+					usedPercent: 100,
+					windowDurationMins: 10_080,
+					resetsAt: 99,
+				},
+			},
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			rateLimitType: "five_hour",
+			status: "ok",
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			rateLimitType: "weekly",
+			status: "rejected",
+		});
+		session.cancel();
+	});
+
+	it("keeps credits-depleted snapshots ok and emits despite missing usedPercent", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const session = new CodexProvider().query(baseCodexParams());
+		const events = session[Symbol.asyncIterator]();
+		await session.send("hello");
+		await nextSessionEvent(events); // session_start
+
+		// Credits don't reset with the window — no rejection.
+		emitSessionNotification(proc, "account/rateLimits/updated", {
+			rateLimits: {
+				rateLimitReachedType: "workspace_owner_credits_depleted",
+				primary: { usedPercent: 100, windowDurationMins: 300, resetsAt: 42 },
+			},
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			rateLimitType: "five_hour",
+			status: "ok",
+		});
+
+		// Hard limit with no usedPercent reading still surfaces the rejection.
+		emitSessionNotification(proc, "account/rateLimits/updated", {
+			rateLimits: {
+				rateLimitReachedType: "rate_limit_reached",
+				primary: { windowDurationMins: 300, resetsAt: 42 },
+			},
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "rate_limit",
+			status: "rejected",
+			rateLimitType: "five_hour",
+			resetsAt: 42,
+		});
+		session.cancel();
+	});
+
 	it("uses Codex item tool metadata instead of the generic item type", async () => {
 		const { proc } = makeFakeSessionProc();
 		vi.mocked(spawn).mockReturnValue(proc as never);

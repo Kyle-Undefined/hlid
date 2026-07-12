@@ -666,12 +666,29 @@ class CodexAgentSession implements AgentSession {
 	private emitRateLimits(raw: unknown): void {
 		// Inbound payload — cast for shape hints, keep runtime guards.
 		const snapshot = asObj(raw) as Partial<RateLimitSnapshot>;
+		const reached = snapshot.rateLimitReachedType;
+		// Credits-depleted variants don't reset with the window, so sleeping on
+		// them is pointless — they stay "ok". The usage/rate-limit variants are
+		// hard limits that lift at the window reset.
+		const hardLimited =
+			reached === "rate_limit_reached" ||
+			reached === "workspace_owner_usage_limit_reached" ||
+			reached === "workspace_member_usage_limit_reached";
+		const windows: {
+			windowId: string;
+			utilization: number | null;
+			resetsAt: number | null;
+		}[] = [];
 		for (const [win, fallbackId] of [
 			[snapshot.primary, "five_hour"],
 			[snapshot.secondary, "weekly"],
 		] as const) {
 			const w = asObj(win);
-			if (typeof w.usedPercent !== "number") continue;
+			const usedPercent =
+				typeof w.usedPercent === "number" ? w.usedPercent : null;
+			// A window with no reading is normally skipped, but a hard limit must
+			// still surface so downstream sleep logic sees the rejection.
+			if (usedPercent == null && !hardLimited) continue;
 			const mins =
 				typeof w.windowDurationMins === "number" ? w.windowDurationMins : null;
 			const windowId =
@@ -682,12 +699,29 @@ class CodexAgentSession implements AgentSession {
 				rawReset != null && rawReset > 1e12
 					? Math.round(rawReset / 1000)
 					: rawReset;
+			windows.push({
+				windowId,
+				utilization: usedPercent == null ? null : usedPercent / 100,
+				resetsAt,
+			});
+		}
+		// rateLimitReachedType is snapshot-level and doesn't name the window that
+		// tripped; attribute the rejection to the most-utilized reported window
+		// (five_hour on ties or when no readings exist) so an exhausted weekly
+		// doesn't masquerade as a five_hour limit.
+		let rejectedId: string | null = null;
+		if (hardLimited && windows.length > 0) {
+			rejectedId = windows.reduce((best, w) =>
+				(w.utilization ?? -1) > (best.utilization ?? -1) ? w : best,
+			).windowId;
+		}
+		for (const w of windows) {
 			this.events.push({
 				type: "rate_limit",
-				status: "ok",
-				rateLimitType: windowId,
-				utilization: w.usedPercent / 100,
-				resetsAt,
+				status: w.windowId === rejectedId ? "rejected" : "ok",
+				rateLimitType: w.windowId,
+				...(w.utilization != null ? { utilization: w.utilization } : {}),
+				resetsAt: w.resetsAt,
 			});
 		}
 	}

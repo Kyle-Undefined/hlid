@@ -198,6 +198,10 @@ function handleRoutingMessage(
 function handleSync(ws: ServerWebSocket<WsData>, entry: PoolEntry): void {
 	send(ws, { type: "status", ...entry.manager.getStatus() });
 	send(ws, { type: "queue_state", ...entry.manager.getQueueState() });
+	// Informational — every syncing client gets the sleep banner, not just the
+	// prompt owner.
+	const sleep = entry.manager.getSleepState();
+	if (sleep) send(ws, sleep);
 	if (!entry.manager.isRunning() || entry.runState.ownerWs !== null) return;
 	entry.runState.ownerWs = ws;
 	for (const request of entry.manager.getPendingPermissionRequests())
@@ -540,6 +544,9 @@ async function handleSessionMessage(
 		case "abort":
 			entry.manager.abort();
 			return;
+		case "skip_sleep":
+			entry.manager.skipSleep();
+			return;
 		case "cancel_queued":
 			entry.manager.cancelQueued(msg.turn_id);
 			return;
@@ -639,6 +646,8 @@ export function createWsHandlers(
 				for (const msg of vault.runState.getReplayBuffer()) {
 					send(ws, msg);
 				}
+				const sleep = vault.manager.getSleepState();
+				if (sleep) send(ws, sleep);
 				// Claim ownership and replay pending prompts if no owner yet (page refresh).
 				if (vault.runState.ownerWs === null) {
 					vault.runState.ownerWs = ws;

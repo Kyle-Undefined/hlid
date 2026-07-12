@@ -102,6 +102,7 @@ describe("useLoadChatHistory — initial load", () => {
 			permissionMode: null,
 			hasPendingPermissions: false,
 			runningTurnId: null,
+			sleepState: null,
 		});
 		vi.mocked(wsStore.claimPendingPrompt).mockReturnValue(null);
 		vi.mocked(wsStore.drainMessageBuffer).mockReturnValue([]);
@@ -157,6 +158,7 @@ describe("useLoadChatHistory — reconnect recovery", () => {
 			permissionMode: null,
 			hasPendingPermissions: false,
 			runningTurnId: null,
+			sleepState: null,
 		});
 		vi.mocked(wsStore.claimPendingPrompt).mockReturnValue(null);
 		vi.mocked(wsStore.drainMessageBuffer).mockReturnValue([]);
@@ -335,6 +337,7 @@ describe("useLoadChatHistory — reconnect recovery", () => {
 			permissionMode: null,
 			hasPendingPermissions: false,
 			runningTurnId: null,
+			sleepState: null,
 		});
 
 		rerender({
@@ -573,6 +576,7 @@ describe("useLoadChatHistory — placeholder reuse during running turn", () => {
 			permissionMode: null,
 			hasPendingPermissions: false,
 			runningTurnId: null,
+			sleepState: null,
 		});
 		vi.mocked(wsStore.claimPendingPrompt).mockReturnValue(null);
 		vi.mocked(wsStore.drainMessageBuffer).mockReturnValue([]);

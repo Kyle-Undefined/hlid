@@ -54,6 +54,15 @@ describe("chat WebSocket runtime schema", () => {
 		).toEqual({ type: "chat", text: "hello" });
 	});
 
+	it("accepts skip_sleep and rejects extra fields on it", () => {
+		expect(parseClientMessage(JSON.stringify({ type: "skip_sleep" }))).toEqual({
+			type: "skip_sleep",
+		});
+		expect(
+			parseClientMessage(JSON.stringify({ type: "skip_sleep", extra: 1 })),
+		).toBeNull();
+	});
+
 	it("accepts plan_mode and plan_html flags", () => {
 		expect(
 			parseClientMessage(

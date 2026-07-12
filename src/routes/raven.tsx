@@ -1655,7 +1655,7 @@ function ChatComposer(props: ChatComposerProps) {
 		handleSkillSelect,
 	} = props;
 	const { agentSkillContext } = session;
-	const { sessionState, send } = runtime;
+	const { sessionState, send, sleepState } = runtime;
 	const {
 		isOpen: pickerOpen,
 		items: pickerItems,
@@ -1688,6 +1688,30 @@ function ChatComposer(props: ChatComposerProps) {
 				</div>
 			)}
 			<ChatModelBadge {...props} />
+
+			{/* Auto-sleep banner */}
+			{sleepState && (
+				<div className="border-t border-primary/30 bg-primary/5 px-4 py-2 flex items-center justify-between gap-4">
+					<span className="text-[10px] tracking-widest text-primary/70 uppercase">
+						sleeping
+						{sleepState.until
+							? ` until ${new Date(sleepState.until * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+							: ""}
+						{sleepState.utilization != null
+							? ` — usage window at ${Math.round(sleepState.utilization * 100)}%`
+							: sleepState.reason === "limit_reached"
+								? " — usage limit reached"
+								: ""}
+					</span>
+					<button
+						type="button"
+						onClick={() => send({ type: "skip_sleep" })}
+						className="text-[10px] tracking-widest px-3 py-1 border border-primary/40 text-primary/70 hover:text-primary hover:border-primary transition-colors uppercase font-bold"
+					>
+						RESUME NOW
+					</button>
+				</div>
+			)}
 
 			{/* Error banner */}
 			{sessionState === "error" && (

@@ -32,6 +32,7 @@ import {
 } from "./permissions";
 import { buildPlanHtmlInstructions, buildPrompt } from "./promptBuilder";
 import type {
+	AgentSleepMessage,
 	AskUserQuestionAnswers,
 	AskUserQuestionNotes,
 	ChatAttachment,
@@ -42,6 +43,12 @@ import { applyReading, updateWindowMark } from "./proxy";
 import { generateTurnRecap } from "./recap";
 import { SessionTurnQueue } from "./sessionTurnQueue";
 import { authorizeHlidTool, registerUmbodApprovalSession } from "./umbod";
+import {
+	reportRateLimitSignal,
+	type SleepDecision,
+	skipSleep as skipProviderSleep,
+	sleepUntilAllowed,
+} from "./usageGate";
 
 /** Fallback context window size when the SDK omits it from result metadata. */
 const DEFAULT_CONTEXT_WINDOW = 200_000;
@@ -316,6 +323,9 @@ export class SessionManager {
 	// emitted `done` event so clients can correlate completions to specific
 	// submissions (and pop their queue display FIFO by id).
 	private currentTurnId: string | undefined;
+	// Auto-sleep: last emitted "sleeping" message, kept for sync replay so a
+	// reconnecting client sees the banner. Cleared on wake/abort.
+	private sleepState: AgentSleepMessage | null = null;
 
 	constructor(config: HlidConfig, providers: Map<string, AgentProvider>) {
 		this.providers = providers;
@@ -799,6 +809,15 @@ export class SessionManager {
 			resetsAt: event.resetsAt as number | undefined,
 			providerId,
 		});
+		// Feed the auto-sleep gate before the utilization guard below — a hard
+		// rejection can arrive without a utilization reading.
+		reportRateLimitSignal(
+			providerId,
+			windowId,
+			event.status,
+			event.resetsAt ?? null,
+			loadConfig()?.auto_sleep,
+		);
 		// Persist for usage windows display, skip if utilization is null
 		// (proxy server writes the authoritative value from API response headers)
 		if (event.utilization != null && windowId) {
@@ -1274,6 +1293,72 @@ export class SessionManager {
 		}
 	}
 
+	/**
+	 * Auto-sleep gate. Blocks while the provider's five_hour window is at the
+	 * configured threshold (or hard-limited) and auto_sleep is enabled, waking
+	 * at the window reset, on "resume now", or on abort. Emits agent_sleep
+	 * transitions and tracks sleepState for sync replay.
+	 *
+	 * Known limitation: with Umbod disabled AND permission_mode
+	 * bypassPermissions, providers never call canUseTool (claude sets
+	 * allowDangerouslySkipPermissions; codex auto-approves server requests), so
+	 * only the turn-boundary gate applies there. With Umbod enabled every tool
+	 * routes through canUseTool and both gates hold.
+	 */
+	private async gateOnUsage(
+		provider: AgentProvider,
+		emit: (msg: ServerMessage) => void,
+	): Promise<"proceeded" | "aborted"> {
+		const cfg = loadConfig()?.auto_sleep;
+		if (!cfg?.enabled) return "proceeded";
+		const providerId = provider.providerId;
+		return sleepUntilAllowed({
+			providerId,
+			cfg,
+			signal: this.abortController?.signal ?? undefined,
+			onSleep: (decision: SleepDecision) => {
+				const message: AgentSleepMessage = {
+					type: "agent_sleep",
+					state: "sleeping",
+					providerId,
+					windowId: decision.windowId,
+					until: decision.until,
+					reason: decision.reason,
+					...(decision.utilization != null
+						? { utilization: decision.utilization }
+						: {}),
+					...(this.currentSessionId
+						? { session_id: this.currentSessionId }
+						: {}),
+				};
+				this.sleepState = message;
+				emit(message);
+			},
+			onWake: (cause) => {
+				this.sleepState = null;
+				emit({
+					type: "agent_sleep",
+					state: "resumed",
+					providerId,
+					cause,
+					...(this.currentSessionId
+						? { session_id: this.currentSessionId }
+						: {}),
+				});
+			},
+		});
+	}
+
+	/** "Resume now": wake every session sleeping on this session's provider. */
+	skipSleep(): void {
+		skipProviderSleep(this.resolveProvider(this.agentCwd).providerId);
+	}
+
+	/** Pending sleep banner for sync replay, or null when not sleeping. */
+	getSleepState(): AgentSleepMessage | null {
+		return this.sleepState;
+	}
+
 	private createToolPermissionHandler(
 		provider: AgentProvider,
 		activeCwd: string,
@@ -1484,32 +1569,44 @@ export class SessionManager {
 						emit({ ...request, description: reason ?? request.description });
 					});
 
-				void authorizeHlidTool({
-					agent: provider.providerId,
-					tool: toolName,
-					input,
-					cwd: activeCwd,
-					sessionId,
-					toolUseId: toolUseID,
-					// Once Umbod is enabled it is the policy authority. Provider-level
-					// bypassPermissions must not turn an Umbod `approve` decision into a
-					// silent allow; the approval still belongs in the originating chat.
-					bypassApproval: false,
-					prompt: (reason) => prompt(reason),
-				})
-					.then(async (policy) => {
-						const decision = policy?.decision ?? (await prompt());
-						resolve(
-							decision === "allow"
-								? { behavior: "allow", updatedInput: passInput }
-								: {
-										behavior: "deny",
-										message:
-											policy?.policyDecision === "block"
-												? policy.reason
-												: (denyMessage ?? "Denied by user"),
-									},
-						);
+				// Usage gate BEFORE the policy/permission pipeline so no permission
+				// card is ever shown into a sleeping session, and any resolution
+				// (allow or deny both resume the model = spend) waits for the window.
+				void this.gateOnUsage(provider, emit)
+					.then((gate) => {
+						if (gate === "aborted") {
+							resolve({
+								behavior: "deny",
+								message: "Aborted while sleeping on usage limit",
+							});
+							return;
+						}
+						return authorizeHlidTool({
+							agent: provider.providerId,
+							tool: toolName,
+							input,
+							cwd: activeCwd,
+							sessionId,
+							toolUseId: toolUseID,
+							// Once Umbod is enabled it is the policy authority. Provider-level
+							// bypassPermissions must not turn an Umbod `approve` decision into a
+							// silent allow; the approval still belongs in the originating chat.
+							bypassApproval: false,
+							prompt: (reason) => prompt(reason),
+						}).then(async (policy) => {
+							const decision = policy?.decision ?? (await prompt());
+							resolve(
+								decision === "allow"
+									? { behavior: "allow", updatedInput: passInput }
+									: {
+											behavior: "deny",
+											message:
+												policy?.policyDecision === "block"
+													? policy.reason
+													: (denyMessage ?? "Denied by user"),
+										},
+							);
+						});
 					})
 					.catch((error) => {
 						resolve({
@@ -1741,6 +1838,11 @@ export class SessionManager {
 			agentSettings,
 			resumeProviderSessionId,
 		} = this.prepareProviderForTurn(sessionId);
+
+		// Turn-boundary usage gate: hold the turn before any provider spend.
+		// State stays "running" while sleeping; agent_sleep carries the nuance.
+		if ((await this.gateOnUsage(currentProvider, emit)) === "aborted") return;
+
 		const turn = createTurnState();
 
 		try {

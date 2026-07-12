@@ -17,6 +17,16 @@ const RECONNECT_MAX_MS = 30_000;
 
 export type WsStatus = "connecting" | "connected" | "disconnected";
 
+/** Auto-sleep banner state from the latest agent_sleep message. */
+export type SleepBanner = {
+	providerId: string;
+	/** Epoch seconds the sleep is expected to end, when known. */
+	until: number | null;
+	reason: "threshold" | "limit_reached" | null;
+	/** five_hour utilization 0–1 behind a threshold sleep. */
+	utilization: number | null;
+};
+
 export type QueuedChatMessage = {
 	id: string;
 	text: string;
@@ -60,6 +70,12 @@ type Snapshot = {
 	 * leave the rest as cancellable / promotable.
 	 */
 	runningTurnId: string | null;
+	/**
+	 * Non-null while the session is auto-sleeping on a usage limit. Transient —
+	 * derived from agent_sleep messages (replayed on sync), never buffered
+	 * into the transcript.
+	 */
+	sleepState: SleepBanner | null;
 };
 
 export type LiveStats = {
@@ -132,6 +148,7 @@ export const INITIAL_SNAPSHOT: Snapshot = {
 	permissionMode: null,
 	hasPendingPermissions: false,
 	runningTurnId: null,
+	sleepState: null,
 };
 
 let _snap: Snapshot = { ...INITIAL_SNAPSHOT };
@@ -311,10 +328,29 @@ function onStatus(msg: Extract<ServerMessage, { type: "status" }>): void {
 		permissionMode: msg.permission_mode ?? _snap.permissionMode,
 		hasPendingPermissions: _pendingPermCount > 0,
 		runningTurnId,
+		// Sleeping only happens while running; a non-running status means any
+		// banner is stale (e.g. the resumed event raced a disconnect).
+		...(msg.state !== "running" ? { sleepState: null } : {}),
 	});
 	// Slice A: server-side queue manages drain order. Client no longer batches
 	// or sends on state=idle — items are dispatched immediately on enqueue and
 	// removed from the local queue when their `done` event arrives.
+}
+
+function onAgentSleep(
+	msg: Extract<ServerMessage, { type: "agent_sleep" }>,
+): void {
+	setSnap({
+		sleepState:
+			msg.state === "sleeping"
+				? {
+						providerId: msg.providerId,
+						until: msg.until ?? null,
+						reason: msg.reason ?? null,
+						utilization: msg.utilization ?? null,
+					}
+				: null,
+	});
 }
 
 function onPermissionRequest(): void {
@@ -439,6 +475,9 @@ function applySessionMessage(msg: ServerMessage): boolean {
 			break;
 		case "usage_update":
 			onUsageUpdate(msg);
+			break;
+		case "agent_sleep":
+			onAgentSleep(msg);
 			break;
 		case "done":
 			return onDone(msg);

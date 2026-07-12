@@ -84,6 +84,12 @@ describe("writeConfig — persistence invariants", () => {
 				max_bytes: 123456,
 				allowed_mimes: ["image/png", "application/x-custom"],
 			},
+			auto_sleep: {
+				enabled: true,
+				threshold: 0.8,
+				max_sleep_minutes: 120,
+				resume_buffer_seconds: 30,
+			},
 			agents: [{ path: "/agent", interactive_mode: false }],
 			acp_agents: [
 				{

@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
 import type { HlidConfig } from "#/config";
-import { DEFAULT_ATTACHMENTS_CONFIG, DEFAULT_VOICE_CONFIG } from "#/config";
+import {
+	DEFAULT_ATTACHMENTS_CONFIG,
+	DEFAULT_AUTO_SLEEP_CONFIG,
+	DEFAULT_VOICE_CONFIG,
+} from "#/config";
 import { getProvidersFn, type ProviderInfo } from "#/lib/serverFns";
 import { buildVaultSection } from "#/lib/vaultConfig";
 import type { StructureState } from "./WizardSteps";
@@ -99,6 +103,7 @@ export function buildFirstRunConfig(s: StructureState): HlidConfig {
 		attachments: DEFAULT_ATTACHMENTS_CONFIG,
 		voice: DEFAULT_VOICE_CONFIG,
 		umbod: { enabled: false, manifest_path: "umbod.toml" },
+		auto_sleep: DEFAULT_AUTO_SLEEP_CONFIG,
 		agents: [],
 		vault_provider: "claude",
 	};

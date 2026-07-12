@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { createServerFn } from "@tanstack/react-start";
-import { parse } from "smol-toml";
+import { parse, TomlError } from "smol-toml";
 import { z } from "zod";
 import { CONFIG_PATH } from "./lib/paths";
 
@@ -130,6 +130,39 @@ const UmbodSchema = z.object({
 	manifest_path: z.string().default("umbod.toml"),
 });
 
+export const DEFAULT_AUTO_SLEEP_CONFIG = {
+	enabled: false,
+	threshold: 0.95,
+	max_sleep_minutes: 360,
+	resume_buffer_seconds: 60,
+};
+
+const AutoSleepSchema = z.object({
+	enabled: z.boolean().default(DEFAULT_AUTO_SLEEP_CONFIG.enabled),
+	/** five_hour utilization at/above which sessions sleep until reset. */
+	threshold: z
+		.number()
+		.min(0.01)
+		.max(1)
+		.default(DEFAULT_AUTO_SLEEP_CONFIG.threshold),
+	/** Hard cap on a single sleep; past it the session proceeds anyway. */
+	max_sleep_minutes: z
+		.number()
+		.int()
+		.min(1)
+		.max(1440)
+		.default(DEFAULT_AUTO_SLEEP_CONFIG.max_sleep_minutes),
+	/** Clock-skew pad added past resetsAt before resuming. */
+	resume_buffer_seconds: z
+		.number()
+		.int()
+		.min(0)
+		.max(600)
+		.default(DEFAULT_AUTO_SLEEP_CONFIG.resume_buffer_seconds),
+});
+
+export type AutoSleepConfig = z.infer<typeof AutoSleepSchema>;
+
 export const AgentSchema = z.object({
 	path: z.string(),
 	name: z.string().optional(),
@@ -197,6 +230,7 @@ export const HlidConfigSchema = z.object({
 		enabled: false,
 		manifest_path: "umbod.toml",
 	})),
+	auto_sleep: AutoSleepSchema.default(DEFAULT_AUTO_SLEEP_CONFIG),
 	agents: z.array(AgentSchema).default([]),
 	acp_agents: z.array(AcpAgentSchema).optional(),
 	vault_provider: z.string().default("claude"),
@@ -205,13 +239,25 @@ export const HlidConfigSchema = z.object({
 export type HlidConfig = z.infer<typeof HlidConfigSchema>;
 
 function loadFromDisk(): HlidConfig {
+	let raw: string;
 	try {
-		const raw = readFileSync(CONFIG_PATH, "utf-8");
-		const parsed = parse(raw);
-		return HlidConfigSchema.parse(parsed);
+		raw = readFileSync(CONFIG_PATH, "utf-8");
 	} catch (err) {
 		if ((err as NodeJS.ErrnoException).code === "ENOENT") {
 			return HlidConfigSchema.parse({});
+		}
+		throw err;
+	}
+	try {
+		return HlidConfigSchema.parse(parse(raw));
+	} catch (err) {
+		if (err instanceof z.ZodError) {
+			throw new Error(
+				`Invalid config at ${CONFIG_PATH}:\n${z.prettifyError(err)}`,
+			);
+		}
+		if (err instanceof TomlError) {
+			throw new Error(`Invalid TOML in ${CONFIG_PATH}:\n${err.message}`);
 		}
 		throw err;
 	}

@@ -42,6 +42,7 @@ export function useSettingsForm(
 	const [voice, setVoice] = useState(initialForms.voice);
 	const [acpAgents, setAcpAgents] = useState(initialForms.acpAgents);
 	const [umbod, setUmbod] = useState(initialForms.umbod);
+	const [autoSleep, setAutoSleep] = useState(initialForms.autoSleep);
 	const [server, setServer] = useState(initialForms.server);
 	const [ui, setUi] = useState(initialForms.ui);
 	const [vocab, setVocab] = useState(initialForms.vocab);
@@ -63,7 +64,18 @@ export function useSettingsForm(
 		setSavedMsg(null);
 		const config = buildSettingsConfig(
 			initial,
-			{ vault, claude, codex, voice, server, ui, vocab, acpAgents, umbod },
+			{
+				vault,
+				claude,
+				codex,
+				voice,
+				server,
+				ui,
+				vocab,
+				acpAgents,
+				umbod,
+				autoSleep,
+			},
 			requiresRestart,
 		);
 		try {
@@ -94,6 +106,7 @@ export function useSettingsForm(
 			vocab === initialForms.vocab &&
 			acpAgents === initialForms.acpAgents &&
 			umbod === initialForms.umbod &&
+			autoSleep === initialForms.autoSleep &&
 			server === initialForms.server
 		) {
 			return;
@@ -119,6 +132,7 @@ export function useSettingsForm(
 		vocab,
 		acpAgents,
 		umbod,
+		autoSleep,
 		server,
 		initialForms,
 	]);
@@ -141,6 +155,8 @@ export function useSettingsForm(
 		setAcpAgents,
 		umbod,
 		setUmbod,
+		autoSleep,
+		setAutoSleep,
 		server,
 		setServer,
 		ui,

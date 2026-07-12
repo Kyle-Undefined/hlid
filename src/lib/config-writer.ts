@@ -1,6 +1,7 @@
 import { renameSync, rmSync, writeFileSync } from "node:fs";
 import {
 	DEFAULT_ATTACHMENTS_CONFIG,
+	DEFAULT_AUTO_SLEEP_CONFIG,
 	DEFAULT_VOICE_CONFIG,
 	type HlidConfig,
 } from "../config";
@@ -86,6 +87,16 @@ function serializeUmbod(config: HlidConfig["umbod"]): string[] {
 	return section("umbod", [
 		`enabled = ${tomlVal(value.enabled)}`,
 		`manifest_path = ${tomlVal(value.manifest_path)}`,
+	]);
+}
+
+function serializeAutoSleep(config: HlidConfig["auto_sleep"]): string[] {
+	const value = config ?? DEFAULT_AUTO_SLEEP_CONFIG;
+	return section("auto_sleep", [
+		`enabled = ${tomlVal(value.enabled)}`,
+		`threshold = ${tomlVal(value.threshold)}`,
+		`max_sleep_minutes = ${tomlVal(value.max_sleep_minutes)}`,
+		`resume_buffer_seconds = ${tomlVal(value.resume_buffer_seconds)}`,
 	]);
 }
 
@@ -199,6 +210,8 @@ export function serializeConfig(config: HlidConfig): string {
 		...serializeVoice(config.voice),
 		"",
 		...serializeUmbod(config.umbod),
+		"",
+		...serializeAutoSleep(config.auto_sleep),
 		"",
 		...serializeClaude(config.claude),
 		...(config.codex ? ["", ...serializeCodex(config.codex)] : []),

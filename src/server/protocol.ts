@@ -73,6 +73,22 @@ export type RateLimitMessage = {
 	providerId?: string;
 };
 
+// Auto-sleep gate transitions: the session paused on a usage limit (state
+// "sleeping") or came back (state "resumed", with the cause).
+export type AgentSleepMessage = {
+	type: "agent_sleep";
+	state: "sleeping" | "resumed";
+	providerId: string;
+	windowId?: string;
+	/** Epoch seconds the sleep is expected to end (sleeping only). */
+	until?: number;
+	reason?: "threshold" | "limit_reached";
+	/** Utilization reading behind a threshold sleep, 0–1 (sleeping only). */
+	utilization?: number;
+	cause?: "reset" | "skipped" | "aborted";
+	session_id?: string;
+};
+
 // Per-turn usage snapshot, emitted on every assistant message so the UI
 // can update the context gauge / live stats without waiting for `done`.
 // Cumulative fields (cost, duration, num_turns, stop_reason, total tokens)
@@ -322,6 +338,7 @@ export type ServerMessage =
 	| ToolResultMessage
 	| DoneMessage
 	| RateLimitMessage
+	| AgentSleepMessage
 	| UsageUpdateMessage
 	| ErrorMessage
 	| PermissionRequestMessage
@@ -381,6 +398,12 @@ export type ClientPromoteQueuedMessage = {
 
 export type ClientAbortMessage = {
 	type: "abort";
+};
+
+// "Resume now" for an auto-sleep pause: wake every session sleeping on this
+// session's provider (the usage budget is shared provider-wide).
+export type ClientSkipSleepMessage = {
+	type: "skip_sleep";
 };
 
 export type ClientClearMessage = {
@@ -491,6 +514,7 @@ export type ClientMessage =
 	| ClientCancelQueuedMessage
 	| ClientPromoteQueuedMessage
 	| ClientAbortMessage
+	| ClientSkipSleepMessage
 	| ClientClearMessage
 	| ClientReloadMessage
 	| ClientPermissionResponseMessage

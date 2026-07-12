@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { AcpSection } from "#/components/forge/AcpSection";
 import { ApiSection } from "#/components/forge/ApiSection";
+import { AutoSleepSection } from "#/components/forge/AutoSleepSection";
 import { ClaudeSection } from "#/components/forge/ClaudeSection";
 import { EventLogSection } from "#/components/forge/EventLogSection";
 import { McpSection } from "#/components/forge/McpSection";
@@ -38,7 +39,8 @@ const CATEGORIES = [
 		id: "agents",
 		label: "Agents",
 		description: "Provider, model, permissions, limits, and recaps",
-		keywords: "provider model effort permissions turns recaps account",
+		keywords:
+			"provider model effort permissions turns recaps account auto sleep usage limit rate window resume",
 		group: "primary",
 	},
 	{
@@ -216,6 +218,12 @@ function CategoryContent({
 						description="Choose the default provider and control how agents work."
 					/>
 					<AgentSettings state={state} initial={initial} />
+					<AutoSleepSection
+						value={state.autoSleep}
+						onChange={(patch) =>
+							state.setAutoSleep((form) => ({ ...form, ...patch }))
+						}
+					/>
 				</>
 			);
 		case "access":

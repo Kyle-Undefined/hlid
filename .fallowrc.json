@@ -74,6 +74,10 @@
 		{
 			"file": "src/db/index.ts",
 			"exports": ["UsageWindow"]
+		},
+		{
+			"file": "src/server/usageGate.ts",
+			"exports": ["_resetForTests"]
 		}
 	],
 	"rules": {
@@ -142,6 +146,8 @@
 		,"getSessionsStatus"
 		,"getSize"
 		,"findByDbSessionId"
+		,"skipSleep"
+		,"getSleepState"
 	],
 	"ignorePatterns": [
 		"src/hooks/wsStore.test-utils.ts",

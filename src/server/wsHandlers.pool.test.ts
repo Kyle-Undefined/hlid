@@ -79,6 +79,8 @@ function makeManager(
 		getPendingPlanModeExits: vi.fn().mockReturnValue([]),
 		getCurrentSessionId: vi.fn().mockReturnValue("mock-db-session"),
 		abort: vi.fn(),
+		skipSleep: vi.fn(),
+		getSleepState: vi.fn().mockReturnValue(null),
 		clearHistory: vi.fn(),
 		reinitialize: vi.fn(),
 		syncConfig: vi.fn().mockReturnValue(false),

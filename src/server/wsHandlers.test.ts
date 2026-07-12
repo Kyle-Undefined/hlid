@@ -91,6 +91,8 @@ function makeSession(overrides: Partial<SessionManager> = {}): SessionManager {
 		getPendingPlanModeExits: vi.fn().mockReturnValue([]),
 		getCurrentSessionId: vi.fn().mockReturnValue("mock-db-session"),
 		abort: vi.fn(),
+		skipSleep: vi.fn(),
+		getSleepState: vi.fn().mockReturnValue(null),
 		clearHistory: vi.fn(),
 		reinitialize: vi.fn(),
 		syncConfig: vi.fn().mockReturnValue(false),
@@ -395,6 +397,20 @@ describe("message — abort", () => {
 		runState.ownerWs = owner;
 		await message(other as never, JSON.stringify({ type: "abort" }));
 		expect(session.abort).toHaveBeenCalled();
+	});
+});
+
+// ── message: skip_sleep ───────────────────────────────────────────────────────
+
+describe("message — skip_sleep", () => {
+	it("routes skip_sleep to session.skipSleep()", async () => {
+		const session = makeSession();
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+		runState.ownerWs = ws;
+		await message(ws as never, JSON.stringify({ type: "skip_sleep" }));
+		expect(session.skipSleep).toHaveBeenCalled();
 	});
 });
 
