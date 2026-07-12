@@ -26,6 +26,8 @@ import { fileURLToPath } from "node:url";
 export interface PtyBridgeOptions {
 	/** DB claude_session_id — passed as --resume to continue prior conversation. */
 	claudeSessionId?: string;
+	/** Explicit argv, used as-is instead of the claudeSessionId → --resume logic. */
+	args?: string[];
 	/** Working directory for the CLI session. */
 	cwd: string;
 	/** Initial terminal column count. */
@@ -88,9 +90,14 @@ export class PtyBridge {
 
 	/** Spawn a new PTY worker running the Claude CLI. */
 	static spawn(opts: PtyBridgeOptions): PtyBridge {
-		const args: string[] = [];
-		if (opts.claudeSessionId) {
-			args.push("--resume", opts.claudeSessionId);
+		let args: string[];
+		if (opts.args) {
+			args = opts.args;
+		} else {
+			args = [];
+			if (opts.claudeSessionId) {
+				args.push("--resume", opts.claudeSessionId);
+			}
 		}
 		// Note: --cwd is not a valid claude CLI flag; working dir is set via the
 		// JSON config `cwd` field which pty-worker passes to node-pty's spawn options.

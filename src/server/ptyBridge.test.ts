@@ -151,6 +151,12 @@ describe("PtyBridge.spawn — config assembly", () => {
 		expect(args).toContain("abc-123");
 	});
 
+	it("uses opts.args as-is when provided, ignoring claudeSessionId", () => {
+		PtyBridge.spawn(makeOpts({ args: ["-d", "Ubuntu", "--", "bash", "-l"] }));
+		const { args } = mock.getConfig() as { args: string[] };
+		expect(args).toEqual(["-d", "Ubuntu", "--", "bash", "-l"]);
+	});
+
 	it("never includes --cwd in args regardless of claudeSessionId (regression guard)", () => {
 		PtyBridge.spawn(
 			makeOpts({ cwd: "/home/user/project", claudeSessionId: "abc-123" }),
