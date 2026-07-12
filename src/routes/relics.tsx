@@ -77,19 +77,12 @@ function formatDate(unix: number): string {
 
 const PAGE_SIZE = 50;
 
-export function RelicPreview({ id, mime }: { id: string; mime: string }) {
+function TextPreview({ id, mime }: { id: string; mime: string }) {
 	const [text, setText] = useState<string | null>(null);
 	const [loading, setLoading] = useState(false);
 	const [err, setErr] = useState<string | null>(null);
 
-	const isImage = mime.startsWith("image/");
-	const isHtml = mime === "text/html";
-	const isText =
-		(mime.startsWith("text/") && !isHtml) || mime === "application/json";
-	const isPdf = mime === "application/pdf";
-
 	useEffect(() => {
-		if (!isText) return;
 		const controller = new AbortController();
 		setLoading(true);
 		fetch(`/api/attachments/${id}/raw`, { signal: controller.signal })
@@ -105,30 +98,43 @@ export function RelicPreview({ id, mime }: { id: string; mime: string }) {
 			})
 			.finally(() => setLoading(false));
 		return () => controller.abort();
-	}, [id, isText]);
+	}, [id]);
 
-	if (isImage) {
+	if (loading)
 		return (
-			<ClickableImage
-				src={`/api/attachments/${id}/raw`}
-				alt=""
-				className="max-h-96 max-w-full"
-			/>
+			<span className="text-[11px] text-muted-foreground/50">loading…</span>
+		);
+	if (err)
+		return <span className="text-[11px] text-destructive/70">{err}</span>;
+	if (text === null) return null;
+	if (mime === "text/markdown") return <MarkdownBody content={text} />;
+	return (
+		<pre className="text-[11px] whitespace-pre-wrap break-words font-mono">
+			{text}
+		</pre>
+	);
+}
+
+export function RelicPreview({ id, mime }: { id: string; mime: string }) {
+	const rawUrl = `/api/attachments/${id}/raw`;
+	if (mime.startsWith("image/")) {
+		return (
+			<ClickableImage src={rawUrl} alt="" className="max-h-96 max-w-full" />
 		);
 	}
-	if (isPdf) {
+	if (mime === "application/pdf") {
 		return (
 			<iframe
-				src={`/api/attachments/${id}/raw`}
+				src={rawUrl}
 				className="w-full h-96 border-0"
 				title="pdf preview"
 			/>
 		);
 	}
-	if (isHtml) {
+	if (mime === "text/html") {
 		return (
 			<iframe
-				src={`/api/attachments/${id}/raw`}
+				src={rawUrl}
 				sandbox="allow-scripts"
 				referrerPolicy="no-referrer"
 				className="w-full h-96 bg-white border-0"
@@ -136,20 +142,8 @@ export function RelicPreview({ id, mime }: { id: string; mime: string }) {
 			/>
 		);
 	}
-	if (isText) {
-		if (loading)
-			return (
-				<span className="text-[11px] text-muted-foreground/50">loading…</span>
-			);
-		if (err)
-			return <span className="text-[11px] text-destructive/70">{err}</span>;
-		if (text === null) return null;
-		if (mime === "text/markdown") return <MarkdownBody content={text} />;
-		return (
-			<pre className="text-[11px] whitespace-pre-wrap break-words font-mono">
-				{text}
-			</pre>
-		);
+	if (mime.startsWith("text/") || mime === "application/json") {
+		return <TextPreview id={id} mime={mime} />;
 	}
 	return (
 		<span className="text-[11px] text-muted-foreground/50">no preview</span>
@@ -173,15 +167,9 @@ export async function deleteRelicRows(
 	return failures;
 }
 
-export function AttachmentsPage({
-	initial,
-	listAttachments = listAttachmentsFn as ListAttachments,
-	request = fetch,
-}: {
-	initial: ListResult;
-	listAttachments?: ListAttachments;
-	request?: typeof fetch;
-}) {
+type ViewerImage = { src: string; alt: string };
+
+function useRelicsList(initial: ListResult, listAttachments: ListAttachments) {
 	const [rows, setRows] = useState<AttachmentRow[]>(initial.rows);
 	const [total, setTotal] = useState(initial.total);
 	const [totalBytes, setTotalBytes] = useState(initial.total_bytes);
@@ -190,11 +178,6 @@ export function AttachmentsPage({
 	const [selected, setSelected] = useState<Set<string>>(new Set());
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
-	const [expandedId, setExpandedId] = useState<string | null>(null);
-	const [viewerImg, setViewerImg] = useState<{
-		src: string;
-		alt: string;
-	} | null>(null);
 
 	useEffect(() => {
 		setRows(initial.rows);
@@ -238,22 +221,27 @@ export function AttachmentsPage({
 	);
 	useWs(handleWsMessage);
 
-	const toggle = (id: string) => {
-		setSelected((prev) => {
-			const next = new Set(prev);
-			if (next.has(id)) next.delete(id);
-			else next.add(id);
-			return next;
-		});
+	return {
+		rows,
+		total,
+		totalBytes,
+		page,
+		search,
+		setSearch,
+		selected,
+		setSelected,
+		busy,
+		setBusy,
+		error,
+		setError,
+		reload,
 	};
+}
 
-	const toggleAll = () => {
-		setSelected((prev) =>
-			prev.size === rows.length
-				? new Set<string>()
-				: new Set(rows.map((r) => r.id)),
-		);
-	};
+type RelicsList = ReturnType<typeof useRelicsList>;
+
+function useRelicDeletes(list: RelicsList, request: typeof fetch) {
+	const { rows, page, selected, setBusy, setError, reload } = list;
 
 	const deleteOne = async (id: string) => {
 		setBusy(true);
@@ -283,267 +271,380 @@ export function AttachmentsPage({
 		}
 	};
 
+	return { deleteOne, deleteSelected };
+}
+
+function RelicsHeader({ list }: { list: RelicsList }) {
+	const { total, totalBytes, search, setSearch, busy, error, reload } = list;
+	return (
+		<div className="px-5 py-4 border-b border-border">
+			<div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+				<div>
+					<div className="text-[11px] tracking-[0.3em] text-muted-foreground uppercase">
+						Relics
+					</div>
+					<PrivacyMask inline className="text-sm font-bold mt-0.5">
+						{total} {total === 1 ? "file" : "files"} · {fmtBytes(totalBytes)}
+					</PrivacyMask>
+				</div>
+				<div className="flex items-center gap-2 flex-wrap">
+					<div className="flex items-center border border-border">
+						<Search className="w-3 h-3 mx-2 text-muted-foreground/60" />
+						<input
+							type="text"
+							value={search}
+							onChange={(e) => setSearch(e.target.value)}
+							onKeyDown={(e) => {
+								if (e.key === "Enter") void reload(1);
+							}}
+							placeholder="filename…"
+							className="bg-transparent text-[11px] py-1.5 pr-2 w-28 md:w-44 focus:outline-none"
+						/>
+					</div>
+					<button
+						type="button"
+						onClick={() => void reload(1)}
+						disabled={busy}
+						className="px-3 py-1.5 text-[10px] tracking-widest text-muted-foreground hover:text-foreground border border-border uppercase disabled:opacity-30"
+					>
+						Refresh
+					</button>
+				</div>
+			</div>
+			{error && (
+				<div className="mt-2 text-[11px] text-destructive/80">{error}</div>
+			)}
+		</div>
+	);
+}
+
+function SelectionBar({
+	count,
+	busy,
+	onDelete,
+}: {
+	count: number;
+	busy: boolean;
+	onDelete: () => void;
+}) {
+	return (
+		<div className="px-5 py-2 border-b border-border bg-secondary/30 flex items-center justify-between">
+			<span className="text-[11px] tracking-widest uppercase text-foreground">
+				{count} selected
+			</span>
+			<ConfirmAction
+				label={`delete ${count}?`}
+				onConfirm={onDelete}
+				trigger={(open) => (
+					<button
+						type="button"
+						onClick={open}
+						disabled={busy}
+						className="px-3 py-1.5 text-[10px] tracking-widest text-destructive/80 hover:text-destructive border border-destructive/40 uppercase disabled:opacity-30 inline-flex items-center gap-1.5"
+					>
+						<Trash2 className="w-3 h-3" />
+						Delete
+					</button>
+				)}
+			/>
+		</div>
+	);
+}
+
+function RelicNameCell({
+	row,
+	expanded,
+	onView,
+}: {
+	row: AttachmentRow;
+	expanded: boolean;
+	onView: (img: ViewerImage) => void;
+}) {
+	const rawUrl = `/api/attachments/${row.id}/raw`;
+	const isImage = row.mime.startsWith("image/");
+	const view = (e: React.MouseEvent) => {
+		e.stopPropagation();
+		onView({ src: rawUrl, alt: row.filename });
+	};
+	return (
+		<td className="px-3 py-2">
+			<div className="flex items-center gap-1.5">
+				{expanded ? (
+					<ChevronDown className="w-3 h-3 shrink-0 text-muted-foreground/50" />
+				) : (
+					<ChevronRight className="w-3 h-3 shrink-0 text-muted-foreground/50" />
+				)}
+				{isImage ? (
+					<button
+						type="button"
+						className="shrink-0 hover:opacity-75 transition-opacity cursor-zoom-in"
+						aria-label={`View ${row.filename}`}
+						onClick={view}
+					>
+						<img
+							src={rawUrl}
+							alt={row.filename}
+							className="w-6 h-6 object-cover"
+						/>
+					</button>
+				) : (
+					<FileIcon className="w-3 h-3 shrink-0 opacity-60" />
+				)}
+				<PrivacyMask inline>
+					{isImage ? (
+						<button
+							type="button"
+							onClick={view}
+							className="font-mono truncate max-w-[260px] text-foreground hover:text-primary cursor-zoom-in"
+						>
+							{row.filename}
+						</button>
+					) : (
+						<a
+							href={rawUrl}
+							target="_blank"
+							rel="noreferrer"
+							onClick={(e) => e.stopPropagation()}
+							className="font-mono truncate max-w-[260px] text-foreground hover:text-primary"
+						>
+							{row.filename}
+						</a>
+					)}
+				</PrivacyMask>
+			</div>
+		</td>
+	);
+}
+
+function RelicRow({
+	row,
+	list,
+	expanded,
+	onToggleExpand,
+	onView,
+	onDelete,
+}: {
+	row: AttachmentRow;
+	list: RelicsList;
+	expanded: boolean;
+	onToggleExpand: () => void;
+	onView: (img: ViewerImage) => void;
+	onDelete: () => void;
+}) {
+	const { selected, setSelected, busy } = list;
+	const stop = {
+		onClick: (e: React.SyntheticEvent) => e.stopPropagation(),
+		onKeyDown: (e: React.SyntheticEvent) => e.stopPropagation(),
+	};
+	return (
+		<tr
+			className="border-b border-border/40 hover:bg-secondary/20 cursor-pointer"
+			onClick={onToggleExpand}
+		>
+			<td className="px-3 py-2" {...stop}>
+				<input
+					type="checkbox"
+					checked={selected.has(row.id)}
+					onChange={() =>
+						setSelected((prev) => {
+							const next = new Set(prev);
+							if (next.has(row.id)) next.delete(row.id);
+							else next.add(row.id);
+							return next;
+						})
+					}
+				/>
+			</td>
+			<RelicNameCell row={row} expanded={expanded} onView={onView} />
+			<td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
+				<PrivacyMask inline>{fmtBytes(row.size_bytes)}</PrivacyMask>
+			</td>
+			<td className="px-3 py-2 font-mono text-muted-foreground/70 truncate">
+				{row.mime}
+			</td>
+			<td
+				className="px-3 py-2 font-mono text-muted-foreground/60 truncate"
+				{...stop}
+			>
+				{row.session_id ? (
+					<Link
+						to="/raven"
+						search={{ session: row.session_id, agent: undefined }}
+						className="hover:text-primary transition-colors"
+					>
+						{row.session_id.slice(0, 12)}
+					</Link>
+				) : (
+					"?"
+				)}
+			</td>
+			<td className="px-3 py-2 text-muted-foreground/70 tabular-nums">
+				{formatDate(row.created_at)}
+			</td>
+			<td className="px-3 py-2 text-right" {...stop}>
+				<ConfirmAction
+					className="justify-end"
+					onConfirm={onDelete}
+					trigger={(open) => (
+						<button
+							type="button"
+							onClick={open}
+							disabled={busy}
+							className="text-muted-foreground/50 hover:text-destructive disabled:opacity-30"
+							aria-label={`Delete ${row.filename}`}
+						>
+							<Trash2 className="w-3.5 h-3.5" />
+						</button>
+					)}
+				/>
+			</td>
+		</tr>
+	);
+}
+
+function RelicsTable({
+	list,
+	expandedId,
+	setExpandedId,
+	onView,
+	onDelete,
+}: {
+	list: RelicsList;
+	expandedId: string | null;
+	setExpandedId: (id: string | null) => void;
+	onView: (img: ViewerImage) => void;
+	onDelete: (id: string) => void;
+}) {
+	const { rows, selected, setSelected } = list;
+	return (
+		<table className="w-full min-w-[720px] text-[11px]">
+			<thead className="text-[9px] tracking-widest uppercase text-muted-foreground/70">
+				<tr className="border-b border-border">
+					<th className="px-3 py-2 text-left w-8">
+						<input
+							type="checkbox"
+							checked={rows.length > 0 && selected.size === rows.length}
+							onChange={() =>
+								setSelected((prev) =>
+									prev.size === rows.length
+										? new Set<string>()
+										: new Set(rows.map((r) => r.id)),
+								)
+							}
+						/>
+					</th>
+					<th className="px-3 py-2 text-left">File</th>
+					<th className="px-3 py-2 text-right w-24">Size</th>
+					<th className="px-3 py-2 text-left w-40">Type</th>
+					<th className="px-3 py-2 text-left w-44">Session</th>
+					<th className="px-3 py-2 text-left w-44">Created</th>
+					<th className="px-3 py-2 w-12" />
+				</tr>
+			</thead>
+			<tbody>
+				{rows.length === 0 ? (
+					<tr>
+						<td
+							colSpan={7}
+							className="px-3 py-12 text-center text-muted-foreground/50"
+						>
+							no relics
+						</td>
+					</tr>
+				) : (
+					rows.map((r) => (
+						<Fragment key={r.id}>
+							<RelicRow
+								row={r}
+								list={list}
+								expanded={expandedId === r.id}
+								onToggleExpand={() =>
+									setExpandedId(expandedId === r.id ? null : r.id)
+								}
+								onView={onView}
+								onDelete={() => onDelete(r.id)}
+							/>
+							{expandedId === r.id && (
+								<tr className="border-b border-border/40 bg-secondary/20">
+									<td />
+									<td colSpan={6} className="px-4 py-4">
+										<PrivacyMask>
+											<RelicPreview id={r.id} mime={r.mime} />
+										</PrivacyMask>
+									</td>
+								</tr>
+							)}
+						</Fragment>
+					))
+				)}
+			</tbody>
+		</table>
+	);
+}
+
+function RelicsPagination({ list }: { list: RelicsList }) {
+	const { page, total, busy, reload } = list;
 	const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
+	if (totalPages <= 1) return null;
+	return (
+		<div className="px-5 py-3 border-t border-border flex items-center justify-between text-[10px] tracking-widest uppercase text-muted-foreground">
+			<button
+				type="button"
+				onClick={() => void reload(Math.max(1, page - 1))}
+				disabled={page === 1 || busy}
+				className="hover:text-foreground disabled:opacity-30"
+			>
+				← prev
+			</button>
+			<span>
+				page {page} / {totalPages}
+			</span>
+			<button
+				type="button"
+				onClick={() => void reload(Math.min(totalPages, page + 1))}
+				disabled={page === totalPages || busy}
+				className="hover:text-foreground disabled:opacity-30"
+			>
+				next →
+			</button>
+		</div>
+	);
+}
+
+export function AttachmentsPage({
+	initial,
+	listAttachments = listAttachmentsFn as ListAttachments,
+	request = fetch,
+}: {
+	initial: ListResult;
+	listAttachments?: ListAttachments;
+	request?: typeof fetch;
+}) {
+	const list = useRelicsList(initial, listAttachments);
+	const { deleteOne, deleteSelected } = useRelicDeletes(list, request);
+	const [expandedId, setExpandedId] = useState<string | null>(null);
+	const [viewerImg, setViewerImg] = useState<ViewerImage | null>(null);
 
 	return (
 		<div className="h-full flex flex-col">
-			<div className="px-5 py-4 border-b border-border">
-				<div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-					<div>
-						<div className="text-[11px] tracking-[0.3em] text-muted-foreground uppercase">
-							Relics
-						</div>
-						<PrivacyMask inline className="text-sm font-bold mt-0.5">
-							{total} {total === 1 ? "file" : "files"} · {fmtBytes(totalBytes)}
-						</PrivacyMask>
-					</div>
-					<div className="flex items-center gap-2 flex-wrap">
-						<div className="flex items-center border border-border">
-							<Search className="w-3 h-3 mx-2 text-muted-foreground/60" />
-							<input
-								type="text"
-								value={search}
-								onChange={(e) => setSearch(e.target.value)}
-								onKeyDown={(e) => {
-									if (e.key === "Enter") void reload(1);
-								}}
-								placeholder="filename…"
-								className="bg-transparent text-[11px] py-1.5 pr-2 w-28 md:w-44 focus:outline-none"
-							/>
-						</div>
-						<button
-							type="button"
-							onClick={() => void reload(1)}
-							disabled={busy}
-							className="px-3 py-1.5 text-[10px] tracking-widest text-muted-foreground hover:text-foreground border border-border uppercase disabled:opacity-30"
-						>
-							Refresh
-						</button>
-					</div>
-				</div>
-				{error && (
-					<div className="mt-2 text-[11px] text-destructive/80">{error}</div>
-				)}
-			</div>
-
-			{selected.size > 0 && (
-				<div className="px-5 py-2 border-b border-border bg-secondary/30 flex items-center justify-between">
-					<span className="text-[11px] tracking-widest uppercase text-foreground">
-						{selected.size} selected
-					</span>
-					<ConfirmAction
-						label={`delete ${selected.size}?`}
-						onConfirm={() => void deleteSelected()}
-						trigger={(open) => (
-							<button
-								type="button"
-								onClick={open}
-								disabled={busy}
-								className="px-3 py-1.5 text-[10px] tracking-widest text-destructive/80 hover:text-destructive border border-destructive/40 uppercase disabled:opacity-30 inline-flex items-center gap-1.5"
-							>
-								<Trash2 className="w-3 h-3" />
-								Delete
-							</button>
-						)}
-					/>
-				</div>
+			<RelicsHeader list={list} />
+			{list.selected.size > 0 && (
+				<SelectionBar
+					count={list.selected.size}
+					busy={list.busy}
+					onDelete={() => void deleteSelected()}
+				/>
 			)}
-
 			<div className="flex-1 overflow-auto">
-				<table className="w-full min-w-[720px] text-[11px]">
-					<thead className="text-[9px] tracking-widest uppercase text-muted-foreground/70">
-						<tr className="border-b border-border">
-							<th className="px-3 py-2 text-left w-8">
-								<input
-									type="checkbox"
-									checked={rows.length > 0 && selected.size === rows.length}
-									onChange={toggleAll}
-								/>
-							</th>
-							<th className="px-3 py-2 text-left">File</th>
-							<th className="px-3 py-2 text-right w-24">Size</th>
-							<th className="px-3 py-2 text-left w-40">Type</th>
-							<th className="px-3 py-2 text-left w-44">Session</th>
-							<th className="px-3 py-2 text-left w-44">Created</th>
-							<th className="px-3 py-2 w-12" />
-						</tr>
-					</thead>
-					<tbody>
-						{rows.length === 0 ? (
-							<tr>
-								<td
-									colSpan={7}
-									className="px-3 py-12 text-center text-muted-foreground/50"
-								>
-									no relics
-								</td>
-							</tr>
-						) : (
-							rows.map((r) => (
-								<Fragment key={r.id}>
-									<tr
-										className="border-b border-border/40 hover:bg-secondary/20 cursor-pointer"
-										onClick={() =>
-											setExpandedId(expandedId === r.id ? null : r.id)
-										}
-									>
-										<td
-											className="px-3 py-2"
-											onClick={(e) => e.stopPropagation()}
-											onKeyDown={(e) => e.stopPropagation()}
-										>
-											<input
-												type="checkbox"
-												checked={selected.has(r.id)}
-												onChange={() => toggle(r.id)}
-											/>
-										</td>
-										<td className="px-3 py-2">
-											<div className="flex items-center gap-1.5">
-												{expandedId === r.id ? (
-													<ChevronDown className="w-3 h-3 shrink-0 text-muted-foreground/50" />
-												) : (
-													<ChevronRight className="w-3 h-3 shrink-0 text-muted-foreground/50" />
-												)}
-												{r.mime.startsWith("image/") ? (
-													<button
-														type="button"
-														className="shrink-0 hover:opacity-75 transition-opacity cursor-zoom-in"
-														aria-label={`View ${r.filename}`}
-														onClick={(e) => {
-															e.stopPropagation();
-															setViewerImg({
-																src: `/api/attachments/${r.id}/raw`,
-																alt: r.filename,
-															});
-														}}
-													>
-														<img
-															src={`/api/attachments/${r.id}/raw`}
-															alt={r.filename}
-															className="w-6 h-6 object-cover"
-														/>
-													</button>
-												) : (
-													<FileIcon className="w-3 h-3 shrink-0 opacity-60" />
-												)}
-												<PrivacyMask inline>
-													{r.mime.startsWith("image/") ? (
-														<button
-															type="button"
-															onClick={(e) => {
-																e.stopPropagation();
-																setViewerImg({
-																	src: `/api/attachments/${r.id}/raw`,
-																	alt: r.filename,
-																});
-															}}
-															className="font-mono truncate max-w-[260px] text-foreground hover:text-primary cursor-zoom-in"
-														>
-															{r.filename}
-														</button>
-													) : (
-														<a
-															href={`/api/attachments/${r.id}/raw`}
-															target="_blank"
-															rel="noreferrer"
-															onClick={(e) => e.stopPropagation()}
-															className="font-mono truncate max-w-[260px] text-foreground hover:text-primary"
-														>
-															{r.filename}
-														</a>
-													)}
-												</PrivacyMask>
-											</div>
-										</td>
-										<td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
-											<PrivacyMask inline>{fmtBytes(r.size_bytes)}</PrivacyMask>
-										</td>
-										<td className="px-3 py-2 font-mono text-muted-foreground/70 truncate">
-											{r.mime}
-										</td>
-										<td
-											className="px-3 py-2 font-mono text-muted-foreground/60 truncate"
-											onClick={(e) => e.stopPropagation()}
-											onKeyDown={(e) => e.stopPropagation()}
-										>
-											{r.session_id ? (
-												<Link
-													to="/raven"
-													search={{ session: r.session_id, agent: undefined }}
-													className="hover:text-primary transition-colors"
-												>
-													{r.session_id.slice(0, 12)}
-												</Link>
-											) : (
-												"?"
-											)}
-										</td>
-										<td className="px-3 py-2 text-muted-foreground/70 tabular-nums">
-											{formatDate(r.created_at)}
-										</td>
-										<td
-											className="px-3 py-2 text-right"
-											onClick={(e) => e.stopPropagation()}
-											onKeyDown={(e) => e.stopPropagation()}
-										>
-											<ConfirmAction
-												className="justify-end"
-												onConfirm={() => void deleteOne(r.id)}
-												trigger={(open) => (
-													<button
-														type="button"
-														onClick={open}
-														disabled={busy}
-														className="text-muted-foreground/50 hover:text-destructive disabled:opacity-30"
-														aria-label={`Delete ${r.filename}`}
-													>
-														<Trash2 className="w-3.5 h-3.5" />
-													</button>
-												)}
-											/>
-										</td>
-									</tr>
-									{expandedId === r.id && (
-										<tr className="border-b border-border/40 bg-secondary/20">
-											<td />
-											<td colSpan={6} className="px-4 py-4">
-												<PrivacyMask>
-													<RelicPreview id={r.id} mime={r.mime} />
-												</PrivacyMask>
-											</td>
-										</tr>
-									)}
-								</Fragment>
-							))
-						)}
-					</tbody>
-				</table>
+				<RelicsTable
+					list={list}
+					expandedId={expandedId}
+					setExpandedId={setExpandedId}
+					onView={setViewerImg}
+					onDelete={(id) => void deleteOne(id)}
+				/>
 			</div>
-
-			{totalPages > 1 && (
-				<div className="px-5 py-3 border-t border-border flex items-center justify-between text-[10px] tracking-widest uppercase text-muted-foreground">
-					<button
-						type="button"
-						onClick={() => void reload(Math.max(1, page - 1))}
-						disabled={page === 1 || busy}
-						className="hover:text-foreground disabled:opacity-30"
-					>
-						← prev
-					</button>
-					<span>
-						page {page} / {totalPages}
-					</span>
-					<button
-						type="button"
-						onClick={() => void reload(Math.min(totalPages, page + 1))}
-						disabled={page === totalPages || busy}
-						className="hover:text-foreground disabled:opacity-30"
-					>
-						next →
-					</button>
-				</div>
-			)}
+			<RelicsPagination list={list} />
 			{viewerImg && (
 				<ImageViewerModal
 					src={viewerImg.src}
