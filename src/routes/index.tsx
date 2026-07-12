@@ -95,23 +95,8 @@ export const Route = createFileRoute("/")({
 	component: CockpitPage,
 });
 
-function CockpitPage() {
-	const {
-		config,
-		data,
-		recentSessions,
-		statsData,
-		mcpServers: initialMcpServers,
-		weeklyStats: initialWeeklyStats,
-		providerUsages: initialProviderUsages,
-		thirtyDayStats: initialThirtyDayStats,
-		agentList,
-		activeSession,
-		voiceInfo: initialVoiceInfo,
-	} = Route.useLoaderData();
-	const router = useRouter();
-	const navigate = useNavigate();
-	const liveStats = useWsLiveStats();
+/** Composer-local state: prompt text, active skill, run toggles, focus plumbing. */
+function useCockpitComposer() {
 	const [prompt, setPrompt] = useState("");
 	const [selectedAgentPath, setSelectedAgentPath] = useState("");
 	const [activeSkill, setActiveSkill] = useState<ActiveCockpitSkill | null>(
@@ -121,100 +106,6 @@ function CockpitPage() {
 	const [sameSession, setSameSession] = useState(false);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const fileInputRef = useRef<HTMLInputElement>(null);
-	const {
-		wsStatus,
-		sessionState,
-		model,
-		send,
-		recentRuns,
-		setRecentRuns,
-		agg,
-		weeklyStats,
-		setWeeklyStats,
-		thirtyDayStats,
-		setThirtyDayStats,
-		liveActiveSession,
-		mcpServers,
-		sdkSlashCommands,
-		runError,
-		setRunError,
-		rateLimit,
-	} = useCockpitLiveData({
-		recentSessions,
-		agg: statsData.agg,
-		weeklyStats: initialWeeklyStats,
-		thirtyDayStats: initialThirtyDayStats,
-		activeSession,
-		mcpServers: initialMcpServers,
-	});
-
-	const {
-		pendingAttachments,
-		uploadingCount,
-		uploadError,
-		uploadSessionIdRef: attachSessionIdRef,
-		uploadFiles,
-		removePending,
-		clearPending: clearPendingAttachments,
-	} = useFileUpload({ agentCwd: selectedAgentPath });
-
-	const allSkills = useMergedSkills(data.skills, sdkSlashCommands);
-
-	const skillGroups = useMemo(
-		() => groupSkills(allSkills, data.sectionOrder),
-		[allSkills, data.sectionOrder],
-	);
-
-	const {
-		isOpen: pickerOpen,
-		items: pickerItems,
-		selectedIndex: pickerIndex,
-		navigate: pickerNavigate,
-		close: pickerClose,
-	} = useSlashPicker(prompt, allSkills, activeSkill);
-	const isConnected = wsStatus === "connected";
-	const isRunning = isConnected && sessionState === "running";
-	const canRun = (!!activeSkill || prompt.trim().length > 0) && isConnected;
-	const handleRun = useCockpitRun({
-		prompt,
-		activeSkill,
-		allSkills,
-		wsStatus,
-		sameSession,
-		attachSessionIdRef,
-		pendingAttachments,
-		clearPendingAttachments,
-		isRunning,
-		selectedAgentPath,
-		background,
-		model,
-		send,
-		setRunError,
-		setPrompt,
-		setActiveSkill,
-		setRecentRuns,
-		setThirtyDayStats,
-		setWeeklyStats,
-		navigateToRaven: (sessionId, agent) => {
-			navigate({ to: "/raven", search: { session: sessionId, agent } });
-		},
-	});
-
-	const voice = useVoiceInput({
-		config: config.voice,
-		initialInfo: initialVoiceInfo,
-		onTranscription: (text) => {
-			if (config.voice.auto_send) {
-				void handleRun(text);
-				return;
-			}
-			const el = textareaRef.current;
-			const start = el?.selectionStart ?? prompt.length;
-			const end = el?.selectionEnd ?? prompt.length;
-			setPrompt(insertAtSelection(prompt, text, start, end));
-			requestAnimationFrame(() => textareaRef.current?.focus());
-		},
-	});
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: prompt length triggers resize
 	useEffect(() => {
@@ -233,10 +124,6 @@ function CockpitPage() {
 		el.selectionStart = el.selectionEnd = 0;
 	}, [activeSkill]);
 
-	if (!config.vault.path) {
-		return <FirstRunWizard onComplete={() => router.invalidate()} />;
-	}
-
 	function handleSkillSelect(skill: Skill) {
 		pendingSkillFocusRef.current = true;
 		setPrompt("");
@@ -252,17 +139,114 @@ function CockpitPage() {
 		setActiveSkill(null);
 	}
 
-	const modelShort = model ? fmtModel(model) : null;
+	return {
+		prompt,
+		setPrompt,
+		selectedAgentPath,
+		setSelectedAgentPath,
+		activeSkill,
+		setActiveSkill,
+		background,
+		setBackground,
+		sameSession,
+		setSameSession,
+		textareaRef,
+		fileInputRef,
+		handleSkillSelect,
+		handleClear,
+	};
+}
 
+type CockpitComposer = ReturnType<typeof useCockpitComposer>;
+type CockpitLive = ReturnType<typeof useCockpitLiveData>;
+type CockpitUpload = ReturnType<typeof useFileUpload>;
+type CockpitNavigate = ReturnType<typeof useNavigate>;
+
+function useCockpitRunWiring({
+	composer,
+	live,
+	upload,
+	allSkills,
+	navigate,
+}: {
+	composer: CockpitComposer;
+	live: CockpitLive;
+	upload: CockpitUpload;
+	allSkills: ReturnType<typeof useMergedSkills>;
+	navigate: CockpitNavigate;
+}) {
+	const isRunning =
+		live.wsStatus === "connected" && live.sessionState === "running";
+	return useCockpitRun({
+		prompt: composer.prompt,
+		activeSkill: composer.activeSkill,
+		allSkills,
+		wsStatus: live.wsStatus,
+		sameSession: composer.sameSession,
+		attachSessionIdRef: upload.uploadSessionIdRef,
+		pendingAttachments: upload.pendingAttachments,
+		clearPendingAttachments: upload.clearPending,
+		isRunning,
+		selectedAgentPath: composer.selectedAgentPath,
+		background: composer.background,
+		model: live.model,
+		send: live.send,
+		setRunError: live.setRunError,
+		setPrompt: composer.setPrompt,
+		setActiveSkill: composer.setActiveSkill,
+		setRecentRuns: live.setRecentRuns,
+		setThirtyDayStats: live.setThirtyDayStats,
+		setWeeklyStats: live.setWeeklyStats,
+		navigateToRaven: (sessionId, agent) => {
+			navigate({ to: "/raven", search: { session: sessionId, agent } });
+		},
+	});
+}
+
+function useCockpitVoice(
+	config: Awaited<ReturnType<typeof getConfig>>,
+	initialVoiceInfo: Awaited<ReturnType<typeof getVoiceInfoFn>>,
+	composer: CockpitComposer,
+	handleRun: (overrideText?: string) => Promise<void>,
+) {
+	const { prompt, setPrompt, textareaRef } = composer;
+	return useVoiceInput({
+		config: config.voice,
+		initialInfo: initialVoiceInfo,
+		onTranscription: (text) => {
+			if (config.voice.auto_send) {
+				void handleRun(text);
+				return;
+			}
+			const el = textareaRef.current;
+			const start = el?.selectionStart ?? prompt.length;
+			const end = el?.selectionEnd ?? prompt.length;
+			setPrompt(insertAtSelection(prompt, text, start, end));
+			requestAnimationFrame(() => textareaRef.current?.focus());
+		},
+	});
+}
+
+/** Full-width panels above the two-column body (usage, graphs, MCP, mobile sections). */
+function CockpitTopPanels({
+	live,
+	liveStats,
+	initialProviderUsages,
+	navigate,
+}: {
+	live: CockpitLive;
+	liveStats: ReturnType<typeof useWsLiveStats>;
+	initialProviderUsages: Awaited<ReturnType<typeof loadProviderUsages>>;
+	navigate: CockpitNavigate;
+}) {
+	const isConnected = live.wsStatus === "connected";
 	return (
-		<div className="flex flex-col md:h-full">
-			<CockpitHeader config={config} modelShort={modelShort} />
-
+		<>
 			{/* Usage windows */}
 			<ProviderUsageStrip
 				initial={initialProviderUsages}
 				liveQueryCount={liveStats?.queries ?? 0}
-				rateLimit={rateLimit}
+				rateLimit={live.rateLimit}
 				fetchFn={loadProviderUsages}
 				tail={<RoutinesWindowSection />}
 			/>
@@ -272,87 +256,180 @@ function CockpitPage() {
 
 			{/* 30-day activity graph */}
 			<PrivacyMask>
-				<ThirtyDayGraph data={thirtyDayStats} />
+				<ThirtyDayGraph data={live.thirtyDayStats} />
 			</PrivacyMask>
 
 			{/* Stats, desktop: right sidebar; mobile: collapsible section */}
-			<MobileStatsPanel stats={liveStats} agg={agg} isConnected={isConnected} />
+			<MobileStatsPanel
+				stats={liveStats}
+				agg={live.agg}
+				isConnected={isConnected}
+			/>
 
 			{/* MCP panel */}
-			<McpPanel servers={mcpServers} />
+			<McpPanel servers={live.mcpServers} />
 
 			{/* Mobile: collapsible recent runs + this week graph */}
 			<MobileRunsPanel
-				runs={recentRuns}
-				weeklyStats={weeklyStats}
+				runs={live.recentRuns}
+				weeklyStats={live.weeklyStats}
 				onRunClick={(id) =>
 					navigate({ to: "/raven", search: { session: id, agent: undefined } })
 				}
+			/>
+		</>
+	);
+}
+
+function CockpitPromptWiring({
+	config,
+	composer,
+	live,
+	upload,
+	voice,
+	agentList,
+	allSkills,
+	onRun,
+}: {
+	config: Awaited<ReturnType<typeof getConfig>>;
+	composer: CockpitComposer;
+	live: CockpitLive;
+	upload: CockpitUpload;
+	voice: ReturnType<typeof useVoiceInput>;
+	agentList: Awaited<ReturnType<typeof getAgentListFn>>;
+	allSkills: ReturnType<typeof useMergedSkills>;
+	onRun: () => void;
+}) {
+	const picker = useSlashPicker(
+		composer.prompt,
+		allSkills,
+		composer.activeSkill,
+	);
+	const isConnected = live.wsStatus === "connected";
+	const isRunning = isConnected && live.sessionState === "running";
+	const canRun =
+		(!!composer.activeSkill || composer.prompt.trim().length > 0) &&
+		isConnected;
+	return (
+		<CockpitPrompt
+			config={config}
+			prompt={composer.prompt}
+			setPrompt={composer.setPrompt}
+			activeSkill={composer.activeSkill}
+			isConnected={isConnected}
+			isRunning={isRunning}
+			canRun={canRun}
+			selectedAgentPath={composer.selectedAgentPath}
+			setSelectedAgentPath={composer.setSelectedAgentPath}
+			agentList={agentList}
+			background={composer.background}
+			setBackground={composer.setBackground}
+			sameSession={composer.sameSession}
+			setSameSession={composer.setSameSession}
+			textareaRef={composer.textareaRef}
+			fileInputRef={composer.fileInputRef}
+			upload={{
+				pendingAttachments: upload.pendingAttachments,
+				uploadingCount: upload.uploadingCount,
+				uploadError: upload.uploadError,
+				uploadFiles: upload.uploadFiles,
+				removePending: upload.removePending,
+			}}
+			voice={voice}
+			picker={{
+				open: picker.isOpen,
+				items: picker.items,
+				index: picker.selectedIndex,
+				navigate: picker.navigate,
+				close: picker.close,
+			}}
+			onSkillSelect={composer.handleSkillSelect}
+			onClear={composer.handleClear}
+			onRun={onRun}
+		/>
+	);
+}
+
+function CockpitPage() {
+	const loader = Route.useLoaderData();
+	const { config, data, agentList } = loader;
+	const router = useRouter();
+	const navigate = useNavigate();
+	const liveStats = useWsLiveStats();
+	const composer = useCockpitComposer();
+	const live = useCockpitLiveData({
+		recentSessions: loader.recentSessions,
+		agg: loader.statsData.agg,
+		weeklyStats: loader.weeklyStats,
+		thirtyDayStats: loader.thirtyDayStats,
+		activeSession: loader.activeSession,
+		mcpServers: loader.mcpServers,
+	});
+	const upload = useFileUpload({ agentCwd: composer.selectedAgentPath });
+	const allSkills = useMergedSkills(data.skills, live.sdkSlashCommands);
+	const skillGroups = useMemo(
+		() => groupSkills(allSkills, data.sectionOrder),
+		[allSkills, data.sectionOrder],
+	);
+	const handleRun = useCockpitRunWiring({
+		composer,
+		live,
+		upload,
+		allSkills,
+		navigate,
+	});
+	const voice = useCockpitVoice(config, loader.voiceInfo, composer, handleRun);
+
+	if (!config.vault.path) {
+		return <FirstRunWizard onComplete={() => router.invalidate()} />;
+	}
+
+	const modelShort = live.model ? fmtModel(live.model) : null;
+	const onRunClick = (id: string) =>
+		navigate({ to: "/raven", search: { session: id, agent: undefined } });
+
+	return (
+		<div className="flex flex-col md:h-full">
+			<CockpitHeader config={config} modelShort={modelShort} />
+			<CockpitTopPanels
+				live={live}
+				liveStats={liveStats}
+				initialProviderUsages={loader.providerUsages}
+				navigate={navigate}
 			/>
 
 			{/* Two-column body */}
 			<div className="flex md:flex-1 md:overflow-hidden">
 				{/* Main column */}
 				<div className="flex flex-col flex-1 md:overflow-auto">
-					<CockpitPrompt
+					<CockpitPromptWiring
 						config={config}
-						prompt={prompt}
-						setPrompt={setPrompt}
-						activeSkill={activeSkill}
-						isConnected={isConnected}
-						isRunning={isRunning}
-						canRun={canRun}
-						selectedAgentPath={selectedAgentPath}
-						setSelectedAgentPath={setSelectedAgentPath}
-						agentList={agentList}
-						background={background}
-						setBackground={setBackground}
-						sameSession={sameSession}
-						setSameSession={setSameSession}
-						textareaRef={textareaRef}
-						fileInputRef={fileInputRef}
-						upload={{
-							pendingAttachments,
-							uploadingCount,
-							uploadError,
-							uploadFiles,
-							removePending,
-						}}
+						composer={composer}
+						live={live}
+						upload={upload}
 						voice={voice}
-						picker={{
-							open: pickerOpen,
-							items: pickerItems,
-							index: pickerIndex,
-							navigate: pickerNavigate,
-							close: pickerClose,
-						}}
-						onSkillSelect={handleSkillSelect}
-						onClear={handleClear}
+						agentList={agentList}
+						allSkills={allSkills}
 						onRun={() => void handleRun()}
 					/>
 
-					<CockpitRunError error={runError} />
+					<CockpitRunError error={live.runError} />
 					<CockpitSkills
 						hasSkills={data.skills.length > 0}
 						groups={skillGroups}
-						activeSkill={activeSkill}
-						onSelect={handleSkillSelect}
+						activeSkill={composer.activeSkill}
+						onSelect={composer.handleSkillSelect}
 					/>
 				</div>
 
 				{/* Recent runs sidebar, desktop only */}
 				<RecentRunsSidebar
-					runs={recentRuns}
-					weeklyStats={weeklyStats}
-					onRunClick={(id) =>
-						navigate({
-							to: "/raven",
-							search: { session: id, agent: undefined },
-						})
-					}
+					runs={live.recentRuns}
+					weeklyStats={live.weeklyStats}
+					onRunClick={onRunClick}
 					stats={liveStats}
-					agg={agg}
-					activeSession={liveActiveSession}
+					agg={live.agg}
+					activeSession={live.liveActiveSession}
 					className="hidden md:flex"
 				/>
 			</div>
