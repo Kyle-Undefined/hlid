@@ -81,6 +81,8 @@ type Snapshot = {
 export type LiveStats = {
 	turns: number;
 	cost: number;
+	estimated_cost?: number;
+	unpriced_queries?: number;
 	duration_ms: number;
 	input_tokens: number;
 	output_tokens: number;
@@ -96,6 +98,8 @@ export type LiveStats = {
 export const EMPTY_STATS: LiveStats = {
 	turns: 0,
 	cost: 0,
+	estimated_cost: 0,
+	unpriced_queries: 0,
 	duration_ms: 0,
 	input_tokens: 0,
 	output_tokens: 0,
@@ -121,7 +125,9 @@ function persistStats(stats: LiveStats): void {
 function loadPersistedStats(): LiveStats | null {
 	try {
 		const raw = sessionStorage.getItem(STATS_KEY);
-		return raw ? (JSON.parse(raw) as LiveStats) : null;
+		return raw
+			? { ...EMPTY_STATS, ...(JSON.parse(raw) as Partial<LiveStats>) }
+			: null;
 	} catch {
 		return null;
 	}
@@ -202,6 +208,7 @@ function sendChatToServer(msg: QueuedChatMessage): boolean {
 		text: msg.text,
 		session_id: msg.session_id,
 		id: msg.id,
+		...(msg.attachments ? { attachments: msg.attachments } : {}),
 	};
 	for (const fn of messageSubs) fn(userEvent);
 	_pendingSessionToday = true;
@@ -256,6 +263,30 @@ function popQueueById(turnId: string): void {
 	if (idx === -1) return;
 	_chatQueue = _chatQueue.filter((_, i) => i !== idx);
 	notifyQueue();
+}
+
+/**
+ * Re-promote a locally queued prompt when the server starts that turn.
+ *
+ * The first synthetic user_message is delivered when the prompt is enqueued,
+ * but the chat reducer is component-local and is lost across SPA navigation.
+ * The queue survives that navigation, so a server running status gives us a
+ * reliable second chance to restore the prompt before its queue card changes
+ * to the running state. ADD_USER is idempotent by turn id, making this harmless
+ * for clients that never unmounted.
+ */
+function notifyRunningQueuedUser(turnId: string | undefined): void {
+	if (!turnId) return;
+	const queued = _chatQueue.find((item) => item.id === turnId);
+	if (!queued) return;
+	const userEvent: ServerMessage = {
+		type: "user_message",
+		text: queued.text,
+		session_id: queued.session_id,
+		id: queued.id,
+		...(queued.attachments ? { attachments: queued.attachments } : {}),
+	};
+	for (const subscriber of messageSubs) subscriber(userEvent);
 }
 
 /**
@@ -406,6 +437,11 @@ function onDone(msg: Extract<ServerMessage, { type: "done" }>): boolean {
 	_liveStats = {
 		turns: _liveStats.turns + msg.turns,
 		cost: _liveStats.cost + (msg.cost ?? 0),
+		estimated_cost:
+			(_liveStats.estimated_cost ?? 0) + (msg.estimated_cost ?? 0),
+		unpriced_queries:
+			(_liveStats.unpriced_queries ?? 0) +
+			(msg.cost == null && msg.estimated_cost == null ? 1 : 0),
 		duration_ms: _liveStats.duration_ms + msg.duration_ms,
 		input_tokens: _liveStats.input_tokens + msg.input_tokens,
 		output_tokens: _liveStats.output_tokens + msg.output_tokens,
@@ -521,6 +557,11 @@ function handleSocketMessage(event: MessageEvent): void {
 	if (handleGlobalMessage(msg) || isMessageFromAnotherSession(msg)) return;
 	if (!applySessionMessage(msg)) return;
 	updateMessageBuffer(msg);
+	if (msg.type === "status" && msg.state === "running") {
+		notifyRunningQueuedUser(msg.turn_id);
+	} else if (msg.type === "queue_state") {
+		notifyRunningQueuedUser(msg.running_turn_id ?? undefined);
+	}
 	for (const subscriber of messageSubs) subscriber(msg);
 }
 

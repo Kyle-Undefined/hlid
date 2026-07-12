@@ -139,7 +139,11 @@ export function ProviderUsageStrip({
 			)}
 			<div className="flex divide-x divide-border/40">
 				{(activeSnapshot?.windows ?? []).map((window) => (
-					<ProviderWindowCell key={window.windowId} win={window} />
+					<ProviderWindowCell
+						key={window.windowId}
+						win={window}
+						estimatedCost={activeSnapshot?.providerId === "codex"}
+					/>
 				))}
 				{tail}
 			</div>

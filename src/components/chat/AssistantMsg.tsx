@@ -75,7 +75,7 @@ export function AssistantMsg({
 									inline
 									className="text-[9px] tabular-nums text-muted-foreground/40 pt-0.5 font-mono"
 								>
-									${message.cost.toFixed(4)}
+									{message.costEstimated ? "~" : ""}${message.cost.toFixed(4)}
 								</PrivacyMask>
 							)}
 							<CopyButton

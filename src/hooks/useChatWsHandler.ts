@@ -26,7 +26,12 @@ function dispatchImmediateMessage(
 			setRateLimit(msg);
 			return true;
 		case "user_message":
-			dispatch({ type: "ADD_USER", id: msg.id ?? uid(), text: msg.text });
+			dispatch({
+				type: "ADD_USER",
+				id: msg.id ?? uid(),
+				text: msg.text,
+				...(msg.attachments ? { attachments: msg.attachments } : {}),
+			});
 			return true;
 		case "permission_request":
 			dispatch({ type: "ADD_PERMISSION", msg });
@@ -123,7 +128,12 @@ function dispatchActiveMessage(
 			dispatch({ type: "ADD_TOOL_EVENT", id: activeId, event: msg });
 			break;
 		case "done":
-			dispatch({ type: "DONE", id: activeId, cost: msg.cost });
+			dispatch({
+				type: "DONE",
+				id: activeId,
+				cost: msg.estimated_cost ?? msg.cost,
+				...(msg.estimated_cost != null ? { costEstimated: true } : {}),
+			});
 			lastAssistantIdRef.current = activeId;
 			pendingIdRef.current = null;
 			break;

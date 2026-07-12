@@ -23,6 +23,8 @@ export async function getAggregatedStats(): Promise<AggStats> {
 
 	type AllTimeRow = {
 		cost: number;
+		estimated_cost: number;
+		unpriced_queries: number;
 		queries: number;
 		input_tokens: number;
 		output_tokens: number;
@@ -32,6 +34,8 @@ export async function getAggregatedStats(): Promise<AggStats> {
 	};
 	type WindowRow = {
 		cost: number;
+		estimated_cost: number;
+		unpriced_queries: number;
 		queries: number;
 		turns: number;
 		tokens: number;
@@ -43,6 +47,8 @@ export async function getAggregatedStats(): Promise<AggStats> {
 
 	const EMPTY_ALLTIME: AllTimeRow = {
 		cost: 0,
+		estimated_cost: 0,
+		unpriced_queries: 0,
 		queries: 0,
 		input_tokens: 0,
 		output_tokens: 0,
@@ -52,6 +58,8 @@ export async function getAggregatedStats(): Promise<AggStats> {
 	};
 	const EMPTY_WINDOW: WindowRow = {
 		cost: 0,
+		estimated_cost: 0,
+		unpriced_queries: 0,
 		queries: 0,
 		turns: 0,
 		tokens: 0,
@@ -66,6 +74,8 @@ export async function getAggregatedStats(): Promise<AggStats> {
 			.query<AllTimeRow, []>(`
     SELECT
       COALESCE(SUM(cost), 0) as cost,
+	  COALESCE(SUM(estimated_cost), 0) as estimated_cost,
+	  COALESCE(SUM(unpriced_queries), 0) as unpriced_queries,
       COALESCE(SUM(queries), 0) as queries,
       COALESCE(SUM(input_tokens), 0) as input_tokens,
       COALESCE(SUM(output_tokens), 0) as output_tokens,
@@ -85,9 +95,11 @@ export async function getAggregatedStats(): Promise<AggStats> {
 			.query<WindowRow, []>(`
     SELECT
       COALESCE(SUM(cost), 0) as cost,
+	  COALESCE(SUM(estimated_cost), 0) as estimated_cost,
+	  COALESCE(SUM(unpriced_queries), 0) as unpriced_queries,
       COALESCE(SUM(queries), 0) as queries,
       COALESCE(SUM(turns), 0) as turns,
-      COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) as tokens,
+	  COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) + COALESCE(cache_read_tokens, 0) + COALESCE(cache_creation_tokens, 0)), 0) as tokens,
       COALESCE(SUM(input_tokens), 0) as input_tokens,
       COALESCE(SUM(output_tokens), 0) as output_tokens,
       COALESCE(SUM(cache_read_tokens), 0) as cache_read_tokens,
@@ -102,9 +114,11 @@ export async function getAggregatedStats(): Promise<AggStats> {
 			.query<WindowRow, []>(`
     SELECT
       COALESCE(SUM(cost), 0) as cost,
+	  COALESCE(SUM(estimated_cost), 0) as estimated_cost,
+	  COALESCE(SUM(unpriced_queries), 0) as unpriced_queries,
       COALESCE(SUM(queries), 0) as queries,
       COALESCE(SUM(turns), 0) as turns,
-      COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) as tokens,
+	  COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) + COALESCE(cache_read_tokens, 0) + COALESCE(cache_creation_tokens, 0)), 0) as tokens,
       COALESCE(SUM(input_tokens), 0) as input_tokens,
       COALESCE(SUM(output_tokens), 0) as output_tokens,
       COALESCE(SUM(cache_read_tokens), 0) as cache_read_tokens,
@@ -132,10 +146,10 @@ export async function getUsageWindows(): Promise<UsageWindows> {
 		db
 			.query<WindowRow, []>(`
       SELECT
-        COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) as tokens,
+		COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) + COALESCE(cache_read_tokens, 0) + COALESCE(cache_creation_tokens, 0)), 0) as tokens,
         COUNT(DISTINCT session_id) as sessions,
         COUNT(*) as queries,
-        COALESCE(SUM(cost), 0) as cost
+		COALESCE(SUM(cost) + SUM(COALESCE(estimated_cost, 0)), 0) as cost
       FROM usage_queries
       WHERE timestamp >= strftime('%s', 'now', '-5 hours')
     `)
@@ -145,10 +159,10 @@ export async function getUsageWindows(): Promise<UsageWindows> {
 		db
 			.query<WindowRow, []>(`
       SELECT
-        COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) as tokens,
+		COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) + COALESCE(cache_read_tokens, 0) + COALESCE(cache_creation_tokens, 0)), 0) as tokens,
         COUNT(DISTINCT session_id) as sessions,
         COUNT(*) as queries,
-        COALESCE(SUM(cost), 0) as cost
+		COALESCE(SUM(cost) + SUM(COALESCE(estimated_cost, 0)), 0) as cost
       FROM usage_queries
       WHERE timestamp >= strftime('%s', 'now', '-7 days')
     `)
@@ -271,8 +285,15 @@ export async function getProviderUsage(
 		sessions: number;
 		queries: number;
 		cost: number;
+		unpricedQueries: number;
 	};
-	const EMPTY_ROW: WindowRow = { tokens: 0, sessions: 0, queries: 0, cost: 0 };
+	const EMPTY_ROW: WindowRow = {
+		tokens: 0,
+		sessions: 0,
+		queries: 0,
+		cost: 0,
+		unpricedQueries: 0,
+	};
 
 	type SettingsRow = { value: string };
 	type StoredRl = {
@@ -309,10 +330,11 @@ export async function getProviderUsage(
 			db
 				.query<WindowRow, [string, number]>(`
         SELECT
-          COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0)), 0) as tokens,
-          COUNT(DISTINCT session_id) as sessions,
-          COUNT(*) as queries,
-          COALESCE(SUM(cost), 0) as cost
+		  COALESCE(SUM(COALESCE(input_tokens, 0) + COALESCE(output_tokens, 0) + COALESCE(cache_read_tokens, 0) + COALESCE(cache_creation_tokens, 0)), 0) as tokens,
+		  COUNT(DISTINCT session_id) as sessions,
+		  COUNT(*) as queries,
+		  COALESCE(SUM(cost) + SUM(COALESCE(estimated_cost, 0)), 0) as cost,
+		  COALESCE(SUM(unpriced), 0) as unpricedQueries
         FROM usage_queries
         WHERE provider_id = ? AND timestamp >= strftime('%s', 'now', ? || ' seconds')
       `)
@@ -334,6 +356,7 @@ export async function getProviderUsage(
 			sessions: row.sessions,
 			queries: row.queries,
 			cost: row.cost,
+			unpricedQueries: row.unpricedQueries,
 			utilization: rl.utilization ?? null,
 			remaining: rl.remaining ?? null,
 			limit: rl.limit ?? null,

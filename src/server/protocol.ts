@@ -60,6 +60,7 @@ export type DoneMessage = {
 	 */
 	turn_id?: string;
 	cost: number | null;
+	estimated_cost?: number | null;
 	turns: number;
 	duration_ms: number;
 	input_tokens: number;
@@ -142,6 +143,7 @@ export type UserMessageEvent = {
 	type: "user_message";
 	text: string;
 	session_id?: string;
+	attachments?: ChatAttachment[];
 	/**
 	 * Slice C: turn id from the originating ClientChatMessage. Originating
 	 * client uses this to correlate UserMsg → chatQueue entry (so the queued

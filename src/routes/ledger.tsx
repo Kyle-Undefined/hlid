@@ -36,6 +36,11 @@ import { useWs } from "#/hooks/useWs";
 import { useWsLiveStats } from "#/hooks/useWsSelectors";
 import type { LiveStats } from "#/hooks/wsStore";
 import * as wsStore from "#/hooks/wsStore";
+import {
+	costDisplayNote,
+	formatDisplayCost,
+	totalDisplayCost,
+} from "#/lib/costDisplay";
 import { dbFetch, dbJson, requireDbOk } from "#/lib/dbClient";
 import { fmt, fmtModel } from "#/lib/formatters";
 import {
@@ -161,18 +166,36 @@ function activeCostStat(
 	activeSession: SessionRow | null,
 ): ActiveStat {
 	if (stats.queries > 0) {
+		const pricedQueries = Math.max(
+			0,
+			stats.queries - (stats.unpriced_queries ?? 0),
+		);
 		return {
-			value: `$${stats.cost.toFixed(4)}`,
-			sub: `$${(stats.cost / stats.queries).toFixed(4)}/query`,
+			value: formatDisplayCost(stats),
+			sub:
+				costDisplayNote(stats) ??
+				(pricedQueries > 0
+					? `$${(totalDisplayCost(stats) / pricedQueries).toFixed(4)}/query`
+					: undefined),
 		};
 	}
 	if (activeSession) {
+		const pricedQueries = Math.max(
+			0,
+			activeSession.query_count - (activeSession.unpriced_query_count ?? 0),
+		);
 		return {
-			value: `$${activeSession.total_cost.toFixed(4)}`,
+			value: formatDisplayCost({
+				cost: activeSession.total_cost,
+				estimated_cost: activeSession.total_estimated_cost,
+				unpriced_queries: activeSession.unpriced_query_count ?? 0,
+			}),
 			sub:
-				activeSession.query_count > 0
-					? `$${(activeSession.total_cost / activeSession.query_count).toFixed(4)}/query`
-					: undefined,
+				(activeSession.total_estimated_cost ?? 0) > 0
+					? "API-equivalent estimate"
+					: pricedQueries > 0
+						? `$${(activeSession.total_cost / pricedQueries).toFixed(4)}/query`
+						: undefined,
 		};
 	}
 	return { value: "--", dim: true };
@@ -204,7 +227,12 @@ function activeTokenStat(
 	if (stats.queries > 0) {
 		const cached = stats.cache_read_tokens + stats.cache_creation_tokens;
 		return {
-			value: fmt(stats.input_tokens + stats.output_tokens),
+			value: fmt(
+				stats.input_tokens +
+					stats.output_tokens +
+					stats.cache_read_tokens +
+					stats.cache_creation_tokens,
+			),
 			sub: cached > 0 ? `${fmt(cached)} cached` : undefined,
 		};
 	}
@@ -214,7 +242,10 @@ function activeTokenStat(
 			activeSession.total_cache_creation_tokens;
 		return {
 			value: fmt(
-				activeSession.total_input_tokens + activeSession.total_output_tokens,
+				activeSession.total_input_tokens +
+					activeSession.total_output_tokens +
+					activeSession.total_cache_read_tokens +
+					activeSession.total_cache_creation_tokens,
 			),
 			sub: cached > 0 ? `${fmt(cached)} cached` : undefined,
 		};
@@ -711,6 +742,8 @@ function StatsTab({
 	const sessionBundle: StatBundle | null = activeSession
 		? {
 				cost: activeSession.total_cost,
+				estimated_cost: activeSession.total_estimated_cost ?? 0,
+				unpriced_queries: activeSession.unpriced_query_count ?? 0,
 				queries: activeSession.query_count,
 				turns: activeSession.total_turns,
 				input_tokens: activeSession.total_input_tokens,
@@ -727,27 +760,31 @@ function StatsTab({
 				<div className="border-r border-b sm:border-b-0 border-border">
 					<StatCell
 						label="TODAY"
-						value={`$${agg.today.cost.toFixed(4)}`}
+						value={formatDisplayCost(agg.today)}
 						sub={
-							agg.today.queries > 0 ? `${agg.today.queries} queries` : undefined
+							costDisplayNote(agg.today) ??
+							(agg.today.queries > 0
+								? `${agg.today.queries} queries`
+								: undefined)
 						}
 					/>
 				</div>
 				<div className="border-b sm:border-b-0 sm:border-r border-border">
 					<StatCell
 						label="THIS MONTH"
-						value={`$${agg.thisMonth.cost.toFixed(4)}`}
+						value={formatDisplayCost(agg.thisMonth)}
 						sub={
-							agg.thisMonth.queries > 0
+							costDisplayNote(agg.thisMonth) ??
+							(agg.thisMonth.queries > 0
 								? `${agg.thisMonth.queries} queries`
-								: undefined
+								: undefined)
 						}
 					/>
 				</div>
 				<div className="border-r border-border">
 					<StatCell
 						label="ALL-TIME"
-						value={`$${agg.allTime.cost.toFixed(4)}`}
+						value={formatDisplayCost(agg.allTime)}
 						sub={`${agg.allTime.queries} queries`}
 					/>
 				</div>

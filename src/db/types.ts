@@ -6,6 +6,8 @@ export type SessionRow = {
 	ended_at: number | null;
 	query_count: number;
 	total_cost: number;
+	total_estimated_cost?: number;
+	unpriced_query_count?: number;
 	total_input_tokens: number;
 	total_output_tokens: number;
 	total_cache_read_tokens: number;
@@ -37,6 +39,7 @@ export type ToolEventRow = {
 
 export type QueryData = {
 	cost: number;
+	estimated_cost?: number | null;
 	input_tokens: number;
 	output_tokens: number;
 	cache_read_tokens: number;
@@ -50,6 +53,8 @@ export type QueryData = {
 
 export type AggWindow = {
 	cost: number;
+	estimated_cost?: number;
+	unpriced_queries?: number;
 	queries: number;
 	turns: number;
 	/** input_tokens + output_tokens (for backwards compat) */
@@ -63,6 +68,8 @@ export type AggWindow = {
 export type AggStats = {
 	allTime: {
 		cost: number;
+		estimated_cost?: number;
+		unpriced_queries?: number;
 		queries: number;
 		sessions: number;
 		input_tokens: number;
@@ -141,6 +148,8 @@ export type ProviderWindowEntry = {
 	queries: number;
 	sessions: number;
 	cost: number;
+	/** Queries whose provider model has no published cost estimate. */
+	unpricedQueries?: number;
 	/** Plan utilization 0–1. Null if not available for this provider. */
 	utilization: number | null;
 	/** Tokens remaining in window. Null if not available. */

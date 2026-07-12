@@ -839,7 +839,7 @@ describe("CodexAgentSession — notifications", () => {
 		});
 		expect(await nextSessionEvent(events)).toEqual({
 			type: "usage",
-			inputTokens: 12,
+			inputTokens: 9,
 			outputTokens: 7,
 			contextWindow: 128_000,
 			cacheReadTokens: 3,
@@ -848,12 +848,12 @@ describe("CodexAgentSession — notifications", () => {
 		});
 		expect(await nextSessionEvent(events)).toEqual({
 			type: "done",
-			cost: 0,
+			estimatedCost: 0.00012825,
 			turns: 1,
 			durationMs: 0,
 			stopReason: "completed",
 			usage: {
-				inputTokens: 12,
+				inputTokens: 9,
 				outputTokens: 7,
 				cacheReadTokens: 3,
 				cacheCreationTokens: 0,

@@ -16,6 +16,8 @@ import { dbJson } from "#/lib/dbClient";
 
 const EMPTY_AGG_WINDOW = {
 	cost: 0,
+	estimated_cost: 0,
+	unpriced_queries: 0,
 	queries: 0,
 	turns: 0,
 	tokens: 0,
@@ -28,6 +30,8 @@ const EMPTY_AGG_WINDOW = {
 export const EMPTY_AGG: AggStats = {
 	allTime: {
 		cost: 0,
+		estimated_cost: 0,
+		unpriced_queries: 0,
 		queries: 0,
 		sessions: 0,
 		input_tokens: 0,

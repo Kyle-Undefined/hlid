@@ -1,4 +1,5 @@
 import { resolve } from "node:path";
+import { estimateCodexCost } from "../lib/codexPricing";
 import { APP_DIR } from "../lib/paths";
 
 const DB_PATH = resolve(APP_DIR, "hlid.db");
@@ -402,6 +403,169 @@ function applyMigrations(db: Db): void {
 		db.run(
 			`ALTER TABLE usage_queries ADD COLUMN provider_id TEXT NOT NULL DEFAULT 'claude'`,
 		);
+	});
+
+	// Canonical usage stores uncached input, cache reads, and cache writes as
+	// disjoint buckets. OpenAI reports cache reads/writes inside inputTokens,
+	// while Claude already reports disjoint values. Normalize existing Codex
+	// rows and backfill API-equivalent cost estimates from the session model.
+	runMigration(db, "_migrated_canonical_usage_and_estimated_cost", (db) => {
+		db.run(
+			`ALTER TABLE sessions ADD COLUMN total_estimated_cost REAL DEFAULT 0`,
+		);
+		db.run(
+			`ALTER TABLE sessions ADD COLUMN unpriced_query_count INTEGER DEFAULT 0`,
+		);
+		db.run(`ALTER TABLE queries ADD COLUMN estimated_cost REAL`);
+		db.run(`ALTER TABLE usage_daily ADD COLUMN estimated_cost REAL DEFAULT 0`);
+		db.run(
+			`ALTER TABLE usage_daily ADD COLUMN unpriced_queries INTEGER DEFAULT 0`,
+		);
+		db.run(`ALTER TABLE usage_queries ADD COLUMN estimated_cost REAL`);
+		db.run(`ALTER TABLE usage_queries ADD COLUMN unpriced INTEGER DEFAULT 0`);
+
+		db.run(`
+			UPDATE usage_queries
+			SET input_tokens = MAX(0, input_tokens - cache_read_tokens - cache_creation_tokens)
+			WHERE provider_id = 'codex'
+		`);
+		db.run(`
+			UPDATE queries
+			SET input_tokens = MAX(0, input_tokens - cache_read_tokens - cache_creation_tokens)
+			WHERE session_id IN (SELECT id FROM sessions WHERE provider_id = 'codex')
+		`);
+		db.run(`
+			UPDATE queries
+			SET tokens_in_context = input_tokens + cache_read_tokens + cache_creation_tokens
+			WHERE session_id IN (SELECT id FROM sessions WHERE provider_id = 'codex')
+		`);
+
+		type UsageRow = {
+			id: number;
+			model: string | null;
+			input_tokens: number;
+			output_tokens: number;
+			cache_read_tokens: number;
+			cache_creation_tokens: number;
+		};
+		const rows = db
+			.query<UsageRow, []>(`
+				SELECT uq.id, COALESCE(s.actual_model, s.model) AS model,
+				       uq.input_tokens, uq.output_tokens,
+				       uq.cache_read_tokens, uq.cache_creation_tokens
+				FROM usage_queries uq
+				LEFT JOIN sessions s ON s.id = uq.session_id
+				WHERE uq.provider_id = 'codex'
+			`)
+			.all();
+		const updateUsage = db.prepare(
+			`UPDATE usage_queries SET estimated_cost = ?, unpriced = ? WHERE id = ?`,
+		);
+		for (const row of rows) {
+			const estimate = estimateCodexCost(row.model, {
+				inputTokens: row.input_tokens,
+				outputTokens: row.output_tokens,
+				cacheReadTokens: row.cache_read_tokens,
+				cacheCreationTokens: row.cache_creation_tokens,
+			});
+			updateUsage.run(estimate, estimate == null ? 1 : 0, row.id);
+		}
+
+		const queryRows = db
+			.query<UsageRow, []>(`
+				SELECT q.id, COALESCE(s.actual_model, s.model) AS model,
+				       q.input_tokens, q.output_tokens,
+				       q.cache_read_tokens, q.cache_creation_tokens
+				FROM queries q
+				JOIN sessions s ON s.id = q.session_id
+				WHERE s.provider_id = 'codex'
+			`)
+			.all();
+		const updateQuery = db.prepare(
+			`UPDATE queries SET estimated_cost = ? WHERE id = ?`,
+		);
+		for (const row of queryRows) {
+			const estimate = estimateCodexCost(row.model, {
+				inputTokens: row.input_tokens,
+				outputTokens: row.output_tokens,
+				cacheReadTokens: row.cache_read_tokens,
+				cacheCreationTokens: row.cache_creation_tokens,
+			});
+			updateQuery.run(estimate, row.id);
+		}
+
+		db.run(`
+			UPDATE sessions SET
+				total_input_tokens = COALESCE((SELECT SUM(input_tokens) FROM queries WHERE session_id = sessions.id), 0),
+				total_output_tokens = COALESCE((SELECT SUM(output_tokens) FROM queries WHERE session_id = sessions.id), 0),
+				total_cache_read_tokens = COALESCE((SELECT SUM(cache_read_tokens) FROM queries WHERE session_id = sessions.id), 0),
+				total_cache_creation_tokens = COALESCE((SELECT SUM(cache_creation_tokens) FROM queries WHERE session_id = sessions.id), 0),
+				total_estimated_cost = COALESCE((SELECT SUM(estimated_cost) FROM queries WHERE session_id = sessions.id), 0),
+				unpriced_query_count = CASE WHEN provider_id = 'codex' THEN
+					COALESCE((SELECT SUM(CASE WHEN estimated_cost IS NULL THEN 1 ELSE 0 END) FROM queries WHERE session_id = sessions.id), 0)
+				ELSE 0 END
+		`);
+
+		// usage_queries is the immutable cross-session ledger, so rebuild daily
+		// aggregates from it rather than from deletable session/query rows.
+		db.run(`DELETE FROM usage_daily`);
+		db.run(`
+			INSERT INTO usage_daily
+				(date, cost, estimated_cost, unpriced_queries, queries, input_tokens,
+				 output_tokens, cache_read_tokens, cache_creation_tokens, turns)
+			SELECT DATE(timestamp, 'unixepoch', 'localtime'),
+			       COALESCE(SUM(cost), 0), COALESCE(SUM(estimated_cost), 0),
+			       COALESCE(SUM(unpriced), 0), COUNT(*),
+			       COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
+			       COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(cache_creation_tokens), 0),
+			       COALESCE(SUM(turns), 0)
+			FROM usage_queries
+			GROUP BY DATE(timestamp, 'unixepoch', 'localtime')
+		`);
+	});
+
+	// Claude Code's total_cost_usd is a CLI-reported API-equivalent value. It
+	// is not authoritative billing: subscription usage has no per-turn charge,
+	// while API gateways can apply pricing the CLI cannot observe. Older HLID
+	// versions stored that value as exact cost, so move every historical Claude
+	// ledger/query value into the estimated bucket. Exact cost remains reserved
+	// for a future provider or gateway billing integration.
+	runMigration(db, "_migrated_claude_costs_to_estimates", (db) => {
+		db.run(`
+			UPDATE usage_queries
+			SET estimated_cost = COALESCE(estimated_cost, 0) + cost,
+			    cost = 0
+			WHERE provider_id = 'claude' AND cost != 0
+		`);
+		db.run(`
+			UPDATE queries
+			SET estimated_cost = COALESCE(estimated_cost, 0) + cost,
+			    cost = 0
+			WHERE session_id IN (SELECT id FROM sessions WHERE provider_id = 'claude')
+			  AND cost != 0
+		`);
+		db.run(`
+			UPDATE sessions SET
+				total_cost = COALESCE((SELECT SUM(cost) FROM queries WHERE session_id = sessions.id), 0),
+				total_estimated_cost = COALESCE((SELECT SUM(estimated_cost) FROM queries WHERE session_id = sessions.id), 0)
+			WHERE provider_id = 'claude'
+		`);
+
+		// usage_queries survives session deletion and is the authoritative ledger.
+		db.run(`DELETE FROM usage_daily`);
+		db.run(`
+			INSERT INTO usage_daily
+				(date, cost, estimated_cost, unpriced_queries, queries, input_tokens,
+				 output_tokens, cache_read_tokens, cache_creation_tokens, turns)
+			SELECT DATE(timestamp, 'unixepoch', 'localtime'),
+			       COALESCE(SUM(cost), 0), COALESCE(SUM(estimated_cost), 0),
+			       COALESCE(SUM(unpriced), 0), COUNT(*),
+			       COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
+			       COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(cache_creation_tokens), 0),
+			       COALESCE(SUM(turns), 0)
+			FROM usage_queries
+			GROUP BY DATE(timestamp, 'unixepoch', 'localtime')
+		`);
 	});
 
 	// Rename Anthropic-specific settings keys to provider-namespaced format.

@@ -38,6 +38,8 @@ export class RingBuffer {
 		this.buf = Buffer.allocUnsafe(capacity);
 	}
 
+	// Shared with ShellSessionPool; Fallow does not resolve that cross-module use.
+	// fallow-ignore-next-line unused-class-member
 	push(data: Buffer): void {
 		const src = data;
 		if (src.length >= this.cap) {
@@ -62,6 +64,8 @@ export class RingBuffer {
 	 * Return the current buffer contents in order (oldest → newest).
 	 * Returns a Buffer of at most `capacity` bytes.
 	 */
+	// Shared with ShellSessionPool; Fallow does not resolve that cross-module use.
+	// fallow-ignore-next-line unused-class-member
 	snapshot(): Buffer {
 		if (this.len === 0) return Buffer.alloc(0);
 		const used = Math.min(this.len, this.cap);
@@ -75,10 +79,6 @@ export class RingBuffer {
 		this.buf.copy(out, 0, start);
 		this.buf.copy(out, this.cap - start, 0, start);
 		return out;
-	}
-
-	get size(): number {
-		return Math.min(this.len, this.cap);
 	}
 }
 

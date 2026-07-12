@@ -139,6 +139,8 @@ export type AgentEvent =
 	| {
 			type: "done";
 			cost?: number;
+			/** API-equivalent estimate when the provider does not report actual cost. */
+			estimatedCost?: number | null;
 			turns: number;
 			durationMs: number;
 			stopReason?: string;

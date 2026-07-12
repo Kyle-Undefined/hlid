@@ -3,6 +3,7 @@ import { useState } from "react";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { AggStats, SessionRow, WeeklyStats } from "#/db";
 import type * as wsStore from "#/hooks/wsStore";
+import { formatDisplayCost } from "#/lib/costDisplay";
 import { fmt, fmtRunTime } from "#/lib/formatters";
 
 // ─── UtilBar ─────────────────────────────────────────────────────────────────
@@ -177,7 +178,13 @@ export function RecentRunsSidebar({
 							inline
 							className={`text-sm font-bold tabular-nums leading-none ${session ? "text-[var(--data)]" : "text-muted-foreground/20"}`}
 						>
-							{session ? `$${session.total_cost.toFixed(4)}` : "--"}
+							{session
+								? formatDisplayCost({
+										cost: session.total_cost,
+										estimated_cost: session.total_estimated_cost,
+										unpriced_queries: session.unpriced_query_count,
+									})
+								: "--"}
 						</PrivacyMask>
 						<PrivacyMask className="mt-1 text-[8px] tracking-wider text-muted-foreground/40">
 							{session
@@ -193,7 +200,7 @@ export function RecentRunsSidebar({
 							inline
 							className="text-sm font-bold tabular-nums leading-none text-[var(--data)]"
 						>
-							${agg.today.cost.toFixed(4)}
+							{formatDisplayCost(agg.today)}
 						</PrivacyMask>
 						<PrivacyMask className="mt-1 text-[8px] tracking-wider text-muted-foreground/40">
 							{agg.today.queries}q · {fmt(agg.today.tokens)} tok
@@ -209,7 +216,7 @@ export function RecentRunsSidebar({
 							inline
 							className="text-sm font-bold tabular-nums leading-none text-[var(--data)]"
 						>
-							${agg.thisMonth.cost.toFixed(4)}
+							{formatDisplayCost(agg.thisMonth)}
 						</PrivacyMask>
 						<PrivacyMask className="mt-1 text-[8px] tracking-wider text-muted-foreground/40">
 							{agg.thisMonth.queries}q · {fmt(agg.thisMonth.tokens)} tok
@@ -223,7 +230,7 @@ export function RecentRunsSidebar({
 							inline
 							className="text-sm font-bold tabular-nums text-foreground/60"
 						>
-							${agg.allTime.cost.toFixed(2)}
+							{formatDisplayCost(agg.allTime, 2)}
 						</PrivacyMask>
 					</div>
 				</div>

@@ -22,6 +22,7 @@ export type AssistantMessage = {
 	toolEvents: ToolEventMessage[];
 	streaming: boolean;
 	cost: number | null;
+	costEstimated?: boolean;
 	recap?: string;
 };
 
@@ -131,7 +132,12 @@ export type Action =
 			decision: Exclude<PlanProposalDecision, "pending">;
 	  }
 	| { type: "ADD_LOCAL_COMMAND_OUTPUT"; id: string; content: string }
-	| { type: "DONE"; id: string; cost: number | null }
+	| {
+			type: "DONE";
+			id: string;
+			cost: number | null;
+			costEstimated?: boolean;
+	  }
 	| { type: "SET_RECAP"; id: string; recap: string }
 	| { type: "ADD_PERMISSION"; msg: PermissionRequestMessage }
 	| {
@@ -326,6 +332,9 @@ function historyItemToMessage(item: HistoryItem): ChatMessage {
 export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 	switch (action.type) {
 		case "ADD_USER":
+			if (state.some((m) => m.role === "user" && m.id === action.id)) {
+				return state;
+			}
 			return [
 				...state,
 				{
@@ -448,6 +457,7 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 				...m,
 				streaming: false,
 				cost: action.cost,
+				costEstimated: action.costEstimated,
 			}));
 		case "SET_RECAP":
 			return patchMessage(state, action.id, "assistant", (m) => ({

@@ -6,6 +6,7 @@ import { sessionEntryDotClass } from "#/components/nav/SystemStatusDot";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { SessionRow } from "#/db";
 import type { LiveStats } from "#/hooks/wsStore";
+import { formatDisplayCost } from "#/lib/costDisplay";
 import { fmt, fmtDate } from "#/lib/formatters";
 import type { SessionStatusEntry } from "#/server/protocol";
 
@@ -18,14 +19,21 @@ export function sessionDisplayUsage(
 ): { cost: number; tokens: number } {
 	if (isActive && liveStats && liveStats.queries > 0) {
 		return {
-			cost: liveStats.cost,
-			tokens: liveStats.input_tokens + liveStats.output_tokens,
+			cost: liveStats.cost + (liveStats.estimated_cost ?? 0),
+			tokens:
+				liveStats.input_tokens +
+				liveStats.output_tokens +
+				liveStats.cache_read_tokens +
+				liveStats.cache_creation_tokens,
 		};
 	}
 	return {
-		cost: session.total_cost ?? 0,
+		cost: (session.total_cost ?? 0) + (session.total_estimated_cost ?? 0),
 		tokens:
-			(session.total_input_tokens ?? 0) + (session.total_output_tokens ?? 0),
+			(session.total_input_tokens ?? 0) +
+			(session.total_output_tokens ?? 0) +
+			(session.total_cache_read_tokens ?? 0) +
+			(session.total_cache_creation_tokens ?? 0),
 	};
 }
 
@@ -50,6 +58,14 @@ function SessionItem({
 	const [editValue, setEditValue] = useState("");
 	const inputRef = useRef<HTMLInputElement>(null);
 	const usage = sessionDisplayUsage(session, Boolean(isActive), liveStats);
+	const costSummary =
+		isActive && liveStats && liveStats.queries > 0
+			? liveStats
+			: {
+					cost: session.total_cost ?? 0,
+					estimated_cost: session.total_estimated_cost ?? 0,
+					unpriced_queries: session.unpriced_query_count ?? 0,
+				};
 
 	function startEdit() {
 		setEditValue(session.label ?? "");
@@ -126,7 +142,7 @@ function SessionItem({
 					</div>
 					<div className="text-right shrink-0">
 						<PrivacyMask className="text-[11px] tabular-nums text-[var(--data)]/70">
-							${usage.cost.toFixed(4)}
+							{formatDisplayCost(costSummary)}
 						</PrivacyMask>
 						<PrivacyMask className="text-[9px] tabular-nums text-muted-foreground/40 mt-0.5">
 							{fmt(usage.tokens)} tok

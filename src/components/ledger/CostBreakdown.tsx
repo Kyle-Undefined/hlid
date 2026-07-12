@@ -4,6 +4,7 @@ import {
 	type StatBundle,
 } from "#/components/ledger/LedgerStats";
 import { PrivacyMask } from "#/components/PrivacyMask";
+import { totalDisplayCost } from "#/lib/costDisplay";
 import { fmt } from "#/lib/formatters";
 
 // ─── CostBreakdown ────────────────────────────────────────────────────────────
@@ -50,7 +51,11 @@ export function CostBreakdown({ s }: { s: StatBundle }) {
 
 	// Per-query efficiency
 	const avgCostPerQuery =
-		s.queries > 0 ? `$${(s.cost / s.queries).toFixed(4)}` : "--";
+		s.queries - (s.unpriced_queries ?? 0) > 0
+			? `${(s.estimated_cost ?? 0) > 0 ? "~" : ""}$${(
+					totalDisplayCost(s) / (s.queries - (s.unpriced_queries ?? 0))
+				).toFixed(4)}`
+			: "--";
 	const avgTokensPerQuery =
 		s.queries > 0 ? fmt(Math.round(totalTokens / s.queries)) : "--";
 	const outputInputRatio =

@@ -1,4 +1,5 @@
 import { PrivacyMask } from "#/components/PrivacyMask";
+import { formatDisplayCost, totalDisplayCost } from "#/lib/costDisplay";
 import { fmt } from "#/lib/formatters";
 
 // ─── StatCell ─────────────────────────────────────────────────────────────────
@@ -63,6 +64,8 @@ export function Row({ label, value }: { label: string; value: string }) {
 
 export type StatBundle = {
 	cost: number;
+	estimated_cost?: number;
+	unpriced_queries?: number;
 	queries: number;
 	turns: number;
 	input_tokens: number;
@@ -85,7 +88,13 @@ export function cacheHitPct(
 }
 
 export function StatRows({ s }: { s: StatBundle }) {
-	const avgCost = s.queries > 0 ? `$${(s.cost / s.queries).toFixed(4)}` : "--";
+	const pricedQueries = Math.max(0, s.queries - (s.unpriced_queries ?? 0));
+	const avgCost =
+		pricedQueries > 0
+			? `${(s.estimated_cost ?? 0) > 0 ? "~" : ""}$${(
+					totalDisplayCost(s) / pricedQueries
+				).toFixed(4)}`
+			: "--";
 	const avgTurns = s.queries > 0 ? (s.turns / s.queries).toFixed(1) : "--";
 	const hit = cacheHitPct(
 		s.input_tokens,
@@ -93,10 +102,20 @@ export function StatRows({ s }: { s: StatBundle }) {
 		s.cache_creation_tokens,
 	);
 	const cacheTokens = s.cache_read_tokens + s.cache_creation_tokens;
-	const total = s.input_tokens + s.output_tokens;
+	const total =
+		s.input_tokens +
+		s.output_tokens +
+		s.cache_read_tokens +
+		s.cache_creation_tokens;
+	const costLabel =
+		(s.estimated_cost ?? 0) > 0
+			? "Cost (estimated)"
+			: (s.unpriced_queries ?? 0) > 0
+				? "Cost (partial)"
+				: "Cost";
 	return (
 		<>
-			<Row label="Cost" value={`$${s.cost.toFixed(4)}`} />
+			<Row label={costLabel} value={formatDisplayCost(s)} />
 			<Row label="Avg cost/query" value={avgCost} />
 			<Row label="Queries" value={String(s.queries)} />
 			<Row label="Turns" value={String(s.turns)} />

@@ -513,7 +513,11 @@ function translateResultMessage(
 	}
 	events.push({
 		type: "done",
-		cost: message.total_cost_usd,
+		// Claude Code reports an API-equivalent per-run dollar value, not an
+		// invoice-authoritative charge. Subscription runs incur no per-turn API
+		// bill, and gateways may apply their own routing, discounts, or markup.
+		// Keep it estimated unless a future billing integration supplies actuals.
+		estimatedCost: message.total_cost_usd,
 		turns: message.num_turns,
 		durationMs: message.duration_ms ?? 0,
 		stopReason: message.stop_reason ?? undefined,

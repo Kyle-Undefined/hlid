@@ -138,11 +138,12 @@ export async function recordQuery(
 	const database = await getDb();
 	database.transaction(() => {
 		database.run(
-			`INSERT INTO queries (session_id, timestamp, cost, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, duration_ms, turns, context_window, stop_reason, tokens_in_context)
-       VALUES (?, unixepoch(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO queries (session_id, timestamp, cost, estimated_cost, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, duration_ms, turns, context_window, stop_reason, tokens_in_context)
+			 VALUES (?, unixepoch(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				sessionId,
 				data.cost,
+				data.estimated_cost ?? null,
 				data.input_tokens,
 				data.output_tokens,
 				data.cache_read_tokens,
@@ -158,6 +159,8 @@ export async function recordQuery(
 			`UPDATE sessions SET
          query_count = query_count + 1,
          total_cost = total_cost + ?,
+         total_estimated_cost = total_estimated_cost + ?,
+         unpriced_query_count = unpriced_query_count + ?,
          total_input_tokens = total_input_tokens + ?,
          total_output_tokens = total_output_tokens + ?,
          total_cache_read_tokens = total_cache_read_tokens + ?,
@@ -167,6 +170,8 @@ export async function recordQuery(
        WHERE id = ?`,
 			[
 				data.cost,
+				data.estimated_cost ?? 0,
+				data.estimated_cost == null && providerId === "codex" ? 1 : 0,
 				data.input_tokens,
 				data.output_tokens,
 				data.cache_read_tokens,
@@ -176,10 +181,12 @@ export async function recordQuery(
 			],
 		);
 		database.run(
-			`INSERT INTO usage_daily (date, cost, queries, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, turns)
-       VALUES (DATE('now', 'localtime'), ?, 1, ?, ?, ?, ?, ?)
-       ON CONFLICT(date) DO UPDATE SET
-         cost = cost + excluded.cost,
+			`INSERT INTO usage_daily (date, cost, estimated_cost, unpriced_queries, queries, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, turns)
+			 VALUES (DATE('now', 'localtime'), ?, ?, ?, 1, ?, ?, ?, ?, ?)
+			 ON CONFLICT(date) DO UPDATE SET
+			   cost = cost + excluded.cost,
+			   estimated_cost = estimated_cost + excluded.estimated_cost,
+			   unpriced_queries = unpriced_queries + excluded.unpriced_queries,
          queries = queries + 1,
          input_tokens = input_tokens + excluded.input_tokens,
          output_tokens = output_tokens + excluded.output_tokens,
@@ -188,6 +195,8 @@ export async function recordQuery(
          turns = turns + excluded.turns`,
 			[
 				data.cost,
+				data.estimated_cost ?? 0,
+				data.estimated_cost == null && providerId === "codex" ? 1 : 0,
 				data.input_tokens,
 				data.output_tokens,
 				data.cache_read_tokens,
@@ -196,11 +205,13 @@ export async function recordQuery(
 			],
 		);
 		database.run(
-			`INSERT INTO usage_queries (session_id, timestamp, cost, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, turns, provider_id)
-       VALUES (?, unixepoch(), ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO usage_queries (session_id, timestamp, cost, estimated_cost, unpriced, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, turns, provider_id)
+			 VALUES (?, unixepoch(), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				sessionId,
 				data.cost,
+				data.estimated_cost ?? null,
+				data.estimated_cost == null && providerId === "codex" ? 1 : 0,
 				data.input_tokens,
 				data.output_tokens,
 				data.cache_read_tokens,

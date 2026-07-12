@@ -243,6 +243,31 @@ describe("useChatWsHandler — immediate messages", () => {
 		expect(dispatch).toHaveBeenCalledWith(action);
 	});
 
+	it("preserves attachments when a queued user message is re-promoted", () => {
+		const { handler, dispatch } = renderHandler();
+		const attachments = [
+			{
+				id: "attachment-1",
+				path: "/tmp/image.png",
+				filename: "image.png",
+				mime: "image/png",
+				kind: "ephemeral" as const,
+			},
+		];
+		handler({
+			type: "user_message",
+			id: "user-1",
+			text: "look at this",
+			attachments,
+		});
+		expect(dispatch).toHaveBeenCalledWith({
+			type: "ADD_USER",
+			id: "user-1",
+			text: "look at this",
+			attachments,
+		});
+	});
+
 	it("preserves structured plan text and its optional HTML relic", () => {
 		const { handler, dispatch } = renderHandler();
 		handler({

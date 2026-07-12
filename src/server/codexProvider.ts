@@ -1,5 +1,6 @@
 import { dirname } from "node:path";
 import { resolveCodexExecutable } from "../lib/codexPath";
+import { canonicalizeCodexUsage, estimateCodexCost } from "../lib/codexPricing";
 import { toLogical } from "../lib/paths";
 import type {
 	AgentEvent,
@@ -409,18 +410,25 @@ function maybeUsage(value: unknown): AgentEvent | null {
 	const output =
 		Number(usage.outputTokens ?? usage.output_tokens ?? usage.output) || 0;
 	if (input === 0 && output === 0) return null;
-	return {
-		type: "usage",
+	const canonical = canonicalizeCodexUsage({
 		inputTokens: input,
 		outputTokens: output,
-		contextWindow,
 		cacheReadTokens:
 			Number(usage.cacheReadTokens ?? usage.cache_read_input_tokens) ||
 			Number(usage.cachedInputTokens) ||
 			undefined,
 		cacheCreationTokens:
 			Number(usage.cacheCreationTokens ?? usage.cache_creation_input_tokens) ||
+			Number(usage.cacheWriteTokens ?? usage.cache_write_tokens) ||
 			undefined,
+	});
+	return {
+		type: "usage",
+		inputTokens: canonical.inputTokens,
+		outputTokens: canonical.outputTokens,
+		contextWindow,
+		cacheReadTokens: canonical.cacheReadTokens || undefined,
+		cacheCreationTokens: canonical.cacheCreationTokens || undefined,
 		model: typeof obj.model === "string" ? obj.model : undefined,
 	};
 }
@@ -450,6 +458,7 @@ class CodexAgentSession implements AgentSession {
 		cacheReadTokens: 0,
 		cacheCreationTokens: 0,
 	};
+	private resolvedModel: string | null = null;
 
 	private launch: CodexLaunchConfig | null = null;
 
@@ -547,6 +556,7 @@ class CodexAgentSession implements AgentSession {
 	 */
 	async setModel(model?: string): Promise<void> {
 		this.params = { ...this.params, model };
+		this.resolvedModel = model ?? null;
 	}
 
 	/**
@@ -692,6 +702,10 @@ class CodexAgentSession implements AgentSession {
 			throw new Error("Codex thread start did not return a thread id");
 		}
 		this.threadId = thread.id;
+		this.resolvedModel =
+			typeof thread.model === "string"
+				? thread.model
+				: (this.params.model ?? null);
 		if (this.canceled) return;
 		this.threadHandler = {
 			onNotification: (method, params) =>
@@ -1150,6 +1164,7 @@ class CodexAgentSession implements AgentSession {
 
 	private recordUsage(usage: AgentEvent | null): void {
 		if (usage?.type !== "usage") return;
+		if (usage.model) this.resolvedModel = usage.model;
 		this.lastUsage = {
 			inputTokens: usage.inputTokens,
 			outputTokens: usage.outputTokens,
@@ -1223,7 +1238,10 @@ class CodexAgentSession implements AgentSession {
 		this.resetTurnTracking();
 		this.events.push({
 			type: "done",
-			cost: 0,
+			estimatedCost: estimateCodexCost(
+				this.resolvedModel ?? this.params.model,
+				this.lastUsage,
+			),
 			turns: 1,
 			durationMs: 0,
 			stopReason: typeof turn.status === "string" ? turn.status : undefined,

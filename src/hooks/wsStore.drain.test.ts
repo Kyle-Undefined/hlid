@@ -78,6 +78,59 @@ describe("wsStore — Slice A: immediate-send drain", () => {
 		expect(wsStore.getQueue()[0].id).toBe("m1");
 	});
 
+	it("re-promotes a queued prompt when the server starts it after a remount", () => {
+		wsStore.enqueueChat({
+			id: "m1",
+			text: "survive navigation",
+			session_id: "s1",
+			attachments: [
+				{
+					id: "a1",
+					path: "/tmp/example.png",
+					filename: "example.png",
+					mime: "image/png",
+					kind: "ephemeral",
+				},
+			],
+		});
+
+		// This subscriber represents Raven after the original reducer unmounted.
+		const received = vi.fn();
+		const unsubscribe = wsStore.subscribeMessage(received);
+		currentWs.onmessage?.({
+			data: JSON.stringify({
+				type: "status",
+				state: "running",
+				model: "codex",
+				turn_id: "m1",
+			}),
+		});
+
+		expect(received.mock.calls.map(([message]) => message)).toEqual([
+			{
+				type: "user_message",
+				id: "m1",
+				text: "survive navigation",
+				session_id: "s1",
+				attachments: [
+					{
+						id: "a1",
+						path: "/tmp/example.png",
+						filename: "example.png",
+						mime: "image/png",
+						kind: "ephemeral",
+					},
+				],
+			},
+			expect.objectContaining({
+				type: "status",
+				state: "running",
+				turn_id: "m1",
+			}),
+		]);
+		unsubscribe();
+	});
+
 	it("done event removes the queued item matching its turn_id (not just the head)", () => {
 		wsStore.enqueueChat({ id: "m1", text: "first", session_id: "s1" });
 		wsStore.enqueueChat({ id: "m2", text: "second", session_id: "s1" });

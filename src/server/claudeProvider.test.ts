@@ -544,7 +544,7 @@ describe("ClaudeProvider — event mapping", () => {
 		const doneEvent = events.find((e) => e.type === "done");
 		expect(doneEvent).toMatchObject({
 			type: "done",
-			cost: 1.23,
+			estimatedCost: 1.23,
 			turns: 3,
 			durationMs: 5000,
 			stopReason: "end_turn",

@@ -77,6 +77,10 @@ export function useLoadChatHistory({
 						dispatch({ type: "ADD_USER", id: uid(), text: p });
 					}
 				}
+				// Mark the reducer ready before requesting sync. A fast status/queue_state
+				// reply can otherwise be gated out by useChatWsHandler, which loses the
+				// queued-turn promotion until a manual refresh.
+				historyReadyRef.current = true;
 				wsStore.setBufferingEnabled(false);
 				// Sync with server to claim session ownership if not yet set
 				wsStore.send({ type: "sync" });

@@ -53,6 +53,8 @@ export function prependPendingRun(
 		ended_at: null,
 		query_count: 0,
 		total_cost: 0,
+		total_estimated_cost: 0,
+		unpriced_query_count: 0,
 		total_input_tokens: 0,
 		total_output_tokens: 0,
 		total_cache_read_tokens: 0,

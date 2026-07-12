@@ -261,6 +261,59 @@ describe("sessions — recordQuery", () => {
 		expect(rows[0].total_input_tokens).toBe(300);
 	});
 
+	it("stores Codex API estimates separately from provider-reported cost", async () => {
+		await createSession("s1", "L", "gpt-5.6-terra");
+		await recordQuery(
+			"s1",
+			baseQuery({ cost: 0, estimated_cost: 0.125 }),
+			"codex",
+		);
+		const rows = await getRecentSessions();
+		expect(rows[0].total_cost).toBe(0);
+		expect(rows[0].total_estimated_cost).toBeCloseTo(0.125);
+		expect(rows[0].unpriced_query_count).toBe(0);
+		const agg = await getAggregatedStats();
+		expect(agg.today.cost).toBe(0);
+		expect(agg.today.estimated_cost).toBeCloseTo(0.125);
+	});
+
+	it("migrates historical Claude CLI cost into the estimated bucket", async () => {
+		const database = freshDb();
+		await createSession("s1", "L", "claude-opus-4-6");
+		await recordQuery(
+			"s1",
+			baseQuery({ cost: 0.25, estimated_cost: null }),
+			"claude",
+		);
+
+		// Simulate a database created before the provenance correction by making
+		// just this migration pending, then initialize the schema again.
+		database.run(
+			`DELETE FROM settings WHERE key = '_migrated_claude_costs_to_estimates'`,
+		);
+		setDbForTest(database);
+
+		const rows = await getRecentSessions();
+		expect(rows[0].total_cost).toBe(0);
+		expect(rows[0].total_estimated_cost).toBeCloseTo(0.25);
+		const agg = await getAggregatedStats();
+		expect(agg.today.cost).toBe(0);
+		expect(agg.today.estimated_cost).toBeCloseTo(0.25);
+	});
+
+	it("marks Codex queries whose model has no published price", async () => {
+		await createSession("s1", "L", "gpt-5.3-codex-spark");
+		await recordQuery(
+			"s1",
+			baseQuery({ cost: 0, estimated_cost: null }),
+			"codex",
+		);
+		const rows = await getRecentSessions();
+		expect(rows[0].unpriced_query_count).toBe(1);
+		const agg = await getAggregatedStats();
+		expect(agg.today.unpriced_queries).toBe(1);
+	});
+
 	it("getSessionLastQueryContext returns context_window from a query", async () => {
 		await createSession("s1", "L", "m");
 		await recordQuery(
@@ -530,7 +583,7 @@ describe("usage — getAggregatedStats", () => {
 		expect(today.cache_creation_tokens).toBe(20);
 		expect(today.turns).toBe(2);
 		expect(today.queries).toBe(1);
-		expect(today.tokens).toBe(400); // input + output
+		expect(today.tokens).toBe(500); // uncached input + output + cache read/write
 		expect(today.cost).toBeCloseTo(0.05);
 
 		// thisMonth mirrors today (single record, same calendar month)

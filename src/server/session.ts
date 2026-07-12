@@ -222,6 +222,7 @@ function buildQueryData(
 		tokensInContext,
 		queryData: {
 			cost: event.cost ?? 0,
+			estimated_cost: event.estimatedCost ?? null,
 			input_tokens: event.usage?.inputTokens ?? 0,
 			output_tokens: event.usage?.outputTokens ?? 0,
 			cache_read_tokens: event.usage?.cacheReadTokens ?? 0,
@@ -985,6 +986,7 @@ export class SessionManager {
 				? { turn_id: this.currentTurnId }
 				: {}),
 			cost: event.cost ?? null,
+			estimated_cost: event.estimatedCost ?? null,
 			turns: event.turns,
 			duration_ms: event.durationMs,
 			input_tokens: queryData.input_tokens,

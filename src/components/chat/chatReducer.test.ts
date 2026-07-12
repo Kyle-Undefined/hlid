@@ -53,6 +53,17 @@ describe("ADD_USER", () => {
 		);
 	});
 
+	it("ignores a repeated user message with the same turn id", () => {
+		const initial = withUser("u1", "queued prompt");
+		const state = reducer(initial, {
+			type: "ADD_USER",
+			id: "u1",
+			text: "queued prompt",
+		});
+		expect(state).toBe(initial);
+		expect(state).toHaveLength(1);
+	});
+
 	it("does not mutate previous state", () => {
 		const initial = empty();
 		reducer(initial, { type: "ADD_USER", id: "x", text: "x" });

@@ -1,6 +1,7 @@
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { AggStats } from "#/db";
 import type * as wsStore from "#/hooks/wsStore";
+import { formatDisplayCost, totalDisplayCost } from "#/lib/costDisplay";
 import { fmt, fmtMs } from "#/lib/formatters";
 
 export function DashboardHeader({
@@ -26,7 +27,9 @@ export function DashboardHeader({
 					<div
 						className={`text-lg md:text-2xl font-bold tabular-nums leading-none ${idle && !isConnected ? "text-muted-foreground/20" : "text-[var(--data)]"}`}
 					>
-						{isConnected || stats.cost > 0 ? `$${stats.cost.toFixed(4)}` : "--"}
+						{isConnected || totalDisplayCost(stats) > 0
+							? formatDisplayCost(stats)
+							: "--"}
 					</div>
 					<div className="mt-1 md:mt-1.5 text-[9px] tracking-wider text-muted-foreground/40">
 						{idle ? "idle" : `${stats.queries}q · ${fmtMs(stats.duration_ms)}`}
@@ -42,7 +45,7 @@ export function DashboardHeader({
 						inline
 						className="text-lg md:text-2xl font-bold tabular-nums leading-none text-[var(--data)]"
 					>
-						${agg.today.cost.toFixed(4)}
+						{formatDisplayCost(agg.today)}
 					</PrivacyMask>
 					<PrivacyMask className="mt-1 md:mt-1.5 text-[9px] tracking-wider text-muted-foreground/40">
 						{agg.today.queries}q · {fmt(agg.today.tokens)} tok
@@ -58,7 +61,7 @@ export function DashboardHeader({
 						inline
 						className="text-lg md:text-2xl font-bold tabular-nums leading-none text-[var(--data)]"
 					>
-						${agg.thisMonth.cost.toFixed(4)}
+						{formatDisplayCost(agg.thisMonth)}
 					</PrivacyMask>
 					<PrivacyMask className="mt-1 md:mt-1.5 text-[9px] tracking-wider text-muted-foreground/40">
 						{agg.thisMonth.queries}q · {fmt(agg.thisMonth.tokens)} tok
@@ -76,7 +79,7 @@ export function DashboardHeader({
 						inline
 						className="text-sm font-bold tabular-nums text-foreground/60"
 					>
-						${agg.allTime.cost.toFixed(2)}
+						{formatDisplayCost(agg.allTime, 2)}
 					</PrivacyMask>
 				</div>
 				<PrivacyMask className="flex items-center gap-4 text-[9px] tracking-wider text-muted-foreground/40">
