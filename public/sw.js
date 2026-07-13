@@ -1,4 +1,8 @@
-const CACHE = "hlid-v5";
+// __HLID_BUILD__ is stamped with the app version + build id at build time
+// (swStampPlugin in vite.config.ts). Every deploy changes these bytes, so the
+// browser sees a new worker, installs it (skipWaiting/claim below), and the
+// activate handler drops every previous cache — no manual cache clearing.
+const CACHE = "hlid-__HLID_BUILD__";
 const STATIC_EXTS = [".js", ".css", ".png", ".svg", ".ico", ".woff2"];
 const OFFLINE_URL = "/offline.html";
 

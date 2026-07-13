@@ -444,11 +444,17 @@ function useRavenViewport({
 
 	useEffect(() => {
 		const visualViewport = window.visualViewport;
-		window.addEventListener("resize", resizeTextarea);
-		visualViewport?.addEventListener("resize", resizeTextarea);
+		const onViewportChange = () => {
+			resizeTextarea();
+			// Keyboard open/close resizes the chat shell (--app-height); keep the
+			// transcript pinned to the bottom instead of leaving it mid-scroll.
+			if (atBottomRef.current) scrollChatToBottom(scrollRef.current, "auto");
+		};
+		window.addEventListener("resize", onViewportChange);
+		visualViewport?.addEventListener("resize", onViewportChange);
 		return () => {
-			window.removeEventListener("resize", resizeTextarea);
-			visualViewport?.removeEventListener("resize", resizeTextarea);
+			window.removeEventListener("resize", onViewportChange);
+			visualViewport?.removeEventListener("resize", onViewportChange);
 		};
 	}, [resizeTextarea]);
 

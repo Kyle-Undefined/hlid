@@ -1,5 +1,5 @@
 import { X509Certificate } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import tailwindcss from "@tailwindcss/vite";
 import { tanstackStart } from "@tanstack/react-start/plugin/vite";
@@ -102,6 +102,32 @@ function chunkBudgetPlugin(): Plugin {
 	};
 }
 
+/**
+ * Stamp the service worker cache name with the app version + a per-build id.
+ * public/ is copied verbatim, so this rewrites dist/client/sw.js after the
+ * client bundle lands (and before scripts/embed-client.ts embeds it). A new
+ * build therefore always byte-changes sw.js — the browser installs the new
+ * worker on next launch and its activate handler evicts all stale caches.
+ */
+function swStampPlugin(): Plugin {
+	return {
+		name: "hlid-sw-stamp",
+		apply: "build",
+		closeBundle() {
+			const swPath = resolve(process.cwd(), "dist/client/sw.js");
+			if (!existsSync(swPath)) return; // SSR/other environments — client build only
+			const { version } = JSON.parse(
+				readFileSync(resolve(process.cwd(), "package.json"), "utf-8"),
+			) as { version: string };
+			const stamp = `v${version}-${Date.now().toString(36)}`;
+			writeFileSync(
+				swPath,
+				readFileSync(swPath, "utf-8").replace("__HLID_BUILD__", stamp),
+			);
+		},
+	};
+}
+
 // TLS only when HLID_TLS=1. Cert is valid for Tailscale host, not localhost.
 const serverCfg = loadServerConfig();
 const tls = /^1|true$/i.test(process.env.HLID_TLS ?? "")
@@ -142,6 +168,7 @@ const config = defineConfig({
 		},
 	},
 	plugins: [
+		swStampPlugin(),
 		chunkBudgetPlugin(),
 		ipGatePlugin(serverCfg.local_network_access ?? false),
 		tailwindcss(),

@@ -25,6 +25,14 @@ function tryUiStatic(pathname: string): Response | null {
 	const headers = new Headers();
 	const mime = UI_MIME[extname(pathname).toLowerCase()];
 	if (mime) headers.set("content-type", mime);
+	if (pathname === "/sw.js") {
+		// Service-worker update checks must always reach the server; a cached
+		// sw.js means clients never learn about new builds.
+		headers.set("cache-control", "no-cache");
+	} else if (pathname.startsWith("/assets/")) {
+		// Vite content-hashes these filenames, so they are safe to cache forever.
+		headers.set("cache-control", "public, max-age=31536000, immutable");
+	}
 	return new Response(Bun.file(filePath), { headers });
 }
 

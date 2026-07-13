@@ -12,6 +12,7 @@ import { PullToRefreshIndicator } from "#/components/PullToRefreshIndicator";
 import { UpdateBanner } from "#/components/UpdateBanner";
 import * as privacyStore from "#/hooks/privacyStore";
 import { usePullToRefresh } from "#/hooks/usePullToRefresh";
+import { useVisualViewportGuard } from "#/hooks/useVisualViewportGuard";
 import { isRavenPath } from "#/lib/scrollContainers";
 import { logClientErrorFn } from "#/lib/serverFns/logging";
 
@@ -54,9 +55,40 @@ export const Route = createRootRoute({
 
 function RegisterSW() {
 	useEffect(() => {
-		if ("serviceWorker" in navigator) {
-			navigator.serviceWorker.register("/sw.js");
-		}
+		if (!("serviceWorker" in navigator)) return;
+		// True only when a worker already controls this page — i.e. this is an
+		// update, not the very first install (clients.claim also fires
+		// controllerchange on first install; reloading then would be a loop risk).
+		const isUpdate = Boolean(navigator.serviceWorker.controller);
+		let reloaded = false;
+		const onControllerChange = () => {
+			if (!isUpdate || reloaded) return;
+			reloaded = true;
+			// New build took control: cached assets were just evicted, so the old
+			// bundle's lazy chunks can no longer load. Reload onto the new build.
+			window.location.reload();
+		};
+		navigator.serviceWorker.addEventListener(
+			"controllerchange",
+			onControllerChange,
+		);
+
+		const registration = navigator.serviceWorker.register("/sw.js");
+		// Installed PWAs can sit resumed for days without a navigation, which is
+		// what normally triggers the browser's sw.js update check. Re-check
+		// whenever the app comes back to the foreground.
+		const onVisible = () => {
+			if (document.visibilityState !== "visible") return;
+			void registration.then((reg) => reg.update()).catch(() => {});
+		};
+		document.addEventListener("visibilitychange", onVisible);
+		return () => {
+			navigator.serviceWorker.removeEventListener(
+				"controllerchange",
+				onControllerChange,
+			);
+			document.removeEventListener("visibilitychange", onVisible);
+		};
 	}, []);
 	return null;
 }
@@ -143,6 +175,7 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 	});
 	const wrapperRef = useRef<HTMLDivElement>(null);
 	const { pullY, isRefreshing } = usePullToRefresh(wrapperRef);
+	useVisualViewportGuard(pathname);
 	const ravenRoute = isRavenPath(pathname);
 
 	// JSON.stringify on enum strings ("dark"|"tan"|"same") is XSS-safe.
@@ -167,7 +200,9 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 				{pathname === "/login" || pathname === "/login/" ? (
 					children
 				) : (
-					<div className="flex h-dvh overflow-hidden bg-background text-foreground">
+					// --app-height: pinned to the visual viewport while the mobile
+					// keyboard is up (useVisualViewportGuard); falls back to 100dvh.
+					<div className="flex h-[var(--app-height,100dvh)] overflow-hidden bg-background text-foreground">
 						<ErrorBoundary>
 							<Sidebar />
 						</ErrorBoundary>
