@@ -122,8 +122,18 @@ vi.mock("#/lib/serverFns/providers", () => ({
 vi.mock("#/lib/serverFns/voice", () => ({
 	getVoiceInfoFn: vi.fn(),
 }));
+vi.mock("#/config", () => ({ getConfig: vi.fn() }));
 
-import { ChatPage } from "./raven";
+import { getConfig } from "#/config";
+import { getCockpitData } from "#/lib/serverFns/cockpit";
+import { getProvidersFn, loadProviderUsages } from "#/lib/serverFns/providers";
+import {
+	getCurrentSessionFn,
+	getLiveSessionsFn,
+	getSessionAgentCwdFn,
+} from "#/lib/serverFns/sessions";
+import { getVoiceInfoFn } from "#/lib/serverFns/voice";
+import { ChatPage, Route } from "./raven";
 
 afterEach(cleanup);
 
@@ -263,5 +273,189 @@ describe("Raven composed submission behavior", () => {
 		expect(state.send).not.toHaveBeenCalledWith(
 			expect.objectContaining({ type: "chat" }),
 		);
+	});
+});
+
+describe("Raven composer keyboard", () => {
+	beforeEach(() => {
+		vi.stubGlobal(
+			"matchMedia",
+			vi.fn(() => ({ matches: false })),
+		);
+	});
+
+	afterEach(() => vi.unstubAllGlobals());
+
+	it("Enter submits the composer when enter_to_submit is on", () => {
+		render(<ChatPage />);
+		fireEvent.change(screen.getByRole("combobox"), {
+			target: { value: "keyboard send" },
+		});
+		fireEvent.keyDown(screen.getByRole("combobox"), { key: "Enter" });
+		expect(state.send).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "chat", text: "keyboard send" }),
+		);
+	});
+
+	it("Shift+Enter inserts a newline instead of sending", () => {
+		render(<ChatPage />);
+		fireEvent.change(screen.getByRole("combobox"), {
+			target: { value: "multi line" },
+		});
+		fireEvent.keyDown(screen.getByRole("combobox"), {
+			key: "Enter",
+			shiftKey: true,
+		});
+		expect(state.send).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "chat" }),
+		);
+	});
+});
+
+// ─── route loader ─────────────────────────────────────────────────────────────
+
+type RouteShape = {
+	validateSearch: (search: Record<string, unknown>) => Record<string, unknown>;
+	loaderDeps: (input: { search: Record<string, unknown> }) => {
+		session?: string;
+		agent?: string;
+	};
+	loader: (input: {
+		deps: { session?: string; agent?: string };
+	}) => Promise<Record<string, unknown>>;
+};
+
+const route = Route as unknown as RouteShape;
+
+function makeLoaderConfig(overrides?: Record<string, unknown>) {
+	return {
+		vault: { path: "/vault" },
+		claude: { interactive_mode: false },
+		agents: [],
+		...overrides,
+	};
+}
+
+describe("raven route search/deps", () => {
+	it("validateSearch keeps only string params", () => {
+		expect(
+			route.validateSearch({
+				session: 1,
+				agent: "/proj",
+				prompt: {},
+				extra: "dropped",
+			}),
+		).toEqual({ agent: "/proj" });
+		expect(route.validateSearch({ session: "s", prompt: "p" })).toEqual({
+			session: "s",
+			prompt: "p",
+		});
+	});
+
+	it("loaderDeps extracts session and agent", () => {
+		expect(
+			route.loaderDeps({ search: { session: "s", agent: "a", prompt: "p" } }),
+		).toEqual({ session: "s", agent: "a" });
+	});
+});
+
+describe("raven route loader", () => {
+	beforeEach(() => {
+		vi.mocked(getConfig).mockResolvedValue(makeLoaderConfig() as never);
+		vi.mocked(getCockpitData).mockResolvedValue({ skills: [] } as never);
+		vi.mocked(getProvidersFn).mockResolvedValue([] as never);
+		vi.mocked(getVoiceInfoFn).mockResolvedValue({
+			status: { state: "unavailable", model: "" },
+			models: [],
+		} as never);
+		vi.mocked(loadProviderUsages).mockResolvedValue([] as never);
+		vi.mocked(getLiveSessionsFn).mockResolvedValue([] as never);
+		vi.mocked(getCurrentSessionFn).mockResolvedValue(null as never);
+		vi.mocked(getSessionAgentCwdFn).mockResolvedValue(null as never);
+	});
+
+	it("uses the explicit session without consulting live sessions", async () => {
+		const data = await route.loader({ deps: { session: "s1" } });
+		expect(data.existingSessionId).toBe("s1");
+		expect(data.isExplicitSession).toBe(true);
+		expect(getLiveSessionsFn).not.toHaveBeenCalled();
+	});
+
+	it("falls back to the newest live SDK session", async () => {
+		vi.mocked(getLiveSessionsFn).mockResolvedValue([
+			{ mode: "chat", db_session_id: "old-sdk" },
+			{ mode: "terminal", db_session_id: "term" },
+			{ mode: "chat", db_session_id: "new-sdk" },
+		] as never);
+		const data = await route.loader({ deps: {} });
+		expect(data.existingSessionId).toBe("new-sdk");
+		expect(getCurrentSessionFn).not.toHaveBeenCalled();
+	});
+
+	it("falls back to the current DB session when no live SDK session exists", async () => {
+		vi.mocked(getCurrentSessionFn).mockResolvedValue("cur" as never);
+		const data = await route.loader({ deps: {} });
+		expect(data.existingSessionId).toBe("cur");
+	});
+
+	it("derives the agent skill context from the resolved session cwd", async () => {
+		vi.mocked(getCurrentSessionFn).mockResolvedValue("cur" as never);
+		vi.mocked(getSessionAgentCwdFn).mockResolvedValue("/proj" as never);
+		const data = await route.loader({ deps: {} });
+		expect(data.agentSkillContext).toBe("/proj");
+		expect(getSessionAgentCwdFn).toHaveBeenCalledWith({ data: "cur" });
+	});
+
+	it("attaches to a running terminal session in interactive vault mode", async () => {
+		vi.mocked(getConfig).mockResolvedValue(
+			makeLoaderConfig({ claude: { interactive_mode: true } }) as never,
+		);
+		vi.mocked(getLiveSessionsFn).mockResolvedValue([
+			{
+				mode: "terminal",
+				state: "running",
+				agent_cwd: "/vault",
+				session_id: "term-live",
+				db_session_id: "term-db",
+			},
+			{
+				mode: "terminal",
+				state: "idle",
+				agent_cwd: "/vault",
+				session_id: "idle-term",
+			},
+		] as never);
+		const data = await route.loader({ deps: {} });
+		expect(data.interactiveMode).toBe(true);
+		expect(data.existingSessionId).toBe("term-db");
+	});
+
+	it("honors per-agent interactive_mode override", async () => {
+		vi.mocked(getConfig).mockResolvedValue(
+			makeLoaderConfig({
+				agents: [{ path: "/proj", interactive_mode: true }],
+			}) as never,
+		);
+		vi.mocked(getLiveSessionsFn).mockResolvedValue([
+			{
+				mode: "terminal",
+				state: "running",
+				agent_cwd: "/proj",
+				session_id: "proj-term",
+			},
+		] as never);
+		const data = await route.loader({ deps: { agent: "/proj" } });
+		expect(data.interactiveMode).toBe(true);
+		// falls back to session_id when the terminal has no DB session yet
+		expect(data.existingSessionId).toBe("proj-term");
+	});
+
+	it("returns null session in interactive mode with no live terminal", async () => {
+		vi.mocked(getConfig).mockResolvedValue(
+			makeLoaderConfig({ claude: { interactive_mode: true } }) as never,
+		);
+		const data = await route.loader({ deps: {} });
+		expect(data.existingSessionId).toBeNull();
+		expect(getCurrentSessionFn).not.toHaveBeenCalled();
 	});
 });

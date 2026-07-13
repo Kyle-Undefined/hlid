@@ -9,14 +9,35 @@ import type { SessionRow } from "../db";
 
 // vi.mock factories are hoisted before module-level code, so vars referenced
 // inside them must also be hoisted via vi.hoisted().
-const { mockGetSessionById, mockListAttachments } = vi.hoisted(() => ({
+const {
+	mockGetSessionById,
+	mockListAttachments,
+	mockRenameSession,
+	mockGetSessionMessages,
+	mockGetSessionToolEvents,
+	mockGetAttachmentsForSession,
+	mockGetProviderUsage,
+	mockGetLogs,
+} = vi.hoisted(() => ({
 	mockGetSessionById: vi.fn(),
 	mockListAttachments: vi.fn(),
+	mockRenameSession: vi.fn(),
+	mockGetSessionMessages: vi.fn(),
+	mockGetSessionToolEvents: vi.fn(),
+	mockGetAttachmentsForSession: vi.fn(),
+	mockGetProviderUsage: vi.fn(),
+	mockGetLogs: vi.fn(),
 }));
 
 vi.mock("../db", () => ({
 	getSessionById: mockGetSessionById,
 	listAttachments: mockListAttachments,
+	renameSession: mockRenameSession,
+	getSessionMessages: mockGetSessionMessages,
+	getSessionToolEvents: mockGetSessionToolEvents,
+	getAttachmentsForSession: mockGetAttachmentsForSession,
+	getProviderUsage: mockGetProviderUsage,
+	getLogs: mockGetLogs,
 }));
 
 // dbRoutes also imports from ./attachments and ./proxy — stub them out.
@@ -423,5 +444,194 @@ describe("handleDbRoute — POST /db/live-sessions/close", () => {
 		const res = await handleDbRoute(url, req, pool);
 
 		expect(res).toBeNull();
+	});
+});
+
+// ── PATCH /db/session ─────────────────────────────────────────────────────────
+
+function patchRequest(body: unknown): Request {
+	return new Request("http://localhost/db/session", {
+		method: "PATCH",
+		body: typeof body === "string" ? body : JSON.stringify(body),
+		headers: { "Content-Type": "application/json" },
+	});
+}
+
+describe("handleDbRoute — PATCH /db/session", () => {
+	it("returns null for unknown PATCH path", async () => {
+		const res = await handleDbRoute(makeUrl("/db/nope"), patchRequest({}));
+		expect(res).toBeNull();
+	});
+
+	it("returns 400 when id is missing", async () => {
+		const res = await handleDbRoute(
+			makeUrl("/db/session"),
+			patchRequest({ label: "x" }),
+		);
+		expect(res?.status).toBe(400);
+		expect(await res?.text()).toMatch(/missing id/i);
+	});
+
+	it("returns 400 when label is missing or body is not JSON", async () => {
+		const noLabel = await handleDbRoute(
+			makeUrl("/db/session", { id: "s1" }),
+			patchRequest({}),
+		);
+		expect(noLabel?.status).toBe(400);
+
+		const badJson = await handleDbRoute(
+			makeUrl("/db/session", { id: "s1" }),
+			patchRequest("not json"),
+		);
+		expect(badJson?.status).toBe(400);
+	});
+
+	it("renames the session and syncs matching live pool entries", async () => {
+		mockRenameSession.mockResolvedValue(undefined);
+		const matching = {
+			getCurrentSessionId: vi.fn().mockReturnValue("s1"),
+			setSessionLabel: vi.fn(),
+		};
+		const other = {
+			getCurrentSessionId: vi.fn().mockReturnValue("s2"),
+			setSessionLabel: vi.fn(),
+		};
+		const pool = makePool();
+		(pool as unknown as { getAllEntries: () => unknown[] }).getAllEntries =
+			() => [{ manager: matching }, { manager: other }];
+		const setSessionLabel = vi.fn();
+		const terminalPool = {
+			setSessionLabel,
+			getSessionsStatus: () => [],
+		} as never;
+
+		const res = await handleDbRoute(
+			makeUrl("/db/session", { id: "s1" }),
+			patchRequest({ label: "renamed" }),
+			pool,
+			terminalPool,
+		);
+
+		expect(res?.status).toBe(200);
+		expect(await res?.json()).toEqual({ ok: true });
+		expect(mockRenameSession).toHaveBeenCalledWith("s1", "renamed");
+		expect(setSessionLabel).toHaveBeenCalledWith("s1", "renamed");
+		expect(matching.setSessionLabel).toHaveBeenCalledWith("renamed");
+		expect(other.setSessionLabel).not.toHaveBeenCalled();
+	});
+});
+
+// ── GET /db/session-messages ──────────────────────────────────────────────────
+
+describe("handleDbRoute — GET /db/session-messages", () => {
+	it("returns 400 when session_id is missing", async () => {
+		const res = await handleDbRoute(
+			makeUrl("/db/session-messages"),
+			makeRequest(),
+		);
+		expect(res?.status).toBe(400);
+	});
+
+	it("attaches tool events to assistant rows and attachments to user rows", async () => {
+		mockGetSessionMessages.mockResolvedValue([
+			{ seq: 1, role: "user", text: "hi" },
+			{ seq: 2, role: "assistant", text: "yo" },
+		]);
+		mockGetSessionToolEvents.mockResolvedValue([
+			{ assistant_seq: 2, tool: "Bash" },
+			{ assistant_seq: 2, tool: "Read" },
+			{ assistant_seq: null, tool: "orphan" },
+		]);
+		mockGetAttachmentsForSession.mockResolvedValue([
+			{ message_seq: 1, name: "a.png" },
+			{ message_seq: null, name: "orphan.png" },
+		]);
+
+		const res = await handleDbRoute(
+			makeUrl("/db/session-messages", { session_id: "s1" }),
+			makeRequest(),
+		);
+
+		const rows = (await res?.json()) as Array<{
+			toolEvents?: unknown[];
+			attachments?: unknown[];
+		}>;
+		expect(rows[0].attachments).toHaveLength(1);
+		expect(rows[0].toolEvents).toBeUndefined();
+		expect(rows[1].toolEvents).toHaveLength(2);
+		expect(rows[1].attachments).toBeUndefined();
+	});
+});
+
+// ── GET /db/provider-usage ────────────────────────────────────────────────────
+
+import { getWindowMark } from "./proxy";
+
+describe("handleDbRoute — GET /db/provider-usage", () => {
+	function makeSnapshot(providerId: string) {
+		return {
+			providerId,
+			windows: [
+				{ windowId: "five_hour", utilization: 10, remaining: 90, resetsAt: 1 },
+			],
+		};
+	}
+
+	it("defaults to the claude provider", async () => {
+		mockGetProviderUsage.mockImplementation(async (id: string) =>
+			makeSnapshot(id),
+		);
+		const res = await handleDbRoute(
+			makeUrl("/db/provider-usage"),
+			makeRequest(),
+		);
+		const body = (await res?.json()) as Array<{ providerId: string }>;
+		expect(body.map((s) => s.providerId)).toEqual(["claude"]);
+	});
+
+	it("parses the provider list and overlays live window marks", async () => {
+		mockGetProviderUsage.mockImplementation(async (id: string) =>
+			makeSnapshot(id),
+		);
+		vi.mocked(getWindowMark).mockImplementation(((provider: string) =>
+			provider === "codex"
+				? { utilization: 55, remaining: 45, resetsAt: 99 }
+				: null) as never);
+
+		const res = await handleDbRoute(
+			makeUrl("/db/provider-usage", { providers: "claude, codex," }),
+			makeRequest(),
+		);
+
+		const body = (await res?.json()) as Array<{
+			providerId: string;
+			windows: Array<{ utilization: number; resetsAt: number }>;
+		}>;
+		expect(body.map((s) => s.providerId)).toEqual(["claude", "codex"]);
+		expect(body[0].windows[0].utilization).toBe(10);
+		expect(body[1].windows[0].utilization).toBe(55);
+		expect(body[1].windows[0].resetsAt).toBe(99);
+	});
+});
+
+// ── GET /db/logs ──────────────────────────────────────────────────────────────
+
+describe("handleDbRoute — GET /db/logs", () => {
+	it("passes a valid level filter and falls back to default size when out of range", async () => {
+		mockGetLogs.mockResolvedValue({ rows: [], total: 0 });
+		await handleDbRoute(
+			makeUrl("/db/logs", { page: "3", size: "999", level: "error" }),
+			makeRequest(),
+		);
+		expect(mockGetLogs).toHaveBeenCalledWith(3, 50, "error");
+	});
+
+	it("ignores an invalid level", async () => {
+		mockGetLogs.mockResolvedValue({ rows: [], total: 0 });
+		await handleDbRoute(
+			makeUrl("/db/logs", { level: "verbose" }),
+			makeRequest(),
+		);
+		expect(mockGetLogs).toHaveBeenCalledWith(1, 50, undefined);
 	});
 });
