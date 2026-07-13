@@ -21,19 +21,45 @@ export type CachedList<T> = {
 };
 
 const DEFAULT_TTL_MS = 6 * 3600_000;
+const DEFAULT_FAILURE_TTL_MS = 60_000;
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	return Promise.race([
+		promise,
+		new Promise<never>((_, reject) => {
+			timer = setTimeout(
+				() => reject(new Error(`catalog fetch timed out after ${timeoutMs}ms`)),
+				timeoutMs,
+			);
+		}),
+	]).finally(() => {
+		if (timer !== undefined) clearTimeout(timer);
+	});
+}
 
 export function createCachedList<T>(opts: {
 	/** DB settings key the last-good fetched value is persisted under. */
 	persistKey: string;
 	/** Time-to-live for the in-memory value. Defaults to 6 hours. */
 	ttlMs?: number;
+	/** Bound external CLI/network discovery so UI route loaders cannot hang. */
+	fetchTimeoutMs?: number;
+	/** How long to reuse persisted/fallback data before retrying a failed fetch. */
+	failureTtlMs?: number;
 	fetcher: () => Promise<T>;
 	fallback: T;
 	/** Guards persisted JSON on read; corrupt/invalid persisted data is ignored. */
 	validate?: (v: unknown) => v is T;
 }): CachedList<T> {
 	const ttlMs = opts.ttlMs ?? DEFAULT_TTL_MS;
-	let memory: { value: T; fetchedAt: number } | null = null;
+	const fetchTimeoutMs = opts.fetchTimeoutMs;
+	const failureTtlMs = opts.failureTtlMs ?? DEFAULT_FAILURE_TTL_MS;
+	let memory: {
+		value: T;
+		fetchedAt: number;
+		source: CatalogSource;
+	} | null = null;
 	let inflight: Promise<{ value: T; source: CatalogSource }> | null = null;
 
 	async function readPersisted(): Promise<{ value: T; source: CatalogSource }> {
@@ -53,8 +79,11 @@ export function createCachedList<T>(opts: {
 
 	async function doFetch(): Promise<{ value: T; source: CatalogSource }> {
 		try {
-			const value = await opts.fetcher();
-			memory = { value, fetchedAt: Date.now() };
+			const fetch = opts.fetcher();
+			const value = fetchTimeoutMs
+				? await withTimeout(fetch, fetchTimeoutMs)
+				: await fetch;
+			memory = { value, fetchedAt: Date.now(), source: "live" };
 			void db
 				.saveSetting(opts.persistKey, JSON.stringify(value))
 				.catch((e) =>
@@ -66,13 +95,19 @@ export function createCachedList<T>(opts: {
 			return { value, source: "live" };
 		} catch {
 			if (memory) return { value: memory.value, source: "memory" };
-			return readPersisted();
+			const fallback = await readPersisted();
+			// A failed warm-up used to leave the cache empty, so every Raven loader
+			// immediately spawned another inspection process and concurrent tabs all
+			// waited on it. Reuse the safe value briefly before a later retry.
+			memory = { ...fallback, fetchedAt: Date.now() };
+			return fallback;
 		}
 	}
 
 	return {
 		get(refresh = false) {
-			if (!refresh && memory && Date.now() - memory.fetchedAt < ttlMs) {
+			const memoryTtl = memory?.source === "live" ? ttlMs : failureTtlMs;
+			if (!refresh && memory && Date.now() - memory.fetchedAt < memoryTtl) {
 				return Promise.resolve({ value: memory.value, source: "memory" });
 			}
 			if (inflight) return inflight;
@@ -109,6 +144,7 @@ export function createModelCatalog(providers: Map<string, AgentProvider>): {
 				persistKey: `model_catalog:${p.providerId}`,
 				fetcher: () => listModels(),
 				fallback: staticModels(p),
+				fetchTimeoutMs: 12_000,
 			}),
 		);
 	}

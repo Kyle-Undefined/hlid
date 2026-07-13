@@ -197,6 +197,22 @@ describe("PtyBridge.spawn — config assembly", () => {
 	});
 });
 
+describe("PtyBridge worker process", () => {
+	it("hides the Node worker console window on Windows desktop builds", () => {
+		const spawnWorker = vi.fn(() => ({ marker: true }));
+		vi.stubGlobal("Bun", { spawn: spawnWorker });
+		try {
+			_impl.spawnWorker("C:\\app\\pty-worker.cjs", "C:\\app");
+			expect(spawnWorker).toHaveBeenCalledWith(
+				["node", "C:\\app\\pty-worker.cjs"],
+				expect.objectContaining({ windowsHide: true }),
+			);
+		} finally {
+			vi.unstubAllGlobals();
+		}
+	});
+});
+
 // ── Stdin frame construction ──────────────────────────────────────────────────
 
 describe("PtyBridge — write / resize / kill frames", () => {

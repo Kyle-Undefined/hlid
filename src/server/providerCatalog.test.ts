@@ -136,6 +136,31 @@ describe("createCachedList", () => {
 		expect(r2).toEqual({ value: ["x"], source: "live" });
 	});
 
+	it("bounds a stuck fetch and briefly reuses the safe fallback", async () => {
+		vi.useFakeTimers();
+		try {
+			const fetcher = vi.fn(() => new Promise<string[]>(() => {}));
+			const cache = createCachedList<string[]>({
+				persistKey: "k:timeout",
+				fetcher,
+				fallback: ["safe"],
+				fetchTimeoutMs: 100,
+				failureTtlMs: 1000,
+			});
+
+			const first = cache.get();
+			await vi.advanceTimersByTimeAsync(101);
+			expect(await first).toEqual({ value: ["safe"], source: "fallback" });
+			expect(await cache.get()).toEqual({
+				value: ["safe"],
+				source: "memory",
+			});
+			expect(fetcher).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("fetcher rejects with stale memory falls back to memory", async () => {
 		const fetcher = vi
 			.fn()

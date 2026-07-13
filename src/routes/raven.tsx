@@ -191,6 +191,11 @@ type ActiveRavenSkill = {
 	section?: string;
 	filePath: string;
 };
+type RavenSessionSelection = {
+	model?: string;
+	effort?: string;
+	permissionMode?: string;
+};
 
 function useRavenSessionIdentity({
 	config,
@@ -754,6 +759,7 @@ function deriveRavenComposerState({
 	isRunning,
 	model,
 	actualModel,
+	selection,
 }: {
 	config: RavenConfig;
 	agentList: RavenAgentList;
@@ -767,6 +773,7 @@ function deriveRavenComposerState({
 	isRunning: boolean;
 	model: string | undefined;
 	actualModel: string | null;
+	selection: RavenSessionSelection;
 }) {
 	const hasInput =
 		(input.trim().length > 0 ||
@@ -774,13 +781,17 @@ function deriveRavenComposerState({
 			pendingAttachmentCount > 0) &&
 		uploadingCount === 0 &&
 		wsStatus === "connected";
-	const agentModel = agentSkillContext
-		? (agentList.find((agent) => agent.path === agentSkillContext)?.model ??
-			null)
-		: null;
+	const selectedAgent = agentSkillContext
+		? config.agents?.find((agent) => agent.path === agentSkillContext)
+		: undefined;
+	const agentModel = selectedAgent?.model ?? null;
+	const selectedModel = selection.model ?? selectedAgent?.model ?? model;
+	const selectedEffort = selection.effort ?? selectedAgent?.effort ?? null;
+	const selectedPermissionMode =
+		selection.permissionMode ?? selectedAgent?.permission_mode ?? null;
 	const { effectiveActualModel, mismatch: modelMismatch } = deriveModelMismatch(
-		model,
-		actualModel,
+		selectedModel,
+		agentSkillContext ? null : actualModel,
 		agentModel,
 	);
 	const providerId = resolveActiveProviderId(
@@ -792,14 +803,17 @@ function deriveRavenComposerState({
 	return {
 		canSend: hasInput && !isRunning,
 		canQueue: hasInput && isRunning,
-		modelShort: model ? fmtModel(model) : null,
+		activeModel: selectedModel,
+		activeEffort: selectedEffort,
+		activePermissionMode: selectedPermissionMode,
+		modelShort: selectedModel ? fmtModel(selectedModel) : null,
 		actualModelShort: effectiveActualModel
 			? fmtModel(effectiveActualModel)
 			: null,
 		modelMismatch,
 		modelPickerOptions: modelOptions(provider),
 		permissionOptions: provider?.permissionModes ?? [],
-		effortOptions: effortOptionsFor(provider, model ?? ""),
+		effortOptions: effortOptionsFor(provider, selectedModel ?? ""),
 	};
 }
 
@@ -826,6 +840,10 @@ export function ChatPage() {
 	});
 	const { agentSkillContext, sessionId, sessionIdRef } = session;
 	const [activeSkill, setActiveSkill] = useState<ActiveRavenSkill | null>(null);
+	const [sessionSelection, setSessionSelection] =
+		useState<RavenSessionSelection>({});
+	// biome-ignore lint/correctness/useExhaustiveDependencies: changing project/provider resets session-only picker overrides
+	useEffect(() => setSessionSelection({}), [agentSkillContext]);
 
 	const liveStats = useWsLiveStats();
 	const chatQueue = useWsChatQueue();
@@ -928,6 +946,9 @@ export function ChatPage() {
 		canSend,
 		canQueue,
 		modelShort,
+		activeModel,
+		activeEffort,
+		activePermissionMode,
 		actualModelShort,
 		modelMismatch,
 		modelPickerOptions,
@@ -946,6 +967,7 @@ export function ChatPage() {
 		isRunning,
 		model,
 		actualModel,
+		selection: sessionSelection,
 	});
 	const composerProps: ChatComposerProps = {
 		interactiveMode,
@@ -971,6 +993,10 @@ export function ChatPage() {
 		showModelPopup,
 		setShowModelPopup,
 		modelShort,
+		activeModel,
+		activeEffort,
+		activePermissionMode,
+		setSessionSelection,
 		actualModelShort,
 		modelMismatch,
 		modelPickerOptions,
@@ -1060,9 +1086,8 @@ function ChatPageContent(props: ChatPageContentProps) {
 				<RavenShellTabBar activeTab={shellTab} setActiveTab={setShellTab} />
 			)}
 			<RavenMessagePane {...props} />
-			{!interactiveMode && <RavenShellPane {...props} />}
-
 			<ChatComposer {...composerProps} />
+			{!interactiveMode && <RavenShellPane {...props} />}
 		</div>
 	);
 }
@@ -1258,6 +1283,10 @@ function ChatModelBadge({
 	showModelPopup,
 	setShowModelPopup,
 	modelShort,
+	activeModel,
+	activeEffort,
+	activePermissionMode,
+	setSessionSelection,
 	actualModelShort,
 	modelMismatch,
 	modelPickerOptions,
@@ -1265,6 +1294,20 @@ function ChatModelBadge({
 	effortOptions,
 }: ChatComposerProps) {
 	const { model, permissionMode, effort, send } = runtime;
+	const displayedModel = activeModel ?? model;
+	const displayedEffort = activeEffort ?? effort;
+	const displayedPermissionMode = activePermissionMode ?? permissionMode;
+	const badgeParts = [
+		actualModelShort ?? modelShort,
+		displayedEffort,
+		displayedPermissionMode === "bypassPermissions"
+			? "auto"
+			: displayedPermissionMode === "acceptEdits"
+				? "edits"
+				: displayedPermissionMode === "default"
+					? "ask"
+					: displayedPermissionMode,
+	].filter(Boolean);
 	const { modelBadgeRef } = viewport;
 	const popupRef = useRef<HTMLDivElement>(null);
 	useEffect(() => {
@@ -1288,7 +1331,7 @@ function ChatModelBadge({
 								: "text-muted-foreground/50 border-border/70 hover:text-foreground/70 hover:border-primary/40"
 						}`}
 					>
-						{actualModelShort ?? modelShort}
+						{badgeParts.join(" · ")}
 					</button>
 					{showModelPopup && (
 						<div
@@ -1325,11 +1368,15 @@ function ChatModelBadge({
 											type="button"
 											title={m.description}
 											onClick={() => {
+												setSessionSelection((current) => ({
+													...current,
+													model: m.value,
+												}));
 												send({ type: "set_model", model: m.value });
 												setShowModelPopup(false);
 											}}
 											className={`block w-full text-left normal-case tracking-normal px-1.5 py-1 transition-colors ${
-												m.value === model
+												m.value === displayedModel
 													? "text-primary bg-primary/10"
 													: "text-foreground/70 hover:bg-accent"
 											}`}
@@ -1349,11 +1396,15 @@ function ChatModelBadge({
 											type="button"
 											title={e.desc}
 											onClick={() => {
+												setSessionSelection((current) => ({
+													...current,
+													effort: e.value,
+												}));
 												send({ type: "set_effort", effort: e.value });
 												setShowModelPopup(false);
 											}}
 											className={`block w-full text-left normal-case tracking-normal px-1.5 py-1 transition-colors ${
-												e.value === effort
+												e.value === displayedEffort
 													? "text-primary bg-primary/10"
 													: "text-foreground/70 hover:bg-accent"
 											}`}
@@ -1373,6 +1424,10 @@ function ChatModelBadge({
 											type="button"
 											title={p.desc}
 											onClick={() => {
+												setSessionSelection((current) => ({
+													...current,
+													permissionMode: p.value,
+												}));
 												send({
 													type: "set_permission_mode",
 													mode: p.value,
@@ -1380,7 +1435,7 @@ function ChatModelBadge({
 												setShowModelPopup(false);
 											}}
 											className={`block w-full text-left normal-case tracking-normal px-1.5 py-1 transition-colors ${
-												p.value === permissionMode
+												p.value === displayedPermissionMode
 													? "text-primary bg-primary/10"
 													: "text-foreground/70 hover:bg-accent"
 											}`}
@@ -1841,6 +1896,10 @@ interface ChatComposerProps {
 	showModelPopup: boolean;
 	setShowModelPopup: Dispatch<SetStateAction<boolean>>;
 	modelShort: string | null;
+	activeModel: string | undefined;
+	activeEffort: string | null;
+	activePermissionMode: string | null;
+	setSessionSelection: Dispatch<SetStateAction<RavenSessionSelection>>;
 	actualModelShort: string | null;
 	modelMismatch: boolean;
 	modelPickerOptions: ReturnType<typeof modelOptions>;

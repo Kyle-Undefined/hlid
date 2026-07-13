@@ -945,6 +945,42 @@ describe("CodexAgentSession — notifications", () => {
 		});
 	});
 
+	it("keeps collab wait bookkeeping out of the generic tool timeline", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const session = new CodexProvider().query(baseCodexParams());
+		const events = session[Symbol.asyncIterator]();
+		await session.send("delegate this");
+		await nextSessionEvent(events); // session_start
+
+		const waitItem = {
+			id: "wait-1",
+			type: "collabAgentToolCall",
+			tool: "wait",
+			receiverThreadIds: [],
+			agentsStates: {},
+		};
+		emitSessionNotification(proc, "item/started", {
+			threadId: "thread-1",
+			item: waitItem,
+		});
+		emitSessionNotification(proc, "item/completed", {
+			threadId: "thread-1",
+			item: { ...waitItem, status: "completed" },
+		});
+		emitSessionNotification(proc, "item/completed", {
+			threadId: "thread-1",
+			item: { id: "reply-1", type: "agentMessage", text: "Finished" },
+		});
+
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "text_delta",
+			text: "Finished",
+		});
+	});
+
 	it("attributes rateLimitReachedType to the most-utilized window", async () => {
 		const { proc } = makeFakeSessionProc();
 		vi.mocked(spawn).mockReturnValue(proc as never);

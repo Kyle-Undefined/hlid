@@ -72,6 +72,10 @@ export const _impl = {
 			stdout: "pipe",
 			stderr: "inherit",
 			cwd: workerCwd,
+			// The compiled desktop app is a GUI-subsystem executable. Without this,
+			// Windows allocates a visible cmd window for the Node PTY worker whenever
+			// Raven's project terminal is opened.
+			windowsHide: true,
 		});
 		return proc as WorkerHandle;
 	},

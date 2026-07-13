@@ -1010,6 +1010,14 @@ class CodexAgentSession implements AgentSession {
 		const input =
 			item.arguments ?? item.input ?? item.rawInput ?? item.params ?? item;
 		const collabTool = item.tool as CollabAgentTool | undefined;
+		if (type === "collabAgentToolCall" && collabTool === "wait") {
+			// `wait` is orchestration bookkeeping for already-visible subagent cards,
+			// not a user-facing tool. The app-server often sends it with no receiver
+			// IDs or state, which previously leaked a permanently empty generic tool
+			// row into Raven.
+			this.mergeCollabAgentStates(item);
+			return;
+		}
 		if (type === "collabAgentToolCall" && collabTool === "spawnAgent") {
 			const prompt = typeof item.prompt === "string" ? item.prompt : undefined;
 			const subagent: SubagentSnapshot = {
@@ -1163,7 +1171,10 @@ class CodexAgentSession implements AgentSession {
 			return;
 		}
 		if (type === "userMessage" || !type) return;
-		if (type === "collabAgentToolCall") this.mergeCollabAgentStates(item);
+		if (type === "collabAgentToolCall") {
+			this.mergeCollabAgentStates(item);
+			if (item.tool === "wait") return;
+		}
 		this.events.push({
 			type: "tool_result",
 			toolId: String(item.id ?? type),

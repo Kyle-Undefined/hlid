@@ -1052,18 +1052,30 @@ async function inspectAcpSessionConfig(
 	options: AcpProviderOptions,
 ): Promise<SessionConfigOption[]> {
 	const { child, connection } = createInspectionConnection(options);
+	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
-		await connection.initialize({
-			protocolVersion: PROTOCOL_VERSION,
-			clientCapabilities: {},
-			clientInfo: { name: "Hlid", version: "1" },
-		});
-		const created = await connection.newSession({
-			cwd: process.cwd(),
-			mcpServers: [],
-		});
-		return created.configOptions ?? [];
+		return await Promise.race([
+			(async () => {
+				await connection.initialize({
+					protocolVersion: PROTOCOL_VERSION,
+					clientCapabilities: {},
+					clientInfo: { name: "Hlid", version: "1" },
+				});
+				const created = await connection.newSession({
+					cwd: process.cwd(),
+					mcpServers: [],
+				});
+				return created.configOptions ?? [];
+			})(),
+			new Promise<never>((_, reject) => {
+				timer = setTimeout(
+					() => reject(new Error("ACP model inspection timed out")),
+					10_000,
+				);
+			}),
+		]);
 	} finally {
+		if (timer !== undefined) clearTimeout(timer);
 		child.kill();
 	}
 }

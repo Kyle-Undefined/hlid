@@ -164,6 +164,53 @@ beforeEach(() => {
 });
 
 describe("Raven composed submission behavior", () => {
+	it("shows the selected Einherjar model, effort, and permission instead of stale vault state", () => {
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as object),
+				agents: [
+					{
+						path: "/codex-project",
+						provider: "codex",
+						model: "gpt-5.4",
+						effort: "low",
+						permission_mode: "bypassPermissions",
+					},
+				],
+			},
+			agentSkillContext: "/codex-project",
+			agentList: [
+				{
+					path: "/codex-project",
+					name: "Codex project",
+					provider: "codex",
+					model: "gpt-5.4",
+				},
+			],
+			providers: [
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					models: [{ value: "gpt-5.4", label: "GPT-5.4" }],
+					effortLevels: [{ value: "low", label: "Low" }],
+					permissionModes: [
+						{ value: "bypassPermissions", label: "Auto-approve all" },
+					],
+				},
+			],
+		};
+
+		render(<ChatPage />);
+
+		const badge = screen.getByRole("button", {
+			name: /gpt-5\.4.*low.*auto/i,
+		});
+		expect(badge).toBeTruthy();
+		expect(badge.textContent).not.toMatch(/claude|medium/i);
+	});
+
 	it("binds a database transcript to its matching live pool session", () => {
 		state.loaderData = {
 			...state.loaderData,
