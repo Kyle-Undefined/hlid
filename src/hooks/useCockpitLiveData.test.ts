@@ -14,6 +14,8 @@ import type { ServerMessage } from "#/server/protocol";
 import { useCockpitLiveData } from "./useCockpitLiveData";
 
 let onMessage: ((message: ServerMessage) => void) | undefined;
+let onSessionsStatus: (() => void) | undefined;
+let sessionsStatus: Array<{ db_session_id?: string | null }> = [];
 
 vi.mock("#/hooks/useWs", () => ({
 	useWs: vi.fn((callback) => {
@@ -22,7 +24,14 @@ vi.mock("#/hooks/useWs", () => ({
 	}),
 }));
 
-vi.mock("#/hooks/wsStore", () => ({ getPendingSessionToday: vi.fn() }));
+vi.mock("#/hooks/wsStore", () => ({
+	getPendingSessionToday: vi.fn(),
+	getSessionsStatus: vi.fn(() => sessionsStatus),
+	subscribeSessionsStatus: vi.fn((callback: () => void) => {
+		onSessionsStatus = callback;
+		return vi.fn();
+	}),
+}));
 
 vi.mock("#/lib/serverFns/sessions", () => ({
 	getActiveSessionRowFn: vi.fn(),
@@ -85,6 +94,8 @@ function deferred<T>() {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	onSessionsStatus = undefined;
+	sessionsStatus = [];
 	vi.mocked(wsStore.getPendingSessionToday).mockReturnValue(false);
 	vi.mocked(getActiveSessionRowFn).mockResolvedValue(null);
 	vi.mocked(getCockpitStatsFn).mockResolvedValue({ agg: initial.agg });
@@ -142,5 +153,21 @@ describe("useCockpitLiveData refreshes", () => {
 		await act(async () => await Promise.resolve());
 		expect(result.current.liveActiveSession).toBeNull();
 		expect(useWs).toHaveBeenCalled();
+	});
+
+	it("refreshes recent runs when a live session gains a DB session", async () => {
+		vi.mocked(getRecentSessionsFn).mockResolvedValueOnce([
+			{ id: "codex-run", label: "CODEX RUN" } as Awaited<
+				ReturnType<typeof getRecentSessionsFn>
+			>[number],
+		]);
+		const { result } = renderHook(() => useCockpitLiveData(initial));
+
+		sessionsStatus = [{ db_session_id: "codex-run" }];
+		act(() => onSessionsStatus?.());
+
+		await waitFor(() =>
+			expect(result.current.recentRuns[0]?.id).toBe("codex-run"),
+		);
 	});
 });

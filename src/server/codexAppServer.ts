@@ -26,6 +26,14 @@ type JsonRpcMessage = {
 	error?: { message?: string };
 };
 
+const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
+
+type PendingRequest = {
+	resolve: (value: unknown) => void;
+	reject: (error: Error) => void;
+	timer: ReturnType<typeof setTimeout>;
+};
+
 /** Per-thread callbacks a session registers to receive its routed traffic. */
 export type ThreadHandler = {
 	onNotification(method: string, params: unknown): void;
@@ -48,10 +56,7 @@ function asObj(value: unknown): Record<string, unknown> {
 export class CodexAppServer {
 	private proc: ChildProcessWithoutNullStreams;
 	private nextId = 1;
-	private pending = new Map<
-		number | string,
-		{ resolve: (v: unknown) => void; reject: (e: Error) => void }
-	>();
+	private pending = new Map<number | string, PendingRequest>();
 	private threads = new Map<string, ThreadHandler>();
 	private lineBuffer = "";
 	private dead = false;
@@ -98,13 +103,26 @@ export class CodexAppServer {
 		return this.threads.size;
 	}
 
-	request(method: string, params: unknown): Promise<unknown> {
+	request(
+		method: string,
+		params: unknown,
+		timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+	): Promise<unknown> {
 		if (this.dead)
 			return Promise.reject(new Error("Codex app-server is not running"));
 		const id = this.nextId++;
-		this.write({ id, method, params });
 		return new Promise((resolve, reject) => {
-			this.pending.set(id, { resolve, reject });
+			const timer = setTimeout(() => {
+				const error = new Error(
+					`Codex app-server ${method} timed out after ${timeoutMs}ms`,
+				);
+				// A live process that no longer answers RPCs is not reusable. Mark the
+				// shared connection dead and terminate it so the next acquire respawns
+				// a clean app-server instead of attaching to a poisoned singleton.
+				this.terminate(error);
+			}, timeoutMs);
+			this.pending.set(id, { resolve, reject, timer });
+			this.write({ id, method, params });
 		});
 	}
 
@@ -121,15 +139,22 @@ export class CodexAppServer {
 		this.threads.delete(threadId);
 	}
 
-	kill(): void {
-		this.fail(new Error("Codex app-server closed"));
+	kill(error = new Error("Codex app-server closed")): void {
+		this.terminate(error);
+	}
+
+	private terminate(error: Error): void {
+		this.fail(error);
 		this.proc.kill();
 	}
 
 	private fail(err: Error): void {
 		if (this.dead) return;
 		this.dead = true;
-		for (const pending of this.pending.values()) pending.reject(err);
+		for (const pending of this.pending.values()) {
+			clearTimeout(pending.timer);
+			pending.reject(err);
+		}
 		this.pending.clear();
 		const handlers = [...this.threads.values()];
 		this.threads.clear();
@@ -173,6 +198,7 @@ export class CodexAppServer {
 			const pending = this.pending.get(msg.id);
 			if (!pending) return;
 			this.pending.delete(msg.id);
+			clearTimeout(pending.timer);
 			if (msg.error)
 				pending.reject(new Error(msg.error.message ?? "Codex error"));
 			else pending.resolve(msg.result);

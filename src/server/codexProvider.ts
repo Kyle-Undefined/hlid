@@ -372,7 +372,7 @@ export async function fetchCodexModels(opts?: {
 }): Promise<ProviderModelInfo[]> {
 	const launch = codexLaunchConfig({ cwd: process.cwd() });
 	const conn = acquireCodexAppServer(launch.executable);
-
+	const timeoutMs = opts?.timeoutMs ?? 10_000;
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
 		const result = await Promise.race([
@@ -381,15 +381,18 @@ export async function fetchCodexModels(opts?: {
 				const modelListParams: ModelListParams = {
 					includeHidden: opts?.includeHidden ?? false,
 				};
-				return conn.request("model/list", modelListParams);
+				return conn.request("model/list", modelListParams, timeoutMs);
 			})(),
 			new Promise<never>((_, reject) => {
 				timer = setTimeout(() => {
-					reject(new Error("Codex model/list timed out"));
-				}, opts?.timeoutMs ?? 10_000);
+					const error = new Error(
+						`Codex model catalog timed out after ${timeoutMs}ms`,
+					);
+					conn.kill(error);
+					reject(error);
+				}, timeoutMs);
 			}),
 		]);
-
 		const models = mapCodexModels(result);
 		return opts?.includeHidden
 			? models

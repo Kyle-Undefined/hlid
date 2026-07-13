@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
 	type McpServerEntry,
 	mapMcpServer,
@@ -62,14 +62,28 @@ export function useCockpitLiveData(initial: InitialCockpitLiveData) {
 	const [runError, setRunError] = useState<string | null>(null);
 	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
 	const refreshGenerationRef = useRef(0);
+	const recentRefreshGenerationRef = useRef(0);
+	const liveSessionIdsRef = useRef(new Set<string>());
+
+	const refreshRecentRuns = useCallback((): void => {
+		const generation = ++recentRefreshGenerationRef.current;
+		void getRecentSessionsFn()
+			.then((runs) => {
+				if (generation === recentRefreshGenerationRef.current)
+					setRecentRuns(runs);
+			})
+			.catch(() => {});
+	}, []);
 
 	const ws = useWs((message: ServerMessage) => {
 		if (message.type === "done") {
 			setRunError(null);
 			const generation = ++refreshGenerationRef.current;
+			const recentGeneration = ++recentRefreshGenerationRef.current;
 			void getRecentSessionsFn()
 				.then((runs) => {
-					if (generation === refreshGenerationRef.current) setRecentRuns(runs);
+					if (recentGeneration === recentRefreshGenerationRef.current)
+						setRecentRuns(runs);
 				})
 				.catch(() => {});
 			void getCockpitStatsFn()
@@ -113,6 +127,23 @@ export function useCockpitLiveData(initial: InitialCockpitLiveData) {
 
 	useEffect(() => {
 		let active = true;
+		const refreshForNewLiveSession = () => {
+			const nextIds = new Set(
+				wsStore
+					.getSessionsStatus()
+					.map((session) => session.db_session_id)
+					.filter((id): id is string => Boolean(id)),
+			);
+			const hasNewSession = [...nextIds].some(
+				(id) => !liveSessionIdsRef.current.has(id),
+			);
+			liveSessionIdsRef.current = nextIds;
+			if (active && hasNewSession) refreshRecentRuns();
+		};
+		refreshForNewLiveSession();
+		const unsubscribeSessions = wsStore.subscribeSessionsStatus(
+			refreshForNewLiveSession,
+		);
 		void getActiveSessionRowFn()
 			.then((session) => {
 				if (active) setLiveActiveSession(session);
@@ -120,9 +151,11 @@ export function useCockpitLiveData(initial: InitialCockpitLiveData) {
 			.catch(() => {});
 		return () => {
 			active = false;
+			unsubscribeSessions();
 			refreshGenerationRef.current++;
+			recentRefreshGenerationRef.current++;
 		};
-	}, []);
+	}, [refreshRecentRuns]);
 
 	return {
 		...ws,

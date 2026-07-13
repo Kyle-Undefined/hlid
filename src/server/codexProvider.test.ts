@@ -7,7 +7,10 @@ vi.mock("../lib/codexPath", () => ({ resolveCodexExecutable: vi.fn() }));
 import { spawn } from "node:child_process";
 import { resolveCodexExecutable } from "../lib/codexPath";
 import type { AgentEvent, AgentQueryParams } from "./agentProvider";
-import { __resetCodexAppServersForTesting } from "./codexAppServer";
+import {
+	__resetCodexAppServersForTesting,
+	acquireCodexAppServer,
+} from "./codexAppServer";
 import type { SandboxPolicy } from "./codexProtocol";
 import {
 	CodexProvider,
@@ -485,7 +488,8 @@ describe("fetchCodexModels", () => {
 		expect(models.map((m) => m.value).sort()).toEqual(["secret", "visible"]);
 	});
 
-	it("rejects on timeout without killing the shared app-server", async () => {
+	it("kills an unresponsive shared app-server so the next call can respawn", async () => {
+		const spawnCount = vi.mocked(spawn).mock.calls.length;
 		const { proc } = makeFakeProc({ silent: true });
 		vi.mocked(spawn).mockReturnValue(proc as never);
 		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
@@ -493,7 +497,14 @@ describe("fetchCodexModels", () => {
 		await expect(fetchCodexModels({ timeoutMs: 20 })).rejects.toThrow(
 			/timed out/i,
 		);
-		expect(proc.kill).not.toHaveBeenCalled();
+		expect(proc.kill).toHaveBeenCalledOnce();
+
+		const replacement = makeFakeProc();
+		vi.mocked(spawn).mockReturnValue(replacement.proc as never);
+		await expect(fetchCodexModels()).resolves.toEqual(
+			mapCodexModels(MODEL_LIST_FIXTURE),
+		);
+		expect(spawn).toHaveBeenCalledTimes(spawnCount + 2);
 	});
 
 	it("rejects when the process emits an error event", async () => {
@@ -514,6 +525,31 @@ describe("fetchCodexModels", () => {
 		const promise = fetchCodexModels({ timeoutMs: 5000 });
 		proc.emit("exit", 1);
 		await expect(promise).rejects.toThrow(/exited/i);
+	});
+});
+
+describe("Codex app-server request recovery", () => {
+	beforeEach(() => {
+		__resetCodexAppServersForTesting();
+	});
+
+	it("evicts an alive process that stops answering a session RPC", async () => {
+		const { proc } = makeFakeProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		const conn = acquireCodexAppServer("/usr/bin/codex");
+		await conn.ready;
+
+		await expect(conn.request("thread/start", {}, 20)).rejects.toThrow(
+			/thread\/start timed out/i,
+		);
+		expect(conn.alive).toBe(false);
+		expect(proc.kill).toHaveBeenCalledOnce();
+
+		const replacement = makeFakeProc();
+		vi.mocked(spawn).mockReturnValue(replacement.proc as never);
+		const next = acquireCodexAppServer("/usr/bin/codex");
+		expect(next).not.toBe(conn);
+		await expect(next.ready).resolves.toBeUndefined();
 	});
 });
 
