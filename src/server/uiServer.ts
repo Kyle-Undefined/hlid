@@ -39,6 +39,7 @@ export async function startUiServer(
 	// from loading during `bun run dev:server`, which would corrupt React's
 	// dispatcher and cause "can't access property 'useContext', dispatcher is null".
 	// @ts-expect-error - missing types; Vite produces this at build time
+	// fallow-ignore-next-line unresolved-import -- Vite generates this module during the production build.
 	const { default: uiHandler } = await import("../../dist/server/server.js");
 
 	// On --restart the old canonical's TCP socket may still be held by the OS
