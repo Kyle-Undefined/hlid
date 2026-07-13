@@ -25,11 +25,17 @@ export function parseAskUserQuestion(
 					? q.question
 					: (title ?? "Question from Claude");
 			const options = extractOptionLabels(q.options);
-			if (options.length === 0) continue;
+			const freeText = q.freeText === true;
+			if (options.length === 0 && !freeText) continue;
 			out.push({
 				question,
 				options,
 				multiSelect: q.multiSelect === true,
+				...(freeText ? { freeText: true } : {}),
+				...(q.inputType === "number" ? { inputType: "number" as const } : {}),
+				...(typeof q.placeholder === "string"
+					? { placeholder: q.placeholder }
+					: {}),
 			});
 		}
 		if (out.length > 0) return { questions: out };

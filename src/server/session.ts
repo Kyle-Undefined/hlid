@@ -76,6 +76,7 @@ type TurnState = {
 		cache_creation_input_tokens?: number;
 	} | null;
 	lastKnownContextWindow: number | null;
+	lastContextTokens: number | null;
 	hadToolEvents: boolean;
 	lastAssistantSeq: number;
 	pendingToolEvents: {
@@ -212,11 +213,13 @@ function buildQueryData(
 	if (primaryModel?.contextWindow) {
 		turn.lastKnownContextWindow = primaryModel.contextWindow;
 	}
-	const tokensInContext = turn.lastTurnUsage
-		? turn.lastTurnUsage.input_tokens +
-			(turn.lastTurnUsage.cache_read_input_tokens ?? 0) +
-			(turn.lastTurnUsage.cache_creation_input_tokens ?? 0)
-		: null;
+	const tokensInContext =
+		turn.lastContextTokens ??
+		(turn.lastTurnUsage
+			? turn.lastTurnUsage.input_tokens +
+				(turn.lastTurnUsage.cache_read_input_tokens ?? 0) +
+				(turn.lastTurnUsage.cache_creation_input_tokens ?? 0)
+			: null);
 	return {
 		primaryModel,
 		tokensInContext,
@@ -265,6 +268,7 @@ function createTurnState(): TurnState {
 		lastActualModel: null,
 		lastTurnUsage: null,
 		lastKnownContextWindow: null,
+		lastContextTokens: null,
 		hadToolEvents: false,
 		lastAssistantSeq: -1,
 		pendingToolEvents: [],
@@ -478,6 +482,7 @@ export class SessionManager {
 	 * On providers without one (claude), the new value still takes effect —
 	 * just starting with the next fresh session rather than the current turn.
 	 */
+	// fallow-ignore-next-line unused-class-member -- Called by the WebSocket set_effort dispatch in wsHandlers.
 	async setEffort(effort: string): Promise<void> {
 		this.effort = effort;
 		await this.agentSession?.setEffort?.(effort);
@@ -1186,13 +1191,17 @@ export class SessionManager {
 		};
 		turn.lastActualModel = event.model ?? null;
 		if (event.contextWindow) turn.lastKnownContextWindow = event.contextWindow;
+		if (event.contextTokens != null)
+			turn.lastContextTokens = event.contextTokens;
+		const tokensInContext =
+			event.contextTokens ?? event.inputTokens + cacheRead + cacheCreation;
 		emit({
 			type: "usage_update",
 			input_tokens: event.inputTokens,
 			output_tokens: event.outputTokens,
 			cache_read_tokens: cacheRead,
 			cache_creation_tokens: cacheCreation,
-			tokens_in_context: event.inputTokens + cacheRead + cacheCreation,
+			tokens_in_context: tokensInContext,
 			actualModel: event.model,
 			context_window: turn.lastKnownContextWindow ?? DEFAULT_CONTEXT_WINDOW,
 		});

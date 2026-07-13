@@ -8,6 +8,31 @@ import {
 } from "@agentclientprotocol/sdk";
 
 const sessions = new Map();
+const configOptions = (session) => [
+	{
+		type: "select",
+		id: "model",
+		name: "Model",
+		category: "model",
+		currentValue: session?.model ?? "fake-fast",
+		options: [
+			{ value: "fake-fast", name: "Fake Fast" },
+			{ value: "fake-smart", name: "Fake Smart" },
+		],
+	},
+	{
+		type: "select",
+		id: "thought",
+		name: "Reasoning",
+		category: "thought_level",
+		currentValue: session?.effort ?? "medium",
+		options: [
+			{ value: "low", name: "Low" },
+			{ value: "medium", name: "Medium" },
+			{ value: "high", name: "High" },
+		],
+	},
+];
 const stream = ndJsonStream(
 	Writable.toWeb(process.stdout),
 	Readable.toWeb(process.stdin),
@@ -21,9 +46,16 @@ agent({ name: "hlid-fake-agent" })
 		agentInfo: { name: "fake-acp", version: "1.0.0" },
 	}))
 	.onRequest("authenticate", () => ({}))
-	.onRequest("session/new", () => {
+	.onRequest("session/new", ({ params }) => {
 		const sessionId = "fake-session";
-		sessions.set(sessionId, { cancelled: false, mode: "code" });
+		const session = {
+			cancelled: false,
+			mode: "code",
+			model: "fake-fast",
+			effort: "medium",
+			mcpCount: params.mcpServers.length,
+		};
+		sessions.set(sessionId, session);
 		return {
 			sessionId,
 			modes: {
@@ -33,16 +65,39 @@ agent({ name: "hlid-fake-agent" })
 					{ id: "plan", name: "Plan" },
 				],
 			},
+			configOptions: configOptions(session),
 		};
 	})
 	.onRequest("session/load", ({ params }) => {
-		sessions.set(params.sessionId, { cancelled: false });
-		return {};
+		const session = {
+			cancelled: false,
+			mode: "code",
+			model: "fake-fast",
+			effort: "medium",
+			mcpCount: params.mcpServers.length,
+		};
+		sessions.set(params.sessionId, session);
+		return {
+			modes: {
+				currentModeId: session.mode,
+				availableModes: [
+					{ id: "code", name: "Code" },
+					{ id: "plan", name: "Plan" },
+				],
+			},
+			configOptions: configOptions(session),
+		};
 	})
 	.onRequest("session/set_mode", ({ params }) => {
 		const session = sessions.get(params.sessionId);
 		if (session) session.mode = params.modeId;
 		return {};
+	})
+	.onRequest("session/set_config_option", ({ params }) => {
+		const session = sessions.get(params.sessionId);
+		if (session && params.configId === "model") session.model = params.value;
+		if (session && params.configId === "thought") session.effort = params.value;
+		return { configOptions: configOptions(session) };
 	})
 	.onNotification("session/cancel", ({ params }) => {
 		const session = sessions.get(params.sessionId);
@@ -71,6 +126,63 @@ agent({ name: "hlid-fake-agent" })
 			});
 			return { stopReason: "end_turn" };
 		}
+		if (text === "report-config") {
+			const session = sessions.get(params.sessionId);
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "agent_message_chunk",
+					content: {
+						type: "text",
+						text: `${session?.model}/${session?.effort}`,
+					},
+				},
+			});
+			return { stopReason: "end_turn" };
+		}
+		if (text === "report-mcp") {
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "agent_message_chunk",
+					content: {
+						type: "text",
+						text: String(sessions.get(params.sessionId)?.mcpCount ?? 0),
+					},
+				},
+			});
+			return { stopReason: "end_turn" };
+		}
+		if (text === "elicit") {
+			const response = await client.request(methods.client.elicitation.create, {
+				mode: "form",
+				sessionId: params.sessionId,
+				message: "Choose deployment settings",
+				requestedSchema: {
+					type: "object",
+					properties: {
+						environment: {
+							type: "string",
+							title: "Environment",
+							enum: ["staging", "production"],
+						},
+						replicas: {
+							type: "integer",
+							title: "Replicas",
+						},
+					},
+					required: ["environment", "replicas"],
+				},
+			});
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "agent_message_chunk",
+					content: { type: "text", text: JSON.stringify(response) },
+				},
+			});
+			return { stopReason: "end_turn" };
+		}
 		if (text === "plan-update") {
 			await client.notify(methods.client.session.update, {
 				sessionId: params.sessionId,
@@ -78,6 +190,54 @@ agent({ name: "hlid-fake-agent" })
 					sessionUpdate: "plan",
 					entries: [
 						{ content: "Research", priority: "high", status: "in_progress" },
+					],
+				},
+			});
+			return { stopReason: "end_turn" };
+		}
+		if (text === "plan-remove") {
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "plan_update",
+					plan: { type: "markdown", id: "draft", content: "# Draft" },
+				},
+			});
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: { sessionUpdate: "plan_removed", id: "draft" },
+			});
+			return { stopReason: "end_turn" };
+		}
+		if (text === "usage-update") {
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "usage_update",
+					used: 1234,
+					size: 8192,
+					cost: { amount: 0.25, currency: "USD" },
+				},
+			});
+			return { stopReason: "end_turn" };
+		}
+		if (text === "structured-tool") {
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "tool_call",
+					toolCallId: "structured-1",
+					title: "Edit a file",
+					kind: "edit",
+					status: "completed",
+					rawInput: { path: "a.txt" },
+					content: [
+						{
+							type: "diff",
+							path: "a.txt",
+							oldText: "old",
+							newText: "new",
+						},
 					],
 				},
 			});
@@ -118,8 +278,8 @@ agent({ name: "hlid-fake-agent" })
 		});
 		const tool = {
 			toolCallId: "tool-1",
-			title: "Write file",
-			kind: "edit",
+			title: text === "read-permission" ? "Read file" : "Write file",
+			kind: text === "read-permission" ? "read" : "edit",
 			rawInput: {
 				path:
 					text === "html-plan" ? "/vault/.hlid/plans/plan-fake.html" : "a.txt",

@@ -12,6 +12,7 @@ export class RingBuffer {
 		this.buf = Buffer.allocUnsafe(capacity);
 	}
 
+	// fallow-ignore-next-line unused-class-member -- Called through PtyPoolEntry.buffer in ptySessionPoolBase.
 	push(data: Buffer): void {
 		const src = data;
 		if (src.length >= this.cap) {
@@ -36,6 +37,7 @@ export class RingBuffer {
 	 * Return the current buffer contents in order (oldest → newest).
 	 * Returns a Buffer of at most `capacity` bytes.
 	 */
+	// fallow-ignore-next-line unused-class-member -- Called through PtyPoolEntry.buffer during PTY reattach.
 	snapshot(): Buffer {
 		if (this.len === 0) return Buffer.alloc(0);
 		const used = Math.min(this.len, this.cap);

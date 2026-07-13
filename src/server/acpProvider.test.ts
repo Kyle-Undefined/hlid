@@ -1,4 +1,6 @@
-import { resolve } from "node:path";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { AcpProvider, inspectAcpAgent } from "./acpProvider";
 import type { AgentEvent, AgentQueryParams } from "./agentProvider";
@@ -67,11 +69,17 @@ describe("AcpProvider — interface compliance", () => {
 
 describe("AcpProvider — plan mode", () => {
 	it("selects an ACP agent's advertised plan session mode", async () => {
+		const canUseTool = vi.fn(async () => ({ behavior: "allow" as const }));
 		const { events, session } = await run(
 			"report-mode",
-			params("allow", { permissionMode: "plan" }),
+			params("allow", { permissionMode: "plan", canUseTool }),
 		);
 		expect(events).toContainEqual({ type: "text_delta", text: "plan" });
+		expect(canUseTool).toHaveBeenCalledWith(
+			"ExitPlanMode",
+			{ plan: "plan" },
+			expect.any(Object),
+		);
 		session.cancel();
 	});
 
@@ -87,12 +95,54 @@ describe("AcpProvider — plan mode", () => {
 		);
 		expect(canUseTool).toHaveBeenCalledWith(
 			"Write",
-			{ file_path: "/vault/.hlid/plans/plan-fake.html" },
+			{
+				path: "/vault/.hlid/plans/plan-fake.html",
+				file_path: "/vault/.hlid/plans/plan-fake.html",
+			},
 			expect.objectContaining({ toolUseID: "tool-1" }),
 		);
 		expect(canUseTool).toHaveBeenCalledWith(
 			"ExitPlanMode",
 			{ plan: "HTML plan ready for review." },
+			expect.objectContaining({ title: "Fake ACP completed its plan" }),
+		);
+		expect(events).toContainEqual({ type: "text_delta", text: "implemented" });
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "done",
+				turns: 2,
+				usage: expect.objectContaining({ inputTokens: 4, outputTokens: 3 }),
+			}),
+		);
+		session.cancel();
+	});
+
+	it("switches an already-running ACP session into its native plan mode", async () => {
+		const session = makeProvider().query(params());
+		await session.send("report-mode");
+		for await (const event of session) {
+			if (event.type === "done") break;
+		}
+		await session.setPermissionMode?.("plan");
+		await session.send("report-mode");
+		const events: AgentEvent[] = [];
+		for await (const event of session) {
+			events.push(event);
+			if (event.type === "done") break;
+		}
+		expect(events).toContainEqual({ type: "text_delta", text: "plan" });
+		session.cancel();
+	});
+
+	it("hands a native ACP plan through the shared plan approval without HTML", async () => {
+		const canUseTool = vi.fn(async () => ({ behavior: "allow" as const }));
+		const { events, session } = await run(
+			"plan-update",
+			params("allow", { permissionMode: "plan", canUseTool }),
+		);
+		expect(canUseTool).toHaveBeenCalledWith(
+			"ExitPlanMode",
+			{ plan: "- [ ] Research" },
 			expect.objectContaining({ title: "Fake ACP completed its plan" }),
 		);
 		expect(events).toContainEqual({ type: "text_delta", text: "implemented" });
@@ -168,15 +218,63 @@ describe("AcpProvider — event mapping", () => {
 		];
 		expect(events).toContainEqual({
 			type: "tool_start",
-			toolId: "acp-plan",
+			toolId: "acp-plan-1",
 			name: "UpdatePlan",
 			input: { plan },
 		});
 		expect(events).toContainEqual({
 			type: "tool_result",
-			toolId: "acp-plan",
-			content: JSON.stringify(plan),
+			toolId: "acp-plan-1",
+			content: "- [ ] Research",
 		});
+		session.cancel();
+	});
+
+	it("shows unstable plan updates and removals as distinct timeline events", async () => {
+		const { events, session } = await run("plan-remove");
+		expect(events).toContainEqual({
+			type: "tool_result",
+			toolId: "acp-plan-1",
+			content: "# Draft",
+		});
+		expect(events).toContainEqual({
+			type: "tool_result",
+			toolId: "acp-plan-2",
+			content: "Plan removed",
+		});
+		session.cancel();
+	});
+
+	it("maps ACP context usage and USD cost updates", async () => {
+		const { events, session } = await run("usage-update");
+		expect(events).toContainEqual({
+			type: "usage",
+			inputTokens: 0,
+			outputTokens: 0,
+			contextTokens: 1234,
+			contextWindow: 8192,
+		});
+		expect(events).toContainEqual(
+			expect.objectContaining({ type: "done", cost: 0.25 }),
+		);
+		session.cancel();
+	});
+
+	it("renders structured ACP diff output from a completed initial tool call", async () => {
+		const { events, session } = await run("structured-tool");
+		expect(events).toContainEqual({
+			type: "tool_start",
+			toolId: "structured-1",
+			name: "Edit a file",
+			input: { path: "a.txt" },
+		});
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "tool_result",
+				toolId: "structured-1",
+				content: expect.stringContaining("File: a.txt"),
+			}),
+		);
 		session.cancel();
 	});
 
@@ -256,6 +354,66 @@ describe("AcpProvider — canUseTool", () => {
 		);
 		session.cancel();
 	});
+
+	it("uses stable ACP tool kinds for policy and approval names", async () => {
+		const query = params();
+		const { session } = await run("read-permission", query);
+		expect(query.canUseTool).toHaveBeenCalledWith(
+			"Read",
+			{ path: "a.txt" },
+			expect.objectContaining({ title: "Read file" }),
+		);
+		session.cancel();
+	});
+});
+
+describe("AcpProvider — elicitation", () => {
+	it("routes ACP forms through the shared AskUserQuestion flow", async () => {
+		const canUseTool = vi.fn(async () => ({
+			behavior: "allow" as const,
+			updatedInput: {
+				answers: {
+					Environment: "production",
+					Replicas: "3",
+				},
+			},
+		}));
+		const { events, session } = await run(
+			"elicit",
+			params("allow", { canUseTool }),
+		);
+		expect(canUseTool).toHaveBeenCalledWith(
+			"AskUserQuestion",
+			{
+				questions: [
+					{
+						question: "Environment",
+						options: ["staging", "production"],
+						multiSelect: false,
+					},
+					{
+						question: "Replicas",
+						options: [],
+						multiSelect: false,
+						freeText: true,
+						inputType: "number",
+					},
+				],
+			},
+			expect.objectContaining({
+				title: "Choose deployment settings",
+				displayName: "elicitation/create",
+			}),
+		);
+		expect(events).toContainEqual({
+			type: "text_delta",
+			text: JSON.stringify({
+				action: "accept",
+				content: { environment: "production", replicas: 3 },
+			}),
+		});
+		session.cancel();
+	});
 });
 
 describe("AcpProvider — session lifecycle", () => {
@@ -290,6 +448,20 @@ describe("AcpProvider — session lifecycle", () => {
 		session.cancel();
 	});
 
+	it("reports turns per Hlid query instead of cumulative session turns", async () => {
+		const session = makeProvider().query(params());
+		for (let query = 0; query < 2; query++) {
+			await session.send("test");
+			for await (const event of session) {
+				if (event.type === "done") {
+					expect(event.turns).toBe(1);
+					break;
+				}
+			}
+		}
+		session.cancel();
+	});
+
 	it("closes transport on cancel()", async () => {
 		const { session } = await run();
 		session.cancel();
@@ -297,6 +469,56 @@ describe("AcpProvider — session lifecycle", () => {
 			done: true,
 			value: undefined,
 		});
+	});
+
+	it("interrupts the current turn without closing the ACP session", async () => {
+		const session = makeProvider().query(params());
+		await session.send("slow");
+		await new Promise((resolve) => setTimeout(resolve, 30));
+		await session.interrupt?.();
+		for await (const event of session) {
+			if (event.type === "done") {
+				expect(event.stopReason).toBe("cancelled");
+				break;
+			}
+		}
+		await session.send("report-mode");
+		const events: AgentEvent[] = [];
+		for await (const event of session) {
+			events.push(event);
+			if (event.type === "done") break;
+		}
+		expect(events).toContainEqual({ type: "text_delta", text: "code" });
+		session.cancel();
+	});
+
+	it("applies ACP model and thought-level configuration initially and live", async () => {
+		const session = makeProvider().query(
+			params("allow", { model: "fake-smart", effort: "high" }),
+		);
+		await session.send("report-config");
+		const initial: AgentEvent[] = [];
+		for await (const event of session) {
+			initial.push(event);
+			if (event.type === "done") break;
+		}
+		expect(initial).toContainEqual({
+			type: "text_delta",
+			text: "fake-smart/high",
+		});
+		await session.setModel?.("fake-fast");
+		await session.setEffort?.("low");
+		await session.send("report-config");
+		const updated: AgentEvent[] = [];
+		for await (const event of session) {
+			updated.push(event);
+			if (event.type === "done") break;
+		}
+		expect(updated).toContainEqual({
+			type: "text_delta",
+			text: "fake-fast/low",
+		});
+		session.cancel();
 	});
 });
 
@@ -314,6 +536,53 @@ describe("AcpProvider — MCP status", () => {
 			true,
 		);
 		session.cancel();
+	});
+
+	it("passes project MCP declarations to ACP and exposes honest configured status", async () => {
+		const cwd = mkdtempSync(join(tmpdir(), "hlid-acp-mcp-"));
+		try {
+			writeFileSync(
+				join(cwd, ".mcp.json"),
+				JSON.stringify({
+					mcpServers: {
+						local: { command: "bun", args: ["server.ts"], env: { TOKEN: "x" } },
+						remote: { type: "http", url: "https://example.com/mcp" },
+					},
+				}),
+			);
+			const session = makeProvider().query(params("allow", { cwd }));
+			expect(await session.mcpServerStatus?.()).toEqual([
+				{ name: "local", status: "pending", scope: "project" },
+				{ name: "remote", status: "pending", scope: "project" },
+			]);
+			await session.send("report-mcp");
+			const events: AgentEvent[] = [];
+			for await (const event of session) {
+				events.push(event);
+				if (event.type === "done") break;
+			}
+			expect(events).toContainEqual({ type: "text_delta", text: "2" });
+			session.cancel();
+		} finally {
+			rmSync(cwd, { recursive: true, force: true });
+		}
+	});
+});
+
+describe("AcpProvider — model catalog", () => {
+	it("surfaces ACP model and thought-level config options", async () => {
+		const models = await makeProvider().listModels();
+		expect(models).toEqual([
+			expect.objectContaining({
+				value: "fake-fast",
+				label: "Fake Fast",
+				isDefault: true,
+				efforts: expect.arrayContaining([
+					expect.objectContaining({ value: "high", label: "High" }),
+				]),
+			}),
+			expect.objectContaining({ value: "fake-smart", label: "Fake Smart" }),
+		]);
 	});
 });
 

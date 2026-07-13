@@ -3370,6 +3370,58 @@ describe("SessionManager — Slice B AgentSession reuse", () => {
 // in-memory windowHighMark and getWindowMark can verify it. Uses unique
 // ── local_command_output ──────────────────────────────────────────────────────
 
+describe("SessionManager — exact context usage", () => {
+	it("prefers provider-reported context occupancy over turn input estimates", async () => {
+		const provider: AgentProvider = {
+			providerId: "acp:test",
+			query(): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield {
+						type: "usage",
+						inputTokens: 0,
+						outputTokens: 0,
+						contextTokens: 1_234,
+						contextWindow: 8_192,
+					};
+					yield {
+						type: "done",
+						cost: 0.25,
+						turns: 1,
+						durationMs: 1,
+						usage: { inputTokens: 4, outputTokens: 2 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+				};
+			},
+		};
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery(
+			"hello",
+			(message) => emitted.push(message),
+			"sess-context",
+		);
+		expect(emitted).toContainEqual(
+			expect.objectContaining({
+				type: "usage_update",
+				tokens_in_context: 1_234,
+				context_window: 8_192,
+			}),
+		);
+		expect(emitted).toContainEqual(
+			expect.objectContaining({
+				type: "done",
+				tokens_in_context: 1_234,
+				context_window: 8_192,
+			}),
+		);
+	});
+});
+
 describe("SessionManager — local_command_output forwarding", () => {
 	it("emits local_command_output WS message when agent yields local_command_output event", async () => {
 		const provider: AgentProvider = {

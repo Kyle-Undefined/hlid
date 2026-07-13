@@ -22,7 +22,10 @@ export function AskUserQuestionCard({
 	const answered = message.answers !== null;
 
 	// Auto-submit applies when there's exactly one question and it isn't multiSelect.
-	const autoSubmit = questions.length === 1 && !questions[0].multiSelect;
+	const autoSubmit =
+		questions.length === 1 &&
+		!questions[0].multiSelect &&
+		questions[0].freeText !== true;
 
 	// Local pending selections, keyed by question text. Each value is an array
 	// so multiSelect questions can accumulate; single-select uses a 1-element array.
@@ -70,6 +73,13 @@ export function AskUserQuestionCard({
 		onSubmit(message.id, pending, buildNotesPayload());
 	}
 
+	function setFreeText(question: string, value: string) {
+		setPending((previous) => ({
+			...previous,
+			[question]: value.trim() ? [value] : [],
+		}));
+	}
+
 	return (
 		<div className="flex gap-0">
 			<div className="w-12 shrink-0 text-[9px] tracking-widest text-primary/60 pt-0.5 uppercase">
@@ -92,6 +102,7 @@ export function AskUserQuestionCard({
 						onNoteChange={(value) =>
 							setNotes((prev) => ({ ...prev, [q.question]: value }))
 						}
+						onFreeTextChange={(value) => setFreeText(q.question, value)}
 					/>
 				))}
 

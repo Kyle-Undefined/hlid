@@ -133,3 +133,38 @@ describe("AskUserQuestionCard — notes (user feedback)", () => {
 		expect(screen.getByText(/team prefers it/i)).not.toBeNull();
 	});
 });
+
+describe("AskUserQuestionCard — direct form input", () => {
+	it("renders and submits an ACP numeric elicitation field", () => {
+		const onSubmit = vi.fn();
+		render(
+			<AskUserQuestionCard
+				message={makeMsg({
+					questions: [
+						{
+							question: "Replicas",
+							options: [],
+							multiSelect: false,
+							freeText: true,
+							inputType: "number",
+							placeholder: "How many?",
+						},
+					],
+				})}
+				onSubmit={onSubmit}
+			/>,
+		);
+		const submit = screen.getByRole("button", { name: /submit/i });
+		expect((submit as HTMLButtonElement).disabled).toBe(true);
+		fireEvent.change(screen.getByRole("spinbutton"), {
+			target: { value: "3" },
+		});
+		expect((submit as HTMLButtonElement).disabled).toBe(false);
+		fireEvent.click(submit);
+		expect(onSubmit).toHaveBeenCalledWith(
+			"aq-1",
+			{ Replicas: ["3"] },
+			undefined,
+		);
+	});
+});

@@ -216,6 +216,10 @@ export type AskQuestion = {
 	question: string;
 	options: string[];
 	multiSelect: boolean;
+	/** Render a direct input instead of choices (used by ACP elicitation forms). */
+	freeText?: boolean;
+	inputType?: "text" | "number";
+	placeholder?: string;
 };
 
 export type AskUserQuestionMessage = {

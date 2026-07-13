@@ -135,6 +135,31 @@ describe("parseAskUserQuestion — SDK format", () => {
 		expect(result.questions).toHaveLength(1);
 		expect(result.questions[0].question).toBe("Has options?");
 	});
+
+	it("preserves direct form inputs that intentionally have no options", () => {
+		const result = parseAskUserQuestion({
+			questions: [
+				{
+					question: "Replicas",
+					options: [],
+					multiSelect: false,
+					freeText: true,
+					inputType: "number",
+					placeholder: "How many?",
+				},
+			],
+		});
+		expect(result.questions).toEqual([
+			{
+				question: "Replicas",
+				options: [],
+				multiSelect: false,
+				freeText: true,
+				inputType: "number",
+				placeholder: "How many?",
+			},
+		]);
+	});
 });
 
 // ── Legacy / plain-string format ───────────────────────────────────────────────

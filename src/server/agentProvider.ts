@@ -127,6 +127,8 @@ export type AgentEvent =
 			model?: string;
 			/** Context window of the model serving this turn, when the provider reports it. */
 			contextWindow?: number;
+			/** Exact tokens currently occupying context, when distinct from turn input. */
+			contextTokens?: number;
 	  }
 	| {
 			type: "rate_limit";
