@@ -87,6 +87,9 @@
 	"health": {
 		"coverage": "coverage/coverage-final.json",
 		"ignore": [
+			"scripts/**",
+			"src/server/fixtures/**",
+			"public/sw.js",
 			"src/hooks/wsStore.test-utils.ts",
 			"src/lib/claudePath.ts",
 			"src/components/wizard/FolderBrowser.tsx",
