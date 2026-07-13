@@ -321,6 +321,7 @@ function syncVaultMcpList(pool: SessionPool): void {
 }
 
 function handlePermissionResponse(
+	context: MessageContext,
 	entry: PoolEntry,
 	msg: MessageOf<"permission_response">,
 ): void {
@@ -342,6 +343,7 @@ function handlePermissionResponse(
 		displayName: pending.displayName,
 		decision,
 	});
+	broadcastSessionsStatus(context);
 	const sessionId = entry.manager.getCurrentSessionId();
 	if (!sessionId) return;
 	void db
@@ -358,6 +360,7 @@ function handlePermissionResponse(
 }
 
 function handleAskUserQuestionResponse(
+	context: MessageContext,
 	entry: PoolEntry,
 	msg: MessageOf<"ask_user_question_response">,
 ): void {
@@ -368,6 +371,7 @@ function handleAskUserQuestionResponse(
 		answers: msg.answers,
 		...(msg.notes !== undefined ? { notes: msg.notes } : {}),
 	});
+	broadcastSessionsStatus(context);
 	const sessionId = entry.manager.getCurrentSessionId();
 	if (!sessionId) return;
 	void db
@@ -383,6 +387,7 @@ function handleAskUserQuestionResponse(
 }
 
 function handlePlanModeExitResponse(
+	context: MessageContext,
 	entry: PoolEntry,
 	msg: MessageOf<"plan_mode_exit_response">,
 ): void {
@@ -396,6 +401,7 @@ function handlePlanModeExitResponse(
 		id: msg.id,
 		decision: msg.decision,
 	});
+	broadcastSessionsStatus(context);
 }
 
 function reuseExistingChatEntry(
@@ -611,13 +617,13 @@ async function handleSessionMessage(
 			else syncVaultMcpList(context.pool);
 			return;
 		case "permission_response":
-			handlePermissionResponse(entry, msg);
+			handlePermissionResponse(context, entry, msg);
 			return;
 		case "ask_user_question_response":
-			handleAskUserQuestionResponse(entry, msg);
+			handleAskUserQuestionResponse(context, entry, msg);
 			return;
 		case "plan_mode_exit_response":
-			handlePlanModeExitResponse(entry, msg);
+			handlePlanModeExitResponse(context, entry, msg);
 			return;
 		case "chat":
 			await handleChat(context, entry, msg);

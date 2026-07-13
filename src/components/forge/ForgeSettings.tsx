@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { AcpSection } from "#/components/forge/AcpSection";
 import { ApiSection } from "#/components/forge/ApiSection";
 import { AutoSleepSection } from "#/components/forge/AutoSleepSection";
@@ -500,6 +500,13 @@ export function ForgeSettings({
 				)
 			: CATEGORIES;
 	}, [search]);
+	useEffect(() => {
+		if (!search.trim() || shown.length === 0) return;
+		if (shown.some((item) => item.id === category)) return;
+		setCategory(shown[0].id);
+		setShowCatalog(false);
+		setShowUmbod(false);
+	}, [category, search, shown]);
 	function choose(next: Category) {
 		setCategory(next);
 		setShowCatalog(false);

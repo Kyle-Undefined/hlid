@@ -851,6 +851,9 @@ describe("message — permission_response", () => {
 			getCurrentSessionId: vi.fn().mockReturnValue("sess-1"),
 		});
 		const { pool, runState } = wrapSession(session);
+		pool.getSessionsStatus.mockReturnValue([
+			{ session_id: "vault-id", hasPendingPermissions: false },
+		]);
 		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		await message(
@@ -870,6 +873,10 @@ describe("message — permission_response", () => {
 		expect(runState.broadcast).toHaveBeenCalledWith(
 			expect.objectContaining({ type: "permission_resolved", id: "perm-1" }),
 		);
+		expect(mockBroadcast).toHaveBeenCalledWith({
+			type: "sessions_status",
+			sessions: [{ session_id: "vault-id", hasPendingPermissions: false }],
+		});
 	});
 
 	it("does nothing when permission id not found", async () => {
@@ -966,6 +973,9 @@ describe("message — ask_user_question_response", () => {
 	it("broadcasts ask_user_question_resolved via runState after response", async () => {
 		const session = makeSession();
 		const { pool, runState } = wrapSession(session);
+		pool.getSessionsStatus.mockReturnValue([
+			{ session_id: "vault-id", hasPendingPermissions: false },
+		]);
 		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
 		await message(
@@ -983,6 +993,10 @@ describe("message — ask_user_question_response", () => {
 				answers: { "Q?": ["Option B"] },
 			}),
 		);
+		expect(mockBroadcast).toHaveBeenCalledWith({
+			type: "sessions_status",
+			sessions: [{ session_id: "vault-id", hasPendingPermissions: false }],
+		});
 	});
 
 	it("propagates multi-question / multi-select answer maps verbatim", async () => {
@@ -1084,6 +1098,44 @@ describe("message — ask_user_question_response", () => {
 			},
 			undefined,
 		);
+	});
+});
+
+// ── message: plan_mode_exit_response ─────────────────────────────────────────
+
+describe("message — plan_mode_exit_response", () => {
+	it("rebroadcasts pool status after the plan decision resolves", async () => {
+		const session = makeSession();
+		const { pool, runState } = wrapSession(session);
+		pool.getSessionsStatus.mockReturnValue([
+			{ session_id: "vault-id", hasPendingPermissions: false },
+		]);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "plan_mode_exit_response",
+				id: "plan-1",
+				decision: "approved",
+			}),
+		);
+
+		expect(session.handlePlanModeExitResponse).toHaveBeenCalledWith(
+			"plan-1",
+			"approved",
+			undefined,
+		);
+		expect(runState.broadcast).toHaveBeenCalledWith({
+			type: "plan_mode_exit_resolved",
+			id: "plan-1",
+			decision: "approved",
+		});
+		expect(mockBroadcast).toHaveBeenCalledWith({
+			type: "sessions_status",
+			sessions: [{ session_id: "vault-id", hasPendingPermissions: false }],
+		});
 	});
 });
 
