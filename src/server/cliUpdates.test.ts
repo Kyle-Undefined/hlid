@@ -62,6 +62,22 @@ describe("CLI update discovery", () => {
 		]);
 	});
 
+	it("shows the npm update command for a Windows npm shim", async () => {
+		const statuses = await inspectCliUpdates({
+			resolveExecutable: (id) =>
+				id === "codex"
+					? "C:\\Users\\Kyle\\AppData\\Roaming\\npm\\codex.cmd"
+					: undefined,
+			readVersion: vi.fn().mockResolvedValue("0.144.1"),
+			fetchLatest: vi.fn().mockResolvedValue("0.144.2"),
+			now: () => 1_800_000_000_000,
+		});
+
+		expect(statuses[0]?.updateCommand).toBe(
+			"npm install --global @openai/codex@latest",
+		);
+	});
+
 	it("keeps a usable installed version when the registry check fails", async () => {
 		const statuses = await inspectCliUpdates({
 			resolveExecutable: (id) => (id === "claude" ? "/bin/claude" : undefined),

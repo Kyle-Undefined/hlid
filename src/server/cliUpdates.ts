@@ -141,7 +141,10 @@ function codexUpdateCommand(executable: string): string | undefined {
 	) {
 		return "bun add --global @openai/codex@latest";
 	}
-	if (normalized.includes("/node_modules/@openai/codex/")) {
+	if (
+		normalized.includes("/node_modules/@openai/codex/") ||
+		normalized.endsWith("/codex.cmd")
+	) {
 		return "npm install --global @openai/codex@latest";
 	}
 	return undefined;
