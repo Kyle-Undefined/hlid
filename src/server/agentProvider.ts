@@ -17,6 +17,13 @@ export type ProviderWindowReading = {
 	resetsAt: number | null;
 };
 
+/** Exact live context occupancy reported by a provider control API. */
+export type ProviderContextUsage = {
+	contextTokens: number;
+	contextWindow: number;
+	model?: string;
+};
+
 /** Normalized MCP server status — compatible with protocol.ts mapMcpServer input. */
 export type McpServerStatus = {
 	name: string;
@@ -261,6 +268,12 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 	 * provider has not crossed a warning threshold during the current turn.
 	 */
 	usageWindows?(): Promise<ProviderWindowReading[]>;
+	/**
+	 * Fetch the provider's current context occupancy and model window. This is
+	 * separate from per-inference token usage because some providers only expose
+	 * the authoritative window through a live control API.
+	 */
+	contextUsage?(): Promise<ProviderContextUsage | null>;
 	/**
 	 * Switch the model used for subsequent turns in this already-running
 	 * session. `undefined` resets to the provider's default. No-op (absent)

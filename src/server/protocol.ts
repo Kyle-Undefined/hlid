@@ -130,6 +130,14 @@ export type UsageUpdateMessage = {
 	context_window?: number;
 };
 
+/** Authoritative live context snapshot from a provider control API. */
+export type ContextUpdateMessage = {
+	type: "context_update";
+	tokens_in_context: number;
+	context_window: number;
+	actualModel?: string;
+};
+
 export type ErrorMessage = {
 	type: "error";
 	message: string;
@@ -364,6 +372,7 @@ export type ServerMessage =
 	| RateLimitMessage
 	| AgentSleepMessage
 	| UsageUpdateMessage
+	| ContextUpdateMessage
 	| ErrorMessage
 	| PermissionRequestMessage
 	| PermissionResolvedMessage

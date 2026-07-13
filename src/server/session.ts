@@ -1295,7 +1295,12 @@ export class SessionManager {
 		try {
 			for await (const event of session) {
 				turn.receivedAny = true;
-				usageRefresh ??= this.startLiveProviderUsageRefresh(session, provider);
+				usageRefresh ??= this.startLiveProviderUsageRefresh(
+					session,
+					provider,
+					turn,
+					emit,
+				);
 				if (!mcpChecked) {
 					mcpChecked = true;
 					if (session.mcpServerStatus) {
@@ -2058,14 +2063,39 @@ export class SessionManager {
 		}
 	}
 
+	private async refreshProviderContext(
+		agentSession: AgentSession,
+		turn: TurnState,
+		emit: (msg: ServerMessage) => void,
+	): Promise<void> {
+		if (!agentSession.contextUsage) return;
+		try {
+			const usage = await agentSession.contextUsage();
+			if (!usage) return;
+			turn.lastKnownContextWindow = usage.contextWindow;
+			turn.lastContextTokens = usage.contextTokens;
+			if (usage.model) turn.lastActualModel = usage.model;
+			emit({
+				type: "context_update",
+				tokens_in_context: usage.contextTokens,
+				context_window: usage.contextWindow,
+				...(usage.model ? { actualModel: usage.model } : {}),
+			});
+		} catch {
+			// Context enrichment is best-effort and must not fail a turn.
+		}
+	}
+
 	private startLiveProviderUsageRefresh(
 		agentSession: AgentSession,
 		provider: AgentProvider,
+		turn: TurnState,
+		emit: (msg: ServerMessage) => void,
 	): {
 		finish: () => Promise<void>;
 		stop: () => void;
 	} {
-		if (!agentSession.usageWindows) {
+		if (!agentSession.usageWindows && !agentSession.contextUsage) {
 			return { finish: async () => {}, stop: () => {} };
 		}
 
@@ -2073,11 +2103,14 @@ export class SessionManager {
 		let inFlight: Promise<void> | null = null;
 		const refresh = (): Promise<void> => {
 			if (inFlight) return inFlight;
-			inFlight = this.refreshProviderUsage(agentSession, provider).finally(
-				() => {
+			inFlight = Promise.all([
+				this.refreshProviderUsage(agentSession, provider),
+				this.refreshProviderContext(agentSession, turn, emit),
+			])
+				.then(() => {})
+				.finally(() => {
 					inFlight = null;
-				},
-			);
+				});
 			return inFlight;
 		};
 		const stop = () => {

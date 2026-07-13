@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderUsageSnapshot } from "#/db";
 import { ProviderUsageStrip } from "./ProviderUsageStrip";
@@ -103,6 +103,77 @@ describe("ProviderUsageStrip polling", () => {
 		);
 
 		expect(fetchFn).toHaveBeenCalledOnce();
+	});
+
+	it("ignores an older refresh that resolves after the post-done totals", async () => {
+		const stale = Promise.withResolvers<ProviderUsageSnapshot[]>();
+		const fresh = Promise.withResolvers<ProviderUsageSnapshot[]>();
+		const withWindow = (queries: number, cost: number) =>
+			[
+				{
+					providerId: "claude",
+					providerLabel: "Claude",
+					windows: [
+						{
+							windowId: "five_hour",
+							label: "5-HOUR",
+							windowSecs: 18_000,
+							utilization: 0.55,
+							remaining: null,
+							limit: null,
+							resetsAt: null,
+							cost,
+							queries,
+							tokens: 0,
+							sessions: queries > 0 ? 1 : 0,
+						},
+					],
+				},
+			] satisfies ProviderUsageSnapshot[];
+		const fetchFn = vi
+			.fn<() => Promise<ProviderUsageSnapshot[]>>()
+			.mockReturnValueOnce(stale.promise)
+			.mockReturnValueOnce(fresh.promise);
+		const rateLimit = {
+			type: "rate_limit" as const,
+			status: "allowed",
+			providerId: "claude",
+			rateLimitType: "five_hour",
+			utilization: 0.55,
+		};
+		const view = render(
+			<ProviderUsageStrip
+				initial={withWindow(0, 0)}
+				liveQueryCount={0}
+				rateLimit={null}
+				fetchFn={fetchFn}
+			/>,
+		);
+
+		view.rerender(
+			<ProviderUsageStrip
+				initial={withWindow(0, 0)}
+				liveQueryCount={0}
+				rateLimit={rateLimit}
+				fetchFn={fetchFn}
+			/>,
+		);
+		view.rerender(
+			<ProviderUsageStrip
+				initial={withWindow(0, 0)}
+				liveQueryCount={1}
+				rateLimit={rateLimit}
+				fetchFn={fetchFn}
+			/>,
+		);
+
+		await act(async () => fresh.resolve(withWindow(3, 17.24)));
+		expect(screen.getByText("3 queries")).not.toBeNull();
+		expect(screen.getByText("~$17.24")).not.toBeNull();
+
+		await act(async () => stale.resolve(withWindow(0, 0)));
+		expect(screen.getByText("3 queries")).not.toBeNull();
+		expect(screen.queryByText("0 queries")).toBeNull();
 	});
 
 	it("refreshes every minute while the page is visible", () => {

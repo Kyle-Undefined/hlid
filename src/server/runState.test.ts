@@ -371,6 +371,24 @@ describe("SessionRunState — send (unicast)", () => {
 });
 
 describe("SessionRunState — replay buffer", () => {
+	it("keeps the latest context snapshot outside the transcript replay buffer", () => {
+		const rs = new SessionRunState("session-1");
+		rs.broadcast({
+			type: "context_update",
+			tokens_in_context: 110_882,
+			context_window: 1_000_000,
+			actualModel: "claude-fable-5",
+		});
+
+		expect(rs.getReplayBuffer()).toHaveLength(0);
+		expect(rs.getContextSnapshot()).toEqual({
+			type: "context_update",
+			tokens_in_context: 110_882,
+			context_window: 1_000_000,
+			actualModel: "claude-fable-5",
+		});
+	});
+
 	it("chunk is added to buffer", () => {
 		const rs = new SessionRunState("session-1");
 		rs.broadcast({ type: "chunk", text: "hello" });

@@ -19,6 +19,10 @@ export class SessionRunState {
 	readonly sessionId: string;
 	private subscribers: Set<WsType> = new Set();
 	private _replayBuffer: ServerMessage[] = [];
+	private latestContextSnapshot: Extract<
+		ServerMessage,
+		{ type: "context_update" }
+	> | null = null;
 	lastError: string | null = null;
 	ownerWs: WsType | null = null;
 	inFlightChatCount: Map<WsType, number> = new Map();
@@ -46,6 +50,26 @@ export class SessionRunState {
 	 * Also manages the replay buffer and error state.
 	 */
 	broadcast(msg: ServerMessage): void {
+		if (msg.type === "context_update") {
+			this.latestContextSnapshot = msg;
+		} else if (msg.type === "usage_update" && msg.context_window != null) {
+			this.latestContextSnapshot = {
+				type: "context_update",
+				tokens_in_context: msg.tokens_in_context,
+				context_window: msg.context_window,
+				...(msg.actualModel ? { actualModel: msg.actualModel } : {}),
+			};
+		} else if (
+			msg.type === "done" &&
+			msg.tokens_in_context != null &&
+			msg.context_window != null
+		) {
+			this.latestContextSnapshot = {
+				type: "context_update",
+				tokens_in_context: msg.tokens_in_context,
+				context_window: msg.context_window,
+			};
+		}
 		// Buffer management (mirrors module-level _runBuffer logic)
 		if (msg.type === "error") {
 			this.lastError = msg.message;
@@ -90,6 +114,14 @@ export class SessionRunState {
 
 	getReplayBuffer(): readonly ServerMessage[] {
 		return this._replayBuffer;
+	}
+
+	// fallow-ignore-next-line unused-class-member -- Replayed by WebSocket sync/subscription handlers in wsHandlers.
+	getContextSnapshot(): Extract<
+		ServerMessage,
+		{ type: "context_update" }
+	> | null {
+		return this.latestContextSnapshot;
 	}
 
 	clearError(): void {

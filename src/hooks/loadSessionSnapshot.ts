@@ -174,9 +174,13 @@ function drainBufferDeduped(
 	}
 }
 
-function applyCtx(ctx: CtxRow): void {
+function applyCtx(ctx: CtxRow, sessionId: string): void {
 	if (ctx?.context_window && ctx.last_context_used != null) {
-		wsStore.seedContextStats(ctx.context_window, ctx.last_context_used);
+		wsStore.seedContextStats(
+			ctx.context_window,
+			ctx.last_context_used,
+			sessionId,
+		);
 	}
 	if (ctx?.actual_model !== undefined) {
 		wsStore.seedActualModel(ctx.actual_model);
@@ -213,7 +217,7 @@ export async function loadSessionSnapshot({
 		getSessionAskUserQuestionsFn({ data: sessionId }),
 	]);
 	if (isCancelled()) return null;
-	applyCtx(ctx);
+	applyCtx(ctx, sessionId);
 	const items = mapSessionRows(rows, permEvents, planRows, aukRows);
 	dispatch({ type: "LOAD_HISTORY", items });
 	const placeholder = findPlaceholderAssistant(items);

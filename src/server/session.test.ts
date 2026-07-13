@@ -461,6 +461,33 @@ describe("SessionManager — per-turn plan mode", () => {
 });
 
 describe("SessionManager — provider usage refresh", () => {
+	it("emits authoritative live provider context before the result boundary", async () => {
+		const contextUsage = vi.fn().mockResolvedValue({
+			contextTokens: 110_882,
+			contextWindow: 1_000_000,
+			model: "claude-fable-5",
+		});
+		const { provider } = makeSwitchableProvider({ contextUsage });
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await sm.runQuery("hello", (message) => emitted.push(message), "fable");
+
+		expect(emitted).toContainEqual({
+			type: "context_update",
+			tokens_in_context: 110_882,
+			context_window: 1_000_000,
+			actualModel: "claude-fable-5",
+		});
+		expect(emitted).toContainEqual(
+			expect.objectContaining({
+				type: "done",
+				tokens_in_context: 110_882,
+				context_window: 1_000_000,
+			}),
+		);
+	});
+
 	it("refreshes and stores structured usage after a successful turn", async () => {
 		const usageWindows = vi.fn().mockResolvedValue([
 			{

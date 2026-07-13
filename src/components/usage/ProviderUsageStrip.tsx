@@ -49,6 +49,7 @@ export function ProviderUsageStrip({
 	);
 	const providerIdsRef = useRef(providerIds);
 	providerIdsRef.current = providerIds;
+	const refreshSequenceRef = useRef(0);
 	const [activeProvider, setActiveProvider] = useState(() =>
 		initialProvider(providerIds),
 	);
@@ -56,13 +57,18 @@ export function ProviderUsageStrip({
 		(snapshot) => snapshot.providerId === activeProvider,
 	);
 	const refreshRef = useRef(() => {
+		const sequence = ++refreshSequenceRef.current;
 		void fetchFnRef
 			.current()
-			.then((fresh) =>
+			.then((fresh) => {
+				// A structured usage reading is broadcast just before the completed
+				// query is committed. If that refresh races the post-done refresh, an
+				// older zero-query response must not overwrite the newer ledger totals.
+				if (sequence !== refreshSequenceRef.current) return;
 				setSnapshots((previous) =>
 					mergeFreshProviderSnapshots(fresh, previous),
-				),
-			)
+				);
+			})
 			.catch(() => {});
 	});
 

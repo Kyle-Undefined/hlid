@@ -14,6 +14,7 @@ import type {
 	AgentSession,
 	McpServerStatus,
 	ProviderAccountInfo,
+	ProviderContextUsage,
 	ProviderEffortInfo,
 	ProviderModelInfo,
 	ProviderWindowReading,
@@ -693,6 +694,23 @@ class ClaudeAgentSession implements AgentSession {
 			// API-key/Bedrock/Vertex sessions and older Claude builds may not expose
 			// subscription limits. Header/event tracking remains the fallback.
 			return [];
+		}
+	}
+
+	async contextUsage(): Promise<ProviderContextUsage | null> {
+		if (!this.sdkQuery) return null;
+		try {
+			const usage = await this.sdkQuery.getContextUsage();
+			const contextWindow = usage.rawMaxTokens || usage.maxTokens;
+			if (usage.totalTokens < 0 || contextWindow <= 0) return null;
+			return {
+				contextTokens: usage.totalTokens,
+				contextWindow,
+				...(usage.model ? { model: usage.model } : {}),
+			};
+		} catch {
+			// Older Claude builds may not expose the context control method.
+			return null;
 		}
 	}
 

@@ -121,6 +121,7 @@ export const EMPTY_STATS: LiveStats = {
 // ─── Stats persistence helpers ───────────────────────────────────────────────
 
 const STATS_KEY = "hlid:live_stats";
+const CONTEXT_SESSION_KEY = "hlid:context_stats_session";
 
 function persistStats(stats: LiveStats): void {
 	try {
@@ -142,6 +143,7 @@ function loadPersistedStats(): LiveStats | null {
 function clearPersistedStats(): void {
 	try {
 		sessionStorage.removeItem(STATS_KEY);
+		sessionStorage.removeItem(CONTEXT_SESSION_KEY);
 	} catch {}
 }
 
@@ -181,6 +183,13 @@ let _chatQueue: QueuedChatMessage[] = [];
 // ── Multi-session state ───────────────────────────────────────────────────────
 /** Pool-wide list of all live sessions (updated by sessions_status messages). */
 let _sessionsStatus: SessionStatusEntry[] = [];
+let _contextSessionId: string | null = (() => {
+	try {
+		return sessionStorage.getItem(CONTEXT_SESSION_KEY);
+	} catch {
+		return null;
+	}
+})();
 /** UUID of the WS pool session this client is currently subscribed to.
  *  Empty string = not yet subscribed (no filtering applied — backward compat). */
 let _subscribedSessionId = "";
@@ -192,6 +201,40 @@ const messageSubs = new Set<(msg: ServerMessage) => void>();
 const statsSubs = new Set<() => void>();
 const queueSubs = new Set<() => void>();
 const sessionsStatusSubs = new Set<() => void>();
+
+function canonicalContextSessionId(sessionId: string): string {
+	const status = _sessionsStatus.find(
+		(session) =>
+			session.session_id === sessionId || session.db_session_id === sessionId,
+	);
+	return status?.db_session_id ?? status?.session_id ?? sessionId;
+}
+
+function markContextSession(sessionId: string): void {
+	_contextSessionId = canonicalContextSessionId(sessionId);
+	try {
+		sessionStorage.setItem(CONTEXT_SESSION_KEY, _contextSessionId);
+	} catch {}
+}
+
+function switchContextSession(sessionId: string): void {
+	const next = canonicalContextSessionId(sessionId);
+	const current = _contextSessionId
+		? canonicalContextSessionId(_contextSessionId)
+		: null;
+	if (current === next) {
+		markContextSession(next);
+		return;
+	}
+	markContextSession(next);
+	_liveStats = {
+		..._liveStats,
+		context_window: null,
+		last_context_used: null,
+	};
+	persistStats(_liveStats);
+	for (const fn of statsSubs) fn();
+}
 
 // ─── Queue helpers ───────────────────────────────────────────────────────────
 
@@ -405,6 +448,7 @@ function onPermissionResolved(): void {
 function onUsageUpdate(
 	msg: Extract<ServerMessage, { type: "usage_update" }>,
 ): void {
+	if (_subscribedSessionId) markContextSession(_subscribedSessionId);
 	// Live per-turn snapshot. Update only the "current turn" fields —
 	// cumulative tokens/cost/turns/duration/queries are still summed at `done`
 	// from the result's authoritative totals.
@@ -426,8 +470,25 @@ function onUsageUpdate(
 	}
 }
 
+function onContextUpdate(
+	msg: Extract<ServerMessage, { type: "context_update" }>,
+): void {
+	if (_subscribedSessionId) markContextSession(_subscribedSessionId);
+	_liveStats = {
+		..._liveStats,
+		last_context_used: msg.tokens_in_context,
+		context_window: msg.context_window,
+	};
+	persistStats(_liveStats);
+	for (const fn of statsSubs) fn();
+	if (msg.actualModel && msg.actualModel !== _snap.actualModel) {
+		setSnap({ actualModel: msg.actualModel });
+	}
+}
+
 /** Returns false if the message is from a stale session and should be dropped. */
 function onDone(msg: Extract<ServerMessage, { type: "done" }>): boolean {
+	if (_subscribedSessionId) markContextSession(_subscribedSessionId);
 	_pendingSessionToday = false;
 	// Note: stale-session filtering is handled by the per-session filter in
 	// onmessage (_subscribedSessionId gate).
@@ -484,6 +545,7 @@ function handleGlobalMessage(msg: ServerMessage): boolean {
 			for (const subscriber of sessionsStatusSubs) subscriber();
 			return true;
 		case "session_created":
+			switchContextSession(msg.session_id);
 			_subscribedSessionId = msg.session_id;
 			_messageBuffer = [];
 			for (const subscriber of statusSubs) subscriber();
@@ -519,6 +581,9 @@ function applySessionMessage(msg: ServerMessage): boolean {
 			break;
 		case "usage_update":
 			onUsageUpdate(msg);
+			break;
+		case "context_update":
+			onContextUpdate(msg);
 			break;
 		case "agent_sleep":
 			onAgentSleep(msg);
@@ -735,6 +800,7 @@ export function subscribeStats(fn: () => void): () => void {
 
 export function resetLiveStats(): void {
 	_liveStats = { ...EMPTY_STATS };
+	_contextSessionId = null;
 	clearPersistedStats();
 	for (const fn of statsSubs) fn();
 }
@@ -752,17 +818,32 @@ export function seedActualModel(actualModel: string | null): void {
 /**
  * Seed context window info from DB when loading an existing session so the
  * gauge shows the last known value immediately, before any new query runs.
- * Only fills null fields — live usage_update/done events that arrived after
- * resetLiveStats() already set these values and must not be overwritten.
+ * For the same chat, only fills null fields so newer live events win. When the
+ * user changes chats, replaces the prior chat's context with the DB snapshot.
  */
 export function seedContextStats(
 	contextWindow: number,
 	lastContextUsed: number,
+	sessionId = _subscribedSessionId,
 ): void {
-	const cw = _liveStats.context_window ?? contextWindow;
-	const lcu = _liveStats.last_context_used ?? lastContextUsed;
-	if (cw === _liveStats.context_window && lcu === _liveStats.last_context_used)
+	const target = sessionId ? canonicalContextSessionId(sessionId) : null;
+	const current = _contextSessionId
+		? canonicalContextSessionId(_contextSessionId)
+		: null;
+	const sameSession = target == null || target === current;
+	const cw = sameSession
+		? (_liveStats.context_window ?? contextWindow)
+		: contextWindow;
+	const lcu = sameSession
+		? (_liveStats.last_context_used ?? lastContextUsed)
+		: lastContextUsed;
+	if (
+		sameSession &&
+		cw === _liveStats.context_window &&
+		lcu === _liveStats.last_context_used
+	)
 		return;
+	if (target) markContextSession(target);
 	_liveStats = { ..._liveStats, context_window: cw, last_context_used: lcu };
 	persistStats(_liveStats);
 	for (const fn of statsSubs) fn();
@@ -858,6 +939,7 @@ export function subscribeSessionsStatus(fn: () => void): () => void {
  * and notifies status subscribers so the UI can re-render.
  */
 export function subscribeToSession(sessionId: string): void {
+	switchContextSession(sessionId);
 	_subscribedSessionId = sessionId;
 	if (_ws?.readyState === WS_OPEN) {
 		try {

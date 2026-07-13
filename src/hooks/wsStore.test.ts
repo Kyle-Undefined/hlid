@@ -250,6 +250,19 @@ describe("wsStore state management", () => {
 			expect(fn).not.toHaveBeenCalled();
 			unsub();
 		});
+
+		it("hydrates a different chat instead of preserving the prior chat context", () => {
+			store.subscribeToSession("session-a");
+			store.seedContextStats(200_000, 50_000, "session-a");
+
+			store.subscribeToSession("session-b");
+			expect(store.getLiveStats().context_window).toBeNull();
+			expect(store.getLiveStats().last_context_used).toBeNull();
+
+			store.seedContextStats(1_000_000, 145_029, "session-b");
+			expect(store.getLiveStats().context_window).toBe(1_000_000);
+			expect(store.getLiveStats().last_context_used).toBe(145_029);
+		});
 	});
 
 	// ── snapshot / actualModel ────────────────────────────────────────────────

@@ -144,6 +144,8 @@ function handleSubscribeSession(
 	entry.runState.addSubscriber(ws);
 	ws.data.subscribedSessionId = entry.sessionId;
 	send(ws, { type: "status", ...entry.manager.getStatus() });
+	const context = entry.runState.getContextSnapshot?.();
+	if (context) entry.runState.send(ws, context);
 	if (entry.manager.isRunning()) {
 		for (const buffered of entry.runState.getReplayBuffer()) send(ws, buffered);
 	}
@@ -216,6 +218,8 @@ function handleRoutingMessage(
 function handleSync(ws: ServerWebSocket<WsData>, entry: PoolEntry): void {
 	send(ws, { type: "status", ...entry.manager.getStatus() });
 	send(ws, { type: "queue_state", ...entry.manager.getQueueState() });
+	const context = entry.runState.getContextSnapshot?.();
+	if (context) entry.runState.send(ws, context);
 	// Informational — every syncing client gets the sleep banner, not just the
 	// prompt owner.
 	const sleep = entry.manager.getSleepState();
@@ -668,6 +672,8 @@ export function createWsHandlers(
 			// Send vault session status and (if relevant) last error.
 			const status = vault.manager.getStatus();
 			send(ws, { type: "status", ...status });
+			const context = vault.runState.getContextSnapshot?.();
+			if (context) vault.runState.send(ws, context);
 			if (vault.runState.lastError !== null && status.state === "error") {
 				send(ws, { type: "error", message: vault.runState.lastError });
 			}

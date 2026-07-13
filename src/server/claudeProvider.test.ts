@@ -1119,6 +1119,37 @@ describe("ClaudeProvider — usageWindows", () => {
 	});
 });
 
+describe("ClaudeProvider — contextUsage", () => {
+	it("uses the SDK raw model window and exact live occupancy", async () => {
+		const gen = sdkGen([
+			{
+				type: "result",
+				subtype: "success",
+				total_cost_usd: 0,
+				num_turns: 1,
+				duration_ms: 100,
+				usage: { input_tokens: 10, output_tokens: 5 },
+			},
+		]);
+		gen.getContextUsage = vi.fn().mockResolvedValue({
+			totalTokens: 110_882,
+			maxTokens: 900_000,
+			rawMaxTokens: 1_000_000,
+			model: "claude-fable-5",
+		});
+		vi.mocked(query).mockReturnValueOnce(gen);
+
+		const session = new ClaudeProvider().query(baseParams());
+		await session[Symbol.asyncIterator]().next();
+
+		await expect(session.contextUsage?.()).resolves.toEqual({
+			contextTokens: 110_882,
+			contextWindow: 1_000_000,
+			model: "claude-fable-5",
+		});
+	});
+});
+
 // ── accountInfo ───────────────────────────────────────────────────────────────
 
 describe("ClaudeProvider — accountInfo", () => {
