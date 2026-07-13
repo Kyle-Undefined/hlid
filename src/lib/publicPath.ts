@@ -14,6 +14,7 @@ export function isPublicPath(pathname: string): boolean {
 		normalized === "/api/health" ||
 		normalized === "/manifest.json" ||
 		normalized === "/sw.js" ||
+		normalized === "/offline.html" ||
 		normalized === "/favicon.svg" ||
 		normalized === "/apple-touch-icon.png" ||
 		normalized.startsWith("/api/auth/") ||

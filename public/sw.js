@@ -1,7 +1,9 @@
-const CACHE = "hlid-v4";
+const CACHE = "hlid-v5";
 const STATIC_EXTS = [".js", ".css", ".png", ".svg", ".ico", ".woff2"];
+const OFFLINE_URL = "/offline.html";
 
-self.addEventListener("install", () => {
+self.addEventListener("install", (e) => {
+	e.waitUntil(caches.open(CACHE).then((c) => c.add(OFFLINE_URL)));
 	self.skipWaiting();
 });
 
@@ -46,13 +48,15 @@ self.addEventListener("fetch", (e) => {
 		e.respondWith(
 			fetch(e.request).catch(async () => {
 				const fallback = await caches.match(e.request);
-				return (
-					fallback ??
-					new Response("Hlið is temporarily unavailable.", {
-						status: 503,
-						headers: { "content-type": "text/plain; charset=utf-8" },
-					})
-				);
+				if (fallback) return fallback;
+				if (e.request.mode === "navigate") {
+					const offline = await caches.match(OFFLINE_URL);
+					if (offline) return offline;
+				}
+				return new Response("Hlið is temporarily unavailable.", {
+					status: 503,
+					headers: { "content-type": "text/plain; charset=utf-8" },
+				});
 			}),
 		);
 	}

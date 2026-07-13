@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hliðskjálf — unavailable</title>
+<style>
+  :root {
+    --background: #0f0f12;
+    --foreground: #dcdce4;
+    --muted-foreground: #ccccda80;
+    --border: #222226;
+    --primary: #38bdf8;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    height: 100%;
+    margin: 0;
+  }
+  body {
+    display: grid;
+    place-items: center;
+    padding: 1.5rem;
+    background: var(--background);
+    color: var(--foreground);
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  main {
+    max-width: 26rem;
+    text-align: center;
+  }
+  h1 {
+    font-size: 0.8rem;
+    letter-spacing: 0.2em;
+    text-transform: uppercase;
+    font-weight: 500;
+    margin: 0 0 0.75rem;
+  }
+  p {
+    font-size: 0.8rem;
+    color: var(--muted-foreground);
+    line-height: 1.6;
+    margin: 0 0 1.5rem;
+  }
+  button {
+    font: inherit;
+    font-size: 0.7rem;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--primary);
+    background: transparent;
+    border: 1px solid var(--border);
+    padding: 0.5rem 1rem;
+    cursor: pointer;
+  }
+  button:hover {
+    border-color: var(--primary);
+  }
+</style>
+</head>
+<body>
+  <main>
+    <h1>Hliðskjálf unavailable</h1>
+    <p>Can't reach the Hlið server. It may be asleep, restarting, or unreachable from here.</p>
+    <button type="button" onclick="location.reload()">Retry</button>
+  </main>
+</body>
+</html>
