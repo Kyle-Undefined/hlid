@@ -54,7 +54,11 @@ import {
 	modelOptions,
 	resolveActiveProviderId,
 } from "#/lib/providerOptions";
-import { scrollChatToBottom } from "#/lib/scrollContainers";
+import {
+	ROUTE_SCROLL_RESTORATION_IDS,
+	resetScrollAncestors,
+	scrollChatToBottom,
+} from "#/lib/scrollContainers";
 import { getAgentListFn } from "#/lib/serverFns/agents";
 import { getCockpitData } from "#/lib/serverFns/cockpit";
 import { getProvidersFn, loadProviderUsages } from "#/lib/serverFns/providers";
@@ -444,17 +448,27 @@ function useRavenViewport({
 
 	useEffect(() => {
 		const visualViewport = window.visualViewport;
+		let frame = 0;
 		const onViewportChange = () => {
+			if (visualViewport && visualViewport.scale > 1.01) return;
 			resizeTextarea();
-			// Keyboard open/close resizes the chat shell (--app-height); keep the
-			// transcript pinned to the bottom instead of leaving it mid-scroll.
-			if (atBottomRef.current) scrollChatToBottom(scrollRef.current, "auto");
+			cancelAnimationFrame(frame);
+			frame = requestAnimationFrame(() => {
+				// Keyboard reveal can scroll overflow-hidden Raven ancestors. Clamp
+				// those boxes without disturbing the transcript's own position.
+				resetScrollAncestors(scrollRef.current);
+				if (atBottomRef.current) scrollChatToBottom(scrollRef.current, "auto");
+			});
 		};
+		onViewportChange();
 		window.addEventListener("resize", onViewportChange);
 		visualViewport?.addEventListener("resize", onViewportChange);
+		visualViewport?.addEventListener("scroll", onViewportChange);
 		return () => {
 			window.removeEventListener("resize", onViewportChange);
 			visualViewport?.removeEventListener("resize", onViewportChange);
+			visualViewport?.removeEventListener("scroll", onViewportChange);
+			cancelAnimationFrame(frame);
 		};
 	}, [resizeTextarea]);
 
@@ -1112,7 +1126,10 @@ function ChatPageContent(props: ChatPageContentProps) {
 			)}
 			<RavenMessagePane {...props} />
 			{!interactiveMode && <RavenShellPane {...props} />}
-			<ChatComposer {...composerProps} />
+			<ChatComposer
+				{...composerProps}
+				hideOnMobile={terminalOpen && shellTab === "terminal"}
+			/>
 		</div>
 	);
 }
@@ -1262,6 +1279,9 @@ function RavenMessagePane({
 			{!interactiveMode && (
 				<div
 					ref={scrollRef}
+					data-scroll-restoration-id={
+						ROUTE_SCROLL_RESTORATION_IDS.ravenTranscript
+					}
 					className={`flex-1 min-h-0 overflow-y-auto overflow-x-hidden ${
 						mobileHideChat ? "hidden md:block" : ""
 					}`}
@@ -1961,6 +1981,7 @@ interface ChatComposerProps {
 	handleSkillSelect: (skill: Skill) => void;
 	handleSend: (overrideText?: string) => void;
 	handleClear: () => void;
+	hideOnMobile?: boolean;
 }
 
 function ChatComposer(props: ChatComposerProps) {
@@ -1971,6 +1992,7 @@ function ChatComposer(props: ChatComposerProps) {
 		runtime,
 		picker,
 		handleSkillSelect,
+		hideOnMobile = false,
 	} = props;
 	const { agentSkillContext } = session;
 	const { sessionState, send, sleepState } = runtime;
@@ -1982,7 +2004,9 @@ function ChatComposer(props: ChatComposerProps) {
 	if (interactiveMode) return null;
 
 	return (
-		<div className="shrink-0 relative">
+		<div
+			className={`shrink-0 relative ${hideOnMobile ? "hidden md:block" : ""}`}
+		>
 			{pickerOpen && (
 				<SlashPicker
 					items={pickerItems}

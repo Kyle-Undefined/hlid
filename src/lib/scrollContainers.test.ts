@@ -4,7 +4,11 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	isRavenPath,
 	keyboardInset,
+	ROUTE_SCROLL_RESTORATION_IDS,
+	resetScrollAncestors,
+	resetShellScroll,
 	resetWindowScroll,
+	SCROLL_TO_TOP_SELECTORS,
 	scrollChatToBottom,
 } from "./scrollContainers";
 
@@ -26,6 +30,55 @@ describe("route scroll containers", () => {
 			top: 1_200,
 			behavior: "smooth",
 		});
+	});
+
+	it("gives each route scroller a distinct restoration identity", () => {
+		const ids = Object.values(ROUTE_SCROLL_RESTORATION_IDS);
+		expect(new Set(ids).size).toBe(ids.length);
+	});
+
+	it("declares both app and nested route reset targets", () => {
+		expect(SCROLL_TO_TOP_SELECTORS).toEqual([
+			'[data-scroll-to-top="app"]',
+			'[data-scroll-to-top="route"]',
+		]);
+	});
+});
+
+describe("resetScrollAncestors", () => {
+	it("clamps ancestors without moving the transcript itself", () => {
+		const shell = document.createElement("div");
+		const page = document.createElement("main");
+		const transcript = document.createElement("div");
+		shell.append(page);
+		page.append(transcript);
+		shell.scrollTop = 120;
+		page.scrollTop = 80;
+		page.scrollLeft = 10;
+		transcript.scrollTop = 600;
+
+		resetScrollAncestors(transcript, shell);
+
+		expect(shell.scrollTop).toBe(0);
+		expect(page.scrollTop).toBe(0);
+		expect(page.scrollLeft).toBe(0);
+		expect(transcript.scrollTop).toBe(600);
+	});
+});
+
+describe("resetShellScroll", () => {
+	it("clamps stray scroll on persistent shell containers", () => {
+		const shell = document.createElement("div");
+		const wrapper = document.createElement("div");
+		shell.scrollTop = 140;
+		wrapper.scrollTop = 90;
+		wrapper.scrollLeft = 12;
+
+		resetShellScroll([shell, null, wrapper]);
+
+		expect(shell.scrollTop).toBe(0);
+		expect(wrapper.scrollTop).toBe(0);
+		expect(wrapper.scrollLeft).toBe(0);
 	});
 });
 

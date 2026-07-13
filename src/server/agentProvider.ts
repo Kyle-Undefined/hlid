@@ -180,6 +180,12 @@ export type CanUseTool = (
 	meta: ToolMeta,
 ) => Promise<AgentToolDecision>;
 
+export type BeforeToolUse = (
+	toolName: string,
+	input: unknown,
+	meta: { toolUseID?: string; signal?: AbortSignal },
+) => Promise<"proceeded" | "aborted">;
+
 export type AgentQueryParams = {
 	cwd: string;
 	/** Resume token from a prior session; undefined starts fresh. */
@@ -191,6 +197,10 @@ export type AgentQueryParams = {
 	permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan";
 	/** A host policy layer must see calls even when interactive prompts are bypassed. */
 	policyEnforced?: boolean;
+	/** Keep provider host boundaries active so auto-sleep can gate continuation. */
+	usageGateEnforced?: boolean;
+	/** Provider-native pre-tool boundary used to pause before autonomous tools. */
+	beforeToolUse?: BeforeToolUse;
 	/** Permission mode to restore after a provider-specific plan is approved. */
 	implementationPermissionMode?:
 		| "default"

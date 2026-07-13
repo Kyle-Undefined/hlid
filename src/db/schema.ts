@@ -1,5 +1,6 @@
 import { resolve } from "node:path";
 import { estimateCodexCost } from "../lib/codexPricing";
+import { cumulativeCostDelta } from "../lib/costAccounting";
 import { APP_DIR } from "../lib/paths";
 
 const DB_PATH = resolve(APP_DIR, "hlid.db");
@@ -552,6 +553,85 @@ function applyMigrations(db: Db): void {
 		`);
 
 		// usage_queries survives session deletion and is the authoritative ledger.
+		db.run(`DELETE FROM usage_daily`);
+		db.run(`
+			INSERT INTO usage_daily
+				(date, cost, estimated_cost, unpriced_queries, queries, input_tokens,
+				 output_tokens, cache_read_tokens, cache_creation_tokens, turns)
+			SELECT DATE(timestamp, 'unixepoch', 'localtime'),
+			       COALESCE(SUM(cost), 0), COALESCE(SUM(estimated_cost), 0),
+			       COALESCE(SUM(unpriced), 0), COUNT(*),
+			       COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
+			       COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(cache_creation_tokens), 0),
+			       COALESCE(SUM(turns), 0)
+			FROM usage_queries
+			GROUP BY DATE(timestamp, 'unixepoch', 'localtime')
+		`);
+	});
+
+	// Claude Code reports total_cost_usd as a cumulative value for the live SDK
+	// session. Older Hlid versions stored every cumulative snapshot as a new
+	// query estimate, inflating multi-turn session and daily totals. Convert the
+	// historical snapshots to increments and retain the last raw provider total
+	// so resumed sessions can continue delta accounting across app restarts.
+	runMigration(db, "_migrated_claude_cumulative_cost_deltas", (db) => {
+		db.run(
+			`ALTER TABLE sessions ADD COLUMN last_provider_estimated_cost REAL DEFAULT 0`,
+		);
+
+		type ClaudeCostRow = {
+			id: number;
+			session_id: string;
+			estimated_cost: number;
+		};
+		const rewriteCumulativeCosts = (
+			table: "queries" | "usage_queries",
+		): Map<string, number> => {
+			const rows = db
+				.query<ClaudeCostRow, []>(`
+					SELECT c.id, c.session_id, c.estimated_cost
+					FROM ${table} c
+					${
+						table === "queries"
+							? "JOIN sessions s ON s.id = c.session_id WHERE s.provider_id = 'claude'"
+							: "WHERE c.provider_id = 'claude'"
+					}
+					  AND c.estimated_cost IS NOT NULL
+					ORDER BY c.session_id, c.timestamp, c.id
+				`)
+				.all();
+			const previousBySession = new Map<string, number>();
+			const update = db.prepare(
+				`UPDATE ${table} SET estimated_cost = ? WHERE id = ?`,
+			);
+			for (const row of rows) {
+				const previous = previousBySession.get(row.session_id) ?? 0;
+				update.run(cumulativeCostDelta(row.estimated_cost, previous), row.id);
+				previousBySession.set(row.session_id, row.estimated_cost);
+			}
+			return previousBySession;
+		};
+
+		rewriteCumulativeCosts("usage_queries");
+		const lastReportedBySession = rewriteCumulativeCosts("queries");
+		const updateLastReported = db.prepare(
+			`UPDATE sessions SET last_provider_estimated_cost = ? WHERE id = ?`,
+		);
+		for (const [sessionId, lastReported] of lastReportedBySession) {
+			updateLastReported.run(lastReported, sessionId);
+		}
+
+		db.run(`
+			UPDATE sessions SET
+				total_estimated_cost = COALESCE((
+					SELECT SUM(estimated_cost) FROM queries
+					WHERE session_id = sessions.id
+				), 0)
+			WHERE provider_id = 'claude'
+		`);
+
+		// usage_queries survives session deletion and remains the authoritative
+		// source for daily/all-time aggregates.
 		db.run(`DELETE FROM usage_daily`);
 		db.run(`
 			INSERT INTO usage_daily

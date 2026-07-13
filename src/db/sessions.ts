@@ -1,3 +1,4 @@
+import { cumulativeCostDelta } from "../lib/costAccounting";
 import type { Db } from "./schema";
 import { getDb } from "./schema";
 import type { QueryData, SessionRow } from "./types";
@@ -134,16 +135,31 @@ export async function recordQuery(
 	sessionId: string,
 	data: QueryData,
 	providerId = "claude",
-): Promise<void> {
+	options?: { estimatedCostMode?: "incremental" | "cumulative" },
+): Promise<{ estimatedCost: number | null }> {
 	const database = await getDb();
+	let estimatedCost = data.estimated_cost ?? null;
 	database.transaction(() => {
+		if (options?.estimatedCostMode === "cumulative" && estimatedCost != null) {
+			const prior = database
+				.query<{ last_provider_estimated_cost: number | null }, [string]>(
+					`SELECT last_provider_estimated_cost FROM sessions WHERE id = ?`,
+				)
+				.get(sessionId)?.last_provider_estimated_cost;
+			const reportedTotal = estimatedCost;
+			estimatedCost = cumulativeCostDelta(reportedTotal, prior ?? 0);
+			database.run(
+				`UPDATE sessions SET last_provider_estimated_cost = ? WHERE id = ?`,
+				[reportedTotal, sessionId],
+			);
+		}
 		database.run(
 			`INSERT INTO queries (session_id, timestamp, cost, estimated_cost, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, duration_ms, turns, context_window, stop_reason, tokens_in_context)
 			 VALUES (?, unixepoch(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				sessionId,
 				data.cost,
-				data.estimated_cost ?? null,
+				estimatedCost,
 				data.input_tokens,
 				data.output_tokens,
 				data.cache_read_tokens,
@@ -170,8 +186,8 @@ export async function recordQuery(
        WHERE id = ?`,
 			[
 				data.cost,
-				data.estimated_cost ?? 0,
-				data.estimated_cost == null && providerId === "codex" ? 1 : 0,
+				estimatedCost ?? 0,
+				estimatedCost == null && providerId === "codex" ? 1 : 0,
 				data.input_tokens,
 				data.output_tokens,
 				data.cache_read_tokens,
@@ -195,8 +211,8 @@ export async function recordQuery(
          turns = turns + excluded.turns`,
 			[
 				data.cost,
-				data.estimated_cost ?? 0,
-				data.estimated_cost == null && providerId === "codex" ? 1 : 0,
+				estimatedCost ?? 0,
+				estimatedCost == null && providerId === "codex" ? 1 : 0,
 				data.input_tokens,
 				data.output_tokens,
 				data.cache_read_tokens,
@@ -210,8 +226,8 @@ export async function recordQuery(
 			[
 				sessionId,
 				data.cost,
-				data.estimated_cost ?? null,
-				data.estimated_cost == null && providerId === "codex" ? 1 : 0,
+				estimatedCost,
+				estimatedCost == null && providerId === "codex" ? 1 : 0,
 				data.input_tokens,
 				data.output_tokens,
 				data.cache_read_tokens,
@@ -221,6 +237,7 @@ export async function recordQuery(
 			],
 		);
 	})();
+	return { estimatedCost };
 }
 
 export async function getSessionLastQueryContext(sessionId: string): Promise<{

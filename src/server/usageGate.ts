@@ -42,6 +42,12 @@ const SLEPT_WINDOW = "five_hour";
 const NULL_RESET_RECHECK_SECONDS = 15 * 60;
 /** skipUntil fallback when no reset timestamp is known. */
 const SKIP_FALLBACK_SECONDS = 5 * 60;
+/**
+ * A utilization response describes work that has already reached the provider.
+ * Reserve one percentage point so a threshold such as 99% gates before the
+ * next model request can consume the final percent and hard-limit the session.
+ */
+const IN_FLIGHT_HEADROOM = 0.01;
 
 const hardLimits = new Map<string, HardLimitRecord>();
 const skipUntil = new Map<string, number>();
@@ -146,7 +152,11 @@ export function evaluateSleep(
 	}
 
 	const mark = getWindowMark(providerId, SLEPT_WINDOW);
-	if (mark?.utilization == null || mark.utilization < cfg.threshold)
+	const proactiveThreshold = Math.max(
+		0,
+		cfg.threshold - Math.min(IN_FLIGHT_HEADROOM, cfg.threshold * 0.1),
+	);
+	if (mark?.utilization == null || mark.utilization < proactiveThreshold)
 		return null;
 	if (mark.resetsAt == null) {
 		const warnKey = `${providerId}:${SLEPT_WINDOW}`;

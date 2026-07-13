@@ -19,6 +19,7 @@ import type { AttachmentRow } from "#/db";
 import { useWs } from "#/hooks/useWs";
 import { dbFetch } from "#/lib/dbClient";
 import { fmtBytes } from "#/lib/formatters";
+import { ROUTE_SCROLL_RESTORATION_IDS } from "#/lib/scrollContainers";
 import type { ServerMessage } from "#/server/protocol";
 
 type ListResult = {
@@ -635,7 +636,11 @@ export function AttachmentsPage({
 					onDelete={() => void deleteSelected()}
 				/>
 			)}
-			<div className="flex-1 overflow-auto">
+			<div
+				data-scroll-restoration-id={ROUTE_SCROLL_RESTORATION_IDS.relicsList}
+				data-scroll-to-top="route"
+				className="flex-1 overflow-auto"
+			>
 				<RelicsTable
 					list={list}
 					expandedId={expandedId}

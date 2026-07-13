@@ -174,6 +174,9 @@ function buildAgentQueryParams(options: {
 	defaultMaxTurns: number | undefined;
 	executable: string | undefined;
 	canUseTool: CanUseTool;
+	beforeToolUse: AgentQueryParams["beforeToolUse"];
+	policyEnforced: boolean;
+	usageGateEnforced: boolean;
 }): AgentQueryParams {
 	const implementationPermissionMode =
 		options.configuredPermissionMode === "plan"
@@ -191,7 +194,8 @@ function buildAgentQueryParams(options: {
 		permissionMode: options.planMode
 			? "plan"
 			: options.configuredPermissionMode,
-		policyEnforced: loadConfig()?.umbod?.enabled ?? false,
+		policyEnforced: options.policyEnforced,
+		usageGateEnforced: options.usageGateEnforced,
 		...(options.planMode ? { implementationPermissionMode } : {}),
 		...(options.planMode && options.planHtmlPath
 			? { planHtmlPath: toLogical(options.planHtmlPath) }
@@ -201,6 +205,7 @@ function buildAgentQueryParams(options: {
 		executable: options.executable,
 		settingSources: ["user", "project", "local"],
 		canUseTool: options.canUseTool,
+		beforeToolUse: options.beforeToolUse,
 	};
 }
 
@@ -347,6 +352,8 @@ export class SessionManager {
 	// Auto-sleep: last emitted "sleeping" message, kept for sync replay so a
 	// reconnecting client sees the banner. Cleared on wake/abort.
 	private sleepState: AgentSleepMessage | null = null;
+	private policyEnforced = false;
+	private usageGateEnforced = false;
 
 	constructor(config: HlidConfig, providers: Map<string, AgentProvider>) {
 		this.providers = providers;
@@ -398,6 +405,8 @@ export class SessionManager {
 		this.claudeExecutable = resolveClaudeExecutable();
 		this.codexExecutable = codexConfig.executable;
 		this.allowedAgentRealPaths = computeAllowedAgentRealPaths(config);
+		this.policyEnforced = config.umbod?.enabled ?? false;
+		this.usageGateEnforced = config.auto_sleep?.enabled ?? false;
 		const agentMaps = buildAgentMaps(config);
 		this.agentProviderMap = agentMaps.providers;
 		this.agentSettingsMap = agentMaps.settings;
@@ -772,6 +781,9 @@ export class SessionManager {
 				newId,
 				(call, reason) =>
 					this.promptForHookApproval(call, reason, provider, emit),
+				this.usageGateEnforced
+					? async () => this.gateOnUsage(provider, emit)
+					: undefined,
 			);
 		}
 	}
@@ -983,7 +995,15 @@ export class SessionManager {
 			turn,
 		);
 		if (sessionId) {
-			await db.recordQuery(sessionId, queryData, provider.providerId);
+			const recorded = await db.recordQuery(
+				sessionId,
+				queryData,
+				provider.providerId,
+				provider.providerId === "claude"
+					? { estimatedCostMode: "cumulative" }
+					: undefined,
+			);
+			if (recorded) queryData.estimated_cost = recorded.estimatedCost;
 			if (turn.lastActualModel) {
 				db.setSessionActualModel(sessionId, turn.lastActualModel).catch((e) => {
 					console.error("[db] setSessionActualModel failed:", e);
@@ -1013,7 +1033,7 @@ export class SessionManager {
 				? { turn_id: this.currentTurnId }
 				: {}),
 			cost: event.cost ?? null,
-			estimated_cost: event.estimatedCost ?? null,
+			estimated_cost: queryData.estimated_cost ?? null,
 			turns: event.turns,
 			duration_ms: event.durationMs,
 			input_tokens: queryData.input_tokens,
@@ -1441,11 +1461,9 @@ export class SessionManager {
 	 * at the window reset, on "resume now", or on abort. Emits agent_sleep
 	 * transitions and tracks sleepState for sync replay.
 	 *
-	 * Known limitation: with Umbod disabled AND permission_mode
-	 * bypassPermissions, providers never call canUseTool (claude sets
-	 * allowDangerouslySkipPermissions; codex auto-approves server requests), so
-	 * only the turn-boundary gate applies there. With Umbod enabled every tool
-	 * routes through canUseTool and both gates hold.
+	 * Provider sessions keep host pre-tool boundaries active while auto-sleep is
+	 * enabled, even when bypassPermissions is configured. Permission results
+	 * remain automatic, but only after the usage gate has run.
 	 */
 	private async gateOnUsage(
 		provider: AgentProvider,
@@ -1506,9 +1524,20 @@ export class SessionManager {
 		activeCwd: string,
 		sessionId: string | undefined,
 		emit: (msg: ServerMessage) => void,
+		autoApproveTools: boolean,
 	): CanUseTool {
-		return (toolName, input, { toolUseID, title, displayName, description }) =>
-			new Promise((resolve) => {
+		return async (
+			toolName,
+			input,
+			{ toolUseID, title, displayName, description },
+		) => {
+			if ((await this.gateOnUsage(provider, emit)) === "aborted") {
+				return {
+					behavior: "deny",
+					message: "Aborted while sleeping on usage limit",
+				};
+			}
+			return new Promise((resolve) => {
 				const passInput = input as Record<string, unknown>;
 				if (toolName === "AskUserQuestion") {
 					this.interceptAskUserQuestion(
@@ -1546,9 +1575,11 @@ export class SessionManager {
 					displayName,
 					description,
 					passInput,
+					autoApproveTools,
 					resolve,
 				});
 			});
+		};
 	}
 
 	/** AskUserQuestion never shows a permission card: persist the questions, emit the modal, and resolve with the user's answers merged into the tool input. */
@@ -1708,6 +1739,7 @@ export class SessionManager {
 		displayName: string | undefined;
 		description: string | undefined;
 		passInput: Record<string, unknown>;
+		autoApproveTools: boolean;
 		resolve: (decision: AgentToolDecision) => void;
 	}): void {
 		const {
@@ -1721,6 +1753,7 @@ export class SessionManager {
 			displayName,
 			description,
 			passInput,
+			autoApproveTools,
 			resolve,
 		} = options;
 		const request = {
@@ -1768,44 +1801,39 @@ export class SessionManager {
 				emit({ ...request, description: reason ?? request.description });
 			});
 
-		// Usage gate BEFORE the policy/permission pipeline so no permission
-		// card is ever shown into a sleeping session, and any resolution
-		// (allow or deny both resume the model = spend) waits for the window.
-		void this.gateOnUsage(provider, emit)
-			.then((gate) => {
-				if (gate === "aborted") {
-					resolve({
-						behavior: "deny",
-						message: "Aborted while sleeping on usage limit",
-					});
-					return;
-				}
-				return authorizeHlidTool({
-					agent: provider.providerId,
-					tool: toolName,
-					input: passInput,
-					cwd: activeCwd,
-					sessionId,
-					toolUseId: toolUseID,
-					// Once Umbod is enabled it is the policy authority. Provider-level
-					// bypassPermissions must not turn an Umbod `approve` decision into a
-					// silent allow; the approval still belongs in the originating chat.
-					bypassApproval: false,
-					prompt: (reason) => prompt(reason),
-				}).then(async (policy) => {
-					const decision = policy?.decision ?? (await prompt());
-					resolve(
-						decision === "allow"
-							? { behavior: "allow", updatedInput: passInput }
-							: {
-									behavior: "deny",
-									message:
-										policy?.policyDecision === "block"
-											? policy.reason
-											: (denyMessage ?? "Denied by user"),
-								},
-					);
-				});
+		// createToolPermissionHandler has already applied the usage gate to every
+		// tool path, including special question/plan paths. Preserve bypass mode
+		// as an auto-allow only after that gate has had a chance to sleep.
+		if (autoApproveTools) {
+			resolve({ behavior: "allow", updatedInput: passInput });
+			return;
+		}
+		void authorizeHlidTool({
+			agent: provider.providerId,
+			tool: toolName,
+			input: passInput,
+			cwd: activeCwd,
+			sessionId,
+			toolUseId: toolUseID,
+			// Once Umbod is enabled it is the policy authority. Provider-level
+			// bypassPermissions must not turn an Umbod `approve` decision into a
+			// silent allow; the approval still belongs in the originating chat.
+			bypassApproval: false,
+			prompt: (reason) => prompt(reason),
+		})
+			.then(async (policy) => {
+				const decision = policy?.decision ?? (await prompt());
+				resolve(
+					decision === "allow"
+						? { behavior: "allow", updatedInput: passInput }
+						: {
+								behavior: "deny",
+								message:
+									policy?.policyDecision === "block"
+										? policy.reason
+										: (denyMessage ?? "Denied by user"),
+							},
+				);
 			})
 			.catch((error) => {
 				resolve({
@@ -1918,6 +1946,10 @@ export class SessionManager {
 		if (this.agentSession) return this.agentSession;
 		const configuredPermissionMode =
 			agentSettings?.permissionMode ?? this.permissionMode;
+		const autoApproveTools =
+			configuredPermissionMode === "bypassPermissions" &&
+			!this.policyEnforced &&
+			this.usageGateEnforced;
 		const session = provider.query(
 			buildAgentQueryParams({
 				activeCwd,
@@ -1932,11 +1964,20 @@ export class SessionManager {
 				defaultEffort: this.effort,
 				defaultMaxTurns: this.maxTurns,
 				executable,
+				policyEnforced: this.policyEnforced,
+				usageGateEnforced: this.usageGateEnforced,
+				// Configured Claude/Codex hooks use the normalized embedded Umbod
+				// path. Provider-native boundaries are a fallback when Umbod is off.
+				beforeToolUse:
+					this.usageGateEnforced && !this.policyEnforced
+						? async () => this.gateOnUsage(provider, emit)
+						: undefined,
 				canUseTool: this.createToolPermissionHandler(
 					provider,
 					activeCwd,
 					sessionId,
 					emit,
+					autoApproveTools,
 				),
 			}),
 		);

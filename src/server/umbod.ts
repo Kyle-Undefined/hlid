@@ -18,8 +18,15 @@ type HookApprovalHandler = (
 	call: ToolCall,
 	reason: string,
 ) => Promise<Exclude<ApprovalDecision, "approve">>;
+type HookBeforeToolHandler = (
+	call: ToolCall,
+) => Promise<"proceeded" | "aborted">;
+type HookSessionHandlers = {
+	approval: HookApprovalHandler;
+	beforeToolUse?: HookBeforeToolHandler;
+};
 
-const hookApprovalHandlers = new Map<string, HookApprovalHandler>();
+const hookSessionHandlers = new Map<string, HookSessionHandlers>();
 type RoutedHookDecision = {
 	key: string;
 	agent: string;
@@ -38,11 +45,13 @@ function routedDecisionKey(agent: string, toolUseId: string): string {
 export function registerUmbodApprovalSession(
 	providerSessionId: string,
 	handler: HookApprovalHandler,
+	beforeToolUse?: HookBeforeToolHandler,
 ): () => void {
-	hookApprovalHandlers.set(providerSessionId, handler);
+	const handlers = { approval: handler, beforeToolUse };
+	hookSessionHandlers.set(providerSessionId, handlers);
 	return () => {
-		if (hookApprovalHandlers.get(providerSessionId) === handler)
-			hookApprovalHandlers.delete(providerSessionId);
+		if (hookSessionHandlers.get(providerSessionId) === handlers)
+			hookSessionHandlers.delete(providerSessionId);
 	};
 }
 
@@ -51,7 +60,7 @@ async function routeHookApproval(
 	reason: string,
 ): Promise<Exclude<ApprovalDecision, "approve">> {
 	const handler = call.sessionId
-		? hookApprovalHandlers.get(call.sessionId)
+		? hookSessionHandlers.get(call.sessionId)?.approval
 		: undefined;
 	if (!handler) return "block";
 	const decision = await handler(call, reason);
@@ -67,6 +76,60 @@ async function routeHookApproval(
 		routedHookDecisionQueue.push(routed);
 	}
 	return decision;
+}
+
+/**
+ * Configured provider PreToolUse hooks all enter through Umbod. Normalize the
+ * provider payload, route it to the owning Hlid session, and pause at one
+ * shared pre-tool boundary before Umbod continues with policy and auditing.
+ */
+async function routeHookBeforeToolUse(
+	request: Request,
+): Promise<Response | null> {
+	const url = new URL(request.url);
+	if (request.method !== "POST" || url.pathname !== "/api/hooks") return null;
+	const agent =
+		request.headers.get("x-umbod-agent")?.trim() ||
+		url.searchParams.get("agent")?.trim();
+	if (!agent) return null;
+
+	const { findAdapterById } = await import("@umbod/core");
+	const adapter = findAdapterById(agent);
+	if (!adapter) return null;
+	let call: ToolCall;
+	try {
+		call = adapter.normalizePayload(await request.clone().json());
+	} catch {
+		// Leave malformed/unknown hook payload handling to Umbod so callers get
+		// its canonical validation response and audit behavior.
+		return null;
+	}
+	const handler = call.sessionId
+		? hookSessionHandlers.get(call.sessionId)?.beforeToolUse
+		: undefined;
+	if (!handler) return null;
+
+	try {
+		if ((await handler(call)) === "proceeded") return null;
+		return Response.json(
+			{
+				permissionDecision: "deny",
+				permissionDecisionReason: "Auto-sleep was aborted before tool use",
+				hookSpecificOutput: { hookEventName: adapter.hookEvent },
+			},
+			{ status: 200 },
+		);
+	} catch (error) {
+		console.error(`[umbod] ${agent} PreToolUse usage gate failed:`, error);
+		return Response.json(
+			{
+				permissionDecision: "deny",
+				permissionDecisionReason: "Auto-sleep check failed before tool use",
+				hookSpecificOutput: { hookEventName: adapter.hookEvent },
+			},
+			{ status: 200 },
+		);
+	}
 }
 
 async function getUmbod(): Promise<Umbod | null> {
@@ -97,6 +160,8 @@ export async function bootstrapUmbod(): Promise<void> {
 		hostname: umbod.manifest.server.host,
 		port: umbod.manifest.server.port,
 		async fetch(request) {
+			const usageGateResponse = await routeHookBeforeToolUse(request);
+			if (usageGateResponse) return usageGateResponse;
 			// Resolve the current engine per request so policy saves can replace it
 			// without tearing down and rebinding the HTTP listener.
 			const current = await getUmbod();

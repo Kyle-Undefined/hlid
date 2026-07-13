@@ -65,7 +65,7 @@ export function AutoSleepSection({
 			</Field>
 			<Field
 				label="Utilization threshold"
-				hint="sleep once this much of the five-hour usage budget is spent — lower values sleep sooner (1% sleeps almost immediately, 95% only near the limit)"
+				hint="sleep near this much of the five-hour budget; Hlid reserves up to 1% so an in-flight request does not overshoot the limit"
 			>
 				<NumberInput
 					value={value.thresholdPercent}

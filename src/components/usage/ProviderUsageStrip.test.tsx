@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderUsageSnapshot } from "#/db";
 import { ProviderUsageStrip } from "./ProviderUsageStrip";
@@ -42,6 +42,40 @@ afterEach(() => {
 });
 
 describe("ProviderUsageStrip polling", () => {
+	it("marks Claude SDK cost as estimated", () => {
+		const claudeWithUsage: ProviderUsageSnapshot[] = [
+			{
+				providerId: "claude",
+				providerLabel: "Claude",
+				windows: [
+					{
+						windowId: "five-hour",
+						label: "5 HOUR",
+						windowSecs: 18_000,
+						utilization: 0.25,
+						remaining: null,
+						limit: null,
+						resetsAt: null,
+						cost: 7.6,
+						queries: 4,
+						tokens: 100,
+						sessions: 1,
+					},
+				],
+			},
+		];
+		render(
+			<ProviderUsageStrip
+				initial={claudeWithUsage}
+				liveQueryCount={0}
+				rateLimit={null}
+				fetchFn={vi.fn().mockResolvedValue(claudeWithUsage)}
+			/>,
+		);
+
+		expect(screen.getByText("~$7.60")).not.toBeNull();
+	});
+
 	it("refreshes authoritative totals when a live window reading arrives", () => {
 		const fetchFn = vi.fn().mockResolvedValue(initial);
 		const view = render(

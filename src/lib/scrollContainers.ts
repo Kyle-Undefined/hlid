@@ -3,6 +3,27 @@ export function isRavenPath(pathname: string): boolean {
 }
 
 /**
+ * TanStack Router otherwise identifies nested scroll containers from their DOM
+ * position. Raven, Relics, and Ledger each put their primary scroller in the
+ * same structural slot, so Raven's auto-scroll position can be restored onto a
+ * different page. Stable route-specific IDs keep those histories isolated.
+ */
+export const ROUTE_SCROLL_RESTORATION_IDS = {
+	ravenTranscript: "raven-transcript",
+	relicsList: "relics-list",
+	ledgerList: "ledger-list",
+	forgeSettings: "forge-settings",
+	vaultContent: "vault-content",
+	einherjarContent: "einherjar-content",
+} as const;
+
+/** Nested page areas that should reset on normal router navigation. */
+export const SCROLL_TO_TOP_SELECTORS = [
+	'[data-scroll-to-top="app"]',
+	'[data-scroll-to-top="route"]',
+] as const;
+
+/**
  * Visual viewport this much shorter than the layout viewport means an
  * on-screen keyboard is up (URL-bar collapse and safe-area shifts are smaller).
  */
@@ -36,6 +57,39 @@ export function resetWindowScroll(win: Window = window): void {
 	win.scrollTo(0, 0);
 	doc.documentElement.scrollTop = 0;
 	doc.body.scrollTop = 0;
+}
+
+/**
+ * Mobile browsers scroll every scrollable-box ancestor — including
+ * overflow-hidden ones — to reveal a focused input. The app-shell wrappers
+ * persist across route changes, so a stray scrollTop left there (e.g. by
+ * focusing Raven's composer) makes every later page render pre-scrolled.
+ * Clamp them back to the origin.
+ */
+export function resetShellScroll(containers: Array<HTMLElement | null>): void {
+	for (const element of containers) {
+		if (!element) continue;
+		if (element.scrollTop !== 0) element.scrollTop = 0;
+		if (element.scrollLeft !== 0) element.scrollLeft = 0;
+	}
+}
+
+/**
+ * Raven's transcript is the only ancestor that should scroll. Mobile browsers
+ * can still move its overflow-hidden page/shell ancestors to reveal the
+ * composer, clipping the whole application until another layout change occurs.
+ */
+export function resetScrollAncestors(
+	element: HTMLElement | null,
+	boundary: HTMLElement | null = document.body,
+): void {
+	let ancestor = element?.parentElement ?? null;
+	while (ancestor) {
+		if (ancestor.scrollTop !== 0) ancestor.scrollTop = 0;
+		if (ancestor.scrollLeft !== 0) ancestor.scrollLeft = 0;
+		if (ancestor === boundary) break;
+		ancestor = ancestor.parentElement;
+	}
 }
 
 /** Scroll only Raven's transcript container, never its page ancestors. */

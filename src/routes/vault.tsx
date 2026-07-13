@@ -6,6 +6,7 @@ import { SkillsTab } from "#/components/vault/SkillsTab";
 import { getConfig } from "#/config";
 import { useWs } from "#/hooks/useWs";
 import * as wsStore from "#/hooks/wsStore";
+import { ROUTE_SCROLL_RESTORATION_IDS } from "#/lib/scrollContainers";
 import type { ClientMessage } from "#/server/protocol";
 
 // ─── server fns ────────────────────────────────────────────────────────────
@@ -198,7 +199,11 @@ function VaultPage() {
 			</div>
 
 			{/* Content */}
-			<div className="flex-1 overflow-auto p-5 space-y-5">
+			<div
+				data-scroll-restoration-id={ROUTE_SCROLL_RESTORATION_IDS.vaultContent}
+				data-scroll-to-top="route"
+				className="flex-1 overflow-auto p-5 space-y-5"
+			>
 				{tab === "projects" && <ProjectsTab initial={projects} />}
 				{tab === "wiki_folder" && (
 					<ProjectsTab initial={wikiPages} emptyLabel="wiki is empty" />

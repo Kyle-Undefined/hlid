@@ -15,6 +15,7 @@ import { agentConfigToEntry, inspectAgentPath } from "#/lib/agentMcp";
 import { writeConfig } from "#/lib/config-writer";
 import { expandTilde, samePath } from "#/lib/paths";
 import type { ProviderInfo } from "#/lib/providerTypes";
+import { ROUTE_SCROLL_RESTORATION_IDS } from "#/lib/scrollContainers";
 import { agentListSchema, agentPathSchema } from "#/lib/serverFnSchemas";
 import { getProvidersFn } from "#/lib/serverFns/providers";
 import { uid } from "#/lib/utils";
@@ -122,7 +123,13 @@ function EinherjarPage() {
 
 	return (
 		<div className="flex flex-col h-full">
-			<div className="flex-1 overflow-auto p-5 space-y-6">
+			<div
+				data-scroll-restoration-id={
+					ROUTE_SCROLL_RESTORATION_IDS.einherjarContent
+				}
+				data-scroll-to-top="route"
+				className="flex-1 overflow-auto p-5 space-y-6"
+			>
 				{/* Header */}
 				<div className="flex items-center justify-between">
 					<div>

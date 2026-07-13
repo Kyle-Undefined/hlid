@@ -1046,6 +1046,41 @@ export class ClaudeProvider implements AgentProvider {
 					allowDangerouslySkipPermissions:
 						params.permissionMode === "bypassPermissions" &&
 						!params.policyEnforced,
+					...(params.beforeToolUse && !params.policyEnforced
+						? {
+								hooks: {
+									PreToolUse: [
+										{
+											timeout: 86_460,
+											hooks: [
+												async (
+													input: unknown,
+													toolUseID: string | undefined,
+													hook: { signal: AbortSignal },
+												) => {
+													const preTool = input as {
+														tool_name?: string;
+														tool_input?: unknown;
+													};
+													const result = await params.beforeToolUse?.(
+														preTool.tool_name ?? "Tool",
+														preTool.tool_input,
+														{ toolUseID, signal: hook.signal },
+													);
+													return result === "aborted"
+														? {
+																continue: false,
+																stopReason:
+																	"Aborted while sleeping on usage limit",
+															}
+														: { continue: true };
+												},
+											],
+										},
+									],
+								},
+							}
+						: {}),
 					settingSources: params.settingSources ?? ["user", "project", "local"],
 					...(resumeId !== undefined ? { resume: resumeId } : {}),
 					...(params.persistSession === false ? { persistSession: false } : {}),

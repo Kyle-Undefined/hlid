@@ -25,6 +25,9 @@ PARA vaults, LLM wiki vaults, and custom folder vocabularies.
 - An optional project shell in Raven and an interactive Claude CLI mode.
 - Forge settings for vaults, providers, permissions, MCP servers, ACP agents,
   Umbod tool policy, networking, updates, lifecycle controls, and diagnostics.
+- Update checks for Hlið itself plus installed agent CLIs (Claude, Codex) and
+  enabled ACP agents, with per-platform update guidance — Hlið never runs
+  installers automatically.
 - A responsive PWA with dark and light themes, pull-to-refresh, and a privacy
   mode that obscures sensitive paths and filenames.
 

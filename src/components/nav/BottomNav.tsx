@@ -4,18 +4,21 @@ import { NAV_ITEMS } from "./items";
 import { WsStatusDot } from "./SystemStatusDot";
 
 const BASE =
-	"flex-1 flex flex-col items-center gap-1 py-2.5 px-1 transition-colors duration-100";
+	"min-w-0 flex-1 flex flex-col items-center gap-1 py-2.5 px-0.5 transition-colors duration-100";
+
+const LABEL =
+	"w-full overflow-hidden text-ellipsis whitespace-nowrap text-center text-[clamp(7px,2vw,9px)] tracking-[0.08em]";
 
 export function BottomNav() {
 	return (
 		<nav
 			aria-label="Primary navigation"
-			className="fixed inset-x-0 bottom-0 z-30 md:hidden bg-sidebar border-t border-sidebar-border"
+			className="relative z-30 shrink-0 bg-sidebar border-t border-sidebar-border md:hidden"
 		>
 			<div className="absolute top-1.5 right-2 z-10">
 				<WsStatusDot />
 			</div>
-			<div className="flex pb-[env(safe-area-inset-bottom)]">
+			<div className="flex w-full pb-[env(safe-area-inset-bottom)]">
 				{NAV_ITEMS.map(({ to, label, icon: Icon, exact }) => (
 					<Link
 						key={to}
@@ -24,8 +27,8 @@ export function BottomNav() {
 						activeProps={{ className: `${BASE} text-primary` }}
 						activeOptions={{ exact }}
 					>
-						<Icon className="w-4 h-4" />
-						<span className="text-[9px] tracking-widest">{label}</span>
+						<Icon className="w-4 h-4 shrink-0" />
+						<span className={LABEL}>{label}</span>
 					</Link>
 				))}
 				<LockButton mobile />

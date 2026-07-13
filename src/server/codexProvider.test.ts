@@ -1371,6 +1371,65 @@ describe("CodexAgentSession — notifications", () => {
 		session.cancel();
 	});
 
+	it("uses approval boundaries as the auto-sleep fallback when Umbod is disabled", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const canUseTool = vi.fn().mockResolvedValue({ behavior: "allow" });
+		const session = new CodexProvider().query(
+			baseCodexParams({
+				permissionMode: "bypassPermissions",
+				usageGateEnforced: true,
+				canUseTool,
+			}),
+		);
+		await session.send("run it");
+		expect(turnStartParams(writes)[0]).toMatchObject({
+			approvalPolicy: "on-request",
+			sandboxPolicy: { type: "dangerFullAccess" },
+		});
+
+		proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: 79,
+					method: "item/commandExecution/requestApproval",
+					params: { threadId: "thread-1", itemId: "command-sleep" },
+				})}\n`,
+			),
+		);
+		await vi.waitFor(() => {
+			expect(canUseTool).toHaveBeenCalledWith(
+				"item/commandExecution/requestApproval",
+				expect.objectContaining({ itemId: "command-sleep" }),
+				expect.objectContaining({ toolUseID: "command-sleep" }),
+			);
+		});
+		session.cancel();
+	});
+
+	it("leaves bypass approval policy intact when embedded Umbod owns PreToolUse", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(
+			baseCodexParams({
+				permissionMode: "bypassPermissions",
+				policyEnforced: true,
+				usageGateEnforced: true,
+			}),
+		);
+
+		await session.send("run it");
+
+		expect(turnStartParams(writes)[0]).toMatchObject({
+			approvalPolicy: "never",
+			sandboxPolicy: { type: "dangerFullAccess" },
+		});
+		session.cancel();
+	});
+
 	it("presents an HTML-enabled plan even when no file approval was requested", async () => {
 		const { proc, writes } = makeFakeSessionProc();
 		vi.mocked(spawn).mockReturnValue(proc as never);

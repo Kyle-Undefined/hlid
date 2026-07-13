@@ -243,6 +243,22 @@ update downloads a versioned executable and launches it through Windows so you
 can respond to SmartScreen. Accepting the launch replaces the canonical copy
 and restarts Hlið; dismissing it leaves the current version running.
 
+Hlið also detects the installed Claude and Codex CLI versions and, for enabled
+ACP agents, compares each agent's self-reported version with the ACP registry.
+Available agent updates appear in the global update banner and under
+**FORGE → Overview**, along with the update command for that installation.
+Hlið never runs installer commands automatically; run the displayed command
+yourself in the matching runtime (Windows or the configured WSL wrapper).
+
+Stop Hlið before running an agent CLI update. While Hlið is running it keeps
+provider sessions open, which holds the CLI executable in use and causes the
+update to fail or be skipped. Shut down Hlið from **FORGE → Advanced**, run the
+update command, then start Hlið again from the Start Menu shortcut.
+
+Installed PWA clients pick up new releases automatically: the service worker
+detects the new build, replaces previously cached assets, and refreshes on the
+next load. No manual cache clearing is needed.
+
 ### Autostart and lifecycle
 
 Forge can add or remove the current executable from the Windows per-user Run

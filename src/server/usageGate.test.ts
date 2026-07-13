@@ -59,6 +59,17 @@ describe("evaluateSleep", () => {
 		expect(evaluateSleep(provider, cfg())).toBeNull();
 	});
 
+	it("reserves headroom before a 99% threshold for an in-flight request", () => {
+		const tight = cfg({ threshold: 0.99 });
+		updateWindowMark(provider, "five_hour", 0.979, now() + 1200);
+		expect(evaluateSleep(provider, tight)).toBeNull();
+		updateWindowMark(provider, "five_hour", 0.98, now() + 1200);
+		expect(evaluateSleep(provider, tight)).toMatchObject({
+			reason: "threshold",
+			utilization: 0.98,
+		});
+	});
+
 	it("does not sleep on a stale or missing resetsAt", () => {
 		updateWindowMark(provider, "five_hour", 0.99, now() - 10);
 		expect(evaluateSleep(provider, cfg())).toBeNull();

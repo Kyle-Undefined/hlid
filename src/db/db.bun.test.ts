@@ -277,6 +277,44 @@ describe("sessions — recordQuery", () => {
 		expect(agg.today.estimated_cost).toBeCloseTo(0.125);
 	});
 
+	it("stores Claude cumulative estimates as per-query increments", async () => {
+		await createSession("s1", "L", "claude-fable-5");
+		const first = await recordQuery(
+			"s1",
+			baseQuery({ cost: 0, estimated_cost: 3.81798 }),
+			"claude",
+			{ estimatedCostMode: "cumulative" },
+		);
+		const second = await recordQuery(
+			"s1",
+			baseQuery({ cost: 0, estimated_cost: 6.043017 }),
+			"claude",
+			{ estimatedCostMode: "cumulative" },
+		);
+
+		expect(first.estimatedCost).toBeCloseTo(3.81798);
+		expect(second.estimatedCost).toBeCloseTo(2.225037);
+		const rows = await getRecentSessions();
+		expect(rows[0].total_estimated_cost).toBeCloseTo(6.043017);
+		const agg = await getAggregatedStats();
+		expect(agg.today.estimated_cost).toBeCloseTo(6.043017);
+	});
+
+	it("continues Claude accounting when its cumulative counter resets", async () => {
+		await createSession("s1", "L", "claude-fable-5");
+		for (const reportedTotal of [7.6, 0.5, 1.0]) {
+			await recordQuery(
+				"s1",
+				baseQuery({ cost: 0, estimated_cost: reportedTotal }),
+				"claude",
+				{ estimatedCostMode: "cumulative" },
+			);
+		}
+
+		const rows = await getRecentSessions();
+		expect(rows[0].total_estimated_cost).toBeCloseTo(8.6);
+	});
+
 	it("migrates historical Claude CLI cost into the estimated bucket", async () => {
 		const database = freshDb();
 		await createSession("s1", "L", "claude-opus-4-6");

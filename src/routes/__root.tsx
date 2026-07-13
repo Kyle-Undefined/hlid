@@ -173,9 +173,10 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 	const pathname = useRouterState({
 		select: (state) => state.location.pathname,
 	});
+	const shellRef = useRef<HTMLDivElement>(null);
 	const wrapperRef = useRef<HTMLDivElement>(null);
 	const { pullY, isRefreshing } = usePullToRefresh(wrapperRef);
-	useVisualViewportGuard(pathname);
+	useVisualViewportGuard(pathname, [shellRef, wrapperRef]);
 	const ravenRoute = isRavenPath(pathname);
 
 	// JSON.stringify on enum strings ("dark"|"tan"|"same") is XSS-safe.
@@ -202,7 +203,10 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 				) : (
 					// --app-height: pinned to the visual viewport while the mobile
 					// keyboard is up (useVisualViewportGuard); falls back to 100dvh.
-					<div className="flex h-[var(--app-height,100dvh)] overflow-hidden bg-background text-foreground">
+					<div
+						ref={shellRef}
+						className="flex h-[var(--app-height,100dvh)] overflow-hidden bg-background text-foreground"
+					>
 						<ErrorBoundary>
 							<Sidebar />
 						</ErrorBoundary>
@@ -219,7 +223,8 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 							</ErrorBoundary>
 							<main
 								key={pathname}
-								className={`flex-1 min-h-0 overscroll-y-contain pb-[calc(3.25rem+env(safe-area-inset-bottom))] md:pb-0 ${ravenRoute ? "overflow-hidden" : "overflow-auto"}`}
+								data-scroll-to-top="app"
+								className={`flex-1 min-h-0 overscroll-y-contain ${ravenRoute ? "overflow-hidden" : "overflow-auto"}`}
 							>
 								{children}
 							</main>

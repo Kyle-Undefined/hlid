@@ -19,6 +19,7 @@ import type {
 	SettingsFormState,
 	SettingsInitial,
 } from "#/hooks/useSettingsForm";
+import { ROUTE_SCROLL_RESTORATION_IDS } from "#/lib/scrollContainers";
 
 const CATEGORIES = [
 	{
@@ -579,7 +580,13 @@ export function ForgeSettings({
 						<SaveStatus state={state} onRestartRequired={showRestartControls} />
 					</div>
 				</header>
-				<main className="flex-1 overflow-auto">
+				<main
+					data-scroll-restoration-id={
+						ROUTE_SCROLL_RESTORATION_IDS.forgeSettings
+					}
+					data-scroll-to-top="route"
+					className="flex-1 overflow-auto"
+				>
 					<div className="max-w-[1000px] mx-auto p-4 sm:p-6 space-y-6">
 						<CategoryContent
 							category={category}

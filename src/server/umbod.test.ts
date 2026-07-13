@@ -4,7 +4,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const testState = vi.hoisted(() => ({
 	root: `/tmp/hlid-umbod-reload-${Date.now()}`,
-	servers: [] as Array<{ stop: ReturnType<typeof vi.fn> }>,
+	servers: [] as Array<{
+		stop: ReturnType<typeof vi.fn>;
+		port: number;
+		fetch: (request: Request) => Promise<Response>;
+	}>,
 }));
 
 vi.mock("#/lib/paths", () => ({
@@ -31,11 +35,13 @@ vi.mock("@umbod/core", () => ({
 
 Object.assign(globalThis, {
 	Bun: {
-		serve: vi.fn(() => {
-			const server = { stop: vi.fn(), port: 9090 };
-			testState.servers.push(server);
-			return server;
-		}),
+		serve: vi.fn(
+			(options: { fetch: (request: Request) => Promise<Response> }) => {
+				const server = { stop: vi.fn(), port: 9090, fetch: options.fetch };
+				testState.servers.push(server);
+				return server;
+			},
+		),
 	},
 });
 
@@ -121,6 +127,147 @@ describe("saveUmbodManifest", () => {
 			decision: "allow",
 			policyDecision: "approve",
 		});
+	});
+
+	it.each([
+		"claude",
+		"codex",
+	] as const)("routes normalized %s PreToolUse through the owning session's usage gate", async (agent) => {
+		mkdirSync(testState.root, { recursive: true });
+		writeFileSync(join(testState.root, "umbod.toml"), manifest("allow"));
+		const providerSessionId = `${agent}-thread`;
+		const beforeToolUse = vi.fn().mockResolvedValue("aborted");
+		const unregister = registerUmbodApprovalSession(
+			providerSessionId,
+			vi.fn().mockResolvedValue("allow"),
+			beforeToolUse,
+		);
+		vi.mocked(findAdapterById).mockReturnValue({
+			id: agent,
+			hookEvent: "PreToolUse",
+			normalizePayload: (payload: Record<string, unknown>) => ({
+				agent,
+				tool: String(payload.tool_name),
+				command: "git status",
+				inputs: payload,
+				timestamp: new Date().toISOString(),
+				sessionId: String(payload.session_id),
+				toolUseId: String(payload.tool_use_id),
+			}),
+		} as never);
+		await bootstrapUmbod();
+
+		const response = await testState.servers.at(-1)?.fetch(
+			new Request("http://127.0.0.1:9090/api/hooks", {
+				method: "POST",
+				headers: {
+					"content-type": "application/json",
+					"x-umbod-agent": agent,
+				},
+				body: JSON.stringify({
+					session_id: providerSessionId,
+					tool_use_id: "tool-1",
+					tool_name: "exec_command",
+					tool_input: { cmd: "git status" },
+				}),
+			}),
+		);
+
+		expect(beforeToolUse).toHaveBeenCalledWith(
+			expect.objectContaining({
+				sessionId: providerSessionId,
+				toolUseId: "tool-1",
+			}),
+		);
+		await expect(response?.json()).resolves.toMatchObject({
+			permissionDecision: "deny",
+			hookSpecificOutput: { hookEventName: "PreToolUse" },
+		});
+		const engine = vi.mocked(createUmbod).mock.results.at(-1)?.value as {
+			fetch: ReturnType<typeof vi.fn>;
+		};
+		expect(engine.fetch).not.toHaveBeenCalled();
+		unregister();
+	});
+
+	it.each([
+		"claude",
+		"codex",
+	] as const)("continues normalized %s PreToolUse into Umbod after the usage gate", async (agent) => {
+		mkdirSync(testState.root, { recursive: true });
+		writeFileSync(join(testState.root, "umbod.toml"), manifest("allow"));
+		const providerSessionId = `${agent}-continue-thread`;
+		const unregister = registerUmbodApprovalSession(
+			providerSessionId,
+			vi.fn().mockResolvedValue("allow"),
+			vi.fn().mockResolvedValue("proceeded"),
+		);
+		vi.mocked(findAdapterById).mockReturnValue({
+			id: agent,
+			hookEvent: "PreToolUse",
+			normalizePayload: () => ({
+				agent,
+				tool: "bash",
+				command: "git status",
+				inputs: {},
+				timestamp: new Date().toISOString(),
+				sessionId: providerSessionId,
+				toolUseId: "tool-continue",
+			}),
+		} as never);
+		await bootstrapUmbod();
+
+		await testState.servers.at(-1)?.fetch(
+			new Request("http://127.0.0.1:9090/api/hooks", {
+				method: "POST",
+				headers: { "x-umbod-agent": agent },
+				body: "{}",
+			}),
+		);
+
+		const engine = vi.mocked(createUmbod).mock.results.at(-1)?.value as {
+			fetch: ReturnType<typeof vi.fn>;
+		};
+		expect(engine.fetch).toHaveBeenCalledOnce();
+		unregister();
+	});
+
+	it("fails normalized PreToolUse closed when the usage gate errors", async () => {
+		mkdirSync(testState.root, { recursive: true });
+		writeFileSync(join(testState.root, "umbod.toml"), manifest("allow"));
+		const unregister = registerUmbodApprovalSession(
+			"codex-error-thread",
+			vi.fn().mockResolvedValue("allow"),
+			vi.fn().mockRejectedValue(new Error("gate failed")),
+		);
+		vi.mocked(findAdapterById).mockReturnValue({
+			id: "codex",
+			hookEvent: "PreToolUse",
+			normalizePayload: () => ({
+				agent: "codex",
+				tool: "bash",
+				command: "git status",
+				inputs: {},
+				timestamp: new Date().toISOString(),
+				sessionId: "codex-error-thread",
+				toolUseId: "tool-error",
+			}),
+		} as never);
+		await bootstrapUmbod();
+
+		const response = await testState.servers.at(-1)?.fetch(
+			new Request("http://127.0.0.1:9090/api/hooks", {
+				method: "POST",
+				headers: { "x-umbod-agent": "codex" },
+				body: "{}",
+			}),
+		);
+
+		await expect(response?.json()).resolves.toMatchObject({
+			permissionDecision: "deny",
+			permissionDecisionReason: "Auto-sleep check failed before tool use",
+		});
+		unregister();
 	});
 });
 

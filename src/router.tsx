@@ -2,6 +2,7 @@ import { createRouter as createTanStackRouter } from "@tanstack/react-router";
 import { LoaderCircle } from "lucide-react";
 import { ErrorFallback } from "./components/ErrorBoundary";
 import { installAuthRedirect } from "./lib/authClient";
+import { SCROLL_TO_TOP_SELECTORS } from "./lib/scrollContainers";
 import { routeTree } from "./routeTree.gen";
 
 function RouterError({ error, reset }: { error: Error; reset: () => void }) {
@@ -37,6 +38,7 @@ export function getRouter() {
 	const router = createTanStackRouter({
 		routeTree,
 		scrollRestoration: true,
+		scrollToTopSelectors: [...SCROLL_TO_TOP_SELECTORS],
 		defaultPreload: "viewport",
 		defaultPreloadStaleTime: 30_000,
 		defaultStaleTime: 30_000,

@@ -25,9 +25,6 @@ const populated: StatBundle = {
 // readPct     = 200k/350k*100 = 57.14 → "57"
 // writePct    = 30k/350k*100  =  8.57 → "9"
 // hitRate     = 200k/(100k+200k+30k)*100 = 60.6%
-// readSavings = (200k/1e6)*(3.00-0.30) = $0.5400
-// writeOH     = (30k/1e6)*(3.75-3.00)  = $0.0225
-// net         = $0.5175
 // avgCost     = $0.5/10 = $0.0500
 // avgTokens   = round(350k/10) = 35k → "35.0k"
 // out/in      = 20k/100k = 0.20 → "0.20×"
@@ -42,21 +39,6 @@ const empty: StatBundle = {
 	cache_read_tokens: 0,
 	cache_creation_tokens: 0,
 };
-
-/** Heavy cache writes, almost no cache reads — net benefit negative. */
-const heavyWrites: StatBundle = {
-	cost: 1.0,
-	queries: 5,
-	turns: 10,
-	input_tokens: 50_000,
-	output_tokens: 10_000,
-	cache_read_tokens: 1_000,
-	cache_creation_tokens: 1_000_000,
-};
-
-// readSavings = (1k/1e6)*2.70     = $0.0027
-// writeOH     = (1000k/1e6)*0.75  = $0.7500
-// net         = $0.0027 - $0.75   = -$0.7473 (est.)
 
 // ─── CostBreakdown ────────────────────────────────────────────────────────────
 
@@ -153,31 +135,11 @@ describe("CostBreakdown", () => {
 		expect(screen.getByText("200.0k")).toBeDefined();
 	});
 
-	it("shows savings from reads estimate", () => {
+	it("shows tokens-written-to-cache row with formatted value", () => {
 		render(<CostBreakdown s={populated} />);
-		expect(screen.getByText(/savings from reads/i)).toBeDefined();
-		// (200k/1e6)*(3.00-0.30) = 0.5400
-		expect(screen.getByText("+$0.5400")).toBeDefined();
-	});
-
-	it("shows overhead from writes estimate", () => {
-		render(<CostBreakdown s={populated} />);
-		expect(screen.getByText(/overhead from writes/i)).toBeDefined();
-		// (30k/1e6)*(3.75-3.00) = 0.0225
-		expect(screen.getByText("-$0.0225")).toBeDefined();
-	});
-
-	it("shows positive net cache benefit", () => {
-		render(<CostBreakdown s={populated} />);
-		expect(screen.getByText(/net cache benefit/i)).toBeDefined();
-		// 0.5400 - 0.0225 = 0.5175
-		expect(screen.getByText("+$0.5175 (est.)")).toBeDefined();
-	});
-
-	it("shows negative net cache benefit when writes dominate", () => {
-		render(<CostBreakdown s={heavyWrites} />);
-		// 0.0027 - 0.7500 = -0.7473
-		expect(screen.getByText("-$0.7473 (est.)")).toBeDefined();
+		expect(screen.getByText(/tokens written to cache/i)).toBeDefined();
+		// fmt(30_000) = "30.0k"
+		expect(screen.getByText("30.0k")).toBeDefined();
 	});
 
 	// ── per-query efficiency ───────────────────────────────────────────────────

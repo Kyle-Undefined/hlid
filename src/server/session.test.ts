@@ -253,6 +253,10 @@ describe("SessionManager — Umbod hook approval routing", () => {
 			.mocked(registerUmbodApprovalSession)
 			.mock.calls.at(-1)?.[1];
 		expect(handler).toBeTypeOf("function");
+		const beforeToolUse = vi
+			.mocked(registerUmbodApprovalSession)
+			.mock.calls.at(-1)?.[2];
+		expect(beforeToolUse).toBeUndefined();
 
 		const approval = handler?.(
 			{
@@ -3948,6 +3952,25 @@ describe("SessionManager — auto-sleep gates", () => {
 		vi.mocked(loadConfig).mockReset();
 	});
 
+	it.each([
+		"claude",
+		"codex",
+	] as const)("registers the normalized %s PreToolUse gate for the provider session", async (providerId) => {
+		const provider: AgentProvider = {
+			...makeImmediateProvider(),
+			providerId,
+		};
+		const sm = new SessionManager(sleepConfig(), makeProviders(provider));
+
+		await sm.runQuery("hi", vi.fn(), `sleep-${providerId}-hook`);
+
+		const registration = vi
+			.mocked(registerUmbodApprovalSession)
+			.mock.calls.at(-1);
+		expect(registration?.[0]).toBe("sdk-sleep");
+		expect(registration?.[2]).toBeTypeOf("function");
+	});
+
 	it("turn gate holds dispatch until the hard limit expires, emitting sleeping/resumed", async () => {
 		// Hard limit that lifts in ~1s (buffer 0).
 		reportRateLimitSignal("claude", "five_hour", "rejected", epochNow() + 1);
@@ -4055,6 +4078,71 @@ describe("SessionManager — auto-sleep gates", () => {
 			expect.objectContaining({ type: "agent_sleep", cause: "skipped" }),
 		);
 		sm.handlePermissionResponse("tid-sleep", true);
+		await turn;
+		expect(emitted.some((m) => m.type === "done")).toBe(true);
+	});
+
+	it("gates special question tools before they can resume the model", async () => {
+		const emitted: ServerMessage[] = [];
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-question-gate" };
+					yield {
+						type: "rate_limit",
+						status: "rejected",
+						rateLimitType: "five_hour",
+						resetsAt: epochNow() + 3600,
+					};
+					await params.canUseTool(
+						"AskUserQuestion",
+						{
+							questions: [
+								{
+									question: "Continue?",
+									header: "Continue",
+									options: [{ label: "Yes" }, { label: "No" }],
+								},
+							],
+						},
+						{
+							toolUseID: "question-sleep",
+							signal: new AbortController().signal,
+						},
+					);
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+				};
+			},
+		};
+		const sm = new SessionManager(sleepConfig(), makeProviders(provider));
+		const turn = sm.runQuery("hi", (m) => emitted.push(m), "sleep-question");
+
+		await waitFor(() =>
+			expect(
+				emitted.some((m) => m.type === "agent_sleep" && m.state === "sleeping"),
+			).toBe(true),
+		);
+		expect(sm.getPendingAskUserQuestions()).toHaveLength(0);
+
+		sm.skipSleep();
+		await waitFor(() =>
+			expect(sm.getPendingAskUserQuestions()).toHaveLength(1),
+		);
+		sm.handleAskUserQuestionResponse("question-sleep", {
+			"Continue?": ["Yes"],
+		});
 		await turn;
 		expect(emitted.some((m) => m.type === "done")).toBe(true);
 	});

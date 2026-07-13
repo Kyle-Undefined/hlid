@@ -9,6 +9,7 @@ vi.mock("../lib/claudePath", () => ({
 	resolveClaudeExecutable: vi.fn(),
 }));
 
+import type { HookCallback } from "@anthropic-ai/claude-agent-sdk";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { resolveClaudeExecutable } from "../lib/claudePath";
 import type { AgentEvent, AgentQueryParams, CanUseTool } from "./agentProvider";
@@ -1732,6 +1733,99 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 		expect(capturedOptions?.canUseTool).toBe(canUseTool);
 	});
 
+	it("uses SDK PreToolUse as the auto-sleep fallback when Umbod is disabled", async () => {
+		let capturedOptions: Record<string, unknown> | undefined;
+		const canUseTool = vi.fn().mockResolvedValue({ behavior: "allow" });
+		const beforeToolUse = vi.fn().mockResolvedValue("proceeded");
+		vi.mocked(query).mockImplementationOnce(
+			({ options }: { prompt: unknown; options?: Record<string, unknown> }) => {
+				capturedOptions = options;
+				return sdkGen([]);
+			},
+		);
+
+		const session = new ClaudeProvider().query(
+			baseParams({
+				permissionMode: "bypassPermissions",
+				usageGateEnforced: true,
+				beforeToolUse,
+				canUseTool,
+			}),
+		);
+		for await (const _event of session) {
+			// Drain the mock session so query() is initialized.
+		}
+
+		expect(capturedOptions?.permissionMode).toBe("bypassPermissions");
+		expect(capturedOptions?.allowDangerouslySkipPermissions).toBe(true);
+		expect(capturedOptions?.canUseTool).toBe(canUseTool);
+		const hook = (
+			capturedOptions?.hooks as {
+				PreToolUse: Array<{ hooks: HookCallback[]; timeout: number }>;
+			}
+		).PreToolUse[0];
+		expect(hook.timeout).toBe(86_460);
+		const beforeToolHook = hook.hooks[0];
+		const hookInput = {
+			hook_event_name: "PreToolUse" as const,
+			session_id: "sdk-session",
+			transcript_path: "/tmp/transcript.jsonl",
+			cwd: "/tmp/test",
+			tool_name: "Bash",
+			tool_input: { command: "pwd" },
+			tool_use_id: "tool-sleep",
+		};
+		await beforeToolHook(hookInput, "tool-sleep", {
+			signal: new AbortController().signal,
+		});
+		expect(beforeToolUse).toHaveBeenCalledWith(
+			"Bash",
+			{ command: "pwd" },
+			{
+				toolUseID: "tool-sleep",
+				signal: expect.any(AbortSignal),
+			},
+		);
+
+		beforeToolUse.mockResolvedValueOnce("aborted");
+		await expect(
+			beforeToolHook(hookInput, "tool-sleep", {
+				signal: new AbortController().signal,
+			}),
+		).resolves.toEqual({
+			continue: false,
+			stopReason: "Aborted while sleeping on usage limit",
+		});
+	});
+
+	it("leaves PreToolUse to embedded Umbod when policy enforcement is active", async () => {
+		let capturedOptions: Record<string, unknown> | undefined;
+		vi.mocked(query).mockImplementationOnce(
+			({ options }: { prompt: unknown; options?: Record<string, unknown> }) => {
+				capturedOptions = options;
+				return sdkGen([]);
+			},
+		);
+
+		const session = new ClaudeProvider().query(
+			baseParams({
+				policyEnforced: true,
+				usageGateEnforced: true,
+				beforeToolUse: vi.fn().mockResolvedValue("proceeded"),
+			}),
+		);
+		for await (const _event of session) {
+			// Drain the mock session so query() is initialized.
+		}
+
+		expect(capturedOptions).not.toHaveProperty("hooks");
+		expect(capturedOptions?.settingSources).toEqual([
+			"user",
+			"project",
+			"local",
+		]);
+	});
+
 	it("preserves normal Claude hooks without internal policy enforcement", async () => {
 		let capturedOptions: Record<string, unknown> | undefined;
 		vi.mocked(query).mockImplementationOnce(
@@ -1747,6 +1841,7 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 		}
 
 		expect(capturedOptions).not.toHaveProperty("settings");
+		expect(capturedOptions).not.toHaveProperty("hooks");
 	});
 });
 

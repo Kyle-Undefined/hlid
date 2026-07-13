@@ -200,6 +200,14 @@ function approvalPolicy(
 	return mode === "bypassPermissions" ? "never" : "on-request";
 }
 
+function effectiveApprovalPolicy(
+	params: AgentQueryParams,
+): "on-request" | "never" {
+	return params.usageGateEnforced && !params.policyEnforced
+		? "on-request"
+		: approvalPolicy(effectivePermissionMode(params));
+}
+
 function autoApprovesPermissions(params: AgentQueryParams): boolean {
 	return (
 		params.permissionMode === "bypassPermissions" ||
@@ -579,9 +587,7 @@ class CodexAgentSession implements AgentSession {
 			...(this.params.effort ? { effort: this.params.effort } : {}),
 			...(this.params.permissionMode
 				? {
-						approvalPolicy: approvalPolicy(
-							effectivePermissionMode(this.params),
-						),
+						approvalPolicy: effectiveApprovalPolicy(this.params),
 						sandboxPolicy: codexSandboxPolicy(
 							this.params.permissionMode,
 							this.params.additionalDirectories ?? [],
@@ -748,9 +754,7 @@ class CodexAgentSession implements AgentSession {
 			...(this.params.model ? { model: this.params.model } : {}),
 			...(this.params.permissionMode
 				? {
-						approvalPolicy: approvalPolicy(
-							effectivePermissionMode(this.params),
-						),
+						approvalPolicy: effectiveApprovalPolicy(this.params),
 						sandbox: sandboxMode(this.params.permissionMode),
 					}
 				: {}),
@@ -867,7 +871,11 @@ class CodexAgentSession implements AgentSession {
 		if (method === "item/tool/requestUserInput") {
 			return this.handleRequestUserInput(params);
 		}
-		if (!this.params.policyEnforced && autoApprovesPermissions(this.params)) {
+		if (
+			!this.params.policyEnforced &&
+			!this.params.usageGateEnforced &&
+			autoApprovesPermissions(this.params)
+		) {
 			return this.allowedServerRequestResult(method, params);
 		}
 		if (typeof this.params.canUseTool !== "function") {

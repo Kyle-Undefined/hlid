@@ -8,9 +8,8 @@ import { totalDisplayCost } from "#/lib/costDisplay";
 import { fmt } from "#/lib/formatters";
 
 // ─── CostBreakdown ────────────────────────────────────────────────────────────
-// Full-width card showing token composition, cache savings estimate, and
-// per-query efficiency. Uses all-time data for maximum analytical richness.
-// Savings estimates use Sonnet pricing as a reasonable baseline.
+// Full-width card showing token composition, cache activity, and per-query
+// efficiency. Uses all-time data for maximum analytical richness.
 
 const LEGEND = [
 	{ color: "bg-primary", label: "Input" },
@@ -34,20 +33,6 @@ export function CostBreakdown({ s }: { s: StatBundle }) {
 	const writePct =
 		totalTokens > 0 ? (s.cache_creation_tokens / totalTokens) * 100 : 0;
 	const pcts = [inputPct, outputPct, readPct, writePct];
-
-	// Cache savings estimate — Sonnet pricing (input=$3/MTok, read=$0.30/MTok, write=$3.75/MTok)
-	const INPUT_RATE = 3.0;
-	const READ_RATE = 0.3;
-	const WRITE_RATE = 3.75;
-	const cacheReadSavings =
-		(s.cache_read_tokens / 1e6) * (INPUT_RATE - READ_RATE);
-	const cacheWriteOverhead =
-		(s.cache_creation_tokens / 1e6) * (WRITE_RATE - INPUT_RATE);
-	const netCacheBenefit = cacheReadSavings - cacheWriteOverhead;
-	const netStr =
-		netCacheBenefit >= 0
-			? `+$${netCacheBenefit.toFixed(4)} (est.)`
-			: `-$${Math.abs(netCacheBenefit).toFixed(4)} (est.)`;
 
 	// Per-query efficiency
 	const avgCostPerQuery =
@@ -141,14 +126,9 @@ export function CostBreakdown({ s }: { s: StatBundle }) {
 				<Row label="Cache hit rate" value={`${hitRate}%`} />
 				<Row label="Tokens from cache" value={fmt(s.cache_read_tokens)} />
 				<Row
-					label="Savings from reads (est.)"
-					value={`+$${cacheReadSavings.toFixed(4)}`}
+					label="Tokens written to cache"
+					value={fmt(s.cache_creation_tokens)}
 				/>
-				<Row
-					label="Overhead from writes (est.)"
-					value={`-$${cacheWriteOverhead.toFixed(4)}`}
-				/>
-				<Row label="Net cache benefit (est.)" value={netStr} />
 			</div>
 
 			{/* ── Per-Query Efficiency ───────────────────────────────────────── */}

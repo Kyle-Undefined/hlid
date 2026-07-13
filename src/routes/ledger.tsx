@@ -48,6 +48,7 @@ import {
 	parseLedgerSearch,
 	VALID_PAGE_SIZES,
 } from "#/lib/ledgerState";
+import { ROUTE_SCROLL_RESTORATION_IDS } from "#/lib/scrollContainers";
 import {
 	sessionCleanupSchema,
 	sessionDeleteSchema,
@@ -668,7 +669,11 @@ function StatsPage() {
 				</div>
 			)}
 
-			<div className="flex-1 overflow-auto">
+			<div
+				data-scroll-restoration-id={ROUTE_SCROLL_RESTORATION_IDS.ledgerList}
+				data-scroll-to-top="route"
+				className="flex-1 overflow-auto"
+			>
 				<ActiveSessionStatGrid
 					stats={stats}
 					activeSession={live.activeSessionData}

@@ -142,7 +142,10 @@ export function ProviderUsageStrip({
 					<ProviderWindowCell
 						key={window.windowId}
 						win={window}
-						estimatedCost={activeSnapshot?.providerId === "codex"}
+						estimatedCost={
+							activeSnapshot?.providerId === "codex" ||
+							activeSnapshot?.providerId === "claude"
+						}
 					/>
 				))}
 				{tail}
