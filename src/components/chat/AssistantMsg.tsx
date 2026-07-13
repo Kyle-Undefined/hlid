@@ -22,15 +22,27 @@ export function AssistantMsg({
 	permissionLabels?: Map<string, string>;
 }) {
 	const { copy, copied } = useCopyToClipboard();
+	// Keep live subagents at the bottom of the active assistant turn. New parent
+	// tool calls and text can then stream above them without pushing the cards
+	// out of view. Once a subagent finishes it returns to its original transcript
+	// position, preserving history order.
+	const activeSubagentEvents = message.toolEvents.filter((event) => {
+		const status = event.subagent?.status;
+		return status === "pending" || status === "running" || status === "paused";
+	});
+	const transcriptToolEvents = message.toolEvents.filter(
+		(event) => !activeSubagentEvents.includes(event),
+	);
+	const renderTool = (event: (typeof message.toolEvents)[number]) => (
+		<ToolBlock
+			key={event.id}
+			event={event}
+			permissionLabel={permissionLabels?.get(event.id)}
+		/>
+	);
 	return (
 		<div className="group w-full min-w-0 max-w-full overflow-hidden py-3 border-b border-border/40 space-y-1.5">
-			{message.toolEvents.map((e) => (
-				<ToolBlock
-					key={e.id}
-					event={e}
-					permissionLabel={permissionLabels?.get(e.id)}
-				/>
-			))}
+			{transcriptToolEvents.map(renderTool)}
 			{(message.text || message.streaming) && (
 				<div className="flex items-start gap-0">
 					<div className="shrink-0 pt-0.5 w-12 flex">
@@ -102,6 +114,7 @@ export function AssistantMsg({
 					</div>
 				</div>
 			)}
+			{activeSubagentEvents.map(renderTool)}
 		</div>
 	);
 }

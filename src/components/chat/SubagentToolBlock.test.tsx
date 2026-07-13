@@ -29,7 +29,24 @@ afterEach(() => {
 });
 
 describe("SubagentToolBlock", () => {
-	it("stays expanded and advances elapsed time while running", () => {
+	it("shows the provider name, model, and effort in the collapsed card", () => {
+		render(
+			<SubagentToolBlock
+				subagent={snapshot({
+					name: "auth-scout",
+					model: "gpt-5.4",
+					effort: "high",
+				})}
+			/>,
+		);
+		expect(
+			screen.getByRole("button", { name: /auth-scout running/i }),
+		).toBeTruthy();
+		expect(screen.getByTitle("Model: gpt-5.4")).toBeTruthy();
+		expect(screen.getByTitle("Effort: high")).toBeTruthy();
+	});
+
+	it("can collapse while running and continues advancing elapsed time", () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(6_000);
 		render(<SubagentToolBlock subagent={snapshot()} />);
@@ -37,9 +54,13 @@ describe("SubagentToolBlock", () => {
 		expect(button.getAttribute("aria-expanded")).toBe("true");
 		expect(screen.getAllByText("5s").length).toBeGreaterThan(0);
 		fireEvent.click(button);
-		expect(button.getAttribute("aria-expanded")).toBe("true");
+		expect(button.getAttribute("aria-expanded")).toBe("false");
+		expect(screen.queryByText("Inspect the authentication flow")).toBeNull();
 		act(() => vi.advanceTimersByTime(2_000));
-		expect(screen.getAllByText("7s").length).toBeGreaterThan(0);
+		expect(screen.getByText("7s")).toBeTruthy();
+		fireEvent.click(button);
+		expect(button.getAttribute("aria-expanded")).toBe("true");
+		expect(screen.getByText("Inspect the authentication flow")).toBeTruthy();
 	});
 
 	it("auto-collapses on completion and reopens with retained details", () => {

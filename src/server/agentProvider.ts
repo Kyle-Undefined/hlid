@@ -82,6 +82,9 @@ export type SubagentSnapshot = {
 	provider: "codex" | "claude";
 	agentId: string;
 	taskId?: string;
+	/** Provider-assigned display name (for example a Claude teammate name). */
+	name?: string;
+	/** Agent type/path when it is distinct from the provider-assigned name. */
 	label?: string;
 	prompt?: string;
 	description?: string;

@@ -88,6 +88,78 @@ describe("normalizeMd", () => {
 });
 
 describe("AssistantMsg", () => {
+	it("keeps active subagent cards below later parent tool calls and text", () => {
+		const { rerender } = render(
+			<AssistantMsg
+				message={makeMsg({
+					toolEvents: [
+						{
+							type: "tool_event",
+							id: "subagent-1",
+							name: "spawn_agent",
+							input: {},
+							subagent: {
+								provider: "codex",
+								agentId: "child-1",
+								name: "Explorer",
+								status: "running",
+								startedAtMs: 1,
+							},
+						},
+						{
+							type: "tool_event",
+							id: "tool-1",
+							name: "Read",
+							input: { path: "src/app.ts" },
+						},
+					],
+				})}
+			/>,
+		);
+		const read = screen.getByRole("button", { name: /read/i });
+		const active = screen.getByRole("button", { name: /explorer running/i });
+		expect(
+			read.compareDocumentPosition(active) & Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+
+		// Terminal cards return to their original transcript position.
+		rerender(
+			<AssistantMsg
+				message={makeMsg({
+					toolEvents: [
+						{
+							type: "tool_event",
+							id: "subagent-1",
+							name: "spawn_agent",
+							input: {},
+							subagent: {
+								provider: "codex",
+								agentId: "child-1",
+								name: "Explorer",
+								status: "completed",
+								startedAtMs: 1,
+								endedAtMs: 2,
+							},
+						},
+						{
+							type: "tool_event",
+							id: "tool-1",
+							name: "Read",
+							input: { path: "src/app.ts" },
+						},
+					],
+				})}
+			/>,
+		);
+		const completed = screen.getByRole("button", {
+			name: /explorer completed/i,
+		});
+		expect(
+			completed.compareDocumentPosition(read) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+	});
+
 	describe("CopyButton mobile visibility", () => {
 		it("copy button has [@media(hover:none)]:opacity-100 class so it shows on touch devices", () => {
 			render(<AssistantMsg message={makeMsg()} />);

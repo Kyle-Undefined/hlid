@@ -505,6 +505,7 @@ class CodexAgentSession implements AgentSession {
 	private attachedThreadIds = new Set<string>();
 	private subagentByThread = new Map<string, string>();
 	private subagentSnapshots = new Map<string, SubagentSnapshot>();
+	private pendingSubagentToolIds = new Set<string>();
 	private threadHandler: ThreadHandler | null = null;
 	private approvedHtmlPlanItemId: string | null = null;
 	private htmlPlanReady = false;
@@ -535,11 +536,8 @@ class CodexAgentSession implements AgentSession {
 					})
 					.catch(() => {});
 			}
-			for (const threadId of this.attachedThreadIds) {
-				this.conn.detachThread(threadId);
-			}
-			this.attachedThreadIds.clear();
 		}
+		this.detachAllThreads();
 		this.conn = null;
 	}
 
@@ -549,7 +547,11 @@ class CodexAgentSession implements AgentSession {
 		// event stream is closed once the in-flight turn completes (see the
 		// turn/completed handler), which ends the caller's for-await loop.
 		this.endAfterTurn = true;
-		if (this.activeTurnId === null) this.events.close();
+		if (this.activeTurnId === null) {
+			this.detachAllThreads();
+			this.conn = null;
+			this.events.close();
+		}
 	}
 
 	async interrupt(): Promise<void> {
@@ -817,6 +819,15 @@ class CodexAgentSession implements AgentSession {
 		this.attachedThreadIds.add(threadId);
 	}
 
+	private detachAllThreads(): void {
+		if (this.conn) {
+			for (const threadId of this.attachedThreadIds) {
+				this.conn.detachThread(threadId);
+			}
+		}
+		this.attachedThreadIds.clear();
+	}
+
 	/**
 	 * Map a codex RateLimitSnapshot (primary/secondary RateLimitWindow) onto
 	 * hlid rate_limit events. Window identity comes from windowDurationMins —
@@ -1074,6 +1085,7 @@ class CodexAgentSession implements AgentSession {
 					typeof obj.startedAtMs === "number" ? obj.startedAtMs : Date.now(),
 			};
 			this.subagentSnapshots.set(itemId, subagent);
+			this.pendingSubagentToolIds.add(itemId);
 			this.events.push({
 				type: "tool_start",
 				toolId: itemId,
@@ -1114,18 +1126,69 @@ class CodexAgentSession implements AgentSession {
 	private handleSubagentActivity(item: Record<string, unknown>): void {
 		const threadId = String(item.agentThreadId ?? "");
 		if (!threadId) return;
+		const activityId = String(item.id ?? "");
 		const kind = item.kind as SubAgentActivityKind | undefined;
+		const agentPath =
+			typeof item.agentPath === "string" ? item.agentPath : undefined;
+		const agentName = agentPath?.split("/").filter(Boolean).at(-1);
+		const currentStep =
+			kind === "interacted"
+				? "Communicating with the parent agent"
+				: kind === "interrupted"
+					? "Subagent interrupted"
+					: "Subagent started";
+		const status: SubagentSnapshot["status"] =
+			kind === "interrupted" ? "interrupted" : "running";
+
+		// Current Codex collaboration calls can surface only a subAgentActivity
+		// item: there is no preceding collabAgentToolCall/spawnAgent item to create
+		// the card. The activity id is the original spawn call id, so treat it as
+		// the originating tool when no snapshot exists yet.
+		const toolId =
+			this.subagentByThread.get(threadId) ||
+			(activityId && this.subagentSnapshots.has(activityId)
+				? activityId
+				: this.pendingSubagentToolIds.values().next().value);
+		if (toolId) {
+			this.pendingSubagentToolIds.delete(toolId);
+			this.subagentByThread.set(threadId, toolId);
+			this.attachThread(threadId);
+			this.updateSubagentFromChild(threadId, {
+				...(agentName ? { name: agentName } : {}),
+				...(agentPath ? { label: agentPath } : {}),
+				status,
+				currentStep,
+				...(kind === "interrupted" ? { endedAtMs: Date.now() } : {}),
+			});
+			return;
+		}
+		if (!activityId) return;
+
+		const now = Date.now();
+		const subagent: SubagentSnapshot = {
+			provider: "codex",
+			agentId: threadId,
+			...(agentName ? { name: agentName } : {}),
+			...(agentPath ? { label: agentPath } : {}),
+			...(this.resolvedModel || this.params.model
+				? { model: this.resolvedModel ?? this.params.model }
+				: {}),
+			...(this.params.effort ? { effort: this.params.effort } : {}),
+			status,
+			currentStep,
+			startedAtMs:
+				typeof item.occurredAtMs === "number" ? item.occurredAtMs : now,
+			...(kind === "interrupted" ? { endedAtMs: now } : {}),
+		};
+		this.subagentByThread.set(threadId, activityId);
+		this.subagentSnapshots.set(activityId, subagent);
 		this.attachThread(threadId);
-		this.updateSubagentFromChild(threadId, {
-			...(typeof item.agentPath === "string" ? { label: item.agentPath } : {}),
-			status: kind === "interrupted" ? "interrupted" : "running",
-			currentStep:
-				kind === "interacted"
-					? "Communicating with the parent agent"
-					: kind === "interrupted"
-						? "Subagent interrupted"
-						: "Subagent started",
-			...(kind === "interrupted" ? { endedAtMs: Date.now() } : {}),
+		this.events.push({
+			type: "tool_start",
+			toolId: activityId,
+			name: "spawn_agent",
+			input: agentPath ? { agentPath } : {},
+			subagent,
 		});
 	}
 
@@ -1143,6 +1206,9 @@ class CodexAgentSession implements AgentSession {
 		const sourceToolId = String(item.id ?? "");
 		const sourceSnapshot = this.subagentSnapshots.get(sourceToolId);
 		const collabTool = item.tool as CollabAgentTool | undefined;
+		if (collabTool === "spawnAgent") {
+			this.pendingSubagentToolIds.delete(sourceToolId);
+		}
 		for (const threadId of receiverThreadIds) {
 			if (sourceSnapshot && collabTool === "spawnAgent") {
 				this.subagentByThread.set(threadId, sourceToolId);
@@ -1309,7 +1375,8 @@ class CodexAgentSession implements AgentSession {
 			usage: { ...this.lastUsage },
 		});
 		if (!this.endAfterTurn) return;
-		if (this.conn && this.threadId) this.conn.detachThread(this.threadId);
+		this.detachAllThreads();
+		this.conn = null;
 		this.events.close();
 	}
 

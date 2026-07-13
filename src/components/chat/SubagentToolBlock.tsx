@@ -60,9 +60,9 @@ export function SubagentToolBlock({
 	subagent: SubagentSnapshot;
 }) {
 	const active = isActive(subagent.status);
-	const [manualOpen, setManualOpen] = useState(false);
+	const [openOverride, setOpenOverride] = useState<boolean | null>(null);
 	const [now, setNow] = useState(() => Date.now());
-	const open = active || manualOpen;
+	const open = openOverride ?? active;
 
 	useEffect(() => {
 		if (!active) return;
@@ -77,7 +77,7 @@ export function SubagentToolBlock({
 			0,
 			(active ? now : (subagent.endedAtMs ?? now)) - subagent.startedAtMs,
 		);
-	const title = subagent.label || "Subagent";
+	const title = subagent.name || subagent.label || "Subagent";
 	const statusTone =
 		subagent.status === "failed" || subagent.status === "interrupted"
 			? "text-destructive/75"
@@ -89,9 +89,7 @@ export function SubagentToolBlock({
 		<div className="my-0.5 min-w-0 max-w-full overflow-hidden">
 			<button
 				type="button"
-				onClick={() => {
-					if (!active) setManualOpen((value) => !value);
-				}}
+				onClick={() => setOpenOverride(!open)}
 				aria-expanded={open}
 				aria-label={`${title} ${statusLabel(subagent.status).toLowerCase()}`}
 				className="flex min-h-11 w-full min-w-0 max-w-full items-center gap-2 overflow-hidden px-3 py-2 text-left transition-colors hover:bg-primary/[0.03]"
@@ -112,6 +110,26 @@ export function SubagentToolBlock({
 					<StatusIcon status={subagent.status} />
 					{statusLabel(subagent.status)}
 				</span>
+				{(subagent.model || subagent.effort) && (
+					<span className="flex min-w-0 shrink items-center gap-1 overflow-hidden font-mono text-[9px] text-primary/50">
+						{subagent.model && (
+							<span
+								className="max-w-32 truncate border border-primary/15 px-1 py-0.5"
+								title={`Model: ${subagent.model}`}
+							>
+								{subagent.model}
+							</span>
+						)}
+						{subagent.effort && (
+							<span
+								className="shrink-0 border border-primary/15 px-1 py-0.5"
+								title={`Effort: ${subagent.effort}`}
+							>
+								{subagent.effort}
+							</span>
+						)}
+					</span>
+				)}
 				<PrivacyMask className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground/60">
 					{subagent.currentStep ?? subagent.description ?? "Working"}
 				</PrivacyMask>
@@ -148,6 +166,13 @@ export function SubagentToolBlock({
 							<div className="truncate font-mono text-[10px] text-primary/60">
 								{subagent.agentId}
 							</div>
+							{subagent.name &&
+								subagent.label &&
+								subagent.name !== subagent.label && (
+									<div className="truncate font-mono text-[10px] text-primary/50">
+										{subagent.label}
+									</div>
+								)}
 						</div>
 						<div className="min-w-0">
 							<div className="mb-1 text-[9px] uppercase tracking-widest text-muted-foreground/50">

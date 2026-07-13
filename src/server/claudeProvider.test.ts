@@ -154,7 +154,11 @@ describe("ClaudeProvider — event mapping", () => {
 								type: "tool_use",
 								id: "agent-tool-1",
 								name: "Agent",
-								input: { prompt: "Inspect auth" },
+								input: {
+									prompt: "Inspect auth",
+									name: "auth-scout",
+									model: "haiku",
+								},
 							},
 						],
 						usage: { input_tokens: 10, output_tokens: 5 },
@@ -219,7 +223,9 @@ describe("ClaudeProvider — event mapping", () => {
 			subagent: {
 				provider: "claude",
 				agentId: "task-1",
+				name: "auth-scout",
 				label: "Explore",
+				model: "haiku",
 				prompt: "Inspect auth",
 				status: "running",
 			},

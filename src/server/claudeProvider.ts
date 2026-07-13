@@ -174,9 +174,43 @@ type EventTranslation = {
 type ClaudeTaskMessage = Extract<SDKMessage, { type: "system" }> &
 	Record<string, unknown>;
 
+type ClaudeSubagentMetadata = Pick<SubagentSnapshot, "name" | "model">;
+
 class ClaudeSubagentTracker {
 	private snapshots = new Map<string, SubagentSnapshot>();
 	private toolIds = new Map<string, string>();
+	private toolMetadata = new Map<string, ClaudeSubagentMetadata>();
+
+	/** Capture fields exposed on Claude's Agent tool before task_started arrives. */
+	recordTool(toolId: string, input: unknown): SubagentSnapshot | undefined {
+		const toolInput =
+			typeof input === "object" && input !== null
+				? (input as Record<string, unknown>)
+				: {};
+		const previous = this.toolMetadata.get(toolId);
+		const metadata: ClaudeSubagentMetadata = {
+			...previous,
+			...(typeof toolInput.name === "string" && toolInput.name
+				? { name: toolInput.name }
+				: {}),
+			...(typeof toolInput.model === "string" && toolInput.model
+				? { model: toolInput.model }
+				: previous?.model
+					? { model: previous.model }
+					: {}),
+		};
+		this.toolMetadata.set(toolId, metadata);
+
+		for (const [taskId, mappedToolId] of this.toolIds) {
+			if (mappedToolId !== toolId) continue;
+			const current = this.snapshots.get(taskId);
+			if (!current) return undefined;
+			const subagent = { ...current, ...metadata };
+			this.snapshots.set(taskId, subagent);
+			return subagent;
+		}
+		return undefined;
+	}
 
 	snapshotForTool(toolId: string): SubagentSnapshot | undefined {
 		for (const [taskId, mappedToolId] of this.toolIds) {
@@ -292,10 +326,12 @@ class ClaudeSubagentTracker {
 			typeof message.prompt === "string" ? message.prompt : undefined;
 		const description =
 			typeof message.description === "string" ? message.description : undefined;
+		const metadata = this.toolMetadata.get(originatingToolId);
 		const subagent: SubagentSnapshot = {
 			provider: "claude",
 			agentId: taskId,
 			taskId,
+			...metadata,
 			...(typeof message.subagent_type === "string"
 				? { label: message.subagent_type }
 				: {}),
@@ -469,7 +505,9 @@ function translateAssistantMessage(
 			nextHadText = true;
 			events.push({ type: "text_delta", text: block.text });
 		} else if (block.type === "tool_use") {
-			const subagent = tracker.snapshotForTool(block.id);
+			const subagent =
+				tracker.recordTool(block.id, block.input) ??
+				tracker.snapshotForTool(block.id);
 			events.push({
 				type: "tool_start",
 				toolId: block.id,

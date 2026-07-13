@@ -1045,6 +1045,8 @@ describe("CodexAgentSession — notifications", () => {
 			subagent: {
 				agentId: "spawn-1",
 				prompt: "Inspect auth",
+				model: "gpt-5.4",
+				effort: "medium",
 				status: "pending",
 				startedAtMs: 1000,
 			},
@@ -1071,6 +1073,26 @@ describe("CodexAgentSession — notifications", () => {
 		});
 
 		emitSessionNotification(proc, "item/started", {
+			threadId: "thread-1",
+			item: {
+				id: "activity-1",
+				type: "subAgentActivity",
+				agentThreadId: "child-1",
+				agentPath: "/root/auth_scout",
+				kind: "started",
+			},
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "tool_update",
+			toolId: "spawn-1",
+			subagent: {
+				name: "auth_scout",
+				label: "/root/auth_scout",
+				status: "running",
+			},
+		});
+
+		emitSessionNotification(proc, "item/started", {
 			threadId: "child-1",
 			item: {
 				id: "command-1",
@@ -1094,6 +1116,75 @@ describe("CodexAgentSession — notifications", () => {
 			toolId: "spawn-1",
 			subagent: { status: "completed", endedAtMs: 7000 },
 		});
+	});
+
+	it("reuses a pending spawn card when activity precedes spawn completion", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const session = new CodexProvider().query(baseCodexParams());
+		const events = session[Symbol.asyncIterator]();
+		await session.send("delegate this");
+		await nextSessionEvent(events); // session_start
+
+		emitSessionNotification(proc, "item/started", {
+			threadId: "thread-1",
+			item: {
+				id: "spawn-1",
+				type: "collabAgentToolCall",
+				tool: "spawnAgent",
+				prompt: "Inspect auth",
+			},
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "tool_start",
+			toolId: "spawn-1",
+			subagent: { status: "pending" },
+		});
+
+		// Some Codex versions emit this activity before the collab item supplies
+		// receiverThreadIds, and the activity id may differ from the spawn item id.
+		emitSessionNotification(proc, "item/started", {
+			threadId: "thread-1",
+			item: {
+				id: "activity-1",
+				type: "subAgentActivity",
+				agentThreadId: "child-1",
+				agentPath: "/root/auth_scout",
+				kind: "started",
+			},
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "tool_update",
+			toolId: "spawn-1",
+			subagent: {
+				agentId: "child-1",
+				name: "auth_scout",
+				status: "running",
+			},
+		});
+
+		emitSessionNotification(proc, "item/completed", {
+			threadId: "thread-1",
+			item: {
+				id: "spawn-1",
+				type: "collabAgentToolCall",
+				tool: "spawnAgent",
+				receiverThreadIds: ["child-1"],
+				agentsStates: { "child-1": { status: "running" } },
+			},
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "tool_update",
+			toolId: "spawn-1",
+			subagent: { agentId: "child-1", status: "running" },
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "tool_result",
+			toolId: "spawn-1",
+		});
+		session.cancel();
 	});
 
 	it("keeps collab wait bookkeeping out of the generic tool timeline", async () => {
@@ -1130,6 +1221,106 @@ describe("CodexAgentSession — notifications", () => {
 			type: "text_delta",
 			text: "Finished",
 		});
+	});
+
+	it("creates a live card when subAgentActivity is the first spawn event", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const session = new CodexProvider().query(
+			baseCodexParams({ effort: "high" }),
+		);
+		const events = session[Symbol.asyncIterator]();
+		await session.send("delegate this");
+		await nextSessionEvent(events); // session_start
+
+		// Captured Codex 0.144 shape: the rollout contains a function_call named
+		// spawn_agent, while app-server exposes only this activity item.
+		emitSessionNotification(proc, "item/started", {
+			threadId: "thread-1",
+			item: {
+				id: "call-spawn-1",
+				type: "subAgentActivity",
+				agentThreadId: "child-1",
+				agentPath: "/root/ui_scout",
+				kind: "started",
+			},
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "tool_start",
+			toolId: "call-spawn-1",
+			name: "spawn_agent",
+			subagent: {
+				agentId: "child-1",
+				name: "ui_scout",
+				label: "/root/ui_scout",
+				model: "gpt-5.4",
+				effort: "high",
+				status: "running",
+			},
+		});
+
+		// The activity-only path must attach the child thread so its work and
+		// terminal state keep updating the synthesized card.
+		emitSessionNotification(proc, "item/started", {
+			threadId: "child-1",
+			item: {
+				id: "command-1",
+				type: "commandExecution",
+				command: "rg auth src",
+			},
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "tool_update",
+			toolId: "call-spawn-1",
+			subagent: { currentStep: "Running rg auth src", status: "running" },
+		});
+
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "child-1",
+			completedAtMs: 7000,
+			turn: { id: "child-turn", status: "completed" },
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "tool_update",
+			toolId: "call-spawn-1",
+			subagent: { status: "completed", endedAtMs: 7000 },
+		});
+	});
+
+	it("detaches parent and child threads after normal input closure", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const session = new CodexProvider().query(baseCodexParams());
+		const events = session[Symbol.asyncIterator]();
+		await session.send("delegate this");
+		await nextSessionEvent(events); // session_start
+
+		emitSessionNotification(proc, "item/started", {
+			threadId: "thread-1",
+			item: {
+				id: "call-spawn-1",
+				type: "subAgentActivity",
+				agentThreadId: "child-1",
+				kind: "started",
+			},
+		});
+		await nextSessionEvent(events); // synthesized spawn_agent card
+
+		const conn = acquireCodexAppServer("/usr/bin/codex");
+		expect(conn.threadCount).toBe(2);
+		session.closeInput?.();
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: { id: "turn-1", status: "completed" },
+		});
+
+		expect(await nextSessionEvent(events)).toMatchObject({ type: "done" });
+		expect(await events.next()).toEqual({ value: undefined, done: true });
+		expect(conn.threadCount).toBe(0);
 	});
 
 	it("attributes rateLimitReachedType to the most-utilized window", async () => {
