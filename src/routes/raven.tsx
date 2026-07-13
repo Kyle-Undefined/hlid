@@ -1266,12 +1266,18 @@ function ChatModelBadge({
 }: ChatComposerProps) {
 	const { model, permissionMode, effort, send } = runtime;
 	const { modelBadgeRef } = viewport;
+	const popupRef = useRef<HTMLDivElement>(null);
+	useEffect(() => {
+		if (showModelPopup) popupRef.current?.focus();
+	}, [showModelPopup]);
 	return (
 		<>
 			{modelShort && (
 				<div ref={modelBadgeRef} className="absolute -top-5 right-3 z-10">
 					<button
 						type="button"
+						aria-haspopup="dialog"
+						aria-expanded={showModelPopup}
 						onClick={(e) => {
 							e.stopPropagation();
 							setShowModelPopup((v) => !v);
@@ -1285,7 +1291,19 @@ function ChatModelBadge({
 						{actualModelShort ?? modelShort}
 					</button>
 					{showModelPopup && (
-						<div className="absolute bottom-full right-0 mb-1.5 w-56 max-w-[calc(100vw-1.5rem)] max-h-72 overflow-y-auto bg-background border border-border px-3 py-2 text-[9px] tracking-widest uppercase space-y-2">
+						<div
+							ref={popupRef}
+							tabIndex={-1}
+							role="dialog"
+							aria-label="Model settings"
+							onKeyDown={(e) => {
+								if (e.key === "Escape") {
+									e.stopPropagation();
+									setShowModelPopup(false);
+								}
+							}}
+							className="absolute bottom-full right-0 mb-1.5 w-56 max-w-[calc(100vw-1.5rem)] max-h-72 overflow-y-auto bg-background border border-border px-3 py-2 text-[9px] tracking-widest uppercase space-y-2 focus:outline-none"
+						>
 							{modelMismatch && (
 								<div className="space-y-0.5 pb-2 border-b border-border/50">
 									<div>
