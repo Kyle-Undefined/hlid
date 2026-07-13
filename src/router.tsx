@@ -1,10 +1,19 @@
 import { createRouter as createTanStackRouter } from "@tanstack/react-router";
+import { LoaderCircle } from "lucide-react";
 import { ErrorFallback } from "./components/ErrorBoundary";
 import { installAuthRedirect } from "./lib/authClient";
 import { routeTree } from "./routeTree.gen";
 
 function RouterError({ error, reset }: { error: Error; reset: () => void }) {
 	return <ErrorFallback error={error} reset={reset} />;
+}
+
+function RoutePending() {
+	return (
+		<div className="grid min-h-full place-items-center p-6">
+			<LoaderCircle className="w-5 h-5 text-muted-foreground/40 animate-spin" />
+		</div>
+	);
 }
 
 function NotFound() {
@@ -33,6 +42,7 @@ export function getRouter() {
 		defaultStaleTime: 30_000,
 		defaultErrorComponent: RouterError,
 		defaultNotFoundComponent: NotFound,
+		defaultPendingComponent: RoutePending,
 	});
 
 	return router;
