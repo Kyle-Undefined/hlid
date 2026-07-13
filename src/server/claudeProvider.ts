@@ -185,6 +185,69 @@ class ClaudeSubagentTracker {
 		return undefined;
 	}
 
+	/** Look up the current snapshot + originating toolId for a task, or null if untracked. */
+	private resolveTask(
+		taskId: string,
+	): { current: SubagentSnapshot; toolId: string } | null {
+		const current = this.snapshots.get(taskId);
+		const toolId = this.toolIds.get(taskId);
+		if (!current || !toolId) return null;
+		return { current, toolId };
+	}
+
+	/**
+	 * Resolve taskId, apply `patch` to build the next snapshot, store it, and
+	 * emit the resulting tool_update event. Returns [] for an untracked taskId.
+	 */
+	private updateTask(
+		taskId: string,
+		patch: (current: SubagentSnapshot, toolId: string) => SubagentSnapshot,
+	): AgentEvent[] {
+		const resolved = this.resolveTask(taskId);
+		if (!resolved) return [];
+		const { current, toolId } = resolved;
+		const subagent = patch(current, toolId);
+		this.snapshots.set(taskId, subagent);
+		return [{ type: "tool_update", toolId, subagent }];
+	}
+
+	/** Pull the raw usage delta + summary text off a task message, if present. */
+	private extractUsageSummary(message: ClaudeTaskMessage): {
+		usage:
+			| { total_tokens?: number; tool_uses?: number; duration_ms?: number }
+			| undefined;
+		summary: string | undefined;
+	} {
+		return {
+			usage: message.usage as
+				| { total_tokens?: number; tool_uses?: number; duration_ms?: number }
+				| undefined,
+			summary:
+				typeof message.summary === "string" ? message.summary : undefined,
+		};
+	}
+
+	/** Merge partial usage fields (only known-number ones) onto the current usage. */
+	private mergeUsage(
+		current: SubagentSnapshot["usage"],
+		usage:
+			| { total_tokens?: number; tool_uses?: number; duration_ms?: number }
+			| undefined,
+	): SubagentSnapshot["usage"] {
+		return {
+			...current,
+			...(typeof usage?.total_tokens === "number"
+				? { totalTokens: usage.total_tokens }
+				: {}),
+			...(typeof usage?.tool_uses === "number"
+				? { toolUses: usage.tool_uses }
+				: {}),
+			...(typeof usage?.duration_ms === "number"
+				? { durationMs: usage.duration_ms }
+				: {}),
+		};
+	}
+
 	handleSystem(message: ClaudeTaskMessage): AgentEvent[] {
 		const subtype = String(message.subtype ?? "");
 		if (subtype === "task_started") return this.handleStarted(message);
@@ -259,51 +322,32 @@ class ClaudeSubagentTracker {
 
 	private handleProgress(message: ClaudeTaskMessage): AgentEvent[] {
 		const taskId = String(message.task_id ?? "");
-		const current = this.snapshots.get(taskId);
-		const toolId = this.toolIds.get(taskId);
-		if (!current || !toolId) return [];
-		const usage = message.usage as
-			| { total_tokens?: number; tool_uses?: number; duration_ms?: number }
-			| undefined;
-		const summary =
-			typeof message.summary === "string" ? message.summary : undefined;
-		const description =
-			typeof message.description === "string"
-				? message.description
-				: current.description;
-		const lastTool =
-			typeof message.last_tool_name === "string"
-				? message.last_tool_name
-				: current.lastTool;
-		const subagent: SubagentSnapshot = {
-			...current,
-			...(description ? { description } : {}),
-			...(lastTool ? { lastTool } : {}),
-			currentStep:
-				summary ??
-				(lastTool ? `Using ${lastTool}` : (description ?? current.currentStep)),
-			usage: {
-				...current.usage,
-				...(typeof usage?.total_tokens === "number"
-					? { totalTokens: usage.total_tokens }
-					: {}),
-				...(typeof usage?.tool_uses === "number"
-					? { toolUses: usage.tool_uses }
-					: {}),
-				...(typeof usage?.duration_ms === "number"
-					? { durationMs: usage.duration_ms }
-					: {}),
-			},
-		};
-		this.snapshots.set(taskId, subagent);
-		return [{ type: "tool_update", toolId, subagent }];
+		const { usage, summary } = this.extractUsageSummary(message);
+		return this.updateTask(taskId, (current) => {
+			const description =
+				typeof message.description === "string"
+					? message.description
+					: current.description;
+			const lastTool =
+				typeof message.last_tool_name === "string"
+					? message.last_tool_name
+					: current.lastTool;
+			return {
+				...current,
+				...(description ? { description } : {}),
+				...(lastTool ? { lastTool } : {}),
+				currentStep:
+					summary ??
+					(lastTool
+						? `Using ${lastTool}`
+						: (description ?? current.currentStep)),
+				usage: this.mergeUsage(current.usage, usage),
+			};
+		});
 	}
 
 	private handleUpdated(message: ClaudeTaskMessage): AgentEvent[] {
 		const taskId = String(message.task_id ?? "");
-		const current = this.snapshots.get(taskId);
-		const toolId = this.toolIds.get(taskId);
-		if (!current || !toolId) return [];
 		const patch = (message.patch ?? {}) as Record<string, unknown>;
 		const rawStatus = String(patch.status ?? "");
 		const status: SubagentSnapshot["status"] =
@@ -317,7 +361,7 @@ class ClaudeSubagentTracker {
 							? "pending"
 							: "running";
 		const terminal = status === "completed" || status === "failed";
-		const subagent: SubagentSnapshot = {
+		return this.updateTask(taskId, (current) => ({
 			...current,
 			status,
 			...(typeof patch.description === "string"
@@ -330,16 +374,11 @@ class ClaudeSubagentTracker {
 							typeof patch.end_time === "number" ? patch.end_time : Date.now(),
 					}
 				: {}),
-		};
-		this.snapshots.set(taskId, subagent);
-		return [{ type: "tool_update", toolId, subagent }];
+		}));
 	}
 
 	private handleNotification(message: ClaudeTaskMessage): AgentEvent[] {
 		const taskId = String(message.task_id ?? "");
-		const current = this.snapshots.get(taskId);
-		const toolId = this.toolIds.get(taskId);
-		if (!current || !toolId) return [];
 		const rawStatus = String(message.status ?? "");
 		const status: SubagentSnapshot["status"] =
 			rawStatus === "completed"
@@ -347,31 +386,14 @@ class ClaudeSubagentTracker {
 				: rawStatus === "stopped"
 					? "interrupted"
 					: "failed";
-		const usage = message.usage as
-			| { total_tokens?: number; tool_uses?: number; duration_ms?: number }
-			| undefined;
-		const summary =
-			typeof message.summary === "string" ? message.summary : undefined;
-		const subagent: SubagentSnapshot = {
+		const { usage, summary } = this.extractUsageSummary(message);
+		return this.updateTask(taskId, (current) => ({
 			...current,
 			status,
 			...(summary ? { currentStep: summary } : {}),
 			endedAtMs: Date.now(),
-			usage: {
-				...current.usage,
-				...(typeof usage?.total_tokens === "number"
-					? { totalTokens: usage.total_tokens }
-					: {}),
-				...(typeof usage?.tool_uses === "number"
-					? { toolUses: usage.tool_uses }
-					: {}),
-				...(typeof usage?.duration_ms === "number"
-					? { durationMs: usage.duration_ms }
-					: {}),
-			},
-		};
-		this.snapshots.set(taskId, subagent);
-		return [{ type: "tool_update", toolId, subagent }];
+			usage: this.mergeUsage(current.usage, usage),
+		}));
 	}
 }
 

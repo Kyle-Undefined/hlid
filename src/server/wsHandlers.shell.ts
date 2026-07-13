@@ -11,7 +11,8 @@
  */
 import type { ServerWebSocket } from "bun";
 import type { ShellSessionPool } from "./shellSessionPool";
-import { parseTerminalResize, parseTerminalTerminate } from "./wsSchemas";
+import { routePtyMessage } from "./wsHandlers.pty";
+import { parseTerminalTerminate } from "./wsSchemas";
 
 export interface ShellWsData {
 	isShell: true;
@@ -37,19 +38,11 @@ export function createShellWsHandlers(pool: ShellSessionPool) {
 		message(ws: ShellWs, data: string | ArrayBuffer | Buffer): void {
 			const { sessionId } = ws.data;
 
-			if (typeof data === "string") {
-				if (parseTerminalTerminate(data)) {
-					pool.terminate(sessionId);
-					return;
-				}
-				const dimensions = parseTerminalResize(data);
-				if (dimensions) {
-					pool.resize(sessionId, dimensions.cols, dimensions.rows);
-				}
-			} else {
-				const buf = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
-				pool.write(sessionId, buf);
+			if (typeof data === "string" && parseTerminalTerminate(data)) {
+				pool.terminate(sessionId);
+				return;
 			}
+			routePtyMessage(pool, sessionId, data);
 		},
 
 		close(ws: ShellWs): void {

@@ -1,7 +1,7 @@
 {
   "name": "hlid",
   "description": "Hliðskjálf - Watcher of Worlds",
-	"version": "0.0.102",
+	"version": "0.0.103",
   "private": true,
   "type": "module",
   "imports": {
@@ -28,11 +28,11 @@
     "lint": "biome lint",
     "check:biome": "biome check",
     "typecheck": "tsc --noEmit",
-    "check": "bun run check:biome && bun run typecheck",
-    "analyze": "fallow dead-code --production --summary --fail-on-issues --changed-since origin/main && fallow health --production --coverage coverage/coverage-final.json --score --changed-since origin/main --min-score 85 && fallow dupes --production --summary --changed-since origin/main --threshold 0.5",
-    "analyze:full": "fallow dead-code --production --summary --fail-on-issues && fallow health --production --coverage coverage/coverage-final.json --score --min-score 85 && fallow dupes --production --summary --threshold 0.5",
+    "check": "bun run check:biome && bun run typecheck && bun run analyze",
+    "analyze": "fallow dead-code --production --summary --fail-on-issues --changed-since origin/main && fallow health --production --coverage coverage/coverage-final.json --score --changed-since origin/main --min-score 85 && fallow dupes --production --summary --changed-since origin/main --threshold 0",
+    "analyze:full": "fallow dead-code --production --summary --fail-on-issues && fallow health --production --coverage coverage/coverage-final.json --score --min-score 85 && fallow dupes --production --summary --threshold 0",
     "validate": "bun run check && bun run test:coverage && bun run analyze:full",
-    "stage": "biome format --write && biome lint --fix && biome check --fix",
+    "stage": "biome format --write && biome lint --fix && biome check --fix && bun run validate",
     "version:bump": "bumpp --quiet",
     "generate-icons": "bun scripts/generate-icons.ts"
   },

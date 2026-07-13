@@ -263,6 +263,32 @@ function patchMessage<R extends ChatMessage["role"]>(
 	return touched ? next : state;
 }
 
+/**
+ * Patch the ToolEventMessage matching toolUseId inside the assistant message
+ * that holds it via `patch`. Returns the original array (same reference, no
+ * re-render) when nothing matched.
+ */
+function patchToolEvent(
+	state: ChatMessage[],
+	toolUseId: string,
+	patch: (event: ToolEventMessage) => ToolEventMessage,
+): ChatMessage[] {
+	let matched = false;
+	const next = state.map((m) => {
+		if (m.role !== "assistant") return m;
+		let touched = false;
+		const toolEvents = m.toolEvents.map((te) => {
+			if (te.id !== toolUseId) return te;
+			touched = true;
+			return patch(te);
+		});
+		if (!touched) return m;
+		matched = true;
+		return { ...m, toolEvents };
+	});
+	return matched ? next : state;
+}
+
 function historyItemToMessage(item: HistoryItem): ChatMessage {
 	if (item.kind === "ask_user_question") {
 		return {
@@ -382,43 +408,17 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 				...m,
 				toolEvents: [...m.toolEvents, action.event],
 			}));
-		case "UPDATE_TOOL_EVENT": {
-			let matched = false;
-			const next = state.map((m) => {
-				if (m.role !== "assistant") return m;
-				let touched = false;
-				const toolEvents = m.toolEvents.map((te) => {
-					if (te.id !== action.toolUseId) return te;
-					matched = true;
-					touched = true;
-					return { ...te, subagent: action.subagent };
-				});
-				return touched ? { ...m, toolEvents } : m;
-			});
-			return matched ? next : state;
-		}
-		case "ADD_TOOL_RESULT": {
-			let matched = false;
-			const next = state.map((m) => {
-				if (m.role !== "assistant") return m;
-				let touched = false;
-				const toolEvents = m.toolEvents.map((te) => {
-					if (te.id !== action.toolUseId) return te;
-					touched = true;
-					return {
-						...te,
-						result: action.content,
-						...(action.isError !== undefined
-							? { isError: action.isError }
-							: {}),
-					};
-				});
-				if (!touched) return m;
-				matched = true;
-				return { ...m, toolEvents };
-			});
-			return matched ? next : state;
-		}
+		case "UPDATE_TOOL_EVENT":
+			return patchToolEvent(state, action.toolUseId, (te) => ({
+				...te,
+				subagent: action.subagent,
+			}));
+		case "ADD_TOOL_RESULT":
+			return patchToolEvent(state, action.toolUseId, (te) => ({
+				...te,
+				result: action.content,
+				...(action.isError !== undefined ? { isError: action.isError } : {}),
+			}));
 		case "ADD_LOCAL_COMMAND_OUTPUT":
 			return [
 				...state,
