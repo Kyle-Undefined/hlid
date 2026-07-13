@@ -22,7 +22,11 @@ vi.mock("@tanstack/react-router", () => ({
 	useNavigate: () => state.navigate,
 }));
 
-vi.mock("#/components/AgentSelect", () => ({ AgentSelect: () => null }));
+vi.mock("#/components/AgentSelect", () => ({
+	AgentSelect: ({ fullWidth }: { fullWidth?: boolean }) => (
+		<div data-testid="agent-select" data-full-width={String(fullWidth)} />
+	),
+}));
 vi.mock("#/components/AttachmentStrip", () => ({
 	AttachmentStrip: () => null,
 }));
@@ -176,6 +180,36 @@ beforeEach(() => {
 });
 
 describe("Raven composed submission behavior", () => {
+	it("keeps agent selection and all composer modes on-screen at mobile widths", () => {
+		state.loaderData = {
+			...state.loaderData,
+			agentSkillContext: "/codex-project",
+			agentList: [
+				{
+					path: "/codex-project",
+					name: "Codex project with a long mobile label",
+					provider: "codex",
+				},
+			],
+		};
+
+		render(<ChatPage />);
+		fireEvent.click(screen.getByRole("button", { name: "plan" }));
+
+		const agentSelect = screen.getByTestId("agent-select");
+		const agentRow = agentSelect.parentElement;
+		const terminalButton = screen.getByRole("button", { name: "terminal" });
+		const modeRow = terminalButton.parentElement;
+		const toolbar = modeRow?.parentElement;
+
+		expect(agentSelect.dataset.fullWidth).toBe("true");
+		expect(agentRow?.className).toContain("min-w-0");
+		expect(agentRow?.className).toContain("w-full");
+		expect(modeRow?.className).toContain("w-full");
+		expect(toolbar?.className).toContain("flex-wrap");
+		expect(screen.getByRole("button", { name: "html" })).toBeTruthy();
+	});
+
 	it("keeps mobile terminal tab content above the composer while desktop orders it last", () => {
 		render(<ChatPage />);
 

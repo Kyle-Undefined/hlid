@@ -1639,58 +1639,63 @@ function ChatInputNotices({
 					</button>
 				</div>
 			)}
-			<div className="flex items-center gap-3 px-4 py-1.5 border-b border-border/40">
+			<div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-1.5 border-b border-border/40">
 				{messages.length === 0 && agentList.length > 0 && (
-					<AgentSelect
-						agents={agentList}
-						value={agentSkillContext ?? ""}
-						onChange={(val) => {
-							setAgentSkillContext(val || undefined);
-							agentContextSentRef.current = false;
-						}}
-					/>
+					<div className="flex min-w-0 w-full items-center gap-3 md:w-auto md:flex-1">
+						<AgentSelect
+							agents={agentList}
+							value={agentSkillContext ?? ""}
+							fullWidth
+							onChange={(val) => {
+								setAgentSkillContext(val || undefined);
+								agentContextSentRef.current = false;
+							}}
+						/>
+					</div>
 				)}
-				<button
-					type="button"
-					onClick={() => setPlanMode((v) => !v)}
-					title="Enable plan mode — the agent plans before acting"
-					className={`flex items-center gap-1.5 text-[9px] tracking-widest uppercase transition-colors shrink-0 ${
-						planMode
-							? "text-primary border-b border-primary/50"
-							: "text-muted-foreground/40 hover:text-muted-foreground/70"
-					}`}
-				>
-					<ShieldCheck className="w-3 h-3" />
-					plan
-				</button>
-				{planMode && (
+				<div className="flex w-full min-w-0 items-center justify-end gap-3 md:w-auto">
 					<button
 						type="button"
-						onClick={() => setPlanHtml((v) => !v)}
-						title="Render the plan as a styled HTML page shown in a modal"
+						onClick={() => setPlanMode((v) => !v)}
+						title="Enable plan mode — the agent plans before acting"
 						className={`flex items-center gap-1.5 text-[9px] tracking-widest uppercase transition-colors shrink-0 ${
-							planHtml
+							planMode
 								? "text-primary border-b border-primary/50"
 								: "text-muted-foreground/40 hover:text-muted-foreground/70"
 						}`}
 					>
-						<FileCode className="w-3 h-3" />
-						html
+						<ShieldCheck className="w-3 h-3" />
+						plan
 					</button>
-				)}
-				<button
-					type="button"
-					onClick={onToggleTerminal}
-					title="Open a real terminal in this project — for running dev servers or recovering from things the agent can't fix"
-					className={`flex items-center gap-1.5 text-[9px] tracking-widest uppercase transition-colors shrink-0 ${
-						terminalOpen
-							? "text-primary border-b border-primary/50"
-							: "text-muted-foreground/40 hover:text-muted-foreground/70"
-					}`}
-				>
-					<TerminalIcon className="w-3 h-3" />
-					terminal
-				</button>
+					{planMode && (
+						<button
+							type="button"
+							onClick={() => setPlanHtml((v) => !v)}
+							title="Render the plan as a styled HTML page shown in a modal"
+							className={`flex items-center gap-1.5 text-[9px] tracking-widest uppercase transition-colors shrink-0 ${
+								planHtml
+									? "text-primary border-b border-primary/50"
+									: "text-muted-foreground/40 hover:text-muted-foreground/70"
+							}`}
+						>
+							<FileCode className="w-3 h-3" />
+							html
+						</button>
+					)}
+					<button
+						type="button"
+						onClick={onToggleTerminal}
+						title="Open a real terminal in this project — for running dev servers or recovering from things the agent can't fix"
+						className={`flex items-center gap-1.5 text-[9px] tracking-widest uppercase transition-colors shrink-0 ${
+							terminalOpen
+								? "text-primary border-b border-primary/50"
+								: "text-muted-foreground/40 hover:text-muted-foreground/70"
+						}`}
+					>
+						<TerminalIcon className="w-3 h-3" />
+						terminal
+					</button>
+				</div>
 			</div>
 		</>
 	);
