@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { ConfirmAction } from "#/components/ConfirmAction";
 import { Field, Section } from "./fields";
 
 function PasswordInput({
@@ -51,7 +52,6 @@ export function SecuritySection() {
 	}
 
 	async function revokeAll() {
-		if (!window.confirm("Lock Hlid on every trusted device?")) return;
 		setWorking(true);
 		try {
 			await fetch("/api/auth/revoke-all", { method: "POST" });
@@ -105,14 +105,21 @@ export function SecuritySection() {
 					label="Revoke All Devices"
 					hint="Deletes every active 30-day session, including this browser."
 				>
-					<button
-						type="button"
-						onClick={() => void revokeAll()}
-						disabled={working}
-						className="text-[10px] tracking-widest px-3 py-1.5 border border-destructive text-destructive hover:bg-destructive hover:text-destructive-foreground uppercase disabled:opacity-40"
-					>
-						Revoke All
-					</button>
+					<ConfirmAction
+						label="lock every trusted device?"
+						confirmText="revoke all"
+						onConfirm={() => void revokeAll()}
+						trigger={(open) => (
+							<button
+								type="button"
+								onClick={open}
+								disabled={working}
+								className="text-[10px] tracking-widest px-3 py-1.5 border border-destructive text-destructive hover:bg-destructive hover:text-destructive-foreground uppercase disabled:opacity-40"
+							>
+								Revoke All
+							</button>
+						)}
+					/>
 				</Field>
 			</Section>
 		</div>
