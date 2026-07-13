@@ -1,3 +1,4 @@
+import { PrivacyMask } from "#/components/PrivacyMask";
 import type { SessionStatusEntry } from "../../server/protocol";
 
 export type ActiveSessionsPanelProps = {
@@ -70,9 +71,9 @@ export function ActiveSessionsPanel({
 							className="border-b border-border/40 hover:bg-accent/30 transition-colors"
 						>
 							<td className="px-4 py-2.5">
-								<div className="font-medium text-foreground/90">
+								<PrivacyMask className="font-medium text-foreground/90">
 									{session.agent_name}
-								</div>
+								</PrivacyMask>
 								{session.lastLabel && (
 									<div className="text-[9px] text-muted-foreground/50 uppercase tracking-widest mt-0.5">
 										{session.lastLabel}
@@ -81,12 +82,12 @@ export function ActiveSessionsPanel({
 								<div className="text-[9px] text-muted-foreground/30 font-mono mt-0.5">
 									#{shortId(session.session_id)}
 								</div>
-								<div className="text-[9px] text-muted-foreground/40 font-mono sm:hidden">
+								<PrivacyMask className="text-[9px] text-muted-foreground/40 font-mono sm:hidden">
 									{session.agent_cwd}
-								</div>
+								</PrivacyMask>
 							</td>
 							<td className="px-4 py-2.5 hidden sm:table-cell font-mono text-muted-foreground/60 text-[10px]">
-								{session.agent_cwd}
+								<PrivacyMask inline>{session.agent_cwd}</PrivacyMask>
 							</td>
 							<td
 								className={`px-4 py-2.5 font-mono uppercase tracking-widest text-[9px] ${stateClass(
