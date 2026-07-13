@@ -1,9 +1,18 @@
 import { ChevronDown, ChevronRight, Folder } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { MarkdownBody } from "#/components/MarkdownBody";
 import { PrivacyMask } from "#/components/PrivacyMask";
+import { Section } from "#/components/shell/Section";
+import {
+	ROW_BUTTON,
+	ROW_EXPANDED,
+	ROW_EXPANDED_INNER,
+	RowChevron,
+} from "#/components/vault/row";
+import { VaultEmptyState } from "#/components/vault/VaultEmptyState";
 import type { ProjectStatus } from "#/lib/classify";
 import type { Project, ProjectNode } from "#/lib/vault";
+import { matchesQuery } from "#/lib/vaultSearch";
 
 // ─── Status metadata ──────────────────────────────────────────────────────────
 
@@ -104,21 +113,13 @@ function ProjectCard({ project }: { project: Project }) {
 				onClick={() => hasContent && setOpen((v) => !v)}
 				tabIndex={hasContent ? undefined : -1}
 				aria-expanded={hasContent ? open : false}
-				className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-colors ${
+				className={`${ROW_BUTTON} ${
 					hasContent ? "hover:bg-accent cursor-pointer" : "cursor-default"
 				}`}
 			>
-				{hasContent ? (
-					open ? (
-						<ChevronDown className="w-3 h-3 text-muted-foreground shrink-0" />
-					) : (
-						<ChevronRight className="w-3 h-3 text-muted-foreground shrink-0" />
-					)
-				) : (
-					<span className="w-3 h-3 shrink-0" />
-				)}
+				<RowChevron open={open} visible={hasContent} />
 				<div className="min-w-0 flex-1">
-					<PrivacyMask inline className="text-sm text-foreground truncate">
+					<PrivacyMask inline className="text-sm text-foreground break-words">
 						{project.title}
 					</PrivacyMask>
 					{project.tags.length > 0 && (
@@ -142,10 +143,12 @@ function ProjectCard({ project }: { project: Project }) {
 				</div>
 			</button>
 			{open && project.content && project.content.trim() && (
-				<div className="px-6 py-4 bg-secondary/30 text-xs text-foreground/80 leading-relaxed">
-					<PrivacyMask>
-						<MarkdownBody content={project.content} />
-					</PrivacyMask>
+				<div className={ROW_EXPANDED}>
+					<div className={ROW_EXPANDED_INNER}>
+						<PrivacyMask>
+							<MarkdownBody content={project.content} />
+						</PrivacyMask>
+					</div>
 				</div>
 			)}
 			{open &&
@@ -173,22 +176,19 @@ function ProjectGroup({
 }) {
 	if (projects.length === 0) return null;
 	return (
-		<div className="space-y-2">
-			<div className="flex items-center gap-2">
-				<span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[status]}`} />
-				<h2 className="text-[10px] tracking-widest text-muted-foreground uppercase">
-					{STATUS_LABEL[status]}
-				</h2>
-				<span className="text-[10px] text-muted-foreground/50">
-					{projects.length}
-				</span>
-			</div>
-			<div className="border border-border bg-card divide-y divide-border">
-				{projects.map((p) => (
-					<ProjectCard key={p.file} project={p} />
-				))}
-			</div>
-		</div>
+		<Section
+			title={STATUS_LABEL[status]}
+			adornment={
+				<span
+					className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_DOT[status]}`}
+				/>
+			}
+			count={projects.length}
+		>
+			{projects.map((p) => (
+				<ProjectCard key={p.file} project={p} />
+			))}
+		</Section>
 	);
 }
 
@@ -197,27 +197,39 @@ function ProjectGroup({
 export function ProjectsTab({
 	initial,
 	emptyLabel,
+	query = "",
 }: {
 	initial: Project[];
 	emptyLabel?: string;
+	query?: string;
 }) {
-	const grouped = STATUS_ORDER.reduce(
-		(acc, s) => {
-			acc[s] = initial.filter((p) => p.status === s);
-			return acc;
-		},
-		{} as Record<ProjectStatus, Project[]>,
+	const filtered = useMemo(
+		() =>
+			initial.filter((p) =>
+				matchesQuery(query, p.title, p.file, p.rawStatus, p.tags),
+			),
+		[initial, query],
 	);
 
 	if (initial.length === 0) {
 		return (
-			<div className="border border-border bg-card px-4 py-8 text-center">
-				<p className="text-xs tracking-wider text-muted-foreground">
-					{emptyLabel ?? "no projects found, set a projects folder in config"}
-				</p>
-			</div>
+			<VaultEmptyState>
+				{emptyLabel ?? "no projects found, set a projects folder in config"}
+			</VaultEmptyState>
 		);
 	}
+
+	if (filtered.length === 0) {
+		return <VaultEmptyState>no matches for “{query.trim()}”</VaultEmptyState>;
+	}
+
+	const grouped = STATUS_ORDER.reduce(
+		(acc, s) => {
+			acc[s] = filtered.filter((p) => p.status === s);
+			return acc;
+		},
+		{} as Record<ProjectStatus, Project[]>,
+	);
 
 	return (
 		<div className="space-y-6">

@@ -15,6 +15,8 @@ import { UpdatesSection } from "#/components/forge/UpdatesSection";
 import { VaultSection } from "#/components/forge/VaultSection";
 import { VocabSection } from "#/components/forge/VocabSection";
 import { VoiceSection } from "#/components/forge/VoiceSection";
+import { PageHeader, PageIntro } from "#/components/shell/PageHeader";
+import { SectionRail } from "#/components/shell/SectionRail";
 import type {
 	SettingsFormState,
 	SettingsInitial,
@@ -82,21 +84,6 @@ const CATEGORIES = [
 ] as const;
 type Category = (typeof CATEGORIES)[number]["id"];
 type DeveloperView = "events" | "api";
-
-function PageIntro({
-	title,
-	description,
-}: {
-	title: string;
-	description: string;
-}) {
-	return (
-		<div className="space-y-1">
-			<h2 className="text-lg font-medium">{title}</h2>
-			<p className="text-xs text-muted-foreground">{description}</p>
-		</div>
-	);
-}
 
 function AgentSettings({
 	state,
@@ -528,58 +515,39 @@ export function ForgeSettings({
 	}
 	return (
 		<div className="flex h-full min-h-0">
-			<aside
-				className="hidden md:flex w-52 shrink-0 border-r border-border bg-card/30 p-3 flex-col gap-1 overflow-auto"
-				aria-label="Forge categories"
-			>
-				{(["primary", "secondary"] as const).map((group, index) => (
-					<div
-						key={group}
-						className={index ? "mt-3 pt-3 border-t border-border" : ""}
-					>
-						{shown
-							.filter((item) => item.group === group)
-							.map((item) => (
-								<button
-									key={item.id}
-									type="button"
-									onClick={() => choose(item.id)}
-									aria-pressed={category === item.id}
-									className={`w-full px-3 py-2 text-left text-xs transition-colors ${category === item.id ? "bg-primary/10 text-primary" : "text-muted-foreground hover:bg-accent hover:text-foreground"}`}
-								>
-									{item.label}
-								</button>
-							))}
-					</div>
-				))}
-			</aside>
+			<SectionRail
+				items={shown.map((item) => ({
+					id: item.id,
+					label: item.label,
+					group: item.group,
+				}))}
+				activeId={category}
+				onSelect={(id) => choose(id as Category)}
+				label="Forge categories"
+			/>
 			<div className="flex-1 min-w-0 flex flex-col">
-				<header className="sticky top-0 z-20 shrink-0 border-b border-border bg-background/95 backdrop-blur px-4 py-3">
-					<div className="max-w-[1000px] mx-auto grid grid-cols-[auto_minmax(0,1fr)] items-center gap-2 md:flex md:gap-3">
-						<div className="text-[10px] tracking-[0.2em] uppercase shrink-0">
-							Forge
-						</div>
-						<select
-							value={category}
-							onChange={(e) => choose(e.target.value as Category)}
-							className="md:hidden w-full min-w-0 bg-secondary border border-border px-2 py-1.5 text-xs"
-						>
-							{CATEGORIES.map((item) => (
-								<option key={item.id} value={item.id}>
-									{item.label}
-								</option>
-							))}
-						</select>
-						<input
-							value={search}
-							onChange={(e) => setSearch(e.target.value)}
-							placeholder="Search settings"
-							aria-label="Search settings"
-							className="col-span-2 row-start-2 w-full bg-secondary border border-border px-3 py-1.5 text-xs focus:outline-none focus:border-primary/50 md:col-span-1 md:row-auto md:ml-auto md:max-w-sm"
-						/>
-						<SaveStatus state={state} onRestartRequired={showRestartControls} />
-					</div>
-				</header>
+				<PageHeader eyebrow="Forge">
+					<select
+						value={category}
+						onChange={(e) => choose(e.target.value as Category)}
+						aria-label="Forge category"
+						className="md:hidden w-full min-w-0 bg-secondary border border-border px-2 py-1.5 text-xs"
+					>
+						{CATEGORIES.map((item) => (
+							<option key={item.id} value={item.id}>
+								{item.label}
+							</option>
+						))}
+					</select>
+					<input
+						value={search}
+						onChange={(e) => setSearch(e.target.value)}
+						placeholder="Search settings"
+						aria-label="Search settings"
+						className="col-span-2 row-start-2 w-full bg-secondary border border-border px-3 py-1.5 text-xs focus:outline-none focus:border-primary/50 md:col-span-1 md:row-auto md:ml-auto md:max-w-sm"
+					/>
+					<SaveStatus state={state} onRestartRequired={showRestartControls} />
+				</PageHeader>
 				<main
 					data-scroll-restoration-id={
 						ROUTE_SCROLL_RESTORATION_IDS.forgeSettings

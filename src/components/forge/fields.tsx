@@ -2,31 +2,8 @@ import { type ReactNode, useEffect, useId, useRef, useState } from "react";
 import { FileBrowser } from "#/components/wizard/FileBrowser";
 import { FolderBrowser } from "#/components/wizard/FolderBrowser";
 
-export function Section({
-	title,
-	description,
-	children,
-}: {
-	title: string;
-	description?: string;
-	children: ReactNode;
-}) {
-	return (
-		<div className="space-y-2">
-			<div className="px-1">
-				<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
-					{title}
-				</div>
-				{description && (
-					<p className="text-xs text-muted-foreground mt-1">{description}</p>
-				)}
-			</div>
-			<div className="border border-border bg-card divide-y divide-border">
-				{children}
-			</div>
-		</div>
-	);
-}
+// Section moved to the shared shell; re-exported so existing imports keep working.
+export { Section } from "#/components/shell/Section";
 
 export function Field({
 	label,

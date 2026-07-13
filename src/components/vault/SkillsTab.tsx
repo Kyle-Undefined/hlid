@@ -1,8 +1,16 @@
-import { ChevronDown, ChevronRight, Play } from "lucide-react";
-import { useState } from "react";
+import { Play } from "lucide-react";
+import { useMemo, useState } from "react";
 import { MarkdownBody } from "#/components/MarkdownBody";
 import { PrivacyMask } from "#/components/PrivacyMask";
+import { Section } from "#/components/shell/Section";
+import {
+	ROW_EXPANDED,
+	ROW_EXPANDED_INNER,
+	RowChevron,
+} from "#/components/vault/row";
+import { VaultEmptyState } from "#/components/vault/VaultEmptyState";
 import { groupSkills, type Skill } from "#/lib/skills";
+import { matchesQuery } from "#/lib/vaultSearch";
 
 // ─── SkillCard ────────────────────────────────────────────────────────────────
 
@@ -25,13 +33,9 @@ function SkillCard({
 					aria-controls={`skill-panel-${skill.file}`}
 					className={`flex items-center gap-3 min-w-0 flex-1 text-left transition-opacity ${skill.content ? "hover:opacity-80 cursor-pointer" : "cursor-default"}`}
 				>
-					{open ? (
-						<ChevronDown className="w-3 h-3 text-muted-foreground shrink-0" />
-					) : (
-						<ChevronRight className="w-3 h-3 text-muted-foreground shrink-0" />
-					)}
+					<RowChevron open={open} visible={!!skill.content} />
 					<div className="min-w-0">
-						<PrivacyMask className="text-sm text-foreground truncate">
+						<PrivacyMask className="text-sm text-foreground break-words">
 							{skill.name}
 						</PrivacyMask>
 						{skill.description && (
@@ -55,13 +59,12 @@ function SkillCard({
 				</button>
 			</div>
 			{open && skill.content && (
-				<div
-					id={`skill-panel-${skill.file}`}
-					className="px-6 py-4 bg-secondary/30 text-xs text-foreground/80 leading-relaxed"
-				>
-					<PrivacyMask>
-						<MarkdownBody content={skill.content} />
-					</PrivacyMask>
+				<div id={`skill-panel-${skill.file}`} className={ROW_EXPANDED}>
+					<div className={ROW_EXPANDED_INNER}>
+						<PrivacyMask>
+							<MarkdownBody content={skill.content} />
+						</PrivacyMask>
+					</div>
 				</div>
 			)}
 		</div>
@@ -74,47 +77,52 @@ export function SkillsTab({
 	skills,
 	sectionOrder,
 	onRun,
+	query = "",
 }: {
 	skills: Skill[];
 	sectionOrder: string[];
 	onRun: (content: string) => void;
+	query?: string;
 }) {
+	const filtered = useMemo(
+		() =>
+			skills.filter((s) =>
+				matchesQuery(query, s.name, s.description, s.section),
+			),
+		[skills, query],
+	);
+
 	if (skills.length === 0) {
 		return (
-			<div className="border border-border bg-card px-4 py-8 text-center">
-				<p className="text-xs tracking-wider text-muted-foreground">
-					no skills here yet, add{" "}
-					<code className="font-mono text-primary">.md</code> files to your
-					skills folder
-				</p>
-			</div>
+			<VaultEmptyState>
+				no skills here yet, add{" "}
+				<code className="font-mono text-primary">.md</code> files to your skills
+				folder
+			</VaultEmptyState>
 		);
 	}
 
-	const groups = groupSkills(skills, sectionOrder);
+	if (filtered.length === 0) {
+		return <VaultEmptyState>no matches for “{query.trim()}”</VaultEmptyState>;
+	}
+
+	const groups = groupSkills(filtered, sectionOrder);
 
 	return (
 		<div className="space-y-6">
 			{groups.map((g) => (
-				<div key={g.section ?? "__unsectioned__"} className="space-y-2">
-					<div className="flex items-center gap-2">
+				<Section
+					key={g.section ?? "__unsectioned__"}
+					title={<PrivacyMask inline>{g.section ?? "SKILLS"}</PrivacyMask>}
+					adornment={
 						<span className="w-1.5 h-1.5 rounded-full bg-primary/40 shrink-0" />
-						<PrivacyMask
-							inline
-							className="text-[10px] tracking-widest text-muted-foreground uppercase"
-						>
-							{g.section ?? "SKILLS"}
-						</PrivacyMask>
-						<span className="text-[10px] text-muted-foreground/50">
-							{g.skills.length}
-						</span>
-					</div>
-					<div className="border border-border bg-card divide-y divide-border">
-						{g.skills.map((s) => (
-							<SkillCard key={s.file} skill={s} onRun={onRun} />
-						))}
-					</div>
-				</div>
+					}
+					count={g.skills.length}
+				>
+					{g.skills.map((s) => (
+						<SkillCard key={s.file} skill={s} onRun={onRun} />
+					))}
+				</Section>
 			))}
 		</div>
 	);
