@@ -167,6 +167,20 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout release commit
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          fetch-depth: 1
+
+      - name: Read release notes from commit body
+        shell: bash
+        run: |
+          git show -s --format=%b "${GITHUB_SHA}^{commit}" > release-notes.md
+          if ! grep -q '[^[:space:]]' release-notes.md; then
+            echo "Release commit body is empty; add curated Markdown release notes."
+            exit 1
+          fi
+
       - name: Download build artifact
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4
         with:
@@ -183,6 +197,7 @@ jobs:
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2
         with:
           tag_name: ${{ github.ref_name }}
+          body_path: release-notes.md
           generate_release_notes: true
           fail_on_unmatched_files: true
           draft: false
