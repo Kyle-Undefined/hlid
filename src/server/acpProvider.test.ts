@@ -620,5 +620,6 @@ describe("AcpProvider — error handling", () => {
 			id: "fake-login",
 			name: "Fake login",
 		});
+		expect(initialized.agentInfo?.version).toBe("1.0.0");
 	});
 });

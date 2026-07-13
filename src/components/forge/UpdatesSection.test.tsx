@@ -108,6 +108,28 @@ describe("UpdatesSection", () => {
 		).toBeTruthy();
 	});
 
+	it("shows ACP updates without inventing a command for custom binaries", async () => {
+		stubFetch(
+			makeStatus({
+				cliUpdates: [
+					{
+						id: "acp:custom",
+						label: "Custom Agent (ACP)",
+						installedVersion: "1.0.0",
+						latestVersion: "2.0.0",
+						available: true,
+						checkedAt: Date.now(),
+					},
+				],
+			}),
+		);
+		render(<UpdatesSection />);
+		expect(await screen.findByText("Custom Agent (ACP) CLI")).toBeTruthy();
+		expect(
+			screen.getByText("update using the original installer"),
+		).toBeTruthy();
+	});
+
 	it("shows last-check error notice from status", async () => {
 		stubFetch(makeStatus({ error: "registry unreachable" }));
 		render(<UpdatesSection />);

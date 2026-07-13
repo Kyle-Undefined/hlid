@@ -4,23 +4,38 @@ import { resolveClaudeExecutable } from "../lib/claudePath";
 import type { CliUpdateStatus } from "../lib/cliUpdateTypes";
 import { resolveCodexExecutable } from "../lib/codexPath";
 
+import { inspectAcpAgent } from "./acpProvider";
+import { type AcpCatalogItem, AcpRegistry } from "./acpRegistry";
+import { loadConfig } from "./config";
+
 const CHECK_TTL_MS = 6 * 60 * 60 * 1000;
 const COMMAND_TIMEOUT_MS = 4_000;
 const REGISTRY_TIMEOUT_MS = 5_000;
 
-type CliId = CliUpdateStatus["id"];
+type NativeCliId = "codex" | "claude";
 
 type CliUpdateDependencies = {
-	resolveExecutable(id: CliId): string | undefined;
+	resolveExecutable(id: NativeCliId): string | undefined;
 	readVersion(executable: string): Promise<string>;
 	fetchLatest(packageName: string): Promise<string>;
 	now(): number;
 };
 
 type CliDefinition = {
-	id: CliId;
+	id: NativeCliId;
 	label: string;
 	packageName: string;
+};
+
+type AcpUpdateCandidate = {
+	item: AcpCatalogItem;
+	customExecutable: boolean;
+};
+
+type AcpUpdateDependencies = {
+	listCandidates(): Promise<AcpUpdateCandidate[]>;
+	readVersion(item: AcpCatalogItem): Promise<string>;
+	now(): number;
 };
 
 const CLI_DEFINITIONS: CliDefinition[] = [
@@ -132,7 +147,10 @@ function codexUpdateCommand(executable: string): string | undefined {
 	return undefined;
 }
 
-function updateCommand(id: CliId, executable: string): string | undefined {
+function updateCommand(
+	id: NativeCliId,
+	executable: string,
+): string | undefined {
 	return id === "claude" ? "claude update" : codexUpdateCommand(executable);
 }
 
@@ -141,6 +159,52 @@ const defaultDependencies: CliUpdateDependencies = {
 		id === "codex" ? resolveCodexExecutable() : resolveClaudeExecutable(),
 	readVersion: readInstalledVersion,
 	fetchLatest: fetchLatestPackageVersion,
+	now: Date.now,
+};
+
+const acpRegistry = new AcpRegistry();
+
+function acpUpdateCommand(candidate: AcpUpdateCandidate): string | undefined {
+	if (candidate.customExecutable) return undefined;
+	const { distribution } = candidate.item;
+	if (distribution.npx) {
+		return `bun add --global ${distribution.npx.package}`;
+	}
+	if (distribution.uvx) {
+		return `uv tool install --force ${distribution.uvx.package}`;
+	}
+	return undefined;
+}
+
+const defaultAcpDependencies: AcpUpdateDependencies = {
+	listCandidates: async () => {
+		const config = loadConfig();
+		const configured = new Map(
+			(config.acp_agents ?? []).map((agent) => [agent.id, agent]),
+		);
+		return (await acpRegistry.catalog(config))
+			.filter((item) => item.enabled && item.available)
+			.map((item) => ({
+				item,
+				customExecutable: Boolean(configured.get(item.id)?.executable),
+			}));
+	},
+	readVersion: async (item) => {
+		const initialized = await inspectAcpAgent({
+			id: item.providerId,
+			label: item.name,
+			command: item.command,
+			args: item.args,
+			env: item.env,
+		});
+		const version = initialized.agentInfo?.version;
+		const parsed =
+			typeof version === "string" ? parseCliVersion(version) : null;
+		if (!parsed) {
+			throw new Error("ACP agent did not report a version");
+		}
+		return parsed;
+	},
 	now: Date.now,
 };
 
@@ -185,7 +249,46 @@ export async function inspectCliUpdates(
 				} satisfies CliUpdateStatus;
 			}),
 		)
-	).filter((status): status is CliUpdateStatus => status != null);
+	).filter((status) => status != null);
+}
+
+export async function inspectAcpUpdates(
+	dependencies: AcpUpdateDependencies = defaultAcpDependencies,
+): Promise<CliUpdateStatus[]> {
+	const checkedAt = dependencies.now();
+	const candidates = await dependencies.listCandidates();
+	return Promise.all(
+		candidates.map(async (candidate) => {
+			const [installedResult] = await Promise.allSettled([
+				dependencies.readVersion(candidate.item),
+			]);
+			const installedVersion =
+				installedResult.status === "fulfilled" ? installedResult.value : null;
+			const latestVersion = parseCliVersion(candidate.item.version);
+			const errors = [
+				installedResult.status === "rejected"
+					? `installed version: ${installedResult.reason instanceof Error ? installedResult.reason.message : String(installedResult.reason)}`
+					: null,
+				latestVersion == null
+					? "latest version: registry did not report a version"
+					: null,
+			].filter((value): value is string => value != null);
+			const command = acpUpdateCommand(candidate);
+			return {
+				id: `acp:${candidate.item.id}`,
+				label: `${candidate.item.name} (ACP)`,
+				installedVersion,
+				latestVersion,
+				available:
+					installedVersion != null &&
+					latestVersion != null &&
+					compareCliVersions(latestVersion, installedVersion) > 0,
+				...(command ? { updateCommand: command } : {}),
+				checkedAt,
+				...(errors.length > 0 ? { error: errors.join("; ") } : {}),
+			} satisfies CliUpdateStatus;
+		}),
+	);
 }
 
 let cached: { checkedAt: number; statuses: CliUpdateStatus[] } | null = null;
@@ -198,8 +301,12 @@ export async function getCliUpdateStatuses(opts?: {
 		return cached.statuses;
 	}
 	if (inflight) return inflight;
-	const pending = inspectCliUpdates()
-		.then((statuses) => {
+	const pending = Promise.all([
+		inspectCliUpdates(),
+		inspectAcpUpdates().catch(() => []),
+	])
+		.then(([nativeStatuses, acpStatuses]) => {
+			const statuses = [...nativeStatuses, ...acpStatuses];
 			cached = { checkedAt: Date.now(), statuses };
 			return statuses;
 		})

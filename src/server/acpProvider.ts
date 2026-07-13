@@ -1085,15 +1085,27 @@ export async function inspectAcpAgent(
 	methodId?: string,
 ): Promise<InitializeResponse> {
 	const { child, connection } = createInspectionConnection(options);
+	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
-		const initialized = await connection.initialize({
-			protocolVersion: PROTOCOL_VERSION,
-			clientCapabilities: {},
-			clientInfo: { name: "Hlid", version: "1" },
-		});
-		if (methodId) await connection.authenticate({ methodId });
-		return initialized;
+		return await Promise.race([
+			(async () => {
+				const initialized = await connection.initialize({
+					protocolVersion: PROTOCOL_VERSION,
+					clientCapabilities: {},
+					clientInfo: { name: "Hlid", version: "1" },
+				});
+				if (methodId) await connection.authenticate({ methodId });
+				return initialized;
+			})(),
+			new Promise<never>((_, reject) => {
+				timer = setTimeout(
+					() => reject(new Error("ACP agent inspection timed out")),
+					10_000,
+				);
+			}),
+		]);
 	} finally {
+		if (timer !== undefined) clearTimeout(timer);
 		child.kill();
 	}
 }

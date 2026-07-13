@@ -11,7 +11,7 @@ const state = vi.hoisted(() => ({
 		available: boolean;
 		lastCheckedAt: number;
 		cliUpdates?: Array<{
-			id: "codex" | "claude";
+			id: "codex" | "claude" | `acp:${string}`;
 			label: string;
 			installedVersion: string | null;
 			latestVersion: string | null;
@@ -65,6 +65,23 @@ describe("UpdateBanner", () => {
 		render(<UpdateBanner />);
 
 		expect(screen.getByText("Codex CLI v0.144.2 available")).toBeTruthy();
+	});
+
+	it("prompts for an enabled ACP agent update", () => {
+		state.status?.cliUpdates?.push({
+			id: "acp:opencode",
+			label: "OpenCode (ACP)",
+			installedVersion: "1.0.0",
+			latestVersion: "1.1.0",
+			available: true,
+			checkedAt: Date.now(),
+		});
+
+		render(<UpdateBanner />);
+
+		expect(
+			screen.getByText("OpenCode (ACP) CLI v1.1.0 available"),
+		).toBeTruthy();
 	});
 
 	it("prioritizes an Hlid update over a provider CLI update", () => {
