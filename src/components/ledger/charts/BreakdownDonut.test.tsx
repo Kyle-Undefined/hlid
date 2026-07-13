@@ -75,7 +75,7 @@ describe("BreakdownDonut", () => {
 		const content = captured.tooltipContent;
 		if (!content) throw new Error("tooltip content not captured");
 		cleanup();
-		render(<>{content({ active: true, payload: [{ payload: rows[0] }] })}</>);
+		render(content({ active: true, payload: [{ payload: rows[0] }] }));
 		expect(screen.getByText("Opus")).toBeTruthy();
 		expect(screen.getByText("75 tok · 75.0%")).toBeTruthy();
 		expect(content({ active: false, payload: [] })).toBeNull();

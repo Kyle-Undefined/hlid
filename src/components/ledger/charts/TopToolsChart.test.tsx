@@ -66,21 +66,19 @@ describe("TopToolsChart", () => {
 		const content = captured.tooltipContent;
 		if (!content) throw new Error("tooltip content not captured");
 		render(
-			<>
-				{content({
-					active: true,
-					payload: [
-						{
-							payload: {
-								name: "create_issue",
-								fullName: "mcp__jira__create_issue",
-								count: 10,
-								errorRate: 0.2,
-							},
+			content({
+				active: true,
+				payload: [
+					{
+						payload: {
+							name: "create_issue",
+							fullName: "mcp__jira__create_issue",
+							count: 10,
+							errorRate: 0.2,
 						},
-					],
-				})}
-			</>,
+					},
+				],
+			}),
 		);
 		expect(screen.getByText("mcp__jira__create_issue")).toBeTruthy();
 		expect(screen.getByText("10 calls")).toBeTruthy();
