@@ -18,6 +18,7 @@
 		"istanbul-lib-report",
 		"istanbul-reports"
 	],
+	"ignoreUnresolvedImports": ["../../dist/server/server.js"],
 	"ignoreExports": [
 		{
 			"file": "src/hooks/wsStore.ts",
