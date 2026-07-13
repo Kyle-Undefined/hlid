@@ -16,6 +16,12 @@ import type { QueuedChatMessage } from "#/hooks/wsStore";
 import type { ChatMessage, UserMessage } from "./chatReducer";
 import { MessageList } from "./MessageList";
 
+vi.mock("./ChatMessageRow", () => ({
+	ChatMessageRow: ({ message }: { message: ChatMessage }) => (
+		<div>{"text" in message ? message.text : message.id}</div>
+	),
+}));
+
 afterEach(cleanup);
 
 beforeEach(() => {
