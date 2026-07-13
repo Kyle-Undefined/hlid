@@ -61,6 +61,25 @@ export function resizeComposer(
 	element.style.height = `${Math.min(element.scrollHeight, maxHeight)}px`;
 }
 
+/**
+ * Keep an expanding composer inside the currently visible viewport. Mobile
+ * landscape and installed-PWA keyboard transitions can leave far less height
+ * than their width suggests, so a width-only 240px cap can push the input row
+ * below an overflow-hidden chat shell.
+ */
+export function responsiveComposerMaxHeight(
+	viewportWidth: number,
+	viewportHeight: number,
+): number {
+	const mobile = viewportWidth < 768;
+	const fixedMax = mobile ? 240 : 480;
+	const viewportShare = mobile ? 0.35 : 0.5;
+	return Math.max(
+		60,
+		Math.min(fixedMax, Math.floor(viewportHeight * viewportShare)),
+	);
+}
+
 export type ChatSubmission =
 	| { kind: "queued"; message: QueuedChatMessage }
 	| {

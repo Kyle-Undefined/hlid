@@ -473,7 +473,9 @@ describe("SessionManager — provider usage refresh", () => {
 
 		await sm.runQuery("hello", () => {}, "usage-refresh-session");
 
-		expect(usageWindows).toHaveBeenCalledOnce();
+		// One live seed when the stream starts, then the authoritative completed-
+		// turn reconciliation before `done` reaches the client.
+		expect(usageWindows).toHaveBeenCalledTimes(2);
 		expect(getWindowMark("claude", "five_hour")).toMatchObject({
 			utilization: 0.42,
 			resetsAt: 1_900_000_000,
@@ -482,6 +484,90 @@ describe("SessionManager — provider usage refresh", () => {
 			"rl_claude_five_hour",
 			expect.stringContaining('"utilization":0.42'),
 		);
+	});
+
+	it("refreshes structured usage while a turn is still running", async () => {
+		vi.useFakeTimers();
+		let finishTurn = () => {};
+		const turnHeld = new Promise<void>((resolve) => {
+			finishTurn = resolve;
+		});
+		let firstRefreshStarted = () => {};
+		const firstRefresh = new Promise<void>((resolve) => {
+			firstRefreshStarted = resolve;
+		});
+		let refreshCount = 0;
+		const resetsAt = Math.floor(Date.now() / 1000) + 3600;
+		const usageWindows = vi.fn(async () => {
+			refreshCount += 1;
+			if (refreshCount === 1) firstRefreshStarted();
+			return [
+				{
+					windowId: "five_hour",
+					label: "5-HOUR",
+					utilization: refreshCount === 1 ? 0.2 : 0.91,
+					remaining: null,
+					limit: null,
+					resetsAt,
+				},
+			];
+		});
+		const provider: AgentProvider = {
+			providerId: "live-usage-test",
+			query(): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "live-usage-sdk" };
+					await turnHeld;
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 5_000,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					usageWindows,
+				};
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const running = sm.runQuery("hello", () => {}, "live-usage-session");
+
+		try {
+			await firstRefresh;
+			await vi.advanceTimersByTimeAsync(0);
+			expect(getWindowMark("live-usage-test", "five_hour")).toMatchObject({
+				utilization: 0.2,
+				resetsAt,
+			});
+
+			await vi.advanceTimersByTimeAsync(5_000);
+			expect(usageWindows).toHaveBeenCalledTimes(2);
+			expect(getWindowMark("live-usage-test", "five_hour")).toMatchObject({
+				utilization: 0.91,
+				resetsAt,
+			});
+			expect(
+				evaluateSleep("live-usage-test", {
+					enabled: true,
+					threshold: 0.9,
+					max_sleep_minutes: 360,
+					resume_buffer_seconds: 30,
+				}),
+			).toMatchObject({ reason: "threshold", utilization: 0.91 });
+
+			finishTurn();
+			await running;
+			expect(usageWindows).toHaveBeenCalledTimes(3);
+		} finally {
+			finishTurn();
+			await running;
+			vi.useRealTimers();
+		}
 	});
 
 	it("does not fail a successful turn when usage refresh rejects", async () => {

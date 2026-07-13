@@ -135,7 +135,7 @@ function isHtmlPlanPath(path: string): boolean {
 	return /(?:^|[\\/])\.hlid[\\/]plans[\\/]plan-[^\\/]+\.html$/i.test(path);
 }
 
-function codexSubagentStatus(
+export function codexSubagentStatus(
 	value: CollabAgentStatus | null | undefined,
 	previous?: SubagentSnapshot["status"],
 ): SubagentSnapshot["status"] {
@@ -158,7 +158,7 @@ function codexSubagentStatus(
 	}
 }
 
-function codexChildStep(item: Record<string, unknown>): string {
+export function codexChildStep(item: Record<string, unknown>): string {
 	const type = String(item.type ?? "activity");
 	if (type === "commandExecution") {
 		const command = typeof item.command === "string" ? item.command : "command";

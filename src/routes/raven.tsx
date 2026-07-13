@@ -46,6 +46,7 @@ import {
 	insertAtSelection,
 	prepareChatSubmission,
 	resizeComposer,
+	responsiveComposerMaxHeight,
 } from "#/lib/composer";
 import { deriveModelMismatch, fmtModel } from "#/lib/formatters";
 import {
@@ -428,10 +429,28 @@ function useRavenViewport({
 		if (atBottomRef.current) scrollChatToBottom(scrollRef.current);
 	}, [messages]);
 
+	const resizeTextarea = useCallback(() => {
+		const visibleHeight = window.visualViewport?.height ?? window.innerHeight;
+		resizeComposer(
+			textareaRef.current,
+			responsiveComposerMaxHeight(window.innerWidth, visibleHeight),
+		);
+	}, []);
+
 	// biome-ignore lint/correctness/useExhaustiveDependencies: input length triggers resize
 	useEffect(() => {
-		resizeComposer(textareaRef.current, window.innerWidth < 768 ? 240 : 480);
-	}, [input]);
+		resizeTextarea();
+	}, [input, resizeTextarea]);
+
+	useEffect(() => {
+		const visualViewport = window.visualViewport;
+		window.addEventListener("resize", resizeTextarea);
+		visualViewport?.addEventListener("resize", resizeTextarea);
+		return () => {
+			window.removeEventListener("resize", resizeTextarea);
+			visualViewport?.removeEventListener("resize", resizeTextarea);
+		};
+	}, [resizeTextarea]);
 
 	useEffect(() => {
 		if (!showModelPopup) return;
@@ -1277,6 +1296,57 @@ function RavenMessagePane({
 	);
 }
 
+interface BadgeOption {
+	value: string;
+	label: string;
+	title?: string;
+	isDefault?: boolean;
+}
+
+/**
+ * One labelled option list inside the model badge popup (model / effort /
+ * permission). All three groups share markup and selection behaviour; only
+ * the label, options, and what "select" means differ.
+ */
+function OptionGroup({
+	label,
+	options,
+	selectedValue,
+	onSelect,
+	divider = false,
+}: {
+	label: string;
+	options: BadgeOption[];
+	selectedValue: string | null | undefined;
+	onSelect: (value: string) => void;
+	divider?: boolean;
+}) {
+	if (options.length === 0) return null;
+	return (
+		<div
+			className={`space-y-1${divider ? " pt-1 border-t border-border/50" : ""}`}
+		>
+			<div className="text-muted-foreground/40">{label}</div>
+			{options.map((o) => (
+				<button
+					key={o.value}
+					type="button"
+					title={o.title}
+					onClick={() => onSelect(o.value)}
+					className={`block w-full text-left normal-case tracking-normal px-1.5 py-1 transition-colors ${
+						o.value === selectedValue
+							? "text-primary bg-primary/10"
+							: "text-foreground/70 hover:bg-accent"
+					}`}
+				>
+					{o.label}
+					{o.isDefault ? " (default)" : ""}
+				</button>
+			))}
+		</div>
+	);
+}
+
 function ChatModelBadge({
 	runtime,
 	viewport,
@@ -1359,92 +1429,67 @@ function ChatModelBadge({
 									</div>
 								</div>
 							)}
-							{modelPickerOptions.length > 0 && (
-								<div className="space-y-1">
-									<div className="text-muted-foreground/40">model</div>
-									{modelPickerOptions.map((m) => (
-										<button
-											key={m.value}
-											type="button"
-											title={m.description}
-											onClick={() => {
-												setSessionSelection((current) => ({
-													...current,
-													model: m.value,
-												}));
-												send({ type: "set_model", model: m.value });
-												setShowModelPopup(false);
-											}}
-											className={`block w-full text-left normal-case tracking-normal px-1.5 py-1 transition-colors ${
-												m.value === displayedModel
-													? "text-primary bg-primary/10"
-													: "text-foreground/70 hover:bg-accent"
-											}`}
-										>
-											{m.label}
-											{m.isDefault ? " (default)" : ""}
-										</button>
-									))}
-								</div>
-							)}
-							{effortOptions.length > 0 && (
-								<div className="space-y-1 pt-1 border-t border-border/50">
-									<div className="text-muted-foreground/40">effort</div>
-									{effortOptions.map((e) => (
-										<button
-											key={e.value}
-											type="button"
-											title={e.desc}
-											onClick={() => {
-												setSessionSelection((current) => ({
-													...current,
-													effort: e.value,
-												}));
-												send({ type: "set_effort", effort: e.value });
-												setShowModelPopup(false);
-											}}
-											className={`block w-full text-left normal-case tracking-normal px-1.5 py-1 transition-colors ${
-												e.value === displayedEffort
-													? "text-primary bg-primary/10"
-													: "text-foreground/70 hover:bg-accent"
-											}`}
-										>
-											{e.label}
-											{e.isDefault ? " (default)" : ""}
-										</button>
-									))}
-								</div>
-							)}
-							{permissionOptions.length > 0 && (
-								<div className="space-y-1 pt-1 border-t border-border/50">
-									<div className="text-muted-foreground/40">permission</div>
-									{permissionOptions.map((p) => (
-										<button
-											key={p.value}
-											type="button"
-											title={p.desc}
-											onClick={() => {
-												setSessionSelection((current) => ({
-													...current,
-													permissionMode: p.value,
-												}));
-												send({
-													type: "set_permission_mode",
-													mode: p.value,
-												});
-												setShowModelPopup(false);
-											}}
-											className={`block w-full text-left normal-case tracking-normal px-1.5 py-1 transition-colors ${
-												p.value === displayedPermissionMode
-													? "text-primary bg-primary/10"
-													: "text-foreground/70 hover:bg-accent"
-											}`}
-										>
-											{p.label}
-										</button>
-									))}
-								</div>
-							)}
+							<OptionGroup
+								label="model"
+								options={modelPickerOptions.map((m) => ({
+									value: m.value,
+									label: m.label,
+									...(m.description !== undefined
+										? { title: m.description }
+										: {}),
+									...(m.isDefault !== undefined
+										? { isDefault: m.isDefault }
+										: {}),
+								}))}
+								selectedValue={displayedModel}
+								onSelect={(value) => {
+									setSessionSelection((current) => ({
+										...current,
+										model: value,
+									}));
+									send({ type: "set_model", model: value });
+									setShowModelPopup(false);
+								}}
+							/>
+							<OptionGroup
+								label="effort"
+								divider
+								options={effortOptions.map((e) => ({
+									value: e.value,
+									label: e.label,
+									...(e.desc !== undefined ? { title: e.desc } : {}),
+									...(e.isDefault !== undefined
+										? { isDefault: e.isDefault }
+										: {}),
+								}))}
+								selectedValue={displayedEffort}
+								onSelect={(value) => {
+									setSessionSelection((current) => ({
+										...current,
+										effort: value,
+									}));
+									send({ type: "set_effort", effort: value });
+									setShowModelPopup(false);
+								}}
+							/>
+							<OptionGroup
+								label="permission"
+								divider
+								options={permissionOptions.map((p) => ({
+									value: p.value,
+									label: p.label,
+									...(p.desc !== undefined ? { title: p.desc } : {}),
+								}))}
+								selectedValue={displayedPermissionMode}
+								onSelect={(value) => {
+									setSessionSelection((current) => ({
+										...current,
+										permissionMode: value,
+									}));
+									send({ type: "set_permission_mode", mode: value });
+									setShowModelPopup(false);
+								}}
+							/>
 							<div className="normal-case tracking-normal text-muted-foreground/30 pt-1 border-t border-border/50">
 								session only — not saved to config
 							</div>

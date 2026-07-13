@@ -6,7 +6,11 @@ vi.mock("../lib/codexPath", () => ({ resolveCodexExecutable: vi.fn() }));
 
 import { spawn } from "node:child_process";
 import { resolveCodexExecutable } from "../lib/codexPath";
-import type { AgentEvent, AgentQueryParams } from "./agentProvider";
+import type {
+	AgentEvent,
+	AgentQueryParams,
+	AgentSession,
+} from "./agentProvider";
 import {
 	__resetCodexAppServersForTesting,
 	acquireCodexAppServer,
@@ -14,9 +18,11 @@ import {
 import type { SandboxPolicy } from "./codexProtocol";
 import {
 	CodexProvider,
+	codexChildStep,
 	codexLaunchConfig,
 	codexReasoningText,
 	codexSandboxPolicy,
+	codexSubagentStatus,
 	fetchCodexModels,
 	mapCodexModels,
 	sandboxMode,
@@ -578,7 +584,15 @@ describe("CodexProvider.listModels", () => {
  * `turn/start` call gets a fresh turn id so CodexAgentSession.send() can be
  * called repeatedly.
  */
-function makeFakeSessionProc(opts: { rateLimits?: unknown } = {}): {
+function makeFakeSessionProc(
+	opts: {
+		rateLimits?: unknown;
+		/** Result for `mcpServerStatus/list`; ignored when `mcpStatusError` set. */
+		mcpStatusResult?: unknown;
+		/** Reply to `mcpServerStatus/list` with a JSON-RPC error. */
+		mcpStatusError?: boolean;
+	} = {},
+): {
 	proc: FakeProc;
 	writes: string[];
 } {
@@ -619,6 +633,17 @@ function makeFakeSessionProc(opts: { rateLimits?: unknown } = {}): {
 								id: msg.id,
 								result: { turn: { id: `turn-${turnCounter}` } },
 							})}\n`,
+						),
+					);
+				} else if (msg.method === "mcpServerStatus/list") {
+					stdout.emit(
+						"data",
+						Buffer.from(
+							`${JSON.stringify(
+								opts.mcpStatusError
+									? { id: msg.id, error: { message: "unsupported" } }
+									: { id: msg.id, result: opts.mcpStatusResult ?? {} },
+							)}\n`,
 						),
 					);
 				} else if (
@@ -1581,6 +1606,133 @@ describe("CodexAgentSession — notifications", () => {
 				text: expect.stringContaining("Add a validation step."),
 			}),
 		]);
+		session.cancel();
+	});
+});
+
+describe("codexSubagentStatus", () => {
+	it("maps each known collab status onto the snapshot status", () => {
+		expect(codexSubagentStatus("pendingInit")).toBe("pending");
+		expect(codexSubagentStatus("running")).toBe("running");
+		expect(codexSubagentStatus("completed")).toBe("completed");
+		expect(codexSubagentStatus("errored")).toBe("failed");
+		expect(codexSubagentStatus("notFound")).toBe("failed");
+		expect(codexSubagentStatus("interrupted")).toBe("interrupted");
+	});
+
+	it("treats shutdown as completed only when the agent already completed", () => {
+		expect(codexSubagentStatus("shutdown", "completed")).toBe("completed");
+		expect(codexSubagentStatus("shutdown", "running")).toBe("interrupted");
+		expect(codexSubagentStatus("shutdown")).toBe("interrupted");
+	});
+
+	it("keeps the previous status for unknown or missing values", () => {
+		expect(codexSubagentStatus(null, "pending")).toBe("pending");
+		expect(codexSubagentStatus(undefined, "failed")).toBe("failed");
+		expect(codexSubagentStatus(null)).toBe("running");
+		expect(codexSubagentStatus(undefined)).toBe("running");
+	});
+});
+
+describe("codexChildStep", () => {
+	it("summarizes command executions with the truncated command line", () => {
+		expect(
+			codexChildStep({ type: "commandExecution", command: "rg auth src" }),
+		).toBe("Running rg auth src");
+		const long = "x".repeat(200);
+		expect(codexChildStep({ type: "commandExecution", command: long })).toBe(
+			`Running ${"x".repeat(120)}`,
+		);
+		expect(codexChildStep({ type: "commandExecution" })).toBe(
+			"Running command",
+		);
+	});
+
+	it("maps the known activity item types to fixed labels", () => {
+		expect(codexChildStep({ type: "fileChange" })).toBe(
+			"Applying file changes",
+		);
+		expect(codexChildStep({ type: "mcpToolCall", tool: "search" })).toBe(
+			"Calling search",
+		);
+		expect(codexChildStep({ type: "mcpToolCall", server: "linear" })).toBe(
+			"Calling linear",
+		);
+		expect(codexChildStep({ type: "mcpToolCall" })).toBe("Calling MCP tool");
+		expect(codexChildStep({ type: "webSearch" })).toBe("Searching the web");
+		expect(codexChildStep({ type: "reasoning" })).toBe("Reasoning");
+	});
+
+	it("falls back to a humanized camelCase type", () => {
+		expect(codexChildStep({ type: "customToolThing" })).toBe(
+			"Working on custom tool thing",
+		);
+		expect(codexChildStep({})).toBe("Working on activity");
+	});
+});
+
+describe("CodexAgentSession — mcpServerStatus", () => {
+	beforeEach(() => {
+		__resetCodexAppServersForTesting();
+	});
+
+	function sessionWith(
+		opts: Parameters<typeof makeFakeSessionProc>[0],
+	): AgentSession {
+		const { proc } = makeFakeSessionProc(opts);
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		return new CodexProvider().query(baseCodexParams());
+	}
+
+	it("maps app-server statuses onto the UI status vocabulary", async () => {
+		const session = sessionWith({
+			mcpStatusResult: {
+				data: [
+					{ name: "linear", status: "notLoggedIn" },
+					{ name: "sentry", status: "failed" },
+					{ name: "grafana", status: "disabled" },
+					{ name: "chrome", status: "pending" },
+					{ name: "github", status: "running" },
+					{ serverName: "playwright", authStatus: "notLoggedIn" },
+					{ status: "running" }, // nameless — dropped
+					{ name: "bare" }, // no status — defaults to pending
+				],
+			},
+		});
+		expect(await session.mcpServerStatus?.()).toEqual([
+			{ name: "linear", status: "needs-auth" },
+			{ name: "sentry", status: "failed" },
+			{ name: "grafana", status: "disabled" },
+			{ name: "chrome", status: "pending" },
+			{ name: "github", status: "connected" },
+			{ name: "playwright", status: "needs-auth" },
+			{ name: "bare", status: "pending" },
+		]);
+		session.cancel();
+	});
+
+	it("reads the legacy `servers` array when `data` is absent", async () => {
+		const session = sessionWith({
+			mcpStatusResult: {
+				servers: [{ name: "linear", status: "running" }],
+			},
+		});
+		expect(await session.mcpServerStatus?.()).toEqual([
+			{ name: "linear", status: "connected" },
+		]);
+		session.cancel();
+	});
+
+	it("returns an empty list when the shape is unrecognized", async () => {
+		const session = sessionWith({ mcpStatusResult: { nope: true } });
+		expect(await session.mcpServerStatus?.()).toEqual([]);
+		session.cancel();
+	});
+
+	it("returns an empty list when the RPC errors", async () => {
+		const session = sessionWith({ mcpStatusError: true });
+		expect(await session.mcpServerStatus?.()).toEqual([]);
 		session.cancel();
 	});
 });

@@ -110,6 +110,13 @@ type TurnState = {
 // against event-loop saturation on Windows (antivirus scans each SQLite write).
 const TEXT_WRITE_THROTTLE_MS = 800;
 
+// Structured subscription windows are provider-global but some SDKs (notably
+// Claude's) do not emit a rate-limit event for every utilization change. Poll
+// the live session while a turn is active so the usage strip and auto-sleep
+// high-water mark do not have to wait for the final `done` event. Codex keeps
+// its native account/rateLimits/updated notifications as the faster path.
+const LIVE_USAGE_REFRESH_MS = 5_000;
+
 type RunQueryArgs = [
 	userMessage: string,
 	emit: (msg: ServerMessage) => void,
@@ -1262,33 +1269,42 @@ export class SessionManager {
 		provider: AgentProvider,
 	): Promise<void> {
 		let mcpChecked = false;
-		for await (const event of session) {
-			turn.receivedAny = true;
-			if (!mcpChecked) {
-				mcpChecked = true;
-				if (session.mcpServerStatus) {
-					void session
-						.mcpServerStatus()
-						.then((statuses) => {
-							this.lastMcpStatus = statuses;
-							emit({ type: "mcp_status", servers: statuses.map(mapMcpServer) });
-						})
-						.catch(() => {});
+		let usageRefresh:
+			| ReturnType<SessionManager["startLiveProviderUsageRefresh"]>
+			| undefined;
+		try {
+			for await (const event of session) {
+				turn.receivedAny = true;
+				usageRefresh ??= this.startLiveProviderUsageRefresh(session, provider);
+				if (!mcpChecked) {
+					mcpChecked = true;
+					if (session.mcpServerStatus) {
+						void session
+							.mcpServerStatus()
+							.then((statuses) => {
+								this.lastMcpStatus = statuses;
+								emit({
+									type: "mcp_status",
+									servers: statuses.map(mapMcpServer),
+								});
+							})
+							.catch(() => {});
+					}
 				}
-			}
-			if (event.type === "done") {
-				await this.refreshProviderUsage(session, provider);
-			}
-			if (
-				await this.handleConversationEvent(
-					event,
-					sessionId,
-					emit,
-					turn,
-					provider,
+				if (event.type === "done") await usageRefresh.finish();
+				if (
+					await this.handleConversationEvent(
+						event,
+						sessionId,
+						emit,
+						turn,
+						provider,
+					)
 				)
-			)
-				return;
+					return;
+			}
+		} finally {
+			usageRefresh?.stop();
 		}
 		for (const [toolId, subagent] of turn.pendingToolUpdates) {
 			if (
@@ -1999,6 +2015,51 @@ export class SessionManager {
 			// Usage enrichment is best-effort and must never fail an otherwise
 			// successful agent turn.
 		}
+	}
+
+	private startLiveProviderUsageRefresh(
+		agentSession: AgentSession,
+		provider: AgentProvider,
+	): {
+		finish: () => Promise<void>;
+		stop: () => void;
+	} {
+		if (!agentSession.usageWindows) {
+			return { finish: async () => {}, stop: () => {} };
+		}
+
+		let timer: ReturnType<typeof setInterval> | null = null;
+		let inFlight: Promise<void> | null = null;
+		const refresh = (): Promise<void> => {
+			if (inFlight) return inFlight;
+			inFlight = this.refreshProviderUsage(agentSession, provider).finally(
+				() => {
+					inFlight = null;
+				},
+			);
+			return inFlight;
+		};
+		const stop = () => {
+			if (timer === null) return;
+			clearInterval(timer);
+			timer = null;
+		};
+
+		// Seed immediately once the provider stream is active, then reconcile at
+		// a small bounded cadence for long-running reasoning/tool loops.
+		void refresh();
+		timer = setInterval(() => void refresh(), LIVE_USAGE_REFRESH_MS);
+
+		return {
+			stop,
+			finish: async () => {
+				stop();
+				// Preserve the existing post-turn refresh even when a timer tick was
+				// already in flight: wait for it, then fetch the completed-turn value.
+				if (inFlight) await inFlight;
+				await refresh();
+			},
+		};
 	}
 
 	private async runOneTurn(...args: RunQueryArgs): Promise<void> {

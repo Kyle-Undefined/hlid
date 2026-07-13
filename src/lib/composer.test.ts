@@ -4,6 +4,7 @@ import {
 	insertAtSelection,
 	prepareChatSubmission,
 	resizeComposer,
+	responsiveComposerMaxHeight,
 } from "./composer";
 
 const key = (
@@ -58,6 +59,17 @@ describe("composer text behavior", () => {
 		const element = { scrollHeight: 500, style: { height: "10px" } };
 		resizeComposer(element, 280);
 		expect(element.style.height).toBe("280px");
+	});
+
+	it("caps mobile composers against the visible viewport height", () => {
+		expect(responsiveComposerMaxHeight(390, 844)).toBe(240);
+		expect(responsiveComposerMaxHeight(720, 320)).toBe(112);
+		expect(responsiveComposerMaxHeight(720, 120)).toBe(60);
+	});
+
+	it("retains the larger desktop cap when the viewport has room", () => {
+		expect(responsiveComposerMaxHeight(1280, 1080)).toBe(480);
+		expect(responsiveComposerMaxHeight(1280, 500)).toBe(250);
 	});
 });
 
