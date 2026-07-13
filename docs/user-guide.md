@@ -55,8 +55,9 @@ inaccessible vault path must be corrected there before vault pages can load.
 ## Your first session
 
 Open **RAVEN** and choose the provider you want to use. The provider must already
-be installed and authenticated on the Windows machine. Select an existing
-session or create a new one, optionally load a vault skill, then send a prompt.
+be available and authenticated in its configured runtime (Windows or a configured
+WSL wrapper). Select an existing session or create a new one, optionally load a
+vault or global skill, then send a prompt.
 
 ![Raven conversation showing agent output and tool activity](images/raven-tool-activity.png)
 
@@ -70,6 +71,11 @@ While an agent is working:
 - Sending another prompt queues it. The queued item appears in the conversation
   and can be canceled before it runs.
 - Agent questions appear as inline choices with an optional note field.
+- Plan mode presents a plan for approval, revision, or cancellation before the
+  implementation turn. The optional HTML toggle opens agent-authored plans in a
+  sandboxed viewer.
+- Supported providers show subagent progress inline, including status, current
+  step, runtime, and usage details.
 - The copy action on a message copies its rendered text.
 
 Drag files onto the composer or use its attachment control before sending.
@@ -83,15 +89,30 @@ Uploads can be temporary for that session or persistent vault attachments.
 
 *Watch is the landing page for recent work and quick vault context.*
 
-**WATCH** shows inbox and project status, live session state, recent query cost,
-seven- and thirty-day token activity, recent sessions, and discovered vault and
-global skills. Use it to orient yourself before opening a detailed page.
+**WATCH** is both the landing dashboard and the quickest way to start work. Its
+composer can run a prompt or discovered vault/global skill, target a registered
+agent, attach files, use voice input, continue the current session, or leave the
+run in the background. It also shows live session state, provider usage, recent
+query cost, seven- and thirty-day activity, MCP status, and recent sessions.
 
 ### Raven
 
 **RAVEN** is the main agent workspace. It combines conversation history,
 session/provider selection, skills, attachments, voice input, tool activity,
-permission requests, and queued follow-ups.
+permission requests, agent questions, plan review, subagent activity, and queued
+follow-ups. The model menu also exposes provider-supported model, effort, and
+permission choices.
+
+Use the **Plan** composer toggle when the agent should propose work before
+implementing it. Enable **HTML** alongside it for a styled plan preview; approve,
+cancel, or send revision feedback from the same plan card or viewer.
+
+The **Terminal** toggle opens a real login shell in the current vault or
+registered-agent directory. Desktop layouts show it in a split panel below the
+chat; mobile layouts switch between Chat and Terminal tabs. Closing the terminal
+disconnects and ends that shell. If Claude interactive mode is enabled in Forge,
+Raven uses the Claude CLI in a full terminal instead of the structured chat
+timeline.
 
 ![Raven conversation adapted to a mobile display](images/raven-mobile.png)
 
@@ -144,16 +165,22 @@ directory. Paths outside the vault require the external-agent option in Forge.
 
 - **Overview** summarizes the current configuration and service state.
 - **Workspace** configures the vault, folder mappings, and vocabulary.
-- **Agents** configures providers, models, permissions, and registered agents.
+- **Agents** configures the default provider, model, effort, permissions, usage
+  limits, recaps, and automatic usage-window sleep/resume behavior.
 - **Access** contains network, TLS, password, and trusted-device settings.
-- **Experience** controls interface, attachments, voice, and session behavior.
-- **Integrations** manages MCP and related connections.
-- **Developer** contains logs and API reference tools.
-- **Advanced** contains lifecycle, update, database, and diagnostic controls.
+- **Experience** controls themes, input behavior, HTML-plan defaults, voice, and
+  browser-local privacy mode.
+- **Integrations** manages MCP servers, Umbod tool policy, and the ACP catalog.
+- **Developer** switches between the event log and local API reference.
+- **Advanced** contains database maintenance, provider-session reload, restart,
+  and shutdown controls.
 
 Most edits save automatically. A visible restart marker means the server must
-restart before the new value applies. Vault and MCP changes can also require a
-session reload so the provider receives the updated context.
+restart before the new value applies; server, ACP, and Umbod configuration
+changes currently set that marker. MCP edits are synchronized to the live vault
+session. Reload a provider session after changing the working context it should
+receive; reloading clears that live provider conversation while its recorded
+Ledger history remains available.
 
 ## Remote and mobile access
 
@@ -186,12 +213,12 @@ enable voice. The chosen model is loaded locally and remains available for fast
 repeated transcription. Changing the selected model hot-loads it without a
 server restart.
 
-In Raven, tap the microphone once to begin and again to stop. On desktop, the
-configured recording shortcut (default `Alt+Shift+V`) controls the same action.
-The browser converts audio to mono 16 kHz WAV, and the Hlið host transcribes it
-locally. Audio is not stored as an attachment or database record. Transcribed
-text can be inserted into the editable draft or sent immediately, depending on
-the Forge setting.
+In Watch or Raven, tap the microphone once to begin and again to stop. On
+desktop, the configured recording shortcut (default `Alt+Shift+V`) controls the
+same action. The browser converts audio to mono 16 kHz WAV, and the Hlið host
+transcribes it locally. Audio is not stored as an attachment or database record.
+Transcribed text can be inserted into the editable draft or sent immediately,
+depending on the Forge setting.
 
 Microphone capture on another device requires the configured HTTPS endpoint. If
 the microphone is unavailable, verify browser permission, HTTPS, the selected
@@ -201,7 +228,7 @@ model, and the Forge voice toggle.
 
 The default upload limit is 25 MB. The default allowlist includes images, PDF,
 plain text, Markdown, CSV, and JSON. Both the byte limit and allowed MIME types
-can be changed in Forge or `hlid.config.toml`.
+can be changed in `hlid.config.toml`.
 
 Use ephemeral attachments for short-lived session context. Use vault
 attachments when the file should remain available in the vault after the

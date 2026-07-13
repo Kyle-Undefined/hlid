@@ -6,7 +6,9 @@ memory = ""
 
 [server]
 port = 3000
-host = "0.0.0.0"
+tls_proxy_port = 3443
+local_network_access = false
+allow_external_agents = false
 
 [voice]
 enabled = false

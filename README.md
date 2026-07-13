@@ -16,13 +16,15 @@ PARA vaults, LLM wiki vaults, and custom folder vocabularies.
 ## What Hlið provides
 
 - Persistent agent sessions with live streaming, visible tool calls, approvals,
-  attachments, queued follow-ups, and inline agent questions.
+  attachments, queued follow-ups, inline agent questions, plan review, and
+  subagent activity.
 - A vault browser, project/status views, skill discovery, attachment management,
   and usage/cost reporting.
 - Claude, Codex, and installed ACP providers behind one session interface.
 - Local Whisper transcription with no cloud audio upload.
-- Forge settings for vaults, providers, permissions, MCP servers, networking,
-  updates, lifecycle controls, and diagnostics.
+- An optional project shell in Raven and an interactive Claude CLI mode.
+- Forge settings for vaults, providers, permissions, MCP servers, ACP agents,
+  Umbod tool policy, networking, updates, lifecycle controls, and diagnostics.
 - A responsive PWA with dark and light themes, pull-to-refresh, and a privacy
   mode that obscures sensitive paths and filenames.
 
@@ -51,11 +53,12 @@ Tailscale setup.
 
 ## Start here
 
-- Open **RAVEN** to start or resume a conversation with an agent.
-- Use **WATCH** for recent activity, session status, and quick vault context.
+- Use **WATCH** to run a prompt or skill quickly, optionally in the background
+  or in the current session, while keeping recent activity and usage in view.
+- Open **RAVEN** for the full conversation, plan-review, and terminal workspace.
 - Browse notes, projects, memory, and skills in **VAULT**.
-- Open **FORGE** to configure providers, permissions, networking, voice, MCP
-  servers, updates, and lifecycle controls.
+- Open **FORGE** to configure providers, permissions, networking, voice, MCP and
+  ACP integrations, Umbod policy, updates, and lifecycle controls.
 - Follow the [user guide](docs/user-guide.md) for page explanations and common
   workflows.
 
@@ -63,12 +66,12 @@ Tailscale setup.
 
 | Page | Purpose |
 |---|---|
-| **WATCH** (`/`) | Overview of vault activity, projects, usage, recent sessions, and skills. |
-| **RAVEN** (`/raven`) | Agent chat, approvals, attachments, skills, session switching, and queued prompts. |
+| **WATCH** (`/`) | Quick prompt/skill runs, usage, MCP state, recent sessions, and vault context. |
 | **VAULT** (`/vault`) | Browse configured folders, projects, notes, memory, and skills. |
 | **RELICS** (`/relics`) | Search, inspect, and manage session and vault attachments. |
-| **LEDGER** (`/ledger`) | Inspect token usage, costs, cache behavior, context, and provider limits. |
+| **RAVEN** (`/raven`) | Full agent chat with plans, approvals, questions, attachments, queues, and a project terminal. |
 | **EINHERJAR** (`/einherjar`) | Register and configure additional working directories or personality contexts. |
+| **LEDGER** (`/ledger`) | Inspect token usage, costs, cache behavior, context, and provider limits. |
 | **FORGE** (`/forge`) | Configure Hlið, integrations, access, updates, and developer tools. |
 
 ## Configuration and data
@@ -78,8 +81,9 @@ voice models, and other runtime data under `%LOCALAPPDATA%\Hlid`.
 `hlid.config.toml` controls the vault layout, providers, server and TLS ports,
 network access, attachments, voice, UI preferences, and registered agents. Most
 settings can be managed in **FORGE**. Settings marked as restart-required take
-effect only after Hlið restarts; vault and MCP changes may require a session
-reload.
+effect only after Hlið restarts. Forge currently marks server, ACP, and Umbod
+configuration changes this way. Reload a provider session after changing the
+working context it should receive.
 
 See [`hlid.config.example.toml`](hlid.config.example.toml) for a minimal example.
 
@@ -121,7 +125,7 @@ starts when certificate paths are configured in `hlid.config.toml`.
 Useful validation commands:
 
 ```bash
-bun run check          # Biome and TypeScript
+bun run check          # Biome, TypeScript, and changed-code Fallow analysis
 bun run test           # Vitest suite
 bun run test:db        # Bun-only database/auth tests
 bun run validate       # Static checks, merged coverage, and full Fallow analysis
