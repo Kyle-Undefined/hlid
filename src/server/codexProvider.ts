@@ -560,6 +560,15 @@ class CodexAgentSession implements AgentSession {
 	}
 
 	/**
+	 * Mid-session effort switch. Same mutate-params-read-per-turn pattern as
+	 * setModel above — send() reads `this.params.effort` fresh on every
+	 * turn/start call, so this takes effect starting the next turn.
+	 */
+	async setEffort(effort: string): Promise<void> {
+		this.params = { ...this.params, effort };
+	}
+
+	/**
 	 * Mid-session permission-mode switch. Like setModel, this only mutates
 	 * the params send() reads per turn — approvalPolicy and sandboxPolicy are
 	 * both recomputed from `this.params.permissionMode` on every turn/start

@@ -12,6 +12,12 @@ export type StatusMessage = {
 	 */
 	permission_mode?: string;
 	/**
+	 * Current effort/thinking level for this session. Session-scoped like
+	 * permission_mode — reflects config defaults until a `set_effort` client
+	 * message overrides it; never persisted to hlid.config.toml.
+	 */
+	effort?: string;
+	/**
 	 * Slice C: when state=running, the turn_id of the turn the server is
 	 * currently processing. Lets the client distinguish "queued behind
 	 * running" from "currently running" in the chat queue UI without
@@ -523,6 +529,18 @@ export type ClientSetPermissionModeMessage = {
 	mode: string;
 };
 
+/**
+ * Mid-session effort/thinking-level switch for the subscribed session.
+ * Session-scoped only — never written to hlid.config.toml. Unlike
+ * `set_model`, not every provider can apply this to the already-running
+ * session (see AgentSession.setEffort) — some providers only pick it up
+ * starting with the next fresh session.
+ */
+export type ClientSetEffortMessage = {
+	type: "set_effort";
+	effort: string;
+};
+
 export type ClientMessage =
 	| ClientChatMessage
 	| ClientCancelQueuedMessage
@@ -543,4 +561,5 @@ export type ClientMessage =
 	| ClientStopSessionMessage
 	| ClientCloseSessionMessage
 	| ClientSetModelMessage
-	| ClientSetPermissionModeMessage;
+	| ClientSetPermissionModeMessage
+	| ClientSetEffortMessage;

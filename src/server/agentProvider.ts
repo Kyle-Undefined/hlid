@@ -258,6 +258,14 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 	 * permission mode mid-session.
 	 */
 	setPermissionMode?(mode: string): Promise<void>;
+	/**
+	 * Switch the effort/thinking level used for subsequent turns in this
+	 * already-running session. No-op (absent) on providers that can't change
+	 * effort mid-session — e.g. Claude's SDK Query exposes setModel but no
+	 * live effort setter, so a Claude session only picks up a new effort on
+	 * its next fresh AgentSession, not the current stream.
+	 */
+	setEffort?(effort: string): Promise<void>;
 	/** Update the per-turn HTML plan handoff without recreating the conversation. */
 	setPlanHtmlPath?(path: string | undefined): void;
 	/**

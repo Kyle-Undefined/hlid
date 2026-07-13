@@ -599,6 +599,13 @@ async function handleSessionMessage(
 		case "set_permission_mode":
 			await handlePermissionMode(context.ws, entry, msg);
 			return;
+		case "set_effort":
+			await entry.manager.setEffort(msg.effort);
+			entry.runState.broadcast({
+				type: "status",
+				...entry.manager.getStatus(),
+			});
+			return;
 		case "sync_mcp_list":
 			if (msg.agent_cwd) syncAgentMcpList(context.ws, msg.agent_cwd);
 			else syncVaultMcpList(context.pool);

@@ -62,6 +62,12 @@ type Snapshot = {
 	 * first status message arrives.
 	 */
 	permissionMode: string | null;
+	/**
+	 * Current effort/thinking level for the subscribed session. Same
+	 * session-scoped semantics as permissionMode — null until the first
+	 * status message arrives.
+	 */
+	effort: string | null;
 	hasPendingPermissions: boolean;
 	/**
 	 * Slice C: turn_id of the turn the server is currently processing
@@ -152,6 +158,7 @@ export const INITIAL_SNAPSHOT: Snapshot = {
 	model: "",
 	actualModel: null,
 	permissionMode: null,
+	effort: null,
 	hasPendingPermissions: false,
 	runningTurnId: null,
 	sleepState: null,
@@ -357,6 +364,7 @@ function onStatus(msg: Extract<ServerMessage, { type: "status" }>): void {
 		sessionState: msg.state,
 		model: msg.model,
 		permissionMode: msg.permission_mode ?? _snap.permissionMode,
+		effort: msg.effort ?? _snap.effort,
 		hasPendingPermissions: _pendingPermCount > 0,
 		runningTurnId,
 		// Sleeping only happens while running; a non-running status means any

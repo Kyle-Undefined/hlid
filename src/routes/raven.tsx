@@ -48,7 +48,11 @@ import {
 	resizeComposer,
 } from "#/lib/composer";
 import { deriveModelMismatch, fmtModel } from "#/lib/formatters";
-import { modelOptions, resolveActiveProviderId } from "#/lib/providerOptions";
+import {
+	effortOptionsFor,
+	modelOptions,
+	resolveActiveProviderId,
+} from "#/lib/providerOptions";
 import { getAgentListFn } from "#/lib/serverFns/agents";
 import { getCockpitData } from "#/lib/serverFns/cockpit";
 import { getProvidersFn, loadProviderUsages } from "#/lib/serverFns/providers";
@@ -795,6 +799,7 @@ function deriveRavenComposerState({
 		modelMismatch,
 		modelPickerOptions: modelOptions(provider),
 		permissionOptions: provider?.permissionModes ?? [],
+		effortOptions: effortOptionsFor(provider, model ?? ""),
 	};
 }
 
@@ -927,6 +932,7 @@ export function ChatPage() {
 		modelMismatch,
 		modelPickerOptions,
 		permissionOptions,
+		effortOptions,
 	} = deriveRavenComposerState({
 		config,
 		agentList,
@@ -969,6 +975,7 @@ export function ChatPage() {
 		modelMismatch,
 		modelPickerOptions,
 		permissionOptions,
+		effortOptions,
 		canSend,
 		canQueue,
 		handleSkillSelect,
@@ -1255,8 +1262,9 @@ function ChatModelBadge({
 	modelMismatch,
 	modelPickerOptions,
 	permissionOptions,
+	effortOptions,
 }: ChatComposerProps) {
-	const { model, permissionMode, send } = runtime;
+	const { model, permissionMode, effort, send } = runtime;
 	const { modelBadgeRef } = viewport;
 	return (
 		<>
@@ -1310,6 +1318,30 @@ function ChatModelBadge({
 										>
 											{m.label}
 											{m.isDefault ? " (default)" : ""}
+										</button>
+									))}
+								</div>
+							)}
+							{effortOptions.length > 0 && (
+								<div className="space-y-1 pt-1 border-t border-border/50">
+									<div className="text-muted-foreground/40">effort</div>
+									{effortOptions.map((e) => (
+										<button
+											key={e.value}
+											type="button"
+											title={e.desc}
+											onClick={() => {
+												send({ type: "set_effort", effort: e.value });
+												setShowModelPopup(false);
+											}}
+											className={`block w-full text-left normal-case tracking-normal px-1.5 py-1 transition-colors ${
+												e.value === effort
+													? "text-primary bg-primary/10"
+													: "text-foreground/70 hover:bg-accent"
+											}`}
+										>
+											{e.label}
+											{e.isDefault ? " (default)" : ""}
 										</button>
 									))}
 								</div>
@@ -1795,6 +1827,7 @@ interface ChatComposerProps {
 	modelMismatch: boolean;
 	modelPickerOptions: ReturnType<typeof modelOptions>;
 	permissionOptions: NonNullable<RavenProviders[number]["permissionModes"]>;
+	effortOptions: ReturnType<typeof effortOptionsFor>;
 	canSend: boolean;
 	canQueue: boolean;
 	handleSkillSelect: (skill: Skill) => void;

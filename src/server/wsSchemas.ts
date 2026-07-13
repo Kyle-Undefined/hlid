@@ -97,6 +97,7 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 	z.strictObject({ type: z.literal("close_session"), session_id: id }),
 	z.strictObject({ type: z.literal("set_model"), model: shortText.optional() }),
 	z.strictObject({ type: z.literal("set_permission_mode"), mode: shortText }),
+	z.strictObject({ type: z.literal("set_effort"), effort: shortText }),
 ]);
 
 export function parseClientMessage(raw: string): ClientMessage | null {

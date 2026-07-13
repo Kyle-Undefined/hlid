@@ -429,11 +429,13 @@ export class SessionManager {
 		state: SessionState;
 		model: string;
 		permission_mode: PermissionMode;
+		effort: string;
 	} {
 		return {
 			state: this.state,
 			model: this.model,
 			permission_mode: this.permissionMode,
+			effort: this.effort,
 		};
 	}
 
@@ -466,6 +468,19 @@ export class SessionManager {
 		}
 		this.permissionMode = mode as PermissionMode;
 		await this.agentSession?.setPermissionMode?.(mode);
+	}
+
+	/**
+	 * Mid-session effort switch. Session-scoped like setModel/setPermissionMode:
+	 * updates the field `buildAgentQueryParams` reads as the default effort for
+	 * the session's next fresh AgentSession, and delegates to the live
+	 * AgentSession when the active provider supports a live switch (codex).
+	 * On providers without one (claude), the new value still takes effect —
+	 * just starting with the next fresh session rather than the current turn.
+	 */
+	async setEffort(effort: string): Promise<void> {
+		this.effort = effort;
+		await this.agentSession?.setEffort?.(effort);
 	}
 
 	/**
@@ -1390,6 +1405,7 @@ export class SessionManager {
 				state: this.state,
 				model: this.model,
 				permission_mode: this.permissionMode,
+				effort: this.effort,
 			});
 		}
 	}
@@ -1781,6 +1797,7 @@ export class SessionManager {
 			state: "running",
 			model: this.model,
 			permission_mode: this.permissionMode,
+			effort: this.effort,
 			...(this.currentTurnId !== undefined
 				? { turn_id: this.currentTurnId }
 				: {}),

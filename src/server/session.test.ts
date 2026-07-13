@@ -188,6 +188,7 @@ describe("SessionManager — initial state", () => {
 			state: "idle",
 			model: "model-x",
 			permission_mode: "default",
+			effort: "medium",
 		});
 	});
 
