@@ -7,8 +7,8 @@ import {
 	subscribeUpdateStatus,
 } from "#/hooks/updateStore";
 
-function dismissedKey(version: string) {
-	return `hlid:update-dismissed:${version}`;
+function dismissedKey(updateId: string) {
+	return `hlid:update-dismissed:${updateId}`;
 }
 
 export function UpdateBanner() {
@@ -19,6 +19,12 @@ export function UpdateBanner() {
 	);
 	const [dismissed, setDismissed] = useState(false);
 	const location = useLocation();
+	const cliUpdate = status?.cliUpdates?.find((update) => update.available);
+	const updateId = status?.available
+		? `hlid:${status.latest}`
+		: cliUpdate
+			? `${cliUpdate.id}:${cliUpdate.latestVersion}`
+			: null;
 
 	// Trigger the shared fetch once. No-op if already fetched.
 	useEffect(() => {
@@ -30,18 +36,18 @@ export function UpdateBanner() {
 	// frame, quota errors) — fall back to "not dismissed" so the banner is
 	// still visible rather than crashing the component.
 	useEffect(() => {
-		if (!status?.latest) return;
+		if (!updateId) return;
 		try {
-			setDismissed(localStorage.getItem(dismissedKey(status.latest)) === "1");
+			setDismissed(localStorage.getItem(dismissedKey(updateId)) === "1");
 		} catch {
 			setDismissed(false);
 		}
-	}, [status?.latest]);
+	}, [updateId]);
 
 	function dismiss() {
-		if (status?.latest) {
+		if (updateId) {
 			try {
-				localStorage.setItem(dismissedKey(status.latest), "1");
+				localStorage.setItem(dismissedKey(updateId), "1");
 			} catch {
 				// localStorage unavailable — dismissal won't persist across
 				// reloads but the banner still hides for this session.
@@ -52,14 +58,12 @@ export function UpdateBanner() {
 
 	// Suppress when: no update ready, already dismissed, or user is on the forge
 	// page where the full update UI is already visible.
-	if (
-		!status?.available ||
-		!status.latest ||
-		dismissed ||
-		location.pathname === "/forge"
-	) {
+	if (!updateId || dismissed || location.pathname === "/forge") {
 		return null;
 	}
+	const label = status?.available
+		? `Hlid v${status.latest} available`
+		: `${cliUpdate?.label} CLI v${cliUpdate?.latestVersion} available`;
 
 	return (
 		<output
@@ -70,7 +74,7 @@ export function UpdateBanner() {
 				to="/forge"
 				className="text-[10px] tracking-widest uppercase text-primary hover:text-primary/80 transition-colors"
 			>
-				v{status.latest} available
+				{label}
 			</Link>
 			<button
 				type="button"

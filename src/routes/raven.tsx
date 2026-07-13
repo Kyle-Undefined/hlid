@@ -53,6 +53,7 @@ import {
 	modelOptions,
 	resolveActiveProviderId,
 } from "#/lib/providerOptions";
+import { scrollChatToBottom } from "#/lib/scrollContainers";
 import { getAgentListFn } from "#/lib/serverFns/agents";
 import { getCockpitData } from "#/lib/serverFns/cockpit";
 import { getProvidersFn, loadProviderUsages } from "#/lib/serverFns/providers";
@@ -424,8 +425,7 @@ function useRavenViewport({
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: messages is the scroll trigger
 	useEffect(() => {
-		if (atBottomRef.current)
-			bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+		if (atBottomRef.current) scrollChatToBottom(scrollRef.current);
 	}, [messages]);
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: input length triggers resize
@@ -1086,8 +1086,8 @@ function ChatPageContent(props: ChatPageContentProps) {
 				<RavenShellTabBar activeTab={shellTab} setActiveTab={setShellTab} />
 			)}
 			<RavenMessagePane {...props} />
-			<ChatComposer {...composerProps} />
 			{!interactiveMode && <RavenShellPane {...props} />}
+			<ChatComposer {...composerProps} />
 		</div>
 	);
 }
@@ -1151,7 +1151,7 @@ function RavenShellPane({
 		<div
 			className={`${
 				shellTab === "terminal" ? "flex" : "hidden"
-			} md:flex flex-1 md:flex-none md:h-64 overflow-hidden md:border-t md:border-border/40`}
+			} md:order-last md:flex flex-1 md:flex-none md:h-64 overflow-hidden md:border-t md:border-border/40`}
 		>
 			<TerminalView
 				sessionId={sessionId}

@@ -45,6 +45,8 @@ import { readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import { getCliUpdateStatuses } from "../server/cliUpdates";
+import type { CliUpdateStatus } from "./cliUpdateTypes";
 import { canonicalInstallDir } from "./install";
 import { CURRENT_VERSION } from "./version";
 
@@ -72,6 +74,7 @@ export type UpdateStatus = {
 	latest: string | null;
 	available: boolean;
 	lastCheckedAt: number;
+	cliUpdates: CliUpdateStatus[];
 	error?: string;
 };
 
@@ -257,7 +260,10 @@ async function fetchLatestRelease(
 	};
 }
 
-function statusFromCache(cache: UpdateCache, error?: string): UpdateStatus {
+function statusFromCache(
+	cache: UpdateCache,
+	error?: string,
+): Omit<UpdateStatus, "cliUpdates"> {
 	const latest = cache.latestVersion;
 	const available =
 		latest != null && compareVersions(latest, CURRENT_VERSION) > 0;
@@ -276,23 +282,30 @@ function statusFromCache(cache: UpdateCache, error?: string): UpdateStatus {
 export async function getStatus(opts?: {
 	force?: boolean;
 }): Promise<UpdateStatus> {
+	const cliUpdates = getCliUpdateStatuses({ force: opts?.force }).catch(
+		() => [],
+	);
+	const finish = async (status: Omit<UpdateStatus, "cliUpdates">) => ({
+		...status,
+		cliUpdates: await cliUpdates,
+	});
 	const cache = await readCache();
 	const stale = Date.now() - cache.lastCheckedAt > CHECK_TTL_MS;
-	if (!opts?.force && !stale) return statusFromCache(cache);
+	if (!opts?.force && !stale) return finish(statusFromCache(cache));
 
 	const result = await fetchLatestRelease(cache.etag);
 	if (result.kind === "not_modified") {
 		const updated: UpdateCache = { ...cache, lastCheckedAt: Date.now() };
 		await writeCache(updated).catch(() => {});
-		return statusFromCache(updated);
+		return finish(statusFromCache(updated));
 	}
 	if (result.kind === "error") {
 		// Soft fail: keep existing cache intact, surface the error so UI can
 		// show "couldn't reach github" without losing the last-known latest.
-		return statusFromCache(cache, result.error);
+		return finish(statusFromCache(cache, result.error));
 	}
 	await writeCache(result.cache).catch(() => {});
-	return statusFromCache(result.cache);
+	return finish(statusFromCache(result.cache));
 }
 
 async function streamToFile(

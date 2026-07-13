@@ -7,6 +7,7 @@ import {
 	waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { CliUpdateStatus } from "#/lib/cliUpdateTypes";
 import { UpdatesSection } from "./UpdatesSection";
 
 afterEach(() => {
@@ -19,6 +20,7 @@ type UpdateStatus = {
 	latest: string | null;
 	available: boolean;
 	lastCheckedAt: number;
+	cliUpdates?: CliUpdateStatus[];
 	error?: string;
 };
 
@@ -80,6 +82,30 @@ describe("UpdatesSection", () => {
 		expect(await screen.findByText("update available: v1.1.0")).toBeTruthy();
 		expect(screen.getByText("→ v1.1.0")).toBeTruthy();
 		expect(screen.getByRole("button", { name: "DOWNLOAD" })).toBeTruthy();
+	});
+
+	it("shows installed provider CLI versions and update instructions", async () => {
+		stubFetch(
+			makeStatus({
+				cliUpdates: [
+					{
+						id: "codex",
+						label: "Codex",
+						installedVersion: "0.144.1",
+						latestVersion: "0.144.2",
+						available: true,
+						updateCommand: "npm install --global @openai/codex@latest",
+						checkedAt: Date.now(),
+					},
+				],
+			}),
+		);
+		render(<UpdatesSection />);
+		expect(await screen.findByText("Codex CLI")).toBeTruthy();
+		expect(screen.getByText("update available: v0.144.2")).toBeTruthy();
+		expect(
+			screen.getByText("npm install --global @openai/codex@latest"),
+		).toBeTruthy();
 	});
 
 	it("shows last-check error notice from status", async () => {

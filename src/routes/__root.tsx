@@ -12,6 +12,7 @@ import { PullToRefreshIndicator } from "#/components/PullToRefreshIndicator";
 import { UpdateBanner } from "#/components/UpdateBanner";
 import * as privacyStore from "#/hooks/privacyStore";
 import { usePullToRefresh } from "#/hooks/usePullToRefresh";
+import { isRavenPath } from "#/lib/scrollContainers";
 import { logClientErrorFn } from "#/lib/serverFns/logging";
 
 import appCss from "../styles.css?url";
@@ -142,6 +143,7 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 	});
 	const wrapperRef = useRef<HTMLDivElement>(null);
 	const { pullY, isRefreshing } = usePullToRefresh(wrapperRef);
+	const ravenRoute = isRavenPath(pathname);
 
 	// JSON.stringify on enum strings ("dark"|"tan"|"same") is XSS-safe.
 	// Runs before first paint to prevent flash when mobile theme differs from desktop.
@@ -180,7 +182,10 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 							<ErrorBoundary>
 								<UpdateBanner />
 							</ErrorBoundary>
-							<main className="flex-1 min-h-0 overflow-auto overscroll-y-contain pb-[calc(3.25rem+env(safe-area-inset-bottom))] md:pb-0">
+							<main
+								key={pathname}
+								className={`flex-1 min-h-0 overscroll-y-contain pb-[calc(3.25rem+env(safe-area-inset-bottom))] md:pb-0 ${ravenRoute ? "overflow-hidden" : "overflow-auto"}`}
+							>
 								{children}
 							</main>
 							<ErrorBoundary>

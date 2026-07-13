@@ -357,7 +357,7 @@ describe("providerWindowUsage", () => {
 		).toEqual({ percentage: 75, label: "25 left" });
 	});
 
-	it("returns an empty display without usable limits", () => {
+	it("labels windows the provider does not report", () => {
 		expect(
 			providerWindowUsage({
 				...base,
@@ -365,6 +365,6 @@ describe("providerWindowUsage", () => {
 				remaining: null,
 				limit: null,
 			}),
-		).toEqual({ percentage: null, label: null });
+		).toEqual({ percentage: null, label: "not reported" });
 	});
 });

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { CliUpdateStatus } from "#/lib/cliUpdateTypes";
 import { Field, Section } from "./fields";
 
 type UpdateStatus = {
@@ -6,6 +7,7 @@ type UpdateStatus = {
 	latest: string | null;
 	available: boolean;
 	lastCheckedAt: number;
+	cliUpdates?: CliUpdateStatus[];
 	error?: string;
 };
 
@@ -195,6 +197,36 @@ function UpdatesView({
 				onDownload={onDownload}
 				onLaunch={onLaunch}
 			/>
+			{status?.cliUpdates?.map((update) => (
+				<Field
+					key={update.id}
+					label={`${update.label} CLI`}
+					hint={
+						update.error
+							? `check incomplete: ${update.error}`
+							: update.available
+								? `update available: v${update.latestVersion}`
+								: "you're on the latest version"
+					}
+				>
+					<div className="flex flex-col items-end gap-1 min-w-0">
+						<span className="text-xs font-mono text-muted-foreground">
+							v{update.installedVersion ?? "—"}
+							{update.available && update.latestVersion && (
+								<span className="text-foreground">
+									{" "}
+									→ v{update.latestVersion}
+								</span>
+							)}
+						</span>
+						{update.available && (
+							<code className="max-w-full select-all break-all text-right text-[9px] text-primary/75">
+								{update.updateCommand ?? "update using the original installer"}
+							</code>
+						)}
+					</div>
+				</Field>
+			))}
 			<UpdateNotices status={status} state={state} />
 		</Section>
 	);

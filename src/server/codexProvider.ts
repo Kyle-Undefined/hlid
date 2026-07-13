@@ -10,6 +10,7 @@ import type {
 	McpServerStatus,
 	ProviderEffortInfo,
 	ProviderModelInfo,
+	ProviderWindowReading,
 	SendOptions,
 	SlashCommand,
 	SubagentSnapshot,
@@ -436,6 +437,51 @@ function maybeUsage(value: unknown): AgentEvent | null {
 	};
 }
 
+type CodexWindowReading = Pick<
+	ProviderWindowReading,
+	"windowId" | "label" | "utilization" | "resetsAt"
+>;
+
+function mapCodexRateLimitWindows(
+	raw: unknown,
+	includeMissingUtilization = false,
+): CodexWindowReading[] {
+	const snapshot = asObj(raw) as Partial<RateLimitSnapshot>;
+	return (
+		[
+			[snapshot.primary, "five_hour"],
+			[snapshot.secondary, "weekly"],
+		] as const
+	).flatMap(([window, fallbackId]) => {
+		const value = asObj(window);
+		const usedPercent =
+			typeof value.usedPercent === "number" ? value.usedPercent : null;
+		if (usedPercent == null && !includeMissingUtilization) return [];
+		const duration =
+			typeof value.windowDurationMins === "number"
+				? value.windowDurationMins
+				: null;
+		const windowId =
+			duration == null
+				? fallbackId
+				: duration <= 24 * 60
+					? "five_hour"
+					: "weekly";
+		const rawReset = typeof value.resetsAt === "number" ? value.resetsAt : null;
+		return [
+			{
+				windowId,
+				label: windowId === "five_hour" ? "5-HOUR" : "7-DAY",
+				utilization: usedPercent == null ? null : usedPercent / 100,
+				resetsAt:
+					rawReset != null && rawReset > 1e12
+						? Math.round(rawReset / 1000)
+						: rawReset,
+			},
+		];
+	});
+}
+
 class CodexAgentSession implements AgentSession {
 	private conn: CodexAppServer | null = null;
 	private events = new AsyncQueue<AgentEvent>();
@@ -654,6 +700,18 @@ class CodexAgentSession implements AgentSession {
 		}
 	}
 
+	async usageWindows(): Promise<ProviderWindowReading[]> {
+		await this.ensureReady();
+		const response = asObj(
+			await this.request("account/rateLimits/read", undefined),
+		);
+		return mapCodexRateLimitWindows(response.rateLimits).map((reading) => ({
+			...reading,
+			remaining: null,
+			limit: null,
+		}));
+	}
+
 	[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
 		return {
 			next: () => this.events.next(),
@@ -772,37 +830,9 @@ class CodexAgentSession implements AgentSession {
 			reached === "rate_limit_reached" ||
 			reached === "workspace_owner_usage_limit_reached" ||
 			reached === "workspace_member_usage_limit_reached";
-		const windows: {
-			windowId: string;
-			utilization: number | null;
-			resetsAt: number | null;
-		}[] = [];
-		for (const [win, fallbackId] of [
-			[snapshot.primary, "five_hour"],
-			[snapshot.secondary, "weekly"],
-		] as const) {
-			const w = asObj(win);
-			const usedPercent =
-				typeof w.usedPercent === "number" ? w.usedPercent : null;
-			// A window with no reading is normally skipped, but a hard limit must
-			// still surface so downstream sleep logic sees the rejection.
-			if (usedPercent == null && !hardLimited) continue;
-			const mins =
-				typeof w.windowDurationMins === "number" ? w.windowDurationMins : null;
-			const windowId =
-				mins == null ? fallbackId : mins <= 24 * 60 ? "five_hour" : "weekly";
-			const rawReset = typeof w.resetsAt === "number" ? w.resetsAt : null;
-			// Observed epoch seconds; normalize defensively if it ever turns ms.
-			const resetsAt =
-				rawReset != null && rawReset > 1e12
-					? Math.round(rawReset / 1000)
-					: rawReset;
-			windows.push({
-				windowId,
-				utilization: usedPercent == null ? null : usedPercent / 100,
-				resetsAt,
-			});
-		}
+		// A window with no reading is normally skipped, but a hard limit must
+		// still surface so downstream sleep logic sees the rejection.
+		const windows = mapCodexRateLimitWindows(raw, hardLimited);
 		// rateLimitReachedType is snapshot-level and doesn't name the window that
 		// tripped; attribute the rejection to the most-utilized reported window
 		// (five_hour on ties or when no readings exist) so an exhausted weekly

@@ -3,11 +3,14 @@
 //
 // Pattern mirrors wsStore: useSyncExternalStore-compatible.
 
+import type { CliUpdateStatus } from "#/lib/cliUpdateTypes";
+
 export type UpdateStatus = {
 	current: string;
 	latest: string | null;
 	available: boolean;
 	lastCheckedAt: number;
+	cliUpdates?: CliUpdateStatus[];
 	error?: string;
 };
 

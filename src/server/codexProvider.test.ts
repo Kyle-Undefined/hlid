@@ -578,7 +578,10 @@ describe("CodexProvider.listModels", () => {
  * `turn/start` call gets a fresh turn id so CodexAgentSession.send() can be
  * called repeatedly.
  */
-function makeFakeSessionProc(): { proc: FakeProc; writes: string[] } {
+function makeFakeSessionProc(opts: { rateLimits?: unknown } = {}): {
+	proc: FakeProc;
+	writes: string[];
+} {
 	const stdout = new EventEmitter();
 	const stderr = new EventEmitter();
 	const proc = new EventEmitter() as FakeProc;
@@ -615,6 +618,19 @@ function makeFakeSessionProc(): { proc: FakeProc; writes: string[] } {
 							`${JSON.stringify({
 								id: msg.id,
 								result: { turn: { id: `turn-${turnCounter}` } },
+							})}\n`,
+						),
+					);
+				} else if (
+					msg.method === "account/rateLimits/read" &&
+					"rateLimits" in opts
+				) {
+					stdout.emit(
+						"data",
+						Buffer.from(
+							`${JSON.stringify({
+								id: msg.id,
+								result: { rateLimits: opts.rateLimits },
 							})}\n`,
 						),
 					);
@@ -666,6 +682,80 @@ function baseCodexParams(
 		...overrides,
 	};
 }
+
+describe("CodexAgentSession — usage windows", () => {
+	beforeEach(() => {
+		__resetCodexAppServersForTesting();
+	});
+
+	it("reads and maps both rolling Codex windows", async () => {
+		const { proc } = makeFakeSessionProc({
+			rateLimits: {
+				primary: {
+					usedPercent: 25,
+					windowDurationMins: 300,
+					resetsAt: 1_800_000_000,
+				},
+				secondary: {
+					usedPercent: 15,
+					windowDurationMins: 10_080,
+					resetsAt: 1_800_600_000,
+				},
+			},
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const session = new CodexProvider().query(baseCodexParams());
+		expect(await session.usageWindows?.()).toEqual([
+			{
+				windowId: "five_hour",
+				label: "5-HOUR",
+				utilization: 0.25,
+				resetsAt: 1_800_000_000,
+				remaining: null,
+				limit: null,
+			},
+			{
+				windowId: "weekly",
+				label: "7-DAY",
+				utilization: 0.15,
+				resetsAt: 1_800_600_000,
+				remaining: null,
+				limit: null,
+			},
+		]);
+		session.cancel();
+	});
+
+	it("uses the reported duration when Codex returns only a weekly primary", async () => {
+		const { proc } = makeFakeSessionProc({
+			rateLimits: {
+				primary: {
+					usedPercent: 15,
+					windowDurationMins: 10_080,
+					resetsAt: 1_800_600_000_000,
+				},
+				secondary: null,
+			},
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const session = new CodexProvider().query(baseCodexParams());
+		expect(await session.usageWindows?.()).toEqual([
+			{
+				windowId: "weekly",
+				label: "7-DAY",
+				utilization: 0.15,
+				resetsAt: 1_800_600_000,
+				remaining: null,
+				limit: null,
+			},
+		]);
+		session.cancel();
+	});
+});
 
 describe("CodexAgentSession — setModel", () => {
 	beforeEach(() => {

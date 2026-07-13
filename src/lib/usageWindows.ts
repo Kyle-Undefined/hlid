@@ -164,7 +164,7 @@ export function providerWindowUsage(window: ProviderWindowEntry): {
 		return { percentage, label: `${Math.floor(percentage)}%` };
 	}
 	if (window.remaining == null || window.limit == null || window.limit <= 0) {
-		return { percentage: null, label: null };
+		return { percentage: null, label: "not reported" };
 	}
 	return {
 		percentage: Math.min((1 - window.remaining / window.limit) * 100, 100),

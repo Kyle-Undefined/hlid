@@ -26,6 +26,10 @@ vi.mock("./version", () => ({
 	CURRENT_VERSION: "1.0.0",
 }));
 
+vi.mock("../server/cliUpdates", () => ({
+	getCliUpdateStatuses: vi.fn().mockResolvedValue([]),
+}));
+
 vi.mock("node:fs/promises", () => ({
 	readFile: vi.fn(),
 	writeFile: vi.fn(),
@@ -60,6 +64,7 @@ import {
 	unlinkSync,
 } from "node:fs";
 import { readFile, writeFile } from "node:fs/promises";
+import { getCliUpdateStatuses } from "../server/cliUpdates";
 import { canonicalInstallDir } from "./install";
 import {
 	applyUpdate,
@@ -83,6 +88,7 @@ beforeEach(() => {
 	vi.mocked(realpathSync).mockImplementation((path) => String(path));
 	vi.mocked(rmSync).mockReturnValue(undefined);
 	vi.mocked(unlinkSync).mockReturnValue(undefined);
+	vi.mocked(getCliUpdateStatuses).mockResolvedValue([]);
 });
 
 afterEach(() => {

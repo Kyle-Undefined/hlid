@@ -37,7 +37,9 @@ vi.mock("#/components/cockpit/SlashPicker", () => ({
 vi.mock("#/components/PrivacyMask", () => ({
 	PrivacyMask: ({ children }: { children: React.ReactNode }) => children,
 }));
-vi.mock("#/components/TerminalView", () => ({ TerminalView: () => null }));
+vi.mock("#/components/TerminalView", () => ({
+	TerminalView: () => <div data-testid="terminal-view" />,
+}));
 vi.mock("#/components/usage/ProviderUsageStrip", () => ({
 	ProviderUsageStrip: () => null,
 }));
@@ -174,6 +176,27 @@ beforeEach(() => {
 });
 
 describe("Raven composed submission behavior", () => {
+	it("keeps mobile terminal tab content above the composer while desktop orders it last", () => {
+		render(<ChatPage />);
+
+		fireEvent.click(screen.getByRole("button", { name: "terminal" }));
+
+		const terminal = screen.getByTestId("terminal-view");
+		const composer = screen.getByRole("combobox");
+		const terminalPane = terminal.parentElement;
+		const terminalTabs = screen.getAllByRole("button", { name: "terminal" });
+
+		expect(
+			terminal.compareDocumentPosition(composer) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		expect(
+			terminalTabs[0].compareDocumentPosition(terminal) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		expect(terminalPane?.className).toContain("md:order-last");
+	});
+
 	it("shows the selected Einherjar model, effort, and permission instead of stale vault state", () => {
 		state.loaderData = {
 			...state.loaderData,
