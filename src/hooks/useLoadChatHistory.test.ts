@@ -13,6 +13,7 @@
 // @vitest-environment jsdom
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ServerMessage } from "#/server/protocol";
 
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
@@ -623,7 +624,7 @@ function makeAssistantRowWithTools(
 	};
 }
 
-describe("useLoadChatHistory — placeholder reuse during running turn", () => {
+describe("useLoadChatHistory — in-flight assistant reuse during running turn", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		_seq = 0;
@@ -718,7 +719,7 @@ describe("useLoadChatHistory — placeholder reuse during running turn", () => {
 		expect(pendingIdRef.current).toBe(addAssistantCalls[0][0].id);
 	});
 
-	it("opens a fresh bubble when last assistant row has non-empty text (not a placeholder)", async () => {
+	it("reuses the in-flight assistant when its persisted text is non-empty", async () => {
 		const dispatch = vi.fn();
 		const historyReadyRef = { current: false };
 		const pendingIdRef = { current: null as string | null };
@@ -726,7 +727,7 @@ describe("useLoadChatHistory — placeholder reuse during running turn", () => {
 
 		vi.mocked(getSessionDataFn).mockResolvedValue([
 			makeRow("user", "hi", 1000),
-			makeRow("assistant", "completed turn", 2000),
+			makeRow("assistant", "partial response", 2000),
 		]);
 
 		renderHistory({
@@ -745,10 +746,16 @@ describe("useLoadChatHistory — placeholder reuse during running turn", () => {
 		const addAssistantCalls = dispatch.mock.calls.filter(
 			([a]) => a.type === "ADD_ASSISTANT",
 		);
-		expect(addAssistantCalls).toHaveLength(1);
+		expect(addAssistantCalls).toHaveLength(0);
+		const loadCall = dispatch.mock.calls.find(
+			([a]) => a.type === "LOAD_HISTORY",
+		);
+		const items = loadCall?.[0].items as { role: string; id: string }[];
+		const assistant = items.find((item) => item.role === "assistant");
+		expect(pendingIdRef.current).toBe(assistant?.id);
 	});
 
-	it("dedupes drained tool_event/tool_result whose tool_use_id is already on the placeholder, and drops chunks (DB streams text)", async () => {
+	it("forwards replay events after reusing the persisted in-flight assistant", async () => {
 		const dispatch = vi.fn();
 		const historyReadyRef = { current: false };
 		const pendingIdRef = { current: null as string | null };
@@ -759,15 +766,17 @@ describe("useLoadChatHistory — placeholder reuse during running turn", () => {
 			makeAssistantRowWithTools(["tu-1"]),
 		]);
 
-		// Buffer contains: duplicate tu-1 events, a fresh tu-2, a chunk (must be
-		// dropped — assistant text streams to DB row directly), and an
-		// ask_user_question (NOT persisted to DB, must pass through).
-		const handleWsMessage = vi.fn();
+		// Buffer contains duplicate tu-1 events, a fresh tu-2, an offset-aware
+		// chunk (the reducer can safely reconcile it), and an ask_user_question.
+		const readyStates: boolean[] = [];
+		const handleWsMessage = vi.fn((_message: ServerMessage) => {
+			readyStates.push(historyReadyRef.current);
+		});
 		vi.mocked(wsStore.drainMessageBuffer).mockReturnValue([
 			{ type: "tool_event", id: "tu-1", name: "Read", input: {} },
 			{ type: "tool_result", id: "tu-1", content: "duplicate" },
 			{ type: "tool_event", id: "tu-2", name: "Read", input: {} },
-			{ type: "chunk", text: "live text" },
+			{ type: "chunk", text: "live text", offset: 0 },
 			{
 				type: "ask_user_question",
 				id: "aq-1",
@@ -789,8 +798,12 @@ describe("useLoadChatHistory — placeholder reuse during running turn", () => {
 		await act(async () => {});
 
 		const forwarded = handleWsMessage.mock.calls.map((c) => c[0]);
+		expect(readyStates.every(Boolean)).toBe(true);
 		expect(forwarded).toEqual([
+			{ type: "tool_event", id: "tu-1", name: "Read", input: {} },
+			{ type: "tool_result", id: "tu-1", content: "duplicate" },
 			{ type: "tool_event", id: "tu-2", name: "Read", input: {} },
+			{ type: "chunk", text: "live text", offset: 0 },
 			{
 				type: "ask_user_question",
 				id: "aq-1",

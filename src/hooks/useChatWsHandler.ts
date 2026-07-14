@@ -122,7 +122,12 @@ function dispatchActiveMessage(
 	const { dispatch, pendingIdRef, lastAssistantIdRef } = context;
 	switch (msg.type) {
 		case "chunk":
-			dispatch({ type: "APPEND_CHUNK", id: activeId, text: msg.text });
+			dispatch({
+				type: "APPEND_CHUNK",
+				id: activeId,
+				text: msg.text,
+				...(msg.offset !== undefined ? { offset: msg.offset } : {}),
+			});
 			break;
 		case "tool_event":
 			dispatch({ type: "ADD_TOOL_EVENT", id: activeId, event: msg });

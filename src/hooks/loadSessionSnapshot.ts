@@ -117,58 +117,42 @@ function mapSessionRows(
 type SessionItems = ReturnType<typeof mapSessionRows>;
 
 /**
- * Find the in-flight assistant placeholder (last assistant row with empty
- * text). The server pre-inserts this on the first tool_start so a mid-turn
- * reload can show the tool calls. If found, returns the id used in the mapped
- * items (so callers can reuse it as pendingIdRef instead of dispatching a
- * fresh ADD_ASSISTANT).
+ * Find the in-flight assistant row. The server pre-inserts it on the first
+ * text/tool event and continuously persists partial text, so it may already
+ * be non-empty when a remount snapshot is read. If the last message is an
+ * assistant while the session is running, reuse its mapped id for live deltas.
  */
-function findPlaceholderAssistant(
+function findInFlightAssistant(
 	items: SessionItems,
-): { id: string; toolIds: Set<string> } | null {
+): { id: string; text: string } | null {
 	for (let i = items.length - 1; i >= 0; i--) {
 		const item = items[i];
 		if (item.kind !== "message") continue;
 		if (item.role === "user") return null;
-		if (item.role === "assistant" && item.text === "") {
-			const toolIds = new Set<string>();
-			for (const te of item.toolEvents ?? []) toolIds.add(te.id);
-			return { id: item.id, toolIds };
+		if (item.role === "assistant") {
+			return { id: item.id, text: item.text };
 		}
-		// Last assistant row already has text — not a placeholder.
 		return null;
 	}
 	return null;
 }
 
 /**
- * Drain wsStore buffer into the chat handler when reusing a placeholder.
+ * Drain wsStore buffer into the chat handler when reusing an in-flight row.
  *
- * The server is the source of truth: assistant text streams to DB on every
- * chunk, tool_event/tool_result rows persist live, plan proposals + permissions
- * are written immediately. So the buffer (events that arrived while the
- * component was unmounted) is mostly redundant on a placeholder reload —
- * everything's already in the LOAD_HISTORY snapshot.
- *
- * Skip:
- *   - chunk: assistant text already in DB row.text
- *   - tool_event/tool_result whose tool_use_id is on the placeholder.
- *
- * Pass through everything else (status, usage_update, ask_user_question, etc.)
- * because those aren't fully captured in the message row snapshot.
+ * Offset-aware chunks and ID-bearing interaction/tool events are idempotent in
+ * the reducer, so replay them after LOAD_HISTORY. Only offset-less legacy chunks
+ * are unsafe once the DB snapshot already contains assistant text.
  */
 function drainBufferDeduped(
 	handle: (msg: ServerMessage) => void,
-	knownToolIds: Set<string>,
+	hasPersistedText: boolean,
 ): void {
 	for (const msg of wsStore.drainMessageBuffer()) {
-		if (msg.type === "chunk") continue;
-		if (
-			(msg.type === "tool_event" ||
-				msg.type === "tool_update" ||
-				msg.type === "tool_result") &&
-			knownToolIds.has(msg.id)
-		) {
+		// Offset-aware chunks are safe to replay: APPEND_CHUNK trims the portion
+		// already present in the DB snapshot. Legacy offset-less chunks cannot be
+		// reconciled once text was persisted, so retain the previous drop behavior.
+		if (msg.type === "chunk" && msg.offset === undefined && hasPersistedText) {
 			continue;
 		}
 		handle(msg);
@@ -187,7 +171,7 @@ function applyCtx(ctx: CtxRow, sessionId: string): void {
 /**
  * Fetches a session's full history (messages, permissions, plans, ask-user
  * questions, context), applies it to the reducer via LOAD_HISTORY, and seeds
- * a pending assistant bubble (reusing an in-flight placeholder if one was
+ * a pending assistant bubble (reusing an in-flight assistant row if one was
  * persisted) when the session is still running — draining any buffered
  * events onto it. Shared by the initial load and reconnect-recovery effects
  * in useLoadChatHistory, which differ only in what happens around this call.
@@ -196,12 +180,14 @@ export async function loadSessionSnapshot({
 	sessionId,
 	dispatch,
 	pendingIdRef,
+	historyReadyRef,
 	handleWsMessage,
 	isCancelled,
 }: {
 	sessionId: string;
 	dispatch: React.Dispatch<Action>;
 	pendingIdRef: React.MutableRefObject<string | null>;
+	historyReadyRef: React.MutableRefObject<boolean>;
 	handleWsMessage: (msg: ServerMessage) => void;
 	/** Checked right after the fetch resolves; skips all dispatches if true (effect was cleaned up or superseded). */
 	isCancelled: () => boolean;
@@ -217,7 +203,11 @@ export async function loadSessionSnapshot({
 	applyCtx(ctx, sessionId);
 	const items = mapSessionRows(rows, permEvents, planRows, aukRows);
 	dispatch({ type: "LOAD_HISTORY", items });
-	const placeholder = findPlaceholderAssistant(items);
+	// Dispatches are processed in order, so opening the gate here lets buffered
+	// events enqueue immediately after LOAD_HISTORY without being discarded by
+	// useChatWsHandler during an initial remount.
+	historyReadyRef.current = true;
+	const inFlightAssistant = findInFlightAssistant(items);
 
 	// Reset any stale pending ID — LOAD_HISTORY wiped the bubble it referenced,
 	// so we must start fresh before draining. Without this, chunks buffered
@@ -226,14 +216,12 @@ export async function loadSessionSnapshot({
 	pendingIdRef.current = null;
 
 	if (wsStore.getSnapshot().sessionState === "running") {
-		if (placeholder) {
-			// Reuse the in-flight assistant placeholder loaded from DB instead
-			// of opening a fresh bubble — otherwise the user sees two
-			// assistant blocks (placeholder with persisted tool_events + new
-			// empty bubble for live chunks). Dedup the buffer so already
-			// persisted tool_events don't reapply.
-			pendingIdRef.current = placeholder.id;
-			drainBufferDeduped(handleWsMessage, placeholder.toolIds);
+		if (inFlightAssistant) {
+			// Reuse the in-flight assistant row loaded from DB instead of opening
+			// a fresh bubble. Offset-aware chunk replay and tool-id deduplication
+			// make repeated subscribe/remount recovery idempotent.
+			pendingIdRef.current = inFlightAssistant.id;
+			drainBufferDeduped(handleWsMessage, inFlightAssistant.text.length > 0);
 		} else {
 			const newId = uid();
 			pendingIdRef.current = newId;

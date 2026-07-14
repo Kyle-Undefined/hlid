@@ -288,13 +288,20 @@ describe("useChatWsHandler — immediate messages", () => {
 describe("useChatWsHandler — assistant lifecycle", () => {
 	it("creates one pending assistant and appends every streamed chunk to it", () => {
 		const { handler, dispatch, refs } = renderHandler();
-		handler({ type: "chunk", text: "first" });
-		handler({ type: "chunk", text: " second" });
+		handler({ type: "chunk", text: "first", offset: 0 });
+		handler({ type: "chunk", text: " second", offset: 5 });
 		expect(refs.pendingIdRef.current).toBe("test-uid");
 		expect(dispatch.mock.calls).toEqual([
 			[{ type: "ADD_ASSISTANT", id: "test-uid" }],
-			[{ type: "APPEND_CHUNK", id: "test-uid", text: "first" }],
-			[{ type: "APPEND_CHUNK", id: "test-uid", text: " second" }],
+			[{ type: "APPEND_CHUNK", id: "test-uid", text: "first", offset: 0 }],
+			[
+				{
+					type: "APPEND_CHUNK",
+					id: "test-uid",
+					text: " second",
+					offset: 5,
+				},
+			],
 		]);
 	});
 

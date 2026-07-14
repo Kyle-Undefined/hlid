@@ -68,6 +68,7 @@ export function useLoadChatHistory({
 			sessionId: existingSessionId,
 			dispatch,
 			pendingIdRef,
+			historyReadyRef,
 			handleWsMessage,
 			isCancelled: () => cancelled,
 		})
@@ -133,6 +134,7 @@ export function useLoadChatHistory({
 			sessionId: sid,
 			dispatch,
 			pendingIdRef,
+			historyReadyRef,
 			handleWsMessage,
 			isCancelled: () => cancelled,
 		})

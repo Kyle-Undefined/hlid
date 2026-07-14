@@ -1160,8 +1160,9 @@ export class SessionManager {
 			!event.text.startsWith("\n")
 				? `\n\n${event.text}`
 				: event.text;
+		const offset = turn.assistantText.length;
 		turn.assistantText += text;
-		emit({ type: "chunk", text });
+		emit({ type: "chunk", text, offset });
 		if (sessionId) {
 			this.ensureAssistantRow(turn, sessionId);
 			this.scheduleTextWrite(turn, sessionId);

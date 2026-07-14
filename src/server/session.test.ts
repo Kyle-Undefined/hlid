@@ -2692,8 +2692,17 @@ describe("SessionManager — live tool_event persistence", () => {
 		);
 
 		const sm = new SessionManager(makeConfig(), makeProviders(provider));
-		const runPromise = sm.runQuery("hi", () => {}, "sess-live-text");
+		const emitted: ServerMessage[] = [];
+		const runPromise = sm.runQuery(
+			"hi",
+			(message) => emitted.push(message),
+			"sess-live-text",
+		);
 		await gateReached;
+		expect(emitted.filter((message) => message.type === "chunk")).toEqual([
+			{ type: "chunk", text: "Hello, ", offset: 0 },
+			{ type: "chunk", text: "world.", offset: 7 },
+		]);
 
 		// Placeholder inserted on first text_delta. Both chunks fall inside the
 		// ~150ms throttle window, so a single setMessageText fires with the

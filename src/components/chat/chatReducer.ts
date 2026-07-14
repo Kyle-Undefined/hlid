@@ -107,7 +107,7 @@ export type Action =
 			 */
 			afterUserId?: string;
 	  }
-	| { type: "APPEND_CHUNK"; id: string; text: string }
+	| { type: "APPEND_CHUNK"; id: string; text: string; offset?: number }
 	| { type: "ADD_TOOL_EVENT"; id: string; event: ToolEventMessage }
 	| {
 			type: "UPDATE_TOOL_EVENT";
@@ -399,15 +399,24 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 			return [...state, placeholder];
 		}
 		case "APPEND_CHUNK":
-			return patchMessage(state, action.id, "assistant", (m) => ({
-				...m,
-				text: m.text + action.text,
-			}));
+			return patchMessage(state, action.id, "assistant", (m) => {
+				if (action.offset === undefined) {
+					return { ...m, text: m.text + action.text };
+				}
+				const consumed = m.text.length - action.offset;
+				if (consumed >= action.text.length) return m;
+				// A negative value means an earlier delta is missing. That should not
+				// occur in a live stream, but appending the full chunk is safer than
+				// silently dropping visible output if a legacy replay buffer was capped.
+				const suffix = action.text.slice(Math.max(0, consumed));
+				return { ...m, text: m.text + suffix };
+			});
 		case "ADD_TOOL_EVENT":
-			return patchMessage(state, action.id, "assistant", (m) => ({
-				...m,
-				toolEvents: [...m.toolEvents, action.event],
-			}));
+			return patchMessage(state, action.id, "assistant", (m) =>
+				m.toolEvents.some((event) => event.id === action.event.id)
+					? m
+					: { ...m, toolEvents: [...m.toolEvents, action.event] },
+			);
 		case "UPDATE_TOOL_EVENT":
 			return patchToolEvent(state, action.toolUseId, (te) => ({
 				...te,
@@ -465,6 +474,14 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 				recap: action.recap,
 			}));
 		case "ADD_PERMISSION":
+			if (
+				state.some(
+					(message) =>
+						message.role === "permission" && message.id === action.msg.id,
+				)
+			) {
+				return state;
+			}
 			return [
 				...state,
 				{

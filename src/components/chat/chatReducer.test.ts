@@ -123,6 +123,37 @@ describe("APPEND_CHUNK", () => {
 		if (msg.role === "assistant") expect(msg.text).toBe("foobar");
 	});
 
+	it("applies offset chunks idempotently across repeated replay", () => {
+		let state = withAssistant("a1");
+		for (const action of [
+			{ type: "APPEND_CHUNK" as const, id: "a1", text: "Hello", offset: 0 },
+			{ type: "APPEND_CHUNK" as const, id: "a1", text: " world", offset: 5 },
+			{ type: "APPEND_CHUNK" as const, id: "a1", text: "Hello", offset: 0 },
+			{ type: "APPEND_CHUNK" as const, id: "a1", text: " world", offset: 5 },
+		]) {
+			state = reducer(state, action);
+		}
+		const msg = state[0];
+		if (msg.role === "assistant") expect(msg.text).toBe("Hello world");
+	});
+
+	it("appends only the unpersisted suffix of an overlapping chunk", () => {
+		let state = withAssistant("a1");
+		state = reducer(state, {
+			type: "APPEND_CHUNK",
+			id: "a1",
+			text: "Hello wor",
+		});
+		state = reducer(state, {
+			type: "APPEND_CHUNK",
+			id: "a1",
+			text: "world",
+			offset: 6,
+		});
+		const msg = state[0];
+		if (msg.role === "assistant") expect(msg.text).toBe("Hello world");
+	});
+
 	it("ignores id mismatch", () => {
 		const state = reducer(withAssistant("a1"), {
 			type: "APPEND_CHUNK",
@@ -153,6 +184,27 @@ describe("ADD_TOOL_EVENT", () => {
 			expect(msg.toolEvents).toHaveLength(1);
 			expect(msg.toolEvents[0].name).toBe("Bash");
 		}
+	});
+
+	it("does not duplicate a replayed tool event", () => {
+		const event = {
+			type: "tool_event" as const,
+			id: "te1",
+			name: "Bash",
+			input: { command: "ls" },
+		};
+		let state = reducer(withAssistant("a1"), {
+			type: "ADD_TOOL_EVENT",
+			id: "a1",
+			event,
+		});
+		state = reducer(state, {
+			type: "ADD_TOOL_EVENT",
+			id: "a1",
+			event,
+		});
+		const msg = state[0];
+		if (msg.role === "assistant") expect(msg.toolEvents).toHaveLength(1);
 	});
 });
 
@@ -493,6 +545,18 @@ describe("ADD_PERMISSION", () => {
 			toolName: "Bash",
 			decision: "pending",
 		});
+	});
+
+	it("does not duplicate a replayed permission request", () => {
+		const msg = {
+			type: "permission_request" as const,
+			id: "p1",
+			toolName: "Bash",
+			title: "Run command",
+		};
+		let state = reducer(empty(), { type: "ADD_PERMISSION", msg });
+		state = reducer(state, { type: "ADD_PERMISSION", msg });
+		expect(state).toHaveLength(1);
 	});
 });
 

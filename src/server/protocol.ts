@@ -29,6 +29,12 @@ export type StatusMessage = {
 export type ChunkMessage = {
 	type: "chunk";
 	text: string;
+	/**
+	 * UTF-16 offset of this delta within the current assistant turn. Replayed
+	 * chunks keep the same offset so clients can apply them idempotently after
+	 * a remount or WebSocket reconnect.
+	 */
+	offset?: number;
 };
 
 export type ToolEventMessage = {
