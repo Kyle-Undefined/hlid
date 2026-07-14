@@ -214,11 +214,7 @@ async function readWslCli(
 	distro: string,
 	id: NativeCliId,
 ): Promise<WslCliInfo> {
-	const script = [
-		`command -v ${id}`,
-		`${id} --version`,
-		`readlink -f "$(command -v ${id})"`,
-	].join(" && ");
+	const script = buildWslCliProbeScript(id);
 	const result = await runBoundedProcess(
 		"wsl.exe",
 		["-d", distro, "--", "bash", "-lc", script],
@@ -238,6 +234,17 @@ async function readWslCli(
 		throw new Error("WSL CLI version output was not recognized");
 	}
 	return { version, executable };
+}
+
+export function buildWslCliProbeScript(id: NativeCliId): string {
+	// Avoid command substitution here. wsl.exe can expand $(command -v ...)
+	// before the login shell has loaded the user's PATH, which hides CLIs
+	// installed in locations such as ~/.local/bin and ~/.bun/bin.
+	return [
+		`command -v ${id}`,
+		`${id} --version`,
+		`command -v ${id} | xargs -r readlink -f`,
+	].join(" && ");
 }
 
 function configuredWslDistros(): string[] {

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AcpCatalogItem } from "./acpRegistry";
 import {
+	buildWslCliProbeScript,
 	compareCliVersions,
 	inspectAcpUpdates,
 	inspectCliUpdates,
@@ -37,6 +38,15 @@ describe("CLI update discovery", () => {
 		expect(compareCliVersions("0.144.2", "0.144.1")).toBeGreaterThan(0);
 		expect(compareCliVersions("2.1.207", "2.1.207")).toBe(0);
 		expect(compareCliVersions("1.0.0-beta", "1.0.0")).toBeLessThan(0);
+	});
+
+	it("resolves WSL CLIs after the login shell loads the user PATH", () => {
+		const script = buildWslCliProbeScript("claude");
+
+		expect(script).toBe(
+			"command -v claude && claude --version && command -v claude | xargs -r readlink -f",
+		);
+		expect(script).not.toContain("$(command -v");
 	});
 
 	it("reports updates only for installed CLIs", async () => {
@@ -180,6 +190,35 @@ describe("CLI update discovery", () => {
 				updateCommand: "sudo npm install --global @openai/codex@latest",
 				updateMode: "interactive",
 				requiresElevation: true,
+				checkedAt: 1_800_000_000_000,
+			},
+		]);
+	});
+
+	it("can automatically update a user-local WSL Claude install", async () => {
+		const statuses = await inspectWslUpdates({
+			listDistros: () => ["Ubuntu-24.04"],
+			readCli: vi.fn(async (_distro, id) => {
+				if (id === "codex") throw new Error("not installed");
+				return {
+					version: "2.1.207",
+					executable: "/home/kyle/.local/share/claude/versions/2.1.207",
+				};
+			}),
+			fetchLatest: vi.fn().mockResolvedValue("2.1.208"),
+			now: () => 1_800_000_000_000,
+		});
+
+		expect(statuses).toEqual([
+			{
+				id: "wsl:Ubuntu-24.04:claude",
+				label: "Claude Code (Ubuntu-24.04)",
+				installedVersion: "2.1.207",
+				latestVersion: "2.1.208",
+				available: true,
+				updateCommand: "claude update",
+				updateMode: "automatic",
+				requiresElevation: false,
 				checkedAt: 1_800_000_000_000,
 			},
 		]);
