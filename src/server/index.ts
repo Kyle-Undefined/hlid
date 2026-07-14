@@ -551,18 +551,18 @@ console.log(`Hlid server on :${PORT}${process.env.HLID_TLS ? " (TLS)" : ""}`);
 // Terminates TLS and forwards plain HTTP → UI_PORT, plain WS → PORT.
 // Starts whenever cert+key are configured; no separate process needed.
 if (config.server.tls_cert_path && config.server.tls_key_path) {
-	startTlsProxy(
-		config.server.tls_proxy_port,
-		UI_PORT,
-		PORT,
-		BIND_HOST,
-		config.server.tls_cert_path,
-		config.server.tls_key_path,
-		config.server.local_network_access,
-		SERVER_TOKEN,
-		Math.max(
+	startTlsProxy({
+		tlsPort: config.server.tls_proxy_port,
+		uiPort: UI_PORT,
+		wsPort: PORT,
+		bindHost: BIND_HOST,
+		certPath: config.server.tls_cert_path,
+		keyPath: config.server.tls_key_path,
+		localNetworkAccess: config.server.local_network_access,
+		internalToken: SERVER_TOKEN,
+		maxBodyBytes: Math.max(
 			MAX_VOICE_BODY_BYTES,
 			config.attachments.max_bytes + MULTIPART_OVERHEAD_BYTES,
 		),
-	);
+	});
 }

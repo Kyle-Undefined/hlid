@@ -2032,19 +2032,19 @@ export class SessionManager {
 			provider.providerId === "claude"
 				? this.claudeExecutable
 				: this.codexExecutable;
-		void generateTurnRecap(
-			sessionId ?? null,
-			turn.lastAssistantSeq,
+		void generateTurnRecap({
+			sessionId: sessionId ?? null,
+			assistantSeq: turn.lastAssistantSeq,
 			userMessage,
-			turn.lastTurnToolEvents,
-			turn.lastAssistantText,
+			toolEvents: turn.lastTurnToolEvents,
+			assistantText: turn.lastAssistantText,
 			emit,
-			this.vaultPath,
+			vaultPath: this.vaultPath,
 			executable,
-			turn.sdkSummary,
+			sdkSummary: turn.sdkSummary,
 			provider,
-			agentSettings?.recapModel ?? this.recapModel,
-		).catch(() => {});
+			recapModel: agentSettings?.recapModel ?? this.recapModel,
+		}).catch(() => {});
 	}
 
 	private async refreshProviderUsage(

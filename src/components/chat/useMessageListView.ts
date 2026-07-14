@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import type { QueuedChatMessage } from "#/hooks/wsStore";
+import type { QueuedChatMessage } from "#/hooks/wsChatQueueStore";
 import { approvedLabel } from "#/server/protocol";
 import type { ChatMessage } from "./chatReducer";
 import type { UserMsgQueueState } from "./UserMsg";

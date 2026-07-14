@@ -1,6 +1,6 @@
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { AggStats } from "#/db";
-import type * as wsStore from "#/hooks/wsStore";
+import type { LiveStats } from "#/hooks/wsLiveStatsStore";
 import { formatDisplayCost, totalDisplayCost } from "#/lib/costDisplay";
 import { fmt, fmtMs } from "#/lib/formatters";
 
@@ -9,7 +9,7 @@ export function DashboardHeader({
 	agg,
 	isConnected,
 }: {
-	stats: wsStore.LiveStats;
+	stats: LiveStats;
 	agg: AggStats;
 	isConnected: boolean;
 }) {

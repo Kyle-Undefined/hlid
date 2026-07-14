@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { DashboardHeader } from "#/components/cockpit/DashboardHeader";
 import type { AggStats } from "#/db";
-import type { LiveStats } from "#/hooks/wsStore";
+import type { LiveStats } from "#/hooks/wsLiveStatsStore";
 
 export function MobileStatsPanel({
 	stats,

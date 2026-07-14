@@ -1232,6 +1232,66 @@ describe("usage — registerProvider", () => {
 		expect(ids).toContain("five_hour");
 		expect(ids).toContain("weekly");
 	});
+
+	it("hydrates provider windows from valid persisted rate-limit metadata", async () => {
+		const resetsAt = Math.floor(Date.now() / 1000) + 3_600;
+		registerProvider("persisted-provider", "Persisted Provider", [
+			{ windowId: "hourly", label: "1-HOUR", windowSecs: 3_600 },
+		]);
+		await saveSetting(
+			"rl_persisted-provider_hourly",
+			JSON.stringify({
+				utilization: 0.42,
+				remaining: 58,
+				limit: 100,
+				resetsAt,
+			}),
+		);
+
+		const snapshot = await getProviderUsage("persisted-provider");
+		expect(snapshot.windows[0]).toMatchObject({
+			utilization: 0.42,
+			remaining: 58,
+			limit: 100,
+			resetsAt,
+		});
+	});
+
+	it("contains malformed or stale persisted rate-limit metadata", async () => {
+		registerProvider("invalid-provider", "Invalid Provider", [
+			{ windowId: "malformed", label: "Malformed", windowSecs: 3_600 },
+			{ windowId: "scalar", label: "Scalar", windowSecs: 3_600 },
+			{ windowId: "stale", label: "Stale", windowSecs: 3_600 },
+			{ windowId: "wrong-types", label: "Wrong Types", windowSecs: 3_600 },
+		]);
+		await saveSetting("rl_invalid-provider_malformed", "not-json{");
+		await saveSetting("rl_invalid-provider_scalar", JSON.stringify("value"));
+		await saveSetting(
+			"rl_invalid-provider_stale",
+			JSON.stringify({
+				utilization: 0.9,
+				resetsAt: Math.floor(Date.now() / 1000) - 1,
+			}),
+		);
+		await saveSetting(
+			"rl_invalid-provider_wrong-types",
+			JSON.stringify({
+				utilization: "high",
+				remaining: "many",
+				limit: false,
+			}),
+		);
+
+		const snapshot = await getProviderUsage("invalid-provider");
+		for (const window of snapshot.windows) {
+			expect(window).toMatchObject({
+				utilization: null,
+				remaining: null,
+				limit: null,
+				resetsAt: null,
+			});
+		}
+	});
 });
 
 // ── ask_user_questions ────────────────────────────────────────────────────────

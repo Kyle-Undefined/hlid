@@ -19,12 +19,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("#/hooks/wsStore", () => ({
 	setBufferingEnabled: vi.fn(),
 	send: vi.fn(),
-	claimPendingPrompt: vi.fn().mockReturnValue(null),
 	drainMessageBuffer: vi.fn().mockReturnValue([]),
 	clearMessageBuffer: vi.fn(),
 	getSnapshot: vi.fn().mockReturnValue({ sessionState: "idle" }),
-	seedContextStats: vi.fn(),
 	seedActualModel: vi.fn(),
+}));
+
+vi.mock("#/hooks/wsChatQueueStore", () => ({
+	claimPendingPrompt: vi.fn().mockReturnValue(null),
+}));
+
+vi.mock("#/hooks/wsLiveStatsStore", () => ({
+	seedContextStats: vi.fn(),
 	resetLiveStats: vi.fn(),
 }));
 
@@ -42,6 +48,8 @@ vi.mock("#/lib/utils", () => ({
 
 // ── imports (after mocks) ─────────────────────────────────────────────────────
 
+import * as chatQueueStore from "#/hooks/wsChatQueueStore";
+import * as liveStatsStore from "#/hooks/wsLiveStatsStore";
 import * as wsStore from "#/hooks/wsStore";
 import {
 	getSessionAskUserQuestionsFn,
@@ -105,7 +113,7 @@ describe("useLoadChatHistory — initial load", () => {
 			runningTurnId: null,
 			sleepState: null,
 		});
-		vi.mocked(wsStore.claimPendingPrompt).mockReturnValue(null);
+		vi.mocked(chatQueueStore.claimPendingPrompt).mockReturnValue(null);
 		vi.mocked(wsStore.drainMessageBuffer).mockReturnValue([]);
 		vi.mocked(getSessionContextFn).mockResolvedValue(makeCtx());
 		vi.mocked(getSessionPermissionsFn).mockResolvedValue(makePerms());
@@ -143,7 +151,7 @@ describe("useLoadChatHistory — initial load", () => {
 
 		await act(async () => {});
 
-		expect(wsStore.resetLiveStats).not.toHaveBeenCalled();
+		expect(liveStatsStore.resetLiveStats).not.toHaveBeenCalled();
 	});
 
 	it("restores persisted subagent snapshots on tool events", async () => {
@@ -211,7 +219,7 @@ describe("useLoadChatHistory — reconnect recovery", () => {
 			runningTurnId: null,
 			sleepState: null,
 		});
-		vi.mocked(wsStore.claimPendingPrompt).mockReturnValue(null);
+		vi.mocked(chatQueueStore.claimPendingPrompt).mockReturnValue(null);
 		vi.mocked(wsStore.drainMessageBuffer).mockReturnValue([]);
 		vi.mocked(getSessionContextFn).mockResolvedValue(makeCtx());
 		vi.mocked(getSessionPermissionsFn).mockResolvedValue(makePerms());
@@ -519,7 +527,7 @@ describe("useLoadChatHistory — reconnect recovery", () => {
 		await act(async () => {});
 
 		// Stats persist across SPA navigation — only index.tsx resets on new run.
-		expect(wsStore.resetLiveStats).not.toHaveBeenCalled();
+		expect(liveStatsStore.resetLiveStats).not.toHaveBeenCalled();
 	});
 
 	it("does not reset live stats when navigating to an implicit session", async () => {
@@ -545,7 +553,7 @@ describe("useLoadChatHistory — reconnect recovery", () => {
 
 		await act(async () => {});
 
-		expect(wsStore.resetLiveStats).not.toHaveBeenCalled();
+		expect(liveStatsStore.resetLiveStats).not.toHaveBeenCalled();
 	});
 
 	it("does NOT re-fetch on first connect (initial load handles that)", async () => {
@@ -631,7 +639,7 @@ describe("useLoadChatHistory — placeholder reuse during running turn", () => {
 			runningTurnId: null,
 			sleepState: null,
 		});
-		vi.mocked(wsStore.claimPendingPrompt).mockReturnValue(null);
+		vi.mocked(chatQueueStore.claimPendingPrompt).mockReturnValue(null);
 		vi.mocked(wsStore.drainMessageBuffer).mockReturnValue([]);
 		vi.mocked(getSessionContextFn).mockResolvedValue(makeCtx());
 		vi.mocked(getSessionPermissionsFn).mockResolvedValue([]);

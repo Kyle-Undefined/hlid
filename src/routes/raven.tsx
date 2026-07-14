@@ -40,6 +40,12 @@ import { useSlashPicker } from "#/hooks/useSlashPicker";
 import { useVoiceInput } from "#/hooks/useVoiceInput";
 import { useWs } from "#/hooks/useWs";
 import { useWsChatQueue, useWsLiveStats } from "#/hooks/useWsSelectors";
+import { clearChatQueue } from "#/hooks/wsChatQueueStore";
+import { resetLiveStats } from "#/hooks/wsLiveStatsStore";
+import {
+	getSessionsStatus,
+	subscribeSessionsStatus,
+} from "#/hooks/wsSessionStatusStore";
 import * as wsStore from "#/hooks/wsStore";
 import {
 	composerKeyAction,
@@ -221,8 +227,8 @@ function useRavenSessionIdentity({
 	);
 	const agentContextSentRef = useRef(false);
 	const sessionsStatus = useSyncExternalStore(
-		wsStore.subscribeSessionsStatus,
-		wsStore.getSessionsStatus,
+		subscribeSessionsStatus,
+		getSessionsStatus,
 		() => [],
 	);
 	const [sessionId, setSessionId] = useState(
@@ -747,10 +753,10 @@ function useRavenClear(props: RavenActionProps) {
 		agentContextSentRef.current = false;
 		dispatch({ type: "CLEAR" });
 		send({ type: "clear" });
-		wsStore.resetLiveStats();
+		resetLiveStats();
 		wsStore.seedActualModel(null);
 		wsStore.clearMessageBuffer();
-		wsStore.clearChatQueue();
+		clearChatQueue();
 		const newId = uid();
 		setSessionId(newId);
 		sessionIdRef.current = newId;

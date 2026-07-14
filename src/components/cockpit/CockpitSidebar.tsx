@@ -2,7 +2,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { AggStats, SessionRow, WeeklyStats } from "#/db";
-import type * as wsStore from "#/hooks/wsStore";
+import type { LiveStats } from "#/hooks/wsLiveStatsStore";
 import { formatDisplayCost } from "#/lib/costDisplay";
 import { fmt, fmtRunTime } from "#/lib/formatters";
 
@@ -148,7 +148,7 @@ export function RecentRunsSidebar({
 	runs: SessionRow[];
 	weeklyStats: WeeklyStats;
 	onRunClick: (sessionId: string) => void;
-	stats: wsStore.LiveStats;
+	stats: LiveStats;
 	agg: AggStats;
 	activeSession: SessionRow | null;
 	className?: string;

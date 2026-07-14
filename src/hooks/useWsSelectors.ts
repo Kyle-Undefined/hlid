@@ -1,12 +1,14 @@
 import { useSyncExternalStore } from "react";
 import {
-	getLiveStats,
 	getQueue,
-	type LiveStats,
 	type QueuedChatMessage,
 	subscribeQueue,
+} from "./wsChatQueueStore";
+import {
+	getLiveStats,
+	type LiveStats,
 	subscribeStats,
-} from "./wsStore";
+} from "./wsLiveStatsStore";
 
 /** Subscribe to live session stats (tokens, cost, turns, context window). */
 export function useWsLiveStats(): LiveStats {

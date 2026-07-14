@@ -2,18 +2,18 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AggStats } from "#/db";
-import type * as wsStore from "#/hooks/wsStore";
+import type { LiveStats } from "#/hooks/wsLiveStatsStore";
 import { DashboardHeader } from "./DashboardHeader";
 
 afterEach(cleanup);
 
-function makeStats(overrides?: Partial<wsStore.LiveStats>): wsStore.LiveStats {
+function makeStats(overrides?: Partial<LiveStats>): LiveStats {
 	return {
 		cost: 0.5,
 		queries: 3,
 		duration_ms: 4000,
 		...overrides,
-	} as wsStore.LiveStats;
+	} as LiveStats;
 }
 
 function makeAgg(): AggStats {

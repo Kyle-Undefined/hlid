@@ -365,6 +365,28 @@ describe("AcpProvider — canUseTool", () => {
 		);
 		session.cancel();
 	});
+
+	it("normalizes every ACP tool kind before policy evaluation", async () => {
+		const query = params();
+		const { session } = await run("tool-kind-matrix", query);
+		expect(
+			vi
+				.mocked(query.canUseTool)
+				.mock.calls.map(([toolName, input]) => [toolName, input]),
+		).toEqual([
+			["Read", { kind: "read" }],
+			["Write", { kind: "edit" }],
+			["Write", { kind: "delete" }],
+			["Write", { kind: "move" }],
+			["Grep", { kind: "search" }],
+			["Bash", { kind: "execute" }],
+			["Reasoning", { kind: "think" }],
+			["WebFetch", { kind: "fetch" }],
+			["Planning mode", { kind: "switch_mode" }],
+			["Custom action", { kind: "other" }],
+		]);
+		session.cancel();
+	});
 });
 
 describe("AcpProvider — elicitation", () => {

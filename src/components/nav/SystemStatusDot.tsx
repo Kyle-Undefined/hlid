@@ -1,4 +1,9 @@
 import { useSyncExternalStore } from "react";
+import {
+	type AggregateNavStatus,
+	getAggregateNavStatus,
+	subscribeSessionsStatus,
+} from "../../hooks/wsSessionStatusStore";
 import * as wsStore from "../../hooks/wsStore";
 import type { SessionStatusEntry } from "../../server/protocol";
 
@@ -19,7 +24,7 @@ export function sessionEntryDotClass(s: SessionStatusEntry): string {
  */
 function aggregateDotClass(
 	wsStatus: wsStore.WsStatus,
-	agg: wsStore.AggregateNavStatus,
+	agg: AggregateNavStatus,
 	fallbackState: "idle" | "running" | "error",
 	fallbackPending: boolean,
 ): string {
@@ -45,8 +50,8 @@ export function useSystemStatusIndicator() {
 		);
 
 	const agg = useSyncExternalStore(
-		wsStore.subscribeSessionsStatus,
-		wsStore.getAggregateNavStatus,
+		subscribeSessionsStatus,
+		getAggregateNavStatus,
 		() => ({
 			state: "idle" as const,
 			runningCount: 0,

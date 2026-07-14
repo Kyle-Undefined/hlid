@@ -12,7 +12,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as privacyStore from "#/hooks/privacyStore";
-import type { QueuedChatMessage } from "#/hooks/wsStore";
+import type { QueuedChatMessage } from "#/hooks/wsChatQueueStore";
 import type { ChatMessage, UserMessage } from "./chatReducer";
 import { MessageList } from "./MessageList";
 

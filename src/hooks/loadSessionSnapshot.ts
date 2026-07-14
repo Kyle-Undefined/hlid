@@ -1,4 +1,5 @@
 import type { Action } from "#/components/chat/chatReducer";
+import { seedContextStats } from "#/hooks/wsLiveStatsStore";
 import * as wsStore from "#/hooks/wsStore";
 import {
 	getSessionAskUserQuestionsFn,
@@ -176,11 +177,7 @@ function drainBufferDeduped(
 
 function applyCtx(ctx: CtxRow, sessionId: string): void {
 	if (ctx?.context_window && ctx.last_context_used != null) {
-		wsStore.seedContextStats(
-			ctx.context_window,
-			ctx.last_context_used,
-			sessionId,
-		);
+		seedContextStats(ctx.context_window, ctx.last_context_used, sessionId);
 	}
 	if (ctx?.actual_model !== undefined) {
 		wsStore.seedActualModel(ctx.actual_model);

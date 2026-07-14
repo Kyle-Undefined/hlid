@@ -7,13 +7,15 @@
  * operations fail silently (try/catch), and _ws stays null throughout.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import * as chatQueueStore from "./wsChatQueueStore";
+import * as liveStatsStore from "./wsLiveStatsStore";
 import * as wsStore from "./wsStore";
 
 // ── test suite ────────────────────────────────────────────────────────────────
 
 describe("wsStore state management", () => {
 	// Use a reference alias so existing test code (store.xxx) works unchanged
-	const store = wsStore;
+	const store = { ...wsStore, ...chatQueueStore, ...liveStatsStore };
 
 	beforeEach(() => {
 		// Reset all module-level state between tests

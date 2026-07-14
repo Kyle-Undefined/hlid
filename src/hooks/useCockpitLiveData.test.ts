@@ -2,7 +2,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useWs } from "#/hooks/useWs";
-import * as wsStore from "#/hooks/wsStore";
+import * as liveStatsStore from "#/hooks/wsLiveStatsStore";
 import { getActiveSessionRowFn } from "#/lib/serverFns/sessions";
 import {
 	getCockpitStatsFn,
@@ -24,8 +24,11 @@ vi.mock("#/hooks/useWs", () => ({
 	}),
 }));
 
-vi.mock("#/hooks/wsStore", () => ({
+vi.mock("#/hooks/wsLiveStatsStore", () => ({
 	getPendingSessionToday: vi.fn(),
+}));
+
+vi.mock("#/hooks/wsSessionStatusStore", () => ({
 	getSessionsStatus: vi.fn(() => sessionsStatus),
 	subscribeSessionsStatus: vi.fn((callback: () => void) => {
 		onSessionsStatus = callback;
@@ -96,7 +99,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	onSessionsStatus = undefined;
 	sessionsStatus = [];
-	vi.mocked(wsStore.getPendingSessionToday).mockReturnValue(false);
+	vi.mocked(liveStatsStore.getPendingSessionToday).mockReturnValue(false);
 	vi.mocked(getActiveSessionRowFn).mockResolvedValue(null);
 	vi.mocked(getCockpitStatsFn).mockResolvedValue({ agg: initial.agg });
 	vi.mocked(getRecentSessionsFn).mockResolvedValue([]);

@@ -49,10 +49,6 @@
 			"exports": ["setUpdateStatus"]
 		},
 		{
-			"file": "src/hooks/wsStore.ts",
-			"exports": ["subscribeToSession", "getSubscribedSessionId"]
-		},
-		{
 			"file": "src/lib/updates.ts",
 			"exports": ["cleanupStagingDir"]
 		},

@@ -98,16 +98,22 @@ vi.mock("#/hooks/useWsSelectors", () => ({
 	useWsChatQueue: () => [],
 }));
 vi.mock("#/hooks/wsStore", () => ({
-	subscribeSessionsStatus: () => () => {},
-	getSessionsStatus: () => state.sessions,
 	subscribeToSession: state.subscribeToSession,
 	enqueueChat: state.enqueueChat,
 	removeFromQueue: vi.fn(),
 	promoteQueued: vi.fn(),
-	resetLiveStats: vi.fn(),
 	seedActualModel: vi.fn(),
 	clearMessageBuffer: vi.fn(),
+}));
+vi.mock("#/hooks/wsChatQueueStore", () => ({
 	clearChatQueue: vi.fn(),
+}));
+vi.mock("#/hooks/wsLiveStatsStore", () => ({
+	resetLiveStats: vi.fn(),
+}));
+vi.mock("#/hooks/wsSessionStatusStore", () => ({
+	subscribeSessionsStatus: () => () => {},
+	getSessionsStatus: () => state.sessions,
 }));
 vi.mock("#/lib/serverFns/sessions", () => ({
 	ensureSessionFn: vi.fn(),

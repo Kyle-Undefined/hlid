@@ -9,7 +9,11 @@ import {
 	incrementWeeklyStats,
 } from "#/hooks/useCockpitRun";
 import { useWs } from "#/hooks/useWs";
-import * as wsStore from "#/hooks/wsStore";
+import { getPendingSessionToday } from "#/hooks/wsLiveStatsStore";
+import {
+	getSessionsStatus,
+	subscribeSessionsStatus,
+} from "#/hooks/wsSessionStatusStore";
 import { getActiveSessionRowFn } from "#/lib/serverFns/sessions";
 import {
 	getCockpitStatsFn,
@@ -29,13 +33,11 @@ type InitialCockpitLiveData = {
 };
 
 function initialWeeklyStats(stats: WeeklyStats): WeeklyStats {
-	return wsStore.getPendingSessionToday() ? incrementWeeklyStats(stats) : stats;
+	return getPendingSessionToday() ? incrementWeeklyStats(stats) : stats;
 }
 
 function initialThirtyDayStats(stats: ThirtyDayStats): ThirtyDayStats {
-	return wsStore.getPendingSessionToday()
-		? incrementThirtyDayStats(stats)
-		: stats;
+	return getPendingSessionToday() ? incrementThirtyDayStats(stats) : stats;
 }
 
 export function useCockpitLiveData(initial: InitialCockpitLiveData) {
@@ -129,8 +131,7 @@ export function useCockpitLiveData(initial: InitialCockpitLiveData) {
 		let active = true;
 		const refreshForNewLiveSession = () => {
 			const nextIds = new Set(
-				wsStore
-					.getSessionsStatus()
+				getSessionsStatus()
 					.map((session) => session.db_session_id)
 					.filter((id): id is string => Boolean(id)),
 			);
@@ -141,7 +142,7 @@ export function useCockpitLiveData(initial: InitialCockpitLiveData) {
 			if (active && hasNewSession) refreshRecentRuns();
 		};
 		refreshForNewLiveSession();
-		const unsubscribeSessions = wsStore.subscribeSessionsStatus(
+		const unsubscribeSessions = subscribeSessionsStatus(
 			refreshForNewLiveSession,
 		);
 		void getActiveSessionRowFn()

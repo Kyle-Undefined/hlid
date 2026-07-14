@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { Action } from "#/components/chat/chatReducer";
 import { loadSessionSnapshot } from "#/hooks/loadSessionSnapshot";
+import { claimPendingPrompt } from "#/hooks/wsChatQueueStore";
 import type { WsStatus } from "#/hooks/wsStore";
 import * as wsStore from "#/hooks/wsStore";
 import { uid } from "#/lib/utils";
@@ -43,7 +44,7 @@ export function useLoadChatHistory({
 		wsStore.setBufferingEnabled(true);
 
 		if (!existingSessionId) {
-			const p = wsStore.claimPendingPrompt();
+			const p = claimPendingPrompt();
 			if (p) dispatch({ type: "ADD_USER", id: uid(), text: p });
 			historyReadyRef.current = true;
 			wsStore.setBufferingEnabled(false);
@@ -70,7 +71,7 @@ export function useLoadChatHistory({
 			.then((result) => {
 				if (cancelled || !result) return;
 				const { rows } = result;
-				const p = wsStore.claimPendingPrompt();
+				const p = claimPendingPrompt();
 				if (p) {
 					const lastRow = rows[rows.length - 1];
 					if (!lastRow || lastRow.role !== "user" || lastRow.text !== p) {

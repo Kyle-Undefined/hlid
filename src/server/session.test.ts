@@ -1670,8 +1670,7 @@ describe("SessionManager — summary passed to recap", () => {
 		const recapMock = vi.mocked(generateTurnRecap);
 		expect(recapMock).toHaveBeenCalled();
 		const lastCall = recapMock.mock.calls[recapMock.mock.calls.length - 1];
-		// sdkSummary is the 9th argument (index 8)
-		expect(lastCall[8]).toBe("Ran lint and fixed 2 warnings.");
+		expect(lastCall[0].sdkSummary).toBe("Ran lint and fixed 2 warnings.");
 	});
 
 	it("passes null sdkSummary when no summary event emitted", async () => {
@@ -1709,7 +1708,7 @@ describe("SessionManager — summary passed to recap", () => {
 		const recapMock = vi.mocked(generateTurnRecap);
 		expect(recapMock).toHaveBeenCalled();
 		const lastCall = recapMock.mock.calls[recapMock.mock.calls.length - 1];
-		expect(lastCall[8]).toBeNull();
+		expect(lastCall[0].sdkSummary).toBeNull();
 	});
 });
 
@@ -1756,8 +1755,7 @@ describe("SessionManager — recap model resolution", () => {
 		const recapMock = vi.mocked(generateTurnRecap);
 		expect(recapMock).toHaveBeenCalled();
 		const lastCall = recapMock.mock.calls[recapMock.mock.calls.length - 1];
-		// recapModel is argument index 10
-		expect(lastCall[10]).toBe("claude-haiku-4-5");
+		expect(lastCall[0].recapModel).toBe("claude-haiku-4-5");
 	});
 
 	it("uses global recap_model from config when set", async () => {
@@ -1774,7 +1772,7 @@ describe("SessionManager — recap model resolution", () => {
 		const recapMock = vi.mocked(generateTurnRecap);
 		expect(recapMock).toHaveBeenCalled();
 		const lastCall = recapMock.mock.calls[recapMock.mock.calls.length - 1];
-		expect(lastCall[10]).toBe("claude-sonnet-4-6");
+		expect(lastCall[0].recapModel).toBe("claude-sonnet-4-6");
 	});
 });
 
@@ -1813,7 +1811,7 @@ describe("SessionManager — per-agent recap model", () => {
 		const recapMock = vi.mocked(generateTurnRecap);
 		expect(recapMock).toHaveBeenCalled();
 		const lastCall = recapMock.mock.calls[recapMock.mock.calls.length - 1];
-		expect(lastCall[10]).toBe("claude-haiku-4-5-20251001");
+		expect(lastCall[0].recapModel).toBe("claude-haiku-4-5-20251001");
 	});
 
 	it("falls back to global recap_model when agent has none", async () => {
@@ -1837,7 +1835,7 @@ describe("SessionManager — per-agent recap model", () => {
 		const recapMock = vi.mocked(generateTurnRecap);
 		expect(recapMock).toHaveBeenCalled();
 		const lastCall = recapMock.mock.calls[recapMock.mock.calls.length - 1];
-		expect(lastCall[10]).toBe("claude-sonnet-4-6");
+		expect(lastCall[0].recapModel).toBe("claude-sonnet-4-6");
 	});
 });
 

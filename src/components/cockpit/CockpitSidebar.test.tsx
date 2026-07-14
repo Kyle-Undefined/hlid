@@ -6,7 +6,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AggStats, SessionRow, WeeklyStats } from "#/db";
 import * as privacyStore from "#/hooks/privacyStore";
-import type * as wsStore from "#/hooks/wsStore";
+import type { LiveStats } from "#/hooks/wsLiveStatsStore";
 
 // ── mocks ─────────────────────────────────────────────────────────────────────
 
@@ -83,7 +83,7 @@ const defaultAgg: AggStats = {
 	},
 };
 
-const defaultStats: wsStore.LiveStats = {
+const defaultStats: LiveStats = {
 	turns: 0,
 	cost: 0,
 	duration_ms: 0,

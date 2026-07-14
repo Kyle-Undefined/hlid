@@ -10,7 +10,7 @@ vi.mock("#/components/cockpit/CockpitSidebar", () => ({
 	),
 }));
 
-import type { LiveStats } from "#/hooks/wsStore";
+import type { LiveStats } from "#/hooks/wsLiveStatsStore";
 import { MobileContextBand } from "./MobileContextBand";
 
 afterEach(cleanup);

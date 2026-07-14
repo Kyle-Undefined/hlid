@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SessionRow, ThirtyDayStats, WeeklyStats } from "#/db";
+import * as chatQueueStore from "#/hooks/wsChatQueueStore";
 import * as wsStore from "#/hooks/wsStore";
 import { getCurrentSessionFn } from "#/lib/serverFns/sessions";
 import { getRecentSessionsFn } from "#/lib/serverFns/stats";
@@ -20,8 +21,14 @@ vi.mock("#/lib/serverFns/stats", () => ({
 
 vi.mock("#/hooks/wsStore", () => ({
 	enqueueChat: vi.fn(),
-	resetLiveStats: vi.fn(),
+}));
+
+vi.mock("#/hooks/wsChatQueueStore", () => ({
 	setPendingPrompt: vi.fn(),
+}));
+
+vi.mock("#/hooks/wsLiveStatsStore", () => ({
+	resetLiveStats: vi.fn(),
 }));
 
 function session(id: string): SessionRow {
@@ -160,7 +167,9 @@ describe("cockpit run controller", () => {
 		);
 		expect(options.clearPendingAttachments).toHaveBeenCalledOnce();
 		expect(options.setPrompt).toHaveBeenCalledWith("");
-		expect(wsStore.setPendingPrompt).toHaveBeenCalledWith("ship the fix");
+		expect(chatQueueStore.setPendingPrompt).toHaveBeenCalledWith(
+			"ship the fix",
+		);
 		expect(options.navigateToRaven).toHaveBeenCalledWith(
 			"recent-session",
 			"/agent",

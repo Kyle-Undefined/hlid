@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionRow } from "#/db";
-import type { LiveStats } from "#/hooks/wsStore";
+import type { LiveStats } from "#/hooks/wsLiveStatsStore";
 import { SessionsLedger, sessionDisplayUsage } from "./SessionsLedger";
 
 afterEach(cleanup);

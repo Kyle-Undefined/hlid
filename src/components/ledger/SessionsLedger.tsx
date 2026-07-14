@@ -5,7 +5,7 @@ import { LedgerPaginationBar } from "#/components/ledger/LedgerPagination";
 import { sessionEntryDotClass } from "#/components/nav/SystemStatusDot";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { SessionRow } from "#/db";
-import type { LiveStats } from "#/hooks/wsStore";
+import type { LiveStats } from "#/hooks/wsLiveStatsStore";
 import { formatDisplayCost } from "#/lib/costDisplay";
 import { fmt, fmtDate } from "#/lib/formatters";
 import type { SessionStatusEntry } from "#/server/protocol";

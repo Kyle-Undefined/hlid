@@ -1,5 +1,5 @@
 import { UtilBar } from "#/components/cockpit/CockpitSidebar";
-import type { LiveStats } from "#/hooks/wsStore";
+import type { LiveStats } from "#/hooks/wsLiveStatsStore";
 
 export function MobileContextBand({ stats }: { stats: LiveStats }) {
 	const hasContext =

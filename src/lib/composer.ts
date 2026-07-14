@@ -1,4 +1,4 @@
-import type { QueuedChatMessage } from "#/hooks/wsStore";
+import type { QueuedChatMessage } from "#/hooks/wsChatQueueStore";
 import type { ChatAttachment, ClientChatMessage } from "#/server/protocol";
 
 export type ComposerKeyAction =

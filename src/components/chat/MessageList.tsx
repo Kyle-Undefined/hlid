@@ -1,4 +1,4 @@
-import type { QueuedChatMessage } from "#/hooks/wsStore";
+import type { QueuedChatMessage } from "#/hooks/wsChatQueueStore";
 import { ChatMessageRow } from "./ChatMessageRow";
 import type { ChatMessage } from "./chatReducer";
 import type { PlanDecision } from "./PlanCard";

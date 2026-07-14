@@ -166,17 +166,29 @@ export function createTlsHttpForwarder({
 	};
 }
 
-export function startTlsProxy(
-	tlsPort: number,
-	uiPort: number,
-	wsPort: number,
-	bindHost: string,
-	certPath: string,
-	keyPath: string,
-	localNetworkAccess: boolean,
-	internalToken: string,
-	maxBodyBytes: number,
-): void {
+export type TlsProxyOptions = {
+	tlsPort: number;
+	uiPort: number;
+	wsPort: number;
+	bindHost: string;
+	certPath: string;
+	keyPath: string;
+	localNetworkAccess: boolean;
+	internalToken: string;
+	maxBodyBytes: number;
+};
+
+export function startTlsProxy({
+	tlsPort,
+	uiPort,
+	wsPort,
+	bindHost,
+	certPath,
+	keyPath,
+	localNetworkAccess,
+	internalToken,
+	maxBodyBytes,
+}: TlsProxyOptions): void {
 	const certBuf = readFileSync(certPath);
 	const x509 = new X509Certificate(certBuf);
 	const san = x509.subjectAltName ?? "";

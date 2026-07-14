@@ -229,158 +229,185 @@ function useSystemMaintenance() {
 	};
 }
 
-export function SystemSection({
-	view = "all",
+type SystemMaintenance = ReturnType<typeof useSystemMaintenance>;
+
+function InstallationAndStartup({
+	maintenance,
+	showShutdown,
 }: {
-	view?: "all" | "overview" | "advanced";
+	maintenance: SystemMaintenance;
+	showShutdown: boolean;
 }) {
 	const {
 		autostart,
-		storage,
 		busy,
 		error,
-		optimizeStorage,
 		toggleAutostart,
 		openInstallDir,
 		doShutdown,
-		doRestart,
-	} = useSystemMaintenance();
-
+	} = maintenance;
 	const supported = autostart?.supported ?? false;
 	const enabled = autostart?.enabled ?? false;
 	const install = autostart?.install;
 
 	return (
+		<Section title="Installation and startup">
+			{install && (
+				<Field label="Install location" hint={install.dir}>
+					<button
+						type="button"
+						onClick={() => {
+							void openInstallDir();
+						}}
+						disabled={busy === "open_install_dir" || !supported}
+						title={
+							supported ? "open install folder in Explorer" : "Windows only"
+						}
+						className="text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors uppercase disabled:opacity-40"
+					>
+						{busy === "open_install_dir" ? "OPENING…" : "OPEN"}
+					</button>
+				</Field>
+			)}
+			<Field
+				label="Launch on login"
+				hint={
+					autostart === null
+						? "checking…"
+						: !supported
+							? "Windows only"
+							: enabled
+								? "starts in background when you sign in"
+								: "off; Hlid won't start automatically"
+				}
+			>
+				<label className="flex items-center gap-2 cursor-pointer">
+					<input
+						type="checkbox"
+						checked={enabled}
+						disabled={!supported || busy === "toggle"}
+						onChange={() => {
+							void toggleAutostart();
+						}}
+						className="accent-primary w-3.5 h-3.5"
+					/>
+					<span className="text-xs text-muted-foreground">
+						{enabled ? "on" : "off"}
+					</span>
+				</label>
+			</Field>
+			{showShutdown && (
+				<ShutdownAction
+					busy={busy !== null}
+					onShutdown={() => void doShutdown()}
+				/>
+			)}
+			{error && (
+				<div className="px-4 py-2 text-xs text-destructive/80">{error}</div>
+			)}
+		</Section>
+	);
+}
+
+function StorageSummary({
+	maintenance,
+	showOptimize,
+}: {
+	maintenance: SystemMaintenance;
+	showOptimize: boolean;
+}) {
+	const { storage, busy, optimizeStorage } = maintenance;
+	return (
+		<Section title="Storage summary">
+			<Field
+				label="Database"
+				hint={
+					storage
+						? `${storage.sessions.toLocaleString()} sessions · ${storage.messages.toLocaleString()} messages · ${storage.usageQueries.toLocaleString()} usage rows`
+						: "checking…"
+				}
+			>
+				<span className="text-xs tabular-nums text-muted-foreground">
+					{storage ? formatBytes(storage.databaseBytes) : "—"}
+				</span>
+			</Field>
+			<Field
+				label="Write-ahead log"
+				hint={
+					storage?.reclaimableBytes
+						? `${formatBytes(storage.reclaimableBytes)} reusable inside database`
+						: "SQLite WAL and reusable page space"
+				}
+			>
+				<span className="text-xs tabular-nums text-muted-foreground">
+					{storage ? formatBytes(storage.walBytes) : "—"}
+				</span>
+			</Field>
+			<Field
+				label="Tracked attachments"
+				hint={
+					storage
+						? `${storage.trackedAttachments.toLocaleString()} files`
+						: "checking…"
+				}
+			>
+				<span className="text-xs tabular-nums text-muted-foreground">
+					{storage ? formatBytes(storage.trackedAttachmentBytes) : "—"}
+				</span>
+			</Field>
+			{showOptimize && (
+				<OptimizeStorageAction
+					busy={busy !== null}
+					onOptimize={() => void optimizeStorage()}
+				/>
+			)}
+		</Section>
+	);
+}
+
+function DangerZone({ maintenance }: { maintenance: SystemMaintenance }) {
+	const { busy, error, optimizeStorage, doRestart, doShutdown } = maintenance;
+	return (
+		<div id="lifecycle-controls" className="scroll-mt-20">
+			<Section
+				title="Danger zone"
+				description="Maintenance and lifecycle actions can interrupt active work."
+			>
+				<OptimizeStorageAction
+					busy={busy !== null}
+					onOptimize={() => void optimizeStorage()}
+				/>
+				<RestartAction
+					busy={busy !== null}
+					onRestart={() => void doRestart()}
+				/>
+				<ShutdownAction
+					busy={busy !== null}
+					onShutdown={() => void doShutdown()}
+				/>
+				{error && (
+					<div className="px-4 py-2 text-xs text-destructive/80">{error}</div>
+				)}
+			</Section>
+		</div>
+	);
+}
+
+export function SystemSection({
+	view = "all",
+}: {
+	view?: "all" | "overview" | "advanced";
+}) {
+	const maintenance = useSystemMaintenance();
+	if (view === "advanced") return <DangerZone maintenance={maintenance} />;
+
+	return (
 		<>
-			{view !== "advanced" && (
-				<Section title="Installation and startup">
-					{install && (
-						<Field label="Install location" hint={install.dir}>
-							<button
-								type="button"
-								onClick={() => {
-									void openInstallDir();
-								}}
-								disabled={busy === "open_install_dir" || !supported}
-								title={
-									supported ? "open install folder in Explorer" : "Windows only"
-								}
-								className="text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors uppercase disabled:opacity-40"
-							>
-								{busy === "open_install_dir" ? "OPENING…" : "OPEN"}
-							</button>
-						</Field>
-					)}
-					<Field
-						label="Launch on login"
-						hint={
-							autostart === null
-								? "checking…"
-								: !supported
-									? "Windows only"
-									: enabled
-										? "starts in background when you sign in"
-										: "off; Hlid won't start automatically"
-						}
-					>
-						<label className="flex items-center gap-2 cursor-pointer">
-							<input
-								type="checkbox"
-								checked={enabled}
-								disabled={!supported || busy === "toggle"}
-								onChange={() => {
-									void toggleAutostart();
-								}}
-								className="accent-primary w-3.5 h-3.5"
-							/>
-							<span className="text-xs text-muted-foreground">
-								{enabled ? "on" : "off"}
-							</span>
-						</label>
-					</Field>
-					{view === "all" && (
-						<ShutdownAction
-							busy={busy !== null}
-							onShutdown={() => void doShutdown()}
-						/>
-					)}
-					{error && (
-						<div className="px-4 py-2 text-xs text-destructive/80">{error}</div>
-					)}
-				</Section>
-			)}
-			{view !== "advanced" && (
-				<Section title="Storage summary">
-					<Field
-						label="Database"
-						hint={
-							storage
-								? `${storage.sessions.toLocaleString()} sessions · ${storage.messages.toLocaleString()} messages · ${storage.usageQueries.toLocaleString()} usage rows`
-								: "checking…"
-						}
-					>
-						<span className="text-xs tabular-nums text-muted-foreground">
-							{storage ? formatBytes(storage.databaseBytes) : "—"}
-						</span>
-					</Field>
-					<Field
-						label="Write-ahead log"
-						hint={
-							storage?.reclaimableBytes
-								? `${formatBytes(storage.reclaimableBytes)} reusable inside database`
-								: "SQLite WAL and reusable page space"
-						}
-					>
-						<span className="text-xs tabular-nums text-muted-foreground">
-							{storage ? formatBytes(storage.walBytes) : "—"}
-						</span>
-					</Field>
-					<Field
-						label="Tracked attachments"
-						hint={
-							storage
-								? `${storage.trackedAttachments.toLocaleString()} files`
-								: "checking…"
-						}
-					>
-						<span className="text-xs tabular-nums text-muted-foreground">
-							{storage ? formatBytes(storage.trackedAttachmentBytes) : "—"}
-						</span>
-					</Field>
-					{view === "all" && (
-						<OptimizeStorageAction
-							busy={busy !== null}
-							onOptimize={() => void optimizeStorage()}
-						/>
-					)}
-				</Section>
-			)}
-			{view === "advanced" && (
-				<div id="lifecycle-controls" className="scroll-mt-20">
-					<Section
-						title="Danger zone"
-						description="Maintenance and lifecycle actions can interrupt active work."
-					>
-						<OptimizeStorageAction
-							busy={busy !== null}
-							onOptimize={() => void optimizeStorage()}
-						/>
-						<RestartAction
-							busy={busy !== null}
-							onRestart={() => void doRestart()}
-						/>
-						<ShutdownAction
-							busy={busy !== null}
-							onShutdown={() => void doShutdown()}
-						/>
-						{error && (
-							<div className="px-4 py-2 text-xs text-destructive/80">
-								{error}
-							</div>
-						)}
-					</Section>
-				</div>
-			)}
+			<InstallationAndStartup
+				maintenance={maintenance}
+				showShutdown={view === "all"}
+			/>
+			<StorageSummary maintenance={maintenance} showOptimize={view === "all"} />
 		</>
 	);
 }

@@ -3,6 +3,8 @@ import type { ActiveCockpitSkill } from "#/components/cockpit/CockpitPrompt";
 import type { SessionRow, ThirtyDayStats, WeeklyStats } from "#/db";
 import type { useFileUpload } from "#/hooks/useFileUpload";
 import type { useWs } from "#/hooks/useWs";
+import { setPendingPrompt } from "#/hooks/wsChatQueueStore";
+import { resetLiveStats } from "#/hooks/wsLiveStatsStore";
 import * as wsStore from "#/hooks/wsStore";
 import { getCurrentSessionFn } from "#/lib/serverFns/sessions";
 import { getRecentSessionsFn } from "#/lib/serverFns/stats";
@@ -113,7 +115,7 @@ function navigateAfterRun(
 	text?: string,
 ): void {
 	if (options.background) return;
-	if (text) wsStore.setPendingPrompt(text);
+	if (text) setPendingPrompt(text);
 	options.navigateToRaven(sessionId, options.selectedAgentPath || undefined);
 }
 
@@ -147,7 +149,7 @@ function startRun(
 		attachments: Attachment[];
 	},
 ): void {
-	if (!options.sameSession) wsStore.resetLiveStats();
+	if (!options.sameSession) resetLiveStats();
 	options.send({
 		type: "chat",
 		text: params.text,

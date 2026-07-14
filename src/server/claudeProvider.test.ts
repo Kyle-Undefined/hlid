@@ -248,6 +248,90 @@ describe("ClaudeProvider — event mapping", () => {
 		});
 	});
 
+	it("maps task_updated status, detail, error, and completion metadata", async () => {
+		const endedAtMs = Date.now() - 1_000;
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "system",
+					subtype: "task_started",
+					task_id: "task-updated",
+					tool_use_id: "agent-updated",
+					task_type: "subagent",
+					description: "Initial work",
+					session_id: "sid",
+					uuid: "u1",
+				},
+				...[
+					["pending", "Waiting for capacity"],
+					["paused", "Waiting for approval"],
+					["unexpected", "Working again"],
+				].map(([status, description], index) => ({
+					type: "system",
+					subtype: "task_updated",
+					task_id: "task-updated",
+					patch: { status, description },
+					session_id: "sid",
+					uuid: `u${index + 2}`,
+				})),
+				{
+					type: "system",
+					subtype: "task_updated",
+					task_id: "task-updated",
+					patch: {
+						status: "completed",
+						description: "Finished",
+						end_time: endedAtMs,
+					},
+					session_id: "sid",
+					uuid: "u5",
+				},
+				{
+					type: "system",
+					subtype: "task_updated",
+					task_id: "task-updated",
+					patch: { status: "killed", error: "Stopped by operator" },
+					session_id: "sid",
+					uuid: "u6",
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 1, output_tokens: 1 },
+				},
+			]),
+		);
+
+		const updates = (await collectEvents(baseParams())).filter(
+			(event) => event.type === "tool_update",
+		);
+		expect(updates.map((event) => event.subagent.status)).toEqual([
+			"running",
+			"pending",
+			"paused",
+			"running",
+			"completed",
+			"failed",
+		]);
+		expect(updates[4]).toMatchObject({
+			subagent: {
+				description: "Finished",
+				currentStep: "Finished",
+				endedAtMs,
+			},
+		});
+		expect(updates[5]).toMatchObject({
+			subagent: {
+				status: "failed",
+				currentStep: "Stopped by operator",
+				endedAtMs: expect.any(Number),
+			},
+		});
+	});
+
 	it("decorates the tool start when task_started arrives first", async () => {
 		vi.mocked(query).mockReturnValueOnce(
 			sdkGen([

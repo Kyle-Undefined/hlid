@@ -8,7 +8,7 @@ import { ProjectsTab } from "#/components/vault/ProjectsTab";
 import { SkillsTab } from "#/components/vault/SkillsTab";
 import { getConfig } from "#/config";
 import { useWs } from "#/hooks/useWs";
-import * as wsStore from "#/hooks/wsStore";
+import { setPendingPrompt } from "#/hooks/wsChatQueueStore";
 import { ROUTE_SCROLL_RESTORATION_IDS } from "#/lib/scrollContainers";
 import type { ClientMessage } from "#/server/protocol";
 
@@ -216,7 +216,7 @@ function VaultPage() {
 	}
 
 	function runSkill(content: string) {
-		wsStore.setPendingPrompt(content);
+		setPendingPrompt(content);
 		send({ type: "chat", text: content } satisfies ClientMessage);
 		navigate({
 			to: "/raven",

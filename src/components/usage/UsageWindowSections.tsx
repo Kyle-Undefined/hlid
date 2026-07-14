@@ -1,6 +1,6 @@
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { ProviderWindowEntry } from "#/db";
-import type { LiveStats } from "#/hooks/wsStore";
+import type { LiveStats } from "#/hooks/wsLiveStatsStore";
 import { fmtResetTime } from "#/lib/formatters";
 import { providerWindowUsage } from "#/lib/usageWindows";
 

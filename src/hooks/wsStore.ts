@@ -1,10 +1,32 @@
-import type {
-	ChatAttachment,
-	ClientMessage,
-	ServerMessage,
-	SessionStatusEntry,
-} from "../server/protocol";
+import type { ClientMessage, ServerMessage } from "../server/protocol";
 import type { SessionState } from "../server/session";
+import {
+	clearChatQueue,
+	enqueueLocalChat,
+	findQueuedChat,
+	getQueue,
+	markQueuedChatSent,
+	type QueuedChatMessage,
+	reconcileLocalQueue,
+	removeLocalChat,
+	resetChatQueueForTesting,
+} from "./wsChatQueueStore";
+import {
+	applyContextUpdate,
+	applyDone,
+	applyUsageUpdate,
+	resetLiveStatsForTesting,
+	setPendingSessionToday,
+	switchStatsContext,
+} from "./wsLiveStatsStore";
+import {
+	focusPendingNewSession,
+	focusSession,
+	getSubscribedSessionId,
+	removeSessionStatus,
+	replaceSessionsStatus,
+	resetSessionStatusForTesting,
+} from "./wsSessionStatusStore";
 
 // WebSocket readyState constants — avoid referencing WebSocket global directly
 // so tests running in Node.js (where WebSocket may be undefined) don't throw.
@@ -25,24 +47,6 @@ export type SleepBanner = {
 	reason: "threshold" | "limit_reached" | null;
 	/** five_hour utilization 0–1 behind a threshold sleep. */
 	utilization: number | null;
-};
-
-export type QueuedChatMessage = {
-	id: string;
-	text: string;
-	session_id: string;
-	skill_context?: string;
-	agent_cwd?: string;
-	attachments?: ChatAttachment[];
-	plan_mode?: boolean;
-	plan_html?: boolean;
-	/**
-	 * Internal flag set after the message has been delivered to the server.
-	 * Items remain in the queue (for UI display of in-flight turns) until
-	 * their `done` event arrives, so we use this flag to avoid re-sending
-	 * on reconnect.
-	 */
-	_sent?: boolean;
 };
 
 type Snapshot = {
@@ -84,69 +88,6 @@ type Snapshot = {
 	sleepState: SleepBanner | null;
 };
 
-export type LiveStats = {
-	turns: number;
-	cost: number;
-	estimated_cost?: number;
-	unpriced_queries?: number;
-	duration_ms: number;
-	input_tokens: number;
-	output_tokens: number;
-	cache_read_tokens: number;
-	cache_creation_tokens: number;
-	context_window: number | null;
-	max_output_tokens: number | null;
-	last_context_used: number | null;
-	last_output_tokens: number | null;
-	queries: number;
-};
-
-export const EMPTY_STATS: LiveStats = {
-	turns: 0,
-	cost: 0,
-	estimated_cost: 0,
-	unpriced_queries: 0,
-	duration_ms: 0,
-	input_tokens: 0,
-	output_tokens: 0,
-	cache_read_tokens: 0,
-	cache_creation_tokens: 0,
-	context_window: null,
-	max_output_tokens: null,
-	last_context_used: null,
-	last_output_tokens: null,
-	queries: 0,
-};
-
-// ─── Stats persistence helpers ───────────────────────────────────────────────
-
-const STATS_KEY = "hlid:live_stats";
-const CONTEXT_SESSION_KEY = "hlid:context_stats_session";
-
-function persistStats(stats: LiveStats): void {
-	try {
-		sessionStorage.setItem(STATS_KEY, JSON.stringify(stats));
-	} catch {}
-}
-
-function loadPersistedStats(): LiveStats | null {
-	try {
-		const raw = sessionStorage.getItem(STATS_KEY);
-		return raw
-			? { ...EMPTY_STATS, ...(JSON.parse(raw) as Partial<LiveStats>) }
-			: null;
-	} catch {
-		return null;
-	}
-}
-
-function clearPersistedStats(): void {
-	try {
-		sessionStorage.removeItem(STATS_KEY);
-		sessionStorage.removeItem(CONTEXT_SESSION_KEY);
-	} catch {}
-}
-
 // ─── Module state ────────────────────────────────────────────────────────────
 // All mutable state lives here as module-level variables. These are private;
 // consumers interact through the exported functions below.
@@ -170,77 +111,15 @@ let _snap: Snapshot = { ...INITIAL_SNAPSHOT };
 let _ws: WebSocket | null = null;
 let _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 let _reconnectAttempts = 0;
-let _liveStats: LiveStats = loadPersistedStats() ?? { ...EMPTY_STATS };
 // Buffers in-flight chunks/tool_events for the current run so they survive SPA navigation.
 // Always written (even when subscribers exist), cleared on run end or new run start.
 let _messageBuffer: ServerMessage[] = [];
 let _bufferingEnabled = true;
 let _pendingPermCount = 0;
-let _pendingSessionToday = false;
-let _pendingPrompt: string | null = null;
-let _chatQueue: QueuedChatMessage[] = [];
 
-// ── Multi-session state ───────────────────────────────────────────────────────
-/** Pool-wide list of all live sessions (updated by sessions_status messages). */
-let _sessionsStatus: SessionStatusEntry[] = [];
-let _contextSessionId: string | null = (() => {
-	try {
-		return sessionStorage.getItem(CONTEXT_SESSION_KEY);
-	} catch {
-		return null;
-	}
-})();
-/** UUID of the WS pool session this client is currently subscribed to.
- *  Empty string = not yet subscribed (no filtering applied — backward compat). */
-let _subscribedSessionId = "";
-const PENDING_NEW_SESSION_ID = "__hlid_pending_new_session__";
-
-// Subscriber sets — five concerns, each notified independently.
+// Subscriber sets — connection and message concerns stay with the transport.
 const statusSubs = new Set<() => void>();
 const messageSubs = new Set<(msg: ServerMessage) => void>();
-const statsSubs = new Set<() => void>();
-const queueSubs = new Set<() => void>();
-const sessionsStatusSubs = new Set<() => void>();
-
-function canonicalContextSessionId(sessionId: string): string {
-	const status = _sessionsStatus.find(
-		(session) =>
-			session.session_id === sessionId || session.db_session_id === sessionId,
-	);
-	return status?.db_session_id ?? status?.session_id ?? sessionId;
-}
-
-function markContextSession(sessionId: string): void {
-	_contextSessionId = canonicalContextSessionId(sessionId);
-	try {
-		sessionStorage.setItem(CONTEXT_SESSION_KEY, _contextSessionId);
-	} catch {}
-}
-
-function switchContextSession(sessionId: string): void {
-	const next = canonicalContextSessionId(sessionId);
-	const current = _contextSessionId
-		? canonicalContextSessionId(_contextSessionId)
-		: null;
-	if (current === next) {
-		markContextSession(next);
-		return;
-	}
-	markContextSession(next);
-	_liveStats = {
-		..._liveStats,
-		context_window: null,
-		last_context_used: null,
-	};
-	persistStats(_liveStats);
-	for (const fn of statsSubs) fn();
-}
-
-// ─── Queue helpers ───────────────────────────────────────────────────────────
-
-function notifyQueue(): void {
-	for (const fn of queueSubs) fn();
-}
 
 /**
  * Slice A: server-side queueing. Enqueued messages are sent to the server
@@ -261,7 +140,7 @@ function sendChatToServer(msg: QueuedChatMessage): boolean {
 		...(msg.attachments ? { attachments: msg.attachments } : {}),
 	};
 	for (const fn of messageSubs) fn(userEvent);
-	_pendingSessionToday = true;
+	setPendingSessionToday(true);
 	_messageBuffer = [];
 	const payload: Record<string, unknown> = {
 		type: "chat",
@@ -295,24 +174,11 @@ function sendChatToServer(msg: QueuedChatMessage): boolean {
  */
 function drainPendingToServer(): void {
 	if (_ws?.readyState !== WS_OPEN) return;
-	for (const item of _chatQueue) {
+	for (const item of getQueue()) {
 		if (item._sent) continue;
-		if (sendChatToServer(item)) item._sent = true;
+		if (sendChatToServer(item)) markQueuedChatSent(item.id);
 		else break;
 	}
-}
-
-/**
- * Remove the queued item matching the given turn_id. Called on each `done`
- * from server. Matches by id rather than head position because promote can
- * reorder the server-side queue, leaving client's insertion-order queue out
- * of sync with the actual processing order.
- */
-function popQueueById(turnId: string): void {
-	const idx = _chatQueue.findIndex((q) => q.id === turnId);
-	if (idx === -1) return;
-	_chatQueue = _chatQueue.filter((_, i) => i !== idx);
-	notifyQueue();
 }
 
 /**
@@ -327,7 +193,7 @@ function popQueueById(turnId: string): void {
  */
 function notifyRunningQueuedUser(turnId: string | undefined): void {
 	if (!turnId) return;
-	const queued = _chatQueue.find((item) => item.id === turnId);
+	const queued = findQueuedChat(turnId);
 	if (!queued) return;
 	const userEvent: ServerMessage = {
 		type: "user_message",
@@ -346,16 +212,6 @@ function notifyRunningQueuedUser(turnId: string | undefined): void {
  * QueuedTurn — and get pruned. Not-yet-sent items (still in the local
  * outbox awaiting ws connect) are preserved.
  */
-function reconcileQueueState(
-	pendingIds: string[],
-	runningId: string | null,
-): void {
-	const known = new Set([...pendingIds, ...(runningId ? [runningId] : [])]);
-	const before = _chatQueue.length;
-	_chatQueue = _chatQueue.filter((q) => !q._sent || known.has(q.id));
-	if (_chatQueue.length !== before) notifyQueue();
-}
-
 // ─── WebSocket connection ─────────────────────────────────────────────────────
 
 function getWsUrl(): string {
@@ -448,20 +304,7 @@ function onPermissionResolved(): void {
 function onUsageUpdate(
 	msg: Extract<ServerMessage, { type: "usage_update" }>,
 ): void {
-	if (_subscribedSessionId) markContextSession(_subscribedSessionId);
-	// Live per-turn snapshot. Update only the "current turn" fields —
-	// cumulative tokens/cost/turns/duration/queries are still summed at `done`
-	// from the result's authoritative totals.
-	// context_window is carried forward from the most recent result so the
-	// gauge can render on sessions that haven't completed a query yet.
-	_liveStats = {
-		..._liveStats,
-		last_context_used: msg.tokens_in_context,
-		last_output_tokens: msg.output_tokens,
-		context_window: msg.context_window ?? _liveStats.context_window,
-	};
-	persistStats(_liveStats);
-	for (const fn of statsSubs) fn();
+	applyUsageUpdate(msg);
 	// actualModel rides on usage_update because it's reported per inference.
 	// Surface via the status snapshot so the model badge can compare against
 	// the configured vault model.
@@ -473,14 +316,7 @@ function onUsageUpdate(
 function onContextUpdate(
 	msg: Extract<ServerMessage, { type: "context_update" }>,
 ): void {
-	if (_subscribedSessionId) markContextSession(_subscribedSessionId);
-	_liveStats = {
-		..._liveStats,
-		last_context_used: msg.tokens_in_context,
-		context_window: msg.context_window,
-	};
-	persistStats(_liveStats);
-	for (const fn of statsSubs) fn();
+	applyContextUpdate(msg);
 	if (msg.actualModel && msg.actualModel !== _snap.actualModel) {
 		setSnap({ actualModel: msg.actualModel });
 	}
@@ -488,10 +324,8 @@ function onContextUpdate(
 
 /** Returns false if the message is from a stale session and should be dropped. */
 function onDone(msg: Extract<ServerMessage, { type: "done" }>): boolean {
-	if (_subscribedSessionId) markContextSession(_subscribedSessionId);
-	_pendingSessionToday = false;
 	// Note: stale-session filtering is handled by the per-session filter in
-	// onmessage (_subscribedSessionId gate).
+	// onmessage (focused-session gate).
 	// here — that's a DB session ID and doesn't match the pool UUID carried by
 	// done events broadcast from entry.runState.broadcast().
 	// Slice C: pop the queue item matching this done's turn_id. Match by
@@ -501,52 +335,23 @@ function onDone(msg: Extract<ServerMessage, { type: "done" }>): boolean {
 	// (e.g. the first idle-path submission from raven, sent via direct
 	// ws.send instead of enqueueChat) leave the queue alone.
 	if (msg.turn_id) {
-		popQueueById(msg.turn_id);
+		removeLocalChat(msg.turn_id);
 	}
-	_liveStats = {
-		turns: _liveStats.turns + msg.turns,
-		cost: _liveStats.cost + (msg.cost ?? 0),
-		estimated_cost:
-			(_liveStats.estimated_cost ?? 0) + (msg.estimated_cost ?? 0),
-		unpriced_queries:
-			(_liveStats.unpriced_queries ?? 0) +
-			(msg.cost == null && msg.estimated_cost == null ? 1 : 0),
-		duration_ms: _liveStats.duration_ms + msg.duration_ms,
-		input_tokens: _liveStats.input_tokens + msg.input_tokens,
-		output_tokens: _liveStats.output_tokens + msg.output_tokens,
-		cache_read_tokens: _liveStats.cache_read_tokens + msg.cache_read_tokens,
-		cache_creation_tokens:
-			_liveStats.cache_creation_tokens + msg.cache_creation_tokens,
-		context_window: msg.context_window ?? _liveStats.context_window,
-		max_output_tokens: msg.max_output_tokens ?? _liveStats.max_output_tokens,
-		last_context_used:
-			msg.tokens_in_context ??
-			msg.input_tokens + msg.cache_read_tokens + msg.cache_creation_tokens,
-		last_output_tokens: msg.output_tokens,
-		queries: _liveStats.queries + 1,
-	};
-	persistStats(_liveStats);
-	for (const fn of statsSubs) fn();
+	applyDone(msg);
 	return true;
 }
 
 function handleGlobalMessage(msg: ServerMessage): boolean {
 	switch (msg.type) {
 		case "sessions_status":
-			_sessionsStatus = msg.sessions;
-			recomputeAggregateNavStatus();
-			for (const subscriber of sessionsStatusSubs) subscriber();
+			replaceSessionsStatus(msg.sessions);
 			return true;
 		case "session_closed":
-			_sessionsStatus = _sessionsStatus.filter(
-				(session) => session.session_id !== msg.session_id,
-			);
-			recomputeAggregateNavStatus();
-			for (const subscriber of sessionsStatusSubs) subscriber();
+			removeSessionStatus(msg.session_id);
 			return true;
 		case "session_created":
-			switchContextSession(msg.session_id);
-			_subscribedSessionId = msg.session_id;
+			switchStatsContext(msg.session_id);
+			focusSession(msg.session_id);
 			_messageBuffer = [];
 			for (const subscriber of statusSubs) subscriber();
 			return true;
@@ -557,10 +362,11 @@ function handleGlobalMessage(msg: ServerMessage): boolean {
 
 function isMessageFromAnotherSession(msg: ServerMessage): boolean {
 	const messageSessionId = (msg as { session_id?: string }).session_id;
+	const subscribedSessionId = getSubscribedSessionId();
 	return (
-		_subscribedSessionId !== "" &&
+		subscribedSessionId !== "" &&
 		messageSessionId !== undefined &&
-		messageSessionId !== _subscribedSessionId
+		messageSessionId !== subscribedSessionId
 	);
 }
 
@@ -591,7 +397,7 @@ function applySessionMessage(msg: ServerMessage): boolean {
 		case "done":
 			return onDone(msg);
 		case "queue_state":
-			reconcileQueueState(msg.pending_turn_ids, msg.running_turn_id);
+			reconcileLocalQueue(msg.pending_turn_ids, msg.running_turn_id);
 			break;
 	}
 	return true;
@@ -617,7 +423,7 @@ function updateMessageBuffer(msg: ServerMessage): void {
 	}
 	if (msg.type !== "done" && msg.type !== "error") return;
 	if (!_bufferingEnabled) _messageBuffer = [];
-	if (msg.type === "error") _pendingSessionToday = false;
+	if (msg.type === "error") setPendingSessionToday(false);
 }
 
 function handleSocketMessage(event: MessageEvent): void {
@@ -677,11 +483,12 @@ function connect() {
 		clearReconnectTimer();
 		_reconnectAttempts = 0;
 		setSnap({ wsStatus: "connected" });
-		if (_subscribedSessionId) {
+		const subscribedSessionId = getSubscribedSessionId();
+		if (subscribedSessionId) {
 			_ws?.send(
 				JSON.stringify({
 					type: "subscribe_session",
-					session_id: _subscribedSessionId,
+					session_id: subscribedSessionId,
 				}),
 			);
 		}
@@ -747,19 +554,18 @@ export function subscribeMessage(fn: (msg: ServerMessage) => void): () => void {
 }
 
 export function send(msg: ClientMessage): void {
-	if (msg.type === "chat") _pendingSessionToday = true;
+	if (msg.type === "chat") setPendingSessionToday(true);
 	if (msg.type === "chat" || msg.type === "clear") _messageBuffer = [];
 	if (msg.type === "clear") {
-		_subscribedSessionId = PENDING_NEW_SESSION_ID;
-		_pendingSessionToday = false;
+		focusPendingNewSession();
+		setPendingSessionToday(false);
 		_pendingPermCount = 0;
 		setSnap({
 			sessionState: "idle",
 			hasPendingPermissions: false,
 			runningTurnId: null,
 		});
-		_chatQueue = [];
-		notifyQueue();
+		clearChatQueue();
 	}
 	// Do NOT pre-decrement _pendingPermCount here. The server broadcasts
 	// `permission_resolved` back to all clients (including the sender), and
@@ -787,87 +593,17 @@ export function setBufferingEnabled(enabled: boolean): void {
 	if (!enabled) _messageBuffer = [];
 }
 
-// ─── Public API — Live stats ──────────────────────────────────────────────────
-
-export function getLiveStats(): LiveStats {
-	return _liveStats;
-}
-
-export function subscribeStats(fn: () => void): () => void {
-	statsSubs.add(fn);
-	return () => statsSubs.delete(fn);
-}
-
-export function resetLiveStats(): void {
-	_liveStats = { ...EMPTY_STATS };
-	_contextSessionId = null;
-	clearPersistedStats();
-	for (const fn of statsSubs) fn();
-}
-
-export function getPendingSessionToday(): boolean {
-	return _pendingSessionToday;
-}
-
 /** Seed the actual model from DB so the model badge is correct before any new query. */
 export function seedActualModel(actualModel: string | null): void {
 	if (actualModel === _snap.actualModel) return;
 	setSnap({ actualModel });
 }
 
-/**
- * Seed context window info from DB when loading an existing session so the
- * gauge shows the last known value immediately, before any new query runs.
- * For the same chat, only fills null fields so newer live events win. When the
- * user changes chats, replaces the prior chat's context with the DB snapshot.
- */
-export function seedContextStats(
-	contextWindow: number,
-	lastContextUsed: number,
-	sessionId = _subscribedSessionId,
-): void {
-	const target = sessionId ? canonicalContextSessionId(sessionId) : null;
-	const current = _contextSessionId
-		? canonicalContextSessionId(_contextSessionId)
-		: null;
-	const sameSession = target == null || target === current;
-	const cw = sameSession
-		? (_liveStats.context_window ?? contextWindow)
-		: contextWindow;
-	const lcu = sameSession
-		? (_liveStats.last_context_used ?? lastContextUsed)
-		: lastContextUsed;
-	if (
-		sameSession &&
-		cw === _liveStats.context_window &&
-		lcu === _liveStats.last_context_used
-	)
-		return;
-	if (target) markContextSession(target);
-	_liveStats = { ..._liveStats, context_window: cw, last_context_used: lcu };
-	persistStats(_liveStats);
-	for (const fn of statsSubs) fn();
-}
-
-// ─── Public API — Pending prompt ─────────────────────────────────────────────
-
-export function setPendingPrompt(text: string): void {
-	_pendingPrompt = text;
-}
-
-export function claimPendingPrompt(): string | null {
-	const p = _pendingPrompt;
-	_pendingPrompt = null;
-	return p;
-}
-
 // ─── Public API — Chat queue ──────────────────────────────────────────────────
 
 export function enqueueChat(msg: QueuedChatMessage): void {
-	const item: QueuedChatMessage = { ...msg };
-	_chatQueue = [..._chatQueue, item];
-	notifyQueue();
-	if (sendChatToServer(item)) item._sent = true;
+	const item = enqueueLocalChat(msg);
+	if (sendChatToServer(item)) markQueuedChatSent(item.id);
 }
 
 /**
@@ -887,7 +623,7 @@ export function promoteQueued(id: string): void {
 }
 
 export function removeFromQueue(id: string): QueuedChatMessage | undefined {
-	const item = _chatQueue.find((m) => m.id === id);
+	const item = findQueuedChat(id);
 	if (!item) return undefined;
 	// Slice C: if the item was already sent to the server, ask the server
 	// to cancel it. The server only cancels pending (not-yet-running) turns;
@@ -900,37 +636,7 @@ export function removeFromQueue(id: string): QueuedChatMessage | undefined {
 			// Connection lost — local removal still proceeds.
 		}
 	}
-	_chatQueue = _chatQueue.filter((m) => m.id !== id);
-	notifyQueue();
-	return item;
-}
-
-export function getQueue(): QueuedChatMessage[] {
-	return _chatQueue;
-}
-
-export function subscribeQueue(fn: () => void): () => void {
-	queueSubs.add(fn);
-	return () => queueSubs.delete(fn);
-}
-
-export function clearChatQueue(): void {
-	if (_chatQueue.length === 0) return;
-	_chatQueue = [];
-	notifyQueue();
-}
-
-// ─── Public API — Multi-session ──────────────────────────────────────────────
-
-/** Pool-wide list of all live sessions, updated by sessions_status messages. */
-export function getSessionsStatus(): SessionStatusEntry[] {
-	return _sessionsStatus;
-}
-
-/** Subscribe to pool-wide session list changes. Returns unsubscribe fn. */
-export function subscribeSessionsStatus(fn: () => void): () => void {
-	sessionsStatusSubs.add(fn);
-	return () => sessionsStatusSubs.delete(fn);
+	return removeLocalChat(id);
 }
 
 /**
@@ -939,8 +645,8 @@ export function subscribeSessionsStatus(fn: () => void): () => void {
  * and notifies status subscribers so the UI can re-render.
  */
 export function subscribeToSession(sessionId: string): void {
-	switchContextSession(sessionId);
-	_subscribedSessionId = sessionId;
+	switchStatsContext(sessionId);
+	focusSession(sessionId);
 	if (_ws?.readyState === WS_OPEN) {
 		try {
 			_ws.send(
@@ -954,88 +660,18 @@ export function subscribeToSession(sessionId: string): void {
 	for (const fn of statusSubs) fn();
 }
 
-/** UUID of the WS pool session this client is subscribed to (empty = not yet set). */
-export function getSubscribedSessionId(): string {
-	return _subscribedSessionId;
-}
-
-/**
- * Aggregate nav status across all live sessions.
- * Driving rule:
- *   running > error > idle
- * runningCount = number of sessions in "running" state.
- * pendingPermissions = true if any session has hasPendingPermissions.
- */
-export type AggregateNavStatus = {
-	state: "idle" | "running" | "error";
-	runningCount: number;
-	pendingPermissions: boolean;
-};
-
-// Cached aggregate so useSyncExternalStore gets a stable reference between
-// store updates. React requires getSnapshot() to return the same object if the
-// store hasn't changed; returning a new object every call causes infinite loops.
-let _aggregateNavStatus: AggregateNavStatus = {
-	state: "idle",
-	runningCount: 0,
-	pendingPermissions: false,
-};
-
-function recomputeAggregateNavStatus(): void {
-	let hasRunning = false;
-	let hasError = false;
-	let runningCount = 0;
-	let pendingPermissions = false;
-	for (const s of _sessionsStatus) {
-		if (s.state === "running") {
-			hasRunning = true;
-			runningCount++;
-		}
-		if (s.state === "error") hasError = true;
-		if (s.hasPendingPermissions) pendingPermissions = true;
-	}
-	const state: "idle" | "running" | "error" = hasRunning
-		? "running"
-		: hasError
-			? "error"
-			: "idle";
-	// Only replace when values actually changed (keeps reference stable).
-	if (
-		state !== _aggregateNavStatus.state ||
-		runningCount !== _aggregateNavStatus.runningCount ||
-		pendingPermissions !== _aggregateNavStatus.pendingPermissions
-	) {
-		_aggregateNavStatus = { state, runningCount, pendingPermissions };
-	}
-}
-
-export function getAggregateNavStatus(): AggregateNavStatus {
-	return _aggregateNavStatus;
-}
-
 /** @internal — resets all module state to initial values; for testing only. */
 export function __resetForTesting(): void {
 	clearReconnectTimer();
 	_snap = { ...INITIAL_SNAPSHOT };
 	_ws = null;
 	_reconnectAttempts = 0;
-	_liveStats = { ...EMPTY_STATS };
 	_messageBuffer = [];
 	_bufferingEnabled = true;
 	_pendingPermCount = 0;
-	_pendingSessionToday = false;
-	_pendingPrompt = null;
-	_chatQueue = [];
-	_sessionsStatus = [];
-	_aggregateNavStatus = {
-		state: "idle",
-		runningCount: 0,
-		pendingPermissions: false,
-	};
-	_subscribedSessionId = "";
+	resetChatQueueForTesting();
+	resetLiveStatsForTesting();
+	resetSessionStatusForTesting();
 	statusSubs.clear();
 	messageSubs.clear();
-	statsSubs.clear();
-	queueSubs.clear();
-	sessionsStatusSubs.clear();
 }

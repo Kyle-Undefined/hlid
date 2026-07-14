@@ -243,6 +243,45 @@ agent({ name: "hlid-fake-agent" })
 			});
 			return { stopReason: "end_turn" };
 		}
+		if (text === "tool-kind-matrix") {
+			const tools = [
+				["read", "Read file"],
+				["edit", "Edit file"],
+				["delete", "Delete file"],
+				["move", "Move file"],
+				["search", "Search files"],
+				["execute", "Run command"],
+				["think", "Think"],
+				["fetch", "Fetch URL"],
+				["switch_mode", "Planning mode"],
+				["other", "Custom action"],
+			];
+			for (const [index, [kind, title]] of tools.entries()) {
+				const toolCall = {
+					toolCallId: `kind-${index}`,
+					title,
+					kind,
+					rawInput: { kind },
+				};
+				await client.notify(methods.client.session.update, {
+					sessionId: params.sessionId,
+					update: {
+						sessionUpdate: "tool_call",
+						...toolCall,
+						status: "pending",
+					},
+				});
+				await client.request(methods.client.session.requestPermission, {
+					sessionId: params.sessionId,
+					toolCall,
+					options: [
+						{ optionId: "allow", name: "Allow", kind: "allow_once" },
+						{ optionId: "deny", name: "Deny", kind: "reject_once" },
+					],
+				});
+			}
+			return { stopReason: "end_turn" };
+		}
 		if (text.startsWith("The user approved the plan.")) {
 			await client.notify(methods.client.session.update, {
 				sessionId: params.sessionId,

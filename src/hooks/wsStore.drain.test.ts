@@ -8,8 +8,11 @@
  */
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import * as wsStore from "./wsStore";
+import * as chatQueueStore from "./wsChatQueueStore";
+import * as wsTransport from "./wsStore";
 import { type MockWs, makeMockWs, WS_STATES } from "./wsStore.test-utils";
+
+const wsStore = { ...wsTransport, ...chatQueueStore };
 
 let currentWs: MockWs;
 let wsCtorSpy: ReturnType<typeof vi.fn>;

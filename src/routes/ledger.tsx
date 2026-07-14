@@ -34,8 +34,11 @@ import type {
 import { useLedgerSessionMutations } from "#/hooks/useLedgerSessionMutations";
 import { useWs } from "#/hooks/useWs";
 import { useWsLiveStats } from "#/hooks/useWsSelectors";
-import type { LiveStats } from "#/hooks/wsStore";
-import * as wsStore from "#/hooks/wsStore";
+import type { LiveStats } from "#/hooks/wsLiveStatsStore";
+import {
+	getSessionsStatus,
+	subscribeSessionsStatus,
+} from "#/hooks/wsSessionStatusStore";
 import {
 	costDisplayNote,
 	formatDisplayCost,
@@ -387,7 +390,7 @@ function useSessionListSync({
 //   (b) a brand-new db_session_id appears that wasn't seen before
 //       (new chat just wrote its first DB row via initSessionContext).
 function useSessionStatusRefresh(
-	sessionsStatus: ReturnType<typeof wsStore.getSessionsStatus>,
+	sessionsStatus: ReturnType<typeof getSessionsStatus>,
 	refreshSessions: () => Promise<void>,
 ) {
 	const prevSessionStatesRef = useRef<
@@ -536,7 +539,7 @@ function SessionsTab({
 	loading,
 	liveStats,
 }: {
-	sessionsStatus: ReturnType<typeof wsStore.getSessionsStatus>;
+	sessionsStatus: ReturnType<typeof getSessionsStatus>;
 	live: ReturnType<typeof useLedgerLiveData>;
 	mutations: ReturnType<typeof useLedgerMutations>;
 	page: number;
@@ -629,8 +632,8 @@ function StatsPage() {
 	const stats = useWsLiveStats();
 	// ── Active sessions (multi-session pool status) ───────────────────────────
 	const sessionsStatus = useSyncExternalStore(
-		wsStore.subscribeSessionsStatus,
-		wsStore.getSessionsStatus,
+		subscribeSessionsStatus,
+		getSessionsStatus,
 		() => [],
 	);
 
