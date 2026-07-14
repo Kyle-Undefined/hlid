@@ -95,7 +95,7 @@ export function ActiveSessionsPanel({
 								{stateLabel(session)}
 							</td>
 							<td className="px-4 py-2.5">
-								<div className="flex items-center gap-1.5">
+								<div className="flex w-40 shrink-0 items-center gap-1.5">
 									<button
 										type="button"
 										onClick={() => onStop(session.session_id)}

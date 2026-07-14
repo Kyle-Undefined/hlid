@@ -184,6 +184,26 @@ describe("ActiveSessionsPanel", () => {
 		);
 	});
 
+	it("reserves the action width while CLOSE confirmation is open", () => {
+		render(
+			<ActiveSessionsPanel
+				sessions={[idle]}
+				onStop={vi.fn()}
+				onClose={vi.fn()}
+			/>,
+		);
+		const closeBtn = screen.getByRole("button", {
+			name: /close s1|close proj/i,
+		});
+		const actions = closeBtn.parentElement;
+		expect(actions?.classList.contains("w-40")).toBe(true);
+
+		fireEvent.click(closeBtn);
+
+		expect(screen.getByRole("button", { name: "confirm" })).toBeDefined();
+		expect(actions?.classList.contains("w-40")).toBe(true);
+	});
+
 	// ── column headers ────────────────────────────────────────────────────────
 
 	it("renders column headers", () => {
