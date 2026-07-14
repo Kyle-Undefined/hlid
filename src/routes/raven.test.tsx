@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
 	subscribeToSession: vi.fn(),
 	enqueueChat: vi.fn(),
 	sessionState: "idle" as "idle" | "running" | "error",
+	actualModel: null as string | null,
 	sessions: [] as unknown[],
 }));
 
@@ -87,7 +88,7 @@ vi.mock("#/hooks/useWs", () => ({
 		wsStatus: "connected",
 		sessionState: state.sessionState,
 		model: "claude-sonnet-4-6",
-		actualModel: null,
+		actualModel: state.actualModel,
 		permissionMode: "default",
 		runningTurnId: state.sessionState === "running" ? "running" : null,
 		send: state.send,
@@ -121,6 +122,7 @@ vi.mock("#/lib/serverFns/sessions", () => ({
 	getLiveSessionsFn: vi.fn(),
 	getSessionAgentCwdFn: vi.fn(),
 	getSessionModelFn: vi.fn(),
+	getSessionProviderIdFn: vi.fn(),
 }));
 vi.mock("#/lib/serverFns/agents", () => ({
 	getAgentListFn: vi.fn(),
@@ -145,6 +147,7 @@ import {
 	getLiveSessionsFn,
 	getSessionAgentCwdFn,
 	getSessionModelFn,
+	getSessionProviderIdFn,
 } from "#/lib/serverFns/sessions";
 import { getVoiceInfoFn } from "#/lib/serverFns/voice";
 import { ChatPage, Route } from "./raven";
@@ -155,6 +158,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	localStorage.clear();
 	state.sessionState = "idle";
+	state.actualModel = null;
 	state.search = {};
 	state.loaderData = {
 		config: {
@@ -177,6 +181,7 @@ beforeEach(() => {
 		providerUsages: [],
 		agentSkillContext: undefined,
 		sessionModel: null,
+		sessionProviderId: null,
 		agentList: [],
 		vaultSkills: [],
 		interactiveMode: false,
@@ -287,19 +292,47 @@ describe("Raven composed submission behavior", () => {
 		expect(badge.textContent).not.toMatch(/claude|medium/i);
 	});
 
-	it("shows a restored session's saved model instead of the current vault model", () => {
+	it("restores an agent session's saved provider and model instead of current config", () => {
 		state.loaderData = {
 			...state.loaderData,
+			config: {
+				...(state.loaderData.config as object),
+				vault_provider: "codex",
+				codex: { model: "gpt-5.6-terra" },
+				agents: [
+					{
+						path: "/hlid",
+						provider: "codex",
+						model: "gpt-5.6-sol",
+					},
+				],
+			},
 			existingSessionId: "saved-session",
+			agentSkillContext: "/hlid",
 			sessionModel: "claude-fable-5",
+			sessionProviderId: "claude",
+			agentList: [
+				{
+					path: "/hlid",
+					name: "Hlid",
+					provider: "codex",
+					model: "gpt-5.6-sol",
+				},
+			],
 			providers: [
 				{
 					id: "claude",
 					label: "Claude",
 					available: true,
+					models: [{ value: "claude-fable-5", label: "Fable" }],
+				},
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
 					models: [
 						{ value: "gpt-5.6-sol", label: "Sol" },
-						{ value: "claude-fable-5", label: "Fable" },
+						{ value: "gpt-5.6-terra", label: "Terra" },
 					],
 				},
 			],
@@ -307,7 +340,14 @@ describe("Raven composed submission behavior", () => {
 
 		render(<ChatPage />);
 
-		expect(screen.getByRole("button", { name: /fable-5/i })).toBeTruthy();
+		const badge = screen.getByRole("button", { name: /fable-5/i });
+		expect(badge).toBeTruthy();
+		fireEvent.click(badge);
+		expect(screen.getByRole("button", { name: "Fable" })).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "Sol" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "Terra" })).toBeNull();
+		expect(screen.queryByText("selected")).toBeNull();
+		expect(screen.queryByText("actual")).toBeNull();
 	});
 
 	it("binds a database transcript to its matching live pool session", () => {
@@ -462,6 +502,7 @@ describe("raven route loader", () => {
 		vi.mocked(getCurrentSessionFn).mockResolvedValue(null as never);
 		vi.mocked(getSessionAgentCwdFn).mockResolvedValue(null as never);
 		vi.mocked(getSessionModelFn).mockResolvedValue(null as never);
+		vi.mocked(getSessionProviderIdFn).mockResolvedValue(null as never);
 	});
 
 	it("uses the explicit session without consulting live sessions", async () => {
@@ -502,6 +543,14 @@ describe("raven route loader", () => {
 		const data = await route.loader({ deps: {} });
 		expect(data.sessionModel).toBe("claude-fable-5");
 		expect(getSessionModelFn).toHaveBeenCalledWith({ data: "cur" });
+	});
+
+	it("restores the provider used by the resolved session", async () => {
+		vi.mocked(getCurrentSessionFn).mockResolvedValue("cur" as never);
+		vi.mocked(getSessionProviderIdFn).mockResolvedValue("claude" as never);
+		const data = await route.loader({ deps: {} });
+		expect(data.sessionProviderId).toBe("claude");
+		expect(getSessionProviderIdFn).toHaveBeenCalledWith({ data: "cur" });
 	});
 
 	it("attaches to a running terminal session in interactive vault mode", async () => {

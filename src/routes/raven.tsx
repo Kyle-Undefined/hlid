@@ -75,6 +75,7 @@ import {
 	getLiveSessionsFn,
 	getSessionAgentCwdFn,
 	getSessionModelFn,
+	getSessionProviderIdFn,
 } from "#/lib/serverFns/sessions";
 import { getVoiceInfoFn } from "#/lib/serverFns/voice";
 import { resolveSkillPrompt } from "#/lib/skillPrompt";
@@ -156,15 +157,21 @@ async function loadRavenRoute(session?: string, agent?: string) {
 	);
 	let agentSkillContext = agent;
 	let sessionModel: string | null = null;
+	let sessionProviderId: string | null = null;
 	if (!agentSkillContext && resolvedSessionId) {
-		const [savedAgentCwd, savedModel] = await Promise.all([
+		const [savedAgentCwd, savedModel, savedProviderId] = await Promise.all([
 			getSessionAgentCwdFn({ data: resolvedSessionId }),
 			getSessionModelFn({ data: resolvedSessionId }),
+			getSessionProviderIdFn({ data: resolvedSessionId }),
 		]);
 		agentSkillContext = savedAgentCwd ?? undefined;
 		sessionModel = savedModel;
+		sessionProviderId = savedProviderId;
 	} else if (resolvedSessionId) {
-		sessionModel = await getSessionModelFn({ data: resolvedSessionId });
+		[sessionModel, sessionProviderId] = await Promise.all([
+			getSessionModelFn({ data: resolvedSessionId }),
+			getSessionProviderIdFn({ data: resolvedSessionId }),
+		]);
 	}
 	const interactiveMode = interactiveModeForAgent(config, agentSkillContext);
 	resolvedSessionId = resolveTerminalSession(
@@ -182,6 +189,7 @@ async function loadRavenRoute(session?: string, agent?: string) {
 		providerUsages,
 		agentSkillContext,
 		sessionModel,
+		sessionProviderId,
 		agentList,
 		vaultSkills: cockpitData.skills,
 		interactiveMode,
@@ -828,6 +836,8 @@ function deriveRavenComposerState({
 	model,
 	actualModel,
 	selection,
+	restoredSession,
+	sessionProviderId,
 	planMode,
 }: {
 	config: RavenConfig;
@@ -843,6 +853,8 @@ function deriveRavenComposerState({
 	model: string | undefined;
 	actualModel: string | null;
 	selection: RavenSessionSelection;
+	restoredSession: boolean;
+	sessionProviderId: string | null;
 	planMode: boolean;
 }) {
 	const hasInput =
@@ -861,14 +873,16 @@ function deriveRavenComposerState({
 		selection.permissionMode ?? selectedAgent?.permission_mode ?? null;
 	const { effectiveActualModel, mismatch: modelMismatch } = deriveModelMismatch(
 		selectedModel,
-		agentSkillContext ? null : actualModel,
-		agentModel,
+		restoredSession || !agentSkillContext ? actualModel : null,
+		restoredSession ? null : agentModel,
 	);
-	const providerId = resolveActiveProviderId(
-		agentList,
-		agentSkillContext,
-		config.vault_provider,
-	);
+	const providerId =
+		(restoredSession ? sessionProviderId : null) ??
+		resolveActiveProviderId(
+			agentList,
+			agentSkillContext,
+			config.vault_provider,
+		);
 	const provider = providers.find((candidate) => candidate.id === providerId);
 	return {
 		canSend: hasInput && !isRunning,
@@ -896,6 +910,7 @@ export function ChatPage() {
 		providerUsages: initialProviderUsages,
 		agentSkillContext: initialAgentSkillContext,
 		sessionModel: initialSessionModel,
+		sessionProviderId: initialSessionProviderId,
 		agentList,
 		vaultSkills,
 		interactiveMode,
@@ -911,6 +926,9 @@ export function ChatPage() {
 		navigate,
 	});
 	const { agentSkillContext, sessionId, sessionIdRef } = session;
+	const restoredSession = Boolean(
+		existingSessionId && agentSkillContext === initialAgentSkillContext,
+	);
 	const [activeSkill, setActiveSkill] = useState<ActiveRavenSkill | null>(null);
 	const [sessionSelection, setSessionSelection] =
 		useState<RavenSessionSelection>(() =>
@@ -1061,6 +1079,8 @@ export function ChatPage() {
 		model,
 		actualModel,
 		selection: sessionSelection,
+		restoredSession,
+		sessionProviderId: initialSessionProviderId,
 		planMode,
 	});
 	const composerProps: ChatComposerProps = {
@@ -1502,11 +1522,11 @@ function ChatModelBadge({
 							{modelMismatch && (
 								<div className="space-y-0.5 pb-2 border-b border-border/50">
 									<div>
-										<span className="text-muted-foreground/50">vault </span>
+										<span className="text-muted-foreground/50">selected </span>
 										<span className="text-foreground/60">{modelShort}</span>
 									</div>
 									<div>
-										<span className="text-muted-foreground/50">agent </span>
+										<span className="text-muted-foreground/50">actual </span>
 										<span className="text-amber-400">{actualModelShort}</span>
 									</div>
 								</div>

@@ -69,6 +69,13 @@ export const getSessionModelFn = createServerFn({ method: "GET" })
 		return getSessionModel(sessionId);
 	});
 
+export const getSessionProviderIdFn = createServerFn({ method: "GET" })
+	.validator((raw) => sessionIdSchema.parse(raw))
+	.handler(async ({ data: sessionId }) => {
+		const { getSessionProviderId } = await import("#/db");
+		return getSessionProviderId(sessionId);
+	});
+
 export const getSessionPermissionsFn = createServerFn({ method: "GET" })
 	.validator((raw) => sessionIdSchema.parse(raw))
 	.handler(({ data: sessionId }) =>

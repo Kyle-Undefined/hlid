@@ -2065,7 +2065,15 @@ export class SessionManager {
 		agentSettings: AgentSettings | undefined;
 		resumeProviderSessionId: string | null;
 	} {
-		const provider = this.resolveProvider(this.agentCwd);
+		const configuredProvider = this.resolveProvider(this.agentCwd);
+		// Provider identity is part of conversation continuity. A restored Claude
+		// thread must stay on Claude even if the vault or agent is configured to use
+		// Codex today; otherwise the saved provider session cannot be resumed and the
+		// next turn silently starts a different conversation on another harness.
+		const provider =
+			(this.providerSessionProviderId
+				? this.providers.get(this.providerSessionProviderId)
+				: undefined) ?? configuredProvider;
 		const agentSettings = this.agentCwd
 			? this.agentSettingsMap.get(this.agentCwd)
 			: undefined;

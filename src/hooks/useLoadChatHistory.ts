@@ -61,6 +61,9 @@ export function useLoadChatHistory({
 		// responsibility lives in index.tsx (new non-same-session run) and
 		// raven.tsx (explicit clear action).
 		let cancelled = false;
+		// actualModel is session-specific. Do not let the previously viewed chat's
+		// inference model leak into the restored session while its DB snapshot loads.
+		wsStore.seedActualModel(null);
 		loadSessionSnapshot({
 			sessionId: existingSessionId,
 			dispatch,

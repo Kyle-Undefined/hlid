@@ -2060,6 +2060,43 @@ describe("SessionManager — provider resolution", () => {
 		expect(claudeCaptured.params).toBeNull();
 	});
 
+	it("restored session keeps its saved provider after agent config changes", async () => {
+		const { provider: claudeProvider, captured: claudeCaptured } =
+			makeCaptureProvider("claude");
+		const { provider: codexProvider, captured: codexCaptured } =
+			makeCaptureProvider("codex");
+		const config = makeConfigWithAgent(AGENT_PATH, {
+			provider: "codex",
+			model: "gpt-5.6-sol",
+		});
+		const providers = new Map([
+			["claude", claudeProvider],
+			["codex", codexProvider],
+		]);
+		vi.mocked(dbMock.getSessionMessages).mockResolvedValueOnce([
+			{ role: "user", text: "prior" },
+		] as never);
+		vi.mocked(dbMock.getSessionAgentCwd).mockResolvedValueOnce(AGENT_PATH);
+		vi.mocked(dbMock.getSessionModel).mockResolvedValueOnce("claude-fable-5");
+		vi.mocked(dbMock.getSessionProviderId).mockResolvedValueOnce("claude");
+		vi.mocked(dbMock.getSessionProviderSession).mockResolvedValueOnce(
+			"claude-session-id",
+		);
+
+		const sm = new SessionManager(config, providers);
+		await sm.runQuery("continue", () => {}, "saved-session");
+
+		expect(claudeCaptured.params).toMatchObject({
+			model: "claude-fable-5",
+			sessionId: "claude-session-id",
+		});
+		expect(codexCaptured.params).toBeNull();
+		expect(dbMock.setSessionProviderId).toHaveBeenCalledWith(
+			"saved-session",
+			"claude",
+		);
+	});
+
 	it("agent query falls back to vaultProviderId when agent not in map", async () => {
 		// Agent config has no provider set — should fall back to vault provider ("claude").
 		// Register two providers; only the vault one should be called.
