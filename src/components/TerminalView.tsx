@@ -11,6 +11,7 @@
  * switching away and returning replays the ring buffer.
  */
 import { FitAddon } from "@xterm/addon-fit";
+import { WebLinksAddon } from "@xterm/addon-web-links";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
 import { useEffect, useRef, useState } from "react";
@@ -129,11 +130,47 @@ export function TerminalView({
 			},
 		});
 		const fitAddon = new FitAddon();
+		const webLinksAddon = new WebLinksAddon((event, uri) => {
+			if (!event.ctrlKey && !event.metaKey) return;
+			window.open(uri, "_blank", "noopener,noreferrer");
+		});
 		term.loadAddon(fitAddon);
+		term.loadAddon(webLinksAddon);
 		term.open(container);
 		fitAddon.fit();
 		termRef.current = term;
 		fitRef.current = fitAddon;
+
+		// xterm treats Ctrl+C/Ctrl+V as terminal control characters by default.
+		// Yield selected Ctrl+C and Ctrl+V back to the browser so xterm's own
+		// copy/paste event handlers can use the system clipboard. Its paste path
+		// also normalizes line endings and honors bracketed-paste mode before
+		// emitting data to the PTY.
+		term.attachCustomKeyEventHandler((event) => {
+			if (event.type !== "keydown") return true;
+
+			if (
+				event.key === "Escape" &&
+				!event.ctrlKey &&
+				!event.altKey &&
+				!event.metaKey &&
+				!event.shiftKey
+			) {
+				// End-of-line followed by readline's line-discard command clears the
+				// complete prompt input even if the cursor was moved into the middle.
+				term.input("\x05\x15", true);
+				return false;
+			}
+
+			if (!event.ctrlKey || event.altKey) return true;
+
+			const key = event.key.toLowerCase();
+			if (key === "v") return false;
+			if (key === "c" && term.hasSelection()) return false;
+
+			// Ctrl+C without a selection must still reach the PTY as SIGINT.
+			return true;
+		});
 
 		// Compute initial size from fitAddon
 		const dims = fitAddon.proposeDimensions() ?? { cols: 80, rows: 24 };

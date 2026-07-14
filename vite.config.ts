@@ -207,7 +207,9 @@ const config = defineConfig({
 	// xterm publishes CommonJS runtime files behind ESM-style type declarations.
 	// Bundle them into SSR so Node prerender does not attempt unsupported named
 	// imports from an externalized CommonJS module.
-	ssr: { noExternal: ["@xterm/xterm", "@xterm/addon-fit"] },
+	ssr: {
+		noExternal: ["@xterm/xterm", "@xterm/addon-fit", "@xterm/addon-web-links"],
+	},
 });
 
 export default config;
