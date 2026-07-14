@@ -56,6 +56,20 @@ describe("codex pricing", () => {
 		expect(estimate).toBeCloseTo(0.204, 6);
 	});
 
+	it("adds the published hosted web-search fee per call", () => {
+		const estimate = estimateCodexCost(
+			"gpt-5.6-terra",
+			{
+				inputTokens: 1_000,
+				outputTokens: 100,
+				cacheReadTokens: 0,
+				cacheCreationTokens: 0,
+			},
+			{ webSearchCalls: 3 },
+		);
+		expect(estimate).toBeCloseTo(0.034, 6);
+	});
+
 	it("resolves aliases/snapshots and leaves unpublished prices unavailable", () => {
 		expect(getCodexPricing("gpt-5.6")?.model).toBe("gpt-5.6-sol");
 		expect(getCodexPricing("gpt-5.4-2026-03-05")?.model).toBe("gpt-5.4");

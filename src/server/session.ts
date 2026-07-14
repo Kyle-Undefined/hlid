@@ -1062,9 +1062,6 @@ export class SessionManager {
 				sessionId,
 				queryData,
 				provider.providerId,
-				provider.providerId === "claude"
-					? { estimatedCostMode: "cumulative" }
-					: undefined,
 			);
 			if (recorded) queryData.estimated_cost = recorded.estimatedCost;
 			if (turn.lastActualModel) {

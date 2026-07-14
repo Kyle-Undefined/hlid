@@ -1126,6 +1126,14 @@ describe("CodexAgentSession — notifications", () => {
 			subagent: { status: "running", currentStep: "Running rg auth src" },
 		});
 
+		emitSessionNotification(proc, "thread/tokenUsage/updated", {
+			threadId: "child-1",
+			usage: {
+				inputTokens: 20,
+				outputTokens: 5,
+				cacheReadTokens: 4,
+			},
+		});
 		emitSessionNotification(proc, "turn/completed", {
 			threadId: "child-1",
 			completedAtMs: 7000,
@@ -1136,6 +1144,34 @@ describe("CodexAgentSession — notifications", () => {
 			toolId: "spawn-1",
 			subagent: { status: "completed", endedAtMs: 7000 },
 		});
+
+		emitSessionNotification(proc, "thread/tokenUsage/updated", {
+			threadId: "thread-1",
+			usage: {
+				inputTokens: 10,
+				outputTokens: 2,
+				cacheReadTokens: 2,
+			},
+		});
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: { id: "parent-turn", status: "completed" },
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({ type: "usage" });
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "done",
+			estimatedCost: 0.0001665,
+			turns: 2,
+			durationMs: 0,
+			stopReason: "completed",
+			usage: {
+				inputTokens: 24,
+				outputTokens: 7,
+				cacheReadTokens: 6,
+				cacheCreationTokens: 0,
+			},
+		});
+		session.cancel();
 	});
 
 	it("reuses a pending spawn card when activity precedes spawn completion", async () => {
@@ -1806,6 +1842,92 @@ describe("CodexAgentSession — notifications", () => {
 				text: expect.stringContaining("approved the plan"),
 			}),
 		]);
+		session.cancel();
+	});
+
+	it("accumulates plan and implementation usage with hosted web-search fees", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const canUseTool = vi.fn().mockResolvedValue({ behavior: "allow" });
+		const session = new CodexProvider().query(
+			baseCodexParams({ permissionMode: "plan", canUseTool }),
+		);
+		const events = session[Symbol.asyncIterator]();
+		await session.send("make and implement a plan");
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "session_start",
+		});
+
+		emitSessionNotification(proc, "turn/started", {
+			threadId: "thread-1",
+			turn: { id: "plan-turn" },
+		});
+		emitSessionNotification(proc, "thread/tokenUsage/updated", {
+			threadId: "thread-1",
+			usage: { inputTokens: 10, outputTokens: 2 },
+		});
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: { id: "plan-turn", status: "completed" },
+		});
+		await vi.waitFor(() => expect(turnStartParams(writes)).toHaveLength(2));
+
+		emitSessionNotification(proc, "turn/started", {
+			threadId: "thread-1",
+			turn: { id: "implementation-turn" },
+		});
+		emitSessionNotification(proc, "item/started", {
+			threadId: "thread-1",
+			item: {
+				id: "web-1",
+				type: "webSearch",
+				action: { type: "openPage", url: "https://example.com" },
+			},
+		});
+		emitSessionNotification(proc, "item/completed", {
+			threadId: "thread-1",
+			item: {
+				id: "web-1",
+				type: "webSearch",
+				action: { type: "openPage", url: "https://example.com" },
+			},
+		});
+		emitSessionNotification(proc, "thread/tokenUsage/updated", {
+			threadId: "thread-1",
+			usage: {
+				inputTokens: 20,
+				outputTokens: 3,
+				cacheReadTokens: 4,
+			},
+		});
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: { id: "implementation-turn", status: "completed" },
+		});
+
+		expect(await nextSessionEvent(events)).toMatchObject({ type: "usage" });
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "tool_start",
+			name: "webSearch",
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "tool_result",
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({ type: "usage" });
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "done",
+			estimatedCost: 0.010141,
+			turns: 2,
+			durationMs: 0,
+			stopReason: "completed",
+			usage: {
+				inputTokens: 26,
+				outputTokens: 5,
+				cacheReadTokens: 4,
+				cacheCreationTokens: 0,
+			},
+		});
 		session.cancel();
 	});
 

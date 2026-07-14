@@ -1,4 +1,3 @@
-import { cumulativeCostDelta } from "../lib/costAccounting";
 import type { Db } from "./schema";
 import { getDb } from "./schema";
 import type { QueryData, SessionRow } from "./types";
@@ -160,24 +159,10 @@ export async function recordQuery(
 	sessionId: string,
 	data: QueryData,
 	providerId = "claude",
-	options?: { estimatedCostMode?: "incremental" | "cumulative" },
 ): Promise<{ estimatedCost: number | null }> {
 	const database = await getDb();
-	let estimatedCost = data.estimated_cost ?? null;
+	const estimatedCost = data.estimated_cost ?? null;
 	database.transaction(() => {
-		if (options?.estimatedCostMode === "cumulative" && estimatedCost != null) {
-			const prior = database
-				.query<{ last_provider_estimated_cost: number | null }, [string]>(
-					`SELECT last_provider_estimated_cost FROM sessions WHERE id = ?`,
-				)
-				.get(sessionId)?.last_provider_estimated_cost;
-			const reportedTotal = estimatedCost;
-			estimatedCost = cumulativeCostDelta(reportedTotal, prior ?? 0);
-			database.run(
-				`UPDATE sessions SET last_provider_estimated_cost = ? WHERE id = ?`,
-				[reportedTotal, sessionId],
-			);
-		}
 		database.run(
 			`INSERT INTO queries (session_id, timestamp, cost, estimated_cost, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, duration_ms, turns, context_window, stop_reason, tokens_in_context)
 			 VALUES (?, unixepoch(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,

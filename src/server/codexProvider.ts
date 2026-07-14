@@ -1,6 +1,10 @@
 import { dirname } from "node:path";
 import { resolveCodexExecutable } from "../lib/codexPath";
-import { canonicalizeCodexUsage, estimateCodexCost } from "../lib/codexPricing";
+import {
+	type CanonicalTokenUsage,
+	canonicalizeCodexUsage,
+	estimateCodexCost,
+} from "../lib/codexPricing";
 import { toLogical } from "../lib/paths";
 import type {
 	AgentEvent,
@@ -445,6 +449,15 @@ function maybeUsage(value: unknown): AgentEvent | null {
 	};
 }
 
+function emptyCodexUsage(): CanonicalTokenUsage {
+	return {
+		inputTokens: 0,
+		outputTokens: 0,
+		cacheReadTokens: 0,
+		cacheCreationTokens: 0,
+	};
+}
+
 type CodexWindowReading = Pick<
 	ProviderWindowReading,
 	"windowId" | "label" | "utilization" | "resetsAt"
@@ -510,12 +523,11 @@ class CodexAgentSession implements AgentSession {
 	private approvedHtmlPlanItemId: string | null = null;
 	private htmlPlanReady = false;
 	private nativePlanText = "";
-	private lastUsage = {
-		inputTokens: 0,
-		outputTokens: 0,
-		cacheReadTokens: 0,
-		cacheCreationTokens: 0,
-	};
+	private lastUsage = emptyCodexUsage();
+	private queryUsage = emptyCodexUsage();
+	private queryTurns = 0;
+	private queryWebSearchItemIds = new Set<string>();
+	private childLastUsage = new Map<string, CanonicalTokenUsage>();
 	private resolvedModel: string | null = null;
 
 	private launch: CodexLaunchConfig | null = null;
@@ -989,6 +1001,26 @@ class CodexAgentSession implements AgentSession {
 		this.nativePlanText = "";
 	}
 
+	private addQueryUsage(usage: CanonicalTokenUsage): void {
+		this.queryUsage.inputTokens += usage.inputTokens;
+		this.queryUsage.outputTokens += usage.outputTokens;
+		this.queryUsage.cacheReadTokens += usage.cacheReadTokens;
+		this.queryUsage.cacheCreationTokens += usage.cacheCreationTokens;
+	}
+
+	private resetQueryAccounting(): void {
+		this.queryUsage = emptyCodexUsage();
+		this.queryTurns = 0;
+		this.queryWebSearchItemIds.clear();
+		this.childLastUsage.clear();
+	}
+
+	private recordHostedToolItem(item: Record<string, unknown>): void {
+		if (item.type !== "webSearch") return;
+		const itemId = typeof item.id === "string" ? item.id : "";
+		if (itemId) this.queryWebSearchItemIds.add(itemId);
+	}
+
 	private handleThreadStarted(obj: Record<string, unknown>): void {
 		const id = asObj(obj.thread).id;
 		if (typeof id !== "string") return;
@@ -1000,6 +1032,7 @@ class CodexAgentSession implements AgentSession {
 		const id = asObj(obj.turn).id;
 		if (typeof id === "string") this.activeTurnId = id;
 		this.resetTurnTracking();
+		this.lastUsage = emptyCodexUsage();
 	}
 
 	private handleAgentMessageDelta(obj: Record<string, unknown>): void {
@@ -1036,6 +1069,7 @@ class CodexAgentSession implements AgentSession {
 
 	private handleItemStarted(obj: Record<string, unknown>): void {
 		const item = asObj(obj.item);
+		this.recordHostedToolItem(item);
 		const type = String(item.type ?? "tool");
 		const itemId = String(item.id ?? type);
 		const notificationThreadId = String(obj.threadId ?? this.threadId ?? "");
@@ -1248,6 +1282,7 @@ class CodexAgentSession implements AgentSession {
 
 	private handleItemCompleted(obj: Record<string, unknown>): void {
 		const item = asObj(obj.item);
+		this.recordHostedToolItem(item);
 		const type = String(item.type ?? "");
 		const itemId = String(item.id ?? type);
 		const notificationThreadId = String(obj.threadId ?? this.threadId ?? "");
@@ -1307,6 +1342,20 @@ class CodexAgentSession implements AgentSession {
 		this.events.push(usage);
 	}
 
+	private handleChildTokenUsageUpdated(
+		threadId: string,
+		params: unknown,
+	): void {
+		const usage = maybeUsage(params);
+		if (usage?.type !== "usage") return;
+		this.childLastUsage.set(threadId, {
+			inputTokens: usage.inputTokens,
+			outputTokens: usage.outputTokens,
+			cacheReadTokens: usage.cacheReadTokens ?? 0,
+			cacheCreationTokens: usage.cacheCreationTokens ?? 0,
+		});
+	}
+
 	private handleMcpStartupStatus(obj: Record<string, unknown>): void {
 		const servers = Array.isArray(obj.servers) ? obj.servers : [];
 		this.events.push({
@@ -1324,6 +1373,8 @@ class CodexAgentSession implements AgentSession {
 	): Promise<void> {
 		const turn = asObj(obj.turn);
 		this.recordUsage(maybeUsage(turn) ?? maybeUsage(params));
+		this.addQueryUsage(this.lastUsage);
+		this.queryTurns += 1;
 		this.activeTurnId = null;
 		if (this.params.permissionMode === "plan") {
 			const plan =
@@ -1362,18 +1413,23 @@ class CodexAgentSession implements AgentSession {
 				return;
 			}
 		}
+		const queryUsage = { ...this.queryUsage };
+		const queryTurns = this.queryTurns;
+		const webSearchCalls = this.queryWebSearchItemIds.size;
 		this.resetTurnTracking();
 		this.events.push({
 			type: "done",
 			estimatedCost: estimateCodexCost(
 				this.resolvedModel ?? this.params.model,
-				this.lastUsage,
+				queryUsage,
+				{ webSearchCalls },
 			),
-			turns: 1,
+			turns: queryTurns,
 			durationMs: 0,
 			stopReason: typeof turn.status === "string" ? turn.status : undefined,
-			usage: { ...this.lastUsage },
+			usage: queryUsage,
 		});
+		this.resetQueryAccounting();
 		if (!this.endAfterTurn) return;
 		this.detachAllThreads();
 		this.conn = null;
@@ -1384,6 +1440,21 @@ class CodexAgentSession implements AgentSession {
 		const threadId = String(obj.threadId ?? "");
 		if (!threadId || threadId === this.threadId) return;
 		const turn = asObj(obj.turn);
+		const reportedUsage = maybeUsage(turn) ?? maybeUsage(obj);
+		const usage =
+			reportedUsage?.type === "usage"
+				? {
+						inputTokens: reportedUsage.inputTokens,
+						outputTokens: reportedUsage.outputTokens,
+						cacheReadTokens: reportedUsage.cacheReadTokens ?? 0,
+						cacheCreationTokens: reportedUsage.cacheCreationTokens ?? 0,
+					}
+				: this.childLastUsage.get(threadId);
+		if (usage) {
+			this.addQueryUsage(usage);
+		}
+		this.queryTurns += 1;
+		this.childLastUsage.delete(threadId);
 		const rawStatus = String(turn.status ?? "completed");
 		const status: SubagentSnapshot["status"] =
 			rawStatus === "failed" || rawStatus === "errored"
@@ -1428,7 +1499,9 @@ class CodexAgentSession implements AgentSession {
 				this.emitRateLimits(obj.rateLimits);
 				break;
 			case "thread/tokenUsage/updated":
-				if (!childNotification) this.handleTokenUsageUpdated(params);
+				if (childNotification) {
+					this.handleChildTokenUsageUpdated(notificationThreadId, params);
+				} else this.handleTokenUsageUpdated(params);
 				break;
 			case "mcpServer/startupStatus/updated":
 				this.handleMcpStartupStatus(obj);

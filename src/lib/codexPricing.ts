@@ -117,6 +117,16 @@ export type CanonicalTokenUsage = {
 	cacheCreationTokens: number;
 };
 
+export type CodexHostedToolUsage = {
+	/** OpenAI-hosted web search calls, including search/open/find actions. */
+	webSearchCalls: number;
+};
+
+/** USD per call. OpenAI publishes web search at $10 per 1,000 calls. */
+export const CODEX_HOSTED_TOOL_RATES = {
+	webSearch: 10 / 1_000,
+} as const;
+
 export function canonicalizeCodexUsage(usage: {
 	inputTokens: number;
 	outputTokens: number;
@@ -162,6 +172,7 @@ export function getCodexPricing(
 export function estimateCodexCost(
 	model: string | null | undefined,
 	usage: CanonicalTokenUsage,
+	hostedTools: CodexHostedToolUsage = { webSearchCalls: 0 },
 ): number | null {
 	const rates = getCodexPricing(model)?.rates;
 	if (!rates) return null;
@@ -174,11 +185,14 @@ export function estimateCodexCost(
 	const outputMultiplier = isLong
 		? (rates.longContextOutputMultiplier ?? 1)
 		: 1;
-	return (
+	const tokenCost =
 		(usage.inputTokens * rates.input * inputMultiplier +
 			usage.cacheReadTokens * rates.cachedInput * inputMultiplier +
 			usage.cacheCreationTokens * rates.cacheWrite * inputMultiplier +
 			usage.outputTokens * rates.output * outputMultiplier) /
-		1_000_000
+		1_000_000;
+	return (
+		tokenCost +
+		Math.max(0, hostedTools.webSearchCalls) * CODEX_HOSTED_TOOL_RATES.webSearch
 	);
 }
