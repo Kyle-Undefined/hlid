@@ -3,7 +3,19 @@ import type {
 	AttachmentKind,
 	AttachmentListFilter,
 	AttachmentRow,
+	AttachmentTypeFilter,
 } from "./types";
+
+/**
+ * SQL predicate for a broad MIME class. TEXT covers text/* plus JSON;
+ * OTHER is everything the first three classes don't match.
+ */
+const TYPE_PREDICATES: Record<AttachmentTypeFilter, string> = {
+	image: `mime LIKE 'image/%'`,
+	pdf: `mime = 'application/pdf'`,
+	text: `(mime LIKE 'text/%' OR mime = 'application/json')`,
+	other: `(mime NOT LIKE 'image/%' AND mime != 'application/pdf' AND mime NOT LIKE 'text/%' AND mime != 'application/json')`,
+};
 
 export async function createAttachment(row: {
 	id: string;
@@ -97,6 +109,9 @@ export async function listAttachments(
 		where.push("session_id = ?");
 		params.push(filter.sessionId);
 	}
+	if (filter.type != null) {
+		where.push(TYPE_PREDICATES[filter.type]);
+	}
 	if (filter.search != null) {
 		const escaped = filter.search
 			.replace(/\\/g, "\\\\")
@@ -123,9 +138,12 @@ export async function listAttachments(
 
 	const limit = filter.limit ?? 100;
 	const offset = filter.offset ?? 0;
+	// Whitelisted ORDER BY — filter.sort/dir are typed unions, never raw input.
+	const sortCol = filter.sort === "size_bytes" ? "size_bytes" : "created_at";
+	const sortDir = filter.dir === "asc" ? "ASC" : "DESC";
 	const rows = db
 		.query<AttachmentRow, (string | number)[]>(
-			`SELECT * FROM attachments ${whereSql} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+			`SELECT * FROM attachments ${whereSql} ORDER BY ${sortCol} ${sortDir} LIMIT ? OFFSET ?`,
 		)
 		.all(...params, limit, offset);
 

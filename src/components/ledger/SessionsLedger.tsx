@@ -1,5 +1,5 @@
-import { Pencil, X } from "lucide-react";
-import { useRef, useState } from "react";
+import { Pencil, Search, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { ConfirmAction } from "#/components/ConfirmAction";
 import { LedgerPaginationBar } from "#/components/ledger/LedgerPagination";
 import { sessionEntryDotClass } from "#/components/nav/SystemStatusDot";
@@ -8,9 +8,16 @@ import type { SessionRow } from "#/db";
 import type { LiveStats } from "#/hooks/wsLiveStatsStore";
 import { formatDisplayCost } from "#/lib/costDisplay";
 import { fmt, fmtDate } from "#/lib/formatters";
+import type { SessionSortKey } from "#/lib/ledgerState";
 import type { SessionStatusEntry } from "#/server/protocol";
 
-const THIRTY_DAYS_S = 30 * 86_400;
+const CLEANUP_DAY_OPTIONS = [7, 30, 90] as const;
+
+const SORT_LABELS: Record<SessionSortKey, string> = {
+	recent: "recent",
+	cost: "cost",
+	tokens: "tokens",
+};
 
 export function sessionDisplayUsage(
 	session: SessionRow,
@@ -181,6 +188,146 @@ function SessionItem({
 	);
 }
 
+// ─── Header controls ──────────────────────────────────────────────────────────
+
+function SessionSearchBox({
+	search,
+	onSearchChange,
+}: {
+	search: string;
+	onSearchChange: (q: string) => void;
+}) {
+	const [text, setText] = useState(search);
+	// Live search after a typing pause. The callback ref keeps live-stats
+	// re-renders (frequent while a session streams) from resetting the timer,
+	// which would otherwise delay the search indefinitely.
+	const onSearchChangeRef = useRef(onSearchChange);
+	onSearchChangeRef.current = onSearchChange;
+	// Sync the box when the committed value changes elsewhere (e.g. the empty
+	// state's "clear search") — but never while the user is mid-typing, which
+	// is why plain `setText(search)` on every prop change won't do.
+	const committedRef = useRef(search);
+	useEffect(() => {
+		if (search !== committedRef.current) {
+			committedRef.current = search;
+			setText(search);
+		}
+	}, [search]);
+	useEffect(() => {
+		const trimmed = text.trim();
+		if (trimmed === committedRef.current) return;
+		const timer = setTimeout(() => {
+			committedRef.current = trimmed;
+			onSearchChangeRef.current(trimmed);
+		}, 300);
+		return () => clearTimeout(timer);
+	}, [text]);
+	return (
+		<div className="flex items-center border border-border">
+			<Search className="w-2.5 h-2.5 mx-1.5 text-muted-foreground/60" />
+			<input
+				type="text"
+				value={text}
+				onChange={(e) => setText(e.target.value)}
+				onKeyDown={(e) => {
+					// Live search commits after a pause; Enter forces it now.
+					if (e.key === "Enter") {
+						committedRef.current = text.trim();
+						onSearchChange(text.trim());
+					}
+				}}
+				placeholder="label…"
+				title="Filters as you type"
+				aria-label="Search sessions"
+				className="bg-transparent text-[10px] py-1 pr-1 w-24 md:w-36 focus:outline-none"
+			/>
+			{(text || search) && (
+				<button
+					type="button"
+					onClick={() => {
+						setText("");
+						committedRef.current = "";
+						onSearchChange("");
+					}}
+					aria-label="Clear session search"
+					className="px-1 text-muted-foreground/50 hover:text-foreground"
+				>
+					<X className="w-2.5 h-2.5" />
+				</button>
+			)}
+		</div>
+	);
+}
+
+/**
+ * Cleanup dropdown driven by the oldest session overall — not the rows on
+ * the current page, which previously hid the control whenever the visible
+ * page happened to contain only fresh sessions.
+ */
+function CleanupControl({
+	oldestStartedAt,
+	onCleanup,
+}: {
+	oldestStartedAt: number | null;
+	onCleanup: (days: number) => void;
+}) {
+	const [pendingDays, setPendingDays] = useState<number | null>(null);
+	const now = Date.now() / 1000;
+	const available = CLEANUP_DAY_OPTIONS.filter(
+		(d) => oldestStartedAt != null && now - oldestStartedAt > d * 86_400,
+	);
+	if (available.length === 0) return null;
+
+	if (pendingDays != null) {
+		return (
+			<div
+				aria-live="polite"
+				className="flex items-center gap-2 text-[8px] tracking-widest uppercase"
+			>
+				<span className="text-muted-foreground/50">
+					delete older than {pendingDays}d?
+				</span>
+				<button
+					type="button"
+					onClick={() => {
+						onCleanup(pendingDays);
+						setPendingDays(null);
+					}}
+					className="text-destructive/60 hover:text-destructive transition-colors"
+				>
+					confirm
+				</button>
+				<button
+					type="button"
+					onClick={() => setPendingDays(null)}
+					className="text-muted-foreground/50 hover:text-muted-foreground/80 transition-colors"
+				>
+					cancel
+				</button>
+			</div>
+		);
+	}
+
+	return (
+		<select
+			value=""
+			onChange={(e) => {
+				const days = Number(e.target.value);
+				if (Number.isFinite(days) && days > 0) setPendingDays(days);
+			}}
+			aria-label="Clean up old sessions"
+			className="bg-transparent border border-border text-[8px] tracking-widest uppercase text-muted-foreground/50 hover:text-muted-foreground/80 px-1.5 py-0.5 focus:outline-none focus:border-primary/50 transition-colors"
+		>
+			<option value="">clean up…</option>
+			{available.map((d) => (
+				<option key={d} value={d}>
+					older than {d}d
+				</option>
+			))}
+		</select>
+	);
+}
+
 // ─── SessionsLedger ───────────────────────────────────────────────────────────
 
 export function SessionsLedger({
@@ -199,6 +346,12 @@ export function SessionsLedger({
 	activeSessionId,
 	sessionsStatus,
 	liveStats,
+	search = "",
+	onSearchChange,
+	sort = "recent",
+	onSortChange,
+	oldestStartedAt = null,
+	onExport,
 }: {
 	data: { sessions: SessionRow[]; total: number };
 	page: number;
@@ -215,6 +368,13 @@ export function SessionsLedger({
 	activeSessionId?: string | null;
 	sessionsStatus?: SessionStatusEntry[];
 	liveStats?: LiveStats;
+	search?: string;
+	onSearchChange?: (q: string) => void;
+	sort?: SessionSortKey;
+	onSortChange?: (sort: SessionSortKey) => void;
+	/** Unix seconds of the oldest session overall; drives cleanup options. */
+	oldestStartedAt?: number | null;
+	onExport?: (format: "csv" | "json") => void;
 }) {
 	const pagination = {
 		page,
@@ -227,7 +387,7 @@ export function SessionsLedger({
 
 	return (
 		<div className="border border-border bg-card">
-			<div className="px-4 py-3 border-b border-border flex items-center justify-between">
+			<div className="px-4 py-3 border-b border-border flex items-center justify-between gap-3 flex-wrap">
 				<div className="flex items-center gap-3">
 					<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
 						SESSIONS
@@ -236,7 +396,29 @@ export function SessionsLedger({
 						{data.total}
 					</span>
 				</div>
-				<div className="flex items-center gap-3">
+				<div className="flex items-center gap-3 flex-wrap">
+					{onSearchChange && (
+						<SessionSearchBox search={search} onSearchChange={onSearchChange} />
+					)}
+					{onSortChange && (
+						<label className="flex items-center gap-1.5 text-[8px] tracking-widest text-muted-foreground/50 uppercase">
+							<span>sort</span>
+							<select
+								value={sort}
+								onChange={(e) => onSortChange(e.target.value as SessionSortKey)}
+								className="bg-transparent border border-border text-[9px] text-foreground/70 px-1.5 py-0.5 focus:outline-none focus:border-primary/50 transition-colors"
+								aria-label="Sort sessions"
+							>
+								{(
+									Object.entries(SORT_LABELS) as [SessionSortKey, string][]
+								).map(([value, label]) => (
+									<option key={value} value={value}>
+										{label}
+									</option>
+								))}
+							</select>
+						</label>
+					)}
 					<label className="flex items-center gap-1.5 text-[8px] tracking-widest text-muted-foreground/50 uppercase">
 						<span>per page</span>
 						<select
@@ -252,24 +434,28 @@ export function SessionsLedger({
 							))}
 						</select>
 					</label>
-					{data.sessions.some(
-						(s) =>
-							s.started_at != null &&
-							Date.now() / 1000 - s.started_at > THIRTY_DAYS_S,
-					) && (
-						<ConfirmAction
-							label="delete older than 30d?"
-							onConfirm={() => onCleanup(30)}
-							trigger={(open) => (
-								<button
-									type="button"
-									onClick={open}
-									className="text-[8px] tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 uppercase transition-colors"
-								>
-									clean up
-								</button>
-							)}
-						/>
+					<CleanupControl
+						oldestStartedAt={oldestStartedAt}
+						onCleanup={onCleanup}
+					/>
+					{onExport && (
+						<div className="flex items-center gap-1.5 text-[8px] tracking-widest uppercase text-muted-foreground/50">
+							<span>export</span>
+							<button
+								type="button"
+								onClick={() => onExport("csv")}
+								className="border border-border px-1.5 py-0.5 hover:text-foreground transition-colors"
+							>
+								csv
+							</button>
+							<button
+								type="button"
+								onClick={() => onExport("json")}
+								className="border border-border px-1.5 py-0.5 hover:text-foreground transition-colors"
+							>
+								json
+							</button>
+						</div>
 					)}
 				</div>
 			</div>
@@ -280,7 +466,20 @@ export function SessionsLedger({
 				</div>
 			) : data.sessions.length === 0 ? (
 				<div className="px-4 py-6 text-center text-[9px] tracking-widest text-muted-foreground/50">
-					no sessions
+					{search ? (
+						<>
+							no sessions match “{search}” ·{" "}
+							<button
+								type="button"
+								onClick={() => onSearchChange?.("")}
+								className="text-primary hover:text-primary/80 underline underline-offset-2 normal-case tracking-normal"
+							>
+								clear search
+							</button>
+						</>
+					) : (
+						"no sessions"
+					)}
 				</div>
 			) : (
 				data.sessions.map((s) => (

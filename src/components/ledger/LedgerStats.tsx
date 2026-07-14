@@ -1,3 +1,5 @@
+import { ChevronDown, ChevronRight } from "lucide-react";
+import { useState } from "react";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import { formatDisplayCost, totalDisplayCost } from "#/lib/costDisplay";
 import { fmt } from "#/lib/formatters";
@@ -122,11 +124,64 @@ export function StatRows({ s }: { s: StatBundle }) {
 			<Row label="Avg turns/query" value={avgTurns} />
 			<Row label="Input" value={fmt(s.input_tokens)} />
 			<Row label="Output" value={fmt(s.output_tokens)} />
-			<Row label="Cache read" value={fmt(s.cache_read_tokens)} />
-			<Row label="Cache creation" value={fmt(s.cache_creation_tokens)} />
-			<Row label="Cache hit rate" value={`${hit}%`} />
-			<Row label="Cache tokens" value={fmt(cacheTokens)} />
 			<Row label="Total tokens" value={fmt(total)} />
+			<CacheRows
+				hit={hit}
+				cacheRead={s.cache_read_tokens}
+				cacheCreation={s.cache_creation_tokens}
+				cacheTokens={cacheTokens}
+			/>
+		</>
+	);
+}
+
+/**
+ * Cache detail rows collapsed behind the always-visible hit-rate row.
+ * Keeps the stat cards scannable — the headline metrics stay, and the
+ * three cache-token breakdowns unfold on demand.
+ */
+function CacheRows({
+	hit,
+	cacheRead,
+	cacheCreation,
+	cacheTokens,
+}: {
+	hit: string;
+	cacheRead: number;
+	cacheCreation: number;
+	cacheTokens: number;
+}) {
+	const [open, setOpen] = useState(false);
+	return (
+		<>
+			<button
+				type="button"
+				onClick={() => setOpen((v) => !v)}
+				aria-expanded={open}
+				className="w-full flex items-center justify-between px-4 py-2.5 border-b border-border last:border-0 hover:bg-accent/20 transition-colors"
+			>
+				<span className="flex items-center gap-1 text-[10px] tracking-widest text-muted-foreground uppercase">
+					{open ? (
+						<ChevronDown className="w-3 h-3" />
+					) : (
+						<ChevronRight className="w-3 h-3" />
+					)}
+					Cache hit rate
+				</span>
+				<PrivacyMask
+					inline
+					className="text-sm font-medium text-foreground tabular-nums"
+				>
+					{`${hit}%`}
+				</PrivacyMask>
+			</button>
+			{open && (
+				<>
+					<Row label="Cache read" value={fmt(cacheRead)} />
+					<Row label="Cache creation" value={fmt(cacheCreation)} />
+					<Row label="Cache tokens" value={fmt(cacheTokens)} />
+				</>
+			)}
 		</>
 	);
 }

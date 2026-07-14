@@ -175,6 +175,37 @@ describe("handleDbRoute — GET /db/attachments", () => {
 		).toMatchObject({ kind });
 	});
 
+	it.each([
+		"image",
+		"pdf",
+		"text",
+		"other",
+	] as const)("accepts the %s type filter", (type) => {
+		expect(
+			parseAttachmentListFilter(makeUrl("/db/attachments", { type })),
+		).toMatchObject({ type });
+	});
+
+	it("accepts whitelisted sort columns and directions", () => {
+		expect(
+			parseAttachmentListFilter(
+				makeUrl("/db/attachments", { sort: "size_bytes", dir: "asc" }),
+			),
+		).toMatchObject({ sort: "size_bytes", dir: "asc" });
+	});
+
+	it("ignores unknown type, sort, and dir values", () => {
+		expect(
+			parseAttachmentListFilter(
+				makeUrl("/db/attachments", {
+					type: "archive",
+					sort: "filename; DROP TABLE attachments",
+					dir: "sideways",
+				}),
+			),
+		).toMatchObject({ type: undefined, sort: undefined, dir: undefined });
+	});
+
 	it("maps valid filters and bounds pagination before querying the database", async () => {
 		mockListAttachments.mockResolvedValue({
 			rows: [],

@@ -14,6 +14,30 @@ vi.mock("#/hooks/useWs", () => ({
 	useWs: (handler: (message: unknown) => void) => ws.handler(handler),
 }));
 
+// Row session links render outside a RouterProvider in these tests.
+vi.mock("@tanstack/react-router", async (importOriginal) => {
+	const actual =
+		await importOriginal<typeof import("@tanstack/react-router")>();
+	return {
+		...actual,
+		Link: ({
+			children,
+			...props
+		}: {
+			children?: React.ReactNode;
+			[key: string]: unknown;
+		}) => (
+			<a
+				href="#mock"
+				aria-label={props["aria-label"] as string | undefined}
+				title={props.title as string | undefined}
+			>
+				{children}
+			</a>
+		),
+	};
+});
+
 import { AttachmentsPage, deleteRelicRows, RelicPreview } from "./relics";
 
 afterEach(() => {
@@ -49,6 +73,29 @@ describe("AttachmentsPage", () => {
 		expect(await screen.findByText("two.pdf")).toBeDefined();
 		expect(screen.queryByText("one.txt")).toBeNull();
 		expect(screen.getByText(/1 file/)).toBeDefined();
+	});
+
+	it("searches live after a typing pause without pressing Enter", async () => {
+		const listAttachments = vi.fn().mockResolvedValue({
+			rows: [rows[1]],
+			total: 1,
+			total_bytes: 4,
+		});
+		render(
+			<AttachmentsPage
+				initial={{ rows, total: 2, total_bytes: 7 }}
+				listAttachments={listAttachments}
+			/>,
+		);
+		fireEvent.change(screen.getByPlaceholderText("filename…"), {
+			target: { value: "two" },
+		});
+		// no Enter — debounce commits on its own
+		await waitFor(() =>
+			expect(listAttachments).toHaveBeenCalledWith({
+				data: { search: "two", limit: 50, offset: 0 },
+			}),
+		);
 	});
 
 	it("keeps existing rows visible when refresh fails", async () => {
@@ -116,7 +163,7 @@ describe("AttachmentsPage", () => {
 		expect(await screen.findByText("page 2 / 3")).toBeDefined();
 	});
 
-	it("refreshes the first page when an attachment is created", async () => {
+	it("shows a refresh pill instead of reloading when an attachment is created", async () => {
 		const listAttachments = vi.fn().mockResolvedValue({
 			rows,
 			total: 2,
@@ -130,10 +177,143 @@ describe("AttachmentsPage", () => {
 		);
 		const handler = ws.handler.mock.calls[0][0];
 		handler({ type: "attachment_created" });
-		await waitFor(() => expect(listAttachments).toHaveBeenCalled());
-		expect(listAttachments).toHaveBeenCalledWith({
-			data: { search: undefined, limit: 50, offset: 0 },
+		// No automatic reload — the user's page/selection stays put.
+		expect(listAttachments).not.toHaveBeenCalled();
+		const pill = await screen.findByRole("button", {
+			name: /new relics — refresh/i,
 		});
+		fireEvent.click(pill);
+		await waitFor(() =>
+			expect(listAttachments).toHaveBeenCalledWith({
+				data: { search: undefined, limit: 50, offset: 0 },
+			}),
+		);
+		await waitFor(() =>
+			expect(
+				screen.queryByRole("button", { name: /new relics — refresh/i }),
+			).toBeNull(),
+		);
+	});
+
+	it("filters by MIME class via the type chips", async () => {
+		const listAttachments = vi.fn().mockResolvedValue({
+			rows: [rows[1]],
+			total: 1,
+			total_bytes: 4,
+		});
+		render(
+			<AttachmentsPage
+				initial={{ rows, total: 2, total_bytes: 7 }}
+				listAttachments={listAttachments}
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "PDF" }));
+		await waitFor(() =>
+			expect(listAttachments).toHaveBeenCalledWith({
+				data: { search: undefined, type: "pdf", limit: 50, offset: 0 },
+			}),
+		);
+	});
+
+	it("sorts by size and toggles direction on repeat clicks", async () => {
+		const listAttachments = vi.fn().mockResolvedValue({
+			rows,
+			total: 2,
+			total_bytes: 7,
+		});
+		render(
+			<AttachmentsPage
+				initial={{ rows, total: 2, total_bytes: 7 }}
+				listAttachments={listAttachments}
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Sort by Size" }));
+		await waitFor(() =>
+			expect(listAttachments).toHaveBeenCalledWith({
+				data: {
+					search: undefined,
+					sort: "size_bytes",
+					dir: "desc",
+					limit: 50,
+					offset: 0,
+				},
+			}),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Sort by Size" }));
+		await waitFor(() =>
+			expect(listAttachments).toHaveBeenCalledWith({
+				data: {
+					search: undefined,
+					sort: "size_bytes",
+					dir: "asc",
+					limit: 50,
+					offset: 0,
+				},
+			}),
+		);
+	});
+
+	it("filters by session and clears via the chip", async () => {
+		const withSession = { ...rows[0], session_id: "sess-1234567890ab" };
+		const listAttachments = vi.fn().mockResolvedValue({
+			rows: [withSession],
+			total: 1,
+			total_bytes: 3,
+		});
+		render(
+			<AttachmentsPage
+				initial={{ rows: [withSession], total: 1, total_bytes: 3 }}
+				listAttachments={listAttachments}
+			/>,
+		);
+		fireEvent.click(screen.getByTitle("Filter by this session"));
+		await waitFor(() =>
+			expect(listAttachments).toHaveBeenCalledWith({
+				data: {
+					search: undefined,
+					session_id: "sess-1234567890ab",
+					limit: 50,
+					offset: 0,
+				},
+			}),
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: "Clear session filter" }),
+		);
+		await waitFor(() =>
+			expect(listAttachments).toHaveBeenLastCalledWith({
+				data: { search: undefined, limit: 50, offset: 0 },
+			}),
+		);
+	});
+
+	it("offers clear filters in the empty state when filters are active", async () => {
+		const listAttachments = vi
+			.fn()
+			.mockResolvedValueOnce({ rows: [], total: 0, total_bytes: 0 })
+			.mockResolvedValue({ rows, total: 2, total_bytes: 7 });
+		render(
+			<AttachmentsPage
+				initial={{ rows, total: 2, total_bytes: 7 }}
+				listAttachments={listAttachments}
+			/>,
+		);
+		fireEvent.change(screen.getByPlaceholderText("filename…"), {
+			target: { value: "nope" },
+		});
+		fireEvent.keyDown(screen.getByPlaceholderText("filename…"), {
+			key: "Enter",
+		});
+		expect(await screen.findByText(/no relics match filters/)).toBeDefined();
+		fireEvent.click(screen.getByRole("button", { name: "clear filters" }));
+		await waitFor(() =>
+			expect(listAttachments).toHaveBeenLastCalledWith({
+				data: { search: undefined, limit: 50, offset: 0 },
+			}),
+		);
+		expect(
+			(screen.getByPlaceholderText("filename…") as HTMLInputElement).value,
+		).toBe("");
 	});
 });
 

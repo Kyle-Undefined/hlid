@@ -1,3 +1,4 @@
+import { ConfirmAction } from "#/components/ConfirmAction";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { SessionStatusEntry } from "../../server/protocol";
 
@@ -57,10 +58,7 @@ export function ActiveSessionsPanel({
 							State
 						</th>
 						<th className="px-4 py-2 text-[9px] tracking-widest text-muted-foreground/50 uppercase font-normal">
-							Stop
-						</th>
-						<th className="px-4 py-2 text-[9px] tracking-widest text-muted-foreground/50 uppercase font-normal">
-							Close
+							Actions
 						</th>
 					</tr>
 				</thead>
@@ -97,25 +95,32 @@ export function ActiveSessionsPanel({
 								{stateLabel(session)}
 							</td>
 							<td className="px-4 py-2.5">
-								<button
-									type="button"
-									onClick={() => onStop(session.session_id)}
-									disabled={session.state !== "running"}
-									aria-label={`stop ${session.agent_name}`}
-									className="text-[9px] tracking-widest uppercase px-2 py-1 border border-border hover:border-destructive/50 hover:text-destructive text-muted-foreground/60 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-								>
-									STOP
-								</button>
-							</td>
-							<td className="px-4 py-2.5">
-								<button
-									type="button"
-									onClick={() => onClose(session.session_id)}
-									aria-label={`close ${session.agent_name}`}
-									className="text-[9px] tracking-widest uppercase px-2 py-1 border border-border hover:border-destructive/50 hover:text-destructive text-muted-foreground/60 transition-colors"
-								>
-									CLOSE
-								</button>
+								<div className="flex items-center gap-1.5">
+									<button
+										type="button"
+										onClick={() => onStop(session.session_id)}
+										disabled={session.state !== "running"}
+										aria-label={`stop ${session.agent_name}`}
+										className="text-[9px] tracking-widest uppercase px-2 py-1 border border-border hover:border-destructive/50 hover:text-destructive text-muted-foreground/60 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+									>
+										STOP
+									</button>
+									{/* Close removes the session entirely — guard against misclicks. */}
+									<ConfirmAction
+										label="close?"
+										onConfirm={() => onClose(session.session_id)}
+										trigger={(open) => (
+											<button
+												type="button"
+												onClick={open}
+												aria-label={`close ${session.agent_name}`}
+												className="text-[9px] tracking-widest uppercase px-2 py-1 border border-border hover:border-destructive/50 hover:text-destructive text-muted-foreground/60 transition-colors"
+											>
+												CLOSE
+											</button>
+										)}
+									/>
+								</div>
 							</td>
 						</tr>
 					))}

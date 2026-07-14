@@ -1,6 +1,6 @@
 import type { Db } from "./schema";
 import { getDb } from "./schema";
-import type { QueryData, SessionRow } from "./types";
+import type { QueryData, SessionRow, SessionSort } from "./types";
 
 export async function setSessionAgentCwd(
 	sessionId: string,
@@ -272,21 +272,67 @@ export async function getSessionLastQueryContext(sessionId: string): Promise<{
 	);
 }
 
+/** Whitelisted ORDER BY clauses — `sort` is a typed union, never raw input. */
+const SESSION_SORT_SQL: Record<SessionSort, string> = {
+	recent: "COALESCE(ended_at, started_at) DESC",
+	cost: "(total_cost + COALESCE(total_estimated_cost, 0)) DESC",
+	tokens:
+		"(total_input_tokens + total_output_tokens + total_cache_read_tokens + total_cache_creation_tokens) DESC",
+};
+
 export async function getSessionsPaginated(
 	page: number,
 	pageSize: number,
-): Promise<{ sessions: SessionRow[]; total: number }> {
+	opts: { search?: string; sort?: SessionSort } = {},
+): Promise<{
+	sessions: SessionRow[];
+	total: number;
+	/** Unix seconds of the oldest session overall (ignores search filter); null when empty. */
+	oldest_started_at: number | null;
+}> {
 	const db = await getDb();
 	const offset = Math.max(0, (page - 1) * pageSize);
+	const params: (string | number)[] = [];
+	let whereSql = "";
+	if (opts.search) {
+		const escaped = opts.search
+			.replace(/\\/g, "\\\\")
+			.replace(/%/g, "\\%")
+			.replace(/_/g, "\\_");
+		whereSql = `WHERE label LIKE ? ESCAPE '\\'`;
+		params.push(`%${escaped}%`);
+	}
+	const orderSql = SESSION_SORT_SQL[opts.sort ?? "recent"];
 	const sessions = db
-		.query<SessionRow, [number, number]>(
-			`SELECT * FROM sessions ORDER BY COALESCE(ended_at, started_at) DESC LIMIT ? OFFSET ?`,
+		.query<SessionRow, (string | number)[]>(
+			`SELECT * FROM sessions ${whereSql} ORDER BY ${orderSql} LIMIT ? OFFSET ?`,
 		)
-		.all(pageSize, offset);
+		.all(...params, pageSize, offset);
 	const row = db
-		.query<{ total: number }, []>(`SELECT COUNT(*) as total FROM sessions`)
+		.query<{ total: number }, (string | number)[]>(
+			`SELECT COUNT(*) as total FROM sessions ${whereSql}`,
+		)
+		.get(...params);
+	const oldest = db
+		.query<{ oldest: number | null }, []>(
+			`SELECT MIN(started_at) as oldest FROM sessions`,
+		)
 		.get();
-	return { sessions, total: row?.total ?? 0 };
+	return {
+		sessions,
+		total: row?.total ?? 0,
+		oldest_started_at: oldest?.oldest ?? null,
+	};
+}
+
+/** Every session row, most recent first — used by ledger export. */
+export async function getAllSessions(): Promise<SessionRow[]> {
+	const db = await getDb();
+	return db
+		.query<SessionRow, []>(
+			`SELECT * FROM sessions ORDER BY COALESCE(ended_at, started_at) DESC`,
+		)
+		.all();
 }
 
 /**

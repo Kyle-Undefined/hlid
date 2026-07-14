@@ -160,6 +160,40 @@ describe("sessions — create & fetch", () => {
 		expect(total).toBe(5);
 		expect(sessions).toHaveLength(3);
 	});
+
+	it("getSessionsPaginated filters by label search with LIKE escaping", async () => {
+		await createSession("s1", "refactor auth", "m");
+		await createSession("s2", "100% done", "m");
+		await createSession("s3", "unrelated", "m");
+
+		const byWord = await getSessionsPaginated(1, 10, { search: "refactor" });
+		expect(byWord.total).toBe(1);
+		expect(byWord.sessions[0].id).toBe("s1");
+		// filtered total, but oldest reflects all sessions
+		expect(byWord.oldest_started_at).not.toBeNull();
+
+		const byPercent = await getSessionsPaginated(1, 10, { search: "100%" });
+		expect(byPercent.total).toBe(1);
+		expect(byPercent.sessions[0].id).toBe("s2");
+	});
+
+	it("getSessionsPaginated sorts by cost and tokens", async () => {
+		await createSession("cheap", "A", "m");
+		await createSession("pricey", "B", "m");
+		await recordQuery("cheap", baseQuery({ cost: 0.1, input_tokens: 10 }));
+		await recordQuery("pricey", baseQuery({ cost: 5, input_tokens: 9000 }));
+
+		const byCost = await getSessionsPaginated(1, 10, { sort: "cost" });
+		expect(byCost.sessions[0].id).toBe("pricey");
+		const byTokens = await getSessionsPaginated(1, 10, { sort: "tokens" });
+		expect(byTokens.sessions[0].id).toBe("pricey");
+	});
+
+	it("getSessionsPaginated reports null oldest_started_at when empty", async () => {
+		const { oldest_started_at, total } = await getSessionsPaginated(1, 10);
+		expect(total).toBe(0);
+		expect(oldest_started_at).toBeNull();
+	});
 });
 
 describe("sessions — claude_session_id", () => {
@@ -794,6 +828,33 @@ describe("attachments — listAttachments", () => {
 		const { rows, total } = await listAttachments({ limit: 2, offset: 1 });
 		expect(total).toBe(5);
 		expect(rows).toHaveLength(2);
+	});
+
+	it("filters by broad MIME class", async () => {
+		await makeAttachment("img", { mime: "image/png" });
+		await makeAttachment("pdf", { mime: "application/pdf" });
+		await makeAttachment("txt", { mime: "text/plain" });
+		await makeAttachment("json", { mime: "application/json" });
+		await makeAttachment("zip", { mime: "application/zip" });
+
+		expect((await listAttachments({ type: "image" })).total).toBe(1);
+		expect((await listAttachments({ type: "pdf" })).total).toBe(1);
+		// text covers text/* plus JSON
+		expect((await listAttachments({ type: "text" })).total).toBe(2);
+		const other = await listAttachments({ type: "other" });
+		expect(other.total).toBe(1);
+		expect(other.rows[0].id).toBe("zip");
+	});
+
+	it("sorts by size in both directions", async () => {
+		await makeAttachment("small", { size_bytes: 10 });
+		await makeAttachment("big", { size_bytes: 1000 });
+		await makeAttachment("mid", { size_bytes: 100 });
+
+		const desc = await listAttachments({ sort: "size_bytes", dir: "desc" });
+		expect(desc.rows.map((r) => r.id)).toEqual(["big", "mid", "small"]);
+		const asc = await listAttachments({ sort: "size_bytes", dir: "asc" });
+		expect(asc.rows.map((r) => r.id)).toEqual(["small", "mid", "big"]);
 	});
 });
 

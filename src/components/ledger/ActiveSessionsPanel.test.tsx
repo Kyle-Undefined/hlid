@@ -163,7 +163,7 @@ describe("ActiveSessionsPanel", () => {
 
 	// ── CLOSE button ─────────────────────────────────────────────────────────
 
-	it("CLOSE button calls onClose with session_id", () => {
+	it("CLOSE button requires confirmation before calling onClose", () => {
 		const onClose = vi.fn();
 		render(
 			<ActiveSessionsPanel
@@ -176,6 +176,9 @@ describe("ActiveSessionsPanel", () => {
 			name: /close s1|close proj/i,
 		});
 		fireEvent.click(closeBtn);
+		// Close removes the session — a single click must not fire it.
+		expect(onClose).not.toHaveBeenCalled();
+		fireEvent.click(screen.getByRole("button", { name: "confirm" }));
 		expect(onClose).toHaveBeenCalledWith(
 			"s1aabbcc-1234-5678-90ab-cdef01234567",
 		);

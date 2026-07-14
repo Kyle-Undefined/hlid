@@ -175,12 +175,24 @@ export type ThirtyDayStats = {
 	total: number;
 };
 
+export type AttachmentTypeFilter = "image" | "pdf" | "text" | "other";
+
+export type AttachmentSort = "created_at" | "size_bytes";
+
+export type SortDir = "asc" | "desc";
+
 export type AttachmentListFilter = {
 	kind?: AttachmentKind;
 	sessionId?: string;
 	search?: string;
+	/** Broad MIME class filter (image/pdf/text/other). */
+	type?: AttachmentTypeFilter;
 	since?: number;
 	until?: number;
+	sort?: AttachmentSort;
+	dir?: SortDir;
 	limit?: number;
 	offset?: number;
 };
+
+export type SessionSort = "recent" | "cost" | "tokens";

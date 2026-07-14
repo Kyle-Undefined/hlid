@@ -6,10 +6,17 @@ export function isValidSize(value: number): value is PageSize {
 	return (VALID_PAGE_SIZES as readonly number[]).includes(value);
 }
 
+export const SESSION_SORTS = ["recent", "cost", "tokens"] as const;
+export type SessionSortKey = (typeof SESSION_SORTS)[number];
+
 export function parseLedgerSearch(search: Record<string, unknown>): {
 	tab: "stats" | "sessions";
 	page: number;
 	size: PageSize;
+	/** Session label filter; omitted from the URL when empty. */
+	q?: string;
+	/** Session sort; omitted from the URL for the default ("recent"). */
+	sort?: SessionSortKey;
 } {
 	const tab = search.tab === "stats" ? "stats" : "sessions";
 	const page =
@@ -18,10 +25,21 @@ export function parseLedgerSearch(search: Record<string, unknown>): {
 		typeof search.size === "number"
 			? Math.floor(search.size)
 			: DEFAULT_PAGE_SIZE;
+	const q =
+		typeof search.q === "string" && search.q !== ""
+			? search.q.slice(0, 200)
+			: undefined;
+	const sort =
+		(SESSION_SORTS as readonly unknown[]).includes(search.sort) &&
+		search.sort !== "recent"
+			? (search.sort as SessionSortKey)
+			: undefined;
 	return {
 		tab,
 		page,
 		size: isValidSize(sizeRaw) ? sizeRaw : DEFAULT_PAGE_SIZE,
+		q,
+		sort,
 	};
 }
 

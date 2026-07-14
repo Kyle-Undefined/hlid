@@ -59,6 +59,7 @@ export {
 	createSession,
 	deleteSession,
 	deleteSessionsOlderThan,
+	getAllSessions,
 	getRecentSessions,
 	getSessionActualModel,
 	getSessionAgentCwd,

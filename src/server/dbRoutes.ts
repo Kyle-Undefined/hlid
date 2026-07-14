@@ -44,6 +44,7 @@ type DbGetHandler = (context: DbRouteContext) => Response | Promise<Response>;
 
 const DB_GET_HANDLERS: Record<string, DbGetHandler> = {
 	"/db/sessions": ({ url }) => getSessions(url),
+	"/db/sessions/export": async () => Response.json(await db.getAllSessions()),
 	"/db/recent-sessions": ({ url }) => getRecentSessions(url),
 	"/db/session-messages": ({ url }) => getSessionMessages(url),
 	"/db/stats": () => getStats(),
@@ -81,7 +82,16 @@ function handleGetRoute(
 async function getSessions(url: URL): Promise<Response> {
 	const page = clampInt(url.searchParams.get("page"), 1, 1);
 	const size = clampInt(url.searchParams.get("size"), 20, 1, 100);
-	const result = await db.getSessionsPaginated(page, size);
+	const q = url.searchParams.get("q")?.trim() || undefined;
+	const sortParam = url.searchParams.get("sort");
+	const sort =
+		sortParam === "cost" || sortParam === "tokens" || sortParam === "recent"
+			? sortParam
+			: undefined;
+	const result = await db.getSessionsPaginated(page, size, {
+		search: q,
+		sort,
+	});
 	return Response.json(result);
 }
 
@@ -270,6 +280,21 @@ export function parseAttachmentListFilter(url: URL): AttachmentListFilter {
 		kindParam === "ephemeral" || kindParam === "vault" ? kindParam : undefined;
 	const sessionId = url.searchParams.get("session_id") ?? undefined;
 	const search = url.searchParams.get("search") ?? undefined;
+	const typeParam = url.searchParams.get("type");
+	const type =
+		typeParam === "image" ||
+		typeParam === "pdf" ||
+		typeParam === "text" ||
+		typeParam === "other"
+			? typeParam
+			: undefined;
+	const sortParam = url.searchParams.get("sort");
+	const sort =
+		sortParam === "size_bytes" || sortParam === "created_at"
+			? sortParam
+			: undefined;
+	const dirParam = url.searchParams.get("dir");
+	const dir = dirParam === "asc" || dirParam === "desc" ? dirParam : undefined;
 	const sinceParam = url.searchParams.get("since");
 	const untilParam = url.searchParams.get("until");
 	const since = sinceParam !== null ? Number(sinceParam) : undefined;
@@ -280,8 +305,11 @@ export function parseAttachmentListFilter(url: URL): AttachmentListFilter {
 		kind,
 		sessionId,
 		search,
+		type,
 		since: since !== undefined && !Number.isNaN(since) ? since : undefined,
 		until: until !== undefined && !Number.isNaN(until) ? until : undefined,
+		sort,
+		dir,
 		limit,
 		offset,
 	};

@@ -49,6 +49,7 @@ import { fmt, fmtModel } from "#/lib/formatters";
 import {
 	isValidSize,
 	parseLedgerSearch,
+	type SessionSortKey,
 	VALID_PAGE_SIZES,
 } from "#/lib/ledgerState";
 import { ROUTE_SCROLL_RESTORATION_IDS } from "#/lib/scrollContainers";
@@ -66,6 +67,7 @@ import {
 	getActivityStatsFn,
 	getThirtyDayStatsFn,
 } from "#/lib/serverFns/stats";
+import { buildSessionExport, downloadContent } from "#/lib/sessionExport";
 import type { RateLimitMessage, ServerMessage } from "#/server/protocol";
 
 // ─── server fns ──────────────────────────────────────────────────────────────
@@ -77,12 +79,27 @@ const getStatsDataFn = createServerFn({ method: "GET" }).handler(async () => {
 
 const getSessionsPageFn = createServerFn({ method: "POST" })
 	.validator((raw) => sessionPageSchema.parse(raw))
-	.handler(({ data }) =>
-		dbJson<{ sessions: SessionRow[]; total: number }>(
-			`/db/sessions?page=${data.page}&size=${data.size}`,
-			{ sessions: [], total: 0 },
-		),
-	);
+	.handler(({ data }) => {
+		const params = new URLSearchParams({
+			page: String(data.page),
+			size: String(data.size),
+		});
+		if (data.q) params.set("q", data.q);
+		if (data.sort && data.sort !== "recent") params.set("sort", data.sort);
+		return dbJson<{
+			sessions: SessionRow[];
+			total: number;
+			oldest_started_at: number | null;
+		}>(`/db/sessions?${params.toString()}`, {
+			sessions: [],
+			total: 0,
+			oldest_started_at: null,
+		});
+	});
+
+const exportSessionsFn = createServerFn({ method: "GET" }).handler(() =>
+	dbJson<SessionRow[]>("/db/sessions/export", []),
+);
 
 const deleteSessionFn = createServerFn({ method: "POST" })
 	.validator((raw) => sessionDeleteSchema.parse(raw))
@@ -126,9 +143,14 @@ const cleanupSessionsFn = createServerFn({ method: "POST" })
 
 export const Route = createFileRoute("/ledger")({
 	validateSearch: parseLedgerSearch,
-	loaderDeps: ({ search: { page, size } }) => ({ page, size }),
+	loaderDeps: ({ search: { page, size, q, sort } }) => ({
+		page,
+		size,
+		q,
+		sort,
+	}),
 	staleTime: 0,
-	loader: async ({ deps: { page, size } }) => {
+	loader: async ({ deps: { page, size, q, sort } }) => {
 		const [statsData, providers, thirtyDayStats, activeSession, activity] =
 			await Promise.all([
 				getStatsDataFn(),
@@ -142,7 +164,7 @@ export const Route = createFileRoute("/ledger")({
 		const providerIds = availableIds.length > 0 ? availableIds : ["claude"];
 
 		const [initialSessions, providerUsages] = await Promise.all([
-			getSessionsPageFn({ data: { page, size } }),
+			getSessionsPageFn({ data: { page, size, q: q || undefined, sort } }),
 			getProviderUsagesFn({ data: providerIds }),
 		]);
 
@@ -151,6 +173,8 @@ export const Route = createFileRoute("/ledger")({
 			initialSessions,
 			page,
 			size,
+			q,
+			sort,
 			thirtyDayStats,
 			providerUsages,
 			providerIds,
@@ -304,12 +328,20 @@ function ActiveSessionStatGrid({
 type LedgerNavigate = ReturnType<typeof useNavigate>;
 type PageSize = (typeof VALID_PAGE_SIZES)[number];
 
+/** Session-list URL state threaded through navigation and refreshes. */
+type ListState = {
+	page: number;
+	size: PageSize;
+	q: string;
+	sort: SessionSortKey;
+};
+
 function useLedgerMutations(
-	page: number,
+	listState: ListState,
 	sessionPage: Awaited<ReturnType<typeof getSessionsPageFn>>,
 	navigate: LedgerNavigate,
-	size: PageSize,
 ) {
+	const { page, size, q, sort } = listState;
 	const dependencies = useMemo(
 		() => ({
 			deleteSession: async (id: string) => {
@@ -324,23 +356,21 @@ function useLedgerMutations(
 			navigateToPage: (nextPage: number) => {
 				navigate({
 					to: "/ledger",
-					search: { tab: "sessions" as const, page: nextPage, size },
+					search: { tab: "sessions" as const, page: nextPage, size, q, sort },
 				});
 			},
 		}),
-		[navigate, size],
+		[navigate, size, q, sort],
 	);
 	return useLedgerSessionMutations({ page, sessionPage, dependencies });
 }
 
 function useSessionListSync({
-	page,
-	size,
+	listState,
 	initialSessions,
 	reconcile,
 }: {
-	page: number;
-	size: PageSize;
+	listState: ListState;
 	initialSessions: Awaited<ReturnType<typeof getSessionsPageFn>>;
 	reconcile: (fresh: Awaited<ReturnType<typeof getSessionsPageFn>>) => void;
 }) {
@@ -349,10 +379,8 @@ function useSessionListSync({
 	// handler fires. useEffect would lag by one render cycle, causing
 	// refreshSessions to fetch with stale page/size if a `done` event arrives
 	// between render and effect commit.
-	const pageRef = useRef(page);
-	pageRef.current = page;
-	const sizeRef = useRef(size);
-	sizeRef.current = size;
+	const listStateRef = useRef(listState);
+	listStateRef.current = listState;
 
 	// Monotonic counter: whichever fetch (loader sync or WS-triggered refresh)
 	// resolves last wins. Earlier results are silently discarded.
@@ -370,8 +398,9 @@ function useSessionListSync({
 
 	const refreshSessions = useCallback(async () => {
 		const v = ++fetchVersionRef.current;
+		const { page, size, q, sort } = listStateRef.current;
 		const fresh = await getSessionsPageFn({
-			data: { page: pageRef.current, size: sizeRef.current },
+			data: { page, size, q: q || undefined, sort },
 		});
 		// Discard if a newer fetch (loader sync or another WS done) already landed.
 		if (fetchVersionRef.current !== v) return;
@@ -492,20 +521,22 @@ function useLedgerLiveData(
 
 function LedgerTabBar({
 	tab,
-	page,
-	size,
+	listState,
 	navigate,
 }: {
 	tab: "stats" | "sessions";
-	page: number;
-	size: PageSize;
+	listState: ListState;
 	navigate: LedgerNavigate;
 }) {
+	const { page, size, q, sort } = listState;
 	function switchTab(next: "stats" | "sessions") {
 		if (next === "sessions") {
-			navigate({ to: "/ledger", search: { tab: next, page: 1, size } });
+			navigate({
+				to: "/ledger",
+				search: { tab: next, page: 1, size, q, sort },
+			});
 		} else {
-			navigate({ to: "/ledger", search: { tab: next, page, size } });
+			navigate({ to: "/ledger", search: { tab: next, page, size, q, sort } });
 		}
 	}
 	return (
@@ -533,32 +564,37 @@ function SessionsTab({
 	sessionsStatus,
 	live,
 	mutations,
-	page,
-	size,
+	listState,
 	navigate,
 	loading,
 	liveStats,
+	oldestStartedAt,
 }: {
 	sessionsStatus: ReturnType<typeof getSessionsStatus>;
 	live: ReturnType<typeof useLedgerLiveData>;
 	mutations: ReturnType<typeof useLedgerMutations>;
-	page: number;
-	size: PageSize;
+	listState: ListState;
 	navigate: LedgerNavigate;
 	loading: boolean;
 	liveStats: LiveStats;
+	oldestStartedAt: number | null;
 }) {
+	const { page, size, q, sort } = listState;
 	const totalPages = Math.max(
 		1,
 		Math.ceil(mutations.sessionsData.total / size),
 	);
 
-	function onPageChange(p: number) {
-		const clamped = Math.max(1, Math.min(totalPages, p));
+	function navigateList(next: Partial<ListState>, replace = false) {
 		navigate({
 			to: "/ledger",
-			search: { tab: "sessions", page: clamped, size },
+			search: { tab: "sessions", page, size, q, sort, ...next },
+			replace,
 		});
+	}
+
+	function onPageChange(p: number) {
+		navigateList({ page: Math.max(1, Math.min(totalPages, p)) });
 	}
 
 	function onPageSizeChange(nextSize: number) {
@@ -567,23 +603,25 @@ function SessionsTab({
 		// state stays well-typed.
 		if (!isValidSize(nextSize)) return;
 		// Reset to page 1 — current page may not exist at the new size.
-		navigate({
-			to: "/ledger",
-			search: { tab: "sessions", page: 1, size: nextSize },
-		});
+		navigateList({ page: 1, size: nextSize });
+	}
+
+	async function onExport(format: "csv" | "json") {
+		const rows = await exportSessionsFn();
+		const { content, mime, filename } = buildSessionExport(rows, format);
+		downloadContent(content, mime, filename);
 	}
 
 	return (
 		<div>
-			{sessionsStatus.length > 0 && (
-				<div className="border-b border-border">
-					<ActiveSessionsPanel
-						sessions={sessionsStatus}
-						onStop={live.handleStopSession}
-						onClose={live.handleCloseSession}
-					/>
-				</div>
-			)}
+			{/* Always rendered — shows the "all quiet" empty state when idle. */}
+			<div className="border-b border-border">
+				<ActiveSessionsPanel
+					sessions={sessionsStatus}
+					onStop={live.handleStopSession}
+					onClose={live.handleCloseSession}
+				/>
+			</div>
 			<div className="p-5">
 				<SessionsLedger
 					data={mutations.sessionsData}
@@ -606,6 +644,16 @@ function SessionsTab({
 					activeSessionId={live.activeSessionData?.id}
 					sessionsStatus={sessionsStatus}
 					liveStats={liveStats}
+					search={q}
+					onSearchChange={(nextQ) =>
+						// replace: live search fires per typing pause — one history
+						// entry per keystroke burst would bury the back button.
+						navigateList({ page: 1, q: nextQ }, true)
+					}
+					sort={sort}
+					onSortChange={(nextSort) => navigateList({ page: 1, sort: nextSort })}
+					oldestStartedAt={oldestStartedAt}
+					onExport={(format) => void onExport(format)}
 				/>
 			</div>
 		</div>
@@ -618,6 +666,8 @@ function StatsPage() {
 		initialSessions,
 		page,
 		size,
+		q,
+		sort,
 		thirtyDayStats,
 		providerUsages,
 		providerIds,
@@ -625,6 +675,12 @@ function StatsPage() {
 		activity,
 	} = Route.useLoaderData();
 	const { tab } = Route.useSearch();
+	const listState: ListState = {
+		page,
+		size,
+		q: q ?? "",
+		sort: sort ?? "recent",
+	};
 	const navigate = useNavigate();
 	const isRouterLoading = useRouterState({
 		select: (s) => s.status === "pending",
@@ -650,19 +706,18 @@ function StatsPage() {
 		[],
 	);
 	const { sessionPage, refreshSessions } = useSessionListSync({
-		page,
-		size,
+		listState,
 		initialSessions,
 		reconcile,
 	});
-	const mutations = useLedgerMutations(page, sessionPage, navigate, size);
+	const mutations = useLedgerMutations(listState, sessionPage, navigate);
 	mutationsRef.current = mutations;
 	useSessionStatusRefresh(sessionsStatus, refreshSessions);
 	const live = useLedgerLiveData(refreshSessions, activeSession, statsData);
 
 	return (
 		<div className="flex flex-col h-full">
-			<LedgerTabBar tab={tab} page={page} size={size} navigate={navigate} />
+			<LedgerTabBar tab={tab} listState={listState} navigate={navigate} />
 			{mutations.mutationError && (
 				<div
 					className="border-b border-destructive/30 bg-destructive/5 px-4 py-2 text-xs text-destructive"
@@ -700,11 +755,11 @@ function StatsPage() {
 						sessionsStatus={sessionsStatus}
 						live={live}
 						mutations={mutations}
-						page={page}
-						size={size}
+						listState={listState}
 						navigate={navigate}
 						loading={isRouterLoading}
 						liveStats={stats}
+						oldestStartedAt={sessionPage.oldest_started_at ?? null}
 					/>
 				)}
 			</div>

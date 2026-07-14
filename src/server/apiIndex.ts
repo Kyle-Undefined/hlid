@@ -120,9 +120,15 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 	// ── Sessions & history (api port) ─────────────────────────────────────────
 	{
 		method: "GET",
-		path: "/db/sessions?page=&size=",
+		path: "/db/sessions?page=&size=&q=&sort=",
 		server: "api",
-		desc: "Paginated session history.",
+		desc: "Paginated session history. Optional label search (q) and sort (recent|cost|tokens).",
+	},
+	{
+		method: "GET",
+		path: "/db/sessions/export",
+		server: "api",
+		desc: "All session rows (unpaginated) for export.",
 	},
 	{
 		method: "GET",
@@ -174,9 +180,9 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 	},
 	{
 		method: "GET",
-		path: "/db/attachments?session_id=",
+		path: "/db/attachments?session_id=&search=&type=&sort=&dir=",
 		server: "api",
-		desc: "Attachments recorded for a session.",
+		desc: "Attachments, filterable by session, filename search, MIME class (image|pdf|text|other), sortable by created_at|size_bytes asc|desc.",
 	},
 	// ── Usage & stats (api port) ──────────────────────────────────────────────
 	{
