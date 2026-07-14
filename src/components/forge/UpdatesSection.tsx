@@ -8,6 +8,7 @@ type UpdateStatus = {
 	available: boolean;
 	lastCheckedAt: number;
 	cliUpdates?: CliUpdateStatus[];
+	cliUpdateActionsAllowed?: boolean;
 	error?: string;
 };
 
@@ -154,6 +155,9 @@ function UpdatesView({
 	onCheck,
 	onDownload,
 	onLaunch,
+	cliBusyId,
+	cliNotice,
+	onCliUpdate,
 }: {
 	status: UpdateStatus | null;
 	state: ApplyState;
@@ -162,6 +166,9 @@ function UpdatesView({
 	onCheck: () => void;
 	onDownload: () => void;
 	onLaunch: (version: string) => void;
+	cliBusyId: string | null;
+	cliNotice: string | null;
+	onCliUpdate: (update: CliUpdateStatus) => void;
 }) {
 	const busy = state.phase !== "idle" && state.phase !== "error";
 	return (
@@ -209,7 +216,7 @@ function UpdatesView({
 								: "you're on the latest version"
 					}
 				>
-					<div className="flex flex-col items-end gap-1 min-w-0">
+					<div className="flex flex-col items-end gap-1.5 min-w-0">
 						<span className="text-xs font-mono text-muted-foreground">
 							v{update.installedVersion ?? "—"}
 							{update.available && update.latestVersion && (
@@ -224,9 +231,32 @@ function UpdatesView({
 								{update.updateCommand ?? "update using the original installer"}
 							</code>
 						)}
+						{update.available &&
+							update.updateCommand &&
+							status.cliUpdateActionsAllowed && (
+								<button
+									type="button"
+									disabled={cliBusyId !== null}
+									onClick={() => onCliUpdate(update)}
+									className="text-[9px] tracking-widest px-2.5 py-1 border border-primary/40 text-primary hover:bg-primary/10 transition-colors uppercase disabled:opacity-40"
+								>
+									{cliBusyId === update.id
+										? update.updateMode === "automatic"
+											? "UPDATING…"
+											: "STOPPING…"
+										: update.updateMode === "automatic"
+											? "UPDATE"
+											: "STOP & COPY"}
+								</button>
+							)}
 					</div>
 				</Field>
 			))}
+			{cliNotice && (
+				<div className="px-4 py-2 text-xs text-muted-foreground">
+					{cliNotice}
+				</div>
+			)}
 			<UpdateNotices status={status} state={state} />
 		</Section>
 	);
@@ -236,6 +266,8 @@ export function UpdatesSection() {
 	const [status, setStatus] = useState<UpdateStatus | null>(null);
 	const [state, setState] = useState<ApplyState>({ phase: "idle" });
 	const [fetchError, setFetchError] = useState<string | null>(null);
+	const [cliBusyId, setCliBusyId] = useState<string | null>(null);
+	const [cliNotice, setCliNotice] = useState<string | null>(null);
 	// Persists the version at launch time so the polling effect doesn't lose it
 	// when status changes and the effect dependency re-evaluates.
 	const launchingStartVersionRef = useRef<string | null>(null);
@@ -293,18 +325,56 @@ export function UpdatesSection() {
 	}, [state.phase]);
 
 	async function postAction(
-		action: "check" | "download" | "apply",
+		action: "check" | "download" | "apply" | "prepare_cli" | "apply_cli",
+		extra: Record<string, unknown> = {},
 	): Promise<{ ok: boolean; data?: unknown; error?: string }> {
 		const res = await fetch("/api/updates", {
 			method: "POST",
 			headers: { "Content-Type": "application/json" },
-			body: JSON.stringify({ action }),
+			body: JSON.stringify({ action, ...extra }),
 		});
 		return (await res.json()) as {
 			ok: boolean;
 			data?: unknown;
 			error?: string;
 		};
+	}
+
+	async function runCliUpdate(update: CliUpdateStatus) {
+		const automatic = update.updateMode === "automatic";
+		const warning = automatic
+			? `Update ${update.label} now? Active provider sessions will be stopped.`
+			: `Stop active provider sessions and copy the ${update.label} update command? Terminal sessions will stay open.`;
+		if (!window.confirm(warning)) return;
+		setCliBusyId(update.id);
+		setCliNotice(null);
+		const result: { ok: boolean; data?: unknown; error?: string } =
+			await postAction(automatic ? "apply_cli" : "prepare_cli", {
+				id: update.id,
+			}).catch((error) => ({ ok: false, error: String(error) }));
+		if (!result.ok) {
+			setCliNotice(result.error ?? "CLI update failed");
+			setCliBusyId(null);
+			return;
+		}
+		if (automatic) {
+			setCliNotice(`${update.label} updated. Rechecking installed versions…`);
+			await refresh();
+		} else {
+			const data = result.data as { command?: string } | undefined;
+			const command = data?.command ?? update.updateCommand;
+			try {
+				if (command) await navigator.clipboard.writeText(command);
+				setCliNotice(
+					"Provider sessions stopped and command copied. Run it in the matching terminal, then select CHECK.",
+				);
+			} catch {
+				setCliNotice(
+					"Provider sessions stopped. Copy the command above into the matching terminal, then select CHECK.",
+				);
+			}
+		}
+		setCliBusyId(null);
 	}
 
 	async function checkNow() {
@@ -369,10 +439,13 @@ export function UpdatesSection() {
 			status={status}
 			state={state}
 			fetchError={fetchError}
+			cliBusyId={cliBusyId}
+			cliNotice={cliNotice}
 			onRefresh={() => void refresh()}
 			onCheck={() => void checkNow()}
 			onDownload={() => void downloadOnly()}
 			onLaunch={(version) => void launchStaged(version)}
+			onCliUpdate={(update) => void runCliUpdate(update)}
 		/>
 	);
 }

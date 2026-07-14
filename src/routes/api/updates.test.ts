@@ -6,9 +6,13 @@ type Operations = Parameters<typeof createUpdateRequestHandlers>[0];
 function operations(overrides: Partial<Operations> = {}): Operations {
 	return {
 		forbidden: vi.fn().mockReturnValue(null),
+		localOnly: vi.fn().mockReturnValue(null),
+		isLocal: vi.fn().mockReturnValue(true),
 		getStatus: vi.fn().mockResolvedValue({ state: "idle" }),
 		download: vi.fn().mockResolvedValue({ ok: true, downloaded: true }),
 		apply: vi.fn().mockResolvedValue({ ok: true, applied: true }),
+		prepareCli: vi.fn().mockResolvedValue({ command: "sudo npm update" }),
+		applyCli: vi.fn().mockResolvedValue({ command: "npm update" }),
 		...overrides,
 	} as Operations;
 }
@@ -54,7 +58,8 @@ describe("update request handlers", () => {
 		expect(unknown.status).toBe(400);
 		expect(await unknown.json()).toEqual({
 			ok: false,
-			error: "action must be one of: check, download, apply",
+			error:
+				"action must be one of: check, download, apply, prepare_cli, apply_cli",
 		});
 	});
 
@@ -80,6 +85,46 @@ describe("update request handlers", () => {
 		expect(response.status).toBe(200);
 		expect(ops.download).toHaveBeenCalledTimes(action === "download" ? 1 : 0);
 		expect(ops.apply).toHaveBeenCalledTimes(action === "apply" ? 1 : 0);
+	});
+
+	it("keeps CLI mutations local and validates their target", async () => {
+		const forbidden = Response.json({ ok: false }, { status: 403 });
+		const remote = operations({
+			localOnly: vi.fn().mockReturnValue(forbidden),
+		});
+		const remoteResponse = await createUpdateRequestHandlers(remote).POST({
+			request: new Request("http://localhost/api/updates", {
+				method: "POST",
+				body: JSON.stringify({ action: "apply_cli", id: "codex" }),
+			}),
+		});
+		expect(remoteResponse).toBe(forbidden);
+		expect(remote.applyCli).not.toHaveBeenCalled();
+
+		const local = operations();
+		const missing = await createUpdateRequestHandlers(local).POST({
+			request: post("prepare_cli"),
+		});
+		expect(missing.status).toBe(400);
+		expect(local.prepareCli).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		"prepare_cli",
+		"apply_cli",
+	] as const)("dispatches the local %s action with the selected CLI", async (action) => {
+		const ops = operations();
+		const response = await createUpdateRequestHandlers(ops).POST({
+			request: new Request("http://localhost/api/updates", {
+				method: "POST",
+				body: JSON.stringify({ action, id: "codex" }),
+			}),
+		});
+		expect(response.status).toBe(200);
+		expect(ops.prepareCli).toHaveBeenCalledTimes(
+			action === "prepare_cli" ? 1 : 0,
+		);
+		expect(ops.applyCli).toHaveBeenCalledTimes(action === "apply_cli" ? 1 : 0);
 	});
 
 	it("rejects concurrent mutations and allows retry after completion", async () => {

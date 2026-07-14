@@ -245,7 +245,7 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 		method: "POST",
 		path: "/api/updates",
 		server: "ui",
-		desc: "Download and stage/apply an update.",
+		desc: 'Body action: "check"|"download"|"apply" or loopback-only "prepare_cli"|"apply_cli" with a CLI id.',
 	},
 	{
 		method: "GET",

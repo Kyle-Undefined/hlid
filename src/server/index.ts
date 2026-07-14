@@ -3,14 +3,18 @@ import type { Server, ServerWebSocket } from "bun";
 import * as db from "../db";
 import { isAllowedOrigin, isAllowedOriginHeader } from "../lib/allowedOrigin";
 import { registerBunServer } from "../lib/lifecycle";
-import { loadToken } from "../lib/token";
+import { loadToken, verifyToken } from "../lib/token";
 import { AcpProvider } from "./acpProvider";
 import { AcpRegistry } from "./acpRegistry";
 import { createAcpRouteHandler } from "./acpRoutes";
 import type { AgentProvider, McpServerStatus } from "./agentProvider";
 import { buildApiIndex } from "./apiIndex";
 import { handleAttachmentRoute } from "./attachmentRoutes";
-import { authorizeServiceRequest, resetAuthentication } from "./auth";
+import {
+	authorizeServiceRequest,
+	isLoopback,
+	resetAuthentication,
+} from "./auth";
 import { openInBrowser } from "./browser";
 import { ClaudeProvider } from "./claudeProvider";
 import { closeAllCodexAppServers, listCodexAppServers } from "./codexAppServer";
@@ -495,6 +499,29 @@ async function handleServerFetch(
 	server: AppServer,
 ): Promise<Response | undefined> {
 	const peerIp = server.requestIP(req)?.address;
+	const url = new URL(req.url);
+	if (req.method === "POST" && url.pathname === "/internal/cli-updates/drain") {
+		if (
+			!isLoopback(peerIp) ||
+			!verifyToken(req.headers.get("x-hlid-internal"), SERVER_TOKEN)
+		) {
+			return new Response("Forbidden", { status: 403 });
+		}
+		const sessions = pool.getSize();
+		const appServers = listCodexAppServers().filter(
+			(entry) => entry.alive,
+		).length;
+		pool.closeAll();
+		closeAllCodexAppServers();
+		broadcast({
+			type: "sessions_status",
+			sessions: getLiveSessionsStatus(pool, terminalPool),
+		});
+		return Response.json({
+			ok: true,
+			data: { sessions, appServers },
+		});
+	}
 	return handleServerRequest(req, peerIp, server);
 }
 

@@ -247,13 +247,20 @@ Hlið also detects the installed Claude and Codex CLI versions and, for enabled
 ACP agents, compares each agent's self-reported version with the ACP registry.
 Available agent updates appear in the global update banner and under
 **FORGE → Overview**, along with the update command for that installation.
-Hlið never runs installer commands automatically; run the displayed command
-yourself in the matching runtime (Windows or the configured WSL wrapper).
+From a browser on the Hlið computer, select **UPDATE** for a user-writable
+installation. Hlið warns before stopping active provider sessions, releases
+shared app-server processes, runs the known update command, and rechecks the
+installed version. Terminal sessions remain open.
 
-Stop Hlið before running an agent CLI update. While Hlið is running it keeps
-provider sessions open, which holds the CLI executable in use and causes the
-update to fail or be skipped. Shut down Hlið from **FORGE → Advanced**, run the
-update command, then start Hlið again from the Start Menu shortcut.
+Installations that require elevation, including a root-owned WSL global npm
+install, show **STOP & COPY** instead. Hlið releases provider processes and
+copies the exact command; run it in the matching interactive terminal so `sudo`
+can prompt there. Hlið never asks for, stores, or relays the sudo password.
+Custom ACP executables continue to use their original installer.
+
+CLI update actions are available only from a loopback browser on the Hlið
+computer. Remote and Tailscale clients can view versions and copy the displayed
+guidance, but cannot stop sessions or start an update.
 
 Installed PWA clients pick up new releases automatically: the service worker
 detects the new build, replaces previously cached assets, and refreshes on the

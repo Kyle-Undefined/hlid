@@ -1,8 +1,9 @@
-import { spawn } from "node:child_process";
-import { realpathSync } from "node:fs";
+import { accessSync, constants, realpathSync } from "node:fs";
 import { resolveClaudeExecutable } from "../lib/claudePath";
 import type { CliUpdateStatus } from "../lib/cliUpdateTypes";
 import { resolveCodexExecutable } from "../lib/codexPath";
+import { parseWslUnc } from "../lib/paths";
+import { runBoundedProcess } from "../lib/process";
 
 import { inspectAcpAgent } from "./acpProvider";
 import { type AcpCatalogItem, AcpRegistry } from "./acpRegistry";
@@ -38,6 +39,24 @@ type AcpUpdateDependencies = {
 	now(): number;
 };
 
+type WslCliInfo = { version: string; executable: string };
+
+type WslUpdateDependencies = {
+	listDistros(): string[];
+	readCli(distro: string, id: NativeCliId): Promise<WslCliInfo>;
+	fetchLatest(packageName: string): Promise<string>;
+	now(): number;
+};
+
+export type CliUpdateAction = {
+	id: CliUpdateStatus["id"];
+	displayCommand: string;
+	command: string;
+	args: string[];
+	automatic: boolean;
+	requiresElevation: boolean;
+};
+
 const CLI_DEFINITIONS: CliDefinition[] = [
 	{ id: "codex", label: "Codex", packageName: "@openai/codex" },
 	{
@@ -71,42 +90,17 @@ export function compareCliVersions(a: string, b: string): number {
 	return left.prerelease.localeCompare(right.prerelease);
 }
 
-function readInstalledVersion(executable: string): Promise<string> {
-	return new Promise((resolve, reject) => {
-		const child = spawn(executable, ["--version"], {
-			stdio: ["ignore", "pipe", "pipe"],
-			windowsHide: true,
-		});
-		let output = "";
-		let settled = false;
-		let timer: ReturnType<typeof setTimeout> | undefined;
-		const finish = (error?: Error) => {
-			if (settled) return;
-			settled = true;
-			if (timer) clearTimeout(timer);
-			if (error) reject(error);
-			else {
-				const version = parseCliVersion(output);
-				if (version) resolve(version);
-				else reject(new Error("version output was not recognized"));
-			}
-		};
-		const append = (chunk: Buffer | string) => {
-			if (output.length < 8_192) output += chunk.toString();
-		};
-		child.stdout?.on("data", append);
-		child.stderr?.on("data", append);
-		child.on("error", (error) => finish(error));
-		child.on("close", (code) =>
-			finish(
-				code === 0 ? undefined : new Error(`version command exited ${code}`),
-			),
-		);
-		timer = setTimeout(() => {
-			child.kill();
-			finish(new Error("version command timed out"));
-		}, COMMAND_TIMEOUT_MS);
+async function readInstalledVersion(executable: string): Promise<string> {
+	const result = await runBoundedProcess(executable, ["--version"], {
+		timeoutMs: COMMAND_TIMEOUT_MS,
+		timeoutError: "version command timed out",
 	});
+	if (result.code !== 0) {
+		throw new Error(`version command exited ${result.code}`);
+	}
+	const version = parseCliVersion(result.output);
+	if (!version) throw new Error("version output was not recognized");
+	return version;
 }
 
 async function fetchLatestPackageVersion(packageName: string): Promise<string> {
@@ -126,35 +120,86 @@ async function fetchLatestPackageVersion(packageName: string): Promise<string> {
 	return body.version;
 }
 
-function codexUpdateCommand(executable: string): string | undefined {
+function resolvedExecutable(executable: string): string {
 	let resolved = executable;
 	try {
 		resolved = realpathSync(executable);
 	} catch {}
+	return resolved;
+}
+
+function needsElevation(executable: string): boolean {
+	if (process.platform === "win32" || /^[A-Za-z]:[\\/]/.test(executable)) {
+		return false;
+	}
+	try {
+		accessSync(resolvedExecutable(executable), constants.W_OK);
+		return false;
+	} catch {
+		return true;
+	}
+}
+
+function codexUpdateAction(executable: string): CliUpdateAction | undefined {
+	const resolved = resolvedExecutable(executable);
 	const normalized = resolved.replaceAll("\\", "/").toLowerCase();
 	if (normalized.includes("/homebrew/") || normalized.includes("/cellar/")) {
-		return "brew upgrade codex";
+		return {
+			id: "codex",
+			displayCommand: "brew upgrade codex",
+			command: "brew",
+			args: ["upgrade", "codex"],
+			automatic: true,
+			requiresElevation: false,
+		};
 	}
 	if (
 		normalized.includes("/.bun/") ||
 		normalized.includes("/bun/install/global/")
 	) {
-		return "bun add --global @openai/codex@latest";
+		return {
+			id: "codex",
+			displayCommand: "bun add --global @openai/codex@latest",
+			command: "bun",
+			args: ["add", "--global", "@openai/codex@latest"],
+			automatic: true,
+			requiresElevation: false,
+		};
 	}
 	if (
 		normalized.includes("/node_modules/@openai/codex/") ||
 		normalized.endsWith("/codex.cmd")
 	) {
-		return "npm install --global @openai/codex@latest";
+		const requiresElevation = needsElevation(resolved);
+		return {
+			id: "codex",
+			displayCommand: `${requiresElevation ? "sudo " : ""}npm install --global @openai/codex@latest`,
+			command: process.platform === "win32" ? "npm.cmd" : "npm",
+			args: ["install", "--global", "@openai/codex@latest"],
+			automatic: !requiresElevation,
+			requiresElevation,
+		};
 	}
 	return undefined;
 }
 
-function updateCommand(
+function nativeUpdateAction(
 	id: NativeCliId,
 	executable: string,
-): string | undefined {
-	return id === "claude" ? "claude update" : codexUpdateCommand(executable);
+): CliUpdateAction | undefined {
+	if (id === "codex") return codexUpdateAction(executable);
+	const requiresElevation = needsElevation(executable);
+	const bundledSdk = resolvedExecutable(executable)
+		.replaceAll("\\", "/")
+		.includes("/node_modules/@anthropic-ai/claude-agent-sdk-");
+	return {
+		id,
+		displayCommand: `${requiresElevation ? "sudo " : ""}claude update`,
+		command: executable,
+		args: ["update"],
+		automatic: !requiresElevation && !bundledSdk,
+		requiresElevation,
+	};
 }
 
 const defaultDependencies: CliUpdateDependencies = {
@@ -165,16 +210,119 @@ const defaultDependencies: CliUpdateDependencies = {
 	now: Date.now,
 };
 
+async function readWslCli(
+	distro: string,
+	id: NativeCliId,
+): Promise<WslCliInfo> {
+	const script = [
+		`command -v ${id}`,
+		`${id} --version`,
+		`readlink -f "$(command -v ${id})"`,
+	].join(" && ");
+	const result = await runBoundedProcess(
+		"wsl.exe",
+		["-d", distro, "--", "bash", "-lc", script],
+		{
+			timeoutMs: COMMAND_TIMEOUT_MS,
+			timeoutError: "WSL version command timed out",
+		},
+	);
+	if (result.code !== 0) throw new Error(`WSL command exited ${result.code}`);
+	const version = parseCliVersion(result.output);
+	const lines = result.output
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter(Boolean);
+	const executable = lines.at(-1);
+	if (!version || !executable?.startsWith("/")) {
+		throw new Error("WSL CLI version output was not recognized");
+	}
+	return { version, executable };
+}
+
+function configuredWslDistros(): string[] {
+	if (process.platform !== "win32") return [];
+	const config = loadConfig();
+	const paths = [
+		config.vault.path,
+		...(config.agents ?? []).map((agent) => agent.path),
+	];
+	return [
+		...new Set(
+			paths
+				.map((path) => parseWslUnc(path)?.distro)
+				.filter((distro): distro is string => distro != null),
+		),
+	].sort();
+}
+
+const defaultWslDependencies: WslUpdateDependencies = {
+	listDistros: configuredWslDistros,
+	readCli: readWslCli,
+	fetchLatest: fetchLatestPackageVersion,
+	now: Date.now,
+};
+
+function wslUpdateAction(
+	distro: string,
+	id: NativeCliId,
+	executable: string,
+): CliUpdateAction | undefined {
+	if (!/^[A-Za-z0-9._-]+$/.test(distro)) return undefined;
+	const normalized = executable.toLowerCase();
+	const actionId = `wsl:${distro}:${id}` as CliUpdateStatus["id"];
+	let displayCommand: string;
+	let requiresElevation = false;
+	if (id === "claude") {
+		requiresElevation = normalized.startsWith("/usr/");
+		displayCommand = `${requiresElevation ? "sudo " : ""}claude update`;
+	} else if (
+		normalized.includes("/.bun/") ||
+		normalized.includes("/bun/install/global/")
+	) {
+		displayCommand = "bun add --global @openai/codex@latest";
+	} else if (normalized.includes("/node_modules/@openai/codex/")) {
+		requiresElevation = normalized.startsWith("/usr/");
+		displayCommand = `${requiresElevation ? "sudo " : ""}npm install --global @openai/codex@latest`;
+	} else {
+		return undefined;
+	}
+	return {
+		id: actionId,
+		displayCommand,
+		command: "wsl.exe",
+		args: ["-d", distro, "--", "bash", "-lc", displayCommand],
+		automatic: !requiresElevation,
+		requiresElevation,
+	};
+}
+
 const acpRegistry = new AcpRegistry();
 
-function acpUpdateCommand(candidate: AcpUpdateCandidate): string | undefined {
+function acpUpdateAction(
+	candidate: AcpUpdateCandidate,
+): CliUpdateAction | undefined {
 	if (candidate.customExecutable) return undefined;
 	const { distribution } = candidate.item;
 	if (distribution.npx) {
-		return `bun add --global ${distribution.npx.package}`;
+		return {
+			id: `acp:${candidate.item.id}`,
+			displayCommand: `bun add --global ${distribution.npx.package}`,
+			command: "bun",
+			args: ["add", "--global", distribution.npx.package],
+			automatic: true,
+			requiresElevation: false,
+		};
 	}
 	if (distribution.uvx) {
-		return `uv tool install --force ${distribution.uvx.package}`;
+		return {
+			id: `acp:${candidate.item.id}`,
+			displayCommand: `uv tool install --force ${distribution.uvx.package}`,
+			command: "uv",
+			args: ["tool", "install", "--force", distribution.uvx.package],
+			automatic: true,
+			requiresElevation: false,
+		};
 	}
 	return undefined;
 }
@@ -236,7 +384,7 @@ export async function inspectCliUpdates(
 						? `latest version: ${latestResult.reason instanceof Error ? latestResult.reason.message : String(latestResult.reason)}`
 						: null,
 				].filter((value): value is string => value != null);
-				const command = updateCommand(definition.id, executable);
+				const action = nativeUpdateAction(definition.id, executable);
 				return {
 					id: definition.id,
 					label: definition.label,
@@ -246,7 +394,15 @@ export async function inspectCliUpdates(
 						installedVersion != null &&
 						latestVersion != null &&
 						compareCliVersions(latestVersion, installedVersion) > 0,
-					...(command ? { updateCommand: command } : {}),
+					...(action
+						? {
+								updateCommand: action.displayCommand,
+								updateMode: action.automatic
+									? ("automatic" as const)
+									: ("interactive" as const),
+								requiresElevation: action.requiresElevation,
+							}
+						: {}),
 					checkedAt,
 					...(errors.length > 0 ? { error: errors.join("; ") } : {}),
 				} satisfies CliUpdateStatus;
@@ -276,7 +432,7 @@ export async function inspectAcpUpdates(
 					? "latest version: registry did not report a version"
 					: null,
 			].filter((value): value is string => value != null);
-			const command = acpUpdateCommand(candidate);
+			const action = acpUpdateAction(candidate);
 			return {
 				id: `acp:${candidate.item.id}`,
 				label: `${candidate.item.name} (ACP)`,
@@ -286,12 +442,100 @@ export async function inspectAcpUpdates(
 					installedVersion != null &&
 					latestVersion != null &&
 					compareCliVersions(latestVersion, installedVersion) > 0,
-				...(command ? { updateCommand: command } : {}),
+				...(action
+					? {
+							updateCommand: action.displayCommand,
+							updateMode: action.automatic
+								? ("automatic" as const)
+								: ("interactive" as const),
+							requiresElevation: action.requiresElevation,
+						}
+					: {}),
 				checkedAt,
 				...(errors.length > 0 ? { error: errors.join("; ") } : {}),
 			} satisfies CliUpdateStatus;
 		}),
 	);
+}
+
+export async function inspectWslUpdates(
+	dependencies: WslUpdateDependencies = defaultWslDependencies,
+): Promise<CliUpdateStatus[]> {
+	const checkedAt = dependencies.now();
+	const definitions = dependencies
+		.listDistros()
+		.flatMap((distro) =>
+			CLI_DEFINITIONS.map((definition) => ({ distro, definition })),
+		);
+	return (
+		await Promise.all(
+			definitions.map(async ({ distro, definition }) => {
+				const [installedResult, latestResult] = await Promise.allSettled([
+					dependencies.readCli(distro, definition.id),
+					dependencies.fetchLatest(definition.packageName),
+				]);
+				// A configured distro does not have to contain every provider CLI.
+				if (installedResult.status === "rejected") return null;
+				const latestVersion =
+					latestResult.status === "fulfilled" ? latestResult.value : null;
+				const action = wslUpdateAction(
+					distro,
+					definition.id,
+					installedResult.value.executable,
+				);
+				return {
+					id: `wsl:${distro}:${definition.id}`,
+					label: `${definition.label} (${distro})`,
+					installedVersion: installedResult.value.version,
+					latestVersion,
+					available:
+						latestVersion != null &&
+						compareCliVersions(latestVersion, installedResult.value.version) >
+							0,
+					...(action
+						? {
+								updateCommand: action.displayCommand,
+								updateMode: action.automatic
+									? ("automatic" as const)
+									: ("interactive" as const),
+								requiresElevation: action.requiresElevation,
+							}
+						: {}),
+					checkedAt,
+					...(latestResult.status === "rejected"
+						? {
+								error: `latest version: ${latestResult.reason instanceof Error ? latestResult.reason.message : String(latestResult.reason)}`,
+							}
+						: {}),
+				} satisfies CliUpdateStatus;
+			}),
+		)
+	).filter((status) => status != null);
+}
+
+export async function resolveCliUpdateAction(
+	id: string,
+): Promise<CliUpdateAction | null> {
+	if (id === "codex" || id === "claude") {
+		const executable = defaultDependencies.resolveExecutable(id);
+		return executable ? (nativeUpdateAction(id, executable) ?? null) : null;
+	}
+	const wslMatch = id.match(/^wsl:([A-Za-z0-9._-]+):(codex|claude)$/);
+	if (wslMatch) {
+		const [, distro, provider] = wslMatch;
+		const info = await defaultWslDependencies.readCli(
+			distro,
+			provider as NativeCliId,
+		);
+		return (
+			wslUpdateAction(distro, provider as NativeCliId, info.executable) ?? null
+		);
+	}
+	if (!id.startsWith("acp:")) return null;
+	const candidateId = id.slice("acp:".length);
+	const candidates = await defaultAcpDependencies.listCandidates();
+	const candidate = candidates.find((entry) => entry.item.id === candidateId);
+	return candidate ? (acpUpdateAction(candidate) ?? null) : null;
 }
 
 let cached: { checkedAt: number; statuses: CliUpdateStatus[] } | null = null;
@@ -306,10 +550,11 @@ export async function getCliUpdateStatuses(opts?: {
 	if (inflight) return inflight;
 	const pending = Promise.all([
 		inspectCliUpdates(),
+		inspectWslUpdates().catch(() => []),
 		inspectAcpUpdates().catch(() => []),
 	])
-		.then(([nativeStatuses, acpStatuses]) => {
-			const statuses = [...nativeStatuses, ...acpStatuses];
+		.then(([nativeStatuses, wslStatuses, acpStatuses]) => {
+			const statuses = [...nativeStatuses, ...wslStatuses, ...acpStatuses];
 			cached = { checkedAt: Date.now(), statuses };
 			return statuses;
 		})

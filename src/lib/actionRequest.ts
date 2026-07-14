@@ -2,10 +2,14 @@ export async function parseJsonAction<const Actions extends readonly string[]>(
 	request: Request,
 	actions: Actions,
 	invalidJsonMessage = "Invalid JSON",
-): Promise<{ action: Actions[number] } | Response> {
-	let body: { action?: unknown };
+): Promise<
+	{ action: Actions[number]; body: Record<string, unknown> } | Response
+> {
+	let body: Record<string, unknown> & { action?: unknown };
 	try {
-		body = (await request.json()) as { action?: unknown };
+		body = (await request.json()) as Record<string, unknown> & {
+			action?: unknown;
+		};
 	} catch {
 		return Response.json(
 			{ ok: false, error: invalidJsonMessage },
@@ -24,5 +28,5 @@ export async function parseJsonAction<const Actions extends readonly string[]>(
 			{ status: 400 },
 		);
 	}
-	return { action: body.action as Actions[number] };
+	return { action: body.action as Actions[number], body };
 }

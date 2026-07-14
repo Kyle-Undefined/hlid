@@ -21,6 +21,7 @@ type UpdateStatus = {
 	available: boolean;
 	lastCheckedAt: number;
 	cliUpdates?: CliUpdateStatus[];
+	cliUpdateActionsAllowed?: boolean;
 	error?: string;
 };
 
@@ -128,6 +129,106 @@ describe("UpdatesSection", () => {
 		expect(
 			screen.getByText("update using the original installer"),
 		).toBeTruthy();
+	});
+
+	it("applies an automatic CLI update only from the local Forge", async () => {
+		const fetchMock = stubFetch(
+			makeStatus({
+				cliUpdateActionsAllowed: true,
+				cliUpdates: [
+					{
+						id: "codex",
+						label: "Codex",
+						installedVersion: "1.0.0",
+						latestVersion: "1.1.0",
+						available: true,
+						updateCommand: "npm install --global @openai/codex@latest",
+						updateMode: "automatic",
+						requiresElevation: false,
+						checkedAt: Date.now(),
+					},
+				],
+			}),
+			{ apply_cli: { ok: true, data: {} } },
+		);
+		vi.spyOn(window, "confirm").mockReturnValue(true);
+		render(<UpdatesSection />);
+		fireEvent.click(await screen.findByRole("button", { name: "UPDATE" }));
+		expect(await screen.findByText(/Codex updated/)).toBeTruthy();
+		const request = fetchMock.mock.calls.find((call) => {
+			const body = call[1]?.body;
+			return typeof body === "string" && body.includes('"apply_cli"');
+		});
+		expect(JSON.parse(String(request?.[1]?.body))).toEqual({
+			action: "apply_cli",
+			id: "codex",
+		});
+	});
+
+	it("stops provider sessions and copies an interactive sudo command", async () => {
+		stubFetch(
+			makeStatus({
+				cliUpdateActionsAllowed: true,
+				cliUpdates: [
+					{
+						id: "codex",
+						label: "Codex",
+						installedVersion: "1.0.0",
+						latestVersion: "1.1.0",
+						available: true,
+						updateCommand: "sudo npm install --global @openai/codex@latest",
+						updateMode: "interactive",
+						requiresElevation: true,
+						checkedAt: Date.now(),
+					},
+				],
+			}),
+			{
+				prepare_cli: {
+					ok: true,
+					data: {
+						command: "sudo npm install --global @openai/codex@latest",
+					},
+				},
+			},
+		);
+		vi.spyOn(window, "confirm").mockReturnValue(true);
+		const writeText = vi.fn().mockResolvedValue(undefined);
+		Object.defineProperty(navigator, "clipboard", {
+			value: { writeText },
+			configurable: true,
+		});
+		render(<UpdatesSection />);
+		fireEvent.click(await screen.findByRole("button", { name: "STOP & COPY" }));
+		await waitFor(() =>
+			expect(writeText).toHaveBeenCalledWith(
+				"sudo npm install --global @openai/codex@latest",
+			),
+		);
+		expect(await screen.findByText(/command copied/)).toBeTruthy();
+	});
+
+	it("does not expose CLI mutation controls to remote browsers", async () => {
+		stubFetch(
+			makeStatus({
+				cliUpdateActionsAllowed: false,
+				cliUpdates: [
+					{
+						id: "codex",
+						label: "Codex",
+						installedVersion: "1.0.0",
+						latestVersion: "1.1.0",
+						available: true,
+						updateCommand: "npm update",
+						updateMode: "automatic",
+						checkedAt: Date.now(),
+					},
+				],
+			}),
+		);
+		render(<UpdatesSection />);
+		await screen.findByText("Codex CLI");
+		expect(screen.queryByRole("button", { name: "UPDATE" })).toBeNull();
 	});
 
 	it("shows last-check error notice from status", async () => {
