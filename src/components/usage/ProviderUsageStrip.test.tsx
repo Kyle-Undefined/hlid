@@ -42,6 +42,115 @@ afterEach(() => {
 });
 
 describe("ProviderUsageStrip polling", () => {
+	it("keeps the chat provider visible when another provider reports usage", () => {
+		const providers: ProviderUsageSnapshot[] = [
+			{
+				providerId: "claude",
+				providerLabel: "Claude",
+				windows: [
+					{
+						windowId: "five_hour",
+						label: "CLAUDE 5-HOUR",
+						windowSecs: 18_000,
+						utilization: 0.94,
+						remaining: null,
+						limit: null,
+						resetsAt: null,
+						cost: 1,
+						queries: 1,
+						tokens: 100,
+						sessions: 1,
+					},
+				],
+			},
+			{
+				providerId: "codex",
+				providerLabel: "Codex",
+				windows: [
+					{
+						windowId: "five_hour",
+						label: "CODEX 5-HOUR",
+						windowSecs: 18_000,
+						utilization: 0.52,
+						remaining: null,
+						limit: null,
+						resetsAt: null,
+						cost: 2,
+						queries: 2,
+						tokens: 200,
+						sessions: 1,
+					},
+				],
+			},
+		];
+		const fetchFn = vi.fn(() => new Promise<ProviderUsageSnapshot[]>(() => {}));
+		const view = render(
+			<ProviderUsageStrip
+				initial={providers}
+				liveQueryCount={0}
+				rateLimit={null}
+				preferredProviderId="codex"
+				fetchFn={fetchFn}
+			/>,
+		);
+
+		expect(screen.getByText("CODEX 5-HOUR")).not.toBeNull();
+		expect(screen.queryByText("CLAUDE 5-HOUR")).toBeNull();
+
+		view.rerender(
+			<ProviderUsageStrip
+				initial={providers}
+				liveQueryCount={0}
+				rateLimit={{
+					type: "rate_limit",
+					status: "allowed",
+					providerId: "claude",
+					rateLimitType: "five_hour",
+					utilization: 0.98,
+				}}
+				preferredProviderId="codex"
+				fetchFn={fetchFn}
+			/>,
+		);
+
+		expect(screen.getByText("CODEX 5-HOUR")).not.toBeNull();
+		expect(screen.queryByText("CLAUDE 5-HOUR")).toBeNull();
+	});
+
+	it("follows the provider selected for the current chat", () => {
+		const providers: ProviderUsageSnapshot[] = [
+			{ providerId: "claude", providerLabel: "Claude", windows: [] },
+			{ providerId: "codex", providerLabel: "Codex", windows: [] },
+		];
+		const view = render(
+			<ProviderUsageStrip
+				initial={providers}
+				liveQueryCount={0}
+				rateLimit={null}
+				preferredProviderId="codex"
+				fetchFn={vi.fn().mockResolvedValue(providers)}
+			/>,
+		);
+
+		expect(screen.getByRole("button", { name: "Codex" }).className).toContain(
+			"text-foreground/70",
+		);
+
+		view.rerender(
+			<ProviderUsageStrip
+				initial={providers}
+				liveQueryCount={0}
+				rateLimit={null}
+				preferredProviderId="claude"
+				fetchFn={vi.fn().mockResolvedValue(providers)}
+			/>,
+		);
+
+		expect(screen.getByRole("button", { name: "Claude" }).className).toContain(
+			"text-foreground/70",
+		);
+	});
+
 	it("marks Claude SDK cost as estimated", () => {
 		const claudeWithUsage: ProviderUsageSnapshot[] = [
 			{

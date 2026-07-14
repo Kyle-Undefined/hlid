@@ -9,7 +9,13 @@ import type { RateLimitMessage } from "#/server/protocol";
 
 const PROVIDER_STRIP_KEY = "hlid_active_provider";
 
-function initialProvider(providerIds: string[]): string {
+function initialProvider(
+	providerIds: string[],
+	preferredProviderId?: string,
+): string {
+	if (preferredProviderId && providerIds.includes(preferredProviderId)) {
+		return preferredProviderId;
+	}
 	try {
 		const stored = localStorage.getItem(PROVIDER_STRIP_KEY);
 		if (stored && providerIds.includes(stored)) return stored;
@@ -31,12 +37,14 @@ export function ProviderUsageStrip({
 	initial,
 	liveQueryCount,
 	rateLimit,
+	preferredProviderId,
 	tail,
 	fetchFn,
 }: {
 	initial: ProviderUsageSnapshot[];
 	liveQueryCount: number;
 	rateLimit: RateLimitMessage | null;
+	preferredProviderId?: string;
 	tail?: React.ReactNode;
 	fetchFn: () => Promise<ProviderUsageSnapshot[]>;
 }) {
@@ -51,7 +59,7 @@ export function ProviderUsageStrip({
 	providerIdsRef.current = providerIds;
 	const refreshSequenceRef = useRef(0);
 	const [activeProvider, setActiveProvider] = useState(() =>
-		initialProvider(providerIds),
+		initialProvider(providerIds, preferredProviderId),
 	);
 	const activeSnapshot = snapshots.find(
 		(snapshot) => snapshot.providerId === activeProvider,
@@ -110,17 +118,20 @@ export function ProviderUsageStrip({
 		setSnapshots((previous) =>
 			previous.map((snapshot) => applyRateLimitToSnapshot(snapshot, rateLimit)),
 		);
-		if (
-			rateLimit.providerId &&
-			providerIdsRef.current.includes(rateLimit.providerId)
-		) {
-			setActiveProvider(rateLimit.providerId);
-		}
 		// Re-read the authoritative query cost/token totals after the provider
 		// window event. The server persists structured window data before done,
 		// so this single refresh keeps every figure in the cell coherent.
 		refreshRef.current();
 	}, [rateLimit]);
+
+	useEffect(() => {
+		if (
+			preferredProviderId &&
+			providerIdsRef.current.includes(preferredProviderId)
+		) {
+			setActiveProvider(preferredProviderId);
+		}
+	}, [preferredProviderId]);
 
 	const selectProvider = (providerId: string) => {
 		setActiveProvider(providerId);
