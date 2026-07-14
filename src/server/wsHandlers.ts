@@ -149,6 +149,11 @@ function handleSubscribeSession(
 	if (entry.manager.isRunning()) {
 		for (const buffered of entry.runState.getReplayBuffer()) send(ws, buffered);
 	}
+	// Auto-sleep is transient session state rather than a transcript event, so
+	// it is not part of the normal replay buffer. Re-send it when Raven switches
+	// to an already-sleeping live session just as we do on connect and sync.
+	const sleep = entry.manager.getSleepState();
+	if (sleep) send(ws, sleep);
 	send(ws, { type: "queue_state", ...entry.manager.getQueueState() });
 }
 

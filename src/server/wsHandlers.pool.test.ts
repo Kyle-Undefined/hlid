@@ -55,6 +55,8 @@ function makeManager(
 	getStatus: ReturnType<typeof vi.fn>;
 	isRunning: ReturnType<typeof vi.fn>;
 	abort: ReturnType<typeof vi.fn>;
+	skipSleep: ReturnType<typeof vi.fn>;
+	getSleepState: ReturnType<typeof vi.fn>;
 	clearHistory: ReturnType<typeof vi.fn>;
 	runQuery: ReturnType<typeof vi.fn>;
 	getPendingPermissionRequests: ReturnType<typeof vi.fn>;
@@ -510,6 +512,43 @@ describe("message — subscribe_session", () => {
 		);
 		const calls = mockSend.mock.calls.filter((c) => c[0] === ws);
 		expect(calls.some((c) => c[1].type === "chunk")).toBe(true);
+	});
+
+	it("replays auto-sleep state when switching to a sleeping live session", async () => {
+		const vault = makeEntry("vault-id");
+		const other = makeEntry("other-id");
+		other.manager.getSleepState.mockReturnValue({
+			type: "agent_sleep",
+			state: "sleeping",
+			providerId: "claude",
+			windowId: "five_hour",
+			until: 1_784_060_475,
+			reason: "threshold",
+			utilization: 0.94,
+		});
+		const pool = makePool(vault);
+		pool.get.mockImplementation((id: string) => {
+			if (id === "vault-id") return vault;
+			if (id === "other-id") return other;
+			return undefined;
+		});
+		const { message } = createWsHandlers(pool);
+		const ws = makeWs("vault-id");
+
+		await message(
+			ws as never,
+			JSON.stringify({ type: "subscribe_session", session_id: "other-id" }),
+		);
+
+		expect(mockSend).toHaveBeenCalledWith(
+			ws,
+			expect.objectContaining({
+				type: "agent_sleep",
+				state: "sleeping",
+				providerId: "claude",
+				utilization: 0.94,
+			}),
+		);
 	});
 
 	it("resolves a database session id to its live pool entry", async () => {
