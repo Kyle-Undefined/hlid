@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ConfirmAction } from "#/components/ConfirmAction";
+import { MarkdownBody } from "#/components/MarkdownBody";
 import type { CliUpdateStatus } from "#/lib/cliUpdateTypes";
+import type { ReleaseNotes } from "#/lib/updates";
 import { CliUpdateTerminalModal } from "./CliUpdateTerminalModal";
 import { Field, Section } from "./fields";
 
@@ -9,6 +11,7 @@ type UpdateStatus = {
 	latest: string | null;
 	available: boolean;
 	lastCheckedAt: number;
+	release: ReleaseNotes | null;
 	cliUpdates?: CliUpdateStatus[];
 	cliUpdateActionsAllowed?: boolean;
 	error?: string;
@@ -40,6 +43,48 @@ function updateHint(
 	if (status.available && status.latest)
 		return `update available: v${status.latest}`;
 	return "you're on the latest version";
+}
+
+function releaseDate(publishedAt: string | null): string | null {
+	if (!publishedAt) return null;
+	const date = new Date(publishedAt);
+	if (!Number.isFinite(date.getTime())) return null;
+	return new Intl.DateTimeFormat(undefined, {
+		dateStyle: "medium",
+	}).format(date);
+}
+
+function LatestChanges({ release }: { release: ReleaseNotes }) {
+	const published = releaseDate(release.publishedAt);
+	return (
+		<Section
+			title="Latest changes"
+			description="Release notes from the latest published Hlið release."
+		>
+			<div className="px-4 py-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+				<div className="min-w-0">
+					<div className="text-sm font-medium text-foreground">
+						{release.name}
+					</div>
+					<div className="text-xs text-muted-foreground">
+						v{release.version}
+						{published ? ` · Published ${published}` : ""}
+					</div>
+				</div>
+				<a
+					href={release.url}
+					target="_blank"
+					rel="noreferrer"
+					className="self-start shrink-0 text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors uppercase"
+				>
+					View on GitHub
+				</a>
+			</div>
+			<div className="px-4 py-4 text-sm text-foreground/85">
+				<MarkdownBody content={release.notes} />
+			</div>
+		</Section>
+	);
 }
 
 function VersionField({
@@ -492,6 +537,7 @@ export function UpdatesSection() {
 				onLaunch={(version) => void launchStaged(version)}
 				onCliUpdate={(update) => void runCliUpdate(update)}
 			/>
+			{status?.release && <LatestChanges release={status.release} />}
 			{cliTerminal && (
 				<CliUpdateTerminalModal
 					{...cliTerminal}

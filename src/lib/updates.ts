@@ -55,18 +55,33 @@ const REPO_NAME = "hlid";
 const RELEASES_LATEST_URL = `https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/releases/latest`;
 const USER_AGENT = `hlid-updater/${CURRENT_VERSION}`;
 const CHECK_TTL_MS = 24 * 60 * 60 * 1000; // 24h
+const CACHE_SCHEMA_VERSION = 2;
+const MAX_RELEASE_NOTES_LENGTH = 128 * 1024;
 // Conservative caps. Real releases land around 90 MB; this leaves headroom
 // while rejecting obvious garbage (a 5 GB redirect target, etc.).
 const MAX_EXE_BYTES = 500 * 1024 * 1024;
 const MAX_CHECKSUMS_BYTES = 64 * 1024;
 
 type UpdateCache = {
+	schemaVersion: number;
 	lastCheckedAt: number;
 	latestVersion: string | null;
 	latestExeUrl: string | null;
 	latestExeName: string | null;
 	latestChecksumUrl: string | null;
+	latestReleaseName: string | null;
+	latestReleasePublishedAt: string | null;
+	latestReleaseUrl: string | null;
+	latestReleaseNotes: string | null;
 	etag: string | null;
+};
+
+export type ReleaseNotes = {
+	version: string;
+	name: string;
+	publishedAt: string | null;
+	url: string;
+	notes: string;
 };
 
 export type UpdateStatus = {
@@ -74,6 +89,7 @@ export type UpdateStatus = {
 	latest: string | null;
 	available: boolean;
 	lastCheckedAt: number;
+	release: ReleaseNotes | null;
 	cliUpdates: CliUpdateStatus[];
 	error?: string;
 };
@@ -85,6 +101,10 @@ export type ActionResult<T = unknown> =
 type ReleaseAsset = { name: string; browser_download_url: string };
 type ReleaseResponse = {
 	tag_name: string;
+	name?: string | null;
+	published_at?: string | null;
+	html_url?: string;
+	body?: string | null;
 	prerelease?: boolean;
 	assets: ReleaseAsset[];
 };
@@ -115,11 +135,16 @@ function tryUnlink(p: string): void {
 }
 
 const EMPTY_CACHE: UpdateCache = {
+	schemaVersion: CACHE_SCHEMA_VERSION,
 	lastCheckedAt: 0,
 	latestVersion: null,
 	latestExeUrl: null,
 	latestExeName: null,
 	latestChecksumUrl: null,
+	latestReleaseName: null,
+	latestReleasePublishedAt: null,
+	latestReleaseUrl: null,
+	latestReleaseNotes: null,
 	etag: null,
 };
 
@@ -128,11 +153,16 @@ async function readCache(): Promise<UpdateCache> {
 		const raw = await readFile(cachePath(), "utf8");
 		const parsed = JSON.parse(raw) as Partial<UpdateCache>;
 		return {
+			schemaVersion: Number(parsed.schemaVersion ?? 0) || 0,
 			lastCheckedAt: Number(parsed.lastCheckedAt ?? 0) || 0,
 			latestVersion: parsed.latestVersion ?? null,
 			latestExeUrl: parsed.latestExeUrl ?? null,
 			latestExeName: parsed.latestExeName ?? null,
 			latestChecksumUrl: parsed.latestChecksumUrl ?? null,
+			latestReleaseName: parsed.latestReleaseName ?? null,
+			latestReleasePublishedAt: parsed.latestReleasePublishedAt ?? null,
+			latestReleaseUrl: parsed.latestReleaseUrl ?? null,
+			latestReleaseNotes: parsed.latestReleaseNotes ?? null,
 			etag: parsed.etag ?? null,
 		};
 	} catch {
@@ -250,11 +280,24 @@ async function fetchLatestRelease(
 	return {
 		kind: "ok",
 		cache: {
+			schemaVersion: CACHE_SCHEMA_VERSION,
 			lastCheckedAt: Date.now(),
 			latestVersion: normalizeVersion(body.tag_name),
 			latestExeUrl: exe.browser_download_url,
 			latestExeName: exe.name,
 			latestChecksumUrl: checksums.browser_download_url,
+			latestReleaseName:
+				typeof body.name === "string" && body.name.trim()
+					? body.name.trim()
+					: body.tag_name,
+			latestReleasePublishedAt:
+				typeof body.published_at === "string" ? body.published_at : null,
+			latestReleaseUrl:
+				typeof body.html_url === "string" ? body.html_url : null,
+			latestReleaseNotes:
+				typeof body.body === "string"
+					? body.body.slice(0, MAX_RELEASE_NOTES_LENGTH).trim()
+					: null,
 			etag: res.headers.get("etag"),
 		},
 	};
@@ -272,6 +315,16 @@ function statusFromCache(
 		latest,
 		available,
 		lastCheckedAt: cache.lastCheckedAt,
+		release:
+			latest && cache.latestReleaseUrl && cache.latestReleaseNotes
+				? {
+						version: latest,
+						name: cache.latestReleaseName ?? `v${latest}`,
+						publishedAt: cache.latestReleasePublishedAt,
+						url: cache.latestReleaseUrl,
+						notes: cache.latestReleaseNotes,
+					}
+				: null,
 		error,
 	};
 }
@@ -290,10 +343,16 @@ export async function getStatus(opts?: {
 		cliUpdates: await cliUpdates,
 	});
 	const cache = await readCache();
-	const stale = Date.now() - cache.lastCheckedAt > CHECK_TTL_MS;
+	const needsReleaseMetadata = cache.schemaVersion < CACHE_SCHEMA_VERSION;
+	const stale =
+		Date.now() - cache.lastCheckedAt > CHECK_TTL_MS || needsReleaseMetadata;
 	if (!opts?.force && !stale) return finish(statusFromCache(cache));
 
-	const result = await fetchLatestRelease(cache.etag);
+	// Older caches have a valid ETag but no release notes. Avoid a 304 once so
+	// they can migrate to the release-aware schema in a single request.
+	const result = await fetchLatestRelease(
+		needsReleaseMetadata ? null : cache.etag,
+	);
 	if (result.kind === "not_modified") {
 		const updated: UpdateCache = { ...cache, lastCheckedAt: Date.now() };
 		await writeCache(updated).catch(() => {});

@@ -8,6 +8,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CliUpdateStatus } from "#/lib/cliUpdateTypes";
+import type { ReleaseNotes } from "#/lib/updates";
 import { UpdatesSection } from "./UpdatesSection";
 
 vi.mock("#/components/TerminalView", () => ({
@@ -35,6 +36,7 @@ type UpdateStatus = {
 	latest: string | null;
 	available: boolean;
 	lastCheckedAt: number;
+	release?: ReleaseNotes | null;
 	cliUpdates?: CliUpdateStatus[];
 	cliUpdateActionsAllowed?: boolean;
 	error?: string;
@@ -46,6 +48,7 @@ function makeStatus(overrides?: Partial<UpdateStatus>): UpdateStatus {
 		latest: null,
 		available: false,
 		lastCheckedAt: Date.now() - 30_000,
+		release: null,
 		...overrides,
 	};
 }
@@ -98,6 +101,28 @@ describe("UpdatesSection", () => {
 		expect(await screen.findByText("update available: v1.1.0")).toBeTruthy();
 		expect(screen.getByText("→ v1.1.0")).toBeTruthy();
 		expect(screen.getByRole("button", { name: "DOWNLOAD" })).toBeTruthy();
+	});
+
+	it("renders the latest published release notes and GitHub link", async () => {
+		stubFetch(
+			makeStatus({
+				release: {
+					version: "1.1.0",
+					name: "Hlið v1.1.0",
+					publishedAt: "2026-07-13T20:04:40Z",
+					url: "https://github.com/Kyle-Undefined/hlid/releases/tag/v1.1.0",
+					notes: "## Highlights\n\n- Added **Forge release notes**.",
+				},
+			}),
+		);
+		render(<UpdatesSection />);
+
+		expect(await screen.findByText("Latest changes")).toBeTruthy();
+		expect(screen.getByText("Hlið v1.1.0")).toBeTruthy();
+		expect(screen.getByText("Forge release notes")).toBeTruthy();
+		expect(
+			screen.getByRole("link", { name: "View on GitHub" }).getAttribute("href"),
+		).toBe("https://github.com/Kyle-Undefined/hlid/releases/tag/v1.1.0");
 	});
 
 	it("shows installed provider CLI versions and update instructions", async () => {

@@ -103,6 +103,7 @@ function makeCacheJson(
 	overrides: Record<string, unknown> = {},
 ): string {
 	return JSON.stringify({
+		schemaVersion: 2,
 		lastCheckedAt: FRESH_TS,
 		latestVersion,
 		latestExeUrl: latestVersion
@@ -114,6 +115,14 @@ function makeCacheJson(
 		latestChecksumUrl: latestVersion
 			? "https://example.com/hlid-checksums.txt"
 			: null,
+		latestReleaseName: latestVersion ? `v${latestVersion}` : null,
+		latestReleasePublishedAt: latestVersion ? "2026-07-13T20:04:40Z" : null,
+		latestReleaseUrl: latestVersion
+			? `https://github.com/Kyle-Undefined/hlid/releases/tag/v${latestVersion}`
+			: null,
+		latestReleaseNotes: latestVersion
+			? "## Highlights\n\n- Better Forge."
+			: null,
 		etag: null,
 		...overrides,
 	});
@@ -123,6 +132,10 @@ function makeGithubRelease(tag: string) {
 	const ver = tag.replace(/^v/, "");
 	return {
 		tag_name: tag,
+		name: tag,
+		published_at: "2026-07-13T20:04:40Z",
+		html_url: `https://github.com/Kyle-Undefined/hlid/releases/tag/${tag}`,
+		body: "## Highlights\n\n- Better Forge.",
 		prerelease: false,
 		assets: [
 			{
@@ -149,6 +162,37 @@ describe("getStatus — fresh cache", () => {
 		expect(fetchSpy).not.toHaveBeenCalled();
 		expect(status.latest).toBe("2.0.0");
 		expect(status.current).toBe("1.0.0");
+		expect(status.release).toMatchObject({
+			version: "2.0.0",
+			name: "v2.0.0",
+			notes: "## Highlights\n\n- Better Forge.",
+		});
+	});
+
+	it("migrates a fresh legacy cache so release notes are not hidden by its ETag", async () => {
+		vi.mocked(readFile).mockResolvedValueOnce(
+			makeCacheJson("2.0.0", {
+				schemaVersion: 0,
+				etag: '"legacy"',
+				latestReleaseUrl: null,
+				latestReleaseNotes: null,
+			}) as never,
+		);
+		const fetchMock = vi.fn().mockResolvedValueOnce({
+			ok: true,
+			status: 200,
+			headers: new Headers({ etag: '"current"' }),
+			json: async () => makeGithubRelease("v2.0.0"),
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		const status = await getStatus();
+
+		expect(fetchMock).toHaveBeenCalledOnce();
+		expect(
+			(fetchMock.mock.calls[0]?.[1] as RequestInit | undefined)?.headers,
+		).not.toMatchObject({ "If-None-Match": '"legacy"' });
+		expect(status.release?.notes).toContain("Better Forge");
 	});
 
 	it("available: true when latest > current", async () => {
