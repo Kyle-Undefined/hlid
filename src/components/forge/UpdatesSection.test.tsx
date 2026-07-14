@@ -10,6 +10,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CliUpdateStatus } from "#/lib/cliUpdateTypes";
 import { UpdatesSection } from "./UpdatesSection";
 
+vi.mock("#/components/TerminalView", () => ({
+	TerminalView: (props: {
+		cwd: string;
+		wsPath: string;
+		terminateOnDisconnect: boolean;
+	}) => (
+		<div
+			data-testid="update-terminal"
+			data-cwd={props.cwd}
+			data-ws-path={props.wsPath}
+			data-terminate={String(props.terminateOnDisconnect)}
+		/>
+	),
+}));
+
 afterEach(() => {
 	cleanup();
 	vi.unstubAllGlobals();
@@ -151,9 +166,15 @@ describe("UpdatesSection", () => {
 			}),
 			{ apply_cli: { ok: true, data: {} } },
 		);
-		vi.spyOn(window, "confirm").mockReturnValue(true);
 		render(<UpdatesSection />);
 		fireEvent.click(await screen.findByRole("button", { name: "UPDATE" }));
+		expect(screen.getByText("stop sessions and update?")).toBeTruthy();
+		expect(
+			fetchMock.mock.calls.some((call) =>
+				String(call[1]?.body).includes('"apply_cli"'),
+			),
+		).toBe(false);
+		fireEvent.click(screen.getByRole("button", { name: "update" }));
 		expect(await screen.findByText(/Codex updated/)).toBeTruthy();
 		const request = fetchMock.mock.calls.find((call) => {
 			const body = call[1]?.body;
@@ -165,18 +186,33 @@ describe("UpdatesSection", () => {
 		});
 	});
 
-	it("stops provider sessions and copies an interactive sudo command", async () => {
-		stubFetch(
+	it("opens an embedded terminal in the matching WSL distro for sudo", async () => {
+		const wslCwd =
+			"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\development\\repos\\hlid";
+		const updatedStatus = makeStatus({
+			cliUpdateActionsAllowed: true,
+			cliUpdates: [
+				{
+					id: "wsl:Ubuntu-24.04:claude",
+					label: "Claude Code (Ubuntu-24.04)",
+					installedVersion: "1.1.0",
+					latestVersion: "1.1.0",
+					available: false,
+					checkedAt: Date.now(),
+				},
+			],
+		});
+		const fetchMock = stubFetch(
 			makeStatus({
 				cliUpdateActionsAllowed: true,
 				cliUpdates: [
 					{
-						id: "codex",
-						label: "Codex",
+						id: "wsl:Ubuntu-24.04:claude",
+						label: "Claude Code (Ubuntu-24.04)",
 						installedVersion: "1.0.0",
 						latestVersion: "1.1.0",
 						available: true,
-						updateCommand: "sudo npm install --global @openai/codex@latest",
+						updateCommand: "sudo claude update",
 						updateMode: "interactive",
 						requiresElevation: true,
 						checkedAt: Date.now(),
@@ -187,25 +223,51 @@ describe("UpdatesSection", () => {
 				prepare_cli: {
 					ok: true,
 					data: {
-						command: "sudo npm install --global @openai/codex@latest",
+						command: "sudo claude update",
+						terminalCwd: wslCwd,
 					},
 				},
+				check: { ok: true, data: updatedStatus },
 			},
 		);
-		vi.spyOn(window, "confirm").mockReturnValue(true);
 		const writeText = vi.fn().mockResolvedValue(undefined);
 		Object.defineProperty(navigator, "clipboard", {
 			value: { writeText },
 			configurable: true,
 		});
 		render(<UpdatesSection />);
-		fireEvent.click(await screen.findByRole("button", { name: "STOP & COPY" }));
-		await waitFor(() =>
-			expect(writeText).toHaveBeenCalledWith(
-				"sudo npm install --global @openai/codex@latest",
-			),
+		fireEvent.click(
+			await screen.findByRole("button", { name: "OPEN TERMINAL" }),
 		);
-		expect(await screen.findByText(/command copied/)).toBeTruthy();
+		expect(screen.getByText("stop sessions and open terminal?")).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "open" }));
+		await waitFor(() =>
+			expect(writeText).toHaveBeenCalledWith("sudo claude update"),
+		);
+		expect(
+			await screen.findByRole("dialog", {
+				name: "Claude Code (Ubuntu-24.04) update terminal",
+			}),
+		).toBeTruthy();
+		const terminal = screen.getByTestId("update-terminal");
+		expect(terminal.getAttribute("data-cwd")).toBe(wslCwd);
+		expect(terminal.getAttribute("data-ws-path")).toBe("/ws/shell");
+		expect(terminal.getAttribute("data-terminate")).toBe("true");
+		expect(screen.getAllByText("sudo claude update")).toHaveLength(2);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Close update terminal" }),
+		);
+		expect(screen.queryByRole("dialog")).toBeNull();
+		expect(
+			await screen.findByText("Installed CLI versions refreshed."),
+		).toBeTruthy();
+		expect(
+			fetchMock.mock.calls.some((call) =>
+				String(call[1]?.body).includes('"action":"check"'),
+			),
+		).toBe(true);
+		expect(screen.queryByRole("button", { name: "OPEN TERMINAL" })).toBeNull();
 	});
 
 	it("does not expose CLI mutation controls to remote browsers", async () => {

@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ConfirmAction } from "#/components/ConfirmAction";
 import type { CliUpdateStatus } from "#/lib/cliUpdateTypes";
+import { CliUpdateTerminalModal } from "./CliUpdateTerminalModal";
 import { Field, Section } from "./fields";
 
 type UpdateStatus = {
@@ -234,20 +236,35 @@ function UpdatesView({
 						{update.available &&
 							update.updateCommand &&
 							status.cliUpdateActionsAllowed && (
-								<button
-									type="button"
-									disabled={cliBusyId !== null}
-									onClick={() => onCliUpdate(update)}
-									className="text-[9px] tracking-widest px-2.5 py-1 border border-primary/40 text-primary hover:bg-primary/10 transition-colors uppercase disabled:opacity-40"
-								>
-									{cliBusyId === update.id
-										? update.updateMode === "automatic"
-											? "UPDATING…"
-											: "STOPPING…"
-										: update.updateMode === "automatic"
-											? "UPDATE"
-											: "STOP & COPY"}
-								</button>
+								<ConfirmAction
+									label={
+										update.updateMode === "automatic"
+											? "stop sessions and update?"
+											: "stop sessions and open terminal?"
+									}
+									confirmText={
+										update.updateMode === "automatic" ? "update" : "open"
+									}
+									variant="primary"
+									onConfirm={() => onCliUpdate(update)}
+									className="justify-end flex-wrap"
+									trigger={(open) => (
+										<button
+											type="button"
+											disabled={cliBusyId !== null}
+											onClick={open}
+											className="text-[9px] tracking-widest px-2.5 py-1 border border-primary/40 text-primary hover:bg-primary/10 transition-colors uppercase disabled:opacity-40"
+										>
+											{cliBusyId === update.id
+												? update.updateMode === "automatic"
+													? "UPDATING…"
+													: "OPENING…"
+												: update.updateMode === "automatic"
+													? "UPDATE"
+													: "OPEN TERMINAL"}
+										</button>
+									)}
+								/>
 							)}
 					</div>
 				</Field>
@@ -268,6 +285,13 @@ export function UpdatesSection() {
 	const [fetchError, setFetchError] = useState<string | null>(null);
 	const [cliBusyId, setCliBusyId] = useState<string | null>(null);
 	const [cliNotice, setCliNotice] = useState<string | null>(null);
+	const [cliTerminal, setCliTerminal] = useState<{
+		label: string;
+		command: string;
+		cwd: string;
+		sessionId: string;
+		initiallyCopied: boolean;
+	} | null>(null);
 	// Persists the version at launch time so the polling effect doesn't lose it
 	// when status changes and the effect dependency re-evaluates.
 	const launchingStartVersionRef = useRef<string | null>(null);
@@ -342,10 +366,6 @@ export function UpdatesSection() {
 
 	async function runCliUpdate(update: CliUpdateStatus) {
 		const automatic = update.updateMode === "automatic";
-		const warning = automatic
-			? `Update ${update.label} now? Active provider sessions will be stopped.`
-			: `Stop active provider sessions and copy the ${update.label} update command? Terminal sessions will stay open.`;
-		if (!window.confirm(warning)) return;
 		setCliBusyId(update.id);
 		setCliNotice(null);
 		const result: { ok: boolean; data?: unknown; error?: string } =
@@ -361,23 +381,34 @@ export function UpdatesSection() {
 			setCliNotice(`${update.label} updated. Rechecking installed versions…`);
 			await refresh();
 		} else {
-			const data = result.data as { command?: string } | undefined;
+			const data = result.data as
+				| { command?: string; terminalCwd?: string }
+				| undefined;
 			const command = data?.command ?? update.updateCommand;
-			try {
-				if (command) await navigator.clipboard.writeText(command);
-				setCliNotice(
-					"Provider sessions stopped and command copied. Run it in the matching terminal, then select CHECK.",
-				);
-			} catch {
-				setCliNotice(
-					"Provider sessions stopped. Copy the command above into the matching terminal, then select CHECK.",
-				);
+			const terminalCwd = data?.terminalCwd;
+			if (!command || !terminalCwd) {
+				setCliNotice("Update terminal details were incomplete");
+				setCliBusyId(null);
+				return;
 			}
+			let initiallyCopied = false;
+			try {
+				await navigator.clipboard.writeText(command);
+				initiallyCopied = true;
+			} catch {}
+			setCliNotice("Provider sessions stopped and update terminal opened.");
+			setCliTerminal({
+				label: update.label,
+				command,
+				cwd: terminalCwd,
+				sessionId: `cli-update-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+				initiallyCopied,
+			});
 		}
 		setCliBusyId(null);
 	}
 
-	async function checkNow() {
+	async function forceCheck(): Promise<string | null> {
 		setState({ phase: "checking" });
 		const r = await postAction("check").catch(
 			(e) => ({ ok: false, error: String(e) }) as const,
@@ -385,9 +416,22 @@ export function UpdatesSection() {
 		if (r.ok && r.data) {
 			setStatus(r.data as UpdateStatus);
 			setState({ phase: "idle" });
-		} else {
-			setState({ phase: "error", message: r.error ?? "check failed" });
+			return null;
 		}
+		const message = r.error ?? "check failed";
+		setState({ phase: "error", message });
+		return message;
+	}
+
+	async function checkNow() {
+		await forceCheck();
+	}
+
+	async function closeCliTerminalAndRecheck() {
+		setCliTerminal(null);
+		setCliNotice("Update terminal closed. Rechecking installed versions…");
+		const error = await forceCheck();
+		setCliNotice(error ?? "Installed CLI versions refreshed.");
 	}
 
 	// Download + checksum-verify the new exe, then surface a "Launch" button.
@@ -435,17 +479,25 @@ export function UpdatesSection() {
 	}
 
 	return (
-		<UpdatesView
-			status={status}
-			state={state}
-			fetchError={fetchError}
-			cliBusyId={cliBusyId}
-			cliNotice={cliNotice}
-			onRefresh={() => void refresh()}
-			onCheck={() => void checkNow()}
-			onDownload={() => void downloadOnly()}
-			onLaunch={(version) => void launchStaged(version)}
-			onCliUpdate={(update) => void runCliUpdate(update)}
-		/>
+		<>
+			<UpdatesView
+				status={status}
+				state={state}
+				fetchError={fetchError}
+				cliBusyId={cliBusyId}
+				cliNotice={cliNotice}
+				onRefresh={() => void refresh()}
+				onCheck={() => void checkNow()}
+				onDownload={() => void downloadOnly()}
+				onLaunch={(version) => void launchStaged(version)}
+				onCliUpdate={(update) => void runCliUpdate(update)}
+			/>
+			{cliTerminal && (
+				<CliUpdateTerminalModal
+					{...cliTerminal}
+					onClose={() => void closeCliTerminalAndRecheck()}
+				/>
+			)}
+		</>
 	);
 }

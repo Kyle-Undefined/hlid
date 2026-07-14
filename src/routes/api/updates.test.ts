@@ -6,8 +6,8 @@ type Operations = Parameters<typeof createUpdateRequestHandlers>[0];
 function operations(overrides: Partial<Operations> = {}): Operations {
 	return {
 		forbidden: vi.fn().mockReturnValue(null),
-		localOnly: vi.fn().mockReturnValue(null),
-		isLocal: vi.fn().mockReturnValue(true),
+		cliAccess: vi.fn().mockReturnValue(null),
+		isCliAccessAllowed: vi.fn().mockReturnValue(true),
 		getStatus: vi.fn().mockResolvedValue({ state: "idle" }),
 		download: vi.fn().mockResolvedValue({ ok: true, downloaded: true }),
 		apply: vi.fn().mockResolvedValue({ ok: true, applied: true }),
@@ -75,6 +75,21 @@ describe("update request handlers", () => {
 	});
 
 	it.each([
+		true,
+		false,
+	])("surfaces CLI action access as %s in update status", async (allowed) => {
+		const ops = operations({
+			isCliAccessAllowed: vi.fn().mockReturnValue(allowed),
+		});
+		const response = await createUpdateRequestHandlers(ops).GET({
+			request: new Request("http://localhost/api/updates"),
+		});
+		expect(await response.json()).toMatchObject({
+			data: { cliUpdateActionsAllowed: allowed },
+		});
+	});
+
+	it.each([
 		"download",
 		"apply",
 	] as const)("runs only the requested %s operation", async (action) => {
@@ -87,10 +102,10 @@ describe("update request handlers", () => {
 		expect(ops.apply).toHaveBeenCalledTimes(action === "apply" ? 1 : 0);
 	});
 
-	it("keeps CLI mutations local and validates their target", async () => {
+	it("keeps CLI mutations limited to approved clients and validates targets", async () => {
 		const forbidden = Response.json({ ok: false }, { status: 403 });
 		const remote = operations({
-			localOnly: vi.fn().mockReturnValue(forbidden),
+			cliAccess: vi.fn().mockReturnValue(forbidden),
 		});
 		const remoteResponse = await createUpdateRequestHandlers(remote).POST({
 			request: new Request("http://localhost/api/updates", {

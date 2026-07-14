@@ -2,7 +2,9 @@ import {
 	type CliRuntimeDrainResult,
 	drainCliRuntime,
 } from "#/lib/cliUpdateRuntime";
+import { parseWslUnc } from "#/lib/paths";
 import { runBoundedProcess } from "#/lib/process";
+import { loadConfig } from "#/server/config";
 import {
 	type CliUpdateAction,
 	getCliUpdateStatuses,
@@ -51,15 +53,37 @@ async function runUpdateProcess(action: CliUpdateAction): Promise<string> {
 export type PreparedCliUpdate = CliRuntimeDrainResult & {
 	command: string;
 	mode: "automatic" | "interactive";
+	terminalCwd: string;
 };
+
+function terminalCwdForUpdate(id: string): string {
+	const config = loadConfig();
+	const match = id.match(/^wsl:([A-Za-z0-9._-]+):(codex|claude)$/);
+	if (!match) return config.vault.path;
+
+	const distro = match[1].toLowerCase();
+	const configuredPaths = [
+		...(config.agents ?? []).map((agent) => agent.path),
+		config.vault.path,
+	];
+	const cwd = configuredPaths.find(
+		(path) => parseWslUnc(path)?.distro.toLowerCase() === distro,
+	);
+	if (!cwd) {
+		throw new Error(`No configured workspace found for WSL distro ${match[1]}`);
+	}
+	return cwd;
+}
 
 export async function prepareCliUpdate(id: string): Promise<PreparedCliUpdate> {
 	const action = await availableAction(id);
+	const terminalCwd = terminalCwdForUpdate(id);
 	const drained = await drainCliRuntime();
 	return {
 		...drained,
 		command: action.displayCommand,
 		mode: action.automatic ? "automatic" : "interactive",
+		terminalCwd,
 	};
 }
 

@@ -1,6 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { parseJsonAction } from "#/lib/actionRequest";
-import { isLocalUiRequest, localOnlyResponse } from "#/lib/localRequest";
+import {
+	cliUpdateAccessResponse,
+	isCliUpdateUiRequest,
+} from "#/lib/localRequest";
 import { forbiddenResponse } from "#/lib/originGate";
 import { applyUpdate, downloadUpdate, getStatus } from "#/lib/updates";
 import { applyCliUpdate, prepareCliUpdate } from "#/server/cliUpdateActions";
@@ -14,8 +17,8 @@ const ACTIONS = [
 ] as const;
 type UpdateOperations = {
 	forbidden: (request: Request) => Response | null;
-	localOnly: (request: Request) => Response | null;
-	isLocal: (request: Request) => boolean;
+	cliAccess: (request: Request) => Response | null;
+	isCliAccessAllowed: (request: Request) => boolean;
 	getStatus: typeof getStatus;
 	download: typeof downloadUpdate;
 	apply: typeof applyUpdate;
@@ -48,7 +51,7 @@ export function createUpdateRequestHandlers(operations: UpdateOperations) {
 				ok: true,
 				data: {
 					...status,
-					cliUpdateActionsAllowed: operations.isLocal(request),
+					cliUpdateActionsAllowed: operations.isCliAccessAllowed(request),
 				},
 			});
 		},
@@ -62,8 +65,8 @@ export function createUpdateRequestHandlers(operations: UpdateOperations) {
 				parsed.action === "prepare_cli" || parsed.action === "apply_cli";
 			let cliId: string | null = null;
 			if (cliAction) {
-				const localOnly = operations.localOnly(request);
-				if (localOnly) return localOnly;
+				const accessRejection = operations.cliAccess(request);
+				if (accessRejection) return accessRejection;
 				if (typeof parsed.body.id !== "string" || parsed.body.id.length > 200) {
 					return Response.json(
 						{ ok: false, error: "id is required" },
@@ -106,8 +109,8 @@ export function createUpdateRequestHandlers(operations: UpdateOperations) {
 
 const handlers = createUpdateRequestHandlers({
 	forbidden: forbiddenResponse,
-	localOnly: localOnlyResponse,
-	isLocal: isLocalUiRequest,
+	cliAccess: cliUpdateAccessResponse,
+	isCliAccessAllowed: isCliUpdateUiRequest,
 	getStatus,
 	download: downloadUpdate,
 	apply: applyUpdate,

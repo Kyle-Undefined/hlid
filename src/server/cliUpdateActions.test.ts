@@ -4,9 +4,13 @@ const drainCliRuntime = vi.hoisted(() => vi.fn());
 const runBoundedProcess = vi.hoisted(() => vi.fn());
 const getCliUpdateStatuses = vi.hoisted(() => vi.fn());
 const resolveCliUpdateAction = vi.hoisted(() => vi.fn());
+const loadConfig = vi.hoisted(() => vi.fn());
+const parseWslUnc = vi.hoisted(() => vi.fn());
 
 vi.mock("#/lib/cliUpdateRuntime", () => ({ drainCliRuntime }));
+vi.mock("#/lib/paths", () => ({ parseWslUnc }));
 vi.mock("#/lib/process", () => ({ runBoundedProcess }));
+vi.mock("#/server/config", () => ({ loadConfig }));
 vi.mock("./cliUpdates", () => ({
 	getCliUpdateStatuses,
 	resolveCliUpdateAction,
@@ -24,6 +28,19 @@ beforeEach(() => {
 		},
 	]);
 	drainCliRuntime.mockResolvedValue({ sessions: 2, appServers: 1 });
+	loadConfig.mockReturnValue({
+		vault: { path: "C:\\Vault" },
+		agents: [
+			{
+				path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\project",
+			},
+		],
+	});
+	parseWslUnc.mockImplementation((path: string) =>
+		path.includes("Ubuntu-24.04")
+			? { distro: "Ubuntu-24.04", posixPath: "/home/kyle/project" }
+			: null,
+	);
 });
 
 describe("CLI update actions", () => {
@@ -41,8 +58,34 @@ describe("CLI update actions", () => {
 			appServers: 1,
 			command: "sudo npm install --global @openai/codex@latest",
 			mode: "interactive",
+			terminalCwd: "C:\\Vault",
 		});
 		expect(drainCliRuntime).toHaveBeenCalledOnce();
+	});
+
+	it("returns an authorized workspace in the matching WSL distro", async () => {
+		getCliUpdateStatuses.mockResolvedValue([
+			{
+				id: "wsl:Ubuntu-24.04:claude",
+				label: "Claude Code (Ubuntu-24.04)",
+				available: true,
+			},
+		]);
+		resolveCliUpdateAction.mockResolvedValue({
+			id: "wsl:Ubuntu-24.04:claude",
+			displayCommand: "sudo claude update",
+			command: "wsl.exe",
+			args: [],
+			automatic: false,
+			requiresElevation: true,
+		});
+
+		await expect(
+			prepareCliUpdate("wsl:Ubuntu-24.04:claude"),
+		).resolves.toMatchObject({
+			command: "sudo claude update",
+			terminalCwd: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\project",
+		});
 	});
 
 	it("never tries to automate a sudo update", async () => {
