@@ -546,8 +546,8 @@ export type ClientSetPermissionModeMessage = {
  * Mid-session effort/thinking-level switch for the subscribed session.
  * Session-scoped only — never written to hlid.config.toml. Unlike
  * `set_model`, not every provider can apply this to the already-running
- * session (see AgentSession.setEffort) — some providers only pick it up
- * starting with the next fresh session.
+ * provider stream (see AgentSession.setEffort). Hlid rebuilds those streams
+ * at the next turn boundary and resumes their provider-side history.
  */
 export type ClientSetEffortMessage = {
 	type: "set_effort";

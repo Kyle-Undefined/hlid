@@ -1964,6 +1964,21 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 		expect(capturedOptions).not.toHaveProperty("settings");
 		expect(capturedOptions).not.toHaveProperty("hooks");
 	});
+
+	it("passes the selected effort into a fresh Claude SDK query", async () => {
+		let capturedOptions: Record<string, unknown> | undefined;
+		vi.mocked(query).mockImplementationOnce(
+			({ options }: { prompt: unknown; options?: Record<string, unknown> }) => {
+				capturedOptions = options;
+				return sdkGen([]);
+			},
+		);
+
+		const session = new ClaudeProvider().query(baseParams({ effort: "max" }));
+		await session.send("use maximum effort");
+
+		expect(capturedOptions?.effort).toBe("max");
+	});
 });
 
 // ── Provider capability declarations ─────────────────────────────────────────

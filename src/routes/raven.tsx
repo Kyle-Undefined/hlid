@@ -58,6 +58,7 @@ import { deriveModelMismatch, fmtModel } from "#/lib/formatters";
 import {
 	effortOptionsFor,
 	modelOptions,
+	normalizeEffortForPlanMode,
 	resolveActiveProviderId,
 } from "#/lib/providerOptions";
 import {
@@ -805,6 +806,7 @@ function deriveRavenComposerState({
 	model,
 	actualModel,
 	selection,
+	planMode,
 }: {
 	config: RavenConfig;
 	agentList: RavenAgentList;
@@ -819,6 +821,7 @@ function deriveRavenComposerState({
 	model: string | undefined;
 	actualModel: string | null;
 	selection: RavenSessionSelection;
+	planMode: boolean;
 }) {
 	const hasInput =
 		(input.trim().length > 0 ||
@@ -856,9 +859,10 @@ function deriveRavenComposerState({
 			? fmtModel(effectiveActualModel)
 			: null,
 		modelMismatch,
+		activeProviderId: providerId,
 		modelPickerOptions: modelOptions(provider),
 		permissionOptions: provider?.permissionModes ?? [],
-		effortOptions: effortOptionsFor(provider, selectedModel ?? ""),
+		effortOptions: effortOptionsFor(provider, selectedModel ?? "", planMode),
 	};
 }
 
@@ -996,6 +1000,7 @@ export function ChatPage() {
 		activePermissionMode,
 		actualModelShort,
 		modelMismatch,
+		activeProviderId,
 		modelPickerOptions,
 		permissionOptions,
 		effortOptions,
@@ -1013,6 +1018,7 @@ export function ChatPage() {
 		model,
 		actualModel,
 		selection: sessionSelection,
+		planMode,
 	});
 	const composerProps: ChatComposerProps = {
 		interactiveMode,
@@ -1044,6 +1050,7 @@ export function ChatPage() {
 		setSessionSelection,
 		actualModelShort,
 		modelMismatch,
+		activeProviderId,
 		modelPickerOptions,
 		permissionOptions,
 		effortOptions,
@@ -1582,10 +1589,13 @@ function ChatInputNotices({
 	setPlanHtml,
 	terminalOpen,
 	onToggleTerminal,
+	activeProviderId,
+	activeEffort,
+	setSessionSelection,
 }: ChatComposerProps) {
 	const { agentSkillContext, setAgentSkillContext, agentContextSentRef } =
 		session;
-	const { messages } = runtime;
+	const { messages, effort, send } = runtime;
 	const {
 		pendingAttachments,
 		uploadingCount,
@@ -1662,8 +1672,28 @@ function ChatInputNotices({
 				<div className="flex w-full min-w-0 items-center justify-end gap-3 md:w-auto">
 					<button
 						type="button"
-						onClick={() => setPlanMode((v) => !v)}
-						title="Enable plan mode — the agent plans before acting"
+						onClick={() => {
+							const enabling = !planMode;
+							if (enabling) {
+								const normalized = normalizeEffortForPlanMode(
+									activeProviderId,
+									activeEffort ?? effort,
+								);
+								if (normalized && normalized !== (activeEffort ?? effort)) {
+									setSessionSelection((current) => ({
+										...current,
+										effort: normalized,
+									}));
+									send({ type: "set_effort", effort: normalized });
+								}
+							}
+							setPlanMode(enabling);
+						}}
+						title={
+							activeProviderId === "codex"
+								? "Enable plan mode — Codex plans at up to X-High effort"
+								: "Enable plan mode — the agent plans before acting"
+						}
 						className={`flex items-center gap-1.5 text-[9px] tracking-widest uppercase transition-colors shrink-0 ${
 							planMode
 								? "text-primary border-b border-primary/50"
@@ -1984,6 +2014,7 @@ interface ChatComposerProps {
 	setSessionSelection: Dispatch<SetStateAction<RavenSessionSelection>>;
 	actualModelShort: string | null;
 	modelMismatch: boolean;
+	activeProviderId: string;
 	modelPickerOptions: ReturnType<typeof modelOptions>;
 	permissionOptions: NonNullable<RavenProviders[number]["permissionModes"]>;
 	effortOptions: ReturnType<typeof effortOptionsFor>;

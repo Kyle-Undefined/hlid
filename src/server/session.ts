@@ -166,6 +166,8 @@ function buildAgentQueryParams(options: {
 	extraDirs: Set<string>;
 	signal: AbortSignal | undefined;
 	agentSettings: AgentSettings | undefined;
+	modelOverride: { value: string | undefined } | null;
+	effortOverride: string | null;
 	defaultModel: string | undefined;
 	configuredPermissionMode: PermissionMode;
 	planMode: boolean | undefined;
@@ -190,7 +192,10 @@ function buildAgentQueryParams(options: {
 				? Array.from(options.extraDirs).map(toLogical)
 				: undefined,
 		signal: options.signal,
-		model: options.agentSettings?.model ?? options.defaultModel,
+		model:
+			options.modelOverride !== null
+				? options.modelOverride.value
+				: (options.agentSettings?.model ?? options.defaultModel),
 		permissionMode: options.planMode
 			? "plan"
 			: options.configuredPermissionMode,
@@ -200,7 +205,10 @@ function buildAgentQueryParams(options: {
 		...(options.planMode && options.planHtmlPath
 			? { planHtmlPath: toLogical(options.planHtmlPath) }
 			: {}),
-		effort: options.agentSettings?.effort ?? options.defaultEffort,
+		effort:
+			options.effortOverride ??
+			options.agentSettings?.effort ??
+			options.defaultEffort,
 		maxTurns: options.agentSettings?.maxTurns ?? options.defaultMaxTurns,
 		executable: options.executable,
 		settingSources: ["user", "project", "local"],
@@ -304,6 +312,12 @@ export class SessionManager {
 	private abortController: AbortController | null = null;
 	private model!: string;
 	private effort!: string;
+	/** Explicit Raven picker values, which outrank refreshed config and agent defaults. */
+	private modelOverride: { value: string | undefined } | null = null;
+	private effortOverride: string | null = null;
+	private permissionModeOverride: PermissionMode | null = null;
+	/** Providers without a live effort control (currently Claude) restart on the next turn. */
+	private restartAgentSessionForEffort = false;
 	private maxTurns: number | undefined;
 	private vaultPath!: string;
 	private permissionMode!: PermissionMode;
@@ -383,7 +397,10 @@ export class SessionManager {
 	}
 
 	/** Apply runtime settings from config. Shared by constructor, reinitialize, and syncConfig. */
-	private applyConfig(config: HlidConfig): void {
+	private applyConfig(
+		config: HlidConfig,
+		preserveSessionOverrides = false,
+	): void {
 		this.vaultPath = config.vault.path || process.env.HOME || "/";
 		this.vaultProviderId = config.vault_provider ?? "claude";
 		const codexConfig = config.codex ?? {
@@ -394,10 +411,13 @@ export class SessionManager {
 		};
 		const providerDefaults =
 			this.vaultProviderId === "codex" ? codexConfig : config.claude;
-		this.model = providerDefaults.model;
-		this.effort = providerDefaults.effort;
+		if (!preserveSessionOverrides || this.modelOverride === null)
+			this.model = providerDefaults.model;
+		if (!preserveSessionOverrides || this.effortOverride === null)
+			this.effort = providerDefaults.effort;
 		this.maxTurns = providerDefaults.max_turns;
-		this.permissionMode = providerDefaults.permission_mode;
+		if (!preserveSessionOverrides || this.permissionModeOverride === null)
+			this.permissionMode = providerDefaults.permission_mode;
 		this.turnRecaps = providerDefaults.turn_recaps ?? true;
 		this.recapModel =
 			providerDefaults.recap_model ??
@@ -414,6 +434,9 @@ export class SessionManager {
 
 	reinitialize(config: HlidConfig): void {
 		this.abort();
+		this.modelOverride = null;
+		this.effortOverride = null;
+		this.permissionModeOverride = null;
 		this.applyConfig(config);
 		this.state = "idle";
 		this.currentSessionId = null;
@@ -429,20 +452,24 @@ export class SessionManager {
 
 	// Lightweight config refresh — updates runtime settings without resetting
 	// session history or conversation continuity. Safe to call when idle.
-	// Returns true if the model changed (so callers can broadcast a status update).
+	// Returns true if an effective status field changed (so callers can broadcast it).
 	syncConfig(config: HlidConfig): boolean {
-		const providerId = config.vault_provider ?? "claude";
-		const codexConfig = config.codex ?? {
-			model: "",
-			effort: "medium" as const,
-			permission_mode: "default" as const,
-			turn_recaps: true,
-		};
-		const providerDefaults =
-			providerId === "codex" ? codexConfig : config.claude;
-		const modelChanged = this.model !== providerDefaults.model;
-		this.applyConfig(config);
-		return modelChanged;
+		const previous = this.getStatus();
+		const nextProviderId = config.vault_provider ?? "claude";
+		const providerChanged = nextProviderId !== this.vaultProviderId;
+		if (providerChanged) {
+			// A picker value from one provider may not be meaningful for another.
+			this.modelOverride = null;
+			this.effortOverride = null;
+			this.permissionModeOverride = null;
+		}
+		this.applyConfig(config, !providerChanged);
+		const current = this.getStatus();
+		return (
+			previous.model !== current.model ||
+			previous.effort !== current.effort ||
+			previous.permission_mode !== current.permission_mode
+		);
 	}
 
 	getStatus(): {
@@ -470,6 +497,7 @@ export class SessionManager {
 	 * setModel(model?: string) semantics).
 	 */
 	async setModel(model?: string): Promise<void> {
+		this.modelOverride = { value: model };
 		this.model = model ?? "";
 		await this.agentSession?.setModel?.(model);
 	}
@@ -486,6 +514,7 @@ export class SessionManager {
 		if (!KNOWN_PERMISSION_MODES.has(mode)) {
 			throw new Error(`Unknown permission mode: ${mode}`);
 		}
+		this.permissionModeOverride = mode as PermissionMode;
 		this.permissionMode = mode as PermissionMode;
 		await this.agentSession?.setPermissionMode?.(mode);
 	}
@@ -500,8 +529,16 @@ export class SessionManager {
 	 */
 	// fallow-ignore-next-line unused-class-member -- Called by the WebSocket set_effort dispatch in wsHandlers.
 	async setEffort(effort: string): Promise<void> {
+		this.effortOverride = effort;
 		this.effort = effort;
-		await this.agentSession?.setEffort?.(effort);
+		if (!this.agentSession) return;
+		if (this.agentSession.setEffort) {
+			await this.agentSession.setEffort(effort);
+			return;
+		}
+		// Do not interrupt an in-flight Claude turn. Rebuild its streaming query
+		// at the next turn boundary and resume from the captured provider session.
+		this.restartAgentSessionForEffort = true;
 	}
 
 	/**
@@ -615,6 +652,7 @@ export class SessionManager {
 		this.agentSession?.cancel();
 		this.agentSession = null;
 		this.agentSessionKey = null;
+		this.restartAgentSessionForEffort = false;
 	}
 
 	handlePermissionResponse(
@@ -683,6 +721,7 @@ export class SessionManager {
 		this.agentSession?.cancel();
 		this.agentSession = null;
 		this.agentSessionKey = null;
+		this.restartAgentSessionForEffort = false;
 		db.clearCurrentSessionId().catch((e) =>
 			logDbError("clearCurrentSessionId", e),
 		);
@@ -1943,14 +1982,20 @@ export class SessionManager {
 			emit,
 		} = options;
 		const desiredKey = `${provider.providerId}|${sessionId ?? "ephemeral"}|${this.agentCwd ?? ""}`;
-		if (this.agentSession && this.agentSessionKey !== desiredKey) {
+		if (
+			this.agentSession &&
+			(this.agentSessionKey !== desiredKey || this.restartAgentSessionForEffort)
+		) {
 			this.agentSession.cancel();
 			this.agentSession = null;
 			this.agentSessionKey = null;
+			this.restartAgentSessionForEffort = false;
 		}
 		if (this.agentSession) return this.agentSession;
 		const configuredPermissionMode =
-			agentSettings?.permissionMode ?? this.permissionMode;
+			this.permissionModeOverride ??
+			agentSettings?.permissionMode ??
+			this.permissionMode;
 		const autoApproveTools =
 			configuredPermissionMode === "bypassPermissions" &&
 			!this.policyEnforced &&
@@ -1962,6 +2007,8 @@ export class SessionManager {
 				extraDirs,
 				signal: this.abortController?.signal,
 				agentSettings,
+				modelOverride: this.modelOverride,
+				effortOverride: this.effortOverride,
 				defaultModel: this.agentCwd ? undefined : this.model,
 				configuredPermissionMode,
 				planMode,
@@ -1988,6 +2035,7 @@ export class SessionManager {
 		);
 		this.agentSession = session;
 		this.agentSessionKey = desiredKey;
+		this.restartAgentSessionForEffort = false;
 		return session;
 	}
 
@@ -2217,7 +2265,9 @@ export class SessionManager {
 				emit,
 			});
 			const configuredPermissionMode =
-				agentSettings?.permissionMode ?? this.permissionMode;
+				this.permissionModeOverride ??
+				agentSettings?.permissionMode ??
+				this.permissionMode;
 			await agentSession.setPermissionMode?.(
 				planMode ? "plan" : configuredPermissionMode,
 			);
@@ -2266,6 +2316,7 @@ export class SessionManager {
 			this.agentSession?.cancel();
 			this.agentSession = null;
 			this.agentSessionKey = null;
+			this.restartAgentSessionForEffort = false;
 		} finally {
 			// Persist any remaining assistant text (the success path clears it).
 			if (turn.assistantText && sessionId) {

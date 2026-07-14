@@ -873,6 +873,26 @@ describe("CodexAgentSession — setPermissionMode", () => {
 		});
 		expect(turns[1].collaborationMode).toMatchObject({ mode: "default" });
 	});
+
+	it("carries xhigh effort into native Codex plan mode", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(baseCodexParams());
+
+		await session.setEffort?.("xhigh");
+		await session.setPermissionMode?.("plan");
+		await session.send("plan this deeply");
+
+		const [turn] = turnStartParams(writes);
+		expect(turn).toMatchObject({
+			effort: "xhigh",
+			collaborationMode: {
+				mode: "plan",
+				settings: { reasoning_effort: "xhigh" },
+			},
+		});
+	});
 });
 
 describe("CodexAgentSession — notifications", () => {

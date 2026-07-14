@@ -3,6 +3,7 @@ import {
 	defaultEffortFor,
 	effortOptionsFor,
 	modelOptions,
+	normalizeEffortForPlanMode,
 	resolveActiveProviderId,
 } from "./providerOptions";
 import type { ProviderInfo } from "./providerTypes";
@@ -71,6 +72,43 @@ describe("effortOptionsFor", () => {
 
 	it("returns [] for undefined provider", () => {
 		expect(effortOptionsFor(undefined, "anything")).toEqual([]);
+	});
+
+	it("hides Max and Ultra only for Codex native plan mode", () => {
+		const codex: ProviderInfo = {
+			...provider,
+			id: "codex",
+			models: [
+				{
+					value: "sol",
+					label: "Sol",
+					efforts: [
+						{ value: "high", label: "High" },
+						{ value: "xhigh", label: "X-High" },
+						{ value: "max", label: "Max" },
+						{ value: "ultra", label: "Ultra" },
+					],
+				},
+			],
+		};
+
+		expect(effortOptionsFor(codex, "sol", true).map((e) => e.value)).toEqual([
+			"high",
+			"xhigh",
+		]);
+		expect(effortOptionsFor(codex, "sol", false)).toHaveLength(4);
+		expect(effortOptionsFor(provider, "opus", true)).toHaveLength(2);
+	});
+});
+
+describe("normalizeEffortForPlanMode", () => {
+	it.each(["max", "ultra"])("maps Codex %s to xhigh", (effort) => {
+		expect(normalizeEffortForPlanMode("codex", effort)).toBe("xhigh");
+	});
+
+	it("leaves X-High and Claude efforts unchanged", () => {
+		expect(normalizeEffortForPlanMode("codex", "xhigh")).toBe("xhigh");
+		expect(normalizeEffortForPlanMode("claude", "max")).toBe("max");
 	});
 });
 

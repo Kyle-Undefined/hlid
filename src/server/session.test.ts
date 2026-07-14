@@ -340,6 +340,43 @@ describe("SessionManager — syncConfig", () => {
 		expect(sm.getStatus().model).toBe("new-model");
 	});
 
+	it("updates effort and permission defaults when no session override exists", () => {
+		const sm = new SessionManager(
+			makeConfig("model-a"),
+			makeProviders(makeProvider("Bash")),
+		);
+		const next = makeConfig("model-a");
+		next.claude.effort = "high";
+		next.claude.permission_mode = "acceptEdits";
+
+		expect(sm.syncConfig(next)).toBe(true);
+		expect(sm.getStatus()).toMatchObject({
+			model: "model-a",
+			effort: "high",
+			permission_mode: "acceptEdits",
+		});
+	});
+
+	it("preserves explicit session picker overrides across config refreshes", async () => {
+		const sm = new SessionManager(
+			makeConfig("model-a"),
+			makeProviders(makeProvider("Bash")),
+		);
+		await sm.setModel("session-model");
+		await sm.setEffort("xhigh");
+		await sm.setPermissionMode("bypassPermissions");
+		const next = makeConfig("model-b");
+		next.claude.effort = "low";
+		next.claude.permission_mode = "acceptEdits";
+
+		expect(sm.syncConfig(next)).toBe(false);
+		expect(sm.getStatus()).toMatchObject({
+			model: "session-model",
+			effort: "xhigh",
+			permission_mode: "bypassPermissions",
+		});
+	});
+
 	it("does not reset session state (non-destructive update)", () => {
 		const sm = new SessionManager(
 			makeConfig(),
@@ -415,6 +452,72 @@ describe("SessionManager — setModel", () => {
 		await sm.setModel("model-b");
 		expect(getSession()?.setModel).toHaveBeenCalledWith("model-b");
 		expect(sm.getStatus().model).toBe("model-b");
+	});
+});
+
+describe("SessionManager — setEffort", () => {
+	it("updates getStatus().effort with no active AgentSession", async () => {
+		const sm = new SessionManager(
+			makeConfig(),
+			makeProviders(makeProvider("Bash")),
+		);
+		await sm.setEffort("xhigh");
+		expect(sm.getStatus().effort).toBe("xhigh");
+	});
+
+	it("delegates live effort changes without rebuilding a capable provider", async () => {
+		const setEffort = vi.fn().mockResolvedValue(undefined);
+		const { provider, getSession } = makeSwitchableProvider({ setEffort });
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("first", () => {}, "live-effort");
+		const firstSession = getSession();
+
+		await sm.setEffort("xhigh");
+		await sm.runQuery("second", () => {}, "live-effort");
+
+		expect(getSession()?.setEffort).toHaveBeenCalledWith("xhigh");
+		expect(getSession()).toBe(firstSession);
+	});
+
+	it("rebuilds and resumes Claude on the next turn when effort changes", async () => {
+		const params: AgentQueryParams[] = [];
+		const cancels: ReturnType<typeof vi.fn>[] = [];
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(queryParams): AgentSession {
+				params.push(queryParams);
+				const index = params.length;
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: `claude-session-${index}` };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				const cancel = vi.fn();
+				cancels.push(cancel);
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel,
+					send: vi.fn().mockResolvedValue(undefined),
+				};
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("first", () => {}, "claude-effort");
+
+		await sm.setEffort("max");
+		await sm.runQuery("second", () => {}, "claude-effort");
+
+		expect(params).toHaveLength(2);
+		expect(cancels[0]).toHaveBeenCalledOnce();
+		expect(params[1]).toMatchObject({
+			effort: "max",
+			sessionId: "claude-session-1",
+		});
 	});
 });
 
@@ -2036,6 +2139,38 @@ describe("SessionManager — per-agent settings", () => {
 			AGENT_PATH,
 		);
 		expect(captured.params?.permissionMode).toBe("bypassPermissions");
+	});
+
+	it.each([
+		"claude",
+		"codex",
+	])("session picker overrides outrank %s agent defaults on the first turn", async (providerId) => {
+		const { provider, captured } = makeCaptureProvider(providerId);
+		const config = makeConfigWithAgent(AGENT_PATH, {
+			provider: providerId,
+			model: "configured-model",
+			effort: "high",
+			permission_mode: "default",
+		});
+		const sm = new SessionManager(config, makeProviders(provider));
+		await sm.setModel("picked-model");
+		await sm.setEffort("xhigh");
+		await sm.setPermissionMode("bypassPermissions");
+
+		await sm.runQuery(
+			"hello",
+			() => {},
+			`sess-overrides-${providerId}`,
+			undefined,
+			undefined,
+			AGENT_PATH,
+		);
+
+		expect(captured.params).toMatchObject({
+			model: "picked-model",
+			effort: "xhigh",
+			permissionMode: "bypassPermissions",
+		});
 	});
 
 	it("plan_mode=true overrides permissionMode to 'plan' without mutating config", async () => {

@@ -27,9 +27,27 @@ export function modelOptions(p: ProviderInfo | undefined): ModelOptions {
 export function effortOptionsFor(
 	p: ProviderInfo | undefined,
 	modelValue: string,
+	planMode = false,
 ): EffortOption[] {
 	const model = p?.models?.find((m) => m.value === modelValue);
-	return model?.efforts ?? p?.effortLevels ?? [];
+	const efforts = model?.efforts ?? p?.effortLevels ?? [];
+	// Codex's native plan-mode override currently supports through xhigh.
+	// Claude's plan workflow has no equivalent plan-specific ceiling.
+	return planMode && p?.id === "codex"
+		? efforts.filter(
+				(effort) => effort.value !== "max" && effort.value !== "ultra",
+			)
+		: efforts;
+}
+
+/** Keep the Codex plan picker and the effort sent to app-server in sync. */
+export function normalizeEffortForPlanMode(
+	providerId: string,
+	effort: string | null | undefined,
+): string | null | undefined {
+	return providerId === "codex" && (effort === "max" || effort === "ultra")
+		? "xhigh"
+		: effort;
 }
 
 /** The `isDefault` effort of the selected model, if any. */
