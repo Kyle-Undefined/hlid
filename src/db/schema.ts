@@ -341,6 +341,13 @@ function applyMigrations(db: Db): void {
 		db.run(`ALTER TABLE sessions ADD COLUMN actual_model TEXT`);
 	});
 
+	// selected_model distinguishes model choices persisted by current Hlid from
+	// legacy sessions whose `model` column only captured the configured default.
+	// Legacy rows remain NULL so restoration can fall back to actual_model.
+	runMigration(db, "_migrated_sessions_selected_model", (db) => {
+		db.run(`ALTER TABLE sessions ADD COLUMN selected_model TEXT`);
+	});
+
 	runMigration(db, "_migrated_queries_tokens_in_context", (db) => {
 		db.run(`ALTER TABLE queries ADD COLUMN tokens_in_context INTEGER`);
 	});

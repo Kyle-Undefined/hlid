@@ -23,6 +23,31 @@ export async function getSessionAgentCwd(
 	return row?.agent_cwd ?? null;
 }
 
+export async function setSessionModel(
+	sessionId: string,
+	model: string,
+): Promise<void> {
+	const db = await getDb();
+	db.run(`UPDATE sessions SET model = ?, selected_model = ? WHERE id = ?`, [
+		model,
+		model,
+		sessionId,
+	]);
+}
+
+export async function getSessionModel(
+	sessionId: string,
+): Promise<string | null> {
+	const db = await getDb();
+	const row = db
+		.query<{ model: string | null }, [string]>(
+			`SELECT COALESCE(selected_model, actual_model, model) AS model
+			 FROM sessions WHERE id = ?`,
+		)
+		.get(sessionId);
+	return row?.model ?? null;
+}
+
 export async function setSessionClaudeId(
 	sessionId: string,
 	claudeId: string | null,
@@ -126,8 +151,8 @@ export async function createSession(
 ): Promise<void> {
 	const db = await getDb();
 	db.run(
-		`INSERT OR IGNORE INTO sessions (id, label, model, started_at) VALUES (?, ?, ?, unixepoch())`,
-		[id, label, model],
+		`INSERT OR IGNORE INTO sessions (id, label, model, selected_model, started_at) VALUES (?, ?, ?, ?, unixepoch())`,
+		[id, label, model, model],
 	);
 }
 

@@ -35,6 +35,7 @@ vi.mock("../db", () => ({
 	recordQuery: vi.fn().mockResolvedValue(undefined),
 	getSessionMessages: vi.fn().mockResolvedValue([]),
 	getSessionAgentCwd: vi.fn().mockResolvedValue(null),
+	getSessionModel: vi.fn().mockResolvedValue(null),
 	getSessionProviderId: vi.fn().mockResolvedValue(null),
 	getSessionProviderSession: vi.fn().mockResolvedValue(null),
 	getSessionClaudeId: vi.fn().mockResolvedValue(null),
@@ -43,6 +44,7 @@ vi.mock("../db", () => ({
 	setSessionClaudeId: vi.fn().mockResolvedValue(undefined),
 	setSessionActualModel: vi.fn().mockResolvedValue(undefined),
 	setSessionAgentCwd: vi.fn().mockResolvedValue(undefined),
+	setSessionModel: vi.fn().mockResolvedValue(undefined),
 	saveSetting: vi.fn().mockResolvedValue(undefined),
 	linkAttachmentToMessage: vi.fn().mockResolvedValue(undefined),
 	recordPermissionEvent: vi.fn().mockResolvedValue(undefined),
@@ -452,6 +454,24 @@ describe("SessionManager — setModel", () => {
 		await sm.setModel("model-b");
 		expect(getSession()?.setModel).toHaveBeenCalledWith("model-b");
 		expect(sm.getStatus().model).toBe("model-b");
+		expect(dbMock.setSessionModel).toHaveBeenCalledWith("sess-1", "model-b");
+	});
+
+	it("restores a saved session model instead of the current config model", async () => {
+		const { provider, captured } = makeCaptureProvider("claude");
+		vi.mocked(dbMock.getSessionModel).mockResolvedValueOnce("claude-fable-5");
+		vi.mocked(dbMock.getSessionMessages).mockResolvedValueOnce([
+			{ role: "user", text: "prior" },
+		] as never);
+		const sm = new SessionManager(
+			makeConfig("gpt-5.6-sol"),
+			makeProviders(provider),
+		);
+
+		await sm.runQuery("continue", () => {}, "saved-session");
+
+		expect(captured.params?.model).toBe("claude-fable-5");
+		expect(sm.getStatus().model).toBe("claude-fable-5");
 	});
 });
 
@@ -2107,6 +2127,11 @@ describe("SessionManager — per-agent settings", () => {
 			AGENT_PATH,
 		);
 		expect(captured.params?.model).toBe("claude-opus-4-7");
+		expect(dbMock.createSession).toHaveBeenCalledWith(
+			"sess-m",
+			"HELLO",
+			"claude-opus-4-7",
+		);
 	});
 
 	it("agent query uses agent-specific effort when configured", async () => {

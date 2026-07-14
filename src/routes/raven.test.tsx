@@ -120,6 +120,7 @@ vi.mock("#/lib/serverFns/sessions", () => ({
 	getCurrentSessionFn: vi.fn(),
 	getLiveSessionsFn: vi.fn(),
 	getSessionAgentCwdFn: vi.fn(),
+	getSessionModelFn: vi.fn(),
 }));
 vi.mock("#/lib/serverFns/agents", () => ({
 	getAgentListFn: vi.fn(),
@@ -143,6 +144,7 @@ import {
 	getCurrentSessionFn,
 	getLiveSessionsFn,
 	getSessionAgentCwdFn,
+	getSessionModelFn,
 } from "#/lib/serverFns/sessions";
 import { getVoiceInfoFn } from "#/lib/serverFns/voice";
 import { ChatPage, Route } from "./raven";
@@ -174,6 +176,7 @@ beforeEach(() => {
 		isExplicitSession: false,
 		providerUsages: [],
 		agentSkillContext: undefined,
+		sessionModel: null,
 		agentList: [],
 		vaultSkills: [],
 		interactiveMode: false,
@@ -282,6 +285,29 @@ describe("Raven composed submission behavior", () => {
 		});
 		expect(badge).toBeTruthy();
 		expect(badge.textContent).not.toMatch(/claude|medium/i);
+	});
+
+	it("shows a restored session's saved model instead of the current vault model", () => {
+		state.loaderData = {
+			...state.loaderData,
+			existingSessionId: "saved-session",
+			sessionModel: "claude-fable-5",
+			providers: [
+				{
+					id: "claude",
+					label: "Claude",
+					available: true,
+					models: [
+						{ value: "gpt-5.6-sol", label: "Sol" },
+						{ value: "claude-fable-5", label: "Fable" },
+					],
+				},
+			],
+		};
+
+		render(<ChatPage />);
+
+		expect(screen.getByRole("button", { name: /fable-5/i })).toBeTruthy();
 	});
 
 	it("binds a database transcript to its matching live pool session", () => {
@@ -435,6 +461,7 @@ describe("raven route loader", () => {
 		vi.mocked(getLiveSessionsFn).mockResolvedValue([] as never);
 		vi.mocked(getCurrentSessionFn).mockResolvedValue(null as never);
 		vi.mocked(getSessionAgentCwdFn).mockResolvedValue(null as never);
+		vi.mocked(getSessionModelFn).mockResolvedValue(null as never);
 	});
 
 	it("uses the explicit session without consulting live sessions", async () => {
@@ -467,6 +494,14 @@ describe("raven route loader", () => {
 		const data = await route.loader({ deps: {} });
 		expect(data.agentSkillContext).toBe("/proj");
 		expect(getSessionAgentCwdFn).toHaveBeenCalledWith({ data: "cur" });
+	});
+
+	it("restores the model selected for the resolved session", async () => {
+		vi.mocked(getCurrentSessionFn).mockResolvedValue("cur" as never);
+		vi.mocked(getSessionModelFn).mockResolvedValue("claude-fable-5" as never);
+		const data = await route.loader({ deps: {} });
+		expect(data.sessionModel).toBe("claude-fable-5");
+		expect(getSessionModelFn).toHaveBeenCalledWith({ data: "cur" });
 	});
 
 	it("attaches to a running terminal session in interactive vault mode", async () => {

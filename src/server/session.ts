@@ -499,7 +499,12 @@ export class SessionManager {
 	async setModel(model?: string): Promise<void> {
 		this.modelOverride = { value: model };
 		this.model = model ?? "";
-		await this.agentSession?.setModel?.(model);
+		await Promise.all([
+			this.agentSession?.setModel?.(model),
+			this.currentSessionId && model !== undefined
+				? db.setSessionModel(this.currentSessionId, model)
+				: Promise.resolve(),
+		]);
 	}
 
 	/**
@@ -742,13 +747,19 @@ export class SessionManager {
 			this.agentCwd = undefined;
 			this.agentMode = "cwd";
 			this.sessionAllowedTools.clear();
-			const [prior, savedAgentCwd, savedProviderId, savedProviderSessionId] =
-				await Promise.all([
-					db.getSessionMessages(sessionId),
-					db.getSessionAgentCwd(sessionId),
-					db.getSessionProviderId(sessionId),
-					db.getSessionProviderSession(sessionId),
-				]);
+			const [
+				prior,
+				savedAgentCwd,
+				savedModel,
+				savedProviderId,
+				savedProviderSessionId,
+			] = await Promise.all([
+				db.getSessionMessages(sessionId),
+				db.getSessionAgentCwd(sessionId),
+				db.getSessionModel(sessionId),
+				db.getSessionProviderId(sessionId),
+				db.getSessionProviderSession(sessionId),
+			]);
 			this.messageSeq = prior.length;
 			this.currentSessionId = sessionId;
 			this.providerSessionId = savedProviderSessionId;
@@ -756,6 +767,12 @@ export class SessionManager {
 			if (savedAgentCwd) {
 				this.agentCwd = savedAgentCwd;
 				this.agentMode = resolveAgentMode(savedAgentCwd);
+			}
+			// Resume with the chat's saved selection, not today's configured
+			// vault/Einherjar model.
+			if (savedModel !== null) {
+				this.model = savedModel;
+				this.modelOverride = { value: savedModel };
 			}
 			db.setCurrentSessionId(sessionId).catch((e) =>
 				logDbError("setCurrentSessionId", e),
@@ -783,7 +800,14 @@ export class SessionManager {
 		if (sessionId && this.messageSeq === 0) {
 			const label = userMessage.slice(0, SESSION_LABEL_LENGTH).toUpperCase();
 			this.currentSessionLabel = label;
-			await db.createSession(sessionId, label, this.model);
+			const agentSettings = this.agentCwd
+				? this.agentSettingsMap.get(this.agentCwd)
+				: undefined;
+			const selectedModel =
+				this.modelOverride !== null
+					? (this.modelOverride.value ?? "")
+					: (agentSettings?.model ?? this.model);
+			await db.createSession(sessionId, label, selectedModel);
 		}
 
 		// Persist agent cwd after session row exists

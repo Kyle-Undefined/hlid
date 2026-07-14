@@ -65,6 +65,7 @@ export {
 	getSessionById,
 	getSessionClaudeId,
 	getSessionLastQueryContext,
+	getSessionModel,
 	getSessionProviderId,
 	getSessionProviderSession,
 	getSessionsPaginated,
@@ -72,6 +73,7 @@ export {
 	renameSession,
 	setSessionActualModel,
 	setSessionAgentCwd,
+	setSessionModel,
 	setSessionProviderId,
 	setSessionProviderSession,
 } from "./sessions";

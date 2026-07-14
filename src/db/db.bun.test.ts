@@ -39,6 +39,7 @@ import {
 	getSessionAgentCwd,
 	getSessionClaudeId,
 	getSessionLastQueryContext,
+	getSessionModel,
 	getSessionProviderId,
 	getSessionProviderSession,
 	getSessionsPaginated,
@@ -46,6 +47,7 @@ import {
 	setSessionActualModel,
 	setSessionAgentCwd,
 	setSessionClaudeId,
+	setSessionModel,
 	setSessionProviderId,
 	setSessionProviderSession,
 } from "./sessions";
@@ -226,6 +228,23 @@ describe("sessions — agent_cwd & actual_model", () => {
 	it("returns null agent_cwd when unset", async () => {
 		await createSession("s1", "L", "m");
 		expect(await getSessionAgentCwd("s1")).toBeNull();
+	});
+
+	it("sets and gets the session-selected model", async () => {
+		await createSession("s1", "L", "gpt-5.6-sol");
+		expect(await getSessionModel("s1")).toBe("gpt-5.6-sol");
+		await setSessionModel("s1", "claude-fable-5");
+		expect(await getSessionModel("s1")).toBe("claude-fable-5");
+	});
+
+	it("falls back to the actual model for a legacy session", async () => {
+		const database = freshDb();
+		await createSession("s1", "L", "gpt-5.6-sol");
+		database.run(
+			`UPDATE sessions SET selected_model = NULL, actual_model = ? WHERE id = ?`,
+			["claude-fable-5", "s1"],
+		);
+		expect(await getSessionModel("s1")).toBe("claude-fable-5");
 	});
 
 	it("sets and gets actual_model", async () => {

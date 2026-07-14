@@ -74,6 +74,7 @@ import {
 	getCurrentSessionFn,
 	getLiveSessionsFn,
 	getSessionAgentCwdFn,
+	getSessionModelFn,
 } from "#/lib/serverFns/sessions";
 import { getVoiceInfoFn } from "#/lib/serverFns/voice";
 import { resolveSkillPrompt } from "#/lib/skillPrompt";
@@ -154,9 +155,16 @@ async function loadRavenRoute(session?: string, agent?: string) {
 		liveSessions,
 	);
 	let agentSkillContext = agent;
+	let sessionModel: string | null = null;
 	if (!agentSkillContext && resolvedSessionId) {
-		agentSkillContext =
-			(await getSessionAgentCwdFn({ data: resolvedSessionId })) ?? undefined;
+		const [savedAgentCwd, savedModel] = await Promise.all([
+			getSessionAgentCwdFn({ data: resolvedSessionId }),
+			getSessionModelFn({ data: resolvedSessionId }),
+		]);
+		agentSkillContext = savedAgentCwd ?? undefined;
+		sessionModel = savedModel;
+	} else if (resolvedSessionId) {
+		sessionModel = await getSessionModelFn({ data: resolvedSessionId });
 	}
 	const interactiveMode = interactiveModeForAgent(config, agentSkillContext);
 	resolvedSessionId = resolveTerminalSession(
@@ -173,6 +181,7 @@ async function loadRavenRoute(session?: string, agent?: string) {
 		isExplicitSession: Boolean(session),
 		providerUsages,
 		agentSkillContext,
+		sessionModel,
 		agentList,
 		vaultSkills: cockpitData.skills,
 		interactiveMode,
@@ -209,6 +218,19 @@ type RavenSessionSelection = {
 	effort?: string;
 	permissionMode?: string;
 };
+
+function restoredRavenSessionSelection(
+	existingSessionId: string | null,
+	agentSkillContext: string | undefined,
+	initialAgentSkillContext: string | undefined,
+	initialSessionModel: string | null,
+): RavenSessionSelection {
+	return existingSessionId &&
+		agentSkillContext === initialAgentSkillContext &&
+		initialSessionModel
+		? { model: initialSessionModel }
+		: {};
+}
 
 function useRavenSessionIdentity({
 	config,
@@ -873,6 +895,7 @@ export function ChatPage() {
 		isExplicitSession,
 		providerUsages: initialProviderUsages,
 		agentSkillContext: initialAgentSkillContext,
+		sessionModel: initialSessionModel,
 		agentList,
 		vaultSkills,
 		interactiveMode,
@@ -890,9 +913,29 @@ export function ChatPage() {
 	const { agentSkillContext, sessionId, sessionIdRef } = session;
 	const [activeSkill, setActiveSkill] = useState<ActiveRavenSkill | null>(null);
 	const [sessionSelection, setSessionSelection] =
-		useState<RavenSessionSelection>({});
-	// biome-ignore lint/correctness/useExhaustiveDependencies: changing project/provider resets session-only picker overrides
-	useEffect(() => setSessionSelection({}), [agentSkillContext]);
+		useState<RavenSessionSelection>(() =>
+			restoredRavenSessionSelection(
+				existingSessionId,
+				agentSkillContext,
+				initialAgentSkillContext,
+				initialSessionModel,
+			),
+		);
+	useEffect(() => {
+		setSessionSelection(
+			restoredRavenSessionSelection(
+				existingSessionId,
+				agentSkillContext,
+				initialAgentSkillContext,
+				initialSessionModel,
+			),
+		);
+	}, [
+		existingSessionId,
+		agentSkillContext,
+		initialAgentSkillContext,
+		initialSessionModel,
+	]);
 
 	const liveStats = useWsLiveStats();
 	const chatQueue = useWsChatQueue();
