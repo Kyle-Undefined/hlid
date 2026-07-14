@@ -511,12 +511,16 @@ function useRavenViewport({
 
 	useEffect(() => {
 		if (!showModelPopup) return;
-		const handleClick = (event: MouseEvent) => {
+		const handleOutsideInteraction = (event: Event) => {
 			if (!modelBadgeRef.current?.contains(event.target as Node))
 				setShowModelPopup(false);
 		};
-		document.addEventListener("click", handleClick);
-		return () => document.removeEventListener("click", handleClick);
+		document.addEventListener("click", handleOutsideInteraction);
+		document.addEventListener("focusin", handleOutsideInteraction);
+		return () => {
+			document.removeEventListener("click", handleOutsideInteraction);
+			document.removeEventListener("focusin", handleOutsideInteraction);
+		};
 	}, [showModelPopup, setShowModelPopup]);
 
 	return {
@@ -1550,7 +1554,6 @@ function ChatModelBadge({
 										model: value,
 									}));
 									send({ type: "set_model", model: value });
-									setShowModelPopup(false);
 								}}
 							/>
 							<OptionGroup
@@ -1571,7 +1574,6 @@ function ChatModelBadge({
 										effort: value,
 									}));
 									send({ type: "set_effort", effort: value });
-									setShowModelPopup(false);
 								}}
 							/>
 							<OptionGroup
@@ -1589,7 +1591,6 @@ function ChatModelBadge({
 										permissionMode: value,
 									}));
 									send({ type: "set_permission_mode", mode: value });
-									setShowModelPopup(false);
 								}}
 							/>
 							<div className="normal-case tracking-normal text-muted-foreground/30 pt-1 border-t border-border/50">

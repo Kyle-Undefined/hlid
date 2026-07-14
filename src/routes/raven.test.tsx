@@ -292,6 +292,55 @@ describe("Raven composed submission behavior", () => {
 		expect(badge.textContent).not.toMatch(/claude|medium/i);
 	});
 
+	it("keeps model settings open while changing multiple options", () => {
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as object),
+				vault_provider: "codex",
+			},
+			providers: [
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					models: [
+						{ value: "gpt-5.4", label: "GPT-5.4" },
+						{ value: "gpt-5.5", label: "GPT-5.5" },
+					],
+					effortLevels: [
+						{ value: "medium", label: "Medium" },
+						{ value: "high", label: "High" },
+					],
+					permissionModes: [
+						{ value: "default", label: "Ask" },
+						{ value: "bypassPermissions", label: "Auto-approve all" },
+					],
+				},
+			],
+		};
+
+		render(<ChatPage />);
+		fireEvent.click(screen.getByRole("button", { name: /sonnet 4\.6/i }));
+
+		fireEvent.click(screen.getByRole("button", { name: "GPT-5.5" }));
+		expect(screen.getByRole("dialog", { name: "Model settings" })).toBeTruthy();
+		expect(state.send).toHaveBeenCalledWith({
+			type: "set_model",
+			model: "gpt-5.5",
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "High" }));
+		expect(screen.getByRole("dialog", { name: "Model settings" })).toBeTruthy();
+		expect(state.send).toHaveBeenCalledWith({
+			type: "set_effort",
+			effort: "high",
+		});
+
+		fireEvent.focus(screen.getByRole("combobox"));
+		expect(screen.queryByRole("dialog", { name: "Model settings" })).toBeNull();
+	});
+
 	it("restores an agent session's saved provider and model instead of current config", () => {
 		state.loaderData = {
 			...state.loaderData,
