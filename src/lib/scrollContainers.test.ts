@@ -3,7 +3,6 @@
 import { describe, expect, it, vi } from "vitest";
 import {
 	isRavenPath,
-	keyboardInset,
 	ROUTE_SCROLL_RESTORATION_IDS,
 	resetScrollAncestors,
 	resetShellScroll,
@@ -79,20 +78,6 @@ describe("resetShellScroll", () => {
 		expect(shell.scrollTop).toBe(0);
 		expect(wrapper.scrollTop).toBe(0);
 		expect(wrapper.scrollLeft).toBe(0);
-	});
-});
-
-describe("keyboardInset", () => {
-	it("reports the keyboard height when the visual viewport shrinks a lot", () => {
-		expect(keyboardInset(500, 800)).toBe(300);
-	});
-
-	it("ignores small viewport differences like URL-bar collapse", () => {
-		expect(keyboardInset(760, 800)).toBe(0);
-	});
-
-	it("returns 0 without a visual viewport", () => {
-		expect(keyboardInset(undefined, 800)).toBe(0);
 	});
 });
 

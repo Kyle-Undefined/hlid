@@ -1,21 +1,17 @@
 import { type RefObject, useEffect } from "react";
-import {
-	keyboardInset,
-	resetShellScroll,
-	resetWindowScroll,
-} from "#/lib/scrollContainers";
+import { resetShellScroll, resetWindowScroll } from "#/lib/scrollContainers";
 
 const APP_HEIGHT_VAR = "--app-height";
 
 /**
  * Keeps the fixed app shell glued to the visible viewport on mobile.
  *
- * - Keyboard open: pin the shell height (`--app-height`, consumed by the root
- *   layout as `h-[var(--app-height,100dvh)]`) to the visual viewport so the
- *   composer sits above the keyboard, instead of relying on iOS scrolling the
- *   layout viewport to reveal the input — a scroll it often never undoes.
- * - Keyboard closed / route change: clear the pin and clamp any stray window
- *   scroll the keyboard reveal left behind. The persistent shell containers
+ * - Pin the shell height (`--app-height`, consumed by the root layout) to the
+ *   visual viewport from the first client render onward. Some Android
+ *   standalone browsers report a stale dynamic viewport height at launch and
+ *   do not correct it until an input opens the keyboard.
+ * - On viewport changes / route changes, clamp any stray window scroll the
+ *   keyboard reveal left behind. The persistent shell containers
  *   (`shellRefs`) are clamped too: focusing an input scrolls even their
  *   overflow-hidden boxes, and they outlive route changes, which would leave
  *   the next page rendered pre-scrolled.
@@ -35,33 +31,44 @@ export function useVisualViewportGuard(
 	useEffect(() => {
 		const visualViewport = window.visualViewport;
 		if (!visualViewport) return;
-		let frame = 0;
+		let resetFrame = 0;
+		let settleFrame = 0;
 		const sync = () => {
 			if (visualViewport.scale > 1.01) return;
-			const inset = keyboardInset(visualViewport.height, window.innerHeight);
-			const rootStyle = document.documentElement.style;
-			if (inset > 0) {
-				rootStyle.setProperty(
-					APP_HEIGHT_VAR,
-					`${Math.round(visualViewport.height)}px`,
-				);
-			} else {
-				rootStyle.removeProperty(APP_HEIGHT_VAR);
-			}
+			document.documentElement.style.setProperty(
+				APP_HEIGHT_VAR,
+				`${Math.round(visualViewport.height)}px`,
+			);
 			// After the shell fits the visible area, any window or shell scroll is
 			// bogus. rAF lets the height change land before clamping.
-			cancelAnimationFrame(frame);
-			frame = requestAnimationFrame(() => {
+			cancelAnimationFrame(resetFrame);
+			resetFrame = requestAnimationFrame(() => {
 				resetWindowScroll();
 				resetShellScroll(shellRefs.map((ref) => ref.current));
 			});
 		};
+		const syncWhenVisible = () => {
+			if (document.visibilityState === "visible") sync();
+		};
+
+		// Measure now, then once more after the standalone window has settled.
+		// Brave can finalize its usable viewport after the first client frame
+		// without dispatching a visualViewport resize event.
+		sync();
+		settleFrame = requestAnimationFrame(sync);
+		window.addEventListener("resize", sync);
+		window.addEventListener("pageshow", sync);
+		document.addEventListener("visibilitychange", syncWhenVisible);
 		visualViewport.addEventListener("resize", sync);
 		visualViewport.addEventListener("scroll", sync);
 		return () => {
+			window.removeEventListener("resize", sync);
+			window.removeEventListener("pageshow", sync);
+			document.removeEventListener("visibilitychange", syncWhenVisible);
 			visualViewport.removeEventListener("resize", sync);
 			visualViewport.removeEventListener("scroll", sync);
-			cancelAnimationFrame(frame);
+			cancelAnimationFrame(resetFrame);
+			cancelAnimationFrame(settleFrame);
 			document.documentElement.style.removeProperty(APP_HEIGHT_VAR);
 		};
 	}, []);

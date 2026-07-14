@@ -201,11 +201,11 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 				{pathname === "/login" || pathname === "/login/" ? (
 					children
 				) : (
-					// --app-height: pinned to the visual viewport while the mobile
-					// keyboard is up (useVisualViewportGuard); falls back to 100dvh.
+					// --app-height: pinned to the visual viewport on the client by
+					// useVisualViewportGuard; 100svh keeps the nav visible before hydration.
 					<div
 						ref={shellRef}
-						className="flex h-[var(--app-height,100dvh)] overflow-hidden bg-background text-foreground"
+						className="flex h-[var(--app-height,100svh)] overflow-hidden bg-background text-foreground"
 					>
 						<ErrorBoundary>
 							<Sidebar />

@@ -24,22 +24,6 @@ export const SCROLL_TO_TOP_SELECTORS = [
 ] as const;
 
 /**
- * Visual viewport this much shorter than the layout viewport means an
- * on-screen keyboard is up (URL-bar collapse and safe-area shifts are smaller).
- */
-const KEYBOARD_MIN_INSET = 80;
-
-/** Height (px) the on-screen keyboard steals from the layout viewport, or 0. */
-export function keyboardInset(
-	visualHeight: number | undefined,
-	layoutHeight: number,
-): number {
-	if (visualHeight === undefined) return 0;
-	const inset = layoutHeight - visualHeight;
-	return inset > KEYBOARD_MIN_INSET ? inset : 0;
-}
-
-/**
  * The app shell is a fixed-height overflow-hidden column, so the window itself
  * must never scroll. iOS still scrolls the layout viewport to reveal a focused
  * input when the keyboard opens — and often never restores it, leaving the
