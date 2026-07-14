@@ -10,6 +10,7 @@ import {
 	fmtMs,
 	fmtResetTime,
 	fmtRunTime,
+	modelComparisonKey,
 	normalizeModel,
 } from "./formatters";
 
@@ -26,6 +27,22 @@ describe("normalizeModel", () => {
 
 	it("does not strip partial numeric suffixes", () => {
 		expect(normalizeModel("claude-haiku-4-5")).toBe("claude-haiku-4-5");
+	});
+});
+
+describe("modelComparisonKey", () => {
+	it("collapses moving Fable, Sonnet, and Opus identifiers to their family", () => {
+		expect(modelComparisonKey("fable-5[1m]")).toBe("fable");
+		expect(modelComparisonKey("claude-fable-5")).toBe("fable");
+		expect(modelComparisonKey("sonnet")).toBe("sonnet");
+		expect(modelComparisonKey("claude-sonnet-4-6")).toBe("sonnet");
+		expect(modelComparisonKey("opus")).toBe("opus");
+		expect(modelComparisonKey("claude-opus-4-8-20260601")).toBe("opus");
+	});
+
+	it("keeps unrelated concrete model identifiers distinct", () => {
+		expect(modelComparisonKey("gpt-5.4")).toBe("gpt-5.4");
+		expect(modelComparisonKey("gpt-5.5")).toBe("gpt-5.5");
 	});
 });
 
@@ -115,6 +132,18 @@ describe("deriveModelMismatch", () => {
 			null,
 		);
 		expect(r.mismatch).toBe(false);
+	});
+
+	it("does not flag moving Claude family aliases as different", () => {
+		expect(
+			deriveModelMismatch("fable-5[1m]", "claude-fable-5", null).mismatch,
+		).toBe(false);
+		expect(
+			deriveModelMismatch("sonnet", "claude-sonnet-4-6", null).mismatch,
+		).toBe(false);
+		expect(deriveModelMismatch("opus", "claude-opus-4-8", null).mismatch).toBe(
+			false,
+		);
 	});
 
 	it("treats undefined the same as null for all inputs", () => {

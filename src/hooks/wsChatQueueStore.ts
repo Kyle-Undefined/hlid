@@ -9,6 +9,10 @@ export type QueuedChatMessage = {
 	attachments?: ChatAttachment[];
 	plan_mode?: boolean;
 	plan_html?: boolean;
+	provider?: string;
+	model?: string;
+	effort?: string;
+	permission_mode?: string;
 	/** True after the message has been delivered to the server. */
 	_sent?: boolean;
 };

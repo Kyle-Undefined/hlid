@@ -222,6 +222,7 @@ type ActiveRavenSkill = {
 	filePath: string;
 };
 type RavenSessionSelection = {
+	providerId?: string;
 	model?: string;
 	effort?: string;
 	permissionMode?: string;
@@ -232,11 +233,17 @@ function restoredRavenSessionSelection(
 	agentSkillContext: string | undefined,
 	initialAgentSkillContext: string | undefined,
 	initialSessionModel: string | null,
+	initialSessionProviderId: string | null,
 ): RavenSessionSelection {
 	return existingSessionId &&
 		agentSkillContext === initialAgentSkillContext &&
 		initialSessionModel
-		? { model: initialSessionModel }
+		? {
+				model: initialSessionModel,
+				...(initialSessionProviderId
+					? { providerId: initialSessionProviderId }
+					: {}),
+			}
 		: {};
 }
 
@@ -549,6 +556,8 @@ type RavenActionProps = {
 	planMode: boolean;
 	setPlanMode: Dispatch<SetStateAction<boolean>>;
 	planHtml: boolean;
+	sessionSelection: RavenSessionSelection;
+	setSessionSelection: Dispatch<SetStateAction<RavenSessionSelection>>;
 	session: ReturnType<typeof useRavenSessionIdentity>;
 	runtime: ReturnType<typeof useRavenChatRuntime>;
 	upload: ReturnType<typeof useFileUpload>;
@@ -627,6 +636,7 @@ function useRavenSend(props: RavenActionProps) {
 		allSkills,
 		planMode,
 		planHtml,
+		sessionSelection,
 	} = props;
 	const { agentSkillContext, agentContextSentRef, sessionId } = props.session;
 	const { sessionState, send, dispatch } = props.runtime;
@@ -655,6 +665,10 @@ function useRavenSend(props: RavenActionProps) {
 				agentContextAlreadySent: agentContextSentRef.current,
 				planMode,
 				planHtml,
+				provider: sessionSelection.providerId,
+				model: sessionSelection.model,
+				effort: sessionSelection.effort,
+				permissionMode: sessionSelection.permissionMode,
 			});
 			if (!submission) return;
 
@@ -686,6 +700,7 @@ function useRavenSend(props: RavenActionProps) {
 			clearPendingAttachments,
 			planMode,
 			planHtml,
+			sessionSelection,
 			dispatch,
 			atBottomRef,
 			agentContextSentRef,
@@ -768,7 +783,7 @@ function useRavenQueueActions(props: RavenActionProps) {
 }
 
 function useRavenClear(props: RavenActionProps) {
-	const { clearDraft, setPlanMode } = props;
+	const { clearDraft, setPlanMode, setSessionSelection } = props;
 	const {
 		setAgentSkillContext,
 		agentContextSentRef,
@@ -792,6 +807,7 @@ function useRavenClear(props: RavenActionProps) {
 		wsStore.seedActualModel(null);
 		wsStore.clearMessageBuffer();
 		clearChatQueue();
+		setSessionSelection({});
 		const newId = uid();
 		setSessionId(newId);
 		sessionIdRef.current = newId;
@@ -807,6 +823,7 @@ function useRavenClear(props: RavenActionProps) {
 		sessionIdRef,
 		setAgentSkillContext,
 		setPlanMode,
+		setSessionSelection,
 	]);
 }
 
@@ -823,6 +840,62 @@ function useRavenActions(props: RavenActionProps) {
 		handleSend,
 		...queue,
 		handleClear,
+	};
+}
+
+function configuredVaultSelection(
+	config: RavenConfig,
+	providerId: string,
+): Omit<RavenSessionSelection, "providerId"> {
+	if (providerId === "codex") {
+		return {
+			model: config.codex?.model,
+			effort: config.codex?.effort,
+			permissionMode: config.codex?.permission_mode,
+		};
+	}
+	if (providerId === "claude") {
+		return {
+			model: config.claude?.model,
+			effort: config.claude?.effort,
+			permissionMode: config.claude?.permission_mode,
+		};
+	}
+	return {};
+}
+
+function defaultSelectionForProvider(
+	provider: RavenProviders[number],
+	configured: RavenSessionSelection,
+): RavenSessionSelection {
+	const useConfigured = configured.providerId === provider.id;
+	const models = modelOptions(provider);
+	const configuredModel = useConfigured ? configured.model : undefined;
+	const model =
+		models.find((candidate) => candidate.value === configuredModel)?.value ??
+		models.find((candidate) => candidate.isDefault)?.value ??
+		models[0]?.value;
+	const efforts = effortOptionsFor(provider, model ?? "");
+	const configuredEffort = useConfigured ? configured.effort : undefined;
+	const effort =
+		efforts.find((candidate) => candidate.value === configuredEffort)?.value ??
+		efforts.find((candidate) => candidate.isDefault)?.value ??
+		efforts.find((candidate) => candidate.value === "medium")?.value ??
+		efforts[0]?.value;
+	const permissions = provider.permissionModes ?? [];
+	const configuredPermission = useConfigured
+		? configured.permissionMode
+		: undefined;
+	const permissionMode =
+		permissions.find((candidate) => candidate.value === configuredPermission)
+			?.value ??
+		permissions.find((candidate) => candidate.value === "default")?.value ??
+		permissions[0]?.value;
+	return {
+		providerId: provider.id,
+		...(model ? { model } : {}),
+		...(effort ? { effort } : {}),
+		...(permissionMode ? { permissionMode } : {}),
 	};
 }
 
@@ -870,24 +943,46 @@ function deriveRavenComposerState({
 	const selectedAgent = agentSkillContext
 		? config.agents?.find((agent) => agent.path === agentSkillContext)
 		: undefined;
-	const agentModel = selectedAgent?.model ?? null;
-	const selectedModel = selection.model ?? selectedAgent?.model ?? model;
-	const selectedEffort = selection.effort ?? selectedAgent?.effort ?? null;
-	const selectedPermissionMode =
-		selection.permissionMode ?? selectedAgent?.permission_mode ?? null;
-	const { effectiveActualModel, mismatch: modelMismatch } = deriveModelMismatch(
-		selectedModel,
-		restoredSession || !agentSkillContext ? actualModel : null,
-		restoredSession ? null : agentModel,
+	const configuredProviderId = resolveActiveProviderId(
+		agentList,
+		agentSkillContext,
+		config.vault_provider,
 	);
+	const vaultSelection = configuredVaultSelection(config, configuredProviderId);
+	const configuredSelection: RavenSessionSelection = {
+		providerId: configuredProviderId,
+		model: selectedAgent?.model ?? vaultSelection.model,
+		effort: selectedAgent?.effort ?? vaultSelection.effort,
+		permissionMode:
+			selectedAgent?.permission_mode ?? vaultSelection.permissionMode,
+	};
 	const providerId =
+		selection.providerId ??
 		(restoredSession ? sessionProviderId : null) ??
-		resolveActiveProviderId(
-			agentList,
-			agentSkillContext,
-			config.vault_provider,
-		);
+		configuredProviderId;
+	const providerUsesConfiguredDefaults = providerId === configuredProviderId;
+	const selectedModel =
+		selection.model ??
+		(providerUsesConfiguredDefaults ? configuredSelection.model : undefined) ??
+		model;
+	const selectedEffort =
+		selection.effort ??
+		(providerUsesConfiguredDefaults ? configuredSelection.effort : null) ??
+		null;
+	const selectedPermissionMode =
+		selection.permissionMode ??
+		(providerUsesConfiguredDefaults
+			? configuredSelection.permissionMode
+			: null) ??
+		null;
+	const { effectiveActualModel, mismatch: runtimeModelMismatch } =
+		deriveModelMismatch(configuredSelection.model, actualModel, selectedModel);
+	const modelMismatch =
+		providerId !== configuredProviderId || runtimeModelMismatch;
 	const provider = providers.find((candidate) => candidate.id === providerId);
+	const configuredProvider = providers.find(
+		(candidate) => candidate.id === configuredProviderId,
+	);
 	return {
 		canSend: hasInput && !isRunning,
 		canQueue: hasInput && isRunning,
@@ -900,6 +995,13 @@ function deriveRavenComposerState({
 			: null,
 		modelMismatch,
 		activeProviderId: providerId,
+		activeProviderLabel: provider?.label ?? providerId,
+		configuredProviderId,
+		configuredProviderLabel: configuredProvider?.label ?? configuredProviderId,
+		configuredModelShort: configuredSelection.model
+			? fmtModel(configuredSelection.model)
+			: null,
+		configuredSelection,
 		modelPickerOptions: modelOptions(provider),
 		permissionOptions: provider?.permissionModes ?? [],
 		effortOptions: effortOptionsFor(provider, selectedModel ?? "", planMode),
@@ -941,6 +1043,7 @@ export function ChatPage() {
 				agentSkillContext,
 				initialAgentSkillContext,
 				initialSessionModel,
+				initialSessionProviderId,
 			),
 		);
 	useEffect(() => {
@@ -950,6 +1053,7 @@ export function ChatPage() {
 				agentSkillContext,
 				initialAgentSkillContext,
 				initialSessionModel,
+				initialSessionProviderId,
 			),
 		);
 	}, [
@@ -957,6 +1061,7 @@ export function ChatPage() {
 		agentSkillContext,
 		initialAgentSkillContext,
 		initialSessionModel,
+		initialSessionProviderId,
 	]);
 
 	const liveStats = useWsLiveStats();
@@ -1049,6 +1154,8 @@ export function ChatPage() {
 		planMode,
 		setPlanMode,
 		planHtml,
+		sessionSelection,
+		setSessionSelection,
 		session,
 		runtime,
 		upload,
@@ -1066,6 +1173,11 @@ export function ChatPage() {
 		actualModelShort,
 		modelMismatch,
 		activeProviderId,
+		activeProviderLabel,
+		configuredProviderId,
+		configuredProviderLabel,
+		configuredModelShort,
+		configuredSelection,
 		modelPickerOptions,
 		permissionOptions,
 		effortOptions,
@@ -1118,6 +1230,12 @@ export function ChatPage() {
 		actualModelShort,
 		modelMismatch,
 		activeProviderId,
+		activeProviderLabel,
+		configuredProviderId,
+		configuredProviderLabel,
+		configuredModelShort,
+		configuredSelection,
+		providers,
 		modelPickerOptions,
 		permissionOptions,
 		effortOptions,
@@ -1455,6 +1573,7 @@ function OptionGroup({
 }
 
 function ChatModelBadge({
+	session,
 	runtime,
 	viewport,
 	showModelPopup,
@@ -1466,15 +1585,23 @@ function ChatModelBadge({
 	setSessionSelection,
 	actualModelShort,
 	modelMismatch,
+	activeProviderId,
+	activeProviderLabel,
+	configuredProviderLabel,
+	configuredModelShort,
+	configuredSelection,
+	providers,
 	modelPickerOptions,
 	permissionOptions,
 	effortOptions,
 }: ChatComposerProps) {
-	const { model, permissionMode, effort, send } = runtime;
+	const { model, permissionMode, effort, sessionState, send } = runtime;
+	const { sessionId } = session;
 	const displayedModel = activeModel ?? model;
 	const displayedEffort = activeEffort ?? effort;
 	const displayedPermissionMode = activePermissionMode ?? permissionMode;
 	const badgeParts = [
+		activeProviderLabel,
 		actualModelShort ?? modelShort,
 		displayedEffort,
 		displayedPermissionMode === "bypassPermissions"
@@ -1492,7 +1619,7 @@ function ChatModelBadge({
 	}, [showModelPopup]);
 	return (
 		<>
-			{modelShort && (
+			{activeProviderLabel && (
 				<div ref={modelBadgeRef} className="absolute -top-5 right-3 z-10">
 					<button
 						type="button"
@@ -1527,17 +1654,65 @@ function ChatModelBadge({
 							{modelMismatch && (
 								<div className="space-y-0.5 pb-2 border-b border-border/50">
 									<div>
-										<span className="text-muted-foreground/50">selected </span>
-										<span className="text-foreground/60">{modelShort}</span>
+										<span className="text-muted-foreground/50">
+											configured{" "}
+										</span>
+										<span className="text-foreground/60">
+											{configuredProviderLabel}
+											{configuredModelShort ? ` · ${configuredModelShort}` : ""}
+										</span>
 									</div>
 									<div>
-										<span className="text-muted-foreground/50">actual </span>
-										<span className="text-amber-400">{actualModelShort}</span>
+										<span className="text-muted-foreground/50">current </span>
+										<span className="text-amber-400">
+											{activeProviderLabel}
+											{actualModelShort || modelShort
+												? ` · ${actualModelShort ?? modelShort}`
+												: ""}
+										</span>
 									</div>
 								</div>
 							)}
 							<OptionGroup
+								label="cli"
+								options={providers
+									.filter(
+										(provider) =>
+											provider.available &&
+											(sessionState !== "running" ||
+												provider.id === activeProviderId),
+									)
+									.map((provider) => ({
+										value: provider.id,
+										label: provider.label,
+									}))}
+								selectedValue={activeProviderId}
+								onSelect={(value) => {
+									const provider = providers.find(
+										(candidate) => candidate.id === value,
+									);
+									if (!provider || provider.id === activeProviderId) return;
+									const next = defaultSelectionForProvider(
+										provider,
+										configuredSelection,
+									);
+									setSessionSelection(next);
+									wsStore.seedActualModel(null);
+									send({
+										type: "set_provider",
+										provider: value,
+										session_id: sessionId,
+										...(next.model ? { model: next.model } : {}),
+										...(next.effort ? { effort: next.effort } : {}),
+										...(next.permissionMode
+											? { permission_mode: next.permissionMode }
+											: {}),
+									});
+								}}
+							/>
+							<OptionGroup
 								label="model"
+								divider
 								options={modelPickerOptions.map((m) => ({
 									value: m.value,
 									label: m.label,
@@ -1554,7 +1729,12 @@ function ChatModelBadge({
 										...current,
 										model: value,
 									}));
-									send({ type: "set_model", model: value });
+									wsStore.seedActualModel(null);
+									send({
+										type: "set_model",
+										model: value,
+										session_id: sessionId,
+									});
 								}}
 							/>
 							<OptionGroup
@@ -1574,7 +1754,11 @@ function ChatModelBadge({
 										...current,
 										effort: value,
 									}));
-									send({ type: "set_effort", effort: value });
+									send({
+										type: "set_effort",
+										effort: value,
+										session_id: sessionId,
+									});
 								}}
 							/>
 							<OptionGroup
@@ -1591,7 +1775,11 @@ function ChatModelBadge({
 										...current,
 										permissionMode: value,
 									}));
-									send({ type: "set_permission_mode", mode: value });
+									send({
+										type: "set_permission_mode",
+										mode: value,
+										session_id: sessionId,
+									});
 								}}
 							/>
 							<div className="normal-case tracking-normal text-muted-foreground/30 pt-1 border-t border-border/50">
@@ -1658,8 +1846,12 @@ function ChatInputNotices({
 	activeEffort,
 	setSessionSelection,
 }: ChatComposerProps) {
-	const { agentSkillContext, setAgentSkillContext, agentContextSentRef } =
-		session;
+	const {
+		agentSkillContext,
+		setAgentSkillContext,
+		agentContextSentRef,
+		sessionId,
+	} = session;
 	const { messages, effort, send } = runtime;
 	const {
 		pendingAttachments,
@@ -1749,7 +1941,11 @@ function ChatInputNotices({
 										...current,
 										effort: normalized,
 									}));
-									send({ type: "set_effort", effort: normalized });
+									send({
+										type: "set_effort",
+										effort: normalized,
+										session_id: sessionId,
+									});
 								}
 							}
 							setPlanMode(enabling);
@@ -2080,6 +2276,12 @@ interface ChatComposerProps {
 	actualModelShort: string | null;
 	modelMismatch: boolean;
 	activeProviderId: string;
+	activeProviderLabel: string;
+	configuredProviderId: string;
+	configuredProviderLabel: string;
+	configuredModelShort: string | null;
+	configuredSelection: RavenSessionSelection;
+	providers: RavenProviders;
 	modelPickerOptions: ReturnType<typeof modelOptions>;
 	permissionOptions: NonNullable<RavenProviders[number]["permissionModes"]>;
 	effortOptions: ReturnType<typeof effortOptionsFor>;

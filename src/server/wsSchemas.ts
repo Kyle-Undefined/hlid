@@ -37,6 +37,10 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 		turn_id: id.optional(),
 		plan_mode: z.boolean().optional(),
 		plan_html: z.boolean().optional(),
+		provider: shortText.optional(),
+		model: shortText.optional(),
+		effort: shortText.optional(),
+		permission_mode: shortText.optional(),
 	}),
 	z.strictObject({ type: z.literal("cancel_queued"), turn_id: id }),
 	z.strictObject({ type: z.literal("promote_queued"), turn_id: id }),
@@ -95,9 +99,29 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 	z.strictObject({ type: z.literal("subscribe_session"), session_id: id }),
 	z.strictObject({ type: z.literal("stop_session"), session_id: id }),
 	z.strictObject({ type: z.literal("close_session"), session_id: id }),
-	z.strictObject({ type: z.literal("set_model"), model: shortText.optional() }),
-	z.strictObject({ type: z.literal("set_permission_mode"), mode: shortText }),
-	z.strictObject({ type: z.literal("set_effort"), effort: shortText }),
+	z.strictObject({
+		type: z.literal("set_provider"),
+		provider: shortText,
+		model: shortText.optional(),
+		effort: shortText.optional(),
+		permission_mode: shortText.optional(),
+		session_id: id.optional(),
+	}),
+	z.strictObject({
+		type: z.literal("set_model"),
+		model: shortText.optional(),
+		session_id: id.optional(),
+	}),
+	z.strictObject({
+		type: z.literal("set_permission_mode"),
+		mode: shortText,
+		session_id: id.optional(),
+	}),
+	z.strictObject({
+		type: z.literal("set_effort"),
+		effort: shortText,
+		session_id: id.optional(),
+	}),
 ]);
 
 export function parseClientMessage(raw: string): ClientMessage | null {

@@ -561,6 +561,13 @@ async function handleChat(
 	}
 	const chatEntry = resolveChatEntry(context, entry, msg);
 	if (!chatEntry) return;
+	if (msg.provider && !chatEntry.manager.isRunning()) {
+		await chatEntry.manager.setProvider(msg.provider, {
+			model: msg.model,
+			effort: msg.effort,
+			permissionMode: msg.permission_mode,
+		});
+	}
 	broadcastUserMessage(context.ws, chatEntry, msg);
 	claimChatOwnership(context.ws, chatEntry);
 	await runChatQuery(context, chatEntry, msg);
@@ -603,6 +610,17 @@ async function handleSessionMessage(
 			void entry.manager.probeSlashCommands((event) =>
 				entry.runState.broadcast(event),
 			);
+			return;
+		case "set_provider":
+			await entry.manager.setProvider(msg.provider, {
+				model: msg.model,
+				effort: msg.effort,
+				permissionMode: msg.permission_mode,
+			});
+			entry.runState.broadcast({
+				type: "status",
+				...entry.manager.getStatus(),
+			});
 			return;
 		case "set_model":
 			await entry.manager.setModel(msg.model);
@@ -649,6 +667,24 @@ async function handleMessage(
 		return;
 	}
 	if (handleRoutingMessage(context, msg)) return;
+	const requestedSettingsSession =
+		(msg.type === "set_provider" ||
+			msg.type === "set_model" ||
+			msg.type === "set_effort" ||
+			msg.type === "set_permission_mode") &&
+		msg.session_id
+			? msg.session_id
+			: null;
+	if (requestedSettingsSession) {
+		const requestedEntry =
+			context.pool.get(requestedSettingsSession) ??
+			context.pool.findByDbSessionId(requestedSettingsSession);
+		// Archived/new chats have no live manager yet. Their chat payload repeats
+		// the selection and applies it atomically after the entry is created.
+		if (!requestedEntry) return;
+		await handleSessionMessage(context, requestedEntry, msg);
+		return;
+	}
 	const entry =
 		context.pool.get(context.ws.data.subscribedSessionId) ??
 		context.pool.vaultEntry();

@@ -168,6 +168,25 @@ describe("chat submission policy", () => {
 		});
 	});
 
+	it("carries session-scoped CLI controls on immediate and queued turns", () => {
+		const controls = {
+			provider: "pi",
+			model: "pi-pro",
+			effort: "medium",
+			permissionMode: "default",
+		};
+		for (const running of [false, true]) {
+			expect(submission({ ...controls, running })).toMatchObject({
+				message: {
+					provider: "pi",
+					model: "pi-pro",
+					effort: "medium",
+					permission_mode: "default",
+				},
+			});
+		}
+	});
+
 	it("does not attach empty arrays to the wire message", () => {
 		expect(submission()).toMatchObject({
 			kind: "immediate",

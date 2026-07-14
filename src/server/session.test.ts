@@ -475,6 +475,77 @@ describe("SessionManager — setModel", () => {
 	});
 });
 
+describe("SessionManager — setProvider", () => {
+	it("switches CLI per chat and hands the persisted transcript to the new provider", async () => {
+		const claudeSend = vi.fn().mockResolvedValue(undefined);
+		const piSend = vi.fn().mockResolvedValue(undefined);
+		const makeCli = (providerId: string, send: AgentSession["send"]) => ({
+			providerId,
+			query: (): AgentSession => {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: `${providerId}-session` };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send,
+				};
+			},
+		});
+		const sm = new SessionManager(
+			makeConfig("claude-sonnet-4-6"),
+			new Map([
+				["claude", makeCli("claude", claudeSend)],
+				["pi", makeCli("pi", piSend)],
+			]),
+		);
+
+		await sm.runQuery("first", () => {}, "switch-chat");
+		vi.mocked(dbMock.getSessionMessages).mockResolvedValueOnce([
+			{ role: "user", text: "first" },
+			{ role: "assistant", text: "prior answer" },
+		] as never);
+		await sm.setProvider("pi", {
+			model: "pi-pro",
+			effort: "medium",
+			permissionMode: "default",
+		});
+		await sm.runQuery("continue", () => {}, "switch-chat");
+
+		expect(claudeSend).toHaveBeenCalledTimes(1);
+		expect(piSend).toHaveBeenCalledTimes(1);
+		expect(piSend.mock.calls[0]?.[0]).toContain("<hlid_provider_handoff>");
+		expect(piSend.mock.calls[0]?.[0]).toContain("USER: first");
+		expect(piSend.mock.calls[0]?.[0]).toContain("ASSISTANT: prior answer");
+		expect(piSend.mock.calls[0]?.[0]).toContain("test prompt");
+		expect(dbMock.setSessionProviderId).toHaveBeenCalledWith(
+			"switch-chat",
+			"pi",
+		);
+		expect(dbMock.setSessionModel).toHaveBeenCalledWith(
+			"switch-chat",
+			"pi-pro",
+		);
+	});
+
+	it("rejects unavailable CLI identifiers", async () => {
+		const sm = new SessionManager(
+			makeConfig(),
+			makeProviders(makeProvider("Bash")),
+		);
+		await expect(sm.setProvider("missing")).rejects.toThrow(
+			"Unknown or unavailable provider: missing",
+		);
+	});
+});
+
 describe("SessionManager — setEffort", () => {
 	it("updates getStatus().effort with no active AgentSession", async () => {
 		const sm = new SessionManager(
@@ -2731,6 +2802,7 @@ describe("SessionManager — live tool_event persistence", () => {
 	});
 
 	it("only one setMessageText is scheduled when many chunks arrive in quick succession", async () => {
+		vi.useFakeTimers();
 		let release!: () => void;
 		const gate = new Promise<void>((r) => {
 			release = r;
@@ -2746,26 +2818,33 @@ describe("SessionManager — live tool_event persistence", () => {
 
 		const sm = new SessionManager(makeConfig(), makeProviders(provider));
 		const runPromise = sm.runQuery("burst", () => {}, "sess-live-throttle");
-		await gateReached;
+		try {
+			await gateReached;
+			expect(
+				vi
+					.mocked(dbMock.setMessageText)
+					.mock.calls.filter((c) => c[0] === "sess-live-throttle"),
+			).toHaveLength(0);
 
-		// Wait for the throttled flush to fire at least once, then confirm we
-		// did NOT do 50 writes — only a small handful.
-		// Throttle fires after TEXT_WRITE_THROTTLE_MS (800ms); use 2500ms to give
-		// comfortable headroom under CI / full-suite load and avoid flakiness.
-		await waitFor(() => {
+			// Advance the coalescing window deterministically. Real-time polling here
+			// used to flap when the full suite starved the event loop past its wall-
+			// clock deadline even though the scheduled callback was still correct.
+			await vi.advanceTimersByTimeAsync(800);
 			const writes = vi
 				.mocked(dbMock.setMessageText)
 				.mock.calls.filter((c) => c[0] === "sess-live-throttle");
-			expect(writes.length).toBeGreaterThanOrEqual(1);
-		}, 2500);
-		const writes = vi
-			.mocked(dbMock.setMessageText)
-			.mock.calls.filter((c) => c[0] === "sess-live-throttle");
-		// 50 chunks emitted essentially synchronously → coalesced into ≤ a few
-		// writes (one per TEXT_WRITE_THROTTLE_MS window). Allow slack for jitter.
-		expect(writes.length).toBeLessThanOrEqual(5);
-		release();
-		await runPromise;
+			expect(writes).toHaveLength(1);
+			expect(writes[0]?.[2]).toBe(
+				Array.from({ length: 50 }, (_, index) => `${index} `).join(""),
+			);
+
+			release();
+			await runPromise;
+		} finally {
+			release();
+			await runPromise;
+			vi.useRealTimers();
+		}
 	});
 
 	it("text_delta after a tool_start reuses the same placeholder (one assistant row per turn)", async () => {

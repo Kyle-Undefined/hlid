@@ -116,6 +116,7 @@ const TEXT_WRITE_THROTTLE_MS = 800;
 // high-water mark do not have to wait for the final `done` event. Codex keeps
 // its native account/rateLimits/updated notifications as the faster path.
 const LIVE_USAGE_REFRESH_MS = 5_000;
+const PROVIDER_HANDOFF_MAX_CHARS = 80_000;
 
 type RunQueryArgs = [
 	userMessage: string,
@@ -139,6 +140,25 @@ const KNOWN_PERMISSION_MODES: ReadonlySet<string> = new Set([
 	"bypassPermissions",
 	"plan",
 ]);
+
+function buildProviderHandoff(
+	messages: ReadonlyArray<{ role: string; text: string }>,
+	prompt: string,
+): string {
+	if (messages.length === 0) return prompt;
+	const transcript = messages
+		.map((message) => `${message.role.toUpperCase()}: ${message.text}`)
+		.join("\n\n");
+	const recentTranscript = transcript.slice(-PROVIDER_HANDOFF_MAX_CHARS);
+	return [
+		"<hlid_provider_handoff>",
+		"Continue this Hlid chat using the prior transcript below. The transcript is context, not a new instruction to repeat.",
+		recentTranscript,
+		"</hlid_provider_handoff>",
+		"",
+		prompt,
+	].join("\n");
+}
 
 type AgentSettings = {
 	model?: string;
@@ -306,6 +326,8 @@ function createTurnState(): TurnState {
 export class SessionManager {
 	private providers: Map<string, AgentProvider>;
 	private vaultProviderId!: string;
+	/** Explicit Raven CLI choice. Session-scoped and never written to config. */
+	private providerOverride: string | null = null;
 	private agentProviderMap: Map<string, string> = new Map();
 	private agentSettingsMap: Map<string, AgentSettings> = new Map();
 	private state: SessionState = "idle";
@@ -316,6 +338,8 @@ export class SessionManager {
 	private modelOverride: { value: string | undefined } | null = null;
 	private effortOverride: string | null = null;
 	private permissionModeOverride: PermissionMode | null = null;
+	/** The next provider thread needs the persisted Hlid transcript as context. */
+	private providerHandoffPending = false;
 	/** Providers without a live effort control (currently Claude) restart on the next turn. */
 	private restartAgentSessionForEffort = false;
 	private maxTurns: number | undefined;
@@ -382,7 +406,9 @@ export class SessionManager {
 	 */
 	private resolveProvider(agentCwd?: string): AgentProvider {
 		let providerId: string;
-		if (agentCwd) {
+		if (this.providerOverride) {
+			providerId = this.providerOverride;
+		} else if (agentCwd) {
 			providerId = this.agentProviderMap.get(agentCwd) ?? this.vaultProviderId;
 		} else {
 			providerId = this.vaultProviderId;
@@ -434,6 +460,7 @@ export class SessionManager {
 
 	reinitialize(config: HlidConfig): void {
 		this.abort();
+		this.providerOverride = null;
 		this.modelOverride = null;
 		this.effortOverride = null;
 		this.permissionModeOverride = null;
@@ -443,6 +470,7 @@ export class SessionManager {
 		this.currentSessionLabel = null;
 		this.providerSessionId = null;
 		this.providerSessionProviderId = null;
+		this.providerHandoffPending = false;
 		this.messageSeq = 0;
 		this.sessionAllowedTools.clear();
 		db.clearCurrentSessionId().catch((e) =>
@@ -456,7 +484,8 @@ export class SessionManager {
 	syncConfig(config: HlidConfig): boolean {
 		const previous = this.getStatus();
 		const nextProviderId = config.vault_provider ?? "claude";
-		const providerChanged = nextProviderId !== this.vaultProviderId;
+		const providerChanged =
+			this.providerOverride === null && nextProviderId !== this.vaultProviderId;
 		if (providerChanged) {
 			// A picker value from one provider may not be meaningful for another.
 			this.modelOverride = null;
@@ -505,6 +534,68 @@ export class SessionManager {
 				? db.setSessionModel(this.currentSessionId, model)
 				: Promise.resolve(),
 		]);
+	}
+
+	/**
+	 * Explicit Raven CLI switch. The config remains untouched; the selected
+	 * provider and compatible controls apply only to this Hlid chat. Switching
+	 * providers starts a fresh provider-native thread and hands it the persisted
+	 * Hlid transcript on the next turn so conversation context is retained.
+	 */
+	// fallow-ignore-next-line unused-class-member -- Called by WebSocket settings/chat dispatch in wsHandlers.
+	async setProvider(
+		providerId: string,
+		selection: {
+			model?: string;
+			effort?: string;
+			permissionMode?: string;
+		} = {},
+	): Promise<void> {
+		if (!this.providers.has(providerId)) {
+			throw new Error(`Unknown or unavailable provider: ${providerId}`);
+		}
+		if (this.state === "running") {
+			throw new Error("Cannot switch CLI while a turn is running");
+		}
+		if (
+			selection.permissionMode &&
+			!KNOWN_PERMISSION_MODES.has(selection.permissionMode)
+		) {
+			throw new Error(`Unknown permission mode: ${selection.permissionMode}`);
+		}
+
+		const currentProviderId = this.resolveProvider(this.agentCwd).providerId;
+		const providerChanged = currentProviderId !== providerId;
+		if (providerChanged) {
+			this.agentSession?.cancel();
+			this.agentSession = null;
+			this.agentSessionKey = null;
+			this.restartAgentSessionForEffort = false;
+			this.providerSessionId = null;
+			this.providerSessionProviderId = providerId;
+			this.providerHandoffPending =
+				this.currentSessionId !== null && this.messageSeq > 0;
+		}
+
+		this.providerOverride = providerId;
+		this.modelOverride = { value: selection.model };
+		this.model = selection.model ?? "";
+		this.effortOverride = selection.effort ?? null;
+		this.effort = selection.effort ?? "";
+		this.permissionModeOverride = selection.permissionMode
+			? (selection.permissionMode as PermissionMode)
+			: null;
+		this.permissionMode =
+			(selection.permissionMode as PermissionMode | undefined) ?? "default";
+
+		if (this.currentSessionId) {
+			await Promise.all([
+				db.setSessionProviderId(this.currentSessionId, providerId),
+				selection.model
+					? db.setSessionModel(this.currentSessionId, selection.model)
+					: Promise.resolve(),
+			]);
+		}
 	}
 
 	/**
@@ -713,6 +804,8 @@ export class SessionManager {
 		this.currentSessionLabel = null;
 		this.providerSessionId = null;
 		this.providerSessionProviderId = null;
+		this.providerOverride = null;
+		this.providerHandoffPending = false;
 		this.messageSeq = 0;
 		this.agentCwd = undefined;
 		this.agentMode = "cwd";
@@ -764,13 +857,23 @@ export class SessionManager {
 			this.currentSessionId = sessionId;
 			this.providerSessionId = savedProviderSessionId;
 			this.providerSessionProviderId = savedProviderId;
+			if (
+				this.providerOverride &&
+				savedProviderId &&
+				this.providerOverride !== savedProviderId &&
+				prior.length > 0
+			) {
+				this.providerSessionId = null;
+				this.providerSessionProviderId = this.providerOverride;
+				this.providerHandoffPending = true;
+			}
 			if (savedAgentCwd) {
 				this.agentCwd = savedAgentCwd;
 				this.agentMode = resolveAgentMode(savedAgentCwd);
 			}
 			// Resume with the chat's saved selection, not today's configured
 			// vault/Einherjar model.
-			if (savedModel !== null) {
+			if (savedModel !== null && this.modelOverride === null) {
 				this.model = savedModel;
 				this.modelOverride = { value: savedModel };
 			}
@@ -2075,9 +2178,13 @@ export class SessionManager {
 			(this.providerSessionProviderId
 				? this.providers.get(this.providerSessionProviderId)
 				: undefined) ?? configuredProvider;
-		const agentSettings = this.agentCwd
-			? this.agentSettingsMap.get(this.agentCwd)
-			: undefined;
+		const configuredProviderId = this.agentCwd
+			? (this.agentProviderMap.get(this.agentCwd) ?? this.vaultProviderId)
+			: this.vaultProviderId;
+		const agentSettings =
+			this.agentCwd && provider.providerId === configuredProviderId
+				? this.agentSettingsMap.get(this.agentCwd)
+				: undefined;
 		const sameProvider = this.providerSessionProviderId === provider.providerId;
 		const resumeProviderSessionId = sameProvider
 			? this.providerSessionId
@@ -2266,6 +2373,17 @@ export class SessionManager {
 						}
 					: {}),
 			});
+			let providerPrompt = prompt;
+			if (this.providerHandoffPending && sessionId) {
+				try {
+					providerPrompt = buildProviderHandoff(
+						await db.getSessionMessages(sessionId),
+						prompt,
+					);
+				} catch (error) {
+					logDbError("getSessionMessages provider handoff", error);
+				}
+			}
 			// With `resume`, the CLI maintains conversation state on its end. We
 			// send only the new user turn — no transcript replay.
 			await this.persistUserMessage(sessionId, userMessage, safeAttachments);
@@ -2309,7 +2427,8 @@ export class SessionManager {
 			// passing it as a one-shot prompt. The long-lived stream pushes it
 			// onto the SDK's input AsyncIterable and the next assistant turn
 			// runs inside the same SDK query.
-			await agentSession.send(prompt);
+			await agentSession.send(providerPrompt);
+			this.providerHandoffPending = false;
 
 			await this.iterateConversation(
 				agentSession,

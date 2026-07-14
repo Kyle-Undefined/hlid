@@ -108,6 +108,7 @@ function makeSession(overrides: Partial<SessionManager> = {}): SessionManager {
 		probeMcpStatus: vi.fn().mockResolvedValue(undefined),
 		restoreMcpStatus: vi.fn(),
 		setModel: vi.fn().mockResolvedValue(undefined),
+		setProvider: vi.fn().mockResolvedValue(undefined),
 		setPermissionMode: vi.fn().mockResolvedValue(undefined),
 		getAccountInfo: vi.fn().mockResolvedValue(null),
 		...overrides,
@@ -508,6 +509,65 @@ describe("message — set_model", () => {
 		const ws = makeWs();
 		await message(ws as never, JSON.stringify({ type: "set_model" }));
 		expect(session.setModel).toHaveBeenCalledWith(undefined);
+	});
+});
+
+describe("message — set_provider", () => {
+	it("switches the session-scoped CLI and broadcasts the updated status", async () => {
+		const session = makeSession({
+			getStatus: vi.fn().mockReturnValue({
+				state: "idle",
+				model: "pi-pro",
+				permission_mode: "default",
+				effort: "medium",
+			}),
+		});
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "set_provider",
+				provider: "pi",
+				model: "pi-pro",
+				effort: "medium",
+				permission_mode: "default",
+			}),
+		);
+
+		expect(session.setProvider).toHaveBeenCalledWith("pi", {
+			model: "pi-pro",
+			effort: "medium",
+			permissionMode: "default",
+		});
+		expect(runState.broadcast).toHaveBeenCalledWith({
+			type: "status",
+			state: "idle",
+			model: "pi-pro",
+			permission_mode: "default",
+			effort: "medium",
+		});
+	});
+
+	it("does not apply archived-session settings to the vault manager", async () => {
+		const session = makeSession();
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs("archived-session");
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "set_provider",
+				provider: "pi",
+				session_id: "archived-session",
+			}),
+		);
+
+		expect(session.setProvider).not.toHaveBeenCalled();
+		expect(runState.broadcast).not.toHaveBeenCalled();
 	});
 });
 

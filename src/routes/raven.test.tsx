@@ -328,6 +328,7 @@ describe("Raven composed submission behavior", () => {
 		expect(state.send).toHaveBeenCalledWith({
 			type: "set_model",
 			model: "gpt-5.5",
+			session_id: expect.any(String),
 		});
 
 		fireEvent.click(screen.getByRole("button", { name: "High" }));
@@ -335,10 +336,94 @@ describe("Raven composed submission behavior", () => {
 		expect(state.send).toHaveBeenCalledWith({
 			type: "set_effort",
 			effort: "high",
+			session_id: expect.any(String),
 		});
 
 		fireEvent.focus(screen.getByRole("combobox"));
 		expect(screen.queryByRole("dialog", { name: "Model settings" })).toBeNull();
+	});
+
+	it("switches the current chat to any available CLI without changing config", () => {
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as object),
+				claude: {
+					interactive_mode: false,
+					model: "claude-sonnet-4-6",
+					effort: "high",
+					permission_mode: "default",
+				},
+			},
+			providers: [
+				{
+					id: "claude",
+					label: "Claude",
+					available: true,
+					models: [{ value: "claude-sonnet-4-6", label: "Sonnet 4.6" }],
+				},
+				{
+					id: "pi",
+					label: "Pi",
+					available: true,
+					models: [{ value: "pi-pro", label: "Pi Pro", isDefault: true }],
+					effortLevels: [{ value: "medium", label: "Medium" }],
+					permissionModes: [{ value: "default", label: "Ask" }],
+				},
+			],
+		};
+
+		render(<ChatPage />);
+		fireEvent.click(
+			screen.getByRole("button", { name: /claude.*sonnet 4\.6/i }),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Pi" }));
+
+		expect(state.send).toHaveBeenCalledWith({
+			type: "set_provider",
+			provider: "pi",
+			model: "pi-pro",
+			effort: "medium",
+			permission_mode: "default",
+			session_id: expect.any(String),
+		});
+		expect(
+			screen.getByRole("button", { name: /pi.*pi-pro.*medium.*ask/i }),
+		).toBeTruthy();
+		expect(
+			screen.getByRole("button", { name: "Pi Pro (default)" }),
+		).toBeTruthy();
+	});
+
+	it("does not highlight equivalent Fable family identifiers as different", () => {
+		state.actualModel = "claude-fable-5";
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as object),
+				claude: {
+					interactive_mode: false,
+					model: "fable-5[1m]",
+					effort: "high",
+					permission_mode: "default",
+				},
+			},
+			providers: [
+				{
+					id: "claude",
+					label: "Claude",
+					available: true,
+					models: [{ value: "fable-5[1m]", label: "Fable" }],
+				},
+			],
+		};
+
+		render(<ChatPage />);
+		const badge = screen.getByRole("button", { name: /claude.*fable-5/i });
+		expect(badge.className).not.toContain("text-amber");
+		fireEvent.click(badge);
+		expect(screen.queryByText("configured")).toBeNull();
+		expect(screen.queryByText("current")).toBeNull();
 	});
 
 	it("restores an agent session's saved provider and model instead of current config", () => {
@@ -397,6 +482,8 @@ describe("Raven composed submission behavior", () => {
 		expect(screen.queryByRole("button", { name: "Terra" })).toBeNull();
 		expect(screen.queryByText("selected")).toBeNull();
 		expect(screen.queryByText("actual")).toBeNull();
+		expect(screen.getByText("configured")).toBeTruthy();
+		expect(screen.getByText("current")).toBeTruthy();
 	});
 
 	it("binds a database transcript to its matching live pool session", () => {

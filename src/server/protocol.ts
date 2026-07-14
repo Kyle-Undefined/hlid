@@ -423,6 +423,11 @@ export type ClientChatMessage = {
 	plan_mode?: boolean;
 	/** With plan_mode: ask the agent to render its plan as an HTML document. */
 	plan_html?: boolean;
+	/** Raven's session-scoped CLI/model controls, repeated on chat for archived-session restoration. */
+	provider?: string;
+	model?: string;
+	effort?: string;
+	permission_mode?: string;
 };
 
 export type ClientCancelQueuedMessage = {
@@ -536,6 +541,17 @@ export type ClientCloseSessionMessage = {
 export type ClientSetModelMessage = {
 	type: "set_model";
 	model?: string;
+	session_id?: string;
+};
+
+/** Explicitly move this Hlid chat to another installed CLI without changing config. */
+export type ClientSetProviderMessage = {
+	type: "set_provider";
+	provider: string;
+	model?: string;
+	effort?: string;
+	permission_mode?: string;
+	session_id?: string;
 };
 
 /**
@@ -546,6 +562,7 @@ export type ClientSetModelMessage = {
 export type ClientSetPermissionModeMessage = {
 	type: "set_permission_mode";
 	mode: string;
+	session_id?: string;
 };
 
 /**
@@ -558,6 +575,7 @@ export type ClientSetPermissionModeMessage = {
 export type ClientSetEffortMessage = {
 	type: "set_effort";
 	effort: string;
+	session_id?: string;
 };
 
 export type ClientMessage =
@@ -579,6 +597,7 @@ export type ClientMessage =
 	| ClientSubscribeSessionMessage
 	| ClientStopSessionMessage
 	| ClientCloseSessionMessage
+	| ClientSetProviderMessage
 	| ClientSetModelMessage
 	| ClientSetPermissionModeMessage
 	| ClientSetEffortMessage;

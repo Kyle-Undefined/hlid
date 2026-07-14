@@ -158,6 +158,10 @@ function sendChatToServer(msg: QueuedChatMessage): boolean {
 	}
 	if (msg.plan_mode) payload.plan_mode = true;
 	if (msg.plan_html) payload.plan_html = true;
+	if (msg.provider) payload.provider = msg.provider;
+	if (msg.model) payload.model = msg.model;
+	if (msg.effort) payload.effort = msg.effort;
+	if (msg.permission_mode) payload.permission_mode = msg.permission_mode;
 	try {
 		_ws.send(JSON.stringify(payload));
 		return true;

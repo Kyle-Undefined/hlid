@@ -100,6 +100,10 @@ export function prepareChatSubmission(input: {
 	agentContextAlreadySent: boolean;
 	planMode: boolean;
 	planHtml: boolean;
+	provider?: string;
+	model?: string;
+	effort?: string;
+	permissionMode?: string;
 }): ChatSubmission | null {
 	if (!input.text && input.attachments.length === 0) return null;
 	const attachments =
@@ -116,6 +120,12 @@ export function prepareChatSubmission(input: {
 				agent_cwd: input.agentCwd,
 				plan_mode: input.planMode || undefined,
 				plan_html: (input.planMode && input.planHtml) || undefined,
+				...(input.provider ? { provider: input.provider } : {}),
+				...(input.model ? { model: input.model } : {}),
+				...(input.effort ? { effort: input.effort } : {}),
+				...(input.permissionMode
+					? { permission_mode: input.permissionMode }
+					: {}),
 			},
 		};
 	}
@@ -136,6 +146,12 @@ export function prepareChatSubmission(input: {
 			agent_cwd: agentCwd,
 			plan_mode: input.planMode || undefined,
 			plan_html: (input.planMode && input.planHtml) || undefined,
+			...(input.provider ? { provider: input.provider } : {}),
+			...(input.model ? { model: input.model } : {}),
+			...(input.effort ? { effort: input.effort } : {}),
+			...(input.permissionMode
+				? { permission_mode: input.permissionMode }
+				: {}),
 		},
 		marksAgentContextSent: agentCwd !== undefined,
 	};

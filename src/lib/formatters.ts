@@ -11,22 +11,42 @@ export function normalizeModel(model: string): string {
 }
 
 /**
+ * Stable identity used only for configured-vs-runtime comparisons.
+ *
+ * Claude's moving family aliases can be reported with a concrete release or
+ * context suffix (for example `fable-5[1m]`) even when the configured picker
+ * value is the family alias. Treat Fable, Sonnet, and Opus as family-stable so
+ * those provider-side spellings do not create a false "different" badge.
+ */
+export function modelComparisonKey(model: string): string {
+	const normalized = normalizeModel(model).toLowerCase();
+	for (const family of ["fable", "sonnet", "opus"] as const) {
+		if (new RegExp(`(^|[^a-z])${family}([^a-z]|$)`).test(normalized)) {
+			return family;
+		}
+	}
+	return normalized;
+}
+
+/**
  * Resolve the "effective" model for mismatch comparison + the mismatch flag.
  *
  * `actualModel` (from per-inference usage events) is authoritative once a turn
- * has run. Before that, the selected agent's configured model is used so the
- * badge surfaces an opus-vs-sonnet override before any inference occurs.
+ * has run. Before that, the active session selection is used. Both are compared
+ * with the configured Einherjar model, or the configured Vault model when no
+ * Einherjar is active.
  */
 export function deriveModelMismatch(
-	vaultModel: string | null | undefined,
+	configuredModel: string | null | undefined,
 	actualModel: string | null | undefined,
-	agentModel: string | null | undefined,
+	selectedModel: string | null | undefined,
 ): { effectiveActualModel: string | null; mismatch: boolean } {
-	const effectiveActualModel = actualModel ?? agentModel ?? null;
+	const effectiveActualModel = actualModel ?? selectedModel ?? null;
 	const mismatch =
 		!!effectiveActualModel &&
-		!!vaultModel &&
-		normalizeModel(effectiveActualModel) !== normalizeModel(vaultModel);
+		!!configuredModel &&
+		modelComparisonKey(effectiveActualModel) !==
+			modelComparisonKey(configuredModel);
 	return { effectiveActualModel, mismatch };
 }
 
