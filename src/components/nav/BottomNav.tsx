@@ -1,5 +1,4 @@
 import { Link } from "@tanstack/react-router";
-import { LockButton } from "../auth/LockButton";
 import { NAV_ITEMS } from "./items";
 import { WsStatusDot } from "./SystemStatusDot";
 
@@ -31,7 +30,6 @@ export function BottomNav() {
 						<span className={LABEL}>{label}</span>
 					</Link>
 				))}
-				<LockButton mobile />
 			</div>
 		</nav>
 	);

@@ -39,9 +39,10 @@ describe("LockButton", () => {
 		resolveFetch(new Response());
 	});
 
-	it("renders the compact mobile variant", () => {
+	it("renders the settings variant without a navigation icon", () => {
 		vi.stubGlobal("fetch", vi.fn());
-		render(<LockButton mobile />);
-		expect(screen.getByText("Lock")).toBeTruthy();
+		render(<LockButton variant="settings" />);
+		const button = screen.getByRole("button", { name: "Lock" });
+		expect(button.querySelector("svg")).toBeNull();
 	});
 });

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { LockButton } from "#/components/auth/LockButton";
 import { ConfirmAction } from "#/components/ConfirmAction";
 import { Field, Section } from "./fields";
 
@@ -101,6 +102,12 @@ export function SecuritySection() {
 			</Section>
 
 			<Section title="Trusted Devices">
+				<Field
+					label="This Device"
+					hint="Return this browser to the unlock screen without affecting other trusted devices."
+				>
+					<LockButton variant="settings" />
+				</Field>
 				<Field
 					label="Revoke All Devices"
 					hint="Deletes every active 30-day session, including this browser."

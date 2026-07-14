@@ -50,7 +50,8 @@ const CATEGORIES = [
 		id: "access",
 		label: "Access",
 		description: "Network, TLS, passwords, and trusted devices",
-		keywords: "port local network tailscale tls password trusted devices",
+		keywords:
+			"port local network tailscale tls password trusted devices lock logout sign out",
 		group: "primary",
 	},
 	{
