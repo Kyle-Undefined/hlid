@@ -203,6 +203,86 @@ describe("useLoadChatHistory — initial load", () => {
 			currentStep: "Reading files",
 		});
 	});
+
+	it("uses a 201-row lookahead and prepends the preceding cursor page without overlap", async () => {
+		const rows = (start: number, end: number) =>
+			Array.from({ length: end - start + 1 }, (_, index) => {
+				const seq = start + index;
+				return {
+					id: seq + 1,
+					session_id: "sess-1",
+					seq,
+					role: seq % 2 === 0 ? "user" : "assistant",
+					text: `message ${seq}`,
+					timestamp: 1_000 + seq,
+					toolEvents: [],
+					attachments: [],
+					recap: null,
+				};
+			});
+		vi.mocked(getSessionDataFn)
+			.mockResolvedValueOnce(rows(100, 300))
+			.mockResolvedValueOnce(rows(0, 100));
+		const dispatch = vi.fn();
+		const hook = renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef: { current: null },
+			historyReadyRef: { current: false },
+			handleWsMessage: noopWsHandler,
+			wsStatus: "connected",
+			sessionIdRef: { current: "sess-1" },
+		});
+
+		await act(async () => {});
+		expect(hook.result.current.hasOlderHistory).toBe(true);
+		let loaded = 0;
+		await act(async () => {
+			loaded = await hook.result.current.loadOlderHistory();
+		});
+
+		expect(loaded).toBe(101);
+		expect(getSessionDataFn).toHaveBeenNthCalledWith(1, {
+			data: { sessionId: "sess-1", limit: 201 },
+		});
+		expect(getSessionDataFn).toHaveBeenNthCalledWith(2, {
+			data: {
+				sessionId: "sess-1",
+				beforeSeq: 101,
+				beforeId: 102,
+				limit: 201,
+			},
+		});
+		const initial = dispatch.mock.calls.find(
+			([action]) => action.type === "LOAD_HISTORY",
+		)?.[0];
+		const prepend = dispatch.mock.calls.find(
+			([action]) => action.type === "PREPEND_HISTORY",
+		)?.[0];
+		const combinedMessages = [...prepend.items, ...initial.items].filter(
+			(item) => item.kind === "message",
+		);
+		const combinedTexts = combinedMessages.map((item) => item.text);
+		expect(combinedTexts).toEqual(
+			Array.from({ length: 301 }, (_, seq) => `message ${seq}`),
+		);
+		expect(new Set(combinedTexts).size).toBe(301);
+		expect(combinedMessages.map((item) => item.id)).toEqual(
+			Array.from(
+				{ length: 301 },
+				(_, index) => `persisted-message:${index + 1}`,
+			),
+		);
+		expect(getSessionPlanProposalsFn).toHaveBeenNthCalledWith(2, {
+			data: {
+				sessionId: "sess-1",
+				minSeq: 0,
+				maxSeq: 100,
+				beforeSeq: 101,
+			},
+		});
+	});
 });
 
 describe("useLoadChatHistory — reconnect recovery", () => {
@@ -238,14 +318,14 @@ describe("useLoadChatHistory — reconnect recovery", () => {
 		const pendingIdRef = { current: null as string | null };
 		const sessionIdRef = { current: "sess-1" };
 
-		// First DB call (initial load) returns just a user message
+		const userRow = makeRow("user", "hello", 1000);
+		const assistantRow = makeRow("assistant", "world", 2000);
+		// First DB call (initial load) returns just a user message. Reconnect
+		// returns that same persisted row plus the newly persisted assistant.
 		vi.mocked(getSessionDataFn)
-			.mockResolvedValueOnce([makeRow("user", "hello", 1000)])
+			.mockResolvedValueOnce([userRow])
 			// Second call (reconnect) returns user + assistant
-			.mockResolvedValueOnce([
-				makeRow("user", "hello", 1000),
-				makeRow("assistant", "world", 2000),
-			]);
+			.mockResolvedValueOnce([userRow, assistantRow]);
 
 		const { rerender } = renderHistory({
 			existingSessionId: "sess-1",
@@ -296,16 +376,107 @@ describe("useLoadChatHistory — reconnect recovery", () => {
 
 		// getSessionDataFn called twice (initial + reconnect)
 		expect(getSessionDataFn).toHaveBeenCalledTimes(2);
+		expect(getSessionDataFn).toHaveBeenNthCalledWith(2, {
+			data: { sessionId: "sess-1", minSeq: 1, minId: 1 },
+		});
 
 		// LOAD_HISTORY dispatched twice
 		const loadHistoryCalls = dispatch.mock.calls.filter(
 			([a]) => a.type === "LOAD_HISTORY",
 		);
 		expect(loadHistoryCalls).toHaveLength(2);
+		expect(loadHistoryCalls[0][0].items[0].id).toBe("persisted-message:1");
+		expect(loadHistoryCalls[1][0].items[0].id).toBe("persisted-message:1");
 
 		// Second LOAD_HISTORY includes the assistant message
 		const secondItems = loadHistoryCalls[1][0].items as { role: string }[];
 		expect(secondItems.some((i) => i.role === "assistant")).toBe(true);
+	});
+
+	it("serializes reconnect behind an in-flight older-page load", async () => {
+		const rows = (start: number, end: number) =>
+			Array.from({ length: end - start + 1 }, (_, index) => {
+				const seq = start + index;
+				return {
+					id: seq + 1,
+					session_id: "sess-1",
+					seq,
+					role: "user" as const,
+					text: `message ${seq}`,
+					timestamp: 1_000 + seq,
+					toolEvents: [],
+					attachments: [],
+					recap: null,
+				};
+			});
+		let resolveOlder!: (value: ReturnType<typeof rows>) => void;
+		const olderPage = new Promise<ReturnType<typeof rows>>((resolve) => {
+			resolveOlder = resolve;
+		});
+		vi.mocked(getSessionDataFn)
+			.mockResolvedValueOnce(rows(100, 300))
+			.mockReturnValueOnce(olderPage)
+			.mockResolvedValueOnce(rows(0, 300));
+		const dispatch = vi.fn();
+		const historyReadyRef = { current: false };
+		const pendingIdRef = { current: null as string | null };
+		const sessionIdRef = { current: "sess-1" };
+		const hook = renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef,
+			historyReadyRef,
+			handleWsMessage: noopWsHandler,
+			wsStatus: "connected",
+			sessionIdRef,
+		});
+		await act(async () => {});
+
+		let olderRequest!: Promise<number>;
+		act(() => {
+			olderRequest = hook.result.current.loadOlderHistory();
+		});
+		hook.rerender({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef,
+			historyReadyRef,
+			handleWsMessage: noopWsHandler,
+			wsStatus: "disconnected",
+			sessionIdRef,
+		});
+		hook.rerender({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef,
+			historyReadyRef,
+			handleWsMessage: noopWsHandler,
+			wsStatus: "connected",
+			sessionIdRef,
+		});
+		await act(async () => {});
+		expect(getSessionDataFn).toHaveBeenCalledTimes(2);
+
+		await act(async () => {
+			resolveOlder(rows(0, 100));
+			await olderRequest;
+		});
+		await act(async () => {});
+
+		expect(getSessionDataFn).toHaveBeenCalledTimes(3);
+		expect(getSessionDataFn).toHaveBeenNthCalledWith(3, {
+			data: { sessionId: "sess-1", minSeq: 0, minId: 1 },
+		});
+		expect(
+			dispatch.mock.calls
+				.map(([action]) => action.type)
+				.filter(
+					(type) => type === "LOAD_HISTORY" || type === "PREPEND_HISTORY",
+				),
+		).toEqual(["LOAD_HISTORY", "PREPEND_HISTORY", "LOAD_HISTORY"]);
 	});
 
 	it("on reconnect clears stale pendingIdRef before re-fetch", async () => {
@@ -678,7 +849,8 @@ describe("useLoadChatHistory — in-flight assistant reuse during running turn",
 		);
 		expect(addAssistantCalls).toHaveLength(0);
 
-		// pendingIdRef should match the placeholder's id from the LOAD_HISTORY items.
+		// pendingIdRef should match the placeholder's stable persisted-row id from
+		// the LOAD_HISTORY items.
 		const loadCall = dispatch.mock.calls.find(
 			([a]) => a.type === "LOAD_HISTORY",
 		);

@@ -138,9 +138,9 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 	},
 	{
 		method: "GET",
-		path: "/db/session-messages?session_id=",
+		path: "/db/session-messages?session_id=&before_seq=&limit=",
 		server: "api",
-		desc: "Full message/tool-event/attachment transcript for a session.",
+		desc: "Message/tool-event/attachment transcript; optional backwards cursor paging.",
 	},
 	{
 		method: "PATCH",

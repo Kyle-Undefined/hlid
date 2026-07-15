@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import {
+	act,
 	cleanup,
 	fireEvent,
 	render,
@@ -7,6 +8,10 @@ import {
 	waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	__resetForTesting as resetUpdateStore,
+	setUpdateStatus,
+} from "#/hooks/updateStore";
 import type { CliUpdateStatus } from "#/lib/cliUpdateTypes";
 import type { ReleaseNotes } from "#/lib/updates";
 import { UpdatesSection } from "./UpdatesSection";
@@ -85,6 +90,7 @@ function stubFetch(
 describe("UpdatesSection", () => {
 	beforeEach(() => {
 		vi.restoreAllMocks();
+		resetUpdateStore();
 	});
 
 	it("shows current version and up-to-date hint", async () => {
@@ -101,6 +107,20 @@ describe("UpdatesSection", () => {
 		expect(await screen.findByText("update available: v1.1.0")).toBeTruthy();
 		expect(screen.getByText("→ v1.1.0")).toBeTruthy();
 		expect(screen.getByRole("button", { name: "DOWNLOAD" })).toBeTruthy();
+	});
+
+	it("applies the shared background reconciliation while Forge stays mounted", async () => {
+		stubFetch(makeStatus());
+		render(<UpdatesSection />);
+		await screen.findByText("v1.0.0");
+
+		act(() => {
+			setUpdateStatus(
+				makeStatus({ current: "1.0.0", latest: "1.1.0", available: true }),
+			);
+		});
+
+		expect(screen.getByText("update available: v1.1.0")).toBeTruthy();
 	});
 
 	it("renders the latest published release notes and GitHub link", async () => {
@@ -336,18 +356,18 @@ describe("UpdatesSection", () => {
 	});
 
 	it("relative time buckets render minutes/hours/days/never", async () => {
-		const { unmount } = render(<UpdatesSection />);
-		unmount();
 		for (const [ageMs, label] of [
 			[5 * 60_000, "last checked 5m ago"],
 			[2 * 3_600_000, "last checked 2h ago"],
 			[3 * 86_400_000, "last checked 3d ago"],
 		] as const) {
+			resetUpdateStore();
 			stubFetch(makeStatus({ lastCheckedAt: Date.now() - ageMs }));
 			render(<UpdatesSection />);
 			expect(await screen.findByText(new RegExp(label))).toBeTruthy();
 			cleanup();
 		}
+		resetUpdateStore();
 		stubFetch(makeStatus({ lastCheckedAt: 0 }));
 		render(<UpdatesSection />);
 		expect(await screen.findByText("never checked")).toBeTruthy();

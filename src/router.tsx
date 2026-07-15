@@ -39,7 +39,12 @@ export function getRouter() {
 		routeTree,
 		scrollRestoration: true,
 		scrollToTopSelectors: [...SCROLL_TO_TOP_SELECTORS],
-		defaultPreload: "viewport",
+		// Viewport preloading eagerly resolves every visible sidebar destination.
+		// On the shell that means loading Forge, Ledger, Vault, and the rest before
+		// the route the user actually selected can settle. Intent preloading keeps
+		// hover/focus navigation fast without turning the whole navigation rail into
+		// startup work.
+		defaultPreload: "intent",
 		defaultPreloadStaleTime: 30_000,
 		defaultStaleTime: 30_000,
 		defaultErrorComponent: RouterError,

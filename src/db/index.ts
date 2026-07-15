@@ -38,6 +38,7 @@ export {
 	appendToolEvent,
 	getSessionAskUserQuestions,
 	getSessionMessages,
+	getSessionNextMessageSeq,
 	getSessionPlanProposals,
 	getSessionToolEvents,
 	setAskUserQuestionResolution,

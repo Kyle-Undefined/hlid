@@ -150,11 +150,35 @@ export type PlanProposalRow = {
 
 export async function getSessionPlanProposals(
 	sessionId: string,
+	minSeq?: number,
+	beforeSeq?: number,
+	maxSeq?: number,
 ): Promise<PlanProposalRow[]> {
 	const db = await getDb();
+	if (minSeq !== undefined) {
+		if (maxSeq !== undefined) {
+			return db
+				.query<PlanProposalRow, [string, number, number]>(
+					`SELECT proposal_id, seq, plan, decision, html_attachment_id, timestamp FROM plan_proposals WHERE session_id = ? AND seq >= ? AND seq <= ? ORDER BY seq ASC, id ASC`,
+				)
+				.all(sessionId, minSeq, maxSeq);
+		}
+		if (beforeSeq !== undefined) {
+			return db
+				.query<PlanProposalRow, [string, number, number]>(
+					`SELECT proposal_id, seq, plan, decision, html_attachment_id, timestamp FROM plan_proposals WHERE session_id = ? AND seq >= ? AND seq < ? ORDER BY seq ASC, id ASC`,
+				)
+				.all(sessionId, minSeq, beforeSeq);
+		}
+		return db
+			.query<PlanProposalRow, [string, number]>(
+				`SELECT proposal_id, seq, plan, decision, html_attachment_id, timestamp FROM plan_proposals WHERE session_id = ? AND seq >= ? ORDER BY seq ASC, id ASC`,
+			)
+			.all(sessionId, minSeq);
+	}
 	return db
 		.query<PlanProposalRow, [string]>(
-			`SELECT proposal_id, seq, plan, decision, html_attachment_id, timestamp FROM plan_proposals WHERE session_id = ? ORDER BY seq ASC`,
+			`SELECT proposal_id, seq, plan, decision, html_attachment_id, timestamp FROM plan_proposals WHERE session_id = ? ORDER BY seq ASC, id ASC`,
 		)
 		.all(sessionId);
 }
@@ -207,30 +231,157 @@ export async function setAskUserQuestionResolution(
 
 export async function getSessionAskUserQuestions(
 	sessionId: string,
+	minSeq?: number,
+	beforeSeq?: number,
+	maxSeq?: number,
 ): Promise<AskUserQuestionRow[]> {
 	const db = await getDb();
+	if (minSeq !== undefined) {
+		if (maxSeq !== undefined) {
+			return db
+				.query<AskUserQuestionRow, [string, number, number]>(
+					`SELECT request_id, seq, questions_json, answers_json, notes_json, timestamp FROM ask_user_questions WHERE session_id = ? AND seq >= ? AND seq <= ? ORDER BY seq ASC, id ASC`,
+				)
+				.all(sessionId, minSeq, maxSeq);
+		}
+		if (beforeSeq !== undefined) {
+			return db
+				.query<AskUserQuestionRow, [string, number, number]>(
+					`SELECT request_id, seq, questions_json, answers_json, notes_json, timestamp FROM ask_user_questions WHERE session_id = ? AND seq >= ? AND seq < ? ORDER BY seq ASC, id ASC`,
+				)
+				.all(sessionId, minSeq, beforeSeq);
+		}
+		return db
+			.query<AskUserQuestionRow, [string, number]>(
+				`SELECT request_id, seq, questions_json, answers_json, notes_json, timestamp FROM ask_user_questions WHERE session_id = ? AND seq >= ? ORDER BY seq ASC, id ASC`,
+			)
+			.all(sessionId, minSeq);
+	}
 	return db
 		.query<AskUserQuestionRow, [string]>(
-			`SELECT request_id, seq, questions_json, answers_json, notes_json, timestamp FROM ask_user_questions WHERE session_id = ? ORDER BY seq ASC`,
+			`SELECT request_id, seq, questions_json, answers_json, notes_json, timestamp FROM ask_user_questions WHERE session_id = ? ORDER BY seq ASC, id ASC`,
 		)
 		.all(sessionId);
 }
 
 export async function getSessionMessages(
 	sessionId: string,
+	beforeSeq?: number,
+	limit?: number,
+	minSeq?: number,
+	beforeId?: number,
+	minId?: number,
 ): Promise<MessageRow[]> {
 	const db = await getDb();
+	if (minSeq !== undefined) {
+		if (minId !== undefined) {
+			return db
+				.query<MessageRow, [string, number, number]>(
+					`SELECT * FROM messages
+					 WHERE session_id = ?
+					   AND (seq, id) >= (?, ?)
+					 ORDER BY seq ASC, id ASC`,
+				)
+				.all(sessionId, minSeq, minId);
+		}
+		return db
+			.query<MessageRow, [string, number]>(
+				`SELECT * FROM messages WHERE session_id = ? AND seq >= ? ORDER BY seq ASC, id ASC`,
+			)
+			.all(sessionId, minSeq);
+	}
+	if (limit !== undefined) {
+		if (beforeSeq !== undefined) {
+			if (beforeId !== undefined) {
+				return db
+					.query<MessageRow, [string, number, number, number]>(
+						`SELECT * FROM (
+							SELECT * FROM messages
+							WHERE session_id = ?
+							  AND (seq, id) < (?, ?)
+							ORDER BY seq DESC, id DESC LIMIT ?
+						) ORDER BY seq ASC, id ASC`,
+					)
+					.all(sessionId, beforeSeq, beforeId, limit);
+			}
+			return db
+				.query<MessageRow, [string, number, number]>(
+					`SELECT * FROM (
+						SELECT * FROM messages
+						WHERE session_id = ? AND seq < ?
+						ORDER BY seq DESC, id DESC LIMIT ?
+					) ORDER BY seq ASC, id ASC`,
+				)
+				.all(sessionId, beforeSeq, limit);
+		}
+		return db
+			.query<MessageRow, [string, number]>(
+				`SELECT * FROM (
+					SELECT * FROM messages
+					WHERE session_id = ?
+					ORDER BY seq DESC, id DESC LIMIT ?
+				) ORDER BY seq ASC, id ASC`,
+			)
+			.all(sessionId, limit);
+	}
 	return db
 		.query<MessageRow, [string]>(
-			`SELECT * FROM messages WHERE session_id = ? ORDER BY seq ASC`,
+			`SELECT * FROM messages WHERE session_id = ? ORDER BY seq ASC, id ASC`,
 		)
 		.all(sessionId);
 }
 
+/**
+ * Returns the first unused transcript sequence for a resumed session.
+ * Interactive cards consume sequence values without adding message rows, so
+ * messages.length is not a safe resume cursor.
+ */
+export async function getSessionNextMessageSeq(
+	sessionId: string,
+): Promise<number> {
+	const db = await getDb();
+	const row = db
+		.query<{ next_seq: number }, [string, string, string, string, string]>(
+			`SELECT MAX(
+				COALESCE((SELECT MAX(seq) FROM messages WHERE session_id = ?), -1),
+				COALESCE((SELECT MAX(assistant_seq) FROM tool_events WHERE session_id = ?), -1),
+				COALESCE((SELECT MAX(seq) FROM plan_proposals WHERE session_id = ?), -1),
+				COALESCE((SELECT MAX(seq) FROM ask_user_questions WHERE session_id = ?), -1),
+				COALESCE((SELECT MAX(message_seq) FROM attachments WHERE session_id = ?), -1)
+			) + 1 AS next_seq`,
+		)
+		.get(sessionId, sessionId, sessionId, sessionId, sessionId);
+	return row?.next_seq ?? 0;
+}
+
 export async function getSessionToolEvents(
 	sessionId: string,
+	minAssistantSeq?: number,
+	beforeAssistantSeq?: number,
+	maxAssistantSeq?: number,
 ): Promise<ToolEventRow[]> {
 	const db = await getDb();
+	if (minAssistantSeq !== undefined) {
+		if (maxAssistantSeq !== undefined) {
+			return db
+				.query<ToolEventRow, [string, number, number]>(
+					`SELECT * FROM tool_events WHERE session_id = ? AND assistant_seq >= ? AND assistant_seq <= ? ORDER BY assistant_seq ASC, id ASC`,
+				)
+				.all(sessionId, minAssistantSeq, maxAssistantSeq);
+		}
+		if (beforeAssistantSeq !== undefined) {
+			return db
+				.query<ToolEventRow, [string, number, number]>(
+					`SELECT * FROM tool_events WHERE session_id = ? AND assistant_seq >= ? AND assistant_seq < ? ORDER BY assistant_seq ASC, id ASC`,
+				)
+				.all(sessionId, minAssistantSeq, beforeAssistantSeq);
+		}
+		return db
+			.query<ToolEventRow, [string, number]>(
+				`SELECT * FROM tool_events WHERE session_id = ? AND assistant_seq >= ? ORDER BY assistant_seq ASC, id ASC`,
+			)
+			.all(sessionId, minAssistantSeq);
+	}
 	return db
 		.query<ToolEventRow, [string]>(
 			`SELECT * FROM tool_events WHERE session_id = ? ORDER BY id ASC`,

@@ -35,6 +35,7 @@ vi.mock("../db", () => ({
 	recordQuery: vi.fn().mockResolvedValue(undefined),
 	getSessionById: vi.fn().mockResolvedValue(null),
 	getSessionMessages: vi.fn().mockResolvedValue([]),
+	getSessionNextMessageSeq: vi.fn().mockResolvedValue(0),
 	getSessionAgentCwd: vi.fn().mockResolvedValue(null),
 	getSessionModel: vi.fn().mockResolvedValue(null),
 	getSessionProviderId: vi.fn().mockResolvedValue(null),
@@ -556,6 +557,30 @@ describe("SessionManager — setModel", () => {
 
 		expect(labelWhileRunning).toBe("MY SAVED NAME");
 		expect(sm.getSessionLabel()).toBe("MY SAVED NAME");
+	});
+
+	it("resumes after the maximum persisted transcript sequence", async () => {
+		const { provider } = makeCaptureProvider("claude");
+		vi.mocked(dbMock.getSessionMessages).mockResolvedValueOnce([
+			{ role: "user", text: "prior" },
+		] as never);
+		vi.mocked(dbMock.getSessionNextMessageSeq).mockResolvedValueOnce(8);
+		vi.mocked(dbMock.appendMessage).mockClear();
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await sm.runQuery("continue", () => {}, "saved-session");
+
+		expect(dbMock.getSessionMessages).toHaveBeenCalledWith(
+			"saved-session",
+			undefined,
+			1,
+		);
+		expect(dbMock.appendMessage).toHaveBeenCalledWith(
+			"saved-session",
+			8,
+			"user",
+			"continue",
+		);
 	});
 });
 

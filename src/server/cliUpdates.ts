@@ -1,7 +1,10 @@
-import { accessSync, constants, realpathSync } from "node:fs";
+import { accessSync, constants, mkdirSync, realpathSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { resolveClaudeExecutable } from "../lib/claudePath";
 import type { CliUpdateStatus } from "../lib/cliUpdateTypes";
 import { resolveCodexExecutable } from "../lib/codexPath";
+import { canonicalInstallDir } from "../lib/install";
 import { parseWslUnc } from "../lib/paths";
 import { runBoundedProcess } from "../lib/process";
 
@@ -12,6 +15,8 @@ import { loadConfig } from "./config";
 const CHECK_TTL_MS = 6 * 60 * 60 * 1000;
 const COMMAND_TIMEOUT_MS = 4_000;
 const REGISTRY_TIMEOUT_MS = 5_000;
+const CACHE_SCHEMA_VERSION = 1;
+const BACKGROUND_REFRESH_DELAY_MS = 1_500;
 
 type NativeCliId = "codex" | "claude";
 
@@ -545,24 +550,142 @@ export async function resolveCliUpdateAction(
 	return candidate ? (acpUpdateAction(candidate) ?? null) : null;
 }
 
-let cached: { checkedAt: number; statuses: CliUpdateStatus[] } | null = null;
-let inflight: Promise<CliUpdateStatus[]> | null = null;
+export type CliUpdateStatusCache = {
+	checkedAt: number;
+	statuses: CliUpdateStatus[];
+};
 
-export async function getCliUpdateStatuses(opts?: {
-	force?: boolean;
-}): Promise<CliUpdateStatus[]> {
-	if (!opts?.force && cached && Date.now() - cached.checkedAt < CHECK_TTL_MS) {
-		return cached.statuses;
+export type CliUpdateStatusDependencies = {
+	now(): number;
+	readCache(): Promise<CliUpdateStatusCache | null>;
+	writeCache(value: CliUpdateStatusCache): Promise<void>;
+	inspectNative(): Promise<CliUpdateStatus[]>;
+	inspectWsl(): Promise<CliUpdateStatus[]>;
+	inspectAcp(): Promise<CliUpdateStatus[]>;
+};
+
+let cached: CliUpdateStatusCache | null = null;
+let inflight: Promise<CliUpdateStatus[]> | null = null;
+let cacheHydration: Promise<void> | null = null;
+let scheduledRefresh: ReturnType<typeof setTimeout> | null = null;
+
+function cachePath(): string {
+	return join(canonicalInstallDir(), "cli-update-cache.json");
+}
+
+function isPersistedStatus(value: unknown): value is CliUpdateStatus {
+	if (!value || typeof value !== "object") return false;
+	const status = value as Partial<CliUpdateStatus>;
+	const nullableString = (field: unknown) =>
+		field === null || typeof field === "string";
+	return (
+		typeof status.id === "string" &&
+		(status.id === "codex" ||
+			status.id === "claude" ||
+			/^wsl:[^:]+:(?:codex|claude)$/.test(status.id) ||
+			/^acp:.+/.test(status.id)) &&
+		typeof status.label === "string" &&
+		nullableString(status.installedVersion) &&
+		nullableString(status.latestVersion) &&
+		typeof status.available === "boolean" &&
+		(status.updateCommand === undefined ||
+			typeof status.updateCommand === "string") &&
+		(status.updateMode === undefined ||
+			status.updateMode === "automatic" ||
+			status.updateMode === "interactive") &&
+		(status.requiresElevation === undefined ||
+			typeof status.requiresElevation === "boolean") &&
+		Number.isFinite(status.checkedAt) &&
+		(status.error === undefined || typeof status.error === "string")
+	);
+}
+
+/** @internal Strictly parse the advisory disk cache before exposing it to UI. */
+export function parseCliUpdateStatusCache(
+	raw: string,
+): CliUpdateStatusCache | null {
+	try {
+		const parsed = JSON.parse(raw) as {
+			schemaVersion?: unknown;
+			checkedAt?: unknown;
+			statuses?: unknown;
+		};
+		if (
+			parsed.schemaVersion === CACHE_SCHEMA_VERSION &&
+			Number.isFinite(parsed.checkedAt) &&
+			Array.isArray(parsed.statuses) &&
+			parsed.statuses.every(isPersistedStatus)
+		) {
+			return {
+				checkedAt: parsed.checkedAt as number,
+				statuses: parsed.statuses,
+			};
+		}
+	} catch {}
+	return null;
+}
+
+async function readPersistedCache(): Promise<CliUpdateStatusCache | null> {
+	try {
+		return parseCliUpdateStatusCache(await readFile(cachePath(), "utf8"));
+	} catch {
+		// First run or an unreadable cache falls back to normal discovery.
+		return null;
+	}
+}
+
+async function writePersistedCache(value: CliUpdateStatusCache): Promise<void> {
+	mkdirSync(canonicalInstallDir(), { recursive: true });
+	await writeFile(
+		cachePath(),
+		JSON.stringify({ schemaVersion: CACHE_SCHEMA_VERSION, ...value }, null, 2),
+		"utf8",
+	);
+}
+
+const defaultStatusDependencies: CliUpdateStatusDependencies = {
+	now: Date.now,
+	readCache: readPersistedCache,
+	writeCache: writePersistedCache,
+	inspectNative: inspectCliUpdates,
+	inspectWsl: inspectWslUpdates,
+	inspectAcp: inspectAcpUpdates,
+};
+
+async function hydrateCache(
+	dependencies: CliUpdateStatusDependencies,
+): Promise<void> {
+	if (cached) return;
+	if (cacheHydration) return cacheHydration;
+	cacheHydration = dependencies
+		.readCache()
+		.then((persisted) => {
+			if (persisted) cached = persisted;
+		})
+		.catch(() => {})
+		.finally(() => {
+			cacheHydration = null;
+		});
+	return cacheHydration;
+}
+
+function refreshCliUpdateStatuses(
+	dependencies: CliUpdateStatusDependencies,
+): Promise<CliUpdateStatus[]> {
+	if (scheduledRefresh) {
+		clearTimeout(scheduledRefresh);
+		scheduledRefresh = null;
 	}
 	if (inflight) return inflight;
 	const pending = Promise.all([
-		inspectCliUpdates(),
-		inspectWslUpdates().catch(() => []),
-		inspectAcpUpdates().catch(() => []),
+		dependencies.inspectNative(),
+		dependencies.inspectWsl().catch(() => []),
+		dependencies.inspectAcp().catch(() => []),
 	])
 		.then(([nativeStatuses, wslStatuses, acpStatuses]) => {
 			const statuses = [...nativeStatuses, ...wslStatuses, ...acpStatuses];
-			cached = { checkedAt: Date.now(), statuses };
+			cached = { checkedAt: dependencies.now(), statuses };
+			void dependencies.writeCache(cached).catch(() => {});
 			return statuses;
 		})
 		.finally(() => {
@@ -570,4 +693,59 @@ export async function getCliUpdateStatuses(opts?: {
 		});
 	inflight = pending;
 	return pending;
+}
+
+function scheduleCliUpdateRefresh(
+	dependencies: CliUpdateStatusDependencies,
+	delayMs: number,
+): void {
+	if (inflight || scheduledRefresh) return;
+	const timer = setTimeout(() => {
+		if (scheduledRefresh !== timer) return;
+		scheduledRefresh = null;
+		void refreshCliUpdateStatuses(dependencies).catch(() => {});
+	}, delayMs);
+	scheduledRefresh = timer;
+	timer.unref?.();
+}
+
+export async function getCliUpdateStatuses(
+	opts?: {
+		force?: boolean;
+		/** Return persisted stale data immediately and refresh it out of band. */
+		background?: boolean;
+		/** @internal Override the startup grace period in focused tests. */
+		backgroundDelayMs?: number;
+	},
+	dependencies = defaultStatusDependencies,
+): Promise<CliUpdateStatus[]> {
+	await hydrateCache(dependencies);
+	if (
+		!opts?.force &&
+		cached &&
+		dependencies.now() - cached.checkedAt < CHECK_TTL_MS
+	) {
+		return cached.statuses;
+	}
+	if (opts?.background) {
+		scheduleCliUpdateRefresh(
+			dependencies,
+			Math.max(0, opts.backgroundDelayMs ?? BACKGROUND_REFRESH_DELAY_MS),
+		);
+		return cached?.statuses ?? [];
+	}
+	return refreshCliUpdateStatuses(dependencies);
+}
+
+export function isCliUpdateStatusRefreshPending(): boolean {
+	return inflight !== null || scheduledRefresh !== null;
+}
+
+/** @internal Reset module-level cache state between dependency-injected tests. */
+export function __resetCliUpdateStatusCacheForTesting(): void {
+	if (scheduledRefresh) clearTimeout(scheduledRefresh);
+	cached = null;
+	inflight = null;
+	cacheHydration = null;
+	scheduledRefresh = null;
 }

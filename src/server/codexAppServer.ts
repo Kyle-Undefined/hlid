@@ -12,9 +12,10 @@
  * WSL agent's generated .cmd wrapper is its own executable and therefore its
  * own instance) and multiplexes all sessions over it as threads.
  *
- * Lifecycle: lazily spawned on first acquire, kept alive for the life of the
- * hlid process, respawned on the next acquire if it died. closeAll() is wired
- * into the server's SIGINT/SIGTERM handlers.
+ * Lifecycle: lazily spawned on first acquire, retained while RPCs or threads
+ * are active, and reaped after an idle grace period. It respawns on the next
+ * acquire after an idle shutdown or crash. closeAll() is also wired into the
+ * server's SIGINT/SIGTERM handlers.
  */
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 
@@ -27,6 +28,30 @@ type JsonRpcMessage = {
 };
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
+const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60_000;
+const DEFAULT_METADATA_IDLE_TIMEOUT_MS = 10_000;
+
+function configuredIdleTimeoutMs(): number {
+	const raw = process.env.HLID_CODEX_APP_SERVER_IDLE_MS;
+	if (raw === undefined || raw.trim() === "") return DEFAULT_IDLE_TIMEOUT_MS;
+	const parsed = Number(raw);
+	// Zero intentionally means "reap on the next event-loop turn". Invalid or
+	// negative values fall back to the safe production default.
+	return Number.isFinite(parsed) && parsed >= 0
+		? parsed
+		: DEFAULT_IDLE_TIMEOUT_MS;
+}
+
+function configuredMetadataIdleTimeoutMs(): number {
+	const raw = process.env.HLID_CODEX_APP_SERVER_METADATA_IDLE_MS;
+	if (raw === undefined || raw.trim() === "") {
+		return DEFAULT_METADATA_IDLE_TIMEOUT_MS;
+	}
+	const parsed = Number(raw);
+	return Number.isFinite(parsed) && parsed >= 0
+		? parsed
+		: DEFAULT_METADATA_IDLE_TIMEOUT_MS;
+}
 
 type PendingRequest = {
 	resolve: (value: unknown) => void;
@@ -60,10 +85,25 @@ export class CodexAppServer {
 	private threads = new Map<string, ThreadHandler>();
 	private lineBuffer = "";
 	private dead = false;
+	private idleTimer: ReturnType<typeof setTimeout> | undefined;
+	private activeServerRequests = 0;
+	private readonly idleTimeoutMs: number;
+	private readonly metadataIdleTimeoutMs: number;
+	private hasOwnedThread = false;
 	/** Resolves after the initialize/initialized handshake completes. */
 	readonly ready: Promise<void>;
 
-	constructor(readonly executable: string) {
+	constructor(
+		readonly executable: string,
+		idleTimeoutMs = configuredIdleTimeoutMs(),
+		private readonly onClosed?: (server: CodexAppServer) => void,
+		metadataIdleTimeoutMs = Math.min(
+			idleTimeoutMs,
+			configuredMetadataIdleTimeoutMs(),
+		),
+	) {
+		this.idleTimeoutMs = Math.max(0, idleTimeoutMs);
+		this.metadataIdleTimeoutMs = Math.max(0, metadataIdleTimeoutMs);
 		// No cwd: the wrapper .cmd sets its own WSL cwd via `wsl --cd`, and for
 		// native codex every thread passes an explicit cwd at thread/start and
 		// turn/start, so the process cwd is irrelevant. windowsHide passes
@@ -113,6 +153,7 @@ export class CodexAppServer {
 	): Promise<unknown> {
 		if (this.dead)
 			return Promise.reject(new Error("Codex app-server is not running"));
+		this.cancelIdleReap();
 		const id = this.nextId++;
 		return new Promise((resolve, reject) => {
 			const timer = setTimeout(() => {
@@ -135,11 +176,20 @@ export class CodexAppServer {
 	}
 
 	attachThread(threadId: string, handler: ThreadHandler): void {
+		this.cancelIdleReap();
+		this.hasOwnedThread = true;
 		this.threads.set(threadId, handler);
 	}
 
 	detachThread(threadId: string): void {
 		this.threads.delete(threadId);
+		this.scheduleIdleReap();
+	}
+
+	/** Refresh the idle grace period when an existing shared server is acquired. */
+	// fallow-ignore-next-line unused-class-member -- Called by the module-level shared-server registry in acquireCodexAppServer.
+	touch(): void {
+		this.scheduleIdleReap();
 	}
 
 	kill(error = new Error("Codex app-server closed")): void {
@@ -154,6 +204,7 @@ export class CodexAppServer {
 	private fail(err: Error): void {
 		if (this.dead) return;
 		this.dead = true;
+		this.cancelIdleReap();
 		for (const pending of this.pending.values()) {
 			clearTimeout(pending.timer);
 			pending.reject(err);
@@ -161,7 +212,54 @@ export class CodexAppServer {
 		this.pending.clear();
 		const handlers = [...this.threads.values()];
 		this.threads.clear();
-		for (const handler of handlers) handler.onExit(err);
+		try {
+			for (const handler of handlers) handler.onExit(err);
+		} finally {
+			this.onClosed?.(this);
+		}
+	}
+
+	private cancelIdleReap(): void {
+		if (this.idleTimer === undefined) return;
+		clearTimeout(this.idleTimer);
+		this.idleTimer = undefined;
+	}
+
+	private scheduleIdleReap(): void {
+		this.cancelIdleReap();
+		if (
+			this.dead ||
+			this.pending.size > 0 ||
+			this.threads.size > 0 ||
+			this.activeServerRequests > 0
+		) {
+			return;
+		}
+		// Metadata-only calls such as model/list can launch a large helper process
+		// while rendering a picker. Reap those aggressively; a server that actually
+		// owned a chat thread keeps the longer grace period to avoid turn-to-turn
+		// respawn churn.
+		const idleDelay = this.hasOwnedThread
+			? this.idleTimeoutMs
+			: this.metadataIdleTimeoutMs;
+		const timer = setTimeout(() => {
+			// Timer identity plus a fresh idle check makes a detach/reattach or
+			// request race harmless even if the old callback was already queued.
+			if (this.idleTimer !== timer) return;
+			this.idleTimer = undefined;
+			if (
+				this.dead ||
+				this.pending.size > 0 ||
+				this.threads.size > 0 ||
+				this.activeServerRequests > 0
+			) {
+				return;
+			}
+			this.terminate(new Error("Codex app-server idle timeout"));
+		}, idleDelay);
+		this.idleTimer = timer;
+		// An idle helper must never keep the Hlid server process alive.
+		timer.unref?.();
 	}
 
 	private write(message: JsonRpcMessage): void {
@@ -205,19 +303,24 @@ export class CodexAppServer {
 			if (msg.error)
 				pending.reject(new Error(msg.error.message ?? "Codex error"));
 			else pending.resolve(msg.result);
+			this.scheduleIdleReap();
 			return;
 		}
 		// Server-initiated request (approvals) — route to the owning thread.
 		if (msg.id !== undefined && msg.method) {
 			const id = msg.id;
+			const method = msg.method;
 			const handler = this.threads.get(this.threadIdOf(msg.params) ?? "");
 			if (!handler) {
 				// No session owns this thread (cancelled mid-approval) — refuse.
 				this.write({ id, error: { message: "no session for thread" } });
+				this.scheduleIdleReap();
 				return;
 			}
-			void handler
-				.onRequest(msg.method, msg.params)
+			this.activeServerRequests++;
+			this.cancelIdleReap();
+			void Promise.resolve()
+				.then(() => handler.onRequest(method, msg.params))
 				.then((result) => this.write({ id, result }))
 				.catch((err: unknown) => {
 					this.write({
@@ -226,6 +329,10 @@ export class CodexAppServer {
 							message: err instanceof Error ? err.message : String(err),
 						},
 					});
+				})
+				.finally(() => {
+					this.activeServerRequests--;
+					this.scheduleIdleReap();
 				});
 			return;
 		}
@@ -252,8 +359,15 @@ const servers = new Map<string, CodexAppServer>();
  */
 export function acquireCodexAppServer(executable: string): CodexAppServer {
 	const existing = servers.get(executable);
-	if (existing?.alive) return existing;
-	const server = new CodexAppServer(executable);
+	if (existing?.alive) {
+		existing.touch();
+		return existing;
+	}
+	const server = new CodexAppServer(executable, undefined, (closed) => {
+		// A thread's onExit callback can synchronously acquire a replacement.
+		// Never let the closing instance delete that newer registry entry.
+		if (servers.get(executable) === closed) servers.delete(executable);
+	});
 	servers.set(executable, server);
 	return server;
 }

@@ -3,10 +3,7 @@ import { ChatMessageRow } from "./ChatMessageRow";
 import type { ChatMessage } from "./chatReducer";
 import type { PlanDecision } from "./PlanCard";
 import { UserMsg } from "./UserMsg";
-import {
-	HISTORY_RENDER_PAGE_SIZE,
-	useMessageListView,
-} from "./useMessageListView";
+import { useMessageListView } from "./useMessageListView";
 
 /**
  * Renders the full message thread: history, permission cards, queued messages,
@@ -24,6 +21,9 @@ export function MessageList({
 	handleCancelQueued,
 	handlePromoteQueued,
 	bottomRef,
+	hasOlderHistory = false,
+	isLoadingOlderHistory = false,
+	onLoadOlderHistory,
 }: {
 	messages: ChatMessage[];
 	chatQueue: QueuedChatMessage[];
@@ -49,9 +49,12 @@ export function MessageList({
 	handleCancelQueued: (id: string) => void;
 	handlePromoteQueued: (id: string) => void;
 	bottomRef: React.MutableRefObject<HTMLDivElement | null>;
+	hasOlderHistory?: boolean;
+	isLoadingOlderHistory?: boolean;
+	onLoadOlderHistory?: () => Promise<number>;
 }) {
 	const {
-		hiddenHistoryCount,
+		olderHistoryCount,
 		visibleMessages,
 		permissionLabels,
 		queueStateById,
@@ -63,18 +66,24 @@ export function MessageList({
 		sessionId,
 		sessionState,
 		runningTurnId,
+		hasOlderHistory,
+		isLoadingOlderHistory,
+		onLoadOlderHistory,
 	});
 
 	return (
 		<>
-			{hiddenHistoryCount > 0 && (
+			{olderHistoryCount > 0 && (
 				<div className="flex justify-center px-4 py-3">
 					<button
 						type="button"
 						onClick={loadOlder}
+						disabled={isLoadingOlderHistory}
 						className="border border-border px-3 py-1.5 text-[10px] tracking-widest text-muted-foreground uppercase transition-colors hover:bg-accent hover:text-foreground"
 					>
-						Load {Math.min(HISTORY_RENDER_PAGE_SIZE, hiddenHistoryCount)} older
+						{isLoadingOlderHistory
+							? "Loading older"
+							: `Load ${olderHistoryCount} older`}
 					</button>
 				</div>
 			)}

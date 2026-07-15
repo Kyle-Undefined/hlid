@@ -1,6 +1,10 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Action } from "#/components/chat/chatReducer";
-import { loadSessionSnapshot } from "#/hooks/loadSessionSnapshot";
+import {
+	loadSessionHistoryPage,
+	loadSessionSnapshot,
+	SESSION_HISTORY_PAGE_SIZE,
+} from "#/hooks/loadSessionSnapshot";
 import { claimPendingPrompt } from "#/hooks/wsChatQueueStore";
 import type { WsStatus } from "#/hooks/wsStore";
 import * as wsStore from "#/hooks/wsStore";
@@ -34,11 +38,42 @@ export function useLoadChatHistory({
 	handleWsMessage: (msg: ServerMessage) => void;
 	wsStatus: WsStatus;
 	sessionIdRef: React.MutableRefObject<string>;
-}): void {
+}) {
+	const oldestSeqRef = useRef<number | null>(null);
+	const oldestIdRef = useRef<number | null>(null);
+	const hasOlderRef = useRef(false);
+	const loadingOlderRef = useRef(false);
+	const olderRequestRef = useRef<Promise<number> | null>(null);
+	const reconnectRequestRef = useRef<Promise<void> | null>(null);
+	const loadGenerationRef = useRef(0);
+	const [hasOlderHistory, setHasOlderHistory] = useState(false);
+	const [isLoadingOlderHistory, setIsLoadingOlderHistory] = useState(false);
+
+	const applyPageState = useCallback(
+		(page: {
+			rows: Array<{ id: number; seq: number }>;
+			hasOlder: boolean;
+			nextBeforeSeq: number | null;
+			nextBeforeId: number | null;
+		}) => {
+			oldestSeqRef.current = page.nextBeforeSeq;
+			oldestIdRef.current = page.nextBeforeId;
+			hasOlderRef.current = page.hasOlder;
+			setHasOlderHistory(page.hasOlder);
+		},
+		[],
+	);
 	// ── initial load ───────────────────────────────────────────────────────────
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: dispatch/pendingIdRef/historyReadyRef are stable — refs and useReducer dispatch never change
 	useEffect(() => {
+		const generation = ++loadGenerationRef.current;
+		oldestSeqRef.current = null;
+		oldestIdRef.current = null;
+		hasOlderRef.current = false;
+		loadingOlderRef.current = false;
+		setHasOlderHistory(false);
+		setIsLoadingOlderHistory(false);
 		// Enable buffering so events arriving before history loads are captured
 		// and can be replayed via drainMessageBuffer() after LOAD_HISTORY.
 		wsStore.setBufferingEnabled(true);
@@ -50,6 +85,9 @@ export function useLoadChatHistory({
 			wsStore.setBufferingEnabled(false);
 			wsStore.send({ type: "sync" });
 			return () => {
+				if (loadGenerationRef.current === generation) {
+					loadGenerationRef.current += 1;
+				}
 				wsStore.setBufferingEnabled(true);
 			};
 		}
@@ -74,6 +112,7 @@ export function useLoadChatHistory({
 		})
 			.then((result) => {
 				if (cancelled || !result) return;
+				applyPageState(result);
 				const { rows } = result;
 				const p = claimPendingPrompt();
 				if (p) {
@@ -97,10 +136,13 @@ export function useLoadChatHistory({
 
 		return () => {
 			cancelled = true;
+			if (loadGenerationRef.current === generation) {
+				loadGenerationRef.current += 1;
+			}
 			// Re-enable buffering for SPA nav so events during unmount are captured
 			wsStore.setBufferingEnabled(true);
 		};
-	}, [existingSessionId, handleWsMessage, isExplicitSession]);
+	}, [existingSessionId, handleWsMessage, isExplicitSession, applyPageState]);
 
 	// ── reconnect recovery ─────────────────────────────────────────────────────
 	// When the WS reconnects after a disconnect, the "done" event for any
@@ -127,22 +169,118 @@ export function useLoadChatHistory({
 		if (!sid) return;
 
 		let cancelled = false;
-		pendingIdRef.current = null; // Discard any stale in-progress bubble
-		wsStore.setBufferingEnabled(true); // Capture live events during re-fetch
+		const priorReconnect = reconnectRequestRef.current;
+		const reconnectRequest = (async () => {
+			// Cursor prepends and reconnect snapshots both replace cursor state. Run
+			// them in a single order so a late LOAD_HISTORY cannot erase a page that
+			// finished while the reconnect request was in flight.
+			if (priorReconnect) await priorReconnect;
+			const olderRequest = olderRequestRef.current;
+			if (olderRequest) await olderRequest.catch(() => 0);
+			if (cancelled || sessionIdRef.current !== sid) return;
 
-		loadSessionSnapshot({
-			sessionId: sid,
-			dispatch,
-			pendingIdRef,
-			historyReadyRef,
-			handleWsMessage,
-			isCancelled: () => cancelled,
-		})
-			.catch(console.error)
-			.finally(() => wsStore.setBufferingEnabled(false));
+			pendingIdRef.current = null; // Discard any stale in-progress bubble
+			wsStore.setBufferingEnabled(true); // Capture live events during re-fetch
+			try {
+				const result = await loadSessionSnapshot({
+					sessionId: sid,
+					dispatch,
+					pendingIdRef,
+					historyReadyRef,
+					handleWsMessage,
+					isCancelled: () => cancelled,
+					pageSize: SESSION_HISTORY_PAGE_SIZE,
+					...(oldestSeqRef.current !== null && oldestIdRef.current !== null
+						? {
+								preserveFromSeq: oldestSeqRef.current,
+								preserveFromId: oldestIdRef.current,
+								preserveHasOlder: hasOlderRef.current,
+							}
+						: {}),
+				});
+				if (!cancelled && result) applyPageState(result);
+			} finally {
+				if (!cancelled) wsStore.setBufferingEnabled(false);
+			}
+		})().catch(console.error);
+		reconnectRequestRef.current = reconnectRequest;
+		void reconnectRequest.finally(() => {
+			if (reconnectRequestRef.current === reconnectRequest) {
+				reconnectRequestRef.current = null;
+			}
+		});
 
 		return () => {
 			cancelled = true;
 		};
-	}, [wsStatus]);
+	}, [wsStatus, applyPageState]);
+
+	const loadOlderHistory = useCallback(async (): Promise<number> => {
+		const sessionId = sessionIdRef.current;
+		if (
+			!sessionId ||
+			oldestSeqRef.current === null ||
+			oldestIdRef.current === null ||
+			!hasOlderRef.current ||
+			loadingOlderRef.current
+		) {
+			return 0;
+		}
+		const generation = loadGenerationRef.current;
+		loadingOlderRef.current = true;
+		setIsLoadingOlderHistory(true);
+		const olderRequest = (async () => {
+			const reconnectRequest = reconnectRequestRef.current;
+			if (reconnectRequest) await reconnectRequest;
+			const beforeSeq = oldestSeqRef.current;
+			const beforeId = oldestIdRef.current;
+			if (
+				beforeSeq === null ||
+				beforeId === null ||
+				!hasOlderRef.current ||
+				generation !== loadGenerationRef.current ||
+				sessionIdRef.current !== sessionId
+			) {
+				return 0;
+			}
+			const page = await loadSessionHistoryPage({
+				sessionId,
+				beforeSeq,
+				beforeId,
+			});
+			if (
+				generation !== loadGenerationRef.current ||
+				sessionIdRef.current !== sessionId
+			) {
+				return 0;
+			}
+			dispatch({ type: "PREPEND_HISTORY", items: page.items });
+			oldestSeqRef.current = page.nextBeforeSeq;
+			oldestIdRef.current = page.nextBeforeId;
+			hasOlderRef.current = page.hasOlder;
+			setHasOlderHistory(page.hasOlder);
+			return page.items.length;
+		})();
+		olderRequestRef.current = olderRequest;
+		try {
+			return await olderRequest;
+		} catch (error) {
+			console.error(error);
+			return 0;
+		} finally {
+			if (olderRequestRef.current === olderRequest) {
+				olderRequestRef.current = null;
+			}
+			if (generation === loadGenerationRef.current) {
+				loadingOlderRef.current = false;
+				setIsLoadingOlderHistory(false);
+			}
+		}
+	}, [dispatch, sessionIdRef]);
+
+	return {
+		hasOlderHistory,
+		isLoadingOlderHistory,
+		loadOlderHistory,
+	};
 }

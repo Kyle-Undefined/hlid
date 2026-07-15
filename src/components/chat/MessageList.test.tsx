@@ -9,7 +9,13 @@
  * queued turn — so the message would vanish until processed. MessageList
  * now re-surfaces queue items not in the transcript.
  */
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+	act,
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as privacyStore from "#/hooks/privacyStore";
 import type { QueuedChatMessage } from "#/hooks/wsChatQueueStore";
@@ -48,28 +54,40 @@ function bottomRef() {
 	return { current: null } as React.MutableRefObject<HTMLDivElement | null>;
 }
 
-function renderList(args: {
+type RenderListArgs = {
 	messages?: ChatMessage[];
 	chatQueue?: QueuedChatMessage[];
 	sessionId?: string;
 	sessionState?: "idle" | "running" | "error";
 	runningTurnId?: string | null;
-}) {
-	return render(
+	hasOlderHistory?: boolean;
+	isLoadingOlderHistory?: boolean;
+	onLoadOlderHistory?: () => Promise<number>;
+};
+
+function listElement(args: RenderListArgs) {
+	return (
 		<MessageList
 			messages={args.messages ?? []}
 			chatQueue={args.chatQueue ?? []}
 			sessionId={args.sessionId ?? "s1"}
 			sessionState={args.sessionState ?? "running"}
 			runningTurnId={args.runningTurnId ?? null}
+			hasOlderHistory={args.hasOlderHistory}
+			isLoadingOlderHistory={args.isLoadingOlderHistory}
+			onLoadOlderHistory={args.onLoadOlderHistory}
 			handleDecide={vi.fn()}
 			handleSubmitAnswers={vi.fn()}
 			handlePlanDecide={vi.fn()}
 			handleCancelQueued={vi.fn()}
 			handlePromoteQueued={vi.fn()}
 			bottomRef={bottomRef()}
-		/>,
+		/>
 	);
+}
+
+function renderList(args: RenderListArgs) {
+	return render(listElement(args));
 }
 
 describe("MessageList — orphan queue rendering", () => {
@@ -174,5 +192,88 @@ describe("MessageList — bounded history rendering", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Load 1 older" }));
 		expect(screen.getByText("message 0")).toBeTruthy();
 		expect(screen.queryByRole("button", { name: /load .* older/i })).toBeNull();
+	});
+
+	it("expands a cursor render window by the returned page size and caps later live growth", async () => {
+		const latest = Array.from({ length: 200 }, (_, index) =>
+			userMsg(`u${index + 50}`, `message ${index + 50}`),
+		);
+		let resolvePage!: (count: number) => void;
+		const onLoadOlderHistory = vi.fn(
+			() =>
+				new Promise<number>((resolve) => {
+					resolvePage = resolve;
+				}),
+		);
+		const view = renderList({
+			messages: latest,
+			hasOlderHistory: true,
+			onLoadOlderHistory,
+		});
+
+		fireEvent.click(screen.getByRole("button", { name: "Load 200 older" }));
+		expect(onLoadOlderHistory).toHaveBeenCalledOnce();
+
+		// The reducer prepends the fetched page before the async scroll-preserving
+		// callback resolves. Its rows must already be inside the reserved window.
+		const withFetchedPage = Array.from({ length: 250 }, (_, index) =>
+			userMsg(`u${index}`, `message ${index}`),
+		);
+		view.rerender(
+			listElement({
+				messages: withFetchedPage,
+				hasOlderHistory: false,
+				isLoadingOlderHistory: true,
+				onLoadOlderHistory,
+			}),
+		);
+		expect(screen.getByText("message 0")).toBeTruthy();
+
+		await act(async () => resolvePage(50));
+
+		// The final cap is 200 + the 50 rows actually returned. A new live row
+		// displaces the oldest rendered row instead of growing the DOM to 251.
+		const withLiveGrowth = [...withFetchedPage, userMsg("u250", "message 250")];
+		view.rerender(
+			listElement({
+				messages: withLiveGrowth,
+				hasOlderHistory: false,
+				onLoadOlderHistory,
+			}),
+		);
+		expect(screen.queryByText("message 0")).toBeNull();
+		expect(screen.getByText("message 1")).toBeTruthy();
+		expect(screen.getByText("message 250")).toBeTruthy();
+	});
+
+	it("keeps cursor-loaded transcripts bounded before another server page is requested", () => {
+		const messages = Array.from({ length: 201 }, (_, index) =>
+			userMsg(`u${index}`, `message ${index}`),
+		);
+		const onLoadOlderHistory = vi.fn().mockResolvedValue(200);
+		renderList({ messages, hasOlderHistory: true, onLoadOlderHistory });
+
+		expect(screen.queryByText("message 0")).toBeNull();
+		expect(screen.getByText("message 1")).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "Load 1 older" }));
+		expect(screen.getByText("message 0")).toBeTruthy();
+		expect(onLoadOlderHistory).not.toHaveBeenCalled();
+	});
+
+	it("disables the older-page control while its cursor request is in flight", () => {
+		renderList({
+			messages: [userMsg("u1", "message")],
+			hasOlderHistory: true,
+			isLoadingOlderHistory: true,
+			onLoadOlderHistory: vi.fn().mockResolvedValue(0),
+		});
+
+		expect(
+			(
+				screen.getByRole("button", {
+					name: "Loading older",
+				}) as HTMLButtonElement
+			).disabled,
+		).toBe(true);
 	});
 });

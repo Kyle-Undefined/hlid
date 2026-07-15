@@ -682,6 +682,36 @@ describe("LOAD_HISTORY", () => {
 		});
 	});
 
+	it("prepends an older cursor page without replacing live rows or duplicating overlap", () => {
+		const current = reducer(empty(), {
+			type: "LOAD_HISTORY",
+			items: [{ kind: "message", id: "u2", role: "user", text: "current" }],
+		});
+		const state = reducer(current, {
+			type: "PREPEND_HISTORY",
+			items: [
+				{ kind: "message", id: "u1", role: "user", text: "older" },
+				{ kind: "message", id: "u2", role: "user", text: "overlap" },
+			],
+		});
+
+		expect(state.map((message) => message.id)).toEqual(["u1", "u2"]);
+		expect(state[1]).toMatchObject({ text: "current" });
+	});
+
+	it("deduplicates repeated persisted cards within one older page", () => {
+		const state = reducer(empty(), {
+			type: "PREPEND_HISTORY",
+			items: [
+				{ kind: "message", id: "u1", role: "user", text: "older" },
+				{ kind: "message", id: "u1", role: "user", text: "duplicate" },
+			],
+		});
+
+		expect(state).toHaveLength(1);
+		expect(state[0]).toMatchObject({ id: "u1", text: "older" });
+	});
+
 	it("loads assistant recap from history", () => {
 		const state = reducer(empty(), {
 			type: "LOAD_HISTORY",

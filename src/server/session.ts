@@ -930,19 +930,27 @@ export class SessionManager {
 			const [
 				savedSession,
 				prior,
+				nextMessageSeq,
 				savedAgentCwd,
 				savedModel,
 				savedProviderId,
 				savedProviderSessionId,
 			] = await Promise.all([
 				db.getSessionById(sessionId),
-				db.getSessionMessages(sessionId),
+				// Only existence matters here. Provider handoff loads the transcript
+				// later and only when needed; do not materialize a long chat on every
+				// ordinary session resume.
+				db.getSessionMessages(sessionId, undefined, 1),
+				db.getSessionNextMessageSeq(sessionId),
 				db.getSessionAgentCwd(sessionId),
 				db.getSessionModel(sessionId),
 				db.getSessionProviderId(sessionId),
 				db.getSessionProviderSession(sessionId),
 			]);
-			this.messageSeq = prior.length;
+			// The persisted max accounts for sequence values consumed by messages,
+			// tools, plans, questions, and linked attachments. The one-row existence
+			// sample is a defensive floor for older or partially migrated databases.
+			this.messageSeq = Math.max(nextMessageSeq, prior.length);
 			this.currentSessionId = sessionId;
 			this.currentSessionLabel = savedSession?.label ?? null;
 			this.providerSessionId = savedProviderSessionId;

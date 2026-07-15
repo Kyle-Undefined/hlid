@@ -78,6 +78,38 @@ export type ChatMessage =
 	| PlanProposalMessage
 	| LocalCommandOutputChatMessage;
 
+export type HistoryItem =
+	| {
+			kind: "message";
+			id: string;
+			role: string;
+			text: string;
+			toolEvents?: ToolEventMessage[];
+			attachments?: ChatAttachment[];
+			recap?: string | null;
+	  }
+	| {
+			kind: "permission";
+			tool_id: string;
+			tool_name: string;
+			display_name: string | null;
+			decision: string;
+	  }
+	| {
+			kind: "plan_proposal";
+			id: string;
+			plan: string;
+			decision: string;
+			html_attachment_id?: string | null;
+	  }
+	| {
+			kind: "ask_user_question";
+			id: string;
+			questions: AskQuestion[];
+			answers: AskUserQuestionAnswers | null;
+			notes?: AskUserQuestionNotes;
+	  };
+
 export type Action =
 	| {
 			type: "ADD_USER";
@@ -156,38 +188,11 @@ export type Action =
 	  }
 	| {
 			type: "LOAD_HISTORY";
-			items: Array<
-				| {
-						kind: "message";
-						id: string;
-						role: string;
-						text: string;
-						toolEvents?: ToolEventMessage[];
-						attachments?: ChatAttachment[];
-						recap?: string | null;
-				  }
-				| {
-						kind: "permission";
-						tool_id: string;
-						tool_name: string;
-						display_name: string | null;
-						decision: string;
-				  }
-				| {
-						kind: "plan_proposal";
-						id: string;
-						plan: string;
-						decision: string;
-						html_attachment_id?: string | null;
-				  }
-				| {
-						kind: "ask_user_question";
-						id: string;
-						questions: AskQuestion[];
-						answers: AskUserQuestionAnswers | null;
-						notes?: AskUserQuestionNotes;
-				  }
-			>;
+			items: HistoryItem[];
+	  }
+	| {
+			type: "PREPEND_HISTORY";
+			items: HistoryItem[];
 	  }
 	| {
 			type: "ADD_ASK_USER_QUESTION";
@@ -201,8 +206,6 @@ export type Action =
 			notes?: AskUserQuestionNotes;
 	  }
 	| { type: "CLEAR" };
-
-type HistoryItem = Extract<Action, { type: "LOAD_HISTORY" }>["items"][number];
 
 const VALID_PERMISSION_DECISIONS = new Set<PermissionMessage["decision"]>([
 	"pending",
@@ -524,6 +527,18 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 		}
 		case "LOAD_HISTORY":
 			return action.items.map(historyItemToMessage);
+		case "PREPEND_HISTORY": {
+			const existing = new Set(
+				state.map((message) => `${message.role}:${message.id}`),
+			);
+			const older = action.items.map(historyItemToMessage).filter((message) => {
+				const key = `${message.role}:${message.id}`;
+				if (existing.has(key)) return false;
+				existing.add(key);
+				return true;
+			});
+			return older.length > 0 ? [...older, ...state] : state;
+		}
 		case "ADD_ASK_USER_QUESTION": {
 			// Dedup: LOAD_HISTORY may have already hydrated this id from DB. The
 			// WS server also re-emits pending questions on reconnect (see

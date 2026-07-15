@@ -22,6 +22,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	vi.useRealTimers();
 	vi.unstubAllGlobals();
 	vi.restoreAllMocks();
 });
@@ -155,6 +156,31 @@ describe("fetchUpdateStatus", () => {
 		});
 		await Promise.all([p1, p2, p3]);
 		expect(fetchMock).toHaveBeenCalledTimes(1);
+	});
+
+	it("reconciles a background-refreshed snapshot exactly once", async () => {
+		vi.useFakeTimers();
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce({
+				json: async () => ({
+					ok: true,
+					data: makeStatus({ refreshing: true, available: false }),
+				}),
+			})
+			.mockResolvedValueOnce({
+				json: async () => ({ ok: true, data: makeStatus() }),
+			});
+		vi.stubGlobal("fetch", fetchMock);
+
+		await store.fetchUpdateStatus();
+		expect(store.getUpdateSnapshot()?.available).toBe(false);
+		await vi.advanceTimersByTimeAsync(25_000);
+
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(store.getUpdateSnapshot()?.available).toBe(true);
+		await vi.advanceTimersByTimeAsync(24_000);
+		expect(fetchMock).toHaveBeenCalledTimes(2);
 	});
 
 	it("leaves snapshot null when the response is not ok", async () => {

@@ -88,3 +88,26 @@ export function scrollChatToBottom(
 	}
 	element.scrollTop = element.scrollHeight;
 }
+
+/**
+ * Prepends transcript rows without moving the reader's viewport. The layout
+ * adjustment waits one animation frame so React has committed the new rows.
+ */
+export async function loadOlderPreservingScroll(
+	element: HTMLElement | null,
+	load: () => Promise<number>,
+	schedule: (callback: FrameRequestCallback) => number = requestAnimationFrame,
+): Promise<number> {
+	const previousHeight = element?.scrollHeight ?? 0;
+	const previousTop = element?.scrollTop ?? 0;
+	const loaded = await load();
+	if (loaded === 0 || !element) return loaded;
+	await new Promise<void>((resolve) => {
+		schedule(() => {
+			const heightDelta = element.scrollHeight - previousHeight;
+			element.scrollTop = previousTop + Math.max(0, heightDelta);
+			resolve();
+		});
+	});
+	return loaded;
+}

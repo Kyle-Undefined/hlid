@@ -1,13 +1,47 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { CliUpdateStatus } from "../lib/cliUpdateTypes";
 import type { AcpCatalogItem } from "./acpRegistry";
 import {
+	__resetCliUpdateStatusCacheForTesting,
 	buildWslCliProbeScript,
+	type CliUpdateStatusDependencies,
 	compareCliVersions,
+	getCliUpdateStatuses,
 	inspectAcpUpdates,
 	inspectCliUpdates,
 	inspectWslUpdates,
+	parseCliUpdateStatusCache,
 	parseCliVersion,
 } from "./cliUpdates";
+
+function cachedStatus(id: CliUpdateStatus["id"] = "codex"): CliUpdateStatus {
+	return {
+		id,
+		label: "Codex",
+		installedVersion: "1.0.0",
+		latestVersion: "1.0.1",
+		available: true,
+		checkedAt: 1_800_000_000_000,
+	};
+}
+
+function statusDependencies(
+	overrides: Partial<CliUpdateStatusDependencies> = {},
+): CliUpdateStatusDependencies {
+	return {
+		now: () => 1_800_000_001_000,
+		readCache: vi.fn().mockResolvedValue(null),
+		writeCache: vi.fn().mockResolvedValue(undefined),
+		inspectNative: vi.fn().mockResolvedValue([]),
+		inspectWsl: vi.fn().mockResolvedValue([]),
+		inspectAcp: vi.fn().mockResolvedValue([]),
+		...overrides,
+	};
+}
+
+beforeEach(() => {
+	__resetCliUpdateStatusCacheForTesting();
+});
 
 function acpItem(overrides: Partial<AcpCatalogItem> = {}): AcpCatalogItem {
 	return {
@@ -222,5 +256,102 @@ describe("CLI update discovery", () => {
 				checkedAt: 1_800_000_000_000,
 			},
 		]);
+	});
+});
+
+describe("CLI update status cache", () => {
+	it("strictly validates persisted cache data", () => {
+		const status = cachedStatus();
+		expect(
+			parseCliUpdateStatusCache(
+				JSON.stringify({
+					schemaVersion: 1,
+					checkedAt: 1_800_000_000_000,
+					statuses: [status],
+				}),
+			),
+		).toEqual({ checkedAt: 1_800_000_000_000, statuses: [status] });
+		expect(parseCliUpdateStatusCache("not-json")).toBeNull();
+		expect(
+			parseCliUpdateStatusCache(
+				JSON.stringify({
+					schemaVersion: 1,
+					checkedAt: 1_800_000_000_000,
+					statuses: [{ ...status, installedVersion: { bad: true } }],
+				}),
+			),
+		).toBeNull();
+	});
+
+	it("serves a fresh persisted snapshot without running discovery", async () => {
+		const status = cachedStatus();
+		const dependencies = statusDependencies({
+			readCache: vi.fn().mockResolvedValue({
+				checkedAt: 1_800_000_000_000,
+				statuses: [status],
+			}),
+		});
+
+		expect(await getCliUpdateStatuses(undefined, dependencies)).toEqual([
+			status,
+		]);
+		expect(dependencies.inspectNative).not.toHaveBeenCalled();
+		expect(dependencies.writeCache).not.toHaveBeenCalled();
+	});
+
+	it("returns a stale snapshot immediately while refreshing in the background", async () => {
+		const stale = cachedStatus();
+		const fresh = cachedStatus("claude");
+		let resolveNative!: (statuses: CliUpdateStatus[]) => void;
+		const dependencies = statusDependencies({
+			now: () => 1_900_000_000_000,
+			readCache: vi.fn().mockResolvedValue({
+				checkedAt: 1_800_000_000_000,
+				statuses: [stale],
+			}),
+			inspectNative: vi.fn().mockReturnValue(
+				new Promise((resolve) => {
+					resolveNative = resolve;
+				}),
+			),
+		});
+
+		const result = await getCliUpdateStatuses(
+			{ background: true, backgroundDelayMs: 0 },
+			dependencies,
+		);
+		expect(result).toEqual([stale]);
+		expect(dependencies.writeCache).not.toHaveBeenCalled();
+
+		await vi.waitFor(() =>
+			expect(dependencies.inspectNative).toHaveBeenCalled(),
+		);
+		resolveNative([fresh]);
+		await vi.waitFor(() =>
+			expect(dependencies.writeCache).toHaveBeenCalledWith({
+				checkedAt: 1_900_000_000_000,
+				statuses: [fresh],
+			}),
+		);
+	});
+
+	it("coalesces forced discovery and awaits the shared result", async () => {
+		const fresh = cachedStatus();
+		let resolveNative!: (statuses: CliUpdateStatus[]) => void;
+		const inspectNative = vi.fn().mockReturnValue(
+			new Promise((resolve) => {
+				resolveNative = resolve;
+			}),
+		);
+		const dependencies = statusDependencies({ inspectNative });
+
+		const first = getCliUpdateStatuses({ force: true }, dependencies);
+		const second = getCliUpdateStatuses({ force: true }, dependencies);
+		await vi.waitFor(() => expect(inspectNative).toHaveBeenCalledOnce());
+		resolveNative([fresh]);
+
+		expect(await first).toEqual([fresh]);
+		expect(await second).toEqual([fresh]);
+		expect(inspectNative).toHaveBeenCalledOnce();
 	});
 });

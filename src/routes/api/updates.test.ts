@@ -70,7 +70,7 @@ describe("update request handlers", () => {
 			request: new Request("http://localhost/api/updates"),
 		});
 		await handlers.POST({ request: post("check") });
-		expect(ops.getStatus).toHaveBeenNthCalledWith(1);
+		expect(ops.getStatus).toHaveBeenNthCalledWith(1, { background: true });
 		expect(ops.getStatus).toHaveBeenNthCalledWith(2, { force: true });
 	});
 

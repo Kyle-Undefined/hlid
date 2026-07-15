@@ -68,8 +68,32 @@ export async function getAttachment(id: string): Promise<AttachmentRow | null> {
 
 export async function getAttachmentsForSession(
 	sessionId: string,
+	minMessageSeq?: number,
+	beforeMessageSeq?: number,
+	maxMessageSeq?: number,
 ): Promise<AttachmentRow[]> {
 	const db = await getDb();
+	if (minMessageSeq !== undefined) {
+		if (maxMessageSeq !== undefined) {
+			return db
+				.query<AttachmentRow, [string, number, number]>(
+					`SELECT * FROM attachments WHERE session_id = ? AND message_seq >= ? AND message_seq <= ? ORDER BY message_seq ASC, created_at ASC, id ASC`,
+				)
+				.all(sessionId, minMessageSeq, maxMessageSeq);
+		}
+		if (beforeMessageSeq !== undefined) {
+			return db
+				.query<AttachmentRow, [string, number, number]>(
+					`SELECT * FROM attachments WHERE session_id = ? AND message_seq >= ? AND message_seq < ? ORDER BY created_at ASC`,
+				)
+				.all(sessionId, minMessageSeq, beforeMessageSeq);
+		}
+		return db
+			.query<AttachmentRow, [string, number]>(
+				`SELECT * FROM attachments WHERE session_id = ? AND message_seq >= ? ORDER BY created_at ASC`,
+			)
+			.all(sessionId, minMessageSeq);
+	}
 	return db
 		.query<AttachmentRow, [string]>(
 			`SELECT * FROM attachments WHERE session_id = ? ORDER BY created_at ASC`,

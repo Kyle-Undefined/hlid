@@ -3,6 +3,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
 	isRavenPath,
+	loadOlderPreservingScroll,
 	ROUTE_SCROLL_RESTORATION_IDS,
 	resetScrollAncestors,
 	resetShellScroll,
@@ -41,6 +42,25 @@ describe("route scroll containers", () => {
 			'[data-scroll-to-top="app"]',
 			'[data-scroll-to-top="route"]',
 		]);
+	});
+
+	it("keeps the visible transcript anchored after an async older-page prepend", async () => {
+		let height = 1_000;
+		const element = document.createElement("div");
+		Object.defineProperty(element, "scrollHeight", { get: () => height });
+		element.scrollTop = 420;
+		const load = vi.fn(async () => {
+			height = 1_360;
+			return 200;
+		});
+
+		await loadOlderPreservingScroll(element, load, (callback) => {
+			callback(0);
+			return 1;
+		});
+
+		expect(load).toHaveBeenCalledOnce();
+		expect(element.scrollTop).toBe(780);
 	});
 });
 

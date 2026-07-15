@@ -1,21 +1,23 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+	useSyncExternalStore,
+} from "react";
 import { ConfirmAction } from "#/components/ConfirmAction";
 import { MarkdownBody } from "#/components/MarkdownBody";
+import {
+	getUpdateServerSnapshot,
+	getUpdateSnapshot,
+	setUpdateStatus,
+	subscribeUpdateStatus,
+	type UpdateStatus,
+} from "#/hooks/updateStore";
 import type { CliUpdateStatus } from "#/lib/cliUpdateTypes";
 import type { ReleaseNotes } from "#/lib/updates";
 import { CliUpdateTerminalModal } from "./CliUpdateTerminalModal";
 import { Field, Section } from "./fields";
-
-type UpdateStatus = {
-	current: string;
-	latest: string | null;
-	available: boolean;
-	lastCheckedAt: number;
-	release: ReleaseNotes | null;
-	cliUpdates?: CliUpdateStatus[];
-	cliUpdateActionsAllowed?: boolean;
-	error?: string;
-};
 
 type ApplyState =
 	| { phase: "idle" }
@@ -325,7 +327,11 @@ function UpdatesView({
 }
 
 export function UpdatesSection() {
-	const [status, setStatus] = useState<UpdateStatus | null>(null);
+	const status = useSyncExternalStore(
+		subscribeUpdateStatus,
+		getUpdateSnapshot,
+		getUpdateServerSnapshot,
+	);
 	const [state, setState] = useState<ApplyState>({ phase: "idle" });
 	const [fetchError, setFetchError] = useState<string | null>(null);
 	const [cliBusyId, setCliBusyId] = useState<string | null>(null);
@@ -346,7 +352,7 @@ export function UpdatesSection() {
 		try {
 			const res = await fetch("/api/updates");
 			const j = (await res.json()) as { ok: boolean; data?: UpdateStatus };
-			if (j.ok && j.data) setStatus(j.data);
+			if (j.ok && j.data) setUpdateStatus(j.data);
 		} catch (e) {
 			console.error("[updates] fetch failed:", e);
 			setFetchError(e instanceof Error ? e.message : "fetch failed");
@@ -354,8 +360,9 @@ export function UpdatesSection() {
 	}, []);
 
 	useEffect(() => {
+		if (status) return;
 		void refresh();
-	}, [refresh]);
+	}, [refresh, status]);
 
 	// While launching, hit /api/version every 1.5s. When the version response
 	// changes (new instance is up after the staged exe took canonical), reload
@@ -459,7 +466,7 @@ export function UpdatesSection() {
 			(e) => ({ ok: false, error: String(e) }) as const,
 		);
 		if (r.ok && r.data) {
-			setStatus(r.data as UpdateStatus);
+			setUpdateStatus(r.data as UpdateStatus);
 			setState({ phase: "idle" });
 			return null;
 		}

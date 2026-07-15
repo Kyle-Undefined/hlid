@@ -41,19 +41,79 @@ type EnrichedMessageRow = MessageRow & {
 	attachments?: AttachmentRow[];
 };
 
+const sessionTranscriptPageSchema = z.object({
+	sessionId: sessionIdSchema,
+	beforeSeq: z.number().int().nonnegative().optional(),
+	beforeId: z.number().int().nonnegative().optional(),
+	limit: z.number().int().min(1).max(5_001),
+});
+
+const sessionTranscriptWindowSchema = z.object({
+	sessionId: sessionIdSchema,
+	minSeq: z.number().int().nonnegative(),
+	minId: z.number().int().nonnegative().optional(),
+});
+
+const sessionScopedPageSchema = z.object({
+	sessionId: sessionIdSchema,
+	minSeq: z.number().int().nonnegative(),
+	beforeSeq: z.number().int().nonnegative().optional(),
+	maxSeq: z.number().int().nonnegative().optional(),
+});
+
+function sessionPagePath(
+	path: string,
+	data: z.infer<typeof sessionScopedPageSchema>,
+): string {
+	const params = new URLSearchParams({
+		session_id: data.sessionId,
+		min_seq: String(data.minSeq),
+	});
+	if (data.beforeSeq !== undefined) {
+		params.set("before_seq", String(data.beforeSeq));
+	}
+	if (data.maxSeq !== undefined) {
+		params.set("max_seq", String(data.maxSeq));
+	}
+	return `${path}?${params}`;
+}
+
 export const getSessionDataFn = createServerFn({ method: "GET" })
 	.validator((raw) =>
 		z
-			.string()
-			.refine((s) => s.trim().length > 0, "sessionId must be non-empty")
+			.union([
+				sessionIdSchema,
+				sessionTranscriptPageSchema,
+				sessionTranscriptWindowSchema,
+			])
 			.parse(raw),
 	)
-	.handler(({ data: sessionId }) =>
-		dbJson<EnrichedMessageRow[]>(
-			`/db/session-messages?session_id=${encodeURIComponent(sessionId)}`,
-			[],
-		),
-	);
+	.handler(({ data }) => {
+		if (typeof data === "string") {
+			return dbJson<EnrichedMessageRow[]>(
+				`/db/session-messages?session_id=${encodeURIComponent(data)}`,
+				[],
+			);
+		}
+		const params = new URLSearchParams({
+			session_id: data.sessionId,
+		});
+		if ("limit" in data) {
+			params.set("limit", String(data.limit));
+			if (data.beforeSeq !== undefined) {
+				params.set("before_seq", String(data.beforeSeq));
+				if (data.beforeId !== undefined) {
+					params.set("before_id", String(data.beforeId));
+				}
+			}
+		} else {
+			params.set("min_seq", String(data.minSeq));
+			if (data.minId !== undefined) {
+				params.set("min_id", String(data.minId));
+			}
+		}
+		return dbJson<EnrichedMessageRow[]>(`/db/session-messages?${params}`, []);
+	});
 
 export const getSessionAgentCwdFn = createServerFn({ method: "GET" })
 	.validator((raw) => sessionIdSchema.parse(raw))
@@ -77,16 +137,28 @@ export const getSessionProviderIdFn = createServerFn({ method: "GET" })
 	});
 
 export const getSessionPermissionsFn = createServerFn({ method: "GET" })
-	.validator((raw) => sessionIdSchema.parse(raw))
-	.handler(({ data: sessionId }) =>
+	.validator((raw) =>
+		z.union([sessionIdSchema, sessionScopedPageSchema]).parse(raw),
+	)
+	.handler(({ data }) =>
 		dbJson<PermissionEventRow[]>(
-			`/db/session-permissions?session_id=${encodeURIComponent(sessionId)}`,
+			typeof data === "string"
+				? `/db/session-permissions?session_id=${encodeURIComponent(data)}`
+				: sessionPagePath("/db/session-permissions", data),
 			[],
 		),
 	);
 
-const getSessionRows = <T>(path: string, sessionId: string) =>
-	dbJson<T[]>(`${path}?session_id=${encodeURIComponent(sessionId)}`, []);
+const getSessionRows = <T>(
+	path: string,
+	data: string | z.infer<typeof sessionScopedPageSchema>,
+) =>
+	dbJson<T[]>(
+		typeof data === "string"
+			? `${path}?session_id=${encodeURIComponent(data)}`
+			: sessionPagePath(path, data),
+		[],
+	);
 
 type SessionPlanProposalRow = {
 	proposal_id: string;
@@ -98,12 +170,11 @@ type SessionPlanProposalRow = {
 };
 
 export const getSessionPlanProposalsFn = createServerFn({ method: "GET" })
-	.validator((raw) => sessionIdSchema.parse(raw))
-	.handler(({ data: sessionId }) =>
-		getSessionRows<SessionPlanProposalRow>(
-			"/db/session-plan-proposals",
-			sessionId,
-		),
+	.validator((raw) =>
+		z.union([sessionIdSchema, sessionScopedPageSchema]).parse(raw),
+	)
+	.handler(({ data }) =>
+		getSessionRows<SessionPlanProposalRow>("/db/session-plan-proposals", data),
 	);
 
 type SessionAskUserQuestionRow = {
@@ -116,11 +187,13 @@ type SessionAskUserQuestionRow = {
 };
 
 export const getSessionAskUserQuestionsFn = createServerFn({ method: "GET" })
-	.validator((raw) => sessionIdSchema.parse(raw))
-	.handler(({ data: sessionId }) =>
+	.validator((raw) =>
+		z.union([sessionIdSchema, sessionScopedPageSchema]).parse(raw),
+	)
+	.handler(({ data }) =>
 		getSessionRows<SessionAskUserQuestionRow>(
 			"/db/session-ask-user-questions",
-			sessionId,
+			data,
 		),
 	);
 

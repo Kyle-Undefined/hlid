@@ -45,7 +45,10 @@ import { readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
-import { getCliUpdateStatuses } from "../server/cliUpdates";
+import {
+	getCliUpdateStatuses,
+	isCliUpdateStatusRefreshPending,
+} from "../server/cliUpdates";
 import type { CliUpdateStatus } from "./cliUpdateTypes";
 import { canonicalInstallDir } from "./install";
 import { CURRENT_VERSION } from "./version";
@@ -61,6 +64,7 @@ const MAX_RELEASE_NOTES_LENGTH = 128 * 1024;
 // while rejecting obvious garbage (a 5 GB redirect target, etc.).
 const MAX_EXE_BYTES = 500 * 1024 * 1024;
 const MAX_CHECKSUMS_BYTES = 64 * 1024;
+const BACKGROUND_REFRESH_DELAY_MS = 1_500;
 
 type UpdateCache = {
 	schemaVersion: number;
@@ -91,6 +95,8 @@ export type UpdateStatus = {
 	lastCheckedAt: number;
 	release: ReleaseNotes | null;
 	cliUpdates: CliUpdateStatus[];
+	/** A stale snapshot was served while slow discovery continues out of band. */
+	refreshing?: boolean;
 	error?: string;
 };
 
@@ -119,6 +125,10 @@ type VerifiedArtifact = {
 // client may ask to apply the most recently verified download, but it cannot
 // select a filesystem path for execution.
 let verifiedArtifact: VerifiedArtifact | null = null;
+let releaseRefresh: Promise<
+	Omit<UpdateStatus, "cliUpdates" | "refreshing">
+> | null = null;
+let scheduledReleaseRefresh: ReturnType<typeof setTimeout> | null = null;
 
 function stagingDir(): string {
 	return join(canonicalInstallDir(), "updates");
@@ -306,7 +316,7 @@ async function fetchLatestRelease(
 function statusFromCache(
 	cache: UpdateCache,
 	error?: string,
-): Omit<UpdateStatus, "cliUpdates"> {
+): Omit<UpdateStatus, "cliUpdates" | "refreshing"> {
 	const latest = cache.latestVersion;
 	const available =
 		latest != null && compareVersions(latest, CURRENT_VERSION) > 0;
@@ -329,42 +339,87 @@ function statusFromCache(
 	};
 }
 
+function startReleaseRefresh(
+	cache: UpdateCache,
+	needsReleaseMetadata: boolean,
+): Promise<Omit<UpdateStatus, "cliUpdates" | "refreshing">> {
+	if (scheduledReleaseRefresh) {
+		clearTimeout(scheduledReleaseRefresh);
+		scheduledReleaseRefresh = null;
+	}
+	if (releaseRefresh) return releaseRefresh;
+	const pending = (async () => {
+		const result = await fetchLatestRelease(
+			needsReleaseMetadata ? null : cache.etag,
+		);
+		if (result.kind === "not_modified") {
+			const updated: UpdateCache = { ...cache, lastCheckedAt: Date.now() };
+			await writeCache(updated).catch(() => {});
+			return statusFromCache(updated);
+		}
+		if (result.kind === "error") {
+			return statusFromCache(cache, result.error);
+		}
+		await writeCache(result.cache).catch(() => {});
+		return statusFromCache(result.cache);
+	})().finally(() => {
+		if (releaseRefresh === pending) releaseRefresh = null;
+	});
+	releaseRefresh = pending;
+	return pending;
+}
+
+function scheduleReleaseRefresh(
+	cache: UpdateCache,
+	needsReleaseMetadata: boolean,
+): void {
+	if (releaseRefresh || scheduledReleaseRefresh) return;
+	const timer = setTimeout(() => {
+		if (scheduledReleaseRefresh !== timer) return;
+		scheduledReleaseRefresh = null;
+		void startReleaseRefresh(cache, needsReleaseMetadata).catch(() => {});
+	}, BACKGROUND_REFRESH_DELAY_MS);
+	scheduledReleaseRefresh = timer;
+	timer.unref?.();
+}
+
 // Read-only view of update status. Used by FORGE on page load. Honors the
 // 24h TTL: only hits GitHub when cache is stale. Pass {force:true} to bypass
 // (the manual "Check for updates" button does this).
 export async function getStatus(opts?: {
 	force?: boolean;
+	/** Serve persisted status immediately while slow provider/network probes refresh. */
+	background?: boolean;
 }): Promise<UpdateStatus> {
-	const cliUpdates = getCliUpdateStatuses({ force: opts?.force }).catch(
-		() => [],
-	);
-	const finish = async (status: Omit<UpdateStatus, "cliUpdates">) => ({
-		...status,
-		cliUpdates: await cliUpdates,
-	});
+	const cliUpdates = getCliUpdateStatuses({
+		force: opts?.force,
+		background: opts?.background && !opts?.force,
+	}).catch(() => []);
+	const finish = async (
+		status: Omit<UpdateStatus, "cliUpdates" | "refreshing">,
+		releaseRefreshing = false,
+	) => {
+		const resolvedCliUpdates = await cliUpdates;
+		const refreshing = releaseRefreshing || isCliUpdateStatusRefreshPending();
+		return {
+			...status,
+			cliUpdates: resolvedCliUpdates,
+			...(refreshing ? { refreshing: true } : {}),
+		};
+	};
 	const cache = await readCache();
 	const needsReleaseMetadata = cache.schemaVersion < CACHE_SCHEMA_VERSION;
 	const stale =
 		Date.now() - cache.lastCheckedAt > CHECK_TTL_MS || needsReleaseMetadata;
 	if (!opts?.force && !stale) return finish(statusFromCache(cache));
+	if (!opts?.force && opts?.background) {
+		scheduleReleaseRefresh(cache, needsReleaseMetadata);
+		return finish(statusFromCache(cache), true);
+	}
 
-	// Older caches have a valid ETag but no release notes. Avoid a 304 once so
-	// they can migrate to the release-aware schema in a single request.
-	const result = await fetchLatestRelease(
-		needsReleaseMetadata ? null : cache.etag,
-	);
-	if (result.kind === "not_modified") {
-		const updated: UpdateCache = { ...cache, lastCheckedAt: Date.now() };
-		await writeCache(updated).catch(() => {});
-		return finish(statusFromCache(updated));
-	}
-	if (result.kind === "error") {
-		// Soft fail: keep existing cache intact, surface the error so UI can
-		// show "couldn't reach github" without losing the last-known latest.
-		return finish(statusFromCache(cache, result.error));
-	}
-	await writeCache(result.cache).catch(() => {});
-	return finish(statusFromCache(result.cache));
+	// Blocking/manual callers share an already scheduled or active refresh,
+	// preventing an older startup request from overwriting a newer force check.
+	return finish(await startReleaseRefresh(cache, needsReleaseMetadata));
 }
 
 async function streamToFile(

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-// Import through the vite pipeline (not createRequire) so istanbul instruments
+// Import through the Vite pipeline (not createRequire) so coverage instruments
 // the CJS module and its coverage lands in the report.
 // @ts-expect-error — plain CJS module without type declarations
 import { createPtyInputParser } from "./ptyInputParser.cjs";

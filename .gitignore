@@ -26,6 +26,7 @@ vendor/whisper/
 whisper.zip
 build
 coverage
+.cache/
 .hlid/
 reports
 .fallow/

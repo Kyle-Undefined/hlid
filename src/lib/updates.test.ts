@@ -28,6 +28,7 @@ vi.mock("./version", () => ({
 
 vi.mock("../server/cliUpdates", () => ({
 	getCliUpdateStatuses: vi.fn().mockResolvedValue([]),
+	isCliUpdateStatusRefreshPending: vi.fn().mockReturnValue(false),
 }));
 
 vi.mock("node:fs/promises", () => ({
@@ -94,6 +95,7 @@ beforeEach(() => {
 afterEach(() => {
 	vi.resetAllMocks(); // removes all mockReturnValue / mockResolvedValueOnce queues
 	vi.unstubAllGlobals();
+	vi.useRealTimers();
 });
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -413,6 +415,73 @@ describe("getStatus — force refresh", () => {
 
 		await getStatus({ force: true });
 		expect(fetchMock).toHaveBeenCalledOnce();
+	});
+});
+
+describe("getStatus — background refresh", () => {
+	it("returns persisted status without awaiting slow release discovery", async () => {
+		vi.useFakeTimers();
+		vi.mocked(readFile).mockResolvedValueOnce(
+			makeCacheJson("1.5.0", { lastCheckedAt: STALE_TS }) as never,
+		);
+		let resolveFetch!: (value: unknown) => void;
+		const fetchMock = vi.fn().mockReturnValueOnce(
+			new Promise((resolve) => {
+				resolveFetch = resolve;
+			}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		const status = await getStatus({ background: true });
+
+		expect(status.latest).toBe("1.5.0");
+		expect(status.refreshing).toBe(true);
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(writeFile).not.toHaveBeenCalled();
+		expect(getCliUpdateStatuses).toHaveBeenCalledWith({
+			force: undefined,
+			background: true,
+		});
+
+		await vi.advanceTimersByTimeAsync(1_500);
+		expect(fetchMock).toHaveBeenCalledOnce();
+		resolveFetch({
+			ok: true,
+			status: 200,
+			headers: new Headers({ etag: '"new"' }),
+			json: async () => makeGithubRelease("v2.0.0"),
+		});
+		await vi.waitFor(() => expect(writeFile).toHaveBeenCalledOnce());
+	});
+
+	it("makes a forced check join and expedite a scheduled refresh", async () => {
+		vi.useFakeTimers();
+		vi.mocked(readFile).mockResolvedValue(
+			makeCacheJson("1.5.0", { lastCheckedAt: STALE_TS }) as never,
+		);
+		let resolveFetch!: (value: unknown) => void;
+		const fetchMock = vi.fn().mockReturnValue(
+			new Promise((resolve) => {
+				resolveFetch = resolve;
+			}),
+		);
+		vi.stubGlobal("fetch", fetchMock);
+
+		await getStatus({ background: true });
+		const forced = getStatus({ force: true });
+		await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledOnce());
+		resolveFetch({
+			ok: true,
+			status: 200,
+			headers: new Headers({ etag: '"forced"' }),
+			json: async () => makeGithubRelease("v2.0.0"),
+		});
+
+		expect((await forced).latest).toBe("2.0.0");
+		expect(writeFile).toHaveBeenCalledOnce();
+		await vi.advanceTimersByTimeAsync(1_500);
+		expect(fetchMock).toHaveBeenCalledOnce();
+		expect(writeFile).toHaveBeenCalledOnce();
 	});
 });
 

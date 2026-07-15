@@ -62,6 +62,35 @@ function initSchema(db: Db): void {
 	createAttachmentTables(db);
 	migrateAttachmentsDropFk(db);
 	applyMigrations(db);
+	ensureTranscriptPagingIndexes(db);
+}
+
+/**
+ * Cursor indexes are ensured after migrations because plan/question tables are
+ * migration-owned and the legacy attachment migration can rebuild its table.
+ */
+function ensureTranscriptPagingIndexes(db: Db): void {
+	db.run(
+		`CREATE INDEX IF NOT EXISTS idx_messages_session_seq_id ON messages(session_id, seq, id)`,
+	);
+	db.run(
+		`CREATE INDEX IF NOT EXISTS idx_tool_events_session_seq_id ON tool_events(session_id, assistant_seq, id)`,
+	);
+	db.run(
+		`CREATE INDEX IF NOT EXISTS idx_tool_events_session_tool_seq ON tool_events(session_id, tool_id, assistant_seq)`,
+	);
+	db.run(
+		`CREATE INDEX IF NOT EXISTS idx_permission_events_session_ts_id ON permission_events(session_id, timestamp, id)`,
+	);
+	db.run(
+		`CREATE INDEX IF NOT EXISTS idx_plan_proposals_session_seq_id ON plan_proposals(session_id, seq, id)`,
+	);
+	db.run(
+		`CREATE INDEX IF NOT EXISTS idx_ask_user_questions_session_seq_id ON ask_user_questions(session_id, seq, id)`,
+	);
+	db.run(
+		`CREATE INDEX IF NOT EXISTS idx_attachments_session_seq ON attachments(session_id, message_seq)`,
+	);
 }
 
 function createSystemTables(db: Db): void {

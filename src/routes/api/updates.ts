@@ -46,7 +46,10 @@ export function createUpdateRequestHandlers(operations: UpdateOperations) {
 		GET: async ({ request }: { request: Request }) => {
 			const forbidden = operations.forbidden(request);
 			if (forbidden) return forbidden;
-			const status = await operations.getStatus();
+			// Startup callers get the last persisted snapshot immediately. Native,
+			// WSL, ACP, and release-network discovery refresh out of band instead of
+			// holding the initial Raven request queue open for several seconds.
+			const status = await operations.getStatus({ background: true });
 			return Response.json({
 				ok: true,
 				data: {

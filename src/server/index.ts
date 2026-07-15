@@ -175,10 +175,10 @@ for (const provider of providers.values()) {
 		);
 	}
 }
-// Non-blocking boot warm-up of live model catalogs (mirrors the
-// `void db.getSetting(...)` MCP status restore pattern below).
+// Keep live model discovery demand-driven. In particular, Codex implements
+// `listModels()` through its app-server, so warming this cache during boot
+// would retain a roughly 100 MB helper process before anyone selects Codex.
 const modelCatalog = createModelCatalog(providers);
-modelCatalog.warm();
 const pool = new SessionPool(config, providers);
 const voice = new VoiceModelManager(
 	config.voice,

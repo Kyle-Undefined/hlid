@@ -25,6 +25,8 @@ type PlanRow = Awaited<ReturnType<typeof getSessionPlanProposalsFn>>[number];
 type AukRow = Awaited<ReturnType<typeof getSessionAskUserQuestionsFn>>[number];
 type CtxRow = Awaited<ReturnType<typeof getSessionContextFn>>;
 
+export const SESSION_HISTORY_PAGE_SIZE = 200;
+
 function safeParseJson<T>(raw: string, fallback: T): T {
 	try {
 		return JSON.parse(raw) as T;
@@ -42,7 +44,9 @@ function mapSessionRows(
 	const messageItems = rows.map((r) => ({
 		kind: "message" as const,
 		timestamp: r.timestamp,
-		id: uid(),
+		// DB row ids are globally unique and stable across reconnect/page fetches.
+		// Namespace them away from uid()-backed live/in-flight message ids.
+		id: `persisted-message:${r.id}`,
 		role: r.role,
 		text: r.text,
 		toolEvents: r.toolEvents?.map((te) => ({
@@ -116,6 +120,116 @@ function mapSessionRows(
 
 type SessionItems = ReturnType<typeof mapSessionRows>;
 
+export type SessionHistoryPage = {
+	rows: SessionDataRow[];
+	items: SessionItems;
+	hasOlder: boolean;
+	nextBeforeSeq: number | null;
+	nextBeforeId: number | null;
+};
+
+/**
+ * Reads one backwards cursor page and maps every persisted transcript card
+ * belonging to that message-sequence window. The extra message is lookahead:
+ * it tells the client whether another page exists without a COUNT query.
+ */
+export async function loadSessionHistoryPage({
+	sessionId,
+	beforeSeq,
+	beforeId,
+	pageSize = SESSION_HISTORY_PAGE_SIZE,
+}: {
+	sessionId: string;
+	beforeSeq?: number;
+	beforeId?: number;
+	pageSize?: number;
+}): Promise<SessionHistoryPage> {
+	const boundedPageSize = Math.max(1, Math.min(5_000, Math.trunc(pageSize)));
+	const pageRows = await getSessionDataFn({
+		data: {
+			sessionId,
+			...(beforeSeq !== undefined
+				? { beforeSeq, ...(beforeId !== undefined ? { beforeId } : {}) }
+				: {}),
+			limit: boundedPageSize + 1,
+		},
+	});
+	const hasOlder = pageRows.length > boundedPageSize;
+	const rows = hasOlder ? pageRows.slice(1) : pageRows;
+	const minSeq = rows[0]?.seq;
+	if (minSeq === undefined) {
+		return {
+			rows,
+			items: [],
+			hasOlder: false,
+			nextBeforeSeq: null,
+			nextBeforeId: null,
+		};
+	}
+	const maxSeq = rows.at(-1)?.seq ?? minSeq;
+	const scopedPage = {
+		sessionId,
+		minSeq,
+		maxSeq,
+		// Marks an older page so standalone permission events are not repeated.
+		...(beforeSeq !== undefined ? { beforeSeq } : {}),
+	};
+	const [permEvents, planRows, aukRows] = await Promise.all([
+		getSessionPermissionsFn({ data: scopedPage }),
+		getSessionPlanProposalsFn({ data: scopedPage }),
+		getSessionAskUserQuestionsFn({ data: scopedPage }),
+	]);
+	return {
+		rows,
+		items: mapSessionRows(rows, permEvents, planRows, aukRows),
+		hasOlder,
+		nextBeforeSeq: rows[0]?.seq ?? null,
+		nextBeforeId: rows[0]?.id ?? null,
+	};
+}
+
+/**
+ * Reconnect refreshes use an inclusive oldest sequence instead of a row count.
+ * That keeps every page the user already revealed even when new rows arrived
+ * while the socket was down.
+ */
+async function loadSessionHistoryWindow({
+	sessionId,
+	minSeq,
+	minId,
+	hasOlder,
+}: {
+	sessionId: string;
+	minSeq: number;
+	minId: number;
+	hasOlder: boolean;
+}): Promise<SessionHistoryPage> {
+	const rows = await getSessionDataFn({ data: { sessionId, minSeq, minId } });
+	if (rows.length === 0) {
+		return {
+			rows,
+			items: [],
+			hasOlder: false,
+			nextBeforeSeq: null,
+			nextBeforeId: null,
+		};
+	}
+	const maxSeq = rows.at(-1)?.seq ?? minSeq;
+	const scopedPage = { sessionId, minSeq, maxSeq };
+	const [permEvents, planRows, aukRows] = await Promise.all([
+		getSessionPermissionsFn({ data: scopedPage }),
+		getSessionPlanProposalsFn({ data: scopedPage }),
+		getSessionAskUserQuestionsFn({ data: scopedPage }),
+	]);
+	return {
+		rows,
+		items: mapSessionRows(rows, permEvents, planRows, aukRows),
+		hasOlder,
+		nextBeforeSeq: rows[0]?.seq ?? null,
+		nextBeforeId: rows[0]?.id ?? null,
+	};
+}
+
 /**
  * Find the in-flight assistant row. The server pre-inserts it on the first
  * text/tool event and continuously persists partial text, so it may already
@@ -169,8 +283,8 @@ function applyCtx(ctx: CtxRow, sessionId: string): void {
 }
 
 /**
- * Fetches a session's full history (messages, permissions, plans, ask-user
- * questions, context), applies it to the reducer via LOAD_HISTORY, and seeds
+ * Fetches the newest page of a session's history plus context, applies it to
+ * the reducer via LOAD_HISTORY, and seeds
  * a pending assistant bubble (reusing an in-flight assistant row if one was
  * persisted) when the session is still running — draining any buffered
  * events onto it. Shared by the initial load and reconnect-recovery effects
@@ -183,25 +297,40 @@ export async function loadSessionSnapshot({
 	historyReadyRef,
 	handleWsMessage,
 	isCancelled,
+	pageSize = SESSION_HISTORY_PAGE_SIZE,
+	preserveFromSeq,
+	preserveFromId,
+	preserveHasOlder = false,
 }: {
 	sessionId: string;
 	dispatch: React.Dispatch<Action>;
 	pendingIdRef: React.MutableRefObject<string | null>;
 	historyReadyRef: React.MutableRefObject<boolean>;
 	handleWsMessage: (msg: ServerMessage) => void;
+	/** Initial page size; reconnects use preserveFromSeq for an exact window. */
+	pageSize?: number;
+	/** Inclusive oldest message cursor used to preserve the exact revealed window on reconnect. */
+	preserveFromSeq?: number;
+	/** Database-row tie-breaker paired with preserveFromSeq. */
+	preserveFromId?: number;
+	preserveHasOlder?: boolean;
 	/** Checked right after the fetch resolves; skips all dispatches if true (effect was cleaned up or superseded). */
 	isCancelled: () => boolean;
-}): Promise<{ rows: SessionDataRow[] } | null> {
-	const [rows, ctx, permEvents, planRows, aukRows] = await Promise.all([
-		getSessionDataFn({ data: sessionId }),
+}): Promise<SessionHistoryPage | null> {
+	const [page, ctx] = await Promise.all([
+		preserveFromSeq === undefined
+			? loadSessionHistoryPage({ sessionId, pageSize })
+			: loadSessionHistoryWindow({
+					sessionId,
+					minSeq: preserveFromSeq,
+					minId: preserveFromId ?? 0,
+					hasOlder: preserveHasOlder,
+				}),
 		getSessionContextFn({ data: sessionId }),
-		getSessionPermissionsFn({ data: sessionId }),
-		getSessionPlanProposalsFn({ data: sessionId }),
-		getSessionAskUserQuestionsFn({ data: sessionId }),
 	]);
 	if (isCancelled()) return null;
 	applyCtx(ctx, sessionId);
-	const items = mapSessionRows(rows, permEvents, planRows, aukRows);
+	const { items } = page;
 	dispatch({ type: "LOAD_HISTORY", items });
 	// Dispatches are processed in order, so opening the gate here lets buffered
 	// events enqueue immediately after LOAD_HISTORY without being discarded by
@@ -237,5 +366,5 @@ export async function loadSessionSnapshot({
 		wsStore.clearMessageBuffer();
 	}
 
-	return { rows };
+	return page;
 }

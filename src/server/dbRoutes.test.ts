@@ -592,6 +592,48 @@ describe("handleDbRoute — GET /db/session-messages", () => {
 		expect(rows[1].toolEvents).toHaveLength(2);
 		expect(rows[1].attachments).toBeUndefined();
 	});
+
+	it("passes the backwards cursor and page sequence window to transcript queries", async () => {
+		mockGetSessionMessages.mockResolvedValue([
+			{ id: 10, seq: 10, role: "user", text: "older" },
+			// A compound cursor may include lower-id rows at before_seq itself.
+			{ id: 49, seq: 50, role: "assistant", text: "newer" },
+		]);
+		mockGetSessionToolEvents.mockResolvedValue([]);
+		mockGetAttachmentsForSession.mockResolvedValue([]);
+
+		const res = await handleDbRoute(
+			makeUrl("/db/session-messages", {
+				session_id: "s1",
+				before_seq: "50",
+				before_id: "500",
+				limit: "201",
+			}),
+			makeRequest(),
+		);
+
+		expect(res?.status).toBe(200);
+		expect(mockGetSessionMessages).toHaveBeenCalledWith(
+			"s1",
+			50,
+			201,
+			undefined,
+			500,
+			undefined,
+		);
+		expect(mockGetSessionToolEvents).toHaveBeenCalledWith(
+			"s1",
+			10,
+			undefined,
+			50,
+		);
+		expect(mockGetAttachmentsForSession).toHaveBeenCalledWith(
+			"s1",
+			10,
+			undefined,
+			50,
+		);
+	});
 });
 
 // ── GET /db/provider-usage ────────────────────────────────────────────────────

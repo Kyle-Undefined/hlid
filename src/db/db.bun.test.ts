@@ -17,9 +17,12 @@ import { appendLog, clearLogs, getLogs } from "./logs";
 import {
 	appendAskUserQuestion,
 	appendMessage,
+	appendPlanProposal,
 	appendToolEvent,
 	getSessionAskUserQuestions,
 	getSessionMessages,
+	getSessionNextMessageSeq,
+	getSessionPlanProposals,
 	getSessionToolEvents,
 	setAskUserQuestionResolution,
 	setMessageRecap,
@@ -439,6 +442,109 @@ describe("messages", () => {
 		expect(await getSessionMessages("s1")).toHaveLength(0);
 	});
 
+	it("pages backwards with a 201-row lookahead and no gaps or duplicates", async () => {
+		await createSession("s1", "L", "m");
+		for (let seq = 0; seq <= 400; seq++) {
+			await appendMessage(
+				"s1",
+				seq,
+				seq % 2 === 0 ? "user" : "assistant",
+				`${seq}`,
+			);
+		}
+
+		const newestWithLookahead = await getSessionMessages("s1", undefined, 201);
+		expect(newestWithLookahead.map((row) => row.seq)).toEqual(
+			Array.from({ length: 201 }, (_, index) => index + 200),
+		);
+		const newest = newestWithLookahead.slice(1);
+		const olderWithLookahead = await getSessionMessages(
+			"s1",
+			newest[0].seq,
+			201,
+			undefined,
+			newest[0].id,
+		);
+		const older = olderWithLookahead.slice(1);
+		const oldest = await getSessionMessages(
+			"s1",
+			older[0].seq,
+			201,
+			undefined,
+			older[0].id,
+		);
+		const combined = [...oldest, ...older, ...newest].map((row) => row.seq);
+
+		expect(combined).toEqual(Array.from({ length: 401 }, (_, index) => index));
+		expect(new Set(combined).size).toBe(401);
+	});
+
+	it("uses the row id tie-breaker when a duplicate sequence straddles a page boundary", async () => {
+		await createSession("s1", "L", "m");
+		for (let seq = 0; seq < 200; seq++) {
+			await appendMessage("s1", seq, "user", `${seq}`);
+		}
+		await appendMessage("s1", 1, "assistant", "duplicate-low-boundary");
+		await appendMessage("s1", 199, "assistant", "duplicate-newest");
+
+		const newestWithLookahead = await getSessionMessages("s1", undefined, 201);
+		const newest = newestWithLookahead.slice(1);
+		const older = await getSessionMessages(
+			"s1",
+			newest[0].seq,
+			201,
+			undefined,
+			newest[0].id,
+		);
+		const combined = [...older, ...newest];
+		const all = await getSessionMessages("s1");
+
+		expect(combined.map((row) => row.id)).toEqual(all.map((row) => row.id));
+		expect(combined).toHaveLength(202);
+	});
+
+	it("refreshes an inclusive loaded window so reconnect does not drop its oldest rows", async () => {
+		await createSession("s1", "L", "m");
+		for (let seq = 0; seq <= 205; seq++) {
+			await appendMessage("s1", seq, "assistant", `${seq}`);
+		}
+
+		const refreshed = await getSessionMessages("s1", undefined, undefined, 5);
+		expect(refreshed[0].seq).toBe(5);
+		expect(refreshed.at(-1)?.seq).toBe(205);
+		expect(refreshed).toHaveLength(201);
+	});
+
+	it("refreshes a compound inclusive window without pulling an older duplicate", async () => {
+		await createSession("s1", "L", "m");
+		await appendMessage("s1", 5, "user", "older duplicate");
+		await appendMessage("s1", 5, "assistant", "window start");
+		await appendMessage("s1", 6, "assistant", "newer");
+		const all = await getSessionMessages("s1");
+
+		const refreshed = await getSessionMessages(
+			"s1",
+			undefined,
+			undefined,
+			5,
+			undefined,
+			all[1].id,
+		);
+
+		expect(refreshed.map((row) => row.text)).toEqual(["window start", "newer"]);
+	});
+
+	it("derives the resume sequence from every persisted transcript table", async () => {
+		await createSession("s1", "L", "m");
+		await appendMessage("s1", 0, "user", "hello");
+		await appendToolEvent("s1", 2, "tool", "Read", {});
+		await appendPlanProposal("s1", "plan", 5, "plan", "approved");
+		await appendAskUserQuestion("s1", "ask", 8, "[]");
+
+		expect(await getSessionNextMessageSeq("s1")).toBe(9);
+		expect(await getSessionNextMessageSeq("missing")).toBe(0);
+	});
+
 	it("setMessageRecap updates the recap field", async () => {
 		await createSession("s1", "L", "m");
 		await appendMessage("s1", 0, "assistant", "some response");
@@ -466,6 +572,98 @@ describe("tool events", () => {
 		expect(events).toHaveLength(1);
 		expect(events[0].name).toBe("Bash");
 		expect(events[0].tool_id).toBe("tid-1");
+	});
+
+	it("scopes tool-adjacent transcript cards to the requested sequence window", async () => {
+		await createSession("s1", "L", "m");
+		await appendMessage("s1", 10, "assistant", "old");
+		await appendMessage("s1", 20, "assistant", "new");
+		await appendToolEvent("s1", 10, "tool-old", "Read", {});
+		await appendToolEvent("s1", 20, "tool-new", "Bash", {});
+		await recordPermissionEvent(
+			"s1",
+			"tool-old",
+			"Read",
+			undefined,
+			"approved",
+		);
+		await recordPermissionEvent(
+			"s1",
+			"tool-new",
+			"Bash",
+			undefined,
+			"approved",
+		);
+		await appendPlanProposal("s1", "plan-old", 10, "old", "approved");
+		await appendPlanProposal("s1", "plan-new", 20, "new", "approved");
+		await appendAskUserQuestion("s1", "ask-old", 10, "[]");
+		await appendAskUserQuestion("s1", "ask-new", 20, "[]");
+		for (const [id, seq] of [
+			["attachment-old", 10],
+			["attachment-new", 20],
+		] as const) {
+			await createAttachment({
+				id,
+				session_id: "s1",
+				kind: "ephemeral",
+				filename: `${id}.txt`,
+				path: `/tmp/${id}.txt`,
+				mime: "text/plain",
+				size_bytes: 1,
+				sha256: null,
+			});
+			await linkAttachmentToMessage(id, "s1", seq);
+		}
+
+		expect(
+			(await getSessionToolEvents("s1", 15, 25)).map((row) => row.tool_id),
+		).toEqual(["tool-new"]);
+		expect(
+			(await getSessionPermissionEvents("s1", 15, 25)).map(
+				(row) => row.tool_id,
+			),
+		).toEqual(["tool-new"]);
+		expect(
+			(await getSessionPlanProposals("s1", 15, 25)).map(
+				(row) => row.proposal_id,
+			),
+		).toEqual(["plan-new"]);
+		expect(
+			(await getSessionAskUserQuestions("s1", 15, 25)).map(
+				(row) => row.request_id,
+			),
+		).toEqual(["ask-new"]);
+		expect(
+			(await getAttachmentsForSession("s1", 15, 25)).map((row) => row.id),
+		).toEqual(["attachment-new"]);
+
+		// Compound message cursors can include a lower-id row whose seq equals the
+		// cursor sequence, so the derived page maximum is inclusive.
+		expect(
+			(await getSessionToolEvents("s1", 15, undefined, 20)).map(
+				(row) => row.tool_id,
+			),
+		).toEqual(["tool-new"]);
+		expect(
+			(await getSessionPermissionEvents("s1", 15, undefined, 20)).map(
+				(row) => row.tool_id,
+			),
+		).toEqual(["tool-new"]);
+		expect(
+			(await getSessionPlanProposals("s1", 15, undefined, 20)).map(
+				(row) => row.proposal_id,
+			),
+		).toEqual(["plan-new"]);
+		expect(
+			(await getSessionAskUserQuestions("s1", 15, undefined, 20)).map(
+				(row) => row.request_id,
+			),
+		).toEqual(["ask-new"]);
+		expect(
+			(await getAttachmentsForSession("s1", 15, undefined, 20)).map(
+				(row) => row.id,
+			),
+		).toEqual(["attachment-new"]);
 	});
 
 	it("stores input as JSON string", async () => {
@@ -540,6 +738,24 @@ describe("permission events", () => {
 		const events = await getSessionPermissionEvents("s1");
 		expect(events[0].tool_id).toBe("t1");
 		expect(events[1].tool_id).toBe("t2");
+	});
+
+	it("keeps standalone approvals visible in the newest paged window only", async () => {
+		await createSession("s1", "L", "m");
+		await recordPermissionEvent(
+			"s1",
+			"hlid-windows-computer-use-turn-1",
+			"hlid.windows_computer_use",
+			"Windows Computer Use",
+			"approved",
+		);
+
+		expect(
+			(await getSessionPermissionEvents("s1", 0, undefined, 10)).map(
+				(row) => row.tool_id,
+			),
+		).toEqual(["hlid-windows-computer-use-turn-1"]);
+		expect(await getSessionPermissionEvents("s1", 0, 11, 10)).toEqual([]);
 	});
 });
 

@@ -134,10 +134,41 @@ async function getRecentSessions(url: URL): Promise<Response> {
 async function getSessionMessages(url: URL): Promise<Response> {
 	const sessionId = url.searchParams.get("session_id");
 	if (!sessionId) return new Response("Missing session_id", { status: 400 });
+	const limitParam = url.searchParams.get("limit");
+	const limit = limitParam ? clampInt(limitParam, 201, 1, 5_001) : undefined;
+	const beforeSeqParam = url.searchParams.get("before_seq");
+	const beforeSeq = beforeSeqParam
+		? clampInt(beforeSeqParam, 0, 0, Number.MAX_SAFE_INTEGER)
+		: undefined;
+	const beforeIdParam = url.searchParams.get("before_id");
+	const beforeId =
+		beforeSeq !== undefined && beforeIdParam
+			? clampInt(beforeIdParam, 0, 0, Number.MAX_SAFE_INTEGER)
+			: undefined;
+	const minSeqParam = url.searchParams.get("min_seq");
+	const requestedMinSeq = minSeqParam
+		? clampInt(minSeqParam, 0, 0, Number.MAX_SAFE_INTEGER)
+		: undefined;
+	const minIdParam = url.searchParams.get("min_id");
+	const requestedMinId =
+		requestedMinSeq !== undefined && minIdParam
+			? clampInt(minIdParam, 0, 0, Number.MAX_SAFE_INTEGER)
+			: undefined;
+	const pageMessages = await db.getSessionMessages(
+		sessionId,
+		beforeSeq,
+		limit,
+		requestedMinSeq,
+		beforeId,
+		requestedMinId,
+	);
+	const minSeq = pageMessages[0]?.seq;
+	if (minSeq === undefined) return Response.json([]);
+	const maxSeq = pageMessages.at(-1)?.seq ?? minSeq;
 	const [messages, toolEvents, attachments] = await Promise.all([
-		db.getSessionMessages(sessionId),
-		db.getSessionToolEvents(sessionId),
-		db.getAttachmentsForSession(sessionId),
+		Promise.resolve(pageMessages),
+		db.getSessionToolEvents(sessionId, minSeq, undefined, maxSeq),
+		db.getAttachmentsForSession(sessionId, minSeq, undefined, maxSeq),
 	]);
 	const toolsBySeq = new Map<number, (typeof toolEvents)[number][]>();
 	for (const te of toolEvents) {
@@ -219,11 +250,28 @@ async function getSessionContext(url: URL): Promise<Response> {
 
 async function getSessionScopedRows<T>(
 	url: URL,
-	query: (sessionId: string) => Promise<T>,
+	query: (
+		sessionId: string,
+		minSeq?: number,
+		beforeSeq?: number,
+		maxSeq?: number,
+	) => Promise<T>,
 ): Promise<Response> {
 	const sessionId = url.searchParams.get("session_id");
 	if (!sessionId) return new Response("Missing session_id", { status: 400 });
-	return Response.json(await query(sessionId));
+	const minSeqParam = url.searchParams.get("min_seq");
+	const minSeq = minSeqParam
+		? clampInt(minSeqParam, 0, 0, Number.MAX_SAFE_INTEGER)
+		: undefined;
+	const beforeSeqParam = url.searchParams.get("before_seq");
+	const beforeSeq = beforeSeqParam
+		? clampInt(beforeSeqParam, 0, 0, Number.MAX_SAFE_INTEGER)
+		: undefined;
+	const maxSeqParam = url.searchParams.get("max_seq");
+	const maxSeq = maxSeqParam
+		? clampInt(maxSeqParam, 0, 0, Number.MAX_SAFE_INTEGER)
+		: undefined;
+	return Response.json(await query(sessionId, minSeq, beforeSeq, maxSeq));
 }
 
 async function getUsageWindows(): Promise<Response> {

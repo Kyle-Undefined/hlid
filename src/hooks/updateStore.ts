@@ -4,13 +4,17 @@
 // Pattern mirrors wsStore: useSyncExternalStore-compatible.
 
 import type { CliUpdateStatus } from "#/lib/cliUpdateTypes";
+import type { ReleaseNotes } from "#/lib/updates";
 
 export type UpdateStatus = {
 	current: string;
 	latest: string | null;
 	available: boolean;
 	lastCheckedAt: number;
+	release?: ReleaseNotes | null;
 	cliUpdates?: CliUpdateStatus[];
+	cliUpdateActionsAllowed?: boolean;
+	refreshing?: boolean;
 	error?: string;
 };
 
@@ -23,14 +27,30 @@ let didFetch = false;
 // alone races: two mounts in the same tick can both pass the check before
 // either marks the fetch as done. Promise dedup is correct.
 let inFlight: Promise<void> | null = null;
+let reconcileTimer: ReturnType<typeof setTimeout> | null = null;
+let didScheduleReconcile = false;
 const listeners = new Set<() => void>();
 
 // 10s should comfortably cover even a slow local round-trip while still
 // freeing callers from hanging if the server stops responding mid-request.
 const FETCH_TIMEOUT_MS = 10_000;
+// Native/WSL probes finish within 5s. ACP can spend 10s loading its registry
+// and another 10s initializing agents, so reconcile once after the full batch
+// has had time to persist its snapshot.
+const BACKGROUND_RECONCILE_MS = 25_000;
 
 function emit() {
 	for (const fn of listeners) fn();
+}
+
+function scheduleReconcileIfNeeded(next: UpdateStatus): void {
+	if (!next.refreshing || didScheduleReconcile) return;
+	didScheduleReconcile = true;
+	reconcileTimer = setTimeout(() => {
+		reconcileTimer = null;
+		didFetch = false;
+		void fetchUpdateStatus();
+	}, BACKGROUND_RECONCILE_MS);
 }
 
 export function subscribeUpdateStatus(cb: () => void): () => void {
@@ -51,6 +71,7 @@ export function getUpdateServerSnapshot(): null {
 export function setUpdateStatus(s: UpdateStatus): void {
 	status = s;
 	emit();
+	scheduleReconcileIfNeeded(s);
 }
 
 /** Fetch once per module lifetime. Safe to call from multiple components
@@ -68,6 +89,7 @@ export async function fetchUpdateStatus(): Promise<void> {
 				status = j.data;
 				didFetch = true;
 				emit();
+				scheduleReconcileIfNeeded(j.data);
 			}
 			// j.ok === false: leave didFetch false so the next mount can retry
 			// instead of being stuck with an empty banner until page refresh.
@@ -82,8 +104,11 @@ export async function fetchUpdateStatus(): Promise<void> {
 
 /** @internal — resets module state for tests. */
 export function __resetForTesting(): void {
+	if (reconcileTimer) clearTimeout(reconcileTimer);
 	status = null;
 	didFetch = false;
 	inFlight = null;
+	reconcileTimer = null;
+	didScheduleReconcile = false;
 	listeners.clear();
 }

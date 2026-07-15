@@ -1,9 +1,13 @@
+import { availableParallelism } from "node:os";
 import { resolve } from "node:path";
 import { defineConfig } from "vitest/config";
+
+const maxWorkers = Math.max(1, Math.min(8, availableParallelism() - 1));
 
 export default defineConfig({
 	test: {
 		environment: "node",
+		maxWorkers,
 		include: [
 			"src/**/*.test.ts",
 			"src/**/*.test.tsx",
@@ -12,8 +16,10 @@ export default defineConfig({
 		// DB tests require bun:sqlite — run with `bun run test:db` instead
 		exclude: ["src/**/*.bun.test.ts"],
 		coverage: {
-			provider: "istanbul",
-			reporter: ["text", "json", "json-summary", "html"],
+			provider: "v8",
+			processingConcurrency: Math.min(4, maxWorkers),
+			// The merge step creates the final text summary, JSON summary, and HTML report.
+			reporter: ["json"],
 			reportsDirectory: "coverage/vitest",
 			include: ["src/**/*.{ts,tsx}", "src/server/ptyInputParser.cjs"],
 			exclude: [

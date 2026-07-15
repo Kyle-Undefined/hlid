@@ -69,6 +69,7 @@ import {
 	resolveActiveProviderId,
 } from "#/lib/providerOptions";
 import {
+	loadOlderPreservingScroll,
 	ROUTE_SCROLL_RESTORATION_IDS,
 	resetScrollAncestors,
 	scrollChatToBottom,
@@ -470,7 +471,7 @@ function useRavenChatRuntime({
 	);
 	const connection = useWs(handleAllMessages);
 
-	useLoadChatHistory({
+	const historyPagination = useLoadChatHistory({
 		existingSessionId,
 		isExplicitSession,
 		dispatch,
@@ -519,6 +520,7 @@ function useRavenChatRuntime({
 
 	return {
 		...connection,
+		...historyPagination,
 		isRunning,
 		sdkSlashCommands,
 		mcpServers,
@@ -1561,6 +1563,12 @@ function RavenMessagePane({
 		handleCancelQueued,
 		handlePromoteQueued,
 	} = actions;
+	const handleLoadOlderHistory = useCallback(async () => {
+		return loadOlderPreservingScroll(
+			scrollRef.current,
+			runtime.loadOlderHistory,
+		);
+	}, [runtime.loadOlderHistory, scrollRef]);
 	// Below md, the Terminal tab fully replaces chat (RavenShellTabBar); md+
 	// always shows chat regardless (desktop split panel is chunk 4).
 	const mobileHideChat = terminalOpen && shellTab === "terminal";
@@ -1598,6 +1606,9 @@ function RavenMessagePane({
 								sessionId={sessionId}
 								sessionState={sessionState}
 								runningTurnId={runningTurnId}
+								hasOlderHistory={runtime.hasOlderHistory}
+								isLoadingOlderHistory={runtime.isLoadingOlderHistory}
+								onLoadOlderHistory={handleLoadOlderHistory}
 								handleDecide={handleDecide}
 								handleSubmitAnswers={handleSubmitAnswers}
 								handlePlanDecide={handlePlanDecide}
