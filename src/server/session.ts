@@ -918,12 +918,14 @@ export class SessionManager {
 			this.agentMode = "cwd";
 			this.sessionAllowedTools.clear();
 			const [
+				savedSession,
 				prior,
 				savedAgentCwd,
 				savedModel,
 				savedProviderId,
 				savedProviderSessionId,
 			] = await Promise.all([
+				db.getSessionById(sessionId),
 				db.getSessionMessages(sessionId),
 				db.getSessionAgentCwd(sessionId),
 				db.getSessionModel(sessionId),
@@ -932,6 +934,7 @@ export class SessionManager {
 			]);
 			this.messageSeq = prior.length;
 			this.currentSessionId = sessionId;
+			this.currentSessionLabel = savedSession?.label ?? null;
 			this.providerSessionId = savedProviderSessionId;
 			this.providerSessionProviderId = savedProviderId;
 			if (

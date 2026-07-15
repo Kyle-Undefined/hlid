@@ -33,6 +33,7 @@ vi.mock("../db", () => ({
 	appendLog: vi.fn().mockResolvedValue(undefined),
 	createSession: vi.fn().mockResolvedValue(undefined),
 	recordQuery: vi.fn().mockResolvedValue(undefined),
+	getSessionById: vi.fn().mockResolvedValue(null),
 	getSessionMessages: vi.fn().mockResolvedValue([]),
 	getSessionAgentCwd: vi.fn().mockResolvedValue(null),
 	getSessionModel: vi.fn().mockResolvedValue(null),
@@ -490,6 +491,32 @@ describe("SessionManager — setModel", () => {
 
 		expect(captured.params?.model).toBe("claude-fable-5");
 		expect(sm.getStatus().model).toBe("claude-fable-5");
+	});
+
+	it("restores a saved session label into live status", async () => {
+		const { provider } = makeCaptureProvider("claude");
+		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
+			id: "saved-session",
+			label: "MY SAVED NAME",
+		} as never);
+		vi.mocked(dbMock.getSessionMessages).mockResolvedValueOnce([
+			{ role: "user", text: "prior" },
+		] as never);
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		let labelWhileRunning: string | null | undefined;
+
+		await sm.runQuery(
+			"continue",
+			(event) => {
+				if (event.type === "status" && event.state === "running") {
+					labelWhileRunning = sm.getSessionLabel();
+				}
+			},
+			"saved-session",
+		);
+
+		expect(labelWhileRunning).toBe("MY SAVED NAME");
+		expect(sm.getSessionLabel()).toBe("MY SAVED NAME");
 	});
 });
 
