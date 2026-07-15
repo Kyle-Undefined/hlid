@@ -32,6 +32,7 @@ import { TerminalView } from "#/components/TerminalView";
 import { ProviderUsageStrip } from "#/components/usage/ProviderUsageStrip";
 import { ContextWindowSection } from "#/components/usage/UsageWindowSections";
 import { getConfig } from "#/config";
+import { rememberRavenSessionId } from "#/hooks/ravenSessionStore";
 import { useChatWsHandler } from "#/hooks/useChatWsHandler";
 import { useCommands } from "#/hooks/useCommands";
 import { useDraft } from "#/hooks/useDraft";
@@ -252,12 +253,14 @@ function useRavenSessionIdentity({
 	existingSessionId,
 	interactiveMode,
 	initialAgentSkillContext,
+	routeSessionId,
 	navigate,
 }: {
 	config: RavenConfig;
 	existingSessionId: string | null;
 	interactiveMode: boolean;
 	initialAgentSkillContext: string | undefined;
+	routeSessionId: string | undefined;
 	navigate: RavenNavigate;
 }) {
 	const [agentSkillContext, setAgentSkillContext] = useState(
@@ -274,20 +277,75 @@ function useRavenSessionIdentity({
 	);
 	const sessionIdRef = useRef(sessionId);
 
+	const activateNewSession = useCallback(
+		(newId: string, clearAgent: boolean) => {
+			rememberRavenSessionId(newId, clearAgent ? undefined : agentSkillContext);
+			setSessionId(newId);
+			sessionIdRef.current = newId;
+			void navigate({
+				to: "/raven",
+				search: (previous) => ({
+					...previous,
+					session: newId,
+					...(clearAgent ? { agent: undefined } : {}),
+				}),
+				replace: true,
+			});
+		},
+		[agentSkillContext, navigate],
+	);
+
 	const handleNewTerminalSession = useCallback(() => {
 		const newId = uid();
-		setSessionId(newId);
-		sessionIdRef.current = newId;
-		void navigate({
-			to: "/raven",
-			search: (previous) => ({ ...previous, session: undefined }),
-			replace: true,
-		});
-	}, [navigate]);
+		activateNewSession(newId, false);
+	}, [activateNewSession]);
+
+	const selectAgent = useCallback(
+		(agent: string | undefined) => {
+			setAgentSkillContext(agent);
+			agentContextSentRef.current = false;
+			rememberRavenSessionId(sessionIdRef.current, agent);
+			void navigate({
+				to: "/raven",
+				search: (previous) => ({
+					...previous,
+					session: sessionIdRef.current,
+					agent,
+				}),
+				replace: true,
+			});
+		},
+		[navigate],
+	);
 
 	useEffect(() => {
 		sessionIdRef.current = sessionId;
 	}, [sessionId]);
+
+	useEffect(() => {
+		if (!sessionId) return;
+		// Route navigation updates loader data before this hook's local session
+		// state catches up. Do not overwrite the newly selected route with the
+		// previous chat during that transition.
+		if (existingSessionId && existingSessionId !== sessionId) return;
+		rememberRavenSessionId(sessionId, agentSkillContext);
+		if (routeSessionId === sessionId) return;
+		void navigate({
+			to: "/raven",
+			search: (previous) => ({
+				...previous,
+				session: sessionId,
+				agent: agentSkillContext,
+			}),
+			replace: true,
+		});
+	}, [
+		agentSkillContext,
+		existingSessionId,
+		navigate,
+		routeSessionId,
+		sessionId,
+	]);
 
 	useEffect(() => {
 		if (!sessionId || interactiveMode) return;
@@ -343,10 +401,11 @@ function useRavenSessionIdentity({
 	return {
 		agentSkillContext,
 		setAgentSkillContext,
+		selectAgent,
 		agentContextSentRef,
 		sessionId,
-		setSessionId,
 		sessionIdRef,
+		activateNewSession,
 		handleNewTerminalSession,
 	};
 }
@@ -824,12 +883,8 @@ function useRavenQueueActions(props: RavenActionProps) {
 
 function useRavenClear(props: RavenActionProps) {
 	const { clearDraft, setPlanMode, setSessionSelection } = props;
-	const {
-		setAgentSkillContext,
-		agentContextSentRef,
-		setSessionId,
-		sessionIdRef,
-	} = props.session;
+	const { setAgentSkillContext, agentContextSentRef, activateNewSession } =
+		props.session;
 	const { send, dispatch, pendingIdRef, lastAssistantIdRef } = props.runtime;
 
 	return useCallback(() => {
@@ -849,9 +904,8 @@ function useRavenClear(props: RavenActionProps) {
 		clearChatQueue();
 		setSessionSelection({});
 		const newId = uid();
-		setSessionId(newId);
-		sessionIdRef.current = newId;
 		setAgentSkillContext(undefined);
+		activateNewSession(newId, true);
 	}, [
 		send,
 		clearDraft,
@@ -859,8 +913,7 @@ function useRavenClear(props: RavenActionProps) {
 		lastAssistantIdRef,
 		agentContextSentRef,
 		dispatch,
-		setSessionId,
-		sessionIdRef,
+		activateNewSession,
 		setAgentSkillContext,
 		setPlanMode,
 		setSessionSelection,
@@ -1063,12 +1116,14 @@ export function ChatPage() {
 		providers,
 		voiceInfo: initialVoiceInfo,
 	} = Route.useLoaderData();
+	const ravenSearch = Route.useSearch();
 	const navigate = useNavigate();
 	const session = useRavenSessionIdentity({
 		config,
 		existingSessionId,
 		interactiveMode,
 		initialAgentSkillContext,
+		routeSessionId: ravenSearch.session,
 		navigate,
 	});
 	const { agentSkillContext, sessionId, sessionIdRef } = session;
@@ -1121,7 +1176,7 @@ export function ChatPage() {
 		rateLimit,
 		messages,
 	} = runtime;
-	const { prompt: seededPrompt } = Route.useSearch();
+	const { prompt: seededPrompt } = ravenSearch;
 	const { input, setInput, clearDraft } = useDraft({
 		existingSessionId,
 		seededPrompt,
@@ -1883,12 +1938,7 @@ function ChatInputNotices({
 	activeEffort,
 	setSessionSelection,
 }: ChatComposerProps) {
-	const {
-		agentSkillContext,
-		setAgentSkillContext,
-		agentContextSentRef,
-		sessionId,
-	} = session;
+	const { agentSkillContext, selectAgent, sessionId } = session;
 	const { messages, effort, send } = runtime;
 	const {
 		pendingAttachments,
@@ -1957,8 +2007,7 @@ function ChatInputNotices({
 							value={agentSkillContext ?? ""}
 							fullWidth
 							onChange={(val) => {
-								setAgentSkillContext(val || undefined);
-								agentContextSentRef.current = false;
+								selectAgent(val || undefined);
 							}}
 						/>
 					</div>

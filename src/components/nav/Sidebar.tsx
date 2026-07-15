@@ -1,5 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
+import { useLastRavenSession } from "#/hooks/ravenSessionStore";
 import { version } from "../../../package.json";
 import {
 	fetchUpdateStatus,
@@ -13,6 +14,7 @@ import { useSystemStatusIndicator } from "./SystemStatusDot";
 
 export function Sidebar() {
 	const { agg, dotClass: dot } = useSystemStatusIndicator();
+	const lastRavenSession = useLastRavenSession();
 
 	const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
 	useEffect(() => {
@@ -63,6 +65,14 @@ export function Sidebar() {
 					<Link
 						key={to}
 						to={to}
+						search={
+							to === "/raven" && lastRavenSession
+								? {
+										session: lastRavenSession.sessionId,
+										agent: lastRavenSession.agent,
+									}
+								: undefined
+						}
 						className="flex items-center gap-3 px-4 py-2.5 text-[11px] tracking-widest text-muted-foreground hover:text-foreground hover:bg-accent transition-colors duration-100 border-l-2 border-transparent"
 						activeProps={{
 							className:

@@ -1,4 +1,5 @@
 import { Link } from "@tanstack/react-router";
+import { useLastRavenSession } from "#/hooks/ravenSessionStore";
 import { NAV_ITEMS } from "./items";
 import { WsStatusDot } from "./SystemStatusDot";
 
@@ -9,6 +10,7 @@ const LABEL =
 	"w-full overflow-hidden text-ellipsis whitespace-nowrap text-center text-[clamp(7px,2vw,9px)] tracking-[0.08em]";
 
 export function BottomNav() {
+	const lastRavenSession = useLastRavenSession();
 	return (
 		<nav
 			aria-label="Primary navigation"
@@ -22,6 +24,14 @@ export function BottomNav() {
 					<Link
 						key={to}
 						to={to}
+						search={
+							to === "/raven" && lastRavenSession
+								? {
+										session: lastRavenSession.sessionId,
+										agent: lastRavenSession.agent,
+									}
+								: undefined
+						}
 						className={`${BASE} text-muted-foreground hover:text-foreground`}
 						activeProps={{ className: `${BASE} text-primary` }}
 						activeOptions={{ exact }}

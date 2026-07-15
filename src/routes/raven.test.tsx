@@ -20,6 +20,7 @@ const state = vi.hoisted(() => ({
 	actualModel: null as string | null,
 	sessions: [] as unknown[],
 	onMessage: null as ((message: ServerMessage) => void) | null,
+	onAgentChange: null as ((value: string) => void) | null,
 }));
 
 vi.mock("@tanstack/react-router", () => ({
@@ -32,9 +33,18 @@ vi.mock("@tanstack/react-router", () => ({
 }));
 
 vi.mock("#/components/AgentSelect", () => ({
-	AgentSelect: ({ fullWidth }: { fullWidth?: boolean }) => (
-		<div data-testid="agent-select" data-full-width={String(fullWidth)} />
-	),
+	AgentSelect: ({
+		fullWidth,
+		onChange,
+	}: {
+		fullWidth?: boolean;
+		onChange: (value: string) => void;
+	}) => {
+		state.onAgentChange = onChange;
+		return (
+			<div data-testid="agent-select" data-full-width={String(fullWidth)} />
+		);
+	},
 }));
 vi.mock("#/components/AttachmentStrip", () => ({
 	AttachmentStrip: () => null,
@@ -171,6 +181,7 @@ beforeEach(() => {
 	state.sessionState = "idle";
 	state.actualModel = null;
 	state.onMessage = null;
+	state.onAgentChange = null;
 	state.search = {};
 	state.loaderData = {
 		config: {
@@ -586,6 +597,76 @@ describe("Raven composed submission behavior", () => {
 		expect(state.send).not.toHaveBeenCalledWith(
 			expect.objectContaining({ type: "chat" }),
 		);
+	});
+
+	it("keeps a new chat and its agent selected across Raven reloads", () => {
+		state.search = { session: "previous-chat", agent: "/old-project" };
+		state.loaderData = {
+			...state.loaderData,
+			existingSessionId: "previous-chat",
+			isExplicitSession: true,
+			agentSkillContext: "/old-project",
+			agentList: [
+				{ path: "/old-project", name: "Old project", provider: "claude" },
+				{ path: "/new-project", name: "New project", provider: "claude" },
+			],
+		};
+
+		render(<ChatPage />);
+		fireEvent.change(screen.getByRole("combobox"), {
+			target: { value: "create a visible message" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Send" }));
+		fireEvent.click(screen.getByRole("button", { name: "New chat" }));
+
+		const newChatNavigation = state.navigate.mock.calls
+			.map(([options]) => options as { search?: unknown })
+			.reverse()
+			.find((options) => {
+				if (typeof options.search !== "function") return false;
+				const next = options.search(state.search) as Record<string, unknown>;
+				return next.session !== "previous-chat" && next.agent === undefined;
+			});
+		expect(newChatNavigation).toBeTruthy();
+		const newSearch = (
+			newChatNavigation?.search as (
+				previous: Record<string, unknown>,
+			) => Record<string, unknown>
+		)(state.search);
+		expect(localStorage.getItem("hlid:raven:last-session")).toBe(
+			newSearch.session,
+		);
+
+		act(() => state.onAgentChange?.("/new-project"));
+		const agentNavigation = state.navigate.mock.calls.at(-1)?.[0] as {
+			search: (previous: Record<string, unknown>) => Record<string, unknown>;
+		};
+		expect(agentNavigation.search(newSearch)).toEqual({
+			session: newSearch.session,
+			agent: "/new-project",
+		});
+		expect(localStorage.getItem("hlid:raven:last-agent")).toBe("/new-project");
+	});
+
+	it("does not swap a newly selected route back to the previous chat", () => {
+		state.search = { session: "chat-a" };
+		state.loaderData = {
+			...state.loaderData,
+			existingSessionId: "chat-a",
+			isExplicitSession: true,
+		};
+		const view = render(<ChatPage />);
+		state.navigate.mockClear();
+
+		state.search = { session: "chat-b" };
+		state.loaderData = {
+			...state.loaderData,
+			existingSessionId: "chat-b",
+		};
+		view.rerender(<ChatPage />);
+
+		expect(state.navigate).not.toHaveBeenCalled();
+		expect(localStorage.getItem("hlid:raven:last-session")).toBe("chat-b");
 	});
 });
 
