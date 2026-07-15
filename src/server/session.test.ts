@@ -868,8 +868,21 @@ describe("SessionManager — provider usage refresh", () => {
 				};
 			},
 		};
-		const sm = new SessionManager(makeConfig(), makeProviders(provider));
-		const running = sm.runQuery("hello", () => {}, "live-usage-session");
+		const autoSleep = {
+			enabled: true,
+			threshold: 0.9,
+			max_sleep_minutes: 360,
+			resume_buffer_seconds: 30,
+		};
+		const config = { ...makeConfig(), auto_sleep: autoSleep } as HlidConfig;
+		vi.mocked(loadConfig).mockReturnValue(config);
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(config, makeProviders(provider));
+		const running = sm.runQuery(
+			"hello",
+			(message) => emitted.push(message),
+			"live-usage-session",
+		);
 
 		try {
 			await firstRefresh;
@@ -885,21 +898,43 @@ describe("SessionManager — provider usage refresh", () => {
 				utilization: 0.91,
 				resetsAt,
 			});
-			expect(
-				evaluateSleep("live-usage-test", {
-					enabled: true,
-					threshold: 0.9,
-					max_sleep_minutes: 360,
-					resume_buffer_seconds: 30,
+			expect(evaluateSleep("live-usage-test", autoSleep)).toMatchObject({
+				reason: "threshold",
+				utilization: 0.91,
+			});
+			expect(emitted).toContainEqual(
+				expect.objectContaining({
+					type: "agent_sleep",
+					state: "sleeping",
+					providerId: "live-usage-test",
+					utilization: 0.91,
 				}),
-			).toMatchObject({ reason: "threshold", utilization: 0.91 });
+			);
+			expect(sm.getSleepState()).toMatchObject({
+				type: "agent_sleep",
+				state: "sleeping",
+				providerId: "live-usage-test",
+			});
 
+			sm.skipSleep();
+			expect(sm.getSleepState()).toBeNull();
+			expect(emitted).toContainEqual(
+				expect.objectContaining({
+					type: "agent_sleep",
+					state: "resumed",
+					providerId: "live-usage-test",
+					cause: "skipped",
+				}),
+			);
 			finishTurn();
 			await running;
 			expect(usageWindows).toHaveBeenCalledTimes(3);
 		} finally {
+			sm.skipSleep();
 			finishTurn();
 			await running;
+			resetUsageGate();
+			vi.mocked(loadConfig).mockReset();
 			vi.useRealTimers();
 		}
 	});

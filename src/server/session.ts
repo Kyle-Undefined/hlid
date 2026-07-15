@@ -47,6 +47,7 @@ import { generateTurnRecap } from "./recap";
 import { SessionTurnQueue } from "./sessionTurnQueue";
 import { authorizeHlidTool, registerUmbodApprovalSession } from "./umbod";
 import {
+	evaluateSleep,
 	reportRateLimitSignal,
 	type SleepDecision,
 	skipSleep as skipProviderSleep,
@@ -401,6 +402,7 @@ export class SessionManager {
 	// Auto-sleep: last emitted "sleeping" message, kept for sync replay so a
 	// reconnecting client sees the banner. Cleared on wake/abort.
 	private sleepState: AgentSleepMessage | null = null;
+	private sleepEmit: ((msg: ServerMessage) => void) | null = null;
 	private policyEnforced = false;
 	private usageGateEnforced = false;
 
@@ -1151,6 +1153,7 @@ export class SessionManager {
 				event.resetsAt ?? null,
 			);
 		}
+		this.reconcileSleepState(provider, emit);
 	}
 
 	private async persistAssistantMessage(
@@ -1818,6 +1821,10 @@ export class SessionManager {
 			// Settle final state. Per-turn errors set state="error" via the
 			// runOneTurn catch; preserve that. Otherwise return to idle.
 			if (this.state === "running") this.state = "idle";
+			// An idle/error session is not sleeping. The status message clears the
+			// client banner; clear the replay copy as the matching server invariant.
+			this.sleepState = null;
+			this.sleepEmit = null;
 			lastEmit?.({
 				type: "status",
 				state: this.state,
@@ -1850,46 +1857,112 @@ export class SessionManager {
 			cfg,
 			signal: this.abortController?.signal ?? undefined,
 			onSleep: (decision: SleepDecision) => {
-				const message: AgentSleepMessage = {
-					type: "agent_sleep",
-					state: "sleeping",
-					providerId,
-					windowId: decision.windowId,
-					until: decision.until,
-					reason: decision.reason,
-					...(decision.utilization != null
-						? { utilization: decision.utilization }
-						: {}),
-					...(this.currentSessionId
-						? { session_id: this.currentSessionId }
-						: {}),
-				};
-				this.sleepState = message;
-				emit(message);
+				this.publishSleepState(providerId, decision, emit);
 			},
 			onWake: (cause) => {
-				this.sleepState = null;
-				emit({
-					type: "agent_sleep",
-					state: "resumed",
-					providerId,
-					cause,
-					...(this.currentSessionId
-						? { session_id: this.currentSessionId }
-						: {}),
-				});
+				this.clearSleepState(providerId, cause, emit);
 			},
 		});
 	}
 
+	private publishSleepState(
+		providerId: string,
+		decision: SleepDecision,
+		emit: (msg: ServerMessage) => void,
+	): void {
+		const current = this.sleepState;
+		// A capped decision is recomputed from the current clock. Preserve the
+		// first deadline so live usage polling cannot slide max_sleep forward.
+		const until =
+			decision.capApplied &&
+			current?.state === "sleeping" &&
+			current.providerId === providerId &&
+			current.reason === decision.reason &&
+			current.until != null
+				? current.until
+				: decision.until;
+		const message: AgentSleepMessage = {
+			type: "agent_sleep",
+			state: "sleeping",
+			providerId,
+			windowId: decision.windowId,
+			until,
+			reason: decision.reason,
+			...(decision.utilization != null
+				? { utilization: decision.utilization }
+				: {}),
+			...(this.currentSessionId ? { session_id: this.currentSessionId } : {}),
+		};
+		this.sleepEmit = emit;
+		if (
+			current?.state === "sleeping" &&
+			current.providerId === message.providerId &&
+			current.windowId === message.windowId &&
+			current.until === message.until &&
+			current.reason === message.reason &&
+			current.utilization === message.utilization &&
+			current.session_id === message.session_id
+		) {
+			return;
+		}
+		this.sleepState = message;
+		emit(message);
+	}
+
+	private clearSleepState(
+		providerId: string,
+		cause: "reset" | "skipped" | "aborted",
+		emit: (msg: ServerMessage) => void,
+	): void {
+		if (
+			this.sleepState?.state !== "sleeping" ||
+			this.sleepState.providerId !== providerId
+		) {
+			return;
+		}
+		this.sleepState = null;
+		this.sleepEmit = null;
+		emit({
+			type: "agent_sleep",
+			state: "resumed",
+			providerId,
+			cause,
+			...(this.currentSessionId ? { session_id: this.currentSessionId } : {}),
+		});
+	}
+
+	/**
+	 * Keep the banner aligned with provider-global usage even when utilization
+	 * crosses the threshold after a turn has already started. Tool/turn gates
+	 * still enforce the pause; this reconciliation makes their state visible to
+	 * the current client and available for late subscription replay.
+	 */
+	private reconcileSleepState(
+		provider: AgentProvider,
+		emit: (msg: ServerMessage) => void,
+	): void {
+		if (this.state !== "running") return;
+		const cfg = loadConfig()?.auto_sleep;
+		const decision = evaluateSleep(provider.providerId, cfg);
+		if (decision) {
+			this.publishSleepState(provider.providerId, decision, emit);
+			return;
+		}
+		this.clearSleepState(provider.providerId, "reset", emit);
+	}
+
 	/** "Resume now": wake every session sleeping on this session's provider. */
 	skipSleep(): void {
-		skipProviderSleep(this.resolveProvider(this.agentCwd).providerId);
+		const providerId = this.resolveProvider(this.agentCwd).providerId;
+		skipProviderSleep(providerId);
+		if (this.sleepEmit) {
+			this.clearSleepState(providerId, "skipped", this.sleepEmit);
+		}
 	}
 
 	/** Pending sleep banner for sync replay, or null when not sleeping. */
 	getSleepState(): AgentSleepMessage | null {
-		return this.sleepState;
+		return this.state === "running" ? this.sleepState : null;
 	}
 
 	private createToolPermissionHandler(
@@ -2551,6 +2624,7 @@ export class SessionManager {
 	private async refreshProviderUsage(
 		agentSession: AgentSession,
 		provider: AgentProvider,
+		emit: (msg: ServerMessage) => void,
 	): Promise<void> {
 		if (!agentSession.usageWindows) return;
 		try {
@@ -2558,6 +2632,7 @@ export class SessionManager {
 			await Promise.all(
 				readings.map((reading) => applyReading(provider.providerId, reading)),
 			);
+			this.reconcileSleepState(provider, emit);
 		} catch {
 			// Usage enrichment is best-effort and must never fail an otherwise
 			// successful agent turn.
@@ -2605,7 +2680,7 @@ export class SessionManager {
 		const refresh = (): Promise<void> => {
 			if (inFlight) return inFlight;
 			inFlight = Promise.all([
-				this.refreshProviderUsage(agentSession, provider),
+				this.refreshProviderUsage(agentSession, provider, emit),
 				this.refreshProviderContext(agentSession, turn, emit),
 			])
 				.then(() => {})
