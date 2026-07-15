@@ -1,13 +1,14 @@
 import { Pencil, Search, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ConfirmAction } from "#/components/ConfirmAction";
+import { HydrationSafeText } from "#/components/HydrationSafeText";
 import { LedgerPaginationBar } from "#/components/ledger/LedgerPagination";
 import { sessionEntryDotClass } from "#/components/nav/SystemStatusDot";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { SessionRow } from "#/db";
 import type { LiveStats } from "#/hooks/wsLiveStatsStore";
 import { formatDisplayCost } from "#/lib/costDisplay";
-import { fmt, fmtDate } from "#/lib/formatters";
+import { fmt, fmtDate, fmtDateUtc } from "#/lib/formatters";
 import type { SessionSortKey } from "#/lib/ledgerState";
 import type { SessionStatusEntry } from "#/server/protocol";
 
@@ -143,8 +144,15 @@ function SessionItem({
 							{session.label ?? "untitled"}
 						</PrivacyMask>
 						<PrivacyMask className="text-[9px] tracking-wider text-muted-foreground/40 mt-0.5 truncate">
-							{session.started_at != null ? fmtDate(session.started_at) : "—"} ·{" "}
-							{session.query_count}q
+							{session.started_at != null ? (
+								<HydrationSafeText
+									serverText={fmtDateUtc(session.started_at)}
+									clientText={fmtDate(session.started_at)}
+								/>
+							) : (
+								"—"
+							)}{" "}
+							· {session.query_count}q
 						</PrivacyMask>
 					</div>
 					<div className="text-right shrink-0">
@@ -266,15 +274,17 @@ function SessionSearchBox({
  */
 function CleanupControl({
 	oldestStartedAt,
+	referenceTime,
 	onCleanup,
 }: {
 	oldestStartedAt: number | null;
+	referenceTime: number;
 	onCleanup: (days: number) => void;
 }) {
 	const [pendingDays, setPendingDays] = useState<number | null>(null);
-	const now = Date.now() / 1000;
 	const available = CLEANUP_DAY_OPTIONS.filter(
-		(d) => oldestStartedAt != null && now - oldestStartedAt > d * 86_400,
+		(d) =>
+			oldestStartedAt != null && referenceTime - oldestStartedAt > d * 86_400,
 	);
 	if (available.length === 0) return null;
 
@@ -351,6 +361,7 @@ export function SessionsLedger({
 	sort = "recent",
 	onSortChange,
 	oldestStartedAt = null,
+	cleanupReferenceTime = 0,
 	onExport,
 }: {
 	data: { sessions: SessionRow[]; total: number };
@@ -374,6 +385,8 @@ export function SessionsLedger({
 	onSortChange?: (sort: SessionSortKey) => void;
 	/** Unix seconds of the oldest session overall; drives cleanup options. */
 	oldestStartedAt?: number | null;
+	/** Serialized loader time keeps cleanup options identical during hydration. */
+	cleanupReferenceTime?: number;
 	onExport?: (format: "csv" | "json") => void;
 }) {
 	const pagination = {
@@ -436,6 +449,7 @@ export function SessionsLedger({
 					</label>
 					<CleanupControl
 						oldestStartedAt={oldestStartedAt}
+						referenceTime={cleanupReferenceTime}
 						onCleanup={onCleanup}
 					/>
 					{onExport && (

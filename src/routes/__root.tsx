@@ -15,6 +15,10 @@ import { usePullToRefresh } from "#/hooks/usePullToRefresh";
 import { useVisualViewportGuard } from "#/hooks/useVisualViewportGuard";
 import { isRavenPath } from "#/lib/scrollContainers";
 import { logClientErrorFn } from "#/lib/serverFns/logging";
+import {
+	serviceWorkerBuild,
+	shouldReloadForServiceWorkerBuild,
+} from "#/lib/serviceWorkerUpdate";
 
 import appCss from "../styles.css?url";
 
@@ -61,11 +65,16 @@ function RegisterSW() {
 		// controllerchange on first install; reloading then would be a loop risk).
 		const isUpdate = Boolean(navigator.serviceWorker.controller);
 		let reloaded = false;
-		const onControllerChange = () => {
+		const onControllerChange = async () => {
 			if (!isUpdate || reloaded) return;
+			const controller = navigator.serviceWorker.controller;
+			if (!controller) return;
+			const workerBuild = await serviceWorkerBuild(controller);
+			if (!shouldReloadForServiceWorkerBuild(__HLID_BUILD__, workerBuild))
+				return;
 			reloaded = true;
-			// New build took control: cached assets were just evicted, so the old
-			// bundle's lazy chunks can no longer load. Reload onto the new build.
+			// Only an older page needs to reload after the new worker evicts its
+			// cached lazy chunks. A page already served by this build stays put.
 			window.location.reload();
 		};
 		navigator.serviceWorker.addEventListener(

@@ -9,6 +9,7 @@ import {
 	acquireCodexAppServer,
 	CodexAppServer,
 	listCodexAppServers,
+	prewarmCodexAppServer,
 	type ThreadHandler,
 } from "./codexAppServer";
 
@@ -134,6 +135,48 @@ describe("CodexAppServer idle lifecycle", () => {
 		await vi.advanceTimersByTimeAsync(45);
 		expect(server.alive).toBe(false);
 		expect(fake.proc.kill).toHaveBeenCalledOnce();
+	});
+
+	it("keeps a prewarmed server alive for the Hlid process lifetime", async () => {
+		vi.stubEnv("HLID_CODEX_APP_SERVER_IDLE_MS", "50");
+		vi.stubEnv("HLID_CODEX_APP_SERVER_METADATA_IDLE_MS", "5");
+		const fake = makeFakeProc();
+		vi.mocked(spawn).mockReturnValue(fake.proc as never);
+
+		await expect(prewarmCodexAppServer("/usr/bin/codex")).resolves.toBe(true);
+
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(fake.proc.kill).not.toHaveBeenCalled();
+		expect(listCodexAppServers()).toEqual([
+			{ executable: "/usr/bin/codex", alive: true, threads: 0 },
+		]);
+	});
+
+	it("bounds how long startup waits while initialization continues", async () => {
+		vi.stubEnv("HLID_CODEX_APP_SERVER_IDLE_MS", "1000");
+		const fake = makeFakeProc();
+		fake.proc.stdin.write = vi.fn();
+		vi.mocked(spawn).mockReturnValue(fake.proc as never);
+
+		const warm = prewarmCodexAppServer("/usr/bin/codex", 25);
+		await vi.advanceTimersByTimeAsync(25);
+
+		await expect(warm).resolves.toBe(false);
+		const [server] = listCodexAppServers();
+		expect(server).toEqual({
+			executable: "/usr/bin/codex",
+			alive: true,
+			threads: 0,
+		});
+		expect(fake.proc.kill).not.toHaveBeenCalled();
+
+		const initialize = JSON.parse(
+			String(vi.mocked(fake.proc.stdin.write).mock.calls[0]?.[0]),
+		) as { id: number };
+		respond(fake.proc, initialize.id, {});
+		await expect(acquireCodexAppServer("/usr/bin/codex").ready).resolves.toBe(
+			undefined,
+		);
 	});
 
 	it("removes an idle server from the registry and respawns on demand", async () => {

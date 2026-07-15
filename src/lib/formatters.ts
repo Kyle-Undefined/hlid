@@ -80,6 +80,18 @@ export function fmtDate(unixSecs: number): string {
 	});
 }
 
+/** Deterministic date text for SSR before the browser applies its locale. */
+export function fmtDateUtc(unixSecs: number): string {
+	return new Date(unixSecs * 1000).toLocaleString("en-US", {
+		month: "short",
+		day: "numeric",
+		hour: "2-digit",
+		minute: "2-digit",
+		timeZone: "UTC",
+		timeZoneName: "short",
+	});
+}
+
 export function fmtRunTime(unixSecs: number): string {
 	const d = new Date(unixSecs * 1000);
 	return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;

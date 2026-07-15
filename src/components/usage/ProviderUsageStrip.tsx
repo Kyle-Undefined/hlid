@@ -16,13 +16,17 @@ function initialProvider(
 	if (preferredProviderId && providerIds.includes(preferredProviderId)) {
 		return preferredProviderId;
 	}
+	return providerIds[0] ?? "claude";
+}
+
+function storedProvider(providerIds: string[]): string | null {
 	try {
 		const stored = localStorage.getItem(PROVIDER_STRIP_KEY);
-		if (stored && providerIds.includes(stored)) return stored;
+		return stored && providerIds.includes(stored) ? stored : null;
 	} catch {
 		// Storage may be unavailable in privacy-restricted contexts.
+		return null;
 	}
-	return providerIds[0] ?? "claude";
 }
 
 function storeProvider(providerId: string): void {
@@ -79,6 +83,12 @@ export function ProviderUsageStrip({
 			})
 			.catch(() => {});
 	});
+
+	useEffect(() => {
+		if (preferredProviderId) return;
+		const stored = storedProvider(providerIdsRef.current);
+		if (stored) setActiveProvider(stored);
+	}, [preferredProviderId]);
 
 	useEffect(() => {
 		if (liveQueryCount > 0) refreshRef.current();

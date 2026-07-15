@@ -191,6 +191,7 @@ describe("TLS proxy server boundary", () => {
 		const headers = new Headers(init.headers);
 		expect(headers.get("x-hlid-forwarded-client-ip")).toBe("127.0.0.1");
 		expect(headers.get("x-hlid-proxy-token")).toBe("internal-secret");
+		expect(headers.get("accept-encoding")).toBe("identity");
 	});
 
 	it("sends, bounds, and closes WebSocket bridge messages by backend state", () => {

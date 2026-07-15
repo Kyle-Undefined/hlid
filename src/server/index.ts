@@ -2,6 +2,7 @@ import "./prelude";
 import type { Server, ServerWebSocket } from "bun";
 import * as db from "../db";
 import { isAllowedOrigin, isAllowedOriginHeader } from "../lib/allowedOrigin";
+import { resolveCodexExecutable } from "../lib/codexPath";
 import { registerBunServer } from "../lib/lifecycle";
 import { loadToken, verifyToken } from "../lib/token";
 import { AcpProvider } from "./acpProvider";
@@ -17,7 +18,11 @@ import {
 } from "./auth";
 import { openInBrowser } from "./browser";
 import { ClaudeProvider } from "./claudeProvider";
-import { closeAllCodexAppServers, listCodexAppServers } from "./codexAppServer";
+import {
+	closeAllCodexAppServers,
+	listCodexAppServers,
+	prewarmCodexAppServer,
+} from "./codexAppServer";
 import { CodexProvider } from "./codexProvider";
 import { loadConfig } from "./config";
 import { handleDbRoute } from "./dbRoutes";
@@ -44,6 +49,7 @@ import { TerminalSessionPool } from "./terminalSessionPool";
 import { createTerminalUpgradeHandler } from "./terminalUpgrade";
 import { startTlsProxy } from "./tlsProxy";
 import { startUiServer } from "./uiServer";
+import { markUiServerReady } from "./uiStartupGate";
 import { bootstrapUmbod, closeUmbod } from "./umbod";
 import { VoiceModelManager } from "./voice";
 import { bootstrapVoiceRuntime } from "./voice-bootstrap";
@@ -230,6 +236,7 @@ process.on("SIGINT", () => {
 
 const PORT = config.server.port + 1; // 3001 when TanStack Start is on 3000
 const UI_PORT = config.server.port;
+const CODEX_STARTUP_WARM_TIMEOUT_MS = 3_000;
 
 // Per-provider transparent proxies. Each provider with proxyConfig gets its own
 // proxy that captures utilization headers and sets the provider's base URL env var.
@@ -237,9 +244,10 @@ const anthropicUpstream = (
 	process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com"
 ).replace(/\/$/, "");
 
+const providerProxyStarts: Promise<void>[] = [];
 for (const provider of providers.values()) {
 	if (provider.proxyConfig) {
-		void startProviderProxy(provider, anthropicUpstream);
+		providerProxyStarts.push(startProviderProxy(provider, anthropicUpstream));
 	}
 }
 
@@ -595,4 +603,42 @@ if (config.server.tls_cert_path && config.server.tls_key_path) {
 			config.attachments.max_bytes + MULTIPART_OVERHEAD_BYTES,
 		),
 	});
+}
+
+// Provider proxy initialization seeds the usage state Ledger reads and installs
+// the provider base URL. Keep the standalone startup splash visible until those
+// lightweight local steps and every public listener are ready.
+const providerProxyResults = await Promise.allSettled(providerProxyStarts);
+for (const result of providerProxyResults) {
+	if (result.status === "rejected") {
+		console.warn(
+			"[proxy] initialization failed before listener startup:",
+			result.reason,
+		);
+	}
+}
+// Include the Codex handshake in readiness when it is quick, but never hold the
+// splash for more than three seconds. A timed-out handshake keeps running in the
+// background. Once initialized, the shared helper stays pinned until Hlid exits.
+if (isCompiled) {
+	const codexExecutable = config.codex.executable ?? resolveCodexExecutable();
+	if (codexExecutable) {
+		try {
+			const warmed = await prewarmCodexAppServer(
+				codexExecutable,
+				CODEX_STARTUP_WARM_TIMEOUT_MS,
+			);
+			if (!warmed) {
+				console.warn(
+					"[codex app-server] startup warm-up exceeded 3000ms; continuing in background",
+				);
+			}
+		} catch (error) {
+			console.warn(
+				"[codex app-server] startup warm-up failed:",
+				error instanceof Error ? error.message : String(error),
+			);
+		}
+	}
+	markUiServerReady();
 }

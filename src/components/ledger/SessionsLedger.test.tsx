@@ -139,6 +139,7 @@ describe("SessionsLedger session actions", () => {
 });
 
 describe("SessionsLedger header controls", () => {
+	const cleanupReferenceTime = 2_000_000_000;
 	it("commits search on Enter and clears via the button", () => {
 		const onSearchChange = vi.fn();
 		renderLedger({ onSearchChange });
@@ -221,7 +222,8 @@ describe("SessionsLedger header controls", () => {
 	it("drives cleanup options from the oldest session, with confirmation", () => {
 		const props = renderLedger({
 			// ~40 days old → 7d and 30d cleanups available, 90d hidden.
-			oldestStartedAt: Math.floor(Date.now() / 1000) - 40 * 86_400,
+			oldestStartedAt: cleanupReferenceTime - 40 * 86_400,
+			cleanupReferenceTime,
 		});
 		const select = screen.getByRole("combobox", {
 			name: "Clean up old sessions",
@@ -237,7 +239,10 @@ describe("SessionsLedger header controls", () => {
 	});
 
 	it("hides cleanup entirely when no sessions are old enough", () => {
-		renderLedger({ oldestStartedAt: Math.floor(Date.now() / 1000) - 3600 });
+		renderLedger({
+			oldestStartedAt: cleanupReferenceTime - 3600,
+			cleanupReferenceTime,
+		});
 		expect(
 			screen.queryByRole("combobox", { name: "Clean up old sessions" }),
 		).toBeNull();

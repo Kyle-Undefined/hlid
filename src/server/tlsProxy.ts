@@ -5,6 +5,7 @@ import { registerBunServer } from "../lib/lifecycle";
 import { isPublicPath } from "../lib/publicPath";
 import { unauthenticatedResponse } from "../lib/uiRequestSecurity";
 import { authenticateRequest } from "./auth";
+import { compressHttpResponse } from "./httpCompression";
 import { createConcurrencyGate, readRequestBodyLimited } from "./requestLimits";
 
 type WsData = {
@@ -52,6 +53,10 @@ function buildForwardHeaders(
 	headers.set("x-hlid-forwarded-proto", "https");
 	headers.set("x-hlid-forwarded-client-ip", peerIp ?? "");
 	headers.set("x-hlid-proxy-token", internalToken);
+	// Bun fetch transparently decodes compressed upstream bodies but preserves
+	// Content-Encoding. Request identity bytes on the loopback hop so the public
+	// proxy never labels already-decoded HTML as gzip.
+	headers.set("accept-encoding", "identity");
 	return headers;
 }
 
@@ -159,7 +164,9 @@ export function createTlsHttpForwarder({
 					? VOICE_FORWARD_TIMEOUT_MS
 					: DEFAULT_FORWARD_TIMEOUT_MS,
 			);
-			return proxyResponse(upstream);
+			// Compress exactly once at the public edge, negotiated against the real
+			// browser request rather than the proxy's internal fetch implementation.
+			return compressHttpResponse(req, proxyResponse(upstream));
 		} finally {
 			release();
 		}

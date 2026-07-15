@@ -151,6 +151,7 @@ export const Route = createFileRoute("/ledger")({
 	}),
 	staleTime: 0,
 	loader: async ({ deps: { page, size, q, sort } }) => {
+		const renderedAt = Math.floor(Date.now() / 1000);
 		const [statsData, providers, thirtyDayStats, activeSession, activity] =
 			await Promise.all([
 				getStatsDataFn(),
@@ -180,6 +181,7 @@ export const Route = createFileRoute("/ledger")({
 			providerIds,
 			activeSession,
 			activity,
+			renderedAt,
 		};
 	},
 	component: StatsPage,
@@ -569,6 +571,7 @@ function SessionsTab({
 	loading,
 	liveStats,
 	oldestStartedAt,
+	cleanupReferenceTime,
 }: {
 	sessionsStatus: ReturnType<typeof getSessionsStatus>;
 	live: ReturnType<typeof useLedgerLiveData>;
@@ -578,6 +581,7 @@ function SessionsTab({
 	loading: boolean;
 	liveStats: LiveStats;
 	oldestStartedAt: number | null;
+	cleanupReferenceTime: number;
 }) {
 	const { page, size, q, sort } = listState;
 	const totalPages = Math.max(
@@ -653,6 +657,7 @@ function SessionsTab({
 					sort={sort}
 					onSortChange={(nextSort) => navigateList({ page: 1, sort: nextSort })}
 					oldestStartedAt={oldestStartedAt}
+					cleanupReferenceTime={cleanupReferenceTime}
 					onExport={(format) => void onExport(format)}
 				/>
 			</div>
@@ -673,6 +678,7 @@ function StatsPage() {
 		providerIds,
 		activeSession,
 		activity,
+		renderedAt,
 	} = Route.useLoaderData();
 	const { tab } = Route.useSearch();
 	const listState: ListState = {
@@ -760,6 +766,7 @@ function StatsPage() {
 						loading={isRouterLoading}
 						liveStats={stats}
 						oldestStartedAt={sessionPage.oldest_started_at ?? null}
+						cleanupReferenceTime={renderedAt}
 					/>
 				)}
 			</div>

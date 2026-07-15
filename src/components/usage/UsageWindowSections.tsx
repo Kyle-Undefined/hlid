@@ -1,7 +1,8 @@
+import { HydrationSafeText } from "#/components/HydrationSafeText";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { ProviderWindowEntry } from "#/db";
 import type { LiveStats } from "#/hooks/wsLiveStatsStore";
-import { fmtResetTime } from "#/lib/formatters";
+import { fmtDateUtc, fmtResetTime } from "#/lib/formatters";
 import { providerWindowUsage } from "#/lib/usageWindows";
 
 export function ContextWindowSection({ stats }: { stats: LiveStats }) {
@@ -34,7 +35,10 @@ export function ContextWindowSection({ stats }: { stats: LiveStats }) {
 				</div>
 				{hasContext && (
 					<span className="text-[8px] tracking-widest text-muted-foreground/50 truncate">
-						{contextUsed.toLocaleString()} / {contextWindow.toLocaleString()}
+						<HydrationSafeText
+							serverText={`${contextUsed.toLocaleString("en-US")} / ${contextWindow.toLocaleString("en-US")}`}
+							clientText={`${contextUsed.toLocaleString()} / ${contextWindow.toLocaleString()}`}
+						/>
 					</span>
 				)}
 			</div>
@@ -89,7 +93,10 @@ export function ProviderWindowCell({
 				</div>
 				{win.resetsAt != null && (
 					<span className="text-[8px] tracking-widest text-muted-foreground/50 truncate">
-						{fmtResetTime(win.resetsAt)}
+						<HydrationSafeText
+							serverText={fmtDateUtc(win.resetsAt)}
+							clientText={fmtResetTime(win.resetsAt)}
+						/>
 					</span>
 				)}
 			</div>

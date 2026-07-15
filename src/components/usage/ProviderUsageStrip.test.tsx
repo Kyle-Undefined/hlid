@@ -34,6 +34,7 @@ function renderStrip(fetchFn = vi.fn().mockResolvedValue(initial)) {
 beforeEach(() => {
 	vi.useFakeTimers();
 	setVisibility("visible");
+	localStorage.clear();
 });
 
 afterEach(() => {
@@ -42,6 +43,27 @@ afterEach(() => {
 });
 
 describe("ProviderUsageStrip polling", () => {
+	it("restores a stored provider after the hydration-stable first render", async () => {
+		const providers: ProviderUsageSnapshot[] = [
+			{ providerId: "claude", providerLabel: "Claude", windows: [] },
+			{ providerId: "codex", providerLabel: "Codex", windows: [] },
+		];
+		localStorage.setItem("hlid_active_provider", "codex");
+
+		render(
+			<ProviderUsageStrip
+				initial={providers}
+				liveQueryCount={0}
+				rateLimit={null}
+				fetchFn={vi.fn().mockResolvedValue(providers)}
+			/>,
+		);
+
+		await act(async () => {});
+		expect(screen.getByRole("button", { name: "Codex" }).className).toContain(
+			"text-foreground/70",
+		);
+	});
 	it("keeps the chat provider visible when another provider reports usage", () => {
 		const providers: ProviderUsageSnapshot[] = [
 			{

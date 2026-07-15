@@ -1,3 +1,4 @@
+import { gunzipSync } from "node:zlib";
 import { describe, expect, it, vi } from "vitest";
 import { createTlsHttpForwarder, MAX_TLS_PUBLIC_BODY_BYTES } from "./tlsProxy";
 
@@ -221,9 +222,32 @@ describe("TLS HTTP proxy limits", () => {
 		expect(headers.get("x-hlid-proxy-token")).toBe("internal-secret");
 		expect(headers.get("x-hlid-forwarded-proto")).toBe("https");
 		expect(headers.get("x-hlid-forwarded-client-ip")).toBe("192.0.2.5");
+		expect(headers.get("accept-encoding")).toBe("identity");
 		expect(response.status).toBe(201);
 		expect(response.headers.get("x-upstream")).toBe("yes");
 		expect(response.headers.has("connection")).toBe(false);
+	});
+
+	it("requests identity upstream and compresses once for the public client", async () => {
+		const html = `<!DOCTYPE html>${"login".repeat(500)}`;
+		const forward = vi.fn(
+			async (_input: string, _init: RequestInit) =>
+				new Response(html, {
+					headers: { "content-type": "text/html; charset=utf-8" },
+				}),
+		);
+		const response = await forwarder({ forward })(
+			new Request("https://hlid.test/login", {
+				headers: { "accept-encoding": "gzip" },
+			}),
+		);
+		const forwardedHeaders = new Headers(forward.mock.calls[0][1].headers);
+
+		expect(forwardedHeaders.get("accept-encoding")).toBe("identity");
+		expect(response.headers.get("content-encoding")).toBe("gzip");
+		expect(
+			gunzipSync(Buffer.from(await response.arrayBuffer())).toString("utf8"),
+		).toBe(html);
 	});
 
 	it("maps upstream connection failures to service unavailable", async () => {

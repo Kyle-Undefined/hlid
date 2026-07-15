@@ -15,6 +15,18 @@ type ServerConfig = {
 	local_network_access?: boolean;
 };
 
+const APP_VERSION = (
+	JSON.parse(readFileSync(resolve(process.cwd(), "package.json"), "utf-8")) as {
+		version: string;
+	}
+).version;
+const BUILD_STAMP_ENV = "_HLID_VITE_BUILD_STAMP";
+const BUILD_STAMP =
+	process.env[BUILD_STAMP_ENV] ?? `v${APP_VERSION}-${Date.now().toString(36)}`;
+// Vite evaluates this config independently for its client and SSR environments.
+// Keep one token for the entire build process so the page and worker agree.
+process.env[BUILD_STAMP_ENV] = BUILD_STAMP;
+
 function bindHost(allowLocalNetwork: boolean): string {
 	return allowLocalNetwork ? "0.0.0.0" : "127.0.0.1";
 }
@@ -116,13 +128,9 @@ function swStampPlugin(): Plugin {
 		closeBundle() {
 			const swPath = resolve(process.cwd(), "dist/client/sw.js");
 			if (!existsSync(swPath)) return; // SSR/other environments — client build only
-			const { version } = JSON.parse(
-				readFileSync(resolve(process.cwd(), "package.json"), "utf-8"),
-			) as { version: string };
-			const stamp = `v${version}-${Date.now().toString(36)}`;
 			writeFileSync(
 				swPath,
-				readFileSync(swPath, "utf-8").replace("__HLID_BUILD__", stamp),
+				readFileSync(swPath, "utf-8").replaceAll("__HLID_BUILD__", BUILD_STAMP),
 			);
 		},
 	};
@@ -135,6 +143,7 @@ const tls = /^1|true$/i.test(process.env.HLID_TLS ?? "")
 	: null;
 
 const config = defineConfig({
+	define: { __HLID_BUILD__: JSON.stringify(BUILD_STAMP) },
 	resolve: { tsconfigPaths: true },
 	build: {
 		// One feature-gated Langium parser chunk from Mermaid cannot be split at

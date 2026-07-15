@@ -89,7 +89,8 @@ export class CodexAppServer {
 	private activeServerRequests = 0;
 	private readonly idleTimeoutMs: number;
 	private readonly metadataIdleTimeoutMs: number;
-	private hasOwnedThread = false;
+	private useLongIdleGrace = false;
+	private pinned = false;
 	/** Resolves after the initialize/initialized handshake completes. */
 	readonly ready: Promise<void>;
 
@@ -177,8 +178,18 @@ export class CodexAppServer {
 
 	attachThread(threadId: string, handler: ThreadHandler): void {
 		this.cancelIdleReap();
-		this.hasOwnedThread = true;
+		this.useLongIdleGrace = true;
 		this.threads.set(threadId, handler);
+	}
+
+	/**
+	 * Pin an intentionally prewarmed process for the lifetime of Hlid. Explicit
+	 * shutdown and process failure still terminate it.
+	 */
+	pinForProcessLifetime(): void {
+		this.useLongIdleGrace = true;
+		this.pinned = true;
+		this.cancelIdleReap();
 	}
 
 	detachThread(threadId: string): void {
@@ -229,6 +240,7 @@ export class CodexAppServer {
 		this.cancelIdleReap();
 		if (
 			this.dead ||
+			this.pinned ||
 			this.pending.size > 0 ||
 			this.threads.size > 0 ||
 			this.activeServerRequests > 0
@@ -239,7 +251,7 @@ export class CodexAppServer {
 		// while rendering a picker. Reap those aggressively; a server that actually
 		// owned a chat thread keeps the longer grace period to avoid turn-to-turn
 		// respawn churn.
-		const idleDelay = this.hasOwnedThread
+		const idleDelay = this.useLongIdleGrace
 			? this.idleTimeoutMs
 			: this.metadataIdleTimeoutMs;
 		const timer = setTimeout(() => {
@@ -370,6 +382,36 @@ export function acquireCodexAppServer(executable: string): CodexAppServer {
 	});
 	servers.set(executable, server);
 	return server;
+}
+
+/**
+ * Start and initialize Codex without creating a thread. When `waitTimeoutMs`
+ * is set, return false after that bounded wait while allowing initialization
+ * to continue in the background.
+ */
+export async function prewarmCodexAppServer(
+	executable: string,
+	waitTimeoutMs?: number,
+): Promise<boolean> {
+	const server = acquireCodexAppServer(executable);
+	server.pinForProcessLifetime();
+	if (waitTimeoutMs === undefined) {
+		await server.ready;
+		return true;
+	}
+
+	let timeout: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			server.ready.then(() => true),
+			new Promise<boolean>((resolve) => {
+				timeout = setTimeout(() => resolve(false), Math.max(0, waitTimeoutMs));
+				timeout.unref?.();
+			}),
+		]);
+	} finally {
+		if (timeout !== undefined) clearTimeout(timeout);
+	}
 }
 
 /** Kill every shared app-server. Wired into server shutdown. */
