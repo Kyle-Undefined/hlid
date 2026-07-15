@@ -1,11 +1,12 @@
-import { dirname } from "node:path";
+import { mkdirSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { resolveCodexExecutable } from "../lib/codexPath";
 import {
 	type CanonicalTokenUsage,
 	canonicalizeCodexUsage,
 	estimateCodexCost,
 } from "../lib/codexPricing";
-import { toLogical } from "../lib/paths";
+import { APP_DIR, toLogical } from "../lib/paths";
 import type {
 	AgentEvent,
 	AgentProvider,
@@ -29,9 +30,12 @@ import type {
 	CollabAgentStatus,
 	CollabAgentTool,
 	CommandExecutionRequestApprovalResponse,
+	DynamicToolCallResponse,
+	DynamicToolSpec,
 	FileChangeRequestApprovalResponse,
 	SandboxMode as GeneratedSandboxMode,
 	GrantedPermissionProfile,
+	McpServerElicitationRequestResponse,
 	Model,
 	ModelListParams,
 	ModelListResponse,
@@ -104,6 +108,280 @@ function asObj(value: unknown): Record<string, unknown> {
 	return value && typeof value === "object"
 		? (value as Record<string, unknown>)
 		: {};
+}
+
+function skillsFromListResponse(value: unknown): Record<string, unknown>[] {
+	const result = asObj(value);
+	if (Array.isArray(result.skills)) return result.skills.map(asObj);
+	if (!Array.isArray(result.data)) return [];
+	return result.data.flatMap((entry) => {
+		const skills = asObj(entry).skills;
+		return Array.isArray(skills) ? skills.map(asObj) : [];
+	});
+}
+
+const WINDOWS_COMPUTER_USE_NAMESPACE = "hlid";
+const WINDOWS_COMPUTER_USE_TOOL = "windows_computer_use";
+const DEFAULT_WINDOWS_COMPUTER_USE_MODEL = "gpt-5.4";
+const DEFAULT_WINDOWS_COMPUTER_USE_EFFORT = "medium";
+
+export function windowsComputerUseModel(
+	override: string | undefined = process.env.HLID_WINDOWS_COMPUTER_USE_MODEL,
+): string {
+	return override?.trim() || DEFAULT_WINDOWS_COMPUTER_USE_MODEL;
+}
+
+export type WindowsComputerUseResolution = {
+	model: string;
+	effort: string;
+	/** User-visible explanation when native validation changed or could not verify a choice. */
+	notice?: string;
+};
+
+/**
+ * Resolve Forge preferences against the active session and the Windows-native
+ * Codex catalog. This stays pure so fallback behavior is deterministic and
+ * testable without launching a desktop worker.
+ */
+export function resolveWindowsComputerUseSettings(options: {
+	configured?: { model?: string; effort?: string };
+	sessionModel?: string | null;
+	sessionEffort?: string | null;
+	nativeModels: ProviderModelInfo[];
+	catalogError?: string;
+}): WindowsComputerUseResolution {
+	const warnings: string[] = [];
+	const configuredModel = options.configured?.model?.trim() || "inherit";
+	const sessionModel = options.sessionModel?.trim() || "";
+	const requestedModel =
+		configuredModel === "inherit" ? sessionModel : configuredModel;
+	const modelSource = configuredModel === "inherit" ? "Session" : "Configured";
+	const fallbackModel =
+		options.nativeModels.find(
+			(model) => model.value === windowsComputerUseModel(),
+		)?.value ??
+		options.nativeModels.find((model) => model.isDefault)?.value ??
+		options.nativeModels[0]?.value ??
+		windowsComputerUseModel();
+
+	let model = requestedModel || fallbackModel;
+	if (options.nativeModels.length > 0) {
+		if (!requestedModel) {
+			model = fallbackModel;
+			warnings.push(
+				`Session model was not reported; using Windows-native ${model}.`,
+			);
+		} else if (
+			!options.nativeModels.some(
+				(candidate) => candidate.value === requestedModel,
+			)
+		) {
+			model = fallbackModel;
+			warnings.push(
+				`${modelSource} model ${requestedModel} is unavailable in Windows-native Codex; using ${model}.`,
+			);
+		}
+	} else if (options.catalogError) {
+		warnings.push(
+			`Windows-native model validation was unavailable; using ${model}.`,
+		);
+	} else {
+		warnings.push(
+			`Windows-native model catalog returned no models; using ${model}.`,
+		);
+	}
+
+	const configuredEffort =
+		options.configured?.effort?.trim() || DEFAULT_WINDOWS_COMPUTER_USE_EFFORT;
+	const requestedEffort =
+		configuredEffort === "inherit"
+			? options.sessionEffort?.trim() || DEFAULT_WINDOWS_COMPUTER_USE_EFFORT
+			: configuredEffort;
+	const selectedModel = options.nativeModels.find(
+		(candidate) => candidate.value === model,
+	);
+	const supportedEfforts = selectedModel?.efforts ?? [];
+	let effort = requestedEffort;
+	if (
+		supportedEfforts.length > 0 &&
+		!supportedEfforts.some((candidate) => candidate.value === requestedEffort)
+	) {
+		effort =
+			supportedEfforts.find(
+				(candidate) => candidate.value === DEFAULT_WINDOWS_COMPUTER_USE_EFFORT,
+			)?.value ??
+			supportedEfforts.find((candidate) => candidate.isDefault)?.value ??
+			supportedEfforts[0]?.value ??
+			DEFAULT_WINDOWS_COMPUTER_USE_EFFORT;
+		warnings.push(
+			`Effort ${requestedEffort} is unsupported by ${model}; using ${effort}.`,
+		);
+	}
+
+	return {
+		model,
+		effort,
+		...(warnings.length > 0 ? { notice: warnings.join(" ") } : {}),
+	};
+}
+
+function windowsComputerUseWorkspace(): string {
+	return (
+		process.env.HLID_WINDOWS_COMPUTER_USE_CWD ??
+		resolve(APP_DIR, "windows-computer-use")
+	);
+}
+
+export function windowsComputerUseHostAvailable(
+	platform = process.platform,
+	executable = resolveCodexExecutable(),
+): boolean {
+	return platform === "win32" && Boolean(executable);
+}
+
+type WindowsComputerUseCapability = {
+	label: string;
+	available: boolean;
+	reason?: string;
+};
+
+async function windowsComputerUseCapability(): Promise<WindowsComputerUseCapability> {
+	const label = "Windows Computer Use";
+	if (process.platform !== "win32") {
+		return {
+			label,
+			available: false,
+			reason: "Hlid is not running on Windows",
+		};
+	}
+	const executable = resolveCodexExecutable();
+	if (!executable) {
+		return { label, available: false, reason: "Native Codex CLI not found" };
+	}
+	try {
+		const cwd = windowsComputerUseWorkspace();
+		mkdirSync(cwd, { recursive: true });
+		const conn = acquireCodexAppServer(executable);
+		await conn.ready;
+		const response = await conn.request("skills/list", { cwds: [cwd] });
+		const loaded = skillsFromListResponse(response).some(
+			(skill) =>
+				String(skill.name ?? "").toLowerCase() === "computer-use:computer-use",
+		);
+		return {
+			label,
+			available: loaded,
+			...(loaded
+				? {}
+				: { reason: "Computer Use plugin is not installed or enabled" }),
+		};
+	} catch (error) {
+		return {
+			label,
+			available: false,
+			reason:
+				error instanceof Error ? error.message : "Capability check failed",
+		};
+	}
+}
+
+function windowsComputerUseTools(): DynamicToolSpec[] {
+	return [
+		{
+			type: "namespace",
+			name: WINDOWS_COMPUTER_USE_NAMESPACE,
+			description: "Hlid host capabilities",
+			tools: [
+				{
+					type: "function",
+					name: WINDOWS_COMPUTER_USE_TOOL,
+					description:
+						"Delegate a Windows desktop task to a Windows-native Codex thread with Computer Use. Use this when the task requires interacting with installed Windows applications or the desktop.",
+					inputSchema: {
+						type: "object",
+						properties: {
+							task: {
+								type: "string",
+								description:
+									"A precise description of the Windows desktop task to complete.",
+							},
+							context: {
+								type: "string",
+								description:
+									"Optional context or success criteria for the delegated task.",
+							},
+						},
+						required: ["task"],
+						additionalProperties: false,
+					},
+				},
+			],
+		},
+	];
+}
+
+function findNestedString(
+	value: unknown,
+	keys: ReadonlySet<string>,
+	depth = 0,
+): string | undefined {
+	if (depth > 6 || !value || typeof value !== "object") return undefined;
+	for (const [key, nested] of Object.entries(value)) {
+		if (keys.has(key.toLowerCase()) && typeof nested === "string" && nested)
+			return nested;
+	}
+	for (const nested of Object.values(value)) {
+		const found = findNestedString(nested, keys, depth + 1);
+		if (found) return found;
+	}
+	return undefined;
+}
+
+export function computerUseApprovalDetails(rawParams: unknown): {
+	appId?: string;
+	displayName: string;
+	riskLevel?: string;
+} {
+	const params = asObj(rawParams);
+	const meta = asObj(params._meta);
+	const toolParams = asObj(meta.tool_params);
+	const displayedApp = Array.isArray(meta.tool_params_display)
+		? meta.tool_params_display
+				.map(asObj)
+				.find((entry) => String(entry.name ?? "").toLowerCase() === "app")
+		: undefined;
+	const appId =
+		(typeof toolParams.app === "string" && toolParams.app
+			? toolParams.app
+			: undefined) ??
+		findNestedString(
+			params,
+			new Set(["appid", "app_id", "applicationid", "application_id"]),
+		);
+	const displayName =
+		(typeof displayedApp?.value === "string" && displayedApp.value
+			? displayedApp.value
+			: undefined) ??
+		findNestedString(
+			params,
+			new Set([
+				"displayname",
+				"display_name",
+				"appname",
+				"app_name",
+				"applicationname",
+				"application_name",
+			]),
+		);
+	const riskLevel = findNestedString(
+		params,
+		new Set(["risklevel", "risk_level", "risk"]),
+	);
+	return {
+		...(appId ? { appId } : {}),
+		displayName: displayName ?? appId ?? "a Windows app",
+		...(riskLevel ? { riskLevel } : {}),
+	};
 }
 
 function textFromUnknown(value: unknown): string {
@@ -382,8 +660,13 @@ export function mapCodexModels(raw: unknown): ProviderModelInfo[] {
 export async function fetchCodexModels(opts?: {
 	includeHidden?: boolean;
 	timeoutMs?: number;
+	executable?: string;
+	cwd?: string;
 }): Promise<ProviderModelInfo[]> {
-	const launch = codexLaunchConfig({ cwd: process.cwd() });
+	const launch = codexLaunchConfig({
+		cwd: opts?.cwd ?? process.cwd(),
+		executable: opts?.executable,
+	});
 	const conn = acquireCodexAppServer(launch.executable);
 	const timeoutMs = opts?.timeoutMs ?? 10_000;
 	let timer: ReturnType<typeof setTimeout> | undefined;
@@ -529,10 +812,21 @@ class CodexAgentSession implements AgentSession {
 	private queryWebSearchItemIds = new Set<string>();
 	private childLastUsage = new Map<string, CanonicalTokenUsage>();
 	private resolvedModel: string | null = null;
+	private elicitationSequence = 0;
 
 	private launch: CodexLaunchConfig | null = null;
 
-	constructor(private params: AgentQueryParams) {}
+	constructor(
+		private params: AgentQueryParams,
+		private readonly delegatedWindowsComputerUse = false,
+		private readonly delegatedWindowsComputerUseTask?: string,
+	) {}
+
+	private canUseWindowsComputerUse(): boolean {
+		return (
+			!this.delegatedWindowsComputerUse && windowsComputerUseHostAvailable()
+		);
+	}
 
 	cancel(): void {
 		this.canceled = true;
@@ -637,6 +931,13 @@ class CodexAgentSession implements AgentSession {
 		this.params = { ...this.params, effort };
 	}
 
+	async setWindowsComputerUse(settings: {
+		model: string;
+		effort: string;
+	}): Promise<void> {
+		this.params = { ...this.params, windowsComputerUse: settings };
+	}
+
 	/**
 	 * Mid-session permission-mode switch. Like setModel, this only mutates
 	 * the params send() reads per turn — approvalPolicy and sandboxPolicy are
@@ -685,6 +986,28 @@ class CodexAgentSession implements AgentSession {
 	}
 
 	async supportedCommands(): Promise<SlashCommand[]> {
+		const computerUseAvailable =
+			this.canUseWindowsComputerUse() &&
+			(await windowsComputerUseCapability()).available;
+		const hlidCommands: SlashCommand[] = [
+			{
+				name: "review",
+				description: "Review the working tree",
+				argumentHint: "[instructions]",
+				action: "review",
+			},
+			...(computerUseAvailable
+				? [
+						{
+							name: "computer-use",
+							description:
+								"Run a task in a Windows-native Codex Computer Use thread",
+							argumentHint: "<Windows desktop task>",
+							action: "computer-use" as const,
+						},
+					]
+				: []),
+		];
 		try {
 			const { conn, launch } = await this.metadataConnection();
 			const result = asObj(
@@ -692,42 +1015,79 @@ class CodexAgentSession implements AgentSession {
 					cwds: [launch.rpcCwd],
 				}),
 			);
-			const skills = Array.isArray(result.skills) ? result.skills : [];
+			const skills = skillsFromListResponse(result);
 			const commands: SlashCommand[] = skills.flatMap((skill) => {
-				const obj = asObj(skill);
-				const name = String(obj.name ?? "");
+				const name = String(skill.name ?? "");
 				if (!name) return [];
 				return [
 					{
 						name,
 						description:
-							typeof obj.description === "string" ? obj.description : "",
+							typeof skill.description === "string" ? skill.description : "",
 						argumentHint: "",
 					},
 				];
 			});
-			commands.push({
-				name: "review",
-				description: "Review the working tree",
-				argumentHint: "[instructions]",
-				action: "review",
-			});
+			commands.push(...hlidCommands);
 			return commands;
 		} catch {
-			return [
-				{
-					name: "review",
-					description: "Review the working tree",
-					argumentHint: "[instructions]",
-					action: "review",
-				},
-			];
+			return hlidCommands;
 		}
 	}
 
-	async executeCommand(action: "review", args?: string): Promise<void> {
+	async executeCommand(
+		action: "review" | "computer-use",
+		args?: string,
+	): Promise<void> {
 		await this.ensureReady();
 		if (!this.threadId) throw new Error("Codex thread did not start");
+		if (action === "computer-use") {
+			const task = args?.trim();
+			if (!task)
+				throw new Error("/computer-use requires a Windows desktop task");
+			if (!this.canUseWindowsComputerUse()) {
+				throw new Error(
+					"Windows Computer Use is unavailable: Hlid must be running on Windows with a native Codex CLI installed",
+				);
+			}
+			const toolId = `hlid-windows-computer-use-${Date.now()}`;
+			this.events.push({
+				type: "tool_start",
+				toolId,
+				name: `${WINDOWS_COMPUTER_USE_NAMESPACE}.${WINDOWS_COMPUTER_USE_TOOL}`,
+				input: { task },
+			});
+			void this.runWindowsComputerUse(task, undefined, toolId)
+				.then(({ text, threadId }) => {
+					const result = `Windows Computer Use thread ${threadId}\n\n${text || "Task completed without a text summary."}`;
+					this.events.push({ type: "tool_result", toolId, content: result });
+					this.events.push({ type: "text_delta", text: result });
+					this.events.push({
+						type: "done",
+						turns: 1,
+						durationMs: 0,
+						stopReason: "end_turn",
+					});
+				})
+				.catch((error) => {
+					const message =
+						error instanceof Error ? error.message : String(error);
+					this.events.push({
+						type: "tool_result",
+						toolId,
+						content: message,
+						isError: true,
+					});
+					this.events.push({ type: "local_command_output", content: message });
+					this.events.push({
+						type: "done",
+						turns: 1,
+						durationMs: 0,
+						stopReason: "error",
+					});
+				});
+			return;
+		}
 		if (action !== "review") throw new Error(`Unsupported command: ${action}`);
 		const target = args?.trim()
 			? { type: "custom", instructions: args.trim() }
@@ -813,16 +1173,27 @@ class CodexAgentSession implements AgentSession {
 				});
 		}
 		await conn.ready;
+		const computerUseAvailable =
+			this.canUseWindowsComputerUse() &&
+			(await windowsComputerUseCapability()).available;
 
 		const threadParams: ThreadStartParams = {
 			cwd: launch.rpcCwd,
 			ephemeral: this.params.persistSession === false,
+			// The Windows Computer Use host only emits per-app approval
+			// elicitations for user-owned threads. Without this source marker it
+			// treats the standalone app-server worker as an internal/background
+			// thread and performs app actions without asking its client.
+			...(this.delegatedWindowsComputerUse ? { threadSource: "user" } : {}),
 			...(this.params.model ? { model: this.params.model } : {}),
 			...(this.params.permissionMode
 				? {
 						approvalPolicy: effectiveApprovalPolicy(this.params),
 						sandbox: sandboxMode(this.params.permissionMode),
 					}
+				: {}),
+			...(computerUseAvailable
+				? { dynamicTools: windowsComputerUseTools() }
 				: {}),
 		};
 		const result = asObj(
@@ -892,6 +1263,20 @@ class CodexAgentSession implements AgentSession {
 		this.attachedThreadIds.clear();
 	}
 
+	private async resetNodeRepl(): Promise<void> {
+		if (!this.threadId || !this.launch) return;
+		const conn = this.conn?.alive
+			? this.conn
+			: acquireCodexAppServer(this.launch.executable);
+		await conn.ready;
+		await conn.request("mcpServer/tool/call", {
+			threadId: this.threadId,
+			server: "node_repl",
+			tool: "js_reset",
+			arguments: {},
+		});
+	}
+
 	/**
 	 * Map a codex RateLimitSnapshot (primary/secondary RateLimitWindow) onto
 	 * hlid rate_limit events. Window identity comes from windowDurationMins —
@@ -938,6 +1323,273 @@ class CodexAgentSession implements AgentSession {
 		return this.conn.request(method, params);
 	}
 
+	private async runWindowsComputerUse(
+		task: string,
+		context: string | undefined,
+		toolId: string,
+	): Promise<{ text: string; threadId: string }> {
+		const executable = resolveCodexExecutable();
+		if (!windowsComputerUseHostAvailable(process.platform, executable)) {
+			throw new Error(
+				"Windows Computer Use requires the Windows Hlid host and a native Codex CLI",
+			);
+		}
+		const cwd = windowsComputerUseWorkspace();
+		mkdirSync(cwd, { recursive: true });
+		let nativeModels: ProviderModelInfo[] = [];
+		let catalogError: string | undefined;
+		try {
+			nativeModels = await fetchCodexModels({ executable, cwd });
+		} catch (error) {
+			catalogError = error instanceof Error ? error.message : String(error);
+		}
+		const resolved = resolveWindowsComputerUseSettings({
+			configured: this.params.windowsComputerUse,
+			sessionModel: this.resolvedModel ?? this.params.model,
+			sessionEffort: this.params.effort,
+			nativeModels,
+			catalogError,
+		});
+		const startedAtMs = Date.now();
+		let snapshot: SubagentSnapshot = {
+			provider: "codex",
+			agentId: toolId,
+			label: "Windows Computer Use",
+			prompt: task,
+			model: resolved.model,
+			effort: resolved.effort,
+			status: "running",
+			currentStep:
+				resolved.notice ??
+				`Starting Windows-native Codex · ${resolved.model} · ${resolved.effort}`,
+			startedAtMs,
+		};
+		this.emitSubagentUpdate(toolId, snapshot);
+		const child = new CodexAgentSession(
+			{
+				...this.params,
+				cwd,
+				sessionId: undefined,
+				executable,
+				model: resolved.model,
+				effort: resolved.effort,
+				permissionMode: "default",
+				implementationPermissionMode: undefined,
+				planHtmlPath: undefined,
+				additionalDirectories: undefined,
+				// Hlid owns this one-shot worker and returns its result to the caller.
+				// Keep the shared app-server process reusable, but do not leave a
+				// standalone Computer Use thread in Codex history after every task.
+				persistSession: false,
+			},
+			true,
+			task,
+		);
+		let text = "";
+		let threadId = "";
+		let completed = false;
+		try {
+			const prompt = [
+				"You are a Windows-native Codex Computer Use worker delegated by Hlid.",
+				"Complete the desktop task below using the installed computer-use:computer-use capability.",
+				"Use Windows applications only as needed, honor every approval response, and do not delegate back to hlid.windows_computer_use.",
+				context ? `Context and success criteria:\n${context}` : "",
+				`Task:\n${task}`,
+				"When finished, briefly report what you did and whether the task succeeded.",
+			]
+				.filter(Boolean)
+				.join("\n\n");
+			await child.send(prompt);
+			child.closeInput();
+			for await (const event of child) {
+				if (event.type === "session_start") {
+					threadId = event.sessionId;
+					snapshot = {
+						...snapshot,
+						agentId: threadId,
+						currentStep: "Working in the Windows desktop",
+					};
+					this.emitSubagentUpdate(toolId, snapshot);
+				} else if (event.type === "text_delta") {
+					text += event.text;
+				} else if (event.type === "local_command_output") {
+					text += `${text ? "\n" : ""}${event.content}`;
+				} else if (event.type === "tool_start") {
+					snapshot = {
+						...snapshot,
+						lastTool: event.name,
+						currentStep: `Using ${event.name}`,
+					};
+					this.emitSubagentUpdate(toolId, snapshot);
+				} else if (event.type === "done") {
+					completed = event.stopReason !== "error";
+				}
+			}
+			if (!threadId)
+				throw new Error("Windows Codex did not return a thread id");
+			if (!completed)
+				throw new Error(text || "Windows Computer Use did not complete");
+			if (!text.trim())
+				throw new Error(
+					"Windows Computer Use completed without producing a response",
+				);
+			snapshot = {
+				...snapshot,
+				status: "completed",
+				currentStep: resolved.notice
+					? `Completed · ${resolved.notice}`
+					: "Completed",
+				endedAtMs: Date.now(),
+			};
+			this.emitSubagentUpdate(toolId, snapshot);
+			return {
+				text: resolved.notice
+					? `Configuration note: ${resolved.notice}\n\n${text.trim()}`
+					: text.trim(),
+				threadId,
+			};
+		} catch (error) {
+			snapshot = {
+				...snapshot,
+				status: this.canceled ? "interrupted" : "failed",
+				currentStep:
+					error instanceof Error
+						? error.message
+						: "Windows Computer Use failed",
+				endedAtMs: Date.now(),
+			};
+			this.emitSubagentUpdate(toolId, snapshot);
+			throw error;
+		} finally {
+			// Computer Use opens a per-thread Node kernel. Ephemeral history alone
+			// does not tear that process down, so reset the owned MCP session after
+			// every one-shot worker without touching the shared app-server.
+			await child.resetNodeRepl().catch(() => {});
+			child.cancel();
+		}
+	}
+
+	private async handleDynamicToolCall(
+		params: Record<string, unknown>,
+	): Promise<DynamicToolCallResponse> {
+		if (
+			params.namespace !== WINDOWS_COMPUTER_USE_NAMESPACE ||
+			params.tool !== WINDOWS_COMPUTER_USE_TOOL
+		) {
+			return {
+				success: false,
+				contentItems: [
+					{
+						type: "inputText",
+						text: `Unknown Hlid dynamic tool: ${String(params.namespace)}.${String(params.tool)}`,
+					},
+				],
+			};
+		}
+		const args = asObj(params.arguments);
+		const task = typeof args.task === "string" ? args.task.trim() : "";
+		const context =
+			typeof args.context === "string" ? args.context.trim() : undefined;
+		if (!task) {
+			return {
+				success: false,
+				contentItems: [
+					{ type: "inputText", text: "A non-empty task is required." },
+				],
+			};
+		}
+		const toolId = String(
+			params.callId ?? `windows-computer-use-${Date.now()}`,
+		);
+		try {
+			const result = await this.runWindowsComputerUse(task, context, toolId);
+			return {
+				success: true,
+				contentItems: [
+					{
+						type: "inputText",
+						text: `Windows Computer Use thread ${result.threadId}\n\n${result.text || "Task completed without a text summary."}`,
+					},
+				],
+			};
+		} catch (error) {
+			return {
+				success: false,
+				contentItems: [
+					{
+						type: "inputText",
+						text: error instanceof Error ? error.message : String(error),
+					},
+				],
+			};
+		}
+	}
+
+	private async handleMcpElicitation(
+		params: Record<string, unknown>,
+	): Promise<McpServerElicitationRequestResponse> {
+		if (params.mode === "url") {
+			return { action: "cancel", content: null, _meta: null };
+		}
+		const serialized = JSON.stringify(params).toLowerCase();
+		if (
+			!this.delegatedWindowsComputerUse &&
+			!String(params.serverName ?? "")
+				.toLowerCase()
+				.includes("computer-use") &&
+			!serialized.includes("computeruse") &&
+			!serialized.includes("computer-use") &&
+			!serialized.includes("computer_use")
+		) {
+			// Hlid does not yet render arbitrary MCP form fields. Never turn an
+			// unrelated elicitation into a blanket approval with empty content.
+			return { action: "cancel", content: null, _meta: null };
+		}
+		if (typeof this.params.canUseTool !== "function") {
+			return { action: "decline", content: null, _meta: null };
+		}
+		const details = computerUseApprovalDetails(params);
+		const serverName = String(params.serverName ?? "MCP server");
+		const appKey = details.appId ?? details.displayName;
+		const task = this.delegatedWindowsComputerUseTask;
+		const decision = await this.params.canUseTool(
+			`hlid.windows_computer_use:${appKey}`,
+			{
+				...(task ? { task } : {}),
+				appId: details.appId,
+				appName: details.displayName,
+				riskLevel: details.riskLevel,
+				serverName,
+				message: params.message,
+			},
+			{
+				toolUseID: `codex-elicitation-${String(params.threadId ?? "thread")}-${++this.elicitationSequence}`,
+				signal: this.params.signal ?? new AbortController().signal,
+				title: `Allow Codex to use ${details.displayName}?`,
+				displayName: `Windows Computer Use · ${details.displayName}`,
+				description: [
+					task ? `Desktop task: ${task}` : undefined,
+					typeof params.message === "string" ? params.message : undefined,
+				]
+					.filter(Boolean)
+					.join("\n\n"),
+			},
+		);
+		if (decision.behavior !== "allow") {
+			return { action: "decline", content: null, _meta: null };
+		}
+		return {
+			action: "accept",
+			content: null,
+			_meta:
+				decision.saveScope === "local"
+					? { persist: "always" }
+					: decision.saveScope === "session"
+						? { persist: "session" }
+						: null,
+		};
+	}
+
 	private async handleServerRequest(
 		method: string,
 		rawParams: unknown,
@@ -945,6 +1597,14 @@ class CodexAgentSession implements AgentSession {
 		const params = asObj(rawParams);
 		if (method === "item/tool/requestUserInput") {
 			return this.handleRequestUserInput(params);
+		}
+		if (method === "item/tool/call") {
+			return this.handleDynamicToolCall(params);
+		}
+		if (method === "mcpServer/elicitation/request") {
+			// Computer Use app access must always flow through Hlid, even when the
+			// surrounding Codex session uses bypassPermissions.
+			return this.handleMcpElicitation(params);
 		}
 		if (
 			!this.params.policyEnforced &&
@@ -1614,6 +2274,12 @@ export class CodexProvider implements AgentProvider {
 		const exe = resolveCodexExecutable();
 		if (!exe) return { available: false, reason: "Codex CLI not found" };
 		return { available: true };
+	}
+
+	async hostCapabilities(): Promise<
+		Record<string, { label: string; available: boolean; reason?: string }>
+	> {
+		return { windowsComputerUse: await windowsComputerUseCapability() };
 	}
 
 	async listModels(): Promise<ProviderModelInfo[]> {

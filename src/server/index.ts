@@ -367,6 +367,9 @@ async function handleProviderRoute(url: URL, req: Request) {
 				models: await modelCatalog.modelsFor(provider, providerRefresh),
 				effortLevels: provider.effortLevels,
 				permissionModes: provider.permissionModes,
+				hostCapabilities: provider.hostCapabilities
+					? await provider.hostCapabilities().catch(() => ({}))
+					: undefined,
 			};
 		}),
 	);

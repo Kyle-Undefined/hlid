@@ -127,7 +127,7 @@ function enqueueRun(
 		sessionId: string;
 		text: string;
 		skillContext?: string;
-		commandAction?: "review";
+		commandAction?: "review" | "computer-use";
 		attachments: Attachment[];
 	},
 ): void {
@@ -150,7 +150,7 @@ function startRun(
 		sessionId: string;
 		text: string;
 		skillContext?: string;
-		commandAction?: "review";
+		commandAction?: "review" | "computer-use";
 		attachments: Attachment[];
 	},
 ): void {

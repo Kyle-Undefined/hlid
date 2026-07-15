@@ -129,7 +129,7 @@ type RunQueryArgs = [
 	turnId?: string,
 	planMode?: boolean,
 	planHtml?: boolean,
-	commandAction?: "review",
+	commandAction?: "review" | "computer-use",
 ];
 
 export type SessionState = "idle" | "running" | "error";
@@ -197,6 +197,7 @@ function buildAgentQueryParams(options: {
 	defaultEffort: string | undefined;
 	defaultMaxTurns: number | undefined;
 	executable: string | undefined;
+	windowsComputerUse: AgentQueryParams["windowsComputerUse"];
 	canUseTool: CanUseTool;
 	beforeToolUse: AgentQueryParams["beforeToolUse"];
 	policyEnforced: boolean;
@@ -233,6 +234,7 @@ function buildAgentQueryParams(options: {
 			options.defaultEffort,
 		maxTurns: options.agentSettings?.maxTurns ?? options.defaultMaxTurns,
 		executable: options.executable,
+		windowsComputerUse: options.windowsComputerUse,
 		settingSources: ["user", "project", "local"],
 		canUseTool: options.canUseTool,
 		beforeToolUse: options.beforeToolUse,
@@ -349,6 +351,9 @@ export class SessionManager {
 	private permissionMode!: PermissionMode;
 	private claudeExecutable: string | undefined;
 	private codexExecutable: string | undefined;
+	private windowsComputerUse!: NonNullable<
+		AgentQueryParams["windowsComputerUse"]
+	>;
 	// Provider session ID for the active chat. Captured from the `session_start`
 	// event on first turn, persisted per chat row, and passed back via `sessionId`
 	// on subsequent turns so the provider manages history natively.
@@ -456,6 +461,10 @@ export class SessionManager {
 			(this.vaultProviderId === "codex" ? "" : "claude-haiku-4-5");
 		this.claudeExecutable = resolveClaudeExecutable();
 		this.codexExecutable = codexConfig.executable;
+		this.windowsComputerUse = codexConfig.windows_computer_use ?? {
+			model: "inherit",
+			effort: "medium",
+		};
 		this.allowedAgentRealPaths = computeAllowedAgentRealPaths(config);
 		this.policyEnforced = config.umbod?.enabled ?? false;
 		this.usageGateEnforced = config.auto_sleep?.enabled ?? false;
@@ -499,6 +508,7 @@ export class SessionManager {
 			this.permissionModeOverride = null;
 		}
 		this.applyConfig(config, !providerChanged);
+		void this.agentSession?.setWindowsComputerUse?.(this.windowsComputerUse);
 		const current = this.getStatus();
 		return (
 			previous.model !== current.model ||
@@ -1296,7 +1306,7 @@ export class SessionManager {
 	 */
 	/**
 	 * Schedule a throttled DB write of the accumulated assistant text. Called on
-	 * every text_delta. The first chunk after an idle window starts a 150ms
+	 * every text_delta. The first chunk after an idle window starts an 800ms
 	 * timer; subsequent chunks within the window mark the row dirty without
 	 * rescheduling. When the timer fires, the *current* (latest) text is
 	 * written, so coalesced chunks land in a single UPDATE.
@@ -2082,6 +2092,81 @@ export class SessionManager {
 		})();
 	}
 
+	/**
+	 * Umbod governs whether Hlid may start a Computer Use task. This is separate
+	 * from the native per-app approval boundary enforced later by Computer Use.
+	 */
+	private async authorizeWindowsComputerUseCommand(options: {
+		provider: AgentProvider;
+		activeCwd: string;
+		sessionId: string | undefined;
+		turnId: string | undefined;
+		task: string;
+		emit: (msg: ServerMessage) => void;
+	}): Promise<void> {
+		const { provider, activeCwd, sessionId, turnId, task, emit } = options;
+		const toolName = "hlid.windows_computer_use";
+		const toolUseId = `hlid-windows-computer-use-${turnId ?? Date.now()}`;
+		let denyMessage: string | undefined;
+		const prompt = (reason: string) =>
+			new Promise<"allow" | "block">((finish) => {
+				if (this.sessionAllowedTools.has(toolName)) {
+					finish("allow");
+					return;
+				}
+				const request = {
+					type: "permission_request" as const,
+					id: toolUseId,
+					toolName,
+					title: "Allow Hlid to start Windows Computer Use?",
+					displayName: "Windows Computer Use",
+					description: reason,
+					input: { task },
+					// Permanent capability policy belongs in umbod.toml. The approval
+					// card may still remember this decision for the current chat.
+					allowAlways: false,
+				};
+				this.permissions.register(
+					toolUseId,
+					request,
+					(approved, saveScope, customDenyMessage) => {
+						if (!approved) {
+							denyMessage = customDenyMessage;
+							finish("block");
+							return;
+						}
+						if (saveScope === "session") this.sessionAllowedTools.add(toolName);
+						finish("allow");
+					},
+				);
+				emit(request);
+			});
+
+		let policy: Awaited<ReturnType<typeof authorizeHlidTool>>;
+		try {
+			policy = await authorizeHlidTool({
+				agent: provider.providerId,
+				tool: toolName,
+				input: { task },
+				cwd: activeCwd,
+				sessionId,
+				toolUseId,
+				bypassApproval: false,
+				prompt,
+			});
+		} catch (error) {
+			throw new Error(
+				`Umbod policy error: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+		if (!policy || policy.decision === "allow") return;
+		throw new Error(
+			policy.policyDecision === "block"
+				? (policy.reason ?? "Windows Computer Use was blocked by Umbod")
+				: (denyMessage ?? "Windows Computer Use was denied by user"),
+		);
+	}
+
 	/** Generic tool path: usage gate, then Umbod policy, then (if the policy defers) the interactive permission card. */
 	private resolveToolPermission(options: {
 		provider: AgentProvider;
@@ -2121,11 +2206,19 @@ export class SessionManager {
 			displayName,
 			description,
 			input: passInput as Record<string, unknown> | undefined,
+			...(toolName.startsWith("hlid.windows_computer_use:")
+				? { allowOnce: false }
+				: {}),
 		};
 		let denyMessage: string | undefined;
+		let approvalSaveScope: "session" | "local" | undefined;
+		const isWindowsComputerUseApproval = toolName.startsWith(
+			"hlid.windows_computer_use:",
+		);
 		const prompt = (reason?: string) =>
 			new Promise<"allow" | "block">((finish) => {
 				if (this.sessionAllowedTools.has(toolName)) {
+					approvalSaveScope = "session";
 					finish("allow");
 					return;
 				}
@@ -2139,8 +2232,9 @@ export class SessionManager {
 							finish("block");
 							return;
 						}
+						approvalSaveScope = saveScope;
 						if (saveScope === "session") this.sessionAllowedTools.add(toolName);
-						if (saveScope === "local") {
+						if (saveScope === "local" && !isWindowsComputerUseApproval) {
 							try {
 								persistAlwaysAllowedTool(activeCwd, toolName);
 							} catch (error) {
@@ -2155,6 +2249,29 @@ export class SessionManager {
 				);
 				emit({ ...request, description: reason ?? request.description });
 			});
+
+		// Windows Computer Use has its own per-app approval boundary. The app ID is
+		// part of toolName, so session persistence remains scoped to that exact app.
+		// Do not let Umbod policy defaults or provider-wide bypass mode silently
+		// grant a new Windows app. "Always" persistence is returned to the native
+		// Computer Use plugin instead of being written as a generic Hlid tool rule.
+		if (isWindowsComputerUseApproval) {
+			void prompt().then((decision) => {
+				resolve(
+					decision === "allow"
+						? {
+								behavior: "allow",
+								updatedInput: passInput,
+								...(approvalSaveScope ? { saveScope: approvalSaveScope } : {}),
+							}
+						: {
+								behavior: "deny",
+								message: denyMessage ?? "Denied by user",
+							},
+				);
+			});
+			return;
+		}
 
 		// createToolPermissionHandler has already applied the usage gate to every
 		// tool path, including special question/plan paths. Preserve bypass mode
@@ -2180,7 +2297,11 @@ export class SessionManager {
 				const decision = policy?.decision ?? (await prompt());
 				resolve(
 					decision === "allow"
-						? { behavior: "allow", updatedInput: passInput }
+						? {
+								behavior: "allow",
+								updatedInput: passInput,
+								...(approvalSaveScope ? { saveScope: approvalSaveScope } : {}),
+							}
 						: {
 								behavior: "deny",
 								message:
@@ -2327,6 +2448,7 @@ export class SessionManager {
 				defaultEffort: this.effort,
 				defaultMaxTurns: this.maxTurns,
 				executable,
+				windowsComputerUse: this.windowsComputerUse,
 				policyEnforced: this.policyEnforced,
 				usageGateEnforced: this.usageGateEnforced,
 				// Configured Claude/Codex hooks use the normalized embedded Umbod
@@ -2588,6 +2710,25 @@ export class SessionManager {
 					currentProvider.providerId === "codex" ? "codex" : "claude",
 				safeAttachments,
 			});
+			let commandArgs: string | undefined;
+			if (commandAction) {
+				commandArgs = userMessage
+					.replace(new RegExp(`^/${commandAction}(?:\\s+|:\\s*)?`, "i"), "")
+					.trim();
+				if (commandAction === "computer-use") {
+					if (!commandArgs)
+						throw new Error("/computer-use requires a Windows desktop task");
+					await this.authorizeWindowsComputerUseCommand({
+						provider: currentProvider,
+						activeCwd,
+						sessionId,
+						turnId,
+						task: commandArgs,
+						emit,
+					});
+				}
+			}
+
 			const agentSession = this.getOrCreateAgentSession({
 				provider: currentProvider,
 				sessionId,
@@ -2620,9 +2761,6 @@ export class SessionManager {
 						`/${commandAction} is not supported by the active provider`,
 					);
 				}
-				const commandArgs = userMessage
-					.replace(new RegExp(`^/${commandAction}(?:\\s+|:\\s*)?`, "i"), "")
-					.trim();
 				await agentSession.executeCommand(commandAction, commandArgs);
 			} else {
 				await agentSession.send(providerPrompt);

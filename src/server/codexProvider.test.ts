@@ -23,9 +23,13 @@ import {
 	codexReasoningText,
 	codexSandboxPolicy,
 	codexSubagentStatus,
+	computerUseApprovalDetails,
 	fetchCodexModels,
 	mapCodexModels,
+	resolveWindowsComputerUseSettings,
 	sandboxMode,
+	windowsComputerUseHostAvailable,
+	windowsComputerUseModel,
 } from "./codexProvider";
 
 // ── fetchCodexModels test helpers ──────────────────────────────────────────
@@ -158,6 +162,150 @@ describe("CodexProvider capability declarations", () => {
 		for (const m of models) {
 			expect(typeof m.value).toBe("string");
 			expect(typeof m.label).toBe("string");
+		}
+	});
+
+	it("only enables Windows Computer Use on a Windows host with native Codex", () => {
+		expect(windowsComputerUseHostAvailable("win32", "C:\\bin\\codex.exe")).toBe(
+			true,
+		);
+		expect(windowsComputerUseHostAvailable("win32", undefined)).toBe(false);
+		expect(windowsComputerUseHostAvailable("linux", "/usr/bin/codex")).toBe(
+			false,
+		);
+	});
+
+	it("uses the native Computer Use model unless explicitly overridden", () => {
+		expect(windowsComputerUseModel(undefined)).toBe("gpt-5.4");
+		expect(windowsComputerUseModel(" gpt-5.5 ")).toBe("gpt-5.5");
+	});
+
+	it("inherits a supported session model and keeps medium effort by default", () => {
+		expect(
+			resolveWindowsComputerUseSettings({
+				configured: { model: "inherit", effort: "medium" },
+				sessionModel: "gpt-5.5",
+				sessionEffort: "high",
+				nativeModels: [
+					{
+						value: "gpt-5.5",
+						label: "GPT-5.5",
+						efforts: [
+							{ value: "medium", label: "Medium" },
+							{ value: "high", label: "High" },
+						],
+					},
+				],
+			}),
+		).toEqual({ model: "gpt-5.5", effort: "medium" });
+	});
+
+	it("can inherit both the active session model and effort", () => {
+		expect(
+			resolveWindowsComputerUseSettings({
+				configured: { model: "inherit", effort: "inherit" },
+				sessionModel: "gpt-5.5",
+				sessionEffort: "high",
+				nativeModels: [
+					{
+						value: "gpt-5.5",
+						label: "GPT-5.5",
+						efforts: [{ value: "high", label: "High" }],
+					},
+				],
+			}),
+		).toEqual({ model: "gpt-5.5", effort: "high" });
+	});
+
+	it("uses a visible safe fallback for unavailable native settings", () => {
+		const resolved = resolveWindowsComputerUseSettings({
+			configured: { model: "wsl-only", effort: "xhigh" },
+			sessionModel: "gpt-5.5",
+			nativeModels: [
+				{
+					value: "gpt-5.4",
+					label: "GPT-5.4",
+					efforts: [{ value: "medium", label: "Medium" }],
+				},
+			],
+		});
+		expect(resolved).toEqual({
+			model: "gpt-5.4",
+			effort: "medium",
+			notice:
+				"Configured model wsl-only is unavailable in Windows-native Codex; using gpt-5.4. Effort xhigh is unsupported by gpt-5.4; using medium.",
+		});
+	});
+
+	it("extracts per-app approval identity from nested Computer Use metadata", () => {
+		expect(
+			computerUseApprovalDetails({
+				_meta: {
+					computerUse: {
+						app: {
+							appId: "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App",
+							displayName: "Calculator",
+						},
+						riskLevel: "medium",
+					},
+				},
+			}),
+		).toEqual({
+			appId: "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App",
+			displayName: "Calculator",
+			riskLevel: "medium",
+		});
+	});
+
+	it("extracts app identity from the native Computer Use elicitation payload", () => {
+		expect(
+			computerUseApprovalDetails({
+				_meta: {
+					connector_id: "computer-use",
+					riskLevel: "low",
+					tool_params: { app: "Docker.DockerForWindows.Settings" },
+					tool_params_display: [
+						{ display_name: "App", name: "app", value: "Docker Desktop" },
+					],
+				},
+			}),
+		).toEqual({
+			appId: "Docker.DockerForWindows.Settings",
+			displayName: "Docker Desktop",
+			riskLevel: "low",
+		});
+	});
+});
+
+describe("CodexProvider host capabilities", () => {
+	beforeEach(() => {
+		__resetCodexAppServersForTesting();
+	});
+
+	it("reports the native Computer Use plugin as ready on Windows", async () => {
+		const platform = vi
+			.spyOn(process, "platform", "get")
+			.mockReturnValue("win32");
+		const previousCwd = process.env.HLID_WINDOWS_COMPUTER_USE_CWD;
+		process.env.HLID_WINDOWS_COMPUTER_USE_CWD = "/tmp/hlid-computer-use-test";
+		try {
+			const { proc } = makeFakeSessionProc({
+				skills: [{ name: "computer-use:computer-use" }],
+			});
+			vi.mocked(spawn).mockReturnValue(proc as never);
+			vi.mocked(resolveCodexExecutable).mockReturnValue("C:\\bin\\codex.exe");
+
+			expect(await new CodexProvider().hostCapabilities()).toEqual({
+				windowsComputerUse: {
+					label: "Windows Computer Use",
+					available: true,
+				},
+			});
+		} finally {
+			if (previousCwd === undefined)
+				delete process.env.HLID_WINDOWS_COMPUTER_USE_CWD;
+			else process.env.HLID_WINDOWS_COMPUTER_USE_CWD = previousCwd;
+			platform.mockRestore();
 		}
 	});
 });
@@ -405,6 +553,13 @@ describe("fetchCodexModels", () => {
 			"initialized",
 			"model/list",
 		]);
+		const initialize = writes
+			.map((line) => JSON.parse(line))
+			.find((message) => message.method === "initialize");
+		expect(initialize?.params?.capabilities).toEqual({
+			experimentalApi: true,
+			mcpServerOpenaiFormElicitation: true,
+		});
 		expect(models).toEqual(mapCodexModels(MODEL_LIST_FIXTURE));
 		// The shared app-server stays alive for reuse — never killed per call.
 		expect(proc.kill).not.toHaveBeenCalled();
@@ -592,6 +747,8 @@ function makeFakeSessionProc(
 		/** Reply to `mcpServerStatus/list` with a JSON-RPC error. */
 		mcpStatusError?: boolean;
 		skills?: unknown[];
+		modelListResult?: unknown;
+		uniqueThreadIds?: boolean;
 	} = {},
 ): {
 	proc: FakeProc;
@@ -602,6 +759,7 @@ function makeFakeSessionProc(
 	const proc = new EventEmitter() as FakeProc;
 	const writes: string[] = [];
 	let turnCounter = 0;
+	let threadCounter = 0;
 	proc.stdin = {
 		write: vi.fn((data: string) => {
 			writes.push(data);
@@ -616,12 +774,39 @@ function makeFakeSessionProc(
 					msg.method === "thread/start" ||
 					msg.method === "thread/resume"
 				) {
+					threadCounter++;
 					stdout.emit(
 						"data",
 						Buffer.from(
 							`${JSON.stringify({
 								id: msg.id,
-								result: { thread: { id: "thread-1" } },
+								result: {
+									thread: {
+										id: opts.uniqueThreadIds
+											? `thread-${threadCounter}`
+											: "thread-1",
+									},
+								},
+							})}\n`,
+						),
+					);
+				} else if (msg.method === "model/list") {
+					stdout.emit(
+						"data",
+						Buffer.from(
+							`${JSON.stringify({
+								id: msg.id,
+								result: opts.modelListResult ?? MODEL_LIST_FIXTURE,
+							})}\n`,
+						),
+					);
+				} else if (msg.method === "mcpServer/tool/call") {
+					stdout.emit(
+						"data",
+						Buffer.from(
+							`${JSON.stringify({
+								id: msg.id,
+								result: { content: [], isError: false },
 							})}\n`,
 						),
 					);
@@ -653,7 +838,9 @@ function makeFakeSessionProc(
 						Buffer.from(
 							`${JSON.stringify({
 								id: msg.id,
-								result: { skills: opts.skills ?? [] },
+								result: {
+									data: [{ cwd: "/tmp/codex-test", skills: opts.skills ?? [] }],
+								},
 							})}\n`,
 						),
 					);
@@ -696,6 +883,13 @@ function turnStartParams(writes: string[]): Array<Record<string, unknown>> {
 	return writes
 		.map((w) => JSON.parse(w) as { method?: string; params?: unknown })
 		.filter((m) => m.method === "turn/start")
+		.map((m) => m.params as Record<string, unknown>);
+}
+
+function threadStartParams(writes: string[]): Array<Record<string, unknown>> {
+	return writes
+		.map((w) => JSON.parse(w) as { method?: string; params?: unknown })
+		.filter((m) => m.method === "thread/start")
 		.map((m) => m.params as Record<string, unknown>);
 }
 
@@ -774,6 +968,181 @@ describe("CodexAgentSession — commands", () => {
 			delivery: "inline",
 		});
 		session.cancel();
+	});
+
+	it("advertises the namespaced dynamic tool and slash command on Windows", async () => {
+		const platform = vi
+			.spyOn(process, "platform", "get")
+			.mockReturnValue("win32");
+		vi.stubEnv("HLID_WINDOWS_COMPUTER_USE_CWD", "/tmp/hlid-computer-use-test");
+		try {
+			const { proc, writes } = makeFakeSessionProc({
+				skills: [
+					{
+						name: "computer-use:computer-use",
+						description: "Control Windows apps from ChatGPT",
+					},
+				],
+			});
+			vi.mocked(spawn).mockReturnValue(proc as never);
+			vi.mocked(resolveCodexExecutable).mockReturnValue("C:\\bin\\codex.exe");
+			const session = new CodexProvider().query(baseCodexParams());
+			expect(await session.supportedCommands?.()).toContainEqual({
+				name: "computer-use",
+				description: "Run a task in a Windows-native Codex Computer Use thread",
+				argumentHint: "<Windows desktop task>",
+				action: "computer-use",
+			});
+			await session.send("hello");
+			expect(threadStartParams(writes)[0].dynamicTools).toEqual([
+				expect.objectContaining({
+					type: "namespace",
+					name: "hlid",
+					tools: [
+						expect.objectContaining({
+							type: "function",
+							name: "windows_computer_use",
+						}),
+					],
+				}),
+			]);
+			session.cancel();
+		} finally {
+			vi.unstubAllEnvs();
+			platform.mockRestore();
+		}
+	});
+
+	it("runs Hlid-owned Computer Use workers as ephemeral native threads", async () => {
+		const platform = vi
+			.spyOn(process, "platform", "get")
+			.mockReturnValue("win32");
+		vi.stubEnv("HLID_WINDOWS_COMPUTER_USE_CWD", "/tmp/hlid-computer-use-test");
+		try {
+			const { proc, writes } = makeFakeSessionProc({
+				uniqueThreadIds: true,
+				skills: [{ name: "computer-use:computer-use" }],
+			});
+			vi.mocked(spawn).mockReturnValue(proc as never);
+			vi.mocked(resolveCodexExecutable).mockReturnValue("C:\\bin\\codex.exe");
+			const canUseTool = vi
+				.fn()
+				.mockResolvedValue({ behavior: "allow", saveScope: "session" });
+			const session = new CodexProvider().query(
+				baseCodexParams({ canUseTool }),
+			);
+			const events = session[Symbol.asyncIterator]();
+			await session.send("delegate to Computer Use");
+			expect(await nextSessionEvent(events)).toMatchObject({
+				type: "session_start",
+				sessionId: "thread-1",
+			});
+
+			proc.stdout.emit(
+				"data",
+				Buffer.from(
+					`${JSON.stringify({
+						id: 82,
+						method: "item/tool/call",
+						params: {
+							threadId: "thread-1",
+							callId: "computer-use-1",
+							namespace: "hlid",
+							tool: "windows_computer_use",
+							arguments: { task: "Open Calculator" },
+						},
+					})}\n`,
+				),
+			);
+
+			await vi.waitFor(() => expect(threadStartParams(writes)).toHaveLength(2));
+			expect(threadStartParams(writes)[1]).toMatchObject({
+				cwd: "/tmp/hlid-computer-use-test",
+				ephemeral: true,
+				threadSource: "user",
+			});
+
+			proc.stdout.emit(
+				"data",
+				Buffer.from(
+					`${JSON.stringify({
+						id: 83,
+						method: "mcpServer/elicitation/request",
+						params: {
+							threadId: "thread-2",
+							turnId: "turn-2",
+							serverName: "node_repl",
+							mode: "form",
+							message: "Allow Codex to use Calculator?",
+							requestedSchema: {},
+							_meta: {
+								connector_id: "computer-use",
+								tool_params: { app: "Microsoft.WindowsCalculator" },
+								tool_params_display: [
+									{
+										display_name: "App",
+										name: "app",
+										value: "Calculator",
+									},
+								],
+							},
+						},
+					})}\n`,
+				),
+			);
+			await vi.waitFor(() => {
+				expect(canUseTool).toHaveBeenCalledWith(
+					"hlid.windows_computer_use:Microsoft.WindowsCalculator",
+					expect.objectContaining({
+						task: "Open Calculator",
+						appName: "Calculator",
+					}),
+					expect.objectContaining({
+						description: expect.stringContaining(
+							"Desktop task: Open Calculator",
+						),
+					}),
+				);
+				const response = writes
+					.map((line) => JSON.parse(line))
+					.find((message) => message.id === 83);
+				expect(response?.result?._meta).toEqual({ persist: "session" });
+			});
+
+			emitSessionNotification(proc, "item/completed", {
+				threadId: "thread-2",
+				item: {
+					id: "computer-use-result",
+					type: "agentMessage",
+					text: "Calculator opened.",
+				},
+			});
+			emitSessionNotification(proc, "turn/completed", {
+				threadId: "thread-2",
+				turn: { id: "turn-2", status: "completed" },
+			});
+
+			await vi.waitFor(() => {
+				const response = writes
+					.map((line) => JSON.parse(line))
+					.find((message) => message.id === 82);
+				expect(response?.result).toMatchObject({ success: true });
+			});
+			expect(
+				writes
+					.map((line) => JSON.parse(line))
+					.find((message) => message.method === "mcpServer/tool/call")?.params,
+			).toEqual({
+				threadId: "thread-2",
+				server: "node_repl",
+				tool: "js_reset",
+				arguments: {},
+			});
+			session.cancel();
+		} finally {
+			vi.unstubAllEnvs();
+			platform.mockRestore();
+		}
 	});
 });
 
@@ -1646,6 +2015,101 @@ describe("CodexAgentSession — notifications", () => {
 			expect(response?.result).toEqual({
 				answers: { database: { answers: ["SQLite"] } },
 			});
+		});
+		session.cancel();
+	});
+
+	it.each([
+		{
+			label: "once",
+			decision: { behavior: "allow" as const },
+			result: { action: "accept", content: null, _meta: null },
+		},
+		{
+			label: "session",
+			decision: { behavior: "allow" as const, saveScope: "session" as const },
+			result: {
+				action: "accept",
+				content: null,
+				_meta: { persist: "session" },
+			},
+		},
+		{
+			label: "always",
+			decision: { behavior: "allow" as const, saveScope: "local" as const },
+			result: {
+				action: "accept",
+				content: null,
+				_meta: { persist: "always" },
+			},
+		},
+		{
+			label: "deny",
+			decision: { behavior: "deny" as const },
+			result: { action: "decline", content: null, _meta: null },
+		},
+	])("routes Computer Use app approval through Hlid for $label", async ({
+		decision,
+		result,
+	}) => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const canUseTool = vi.fn().mockResolvedValue(decision);
+		const session = new CodexProvider().query(
+			baseCodexParams({
+				permissionMode: "bypassPermissions",
+				canUseTool,
+			}),
+		);
+		await session.send("use calculator");
+
+		proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: 81,
+					method: "mcpServer/elicitation/request",
+					params: {
+						threadId: "thread-1",
+						turnId: "turn-1",
+						serverName: "node_repl",
+						mode: "form",
+						message: "Allow Codex to use Docker Desktop?",
+						requestedSchema: {},
+						_meta: {
+							connector_id: "computer-use",
+							riskLevel: "low",
+							tool_params: { app: "Docker.DockerForWindows.Settings" },
+							tool_params_display: [
+								{
+									display_name: "App",
+									name: "app",
+									value: "Docker Desktop",
+								},
+							],
+						},
+					},
+				})}\n`,
+			),
+		);
+
+		await vi.waitFor(() => {
+			expect(canUseTool).toHaveBeenCalledWith(
+				"hlid.windows_computer_use:Docker.DockerForWindows.Settings",
+				expect.objectContaining({
+					appId: "Docker.DockerForWindows.Settings",
+					appName: "Docker Desktop",
+				}),
+				expect.objectContaining({
+					title: "Allow Codex to use Docker Desktop?",
+					displayName: "Windows Computer Use · Docker Desktop",
+				}),
+			);
+			const response = writes
+				.map((line) => JSON.parse(line))
+				.find((message) => message.id === 81);
+			expect(response?.result).toEqual(result);
 		});
 		session.cancel();
 	});

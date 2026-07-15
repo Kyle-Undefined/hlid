@@ -85,7 +85,10 @@ export class CodexAppServer {
 		this.ready = (async () => {
 			await this.request("initialize", {
 				clientInfo: { name: "hlid", title: "Hlid", version: "0.0.0" },
-				capabilities: { experimentalApi: true },
+				capabilities: {
+					experimentalApi: true,
+					mcpServerOpenaiFormElicitation: true,
+				},
 			});
 			this.notify("initialized", {});
 		})();

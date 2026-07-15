@@ -31,6 +31,11 @@ export type ProviderInfo = {
 	effortLevels?: Array<{ value: string; label: string; desc?: string }>;
 	/** Permission gate modes the provider honours. */
 	permissionModes?: Array<{ value: string; label: string; desc?: string }>;
+	/** Host-only provider capabilities and their live readiness. */
+	hostCapabilities?: Record<
+		string,
+		{ label: string; available: boolean; reason?: string }
+	>;
 };
 
 /** Account info for the authenticated agent backing a live claude session. */

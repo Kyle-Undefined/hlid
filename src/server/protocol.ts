@@ -157,6 +157,10 @@ export type PermissionRequestMessage = {
 	displayName?: string;
 	description?: string;
 	input?: Record<string, unknown>;
+	/** False when a one-shot grant would immediately cause repetitive prompts. */
+	allowOnce?: boolean;
+	/** False when permanent approval belongs in the policy manifest instead. */
+	allowAlways?: boolean;
 };
 
 export type UserMessageEvent = {
@@ -232,7 +236,7 @@ export type SlashCommandsMessage = {
 		description: string;
 		argumentHint: string;
 		aliases?: string[];
-		action?: "review";
+		action?: "review" | "computer-use";
 	}>;
 };
 
@@ -429,7 +433,7 @@ export type ClientChatMessage = {
 	session_id?: string;
 	skill_context?: string;
 	/** Hlid-owned capability action, executed directly instead of prompt passthrough. */
-	command_action?: "review";
+	command_action?: "review" | "computer-use";
 	agent_cwd?: string;
 	attachments?: ChatAttachment[];
 	/**

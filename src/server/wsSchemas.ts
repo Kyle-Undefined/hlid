@@ -32,7 +32,7 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 			.max(1024 * 1024),
 		session_id: id.optional(),
 		skill_context: path.optional(),
-		command_action: z.literal("review").optional(),
+		command_action: z.enum(["review", "computer-use"]).optional(),
 		agent_cwd: path.optional(),
 		attachments: z.array(attachment).max(32).optional(),
 		turn_id: id.optional(),

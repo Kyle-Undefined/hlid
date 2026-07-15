@@ -1,6 +1,6 @@
 // AUTO-GENERATED — vendored from codex-cli's `codex app-server generate-ts`.
-// CLI version: codex-cli 0.144.1 (pinned to 0.144.1 in scripts/generate-codex-types.ts)
-// Generated: 2026-07-10
+// CLI version: codex-cli 0.144.4 (pinned to 0.144.4 in scripts/generate-codex-types.ts)
+// Generated: 2026-07-15
 // Regenerate via `bun scripts/generate-codex-types.ts`; version bumps are
 // deliberate manual updates, not run automatically on every build.
 
@@ -27,3 +27,8 @@ export type { CollabAgentTool } from "./v2/CollabAgentTool";
 export type { CollabAgentState } from "./v2/CollabAgentState";
 export type { CollabAgentStatus } from "./v2/CollabAgentStatus";
 export type { SubAgentActivityKind } from "./v2/SubAgentActivityKind";
+export type { DynamicToolSpec } from "./v2/DynamicToolSpec";
+export type { DynamicToolCallParams } from "./v2/DynamicToolCallParams";
+export type { DynamicToolCallResponse } from "./v2/DynamicToolCallResponse";
+export type { McpServerElicitationRequestParams } from "./v2/McpServerElicitationRequestParams";
+export type { McpServerElicitationRequestResponse } from "./v2/McpServerElicitationRequestResponse";

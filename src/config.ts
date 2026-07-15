@@ -45,6 +45,13 @@ const ClaudeSchema = z.object({
 	interactive_mode: z.boolean().default(false),
 });
 
+const WindowsComputerUseSchema = z.object({
+	/** "inherit" follows the active Hlid Codex session model. */
+	model: z.string().default("inherit"),
+	/** Medium is the conservative default; "inherit" follows the session effort. */
+	effort: z.string().default("medium"),
+});
+
 const CodexSchema = z.object({
 	model: z.string().default(""),
 	effort: z.string().default("medium"),
@@ -55,6 +62,10 @@ const CodexSchema = z.object({
 	turn_recaps: z.boolean().default(true),
 	recap_model: z.string().optional(),
 	executable: z.string().optional(),
+	windows_computer_use: WindowsComputerUseSchema.default(() => ({
+		model: "inherit",
+		effort: "medium",
+	})),
 });
 
 const UiSchema = z.object({
@@ -212,6 +223,7 @@ export const HlidConfigSchema = z.object({
 		effort: "medium" as const,
 		permission_mode: "default" as const,
 		turn_recaps: true,
+		windows_computer_use: { model: "inherit", effort: "medium" },
 	})),
 	ui: UiSchema.default(() => ({
 		enter_to_submit: true,

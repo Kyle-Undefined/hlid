@@ -1,6 +1,6 @@
 import type { Skill } from "./skills";
 
-export type CommandAction = "review";
+export type CommandAction = "review" | "computer-use";
 
 export type CommandExecution =
 	| { kind: "skill"; filePath: string }

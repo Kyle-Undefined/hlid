@@ -62,7 +62,7 @@ export function useCockpitLiveData(
 			description: string;
 			argumentHint: string;
 			aliases?: string[];
-			action?: "review";
+			action?: "review" | "computer-use";
 		}>
 	>([]);
 	const [runError, setRunError] = useState<string | null>(null);

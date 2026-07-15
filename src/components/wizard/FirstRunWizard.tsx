@@ -89,6 +89,7 @@ export function buildFirstRunConfig(s: StructureState): HlidConfig {
 			effort: "medium",
 			permission_mode: "default",
 			turn_recaps: true,
+			windows_computer_use: { model: "inherit", effort: "medium" },
 		},
 		ui: {
 			enter_to_submit: true,

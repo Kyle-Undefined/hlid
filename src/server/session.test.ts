@@ -95,6 +95,7 @@ import type {
 	AgentProvider,
 	AgentQueryParams,
 	AgentSession,
+	AgentToolDecision,
 	McpServerStatus,
 } from "./agentProvider";
 import { loadConfig } from "./config";
@@ -145,13 +146,17 @@ function makeProviders(provider: AgentProvider): Map<string, AgentProvider> {
 }
 
 /** Build a mock AgentProvider whose query() calls canUseTool once for toolName. */
-function makeProvider(toolName: string, toolUseID = "tid-1"): AgentProvider {
+function makeProvider(
+	toolName: string,
+	toolUseID = "tid-1",
+	onDecision?: (decision: AgentToolDecision) => void,
+): AgentProvider {
 	return {
 		providerId: "claude",
 		query(params: AgentQueryParams): AgentSession {
 			const gen = (async function* (): AsyncGenerator<AgentEvent> {
 				yield { type: "session_start", sessionId: "sdk-session-1" };
-				await params.canUseTool(
+				const decision = await params.canUseTool(
 					toolName,
 					{},
 					{
@@ -162,6 +167,7 @@ function makeProvider(toolName: string, toolUseID = "tid-1"): AgentProvider {
 						description: undefined,
 					},
 				);
+				onDecision?.(decision);
 				yield {
 					type: "done",
 					cost: 0,
@@ -407,18 +413,51 @@ describe("SessionManager — syncConfig", () => {
 		expect(sm.getStatus().state).toBe("idle");
 		expect(sm.getCurrentSessionId()).toBeNull();
 	});
+
+	it("updates Computer Use preferences on an already-open Codex session", async () => {
+		const setWindowsComputerUse = vi.fn().mockResolvedValue(undefined);
+		const { provider } = makeSwitchableProvider(
+			{ setWindowsComputerUse },
+			"codex",
+		);
+		const config = {
+			...makeConfig("gpt-5.5"),
+			vault_provider: "codex",
+			codex: {
+				model: "gpt-5.5",
+				effort: "high",
+				permission_mode: "default",
+				turn_recaps: false,
+				windows_computer_use: { model: "inherit", effort: "medium" },
+			},
+		} as HlidConfig;
+		const sm = new SessionManager(config, makeProviders(provider));
+		await sm.runQuery("hi", () => {}, "live-computer-use-config");
+
+		const next = structuredClone(config);
+		next.codex.windows_computer_use = { model: "gpt-5.4", effort: "high" };
+		sm.syncConfig(next);
+
+		expect(setWindowsComputerUse).toHaveBeenCalledWith({
+			model: "gpt-5.4",
+			effort: "high",
+		});
+	});
 });
 
 // ── setModel / setPermissionMode / getAccountInfo ─────────────────────────────
 
 /** Build a fake single-turn AgentProvider whose session exposes the given optional methods. */
-function makeSwitchableProvider(sessionOverrides: Partial<AgentSession> = {}): {
+function makeSwitchableProvider(
+	sessionOverrides: Partial<AgentSession> = {},
+	providerId = "claude",
+): {
 	provider: AgentProvider;
 	getSession: () => AgentSession | undefined;
 } {
 	let session: AgentSession | undefined;
 	const provider: AgentProvider = {
-		providerId: "claude",
+		providerId,
 		query(): AgentSession {
 			const gen = (async function* (): AsyncGenerator<AgentEvent> {
 				yield { type: "session_start", sessionId: "sdk-session-1" };
@@ -1515,6 +1554,289 @@ describe("SessionManager — AskUserQuestion", () => {
 // ── Session-scoped permission persistence ──────────────────────────────────────
 
 describe("SessionManager — session-scoped permission persistence", () => {
+	it("routes Windows Computer Use through explicit app approval instead of Umbod", async () => {
+		let decision: AgentToolDecision | undefined;
+		const toolName =
+			"hlid.windows_computer_use:Docker.DockerForWindows.Settings";
+		const sm = new SessionManager(
+			makeConfig(),
+			makeProviders(
+				makeProvider(toolName, "computer-use-1", (value) => {
+					decision = value;
+				}),
+			),
+		);
+		const emitted: ServerMessage[] = [];
+		const turn = sm.runQuery(
+			"open Docker",
+			(event) => emitted.push(event),
+			"sess-1",
+		);
+
+		await waitFor(() =>
+			expect(sm.getPendingPermissionRequests()).toHaveLength(1),
+		);
+		expect(authorizeHlidTool).not.toHaveBeenCalled();
+		expect(emitted).toContainEqual(
+			expect.objectContaining({
+				type: "permission_request",
+				id: "computer-use-1",
+				toolName,
+				allowOnce: false,
+			}),
+		);
+
+		sm.handlePermissionResponse("computer-use-1", true, "session");
+		await turn;
+		expect(decision).toEqual({
+			behavior: "allow",
+			updatedInput: {},
+			saveScope: "session",
+		});
+	});
+
+	it("leaves always persistence for Computer Use to the native plugin", async () => {
+		vi.mocked(fsMock.writeFileSync).mockClear();
+		let decision: AgentToolDecision | undefined;
+		const sm = new SessionManager(
+			makeConfig(),
+			makeProviders(
+				makeProvider(
+					"hlid.windows_computer_use:Microsoft.WindowsCalculator",
+					"computer-use-1",
+					(value) => {
+						decision = value;
+					},
+				),
+			),
+		);
+		const turn = sm.runQuery("open Calculator", () => {}, "sess-1");
+
+		await waitFor(() =>
+			expect(sm.getPendingPermissionRequests()).toHaveLength(1),
+		);
+		sm.handlePermissionResponse("computer-use-1", true, "local");
+		await turn;
+
+		expect(decision).toEqual({
+			behavior: "allow",
+			updatedInput: {},
+			saveScope: "local",
+		});
+		expect(fsMock.writeFileSync).not.toHaveBeenCalled();
+	});
+
+	it("keeps Computer Use session approval scoped to the exact app", async () => {
+		const dockerTool =
+			"hlid.windows_computer_use:Docker.DockerForWindows.Settings";
+		const paintTool = "hlid.windows_computer_use:Microsoft.Paint";
+		const decisions: AgentToolDecision[] = [];
+		const provider: AgentProvider = {
+			providerId: "codex",
+			query(params: AgentQueryParams): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "codex-session-1" };
+					decisions.push(
+						await params.canUseTool(
+							dockerTool,
+							{},
+							{
+								toolUseID: "docker-1",
+								signal: new AbortController().signal,
+							},
+						),
+					);
+					decisions.push(
+						await params.canUseTool(
+							dockerTool,
+							{},
+							{
+								toolUseID: "docker-2",
+								signal: new AbortController().signal,
+							},
+						),
+					);
+					decisions.push(
+						await params.canUseTool(
+							paintTool,
+							{},
+							{
+								toolUseID: "paint-1",
+								signal: new AbortController().signal,
+							},
+						),
+					);
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const emitted: ServerMessage[] = [];
+		const turn = sm.runQuery(
+			"use Docker, then Paint",
+			(event) => emitted.push(event),
+			"sess-1",
+		);
+
+		await waitFor(() =>
+			expect(sm.getPendingPermissionRequests()[0]?.id).toBe("docker-1"),
+		);
+		sm.handlePermissionResponse("docker-1", true, "session");
+		await waitFor(() =>
+			expect(sm.getPendingPermissionRequests()[0]?.id).toBe("paint-1"),
+		);
+		expect(
+			emitted.filter((event) => event.type === "permission_request"),
+		).toEqual([
+			expect.objectContaining({ id: "docker-1", toolName: dockerTool }),
+			expect.objectContaining({ id: "paint-1", toolName: paintTool }),
+		]);
+		sm.handlePermissionResponse("paint-1", false);
+		await turn;
+
+		expect(decisions).toEqual([
+			{ behavior: "allow", updatedInput: {}, saveScope: "session" },
+			{ behavior: "allow", updatedInput: {}, saveScope: "session" },
+			{ behavior: "deny", message: "Denied by user" },
+		]);
+		expect(authorizeHlidTool).not.toHaveBeenCalled();
+	});
+
+	describe("Computer Use capability policy", () => {
+		function setup() {
+			const executeCommand = vi.fn().mockResolvedValue(undefined);
+			const { provider } = makeSwitchableProvider({ executeCommand }, "codex");
+			const config = {
+				...makeConfig("gpt-5.5"),
+				vault_provider: "codex",
+				codex: {
+					model: "gpt-5.5",
+					effort: "high",
+					permission_mode: "default",
+					turn_recaps: false,
+					windows_computer_use: { model: "inherit", effort: "medium" },
+				},
+			} as HlidConfig;
+			return {
+				executeCommand,
+				sm: new SessionManager(config, makeProviders(provider)),
+			};
+		}
+
+		function run(
+			sm: SessionManager,
+			emit: (message: ServerMessage) => void,
+			turnId = "computer-use-turn",
+		) {
+			return sm.runQuery(
+				"/computer-use open Docker",
+				emit,
+				"sess-1",
+				undefined,
+				undefined,
+				undefined,
+				turnId,
+				undefined,
+				undefined,
+				"computer-use",
+			);
+		}
+
+		it("lets Umbod allow the capability without approving a Windows app", async () => {
+			vi.mocked(authorizeHlidTool).mockResolvedValueOnce({
+				decision: "allow",
+				policyDecision: "allow",
+				reason: "matched capability allow rule",
+			});
+			const { sm, executeCommand } = setup();
+			const emitted: ServerMessage[] = [];
+
+			await run(sm, (message) => emitted.push(message));
+
+			expect(authorizeHlidTool).toHaveBeenCalledWith(
+				expect.objectContaining({
+					agent: "codex",
+					tool: "hlid.windows_computer_use",
+					input: { task: "open Docker" },
+					sessionId: "sess-1",
+					toolUseId: "hlid-windows-computer-use-computer-use-turn",
+					bypassApproval: false,
+				}),
+			);
+			expect(executeCommand).toHaveBeenCalledWith(
+				"computer-use",
+				"open Docker",
+			);
+			expect(
+				emitted.some((message) => message.type === "permission_request"),
+			).toBe(false);
+		});
+
+		it("routes an Umbod approve decision to a capability-level card", async () => {
+			vi.mocked(authorizeHlidTool).mockImplementationOnce(async (options) => ({
+				decision: await options.prompt("matched capability approval rule"),
+				policyDecision: "approve",
+				reason: "matched capability approval rule",
+			}));
+			const { sm, executeCommand } = setup();
+			const emitted: ServerMessage[] = [];
+			const turn = run(sm, (message) => emitted.push(message));
+
+			await waitFor(() =>
+				expect(sm.getPendingPermissionRequests()).toHaveLength(1),
+			);
+			expect(executeCommand).not.toHaveBeenCalled();
+			expect(sm.getPendingPermissionRequests()[0]).toMatchObject({
+				toolName: "hlid.windows_computer_use",
+				displayName: "Windows Computer Use",
+				description: "matched capability approval rule",
+				input: { task: "open Docker" },
+				allowAlways: false,
+			});
+
+			sm.handlePermissionResponse(
+				"hlid-windows-computer-use-computer-use-turn",
+				true,
+				"session",
+			);
+			await turn;
+			expect(executeCommand).toHaveBeenCalledWith(
+				"computer-use",
+				"open Docker",
+			);
+		});
+
+		it("does not start the worker when Umbod blocks the capability", async () => {
+			vi.mocked(authorizeHlidTool).mockResolvedValueOnce({
+				decision: "block",
+				policyDecision: "block",
+				reason: "matched capability block rule",
+			});
+			const { sm, executeCommand } = setup();
+			const emitted: ServerMessage[] = [];
+
+			await run(sm, (message) => emitted.push(message));
+
+			expect(executeCommand).not.toHaveBeenCalled();
+			expect(emitted).toContainEqual({
+				type: "error",
+				message: "matched capability block rule",
+			});
+		});
+	});
+
 	it("routes an Umbod approve decision to chat even in bypassPermissions mode", async () => {
 		vi.mocked(authorizeHlidTool).mockImplementationOnce(async (options) => {
 			expect(options.bypassApproval).toBe(false);
@@ -1803,7 +2125,10 @@ describe("SessionManager — session-scoped permission persistence", () => {
 		vi.mocked(fsMock.writeFileSync).mockClear();
 		vi.mocked(fsMock.readFileSync).mockClear();
 
-		const provider = makeProvider("Bash");
+		let decision: AgentToolDecision | undefined;
+		const provider = makeProvider("Bash", "tid-1", (value) => {
+			decision = value;
+		});
 		const sm = new SessionManager(makeConfig(), makeProviders(provider));
 
 		const turn1 = sm.runQuery("hello", () => {}, "sess-1");
@@ -1813,6 +2138,11 @@ describe("SessionManager — session-scoped permission persistence", () => {
 
 		sm.handlePermissionResponse("tid-1", true, "local");
 		await turn1;
+		expect(decision).toEqual({
+			behavior: "allow",
+			updatedInput: {},
+			saveScope: "local",
+		});
 
 		expect(vi.mocked(fsMock.writeFileSync)).toHaveBeenCalledWith(
 			expect.stringContaining(".claude/settings.local.json."),
@@ -2249,6 +2579,29 @@ describe("SessionManager — provider resolution", () => {
 			/No providers/,
 		);
 	});
+
+	it("passes Windows Computer Use preferences into Codex sessions", async () => {
+		const { provider, captured } = makeCaptureProvider("codex");
+		const config = {
+			...makeConfig("gpt-5.5"),
+			vault_provider: "codex",
+			codex: {
+				model: "gpt-5.5",
+				effort: "high",
+				permission_mode: "default",
+				turn_recaps: false,
+				windows_computer_use: { model: "inherit", effort: "medium" },
+			},
+		} as HlidConfig;
+		const sm = new SessionManager(config, makeProviders(provider));
+
+		await sm.runQuery("hello", () => {}, "computer-use-settings");
+
+		expect(captured.params?.windowsComputerUse).toEqual({
+			model: "inherit",
+			effort: "medium",
+		});
+	});
 });
 
 // ── SessionManager — per-agent settings ──────────────────────────────────────
@@ -2300,6 +2653,39 @@ describe("SessionManager — per-agent settings", () => {
 			AGENT_PATH,
 		);
 		expect(captured.params?.effort).toBe("low");
+	});
+
+	it("keeps WSL caller settings ahead of unrelated vault defaults for Computer Use inheritance", async () => {
+		const { provider, captured } = makeCaptureProvider("codex");
+		const config = makeConfigWithAgent(AGENT_PATH, {
+			provider: "codex",
+			model: "gpt-5.6-sol",
+			effort: "high",
+		});
+		config.vault_provider = "codex";
+		config.codex = {
+			model: "gpt-5.6-terra",
+			effort: "medium",
+			permission_mode: "default",
+			turn_recaps: false,
+			windows_computer_use: { model: "inherit", effort: "inherit" },
+		};
+		const sm = new SessionManager(config, makeProviders(provider));
+
+		await sm.runQuery(
+			"hello",
+			() => {},
+			"wsl-caller-inheritance",
+			undefined,
+			undefined,
+			AGENT_PATH,
+		);
+
+		expect(captured.params).toMatchObject({
+			model: "gpt-5.6-sol",
+			effort: "high",
+			windowsComputerUse: { model: "inherit", effort: "inherit" },
+		});
 	});
 
 	it("agent query uses agent-specific permissionMode when configured", async () => {
@@ -2794,6 +3180,7 @@ describe("SessionManager — live tool_event persistence", () => {
 	});
 
 	it("text_delta streams accumulated assistant text to DB live (throttled to coalesce chunks)", async () => {
+		vi.useFakeTimers();
 		let release!: () => void;
 		const gate = new Promise<void>((r) => {
 			release = r;
@@ -2814,18 +3201,15 @@ describe("SessionManager — live tool_event persistence", () => {
 			(message) => emitted.push(message),
 			"sess-live-text",
 		);
-		await gateReached;
-		expect(emitted.filter((message) => message.type === "chunk")).toEqual([
-			{ type: "chunk", text: "Hello, ", offset: 0 },
-			{ type: "chunk", text: "world.", offset: 7 },
-		]);
+		try {
+			await gateReached;
+			expect(emitted.filter((message) => message.type === "chunk")).toEqual([
+				{ type: "chunk", text: "Hello, ", offset: 0 },
+				{ type: "chunk", text: "world.", offset: 7 },
+			]);
 
-		// Placeholder inserted on first text_delta. Both chunks fall inside the
-		// ~150ms throttle window, so a single setMessageText fires with the
-		// fully accumulated text — bounded I/O without losing liveness.
-		// TEXT_WRITE_THROTTLE_MS is 800ms; use 2500ms for comfortable headroom
-		// under CI / full-suite load so this doesn't flap.
-		await waitFor(() => {
+			// The first chunk inserts the placeholder immediately, while both text
+			// chunks remain coalesced until the 800ms write window expires.
 			const placeholderInserts = vi
 				.mocked(dbMock.appendMessage)
 				.mock.calls.filter(
@@ -2833,17 +3217,26 @@ describe("SessionManager — live tool_event persistence", () => {
 						c[0] === "sess-live-text" && c[2] === "assistant" && c[3] === "",
 				);
 			expect(placeholderInserts).toHaveLength(1);
+			expect(
+				vi
+					.mocked(dbMock.setMessageText)
+					.mock.calls.filter((c) => c[0] === "sess-live-text"),
+			).toHaveLength(0);
 
+			await vi.advanceTimersByTimeAsync(800);
 			const liveTexts = vi
 				.mocked(dbMock.setMessageText)
 				.mock.calls.filter((c) => c[0] === "sess-live-text")
 				.map((c) => c[2]);
-			expect(liveTexts.length).toBeGreaterThanOrEqual(1);
-			// Whichever write fires, the *latest* one always reflects full text.
-			expect(liveTexts[liveTexts.length - 1]).toBe("Hello, world.");
-		}, 2500);
-		release();
-		await runPromise;
+			expect(liveTexts).toEqual(["Hello, world."]);
+
+			release();
+			await runPromise;
+		} finally {
+			release();
+			vi.useRealTimers();
+			await runPromise;
+		}
 	});
 
 	it("only one setMessageText is scheduled when many chunks arrive in quick succession", async () => {
@@ -2893,6 +3286,7 @@ describe("SessionManager — live tool_event persistence", () => {
 	});
 
 	it("text_delta after a tool_start reuses the same placeholder (one assistant row per turn)", async () => {
+		vi.useFakeTimers();
 		let release!: () => void;
 		const gate = new Promise<void>((r) => {
 			release = r;
@@ -2908,10 +3302,8 @@ describe("SessionManager — live tool_event persistence", () => {
 
 		const sm = new SessionManager(makeConfig(), makeProviders(provider));
 		const runPromise = sm.runQuery("go", () => {}, "sess-live-mix");
-		await gateReached;
-		// TEXT_WRITE_THROTTLE_MS is 800ms; use 2500ms for comfortable headroom
-		// under CI / full-suite load (matches the other throttle test).
-		await waitFor(() => {
+		try {
+			await gateReached;
 			const placeholderInserts = vi
 				.mocked(dbMock.appendMessage)
 				.mock.calls.filter(
@@ -2923,13 +3315,20 @@ describe("SessionManager — live tool_event persistence", () => {
 				.mocked(dbMock.appendToolEvent)
 				.mock.calls.find((c) => c[0] === "sess-live-mix" && c[2] === "tu-1");
 			expect(toolCall?.[1]).toBe(placeholderInserts[0][1]);
+
+			await vi.advanceTimersByTimeAsync(800);
 			const textCall = vi
 				.mocked(dbMock.setMessageText)
 				.mock.calls.find((c) => c[0] === "sess-live-mix");
 			expect(textCall?.[1]).toBe(placeholderInserts[0][1]);
-		}, 2500);
-		release();
-		await runPromise;
+
+			release();
+			await runPromise;
+		} finally {
+			release();
+			await runPromise;
+			vi.useRealTimers();
+		}
 	});
 
 	it("tool_result before any tool_start is a no-op (defensive: gated on persistedToolIds)", async () => {

@@ -107,7 +107,8 @@
 				"effortLevels",
 				"permissionModes",
 				"usageWindows",
-				"check"
+				"check",
+				"hostCapabilities"
 			]
 		},
 		"attachThread",

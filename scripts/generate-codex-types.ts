@@ -25,7 +25,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, normalize } from "node:path";
 
-const CLI_VERSION_PIN = "0.144.1";
+const CLI_VERSION_PIN = "0.144.4";
 
 const root = join(import.meta.dir, "..");
 const outDir = join(root, "src", "server", "codexProtocol");
@@ -78,6 +78,17 @@ const SEEDS: Array<[name: string, relPath: string]> = [
 	["CollabAgentState", "v2/CollabAgentState.ts"],
 	["CollabAgentStatus", "v2/CollabAgentStatus.ts"],
 	["SubAgentActivityKind", "v2/SubAgentActivityKind.ts"],
+	["DynamicToolSpec", "v2/DynamicToolSpec.ts"],
+	["DynamicToolCallParams", "v2/DynamicToolCallParams.ts"],
+	["DynamicToolCallResponse", "v2/DynamicToolCallResponse.ts"],
+	[
+		"McpServerElicitationRequestParams",
+		"v2/McpServerElicitationRequestParams.ts",
+	],
+	[
+		"McpServerElicitationRequestResponse",
+		"v2/McpServerElicitationRequestResponse.ts",
+	],
 ];
 
 async function run(cmd: string[], opts?: { cwd?: string }): Promise<string> {
@@ -172,8 +183,17 @@ async function main(): Promise<void> {
 
 	const genRoot = mkdtempSync(join(tmpdir(), "codex-app-server-ts-"));
 	try {
-		console.log(`Running \`codex app-server generate-ts --out ${genRoot}\`...`);
-		await run(["codex", "app-server", "generate-ts", "--out", genRoot]);
+		console.log(
+			`Running \`codex app-server generate-ts --experimental --out ${genRoot}\`...`,
+		);
+		await run([
+			"codex",
+			"app-server",
+			"generate-ts",
+			"--experimental",
+			"--out",
+			genRoot,
+		]);
 
 		console.log("Walking import graph from seed types...");
 		const closure = await walkClosure(

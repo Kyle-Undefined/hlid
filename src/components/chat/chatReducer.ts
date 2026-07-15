@@ -34,6 +34,8 @@ export type PermissionMessage = {
 	displayName?: string;
 	description?: string;
 	input?: Record<string, unknown>;
+	allowOnce?: boolean;
+	allowAlways?: boolean;
 	decision: "pending" | PermissionDecision;
 };
 
@@ -492,6 +494,8 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 					displayName: action.msg.displayName,
 					description: action.msg.description,
 					input: action.msg.input,
+					allowOnce: action.msg.allowOnce,
+					allowAlways: action.msg.allowAlways,
 					decision: "pending",
 				},
 			];

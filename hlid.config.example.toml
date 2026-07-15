@@ -18,6 +18,12 @@ auto_send = false
 hotkey = "Alt+Shift+KeyV"
 max_recording_seconds = 300
 
+# Windows-native Codex Computer Use workers can follow the active session
+# model, while keeping a predictable default effort. Forge edits these values.
+[codex.windows_computer_use]
+model = "inherit"
+effort = "medium"
+
 # Enable installed Agent Client Protocol agents from Forge. Installation
 # guidance is shown there; Hlid never runs installer commands automatically.
 # [[acp_agents]]

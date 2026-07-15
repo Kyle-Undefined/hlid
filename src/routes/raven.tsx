@@ -427,7 +427,7 @@ function useRavenChatRuntime({
 			description: string;
 			argumentHint: string;
 			aliases?: string[];
-			action?: "review";
+			action?: "review" | "computer-use";
 		}>
 	>([]);
 	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);

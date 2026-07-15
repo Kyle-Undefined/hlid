@@ -11,7 +11,10 @@ describe("settings form conversion", () => {
 		const initial = HlidConfigSchema.parse({
 			vault_provider: "codex",
 			claude: { max_turns: 12, interactive_mode: true },
-			codex: { max_turns: 8 },
+			codex: {
+				max_turns: 8,
+				windows_computer_use: { model: "gpt-5.5", effort: "inherit" },
+			},
 			server: { port: 4000, tls_proxy_port: 4443 },
 			status_vocabulary: { active: ["Doing"], planning: [], done: ["Done"] },
 			ui: { html_plans: true },
@@ -24,6 +27,8 @@ describe("settings form conversion", () => {
 			interactiveMode: true,
 		});
 		expect(forms.codex.maxTurns).toBe("8");
+		expect(forms.codex.windowsComputerUseModel).toBe("gpt-5.5");
+		expect(forms.codex.windowsComputerUseEffort).toBe("inherit");
 		expect(forms.server).toMatchObject({ port: "4000", tlsProxyPort: "4443" });
 		expect(forms.ui.htmlPlans).toBe(true);
 		expect(forms.vocab).toEqual({
@@ -68,6 +73,10 @@ describe("settings form conversion", () => {
 		const config = buildSettingsConfig(initial, forms, false);
 		expect(config.claude.max_turns).toBeUndefined();
 		expect(config.codex.max_turns).toBe(9);
+		expect(config.codex.windows_computer_use).toEqual({
+			model: "inherit",
+			effort: "medium",
+		});
 		expect(config.status_vocabulary).toEqual({
 			active: ["Active", "Doing"],
 			planning: ["Planning"],

@@ -124,6 +124,15 @@ function serializeCodex(config: NonNullable<HlidConfig["codex"]>): string[] {
 	]);
 }
 
+function serializeWindowsComputerUse(
+	config: NonNullable<HlidConfig["codex"]>["windows_computer_use"],
+): string[] {
+	return section("codex.windows_computer_use", [
+		`model = ${tomlVal(config.model)}`,
+		`effort = ${tomlVal(config.effort)}`,
+	]);
+}
+
 function serializeUi(config: HlidConfig["ui"]): string[] {
 	return section("ui", [
 		`enter_to_submit = ${tomlVal(config.enter_to_submit)}`,
@@ -214,7 +223,14 @@ export function serializeConfig(config: HlidConfig): string {
 		...serializeAutoSleep(config.auto_sleep),
 		"",
 		...serializeClaude(config.claude),
-		...(config.codex ? ["", ...serializeCodex(config.codex)] : []),
+		...(config.codex
+			? [
+					"",
+					...serializeCodex(config.codex),
+					"",
+					...serializeWindowsComputerUse(config.codex.windows_computer_use),
+				]
+			: []),
 		"",
 		...serializeUi(config.ui),
 		"",

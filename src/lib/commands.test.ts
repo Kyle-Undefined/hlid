@@ -106,4 +106,25 @@ describe("commands", () => {
 			commandAction: "review",
 		});
 	});
+
+	it("resolves computer-use as a namespaced Hlid capability action", () => {
+		const computerUse = mergeCommands(
+			[],
+			[
+				{
+					name: "computer-use",
+					description: "Use the Windows desktop",
+					argumentHint: "<task>",
+					action: "computer-use",
+				},
+			],
+			"codex",
+		)[0];
+		expect(
+			resolveCommandSubmission(computerUse, "open Calculator", [computerUse]),
+		).toEqual({
+			text: "/computer-use open Calculator",
+			commandAction: "computer-use",
+		});
+	});
 });

@@ -17,6 +17,9 @@ export type ClaudeForm = {
 	vaultProvider: string;
 	/** Use Claude CLI directly in a terminal instead of the Agent SDK. */
 	interactiveMode: boolean;
+	/** Codex-only Windows-native Computer Use preferences. */
+	windowsComputerUseModel?: string;
+	windowsComputerUseEffort?: string;
 };
 
 const selectClass =
@@ -51,6 +54,83 @@ function ProviderField({
 						{active?.unavailableReason ?? "unavailable"}
 					</span>
 				)}
+			</div>
+		</Field>
+	);
+}
+
+function WindowsComputerUseField({
+	claude,
+	onChange,
+	provider,
+	capability,
+}: {
+	claude: ClaudeForm;
+	onChange: (patch: Partial<ClaudeForm>) => void;
+	provider: ProviderInfo;
+	capability: NonNullable<ProviderInfo["hostCapabilities"]>[string];
+}) {
+	const configuredModel = claude.windowsComputerUseModel ?? "inherit";
+	const configuredEffort = claude.windowsComputerUseEffort ?? "medium";
+	const efforts = provider.effortLevels ?? [];
+	return (
+		<Field label={capability.label} hint="host capability">
+			<div className="space-y-2 min-w-48">
+				<div
+					className={
+						capability.available
+							? "text-[10px] text-green-600/80"
+							: "text-[10px] text-destructive/70"
+					}
+				>
+					{capability.available
+						? "ready"
+						: (capability.reason ?? "unavailable")}
+				</div>
+				<label className="block">
+					<span className="block text-[9px] tracking-widest uppercase text-muted-foreground mb-1">
+						Model
+					</span>
+					<select
+						aria-label="Computer Use model"
+						value={configuredModel}
+						onChange={(event) =>
+							onChange({ windowsComputerUseModel: event.target.value })
+						}
+						className={selectClass}
+					>
+						<option value="inherit">Inherit from calling session</option>
+						{getModelOptions(provider).map((model) => (
+							<option key={model.value} value={model.value}>
+								{model.label}
+							</option>
+						))}
+					</select>
+				</label>
+				<label className="block">
+					<span className="block text-[9px] tracking-widest uppercase text-muted-foreground mb-1">
+						Effort
+					</span>
+					<select
+						aria-label="Computer Use effort"
+						value={configuredEffort}
+						onChange={(event) =>
+							onChange({ windowsComputerUseEffort: event.target.value })
+						}
+						className={selectClass}
+					>
+						<option value="inherit">Inherit from calling session</option>
+						{efforts.map((effort) => (
+							<option key={effort.value} value={effort.value}>
+								{effort.label}
+							</option>
+						))}
+					</select>
+				</label>
+				<div className="text-[10px] text-muted-foreground max-w-xs">
+					Applied to the next Computer Use worker. Unsupported native choices
+					use a visible safe fallback.
+				</div>
 			</div>
 		</Field>
 	);
@@ -294,6 +374,33 @@ export function ClaudeSection({
 					providers={providers}
 				/>
 			)}
+			{activeProvider?.hostCapabilities &&
+				Object.entries(activeProvider.hostCapabilities).map(
+					([id, capability]) =>
+						id === "windowsComputerUse" && activeProvider.id === "codex" ? (
+							<WindowsComputerUseField
+								key={id}
+								claude={claude}
+								onChange={onChange}
+								provider={activeProvider}
+								capability={capability}
+							/>
+						) : (
+							<Field key={id} label={capability.label} hint="host capability">
+								<span
+									className={
+										capability.available
+											? "text-[10px] text-green-600/80"
+											: "text-[10px] text-destructive/70"
+									}
+								>
+									{capability.available
+										? "ready"
+										: (capability.reason ?? "unavailable")}
+								</span>
+							</Field>
+						),
+				)}
 			{hasProviderOptions && (
 				<>
 					{modelOptions.length > 0 && (

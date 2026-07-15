@@ -124,4 +124,73 @@ describe("ClaudeSection model/effort interplay", () => {
 		expect(screen.getByText("Sonnet 4.6 (default)")).not.toBeNull();
 		expect(screen.getByText("High (default)")).not.toBeNull();
 	});
+
+	it("shows Windows Computer Use host readiness for Codex", () => {
+		const codexProvider: ProviderInfo = {
+			...provider,
+			id: "codex",
+			label: "Codex",
+			hostCapabilities: {
+				windowsComputerUse: {
+					label: "Windows Computer Use",
+					available: true,
+				},
+			},
+		};
+		render(
+			<ClaudeSection
+				claude={makeClaude({ vaultProvider: "codex" })}
+				onChange={vi.fn()}
+				providers={[codexProvider]}
+			/>,
+		);
+
+		expect(screen.getByText("Windows Computer Use")).not.toBeNull();
+		expect(screen.getByText("ready")).not.toBeNull();
+		expect(
+			(screen.getByLabelText("Computer Use model") as HTMLSelectElement).value,
+		).toBe("inherit");
+		expect(
+			(screen.getByLabelText("Computer Use effort") as HTMLSelectElement).value,
+		).toBe("medium");
+		expect(
+			screen.getAllByRole("option", { name: "Inherit from calling session" }),
+		).toHaveLength(2);
+	});
+
+	it("saves Windows Computer Use model and effort choices through the Codex form", () => {
+		const onChange = vi.fn();
+		const codexProvider: ProviderInfo = {
+			...provider,
+			id: "codex",
+			label: "Codex",
+			hostCapabilities: {
+				windowsComputerUse: {
+					label: "Windows Computer Use",
+					available: true,
+				},
+			},
+		};
+		render(
+			<ClaudeSection
+				claude={makeClaude({ vaultProvider: "codex" })}
+				onChange={onChange}
+				providers={[codexProvider]}
+			/>,
+		);
+
+		fireEvent.change(screen.getByLabelText("Computer Use model"), {
+			target: { value: "claude-opus-4-1" },
+		});
+		fireEvent.change(screen.getByLabelText("Computer Use effort"), {
+			target: { value: "inherit" },
+		});
+
+		expect(onChange).toHaveBeenCalledWith({
+			windowsComputerUseModel: "claude-opus-4-1",
+		});
+		expect(onChange).toHaveBeenCalledWith({
+			windowsComputerUseEffort: "inherit",
+		});
+	});
 });

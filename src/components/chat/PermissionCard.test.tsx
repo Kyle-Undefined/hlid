@@ -82,4 +82,27 @@ describe("PermissionCard", () => {
 		);
 		expect(screen.getByText("/tmp/output")).not.toBeNull();
 	});
+
+	it("hides permanent approval when policy owns persistence", () => {
+		render(
+			<PermissionCard
+				message={permission({ allowAlways: false })}
+				onDecide={vi.fn()}
+			/>,
+		);
+		expect(screen.queryByLabelText("Approve always")).toBeNull();
+		expect(screen.getByLabelText("Approve for this session")).not.toBeNull();
+	});
+
+	it("hides one-time approval when the native app needs a durable scope", () => {
+		render(
+			<PermissionCard
+				message={permission({ allowOnce: false })}
+				onDecide={vi.fn()}
+			/>,
+		);
+		expect(screen.queryByLabelText("Approve")).toBeNull();
+		expect(screen.getByLabelText("Approve for this session")).not.toBeNull();
+		expect(screen.getByLabelText("Approve always")).not.toBeNull();
+	});
 });

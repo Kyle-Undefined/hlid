@@ -42,7 +42,7 @@ export type SlashCommand = {
 	argumentHint: string;
 	aliases?: string[];
 	/** Hlid capability action. Omitted commands are sent as provider-native prompts. */
-	action?: "review";
+	action?: "review" | "computer-use";
 };
 
 /**
@@ -172,7 +172,12 @@ export type AgentEvent =
 	  };
 
 export type AgentToolDecision =
-	| { behavior: "allow"; updatedInput?: unknown }
+	| {
+			behavior: "allow";
+			updatedInput?: unknown;
+			/** Hlid approval-card persistence chosen by the user. */
+			saveScope?: "session" | "local";
+	  }
 	| { behavior: "deny"; message?: string };
 
 export type ToolMeta = {
@@ -227,6 +232,8 @@ export type AgentQueryParams = {
 	canUseTool: CanUseTool;
 	settingSources?: ("user" | "project" | "local")[];
 	executable?: string;
+	/** Windows-native Codex Computer Use delegation preferences. */
+	windowsComputerUse?: { model: string; effort: string };
 };
 
 /**
@@ -266,7 +273,10 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 	/** Available on providers that expose the list of supported slash commands. */
 	supportedCommands?(): Promise<SlashCommand[]>;
 	/** Execute a provider capability without relying on prompt-parsed CLI syntax. */
-	executeCommand?(action: "review", args?: string): Promise<void>;
+	executeCommand?(
+		action: "review" | "computer-use",
+		args?: string,
+	): Promise<void>;
 	/**
 	 * Fetch the provider's current subscription/rate-limit windows. Unlike
 	 * passive rate-limit events, this can return a reading even when the
@@ -299,6 +309,11 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 	 * its next fresh AgentSession, not the current stream.
 	 */
 	setEffort?(effort: string): Promise<void>;
+	/** Update preferences used by the next Windows-native Computer Use worker. */
+	setWindowsComputerUse?(settings: {
+		model: string;
+		effort: string;
+	}): Promise<void>;
 	/** Update the per-turn HTML plan handoff without recreating the conversation. */
 	setPlanHtmlPath?(path: string | undefined): void;
 	/**
@@ -354,6 +369,10 @@ export interface AgentProvider {
 	readonly probeRequiresTurn?: boolean;
 	/** Optional availability check. Returns false + reason if provider can't run. */
 	check?(): Promise<{ available: boolean; reason?: string }>;
+	/** Optional host-only capabilities surfaced in Forge diagnostics. */
+	hostCapabilities?(): Promise<
+		Record<string, { label: string; available: boolean; reason?: string }>
+	>;
 	/** Live-fetch the provider's model catalog. Falls back to the static `models` list on failure. */
 	listModels?(): Promise<ProviderModelInfo[]>;
 	query(params: AgentQueryParams): AgentSession;

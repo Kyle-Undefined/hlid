@@ -18,6 +18,8 @@ export type CodexForm = {
 	permissionMode: HlidConfig["codex"]["permission_mode"];
 	turnRecaps: boolean;
 	recapModel: string;
+	windowsComputerUseModel: string;
+	windowsComputerUseEffort: string;
 };
 
 export type AutoSleepForm = {
@@ -72,6 +74,12 @@ export function applyAgentFormPatch(
 			...(patch.recapModel !== undefined
 				? { recapModel: patch.recapModel }
 				: {}),
+			...(patch.windowsComputerUseModel !== undefined
+				? { windowsComputerUseModel: patch.windowsComputerUseModel }
+				: {}),
+			...(patch.windowsComputerUseEffort !== undefined
+				? { windowsComputerUseEffort: patch.windowsComputerUseEffort }
+				: {}),
 		},
 	};
 }
@@ -119,6 +127,10 @@ function createCodexForm(initial: HlidConfig): CodexForm {
 		permissionMode: initial.codex.permission_mode,
 		turnRecaps: initial.codex.turn_recaps ?? true,
 		recapModel: initial.codex.recap_model ?? "",
+		windowsComputerUseModel:
+			initial.codex.windows_computer_use?.model ?? "inherit",
+		windowsComputerUseEffort:
+			initial.codex.windows_computer_use?.effort ?? "medium",
 	};
 }
 
@@ -270,6 +282,10 @@ export function buildSettingsConfig(
 			turn_recaps: forms.codex.turnRecaps,
 			recap_model: forms.codex.recapModel || undefined,
 			executable: initial.codex.executable,
+			windows_computer_use: {
+				model: forms.codex.windowsComputerUseModel || "inherit",
+				effort: forms.codex.windowsComputerUseEffort || "medium",
+			},
 		},
 		ui: {
 			enter_to_submit: forms.ui.enterToSubmit,

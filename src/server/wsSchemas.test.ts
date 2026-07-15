@@ -54,6 +54,22 @@ describe("chat WebSocket runtime schema", () => {
 		).toEqual({ type: "chat", text: "hello" });
 	});
 
+	it("accepts the computer-use capability action", () => {
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "chat",
+					text: "/computer-use open Calculator",
+					command_action: "computer-use",
+				}),
+			),
+		).toEqual({
+			type: "chat",
+			text: "/computer-use open Calculator",
+			command_action: "computer-use",
+		});
+	});
+
 	it("accepts skip_sleep and rejects extra fields on it", () => {
 		expect(parseClientMessage(JSON.stringify({ type: "skip_sleep" }))).toEqual({
 			type: "skip_sleep",

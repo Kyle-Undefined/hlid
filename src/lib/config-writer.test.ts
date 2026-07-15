@@ -85,6 +85,9 @@ describe("writeConfig — persistence invariants", () => {
 				max_bytes: 123456,
 				allowed_mimes: ["image/png", "application/x-custom"],
 			},
+			codex: {
+				windows_computer_use: { model: "gpt-5.5", effort: "high" },
+			},
 			auto_sleep: {
 				enabled: true,
 				threshold: 0.8,

@@ -54,6 +54,17 @@ export function PermissionCard({
 				(v): v is string => typeof v === "string",
 			))
 		: undefined;
+	const actionCount =
+		1 +
+		(message.allowOnce === false ? 0 : 1) +
+		1 +
+		(message.allowAlways === false ? 0 : 1);
+	const actionGrid =
+		actionCount === 4
+			? "sm:grid-cols-4"
+			: actionCount === 3
+				? "sm:grid-cols-3"
+				: "sm:grid-cols-2";
 
 	return (
 		<div className="flex w-full min-w-0 max-w-full overflow-hidden gap-0">
@@ -77,7 +88,7 @@ export function PermissionCard({
 						</div>
 					)}
 				</div>
-				<div className="grid grid-cols-2 sm:grid-cols-4">
+				<div className={`grid grid-cols-2 ${actionGrid}`}>
 					<button
 						type="button"
 						onClick={() => onDecide(message.id, false)}
@@ -87,15 +98,17 @@ export function PermissionCard({
 						<X className="w-3 h-3 shrink-0" />
 						DENY
 					</button>
-					<button
-						type="button"
-						onClick={() => onDecide(message.id, true)}
-						aria-label="Approve"
-						className="min-w-0 flex items-center justify-center gap-1.5 sm:gap-2 px-1 py-2 text-[10px] tracking-widest text-green-500/70 hover:bg-green-500/5 transition-colors uppercase border-b border-border sm:border-b-0 sm:border-l"
-					>
-						<Check className="w-3 h-3 shrink-0" />
-						APPROVE
-					</button>
+					{message.allowOnce !== false && (
+						<button
+							type="button"
+							onClick={() => onDecide(message.id, true)}
+							aria-label="Approve"
+							className="min-w-0 flex items-center justify-center gap-1.5 sm:gap-2 px-1 py-2 text-[10px] tracking-widest text-green-500/70 hover:bg-green-500/5 transition-colors uppercase border-b border-border sm:border-b-0 sm:border-l"
+						>
+							<Check className="w-3 h-3 shrink-0" />
+							APPROVE
+						</button>
+					)}
 					<button
 						type="button"
 						onClick={() => onDecide(message.id, true, "session")}
@@ -105,15 +118,17 @@ export function PermissionCard({
 						<Check className="w-3 h-3 shrink-0" />
 						SESSION
 					</button>
-					<button
-						type="button"
-						onClick={() => onDecide(message.id, true, "local")}
-						aria-label="Approve always"
-						className="min-w-0 flex items-center justify-center gap-1.5 sm:gap-2 px-1 py-2 text-[10px] tracking-widest text-purple-500/70 hover:bg-purple-500/5 transition-colors uppercase sm:border-l border-border"
-					>
-						<Check className="w-3 h-3 shrink-0" />
-						ALWAYS
-					</button>
+					{message.allowAlways !== false && (
+						<button
+							type="button"
+							onClick={() => onDecide(message.id, true, "local")}
+							aria-label="Approve always"
+							className="min-w-0 flex items-center justify-center gap-1.5 sm:gap-2 px-1 py-2 text-[10px] tracking-widest text-purple-500/70 hover:bg-purple-500/5 transition-colors uppercase sm:border-l border-border"
+						>
+							<Check className="w-3 h-3 shrink-0" />
+							ALWAYS
+						</button>
+					)}
 				</div>
 				<div className="flex items-stretch border-t border-border">
 					<textarea
