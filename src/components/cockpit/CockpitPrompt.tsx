@@ -6,16 +6,12 @@ import { SlashPicker } from "#/components/cockpit/SlashPicker";
 import type { getConfig } from "#/config";
 import type { useFileUpload } from "#/hooks/useFileUpload";
 import type { useVoiceInput } from "#/hooks/useVoiceInput";
+import type { CommandDescriptor } from "#/lib/commands";
 import { type ComposerKeyAction, composerKeyAction } from "#/lib/composer";
 import type { getAgentListFn } from "#/lib/serverFns/agents";
-import type { Skill } from "#/lib/skills";
 import { displayVoiceHotkey } from "#/lib/voiceHotkey";
 
-export type ActiveCockpitSkill = {
-	name: string;
-	section?: string;
-	filePath: string;
-};
+export type ActiveCockpitSkill = CommandDescriptor;
 
 type CockpitConfig = Awaited<ReturnType<typeof getConfig>>;
 type AgentList = Awaited<ReturnType<typeof getAgentListFn>>;
@@ -50,12 +46,12 @@ type PromptProps = {
 	voice: VoiceState;
 	picker: {
 		open: boolean;
-		items: Skill[];
+		items: CommandDescriptor[];
 		index: number;
 		navigate: (direction: 1 | -1) => void;
 		close: () => void;
 	};
-	onSkillSelect: (skill: Skill) => void;
+	onSkillSelect: (command: CommandDescriptor) => void;
 	onClear: () => void;
 	onRun: () => void;
 };
@@ -152,7 +148,7 @@ function PromptTextarea(props: PromptProps) {
 					props.activeSkill,
 				)}
 				disabled={!props.isConnected || props.voice.phase === "transcribing"}
-				className={`flex-1 resize-none bg-transparent py-2.5 pr-3 text-sm text-foreground focus:outline-none disabled:opacity-30 overflow-hidden min-h-[72px] ${!props.isConnected ? "placeholder:text-foreground/50" : "placeholder:text-muted-foreground/25"}`}
+				className={`min-w-0 flex-1 resize-none bg-transparent py-2.5 pr-3 text-sm text-foreground focus:outline-none disabled:opacity-30 overflow-hidden min-h-[72px] ${!props.isConnected ? "placeholder:text-foreground/50" : "placeholder:text-muted-foreground/25"}`}
 			/>
 		</div>
 	);
@@ -268,8 +264,8 @@ function ComposerToggle({
 
 function ComposerToolbar(props: PromptProps) {
 	return (
-		<div className="flex items-center justify-between px-3 py-2 border-t border-border/60">
-			<div className="flex items-center gap-3">
+		<div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-2 px-3 py-2 border-t border-border/60">
+			<div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-2">
 				<input
 					ref={props.fileInputRef}
 					type="file"
@@ -308,7 +304,7 @@ function ComposerToolbar(props: PromptProps) {
 					onChange={props.setSameSession}
 				/>
 			</div>
-			<div className="flex gap-2">
+			<div className="ml-auto flex shrink-0 gap-2">
 				{(props.prompt || props.activeSkill) && (
 					<button
 						type="button"
@@ -341,7 +337,7 @@ export function CockpitPrompt(props: PromptProps) {
 		void props.upload.uploadFiles(event.dataTransfer.files);
 	};
 	return (
-		<div className="p-4 border-b border-border space-y-2 shrink-0">
+		<div className="min-w-0 p-4 border-b border-border space-y-2 shrink-0">
 			<div className="flex items-center justify-between mb-1">
 				<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
 					PROMPT
@@ -354,7 +350,7 @@ export function CockpitPrompt(props: PromptProps) {
 			</div>
 			<section
 				aria-label="Prompt input area"
-				className={`relative border bg-card transition-colors ${props.isConnected ? "border-border focus-within:border-primary/30" : "border-border/40"}`}
+				className={`relative min-w-0 border bg-card transition-colors ${props.isConnected ? "border-border focus-within:border-primary/30" : "border-border/40"}`}
 				onDragOver={onDragOver}
 				onDrop={onDrop}
 			>

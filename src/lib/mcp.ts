@@ -4,6 +4,8 @@ export type McpServerEntry = {
 	name: string;
 	displayName: string;
 	source: "cloud" | "vault" | "global";
+	providerId?: string;
+	error?: string;
 	status:
 		| "connected"
 		| "failed"
@@ -27,6 +29,8 @@ export function mapMcpServer(s: {
 	name: string;
 	status: string;
 	scope?: string;
+	providerId?: string;
+	error?: string;
 }): McpServerEntry {
 	return {
 		name: s.name,
@@ -42,5 +46,7 @@ export function mapMcpServer(s: {
 		status: VALID_MCP_STATUSES.has(s.status as McpServerEntry["status"])
 			? (s.status as McpServerEntry["status"])
 			: "unknown",
+		...(s.providerId ? { providerId: s.providerId } : {}),
+		...(s.error ? { error: s.error } : {}),
 	};
 }

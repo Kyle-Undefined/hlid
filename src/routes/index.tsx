@@ -28,11 +28,12 @@ import { FirstRunWizard } from "#/components/wizard/FirstRunWizard";
 import { getConfig } from "#/config";
 import { useCockpitLiveData } from "#/hooks/useCockpitLiveData";
 import { useCockpitRun } from "#/hooks/useCockpitRun";
+import { useCommands } from "#/hooks/useCommands";
 import { useFileUpload } from "#/hooks/useFileUpload";
-import { useMergedSkills } from "#/hooks/useMergedSkills";
 import { useSlashPicker } from "#/hooks/useSlashPicker";
 import { useVoiceInput } from "#/hooks/useVoiceInput";
 import { useWsLiveStats } from "#/hooks/useWsSelectors";
+import { type CommandDescriptor, skillCommand } from "#/lib/commands";
 import { insertAtSelection, resizeComposer } from "#/lib/composer";
 import { fmtModel } from "#/lib/formatters";
 import { getAgentListFn } from "#/lib/serverFns/agents";
@@ -124,14 +125,14 @@ function useCockpitComposer() {
 		el.selectionStart = el.selectionEnd = 0;
 	}, [activeSkill]);
 
-	function handleSkillSelect(skill: Skill) {
+	function handleCommandSelect(command: CommandDescriptor) {
 		pendingSkillFocusRef.current = true;
 		setPrompt("");
-		setActiveSkill({
-			name: skill.name,
-			section: skill.section,
-			filePath: skill.filePath,
-		});
+		setActiveSkill(command);
+	}
+
+	function handleSkillSelect(skill: Skill) {
+		handleCommandSelect(skillCommand(skill));
 	}
 
 	function handleClear() {
@@ -153,6 +154,7 @@ function useCockpitComposer() {
 		textareaRef,
 		fileInputRef,
 		handleSkillSelect,
+		handleCommandSelect,
 		handleClear,
 	};
 }
@@ -166,13 +168,13 @@ function useCockpitRunWiring({
 	composer,
 	live,
 	upload,
-	allSkills,
+	commands,
 	navigate,
 }: {
 	composer: CockpitComposer;
 	live: CockpitLive;
 	upload: CockpitUpload;
-	allSkills: ReturnType<typeof useMergedSkills>;
+	commands: CommandDescriptor[];
 	navigate: CockpitNavigate;
 }) {
 	const isRunning =
@@ -180,7 +182,7 @@ function useCockpitRunWiring({
 	return useCockpitRun({
 		prompt: composer.prompt,
 		activeSkill: composer.activeSkill,
-		allSkills,
+		commands,
 		wsStatus: live.wsStatus,
 		sameSession: composer.sameSession,
 		attachSessionIdRef: upload.uploadSessionIdRef,
@@ -288,7 +290,7 @@ function CockpitPromptWiring({
 	upload,
 	voice,
 	agentList,
-	allSkills,
+	commands,
 	onRun,
 }: {
 	config: Awaited<ReturnType<typeof getConfig>>;
@@ -297,12 +299,12 @@ function CockpitPromptWiring({
 	upload: CockpitUpload;
 	voice: ReturnType<typeof useVoiceInput>;
 	agentList: Awaited<ReturnType<typeof getAgentListFn>>;
-	allSkills: ReturnType<typeof useMergedSkills>;
+	commands: CommandDescriptor[];
 	onRun: () => void;
 }) {
 	const picker = useSlashPicker(
 		composer.prompt,
-		allSkills,
+		commands,
 		composer.activeSkill,
 	);
 	const isConnected = live.wsStatus === "connected";
@@ -343,7 +345,7 @@ function CockpitPromptWiring({
 				navigate: picker.navigate,
 				close: picker.close,
 			}}
-			onSkillSelect={composer.handleSkillSelect}
+			onSkillSelect={composer.handleCommandSelect}
 			onClear={composer.handleClear}
 			onRun={onRun}
 		/>
@@ -357,25 +359,28 @@ function CockpitPage() {
 	const navigate = useNavigate();
 	const liveStats = useWsLiveStats();
 	const composer = useCockpitComposer();
-	const live = useCockpitLiveData({
-		recentSessions: loader.recentSessions,
-		agg: loader.statsData.agg,
-		weeklyStats: loader.weeklyStats,
-		thirtyDayStats: loader.thirtyDayStats,
-		activeSession: loader.activeSession,
-		mcpServers: loader.mcpServers,
-	});
+	const live = useCockpitLiveData(
+		{
+			recentSessions: loader.recentSessions,
+			agg: loader.statsData.agg,
+			weeklyStats: loader.weeklyStats,
+			thirtyDayStats: loader.thirtyDayStats,
+			activeSession: loader.activeSession,
+			mcpServers: loader.mcpServers,
+		},
+		composer.selectedAgentPath || undefined,
+	);
 	const upload = useFileUpload({ agentCwd: composer.selectedAgentPath });
-	const allSkills = useMergedSkills(data.skills, live.sdkSlashCommands);
+	const commands = useCommands(data.skills, live.sdkSlashCommands);
 	const skillGroups = useMemo(
-		() => groupSkills(allSkills, data.sectionOrder),
-		[allSkills, data.sectionOrder],
+		() => groupSkills(data.skills, data.sectionOrder),
+		[data.skills, data.sectionOrder],
 	);
 	const handleRun = useCockpitRunWiring({
 		composer,
 		live,
 		upload,
-		allSkills,
+		commands,
 		navigate,
 	});
 	const voice = useCockpitVoice(config, loader.voiceInfo, composer, handleRun);
@@ -389,7 +394,7 @@ function CockpitPage() {
 		navigate({ to: "/raven", search: { session: id, agent: undefined } });
 
 	return (
-		<div className="flex flex-col md:h-full">
+		<div className="flex min-w-0 flex-col overflow-x-hidden md:h-full">
 			<CockpitHeader config={config} modelShort={modelShort} />
 			<CockpitTopPanels
 				live={live}
@@ -399,9 +404,9 @@ function CockpitPage() {
 			/>
 
 			{/* Two-column body */}
-			<div className="flex md:flex-1 md:overflow-hidden">
+			<div className="flex min-w-0 md:flex-1 md:overflow-hidden">
 				{/* Main column */}
-				<div className="flex flex-col flex-1 md:overflow-auto">
+				<div className="flex min-w-0 flex-1 flex-col md:overflow-auto">
 					<CockpitPromptWiring
 						config={config}
 						composer={composer}
@@ -409,7 +414,7 @@ function CockpitPage() {
 						upload={upload}
 						voice={voice}
 						agentList={agentList}
-						allSkills={allSkills}
+						commands={commands}
 						onRun={() => void handleRun()}
 					/>
 

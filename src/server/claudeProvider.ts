@@ -445,6 +445,12 @@ function translateSystemMessage(
 			hadText,
 		};
 	}
+	if (message.subtype === "commands_changed") {
+		return {
+			events: [{ type: "commands_changed", commands: message.commands }],
+			hadText,
+		};
+	}
 	if ((message as { subtype: string }).subtype === "local_command_output") {
 		return {
 			events: [

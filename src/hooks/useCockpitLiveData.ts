@@ -40,7 +40,10 @@ function initialThirtyDayStats(stats: ThirtyDayStats): ThirtyDayStats {
 	return getPendingSessionToday() ? incrementThirtyDayStats(stats) : stats;
 }
 
-export function useCockpitLiveData(initial: InitialCockpitLiveData) {
+export function useCockpitLiveData(
+	initial: InitialCockpitLiveData,
+	commandAgentCwd?: string,
+) {
 	const [recentRuns, setRecentRuns] = useState(initial.recentSessions);
 	const [agg, setAgg] = useState(initial.agg);
 	const [weeklyStats, setWeeklyStats] = useState(() =>
@@ -59,6 +62,7 @@ export function useCockpitLiveData(initial: InitialCockpitLiveData) {
 			description: string;
 			argumentHint: string;
 			aliases?: string[];
+			action?: "review";
 		}>
 	>([]);
 	const [runError, setRunError] = useState<string | null>(null);
@@ -115,17 +119,38 @@ export function useCockpitLiveData(initial: InitialCockpitLiveData) {
 		if (message.type === "error") setRunError(message.message);
 		if (message.type === "rate_limit") setRateLimit(message);
 		if (message.type === "mcp_status") {
-			setMcpServers(message.servers.map(mapMcpServer));
+			if ((message.agent_cwd ?? "") !== (commandAgentCwd ?? "")) return;
+			setMcpServers(
+				message.servers.map((server) =>
+					mapMcpServer({
+						...server,
+						providerId: server.provider_id ?? message.provider_id,
+					}),
+				),
+			);
 		}
 		if (message.type === "slash_commands") {
+			if ((message.agent_cwd ?? "") !== (commandAgentCwd ?? "")) return;
 			setSdkSlashCommands(message.commands);
 		}
 	});
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: agent context changes invalidate the scoped command snapshot
 	useEffect(() => {
-		ws.send({ type: "sync_mcp_list" });
-		ws.send({ type: "probe_slash_commands" });
-	}, [ws.send]);
+		setSdkSlashCommands([]);
+	}, [commandAgentCwd]);
+
+	useEffect(() => {
+		ws.send({
+			type: "sync_mcp_list",
+			inventory: true,
+			...(commandAgentCwd ? { agent_cwd: commandAgentCwd } : {}),
+		});
+		ws.send({
+			type: "probe_slash_commands",
+			...(commandAgentCwd ? { agent_cwd: commandAgentCwd } : {}),
+		});
+	}, [ws.send, commandAgentCwd]);
 
 	useEffect(() => {
 		let active = true;

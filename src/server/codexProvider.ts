@@ -664,16 +664,36 @@ class CodexAgentSession implements AgentSession {
 		this.params = { ...this.params, planHtmlPath: path };
 	}
 
+	/**
+	 * Read provider metadata without starting a Codex thread. Skills and MCP
+	 * inventory are app-server-level RPCs; creating an ephemeral thread here
+	 * needlessly starts another copy of every configured MCP server.
+	 */
+	private async metadataConnection(): Promise<{
+		conn: CodexAppServer;
+		launch: CodexLaunchConfig;
+	}> {
+		const launch =
+			this.launch ??
+			codexLaunchConfig({
+				cwd: this.params.cwd,
+				executable: this.params.executable,
+			});
+		const conn = this.conn ?? acquireCodexAppServer(launch.executable);
+		await conn.ready;
+		return { conn, launch };
+	}
+
 	async supportedCommands(): Promise<SlashCommand[]> {
-		await this.ensureReady();
 		try {
+			const { conn, launch } = await this.metadataConnection();
 			const result = asObj(
-				await this.request("skills/list", {
-					cwds: [this.launch?.rpcCwd ?? this.params.cwd],
+				await conn.request("skills/list", {
+					cwds: [launch.rpcCwd],
 				}),
 			);
 			const skills = Array.isArray(result.skills) ? result.skills : [];
-			return skills.flatMap((skill) => {
+			const commands: SlashCommand[] = skills.flatMap((skill) => {
 				const obj = asObj(skill);
 				const name = String(obj.name ?? "");
 				if (!name) return [];
@@ -686,15 +706,47 @@ class CodexAgentSession implements AgentSession {
 					},
 				];
 			});
+			commands.push({
+				name: "review",
+				description: "Review the working tree",
+				argumentHint: "[instructions]",
+				action: "review",
+			});
+			return commands;
 		} catch {
-			return [];
+			return [
+				{
+					name: "review",
+					description: "Review the working tree",
+					argumentHint: "[instructions]",
+					action: "review",
+				},
+			];
 		}
 	}
 
-	async mcpServerStatus(): Promise<McpServerStatus[]> {
+	async executeCommand(action: "review", args?: string): Promise<void> {
 		await this.ensureReady();
+		if (!this.threadId) throw new Error("Codex thread did not start");
+		if (action !== "review") throw new Error(`Unsupported command: ${action}`);
+		const target = args?.trim()
+			? { type: "custom", instructions: args.trim() }
+			: { type: "uncommittedChanges" };
+		const result = asObj(
+			await this.request("review/start", {
+				threadId: this.threadId,
+				target,
+				delivery: "inline",
+			}),
+		);
+		const turn = asObj(result.turn);
+		if (typeof turn.id === "string") this.activeTurnId = turn.id;
+	}
+
+	async mcpServerStatus(): Promise<McpServerStatus[]> {
 		try {
-			const result = asObj(await this.request("mcpServerStatus/list", {}));
+			const { conn } = await this.metadataConnection();
+			const result = asObj(await conn.request("mcpServerStatus/list", {}));
 			const servers = Array.isArray(result.data)
 				? result.data
 				: Array.isArray(result.servers)

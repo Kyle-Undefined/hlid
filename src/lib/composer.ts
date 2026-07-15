@@ -1,5 +1,6 @@
 import type { QueuedChatMessage } from "#/hooks/wsChatQueueStore";
 import type { ChatAttachment, ClientChatMessage } from "#/server/protocol";
+import type { CommandAction } from "./commands";
 
 export type ComposerKeyAction =
 	| "picker-next"
@@ -95,6 +96,7 @@ export function prepareChatSubmission(input: {
 	sessionId: string;
 	running: boolean;
 	skillContext?: string;
+	commandAction?: CommandAction;
 	attachments: ChatAttachment[];
 	agentCwd?: string;
 	agentContextAlreadySent: boolean;
@@ -116,6 +118,7 @@ export function prepareChatSubmission(input: {
 				text: input.text,
 				session_id: input.sessionId,
 				skill_context: input.skillContext,
+				command_action: input.commandAction,
 				attachments,
 				agent_cwd: input.agentCwd,
 				plan_mode: input.planMode || undefined,
@@ -142,6 +145,7 @@ export function prepareChatSubmission(input: {
 			text: input.text,
 			session_id: input.sessionId,
 			skill_context: input.skillContext,
+			command_action: input.commandAction,
 			attachments,
 			agent_cwd: agentCwd,
 			plan_mode: input.planMode || undefined,

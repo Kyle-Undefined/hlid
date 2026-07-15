@@ -4,11 +4,7 @@
  * {vaultPath}/.claude/settings.local.json without referencing
  * any server function infrastructure or config loading.
  */
-import {
-	readProjectMcpFile,
-	toggleProjectMcpFile,
-	writeProjectMcpFile,
-} from "./projectMcp";
+import { legacyProjectMcpAdapter } from "./mcpConfig";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -28,7 +24,7 @@ export interface VaultMcpServer {
 export function readVaultMcpFile(vaultPath: string): {
 	servers: VaultMcpServer[];
 } {
-	return readProjectMcpFile(vaultPath);
+	return legacyProjectMcpAdapter.read(vaultPath);
 }
 
 // ─── Write ────────────────────────────────────────────────────────────────────
@@ -41,7 +37,7 @@ export function writeVaultMcpFile(
 	vaultPath: string,
 	servers: Record<string, unknown>,
 ): void {
-	writeProjectMcpFile(vaultPath, servers);
+	legacyProjectMcpAdapter.write(vaultPath, servers);
 }
 
 // ─── Toggle ───────────────────────────────────────────────────────────────────
@@ -57,5 +53,5 @@ export function toggleVaultMcpFile(
 	name: string,
 	disabled: boolean,
 ): void {
-	toggleProjectMcpFile(vaultPath, name, disabled);
+	legacyProjectMcpAdapter.toggle(vaultPath, name, disabled);
 }

@@ -118,12 +118,31 @@ describe("CockpitPrompt placeholder", () => {
 		render(
 			<CockpitPrompt
 				{...makeProps({
-					activeSkill: { name: "review", filePath: "/skills/review.md" },
+					activeSkill: {
+						id: "skill:review",
+						name: "review",
+						description: "Review changes",
+						source: "vault",
+						execution: { kind: "skill", filePath: "/skills/review.md" },
+					},
 				})}
 			/>,
 		);
 		expect(textarea().placeholder).toBe("add context… (optional)");
 		expect(screen.getByText("· review")).toBeTruthy();
+	});
+});
+
+describe("CockpitPrompt mobile sizing", () => {
+	it("allows controls to wrap when prompt actions are visible", () => {
+		render(<CockpitPrompt {...makeProps({ prompt: "/review" })} />);
+		const clearGroup = screen.getByRole("button", {
+			name: "CLEAR",
+		}).parentElement;
+		const toolbar = clearGroup?.parentElement;
+		expect(toolbar?.className).toContain("flex-wrap");
+		expect(toolbar?.className).toContain("min-w-0");
+		expect(clearGroup?.className).toContain("shrink-0");
 	});
 });
 
@@ -173,7 +192,13 @@ describe("CockpitPrompt composer keys", () => {
 	it("Enter selects highlighted skill while picker open", () => {
 		const onSkillSelect = vi.fn();
 		const props = makeProps();
-		const skill = { name: "deploy", filePath: "/skills/deploy.md" };
+		const skill = {
+			id: "skill:deploy",
+			name: "deploy",
+			description: "Deploy",
+			source: "vault",
+			execution: { kind: "skill", filePath: "/skills/deploy.md" },
+		} as const;
 		render(
 			<CockpitPrompt
 				{...props}
@@ -181,7 +206,7 @@ describe("CockpitPrompt composer keys", () => {
 				picker={{
 					...props.picker,
 					open: true,
-					items: [skill] as never,
+					items: [skill],
 					index: 0,
 				}}
 			/>,

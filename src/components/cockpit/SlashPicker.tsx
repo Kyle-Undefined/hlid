@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { Skill } from "#/lib/skills";
+import type { CommandDescriptor } from "#/lib/commands";
 
 /**
  * Floating slash-command picker.
@@ -26,9 +26,9 @@ export function SlashPicker({
 	onSelect,
 	direction = "down",
 }: {
-	items: Skill[];
+	items: CommandDescriptor[];
 	selectedIndex: number;
-	onSelect: (skill: Skill) => void;
+	onSelect: (command: CommandDescriptor) => void;
 	direction?: "up" | "down";
 }) {
 	const containerRef = useRef<HTMLDivElement>(null);
@@ -53,11 +53,11 @@ export function SlashPicker({
 			id="slash-picker"
 			role="listbox"
 			aria-label="Slash commands"
-			className={`absolute ${direction === "up" ? "bottom-full" : "top-full"} left-0 right-0 z-50 border border-border bg-card shadow-lg max-h-48 overflow-y-auto`}
+			className={`absolute ${direction === "up" ? "bottom-full" : "top-full"} left-0 right-0 z-50 min-w-0 max-h-48 overflow-x-hidden overflow-y-auto border border-border bg-card shadow-lg`}
 		>
-			{items.map((skill, i) => (
+			{items.map((command, i) => (
 				<div
-					key={skill.file}
+					key={command.id}
 					id={`slash-picker-opt-${i}`}
 					role="option"
 					aria-selected={i === selectedIndex}
@@ -68,14 +68,14 @@ export function SlashPicker({
 						// Prevent textarea blur before selection fires
 						e.preventDefault();
 					}}
-					onClick={() => onSelect(skill)}
+					onClick={() => onSelect(command)}
 					onKeyDown={(e) => {
 						if (e.key === "Enter" || e.key === " ") {
 							e.preventDefault();
-							onSelect(skill);
+							onSelect(command);
 						}
 					}}
-					className={`w-full flex flex-col px-3 py-1.5 text-left cursor-pointer transition-colors select-none ${
+					className={`flex w-full min-w-0 flex-col px-3 py-1.5 text-left cursor-pointer transition-colors select-none ${
 						i === selectedIndex ? "bg-primary/10" : "hover:bg-primary/5"
 					}`}
 				>
@@ -84,13 +84,17 @@ export function SlashPicker({
 							i === selectedIndex ? "text-primary" : "text-foreground/80"
 						}`}
 					>
-						/{skill.name}
+						/{command.name}
 					</span>
-					{skill.description && (
-						<span className="text-[10px] tracking-wider text-muted-foreground/70 truncate">
-							{skill.description}
+					{command.description && (
+						<span className="w-full min-w-0 max-w-full truncate text-[10px] tracking-wider text-muted-foreground/70">
+							{command.description}
+							{command.argumentHint ? ` ${command.argumentHint}` : ""}
 						</span>
 					)}
+					<span className="text-[8px] tracking-widest uppercase text-muted-foreground/35">
+						{command.source}
+					</span>
 				</div>
 			))}
 		</div>

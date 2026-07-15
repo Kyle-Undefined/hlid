@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
+import { type CommandDescriptor, skillCommand } from "#/lib/commands";
 import type { Skill } from "#/lib/skills";
 import { useSlashPicker } from "./useSlashPicker";
 
@@ -19,12 +20,12 @@ function makeSkill(name: string, section = "vault"): Skill {
 	};
 }
 
-const SKILLS: Skill[] = [
+const SKILLS: CommandDescriptor[] = [
 	makeSkill("help"),
 	makeSkill("commit"),
 	makeSkill("review"),
 	makeSkill("compact", "claude"), // SDK skill — must appear in results
-];
+].map(skillCommand);
 
 // ─── isOpen ──────────────────────────────────────────────────────────────────
 
@@ -54,9 +55,7 @@ describe("useSlashPicker – isOpen", () => {
 	});
 
 	it("closed when activeSkill is set (user is typing context, not a new command)", () => {
-		const { result } = renderHook(() =>
-			useSlashPicker("/", SKILLS, { name: "help" }),
-		);
+		const { result } = renderHook(() => useSlashPicker("/", SKILLS, SKILLS[0]));
 		expect(result.current.isOpen).toBe(false);
 	});
 
@@ -164,16 +163,19 @@ describe("useSlashPicker – selectedIndex", () => {
 	});
 
 	it("clamps selectedIndex when items list shrinks without a query change", () => {
-		const twoSkills = [makeSkill("commit"), makeSkill("compact")];
+		const twoSkills = [makeSkill("commit"), makeSkill("compact")].map(
+			skillCommand,
+		);
 		const { result, rerender } = renderHook(
-			({ skills }: { skills: Skill[] }) => useSlashPicker("/co", skills, null),
+			({ skills }: { skills: CommandDescriptor[] }) =>
+				useSlashPicker("/co", skills, null),
 			{ initialProps: { skills: twoSkills } },
 		);
 		act(() => result.current.navigate(1)); // idx → 1, 2 items
 		expect(result.current.selectedIndex).toBe(1);
 
 		// Skills list shrinks to 1 item — index must clamp to 0
-		rerender({ skills: [makeSkill("commit")] });
+		rerender({ skills: [skillCommand(makeSkill("commit"))] });
 		expect(result.current.selectedIndex).toBe(0);
 	});
 });

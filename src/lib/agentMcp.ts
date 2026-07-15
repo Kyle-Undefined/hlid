@@ -10,12 +10,8 @@ import { existsSync, realpathSync } from "node:fs";
 import { basename, isAbsolute, relative, resolve } from "node:path";
 import type { Agent, HlidConfig } from "../config";
 import { findAgentInstructionFile } from "./agentInstructions";
+import { legacyProjectMcpAdapter } from "./mcpConfig";
 import { expandTilde, samePath } from "./paths";
-import {
-	readProjectMcpFile,
-	toggleProjectMcpFile,
-	writeProjectMcpFile,
-} from "./projectMcp";
 
 // ─── Name helper ─────────────────────────────────────────────────────────────
 
@@ -116,7 +112,7 @@ export function validateAgentPath(agentPath: string, config: HlidConfig): void {
 export function readAgentMcpFile(resolvedPath: string): {
 	servers: Array<{ name: string; config: unknown; disabled: boolean }>;
 } {
-	return readProjectMcpFile(resolvedPath);
+	return legacyProjectMcpAdapter.read(resolvedPath);
 }
 
 // ─── Write helpers ────────────────────────────────────────────────────────────
@@ -129,7 +125,7 @@ export function writeAgentMcpFile(
 	agentPath: string,
 	servers: Record<string, unknown>,
 ): void {
-	writeProjectMcpFile(agentPath, servers);
+	legacyProjectMcpAdapter.write(agentPath, servers);
 }
 
 /**
@@ -143,5 +139,5 @@ export function toggleAgentMcpFile(
 	name: string,
 	disabled: boolean,
 ): void {
-	toggleProjectMcpFile(agentPath, name, disabled);
+	legacyProjectMcpAdapter.toggle(agentPath, name, disabled);
 }

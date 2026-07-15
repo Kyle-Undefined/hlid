@@ -6,11 +6,13 @@ import type { useWs } from "#/hooks/useWs";
 import { setPendingPrompt } from "#/hooks/wsChatQueueStore";
 import { resetLiveStats } from "#/hooks/wsLiveStatsStore";
 import * as wsStore from "#/hooks/wsStore";
+import {
+	type CommandDescriptor,
+	resolveCommandSubmission,
+} from "#/lib/commands";
 import { getCurrentSessionFn } from "#/lib/serverFns/sessions";
 import { getRecentSessionsFn } from "#/lib/serverFns/stats";
 import { resolveSessionId } from "#/lib/sessionRouting";
-import { resolveSkillPrompt } from "#/lib/skillPrompt";
-import type { Skill } from "#/lib/skills";
 import { SESSION_LABEL_LENGTH, uid } from "#/lib/utils";
 
 type Attachment = ReturnType<
@@ -69,7 +71,7 @@ export function prependPendingRun(
 type CockpitRunOptions = {
 	prompt: string;
 	activeSkill: ActiveCockpitSkill | null;
-	allSkills: Skill[];
+	commands: CommandDescriptor[];
 	wsStatus: string;
 	sameSession: boolean;
 	attachSessionIdRef: { current: string | null };
@@ -125,6 +127,7 @@ function enqueueRun(
 		sessionId: string;
 		text: string;
 		skillContext?: string;
+		commandAction?: "review";
 		attachments: Attachment[];
 	},
 ): void {
@@ -133,6 +136,7 @@ function enqueueRun(
 		text: params.text,
 		session_id: params.sessionId,
 		skill_context: params.skillContext,
+		command_action: params.commandAction,
 		agent_cwd: options.selectedAgentPath || undefined,
 		attachments: params.attachments.length > 0 ? params.attachments : undefined,
 	});
@@ -146,6 +150,7 @@ function startRun(
 		sessionId: string;
 		text: string;
 		skillContext?: string;
+		commandAction?: "review";
 		attachments: Attachment[];
 	},
 ): void {
@@ -155,6 +160,7 @@ function startRun(
 		text: params.text,
 		session_id: params.sessionId,
 		skill_context: params.skillContext,
+		command_action: params.commandAction,
 		agent_cwd: options.selectedAgentPath || undefined,
 		attachments: params.attachments.length > 0 ? params.attachments : undefined,
 	});
@@ -176,10 +182,10 @@ function startRun(
 export function useCockpitRun(options: CockpitRunOptions) {
 	return async (overrideText?: string): Promise<void> => {
 		const typed = (overrideText ?? options.prompt).trim();
-		const { text, skillContext } = resolveSkillPrompt(
+		const { text, skillContext, commandAction } = resolveCommandSubmission(
 			options.activeSkill,
 			typed,
-			options.allSkills,
+			options.commands,
 		);
 		if (!text || options.wsStatus !== "connected") return;
 		options.setRunError(null);
@@ -195,7 +201,13 @@ export function useCockpitRun(options: CockpitRunOptions) {
 		options.attachSessionIdRef.current = null;
 		const attachments = options.pendingAttachments;
 		options.clearPendingAttachments();
-		const params = { sessionId, text, skillContext, attachments };
+		const params = {
+			sessionId,
+			text,
+			skillContext,
+			commandAction,
+			attachments,
+		};
 		if (options.isRunning) enqueueRun(options, params);
 		else startRun(options, params);
 	};

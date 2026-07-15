@@ -76,6 +76,8 @@ function makeManager(
 		getStatus: vi.fn().mockReturnValue({ state: "idle", model: "test-model" }),
 		isRunning: vi.fn().mockReturnValue(false),
 		getLastMcpStatus: vi.fn().mockReturnValue(null),
+		getAgentCwd: vi.fn().mockReturnValue(undefined),
+		getProviderId: vi.fn().mockReturnValue("claude"),
 		getPendingPermissionRequests: vi.fn().mockReturnValue([]),
 		getPendingAskUserQuestions: vi.fn().mockReturnValue([]),
 		getPendingPlanModeExits: vi.fn().mockReturnValue([]),

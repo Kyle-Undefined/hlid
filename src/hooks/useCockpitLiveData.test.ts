@@ -108,6 +108,18 @@ beforeEach(() => {
 });
 
 describe("useCockpitLiveData refreshes", () => {
+	it("requests the cross-provider MCP inventory for Cockpit", async () => {
+		renderHook(() => useCockpitLiveData(initial));
+		const connection = vi.mocked(useWs).mock.results.at(-1)?.value;
+
+		await waitFor(() =>
+			expect(connection?.send).toHaveBeenCalledWith({
+				type: "sync_mcp_list",
+				inventory: true,
+			}),
+		);
+	});
+
 	it("ignores an older completion that resolves after a newer refresh", async () => {
 		const older = deferred<Awaited<ReturnType<typeof getRecentSessionsFn>>>();
 		vi.mocked(getRecentSessionsFn)

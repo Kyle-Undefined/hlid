@@ -86,6 +86,9 @@ function makeSession(overrides: Partial<SessionManager> = {}): SessionManager {
 		getStatus: vi.fn().mockReturnValue({ state: "idle", model: "test-model" }),
 		isRunning: vi.fn().mockReturnValue(false),
 		getLastMcpStatus: vi.fn().mockReturnValue(null),
+		getMcpSnapshots: vi.fn().mockReturnValue([]),
+		getAgentCwd: vi.fn().mockReturnValue(undefined),
+		getProviderId: vi.fn().mockReturnValue("claude"),
 		getPendingPermissionRequests: vi.fn().mockReturnValue([]),
 		getPendingAskUserQuestions: vi.fn().mockReturnValue([]),
 		getPendingPlanModeExits: vi.fn().mockReturnValue([]),
@@ -106,6 +109,7 @@ function makeSession(overrides: Partial<SessionManager> = {}): SessionManager {
 		handleAskUserQuestionResponse: vi.fn(),
 		handlePlanModeExitResponse: vi.fn(),
 		probeMcpStatus: vi.fn().mockResolvedValue(undefined),
+		probeSlashCommands: vi.fn().mockResolvedValue(undefined),
 		restoreMcpStatus: vi.fn(),
 		setModel: vi.fn().mockResolvedValue(undefined),
 		setProvider: vi.fn().mockResolvedValue(undefined),
@@ -154,6 +158,111 @@ beforeEach(() => {
 	wsState.clients.clear();
 	mockSend.mockClear();
 	mockBroadcast.mockClear();
+});
+
+describe("message — provider probes", () => {
+	it("replies directly when an archived session is detached from the live pool", async () => {
+		const probeMcpStatus = vi.fn(
+			async (emit: (message: ServerMessage) => void) => {
+				emit({
+					type: "mcp_status",
+					provider_id: "codex",
+					agent_cwd: "/tmp/test",
+					session_id: "archived-session",
+					servers: [],
+				});
+			},
+		);
+		const session = makeSession({ probeMcpStatus });
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs("archived-session");
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "probe_mcp",
+				agent_cwd: "/tmp/test",
+				session_id: "archived-session",
+			}),
+		);
+
+		expect(probeMcpStatus).toHaveBeenCalled();
+		expect(mockSend).toHaveBeenCalledWith(
+			ws,
+			expect.objectContaining({
+				type: "mcp_status",
+				session_id: "archived-session",
+			}),
+		);
+		expect(runState.broadcast).not.toHaveBeenCalled();
+	});
+
+	it("sends scoped command discovery only to the requesting client", async () => {
+		const probeSlashCommands = vi.fn(
+			async (emit: (message: ServerMessage) => void) => {
+				emit({
+					type: "slash_commands",
+					provider_id: "codex",
+					commands: [
+						{ name: "review", description: "Review", argumentHint: "" },
+					],
+				});
+			},
+		);
+		const session = makeSession({ probeSlashCommands });
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({ type: "probe_slash_commands" }),
+		);
+
+		expect(runState.send).toHaveBeenCalledWith(
+			ws,
+			expect.objectContaining({ type: "slash_commands" }),
+		);
+		expect(runState.broadcast).not.toHaveBeenCalled();
+	});
+
+	it("tags live MCP probe replies with the subscribed pool session", async () => {
+		const probeMcpStatus = vi.fn(
+			async (emit: (message: ServerMessage) => void) => {
+				emit({
+					type: "mcp_status",
+					provider_id: "claude",
+					session_id: "db-session",
+					servers: [{ name: "claude.ai Excalidraw", status: "connected" }],
+				});
+			},
+		);
+		const session = makeSession({ probeMcpStatus });
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs("vault-id");
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "probe_mcp",
+				session_id: "db-session",
+			}),
+		);
+
+		expect(runState.send).toHaveBeenCalledWith(
+			ws,
+			expect.objectContaining({
+				type: "mcp_status",
+				session_id: "db-session",
+			}),
+		);
+		expect(mockSend).not.toHaveBeenCalledWith(
+			ws,
+			expect.objectContaining({ type: "mcp_status" }),
+		);
+	});
 });
 
 // ── open ──────────────────────────────────────────────────────────────────────
@@ -1243,6 +1352,63 @@ describe("message — sync_mcp_list (agent_cwd)", () => {
 		await message(ws as never, JSON.stringify({ type: "sync_mcp_list" }));
 		expect(mockBroadcast).toHaveBeenCalledWith(
 			expect.objectContaining({ type: "mcp_status" }),
+		);
+	});
+
+	it("returns Cockpit inventory across cached provider sessions", async () => {
+		const codexSession = makeSession({
+			getMcpSnapshots: vi.fn().mockReturnValue([
+				{
+					providerId: "codex",
+					servers: [{ name: "github", status: "connected" }],
+				},
+			]),
+		});
+		const claudeSession = makeSession({
+			getMcpSnapshots: vi.fn().mockReturnValue([
+				{
+					providerId: "claude",
+					servers: [
+						{
+							name: "claude.ai Excalidraw",
+							status: "connected",
+							scope: "claudeai",
+						},
+					],
+				},
+			]),
+		});
+		const { pool, entry } = wrapSession(codexSession);
+		const claudeEntry = {
+			...entry,
+			sessionId: "claude-live",
+			agentCwd: agentDir,
+			manager: claudeSession,
+		};
+		pool.getAllEntries.mockReturnValue([entry, claudeEntry][Symbol.iterator]());
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({ type: "sync_mcp_list", inventory: true }),
+		);
+
+		const inventory = mockSend.mock.calls.find(
+			(call) => call[0] === ws && call[1]?.type === "mcp_status",
+		)?.[1] as
+			| {
+					servers: Array<{ name: string; provider_id?: string }>;
+			  }
+			| undefined;
+		expect(inventory?.servers).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ name: "github", provider_id: "codex" }),
+				expect.objectContaining({
+					name: "claude.ai Excalidraw",
+					provider_id: "claude",
+				}),
+			]),
 		);
 	});
 

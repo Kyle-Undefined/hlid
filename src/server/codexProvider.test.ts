@@ -591,6 +591,7 @@ function makeFakeSessionProc(
 		mcpStatusResult?: unknown;
 		/** Reply to `mcpServerStatus/list` with a JSON-RPC error. */
 		mcpStatusError?: boolean;
+		skills?: unknown[];
 	} = {},
 ): {
 	proc: FakeProc;
@@ -632,6 +633,27 @@ function makeFakeSessionProc(
 							`${JSON.stringify({
 								id: msg.id,
 								result: { turn: { id: `turn-${turnCounter}` } },
+							})}\n`,
+						),
+					);
+				} else if (msg.method === "review/start") {
+					turnCounter++;
+					stdout.emit(
+						"data",
+						Buffer.from(
+							`${JSON.stringify({
+								id: msg.id,
+								result: { turn: { id: `review-${turnCounter}` } },
+							})}\n`,
+						),
+					);
+				} else if (msg.method === "skills/list") {
+					stdout.emit(
+						"data",
+						Buffer.from(
+							`${JSON.stringify({
+								id: msg.id,
+								result: { skills: opts.skills ?? [] },
 							})}\n`,
 						),
 					);
@@ -707,6 +729,53 @@ function baseCodexParams(
 		...overrides,
 	};
 }
+
+describe("CodexAgentSession — commands", () => {
+	beforeEach(() => {
+		__resetCodexAppServersForTesting();
+	});
+
+	it("advertises Hlid review beside provider-discovered skills", async () => {
+		const { proc, writes } = makeFakeSessionProc({
+			skills: [{ name: "garden-check", description: "Check garden" }],
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(baseCodexParams());
+		expect(await session.supportedCommands?.()).toEqual([
+			{
+				name: "garden-check",
+				description: "Check garden",
+				argumentHint: "",
+			},
+			{
+				name: "review",
+				description: "Review the working tree",
+				argumentHint: "[instructions]",
+				action: "review",
+			},
+		]);
+		expect(writeMethods(writes)).not.toContain("thread/start");
+		session.cancel();
+	});
+
+	it("executes review through review/start with a custom target", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(baseCodexParams());
+		await session.executeCommand?.("review", "focus on auth");
+		const request = writes
+			.map((value) => JSON.parse(value) as Record<string, unknown>)
+			.find((value) => value.method === "review/start");
+		expect(request?.params).toEqual({
+			threadId: "thread-1",
+			target: { type: "custom", instructions: "focus on auth" },
+			delivery: "inline",
+		});
+		session.cancel();
+	});
+});
 
 describe("CodexAgentSession — usage windows", () => {
 	beforeEach(() => {
@@ -2076,6 +2145,23 @@ describe("CodexAgentSession — mcpServerStatus", () => {
 		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
 		return new CodexProvider().query(baseCodexParams());
 	}
+
+	it("reads app-server inventory without creating an ephemeral thread", async () => {
+		const { proc, writes } = makeFakeSessionProc({
+			mcpStatusResult: {
+				data: [{ name: "github", authStatus: "bearerToken" }],
+			},
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(baseCodexParams());
+
+		expect(await session.mcpServerStatus?.()).toEqual([
+			{ name: "github", status: "connected" },
+		]);
+		expect(writeMethods(writes)).not.toContain("thread/start");
+		session.cancel();
+	});
 
 	it("maps app-server statuses onto the UI status vocabulary", async () => {
 		const session = sessionWith({

@@ -20,6 +20,7 @@ import type {
 	CanUseTool,
 	McpServerStatus,
 	ProviderAccountInfo,
+	SlashCommand,
 	SubagentSnapshot,
 } from "./agentProvider";
 import { ingestPlanHtml } from "./attachments";
@@ -128,6 +129,7 @@ type RunQueryArgs = [
 	turnId?: string,
 	planMode?: boolean,
 	planHtml?: boolean,
+	commandAction?: "review",
 ];
 
 export type SessionState = "idle" | "running" | "error";
@@ -366,8 +368,12 @@ export class SessionManager {
 	private currentSessionId: string | null = null;
 	private currentSessionLabel: string | null = null;
 	private messageSeq = 0;
-	private lastMcpStatus: McpServerStatus[] | null = null;
-	private probing = false;
+	/** Last runtime MCP snapshot per provider for this Hlid conversation. */
+	private mcpStatusByProvider = new Map<string, McpServerStatus[]>();
+	/** Invalidates delayed Claude MCP refreshes when a newer turn starts. */
+	private mcpRefreshGeneration = 0;
+	/** Serialize temporary provider probes so MCP and command discovery both run. */
+	private probeQueue: Promise<void> = Promise.resolve();
 	private agentCwd: string | undefined;
 	private agentMode: "cwd" | "context" = "cwd";
 	private allowedAgentRealPaths: string[] = [];
@@ -655,6 +661,14 @@ export class SessionManager {
 		return this.currentSessionId;
 	}
 
+	getAgentCwd(): string | undefined {
+		return this.agentCwd;
+	}
+
+	getProviderId(agentCwd?: string): string {
+		return this.resolveProvider(agentCwd ?? this.agentCwd).providerId;
+	}
+
 	getSessionLabel(): string | null {
 		return this.currentSessionLabel;
 	}
@@ -664,69 +678,132 @@ export class SessionManager {
 		this.currentSessionLabel = label;
 	}
 
-	getLastMcpStatus(): McpServerStatus[] | null {
-		return this.lastMcpStatus;
+	getLastMcpStatus(
+		providerId = this.getProviderId(),
+	): McpServerStatus[] | null {
+		return this.mcpStatusByProvider.get(providerId) ?? null;
 	}
 
-	restoreMcpStatus(statuses: McpServerStatus[]): void {
-		this.lastMcpStatus = statuses;
+	// fallow-ignore-next-line unused-class-member -- Read by Cockpit inventory aggregation in wsHandlers.
+	getMcpSnapshots(): Array<{
+		providerId: string;
+		servers: McpServerStatus[];
+	}> {
+		return [...this.mcpStatusByProvider].map(([providerId, servers]) => ({
+			providerId,
+			servers,
+		}));
+	}
+
+	restoreMcpStatus(
+		statuses: McpServerStatus[],
+		providerId = this.getProviderId(),
+	): void {
+		this.mcpStatusByProvider.set(providerId, statuses);
 	}
 
 	private async runProbe(
 		inspect: (session: AgentSession) => Promise<void>,
+		agentCwd?: string,
 	): Promise<void> {
-		if (this.probing || this.state === "running") return;
-		this.probing = true;
-		const ac = new AbortController();
-		const timeout = setTimeout(() => ac.abort(), 30_000);
-		try {
-			const provider = this.resolveProvider();
-			const session = provider.query({
-				cwd: this.vaultPath,
-				signal: ac.signal,
-				permissionMode: "default",
-				effort: "low",
-				maxTurns: 1,
-				persistSession: false,
-				settingSources: ["user", "project"],
-				executable:
-					provider.providerId === "claude"
-						? this.claudeExecutable
-						: this.codexExecutable,
-				canUseTool: () =>
-					Promise.resolve({ behavior: "deny" as const, message: "probe" }),
-			});
-			if (provider.probeRequiresTurn) {
-				await session.send(".");
-				for await (const _ of session) {
+		const run = async () => {
+			const ac = new AbortController();
+			const timeout = setTimeout(() => ac.abort(), 30_000);
+			let session: AgentSession | undefined;
+			try {
+				const provider = this.resolveProvider(agentCwd);
+				session = provider.query({
+					cwd: agentCwd ?? this.agentCwd ?? this.vaultPath,
+					signal: ac.signal,
+					permissionMode: "default",
+					effort: "low",
+					maxTurns: 1,
+					persistSession: false,
+					settingSources: ["user", "project"],
+					executable:
+						provider.providerId === "claude"
+							? this.claudeExecutable
+							: this.codexExecutable,
+					canUseTool: () =>
+						Promise.resolve({ behavior: "deny" as const, message: "probe" }),
+				});
+				if (provider.probeRequiresTurn) {
+					await session.send(".");
+					for await (const _ of session) {
+						await inspect(session);
+						break;
+					}
+				} else {
 					await inspect(session);
-					break;
 				}
-			} else {
-				await inspect(session);
+			} catch {
+				// Abort errors are expected when a probe reaches its time limit.
+			} finally {
+				clearTimeout(timeout);
+				session?.cancel();
 			}
-			session.cancel();
-		} catch {
-			// Abort errors are expected when a probe reaches its time limit.
-		} finally {
-			clearTimeout(timeout);
-			this.probing = false;
-		}
+		};
+		const queued = this.probeQueue.then(run, run);
+		this.probeQueue = queued;
+		await queued;
 	}
 
-	async probeMcpStatus(emit: (msg: ServerMessage) => void): Promise<void> {
+	async probeMcpStatus(
+		emit: (msg: ServerMessage) => void,
+		scope: { agentCwd?: string; sessionId?: string } = {},
+	): Promise<void> {
+		const activeAgentCwd = scope.agentCwd ?? this.getAgentCwd();
+		const provider = this.resolveProvider(activeAgentCwd);
+		const providerId = this.getProviderId(activeAgentCwd);
+		const publish = (statuses: McpServerStatus[]) => {
+			// Archived-session probes may be proxied through the vault manager. Keep
+			// their scoped result out of the vault cache or Watch will inherit the
+			// wrong provider context on its next connection.
+			if (!scope.agentCwd || scope.agentCwd === this.agentCwd) {
+				this.mcpStatusByProvider.set(providerId, statuses);
+			}
+			emit({
+				type: "mcp_status",
+				provider_id: providerId,
+				...(scope.agentCwd ? { agent_cwd: scope.agentCwd } : {}),
+				...(scope.sessionId ? { session_id: scope.sessionId } : {}),
+				servers: statuses.map(mapMcpServer),
+			});
+		};
+		if (provider.probeRequiresTurn) {
+			if (!this.agentSession?.mcpServerStatus) return;
+			publish(await this.agentSession.mcpServerStatus());
+			return;
+		}
 		await this.runProbe(async (session) => {
 			const statuses = (await session.mcpServerStatus?.()) ?? [];
-			this.lastMcpStatus = statuses;
-			emit({ type: "mcp_status", servers: statuses.map(mapMcpServer) });
-		});
+			publish(statuses);
+		}, scope.agentCwd);
 	}
 
-	async probeSlashCommands(emit: (msg: ServerMessage) => void): Promise<void> {
+	async probeSlashCommands(
+		emit: (msg: ServerMessage) => void,
+		scope: { agentCwd?: string; sessionId?: string } = {},
+	): Promise<void> {
+		const activeAgentCwd = scope.agentCwd ?? this.getAgentCwd();
+		const provider = this.resolveProvider(activeAgentCwd);
+		const providerId = this.getProviderId(activeAgentCwd);
+		const publish = (commands: SlashCommand[]) =>
+			emit({
+				type: "slash_commands",
+				provider_id: providerId,
+				...(scope.agentCwd ? { agent_cwd: scope.agentCwd } : {}),
+				...(scope.sessionId ? { session_id: scope.sessionId } : {}),
+				commands,
+			});
+		if (provider.probeRequiresTurn) {
+			publish((await this.agentSession?.supportedCommands?.()) ?? []);
+			return;
+		}
 		await this.runProbe(async (session) => {
 			const commands = (await session.supportedCommands?.()) ?? [];
-			emit({ type: "slash_commands", commands });
-		});
+			publish(commands);
+		}, scope.agentCwd);
 	}
 
 	isRunning(): boolean {
@@ -1409,6 +1486,15 @@ export class SessionManager {
 			case "session_start":
 				this.handleSessionStart(event, sessionId, provider, emit);
 				break;
+			case "commands_changed":
+				emit({
+					type: "slash_commands",
+					provider_id: provider.providerId,
+					...(this.agentCwd ? { agent_cwd: this.agentCwd } : {}),
+					...(sessionId ? { session_id: sessionId } : {}),
+					commands: event.commands,
+				});
+				break;
 			case "text_delta":
 				this.handleTextDelta(event, turn, sessionId, emit);
 				break;
@@ -1435,14 +1521,81 @@ export class SessionManager {
 				emit({ type: "local_command_output", content: event.content });
 				break;
 			case "mcp_status":
-				this.lastMcpStatus = event.servers;
-				emit({ type: "mcp_status", servers: event.servers.map(mapMcpServer) });
+				this.mcpStatusByProvider.set(provider.providerId, event.servers);
+				emit({
+					type: "mcp_status",
+					provider_id: provider.providerId,
+					...(this.agentCwd ? { agent_cwd: this.agentCwd } : {}),
+					...(sessionId ? { session_id: sessionId } : {}),
+					servers: event.servers.map(mapMcpServer),
+				});
 				break;
 			case "done":
 				await this.handleDone(event, turn, sessionId, emit, provider);
 				return true;
 		}
 		return false;
+	}
+
+	private async refreshMcpStatus(
+		session: AgentSession,
+		sessionId: string | undefined,
+		emit: (msg: ServerMessage) => void,
+		provider: AgentProvider,
+	): Promise<McpServerStatus[]> {
+		if (!session.mcpServerStatus) return [];
+		try {
+			const statuses = await session.mcpServerStatus();
+			this.mcpStatusByProvider.set(provider.providerId, statuses);
+			emit({
+				type: "mcp_status",
+				provider_id: provider.providerId,
+				...(this.agentCwd ? { agent_cwd: this.agentCwd } : {}),
+				...(sessionId ? { session_id: sessionId } : {}),
+				servers: statuses.map(mapMcpServer),
+			});
+			return statuses;
+		} catch {
+			// Runtime MCP discovery is optional and must not fail a turn.
+			return [];
+		}
+	}
+
+	private scheduleDeferredMcpRefresh(
+		session: AgentSession,
+		sessionId: string | undefined,
+		emit: (msg: ServerMessage) => void,
+		provider: AgentProvider,
+		initialStatuses: McpServerStatus[],
+	): void {
+		const generation = ++this.mcpRefreshGeneration;
+		if (
+			!provider.probeRequiresTurn ||
+			(initialStatuses.length > 0 &&
+				initialStatuses.every((server) => server.status !== "pending"))
+		)
+			return;
+		void (async () => {
+			for (const delayMs of [500, 1_500, 3_000, 5_000]) {
+				await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+				if (
+					generation !== this.mcpRefreshGeneration ||
+					this.agentSession !== session
+				)
+					return;
+				const statuses = await this.refreshMcpStatus(
+					session,
+					sessionId,
+					emit,
+					provider,
+				);
+				if (
+					statuses.length > 0 &&
+					statuses.every((server) => server.status !== "pending")
+				)
+					return;
+			}
+		})();
 	}
 
 	private async iterateConversation(
@@ -1453,6 +1606,8 @@ export class SessionManager {
 		provider: AgentProvider,
 	): Promise<void> {
 		let mcpChecked = false;
+		let initialMcpRefresh: Promise<McpServerStatus[]> | undefined;
+		let commandsChecked = false;
 		let usageRefresh:
 			| ReturnType<SessionManager["startLiveProviderUsageRefresh"]>
 			| undefined;
@@ -1468,19 +1623,47 @@ export class SessionManager {
 				if (!mcpChecked) {
 					mcpChecked = true;
 					if (session.mcpServerStatus) {
-						void session
-							.mcpServerStatus()
-							.then((statuses) => {
-								this.lastMcpStatus = statuses;
-								emit({
-									type: "mcp_status",
-									servers: statuses.map(mapMcpServer),
-								});
-							})
-							.catch(() => {});
+						initialMcpRefresh = this.refreshMcpStatus(
+							session,
+							sessionId,
+							emit,
+							provider,
+						);
 					}
 				}
-				if (event.type === "done") await usageRefresh.finish();
+				if (!commandsChecked) {
+					commandsChecked = true;
+					if (session.supportedCommands) {
+						try {
+							emit({
+								type: "slash_commands",
+								provider_id: provider.providerId,
+								...(this.agentCwd ? { agent_cwd: this.agentCwd } : {}),
+								...(sessionId ? { session_id: sessionId } : {}),
+								commands: await session.supportedCommands(),
+							});
+						} catch {
+							// Command discovery is optional and must not fail a turn.
+						}
+					}
+				}
+				if (event.type === "done") {
+					await usageRefresh.finish();
+					await initialMcpRefresh;
+					const statuses = await this.refreshMcpStatus(
+						session,
+						sessionId,
+						emit,
+						provider,
+					);
+					this.scheduleDeferredMcpRefresh(
+						session,
+						sessionId,
+						emit,
+						provider,
+						statuses,
+					);
+				}
 				if (
 					await this.handleConversationEvent(
 						event,
@@ -2332,6 +2515,7 @@ export class SessionManager {
 			turnId,
 			planMode,
 			planHtml,
+			commandAction,
 		] = args;
 		this.currentTurnId = turnId;
 		await this.initSessionContext(sessionId, agentCwd, userMessage);
@@ -2427,7 +2611,19 @@ export class SessionManager {
 			// passing it as a one-shot prompt. The long-lived stream pushes it
 			// onto the SDK's input AsyncIterable and the next assistant turn
 			// runs inside the same SDK query.
-			await agentSession.send(providerPrompt);
+			if (commandAction) {
+				if (!agentSession.executeCommand) {
+					throw new Error(
+						`/${commandAction} is not supported by the active provider`,
+					);
+				}
+				const commandArgs = userMessage
+					.replace(new RegExp(`^/${commandAction}(?:\\s+|:\\s*)?`, "i"), "")
+					.trim();
+				await agentSession.executeCommand(commandAction, commandArgs);
+			} else {
+				await agentSession.send(providerPrompt);
+			}
 			this.providerHandoffPending = false;
 
 			await this.iterateConversation(

@@ -94,6 +94,7 @@ import type {
 	AgentProvider,
 	AgentQueryParams,
 	AgentSession,
+	McpServerStatus,
 } from "./agentProvider";
 import { loadConfig } from "./config";
 import type { RateLimitMessage, ServerMessage } from "./protocol";
@@ -311,6 +312,23 @@ describe("SessionManager — restoreMcpStatus", () => {
 		const last = sm.getLastMcpStatus();
 		expect(last).not.toBeNull();
 		expect(last?.[0].name).toBe("b");
+	});
+
+	it("keeps cached MCP snapshots isolated by provider", () => {
+		const sm = new SessionManager(
+			makeConfig(),
+			makeProviders(makeProvider("Bash")),
+		);
+		sm.restoreMcpStatus(
+			[{ name: "claude.ai Excalidraw", status: "connected" }],
+			"claude",
+		);
+		sm.restoreMcpStatus([{ name: "github", status: "connected" }], "codex");
+
+		expect(sm.getLastMcpStatus("claude")?.[0].name).toBe(
+			"claude.ai Excalidraw",
+		);
+		expect(sm.getLastMcpStatus("codex")?.[0].name).toBe("github");
 	});
 });
 
@@ -3895,9 +3913,189 @@ describe("SessionManager — local_command_output forwarding", () => {
 	});
 });
 
+describe("SessionManager — deferred MCP discovery", () => {
+	it("refreshes Claude MCP status again when the first turn completes", async () => {
+		const mcpServerStatus = vi
+			.fn<() => Promise<McpServerStatus[]>>()
+			.mockResolvedValueOnce([])
+			.mockResolvedValueOnce([
+				{
+					name: "claude.ai Excalidraw",
+					status: "connected" as const,
+					scope: "claudeai",
+				},
+			]);
+		const provider: AgentProvider = {
+			providerId: "claude",
+			probeRequiresTurn: true,
+			query(): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-mcp-late" };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus,
+				};
+			},
+		};
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await sm.runQuery("hello", (message) => emitted.push(message), "sess-mcp");
+
+		expect(mcpServerStatus).toHaveBeenCalledTimes(2);
+		expect(sm.getLastMcpStatus("claude")).toEqual([
+			{
+				name: "claude.ai Excalidraw",
+				status: "connected",
+				scope: "claudeai",
+			},
+		]);
+		expect(emitted).toContainEqual(
+			expect.objectContaining({
+				type: "mcp_status",
+				provider_id: "claude",
+				servers: [
+					expect.objectContaining({
+						name: "claude.ai Excalidraw",
+						status: "connected",
+					}),
+				],
+			}),
+		);
+	});
+
+	it("keeps checking while a Claude.ai MCP is still pending", async () => {
+		vi.useFakeTimers();
+		try {
+			const mcpServerStatus = vi
+				.fn<() => Promise<McpServerStatus[]>>()
+				.mockResolvedValueOnce([])
+				.mockResolvedValueOnce([
+					{ name: "claude.ai Excalidraw", status: "pending" as const },
+				])
+				.mockResolvedValueOnce([
+					{ name: "claude.ai Excalidraw", status: "connected" as const },
+				]);
+			const provider: AgentProvider = {
+				providerId: "claude",
+				probeRequiresTurn: true,
+				query(): AgentSession {
+					const gen = (async function* (): AsyncGenerator<AgentEvent> {
+						yield { type: "session_start", sessionId: "sdk-mcp-pending" };
+						yield {
+							type: "done",
+							cost: 0,
+							turns: 1,
+							durationMs: 0,
+							usage: { inputTokens: 1, outputTokens: 1 },
+						};
+					})();
+					return {
+						[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+						cancel: vi.fn(),
+						send: vi.fn().mockResolvedValue(undefined),
+						mcpServerStatus,
+					};
+				},
+			};
+			const emitted: ServerMessage[] = [];
+			const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+			await sm.runQuery(
+				"hello",
+				(message) => emitted.push(message),
+				"sess-mcp-pending",
+			);
+			expect(sm.getLastMcpStatus("claude")?.[0].status).toBe("pending");
+
+			await vi.advanceTimersByTimeAsync(500);
+
+			expect(sm.getLastMcpStatus("claude")?.[0].status).toBe("connected");
+			expect(mcpServerStatus).toHaveBeenCalledTimes(3);
+			expect(
+				emitted.some(
+					(message) =>
+						message.type === "mcp_status" &&
+						message.servers[0]?.status === "connected",
+				),
+			).toBe(true);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
+
 // ── probeSlashCommands ────────────────────────────────────────────────────────
 
 describe("SessionManager — probeSlashCommands", () => {
+	it("serializes simultaneous MCP and command probes without dropping either", async () => {
+		const query = vi.fn(
+			(): AgentSession => ({
+				async *[Symbol.asyncIterator]() {},
+				cancel: vi.fn(),
+				send: vi.fn().mockResolvedValue(undefined),
+				mcpServerStatus: () =>
+					Promise.resolve([{ name: "github", status: "connected" as const }]),
+				supportedCommands: () =>
+					Promise.resolve([
+						{ name: "review", description: "Review changes", argumentHint: "" },
+					]),
+			}),
+		);
+		const provider: AgentProvider = { providerId: "codex", query };
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await Promise.all([
+			sm.probeMcpStatus((message) => emitted.push(message), {
+				agentCwd: "/tmp/project",
+			}),
+			sm.probeSlashCommands((message) => emitted.push(message)),
+		]);
+
+		expect(query).toHaveBeenCalledTimes(2);
+		expect(emitted.some((message) => message.type === "mcp_status")).toBe(true);
+		expect(emitted.some((message) => message.type === "slash_commands")).toBe(
+			true,
+		);
+		expect(sm.getLastMcpStatus()).toBeNull();
+	});
+
+	it("does not start a hidden assistant turn for turn-gated providers", async () => {
+		const query = vi.fn();
+		const provider: AgentProvider = {
+			providerId: "claude",
+			probeRequiresTurn: true,
+			query,
+		};
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.probeSlashCommands((message) => emitted.push(message), {
+			agentCwd: "/tmp/project",
+			sessionId: "session-1",
+		});
+		expect(query).not.toHaveBeenCalled();
+		expect(emitted).toEqual([
+			{
+				type: "slash_commands",
+				provider_id: "claude",
+				agent_cwd: "/tmp/project",
+				session_id: "session-1",
+				commands: [],
+			},
+		]);
+	});
+
 	it("emits slash_commands WS message with commands from supportedCommands()", async () => {
 		const mockCommands = [
 			{ name: "help", description: "Show help", argumentHint: "" },

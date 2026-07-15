@@ -54,7 +54,7 @@ function runOptions(
 	return {
 		prompt: "ship the fix",
 		activeSkill: null,
-		allSkills: [],
+		commands: [],
 		wsStatus: "connected",
 		sameSession: true,
 		attachSessionIdRef: { current: "attached-session" },

@@ -16,7 +16,7 @@ import {
 	type ToolCallContent,
 	type ToolCallUpdate,
 } from "@agentclientprotocol/sdk";
-import { readProjectMcpFile } from "../lib/projectMcp";
+import { legacyProjectMcpAdapter } from "../lib/mcpConfig";
 import type {
 	AgentEvent,
 	AgentProvider,
@@ -307,7 +307,7 @@ function configuredMcpServers(cwd: string): {
 	statuses: McpServerStatus[];
 } {
 	try {
-		const entries = readProjectMcpFile(cwd).servers;
+		const entries = legacyProjectMcpAdapter.read(cwd).servers;
 		const servers: McpServer[] = [];
 		const statuses: McpServerStatus[] = [];
 		for (const entry of entries) {
@@ -693,6 +693,10 @@ class AcpSession implements AgentSession {
 						description: command.description ?? "",
 						argumentHint: command.input?.hint ?? "",
 					}));
+					this.events.push({
+						type: "commands_changed",
+						commands: this.commands,
+					});
 				}
 				if (
 					update.sessionUpdate === "tool_call_update" &&

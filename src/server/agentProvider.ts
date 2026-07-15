@@ -41,6 +41,8 @@ export type SlashCommand = {
 	description: string;
 	argumentHint: string;
 	aliases?: string[];
+	/** Hlid capability action. Omitted commands are sent as provider-native prompts. */
+	action?: "review";
 };
 
 /**
@@ -111,6 +113,7 @@ export type SubagentSnapshot = {
 
 export type AgentEvent =
 	| { type: "session_start"; sessionId: string }
+	| { type: "commands_changed"; commands: SlashCommand[] }
 	| { type: "text_delta"; text: string }
 	| { type: "local_command_output"; content: string }
 	| {
@@ -262,6 +265,8 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 	mcpServerStatus?(): Promise<McpServerStatus[]>;
 	/** Available on providers that expose the list of supported slash commands. */
 	supportedCommands?(): Promise<SlashCommand[]>;
+	/** Execute a provider capability without relying on prompt-parsed CLI syntax. */
+	executeCommand?(action: "review", args?: string): Promise<void>;
 	/**
 	 * Fetch the provider's current subscription/rate-limit windows. Unlike
 	 * passive rate-limit events, this can return a reading even when the

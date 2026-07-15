@@ -32,6 +32,7 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 			.max(1024 * 1024),
 		session_id: id.optional(),
 		skill_context: path.optional(),
+		command_action: z.literal("review").optional(),
 		agent_cwd: path.optional(),
 		attachments: z.array(attachment).max(32).optional(),
 		turn_id: id.optional(),
@@ -56,11 +57,20 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 		denyMessage: shortText.optional(),
 	}),
 	noFields("sync"),
-	noFields("probe_mcp"),
-	noFields("probe_slash_commands"),
+	z.strictObject({
+		type: z.literal("probe_mcp"),
+		agent_cwd: path.optional(),
+		session_id: id.optional(),
+	}),
+	z.strictObject({
+		type: z.literal("probe_slash_commands"),
+		agent_cwd: path.optional(),
+		session_id: id.optional(),
+	}),
 	z.strictObject({
 		type: z.literal("sync_mcp_list"),
 		agent_cwd: path.optional(),
+		inventory: z.boolean().optional(),
 	}),
 	z.strictObject({
 		type: z.literal("ask_user_question_response"),

@@ -144,6 +144,20 @@ function handleSubscribeSession(
 	entry.runState.addSubscriber(ws);
 	ws.data.subscribedSessionId = entry.sessionId;
 	send(ws, { type: "status", ...entry.manager.getStatus() });
+	const cachedMcp = entry.manager.getLastMcpStatus();
+	if (cachedMcp) {
+		const providerId = entry.manager.getProviderId();
+		const agentCwd = entry.manager.getAgentCwd();
+		send(ws, {
+			type: "mcp_status",
+			...(providerId ? { provider_id: providerId } : {}),
+			...(agentCwd ? { agent_cwd: agentCwd } : {}),
+			...(entry.manager.getCurrentSessionId()
+				? { session_id: entry.manager.getCurrentSessionId() ?? undefined }
+				: {}),
+			servers: cachedMcp.map(mapMcpServer),
+		});
+	}
 	const context = entry.runState.getContextSnapshot?.();
 	if (context) entry.runState.send(ws, context);
 	if (entry.manager.isRunning()) {
@@ -279,7 +293,11 @@ function readAgentServers(resolvedAgent: string) {
 	}
 }
 
-function syncAgentMcpList(ws: ServerWebSocket<WsData>, agentCwd: string): void {
+function syncAgentMcpList(
+	ws: ServerWebSocket<WsData>,
+	entry: PoolEntry,
+	agentCwd: string,
+): void {
 	const config = loadConfig();
 	let resolvedAgent: string;
 	try {
@@ -296,7 +314,14 @@ function syncAgentMcpList(ws: ServerWebSocket<WsData>, agentCwd: string): void {
 			scope: "project",
 		}),
 	);
-	send(ws, { type: "mcp_status", servers, agent_cwd: resolvedAgent });
+	send(ws, {
+		type: "mcp_status",
+		...(entry.manager.getProviderId(resolvedAgent)
+			? { provider_id: entry.manager.getProviderId(resolvedAgent) }
+			: {}),
+		servers,
+		agent_cwd: agentCwd,
+	});
 }
 
 function readVaultServers(vaultPath: string) {
@@ -305,6 +330,65 @@ function readVaultServers(vaultPath: string) {
 	} catch {
 		return [];
 	}
+}
+
+function syncMcpInventory(
+	ws: ServerWebSocket<WsData>,
+	pool: SessionPool,
+	agentCwd?: string,
+): void {
+	const config = loadConfig();
+	let resolvedAgent: string | undefined;
+	if (agentCwd) {
+		try {
+			resolvedAgent = realpathSync(expandTilde(agentCwd));
+		} catch {
+			return;
+		}
+		if (
+			!isAllowedAgentPath(computeAllowedAgentRealPaths(config), resolvedAgent)
+		)
+			return;
+	}
+
+	const inventory = new Map<string, ReturnType<typeof mapMcpServer>>();
+	const configuredProvider = pool
+		.vaultEntry()
+		.manager.getProviderId(resolvedAgent);
+	const configuredServers = resolvedAgent
+		? readAgentServers(resolvedAgent)
+		: config.vault.path
+			? readVaultServers(config.vault.path)
+			: [];
+	for (const { name, disabled } of configuredServers) {
+		inventory.set(
+			`${configuredProvider}:${name}`,
+			mapMcpServer({
+				name,
+				providerId: configuredProvider,
+				status: disabled ? "disabled" : "pending",
+				scope: "project",
+			}),
+		);
+	}
+
+	for (const entry of pool.getAllEntries()) {
+		if (resolvedAgent && entry.agentCwd !== resolvedAgent) continue;
+		for (const snapshot of entry.manager.getMcpSnapshots()) {
+			for (const server of snapshot.servers) {
+				inventory.set(
+					`${snapshot.providerId}:${server.name}`,
+					mapMcpServer({ ...server, providerId: snapshot.providerId }),
+				);
+			}
+		}
+	}
+
+	send(ws, {
+		type: "mcp_status",
+		...(agentCwd ? { agent_cwd: agentCwd } : {}),
+		servers: [...inventory.values()],
+	});
 }
 
 function syncVaultMcpList(pool: SessionPool): void {
@@ -326,7 +410,12 @@ function syncVaultMcpList(pool: SessionPool): void {
 			});
 		},
 	);
-	broadcast({ type: "mcp_status", servers: [...preserved, ...vault] });
+	const providerId = pool.vaultEntry().manager.getProviderId();
+	broadcast({
+		type: "mcp_status",
+		...(providerId ? { provider_id: providerId } : {}),
+		servers: [...preserved, ...vault],
+	});
 }
 
 function handlePermissionResponse(
@@ -525,7 +614,7 @@ async function runChatQuery(
 				type: "status",
 				...entry.manager.getStatus(),
 			});
-		await entry.manager.runQuery(
+		const queryArgs = [
 			msg.text,
 			(event) => {
 				entry.runState.broadcast(event);
@@ -538,7 +627,9 @@ async function runChatQuery(
 			msg.turn_id,
 			msg.plan_mode,
 			msg.plan_html,
-		);
+		] as Parameters<typeof entry.manager.runQuery>;
+		if (msg.command_action) queryArgs.push(msg.command_action);
+		await entry.manager.runQuery(...queryArgs);
 	} catch (error) {
 		send(context.ws, {
 			type: "error",
@@ -578,6 +669,16 @@ async function handleSessionMessage(
 	entry: PoolEntry,
 	msg: ClientMessage,
 ): Promise<void> {
+	const sendProbeResult = (event: Parameters<typeof send>[1]) => {
+		// Live-entry messages must carry the pool session ID so the client WS
+		// router accepts them. Detached archived probes retain the requested DB
+		// session ID because there is no live pool subscription for them.
+		if (context.ws.data.subscribedSessionId === entry.sessionId) {
+			entry.runState.send(context.ws, event);
+		} else {
+			send(context.ws, event);
+		}
+	};
 	switch (msg.type) {
 		case "sync":
 			handleSync(context.ws, entry);
@@ -602,16 +703,18 @@ async function handleSessionMessage(
 			handleReloadSession(context.pool, context.terminalPool, entry);
 			return;
 		case "probe_mcp":
-			void entry.manager.probeMcpStatus((event) =>
-				entry.runState.broadcast(event),
-			);
+			void entry.manager.probeMcpStatus(sendProbeResult, {
+				agentCwd: msg.agent_cwd,
+				sessionId: msg.session_id,
+			});
 			return;
 		case "probe_slash_commands":
-			void entry.manager.probeSlashCommands((event) =>
-				entry.runState.broadcast(event),
-			);
+			void entry.manager.probeSlashCommands(sendProbeResult, {
+				agentCwd: msg.agent_cwd,
+				sessionId: msg.session_id,
+			});
 			return;
-		case "set_provider":
+		case "set_provider": {
 			await entry.manager.setProvider(msg.provider, {
 				model: msg.model,
 				effort: msg.effort,
@@ -621,7 +724,23 @@ async function handleSessionMessage(
 				type: "status",
 				...entry.manager.getStatus(),
 			});
+			const providerId = entry.manager.getProviderId();
+			const agentCwd = entry.manager.getAgentCwd();
+			const cachedMcp = entry.manager.getLastMcpStatus(providerId) ?? [];
+			entry.runState.broadcast({
+				type: "mcp_status",
+				...(providerId ? { provider_id: providerId } : {}),
+				...(agentCwd ? { agent_cwd: agentCwd } : {}),
+				servers: cachedMcp.map(mapMcpServer),
+			});
+			void entry.manager.probeMcpStatus?.((event) =>
+				entry.runState.broadcast(event),
+			);
+			void entry.manager.probeSlashCommands?.((event) =>
+				entry.runState.broadcast(event),
+			);
 			return;
+		}
 		case "set_model":
 			await entry.manager.setModel(msg.model);
 			entry.runState.broadcast({
@@ -640,7 +759,10 @@ async function handleSessionMessage(
 			});
 			return;
 		case "sync_mcp_list":
-			if (msg.agent_cwd) syncAgentMcpList(context.ws, msg.agent_cwd);
+			if (msg.inventory)
+				syncMcpInventory(context.ws, context.pool, msg.agent_cwd);
+			else if (msg.agent_cwd)
+				syncAgentMcpList(context.ws, entry, msg.agent_cwd);
 			else syncVaultMcpList(context.pool);
 			return;
 		case "permission_response":
@@ -745,7 +867,12 @@ export function createWsHandlers(
 			// Send cached MCP status so clients see server list immediately on connect.
 			const cachedMcp = vault.manager.getLastMcpStatus();
 			if (cachedMcp) {
-				send(ws, { type: "mcp_status", servers: cachedMcp.map(mapMcpServer) });
+				const providerId = vault.manager.getProviderId();
+				send(ws, {
+					type: "mcp_status",
+					...(providerId ? { provider_id: providerId } : {}),
+					servers: cachedMcp.map(mapMcpServer),
+				});
 			}
 
 			// Send queue state so the client can prune any orphan chatQueue items.

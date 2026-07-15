@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { type CommandDescriptor, skillCommand } from "#/lib/commands";
 import type { Skill } from "#/lib/skills";
 import { SlashPicker } from "./SlashPicker";
 
@@ -19,11 +20,11 @@ function makeSkill(name: string, description = "", section = "vault"): Skill {
 	};
 }
 
-const ITEMS: Skill[] = [
+const ITEMS: CommandDescriptor[] = [
 	makeSkill("help", "Get help with commands"),
 	makeSkill("commit", "Create a git commit"),
 	makeSkill("compact", "Compact conversation", "claude"),
-];
+].map(skillCommand);
 
 // ─── rendering ───────────────────────────────────────────────────────────────
 
@@ -48,7 +49,7 @@ describe("SlashPicker – rendering", () => {
 	});
 
 	it("does not crash when a skill has no description", () => {
-		const noDesc = [makeSkill("bare", "")];
+		const noDesc = [skillCommand(makeSkill("bare", ""))];
 		expect(() =>
 			render(
 				<SlashPicker items={noDesc} selectedIndex={0} onSelect={vi.fn()} />,
@@ -60,6 +61,25 @@ describe("SlashPicker – rendering", () => {
 		render(<SlashPicker items={ITEMS} selectedIndex={0} onSelect={vi.fn()} />);
 		// At least one element with "compact" — name span and possibly description
 		expect(screen.getAllByText(/compact/i).length).toBeGreaterThan(0);
+	});
+
+	it("contains long provider descriptions without horizontal overflow", () => {
+		const command = skillCommand(
+			makeSkill(
+				"review",
+				"Review the working tree with a deliberately long instruction hint",
+			),
+		);
+		render(
+			<SlashPicker items={[command]} selectedIndex={0} onSelect={vi.fn()} />,
+		);
+		const listbox = screen.getByRole("listbox");
+		const option = screen.getByRole("option");
+		const description = screen.getByText(command.description);
+		expect(listbox.className).toContain("overflow-x-hidden");
+		expect(option.className).toContain("min-w-0");
+		expect(description.className).toContain("min-w-0");
+		expect(description.className).toContain("max-w-full");
 	});
 });
 

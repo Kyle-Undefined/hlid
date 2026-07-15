@@ -1,6 +1,13 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+	act,
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ServerMessage } from "#/server/protocol";
 
 const state = vi.hoisted(() => ({
 	loaderData: {} as Record<string, unknown>,
@@ -12,6 +19,7 @@ const state = vi.hoisted(() => ({
 	sessionState: "idle" as "idle" | "running" | "error",
 	actualModel: null as string | null,
 	sessions: [] as unknown[],
+	onMessage: null as ((message: ServerMessage) => void) | null,
 }));
 
 vi.mock("@tanstack/react-router", () => ({
@@ -84,15 +92,18 @@ vi.mock("#/hooks/useFileUpload", () => ({
 	}),
 }));
 vi.mock("#/hooks/useWs", () => ({
-	useWs: () => ({
-		wsStatus: "connected",
-		sessionState: state.sessionState,
-		model: "claude-sonnet-4-6",
-		actualModel: state.actualModel,
-		permissionMode: "default",
-		runningTurnId: state.sessionState === "running" ? "running" : null,
-		send: state.send,
-	}),
+	useWs: (onMessage?: (message: ServerMessage) => void) => {
+		state.onMessage = onMessage ?? null;
+		return {
+			wsStatus: "connected",
+			sessionState: state.sessionState,
+			model: "claude-sonnet-4-6",
+			actualModel: state.actualModel,
+			permissionMode: "default",
+			runningTurnId: state.sessionState === "running" ? "running" : null,
+			send: state.send,
+		};
+	},
 }));
 vi.mock("#/hooks/useWsSelectors", () => ({
 	useWsLiveStats: () => ({ queries: 0 }),
@@ -159,6 +170,7 @@ beforeEach(() => {
 	localStorage.clear();
 	state.sessionState = "idle";
 	state.actualModel = null;
+	state.onMessage = null;
 	state.search = {};
 	state.loaderData = {
 		config: {
@@ -504,6 +516,42 @@ describe("Raven composed submission behavior", () => {
 		render(<ChatPage />);
 
 		expect(state.subscribeToSession).toHaveBeenCalledWith("pool-session");
+	});
+
+	it("accepts runtime MCP updates tagged with the live pool session", () => {
+		state.loaderData = {
+			...state.loaderData,
+			existingSessionId: "db-session",
+			isExplicitSession: true,
+		};
+		state.sessions = [
+			{
+				session_id: "pool-session",
+				db_session_id: "db-session",
+				mode: "chat",
+				state: "idle",
+			},
+		];
+		render(<ChatPage />);
+
+		act(() => {
+			state.onMessage?.({
+				type: "mcp_status",
+				provider_id: "claude",
+				session_id: "pool-session",
+				servers: [
+					{
+						name: "claude.ai Excalidraw",
+						status: "connected",
+						scope: "claudeai",
+					},
+				],
+			});
+		});
+
+		expect(
+			screen.getByRole("button", { name: "MCP server status" }).textContent,
+		).toContain("1/1");
 	});
 
 	it("sends an idle message through the WebSocket boundary", () => {

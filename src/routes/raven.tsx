@@ -26,16 +26,17 @@ import { AttachmentStrip } from "#/components/AttachmentStrip";
 import { reducer } from "#/components/chat/chatReducer";
 import { MessageList } from "#/components/chat/MessageList";
 import { SlashPicker } from "#/components/cockpit/SlashPicker";
+import { McpIndicator } from "#/components/McpIndicator";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import { TerminalView } from "#/components/TerminalView";
 import { ProviderUsageStrip } from "#/components/usage/ProviderUsageStrip";
 import { ContextWindowSection } from "#/components/usage/UsageWindowSections";
 import { getConfig } from "#/config";
 import { useChatWsHandler } from "#/hooks/useChatWsHandler";
+import { useCommands } from "#/hooks/useCommands";
 import { useDraft } from "#/hooks/useDraft";
 import { useFileUpload } from "#/hooks/useFileUpload";
 import { useLoadChatHistory } from "#/hooks/useLoadChatHistory";
-import { useMergedSkills } from "#/hooks/useMergedSkills";
 import { useSlashPicker } from "#/hooks/useSlashPicker";
 import { useVoiceInput } from "#/hooks/useVoiceInput";
 import { useWs } from "#/hooks/useWs";
@@ -48,6 +49,10 @@ import {
 } from "#/hooks/wsSessionStatusStore";
 import * as wsStore from "#/hooks/wsStore";
 import {
+	type CommandDescriptor,
+	resolveCommandSubmission,
+} from "#/lib/commands";
+import {
 	composerKeyAction,
 	insertAtSelection,
 	prepareChatSubmission,
@@ -55,6 +60,7 @@ import {
 	responsiveComposerMaxHeight,
 } from "#/lib/composer";
 import { deriveModelMismatch, fmtModel } from "#/lib/formatters";
+import { mapMcpServer } from "#/lib/mcp";
 import {
 	effortOptionsFor,
 	modelOptions,
@@ -78,8 +84,6 @@ import {
 	getSessionProviderIdFn,
 } from "#/lib/serverFns/sessions";
 import { getVoiceInfoFn } from "#/lib/serverFns/voice";
-import { resolveSkillPrompt } from "#/lib/skillPrompt";
-import type { Skill } from "#/lib/skills";
 import { uid } from "#/lib/utils";
 import { displayVoiceHotkey } from "#/lib/voiceHotkey";
 import { decisionFromScope, type RateLimitMessage } from "#/server/protocol";
@@ -216,11 +220,7 @@ export const Route = createFileRoute("/raven")({
 type RavenNavigate = ReturnType<typeof useNavigate>;
 type RavenAgentList = Awaited<ReturnType<typeof getAgentListFn>>;
 type RavenProviders = Awaited<ReturnType<typeof getProvidersFn>>;
-type ActiveRavenSkill = {
-	name: string;
-	section?: string;
-	filePath: string;
-};
+type ActiveRavenSkill = CommandDescriptor;
 type RavenSessionSelection = {
 	providerId?: string;
 	model?: string;
@@ -355,10 +355,12 @@ function useRavenChatRuntime({
 	existingSessionId,
 	isExplicitSession,
 	sessionIdRef,
+	agentCwd,
 }: {
 	existingSessionId: string | null;
 	isExplicitSession: boolean;
 	sessionIdRef: { current: string };
+	agentCwd?: string;
 }) {
 	const [sdkSlashCommands, setSdkSlashCommands] = useState<
 		Array<{
@@ -366,9 +368,13 @@ function useRavenChatRuntime({
 			description: string;
 			argumentHint: string;
 			aliases?: string[];
+			action?: "review";
 		}>
 	>([]);
 	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
+	const [mcpServers, setMcpServers] = useState<
+		ReturnType<typeof mapMcpServer>[]
+	>([]);
 	const [messages, dispatch] = useReducer(reducer, []);
 	const pendingIdRef = useRef<string | null>(null);
 	const lastAssistantIdRef = useRef<string | null>(null);
@@ -382,13 +388,26 @@ function useRavenChatRuntime({
 	});
 	const handleAllMessages = useCallback(
 		(message: Parameters<typeof handleWsMessage>[0]) => {
+			if (message.type === "mcp_status") {
+				if ((message.agent_cwd ?? "") !== (agentCwd ?? "")) return;
+				setMcpServers(
+					message.servers.map((server) =>
+						mapMcpServer({
+							...server,
+							providerId: server.provider_id ?? message.provider_id,
+						}),
+					),
+				);
+				return;
+			}
 			if (message.type === "slash_commands") {
+				if ((message.agent_cwd ?? "") !== (agentCwd ?? "")) return;
 				setSdkSlashCommands(message.commands);
 				return;
 			}
 			handleWsMessage(message);
 		},
-		[handleWsMessage],
+		[handleWsMessage, agentCwd],
 	);
 	const connection = useWs(handleAllMessages);
 
@@ -403,9 +422,28 @@ function useRavenChatRuntime({
 		sessionIdRef,
 	});
 
+	// biome-ignore lint/correctness/useExhaustiveDependencies: Raven context changes invalidate provider-scoped runtime snapshots
 	useEffect(() => {
-		connection.send({ type: "probe_slash_commands" });
-	}, [connection.send]);
+		setSdkSlashCommands([]);
+		setMcpServers([]);
+	}, [agentCwd, existingSessionId]);
+
+	useEffect(() => {
+		connection.send({
+			type: "sync_mcp_list",
+			...(agentCwd ? { agent_cwd: agentCwd } : {}),
+		});
+		connection.send({
+			type: "probe_mcp",
+			session_id: sessionIdRef.current,
+			...(agentCwd ? { agent_cwd: agentCwd } : {}),
+		});
+		connection.send({
+			type: "probe_slash_commands",
+			session_id: sessionIdRef.current,
+			...(agentCwd ? { agent_cwd: agentCwd } : {}),
+		});
+	}, [connection.send, agentCwd, sessionIdRef]);
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: session navigation is the reset trigger
 	useEffect(() => {
@@ -424,6 +462,7 @@ function useRavenChatRuntime({
 		...connection,
 		isRunning,
 		sdkSlashCommands,
+		mcpServers,
 		rateLimit,
 		setRateLimit,
 		messages,
@@ -552,7 +591,7 @@ type RavenActionProps = {
 	clearDraft: ReturnType<typeof useDraft>["clearDraft"];
 	activeSkill: ActiveRavenSkill | null;
 	setActiveSkill: Dispatch<SetStateAction<ActiveRavenSkill | null>>;
-	allSkills: ReturnType<typeof useMergedSkills>;
+	commands: CommandDescriptor[];
 	planMode: boolean;
 	setPlanMode: Dispatch<SetStateAction<boolean>>;
 	planHtml: boolean;
@@ -633,7 +672,7 @@ function useRavenSend(props: RavenActionProps) {
 		clearDraft,
 		activeSkill,
 		setActiveSkill,
-		allSkills,
+		commands,
 		planMode,
 		planHtml,
 		sessionSelection,
@@ -648,10 +687,10 @@ function useRavenSend(props: RavenActionProps) {
 		(overrideText?: string) => {
 			const typed = (overrideText ?? input).trim();
 
-			const { text, skillContext } = resolveSkillPrompt(
+			const { text, skillContext, commandAction } = resolveCommandSubmission(
 				activeSkill,
 				typed,
-				allSkills,
+				commands,
 			);
 			const id = uid();
 			const submission = prepareChatSubmission({
@@ -660,6 +699,7 @@ function useRavenSend(props: RavenActionProps) {
 				sessionId,
 				running: sessionState === "running",
 				skillContext,
+				commandAction,
 				attachments: pendingAttachments,
 				agentCwd: agentSkillContext ?? undefined,
 				agentContextAlreadySent: agentContextSentRef.current,
@@ -690,7 +730,7 @@ function useRavenSend(props: RavenActionProps) {
 			input,
 			setInput,
 			activeSkill,
-			allSkills,
+			commands,
 			sessionState,
 			send,
 			sessionId,
@@ -1070,6 +1110,7 @@ export function ChatPage() {
 		existingSessionId,
 		isExplicitSession,
 		sessionIdRef,
+		agentCwd: agentSkillContext,
 	});
 	const {
 		wsStatus,
@@ -1117,17 +1158,13 @@ export function ChatPage() {
 
 	// ─── Skills + slash picker ────────────────────────────────────────────────
 
-	const allSkills = useMergedSkills(vaultSkills, sdkSlashCommands);
+	const commands = useCommands(vaultSkills, sdkSlashCommands);
 
-	const picker = useSlashPicker(input, allSkills, activeSkill);
+	const picker = useSlashPicker(input, commands, activeSkill);
 
-	function handleSkillSelect(skill: Skill) {
+	function handleSkillSelect(command: CommandDescriptor) {
 		focusSkillOnNextRender();
-		setActiveSkill({
-			name: skill.name,
-			section: skill.section,
-			filePath: skill.filePath,
-		});
+		setActiveSkill(command);
 		setInput("");
 	}
 
@@ -1150,7 +1187,7 @@ export function ChatPage() {
 		clearDraft,
 		activeSkill,
 		setActiveSkill,
-		allSkills,
+		commands,
 		planMode,
 		setPlanMode,
 		planHtml,
@@ -1799,7 +1836,7 @@ function ChatInputArea(props: ChatComposerProps) {
 	return (
 		// biome-ignore lint/a11y/noStaticElementInteractions: drop zone wraps the input, interactive children handle keyboard input
 		<div
-			className={`border-t border-border bg-background transition-colors relative z-0 ${
+			className={`relative border-t border-border bg-background transition-colors ${
 				dragOver ? "bg-primary/5" : ""
 			}`}
 			onDragEnter={(e) => {
@@ -1927,6 +1964,7 @@ function ChatInputNotices({
 					</div>
 				)}
 				<div className="flex w-full min-w-0 items-center justify-end gap-3 md:w-auto">
+					<McpIndicator servers={runtime.mcpServers} align="mobile-left" />
 					<button
 						type="button"
 						onClick={() => {
@@ -2287,7 +2325,7 @@ interface ChatComposerProps {
 	effortOptions: ReturnType<typeof effortOptionsFor>;
 	canSend: boolean;
 	canQueue: boolean;
-	handleSkillSelect: (skill: Skill) => void;
+	handleSkillSelect: (command: CommandDescriptor) => void;
 	handleSend: (overrideText?: string) => void;
 	handleClear: () => void;
 	hideOnMobile?: boolean;

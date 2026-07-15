@@ -190,14 +190,20 @@ export type QueueStateMessage = {
 
 export type McpStatusMessage = {
 	type: "mcp_status";
+	/** Provider that produced this runtime snapshot. Optional for legacy cached payloads. */
+	provider_id?: string;
 	servers: Array<{
 		name: string;
 		status: "connected" | "failed" | "needs-auth" | "pending" | "disabled";
+		/** Provider owning this server when the message is a Cockpit inventory. */
+		provider_id?: string;
 		scope?: string;
 		error?: string;
 	}>;
 	/** Set when this status response is scoped to a specific cwd-agent's .mcp.json. */
 	agent_cwd?: string;
+	/** Set when the snapshot belongs to a specific live Raven session. */
+	session_id?: string;
 };
 
 export type AttachmentCreatedMessage = {
@@ -218,11 +224,15 @@ export type LocalCommandOutputMessage = {
 
 export type SlashCommandsMessage = {
 	type: "slash_commands";
+	provider_id: string;
+	agent_cwd?: string;
+	session_id?: string;
 	commands: Array<{
 		name: string;
 		description: string;
 		argumentHint: string;
 		aliases?: string[];
+		action?: "review";
 	}>;
 };
 
@@ -288,10 +298,17 @@ export type PermissionResolvedMessage = {
 export function mapMcpServer(s: {
 	name: string;
 	status: McpStatusMessage["servers"][number]["status"];
+	providerId?: string;
 	scope?: string;
 	error?: string;
 }): McpStatusMessage["servers"][number] {
-	return { name: s.name, status: s.status, scope: s.scope, error: s.error };
+	return {
+		name: s.name,
+		status: s.status,
+		provider_id: s.providerId,
+		scope: s.scope,
+		error: s.error,
+	};
 }
 
 /** Map (approved, saveScope) from the WS client into a stable decision string. */
@@ -411,6 +428,8 @@ export type ClientChatMessage = {
 	text: string;
 	session_id?: string;
 	skill_context?: string;
+	/** Hlid-owned capability action, executed directly instead of prompt passthrough. */
+	command_action?: "review";
 	agent_cwd?: string;
 	attachments?: ChatAttachment[];
 	/**
@@ -473,16 +492,22 @@ export type ClientSyncMessage = {
 
 export type ClientProbeMcpMessage = {
 	type: "probe_mcp";
+	agent_cwd?: string;
+	session_id?: string;
 };
 
 export type ClientProbeSlashCommandsMessage = {
 	type: "probe_slash_commands";
+	agent_cwd?: string;
+	session_id?: string;
 };
 
 export type ClientSyncMcpListMessage = {
 	type: "sync_mcp_list";
 	/** When set, sync MCP servers from this cwd-agent's .mcp.json instead of the vault's. */
 	agent_cwd?: string;
+	/** Cockpit requests the known inventory across provider sessions for this context. */
+	inventory?: boolean;
 };
 
 export type ClientAskUserQuestionResponseMessage = {

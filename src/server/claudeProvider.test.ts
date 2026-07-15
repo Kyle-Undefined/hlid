@@ -841,6 +841,45 @@ describe("ClaudeProvider — canUseTool pass-through", () => {
 // ── local_command_output ──────────────────────────────────────────────────────
 
 describe("ClaudeProvider — local_command_output", () => {
+	it("yields scoped command refreshes from commands_changed", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "system",
+					subtype: "commands_changed",
+					commands: [
+						{
+							name: "review",
+							description: "Review changes",
+							argumentHint: "",
+						},
+					],
+					uuid: "uuid-commands",
+					session_id: "sid-abc",
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 1, output_tokens: 1 },
+				},
+			]),
+		);
+		const events = await collectEvents(baseParams());
+		expect(events.find((event) => event.type === "commands_changed")).toEqual({
+			type: "commands_changed",
+			commands: [
+				{
+					name: "review",
+					description: "Review changes",
+					argumentHint: "",
+				},
+			],
+		});
+	});
+
 	it("yields local_command_output event for system/local_command_output messages", async () => {
 		vi.mocked(query).mockReturnValueOnce(
 			sdkGen([

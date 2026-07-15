@@ -1,3 +1,4 @@
+import type { CommandAction } from "../lib/commands";
 import type { ChatAttachment } from "../server/protocol";
 
 export type QueuedChatMessage = {
@@ -5,6 +6,7 @@ export type QueuedChatMessage = {
 	text: string;
 	session_id: string;
 	skill_context?: string;
+	command_action?: CommandAction;
 	agent_cwd?: string;
 	attachments?: ChatAttachment[];
 	plan_mode?: boolean;

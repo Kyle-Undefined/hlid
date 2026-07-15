@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
-import type { Skill } from "#/lib/skills";
+import { type CommandDescriptor, commandMatches } from "#/lib/commands";
 
 export type SlashPickerState = {
 	isOpen: boolean;
-	items: Skill[];
+	items: CommandDescriptor[];
 	query: string;
 	selectedIndex: number;
 	navigate: (dir: 1 | -1) => void;
@@ -15,34 +15,32 @@ export type SlashPickerState = {
  * Drives the slash-command picker dropdown.
  *
  * Opens when:
- *  - `activeSkill` is null (an active skill means user is typing context, not a new command)
+ *  - `activeCommand` is null (a selected command means the user is entering arguments)
  *  - `prompt` matches /^\/[^:\s]*$/ — starts with "/" and has no colon or space yet
  *
- * Items are filtered by prefix match (case-insensitive) against `allSkills`,
- * which should include both vault skills and SDK (claude-section) commands.
+ * Items are filtered by prefix match against the provider-neutral command list,
+ * including aliases reported by the active provider.
  *
  * Call `close()` to dismiss the picker without touching the input (e.g. on Escape).
  * The picker reopens automatically once the user changes the query.
  *
- * TODO: SDK commands expose `aliases` that are not yet part of the Skill shape.
- *       Wire aliases into filter matching once Skill gains an `aliases` field.
  */
 export function useSlashPicker(
 	prompt: string,
-	allSkills: Skill[],
-	activeSkill: { name: string } | null,
+	commands: CommandDescriptor[],
+	activeCommand: CommandDescriptor | null,
 ): SlashPickerState {
 	const [selectedIndex, setSelectedIndex] = useState(0);
 	const [forceClosed, setForceClosed] = useState(false);
 
 	// Bare slash query: starts with "/" with no colon or space yet
 	const isSlashQuery = /^\/[^:\s]*$/.test(prompt);
-	const shouldOpen = activeSkill === null && isSlashQuery;
+	const shouldOpen = activeCommand === null && isSlashQuery;
 
 	const query = shouldOpen ? prompt.slice(1).toLowerCase() : "";
 
 	const items = shouldOpen
-		? allSkills.filter((s) => s.name.toLowerCase().startsWith(query))
+		? commands.filter((command) => commandMatches(command, query))
 		: [];
 
 	const isOpen = shouldOpen && items.length > 0 && !forceClosed;
@@ -55,7 +53,7 @@ export function useSlashPicker(
 	}, [query]);
 
 	// Clamp at read time: safety net when items shrink without a query change
-	// (e.g. allSkills updates while picker is open)
+	// (e.g. the active provider publishes a command update while open)
 	const clampedIndex =
 		items.length === 0 ? 0 : Math.min(selectedIndex, items.length - 1);
 

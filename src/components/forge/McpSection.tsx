@@ -70,7 +70,7 @@ export interface McpServerManagerProps {
 	footer?: ReactNode;
 }
 
-type CloudServer = { name: string; status: string };
+type CloudServer = { name: string; status: string; providerId?: string };
 
 /** Live per-server status via mcp_status WS messages, scoped to vault or one agent cwd. */
 function useMcpLiveStatus(agentCwd: string | null) {
@@ -92,7 +92,11 @@ function useMcpLiveStatus(agentCwd: string | null) {
 				setCloudServers(
 					msg.servers
 						.filter((s) => s.scope === "claudeai")
-						.map((s) => ({ name: s.name, status: s.status })),
+						.map((s) => ({
+							name: s.name,
+							status: s.status,
+							providerId: msg.provider_id,
+						})),
 				);
 				setProbing(false);
 			}
@@ -165,8 +169,17 @@ type McpMutationCtx = {
 	writeServers: McpServerManagerProps["writeServers"];
 	toggleServer: McpServerManagerProps["toggleServer"];
 	syncAfterWrite: boolean;
+	agentCwd: string | null;
 	send: McpLiveStatus["send"];
 };
+
+function syncConfiguredServers(ctx: McpMutationCtx): void {
+	if (!ctx.syncAfterWrite) return;
+	ctx.send({
+		type: "sync_mcp_list",
+		...(ctx.agentCwd ? { agent_cwd: ctx.agentCwd } : {}),
+	});
+}
 
 async function mutateMcp(
 	ctx: McpMutationCtx,
@@ -177,7 +190,7 @@ async function mutateMcp(
 	try {
 		await ctx.writeServers(next);
 		apply();
-		if (ctx.syncAfterWrite) ctx.send({ type: "sync_mcp_list" });
+		syncConfiguredServers(ctx);
 	} catch (e) {
 		ctx.setOpError(e instanceof Error ? e.message : `${errLabel} failed`);
 	}
@@ -197,7 +210,7 @@ async function toggleMcpServer(
 					s.name === name ? { ...s, disabled: makeDisabled } : s,
 				) ?? null,
 		);
-		if (ctx.syncAfterWrite) ctx.send({ type: "sync_mcp_list" });
+		syncConfiguredServers(ctx);
 	} catch (e) {
 		ctx.setOpError(e instanceof Error ? e.message : "Toggle failed");
 	}
@@ -354,7 +367,7 @@ function CloudServerRows({
 							: s.name}
 					</span>
 					<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase shrink-0">
-						claude.ai
+						{s.providerId ?? "provider"}
 					</span>
 				</div>
 			))}
@@ -373,10 +386,11 @@ function ManagerFooter({
 	return (
 		<div className="px-4 py-3 flex items-center justify-between gap-4 border-t border-border">
 			<div className="text-[9px] text-muted-foreground/30 leading-relaxed">
-				changes take effect on next session · cloud MCPs managed on claude.ai
+				compatibility config: .mcp.json · provider-native servers are discovered
+				at runtime
 				<br />
 				use <span className="text-muted-foreground/50">check MCPs</span> to
-				validate configs, runs a quick SDK query
+				refresh the active provider without starting an assistant turn
 			</div>
 			{showProbe && (
 				<button
@@ -413,6 +427,7 @@ export function McpServerManager(props: McpServerManagerProps) {
 		writeServers: props.writeServers,
 		toggleServer: props.toggleServer,
 		syncAfterWrite: props.syncAfterWrite ?? false,
+		agentCwd: props.agentCwd,
 		send: status.send,
 	};
 
@@ -530,12 +545,13 @@ export function AgentMcpSection({ agentPath }: { agentPath: string }) {
 				toggleAgentMcpFn({ data: { agentPath, name, disabled } })
 			}
 			loadLiveStatus={getLiveMcpStatusFn}
+			syncAfterWrite
 			footer={
 				<div className="px-4 py-3 border-t border-border">
 					<div className="text-[9px] text-muted-foreground/30 leading-relaxed">
-						changes take effect on next session · stored in this agent's{" "}
+						compatibility config for providers that read{" "}
 						<span className="text-muted-foreground/50">.mcp.json</span>
-						{" · "}status updates when agent session runs
+						{" · "}provider-native status updates when this agent runs
 					</div>
 				</div>
 			}
