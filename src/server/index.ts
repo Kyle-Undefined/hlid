@@ -618,7 +618,8 @@ for (const result of providerProxyResults) {
 }
 // Include the Codex handshake in readiness when it is quick, but never hold the
 // splash for more than three seconds. A timed-out handshake keeps running in the
-// background. Once initialized, the shared helper stays pinned until Hlid exits.
+// background. Once initialized, the shared helper follows the normal idle-reap
+// lifecycle so desktop plugin/runtime updates do not leave it stale indefinitely.
 if (isCompiled) {
 	const codexExecutable = config.codex.executable ?? resolveCodexExecutable();
 	if (codexExecutable) {

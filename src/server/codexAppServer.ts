@@ -101,7 +101,6 @@ export class CodexAppServer {
 	private readonly idleTimeoutMs: number;
 	private readonly metadataIdleTimeoutMs: number;
 	private useLongIdleGrace = false;
-	private pinned = false;
 	/** Resolves after the initialize/initialized handshake completes. */
 	readonly ready: Promise<void>;
 
@@ -197,16 +196,6 @@ export class CodexAppServer {
 		this.threads.set(threadId, handler);
 	}
 
-	/**
-	 * Pin an intentionally prewarmed process for the lifetime of Hlid. Explicit
-	 * shutdown and process failure still terminate it.
-	 */
-	pinForProcessLifetime(): void {
-		this.useLongIdleGrace = true;
-		this.pinned = true;
-		this.cancelIdleReap();
-	}
-
 	detachThread(threadId: string): void {
 		this.threads.delete(threadId);
 		this.scheduleIdleReap();
@@ -255,7 +244,6 @@ export class CodexAppServer {
 		this.cancelIdleReap();
 		if (
 			this.dead ||
-			this.pinned ||
 			this.pending.size > 0 ||
 			this.threads.size > 0 ||
 			this.activeServerRequests > 0
@@ -409,7 +397,6 @@ export async function prewarmCodexAppServer(
 	waitTimeoutMs?: number,
 ): Promise<boolean> {
 	const server = acquireCodexAppServer(executable);
-	server.pinForProcessLifetime();
 	if (waitTimeoutMs === undefined) {
 		await server.ready;
 		return true;

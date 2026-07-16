@@ -540,6 +540,79 @@ describe("getAggregateNavStatus", () => {
 		expect(wsStore.getAggregateNavStatus().state).toBe("running");
 	});
 
+	it("clears a stale aggregate running state from the scoped idle heartbeat", () => {
+		receive({
+			type: "sessions_status",
+			sessions: [
+				{
+					session_id: "pool-session",
+					db_session_id: "db-session",
+					agent_cwd: "/a",
+					agent_name: "A",
+					state: "running",
+					model: "codex",
+					hasPendingPermissions: false,
+				},
+			],
+		});
+		wsStore.subscribeToSession("db-session");
+
+		receive({
+			type: "status",
+			session_id: "pool-session",
+			state: "idle",
+			model: "codex",
+		});
+
+		expect(wsStore.getSessionsStatus()[0].state).toBe("idle");
+		expect(wsStore.getAggregateNavStatus()).toMatchObject({
+			state: "idle",
+			runningCount: 0,
+		});
+	});
+
+	it("does not clear a different background session that is still running", () => {
+		receive({
+			type: "sessions_status",
+			sessions: [
+				{
+					session_id: "focused",
+					agent_cwd: "/a",
+					agent_name: "A",
+					state: "running",
+					model: "codex",
+					hasPendingPermissions: false,
+				},
+				{
+					session_id: "background",
+					agent_cwd: "/b",
+					agent_name: "B",
+					state: "running",
+					model: "claude",
+					hasPendingPermissions: false,
+				},
+			],
+		});
+		wsStore.subscribeToSession("focused");
+
+		receive({
+			type: "status",
+			session_id: "focused",
+			state: "idle",
+			model: "codex",
+		});
+
+		expect(wsStore.getAggregateNavStatus()).toMatchObject({
+			state: "running",
+			runningCount: 1,
+		});
+		expect(
+			wsStore
+				.getSessionsStatus()
+				.find((session) => session.session_id === "background")?.state,
+		).toBe("running");
+	});
+
 	it("returns error when any session has error but none running", () => {
 		receive({
 			type: "sessions_status",

@@ -1,4 +1,4 @@
-import type { SessionStatusEntry } from "../server/protocol";
+import type { SessionStatusEntry, StatusMessage } from "../server/protocol";
 
 const PENDING_NEW_SESSION_ID = "__hlid_pending_new_session__";
 
@@ -51,6 +51,52 @@ function notifySubscribers(): void {
 
 export function replaceSessionsStatus(sessions: SessionStatusEntry[]): void {
 	sessionsStatus = sessions;
+	recomputeAggregateNavStatus();
+	notifySubscribers();
+}
+
+/**
+ * Reconcile a session-scoped status heartbeat into the latest pool snapshot.
+ *
+ * The focused chat and the nav aggregate arrive over separate WS messages. If
+ * the pool-wide snapshot is delayed or missed, keeping its old `running` value
+ * makes the status dot pulse until the next reconnect. A scoped heartbeat is
+ * authoritative for these fields, so apply it by either the pool UUID or the
+ * current DB chat ID without disturbing other live sessions.
+ */
+export function reconcileSessionStatus(
+	sessionId: string,
+	status: Pick<StatusMessage, "state" | "model" | "effort" | "permission_mode">,
+): void {
+	let changed = false;
+	sessionsStatus = sessionsStatus.map((session) => {
+		if (
+			session.session_id !== sessionId &&
+			session.db_session_id !== sessionId
+		) {
+			return session;
+		}
+		if (
+			session.state === status.state &&
+			session.model === status.model &&
+			(status.effort === undefined || session.effort === status.effort) &&
+			(status.permission_mode === undefined ||
+				session.permission_mode === status.permission_mode)
+		) {
+			return session;
+		}
+		changed = true;
+		return {
+			...session,
+			state: status.state,
+			model: status.model,
+			...(status.effort !== undefined ? { effort: status.effort } : {}),
+			...(status.permission_mode !== undefined
+				? { permission_mode: status.permission_mode }
+				: {}),
+		};
+	});
+	if (!changed) return;
 	recomputeAggregateNavStatus();
 	notifySubscribers();
 }

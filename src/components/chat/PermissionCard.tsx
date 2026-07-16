@@ -113,7 +113,7 @@ export function PermissionCard({
 						type="button"
 						onClick={() => onDecide(message.id, true, "session")}
 						aria-label="Approve for this session"
-						className="min-w-0 flex items-center justify-center gap-1.5 sm:gap-2 px-1 py-2 text-[10px] tracking-widest text-blue-500/70 hover:bg-blue-500/5 transition-colors uppercase border-r border-border sm:border-r-0 sm:border-l"
+						className={`min-w-0 flex items-center justify-center gap-1.5 sm:gap-2 px-1 py-2 text-[10px] tracking-widest text-blue-500/70 hover:bg-blue-500/5 transition-colors uppercase border-border sm:border-r-0 sm:border-l ${message.allowOnce === false ? "border-b sm:border-b-0" : "border-r"}`}
 					>
 						<Check className="w-3 h-3 shrink-0" />
 						SESSION
@@ -123,7 +123,7 @@ export function PermissionCard({
 							type="button"
 							onClick={() => onDecide(message.id, true, "local")}
 							aria-label="Approve always"
-							className="min-w-0 flex items-center justify-center gap-1.5 sm:gap-2 px-1 py-2 text-[10px] tracking-widest text-purple-500/70 hover:bg-purple-500/5 transition-colors uppercase sm:border-l border-border"
+							className={`min-w-0 flex items-center justify-center gap-1.5 sm:gap-2 px-1 py-2 text-[10px] tracking-widest text-purple-500/70 hover:bg-purple-500/5 transition-colors uppercase sm:border-l border-border ${message.allowOnce === false ? "col-span-2 sm:col-span-1" : ""}`}
 						>
 							<Check className="w-3 h-3 shrink-0" />
 							ALWAYS

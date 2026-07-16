@@ -22,7 +22,7 @@ import type {
 } from "./agentProvider";
 import {
 	acquireCodexAppServer,
-	type CodexAppServer,
+	CodexAppServer,
 	type ThreadHandler,
 } from "./codexAppServer";
 import type {
@@ -386,10 +386,6 @@ async function refreshWindowsComputerUseCapability(
 		});
 	hostCapabilityInflight = refresh;
 	return refresh;
-}
-
-async function windowsComputerUseCapability(): Promise<WindowsComputerUseCapability> {
-	return refreshWindowsComputerUseCapability();
 }
 
 function cachedWindowsComputerUseCapability(): WindowsComputerUseCapability {
@@ -947,6 +943,8 @@ class CodexAgentSession implements AgentSession {
 	private childLastUsage = new Map<string, CanonicalTokenUsage>();
 	private resolvedModel: string | null = null;
 	private elicitationSequence = 0;
+	/** Dedicated transport owned by a one-shot Windows Computer Use worker. */
+	private ownedConnection: CodexAppServer | null = null;
 
 	private launch: CodexLaunchConfig | null = null;
 
@@ -965,8 +963,9 @@ class CodexAgentSession implements AgentSession {
 	cancel(): void {
 		this.canceled = true;
 		this.events.close();
-		// The app-server is shared — never kill the process. Interrupt any
-		// running turn and detach this session's thread from event routing.
+		// Normal sessions share an app-server and must only detach. Delegated
+		// Computer Use workers own a fresh app-server so every task reloads the
+		// desktop app's current plugin path, Node REPL, and native approval pipe.
 		if (this.conn && this.threadId) {
 			if (this.activeTurnId) {
 				void this.conn
@@ -978,6 +977,8 @@ class CodexAgentSession implements AgentSession {
 			}
 		}
 		this.detachAllThreads();
+		this.ownedConnection?.kill(new Error("Windows Computer Use worker closed"));
+		this.ownedConnection = null;
 		this.conn = null;
 	}
 
@@ -1120,9 +1121,10 @@ class CodexAgentSession implements AgentSession {
 	}
 
 	async supportedCommands(): Promise<SlashCommand[]> {
-		const computerUseAvailable =
-			this.canUseWindowsComputerUse() &&
-			(await windowsComputerUseCapability()).available;
+		// Keep the command available whenever this is a native Windows host. The
+		// desktop app can update its plugin/runtime while Hlid stays open, so a
+		// capability snapshot is advisory and must not hide the recovery path.
+		const computerUseAvailable = this.canUseWindowsComputerUse();
 		const hlidCommands: SlashCommand[] = [
 			{
 				name: "review",
@@ -1297,7 +1299,10 @@ class CodexAgentSession implements AgentSession {
 			executable: this.params.executable,
 		});
 		this.launch = launch;
-		const conn = acquireCodexAppServer(launch.executable);
+		const conn = this.delegatedWindowsComputerUse
+			? new CodexAppServer(launch.executable)
+			: acquireCodexAppServer(launch.executable);
+		if (this.delegatedWindowsComputerUse) this.ownedConnection = conn;
 		this.conn = conn;
 		if (this.params.signal) {
 			if (this.params.signal.aborted) this.cancel();
@@ -1307,9 +1312,9 @@ class CodexAgentSession implements AgentSession {
 				});
 		}
 		await conn.ready;
-		const computerUseAvailable =
-			this.canUseWindowsComputerUse() &&
-			(await windowsComputerUseCapability()).available;
+		// The one-shot delegated worker validates the current plugin/runtime on a
+		// fresh transport. Do not bind tool availability to a long-lived snapshot.
+		const computerUseAvailable = this.canUseWindowsComputerUse();
 
 		const threadParams: ThreadStartParams = {
 			cwd: launch.rpcCwd,
@@ -1382,6 +1387,7 @@ class CodexAgentSession implements AgentSession {
 		// session's local transport state so an idle failure transparently
 		// reacquires a process and resumes the same thread on the next send.
 		this.conn = null;
+		this.ownedConnection = null;
 		this.ready = null;
 		this.threadId = null;
 		this.activeTurnId = null;
@@ -1422,9 +1428,11 @@ class CodexAgentSession implements AgentSession {
 
 	private async resetNodeRepl(): Promise<void> {
 		if (!this.threadId || !this.launch) return;
-		const conn = this.conn?.alive
-			? this.conn
-			: acquireCodexAppServer(this.launch.executable);
+		const conn = this.ownedConnection?.alive
+			? this.ownedConnection
+			: this.conn?.alive
+				? this.conn
+				: acquireCodexAppServer(this.launch.executable);
 		await conn.ready;
 		await conn.request("mcpServer/tool/call", {
 			threadId: this.threadId,
@@ -1535,8 +1543,8 @@ class CodexAgentSession implements AgentSession {
 				planHtmlPath: undefined,
 				additionalDirectories: undefined,
 				// Hlid owns this one-shot worker and returns its result to the caller.
-				// Keep the shared app-server process reusable, but do not leave a
-				// standalone Computer Use thread in Codex history after every task.
+				// Use a fresh native app-server for each task so a desktop update cannot
+				// leave this worker on an obsolete plugin path or native approval pipe.
 				persistSession: false,
 			},
 			true,
@@ -1619,8 +1627,8 @@ class CodexAgentSession implements AgentSession {
 			throw error;
 		} finally {
 			// Computer Use opens a per-thread Node kernel. Ephemeral history alone
-			// does not tear that process down, so reset the owned MCP session after
-			// every one-shot worker without touching the shared app-server.
+			// does not tear that process down, so reset the owned MCP session and
+			// terminate its dedicated app-server after every one-shot worker.
 			await child.resetNodeRepl().catch(() => {});
 			child.cancel();
 		}

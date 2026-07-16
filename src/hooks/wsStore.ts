@@ -31,6 +31,7 @@ import {
 	focusSession,
 	getSessionsStatus,
 	getSubscribedSessionId,
+	reconcileSessionStatus,
 	removeSessionStatus,
 	replaceSessionsStatus,
 	resetSessionStatusForTesting,
@@ -478,6 +479,12 @@ function handleSocketMessage(event: MessageEvent): void {
 		msg = JSON.parse(event.data as string) as ServerMessage;
 	} catch {
 		return;
+	}
+	if (msg.type === "status") {
+		const sessionId =
+			(msg as typeof msg & { session_id?: string }).session_id ??
+			getSubscribedSessionId();
+		if (sessionId) reconcileSessionStatus(sessionId, msg);
 	}
 	if (handleGlobalMessage(msg) || isMessageFromAnotherSession(msg)) return;
 	if (!applySessionMessage(msg)) return;

@@ -13,6 +13,11 @@ import { type AcpCatalogItem, AcpRegistry } from "./acpRegistry";
 import { loadConfig } from "./config";
 
 const CHECK_TTL_MS = 6 * 60 * 60 * 1000;
+// Desktop apps update independently of Hlid and can rotate plugin/runtime
+// configuration while both processes stay open. Keep the expensive full
+// update inventory cached, but refresh a Forge background view soon enough to
+// reflect a Store update instead of showing the previous package for six hours.
+const DESKTOP_CHECK_TTL_MS = 5 * 60 * 1000;
 const COMMAND_TIMEOUT_MS = 4_000;
 const STORE_TIMEOUT_MS = 15_000;
 const REGISTRY_TIMEOUT_MS = 5_000;
@@ -890,11 +895,21 @@ export async function getCliUpdateStatuses(
 	dependencies = defaultStatusDependencies,
 ): Promise<CliUpdateStatus[]> {
 	await hydrateCache(dependencies);
-	if (
-		!opts?.force &&
-		cached &&
-		dependencies.now() - cached.checkedAt < CHECK_TTL_MS
-	) {
+	const now = dependencies.now();
+	if (!opts?.force && cached && now - cached.checkedAt < CHECK_TTL_MS) {
+		const desktopStatus = cached.statuses.find(
+			(status) => status.id === "codex-desktop",
+		);
+		if (
+			opts?.background &&
+			desktopStatus &&
+			now - desktopStatus.checkedAt >= DESKTOP_CHECK_TTL_MS
+		) {
+			scheduleCliUpdateRefresh(
+				dependencies,
+				Math.max(0, opts.backgroundDelayMs ?? BACKGROUND_REFRESH_DELAY_MS),
+			);
+		}
 		return cached.statuses;
 	}
 	if (opts?.background) {

@@ -366,6 +366,44 @@ describe("CLI update status cache", () => {
 		expect(dependencies.writeCache).not.toHaveBeenCalled();
 	});
 
+	it("refreshes an older desktop version in the background before the full cache expires", async () => {
+		const now = 1_800_000_600_000;
+		const staleDesktop = {
+			...cachedStatus("codex-desktop"),
+			installedVersion: "26.707.9981.0",
+			checkedAt: now - 6 * 60_000,
+		};
+		const freshDesktop = {
+			...staleDesktop,
+			installedVersion: "26.707.12708.0",
+			checkedAt: now,
+		};
+		const dependencies = statusDependencies({
+			now: () => now,
+			readCache: vi.fn().mockResolvedValue({
+				checkedAt: now - 1_000,
+				statuses: [staleDesktop],
+			}),
+			inspectDesktop: vi.fn().mockResolvedValue([freshDesktop]),
+		});
+
+		expect(
+			await getCliUpdateStatuses(
+				{ background: true, backgroundDelayMs: 0 },
+				dependencies,
+			),
+		).toEqual([staleDesktop]);
+		await vi.waitFor(() =>
+			expect(dependencies.inspectDesktop).toHaveBeenCalledOnce(),
+		);
+		await vi.waitFor(() =>
+			expect(dependencies.writeCache).toHaveBeenCalledWith({
+				checkedAt: now,
+				statuses: [freshDesktop],
+			}),
+		);
+	});
+
 	it("returns a stale snapshot immediately while refreshing in the background", async () => {
 		const stale = cachedStatus();
 		const fresh = cachedStatus("claude");

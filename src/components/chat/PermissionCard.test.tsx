@@ -103,6 +103,11 @@ describe("PermissionCard", () => {
 		);
 		expect(screen.queryByLabelText("Approve")).toBeNull();
 		expect(screen.getByLabelText("Approve for this session")).not.toBeNull();
-		expect(screen.getByLabelText("Approve always")).not.toBeNull();
+		expect(
+			screen.getByLabelText("Approve for this session").className,
+		).toContain("border-b");
+		const always = screen.getByLabelText("Approve always");
+		expect(always.className).toContain("col-span-2");
+		expect(always.className).toContain("sm:col-span-1");
 	});
 });

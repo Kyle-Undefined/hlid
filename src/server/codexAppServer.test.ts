@@ -137,7 +137,7 @@ describe("CodexAppServer idle lifecycle", () => {
 		expect(fake.proc.kill).toHaveBeenCalledOnce();
 	});
 
-	it("keeps a prewarmed server alive for the Hlid process lifetime", async () => {
+	it("reaps a prewarmed metadata server when it stays idle", async () => {
 		vi.stubEnv("HLID_CODEX_APP_SERVER_IDLE_MS", "50");
 		vi.stubEnv("HLID_CODEX_APP_SERVER_METADATA_IDLE_MS", "5");
 		const fake = makeFakeProc();
@@ -145,11 +145,9 @@ describe("CodexAppServer idle lifecycle", () => {
 
 		await expect(prewarmCodexAppServer("/usr/bin/codex")).resolves.toBe(true);
 
-		await vi.advanceTimersByTimeAsync(10_000);
-		expect(fake.proc.kill).not.toHaveBeenCalled();
-		expect(listCodexAppServers()).toEqual([
-			{ executable: "/usr/bin/codex", alive: true, threads: 0 },
-		]);
+		await vi.advanceTimersByTimeAsync(5);
+		expect(fake.proc.kill).toHaveBeenCalledOnce();
+		expect(listCodexAppServers()).toEqual([]);
 	});
 
 	it("drops repetitive optional PowerShell and MCP capability warnings", async () => {

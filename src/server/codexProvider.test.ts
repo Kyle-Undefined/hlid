@@ -1055,11 +1055,15 @@ describe("CodexAgentSession — commands", () => {
 			.mockReturnValue("win32");
 		vi.stubEnv("HLID_WINDOWS_COMPUTER_USE_CWD", "/tmp/hlid-computer-use-test");
 		try {
-			const { proc, writes } = makeFakeSessionProc({
-				uniqueThreadIds: true,
+			const parent = makeFakeSessionProc({
 				skills: [{ name: "computer-use:computer-use" }],
 			});
-			vi.mocked(spawn).mockReturnValue(proc as never);
+			const child = makeFakeSessionProc({
+				skills: [{ name: "computer-use:computer-use" }],
+			});
+			vi.mocked(spawn)
+				.mockReturnValueOnce(parent.proc as never)
+				.mockReturnValueOnce(child.proc as never);
 			vi.mocked(resolveCodexExecutable).mockReturnValue("C:\\bin\\codex.exe");
 			const canUseTool = vi
 				.fn()
@@ -1074,7 +1078,7 @@ describe("CodexAgentSession — commands", () => {
 				sessionId: "thread-1",
 			});
 
-			proc.stdout.emit(
+			parent.proc.stdout.emit(
 				"data",
 				Buffer.from(
 					`${JSON.stringify({
@@ -1091,21 +1095,23 @@ describe("CodexAgentSession — commands", () => {
 				),
 			);
 
-			await vi.waitFor(() => expect(threadStartParams(writes)).toHaveLength(2));
-			expect(threadStartParams(writes)[1]).toMatchObject({
+			await vi.waitFor(() =>
+				expect(threadStartParams(child.writes)).toHaveLength(1),
+			);
+			expect(threadStartParams(child.writes)[0]).toMatchObject({
 				cwd: "/tmp/hlid-computer-use-test",
 				ephemeral: true,
 				threadSource: "user",
 			});
 
-			proc.stdout.emit(
+			child.proc.stdout.emit(
 				"data",
 				Buffer.from(
 					`${JSON.stringify({
 						id: 83,
 						method: "mcpServer/elicitation/request",
 						params: {
-							threadId: "thread-2",
+							threadId: "thread-1",
 							turnId: "turn-2",
 							serverName: "node_repl",
 							mode: "form",
@@ -1139,41 +1145,43 @@ describe("CodexAgentSession — commands", () => {
 						),
 					}),
 				);
-				const response = writes
+				const response = child.writes
 					.map((line) => JSON.parse(line))
 					.find((message) => message.id === 83);
 				expect(response?.result?._meta).toEqual({ persist: "session" });
 			});
 
-			emitSessionNotification(proc, "item/completed", {
-				threadId: "thread-2",
+			emitSessionNotification(child.proc, "item/completed", {
+				threadId: "thread-1",
 				item: {
 					id: "computer-use-result",
 					type: "agentMessage",
 					text: "Calculator opened.",
 				},
 			});
-			emitSessionNotification(proc, "turn/completed", {
-				threadId: "thread-2",
+			emitSessionNotification(child.proc, "turn/completed", {
+				threadId: "thread-1",
 				turn: { id: "turn-2", status: "completed" },
 			});
 
 			await vi.waitFor(() => {
-				const response = writes
+				const response = parent.writes
 					.map((line) => JSON.parse(line))
 					.find((message) => message.id === 82);
 				expect(response?.result).toMatchObject({ success: true });
 			});
 			expect(
-				writes
+				child.writes
 					.map((line) => JSON.parse(line))
 					.find((message) => message.method === "mcpServer/tool/call")?.params,
 			).toEqual({
-				threadId: "thread-2",
+				threadId: "thread-1",
 				server: "node_repl",
 				tool: "js_reset",
 				arguments: {},
 			});
+			expect(child.proc.kill).toHaveBeenCalledOnce();
+			expect(parent.proc.kill).not.toHaveBeenCalled();
 			session.cancel();
 		} finally {
 			vi.unstubAllEnvs();
