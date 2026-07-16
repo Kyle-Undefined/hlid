@@ -2,6 +2,7 @@ import { Mic, Paperclip, Square, X } from "lucide-react";
 import type { RefObject } from "react";
 import { AgentSelect } from "#/components/AgentSelect";
 import { AttachmentStrip } from "#/components/AttachmentStrip";
+import { ActiveCommandBadge } from "#/components/chat/ActiveCommandBadge";
 import { SlashPicker } from "#/components/cockpit/SlashPicker";
 import type { useFileUpload } from "#/hooks/useFileUpload";
 import type { useVoiceInput } from "#/hooks/useVoiceInput";
@@ -52,6 +53,7 @@ type PromptProps = {
 		close: () => void;
 	};
 	onSkillSelect: (command: CommandDescriptor) => void;
+	onClearSkill: () => void;
 	onClear: () => void;
 	onRun: () => void;
 };
@@ -341,11 +343,6 @@ export function CockpitPrompt(props: PromptProps) {
 			<div className="flex items-center justify-between mb-1">
 				<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
 					PROMPT
-					{props.activeSkill && (
-						<span className="text-primary/50 ml-2">
-							· {props.activeSkill.name}
-						</span>
-					)}
 				</div>
 			</div>
 			<section
@@ -359,6 +356,12 @@ export function CockpitPrompt(props: PromptProps) {
 						items={props.picker.items}
 						selectedIndex={props.picker.index}
 						onSelect={props.onSkillSelect}
+					/>
+				)}
+				{props.activeSkill && (
+					<ActiveCommandBadge
+						command={props.activeSkill}
+						onClear={props.onClearSkill}
 					/>
 				)}
 				<AttachmentStrip

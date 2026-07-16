@@ -365,6 +365,10 @@ function CockpitPromptWiring({
 			onSkillSelect={(command) =>
 				composer.handleCommandSelect(command, picker.promptWithoutQuery)
 			}
+			onClearSkill={() => {
+				composer.setActiveSkill(null);
+				composer.textareaRef.current?.focus();
+			}}
 			onClear={composer.handleClear}
 			onRun={onRun}
 		/>

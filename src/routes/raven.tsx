@@ -24,6 +24,7 @@ import {
 } from "react";
 import { AgentSelect } from "#/components/AgentSelect";
 import { AttachmentStrip } from "#/components/AttachmentStrip";
+import { ActiveCommandBadge } from "#/components/chat/ActiveCommandBadge";
 import { reducer } from "#/components/chat/chatReducer";
 import { MessageList } from "#/components/chat/MessageList";
 import { SlashPicker } from "#/components/cockpit/SlashPicker";
@@ -1422,6 +1423,10 @@ export function ChatPage() {
 		input,
 		setInput,
 		activeSkill,
+		clearActiveSkill: () => {
+			setActiveSkill(null);
+			viewport.textareaRef.current?.focus();
+		},
 		planMode,
 		setPlanMode,
 		planHtml,
@@ -2072,6 +2077,8 @@ function ChatInputNotices({
 	activeProviderId,
 	activeEffort,
 	setSessionSelection,
+	activeSkill,
+	clearActiveSkill,
 }: ChatComposerProps) {
 	const { agentSkillContext, selectAgent, sessionId } = session;
 	const { messages, effort, send } = runtime;
@@ -2085,6 +2092,9 @@ function ChatInputNotices({
 	} = upload;
 	return (
 		<>
+			{activeSkill && (
+				<ActiveCommandBadge command={activeSkill} onClear={clearActiveSkill} />
+			)}
 			{gitignoreHint && (
 				<div className="px-4 py-2 flex items-start gap-2 border-b border-border/40 bg-yellow-500/5">
 					<div className="flex-1 text-[10px] text-foreground/70 leading-relaxed">
@@ -2480,6 +2490,7 @@ interface ChatComposerProps {
 	input: string;
 	setInput: ReturnType<typeof useDraft>["setInput"];
 	activeSkill: ActiveRavenSkill | null;
+	clearActiveSkill: () => void;
 	planMode: boolean;
 	setPlanMode: Dispatch<SetStateAction<boolean>>;
 	planHtml: boolean;

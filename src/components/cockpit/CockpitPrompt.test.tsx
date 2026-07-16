@@ -70,6 +70,7 @@ function makeProps(overrides?: Partial<Props>): Props {
 			close: vi.fn(),
 		},
 		onSkillSelect: vi.fn(),
+		onClearSkill: vi.fn(),
 		onClear: vi.fn(),
 		onRun: vi.fn(),
 		...overrides,
@@ -115,9 +116,11 @@ describe("CockpitPrompt placeholder", () => {
 	});
 
 	it("shows skill context hint when a skill is active", () => {
+		const onClearSkill = vi.fn();
 		render(
 			<CockpitPrompt
 				{...makeProps({
+					onClearSkill,
 					activeSkill: {
 						id: "skill:review",
 						name: "review",
@@ -129,7 +132,13 @@ describe("CockpitPrompt placeholder", () => {
 			/>,
 		);
 		expect(textarea().placeholder).toBe("add context… (optional)");
-		expect(screen.getByText("· review")).toBeTruthy();
+		expect(screen.getByTestId("active-command").textContent).toContain(
+			"skill/review",
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: "Clear selected skill /review" }),
+		);
+		expect(onClearSkill).toHaveBeenCalledOnce();
 	});
 });
 

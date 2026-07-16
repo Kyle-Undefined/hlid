@@ -63,7 +63,18 @@ vi.mock("#/components/chat/MessageList", () => ({
 	),
 }));
 vi.mock("#/components/cockpit/SlashPicker", () => ({
-	SlashPicker: () => null,
+	SlashPicker: ({
+		items,
+		onSelect,
+	}: {
+		items: Array<{ name: string }>;
+		onSelect: (item: { name: string }) => void;
+	}) =>
+		items[0] ? (
+			<button type="button" onClick={() => onSelect(items[0])}>
+				Select /{items[0].name}
+			</button>
+		) : null,
 }));
 vi.mock("#/components/PrivacyMask", () => ({
 	PrivacyMask: ({ children }: { children: React.ReactNode }) => children,
@@ -244,6 +255,36 @@ beforeEach(() => {
 });
 
 describe("Raven composed submission behavior", () => {
+	it("shows the selected skill outside the textarea and clears only the selection", () => {
+		state.loaderData = {
+			...state.loaderData,
+			vaultSkills: [
+				{
+					file: "review.md",
+					name: "review",
+					description: "Review changes",
+					content: "Review the work",
+					filePath: "/vault/skills/review.md",
+				},
+			],
+		};
+		render(<ChatPage />);
+
+		const composer = screen.getByRole("combobox");
+		fireEvent.change(composer, { target: { value: "/rev" } });
+		fireEvent.click(screen.getByRole("button", { name: "Select /review" }));
+
+		expect(screen.getByTestId("active-command").textContent).toContain(
+			"skill/review",
+		);
+		fireEvent.change(composer, { target: { value: "keep this context" } });
+		fireEvent.click(
+			screen.getByRole("button", { name: "Clear selected skill /review" }),
+		);
+		expect(screen.queryByTestId("active-command")).toBeNull();
+		expect((composer as HTMLTextAreaElement).value).toBe("keep this context");
+	});
+
 	it("keeps agent selection and all composer modes on-screen at mobile widths", () => {
 		state.loaderData = {
 			...state.loaderData,
