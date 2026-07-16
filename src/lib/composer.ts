@@ -90,6 +90,24 @@ export type ChatSubmission =
 			marksAgentContextSent: boolean;
 	  };
 
+function sessionControlFields(input: {
+	planMode: boolean;
+	planHtml: boolean;
+	provider?: string;
+	model?: string;
+	effort?: string;
+	permissionMode?: string;
+}) {
+	return {
+		plan_mode: input.planMode || undefined,
+		plan_html: (input.planMode && input.planHtml) || undefined,
+		...(input.provider ? { provider: input.provider } : {}),
+		...(input.model ? { model: input.model } : {}),
+		...(input.effort ? { effort: input.effort } : {}),
+		...(input.permissionMode ? { permission_mode: input.permissionMode } : {}),
+	};
+}
+
 export function prepareChatSubmission(input: {
 	id: string;
 	text: string;
@@ -110,6 +128,7 @@ export function prepareChatSubmission(input: {
 	if (!input.text && input.attachments.length === 0) return null;
 	const attachments =
 		input.attachments.length > 0 ? [...input.attachments] : undefined;
+	const sessionControls = sessionControlFields(input);
 	if (input.running) {
 		return {
 			kind: "queued",
@@ -121,14 +140,7 @@ export function prepareChatSubmission(input: {
 				command_action: input.commandAction,
 				attachments,
 				agent_cwd: input.agentCwd,
-				plan_mode: input.planMode || undefined,
-				plan_html: (input.planMode && input.planHtml) || undefined,
-				...(input.provider ? { provider: input.provider } : {}),
-				...(input.model ? { model: input.model } : {}),
-				...(input.effort ? { effort: input.effort } : {}),
-				...(input.permissionMode
-					? { permission_mode: input.permissionMode }
-					: {}),
+				...sessionControls,
 			},
 		};
 	}
@@ -148,14 +160,7 @@ export function prepareChatSubmission(input: {
 			command_action: input.commandAction,
 			attachments,
 			agent_cwd: agentCwd,
-			plan_mode: input.planMode || undefined,
-			plan_html: (input.planMode && input.planHtml) || undefined,
-			...(input.provider ? { provider: input.provider } : {}),
-			...(input.model ? { model: input.model } : {}),
-			...(input.effort ? { effort: input.effort } : {}),
-			...(input.permissionMode
-				? { permission_mode: input.permissionMode }
-				: {}),
+			...sessionControls,
 		},
 		marksAgentContextSent: agentCwd !== undefined,
 	};

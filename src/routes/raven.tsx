@@ -33,6 +33,11 @@ import { TerminalView } from "#/components/TerminalView";
 import { ProviderUsageStrip } from "#/components/usage/ProviderUsageStrip";
 import { ContextWindowSection } from "#/components/usage/UsageWindowSections";
 import { rememberRavenSessionId } from "#/hooks/ravenSessionStore";
+import {
+	forgetRavenTerminal,
+	isRavenTerminalOpen,
+	rememberRavenTerminal,
+} from "#/hooks/ravenTerminalStore";
 import { useChatWsHandler } from "#/hooks/useChatWsHandler";
 import { useCommands } from "#/hooks/useCommands";
 import { useDraft } from "#/hooks/useDraft";
@@ -82,9 +87,7 @@ import {
 	ensureSessionFn,
 	getCurrentSessionFn,
 	getLiveSessionsFn,
-	getSessionAgentCwdFn,
-	getSessionModelFn,
-	getSessionProviderIdFn,
+	getSessionSelectionFn,
 } from "#/lib/serverFns/sessions";
 import { getVoiceInfoFn } from "#/lib/serverFns/voice";
 import { uid } from "#/lib/utils";
@@ -165,20 +168,19 @@ async function loadRavenRoute(session?: string, agent?: string) {
 	let agentSkillContext = agent;
 	let sessionModel: string | null = null;
 	let sessionProviderId: string | null = null;
-	if (!agentSkillContext && resolvedSessionId) {
-		const [savedAgentCwd, savedModel, savedProviderId] = await Promise.all([
-			getSessionAgentCwdFn({ data: resolvedSessionId }),
-			getSessionModelFn({ data: resolvedSessionId }),
-			getSessionProviderIdFn({ data: resolvedSessionId }),
-		]);
-		agentSkillContext = savedAgentCwd ?? undefined;
-		sessionModel = savedModel;
-		sessionProviderId = savedProviderId;
-	} else if (resolvedSessionId) {
-		[sessionModel, sessionProviderId] = await Promise.all([
-			getSessionModelFn({ data: resolvedSessionId }),
-			getSessionProviderIdFn({ data: resolvedSessionId }),
-		]);
+	let sessionEffort: string | null = null;
+	let sessionPermissionMode: string | null = null;
+	if (resolvedSessionId) {
+		const savedSelection = await getSessionSelectionFn({
+			data: resolvedSessionId,
+		});
+		if (!agentSkillContext) {
+			agentSkillContext = savedSelection?.agentCwd ?? undefined;
+		}
+		sessionModel = savedSelection?.model ?? null;
+		sessionProviderId = savedSelection?.providerId ?? null;
+		sessionEffort = savedSelection?.effort ?? null;
+		sessionPermissionMode = savedSelection?.permissionMode ?? null;
 	}
 	const interactiveMode = interactiveModeForAgent(config, agentSkillContext);
 	resolvedSessionId = resolveTerminalSession(
@@ -197,6 +199,8 @@ async function loadRavenRoute(session?: string, agent?: string) {
 		agentSkillContext,
 		sessionModel,
 		sessionProviderId,
+		sessionEffort,
+		sessionPermissionMode,
 		agentList,
 		vaultSkills: cockpitData.skills,
 		interactiveMode,
@@ -250,6 +254,8 @@ function restoredRavenSessionSelection(
 	initialAgentSkillContext: string | undefined,
 	initialSessionModel: string | null,
 	initialSessionProviderId: string | null,
+	initialSessionEffort: string | null,
+	initialSessionPermissionMode: string | null,
 ): RavenSessionSelection {
 	return existingSessionId &&
 		agentSkillContext === initialAgentSkillContext &&
@@ -258,6 +264,10 @@ function restoredRavenSessionSelection(
 				model: initialSessionModel,
 				...(initialSessionProviderId
 					? { providerId: initialSessionProviderId }
+					: {}),
+				...(initialSessionEffort ? { effort: initialSessionEffort } : {}),
+				...(initialSessionPermissionMode
+					? { permissionMode: initialSessionPermissionMode }
 					: {}),
 			}
 		: {};
@@ -1158,6 +1168,8 @@ export function ChatPage() {
 		agentSkillContext: initialAgentSkillContext,
 		sessionModel: initialSessionModel,
 		sessionProviderId: initialSessionProviderId,
+		sessionEffort: initialSessionEffort,
+		sessionPermissionMode: initialSessionPermissionMode,
 		agentList,
 		vaultSkills,
 		interactiveMode,
@@ -1187,6 +1199,8 @@ export function ChatPage() {
 				initialAgentSkillContext,
 				initialSessionModel,
 				initialSessionProviderId,
+				initialSessionEffort,
+				initialSessionPermissionMode,
 			),
 		);
 	useEffect(() => {
@@ -1197,6 +1211,8 @@ export function ChatPage() {
 				initialAgentSkillContext,
 				initialSessionModel,
 				initialSessionProviderId,
+				initialSessionEffort,
+				initialSessionPermissionMode,
 			),
 		);
 	}, [
@@ -1205,6 +1221,8 @@ export function ChatPage() {
 		initialAgentSkillContext,
 		initialSessionModel,
 		initialSessionProviderId,
+		initialSessionEffort,
+		initialSessionPermissionMode,
 	]);
 	const liveSessionStatus = session.liveSessionStatus;
 	useEffect(() => {
@@ -1261,15 +1279,31 @@ export function ChatPage() {
 	const { pendingAttachments, uploadingCount } = upload;
 	const [planMode, setPlanMode] = useState(false);
 	const [planHtml, setPlanHtml] = useState(config.ui.html_plans ?? false);
-	const [terminalOpen, setTerminalOpen] = useState(false);
-	const [shellTab, setShellTab] = useState<"chat" | "terminal">("chat");
+	const [, refreshTerminalState] = useReducer(
+		(revision: number) => revision + 1,
+		0,
+	);
+	const terminalOpen = isRavenTerminalOpen(sessionId);
+	const [terminalClosingSessionId, setTerminalClosingSessionId] = useState<
+		string | null
+	>(null);
+	const [shellTab, setShellTab] = useState<"chat" | "terminal">(() =>
+		terminalOpen ? "terminal" : "chat",
+	);
 	const handleToggleTerminal = useCallback(() => {
-		setTerminalOpen((open) => {
-			const next = !open;
-			setShellTab(next ? "terminal" : "chat");
-			return next;
-		});
-	}, []);
+		const next = !isRavenTerminalOpen(sessionId);
+		if (next) {
+			setTerminalClosingSessionId(null);
+			rememberRavenTerminal(sessionId);
+		} else {
+			// This distinguishes an explicit toggle-off from a route unmount. Only
+			// the former owns and terminates the server-side shell.
+			setTerminalClosingSessionId(sessionId);
+			forgetRavenTerminal(sessionId);
+		}
+		setShellTab(next ? "terminal" : "chat");
+		refreshTerminalState();
+	}, [sessionId]);
 	const [dragOver, setDragOver] = useState(false);
 	const [showModelPopup, setShowModelPopup] = useState(false);
 	const viewport = useRavenViewport({
@@ -1430,6 +1464,7 @@ export function ChatPage() {
 			rateLimit={rateLimit}
 			interactiveMode={interactiveMode}
 			terminalOpen={terminalOpen}
+			terminalClosingSessionId={terminalClosingSessionId}
 			shellTab={shellTab}
 			setShellTab={setShellTab}
 			session={session}
@@ -1455,6 +1490,7 @@ interface ChatPageContentProps {
 	rateLimit: RateLimitMessage | null;
 	interactiveMode: boolean;
 	terminalOpen: boolean;
+	terminalClosingSessionId: string | null;
 	shellTab: "chat" | "terminal";
 	setShellTab: Dispatch<SetStateAction<"chat" | "terminal">>;
 	session: ReturnType<typeof useRavenSessionIdentity>;
@@ -1547,34 +1583,40 @@ function RavenShellTabBar({
 }
 
 /**
- * Dev-shell pane — mounts a real login shell (/ws/shell), once, only while
- * terminalOpen (nothing spins up until toggled on). A single TerminalView
- * stays connected the whole time terminalOpen is true — below md it's
- * CSS-shown/hidden by the Chat/Terminal tab bar; at md+ it's always visible
- * as a fixed-height panel under the chat, alongside the chat rather than
- * swapped with it. Unmounting this component — terminalOpen flipping false —
- * is what kills the PTY, via terminateOnDisconnect.
+ * Dev-shell pane — connects a real login shell (/ws/shell) only after it is
+ * toggled on. While open, ordinary Raven/site navigation disconnects the
+ * browser without terminating the server-side PTY. Returning to the chat
+ * restores the open pane and reattaches to its buffered shell. Toggling the
+ * terminal off keeps this component mounted for its inactive render so that
+ * TerminalView can send the explicit terminate frame.
  */
 function RavenShellPane({
 	config,
 	terminalOpen,
+	terminalClosingSessionId,
 	shellTab,
 	session,
 }: ChatPageContentProps) {
 	const { agentSkillContext, sessionId } = session;
-	if (!terminalOpen || !sessionId) return null;
+	if (!sessionId) return null;
 	return (
 		<div
 			className={`${
-				shellTab === "terminal" ? "flex" : "hidden"
-			} md:order-last md:flex flex-1 md:flex-none md:h-64 overflow-hidden md:border-t md:border-border/40`}
+				terminalOpen
+					? shellTab === "terminal"
+						? "flex md:flex"
+						: "hidden md:flex"
+					: "hidden"
+			} md:order-last flex-1 md:flex-none md:h-64 overflow-hidden md:border-t md:border-border/40`}
 		>
 			<TerminalView
 				sessionId={sessionId}
 				cwd={agentSkillContext ?? config.vault.path}
 				wsPath="/ws/shell"
-				active={true}
-				terminateOnDisconnect
+				active={terminalOpen}
+				terminateOnDisconnect={
+					!terminalOpen && terminalClosingSessionId === sessionId
+				}
 			/>
 		</div>
 	);

@@ -115,25 +115,12 @@ export const getSessionDataFn = createServerFn({ method: "GET" })
 		return dbJson<EnrichedMessageRow[]>(`/db/session-messages?${params}`, []);
 	});
 
-export const getSessionAgentCwdFn = createServerFn({ method: "GET" })
+/** Returns all persisted Raven controls in one session-scoped read. */
+export const getSessionSelectionFn = createServerFn({ method: "GET" })
 	.validator((raw) => sessionIdSchema.parse(raw))
 	.handler(async ({ data: sessionId }) => {
-		const { getSessionAgentCwd } = await import("#/db");
-		return getSessionAgentCwd(sessionId);
-	});
-
-export const getSessionModelFn = createServerFn({ method: "GET" })
-	.validator((raw) => sessionIdSchema.parse(raw))
-	.handler(async ({ data: sessionId }) => {
-		const { getSessionModel } = await import("#/db");
-		return getSessionModel(sessionId);
-	});
-
-export const getSessionProviderIdFn = createServerFn({ method: "GET" })
-	.validator((raw) => sessionIdSchema.parse(raw))
-	.handler(async ({ data: sessionId }) => {
-		const { getSessionProviderId } = await import("#/db");
-		return getSessionProviderId(sessionId);
+		const { getSessionSelection } = await import("#/db");
+		return getSessionSelection(sessionId);
 	});
 
 export const getSessionPermissionsFn = createServerFn({ method: "GET" })
@@ -160,6 +147,9 @@ const getSessionRows = <T>(
 		[],
 	);
 
+const validateSessionRowsRequest = (raw: unknown) =>
+	z.union([sessionIdSchema, sessionScopedPageSchema]).parse(raw);
+
 type SessionPlanProposalRow = {
 	proposal_id: string;
 	seq: number;
@@ -170,9 +160,7 @@ type SessionPlanProposalRow = {
 };
 
 export const getSessionPlanProposalsFn = createServerFn({ method: "GET" })
-	.validator((raw) =>
-		z.union([sessionIdSchema, sessionScopedPageSchema]).parse(raw),
-	)
+	.validator(validateSessionRowsRequest)
 	.handler(({ data }) =>
 		getSessionRows<SessionPlanProposalRow>("/db/session-plan-proposals", data),
 	);
@@ -187,9 +175,7 @@ type SessionAskUserQuestionRow = {
 };
 
 export const getSessionAskUserQuestionsFn = createServerFn({ method: "GET" })
-	.validator((raw) =>
-		z.union([sessionIdSchema, sessionScopedPageSchema]).parse(raw),
-	)
+	.validator(validateSessionRowsRequest)
 	.handler(({ data }) =>
 		getSessionRows<SessionAskUserQuestionRow>(
 			"/db/session-ask-user-questions",

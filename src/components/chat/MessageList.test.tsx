@@ -23,8 +23,16 @@ import type { ChatMessage, UserMessage } from "./chatReducer";
 import { MessageList } from "./MessageList";
 
 vi.mock("./ChatMessageRow", () => ({
-	ChatMessageRow: ({ message }: { message: ChatMessage }) => (
-		<div>{"text" in message ? message.text : message.id}</div>
+	ChatMessageRow: ({
+		message,
+		queueState,
+	}: {
+		message: ChatMessage;
+		queueState?: { kind: string };
+	}) => (
+		<div data-queue-state={queueState?.kind}>
+			{"text" in message ? message.text : message.id}
+		</div>
 	),
 }));
 
@@ -175,6 +183,17 @@ describe("MessageList — orphan queue rendering", () => {
 		});
 		expect(screen.getAllByText("only msg")).toHaveLength(1);
 		expect(screen.queryByText(/^Q\d/)).toBeNull();
+	});
+
+	it("marks a promoted follow-up as pending instead of leaving queued actions active", () => {
+		renderList({
+			messages: [userMsg("q1", "run this next")],
+			chatQueue: [{ ...queued("q1", "run this next"), _promoting: true }],
+			runningTurnId: "old-turn",
+		});
+		expect(screen.getByText("run this next").dataset.queueState).toBe(
+			"promoting",
+		);
 	});
 });
 

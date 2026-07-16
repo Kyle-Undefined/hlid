@@ -58,6 +58,7 @@ vi.mock("../db", () => ({
 
 // ── import after mocks ────────────────────────────────────────────────────────
 
+import { SessionManager } from "./session";
 import { SessionPool } from "./sessionPool";
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
@@ -160,11 +161,24 @@ describe("SessionPool.create", () => {
 	});
 
 	it("constructs one SessionManager per create call", async () => {
-		const { SessionManager } = await import("./session");
 		const pool = makePool();
 		pool.create("/a", "A");
 		pool.create("/b", "B");
 		expect(SessionManager).toHaveBeenCalledTimes(2);
+	});
+
+	it("constructs the manager with the pool entry's agent defaults", () => {
+		const config = makeConfig();
+		const providers = makeProviders();
+		const pool = new SessionPool(config, providers);
+
+		pool.create("/code/proj", "Agent");
+
+		expect(SessionManager).toHaveBeenCalledWith(
+			config,
+			providers,
+			"/code/proj",
+		);
 	});
 });
 
@@ -321,6 +335,16 @@ describe("SessionPool vault helpers", () => {
 		const entry = pool.vaultEntry();
 
 		expect(entry.agentName).toBe("My Notes");
+	});
+
+	it("vaultEntry keeps vault defaults instead of treating the vault as an agent", () => {
+		const config = makeConfig("/vault", "My Notes");
+		const providers = makeProviders();
+		const pool = new SessionPool(config, providers);
+
+		pool.vaultEntry();
+
+		expect(SessionManager).toHaveBeenCalledWith(config, providers, undefined);
 	});
 
 	it("vaultEntry returns same entry on repeated calls (lazy singleton)", () => {

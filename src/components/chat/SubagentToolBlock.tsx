@@ -101,7 +101,7 @@ function SubagentHeader({
 			onClick={onToggle}
 			aria-expanded={open}
 			aria-label={`${title} ${statusLabel(subagent.status).toLowerCase()}`}
-			className="flex min-h-11 w-full min-w-0 max-w-full items-center gap-2 overflow-hidden px-3 py-2 text-left transition-colors hover:bg-primary/[0.03]"
+			className="grid min-h-11 w-full min-w-0 max-w-full grid-cols-[auto_auto_minmax(0,1fr)_auto] items-center gap-x-2 gap-y-1 overflow-hidden px-3 py-2 text-left transition-colors hover:bg-primary/[0.03] sm:flex sm:gap-2"
 		>
 			<ChevronRight
 				className={`h-3 w-3 shrink-0 text-primary/50 transition-transform duration-150 ${open ? "rotate-90" : ""}`}
@@ -109,40 +109,42 @@ function SubagentHeader({
 			<Bot className="h-3.5 w-3.5 shrink-0 text-primary/60" />
 			<PrivacyMask
 				inline
-				className="shrink-0 text-[11px] font-medium tracking-wider text-primary/75"
+				className="col-start-3 row-start-1 min-w-0 break-all text-[11px] font-medium tracking-wider text-primary/75 sm:col-auto sm:row-auto sm:shrink-0 sm:whitespace-nowrap"
 			>
 				{title}
 			</PrivacyMask>
-			<span
-				className={`flex shrink-0 items-center gap-1 text-[9px] font-medium tracking-widest ${statusTone}`}
-			>
-				<StatusIcon status={subagent.status} />
-				{statusLabel(subagent.status)}
-			</span>
-			{(subagent.model || subagent.effort) && (
-				<span className="flex min-w-0 shrink items-center gap-1 overflow-hidden font-mono text-[9px] text-primary/50">
-					{subagent.model && (
-						<span
-							className="max-w-32 truncate border border-primary/15 px-1 py-0.5"
-							title={`Model: ${subagent.model}`}
-						>
-							{subagent.model}
-						</span>
-					)}
-					{subagent.effort && (
-						<span
-							className="shrink-0 border border-primary/15 px-1 py-0.5"
-							title={`Effort: ${subagent.effort}`}
-						>
-							{subagent.effort}
-						</span>
-					)}
+			<div className="col-span-2 col-start-3 row-start-2 flex min-w-0 flex-wrap items-center gap-1 sm:contents">
+				<span
+					className={`flex shrink-0 items-center gap-1 text-[9px] font-medium tracking-widest ${statusTone}`}
+				>
+					<StatusIcon status={subagent.status} />
+					{statusLabel(subagent.status)}
 				</span>
-			)}
-			<PrivacyMask className="min-w-0 flex-1 truncate text-[10px] text-muted-foreground/60">
+				{(subagent.model || subagent.effort) && (
+					<span className="flex min-w-0 shrink flex-wrap items-center gap-1 font-mono text-[9px] text-primary/50 sm:flex-nowrap sm:overflow-hidden">
+						{subagent.model && (
+							<span
+								className="max-w-full break-all border border-primary/15 px-1 py-0.5 sm:max-w-32 sm:truncate"
+								title={`Model: ${subagent.model}`}
+							>
+								{subagent.model}
+							</span>
+						)}
+						{subagent.effort && (
+							<span
+								className="shrink-0 border border-primary/15 px-1 py-0.5"
+								title={`Effort: ${subagent.effort}`}
+							>
+								{subagent.effort}
+							</span>
+						)}
+					</span>
+				)}
+			</div>
+			<PrivacyMask className="col-span-2 col-start-3 row-start-3 min-w-0 break-words text-[10px] text-muted-foreground/60 sm:col-auto sm:row-auto sm:flex-1 sm:truncate">
 				{subagent.currentStep ?? subagent.description ?? "Working"}
 			</PrivacyMask>
-			<span className="shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground/55">
+			<span className="col-start-4 row-start-1 shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground/55 sm:col-auto sm:row-auto">
 				{formatSubagentDuration(durationMs)}
 			</span>
 		</button>
@@ -181,13 +183,13 @@ function SubagentDetails({
 					<div className="mb-1 text-[9px] uppercase tracking-widest text-muted-foreground/50">
 						Agent
 					</div>
-					<div className="truncate font-mono text-[10px] text-primary/60">
+					<div className="break-all font-mono text-[10px] text-primary/60">
 						{subagent.agentId}
 					</div>
 					{subagent.name &&
 						subagent.label &&
 						subagent.name !== subagent.label && (
-							<div className="truncate font-mono text-[10px] text-primary/50">
+							<div className="break-words font-mono text-[10px] text-primary/50">
 								{subagent.label}
 							</div>
 						)}

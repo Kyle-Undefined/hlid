@@ -32,6 +32,24 @@ describe("UserMsg", () => {
 		expect(screen.queryByText("RUN")).toBeNull();
 	});
 
+	it("hides queued turn actions once promotion has been requested", () => {
+		render(
+			<UserMsg
+				message={makeMsg()}
+				queueState={{ kind: "promoting" }}
+				onPromote={vi.fn()}
+				onCancel={vi.fn()}
+			/>,
+		);
+		expect(screen.getByText("NEXT")).toBeTruthy();
+		expect(
+			screen.queryByRole("button", { name: /send queued message/i }),
+		).toBeNull();
+		expect(
+			screen.queryByRole("button", { name: /cancel queued message/i }),
+		).toBeNull();
+	});
+
 	describe("CopyButton mobile visibility", () => {
 		it("copy button has [@media(hover:none)]:opacity-100 class so it shows on touch devices", () => {
 			render(<UserMsg message={makeMsg()} />);

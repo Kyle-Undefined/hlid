@@ -33,6 +33,10 @@ export class SessionTurnQueue<TArgs extends unknown[]> {
 			.filter((id): id is string => id !== undefined);
 	}
 
+	pendingTurns(): ReadonlyArray<Pick<QueuedTurn<TArgs>, "args" | "turnId">> {
+		return this.pending.map(({ args, turnId }) => ({ args, turnId }));
+	}
+
 	cancel(turnId: string): boolean {
 		const index = this.pending.findIndex((turn) => turn.turnId === turnId);
 		if (index === -1) return false;

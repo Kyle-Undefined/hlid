@@ -24,6 +24,11 @@ const state = vi.hoisted(() => ({
 	sessions: [] as unknown[],
 	onMessage: null as ((message: ServerMessage) => void) | null,
 	onAgentChange: null as ((value: string) => void) | null,
+	terminalProps: null as null | {
+		active: boolean;
+		terminateOnDisconnect?: boolean;
+		sessionId: string;
+	},
 }));
 
 vi.mock("@tanstack/react-router", () => ({
@@ -64,7 +69,20 @@ vi.mock("#/components/PrivacyMask", () => ({
 	PrivacyMask: ({ children }: { children: React.ReactNode }) => children,
 }));
 vi.mock("#/components/TerminalView", () => ({
-	TerminalView: () => <div data-testid="terminal-view" />,
+	TerminalView: (props: {
+		active: boolean;
+		terminateOnDisconnect?: boolean;
+		sessionId: string;
+	}) => {
+		state.terminalProps = props;
+		return (
+			<div
+				data-testid="terminal-view"
+				data-active={String(props.active)}
+				data-terminate={String(props.terminateOnDisconnect ?? false)}
+			/>
+		);
+	},
 }));
 vi.mock("#/components/usage/ProviderUsageStrip", () => ({
 	ProviderUsageStrip: () => null,
@@ -145,9 +163,7 @@ vi.mock("#/lib/serverFns/sessions", () => ({
 	ensureSessionFn: vi.fn(),
 	getCurrentSessionFn: vi.fn(),
 	getLiveSessionsFn: vi.fn(),
-	getSessionAgentCwdFn: vi.fn(),
-	getSessionModelFn: vi.fn(),
-	getSessionProviderIdFn: vi.fn(),
+	getSessionSelectionFn: vi.fn(),
 }));
 vi.mock("#/lib/serverFns/agents", () => ({
 	getAgentListFn: vi.fn(),
@@ -164,15 +180,14 @@ vi.mock("#/lib/serverFns/voice", () => ({
 }));
 vi.mock("#/lib/serverFns/config", () => ({ getConfig: vi.fn() }));
 
+import { resetRavenTerminalsForTesting } from "#/hooks/ravenTerminalStore";
 import { getCockpitData } from "#/lib/serverFns/cockpit";
 import { getConfig } from "#/lib/serverFns/config";
 import { getProvidersFn, loadProviderUsages } from "#/lib/serverFns/providers";
 import {
 	getCurrentSessionFn,
 	getLiveSessionsFn,
-	getSessionAgentCwdFn,
-	getSessionModelFn,
-	getSessionProviderIdFn,
+	getSessionSelectionFn,
 } from "#/lib/serverFns/sessions";
 import { getVoiceInfoFn } from "#/lib/serverFns/voice";
 import { ChatPage, Route } from "./raven";
@@ -182,6 +197,7 @@ afterEach(cleanup);
 beforeEach(() => {
 	vi.clearAllMocks();
 	localStorage.clear();
+	resetRavenTerminalsForTesting();
 	state.sessionState = "idle";
 	state.actualModel = null;
 	state.model = "claude-sonnet-4-6";
@@ -190,6 +206,7 @@ beforeEach(() => {
 	state.sessions = [];
 	state.onMessage = null;
 	state.onAgentChange = null;
+	state.terminalProps = null;
 	state.search = {};
 	state.loaderData = {
 		config: {
@@ -213,6 +230,8 @@ beforeEach(() => {
 		agentSkillContext: undefined,
 		sessionModel: null,
 		sessionProviderId: null,
+		sessionEffort: null,
+		sessionPermissionMode: null,
 		agentList: [],
 		vaultSkills: [],
 		interactiveMode: false,
@@ -274,6 +293,40 @@ describe("Raven composed submission behavior", () => {
 				Node.DOCUMENT_POSITION_FOLLOWING,
 		).toBeTruthy();
 		expect(terminalPane?.className).toContain("md:order-last");
+	});
+
+	it("restores an open project terminal after navigating away without terminating it", () => {
+		state.loaderData = {
+			...state.loaderData,
+			existingSessionId: "saved-session",
+			isExplicitSession: true,
+		};
+
+		render(<ChatPage />);
+		fireEvent.click(screen.getByRole("button", { name: "terminal" }));
+
+		expect(state.terminalProps).toMatchObject({
+			active: true,
+			terminateOnDisconnect: false,
+			sessionId: "saved-session",
+		});
+
+		cleanup();
+		state.terminalProps = null;
+		render(<ChatPage />);
+
+		expect(state.terminalProps).toMatchObject({
+			active: true,
+			terminateOnDisconnect: false,
+			sessionId: "saved-session",
+		});
+
+		fireEvent.click(screen.getByTitle(/open a real terminal in this project/i));
+		expect(state.terminalProps).toMatchObject({
+			active: false,
+			terminateOnDisconnect: true,
+			sessionId: "saved-session",
+		});
 	});
 
 	it("shows the selected Einherjar model, effort, and permission instead of stale vault state", () => {
@@ -833,9 +886,7 @@ describe("raven route loader", () => {
 		vi.mocked(loadProviderUsages).mockResolvedValue([] as never);
 		vi.mocked(getLiveSessionsFn).mockResolvedValue([] as never);
 		vi.mocked(getCurrentSessionFn).mockResolvedValue(null as never);
-		vi.mocked(getSessionAgentCwdFn).mockResolvedValue(null as never);
-		vi.mocked(getSessionModelFn).mockResolvedValue(null as never);
-		vi.mocked(getSessionProviderIdFn).mockResolvedValue(null as never);
+		vi.mocked(getSessionSelectionFn).mockResolvedValue(null as never);
 	});
 
 	it("uses the explicit session without consulting live sessions", async () => {
@@ -864,26 +915,36 @@ describe("raven route loader", () => {
 
 	it("derives the agent skill context from the resolved session cwd", async () => {
 		vi.mocked(getCurrentSessionFn).mockResolvedValue("cur" as never);
-		vi.mocked(getSessionAgentCwdFn).mockResolvedValue("/proj" as never);
+		vi.mocked(getSessionSelectionFn).mockResolvedValue({
+			agentCwd: "/proj",
+			providerId: null,
+			model: null,
+			effort: null,
+			permissionMode: null,
+		} as never);
 		const data = await route.loader({ deps: {} });
 		expect(data.agentSkillContext).toBe("/proj");
-		expect(getSessionAgentCwdFn).toHaveBeenCalledWith({ data: "cur" });
+		expect(getSessionSelectionFn).toHaveBeenCalledWith({ data: "cur" });
 	});
 
-	it("restores the model selected for the resolved session", async () => {
+	it("restores all controls selected for the resolved session", async () => {
 		vi.mocked(getCurrentSessionFn).mockResolvedValue("cur" as never);
-		vi.mocked(getSessionModelFn).mockResolvedValue("claude-fable-5" as never);
+		vi.mocked(getSessionSelectionFn).mockResolvedValue({
+			agentCwd: "/proj",
+			providerId: "codex",
+			model: "gpt-5.6-sol",
+			effort: "high",
+			permissionMode: "bypassPermissions",
+		} as never);
 		const data = await route.loader({ deps: {} });
-		expect(data.sessionModel).toBe("claude-fable-5");
-		expect(getSessionModelFn).toHaveBeenCalledWith({ data: "cur" });
-	});
-
-	it("restores the provider used by the resolved session", async () => {
-		vi.mocked(getCurrentSessionFn).mockResolvedValue("cur" as never);
-		vi.mocked(getSessionProviderIdFn).mockResolvedValue("claude" as never);
-		const data = await route.loader({ deps: {} });
-		expect(data.sessionProviderId).toBe("claude");
-		expect(getSessionProviderIdFn).toHaveBeenCalledWith({ data: "cur" });
+		expect(data).toMatchObject({
+			agentSkillContext: "/proj",
+			sessionModel: "gpt-5.6-sol",
+			sessionProviderId: "codex",
+			sessionEffort: "high",
+			sessionPermissionMode: "bypassPermissions",
+		});
+		expect(getSessionSelectionFn).toHaveBeenCalledWith({ data: "cur" });
 	});
 
 	it("attaches to a running terminal session in interactive vault mode", async () => {

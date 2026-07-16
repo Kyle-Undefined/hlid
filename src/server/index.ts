@@ -548,7 +548,7 @@ registerBunServer(
 		fetch: handleServerFetch,
 
 		websocket: (() => {
-			const chatHandlers = createWsHandlers(pool, terminalPool);
+			const chatHandlers = createWsHandlers(pool, terminalPool, shellPool);
 			const termHandlers = createTerminalWsHandlers(terminalPool);
 			const shellHandlers = createShellWsHandlers(shellPool);
 			type ChatWs = Parameters<typeof chatHandlers.open>[0];

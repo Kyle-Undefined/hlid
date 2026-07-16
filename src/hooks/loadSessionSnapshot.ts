@@ -128,6 +128,49 @@ export type SessionHistoryPage = {
 	nextBeforeId: number | null;
 };
 
+async function hydrateSessionHistoryPage({
+	rows,
+	hasOlder,
+	sessionId,
+	beforeSeq,
+}: {
+	rows: SessionDataRow[];
+	hasOlder: boolean;
+	sessionId: string;
+	beforeSeq?: number;
+}): Promise<SessionHistoryPage> {
+	const minSeq = rows[0]?.seq;
+	if (minSeq === undefined) {
+		return {
+			rows,
+			items: [],
+			hasOlder: false,
+			nextBeforeSeq: null,
+			nextBeforeId: null,
+		};
+	}
+	const maxSeq = rows.at(-1)?.seq ?? minSeq;
+	const scopedPage = {
+		sessionId,
+		minSeq,
+		maxSeq,
+		// Older pages exclude unscoped permission events so they are not repeated.
+		...(beforeSeq !== undefined ? { beforeSeq } : {}),
+	};
+	const [permEvents, planRows, aukRows] = await Promise.all([
+		getSessionPermissionsFn({ data: scopedPage }),
+		getSessionPlanProposalsFn({ data: scopedPage }),
+		getSessionAskUserQuestionsFn({ data: scopedPage }),
+	]);
+	return {
+		rows,
+		items: mapSessionRows(rows, permEvents, planRows, aukRows),
+		hasOlder,
+		nextBeforeSeq: rows[0]?.seq ?? null,
+		nextBeforeId: rows[0]?.id ?? null,
+	};
+}
+
 /**
  * Reads one backwards cursor page and maps every persisted transcript card
  * belonging to that message-sequence window. The extra message is lookahead:
@@ -156,36 +199,13 @@ export async function loadSessionHistoryPage({
 	});
 	const hasOlder = pageRows.length > boundedPageSize;
 	const rows = hasOlder ? pageRows.slice(1) : pageRows;
-	const minSeq = rows[0]?.seq;
-	if (minSeq === undefined) {
-		return {
-			rows,
-			items: [],
-			hasOlder: false,
-			nextBeforeSeq: null,
-			nextBeforeId: null,
-		};
-	}
-	const maxSeq = rows.at(-1)?.seq ?? minSeq;
-	const scopedPage = {
+	return hydrateSessionHistoryPage({
+		rows,
+		hasOlder,
 		sessionId,
-		minSeq,
-		maxSeq,
 		// Marks an older page so standalone permission events are not repeated.
 		...(beforeSeq !== undefined ? { beforeSeq } : {}),
-	};
-	const [permEvents, planRows, aukRows] = await Promise.all([
-		getSessionPermissionsFn({ data: scopedPage }),
-		getSessionPlanProposalsFn({ data: scopedPage }),
-		getSessionAskUserQuestionsFn({ data: scopedPage }),
-	]);
-	return {
-		rows,
-		items: mapSessionRows(rows, permEvents, planRows, aukRows),
-		hasOlder,
-		nextBeforeSeq: rows[0]?.seq ?? null,
-		nextBeforeId: rows[0]?.id ?? null,
-	};
+	});
 }
 
 /**
@@ -205,29 +225,11 @@ async function loadSessionHistoryWindow({
 	hasOlder: boolean;
 }): Promise<SessionHistoryPage> {
 	const rows = await getSessionDataFn({ data: { sessionId, minSeq, minId } });
-	if (rows.length === 0) {
-		return {
-			rows,
-			items: [],
-			hasOlder: false,
-			nextBeforeSeq: null,
-			nextBeforeId: null,
-		};
-	}
-	const maxSeq = rows.at(-1)?.seq ?? minSeq;
-	const scopedPage = { sessionId, minSeq, maxSeq };
-	const [permEvents, planRows, aukRows] = await Promise.all([
-		getSessionPermissionsFn({ data: scopedPage }),
-		getSessionPlanProposalsFn({ data: scopedPage }),
-		getSessionAskUserQuestionsFn({ data: scopedPage }),
-	]);
-	return {
+	return hydrateSessionHistoryPage({
 		rows,
-		items: mapSessionRows(rows, permEvents, planRows, aukRows),
 		hasOlder,
-		nextBeforeSeq: rows[0]?.seq ?? null,
-		nextBeforeId: rows[0]?.id ?? null,
-	};
+		sessionId,
+	});
 }
 
 /**

@@ -1,10 +1,12 @@
 import type { ClientMessage, ServerMessage } from "../server/protocol";
 import type { SessionState } from "../server/session";
+import { forgetRavenTerminal } from "./ravenTerminalStore";
 import {
 	clearChatQueue,
 	enqueueLocalChat,
 	findQueuedChat,
 	getQueue,
+	markQueuedChatPromoting,
 	markQueuedChatSent,
 	type QueuedChatMessage,
 	reconcileLocalQueue,
@@ -24,8 +26,10 @@ import {
 	switchStatsContext,
 } from "./wsLiveStatsStore";
 import {
+	canonicalSessionId,
 	focusPendingNewSession,
 	focusSession,
+	getSessionsStatus,
 	getSubscribedSessionId,
 	removeSessionStatus,
 	replaceSessionsStatus,
@@ -355,6 +359,12 @@ function handleGlobalMessage(msg: ServerMessage): boolean {
 			replaceSessionsStatus(msg.sessions);
 			return true;
 		case "session_closed":
+			for (const session of getSessionsStatus()) {
+				if (session.session_id !== msg.session_id) continue;
+				if (session.db_session_id) forgetRavenTerminal(session.db_session_id);
+				break;
+			}
+			forgetRavenTerminal(msg.session_id);
 			removeSessionStatus(msg.session_id);
 			return true;
 		case "session_created":
@@ -377,7 +387,8 @@ function isMessageFromAnotherSession(msg: ServerMessage): boolean {
 	return (
 		subscribedSessionId !== "" &&
 		messageSessionId !== undefined &&
-		messageSessionId !== subscribedSessionId
+		canonicalSessionId(messageSessionId) !==
+			canonicalSessionId(subscribedSessionId)
 	);
 }
 
@@ -408,7 +419,26 @@ function applySessionMessage(msg: ServerMessage): boolean {
 		case "done":
 			return onDone(msg);
 		case "queue_state":
-			reconcileLocalQueue(msg.pending_turn_ids, msg.running_turn_id);
+			// Queue snapshots are session-scoped. Without that scope, the empty
+			// snapshot for a newly selected chat (or the vault snapshot sent before
+			// reconnect re-subscription) prunes durable queued prompts belonging to
+			// every other chat.
+			{
+				const rawSessionId = msg.session_id ?? getSubscribedSessionId();
+				const sessionId = rawSessionId ? canonicalSessionId(rawSessionId) : "";
+				if (sessionId) {
+					reconcileLocalQueue(
+						sessionId,
+						msg.pending_turn_ids,
+						msg.running_turn_id,
+						(msg.pending_turns ?? []).map((turn) => ({
+							...turn,
+							session_id: canonicalSessionId(turn.session_id),
+							_sent: true,
+						})),
+					);
+				}
+			}
 			break;
 	}
 	return true;
@@ -628,6 +658,7 @@ export function promoteQueued(id: string): void {
 	if (_ws?.readyState !== WS_OPEN) return;
 	try {
 		_ws.send(JSON.stringify({ type: "promote_queued", turn_id: id }));
+		markQueuedChatPromoting(id);
 	} catch {
 		// Connection lost — best-effort; UI stays consistent next refresh.
 	}

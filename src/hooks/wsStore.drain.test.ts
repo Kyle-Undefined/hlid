@@ -306,12 +306,35 @@ describe("wsStore — Slice A: immediate-send drain", () => {
 
 	it("promoteQueued sends promote_queued to server (Slice C)", () => {
 		wsStore.enqueueChat({ id: "m1", text: "x", session_id: "s1" });
+		const subscriber = vi.fn();
+		const unsubscribe = wsStore.subscribeQueue(subscriber);
 		currentWs.send.mockClear();
 		wsStore.promoteQueued("m1");
 		const sent = currentWs.send.mock.calls
 			.map((c) => JSON.parse(c[0] as string))
 			.filter((m) => m.type === "promote_queued");
 		expect(sent).toEqual([{ type: "promote_queued", turn_id: "m1" }]);
+		expect(wsStore.getQueue()[0]._promoting).toBe(true);
+		expect(subscriber).toHaveBeenCalledOnce();
+		expect(localStorage.getItem("hlid:raven:chat-queue")).not.toContain(
+			"_promoting",
+		);
+		unsubscribe();
+	});
+
+	it("keeps only the latest promotion request marked as next", () => {
+		wsStore.enqueueChat({ id: "m1", text: "first", session_id: "s1" });
+		wsStore.enqueueChat({ id: "m2", text: "second", session_id: "s1" });
+
+		wsStore.promoteQueued("m1");
+		wsStore.promoteQueued("m2");
+
+		expect(wsStore.getQueue()[0]).toMatchObject({ id: "m1" });
+		expect(wsStore.getQueue()[0]).not.toHaveProperty("_promoting");
+		expect(wsStore.getQueue()[1]).toMatchObject({
+			id: "m2",
+			_promoting: true,
+		});
 	});
 
 	it("queue_state prunes orphan _sent items the server doesn't have (Slice C polish)", () => {
@@ -324,6 +347,7 @@ describe("wsStore — Slice A: immediate-send drain", () => {
 		currentWs.onmessage?.({
 			data: JSON.stringify({
 				type: "queue_state",
+				session_id: "s1",
 				pending_turn_ids: ["m3"],
 				running_turn_id: "m2",
 			}),
@@ -342,12 +366,147 @@ describe("wsStore — Slice A: immediate-send drain", () => {
 		currentWs.onmessage?.({
 			data: JSON.stringify({
 				type: "queue_state",
+				session_id: "s1",
 				pending_turn_ids: [],
 				running_turn_id: null,
 			}),
 		});
 
 		expect(wsStore.getQueue().map((q) => q.id)).toEqual(["m1"]);
+	});
+
+	it("does not prune a queued prompt when another session reports an empty queue", () => {
+		wsStore.enqueueChat({
+			id: "queued-s1",
+			text: "stay visible after navigation",
+			session_id: "s1",
+		});
+		wsStore.enqueueChat({
+			id: "queued-s2",
+			text: "orphan in selected session",
+			session_id: "s2",
+		});
+
+		currentWs.onmessage?.({
+			data: JSON.stringify({
+				type: "queue_state",
+				session_id: "s2",
+				pending_turn_ids: [],
+				running_turn_id: null,
+			}),
+		});
+
+		expect(wsStore.getQueue().map((queued) => queued.id)).toEqual([
+			"queued-s1",
+		]);
+		expect(localStorage.getItem("hlid:raven:chat-queue")).toContain(
+			"stay visible after navigation",
+		);
+	});
+
+	it("does not let the reconnect vault snapshot erase another chat's restored queue", () => {
+		wsStore.enqueueChat({
+			id: "queued-chat",
+			text: "survive reconnect",
+			session_id: "chat-db-id",
+		});
+		const persisted = localStorage.getItem("hlid:raven:chat-queue");
+		wsStore.__resetForTesting();
+		localStorage.setItem("hlid:raven:chat-queue", persisted ?? "[]");
+		wsStore.resetChatQueueForTesting(true);
+
+		currentWs.onmessage?.({
+			data: JSON.stringify({
+				type: "queue_state",
+				session_id: "vault-db-id",
+				pending_turn_ids: [],
+				running_turn_id: null,
+			}),
+		});
+
+		expect(wsStore.getQueue()).toEqual([
+			expect.objectContaining({
+				id: "queued-chat",
+				text: "survive reconnect",
+				session_id: "chat-db-id",
+			}),
+		]);
+	});
+
+	it("rebuilds missing queued text from the server snapshot", () => {
+		currentWs.onmessage?.({
+			data: JSON.stringify({
+				type: "queue_state",
+				session_id: "chat-db-id",
+				pending_turn_ids: ["queued-turn"],
+				pending_turns: [
+					{
+						id: "queued-turn",
+						text: "restore me from the server",
+						session_id: "chat-db-id",
+						plan_mode: true,
+					},
+				],
+				running_turn_id: null,
+			}),
+		});
+
+		expect(wsStore.getQueue()).toEqual([
+			expect.objectContaining({
+				id: "queued-turn",
+				text: "restore me from the server",
+				session_id: "chat-db-id",
+				plan_mode: true,
+				_sent: true,
+			}),
+		]);
+		expect(localStorage.getItem("hlid:raven:chat-queue")).toContain(
+			"restore me from the server",
+		);
+	});
+
+	it("accepts a DB queue snapshot while subscribed by live pool id", () => {
+		currentWs.onmessage?.({
+			data: JSON.stringify({
+				type: "sessions_status",
+				sessions: [
+					{
+						session_id: "live-pool-id",
+						db_session_id: "chat-db-id",
+						agent_cwd: "/project",
+						agent_name: "Project",
+						state: "running",
+						model: "gpt-test",
+						hasPendingPermissions: false,
+					},
+				],
+			}),
+		});
+		wsStore.subscribeToSession("live-pool-id");
+
+		currentWs.onmessage?.({
+			data: JSON.stringify({
+				type: "queue_state",
+				session_id: "chat-db-id",
+				pending_turn_ids: ["queued-turn"],
+				pending_turns: [
+					{
+						id: "queued-turn",
+						text: "canonical session queue",
+						session_id: "chat-db-id",
+					},
+				],
+				running_turn_id: null,
+			}),
+		});
+
+		expect(wsStore.getQueue()).toEqual([
+			expect.objectContaining({
+				id: "queued-turn",
+				text: "canonical session queue",
+				session_id: "chat-db-id",
+			}),
+		]);
 	});
 
 	it("removeFromQueue does NOT send cancel_queued for items not yet sent (ws closed at enqueue)", () => {

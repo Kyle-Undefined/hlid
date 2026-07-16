@@ -21,3 +21,14 @@ export const NAV_ITEMS = [
 	{ to: "/ledger", label: "LEDGER", icon: Scroll, exact: false },
 	{ to: "/forge", label: "FORGE", icon: Hammer, exact: false },
 ] as const;
+
+export function navSearch(
+	to: (typeof NAV_ITEMS)[number]["to"],
+	lastRavenSession: { sessionId: string; agent?: string } | null,
+): { session: string; agent?: string } | undefined {
+	if (to !== "/raven" || !lastRavenSession) return undefined;
+	return {
+		session: lastRavenSession.sessionId,
+		agent: lastRavenSession.agent,
+	};
+}

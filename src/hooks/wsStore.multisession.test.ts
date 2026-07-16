@@ -9,6 +9,11 @@
  */
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	isRavenTerminalOpen,
+	rememberRavenTerminal,
+	resetRavenTerminalsForTesting,
+} from "./ravenTerminalStore";
 import * as wsDataRevisionStore from "./wsDataRevisionStore";
 import * as wsSessionStatusStore from "./wsSessionStatusStore";
 import * as wsTransport from "./wsStore";
@@ -23,6 +28,7 @@ const wsStore = {
 let currentWs: MockWs;
 
 beforeEach(() => {
+	resetRavenTerminalsForTesting();
 	currentWs = makeMockWs(WS_STATES.OPEN);
 	vi.stubGlobal(
 		"WebSocket",
@@ -166,6 +172,28 @@ describe("getSessionsStatus", () => {
 		const status = wsStore.getSessionsStatus();
 		expect(status).toHaveLength(1);
 		expect(status[0].session_id).toBe("s2");
+	});
+
+	it("session_closed forgets terminal state stored under the DB session id", () => {
+		rememberRavenTerminal("db-session");
+		receive({
+			type: "sessions_status",
+			sessions: [
+				{
+					session_id: "pool-session",
+					db_session_id: "db-session",
+					agent_cwd: "/a",
+					agent_name: "A",
+					state: "idle",
+					model: "m",
+					hasPendingPermissions: false,
+				},
+			],
+		});
+
+		receive({ type: "session_closed", session_id: "pool-session" });
+
+		expect(isRavenTerminalOpen("db-session")).toBe(false);
 	});
 
 	it("session_closed notifies subscribeSessionsStatus subscribers", () => {

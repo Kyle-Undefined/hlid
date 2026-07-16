@@ -376,6 +376,13 @@ function applyMigrations(db: Db): void {
 		db.run(`ALTER TABLE sessions ADD COLUMN selected_model TEXT`);
 	});
 
+	// Session-scoped Raven controls must survive refreshes and process restarts
+	// just like selected_model. NULL keeps legacy rows on configured defaults.
+	runMigration(db, "_migrated_sessions_selected_controls", (db) => {
+		db.run(`ALTER TABLE sessions ADD COLUMN selected_effort TEXT`);
+		db.run(`ALTER TABLE sessions ADD COLUMN selected_permission_mode TEXT`);
+	});
+
 	runMigration(db, "_migrated_queries_tokens_in_context", (db) => {
 		db.run(`ALTER TABLE queries ADD COLUMN tokens_in_context INTEGER`);
 	});

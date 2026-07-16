@@ -47,7 +47,11 @@ export class SessionPool {
 	 *
 	 * Throws if the pool has reached its capacity limit.
 	 */
-	create(agentCwd: string, agentName: string): PoolEntry {
+	create(
+		agentCwd: string,
+		agentName: string,
+		useAgentDefaults = true,
+	): PoolEntry {
 		if (this.entries.size >= this.maxSize) {
 			throw new Error(
 				`Session pool at capacity (${this.maxSize}). Close a session before creating a new one.`,
@@ -55,7 +59,11 @@ export class SessionPool {
 		}
 
 		const sessionId = randomUUID();
-		const manager = new SessionManager(this.config, this.providers);
+		const manager = new SessionManager(
+			this.config,
+			this.providers,
+			useAgentDefaults ? agentCwd : undefined,
+		);
 		const runState = new SessionRunState(sessionId);
 		const entry: PoolEntry = {
 			sessionId,
@@ -115,7 +123,7 @@ export class SessionPool {
 		}
 		const vaultCwd = this.config.vault.path;
 		const vaultName = this.config.vault.name ?? "Vault";
-		const entry = this.create(vaultCwd, vaultName);
+		const entry = this.create(vaultCwd, vaultName, false);
 		this._vaultSessionId = entry.sessionId;
 		return entry;
 	}

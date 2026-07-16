@@ -40,6 +40,7 @@ import type {
 	AskUserQuestionAnswers,
 	AskUserQuestionNotes,
 	ChatAttachment,
+	QueueStateSnapshot,
 	ServerMessage,
 } from "./protocol";
 import { mapMcpServer } from "./protocol";
@@ -170,6 +171,17 @@ type AgentSettings = {
 	maxTurns?: number;
 	permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan";
 	recapModel?: string;
+};
+
+export type ConfiguredSessionDefaults = {
+	agentCwd?: string;
+	providerId: string;
+	model: string;
+	effort: string;
+	permissionMode: PermissionMode;
+	maxTurns?: number;
+	turnRecaps: boolean;
+	recapModel: string;
 };
 
 function configuredAgentSettings(
@@ -305,6 +317,61 @@ function buildAgentMaps(config: HlidConfig): {
 	return { providers, settings };
 }
 
+function configuredSessionDefaultsFromMaps(
+	config: HlidConfig,
+	configuredAgentCwd: string | undefined,
+	agentMaps: ReturnType<typeof buildAgentMaps>,
+): ConfiguredSessionDefaults {
+	let configuredAgentPath: string | undefined;
+	if (configuredAgentCwd) {
+		try {
+			configuredAgentPath = realpathSync(expandTilde(configuredAgentCwd));
+		} catch {
+			configuredAgentPath = undefined;
+		}
+	}
+	const configuredAgent = configuredAgentPath
+		? agentMaps.settings.get(configuredAgentPath)
+		: undefined;
+	const vaultProviderId = config.vault_provider ?? "claude";
+	const providerId = configuredAgentPath
+		? (agentMaps.providers.get(configuredAgentPath) ?? vaultProviderId)
+		: vaultProviderId;
+	const codexConfig = config.codex ?? {
+		model: "",
+		effort: "medium" as const,
+		permission_mode: "default" as const,
+		turn_recaps: true,
+	};
+	const providerDefaults = providerId === "codex" ? codexConfig : config.claude;
+	return {
+		...(configuredAgentPath ? { agentCwd: configuredAgentPath } : {}),
+		providerId,
+		model: configuredAgent?.model ?? providerDefaults.model,
+		effort: configuredAgent?.effort ?? providerDefaults.effort,
+		permissionMode:
+			configuredAgent?.permissionMode ?? providerDefaults.permission_mode,
+		maxTurns: configuredAgent?.maxTurns ?? providerDefaults.max_turns,
+		turnRecaps: providerDefaults.turn_recaps ?? true,
+		recapModel:
+			configuredAgent?.recapModel ??
+			providerDefaults.recap_model ??
+			(providerId === "codex" ? "" : "claude-haiku-4-5"),
+	};
+}
+
+/** Resolve the controls an idle vault/Einherjar session should advertise. */
+export function resolveConfiguredSessionDefaults(
+	config: HlidConfig,
+	configuredAgentCwd?: string,
+): ConfiguredSessionDefaults {
+	return configuredSessionDefaultsFromMaps(
+		config,
+		configuredAgentCwd,
+		buildAgentMaps(config),
+	);
+}
+
 function createTurnState(): TurnState {
 	return {
 		receivedAny: false,
@@ -382,6 +449,8 @@ export class SessionManager {
 	/** Serialize temporary provider probes so MCP and command discovery both run. */
 	private probeQueue: Promise<void> = Promise.resolve();
 	private agentCwd: string | undefined;
+	/** Pool-scoped agent path whose configured defaults seed live status. */
+	private configuredAgentCwd: string | undefined;
 	private agentMode: "cwd" | "context" = "cwd";
 	private allowedAgentRealPaths: string[] = [];
 	private turnRecaps!: boolean;
@@ -407,8 +476,13 @@ export class SessionManager {
 	private policyEnforced = false;
 	private usageGateEnforced = false;
 
-	constructor(config: HlidConfig, providers: Map<string, AgentProvider>) {
+	constructor(
+		config: HlidConfig,
+		providers: Map<string, AgentProvider>,
+		configuredAgentCwd?: string,
+	) {
 		this.providers = providers;
+		this.configuredAgentCwd = configuredAgentCwd;
 		this.applyConfig(config);
 	}
 
@@ -443,25 +517,33 @@ export class SessionManager {
 	): void {
 		this.vaultPath = config.vault.path || process.env.HOME || "/";
 		this.vaultProviderId = config.vault_provider ?? "claude";
+		const agentMaps = buildAgentMaps(config);
+		this.agentProviderMap = agentMaps.providers;
+		this.agentSettingsMap = agentMaps.settings;
+		const configuredDefaults = configuredSessionDefaultsFromMaps(
+			config,
+			this.configuredAgentCwd,
+			agentMaps,
+		);
+		if (configuredDefaults.agentCwd && !this.agentCwd) {
+			this.agentCwd = configuredDefaults.agentCwd;
+			this.agentMode = resolveAgentMode(configuredDefaults.agentCwd);
+		}
 		const codexConfig = config.codex ?? {
 			model: "",
 			effort: "medium" as const,
 			permission_mode: "default" as const,
 			turn_recaps: true,
 		};
-		const providerDefaults =
-			this.vaultProviderId === "codex" ? codexConfig : config.claude;
 		if (!preserveSessionOverrides || this.modelOverride === null)
-			this.model = providerDefaults.model;
+			this.model = configuredDefaults.model;
 		if (!preserveSessionOverrides || this.effortOverride === null)
-			this.effort = providerDefaults.effort;
-		this.maxTurns = providerDefaults.max_turns;
+			this.effort = configuredDefaults.effort;
+		this.maxTurns = configuredDefaults.maxTurns;
 		if (!preserveSessionOverrides || this.permissionModeOverride === null)
-			this.permissionMode = providerDefaults.permission_mode;
-		this.turnRecaps = providerDefaults.turn_recaps ?? true;
-		this.recapModel =
-			providerDefaults.recap_model ??
-			(this.vaultProviderId === "codex" ? "" : "claude-haiku-4-5");
+			this.permissionMode = configuredDefaults.permissionMode;
+		this.turnRecaps = configuredDefaults.turnRecaps;
+		this.recapModel = configuredDefaults.recapModel;
 		this.claudeExecutable = resolveClaudeExecutable();
 		this.codexExecutable = codexConfig.executable;
 		this.windowsComputerUse = codexConfig.windows_computer_use ?? {
@@ -471,9 +553,6 @@ export class SessionManager {
 		this.allowedAgentRealPaths = computeAllowedAgentRealPaths(config);
 		this.policyEnforced = config.umbod?.enabled ?? false;
 		this.usageGateEnforced = config.auto_sleep?.enabled ?? false;
-		const agentMaps = buildAgentMaps(config);
-		this.agentProviderMap = agentMaps.providers;
-		this.agentSettingsMap = agentMaps.settings;
 	}
 
 	reinitialize(config: HlidConfig): void {
@@ -613,6 +692,15 @@ export class SessionManager {
 				selection.model
 					? db.setSessionModel(this.currentSessionId, selection.model)
 					: Promise.resolve(),
+				selection.effort
+					? db.setSessionEffort(this.currentSessionId, selection.effort)
+					: Promise.resolve(),
+				selection.permissionMode
+					? db.setSessionPermissionMode(
+							this.currentSessionId,
+							selection.permissionMode,
+						)
+					: Promise.resolve(),
 			]);
 		}
 	}
@@ -631,7 +719,12 @@ export class SessionManager {
 		}
 		this.permissionModeOverride = mode as PermissionMode;
 		this.permissionMode = mode as PermissionMode;
-		await this.agentSession?.setPermissionMode?.(mode);
+		await Promise.all([
+			this.agentSession?.setPermissionMode?.(mode),
+			this.currentSessionId
+				? db.setSessionPermissionMode(this.currentSessionId, mode)
+				: Promise.resolve(),
+		]);
 	}
 
 	/**
@@ -646,6 +739,9 @@ export class SessionManager {
 	async setEffort(effort: string): Promise<void> {
 		this.effortOverride = effort;
 		this.effort = effort;
+		await (this.currentSessionId
+			? db.setSessionEffort(this.currentSessionId, effort)
+			: Promise.resolve());
 		if (!this.agentSession) return;
 		if (this.agentSession.setEffort) {
 			await this.agentSession.setEffort(effort);
@@ -761,13 +857,24 @@ export class SessionManager {
 		await queued;
 	}
 
+	private resolveProbeContext(scope: { agentCwd?: string }): {
+		activeAgentCwd?: string;
+		provider: AgentProvider;
+		providerId: string;
+	} {
+		const activeAgentCwd = scope.agentCwd ?? this.getAgentCwd();
+		return {
+			activeAgentCwd,
+			provider: this.resolveProvider(activeAgentCwd),
+			providerId: this.getProviderId(activeAgentCwd),
+		};
+	}
+
 	async probeMcpStatus(
 		emit: (msg: ServerMessage) => void,
 		scope: { agentCwd?: string; sessionId?: string } = {},
 	): Promise<void> {
-		const activeAgentCwd = scope.agentCwd ?? this.getAgentCwd();
-		const provider = this.resolveProvider(activeAgentCwd);
-		const providerId = this.getProviderId(activeAgentCwd);
+		const { provider, providerId } = this.resolveProbeContext(scope);
 		const publish = (statuses: McpServerStatus[]) => {
 			// Archived-session probes may be proxied through the vault manager. Keep
 			// their scoped result out of the vault cache or Watch will inherit the
@@ -798,9 +905,7 @@ export class SessionManager {
 		emit: (msg: ServerMessage) => void,
 		scope: { agentCwd?: string; sessionId?: string } = {},
 	): Promise<void> {
-		const activeAgentCwd = scope.agentCwd ?? this.getAgentCwd();
-		const provider = this.resolveProvider(activeAgentCwd);
-		const providerId = this.getProviderId(activeAgentCwd);
+		const { provider, providerId } = this.resolveProbeContext(scope);
 		const publish = (commands: SlashCommand[]) =>
 			emit({
 				type: "slash_commands",
@@ -978,6 +1083,20 @@ export class SessionManager {
 				this.model = savedModel;
 				this.modelOverride = { value: savedModel };
 			}
+			if (savedSession?.selected_effort && this.effortOverride === null) {
+				this.effort = savedSession.selected_effort;
+				this.effortOverride = savedSession.selected_effort;
+			}
+			if (
+				savedSession?.selected_permission_mode &&
+				KNOWN_PERMISSION_MODES.has(savedSession.selected_permission_mode) &&
+				this.permissionModeOverride === null
+			) {
+				this.permissionMode =
+					savedSession.selected_permission_mode as PermissionMode;
+				this.permissionModeOverride =
+					savedSession.selected_permission_mode as PermissionMode;
+			}
 			db.setCurrentSessionId(sessionId).catch((e) =>
 				logDbError("setCurrentSessionId", e),
 			);
@@ -1011,7 +1130,16 @@ export class SessionManager {
 				this.modelOverride !== null
 					? (this.modelOverride.value ?? "")
 					: (agentSettings?.model ?? this.model);
-			await db.createSession(sessionId, label, selectedModel);
+			const selectedEffort =
+				this.effortOverride ?? agentSettings?.effort ?? this.effort;
+			const selectedPermissionMode =
+				this.permissionModeOverride ??
+				agentSettings?.permissionMode ??
+				this.permissionMode;
+			await db.createSession(sessionId, label, selectedModel, {
+				effort: selectedEffort,
+				permissionMode: selectedPermissionMode,
+			});
 		}
 
 		// Persist agent cwd after session row exists
@@ -1758,12 +1886,28 @@ export class SessionManager {
 	 * that were _sent before a server restart and have no matching QueuedTurn
 	 * anymore.
 	 */
-	getQueueState(): {
-		pending_turn_ids: string[];
-		running_turn_id: string | null;
-	} {
+	getQueueState(): QueueStateSnapshot {
+		const pendingTurns = this.turnQueue.pendingTurns().flatMap((turn) => {
+			const id = turn.turnId;
+			const sessionId = turn.args[2] ?? this.currentSessionId;
+			if (!id || !sessionId) return [];
+			return [
+				{
+					id,
+					text: turn.args[0],
+					session_id: sessionId,
+					...(turn.args[3] ? { skill_context: turn.args[3] } : {}),
+					...(turn.args[4] ? { attachments: turn.args[4] } : {}),
+					...(turn.args[5] ? { agent_cwd: turn.args[5] } : {}),
+					...(turn.args[7] !== undefined ? { plan_mode: turn.args[7] } : {}),
+					...(turn.args[8] !== undefined ? { plan_html: turn.args[8] } : {}),
+					...(turn.args[9] ? { command_action: turn.args[9] } : {}),
+				},
+			];
+		});
 		return {
 			pending_turn_ids: this.turnQueue.pendingTurnIds(),
+			pending_turns: pendingTurns,
 			running_turn_id:
 				this.state === "running" ? (this.currentTurnId ?? null) : null,
 		};

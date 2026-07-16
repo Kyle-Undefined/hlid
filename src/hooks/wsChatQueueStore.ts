@@ -17,6 +17,8 @@ export type QueuedChatMessage = {
 	permission_mode?: string;
 	/** True after the message has been delivered to the server. */
 	_sent?: boolean;
+	/** True while the server is interrupting the active turn to promote this one. */
+	_promoting?: boolean;
 };
 
 let pendingPrompt: string | null = null;
@@ -46,7 +48,16 @@ function persistQueue(): void {
 	if (typeof localStorage === "undefined") return;
 	try {
 		if (chatQueue.length > 0) {
-			localStorage.setItem(CHAT_QUEUE_STORAGE_KEY, JSON.stringify(chatQueue));
+			// Promotion is only an optimistic, in-memory acknowledgement while the
+			// server interrupts the current turn. A reload must rebuild that state
+			// from the server instead of reviving a stale NEXT badge.
+			const persistedQueue = chatQueue.map(
+				({ _promoting, ...queued }) => queued,
+			);
+			localStorage.setItem(
+				CHAT_QUEUE_STORAGE_KEY,
+				JSON.stringify(persistedQueue),
+			);
 		} else {
 			localStorage.removeItem(CHAT_QUEUE_STORAGE_KEY);
 		}
@@ -76,6 +87,27 @@ export function markQueuedChatSent(id: string): void {
 	}
 }
 
+/**
+ * Give the promoted turn immediate UI feedback while the server interrupts the
+ * active turn. The next running status takes precedence over this marker and
+ * the item is removed normally when its turn completes.
+ */
+export function markQueuedChatPromoting(id: string): void {
+	if (!chatQueue.some((queued) => queued.id === id)) return;
+	let changed = false;
+	chatQueue = chatQueue.map((queued) => {
+		const promoting = queued.id === id;
+		if (Boolean(queued._promoting) === promoting) return queued;
+		changed = true;
+		if (promoting) return { ...queued, _promoting: true };
+		const { _promoting, ...rest } = queued;
+		return rest;
+	});
+	if (!changed) return;
+	persistQueue();
+	notifySubscribers();
+}
+
 export function findQueuedChat(id: string): QueuedChatMessage | undefined {
 	return chatQueue.find((queued) => queued.id === id);
 }
@@ -90,15 +122,44 @@ export function removeLocalChat(id: string): QueuedChatMessage | undefined {
 }
 
 export function reconcileLocalQueue(
+	sessionId: string,
 	pendingIds: string[],
 	runningId: string | null,
+	pendingTurns: QueuedChatMessage[] = [],
 ): void {
 	const known = new Set([...pendingIds, ...(runningId ? [runningId] : [])]);
-	const before = chatQueue.length;
-	chatQueue = chatQueue.filter(
-		(queued) => !queued._sent || known.has(queued.id),
-	);
-	if (chatQueue.length !== before) {
+	const serverPending = new Map(pendingTurns.map((turn) => [turn.id, turn]));
+	let changed = false;
+	chatQueue = chatQueue
+		.map((queued) => {
+			if (queued.session_id !== sessionId) return queued;
+			const snapshot = serverPending.get(queued.id);
+			if (!snapshot) return queued;
+			serverPending.delete(queued.id);
+			const restored = { ...queued, ...snapshot, _sent: true };
+			if (JSON.stringify(restored) !== JSON.stringify(queued)) changed = true;
+			return restored;
+		})
+		.filter((queued) => {
+			const keep =
+				queued.session_id !== sessionId ||
+				!queued._sent ||
+				known.has(queued.id);
+			if (!keep) changed = true;
+			return keep;
+		});
+	if (serverPending.size > 0) {
+		chatQueue = [
+			...chatQueue,
+			...Array.from(serverPending.values(), (turn) => ({
+				...turn,
+				session_id: sessionId,
+				_sent: true,
+			})),
+		];
+		changed = true;
+	}
+	if (changed) {
 		persistQueue();
 		notifySubscribers();
 	}

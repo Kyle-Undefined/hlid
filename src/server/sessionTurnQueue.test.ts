@@ -14,6 +14,17 @@ describe("SessionTurnQueue", () => {
 		expect(queue.shift()?.args).toEqual(["third"]);
 	});
 
+	it("exposes pending arguments without queue settlement callbacks", () => {
+		const queue = new SessionTurnQueue<[string, number]>();
+		void queue.enqueue(["first", 1], "one");
+		void queue.enqueue(["second", 2], "two");
+
+		expect(queue.pendingTurns()).toEqual([
+			{ args: ["first", 1], turnId: "one" },
+			{ args: ["second", 2], turnId: "two" },
+		]);
+	});
+
 	it("cancels and resolves a pending turn", async () => {
 		const queue = new SessionTurnQueue<[]>();
 		const resolved = vi.fn();

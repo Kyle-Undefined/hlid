@@ -28,6 +28,11 @@ export abstract class PtySessionPoolBase<TEntry extends PtyPoolEntry> {
 	/** Reverse lookup: WS → sessionId (for unsubscribe). */
 	protected wsToSession: Map<AnyWs, string> = new Map();
 
+	/** Override with null for PTYs whose owning session controls their lifetime. */
+	protected idleTimeoutMs(): number | null {
+		return IDLE_TIMEOUT_MS;
+	}
+
 	/** Remove a WS client from its session; starts the idle timer once empty. */
 	unsubscribe(ws: AnyWs): void {
 		const sessionId = this.wsToSession.get(ws);
@@ -39,10 +44,11 @@ export abstract class PtySessionPoolBase<TEntry extends PtyPoolEntry> {
 
 		entry.subscribers.delete(ws);
 
-		if (entry.subscribers.size === 0 && entry.alive) {
+		const idleTimeoutMs = this.idleTimeoutMs();
+		if (entry.subscribers.size === 0 && entry.alive && idleTimeoutMs !== null) {
 			entry.idleTimer = setTimeout(() => {
 				this.close(sessionId);
-			}, IDLE_TIMEOUT_MS);
+			}, idleTimeoutMs);
 		}
 	}
 

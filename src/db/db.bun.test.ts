@@ -50,12 +50,15 @@ import {
 	getSessionModel,
 	getSessionProviderId,
 	getSessionProviderSession,
+	getSessionSelection,
 	getSessionsPaginated,
 	recordQuery,
 	setSessionActualModel,
 	setSessionAgentCwd,
 	setSessionClaudeId,
+	setSessionEffort,
 	setSessionModel,
+	setSessionPermissionMode,
 	setSessionProviderId,
 	setSessionProviderSession,
 } from "./sessions";
@@ -314,6 +317,43 @@ describe("sessions — agent_cwd & actual_model", () => {
 		expect(await getSessionModel("s1")).toBe("gpt-5.6-sol");
 		await setSessionModel("s1", "claude-fable-5");
 		expect(await getSessionModel("s1")).toBe("claude-fable-5");
+	});
+
+	it("persists and reads all Raven session controls together", async () => {
+		await createSession("s1", "L", "gpt-5.6-sol", {
+			effort: "high",
+			permissionMode: "bypassPermissions",
+		});
+		await setSessionAgentCwd("s1", "/home/kyle/agents/hlid");
+		await setSessionProviderId("s1", "codex");
+
+		expect(await getSessionSelection("s1")).toEqual({
+			agentCwd: "/home/kyle/agents/hlid",
+			providerId: "codex",
+			model: "gpt-5.6-sol",
+			effort: "high",
+			permissionMode: "bypassPermissions",
+		});
+
+		await setSessionModel("s1", "gpt-5.6-terra");
+		await setSessionEffort("s1", "xhigh");
+		await setSessionPermissionMode("s1", "default");
+		expect(await getSessionSelection("s1")).toMatchObject({
+			model: "gpt-5.6-terra",
+			effort: "xhigh",
+			permissionMode: "default",
+		});
+	});
+
+	it("leaves legacy session controls null so configured defaults can apply", async () => {
+		await createSession("s1", "L", "gpt-5.6-sol");
+		expect(await getSessionSelection("s1")).toEqual({
+			agentCwd: null,
+			providerId: "claude",
+			model: "gpt-5.6-sol",
+			effort: null,
+			permissionMode: null,
+		});
 	});
 
 	it("falls back to the actual model for a legacy session", async () => {

@@ -8,13 +8,13 @@ export type StatusMessage = {
 	/**
 	 * Current permission mode for this session. Session-scoped — reflects
 	 * config defaults until a `set_permission_mode` client message overrides
-	 * it; never persisted to hlid.config.toml.
+	 * it. Persisted on the chat row, never written back to hlid.config.toml.
 	 */
 	permission_mode?: string;
 	/**
 	 * Current effort/thinking level for this session. Session-scoped like
 	 * permission_mode — reflects config defaults until a `set_effort` client
-	 * message overrides it; never persisted to hlid.config.toml.
+	 * message overrides it, then persists on the chat row.
 	 */
 	effort?: string;
 	/**
@@ -179,17 +179,35 @@ export type UserMessageEvent = {
 };
 
 /**
- * Slice C polish: server-authoritative queue state. Emitted on connect and
- * sync. Client uses it to prune orphan chatQueue items (e.g. items that
- * were _sent before a server restart and the server no longer has a
- * matching QueuedTurn).
+ * Slice C polish: server-authoritative queue state. Emitted on connect, sync,
+ * and queue changes. Clients use it to rebuild pending text and prune orphan
+ * items only within the represented chat.
  */
-export type QueueStateMessage = {
-	type: "queue_state";
+export type PendingTurnSnapshot = {
+	id: string;
+	text: string;
+	session_id: string;
+	skill_context?: string;
+	command_action?: "review" | "computer-use";
+	agent_cwd?: string;
+	attachments?: ChatAttachment[];
+	plan_mode?: boolean;
+	plan_html?: boolean;
+};
+
+export type QueueStateSnapshot = {
 	/** turn_ids currently in the server's pending queue (head is next-up). */
 	pending_turn_ids: string[];
+	/** Pending content lets another page/device reconstruct the queue display. */
+	pending_turns?: PendingTurnSnapshot[];
 	/** turn_id of the turn the server is running, if any. */
 	running_turn_id: string | null;
+};
+
+export type QueueStateMessage = QueueStateSnapshot & {
+	type: "queue_state";
+	/** DB session whose queue is represented by this snapshot. */
+	session_id?: string;
 };
 
 export type McpStatusMessage = {

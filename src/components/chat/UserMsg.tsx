@@ -7,6 +7,7 @@ import { CopyButton } from "./CopyButton";
 
 export type UserMsgQueueState =
 	| { kind: "running" }
+	| { kind: "promoting" }
 	| { kind: "queued"; index: number };
 
 export function UserMsg({
@@ -34,12 +35,19 @@ export function UserMsg({
 	const { copy, copied } = useCopyToClipboard();
 	const isQueued = queueState?.kind === "queued";
 	const isRunning = queueState?.kind === "running";
-	const label = isRunning ? "ME" : isQueued ? `Q${queueState.index + 1}` : "ME";
+	const isPromoting = queueState?.kind === "promoting";
+	const label = isRunning
+		? "ME"
+		: isPromoting
+			? "NEXT"
+			: isQueued
+				? `Q${queueState.index + 1}`
+				: "ME";
 	return (
 		<div className="group flex items-start justify-end gap-3 py-3 border-b border-border/40">
 			<div
 				className={`flex flex-col items-end gap-1.5 min-w-0 max-w-[78%] ${
-					isQueued || isRunning ? "opacity-60" : ""
+					isQueued || isRunning || isPromoting ? "opacity-60" : ""
 				}`}
 			>
 				{message.attachments && message.attachments.length > 0 && (
@@ -63,14 +71,14 @@ export function UserMsg({
 			<div className="flex flex-col items-end gap-0.5 shrink-0">
 				<div
 					className={`text-[9px] tracking-widest pt-0.5 w-11 text-right ${
-						isQueued || isRunning
+						isQueued || isRunning || isPromoting
 							? "text-muted-foreground/60"
 							: "text-primary/60"
 					}`}
 				>
 					{label}
 				</div>
-				{message.text && !isQueued && !isRunning && (
+				{message.text && !isQueued && !isRunning && !isPromoting && (
 					<CopyButton
 						onCopy={() => copy(message.text)}
 						copied={copied}

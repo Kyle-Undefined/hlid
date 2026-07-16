@@ -151,39 +151,76 @@ export type PlanProposalRow = {
 	timestamp: number;
 };
 
+type SessionSequenceQuery = {
+	sessionId: string;
+	select: string;
+	table: string;
+	sequenceColumn: string;
+	minSequence?: number;
+	beforeSequence?: number;
+	maxSequence?: number;
+	unboundedOrderBy?: string;
+};
+
+/**
+ * Read a session-owned child table over the sequence window used by transcript
+ * hydration. Table, column, and select values are internal constants supplied
+ * by the typed wrappers below; user values remain bound query parameters.
+ */
+async function getSessionSequenceRows<Row>({
+	sessionId,
+	select,
+	table,
+	sequenceColumn,
+	minSequence,
+	beforeSequence,
+	maxSequence,
+	unboundedOrderBy = `${sequenceColumn} ASC, id ASC`,
+}: SessionSequenceQuery): Promise<Row[]> {
+	const db = await getDb();
+	const queryBase = `SELECT ${select} FROM ${table} WHERE session_id = ?`;
+	const sequenceOrder = `${sequenceColumn} ASC, id ASC`;
+	if (minSequence !== undefined) {
+		if (maxSequence !== undefined) {
+			return db
+				.query<Row, [string, number, number]>(
+					`${queryBase} AND ${sequenceColumn} >= ? AND ${sequenceColumn} <= ? ORDER BY ${sequenceOrder}`,
+				)
+				.all(sessionId, minSequence, maxSequence);
+		}
+		if (beforeSequence !== undefined) {
+			return db
+				.query<Row, [string, number, number]>(
+					`${queryBase} AND ${sequenceColumn} >= ? AND ${sequenceColumn} < ? ORDER BY ${sequenceOrder}`,
+				)
+				.all(sessionId, minSequence, beforeSequence);
+		}
+		return db
+			.query<Row, [string, number]>(
+				`${queryBase} AND ${sequenceColumn} >= ? ORDER BY ${sequenceOrder}`,
+			)
+			.all(sessionId, minSequence);
+	}
+	return db
+		.query<Row, [string]>(`${queryBase} ORDER BY ${unboundedOrderBy}`)
+		.all(sessionId);
+}
+
 export async function getSessionPlanProposals(
 	sessionId: string,
 	minSeq?: number,
 	beforeSeq?: number,
 	maxSeq?: number,
 ): Promise<PlanProposalRow[]> {
-	const db = await getDb();
-	if (minSeq !== undefined) {
-		if (maxSeq !== undefined) {
-			return db
-				.query<PlanProposalRow, [string, number, number]>(
-					`SELECT proposal_id, seq, plan, decision, html_attachment_id, timestamp FROM plan_proposals WHERE session_id = ? AND seq >= ? AND seq <= ? ORDER BY seq ASC, id ASC`,
-				)
-				.all(sessionId, minSeq, maxSeq);
-		}
-		if (beforeSeq !== undefined) {
-			return db
-				.query<PlanProposalRow, [string, number, number]>(
-					`SELECT proposal_id, seq, plan, decision, html_attachment_id, timestamp FROM plan_proposals WHERE session_id = ? AND seq >= ? AND seq < ? ORDER BY seq ASC, id ASC`,
-				)
-				.all(sessionId, minSeq, beforeSeq);
-		}
-		return db
-			.query<PlanProposalRow, [string, number]>(
-				`SELECT proposal_id, seq, plan, decision, html_attachment_id, timestamp FROM plan_proposals WHERE session_id = ? AND seq >= ? ORDER BY seq ASC, id ASC`,
-			)
-			.all(sessionId, minSeq);
-	}
-	return db
-		.query<PlanProposalRow, [string]>(
-			`SELECT proposal_id, seq, plan, decision, html_attachment_id, timestamp FROM plan_proposals WHERE session_id = ? ORDER BY seq ASC, id ASC`,
-		)
-		.all(sessionId);
+	return getSessionSequenceRows<PlanProposalRow>({
+		sessionId,
+		select: "proposal_id, seq, plan, decision, html_attachment_id, timestamp",
+		table: "plan_proposals",
+		sequenceColumn: "seq",
+		minSequence: minSeq,
+		beforeSequence: beforeSeq,
+		maxSequence: maxSeq,
+	});
 }
 
 // ─── ask_user_questions ──────────────────────────────────────────────────────
@@ -238,33 +275,16 @@ export async function getSessionAskUserQuestions(
 	beforeSeq?: number,
 	maxSeq?: number,
 ): Promise<AskUserQuestionRow[]> {
-	const db = await getDb();
-	if (minSeq !== undefined) {
-		if (maxSeq !== undefined) {
-			return db
-				.query<AskUserQuestionRow, [string, number, number]>(
-					`SELECT request_id, seq, questions_json, answers_json, notes_json, timestamp FROM ask_user_questions WHERE session_id = ? AND seq >= ? AND seq <= ? ORDER BY seq ASC, id ASC`,
-				)
-				.all(sessionId, minSeq, maxSeq);
-		}
-		if (beforeSeq !== undefined) {
-			return db
-				.query<AskUserQuestionRow, [string, number, number]>(
-					`SELECT request_id, seq, questions_json, answers_json, notes_json, timestamp FROM ask_user_questions WHERE session_id = ? AND seq >= ? AND seq < ? ORDER BY seq ASC, id ASC`,
-				)
-				.all(sessionId, minSeq, beforeSeq);
-		}
-		return db
-			.query<AskUserQuestionRow, [string, number]>(
-				`SELECT request_id, seq, questions_json, answers_json, notes_json, timestamp FROM ask_user_questions WHERE session_id = ? AND seq >= ? ORDER BY seq ASC, id ASC`,
-			)
-			.all(sessionId, minSeq);
-	}
-	return db
-		.query<AskUserQuestionRow, [string]>(
-			`SELECT request_id, seq, questions_json, answers_json, notes_json, timestamp FROM ask_user_questions WHERE session_id = ? ORDER BY seq ASC, id ASC`,
-		)
-		.all(sessionId);
+	return getSessionSequenceRows<AskUserQuestionRow>({
+		sessionId,
+		select:
+			"request_id, seq, questions_json, answers_json, notes_json, timestamp",
+		table: "ask_user_questions",
+		sequenceColumn: "seq",
+		minSequence: minSeq,
+		beforeSequence: beforeSeq,
+		maxSequence: maxSeq,
+	});
 }
 
 export async function getSessionMessages(
@@ -363,31 +383,14 @@ export async function getSessionToolEvents(
 	beforeAssistantSeq?: number,
 	maxAssistantSeq?: number,
 ): Promise<ToolEventRow[]> {
-	const db = await getDb();
-	if (minAssistantSeq !== undefined) {
-		if (maxAssistantSeq !== undefined) {
-			return db
-				.query<ToolEventRow, [string, number, number]>(
-					`SELECT * FROM tool_events WHERE session_id = ? AND assistant_seq >= ? AND assistant_seq <= ? ORDER BY assistant_seq ASC, id ASC`,
-				)
-				.all(sessionId, minAssistantSeq, maxAssistantSeq);
-		}
-		if (beforeAssistantSeq !== undefined) {
-			return db
-				.query<ToolEventRow, [string, number, number]>(
-					`SELECT * FROM tool_events WHERE session_id = ? AND assistant_seq >= ? AND assistant_seq < ? ORDER BY assistant_seq ASC, id ASC`,
-				)
-				.all(sessionId, minAssistantSeq, beforeAssistantSeq);
-		}
-		return db
-			.query<ToolEventRow, [string, number]>(
-				`SELECT * FROM tool_events WHERE session_id = ? AND assistant_seq >= ? ORDER BY assistant_seq ASC, id ASC`,
-			)
-			.all(sessionId, minAssistantSeq);
-	}
-	return db
-		.query<ToolEventRow, [string]>(
-			`SELECT * FROM tool_events WHERE session_id = ? ORDER BY id ASC`,
-		)
-		.all(sessionId);
+	return getSessionSequenceRows<ToolEventRow>({
+		sessionId,
+		select: "*",
+		table: "tool_events",
+		sequenceColumn: "assistant_seq",
+		minSequence: minAssistantSeq,
+		beforeSequence: beforeAssistantSeq,
+		maxSequence: maxAssistantSeq,
+		unboundedOrderBy: "id ASC",
+	});
 }

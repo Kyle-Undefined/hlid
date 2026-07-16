@@ -9,19 +9,19 @@ import type { PoolEntry, SessionPool } from "./sessionPool";
 
 // ── mocks ─────────────────────────────────────────────────────────────────────
 
-vi.mock("../db", () => ({
-	recordPermissionEvent: vi.fn().mockResolvedValue(undefined),
-	appendLog: vi.fn().mockResolvedValue(undefined),
-	saveSetting: vi.fn().mockResolvedValue(undefined),
-	setAskUserQuestionResolution: vi.fn().mockResolvedValue(undefined),
-}));
-
-const { wsState, mockSend, mockBroadcast, mockLoadConfig } = vi.hoisted(() => ({
+const {
+	wsState,
+	mockSend,
+	mockBroadcast,
+	mockLoadConfig,
+	mockGetSessionSelection,
+} = vi.hoisted(() => ({
 	wsState: {
 		clients: new Set<object>(),
 	},
 	mockSend: vi.fn(),
 	mockBroadcast: vi.fn(),
+	mockGetSessionSelection: vi.fn().mockResolvedValue(null),
 	mockLoadConfig: vi.fn().mockReturnValue({
 		vault: { path: "/tmp/test", name: "Test Vault" },
 		claude: {
@@ -32,6 +32,14 @@ const { wsState, mockSend, mockBroadcast, mockLoadConfig } = vi.hoisted(() => ({
 		},
 		agents: [],
 	}),
+}));
+
+vi.mock("../db", () => ({
+	recordPermissionEvent: vi.fn().mockResolvedValue(undefined),
+	appendLog: vi.fn().mockResolvedValue(undefined),
+	saveSetting: vi.fn().mockResolvedValue(undefined),
+	setAskUserQuestionResolution: vi.fn().mockResolvedValue(undefined),
+	getSessionSelection: mockGetSessionSelection,
 }));
 
 vi.mock("./config", () => ({ loadConfig: mockLoadConfig }));
@@ -299,7 +307,12 @@ describe("open (pool)", () => {
 		const ws = makeWs();
 		open(ws as never);
 		const calls = mockSend.mock.calls.filter((c) => c[0] === ws);
-		expect(calls.some((c) => c[1].type === "queue_state")).toBe(true);
+		expect(calls.find((c) => c[1].type === "queue_state")?.[1]).toEqual({
+			type: "queue_state",
+			session_id: "mock-db-session",
+			pending_turn_ids: ["t1"],
+			running_turn_id: null,
+		});
 	});
 });
 
@@ -588,6 +601,68 @@ describe("message — subscribe_session", () => {
 			expect.objectContaining({ type: "status", state: "idle" }),
 		);
 	});
+
+	it("uses the archived Einherjar controls instead of vault defaults", async () => {
+		const vault = makeEntry("vault-id");
+		vault.manager.getStatus.mockReturnValue({
+			state: "idle",
+			model: "vault-model",
+			effort: "medium",
+			permission_mode: "default",
+		});
+		const pool = makePool(vault);
+		pool.get.mockReturnValue(undefined);
+		mockGetSessionSelection.mockResolvedValueOnce({
+			agentCwd: "/tmp",
+			providerId: "codex",
+			model: "gpt-session",
+			effort: null,
+			permissionMode: null,
+		});
+		mockLoadConfig.mockReturnValueOnce({
+			vault: { path: "/tmp/test", name: "Test Vault" },
+			vault_provider: "codex",
+			codex: {
+				model: "vault-model",
+				effort: "medium",
+				permission_mode: "default",
+				turn_recaps: false,
+			},
+			claude: {
+				model: "claude-model",
+				effort: "medium",
+				permission_mode: "default",
+				turn_recaps: false,
+			},
+			agents: [
+				{
+					path: "/tmp",
+					provider: "codex",
+					model: "gpt-agent",
+					effort: "high",
+					permission_mode: "bypassPermissions",
+				},
+			],
+		});
+		const { message } = createWsHandlers(pool);
+		const ws = makeWs("vault-id");
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "subscribe_session",
+				session_id: "archived-einherjar",
+			}),
+		);
+
+		expect(mockSend).toHaveBeenCalledWith(ws, {
+			type: "status",
+			state: "idle",
+			model: "gpt-session",
+			effort: "high",
+			permission_mode: "bypassPermissions",
+		});
+	});
 });
 
 // ── stop_session ──────────────────────────────────────────────────────────────
@@ -626,6 +701,29 @@ describe("message — stop_session", () => {
 // ── close_session ─────────────────────────────────────────────────────────────
 
 describe("message — close_session", () => {
+	it("closes project shells keyed by either pool or database session id", async () => {
+		const vault = makeEntry("vault-id");
+		const sessionEntry = makeEntry("session-abc");
+		sessionEntry.manager.getCurrentSessionId.mockReturnValue("db-session-abc");
+		const pool = makePool(vault);
+		pool.get.mockImplementation((id: string) => {
+			if (id === vault.sessionId) return vault;
+			if (id === "session-abc") return sessionEntry;
+			return undefined;
+		});
+		const shellPool = { close: vi.fn() };
+		const { message } = createWsHandlers(pool, undefined, shellPool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({ type: "close_session", session_id: "session-abc" }),
+		);
+
+		expect(shellPool.close).toHaveBeenCalledWith("session-abc");
+		expect(shellPool.close).toHaveBeenCalledWith("db-session-abc");
+	});
+
 	it("calls pool.close() with the session_id", async () => {
 		const vault = makeEntry("vault-id");
 		const sessionEntry = makeEntry("session-abc");

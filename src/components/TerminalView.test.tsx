@@ -465,6 +465,25 @@ describe("TerminalView — active prop", () => {
 		expect(ws.close).toHaveBeenCalled();
 	});
 
+	it("unmount without terminateOnDisconnect leaves the server-side PTY alive", () => {
+		const { unmount } = render(
+			<TerminalView {...defaultProps({ active: true })} />,
+		);
+		const ws = mockWsInstance;
+
+		unmount();
+
+		const terminateSent = ws.send.mock.calls.some((call) => {
+			try {
+				return JSON.parse(call[0] as string)?.type === "terminate";
+			} catch {
+				return false;
+			}
+		});
+		expect(terminateSent).toBe(false);
+		expect(ws.close).toHaveBeenCalled();
+	});
+
 	it("active=true after false → reconnects with new WS", () => {
 		const { rerender } = render(
 			<TerminalView {...defaultProps({ active: true })} />,

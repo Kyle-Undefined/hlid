@@ -1,7 +1,12 @@
 import { markAnalyticsChanged } from "./analyticsRevision";
 import type { Db } from "./schema";
 import { getDb } from "./schema";
-import type { QueryData, SessionRow, SessionSort } from "./types";
+import type {
+	QueryData,
+	SessionRow,
+	SessionSelection,
+	SessionSort,
+} from "./types";
 
 export async function setSessionAgentCwd(
 	sessionId: string,
@@ -48,6 +53,62 @@ export async function getSessionModel(
 		)
 		.get(sessionId);
 	return row?.model ?? null;
+}
+
+export async function getSessionSelection(
+	sessionId: string,
+): Promise<SessionSelection | null> {
+	const db = await getDb();
+	const row = db
+		.query<
+			{
+				agent_cwd: string | null;
+				provider_id: string | null;
+				model: string | null;
+				effort: string | null;
+				permission_mode: string | null;
+			},
+			[string]
+		>(
+			`SELECT agent_cwd,
+			        provider_id,
+			        COALESCE(selected_model, actual_model, model) AS model,
+			        selected_effort AS effort,
+			        selected_permission_mode AS permission_mode
+			 FROM sessions WHERE id = ?`,
+		)
+		.get(sessionId);
+	return row
+		? {
+				agentCwd: row.agent_cwd,
+				providerId: row.provider_id,
+				model: row.model,
+				effort: row.effort,
+				permissionMode: row.permission_mode,
+			}
+		: null;
+}
+
+export async function setSessionEffort(
+	sessionId: string,
+	effort: string,
+): Promise<void> {
+	const db = await getDb();
+	db.run(`UPDATE sessions SET selected_effort = ? WHERE id = ?`, [
+		effort,
+		sessionId,
+	]);
+}
+
+export async function setSessionPermissionMode(
+	sessionId: string,
+	permissionMode: string,
+): Promise<void> {
+	const db = await getDb();
+	db.run(`UPDATE sessions SET selected_permission_mode = ? WHERE id = ?`, [
+		permissionMode,
+		sessionId,
+	]);
 }
 
 export async function setSessionClaudeId(
@@ -153,11 +214,21 @@ export async function createSession(
 	id: string,
 	label: string,
 	model: string,
+	selection: { effort?: string; permissionMode?: string } = {},
 ): Promise<void> {
 	const db = await getDb();
 	const { changes } = db.run(
-		`INSERT OR IGNORE INTO sessions (id, label, model, selected_model, started_at) VALUES (?, ?, ?, ?, unixepoch())`,
-		[id, label, model, model],
+		`INSERT OR IGNORE INTO sessions
+		 (id, label, model, selected_model, selected_effort, selected_permission_mode, started_at)
+		 VALUES (?, ?, ?, ?, ?, ?, unixepoch())`,
+		[
+			id,
+			label,
+			model,
+			model,
+			selection.effort ?? null,
+			selection.permissionMode ?? null,
+		],
 	);
 	if (changes > 0) {
 		markAnalyticsChanged(["stats", "activity"], "session_created");

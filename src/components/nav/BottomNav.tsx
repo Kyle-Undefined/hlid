@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useLastRavenSession } from "#/hooks/ravenSessionStore";
-import { NAV_ITEMS } from "./items";
+import { NAV_ITEMS, navSearch } from "./items";
 import { WsStatusDot } from "./SystemStatusDot";
 
 const BASE =
@@ -24,14 +24,7 @@ export function BottomNav() {
 					<Link
 						key={to}
 						to={to}
-						search={
-							to === "/raven" && lastRavenSession
-								? {
-										session: lastRavenSession.sessionId,
-										agent: lastRavenSession.agent,
-									}
-								: undefined
-						}
+						search={navSearch(to, lastRavenSession)}
 						className={`${BASE} text-muted-foreground hover:text-foreground`}
 						activeProps={{ className: `${BASE} text-primary` }}
 						activeOptions={{ exact }}

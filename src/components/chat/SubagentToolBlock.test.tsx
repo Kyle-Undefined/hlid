@@ -46,6 +46,35 @@ describe("SubagentToolBlock", () => {
 		expect(screen.getByTitle("Effort: high")).toBeTruthy();
 	});
 
+	it("wraps long subagent identity and runtime fields on mobile", () => {
+		const name = "long_mobile_subagent_name_that_must_remain_visible";
+		const agentId = "019f6942-a481-7651-b1b9-a39b62c56657-extra-context";
+		render(
+			<SubagentToolBlock
+				subagent={snapshot({
+					name,
+					label: "/root/long_mobile_subagent_name_that_must_remain_visible",
+					agentId,
+					model: "gpt-5.6-sol-with-a-long-runtime-label",
+					effort: "high",
+				})}
+			/>,
+		);
+
+		const button = screen.getByRole("button", { name: new RegExp(name) });
+		expect(button.className).toContain(
+			"grid-cols-[auto_auto_minmax(0,1fr)_auto]",
+		);
+		expect(screen.getByText(name).className).toContain("break-all");
+		expect(screen.getByTitle(/Model:/).className).toContain("break-all");
+		expect(screen.getByText(agentId).className).toContain("break-all");
+		expect(
+			screen.getByText(
+				"/root/long_mobile_subagent_name_that_must_remain_visible",
+			).className,
+		).toContain("break-words");
+	});
+
 	it("can collapse while running and continues advancing elapsed time", () => {
 		vi.useFakeTimers();
 		vi.setSystemTime(6_000);

@@ -12,9 +12,13 @@ import {
 	type ClientMessage,
 	decisionFromScope,
 	mapMcpServer,
+	type QueueStateMessage,
+	type StatusMessage,
 } from "./protocol";
 import { broadcast, send, wsState } from "./runState";
+import { resolveConfiguredSessionDefaults } from "./session";
 import type { PoolEntry, SessionPool } from "./sessionPool";
+import type { ShellSessionPool } from "./shellSessionPool";
 import type { TerminalSessionPool } from "./terminalSessionPool";
 import { parseClientMessage } from "./wsSchemas";
 
@@ -55,6 +59,7 @@ interface MessageContext {
 	ws: ServerWebSocket<WsData>;
 	pool: SessionPool;
 	terminalPool?: TerminalSessionPool;
+	shellPool?: ShellSessionPool;
 }
 
 function broadcastSessionsStatus({ pool, terminalPool }: MessageContext): void {
@@ -99,6 +104,22 @@ function sendSessionCreated({ ws }: MessageContext, entry: PoolEntry): void {
 	});
 }
 
+function queueStateMessage(entry: PoolEntry): QueueStateMessage {
+	return {
+		type: "queue_state",
+		session_id: entry.manager.getCurrentSessionId() ?? entry.sessionId,
+		...entry.manager.getQueueState(),
+	};
+}
+
+function sendQueueState(ws: ServerWebSocket<WsData>, entry: PoolEntry): void {
+	send(ws, queueStateMessage(entry));
+}
+
+function broadcastQueueState(entry: PoolEntry): void {
+	entry.runState.broadcast(queueStateMessage(entry));
+}
+
 function handleNewSession(
 	context: MessageContext,
 	msg: MessageOf<"new_session">,
@@ -113,14 +134,14 @@ function handleNewSession(
 	subscribeToEntry(context, entry);
 	sendSessionCreated(context, entry);
 	send(context.ws, { type: "status", ...entry.manager.getStatus() });
-	send(context.ws, { type: "queue_state", ...entry.manager.getQueueState() });
+	sendQueueState(context.ws, entry);
 	broadcastSessionsStatus(context);
 }
 
-function handleSubscribeSession(
+async function handleSubscribeSession(
 	{ ws, pool }: MessageContext,
 	msg: MessageOf<"subscribe_session">,
-): void {
+): Promise<void> {
 	ws.data.pendingNewSession = false;
 	pool.get(ws.data.subscribedSessionId)?.runState.removeSubscriber(ws);
 	const entry =
@@ -130,13 +151,34 @@ function handleSubscribeSession(
 		// Falling back to the vault here leaks the vault's in-flight events into
 		// whichever transcript Raven is displaying.
 		ws.data.subscribedSessionId = msg.session_id;
+		const vaultStatus = pool.vaultEntry().manager.getStatus();
+		let detachedStatus: Omit<StatusMessage, "type"> = {
+			...vaultStatus,
+			state: "idle",
+		};
+		try {
+			const savedSelection = await db.getSessionSelection(msg.session_id);
+			const configured = resolveConfiguredSessionDefaults(
+				loadConfig(),
+				savedSelection?.agentCwd ?? undefined,
+			);
+			detachedStatus = {
+				state: "idle",
+				model: savedSelection?.model ?? configured.model,
+				effort: savedSelection?.effort ?? configured.effort,
+				permission_mode:
+					savedSelection?.permissionMode ?? configured.permissionMode,
+			};
+		} catch {
+			// A missing/corrupt archived row still gets a safe idle vault snapshot.
+		}
 		send(ws, {
 			type: "status",
-			state: "idle",
-			model: pool.vaultEntry().manager.getStatus().model,
+			...detachedStatus,
 		});
 		send(ws, {
 			type: "queue_state",
+			session_id: msg.session_id,
 			pending_turn_ids: [],
 			running_turn_id: null,
 		});
@@ -169,7 +211,7 @@ function handleSubscribeSession(
 	// to an already-sleeping live session just as we do on connect and sync.
 	const sleep = entry.manager.getSleepState();
 	if (sleep) send(ws, sleep);
-	send(ws, { type: "queue_state", ...entry.manager.getQueueState() });
+	sendQueueState(ws, entry);
 }
 
 function handleStopSession(
@@ -198,16 +240,22 @@ function handleCloseSession(
 	context: MessageContext,
 	msg: MessageOf<"close_session">,
 ): void {
-	const { ws, pool, terminalPool } = context;
+	const { ws, pool, terminalPool, shellPool } = context;
 	if (msg.session_id === pool.vaultSessionId()) {
 		send(ws, { type: "error", message: "Cannot close the vault session" });
 		return;
 	}
-	if (pool.get(msg.session_id)) {
+	const entry = pool.get(msg.session_id);
+	const dbSessionId = entry?.manager.getCurrentSessionId() ?? null;
+	if (entry) {
 		pool.close(msg.session_id);
 		resubscribeClosedSessionClients(pool, msg.session_id);
 	} else {
 		terminalPool?.close(msg.session_id);
+	}
+	shellPool?.close(msg.session_id);
+	if (dbSessionId && dbSessionId !== msg.session_id) {
+		shellPool?.close(dbSessionId);
 	}
 	broadcast({ type: "session_closed", session_id: msg.session_id });
 	broadcastSessionsStatus(context);
@@ -220,9 +268,6 @@ function handleRoutingMessage(
 	switch (msg.type) {
 		case "new_session":
 			handleNewSession(context, msg);
-			return true;
-		case "subscribe_session":
-			handleSubscribeSession(context, msg);
 			return true;
 		case "stop_session":
 			handleStopSession(context, msg);
@@ -237,7 +282,7 @@ function handleRoutingMessage(
 
 function handleSync(ws: ServerWebSocket<WsData>, entry: PoolEntry): void {
 	send(ws, { type: "status", ...entry.manager.getStatus() });
-	send(ws, { type: "queue_state", ...entry.manager.getQueueState() });
+	sendQueueState(ws, entry);
 	const context = entry.runState.getContextSnapshot?.();
 	if (context) entry.runState.send(ws, context);
 	// Informational — every syncing client gets the sleep banner, not just the
@@ -635,13 +680,18 @@ async function runChatQuery(
 			msg.plan_html,
 		] as Parameters<typeof entry.manager.runQuery>;
 		if (msg.command_action) queryArgs.push(msg.command_action);
-		await entry.manager.runQuery(...queryArgs);
+		const completion = entry.manager.runQuery(...queryArgs);
+		// Publish the queued content immediately. Other tabs/devices can now render
+		// it without relying on the originating browser's localStorage copy.
+		broadcastQueueState(entry);
+		await completion;
 	} catch (error) {
 		send(context.ws, {
 			type: "error",
 			message: error instanceof Error ? error.message : "Unknown error",
 		});
 	} finally {
+		broadcastQueueState(entry);
 		releaseChatOwnership(context.ws, entry);
 		broadcastSessionsStatus(context);
 	}
@@ -696,10 +746,10 @@ async function handleSessionMessage(
 			entry.manager.skipSleep();
 			return;
 		case "cancel_queued":
-			entry.manager.cancelQueued(msg.turn_id);
+			if (entry.manager.cancelQueued(msg.turn_id)) broadcastQueueState(entry);
 			return;
 		case "promote_queued":
-			entry.manager.promoteQueued(msg.turn_id);
+			if (entry.manager.promoteQueued(msg.turn_id)) broadcastQueueState(entry);
 			return;
 		case "clear":
 			context.ws.data.pendingNewSession = true;
@@ -798,6 +848,10 @@ async function handleMessage(
 		send(context.ws, { type: "error", message: "Invalid JSON" });
 		return;
 	}
+	if (msg.type === "subscribe_session") {
+		await handleSubscribeSession(context, msg);
+		return;
+	}
 	if (handleRoutingMessage(context, msg)) return;
 	const requestedSettingsSession =
 		(msg.type === "set_provider" ||
@@ -826,6 +880,7 @@ async function handleMessage(
 export function createWsHandlers(
 	pool: SessionPool,
 	terminalPool?: TerminalSessionPool,
+	shellPool?: ShellSessionPool,
 ) {
 	return {
 		open(ws: ServerWebSocket<WsData>) {
@@ -887,7 +942,7 @@ export function createWsHandlers(
 			}
 
 			// Send queue state so the client can prune any orphan chatQueue items.
-			send(ws, { type: "queue_state", ...vault.manager.getQueueState() });
+			sendQueueState(ws, vault);
 		},
 
 		close(ws: ServerWebSocket<WsData>) {
@@ -901,7 +956,7 @@ export function createWsHandlers(
 		},
 
 		message(ws: ServerWebSocket<WsData>, raw: string | Buffer) {
-			return handleMessage({ ws, pool, terminalPool }, raw);
+			return handleMessage({ ws, pool, terminalPool, shellPool }, raw);
 		},
 	};
 }

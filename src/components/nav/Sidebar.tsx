@@ -9,7 +9,7 @@ import {
 	type UpdateStatus,
 } from "../../hooks/updateStore";
 import { LockButton } from "../auth/LockButton";
-import { NAV_ITEMS } from "./items";
+import { NAV_ITEMS, navSearch } from "./items";
 import { useSystemStatusIndicator } from "./SystemStatusDot";
 
 export function Sidebar() {
@@ -65,14 +65,7 @@ export function Sidebar() {
 					<Link
 						key={to}
 						to={to}
-						search={
-							to === "/raven" && lastRavenSession
-								? {
-										session: lastRavenSession.sessionId,
-										agent: lastRavenSession.agent,
-									}
-								: undefined
-						}
+						search={navSearch(to, lastRavenSession)}
 						className="flex items-center gap-3 px-4 py-2.5 text-[11px] tracking-widest text-muted-foreground hover:text-foreground hover:bg-accent transition-colors duration-100 border-l-2 border-transparent"
 						activeProps={{
 							className:

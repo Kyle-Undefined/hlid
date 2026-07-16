@@ -47,6 +47,8 @@ vi.mock("../db", () => ({
 	setSessionActualModel: vi.fn().mockResolvedValue(undefined),
 	setSessionAgentCwd: vi.fn().mockResolvedValue(undefined),
 	setSessionModel: vi.fn().mockResolvedValue(undefined),
+	setSessionEffort: vi.fn().mockResolvedValue(undefined),
+	setSessionPermissionMode: vi.fn().mockResolvedValue(undefined),
 	saveSetting: vi.fn().mockResolvedValue(undefined),
 	linkAttachmentToMessage: vi.fn().mockResolvedValue(undefined),
 	recordPermissionEvent: vi.fn().mockResolvedValue(undefined),
@@ -533,6 +535,31 @@ describe("SessionManager — setModel", () => {
 		expect(sm.getStatus().model).toBe("claude-fable-5");
 	});
 
+	it("restores saved effort and permission instead of current config defaults", async () => {
+		const { provider, captured } = makeCaptureProvider("claude");
+		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
+			id: "saved-session",
+			label: "SAVED",
+			selected_effort: "high",
+			selected_permission_mode: "bypassPermissions",
+		} as never);
+		vi.mocked(dbMock.getSessionMessages).mockResolvedValueOnce([
+			{ role: "user", text: "prior" },
+		] as never);
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await sm.runQuery("continue", () => {}, "saved-session");
+
+		expect(captured.params).toMatchObject({
+			effort: "high",
+			permissionMode: "bypassPermissions",
+		});
+		expect(sm.getStatus()).toMatchObject({
+			effort: "high",
+			permission_mode: "bypassPermissions",
+		});
+	});
+
 	it("restores a saved session label into live status", async () => {
 		const { provider } = makeCaptureProvider("claude");
 		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
@@ -642,6 +669,14 @@ describe("SessionManager — setProvider", () => {
 			"switch-chat",
 			"pi-pro",
 		);
+		expect(dbMock.setSessionEffort).toHaveBeenCalledWith(
+			"switch-chat",
+			"medium",
+		);
+		expect(dbMock.setSessionPermissionMode).toHaveBeenCalledWith(
+			"switch-chat",
+			"default",
+		);
 	});
 
 	it("rejects unavailable CLI identifiers", async () => {
@@ -677,6 +712,10 @@ describe("SessionManager — setEffort", () => {
 
 		expect(getSession()?.setEffort).toHaveBeenCalledWith("xhigh");
 		expect(getSession()).toBe(firstSession);
+		expect(dbMock.setSessionEffort).toHaveBeenCalledWith(
+			"live-effort",
+			"xhigh",
+		);
 	});
 
 	it("rebuilds and resumes Claude on the next turn when effort changes", async () => {
@@ -974,6 +1013,10 @@ describe("SessionManager — setPermissionMode", () => {
 		await sm.setPermissionMode("acceptEdits");
 		expect(getSession()?.setPermissionMode).toHaveBeenCalledWith("acceptEdits");
 		expect(sm.getStatus().permission_mode).toBe("acceptEdits");
+		expect(dbMock.setSessionPermissionMode).toHaveBeenCalledWith(
+			"sess-1",
+			"acceptEdits",
+		);
 	});
 });
 
@@ -2697,7 +2740,28 @@ describe("SessionManager — per-agent settings", () => {
 			"sess-m",
 			"HELLO",
 			"claude-opus-4-7",
+			{ effort: "medium", permissionMode: "default" },
 		);
+	});
+
+	it("seeds idle pool status from the configured agent", () => {
+		const config = makeConfigWithAgent(AGENT_PATH, {
+			model: "claude-opus-4-7",
+			effort: "high",
+			permission_mode: "bypassPermissions",
+		});
+
+		const sm = new SessionManager(
+			config,
+			makeProviders(makeProvider("Bash")),
+			AGENT_PATH,
+		);
+
+		expect(sm.getStatus()).toMatchObject({
+			model: "claude-opus-4-7",
+			effort: "high",
+			permission_mode: "bypassPermissions",
+		});
 	});
 
 	it("agent query uses agent-specific effort when configured", async () => {
@@ -3812,6 +3876,14 @@ describe("SessionManager — promoteQueued", () => {
 			undefined,
 			"turn-3",
 		);
+		expect(sm.getQueueState()).toMatchObject({
+			pending_turn_ids: ["turn-2", "turn-3"],
+			pending_turns: [
+				{ id: "turn-2", text: "second", session_id: "sess-1" },
+				{ id: "turn-3", text: "third", session_id: "sess-1" },
+			],
+			running_turn_id: "turn-1",
+		});
 
 		// Promote turn-3 — should reorder turnQueue (turn-3 before turn-2) and
 		// interrupt the currently running turn.

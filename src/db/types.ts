@@ -2,6 +2,11 @@ export type SessionRow = {
 	id: string;
 	label: string | null;
 	model: string | null;
+	selected_model?: string | null;
+	selected_effort?: string | null;
+	selected_permission_mode?: string | null;
+	provider_id?: string | null;
+	agent_cwd?: string | null;
 	started_at: number;
 	ended_at: number | null;
 	query_count: number;
@@ -13,6 +18,14 @@ export type SessionRow = {
 	total_cache_read_tokens: number;
 	total_cache_creation_tokens: number;
 	total_turns: number;
+};
+
+export type SessionSelection = {
+	agentCwd: string | null;
+	providerId: string | null;
+	model: string | null;
+	effort: string | null;
+	permissionMode: string | null;
 };
 
 export type MessageRow = {

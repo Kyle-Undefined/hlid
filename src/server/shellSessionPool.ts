@@ -9,9 +9,9 @@
  *   resolver.
  * - Separate Map from TerminalSessionPool, so the same sessionId (a Raven
  *   chat's id, reused directly) can't collide with that chat's Claude PTY.
- * - terminate() bypasses the idle timer for the explicit "toggle off" path;
- *   unsubscribe() alone (e.g. navigating away without toggling off) still
- *   idles out after IDLE_TIMEOUT_MS like the terminal pool does.
+ * - Browser disconnects do not own the PTY lifetime. The shell remains alive
+ *   until the terminal is toggled off, its owning session closes, or the
+ *   server shuts down.
  */
 
 import { dirname } from "node:path";
@@ -33,6 +33,10 @@ export interface ShellSubscribeOpts {
 export class ShellSessionPool extends PtySessionPoolBase<ShellSessionEntry> {
 	constructor(private workerPath?: string) {
 		super();
+	}
+
+	protected override idleTimeoutMs(): null {
+		return null;
 	}
 
 	/**
