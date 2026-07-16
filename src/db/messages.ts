@@ -8,11 +8,12 @@ export async function appendMessage(
 	seq: number,
 	role: string,
 	text: string,
+	turnId?: string,
 ): Promise<void> {
 	const db = await getDb();
 	db.run(
-		`INSERT INTO messages (session_id, seq, role, text, timestamp) VALUES (?, ?, ?, ?, unixepoch())`,
-		[sessionId, seq, role, text],
+		`INSERT INTO messages (session_id, seq, role, text, timestamp, turn_id) VALUES (?, ?, ?, ?, unixepoch(), ?)`,
+		[sessionId, seq, role, text, turnId ?? null],
 	);
 }
 

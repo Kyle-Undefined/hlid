@@ -11,8 +11,9 @@ const state = vi.hoisted(() => ({
 		available: boolean;
 		lastCheckedAt: number;
 		cliUpdates?: Array<{
-			id: "codex" | "claude" | `acp:${string}`;
+			id: "codex" | "claude" | "codex-desktop" | `acp:${string}`;
 			label: string;
+			surface?: "cli" | "desktop";
 			installedVersion: string | null;
 			latestVersion: string | null;
 			available: boolean;
@@ -81,6 +82,24 @@ describe("UpdateBanner", () => {
 
 		expect(
 			screen.getByText("OpenCode (ACP) CLI v1.1.0 available"),
+		).toBeTruthy();
+	});
+
+	it("prompts for a Microsoft Store desktop app update", () => {
+		state.status?.cliUpdates?.push({
+			id: "codex-desktop",
+			label: "Codex desktop app",
+			surface: "desktop",
+			installedVersion: "26.707.9981.0",
+			latestVersion: "26.708.10000.0",
+			available: true,
+			checkedAt: Date.now(),
+		});
+
+		render(<UpdateBanner />);
+
+		expect(
+			screen.getByText("Codex desktop app v26.708.10000.0 available"),
 		).toBeTruthy();
 	});
 

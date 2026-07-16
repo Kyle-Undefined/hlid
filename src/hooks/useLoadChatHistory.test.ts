@@ -393,6 +393,34 @@ describe("useLoadChatHistory — reconnect recovery", () => {
 		expect(secondItems.some((i) => i.role === "assistant")).toBe(true);
 	});
 
+	it("keeps a persisted user message keyed by its queued turn id", async () => {
+		vi.mocked(getSessionDataFn).mockResolvedValue([
+			{ ...makeRow("user", "queued prompt"), turn_id: "queued-turn-1" },
+		]);
+
+		const dispatch = vi.fn();
+		const pendingIdRef = { current: null };
+		const historyReadyRef = { current: false };
+		const sessionIdRef = { current: "sess-1" };
+		renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef,
+			historyReadyRef,
+			handleWsMessage: noopWsHandler,
+			wsStatus: "connected",
+			sessionIdRef,
+		});
+
+		await act(async () => {});
+
+		const loadHistory = dispatch.mock.calls.find(
+			([action]) => action.type === "LOAD_HISTORY",
+		)?.[0];
+		expect(loadHistory.items[0].id).toBe("queued-turn-1");
+	});
+
 	it("serializes reconnect behind an in-flight older-page load", async () => {
 		const rows = (start: number, end: number) =>
 			Array.from({ length: end - start + 1 }, (_, index) => {

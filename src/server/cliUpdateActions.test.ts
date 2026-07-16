@@ -129,4 +129,31 @@ describe("CLI update actions", () => {
 		);
 		expect(getCliUpdateStatuses).toHaveBeenLastCalledWith({ force: true });
 	});
+
+	it("updates the desktop app without stopping provider sessions", async () => {
+		getCliUpdateStatuses.mockResolvedValue([
+			{
+				id: "codex-desktop",
+				label: "Codex desktop app",
+				available: true,
+			},
+		]);
+		resolveCliUpdateAction.mockResolvedValue({
+			id: "codex-desktop",
+			displayCommand: "winget upgrade --id 9PLM9XGG6VKS",
+			command: "winget.exe",
+			args: ["upgrade", "--id", "9PLM9XGG6VKS"],
+			automatic: true,
+			requiresElevation: false,
+			drainSessions: false,
+		});
+		runBoundedProcess.mockResolvedValue({ output: "updated", code: 0 });
+
+		await expect(applyCliUpdate("codex-desktop")).resolves.toEqual({
+			command: "winget upgrade --id 9PLM9XGG6VKS",
+			output: "updated",
+			drained: { sessions: 0, appServers: 0 },
+		});
+		expect(drainCliRuntime).not.toHaveBeenCalled();
+	});
 });

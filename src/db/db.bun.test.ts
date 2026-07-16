@@ -237,6 +237,36 @@ describe("sessions — create & fetch", () => {
 		expect(byTokens.sessions[0].id).toBe("pricey");
 	});
 
+	it("getSessionsPaginated filters Vault and Einherjar sessions, then model", async () => {
+		await createSession("vault", "Vault chat", "claude-sonnet");
+		await createSession("raven-fast", "Raven fast", "configured-model");
+		await setSessionAgentCwd("raven-fast", "/agents/raven");
+		await setSessionActualModel("raven-fast", "gpt-5.4");
+		await createSession("raven-deep", "Raven deep", "gpt-5.4-pro");
+		await setSessionAgentCwd("raven-deep", "/agents/raven");
+		await createSession("forge", "Forge chat", "claude-opus");
+		await setSessionAgentCwd("forge", "/agents/forge");
+
+		const vault = await getSessionsPaginated(1, 10, { agent: "vault" });
+		expect(vault.sessions.map((row) => row.id)).toEqual(["vault"]);
+		expect(vault.models).toEqual(["claude-sonnet"]);
+
+		const raven = await getSessionsPaginated(1, 10, {
+			agent: "/agents/raven",
+		});
+		expect(raven.total).toBe(2);
+		expect(raven.models).toEqual(["gpt-5.4", "gpt-5.4-pro"]);
+		expect(raven.agent_cwds).toEqual(["/agents/forge", "/agents/raven"]);
+
+		const exactModel = await getSessionsPaginated(1, 10, {
+			agent: "/agents/raven",
+			model: "gpt-5.4",
+		});
+		expect(exactModel.sessions.map((row) => row.id)).toEqual(["raven-fast"]);
+		// The facet remains owner-scoped so the user can switch models directly.
+		expect(exactModel.models).toEqual(["gpt-5.4", "gpt-5.4-pro"]);
+	});
+
 	it("getSessionsPaginated reports null oldest_started_at when empty", async () => {
 		const { oldest_started_at, total } = await getSessionsPaginated(1, 10);
 		expect(total).toBe(0);
@@ -510,13 +540,15 @@ describe("messages", () => {
 
 	it("appends and retrieves messages in seq order", async () => {
 		await createSession("s1", "L", "m");
-		await appendMessage("s1", 0, "user", "hello");
+		await appendMessage("s1", 0, "user", "hello", "turn-1");
 		await appendMessage("s1", 1, "assistant", "world");
 		const rows = await getSessionMessages("s1");
 		expect(rows).toHaveLength(2);
 		expect(rows[0].role).toBe("user");
 		expect(rows[0].text).toBe("hello");
+		expect(rows[0].turn_id).toBe("turn-1");
 		expect(rows[1].role).toBe("assistant");
+		expect(rows[1].turn_id).toBeNull();
 	});
 
 	it("returns empty array for session with no messages", async () => {

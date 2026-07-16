@@ -3181,6 +3181,69 @@ describe("SessionManager — live tool_event persistence", () => {
 		await runPromise;
 	});
 
+	it("settles an unfinished subagent before the parent done event", async () => {
+		let releaseTurn!: () => void;
+		const turnGate = new Promise<void>((resolve) => {
+			releaseTurn = resolve;
+		});
+		const running = {
+			provider: "codex" as const,
+			agentId: "desktop-task-1",
+			name: "Computer Use",
+			status: "running" as const,
+			startedAtMs: 1000,
+			currentStep: "Checking the Windows app",
+		};
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{ type: "session_start", sessionId: "sdk-computer-use" },
+				{
+					type: "tool_start",
+					toolId: "computer-use-tool",
+					name: "hlid.windows_computer_use",
+					input: { task: "Check the app" },
+					subagent: running,
+				},
+			],
+			turnGate,
+		);
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const runPromise = sm.runQuery(
+			"delegate",
+			(message) => emitted.push(message),
+			"sess-computer-use",
+		);
+		await gateReached;
+		releaseTurn();
+		await runPromise;
+
+		const interruptedIndex = emitted.findIndex(
+			(message) =>
+				message.type === "tool_update" &&
+				message.id === "computer-use-tool" &&
+				message.subagent.status === "interrupted",
+		);
+		const doneIndex = emitted.findIndex((message) => message.type === "done");
+		expect(interruptedIndex).toBeGreaterThan(-1);
+		expect(interruptedIndex).toBeLessThan(doneIndex);
+		expect(emitted[interruptedIndex]).toMatchObject({
+			type: "tool_update",
+			id: "computer-use-tool",
+			subagent: {
+				status: "interrupted",
+				currentStep: "Parent turn ended before the subagent completed",
+			},
+		});
+		await waitFor(() =>
+			expect(dbMock.setToolEventSubagent).toHaveBeenCalledWith(
+				"sess-computer-use",
+				"computer-use-tool",
+				expect.objectContaining({ status: "interrupted" }),
+			),
+		);
+	});
+
 	it("tool_result with isError=true persists is_error=true", async () => {
 		let release!: () => void;
 		const gate = new Promise<void>((r) => {
@@ -4083,6 +4146,13 @@ describe("SessionManager — turn_id forwarding", () => {
 			"turn-xyz",
 		);
 		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		expect(dbMock.appendMessage).toHaveBeenCalledWith(
+			"sess-1",
+			expect.any(Number),
+			"user",
+			"first",
+			"turn-xyz",
+		);
 		ctl.turns[0].resolveDone();
 		await turn;
 

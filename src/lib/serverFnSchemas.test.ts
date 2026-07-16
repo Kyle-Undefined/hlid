@@ -19,6 +19,24 @@ describe("server function boundary schemas", () => {
 		}
 	});
 
+	it("accepts bounded Ledger owner and model filters", () => {
+		expect(
+			sessionPageSchema.parse({
+				page: 1,
+				size: 20,
+				agent: "  vault  ",
+				model: "  gpt-5.4  ",
+			}),
+		).toMatchObject({ agent: "vault", model: "gpt-5.4" });
+		expect(
+			sessionPageSchema.safeParse({
+				page: 1,
+				size: 20,
+				agent: "",
+			}).success,
+		).toBe(false);
+	});
+
 	it.each([
 		undefined,
 		null,

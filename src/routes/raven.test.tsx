@@ -320,6 +320,15 @@ describe("Raven composed submission behavior", () => {
 			terminateOnDisconnect: false,
 			sessionId: "saved-session",
 		});
+		const chatTab = screen.getByRole("button", { name: "chat" });
+		expect(chatTab.className).toContain("text-primary");
+		expect(
+			document.querySelector('[data-scroll-restoration-id="raven-transcript"]')
+				?.className,
+		).not.toContain("hidden md:block");
+		expect(
+			screen.getByTestId("terminal-view").parentElement?.className,
+		).toContain("hidden md:flex");
 
 		fireEvent.click(screen.getByTitle(/open a real terminal in this project/i));
 		expect(state.terminalProps).toMatchObject({

@@ -20,6 +20,7 @@ const {
 	mockGetLogs,
 	mockGetAggregatedStats,
 	mockGetRecentSessions,
+	mockGetSessionsPaginated,
 } = vi.hoisted(() => ({
 	mockGetSessionById: vi.fn(),
 	mockListAttachments: vi.fn(),
@@ -31,6 +32,7 @@ const {
 	mockGetLogs: vi.fn(),
 	mockGetAggregatedStats: vi.fn(),
 	mockGetRecentSessions: vi.fn(),
+	mockGetSessionsPaginated: vi.fn(),
 }));
 
 vi.mock("../db", () => ({
@@ -44,6 +46,7 @@ vi.mock("../db", () => ({
 	getLogs: mockGetLogs,
 	getAggregatedStats: mockGetAggregatedStats,
 	getRecentSessions: mockGetRecentSessions,
+	getSessionsPaginated: mockGetSessionsPaginated,
 }));
 
 // dbRoutes also imports from ./attachments and ./proxy — stub them out.
@@ -123,6 +126,35 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	resetAnalyticsRevisionForTest();
 	resetAnalyticsSnapshotsForTest();
+});
+
+describe("handleDbRoute — /db/sessions", () => {
+	it("forwards agent and model filters to paginated storage", async () => {
+		mockGetSessionsPaginated.mockResolvedValue({
+			sessions: [],
+			total: 0,
+			oldest_started_at: null,
+			agent_cwds: [],
+			models: [],
+		});
+		const response = await handleDbRoute(
+			makeUrl("/db/sessions", {
+				page: "2",
+				size: "50",
+				agent: "/agents/raven",
+				model: "gpt-5.4",
+			}),
+			makeRequest(),
+		);
+
+		expect(response?.status).toBe(200);
+		expect(mockGetSessionsPaginated).toHaveBeenCalledWith(2, 50, {
+			search: undefined,
+			agent: "/agents/raven",
+			model: "gpt-5.4",
+			sort: undefined,
+		});
+	});
 });
 
 describe("handleDbRoute — analytics snapshots", () => {

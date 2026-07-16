@@ -232,6 +232,8 @@ type LedgerRouteShape = {
 			page: number;
 			size: number;
 			q: string;
+			agent: string;
+			model: string;
 			sort: "recent";
 		};
 	}) => Record<string, unknown>;
@@ -240,6 +242,8 @@ type LedgerRouteShape = {
 			page: number;
 			size: number;
 			q: string;
+			agent?: string;
+			model?: string;
 			sort: "recent";
 		};
 	}) => Promise<Record<string, unknown>>;
@@ -249,7 +253,14 @@ const ledgerRoute = Route as unknown as LedgerRouteShape;
 
 describe("ledger route loader", () => {
 	it("does not key route data by the selected tab", () => {
-		const listState = { page: 1, size: 20, q: "", sort: "recent" as const };
+		const listState = {
+			page: 1,
+			size: 20,
+			q: "",
+			agent: "vault",
+			model: "claude-sonnet",
+			sort: "recent" as const,
+		};
 
 		expect(
 			ledgerRoute.loaderDeps({

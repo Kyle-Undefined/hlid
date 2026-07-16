@@ -120,9 +120,9 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 	// ── Sessions & history (api port) ─────────────────────────────────────────
 	{
 		method: "GET",
-		path: "/db/sessions?page=&size=&q=&sort=",
+		path: "/db/sessions?page=&size=&q=&agent=&model=&sort=",
 		server: "api",
-		desc: "Paginated session history. Optional label search (q) and sort (recent|cost|tokens).",
+		desc: 'Paginated session history. Optional label search (q), owner (agent="vault" or an Einherjar cwd), model, and sort (recent|cost|tokens).',
 	},
 	{
 		method: "GET",

@@ -13,6 +13,10 @@ import {
 
 const UPDATE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_OUTPUT_CHARS = 32_000;
+const EMPTY_DRAIN_RESULT: CliRuntimeDrainResult = {
+	sessions: 0,
+	appServers: 0,
+};
 
 async function availableAction(id: string): Promise<CliUpdateAction> {
 	const statuses = await getCliUpdateStatuses({ force: true });
@@ -78,7 +82,10 @@ function terminalCwdForUpdate(id: string): string {
 export async function prepareCliUpdate(id: string): Promise<PreparedCliUpdate> {
 	const action = await availableAction(id);
 	const terminalCwd = terminalCwdForUpdate(id);
-	const drained = await drainCliRuntime();
+	const drained =
+		action.drainSessions === false
+			? EMPTY_DRAIN_RESULT
+			: await drainCliRuntime();
 	return {
 		...drained,
 		command: action.displayCommand,
@@ -100,7 +107,10 @@ export async function applyCliUpdate(id: string): Promise<{
 				: "This update must be run interactively",
 		);
 	}
-	const drained = await drainCliRuntime();
+	const drained =
+		action.drainSessions === false
+			? EMPTY_DRAIN_RESULT
+			: await drainCliRuntime();
 	const output = await runUpdateProcess(action);
 	await getCliUpdateStatuses({ force: true });
 	return { command: action.displayCommand, output, drained };

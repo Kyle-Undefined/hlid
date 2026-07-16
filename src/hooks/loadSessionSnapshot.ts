@@ -45,8 +45,10 @@ function mapSessionRows(
 		kind: "message" as const,
 		timestamp: r.timestamp,
 		// DB row ids are globally unique and stable across reconnect/page fetches.
-		// Namespace them away from uid()-backed live/in-flight message ids.
-		id: `persisted-message:${r.id}`,
+		// A user row with turn_id retains its live queue identity so history and
+		// the running-turn event cannot render the same prompt twice.
+		id:
+			r.role === "user" && r.turn_id ? r.turn_id : `persisted-message:${r.id}`,
 		role: r.role,
 		text: r.text,
 		toolEvents: r.toolEvents?.map((te) => ({

@@ -97,6 +97,13 @@ function dispatchImmediateMessage(
 				subagent: msg.subagent,
 			});
 			return true;
+		case "status":
+			if (msg.state === "running") return false;
+			dispatch({
+				type: "SETTLE_ACTIVE_SUBAGENTS",
+				endedAtMs: Date.now(),
+			});
+			return true;
 		default:
 			return false;
 	}

@@ -1287,9 +1287,10 @@ export function ChatPage() {
 	const [terminalClosingSessionId, setTerminalClosingSessionId] = useState<
 		string | null
 	>(null);
-	const [shellTab, setShellTab] = useState<"chat" | "terminal">(() =>
-		terminalOpen ? "terminal" : "chat",
-	);
+	// Terminal lifetime and the visible mobile pane are separate concerns. An
+	// open terminal survives site navigation, but returning to Raven should put
+	// the conversation back in view until the user explicitly selects Terminal.
+	const [shellTab, setShellTab] = useState<"chat" | "terminal">("chat");
 	const handleToggleTerminal = useCallback(() => {
 		const next = !isRavenTerminalOpen(sessionId);
 		if (next) {

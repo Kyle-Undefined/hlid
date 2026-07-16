@@ -63,7 +63,7 @@ export function UpdateBanner() {
 	}
 	const label = status?.available
 		? `Hlid v${status.latest} available`
-		: `${cliUpdate?.label} CLI v${cliUpdate?.latestVersion} available`;
+		: `${cliUpdate?.label}${cliUpdate?.surface === "desktop" ? "" : " CLI"} v${cliUpdate?.latestVersion} available`;
 
 	return (
 		<output

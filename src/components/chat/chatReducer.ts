@@ -155,6 +155,10 @@ export type Action =
 			isError?: boolean;
 	  }
 	| {
+			type: "SETTLE_ACTIVE_SUBAGENTS";
+			endedAtMs: number;
+	  }
+	| {
 			type: "ADD_PLAN_PROPOSAL";
 			id: string;
 			plan: string;
@@ -292,6 +296,41 @@ function patchToolEvent(
 		return { ...m, toolEvents };
 	});
 	return matched ? next : state;
+}
+
+const ACTIVE_SUBAGENT_STATUSES = new Set(["pending", "running", "paused"]);
+
+/** Reconcile stale live cards after an idle/error status or reconnect. */
+function settleActiveSubagents(
+	state: ChatMessage[],
+	endedAtMs: number,
+): ChatMessage[] {
+	let changed = false;
+	const next = state.map((message) => {
+		if (message.role !== "assistant") return message;
+		let messageChanged = false;
+		const toolEvents = message.toolEvents.map((event) => {
+			if (
+				!event.subagent ||
+				!ACTIVE_SUBAGENT_STATUSES.has(event.subagent.status)
+			) {
+				return event;
+			}
+			changed = true;
+			messageChanged = true;
+			return {
+				...event,
+				subagent: {
+					...event.subagent,
+					status: "interrupted" as const,
+					currentStep: "Parent turn is no longer running",
+					endedAtMs,
+				},
+			};
+		});
+		return messageChanged ? { ...message, toolEvents } : message;
+	});
+	return changed ? next : state;
 }
 
 function historyItemToMessage(item: HistoryItem): ChatMessage {
@@ -433,6 +472,8 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 				result: action.content,
 				...(action.isError !== undefined ? { isError: action.isError } : {}),
 			}));
+		case "SETTLE_ACTIVE_SUBAGENTS":
+			return settleActiveSubagents(state, action.endedAtMs);
 		case "ADD_LOCAL_COMMAND_OUTPUT":
 			return [
 				...state,

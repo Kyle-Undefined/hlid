@@ -2,8 +2,8 @@
  * wsStore — Slice A drain behavior tests.
  *
  * New semantics: enqueueChat sends to the server immediately (server-side
- * queue accepts mid-run). Client queue mirrors what's still in flight; items
- * are removed when their `done` event arrives. WS-closed enqueues remain in
+ * queue accepts mid-run). Client queue mirrors work that has not started; items
+ * are removed when their running status arrives. WS-closed enqueues remain in
  * the queue and drain on next ws.onopen.
  */
 // @vitest-environment jsdom
@@ -156,6 +156,8 @@ describe("wsStore — Slice A: immediate-send drain", () => {
 				turn_id: "m1",
 			}),
 		]);
+		expect(wsStore.getQueue()).toEqual([]);
+		expect(localStorage.getItem("hlid:raven:chat-queue")).toBeNull();
 		unsubscribe();
 	});
 
@@ -343,7 +345,8 @@ describe("wsStore — Slice A: immediate-send drain", () => {
 		wsStore.enqueueChat({ id: "m3", text: "c", session_id: "s1" });
 		expect(wsStore.getQueue()).toHaveLength(3);
 
-		// Server reports it has m2 running, m3 queued — m1 is an orphan.
+		// Server reports it has m2 running, m3 queued — m1 is an orphan and m2
+		// has been consumed into the transcript, leaving only pending m3.
 		currentWs.onmessage?.({
 			data: JSON.stringify({
 				type: "queue_state",
@@ -354,7 +357,7 @@ describe("wsStore — Slice A: immediate-send drain", () => {
 		});
 
 		const remaining = wsStore.getQueue().map((q) => q.id);
-		expect(remaining).toEqual(["m2", "m3"]);
+		expect(remaining).toEqual(["m3"]);
 	});
 
 	it("queue_state preserves not-yet-sent items even if server doesn't know them", () => {

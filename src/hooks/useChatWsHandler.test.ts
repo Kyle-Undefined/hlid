@@ -141,6 +141,18 @@ describe("useChatWsHandler — session id domains", () => {
 });
 
 describe("useChatWsHandler — immediate messages", () => {
+	it.each([
+		"idle",
+		"error",
+	] as const)("settles stale subagents when the session becomes %s", (state) => {
+		const { handler, dispatch } = renderHandler();
+		handler({ type: "status", state, model: "gpt-5.4" });
+		expect(dispatch).toHaveBeenCalledWith({
+			type: "SETTLE_ACTIVE_SUBAGENTS",
+			endedAtMs: expect.any(Number),
+		});
+	});
+
 	it("stores rate limits without dispatching a chat action", () => {
 		const { handler, dispatch, setRateLimit } = renderHandler();
 		const message = {

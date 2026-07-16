@@ -391,6 +391,12 @@ function applyMigrations(db: Db): void {
 		db.run(`ALTER TABLE messages ADD COLUMN recap TEXT`);
 	});
 
+	// Correlates a promoted Raven queue entry with its persisted user message.
+	// Older transcripts remain NULL and continue using their database row id.
+	runMigration(db, "_migrated_messages_turn_id", (db) => {
+		db.run(`ALTER TABLE messages ADD COLUMN turn_id TEXT`);
+	});
+
 	runMigration(db, "_migrated_tool_events_result", (db) => {
 		db.run(`ALTER TABLE tool_events ADD COLUMN result_text TEXT`);
 		db.run(`ALTER TABLE tool_events ADD COLUMN is_error INTEGER`);

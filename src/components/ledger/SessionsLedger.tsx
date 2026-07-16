@@ -9,7 +9,7 @@ import type { SessionRow } from "#/db";
 import type { LiveStats } from "#/hooks/wsLiveStatsStore";
 import { formatDisplayCost } from "#/lib/costDisplay";
 import { fmt, fmtDate, fmtDateUtc } from "#/lib/formatters";
-import type { SessionSortKey } from "#/lib/ledgerState";
+import type { LedgerAgentOption, SessionSortKey } from "#/lib/ledgerState";
 import type { SessionStatusEntry } from "#/server/protocol";
 
 const CLEANUP_DAY_OPTIONS = [7, 30, 90] as const;
@@ -358,6 +358,13 @@ export function SessionsLedger({
 	liveStats,
 	search = "",
 	onSearchChange,
+	agentFilter = "",
+	agentOptions = [],
+	onAgentFilterChange,
+	modelFilter = "",
+	modelOptions = [],
+	onModelFilterChange,
+	onClearFilters,
 	sort = "recent",
 	onSortChange,
 	oldestStartedAt = null,
@@ -381,6 +388,13 @@ export function SessionsLedger({
 	liveStats?: LiveStats;
 	search?: string;
 	onSearchChange?: (q: string) => void;
+	agentFilter?: string;
+	agentOptions?: LedgerAgentOption[];
+	onAgentFilterChange?: (agent: string) => void;
+	modelFilter?: string;
+	modelOptions?: string[];
+	onModelFilterChange?: (model: string) => void;
+	onClearFilters?: () => void;
 	sort?: SessionSortKey;
 	onSortChange?: (sort: SessionSortKey) => void;
 	/** Unix seconds of the oldest session overall; drives cleanup options. */
@@ -389,6 +403,7 @@ export function SessionsLedger({
 	cleanupReferenceTime?: number;
 	onExport?: (format: "csv" | "json") => void;
 }) {
+	const hasFilters = Boolean(search || agentFilter || modelFilter);
 	const pagination = {
 		page,
 		pageSize,
@@ -410,6 +425,42 @@ export function SessionsLedger({
 					</span>
 				</div>
 				<div className="flex items-center gap-3 flex-wrap">
+					{onAgentFilterChange && (
+						<label className="flex items-center gap-1.5 text-[8px] tracking-widest text-muted-foreground/50 uppercase">
+							<span>agent</span>
+							<select
+								value={agentFilter}
+								onChange={(e) => onAgentFilterChange(e.target.value)}
+								className="max-w-40 bg-transparent border border-border text-[9px] text-foreground/70 px-1.5 py-0.5 focus:outline-none focus:border-primary/50 transition-colors"
+								aria-label="Filter sessions by agent"
+							>
+								<option value="">all</option>
+								{agentOptions.map((option) => (
+									<option key={option.value} value={option.value}>
+										{option.label}
+									</option>
+								))}
+							</select>
+						</label>
+					)}
+					{onModelFilterChange && (
+						<label className="flex items-center gap-1.5 text-[8px] tracking-widest text-muted-foreground/50 uppercase">
+							<span>model</span>
+							<select
+								value={modelFilter}
+								onChange={(e) => onModelFilterChange(e.target.value)}
+								className="max-w-44 bg-transparent border border-border text-[9px] text-foreground/70 px-1.5 py-0.5 focus:outline-none focus:border-primary/50 transition-colors"
+								aria-label="Filter sessions by model"
+							>
+								<option value="">all</option>
+								{modelOptions.map((model) => (
+									<option key={model} value={model}>
+										{model}
+									</option>
+								))}
+							</select>
+						</label>
+					)}
 					{onSearchChange && (
 						<SessionSearchBox search={search} onSearchChange={onSearchChange} />
 					)}
@@ -480,15 +531,17 @@ export function SessionsLedger({
 				</div>
 			) : data.sessions.length === 0 ? (
 				<div className="px-4 py-6 text-center text-[9px] tracking-widest text-muted-foreground/50">
-					{search ? (
+					{hasFilters ? (
 						<>
-							no sessions match “{search}” ·{" "}
+							no sessions match the current filters ·{" "}
 							<button
 								type="button"
-								onClick={() => onSearchChange?.("")}
+								onClick={() =>
+									onClearFilters ? onClearFilters() : onSearchChange?.("")
+								}
 								className="text-primary hover:text-primary/80 underline underline-offset-2 normal-case tracking-normal"
 							>
-								clear search
+								clear filters
 							</button>
 						</>
 					) : (

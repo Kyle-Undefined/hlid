@@ -23,6 +23,8 @@ export const sessionPageSchema = z.object({
 	page: z.number().int().min(1).max(1_000_000),
 	size: z.union([z.literal(10), z.literal(20), z.literal(50), z.literal(100)]),
 	q: z.string().trim().max(200).optional(),
+	agent: z.string().trim().min(1).max(4096).optional(),
+	model: z.string().trim().min(1).max(200).optional(),
 	sort: z.enum(["recent", "cost", "tokens"]).optional(),
 });
 

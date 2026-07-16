@@ -218,7 +218,7 @@ Read \`hlid.config.toml\` to find \`server.port\`. The data API runs on that por
 
   GET  /api/health     — Liveness check.
   GET  /api/version    — Running hlid version.
-  GET  /api/updates    — Check Hlið and provider CLI versions.
+  GET  /api/updates    — Check Hlið, provider CLI, and desktop app versions.
   POST /api/updates    — Download/apply Hlið updates; local or Tailscale browsers can prepare/apply known CLI updates.
   GET  /api/lifecycle  — Autostart status and install paths.
   POST /api/lifecycle  — Body: { action: "install" | "uninstall" | "restart" | "shutdown" | "open_install_dir" }.

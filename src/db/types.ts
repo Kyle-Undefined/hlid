@@ -36,6 +36,8 @@ export type MessageRow = {
 	text: string;
 	timestamp: number;
 	recap: string | null;
+	/** Stable queued-turn identity for user messages created by Raven. */
+	turn_id?: string | null;
 };
 
 export type ToolEventRow = {

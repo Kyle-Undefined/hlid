@@ -14,9 +14,11 @@ import { loadConfig } from "./config";
 
 const CHECK_TTL_MS = 6 * 60 * 60 * 1000;
 const COMMAND_TIMEOUT_MS = 4_000;
+const STORE_TIMEOUT_MS = 15_000;
 const REGISTRY_TIMEOUT_MS = 5_000;
-const CACHE_SCHEMA_VERSION = 1;
+const CACHE_SCHEMA_VERSION = 2;
 const BACKGROUND_REFRESH_DELAY_MS = 1_500;
+const CODEX_DESKTOP_STORE_ID = "9PLM9XGG6VKS";
 
 type NativeCliId = "codex" | "claude";
 
@@ -53,6 +55,16 @@ type WslUpdateDependencies = {
 	now(): number;
 };
 
+type WindowsDesktopUpdateDependencies = {
+	isWindows(): boolean;
+	readInstalledVersion(): Promise<string | null>;
+	readStoreVersions(): Promise<{
+		installedVersion: string;
+		latestVersion: string;
+	}>;
+	now(): number;
+};
+
 export type CliUpdateAction = {
 	id: CliUpdateStatus["id"];
 	displayCommand: string;
@@ -60,6 +72,7 @@ export type CliUpdateAction = {
 	args: string[];
 	automatic: boolean;
 	requiresElevation: boolean;
+	drainSessions?: boolean;
 };
 
 const CLI_DEFINITIONS: CliDefinition[] = [
@@ -72,7 +85,10 @@ const CLI_DEFINITIONS: CliDefinition[] = [
 ];
 
 export function parseCliVersion(output: string): string | null {
-	return output.match(/\b(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)\b/)?.[1] ?? null;
+	return (
+		output.match(/\b(\d+\.\d+\.\d+(?:\.\d+)*(?:-[0-9A-Za-z.-]+)?)\b/)?.[1] ??
+		null
+	);
 }
 
 export function compareCliVersions(a: string, b: string): number {
@@ -85,7 +101,11 @@ export function compareCliVersions(a: string, b: string): number {
 	};
 	const left = parse(a);
 	const right = parse(b);
-	for (let index = 0; index < 3; index++) {
+	for (
+		let index = 0;
+		index < Math.max(left.parts.length, right.parts.length);
+		index++
+	) {
 		const difference = (left.parts[index] ?? 0) - (right.parts[index] ?? 0);
 		if (difference !== 0) return difference;
 	}
@@ -93,6 +113,27 @@ export function compareCliVersions(a: string, b: string): number {
 	if (!left.prerelease) return 1;
 	if (!right.prerelease) return -1;
 	return left.prerelease.localeCompare(right.prerelease);
+}
+
+/** Parse winget's exact Store-package row without depending on localized headers. */
+export function parseWindowsStoreVersions(
+	output: string,
+	storeId = CODEX_DESKTOP_STORE_ID,
+): { installedVersion: string; latestVersion: string } | null {
+	const row = output
+		.split(/\r?\n/)
+		.find((line) => line.toUpperCase().includes(storeId.toUpperCase()));
+	if (!row) return null;
+	const idIndex = row.toUpperCase().indexOf(storeId.toUpperCase());
+	const versions = row
+		.slice(idIndex + storeId.length)
+		.match(/\b\d+\.\d+\.\d+(?:\.\d+)*(?:-[0-9A-Za-z.-]+)?\b/g);
+	const installedVersion = versions?.[0];
+	if (!installedVersion) return null;
+	return {
+		installedVersion,
+		latestVersion: versions?.[1] ?? installedVersion,
+	};
 }
 
 async function readInstalledVersion(executable: string): Promise<string> {
@@ -214,6 +255,86 @@ const defaultDependencies: CliUpdateDependencies = {
 	fetchLatest: fetchLatestPackageVersion,
 	now: Date.now,
 };
+
+async function readInstalledCodexDesktopVersion(): Promise<string | null> {
+	const result = await runBoundedProcess(
+		"powershell.exe",
+		[
+			"-NoProfile",
+			"-NonInteractive",
+			"-Command",
+			"$package = Get-AppxPackage -Name OpenAI.Codex -ErrorAction SilentlyContinue; if ($package) { $package.Version.ToString() }",
+		],
+		{
+			timeoutMs: COMMAND_TIMEOUT_MS,
+			timeoutError: "Codex desktop version check timed out",
+		},
+	);
+	if (result.code !== 0) {
+		throw new Error(`PowerShell version check exited ${result.code}`);
+	}
+	return parseCliVersion(result.output);
+}
+
+async function readCodexDesktopStoreVersions(): Promise<{
+	installedVersion: string;
+	latestVersion: string;
+}> {
+	const result = await runBoundedProcess(
+		"winget.exe",
+		[
+			"list",
+			"--id",
+			CODEX_DESKTOP_STORE_ID,
+			"--source",
+			"msstore",
+			"--exact",
+			"--accept-source-agreements",
+			"--disable-interactivity",
+		],
+		{
+			timeoutMs: STORE_TIMEOUT_MS,
+			timeoutError: "Microsoft Store version check timed out",
+		},
+	);
+	if (result.code !== 0) {
+		throw new Error(`winget Store check exited ${result.code}`);
+	}
+	const versions = parseWindowsStoreVersions(result.output);
+	if (!versions) throw new Error("winget Store output was not recognized");
+	return versions;
+}
+
+const defaultWindowsDesktopDependencies: WindowsDesktopUpdateDependencies = {
+	isWindows: () => process.platform === "win32",
+	readInstalledVersion: readInstalledCodexDesktopVersion,
+	readStoreVersions: readCodexDesktopStoreVersions,
+	now: Date.now,
+};
+
+function windowsDesktopUpdateAction(): CliUpdateAction {
+	const args = [
+		"upgrade",
+		"--id",
+		CODEX_DESKTOP_STORE_ID,
+		"--source",
+		"msstore",
+		"--exact",
+		"--silent",
+		"--accept-source-agreements",
+		"--accept-package-agreements",
+		"--disable-interactivity",
+	];
+	return {
+		id: "codex-desktop",
+		displayCommand: `winget ${args.join(" ")}`,
+		command: "winget.exe",
+		args,
+		automatic: true,
+		requiresElevation: false,
+		drainSessions: false,
+	};
+}
 
 async function readWslCli(
 	distro: string,
@@ -423,6 +544,42 @@ export async function inspectCliUpdates(
 	).filter((status) => status != null);
 }
 
+export async function inspectWindowsDesktopUpdates(
+	dependencies: WindowsDesktopUpdateDependencies = defaultWindowsDesktopDependencies,
+): Promise<CliUpdateStatus[]> {
+	if (!dependencies.isWindows()) return [];
+	const installedVersion = await dependencies.readInstalledVersion();
+	if (!installedVersion) return [];
+	const storeResult = await Promise.allSettled([
+		dependencies.readStoreVersions(),
+	]);
+	const storeVersions =
+		storeResult[0].status === "fulfilled" ? storeResult[0].value : null;
+	const latestVersion = storeVersions?.latestVersion ?? null;
+	const action = windowsDesktopUpdateAction();
+	return [
+		{
+			id: "codex-desktop",
+			label: "Codex desktop app",
+			surface: "desktop",
+			installedVersion,
+			latestVersion,
+			available:
+				latestVersion != null &&
+				compareCliVersions(latestVersion, installedVersion) > 0,
+			updateCommand: action.displayCommand,
+			updateMode: "automatic",
+			requiresElevation: false,
+			checkedAt: dependencies.now(),
+			...(storeResult[0].status === "rejected"
+				? {
+						error: `latest version: ${storeResult[0].reason instanceof Error ? storeResult[0].reason.message : String(storeResult[0].reason)}`,
+					}
+				: {}),
+		} satisfies CliUpdateStatus,
+	];
+}
+
 export async function inspectAcpUpdates(
 	dependencies: AcpUpdateDependencies = defaultAcpDependencies,
 ): Promise<CliUpdateStatus[]> {
@@ -528,6 +685,7 @@ export async function inspectWslUpdates(
 export async function resolveCliUpdateAction(
 	id: string,
 ): Promise<CliUpdateAction | null> {
+	if (id === "codex-desktop") return windowsDesktopUpdateAction();
 	if (id === "codex" || id === "claude") {
 		const executable = defaultDependencies.resolveExecutable(id);
 		return executable ? (nativeUpdateAction(id, executable) ?? null) : null;
@@ -560,6 +718,7 @@ export type CliUpdateStatusDependencies = {
 	readCache(): Promise<CliUpdateStatusCache | null>;
 	writeCache(value: CliUpdateStatusCache): Promise<void>;
 	inspectNative(): Promise<CliUpdateStatus[]>;
+	inspectDesktop(): Promise<CliUpdateStatus[]>;
 	inspectWsl(): Promise<CliUpdateStatus[]>;
 	inspectAcp(): Promise<CliUpdateStatus[]>;
 };
@@ -582,9 +741,13 @@ function isPersistedStatus(value: unknown): value is CliUpdateStatus {
 		typeof status.id === "string" &&
 		(status.id === "codex" ||
 			status.id === "claude" ||
+			status.id === "codex-desktop" ||
 			/^wsl:[^:]+:(?:codex|claude)$/.test(status.id) ||
 			/^acp:.+/.test(status.id)) &&
 		typeof status.label === "string" &&
+		(status.surface === undefined ||
+			status.surface === "cli" ||
+			status.surface === "desktop") &&
 		nullableString(status.installedVersion) &&
 		nullableString(status.latestVersion) &&
 		typeof status.available === "boolean" &&
@@ -648,6 +811,7 @@ const defaultStatusDependencies: CliUpdateStatusDependencies = {
 	readCache: readPersistedCache,
 	writeCache: writePersistedCache,
 	inspectNative: inspectCliUpdates,
+	inspectDesktop: inspectWindowsDesktopUpdates,
 	inspectWsl: inspectWslUpdates,
 	inspectAcp: inspectAcpUpdates,
 };
@@ -679,11 +843,17 @@ function refreshCliUpdateStatuses(
 	if (inflight) return inflight;
 	const pending = Promise.all([
 		dependencies.inspectNative(),
+		dependencies.inspectDesktop().catch(() => []),
 		dependencies.inspectWsl().catch(() => []),
 		dependencies.inspectAcp().catch(() => []),
 	])
-		.then(([nativeStatuses, wslStatuses, acpStatuses]) => {
-			const statuses = [...nativeStatuses, ...wslStatuses, ...acpStatuses];
+		.then(([nativeStatuses, desktopStatuses, wslStatuses, acpStatuses]) => {
+			const statuses = [
+				...nativeStatuses,
+				...desktopStatuses,
+				...wslStatuses,
+				...acpStatuses,
+			];
 			cached = { checkedAt: dependencies.now(), statuses };
 			void dependencies.writeCache(cached).catch(() => {});
 			return statuses;

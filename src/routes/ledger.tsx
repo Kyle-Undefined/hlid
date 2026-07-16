@@ -48,6 +48,7 @@ import {
 import { dbFetch, dbJson, requireDbOk } from "#/lib/dbClient";
 import { fmt, fmtModel } from "#/lib/formatters";
 import {
+	buildLedgerAgentOptions,
 	isValidSize,
 	parseLedgerSearch,
 	type SessionSortKey,
@@ -60,6 +61,7 @@ import {
 	sessionPageSchema,
 	sessionRenameSchema,
 } from "#/lib/serverFnSchemas";
+import { getAgentListFn } from "#/lib/serverFns/agents";
 import { getProviderUsagesFn } from "#/lib/serverFns/providers";
 import { getActiveSessionRowFn } from "#/lib/serverFns/sessions";
 import type { ActivityStats } from "#/lib/serverFns/stats";
@@ -76,15 +78,21 @@ const getSessionsPageFn = createServerFn({ method: "POST" })
 			size: String(data.size),
 		});
 		if (data.q) params.set("q", data.q);
+		if (data.agent) params.set("agent", data.agent);
+		if (data.model) params.set("model", data.model);
 		if (data.sort && data.sort !== "recent") params.set("sort", data.sort);
 		return dbJson<{
 			sessions: SessionRow[];
 			total: number;
 			oldest_started_at: number | null;
+			agent_cwds: string[];
+			models: string[];
 		}>(`/db/sessions?${params.toString()}`, {
 			sessions: [],
 			total: 0,
 			oldest_started_at: null,
+			agent_cwds: [],
+			models: [],
 		});
 	});
 
@@ -134,27 +142,43 @@ const cleanupSessionsFn = createServerFn({ method: "POST" })
 
 export const Route = createFileRoute("/ledger")({
 	validateSearch: parseLedgerSearch,
-	loaderDeps: ({ search: { page, size, q, sort } }) => ({
+	loaderDeps: ({ search: { page, size, q, agent, model, sort } }) => ({
 		page,
 		size,
 		q,
+		agent,
+		model,
 		sort,
 	}),
 	staleTime: 0,
-	loader: async ({ deps: { page, size, q, sort } }) => {
+	loader: async ({ deps: { page, size, q, agent, model, sort } }) => {
 		const renderedAt = Math.floor(Date.now() / 1000);
-		const [initialSessions, activeSession] = await Promise.all([
-			getSessionsPageFn({ data: { page, size, q: q || undefined, sort } }),
-			getActiveSessionRowFn(),
-		]);
+		const [initialSessions, activeSession, configuredAgents] =
+			await Promise.all([
+				getSessionsPageFn({
+					data: {
+						page,
+						size,
+						q: q || undefined,
+						agent: agent || undefined,
+						model: model || undefined,
+						sort,
+					},
+				}),
+				getActiveSessionRowFn(),
+				getAgentListFn(),
+			]);
 
 		return {
 			initialSessions,
 			page,
 			size,
 			q,
+			agent,
+			model,
 			sort,
 			activeSession,
+			configuredAgents,
 			renderedAt,
 		};
 	},
@@ -309,6 +333,8 @@ type ListState = {
 	page: number;
 	size: PageSize;
 	q: string;
+	agent: string;
+	model: string;
 	sort: SessionSortKey;
 };
 
@@ -317,7 +343,7 @@ function useLedgerMutations(
 	sessionPage: Awaited<ReturnType<typeof getSessionsPageFn>>,
 	navigate: LedgerNavigate,
 ) {
-	const { page, size, q, sort } = listState;
+	const { page, size, q, agent, model, sort } = listState;
 	const dependencies = useMemo(
 		() => ({
 			deleteSession: async (id: string) => {
@@ -332,11 +358,19 @@ function useLedgerMutations(
 			navigateToPage: (nextPage: number) => {
 				navigate({
 					to: "/ledger",
-					search: { tab: "sessions" as const, page: nextPage, size, q, sort },
+					search: {
+						tab: "sessions" as const,
+						page: nextPage,
+						size,
+						q,
+						agent,
+						model,
+						sort,
+					},
 				});
 			},
 		}),
-		[navigate, size, q, sort],
+		[navigate, size, q, agent, model, sort],
 	);
 	return useLedgerSessionMutations({ page, sessionPage, dependencies });
 }
@@ -374,9 +408,16 @@ function useSessionListSync({
 
 	const refreshSessions = useCallback(async () => {
 		const v = ++fetchVersionRef.current;
-		const { page, size, q, sort } = listStateRef.current;
+		const { page, size, q, agent, model, sort } = listStateRef.current;
 		const fresh = await getSessionsPageFn({
-			data: { page, size, q: q || undefined, sort },
+			data: {
+				page,
+				size,
+				q: q || undefined,
+				agent: agent || undefined,
+				model: model || undefined,
+				sort,
+			},
 		});
 		// Discard if a newer fetch (loader sync or another WS done) already landed.
 		if (fetchVersionRef.current !== v) return;
@@ -517,15 +558,18 @@ function LedgerTabBar({
 	listState: ListState;
 	navigate: LedgerNavigate;
 }) {
-	const { page, size, q, sort } = listState;
+	const { page, size, q, agent, model, sort } = listState;
 	function switchTab(next: "stats" | "sessions") {
 		if (next === "sessions") {
 			navigate({
 				to: "/ledger",
-				search: { tab: next, page: 1, size, q, sort },
+				search: { tab: next, page: 1, size, q, agent, model, sort },
 			});
 		} else {
-			navigate({ to: "/ledger", search: { tab: next, page, size, q, sort } });
+			navigate({
+				to: "/ledger",
+				search: { tab: next, page, size, q, agent, model, sort },
+			});
 		}
 	}
 	return (
@@ -559,6 +603,7 @@ function SessionsTab({
 	liveStats,
 	oldestStartedAt,
 	cleanupReferenceTime,
+	configuredAgents,
 }: {
 	sessionsStatus: ReturnType<typeof getSessionsStatus>;
 	live: ReturnType<typeof useLedgerLiveData>;
@@ -569,8 +614,9 @@ function SessionsTab({
 	liveStats: LiveStats;
 	oldestStartedAt: number | null;
 	cleanupReferenceTime: number;
+	configuredAgents: Awaited<ReturnType<typeof getAgentListFn>>;
 }) {
-	const { page, size, q, sort } = listState;
+	const { page, size, q, agent, model, sort } = listState;
 	const totalPages = Math.max(
 		1,
 		Math.ceil(mutations.sessionsData.total / size),
@@ -579,7 +625,7 @@ function SessionsTab({
 	function navigateList(next: Partial<ListState>, replace = false) {
 		navigate({
 			to: "/ledger",
-			search: { tab: "sessions", page, size, q, sort, ...next },
+			search: { tab: "sessions", page, size, q, agent, model, sort, ...next },
 			replace,
 		});
 	}
@@ -602,6 +648,11 @@ function SessionsTab({
 		const { content, mime, filename } = buildSessionExport(rows, format);
 		downloadContent(content, mime, filename);
 	}
+
+	const agentOptions = buildLedgerAgentOptions(
+		configuredAgents,
+		mutations.sessionsData.agent_cwds ?? [],
+	);
 
 	return (
 		<div>
@@ -643,6 +694,20 @@ function SessionsTab({
 					}
 					sort={sort}
 					onSortChange={(nextSort) => navigateList({ page: 1, sort: nextSort })}
+					agentFilter={agent}
+					agentOptions={agentOptions}
+					onAgentFilterChange={(nextAgent) =>
+						// Model facets depend on the owner; clear a stale model atomically.
+						navigateList({ page: 1, agent: nextAgent, model: "" })
+					}
+					modelFilter={model}
+					modelOptions={mutations.sessionsData.models ?? []}
+					onModelFilterChange={(nextModel) =>
+						navigateList({ page: 1, model: nextModel })
+					}
+					onClearFilters={() =>
+						navigateList({ page: 1, q: "", agent: "", model: "" })
+					}
 					oldestStartedAt={oldestStartedAt}
 					cleanupReferenceTime={cleanupReferenceTime}
 					onExport={(format) => void onExport(format)}
@@ -653,13 +718,25 @@ function SessionsTab({
 }
 
 function StatsPage() {
-	const { initialSessions, page, size, q, sort, activeSession, renderedAt } =
-		Route.useLoaderData();
+	const {
+		initialSessions,
+		page,
+		size,
+		q,
+		agent,
+		model,
+		sort,
+		activeSession,
+		configuredAgents,
+		renderedAt,
+	} = Route.useLoaderData();
 	const { tab } = Route.useSearch();
 	const listState: ListState = {
 		page,
 		size,
 		q: q ?? "",
+		agent: agent ?? "",
+		model: model ?? "",
 		sort: sort ?? "recent",
 	};
 	const navigate = useNavigate();
@@ -750,6 +827,7 @@ function StatsPage() {
 						liveStats={stats}
 						oldestStartedAt={sessionPage.oldest_started_at ?? null}
 						cleanupReferenceTime={renderedAt}
+						configuredAgents={configuredAgents ?? []}
 					/>
 				)}
 			</div>

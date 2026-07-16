@@ -9,9 +9,11 @@ import {
 	getCliUpdateStatuses,
 	inspectAcpUpdates,
 	inspectCliUpdates,
+	inspectWindowsDesktopUpdates,
 	inspectWslUpdates,
 	parseCliUpdateStatusCache,
 	parseCliVersion,
+	parseWindowsStoreVersions,
 } from "./cliUpdates";
 
 function cachedStatus(id: CliUpdateStatus["id"] = "codex"): CliUpdateStatus {
@@ -33,6 +35,7 @@ function statusDependencies(
 		readCache: vi.fn().mockResolvedValue(null),
 		writeCache: vi.fn().mockResolvedValue(undefined),
 		inspectNative: vi.fn().mockResolvedValue([]),
+		inspectDesktop: vi.fn().mockResolvedValue([]),
 		inspectWsl: vi.fn().mockResolvedValue([]),
 		inspectAcp: vi.fn().mockResolvedValue([]),
 		...overrides,
@@ -65,13 +68,77 @@ describe("CLI update discovery", () => {
 	it("parses Codex and Claude version output", () => {
 		expect(parseCliVersion("codex-cli 0.144.1")).toBe("0.144.1");
 		expect(parseCliVersion("2.1.207 (Claude Code)")).toBe("2.1.207");
+		expect(parseCliVersion("26.707.9981.0")).toBe("26.707.9981.0");
 		expect(parseCliVersion("unknown")).toBeNull();
 	});
 
 	it("compares release and prerelease versions", () => {
 		expect(compareCliVersions("0.144.2", "0.144.1")).toBeGreaterThan(0);
 		expect(compareCliVersions("2.1.207", "2.1.207")).toBe(0);
+		expect(
+			compareCliVersions("26.707.9981.1", "26.707.9981.0"),
+		).toBeGreaterThan(0);
 		expect(compareCliVersions("1.0.0-beta", "1.0.0")).toBeLessThan(0);
+	});
+
+	it("parses installed and available versions from an exact Store row", () => {
+		expect(
+			parseWindowsStoreVersions(`
+Name    Id           Version       Available      Source
+----------------------------------------------------------
+ChatGPT 9PLM9XGG6VKS 26.707.9981.0 26.708.10000.0 msstore
+`),
+		).toEqual({
+			installedVersion: "26.707.9981.0",
+			latestVersion: "26.708.10000.0",
+		});
+		expect(
+			parseWindowsStoreVersions("ChatGPT 9PLM9XGG6VKS 26.707.9981.0"),
+		).toEqual({
+			installedVersion: "26.707.9981.0",
+			latestVersion: "26.707.9981.0",
+		});
+	});
+
+	it("tracks the installed Codex desktop app against Microsoft Store", async () => {
+		const statuses = await inspectWindowsDesktopUpdates({
+			isWindows: () => true,
+			readInstalledVersion: vi.fn().mockResolvedValue("26.707.9981.0"),
+			readStoreVersions: vi.fn().mockResolvedValue({
+				installedVersion: "26.707.9981.0",
+				latestVersion: "26.708.10000.0",
+			}),
+			now: () => 1_800_000_000_000,
+		});
+
+		expect(statuses).toEqual([
+			{
+				id: "codex-desktop",
+				label: "Codex desktop app",
+				surface: "desktop",
+				installedVersion: "26.707.9981.0",
+				latestVersion: "26.708.10000.0",
+				available: true,
+				updateCommand:
+					"winget upgrade --id 9PLM9XGG6VKS --source msstore --exact --silent --accept-source-agreements --accept-package-agreements --disable-interactivity",
+				updateMode: "automatic",
+				requiresElevation: false,
+				checkedAt: 1_800_000_000_000,
+			},
+		]);
+	});
+
+	it("does not probe Store metadata away from the Windows host", async () => {
+		const readInstalledVersion = vi.fn();
+		expect(
+			await inspectWindowsDesktopUpdates({
+				isWindows: () => false,
+				readInstalledVersion,
+				readStoreVersions: vi.fn(),
+				now: () => 1_800_000_000_000,
+			}),
+		).toEqual([]);
+		expect(readInstalledVersion).not.toHaveBeenCalled();
 	});
 
 	it("resolves WSL CLIs after the login shell loads the user PATH", () => {
@@ -265,7 +332,7 @@ describe("CLI update status cache", () => {
 		expect(
 			parseCliUpdateStatusCache(
 				JSON.stringify({
-					schemaVersion: 1,
+					schemaVersion: 2,
 					checkedAt: 1_800_000_000_000,
 					statuses: [status],
 				}),
@@ -275,7 +342,7 @@ describe("CLI update status cache", () => {
 		expect(
 			parseCliUpdateStatusCache(
 				JSON.stringify({
-					schemaVersion: 1,
+					schemaVersion: 2,
 					checkedAt: 1_800_000_000_000,
 					statuses: [{ ...status, installedVersion: { bad: true } }],
 				}),

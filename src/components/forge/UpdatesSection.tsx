@@ -256,7 +256,9 @@ function UpdatesView({
 			{status?.cliUpdates?.map((update) => (
 				<Field
 					key={update.id}
-					label={`${update.label} CLI`}
+					label={
+						update.surface === "desktop" ? update.label : `${update.label} CLI`
+					}
 					hint={
 						update.error
 							? `check incomplete: ${update.error}`
@@ -285,9 +287,11 @@ function UpdatesView({
 							status.cliUpdateActionsAllowed && (
 								<ConfirmAction
 									label={
-										update.updateMode === "automatic"
-											? "stop sessions and update?"
-											: "stop sessions and open terminal?"
+										update.surface === "desktop"
+											? "update desktop app?"
+											: update.updateMode === "automatic"
+												? "stop sessions and update?"
+												: "stop sessions and open terminal?"
 									}
 									confirmText={
 										update.updateMode === "automatic" ? "update" : "open"
@@ -425,7 +429,7 @@ export function UpdatesSection() {
 				id: update.id,
 			}).catch((error) => ({ ok: false, error: String(error) }));
 		if (!result.ok) {
-			setCliNotice(result.error ?? "CLI update failed");
+			setCliNotice(result.error ?? "Update failed");
 			setCliBusyId(null);
 			return;
 		}

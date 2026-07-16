@@ -2,7 +2,12 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import type { SessionRow } from "#/db";
 import { filterOptimisticIds, filterOptimisticLabels } from "#/lib/ledgerState";
 
-type SessionPage = { sessions: SessionRow[]; total: number };
+type SessionPage = {
+	sessions: SessionRow[];
+	total: number;
+	agent_cwds?: string[];
+	models?: string[];
+};
 
 type LedgerMutationDependencies = {
 	deleteSession(id: string): Promise<void>;
@@ -35,6 +40,7 @@ export function useLedgerSessionMutations({
 
 	const sessionsData = useMemo(
 		() => ({
+			...sessionPage,
 			sessions: sessionPage.sessions
 				.filter((session) => !deletedIds.has(session.id))
 				.map((session) =>

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { cacheHitPct } from "#/components/ledger/LedgerStats";
 import {
+	buildLedgerAgentOptions,
 	filterOptimisticIds,
 	filterOptimisticLabels,
 	parseLedgerSearch,
@@ -91,6 +92,40 @@ describe("parseLedgerSearch", () => {
 		expect(parseLedgerSearch({ size: 20.7 })).toMatchObject({ size: 20 });
 		// 19.9 floors to 19, which is invalid → fallback to 20
 		expect(parseLedgerSearch({ size: 19.9 })).toMatchObject({ size: 20 });
+	});
+
+	it("parses bounded agent and model filters", () => {
+		expect(
+			parseLedgerSearch({
+				agent: "  /agents/raven  ",
+				model: "  gpt-5.4  ",
+			}),
+		).toMatchObject({ agent: "/agents/raven", model: "gpt-5.4" });
+		expect(parseLedgerSearch({ agent: "", model: 42 })).toMatchObject({
+			agent: undefined,
+			model: undefined,
+		});
+	});
+});
+
+describe("buildLedgerAgentOptions", () => {
+	it("puts Vault first and merges configured names with observed paths", () => {
+		expect(
+			buildLedgerAgentOptions(
+				[
+					{
+						path: "~/agents/raven",
+						resolvedPath: "/home/kyle/agents/raven",
+						name: "Raven",
+					},
+				],
+				["/home/kyle/agents/raven", "/retired/agent"],
+			),
+		).toEqual([
+			{ value: "vault", label: "Vault" },
+			{ value: "/home/kyle/agents/raven", label: "Raven" },
+			{ value: "/retired/agent", label: "/retired/agent" },
+		]);
 	});
 });
 

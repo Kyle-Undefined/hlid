@@ -87,6 +87,8 @@ async function getSessions(url: URL): Promise<Response> {
 	const page = clampInt(url.searchParams.get("page"), 1, 1);
 	const size = clampInt(url.searchParams.get("size"), 20, 1, 100);
 	const q = url.searchParams.get("q")?.trim() || undefined;
+	const agent = url.searchParams.get("agent")?.trim() || undefined;
+	const model = url.searchParams.get("model")?.trim() || undefined;
 	const sortParam = url.searchParams.get("sort");
 	const sort =
 		sortParam === "cost" || sortParam === "tokens" || sortParam === "recent"
@@ -94,6 +96,8 @@ async function getSessions(url: URL): Promise<Response> {
 			: undefined;
 	const result = await db.getSessionsPaginated(page, size, {
 		search: q,
+		agent,
+		model,
 		sort,
 	});
 	return Response.json(result);

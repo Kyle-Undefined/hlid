@@ -200,14 +200,47 @@ describe("SessionsLedger header controls", () => {
 
 	it("offers clearing the search from the empty state", () => {
 		const onSearchChange = vi.fn();
+		const onClearFilters = vi.fn();
 		renderLedger({
 			data: { sessions: [], total: 0 },
 			search: "nope",
 			onSearchChange,
+			onClearFilters,
 		});
 		expect(screen.getByText(/no sessions match/)).toBeDefined();
-		fireEvent.click(screen.getByRole("button", { name: "clear search" }));
-		expect(onSearchChange).toHaveBeenCalledWith("");
+		fireEvent.click(screen.getByRole("button", { name: "clear filters" }));
+		expect(onClearFilters).toHaveBeenCalledOnce();
+	});
+
+	it("filters by agent before model", () => {
+		const onAgentFilterChange = vi.fn();
+		const onModelFilterChange = vi.fn();
+		renderLedger({
+			agentFilter: "vault",
+			agentOptions: [
+				{ value: "vault", label: "Vault" },
+				{ value: "/agents/raven", label: "Raven" },
+			],
+			onAgentFilterChange,
+			modelFilter: "claude-sonnet",
+			modelOptions: ["claude-sonnet", "claude-opus"],
+			onModelFilterChange,
+		});
+
+		const controls = screen.getAllByRole("combobox");
+		const agentSelect = screen.getByRole("combobox", {
+			name: "Filter sessions by agent",
+		});
+		const modelSelect = screen.getByRole("combobox", {
+			name: "Filter sessions by model",
+		});
+		expect(controls.indexOf(agentSelect)).toBeLessThan(
+			controls.indexOf(modelSelect),
+		);
+		fireEvent.change(agentSelect, { target: { value: "/agents/raven" } });
+		fireEvent.change(modelSelect, { target: { value: "claude-opus" } });
+		expect(onAgentFilterChange).toHaveBeenCalledWith("/agents/raven");
+		expect(onModelFilterChange).toHaveBeenCalledWith("claude-opus");
 	});
 
 	it("changes sort through the select", () => {

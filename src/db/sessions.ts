@@ -361,28 +361,63 @@ const SESSION_SORT_SQL: Record<SessionSort, string> = {
 		"(total_input_tokens + total_output_tokens + total_cache_read_tokens + total_cache_creation_tokens) DESC",
 };
 
-export async function getSessionsPaginated(
-	page: number,
-	pageSize: number,
-	opts: { search?: string; sort?: SessionSort } = {},
-): Promise<{
-	sessions: SessionRow[];
-	total: number;
-	/** Unix seconds of the oldest session overall (ignores search filter); null when empty. */
-	oldest_started_at: number | null;
-}> {
-	const db = await getDb();
-	const offset = Math.max(0, (page - 1) * pageSize);
-	const params: (string | number)[] = [];
-	let whereSql = "";
+const SESSION_EFFECTIVE_MODEL_SQL =
+	"COALESCE(NULLIF(actual_model, ''), NULLIF(selected_model, ''), NULLIF(model, ''))";
+
+type SessionListOptions = {
+	search?: string;
+	sort?: SessionSort;
+	/** "vault" matches rows without an agent cwd; any other value is exact. */
+	agent?: string;
+	model?: string;
+};
+
+function buildSessionFilter(
+	opts: Pick<SessionListOptions, "search" | "agent" | "model">,
+): { whereSql: string; params: string[] } {
+	const conditions: string[] = [];
+	const params: string[] = [];
 	if (opts.search) {
 		const escaped = opts.search
 			.replace(/\\/g, "\\\\")
 			.replace(/%/g, "\\%")
 			.replace(/_/g, "\\_");
-		whereSql = `WHERE label LIKE ? ESCAPE '\\'`;
+		conditions.push(`label LIKE ? ESCAPE '\\'`);
 		params.push(`%${escaped}%`);
 	}
+	if (opts.agent === "vault") {
+		conditions.push("(agent_cwd IS NULL OR TRIM(agent_cwd) = '')");
+	} else if (opts.agent) {
+		conditions.push("agent_cwd = ?");
+		params.push(opts.agent);
+	}
+	if (opts.model) {
+		conditions.push(`${SESSION_EFFECTIVE_MODEL_SQL} = ?`);
+		params.push(opts.model);
+	}
+	return {
+		whereSql: conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "",
+		params,
+	};
+}
+
+export async function getSessionsPaginated(
+	page: number,
+	pageSize: number,
+	opts: SessionListOptions = {},
+): Promise<{
+	sessions: SessionRow[];
+	total: number;
+	/** Unix seconds of the oldest session overall (ignores search filter); null when empty. */
+	oldest_started_at: number | null;
+	/** Persisted Einherjar cwd facets, including agents removed from config. */
+	agent_cwds: string[];
+	/** Effective model facets narrowed by the selected Vault/agent owner. */
+	models: string[];
+}> {
+	const db = await getDb();
+	const offset = Math.max(0, (page - 1) * pageSize);
+	const { whereSql, params } = buildSessionFilter(opts);
 	const orderSql = SESSION_SORT_SQL[opts.sort ?? "recent"];
 	const sessions = db
 		.query<SessionRow, (string | number)[]>(
@@ -399,10 +434,33 @@ export async function getSessionsPaginated(
 			`SELECT MIN(started_at) as oldest FROM sessions`,
 		)
 		.get();
+	const agentCwds = db
+		.query<{ agent_cwd: string }, []>(
+			`SELECT DISTINCT agent_cwd
+			 FROM sessions
+			 WHERE agent_cwd IS NOT NULL AND TRIM(agent_cwd) <> ''
+			 ORDER BY agent_cwd COLLATE NOCASE ASC`,
+		)
+		.all()
+		.map((row) => row.agent_cwd);
+	const agentFilter = buildSessionFilter({ agent: opts.agent });
+	const modelWhere = agentFilter.whereSql
+		? `${agentFilter.whereSql} AND ${SESSION_EFFECTIVE_MODEL_SQL} IS NOT NULL`
+		: `WHERE ${SESSION_EFFECTIVE_MODEL_SQL} IS NOT NULL`;
+	const models = db
+		.query<{ model: string }, string[]>(
+			`SELECT DISTINCT ${SESSION_EFFECTIVE_MODEL_SQL} AS model
+			 FROM sessions ${modelWhere}
+			 ORDER BY model COLLATE NOCASE ASC`,
+		)
+		.all(...agentFilter.params)
+		.map((row) => row.model);
 	return {
 		sessions,
 		total: row?.total ?? 0,
 		oldest_started_at: oldest?.oldest ?? null,
+		agent_cwds: agentCwds,
+		models,
 	};
 }
 

@@ -339,6 +339,58 @@ describe("UPDATE_TOOL_EVENT", () => {
 	});
 });
 
+describe("SETTLE_ACTIVE_SUBAGENTS", () => {
+	it("interrupts stale live cards while preserving completed children", () => {
+		let state = reducer(withAssistant("a1"), {
+			type: "ADD_TOOL_EVENT",
+			id: "a1",
+			event: {
+				type: "tool_event",
+				id: "computer-use",
+				name: "windows_computer_use",
+				input: {},
+				subagent: {
+					provider: "codex",
+					agentId: "desktop-1",
+					status: "running",
+					startedAtMs: 1000,
+				},
+			},
+		});
+		state = reducer(state, {
+			type: "ADD_TOOL_EVENT",
+			id: "a1",
+			event: {
+				type: "tool_event",
+				id: "finished",
+				name: "spawn_agent",
+				input: {},
+				subagent: {
+					provider: "codex",
+					agentId: "child-2",
+					status: "completed",
+					startedAtMs: 1000,
+					endedAtMs: 1500,
+				},
+			},
+		});
+
+		state = reducer(state, {
+			type: "SETTLE_ACTIVE_SUBAGENTS",
+			endedAtMs: 2000,
+		});
+
+		const message = state[0];
+		if (message.role !== "assistant") throw new Error("wrong role");
+		expect(message.toolEvents[0].subagent).toMatchObject({
+			status: "interrupted",
+			currentStep: "Parent turn is no longer running",
+			endedAtMs: 2000,
+		});
+		expect(message.toolEvents[1].subagent?.status).toBe("completed");
+	});
+});
+
 // ── ADD_PLAN_PROPOSAL ─────────────────────────────────────────────────────────
 
 describe("ADD_PLAN_PROPOSAL", () => {

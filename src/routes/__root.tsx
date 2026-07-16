@@ -261,7 +261,6 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 								<UpdateBanner />
 							</ErrorBoundary>
 							<main
-								key={pathname}
 								data-scroll-to-top="app"
 								className={`flex-1 min-h-0 overscroll-y-contain ${ravenRoute ? "overflow-hidden" : "overflow-auto"}`}
 							>

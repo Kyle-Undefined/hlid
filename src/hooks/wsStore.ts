@@ -132,8 +132,8 @@ const messageSubs = new Set<(msg: ServerMessage) => void>();
 /**
  * Slice A: server-side queueing. Enqueued messages are sent to the server
  * IMMEDIATELY (not batched on idle). The server accepts mid-run and queues
- * FIFO at the SessionManager level. The client queue mirrors what's still in
- * flight: items remain visible until their `done` event arrives.
+ * FIFO at the SessionManager level. The client queue mirrors work that has not
+ * started yet: items remain visible until the server reports them as running.
  *
  * Items added while the WS is closed remain in the queue and drain on the
  * next ws.onopen.
@@ -203,7 +203,7 @@ function drainPendingToServer(): void {
  * to the running state. ADD_USER is idempotent by turn id, making this harmless
  * for clients that never unmounted.
  */
-function notifyRunningQueuedUser(turnId: string | undefined): void {
+function consumeRunningQueuedUser(turnId: string | undefined): void {
 	if (!turnId) return;
 	const queued = findQueuedChat(turnId);
 	if (!queued) return;
@@ -215,6 +215,11 @@ function notifyRunningQueuedUser(turnId: string | undefined): void {
 		...(queued.attachments ? { attachments: queued.attachments } : {}),
 	};
 	for (const subscriber of messageSubs) subscriber(userEvent);
+	// A running turn is no longer queued. Remove it only after re-emitting its
+	// prompt so a Raven reducer that remounted during navigation can restore the
+	// user row before the durable queue copy disappears. `done` retains the same
+	// removal as an idempotent fallback for missed status frames.
+	removeLocalChat(turnId);
 }
 
 /**
@@ -284,7 +289,7 @@ function onStatus(msg: Extract<ServerMessage, { type: "status" }>): void {
 	});
 	// Slice A: server-side queue manages drain order. Client no longer batches
 	// or sends on state=idle — items are dispatched immediately on enqueue and
-	// removed from the local queue when their `done` event arrives.
+	// consumed from the local queue when their turn starts running.
 }
 
 function onAgentSleep(
@@ -478,9 +483,9 @@ function handleSocketMessage(event: MessageEvent): void {
 	if (!applySessionMessage(msg)) return;
 	updateMessageBuffer(msg);
 	if (msg.type === "status" && msg.state === "running") {
-		notifyRunningQueuedUser(msg.turn_id);
+		consumeRunningQueuedUser(msg.turn_id);
 	} else if (msg.type === "queue_state") {
-		notifyRunningQueuedUser(msg.running_turn_id ?? undefined);
+		consumeRunningQueuedUser(msg.running_turn_id ?? undefined);
 	}
 	for (const subscriber of messageSubs) subscriber(msg);
 }

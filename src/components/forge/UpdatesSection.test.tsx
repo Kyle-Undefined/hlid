@@ -175,6 +175,45 @@ describe("UpdatesSection", () => {
 		).toBeTruthy();
 	});
 
+	it("shows and applies a Microsoft Store desktop app update", async () => {
+		const fetchMock = stubFetch(
+			makeStatus({
+				cliUpdateActionsAllowed: true,
+				cliUpdates: [
+					{
+						id: "codex-desktop",
+						label: "Codex desktop app",
+						surface: "desktop",
+						installedVersion: "26.707.9981.0",
+						latestVersion: "26.708.10000.0",
+						available: true,
+						updateCommand: "winget upgrade --id 9PLM9XGG6VKS --source msstore",
+						updateMode: "automatic",
+						requiresElevation: false,
+						checkedAt: Date.now(),
+					},
+				],
+			}),
+			{ apply_cli: { ok: true, data: {} } },
+		);
+		render(<UpdatesSection />);
+
+		expect(await screen.findByText("Codex desktop app")).toBeTruthy();
+		expect(screen.queryByText("Codex desktop app CLI")).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "UPDATE" }));
+		expect(screen.getByText("update desktop app?")).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "update" }));
+
+		expect(await screen.findByText(/Codex desktop app updated/)).toBeTruthy();
+		const request = fetchMock.mock.calls.find((call) =>
+			String(call[1]?.body).includes('"apply_cli"'),
+		);
+		expect(JSON.parse(String(request?.[1]?.body))).toEqual({
+			action: "apply_cli",
+			id: "codex-desktop",
+		});
+	});
+
 	it("shows ACP updates without inventing a command for custom binaries", async () => {
 		stubFetch(
 			makeStatus({

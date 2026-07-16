@@ -1571,6 +1571,49 @@ export class SessionManager {
 		}
 	}
 
+	/**
+	 * A provider turn cannot leave a child card live after the parent has ended.
+	 * Some transports finish or are cancelled without emitting a final child
+	 * update, so settle every active snapshot before persisting/emitting `done`.
+	 */
+	private settleIncompleteSubagents(
+		turn: TurnState,
+		sessionId: string | undefined,
+		emit: (msg: ServerMessage) => void,
+	): void {
+		const snapshots = new Map<string, SubagentSnapshot>();
+		for (const event of turn.pendingToolEvents) {
+			if (event.subagent) snapshots.set(event.toolId, event.subagent);
+		}
+		for (const [toolId, subagent] of turn.pendingToolUpdates) {
+			snapshots.set(toolId, subagent);
+		}
+		for (const [toolId, subagent] of snapshots) {
+			if (
+				subagent.status !== "pending" &&
+				subagent.status !== "running" &&
+				subagent.status !== "paused"
+			) {
+				continue;
+			}
+			this.handleToolUpdate(
+				{
+					type: "tool_update",
+					toolId,
+					subagent: {
+						...subagent,
+						status: "interrupted",
+						currentStep: "Parent turn ended before the subagent completed",
+						endedAtMs: Date.now(),
+					},
+				},
+				turn,
+				sessionId,
+				emit,
+			);
+		}
+	}
+
 	private handleToolResult(
 		event: Extract<AgentEvent, { type: "tool_result" }>,
 		turn: TurnState,
@@ -1687,6 +1730,7 @@ export class SessionManager {
 				});
 				break;
 			case "done":
+				this.settleIncompleteSubagents(turn, sessionId, emit);
 				await this.handleDone(event, turn, sessionId, emit, provider);
 				return true;
 		}
@@ -1833,30 +1877,9 @@ export class SessionManager {
 			}
 		} finally {
 			usageRefresh?.stop();
-		}
-		for (const [toolId, subagent] of turn.pendingToolUpdates) {
-			if (
-				subagent.status !== "pending" &&
-				subagent.status !== "running" &&
-				subagent.status !== "paused"
-			) {
-				continue;
-			}
-			this.handleToolUpdate(
-				{
-					type: "tool_update",
-					toolId,
-					subagent: {
-						...subagent,
-						status: "interrupted",
-						currentStep: "Provider session ended before the subagent completed",
-						endedAtMs: Date.now(),
-					},
-				},
-				turn,
-				sessionId,
-				emit,
-			);
+			// Covers iterator exhaustion, transport errors, and cancellation. The done
+			// path already settled these snapshots, making this call idempotent.
+			this.settleIncompleteSubagents(turn, sessionId, emit);
 		}
 	}
 
@@ -2608,10 +2631,15 @@ export class SessionManager {
 		sessionId: string | undefined,
 		userMessage: string,
 		attachments: ChatAttachment[],
+		turnId?: string,
 	): Promise<void> {
 		const userSeq = this.messageSeq++;
 		if (!sessionId) return;
-		await db.appendMessage(sessionId, userSeq, "user", userMessage);
+		if (turnId) {
+			await db.appendMessage(sessionId, userSeq, "user", userMessage, turnId);
+		} else {
+			await db.appendMessage(sessionId, userSeq, "user", userMessage);
+		}
 		for (const attachment of attachments) {
 			await db
 				.linkAttachmentToMessage(attachment.id, sessionId, userSeq)
@@ -2927,7 +2955,12 @@ export class SessionManager {
 			}
 			// With `resume`, the CLI maintains conversation state on its end. We
 			// send only the new user turn — no transcript replay.
-			await this.persistUserMessage(sessionId, userMessage, safeAttachments);
+			await this.persistUserMessage(
+				sessionId,
+				userMessage,
+				safeAttachments,
+				turnId,
+			);
 
 			const { activeCwd, extraDirs, executable } = resolveExecutionContext({
 				agentMode: this.agentMode,
