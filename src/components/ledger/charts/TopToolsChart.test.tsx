@@ -53,7 +53,7 @@ const data = [
 describe("TopToolsChart", () => {
 	it("shows the empty state without data", () => {
 		render(<TopToolsChart data={[]} />);
-		expect(screen.getByText("No tool events yet")).toBeTruthy();
+		expect(screen.getByText("No tool events recorded")).toBeTruthy();
 	});
 
 	it("renders subtitle with tool count", () => {

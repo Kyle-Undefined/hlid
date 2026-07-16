@@ -99,6 +99,9 @@ vi.mock("#/hooks/useLedgerStatsData", () => ({
 		providerUsages: testState.loaderData.providerUsages,
 		providerIds: testState.loaderData.providerIds,
 		activity: testState.loaderData.activity,
+		statsStatus: testState.loaderData.statsStatus,
+		thirtyDayStatus: testState.loaderData.thirtyDayStatus,
+		activityStatus: testState.loaderData.activityStatus,
 		refresh: vi.fn(),
 	}),
 }));
@@ -208,6 +211,9 @@ function setLoader(active: Record<string, unknown> | null): void {
 			topTools: [],
 			hourOfDay: [],
 		},
+		statsStatus: "ready",
+		thirtyDayStatus: "ready",
+		activityStatus: "ready",
 	};
 }
 
@@ -298,6 +304,16 @@ describe("ledger route loader", () => {
 });
 
 describe("ledger stats view", () => {
+	it("does not present pending activity hydration as an empty ledger", () => {
+		setLoader(null);
+		testState.loaderData.activityStatus = "loading";
+
+		renderLedger();
+
+		expect(screen.getByText("Loading activity breakdowns…")).toBeTruthy();
+		expect(screen.queryByText("Model chart")).toBeNull();
+	});
+
 	it("prefers live query cost, query, and token totals over persisted session data", () => {
 		setLoader(activeSession());
 		testState.liveStats = {

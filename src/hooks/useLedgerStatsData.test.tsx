@@ -86,6 +86,19 @@ describe("useLedgerStatsData", () => {
 		expect(result.current.statsData.agg.allTime.sessions).toBe(0);
 		expect(result.current.thirtyDayStats).toEqual({ days: [], total: 0 });
 		expect(result.current.activity).toBe(EMPTY_ACTIVITY);
+		expect(result.current.statsStatus).toBe("loading");
+		expect(result.current.thirtyDayStatus).toBe("loading");
+		expect(result.current.activityStatus).toBe("loading");
+	});
+
+	it("reports a cold failed activity read instead of a false empty history", async () => {
+		vi.mocked(getActivityStatsFn).mockRejectedValueOnce(new Error("offline"));
+		const { result } = renderHook(() => useLedgerStatsData(true));
+
+		await waitFor(() =>
+			expect(result.current.activityStatus).toBe("unavailable"),
+		);
+		expect(result.current.statsStatus).toBe("ready");
 	});
 
 	it("keeps last-good data visible while a later refresh is pending", async () => {
@@ -101,6 +114,7 @@ describe("useLedgerStatsData", () => {
 		const second = renderHook(() => useLedgerStatsData(true));
 
 		expect(second.result.current.statsData.agg.allTime.sessions).toBe(1);
+		expect(second.result.current.statsStatus).toBe("ready");
 	});
 
 	it("reconciles successful sources independently and retains rejected data", async () => {
@@ -120,6 +134,7 @@ describe("useLedgerStatsData", () => {
 		);
 		expect(second.result.current.statsData.agg.allTime.sessions).toBe(1);
 		expect(second.result.current.activity.topTools[0]?.count).toBe(8);
+		expect(second.result.current.statsStatus).toBe("ready");
 	});
 
 	it("ignores an older refresh that resolves after a newer one", async () => {

@@ -19,7 +19,7 @@ export function StopReasonDonut({ data }: { data: StopReasonEntry[] }) {
 			title="Stop reason"
 			subtitle={`${total} queries`}
 			height={200}
-			emptyMessage="No completed queries yet"
+			emptyMessage="No stop reasons recorded"
 			innerRadius="50%"
 			rows={rows}
 		/>

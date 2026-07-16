@@ -47,6 +47,11 @@ export function getRouter() {
 		defaultPreload: "intent",
 		defaultPreloadStaleTime: 30_000,
 		defaultStaleTime: 30_000,
+		// Do not leave a destination looking unresponsive while a route loader is
+		// genuinely pending. Most local snapshot reads settle before this threshold;
+		// slower transitions replace the previous page with an explicit loading state.
+		defaultPendingMs: 150,
+		defaultPendingMinMs: 150,
 		defaultErrorComponent: RouterError,
 		defaultNotFoundComponent: NotFound,
 		defaultPendingComponent: RoutePending,

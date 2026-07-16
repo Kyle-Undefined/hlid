@@ -17,6 +17,7 @@ const snapshot: Snapshot = {
 
 const agg: AggStatus = {
 	state: "idle",
+	sessionCount: 0,
 	runningCount: 0,
 	pendingPermissions: false,
 };
@@ -47,6 +48,7 @@ function setState(snap: Partial<Snapshot>, aggPatch: Partial<AggStatus> = {}) {
 	});
 	Object.assign(agg, {
 		state: "idle",
+		sessionCount: 0,
 		runningCount: 0,
 		pendingPermissions: false,
 		...aggPatch,
@@ -68,34 +70,43 @@ describe("WsStatusDot", () => {
 	});
 
 	it("destructive dot on aggregate error", () => {
-		setState({}, { state: "error" });
+		setState({}, { state: "error", sessionCount: 1 });
 		render(<WsStatusDot />);
 		expect(dot().className).toContain("bg-destructive");
 		expect(dot().getAttribute("aria-label")).toBe("System error");
 	});
 
 	it("warning dot when permissions pending", () => {
-		setState({}, { pendingPermissions: true });
+		setState({}, { pendingPermissions: true, sessionCount: 1 });
 		render(<WsStatusDot />);
 		expect(dot().className).toContain("bg-status-warning");
 		expect(dot().getAttribute("aria-label")).toBe("Waiting for permissions");
 	});
 
 	it("primary dot while aggregate running", () => {
-		setState({}, { state: "running", runningCount: 2 });
+		setState({}, { state: "running", sessionCount: 2, runningCount: 2 });
 		render(<WsStatusDot />);
 		expect(dot().className).toContain("bg-primary");
 		expect(dot().getAttribute("aria-label")).toBe("System running");
 	});
 
-	it("falls back to single-session state when pool idle", () => {
+	it("falls back to single-session state when the pool snapshot is empty", () => {
 		setState({ sessionState: "running" } as Partial<Snapshot>);
 		render(<WsStatusDot />);
 		expect(dot().className).toContain("bg-primary");
 		expect(dot().getAttribute("aria-label")).toBe("System running");
 	});
 
-	it("falls back to single-session pending permissions", () => {
+	it("keeps an authoritative pool idle over a stale focused running state", () => {
+		setState({ sessionState: "running" } as Partial<Snapshot>, {
+			sessionCount: 1,
+		});
+		render(<WsStatusDot />);
+		expect(dot().className).toContain("bg-status-success");
+		expect(dot().getAttribute("aria-label")).toBe("System connected");
+	});
+
+	it("falls back to single-session permissions when the pool snapshot is empty", () => {
 		setState({ hasPendingPermissions: true } as Partial<Snapshot>);
 		render(<WsStatusDot />);
 		expect(dot().className).toContain("bg-status-warning");

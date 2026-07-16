@@ -25,7 +25,7 @@ export function HourOfDayChart({ data }: { data: HourOfDayBucket[] }) {
 			title="Time of day"
 			subtitle={empty ? undefined : `${total} queries`}
 			height={160}
-			empty={empty ? "No query history yet" : undefined}
+			empty={empty ? "No query timestamps recorded" : undefined}
 		>
 			<BarChart data={data} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
 				<XAxis

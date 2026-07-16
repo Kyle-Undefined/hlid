@@ -32,7 +32,10 @@ import type {
 	ThirtyDayStats,
 } from "#/db";
 import { useLedgerSessionMutations } from "#/hooks/useLedgerSessionMutations";
-import { useLedgerStatsData } from "#/hooks/useLedgerStatsData";
+import {
+	type LedgerStatsSourceStatus,
+	useLedgerStatsData,
+} from "#/hooks/useLedgerStatsData";
 import { useWs } from "#/hooks/useWs";
 import { useWsLiveStats } from "#/hooks/useWsSelectors";
 import type { LiveStats } from "#/hooks/wsLiveStatsStore";
@@ -815,6 +818,9 @@ function StatsPage() {
 						thirtyDayStats={ledgerStats.thirtyDayStats}
 						activeSession={live.activeSessionData}
 						activity={ledgerStats.activity}
+						statsStatus={ledgerStats.statsStatus}
+						thirtyDayStatus={ledgerStats.thirtyDayStatus}
+						activityStatus={ledgerStats.activityStatus}
 					/>
 				) : (
 					<SessionsTab
@@ -851,6 +857,20 @@ function WindowCard({ title, w }: { title: string; w: AggWindow }) {
 	);
 }
 
+function StatsDataState({
+	status,
+	label,
+}: {
+	status: Exclude<LedgerStatsSourceStatus, "ready">;
+	label: string;
+}) {
+	return (
+		<div className="grid min-h-36 place-items-center border border-border bg-card px-4 text-center text-[10px] tracking-widest text-muted-foreground/60 uppercase">
+			{status === "loading" ? `Loading ${label}…` : `${label} unavailable`}
+		</div>
+	);
+}
+
 function StatsTab({
 	agg,
 	stats,
@@ -860,6 +880,9 @@ function StatsTab({
 	thirtyDayStats,
 	activeSession,
 	activity,
+	statsStatus,
+	thirtyDayStatus,
+	activityStatus,
 }: {
 	agg: AggStats;
 	stats: LiveStats;
@@ -869,6 +892,9 @@ function StatsTab({
 	thirtyDayStats: ThirtyDayStats;
 	activeSession: SessionRow | null;
 	activity: ActivityStats;
+	statsStatus: LedgerStatsSourceStatus;
+	thirtyDayStatus: LedgerStatsSourceStatus;
+	activityStatus: LedgerStatsSourceStatus;
 }) {
 	const sessionBundle: StatBundle | null = activeSession
 		? {
@@ -891,49 +917,73 @@ function StatsTab({
 				<div className="border-r border-b sm:border-b-0 border-border">
 					<StatCell
 						label="TODAY"
-						value={formatDisplayCost(agg.today)}
+						value={
+							statsStatus === "ready" ? formatDisplayCost(agg.today) : "--"
+						}
 						sub={
-							costDisplayNote(agg.today) ??
-							(agg.today.queries > 0
-								? `${agg.today.queries} queries`
-								: undefined)
+							statsStatus !== "ready"
+								? statsStatus
+								: (costDisplayNote(agg.today) ??
+									(agg.today.queries > 0
+										? `${agg.today.queries} queries`
+										: undefined))
 						}
 					/>
 				</div>
 				<div className="border-b sm:border-b-0 sm:border-r border-border">
 					<StatCell
 						label="THIS MONTH"
-						value={formatDisplayCost(agg.thisMonth)}
+						value={
+							statsStatus === "ready" ? formatDisplayCost(agg.thisMonth) : "--"
+						}
 						sub={
-							costDisplayNote(agg.thisMonth) ??
-							(agg.thisMonth.queries > 0
-								? `${agg.thisMonth.queries} queries`
-								: undefined)
+							statsStatus !== "ready"
+								? statsStatus
+								: (costDisplayNote(agg.thisMonth) ??
+									(agg.thisMonth.queries > 0
+										? `${agg.thisMonth.queries} queries`
+										: undefined))
 						}
 					/>
 				</div>
 				<div className="border-r border-border">
 					<StatCell
 						label="ALL-TIME"
-						value={formatDisplayCost(agg.allTime)}
-						sub={`${agg.allTime.queries} queries`}
+						value={
+							statsStatus === "ready" ? formatDisplayCost(agg.allTime) : "--"
+						}
+						sub={
+							statsStatus === "ready"
+								? `${agg.allTime.queries} queries`
+								: statsStatus
+						}
 					/>
 				</div>
 				<div>
 					<StatCell
 						label="SESSIONS"
-						value={String(agg.allTime.sessions)}
+						value={
+							statsStatus === "ready" ? String(agg.allTime.sessions) : "--"
+						}
 						sub={
-							agg.allTime.queries > 0
-								? `${agg.allTime.queries} queries`
-								: undefined
+							statsStatus !== "ready"
+								? statsStatus
+								: agg.allTime.queries > 0
+									? `${agg.allTime.queries} queries`
+									: undefined
 						}
 					/>
 				</div>
 			</div>
 
 			{/* 30-day activity graph */}
-			<ThirtyDayGraph data={thirtyDayStats} />
+			{thirtyDayStatus === "ready" ? (
+				<ThirtyDayGraph data={thirtyDayStats} />
+			) : (
+				<div className="p-5 pb-0">
+					<StatsDataState status={thirtyDayStatus} label="30-day activity" />
+				</div>
+			)}
 
 			{/* Provider usage windows */}
 			<ProviderUsageStrip
@@ -946,52 +996,62 @@ function StatsTab({
 
 			<div className="p-5 space-y-5">
 				{/* System activity — charts */}
-				<div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-					{/* Donuts paired side-by-side on lg so the wide-screen space goes
+				{activityStatus === "ready" ? (
+					<div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+						{/* Donuts paired side-by-side on lg so the wide-screen space goes
 					    toward the inline legend instead of empty whitespace. */}
-					<ModelSplitDonut data={activity.modelSplit} />
-					<StopReasonDonut data={activity.stopReasonSplit} />
-					{/* TopTools is dense (10 horizontal bars) — give it the full row. */}
-					<div className="lg:col-span-2">
-						<TopToolsChart data={activity.topTools} />
+						<ModelSplitDonut data={activity.modelSplit} />
+						<StopReasonDonut data={activity.stopReasonSplit} />
+						{/* TopTools is dense (10 horizontal bars) — give it the full row. */}
+						<div className="lg:col-span-2">
+							<TopToolsChart data={activity.topTools} />
+						</div>
+						<div className="lg:col-span-2">
+							<HourOfDayChart data={activity.hourOfDay} />
+						</div>
 					</div>
-					<div className="lg:col-span-2">
-						<HourOfDayChart data={activity.hourOfDay} />
-					</div>
-				</div>
+				) : (
+					<StatsDataState status={activityStatus} label="activity breakdowns" />
+				)}
 
 				{/* Cost breakdown — all-time window for maximum analytical richness */}
-				<CostBreakdown s={agg.allTime} />
+				{statsStatus === "ready" ? (
+					<CostBreakdown s={agg.allTime} />
+				) : (
+					<StatsDataState status={statsStatus} label="cost breakdown" />
+				)}
 
 				{/* SESSION (DB) + TODAY + THIS MONTH + ALL-TIME — same-size row.
 				    Falls back to 3 cols when there's no active session so the
 				    remaining cards still fill the row without a trailing gap. */}
-				<div
-					className={`grid grid-cols-1 sm:grid-cols-2 gap-4 ${
-						activeSession ? "lg:grid-cols-4" : "lg:grid-cols-3"
-					}`}
-				>
-					{sessionBundle && (
+				{statsStatus === "ready" && (
+					<div
+						className={`grid grid-cols-1 sm:grid-cols-2 gap-4 ${
+							activeSession ? "lg:grid-cols-4" : "lg:grid-cols-3"
+						}`}
+					>
+						{sessionBundle && (
+							<div className="border border-border bg-card">
+								<div className="px-4 py-3 border-b border-border">
+									<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+										SESSION
+									</div>
+								</div>
+								<StatRows s={sessionBundle} />
+							</div>
+						)}
+						<WindowCard title="TODAY" w={agg.today} />
+						<WindowCard title="THIS MONTH" w={agg.thisMonth} />
 						<div className="border border-border bg-card">
 							<div className="px-4 py-3 border-b border-border">
 								<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
-									SESSION
+									ALL-TIME
 								</div>
 							</div>
-							<StatRows s={sessionBundle} />
+							<StatRows s={agg.allTime} />
 						</div>
-					)}
-					<WindowCard title="TODAY" w={agg.today} />
-					<WindowCard title="THIS MONTH" w={agg.thisMonth} />
-					<div className="border border-border bg-card">
-						<div className="px-4 py-3 border-b border-border">
-							<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
-								ALL-TIME
-							</div>
-						</div>
-						<StatRows s={agg.allTime} />
 					</div>
-				</div>
+				)}
 			</div>
 		</div>
 	);

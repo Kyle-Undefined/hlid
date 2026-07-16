@@ -65,7 +65,6 @@ export const Route = createFileRoute("/")({
 			statsData,
 			mcpServers,
 			weeklyStats,
-			providerUsages,
 			thirtyDayStats,
 			agentList,
 			activeSession,
@@ -77,7 +76,6 @@ export const Route = createFileRoute("/")({
 			getCockpitStatsFn(),
 			getMcpServersFn(),
 			getWeeklyStatsFn(),
-			loadProviderUsages(),
 			getThirtyDayStatsFn(),
 			getAgentListFn(),
 			getActiveSessionRowFn(),
@@ -90,7 +88,10 @@ export const Route = createFileRoute("/")({
 			statsData,
 			mcpServers,
 			weeklyStats,
-			providerUsages,
+			// Provider discovery is optional dashboard decoration and can involve a
+			// busy host CLI. Let the mounted usage strip hydrate it in the background
+			// so navigating to Watch never waits on /providers.
+			providerUsages: [],
 			thirtyDayStats,
 			agentList,
 			activeSession,

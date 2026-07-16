@@ -152,7 +152,7 @@ export function TopToolsChart({ data }: { data: TopToolCall[] }) {
 				title="Top tool calls"
 				subtitle={empty ? undefined : `Top ${data.length} by count`}
 				height={height}
-				empty={empty ? "No tool events yet" : undefined}
+				empty={empty ? "No tool events recorded" : undefined}
 			>
 				<BarChart
 					data={rows}

@@ -486,6 +486,7 @@ describe("getAggregateNavStatus", () => {
 	it("returns idle when sessions list is empty", () => {
 		const s = wsStore.getAggregateNavStatus();
 		expect(s.state).toBe("idle");
+		expect(s.sessionCount).toBe(0);
 		expect(s.runningCount).toBe(0);
 		expect(s.pendingPermissions).toBe(false);
 	});
@@ -513,6 +514,7 @@ describe("getAggregateNavStatus", () => {
 			],
 		});
 		expect(wsStore.getAggregateNavStatus().state).toBe("idle");
+		expect(wsStore.getAggregateNavStatus().sessionCount).toBe(2);
 	});
 
 	it("returns running when any session is running", () => {
@@ -567,6 +569,7 @@ describe("getAggregateNavStatus", () => {
 		expect(wsStore.getSessionsStatus()[0].state).toBe("idle");
 		expect(wsStore.getAggregateNavStatus()).toMatchObject({
 			state: "idle",
+			sessionCount: 1,
 			runningCount: 0,
 		});
 	});

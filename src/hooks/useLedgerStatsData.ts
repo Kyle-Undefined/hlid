@@ -16,7 +16,12 @@ export type LedgerStatsData = {
 	providerUsages: ProviderUsageSnapshot[];
 	providerIds: string[];
 	activity: ActivityStats;
+	statsStatus: LedgerStatsSourceStatus;
+	thirtyDayStatus: LedgerStatsSourceStatus;
+	activityStatus: LedgerStatsSourceStatus;
 };
+
+export type LedgerStatsSourceStatus = "loading" | "ready" | "unavailable";
 
 const EMPTY_LEDGER_STATS: LedgerStatsData = {
 	statsData: { agg: EMPTY_AGG },
@@ -24,6 +29,9 @@ const EMPTY_LEDGER_STATS: LedgerStatsData = {
 	providerUsages: [],
 	providerIds: ["claude"],
 	activity: EMPTY_ACTIVITY,
+	statsStatus: "loading",
+	thirtyDayStatus: "loading",
+	activityStatus: "loading",
 };
 
 let snapshot: LedgerStatsData = EMPTY_LEDGER_STATS;
@@ -74,21 +82,35 @@ export function useLedgerStatsData(
 
 		void getCockpitStatsFn()
 			.then((statsData) => {
-				if (isCurrent()) updateSnapshot({ statsData });
+				if (isCurrent()) updateSnapshot({ statsData, statsStatus: "ready" });
 			})
-			.catch(() => {});
+			.catch(() => {
+				if (isCurrent() && getSnapshot().statsStatus !== "ready") {
+					updateSnapshot({ statsStatus: "unavailable" });
+				}
+			});
 
 		void getThirtyDayStatsFn()
 			.then((thirtyDayStats) => {
-				if (isCurrent()) updateSnapshot({ thirtyDayStats });
+				if (isCurrent()) {
+					updateSnapshot({ thirtyDayStats, thirtyDayStatus: "ready" });
+				}
 			})
-			.catch(() => {});
+			.catch(() => {
+				if (isCurrent() && getSnapshot().thirtyDayStatus !== "ready") {
+					updateSnapshot({ thirtyDayStatus: "unavailable" });
+				}
+			});
 
 		void getActivityStatsFn()
 			.then((activity) => {
-				if (isCurrent()) updateSnapshot({ activity });
+				if (isCurrent()) updateSnapshot({ activity, activityStatus: "ready" });
 			})
-			.catch(() => {});
+			.catch(() => {
+				if (isCurrent() && getSnapshot().activityStatus !== "ready") {
+					updateSnapshot({ activityStatus: "unavailable" });
+				}
+			});
 
 		const refreshProviderUsages = (providerIds: string[]) => {
 			void getProviderUsagesFn({ data: providerIds })

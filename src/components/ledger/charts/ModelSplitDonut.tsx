@@ -15,7 +15,7 @@ export function ModelSplitDonut({ data }: { data: ModelSplitEntry[] }) {
 			title="Model split"
 			subtitle={`${total} sessions · ${data.length} models`}
 			height={220}
-			emptyMessage="No sessions yet"
+			emptyMessage="No model metadata recorded"
 			innerRadius="55%"
 			rows={rows}
 			formatTooltipValue={(value) => `${value} sessions`}

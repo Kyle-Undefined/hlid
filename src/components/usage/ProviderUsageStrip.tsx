@@ -92,6 +92,13 @@ export function ProviderUsageStrip({
 	}, [initial]);
 
 	useEffect(() => {
+		// Routes may intentionally omit provider inventory from their blocking
+		// loader. Hydrate an empty strip after first paint instead of making page
+		// navigation depend on host/provider discovery.
+		if (initial.length === 0) refreshRef.current();
+	}, [initial.length]);
+
+	useEffect(() => {
 		if (preferredProviderId) return;
 		const stored = storedProvider(providerIds);
 		if (stored) setActiveProvider(stored);

@@ -66,7 +66,7 @@ describe("ProviderUsageStrip polling", () => {
 			},
 		];
 		const fetchFn = vi.fn().mockResolvedValue(loaded);
-		const view = render(
+		render(
 			<ProviderUsageStrip
 				initial={[]}
 				liveQueryCount={0}
@@ -76,17 +76,9 @@ describe("ProviderUsageStrip polling", () => {
 		);
 
 		expect(screen.queryByText("CODEX 5-HOUR")).toBeNull();
-
-		view.rerender(
-			<ProviderUsageStrip
-				initial={loaded}
-				liveQueryCount={0}
-				rateLimit={null}
-				fetchFn={fetchFn}
-			/>,
-		);
 		await act(async () => {});
 
+		expect(fetchFn).toHaveBeenCalledOnce();
 		expect(screen.getByText("CODEX 5-HOUR")).not.toBeNull();
 	});
 

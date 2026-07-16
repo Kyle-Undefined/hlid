@@ -8,12 +8,14 @@ const subscribers = new Set<() => void>();
 
 export type AggregateNavStatus = {
 	state: "idle" | "running" | "error";
+	sessionCount: number;
 	runningCount: number;
 	pendingPermissions: boolean;
 };
 
 let aggregateNavStatus: AggregateNavStatus = {
 	state: "idle",
+	sessionCount: 0,
 	runningCount: 0,
 	pendingPermissions: false,
 };
@@ -36,12 +38,19 @@ function recomputeAggregateNavStatus(): void {
 		: hasError
 			? "error"
 			: "idle";
+	const sessionCount = sessionsStatus.length;
 	if (
 		state !== aggregateNavStatus.state ||
+		sessionCount !== aggregateNavStatus.sessionCount ||
 		runningCount !== aggregateNavStatus.runningCount ||
 		pendingPermissions !== aggregateNavStatus.pendingPermissions
 	) {
-		aggregateNavStatus = { state, runningCount, pendingPermissions };
+		aggregateNavStatus = {
+			state,
+			sessionCount,
+			runningCount,
+			pendingPermissions,
+		};
 	}
 }
 
@@ -147,6 +156,7 @@ export function resetSessionStatusForTesting(): void {
 	subscribedSessionId = "";
 	aggregateNavStatus = {
 		state: "idle",
+		sessionCount: 0,
 		runningCount: 0,
 		pendingPermissions: false,
 	};

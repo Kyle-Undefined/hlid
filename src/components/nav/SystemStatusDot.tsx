@@ -31,10 +31,14 @@ function aggregateDotClass(
 	if (wsStatus === "disconnected" || wsStatus === "connecting") {
 		return "bg-muted-foreground/25";
 	}
-	// Use aggregate when pool has sessions, else fall back to single-session
-	const state =
-		agg.state !== "idle" || agg.runningCount > 0 ? agg.state : fallbackState;
-	const pending = agg.pendingPermissions || fallbackPending;
+	// An idle aggregate is still authoritative when the pool contains sessions.
+	// Falling back based on the state value itself lets an older focused-chat
+	// heartbeat turn a correctly idle pool back into a pulsing/running icon.
+	const hasAggregateSessions = agg.sessionCount > 0;
+	const state = hasAggregateSessions ? agg.state : fallbackState;
+	const pending = hasAggregateSessions
+		? agg.pendingPermissions
+		: fallbackPending;
 	if (state === "error") return "bg-destructive";
 	if (pending) return "bg-status-warning animate-pulse";
 	if (state === "running") return "bg-primary animate-pulse";
@@ -54,6 +58,7 @@ export function useSystemStatusIndicator() {
 		getAggregateNavStatus,
 		() => ({
 			state: "idle" as const,
+			sessionCount: 0,
 			runningCount: 0,
 			pendingPermissions: false,
 		}),
@@ -80,12 +85,14 @@ export function WsStatusDot() {
 	const statusLabel = (() => {
 		if (wsStatus === "disconnected" || wsStatus === "connecting")
 			return "Connecting to system";
-		if (agg.state === "error" || sessionState === "error")
-			return "System error";
-		if (agg.pendingPermissions || hasPendingPermissions)
-			return "Waiting for permissions";
-		if (agg.state === "running" || sessionState === "running")
-			return "System running";
+		const hasAggregateSessions = agg.sessionCount > 0;
+		const state = hasAggregateSessions ? agg.state : sessionState;
+		const pending = hasAggregateSessions
+			? agg.pendingPermissions
+			: hasPendingPermissions;
+		if (state === "error") return "System error";
+		if (pending) return "Waiting for permissions";
+		if (state === "running") return "System running";
 		return "System connected";
 	})();
 
