@@ -44,7 +44,7 @@ export function AssistantMsg({
 		<div className="group w-full min-w-0 max-w-full overflow-hidden py-3 border-b border-border/40 space-y-1.5">
 			{transcriptToolEvents.map(renderTool)}
 			{(message.text || message.streaming) && (
-				<div className="flex items-start gap-0">
+				<div className="flex flex-wrap items-start gap-0 sm:flex-nowrap">
 					<div className="shrink-0 pt-0.5 w-12 flex">
 						<svg
 							xmlns="http://www.w3.org/2000/svg"
@@ -81,7 +81,7 @@ export function AssistantMsg({
 						)}
 					</PrivacyMask>
 					{!message.streaming && message.text && (
-						<div className="flex items-center gap-1 shrink-0">
+						<div className="flex w-full basis-full shrink-0 items-center justify-end gap-1 pr-4 pl-12 pt-1 sm:w-auto sm:basis-auto sm:justify-start sm:p-0">
 							{message.cost !== null && (
 								<PrivacyMask
 									inline

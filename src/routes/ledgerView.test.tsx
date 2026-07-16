@@ -92,6 +92,16 @@ vi.mock("#/hooks/useLedgerSessionMutations", () => ({
 		cleanupSessions: vi.fn(),
 	}),
 }));
+vi.mock("#/hooks/useLedgerStatsData", () => ({
+	useLedgerStatsData: () => ({
+		statsData: testState.loaderData.statsData,
+		thirtyDayStats: testState.loaderData.thirtyDayStats,
+		providerUsages: testState.loaderData.providerUsages,
+		providerIds: testState.loaderData.providerIds,
+		activity: testState.loaderData.activity,
+		refresh: vi.fn(),
+	}),
+}));
 vi.mock("#/hooks/useWs", () => ({
 	useWs: () => ({ model: "", actualModel: null, send: vi.fn() }),
 }));
@@ -116,6 +126,7 @@ vi.mock("#/lib/serverFns/stats", () => ({
 }));
 
 import { getProvidersFn, getProviderUsagesFn } from "#/lib/serverFns/providers";
+import { getActivityStatsFn, getThirtyDayStatsFn } from "#/lib/serverFns/stats";
 import { Route } from "./ledger";
 
 const EMPTY_STATS = {
@@ -215,9 +226,17 @@ beforeEach(() => {
 afterEach(cleanup);
 
 type LedgerRouteShape = {
+	loaderDeps: (input: {
+		search: {
+			tab: "stats" | "sessions";
+			page: number;
+			size: number;
+			q: string;
+			sort: "recent";
+		};
+	}) => Record<string, unknown>;
 	loader: (input: {
 		deps: {
-			tab: "stats" | "sessions";
 			page: number;
 			size: number;
 			q: string;
@@ -229,17 +248,41 @@ type LedgerRouteShape = {
 const ledgerRoute = Route as unknown as LedgerRouteShape;
 
 describe("ledger route loader", () => {
-	it("uses the server-cached provider catalog for stats navigation", async () => {
-		vi.mocked(getProvidersFn).mockResolvedValue([]);
-		vi.mocked(getProviderUsagesFn).mockResolvedValue([]);
+	it("does not key route data by the selected tab", () => {
+		const listState = { page: 1, size: 20, q: "", sort: "recent" as const };
 
-		await ledgerRoute.loader({
-			deps: { tab: "stats", page: 1, size: 20, q: "", sort: "recent" },
+		expect(
+			ledgerRoute.loaderDeps({
+				search: { tab: "stats", ...listState },
+			}),
+		).toEqual(
+			ledgerRoute.loaderDeps({
+				search: { tab: "sessions", ...listState },
+			}),
+		);
+	});
+
+	it("does not hold navigation behind analytics hydration", async () => {
+		vi.mocked(getProvidersFn).mockImplementation(() => new Promise(() => {}));
+		vi.mocked(getProviderUsagesFn).mockImplementation(
+			() => new Promise(() => {}),
+		);
+		vi.mocked(getThirtyDayStatsFn).mockImplementation(
+			() => new Promise(() => {}),
+		);
+		vi.mocked(getActivityStatsFn).mockImplementation(
+			() => new Promise(() => {}),
+		);
+
+		const loaded = await ledgerRoute.loader({
+			deps: { page: 1, size: 20, q: "", sort: "recent" },
 		});
 
-		expect(getProvidersFn).toHaveBeenCalledWith({
-			data: { preferCachedModels: true },
-		});
+		expect(loaded).toHaveProperty("initialSessions");
+		expect(getProvidersFn).not.toHaveBeenCalled();
+		expect(getProviderUsagesFn).not.toHaveBeenCalled();
+		expect(getThirtyDayStatsFn).not.toHaveBeenCalled();
+		expect(getActivityStatsFn).not.toHaveBeenCalled();
 	});
 });
 

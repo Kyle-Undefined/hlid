@@ -84,11 +84,24 @@ export function ProviderUsageStrip({
 			.catch(() => {});
 	});
 
+	// Stats hydration is intentionally decoupled from Ledger navigation. Reconcile
+	// each authoritative server snapshot when it arrives without discarding a
+	// newer live high-water reading already shown in this strip.
+	useEffect(() => {
+		setSnapshots((previous) => mergeFreshProviderSnapshots(initial, previous));
+	}, [initial]);
+
 	useEffect(() => {
 		if (preferredProviderId) return;
-		const stored = storedProvider(providerIdsRef.current);
+		const stored = storedProvider(providerIds);
 		if (stored) setActiveProvider(stored);
-	}, [preferredProviderId]);
+	}, [preferredProviderId, providerIds]);
+
+	useEffect(() => {
+		if (providerIds.length === 0 || providerIds.includes(activeProvider))
+			return;
+		setActiveProvider(initialProvider(providerIds, preferredProviderId));
+	}, [activeProvider, preferredProviderId, providerIds]);
 
 	useEffect(() => {
 		if (liveQueryCount > 0) refreshRef.current();

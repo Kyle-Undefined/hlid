@@ -43,6 +43,53 @@ afterEach(() => {
 });
 
 describe("ProviderUsageStrip polling", () => {
+	it("shows provider data that arrives after immediate ledger hydration", async () => {
+		const loaded: ProviderUsageSnapshot[] = [
+			{
+				providerId: "codex",
+				providerLabel: "Codex",
+				windows: [
+					{
+						windowId: "five_hour",
+						label: "CODEX 5-HOUR",
+						windowSecs: 18_000,
+						utilization: 0.25,
+						remaining: null,
+						limit: null,
+						resetsAt: null,
+						cost: 3,
+						queries: 2,
+						tokens: 100,
+						sessions: 1,
+					},
+				],
+			},
+		];
+		const fetchFn = vi.fn().mockResolvedValue(loaded);
+		const view = render(
+			<ProviderUsageStrip
+				initial={[]}
+				liveQueryCount={0}
+				rateLimit={null}
+				fetchFn={fetchFn}
+			/>,
+		);
+
+		expect(screen.queryByText("CODEX 5-HOUR")).toBeNull();
+
+		view.rerender(
+			<ProviderUsageStrip
+				initial={loaded}
+				liveQueryCount={0}
+				rateLimit={null}
+				fetchFn={fetchFn}
+			/>,
+		);
+		await act(async () => {});
+
+		expect(screen.getByText("CODEX 5-HOUR")).not.toBeNull();
+	});
+
 	it("restores a stored provider after the hydration-stable first render", async () => {
 		const providers: ProviderUsageSnapshot[] = [
 			{ providerId: "claude", providerLabel: "Claude", windows: [] },

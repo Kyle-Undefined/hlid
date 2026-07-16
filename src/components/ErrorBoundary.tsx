@@ -61,7 +61,7 @@ export class ErrorBoundary extends Component<Props, State> {
 		// Use error.name (e.g. "TypeError") rather than message to avoid leaking
 		// sensitive data (file paths, tokens, DB strings) that may appear in messages.
 		void logClientErrorFn({
-			data: { errorName: error.name, componentStack: info.componentStack },
+			data: { message: error.name, componentStack: info.componentStack },
 		}).catch(() => {});
 	}
 

@@ -197,7 +197,9 @@ function RegisterErrorLogger() {
 			const message =
 				e.reason instanceof Error ? e.reason.message : String(e.reason);
 			const stack = e.reason instanceof Error ? (e.reason.stack ?? null) : null;
-			void logClientErrorFn({ data: { message, stack } }).catch(() => {});
+			void logClientErrorFn({
+				data: { message, componentStack: stack ?? undefined },
+			}).catch(() => {});
 		};
 		window.addEventListener("unhandledrejection", handler);
 		return () => window.removeEventListener("unhandledrejection", handler);
