@@ -1,3 +1,4 @@
+import { markAnalyticsChanged } from "./analyticsRevision";
 import type { Db } from "./schema";
 import { getDb } from "./schema";
 import type { QueryData, SessionRow, SessionSort } from "./types";
@@ -8,6 +9,7 @@ export async function setSessionAgentCwd(
 ): Promise<void> {
 	const db = await getDb();
 	db.run(`UPDATE sessions SET agent_cwd = ? WHERE id = ?`, [cwd, sessionId]);
+	markAnalyticsChanged(["stats"], "session_agent_cwd");
 }
 
 export async function getSessionAgentCwd(
@@ -32,6 +34,7 @@ export async function setSessionModel(
 		model,
 		sessionId,
 	]);
+	markAnalyticsChanged(["stats", "activity"], "session_model");
 }
 
 export async function getSessionModel(
@@ -73,6 +76,7 @@ export async function setSessionProviderSession(
 		 WHERE id = ?`,
 		[providerId, providerSessionId, providerId, providerSessionId, sessionId],
 	);
+	markAnalyticsChanged(["stats"], "session_provider_session");
 }
 
 export async function getSessionProviderSession(
@@ -106,6 +110,7 @@ export async function setSessionProviderId(
 		providerId,
 		sessionId,
 	]);
+	markAnalyticsChanged(["stats"], "session_provider");
 }
 
 export async function getSessionProviderId(
@@ -129,6 +134,7 @@ export async function setSessionActualModel(
 		actualModel,
 		sessionId,
 	]);
+	markAnalyticsChanged(["stats", "activity"], "session_actual_model");
 }
 
 export async function getSessionActualModel(
@@ -149,10 +155,13 @@ export async function createSession(
 	model: string,
 ): Promise<void> {
 	const db = await getDb();
-	db.run(
+	const { changes } = db.run(
 		`INSERT OR IGNORE INTO sessions (id, label, model, selected_model, started_at) VALUES (?, ?, ?, ?, unixepoch())`,
 		[id, label, model, model],
 	);
+	if (changes > 0) {
+		markAnalyticsChanged(["stats", "activity"], "session_created");
+	}
 }
 
 export async function recordQuery(
@@ -247,6 +256,7 @@ export async function recordQuery(
 			],
 		);
 	})();
+	markAnalyticsChanged(undefined, "query_recorded");
 	return { estimatedCost };
 }
 
@@ -374,6 +384,7 @@ export async function deleteSession(
 	db.transaction(() => {
 		ephemeralPaths = cascadeDeleteSessionIds(db, [id]);
 	})();
+	markAnalyticsChanged(["stats", "activity"], "session_deleted");
 	return { ephemeralPaths };
 }
 
@@ -395,12 +406,19 @@ export async function deleteSessionsOlderThan(
 			ephemeralPaths = cascadeDeleteSessionIds(db, ids);
 		}
 	})();
+	if (ids.length > 0) {
+		markAnalyticsChanged(["stats", "activity"], "sessions_cleaned_up");
+	}
 	return { count: ids.length, ephemeralPaths };
 }
 
 export async function renameSession(id: string, label: string): Promise<void> {
 	const db = await getDb();
-	db.run(`UPDATE sessions SET label = ? WHERE id = ?`, [label, id]);
+	const { changes } = db.run(`UPDATE sessions SET label = ? WHERE id = ?`, [
+		label,
+		id,
+	]);
+	if (changes > 0) markAnalyticsChanged(["stats"], "session_renamed");
 }
 
 export async function getSessionById(id: string): Promise<SessionRow | null> {

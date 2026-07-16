@@ -48,6 +48,7 @@ import type {
 	ThreadStartParams,
 	TurnStartParams,
 } from "./codexProtocol";
+import { bumpDataRevision } from "./dataRevision";
 
 /**
  * Union of the RESPONSE shapes hlid can send back for the server-initiated
@@ -245,7 +246,11 @@ type WindowsComputerUseCapability = {
 	reason?: string;
 };
 
-async function windowsComputerUseCapability(): Promise<WindowsComputerUseCapability> {
+export type CodexHostCapabilities = {
+	windowsComputerUse: WindowsComputerUseCapability;
+};
+
+async function probeWindowsComputerUseCapability(): Promise<WindowsComputerUseCapability> {
 	const label = "Windows Computer Use";
 	if (process.platform !== "win32") {
 		return {
@@ -276,13 +281,142 @@ async function windowsComputerUseCapability(): Promise<WindowsComputerUseCapabil
 				: { reason: "Computer Use plugin is not installed or enabled" }),
 		};
 	} catch (error) {
+		throw error instanceof Error ? error : new Error("Capability check failed");
+	}
+}
+
+const HOST_CAPABILITY_TTL_MS = 60_000;
+const HOST_CAPABILITY_FAILURE_TTL_MS = 15_000;
+const HOST_CAPABILITY_TIMEOUT_MS = 5_000;
+let hostCapabilitySnapshot: WindowsComputerUseCapability | null = null;
+let hostCapabilityRefreshedAt = 0;
+let hostCapabilityFailedAt = 0;
+let hostCapabilityInflight: Promise<WindowsComputerUseCapability> | null = null;
+
+function fallbackWindowsComputerUseCapability(
+	error?: unknown,
+): WindowsComputerUseCapability {
+	const label = "Windows Computer Use";
+	if (process.platform !== "win32") {
 		return {
 			label,
 			available: false,
-			reason:
-				error instanceof Error ? error.message : "Capability check failed",
+			reason: "Hlid is not running on Windows",
 		};
 	}
+	if (!resolveCodexExecutable()) {
+		return { label, available: false, reason: "Native Codex CLI not found" };
+	}
+	return {
+		label,
+		available: false,
+		reason:
+			error instanceof Error
+				? error.message
+				: "Capability status is refreshing",
+	};
+}
+
+function capabilityChanged(
+	previous: WindowsComputerUseCapability | null,
+	next: WindowsComputerUseCapability,
+): boolean {
+	return (
+		previous?.available !== next.available ||
+		previous?.label !== next.label ||
+		previous?.reason !== next.reason
+	);
+}
+
+async function boundedWindowsComputerUseProbe(): Promise<WindowsComputerUseCapability> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	return Promise.race([
+		probeWindowsComputerUseCapability(),
+		new Promise<never>((_, reject) => {
+			timer = setTimeout(
+				() => reject(new Error("Capability check timed out")),
+				HOST_CAPABILITY_TIMEOUT_MS,
+			);
+		}),
+	]).finally(() => {
+		if (timer !== undefined) clearTimeout(timer);
+	});
+}
+
+async function refreshWindowsComputerUseCapability(
+	force = false,
+): Promise<WindowsComputerUseCapability> {
+	const now = Date.now();
+	if (
+		!force &&
+		hostCapabilitySnapshot &&
+		now - hostCapabilityRefreshedAt < HOST_CAPABILITY_TTL_MS
+	) {
+		return hostCapabilitySnapshot;
+	}
+	if (
+		!force &&
+		!hostCapabilitySnapshot &&
+		hostCapabilityFailedAt > 0 &&
+		now - hostCapabilityFailedAt < HOST_CAPABILITY_FAILURE_TTL_MS
+	) {
+		return fallbackWindowsComputerUseCapability();
+	}
+	if (hostCapabilityInflight) return hostCapabilityInflight;
+
+	const refresh = boundedWindowsComputerUseProbe()
+		.then((capability) => {
+			const previous = hostCapabilitySnapshot;
+			hostCapabilitySnapshot = capability;
+			hostCapabilityRefreshedAt = Date.now();
+			hostCapabilityFailedAt = 0;
+			if (capabilityChanged(previous, capability)) {
+				bumpDataRevision("providers");
+			}
+			return capability;
+		})
+		.catch((error) => {
+			hostCapabilityFailedAt = Date.now();
+			return (
+				hostCapabilitySnapshot ?? fallbackWindowsComputerUseCapability(error)
+			);
+		})
+		.finally(() => {
+			hostCapabilityInflight = null;
+		});
+	hostCapabilityInflight = refresh;
+	return refresh;
+}
+
+async function windowsComputerUseCapability(): Promise<WindowsComputerUseCapability> {
+	return refreshWindowsComputerUseCapability();
+}
+
+function cachedWindowsComputerUseCapability(): WindowsComputerUseCapability {
+	const capability =
+		hostCapabilitySnapshot ?? fallbackWindowsComputerUseCapability();
+	if (
+		!hostCapabilitySnapshot ||
+		Date.now() - hostCapabilityRefreshedAt >= HOST_CAPABILITY_TTL_MS
+	) {
+		void refreshWindowsComputerUseCapability().catch(() => {});
+	}
+	return capability;
+}
+
+/** Force a bounded live refresh for an explicit provider-catalog refresh. */
+export async function refreshCodexHostCapabilities(): Promise<CodexHostCapabilities> {
+	return {
+		windowsComputerUse: await refreshWindowsComputerUseCapability(true),
+	};
+}
+
+// fallow-ignore-next-line unused-export -- Test-only reset for module-level cache isolation.
+export function __resetCodexHostCapabilitiesForTesting(): void {
+	hostCapabilitySnapshot = null;
+	hostCapabilityRefreshedAt = 0;
+	hostCapabilityFailedAt = 0;
+	hostCapabilityInflight = null;
 }
 
 function windowsComputerUseTools(): DynamicToolSpec[] {
@@ -2279,7 +2413,7 @@ export class CodexProvider implements AgentProvider {
 	async hostCapabilities(): Promise<
 		Record<string, { label: string; available: boolean; reason?: string }>
 	> {
-		return { windowsComputerUse: await windowsComputerUseCapability() };
+		return { windowsComputerUse: cachedWindowsComputerUseCapability() };
 	}
 
 	async listModels(): Promise<ProviderModelInfo[]> {

@@ -353,6 +353,10 @@ export type SessionStatusEntry = {
 	agent_name: string;
 	state: "idle" | "running" | "error";
 	model: string;
+	/** Current session-scoped effort, when the live session exposes one. */
+	effort?: string;
+	/** Current session-scoped permission mode, when available. */
+	permission_mode?: string;
 	hasPendingPermissions: boolean;
 	/** True when the session has started at least one DB chat (getCurrentSessionId !== null). */
 	hasDbSession: boolean;
@@ -389,6 +393,11 @@ export type SessionCreatedMessage = {
 	agent_name: string;
 };
 
+export type DataRevisionsMessage = {
+	type: "data_revisions";
+	revisions: import("../lib/dataRevision").DataRevisionSnapshot;
+};
+
 export type ServerMessage =
 	| StatusMessage
 	| ChunkMessage
@@ -416,7 +425,8 @@ export type ServerMessage =
 	| SlashCommandsMessage
 	| SessionsStatusMessage
 	| SessionClosedMessage
-	| SessionCreatedMessage;
+	| SessionCreatedMessage
+	| DataRevisionsMessage;
 
 export type ChatAttachment = {
 	id: string;

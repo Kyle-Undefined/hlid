@@ -1,20 +1,37 @@
 /** Provider catalog, account info, and usage snapshot server fns. */
 import { createServerFn } from "@tanstack/react-start";
+import { z } from "zod";
 import type { ProviderUsageSnapshot } from "#/db";
 import { dbJson } from "#/lib/dbClient";
 import type { AccountInfo, ProviderInfo } from "#/lib/providerTypes";
-import { optionalRefreshSchema, withRefreshQuery } from "#/lib/serverFnSchemas";
+import { withRefreshQuery } from "#/lib/serverFnSchemas";
+
+const providerCatalogQuerySchema = z
+	.object({
+		refresh: z.boolean().optional(),
+		includeHostCapabilities: z.boolean().optional(),
+		preferCachedModels: z.boolean().optional(),
+	})
+	.optional();
+
+export function providerCatalogPath(
+	data: z.infer<typeof providerCatalogQuerySchema>,
+): string {
+	const path = withRefreshQuery("/providers", data);
+	const params = new URLSearchParams();
+	if (data?.includeHostCapabilities) params.set("host_capabilities", "1");
+	if (data?.preferCachedModels) params.set("cached_models", "1");
+	if (params.size === 0) return path;
+	return `${path}${path.includes("?") ? "&" : "?"}${params}`;
+}
 
 /** Returns the list of compiled-in providers with availability status. */
 export const getProvidersFn = createServerFn({ method: "GET" })
-	.validator((raw) => optionalRefreshSchema.parse(raw))
+	.validator((raw) => providerCatalogQuerySchema.parse(raw))
 	.handler(({ data }) =>
-		dbJson<{ providers: ProviderInfo[] }>(
-			withRefreshQuery("/providers", data),
-			{
-				providers: [],
-			},
-		).then((response) => response.providers),
+		dbJson<{ providers: ProviderInfo[] }>(providerCatalogPath(data), {
+			providers: [],
+		}).then((response) => response.providers),
 	);
 
 /**

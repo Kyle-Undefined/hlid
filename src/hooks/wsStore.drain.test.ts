@@ -81,6 +81,31 @@ describe("wsStore — Slice A: immediate-send drain", () => {
 		expect(wsStore.getQueue()[0].id).toBe("m1");
 	});
 
+	it("restores queued prompt text from localStorage after a browser reload", () => {
+		wsStore.enqueueChat({
+			id: "m1",
+			text: "survive refresh",
+			session_id: "s1",
+			plan_mode: true,
+		});
+		const persisted = localStorage.getItem("hlid:raven:chat-queue");
+		expect(persisted).toContain("survive refresh");
+
+		wsStore.__resetForTesting();
+		localStorage.setItem("hlid:raven:chat-queue", persisted ?? "[]");
+		wsStore.resetChatQueueForTesting(true);
+
+		expect(wsStore.getQueue()).toEqual([
+			expect.objectContaining({
+				id: "m1",
+				text: "survive refresh",
+				session_id: "s1",
+				plan_mode: true,
+				_sent: true,
+			}),
+		]);
+	});
+
 	it("re-promotes a queued prompt when the server starts it after a remount", () => {
 		wsStore.enqueueChat({
 			id: "m1",

@@ -1,4 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import {
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+	useSyncExternalStore,
+} from "react";
 import {
 	type McpServerEntry,
 	mapMcpServer,
@@ -22,6 +28,8 @@ import {
 	getWeeklyStatsFn,
 } from "#/lib/serverFns/stats";
 import type { RateLimitMessage, ServerMessage } from "#/server/protocol";
+
+const EMPTY_SESSIONS: ReturnType<typeof getSessionsStatus> = [];
 
 type InitialCockpitLiveData = {
 	recentSessions: SessionRow[];
@@ -67,9 +75,34 @@ export function useCockpitLiveData(
 	>([]);
 	const [runError, setRunError] = useState<string | null>(null);
 	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
+	const sessionsStatus = useSyncExternalStore(
+		subscribeSessionsStatus,
+		getSessionsStatus,
+		() => EMPTY_SESSIONS,
+	);
 	const refreshGenerationRef = useRef(0);
 	const recentRefreshGenerationRef = useRef(0);
+	const activeRefreshGenerationRef = useRef(0);
 	const liveSessionIdsRef = useRef(new Set<string>());
+
+	// Route invalidation is how changes from other browser tabs and other live
+	// sessions arrive. Mirror refreshed loader snapshots into the hook's local
+	// view without remounting the composer or disturbing an in-progress prompt.
+	useEffect(
+		() => setRecentRuns(initial.recentSessions),
+		[initial.recentSessions],
+	);
+	useEffect(() => setAgg(initial.agg), [initial.agg]);
+	useEffect(() => setWeeklyStats(initial.weeklyStats), [initial.weeklyStats]);
+	useEffect(
+		() => setThirtyDayStats(initial.thirtyDayStats),
+		[initial.thirtyDayStats],
+	);
+	useEffect(
+		() => setLiveActiveSession(initial.activeSession),
+		[initial.activeSession],
+	);
+	useEffect(() => setMcpServers(initial.mcpServers), [initial.mcpServers]);
 
 	const refreshRecentRuns = useCallback((): void => {
 		const generation = ++recentRefreshGenerationRef.current;
@@ -77,6 +110,15 @@ export function useCockpitLiveData(
 			.then((runs) => {
 				if (generation === recentRefreshGenerationRef.current)
 					setRecentRuns(runs);
+			})
+			.catch(() => {});
+	}, []);
+	const refreshActiveSession = useCallback((): void => {
+		const generation = ++activeRefreshGenerationRef.current;
+		void getActiveSessionRowFn()
+			.then((session) => {
+				if (generation === activeRefreshGenerationRef.current)
+					setLiveActiveSession(session);
 			})
 			.catch(() => {});
 	}, []);
@@ -109,12 +151,7 @@ export function useCockpitLiveData(
 						setThirtyDayStats(stats);
 				})
 				.catch(() => {});
-			void getActiveSessionRowFn()
-				.then((session) => {
-					if (generation === refreshGenerationRef.current)
-						setLiveActiveSession(session);
-				})
-				.catch(() => {});
+			refreshActiveSession();
 		}
 		if (message.type === "error") setRunError(message.message);
 		if (message.type === "rate_limit") setRateLimit(message);
@@ -153,35 +190,29 @@ export function useCockpitLiveData(
 	}, [ws.send, commandAgentCwd]);
 
 	useEffect(() => {
-		let active = true;
-		const refreshForNewLiveSession = () => {
-			const nextIds = new Set(
-				getSessionsStatus()
-					.map((session) => session.db_session_id)
-					.filter((id): id is string => Boolean(id)),
-			);
-			const hasNewSession = [...nextIds].some(
-				(id) => !liveSessionIdsRef.current.has(id),
-			);
-			liveSessionIdsRef.current = nextIds;
-			if (active && hasNewSession) refreshRecentRuns();
-		};
-		refreshForNewLiveSession();
-		const unsubscribeSessions = subscribeSessionsStatus(
-			refreshForNewLiveSession,
+		const nextIds = new Set(
+			sessionsStatus
+				.map((session) => session.db_session_id)
+				.filter((id): id is string => Boolean(id)),
 		);
-		void getActiveSessionRowFn()
-			.then((session) => {
-				if (active) setLiveActiveSession(session);
-			})
-			.catch(() => {});
+		const hasNewSession = [...nextIds].some(
+			(id) => !liveSessionIdsRef.current.has(id),
+		);
+		liveSessionIdsRef.current = nextIds;
+		if (hasNewSession) {
+			refreshRecentRuns();
+			refreshActiveSession();
+		}
+	}, [sessionsStatus, refreshRecentRuns, refreshActiveSession]);
+
+	useEffect(() => {
+		refreshActiveSession();
 		return () => {
-			active = false;
-			unsubscribeSessions();
 			refreshGenerationRef.current++;
 			recentRefreshGenerationRef.current++;
+			activeRefreshGenerationRef.current++;
 		};
-	}, [refreshRecentRuns]);
+	}, [refreshActiveSession]);
 
 	return {
 		...ws,
@@ -198,5 +229,6 @@ export function useCockpitLiveData(
 		runError,
 		setRunError,
 		rateLimit,
+		sessionsStatus,
 	};
 }

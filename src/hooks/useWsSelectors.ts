@@ -10,6 +10,8 @@ import {
 	subscribeStats,
 } from "./wsLiveStatsStore";
 
+const EMPTY_CHAT_QUEUE: QueuedChatMessage[] = [];
+
 /** Subscribe to live session stats (tokens, cost, turns, context window). */
 export function useWsLiveStats(): LiveStats {
 	return useSyncExternalStore(subscribeStats, getLiveStats, getLiveStats);
@@ -17,5 +19,5 @@ export function useWsLiveStats(): LiveStats {
 
 /** Subscribe to the queued chat message list. */
 export function useWsChatQueue(): QueuedChatMessage[] {
-	return useSyncExternalStore(subscribeQueue, getQueue, getQueue);
+	return useSyncExternalStore(subscribeQueue, getQueue, () => EMPTY_CHAT_QUEUE);
 }

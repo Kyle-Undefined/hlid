@@ -1,6 +1,7 @@
 import type { HlidConfig } from "../config";
 import { handleUpload, removeAttachment, serveAttachment } from "./attachments";
 import { loadConfig } from "./config";
+import { bumpDataRevision } from "./dataRevision";
 import { broadcast } from "./runState";
 
 const MAX_CONCURRENT_UPLOADS = 4;
@@ -38,6 +39,7 @@ export async function handleAttachmentRoute(
 		activeUploads++;
 		try {
 			return await handleUpload(req, uploadConfig, async (id, kind) => {
+				bumpDataRevision("relics", "storage");
 				try {
 					await broadcast({ type: "attachment_created", id, kind });
 				} catch (err) {
@@ -68,7 +70,9 @@ export async function handleAttachmentRoute(
 		} catch {
 			// fallback config already set
 		}
-		return removeAttachment(idMatch[1], deleteConfig);
+		const response = await removeAttachment(idMatch[1], deleteConfig);
+		if (response.ok) bumpDataRevision("relics", "storage");
+		return response;
 	}
 
 	return null;

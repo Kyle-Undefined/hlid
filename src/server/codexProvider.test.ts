@@ -17,6 +17,7 @@ import {
 } from "./codexAppServer";
 import type { SandboxPolicy } from "./codexProtocol";
 import {
+	__resetCodexHostCapabilitiesForTesting,
 	CodexProvider,
 	codexChildStep,
 	codexLaunchConfig,
@@ -26,6 +27,7 @@ import {
 	computerUseApprovalDetails,
 	fetchCodexModels,
 	mapCodexModels,
+	refreshCodexHostCapabilities,
 	resolveWindowsComputerUseSettings,
 	sandboxMode,
 	windowsComputerUseHostAvailable,
@@ -280,6 +282,7 @@ describe("CodexProvider capability declarations", () => {
 describe("CodexProvider host capabilities", () => {
 	beforeEach(() => {
 		__resetCodexAppServersForTesting();
+		__resetCodexHostCapabilitiesForTesting();
 	});
 
 	it("reports the native Computer Use plugin as ready on Windows", async () => {
@@ -295,6 +298,12 @@ describe("CodexProvider host capabilities", () => {
 			vi.mocked(spawn).mockReturnValue(proc as never);
 			vi.mocked(resolveCodexExecutable).mockReturnValue("C:\\bin\\codex.exe");
 
+			expect(await refreshCodexHostCapabilities()).toEqual({
+				windowsComputerUse: {
+					label: "Windows Computer Use",
+					available: true,
+				},
+			});
 			expect(await new CodexProvider().hostCapabilities()).toEqual({
 				windowsComputerUse: {
 					label: "Windows Computer Use",
@@ -305,6 +314,32 @@ describe("CodexProvider host capabilities", () => {
 			if (previousCwd === undefined)
 				delete process.env.HLID_WINDOWS_COMPUTER_USE_CWD;
 			else process.env.HLID_WINDOWS_COMPUTER_USE_CWD = previousCwd;
+			platform.mockRestore();
+		}
+	});
+
+	it("returns an immediate snapshot while a bounded probe runs in the background", async () => {
+		vi.useFakeTimers();
+		const platform = vi
+			.spyOn(process, "platform", "get")
+			.mockReturnValue("win32");
+		try {
+			const { proc } = makeFakeProc({ silent: true });
+			vi.mocked(spawn).mockReturnValue(proc as never);
+			vi.mocked(resolveCodexExecutable).mockReturnValue("C:\\bin\\codex.exe");
+
+			await expect(new CodexProvider().hostCapabilities()).resolves.toEqual({
+				windowsComputerUse: {
+					label: "Windows Computer Use",
+					available: false,
+					reason: "Capability status is refreshing",
+				},
+			});
+			expect(spawn).toHaveBeenCalledOnce();
+
+			await vi.advanceTimersByTimeAsync(5_001);
+		} finally {
+			vi.useRealTimers();
 			platform.mockRestore();
 		}
 	});
@@ -927,6 +962,7 @@ function baseCodexParams(
 describe("CodexAgentSession — commands", () => {
 	beforeEach(() => {
 		__resetCodexAppServersForTesting();
+		__resetCodexHostCapabilitiesForTesting();
 	});
 
 	it("advertises Hlid review beside provider-discovered skills", async () => {

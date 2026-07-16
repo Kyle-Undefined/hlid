@@ -19,6 +19,38 @@ type CockpitDataDependencies = {
 	claudeSkillsDir: string;
 };
 
+export function assembleCockpitData(options: {
+	inboxCount: number;
+	projects: Project[];
+	vaultSkills: Skill[];
+	sectionOrder: string[];
+	claudeSkills: Skill[];
+}) {
+	const {
+		inboxCount,
+		projects,
+		vaultSkills,
+		sectionOrder,
+		claudeSkills: rawClaudeSkills,
+	} = options;
+	const vaultSkillNames = new Set(
+		vaultSkills.map((skill) => skill.name.toLowerCase()),
+	);
+	const claudeSkills = rawClaudeSkills
+		.filter((skill) => !vaultSkillNames.has(skill.name.toLowerCase()))
+		.map((skill) => ({ ...skill, section: "claude" }));
+
+	return {
+		inboxCount,
+		activeCount: projects.filter((project) => project.status === "active")
+			.length,
+		totalCount: projects.length,
+		skills: [...vaultSkills, ...claudeSkills],
+		sectionOrder:
+			claudeSkills.length > 0 ? [...sectionOrder, "claude"] : sectionOrder,
+	};
+}
+
 export function collectCockpitData(
 	config: HlidConfig,
 	dependencies: CockpitDataDependencies,
@@ -54,20 +86,11 @@ export function collectCockpitData(
 		".",
 		false,
 	);
-	const vaultSkillNames = new Set(
-		vaultSkills.map((skill) => skill.name.toLowerCase()),
-	);
-	const claudeSkills = rawClaudeSkills
-		.filter((skill) => !vaultSkillNames.has(skill.name.toLowerCase()))
-		.map((skill) => ({ ...skill, section: "claude" }));
-
-	return {
+	return assembleCockpitData({
 		inboxCount,
-		activeCount: projects.filter((project) => project.status === "active")
-			.length,
-		totalCount: projects.length,
-		skills: [...vaultSkills, ...claudeSkills],
-		sectionOrder:
-			claudeSkills.length > 0 ? [...sectionOrder, "claude"] : sectionOrder,
-	};
+		projects,
+		vaultSkills,
+		sectionOrder,
+		claudeSkills: rawClaudeSkills,
+	});
 }

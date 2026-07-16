@@ -23,11 +23,16 @@ import {
 	listCodexAppServers,
 	prewarmCodexAppServer,
 } from "./codexAppServer";
-import { CodexProvider } from "./codexProvider";
+import { CodexProvider, refreshCodexHostCapabilities } from "./codexProvider";
 import { loadConfig } from "./config";
+import { bumpDataRevision, subscribeDataRevisions } from "./dataRevision";
 import { handleDbRoute } from "./dbRoutes";
 import { getLiveSessionsStatus } from "./liveSessions";
-import { createModelCatalog } from "./providerCatalog";
+import {
+	createModelCatalog,
+	loadProviderCatalog,
+	providerCatalogRequestOptions,
+} from "./providerCatalog";
 import { startProviderProxy } from "./proxy";
 import { bootstrapPtyRuntime } from "./pty-bootstrap";
 import {
@@ -51,6 +56,7 @@ import { startTlsProxy } from "./tlsProxy";
 import { startUiServer } from "./uiServer";
 import { markUiServerReady } from "./uiStartupGate";
 import { bootstrapUmbod, closeUmbod } from "./umbod";
+import { warmVaultSnapshot } from "./vaultSnapshot";
 import { VoiceModelManager } from "./voice";
 import { bootstrapVoiceRuntime } from "./voice-bootstrap";
 import { syncWrappers } from "./wrappers";
@@ -184,7 +190,13 @@ for (const provider of providers.values()) {
 // Keep live model discovery demand-driven. In particular, Codex implements
 // `listModels()` through its app-server, so warming this cache during boot
 // would retain a roughly 100 MB helper process before anyone selects Codex.
-const modelCatalog = createModelCatalog(providers);
+const modelCatalog = createModelCatalog(providers, () => {
+	bumpDataRevision("providers");
+});
+subscribeDataRevisions((revisions) => {
+	broadcast({ type: "data_revisions", revisions });
+});
+warmVaultSnapshot();
 const pool = new SessionPool(config, providers);
 const voice = new VoiceModelManager(
 	config.voice,
@@ -357,29 +369,16 @@ function handleCodexRoute(url: URL, req: Request): Response | null {
 
 async function handleProviderRoute(url: URL, req: Request) {
 	if (url.pathname !== "/providers" || req.method !== "GET") return null;
-	const refresh = url.searchParams.get("refresh") === "1";
-	const list = await Promise.all(
-		[...providers.values()].map(async (provider) => {
-			const check = provider.check
-				? await provider
-						.check()
-						.catch(() => ({ available: false, reason: "check failed" }))
-				: null;
-			const providerRefresh = refresh && check?.available !== false;
-			return {
-				id: provider.providerId,
-				label: provider.label ?? provider.providerId,
-				available: check?.available ?? true,
-				unavailableReason:
-					check?.available === false ? check.reason : undefined,
-				models: await modelCatalog.modelsFor(provider, providerRefresh),
-				effortLevels: provider.effortLevels,
-				permissionModes: provider.permissionModes,
-				hostCapabilities: provider.hostCapabilities
-					? await provider.hostCapabilities().catch(() => ({}))
-					: undefined,
-			};
-		}),
+	if (
+		url.searchParams.get("refresh") === "1" &&
+		url.searchParams.get("host_capabilities") === "1"
+	) {
+		await refreshCodexHostCapabilities();
+	}
+	const list = await loadProviderCatalog(
+		providers.values(),
+		modelCatalog,
+		providerCatalogRequestOptions(url.searchParams),
 	);
 	return Response.json({ providers: list });
 }

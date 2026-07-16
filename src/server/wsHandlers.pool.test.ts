@@ -979,6 +979,38 @@ describe("message — reload_session (pool)", () => {
  * reuse the existing pool entry instead of spawning a new one.
  */
 describe("message — chat pool entry reuse", () => {
+	it("creates a parallel entry when the subscribed session is running but the chat ID is new", async () => {
+		const vault = makeEntry("vault-id");
+		vault.manager.getCurrentSessionId.mockReturnValue("running-db-session");
+		vault.manager.isRunning.mockReturnValue(true);
+		const created = makeEntry("parallel-pool-session");
+		const pool = makePool(vault);
+		pool.get.mockImplementation((id: string) =>
+			id === "vault-id" ? vault : undefined,
+		);
+		pool.findByDbSessionId.mockReturnValue(undefined);
+		pool.create.mockReturnValue(created);
+		const { message } = createWsHandlers(pool);
+		const ws = makeWs("vault-id");
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "chat",
+				text: "start in parallel",
+				session_id: "new-db-session",
+				agent_cwd: "/other-project",
+			}),
+		);
+
+		expect(pool.create).toHaveBeenCalledWith(
+			"/other-project",
+			expect.any(String),
+		);
+		expect(created.manager.runQuery).toHaveBeenCalled();
+		expect(vault.manager.runQuery).not.toHaveBeenCalled();
+	});
+
 	it("reuses existing idle pool entry that owns the db session_id", async () => {
 		// Entry A owns db_session "abc" but ws is subscribed to entry B (vault).
 		const entryA = makeEntry("session-a-id");

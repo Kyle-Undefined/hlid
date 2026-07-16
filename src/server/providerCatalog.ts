@@ -6,6 +6,7 @@
  * as `createModelCatalog`.
  */
 import * as db from "../db";
+import type { ProviderInfo } from "../lib/providerTypes";
 import type { AgentProvider, ProviderModelInfo } from "./agentProvider";
 
 /** Where a `CachedList.get()` result came from. */
@@ -18,6 +19,8 @@ export type CachedList<T> = {
 	 * Never throws — on total failure resolves with the static fallback.
 	 */
 	get(refresh?: boolean): Promise<{ value: T; source: CatalogSource }>;
+	/** Return memory/persisted/fallback immediately without awaiting discovery. */
+	getCached(): Promise<{ value: T; source: CatalogSource }>;
 };
 
 const DEFAULT_TTL_MS = 6 * 3600_000;
@@ -49,6 +52,8 @@ export function createCachedList<T>(opts: {
 	failureTtlMs?: number;
 	fetcher: () => Promise<T>;
 	fallback: T;
+	/** Called after a successful live fetch refreshes the in-memory snapshot. */
+	onChange?: (value: T) => void;
 	/** Guards persisted JSON on read; corrupt/invalid persisted data is ignored. */
 	validate?: (v: unknown) => v is T;
 }): CachedList<T> {
@@ -92,6 +97,7 @@ export function createCachedList<T>(opts: {
 						e,
 					),
 				);
+			opts.onChange?.(value);
 			return { value, source: "live" };
 		} catch {
 			if (memory) return { value: memory.value, source: "memory" };
@@ -117,6 +123,11 @@ export function createCachedList<T>(opts: {
 			inflight = p;
 			return p;
 		},
+		getCached() {
+			if (memory)
+				return Promise.resolve({ value: memory.value, source: "memory" });
+			return readPersisted();
+		},
 	};
 }
 
@@ -129,8 +140,12 @@ function staticModels(p: AgentProvider): ProviderModelInfo[] {
  * Wraps `createCachedList` per-provider for `AgentProvider.listModels`,
  * keyed by `model_catalog:<providerId>` in the settings table.
  */
-export function createModelCatalog(providers: Map<string, AgentProvider>): {
+export function createModelCatalog(
+	providers: Map<string, AgentProvider>,
+	onChange?: (providerId: string) => void,
+): {
 	modelsFor(p: AgentProvider, refresh?: boolean): Promise<ProviderModelInfo[]>;
+	cachedModelsFor(p: AgentProvider): Promise<ProviderModelInfo[]>;
 	/** Fire-and-forget warm-up of every provider's cache; never rejects. */
 	warm(): void;
 } {
@@ -145,6 +160,7 @@ export function createModelCatalog(providers: Map<string, AgentProvider>): {
 				fetcher: () => listModels(),
 				fallback: staticModels(p),
 				fetchTimeoutMs: 12_000,
+				onChange: () => onChange?.(p.providerId),
 			}),
 		);
 	}
@@ -156,10 +172,93 @@ export function createModelCatalog(providers: Map<string, AgentProvider>): {
 			const { value } = await cache.get(refresh);
 			return value;
 		},
+		async cachedModelsFor(p) {
+			const cache = caches.get(p.providerId);
+			if (!cache) return staticModels(p);
+			const { value } = await cache.getCached();
+			// Refresh stale/missing discovery in the background. Navigation gets the
+			// last safe value instead of waiting on an external CLI inspection.
+			void cache.get().catch(() => {});
+			return value;
+		},
 		warm() {
 			for (const cache of caches.values()) {
 				void cache.get().catch(() => {});
 			}
 		},
+	};
+}
+
+/**
+ * Build the UI provider catalog without probing host-only capabilities unless
+ * the requesting surface explicitly needs them. Capability probes can involve
+ * live provider RPCs and must not block unrelated route loaders.
+ */
+export async function loadProviderCatalog(
+	providers: Iterable<AgentProvider>,
+	modelCatalog: {
+		modelsFor(
+			provider: AgentProvider,
+			refresh?: boolean,
+		): Promise<ProviderModelInfo[]>;
+		cachedModelsFor?(provider: AgentProvider): Promise<ProviderModelInfo[]>;
+	},
+	options: {
+		refresh?: boolean;
+		includeHostCapabilities?: boolean;
+		preferCachedModels?: boolean;
+	} = {},
+): Promise<ProviderInfo[]> {
+	return Promise.all(
+		[...providers].map(async (provider) => {
+			const check = provider.check
+				? await provider
+						.check()
+						.catch(() => ({ available: false, reason: "check failed" }))
+				: null;
+			const providerRefresh =
+				options.refresh === true && check?.available !== false;
+			return {
+				id: provider.providerId,
+				label: provider.label ?? provider.providerId,
+				available: check?.available ?? true,
+				unavailableReason:
+					check?.available === false ? check.reason : undefined,
+				models:
+					options.preferCachedModels && modelCatalog.cachedModelsFor
+						? await modelCatalog.cachedModelsFor(provider)
+						: await modelCatalog.modelsFor(provider, providerRefresh),
+				effortLevels: provider.effortLevels
+					? [...provider.effortLevels]
+					: undefined,
+				permissionModes: provider.permissionModes
+					? [...provider.permissionModes]
+					: undefined,
+				hostCapabilities:
+					options.includeHostCapabilities && provider.hostCapabilities
+						? await provider.hostCapabilities().catch(() => ({}))
+						: undefined,
+			};
+		}),
+	);
+}
+
+/**
+ * Normal UI reads are stale-while-revalidate: return the server's last-good
+ * model snapshot immediately and let `cachedModelsFor()` refresh stale data in
+ * the background. Only an explicit refresh may block on live provider/CLI
+ * discovery. This keeps every browser and PWA a view over the same server-owned
+ * cache instead of letting route navigation start host probes of its own.
+ */
+export function providerCatalogRequestOptions(searchParams: URLSearchParams): {
+	refresh: boolean;
+	preferCachedModels: boolean;
+	includeHostCapabilities: boolean;
+} {
+	const refresh = searchParams.get("refresh") === "1";
+	return {
+		refresh,
+		preferCachedModels: !refresh,
+		includeHostCapabilities: searchParams.get("host_capabilities") === "1",
 	};
 }

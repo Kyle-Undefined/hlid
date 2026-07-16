@@ -6,7 +6,7 @@ export { mapMcpServer } from "#/lib/mcp";
 
 export function McpPanel({ servers }: { servers: McpServerEntry[] }) {
 	return (
-		<div className="border-b border-border shrink-0 flex items-center justify-between gap-3 px-4 py-2">
+		<div className="border-b border-border shrink-0 flex items-center justify-between md:justify-start gap-3 px-4 py-2">
 			<span className="text-[9px] tracking-widest text-muted-foreground/35 uppercase">
 				Provider tools
 			</span>

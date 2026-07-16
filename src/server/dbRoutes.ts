@@ -1,7 +1,12 @@
 import * as db from "../db";
 import type { AttachmentListFilter } from "../db/types";
 import { clampInt } from "../lib/utils";
+import {
+	msUntilNextLocalDay,
+	readAnalyticsSnapshot,
+} from "./analyticsSnapshots";
 import { unlinkPaths } from "./attachments";
+import { bumpDataRevision } from "./dataRevision";
 import { getLiveSessionsStatus, hasLiveTerminalSession } from "./liveSessions";
 import { getWindowMark } from "./proxy";
 import { broadcast } from "./runState";
@@ -60,9 +65,8 @@ const DB_GET_HANDLERS: Record<string, DbGetHandler> = {
 		getSessionScopedRows(url, db.getSessionPlanProposals),
 	"/db/session-ask-user-questions": ({ url }) =>
 		getSessionScopedRows(url, db.getSessionAskUserQuestions),
-	"/db/weekly-stats": async () => Response.json(await db.getWeeklyStats()),
-	"/db/thirty-day-stats": async () =>
-		Response.json(await db.getThirtyDayStats()),
+	"/db/weekly-stats": () => getWeeklyStats(),
+	"/db/thirty-day-stats": () => getThirtyDayStats(),
 	"/db/usage-windows": () => getUsageWindows(),
 	"/db/provider-usage": ({ url }) => getProviderUsage(url),
 	"/db/attachments": ({ url }) => getAttachments(url),
@@ -108,6 +112,7 @@ async function handlePatchRoute({
 	if (!body || typeof body.label !== "string")
 		return new Response("Missing label", { status: 400 });
 	await db.renameSession(id, body.label);
+	bumpDataRevision("sessions");
 	terminalPool?.setSessionLabel(id, body.label);
 	// Live pool entries cache the label in-memory — sync + rebroadcast so
 	// the ledger ACTIVE tab reflects the rename without a restart.
@@ -194,29 +199,64 @@ async function getSessionMessages(url: URL): Promise<Response> {
 }
 
 async function getStats(): Promise<Response> {
-	const [agg, sessions] = await Promise.all([
-		db.getAggregatedStats(),
-		db.getRecentSessions(10),
-	]);
-	return Response.json({ agg, sessions });
+	const snapshot = await readAnalyticsSnapshot(
+		"stats",
+		"cockpit",
+		async () => {
+			const [agg, sessions] = await Promise.all([
+				db.getAggregatedStats(),
+				db.getRecentSessions(10),
+			]);
+			return { agg, sessions };
+		},
+		{ maxAgeMs: msUntilNextLocalDay() },
+	);
+	return Response.json(snapshot);
 }
 
 async function getActivity(): Promise<Response> {
-	const [topTools, hourOfDay, latency, modelSplit, stopReasonSplit] =
-		await Promise.all([
-			db.getTopToolCalls(10),
-			db.getHourOfDayActivity(),
-			db.getLatencyDistribution(),
-			db.getModelSplit(),
-			db.getStopReasonSplit(),
-		]);
-	return Response.json({
-		topTools,
-		hourOfDay,
-		latency,
-		modelSplit,
-		stopReasonSplit,
-	});
+	const snapshot = await readAnalyticsSnapshot(
+		"activity",
+		"ledger",
+		async () => {
+			const [topTools, hourOfDay, latency, modelSplit, stopReasonSplit] =
+				await Promise.all([
+					db.getTopToolCalls(10),
+					db.getHourOfDayActivity(),
+					db.getLatencyDistribution(),
+					db.getModelSplit(),
+					db.getStopReasonSplit(),
+				]);
+			return {
+				topTools,
+				hourOfDay,
+				latency,
+				modelSplit,
+				stopReasonSplit,
+			};
+		},
+	);
+	return Response.json(snapshot);
+}
+
+async function getWeeklyStats(): Promise<Response> {
+	const snapshot = await readAnalyticsSnapshot(
+		"weekly",
+		"weekly",
+		() => db.getWeeklyStats(),
+		{ maxAgeMs: msUntilNextLocalDay() },
+	);
+	return Response.json(snapshot);
+}
+
+async function getThirtyDayStats(): Promise<Response> {
+	const snapshot = await readAnalyticsSnapshot(
+		"thirtyDay",
+		"thirty-day",
+		() => db.getThirtyDayStats(),
+		{ maxAgeMs: msUntilNextLocalDay() },
+	);
+	return Response.json(snapshot);
 }
 
 async function getSessionRow(url: URL): Promise<Response> {
@@ -275,7 +315,18 @@ async function getSessionScopedRows<T>(
 }
 
 async function getUsageWindows(): Promise<Response> {
-	const windows = await db.getUsageWindows();
+	const cached = await readAnalyticsSnapshot(
+		"providerUsage",
+		"legacy-usage-windows",
+		() => db.getUsageWindows(),
+		{ maxAgeMs: 15_000 },
+	);
+	const windows = {
+		...cached,
+		fiveHour: { ...cached.fiveHour },
+		weekly: { ...cached.weekly },
+		weeklySonnet: cached.weeklySonnet ? { ...cached.weeklySonnet } : null,
+	};
 	// Overlay in-memory high-water marks. DB writes are async/void so the mark
 	// is always more current during a session; DB is the cold-start fallback only.
 	const m5 = getWindowMark("claude", "five_hour");
@@ -306,9 +357,17 @@ async function getProviderUsage(url: URL): Promise<Response> {
 		.split(",")
 		.map((s) => s.trim())
 		.filter(Boolean);
-	const snapshots = await Promise.all(
-		providerIds.map((id) => db.getProviderUsage(id)),
+	const cached = await readAnalyticsSnapshot(
+		"providerUsage",
+		providerIds.join(","),
+		() => Promise.all(providerIds.map((id) => db.getProviderUsage(id))),
+		{ maxAgeMs: 15_000 },
 	);
+	// Live overlays must not mutate the retained DB snapshot.
+	const snapshots = cached.map((snapshot) => ({
+		...snapshot,
+		windows: snapshot.windows.map((window) => ({ ...window })),
+	}));
 	// Overlay in-memory high-water marks so live-session values are always current.
 	for (const snapshot of snapshots) {
 		for (const win of snapshot.windows) {
@@ -389,6 +448,7 @@ async function handleDeleteRoute({
 			if (!id) return new Response("Missing id", { status: 400 });
 			const { ephemeralPaths } = await db.deleteSession(id);
 			await unlinkPaths(ephemeralPaths);
+			bumpDataRevision("stats", "sessions", "relics", "storage");
 			return Response.json({ ok: true });
 		}
 		case "/db/logs":
@@ -403,8 +463,11 @@ async function handlePostRoute(
 	context: DbRouteContext,
 ): Promise<Response | null> {
 	switch (context.url.pathname) {
-		case "/db/storage/optimize":
-			return Response.json(await db.optimizeStorage());
+		case "/db/storage/optimize": {
+			const result = await db.optimizeStorage();
+			bumpDataRevision("storage");
+			return Response.json(result);
+		}
 		case "/db/sessions/cleanup":
 			return cleanupSessions(context);
 		case "/db/live-sessions/stop":
@@ -426,6 +489,9 @@ async function cleanupSessions({
 	const days = clampInt(fromBody != null ? String(fromBody) : fromQuery, 30, 1);
 	const { count, ephemeralPaths } = await db.deleteSessionsOlderThan(days);
 	await unlinkPaths(ephemeralPaths);
+	if (count > 0) {
+		bumpDataRevision("stats", "sessions", "relics", "storage");
+	}
 	return Response.json({ deleted: count });
 }
 

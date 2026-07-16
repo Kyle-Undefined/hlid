@@ -2,9 +2,10 @@ import {
 	createRootRoute,
 	HeadContent,
 	Scripts,
+	useRouter,
 	useRouterState,
 } from "@tanstack/react-router";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useSyncExternalStore } from "react";
 import { ErrorBoundary } from "#/components/ErrorBoundary";
 import { BottomNav } from "#/components/nav/BottomNav";
 import { Sidebar } from "#/components/nav/Sidebar";
@@ -13,6 +14,13 @@ import { UpdateBanner } from "#/components/UpdateBanner";
 import * as privacyStore from "#/hooks/privacyStore";
 import { usePullToRefresh } from "#/hooks/usePullToRefresh";
 import { useVisualViewportGuard } from "#/hooks/useVisualViewportGuard";
+import {
+	changedDataDomains,
+	getDataRevisionSnapshot,
+	subscribeDataRevisionSnapshot,
+} from "#/hooks/wsDataRevisionStore";
+import type { DataRevisionSnapshot } from "#/lib/dataRevision";
+import { shouldRevalidateRouteData } from "#/lib/routeDataRevalidation";
 import { isRavenPath } from "#/lib/scrollContainers";
 import { logClientErrorFn } from "#/lib/serverFns/logging";
 import {
@@ -106,6 +114,26 @@ function SyncPrivacyStore() {
 	useEffect(() => {
 		privacyStore.initFromStorage();
 	}, []);
+	return null;
+}
+
+function SyncServerData({ pathname }: { pathname: string }) {
+	const router = useRouter();
+	const revisions = useSyncExternalStore(
+		subscribeDataRevisionSnapshot,
+		getDataRevisionSnapshot,
+		() => getDataRevisionSnapshot(),
+	);
+	const previousRef = useRef<DataRevisionSnapshot>(revisions);
+	useEffect(() => {
+		const changed = changedDataDomains(previousRef.current, revisions);
+		previousRef.current = revisions;
+		if (changed.length === 0) return;
+		if (!shouldRevalidateRouteData(pathname, changed)) return;
+		// Several writes may land together. Collapse the burst into one route read.
+		const timer = setTimeout(() => void router.invalidate(), 100);
+		return () => clearTimeout(timer);
+	}, [pathname, revisions, router]);
 	return null;
 }
 
@@ -250,6 +278,7 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 						<RegisterSW />
 						<SyncThemeFromConfig />
 						<SyncPrivacyStore />
+						<SyncServerData pathname={pathname} />
 						<RegisterErrorLogger />
 					</>
 				)}

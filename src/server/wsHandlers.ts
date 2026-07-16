@@ -6,6 +6,7 @@ import { expandTilde } from "../lib/paths";
 import { readVaultMcpFile } from "../lib/vaultMcp";
 import { computeAllowedAgentRealPaths, isAllowedAgentPath } from "./agentPaths";
 import { loadConfig } from "./config";
+import { getDataRevisions } from "./dataRevision";
 import { getLiveSessionsStatus } from "./liveSessions";
 import {
 	type ClientMessage,
@@ -524,7 +525,12 @@ function shouldCreateChatEntry(
 	needsNewSession: boolean,
 ): boolean {
 	if (chatEntry !== entry) return false;
-	if (entry.manager.isRunning() && !needsNewSession) return false;
+	if (entry.manager.isRunning() && !needsNewSession) {
+		const currentSessionId = entry.manager.getCurrentSessionId();
+		// Missing/same IDs are follow-ups and belong in this session's queue.
+		// A different explicit ID is a parallel new chat and needs its own entry.
+		if (!msg.session_id || msg.session_id === currentSessionId) return false;
+	}
 	return (
 		entry.manager.getCurrentSessionId() === null ||
 		(msg.agent_cwd !== undefined && msg.agent_cwd !== entry.agentCwd) ||
@@ -739,6 +745,7 @@ async function handleSessionMessage(
 			void entry.manager.probeSlashCommands?.((event) =>
 				entry.runState.broadcast(event),
 			);
+			broadcastSessionsStatus(context);
 			return;
 		}
 		case "set_model":
@@ -747,9 +754,11 @@ async function handleSessionMessage(
 				type: "status",
 				...entry.manager.getStatus(),
 			});
+			broadcastSessionsStatus(context);
 			return;
 		case "set_permission_mode":
 			await handlePermissionMode(context.ws, entry, msg);
+			broadcastSessionsStatus(context);
 			return;
 		case "set_effort":
 			await entry.manager.setEffort(msg.effort);
@@ -757,6 +766,7 @@ async function handleSessionMessage(
 				type: "status",
 				...entry.manager.getStatus(),
 			});
+			broadcastSessionsStatus(context);
 			return;
 		case "sync_mcp_list":
 			if (msg.inventory)
@@ -831,6 +841,7 @@ export function createWsHandlers(
 				type: "sessions_status",
 				sessions: getLiveSessionsStatus(pool, terminalPool),
 			});
+			send(ws, { type: "data_revisions", revisions: getDataRevisions() });
 
 			// Send vault session status and (if relevant) last error.
 			const status = vault.manager.getStatus();

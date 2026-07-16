@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	configuredVaultModel,
 	defaultEffortFor,
 	effortOptionsFor,
 	modelOptions,
@@ -152,5 +153,26 @@ describe("resolveActiveProviderId", () => {
 		expect(
 			resolveActiveProviderId(agentList, "/agents/unknown", "claude"),
 		).toBe("claude");
+	});
+});
+
+describe("configuredVaultModel", () => {
+	const config = {
+		vault_provider: "claude",
+		claude: { model: "claude-sonnet-4-6" },
+		codex: { model: "gpt-5.6-sol" },
+	};
+
+	it("uses vault configuration instead of whichever session is focused", () => {
+		expect(configuredVaultModel(config as never)).toBe("claude-sonnet-4-6");
+		expect(
+			configuredVaultModel({ ...config, vault_provider: "codex" } as never),
+		).toBe("gpt-5.6-sol");
+	});
+
+	it("does not invent a model for providers without vault model fields", () => {
+		expect(
+			configuredVaultModel({ ...config, vault_provider: "acp:pi" } as never),
+		).toBeNull();
 	});
 });

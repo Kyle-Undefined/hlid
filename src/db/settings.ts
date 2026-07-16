@@ -1,3 +1,4 @@
+import { markAnalyticsChanged } from "./analyticsRevision";
 import { getDb } from "./schema";
 
 export async function getSetting(key: string): Promise<string | null> {
@@ -16,6 +17,9 @@ export async function saveSetting(key: string, value: string): Promise<void> {
 		`INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, unixepoch())`,
 		[key, value],
 	);
+	if (key.startsWith("rl_")) {
+		markAnalyticsChanged(["providerUsage"], "provider_usage_updated");
+	}
 }
 
 async function deleteSetting(key: string): Promise<void> {

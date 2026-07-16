@@ -89,7 +89,7 @@ const EMPTY_LATENCY_BUCKETS = [
 	{ label: "60k+", count: 0 },
 ];
 
-const EMPTY_ACTIVITY: ActivityStats = {
+export const EMPTY_ACTIVITY: ActivityStats = {
 	topTools: [],
 	hourOfDay: Array.from({ length: 24 }, (_, hour) => ({ hour, count: 0 })),
 	latency: { buckets: EMPTY_LATENCY_BUCKETS, p50: 0, p95: 0, total: 0 },

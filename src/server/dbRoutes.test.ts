@@ -18,6 +18,8 @@ const {
 	mockGetAttachmentsForSession,
 	mockGetProviderUsage,
 	mockGetLogs,
+	mockGetAggregatedStats,
+	mockGetRecentSessions,
 } = vi.hoisted(() => ({
 	mockGetSessionById: vi.fn(),
 	mockListAttachments: vi.fn(),
@@ -27,6 +29,8 @@ const {
 	mockGetAttachmentsForSession: vi.fn(),
 	mockGetProviderUsage: vi.fn(),
 	mockGetLogs: vi.fn(),
+	mockGetAggregatedStats: vi.fn(),
+	mockGetRecentSessions: vi.fn(),
 }));
 
 vi.mock("../db", () => ({
@@ -38,6 +42,8 @@ vi.mock("../db", () => ({
 	getAttachmentsForSession: mockGetAttachmentsForSession,
 	getProviderUsage: mockGetProviderUsage,
 	getLogs: mockGetLogs,
+	getAggregatedStats: mockGetAggregatedStats,
+	getRecentSessions: mockGetRecentSessions,
 }));
 
 // dbRoutes also imports from ./attachments and ./proxy — stub them out.
@@ -73,6 +79,11 @@ function makePool(
 
 // ── import after mocks ────────────────────────────────────────────────────────
 
+import {
+	markAnalyticsChanged,
+	resetAnalyticsRevisionForTest,
+} from "../db/analyticsRevision";
+import { resetAnalyticsSnapshotsForTest } from "./analyticsSnapshots";
 import { handleDbRoute, parseAttachmentListFilter } from "./dbRoutes";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -110,6 +121,35 @@ const sampleRow: SessionRow = {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	resetAnalyticsRevisionForTest();
+	resetAnalyticsSnapshotsForTest();
+});
+
+describe("handleDbRoute — analytics snapshots", () => {
+	it("reuses /db/stats until an authoritative stats mutation", async () => {
+		mockGetAggregatedStats
+			.mockResolvedValueOnce({ allTime: { queries: 1 } })
+			.mockResolvedValueOnce({ allTime: { queries: 2 } });
+		mockGetRecentSessions.mockResolvedValue([]);
+
+		const first = await handleDbRoute(makeUrl("/db/stats"), makeRequest());
+		const second = await handleDbRoute(makeUrl("/db/stats"), makeRequest());
+		expect(await first?.json()).toMatchObject({
+			agg: { allTime: { queries: 1 } },
+		});
+		expect(await second?.json()).toMatchObject({
+			agg: { allTime: { queries: 1 } },
+		});
+		expect(mockGetAggregatedStats).toHaveBeenCalledTimes(1);
+		expect(mockGetRecentSessions).toHaveBeenCalledTimes(1);
+
+		markAnalyticsChanged(["stats"], "query_recorded");
+		const refreshed = await handleDbRoute(makeUrl("/db/stats"), makeRequest());
+		expect(await refreshed?.json()).toMatchObject({
+			agg: { allTime: { queries: 2 } },
+		});
+		expect(mockGetAggregatedStats).toHaveBeenCalledTimes(2);
+	});
 });
 
 describe("handleDbRoute — /db/session-row", () => {
@@ -684,6 +724,21 @@ describe("handleDbRoute — GET /db/provider-usage", () => {
 		expect(body[0].windows[0].utilization).toBe(10);
 		expect(body[1].windows[0].utilization).toBe(55);
 		expect(body[1].windows[0].resetsAt).toBe(99);
+
+		vi.mocked(getWindowMark).mockImplementation(((provider: string) =>
+			provider === "codex"
+				? { utilization: 75, remaining: 25, resetsAt: 100 }
+				: null) as never);
+		const secondRes = await handleDbRoute(
+			makeUrl("/db/provider-usage", { providers: "claude, codex," }),
+			makeRequest(),
+		);
+		const secondBody = (await secondRes?.json()) as Array<{
+			windows: Array<{ utilization: number; resetsAt: number }>;
+		}>;
+		expect(secondBody[1].windows[0].utilization).toBe(75);
+		expect(secondBody[1].windows[0].resetsAt).toBe(100);
+		expect(mockGetProviderUsage).toHaveBeenCalledTimes(2);
 	});
 });
 

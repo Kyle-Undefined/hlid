@@ -63,9 +63,9 @@ function LatestChanges({ release }: { release: ReleaseNotes }) {
 			title="Latest changes"
 			description="Release notes from the latest published Hlið release."
 		>
-			<div className="px-4 py-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+			<div className="min-w-0 px-4 py-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
 				<div className="min-w-0">
-					<div className="text-sm font-medium text-foreground">
+					<div className="break-words text-sm font-medium text-foreground">
 						{release.name}
 					</div>
 					<div className="text-xs text-muted-foreground">
@@ -77,12 +77,12 @@ function LatestChanges({ release }: { release: ReleaseNotes }) {
 					href={release.url}
 					target="_blank"
 					rel="noreferrer"
-					className="self-start shrink-0 text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors uppercase"
+					className="max-w-full self-start whitespace-normal break-words text-center text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors uppercase"
 				>
 					View on GitHub
 				</a>
 			</div>
-			<div className="px-4 py-4 text-sm text-foreground/85">
+			<div className="min-w-0 max-w-full overflow-x-hidden break-words px-4 py-4 text-sm text-foreground/85 [&_a]:break-all [&_code]:break-all">
 				<MarkdownBody content={release.notes} />
 			</div>
 		</Section>

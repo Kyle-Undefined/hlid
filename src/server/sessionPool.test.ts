@@ -23,6 +23,7 @@ const mockInstances: {
 	getPendingPlanModeExits: ReturnType<typeof vi.fn>;
 	getCurrentSessionId: ReturnType<typeof vi.fn>;
 	getSessionLabel: ReturnType<typeof vi.fn>;
+	getProviderId: ReturnType<typeof vi.fn>;
 	isRunning: ReturnType<typeof vi.fn>;
 }[] = [];
 
@@ -31,14 +32,18 @@ vi.mock("./session", () => ({
 	SessionManager: vi.fn().mockImplementation(function () {
 		const instance = {
 			abort: vi.fn(),
-			getStatus: vi
-				.fn()
-				.mockReturnValue({ state: "idle", model: "claude-test" }),
+			getStatus: vi.fn().mockReturnValue({
+				state: "idle",
+				model: "claude-test",
+				effort: "medium",
+				permission_mode: "default",
+			}),
 			getPendingPermissionRequests: vi.fn().mockReturnValue([]),
 			getPendingAskUserQuestions: vi.fn().mockReturnValue([]),
 			getPendingPlanModeExits: vi.fn().mockReturnValue([]),
 			getCurrentSessionId: vi.fn().mockReturnValue(null),
 			getSessionLabel: vi.fn().mockReturnValue(null),
+			getProviderId: vi.fn().mockReturnValue("claude"),
 			isRunning: vi.fn().mockReturnValue(false),
 		};
 		mockInstances.push(instance);
@@ -369,6 +374,8 @@ describe("SessionPool.getSessionsStatus", () => {
 		expect(s.agent_name).toBe("MyAgent");
 		expect(s.state).toBe("idle");
 		expect(s.model).toBe("claude-test");
+		expect(s.effort).toBe("medium");
+		expect(s.permission_mode).toBe("default");
 		expect(typeof s.hasPendingPermissions).toBe("boolean");
 	});
 

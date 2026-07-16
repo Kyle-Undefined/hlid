@@ -115,6 +115,7 @@ vi.mock("#/lib/serverFns/stats", () => ({
 	getThirtyDayStatsFn: vi.fn(),
 }));
 
+import { getProvidersFn, getProviderUsagesFn } from "#/lib/serverFns/providers";
 import { Route } from "./ledger";
 
 const EMPTY_STATS = {
@@ -212,6 +213,35 @@ beforeEach(() => {
 });
 
 afterEach(cleanup);
+
+type LedgerRouteShape = {
+	loader: (input: {
+		deps: {
+			tab: "stats" | "sessions";
+			page: number;
+			size: number;
+			q: string;
+			sort: "recent";
+		};
+	}) => Promise<Record<string, unknown>>;
+};
+
+const ledgerRoute = Route as unknown as LedgerRouteShape;
+
+describe("ledger route loader", () => {
+	it("uses the server-cached provider catalog for stats navigation", async () => {
+		vi.mocked(getProvidersFn).mockResolvedValue([]);
+		vi.mocked(getProviderUsagesFn).mockResolvedValue([]);
+
+		await ledgerRoute.loader({
+			deps: { tab: "stats", page: 1, size: 20, q: "", sort: "recent" },
+		});
+
+		expect(getProvidersFn).toHaveBeenCalledWith({
+			data: { preferCachedModels: true },
+		});
+	});
+});
 
 describe("ledger stats view", () => {
 	it("prefers live query cost, query, and token totals over persisted session data", () => {

@@ -10,7 +10,14 @@ import {
 	Trash2,
 	X,
 } from "lucide-react";
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import {
+	Fragment,
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+	useSyncExternalStore,
+} from "react";
 import { ConfirmAction } from "#/components/ConfirmAction";
 import {
 	ClickableImage,
@@ -21,6 +28,10 @@ import { PrivacyMask } from "#/components/PrivacyMask";
 import type { AttachmentRow } from "#/db";
 import { useIsDesktop } from "#/hooks/useIsDesktop";
 import { useWs } from "#/hooks/useWs";
+import {
+	getDataRevisionSnapshot,
+	subscribeDataRevisionSnapshot,
+} from "#/hooks/wsDataRevisionStore";
 import { dbFetch } from "#/lib/dbClient";
 import { fmtBytes, fmtDate } from "#/lib/formatters";
 import { ROUTE_SCROLL_RESTORATION_IDS } from "#/lib/scrollContainers";
@@ -232,6 +243,15 @@ function useRelicsList(initial: ListResult, listAttachments: ListAttachments) {
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [hasNew, setHasNew] = useState(false);
+	const relicsRevision = useSyncExternalStore(
+		subscribeDataRevisionSnapshot,
+		() => getDataRevisionSnapshot().relics,
+		() => 0,
+	);
+	const initialRelicsRevisionRef = useRef(relicsRevision);
+	useEffect(() => {
+		if (relicsRevision !== initialRelicsRevisionRef.current) setHasNew(true);
+	}, [relicsRevision]);
 
 	useEffect(() => {
 		setRows(initial.rows);

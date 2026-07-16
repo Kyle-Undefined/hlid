@@ -25,6 +25,7 @@ import type {
 } from "./agentProvider";
 import { ingestPlanHtml } from "./attachments";
 import { loadConfig } from "./config";
+import { bumpDataRevision } from "./dataRevision";
 import { resolveExecutionContext } from "./executionContext";
 import { parseAskUserQuestion } from "./parseAskUserQuestion";
 import { persistAlwaysAllowedTool } from "./permissionStore";
@@ -1268,6 +1269,7 @@ export class SessionManager {
 				provider.providerId,
 			);
 			if (recorded) queryData.estimated_cost = recorded.estimatedCost;
+			bumpDataRevision("stats", "sessions");
 			if (turn.lastActualModel) {
 				db.setSessionActualModel(sessionId, turn.lastActualModel).catch((e) => {
 					console.error("[db] setSessionActualModel failed:", e);
@@ -2163,6 +2165,7 @@ export class SessionManager {
 			// pending plan interaction before the modal event arrives.
 			this.emitRunningStatus(emit);
 			if (htmlRelicId) {
+				bumpDataRevision("relics", "storage");
 				emit({
 					type: "attachment_created",
 					id: htmlRelicId,

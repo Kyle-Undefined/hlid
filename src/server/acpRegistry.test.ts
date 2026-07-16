@@ -45,6 +45,7 @@ describe("AcpRegistry", () => {
 	it("validates, persists, and features OpenCode", async () => {
 		const catalog = await new AcpRegistry(async () => registry).catalog(
 			HlidConfigSchema.parse({}),
+			true,
 		);
 		expect(catalog.map((item) => item.id)).toEqual(["opencode", "other"]);
 		expect(saveSetting).toHaveBeenCalledWith(
@@ -60,6 +61,7 @@ describe("AcpRegistry", () => {
 					{ id: "opencode", executable: "custom-open", args: ["serve"] },
 				],
 			}),
+			true,
 		);
 		expect(catalog[0]).toMatchObject({
 			enabled: true,
@@ -74,11 +76,54 @@ describe("AcpRegistry", () => {
 		getSetting.mockRejectedValue(new Error("offline"));
 		const catalog = await new AcpRegistry(async () => {
 			throw new Error("offline");
-		}).catalog(HlidConfigSchema.parse({}));
+		}).catalog(HlidConfigSchema.parse({}), true);
 		expect(catalog.slice(0, 2).map((item) => item.id)).toEqual([
 			"opencode",
 			"pi-acp",
 		]);
+	});
+
+	it("serves the persisted snapshot while refreshing normal reads", async () => {
+		getSetting.mockResolvedValue(JSON.stringify(registry));
+		let resolveFetch!: (value: typeof registry) => void;
+		const fetcher = vi.fn(
+			() =>
+				new Promise<typeof registry>((resolve) => {
+					resolveFetch = resolve;
+				}),
+		);
+		const onChange = vi.fn();
+		const instance = new AcpRegistry(fetcher, onChange);
+
+		const catalog = await instance.catalog(HlidConfigSchema.parse({}));
+
+		expect(catalog.map((item) => item.id)).toEqual(["opencode", "other"]);
+		expect(fetcher).toHaveBeenCalledOnce();
+		expect(onChange).not.toHaveBeenCalled();
+
+		resolveFetch({
+			...registry,
+			version: "2",
+			agents: registry.agents.map((agent) => ({ ...agent, version: "2.0.0" })),
+		});
+		await vi.waitFor(() => expect(onChange).toHaveBeenCalledOnce());
+		expect(
+			(await instance.catalog(HlidConfigSchema.parse({})))[0]?.version,
+		).toBe("2.0.0");
+	});
+
+	it("waits for live discovery only on an explicit refresh", async () => {
+		getSetting.mockResolvedValue(JSON.stringify(registry));
+		const refreshed = {
+			...registry,
+			version: "2",
+			agents: registry.agents.map((agent) => ({ ...agent, version: "2.0.0" })),
+		};
+		const instance = new AcpRegistry(async () => refreshed);
+
+		const catalog = await instance.catalog(HlidConfigSchema.parse({}), true);
+
+		expect(catalog[0]?.version).toBe("2.0.0");
 	});
 });
 

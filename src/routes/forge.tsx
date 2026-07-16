@@ -15,7 +15,7 @@ export const Route = createFileRoute("/forge")({
 			await Promise.all([
 				getConfig(),
 				getCwdFn(),
-				getProvidersFn(),
+				getProvidersFn({ data: { includeHostCapabilities: true } }),
 				getAccountInfoFn(),
 				getVoiceInfoFn(),
 				getAcpRegistryFn(),

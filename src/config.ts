@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFileSync, statSync } from "node:fs";
 import { createServerFn } from "@tanstack/react-start";
 import { parse, TomlError } from "smol-toml";
 import { z } from "zod";
@@ -250,16 +250,9 @@ export const HlidConfigSchema = z.object({
 
 export type HlidConfig = z.infer<typeof HlidConfigSchema>;
 
-function loadFromDisk(): HlidConfig {
-	let raw: string;
-	try {
-		raw = readFileSync(CONFIG_PATH, "utf-8");
-	} catch (err) {
-		if ((err as NodeJS.ErrnoException).code === "ENOENT") {
-			return HlidConfigSchema.parse({});
-		}
-		throw err;
-	}
+let configCache: { config: HlidConfig; mtimeMs: number } | null = null;
+
+function parseConfig(raw: string): HlidConfig {
 	try {
 		return HlidConfigSchema.parse(parse(raw));
 	} catch (err) {
@@ -275,6 +268,32 @@ function loadFromDisk(): HlidConfig {
 	}
 }
 
+/** Update the shared cache after an atomic config write. */
+export function setConfigCache(config: HlidConfig): void {
+	try {
+		configCache = { config, mtimeMs: statSync(CONFIG_PATH).mtimeMs };
+	} catch {
+		configCache = null;
+	}
+}
+
+/** Load the latest config, parsing only when its on-disk mtime changes. */
+export function loadConfig(): HlidConfig {
+	try {
+		const { mtimeMs } = statSync(CONFIG_PATH);
+		if (configCache?.mtimeMs === mtimeMs) return configCache.config;
+		const config = parseConfig(readFileSync(CONFIG_PATH, "utf-8"));
+		configCache = { config, mtimeMs };
+		return config;
+	} catch (err) {
+		if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+			configCache = null;
+			return HlidConfigSchema.parse({});
+		}
+		throw err;
+	}
+}
+
 export const getConfig = createServerFn({ method: "GET" }).handler(() => {
-	return loadFromDisk();
+	return loadConfig();
 });

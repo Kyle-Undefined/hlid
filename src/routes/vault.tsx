@@ -6,7 +6,6 @@ import { SectionRail } from "#/components/shell/SectionRail";
 import { FolderGroupsTab, NotesTab } from "#/components/vault/NotesTab";
 import { ProjectsTab } from "#/components/vault/ProjectsTab";
 import { SkillsTab } from "#/components/vault/SkillsTab";
-import { getConfig } from "#/config";
 import { useWs } from "#/hooks/useWs";
 import { setPendingPrompt } from "#/hooks/wsChatQueueStore";
 import { ROUTE_SCROLL_RESTORATION_IDS } from "#/lib/scrollContainers";
@@ -25,24 +24,6 @@ type VaultFolderKey =
 	| "skills"
 	| "memory"
 	| "outputs";
-
-const PARA_ORDER: VaultFolderKey[] = [
-	"inbox",
-	"projects",
-	"areas",
-	"resources",
-	"archive",
-	"skills",
-	"memory",
-	"outputs",
-];
-const WIKI_ORDER: VaultFolderKey[] = [
-	"raw",
-	"wiki_folder",
-	"outputs",
-	"skills",
-	"memory",
-];
 
 const FIELD_LABELS: Record<VaultFolderKey, string> = {
 	inbox: "INBOX",
@@ -70,81 +51,9 @@ const FIELD_DESCRIPTIONS: Record<VaultFolderKey, string> = {
 	outputs: "Generated documents and finished artifacts.",
 };
 
-type VaultConfig = Awaited<ReturnType<typeof getConfig>>["vault"];
-
-function scanConfiguredFolder<T>(
-	vault: VaultConfig,
-	key: VaultFolderKey,
-	scan: (root: string, folder: string) => T,
-	fallback: T,
-): T {
-	const folder = vault[key];
-	return vault.path && typeof folder === "string"
-		? scan(vault.path, folder)
-		: fallback;
-}
-
-function configuredVaultTabs(vault: VaultConfig) {
-	const fieldOrder = vault.style === "wiki" ? WIKI_ORDER : PARA_ORDER;
-	return fieldOrder
-		.filter((key) => Boolean(vault[key]))
-		.map((key) => ({ id: key, label: FIELD_LABELS[key] }));
-}
-
 const getVaultData = createServerFn({ method: "GET" }).handler(async () => {
-	const [config, { scanProjects, scanSkills, scanMemory, scanFolderGroups }] =
-		await Promise.all([getConfig(), import("#/lib/vault")]);
-	const { vault, status_vocabulary } = config;
-
-	const tabConfig = configuredVaultTabs(vault);
-	const scanProjectFolder = (root: string, folder: string) =>
-		scanProjects(root, folder, status_vocabulary);
-	const projects = scanConfiguredFolder(
-		vault,
-		"projects",
-		scanProjectFolder,
-		[],
-	);
-	const wikiPages = scanConfiguredFolder(
-		vault,
-		"wiki_folder",
-		scanProjectFolder,
-		[],
-	);
-	const { skills, sectionOrder } = scanConfiguredFolder(
-		vault,
-		"skills",
-		(root, folder) => scanSkills(root, folder, config.ui.hide_skills_index),
-		{ skills: [], sectionOrder: [] },
-	);
-	const memory = scanConfiguredFolder(vault, "memory", scanMemory, []);
-	const inbox = scanConfiguredFolder(vault, "inbox", scanMemory, []);
-	const raw = scanConfiguredFolder(vault, "raw", scanMemory, []);
-	const areas = scanConfiguredFolder(vault, "areas", scanFolderGroups, []);
-	const resources = scanConfiguredFolder(
-		vault,
-		"resources",
-		scanFolderGroups,
-		[],
-	);
-	const archive = scanConfiguredFolder(vault, "archive", scanProjectFolder, []);
-	const outputs = scanConfiguredFolder(vault, "outputs", scanMemory, []);
-
-	return {
-		tabConfig,
-		projects,
-		wikiPages,
-		resources,
-		archive,
-		skills,
-		sectionOrder,
-		memory,
-		inbox,
-		raw,
-		areas,
-		outputs,
-		vocab: status_vocabulary,
-	};
+	const { getVaultSnapshot } = await import("#/server/vaultSnapshot");
+	return (await getVaultSnapshot()).vault;
 });
 
 // ─── route ─────────────────────────────────────────────────────────────────

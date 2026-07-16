@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 
+const DRAFT_PERSIST_DELAY_MS = 120;
+
+function persistDraft(key: string, value: string): void {
+	try {
+		if (value) localStorage.setItem(key, value);
+		else localStorage.removeItem(key);
+	} catch {}
+}
+
 /**
  * Manages the chat input draft — persists to localStorage per session,
  * restores on session change, and handles seeded-prompt (URL ?prompt=) seeding.
@@ -22,6 +31,9 @@ export function useDraft({
 		: "hlid:draft:new";
 
 	const [input, setInput] = useState(seededPrompt ?? "");
+	const activeDraftKeyRef = useRef(draftKey);
+	const latestInputRef = useRef(input);
+	latestInputRef.current = input;
 
 	// Strip ?prompt from URL after seeding so refresh doesn't re-fill the box.
 	useEffect(() => {
@@ -37,6 +49,10 @@ export function useDraft({
 	// Restore draft when the active session changes (URL prompt takes precedence).
 	useEffect(() => {
 		if (seededPrompt !== undefined) return;
+		if (activeDraftKeyRef.current !== draftKey) {
+			persistDraft(activeDraftKeyRef.current, latestInputRef.current);
+			activeDraftKeyRef.current = draftKey;
+		}
 		isRestoringDraftRef.current = true;
 		try {
 			const saved = localStorage.getItem(draftKey);
@@ -51,7 +67,8 @@ export function useDraft({
 		// effect sees the restored input value.
 	}, [draftKey, seededPrompt]);
 
-	// Persist draft on every keystroke.
+	// Debounce synchronous localStorage writes. Persisting a growing string for
+	// every key-repeat event can monopolize the UI thread while Raven also streams.
 	useEffect(() => {
 		if (isRestoringDraftRef.current) {
 			// Clear the guard set by the restore effect above and skip
@@ -59,11 +76,19 @@ export function useDraft({
 			isRestoringDraftRef.current = false;
 			return;
 		}
-		try {
-			if (input) localStorage.setItem(draftKey, input);
-			else localStorage.removeItem(draftKey);
-		} catch {}
+		const timer = window.setTimeout(
+			() => persistDraft(draftKey, input),
+			DRAFT_PERSIST_DELAY_MS,
+		);
+		return () => window.clearTimeout(timer);
 	}, [input, draftKey]);
+
+	// A route change can happen before the debounce expires. Flush the latest
+	// value once on unmount so the draft remains durable without per-key writes.
+	useEffect(
+		() => () => persistDraft(activeDraftKeyRef.current, latestInputRef.current),
+		[],
+	);
 
 	/** Remove the persisted draft for the current session. Call on send or clear. */
 	function clearDraft() {

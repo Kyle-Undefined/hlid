@@ -77,7 +77,9 @@ export const Route = createFileRoute("/einherjar")({
 		const [agents, externalAllowed, providers] = await Promise.all([
 			getAgentsFn(),
 			getExternalAllowedFn(),
-			getProvidersFn(),
+			// Agent management can render from the last-good model catalog. Do not
+			// block navigation behind live Codex/ACP discovery while a chat is busy.
+			getProvidersFn({ data: { preferCachedModels: true } }),
 		]);
 		return { agents, externalAllowed, providers };
 	},

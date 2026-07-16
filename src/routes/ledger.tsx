@@ -63,6 +63,7 @@ import { getProvidersFn, getProviderUsagesFn } from "#/lib/serverFns/providers";
 import { getActiveSessionRowFn } from "#/lib/serverFns/sessions";
 import type { ActivityStats } from "#/lib/serverFns/stats";
 import {
+	EMPTY_ACTIVITY,
 	EMPTY_AGG,
 	getActivityStatsFn,
 	getThirtyDayStatsFn,
@@ -143,19 +144,43 @@ const cleanupSessionsFn = createServerFn({ method: "POST" })
 
 export const Route = createFileRoute("/ledger")({
 	validateSearch: parseLedgerSearch,
-	loaderDeps: ({ search: { page, size, q, sort } }) => ({
+	loaderDeps: ({ search: { tab, page, size, q, sort } }) => ({
+		tab,
 		page,
 		size,
 		q,
 		sort,
 	}),
 	staleTime: 0,
-	loader: async ({ deps: { page, size, q, sort } }) => {
+	loader: async ({ deps: { tab, page, size, q, sort } }) => {
 		const renderedAt = Math.floor(Date.now() / 1000);
+		if (tab === "sessions") {
+			const [initialSessions, activeSession] = await Promise.all([
+				getSessionsPageFn({ data: { page, size, q: q || undefined, sort } }),
+				getActiveSessionRowFn(),
+			]);
+			return {
+				statsData: { agg: EMPTY_AGG },
+				initialSessions,
+				page,
+				size,
+				q,
+				sort,
+				thirtyDayStats: { days: [], total: 0 } as ThirtyDayStats,
+				providerUsages: [] as ProviderUsageSnapshot[],
+				providerIds: [] as string[],
+				activeSession,
+				activity: EMPTY_ACTIVITY,
+				renderedAt,
+			};
+		}
+
 		const [statsData, providers, thirtyDayStats, activeSession, activity] =
 			await Promise.all([
 				getStatsDataFn(),
-				getProvidersFn(),
+				// Ledger is a view over the server's last-good provider snapshot.
+				// Never hold navigation behind live CLI/model discovery.
+				getProvidersFn({ data: { preferCachedModels: true } }),
 				getThirtyDayStatsFn(),
 				getActiveSessionRowFn(),
 				getActivityStatsFn(),
@@ -164,14 +189,15 @@ export const Route = createFileRoute("/ledger")({
 		const availableIds = providers.filter((p) => p.available).map((p) => p.id);
 		const providerIds = availableIds.length > 0 ? availableIds : ["claude"];
 
-		const [initialSessions, providerUsages] = await Promise.all([
-			getSessionsPageFn({ data: { page, size, q: q || undefined, sort } }),
-			getProviderUsagesFn({ data: providerIds }),
-		]);
+		const providerUsages = await getProviderUsagesFn({ data: providerIds });
 
 		return {
 			statsData,
-			initialSessions,
+			initialSessions: {
+				sessions: [] as SessionRow[],
+				total: 0,
+				oldest_started_at: null,
+			},
 			page,
 			size,
 			q,
@@ -428,8 +454,21 @@ function useSessionStatusRefresh(
 		Map<string, "idle" | "running" | "error">
 	>(new Map());
 	const seenDbSessionIdsRef = useRef<Set<string>>(new Set());
+	const initializedRef = useRef(false);
 	useEffect(() => {
 		const prev = prevSessionStatesRef.current;
+		if (!initializedRef.current) {
+			initializedRef.current = true;
+			prevSessionStatesRef.current = new Map(
+				sessionsStatus.map((session) => [session.session_id, session.state]),
+			);
+			seenDbSessionIdsRef.current = new Set(
+				sessionsStatus.flatMap((session) =>
+					session.db_session_id ? [session.db_session_id] : [],
+				),
+			);
+			return;
+		}
 		let shouldRefresh = false;
 
 		for (const s of sessionsStatus) {
@@ -457,14 +496,19 @@ function useSessionStatusRefresh(
 
 /** Live data driven by WS events: rate limit, active session row, agg stats. */
 function useLedgerLiveData(
-	refreshSessions: () => Promise<void>,
 	initialActiveSession: SessionRow | null,
 	initialStatsData: { agg: AggStats },
+	loadStatsOnDone: boolean,
 ) {
 	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
 	const [activeSessionData, setActiveSessionData] =
 		useState(initialActiveSession);
 	const [statsDataState, setStatsDataState] = useState(initialStatsData);
+	useEffect(
+		() => setActiveSessionData(initialActiveSession),
+		[initialActiveSession],
+	);
+	useEffect(() => setStatsDataState(initialStatsData), [initialStatsData]);
 
 	const {
 		model,
@@ -475,12 +519,11 @@ function useLedgerLiveData(
 			(msg: ServerMessage) => {
 				if (msg.type === "rate_limit") setRateLimit(msg);
 				if (msg.type === "done") {
-					void refreshSessions();
 					void getActiveSessionRowFn().then(setActiveSessionData);
-					void getStatsDataFn().then(setStatsDataState);
+					if (loadStatsOnDone) void getStatsDataFn().then(setStatsDataState);
 				}
 			},
-			[refreshSessions],
+			[loadStatsOnDone],
 		),
 	);
 
@@ -718,8 +761,12 @@ function StatsPage() {
 	});
 	const mutations = useLedgerMutations(listState, sessionPage, navigate);
 	mutationsRef.current = mutations;
-	useSessionStatusRefresh(sessionsStatus, refreshSessions);
-	const live = useLedgerLiveData(refreshSessions, activeSession, statsData);
+	const refreshVisibleSessions = useCallback(
+		() => (tab === "sessions" ? refreshSessions() : Promise.resolve()),
+		[tab, refreshSessions],
+	);
+	useSessionStatusRefresh(sessionsStatus, refreshVisibleSessions);
+	const live = useLedgerLiveData(activeSession, statsData, tab === "stats");
 
 	return (
 		<div className="flex flex-col h-full">

@@ -5,6 +5,7 @@ import type { useFileUpload } from "#/hooks/useFileUpload";
 import type { useWs } from "#/hooks/useWs";
 import { setPendingPrompt } from "#/hooks/wsChatQueueStore";
 import { resetLiveStats } from "#/hooks/wsLiveStatsStore";
+import { getSessionsStatus } from "#/hooks/wsSessionStatusStore";
 import * as wsStore from "#/hooks/wsStore";
 import {
 	type CommandDescriptor,
@@ -14,6 +15,7 @@ import { getCurrentSessionFn } from "#/lib/serverFns/sessions";
 import { getRecentSessionsFn } from "#/lib/serverFns/stats";
 import { resolveSessionId } from "#/lib/sessionRouting";
 import { SESSION_LABEL_LENGTH, uid } from "#/lib/utils";
+import type { SessionStatusEntry } from "#/server/protocol";
 
 type Attachment = ReturnType<
 	typeof useFileUpload
@@ -77,8 +79,8 @@ type CockpitRunOptions = {
 	attachSessionIdRef: { current: string | null };
 	pendingAttachments: Attachment[];
 	clearPendingAttachments: () => void;
-	isRunning: boolean;
 	selectedAgentPath: string;
+	vaultPath: string;
 	background: boolean;
 	model: string | null | undefined;
 	send: Send;
@@ -91,8 +93,56 @@ type CockpitRunOptions = {
 	navigateToRaven: (sessionId: string, agentPath?: string) => void;
 };
 
+function matchingLiveSession(
+	sessionId: string,
+	sessions: SessionStatusEntry[],
+): SessionStatusEntry | undefined {
+	return sessions.find(
+		(session) =>
+			session.session_id === sessionId || session.db_session_id === sessionId,
+	);
+}
+
+export function isCockpitQueueTarget({
+	sameSession,
+	sessionId,
+	selectedAgentPath,
+	vaultPath,
+	sessions,
+}: {
+	sameSession: boolean;
+	sessionId: string | null | undefined;
+	selectedAgentPath: string;
+	vaultPath: string;
+	sessions: SessionStatusEntry[];
+}): boolean {
+	if (!sameSession || !sessionId) return false;
+	const live = matchingLiveSession(sessionId, sessions);
+	const targetCwd = selectedAgentPath || vaultPath;
+	return (
+		live?.mode !== "terminal" &&
+		live?.state === "running" &&
+		live.agent_cwd === targetCwd
+	);
+}
+
 async function resolveRunSession(options: CockpitRunOptions): Promise<string> {
+	const sessions = getSessionsStatus();
 	const currentId = options.sameSession ? await getCurrentSessionFn() : null;
+	const currentLive = currentId
+		? matchingLiveSession(currentId, sessions)
+		: undefined;
+	const targetCwd = options.selectedAgentPath || options.vaultPath;
+	// Same Session only applies when the selected Vault/project owns that live
+	// session. Switching the target while another chat runs starts a new chat.
+	if (
+		options.sameSession &&
+		currentId &&
+		currentLive &&
+		(currentLive.mode === "terminal" || currentLive.agent_cwd !== targetCwd)
+	) {
+		return uid();
+	}
 	const mostRecentId =
 		options.sameSession && !currentId
 			? (await getRecentSessionsFn())[0]?.id
@@ -208,7 +258,16 @@ export function useCockpitRun(options: CockpitRunOptions) {
 			commandAction,
 			attachments,
 		};
-		if (options.isRunning) enqueueRun(options, params);
+		if (
+			isCockpitQueueTarget({
+				sameSession: options.sameSession,
+				sessionId,
+				selectedAgentPath: options.selectedAgentPath,
+				vaultPath: options.vaultPath,
+				sessions: getSessionsStatus(),
+			})
+		)
+			enqueueRun(options, params);
 		else startRun(options, params);
 	};
 }

@@ -5,6 +5,7 @@ import {
 	type HlidConfig,
 } from "../config";
 import { setConfigCache } from "../server/config";
+import { bumpDataRevision } from "../server/dataRevision";
 import { syncWrappers } from "../server/wrappers";
 import { writeFileAtomicSync } from "./atomicFile";
 import { CONFIG_PATH } from "./paths";
@@ -253,5 +254,6 @@ export function writeConfig(config: HlidConfig): void {
 		mode: 0o600,
 	});
 	setConfigCache(config);
+	bumpDataRevision("config", "vault", "providers", "mcp");
 	syncWrappers(config.agents ?? []);
 }

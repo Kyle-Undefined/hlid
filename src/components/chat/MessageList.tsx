@@ -1,3 +1,4 @@
+import { memo } from "react";
 import type { QueuedChatMessage } from "#/hooks/wsChatQueueStore";
 import { ChatMessageRow } from "./ChatMessageRow";
 import type { ChatMessage } from "./chatReducer";
@@ -9,7 +10,7 @@ import { useMessageListView } from "./useMessageListView";
  * Renders the full message thread: history, permission cards, queued messages,
  * and the scroll-anchor sentinel. Extracted from ChatPage to keep JSX readable.
  */
-export function MessageList({
+export const MessageList = memo(function MessageList({
 	messages,
 	chatQueue,
 	sessionId,
@@ -117,4 +118,4 @@ export function MessageList({
 			<div ref={bottomRef} />
 		</>
 	);
-}
+});

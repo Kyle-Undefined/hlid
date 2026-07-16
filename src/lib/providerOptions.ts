@@ -4,6 +4,8 @@
  * catalog with provider-level fallback" logic so every picker (vault-level
  * ClaudeSection, per-agent AgentCard/AddAgentPanel) stays in sync.
  */
+
+import type { HlidConfig } from "../config";
 import type { ProviderInfo } from "./providerTypes";
 import type { AgentListItem } from "./serverFns/agents";
 
@@ -74,4 +76,11 @@ export function resolveActiveProviderId(
 	if (!agentSkillContext) return vaultProviderId;
 	const agent = agentList.find((a) => a.path === agentSkillContext);
 	return agent?.provider ?? vaultProviderId;
+}
+
+/** Model explicitly configured for the vault's provider (never live-session state). */
+export function configuredVaultModel(config: HlidConfig): string | null {
+	if (config.vault_provider === "codex") return config.codex?.model || null;
+	if (config.vault_provider === "claude") return config.claude?.model || null;
+	return null;
 }

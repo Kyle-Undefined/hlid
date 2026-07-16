@@ -12,6 +12,10 @@ import {
 	resetChatQueueForTesting,
 } from "./wsChatQueueStore";
 import {
+	replaceDataRevisions,
+	resetDataRevisionsForTesting,
+} from "./wsDataRevisionStore";
+import {
 	applyContextUpdate,
 	applyDone,
 	applyUsageUpdate,
@@ -359,6 +363,9 @@ function handleGlobalMessage(msg: ServerMessage): boolean {
 			_messageBuffer = [];
 			for (const subscriber of statusSubs) subscriber();
 			return true;
+		case "data_revisions":
+			replaceDataRevisions(msg.revisions);
+			return true;
 		default:
 			return false;
 	}
@@ -649,8 +656,26 @@ export function removeFromQueue(id: string): QueuedChatMessage | undefined {
  * and notifies status subscribers so the UI can re-render.
  */
 export function subscribeToSession(sessionId: string): void {
+	const sessionChanged = getSubscribedSessionId() !== sessionId;
 	switchStatsContext(sessionId);
 	focusSession(sessionId);
+	if (sessionChanged) {
+		// Session controls and run state are scoped to the focused chat. Do not
+		// display the previous chat's model/effort/permissions while waiting for
+		// the subscribed session's status response.
+		_snap = {
+			..._snap,
+			sessionState: "idle",
+			model: "",
+			actualModel: null,
+			permissionMode: null,
+			effort: null,
+			hasPendingPermissions: false,
+			runningTurnId: null,
+			sleepState: null,
+		};
+		_pendingPermCount = 0;
+	}
 	if (_ws?.readyState === WS_OPEN) {
 		try {
 			_ws.send(
@@ -676,6 +701,7 @@ export function __resetForTesting(): void {
 	resetChatQueueForTesting();
 	resetLiveStatsForTesting();
 	resetSessionStatusForTesting();
+	resetDataRevisionsForTesting();
 	statusSubs.clear();
 	messageSubs.clear();
 }

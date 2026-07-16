@@ -1,6 +1,7 @@
 import { basename } from "node:path";
 import { z } from "zod";
 import type { HlidConfig } from "../config";
+import { bumpDataRevision } from "./dataRevision";
 import { type CachedList, createCachedList } from "./providerCatalog";
 
 const ACP_REGISTRY_URL =
@@ -146,12 +147,17 @@ export class AcpRegistry {
 				throw new Error(`ACP registry returned ${response.status}`);
 			return response.json();
 		},
+		onChange?: () => void,
 	) {
 		this.cache = createCachedList({
 			persistKey: "acp_registry_catalog",
 			ttlMs: 6 * 3600_000,
 			fetcher: async () => RegistrySchema.parse(await fetcher()),
 			fallback: FALLBACK,
+			onChange: () => {
+				bumpDataRevision("providers");
+				onChange?.();
+			},
 			validate: (value): value is z.infer<typeof RegistrySchema> =>
 				RegistrySchema.safeParse(value).success,
 		});
@@ -161,7 +167,15 @@ export class AcpRegistry {
 		config: HlidConfig,
 		refresh = false,
 	): Promise<AcpCatalogItem[]> {
-		const { value } = await this.cache.get(refresh);
+		const { value } = refresh
+			? await this.cache.get(true)
+			: await this.cache.getCached();
+		if (!refresh) {
+			// Navigation should never wait on the remote registry. Refresh the
+			// server-owned snapshot once in the background; createCachedList keeps
+			// concurrent tabs and PWAs on the same single flight.
+			void this.cache.get().catch(() => {});
+		}
 		return value.agents
 			.map((agent) => {
 				const override = (config.acp_agents ?? []).find(

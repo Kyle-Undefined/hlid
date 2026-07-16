@@ -143,6 +143,12 @@ describe("UpdatesSection", () => {
 		expect(
 			screen.getByRole("link", { name: "View on GitHub" }).getAttribute("href"),
 		).toBe("https://github.com/Kyle-Undefined/hlid/releases/tag/v1.1.0");
+		expect(
+			screen.getByRole("link", { name: "View on GitHub" }).className,
+		).toContain("max-w-full");
+		expect(
+			screen.getByText("Forge release notes").closest("div")?.className,
+		).toContain("break-words");
 	});
 
 	it("shows installed provider CLI versions and update instructions", async () => {

@@ -6,6 +6,11 @@
 import { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "bun:test";
 import {
+	ANALYTICS_SCOPES,
+	getAnalyticsRevision,
+	resetAnalyticsRevisionForTest,
+} from "./analyticsRevision";
+import {
 	createAttachment,
 	deleteAttachment,
 	getAttachment,
@@ -92,6 +97,43 @@ function baseQuery(overrides: Partial<QueryData> = {}): QueryData {
 		...overrides,
 	};
 }
+
+describe("analytics revisions", () => {
+	beforeEach(() => {
+		freshDb();
+		resetAnalyticsRevisionForTest();
+	});
+
+	it("advances every aggregate scope after a query commits", async () => {
+		await createSession("revision-query", "Query", "sonnet");
+		resetAnalyticsRevisionForTest();
+
+		await recordQuery("revision-query", baseQuery());
+
+		for (const scope of ANALYTICS_SCOPES) {
+			expect(getAnalyticsRevision(scope)).toBeGreaterThan(0);
+		}
+	});
+
+	it("invalidates only activity aggregates for a tool event", async () => {
+		await createSession("revision-tool", "Tool", "sonnet");
+		resetAnalyticsRevisionForTest();
+
+		await appendToolEvent("revision-tool", 1, "tool-1", "Read", {});
+
+		expect(getAnalyticsRevision("activity")).toBeGreaterThan(0);
+		expect(getAnalyticsRevision("stats")).toBe(0);
+		expect(getAnalyticsRevision("providerUsage")).toBe(0);
+	});
+
+	it("invalidates provider snapshots for rate-limit settings only", async () => {
+		await saveSetting("theme", "dark");
+		expect(getAnalyticsRevision("providerUsage")).toBe(0);
+
+		await saveSetting("rl_claude_weekly", "{}");
+		expect(getAnalyticsRevision("providerUsage")).toBeGreaterThan(0);
+	});
+});
 
 // ── settings ──────────────────────────────────────────────────────────────────
 

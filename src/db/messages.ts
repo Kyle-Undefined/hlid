@@ -1,4 +1,5 @@
 import type { SubagentSnapshot } from "../server/agentProvider";
+import { markAnalyticsChanged } from "./analyticsRevision";
 import { getDb } from "./schema";
 import type { MessageRow, ToolEventRow } from "./types";
 
@@ -69,6 +70,7 @@ export async function appendToolEvent(
 			subagent ? JSON.stringify(subagent) : null,
 		],
 	);
+	markAnalyticsChanged(["activity"], "tool_event_recorded");
 }
 
 export async function setToolEventSubagent(
@@ -104,6 +106,7 @@ export async function setToolEventResult(
 			`setToolEventResult: no row found for session=${sessionId} tool_id=${toolId}`,
 		);
 	}
+	markAnalyticsChanged(["activity"], "tool_event_result");
 }
 
 export async function appendPlanProposal(

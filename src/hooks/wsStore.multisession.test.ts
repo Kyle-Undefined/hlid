@@ -9,11 +9,16 @@
  */
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as wsDataRevisionStore from "./wsDataRevisionStore";
 import * as wsSessionStatusStore from "./wsSessionStatusStore";
 import * as wsTransport from "./wsStore";
 import { type MockWs, makeMockWs, WS_STATES } from "./wsStore.test-utils";
 
-const wsStore = { ...wsTransport, ...wsSessionStatusStore };
+const wsStore = {
+	...wsTransport,
+	...wsSessionStatusStore,
+	...wsDataRevisionStore,
+};
 
 let currentWs: MockWs;
 
@@ -185,6 +190,34 @@ describe("getSessionsStatus", () => {
 	});
 });
 
+describe("server data revisions", () => {
+	it("reconciles the authoritative revision snapshot on connect or change", () => {
+		const notify = vi.fn();
+		wsStore.subscribeDataRevisionSnapshot(notify);
+
+		receive({
+			type: "data_revisions",
+			revisions: {
+				stats: 2,
+				sessions: 1,
+				relics: 3,
+				vault: 0,
+				providers: 1,
+				config: 0,
+				mcp: 0,
+				storage: 0,
+			},
+		});
+
+		expect(wsStore.getDataRevisionSnapshot()).toMatchObject({
+			stats: 2,
+			sessions: 1,
+			relics: 3,
+		});
+		expect(notify).toHaveBeenCalledOnce();
+	});
+});
+
 describe("pending interaction status", () => {
 	it("does not turn idle-green before a plan interaction resolves", () => {
 		receive({
@@ -244,6 +277,25 @@ describe("subscribeToSession / getSubscribedSessionId", () => {
 		wsStore.subscribeToSession("session-a");
 		wsStore.subscribeToSession("session-b");
 		expect(wsStore.getSubscribedSessionId()).toBe("session-b");
+	});
+
+	it("clears session-scoped controls while the next session status loads", () => {
+		wsStore.subscribeToSession("session-a");
+		receive({
+			type: "status",
+			state: "idle",
+			model: "gpt-5.4",
+			effort: "xhigh",
+			permission_mode: "bypassPermissions",
+		});
+
+		wsStore.subscribeToSession("session-b");
+
+		expect(wsStore.getSnapshot()).toMatchObject({
+			model: "",
+			effort: null,
+			permissionMode: null,
+		});
 	});
 
 	it("restores the focused session when a socket reconnects", () => {

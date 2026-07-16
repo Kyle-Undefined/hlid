@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SessionRow, ThirtyDayStats, WeeklyStats } from "#/db";
 import * as chatQueueStore from "#/hooks/wsChatQueueStore";
 import * as wsStore from "#/hooks/wsStore";
@@ -11,6 +11,8 @@ import {
 	useCockpitRun,
 } from "./useCockpitRun";
 
+const sessionStatusState = vi.hoisted(() => ({ sessions: [] as unknown[] }));
+
 vi.mock("#/lib/serverFns/sessions", () => ({
 	getCurrentSessionFn: vi.fn(),
 }));
@@ -21,6 +23,10 @@ vi.mock("#/lib/serverFns/stats", () => ({
 
 vi.mock("#/hooks/wsStore", () => ({
 	enqueueChat: vi.fn(),
+}));
+
+vi.mock("#/hooks/wsSessionStatusStore", () => ({
+	getSessionsStatus: () => sessionStatusState.sessions,
 }));
 
 vi.mock("#/hooks/wsChatQueueStore", () => ({
@@ -60,8 +66,8 @@ function runOptions(
 		attachSessionIdRef: { current: "attached-session" },
 		pendingAttachments: [],
 		clearPendingAttachments: vi.fn(),
-		isRunning: false,
 		selectedAgentPath: "/agent",
+		vaultPath: "/vault",
 		background: false,
 		model: "gpt-5.5",
 		send: vi.fn(),
@@ -129,6 +135,10 @@ describe("cockpit optimistic activity", () => {
 });
 
 describe("cockpit run controller", () => {
+	beforeEach(() => {
+		vi.clearAllMocks();
+		sessionStatusState.sessions = [];
+	});
 	it("surfaces session lookup failures without consuming composer state", async () => {
 		vi.mocked(getCurrentSessionFn).mockRejectedValueOnce(
 			new Error("session service unavailable"),
@@ -178,7 +188,15 @@ describe("cockpit run controller", () => {
 
 	it("queues into a running session without optimistic activity updates", async () => {
 		vi.mocked(getCurrentSessionFn).mockResolvedValueOnce("active-session");
-		const options = runOptions({ isRunning: true, background: true });
+		sessionStatusState.sessions = [
+			{
+				session_id: "pool-session",
+				db_session_id: "active-session",
+				agent_cwd: "/agent",
+				state: "running",
+			},
+		];
+		const options = runOptions({ background: true });
 
 		await useCockpitRun(options)();
 
@@ -191,5 +209,51 @@ describe("cockpit run controller", () => {
 		expect(options.send).not.toHaveBeenCalled();
 		expect(options.setRecentRuns).not.toHaveBeenCalled();
 		expect(options.navigateToRaven).not.toHaveBeenCalled();
+	});
+
+	it("starts a parallel chat while another session is running", async () => {
+		sessionStatusState.sessions = [
+			{
+				session_id: "pool-session",
+				db_session_id: "active-session",
+				agent_cwd: "/agent",
+				state: "running",
+			},
+		];
+		const options = runOptions({ sameSession: false, background: true });
+
+		await useCockpitRun(options)();
+
+		expect(options.send).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "chat",
+				session_id: expect.not.stringMatching(/^active-session$/),
+			}),
+		);
+		expect(wsStore.enqueueChat).not.toHaveBeenCalled();
+	});
+
+	it("starts a new chat when Same Session targets another project", async () => {
+		vi.mocked(getCurrentSessionFn).mockResolvedValueOnce("active-session");
+		sessionStatusState.sessions = [
+			{
+				session_id: "pool-session",
+				db_session_id: "active-session",
+				agent_cwd: "/other-project",
+				state: "running",
+			},
+		];
+		const options = runOptions({ background: true });
+
+		await useCockpitRun(options)();
+
+		expect(options.send).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "chat",
+				session_id: expect.not.stringMatching(/^active-session$/),
+				agent_cwd: "/agent",
+			}),
+		);
+		expect(wsStore.enqueueChat).not.toHaveBeenCalled();
 	});
 });

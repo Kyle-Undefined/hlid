@@ -20,7 +20,40 @@ export type QueuedChatMessage = {
 };
 
 let pendingPrompt: string | null = null;
-let chatQueue: QueuedChatMessage[] = [];
+const CHAT_QUEUE_STORAGE_KEY = "hlid:raven:chat-queue";
+
+function loadPersistedQueue(): QueuedChatMessage[] {
+	if (typeof localStorage === "undefined") return [];
+	try {
+		const parsed = JSON.parse(
+			localStorage.getItem(CHAT_QUEUE_STORAGE_KEY) ?? "[]",
+		) as unknown;
+		if (!Array.isArray(parsed)) return [];
+		return parsed.filter(
+			(item): item is QueuedChatMessage =>
+				typeof item === "object" &&
+				item !== null &&
+				typeof (item as QueuedChatMessage).id === "string" &&
+				typeof (item as QueuedChatMessage).text === "string" &&
+				typeof (item as QueuedChatMessage).session_id === "string",
+		);
+	} catch {
+		return [];
+	}
+}
+
+function persistQueue(): void {
+	if (typeof localStorage === "undefined") return;
+	try {
+		if (chatQueue.length > 0) {
+			localStorage.setItem(CHAT_QUEUE_STORAGE_KEY, JSON.stringify(chatQueue));
+		} else {
+			localStorage.removeItem(CHAT_QUEUE_STORAGE_KEY);
+		}
+	} catch {}
+}
+
+let chatQueue: QueuedChatMessage[] = loadPersistedQueue();
 const subscribers = new Set<() => void>();
 
 function notifySubscribers(): void {
@@ -30,13 +63,17 @@ function notifySubscribers(): void {
 export function enqueueLocalChat(msg: QueuedChatMessage): QueuedChatMessage {
 	const item = { ...msg };
 	chatQueue = [...chatQueue, item];
+	persistQueue();
 	notifySubscribers();
 	return item;
 }
 
 export function markQueuedChatSent(id: string): void {
 	const item = chatQueue.find((queued) => queued.id === id);
-	if (item) item._sent = true;
+	if (item) {
+		item._sent = true;
+		persistQueue();
+	}
 }
 
 export function findQueuedChat(id: string): QueuedChatMessage | undefined {
@@ -47,6 +84,7 @@ export function removeLocalChat(id: string): QueuedChatMessage | undefined {
 	const item = findQueuedChat(id);
 	if (!item) return undefined;
 	chatQueue = chatQueue.filter((queued) => queued.id !== id);
+	persistQueue();
 	notifySubscribers();
 	return item;
 }
@@ -60,7 +98,10 @@ export function reconcileLocalQueue(
 	chatQueue = chatQueue.filter(
 		(queued) => !queued._sent || known.has(queued.id),
 	);
-	if (chatQueue.length !== before) notifySubscribers();
+	if (chatQueue.length !== before) {
+		persistQueue();
+		notifySubscribers();
+	}
 }
 
 export function getQueue(): QueuedChatMessage[] {
@@ -75,6 +116,7 @@ export function subscribeQueue(fn: () => void): () => void {
 export function clearChatQueue(): void {
 	if (chatQueue.length === 0) return;
 	chatQueue = [];
+	persistQueue();
 	notifySubscribers();
 }
 
@@ -88,8 +130,9 @@ export function claimPendingPrompt(): string | null {
 	return prompt;
 }
 
-export function resetChatQueueForTesting(): void {
+export function resetChatQueueForTesting(reloadPersisted = false): void {
 	pendingPrompt = null;
-	chatQueue = [];
+	chatQueue = reloadPersisted ? loadPersistedQueue() : [];
+	if (!reloadPersisted) persistQueue();
 	subscribers.clear();
 }

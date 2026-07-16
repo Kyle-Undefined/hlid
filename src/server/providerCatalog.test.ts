@@ -20,7 +20,12 @@ vi.mock("../db", () => ({
 // ── import after mocks ────────────────────────────────────────────────────────
 
 import type { AgentProvider, ProviderModelInfo } from "./agentProvider";
-import { createCachedList, createModelCatalog } from "./providerCatalog";
+import {
+	createCachedList,
+	createModelCatalog,
+	loadProviderCatalog,
+	providerCatalogRequestOptions,
+} from "./providerCatalog";
 
 beforeEach(() => {
 	vi.clearAllMocks();
@@ -264,6 +269,24 @@ function makeProvider(
 }
 
 describe("createModelCatalog", () => {
+	it("notifies when live discovery refreshes the server snapshot", async () => {
+		const onChange = vi.fn();
+		const provider = makeProvider({
+			providerId: "notify",
+			listModels: vi.fn().mockResolvedValue([{ value: "new", label: "New" }]),
+		});
+		const catalog = createModelCatalog(
+			new Map([[provider.providerId, provider]]),
+			onChange,
+		);
+
+		await catalog.modelsFor(provider, true);
+		await catalog.modelsFor(provider, true);
+
+		expect(onChange).toHaveBeenCalledTimes(2);
+		expect(onChange).toHaveBeenCalledWith("notify");
+	});
+
 	it("modelsFor a provider without listModels returns static models", async () => {
 		const provider = makeProvider({ providerId: "static-only" });
 		const providers = new Map([["static-only", provider]]);
@@ -317,5 +340,87 @@ describe("createModelCatalog", () => {
 		const models = await catalog.modelsFor(provider);
 
 		expect(models).toEqual([{ value: "fallback-1", label: "Fallback" }]);
+	});
+});
+
+describe("loadProviderCatalog", () => {
+	it("uses cached models for navigation-sensitive loaders", async () => {
+		const provider = makeProvider({ providerId: "codex" });
+		const modelsFor = vi.fn(() => new Promise<ProviderModelInfo[]>(() => {}));
+		const cachedModelsFor = vi
+			.fn()
+			.mockResolvedValue([{ value: "cached", label: "Cached" }]);
+
+		const result = await loadProviderCatalog(
+			[provider],
+			{ modelsFor, cachedModelsFor },
+			{ preferCachedModels: true },
+		);
+
+		expect(result[0]?.models).toEqual([{ value: "cached", label: "Cached" }]);
+		expect(cachedModelsFor).toHaveBeenCalledOnce();
+		expect(modelsFor).not.toHaveBeenCalled();
+	});
+
+	it("does not run host capability probes for normal route loaders", async () => {
+		const hostCapabilities = vi.fn(
+			() => new Promise<Record<string, never>>(() => {}),
+		);
+		const provider = makeProvider({
+			providerId: "codex",
+			hostCapabilities,
+		});
+		const modelsFor = vi
+			.fn()
+			.mockResolvedValue([{ value: "m1", label: "Model 1" }]);
+
+		const result = await loadProviderCatalog([provider], { modelsFor });
+
+		expect(result[0]?.models).toEqual([{ value: "m1", label: "Model 1" }]);
+		expect(hostCapabilities).not.toHaveBeenCalled();
+	});
+
+	it("runs host capability probes only when explicitly requested", async () => {
+		const hostCapabilities = vi.fn().mockResolvedValue({
+			windowsComputerUse: { label: "Windows Computer Use", available: true },
+		});
+		const provider = makeProvider({
+			providerId: "codex",
+			hostCapabilities,
+		});
+		const modelsFor = vi.fn().mockResolvedValue([]);
+
+		const result = await loadProviderCatalog(
+			[provider],
+			{ modelsFor },
+			{ includeHostCapabilities: true },
+		);
+
+		expect(hostCapabilities).toHaveBeenCalledOnce();
+		expect(result[0]?.hostCapabilities).toEqual({
+			windowsComputerUse: { label: "Windows Computer Use", available: true },
+		});
+	});
+});
+
+describe("providerCatalogRequestOptions", () => {
+	it("serves normal UI reads from the server-owned cache", () => {
+		expect(providerCatalogRequestOptions(new URLSearchParams())).toEqual({
+			refresh: false,
+			preferCachedModels: true,
+			includeHostCapabilities: false,
+		});
+	});
+
+	it("uses live discovery only for an explicit refresh", () => {
+		expect(
+			providerCatalogRequestOptions(
+				new URLSearchParams("refresh=1&host_capabilities=1"),
+			),
+		).toEqual({
+			refresh: true,
+			preferCachedModels: false,
+			includeHostCapabilities: true,
+		});
 	});
 });

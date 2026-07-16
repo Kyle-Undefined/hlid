@@ -16,6 +16,7 @@ import {
 	type SetStateAction,
 	useCallback,
 	useEffect,
+	useLayoutEffect,
 	useReducer,
 	useRef,
 	useState,
@@ -216,8 +217,21 @@ export const Route = createFileRoute("/raven")({
 	},
 	loaderDeps: ({ search: { session, agent } }) => ({ session, agent }),
 	loader: ({ deps: { session, agent } }) => loadRavenRoute(session, agent),
-	component: ChatPage,
+	// Replace the previous transcript as soon as a session navigation starts.
+	// Otherwise its live stream remains visible (and scrollable) while the next
+	// session's loader resolves, making the app look stuck on the old reply.
+	pendingMs: 0,
+	component: RavenRoutePage,
 });
+
+function RavenRoutePage() {
+	const { existingSessionId, agentSkillContext } = Route.useLoaderData();
+	return (
+		<ChatPage
+			key={`${existingSessionId ?? "new"}:${agentSkillContext ?? "vault"}`}
+		/>
+	);
+}
 
 type RavenNavigate = ReturnType<typeof useNavigate>;
 type RavenAgentList = Awaited<ReturnType<typeof getAgentListFn>>;
@@ -408,6 +422,10 @@ function useRavenSessionIdentity({
 		sessionIdRef,
 		activateNewSession,
 		handleNewTerminalSession,
+		liveSessionStatus: sessionsStatus.find(
+			(status) =>
+				status.session_id === sessionId || status.db_session_id === sessionId,
+		),
 	};
 }
 
@@ -536,12 +554,14 @@ function useRavenChatRuntime({
 function useRavenViewport({
 	input,
 	messages,
+	sessionId,
 	activeSkill,
 	showModelPopup,
 	setShowModelPopup,
 }: {
 	input: string;
 	messages: unknown[];
+	sessionId: string;
 	activeSkill: unknown;
 	showModelPopup: boolean;
 	setShowModelPopup: Dispatch<SetStateAction<boolean>>;
@@ -553,6 +573,13 @@ function useRavenViewport({
 	const modelBadgeRef = useRef<HTMLDivElement>(null);
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const pendingSkillFocusRef = useRef(false);
+	const scrollSessionRef = useRef(sessionId);
+	const needsInitialBottomRef = useRef(true);
+	if (scrollSessionRef.current !== sessionId) {
+		scrollSessionRef.current = sessionId;
+		needsInitialBottomRef.current = true;
+		atBottomRef.current = true;
+	}
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: activeSkill triggers deferred focus
 	useEffect(() => {
@@ -572,9 +599,21 @@ function useRavenViewport({
 		return () => element.removeEventListener("scroll", onScroll);
 	}, []);
 
+	// Put restored/new chats at the bottom before their first paint. This avoids
+	// replaying a visible smooth scroll through the entire mounted transcript.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: messages is the DOM commit trigger
+	useLayoutEffect(() => {
+		if (!needsInitialBottomRef.current || messages.length === 0) return;
+		scrollChatToBottom(scrollRef.current, "auto");
+		needsInitialBottomRef.current = false;
+	}, [messages, sessionId]);
+
+	// Streaming should stay pinned when the reader is already at the bottom, but
+	// it must not enqueue overlapping smooth-scroll animations for every chunk.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: messages is the scroll trigger
 	useEffect(() => {
-		if (atBottomRef.current) scrollChatToBottom(scrollRef.current);
+		if (!needsInitialBottomRef.current && atBottomRef.current)
+			scrollChatToBottom(scrollRef.current, "auto");
 	}, [messages]);
 
 	const resizeTextarea = useCallback(() => {
@@ -837,6 +876,10 @@ function useRavenQueueActions(props: RavenActionProps) {
 	const { input, setInput, chatQueue } = props;
 	const { dispatch } = props.runtime;
 	const { pendingAttachments, setPendingAttachments } = props.upload;
+	const inputRef = useRef(input);
+	const pendingAttachmentsRef = useRef(pendingAttachments);
+	inputRef.current = input;
+	pendingAttachmentsRef.current = pendingAttachments;
 
 	const handleCancelQueued = useCallback(
 		(id: string) => {
@@ -848,20 +891,17 @@ function useRavenQueueActions(props: RavenActionProps) {
 			// DB) — confusing because they look "sent."
 			dispatch({ type: "REMOVE_USER", id });
 			// Restore to input only if the input box is empty
-			if (!input.trim() && pendingAttachments.length === 0) {
+			if (
+				!inputRef.current.trim() &&
+				pendingAttachmentsRef.current.length === 0
+			) {
 				setInput(item.text);
 				if (item.attachments && item.attachments.length > 0) {
 					setPendingAttachments(item.attachments);
 				}
 			}
 		},
-		[
-			input,
-			setInput,
-			pendingAttachments.length,
-			setPendingAttachments,
-			dispatch,
-		],
+		[setInput, setPendingAttachments, dispatch],
 	);
 
 	const handlePromoteQueued = useCallback(
@@ -1160,6 +1200,27 @@ export function ChatPage() {
 		initialSessionModel,
 		initialSessionProviderId,
 	]);
+	const liveSessionStatus = session.liveSessionStatus;
+	useEffect(() => {
+		if (!liveSessionStatus || liveSessionStatus.mode === "terminal") return;
+		setSessionSelection((current) => {
+			const next = {
+				...current,
+				...(liveSessionStatus.model ? { model: liveSessionStatus.model } : {}),
+				...(liveSessionStatus.effort
+					? { effort: liveSessionStatus.effort }
+					: {}),
+				...(liveSessionStatus.permission_mode
+					? { permissionMode: liveSessionStatus.permission_mode }
+					: {}),
+			};
+			return next.model === current.model &&
+				next.effort === current.effort &&
+				next.permissionMode === current.permissionMode
+				? current
+				: next;
+		});
+	}, [liveSessionStatus]);
 
 	const liveStats = useWsLiveStats();
 	const chatQueue = useWsChatQueue();
@@ -1207,6 +1268,7 @@ export function ChatPage() {
 	const viewport = useRavenViewport({
 		input,
 		messages,
+		sessionId,
 		activeSkill,
 		showModelPopup,
 		setShowModelPopup,

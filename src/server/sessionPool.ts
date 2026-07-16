@@ -140,7 +140,8 @@ export class SessionPool {
 	getSessionsStatus(): SessionStatusEntry[] {
 		const statuses: SessionStatusEntry[] = [];
 		for (const entry of this.entries.values()) {
-			const { state, model } = entry.manager.getStatus();
+			const { state, model, effort, permission_mode } =
+				entry.manager.getStatus();
 			const pendingPerms = entry.manager.getPendingPermissionRequests();
 			const pendingQuestions = entry.manager.getPendingAskUserQuestions();
 			const pendingPlans = entry.manager.getPendingPlanModeExits();
@@ -151,6 +152,8 @@ export class SessionPool {
 				agent_name: entry.agentName,
 				state,
 				model,
+				effort,
+				permission_mode,
 				hasPendingPermissions:
 					pendingPerms.length > 0 ||
 					pendingQuestions.length > 0 ||

@@ -27,7 +27,7 @@ import { RoutinesWindowSection } from "#/components/usage/UsageWindowSections";
 import { FirstRunWizard } from "#/components/wizard/FirstRunWizard";
 import { getConfig } from "#/config";
 import { useCockpitLiveData } from "#/hooks/useCockpitLiveData";
-import { useCockpitRun } from "#/hooks/useCockpitRun";
+import { isCockpitQueueTarget, useCockpitRun } from "#/hooks/useCockpitRun";
 import { useCommands } from "#/hooks/useCommands";
 import { useFileUpload } from "#/hooks/useFileUpload";
 import { useSlashPicker } from "#/hooks/useSlashPicker";
@@ -36,6 +36,7 @@ import { useWsLiveStats } from "#/hooks/useWsSelectors";
 import { type CommandDescriptor, skillCommand } from "#/lib/commands";
 import { insertAtSelection, resizeComposer } from "#/lib/composer";
 import { fmtModel } from "#/lib/formatters";
+import { configuredVaultModel } from "#/lib/providerOptions";
 import { getAgentListFn } from "#/lib/serverFns/agents";
 import { getCockpitData } from "#/lib/serverFns/cockpit";
 import { getMcpServersFn } from "#/lib/serverFns/mcp";
@@ -170,15 +171,17 @@ function useCockpitRunWiring({
 	upload,
 	commands,
 	navigate,
+	configuredModel,
+	vaultPath,
 }: {
 	composer: CockpitComposer;
 	live: CockpitLive;
 	upload: CockpitUpload;
 	commands: CommandDescriptor[];
 	navigate: CockpitNavigate;
+	configuredModel: string | null;
+	vaultPath: string;
 }) {
-	const isRunning =
-		live.wsStatus === "connected" && live.sessionState === "running";
 	return useCockpitRun({
 		prompt: composer.prompt,
 		activeSkill: composer.activeSkill,
@@ -188,10 +191,10 @@ function useCockpitRunWiring({
 		attachSessionIdRef: upload.uploadSessionIdRef,
 		pendingAttachments: upload.pendingAttachments,
 		clearPendingAttachments: upload.clearPending,
-		isRunning,
 		selectedAgentPath: composer.selectedAgentPath,
+		vaultPath,
 		background: composer.background,
-		model: live.model,
+		model: configuredModel,
 		send: live.send,
 		setRunError: live.setRunError,
 		setPrompt: composer.setPrompt,
@@ -308,7 +311,15 @@ function CockpitPromptWiring({
 		composer.activeSkill,
 	);
 	const isConnected = live.wsStatus === "connected";
-	const isRunning = isConnected && live.sessionState === "running";
+	const isRunning =
+		isConnected &&
+		isCockpitQueueTarget({
+			sameSession: composer.sameSession,
+			sessionId: live.liveActiveSession?.id,
+			selectedAgentPath: composer.selectedAgentPath,
+			vaultPath: config.vault.path,
+			sessions: live.sessionsStatus,
+		});
 	const canRun =
 		(!!composer.activeSkill || composer.prompt.trim().length > 0) &&
 		isConnected;
@@ -376,12 +387,19 @@ function CockpitPage() {
 		() => groupSkills(data.skills, data.sectionOrder),
 		[data.skills, data.sectionOrder],
 	);
+	const vaultModel = configuredVaultModel(config);
+	const configuredRunModel = composer.selectedAgentPath
+		? (agentList.find((agent) => agent.path === composer.selectedAgentPath)
+				?.model ?? vaultModel)
+		: vaultModel;
 	const handleRun = useCockpitRunWiring({
 		composer,
 		live,
 		upload,
 		commands,
 		navigate,
+		configuredModel: configuredRunModel,
+		vaultPath: config.vault.path,
 	});
 	const voice = useCockpitVoice(config, loader.voiceInfo, composer, handleRun);
 
@@ -389,7 +407,7 @@ function CockpitPage() {
 		return <FirstRunWizard onComplete={() => router.invalidate()} />;
 	}
 
-	const modelShort = live.model ? fmtModel(live.model) : null;
+	const modelShort = vaultModel ? fmtModel(vaultModel) : null;
 	const onRunClick = (id: string) =>
 		navigate({ to: "/raven", search: { session: id, agent: undefined } });
 

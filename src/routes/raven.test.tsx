@@ -18,6 +18,9 @@ const state = vi.hoisted(() => ({
 	enqueueChat: vi.fn(),
 	sessionState: "idle" as "idle" | "running" | "error",
 	actualModel: null as string | null,
+	model: "claude-sonnet-4-6",
+	effort: "high",
+	permissionMode: "default",
 	sessions: [] as unknown[],
 	onMessage: null as ((message: ServerMessage) => void) | null,
 	onAgentChange: null as ((value: string) => void) | null,
@@ -107,9 +110,10 @@ vi.mock("#/hooks/useWs", () => ({
 		return {
 			wsStatus: "connected",
 			sessionState: state.sessionState,
-			model: "claude-sonnet-4-6",
+			model: state.model,
 			actualModel: state.actualModel,
-			permissionMode: "default",
+			permissionMode: state.permissionMode,
+			effort: state.effort,
 			runningTurnId: state.sessionState === "running" ? "running" : null,
 			send: state.send,
 		};
@@ -180,6 +184,10 @@ beforeEach(() => {
 	localStorage.clear();
 	state.sessionState = "idle";
 	state.actualModel = null;
+	state.model = "claude-sonnet-4-6";
+	state.effort = "high";
+	state.permissionMode = "default";
+	state.sessions = [];
 	state.onMessage = null;
 	state.onAgentChange = null;
 	state.search = {};
@@ -507,6 +515,66 @@ describe("Raven composed submission behavior", () => {
 		expect(screen.queryByText("actual")).toBeNull();
 		expect(screen.getByText("configured")).toBeTruthy();
 		expect(screen.getByText("current")).toBeTruthy();
+	});
+
+	it("restores a live session's model, effort, and permission after refresh", () => {
+		state.model = "gpt-5.5";
+		state.effort = "xhigh";
+		state.permissionMode = "bypassPermissions";
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as object),
+				vault_provider: "codex",
+				codex: {
+					model: "gpt-5.4",
+					effort: "high",
+					permission_mode: "default",
+				},
+			},
+			existingSessionId: "db-session",
+			isExplicitSession: true,
+			sessionModel: "gpt-5.4",
+			sessionProviderId: "codex",
+			providers: [
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					models: [
+						{ value: "gpt-5.4", label: "GPT-5.4" },
+						{ value: "gpt-5.5", label: "GPT-5.5" },
+					],
+					effortLevels: [
+						{ value: "high", label: "High" },
+						{ value: "xhigh", label: "X-High" },
+					],
+					permissionModes: [
+						{ value: "default", label: "Ask" },
+						{ value: "bypassPermissions", label: "Auto-approve all" },
+					],
+				},
+			],
+		};
+		state.sessions = [
+			{
+				session_id: "pool-session",
+				db_session_id: "db-session",
+				mode: "sdk",
+				state: "idle",
+				model: "gpt-5.5",
+				effort: "xhigh",
+				permission_mode: "bypassPermissions",
+			},
+		];
+
+		render(<ChatPage />);
+
+		expect(
+			screen.getByRole("button", {
+				name: /codex.*gpt-5\.5.*xhigh.*auto/i,
+			}),
+		).toBeTruthy();
 	});
 
 	it("binds a database transcript to its matching live pool session", () => {
