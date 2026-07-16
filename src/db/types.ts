@@ -40,7 +40,7 @@ export type MessageRow = {
 	turn_id?: string | null;
 };
 
-export type ToolEventRow = {
+type ToolEventRow = {
 	id: number;
 	session_id: string;
 	assistant_seq: number;
@@ -51,6 +51,18 @@ export type ToolEventRow = {
 	is_error: number | null;
 	subagent_json?: string | null;
 };
+
+/** Lightweight transcript projection; result_text contains only a preview. */
+export type ToolEventSummaryRow = ToolEventRow & {
+	result_length: number | null;
+	result_truncated: number;
+};
+
+/** Full result returned only when a historical tool event is expanded. */
+export type ToolEventDetailRow = Pick<
+	ToolEventRow,
+	"tool_id" | "result_text" | "is_error"
+>;
 
 export type QueryData = {
 	cost: number;

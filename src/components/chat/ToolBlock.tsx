@@ -1,6 +1,10 @@
 import { AlertTriangle, Check, ChevronRight } from "lucide-react";
-import { useState } from "react";
+import { memo, useEffect, useState } from "react";
 import { PrivacyMask } from "#/components/PrivacyMask";
+import {
+	type HistoricalToolEventDetail,
+	loadToolEventDetail,
+} from "#/hooks/toolEventDetailStore";
 import type { ToolEventMessage } from "#/server/protocol";
 import { SubagentToolBlock } from "./SubagentToolBlock";
 import { ToolBlockExpandedPanel } from "./ToolBlockExpandedPanel";
@@ -64,7 +68,7 @@ export function looksLikeMarkdown(text: string): boolean {
 	return false;
 }
 
-export function ToolBlock({
+export const ToolBlock = memo(function ToolBlock({
 	event,
 	permissionLabel,
 }: {
@@ -72,21 +76,69 @@ export function ToolBlock({
 	permissionLabel?: string;
 }) {
 	const [open, setOpen] = useState(false);
+	const [detail, setDetail] = useState<HistoricalToolEventDetail | null>(null);
+	const [detailLoading, setDetailLoading] = useState(false);
+	const [detailError, setDetailError] = useState<string | null>(null);
+	const needsDetail =
+		event.resultTruncated === true && Boolean(event.detailSessionId);
+
+	useEffect(() => {
+		if (
+			!open ||
+			!needsDetail ||
+			!event.detailSessionId ||
+			detail ||
+			detailError
+		)
+			return;
+		let cancelled = false;
+		setDetailLoading(true);
+		setDetailError(null);
+		void loadToolEventDetail(event.detailSessionId, event.id)
+			.then((loaded) => {
+				if (!cancelled) setDetail(loaded);
+			})
+			.catch((error: unknown) => {
+				if (!cancelled) {
+					setDetailError(
+						error instanceof Error
+							? error.message
+							: "Unable to load tool result",
+					);
+				}
+			})
+			.finally(() => {
+				if (!cancelled) setDetailLoading(false);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [open, needsDetail, event.detailSessionId, event.id, detail, detailError]);
+
 	if (event.subagent) {
 		return <SubagentToolBlock subagent={event.subagent} />;
 	}
 	const inputEntries = Object.entries(event.input ?? {});
 	const pills = inputEntries.slice(0, 3);
 	const isReasoning = event.name === "Reasoning";
-	const hasResult = typeof event.result === "string";
-	const resultText = event.result ?? "";
-	const strippedResult = stripReadLineNumbers(resultText);
+	const hydratedDetail = needsDetail ? detail : null;
+	const isError = hydratedDetail?.isError ?? event.isError;
+	const hasResult =
+		typeof event.result === "string" ||
+		(hydratedDetail?.result !== undefined && hydratedDetail.result !== null) ||
+		(event.resultLength !== undefined && event.resultLength !== null);
+	const resultText = hydratedDetail?.result ?? event.result ?? "";
+	const canProcessResult = open && (!needsDetail || detail !== null);
+	const strippedResult = canProcessResult
+		? stripReadLineNumbers(resultText)
+		: "";
 	const renderResultAsMarkdown =
+		canProcessResult &&
 		hasResult &&
-		!event.isError &&
+		!isError &&
 		(isReasoning || looksLikeMarkdown(strippedResult));
 	const resultPreview = hasResult
-		? firstLine(resultText).slice(0, RESULT_PREVIEW_CHARS)
+		? firstLine(event.result ?? resultText).slice(0, RESULT_PREVIEW_CHARS)
 		: null;
 
 	return (
@@ -126,10 +178,10 @@ export function ToolBlock({
 			{!open && hasResult && (
 				<div
 					className={`flex items-center gap-1.5 pl-8 pr-3 pb-1 text-[10px] font-mono leading-tight ${
-						event.isError ? "text-destructive/70" : "text-muted-foreground/55"
+						isError ? "text-destructive/70" : "text-muted-foreground/55"
 					}`}
 				>
-					{event.isError && (
+					{isError && (
 						<AlertTriangle
 							className="w-2.5 h-2.5 shrink-0 text-destructive/70"
 							aria-label="Error"
@@ -139,18 +191,36 @@ export function ToolBlock({
 						<PrivacyMask inline>
 							{resultPreview && resultPreview.length > 0
 								? resultPreview
-								: event.isError
+								: isError
 									? "(error)"
 									: "(empty)"}
 						</PrivacyMask>
 					</span>
 				</div>
 			)}
-			{open && (
+			{open && needsDetail && !detail && (
+				<div className="mx-3 mb-1.5 min-w-0 max-w-[calc(100%_-_1.5rem)] border border-[var(--tool-panel-border)] bg-[var(--tool-panel)] px-3 py-2 text-[11px] text-muted-foreground/70">
+					{detailError ? (
+						<div className="flex items-center justify-between gap-3">
+							<span>{detailError}</span>
+							<button
+								type="button"
+								onClick={() => setDetailError(null)}
+								className="shrink-0 text-primary/75 hover:text-primary underline underline-offset-2"
+							>
+								Retry
+							</button>
+						</div>
+					) : (
+						<span>{detailLoading ? "Loading full result…" : "Loading…"}</span>
+					)}
+				</div>
+			)}
+			{open && (!needsDetail || detail) && (
 				<ToolBlockExpandedPanel
 					inputEntries={inputEntries}
 					hasResult={hasResult}
-					isError={event.isError}
+					isError={isError}
 					isReasoning={isReasoning}
 					renderResultAsMarkdown={renderResultAsMarkdown}
 					strippedResult={strippedResult}
@@ -158,4 +228,4 @@ export function ToolBlock({
 			)}
 		</div>
 	);
-}
+});

@@ -1,8 +1,23 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+} from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as privacyStore from "#/hooks/privacyStore";
 import type { ToolEventMessage } from "#/server/protocol";
+
+const { mockLoadToolEventDetail } = vi.hoisted(() => ({
+	mockLoadToolEventDetail: vi.fn(),
+}));
+
+vi.mock("#/hooks/toolEventDetailStore", () => ({
+	loadToolEventDetail: mockLoadToolEventDetail,
+}));
+
 import {
 	looksLikeMarkdown,
 	stripReadLineNumbers,
@@ -12,6 +27,7 @@ import {
 afterEach(cleanup);
 beforeEach(() => {
 	privacyStore.__resetForTesting();
+	mockLoadToolEventDetail.mockReset();
 });
 
 function makeEvent(overrides?: Partial<ToolEventMessage>): ToolEventMessage {
@@ -108,6 +124,75 @@ describe("ToolBlock — expanded", () => {
 			screen.getByText("Checking the repo layout before editing."),
 		).not.toBeNull();
 		expect(document.querySelector("pre")).toBeNull();
+	});
+
+	it("keeps oversized results complete without building a wrapped or markdown DOM", () => {
+		const result = `# Large result\n${"x".repeat(25_000)}`;
+		render(<ToolBlock event={makeEvent({ result })} />);
+		fireEvent.click(screen.getByRole("button", { expanded: false }));
+		const viewer = screen.getByLabelText("Full tool result");
+		expect(viewer).toBeInstanceOf(HTMLTextAreaElement);
+		expect((viewer as HTMLTextAreaElement).value).toBe(result);
+		expect(viewer.getAttribute("wrap")).toBe("off");
+		expect(screen.queryByRole("heading", { name: "Large result" })).toBeNull();
+	});
+
+	it("uses the native scroll viewer for oversized tool inputs", () => {
+		const command = "x".repeat(25_000);
+		render(<ToolBlock event={makeEvent({ input: { command } })} />);
+		fireEvent.click(screen.getByRole("button", { expanded: false }));
+		const viewer = screen.getByLabelText("command tool input");
+		expect(viewer).toBeInstanceOf(HTMLTextAreaElement);
+		expect((viewer as HTMLTextAreaElement).value).toBe(command);
+	});
+
+	it("hydrates a truncated historical result only when expanded", async () => {
+		mockLoadToolEventDetail.mockResolvedValue({
+			result: "complete result\nwith every line",
+			isError: false,
+		});
+		render(
+			<ToolBlock
+				event={makeEvent({
+					result: "complete result\nwith",
+					resultLength: 31,
+					resultTruncated: true,
+					detailSessionId: "session-1",
+				})}
+			/>,
+		);
+		expect(mockLoadToolEventDetail).not.toHaveBeenCalled();
+		fireEvent.click(screen.getByRole("button", { expanded: false }));
+		expect(screen.getByText("Loading full result…")).not.toBeNull();
+		await waitFor(() => {
+			expect(document.querySelector("pre")?.textContent).toBe(
+				"complete result\nwith every line",
+			);
+		});
+		expect(mockLoadToolEventDetail).toHaveBeenCalledWith("session-1", "te1");
+	});
+
+	it("offers a retry when historical detail hydration fails", async () => {
+		mockLoadToolEventDetail
+			.mockRejectedValueOnce(new Error("offline"))
+			.mockResolvedValueOnce({ result: "recovered" });
+		render(
+			<ToolBlock
+				event={makeEvent({
+					result: "preview",
+					resultLength: 500,
+					resultTruncated: true,
+					detailSessionId: "session-1",
+				})}
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { expanded: false }));
+		await screen.findByText("offline");
+		fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+		await waitFor(() => {
+			expect(document.querySelector("pre")?.textContent).toBe("recovered");
+		});
+		expect(mockLoadToolEventDetail).toHaveBeenCalledTimes(2);
 	});
 });
 

@@ -19,6 +19,11 @@ export const sessionIdSchema = z
 	.min(1, "session id is required")
 	.max(512, "session id is too long");
 
+export const sessionToolEventSchema = z.object({
+	sessionId: sessionIdSchema,
+	toolId: z.string().trim().min(1, "tool id is required").max(512),
+});
+
 export const sessionPageSchema = z.object({
 	page: z.number().int().min(1).max(1_000_000),
 	size: z.union([z.literal(10), z.literal(20), z.literal(50), z.literal(100)]),

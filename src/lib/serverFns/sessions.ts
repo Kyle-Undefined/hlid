@@ -6,10 +6,15 @@ import type {
 	MessageRow,
 	PermissionEventRow,
 	SessionRow,
-	ToolEventRow,
+	ToolEventDetailRow,
+	ToolEventSummaryRow,
 } from "#/db";
 import { dbJson } from "#/lib/dbClient";
-import { sessionIdSchema, terminalSessionSchema } from "#/lib/serverFnSchemas";
+import {
+	sessionIdSchema,
+	sessionToolEventSchema,
+	terminalSessionSchema,
+} from "#/lib/serverFnSchemas";
 import type { SessionStatusEntry } from "#/server/protocol";
 
 /** Returns the session_id of the currently active/last session, or null. */
@@ -37,7 +42,7 @@ export const getLiveSessionsFn = createServerFn({ method: "GET" }).handler(() =>
 );
 
 type EnrichedMessageRow = MessageRow & {
-	toolEvents?: ToolEventRow[];
+	toolEvents?: ToolEventSummaryRow[];
 	attachments?: AttachmentRow[];
 };
 
@@ -113,6 +118,20 @@ export const getSessionDataFn = createServerFn({ method: "GET" })
 			}
 		}
 		return dbJson<EnrichedMessageRow[]>(`/db/session-messages?${params}`, []);
+	});
+
+/** Hydrates a complete historical tool result only when its block is opened. */
+export const getSessionToolEventDetailFn = createServerFn({ method: "GET" })
+	.validator((raw) => sessionToolEventSchema.parse(raw))
+	.handler(({ data }) => {
+		const params = new URLSearchParams({
+			session_id: data.sessionId,
+			tool_id: data.toolId,
+		});
+		return dbJson<ToolEventDetailRow | null>(
+			`/db/session-tool-event?${params}`,
+			null,
+		);
 	});
 
 /** Returns all persisted Raven controls in one session-scoped read. */

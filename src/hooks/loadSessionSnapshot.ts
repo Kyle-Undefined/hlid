@@ -63,6 +63,15 @@ function mapSessionRows(
 				}
 			})(),
 			...(te.result_text != null ? { result: te.result_text } : {}),
+			...(te.result_truncated === 1
+				? {
+						resultTruncated: true,
+						...(te.result_length != null
+							? { resultLength: te.result_length }
+							: {}),
+						detailSessionId: r.session_id,
+					}
+				: {}),
 			...(te.is_error != null ? { isError: te.is_error === 1 } : {}),
 			...(te.subagent_json
 				? {

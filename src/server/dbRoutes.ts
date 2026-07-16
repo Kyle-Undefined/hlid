@@ -52,6 +52,7 @@ const DB_GET_HANDLERS: Record<string, DbGetHandler> = {
 	"/db/sessions/export": async () => Response.json(await db.getAllSessions()),
 	"/db/recent-sessions": ({ url }) => getRecentSessions(url),
 	"/db/session-messages": ({ url }) => getSessionMessages(url),
+	"/db/session-tool-event": ({ url }) => getSessionToolEvent(url),
 	"/db/stats": () => getStats(),
 	"/db/activity": () => getActivity(),
 	"/db/current-session": async () =>
@@ -176,7 +177,7 @@ async function getSessionMessages(url: URL): Promise<Response> {
 	const maxSeq = pageMessages.at(-1)?.seq ?? minSeq;
 	const [messages, toolEvents, attachments] = await Promise.all([
 		Promise.resolve(pageMessages),
-		db.getSessionToolEvents(sessionId, minSeq, undefined, maxSeq),
+		db.getSessionToolEventSummaries(sessionId, minSeq, undefined, maxSeq),
 		db.getAttachmentsForSession(sessionId, minSeq, undefined, maxSeq),
 	]);
 	const toolsBySeq = new Map<number, (typeof toolEvents)[number][]>();
@@ -200,6 +201,15 @@ async function getSessionMessages(url: URL): Promise<Response> {
 		attachments: m.role === "user" ? (attachBySeq.get(m.seq) ?? []) : undefined,
 	}));
 	return Response.json(enriched);
+}
+
+async function getSessionToolEvent(url: URL): Promise<Response> {
+	const sessionId = url.searchParams.get("session_id")?.trim();
+	const toolId = url.searchParams.get("tool_id")?.trim();
+	if (!sessionId) return new Response("Missing session_id", { status: 400 });
+	if (!toolId) return new Response("Missing tool_id", { status: 400 });
+	const detail = await db.getSessionToolEventDetail(sessionId, toolId);
+	return detail ? Response.json(detail) : Response.json(null, { status: 404 });
 }
 
 async function getStats(): Promise<Response> {

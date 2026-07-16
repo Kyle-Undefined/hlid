@@ -6,6 +6,7 @@ import {
 	sessionDeleteSchema,
 	sessionPageSchema,
 	sessionRenameSchema,
+	sessionToolEventSchema,
 	terminalSessionSchema,
 } from "./serverFnSchemas";
 
@@ -59,6 +60,19 @@ describe("server function boundary schemas", () => {
 		expect(sessionDeleteSchema.safeParse({ id: " " }).success).toBe(false);
 		expect(
 			sessionRenameSchema.safeParse({ id: "s1", label: "x".repeat(201) })
+				.success,
+		).toBe(false);
+	});
+
+	it("validates session-scoped tool detail reads", () => {
+		expect(
+			sessionToolEventSchema.parse({
+				sessionId: " session-1 ",
+				toolId: " tool-1 ",
+			}),
+		).toEqual({ sessionId: "session-1", toolId: "tool-1" });
+		expect(
+			sessionToolEventSchema.safeParse({ sessionId: "s1", toolId: " " })
 				.success,
 		).toBe(false);
 	});

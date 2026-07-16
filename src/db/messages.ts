@@ -1,7 +1,13 @@
 import type { SubagentSnapshot } from "../server/agentProvider";
 import { markAnalyticsChanged } from "./analyticsRevision";
 import { getDb } from "./schema";
-import type { MessageRow, ToolEventRow } from "./types";
+import type {
+	MessageRow,
+	ToolEventDetailRow,
+	ToolEventSummaryRow,
+} from "./types";
+
+export const TOOL_RESULT_PREVIEW_CHARS = 256;
 
 export async function appendMessage(
 	sessionId: string,
@@ -378,15 +384,23 @@ export async function getSessionNextMessageSeq(
 	return row?.next_seq ?? 0;
 }
 
-export async function getSessionToolEvents(
+/**
+ * Transcript-friendly tool rows. Tool results dominate large session payloads,
+ * so history carries a short preview and hydrates the full result on demand.
+ */
+export async function getSessionToolEventSummaries(
 	sessionId: string,
 	minAssistantSeq?: number,
 	beforeAssistantSeq?: number,
 	maxAssistantSeq?: number,
-): Promise<ToolEventRow[]> {
-	return getSessionSequenceRows<ToolEventRow>({
+): Promise<ToolEventSummaryRow[]> {
+	return getSessionSequenceRows<ToolEventSummaryRow>({
 		sessionId,
-		select: "*",
+		select: `id, session_id, assistant_seq, tool_id, name, input_json,
+			CASE WHEN result_text IS NULL THEN NULL ELSE substr(result_text, 1, ${TOOL_RESULT_PREVIEW_CHARS}) END AS result_text,
+			length(result_text) AS result_length,
+			CASE WHEN length(COALESCE(result_text, '')) > ${TOOL_RESULT_PREVIEW_CHARS} THEN 1 ELSE 0 END AS result_truncated,
+			is_error, subagent_json`,
 		table: "tool_events",
 		sequenceColumn: "assistant_seq",
 		minSequence: minAssistantSeq,
@@ -394,4 +408,23 @@ export async function getSessionToolEvents(
 		maxSequence: maxAssistantSeq,
 		unboundedOrderBy: "id ASC",
 	});
+}
+
+/** Full result for one session-scoped historical tool event. */
+export async function getSessionToolEventDetail(
+	sessionId: string,
+	toolId: string,
+): Promise<ToolEventDetailRow | null> {
+	const db = await getDb();
+	return (
+		db
+			.query<ToolEventDetailRow, [string, string]>(
+				`SELECT tool_id, result_text, is_error
+				 FROM tool_events
+				 WHERE session_id = ? AND tool_id = ?
+				 ORDER BY id DESC
+				 LIMIT 1`,
+			)
+			.get(sessionId, toolId) ?? null
+	);
 }

@@ -946,6 +946,42 @@ describe("raven route loader", () => {
 		expect(getLiveSessionsFn).not.toHaveBeenCalled();
 	});
 
+	it("does not let a stalled provider catalog hold Raven navigation pending", async () => {
+		vi.useFakeTimers();
+		try {
+			vi.mocked(getProvidersFn).mockImplementation(() => new Promise(() => {}));
+			const pending = route.loader({ deps: { session: "s1" } });
+			await vi.advanceTimersByTimeAsync(501);
+			const data = await pending;
+			expect(data.existingSessionId).toBe("s1");
+			expect(data.providers).toEqual([]);
+			expect(getProvidersFn).toHaveBeenCalledWith({
+				data: { preferCachedModels: true },
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not let stalled provider usage hold Raven navigation pending", async () => {
+		vi.useFakeTimers();
+		try {
+			vi.mocked(getProvidersFn).mockResolvedValue([
+				{ id: "codex", label: "Codex", available: true },
+			] as never);
+			vi.mocked(loadProviderUsages).mockImplementation(
+				() => new Promise(() => {}),
+			);
+			const pending = route.loader({ deps: { session: "s1" } });
+			await vi.advanceTimersByTimeAsync(501);
+			const data = await pending;
+			expect(data.existingSessionId).toBe("s1");
+			expect(data.providerUsages).toEqual([]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("falls back to the newest live SDK session", async () => {
 		vi.mocked(getLiveSessionsFn).mockResolvedValue([
 			{ mode: "chat", db_session_id: "old-sdk" },

@@ -169,6 +169,8 @@ describe("useLoadChatHistory — initial load", () => {
 						name: "spawn_agent",
 						input_json: JSON.stringify({ prompt: "Inspect auth" }),
 						result_text: null,
+						result_length: null,
+						result_truncated: 0,
 						is_error: null,
 						subagent_json: JSON.stringify({
 							provider: "codex",
@@ -201,6 +203,53 @@ describe("useLoadChatHistory — initial load", () => {
 			agentId: "child-1",
 			status: "running",
 			currentStep: "Reading files",
+		});
+	});
+
+	it("maps historical result previews to lazy session-scoped tool events", async () => {
+		const row = makeRow("assistant", "", 1000);
+		vi.mocked(getSessionDataFn).mockResolvedValue([
+			{
+				...row,
+				toolEvents: [
+					{
+						id: 1,
+						session_id: "sess-1",
+						assistant_seq: row.seq,
+						tool_id: "tool-1",
+						name: "Read",
+						input_json: JSON.stringify({ path: "README.md" }),
+						result_text: "preview",
+						result_length: 10_000,
+						result_truncated: 1,
+						is_error: 0,
+						subagent_json: null,
+					},
+				],
+			},
+		]);
+		const dispatch = vi.fn();
+		renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef: { current: null },
+			historyReadyRef: { current: false },
+			handleWsMessage: noopWsHandler,
+			wsStatus: "connected",
+			sessionIdRef: { current: "sess-1" },
+		});
+		await act(async () => {});
+
+		const load = dispatch.mock.calls.find(
+			([action]) => action.type === "LOAD_HISTORY",
+		)?.[0];
+		expect(load.items[0].toolEvents[0]).toMatchObject({
+			id: "tool-1",
+			result: "preview",
+			resultLength: 10_000,
+			resultTruncated: true,
+			detailSessionId: "sess-1",
 		});
 	});
 
@@ -816,6 +865,8 @@ function makeAssistantRowWithTools(
 			name: "Read",
 			input_json: "{}",
 			result_text: null,
+			result_length: null,
+			result_truncated: 0,
 			is_error: null,
 		})),
 		attachments: [],

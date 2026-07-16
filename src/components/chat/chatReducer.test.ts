@@ -252,6 +252,36 @@ describe("ADD_TOOL_RESULT", () => {
 		}
 	});
 
+	it("replaces lazy history metadata when the live full result arrives", () => {
+		let state = reducer(withAssistant("a1"), {
+			type: "ADD_TOOL_EVENT",
+			id: "a1",
+			event: {
+				type: "tool_event",
+				id: "te1",
+				name: "Read",
+				input: {},
+				result: "preview",
+				resultTruncated: true,
+				resultLength: 10_000,
+				detailSessionId: "session-1",
+			},
+		});
+		state = reducer(state, {
+			type: "ADD_TOOL_RESULT",
+			toolUseId: "te1",
+			content: "complete live result",
+		});
+		const msg = state[0];
+		if (msg.role === "assistant") {
+			expect(msg.toolEvents[0]).toMatchObject({
+				result: "complete live result",
+			});
+			expect(msg.toolEvents[0].resultTruncated).toBeUndefined();
+			expect(msg.toolEvents[0].detailSessionId).toBeUndefined();
+		}
+	});
+
 	it("locates tool event across multiple assistant messages", () => {
 		let state = [...withAssistant("a1"), ...withAssistant("a2")];
 		state = reducer(state, {

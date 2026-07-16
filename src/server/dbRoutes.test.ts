@@ -14,7 +14,8 @@ const {
 	mockListAttachments,
 	mockRenameSession,
 	mockGetSessionMessages,
-	mockGetSessionToolEvents,
+	mockGetSessionToolEventSummaries,
+	mockGetSessionToolEventDetail,
 	mockGetAttachmentsForSession,
 	mockGetProviderUsage,
 	mockGetLogs,
@@ -26,7 +27,8 @@ const {
 	mockListAttachments: vi.fn(),
 	mockRenameSession: vi.fn(),
 	mockGetSessionMessages: vi.fn(),
-	mockGetSessionToolEvents: vi.fn(),
+	mockGetSessionToolEventSummaries: vi.fn(),
+	mockGetSessionToolEventDetail: vi.fn(),
 	mockGetAttachmentsForSession: vi.fn(),
 	mockGetProviderUsage: vi.fn(),
 	mockGetLogs: vi.fn(),
@@ -40,7 +42,8 @@ vi.mock("../db", () => ({
 	listAttachments: mockListAttachments,
 	renameSession: mockRenameSession,
 	getSessionMessages: mockGetSessionMessages,
-	getSessionToolEvents: mockGetSessionToolEvents,
+	getSessionToolEventSummaries: mockGetSessionToolEventSummaries,
+	getSessionToolEventDetail: mockGetSessionToolEventDetail,
 	getAttachmentsForSession: mockGetAttachmentsForSession,
 	getProviderUsage: mockGetProviderUsage,
 	getLogs: mockGetLogs,
@@ -640,7 +643,7 @@ describe("handleDbRoute — GET /db/session-messages", () => {
 			{ seq: 1, role: "user", text: "hi" },
 			{ seq: 2, role: "assistant", text: "yo" },
 		]);
-		mockGetSessionToolEvents.mockResolvedValue([
+		mockGetSessionToolEventSummaries.mockResolvedValue([
 			{ assistant_seq: 2, tool: "Bash" },
 			{ assistant_seq: 2, tool: "Read" },
 			{ assistant_seq: null, tool: "orphan" },
@@ -671,7 +674,7 @@ describe("handleDbRoute — GET /db/session-messages", () => {
 			// A compound cursor may include lower-id rows at before_seq itself.
 			{ id: 49, seq: 50, role: "assistant", text: "newer" },
 		]);
-		mockGetSessionToolEvents.mockResolvedValue([]);
+		mockGetSessionToolEventSummaries.mockResolvedValue([]);
 		mockGetAttachmentsForSession.mockResolvedValue([]);
 
 		const res = await handleDbRoute(
@@ -693,7 +696,7 @@ describe("handleDbRoute — GET /db/session-messages", () => {
 			500,
 			undefined,
 		);
-		expect(mockGetSessionToolEvents).toHaveBeenCalledWith(
+		expect(mockGetSessionToolEventSummaries).toHaveBeenCalledWith(
 			"s1",
 			10,
 			undefined,
@@ -705,6 +708,58 @@ describe("handleDbRoute — GET /db/session-messages", () => {
 			undefined,
 			50,
 		);
+	});
+});
+
+// ── GET /db/session-tool-event ────────────────────────────────────────────────
+
+describe("handleDbRoute — GET /db/session-tool-event", () => {
+	it("requires both session and tool ids", async () => {
+		const missingSession = await handleDbRoute(
+			makeUrl("/db/session-tool-event", { tool_id: "tool-1" }),
+			makeRequest(),
+		);
+		const missingTool = await handleDbRoute(
+			makeUrl("/db/session-tool-event", { session_id: "s1" }),
+			makeRequest(),
+		);
+		expect(missingSession?.status).toBe(400);
+		expect(missingTool?.status).toBe(400);
+	});
+
+	it("returns a complete session-scoped result", async () => {
+		mockGetSessionToolEventDetail.mockResolvedValue({
+			tool_id: "tool-1",
+			result_text: "complete result",
+			is_error: 0,
+		});
+		const res = await handleDbRoute(
+			makeUrl("/db/session-tool-event", {
+				session_id: "s1",
+				tool_id: "tool-1",
+			}),
+			makeRequest(),
+		);
+		expect(res?.status).toBe(200);
+		expect(await res?.json()).toEqual({
+			tool_id: "tool-1",
+			result_text: "complete result",
+			is_error: 0,
+		});
+		expect(mockGetSessionToolEventDetail).toHaveBeenCalledWith("s1", "tool-1");
+	});
+
+	it("returns 404 when the scoped tool event does not exist", async () => {
+		mockGetSessionToolEventDetail.mockResolvedValue(null);
+		const res = await handleDbRoute(
+			makeUrl("/db/session-tool-event", {
+				session_id: "s1",
+				tool_id: "missing",
+			}),
+			makeRequest(),
+		);
+		expect(res?.status).toBe(404);
+		expect(await res?.json()).toBeNull();
 	});
 });
 

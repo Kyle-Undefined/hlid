@@ -470,6 +470,9 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 			return patchToolEvent(state, action.toolUseId, (te) => ({
 				...te,
 				result: action.content,
+				resultTruncated: undefined,
+				resultLength: undefined,
+				detailSessionId: undefined,
 				...(action.isError !== undefined ? { isError: action.isError } : {}),
 			}));
 		case "SETTLE_ACTIVE_SUBAGENTS":

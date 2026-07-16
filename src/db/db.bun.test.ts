@@ -28,9 +28,11 @@ import {
 	getSessionMessages,
 	getSessionNextMessageSeq,
 	getSessionPlanProposals,
-	getSessionToolEvents,
+	getSessionToolEventDetail,
+	getSessionToolEventSummaries,
 	setAskUserQuestionResolution,
 	setMessageRecap,
+	setToolEventResult,
 	setToolEventSubagent,
 } from "./messages";
 import {
@@ -682,7 +684,7 @@ describe("tool events", () => {
 		await createSession("s1", "L", "m");
 		await appendMessage("s1", 0, "assistant", "used tool");
 		await appendToolEvent("s1", 0, "tid-1", "Bash", { command: "ls" });
-		const events = await getSessionToolEvents("s1");
+		const events = await getSessionToolEventSummaries("s1");
 		expect(events).toHaveLength(1);
 		expect(events[0].name).toBe("Bash");
 		expect(events[0].tool_id).toBe("tid-1");
@@ -730,7 +732,9 @@ describe("tool events", () => {
 		}
 
 		expect(
-			(await getSessionToolEvents("s1", 15, 25)).map((row) => row.tool_id),
+			(await getSessionToolEventSummaries("s1", 15, 25)).map(
+				(row) => row.tool_id,
+			),
 		).toEqual(["tool-new"]);
 		expect(
 			(await getSessionPermissionEvents("s1", 15, 25)).map(
@@ -754,7 +758,7 @@ describe("tool events", () => {
 		// Compound message cursors can include a lower-id row whose seq equals the
 		// cursor sequence, so the derived page maximum is inclusive.
 		expect(
-			(await getSessionToolEvents("s1", 15, undefined, 20)).map(
+			(await getSessionToolEventSummaries("s1", 15, undefined, 20)).map(
 				(row) => row.tool_id,
 			),
 		).toEqual(["tool-new"]);
@@ -786,10 +790,40 @@ describe("tool events", () => {
 		await appendToolEvent("s1", 0, "tid-1", "Read", {
 			file_path: "/etc/hosts",
 		});
-		const events = await getSessionToolEvents("s1");
+		const events = await getSessionToolEventSummaries("s1");
 		expect(events[0].input_json).toBe(
 			JSON.stringify({ file_path: "/etc/hosts" }),
 		);
+	});
+
+	it("summarizes large results and hydrates full detail within the session", async () => {
+		await createSession("s1", "One", "m");
+		await createSession("s2", "Two", "m");
+		await appendMessage("s1", 0, "assistant", "x");
+		await appendMessage("s2", 0, "assistant", "x");
+		await appendToolEvent("s1", 0, "shared-tool", "Read", { path: "a" });
+		await appendToolEvent("s2", 0, "shared-tool", "Read", { path: "b" });
+		const longResult = "x".repeat(400);
+		await setToolEventResult("s1", "shared-tool", longResult, false);
+		await setToolEventResult("s2", "shared-tool", "other session", true);
+
+		const [summary] = await getSessionToolEventSummaries("s1");
+		expect(summary.result_text).toBe("x".repeat(256));
+		expect(summary.result_length).toBe(400);
+		expect(summary.result_truncated).toBe(1);
+		expect(await getSessionToolEventDetail("s1", "shared-tool")).toEqual({
+			tool_id: "shared-tool",
+			result_text: longResult,
+			is_error: 0,
+		});
+		expect(await getSessionToolEventDetail("s2", "shared-tool")).toEqual({
+			tool_id: "shared-tool",
+			result_text: "other session",
+			is_error: 1,
+		});
+		expect(
+			await getSessionToolEventDetail("missing", "shared-tool"),
+		).toBeNull();
 	});
 
 	it("stores and updates the normalized subagent snapshot", async () => {
@@ -808,7 +842,7 @@ describe("tool events", () => {
 			status: "completed",
 			endedAtMs: 5000,
 		});
-		const events = await getSessionToolEvents("s1");
+		const events = await getSessionToolEventSummaries("s1");
 		expect(JSON.parse(events[0].subagent_json ?? "{}")).toEqual({
 			provider: "codex",
 			agentId: "child-1",
@@ -1250,7 +1284,7 @@ describe("sessions — cascade delete completeness", () => {
 		await deleteSession("s1");
 
 		expect(await getSessionMessages("s1")).toHaveLength(0);
-		expect(await getSessionToolEvents("s1")).toHaveLength(0);
+		expect(await getSessionToolEventSummaries("s1")).toHaveLength(0);
 		expect(await getSessionPermissionEvents("s1")).toHaveLength(0);
 	});
 

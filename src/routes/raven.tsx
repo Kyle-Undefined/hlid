@@ -99,6 +99,28 @@ import { decisionFromScope, type RateLimitMessage } from "#/server/protocol";
 
 type RavenConfig = Awaited<ReturnType<typeof getConfig>>;
 type RavenLiveSessions = Awaited<ReturnType<typeof getLiveSessionsFn>>;
+const RAVEN_OPTIONAL_LOADER_WAIT_MS = 500;
+
+/** Optional inventory must never hold the route pending behind an API timeout. */
+function optionalRavenLoaderValue<T>(
+	read: Promise<T>,
+	fallback: T,
+): Promise<T> {
+	return new Promise((resolve) => {
+		let settled = false;
+		const finish = (value: T) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			resolve(value);
+		};
+		const timer = setTimeout(
+			() => finish(fallback),
+			RAVEN_OPTIONAL_LOADER_WAIT_MS,
+		);
+		void read.then(finish, () => finish(fallback));
+	});
+}
 
 function interactiveModeForAgent(
 	config: RavenConfig,
@@ -155,10 +177,16 @@ async function loadRavenRoute(session?: string, agent?: string) {
 			getConfig(),
 			getAgentListFn(),
 			getCockpitData(),
-			getProvidersFn(),
+			optionalRavenLoaderValue(
+				getProvidersFn({ data: { preferCachedModels: true } }),
+				[],
+			),
 			getVoiceInfoFn(),
 		]);
-	const providerUsages = await loadProviderUsages(providers);
+	const providerUsages = await optionalRavenLoaderValue(
+		loadProviderUsages(providers),
+		[],
+	);
 	const routeInteractiveMode = interactiveModeForAgent(config, agent);
 	const liveSessions = session ? [] : await getLiveSessionsFn();
 	let resolvedSessionId = await resolveSdkSession(
@@ -1174,9 +1202,43 @@ export function ChatPage() {
 		agentList,
 		vaultSkills,
 		interactiveMode,
-		providers,
+		providers: initialProviders,
 		voiceInfo: initialVoiceInfo,
 	} = Route.useLoaderData();
+	const [providers, setProviders] = useState(initialProviders);
+	const [providerUsages, setProviderUsages] = useState(initialProviderUsages);
+	useEffect(() => {
+		setProviders(initialProviders);
+		if (initialProviders.length > 0) return;
+		let cancelled = false;
+		void Promise.resolve(
+			getProvidersFn({ data: { preferCachedModels: true } }),
+		).then(
+			(next) => {
+				if (!cancelled && Array.isArray(next) && next.length > 0) {
+					setProviders(next);
+				}
+			},
+			() => {},
+		);
+		return () => {
+			cancelled = true;
+		};
+	}, [initialProviders]);
+	useEffect(() => {
+		setProviderUsages(initialProviderUsages);
+		if (initialProviderUsages.length > 0) return;
+		let cancelled = false;
+		void Promise.resolve(loadProviderUsages(providers)).then(
+			(next) => {
+				if (!cancelled && Array.isArray(next)) setProviderUsages(next);
+			},
+			() => {},
+		);
+		return () => {
+			cancelled = true;
+		};
+	}, [initialProviderUsages, providers]);
 	const ravenSearch = Route.useSearch();
 	const navigate = useNavigate();
 	const session = useRavenSessionIdentity({
@@ -1465,7 +1527,7 @@ export function ChatPage() {
 	return (
 		<ChatPageContent
 			config={config}
-			initialProviderUsages={initialProviderUsages}
+			initialProviderUsages={providerUsages}
 			liveStats={liveStats}
 			rateLimit={rateLimit}
 			interactiveMode={interactiveMode}

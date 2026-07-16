@@ -44,6 +44,11 @@ export type ToolEventMessage = {
 	id: string;
 	/** Populated client-side once a matching tool_result arrives or from history. */
 	result?: string;
+	/** Historical result is only a preview and should be fetched when expanded. */
+	resultTruncated?: boolean;
+	resultLength?: number;
+	/** Session scope needed by the historical detail endpoint. */
+	detailSessionId?: string;
 	isError?: boolean;
 	subagent?: SubagentSnapshot;
 };
