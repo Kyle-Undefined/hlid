@@ -1512,6 +1512,8 @@ export class SessionManager {
 			case "session_start":
 				this.handleSessionStart(event, sessionId, provider, emit);
 				break;
+			case "transport_error":
+				throw new Error(event.message);
 			case "commands_changed":
 				emit({
 					type: "slash_commands",

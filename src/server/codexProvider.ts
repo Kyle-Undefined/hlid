@@ -1358,11 +1358,7 @@ class CodexAgentSession implements AgentSession {
 			onRequest: (method, params) => this.handleServerRequest(method, params),
 			onExit: (err) => {
 				if (this.canceled) return;
-				this.events.push({
-					type: "local_command_output",
-					content: `Codex app-server error: ${err.message}`,
-				});
-				this.events.close();
+				this.handleAppServerExit(err);
 			},
 		};
 		this.attachThread(thread.id);
@@ -1374,6 +1370,33 @@ class CodexAgentSession implements AgentSession {
 			.request("account/rateLimits/read", undefined)
 			.then((res) => this.emitRateLimits(asObj(res).rateLimits))
 			.catch(() => {});
+	}
+
+	private handleAppServerExit(error: Error): void {
+		const resumeThreadId = this.threadId ?? this.params.sessionId;
+		const interruptedTurn = this.activeTurnId !== null;
+		if (resumeThreadId) {
+			this.params = { ...this.params, sessionId: resumeThreadId };
+		}
+		// CodexAppServer has already dropped its routed handlers. Reset this
+		// session's local transport state so an idle failure transparently
+		// reacquires a process and resumes the same thread on the next send.
+		this.conn = null;
+		this.ready = null;
+		this.threadId = null;
+		this.activeTurnId = null;
+		this.threadHandler = null;
+		this.attachedThreadIds.clear();
+
+		// Retrying a partially executed turn can duplicate side effects. Surface
+		// the transport failure immediately; SessionManager tears down this
+		// AgentSession, while the user's next turn creates a clean resumable one.
+		if (interruptedTurn) {
+			this.events.push({
+				type: "transport_error",
+				message: `Codex app-server disconnected during the active turn: ${error.message}`,
+			});
+		}
 	}
 
 	private attachThread(threadId: string): void {

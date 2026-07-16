@@ -449,6 +449,9 @@ function useRavenChatRuntime({
 			action?: "review" | "computer-use";
 		}>
 	>([]);
+	const [sdkSlashCommandProviderId, setSdkSlashCommandProviderId] = useState<
+		string | null
+	>(null);
 	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
 	const [mcpServers, setMcpServers] = useState<
 		ReturnType<typeof mapMcpServer>[]
@@ -481,6 +484,7 @@ function useRavenChatRuntime({
 			if (message.type === "slash_commands") {
 				if ((message.agent_cwd ?? "") !== (agentCwd ?? "")) return;
 				setSdkSlashCommands(message.commands);
+				setSdkSlashCommandProviderId(message.provider_id);
 				return;
 			}
 			handleWsMessage(message);
@@ -503,6 +507,7 @@ function useRavenChatRuntime({
 	// biome-ignore lint/correctness/useExhaustiveDependencies: Raven context changes invalidate provider-scoped runtime snapshots
 	useEffect(() => {
 		setSdkSlashCommands([]);
+		setSdkSlashCommandProviderId(null);
 		setMcpServers([]);
 	}, [agentCwd, existingSessionId]);
 
@@ -541,6 +546,7 @@ function useRavenChatRuntime({
 		...historyPagination,
 		isRunning,
 		sdkSlashCommands,
+		sdkSlashCommandProviderId,
 		mcpServers,
 		rateLimit,
 		setRateLimit,
@@ -1236,6 +1242,7 @@ export function ChatPage() {
 		actualModel,
 		isRunning,
 		sdkSlashCommands,
+		sdkSlashCommandProviderId,
 		rateLimit,
 		messages,
 	} = runtime;
@@ -1277,14 +1284,26 @@ export function ChatPage() {
 
 	// ─── Skills + slash picker ────────────────────────────────────────────────
 
-	const commands = useCommands(vaultSkills, sdkSlashCommands);
+	const commandProviderId =
+		sessionSelection.providerId ??
+		(restoredSession ? initialSessionProviderId : null) ??
+		resolveActiveProviderId(
+			agentList,
+			agentSkillContext,
+			config.vault_provider,
+		);
+	const commands = useCommands(
+		vaultSkills,
+		sdkSlashCommandProviderId === commandProviderId ? sdkSlashCommands : [],
+		commandProviderId,
+	);
 
 	const picker = useSlashPicker(input, commands, activeSkill);
 
 	function handleSkillSelect(command: CommandDescriptor) {
 		focusSkillOnNextRender();
 		setActiveSkill(command);
-		setInput("");
+		setInput(picker.promptWithoutQuery);
 	}
 
 	// ─── Handlers ─────────────────────────────────────────────────────────────

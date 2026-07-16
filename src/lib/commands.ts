@@ -40,12 +40,16 @@ const UI_OWNED_COMMANDS = new Set([
 ]);
 
 export function skillCommand(skill: Skill): CommandDescriptor {
+	const providerOwned = Boolean(skill.providerId);
 	return {
 		id: `skill:${skill.file}`,
 		name: skill.name,
 		description: skill.description,
-		source: "vault",
-		execution: { kind: "skill", filePath: skill.filePath },
+		source: providerOwned ? "provider" : "vault",
+		...(skill.providerId ? { providerId: skill.providerId } : {}),
+		execution: providerOwned
+			? { kind: "prompt" }
+			: { kind: "skill", filePath: skill.filePath },
 	};
 }
 
@@ -54,11 +58,20 @@ export function mergeCommands(
 	providerCommands: ProviderCommand[],
 	providerId?: string,
 ): CommandDescriptor[] {
-	const commands = vaultSkills.map(skillCommand);
+	const commands = vaultSkills
+		.filter((skill) => !skill.providerId || skill.providerId === providerId)
+		.map(skillCommand);
 	for (const command of providerCommands) {
 		if (/\(user\)/i.test(command.name)) continue;
 		const normalized = command.name.replace(/\s*\(user\)\s*$/i, "");
 		if (!command.action && UI_OWNED_COMMANDS.has(normalized.toLowerCase()))
+			continue;
+		if (
+			!command.action &&
+			commands.some(
+				(existing) => existing.name.toLowerCase() === normalized.toLowerCase(),
+			)
+		)
 			continue;
 		commands.push({
 			id: `${command.action ? "hlid" : "provider"}:${providerId ?? "active"}:${normalized.toLowerCase()}`,

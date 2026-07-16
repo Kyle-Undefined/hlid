@@ -114,6 +114,7 @@ export type SubagentSnapshot = {
 export type AgentEvent =
 	| { type: "session_start"; sessionId: string }
 	| { type: "commands_changed"; commands: SlashCommand[] }
+	| { type: "transport_error"; message: string }
 	| { type: "text_delta"; text: string }
 	| { type: "local_command_output"; content: string }
 	| {

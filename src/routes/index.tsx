@@ -36,7 +36,10 @@ import { useWsLiveStats } from "#/hooks/useWsSelectors";
 import { type CommandDescriptor, skillCommand } from "#/lib/commands";
 import { insertAtSelection, resizeComposer } from "#/lib/composer";
 import { fmtModel } from "#/lib/formatters";
-import { configuredVaultModel } from "#/lib/providerOptions";
+import {
+	configuredVaultModel,
+	resolveActiveProviderId,
+} from "#/lib/providerOptions";
 import { getAgentListFn } from "#/lib/serverFns/agents";
 import { getCockpitData } from "#/lib/serverFns/cockpit";
 import { getMcpServersFn } from "#/lib/serverFns/mcp";
@@ -123,12 +126,15 @@ function useCockpitComposer() {
 		const el = textareaRef.current;
 		if (!el) return;
 		el.focus();
-		el.selectionStart = el.selectionEnd = 0;
+		el.selectionStart = el.selectionEnd = el.value.length;
 	}, [activeSkill]);
 
-	function handleCommandSelect(command: CommandDescriptor) {
+	function handleCommandSelect(
+		command: CommandDescriptor,
+		remainingPrompt = "",
+	) {
 		pendingSkillFocusRef.current = true;
-		setPrompt("");
+		setPrompt(remainingPrompt);
 		setActiveSkill(command);
 	}
 
@@ -356,7 +362,9 @@ function CockpitPromptWiring({
 				navigate: picker.navigate,
 				close: picker.close,
 			}}
-			onSkillSelect={composer.handleCommandSelect}
+			onSkillSelect={(command) =>
+				composer.handleCommandSelect(command, picker.promptWithoutQuery)
+			}
 			onClear={composer.handleClear}
 			onRun={onRun}
 		/>
@@ -382,10 +390,28 @@ function CockpitPage() {
 		composer.selectedAgentPath || undefined,
 	);
 	const upload = useFileUpload({ agentCwd: composer.selectedAgentPath });
-	const commands = useCommands(data.skills, live.sdkSlashCommands);
+	const commandProviderId = resolveActiveProviderId(
+		agentList,
+		composer.selectedAgentPath || undefined,
+		config.vault_provider,
+	);
+	const visibleSkills = useMemo(
+		() =>
+			data.skills.filter(
+				(skill) => !skill.providerId || skill.providerId === commandProviderId,
+			),
+		[data.skills, commandProviderId],
+	);
+	const commands = useCommands(
+		visibleSkills,
+		live.sdkSlashCommandProviderId === commandProviderId
+			? live.sdkSlashCommands
+			: [],
+		commandProviderId,
+	);
 	const skillGroups = useMemo(
-		() => groupSkills(data.skills, data.sectionOrder),
-		[data.skills, data.sectionOrder],
+		() => groupSkills(visibleSkills, data.sectionOrder),
+		[visibleSkills, data.sectionOrder],
 	);
 	const vaultModel = configuredVaultModel(config);
 	const configuredRunModel = composer.selectedAgentPath
@@ -438,7 +464,7 @@ function CockpitPage() {
 
 					<CockpitRunError error={live.runError} />
 					<CockpitSkills
-						hasSkills={data.skills.length > 0}
+						hasSkills={visibleSkills.length > 0}
 						groups={skillGroups}
 						activeSkill={composer.activeSkill}
 						onSelect={composer.handleSkillSelect}

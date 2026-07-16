@@ -152,6 +152,29 @@ describe("CodexAppServer idle lifecycle", () => {
 		]);
 	});
 
+	it("drops repetitive optional PowerShell and MCP capability warnings", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const { proc } = await create();
+
+		proc.stderr.emit(
+			"data",
+			Buffer.from(
+				[
+					"Failed to create shell snapshot for powershell: Shell snapshot not supported yet for PowerShell",
+					"Failed to list resources for MCP server 'optional': Mcp error: -32601: Method not found: resources/list",
+					"stream disconnected - retrying sampling request",
+				].join("\n"),
+			),
+		);
+
+		expect(warn).toHaveBeenCalledOnce();
+		expect(warn).toHaveBeenCalledWith(
+			"[codex app-server]",
+			"stream disconnected - retrying sampling request",
+		);
+		warn.mockRestore();
+	});
+
 	it("bounds how long startup waits while initialization continues", async () => {
 		vi.stubEnv("HLID_CODEX_APP_SERVER_IDLE_MS", "1000");
 		const fake = makeFakeProc();

@@ -35,9 +35,18 @@ describe("useSlashPicker – isOpen", () => {
 		expect(result.current.isOpen).toBe(false);
 	});
 
-	it("closed when prompt doesn't start with /", () => {
+	it("closed when prompt has no slash query", () => {
 		const { result } = renderHook(() => useSlashPicker("hello", SKILLS, null));
 		expect(result.current.isOpen).toBe(false);
+	});
+
+	it("opens after existing context and preserves that text for submission", () => {
+		const { result } = renderHook(() =>
+			useSlashPicker("please keep my voice /he", SKILLS, null),
+		);
+		expect(result.current.isOpen).toBe(true);
+		expect(result.current.items[0]?.name).toBe("help");
+		expect(result.current.promptWithoutQuery).toBe("please keep my voice ");
 	});
 
 	it("closed when prompt contains colon (skill already applied)", () => {

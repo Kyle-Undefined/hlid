@@ -78,6 +78,17 @@ function asObj(value: unknown): Record<string, unknown> {
 		: {};
 }
 
+function isBenignCodexStderr(line: string): boolean {
+	return (
+		line.includes("Shell snapshot not supported yet for PowerShell") ||
+		(/Failed to list (?:resources|resource templates) for MCP server/.test(
+			line,
+		) &&
+			line.includes("-32601") &&
+			line.includes("Method not found"))
+	);
+}
+
 export class CodexAppServer {
 	private proc: ChildProcessWithoutNullStreams;
 	private nextId = 1;
@@ -119,8 +130,12 @@ export class CodexAppServer {
 		});
 		this.proc.stdout.on("data", (chunk: Buffer) => this.onStdout(chunk));
 		this.proc.stderr.on("data", (chunk: Buffer) => {
-			const text = chunk.toString("utf8").trim();
-			if (text) console.warn("[codex app-server]", text);
+			for (const line of chunk.toString("utf8").split(/\r?\n/)) {
+				const text = line.trim();
+				if (text && !isBenignCodexStderr(text)) {
+					console.warn("[codex app-server]", text);
+				}
+			}
 		});
 
 		this.ready = (async () => {

@@ -1297,6 +1297,74 @@ describe("CodexAgentSession — setModel", () => {
 	});
 });
 
+describe("CodexAgentSession — shared transport recovery", () => {
+	beforeEach(() => {
+		__resetCodexAppServersForTesting();
+	});
+
+	it("reacquires the app-server and resumes the thread after an idle process exit", async () => {
+		const first = makeFakeSessionProc();
+		const replacement = makeFakeSessionProc();
+		vi.mocked(spawn)
+			.mockReturnValueOnce(first.proc as never)
+			.mockReturnValueOnce(replacement.proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(baseCodexParams());
+		const events = session[Symbol.asyncIterator]();
+
+		await session.send("first turn");
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "session_start",
+			sessionId: "thread-1",
+		});
+		emitSessionNotification(first.proc, "turn/started", {
+			threadId: "thread-1",
+			turn: { id: "turn-1" },
+		});
+		emitSessionNotification(first.proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: { id: "turn-1", status: "completed" },
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({ type: "done" });
+
+		first.proc.emit("exit", 1);
+		await session.send("second turn");
+
+		const replacementMessages = replacement.writes.map(
+			(value) => JSON.parse(value) as { method?: string; params?: unknown },
+		);
+		expect(replacementMessages.map((message) => message.method)).toContain(
+			"thread/resume",
+		);
+		expect(
+			replacementMessages.find((message) => message.method === "thread/resume")
+				?.params,
+		).toMatchObject({ threadId: "thread-1" });
+		expect(turnStartParams(replacement.writes)).toHaveLength(1);
+	});
+
+	it("surfaces an active-turn app-server exit as a transport error", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(baseCodexParams());
+		const events = session[Symbol.asyncIterator]();
+
+		await session.send("working turn");
+		await nextSessionEvent(events); // session_start
+		emitSessionNotification(proc, "turn/started", {
+			threadId: "thread-1",
+			turn: { id: "turn-1" },
+		});
+		proc.emit("exit", 1);
+
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "transport_error",
+			message: expect.stringContaining("disconnected during the active turn"),
+		});
+	});
+});
+
 describe("CodexAgentSession — setPermissionMode", () => {
 	beforeEach(() => {
 		__resetCodexAppServersForTesting();

@@ -77,6 +77,56 @@ describe("commands", () => {
 		});
 	});
 
+	it("shows provider-owned skills only for their provider", () => {
+		const claudeSkill: Skill = {
+			...skill,
+			file: "kyle-voice/SKILL.md",
+			name: "kyle-voice",
+			filePath: "/home/kyle/.claude/skills/kyle-voice/SKILL.md",
+			providerId: "claude",
+		};
+		expect(
+			mergeCommands([skill, claudeSkill], [], "codex").map(
+				(command) => command.name,
+			),
+		).toEqual(["garden-check"]);
+
+		const commands = mergeCommands([skill, claudeSkill], [], "claude");
+		const claude = commands.find((command) => command.name === "kyle-voice");
+		expect(claude).toMatchObject({
+			source: "provider",
+			providerId: "claude",
+			execution: { kind: "prompt" },
+		});
+		expect(
+			resolveCommandSubmission(claude ?? null, "be concise", commands),
+		).toEqual({
+			text: "/kyle-voice be concise",
+		});
+	});
+
+	it("deduplicates provider discovery against a preloaded provider skill", () => {
+		const claudeSkill: Skill = {
+			...skill,
+			name: "kyle-voice",
+			providerId: "claude",
+		};
+		const commands = mergeCommands(
+			[claudeSkill],
+			[
+				{
+					name: "kyle-voice",
+					description: "Native Claude skill",
+					argumentHint: "",
+				},
+			],
+			"claude",
+		);
+		expect(
+			commands.filter((command) => command.name === "kyle-voice"),
+		).toHaveLength(1);
+	});
+
 	it("resolves review as a capability action", () => {
 		const review = mergeCommands(
 			[],

@@ -38,7 +38,11 @@ export function assembleCockpitData(options: {
 	);
 	const claudeSkills = rawClaudeSkills
 		.filter((skill) => !vaultSkillNames.has(skill.name.toLowerCase()))
-		.map((skill) => ({ ...skill, section: "claude" }));
+		.map((skill) => ({
+			...skill,
+			section: "claude",
+			providerId: "claude",
+		}));
 
 	return {
 		inboxCount,

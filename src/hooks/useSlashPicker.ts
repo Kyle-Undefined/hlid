@@ -5,6 +5,8 @@ export type SlashPickerState = {
 	isOpen: boolean;
 	items: CommandDescriptor[];
 	query: string;
+	/** Prompt text with the active slash fragment removed after selection. */
+	promptWithoutQuery: string;
 	selectedIndex: number;
 	navigate: (dir: 1 | -1) => void;
 	/** Close the picker without clearing the input. Resets automatically when the query changes. */
@@ -16,7 +18,8 @@ export type SlashPickerState = {
  *
  * Opens when:
  *  - `activeCommand` is null (a selected command means the user is entering arguments)
- *  - `prompt` matches /^\/[^:\s]*$/ — starts with "/" and has no colon or space yet
+ *  - the prompt ends with a slash fragment at a word boundary, so commands can
+ *    be activated after already-written context as well as at the start
  *
  * Items are filtered by prefix match against the provider-neutral command list,
  * including aliases reported by the active provider.
@@ -33,11 +36,14 @@ export function useSlashPicker(
 	const [selectedIndex, setSelectedIndex] = useState(0);
 	const [forceClosed, setForceClosed] = useState(false);
 
-	// Bare slash query: starts with "/" with no colon or space yet
-	const isSlashQuery = /^\/[^:\s]*$/.test(prompt);
-	const shouldOpen = activeCommand === null && isSlashQuery;
-
-	const query = shouldOpen ? prompt.slice(1).toLowerCase() : "";
+	const slashMatch = /(?:^|\s)\/([^:\s]*)$/.exec(prompt);
+	const slashStart = slashMatch
+		? (slashMatch.index ?? 0) + slashMatch[0].lastIndexOf("/")
+		: -1;
+	const shouldOpen = activeCommand === null && slashMatch !== null;
+	const query = shouldOpen ? (slashMatch?.[1].toLowerCase() ?? "") : "";
+	const promptWithoutQuery =
+		slashStart >= 0 ? prompt.slice(0, slashStart) : prompt;
 
 	const items = shouldOpen
 		? commands.filter((command) => commandMatches(command, query))
@@ -69,5 +75,13 @@ export function useSlashPicker(
 		setForceClosed(true);
 	}
 
-	return { isOpen, items, query, selectedIndex: clampedIndex, navigate, close };
+	return {
+		isOpen,
+		items,
+		query,
+		promptWithoutQuery,
+		selectedIndex: clampedIndex,
+		navigate,
+		close,
+	};
 }

@@ -11,6 +11,8 @@ export type Skill = {
 	content: string;
 	filePath: string;
 	section?: string;
+	/** Provider-native skill directory that owns this entry. Vault skills omit it. */
+	providerId?: string;
 };
 
 export type SkillGroup = {

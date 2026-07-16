@@ -57,6 +57,12 @@ describe("collectCockpitData", () => {
 			"Vault",
 			"Claude",
 		]);
+		expect(
+			result.skills.find((entry) => entry.name === "Claude"),
+		).toMatchObject({
+			providerId: "claude",
+			section: "claude",
+		});
 	});
 
 	it("treats a missing inbox as empty without hiding other data", () => {

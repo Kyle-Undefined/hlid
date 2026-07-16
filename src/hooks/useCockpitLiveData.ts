@@ -73,6 +73,9 @@ export function useCockpitLiveData(
 			action?: "review" | "computer-use";
 		}>
 	>([]);
+	const [sdkSlashCommandProviderId, setSdkSlashCommandProviderId] = useState<
+		string | null
+	>(null);
 	const [runError, setRunError] = useState<string | null>(null);
 	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
 	const sessionsStatus = useSyncExternalStore(
@@ -169,12 +172,14 @@ export function useCockpitLiveData(
 		if (message.type === "slash_commands") {
 			if ((message.agent_cwd ?? "") !== (commandAgentCwd ?? "")) return;
 			setSdkSlashCommands(message.commands);
+			setSdkSlashCommandProviderId(message.provider_id);
 		}
 	});
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: agent context changes invalidate the scoped command snapshot
 	useEffect(() => {
 		setSdkSlashCommands([]);
+		setSdkSlashCommandProviderId(null);
 	}, [commandAgentCwd]);
 
 	useEffect(() => {
@@ -226,6 +231,7 @@ export function useCockpitLiveData(
 		liveActiveSession,
 		mcpServers,
 		sdkSlashCommands,
+		sdkSlashCommandProviderId,
 		runError,
 		setRunError,
 		rateLimit,
