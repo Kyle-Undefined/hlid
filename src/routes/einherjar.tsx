@@ -9,7 +9,6 @@ import type {
 	AgentProviderSettings,
 } from "#/components/einherjar/AgentCard";
 import { AgentCard, AgentEmptyState } from "#/components/einherjar/AgentCard";
-import { getConfig } from "#/config";
 import { readAgentInstructions } from "#/lib/agentInstructions";
 import { agentConfigToEntry, inspectAgentPath } from "#/lib/agentMcp";
 import { writeConfig } from "#/lib/config-writer";
@@ -17,6 +16,7 @@ import { expandTilde, samePath } from "#/lib/paths";
 import type { ProviderInfo } from "#/lib/providerTypes";
 import { ROUTE_SCROLL_RESTORATION_IDS } from "#/lib/scrollContainers";
 import { agentListSchema, agentPathSchema } from "#/lib/serverFnSchemas";
+import { getConfig } from "#/lib/serverFns/config";
 import { getProvidersFn } from "#/lib/serverFns/providers";
 import { uid } from "#/lib/utils";
 import { useAgentRoster } from "./-useAgentRoster";

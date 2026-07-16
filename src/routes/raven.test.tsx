@@ -162,10 +162,10 @@ vi.mock("#/lib/serverFns/providers", () => ({
 vi.mock("#/lib/serverFns/voice", () => ({
 	getVoiceInfoFn: vi.fn(),
 }));
-vi.mock("#/config", () => ({ getConfig: vi.fn() }));
+vi.mock("#/lib/serverFns/config", () => ({ getConfig: vi.fn() }));
 
-import { getConfig } from "#/config";
 import { getCockpitData } from "#/lib/serverFns/cockpit";
+import { getConfig } from "#/lib/serverFns/config";
 import { getProvidersFn, loadProviderUsages } from "#/lib/serverFns/providers";
 import {
 	getCurrentSessionFn,

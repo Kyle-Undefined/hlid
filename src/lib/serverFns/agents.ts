@@ -1,7 +1,7 @@
 /** Configured-agent listing server fns. */
 import { basename, extname } from "node:path";
 import { createServerFn } from "@tanstack/react-start";
-import { getConfig } from "#/config";
+import { getConfig } from "./config";
 
 export type AgentListItem = {
 	path: string;

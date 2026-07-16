@@ -1,4 +1,4 @@
-import { getConfig } from "#/config";
+import { getConfig } from "#/lib/serverFns/config";
 
 let _base: string | null = null;
 const SOFT_FAILURE_DEDUP_MS = 30_000;

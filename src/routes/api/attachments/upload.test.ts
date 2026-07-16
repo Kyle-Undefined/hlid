@@ -1,12 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("#/config", () => ({ getConfig: vi.fn() }));
+vi.mock("#/lib/serverFns/config", () => ({ getConfig: vi.fn() }));
 vi.mock("#/lib/dbClient", () => ({ dbFetch: vi.fn() }));
 vi.mock("#/lib/originGate", () => ({ forbiddenResponse: vi.fn(() => null) }));
 
-import { getConfig } from "#/config";
 import { dbFetch } from "#/lib/dbClient";
 import { forbiddenResponse } from "#/lib/originGate";
+import { getConfig } from "#/lib/serverFns/config";
 import { MULTIPART_OVERHEAD_BYTES } from "#/server/requestLimits";
 import { handleAttachmentUpload } from "./upload";
 

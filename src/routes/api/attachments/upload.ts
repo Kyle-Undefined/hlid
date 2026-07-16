@@ -1,7 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router";
-import { getConfig } from "#/config";
 import { dbFetch } from "#/lib/dbClient";
 import { forbiddenResponse } from "#/lib/originGate";
+import { getConfig } from "#/lib/serverFns/config";
 import {
 	contentLengthExceeds,
 	createConcurrencyGate,

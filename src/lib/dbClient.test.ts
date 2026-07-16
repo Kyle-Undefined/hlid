@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("#/config", () => ({
+vi.mock("#/lib/serverFns/config", () => ({
 	getConfig: vi.fn(async () => ({ server: { port: 3000 } })),
 }));
 vi.mock("./token", () => ({ loadToken: vi.fn(() => "test-token") }));

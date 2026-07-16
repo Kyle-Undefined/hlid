@@ -25,7 +25,6 @@ import { PrivacyMask } from "#/components/PrivacyMask";
 import { ProviderUsageStrip } from "#/components/usage/ProviderUsageStrip";
 import { RoutinesWindowSection } from "#/components/usage/UsageWindowSections";
 import { FirstRunWizard } from "#/components/wizard/FirstRunWizard";
-import { getConfig } from "#/config";
 import { useCockpitLiveData } from "#/hooks/useCockpitLiveData";
 import { isCockpitQueueTarget, useCockpitRun } from "#/hooks/useCockpitRun";
 import { useCommands } from "#/hooks/useCommands";
@@ -42,6 +41,7 @@ import {
 } from "#/lib/providerOptions";
 import { getAgentListFn } from "#/lib/serverFns/agents";
 import { getCockpitData } from "#/lib/serverFns/cockpit";
+import { getConfig } from "#/lib/serverFns/config";
 import { getMcpServersFn } from "#/lib/serverFns/mcp";
 import { loadProviderUsages } from "#/lib/serverFns/providers";
 import { getActiveSessionRowFn } from "#/lib/serverFns/sessions";

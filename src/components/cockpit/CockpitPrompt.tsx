@@ -3,12 +3,12 @@ import type { RefObject } from "react";
 import { AgentSelect } from "#/components/AgentSelect";
 import { AttachmentStrip } from "#/components/AttachmentStrip";
 import { SlashPicker } from "#/components/cockpit/SlashPicker";
-import type { getConfig } from "#/config";
 import type { useFileUpload } from "#/hooks/useFileUpload";
 import type { useVoiceInput } from "#/hooks/useVoiceInput";
 import type { CommandDescriptor } from "#/lib/commands";
 import { type ComposerKeyAction, composerKeyAction } from "#/lib/composer";
 import type { getAgentListFn } from "#/lib/serverFns/agents";
+import type { getConfig } from "#/lib/serverFns/config";
 import { displayVoiceHotkey } from "#/lib/voiceHotkey";
 
 export type ActiveCockpitSkill = CommandDescriptor;

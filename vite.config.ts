@@ -114,6 +114,28 @@ function chunkBudgetPlugin(): Plugin {
 	};
 }
 
+function browserRuntimeBoundaryPlugin(): Plugin {
+	// `process.platform` and `process.cwd()` can appear in guarded vendor code.
+	// `process.execPath` is only meaningful in a Node/Bun process and was the
+	// packaged-login regression when src/lib/paths.ts leaked into the client.
+	const forbiddenNodeGlobal = /\bprocess\.execPath\b/;
+	return {
+		name: "hlid-browser-runtime-boundary",
+		apply: "build",
+		generateBundle(options, bundle) {
+			if (resolve(options.dir ?? "") !== resolve(process.cwd(), "dist/client"))
+				return;
+			for (const output of Object.values(bundle)) {
+				if (output.type !== "chunk") continue;
+				if (!forbiddenNodeGlobal.test(output.code)) continue;
+				this.error(
+					`${output.fileName} contains a Node process global and cannot run in the browser`,
+				);
+			}
+		},
+	};
+}
+
 /**
  * Stamp the service worker cache name with the app version + a per-build id.
  * public/ is copied verbatim, so this rewrites dist/client/sw.js after the
@@ -178,6 +200,7 @@ const config = defineConfig({
 	},
 	plugins: [
 		swStampPlugin(),
+		browserRuntimeBoundaryPlugin(),
 		chunkBudgetPlugin(),
 		ipGatePlugin(serverCfg.local_network_access ?? false),
 		tailwindcss(),

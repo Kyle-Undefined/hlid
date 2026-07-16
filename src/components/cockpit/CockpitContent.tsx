@@ -1,7 +1,7 @@
 import type { ActiveCockpitSkill } from "#/components/cockpit/CockpitPrompt";
 import { SkillCard } from "#/components/cockpit/SkillCard";
 import { PrivacyMask } from "#/components/PrivacyMask";
-import type { getConfig } from "#/config";
+import type { getConfig } from "#/lib/serverFns/config";
 import type { groupSkills } from "#/lib/skills";
 
 type CockpitConfig = Awaited<ReturnType<typeof getConfig>>;

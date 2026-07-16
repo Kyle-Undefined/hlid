@@ -1,7 +1,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
-import { getConfig } from "#/config";
 import { dbFetch } from "#/lib/dbClient";
+import { getConfig } from "#/lib/serverFns/config";
 import type { VaultMcpConfig, VaultMcpServer } from "./McpServerForm";
 
 export const getVaultMcpFn = createServerFn({ method: "GET" }).handler(

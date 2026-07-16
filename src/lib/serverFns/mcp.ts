@@ -3,9 +3,9 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createServerFn } from "@tanstack/react-start";
-import { getConfig } from "#/config";
 import { dbFetch } from "#/lib/dbClient";
 import { discoverMcpServers } from "#/lib/mcpDiscovery";
+import { getConfig } from "./config";
 
 export const getMcpServersFn = createServerFn({ method: "GET" }).handler(
 	async () => {

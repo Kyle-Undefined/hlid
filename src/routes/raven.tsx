@@ -32,7 +32,6 @@ import { PrivacyMask } from "#/components/PrivacyMask";
 import { TerminalView } from "#/components/TerminalView";
 import { ProviderUsageStrip } from "#/components/usage/ProviderUsageStrip";
 import { ContextWindowSection } from "#/components/usage/UsageWindowSections";
-import { getConfig } from "#/config";
 import { rememberRavenSessionId } from "#/hooks/ravenSessionStore";
 import { useChatWsHandler } from "#/hooks/useChatWsHandler";
 import { useCommands } from "#/hooks/useCommands";
@@ -77,6 +76,7 @@ import {
 } from "#/lib/scrollContainers";
 import { getAgentListFn } from "#/lib/serverFns/agents";
 import { getCockpitData } from "#/lib/serverFns/cockpit";
+import { getConfig } from "#/lib/serverFns/config";
 import { getProvidersFn, loadProviderUsages } from "#/lib/serverFns/providers";
 import {
 	ensureSessionFn,

@@ -1,9 +1,9 @@
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import { ForgeSettings } from "#/components/forge/ForgeSettings";
-import { getConfig } from "#/config";
 import { useSettingsForm } from "#/hooks/useSettingsForm";
 import { getAcpRegistryFn } from "#/lib/serverFns/acp";
+import { getConfig } from "#/lib/serverFns/config";
 import { getAccountInfoFn, getProvidersFn } from "#/lib/serverFns/providers";
 import { getVoiceInfoFn } from "#/lib/serverFns/voice";
 
