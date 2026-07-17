@@ -42,8 +42,17 @@ const COLOR_GROUPS: Array<{
 			["destructive_foreground", "Destructive text"],
 			["status_success", "Success"],
 			["status_warning", "Warning"],
-			["chart_error", "Chart errors"],
-			["data", "Chart data"],
+		],
+	},
+	{
+		title: "Ledger and stats",
+		colors: [
+			["data", "Charts and heatmap"],
+			["chart_error", "Tool errors"],
+			["token_input", "Token input"],
+			["token_output", "Token output"],
+			["cache_read", "Cache read"],
+			["cache_write", "Cache write"],
 		],
 	},
 	{

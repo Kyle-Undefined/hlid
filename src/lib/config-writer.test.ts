@@ -123,6 +123,25 @@ describe("writeConfig — persistence invariants", () => {
 		expect(parsed.ui).toEqual(config.ui);
 	});
 
+	it("fills new Ledger colors when reading a legacy custom palette", () => {
+		const legacyPalette: Record<string, unknown> = {
+			...builtInThemePalette("tan"),
+		};
+		delete legacyPalette.token_input;
+		delete legacyPalette.token_output;
+		delete legacyPalette.cache_read;
+		delete legacyPalette.cache_write;
+		const config = HlidConfigSchema.parse({
+			ui: { theme: "custom", custom_theme: legacyPalette },
+		});
+		expect(config.ui.custom_theme).toMatchObject({
+			token_input: "#8c4e35",
+			token_output: "#ca8a04",
+			cache_read: "#16a34a",
+			cache_write: "#ea580c",
+		});
+	});
+
 	it("writes to a private temporary file before atomically renaming it", () => {
 		writeConfig(makeConfig());
 		const temporaryPath = mockWrite.mock.calls[0][0] as string;

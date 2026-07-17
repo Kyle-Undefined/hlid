@@ -102,9 +102,14 @@ describe("CostBreakdown", () => {
 
 	it("renders stacked bar with aria-label when tokens exist", () => {
 		render(<CostBreakdown s={populated} />);
-		expect(
-			screen.getByRole("img", { name: /token composition bar/i }),
-		).toBeDefined();
+		const bar = screen.getByRole("img", { name: /token composition bar/i });
+		expect(bar).toBeDefined();
+		expect(Array.from(bar.children).map((child) => child.className)).toEqual([
+			expect.stringContaining("bg-[var(--token-input)]"),
+			expect.stringContaining("bg-[var(--token-output)]"),
+			expect.stringContaining("bg-[var(--cache-read)]"),
+			expect.stringContaining("bg-[var(--cache-write)]"),
+		]);
 	});
 
 	it("does not render stacked bar role when no tokens", () => {

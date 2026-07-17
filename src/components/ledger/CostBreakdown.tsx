@@ -12,10 +12,10 @@ import { fmt } from "#/lib/formatters";
 // efficiency. Uses all-time data for maximum analytical richness.
 
 const LEGEND = [
-	{ color: "bg-primary", label: "Input" },
-	{ color: "bg-yellow-600", label: "Output" },
-	{ color: "bg-green-600", label: "Cache read" },
-	{ color: "bg-orange-600", label: "Cache write" },
+	{ color: "bg-[var(--token-input)]", label: "Input" },
+	{ color: "bg-[var(--token-output)]", label: "Output" },
+	{ color: "bg-[var(--cache-read)]", label: "Cache read" },
+	{ color: "bg-[var(--cache-write)]", label: "Cache write" },
 ] as const;
 
 export function CostBreakdown({ s }: { s: StatBundle }) {
@@ -77,19 +77,19 @@ export function CostBreakdown({ s }: { s: StatBundle }) {
 						className="flex h-1.5 overflow-hidden bg-secondary"
 					>
 						<div
-							className="h-full bg-primary transition-all"
+							className="h-full bg-[var(--token-input)] transition-all"
 							style={{ width: `${inputPct}%` }}
 						/>
 						<div
-							className="h-full bg-yellow-600 transition-all"
+							className="h-full bg-[var(--token-output)] transition-all"
 							style={{ width: `${outputPct}%` }}
 						/>
 						<div
-							className="h-full bg-green-600 transition-all"
+							className="h-full bg-[var(--cache-read)] transition-all"
 							style={{ width: `${readPct}%` }}
 						/>
 						<div
-							className="h-full bg-orange-600 transition-all"
+							className="h-full bg-[var(--cache-write)] transition-all"
 							style={{ width: `${writePct}%` }}
 						/>
 					</div>

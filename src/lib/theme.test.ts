@@ -17,6 +17,7 @@ describe("custom themes", () => {
 	it("applies and then clears custom properties when returning to a built-in", () => {
 		const palette = builtInThemePalette("tan");
 		palette.primary = "#123456";
+		palette.cache_write = "#654321";
 		applyThemeToDocument("custom", palette);
 
 		expect(document.documentElement.dataset.theme).toBe("custom");
@@ -24,11 +25,17 @@ describe("custom themes", () => {
 			"#123456",
 		);
 		expect(document.documentElement.style.colorScheme).toBe("light");
+		expect(
+			document.documentElement.style.getPropertyValue("--cache-write"),
+		).toBe("#654321");
 
 		applyThemeToDocument("dark");
 		expect(document.documentElement.style.getPropertyValue("--primary")).toBe(
 			"",
 		);
+		expect(
+			document.documentElement.style.getPropertyValue("--cache-write"),
+		).toBe("");
 		expect(document.documentElement.classList.contains("dark")).toBe(true);
 	});
 

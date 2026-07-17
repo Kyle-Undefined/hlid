@@ -50,6 +50,10 @@
   /* chart error accent — brighter than --destructive (#963232) so error
      bars stay readable on the near-black chart background */
   --chart-error: #ef4444;
+  --token-input: #38bdf8;
+  --token-output: #ca8a04;
+  --cache-read: #16a34a;
+  --cache-write: #ea580c;
   --status-success: #22c55e;
   --status-warning: #f59e0b;
   /* tool block expanded panel, sky blue inset */
@@ -92,6 +96,10 @@ html[data-theme="tan"] {
   --data: #8c4e35;
   /* chart error accent — warmer red tuned for the tan card background */
   --chart-error: #c0392b;
+  --token-input: #8c4e35;
+  --token-output: #ca8a04;
+  --cache-read: #16a34a;
+  --cache-write: #ea580c;
   --status-success: #3f7d44;
   --status-warning: #a65f00;
   --tool-panel: #e9ddc8;

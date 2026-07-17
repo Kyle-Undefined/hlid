@@ -203,6 +203,16 @@ describe("ForgeSettings category navigation", () => {
 		expect(screen.getByRole("heading", { name: "Custom Theme" })).toBeTruthy();
 		expect(screen.getByRole("tab", { name: "desktop" })).toBeTruthy();
 		expect(screen.getByLabelText("Background color")).toBeTruthy();
+		for (const label of [
+			"Charts and heatmap color",
+			"Tool errors color",
+			"Token input color",
+			"Token output color",
+			"Cache read color",
+			"Cache write color",
+		]) {
+			expect(screen.getByLabelText(label)).toBeTruthy();
+		}
 		fireEvent.click(screen.getByRole("button", { name: "← Experience" }));
 		expect(screen.getByRole("heading", { name: "Experience" })).toBeTruthy();
 	});
