@@ -32,3 +32,8 @@ export function navSearch(
 		agent: lastRavenSession.agent,
 	};
 }
+
+/** Section highlighting follows the pathname; search only chooses the Raven chat. */
+export function navActiveOptions(exact: boolean) {
+	return { exact, includeSearch: false } as const;
+}

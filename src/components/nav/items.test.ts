@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { navSearch } from "./items";
+import { navActiveOptions, navSearch } from "./items";
 
 describe("navSearch", () => {
 	it("restores the last Raven session only for the Raven destination", () => {
@@ -16,5 +16,14 @@ describe("navSearch", () => {
 
 	it("omits search state when no Raven session has been remembered", () => {
 		expect(navSearch("/raven", null)).toBeUndefined();
+	});
+});
+
+describe("navActiveOptions", () => {
+	it("matches the section pathname without requiring Raven search equality", () => {
+		expect(navActiveOptions(false)).toEqual({
+			exact: false,
+			includeSearch: false,
+		});
 	});
 });

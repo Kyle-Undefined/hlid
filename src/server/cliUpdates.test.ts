@@ -14,6 +14,7 @@ import {
 	parseCliUpdateStatusCache,
 	parseCliVersion,
 	parseWindowsStoreVersions,
+	readElectronAsarPackageVersion,
 } from "./cliUpdates";
 
 function cachedStatus(id: CliUpdateStatus["id"] = "codex"): CliUpdateStatus {
@@ -103,7 +104,10 @@ ChatGPT 9PLM9XGG6VKS 26.707.9981.0 26.708.10000.0 msstore
 	it("tracks the installed Codex desktop app against Microsoft Store", async () => {
 		const statuses = await inspectWindowsDesktopUpdates({
 			isWindows: () => true,
-			readInstalledVersion: vi.fn().mockResolvedValue("26.707.9981.0"),
+			readInstalledVersions: vi.fn().mockResolvedValue({
+				packageVersion: "26.707.9981.0",
+				appVersion: "26.707.91948",
+			}),
 			readStoreVersions: vi.fn().mockResolvedValue({
 				installedVersion: "26.707.9981.0",
 				latestVersion: "26.708.10000.0",
@@ -116,6 +120,7 @@ ChatGPT 9PLM9XGG6VKS 26.707.9981.0 26.708.10000.0 msstore
 				id: "codex-desktop",
 				label: "Codex desktop app",
 				surface: "desktop",
+				appVersion: "26.707.91948",
 				installedVersion: "26.707.9981.0",
 				latestVersion: "26.708.10000.0",
 				available: true,
@@ -129,16 +134,55 @@ ChatGPT 9PLM9XGG6VKS 26.707.9981.0 26.708.10000.0 msstore
 	});
 
 	it("does not probe Store metadata away from the Windows host", async () => {
-		const readInstalledVersion = vi.fn();
+		const readInstalledVersions = vi.fn();
 		expect(
 			await inspectWindowsDesktopUpdates({
 				isWindows: () => false,
-				readInstalledVersion,
+				readInstalledVersions,
 				readStoreVersions: vi.fn(),
 				now: () => 1_800_000_000_000,
 			}),
 		).toEqual([]);
-		expect(readInstalledVersion).not.toHaveBeenCalled();
+		expect(readInstalledVersions).not.toHaveBeenCalled();
+	});
+
+	it("reads the human-facing version from an Electron ASAR package", async () => {
+		const { mkdtemp, rm, writeFile } = await import("node:fs/promises");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const directory = await mkdtemp(join(tmpdir(), "hlid-asar-version-"));
+		try {
+			const packageBody = Buffer.from(
+				JSON.stringify({
+					name: "openai-codex-electron",
+					version: "26.707.91948",
+				}),
+			);
+			const headerJson = Buffer.from(
+				JSON.stringify({
+					files: {
+						"package.json": { size: packageBody.length, offset: "0" },
+					},
+				}),
+			);
+			const padding = (4 - ((4 + headerJson.length) % 4)) % 4;
+			const headerSize = 8 + headerJson.length + padding;
+			const archive = Buffer.alloc(8 + headerSize + packageBody.length);
+			archive.writeUInt32LE(4, 0);
+			archive.writeUInt32LE(headerSize, 4);
+			archive.writeUInt32LE(headerSize - 4, 8);
+			archive.writeUInt32LE(headerJson.length, 12);
+			headerJson.copy(archive, 16);
+			packageBody.copy(archive, 8 + headerSize);
+			const archivePath = join(directory, "app.asar");
+			await writeFile(archivePath, archive);
+
+			await expect(readElectronAsarPackageVersion(archivePath)).resolves.toBe(
+				"26.707.91948",
+			);
+		} finally {
+			await rm(directory, { recursive: true, force: true });
+		}
 	});
 
 	it("resolves WSL CLIs after the login shell loads the user PATH", () => {
@@ -332,7 +376,7 @@ describe("CLI update status cache", () => {
 		expect(
 			parseCliUpdateStatusCache(
 				JSON.stringify({
-					schemaVersion: 2,
+					schemaVersion: 3,
 					checkedAt: 1_800_000_000_000,
 					statuses: [status],
 				}),
@@ -342,7 +386,7 @@ describe("CLI update status cache", () => {
 		expect(
 			parseCliUpdateStatusCache(
 				JSON.stringify({
-					schemaVersion: 2,
+					schemaVersion: 3,
 					checkedAt: 1_800_000_000_000,
 					statuses: [{ ...status, installedVersion: { bad: true } }],
 				}),

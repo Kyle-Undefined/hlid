@@ -199,6 +199,7 @@ vi.mock("#/lib/serverFns/voice", () => ({
 vi.mock("#/lib/serverFns/config", () => ({ getConfig: vi.fn() }));
 
 import { resetRavenTerminalsForTesting } from "#/hooks/ravenTerminalStore";
+import { getAgentListFn } from "#/lib/serverFns/agents";
 import { getCockpitData } from "#/lib/serverFns/cockpit";
 import { getConfig } from "#/lib/serverFns/config";
 import { getProvidersFn, loadProviderUsages } from "#/lib/serverFns/providers";
@@ -944,6 +945,7 @@ describe("raven route search/deps", () => {
 describe("raven route loader", () => {
 	beforeEach(() => {
 		vi.mocked(getConfig).mockResolvedValue(makeLoaderConfig() as never);
+		vi.mocked(getAgentListFn).mockResolvedValue([] as never);
 		vi.mocked(getCockpitData).mockResolvedValue({ skills: [] } as never);
 		vi.mocked(getProvidersFn).mockResolvedValue([] as never);
 		vi.mocked(getVoiceInfoFn).mockResolvedValue({
@@ -974,6 +976,27 @@ describe("raven route loader", () => {
 			expect(data.providers).toEqual([]);
 			expect(getProvidersFn).toHaveBeenCalledWith({
 				data: { preferCachedModels: true },
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not let optional agent, skill, or voice inventory hold navigation pending", async () => {
+		vi.useFakeTimers();
+		try {
+			vi.mocked(getAgentListFn).mockImplementation(() => new Promise(() => {}));
+			vi.mocked(getCockpitData).mockImplementation(() => new Promise(() => {}));
+			vi.mocked(getVoiceInfoFn).mockImplementation(() => new Promise(() => {}));
+			const pending = route.loader({ deps: { session: "s1" } });
+			await vi.advanceTimersByTimeAsync(501);
+			const data = await pending;
+			expect(data.existingSessionId).toBe("s1");
+			expect(data.agentList).toEqual([]);
+			expect(data.vaultSkills).toEqual([]);
+			expect(data.voiceInfo).toEqual({
+				status: { state: "unavailable", model: "" },
+				models: [],
 			});
 		} finally {
 			vi.useRealTimers();

@@ -263,20 +263,34 @@ function UpdatesView({
 						update.error
 							? `check incomplete: ${update.error}`
 							: update.available
-								? `update available: v${update.latestVersion}`
+								? update.surface === "desktop"
+									? `Store update available: package v${update.latestVersion}`
+									: `update available: v${update.latestVersion}`
 								: "you're on the latest version"
 					}
 				>
 					<div className="flex flex-col items-end gap-1.5 min-w-0">
 						<span className="text-xs font-mono text-muted-foreground">
-							v{update.installedVersion ?? "—"}
-							{update.available && update.latestVersion && (
-								<span className="text-foreground">
-									{" "}
-									→ v{update.latestVersion}
+							v{update.appVersion ?? update.installedVersion ?? "—"}
+							{(update.surface !== "desktop" || !update.appVersion) &&
+								update.available &&
+								update.latestVersion && (
+									<span className="text-foreground">
+										{" "}
+										→ v{update.latestVersion}
+									</span>
+								)}
+						</span>
+						{update.surface === "desktop" &&
+							update.appVersion &&
+							update.installedVersion && (
+								<span className="text-[9px] font-mono text-muted-foreground/60">
+									Store package v{update.installedVersion}
+									{update.available && update.latestVersion
+										? ` → v${update.latestVersion}`
+										: ""}
 								</span>
 							)}
-						</span>
 						{update.available && (
 							<code className="max-w-full select-all break-all text-right text-[9px] text-primary/75">
 								{update.updateCommand ?? "update using the original installer"}

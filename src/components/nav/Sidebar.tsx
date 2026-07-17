@@ -9,7 +9,7 @@ import {
 	type UpdateStatus,
 } from "../../hooks/updateStore";
 import { LockButton } from "../auth/LockButton";
-import { NAV_ITEMS, navSearch } from "./items";
+import { NAV_ITEMS, navActiveOptions, navSearch } from "./items";
 import { useSystemStatusIndicator } from "./SystemStatusDot";
 
 export function Sidebar() {
@@ -71,7 +71,7 @@ export function Sidebar() {
 							className:
 								"flex items-center gap-3 px-4 py-2.5 text-[11px] tracking-widest text-primary border-l-2 border-primary bg-primary/5 transition-colors duration-100",
 						}}
-						activeOptions={{ exact }}
+						activeOptions={navActiveOptions(exact)}
 					>
 						<Icon className="w-3.5 h-3.5 shrink-0" />
 						<span>{label}</span>

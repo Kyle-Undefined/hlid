@@ -1,6 +1,6 @@
 import { Link } from "@tanstack/react-router";
 import { useLastRavenSession } from "#/hooks/ravenSessionStore";
-import { NAV_ITEMS, navSearch } from "./items";
+import { NAV_ITEMS, navActiveOptions, navSearch } from "./items";
 import { WsStatusDot } from "./SystemStatusDot";
 
 const BASE =
@@ -27,7 +27,7 @@ export function BottomNav() {
 						search={navSearch(to, lastRavenSession)}
 						className={`${BASE} text-muted-foreground hover:text-foreground`}
 						activeProps={{ className: `${BASE} text-primary` }}
-						activeOptions={{ exact }}
+						activeOptions={navActiveOptions(exact)}
 					>
 						<Icon className="w-4 h-4 shrink-0" />
 						<span className={LABEL}>{label}</span>

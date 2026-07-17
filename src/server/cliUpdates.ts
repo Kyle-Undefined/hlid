@@ -1,5 +1,5 @@
 import { accessSync, constants, mkdirSync, realpathSync } from "node:fs";
-import { readFile, writeFile } from "node:fs/promises";
+import { open, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { resolveClaudeExecutable } from "../lib/claudePath";
 import type { CliUpdateStatus } from "../lib/cliUpdateTypes";
@@ -21,7 +21,7 @@ const DESKTOP_CHECK_TTL_MS = 5 * 60 * 1000;
 const COMMAND_TIMEOUT_MS = 4_000;
 const STORE_TIMEOUT_MS = 15_000;
 const REGISTRY_TIMEOUT_MS = 5_000;
-const CACHE_SCHEMA_VERSION = 2;
+const CACHE_SCHEMA_VERSION = 3;
 const BACKGROUND_REFRESH_DELAY_MS = 1_500;
 const CODEX_DESKTOP_STORE_ID = "9PLM9XGG6VKS";
 
@@ -62,7 +62,10 @@ type WslUpdateDependencies = {
 
 type WindowsDesktopUpdateDependencies = {
 	isWindows(): boolean;
-	readInstalledVersion(): Promise<string | null>;
+	readInstalledVersions(): Promise<{
+		packageVersion: string;
+		appVersion: string | null;
+	} | null>;
 	readStoreVersions(): Promise<{
 		installedVersion: string;
 		latestVersion: string;
@@ -261,14 +264,89 @@ const defaultDependencies: CliUpdateDependencies = {
 	now: Date.now,
 };
 
-async function readInstalledCodexDesktopVersion(): Promise<string | null> {
+type AsarFileEntry = {
+	size?: unknown;
+	offset?: unknown;
+};
+
+/** Read Electron's canonical app version without loading the full ASAR into memory. */
+export async function readElectronAsarPackageVersion(
+	archivePath: string,
+): Promise<string | null> {
+	const archive = await open(archivePath, "r").catch(() => null);
+	if (!archive) return null;
+	try {
+		const prefix = Buffer.alloc(16);
+		const prefixRead = await archive.read(prefix, 0, prefix.length, 0);
+		if (prefixRead.bytesRead !== prefix.length) return null;
+		const headerSize = prefix.readUInt32LE(4);
+		const headerJsonSize = prefix.readUInt32LE(12);
+		if (
+			headerSize < 8 ||
+			headerJsonSize === 0 ||
+			headerJsonSize > headerSize ||
+			headerJsonSize > 64 * 1024 * 1024
+		) {
+			return null;
+		}
+		const headerBuffer = Buffer.alloc(headerJsonSize);
+		const headerRead = await archive.read(
+			headerBuffer,
+			0,
+			headerBuffer.length,
+			16,
+		);
+		if (headerRead.bytesRead !== headerBuffer.length) return null;
+		const header = JSON.parse(headerBuffer.toString("utf8")) as {
+			files?: Record<string, AsarFileEntry>;
+		};
+		const packageEntry = header.files?.["package.json"];
+		const packageSize = packageEntry?.size;
+		const packageOffset = packageEntry?.offset;
+		if (
+			typeof packageSize !== "number" ||
+			!Number.isSafeInteger(packageSize) ||
+			packageSize <= 0 ||
+			packageSize > 1024 * 1024 ||
+			typeof packageOffset !== "string" ||
+			!/^\d+$/.test(packageOffset)
+		) {
+			return null;
+		}
+		const offset = Number(packageOffset);
+		if (!Number.isSafeInteger(offset)) return null;
+		const packageBuffer = Buffer.alloc(packageSize);
+		const packageRead = await archive.read(
+			packageBuffer,
+			0,
+			packageBuffer.length,
+			8 + headerSize + offset,
+		);
+		if (packageRead.bytesRead !== packageBuffer.length) return null;
+		const packageJson = JSON.parse(packageBuffer.toString("utf8")) as {
+			version?: unknown;
+		};
+		return typeof packageJson.version === "string"
+			? parseCliVersion(packageJson.version)
+			: null;
+	} catch {
+		return null;
+	} finally {
+		await archive.close();
+	}
+}
+
+async function readInstalledCodexDesktopVersions(): Promise<{
+	packageVersion: string;
+	appVersion: string | null;
+} | null> {
 	const result = await runBoundedProcess(
 		"powershell.exe",
 		[
 			"-NoProfile",
 			"-NonInteractive",
 			"-Command",
-			"$package = Get-AppxPackage -Name OpenAI.Codex -ErrorAction SilentlyContinue; if ($package) { $package.Version.ToString() }",
+			"$package = Get-AppxPackage -Name OpenAI.Codex -ErrorAction SilentlyContinue; if ($package) { [pscustomobject]@{ packageVersion = $package.Version.ToString(); installLocation = $package.InstallLocation } | ConvertTo-Json -Compress }",
 		],
 		{
 			timeoutMs: COMMAND_TIMEOUT_MS,
@@ -278,7 +356,27 @@ async function readInstalledCodexDesktopVersion(): Promise<string | null> {
 	if (result.code !== 0) {
 		throw new Error(`PowerShell version check exited ${result.code}`);
 	}
-	return parseCliVersion(result.output);
+	if (!result.output.trim()) return null;
+	let installed: { packageVersion?: unknown; installLocation?: unknown };
+	try {
+		installed = JSON.parse(result.output.trim()) as typeof installed;
+	} catch {
+		throw new Error("PowerShell version output was not recognized");
+	}
+	const packageVersion =
+		typeof installed.packageVersion === "string"
+			? parseCliVersion(installed.packageVersion)
+			: null;
+	if (!packageVersion) {
+		throw new Error("PowerShell package version was not recognized");
+	}
+	const appVersion =
+		typeof installed.installLocation === "string"
+			? await readElectronAsarPackageVersion(
+					join(installed.installLocation, "app", "resources", "app.asar"),
+				)
+			: null;
+	return { packageVersion, appVersion };
 }
 
 async function readCodexDesktopStoreVersions(): Promise<{
@@ -312,7 +410,7 @@ async function readCodexDesktopStoreVersions(): Promise<{
 
 const defaultWindowsDesktopDependencies: WindowsDesktopUpdateDependencies = {
 	isWindows: () => process.platform === "win32",
-	readInstalledVersion: readInstalledCodexDesktopVersion,
+	readInstalledVersions: readInstalledCodexDesktopVersions,
 	readStoreVersions: readCodexDesktopStoreVersions,
 	now: Date.now,
 };
@@ -553,8 +651,9 @@ export async function inspectWindowsDesktopUpdates(
 	dependencies: WindowsDesktopUpdateDependencies = defaultWindowsDesktopDependencies,
 ): Promise<CliUpdateStatus[]> {
 	if (!dependencies.isWindows()) return [];
-	const installedVersion = await dependencies.readInstalledVersion();
-	if (!installedVersion) return [];
+	const installedVersions = await dependencies.readInstalledVersions();
+	if (!installedVersions) return [];
+	const { packageVersion: installedVersion, appVersion } = installedVersions;
 	const storeResult = await Promise.allSettled([
 		dependencies.readStoreVersions(),
 	]);
@@ -567,6 +666,7 @@ export async function inspectWindowsDesktopUpdates(
 			id: "codex-desktop",
 			label: "Codex desktop app",
 			surface: "desktop",
+			appVersion,
 			installedVersion,
 			latestVersion,
 			available:
@@ -753,6 +853,7 @@ function isPersistedStatus(value: unknown): value is CliUpdateStatus {
 		(status.surface === undefined ||
 			status.surface === "cli" ||
 			status.surface === "desktop") &&
+		(status.appVersion === undefined || nullableString(status.appVersion)) &&
 		nullableString(status.installedVersion) &&
 		nullableString(status.latestVersion) &&
 		typeof status.available === "boolean" &&

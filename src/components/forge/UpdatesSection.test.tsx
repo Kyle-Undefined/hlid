@@ -184,6 +184,7 @@ describe("UpdatesSection", () => {
 						id: "codex-desktop",
 						label: "Codex desktop app",
 						surface: "desktop",
+						appVersion: "26.707.91948",
 						installedVersion: "26.707.9981.0",
 						latestVersion: "26.708.10000.0",
 						available: true,
@@ -200,6 +201,13 @@ describe("UpdatesSection", () => {
 
 		expect(await screen.findByText("Codex desktop app")).toBeTruthy();
 		expect(screen.queryByText("Codex desktop app CLI")).toBeNull();
+		expect(screen.getByText("v26.707.91948")).toBeTruthy();
+		expect(
+			screen.getByText("Store package v26.707.9981.0 → v26.708.10000.0"),
+		).toBeTruthy();
+		expect(
+			screen.getByText("Store update available: package v26.708.10000.0"),
+		).toBeTruthy();
 		fireEvent.click(screen.getByRole("button", { name: "UPDATE" }));
 		expect(screen.getByText("update desktop app?")).toBeTruthy();
 		fireEvent.click(screen.getByRole("button", { name: "update" }));

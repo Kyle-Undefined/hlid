@@ -177,17 +177,33 @@ function resolveTerminalSession(
 }
 
 async function loadRavenRoute(session?: string, agent?: string) {
-	const [config, agentList, cockpitData, providers, voiceInfo] =
-		await Promise.all([
-			getConfig(),
-			getAgentListFn(),
-			getCockpitData(),
-			optionalRavenLoaderValue(
-				getProvidersFn({ data: { preferCachedModels: true } }),
-				[],
-			),
-			getVoiceInfoFn(),
-		]);
+	const explicitSelection = session
+		? getSessionSelectionFn({ data: session })
+		: Promise.resolve(null);
+	const [
+		config,
+		agentList,
+		vaultSkills,
+		providers,
+		voiceInfo,
+		explicitSessionSelection,
+	] = await Promise.all([
+		getConfig(),
+		optionalRavenLoaderValue(getAgentListFn(), []),
+		optionalRavenLoaderValue(
+			getCockpitData().then((cockpit) => cockpit.skills),
+			[],
+		),
+		optionalRavenLoaderValue(
+			getProvidersFn({ data: { preferCachedModels: true } }),
+			[],
+		),
+		optionalRavenLoaderValue(getVoiceInfoFn(), {
+			status: { state: "unavailable", model: "" },
+			models: [],
+		}),
+		explicitSelection,
+	]);
 	const providerUsages = await optionalRavenLoaderValue(
 		loadProviderUsages(providers),
 		[],
@@ -205,12 +221,11 @@ async function loadRavenRoute(session?: string, agent?: string) {
 	let sessionEffort: string | null = null;
 	let sessionPermissionMode: string | null = null;
 	if (resolvedSessionId) {
-		const savedSelection = await getSessionSelectionFn({
-			data: resolvedSessionId,
-		});
-		if (!agentSkillContext) {
-			agentSkillContext = savedSelection?.agentCwd ?? undefined;
-		}
+		const savedSelection =
+			resolvedSessionId === session
+				? explicitSessionSelection
+				: await getSessionSelectionFn({ data: resolvedSessionId });
+		agentSkillContext ||= savedSelection?.agentCwd ?? undefined;
 		sessionModel = savedSelection?.model ?? null;
 		sessionProviderId = savedSelection?.providerId ?? null;
 		sessionEffort = savedSelection?.effort ?? null;
@@ -236,7 +251,7 @@ async function loadRavenRoute(session?: string, agent?: string) {
 		sessionEffort,
 		sessionPermissionMode,
 		agentList,
-		vaultSkills: cockpitData.skills,
+		vaultSkills,
 		interactiveMode,
 		providers,
 		voiceInfo,

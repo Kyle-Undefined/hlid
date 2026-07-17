@@ -8,6 +8,8 @@ export type CliUpdateStatus = {
 		| `acp:${string}`;
 	label: string;
 	surface?: "cli" | "desktop";
+	/** Human-facing app version when it differs from the installer/package version. */
+	appVersion?: string | null;
 	installedVersion: string | null;
 	latestVersion: string | null;
 	available: boolean;
