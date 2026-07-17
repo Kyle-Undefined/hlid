@@ -6,6 +6,7 @@ import { ActiveSessionsPanel } from "./ActiveSessionsPanel";
 
 afterEach(() => {
 	cleanup();
+	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
 });
 
@@ -140,6 +141,25 @@ describe("ActiveSessionsPanel", () => {
 		fireEvent.keyDown(row, { key: " " });
 		expect(onNavigate).toHaveBeenNthCalledWith(1, "db-session-1");
 		expect(onNavigate).toHaveBeenNthCalledWith(2, "db-session-1");
+	});
+
+	it("does not open a session when the row click finishes text selection", () => {
+		const onNavigate = vi.fn();
+		vi.spyOn(window, "getSelection").mockReturnValue({
+			toString: () => "claude-sonnet",
+		} as Selection);
+		render(
+			<ActiveSessionsPanel
+				sessions={[{ ...idle, db_session_id: "db-session-1" }]}
+				onStop={vi.fn()}
+				onClose={vi.fn()}
+				onNavigate={onNavigate}
+			/>,
+		);
+
+		fireEvent.click(screen.getByLabelText("Open Proj session"));
+
+		expect(onNavigate).not.toHaveBeenCalled();
 	});
 
 	it("shows agent_cwd in each row", () => {

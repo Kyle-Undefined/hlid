@@ -22,14 +22,18 @@ export type LedgerStatsData = {
 	thirtyDayStatus: LedgerStatsSourceStatus;
 	activityStatus: LedgerStatsSourceStatus;
 	analytics: LedgerAnalytics | null;
+	/** Prior successful filter result retained only while the next filter loads. */
+	staleAnalytics: LedgerAnalytics | null;
 	analyticsStatus: LedgerStatsSourceStatus;
 };
 
 export type LedgerStatsSourceStatus = "loading" | "ready" | "unavailable";
 
-type LedgerStatsSnapshot = LedgerStatsData & {
+type LedgerStatsSnapshot = Omit<LedgerStatsData, "staleAnalytics"> & {
 	/** Filter identity for the analytics payload/status stored in this snapshot. */
 	analyticsKey: string | null;
+	/** Filter identity whose request owns analyticsStatus. */
+	analyticsRequestKey: string | null;
 };
 
 const EMPTY_LEDGER_STATS: LedgerStatsSnapshot = {
@@ -42,6 +46,7 @@ const EMPTY_LEDGER_STATS: LedgerStatsSnapshot = {
 	analytics: null,
 	analyticsStatus: "loading",
 	analyticsKey: null,
+	analyticsRequestKey: null,
 };
 
 let snapshot: LedgerStatsSnapshot = EMPTY_LEDGER_STATS;
@@ -103,9 +108,8 @@ export function useLedgerStatsData(
 		const isCurrent = () => generation === generationRef.current;
 		if (getSnapshot().analyticsKey !== filterKey) {
 			updateSnapshot({
-				analytics: null,
 				analyticsStatus: "loading",
-				analyticsKey: filterKey,
+				analyticsRequestKey: filterKey,
 			});
 		}
 
@@ -158,28 +162,24 @@ export function useLedgerStatsData(
 						analytics,
 						analyticsStatus: "ready",
 						analyticsKey: filterKey,
+						analyticsRequestKey: filterKey,
 					});
-				} else if (
-					getSnapshot().analyticsKey !== filterKey ||
-					getSnapshot().analyticsStatus !== "ready"
-				) {
+				} else if (getSnapshot().analyticsRequestKey === filterKey) {
 					updateSnapshot({
-						analytics: null,
 						analyticsStatus: "unavailable",
-						analyticsKey: filterKey,
+						analyticsRequestKey: filterKey,
 					});
 				}
 			})
 			.catch(() => {
 				if (
 					isCurrent() &&
-					(getSnapshot().analyticsKey !== filterKey ||
-						getSnapshot().analyticsStatus !== "ready")
+					getSnapshot().analyticsRequestKey === filterKey &&
+					getSnapshot().analyticsKey !== filterKey
 				) {
 					updateSnapshot({
-						analytics: null,
 						analyticsStatus: "unavailable",
-						analyticsKey: filterKey,
+						analyticsRequestKey: filterKey,
 					});
 				}
 			});
@@ -210,10 +210,22 @@ export function useLedgerStatsData(
 	);
 
 	const analyticsMatchesFilter = data.analyticsKey === filterKey;
+	const requestMatchesFilter = data.analyticsRequestKey === filterKey;
+	const staleAnalytics =
+		!analyticsMatchesFilter &&
+		requestMatchesFilter &&
+		data.analyticsStatus === "loading"
+			? data.analytics
+			: null;
 	return {
 		...data,
 		analytics: analyticsMatchesFilter ? data.analytics : null,
-		analyticsStatus: analyticsMatchesFilter ? data.analyticsStatus : "loading",
+		staleAnalytics,
+		analyticsStatus: analyticsMatchesFilter
+			? "ready"
+			: requestMatchesFilter
+				? data.analyticsStatus
+				: "loading",
 		refresh,
 	};
 }

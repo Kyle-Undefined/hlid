@@ -230,6 +230,7 @@ describe("useLedgerStatsData", () => {
 		rerender({ filter: { range: "30d", provider: "codex" } });
 
 		expect(result.current.analytics).toBeNull();
+		expect(result.current.staleAnalytics?.selected.queries).toBe(7);
 		expect(result.current.analyticsStatus).toBe("loading");
 		next.resolve(filteredAnalytics(3));
 		await waitFor(() =>

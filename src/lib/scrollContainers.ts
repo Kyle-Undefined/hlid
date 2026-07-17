@@ -27,7 +27,9 @@ export function isNearChatBottom(
 	element: Pick<HTMLElement, "scrollHeight" | "scrollTop" | "clientHeight">,
 	isCoarsePointer: boolean,
 ): boolean {
-	const threshold = isCoarsePointer ? 12 : 80;
+	// Desktop wheel/trackpad input needs a tighter lock than a broad proximity
+	// zone or streaming chunks can pull the reader down too aggressively.
+	const threshold = isCoarsePointer ? 12 : 32;
 	return (
 		element.scrollHeight - element.scrollTop - element.clientHeight < threshold
 	);

@@ -10,6 +10,12 @@ import { useEffect, useState } from "react";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { SubagentSnapshot } from "#/server/agentProvider";
 
+const subagentOpenOverrides = new Map<string, boolean>();
+
+function subagentStateKey(subagent: SubagentSnapshot): string {
+	return `${subagent.provider}:${subagent.agentId}`;
+}
+
 function isActive(status: SubagentSnapshot["status"]): boolean {
 	return status === "pending" || status === "running" || status === "paused";
 }
@@ -222,9 +228,22 @@ export function SubagentToolBlock({
 	subagent: SubagentSnapshot;
 }) {
 	const active = isActive(subagent.status);
-	const [openOverride, setOpenOverride] = useState<boolean | null>(null);
+	const stateKey = subagentStateKey(subagent);
+	const [openOverride, setOpenOverride] = useState<boolean | null>(
+		() => subagentOpenOverrides.get(stateKey) ?? null,
+	);
 	const open = openOverride ?? active;
 	const durationMs = useSubagentDuration(subagent, active);
+
+	useEffect(() => {
+		setOpenOverride(subagentOpenOverrides.get(stateKey) ?? null);
+	}, [stateKey]);
+
+	function toggleOpen() {
+		const next = !open;
+		subagentOpenOverrides.set(stateKey, next);
+		setOpenOverride(next);
+	}
 
 	return (
 		<div className="my-0.5 min-w-0 max-w-full overflow-hidden">
@@ -232,9 +251,15 @@ export function SubagentToolBlock({
 				subagent={subagent}
 				open={open}
 				durationMs={durationMs}
-				onToggle={() => setOpenOverride(!open)}
+				onToggle={toggleOpen}
 			/>
 			{open && <SubagentDetails subagent={subagent} durationMs={durationMs} />}
 		</div>
 	);
+}
+
+/** Test-only reset for module-level navigation state. */
+// fallow-ignore-next-line unused-export -- test-only reset
+export function resetSubagentOpenStateForTest(): void {
+	subagentOpenOverrides.clear();
 }

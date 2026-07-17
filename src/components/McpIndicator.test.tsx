@@ -1,7 +1,11 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
-import { McpIndicator, mobilePopoverOffset } from "./McpIndicator";
+import {
+	McpIndicator,
+	mcpPopoverOffset,
+	mobilePopoverOffset,
+} from "./McpIndicator";
 
 afterEach(cleanup);
 
@@ -10,6 +14,11 @@ describe("McpIndicator", () => {
 		expect(mobilePopoverOffset(456, 172)).toBe(-20);
 		expect(mobilePopoverOffset(360, 16)).toBe(0);
 		expect(mobilePopoverOffset(320, 4)).toBe(12);
+	});
+
+	it("clamps a right-aligned desktop popover when its anchor is near the left edge", () => {
+		expect(mcpPopoverOffset(1_200, 20, 60, true)).toBe(-4);
+		expect(mcpPopoverOffset(1_200, 1_100, 60, true)).toBe(-228);
 	});
 
 	it("summarizes the active provider and opens a detailed status popover", () => {

@@ -8,7 +8,10 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SubagentSnapshot } from "#/server/agentProvider";
-import { SubagentToolBlock } from "./SubagentToolBlock";
+import {
+	resetSubagentOpenStateForTest,
+	SubagentToolBlock,
+} from "./SubagentToolBlock";
 
 function snapshot(overrides: Partial<SubagentSnapshot> = {}): SubagentSnapshot {
 	return {
@@ -25,6 +28,7 @@ function snapshot(overrides: Partial<SubagentSnapshot> = {}): SubagentSnapshot {
 
 afterEach(() => {
 	cleanup();
+	resetSubagentOpenStateForTest();
 	vi.useRealTimers();
 });
 
@@ -90,6 +94,24 @@ describe("SubagentToolBlock", () => {
 		fireEvent.click(button);
 		expect(button.getAttribute("aria-expanded")).toBe("true");
 		expect(screen.getByText("Inspect the authentication flow")).toBeTruthy();
+	});
+
+	it("restores a running card's collapsed state after navigation remounts it", () => {
+		const first = render(<SubagentToolBlock subagent={snapshot()} />);
+		fireEvent.click(screen.getByRole("button", { name: /explorer running/i }));
+		expect(
+			screen
+				.getByRole("button", { name: /explorer running/i })
+				.getAttribute("aria-expanded"),
+		).toBe("false");
+
+		first.unmount();
+		render(<SubagentToolBlock subagent={snapshot()} />);
+		expect(
+			screen
+				.getByRole("button", { name: /explorer running/i })
+				.getAttribute("aria-expanded"),
+		).toBe("false");
 	});
 
 	it("auto-collapses on completion and reopens with retained details", () => {

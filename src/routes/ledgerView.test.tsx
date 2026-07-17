@@ -144,6 +144,7 @@ vi.mock("#/hooks/useLedgerStatsData", () => ({
 		thirtyDayStatus: testState.loaderData.thirtyDayStatus,
 		activityStatus: testState.loaderData.activityStatus,
 		analytics: testState.loaderData.analytics,
+		staleAnalytics: testState.loaderData.staleAnalytics,
 		analyticsStatus: testState.loaderData.analyticsStatus,
 		refresh: vi.fn(),
 	}),
@@ -652,6 +653,21 @@ describe("ledger stats view", () => {
 
 		expect(screen.getByText("Loading filtered analytics…")).toBeTruthy();
 		expect(screen.queryByText("Model chart")).toBeNull();
+	});
+
+	it("keeps the prior stats layout visible while a filter or reset refreshes", () => {
+		const staleAnalytics = testState.loaderData.analytics;
+		testState.loaderData.analytics = null;
+		testState.loaderData.staleAnalytics = staleAnalytics;
+		testState.loaderData.analyticsStatus = "loading";
+
+		renderLedger();
+
+		expect(screen.getByText("Overview")).toBeTruthy();
+		expect(screen.getByRole("status").textContent).toContain(
+			"Updating filtered analytics",
+		);
+		expect(screen.queryByText("Loading filtered analytics…")).toBeNull();
 	});
 
 	it("sums header totals across every open session regardless of state", async () => {

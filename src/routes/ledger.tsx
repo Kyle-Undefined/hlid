@@ -1129,8 +1129,11 @@ function StatsPage() {
 			>
 				{tab === "stats" ? (
 					<StatsTab
-						analytics={ledgerStats.analytics}
+						analytics={ledgerStats.analytics ?? ledgerStats.staleAnalytics}
 						analyticsStatus={ledgerStats.analyticsStatus}
+						analyticsRefreshing={Boolean(
+							!ledgerStats.analytics && ledgerStats.staleAnalytics,
+						)}
 						analyticsFilter={statsFilter}
 						listState={listState}
 						navigate={navigate}
@@ -1181,6 +1184,7 @@ function StatsDataState({
 function StatsTab({
 	analytics,
 	analyticsStatus,
+	analyticsRefreshing,
 	analyticsFilter,
 	listState,
 	navigate,
@@ -1188,6 +1192,7 @@ function StatsTab({
 }: {
 	analytics: LedgerAnalytics | null;
 	analyticsStatus: LedgerStatsSourceStatus;
+	analyticsRefreshing: boolean;
 	analyticsFilter: LedgerAnalyticsFilter;
 	listState: ListState;
 	navigate: LedgerNavigate;
@@ -1263,7 +1268,9 @@ function StatsTab({
 				models={analytics?.facets.models ?? []}
 				onChange={setFilter}
 			/>
-			{analyticsStatus !== "ready" || !analytics || !selected ? (
+			{(!analyticsRefreshing && analyticsStatus !== "ready") ||
+			!analytics ||
+			!selected ? (
 				<div className="p-5">
 					<StatsDataState
 						status={
@@ -1273,111 +1280,127 @@ function StatsTab({
 					/>
 				</div>
 			) : (
-				<div className="space-y-3 p-3 sm:p-5">
-					<StatsSection
-						title="Overview"
-						summary={`${rangeLabel} · ${selected.queries} queries`}
-						open
-						privacySensitive
+				<div className="relative">
+					{analyticsRefreshing && (
+						<output className="pointer-events-none absolute right-3 top-3 z-10 border border-border bg-background/95 px-2 py-1 text-[8px] tracking-widest text-muted-foreground uppercase shadow-sm sm:right-5 sm:top-5">
+							Updating filtered analytics…
+						</output>
+					)}
+					<div
+						className={`space-y-3 p-3 sm:p-5 ${analyticsRefreshing ? "pointer-events-none" : ""}`}
+						aria-busy={analyticsRefreshing}
 					>
-						<div className="grid grid-cols-2 gap-px border border-border bg-border sm:grid-cols-3 lg:grid-cols-6">
-							<MetricTile
-								label="Cost"
-								value={formatDisplayCost(selected)}
-								sub={costDisplayNote(selected)}
-							/>
-							<MetricTile label="Avg cost / priced query" value={avgCost} />
-							<MetricTile label="Cache hit rate" value={hitRate} />
-							<MetricTile
-								label="Priced coverage"
-								value={pricedCoverage}
-								sub={`${pricedQueries}/${selected.queries} queries`}
-							/>
-							<MetricTile
-								label="Queries"
-								value={String(selected.queries)}
-								sub="completed query records"
-							/>
-							<MetricTile
-								label="Sessions"
-								value={String(selected.sessions)}
-								sub="distinct sessions with queries"
-							/>
-						</div>
-						<div className="border border-border bg-card">
-							<div className="border-b border-border px-3 py-2 text-[8px] tracking-widest text-muted-foreground uppercase">
-								Token counts
-							</div>
-							<div className="grid grid-cols-2 gap-px bg-border sm:grid-cols-3 lg:grid-cols-6">
-								<TokenCountTile
-									label="Input"
-									value={fmt(selected.input_tokens)}
+						<StatsSection
+							title="Overview"
+							summary={`${rangeLabel} · ${selected.queries} queries`}
+							open
+							privacySensitive
+						>
+							<div className="grid grid-cols-2 gap-px border border-border bg-border sm:grid-cols-3 lg:grid-cols-6">
+								<MetricTile
+									label="Cost"
+									value={formatDisplayCost(selected)}
+									sub={costDisplayNote(selected)}
 								/>
-								<TokenCountTile
-									label="Output"
-									value={fmt(selected.output_tokens)}
+								<MetricTile label="Avg cost / priced query" value={avgCost} />
+								<MetricTile label="Cache hit rate" value={hitRate} />
+								<MetricTile
+									label="Priced coverage"
+									value={pricedCoverage}
+									sub={`${pricedQueries}/${selected.queries} queries`}
 								/>
-								<TokenCountTile
-									label="Non-cache total"
-									value={fmt(nonCacheTokens)}
-									sub="input + output"
+								<MetricTile
+									label="Queries"
+									value={String(selected.queries)}
+									sub="completed query records"
 								/>
-								<TokenCountTile
-									label="Cache read"
-									value={fmt(selected.cache_read_tokens)}
-								/>
-								<TokenCountTile
-									label="Cache write"
-									value={fmt(selected.cache_creation_tokens)}
-								/>
-								<TokenCountTile
-									label="Total tokens"
-									value={fmt(totalTokens)}
-									sub="including cache"
+								<MetricTile
+									label="Sessions"
+									value={String(selected.sessions)}
+									sub="distinct sessions with queries"
 								/>
 							</div>
-						</div>
-						<ThirtyDayGraph
-							data={analytics.trend}
-							label={`${rangeLabel} query activity`}
-						/>
-					</StatsSection>
-
-					<StatsSection title="Cost" summary="Token mix, cache, and efficiency">
-						<CostBreakdown s={selected} />
-					</StatsSection>
-
-					<StatsSection
-						title="Models"
-						summary={`${analytics.modelSplit.length} used`}
-						privacySensitive
-					>
-						<ModelSplitDonut
-							data={analytics.modelSplit}
-							onSelect={(model) => drillDown({ model, stop: "" })}
-						/>
-					</StatsSection>
-
-					<StatsSection
-						title="Tools"
-						summary={`${analytics.topTools.length} ranked`}
-						privacySensitive
-					>
-						<TopToolsChart data={analytics.topTools} filter={analyticsFilter} />
-					</StatsSection>
-
-					<StatsSection
-						title="Reliability"
-						summary="Stop reasons and activity timing"
-					>
-						<div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-							<StopReasonDonut
-								data={analytics.stopReasonSplit}
-								onSelect={(stop) => drillDown({ stop })}
+							<div className="border border-border bg-card">
+								<div className="border-b border-border px-3 py-2 text-[8px] tracking-widest text-muted-foreground uppercase">
+									Token counts
+								</div>
+								<div className="grid grid-cols-2 gap-px bg-border sm:grid-cols-3 lg:grid-cols-6">
+									<TokenCountTile
+										label="Input"
+										value={fmt(selected.input_tokens)}
+									/>
+									<TokenCountTile
+										label="Output"
+										value={fmt(selected.output_tokens)}
+									/>
+									<TokenCountTile
+										label="Non-cache total"
+										value={fmt(nonCacheTokens)}
+										sub="input + output"
+									/>
+									<TokenCountTile
+										label="Cache read"
+										value={fmt(selected.cache_read_tokens)}
+									/>
+									<TokenCountTile
+										label="Cache write"
+										value={fmt(selected.cache_creation_tokens)}
+									/>
+									<TokenCountTile
+										label="Total tokens"
+										value={fmt(totalTokens)}
+										sub="including cache"
+									/>
+								</div>
+							</div>
+							<ThirtyDayGraph
+								data={analytics.trend}
+								label={`${rangeLabel} query activity`}
 							/>
-							<HourOfDayChart data={analytics.weekdayHour} />
-						</div>
-					</StatsSection>
+						</StatsSection>
+
+						<StatsSection
+							title="Cost"
+							summary="Token mix, cache, and efficiency"
+						>
+							<CostBreakdown s={selected} />
+						</StatsSection>
+
+						<StatsSection
+							title="Models"
+							summary={`${analytics.modelSplit.length} used`}
+							privacySensitive
+						>
+							<ModelSplitDonut
+								data={analytics.modelSplit}
+								onSelect={(model) => drillDown({ model, stop: "" })}
+							/>
+						</StatsSection>
+
+						<StatsSection
+							title="Tools"
+							summary={`${analytics.topTools.length} ranked`}
+							privacySensitive
+						>
+							<TopToolsChart
+								data={analytics.topTools}
+								filter={analyticsFilter}
+							/>
+						</StatsSection>
+
+						<StatsSection
+							title="Reliability"
+							summary="Stop reasons and activity timing"
+						>
+							<div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+								<StopReasonDonut
+									data={analytics.stopReasonSplit}
+									onSelect={(stop) => drillDown({ stop })}
+								/>
+								<HourOfDayChart data={analytics.weekdayHour} />
+							</div>
+						</StatsSection>
+					</div>
 				</div>
 			)}
 		</div>

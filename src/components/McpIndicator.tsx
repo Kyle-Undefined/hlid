@@ -33,16 +33,36 @@ function aggregateStatus(servers: McpServerEntry[]): McpServerEntry["status"] {
 	)[0].status;
 }
 
+// fallow-ignore-next-line unused-export -- test-only mobile edge regression
 export function mobilePopoverOffset(
 	viewportWidth: number,
 	anchorLeft: number,
 	popoverWidth = 288,
 	margin = 16,
 ): number {
+	return mcpPopoverOffset(
+		viewportWidth,
+		anchorLeft,
+		0,
+		false,
+		popoverWidth,
+		margin,
+	);
+}
+
+export function mcpPopoverOffset(
+	viewportWidth: number,
+	anchorLeft: number,
+	anchorWidth: number,
+	preferRight: boolean,
+	popoverWidth = 288,
+	margin = 16,
+): number {
 	const width = Math.min(popoverWidth, Math.max(0, viewportWidth - margin * 2));
+	const idealLeft = preferRight ? anchorLeft + anchorWidth - width : anchorLeft;
 	const absoluteLeft = Math.max(
 		margin,
-		Math.min(anchorLeft, viewportWidth - margin - width),
+		Math.min(idealLeft, viewportWidth - margin - width),
 	);
 	return absoluteLeft - anchorLeft;
 }
@@ -57,7 +77,7 @@ export function McpIndicator({
 	label?: string;
 }) {
 	const [open, setOpen] = useState(false);
-	const [mobileOffset, setMobileOffset] = useState<number | null>(null);
+	const [popoverOffset, setPopoverOffset] = useState<number | null>(null);
 	const rootRef = useRef<HTMLDivElement>(null);
 	const sorted = [...servers].sort(
 		(a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status],
@@ -78,18 +98,21 @@ export function McpIndicator({
 
 	useEffect(() => {
 		if (!open || align !== "mobile-left") {
-			setMobileOffset(null);
+			setPopoverOffset(null);
 			return;
 		}
 		const reposition = () => {
 			const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
-			if (viewportWidth >= 768) {
-				setMobileOffset(null);
-				return;
-			}
-			const anchorLeft = rootRef.current?.getBoundingClientRect().left;
-			if (anchorLeft === undefined) return;
-			setMobileOffset(mobilePopoverOffset(viewportWidth, anchorLeft));
+			const anchor = rootRef.current?.getBoundingClientRect();
+			if (!anchor) return;
+			setPopoverOffset(
+				mcpPopoverOffset(
+					viewportWidth,
+					anchor.left,
+					anchor.width,
+					viewportWidth >= 768,
+				),
+			);
 		};
 		reposition();
 		window.addEventListener("resize", reposition);
@@ -121,8 +144,8 @@ export function McpIndicator({
 				<div
 					className={`absolute bottom-full z-50 mb-2 w-72 max-w-[calc(100vw-2rem)] border border-border bg-card shadow-xl ${align === "right" ? "right-0" : align === "left" ? "left-0" : "left-0 md:left-auto md:right-0"}`}
 					style={
-						align === "mobile-left" && mobileOffset !== null
-							? { left: `${mobileOffset}px` }
+						align === "mobile-left" && popoverOffset !== null
+							? { left: `${popoverOffset}px`, right: "auto" }
 							: undefined
 					}
 				>

@@ -45,6 +45,11 @@ describe("route scroll containers", () => {
 		expect(isNearChatBottom(viewport, true)).toBe(false);
 	});
 
+	it("does not let desktop wheel proximity pull a reader down from 40px away", () => {
+		const viewport = { scrollHeight: 1_000, scrollTop: 910, clientHeight: 50 };
+		expect(isNearChatBottom(viewport, false)).toBe(false);
+	});
+
 	it("recognizes a finger drag toward older messages immediately", () => {
 		expect(touchMovesTowardOlderMessages(200, 207)).toBe(true);
 		expect(touchMovesTowardOlderMessages(200, 197)).toBe(false);

@@ -191,6 +191,7 @@ function ActiveSessionRow({
 		<tr
 			className={`border-b border-border/40 hover:bg-accent/30 transition-colors ${canNavigate ? "cursor-pointer" : ""}`}
 			onClick={() => {
+				if (window.getSelection()?.toString()) return;
 				if (session.db_session_id) onNavigate?.(session.db_session_id);
 			}}
 			onKeyDown={(event) => {
