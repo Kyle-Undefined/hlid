@@ -47,11 +47,11 @@ export function CockpitRunError({ error }: { error: string | null }) {
 
 function SkillGroup({
 	group,
-	activeSkill,
+	activeSkills,
 	onSelect,
 }: {
 	group: SkillGroups[number];
-	activeSkill: ActiveCockpitSkill | null;
+	activeSkills: ActiveCockpitSkill[];
 	onSelect: (skill: SkillGroups[number]["skills"][number]) => void;
 }) {
 	return (
@@ -73,7 +73,7 @@ function SkillGroup({
 					<SkillCard
 						key={skill.file}
 						skill={skill}
-						active={activeSkill?.name === skill.name}
+						active={activeSkills.some((command) => command.name === skill.name)}
 						onSelect={onSelect}
 					/>
 				))}
@@ -85,12 +85,12 @@ function SkillGroup({
 export function CockpitSkills({
 	hasSkills,
 	groups,
-	activeSkill,
+	activeSkills,
 	onSelect,
 }: {
 	hasSkills: boolean;
 	groups: SkillGroups;
-	activeSkill: ActiveCockpitSkill | null;
+	activeSkills: ActiveCockpitSkill[];
 	onSelect: (skill: SkillGroups[number]["skills"][number]) => void;
 }) {
 	if (!hasSkills) {
@@ -113,7 +113,7 @@ export function CockpitSkills({
 				<SkillGroup
 					key={group.section ?? "__unsectioned__"}
 					group={group}
-					activeSkill={activeSkill}
+					activeSkills={activeSkills}
 					onSelect={onSelect}
 				/>
 			))}

@@ -115,7 +115,7 @@ describe("chat submission policy", () => {
 		expect(
 			submission({
 				running: true,
-				skillContext: "/skills/review.md",
+				skillContexts: ["/skills/review.md"],
 				attachments: [attachment],
 				agentCwd: "/agents/reviewer",
 				planMode: true,
@@ -127,7 +127,7 @@ describe("chat submission policy", () => {
 				id: "turn-1",
 				text: "hello",
 				session_id: "session-1",
-				skill_context: "/skills/review.md",
+				skill_contexts: ["/skills/review.md"],
 				attachments: [attachment],
 				agent_cwd: "/agents/reviewer",
 				plan_mode: true,
@@ -190,7 +190,7 @@ describe("chat submission policy", () => {
 	it("does not attach empty arrays to the wire message", () => {
 		expect(submission()).toMatchObject({
 			kind: "immediate",
-			message: { attachments: undefined, skill_context: undefined },
+			message: { attachments: undefined, skill_contexts: undefined },
 		});
 	});
 });

@@ -162,6 +162,7 @@ function sendChatToServer(msg: QueuedChatMessage): boolean {
 	};
 	if (msg.agent_cwd) payload.agent_cwd = msg.agent_cwd;
 	if (msg.skill_context) payload.skill_context = msg.skill_context;
+	if (msg.skill_contexts?.length) payload.skill_contexts = msg.skill_contexts;
 	if (msg.attachments && msg.attachments.length > 0) {
 		payload.attachments = msg.attachments;
 	}

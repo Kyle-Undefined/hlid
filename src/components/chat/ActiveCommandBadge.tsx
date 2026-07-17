@@ -37,3 +37,24 @@ export function ActiveCommandBadge({
 		</div>
 	);
 }
+
+export function ActiveCommandBadges({
+	commands,
+	onClear,
+}: {
+	commands: CommandDescriptor[];
+	onClear: (commandId: string) => void;
+}) {
+	if (commands.length === 0) return null;
+	return (
+		<div data-testid="active-commands">
+			{commands.map((command) => (
+				<ActiveCommandBadge
+					key={command.id}
+					command={command}
+					onClear={() => onClear(command.id)}
+				/>
+			))}
+		</div>
+	);
+}

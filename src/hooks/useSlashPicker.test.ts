@@ -63,9 +63,10 @@ describe("useSlashPicker – isOpen", () => {
 		expect(result.current.isOpen).toBe(false);
 	});
 
-	it("closed when activeSkill is set (user is typing context, not a new command)", () => {
+	it("stays open for another command and excludes the selected command", () => {
 		const { result } = renderHook(() => useSlashPicker("/", SKILLS, SKILLS[0]));
-		expect(result.current.isOpen).toBe(false);
+		expect(result.current.isOpen).toBe(true);
+		expect(result.current.items).not.toContain(SKILLS[0]);
 	});
 
 	it("closed when no skills match the query", () => {

@@ -2,7 +2,7 @@ import { FileCode, Mic, Paperclip, ShieldCheck, Square, X } from "lucide-react";
 import type { RefObject } from "react";
 import { AgentSelect } from "#/components/AgentSelect";
 import { AttachmentStrip } from "#/components/AttachmentStrip";
-import { ActiveCommandBadge } from "#/components/chat/ActiveCommandBadge";
+import { ActiveCommandBadges } from "#/components/chat/ActiveCommandBadge";
 import { SlashPicker } from "#/components/cockpit/SlashPicker";
 import type { useFileUpload } from "#/hooks/useFileUpload";
 import type { useVoiceInput } from "#/hooks/useVoiceInput";
@@ -23,7 +23,7 @@ type PromptProps = {
 	config: CockpitConfig;
 	prompt: string;
 	setPrompt: (value: string) => void;
-	activeSkill: ActiveCockpitSkill | null;
+	activeSkills: ActiveCockpitSkill[];
 	isConnected: boolean;
 	isRunning: boolean;
 	canRun: boolean;
@@ -57,7 +57,7 @@ type PromptProps = {
 		close: () => void;
 	};
 	onSkillSelect: (command: CommandDescriptor) => void;
-	onClearSkill: () => void;
+	onClearSkill: (commandId: string) => void;
 	onClear: () => void;
 	onRun: () => void;
 };
@@ -87,12 +87,12 @@ function VoiceError({ voice }: { voice: VoiceState }) {
 function promptPlaceholder(
 	voice: VoiceState,
 	isConnected: boolean,
-	activeSkill: ActiveCockpitSkill | null,
+	activeSkills: ActiveCockpitSkill[],
 ): string {
 	if (voice.phase === "recording") return `recording… ${voice.seconds}s`;
 	if (voice.phase === "transcribing") return "transcribing locally…";
 	if (!isConnected) return "server offline…";
-	if (activeSkill) return "add context… (optional)";
+	if (activeSkills.length > 0) return "add more context or another /command…";
 	return "type a prompt, or pick a skill below";
 }
 
@@ -157,7 +157,7 @@ function PromptTextarea(props: PromptProps) {
 				placeholder={promptPlaceholder(
 					props.voice,
 					props.isConnected,
-					props.activeSkill,
+					props.activeSkills,
 				)}
 				disabled={!props.isConnected || props.voice.phase === "transcribing"}
 				className={`min-w-0 flex-1 resize-none bg-transparent py-2.5 pr-3 text-sm text-foreground focus:outline-none disabled:opacity-30 overflow-hidden min-h-[72px] ${!props.isConnected ? "placeholder:text-foreground/50" : "placeholder:text-muted-foreground/25"}`}
@@ -339,7 +339,7 @@ function ComposerToolbar(props: PromptProps) {
 				)}
 			</div>
 			<div className="ml-auto flex shrink-0 gap-2">
-				{(props.prompt || props.activeSkill) && (
+				{(props.prompt || props.activeSkills.length > 0) && (
 					<button
 						type="button"
 						onClick={props.onClear}
@@ -390,12 +390,10 @@ export function CockpitPrompt(props: PromptProps) {
 						onSelect={props.onSkillSelect}
 					/>
 				)}
-				{props.activeSkill && (
-					<ActiveCommandBadge
-						command={props.activeSkill}
-						onClear={props.onClearSkill}
-					/>
-				)}
+				<ActiveCommandBadges
+					commands={props.activeSkills}
+					onClear={props.onClearSkill}
+				/>
 				<AttachmentStrip
 					attachments={props.upload.pendingAttachments}
 					uploadingCount={props.upload.uploadingCount}

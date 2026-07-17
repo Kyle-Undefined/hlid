@@ -32,7 +32,11 @@ import { useFileUpload } from "#/hooks/useFileUpload";
 import { useSlashPicker } from "#/hooks/useSlashPicker";
 import { useVoiceInput } from "#/hooks/useVoiceInput";
 import { useWsLiveStats } from "#/hooks/useWsSelectors";
-import { type CommandDescriptor, skillCommand } from "#/lib/commands";
+import {
+	addCommandSelection,
+	type CommandDescriptor,
+	skillCommand,
+} from "#/lib/commands";
 import { insertAtSelection, resizeComposer } from "#/lib/composer";
 import { fmtModel } from "#/lib/formatters";
 import {
@@ -105,9 +109,7 @@ export const Route = createFileRoute("/")({
 function useCockpitComposer(initialPlanHtml: boolean) {
 	const [prompt, setPrompt] = useState("");
 	const [selectedAgentPath, setSelectedAgentPath] = useState("");
-	const [activeSkill, setActiveSkill] = useState<ActiveCockpitSkill | null>(
-		null,
-	);
+	const [activeSkills, setActiveSkills] = useState<ActiveCockpitSkill[]>([]);
 	const [background, setBackground] = useState(false);
 	const [sameSession, setSameSession] = useState(false);
 	const [planMode, setPlanMode] = useState(false);
@@ -130,24 +132,27 @@ function useCockpitComposer(initialPlanHtml: boolean) {
 		if (!el) return;
 		el.focus();
 		el.selectionStart = el.selectionEnd = el.value.length;
-	}, [activeSkill]);
+	}, [activeSkills]);
 
 	function handleCommandSelect(
 		command: CommandDescriptor,
 		remainingPrompt = "",
+		providerId?: string,
 	) {
 		pendingSkillFocusRef.current = true;
 		setPrompt(remainingPrompt);
-		setActiveSkill(command);
+		setActiveSkills((selected) =>
+			addCommandSelection(selected, command, providerId),
+		);
 	}
 
-	function handleSkillSelect(skill: Skill) {
-		handleCommandSelect(skillCommand(skill));
+	function handleSkillSelect(skill: Skill, providerId?: string) {
+		handleCommandSelect(skillCommand(skill), "", providerId);
 	}
 
 	function handleClear() {
 		setPrompt("");
-		setActiveSkill(null);
+		setActiveSkills([]);
 	}
 
 	return {
@@ -155,8 +160,8 @@ function useCockpitComposer(initialPlanHtml: boolean) {
 		setPrompt,
 		selectedAgentPath,
 		setSelectedAgentPath,
-		activeSkill,
-		setActiveSkill,
+		activeSkills,
+		setActiveSkills,
 		background,
 		setBackground,
 		sameSession,
@@ -197,7 +202,7 @@ function useCockpitRunWiring({
 }) {
 	return useCockpitRun({
 		prompt: composer.prompt,
-		activeSkill: composer.activeSkill,
+		activeSkills: composer.activeSkills,
 		commands,
 		wsStatus: live.wsStatus,
 		sameSession: composer.sameSession,
@@ -213,7 +218,7 @@ function useCockpitRunWiring({
 		send: live.send,
 		setRunError: live.setRunError,
 		setPrompt: composer.setPrompt,
-		setActiveSkill: composer.setActiveSkill,
+		setActiveSkills: composer.setActiveSkills,
 		setRecentRuns: live.setRecentRuns,
 		setThirtyDayStats: live.setThirtyDayStats,
 		setWeeklyStats: live.setWeeklyStats,
@@ -320,10 +325,25 @@ function CockpitPromptWiring({
 	commands: CommandDescriptor[];
 	onRun: () => void;
 }) {
+	const commandProviderId = resolveActiveProviderId(
+		agentList,
+		composer.selectedAgentPath || undefined,
+		config.vault_provider,
+	);
+	useEffect(() => {
+		composer.setActiveSkills((selected) => {
+			const compatible = selected.filter(
+				(command) =>
+					!command.providerId || command.providerId === commandProviderId,
+			);
+			return compatible.length === selected.length ? selected : compatible;
+		});
+	}, [commandProviderId, composer.setActiveSkills]);
 	const picker = useSlashPicker(
 		composer.prompt,
 		commands,
-		composer.activeSkill,
+		composer.activeSkills,
+		commandProviderId,
 	);
 	const isConnected = live.wsStatus === "connected";
 	const isRunning =
@@ -336,7 +356,7 @@ function CockpitPromptWiring({
 			sessions: live.sessionsStatus,
 		});
 	const canRun =
-		(!!composer.activeSkill ||
+		(composer.activeSkills.length > 0 ||
 			composer.prompt.trim().length > 0 ||
 			upload.pendingAttachments.length > 0) &&
 		upload.uploadingCount === 0 &&
@@ -346,7 +366,7 @@ function CockpitPromptWiring({
 			config={config}
 			prompt={composer.prompt}
 			setPrompt={composer.setPrompt}
-			activeSkill={composer.activeSkill}
+			activeSkills={composer.activeSkills}
 			isConnected={isConnected}
 			isRunning={isRunning}
 			canRun={canRun}
@@ -379,10 +399,16 @@ function CockpitPromptWiring({
 				close: picker.close,
 			}}
 			onSkillSelect={(command) =>
-				composer.handleCommandSelect(command, picker.promptWithoutQuery)
+				composer.handleCommandSelect(
+					command,
+					picker.promptWithoutQuery,
+					commandProviderId,
+				)
 			}
-			onClearSkill={() => {
-				composer.setActiveSkill(null);
+			onClearSkill={(commandId) => {
+				composer.setActiveSkills((selected) =>
+					selected.filter((command) => command.id !== commandId),
+				);
 				composer.textareaRef.current?.focus();
 			}}
 			onClear={composer.handleClear}
@@ -486,8 +512,10 @@ function CockpitPage() {
 					<CockpitSkills
 						hasSkills={visibleSkills.length > 0}
 						groups={skillGroups}
-						activeSkill={composer.activeSkill}
-						onSelect={composer.handleSkillSelect}
+						activeSkills={composer.activeSkills}
+						onSelect={(skill) =>
+							composer.handleSkillSelect(skill, commandProviderId)
+						}
 					/>
 				</div>
 

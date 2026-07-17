@@ -47,6 +47,29 @@ describe("buildPrompt — basic", () => {
 // ── skillContext ──────────────────────────────────────────────────────────────
 
 describe("buildPrompt — skillContext", () => {
+	it("injects every valid selected skill", () => {
+		const first = join(tmp, "skills", "first.md");
+		const second = join(tmp, "skills", "second.md");
+		mkdirSync(join(tmp, "skills"), { recursive: true });
+		writeFileSync(first, "# First");
+		writeFileSync(second, "# Second");
+		const { prompt } = buildPrompt(base({ skillContexts: [first, second] }));
+		expect(prompt).toContain("following skill files");
+		expect(prompt).toContain("first.md");
+		expect(prompt).toContain("second.md");
+	});
+
+	it("keeps a provider slash command at the prompt prefix with vault skills", () => {
+		const skillFile = join(tmp, "skills", "review.md");
+		mkdirSync(join(tmp, "skills"), { recursive: true });
+		writeFileSync(skillFile, "# Review");
+		const { prompt } = buildPrompt(
+			base({ skillContexts: [skillFile], userMessage: "/test focused" }),
+		);
+		expect(prompt.startsWith("/test focused")).toBe(true);
+		expect(prompt).toContain("review.md");
+	});
+
 	it("injects skill read instruction when skillContext is inside vault", () => {
 		const skillFile = join(tmp, "skills", "my-skill.md");
 		mkdirSync(join(tmp, "skills"), { recursive: true });

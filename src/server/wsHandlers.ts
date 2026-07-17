@@ -672,7 +672,7 @@ async function runChatQuery(
 				if (event.type === "status") broadcastSessionsStatus(context);
 			},
 			msg.session_id,
-			msg.skill_context,
+			msg.skill_contexts ?? msg.skill_context,
 			msg.attachments,
 			msg.agent_cwd,
 			msg.turn_id,

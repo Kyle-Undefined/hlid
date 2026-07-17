@@ -101,16 +101,102 @@ export function commandMatches(
 
 export type CommandSubmission = {
 	text: string;
-	skillContext?: string;
+	skillContexts?: string[];
 	commandAction?: CommandAction;
 };
 
+export const CLAUDE_COMMAND_SELECTION_LIMIT = 6;
+
+function isNativePromptCommand(command: CommandDescriptor): boolean {
+	return command.execution.kind === "prompt" && command.source === "provider";
+}
+
+/**
+ * Provider actions own the whole turn. Native ACP commands are text-prefix
+ * commands, so ACP can reliably execute one per prompt; vault skills remain
+ * composable because Hlid injects their files itself.
+ */
+export function canSelectCommand(
+	selected: CommandDescriptor[],
+	candidate: CommandDescriptor,
+	providerId?: string,
+): boolean {
+	if (selected.some((command) => command.id === candidate.id)) return false;
+	if (candidate.execution.kind === "provider-action") return true;
+	const composable = selected.filter(
+		(command) => command.execution.kind !== "provider-action",
+	);
+	if (
+		providerId === "claude" &&
+		composable.length >= CLAUDE_COMMAND_SELECTION_LIMIT
+	)
+		return false;
+	if (
+		providerId?.startsWith("acp:") &&
+		isNativePromptCommand(candidate) &&
+		composable.some(isNativePromptCommand)
+	)
+		return false;
+	return true;
+}
+
+export function addCommandSelection(
+	selected: CommandDescriptor[],
+	candidate: CommandDescriptor,
+	providerId?: string,
+): CommandDescriptor[] {
+	if (!canSelectCommand(selected, candidate, providerId)) return selected;
+	if (candidate.execution.kind === "provider-action") return [candidate];
+	const withoutAction = selected.filter(
+		(command) => command.execution.kind !== "provider-action",
+	);
+	return [...withoutAction, candidate];
+}
+
+function providerCommandText(
+	commands: CommandDescriptor[],
+	vaultCommands: CommandDescriptor[],
+	typed: string,
+): string {
+	const vaultMentions = vaultCommands
+		.map((command) => `/${command.name}`)
+		.join(" ");
+	const vaultLabel = vaultMentions ? `skills: ${vaultMentions}` : "";
+	if (commands.length === 0) {
+		return typed ? `${vaultLabel}\n\n${typed}` : vaultLabel;
+	}
+	if (commands.every((command) => command.providerId === "codex")) {
+		const mentions = [
+			...commands.map((command) => `$${command.name}`),
+			...(vaultLabel ? [vaultLabel] : []),
+		].join(" ");
+		return typed ? `${mentions}\n\n${typed}` : mentions;
+	}
+	if (commands.length === 1) {
+		const mentions = [`/${commands[0].name}`, vaultLabel]
+			.filter(Boolean)
+			.join(" ");
+		return `${mentions}${typed ? ` ${typed}` : ""}`;
+	}
+	const mentions = commands.map((command) => `/${command.name}`).join(", ");
+	const vaultInstruction = vaultMentions
+		? ` Also apply these vault skills: ${vaultMentions}.`
+		: "";
+	return `Use these skills/commands together: ${mentions}.${vaultInstruction}${typed ? `\n\n${typed}` : ""}`;
+}
+
 /** Resolve a selected or manually typed slash command into a chat submission. */
 export function resolveCommandSubmission(
-	activeCommand: CommandDescriptor | null,
+	activeCommands: CommandDescriptor | CommandDescriptor[] | null,
 	typed: string,
 	commands: CommandDescriptor[],
 ): CommandSubmission {
+	const selected = Array.isArray(activeCommands)
+		? activeCommands
+		: activeCommands
+			? [activeCommands]
+			: [];
+	const activeCommand = selected.length === 1 ? selected[0] : null;
 	const commandText = activeCommand
 		? `/${activeCommand.name}${typed ? ` ${typed}` : ""}`
 		: typed;
@@ -122,26 +208,41 @@ export function resolveCommandSubmission(
 			command.name.toLowerCase() === slashName ||
 			command.aliases?.some((alias) => alias.toLowerCase() === slashName),
 	);
-	const match =
-		activeCommand ??
+	const manualMatch =
 		matches.find((command) => command.execution.kind === "provider-action") ??
 		matches[0];
-	if (!match) return { text: commandText };
+	const resolved =
+		selected.length > 0 ? selected : manualMatch ? [manualMatch] : [];
+	if (resolved.length === 0) return { text: commandText };
 
-	if (match.execution.kind === "skill") {
-		const suffix = activeCommand
-			? typed.trim()
-			: commandText.slice(match.name.length + 2).trim();
+	const action = resolved.find(
+		(command) => command.execution.kind === "provider-action",
+	);
+	if (action?.execution.kind === "provider-action") {
 		return {
-			text: suffix || commandText,
-			skillContext: match.execution.filePath,
+			text:
+				selected.length > 0
+					? `/${action.name}${typed ? ` ${typed}` : ""}`
+					: commandText,
+			commandAction: action.execution.action,
 		};
 	}
-	if (match.execution.kind === "provider-action") {
-		return {
-			text: commandText,
-			commandAction: match.execution.action,
-		};
-	}
-	return { text: commandText };
+	const skillContexts = resolved.flatMap((command) =>
+		command.execution.kind === "skill" ? [command.execution.filePath] : [],
+	);
+	const vaultCommands = resolved.filter(
+		(command) => command.execution.kind === "skill",
+	);
+	const promptCommands = resolved.filter(isNativePromptCommand);
+	const manualSuffix =
+		selected.length === 0 && manualMatch
+			? commandText.slice(manualMatch.name.length + 2).trim()
+			: typed.trim();
+	const text =
+		providerCommandText(promptCommands, vaultCommands, manualSuffix) ||
+		resolved.map((command) => `/${command.name}`).join(" ");
+	return {
+		text,
+		...(skillContexts.length > 0 ? { skillContexts } : {}),
+	};
 }

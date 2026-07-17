@@ -1,5 +1,9 @@
 import { useEffect, useState } from "react";
-import { type CommandDescriptor, commandMatches } from "#/lib/commands";
+import {
+	type CommandDescriptor,
+	canSelectCommand,
+	commandMatches,
+} from "#/lib/commands";
 
 export type SlashPickerState = {
 	isOpen: boolean;
@@ -17,12 +21,11 @@ export type SlashPickerState = {
  * Drives the slash-command picker dropdown.
  *
  * Opens when:
- *  - `activeCommand` is null (a selected command means the user is entering arguments)
  *  - the prompt ends with a slash fragment at a word boundary, so commands can
  *    be activated after already-written context as well as at the start
  *
- * Items are filtered by prefix match against the provider-neutral command list,
- * including aliases reported by the active provider.
+ * Items are filtered by prefix match, prior selection, and provider composition
+ * limits. This keeps the picker available for repeated selections.
  *
  * Call `close()` to dismiss the picker without touching the input (e.g. on Escape).
  * The picker reopens automatically once the user changes the query.
@@ -31,8 +34,14 @@ export type SlashPickerState = {
 export function useSlashPicker(
 	prompt: string,
 	commands: CommandDescriptor[],
-	activeCommand: CommandDescriptor | null,
+	selectedCommands: CommandDescriptor[] | CommandDescriptor | null = [],
+	providerId?: string,
 ): SlashPickerState {
+	const selected = Array.isArray(selectedCommands)
+		? selectedCommands
+		: selectedCommands
+			? [selectedCommands]
+			: [];
 	const [selectedIndex, setSelectedIndex] = useState(0);
 	const [forceClosed, setForceClosed] = useState(false);
 
@@ -40,13 +49,17 @@ export function useSlashPicker(
 	const slashStart = slashMatch
 		? (slashMatch.index ?? 0) + slashMatch[0].lastIndexOf("/")
 		: -1;
-	const shouldOpen = activeCommand === null && slashMatch !== null;
+	const shouldOpen = slashMatch !== null;
 	const query = shouldOpen ? (slashMatch?.[1].toLowerCase() ?? "") : "";
 	const promptWithoutQuery =
 		slashStart >= 0 ? prompt.slice(0, slashStart) : prompt;
 
 	const items = shouldOpen
-		? commands.filter((command) => commandMatches(command, query))
+		? commands.filter(
+				(command) =>
+					commandMatches(command, query) &&
+					canSelectCommand(selected, command, providerId),
+			)
 		: [];
 
 	const isOpen = shouldOpen && items.length > 0 && !forceClosed;

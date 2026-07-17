@@ -6,6 +6,7 @@ export type QueuedChatMessage = {
 	text: string;
 	session_id: string;
 	skill_context?: string;
+	skill_contexts?: string[];
 	command_action?: CommandAction;
 	agent_cwd?: string;
 	attachments?: ChatAttachment[];

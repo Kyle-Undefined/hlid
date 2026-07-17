@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+	addCommandSelection,
+	canSelectCommand,
 	commandMatches,
 	mergeCommands,
 	resolveCommandSubmission,
@@ -59,8 +61,8 @@ describe("commands", () => {
 	it("resolves vault skills to context and provider commands to prompts", () => {
 		const vault = skillCommand(skill);
 		expect(resolveCommandSubmission(vault, "please", [vault])).toEqual({
-			text: "please",
-			skillContext: skill.filePath,
+			text: "skills: /garden-check\n\nplease",
+			skillContexts: [skill.filePath],
 		});
 		const provider = mergeCommands(
 			[],
@@ -176,5 +178,65 @@ describe("commands", () => {
 			text: "/computer-use open Calculator",
 			commandAction: "computer-use",
 		});
+	});
+
+	it("composes multiple vault skills and Codex skill mentions", () => {
+		const second = skillCommand({
+			...skill,
+			file: "release.md",
+			name: "release",
+			filePath: "/vault/skills/release.md",
+		});
+		const codex = mergeCommands(
+			[],
+			[
+				{ name: "github", description: "GitHub", argumentHint: "" },
+				{ name: "yeet", description: "Publish", argumentHint: "" },
+			],
+			"codex",
+		);
+		expect(
+			resolveCommandSubmission(
+				[skillCommand(skill), second, ...codex],
+				"ship it",
+				[skillCommand(skill), second, ...codex],
+			),
+		).toEqual({
+			text: "$github $yeet skills: /garden-check /release\n\nship it",
+			skillContexts: [skill.filePath, "/vault/skills/release.md"],
+		});
+	});
+
+	it("caps Claude at six selections and ACP at one native command", () => {
+		const claudeCommands = Array.from(
+			{ length: 7 },
+			(_, index) =>
+				mergeCommands(
+					[],
+					[
+						{
+							name: `skill-${index}`,
+							description: "",
+							argumentHint: "",
+						},
+					],
+					"claude",
+				)[0],
+		);
+		expect(
+			canSelectCommand(claudeCommands.slice(0, 6), claudeCommands[6], "claude"),
+		).toBe(false);
+
+		const acpCommands = claudeCommands.slice(0, 2).map((command, index) => ({
+			...command,
+			id: `provider:acp:test:${index}`,
+			providerId: "acp:test",
+		}));
+		expect(canSelectCommand([acpCommands[0]], acpCommands[1], "acp:test")).toBe(
+			false,
+		);
+		expect(
+			addCommandSelection([acpCommands[0]], skillCommand(skill), "acp:test"),
+		).toHaveLength(2);
 	});
 });

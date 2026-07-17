@@ -113,7 +113,7 @@ export function prepareChatSubmission(input: {
 	text: string;
 	sessionId: string;
 	running: boolean;
-	skillContext?: string;
+	skillContexts?: string[];
 	commandAction?: CommandAction;
 	attachments: ChatAttachment[];
 	agentCwd?: string;
@@ -136,7 +136,7 @@ export function prepareChatSubmission(input: {
 				id: input.id,
 				text: input.text,
 				session_id: input.sessionId,
-				skill_context: input.skillContext,
+				skill_contexts: input.skillContexts,
 				command_action: input.commandAction,
 				attachments,
 				agent_cwd: input.agentCwd,
@@ -156,7 +156,7 @@ export function prepareChatSubmission(input: {
 			type: "chat",
 			text: input.text,
 			session_id: input.sessionId,
-			skill_context: input.skillContext,
+			skill_contexts: input.skillContexts,
 			command_action: input.commandAction,
 			attachments,
 			agent_cwd: agentCwd,

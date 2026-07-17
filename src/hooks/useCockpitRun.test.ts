@@ -59,7 +59,7 @@ function runOptions(
 ): Parameters<typeof useCockpitRun>[0] {
 	return {
 		prompt: "ship the fix",
-		activeSkill: null,
+		activeSkills: [],
 		commands: [],
 		wsStatus: "connected",
 		sameSession: true,
@@ -75,7 +75,7 @@ function runOptions(
 		send: vi.fn(),
 		setRunError: vi.fn(),
 		setPrompt: vi.fn(),
-		setActiveSkill: vi.fn(),
+		setActiveSkills: vi.fn(),
 		setRecentRuns: vi.fn(),
 		setThirtyDayStats: vi.fn(),
 		setWeeklyStats: vi.fn(),

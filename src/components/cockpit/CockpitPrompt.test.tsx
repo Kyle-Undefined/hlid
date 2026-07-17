@@ -41,7 +41,7 @@ function makeProps(overrides?: Partial<Props>): Props {
 		} as unknown as Props["config"],
 		prompt: "",
 		setPrompt: vi.fn(),
-		activeSkill: null,
+		activeSkills: [],
 		isConnected: true,
 		isRunning: false,
 		canRun: true,
@@ -125,17 +125,21 @@ describe("CockpitPrompt placeholder", () => {
 			<CockpitPrompt
 				{...makeProps({
 					onClearSkill,
-					activeSkill: {
-						id: "skill:review",
-						name: "review",
-						description: "Review changes",
-						source: "vault",
-						execution: { kind: "skill", filePath: "/skills/review.md" },
-					},
+					activeSkills: [
+						{
+							id: "skill:review",
+							name: "review",
+							description: "Review changes",
+							source: "vault",
+							execution: { kind: "skill", filePath: "/skills/review.md" },
+						},
+					],
 				})}
 			/>,
 		);
-		expect(textarea().placeholder).toBe("add context… (optional)");
+		expect(textarea().placeholder).toBe(
+			"add more context or another /command…",
+		);
 		expect(screen.getByTestId("active-command").textContent).toContain(
 			"skill/review",
 		);

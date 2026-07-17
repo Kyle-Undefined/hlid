@@ -131,7 +131,7 @@ type RunQueryArgs = [
 	userMessage: string,
 	emit: (msg: ServerMessage) => void,
 	sessionId?: string,
-	skillContext?: string,
+	skillContexts?: string | string[],
 	attachments?: ChatAttachment[],
 	agentCwd?: string,
 	turnId?: string,
@@ -1926,7 +1926,11 @@ export class SessionManager {
 					id,
 					text: turn.args[0],
 					session_id: sessionId,
-					...(turn.args[3] ? { skill_context: turn.args[3] } : {}),
+					...(typeof turn.args[3] === "string"
+						? { skill_context: turn.args[3] }
+						: turn.args[3]?.length
+							? { skill_contexts: turn.args[3] }
+							: {}),
 					...(turn.args[4] ? { attachments: turn.args[4] } : {}),
 					...(turn.args[5] ? { agent_cwd: turn.args[5] } : {}),
 					...(turn.args[7] !== undefined ? { plan_mode: turn.args[7] } : {}),
@@ -2901,7 +2905,7 @@ export class SessionManager {
 			userMessage,
 			emit,
 			sessionId,
-			skillContext,
+			skillContexts,
 			attachments,
 			agentCwd,
 			turnId,
@@ -2939,7 +2943,7 @@ export class SessionManager {
 				agentCwd: this.agentCwd,
 				claudeSessionId: resumeProviderSessionId,
 				userMessage,
-				skillContext,
+				skillContexts,
 				attachments,
 				...(this.planHtmlPath
 					? {

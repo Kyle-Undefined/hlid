@@ -24,7 +24,7 @@ import {
 } from "react";
 import { AgentSelect } from "#/components/AgentSelect";
 import { AttachmentStrip } from "#/components/AttachmentStrip";
-import { ActiveCommandBadge } from "#/components/chat/ActiveCommandBadge";
+import { ActiveCommandBadges } from "#/components/chat/ActiveCommandBadge";
 import { reducer } from "#/components/chat/chatReducer";
 import { MessageList } from "#/components/chat/MessageList";
 import { SlashPicker } from "#/components/cockpit/SlashPicker";
@@ -59,6 +59,7 @@ import {
 } from "#/hooks/wsSessionStatusStore";
 import * as wsStore from "#/hooks/wsStore";
 import {
+	addCommandSelection,
 	type CommandDescriptor,
 	resolveCommandSubmission,
 } from "#/lib/commands";
@@ -622,14 +623,14 @@ function useRavenViewport({
 	input,
 	messages,
 	sessionId,
-	activeSkill,
+	activeSkills,
 	showModelPopup,
 	setShowModelPopup,
 }: {
 	input: string;
 	messages: unknown[];
 	sessionId: string;
-	activeSkill: unknown;
+	activeSkills: unknown;
 	showModelPopup: boolean;
 	setShowModelPopup: Dispatch<SetStateAction<boolean>>;
 }) {
@@ -656,7 +657,7 @@ function useRavenViewport({
 		if (!pendingSkillFocusRef.current) return;
 		pendingSkillFocusRef.current = false;
 		textareaRef.current?.focus();
-	}, [activeSkill]);
+	}, [activeSkills]);
 
 	useEffect(() => {
 		const element = scrollRef.current;
@@ -797,8 +798,8 @@ type RavenActionProps = {
 	input: string;
 	setInput: ReturnType<typeof useDraft>["setInput"];
 	clearDraft: ReturnType<typeof useDraft>["clearDraft"];
-	activeSkill: ActiveRavenSkill | null;
-	setActiveSkill: Dispatch<SetStateAction<ActiveRavenSkill | null>>;
+	activeSkills: ActiveRavenSkill[];
+	setActiveSkills: Dispatch<SetStateAction<ActiveRavenSkill[]>>;
 	commands: CommandDescriptor[];
 	planMode: boolean;
 	setPlanMode: Dispatch<SetStateAction<boolean>>;
@@ -878,8 +879,8 @@ function useRavenSend(props: RavenActionProps) {
 		input,
 		setInput,
 		clearDraft,
-		activeSkill,
-		setActiveSkill,
+		activeSkills,
+		setActiveSkills,
 		commands,
 		planMode,
 		planHtml,
@@ -895,8 +896,8 @@ function useRavenSend(props: RavenActionProps) {
 		(overrideText?: string) => {
 			const typed = (overrideText ?? input).trim();
 
-			const { text, skillContext, commandAction } = resolveCommandSubmission(
-				activeSkill,
+			const { text, skillContexts, commandAction } = resolveCommandSubmission(
+				activeSkills,
 				typed,
 				commands,
 			);
@@ -906,7 +907,7 @@ function useRavenSend(props: RavenActionProps) {
 				text,
 				sessionId,
 				running: sessionState === "running",
-				skillContext,
+				skillContexts,
 				commandAction,
 				attachments: pendingAttachments,
 				agentCwd: agentSkillContext ?? undefined,
@@ -931,13 +932,13 @@ function useRavenSend(props: RavenActionProps) {
 			}
 			clearDraft();
 			setInput("");
-			setActiveSkill(null);
+			setActiveSkills([]);
 			clearPendingAttachments();
 		},
 		[
 			input,
 			setInput,
-			activeSkill,
+			activeSkills,
 			commands,
 			sessionState,
 			send,
@@ -952,7 +953,7 @@ function useRavenSend(props: RavenActionProps) {
 			dispatch,
 			atBottomRef,
 			agentContextSentRef,
-			setActiveSkill,
+			setActiveSkills,
 		],
 	);
 }
@@ -1148,7 +1149,7 @@ function deriveRavenComposerState({
 	providers,
 	agentSkillContext,
 	input,
-	activeSkill,
+	activeSkills,
 	pendingAttachmentCount,
 	uploadingCount,
 	wsStatus,
@@ -1165,7 +1166,7 @@ function deriveRavenComposerState({
 	providers: RavenProviders;
 	agentSkillContext: string | undefined;
 	input: string;
-	activeSkill: ActiveRavenSkill | null;
+	activeSkills: ActiveRavenSkill[];
 	pendingAttachmentCount: number;
 	uploadingCount: number;
 	wsStatus: string;
@@ -1179,7 +1180,7 @@ function deriveRavenComposerState({
 }) {
 	const hasInput =
 		(input.trim().length > 0 ||
-			activeSkill !== null ||
+			activeSkills.length > 0 ||
 			pendingAttachmentCount > 0) &&
 		uploadingCount === 0 &&
 		wsStatus === "connected";
@@ -1315,7 +1316,7 @@ export function ChatPage() {
 	const restoredSession = Boolean(
 		existingSessionId && agentSkillContext === initialAgentSkillContext,
 	);
-	const [activeSkill, setActiveSkill] = useState<ActiveRavenSkill | null>(null);
+	const [activeSkills, setActiveSkills] = useState<ActiveRavenSkill[]>([]);
 	const [sessionSelection, setSessionSelection] =
 		useState<RavenSessionSelection>(() =>
 			restoredRavenSessionSelection(
@@ -1436,7 +1437,7 @@ export function ChatPage() {
 		input,
 		messages,
 		sessionId,
-		activeSkill,
+		activeSkills,
 		showModelPopup,
 		setShowModelPopup,
 	});
@@ -1452,17 +1453,33 @@ export function ChatPage() {
 			agentSkillContext,
 			config.vault_provider,
 		);
+	useEffect(() => {
+		setActiveSkills((selected) => {
+			const compatible = selected.filter(
+				(command) =>
+					!command.providerId || command.providerId === commandProviderId,
+			);
+			return compatible.length === selected.length ? selected : compatible;
+		});
+	}, [commandProviderId]);
 	const commands = useCommands(
 		vaultSkills,
 		sdkSlashCommandProviderId === commandProviderId ? sdkSlashCommands : [],
 		commandProviderId,
 	);
 
-	const picker = useSlashPicker(input, commands, activeSkill);
+	const picker = useSlashPicker(
+		input,
+		commands,
+		activeSkills,
+		commandProviderId,
+	);
 
 	function handleSkillSelect(command: CommandDescriptor) {
 		focusSkillOnNextRender();
-		setActiveSkill(command);
+		setActiveSkills((selected) =>
+			addCommandSelection(selected, command, commandProviderId),
+		);
 		setInput(picker.promptWithoutQuery);
 	}
 
@@ -1483,8 +1500,8 @@ export function ChatPage() {
 		input,
 		setInput,
 		clearDraft,
-		activeSkill,
-		setActiveSkill,
+		activeSkills,
+		setActiveSkills,
 		commands,
 		planMode,
 		setPlanMode,
@@ -1522,7 +1539,7 @@ export function ChatPage() {
 		providers,
 		agentSkillContext,
 		input,
-		activeSkill,
+		activeSkills,
 		pendingAttachmentCount: pendingAttachments.length,
 		uploadingCount,
 		wsStatus,
@@ -1546,9 +1563,11 @@ export function ChatPage() {
 		voice,
 		input,
 		setInput,
-		activeSkill,
-		clearActiveSkill: () => {
-			setActiveSkill(null);
+		activeSkills,
+		clearActiveSkill: (commandId) => {
+			setActiveSkills((selected) =>
+				selected.filter((command) => command.id !== commandId),
+			);
 			viewport.textareaRef.current?.focus();
 		},
 		planMode,
@@ -2201,7 +2220,7 @@ function ChatInputNotices({
 	activeProviderId,
 	activeEffort,
 	setSessionSelection,
-	activeSkill,
+	activeSkills,
 	clearActiveSkill,
 }: ChatComposerProps) {
 	const { agentSkillContext, selectAgent, sessionId } = session;
@@ -2216,9 +2235,7 @@ function ChatInputNotices({
 	} = upload;
 	return (
 		<>
-			{activeSkill && (
-				<ActiveCommandBadge command={activeSkill} onClear={clearActiveSkill} />
-			)}
+			<ActiveCommandBadges commands={activeSkills} onClear={clearActiveSkill} />
 			{gitignoreHint && (
 				<div className="px-4 py-2 flex items-start gap-2 border-b border-border/40 bg-yellow-500/5">
 					<div className="flex-1 text-[10px] text-foreground/70 leading-relaxed">
@@ -2470,13 +2487,13 @@ function handleComposerKeyDown(
 function composerPlaceholder(
 	voice: RavenVoice,
 	wsStatus: string,
-	activeSkill: ActiveRavenSkill | null,
+	activeSkills: ActiveRavenSkill[],
 	isRunning: boolean,
 ): string {
 	if (voice.phase === "recording") return `recording… ${voice.seconds}s`;
 	if (voice.phase === "transcribing") return "transcribing locally…";
 	if (wsStatus !== "connected") return "connecting…";
-	if (activeSkill) return `add context for /${activeSkill.name}… (optional)`;
+	if (activeSkills.length > 0) return "add more context or another /command…";
 	return isRunning ? "type to queue next…" : "speak to the watcher…";
 }
 
@@ -2495,7 +2512,7 @@ function ChatTextarea(props: ChatComposerProps) {
 		voice,
 		input,
 		setInput,
-		activeSkill,
+		activeSkills,
 	} = props;
 	const { wsStatus, isRunning } = runtime;
 	const { uploadFiles } = upload;
@@ -2526,7 +2543,7 @@ function ChatTextarea(props: ChatComposerProps) {
 				placeholder={composerPlaceholder(
 					voice,
 					wsStatus,
-					activeSkill,
+					activeSkills,
 					isRunning,
 				)}
 				disabled={wsStatus !== "connected" || voice.phase === "transcribing"}
@@ -2613,8 +2630,8 @@ interface ChatComposerProps {
 	voice: RavenVoice;
 	input: string;
 	setInput: ReturnType<typeof useDraft>["setInput"];
-	activeSkill: ActiveRavenSkill | null;
-	clearActiveSkill: () => void;
+	activeSkills: ActiveRavenSkill[];
+	clearActiveSkill: (commandId: string) => void;
 	planMode: boolean;
 	setPlanMode: Dispatch<SetStateAction<boolean>>;
 	planHtml: boolean;

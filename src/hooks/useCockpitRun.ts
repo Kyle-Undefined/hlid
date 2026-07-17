@@ -72,7 +72,7 @@ export function prependPendingRun(
 
 type CockpitRunOptions = {
 	prompt: string;
-	activeSkill: ActiveCockpitSkill | null;
+	activeSkills: ActiveCockpitSkill[];
 	commands: CommandDescriptor[];
 	wsStatus: string;
 	sameSession: boolean;
@@ -88,7 +88,7 @@ type CockpitRunOptions = {
 	send: Send;
 	setRunError: (error: string | null) => void;
 	setPrompt: (prompt: string) => void;
-	setActiveSkill: (skill: ActiveCockpitSkill | null) => void;
+	setActiveSkills: (skills: ActiveCockpitSkill[]) => void;
 	setRecentRuns: Dispatch<SetStateAction<SessionRow[]>>;
 	setThirtyDayStats: Dispatch<SetStateAction<ThirtyDayStats>>;
 	setWeeklyStats: Dispatch<SetStateAction<WeeklyStats>>;
@@ -160,7 +160,7 @@ async function resolveRunSession(options: CockpitRunOptions): Promise<string> {
 
 function clearComposer(options: CockpitRunOptions): void {
 	options.setPrompt("");
-	options.setActiveSkill(null);
+	options.setActiveSkills([]);
 }
 
 function navigateAfterRun(
@@ -178,7 +178,7 @@ function enqueueRun(
 	params: {
 		sessionId: string;
 		text: string;
-		skillContext?: string;
+		skillContexts?: string[];
 		commandAction?: "review" | "computer-use";
 		attachments: Attachment[];
 	},
@@ -187,7 +187,7 @@ function enqueueRun(
 		id: uid(),
 		text: params.text,
 		session_id: params.sessionId,
-		skill_context: params.skillContext,
+		skill_contexts: params.skillContexts,
 		command_action: params.commandAction,
 		agent_cwd: options.selectedAgentPath || undefined,
 		attachments: params.attachments.length > 0 ? params.attachments : undefined,
@@ -203,7 +203,7 @@ function startRun(
 	params: {
 		sessionId: string;
 		text: string;
-		skillContext?: string;
+		skillContexts?: string[];
 		commandAction?: "review" | "computer-use";
 		attachments: Attachment[];
 	},
@@ -213,7 +213,7 @@ function startRun(
 		type: "chat",
 		text: params.text,
 		session_id: params.sessionId,
-		skill_context: params.skillContext,
+		skill_contexts: params.skillContexts,
 		command_action: params.commandAction,
 		agent_cwd: options.selectedAgentPath || undefined,
 		attachments: params.attachments.length > 0 ? params.attachments : undefined,
@@ -240,8 +240,8 @@ function startRun(
 export function useCockpitRun(options: CockpitRunOptions) {
 	return async (overrideText?: string): Promise<void> => {
 		const typed = (overrideText ?? options.prompt).trim();
-		const { text, skillContext, commandAction } = resolveCommandSubmission(
-			options.activeSkill,
+		const { text, skillContexts, commandAction } = resolveCommandSubmission(
+			options.activeSkills,
 			typed,
 			options.commands,
 		);
@@ -266,7 +266,7 @@ export function useCockpitRun(options: CockpitRunOptions) {
 		const params = {
 			sessionId,
 			text,
-			skillContext,
+			skillContexts,
 			commandAction,
 			attachments,
 		};

@@ -11,7 +11,9 @@ export type BuildPromptOptions = {
 	agentCwd: string | undefined;
 	claudeSessionId: string | null;
 	userMessage: string;
-	skillContext: string | undefined;
+	/** Legacy single-skill field retained for queued turns created by older clients. */
+	skillContext?: string;
+	skillContexts?: string | string[];
 	attachments: ChatAttachment[] | undefined;
 	/** Plan-mode HTML instructions (from buildPlanHtmlInstructions), appended after the user message. */
 	planHtmlInstructions?: string;
@@ -67,6 +69,7 @@ export function buildPrompt(opts: BuildPromptOptions): {
 		agentCwd,
 		claudeSessionId,
 		userMessage,
+		skillContexts,
 		skillContext,
 		attachments,
 		planHtmlInstructions,
@@ -83,18 +86,24 @@ export function buildPrompt(opts: BuildPromptOptions): {
 	} catch {
 		vaultRootReal = vaultRoot;
 	}
-	const safeSkillContext = (() => {
-		if (!skillContext) return undefined;
+	const requestedSkillContexts = skillContexts ?? skillContext;
+	const safeSkillContexts = (
+		Array.isArray(requestedSkillContexts)
+			? requestedSkillContexts
+			: requestedSkillContexts
+				? [requestedSkillContexts]
+				: []
+	).flatMap((skillContext) => {
 		// Use realpath for consistency with safeAttachments: both must compare
 		// against vaultRootReal so symlinked paths resolve to the same base.
 		let real: string;
 		try {
 			real = realpathSync(resolve(skillContext));
 		} catch {
-			return undefined;
+			return [];
 		}
-		return pathStartsWith(vaultRootReal, real) ? skillContext : undefined;
-	})();
+		return pathStartsWith(vaultRootReal, real) ? [skillContext] : [];
+	});
 	const safeAttachments = (attachments ?? []).filter((a) => {
 		let real: string;
 		try {
@@ -131,8 +140,16 @@ export function buildPrompt(opts: BuildPromptOptions): {
 	const planHtmlBlock = planHtmlInstructions
 		? `\n\n${planHtmlInstructions}`
 		: "";
-	const prompt = safeSkillContext
-		? `${personaBlock}${attachmentBlock}Please read the skill file at \`${toLogical(safeSkillContext)}\` and follow its instructions.\n\nUser: ${userMessage || "(no additional input)"}${planHtmlBlock}`
+	const skillBlock =
+		safeSkillContexts.length === 1
+			? `Please read the skill file at \`${toLogical(safeSkillContexts[0])}\` and follow its instructions.\n\n`
+			: safeSkillContexts.length > 1
+				? `Please read the following skill files and follow all of their instructions:\n${safeSkillContexts.map((skillContext) => `- \`${toLogical(skillContext)}\``).join("\n")}\n\n`
+				: "";
+	const prompt = skillBlock
+		? userMessage.startsWith("/")
+			? `${userMessage}\n\n${personaBlock}${attachmentBlock}${skillBlock}${planHtmlBlock}`
+			: `${personaBlock}${attachmentBlock}${skillBlock}User: ${userMessage || "(no additional input)"}${planHtmlBlock}`
 		: `${personaBlock}${attachmentBlock}${userMessage}${planHtmlBlock}`;
 	return { prompt, safeAttachments };
 }

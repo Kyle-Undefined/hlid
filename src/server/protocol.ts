@@ -193,6 +193,7 @@ export type PendingTurnSnapshot = {
 	text: string;
 	session_id: string;
 	skill_context?: string;
+	skill_contexts?: string[];
 	command_action?: "review" | "computer-use";
 	agent_cwd?: string;
 	attachments?: ChatAttachment[];
@@ -465,6 +466,7 @@ export type ClientChatMessage = {
 	text: string;
 	session_id?: string;
 	skill_context?: string;
+	skill_contexts?: string[];
 	/** Hlid-owned capability action, executed directly instead of prompt passthrough. */
 	command_action?: "review" | "computer-use";
 	agent_cwd?: string;

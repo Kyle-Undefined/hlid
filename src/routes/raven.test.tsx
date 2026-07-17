@@ -263,7 +263,7 @@ beforeEach(() => {
 });
 
 describe("Raven composed submission behavior", () => {
-	it("shows the selected skill outside the textarea and clears only the selection", () => {
+	it("keeps multiple selected skills outside the textarea and clears them independently", () => {
 		state.loaderData = {
 			...state.loaderData,
 			vaultSkills: [
@@ -273,6 +273,13 @@ describe("Raven composed submission behavior", () => {
 					description: "Review changes",
 					content: "Review the work",
 					filePath: "/vault/skills/review.md",
+				},
+				{
+					file: "release.md",
+					name: "release",
+					description: "Release changes",
+					content: "Release the work",
+					filePath: "/vault/skills/release.md",
 				},
 			],
 		};
@@ -285,11 +292,17 @@ describe("Raven composed submission behavior", () => {
 		expect(screen.getByTestId("active-command").textContent).toContain(
 			"skill/review",
 		);
+		fireEvent.change(composer, { target: { value: "/rel" } });
+		fireEvent.click(screen.getByRole("button", { name: "Select /release" }));
+		expect(screen.getAllByTestId("active-command")).toHaveLength(2);
 		fireEvent.change(composer, { target: { value: "keep this context" } });
 		fireEvent.click(
 			screen.getByRole("button", { name: "Clear selected skill /review" }),
 		);
-		expect(screen.queryByTestId("active-command")).toBeNull();
+		expect(screen.getAllByTestId("active-command")).toHaveLength(1);
+		expect(screen.getByTestId("active-command").textContent).toContain(
+			"skill/release",
+		);
 		expect((composer as HTMLTextAreaElement).value).toBe("keep this context");
 	});
 
