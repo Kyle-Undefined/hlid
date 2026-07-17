@@ -1,4 +1,5 @@
 import { type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { StatusDot } from "#/components/McpStatusDot";
 import { FileBrowser } from "#/components/wizard/FileBrowser";
 import { FolderBrowser } from "#/components/wizard/FolderBrowser";
 
@@ -26,6 +27,23 @@ export function Field({
 			</div>
 			<div className="shrink-0">{children}</div>
 		</div>
+	);
+}
+
+export function StatusIndicator({
+	ok,
+	children,
+	label,
+}: {
+	ok: boolean | null;
+	children: ReactNode;
+	label?: string;
+}) {
+	return (
+		<span className="inline-flex items-center gap-3">
+			<StatusDot ok={ok} label={label} />
+			<span className="text-xs text-muted-foreground">{children}</span>
+		</span>
 	);
 }
 

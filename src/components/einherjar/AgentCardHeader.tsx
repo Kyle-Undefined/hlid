@@ -80,7 +80,7 @@ export function AgentCardHeader({
 					<button
 						type="button"
 						onClick={() => onModeChange("cwd")}
-						title="Run claude in agent's directory"
+						title="Run in agent's directory"
 						className={`text-[9px] tracking-widest px-2.5 py-1.5 sm:px-1.5 sm:py-0.5 uppercase transition-colors ${
 							agent.mode === "cwd"
 								? "bg-primary/10 text-primary"

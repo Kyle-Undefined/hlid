@@ -31,6 +31,7 @@ vi.mock("#/components/forge/AutoSleepSection", () => ({
 }));
 vi.mock("#/components/forge/ClaudeSection", () => ({
 	ClaudeSection: () => <div>Claude content</div>,
+	ComputerUseSection: () => <div>Computer Use content</div>,
 }));
 vi.mock("#/components/forge/EventLogSection", () => ({
 	EventLogSection: () => <div>Event log content</div>,
@@ -148,6 +149,21 @@ function renderSettings() {
 }
 
 describe("ForgeSettings category navigation", () => {
+	it("places Computer Use between the Vault agent and Auto Sleep", () => {
+		renderSettings();
+		fireEvent.change(screen.getByRole("combobox", { name: "Forge category" }), {
+			target: { value: "agents" },
+		});
+
+		const content = document.body.textContent ?? "";
+		expect(content.indexOf("Claude content")).toBeLessThan(
+			content.indexOf("Computer Use content"),
+		);
+		expect(content.indexOf("Computer Use content")).toBeLessThan(
+			content.indexOf("Auto sleep content"),
+		);
+	});
+
 	it("renders every top-level category selected from the mobile selector", () => {
 		renderSettings();
 		const selector = screen.getByRole("combobox", { name: "Forge category" });

@@ -48,8 +48,8 @@ export function ModeProviderPicker({
 				</div>
 				<span className="text-[9px] text-muted-foreground/40 leading-snug">
 					{mode === "cwd"
-						? "claude runs in agent's directory"
-						: "claude stays in vault, loads AGENTS.md or CLAUDE.md as persona"}
+						? "runs in agent's directory"
+						: "stays in vault, loads AGENTS.md or CLAUDE.md as persona"}
 				</span>
 			</div>
 

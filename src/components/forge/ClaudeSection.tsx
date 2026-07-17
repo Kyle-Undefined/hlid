@@ -5,7 +5,7 @@ import {
 	modelOptions as getModelOptions,
 } from "#/lib/providerOptions";
 import type { AccountInfo, ProviderInfo } from "#/lib/providerTypes";
-import { Field, Section } from "./fields";
+import { Field, Section, StatusIndicator } from "./fields";
 
 export type ClaudeForm = {
 	model: string;
@@ -23,7 +23,7 @@ export type ClaudeForm = {
 };
 
 const selectClass =
-	"w-32 sm:w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer";
+	"w-32 sm:w-48 lg:w-80 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer";
 
 function ProviderField({
 	claude,
@@ -59,7 +59,7 @@ function ProviderField({
 	);
 }
 
-function WindowsComputerUseField({
+function WindowsComputerUseFields({
 	claude,
 	onChange,
 	provider,
@@ -72,67 +72,93 @@ function WindowsComputerUseField({
 }) {
 	const configuredModel = claude.windowsComputerUseModel ?? "inherit";
 	const configuredEffort = claude.windowsComputerUseEffort ?? "medium";
-	const efforts = provider.effortLevels ?? [];
+	const models = getModelOptions(provider);
+	const selectedModel = models.find((model) => model.value === configuredModel);
+	const efforts = effortOptionsFor(provider, configuredModel);
+	const effortOptions = [
+		{
+			value: "inherit",
+			label: "Inherit from calling session",
+			desc: "Use the reasoning effort selected in the session that requested Computer Use",
+		},
+		...efforts,
+	];
+	const changeModel = (model: string) => {
+		const availableEfforts = effortOptionsFor(provider, model);
+		const patch: Partial<ClaudeForm> = { windowsComputerUseModel: model };
+		if (
+			configuredEffort !== "inherit" &&
+			!availableEfforts.some((effort) => effort.value === configuredEffort)
+		) {
+			patch.windowsComputerUseEffort =
+				defaultEffortFor(provider, model) ??
+				availableEfforts[0]?.value ??
+				"inherit";
+		}
+		onChange(patch);
+	};
 	return (
-		<Field label={capability.label} hint="host capability">
-			<div className="space-y-2 min-w-48">
-				<div
-					className={
+		<>
+			<div className="flex flex-col gap-2 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+				<div>
+					<div className="text-sm text-foreground">{capability.label}</div>
+					<div className="text-xs text-muted-foreground mt-0.5">
+						Windows-native desktop worker
+					</div>
+				</div>
+				<StatusIndicator
+					ok={capability.available}
+					label={
 						capability.available
-							? "text-[10px] text-green-600/80"
-							: "text-[10px] text-destructive/70"
+							? "Computer Use ready"
+							: "Computer Use unavailable"
 					}
 				>
 					{capability.available
 						? "ready"
 						: (capability.reason ?? "unavailable")}
-				</div>
-				<label className="block">
-					<span className="block text-[9px] tracking-widest uppercase text-muted-foreground mb-1">
-						Model
-					</span>
+				</StatusIndicator>
+			</div>
+			<Field label="Model">
+				<div>
 					<select
 						aria-label="Computer Use model"
 						value={configuredModel}
-						onChange={(event) =>
-							onChange({ windowsComputerUseModel: event.target.value })
-						}
+						onChange={(event) => changeModel(event.target.value)}
 						className={selectClass}
 					>
 						<option value="inherit">Inherit from calling session</option>
-						{getModelOptions(provider).map((model) => (
-							<option key={model.value} value={model.value}>
+						{models.map((model) => (
+							<option
+								key={model.value}
+								value={model.value}
+								title={model.description}
+							>
 								{model.label}
+								{model.isDefault ? " (default)" : ""}
 							</option>
 						))}
 					</select>
-				</label>
-				<label className="block">
-					<span className="block text-[9px] tracking-widest uppercase text-muted-foreground mb-1">
-						Effort
-					</span>
-					<select
-						aria-label="Computer Use effort"
-						value={configuredEffort}
-						onChange={(event) =>
-							onChange({ windowsComputerUseEffort: event.target.value })
-						}
-						className={selectClass}
-					>
-						<option value="inherit">Inherit from calling session</option>
-						{efforts.map((effort) => (
-							<option key={effort.value} value={effort.value}>
-								{effort.label}
-							</option>
-						))}
-					</select>
-				</label>
-				<div className="text-[10px] text-muted-foreground max-w-xs">
-					Applied to the next Computer Use worker. Unsupported native choices
-					use a visible safe fallback.
+					<div className="text-xs text-muted-foreground mt-1 max-w-[12rem] sm:max-w-xs lg:max-w-sm">
+						{configuredModel === "inherit"
+							? "Use the model selected in the session that requested Computer Use."
+							: selectedModel?.description}
+					</div>
 				</div>
+			</Field>
+			<RadioCardGroup
+				legend="EFFORT"
+				ariaLabel="Computer Use effort"
+				name="computer-use-effort"
+				options={effortOptions}
+				value={configuredEffort}
+				onSelect={(effort) => onChange({ windowsComputerUseEffort: effort })}
+			/>
+			<div className="px-4 py-3 text-xs text-muted-foreground">
+				Applied to the next Computer Use worker. Unsupported native choices use
+				a visible safe fallback.
 			</div>
-		</Field>
+		</>
 	);
 }
 
@@ -180,7 +206,7 @@ function ModelField({
 					))}
 				</select>
 				{selectedModel?.description && (
-					<div className="text-xs text-muted-foreground mt-1 max-w-[12rem] sm:max-w-xs">
+					<div className="text-xs text-muted-foreground mt-1 max-w-[12rem] sm:max-w-xs lg:max-w-sm">
 						{selectedModel.description}
 					</div>
 				)}
@@ -191,12 +217,14 @@ function ModelField({
 
 function RadioCardGroup({
 	legend,
+	ariaLabel,
 	name,
 	options,
 	value,
 	onSelect,
 }: {
 	legend: string;
+	ariaLabel?: string;
 	name: string;
 	options: readonly {
 		value: string;
@@ -208,7 +236,10 @@ function RadioCardGroup({
 	onSelect: (value: string) => void;
 }) {
 	return (
-		<fieldset className="border-0 m-0 p-0 px-4 py-3">
+		<fieldset
+			aria-label={ariaLabel ?? legend}
+			className="border-0 m-0 p-0 px-4 py-3"
+		>
 			<div className="text-[9px] tracking-widest text-muted-foreground uppercase mb-2">
 				{legend}
 			</div>
@@ -377,15 +408,7 @@ export function ClaudeSection({
 			{activeProvider?.hostCapabilities &&
 				Object.entries(activeProvider.hostCapabilities).map(
 					([id, capability]) =>
-						id === "windowsComputerUse" && activeProvider.id === "codex" ? (
-							<WindowsComputerUseField
-								key={id}
-								claude={claude}
-								onChange={onChange}
-								provider={activeProvider}
-								capability={capability}
-							/>
-						) : (
+						id === "windowsComputerUse" ? null : (
 							<Field key={id} label={capability.label} hint="host capability">
 								<span
 									className={
@@ -456,6 +479,33 @@ export function ClaudeSection({
 					)}
 				</>
 			)}
+		</Section>
+	);
+}
+
+export function ComputerUseSection({
+	claude,
+	onChange,
+	providers,
+}: {
+	claude: ClaudeForm;
+	onChange: (patch: Partial<ClaudeForm>) => void;
+	providers: ProviderInfo[];
+}) {
+	const provider = providers.find(
+		(candidate) => candidate.id === claude.vaultProvider,
+	);
+	const capability = provider?.hostCapabilities?.windowsComputerUse;
+	if (provider?.id !== "codex" || !capability) return null;
+
+	return (
+		<Section title="Computer Use">
+			<WindowsComputerUseFields
+				claude={claude}
+				onChange={onChange}
+				provider={provider}
+				capability={capability}
+			/>
 		</Section>
 	);
 }

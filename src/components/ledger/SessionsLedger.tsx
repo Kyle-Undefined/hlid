@@ -6,7 +6,7 @@ import {
 	SlidersHorizontal,
 	X,
 } from "lucide-react";
-import type { ComponentType } from "react";
+import type { ComponentType, RefObject } from "react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { HydrationSafeText } from "#/components/HydrationSafeText";
@@ -59,7 +59,6 @@ export function sessionDisplayUsage(
 }
 
 function SessionActionPanel({
-	mobile,
 	deleteConfirming,
 	renaming,
 	renameValue,
@@ -70,9 +69,9 @@ function SessionActionPanel({
 	onRequestDelete,
 	onCancelDelete,
 	onConfirmDelete,
-	mobilePosition,
+	position,
+	panelRef,
 }: {
-	mobile: boolean;
 	deleteConfirming: boolean;
 	renaming: boolean;
 	renameValue: string;
@@ -83,25 +82,19 @@ function SessionActionPanel({
 	onRequestDelete: () => void;
 	onCancelDelete: () => void;
 	onConfirmDelete: () => void;
-	mobilePosition?: AnchoredPopoverPosition | null;
+	position: AnchoredPopoverPosition;
+	panelRef: RefObject<HTMLDivElement | null>;
 }) {
 	return (
 		<div
-			className={
-				mobile
-					? "fixed z-[70] overflow-y-auto border border-border bg-popover p-2 shadow-xl"
-					: "absolute right-2 top-10 z-[70] w-40 border border-border bg-popover p-2 shadow-xl"
-			}
-			style={
-				mobile && mobilePosition
-					? {
-							left: mobilePosition.left,
-							top: mobilePosition.top,
-							width: mobilePosition.width,
-							maxHeight: mobilePosition.maxHeight,
-						}
-					: undefined
-			}
+			ref={panelRef}
+			className="fixed z-[70] overflow-y-auto border border-border bg-popover p-2 shadow-xl"
+			style={{
+				left: position.left,
+				top: position.top,
+				width: position.width,
+				maxHeight: position.maxHeight,
+			}}
 			role="dialog"
 			aria-label={
 				renaming
@@ -218,11 +211,13 @@ function SessionItem({
 	const [mobileRenaming, setMobileRenaming] = useState(false);
 	const inputRef = useRef<HTMLInputElement>(null);
 	const actionButtonRef = useRef<HTMLButtonElement>(null);
-	const mobilePosition = useAnchoredPopover(
-		menuOpen && !isDesktop,
+	const actionPanelRef = useRef<HTMLDivElement>(null);
+	const actionPosition = useAnchoredPopover(
+		menuOpen,
 		actionButtonRef,
-		mobileRenaming ? 320 : 208,
+		isDesktop ? 160 : mobileRenaming ? 320 : 208,
 		mobileRenaming ? 210 : deleteConfirming ? 170 : 112,
+		actionPanelRef,
 	);
 	const usage = sessionDisplayUsage(session, Boolean(isActive), liveStats);
 	const costSummary =
@@ -358,45 +353,27 @@ function SessionItem({
 				>
 					<Ellipsis size={17} />
 				</button>
-				{menuOpen &&
-					(isDesktop ? (
-						<SessionActionPanel
-							mobile={false}
-							deleteConfirming={deleteConfirming}
-							renaming={false}
-							renameValue={editValue}
-							onRenameValueChange={setEditValue}
-							onRename={() => {
-								closeMenu();
-								startEdit();
-							}}
-							onCancelRename={closeMenu}
-							onConfirmRename={commitMobileEdit}
-							onRequestDelete={() => setDeleteConfirming(true)}
-							onCancelDelete={() => setDeleteConfirming(false)}
-							onConfirmDelete={() => {
-								onDelete(session.id);
-								closeMenu();
-							}}
-							mobilePosition={null}
-						/>
-					) : typeof document !== "undefined" ? (
-						createPortal(
+				{menuOpen && typeof document !== "undefined"
+					? createPortal(
 							<>
 								<button
 									type="button"
 									onClick={closeMenu}
-									className="fixed inset-0 z-[60] bg-black/10"
+									className={`fixed inset-0 z-[60] ${isDesktop ? "bg-transparent" : "bg-black/10"}`}
 									aria-label="Dismiss session actions"
 								/>
-								{mobilePosition && (
+								{actionPosition && (
 									<SessionActionPanel
-										mobile
 										deleteConfirming={deleteConfirming}
-										renaming={mobileRenaming}
+										renaming={!isDesktop && mobileRenaming}
 										renameValue={editValue}
 										onRenameValueChange={setEditValue}
-										onRename={startMobileEdit}
+										onRename={() => {
+											if (isDesktop) {
+												closeMenu();
+												startEdit();
+											} else startMobileEdit();
+										}}
 										onCancelRename={closeMenu}
 										onConfirmRename={commitMobileEdit}
 										onRequestDelete={() => setDeleteConfirming(true)}
@@ -405,13 +382,14 @@ function SessionItem({
 											onDelete(session.id);
 											closeMenu();
 										}}
-										mobilePosition={mobilePosition}
+										position={actionPosition}
+										panelRef={actionPanelRef}
 									/>
 								)}
 							</>,
 							document.body,
 						)
-					) : null)}
+					: null}
 			</div>
 		</div>
 	);

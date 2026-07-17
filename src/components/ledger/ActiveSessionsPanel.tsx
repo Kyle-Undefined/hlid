@@ -1,4 +1,5 @@
 import { Ellipsis } from "lucide-react";
+import type { RefObject } from "react";
 import { useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { PrivacyMask } from "#/components/PrivacyMask";
@@ -94,76 +95,37 @@ export function ActiveSessionsPanel({
 }
 
 function ActiveSessionActionPanel({
-	mobile,
-	confirming,
 	agentName,
-	onRequestClose,
-	onCancelClose,
-	onConfirmClose,
-	mobilePosition,
+	onClose,
+	position,
+	panelRef,
 }: {
-	mobile: boolean;
-	confirming: boolean;
 	agentName: string;
-	onRequestClose: () => void;
-	onCancelClose: () => void;
-	onConfirmClose: () => void;
-	mobilePosition?: AnchoredPopoverPosition | null;
+	onClose: () => void;
+	position: AnchoredPopoverPosition;
+	panelRef: RefObject<HTMLDivElement | null>;
 }) {
 	return (
 		<div
-			className={
-				mobile
-					? "fixed z-[70] overflow-y-auto border border-border bg-popover p-3 shadow-xl"
-					: "absolute right-0 top-11 z-[70] w-44 border border-border bg-popover p-3 shadow-xl"
-			}
-			style={
-				mobile && mobilePosition
-					? {
-							left: mobilePosition.left,
-							top: mobilePosition.top,
-							width: mobilePosition.width,
-							maxHeight: mobilePosition.maxHeight,
-						}
-					: undefined
-			}
+			ref={panelRef}
+			className="fixed z-[70] overflow-y-auto border border-border bg-popover p-3 shadow-xl"
+			style={{
+				left: position.left,
+				top: position.top,
+				width: position.width,
+				maxHeight: position.maxHeight,
+			}}
 			role="dialog"
-			aria-label={
-				confirming ? "Confirm live session close" : "Active session actions"
-			}
+			aria-label="Active session actions"
 		>
-			{confirming ? (
-				<div className="space-y-3">
-					<div className="text-[10px] text-muted-foreground">
-						Close this live session?
-					</div>
-					<div className="grid grid-cols-2 gap-2">
-						<button
-							type="button"
-							onClick={onCancelClose}
-							className="min-h-11 border border-border text-[9px] tracking-widest uppercase"
-						>
-							Cancel
-						</button>
-						<button
-							type="button"
-							onClick={onConfirmClose}
-							className="min-h-11 border border-destructive/40 text-[9px] tracking-widest text-destructive uppercase"
-						>
-							Close
-						</button>
-					</div>
-				</div>
-			) : (
-				<button
-					type="button"
-					onClick={onRequestClose}
-					aria-label={`close ${agentName}`}
-					className="min-h-11 w-full px-2 text-left text-[9px] tracking-widest uppercase text-destructive/80 hover:bg-accent/40"
-				>
-					Close session
-				</button>
-			)}
+			<button
+				type="button"
+				onClick={onClose}
+				aria-label={`close ${agentName}`}
+				className="min-h-11 w-full px-2 text-left text-[9px] tracking-widest uppercase text-destructive/80 hover:bg-accent/40"
+			>
+				Close session
+			</button>
 		</div>
 	);
 }
@@ -182,25 +144,22 @@ function ActiveSessionRow({
 	isDesktop: boolean;
 }) {
 	const [menuOpen, setMenuOpen] = useState(false);
-	const [closeConfirming, setCloseConfirming] = useState(false);
 	const actionButtonRef = useRef<HTMLButtonElement>(null);
-	const mobilePosition = useAnchoredPopover(
-		menuOpen && !isDesktop,
+	const actionPanelRef = useRef<HTMLDivElement>(null);
+	const actionPosition = useAnchoredPopover(
+		menuOpen,
 		actionButtonRef,
-		208,
-		closeConfirming ? 170 : 112,
+		isDesktop ? 176 : 208,
+		112,
+		actionPanelRef,
 	);
 	const canNavigate = Boolean(session.db_session_id && onNavigate);
 	function dismissActions() {
 		setMenuOpen(false);
-		setCloseConfirming(false);
 	}
 	const actionPanelProps = {
-		confirming: closeConfirming,
 		agentName: session.agent_name,
-		onRequestClose: () => setCloseConfirming(true),
-		onCancelClose: () => setCloseConfirming(false),
-		onConfirmClose: () => {
+		onClose: () => {
 			onClose(session.session_id);
 			dismissActions();
 		},
@@ -281,33 +240,26 @@ function ActiveSessionRow({
 					>
 						<Ellipsis className="h-4 w-4" />
 					</button>
-					{menuOpen &&
-						(isDesktop ? (
-							<ActiveSessionActionPanel
-								{...actionPanelProps}
-								mobile={false}
-								mobilePosition={null}
-							/>
-						) : typeof document !== "undefined" ? (
-							createPortal(
+					{menuOpen && typeof document !== "undefined"
+						? createPortal(
 								<>
 									<button
 										type="button"
 										onClick={dismissActions}
-										className="fixed inset-0 z-[60] bg-black/10"
+										className={`fixed inset-0 z-[60] ${isDesktop ? "bg-transparent" : "bg-black/10"}`}
 										aria-label="Dismiss active session actions"
 									/>
-									{mobilePosition && (
+									{actionPosition && (
 										<ActiveSessionActionPanel
 											{...actionPanelProps}
-											mobile
-											mobilePosition={mobilePosition}
+											position={actionPosition}
+											panelRef={actionPanelRef}
 										/>
 									)}
 								</>,
 								document.body,
 							)
-						) : null)}
+						: null}
 				</div>
 			</td>
 		</tr>

@@ -1,5 +1,4 @@
-import { StatusDot } from "#/components/McpStatusDot";
-import { Field, FilePathField, TextInput } from "./fields";
+import { Field, FilePathField, StatusIndicator, TextInput } from "./fields";
 import type { ServerForm } from "./NetworkSection";
 
 export type TailscaleStatus = {
@@ -68,10 +67,9 @@ export function TailscaleFields({
 			</div>
 			<Field label="Installed">
 				<div className="flex items-center gap-3">
-					<StatusDot ok={installed} />
-					<span className="text-xs text-muted-foreground">
+					<StatusIndicator ok={installed}>
 						{availabilityLabel(installed)}
-					</span>
+					</StatusIndicator>
 					{installed === false && (
 						<button
 							type="button"
@@ -99,12 +97,9 @@ export function TailscaleFields({
 			</Field>
 			{installed && (
 				<Field label="Authenticated" hint={authenticationHint(status)}>
-					<div className="flex items-center gap-3">
-						<StatusDot ok={authenticated} />
-						<span className="text-xs text-muted-foreground">
-							{authenticationLabel(authenticated)}
-						</span>
-					</div>
+					<StatusIndicator ok={authenticated}>
+						{authenticationLabel(authenticated)}
+					</StatusIndicator>
 				</Field>
 			)}
 			{status?.magicDNS && (

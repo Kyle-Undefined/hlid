@@ -212,6 +212,8 @@ describe("AgentCard edit options", () => {
 		const onChat = vi.fn();
 		renderCard(makeAgent(), [claudeProvider], { onModeChange, onChat });
 
+		expect(screen.getByTitle("Run in agent's directory")).not.toBeNull();
+		expect(screen.queryByTitle(/Run claude/i)).toBeNull();
 		fireEvent.click(screen.getByText("CTX"));
 		fireEvent.click(screen.getByTitle("Chat with agent"));
 

@@ -2,7 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { AcpSection } from "#/components/forge/AcpSection";
 import { ApiSection } from "#/components/forge/ApiSection";
 import { AutoSleepSection } from "#/components/forge/AutoSleepSection";
-import { ClaudeSection } from "#/components/forge/ClaudeSection";
+import {
+	ClaudeSection,
+	ComputerUseSection,
+} from "#/components/forge/ClaudeSection";
 import { CustomThemeSection } from "#/components/forge/CustomThemeSection";
 import { EventLogSection } from "#/components/forge/EventLogSection";
 import { McpSection } from "#/components/forge/McpSection";
@@ -45,7 +48,7 @@ const CATEGORIES = [
 		label: "Agents",
 		description: "Provider, model, permissions, limits, and recaps",
 		keywords:
-			"provider model effort permissions turns recaps account auto sleep usage limit rate window resume",
+			"provider model effort permissions turns recaps account computer use windows desktop auto sleep usage limit rate window resume",
 		group: "primary",
 	},
 	{
@@ -105,12 +108,19 @@ function AgentSettings({
 				}
 			: state.claude;
 	return (
-		<ClaudeSection
-			claude={agentForm}
-			onChange={state.changeClaude}
-			providers={initial.providers}
-			accountInfo={initial.accountInfo}
-		/>
+		<>
+			<ClaudeSection
+				claude={agentForm}
+				onChange={state.changeClaude}
+				providers={initial.providers}
+				accountInfo={initial.accountInfo}
+			/>
+			<ComputerUseSection
+				claude={agentForm}
+				onChange={state.changeClaude}
+				providers={initial.providers}
+			/>
+		</>
 	);
 }
 

@@ -119,6 +119,23 @@ describe("ActiveSessionsPanel", () => {
 		expect(screen.getByText("Vault")).toBeDefined();
 	});
 
+	it("opens a persisted session from the keyboard", () => {
+		const onNavigate = vi.fn();
+		render(
+			<ActiveSessionsPanel
+				sessions={[{ ...idle, db_session_id: "db-session-1" }]}
+				onStop={vi.fn()}
+				onClose={vi.fn()}
+				onNavigate={onNavigate}
+			/>,
+		);
+		const row = screen.getByLabelText("Open Proj session");
+		fireEvent.keyDown(row, { key: "Enter" });
+		fireEvent.keyDown(row, { key: " " });
+		expect(onNavigate).toHaveBeenNthCalledWith(1, "db-session-1");
+		expect(onNavigate).toHaveBeenNthCalledWith(2, "db-session-1");
+	});
+
 	it("shows agent_cwd in each row", () => {
 		render(
 			<ActiveSessionsPanel
@@ -196,7 +213,7 @@ describe("ActiveSessionsPanel", () => {
 
 	// ── CLOSE button ─────────────────────────────────────────────────────────
 
-	it("CLOSE button requires confirmation before calling onClose", () => {
+	it("CLOSE button closes the session directly from the secondary menu", () => {
 		const onClose = vi.fn();
 		render(
 			<ActiveSessionsPanel
@@ -212,12 +229,12 @@ describe("ActiveSessionsPanel", () => {
 			name: /close s1|close proj/i,
 		});
 		fireEvent.click(closeBtn);
-		// Close removes the session — a single click must not fire it.
-		expect(onClose).not.toHaveBeenCalled();
-		fireEvent.click(screen.getByRole("button", { name: "Close" }));
 		expect(onClose).toHaveBeenCalledWith(
 			"s1aabbcc-1234-5678-90ab-cdef01234567",
 		);
+		expect(
+			screen.queryByRole("dialog", { name: "Active session actions" }),
+		).toBeNull();
 	});
 
 	it("keeps CLOSE in the secondary menu", () => {
@@ -234,9 +251,33 @@ describe("ActiveSessionsPanel", () => {
 		const closeBtn = screen.getByRole("button", {
 			name: /close s1|close proj/i,
 		});
-		fireEvent.click(closeBtn);
+		expect(closeBtn).toBeDefined();
+	});
 
-		expect(screen.getByRole("button", { name: "Close" })).toBeDefined();
+	it("portals desktop actions outside the clipped table", () => {
+		render(
+			<ActiveSessionsPanel
+				sessions={[idle]}
+				onStop={vi.fn()}
+				onClose={vi.fn()}
+			/>,
+		);
+		anchorBelow(screen.getByRole("button", { name: /more actions for proj/i }));
+		fireEvent.click(
+			screen.getByRole("button", { name: /more actions for proj/i }),
+		);
+		const menu = screen.getByRole("dialog", {
+			name: "Active session actions",
+		});
+		expect(menu.parentElement).toBe(document.body);
+		expect(menu.className).toContain("fixed");
+		expect(menu.style.top).toBe("152px");
+		expect(menu.style.left).toBe("164px");
+		expect(
+			screen.getByRole("button", {
+				name: "Dismiss active session actions",
+			}).className,
+		).toContain("bg-transparent");
 	});
 
 	it("anchors mobile actions below the tapped overflow button", () => {

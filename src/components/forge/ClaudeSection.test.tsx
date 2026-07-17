@@ -5,10 +5,20 @@
  * own default (falling back to the first available option), and the
  * selected model's description should render as a hint under the picker.
  */
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+	within,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ProviderInfo } from "#/lib/providerTypes";
-import { type ClaudeForm, ClaudeSection } from "./ClaudeSection";
+import {
+	type ClaudeForm,
+	ClaudeSection,
+	ComputerUseSection,
+} from "./ClaudeSection";
 
 afterEach(cleanup);
 
@@ -46,7 +56,7 @@ function makeClaude(overrides: Partial<ClaudeForm> = {}): ClaudeForm {
 	};
 }
 
-describe("ClaudeSection model/effort interplay", () => {
+describe("Vault Agent and Computer Use model/effort interplay", () => {
 	it("resets effort to the new model's default effort on model change", () => {
 		const onChange = vi.fn();
 		render(
@@ -125,11 +135,10 @@ describe("ClaudeSection model/effort interplay", () => {
 		expect(screen.getByText("High (default)")).not.toBeNull();
 	});
 
-	it("shows Windows Computer Use host readiness for Codex", () => {
+	it("keeps Windows Computer Use out of the Vault Agent section", () => {
 		const codexProvider: ProviderInfo = {
 			...provider,
 			id: "codex",
-			label: "Codex",
 			hostCapabilities: {
 				windowsComputerUse: {
 					label: "Windows Computer Use",
@@ -145,17 +154,52 @@ describe("ClaudeSection model/effort interplay", () => {
 			/>,
 		);
 
+		expect(screen.queryByText("Windows Computer Use")).toBeNull();
+	});
+
+	it("shows Windows Computer Use host readiness for Codex", () => {
+		const codexProvider: ProviderInfo = {
+			...provider,
+			id: "codex",
+			label: "Codex",
+			hostCapabilities: {
+				windowsComputerUse: {
+					label: "Windows Computer Use",
+					available: true,
+				},
+			},
+		};
+		render(
+			<ComputerUseSection
+				claude={makeClaude({ vaultProvider: "codex" })}
+				onChange={vi.fn()}
+				providers={[codexProvider]}
+			/>,
+		);
+
 		expect(screen.getByText("Windows Computer Use")).not.toBeNull();
 		expect(screen.getByText("ready")).not.toBeNull();
 		expect(
+			screen.getByRole("img", { name: "Computer Use ready" }),
+		).not.toBeNull();
+		expect(
 			(screen.getByLabelText("Computer Use model") as HTMLSelectElement).value,
 		).toBe("inherit");
+		const computerUseEffort = within(
+			screen.getByRole("group", { name: "Computer Use effort" }),
+		);
 		expect(
-			(screen.getByLabelText("Computer Use effort") as HTMLSelectElement).value,
-		).toBe("medium");
+			(
+				computerUseEffort.getByRole("radio", {
+					name: /Medium/,
+				}) as HTMLInputElement
+			).checked,
+		).toBe(true);
 		expect(
-			screen.getAllByRole("option", { name: "Inherit from calling session" }),
-		).toHaveLength(2);
+			computerUseEffort.getByRole("radio", {
+				name: /Inherit from calling session/,
+			}),
+		).not.toBeNull();
 	});
 
 	it("saves Windows Computer Use model and effort choices through the Codex form", () => {
@@ -172,7 +216,7 @@ describe("ClaudeSection model/effort interplay", () => {
 			},
 		};
 		render(
-			<ClaudeSection
+			<ComputerUseSection
 				claude={makeClaude({ vaultProvider: "codex" })}
 				onChange={onChange}
 				providers={[codexProvider]}
@@ -182,15 +226,59 @@ describe("ClaudeSection model/effort interplay", () => {
 		fireEvent.change(screen.getByLabelText("Computer Use model"), {
 			target: { value: "claude-opus-4-1" },
 		});
-		fireEvent.change(screen.getByLabelText("Computer Use effort"), {
-			target: { value: "inherit" },
-		});
+		fireEvent.click(
+			screen.getByRole("radio", { name: /Inherit from calling session/ }),
+		);
 
 		expect(onChange).toHaveBeenCalledWith({
 			windowsComputerUseModel: "claude-opus-4-1",
+			windowsComputerUseEffort: "high",
 		});
 		expect(onChange).toHaveBeenCalledWith({
 			windowsComputerUseEffort: "inherit",
+		});
+	});
+
+	it("resets an unsupported Computer Use effort when its model changes", () => {
+		const onChange = vi.fn();
+		const codexProvider: ProviderInfo = {
+			...provider,
+			id: "codex",
+			label: "Codex",
+			models: [
+				...(provider.models ?? []),
+				{
+					value: "fast-model",
+					label: "Fast model",
+					efforts: [{ value: "low", label: "Low", isDefault: true }],
+				},
+			],
+			hostCapabilities: {
+				windowsComputerUse: {
+					label: "Windows Computer Use",
+					available: true,
+				},
+			},
+		};
+		render(
+			<ComputerUseSection
+				claude={makeClaude({
+					vaultProvider: "codex",
+					windowsComputerUseModel: "claude-opus-4-1",
+					windowsComputerUseEffort: "high",
+				})}
+				onChange={onChange}
+				providers={[codexProvider]}
+			/>,
+		);
+
+		fireEvent.change(screen.getByLabelText("Computer Use model"), {
+			target: { value: "fast-model" },
+		});
+
+		expect(onChange).toHaveBeenCalledWith({
+			windowsComputerUseModel: "fast-model",
+			windowsComputerUseEffort: "low",
 		});
 	});
 });

@@ -129,6 +129,20 @@ describe("sessionDisplayUsage", () => {
 });
 
 describe("SessionsLedger session actions", () => {
+	it("portals desktop actions outside the Ledger scroll container", () => {
+		renderLedger();
+		anchorBelow(screen.getByRole("button", { name: "Session actions" }));
+		openSessionActions();
+		const menu = screen.getByRole("dialog", { name: "Session actions" });
+		expect(menu.parentElement).toBe(document.body);
+		expect(menu.className).toContain("fixed");
+		expect(menu.style.top).toBe("152px");
+		expect(menu.style.left).toBe("180px");
+		expect(
+			screen.getByRole("button", { name: "Dismiss session actions" }).className,
+		).toContain("bg-transparent");
+	});
+
 	it("anchors the mobile actions below the tapped overflow button", () => {
 		setMobileViewport();
 		renderLedger();

@@ -85,6 +85,9 @@ describe("VoiceSection", () => {
 			(screen.getByRole("button", { name: "DELETE" }) as HTMLButtonElement)
 				.disabled,
 		).toBe(true);
+		expect(
+			screen.getByRole("img", { name: "Voice runtime ready" }),
+		).toBeTruthy();
 	});
 
 	it("reports deletion failure without leaving actions busy", async () => {

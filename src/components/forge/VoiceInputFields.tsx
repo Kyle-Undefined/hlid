@@ -1,6 +1,6 @@
 import type { VoiceInfo } from "#/lib/serverFns/voice";
 import { displayVoiceHotkey, voiceHotkeyFromEvent } from "#/lib/voiceHotkey";
-import { Field, Section } from "./fields";
+import { Field, Section, StatusIndicator } from "./fields";
 import type { VoiceForm } from "./VoiceSection";
 
 const LANGUAGES = [
@@ -25,6 +25,12 @@ export function VoiceInputFields({
 	onChange: (patch: Partial<VoiceForm>) => void;
 	status: VoiceInfo["status"];
 }) {
+	const runtimeOk =
+		status.state === "ready"
+			? true
+			: status.state === "error" || status.state === "unavailable"
+				? false
+				: null;
 	return (
 		<Section title="Voice input">
 			<Field
@@ -42,17 +48,12 @@ export function VoiceInputFields({
 				</label>
 			</Field>
 			<Field label="Runtime status" hint={status.error}>
-				<span
-					className={
-						status.state === "ready"
-							? "text-xs text-green-500"
-							: "text-xs text-muted-foreground"
-					}
-					aria-live="polite"
-				>
-					{status.state}
-					{status.loadedModel ? ` · ${status.loadedModel}` : ""}
-				</span>
+				<StatusIndicator ok={runtimeOk} label={`Voice runtime ${status.state}`}>
+					<span aria-live="polite">
+						{status.state}
+						{status.loadedModel ? ` · ${status.loadedModel}` : ""}
+					</span>
+				</StatusIndicator>
 			</Field>
 			<Field
 				label="Language"

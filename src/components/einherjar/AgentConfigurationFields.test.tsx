@@ -39,7 +39,7 @@ const provider: ProviderInfo = {
 describe("AgentConfigurationFields", () => {
 	it("renders provider capabilities and emits each setting change", () => {
 		const onChange = vi.fn();
-		render(
+		const { rerender } = render(
 			<AgentConfigurationFields
 				value={value}
 				providers={[provider]}
@@ -49,7 +49,23 @@ describe("AgentConfigurationFields", () => {
 		);
 
 		expect(screen.getByText("CLI missing")).not.toBeNull();
+		expect(
+			screen.getByText(
+				"stays in vault, loads AGENTS.md or CLAUDE.md as persona",
+			),
+		).not.toBeNull();
+		expect(screen.queryByText(/claude stays/i)).toBeNull();
 		fireEvent.click(screen.getByText("CWD"));
+		rerender(
+			<AgentConfigurationFields
+				value={{ ...value, mode: "cwd" }}
+				providers={[provider]}
+				onChange={onChange}
+				includeInteractive
+			/>,
+		);
+		expect(screen.getByText("runs in agent's directory")).not.toBeNull();
+		expect(screen.queryByText(/claude runs/i)).toBeNull();
 		const selects = screen.getAllByRole("combobox");
 		fireEvent.change(selects[0], { target: { value: "haiku" } });
 		fireEvent.change(selects[1], { target: { value: "low" } });
