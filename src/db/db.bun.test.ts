@@ -962,6 +962,16 @@ describe("event log — appendLog / getLogs", () => {
 		expect(counts.info).toBe(0);
 	});
 
+	it("retains exactly the newest 1000 entries", async () => {
+		for (let index = 0; index < 1001; index++) {
+			await appendLog("info", "retention", `entry-${index}`);
+		}
+		const { logs, total } = await getLogs(1, 1000);
+		expect(total).toBe(1000);
+		expect(logs[0].message).toBe("entry-1000");
+		expect(logs.at(-1)?.message).toBe("entry-1");
+	});
+
 	it("clearLogs removes all entries", async () => {
 		await appendLog("info", "x", "msg");
 		await clearLogs();

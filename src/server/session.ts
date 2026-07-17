@@ -3061,7 +3061,12 @@ export class SessionManager {
 		} catch (err) {
 			this.state = "error";
 			const msg = err instanceof Error ? err.message : "Unknown error";
-			console.error("[session] runQuery error:", err);
+			// Compiled Hlið redirects console.error into this same table. Keep the
+			// development console useful without storing every production failure
+			// twice (once as console and once as the structured session record).
+			if (!process.execPath.endsWith(".exe")) {
+				console.error("[session] runQuery error:", err);
+			}
 			void db.appendLog("error", "session", "runQuery error", {
 				message: msg,
 				name: err instanceof Error ? err.name : undefined,

@@ -36,6 +36,9 @@ describe("internal API client", () => {
 		expect(new Headers(init?.headers).get("x-hlid-internal")).toBe(
 			"test-token",
 		);
+		expect(new Headers(init?.headers).get("x-hlid-request-id")).toMatch(
+			/^[0-9a-f-]{36}$/,
+		);
 	});
 
 	it.each([
@@ -44,12 +47,19 @@ describe("internal API client", () => {
 	])("returns the fallback and reports %s", async (_label, response) => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		fetchMock.mockResolvedValueOnce(response());
-		await expect(dbJson("/db/failing", { value: 0 })).resolves.toEqual({
+		await expect(
+			dbJson("/db/failing?session_id=private", { value: 0 }),
+		).resolves.toEqual({
 			value: 0,
 		});
 		expect(warn).toHaveBeenCalledWith(
 			expect.stringContaining("[internal-api] /db/failing unavailable"),
 		);
+		expect(warn).toHaveBeenCalledWith(expect.stringMatching(/after \d+ms/));
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringMatching(/\(request [0-9a-f-]{12}\)/),
+		);
+		expect(warn.mock.calls[0][0]).not.toContain("private");
 	});
 
 	it("deduplicates repeated soft-failure logs", async () => {

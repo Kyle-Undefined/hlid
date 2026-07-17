@@ -23,7 +23,7 @@ export async function appendLog(
 				],
 			);
 			db.run(
-				`DELETE FROM event_log WHERE id <= (SELECT id FROM event_log ORDER BY id DESC LIMIT 1 OFFSET ${LOG_MAX_ROWS - 1})`,
+				`DELETE FROM event_log WHERE id <= (SELECT id FROM event_log ORDER BY id DESC LIMIT 1 OFFSET ${LOG_MAX_ROWS})`,
 			);
 		})();
 	} catch (e) {
@@ -42,12 +42,12 @@ export async function getLogs(
 	const rows = level
 		? db
 				.query<LogRow, [string, number, number]>(
-					`SELECT * FROM event_log WHERE level = ? ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
+					`SELECT * FROM event_log WHERE level = ? ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?`,
 				)
 				.all(level, pageSize, offset)
 		: db
 				.query<LogRow, [number, number]>(
-					`SELECT * FROM event_log ORDER BY timestamp DESC LIMIT ? OFFSET ?`,
+					`SELECT * FROM event_log ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?`,
 				)
 				.all(pageSize, offset);
 

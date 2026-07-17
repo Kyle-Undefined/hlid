@@ -72,7 +72,7 @@ type CodexCollaborationMode = {
 };
 
 type TurnStartParamsWithCollaboration = TurnStartParams & {
-	collaborationMode: CodexCollaborationMode;
+	collaborationMode?: CodexCollaborationMode;
 };
 
 class AsyncQueue<T> {
@@ -109,6 +109,11 @@ function asObj(value: unknown): Record<string, unknown> {
 	return value && typeof value === "object"
 		? (value as Record<string, unknown>)
 		: {};
+}
+
+function isMissingRolloutError(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	return /no rollout found for thread id/i.test(message);
 }
 
 function skillsFromListResponse(value: unknown): Record<string, unknown>[] {
@@ -1017,23 +1022,31 @@ class CodexAgentSession implements AgentSession {
 		await this.ensureReady();
 		if (!this.threadId) throw new Error("Codex thread did not start");
 		const cwd = this.launch?.rpcCwd ?? this.params.cwd;
+		const collaborationModel = this.params.model ?? this.resolvedModel;
+		const collaborationMode =
+			collaborationModel ||
+			(this.params.permissionMode === "plan" && !this.params.planHtmlPath)
+				? {
+						mode:
+							this.params.permissionMode === "plan" && !this.params.planHtmlPath
+								? ("plan" as const)
+								: ("default" as const),
+						settings: {
+							model: collaborationModel ?? "",
+							reasoning_effort: this.params.effort ?? null,
+							developer_instructions: null,
+						},
+					}
+				: undefined;
 		const params: TurnStartParamsWithCollaboration = {
 			threadId: this.threadId,
 			input: [{ type: "text", text: message, text_elements: [] }],
-			collaborationMode: {
-				// Native Codex Plan Mode forbids every write at the instruction layer,
-				// even when the sandbox grants the HTML plan directory. HTML plans use
-				// Hlið-managed planning while plain Markdown plans stay native.
-				mode:
-					this.params.permissionMode === "plan" && !this.params.planHtmlPath
-						? "plan"
-						: "default",
-				settings: {
-					model: this.params.model ?? "",
-					reasoning_effort: this.params.effort ?? null,
-					developer_instructions: null,
-				},
-			},
+			// Native Codex Plan Mode forbids every write at the instruction layer,
+			// even when the sandbox grants the HTML plan directory. HTML plans use
+			// Hlið-managed planning while plain Markdown plans stay native. A thread
+			// without a resolved model does not need an explicit default-mode update;
+			// sending an empty model makes Codex warn and fall back anyway.
+			...(collaborationMode ? { collaborationMode } : {}),
 			...(cwd ? { cwd } : {}),
 			...(this.params.model ? { model: this.params.model } : {}),
 			...(this.params.effort ? { effort: this.params.effort } : {}),
@@ -1346,25 +1359,40 @@ class CodexAgentSession implements AgentSession {
 				? { dynamicTools: windowsComputerUseTools() }
 				: {}),
 		};
-		const result = asObj(
-			this.params.sessionId
-				? await this.request("thread/resume", {
-						threadId: this.params.sessionId,
-						...threadParams,
-						// NOTE: `ephemeral` is a ThreadStartParams-only field —
-						// ThreadResumeParams (vendored in ./codexProtocol) has no
-						// such field, so this is likely a no-op/ignored on resume.
-						// Pre-existing behavior; typed here, not changed.
-					} satisfies ThreadResumeParams & { ephemeral?: boolean | null })
-				: await this.request("thread/start", threadParams),
-		);
+		let rawResult: unknown;
+		let replacedMissingRollout = false;
+		if (this.params.sessionId) {
+			try {
+				rawResult = await this.request("thread/resume", {
+					threadId: this.params.sessionId,
+					...threadParams,
+					// NOTE: `ephemeral` is a ThreadStartParams-only field —
+					// ThreadResumeParams (vendored in ./codexProtocol) has no
+					// such field, so this is likely a no-op/ignored on resume.
+					// Pre-existing behavior; typed here, not changed.
+				} satisfies ThreadResumeParams & { ephemeral?: boolean | null });
+			} catch (error) {
+				if (!isMissingRolloutError(error)) throw error;
+				console.warn(
+					"[codex] saved provider rollout is unavailable; starting a fresh thread",
+				);
+				// Hlið's DB transcript remains authoritative. Drop only the stale
+				// provider id so future transport recovery cannot retry it again.
+				this.params = { ...this.params, sessionId: undefined };
+				replacedMissingRollout = true;
+				rawResult = await this.request("thread/start", threadParams);
+			}
+		} else {
+			rawResult = await this.request("thread/start", threadParams);
+		}
+		const result = asObj(rawResult);
 		const thread = asObj(result.thread);
 		if (typeof thread.id !== "string") {
 			throw new Error("Codex thread start did not return a thread id");
 		}
 		this.threadId = thread.id;
 		this.resolvedModel =
-			typeof thread.model === "string"
+			typeof thread.model === "string" && thread.model.trim()
 				? thread.model
 				: (this.params.model ?? null);
 		if (this.canceled) return;
@@ -1379,6 +1407,13 @@ class CodexAgentSession implements AgentSession {
 		};
 		this.attachThread(thread.id);
 		this.events.push({ type: "session_start", sessionId: thread.id });
+		if (replacedMissingRollout) {
+			this.events.push({
+				type: "local_command_output",
+				content:
+					"Codex's saved provider history was unavailable. Continued in a fresh provider thread; Hlið's transcript is still preserved.",
+			});
+		}
 
 		// Seed usage windows immediately; rolling account/rateLimits/updated
 		// notifications keep them fresh during turns.

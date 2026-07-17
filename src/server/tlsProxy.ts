@@ -6,6 +6,7 @@ import { isPublicPath } from "../lib/publicPath";
 import { unauthenticatedResponse } from "../lib/uiRequestSecurity";
 import { authenticateRequest } from "./auth";
 import { compressHttpResponse } from "./httpCompression";
+import { createRequestObserver } from "./requestDiagnostics";
 import { createConcurrencyGate, readRequestBodyLimited } from "./requestLimits";
 
 type WsData = {
@@ -20,6 +21,13 @@ export const MAX_TLS_PUBLIC_BODY_BYTES = 2 * 1024;
 const DEFAULT_FORWARD_TIMEOUT_MS = 30_000;
 const VOICE_FORWARD_TIMEOUT_MS = 70_000;
 const TLS_IDLE_TIMEOUT_SECONDS = 75;
+const observeTlsForward = createRequestObserver({
+	scope: "tls-proxy",
+	slowRequestMs: () => undefined,
+	// The UI listener records returned 5xx responses with richer context. The
+	// proxy only needs to record failures that prevent reaching that listener.
+	reportServerErrors: false,
+});
 
 const SKIP_REQ = new Set([
 	"host",
@@ -74,19 +82,6 @@ function proxyResponse(upstream: Response): Response {
 	});
 }
 
-function isExpectedUpstreamFailure(error: unknown): boolean {
-	const message = error instanceof Error ? error.message : String(error);
-	return (
-		message.includes("abort") ||
-		message.includes("Abort") ||
-		message.includes("ConnectionRefused") ||
-		message.includes("ECONNREFUSED") ||
-		(error instanceof Error &&
-			"code" in error &&
-			(error as NodeJS.ErrnoException).code === "ConnectionRefused")
-	);
-}
-
 async function forwardRequest(
 	forward: NonNullable<HttpForwarderOptions["forward"]>,
 	input: string,
@@ -95,12 +90,17 @@ async function forwardRequest(
 ): Promise<Response> {
 	const controller = new AbortController();
 	const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+	const requestHeaders = new Headers(init.headers);
+	const requestId = requestHeaders.get("x-hlid-request-id");
+	const diagnosticRequest = new Request(input, {
+		method: init.method ?? "GET",
+		headers: requestId ? { "x-hlid-request-id": requestId } : undefined,
+	});
 	try {
-		return await forward(input, { ...init, signal: controller.signal });
-	} catch (error) {
-		if (!isExpectedUpstreamFailure(error)) {
-			console.error("[tlsProxy] upstream fetch failed:", error);
-		}
+		return await observeTlsForward(diagnosticRequest, () =>
+			forward(input, { ...init, signal: controller.signal }),
+		);
+	} catch {
 		return new Response("Service Unavailable", { status: 503 });
 	} finally {
 		clearTimeout(timeoutId);

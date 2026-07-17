@@ -161,8 +161,60 @@ describe("CodexAppServer idle lifecycle", () => {
 					"Failed to create shell snapshot for powershell: Shell snapshot not supported yet for PowerShell",
 					"Failed to list resources for MCP server 'optional': Mcp error: -32601: Method not found: resources/list",
 					"stream disconnected - retrying sampling request",
+					"",
 				].join("\n"),
 			),
+		);
+
+		expect(warn).toHaveBeenCalledOnce();
+		expect(warn).toHaveBeenCalledWith(
+			"[codex app-server]",
+			"stream disconnected - retrying sampling request",
+		);
+		warn.mockRestore();
+	});
+
+	it("summarizes tool failures without retaining commands or output", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const { proc } = await create();
+
+		proc.stderr.emit(
+			"data",
+			Buffer.from(
+				[
+					"2026-07-17T05:17:06Z ERROR codex_core::tools::router: error=apply_patch verification failed: Failed to find expected lines in /home/kyle/private.ts:",
+					"const secret = 'do not retain this';",
+					"return secret;",
+					"",
+				].join("\n"),
+			),
+		);
+		await vi.advanceTimersByTimeAsync(100);
+
+		const messages = warn.mock.calls.map((call) => call.join(" "));
+		expect(messages).toContain(
+			"[codex app-server] tool failure: apply_patch verification failed (details omitted)",
+		);
+		expect(messages).toEqual(
+			expect.arrayContaining([
+				expect.stringContaining(
+					"[codex app-server] omitted unstructured stderr burst (2 lines,",
+				),
+			]),
+		);
+		expect(messages.join("\n")).not.toContain("private.ts");
+		expect(messages.join("\n")).not.toContain("do not retain this");
+		warn.mockRestore();
+	});
+
+	it("buffers stderr lines split across process chunks", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const { proc } = await create();
+
+		proc.stderr.emit("data", Buffer.from("stream discon"));
+		proc.stderr.emit(
+			"data",
+			Buffer.from("nected - retrying sampling request\n"),
 		);
 
 		expect(warn).toHaveBeenCalledOnce();

@@ -25,6 +25,7 @@ import {
 } from "./codexAppServer";
 import { CodexProvider, refreshCodexHostCapabilities } from "./codexProvider";
 import { loadConfig } from "./config";
+import { formatPersistentConsoleMessage } from "./consoleLog";
 import { bumpDataRevision, subscribeDataRevisions } from "./dataRevision";
 import { handleDbRoute } from "./dbRoutes";
 import { getLiveSessionsStatus } from "./liveSessions";
@@ -35,6 +36,10 @@ import {
 } from "./providerCatalog";
 import { startProviderProxy } from "./proxy";
 import { bootstrapPtyRuntime } from "./pty-bootstrap";
+import {
+	createRequestObserver,
+	startEventLoopLagMonitor,
+} from "./requestDiagnostics";
 import {
 	contentLengthExceeds,
 	MAX_VOICE_BODY_BYTES,
@@ -49,6 +54,7 @@ import {
 import { SessionPool } from "./sessionPool";
 import { ShellSessionPool } from "./shellSessionPool";
 import { createShellUpgradeHandler } from "./shellUpgrade";
+import { probeExistingInstance } from "./startupProbe";
 import { resolveAllowedTerminalCwd } from "./terminalAccess";
 import { TerminalSessionPool } from "./terminalSessionPool";
 import { createTerminalUpgradeHandler } from "./terminalUpgrade";
@@ -81,9 +87,8 @@ if (process.argv[2] === "auth" && process.argv[3] === "reset") {
 // all console output to the DB log so no console is ever allocated.
 if (process.execPath.endsWith(".exe")) {
 	const toDb = (level: "info" | "warn" | "error", args: unknown[]) => {
-		const msg = args
-			.map((a) => (a instanceof Error ? (a.stack ?? a.message) : String(a)))
-			.join(" ");
+		const msg = formatPersistentConsoleMessage(level, args);
+		if (!msg) return;
 		void db.appendLog(level, "console", msg);
 	};
 	console.log = (...a) => toDb("info", a);
@@ -92,6 +97,11 @@ if (process.execPath.endsWith(".exe")) {
 	console.error = (...a) => toDb("error", a);
 	console.debug = () => {};
 }
+
+// A clustered set of otherwise unrelated request timeouts usually means the
+// single server event loop was delayed. Log only material stalls, with a
+// cooldown and sleep-gap filter handled by the monitor.
+startEventLoopLagMonitor();
 
 // CLI flags. `--background` = silent boot (used by the autostart registry entry).
 // `--restart` = post-update relaunch; implies background and skips the running-
@@ -122,13 +132,6 @@ if (restartParentArg) {
 }
 
 const config = loadConfig();
-syncWrappers(config.agents ?? []);
-await bootstrapUmbod().catch((error) => {
-	console.error(
-		"[umbod] failed to initialize:",
-		error instanceof Error ? error.message : String(error),
-	);
-});
 
 // Bind localhost-only by default. Opt-in to LAN/Tailscale exposure via
 // `local_network_access = true` in hlid.config.toml (requires restart).
@@ -139,19 +142,23 @@ const BIND_HOST = config.server.local_network_access ? "0.0.0.0" : "127.0.0.1";
 // makes double-clicking hlid.exe a friendly no-op when it's already up.
 // Skipped on --restart: the old instance was deliberately replaced.
 if (process.execPath.endsWith(".exe") && !RESTART_MODE) {
-	const probeUrl = `http://127.0.0.1:${config.server.port}/`;
-	try {
-		const res = await fetch(probeUrl, {
-			signal: AbortSignal.timeout(800),
-		});
-		if (res.ok) {
-			if (!BACKGROUND_MODE) openInBrowser(probeUrl);
-			process.exit(0);
-		}
-	} catch {
-		// no running instance, proceed to start one
+	const runningUrl = await probeExistingInstance(config.server.port);
+	if (runningUrl) {
+		if (!BACKGROUND_MODE) openInBrowser(runningUrl);
+		process.exit(0);
 	}
 }
+
+// Mutating startup work must happen only after the existing-instance probe.
+// A friendly second launch should not contend for Umbod's port, rewrite
+// wrappers, or start provider proxies before it exits.
+syncWrappers(config.agents ?? []);
+await bootstrapUmbod().catch((error) => {
+	console.error(
+		"[umbod] failed to initialize:",
+		error instanceof Error ? error.message : String(error),
+	);
+});
 
 const acpRegistry = new AcpRegistry();
 const handleAcpRoute = createAcpRouteHandler({
@@ -249,6 +256,16 @@ process.on("SIGINT", () => {
 const PORT = config.server.port + 1; // 3001 when TanStack Start is on 3000
 const UI_PORT = config.server.port;
 const CODEX_STARTUP_WARM_TIMEOUT_MS = 3_000;
+const observeApiRequest = createRequestObserver({
+	scope: "internal-api",
+	slowRequestMs: (request) => {
+		const pathname = new URL(request.url).pathname;
+		if (pathname === "/voice/transcribe") return 70_000;
+		if (pathname === "/api/attachments/upload") return 30_000;
+		if (pathname.startsWith("/api/attachments/")) return 10_000;
+		return 1_000;
+	},
+});
 
 // Per-provider transparent proxies. Each provider with proxyConfig gets its own
 // proxy that captures utilization headers and sets the provider's base URL env var.
@@ -504,7 +521,7 @@ const handleServerRequest = createServerRequestPolicy<AppServer>({
 	handleAuthenticated: handleAuthenticatedRoute,
 });
 
-async function handleServerFetch(
+async function dispatchServerFetch(
 	req: Request,
 	server: AppServer,
 ): Promise<Response | undefined> {
@@ -533,6 +550,13 @@ async function handleServerFetch(
 		});
 	}
 	return handleServerRequest(req, peerIp, server);
+}
+
+async function handleServerFetch(
+	req: Request,
+	server: AppServer,
+): Promise<Response | undefined> {
+	return observeApiRequest(req, () => dispatchServerFetch(req, server));
 }
 
 registerBunServer(

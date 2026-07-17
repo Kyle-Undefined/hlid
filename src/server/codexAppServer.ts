@@ -30,6 +30,11 @@ type JsonRpcMessage = {
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 const DEFAULT_IDLE_TIMEOUT_MS = 5 * 60_000;
 const DEFAULT_METADATA_IDLE_TIMEOUT_MS = 10_000;
+const CODEX_STDERR_BURST_MS = 100;
+const MAX_CODEX_STDERR_BUFFER_CHARS = 64 * 1024;
+const MAX_CODEX_DIAGNOSTIC_CHARS = 500;
+// biome-ignore lint/complexity/useRegexLiterals: constructor avoids a literal control character rejected by noControlCharactersInRegex
+const ANSI_ESCAPE = new RegExp("\\x1b\\[[0-9;]*m", "g");
 
 function configuredIdleTimeoutMs(): number {
 	const raw = process.env.HLID_CODEX_APP_SERVER_IDLE_MS;
@@ -89,12 +94,96 @@ function isBenignCodexStderr(line: string): boolean {
 	);
 }
 
+function compactDiagnosticText(value: string): string {
+	const firstLine = value.replace(ANSI_ESCAPE, "").split(/\r?\n/, 1)[0].trim();
+	return firstLine
+		.replace(/[A-Za-z]:\\[^|"\n]+/g, "<path>")
+		.replace(/\/(?:home|Users|mnt\/c\/Users)\/[^\s|"']+/g, "<path>")
+		.replace(/https?:\/\/\S+/g, "<url>")
+		.slice(0, MAX_CODEX_DIAGNOSTIC_CHARS);
+}
+
+function summarizeToolFailure(value: string): string {
+	if (/apply_patch verification failed/i.test(value)) {
+		return "tool failure: apply_patch verification failed (details omitted)";
+	}
+	if (/exec_command failed for/i.test(value)) {
+		return "tool failure: exec_command failed (command and output omitted)";
+	}
+	if (/write_stdin failed: Unknown process id/i.test(value)) {
+		return "tool failure: write_stdin targeted a process that had already exited";
+	}
+	const windowsError = value.match(
+		/windows sandbox[\s\S]*?Windows error (\d+)/i,
+	);
+	if (windowsError) {
+		return `tool failure: Windows sandbox process launch failed (error ${windowsError[1]})`;
+	}
+	const exitCode = value.match(/Exit code:\s*(-?\d+)/i);
+	if (exitCode) {
+		return `tool failure: command exited with code ${exitCode[1]} (output omitted)`;
+	}
+	return "tool/runtime failure (details omitted)";
+}
+
+/**
+ * Return null for known benign diagnostics, a safe summary for useful
+ * diagnostics, and undefined for unstructured continuation output.
+ */
+function summarizeCodexStderr(line: string): string | null | undefined {
+	const clean = line.replace(ANSI_ESCAPE, "").trim();
+	if (!clean || isBenignCodexStderr(clean)) return null;
+
+	if (clean.startsWith("{")) {
+		try {
+			const parsed = JSON.parse(clean) as {
+				level?: unknown;
+				target?: unknown;
+				fields?: { message?: unknown; error?: unknown };
+			};
+			const level =
+				typeof parsed.level === "string" ? parsed.level.toUpperCase() : "WARN";
+			const target =
+				typeof parsed.target === "string" ? parsed.target : "codex runtime";
+			const raw =
+				typeof parsed.fields?.message === "string"
+					? parsed.fields.message
+					: typeof parsed.fields?.error === "string"
+						? parsed.fields.error
+						: "";
+			if (
+				level === "ERROR" ||
+				target.includes("::tools::") ||
+				target.endsWith("::exec")
+			) {
+				return `${target}: ${summarizeToolFailure(raw)}`;
+			}
+			const summary = compactDiagnosticText(raw);
+			return summary ? `${target}: ${summary}` : `${target}: ${level}`;
+		} catch {
+			return undefined;
+		}
+	}
+
+	if (/^\d{4}-\d{2}-\d{2}T\S+\s+(?:ERROR|WARN)\s+/i.test(clean)) {
+		return summarizeToolFailure(clean);
+	}
+	if (/stream disconnected|failed to load recommended plugins/i.test(clean)) {
+		return compactDiagnosticText(clean);
+	}
+	return undefined;
+}
+
 export class CodexAppServer {
 	private proc: ChildProcessWithoutNullStreams;
 	private nextId = 1;
 	private pending = new Map<number | string, PendingRequest>();
 	private threads = new Map<string, ThreadHandler>();
 	private lineBuffer = "";
+	private stderrBuffer = "";
+	private omittedStderrLines = 0;
+	private omittedStderrChars = 0;
+	private stderrOmissionTimer: ReturnType<typeof setTimeout> | undefined;
 	private dead = false;
 	private idleTimer: ReturnType<typeof setTimeout> | undefined;
 	private activeServerRequests = 0;
@@ -128,14 +217,8 @@ export class CodexAppServer {
 			this.fail(new Error(`Codex app-server exited (code ${code ?? "null"})`));
 		});
 		this.proc.stdout.on("data", (chunk: Buffer) => this.onStdout(chunk));
-		this.proc.stderr.on("data", (chunk: Buffer) => {
-			for (const line of chunk.toString("utf8").split(/\r?\n/)) {
-				const text = line.trim();
-				if (text && !isBenignCodexStderr(text)) {
-					console.warn("[codex app-server]", text);
-				}
-			}
-		});
+		this.proc.stderr.on("data", (chunk: Buffer) => this.onStderr(chunk));
+		this.proc.stderr.on("end", () => this.flushPartialStderr());
 
 		this.ready = (async () => {
 			await this.request("initialize", {
@@ -220,6 +303,8 @@ export class CodexAppServer {
 		if (this.dead) return;
 		this.dead = true;
 		this.cancelIdleReap();
+		this.flushPartialStderr();
+		this.flushOmittedStderr();
 		for (const pending of this.pending.values()) {
 			clearTimeout(pending.timer);
 			pending.reject(err);
@@ -279,6 +364,63 @@ export class CodexAppServer {
 
 	private write(message: JsonRpcMessage): void {
 		this.proc.stdin.write(`${JSON.stringify(message)}\n`);
+	}
+
+	private onStderr(chunk: Buffer): void {
+		this.stderrBuffer += chunk.toString("utf8");
+		while (true) {
+			const index = this.stderrBuffer.indexOf("\n");
+			if (index === -1) break;
+			const line = this.stderrBuffer.slice(0, index).replace(/\r$/, "");
+			this.stderrBuffer = this.stderrBuffer.slice(index + 1);
+			this.handleStderrLine(line);
+		}
+		if (this.stderrBuffer.length > MAX_CODEX_STDERR_BUFFER_CHARS) {
+			this.recordOmittedStderr(this.stderrBuffer);
+			this.stderrBuffer = "";
+		}
+	}
+
+	private flushPartialStderr(): void {
+		if (!this.stderrBuffer) return;
+		const line = this.stderrBuffer;
+		this.stderrBuffer = "";
+		this.handleStderrLine(line);
+	}
+
+	private handleStderrLine(line: string): void {
+		const summary = summarizeCodexStderr(line);
+		if (summary === null) return;
+		if (summary === undefined) {
+			if (line.trim()) this.recordOmittedStderr(line);
+			return;
+		}
+		console.warn("[codex app-server]", summary);
+	}
+
+	private recordOmittedStderr(line: string): void {
+		this.omittedStderrLines++;
+		this.omittedStderrChars += line.length;
+		if (this.stderrOmissionTimer !== undefined) return;
+		this.stderrOmissionTimer = setTimeout(
+			() => this.flushOmittedStderr(),
+			CODEX_STDERR_BURST_MS,
+		);
+		this.stderrOmissionTimer.unref?.();
+	}
+
+	private flushOmittedStderr(): void {
+		if (this.stderrOmissionTimer !== undefined) {
+			clearTimeout(this.stderrOmissionTimer);
+			this.stderrOmissionTimer = undefined;
+		}
+		if (this.omittedStderrLines === 0) return;
+		console.warn(
+			"[codex app-server]",
+			`omitted unstructured stderr burst (${this.omittedStderrLines} lines, ${this.omittedStderrChars} chars)`,
+		);
+		this.omittedStderrLines = 0;
+		this.omittedStderrChars = 0;
 	}
 
 	private onStdout(chunk: Buffer): void {

@@ -784,6 +784,8 @@ function makeFakeSessionProc(
 		skills?: unknown[];
 		modelListResult?: unknown;
 		uniqueThreadIds?: boolean;
+		missingRolloutOnResume?: boolean;
+		threadModel?: string | null;
 	} = {},
 ): {
 	proc: FakeProc;
@@ -806,6 +808,21 @@ function makeFakeSessionProc(
 						Buffer.from(`${JSON.stringify({ id: msg.id, result: {} })}\n`),
 					);
 				} else if (
+					msg.method === "thread/resume" &&
+					opts.missingRolloutOnResume
+				) {
+					stdout.emit(
+						"data",
+						Buffer.from(
+							`${JSON.stringify({
+								id: msg.id,
+								error: {
+									message: "no rollout found for thread id missing-thread",
+								},
+							})}\n`,
+						),
+					);
+				} else if (
 					msg.method === "thread/start" ||
 					msg.method === "thread/resume"
 				) {
@@ -820,6 +837,9 @@ function makeFakeSessionProc(
 										id: opts.uniqueThreadIds
 											? `thread-${threadCounter}`
 											: "thread-1",
+										...(opts.threadModel === null
+											? {}
+											: { model: opts.threadModel ?? "gpt-5.4" }),
 									},
 								},
 							})}\n`,
@@ -1408,6 +1428,22 @@ describe("CodexAgentSession — setModel", () => {
 		expect(turns[0].model).toBe("gpt-5.4");
 		expect(turns[1].model).toBeUndefined();
 	});
+
+	it("does not send an empty collaboration model before one is resolved", async () => {
+		const { proc, writes } = makeFakeSessionProc({ threadModel: null });
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(
+			baseCodexParams({ model: undefined, effort: "medium" }),
+		);
+
+		await session.send("hello");
+
+		const [turn] = turnStartParams(writes);
+		expect(turn.model).toBeUndefined();
+		expect(turn.effort).toBe("medium");
+		expect(turn.collaborationMode).toBeUndefined();
+	});
 });
 
 describe("CodexAgentSession — shared transport recovery", () => {
@@ -1475,6 +1511,43 @@ describe("CodexAgentSession — shared transport recovery", () => {
 			type: "transport_error",
 			message: expect.stringContaining("disconnected during the active turn"),
 		});
+	});
+
+	it("starts a fresh thread when the saved rollout no longer exists", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const { proc, writes } = makeFakeSessionProc({
+			missingRolloutOnResume: true,
+			uniqueThreadIds: true,
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query({
+			...baseCodexParams(),
+			sessionId: "missing-thread",
+		});
+		const events = session[Symbol.asyncIterator]();
+
+		await session.send("continue here");
+
+		const methods = writes.map(
+			(value) => (JSON.parse(value) as { method?: string }).method,
+		);
+		expect(methods).toContain("thread/resume");
+		expect(methods).toContain("thread/start");
+		expect(methods.indexOf("thread/resume")).toBeLessThan(
+			methods.indexOf("thread/start"),
+		);
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "session_start",
+			sessionId: "thread-1",
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "local_command_output",
+			content: expect.stringContaining("fresh provider thread"),
+		});
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining("starting a fresh thread"),
+		);
 	});
 });
 

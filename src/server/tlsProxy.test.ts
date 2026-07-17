@@ -251,6 +251,7 @@ describe("TLS HTTP proxy limits", () => {
 	});
 
 	it("maps upstream connection failures to service unavailable", async () => {
+		const log = vi.spyOn(console, "error").mockImplementation(() => {});
 		const response = await forwarder({
 			forward: async () => {
 				const error = new Error("connect failed") as NodeJS.ErrnoException;
@@ -260,6 +261,10 @@ describe("TLS HTTP proxy limits", () => {
 		})(new Request("https://hlid.test/api/private"));
 		expect(response.status).toBe(503);
 		expect(await response.text()).toBe("Service Unavailable");
+		expect(log).toHaveBeenCalledWith(
+			"[tls-proxy] GET /api/private failed after 0ms: Error: connect failed",
+		);
+		log.mockRestore();
 	});
 
 	it("keeps the Tailscale voice forward alive beyond the default timeout", async () => {
