@@ -6,6 +6,7 @@ import {
 	CONFIG_PATH,
 	canonical,
 	expandTilde,
+	PRICING_OVERRIDES_PATH,
 	parseWslUnc,
 	pathStartsWith,
 	samePath,
@@ -18,6 +19,14 @@ import {
 describe("CONFIG_PATH", () => {
 	it("resolves to hlid.config.toml inside APP_DIR", () => {
 		expect(CONFIG_PATH).toBe(resolve(APP_DIR, "hlid.config.toml"));
+	});
+});
+
+describe("PRICING_OVERRIDES_PATH", () => {
+	it("resolves to pricing-overrides.toml inside APP_DIR", () => {
+		expect(PRICING_OVERRIDES_PATH).toBe(
+			resolve(APP_DIR, "pricing-overrides.toml"),
+		);
 	});
 });
 

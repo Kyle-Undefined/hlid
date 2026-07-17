@@ -1,26 +1,31 @@
 import { describe, expect, it } from "vitest";
 import {
-	CODEX_MODEL_PRICING,
 	canonicalizeCodexUsage,
 	estimateCodexCost,
 	getCodexPricing,
 } from "./codexPricing";
+import { getPricingCatalogState } from "./pricingCatalog";
 
 describe("codex pricing", () => {
 	it("contains every model currently exposed by the CLI catalog", () => {
-		const models = CODEX_MODEL_PRICING.map((entry) => entry.model);
-		expect(models).toEqual([
-			"gpt-5.6-sol",
-			"gpt-5.6-terra",
-			"gpt-5.6-luna",
-			"gpt-5.5",
-			"gpt-5.4",
-			"gpt-5.4-mini",
-			"gpt-5.3-codex",
-			"gpt-5.2-codex",
-			"gpt-5.3-codex-spark",
-			"codex-auto-review",
-		]);
+		const models = getPricingCatalogState()
+			.models.filter(
+				(entry) => entry.source === "built-in" && entry.provider === "codex",
+			)
+			.map((entry) => entry.model);
+		expect(new Set(models)).toEqual(
+			new Set([
+				"gpt-5.6-sol",
+				"gpt-5.6-terra",
+				"gpt-5.6-luna",
+				"gpt-5.5",
+				"gpt-5.4",
+				"gpt-5.4-mini",
+				"gpt-5.3-codex",
+				"gpt-5.2-codex",
+				"gpt-5.3-codex-spark",
+			]),
+		);
 	});
 
 	it("prices historical Codex and the documented code-review alias", () => {

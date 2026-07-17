@@ -51,6 +51,7 @@ describe("Windows install policy", () => {
 		const copy = vi.fn();
 		const existing = new Set([
 			"C:\\Legacy\\hlid.config.toml",
+			"C:\\Legacy\\pricing-overrides.toml",
 			"C:\\Legacy\\hlid.db",
 			"C:\\Legacy\\hlid.db-wal",
 		]);
@@ -61,8 +62,13 @@ describe("Windows install policy", () => {
 				exists: (path) => existing.has(path),
 				copy,
 			}),
-		).toEqual(["hlid.config.toml", "hlid.db", "hlid.db-wal"]);
-		expect(copy).toHaveBeenCalledTimes(3);
+		).toEqual([
+			"hlid.config.toml",
+			"hlid.db",
+			"hlid.db-wal",
+			"pricing-overrides.toml",
+		]);
+		expect(copy).toHaveBeenCalledTimes(4);
 	});
 
 	it("does not overwrite an established canonical database", () => {

@@ -5,6 +5,7 @@ const INSTALL_DATA_FILES = [
 	"hlid.db",
 	"hlid.db-shm",
 	"hlid.db-wal",
+	"pricing-overrides.toml",
 ] as const;
 
 export function windowsPathEquals(a: string, b: string): boolean {

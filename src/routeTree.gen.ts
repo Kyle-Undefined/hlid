@@ -21,6 +21,7 @@ import { Route as ApiVersionRouteImport } from './routes/api/version'
 import { Route as ApiUpdatesRouteImport } from './routes/api/updates'
 import { Route as ApiUmbodRouteImport } from './routes/api/umbod'
 import { Route as ApiTailscaleRouteImport } from './routes/api/tailscale'
+import { Route as ApiPricingRouteImport } from './routes/api/pricing'
 import { Route as ApiLifecycleRouteImport } from './routes/api/lifecycle'
 import { Route as ApiHealthRouteImport } from './routes/api/health'
 import { Route as ApiConfigRouteImport } from './routes/api/config'
@@ -98,6 +99,11 @@ const ApiUmbodRoute = ApiUmbodRouteImport.update({
 const ApiTailscaleRoute = ApiTailscaleRouteImport.update({
   id: '/api/tailscale',
   path: '/api/tailscale',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiPricingRoute = ApiPricingRouteImport.update({
+  id: '/api/pricing',
+  path: '/api/pricing',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiLifecycleRoute = ApiLifecycleRouteImport.update({
@@ -204,6 +210,7 @@ export interface FileRoutesByFullPath {
   '/api/config': typeof ApiConfigRoute
   '/api/health': typeof ApiHealthRoute
   '/api/lifecycle': typeof ApiLifecycleRoute
+  '/api/pricing': typeof ApiPricingRoute
   '/api/tailscale': typeof ApiTailscaleRoute
   '/api/umbod': typeof ApiUmbodRoute
   '/api/updates': typeof ApiUpdatesRoute
@@ -236,6 +243,7 @@ export interface FileRoutesByTo {
   '/api/config': typeof ApiConfigRoute
   '/api/health': typeof ApiHealthRoute
   '/api/lifecycle': typeof ApiLifecycleRoute
+  '/api/pricing': typeof ApiPricingRoute
   '/api/tailscale': typeof ApiTailscaleRoute
   '/api/umbod': typeof ApiUmbodRoute
   '/api/updates': typeof ApiUpdatesRoute
@@ -269,6 +277,7 @@ export interface FileRoutesById {
   '/api/config': typeof ApiConfigRoute
   '/api/health': typeof ApiHealthRoute
   '/api/lifecycle': typeof ApiLifecycleRoute
+  '/api/pricing': typeof ApiPricingRoute
   '/api/tailscale': typeof ApiTailscaleRoute
   '/api/umbod': typeof ApiUmbodRoute
   '/api/updates': typeof ApiUpdatesRoute
@@ -303,6 +312,7 @@ export interface FileRouteTypes {
     | '/api/config'
     | '/api/health'
     | '/api/lifecycle'
+    | '/api/pricing'
     | '/api/tailscale'
     | '/api/umbod'
     | '/api/updates'
@@ -335,6 +345,7 @@ export interface FileRouteTypes {
     | '/api/config'
     | '/api/health'
     | '/api/lifecycle'
+    | '/api/pricing'
     | '/api/tailscale'
     | '/api/umbod'
     | '/api/updates'
@@ -367,6 +378,7 @@ export interface FileRouteTypes {
     | '/api/config'
     | '/api/health'
     | '/api/lifecycle'
+    | '/api/pricing'
     | '/api/tailscale'
     | '/api/umbod'
     | '/api/updates'
@@ -400,6 +412,7 @@ export interface RootRouteChildren {
   ApiConfigRoute: typeof ApiConfigRoute
   ApiHealthRoute: typeof ApiHealthRoute
   ApiLifecycleRoute: typeof ApiLifecycleRoute
+  ApiPricingRoute: typeof ApiPricingRoute
   ApiTailscaleRoute: typeof ApiTailscaleRoute
   ApiUmbodRoute: typeof ApiUmbodRoute
   ApiUpdatesRoute: typeof ApiUpdatesRoute
@@ -501,6 +514,13 @@ declare module '@tanstack/react-router' {
       path: '/api/tailscale'
       fullPath: '/api/tailscale'
       preLoaderRoute: typeof ApiTailscaleRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/pricing': {
+      id: '/api/pricing'
+      path: '/api/pricing'
+      fullPath: '/api/pricing'
+      preLoaderRoute: typeof ApiPricingRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/lifecycle': {
@@ -680,6 +700,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiConfigRoute: ApiConfigRoute,
   ApiHealthRoute: ApiHealthRoute,
   ApiLifecycleRoute: ApiLifecycleRoute,
+  ApiPricingRoute: ApiPricingRoute,
   ApiTailscaleRoute: ApiTailscaleRoute,
   ApiUmbodRoute: ApiUmbodRoute,
   ApiUpdatesRoute: ApiUpdatesRoute,

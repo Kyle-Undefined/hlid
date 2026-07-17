@@ -502,6 +502,7 @@ function applyMigrations(db: Db): void {
 
 		type UsageRow = {
 			id: number;
+			timestamp: number;
 			model: string | null;
 			input_tokens: number;
 			output_tokens: number;
@@ -510,7 +511,7 @@ function applyMigrations(db: Db): void {
 		};
 		const rows = db
 			.query<UsageRow, []>(`
-				SELECT uq.id, COALESCE(s.actual_model, s.model) AS model,
+				SELECT uq.id, uq.timestamp, COALESCE(s.actual_model, s.model) AS model,
 				       uq.input_tokens, uq.output_tokens,
 				       uq.cache_read_tokens, uq.cache_creation_tokens
 				FROM usage_queries uq
@@ -522,18 +523,23 @@ function applyMigrations(db: Db): void {
 			`UPDATE usage_queries SET estimated_cost = ?, unpriced = ? WHERE id = ?`,
 		);
 		for (const row of rows) {
-			const estimate = estimateCodexCost(row.model, {
-				inputTokens: row.input_tokens,
-				outputTokens: row.output_tokens,
-				cacheReadTokens: row.cache_read_tokens,
-				cacheCreationTokens: row.cache_creation_tokens,
-			});
+			const estimate = estimateCodexCost(
+				row.model,
+				{
+					inputTokens: row.input_tokens,
+					outputTokens: row.output_tokens,
+					cacheReadTokens: row.cache_read_tokens,
+					cacheCreationTokens: row.cache_creation_tokens,
+				},
+				{ webSearchCalls: 0 },
+				row.timestamp * 1_000,
+			);
 			updateUsage.run(estimate, estimate == null ? 1 : 0, row.id);
 		}
 
 		const queryRows = db
 			.query<UsageRow, []>(`
-				SELECT q.id, COALESCE(s.actual_model, s.model) AS model,
+				SELECT q.id, q.timestamp, COALESCE(s.actual_model, s.model) AS model,
 				       q.input_tokens, q.output_tokens,
 				       q.cache_read_tokens, q.cache_creation_tokens
 				FROM queries q
@@ -545,12 +551,17 @@ function applyMigrations(db: Db): void {
 			`UPDATE queries SET estimated_cost = ? WHERE id = ?`,
 		);
 		for (const row of queryRows) {
-			const estimate = estimateCodexCost(row.model, {
-				inputTokens: row.input_tokens,
-				outputTokens: row.output_tokens,
-				cacheReadTokens: row.cache_read_tokens,
-				cacheCreationTokens: row.cache_creation_tokens,
-			});
+			const estimate = estimateCodexCost(
+				row.model,
+				{
+					inputTokens: row.input_tokens,
+					outputTokens: row.output_tokens,
+					cacheReadTokens: row.cache_read_tokens,
+					cacheCreationTokens: row.cache_creation_tokens,
+				},
+				{ webSearchCalls: 0 },
+				row.timestamp * 1_000,
+			);
 			updateQuery.run(estimate, row.id);
 		}
 

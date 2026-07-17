@@ -1,12 +1,14 @@
+import { type PricingTokenRates, resolvePricing } from "./pricingCatalog";
+
 /**
  * Published OpenAI API-equivalent token prices for models exposed by the
  * Codex CLI model catalog. Rates are USD per one million tokens.
  *
  * These are estimates, not the user's ChatGPT/Codex subscription charge.
- * Keep unpriced preview/internal models in the catalog with `rates: null` so
- * callers never silently treat an unknown price as free.
+ * Built-in rates live in the shared effective-dated catalog and can be
+ * supplemented by pricing-overrides.toml without changing application code.
  *
- * Sources checked 2026-07-12:
+ * Sources checked 2026-07-17:
  * https://developers.openai.com/api/docs/models/gpt-5.6-sol
  * https://developers.openai.com/api/docs/models/gpt-5.6-terra
  * https://developers.openai.com/api/docs/models/gpt-5.6-luna
@@ -17,122 +19,13 @@
  * https://help.openai.com/en/articles/20001106-codex-rate-card
  */
 
-export type CodexTokenRates = {
-	input: number;
-	cachedInput: number;
-	cacheWrite: number;
-	output: number;
-	longContextThreshold?: number;
-	longContextInputMultiplier?: number;
-	longContextOutputMultiplier?: number;
-};
+export type CodexTokenRates = PricingTokenRates;
 
 export type CodexPricingEntry = {
 	model: string;
 	rates: CodexTokenRates | null;
 	note?: string;
 };
-
-const LONG_CONTEXT = {
-	longContextThreshold: 272_000,
-	longContextInputMultiplier: 2,
-	longContextOutputMultiplier: 1.5,
-} as const;
-
-export const CODEX_MODEL_PRICING: readonly CodexPricingEntry[] = [
-	{
-		model: "gpt-5.6-sol",
-		rates: {
-			input: 5,
-			cachedInput: 0.5,
-			cacheWrite: 6.25,
-			output: 30,
-			...LONG_CONTEXT,
-		},
-	},
-	{
-		model: "gpt-5.6-terra",
-		rates: {
-			input: 2.5,
-			cachedInput: 0.25,
-			cacheWrite: 3.125,
-			output: 15,
-			...LONG_CONTEXT,
-		},
-	},
-	{
-		model: "gpt-5.6-luna",
-		rates: {
-			input: 1,
-			cachedInput: 0.1,
-			cacheWrite: 1.25,
-			output: 6,
-			...LONG_CONTEXT,
-		},
-	},
-	{
-		model: "gpt-5.5",
-		rates: {
-			input: 5,
-			cachedInput: 0.5,
-			cacheWrite: 5,
-			output: 30,
-			...LONG_CONTEXT,
-		},
-	},
-	{
-		model: "gpt-5.4",
-		rates: {
-			input: 2.5,
-			cachedInput: 0.25,
-			cacheWrite: 2.5,
-			output: 15,
-			...LONG_CONTEXT,
-		},
-	},
-	{
-		model: "gpt-5.4-mini",
-		rates: {
-			input: 0.75,
-			cachedInput: 0.075,
-			cacheWrite: 0.75,
-			output: 4.5,
-		},
-	},
-	{
-		model: "gpt-5.3-codex",
-		rates: {
-			input: 1.75,
-			cachedInput: 0.175,
-			cacheWrite: 1.75,
-			output: 14,
-		},
-	},
-	{
-		model: "gpt-5.2-codex",
-		rates: {
-			input: 1.75,
-			cachedInput: 0.175,
-			cacheWrite: 1.75,
-			output: 14,
-		},
-	},
-	{
-		model: "gpt-5.3-codex-spark",
-		rates: null,
-		note: "Research preview; OpenAI has not published a finalized rate.",
-	},
-	{
-		model: "codex-auto-review",
-		rates: {
-			input: 1.75,
-			cachedInput: 0.175,
-			cacheWrite: 1.75,
-			output: 14,
-		},
-		note: "Codex Code Review uses GPT-5.3-Codex.",
-	},
-] as const;
 
 export type CanonicalTokenUsage = {
 	/** Input tokens processed without a cache read/write discount. */
@@ -177,29 +70,25 @@ export function canonicalizeCodexUsage(usage: {
 
 export function getCodexPricing(
 	model: string | null | undefined,
+	atMs = Date.now(),
 ): CodexPricingEntry | null {
-	if (!model) return null;
-	const normalized = model.toLowerCase();
-	if (normalized === "gpt-5.6") {
-		return (
-			CODEX_MODEL_PRICING.find((entry) => entry.model === "gpt-5.6-sol") ?? null
-		);
-	}
-	return (
-		CODEX_MODEL_PRICING.find(
-			(entry) =>
-				normalized === entry.model ||
-				normalized.startsWith(`${entry.model}-20`),
-		) ?? null
-	);
+	const resolved = resolvePricing("codex", model, atMs);
+	return resolved
+		? {
+				model: resolved.model,
+				rates: resolved.rates,
+				...(resolved.note ? { note: resolved.note } : {}),
+			}
+		: null;
 }
 
 export function estimateCodexCost(
 	model: string | null | undefined,
 	usage: CanonicalTokenUsage,
 	hostedTools: CodexHostedToolUsage = { webSearchCalls: 0 },
+	atMs = Date.now(),
 ): number | null {
-	const rates = getCodexPricing(model)?.rates;
+	const rates = getCodexPricing(model, atMs)?.rates;
 	if (!rates) return null;
 	const promptTokens =
 		usage.inputTokens + usage.cacheReadTokens + usage.cacheCreationTokens;

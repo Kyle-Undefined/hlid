@@ -42,6 +42,9 @@ vi.mock("#/components/forge/McpSection", () => ({
 vi.mock("#/components/forge/NetworkSection", () => ({
 	NetworkSection: () => <div>Network content</div>,
 }));
+vi.mock("#/components/forge/PricingSection", () => ({
+	PricingSection: () => <div>Pricing catalog content</div>,
+}));
 vi.mock("#/components/forge/SecuritySection", () => ({
 	SecuritySection: () => <div>Security content</div>,
 }));
@@ -259,7 +262,7 @@ describe("ForgeSettings category navigation", () => {
 		expect(screen.getByRole("heading", { name: "Integrations" })).toBeTruthy();
 	});
 
-	it("switches between developer event and API views", () => {
+	it("switches between developer event, API, and pricing views", () => {
 		renderSettings();
 		fireEvent.change(
 			screen.getByRole("combobox", { name: "Filtered Forge category" }),
@@ -270,6 +273,8 @@ describe("ForgeSettings category navigation", () => {
 		expect(screen.getByText("Event log content")).toBeTruthy();
 		fireEvent.click(screen.getByRole("tab", { name: "API Reference" }));
 		expect(screen.getByText("API reference content")).toBeTruthy();
+		fireEvent.click(screen.getByRole("tab", { name: "Pricing" }));
+		expect(screen.getByText("Pricing catalog content")).toBeTruthy();
 	});
 
 	it("opens the custom theme editor as an Experience subpage", () => {

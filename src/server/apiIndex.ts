@@ -285,6 +285,18 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 	},
 	{
 		method: "GET",
+		path: "/api/pricing",
+		server: "ui",
+		desc: "Read the merged built-in and local effective-dated pricing catalog.",
+	},
+	{
+		method: "POST",
+		path: "/api/pricing",
+		server: "ui",
+		desc: 'Validate and write pricing-overrides.toml. Body: {"text": string}.',
+	},
+	{
+		method: "GET",
 		path: "/api/tailscale",
 		server: "ui",
 		desc: "Tailscale status for remote access.",

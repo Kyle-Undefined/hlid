@@ -12,6 +12,12 @@ export const APP_DIR =
 /** Canonical path to `hlid.config.toml`. Single source of truth — import this instead of re-computing. */
 export const CONFIG_PATH = resolve(APP_DIR, "hlid.config.toml");
 
+/** Optional effective-dated pricing overrides, managed from Forge > Developer. */
+export const PRICING_OVERRIDES_PATH = resolve(
+	APP_DIR,
+	"pricing-overrides.toml",
+);
+
 const isWindows = process.platform === "win32";
 
 function parseWslUncSyntax(

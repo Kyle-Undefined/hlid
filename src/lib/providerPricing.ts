@@ -12,7 +12,9 @@ export function estimateProviderCost(
 	usage: CanonicalTokenUsage,
 	atMs = Date.now(),
 ): number | null {
-	if (providerId === "codex") return estimateCodexCost(model, usage);
+	if (providerId === "codex") {
+		return estimateCodexCost(model, usage, { webSearchCalls: 0 }, atMs);
+	}
 	if (providerId === "claude") return estimateClaudeCost(model, usage, atMs);
 	return null;
 }

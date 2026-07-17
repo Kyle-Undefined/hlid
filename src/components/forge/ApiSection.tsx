@@ -90,8 +90,10 @@ All endpoints are served at http://localhost:3000.
 Endpoints:
   GET  /api/config           — Read the full hlid configuration object
   POST /api/config           — Write/replace the full configuration (body: HlidConfig JSON)
+  GET  /api/pricing          — Read the merged built-in and local pricing catalog
+  POST /api/pricing          — Validate/write pricing-overrides.toml (body: { text: string })
 
-The config object includes: vault (path, name, style, folder names), server (port, TLS, access), claude (model, effort, max_turns, permission_mode), ui (theme, enter_to_submit), status_vocabulary, agents array.
+The config object includes: vault (path, name, style, folder names), server (port, TLS, access), claude (model, effort, max_turns, permission_mode), ui (theme, enter_to_submit), status_vocabulary, agents array. Pricing overrides use effective_from/effective_until UTC dates and are returned alongside read-only built-ins.
 
 Create a skill file in the vault's skills folder (\`vault.skills\` in config). Add YAML frontmatter with \`name\` and \`description\` fields. Include request/response shapes and usage examples for an AI agent.
 
@@ -285,9 +287,14 @@ const API_GROUPS = [
 	},
 	{
 		id: "config",
-		label: "Config API",
-		description: "Read and write full hlid configuration",
-		endpoints: ["GET  /api/config", "POST /api/config"],
+		label: "Config & Pricing API",
+		description: "Read and write configuration and pricing overrides",
+		endpoints: [
+			"GET  /api/config",
+			"POST /api/config",
+			"GET  /api/pricing",
+			"POST /api/pricing",
+		],
 		prompt: CONFIG_API_PROMPT,
 	},
 	{

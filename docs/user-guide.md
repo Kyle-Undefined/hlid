@@ -171,7 +171,8 @@ directory. Paths outside the vault require the external-agent option in Forge.
 - **Experience** controls themes, input behavior, HTML-plan defaults, voice, and
   browser-local privacy mode.
 - **Integrations** manages MCP servers, Umbod tool policy, and the ACP catalog.
-- **Developer** switches between the event log and local API reference.
+- **Developer** switches between the event log, local API reference, and pricing
+  catalog.
 - **Advanced** contains database maintenance, provider-session reload, restart,
   and shutdown controls.
 
@@ -181,6 +182,13 @@ changes currently set that marker. MCP edits are synchronized to the live vault
 session. Reload a provider session after changing the working context it should
 receive; reloading clears that live provider conversation while its recorded
 Ledger history remains available.
+
+Developer → Pricing shows Hlið's read-only built-in model and alias timelines
+and edits `pricing-overrides.toml`. Local model rates or aliases can be bounded
+with UTC `effective_from` and `effective_until` dates, so a moving label such as
+`codex-auto-review` can change without an application update. Saving validates
+the whole file before replacing it. Existing priced Ledger rows remain frozen;
+new fallback estimates use the rule active at the query timestamp.
 
 ## Remote and mobile access
 

@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
-import {
-	CLAUDE_MODEL_PRICING,
-	estimateClaudeCost,
-	getClaudePricing,
-} from "./claudePricing";
+import { estimateClaudeCost, getClaudePricing } from "./claudePricing";
+import { getPricingCatalogState } from "./pricingCatalog";
 
 const USAGE = {
 	inputTokens: 1_000_000,
@@ -14,15 +11,14 @@ const USAGE = {
 
 describe("claude pricing", () => {
 	it("covers the published Claude model families", () => {
-		expect(CLAUDE_MODEL_PRICING.map((entry) => entry.model)).toContain(
-			"claude-fable-5",
-		);
-		expect(CLAUDE_MODEL_PRICING.map((entry) => entry.model)).toContain(
-			"claude-opus-4-8",
-		);
-		expect(CLAUDE_MODEL_PRICING.map((entry) => entry.model)).toContain(
-			"claude-sonnet-4-6",
-		);
+		const models = getPricingCatalogState()
+			.models.filter(
+				(entry) => entry.source === "built-in" && entry.provider === "claude",
+			)
+			.map((entry) => entry.model);
+		expect(models).toContain("claude-fable-5");
+		expect(models).toContain("claude-opus-4-8");
+		expect(models).toContain("claude-sonnet-4-6");
 	});
 
 	it("uses disjoint token and five-minute cache-write rates", () => {

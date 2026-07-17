@@ -88,6 +88,10 @@ effect only after Hlið restarts. Forge currently marks server, ACP, and Umbod
 configuration changes this way. Reload a provider session after changing the
 working context it should receive.
 
+`pricing-overrides.toml`, managed from **FORGE → Developer → Pricing**, adds
+validated effective-dated model rates and aliases without modifying built-in
+pricing code. Existing priced Ledger rows are not rewritten.
+
 See [`hlid.config.example.toml`](hlid.config.example.toml) for a minimal example.
 
 ## Remote access and security

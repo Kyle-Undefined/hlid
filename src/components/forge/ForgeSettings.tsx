@@ -10,6 +10,7 @@ import { CustomThemeSection } from "#/components/forge/CustomThemeSection";
 import { EventLogSection } from "#/components/forge/EventLogSection";
 import { McpSection } from "#/components/forge/McpSection";
 import { NetworkSection } from "#/components/forge/NetworkSection";
+import { PricingSection } from "#/components/forge/PricingSection";
 import { SecuritySection } from "#/components/forge/SecuritySection";
 import { SessionSection } from "#/components/forge/SessionSection";
 import { SystemSection } from "#/components/forge/SystemSection";
@@ -97,9 +98,10 @@ const CATEGORIES = [
 	{
 		id: "developer",
 		label: "Developer",
-		description: "Event log and API reference",
-		sections: ["Event Log", "API Reference"],
-		keywords: "events logs api diagnostics endpoints",
+		description: "Event log, API reference, and pricing catalog",
+		sections: ["Event Log", "API Reference", "Pricing"],
+		keywords:
+			"events logs api diagnostics endpoints pricing costs rates model aliases overrides",
 		group: "secondary",
 	},
 	{
@@ -112,7 +114,7 @@ const CATEGORIES = [
 	},
 ] as const;
 type Category = (typeof CATEGORIES)[number]["id"];
-type DeveloperView = "events" | "api";
+type DeveloperView = "events" | "api" | "pricing";
 type ThemeTarget = "desktop" | "mobile";
 
 function AgentSettings({
@@ -424,7 +426,7 @@ function DeveloperCategory({
 		<>
 			<PageIntro
 				title="Developer"
-				description="Inspect runtime activity and the local API surface."
+				description="Inspect runtime activity, the local API surface, and cost-estimation inputs."
 			/>
 			<div
 				className="inline-flex border border-border bg-card p-1"
@@ -435,6 +437,7 @@ function DeveloperCategory({
 					[
 						["events", "Event Log"],
 						["api", "API Reference"],
+						["pricing", "Pricing"],
 					] as const
 				).map(([view, label]) => (
 					<button
@@ -453,7 +456,13 @@ function DeveloperCategory({
 					</button>
 				))}
 			</div>
-			{developerView === "events" ? <EventLogSection /> : <ApiSection />}
+			{developerView === "events" ? (
+				<EventLogSection />
+			) : developerView === "api" ? (
+				<ApiSection />
+			) : (
+				<PricingSection />
+			)}
 		</>
 	);
 }

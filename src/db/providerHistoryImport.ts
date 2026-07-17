@@ -495,6 +495,8 @@ function codexCostForTurns(
 			const incrementCost = estimateCodexCost(
 				increment.model ?? fallbackModel,
 				increment.usage,
+				{ webSearchCalls: 0 },
+				increment.atMs,
 			);
 			if (incrementCost == null) return null;
 			cost += incrementCost;
@@ -503,6 +505,7 @@ function codexCostForTurns(
 			fallbackModel,
 			{ ...EMPTY_USAGE },
 			{ webSearchCalls: turn.webSearchIds.size },
+			turn.endedAtMs ?? turn.startedAtMs,
 		);
 		if (hostedCost == null) return null;
 		cost += hostedCost;
