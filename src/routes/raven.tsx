@@ -58,6 +58,7 @@ import {
 	subscribeSessionsStatus,
 } from "#/hooks/wsSessionStatusStore";
 import * as wsStore from "#/hooks/wsStore";
+import { agentDisplayName } from "#/lib/agentDisplay";
 import {
 	addCommandSelection,
 	type CommandDescriptor,
@@ -1252,13 +1253,30 @@ export function ChatPage() {
 		sessionProviderId: initialSessionProviderId,
 		sessionEffort: initialSessionEffort,
 		sessionPermissionMode: initialSessionPermissionMode,
-		agentList,
+		agentList: initialAgentList,
 		vaultSkills,
 		providers: initialProviders,
 		voiceInfo: initialVoiceInfo,
 	} = Route.useLoaderData();
+	const [agentList, setAgentList] = useState(initialAgentList);
 	const [providers, setProviders] = useState(initialProviders);
 	const [providerUsages, setProviderUsages] = useState(initialProviderUsages);
+	useEffect(() => {
+		setAgentList(initialAgentList);
+		if (initialAgentList.length > 0) return;
+		let cancelled = false;
+		void Promise.resolve(getAgentListFn()).then(
+			(next) => {
+				if (!cancelled && Array.isArray(next) && next.length > 0) {
+					setAgentList(next);
+				}
+			},
+			() => {},
+		);
+		return () => {
+			cancelled = true;
+		};
+	}, [initialAgentList]);
 	useEffect(() => {
 		setProviders(initialProviders);
 		if (initialProviders.length > 0) return;
@@ -2655,6 +2673,7 @@ interface ChatComposerProps {
 function ChatComposer(props: ChatComposerProps) {
 	const {
 		interactiveMode,
+		config,
 		agentList,
 		session,
 		runtime,
@@ -2690,9 +2709,10 @@ function ChatComposer(props: ChatComposerProps) {
 						className="text-[9px] tracking-widest px-2 py-0.5 uppercase bg-background border border-primary/30 text-primary/60 cursor-default"
 					>
 						<PrivacyMask inline>
-							{agentList.find((a) => a.path === agentSkillContext)?.name ??
-								agentSkillContext.split("/").pop() ??
-								"agent"}
+							{agentDisplayName(agentSkillContext, [
+								...agentList,
+								...(config.agents ?? []),
+							])}
 						</PrivacyMask>
 					</button>
 				</div>

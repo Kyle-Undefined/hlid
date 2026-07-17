@@ -4,6 +4,7 @@ import { safeRequestPath } from "./httpDiagnostics";
 let _base: string | null = null;
 const SOFT_FAILURE_DEDUP_MS = 30_000;
 const INTERNAL_API_READ_TIMEOUT_MS = 5_000;
+const INTERNAL_API_RETRY_TIMEOUT_MS = 1_000;
 const REQUEST_ID_HEADER = "x-hlid-request-id";
 const softFailureTimes = new Map<string, number>();
 
@@ -92,6 +93,29 @@ export async function requireDbOk(
 	throw new InternalApiError(operation, response.status, detail);
 }
 
+async function readInternalApi(
+	path: string,
+	requestId: string,
+	timeoutMs: number,
+): Promise<Response> {
+	const abort = new AbortController();
+	const timeout = setTimeout(
+		() =>
+			abort.abort(
+				new Error(`internal API read timed out after ${timeoutMs}ms`),
+			),
+		timeoutMs,
+	);
+	try {
+		return await dbFetch(path, {
+			headers: { [REQUEST_ID_HEADER]: requestId },
+			signal: abort.signal,
+		});
+	} finally {
+		clearTimeout(timeout);
+	}
+}
+
 /**
  * GET JSON from the data API. Returns `fallback` on any failure
  * (network error, non-OK response, malformed JSON). Used by the
@@ -101,21 +125,27 @@ export async function requireDbOk(
 export async function dbJson<T>(path: string, fallback: T): Promise<T> {
 	const startedAt = performance.now();
 	const currentRequestId = requestId();
-	const abort = new AbortController();
-	const timeout = setTimeout(
-		() =>
-			abort.abort(
-				new Error(
-					`internal API read timed out after ${INTERNAL_API_READ_TIMEOUT_MS}ms`,
-				),
-			),
-		INTERNAL_API_READ_TIMEOUT_MS,
-	);
+	let res: Response;
 	try {
-		const res = await dbFetch(path, {
-			headers: { [REQUEST_ID_HEADER]: currentRequestId },
-			signal: abort.signal,
-		});
+		try {
+			res = await readInternalApi(
+				path,
+				currentRequestId,
+				INTERNAL_API_READ_TIMEOUT_MS,
+			);
+		} catch (initialError) {
+			try {
+				res = await readInternalApi(
+					path,
+					currentRequestId,
+					INTERNAL_API_RETRY_TIMEOUT_MS,
+				);
+			} catch (retryError) {
+				throw new Error(
+					`${describeError(initialError)}; retry failed: ${describeError(retryError)}`,
+				);
+			}
+		}
 		if (!res.ok) {
 			reportSoftFailure(
 				path,
@@ -144,8 +174,6 @@ export async function dbJson<T>(path: string, fallback: T): Promise<T> {
 			currentRequestId,
 		);
 		return fallback;
-	} finally {
-		clearTimeout(timeout);
 	}
 }
 

@@ -34,7 +34,10 @@ describe("raw attachment route adapter", () => {
 			"relic-1",
 		);
 
-		expect(mockDbFetch).toHaveBeenCalledWith("/api/attachments/relic-1/raw");
+		expect(mockDbFetch).toHaveBeenCalledWith(
+			"/api/attachments/relic-1/raw",
+			expect.objectContaining({ signal: expect.any(AbortSignal) }),
+		);
 		expect(response.status).toBe(200);
 		expect(response.headers.get("content-type")).toBe("image/png");
 		expect(response.headers.get("content-length")).toBe("4");

@@ -263,6 +263,46 @@ beforeEach(() => {
 });
 
 describe("Raven composed submission behavior", () => {
+	it("shows the configured agent name for a WSL UNC session path", () => {
+		state.loaderData = {
+			...state.loaderData,
+			agentSkillContext:
+				"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\development\\repos\\hlid",
+			config: {
+				...(state.loaderData.config as Record<string, unknown>),
+				agents: [
+					{
+						path: "/home/kyle/development/repos/hlid",
+						name: "Hlid",
+					},
+				],
+			},
+			agentList: [],
+		};
+
+		render(<ChatPage />);
+
+		expect(screen.getByText("Hlid")).toBeTruthy();
+		expect(screen.queryByText(/wsl\.localhost/i)).toBeNull();
+	});
+
+	it("recovers agent inventory after the optional loader fallback", async () => {
+		vi.mocked(getAgentListFn).mockResolvedValue([
+			{
+				path: "/home/kyle/development/repos/hlid",
+				name: "Hlid",
+				provider: "codex",
+			},
+		] as never);
+
+		render(<ChatPage />);
+
+		await waitFor(() =>
+			expect(screen.getByTestId("agent-select")).toBeTruthy(),
+		);
+		expect(getAgentListFn).toHaveBeenCalledTimes(1);
+	});
+
 	it("keeps multiple selected skills outside the textarea and clears them independently", () => {
 		state.loaderData = {
 			...state.loaderData,

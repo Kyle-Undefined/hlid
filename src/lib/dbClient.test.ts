@@ -71,11 +71,11 @@ describe("internal API client", () => {
 		expect(warn).toHaveBeenCalledTimes(1);
 	});
 
-	it("aborts a stalled read and returns the fallback", async () => {
+	it("retries a stalled read before returning the fallback", async () => {
 		vi.useFakeTimers();
 		try {
 			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-			fetchMock.mockImplementationOnce((_url, init) => {
+			fetchMock.mockImplementation((_url, init) => {
 				return new Promise<Response>((_resolve, reject) => {
 					init?.signal?.addEventListener(
 						"abort",
@@ -86,11 +86,36 @@ describe("internal API client", () => {
 			});
 			const pending = dbJson("/db/stalled", { value: 0 });
 			await vi.advanceTimersByTimeAsync(5_000);
+			expect(fetchMock).toHaveBeenCalledTimes(2);
+			await vi.advanceTimersByTimeAsync(1_000);
 			await expect(pending).resolves.toEqual({ value: 0 });
 			expect(fetchMock.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
 			expect(warn).toHaveBeenCalledWith(
 				expect.stringContaining("internal API read timed out after 5000ms"),
 			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("returns recovered JSON when the retry succeeds", async () => {
+		vi.useFakeTimers();
+		try {
+			fetchMock
+				.mockImplementationOnce((_url, init) => {
+					return new Promise<Response>((_resolve, reject) => {
+						init?.signal?.addEventListener(
+							"abort",
+							() => reject(init.signal?.reason),
+							{ once: true },
+						);
+					});
+				})
+				.mockResolvedValueOnce(Response.json({ value: 42 }));
+			const pending = dbJson("/db/transient", { value: 0 });
+			await vi.advanceTimersByTimeAsync(5_000);
+			await expect(pending).resolves.toEqual({ value: 42 });
+			expect(fetchMock).toHaveBeenCalledTimes(2);
 		} finally {
 			vi.useRealTimers();
 		}

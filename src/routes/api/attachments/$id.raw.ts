@@ -12,6 +12,7 @@ const FORWARDED_HEADERS = [
 	"x-content-type-options",
 	"content-security-policy",
 ] as const;
+const RAW_ATTACHMENT_TIMEOUT_MS = 25_000;
 
 export async function handleRawAttachment(
 	request: Request,
@@ -20,7 +21,10 @@ export async function handleRawAttachment(
 	const forbidden = forbiddenResponse(request);
 	if (forbidden) return forbidden;
 	try {
-		const res = await dbFetch(`/api/attachments/${encodeURIComponent(id)}/raw`);
+		const res = await dbFetch(
+			`/api/attachments/${encodeURIComponent(id)}/raw`,
+			{ signal: AbortSignal.timeout(RAW_ATTACHMENT_TIMEOUT_MS) },
+		);
 		const headers = new Headers();
 		for (const name of FORWARDED_HEADERS) {
 			const value = res.headers.get(name);
