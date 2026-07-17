@@ -28,7 +28,7 @@ vi.mock("highlight.js/lib/common", () => {
 	};
 });
 
-import { MarkdownBody } from "./MarkdownBody";
+import { MarkdownBody, normalizeLatexMath } from "./MarkdownBody";
 
 let consoleError: ReturnType<typeof vi.spyOn>;
 
@@ -223,6 +223,50 @@ describe("MarkdownBody", () => {
 				<MarkdownBody content={"$$\n\\int_0^1 x \\, dx\n$$"} />,
 			);
 			expect(container.querySelector(".katex-display")).toBeTruthy();
+		});
+
+		it("renders LaTeX inline delimiters", () => {
+			const { container } = render(
+				<MarkdownBody content={"Inline \\(a^2 + b^2 = c^2\\) here."} />,
+			);
+			expect(container.querySelector(".katex")).toBeTruthy();
+			expect(container.querySelector(".katex-display")).toBeNull();
+		});
+
+		it("renders LaTeX display delimiters", () => {
+			const { container } = render(
+				<MarkdownBody content={"\\[\nE = mc^2\n\\]"} />,
+			);
+			expect(container.querySelector(".katex-display")).toBeTruthy();
+		});
+
+		it("renders same-line LaTeX display delimiters as display math", () => {
+			const { container } = render(
+				<MarkdownBody content={"Before \\[E = mc^2\\] after"} />,
+			);
+			expect(container.querySelector(".katex-display")).toBeTruthy();
+			expect(container.textContent).toContain("Before");
+			expect(container.textContent).toContain("after");
+		});
+
+		it("leaves LaTeX delimiters literal inside code", () => {
+			const { container } = render(
+				<MarkdownBody
+					content={"`\\(inline\\)`\n\n```md\n\\[display\\]\n```"}
+				/>,
+			);
+			expect(container.querySelector(".katex")).toBeNull();
+			expect(container.textContent).toContain("\\(inline\\)");
+			expect(container.textContent).toContain("\\[display\\]");
+		});
+
+		it("leaves escaped and incomplete delimiters unchanged", () => {
+			expect(normalizeLatexMath(String.raw`\\(literal\\)`)).toBe(
+				String.raw`\\(literal\\)`,
+			);
+			expect(normalizeLatexMath(String.raw`unfinished \\(x`)).toBe(
+				String.raw`unfinished \\(x`,
+			);
 		});
 	});
 

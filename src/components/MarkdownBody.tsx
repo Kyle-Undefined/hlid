@@ -79,6 +79,159 @@ const rehypePlugins: Options["rehypePlugins"] = [
 	rehypeKatex,
 ];
 
+function isEscaped(text: string, index: number): boolean {
+	let slashes = 0;
+	for (let cursor = index - 1; cursor >= 0 && text[cursor] === "\\"; cursor--) {
+		slashes++;
+	}
+	return slashes % 2 === 1;
+}
+
+function findClosingDelimiter(
+	text: string,
+	from: number,
+	delimiter: "\\)" | "\\]",
+): number {
+	let cursor = text.indexOf(delimiter, from);
+	while (cursor !== -1) {
+		if (!isEscaped(text, cursor)) return cursor;
+		cursor = text.indexOf(delimiter, cursor + delimiter.length);
+	}
+	return -1;
+}
+
+function normalizeLatexSegment(text: string): string {
+	let output = "";
+	let cursor = 0;
+
+	while (cursor < text.length) {
+		const opener = text.slice(cursor, cursor + 2);
+		if ((opener === "\\(" || opener === "\\[") && !isEscaped(text, cursor)) {
+			const closer = opener === "\\(" ? "\\)" : "\\]";
+			const closeAt = findClosingDelimiter(text, cursor + 2, closer);
+			if (closeAt !== -1) {
+				const equation = text.slice(cursor + 2, closeAt);
+				if (opener === "\\(") {
+					output += `$${equation}$`;
+				} else {
+					const leadingNewline = equation.startsWith("\n") ? "" : "\n";
+					const trailingNewline = equation.endsWith("\n") ? "" : "\n";
+					output += `\n\n$$${leadingNewline}${equation}${trailingNewline}$$\n\n`;
+				}
+				cursor = closeAt + closer.length;
+				continue;
+			}
+		}
+
+		output += text[cursor];
+		cursor++;
+	}
+
+	return output;
+}
+
+function backtickRunLength(text: string, index: number): number {
+	let cursor = index;
+	while (text[cursor] === "`") cursor++;
+	return cursor - index;
+}
+
+function findInlineCodeEnd(
+	text: string,
+	from: number,
+	runLength: number,
+): number {
+	let cursor = text.indexOf("`", from);
+	while (cursor !== -1) {
+		const candidateLength = backtickRunLength(text, cursor);
+		if (candidateLength === runLength) return cursor + candidateLength;
+		cursor = text.indexOf("`", cursor + candidateLength);
+	}
+	return -1;
+}
+
+function fencedCodeEnd(text: string, start: number): number | null {
+	const lineEnd = text.indexOf("\n", start);
+	const firstLineEnd = lineEnd === -1 ? text.length : lineEnd + 1;
+	const firstLine = text.slice(start, firstLineEnd);
+	const opening = /^ {0,3}(`{3,}|~{3,})/u.exec(firstLine);
+	if (!opening) return null;
+
+	const marker = opening[1][0];
+	const minimumLength = opening[1].length;
+	let lineStart = firstLineEnd;
+	while (lineStart < text.length) {
+		const nextLineEnd = text.indexOf("\n", lineStart);
+		const lineAfter = nextLineEnd === -1 ? text.length : nextLineEnd + 1;
+		const line = text.slice(lineStart, lineAfter).replace(/\r?\n$/u, "");
+		const closing = /^ {0,3}(`+|~+)[ \t]*$/u.exec(line);
+		if (
+			closing &&
+			closing[1][0] === marker &&
+			closing[1].length >= minimumLength
+		) {
+			return lineAfter;
+		}
+		lineStart = lineAfter;
+	}
+
+	return text.length;
+}
+
+/**
+ * remark-math recognizes dollar delimiters, while model output commonly uses
+ * LaTeX's \\(...\\) and \\[...\\] forms. Translate complete pairs before the
+ * Markdown parser sees (and consumes) the backslashes, without touching code.
+ */
+export function normalizeLatexMath(text: string): string {
+	let output = "";
+	let plainStart = 0;
+	let cursor = 0;
+
+	while (cursor < text.length) {
+		const atLineStart = cursor === 0 || text[cursor - 1] === "\n";
+		if (atLineStart) {
+			const fenceEnd = fencedCodeEnd(text, cursor);
+			if (fenceEnd !== null) {
+				output += normalizeLatexSegment(text.slice(plainStart, cursor));
+				output += text.slice(cursor, fenceEnd);
+				cursor = fenceEnd;
+				plainStart = cursor;
+				continue;
+			}
+
+			const lineEnd = text.indexOf("\n", cursor);
+			const lineAfter = lineEnd === -1 ? text.length : lineEnd + 1;
+			if (/^(?: {4}|\t)/u.test(text.slice(cursor, lineAfter))) {
+				output += normalizeLatexSegment(text.slice(plainStart, cursor));
+				output += text.slice(cursor, lineAfter);
+				cursor = lineAfter;
+				plainStart = cursor;
+				continue;
+			}
+		}
+
+		if (text[cursor] === "`") {
+			const runLength = backtickRunLength(text, cursor);
+			const codeEnd = findInlineCodeEnd(text, cursor + runLength, runLength);
+			if (codeEnd !== -1) {
+				output += normalizeLatexSegment(text.slice(plainStart, cursor));
+				output += text.slice(cursor, codeEnd);
+				cursor = codeEnd;
+				plainStart = cursor;
+				continue;
+			}
+			cursor += runLength;
+			continue;
+		}
+
+		cursor++;
+	}
+
+	output += normalizeLatexSegment(text.slice(plainStart));
+	return output;
+}
+
 export const MarkdownBody = memo(function MarkdownBody({
 	content,
 	streaming = false,
@@ -205,7 +358,7 @@ export const MarkdownBody = memo(function MarkdownBody({
 				),
 			}}
 		>
-			{content}
+			{normalizeLatexMath(content)}
 		</Markdown>
 	);
 });
