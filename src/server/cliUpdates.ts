@@ -21,9 +21,12 @@ const DESKTOP_CHECK_TTL_MS = 5 * 60 * 1000;
 const COMMAND_TIMEOUT_MS = 4_000;
 const STORE_TIMEOUT_MS = 15_000;
 const REGISTRY_TIMEOUT_MS = 5_000;
-const CACHE_SCHEMA_VERSION = 3;
+const CACHE_SCHEMA_VERSION = 4;
 const BACKGROUND_REFRESH_DELAY_MS = 1_500;
 const CODEX_DESKTOP_STORE_ID = "9PLM9XGG6VKS";
+const CODEX_DESKTOP_PACKAGE_IDENTITY = "OpenAI.Codex";
+const CODEX_DESKTOP_STORE_UPDATE_MANIFEST_URL =
+	"https://persistent.oaistatic.com/codex-app-prod/windows-store-update.json";
 
 type NativeCliId = "codex" | "claude";
 
@@ -67,8 +70,9 @@ type WindowsDesktopUpdateDependencies = {
 		appVersion: string | null;
 	} | null>;
 	readStoreVersions(): Promise<{
-		installedVersion: string;
+		installedVersion: string | null;
 		latestVersion: string;
+		automaticUpdateAvailable?: boolean;
 	}>;
 	now(): number;
 };
@@ -142,6 +146,22 @@ export function parseWindowsStoreVersions(
 		installedVersion,
 		latestVersion: versions?.[1] ?? installedVersion,
 	};
+}
+
+/** Parse the same advisory manifest used by Codex Desktop's Windows updater. */
+export function parseCodexDesktopStoreUpdateManifest(
+	value: unknown,
+): string | null {
+	if (!value || typeof value !== "object") return null;
+	const manifest = value as Record<string, unknown>;
+	if (
+		manifest.storeProductId !== CODEX_DESKTOP_STORE_ID ||
+		manifest.packageIdentity !== CODEX_DESKTOP_PACKAGE_IDENTITY ||
+		typeof manifest.buildVersion !== "string"
+	) {
+		return null;
+	}
+	return parseCliVersion(manifest.buildVersion);
 }
 
 async function readInstalledVersion(executable: string): Promise<string> {
@@ -379,7 +399,7 @@ async function readInstalledCodexDesktopVersions(): Promise<{
 	return { packageVersion, appVersion };
 }
 
-async function readCodexDesktopStoreVersions(): Promise<{
+async function readWingetCodexDesktopStoreVersions(): Promise<{
 	installedVersion: string;
 	latestVersion: string;
 }> {
@@ -406,6 +426,64 @@ async function readCodexDesktopStoreVersions(): Promise<{
 	const versions = parseWindowsStoreVersions(result.output);
 	if (!versions) throw new Error("winget Store output was not recognized");
 	return versions;
+}
+
+async function fetchCodexDesktopStoreManifestVersion(): Promise<string> {
+	const response = await fetch(CODEX_DESKTOP_STORE_UPDATE_MANIFEST_URL, {
+		headers: {
+			Accept: "application/json",
+			"User-Agent": "hlid-cli-updater",
+		},
+		signal: AbortSignal.timeout(STORE_TIMEOUT_MS),
+	});
+	if (!response.ok) {
+		throw new Error(`Codex update manifest returned HTTP ${response.status}`);
+	}
+	const version = parseCodexDesktopStoreUpdateManifest(await response.json());
+	if (!version) throw new Error("Codex update manifest was not recognized");
+	return version;
+}
+
+async function readCodexDesktopStoreVersions(): Promise<{
+	installedVersion: string | null;
+	latestVersion: string;
+	automaticUpdateAvailable: boolean;
+}> {
+	const [wingetResult, manifestResult] = await Promise.allSettled([
+		readWingetCodexDesktopStoreVersions(),
+		fetchCodexDesktopStoreManifestVersion(),
+	]);
+	const wingetVersions =
+		wingetResult.status === "fulfilled" ? wingetResult.value : null;
+	const manifestVersion =
+		manifestResult.status === "fulfilled" ? manifestResult.value : null;
+	const candidates = [wingetVersions?.latestVersion, manifestVersion].filter(
+		(value): value is string => value != null,
+	);
+	if (candidates.length === 0) {
+		const errors = [wingetResult, manifestResult]
+			.filter((result) => result.status === "rejected")
+			.map((result) =>
+				result.status === "rejected" && result.reason instanceof Error
+					? result.reason.message
+					: String(result),
+			);
+		throw new Error(errors.join("; ") || "Codex desktop update check failed");
+	}
+	const latestVersion = candidates.reduce((latest, candidate) =>
+		compareCliVersions(candidate, latest) > 0 ? candidate : latest,
+	);
+	return {
+		installedVersion: wingetVersions?.installedVersion ?? null,
+		latestVersion,
+		automaticUpdateAvailable:
+			wingetVersions != null &&
+			compareCliVersions(wingetVersions.latestVersion, latestVersion) >= 0 &&
+			compareCliVersions(
+				wingetVersions.latestVersion,
+				wingetVersions.installedVersion,
+			) > 0,
+	};
 }
 
 const defaultWindowsDesktopDependencies: WindowsDesktopUpdateDependencies = {
@@ -660,6 +738,11 @@ export async function inspectWindowsDesktopUpdates(
 	const storeVersions =
 		storeResult[0].status === "fulfilled" ? storeResult[0].value : null;
 	const latestVersion = storeVersions?.latestVersion ?? null;
+	const available =
+		latestVersion != null &&
+		compareCliVersions(latestVersion, installedVersion) > 0;
+	const automaticUpdateAvailable =
+		storeVersions?.automaticUpdateAvailable ?? true;
 	const action = windowsDesktopUpdateAction();
 	return [
 		{
@@ -669,12 +752,19 @@ export async function inspectWindowsDesktopUpdates(
 			appVersion,
 			installedVersion,
 			latestVersion,
-			available:
-				latestVersion != null &&
-				compareCliVersions(latestVersion, installedVersion) > 0,
-			updateCommand: action.displayCommand,
-			updateMode: "automatic",
-			requiresElevation: false,
+			available,
+			...(automaticUpdateAvailable
+				? {
+						updateCommand: action.displayCommand,
+						updateMode: "automatic" as const,
+						requiresElevation: false,
+					}
+				: available
+					? {
+							updateInstructions:
+								"Install the update from the Codex desktop app.",
+						}
+					: {}),
 			checkedAt: dependencies.now(),
 			...(storeResult[0].status === "rejected"
 				? {
@@ -859,6 +949,8 @@ function isPersistedStatus(value: unknown): value is CliUpdateStatus {
 		typeof status.available === "boolean" &&
 		(status.updateCommand === undefined ||
 			typeof status.updateCommand === "string") &&
+		(status.updateInstructions === undefined ||
+			typeof status.updateInstructions === "string") &&
 		(status.updateMode === undefined ||
 			status.updateMode === "automatic" ||
 			status.updateMode === "interactive") &&

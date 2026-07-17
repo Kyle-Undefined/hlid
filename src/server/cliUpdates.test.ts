@@ -13,6 +13,7 @@ import {
 	inspectWslUpdates,
 	parseCliUpdateStatusCache,
 	parseCliVersion,
+	parseCodexDesktopStoreUpdateManifest,
 	parseWindowsStoreVersions,
 	readElectronAsarPackageVersion,
 } from "./cliUpdates";
@@ -101,6 +102,24 @@ ChatGPT 9PLM9XGG6VKS 26.707.9981.0 26.708.10000.0 msstore
 		});
 	});
 
+	it("parses Codex Desktop's advisory Windows Store manifest", () => {
+		expect(
+			parseCodexDesktopStoreUpdateManifest({
+				schemaVersion: 1,
+				buildVersion: "26.715.2305.0",
+				storeProductId: "9PLM9XGG6VKS",
+				packageIdentity: "OpenAI.Codex",
+			}),
+		).toBe("26.715.2305.0");
+		expect(
+			parseCodexDesktopStoreUpdateManifest({
+				buildVersion: "26.715.2305.0",
+				storeProductId: "different-product",
+				packageIdentity: "OpenAI.Codex",
+			}),
+		).toBeNull();
+	});
+
 	it("tracks the installed Codex desktop app against Microsoft Store", async () => {
 		const statuses = await inspectWindowsDesktopUpdates({
 			isWindows: () => true,
@@ -144,6 +163,29 @@ ChatGPT 9PLM9XGG6VKS 26.707.9981.0 26.708.10000.0 msstore
 			}),
 		).toEqual([]);
 		expect(readInstalledVersions).not.toHaveBeenCalled();
+	});
+
+	it("reports a manifest update that winget cannot apply yet", async () => {
+		const statuses = await inspectWindowsDesktopUpdates({
+			isWindows: () => true,
+			readInstalledVersions: vi.fn().mockResolvedValue({
+				packageVersion: "26.707.12708.0",
+				appVersion: "26.707.91948",
+			}),
+			readStoreVersions: vi.fn().mockResolvedValue({
+				installedVersion: "26.707.12708.0",
+				latestVersion: "26.715.2305.0",
+				automaticUpdateAvailable: false,
+			}),
+			now: () => 1_800_000_000_000,
+		});
+
+		expect(statuses[0]).toMatchObject({
+			available: true,
+			latestVersion: "26.715.2305.0",
+			updateInstructions: "Install the update from the Codex desktop app.",
+		});
+		expect(statuses[0].updateCommand).toBeUndefined();
 	});
 
 	it("reads the human-facing version from an Electron ASAR package", async () => {
@@ -376,7 +418,7 @@ describe("CLI update status cache", () => {
 		expect(
 			parseCliUpdateStatusCache(
 				JSON.stringify({
-					schemaVersion: 3,
+					schemaVersion: 4,
 					checkedAt: 1_800_000_000_000,
 					statuses: [status],
 				}),
@@ -386,7 +428,7 @@ describe("CLI update status cache", () => {
 		expect(
 			parseCliUpdateStatusCache(
 				JSON.stringify({
-					schemaVersion: 3,
+					schemaVersion: 4,
 					checkedAt: 1_800_000_000_000,
 					statuses: [{ ...status, installedVersion: { bad: true } }],
 				}),

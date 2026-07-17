@@ -156,4 +156,21 @@ describe("CLI update actions", () => {
 		});
 		expect(drainCliRuntime).not.toHaveBeenCalled();
 	});
+
+	it("does not send a manifest-only desktop update through winget", async () => {
+		getCliUpdateStatuses.mockResolvedValue([
+			{
+				id: "codex-desktop",
+				label: "Codex desktop app",
+				available: true,
+				updateInstructions: "Install the update from the Codex desktop app.",
+			},
+		]);
+
+		await expect(applyCliUpdate("codex-desktop")).rejects.toThrow(
+			"Install the update from the Codex desktop app.",
+		);
+		expect(resolveCliUpdateAction).not.toHaveBeenCalled();
+		expect(runBoundedProcess).not.toHaveBeenCalled();
+	});
 });

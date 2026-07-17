@@ -292,12 +292,15 @@ function UpdatesView({
 								</span>
 							)}
 						{update.available && (
-							<code className="max-w-full select-all break-all text-right text-[9px] text-primary/75">
-								{update.updateCommand ?? "update using the original installer"}
-							</code>
+							<span className="max-w-full break-words text-right text-[9px] text-primary/75">
+								{update.updateInstructions ??
+									update.updateCommand ??
+									"update using the original installer"}
+							</span>
 						)}
 						{update.available &&
 							update.updateCommand &&
+							update.updateMode &&
 							status.cliUpdateActionsAllowed && (
 								<ConfirmAction
 									label={

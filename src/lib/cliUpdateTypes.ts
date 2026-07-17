@@ -14,6 +14,8 @@ export type CliUpdateStatus = {
 	latestVersion: string | null;
 	available: boolean;
 	updateCommand?: string;
+	/** Human-facing workflow when an update is visible but cannot be applied by Hlid. */
+	updateInstructions?: string;
 	updateMode?: "automatic" | "interactive";
 	requiresElevation?: boolean;
 	checkedAt: number;

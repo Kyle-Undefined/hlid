@@ -244,6 +244,34 @@ describe("UpdatesSection", () => {
 		).toBeTruthy();
 	});
 
+	it("directs manifest-only desktop updates back to the Codex app", async () => {
+		stubFetch(
+			makeStatus({
+				cliUpdateActionsAllowed: true,
+				cliUpdates: [
+					{
+						id: "codex-desktop",
+						label: "Codex desktop app",
+						surface: "desktop",
+						appVersion: "26.707.91948",
+						installedVersion: "26.707.12708.0",
+						latestVersion: "26.715.2305.0",
+						available: true,
+						updateInstructions:
+							"Install the update from the Codex desktop app.",
+						checkedAt: Date.now(),
+					},
+				],
+			}),
+		);
+		render(<UpdatesSection />);
+
+		expect(
+			await screen.findByText("Install the update from the Codex desktop app."),
+		).toBeTruthy();
+		expect(screen.queryByRole("button", { name: "UPDATE" })).toBeNull();
+	});
+
 	it("applies an automatic CLI update only from the local Forge", async () => {
 		const fetchMock = stubFetch(
 			makeStatus({

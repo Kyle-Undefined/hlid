@@ -24,6 +24,7 @@ async function availableAction(id: string): Promise<CliUpdateAction> {
 	if (!status) throw new Error("CLI update target was not found");
 	if (!status.available)
 		throw new Error(`${status.label} is already up to date`);
+	if (status.updateInstructions) throw new Error(status.updateInstructions);
 	const action = await resolveCliUpdateAction(id);
 	if (!action) {
 		throw new Error("This CLI must be updated with its original installer");
