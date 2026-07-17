@@ -1,15 +1,7 @@
 import { X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { Bar, BarChart, Cell, Tooltip, XAxis, YAxis } from "recharts";
 import type { ToolErrorEntry, TopToolCall } from "#/db";
 import { getToolErrorsFn } from "#/lib/serverFns/stats";
-import { ChartCard } from "../ChartCard";
-
-const AXIS_TICK = {
-	fontSize: 9,
-	fill: "color-mix(in oklch, var(--muted-foreground) 60%, transparent)",
-	fontFamily: "inherit",
-};
 
 /**
  * Strip MCP prefix for display so `mcp__server__tool` reads as `tool`.
@@ -142,87 +134,82 @@ export function TopToolsChart({ data }: { data: TopToolCall[] }) {
 		count: d.count,
 		errorRate: d.errorRate,
 	}));
-	// Dynamic height: 26px per row + 20px padding, floor of 140 so the smallest
-	// charts still have visual air.
-	const height = empty ? 140 : Math.max(140, 26 * rows.length + 20);
+	const max = Math.max(1, ...rows.map((row) => row.count));
 
 	return (
 		<>
-			<ChartCard
-				title="Top tool calls"
-				subtitle={empty ? undefined : `Top ${data.length} by count`}
-				height={height}
-				empty={empty ? "No tool events recorded" : undefined}
-			>
-				<BarChart
-					data={rows}
-					layout="vertical"
-					margin={{ top: 4, right: 12, bottom: 0, left: 8 }}
-				>
-					<XAxis
-						type="number"
-						tick={AXIS_TICK}
-						axisLine={false}
-						tickLine={false}
-					/>
-					<YAxis
-						type="category"
-						dataKey="name"
-						tick={AXIS_TICK}
-						axisLine={false}
-						tickLine={false}
-						width={84}
-					/>
-					<Tooltip
-						cursor={{
-							fill: "color-mix(in oklch, var(--data) 8%, transparent)",
-						}}
-						content={({ active, payload }) => {
-							if (!active || !payload?.length) return null;
-							const r = payload[0].payload as (typeof rows)[number];
+			<div className="border border-border bg-card">
+				<div className="border-b border-border px-4 py-3">
+					<div className="flex items-baseline justify-between gap-2">
+						<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
+							Top tool calls
+						</div>
+						{!empty && (
+							<div className="text-[9px] text-muted-foreground/60">
+								Top {data.length} by count
+							</div>
+						)}
+					</div>
+					<div className="mt-2 flex gap-4 text-[8px] tracking-widest text-muted-foreground uppercase">
+						<span className="flex items-center gap-1.5">
+							<span className="h-2 w-2 bg-[var(--data)]" />
+							Total calls
+						</span>
+						<span className="flex items-center gap-1.5">
+							<span className="h-2 w-2 bg-[var(--chart-error)]" />
+							Errors
+						</span>
+					</div>
+				</div>
+				{empty ? (
+					<div className="grid min-h-36 place-items-center text-[10px] tracking-widest text-muted-foreground/40 uppercase">
+						No tool events recorded
+					</div>
+				) : (
+					<div className="divide-y divide-border/40 p-2">
+						{rows.map((row) => {
+							const errorCount = Math.round(row.count * row.errorRate);
 							return (
-								<div className="text-[9px] tabular-nums bg-background/95 border border-border px-2 py-1 rounded shadow-sm text-foreground/80 space-y-0.5">
-									<div className="text-foreground">{r.fullName}</div>
-									<div>{r.count} calls</div>
-									<div className="text-muted-foreground">
-										{(r.errorRate * 100).toFixed(1)}% errors
-										{r.errorRate > 0 && (
-											<span className="ml-1 opacity-60">
-												— click for details
+								<button
+									key={row.fullName}
+									type="button"
+									disabled={row.errorRate <= 0}
+									onClick={() => setSelectedTool(row.fullName)}
+									className="block min-h-12 w-full px-2 py-2 text-left hover:bg-accent/30 disabled:cursor-default"
+								>
+									<div className="flex items-center justify-between gap-3">
+										<span
+											className="min-w-0 truncate font-mono text-[10px] text-foreground/80"
+											title={row.fullName}
+										>
+											{row.name}
+										</span>
+										<span className="shrink-0 text-[9px] tabular-nums text-muted-foreground">
+											{row.count} calls ·{" "}
+											<span
+												className={errorCount > 0 ? "text-destructive" : ""}
+											>
+												{errorCount} errors ({(row.errorRate * 100).toFixed(1)}
+												%)
 											</span>
-										)}
+										</span>
 									</div>
-								</div>
-							);
-						}}
-					/>
-					<Bar
-						dataKey="count"
-						radius={[0, 2, 2, 0]}
-						isAnimationActive={false}
-						onClick={(barData) => {
-							const row = barData as unknown as (typeof rows)[number];
-							if (row.errorRate > 0) setSelectedTool(row.fullName);
-						}}
-					>
-						{rows.map((r) => {
-							// Defensive clamp: errorRate is contract-bounded to [0,1] but
-							// guard against bad upstream data so opacity stays valid.
-							const er = Math.max(0, Math.min(1, r.errorRate));
-							// Min opacity 0.7 keeps low-error bars readable on the dark
-							// theme background (--destructive is too muddy at <0.7).
-							return (
-								<Cell
-									key={r.fullName}
-									fill={er > 0 ? "var(--chart-error)" : "var(--data)"}
-									fillOpacity={er > 0 ? 0.7 + er * 0.3 : 0.85}
-									style={{ cursor: er > 0 ? "pointer" : "default" }}
-								/>
+									<div className="relative mt-1.5 h-1.5 overflow-hidden bg-secondary">
+										<div
+											className="absolute inset-y-0 left-0 bg-[var(--data)]"
+											style={{ width: `${(row.count / max) * 100}%` }}
+										/>
+										<div
+											className="absolute inset-y-0 left-0 bg-[var(--chart-error)]"
+											style={{ width: `${(errorCount / max) * 100}%` }}
+										/>
+									</div>
+								</button>
 							);
 						})}
-					</Bar>
-				</BarChart>
-			</ChartCard>
+					</div>
+				)}
+			</div>
 
 			{selectedTool && (
 				<ErrorModal

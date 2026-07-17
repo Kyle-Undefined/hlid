@@ -89,6 +89,7 @@ export function cacheHitPct(
 	return total > 0 ? ((cacheRead / total) * 100).toFixed(1) : "0";
 }
 
+// fallow-ignore-next-line unused-export -- directly exercised by component tests
 export function StatRows({ s }: { s: StatBundle }) {
 	const pricedQueries = Math.max(0, s.queries - (s.unpriced_queries ?? 0));
 	const avgCost =

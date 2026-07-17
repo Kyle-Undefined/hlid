@@ -8,6 +8,61 @@ export function isValidSize(value: number): value is PageSize {
 
 export const SESSION_SORTS = ["recent", "cost", "tokens"] as const;
 export type SessionSortKey = (typeof SESSION_SORTS)[number];
+export const LEDGER_STATS_RANGES = [
+	"today",
+	"7d",
+	"30d",
+	"90d",
+	"all",
+	"custom",
+] as const;
+export type LedgerStatsRange = (typeof LEDGER_STATS_RANGES)[number];
+
+function parseDateValue(value: unknown): string | undefined {
+	if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+		return undefined;
+	}
+	const date = new Date(`${value}T00:00:00Z`);
+	return !Number.isNaN(date.getTime()) &&
+		date.toISOString().slice(0, 10) === value
+		? value
+		: undefined;
+}
+
+function parsePage(value: unknown): number {
+	if (typeof value !== "number") return 1;
+	return Math.max(1, Math.floor(value));
+}
+
+function parsePageSize(value: unknown): PageSize {
+	const size =
+		typeof value === "number" ? Math.floor(value) : DEFAULT_PAGE_SIZE;
+	return isValidSize(size) ? size : DEFAULT_PAGE_SIZE;
+}
+
+function parseBoundedString(
+	value: unknown,
+	maxLength: number,
+): string | undefined {
+	if (typeof value !== "string" || value === "") return undefined;
+	return value.slice(0, maxLength);
+}
+
+function parseTrimmedString(
+	value: unknown,
+	maxLength: number,
+): string | undefined {
+	if (typeof value !== "string") return undefined;
+	const trimmed = value.trim();
+	return trimmed ? trimmed.slice(0, maxLength) : undefined;
+}
+
+function parseEnumValue<T extends string>(
+	value: unknown,
+	valid: readonly T[],
+): T | undefined {
+	return valid.includes(value as T) ? (value as T) : undefined;
+}
 
 export function parseLedgerSearch(search: Record<string, unknown>): {
 	tab: "stats" | "sessions";
@@ -19,40 +74,43 @@ export function parseLedgerSearch(search: Record<string, unknown>): {
 	agent?: string;
 	/** Effective model filter; omitted from the URL when empty. */
 	model?: string;
+	/** Provider filter shared by Stats and session drill-downs. */
+	provider?: string;
+	/** Stop-reason drill-down filter. */
+	stop?: string;
+	/** Global Stats time window. */
+	range?: LedgerStatsRange;
+	/** Inclusive local-calendar boundaries used by the custom Stats range. */
+	from?: string;
+	to?: string;
 	/** Session sort; omitted from the URL for the default ("recent"). */
 	sort?: SessionSortKey;
 } {
 	const tab = search.tab === "stats" ? "stats" : "sessions";
-	const page =
-		typeof search.page === "number" ? Math.max(1, Math.floor(search.page)) : 1;
-	const sizeRaw =
-		typeof search.size === "number"
-			? Math.floor(search.size)
-			: DEFAULT_PAGE_SIZE;
-	const q =
-		typeof search.q === "string" && search.q !== ""
-			? search.q.slice(0, 200)
-			: undefined;
-	const agent =
-		typeof search.agent === "string" && search.agent.trim() !== ""
-			? search.agent.trim().slice(0, 4096)
-			: undefined;
-	const model =
-		typeof search.model === "string" && search.model.trim() !== ""
-			? search.model.trim().slice(0, 200)
-			: undefined;
-	const sort =
-		(SESSION_SORTS as readonly unknown[]).includes(search.sort) &&
-		search.sort !== "recent"
-			? (search.sort as SessionSortKey)
-			: undefined;
+	const page = parsePage(search.page);
+	const size = parsePageSize(search.size);
+	const q = parseBoundedString(search.q, 200);
+	const agent = parseTrimmedString(search.agent, 4096);
+	const model = parseTrimmedString(search.model, 200);
+	const provider = parseTrimmedString(search.provider, 100);
+	const stop = parseTrimmedString(search.stop, 100);
+	const range = parseEnumValue(search.range, LEDGER_STATS_RANGES);
+	const from = parseDateValue(search.from);
+	const to = parseDateValue(search.to);
+	const parsedSort = parseEnumValue(search.sort, SESSION_SORTS);
+	const sort = parsedSort === "recent" ? undefined : parsedSort;
 	return {
 		tab,
 		page,
-		size: isValidSize(sizeRaw) ? sizeRaw : DEFAULT_PAGE_SIZE,
+		size,
 		q,
 		agent,
 		model,
+		provider,
+		stop,
+		range,
+		from,
+		to,
 		sort,
 	};
 }

@@ -26,6 +26,13 @@ export {
 	linkAttachmentToMessage,
 	listAttachments,
 } from "./attachments";
+export type {
+	LedgerAnalytics,
+	LedgerAnalyticsFilter,
+	LedgerStatsRange,
+	WeekdayHourBucket,
+} from "./ledgerAnalytics";
+export { getLedgerAnalytics } from "./ledgerAnalytics";
 // Event log
 export { appendLog, clearLogs, getLogs } from "./logs";
 export type { StorageStats } from "./maintenance";
@@ -93,7 +100,6 @@ export {
 } from "./settings";
 export type {
 	AggStats,
-	AggWindow,
 	AttachmentKind,
 	AttachmentRow,
 	LogCounts,

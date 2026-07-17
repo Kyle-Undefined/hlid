@@ -55,6 +55,7 @@ const DB_GET_HANDLERS: Record<string, DbGetHandler> = {
 	"/db/session-tool-event": ({ url }) => getSessionToolEvent(url),
 	"/db/stats": () => getStats(),
 	"/db/activity": () => getActivity(),
+	"/db/ledger-analytics": ({ url }) => getLedgerAnalytics(url),
 	"/db/current-session": async () =>
 		Response.json({ session_id: await db.getCurrentSessionId() }),
 	"/db/session-row": ({ url }) => getSessionRow(url),
@@ -90,6 +91,8 @@ async function getSessions(url: URL): Promise<Response> {
 	const q = url.searchParams.get("q")?.trim() || undefined;
 	const agent = url.searchParams.get("agent")?.trim() || undefined;
 	const model = url.searchParams.get("model")?.trim() || undefined;
+	const provider = url.searchParams.get("provider")?.trim() || undefined;
+	const stop = url.searchParams.get("stop")?.trim() || undefined;
 	const sortParam = url.searchParams.get("sort");
 	const sort =
 		sortParam === "cost" || sortParam === "tokens" || sortParam === "recent"
@@ -99,6 +102,8 @@ async function getSessions(url: URL): Promise<Response> {
 		search: q,
 		agent,
 		model,
+		provider,
+		stop,
 		sort,
 	});
 	return Response.json(result);
@@ -249,6 +254,38 @@ async function getActivity(): Promise<Response> {
 				stopReasonSplit,
 			};
 		},
+	);
+	return Response.json(snapshot);
+}
+
+async function getLedgerAnalytics(url: URL): Promise<Response> {
+	const rangeParam = url.searchParams.get("range");
+	const range: db.LedgerStatsRange =
+		rangeParam === "today" ||
+		rangeParam === "7d" ||
+		rangeParam === "90d" ||
+		rangeParam === "all" ||
+		rangeParam === "custom"
+			? rangeParam
+			: "30d";
+	const dateParam = (name: "from" | "to") => {
+		const value = url.searchParams.get(name);
+		return value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : undefined;
+	};
+	const filter = {
+		range,
+		agent: url.searchParams.get("agent")?.trim() || undefined,
+		provider: url.searchParams.get("provider")?.trim() || undefined,
+		model: url.searchParams.get("model")?.trim() || undefined,
+		from: dateParam("from"),
+		to: dateParam("to"),
+	};
+	const key = JSON.stringify(filter);
+	const snapshot = await readAnalyticsSnapshot(
+		"activity",
+		`ledger:${key}`,
+		() => db.getLedgerAnalytics(filter),
+		{ maxAgeMs: msUntilNextLocalDay() },
 	);
 	return Response.json(snapshot);
 }

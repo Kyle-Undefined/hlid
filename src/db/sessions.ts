@@ -370,10 +370,15 @@ type SessionListOptions = {
 	/** "vault" matches rows without an agent cwd; any other value is exact. */
 	agent?: string;
 	model?: string;
+	provider?: string;
+	stop?: string;
 };
 
 function buildSessionFilter(
-	opts: Pick<SessionListOptions, "search" | "agent" | "model">,
+	opts: Pick<
+		SessionListOptions,
+		"search" | "agent" | "model" | "provider" | "stop"
+	>,
 ): { whereSql: string; params: string[] } {
 	const conditions: string[] = [];
 	const params: string[] = [];
@@ -394,6 +399,16 @@ function buildSessionFilter(
 	if (opts.model) {
 		conditions.push(`${SESSION_EFFECTIVE_MODEL_SQL} = ?`);
 		params.push(opts.model);
+	}
+	if (opts.provider) {
+		conditions.push("provider_id = ?");
+		params.push(opts.provider);
+	}
+	if (opts.stop) {
+		conditions.push(
+			"EXISTS (SELECT 1 FROM queries q_filter WHERE q_filter.session_id = sessions.id AND q_filter.stop_reason = ?)",
+		);
+		params.push(opts.stop);
 	}
 	return {
 		whereSql: conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "",

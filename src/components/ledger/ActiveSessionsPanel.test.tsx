@@ -4,7 +4,40 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionStatusEntry } from "../../server/protocol";
 import { ActiveSessionsPanel } from "./ActiveSessionsPanel";
 
-afterEach(cleanup);
+afterEach(() => {
+	cleanup();
+	vi.unstubAllGlobals();
+});
+
+function setMobileViewport(): void {
+	vi.stubGlobal(
+		"matchMedia",
+		vi.fn().mockImplementation((query: string) => ({
+			matches: false,
+			media: query,
+			onchange: null,
+			addEventListener: vi.fn(),
+			removeEventListener: vi.fn(),
+			addListener: vi.fn(),
+			removeListener: vi.fn(),
+			dispatchEvent: vi.fn(() => true),
+		})),
+	);
+}
+
+function anchorBelow(element: HTMLElement): void {
+	vi.spyOn(element, "getBoundingClientRect").mockReturnValue({
+		x: 296,
+		y: 100,
+		left: 296,
+		top: 100,
+		right: 340,
+		bottom: 144,
+		width: 44,
+		height: 44,
+		toJSON: () => ({}),
+	});
+}
 
 const idle: SessionStatusEntry = {
 	session_id: "s1aabbcc-1234-5678-90ab-cdef01234567",
@@ -172,19 +205,22 @@ describe("ActiveSessionsPanel", () => {
 				onClose={onClose}
 			/>,
 		);
+		fireEvent.click(
+			screen.getByRole("button", { name: /more actions for proj/i }),
+		);
 		const closeBtn = screen.getByRole("button", {
 			name: /close s1|close proj/i,
 		});
 		fireEvent.click(closeBtn);
 		// Close removes the session — a single click must not fire it.
 		expect(onClose).not.toHaveBeenCalled();
-		fireEvent.click(screen.getByRole("button", { name: "confirm" }));
+		fireEvent.click(screen.getByRole("button", { name: "Close" }));
 		expect(onClose).toHaveBeenCalledWith(
 			"s1aabbcc-1234-5678-90ab-cdef01234567",
 		);
 	});
 
-	it("reserves the action width while CLOSE confirmation is open", () => {
+	it("keeps CLOSE in the secondary menu", () => {
 		render(
 			<ActiveSessionsPanel
 				sessions={[idle]}
@@ -192,16 +228,42 @@ describe("ActiveSessionsPanel", () => {
 				onClose={vi.fn()}
 			/>,
 		);
+		expect(screen.queryByRole("button", { name: /close proj/i })).toBeNull();
+		const more = screen.getByRole("button", { name: /more actions for proj/i });
+		fireEvent.click(more);
 		const closeBtn = screen.getByRole("button", {
 			name: /close s1|close proj/i,
 		});
-		const actions = closeBtn.parentElement;
-		expect(actions?.classList.contains("w-40")).toBe(true);
-
 		fireEvent.click(closeBtn);
 
-		expect(screen.getByRole("button", { name: "confirm" })).toBeDefined();
-		expect(actions?.classList.contains("w-40")).toBe(true);
+		expect(screen.getByRole("button", { name: "Close" })).toBeDefined();
+	});
+
+	it("anchors mobile actions below the tapped overflow button", () => {
+		setMobileViewport();
+		render(
+			<ActiveSessionsPanel
+				sessions={[idle]}
+				onStop={vi.fn()}
+				onClose={vi.fn()}
+			/>,
+		);
+		anchorBelow(screen.getByRole("button", { name: /more actions for proj/i }));
+		fireEvent.click(
+			screen.getByRole("button", { name: /more actions for proj/i }),
+		);
+		const sheet = screen.getByRole("dialog", {
+			name: "Active session actions",
+		});
+		expect(sheet.parentElement).toBe(document.body);
+		expect(sheet.className).toContain("fixed");
+		expect(sheet.style.top).toBe("152px");
+		expect(sheet.style.left).toBe("132px");
+		const dismiss = screen.getByRole("button", {
+			name: "Dismiss active session actions",
+		});
+		expect(dismiss.className).toContain("bg-black/10");
+		expect(dismiss.className).not.toContain("backdrop-blur");
 	});
 
 	// ── column headers ────────────────────────────────────────────────────────

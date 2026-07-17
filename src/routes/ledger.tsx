@@ -1,9 +1,7 @@
-import {
-	createFileRoute,
-	useNavigate,
-	useRouterState,
-} from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
+import { ChevronDown } from "lucide-react";
+import type { ReactNode } from "react";
 import {
 	useCallback,
 	useEffect,
@@ -19,18 +17,10 @@ import { HourOfDayChart } from "#/components/ledger/charts/HourOfDayChart";
 import { ModelSplitDonut } from "#/components/ledger/charts/ModelSplitDonut";
 import { StopReasonDonut } from "#/components/ledger/charts/StopReasonDonut";
 import { TopToolsChart } from "#/components/ledger/charts/TopToolsChart";
-import type { StatBundle } from "#/components/ledger/LedgerStats";
-import { StatCell, StatRows } from "#/components/ledger/LedgerStats";
+import { cacheHitPct, StatCell } from "#/components/ledger/LedgerStats";
 import { SessionsLedger } from "#/components/ledger/SessionsLedger";
-import { ProviderUsageStrip } from "#/components/usage/ProviderUsageStrip";
-import { ContextWindowSection } from "#/components/usage/UsageWindowSections";
-import type {
-	AggStats,
-	AggWindow,
-	ProviderUsageSnapshot,
-	SessionRow,
-	ThirtyDayStats,
-} from "#/db";
+import { StatsFilterBar } from "#/components/ledger/StatsFilterBar";
+import type { LedgerAnalytics, SessionRow } from "#/db";
 import { useLedgerSessionMutations } from "#/hooks/useLedgerSessionMutations";
 import {
 	type LedgerStatsSourceStatus,
@@ -53,6 +43,7 @@ import { fmt, fmtModel } from "#/lib/formatters";
 import {
 	buildLedgerAgentOptions,
 	isValidSize,
+	type LedgerStatsRange,
 	parseLedgerSearch,
 	type SessionSortKey,
 	VALID_PAGE_SIZES,
@@ -65,11 +56,9 @@ import {
 	sessionRenameSchema,
 } from "#/lib/serverFnSchemas";
 import { getAgentListFn } from "#/lib/serverFns/agents";
-import { getProviderUsagesFn } from "#/lib/serverFns/providers";
 import { getActiveSessionRowFn } from "#/lib/serverFns/sessions";
-import type { ActivityStats } from "#/lib/serverFns/stats";
 import { buildSessionExport, downloadContent } from "#/lib/sessionExport";
-import type { RateLimitMessage, ServerMessage } from "#/server/protocol";
+import type { ServerMessage } from "#/server/protocol";
 
 // ─── server fns ──────────────────────────────────────────────────────────────
 
@@ -83,6 +72,8 @@ const getSessionsPageFn = createServerFn({ method: "POST" })
 		if (data.q) params.set("q", data.q);
 		if (data.agent) params.set("agent", data.agent);
 		if (data.model) params.set("model", data.model);
+		if (data.provider) params.set("provider", data.provider);
+		if (data.stop) params.set("stop", data.stop);
 		if (data.sort && data.sort !== "recent") params.set("sort", data.sort);
 		return dbJson<{
 			sessions: SessionRow[];
@@ -145,16 +136,53 @@ const cleanupSessionsFn = createServerFn({ method: "POST" })
 
 export const Route = createFileRoute("/ledger")({
 	validateSearch: parseLedgerSearch,
-	loaderDeps: ({ search: { page, size, q, agent, model, sort } }) => ({
+	loaderDeps: ({
+		search: {
+			page,
+			size,
+			q,
+			agent,
+			model,
+			provider,
+			stop,
+			range,
+			from,
+			to,
+			sort,
+		},
+	}) => ({
 		page,
 		size,
 		q,
 		agent,
 		model,
+		provider,
+		stop,
+		range,
+		from,
+		to,
 		sort,
 	}),
 	staleTime: 0,
-	loader: async ({ deps: { page, size, q, agent, model, sort } }) => {
+	// Search controls are client-synchronized below. Re-entering the route still
+	// gets a fresh loader seed, while changing a dropdown keeps the current page
+	// mounted instead of replacing it with a pending route.
+	shouldReload: ({ cause }) => cause !== "stay",
+	loader: async ({
+		deps: {
+			page,
+			size,
+			q,
+			agent,
+			model,
+			provider,
+			stop,
+			range,
+			from,
+			to,
+			sort,
+		},
+	}) => {
 		const renderedAt = Math.floor(Date.now() / 1000);
 		const [initialSessions, activeSession, configuredAgents] =
 			await Promise.all([
@@ -165,6 +193,8 @@ export const Route = createFileRoute("/ledger")({
 						q: q || undefined,
 						agent: agent || undefined,
 						model: model || undefined,
+						provider: provider || undefined,
+						stop: stop || undefined,
 						sort,
 					},
 				}),
@@ -179,6 +209,11 @@ export const Route = createFileRoute("/ledger")({
 			q,
 			agent,
 			model,
+			provider,
+			stop,
+			range,
+			from,
+			to,
 			sort,
 			activeSession,
 			configuredAgents,
@@ -338,6 +373,11 @@ type ListState = {
 	q: string;
 	agent: string;
 	model: string;
+	provider: string;
+	stop: string;
+	range: LedgerStatsRange;
+	from: string;
+	to: string;
 	sort: SessionSortKey;
 };
 
@@ -346,7 +386,8 @@ function useLedgerMutations(
 	sessionPage: Awaited<ReturnType<typeof getSessionsPageFn>>,
 	navigate: LedgerNavigate,
 ) {
-	const { page, size, q, agent, model, sort } = listState;
+	const { page, size, q, agent, model, provider, stop, range, from, to, sort } =
+		listState;
 	const dependencies = useMemo(
 		() => ({
 			deleteSession: async (id: string) => {
@@ -368,12 +409,17 @@ function useLedgerMutations(
 						q,
 						agent,
 						model,
+						provider,
+						stop,
+						range,
+						from,
+						to,
 						sort,
 					},
 				});
 			},
 		}),
-		[navigate, size, q, agent, model, sort],
+		[navigate, size, q, agent, model, provider, stop, range, from, to, sort],
 	);
 	return useLedgerSessionMutations({ page, sessionPage, dependencies });
 }
@@ -382,10 +428,12 @@ function useSessionListSync({
 	listState,
 	initialSessions,
 	reconcile,
+	enabled,
 }: {
 	listState: ListState;
 	initialSessions: Awaited<ReturnType<typeof getSessionsPageFn>>;
 	reconcile: (fresh: Awaited<ReturnType<typeof getSessionsPageFn>>) => void;
+	enabled: boolean;
 }) {
 	const [sessionPage, setSessionPage] = useState(initialSessions);
 	// Mutate refs during render so they're always current before any event
@@ -398,8 +446,19 @@ function useSessionListSync({
 	// Monotonic counter: whichever fetch (loader sync or WS-triggered refresh)
 	// resolves last wins. Earlier results are silently discarded.
 	const fetchVersionRef = useRef(0);
+	const requestKey = [
+		listState.page,
+		listState.size,
+		listState.q,
+		listState.agent,
+		listState.model,
+		listState.provider,
+		listState.stop,
+		listState.sort,
+	].join("\u0000");
+	const lastFetchedKeyRef = useRef(requestKey);
 
-	// Sync when loader data changes (page navigation).
+	// Sync when a route entry or explicit invalidation supplies a new loader seed.
 	useEffect(() => {
 		const v = ++fetchVersionRef.current;
 		// Guard: if refreshSessions already resolved with a newer version, discard
@@ -411,7 +470,8 @@ function useSessionListSync({
 
 	const refreshSessions = useCallback(async () => {
 		const v = ++fetchVersionRef.current;
-		const { page, size, q, agent, model, sort } = listStateRef.current;
+		const { page, size, q, agent, model, provider, stop, sort } =
+			listStateRef.current;
 		const fresh = await getSessionsPageFn({
 			data: {
 				page,
@@ -419,6 +479,8 @@ function useSessionListSync({
 				q: q || undefined,
 				agent: agent || undefined,
 				model: model || undefined,
+				provider: provider || undefined,
+				stop: stop || undefined,
 				sort,
 			},
 		});
@@ -430,6 +492,14 @@ function useSessionListSync({
 		// background `done` event fires before the delete RPC resolves.
 		reconcile(fresh);
 	}, [reconcile]);
+
+	// Route search changes no longer rerun the loader. Keep the previous rows on
+	// screen while fetching the next page/filter result, then swap atomically.
+	useEffect(() => {
+		if (!enabled || lastFetchedKeyRef.current === requestKey) return;
+		lastFetchedKeyRef.current = requestKey;
+		void refreshSessions();
+	}, [enabled, refreshSessions, requestKey]);
 
 	return { sessionPage, refreshSessions };
 }
@@ -491,7 +561,6 @@ function useLedgerLiveData(
 	initialActiveSession: SessionRow | null,
 	onDone?: () => void,
 ) {
-	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
 	const [activeSessionData, setActiveSessionData] =
 		useState(initialActiveSession);
 	useEffect(
@@ -506,7 +575,6 @@ function useLedgerLiveData(
 	} = useWs(
 		useCallback(
 			(msg: ServerMessage) => {
-				if (msg.type === "rate_limit") setRateLimit(msg);
 				if (msg.type === "done") {
 					void getActiveSessionRowFn().then(setActiveSessionData);
 					onDone?.();
@@ -543,7 +611,6 @@ function useLedgerLiveData(
 	}, []);
 
 	return {
-		rateLimit,
 		activeSessionData,
 		model,
 		actualModel,
@@ -561,17 +628,44 @@ function LedgerTabBar({
 	listState: ListState;
 	navigate: LedgerNavigate;
 }) {
-	const { page, size, q, agent, model, sort } = listState;
+	const { page, size, q, agent, model, provider, stop, range, from, to, sort } =
+		listState;
 	function switchTab(next: "stats" | "sessions") {
 		if (next === "sessions") {
 			navigate({
 				to: "/ledger",
-				search: { tab: next, page: 1, size, q, agent, model, sort },
+				search: {
+					tab: next,
+					page: 1,
+					size,
+					q,
+					agent,
+					model,
+					provider,
+					stop,
+					range,
+					from,
+					to,
+					sort,
+				},
 			});
 		} else {
 			navigate({
 				to: "/ledger",
-				search: { tab: next, page, size, q, agent, model, sort },
+				search: {
+					tab: next,
+					page,
+					size,
+					q,
+					agent,
+					model,
+					provider,
+					stop,
+					range,
+					from,
+					to,
+					sort,
+				},
 			});
 		}
 	}
@@ -602,7 +696,6 @@ function SessionsTab({
 	mutations,
 	listState,
 	navigate,
-	loading,
 	liveStats,
 	oldestStartedAt,
 	cleanupReferenceTime,
@@ -613,28 +706,47 @@ function SessionsTab({
 	mutations: ReturnType<typeof useLedgerMutations>;
 	listState: ListState;
 	navigate: LedgerNavigate;
-	loading: boolean;
 	liveStats: LiveStats;
 	oldestStartedAt: number | null;
 	cleanupReferenceTime: number;
 	configuredAgents: Awaited<ReturnType<typeof getAgentListFn>>;
 }) {
-	const { page, size, q, agent, model, sort } = listState;
+	const { page, size, q, agent, model, provider, stop, range, from, to, sort } =
+		listState;
 	const totalPages = Math.max(
 		1,
 		Math.ceil(mutations.sessionsData.total / size),
 	);
 
-	function navigateList(next: Partial<ListState>, replace = false) {
+	function navigateList(
+		next: Partial<ListState>,
+		replace = false,
+		resetScroll = false,
+	) {
 		navigate({
 			to: "/ledger",
-			search: { tab: "sessions", page, size, q, agent, model, sort, ...next },
+			search: {
+				tab: "sessions",
+				page,
+				size,
+				q,
+				agent,
+				model,
+				provider,
+				stop,
+				range,
+				from,
+				to,
+				sort,
+				...next,
+			},
 			replace,
+			resetScroll,
 		});
 	}
 
 	function onPageChange(p: number) {
-		navigateList({ page: Math.max(1, Math.min(totalPages, p)) });
+		navigateList({ page: Math.max(1, Math.min(totalPages, p)) }, false, true);
 	}
 
 	function onPageSizeChange(nextSize: number) {
@@ -660,11 +772,23 @@ function SessionsTab({
 	return (
 		<div>
 			{/* Always rendered — shows the "all quiet" empty state when idle. */}
-			<div className="border-b border-border">
+			<div
+				className={
+					sessionsStatus.some((session) => session.state === "running")
+						? "sticky top-0 z-20 border-b border-border"
+						: "border-b border-border"
+				}
+			>
 				<ActiveSessionsPanel
 					sessions={sessionsStatus}
 					onStop={live.handleStopSession}
 					onClose={live.handleCloseSession}
+					onNavigate={(id) =>
+						navigate({
+							to: "/raven",
+							search: { session: id, agent: undefined },
+						})
+					}
 				/>
 			</div>
 			<div className="p-5">
@@ -674,7 +798,7 @@ function SessionsTab({
 					pageSize={size}
 					pageSizeOptions={VALID_PAGE_SIZES}
 					totalPages={totalPages}
-					loading={loading}
+					loading={false}
 					onPageChange={onPageChange}
 					onPageSizeChange={onPageSizeChange}
 					onDelete={mutations.deleteSession}
@@ -721,31 +845,24 @@ function SessionsTab({
 }
 
 function StatsPage() {
-	const {
-		initialSessions,
-		page,
-		size,
-		q,
-		agent,
-		model,
-		sort,
-		activeSession,
-		configuredAgents,
-		renderedAt,
-	} = Route.useLoaderData();
-	const { tab } = Route.useSearch();
+	const { initialSessions, activeSession, configuredAgents, renderedAt } =
+		Route.useLoaderData();
+	const search = Route.useSearch();
+	const { tab } = search;
 	const listState: ListState = {
-		page,
-		size,
-		q: q ?? "",
-		agent: agent ?? "",
-		model: model ?? "",
-		sort: sort ?? "recent",
+		page: search.page ?? 1,
+		size: search.size ?? 20,
+		q: search.q ?? "",
+		agent: search.agent ?? "",
+		model: search.model ?? "",
+		provider: search.provider ?? "",
+		stop: search.stop ?? "",
+		range: search.range ?? "30d",
+		from: search.from ?? "",
+		to: search.to ?? "",
+		sort: search.sort ?? "recent",
 	};
 	const navigate = useNavigate();
-	const isRouterLoading = useRouterState({
-		select: (s) => s.status === "pending",
-	});
 	const stats = useWsLiveStats();
 	// ── Active sessions (multi-session pool status) ───────────────────────────
 	const sessionsStatus = useSyncExternalStore(
@@ -770,6 +887,7 @@ function StatsPage() {
 		listState,
 		initialSessions,
 		reconcile,
+		enabled: tab === "sessions",
 	});
 	const mutations = useLedgerMutations(listState, sessionPage, navigate);
 	mutationsRef.current = mutations;
@@ -778,7 +896,30 @@ function StatsPage() {
 		[tab, refreshSessions],
 	);
 	useSessionStatusRefresh(sessionsStatus, refreshVisibleSessions);
-	const ledgerStats = useLedgerStatsData(tab === "stats", renderedAt);
+	const statsFilter = useMemo(
+		() => ({
+			range: listState.range,
+			agent: listState.agent || undefined,
+			provider: listState.provider || undefined,
+			model: listState.model || undefined,
+			from:
+				listState.range === "custom" ? listState.from || undefined : undefined,
+			to: listState.range === "custom" ? listState.to || undefined : undefined,
+		}),
+		[
+			listState.range,
+			listState.agent,
+			listState.provider,
+			listState.model,
+			listState.from,
+			listState.to,
+		],
+	);
+	const ledgerStats = useLedgerStatsData(
+		tab === "stats",
+		renderedAt,
+		statsFilter,
+	);
 	const live = useLedgerLiveData(
 		activeSession,
 		tab === "stats" ? ledgerStats.refresh : undefined,
@@ -801,40 +942,34 @@ function StatsPage() {
 				data-scroll-to-top="route"
 				className="flex-1 overflow-auto"
 			>
-				<ActiveSessionStatGrid
-					stats={stats}
-					activeSession={live.activeSessionData}
-					model={live.model}
-					actualModel={live.actualModel}
-				/>
-
 				{tab === "stats" ? (
 					<StatsTab
-						agg={ledgerStats.statsData.agg}
-						stats={stats}
-						rateLimit={live.rateLimit}
-						providerUsages={ledgerStats.providerUsages}
-						providerIds={ledgerStats.providerIds}
-						thirtyDayStats={ledgerStats.thirtyDayStats}
-						activeSession={live.activeSessionData}
-						activity={ledgerStats.activity}
-						statsStatus={ledgerStats.statsStatus}
-						thirtyDayStatus={ledgerStats.thirtyDayStatus}
-						activityStatus={ledgerStats.activityStatus}
-					/>
-				) : (
-					<SessionsTab
-						sessionsStatus={sessionsStatus}
-						live={live}
-						mutations={mutations}
+						analytics={ledgerStats.analytics}
+						analyticsStatus={ledgerStats.analyticsStatus}
 						listState={listState}
 						navigate={navigate}
-						loading={isRouterLoading}
-						liveStats={stats}
-						oldestStartedAt={sessionPage.oldest_started_at ?? null}
-						cleanupReferenceTime={renderedAt}
 						configuredAgents={configuredAgents ?? []}
 					/>
+				) : (
+					<>
+						<ActiveSessionStatGrid
+							stats={stats}
+							activeSession={live.activeSessionData}
+							model={live.model}
+							actualModel={live.actualModel}
+						/>
+						<SessionsTab
+							sessionsStatus={sessionsStatus}
+							live={live}
+							mutations={mutations}
+							listState={listState}
+							navigate={navigate}
+							liveStats={stats}
+							oldestStartedAt={sessionPage.oldest_started_at ?? null}
+							cleanupReferenceTime={renderedAt}
+							configuredAgents={configuredAgents ?? []}
+						/>
+					</>
 				)}
 			</div>
 		</div>
@@ -842,20 +977,6 @@ function StatsPage() {
 }
 
 // ─── Stats tab content ────────────────────────────────────────────────────────
-
-/** Compact time-window breakdown card (TODAY / THIS MONTH). */
-function WindowCard({ title, w }: { title: string; w: AggWindow }) {
-	return (
-		<div className="border border-border bg-card">
-			<div className="px-4 py-3 border-b border-border">
-				<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
-					{title}
-				</div>
-			</div>
-			<StatRows s={w} />
-		</div>
-	);
-}
 
 function StatsDataState({
 	status,
@@ -872,187 +993,280 @@ function StatsDataState({
 }
 
 function StatsTab({
-	agg,
-	stats,
-	rateLimit,
-	providerUsages,
-	providerIds,
-	thirtyDayStats,
-	activeSession,
-	activity,
-	statsStatus,
-	thirtyDayStatus,
-	activityStatus,
+	analytics,
+	analyticsStatus,
+	listState,
+	navigate,
+	configuredAgents,
 }: {
-	agg: AggStats;
-	stats: LiveStats;
-	rateLimit: RateLimitMessage | null;
-	providerUsages: ProviderUsageSnapshot[];
-	providerIds: string[];
-	thirtyDayStats: ThirtyDayStats;
-	activeSession: SessionRow | null;
-	activity: ActivityStats;
-	statsStatus: LedgerStatsSourceStatus;
-	thirtyDayStatus: LedgerStatsSourceStatus;
-	activityStatus: LedgerStatsSourceStatus;
+	analytics: LedgerAnalytics | null;
+	analyticsStatus: LedgerStatsSourceStatus;
+	listState: ListState;
+	navigate: LedgerNavigate;
+	configuredAgents: Awaited<ReturnType<typeof getAgentListFn>>;
 }) {
-	const sessionBundle: StatBundle | null = activeSession
-		? {
-				cost: activeSession.total_cost,
-				estimated_cost: activeSession.total_estimated_cost ?? 0,
-				unpriced_queries: activeSession.unpriced_query_count ?? 0,
-				queries: activeSession.query_count,
-				turns: activeSession.total_turns,
-				input_tokens: activeSession.total_input_tokens,
-				output_tokens: activeSession.total_output_tokens,
-				cache_read_tokens: activeSession.total_cache_read_tokens,
-				cache_creation_tokens: activeSession.total_cache_creation_tokens,
-			}
-		: null;
+	const agentOptions = buildLedgerAgentOptions(
+		configuredAgents,
+		analytics?.facets.agents ?? [],
+	);
+	const selected = analytics?.selected;
+	const pricedQueries = selected
+		? Math.max(0, selected.queries - (selected.unpriced_queries ?? 0))
+		: 0;
+	const avgCost =
+		selected && pricedQueries > 0
+			? `$${(totalDisplayCost(selected) / pricedQueries).toFixed(4)}`
+			: "--";
+	const pricedCoverage =
+		selected && selected.queries > 0
+			? `${((pricedQueries / selected.queries) * 100).toFixed(1)}%`
+			: "--";
+	const hitRate = selected
+		? `${cacheHitPct(selected.input_tokens, selected.cache_read_tokens, selected.cache_creation_tokens)}%`
+		: "--";
+	const nonCacheTokens = selected
+		? selected.input_tokens + selected.output_tokens
+		: 0;
+	const totalTokens = selected
+		? nonCacheTokens +
+			selected.cache_read_tokens +
+			selected.cache_creation_tokens
+		: 0;
+	const rangeLabel =
+		listState.range === "all"
+			? "All-time"
+			: listState.range === "today"
+				? "Today"
+				: listState.range === "custom"
+					? listState.from && listState.to
+						? `${listState.from} – ${listState.to}`
+						: "Custom range"
+					: listState.range.toUpperCase();
+
+	function setFilter(patch: Partial<ListState>) {
+		navigate({
+			to: "/ledger",
+			search: { ...listState, ...patch, tab: "stats", page: 1 },
+			replace: true,
+			resetScroll: false,
+		});
+	}
+
+	function drillDown(patch: Partial<ListState>) {
+		navigate({
+			to: "/ledger",
+			search: {
+				...listState,
+				...patch,
+				tab: "sessions",
+				page: 1,
+				q: "",
+				sort: "recent",
+			},
+		});
+	}
 
 	return (
 		<div>
-			{/* Summary headline strip — 4 key metrics at a glance */}
-			<div className="grid grid-cols-2 sm:grid-cols-4 border-b border-border shrink-0">
-				<div className="border-r border-b sm:border-b-0 border-border">
-					<StatCell
-						label="TODAY"
-						value={
-							statsStatus === "ready" ? formatDisplayCost(agg.today) : "--"
+			<StatsFilterBar
+				filters={listState}
+				agentOptions={agentOptions}
+				providers={analytics?.facets.providers ?? []}
+				models={analytics?.facets.models ?? []}
+				onChange={setFilter}
+			/>
+			{analyticsStatus !== "ready" || !analytics || !selected ? (
+				<div className="p-5">
+					<StatsDataState
+						status={
+							analyticsStatus === "ready" ? "unavailable" : analyticsStatus
 						}
-						sub={
-							statsStatus !== "ready"
-								? statsStatus
-								: (costDisplayNote(agg.today) ??
-									(agg.today.queries > 0
-										? `${agg.today.queries} queries`
-										: undefined))
-						}
+						label="filtered analytics"
 					/>
 				</div>
-				<div className="border-b sm:border-b-0 sm:border-r border-border">
-					<StatCell
-						label="THIS MONTH"
-						value={
-							statsStatus === "ready" ? formatDisplayCost(agg.thisMonth) : "--"
-						}
-						sub={
-							statsStatus !== "ready"
-								? statsStatus
-								: (costDisplayNote(agg.thisMonth) ??
-									(agg.thisMonth.queries > 0
-										? `${agg.thisMonth.queries} queries`
-										: undefined))
-						}
-					/>
-				</div>
-				<div className="border-r border-border">
-					<StatCell
-						label="ALL-TIME"
-						value={
-							statsStatus === "ready" ? formatDisplayCost(agg.allTime) : "--"
-						}
-						sub={
-							statsStatus === "ready"
-								? `${agg.allTime.queries} queries`
-								: statsStatus
-						}
-					/>
-				</div>
-				<div>
-					<StatCell
-						label="SESSIONS"
-						value={
-							statsStatus === "ready" ? String(agg.allTime.sessions) : "--"
-						}
-						sub={
-							statsStatus !== "ready"
-								? statsStatus
-								: agg.allTime.queries > 0
-									? `${agg.allTime.queries} queries`
-									: undefined
-						}
-					/>
-				</div>
-			</div>
-
-			{/* 30-day activity graph */}
-			{thirtyDayStatus === "ready" ? (
-				<ThirtyDayGraph data={thirtyDayStats} />
 			) : (
-				<div className="p-5 pb-0">
-					<StatsDataState status={thirtyDayStatus} label="30-day activity" />
+				<div className="space-y-3 p-3 sm:p-5">
+					<StatsSection
+						title="Overview"
+						summary={`${rangeLabel} · ${selected.queries} queries`}
+						open
+					>
+						<div className="grid grid-cols-2 gap-px border border-border bg-border sm:grid-cols-3 lg:grid-cols-6">
+							<MetricTile
+								label="Cost"
+								value={formatDisplayCost(selected)}
+								sub={costDisplayNote(selected)}
+							/>
+							<MetricTile label="Avg cost / priced query" value={avgCost} />
+							<MetricTile label="Cache hit rate" value={hitRate} />
+							<MetricTile
+								label="Priced coverage"
+								value={pricedCoverage}
+								sub={`${pricedQueries}/${selected.queries} queries`}
+							/>
+							<MetricTile
+								label="Queries"
+								value={String(selected.queries)}
+								sub="completed query records"
+							/>
+							<MetricTile
+								label="Sessions"
+								value={String(selected.sessions)}
+								sub="distinct sessions with queries"
+							/>
+						</div>
+						<div className="border border-border bg-card">
+							<div className="border-b border-border px-3 py-2 text-[8px] tracking-widest text-muted-foreground uppercase">
+								Token counts
+							</div>
+							<div className="grid grid-cols-2 gap-px bg-border sm:grid-cols-3 lg:grid-cols-6">
+								<TokenCountTile
+									label="Input"
+									value={fmt(selected.input_tokens)}
+								/>
+								<TokenCountTile
+									label="Output"
+									value={fmt(selected.output_tokens)}
+								/>
+								<TokenCountTile
+									label="Non-cache total"
+									value={fmt(nonCacheTokens)}
+									sub="input + output"
+								/>
+								<TokenCountTile
+									label="Cache read"
+									value={fmt(selected.cache_read_tokens)}
+								/>
+								<TokenCountTile
+									label="Cache write"
+									value={fmt(selected.cache_creation_tokens)}
+								/>
+								<TokenCountTile
+									label="Total tokens"
+									value={fmt(totalTokens)}
+									sub="including cache"
+								/>
+							</div>
+						</div>
+						<ThirtyDayGraph
+							data={analytics.trend}
+							label={`${rangeLabel} query activity`}
+						/>
+					</StatsSection>
+
+					<StatsSection title="Cost" summary="Token mix, cache, and efficiency">
+						<CostBreakdown s={selected} />
+					</StatsSection>
+
+					<StatsSection
+						title="Models"
+						summary={`${analytics.modelSplit.length} used`}
+					>
+						<ModelSplitDonut
+							data={analytics.modelSplit}
+							onSelect={(model) => drillDown({ model, stop: "" })}
+						/>
+					</StatsSection>
+
+					<StatsSection
+						title="Tools"
+						summary={`${analytics.topTools.length} ranked`}
+					>
+						<TopToolsChart data={analytics.topTools} />
+					</StatsSection>
+
+					<StatsSection
+						title="Reliability"
+						summary="Stop reasons and activity timing"
+					>
+						<div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
+							<StopReasonDonut
+								data={analytics.stopReasonSplit}
+								onSelect={(stop) => drillDown({ stop })}
+							/>
+							<HourOfDayChart data={analytics.weekdayHour} />
+						</div>
+					</StatsSection>
 				</div>
 			)}
+		</div>
+	);
+}
 
-			{/* Provider usage windows */}
-			<ProviderUsageStrip
-				initial={providerUsages}
-				liveQueryCount={stats.queries}
-				rateLimit={rateLimit}
-				tail={<ContextWindowSection stats={stats} />}
-				fetchFn={() => getProviderUsagesFn({ data: providerIds })}
-			/>
+function StatsSection({
+	title,
+	summary,
+	open = false,
+	children,
+}: {
+	title: string;
+	summary: string;
+	open?: boolean;
+	children: ReactNode;
+}) {
+	const [expanded, setExpanded] = useState(open);
+	return (
+		<details
+			className="group"
+			open={expanded}
+			onToggle={(event) => setExpanded(event.currentTarget.open)}
+		>
+			<summary className="flex min-h-12 cursor-pointer list-none items-center justify-between gap-3 border border-border/60 bg-muted/5 px-3 sm:px-4">
+				<span className="text-[10px] tracking-widest text-foreground/80 uppercase">
+					{title}
+				</span>
+				<span className="flex items-center gap-2 text-[9px] text-muted-foreground">
+					<span>{summary}</span>
+					<ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
+				</span>
+			</summary>
+			<div className="space-y-3 pt-3">{children}</div>
+		</details>
+	);
+}
 
-			<div className="p-5 space-y-5">
-				{/* System activity — charts */}
-				{activityStatus === "ready" ? (
-					<div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-						{/* Donuts paired side-by-side on lg so the wide-screen space goes
-					    toward the inline legend instead of empty whitespace. */}
-						<ModelSplitDonut data={activity.modelSplit} />
-						<StopReasonDonut data={activity.stopReasonSplit} />
-						{/* TopTools is dense (10 horizontal bars) — give it the full row. */}
-						<div className="lg:col-span-2">
-							<TopToolsChart data={activity.topTools} />
-						</div>
-						<div className="lg:col-span-2">
-							<HourOfDayChart data={activity.hourOfDay} />
-						</div>
-					</div>
-				) : (
-					<StatsDataState status={activityStatus} label="activity breakdowns" />
-				)}
-
-				{/* Cost breakdown — all-time window for maximum analytical richness */}
-				{statsStatus === "ready" ? (
-					<CostBreakdown s={agg.allTime} />
-				) : (
-					<StatsDataState status={statsStatus} label="cost breakdown" />
-				)}
-
-				{/* SESSION (DB) + TODAY + THIS MONTH + ALL-TIME — same-size row.
-				    Falls back to 3 cols when there's no active session so the
-				    remaining cards still fill the row without a trailing gap. */}
-				{statsStatus === "ready" && (
-					<div
-						className={`grid grid-cols-1 sm:grid-cols-2 gap-4 ${
-							activeSession ? "lg:grid-cols-4" : "lg:grid-cols-3"
-						}`}
-					>
-						{sessionBundle && (
-							<div className="border border-border bg-card">
-								<div className="px-4 py-3 border-b border-border">
-									<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
-										SESSION
-									</div>
-								</div>
-								<StatRows s={sessionBundle} />
-							</div>
-						)}
-						<WindowCard title="TODAY" w={agg.today} />
-						<WindowCard title="THIS MONTH" w={agg.thisMonth} />
-						<div className="border border-border bg-card">
-							<div className="px-4 py-3 border-b border-border">
-								<div className="text-[9px] tracking-widest text-muted-foreground uppercase">
-									ALL-TIME
-								</div>
-							</div>
-							<StatRows s={agg.allTime} />
-						</div>
-					</div>
-				)}
+function MetricTile({
+	label,
+	value,
+	sub,
+}: {
+	label: string;
+	value: string;
+	sub?: string;
+}) {
+	return (
+		<div className="min-h-24 bg-card p-3">
+			<div className="text-[8px] tracking-widest text-muted-foreground uppercase">
+				{label}
 			</div>
+			<div className="mt-1 text-lg font-semibold tabular-nums text-[var(--data)]">
+				{value}
+			</div>
+			{sub && (
+				<div className="mt-1 text-[9px] text-muted-foreground">{sub}</div>
+			)}
+		</div>
+	);
+}
+
+function TokenCountTile({
+	label,
+	value,
+	sub,
+}: {
+	label: string;
+	value: string;
+	sub?: string;
+}) {
+	return (
+		<div className="min-h-16 bg-card px-3 py-2.5">
+			<div className="text-[8px] tracking-widest text-muted-foreground uppercase">
+				{label}
+			</div>
+			<div className="mt-1 text-sm font-medium tabular-nums text-foreground">
+				{value}
+			</div>
+			{sub && <div className="text-[8px] text-muted-foreground">{sub}</div>}
 		</div>
 	);
 }

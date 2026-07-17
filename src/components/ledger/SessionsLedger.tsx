@@ -1,11 +1,24 @@
-import { Pencil, Search, X } from "lucide-react";
+import {
+	ArrowUpDown,
+	Ellipsis,
+	Pencil,
+	Search,
+	SlidersHorizontal,
+	X,
+} from "lucide-react";
+import type { ComponentType } from "react";
 import { useEffect, useRef, useState } from "react";
-import { ConfirmAction } from "#/components/ConfirmAction";
+import { createPortal } from "react-dom";
 import { HydrationSafeText } from "#/components/HydrationSafeText";
 import { LedgerPaginationBar } from "#/components/ledger/LedgerPagination";
 import { sessionEntryDotClass } from "#/components/nav/SystemStatusDot";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { SessionRow } from "#/db";
+import {
+	type AnchoredPopoverPosition,
+	useAnchoredPopover,
+} from "#/hooks/useAnchoredPopover";
+import { useIsDesktop } from "#/hooks/useIsDesktop";
 import type { LiveStats } from "#/hooks/wsLiveStatsStore";
 import { formatDisplayCost } from "#/lib/costDisplay";
 import { fmt, fmtDate, fmtDateUtc } from "#/lib/formatters";
@@ -45,6 +58,140 @@ export function sessionDisplayUsage(
 	};
 }
 
+function SessionActionPanel({
+	mobile,
+	deleteConfirming,
+	renaming,
+	renameValue,
+	onRenameValueChange,
+	onRename,
+	onCancelRename,
+	onConfirmRename,
+	onRequestDelete,
+	onCancelDelete,
+	onConfirmDelete,
+	mobilePosition,
+}: {
+	mobile: boolean;
+	deleteConfirming: boolean;
+	renaming: boolean;
+	renameValue: string;
+	onRenameValueChange: (value: string) => void;
+	onRename: () => void;
+	onCancelRename: () => void;
+	onConfirmRename: () => void;
+	onRequestDelete: () => void;
+	onCancelDelete: () => void;
+	onConfirmDelete: () => void;
+	mobilePosition?: AnchoredPopoverPosition | null;
+}) {
+	return (
+		<div
+			className={
+				mobile
+					? "fixed z-[70] overflow-y-auto border border-border bg-popover p-2 shadow-xl"
+					: "absolute right-2 top-10 z-[70] w-40 border border-border bg-popover p-2 shadow-xl"
+			}
+			style={
+				mobile && mobilePosition
+					? {
+							left: mobilePosition.left,
+							top: mobilePosition.top,
+							width: mobilePosition.width,
+							maxHeight: mobilePosition.maxHeight,
+						}
+					: undefined
+			}
+			role="dialog"
+			aria-label={
+				renaming
+					? "Rename session"
+					: deleteConfirming
+						? "Confirm session deletion"
+						: "Session actions"
+			}
+		>
+			{renaming ? (
+				<form
+					className="space-y-3 p-2"
+					onSubmit={(event) => {
+						event.preventDefault();
+						onConfirmRename();
+					}}
+				>
+					<label className="block">
+						<span className="mb-1.5 block text-[9px] tracking-widest text-muted-foreground uppercase">
+							Session name
+						</span>
+						<input
+							value={renameValue}
+							onChange={(event) => onRenameValueChange(event.target.value)}
+							enterKeyHint="done"
+							className="min-h-11 w-full border border-border bg-background px-3 text-sm outline-none focus:border-primary/50"
+							aria-label="Session name"
+						/>
+					</label>
+					<div className="grid grid-cols-2 gap-2">
+						<button
+							type="button"
+							onClick={onCancelRename}
+							className="min-h-11 border border-border text-[9px] tracking-widest uppercase"
+						>
+							Cancel
+						</button>
+						<button
+							type="submit"
+							disabled={!renameValue.trim()}
+							className="min-h-11 border border-primary/40 text-[9px] tracking-widest text-primary uppercase disabled:opacity-40"
+						>
+							Save
+						</button>
+					</div>
+				</form>
+			) : deleteConfirming ? (
+				<div className="space-y-3 p-2">
+					<div className="text-[10px] text-muted-foreground">
+						Delete this session permanently?
+					</div>
+					<div className="grid grid-cols-2 gap-2">
+						<button
+							type="button"
+							onClick={onCancelDelete}
+							className="min-h-11 border border-border text-[9px] tracking-widest uppercase"
+						>
+							Cancel
+						</button>
+						<button
+							type="button"
+							onClick={onConfirmDelete}
+							className="min-h-11 border border-destructive/40 text-[9px] tracking-widest text-destructive uppercase"
+						>
+							Delete
+						</button>
+					</div>
+				</div>
+			) : (
+				<>
+					<button
+						type="button"
+						onClick={onRename}
+						className="flex min-h-11 w-full items-center gap-2 px-3 text-[10px] tracking-wider text-foreground/80 hover:bg-accent/40"
+					>
+						<Pencil size={14} /> Rename
+					</button>
+					<button
+						type="button"
+						onClick={onRequestDelete}
+						className="flex min-h-11 w-full items-center gap-2 px-3 text-[10px] tracking-wider text-destructive/80 hover:bg-accent/40"
+					>
+						<X size={14} /> Delete
+					</button>
+				</>
+			)}
+		</div>
+	);
+}
+
 function SessionItem({
 	session,
 	onDelete,
@@ -53,6 +200,7 @@ function SessionItem({
 	isActive,
 	poolSession,
 	liveStats,
+	isDesktop,
 }: {
 	session: SessionRow;
 	onDelete: (id: string) => void;
@@ -61,10 +209,21 @@ function SessionItem({
 	isActive?: boolean;
 	poolSession?: SessionStatusEntry;
 	liveStats?: LiveStats;
+	isDesktop: boolean;
 }) {
 	const [editing, setEditing] = useState(false);
 	const [editValue, setEditValue] = useState("");
+	const [menuOpen, setMenuOpen] = useState(false);
+	const [deleteConfirming, setDeleteConfirming] = useState(false);
+	const [mobileRenaming, setMobileRenaming] = useState(false);
 	const inputRef = useRef<HTMLInputElement>(null);
+	const actionButtonRef = useRef<HTMLButtonElement>(null);
+	const mobilePosition = useAnchoredPopover(
+		menuOpen && !isDesktop,
+		actionButtonRef,
+		mobileRenaming ? 320 : 208,
+		mobileRenaming ? 210 : deleteConfirming ? 170 : 112,
+	);
 	const usage = sessionDisplayUsage(session, Boolean(isActive), liveStats);
 	const costSummary =
 		isActive && liveStats && liveStats.queries > 0
@@ -96,8 +255,35 @@ function SessionItem({
 		setEditing(false);
 	}
 
+	function closeMenu() {
+		setMenuOpen(false);
+		setDeleteConfirming(false);
+		setMobileRenaming(false);
+	}
+
+	function startMobileEdit() {
+		setEditValue(session.label ?? "");
+		setMobileRenaming(true);
+	}
+
+	function commitMobileEdit() {
+		const trimmed = editValue.trim();
+		if (trimmed && trimmed !== session.label) {
+			onRename(session.id, trimmed);
+		}
+		closeMenu();
+	}
+
 	return (
-		<div className="flex items-center gap-2 border-b border-border last:border-0 group hover:bg-accent/20 transition-colors">
+		<div className="relative flex items-center gap-2 border-b border-border last:border-0 group hover:bg-accent/20 transition-colors cursor-pointer">
+			{!editing && (
+				<button
+					type="button"
+					onClick={() => onNavigate(session.id)}
+					className="absolute inset-0 z-0 w-full"
+					aria-label={`Open ${session.label ?? "untitled"} session`}
+				/>
+			)}
 			{editing ? (
 				<>
 					<div className="flex-1 min-w-0 px-4 py-2.5">
@@ -127,11 +313,7 @@ function SessionItem({
 					</button>
 				</>
 			) : (
-				<button
-					type="button"
-					onClick={() => onNavigate(session.id)}
-					className="flex items-center gap-3 flex-1 min-w-0 px-4 py-2.5 text-left"
-				>
+				<div className="pointer-events-none relative z-10 flex items-center gap-3 flex-1 min-w-0 px-4 py-2.5 text-left">
 					{poolSession && (
 						<div
 							className={`w-1.5 h-1.5 rounded-full shrink-0 ${sessionEntryDotClass(poolSession)}`}
@@ -163,35 +345,74 @@ function SessionItem({
 							{fmt(usage.tokens)} tok
 						</PrivacyMask>
 					</div>
-				</button>
+				</div>
 			)}
-			<ConfirmAction
-				confirmText="delete"
-				onConfirm={() => onDelete(session.id)}
-				className="pr-2 shrink-0"
-				trigger={(open) => (
-					<div className="flex items-center shrink-0">
-						<button
-							type="button"
-							onClick={startEdit}
-							className="w-9 h-9 flex items-center justify-center text-muted-foreground/20 hover:text-primary/60 md:opacity-0 md:group-hover:opacity-100 transition-all"
-							title="Rename session"
-							aria-label="Rename session"
-						>
-							<Pencil size={11} />
-						</button>
-						<button
-							type="button"
-							onClick={open}
-							className="w-9 h-9 flex items-center justify-center text-muted-foreground/20 hover:text-destructive/60 md:opacity-0 md:group-hover:opacity-100 transition-all pr-1"
-							title="Delete session"
-							aria-label="Delete session"
-						>
-							<X size={11} />
-						</button>
-					</div>
-				)}
-			/>
+			<div className={`relative pr-2 shrink-0 ${menuOpen ? "z-[70]" : "z-20"}`}>
+				<button
+					ref={actionButtonRef}
+					type="button"
+					onClick={() => setMenuOpen((open) => !open)}
+					className="w-11 h-11 flex items-center justify-center text-muted-foreground/50 hover:text-foreground md:opacity-0 md:group-hover:opacity-100 md:focus:opacity-100 transition-all"
+					aria-label="Session actions"
+					aria-expanded={menuOpen}
+				>
+					<Ellipsis size={17} />
+				</button>
+				{menuOpen &&
+					(isDesktop ? (
+						<SessionActionPanel
+							mobile={false}
+							deleteConfirming={deleteConfirming}
+							renaming={false}
+							renameValue={editValue}
+							onRenameValueChange={setEditValue}
+							onRename={() => {
+								closeMenu();
+								startEdit();
+							}}
+							onCancelRename={closeMenu}
+							onConfirmRename={commitMobileEdit}
+							onRequestDelete={() => setDeleteConfirming(true)}
+							onCancelDelete={() => setDeleteConfirming(false)}
+							onConfirmDelete={() => {
+								onDelete(session.id);
+								closeMenu();
+							}}
+							mobilePosition={null}
+						/>
+					) : typeof document !== "undefined" ? (
+						createPortal(
+							<>
+								<button
+									type="button"
+									onClick={closeMenu}
+									className="fixed inset-0 z-[60] bg-black/10"
+									aria-label="Dismiss session actions"
+								/>
+								{mobilePosition && (
+									<SessionActionPanel
+										mobile
+										deleteConfirming={deleteConfirming}
+										renaming={mobileRenaming}
+										renameValue={editValue}
+										onRenameValueChange={setEditValue}
+										onRename={startMobileEdit}
+										onCancelRename={closeMenu}
+										onConfirmRename={commitMobileEdit}
+										onRequestDelete={() => setDeleteConfirming(true)}
+										onCancelDelete={() => setDeleteConfirming(false)}
+										onConfirmDelete={() => {
+											onDelete(session.id);
+											closeMenu();
+										}}
+										mobilePosition={mobilePosition}
+									/>
+								)}
+							</>,
+							document.body,
+						)
+					) : null)}
+			</div>
 		</div>
 	);
 }
@@ -231,7 +452,7 @@ function SessionSearchBox({
 		return () => clearTimeout(timer);
 	}, [text]);
 	return (
-		<div className="flex items-center border border-border">
+		<div className="flex min-h-10 w-full min-w-0 items-center border border-border md:min-h-0 md:w-auto">
 			<Search className="w-2.5 h-2.5 mx-1.5 text-muted-foreground/60" />
 			<input
 				type="text"
@@ -247,7 +468,7 @@ function SessionSearchBox({
 				placeholder="label…"
 				title="Filters as you type"
 				aria-label="Search sessions"
-				className="bg-transparent text-[10px] py-1 pr-1 w-24 md:w-36 focus:outline-none"
+				className="min-w-0 flex-1 bg-transparent py-1 pr-1 text-[10px] focus:outline-none md:w-36 md:flex-none"
 			/>
 			{(text || search) && (
 				<button
@@ -258,7 +479,7 @@ function SessionSearchBox({
 						onSearchChange("");
 					}}
 					aria-label="Clear session search"
-					className="px-1 text-muted-foreground/50 hover:text-foreground"
+					className="flex h-10 w-10 shrink-0 items-center justify-center text-muted-foreground/50 hover:text-foreground md:h-auto md:w-auto md:px-1"
 				>
 					<X className="w-2.5 h-2.5" />
 				</button>
@@ -338,6 +559,147 @@ function CleanupControl({
 	);
 }
 
+function MobileControlButton({
+	icon: Icon,
+	label,
+	active,
+	onClick,
+}: {
+	icon: ComponentType<{ className?: string }>;
+	label: string;
+	active: boolean;
+	onClick: () => void;
+}) {
+	return (
+		<button
+			type="button"
+			onClick={onClick}
+			aria-pressed={active}
+			className={`flex min-h-10 flex-1 items-center justify-center gap-1.5 border px-2 text-[9px] tracking-widest uppercase transition-colors ${
+				active
+					? "border-primary/50 bg-primary/10 text-primary"
+					: "border-border text-muted-foreground"
+			}`}
+		>
+			<Icon className="h-3.5 w-3.5" />
+			{label}
+		</button>
+	);
+}
+
+function SecondaryActionsMenu({
+	open,
+	onOpenChange,
+	oldestStartedAt,
+	cleanupReferenceTime,
+	onCleanup,
+	onExport,
+	compact = false,
+}: {
+	open: boolean;
+	onOpenChange: (open: boolean) => void;
+	oldestStartedAt: number | null;
+	cleanupReferenceTime: number;
+	onCleanup: (days: number) => void;
+	onExport?: (format: "csv" | "json") => void;
+	compact?: boolean;
+}) {
+	const buttonRef = useRef<HTMLButtonElement>(null);
+	const menuRef = useRef<HTMLDivElement>(null);
+	const mobilePosition = useAnchoredPopover(
+		open && compact,
+		buttonRef,
+		320,
+		280,
+		menuRef,
+	);
+	const menuContent = (
+		<div
+			ref={menuRef}
+			className={
+				compact
+					? "fixed z-[70] space-y-3 overflow-y-auto border border-border bg-popover p-3 shadow-xl"
+					: "absolute right-0 top-full z-40 mt-1 w-52 space-y-3 border border-border bg-popover p-3 shadow-lg"
+			}
+			style={
+				compact && mobilePosition
+					? {
+							left: mobilePosition.left,
+							top: mobilePosition.top,
+							width: mobilePosition.width,
+							maxHeight: mobilePosition.maxHeight,
+						}
+					: undefined
+			}
+			role="dialog"
+			aria-label="Session list actions"
+		>
+			<div>
+				<div className="mb-1.5 text-[8px] tracking-widest text-muted-foreground uppercase">
+					Maintenance
+				</div>
+				<CleanupControl
+					oldestStartedAt={oldestStartedAt}
+					referenceTime={cleanupReferenceTime}
+					onCleanup={onCleanup}
+				/>
+			</div>
+			{onExport && (
+				<div>
+					<div className="mb-1.5 text-[8px] tracking-widest text-muted-foreground uppercase">
+						Export all sessions
+					</div>
+					<div className="grid grid-cols-2 gap-2">
+						<button
+							type="button"
+							onClick={() => onExport("csv")}
+							className="min-h-9 border border-border text-[9px] tracking-widest uppercase hover:text-foreground"
+						>
+							CSV
+						</button>
+						<button
+							type="button"
+							onClick={() => onExport("json")}
+							className="min-h-9 border border-border text-[9px] tracking-widest uppercase hover:text-foreground"
+						>
+							JSON
+						</button>
+					</div>
+				</div>
+			)}
+		</div>
+	);
+	return (
+		<div className="relative">
+			<button
+				ref={buttonRef}
+				type="button"
+				onClick={() => onOpenChange(!open)}
+				aria-label="More session list actions"
+				aria-expanded={open}
+				className={`${compact ? "h-10 w-10" : "h-7 w-7"} flex items-center justify-center border border-border text-muted-foreground hover:text-foreground`}
+			>
+				<Ellipsis className="h-4 w-4" />
+			</button>
+			{open &&
+				(compact && typeof document !== "undefined"
+					? createPortal(
+							<>
+								<button
+									type="button"
+									onClick={() => onOpenChange(false)}
+									className="fixed inset-0 z-[60] bg-black/10 md:hidden"
+									aria-label="Dismiss session list actions"
+								/>
+								{mobilePosition && menuContent}
+							</>,
+							document.body,
+						)
+					: menuContent)}
+		</div>
+	);
+}
+
 // ─── SessionsLedger ───────────────────────────────────────────────────────────
 
 export function SessionsLedger({
@@ -403,6 +765,12 @@ export function SessionsLedger({
 	cleanupReferenceTime?: number;
 	onExport?: (format: "csv" | "json") => void;
 }) {
+	const isDesktop = useIsDesktop();
+	const [mobilePanel, setMobilePanel] = useState<
+		"search" | "filter" | "sort" | null
+	>(null);
+	const [desktopMoreOpen, setDesktopMoreOpen] = useState(false);
+	const [mobileMoreOpen, setMobileMoreOpen] = useState(false);
 	const hasFilters = Boolean(search || agentFilter || modelFilter);
 	const pagination = {
 		page,
@@ -424,7 +792,7 @@ export function SessionsLedger({
 						{data.total}
 					</span>
 				</div>
-				<div className="flex items-center gap-3 flex-wrap">
+				<div className="hidden md:flex items-center gap-3 flex-wrap">
 					{onAgentFilterChange && (
 						<label className="flex items-center gap-1.5 text-[8px] tracking-widest text-muted-foreground/50 uppercase">
 							<span>agent</span>
@@ -498,32 +866,125 @@ export function SessionsLedger({
 							))}
 						</select>
 					</label>
-					<CleanupControl
+					<SecondaryActionsMenu
+						open={desktopMoreOpen}
+						onOpenChange={setDesktopMoreOpen}
 						oldestStartedAt={oldestStartedAt}
-						referenceTime={cleanupReferenceTime}
+						cleanupReferenceTime={cleanupReferenceTime}
 						onCleanup={onCleanup}
+						onExport={onExport}
 					/>
-					{onExport && (
-						<div className="flex items-center gap-1.5 text-[8px] tracking-widest uppercase text-muted-foreground/50">
-							<span>export</span>
-							<button
-								type="button"
-								onClick={() => onExport("csv")}
-								className="border border-border px-1.5 py-0.5 hover:text-foreground transition-colors"
-							>
-								csv
-							</button>
-							<button
-								type="button"
-								onClick={() => onExport("json")}
-								className="border border-border px-1.5 py-0.5 hover:text-foreground transition-colors"
-							>
-								json
-							</button>
-						</div>
-					)}
+				</div>
+				<div className="flex w-full md:hidden items-center gap-1.5">
+					<MobileControlButton
+						icon={Search}
+						label="Search"
+						active={mobilePanel === "search"}
+						onClick={() =>
+							setMobilePanel((p) => (p === "search" ? null : "search"))
+						}
+					/>
+					<MobileControlButton
+						icon={SlidersHorizontal}
+						label="Filter"
+						active={
+							mobilePanel === "filter" || Boolean(agentFilter || modelFilter)
+						}
+						onClick={() =>
+							setMobilePanel((p) => (p === "filter" ? null : "filter"))
+						}
+					/>
+					<MobileControlButton
+						icon={ArrowUpDown}
+						label="Sort"
+						active={mobilePanel === "sort" || sort !== "recent"}
+						onClick={() =>
+							setMobilePanel((p) => (p === "sort" ? null : "sort"))
+						}
+					/>
 				</div>
 			</div>
+			{mobilePanel && (
+				<div className="md:hidden border-b border-border bg-muted/15 p-3">
+					{mobilePanel === "search" && onSearchChange && (
+						<SessionSearchBox search={search} onSearchChange={onSearchChange} />
+					)}
+					{mobilePanel === "filter" && (
+						<div className="grid grid-cols-2 gap-2">
+							<select
+								value={agentFilter}
+								onChange={(e) => onAgentFilterChange?.(e.target.value)}
+								aria-label="Filter sessions by agent"
+								className="min-h-10 bg-background border border-border px-2 text-xs"
+							>
+								<option value="">All agents</option>
+								{agentOptions.map((o) => (
+									<option key={o.value} value={o.value}>
+										{o.label}
+									</option>
+								))}
+							</select>
+							<select
+								value={modelFilter}
+								onChange={(e) => onModelFilterChange?.(e.target.value)}
+								aria-label="Filter sessions by model"
+								className="min-h-10 bg-background border border-border px-2 text-xs"
+							>
+								<option value="">All models</option>
+								{modelOptions.map((m) => (
+									<option key={m} value={m}>
+										{m}
+									</option>
+								))}
+							</select>
+							<label className="col-span-1">
+								<span className="mb-1 block text-[8px] tracking-widest text-muted-foreground uppercase">
+									Per page
+								</span>
+								<select
+									value={pageSize}
+									onChange={(e) => onPageSizeChange(Number(e.target.value))}
+									className="min-h-10 w-full bg-background border border-border px-2 text-xs"
+									aria-label="Sessions per page"
+								>
+									{pageSizeOptions.map((n) => (
+										<option key={n} value={n}>
+											{n}
+										</option>
+									))}
+								</select>
+							</label>
+							<div className="col-span-1 flex items-end justify-end">
+								<SecondaryActionsMenu
+									open={mobileMoreOpen}
+									onOpenChange={setMobileMoreOpen}
+									oldestStartedAt={oldestStartedAt}
+									cleanupReferenceTime={cleanupReferenceTime}
+									onCleanup={onCleanup}
+									onExport={onExport}
+									compact
+								/>
+							</div>
+						</div>
+					)}
+					{mobilePanel === "sort" && (
+						<select
+							value={sort}
+							onChange={(e) => onSortChange?.(e.target.value as SessionSortKey)}
+							aria-label="Sort sessions"
+							className="min-h-10 w-full bg-background border border-border px-2 text-xs"
+						>
+							{(Object.entries(SORT_LABELS) as [SessionSortKey, string][]).map(
+								([value, label]) => (
+									<option key={value} value={value}>
+										{label}
+									</option>
+								),
+							)}
+						</select>
+					)}
+				</div>
+			)}
 
 			{loading ? (
 				<div className="px-4 py-6 text-center text-[9px] tracking-widest text-muted-foreground/50">
@@ -559,6 +1020,7 @@ export function SessionsLedger({
 						isActive={activeSessionId != null && s.id === activeSessionId}
 						poolSession={sessionsStatus?.find((p) => p.db_session_id === s.id)}
 						liveStats={liveStats}
+						isDesktop={isDesktop}
 					/>
 				))
 			)}

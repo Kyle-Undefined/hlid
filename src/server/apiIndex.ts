@@ -215,6 +215,12 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 		server: "api",
 		desc: "Recent query activity feed.",
 	},
+	{
+		method: "GET",
+		path: "/db/ledger-analytics?range=30d&agent=&provider=&model=",
+		server: "api",
+		desc: "Filterable Ledger overview, trend, model, reliability, tool, and time-of-day analytics.",
+	},
 	// ── Logs (api port) ───────────────────────────────────────────────────────
 	{
 		method: "GET",

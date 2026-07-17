@@ -1,12 +1,18 @@
 import type { StopReasonEntry } from "#/db";
-import { BreakdownDonut } from "./BreakdownDonut";
+import { RankedBreakdown } from "./RankedBreakdown";
 
 /** Format an Anthropic stop_reason for display by replacing underscores with spaces. */
 function fmtReason(r: string): string {
 	return r.replace(/_/g, " ");
 }
 
-export function StopReasonDonut({ data }: { data: StopReasonEntry[] }) {
+export function StopReasonDonut({
+	data,
+	onSelect,
+}: {
+	data: StopReasonEntry[];
+	onSelect?: (reason: string) => void;
+}) {
 	const rows = data.map((d) => ({
 		key: d.reason,
 		label: fmtReason(d.reason),
@@ -15,13 +21,13 @@ export function StopReasonDonut({ data }: { data: StopReasonEntry[] }) {
 	const total = rows.reduce((sum, row) => sum + row.value, 0);
 
 	return (
-		<BreakdownDonut
+		<RankedBreakdown
 			title="Stop reason"
 			subtitle={`${total} queries`}
-			height={200}
-			emptyMessage="No stop reasons recorded"
-			innerRadius="50%"
 			rows={rows}
+			emptyMessage="No stop reasons recorded"
+			valueLabel={(value) => `${value} queries`}
+			onSelect={onSelect}
 		/>
 	);
 }

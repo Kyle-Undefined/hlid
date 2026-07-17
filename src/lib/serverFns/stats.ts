@@ -5,6 +5,8 @@ import type {
 	AggStats,
 	HourOfDayBucket,
 	LatencyDistribution,
+	LedgerAnalytics,
+	LedgerAnalyticsFilter,
 	ModelSplitEntry,
 	SessionRow,
 	StopReasonEntry,
@@ -100,6 +102,37 @@ export const EMPTY_ACTIVITY: ActivityStats = {
 export const getActivityStatsFn = createServerFn({ method: "GET" }).handler(
 	() => dbJson<ActivityStats>("/db/activity", EMPTY_ACTIVITY),
 );
+
+const ledgerAnalyticsFilterSchema = z.object({
+	range: z.enum(["today", "7d", "30d", "90d", "all", "custom"]),
+	agent: z.string().max(4096).optional(),
+	provider: z.string().max(100).optional(),
+	model: z.string().max(200).optional(),
+	from: z
+		.string()
+		.regex(/^\d{4}-\d{2}-\d{2}$/)
+		.optional(),
+	to: z
+		.string()
+		.regex(/^\d{4}-\d{2}-\d{2}$/)
+		.optional(),
+});
+
+export const getLedgerAnalyticsFn = createServerFn({ method: "POST" })
+	.validator((raw) => ledgerAnalyticsFilterSchema.parse(raw))
+	.handler(({ data }) => {
+		const filter = data as LedgerAnalyticsFilter;
+		const params = new URLSearchParams({ range: filter.range });
+		if (filter.agent) params.set("agent", filter.agent);
+		if (filter.provider) params.set("provider", filter.provider);
+		if (filter.model) params.set("model", filter.model);
+		if (filter.from) params.set("from", filter.from);
+		if (filter.to) params.set("to", filter.to);
+		return dbJson<LedgerAnalytics | null>(
+			`/db/ledger-analytics?${params.toString()}`,
+			null,
+		);
+	});
 
 export const getToolErrorsFn = createServerFn({ method: "GET" })
 	.validator((raw) => z.string().min(1).parse(raw))

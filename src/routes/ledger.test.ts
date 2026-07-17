@@ -106,6 +106,43 @@ describe("parseLedgerSearch", () => {
 			model: undefined,
 		});
 	});
+
+	it("parses Stats range/provider filters and reliability drill-downs", () => {
+		expect(
+			parseLedgerSearch({
+				range: "90d",
+				provider: " codex ",
+				stop: "max_tokens",
+			}),
+		).toMatchObject({ range: "90d", provider: "codex", stop: "max_tokens" });
+		expect(
+			parseLedgerSearch({ range: "forever", provider: 42, stop: "" }),
+		).toMatchObject({
+			range: undefined,
+			provider: undefined,
+			stop: undefined,
+		});
+	});
+
+	it("parses Today and valid custom date boundaries", () => {
+		expect(parseLedgerSearch({ range: "today" })).toMatchObject({
+			range: "today",
+		});
+		expect(
+			parseLedgerSearch({
+				range: "custom",
+				from: "2026-07-01",
+				to: "2026-07-16",
+			}),
+		).toMatchObject({
+			range: "custom",
+			from: "2026-07-01",
+			to: "2026-07-16",
+		});
+		expect(
+			parseLedgerSearch({ from: "2026-02-30", to: "not-a-date" }),
+		).toMatchObject({ from: undefined, to: undefined });
+	});
 });
 
 describe("buildLedgerAgentOptions", () => {

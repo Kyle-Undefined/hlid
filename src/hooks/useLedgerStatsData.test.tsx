@@ -1,23 +1,19 @@
 // @vitest-environment jsdom
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getProvidersFn, getProviderUsagesFn } from "#/lib/serverFns/providers";
+import type { LedgerAnalyticsFilter } from "#/db";
 import {
 	EMPTY_ACTIVITY,
 	EMPTY_AGG,
 	getActivityStatsFn,
 	getCockpitStatsFn,
+	getLedgerAnalyticsFn,
 	getThirtyDayStatsFn,
 } from "#/lib/serverFns/stats";
 import {
 	resetLedgerStatsDataForTest,
 	useLedgerStatsData,
 } from "./useLedgerStatsData";
-
-vi.mock("#/lib/serverFns/providers", () => ({
-	getProvidersFn: vi.fn(),
-	getProviderUsagesFn: vi.fn(),
-}));
 
 vi.mock("#/lib/serverFns/stats", async (importOriginal) => {
 	const original =
@@ -26,6 +22,7 @@ vi.mock("#/lib/serverFns/stats", async (importOriginal) => {
 		...original,
 		getActivityStatsFn: vi.fn(),
 		getCockpitStatsFn: vi.fn(),
+		getLedgerAnalyticsFn: vi.fn(),
 		getThirtyDayStatsFn: vi.fn(),
 	};
 });
@@ -51,20 +48,13 @@ const activity = (count: number) => ({
 	topTools: [{ name: "Read", count, errorRate: 0 }],
 });
 
-const providerUsages = [
-	{ providerId: "codex", providerLabel: "Codex", windows: [] },
-];
-
 beforeEach(() => {
 	vi.clearAllMocks();
 	resetLedgerStatsDataForTest();
 	vi.mocked(getCockpitStatsFn).mockResolvedValue(statsData(1));
 	vi.mocked(getThirtyDayStatsFn).mockResolvedValue(thirtyDayStats(2));
 	vi.mocked(getActivityStatsFn).mockResolvedValue(activity(3));
-	vi.mocked(getProvidersFn).mockResolvedValue([
-		{ id: "codex", label: "Codex", available: true },
-	]);
-	vi.mocked(getProviderUsagesFn).mockResolvedValue(providerUsages);
+	vi.mocked(getLedgerAnalyticsFn).mockResolvedValue(null);
 });
 
 afterEach(cleanup);
@@ -164,5 +154,40 @@ describe("useLedgerStatsData", () => {
 		rerender({ token: 2 });
 
 		await waitFor(() => expect(getCockpitStatsFn).toHaveBeenCalledTimes(2));
+	});
+
+	it("passes Today and custom date boundaries to filtered analytics", async () => {
+		const { rerender } = renderHook(
+			({ filter }) => useLedgerStatsData(true, undefined, filter),
+			{
+				initialProps: {
+					filter: {
+						range: "today" as const,
+						from: undefined as string | undefined,
+						to: undefined as string | undefined,
+					} as LedgerAnalyticsFilter,
+				},
+			},
+		);
+		await waitFor(() => expect(getLedgerAnalyticsFn).toHaveBeenCalledTimes(1));
+		expect(getLedgerAnalyticsFn).toHaveBeenLastCalledWith({
+			data: expect.objectContaining({ range: "today" }),
+		});
+
+		rerender({
+			filter: {
+				range: "custom",
+				from: "2026-07-01",
+				to: "2026-07-16",
+			},
+		});
+		await waitFor(() => expect(getLedgerAnalyticsFn).toHaveBeenCalledTimes(2));
+		expect(getLedgerAnalyticsFn).toHaveBeenLastCalledWith({
+			data: expect.objectContaining({
+				range: "custom",
+				from: "2026-07-01",
+				to: "2026-07-16",
+			}),
+		});
 	});
 });

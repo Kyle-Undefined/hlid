@@ -1,24 +1,28 @@
 import { useCallback, useEffect, useRef, useSyncExternalStore } from "react";
-import type { ProviderUsageSnapshot, ThirtyDayStats } from "#/db";
-import { getProvidersFn, getProviderUsagesFn } from "#/lib/serverFns/providers";
+import type {
+	LedgerAnalytics,
+	LedgerAnalyticsFilter,
+	ThirtyDayStats,
+} from "#/db";
 import type { ActivityStats } from "#/lib/serverFns/stats";
 import {
 	EMPTY_ACTIVITY,
 	EMPTY_AGG,
 	getActivityStatsFn,
 	getCockpitStatsFn,
+	getLedgerAnalyticsFn,
 	getThirtyDayStatsFn,
 } from "#/lib/serverFns/stats";
 
 export type LedgerStatsData = {
 	statsData: Awaited<ReturnType<typeof getCockpitStatsFn>>;
 	thirtyDayStats: ThirtyDayStats;
-	providerUsages: ProviderUsageSnapshot[];
-	providerIds: string[];
 	activity: ActivityStats;
 	statsStatus: LedgerStatsSourceStatus;
 	thirtyDayStatus: LedgerStatsSourceStatus;
 	activityStatus: LedgerStatsSourceStatus;
+	analytics: LedgerAnalytics | null;
+	analyticsStatus: LedgerStatsSourceStatus;
 };
 
 export type LedgerStatsSourceStatus = "loading" | "ready" | "unavailable";
@@ -26,12 +30,12 @@ export type LedgerStatsSourceStatus = "loading" | "ready" | "unavailable";
 const EMPTY_LEDGER_STATS: LedgerStatsData = {
 	statsData: { agg: EMPTY_AGG },
 	thirtyDayStats: { days: [], total: 0 },
-	providerUsages: [],
-	providerIds: ["claude"],
 	activity: EMPTY_ACTIVITY,
 	statsStatus: "loading",
 	thirtyDayStatus: "loading",
 	activityStatus: "loading",
+	analytics: null,
+	analyticsStatus: "loading",
 };
 
 let snapshot: LedgerStatsData = EMPTY_LEDGER_STATS;
@@ -51,13 +55,6 @@ function updateSnapshot(patch: Partial<LedgerStatsData>): void {
 	for (const subscriber of subscribers) subscriber();
 }
 
-function sameProviderIds(left: string[], right: string[]): boolean {
-	return (
-		left.length === right.length &&
-		left.every((id, index) => id === right[index])
-	);
-}
-
 /**
  * Last-good Ledger analytics with non-blocking stale-while-revalidate reads.
  *
@@ -68,6 +65,7 @@ function sameProviderIds(left: string[], right: string[]): boolean {
 export function useLedgerStatsData(
 	enabled: boolean,
 	refreshToken?: number,
+	filter: LedgerAnalyticsFilter = { range: "30d" },
 ): LedgerStatsData & { refresh: () => void } {
 	const data = useSyncExternalStore(
 		subscribe,
@@ -75,6 +73,12 @@ export function useLedgerStatsData(
 		() => EMPTY_LEDGER_STATS,
 	);
 	const generationRef = useRef(0);
+	const filterRange = filter.range;
+	const filterAgent = filter.agent;
+	const filterProvider = filter.provider;
+	const filterModel = filter.model;
+	const filterFrom = filter.from;
+	const filterTo = filter.to;
 
 	const refresh = useCallback(() => {
 		const generation = ++generationRef.current;
@@ -112,35 +116,37 @@ export function useLedgerStatsData(
 				}
 			});
 
-		const refreshProviderUsages = (providerIds: string[]) => {
-			void getProviderUsagesFn({ data: providerIds })
-				.then((providerUsages) => {
-					if (
-						isCurrent() &&
-						sameProviderIds(getSnapshot().providerIds, providerIds)
-					) {
-						updateSnapshot({ providerUsages });
-					}
-				})
-				.catch(() => {});
-		};
-
-		const currentProviderIds = getSnapshot().providerIds;
-		refreshProviderUsages(currentProviderIds);
-		void getProvidersFn({ data: { preferCachedModels: true } })
-			.then((providers) => {
+		void getLedgerAnalyticsFn({
+			data: {
+				range: filterRange,
+				agent: filterAgent,
+				provider: filterProvider,
+				model: filterModel,
+				from: filterFrom,
+				to: filterTo,
+			},
+		})
+			.then((analytics) => {
 				if (!isCurrent()) return;
-				const availableIds = providers
-					.filter((provider) => provider.available)
-					.map((provider) => provider.id);
-				const providerIds = availableIds.length > 0 ? availableIds : ["claude"];
-				updateSnapshot({ providerIds });
-				if (!sameProviderIds(currentProviderIds, providerIds)) {
-					refreshProviderUsages(providerIds);
+				if (analytics) {
+					updateSnapshot({ analytics, analyticsStatus: "ready" });
+				} else if (getSnapshot().analyticsStatus !== "ready") {
+					updateSnapshot({ analyticsStatus: "unavailable" });
 				}
 			})
-			.catch(() => {});
-	}, []);
+			.catch(() => {
+				if (isCurrent() && getSnapshot().analyticsStatus !== "ready") {
+					updateSnapshot({ analyticsStatus: "unavailable" });
+				}
+			});
+	}, [
+		filterAgent,
+		filterFrom,
+		filterModel,
+		filterProvider,
+		filterRange,
+		filterTo,
+	]);
 
 	useEffect(() => {
 		if (enabled) {

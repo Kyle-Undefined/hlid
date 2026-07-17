@@ -29,7 +29,13 @@ function fmtTickDate(iso: string): string {
 	return `${month} ${parseInt(d, 10)}`;
 }
 
-export function ThirtyDayGraph({ data }: { data: ThirtyDayStats }) {
+export function ThirtyDayGraph({
+	data,
+	label = "30D activity",
+}: {
+	data: ThirtyDayStats;
+	label?: string;
+}) {
 	const points = useMemo(() => {
 		let running = 0;
 		return data.days.map((d) => {
@@ -52,13 +58,13 @@ export function ThirtyDayGraph({ data }: { data: ThirtyDayStats }) {
 		<div className="border-b border-border shrink-0 px-4 pt-2.5 pb-0">
 			<div className="flex items-center justify-between mb-1">
 				<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase">
-					30D Activity
+					{label}
 				</span>
 				<PrivacyMask
 					inline
 					className="text-[9px] tabular-nums text-muted-foreground/50"
 				>
-					{data.total} sessions
+					{data.total} queries
 				</PrivacyMask>
 			</div>
 			<ResponsiveContainer width="100%" height={56}>
