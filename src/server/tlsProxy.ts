@@ -19,6 +19,7 @@ const MAX_WS_QUEUE = 100;
 const MAX_BUFFERED_FORWARDS = 16;
 export const MAX_TLS_PUBLIC_BODY_BYTES = 2 * 1024;
 const DEFAULT_FORWARD_TIMEOUT_MS = 30_000;
+const SAFE_FORWARD_FIRST_ATTEMPT_MS = 5_000;
 const VOICE_FORWARD_TIMEOUT_MS = 70_000;
 const TLS_IDLE_TIMEOUT_SECONDS = 75;
 const observeTlsForward = createRequestObserver({
@@ -82,7 +83,7 @@ function proxyResponse(upstream: Response): Response {
 	});
 }
 
-async function forwardRequest(
+async function forwardAttempt(
 	forward: NonNullable<HttpForwarderOptions["forward"]>,
 	input: string,
 	init: RequestInit,
@@ -90,20 +91,48 @@ async function forwardRequest(
 ): Promise<Response> {
 	const controller = new AbortController();
 	const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+	try {
+		return await forward(input, { ...init, signal: controller.signal });
+	} finally {
+		clearTimeout(timeoutId);
+	}
+}
+
+async function forwardRequest(
+	forward: NonNullable<HttpForwarderOptions["forward"]>,
+	input: string,
+	init: RequestInit,
+	timeoutMs: number,
+): Promise<Response> {
 	const requestHeaders = new Headers(init.headers);
 	const requestId = requestHeaders.get("x-hlid-request-id");
+	const method = init.method?.toUpperCase() ?? "GET";
 	const diagnosticRequest = new Request(input, {
-		method: init.method ?? "GET",
+		method,
 		headers: requestId ? { "x-hlid-request-id": requestId } : undefined,
 	});
 	try {
-		return await observeTlsForward(diagnosticRequest, () =>
-			forward(input, { ...init, signal: controller.signal }),
-		);
+		return await observeTlsForward(diagnosticRequest, async () => {
+			if (method !== "GET" && method !== "HEAD") {
+				return forwardAttempt(forward, input, init, timeoutMs);
+			}
+
+			const deadline = performance.now() + timeoutMs;
+			try {
+				return await forwardAttempt(
+					forward,
+					input,
+					init,
+					Math.min(SAFE_FORWARD_FIRST_ATTEMPT_MS, timeoutMs),
+				);
+			} catch {
+				const remainingMs = Math.floor(deadline - performance.now());
+				if (remainingMs <= 0) throw new Error("TLS upstream timed out");
+				return forwardAttempt(forward, input, init, remainingMs);
+			}
+		});
 	} catch {
 		return new Response("Service Unavailable", { status: 503 });
-	} finally {
-		clearTimeout(timeoutId);
 	}
 }
 

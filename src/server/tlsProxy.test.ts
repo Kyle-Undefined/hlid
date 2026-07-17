@@ -250,6 +250,84 @@ describe("TLS HTTP proxy limits", () => {
 		).toBe(html);
 	});
 
+	it("retries a stalled safe request within the existing timeout budget", async () => {
+		vi.useFakeTimers();
+		try {
+			let firstSignal: AbortSignal | undefined;
+			const log = vi.spyOn(console, "error").mockImplementation(() => {});
+			const forward = vi
+				.fn()
+				.mockImplementationOnce((_input: string, init: RequestInit) => {
+					firstSignal = init.signal ?? undefined;
+					return new Promise<Response>((_resolve, reject) => {
+						firstSignal?.addEventListener("abort", () =>
+							reject(firstSignal?.reason),
+						);
+					});
+				})
+				.mockResolvedValueOnce(new Response("recovered"));
+			const pending = forwarder({ forward })(
+				new Request("https://hlid.test/api/private"),
+			);
+			await vi.waitFor(() => expect(forward).toHaveBeenCalledOnce());
+
+			await vi.advanceTimersByTimeAsync(5_000);
+			const response = await pending;
+
+			expect(firstSignal?.aborted).toBe(true);
+			expect(forward).toHaveBeenCalledTimes(2);
+			expect(response.status).toBe(200);
+			expect(await response.text()).toBe("recovered");
+			expect(log).not.toHaveBeenCalled();
+			log.mockRestore();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("bounds both safe attempts to the original total timeout", async () => {
+		vi.useFakeTimers();
+		const log = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const forward = vi.fn((_input: string, init: RequestInit) => {
+				const signal = init.signal;
+				return new Promise<Response>((_resolve, reject) => {
+					signal?.addEventListener("abort", () => reject(signal.reason));
+				});
+			});
+			const pending = forwarder({ forward })(
+				new Request("https://hlid.test/api/private"),
+			);
+			await vi.waitFor(() => expect(forward).toHaveBeenCalledOnce());
+
+			await vi.advanceTimersByTimeAsync(5_000);
+			expect(forward).toHaveBeenCalledTimes(2);
+			await vi.advanceTimersByTimeAsync(25_000);
+			const response = await pending;
+
+			expect(response.status).toBe(503);
+			expect(forward).toHaveBeenCalledTimes(2);
+			expect(log).toHaveBeenCalledOnce();
+		} finally {
+			log.mockRestore();
+			vi.useRealTimers();
+		}
+	});
+
+	it("does not retry failed mutation requests", async () => {
+		const log = vi.spyOn(console, "error").mockImplementation(() => {});
+		const forward = vi.fn(async () => {
+			throw new Error("mutation failed");
+		});
+		const response = await forwarder({ forward })(
+			request("/api/private", "body"),
+		);
+
+		expect(response.status).toBe(503);
+		expect(forward).toHaveBeenCalledOnce();
+		log.mockRestore();
+	});
+
 	it("maps upstream connection failures to service unavailable", async () => {
 		const log = vi.spyOn(console, "error").mockImplementation(() => {});
 		const response = await forwarder({
