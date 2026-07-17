@@ -3,6 +3,7 @@ import {
 	addCommandSelection,
 	canSelectCommand,
 	commandMatches,
+	filterProviderCompatibleCommands,
 	mergeCommands,
 	resolveCommandSubmission,
 	skillCommand,
@@ -19,6 +20,19 @@ const skill: Skill = {
 };
 
 describe("commands", () => {
+	it("keeps only commands compatible with the active provider", () => {
+		const neutral = skillCommand(skill);
+		const claude = { ...neutral, id: "claude", providerId: "claude" };
+		const codex = { ...neutral, id: "codex", providerId: "codex" };
+		expect(
+			filterProviderCompatibleCommands([neutral, claude, codex], "codex"),
+		).toEqual([neutral, codex]);
+		const compatible = [neutral, codex];
+		expect(filterProviderCompatibleCommands(compatible, "codex")).toBe(
+			compatible,
+		);
+	});
+
 	it("keeps vault, provider, and Hlid actions distinct", () => {
 		const commands = mergeCommands(
 			[skill],

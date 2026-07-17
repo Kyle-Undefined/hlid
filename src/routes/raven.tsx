@@ -61,6 +61,7 @@ import * as wsStore from "#/hooks/wsStore";
 import {
 	addCommandSelection,
 	type CommandDescriptor,
+	filterProviderCompatibleCommands,
 	resolveCommandSubmission,
 } from "#/lib/commands";
 import {
@@ -1442,13 +1443,9 @@ export function ChatPage() {
 			config.vault_provider,
 		);
 	useEffect(() => {
-		setActiveSkills((selected) => {
-			const compatible = selected.filter(
-				(command) =>
-					!command.providerId || command.providerId === commandProviderId,
-			);
-			return compatible.length === selected.length ? selected : compatible;
-		});
+		setActiveSkills((selected) =>
+			filterProviderCompatibleCommands(selected, commandProviderId),
+		);
 	}, [commandProviderId]);
 	const commands = useCommands(
 		vaultSkills,

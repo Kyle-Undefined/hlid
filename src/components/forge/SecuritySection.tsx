@@ -1,21 +1,25 @@
 import { useState } from "react";
 import { LockButton } from "#/components/auth/LockButton";
 import { ConfirmAction } from "#/components/ConfirmAction";
-import { Field, Section } from "./fields";
+import { Field, Section, useFieldControlProps } from "./fields";
 
 function PasswordInput({
 	value,
 	onChange,
+	autoComplete,
 }: {
 	value: string;
 	onChange: (value: string) => void;
+	autoComplete: "current-password" | "new-password";
 }) {
+	const fieldA11y = useFieldControlProps();
 	return (
 		<input
+			{...fieldA11y}
 			type="password"
 			value={value}
 			onChange={(event) => onChange(event.target.value)}
-			autoComplete="current-password"
+			autoComplete={autoComplete}
 			className="w-48 bg-secondary border border-border px-2.5 py-1.5 text-sm text-foreground focus:outline-none focus:border-primary/50"
 		/>
 	);
@@ -69,18 +73,24 @@ export function SecuritySection() {
 					<PasswordInput
 						value={currentPassword}
 						onChange={setCurrentPassword}
+						autoComplete="current-password"
 					/>
 				</Field>
 				<Field
 					label="New Password"
 					hint="12-256 characters; no composition rules"
 				>
-					<PasswordInput value={newPassword} onChange={setNewPassword} />
+					<PasswordInput
+						value={newPassword}
+						onChange={setNewPassword}
+						autoComplete="new-password"
+					/>
 				</Field>
 				<Field label="Confirm New Password">
 					<PasswordInput
 						value={confirmPassword}
 						onChange={setConfirmPassword}
+						autoComplete="new-password"
 					/>
 				</Field>
 				<div className="px-4 py-3 flex items-center justify-between gap-4">

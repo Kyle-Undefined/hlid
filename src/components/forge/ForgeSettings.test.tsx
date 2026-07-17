@@ -76,8 +76,10 @@ describe("ForgeSettings search", () => {
 				state={
 					{
 						saving: false,
+						dirty: false,
 						error: null,
 						savedMsg: null,
+						save: vi.fn(),
 						ui: {
 							theme: "tan",
 							mobileTheme: "same",
@@ -90,14 +92,43 @@ describe("ForgeSettings search", () => {
 		);
 
 		expect(screen.getByRole("heading", { name: "Overview" })).toBeTruthy();
-		fireEvent.change(screen.getByRole("textbox", { name: "Search settings" }), {
-			target: { value: "shutdown" },
-		});
+		fireEvent.change(
+			screen.getByRole("textbox", { name: "Filter setting categories" }),
+			{
+				target: { value: "shutdown" },
+			},
+		);
 
 		await waitFor(() =>
 			expect(screen.getByRole("heading", { name: "Advanced" })).toBeTruthy(),
 		);
 		expect(screen.getByText("System section: advanced")).toBeTruthy();
+	});
+
+	it("offers an explicit retry after an autosave failure", () => {
+		const save = vi.fn();
+		render(
+			<ForgeSettings
+				initial={{} as never}
+				state={
+					{
+						saving: false,
+						dirty: true,
+						error: "Could not write config",
+						savedMsg: null,
+						save,
+						ui: {
+							theme: "tan",
+							mobileTheme: "same",
+							customTheme: TAN_THEME,
+							mobileCustomTheme: TAN_THEME,
+						},
+					} as never
+				}
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Retry save" }));
+		expect(save).toHaveBeenCalledOnce();
 	});
 });
 
@@ -116,8 +147,10 @@ function renderSettings() {
 			state={
 				{
 					saving: false,
+					dirty: false,
 					error: null,
 					savedMsg: null,
+					save: vi.fn(),
 					claude: { vaultProvider: "claude" },
 					codex: {},
 					vault: { path: "/tmp/vault" },
@@ -151,9 +184,12 @@ function renderSettings() {
 describe("ForgeSettings category navigation", () => {
 	it("places Computer Use between the Vault agent and Auto Sleep", () => {
 		renderSettings();
-		fireEvent.change(screen.getByRole("combobox", { name: "Forge category" }), {
-			target: { value: "agents" },
-		});
+		fireEvent.change(
+			screen.getByRole("combobox", { name: "Filtered Forge category" }),
+			{
+				target: { value: "agents" },
+			},
+		);
 
 		const content = document.body.textContent ?? "";
 		expect(content.indexOf("Claude content")).toBeLessThan(
@@ -166,7 +202,9 @@ describe("ForgeSettings category navigation", () => {
 
 	it("renders every top-level category selected from the mobile selector", () => {
 		renderSettings();
-		const selector = screen.getByRole("combobox", { name: "Forge category" });
+		const selector = screen.getByRole("combobox", {
+			name: "Filtered Forge category",
+		});
 
 		for (const category of [
 			"Workspace",
@@ -184,9 +222,12 @@ describe("ForgeSettings category navigation", () => {
 
 	it("opens and returns from the ACP and Umbod integration pages", () => {
 		renderSettings();
-		fireEvent.change(screen.getByRole("combobox", { name: "Forge category" }), {
-			target: { value: "integrations" },
-		});
+		fireEvent.change(
+			screen.getByRole("combobox", { name: "Filtered Forge category" }),
+			{
+				target: { value: "integrations" },
+			},
+		);
 
 		fireEvent.click(screen.getByRole("button", { name: "Open catalog" }));
 		expect(
@@ -202,9 +243,12 @@ describe("ForgeSettings category navigation", () => {
 
 	it("switches between developer event and API views", () => {
 		renderSettings();
-		fireEvent.change(screen.getByRole("combobox", { name: "Forge category" }), {
-			target: { value: "developer" },
-		});
+		fireEvent.change(
+			screen.getByRole("combobox", { name: "Filtered Forge category" }),
+			{
+				target: { value: "developer" },
+			},
+		);
 		expect(screen.getByText("Event log content")).toBeTruthy();
 		fireEvent.click(screen.getByRole("tab", { name: "API Reference" }));
 		expect(screen.getByText("API reference content")).toBeTruthy();
@@ -212,9 +256,12 @@ describe("ForgeSettings category navigation", () => {
 
 	it("opens the custom theme editor as an Experience subpage", () => {
 		renderSettings();
-		fireEvent.change(screen.getByRole("combobox", { name: "Forge category" }), {
-			target: { value: "experience" },
-		});
+		fireEvent.change(
+			screen.getByRole("combobox", { name: "Filtered Forge category" }),
+			{
+				target: { value: "experience" },
+			},
+		);
 		fireEvent.click(screen.getByRole("button", { name: "Open theme editor" }));
 		expect(screen.getByRole("heading", { name: "Custom Theme" })).toBeTruthy();
 		expect(screen.getByRole("tab", { name: "desktop" })).toBeTruthy();

@@ -20,6 +20,7 @@ const structure: StructureState = {
 	outputs: "Outputs",
 	skills: "Skills",
 	memory: "Memory",
+	vaultProvider: "claude",
 	permissionMode: "acceptEdits",
 	theme: "dark",
 };
@@ -71,6 +72,17 @@ describe("first-run configuration policy", () => {
 			attachments: { max_bytes: 25 * 1024 * 1024 },
 			voice: { enabled: false },
 		});
+	});
+
+	it("applies first-run authority to the selected Codex provider", () => {
+		const config = buildFirstRunConfig({
+			...structure,
+			vaultProvider: "codex",
+			permissionMode: "bypassPermissions",
+		});
+		expect(config.vault_provider).toBe("codex");
+		expect(config.codex.permission_mode).toBe("bypassPermissions");
+		expect(config.claude.permission_mode).toBe("default");
 	});
 
 	it("derives a vault name from POSIX and Windows paths", () => {

@@ -56,7 +56,13 @@ export async function dbFetch(
 	if (!headers.has(REQUEST_ID_HEADER)) {
 		headers.set(REQUEST_ID_HEADER, requestId());
 	}
-	return fetch(`${base}${path}`, { ...init, headers });
+	const method = (init?.method ?? "GET").toUpperCase();
+	const signal =
+		init?.signal ??
+		(method === "GET"
+			? AbortSignal.timeout(INTERNAL_API_READ_TIMEOUT_MS)
+			: undefined);
+	return fetch(`${base}${path}`, { ...init, headers, signal });
 }
 
 export class InternalApiError extends Error {

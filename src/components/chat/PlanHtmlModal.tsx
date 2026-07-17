@@ -1,6 +1,7 @@
 import { X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import { useDialogFocus } from "#/hooks/useDialogFocus";
 import { PlanDecisionBar } from "./PlanDecisionBar";
 
 type DecisionProps = {
@@ -30,13 +31,10 @@ export function PlanHtmlModal({
 	relicId: string;
 	onClose: () => void;
 } & (DecisionProps | ReadOnlyProps)) {
-	const dialogRef = useRef<HTMLDivElement>(null);
+	const { dialogRef, onDialogKeyDown } =
+		useDialogFocus<HTMLDivElement>(onClose);
 	const [html, setHtml] = useState<string | null>(null);
 	const [loadError, setLoadError] = useState(false);
-
-	useEffect(() => {
-		dialogRef.current?.focus();
-	}, []);
 
 	useEffect(() => {
 		const controller = new AbortController();
@@ -94,9 +92,7 @@ export function PlanHtmlModal({
 				aria-label="Plan document"
 				className="relative flex flex-col w-[92vw] max-w-5xl max-h-[90vh] bg-card border border-border shadow-2xl focus:outline-none"
 				onClick={(e) => e.stopPropagation()}
-				onKeyDown={(e) => {
-					if (e.key === "Escape") onClose();
-				}}
+				onKeyDown={onDialogKeyDown}
 			>
 				<div className="flex items-center justify-between px-4 py-2 border-b border-border">
 					<span className="text-[9px] tracking-widest text-muted-foreground/65 uppercase">

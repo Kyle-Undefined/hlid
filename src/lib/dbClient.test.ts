@@ -6,6 +6,7 @@ vi.mock("#/lib/serverFns/config", () => ({
 vi.mock("./token", () => ({ loadToken: vi.fn(() => "test-token") }));
 
 import {
+	dbFetch,
 	dbJson,
 	type InternalApiError,
 	requireDbOk,
@@ -93,6 +94,12 @@ describe("internal API client", () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+
+	it("gives direct internal GET reads a timeout signal", async () => {
+		fetchMock.mockResolvedValueOnce(Response.json({ ok: true }));
+		await dbFetch("/mcp-status");
+		expect(fetchMock.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
 	});
 
 	it("requires mutation responses to succeed", async () => {

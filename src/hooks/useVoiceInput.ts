@@ -96,6 +96,7 @@ export function useVoiceInput({
 	const mountedRef = useRef(true);
 	const callbackRef = useRef(onTranscription);
 	callbackRef.current = onTranscription;
+	useEffect(() => setInfo(initialInfo), [initialInfo]);
 
 	useEffect(() => {
 		if (info.status.state !== "loading") return;

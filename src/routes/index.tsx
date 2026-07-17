@@ -3,7 +3,7 @@ import {
 	useNavigate,
 	useRouter,
 } from "@tanstack/react-router";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	CockpitHeader,
 	CockpitRunError,
@@ -28,6 +28,7 @@ import { FirstRunWizard } from "#/components/wizard/FirstRunWizard";
 import { useCockpitLiveData } from "#/hooks/useCockpitLiveData";
 import { isCockpitQueueTarget, useCockpitRun } from "#/hooks/useCockpitRun";
 import { useCommands } from "#/hooks/useCommands";
+import { useDraft } from "#/hooks/useDraft";
 import { useFileUpload } from "#/hooks/useFileUpload";
 import { useSlashPicker } from "#/hooks/useSlashPicker";
 import { useVoiceInput } from "#/hooks/useVoiceInput";
@@ -35,10 +36,12 @@ import { useWsLiveStats } from "#/hooks/useWsSelectors";
 import {
 	addCommandSelection,
 	type CommandDescriptor,
+	filterProviderCompatibleCommands,
 	skillCommand,
 } from "#/lib/commands";
 import { insertAtSelection, resizeComposer } from "#/lib/composer";
 import { fmtModel } from "#/lib/formatters";
+import { optionalLoaderValue } from "#/lib/loaderFallback";
 import {
 	configuredVaultModel,
 	resolveActiveProviderId,
@@ -60,6 +63,70 @@ import { groupSkills, type Skill } from "#/lib/skills";
 
 // ─── route ───────────────────────────────────────────────────────────────────
 
+const WATCH_OPTIONAL_LOADER_WAIT_MS = 500;
+const WATCH_OPTIONAL_RECOVERY_WAIT_MS = 8_000;
+const EMPTY_COCKPIT_DATA: Awaited<ReturnType<typeof getCockpitData>> = {
+	inboxCount: 0,
+	activeCount: 0,
+	totalCount: 0,
+	skills: [],
+	sectionOrder: [],
+};
+const EMPTY_STATS_DATA: Awaited<ReturnType<typeof getCockpitStatsFn>> = {
+	agg: {
+		allTime: {
+			cost: 0,
+			estimated_cost: 0,
+			unpriced_queries: 0,
+			queries: 0,
+			sessions: 0,
+			input_tokens: 0,
+			output_tokens: 0,
+			cache_read_tokens: 0,
+			cache_creation_tokens: 0,
+			turns: 0,
+		},
+		today: {
+			cost: 0,
+			estimated_cost: 0,
+			unpriced_queries: 0,
+			queries: 0,
+			turns: 0,
+			tokens: 0,
+			input_tokens: 0,
+			output_tokens: 0,
+			cache_read_tokens: 0,
+			cache_creation_tokens: 0,
+		},
+		thisMonth: {
+			cost: 0,
+			estimated_cost: 0,
+			unpriced_queries: 0,
+			queries: 0,
+			turns: 0,
+			tokens: 0,
+			input_tokens: 0,
+			output_tokens: 0,
+			cache_read_tokens: 0,
+			cache_creation_tokens: 0,
+		},
+	},
+};
+const EMPTY_WEEKLY_STATS: Awaited<ReturnType<typeof getWeeklyStatsFn>> = {
+	total: 0,
+	days: [0, 0, 0, 0, 0, 0, 0],
+};
+const EMPTY_THIRTY_DAY_STATS: Awaited<ReturnType<typeof getThirtyDayStatsFn>> =
+	{ days: [], total: 0 };
+const UNAVAILABLE_VOICE_INFO: Awaited<ReturnType<typeof getVoiceInfoFn>> = {
+	status: {
+		state: "unavailable",
+		model: "",
+		error: "voice service unavailable",
+	},
+	models: [],
+};
+
 export const Route = createFileRoute("/")({
 	loader: async () => {
 		const [
@@ -75,31 +142,73 @@ export const Route = createFileRoute("/")({
 			voiceInfo,
 		] = await Promise.all([
 			getConfig(),
-			getCockpitData(),
-			getRecentSessionsFn(),
-			getCockpitStatsFn(),
-			getMcpServersFn(),
-			getWeeklyStatsFn(),
-			getThirtyDayStatsFn(),
-			getAgentListFn(),
-			getActiveSessionRowFn(),
-			getVoiceInfoFn(),
+			optionalLoaderValue(
+				getCockpitData(),
+				EMPTY_COCKPIT_DATA,
+				WATCH_OPTIONAL_LOADER_WAIT_MS,
+			),
+			optionalLoaderValue(
+				getRecentSessionsFn(),
+				[],
+				WATCH_OPTIONAL_LOADER_WAIT_MS,
+			),
+			optionalLoaderValue(
+				getCockpitStatsFn(),
+				EMPTY_STATS_DATA,
+				WATCH_OPTIONAL_LOADER_WAIT_MS,
+			),
+			optionalLoaderValue(getMcpServersFn(), [], WATCH_OPTIONAL_LOADER_WAIT_MS),
+			optionalLoaderValue(
+				getWeeklyStatsFn(),
+				EMPTY_WEEKLY_STATS,
+				WATCH_OPTIONAL_LOADER_WAIT_MS,
+			),
+			optionalLoaderValue(
+				getThirtyDayStatsFn(),
+				EMPTY_THIRTY_DAY_STATS,
+				WATCH_OPTIONAL_LOADER_WAIT_MS,
+			),
+			optionalLoaderValue(getAgentListFn(), [], WATCH_OPTIONAL_LOADER_WAIT_MS),
+			optionalLoaderValue(
+				getActiveSessionRowFn(),
+				null,
+				WATCH_OPTIONAL_LOADER_WAIT_MS,
+			),
+			optionalLoaderValue(
+				getVoiceInfoFn(),
+				UNAVAILABLE_VOICE_INFO,
+				WATCH_OPTIONAL_LOADER_WAIT_MS,
+			),
 		]);
-		return {
-			config,
+		const optionalDataStatus = [
 			data,
 			recentSessions,
 			statsData,
 			mcpServers,
 			weeklyStats,
-			// Provider discovery is optional dashboard decoration and can involve a
-			// busy host CLI. Let the mounted usage strip hydrate it in the background
-			// so navigating to Watch never waits on /providers.
-			providerUsages: [],
 			thirtyDayStats,
 			agentList,
 			activeSession,
 			voiceInfo,
+		].some((item) => item.status === "unavailable")
+			? ("unavailable" as const)
+			: ("ready" as const);
+		return {
+			config,
+			data: data.value,
+			recentSessions: recentSessions.value,
+			statsData: statsData.value,
+			mcpServers: mcpServers.value,
+			weeklyStats: weeklyStats.value,
+			// Provider discovery is optional dashboard decoration and can involve a
+			// busy host CLI. Let the mounted usage strip hydrate it in the background
+			// so navigating to Watch never waits on /providers.
+			providerUsages: [],
+			thirtyDayStats: thirtyDayStats.value,
+			agentList: agentList.value,
+			activeSession: activeSession.value,
+			voiceInfo: voiceInfo.value,
+			optionalDataStatus,
 		};
 	},
 	component: CockpitPage,
@@ -107,7 +216,10 @@ export const Route = createFileRoute("/")({
 
 /** Composer-local state: prompt text, active skill, run toggles, focus plumbing. */
 function useCockpitComposer(initialPlanHtml: boolean) {
-	const [prompt, setPrompt] = useState("");
+	const { input: prompt, setInput: setPrompt } = useDraft({
+		existingSessionId: "watch",
+		seededPrompt: undefined,
+	});
 	const [selectedAgentPath, setSelectedAgentPath] = useState("");
 	const [activeSkills, setActiveSkills] = useState<ActiveCockpitSkill[]>([]);
 	const [background, setBackground] = useState(false);
@@ -331,13 +443,9 @@ function CockpitPromptWiring({
 		config.vault_provider,
 	);
 	useEffect(() => {
-		composer.setActiveSkills((selected) => {
-			const compatible = selected.filter(
-				(command) =>
-					!command.providerId || command.providerId === commandProviderId,
-			);
-			return compatible.length === selected.length ? selected : compatible;
-		});
+		composer.setActiveSkills((selected) =>
+			filterProviderCompatibleCommands(selected, commandProviderId),
+		);
 	}, [commandProviderId, composer.setActiveSkills]);
 	const picker = useSlashPicker(
 		composer.prompt,
@@ -417,21 +525,172 @@ function CockpitPromptWiring({
 	);
 }
 
+function OptionalDataNotice({
+	status,
+	onRetry,
+}: {
+	status: "loading" | "ready" | "unavailable";
+	onRetry: () => void;
+}) {
+	if (status === "ready") return null;
+	return (
+		<output className="mx-4 mt-3 flex items-center justify-between gap-3 border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-[10px] tracking-wider text-[var(--status-warning)] uppercase">
+			<span>
+				{status === "loading"
+					? "Restoring dashboard data…"
+					: "Some dashboard data is unavailable"}
+			</span>
+			{status === "unavailable" && (
+				<button
+					type="button"
+					onClick={onRetry}
+					className="shrink-0 border border-amber-500/40 px-2 py-1 hover:bg-amber-500/10"
+				>
+					Retry
+				</button>
+			)}
+		</output>
+	);
+}
+
 function CockpitPage() {
 	const loader = Route.useLoaderData();
-	const { config, data, agentList } = loader;
+	const { config } = loader;
+	const [optionalData, setOptionalData] = useState(() => ({
+		data: loader.data,
+		recentSessions: loader.recentSessions,
+		statsData: loader.statsData,
+		mcpServers: loader.mcpServers,
+		weeklyStats: loader.weeklyStats,
+		thirtyDayStats: loader.thirtyDayStats,
+		agentList: loader.agentList,
+		activeSession: loader.activeSession,
+		voiceInfo: loader.voiceInfo,
+	}));
+	const [optionalDataStatus, setOptionalDataStatus] = useState<
+		"loading" | "ready" | "unavailable"
+	>(loader.optionalDataStatus);
+	useEffect(() => {
+		setOptionalData({
+			data: loader.data,
+			recentSessions: loader.recentSessions,
+			statsData: loader.statsData,
+			mcpServers: loader.mcpServers,
+			weeklyStats: loader.weeklyStats,
+			thirtyDayStats: loader.thirtyDayStats,
+			agentList: loader.agentList,
+			activeSession: loader.activeSession,
+			voiceInfo: loader.voiceInfo,
+		});
+		setOptionalDataStatus(loader.optionalDataStatus);
+	}, [
+		loader.data,
+		loader.recentSessions,
+		loader.statsData,
+		loader.mcpServers,
+		loader.weeklyStats,
+		loader.thirtyDayStats,
+		loader.agentList,
+		loader.activeSession,
+		loader.voiceInfo,
+		loader.optionalDataStatus,
+	]);
+	const refreshOptionalData = useCallback(async () => {
+		setOptionalDataStatus("loading");
+		const results = await Promise.all([
+			optionalLoaderValue(
+				getCockpitData(),
+				EMPTY_COCKPIT_DATA,
+				WATCH_OPTIONAL_RECOVERY_WAIT_MS,
+			),
+			optionalLoaderValue(
+				getRecentSessionsFn(),
+				[],
+				WATCH_OPTIONAL_RECOVERY_WAIT_MS,
+			),
+			optionalLoaderValue(
+				getCockpitStatsFn(),
+				EMPTY_STATS_DATA,
+				WATCH_OPTIONAL_RECOVERY_WAIT_MS,
+			),
+			optionalLoaderValue(
+				getMcpServersFn(),
+				[],
+				WATCH_OPTIONAL_RECOVERY_WAIT_MS,
+			),
+			optionalLoaderValue(
+				getWeeklyStatsFn(),
+				EMPTY_WEEKLY_STATS,
+				WATCH_OPTIONAL_RECOVERY_WAIT_MS,
+			),
+			optionalLoaderValue(
+				getThirtyDayStatsFn(),
+				EMPTY_THIRTY_DAY_STATS,
+				WATCH_OPTIONAL_RECOVERY_WAIT_MS,
+			),
+			optionalLoaderValue(
+				getAgentListFn(),
+				[],
+				WATCH_OPTIONAL_RECOVERY_WAIT_MS,
+			),
+			optionalLoaderValue(
+				getActiveSessionRowFn(),
+				null,
+				WATCH_OPTIONAL_RECOVERY_WAIT_MS,
+			),
+			optionalLoaderValue(
+				getVoiceInfoFn(),
+				UNAVAILABLE_VOICE_INFO,
+				WATCH_OPTIONAL_RECOVERY_WAIT_MS,
+			),
+		]);
+		setOptionalData((current) => ({
+			data: results[0].status === "ready" ? results[0].value : current.data,
+			recentSessions:
+				results[1].status === "ready"
+					? results[1].value
+					: current.recentSessions,
+			statsData:
+				results[2].status === "ready" ? results[2].value : current.statsData,
+			mcpServers:
+				results[3].status === "ready" ? results[3].value : current.mcpServers,
+			weeklyStats:
+				results[4].status === "ready" ? results[4].value : current.weeklyStats,
+			thirtyDayStats:
+				results[5].status === "ready"
+					? results[5].value
+					: current.thirtyDayStats,
+			agentList:
+				results[6].status === "ready" ? results[6].value : current.agentList,
+			activeSession:
+				results[7].status === "ready"
+					? results[7].value
+					: current.activeSession,
+			voiceInfo:
+				results[8].status === "ready" ? results[8].value : current.voiceInfo,
+		}));
+		setOptionalDataStatus(
+			results.every((result) => result.status === "ready")
+				? "ready"
+				: "unavailable",
+		);
+	}, []);
+	useEffect(() => {
+		if (loader.optionalDataStatus === "unavailable") void refreshOptionalData();
+	}, [loader.optionalDataStatus, refreshOptionalData]);
+	const { data, agentList } = optionalData;
 	const router = useRouter();
 	const navigate = useNavigate();
 	const liveStats = useWsLiveStats();
 	const composer = useCockpitComposer(config.ui.html_plans ?? false);
 	const live = useCockpitLiveData(
 		{
-			recentSessions: loader.recentSessions,
-			agg: loader.statsData.agg,
-			weeklyStats: loader.weeklyStats,
-			thirtyDayStats: loader.thirtyDayStats,
-			activeSession: loader.activeSession,
-			mcpServers: loader.mcpServers,
+			recentSessions: optionalData.recentSessions,
+			agg: optionalData.statsData.agg,
+			weeklyStats: optionalData.weeklyStats,
+			thirtyDayStats: optionalData.thirtyDayStats,
+			activeSession: optionalData.activeSession,
+			mcpServers: optionalData.mcpServers,
 		},
 		composer.selectedAgentPath || undefined,
 	);
@@ -473,7 +732,12 @@ function CockpitPage() {
 		configuredModel: configuredRunModel,
 		vaultPath: config.vault.path,
 	});
-	const voice = useCockpitVoice(config, loader.voiceInfo, composer, handleRun);
+	const voice = useCockpitVoice(
+		config,
+		optionalData.voiceInfo,
+		composer,
+		handleRun,
+	);
 
 	if (!config.vault.path) {
 		return <FirstRunWizard onComplete={() => router.invalidate()} />;
@@ -509,6 +773,10 @@ function CockpitPage() {
 					/>
 
 					<CockpitRunError error={live.runError} />
+					<OptionalDataNotice
+						status={optionalDataStatus}
+						onRetry={() => void refreshOptionalData()}
+					/>
 					<CockpitSkills
 						hasSkills={visibleSkills.length > 0}
 						groups={skillGroups}

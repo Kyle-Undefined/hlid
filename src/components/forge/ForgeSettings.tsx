@@ -547,8 +547,22 @@ function SaveStatus({
 			aria-live="polite"
 		>
 			{state.saving && <span className="text-muted-foreground">Saving…</span>}
-			{state.error && <span className="text-destructive">{state.error}</span>}
-			{state.savedMsg === "saved" && (
+			{!state.saving && state.error && (
+				<span className="inline-flex flex-wrap items-center gap-2 text-destructive">
+					<span>{state.error}</span>
+					<button
+						type="button"
+						onClick={() => void state.save()}
+						className="border border-destructive/40 px-1.5 py-0.5 hover:bg-destructive/10"
+					>
+						Retry save
+					</button>
+				</span>
+			)}
+			{!state.saving && !state.error && state.dirty && (
+				<span className="text-[var(--status-warning)]">Unsaved changes…</span>
+			)}
+			{!state.dirty && state.savedMsg === "saved" && (
 				<span className="text-green-500">Saved</span>
 			)}
 			{state.savedMsg === "restart" && (
@@ -567,12 +581,42 @@ function SaveStatus({
 	);
 }
 
+function InventoryStatus({
+	status,
+	onRetry,
+}: {
+	status: "loading" | "ready" | "unavailable";
+	onRetry: () => void;
+}) {
+	if (status === "ready") return null;
+	if (status === "loading") {
+		return (
+			<span className="text-[10px] tracking-wider text-muted-foreground uppercase">
+				Refreshing system inventory…
+			</span>
+		);
+	}
+	return (
+		<button
+			type="button"
+			onClick={onRetry}
+			className="border border-amber-500/40 px-2 py-1 text-[10px] tracking-wider text-[var(--status-warning)] hover:bg-amber-500/10 uppercase"
+		>
+			Inventory unavailable · Retry
+		</button>
+	);
+}
+
 export function ForgeSettings({
 	initial,
 	state,
+	inventoryStatus = "ready",
+	onRetryInventory = () => {},
 }: {
 	initial: SettingsInitial;
 	state: SettingsFormState;
+	inventoryStatus?: "loading" | "ready" | "unavailable";
+	onRetryInventory?: () => void;
 }) {
 	const [category, setCategory] = useState<Category>("overview");
 	const [search, setSearch] = useState("");
@@ -660,12 +704,13 @@ export function ForgeSettings({
 			<div className="flex-1 min-w-0 flex flex-col">
 				<PageHeader eyebrow="Forge">
 					<select
-						value={category}
+						value={shown.some((item) => item.id === category) ? category : ""}
 						onChange={(e) => choose(e.target.value as Category)}
-						aria-label="Forge category"
+						aria-label="Filtered Forge category"
 						className="md:hidden w-full min-w-0 bg-secondary border border-border px-2 py-1.5 text-xs"
 					>
-						{CATEGORIES.map((item) => (
+						{shown.length === 0 && <option value="">No matches</option>}
+						{shown.map((item) => (
 							<option key={item.id} value={item.id}>
 								{item.label}
 							</option>
@@ -674,13 +719,17 @@ export function ForgeSettings({
 					<input
 						value={search}
 						onChange={(e) => setSearch(e.target.value)}
-						placeholder="Search settings"
-						aria-label="Search settings"
+						placeholder="Filter setting categories"
+						aria-label="Filter setting categories"
 						className="col-span-2 row-start-2 w-full bg-secondary border border-border px-3 py-1.5 text-xs focus:outline-none focus:border-primary/50 md:col-span-1 md:row-auto md:ml-auto md:max-w-sm"
+					/>
+					<InventoryStatus
+						status={inventoryStatus}
+						onRetry={onRetryInventory}
 					/>
 					<SaveStatus state={state} onRestartRequired={showRestartControls} />
 				</PageHeader>
-				<main
+				<div
 					data-scroll-restoration-id={
 						ROUTE_SCROLL_RESTORATION_IDS.forgeSettings
 					}
@@ -688,23 +737,38 @@ export function ForgeSettings({
 					className="flex-1 overflow-auto"
 				>
 					<div className="max-w-[1000px] mx-auto p-4 sm:p-6 space-y-6">
-						<CategoryContent
-							category={category}
-							state={state}
-							initial={initial}
-							showCatalog={showCatalog}
-							onShowCatalog={setShowCatalog}
-							showUmbod={showUmbod}
-							onShowUmbod={setShowUmbod}
-							showTheme={showTheme}
-							onShowTheme={setShowTheme}
-							themeTarget={themeTarget}
-							onThemeTarget={setThemeTarget}
-							developerView={developerView}
-							onDeveloperView={setDeveloperView}
-						/>
+						{shown.length === 0 ? (
+							<div className="border border-border bg-card p-6 text-center space-y-3">
+								<p className="text-sm text-muted-foreground">
+									No setting category matches “{search.trim()}”.
+								</p>
+								<button
+									type="button"
+									onClick={() => setSearch("")}
+									className="border border-border px-3 py-1.5 text-[10px] tracking-widest uppercase hover:bg-accent"
+								>
+									Clear filter
+								</button>
+							</div>
+						) : (
+							<CategoryContent
+								category={category}
+								state={state}
+								initial={initial}
+								showCatalog={showCatalog}
+								onShowCatalog={setShowCatalog}
+								showUmbod={showUmbod}
+								onShowUmbod={setShowUmbod}
+								showTheme={showTheme}
+								onShowTheme={setShowTheme}
+								themeTarget={themeTarget}
+								onThemeTarget={setThemeTarget}
+								developerView={developerView}
+								onDeveloperView={setDeveloperView}
+							/>
+						)}
 					</div>
-				</main>
+				</div>
 			</div>
 		</div>
 	);

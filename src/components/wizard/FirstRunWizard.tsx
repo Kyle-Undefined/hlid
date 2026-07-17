@@ -55,6 +55,7 @@ export function detectVaultStructure(
 }
 
 export function buildFirstRunConfig(s: StructureState): HlidConfig {
+	const selectedPermissionMode = s.permissionMode;
 	return {
 		vault: buildVaultSection({
 			name: s.vaultName,
@@ -80,14 +81,16 @@ export function buildFirstRunConfig(s: StructureState): HlidConfig {
 		claude: {
 			model: "claude-sonnet-4-6",
 			effort: "high",
-			permission_mode: s.permissionMode,
+			permission_mode:
+				s.vaultProvider === "claude" ? selectedPermissionMode : "default",
 			turn_recaps: true,
 			interactive_mode: false,
 		},
 		codex: {
 			model: "",
 			effort: "medium",
-			permission_mode: "default",
+			permission_mode:
+				s.vaultProvider === "codex" ? selectedPermissionMode : "default",
 			turn_recaps: true,
 			windows_computer_use: { model: "inherit", effort: "medium" },
 		},
@@ -107,7 +110,7 @@ export function buildFirstRunConfig(s: StructureState): HlidConfig {
 		umbod: { enabled: false, manifest_path: "umbod.toml" },
 		auto_sleep: DEFAULT_AUTO_SLEEP_CONFIG,
 		agents: [],
-		vault_provider: "claude",
+		vault_provider: s.vaultProvider,
 	};
 }
 
@@ -139,6 +142,7 @@ export function FirstRunWizard({ onComplete }: Props) {
 		outputs: "",
 		skills: "",
 		memory: "",
+		vaultProvider: "claude",
 		permissionMode: "default",
 		theme: "tan",
 	});
@@ -146,7 +150,28 @@ export function FirstRunWizard({ onComplete }: Props) {
 	// Fetch providers once on mount so StructureStep can show dynamic permission options.
 	useEffect(() => {
 		getProvidersFn()
-			.then(setProviders)
+			.then((inventory) => {
+				setProviders(inventory);
+				setStructure((current) => {
+					const supported = inventory.filter(
+						(provider) =>
+							(provider.id === "claude" || provider.id === "codex") &&
+							provider.available,
+					);
+					if (
+						supported.some((provider) => provider.id === current.vaultProvider)
+					)
+						return current;
+					const fallback = supported[0];
+					return fallback
+						? {
+								...current,
+								vaultProvider: fallback.id,
+								permissionMode: "default",
+							}
+						: current;
+				});
+			})
 			.catch(() => {});
 	}, []);
 
@@ -232,8 +257,24 @@ export function FirstRunWizard({ onComplete }: Props) {
 							onBack={() => setStep("vault")}
 							onSave={save}
 							permissionOptions={
-								providers.find((p) => p.id === "claude")?.permissionModes
+								providers.find((p) => p.id === structure.vaultProvider)
+									?.permissionModes
 							}
+							providerLabel={
+								providers.find((p) => p.id === structure.vaultProvider)
+									?.label ?? "Agent"
+							}
+							providerOptions={providers
+								.filter(
+									(provider) =>
+										(provider.id === "claude" || provider.id === "codex") &&
+										provider.available,
+								)
+								.map((provider) => ({
+									value: provider.id,
+									label: provider.label,
+									desc: `Run vault sessions with ${provider.label}`,
+								}))}
 						/>
 					)}
 					{step === "primer" && <PrimerStep onNext={() => setStep("done")} />}

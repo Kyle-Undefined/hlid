@@ -28,6 +28,16 @@ export type ProviderCommand = {
 	action?: CommandAction;
 };
 
+/** Keep provider-neutral commands plus commands owned by the active provider. */
+export function filterProviderCompatibleCommands<
+	T extends { providerId?: string },
+>(selected: T[], providerId: string | null | undefined): T[] {
+	const compatible = selected.filter(
+		(command) => !command.providerId || command.providerId === providerId,
+	);
+	return compatible.length === selected.length ? selected : compatible;
+}
+
 const UI_OWNED_COMMANDS = new Set([
 	"model",
 	"permissions",

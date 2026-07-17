@@ -186,6 +186,7 @@ export type StructureState = {
 	outputs: string;
 	skills: string;
 	memory: string;
+	vaultProvider: string;
 	permissionMode: "default" | "acceptEdits" | "bypassPermissions";
 	theme: "dark" | "tan";
 };
@@ -337,16 +338,18 @@ function PermissionModePicker({
 	value,
 	onChange,
 	options,
+	providerLabel,
 }: {
 	value: StructureState["permissionMode"];
 	onChange: (v: StructureState["permissionMode"]) => void;
 	options: ReadonlyArray<{ value: string; label: string; desc?: string }>;
+	providerLabel: string;
 }) {
 	if (options.length === 0) return null;
 	return (
 		<div className="space-y-2">
 			<p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
-				Claude's authority
+				{providerLabel}'s authority
 			</p>
 			<div className="space-y-1.5">
 				{options.map((opt) => (
@@ -389,6 +392,8 @@ export function StructureStep({
 	onChange,
 	onBack,
 	onSave,
+	providerOptions = [],
+	providerLabel = "Agent",
 	permissionOptions = [],
 }: {
 	state: StructureState;
@@ -396,6 +401,12 @@ export function StructureStep({
 	onChange: (patch: Partial<StructureState>) => void;
 	onBack: () => void;
 	onSave: () => void;
+	providerOptions?: ReadonlyArray<{
+		value: string;
+		label: string;
+		desc: string;
+	}>;
+	providerLabel?: string;
 	/** Permission modes declared by the active provider. Falls back to empty (no radio group shown). */
 	permissionOptions?: ReadonlyArray<{
 		value: string;
@@ -424,10 +435,23 @@ export function StructureStep({
 
 			<VaultFoldersFields state={state} onChange={onChange} />
 
+			{providerOptions.length > 0 && (
+				<RadioCardGrid
+					name="vaultProvider"
+					label="Vault agent"
+					value={state.vaultProvider}
+					options={providerOptions}
+					onChange={(vaultProvider) =>
+						onChange({ vaultProvider, permissionMode: "default" })
+					}
+				/>
+			)}
+
 			<PermissionModePicker
 				value={state.permissionMode}
 				onChange={(permissionMode) => onChange({ permissionMode })}
 				options={permissionOptions}
+				providerLabel={providerLabel}
 			/>
 
 			<RadioCardGrid

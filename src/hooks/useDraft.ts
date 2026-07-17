@@ -1,4 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import {
+	type Dispatch,
+	type SetStateAction,
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+} from "react";
 
 const DRAFT_PERSIST_DELAY_MS = 120;
 
@@ -30,10 +37,18 @@ export function useDraft({
 		? `hlid:draft:${existingSessionId}`
 		: "hlid:draft:new";
 
-	const [input, setInput] = useState(seededPrompt ?? "");
+	const [input, setInputState] = useState(seededPrompt ?? "");
 	const activeDraftKeyRef = useRef(draftKey);
 	const latestInputRef = useRef(input);
 	latestInputRef.current = input;
+	const setInput: Dispatch<SetStateAction<string>> = useCallback((next) => {
+		if (typeof next !== "function") latestInputRef.current = next;
+		setInputState((previous) => {
+			const value = typeof next === "function" ? next(previous) : next;
+			latestInputRef.current = value;
+			return value;
+		});
+	}, []);
 
 	// Strip ?prompt from URL after seeding so refresh doesn't re-fill the box.
 	useEffect(() => {
@@ -56,9 +71,11 @@ export function useDraft({
 		isRestoringDraftRef.current = true;
 		try {
 			const saved = localStorage.getItem(draftKey);
-			setInput(saved ?? "");
+			latestInputRef.current = saved ?? "";
+			setInputState(saved ?? "");
 		} catch {
-			setInput("");
+			latestInputRef.current = "";
+			setInputState("");
 		}
 		// Intentionally do NOT reset isRestoringDraftRef here — the persist
 		// effect below clears it on the next render after setInput fires.
@@ -92,6 +109,7 @@ export function useDraft({
 
 	/** Remove the persisted draft for the current session. Call on send or clear. */
 	function clearDraft() {
+		latestInputRef.current = "";
 		try {
 			localStorage.removeItem(draftKey);
 		} catch {}

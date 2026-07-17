@@ -1,6 +1,7 @@
 import { X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { ToolErrorEntry, TopToolCall } from "#/db";
+import { useDialogFocus } from "#/hooks/useDialogFocus";
 import { getToolErrorsFn } from "#/lib/serverFns/stats";
 
 /**
@@ -32,11 +33,11 @@ function ErrorModal({
 	onClose: () => void;
 }) {
 	const [errors, setErrors] = useState<ToolErrorEntry[] | null>(null);
-	const dialogRef = useRef<HTMLDivElement>(null);
+	const { dialogRef, onDialogKeyDown } =
+		useDialogFocus<HTMLDivElement>(onClose);
 
 	useEffect(() => {
 		let cancelled = false;
-		dialogRef.current?.focus();
 		getToolErrorsFn({ data: toolName })
 			.then((data) => {
 				if (!cancelled) setErrors(data);
@@ -66,9 +67,7 @@ function ErrorModal({
 				aria-label={`Errors for ${displayName}`}
 				className="relative bg-card border border-border shadow-lg w-full max-w-md max-h-[70vh] flex flex-col focus:outline-none"
 				onClick={(e) => e.stopPropagation()}
-				onKeyDown={(e) => {
-					if (e.key === "Escape") onClose();
-				}}
+				onKeyDown={onDialogKeyDown}
 			>
 				{/* Header */}
 				<div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">

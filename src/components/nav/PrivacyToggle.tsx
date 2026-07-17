@@ -12,6 +12,7 @@ export function PrivacyToggle() {
 		<label className="flex items-center gap-2 cursor-pointer">
 			<input
 				type="checkbox"
+				aria-label="Privacy mode"
 				checked={isPrivate}
 				onChange={privacyStore.togglePrivacy}
 				className="accent-primary w-3.5 h-3.5"

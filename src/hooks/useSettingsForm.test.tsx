@@ -99,7 +99,48 @@ describe("useSettingsForm autosave", () => {
 		await advance(800);
 		expect(result.current.error).toBe("configuration rejected");
 		expect(result.current.voice.enabled).toBe(true);
+		expect(result.current.dirty).toBe(true);
 		expect(result.current.saving).toBe(false);
+	});
+
+	it("retries a failed save without requiring another edit", async () => {
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(
+				Response.json({ error: "temporarily unavailable" }, { status: 503 }),
+			)
+			.mockResolvedValueOnce(Response.json({ ok: true }));
+		vi.stubGlobal("fetch", fetchMock);
+		const onSaved = vi.fn().mockResolvedValue(undefined);
+		const { result } = renderHook(() =>
+			useSettingsForm(initialSettings(), onSaved),
+		);
+		act(() => result.current.setUi({ ...result.current.ui, htmlPlans: true }));
+		await advance(800);
+		expect(result.current.error).toBe("temporarily unavailable");
+		await act(async () => result.current.save());
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(result.current.error).toBeNull();
+		expect(result.current.dirty).toBe(false);
+		expect(onSaved).toHaveBeenCalledOnce();
+	});
+
+	it("does not report a successful write as failed when refresh fails", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue(Response.json({ ok: true })),
+		);
+		const { result } = renderHook(() =>
+			useSettingsForm(
+				initialSettings(),
+				vi.fn().mockRejectedValue(new Error("route refresh failed")),
+			),
+		);
+		act(() => result.current.setUi({ ...result.current.ui, htmlPlans: true }));
+		await advance(800);
+		expect(result.current.error).toBeNull();
+		expect(result.current.dirty).toBe(false);
+		expect(result.current.savedMsg).toBe("saved");
 	});
 
 	it("uses a stable fallback for invalid error bodies and network failures", async () => {
@@ -135,5 +176,56 @@ describe("useSettingsForm autosave", () => {
 		await act(async () => result.current.save());
 		await advance(1_000);
 		expect(fetchMock).toHaveBeenCalledOnce();
+	});
+
+	it("queues edits made while a save is in flight and writes the latest form", async () => {
+		let resolveFirst: (response: Response) => void = () => {};
+		const firstResponse = new Promise<Response>((resolve) => {
+			resolveFirst = resolve;
+		});
+		const fetchMock = vi
+			.fn()
+			.mockReturnValueOnce(firstResponse)
+			.mockResolvedValueOnce(Response.json({ ok: true }));
+		vi.stubGlobal("fetch", fetchMock);
+		const { result } = renderHook(() =>
+			useSettingsForm(initialSettings(), vi.fn().mockResolvedValue(undefined)),
+		);
+		act(() =>
+			result.current.setVoice({ ...result.current.voice, enabled: true }),
+		);
+		await advance(800);
+		expect(fetchMock).toHaveBeenCalledOnce();
+
+		act(() =>
+			result.current.setVoice({ ...result.current.voice, language: "en" }),
+		);
+		await advance(800);
+		expect(fetchMock).toHaveBeenCalledOnce();
+
+		await act(async () => {
+			resolveFirst(Response.json({ ok: true }));
+			await firstResponse;
+			await Promise.resolve();
+		});
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		const latest = JSON.parse(fetchMock.mock.calls[1][1].body as string);
+		expect(latest.voice).toMatchObject({ enabled: true, language: "en" });
+		expect(result.current.dirty).toBe(false);
+	});
+
+	it("flushes a pending edit with keepalive when Forge unmounts", async () => {
+		const fetchMock = vi.fn().mockResolvedValue(Response.json({ ok: true }));
+		vi.stubGlobal("fetch", fetchMock);
+		const { result, unmount } = renderHook(() =>
+			useSettingsForm(initialSettings(), vi.fn()),
+		);
+		act(() => result.current.setUi({ ...result.current.ui, htmlPlans: true }));
+		await advance(400);
+		unmount();
+		expect(fetchMock).toHaveBeenCalledOnce();
+		expect(fetchMock.mock.calls[0][1]).toEqual(
+			expect.objectContaining({ keepalive: true, method: "POST" }),
+		);
 	});
 });

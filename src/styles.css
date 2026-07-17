@@ -459,3 +459,28 @@ html[data-theme="tan"] .markdown-alert-caution {
   border-left-color: #b91c1c;
 }
 html[data-theme="tan"] .markdown-alert-caution .markdown-alert-title { color: #991b1b; }
+
+/* Keep the compact terminal aesthetic without dropping UI copy below a
+   practical reading size or making muted labels disappear on either theme. */
+.text-\[7px\],
+.text-\[8px\],
+.text-\[9px\],
+.text-\[10px\] {
+  font-size: 0.6875rem;
+}
+
+.text-muted-foreground\/20,
+.text-muted-foreground\/25,
+.text-muted-foreground\/30,
+.text-muted-foreground\/35,
+.text-muted-foreground\/40,
+.text-muted-foreground\/45,
+.text-muted-foreground\/50,
+.text-muted-foreground\/55,
+.placeholder\:text-muted-foreground\/25::placeholder,
+.placeholder\:text-muted-foreground\/30::placeholder,
+.placeholder\:text-muted-foreground\/35::placeholder,
+.placeholder\:text-muted-foreground\/40::placeholder,
+.placeholder\:text-muted-foreground\/50::placeholder {
+  color: color-mix(in oklab, var(--muted-foreground) 60%, transparent);
+}

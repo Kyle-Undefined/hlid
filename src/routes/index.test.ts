@@ -57,4 +57,21 @@ describe("Watch route loader", () => {
 		expect(loaded).toMatchObject({ providerUsages: [] });
 		expect(mocks.loadProviderUsages).not.toHaveBeenCalled();
 	});
+
+	it("falls back inside the navigation budget when optional data stalls", async () => {
+		vi.useFakeTimers();
+		try {
+			mocks.getMcpServersFn.mockReturnValueOnce(new Promise(() => {}));
+			const loader = (Route as unknown as { loader: () => Promise<unknown> })
+				.loader;
+			const pending = loader();
+			await vi.advanceTimersByTimeAsync(500);
+			await expect(pending).resolves.toMatchObject({
+				mcpServers: [],
+				optionalDataStatus: "unavailable",
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });

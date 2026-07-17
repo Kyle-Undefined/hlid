@@ -1,6 +1,7 @@
 import { X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { createPortal } from "react-dom";
+import { useDialogFocus } from "#/hooks/useDialogFocus";
 
 export function ImageViewerModal({
 	src,
@@ -11,11 +12,8 @@ export function ImageViewerModal({
 	alt: string;
 	onClose: () => void;
 }) {
-	const dialogRef = useRef<HTMLDivElement>(null);
-
-	useEffect(() => {
-		dialogRef.current?.focus();
-	}, []);
+	const { dialogRef, onDialogKeyDown } =
+		useDialogFocus<HTMLDivElement>(onClose);
 
 	return (
 		// biome-ignore lint/a11y/useKeyWithClickEvents: backdrop Escape handled by inner dialog
@@ -32,9 +30,7 @@ export function ImageViewerModal({
 				aria-label="Image viewer"
 				className="relative flex flex-col items-center gap-3 focus:outline-none"
 				onClick={(e) => e.stopPropagation()}
-				onKeyDown={(e) => {
-					if (e.key === "Escape") onClose();
-				}}
+				onKeyDown={onDialogKeyDown}
 			>
 				<button
 					type="button"

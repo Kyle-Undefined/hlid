@@ -1,7 +1,8 @@
 import { X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { createPortal } from "react-dom";
 import { TerminalView } from "#/components/TerminalView";
+import { useDialogFocus } from "#/hooks/useDialogFocus";
 
 export function CliUpdateTerminalModal({
 	label,
@@ -18,12 +19,9 @@ export function CliUpdateTerminalModal({
 	initiallyCopied: boolean;
 	onClose: () => void;
 }) {
-	const dialogRef = useRef<HTMLDivElement>(null);
+	const { dialogRef, onDialogKeyDown } =
+		useDialogFocus<HTMLDivElement>(onClose);
 	const [copied, setCopied] = useState(initiallyCopied);
-
-	useEffect(() => {
-		dialogRef.current?.focus();
-	}, []);
 
 	async function copyCommand() {
 		try {
@@ -49,9 +47,7 @@ export function CliUpdateTerminalModal({
 				aria-label={`${label} update terminal`}
 				className="flex h-[82vh] w-[96vw] max-w-5xl flex-col overflow-hidden border border-border bg-card shadow-2xl focus:outline-none"
 				onClick={(event) => event.stopPropagation()}
-				onKeyDown={(event) => {
-					if (event.key === "Escape") onClose();
-				}}
+				onKeyDown={onDialogKeyDown}
 			>
 				<div className="flex items-center gap-3 border-b border-border px-4 py-2">
 					<div className="min-w-0 flex-1">
