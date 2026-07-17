@@ -24,25 +24,28 @@ const notes = z
 	.refine((value) => Object.keys(value).length <= 20, "too many notes");
 
 const clientMessageSchema = z.discriminatedUnion("type", [
-	z.strictObject({
-		type: z.literal("chat"),
-		text: z
-			.string()
-			.min(1)
-			.max(1024 * 1024),
-		session_id: id.optional(),
-		skill_context: path.optional(),
-		command_action: z.enum(["review", "computer-use"]).optional(),
-		agent_cwd: path.optional(),
-		attachments: z.array(attachment).max(32).optional(),
-		turn_id: id.optional(),
-		plan_mode: z.boolean().optional(),
-		plan_html: z.boolean().optional(),
-		provider: shortText.optional(),
-		model: shortText.optional(),
-		effort: shortText.optional(),
-		permission_mode: shortText.optional(),
-	}),
+	z
+		.strictObject({
+			type: z.literal("chat"),
+			text: z.string().max(1024 * 1024),
+			session_id: id.optional(),
+			skill_context: path.optional(),
+			command_action: z.enum(["review", "computer-use"]).optional(),
+			agent_cwd: path.optional(),
+			attachments: z.array(attachment).max(32).optional(),
+			turn_id: id.optional(),
+			plan_mode: z.boolean().optional(),
+			plan_html: z.boolean().optional(),
+			provider: shortText.optional(),
+			model: shortText.optional(),
+			effort: shortText.optional(),
+			permission_mode: shortText.optional(),
+		})
+		.refine(
+			(message) =>
+				message.text.length > 0 || (message.attachments?.length ?? 0) > 0,
+			{ message: "chat requires text or an attachment" },
+		),
 	z.strictObject({ type: z.literal("cancel_queued"), turn_id: id }),
 	z.strictObject({ type: z.literal("promote_queued"), turn_id: id }),
 	noFields("abort"),

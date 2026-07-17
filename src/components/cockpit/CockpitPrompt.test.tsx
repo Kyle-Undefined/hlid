@@ -52,6 +52,10 @@ function makeProps(overrides?: Partial<Props>): Props {
 		setBackground: vi.fn(),
 		sameSession: false,
 		setSameSession: vi.fn(),
+		planMode: false,
+		setPlanMode: vi.fn(),
+		planHtml: false,
+		setPlanHtml: vi.fn(),
 		textareaRef: createRef<HTMLTextAreaElement>(),
 		fileInputRef: createRef<HTMLInputElement>(),
 		upload: {
@@ -225,6 +229,33 @@ describe("CockpitPrompt composer keys", () => {
 	});
 });
 
+describe("CockpitPrompt attachments", () => {
+	it("uploads files selected from the attachment picker", () => {
+		const uploadFiles = vi.fn();
+		render(
+			<CockpitPrompt
+				{...makeProps({ upload: { ...makeProps().upload, uploadFiles } })}
+			/>,
+		);
+		const file = new File(["hello"], "note.txt", { type: "text/plain" });
+		const input = document.querySelector('input[type="file"]');
+		expect(input).toBeInstanceOf(HTMLInputElement);
+		fireEvent.change(input as HTMLInputElement, { target: { files: [file] } });
+		expect(uploadFiles).toHaveBeenCalledWith([file]);
+	});
+
+	it("uploads pasted images like Raven", () => {
+		const uploadFiles = vi.fn();
+		const props = makeProps();
+		render(
+			<CockpitPrompt {...props} upload={{ ...props.upload, uploadFiles }} />,
+		);
+		const image = new File(["image"], "shot.png", { type: "image/png" });
+		fireEvent.paste(textarea(), { clipboardData: { files: [image] } });
+		expect(uploadFiles).toHaveBeenCalledWith([image]);
+	});
+});
+
 describe("VoiceButton", () => {
 	it("starts voice input on click when ready", () => {
 		const voice = makeVoice();
@@ -312,5 +343,20 @@ describe("CockpitPrompt toolbar", () => {
 		fireEvent.click(screen.getByLabelText("Same Session"));
 		expect(setBackground).toHaveBeenCalledWith(true);
 		expect(setSameSession).toHaveBeenCalledWith(true);
+	});
+
+	it("enables plan mode and reveals the HTML toggle", () => {
+		const setPlanMode = vi.fn();
+		const setPlanHtml = vi.fn();
+		const props = makeProps({ setPlanMode, setPlanHtml });
+		const { rerender } = render(<CockpitPrompt {...props} />);
+
+		fireEvent.click(screen.getByRole("button", { name: "plan" }));
+		expect(setPlanMode).toHaveBeenCalledWith(true);
+		expect(screen.queryByRole("button", { name: "html" })).toBeNull();
+
+		rerender(<CockpitPrompt {...props} planMode />);
+		fireEvent.click(screen.getByRole("button", { name: "html" }));
+		expect(setPlanHtml).toHaveBeenCalledWith(true);
 	});
 });

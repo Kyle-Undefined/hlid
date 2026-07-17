@@ -83,6 +83,34 @@ describe("PermissionCard", () => {
 		expect(screen.getByText("/tmp/output")).not.toBeNull();
 	});
 
+	it("makes native Computer Use app identity and Always scope explicit", () => {
+		render(
+			<PermissionCard
+				message={permission({
+					toolName:
+						"hlid.windows_computer_use:process:C:\\Program Files\\Brave\\brave.exe",
+					title: "Allow Codex to use Brave?",
+					input: {
+						task: "Check the active window",
+						appName: "Brave",
+						appId: "process:C:\\Program Files\\Brave\\brave.exe",
+					},
+				})}
+				onDecide={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByText("Application")).not.toBeNull();
+		expect(screen.getByText("Brave")).not.toBeNull();
+		expect(
+			screen.getByText("process:C:\\Program Files\\Brave\\brave.exe"),
+		).not.toBeNull();
+		expect(
+			screen.getByText("Always applies only to this application."),
+		).not.toBeNull();
+		expect(screen.queryByText("Check the active window")).toBeNull();
+	});
+
 	it("hides permanent approval when policy owns persistence", () => {
 		render(
 			<PermissionCard

@@ -63,6 +63,8 @@ function runOptions(
 		commands: [],
 		wsStatus: "connected",
 		sameSession: true,
+		planMode: false,
+		planHtml: false,
 		attachSessionIdRef: { current: "attached-session" },
 		pendingAttachments: [],
 		clearPendingAttachments: vi.fn(),
@@ -211,6 +213,29 @@ describe("cockpit run controller", () => {
 		expect(options.navigateToRaven).not.toHaveBeenCalled();
 	});
 
+	it("carries plan and HTML mode into a queued run", async () => {
+		vi.mocked(getCurrentSessionFn).mockResolvedValueOnce("active-session");
+		sessionStatusState.sessions = [
+			{
+				session_id: "pool-session",
+				db_session_id: "active-session",
+				agent_cwd: "/agent",
+				state: "running",
+			},
+		];
+		const options = runOptions({
+			background: true,
+			planMode: true,
+			planHtml: true,
+		});
+
+		await useCockpitRun(options)();
+
+		expect(wsStore.enqueueChat).toHaveBeenCalledWith(
+			expect.objectContaining({ plan_mode: true, plan_html: true }),
+		);
+	});
+
 	it("starts a parallel chat while another session is running", async () => {
 		sessionStatusState.sessions = [
 			{
@@ -231,6 +256,37 @@ describe("cockpit run controller", () => {
 			}),
 		);
 		expect(wsStore.enqueueChat).not.toHaveBeenCalled();
+	});
+
+	it("starts an attachment-only plan run", async () => {
+		const attachment = {
+			id: "attachment-1",
+			path: "/tmp/shot.png",
+			filename: "shot.png",
+			mime: "image/png",
+			kind: "ephemeral",
+		};
+		const options = runOptions({
+			prompt: "",
+			sameSession: false,
+			background: true,
+			pendingAttachments: [attachment],
+			planMode: true,
+			planHtml: true,
+		});
+
+		await useCockpitRun(options)();
+
+		expect(options.send).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "chat",
+				text: "",
+				attachments: [attachment],
+				plan_mode: true,
+				plan_html: true,
+			}),
+		);
+		expect(options.clearPendingAttachments).toHaveBeenCalledOnce();
 	});
 
 	it("starts a new chat when Same Session targets another project", async () => {

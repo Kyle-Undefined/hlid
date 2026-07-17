@@ -54,6 +54,24 @@ describe("chat WebSocket runtime schema", () => {
 		).toEqual({ type: "chat", text: "hello" });
 	});
 
+	it("accepts attachment-only chat and rejects a fully empty chat", () => {
+		const attachment = {
+			id: "attachment-1",
+			path: "/tmp/shot.png",
+			filename: "shot.png",
+			mime: "image/png",
+			kind: "ephemeral",
+		};
+		expect(
+			parseClientMessage(
+				JSON.stringify({ type: "chat", text: "", attachments: [attachment] }),
+			),
+		).toEqual({ type: "chat", text: "", attachments: [attachment] });
+		expect(
+			parseClientMessage(JSON.stringify({ type: "chat", text: "" })),
+		).toBeNull();
+	});
+
 	it("accepts the computer-use capability action", () => {
 		expect(
 			parseClientMessage(

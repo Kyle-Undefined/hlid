@@ -46,14 +46,22 @@ export function PermissionCard({
 		);
 	}
 
-	const inputPreview = message.input
-		? ((message.input.command as string | undefined) ??
-			(message.input.file_path as string | undefined) ??
-			(message.input.path as string | undefined) ??
-			Object.values(message.input).find(
-				(v): v is string => typeof v === "string",
-			))
-		: undefined;
+	const appName =
+		typeof message.input?.appName === "string"
+			? message.input.appName
+			: undefined;
+	const appId =
+		typeof message.input?.appId === "string" ? message.input.appId : undefined;
+	const appIdentity = appName ?? appId;
+	const inputPreview =
+		message.input && !appIdentity
+			? ((message.input.command as string | undefined) ??
+				(message.input.file_path as string | undefined) ??
+				(message.input.path as string | undefined) ??
+				Object.values(message.input).find(
+					(v): v is string => typeof v === "string",
+				))
+			: undefined;
 	const actionCount =
 		1 +
 		(message.allowOnce === false ? 0 : 1) +
@@ -77,6 +85,24 @@ export function PermissionCard({
 						PERMISSION REQUEST
 					</div>
 					<div className="text-sm text-foreground">{message.title}</div>
+					{appIdentity && (
+						<div className="min-w-0 max-w-full mt-2 px-2 py-2 bg-secondary/60 border border-border overflow-hidden">
+							<div className="text-[8px] tracking-widest text-muted-foreground/55 uppercase">
+								Application
+							</div>
+							<div className="mt-0.5 text-xs text-foreground/90 break-all">
+								{appIdentity}
+							</div>
+							{appId && appId !== appName && (
+								<div className="mt-1 font-mono text-[10px] text-muted-foreground/65 whitespace-pre-wrap break-all">
+									{appId}
+								</div>
+							)}
+							<div className="mt-1.5 text-[9px] text-muted-foreground/55">
+								Always applies only to this application.
+							</div>
+						</div>
+					)}
 					{inputPreview && (
 						<div className="min-w-0 max-w-full mt-2 px-2 py-1.5 bg-secondary/60 border border-border font-mono text-[11px] text-foreground/80 whitespace-pre-wrap break-all overflow-hidden">
 							{inputPreview}

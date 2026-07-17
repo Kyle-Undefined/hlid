@@ -92,12 +92,19 @@ vi.mock("#/components/ledger/LedgerStats", () => ({
 vi.mock("#/components/ledger/SessionsLedger", () => ({
 	SessionsLedger: ({
 		onSearchChange,
+		onSortChange,
 	}: {
 		onSearchChange: (value: string) => void;
+		onSortChange: (value: "recent" | "cost" | "tokens") => void;
 	}) => (
-		<button type="button" onClick={() => onSearchChange("needle")}>
-			Mock session search
-		</button>
+		<>
+			<button type="button" onClick={() => onSearchChange("needle")}>
+				Mock session search
+			</button>
+			<button type="button" onClick={() => onSortChange("cost")}>
+				Mock session sort
+			</button>
+		</>
 	),
 }));
 vi.mock("#/hooks/useLedgerSessionMutations", () => ({
@@ -257,24 +264,11 @@ afterEach(cleanup);
 type LedgerRouteShape = {
 	shouldReload: (input: { cause: "preload" | "enter" | "stay" }) => boolean;
 	loaderDeps: (input: {
-		search: {
-			tab: "stats" | "sessions";
-			page: number;
-			size: number;
-			q: string;
-			agent: string;
-			model: string;
-			sort: "recent";
-		};
+		search: Record<string, unknown>;
 	}) => Record<string, unknown>;
 	loader: (input: {
-		deps: {
-			page: number;
-			size: number;
-			q: string;
-			agent?: string;
-			model?: string;
-			sort: "recent";
+		location: {
+			search: Record<string, unknown>;
 		};
 	}) => Promise<Record<string, unknown>>;
 };
@@ -288,7 +282,7 @@ describe("ledger route loader", () => {
 		expect(ledgerRoute.shouldReload({ cause: "preload" })).toBe(true);
 	});
 
-	it("does not key route data by the selected tab", () => {
+	it("does not key the route match by live Ledger controls", () => {
 		const listState = {
 			page: 1,
 			size: 20,
@@ -299,14 +293,13 @@ describe("ledger route loader", () => {
 		};
 
 		expect(
+			ledgerRoute.loaderDeps({ search: { tab: "stats", ...listState } }),
+		).toEqual({});
+		expect(
 			ledgerRoute.loaderDeps({
-				search: { tab: "stats", ...listState },
+				search: { tab: "sessions", ...listState, sort: "cost" },
 			}),
-		).toEqual(
-			ledgerRoute.loaderDeps({
-				search: { tab: "sessions", ...listState },
-			}),
-		);
+		).toEqual({});
 	});
 
 	it("does not hold navigation behind analytics hydration", async () => {
@@ -318,7 +311,9 @@ describe("ledger route loader", () => {
 		);
 
 		const loaded = await ledgerRoute.loader({
-			deps: { page: 1, size: 20, q: "", sort: "recent" },
+			location: {
+				search: { tab: "sessions", page: 1, size: 20 },
+			},
 		});
 
 		expect(loaded).toHaveProperty("initialSessions");
@@ -391,6 +386,24 @@ describe("ledger stats view", () => {
 				replace: true,
 				resetScroll: false,
 				search: expect.objectContaining({ q: "needle", page: 1 }),
+			}),
+		);
+	});
+
+	it("updates session sorting without replacing the Ledger route", () => {
+		testState.search = {
+			tab: "sessions",
+			page: 2,
+			size: 20,
+			sort: "recent",
+		};
+		renderLedger();
+
+		fireEvent.click(screen.getByRole("button", { name: "Mock session sort" }));
+		expect(testState.navigate).toHaveBeenCalledWith(
+			expect.objectContaining({
+				resetScroll: false,
+				search: expect.objectContaining({ page: 1, sort: "cost" }),
 			}),
 		);
 	});

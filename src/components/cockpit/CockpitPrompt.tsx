@@ -1,4 +1,4 @@
-import { Mic, Paperclip, Square, X } from "lucide-react";
+import { FileCode, Mic, Paperclip, ShieldCheck, Square, X } from "lucide-react";
 import type { RefObject } from "react";
 import { AgentSelect } from "#/components/AgentSelect";
 import { AttachmentStrip } from "#/components/AttachmentStrip";
@@ -34,6 +34,10 @@ type PromptProps = {
 	setBackground: (value: boolean) => void;
 	sameSession: boolean;
 	setSameSession: (value: boolean) => void;
+	planMode: boolean;
+	setPlanMode: (value: boolean) => void;
+	planHtml: boolean;
+	setPlanHtml: (value: boolean) => void;
 	textareaRef: RefObject<HTMLTextAreaElement | null>;
 	fileInputRef: RefObject<HTMLInputElement | null>;
 	upload: Pick<
@@ -133,6 +137,12 @@ function PromptTextarea(props: PromptProps) {
 				ref={props.textareaRef}
 				value={props.prompt}
 				onChange={(event) => props.setPrompt(event.target.value)}
+				onPaste={(event) => {
+					const files = Array.from(event.clipboardData?.files ?? []);
+					if (files.length === 0) return;
+					event.preventDefault();
+					void props.upload.uploadFiles(files);
+				}}
 				onKeyDown={onKeyDown}
 				role="combobox"
 				aria-expanded={props.picker.open}
@@ -305,6 +315,28 @@ function ComposerToolbar(props: PromptProps) {
 					checked={props.sameSession}
 					onChange={props.setSameSession}
 				/>
+				<button
+					type="button"
+					onClick={() => props.setPlanMode(!props.planMode)}
+					title="Enable plan mode — the agent plans before acting"
+					aria-pressed={props.planMode}
+					className={`flex items-center gap-1.5 text-[9px] tracking-wider uppercase transition-colors shrink-0 ${props.planMode ? "text-primary border-b border-primary/50" : "text-muted-foreground/40 hover:text-muted-foreground/70"}`}
+				>
+					<ShieldCheck className="w-3 h-3" />
+					plan
+				</button>
+				{props.planMode && (
+					<button
+						type="button"
+						onClick={() => props.setPlanHtml(!props.planHtml)}
+						title="Render the plan as a styled HTML page shown in Raven"
+						aria-pressed={props.planHtml}
+						className={`flex items-center gap-1.5 text-[9px] tracking-wider uppercase transition-colors shrink-0 ${props.planHtml ? "text-primary border-b border-primary/50" : "text-muted-foreground/40 hover:text-muted-foreground/70"}`}
+					>
+						<FileCode className="w-3 h-3" />
+						html
+					</button>
+				)}
 			</div>
 			<div className="ml-auto flex shrink-0 gap-2">
 				{(props.prompt || props.activeSkill) && (

@@ -102,7 +102,7 @@ export const Route = createFileRoute("/")({
 });
 
 /** Composer-local state: prompt text, active skill, run toggles, focus plumbing. */
-function useCockpitComposer() {
+function useCockpitComposer(initialPlanHtml: boolean) {
 	const [prompt, setPrompt] = useState("");
 	const [selectedAgentPath, setSelectedAgentPath] = useState("");
 	const [activeSkill, setActiveSkill] = useState<ActiveCockpitSkill | null>(
@@ -110,6 +110,8 @@ function useCockpitComposer() {
 	);
 	const [background, setBackground] = useState(false);
 	const [sameSession, setSameSession] = useState(false);
+	const [planMode, setPlanMode] = useState(false);
+	const [planHtml, setPlanHtml] = useState(initialPlanHtml);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -159,6 +161,10 @@ function useCockpitComposer() {
 		setBackground,
 		sameSession,
 		setSameSession,
+		planMode,
+		setPlanMode,
+		planHtml,
+		setPlanHtml,
 		textareaRef,
 		fileInputRef,
 		handleSkillSelect,
@@ -195,6 +201,8 @@ function useCockpitRunWiring({
 		commands,
 		wsStatus: live.wsStatus,
 		sameSession: composer.sameSession,
+		planMode: composer.planMode,
+		planHtml: composer.planHtml,
 		attachSessionIdRef: upload.uploadSessionIdRef,
 		pendingAttachments: upload.pendingAttachments,
 		clearPendingAttachments: upload.clearPending,
@@ -328,7 +336,10 @@ function CockpitPromptWiring({
 			sessions: live.sessionsStatus,
 		});
 	const canRun =
-		(!!composer.activeSkill || composer.prompt.trim().length > 0) &&
+		(!!composer.activeSkill ||
+			composer.prompt.trim().length > 0 ||
+			upload.pendingAttachments.length > 0) &&
+		upload.uploadingCount === 0 &&
 		isConnected;
 	return (
 		<CockpitPrompt
@@ -346,6 +357,10 @@ function CockpitPromptWiring({
 			setBackground={composer.setBackground}
 			sameSession={composer.sameSession}
 			setSameSession={composer.setSameSession}
+			planMode={composer.planMode}
+			setPlanMode={composer.setPlanMode}
+			planHtml={composer.planHtml}
+			setPlanHtml={composer.setPlanHtml}
 			textareaRef={composer.textareaRef}
 			fileInputRef={composer.fileInputRef}
 			upload={{
@@ -382,7 +397,7 @@ function CockpitPage() {
 	const router = useRouter();
 	const navigate = useNavigate();
 	const liveStats = useWsLiveStats();
-	const composer = useCockpitComposer();
+	const composer = useCockpitComposer(config.ui.html_plans ?? false);
 	const live = useCockpitLiveData(
 		{
 			recentSessions: loader.recentSessions,

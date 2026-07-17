@@ -76,6 +76,8 @@ type CockpitRunOptions = {
 	commands: CommandDescriptor[];
 	wsStatus: string;
 	sameSession: boolean;
+	planMode: boolean;
+	planHtml: boolean;
 	attachSessionIdRef: { current: string | null };
 	pendingAttachments: Attachment[];
 	clearPendingAttachments: () => void;
@@ -189,6 +191,8 @@ function enqueueRun(
 		command_action: params.commandAction,
 		agent_cwd: options.selectedAgentPath || undefined,
 		attachments: params.attachments.length > 0 ? params.attachments : undefined,
+		plan_mode: options.planMode || undefined,
+		plan_html: (options.planMode && options.planHtml) || undefined,
 	});
 	clearComposer(options);
 	navigateAfterRun(options, params.sessionId);
@@ -213,12 +217,16 @@ function startRun(
 		command_action: params.commandAction,
 		agent_cwd: options.selectedAgentPath || undefined,
 		attachments: params.attachments.length > 0 ? params.attachments : undefined,
+		plan_mode: options.planMode || undefined,
+		plan_html: (options.planMode && options.planHtml) || undefined,
 	});
 	if (!options.sameSession) {
+		const activityText =
+			params.text || params.attachments[0]?.filename || "attachment";
 		options.setRecentRuns((runs) =>
 			prependPendingRun(runs, {
 				sessionId: params.sessionId,
-				text: params.text,
+				text: activityText,
 				model: options.model ?? null,
 			}),
 		);
@@ -237,7 +245,11 @@ export function useCockpitRun(options: CockpitRunOptions) {
 			typed,
 			options.commands,
 		);
-		if (!text || options.wsStatus !== "connected") return;
+		if (
+			(!text && options.pendingAttachments.length === 0) ||
+			options.wsStatus !== "connected"
+		)
+			return;
 		options.setRunError(null);
 		let sessionId: string;
 		try {

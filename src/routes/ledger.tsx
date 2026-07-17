@@ -136,40 +136,17 @@ const cleanupSessionsFn = createServerFn({ method: "POST" })
 
 export const Route = createFileRoute("/ledger")({
 	validateSearch: parseLedgerSearch,
-	loaderDeps: ({
-		search: {
-			page,
-			size,
-			q,
-			agent,
-			model,
-			provider,
-			stop,
-			range,
-			from,
-			to,
-			sort,
-		},
-	}) => ({
-		page,
-		size,
-		q,
-		agent,
-		model,
-		provider,
-		stop,
-		range,
-		from,
-		to,
-		sort,
-	}),
+	// Search state is synchronized by the mounted page. Including it in
+	// loaderDeps changes the TanStack match ID, which forces a new pending match
+	// before shouldReload can keep a sort/filter interaction on-screen.
+	loaderDeps: () => ({}),
 	staleTime: 0,
 	// Search controls are client-synchronized below. Re-entering the route still
 	// gets a fresh loader seed, while changing a dropdown keeps the current page
 	// mounted instead of replacing it with a pending route.
 	shouldReload: ({ cause }) => cause !== "stay",
-	loader: async ({
-		deps: {
+	loader: async ({ location }) => {
+		const {
 			page,
 			size,
 			q,
@@ -181,8 +158,7 @@ export const Route = createFileRoute("/ledger")({
 			from,
 			to,
 			sort,
-		},
-	}) => {
+		} = parseLedgerSearch(location.search);
 		const renderedAt = Math.floor(Date.now() / 1000);
 		const [initialSessions, activeSession, configuredAgents] =
 			await Promise.all([
