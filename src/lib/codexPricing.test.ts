@@ -16,9 +16,23 @@ describe("codex pricing", () => {
 			"gpt-5.5",
 			"gpt-5.4",
 			"gpt-5.4-mini",
+			"gpt-5.3-codex",
+			"gpt-5.2-codex",
 			"gpt-5.3-codex-spark",
 			"codex-auto-review",
 		]);
+	});
+
+	it("prices historical Codex and the documented code-review alias", () => {
+		const usage = {
+			inputTokens: 1_000_000,
+			outputTokens: 1_000_000,
+			cacheReadTokens: 1_000_000,
+			cacheCreationTokens: 0,
+		};
+		expect(estimateCodexCost("gpt-5.3-codex", usage)).toBe(15.925);
+		expect(estimateCodexCost("gpt-5.2-codex", usage)).toBe(15.925);
+		expect(estimateCodexCost("codex-auto-review", usage)).toBe(15.925);
 	});
 
 	it("normalizes OpenAI cached input into disjoint provider-neutral buckets", () => {

@@ -778,6 +778,62 @@ describe("message — chat", () => {
 		expect(session.runQuery).toHaveBeenCalled();
 	});
 
+	it("does not let a stale live-chat payload overwrite a just-selected effort", async () => {
+		const session = makeSession({
+			getProviderId: vi.fn().mockReturnValue("codex"),
+			getCurrentSessionId: vi.fn().mockReturnValue("live-session"),
+		});
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "chat",
+				text: "follow up",
+				session_id: "live-session",
+				provider: "codex",
+				model: "gpt-5.6-sol",
+				effort: "high",
+				permission_mode: "bypassPermissions",
+			}),
+		);
+
+		expect(session.setProvider).not.toHaveBeenCalled();
+		expect(session.runQuery).toHaveBeenCalled();
+	});
+
+	it("still applies repeated controls when creating a live manager", async () => {
+		const session = makeSession({
+			getProviderId: vi.fn().mockReturnValue("codex"),
+			getCurrentSessionId: vi.fn().mockReturnValue(null),
+		});
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "chat",
+				text: "first turn",
+				session_id: "new-session",
+				provider: "codex",
+				model: "gpt-5.6-sol",
+				effort: "ultra",
+				permission_mode: "bypassPermissions",
+			}),
+		);
+
+		expect(session.setProvider).toHaveBeenCalledWith("codex", {
+			model: "gpt-5.6-sol",
+			effort: "ultra",
+			permissionMode: "bypassPermissions",
+		});
+		expect(session.runQuery).toHaveBeenCalled();
+	});
+
 	it("keeps ownership across concurrent chats from the same ws (Slice A)", async () => {
 		// Provider runQuery resolves only when we say so — lets us simulate two
 		// chats in-flight from the same ws.

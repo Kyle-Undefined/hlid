@@ -1,3 +1,8 @@
+import {
+	estimateProviderCost,
+	hasProviderPricing,
+	isSyntheticModel,
+} from "../lib/providerPricing";
 import { normalizeSearchText } from "../lib/search";
 import { markAnalyticsChanged } from "./analyticsRevision";
 import { type LedgerStatsRange, ledgerRangeCondition } from "./ledgerAnalytics";
@@ -252,10 +257,6 @@ export async function recordQuery(
 	providerId = "claude",
 ): Promise<{ estimatedCost: number | null }> {
 	const database = await getDb();
-	const estimatedCost = data.estimated_cost ?? null;
-	const costKnown =
-		data.cost_known === true || data.cost !== 0 || estimatedCost !== null;
-	const unpriced = estimatedCost === null && !costKnown ? 1 : 0;
 	const sessionDimensions = database
 		.query<{ model: string | null; agent_cwd: string | null }, [string]>(
 			`SELECT COALESCE(NULLIF(selected_model, ''), NULLIF(actual_model, ''), NULLIF(model, '')) AS model,
@@ -263,7 +264,27 @@ export async function recordQuery(
 			 FROM sessions WHERE id = ?`,
 		)
 		.get(sessionId);
-	const queryModel = data.model ?? sessionDimensions?.model ?? null;
+	const sessionModel = sessionDimensions?.model ?? null;
+	const queryModel = isSyntheticModel(data.model)
+		? hasProviderPricing(providerId, sessionModel)
+			? sessionModel
+			: (data.model ?? null)
+		: data.model?.trim()
+			? data.model
+			: sessionModel;
+	const estimatedCost =
+		data.estimated_cost ??
+		(data.cost === 0 && data.cost_known !== true
+			? estimateProviderCost(providerId, queryModel, {
+					inputTokens: data.input_tokens,
+					outputTokens: data.output_tokens,
+					cacheReadTokens: data.cache_read_tokens,
+					cacheCreationTokens: data.cache_creation_tokens,
+				})
+			: null);
+	const costKnown =
+		data.cost_known === true || data.cost !== 0 || estimatedCost !== null;
+	const unpriced = estimatedCost === null && !costKnown ? 1 : 0;
 	const queryAgentCwd =
 		data.agent_cwd === undefined
 			? (sessionDimensions?.agent_cwd ?? null)

@@ -570,6 +570,130 @@ describe("sessions — recordQuery", () => {
 		expect(agg.today.estimated_cost).toBeCloseTo(6.043017);
 	});
 
+	it("falls back to published pricing when provider telemetry is missing", async () => {
+		const database = freshDb();
+		await createSession("s1", "L", "claude-fable-5");
+		const recorded = await recordQuery(
+			"s1",
+			baseQuery({
+				cost: 0,
+				cost_known: false,
+				estimated_cost: null,
+				input_tokens: 1_000_000,
+				output_tokens: 0,
+			}),
+			"claude",
+		);
+
+		expect(recorded.estimatedCost).toBe(10);
+		expect((await getRecentSessions())[0].unpriced_query_count).toBe(0);
+		expect(
+			database
+				.query(`SELECT estimated_cost, cost_known, unpriced FROM usage_queries`)
+				.get(),
+		).toEqual({ estimated_cost: 10, cost_known: 1, unpriced: 0 });
+	});
+
+	it("uses the configured model instead of persisting a synthetic marker", async () => {
+		const database = freshDb();
+		await createSession("s1", "L", "gpt-5.6-terra");
+		const recorded = await recordQuery(
+			"s1",
+			baseQuery({
+				cost: 0,
+				cost_known: false,
+				estimated_cost: null,
+				model: "<synthetic>",
+			}),
+			"codex",
+		);
+
+		expect(recorded.estimatedCost).not.toBeNull();
+		expect(database.query(`SELECT model FROM usage_queries`).get()).toEqual({
+			model: "gpt-5.6-terra",
+		});
+	});
+
+	it("does not relabel a synthetic turn from another provider's model", async () => {
+		const database = freshDb();
+		await createSession("s1", "L", "gpt-5.6-terra");
+		const recorded = await recordQuery(
+			"s1",
+			baseQuery({
+				cost: 0,
+				cost_known: false,
+				estimated_cost: null,
+				model: "<synthetic>",
+			}),
+			"claude",
+		);
+
+		expect(recorded.estimatedCost).toBeNull();
+		expect(
+			database.query(`SELECT model, unpriced FROM usage_queries`).get(),
+		).toEqual({ model: "<synthetic>", unpriced: 1 });
+	});
+
+	it("backfills known aliases and session-resolved synthetic models", async () => {
+		const database = freshDb();
+		await createSession("review", "Review", "codex-auto-review");
+		await recordQuery(
+			"review",
+			baseQuery({ cost: 0, cost_known: false, estimated_cost: null }),
+			"codex",
+		);
+		await createSession("synthetic", "Synthetic", "gpt-5.6-terra");
+		await recordQuery(
+			"synthetic",
+			baseQuery({ cost: 0, cost_known: false, estimated_cost: null }),
+			"codex",
+		);
+
+		database.run(`
+			UPDATE queries
+			SET model = CASE WHEN session_id = 'synthetic' THEN '<synthetic>' ELSE model END,
+			    estimated_cost = NULL, cost_known = 0
+		`);
+		database.run(`
+			UPDATE usage_queries
+			SET model = CASE WHEN session_id = 'synthetic' THEN '<synthetic>' ELSE model END,
+			    estimated_cost = NULL, cost_known = 0, unpriced = 1
+		`);
+		database.run(
+			`UPDATE sessions SET total_estimated_cost = 0, unpriced_query_count = 1`,
+		);
+		database.run(
+			`UPDATE usage_daily SET estimated_cost = 0, unpriced_queries = 2`,
+		);
+		database.run(
+			`DELETE FROM settings WHERE key = '_migrated_provider_pricing_fallback_v1'`,
+		);
+		setDbForTest(database);
+
+		expect(
+			database
+				.query(
+					`SELECT session_id, model, cost_known, unpriced
+					 FROM usage_queries ORDER BY session_id`,
+				)
+				.all(),
+		).toEqual([
+			{
+				session_id: "review",
+				model: "codex-auto-review",
+				cost_known: 1,
+				unpriced: 0,
+			},
+			{
+				session_id: "synthetic",
+				model: "gpt-5.6-terra",
+				cost_known: 1,
+				unpriced: 0,
+			},
+		]);
+		expect((await getAggregatedStats()).today.unpriced_queries).toBe(0);
+	});
+
 	it("migrates historical Claude CLI cost into the estimated bucket", async () => {
 		const database = freshDb();
 		await createSession("s1", "L", "claude-opus-4-6");

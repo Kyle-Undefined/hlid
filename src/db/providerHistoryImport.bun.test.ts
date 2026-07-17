@@ -155,7 +155,7 @@ function claudeAssistant(args: {
 		message: {
 			id: args.messageId,
 			role: "assistant",
-			model: args.model ?? "claude-sonnet-test",
+			model: args.model ?? "claude-sonnet-4-6",
 			stop_reason: "end_turn",
 			content: [],
 			usage: {
@@ -555,6 +555,8 @@ describe("provider history import", () => {
 			cacheCreationTokens: 0,
 		});
 		expect(historyTokenTotal(query.usage)).toBe(56);
+		expect(query.estimatedCost).toBeCloseTo(0.0001803);
+		expect(query.unpriced).toBe(0);
 		expect(query.evidence.childIds).toEqual(["agent-child"]);
 		expect(
 			manifest.skipped.some(
@@ -583,7 +585,7 @@ describe("provider history import", () => {
 			input_tokens: 17,
 			output_tokens: 8,
 			cache_read_tokens: 31,
-			unpriced: 1,
+			unpriced: 0,
 		});
 		const dimensions = db
 			.query<
@@ -615,12 +617,12 @@ describe("provider history import", () => {
 		expect(dimensions).toEqual({
 			query_provider: "claude",
 			ledger_provider: "claude",
-			query_model: "claude-sonnet-test",
-			ledger_model: "claude-sonnet-test",
+			query_model: "claude-sonnet-4-6",
+			ledger_model: "claude-sonnet-4-6",
 			query_cwd: "/work/claude",
 			ledger_cwd: "/work/claude",
-			query_cost_known: 0,
-			ledger_cost_known: 0,
+			query_cost_known: 1,
+			ledger_cost_known: 1,
 			provider_session_id: null,
 		});
 	});

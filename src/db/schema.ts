@@ -1,6 +1,11 @@
 import { resolve } from "node:path";
 import { estimateCodexCost } from "../lib/codexPricing";
 import { APP_DIR } from "../lib/paths";
+import {
+	estimateProviderCost,
+	hasProviderPricing,
+	isSyntheticModel,
+} from "../lib/providerPricing";
 import { normalizeSearchText } from "../lib/search";
 
 const DB_PATH = resolve(APP_DIR, "hlid.db");
@@ -831,5 +836,167 @@ function applyMigrations(db: Db): void {
 			.all()) {
 			insertAttachment.run(row.id, normalizeSearchText(row.filename));
 		}
+	});
+
+	// Providers do not always emit a per-query cost (notably imported history),
+	// but their public token rates are still enough for an API-equivalent
+	// estimate. Reprice the immutable ledger and the deletable session mirror.
+	// Synthetic model markers are repaired only when the owning session retains
+	// a concrete configured model; orphaned/ambiguous rows remain unpriced.
+	runMigration(db, "_migrated_provider_pricing_fallback_v1", (db) => {
+		type PricingRow = {
+			id: number;
+			provider_id: string;
+			model: string | null;
+			selected_model: string | null;
+			actual_model: string | null;
+			session_model: string | null;
+			timestamp: number;
+			cost: number;
+			cost_known: number;
+			estimated_cost: number | null;
+			input_tokens: number;
+			output_tokens: number;
+			cache_read_tokens: number;
+			cache_creation_tokens: number;
+		};
+
+		const concreteModel = (model: string | null): string | null => {
+			const value = model?.trim();
+			return value && !isSyntheticModel(value) ? value : null;
+		};
+		const resolveModel = (row: PricingRow): string | null => {
+			const recorded = concreteModel(row.model);
+			if (recorded) return recorded;
+			const sessionModel =
+				concreteModel(row.selected_model) ??
+				concreteModel(row.actual_model) ??
+				concreteModel(row.session_model);
+			return hasProviderPricing(
+				row.provider_id,
+				sessionModel,
+				row.timestamp * 1_000,
+			)
+				? sessionModel
+				: null;
+		};
+
+		for (const session of db
+			.query<
+				{
+					id: string;
+					provider_id: string;
+					actual_model: string | null;
+					selected_model: string | null;
+					model: string | null;
+				},
+				[]
+			>(
+				`SELECT id, provider_id, actual_model, selected_model, model
+				 FROM sessions WHERE LOWER(TRIM(COALESCE(actual_model, ''))) = '<synthetic>'`,
+			)
+			.all()) {
+			const replacement =
+				concreteModel(session.selected_model) ?? concreteModel(session.model);
+			if (hasProviderPricing(session.provider_id, replacement)) {
+				db.run(`UPDATE sessions SET actual_model = ? WHERE id = ?`, [
+					replacement,
+					session.id,
+				]);
+			}
+		}
+
+		const repairTable = (table: "queries" | "usage_queries"): void => {
+			const providerExpression =
+				table === "queries"
+					? "COALESCE(t.provider_id, s.provider_id, 'claude')"
+					: "t.provider_id";
+			const rows = db
+				.query<PricingRow, []>(`
+					SELECT t.id, ${providerExpression} AS provider_id, t.model,
+					       s.selected_model, s.actual_model, s.model AS session_model,
+					       t.timestamp, t.cost, t.cost_known, t.estimated_cost,
+					       t.input_tokens, t.output_tokens,
+					       t.cache_read_tokens, t.cache_creation_tokens
+					FROM ${table} t
+					LEFT JOIN sessions s ON s.id = t.session_id
+					WHERE LOWER(TRIM(COALESCE(t.model, ''))) = '<synthetic>'
+					   OR (t.estimated_cost IS NULL AND t.cost = 0 AND t.cost_known = 0)
+				`)
+				.all();
+			for (const row of rows) {
+				const model = resolveModel(row);
+				if (!model) continue;
+				const shouldEstimate =
+					row.estimated_cost == null && row.cost === 0 && row.cost_known === 0;
+				const estimate = shouldEstimate
+					? estimateProviderCost(
+							row.provider_id,
+							model,
+							{
+								inputTokens: row.input_tokens,
+								outputTokens: row.output_tokens,
+								cacheReadTokens: row.cache_read_tokens,
+								cacheCreationTokens: row.cache_creation_tokens,
+							},
+							row.timestamp * 1_000,
+						)
+					: row.estimated_cost;
+				if (estimate == null) {
+					if (model !== row.model) {
+						db.run(`UPDATE ${table} SET model = ? WHERE id = ?`, [
+							model,
+							row.id,
+						]);
+					}
+					continue;
+				}
+				if (table === "usage_queries") {
+					db.run(
+						`UPDATE usage_queries
+						 SET model = ?, estimated_cost = ?, cost_known = 1, unpriced = 0
+						 WHERE id = ?`,
+						[model, estimate, row.id],
+					);
+				} else {
+					db.run(
+						`UPDATE queries
+						 SET model = ?, estimated_cost = ?, cost_known = 1
+						 WHERE id = ?`,
+						[model, estimate, row.id],
+					);
+				}
+			}
+		};
+
+		repairTable("queries");
+		repairTable("usage_queries");
+
+		db.run(`
+			UPDATE sessions SET
+				total_estimated_cost = COALESCE((
+					SELECT SUM(estimated_cost) FROM queries WHERE session_id = sessions.id
+				), 0),
+				unpriced_query_count = COALESCE((
+					SELECT SUM(CASE
+						WHEN estimated_cost IS NULL AND cost_known = 0 THEN 1 ELSE 0 END)
+					FROM queries WHERE session_id = sessions.id
+				), 0)
+		`);
+
+		db.run(`DELETE FROM usage_daily`);
+		db.run(`
+			INSERT INTO usage_daily
+				(date, cost, estimated_cost, unpriced_queries, queries, input_tokens,
+				 output_tokens, cache_read_tokens, cache_creation_tokens, turns)
+			SELECT DATE(timestamp, 'unixepoch', 'localtime'),
+			       COALESCE(SUM(cost), 0), COALESCE(SUM(estimated_cost), 0),
+			       COALESCE(SUM(unpriced), 0), COUNT(*),
+			       COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
+			       COALESCE(SUM(cache_read_tokens), 0),
+			       COALESCE(SUM(cache_creation_tokens), 0), COALESCE(SUM(turns), 0)
+			FROM usage_queries
+			GROUP BY DATE(timestamp, 'unixepoch', 'localtime')
+		`);
 	});
 }

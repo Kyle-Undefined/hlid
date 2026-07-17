@@ -1,6 +1,7 @@
 import type { Database } from "bun:sqlite";
 import { realpathSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
+import { estimateClaudeCost } from "../lib/claudePricing";
 import { estimateCodexCost } from "../lib/codexPricing";
 import {
 	codexChildrenByParent,
@@ -17,7 +18,7 @@ import {
 	usageTokenTotal,
 } from "./usageRepairShared";
 
-export const PROVIDER_HISTORY_IMPORT_VERSION = 2 as const;
+export const PROVIDER_HISTORY_IMPORT_VERSION = 3 as const;
 
 export type HistoryProviderId = "codex" | "claude";
 
@@ -1172,6 +1173,7 @@ function buildClaudeQuery(
 		candidate.durationMs ? startedAtMs + candidate.durationMs : 0,
 	);
 	const sourceId = `prompt:${candidate.nativeSessionId}:${candidate.promptKey}`;
+	const estimatedCost = estimateClaudeCost(model, usage, endedAtMs);
 	const childIds = [
 		...new Set(
 			calls
@@ -1214,8 +1216,8 @@ function buildClaudeQuery(
 				finalCall.usage.cacheCreationTokens
 			: null,
 		usage,
-		estimatedCost: null,
-		unpriced: 1,
+		estimatedCost,
+		unpriced: estimatedCost == null ? 1 : 0,
 		evidence: {
 			rootId: `${candidate.nativeSessionId}:${candidate.promptKey}`,
 			childIds,

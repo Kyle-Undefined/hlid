@@ -13,6 +13,8 @@
  * https://developers.openai.com/api/docs/models/gpt-5.5
  * https://developers.openai.com/api/docs/models/gpt-5.4
  * https://developers.openai.com/api/docs/models/gpt-5.4-mini
+ * https://developers.openai.com/api/docs/models/gpt-5.3-codex
+ * https://help.openai.com/en/articles/20001106-codex-rate-card
  */
 
 export type CodexTokenRates = {
@@ -98,14 +100,37 @@ export const CODEX_MODEL_PRICING: readonly CodexPricingEntry[] = [
 		},
 	},
 	{
+		model: "gpt-5.3-codex",
+		rates: {
+			input: 1.75,
+			cachedInput: 0.175,
+			cacheWrite: 1.75,
+			output: 14,
+		},
+	},
+	{
+		model: "gpt-5.2-codex",
+		rates: {
+			input: 1.75,
+			cachedInput: 0.175,
+			cacheWrite: 1.75,
+			output: 14,
+		},
+	},
+	{
 		model: "gpt-5.3-codex-spark",
 		rates: null,
 		note: "Research preview; OpenAI has not published a finalized rate.",
 	},
 	{
 		model: "codex-auto-review",
-		rates: null,
-		note: "Internal hidden model; no public token price.",
+		rates: {
+			input: 1.75,
+			cachedInput: 0.175,
+			cacheWrite: 1.75,
+			output: 14,
+		},
+		note: "Codex Code Review uses GPT-5.3-Codex.",
 	},
 ] as const;
 

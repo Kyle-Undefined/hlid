@@ -708,7 +708,20 @@ async function handleChat(
 	}
 	const chatEntry = resolveChatEntry(context, entry, msg);
 	if (!chatEntry) return;
-	if (msg.provider && !chatEntry.manager.isRunning()) {
+	const currentSessionId = chatEntry.manager.getCurrentSessionId();
+	const providerChanged =
+		msg.provider !== undefined &&
+		msg.provider !== chatEntry.manager.getProviderId();
+	// The chat payload repeats the composer's controls so a detached archive or
+	// brand-new chat can apply them atomically when its live manager is created.
+	// Once a chat is already live, the dedicated set_* messages are authoritative.
+	// Reapplying an older render's payload here can race a just-clicked effort/model
+	// change and visibly snap the control back as the turn starts.
+	if (
+		msg.provider &&
+		!chatEntry.manager.isRunning() &&
+		(currentSessionId === null || providerChanged)
+	) {
 		await chatEntry.manager.setProvider(msg.provider, {
 			model: msg.model,
 			effort: msg.effort,
