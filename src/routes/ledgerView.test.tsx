@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import {
+	act,
 	cleanup,
 	fireEvent,
 	render,
@@ -8,6 +9,7 @@ import {
 } from "@testing-library/react";
 import type { ComponentType } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as privacyStore from "#/hooks/privacyStore";
 
 const testState = vi.hoisted(() => ({
 	loaderData: {} as Record<string, unknown>,
@@ -253,6 +255,7 @@ function renderLedger(): void {
 }
 
 beforeEach(() => {
+	privacyStore.__resetForTesting();
 	testState.navigate.mockClear();
 	testState.search = { tab: "stats" };
 	testState.liveStats = { ...EMPTY_STATS };
@@ -427,6 +430,25 @@ describe("ledger stats view", () => {
 		expect(metricGrid?.className).toContain("gap-px");
 		expect(costTile?.className).toContain("bg-card");
 		expect(costTile?.className).not.toContain("border-r");
+	});
+
+	it("fully masks the Overview, Models, and Tools sections in privacy mode", () => {
+		renderLedger();
+
+		act(() => privacyStore.togglePrivacy());
+
+		for (const title of ["Overview", "Models", "Tools"]) {
+			const details = screen.getByText(title).closest("details");
+			const summary = details?.querySelector("summary");
+			const content = summary?.nextElementSibling as HTMLElement | null;
+			const summaryMask = summary?.querySelector(
+				'span[style*="blur(6px)"]',
+			) as HTMLElement | null;
+
+			expect(summaryMask?.style.filter).toBe("blur(6px)");
+			expect(content?.style.filter).toBe("blur(6px)");
+			expect(content?.style.pointerEvents).toBe("none");
+		}
 	});
 
 	it("shows the full token accounting without a provider usage strip", () => {

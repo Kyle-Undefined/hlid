@@ -20,6 +20,7 @@ import { TopToolsChart } from "#/components/ledger/charts/TopToolsChart";
 import { cacheHitPct, StatCell } from "#/components/ledger/LedgerStats";
 import { SessionsLedger } from "#/components/ledger/SessionsLedger";
 import { StatsFilterBar } from "#/components/ledger/StatsFilterBar";
+import { PrivacyMask } from "#/components/PrivacyMask";
 import type { LedgerAnalytics, SessionRow } from "#/db";
 import { useLedgerSessionMutations } from "#/hooks/useLedgerSessionMutations";
 import {
@@ -1066,6 +1067,7 @@ function StatsTab({
 						title="Overview"
 						summary={`${rangeLabel} · ${selected.queries} queries`}
 						open
+						privacySensitive
 					>
 						<div className="grid grid-cols-2 gap-px border border-border bg-border sm:grid-cols-3 lg:grid-cols-6">
 							<MetricTile
@@ -1137,6 +1139,7 @@ function StatsTab({
 					<StatsSection
 						title="Models"
 						summary={`${analytics.modelSplit.length} used`}
+						privacySensitive
 					>
 						<ModelSplitDonut
 							data={analytics.modelSplit}
@@ -1147,6 +1150,7 @@ function StatsTab({
 					<StatsSection
 						title="Tools"
 						summary={`${analytics.topTools.length} ranked`}
+						privacySensitive
 					>
 						<TopToolsChart data={analytics.topTools} />
 					</StatsSection>
@@ -1173,11 +1177,13 @@ function StatsSection({
 	title,
 	summary,
 	open = false,
+	privacySensitive = false,
 	children,
 }: {
 	title: string;
 	summary: string;
 	open?: boolean;
+	privacySensitive?: boolean;
 	children: ReactNode;
 }) {
 	const [expanded, setExpanded] = useState(open);
@@ -1192,11 +1198,19 @@ function StatsSection({
 					{title}
 				</span>
 				<span className="flex items-center gap-2 text-[9px] text-muted-foreground">
-					<span>{summary}</span>
+					{privacySensitive ? (
+						<PrivacyMask inline>{summary}</PrivacyMask>
+					) : (
+						<span>{summary}</span>
+					)}
 					<ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
 				</span>
 			</summary>
-			<div className="space-y-3 pt-3">{children}</div>
+			{privacySensitive ? (
+				<PrivacyMask className="space-y-3 pt-3">{children}</PrivacyMask>
+			) : (
+				<div className="space-y-3 pt-3">{children}</div>
+			)}
 		</details>
 	);
 }
