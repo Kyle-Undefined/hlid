@@ -182,9 +182,16 @@ describe("Vault Agent and Computer Use model/effort interplay", () => {
 		expect(
 			screen.getByRole("img", { name: "Computer Use ready" }),
 		).not.toBeNull();
+		const modelSelect = screen.getByLabelText(
+			"Computer Use model",
+		) as HTMLSelectElement;
+		expect(modelSelect.value).toBe("inherit");
+		expect(modelSelect.className).toContain("w-full");
 		expect(
-			(screen.getByLabelText("Computer Use model") as HTMLSelectElement).value,
-		).toBe("inherit");
+			screen.getByText(
+				"Use the model selected in the session that requested Computer Use.",
+			).className,
+		).toContain("max-w-none");
 		const computerUseEffort = within(
 			screen.getByRole("group", { name: "Computer Use effort" }),
 		);

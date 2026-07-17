@@ -23,7 +23,7 @@ export type ClaudeForm = {
 };
 
 const selectClass =
-	"w-32 sm:w-48 lg:w-80 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer";
+	"w-full min-w-0 sm:w-48 lg:w-80 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer";
 
 function ProviderField({
 	claude,
@@ -139,7 +139,7 @@ function WindowsComputerUseFields({
 							</option>
 						))}
 					</select>
-					<div className="text-xs text-muted-foreground mt-1 max-w-[12rem] sm:max-w-xs lg:max-w-sm">
+					<div className="text-xs text-muted-foreground mt-1 max-w-none sm:max-w-xs lg:max-w-sm">
 						{configuredModel === "inherit"
 							? "Use the model selected in the session that requested Computer Use."
 							: selectedModel?.description}
@@ -206,7 +206,7 @@ function ModelField({
 					))}
 				</select>
 				{selectedModel?.description && (
-					<div className="text-xs text-muted-foreground mt-1 max-w-[12rem] sm:max-w-xs lg:max-w-sm">
+					<div className="text-xs text-muted-foreground mt-1 max-w-none sm:max-w-xs lg:max-w-sm">
 						{selectedModel.description}
 					</div>
 				)}
