@@ -15,8 +15,13 @@ export type Db = import("bun:sqlite").Database;
  * Never call this in production code.
  */
 export function setDbForTest(db: Db): void {
-	initSchema(db);
+	initializeSchema(db);
 	_initPromise = Promise.resolve(db);
+}
+
+/** Apply the current schema/migrations to an explicitly opened database. */
+export function initializeSchema(db: Db): void {
+	initSchema(db);
 }
 
 export function getDb(): Promise<Db> {
@@ -616,6 +621,155 @@ function applyMigrations(db: Db): void {
 			FROM usage_queries
 			GROUP BY DATE(timestamp, 'unixepoch', 'localtime')
 		`);
+	});
+
+	// A numeric zero is not enough to prove that a provider reported a free
+	// query: it is also the legacy fallback when a provider exposes no pricing.
+	// Persist that distinction so every provider (including ACP and imported
+	// histories) participates in the same unpriced accounting semantics.
+	runMigration(db, "_migrated_query_cost_known_columns", (db) => {
+		db.run(
+			`ALTER TABLE queries ADD COLUMN cost_known INTEGER NOT NULL DEFAULT 0`,
+		);
+		db.run(
+			`ALTER TABLE usage_queries ADD COLUMN cost_known INTEGER NOT NULL DEFAULT 0`,
+		);
+	});
+
+	runMigration(db, "_migrated_provider_agnostic_unpriced", (db) => {
+		db.run(`
+			UPDATE queries
+			SET cost_known = CASE
+				WHEN estimated_cost IS NOT NULL OR cost != 0 THEN 1 ELSE 0 END
+		`);
+		db.run(`
+			UPDATE usage_queries
+			SET cost_known = CASE
+				WHEN estimated_cost IS NOT NULL OR cost != 0 THEN 1 ELSE 0 END,
+				unpriced = CASE
+					WHEN estimated_cost IS NULL AND cost = 0 THEN 1 ELSE 0 END
+		`);
+		db.run(`
+			UPDATE sessions SET
+				total_cost = COALESCE((SELECT SUM(cost) FROM queries WHERE session_id = sessions.id), 0),
+				total_estimated_cost = COALESCE((SELECT SUM(estimated_cost) FROM queries WHERE session_id = sessions.id), 0),
+				unpriced_query_count = COALESCE((
+					SELECT SUM(CASE
+						WHEN estimated_cost IS NULL AND cost_known = 0 THEN 1 ELSE 0 END)
+					FROM queries WHERE session_id = sessions.id
+				), 0)
+		`);
+
+		// usage_queries is the immutable source for provider/date aggregates.
+		db.run(`DELETE FROM usage_daily`);
+		db.run(`
+			INSERT INTO usage_daily
+				(date, cost, estimated_cost, unpriced_queries, queries, input_tokens,
+				 output_tokens, cache_read_tokens, cache_creation_tokens, turns)
+			SELECT DATE(timestamp, 'unixepoch', 'localtime'),
+			       COALESCE(SUM(cost), 0), COALESCE(SUM(estimated_cost), 0),
+			       COALESCE(SUM(unpriced), 0), COUNT(*),
+			       COALESCE(SUM(input_tokens), 0), COALESCE(SUM(output_tokens), 0),
+			       COALESCE(SUM(cache_read_tokens), 0), COALESCE(SUM(cache_creation_tokens), 0),
+			       COALESCE(SUM(turns), 0)
+			FROM usage_queries
+			GROUP BY DATE(timestamp, 'unixepoch', 'localtime')
+		`);
+	});
+
+	// Session metadata is mutable: users can switch provider, model, or agent
+	// between turns. Snapshot those dimensions on each analytics fact so an old
+	// query/tool call is never reassigned to the session's latest configuration.
+	runMigration(db, "_migrated_query_analytics_dimensions", (db) => {
+		db.run(`ALTER TABLE queries ADD COLUMN provider_id TEXT`);
+		db.run(`ALTER TABLE queries ADD COLUMN model TEXT`);
+		db.run(`ALTER TABLE queries ADD COLUMN agent_cwd TEXT`);
+		db.run(`ALTER TABLE usage_queries ADD COLUMN model TEXT`);
+		db.run(`ALTER TABLE usage_queries ADD COLUMN agent_cwd TEXT`);
+		db.run(`ALTER TABLE tool_events ADD COLUMN timestamp INTEGER`);
+		db.run(`ALTER TABLE tool_events ADD COLUMN provider_id TEXT`);
+		db.run(`ALTER TABLE tool_events ADD COLUMN model TEXT`);
+		db.run(`ALTER TABLE tool_events ADD COLUMN agent_cwd TEXT`);
+
+		db.run(`
+			UPDATE queries
+			SET provider_id = COALESCE(
+				(SELECT uq.provider_id
+				 FROM usage_queries uq
+				 WHERE uq.session_id = queries.session_id
+				 ORDER BY CASE WHEN uq.timestamp = queries.timestamp THEN 0 ELSE 1 END,
+				          ABS(uq.timestamp - queries.timestamp), uq.id
+				 LIMIT 1),
+				(SELECT s.provider_id FROM sessions s WHERE s.id = queries.session_id),
+				'claude'
+			),
+			model = (SELECT COALESCE(NULLIF(s.actual_model, ''),
+			                             NULLIF(s.selected_model, ''),
+			                             NULLIF(s.model, ''))
+			         FROM sessions s WHERE s.id = queries.session_id),
+			agent_cwd = (SELECT s.agent_cwd FROM sessions s WHERE s.id = queries.session_id)
+		`);
+		db.run(`
+			UPDATE usage_queries
+			SET model = (SELECT COALESCE(NULLIF(s.actual_model, ''),
+			                             NULLIF(s.selected_model, ''),
+			                             NULLIF(s.model, ''))
+			             FROM sessions s WHERE s.id = usage_queries.session_id),
+			    agent_cwd = (SELECT s.agent_cwd FROM sessions s WHERE s.id = usage_queries.session_id)
+		`);
+		db.run(`
+			UPDATE tool_events
+			SET timestamp = COALESCE(
+				(SELECT MIN(m.timestamp) FROM messages m
+				 WHERE m.session_id = tool_events.session_id
+				   AND m.seq = tool_events.assistant_seq
+				   AND m.role = 'assistant'),
+				(SELECT s.started_at FROM sessions s WHERE s.id = tool_events.session_id)
+			),
+			provider_id = COALESCE(
+				(SELECT s.provider_id FROM sessions s WHERE s.id = tool_events.session_id),
+				'claude'
+			),
+			model = (SELECT COALESCE(NULLIF(s.actual_model, ''),
+			                             NULLIF(s.selected_model, ''),
+			                             NULLIF(s.model, ''))
+			         FROM sessions s WHERE s.id = tool_events.session_id),
+			agent_cwd = (SELECT s.agent_cwd FROM sessions s WHERE s.id = tool_events.session_id)
+		`);
+
+		db.run(`CREATE INDEX idx_queries_analytics_dimensions
+		        ON queries(timestamp, provider_id, model, agent_cwd)`);
+		db.run(`CREATE INDEX idx_usage_queries_analytics_dimensions
+		        ON usage_queries(timestamp, provider_id, model, agent_cwd)`);
+		db.run(`CREATE INDEX idx_tool_events_analytics_dimensions
+		        ON tool_events(timestamp, provider_id, model, agent_cwd)`);
+	});
+
+	// Usage-only provider history belongs in Ledger/Stats but is not a Raven
+	// transcript that can safely be resumed or cleaned up like a native chat.
+	runMigration(db, "_migrated_sessions_history_imported", (db) => {
+		db.run(
+			`ALTER TABLE sessions ADD COLUMN history_imported INTEGER NOT NULL DEFAULT 0`,
+		);
+	});
+	runMigration(db, "_migrated_history_import_provenance", (db) => {
+		db.run(`
+			CREATE TABLE IF NOT EXISTS history_import_items (
+				provider_id TEXT NOT NULL,
+				source_kind TEXT NOT NULL,
+				source_id TEXT NOT NULL,
+				source_hash TEXT NOT NULL,
+				imported_session_id TEXT NOT NULL,
+				imported_query_id INTEGER,
+				imported_usage_query_id INTEGER,
+				imported_at INTEGER NOT NULL DEFAULT (unixepoch()),
+				PRIMARY KEY (provider_id, source_kind, source_id)
+			)
+		`);
+		db.run(
+			`CREATE INDEX IF NOT EXISTS idx_history_import_session
+			 ON history_import_items(imported_session_id)`,
+		);
 	});
 
 	// Rename Anthropic-specific settings keys to provider-namespaced format.

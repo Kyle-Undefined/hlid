@@ -164,12 +164,21 @@ describe("fmt", () => {
 	it("formats thousands with k suffix", () => {
 		expect(fmt(1000)).toBe("1.0k");
 		expect(fmt(1500)).toBe("1.5k");
-		expect(fmt(999_999)).toBe("1000.0k");
+		expect(fmt(999_949)).toBe("999.9k");
+		expect(fmt(999_950)).toBe("1.0M");
 	});
 
 	it("formats millions with M suffix", () => {
 		expect(fmt(1_000_000)).toBe("1.0M");
 		expect(fmt(2_500_000)).toBe("2.5M");
+		expect(fmt(999_949_999)).toBe("999.9M");
+	});
+
+	it("promotes billions and trillions instead of overflowing a suffix", () => {
+		expect(fmt(999_950_000)).toBe("1.0B");
+		expect(fmt(1_157_300_000)).toBe("1.2B");
+		expect(fmt(999_950_000_000)).toBe("1.0T");
+		expect(fmt(1_000_000_000_000)).toBe("1.0T");
 	});
 });
 

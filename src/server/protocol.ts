@@ -376,6 +376,8 @@ export type SessionStatusEntry = {
 	agent_cwd: string;
 	agent_name: string;
 	state: "idle" | "running" | "error";
+	/** Provider currently configured for this live session. */
+	provider_id?: string;
 	model: string;
 	/** Current session-scoped effort, when the live session exposes one. */
 	effort?: string;

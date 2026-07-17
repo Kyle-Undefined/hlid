@@ -2,8 +2,12 @@ import { HydrationSafeText } from "#/components/HydrationSafeText";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { ProviderWindowEntry } from "#/db";
 import type { LiveStats } from "#/hooks/wsLiveStatsStore";
-import { fmtDateUtc, fmtResetTime } from "#/lib/formatters";
+import { fmtCompact, fmtDateUtc, fmtResetTime } from "#/lib/formatters";
 import { providerWindowUsage } from "#/lib/usageWindows";
+
+function fmtMobileTokens(value: number): string {
+	return fmtCompact(value, value >= 1_000_000 ? 1 : 0, true);
+}
 
 export function ContextWindowSection({ stats }: { stats: LiveStats }) {
 	const hasContext =
@@ -34,11 +38,19 @@ export function ContextWindowSection({ stats }: { stats: LiveStats }) {
 					)}
 				</div>
 				{hasContext && (
-					<span className="text-[8px] tracking-widest text-muted-foreground/50 truncate">
-						<HydrationSafeText
-							serverText={`${contextUsed.toLocaleString("en-US")} / ${contextWindow.toLocaleString("en-US")}`}
-							clientText={`${contextUsed.toLocaleString()} / ${contextWindow.toLocaleString()}`}
-						/>
+					<span
+						className="text-[8px] tracking-normal md:tracking-widest text-muted-foreground/50 whitespace-nowrap"
+						title={`${contextUsed.toLocaleString("en-US")} / ${contextWindow.toLocaleString("en-US")}`}
+					>
+						<span className="md:hidden">
+							{fmtMobileTokens(contextUsed)} / {fmtMobileTokens(contextWindow)}
+						</span>
+						<span className="hidden md:inline">
+							<HydrationSafeText
+								serverText={`${contextUsed.toLocaleString("en-US")} / ${contextWindow.toLocaleString("en-US")}`}
+								clientText={`${contextUsed.toLocaleString()} / ${contextWindow.toLocaleString()}`}
+							/>
+						</span>
 					</span>
 				)}
 			</div>

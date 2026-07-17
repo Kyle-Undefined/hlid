@@ -105,6 +105,24 @@ describe("ForgeSettings search", () => {
 		expect(screen.getByText("System section: advanced")).toBeTruthy();
 	});
 
+	it("matches section labels rendered inside category pages", async () => {
+		renderSettings();
+		fireEvent.change(
+			screen.getByRole("textbox", { name: "Filter setting categories" }),
+			{
+				target: { value: "umbod" },
+			},
+		);
+
+		await waitFor(() =>
+			expect(
+				screen.getByRole("heading", { name: "Integrations" }),
+			).toBeTruthy(),
+		);
+		expect(screen.getByText("Umbod policy")).toBeTruthy();
+		expect(screen.getByRole("option", { name: "Integrations" })).toBeTruthy();
+	});
+
 	it("offers an explicit retry after an autosave failure", () => {
 		const save = vi.fn();
 		render(

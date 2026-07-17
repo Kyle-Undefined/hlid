@@ -5,6 +5,7 @@ import {
 	fireEvent,
 	render,
 	screen,
+	waitFor,
 	within,
 } from "@testing-library/react";
 import type { ComponentType } from "react";
@@ -30,6 +31,7 @@ const testState = vi.hoisted(() => ({
 	navigate: vi.fn(),
 	liveStats: {} as Record<string, unknown>,
 	activeSession: null as Record<string, unknown> | null,
+	openSessionRows: [] as Record<string, unknown>[],
 	emptySessions: [] as unknown[],
 }));
 
@@ -70,10 +72,24 @@ vi.mock("#/components/ledger/charts/HourOfDayChart", () => ({
 	HourOfDayChart: () => <div>Hour chart</div>,
 }));
 vi.mock("#/components/ledger/charts/ModelSplitDonut", () => ({
-	ModelSplitDonut: () => <div>Model chart</div>,
+	ModelSplitDonut: ({ onSelect }: { onSelect?: (model: string) => void }) => (
+		<div>
+			Model chart
+			<button type="button" onClick={() => onSelect?.("gpt-test")}>
+				Mock model drill-down
+			</button>
+		</div>
+	),
 }));
 vi.mock("#/components/ledger/charts/StopReasonDonut", () => ({
-	StopReasonDonut: () => <div>Stop reason chart</div>,
+	StopReasonDonut: ({ onSelect }: { onSelect?: (reason: string) => void }) => (
+		<div>
+			Stop reason chart
+			<button type="button" onClick={() => onSelect?.("max_tokens")}>
+				Mock stop drill-down
+			</button>
+		</div>
+	),
 }));
 vi.mock("#/components/ledger/charts/TopToolsChart", () => ({
 	TopToolsChart: () => <div>Tools chart</div>,
@@ -144,6 +160,7 @@ vi.mock("#/hooks/wsSessionStatusStore", () => ({
 }));
 vi.mock("#/lib/serverFns/sessions", () => ({
 	getActiveSessionRowFn: vi.fn(async () => testState.activeSession),
+	getSessionRowsByIdsFn: vi.fn(async () => testState.openSessionRows),
 }));
 vi.mock("#/lib/serverFns/stats", () => ({
 	EMPTY_AGG: {},
@@ -259,6 +276,8 @@ beforeEach(() => {
 	testState.navigate.mockClear();
 	testState.search = { tab: "stats" };
 	testState.liveStats = { ...EMPTY_STATS };
+	testState.openSessionRows = [];
+	testState.emptySessions = [];
 	setLoader(null);
 });
 
@@ -377,6 +396,49 @@ describe("ledger stats view", () => {
 		);
 	});
 
+	it("carries the selected Stats dates into model and stop drill-downs", () => {
+		testState.search = {
+			tab: "stats",
+			range: "custom",
+			from: "2026-07-01",
+			to: "2026-07-16",
+			provider: "codex",
+		};
+		renderLedger();
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Mock model drill-down" }),
+		);
+		expect(testState.navigate).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				search: expect.objectContaining({
+					tab: "sessions",
+					model: "gpt-test",
+					provider: "codex",
+					range: "custom",
+					from: "2026-07-01",
+					to: "2026-07-16",
+				}),
+			}),
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Mock stop drill-down" }),
+		);
+		expect(testState.navigate).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				search: expect.objectContaining({
+					tab: "sessions",
+					stop: "max_tokens",
+					provider: "codex",
+					range: "custom",
+					from: "2026-07-01",
+					to: "2026-07-16",
+				}),
+			}),
+		);
+	});
+
 	it("updates session search without resetting the Ledger scroll container", () => {
 		testState.search = { tab: "sessions", page: 1, size: 20 };
 		renderLedger();
@@ -409,6 +471,103 @@ describe("ledger stats view", () => {
 				search: expect.objectContaining({ page: 1, sort: "cost" }),
 			}),
 		);
+	});
+
+	it("shows and clears Stats drill-down date, provider, and stop filters", () => {
+		testState.search = {
+			tab: "sessions",
+			page: 1,
+			size: 20,
+			provider: "codex",
+			stop: "max_tokens",
+			range: "custom",
+			from: "2026-07-01",
+			to: "2026-07-16",
+		};
+		renderLedger();
+
+		const filters = screen.getByLabelText("Active session drill-down filters");
+		expect(filters.textContent).toContain("Date: 2026-07-01 – 2026-07-16");
+		expect(filters.textContent).toContain("Provider: codex");
+		expect(filters.textContent).toContain("Stop: max tokens");
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Clear session date filter" }),
+		);
+		expect(testState.navigate).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				search: expect.objectContaining({
+					range: undefined,
+					from: undefined,
+					to: undefined,
+				}),
+			}),
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Clear session provider filter" }),
+		);
+		expect(testState.navigate).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				search: expect.objectContaining({ provider: "" }),
+			}),
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Clear session stop reason filter" }),
+		);
+		expect(testState.navigate).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				search: expect.objectContaining({ stop: "" }),
+			}),
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
+		expect(testState.navigate).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				search: expect.objectContaining({
+					agent: "",
+					model: "",
+					provider: "",
+					stop: "",
+					range: undefined,
+				}),
+			}),
+		);
+	});
+
+	it("clears the drill-down-only stop reason when returning to Stats", () => {
+		testState.search = {
+			tab: "sessions",
+			page: 1,
+			provider: "codex",
+			model: "gpt-test",
+			stop: "max_tokens",
+			range: "30d",
+		};
+		renderLedger();
+
+		fireEvent.click(screen.getByRole("button", { name: "stats" }));
+		expect(testState.navigate).toHaveBeenLastCalledWith(
+			expect.objectContaining({
+				search: expect.objectContaining({
+					tab: "stats",
+					provider: "codex",
+					model: "gpt-test",
+					stop: "",
+					range: "30d",
+				}),
+			}),
+		);
+	});
+
+	it("does not apply or show a date filter on the ordinary Sessions view", () => {
+		testState.search = { tab: "sessions", page: 1, size: 20 };
+		renderLedger();
+
+		expect(
+			screen.queryByLabelText("Active session drill-down filters"),
+		).toBeNull();
 	});
 
 	it("uses one aligned frame for the Overview metrics", () => {
@@ -495,53 +654,82 @@ describe("ledger stats view", () => {
 		expect(screen.queryByText("Model chart")).toBeNull();
 	});
 
-	it("prefers live query cost, query, and token totals over persisted session data", () => {
-		setLoader(activeSession());
+	it("sums header totals across every open session regardless of state", async () => {
+		const first = activeSession();
+		const second = activeSession({
+			id: "session-2",
+			query_count: 2,
+			total_cost: 3,
+			total_estimated_cost: 1,
+			total_input_tokens: 500,
+			total_output_tokens: 100,
+			total_cache_read_tokens: 50,
+			total_cache_creation_tokens: 0,
+			total_turns: 2,
+		});
+		setLoader(first);
 		testState.search = { tab: "sessions" };
+		testState.openSessionRows = [first, second];
+		testState.emptySessions = [
+			{
+				session_id: "pool-1",
+				db_session_id: "session-1",
+				state: "idle",
+				hasPendingPermissions: false,
+			},
+			{
+				session_id: "pool-2",
+				db_session_id: "session-2",
+				state: "error",
+				hasPendingPermissions: false,
+			},
+		];
 		testState.liveStats = {
 			...EMPTY_STATS,
-			queries: 2,
-			turns: 3,
-			cost: 2,
-			estimated_cost: 0.5,
-			input_tokens: 100,
-			output_tokens: 20,
-			cache_read_tokens: 30,
-			cache_creation_tokens: 10,
+			queries: 99,
+			cost: 99,
 		};
 
 		renderLedger();
 
-		expect(screen.getByTestId("stat-COST").textContent).toBe(
-			"~$2.5000|includes API-equivalent estimate",
+		await waitFor(() =>
+			expect(screen.getByTestId("stat-COST").textContent).toBe(
+				"~$12.0000|includes API-equivalent estimate",
+			),
 		);
-		expect(screen.getByTestId("stat-QUERIES").textContent).toBe("2|3 turns");
-		expect(screen.getByTestId("stat-TOKENS").textContent).toBe("160|40 cached");
-		expect(screen.getByTestId("stat-MODEL").textContent).toBe("sonnet|");
-	});
-
-	it("falls back to persisted session totals when no live query is active", () => {
-		setLoader(activeSession());
-		testState.search = { tab: "sessions" };
-
-		renderLedger();
-
-		expect(screen.getByTestId("stat-COST").textContent).toBe(
-			"$8.0000|$2.0000/query",
-		);
-		expect(screen.getByTestId("stat-QUERIES").textContent).toBe("4|6 turns");
+		expect(screen.getByTestId("stat-QUERIES").textContent).toBe("6|8 turns");
 		expect(screen.getByTestId("stat-TOKENS").textContent).toBe(
-			"1.6k|400 cached",
+			"2.3k|450 cached",
 		);
+		expect(screen.getByTestId("stat-SESSIONS").textContent).toBe("2|1 error");
 	});
 
-	it("shows honest empty states without an active or persisted session", () => {
+	it("shows honest empty states without an open session", () => {
 		testState.search = { tab: "sessions" };
 		renderLedger();
 
-		expect(screen.getByTestId("stat-COST").textContent).toBe("--|");
-		expect(screen.getByTestId("stat-QUERIES").textContent).toBe("--|");
-		expect(screen.getByTestId("stat-TOKENS").textContent).toBe("--|");
-		expect(screen.getByTestId("stat-MODEL").textContent).toBe("--|");
+		expect(screen.getByTestId("stat-COST").textContent).toBe("$0.0000|");
+		expect(screen.getByTestId("stat-QUERIES").textContent).toBe("0|");
+		expect(screen.getByTestId("stat-TOKENS").textContent).toBe("0|");
+		expect(screen.getByTestId("stat-SESSIONS").textContent).toBe("0|all idle");
+	});
+
+	it("does not count an unused idle pool placeholder as an open session", () => {
+		testState.search = { tab: "sessions" };
+		testState.emptySessions = [
+			{
+				session_id: "vault-placeholder",
+				db_session_id: null,
+				state: "idle",
+				hasDbSession: false,
+				hasPendingPermissions: false,
+			},
+		];
+		renderLedger();
+
+		expect(screen.getByTestId("stat-COST").textContent).toBe("$0.0000|");
+		expect(screen.getByTestId("stat-QUERIES").textContent).toBe("0|");
+		expect(screen.getByTestId("stat-TOKENS").textContent).toBe("0|");
+		expect(screen.getByTestId("stat-SESSIONS").textContent).toBe("0|all idle");
 	});
 });

@@ -275,6 +275,9 @@ function buildQueryData(
 	const primaryModel = event.modelUsage
 		? Object.values(event.modelUsage)[0]
 		: undefined;
+	const primaryModelId = event.modelUsage
+		? Object.keys(event.modelUsage)[0]
+		: undefined;
 	if (primaryModel?.contextWindow) {
 		turn.lastKnownContextWindow = primaryModel.contextWindow;
 	}
@@ -290,6 +293,10 @@ function buildQueryData(
 		tokensInContext,
 		queryData: {
 			cost: event.cost ?? 0,
+			cost_known:
+				event.costKnown ??
+				(typeof event.cost === "number" ||
+					typeof event.estimatedCost === "number"),
 			estimated_cost: event.estimatedCost ?? null,
 			input_tokens: event.usage?.inputTokens ?? 0,
 			output_tokens: event.usage?.outputTokens ?? 0,
@@ -301,6 +308,7 @@ function buildQueryData(
 				primaryModel?.contextWindow ?? turn.lastKnownContextWindow ?? null,
 			stop_reason: event.stopReason ?? null,
 			tokens_in_context: tokensInContext,
+			model: turn.lastActualModel ?? primaryModelId ?? null,
 		},
 	};
 }
@@ -823,11 +831,15 @@ export class SessionManager {
 		agentCwd?: string,
 	): Promise<void> {
 		const run = async () => {
+			const provider = this.resolveProvider(agentCwd);
+			// A turn-gated provider cannot promise that its first streamed event is
+			// pre-inference. Public probe paths use the active chat session instead;
+			// keep this helper metadata-only so it can never create hidden usage.
+			if (provider.probeRequiresTurn) return;
 			const ac = new AbortController();
 			const timeout = setTimeout(() => ac.abort(), 30_000);
 			let session: AgentSession | undefined;
 			try {
-				const provider = this.resolveProvider(agentCwd);
 				session = provider.query({
 					cwd: agentCwd ?? this.agentCwd ?? this.vaultPath,
 					signal: ac.signal,
@@ -843,15 +855,7 @@ export class SessionManager {
 					canUseTool: () =>
 						Promise.resolve({ behavior: "deny" as const, message: "probe" }),
 				});
-				if (provider.probeRequiresTurn) {
-					await session.send(".");
-					for await (const _ of session) {
-						await inspect(session);
-						break;
-					}
-				} else {
-					await inspect(session);
-				}
+				await inspect(session);
 			} catch {
 				// Abort errors are expected when a probe reaches its time limit.
 			} finally {
@@ -1039,9 +1043,6 @@ export class SessionManager {
 		userMessage: string,
 	): Promise<void> {
 		if (sessionId && sessionId !== this.currentSessionId) {
-			this.agentCwd = undefined;
-			this.agentMode = "cwd";
-			this.sessionAllowedTools.clear();
 			const [
 				savedSession,
 				prior,
@@ -1062,6 +1063,14 @@ export class SessionManager {
 				db.getSessionProviderId(sessionId),
 				db.getSessionProviderSession(sessionId),
 			]);
+			if (savedSession?.history_imported) {
+				throw new Error(
+					"Imported provider history is read-only and cannot be resumed as a live session.",
+				);
+			}
+			this.agentCwd = undefined;
+			this.agentMode = "cwd";
+			this.sessionAllowedTools.clear();
 			// The persisted max accounts for sequence values consumed by messages,
 			// tools, plans, questions, and linked attachments. The one-row existence
 			// sample is a defensive floor for older or partially migrated databases.
@@ -1321,7 +1330,13 @@ export class SessionManager {
 		assistantSeq: number,
 		turn: TurnState,
 		operationSuffix: string,
+		providerId: string,
 	): void {
+		const dimensions = {
+			providerId,
+			...(turn.lastActualModel ? { model: turn.lastActualModel } : {}),
+			agentCwd: this.agentCwd ?? null,
+		};
 		for (const toolEvent of turn.pendingToolEvents) {
 			const result = turn.pendingToolResults.get(toolEvent.toolId);
 			const subagent =
@@ -1353,6 +1368,7 @@ export class SessionManager {
 						toolEvent.name,
 						toolEvent.input,
 						subagent,
+						dimensions,
 					)
 				: db.appendToolEvent(
 						sessionId,
@@ -1360,6 +1376,8 @@ export class SessionManager {
 						toolEvent.toolId,
 						toolEvent.name,
 						toolEvent.input,
+						undefined,
+						dimensions,
 					);
 			append
 				.then(async () => {
@@ -1398,6 +1416,7 @@ export class SessionManager {
 			turn,
 		);
 		if (sessionId) {
+			queryData.agent_cwd = this.agentCwd ?? null;
 			const recorded = await db.recordQuery(
 				sessionId,
 				queryData,
@@ -1417,7 +1436,13 @@ export class SessionManager {
 					turn,
 				);
 				turn.lastAssistantSeq = assistantSeq;
-				this.persistPendingToolEvents(sessionId, assistantSeq, turn, "done");
+				this.persistPendingToolEvents(
+					sessionId,
+					assistantSeq,
+					turn,
+					"done",
+					provider.providerId,
+				);
 				turn.lastTurnToolEvents = [...turn.pendingToolEvents];
 				turn.pendingToolEvents.length = 0;
 				turn.pendingToolResults.clear();
@@ -1516,6 +1541,7 @@ export class SessionManager {
 		turn: TurnState,
 		sessionId: string | undefined,
 		emit: (msg: ServerMessage) => void,
+		provider: AgentProvider,
 	): void {
 		turn.hadToolEvents = true;
 		if (event.name === "ExitPlanMode") {
@@ -1538,6 +1564,11 @@ export class SessionManager {
 		if (sessionId) {
 			const seq = this.ensureAssistantRow(turn, sessionId);
 			const toolId = event.toolId;
+			const dimensions = {
+				providerId: provider.providerId,
+				...(turn.lastActualModel ? { model: turn.lastActualModel } : {}),
+				agentCwd: this.agentCwd ?? null,
+			};
 			const append = event.subagent
 				? db.appendToolEvent(
 						sessionId,
@@ -1546,8 +1577,17 @@ export class SessionManager {
 						event.name,
 						event.input,
 						event.subagent,
+						dimensions,
 					)
-				: db.appendToolEvent(sessionId, seq, toolId, event.name, event.input);
+				: db.appendToolEvent(
+						sessionId,
+						seq,
+						toolId,
+						event.name,
+						event.input,
+						undefined,
+						dimensions,
+					);
 			void append
 				.then(async () => {
 					turn.persistedToolIds.add(toolId);
@@ -1705,7 +1745,7 @@ export class SessionManager {
 				this.handleTextDelta(event, turn, sessionId, emit);
 				break;
 			case "tool_start":
-				this.handleToolStart(event, turn, sessionId, emit);
+				this.handleToolStart(event, turn, sessionId, emit, provider);
 				break;
 			case "tool_update":
 				this.handleToolUpdate(event, turn, sessionId, emit);
@@ -2806,6 +2846,7 @@ export class SessionManager {
 			sdkSummary: turn.sdkSummary,
 			provider,
 			recapModel: agentSettings?.recapModel ?? this.recapModel,
+			agentCwd: this.agentCwd ?? null,
 		}).catch(() => {});
 	}
 
@@ -3097,6 +3138,7 @@ export class SessionManager {
 						assistantSeq,
 						turn,
 						"finally",
+						currentProvider.providerId,
 					);
 				} catch (error) {
 					logDbError("appendMessage (assistant)", error);

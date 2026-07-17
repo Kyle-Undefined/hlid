@@ -166,6 +166,50 @@ describe("SessionsLedger session actions", () => {
 		expect(props.onNavigate).toHaveBeenCalledWith("session-1");
 	});
 
+	it("renders imported usage as read-only instead of a resumable chat", () => {
+		const props = renderLedger({
+			data: {
+				sessions: [{ ...session, history_imported: 1 }],
+				total: 1,
+			},
+		});
+
+		expect(screen.getByText(/imported usage/i)).toBeDefined();
+		expect(
+			screen.queryByRole("button", { name: /open original name/i }),
+		).toBeNull();
+		expect(
+			screen.queryByRole("button", { name: "Session actions" }),
+		).toBeNull();
+		const importedMarker = screen.getByText(/imported usage/i);
+		const actionSlot = importedMarker
+			.closest(".group")
+			?.querySelector("[data-session-action-slot]");
+		expect(actionSlot).not.toBeNull();
+		expect(actionSlot?.className).toContain("pr-2");
+		expect(
+			actionSlot?.querySelector("[aria-hidden='true']")?.className,
+		).toContain("w-11");
+		expect(props.onNavigate).not.toHaveBeenCalled();
+	});
+
+	it("shows the configured provider and model in each session row", () => {
+		renderLedger({
+			data: {
+				sessions: [
+					{
+						...session,
+						provider_id: "codex",
+						selected_model: "gpt-5.4",
+					},
+				],
+				total: 1,
+			},
+		});
+
+		expect(screen.getByText(/codex · GPT-5\.4/i)).toBeDefined();
+	});
+
 	it("renames in the mobile popover with an explicit Save action", () => {
 		setMobileViewport();
 		const props = renderLedger();

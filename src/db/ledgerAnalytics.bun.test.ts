@@ -1,12 +1,13 @@
 import { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "bun:test";
-import { getLedgerAnalytics } from "./ledgerAnalytics";
+import { getLedgerAnalytics, getLedgerToolErrors } from "./ledgerAnalytics";
 import { appendMessage, appendToolEvent, setToolEventResult } from "./messages";
 import { setDbForTest } from "./schema";
 import {
 	createSession,
 	recordQuery,
 	setSessionAgentCwd,
+	setSessionModel,
 	setSessionProviderId,
 } from "./sessions";
 import type { QueryData } from "./types";
@@ -61,9 +62,119 @@ describe("Ledger filtered analytics", () => {
 		expect(result.stopReasonSplit).toEqual([
 			{ reason: "max_tokens", count: 1 },
 		]);
-		expect(result.topTools).toEqual([{ name: "Bash", count: 1, errorRate: 1 }]);
+		expect(result.topTools).toEqual([
+			{ name: "Bash", count: 1, errorCount: 1, errorRate: 1 },
+		]);
+		await appendMessage("claude-vault", 1, "assistant", "failed");
+		await appendToolEvent("claude-vault", 1, "tool-2", "Bash", {});
+		await setToolEventResult("claude-vault", "tool-2", "other", true);
+		const errors = await getLedgerToolErrors("Bash", {
+			range: "all",
+			agent: "/agents/raven",
+			provider: "codex",
+			model: "gpt-5.6",
+		});
+		expect(errors).toEqual({
+			total: 1,
+			distinct: 1,
+			groups: [{ text: "failed", count: 1 }],
+		});
 		expect(result.weekdayHour.reduce((sum, row) => sum + row.count, 0)).toBe(1);
 		expect(result.facets.providers).toEqual(["claude", "codex"]);
+	});
+
+	it("keeps every section attributed to the dimensions captured for that turn", async () => {
+		await createSession("mixed", "Mixed", "model-a");
+		await setSessionAgentCwd("mixed", "/agents/a");
+		await setSessionProviderId("mixed", "claude");
+		await appendMessage("mixed", 1, "assistant", "first");
+		await appendToolEvent("mixed", 1, "tool-a", "Read", {}, undefined, {
+			providerId: "claude",
+			model: "model-a",
+			agentCwd: "/agents/a",
+		});
+		await recordQuery(
+			"mixed",
+			{
+				...query("end_turn", 1),
+				model: "model-a",
+				agent_cwd: "/agents/a",
+			},
+			"claude",
+		);
+
+		await setSessionAgentCwd("mixed", "/agents/b");
+		await setSessionProviderId("mixed", "codex");
+		await setSessionModel("mixed", "model-b");
+		await appendMessage("mixed", 2, "assistant", "second");
+		await appendToolEvent("mixed", 2, "tool-b", "Bash", {}, undefined, {
+			providerId: "codex",
+			model: "model-b",
+			agentCwd: "/agents/b",
+		});
+		await recordQuery(
+			"mixed",
+			{
+				...query("max_tokens", 2),
+				model: "model-b",
+				agent_cwd: "/agents/b",
+			},
+			"codex",
+		);
+
+		const first = await getLedgerAnalytics({
+			range: "all",
+			agent: "/agents/a",
+			provider: "claude",
+			model: "model-a",
+		});
+		expect(first.selected.queries).toBe(1);
+		expect(first.modelSplit).toEqual([{ model: "model-a", count: 1 }]);
+		expect(first.stopReasonSplit).toEqual([{ reason: "end_turn", count: 1 }]);
+		expect(first.topTools).toEqual([
+			{ name: "Read", count: 1, errorCount: 0, errorRate: 0 },
+		]);
+		expect(first.weekdayHour.reduce((sum, row) => sum + row.count, 0)).toBe(1);
+
+		const second = await getLedgerAnalytics({
+			range: "all",
+			agent: "/agents/b",
+			provider: "codex",
+			model: "model-b",
+		});
+		expect(second.selected.queries).toBe(1);
+		expect(second.stopReasonSplit).toEqual([
+			{ reason: "max_tokens", count: 1 },
+		]);
+		expect(second.topTools[0]?.name).toBe("Bash");
+	});
+
+	it("reports exact filtered error totals independently from grouped detail limits", async () => {
+		await createSession("errors", "Errors", "gpt-test");
+		await setSessionProviderId("errors", "codex");
+		await appendMessage("errors", 1, "assistant", "failed");
+		for (const id of ["tool-1", "tool-2", "tool-3"]) {
+			await appendToolEvent("errors", 1, id, "Bash", {});
+		}
+		await setToolEventResult("errors", "tool-1", "same error", true);
+		await setToolEventResult("errors", "tool-2", "same error", true);
+		testDb
+			.query(
+				"UPDATE tool_events SET is_error = 1, result_text = NULL WHERE tool_id = ?",
+			)
+			.run("tool-3");
+
+		const result = await getLedgerToolErrors(
+			"Bash",
+			{ range: "all", provider: "codex" },
+			1,
+		);
+
+		expect(result).toEqual({
+			total: 3,
+			distinct: 2,
+			groups: [{ text: "same error", count: 2 }],
+		});
 	});
 
 	it("treats Today as the current local calendar day", async () => {
@@ -120,4 +231,45 @@ describe("Ledger filtered analytics", () => {
 		expect(result.modelSplit).toEqual([{ model: "included-model", count: 1 }]);
 		expect(result.trend.days).toEqual([{ date: "2026-07-10", count: 1 }]);
 	});
+
+	for (const [range, includedOffset, excludedOffset] of [
+		["7d", "-6 days", "-7 days"],
+		["30d", "-29 days", "-30 days"],
+		["90d", "-89 days", "-90 days"],
+	] as const) {
+		it(`treats ${range} as exactly that many local calendar days`, async () => {
+			await createSession("included", "Included", "included-model");
+			await recordQuery("included", query("end_turn", 1), "codex");
+			await createSession("excluded", "Excluded", "excluded-model");
+			await recordQuery("excluded", query("end_turn", 2), "codex");
+
+			for (const [sessionId, offset] of [
+				["included", includedOffset],
+				["excluded", excludedOffset],
+			] as const) {
+				testDb
+					.query(
+						`UPDATE usage_queries
+						 SET timestamp = unixepoch('now', 'localtime', 'start of day', ?, 'utc')
+						 WHERE session_id = ?`,
+					)
+					.run(offset, sessionId);
+				testDb
+					.query(
+						`UPDATE queries
+						 SET timestamp = unixepoch('now', 'localtime', 'start of day', ?, 'utc')
+						 WHERE session_id = ?`,
+					)
+					.run(offset, sessionId);
+			}
+
+			const result = await getLedgerAnalytics({ range });
+
+			expect(result.selected.queries).toBe(1);
+			expect(result.selected.cost).toBe(1);
+			expect(result.modelSplit).toEqual([
+				{ model: "included-model", count: 1 },
+			]);
+		});
+	}
 });

@@ -155,6 +155,8 @@ export type AgentEvent =
 	| {
 			type: "done";
 			cost?: number;
+			/** Whether `cost` is provider-reported, including a genuine known zero. */
+			costKnown?: boolean;
 			/** API-equivalent estimate when the provider does not report actual cost. */
 			estimatedCost?: number | null;
 			turns: number;

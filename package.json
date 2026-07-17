@@ -1,7 +1,7 @@
 {
   "name": "hlid",
   "description": "Hliðskjálf - Watcher of Worlds",
-	"version": "0.0.169",
+	"version": "0.0.170",
   "private": true,
   "type": "module",
   "imports": {
@@ -34,7 +34,10 @@
     "validate": "bun run test:coverage && bun run check && bun run analyze:full",
     "stage": "biome format --write && biome lint --fix && biome check --fix && bun run validate",
     "version:bump": "bumpp --quiet",
-    "generate-icons": "bun scripts/generate-icons.ts"
+    "generate-icons": "bun scripts/generate-icons.ts",
+    "repair:codex-usage": "bun scripts/repair-codex-usage.ts",
+    "repair:claude-usage": "bun scripts/repair-claude-usage.ts",
+    "import:provider-history": "bun scripts/import-provider-history.ts"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.1.0",

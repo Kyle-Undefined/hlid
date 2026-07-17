@@ -255,6 +255,7 @@ describe("TerminalSessionPool — getSessionsStatus", () => {
 		const statuses = pool.getSessionsStatus();
 		expect(statuses).toHaveLength(1);
 		expect(statuses[0].session_id).toBe("sess-1");
+		expect(statuses[0].provider_id).toBe("claude");
 		expect(statuses[0].mode).toBe("terminal");
 		pool.closeAll();
 		vi.useRealTimers();

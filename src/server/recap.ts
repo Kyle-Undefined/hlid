@@ -1,5 +1,6 @@
 import * as db from "../db";
-import type { AgentProvider } from "./agentProvider";
+import type { AgentEvent, AgentProvider } from "./agentProvider";
+import { bumpDataRevision } from "./dataRevision";
 import type { ServerMessage } from "./protocol";
 
 export type GenerateTurnRecapOptions = {
@@ -14,7 +15,55 @@ export type GenerateTurnRecapOptions = {
 	sdkSummary?: string | null;
 	provider?: AgentProvider;
 	recapModel?: string;
+	agentCwd?: string | null;
 };
+
+async function recordRecapUsage(
+	sessionId: string,
+	provider: AgentProvider,
+	recapModel: string,
+	agentCwd: string | null | undefined,
+	event: Extract<AgentEvent, { type: "done" }>,
+	actualModel: string | null,
+	contextWindow: number | null,
+): Promise<void> {
+	const primaryModelId = event.modelUsage
+		? Object.keys(event.modelUsage)[0]
+		: undefined;
+	const primaryModel = event.modelUsage
+		? Object.values(event.modelUsage)[0]
+		: undefined;
+	const inputTokens = event.usage?.inputTokens ?? 0;
+	const cacheReadTokens = event.usage?.cacheReadTokens ?? 0;
+	const cacheCreationTokens = event.usage?.cacheCreationTokens ?? 0;
+	await db.recordQuery(
+		sessionId,
+		{
+			cost: event.cost ?? 0,
+			cost_known:
+				event.costKnown ??
+				(typeof event.cost === "number" ||
+					typeof event.estimatedCost === "number"),
+			estimated_cost: event.estimatedCost ?? null,
+			input_tokens: inputTokens,
+			output_tokens: event.usage?.outputTokens ?? 0,
+			cache_read_tokens: cacheReadTokens,
+			cache_creation_tokens: cacheCreationTokens,
+			duration_ms: event.durationMs,
+			turns: event.turns,
+			context_window: primaryModel?.contextWindow ?? contextWindow,
+			// Recaps are real provider calls, but remain auxiliary accounting facts:
+			// persistSession=false keeps them out of Raven/provider history and this
+			// sentinel keeps their ephemeral context from replacing the chat context.
+			stop_reason: "turn_recap",
+			tokens_in_context: inputTokens + cacheReadTokens + cacheCreationTokens,
+			model: actualModel ?? primaryModelId ?? recapModel,
+			agent_cwd: agentCwd ?? null,
+		},
+		provider.providerId,
+	);
+	bumpDataRevision("stats", "sessions");
+}
 
 export async function generateTurnRecap({
 	sessionId,
@@ -28,6 +77,7 @@ export async function generateTurnRecap({
 	sdkSummary = null,
 	provider,
 	recapModel = "claude-haiku-4-5",
+	agentCwd,
 }: GenerateTurnRecapOptions): Promise<void> {
 	const userExcerpt = userMessage
 		.slice(0, 600)
@@ -93,9 +143,34 @@ export async function generateTurnRecap({
 		await session.send(prompt);
 		session.closeInput?.();
 		let summary = "";
+		let usageRecorded = false;
+		let actualModel: string | null = null;
+		let contextWindow: number | null = null;
 		for await (const event of session) {
 			if (event.type === "text_delta") {
 				summary += event.text;
+			} else if (event.type === "usage") {
+				if (event.model) actualModel = event.model;
+				if (event.contextWindow) contextWindow = event.contextWindow;
+			} else if (event.type === "done" && sessionId && !usageRecorded) {
+				// Some provider adapters can surface duplicate terminal notifications.
+				// The recap call is one inference, so account its first successfully
+				// persisted completion once. A duplicate done may retry a transient DB
+				// failure without charging twice after the atomic recordQuery succeeds.
+				try {
+					await recordRecapUsage(
+						sessionId,
+						provider,
+						recapModel,
+						agentCwd,
+						event,
+						actualModel,
+						contextWindow,
+					);
+					usageRecorded = true;
+				} catch (e) {
+					console.error("[db] record recap usage failed:", e);
+				}
 			}
 		}
 		const trimmed = summary.trim();

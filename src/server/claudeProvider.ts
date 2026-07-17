@@ -172,6 +172,153 @@ type EventTranslation = {
 	hadText: boolean;
 };
 
+type ClaudeMessageWait =
+	| { kind: "message"; result: IteratorResult<SDKMessage> }
+	| { kind: "timeout" };
+
+async function waitForClaudeMessage(
+	promise: Promise<IteratorResult<SDKMessage>>,
+	timeoutMs?: number,
+): Promise<ClaudeMessageWait> {
+	if (timeoutMs === undefined) {
+		return { kind: "message", result: await promise };
+	}
+	if (timeoutMs <= 0) return { kind: "timeout" };
+	return new Promise<ClaudeMessageWait>((resolve, reject) => {
+		const timer = setTimeout(() => resolve({ kind: "timeout" }), timeoutMs);
+		promise.then(
+			(result) => {
+				clearTimeout(timer);
+				resolve({ kind: "message", result });
+			},
+			(error) => {
+				clearTimeout(timer);
+				reject(error);
+			},
+		);
+	});
+}
+
+type ClaudeTokenBuckets = {
+	inputTokens: number;
+	outputTokens: number;
+	cacheReadTokens: number;
+	cacheCreationTokens: number;
+};
+
+const EMPTY_CLAUDE_USAGE: ClaudeTokenBuckets = {
+	inputTokens: 0,
+	outputTokens: 0,
+	cacheReadTokens: 0,
+	cacheCreationTokens: 0,
+};
+
+// Claude can return the root result while an Agent task continues in the
+// background. Keep the Hlid query open long enough to collect that owned
+// child's final assistant usage, but never let a missing task notification
+// hold the session open forever.
+const CLAUDE_BACKGROUND_SETTLE_TIMEOUT_MS = 10 * 60_000;
+const CLAUDE_BACKGROUND_USAGE_DRAIN_MS = 250;
+
+function claudeUsageBuckets(
+	usage:
+		| {
+				input_tokens?: number;
+				output_tokens?: number;
+				cache_read_input_tokens?: number | null;
+				cache_creation_input_tokens?: number | null;
+		  }
+		| null
+		| undefined,
+): ClaudeTokenBuckets | null {
+	if (!usage) return null;
+	return {
+		inputTokens: usage.input_tokens ?? 0,
+		outputTokens: usage.output_tokens ?? 0,
+		cacheReadTokens: usage.cache_read_input_tokens ?? 0,
+		cacheCreationTokens: usage.cache_creation_input_tokens ?? 0,
+	};
+}
+
+function addClaudeUsage(
+	a: ClaudeTokenBuckets,
+	b: ClaudeTokenBuckets,
+): ClaudeTokenBuckets {
+	return {
+		inputTokens: a.inputTokens + b.inputTokens,
+		outputTokens: a.outputTokens + b.outputTokens,
+		cacheReadTokens: a.cacheReadTokens + b.cacheReadTokens,
+		cacheCreationTokens: a.cacheCreationTokens + b.cacheCreationTokens,
+	};
+}
+
+function claudeUsageEquals(
+	a: ClaudeTokenBuckets,
+	b: ClaudeTokenBuckets,
+): boolean {
+	return (
+		a.inputTokens === b.inputTokens &&
+		a.outputTokens === b.outputTokens &&
+		a.cacheReadTokens === b.cacheReadTokens &&
+		a.cacheCreationTokens === b.cacheCreationTokens
+	);
+}
+
+/**
+ * Claude's result.usage has historically covered the root API calls but not
+ * child Agent calls. The SDK does stream those child assistant messages with a
+ * parent_tool_use_id, so retain the latest usage snapshot for each API message
+ * id and add children only when the root stream exactly fingerprints the result.
+ * Newer SDKs that already return the combined total are detected and left alone.
+ */
+class ClaudeTurnUsageAccumulator {
+	private calls = new Map<
+		string,
+		{ usage: ClaudeTokenBuckets; child: boolean }
+	>();
+	private ambiguousIds = new Set<string>();
+
+	record(message: Extract<SDKMessage, { type: "assistant" }>): void {
+		const messageId = message.message.id;
+		const usage = claudeUsageBuckets(message.message.usage);
+		if (typeof messageId !== "string" || !messageId || !usage) return;
+		if (this.ambiguousIds.has(messageId)) return;
+		const child = message.parent_tool_use_id != null;
+		const previous = this.calls.get(messageId);
+		// A single API response can be delivered more than once as its content
+		// grows. Keep the latest snapshot, but never reclassify an id across root
+		// and child ownership.
+		if (previous && previous.child !== child) {
+			this.calls.delete(messageId);
+			this.ambiguousIds.add(messageId);
+			return;
+		}
+		this.calls.set(messageId, { usage, child });
+	}
+
+	reconcile(
+		result: Extract<SDKMessage, { type: "result" }>,
+	): ClaudeTokenBuckets | null {
+		const reported = claudeUsageBuckets(result.usage);
+		if (!reported) return null;
+		let root = { ...EMPTY_CLAUDE_USAGE };
+		let children = { ...EMPTY_CLAUDE_USAGE };
+		for (const call of this.calls.values()) {
+			if (call.child) children = addClaudeUsage(children, call.usage);
+			else root = addClaudeUsage(root, call.usage);
+		}
+		const combined = addClaudeUsage(root, children);
+		if (claudeUsageEquals(reported, combined)) return reported;
+		if (claudeUsageEquals(reported, root)) return combined;
+		return reported;
+	}
+
+	reset(): void {
+		this.calls.clear();
+		this.ambiguousIds.clear();
+	}
+}
+
 type ClaudeTaskMessage = Extract<SDKMessage, { type: "system" }> &
 	Record<string, unknown>;
 
@@ -181,9 +328,18 @@ class ClaudeSubagentTracker {
 	private snapshots = new Map<string, SubagentSnapshot>();
 	private toolIds = new Map<string, string>();
 	private toolMetadata = new Map<string, ClaudeSubagentMetadata>();
+	private unsettledTaskIds = new Set<string>();
+	private abandonedTaskIds = new Set<string>();
+	private queryOwnedParentIds = new Set<string>();
+	private ignoredParentIds = new Set<string>();
+	private startedTaskVersion = 0;
 
 	/** Capture fields exposed on Claude's Agent tool before task_started arrives. */
-	recordTool(toolId: string, input: unknown): SubagentSnapshot | undefined {
+	recordTool(
+		toolId: string,
+		input: unknown,
+		toolName?: string,
+	): SubagentSnapshot | undefined {
 		const toolInput =
 			typeof input === "object" && input !== null
 				? (input as Record<string, unknown>)
@@ -201,6 +357,9 @@ class ClaudeSubagentTracker {
 					: {}),
 		};
 		this.toolMetadata.set(toolId, metadata);
+		if (toolName === "Agent" || toolName === "Task") {
+			this.queryOwnedParentIds.add(toolId);
+		}
 
 		for (const [taskId, mappedToolId] of this.toolIds) {
 			if (mappedToolId !== toolId) continue;
@@ -211,6 +370,65 @@ class ClaudeSubagentTracker {
 			return subagent;
 		}
 		return undefined;
+	}
+
+	hasUnsettledTasks(): boolean {
+		return this.unsettledTaskIds.size > 0;
+	}
+
+	hasOwnedTaskCandidates(): boolean {
+		return this.queryOwnedParentIds.size > 0;
+	}
+
+	taskVersion(): number {
+		return this.startedTaskVersion;
+	}
+
+	trackChildParent(parentToolUseId: string | null | undefined): void {
+		if (!parentToolUseId || this.ignoredParentIds.has(parentToolUseId)) return;
+		this.queryOwnedParentIds.add(parentToolUseId);
+	}
+
+	shouldIgnoreChildUsage(parentToolUseId: string | null | undefined): boolean {
+		return Boolean(
+			parentToolUseId && this.ignoredParentIds.has(parentToolUseId),
+		);
+	}
+
+	/**
+	 * Seal child ownership at a query boundary. Any straggling assistant event
+	 * for one of these tool ids belongs to the completed query and must not be
+	 * recorded by the following Hlid query.
+	 */
+	finishQuery(): void {
+		for (const parentId of this.queryOwnedParentIds) {
+			this.ignoredParentIds.add(parentId);
+		}
+		this.queryOwnedParentIds.clear();
+	}
+
+	/** Mark still-running owned tasks interrupted and quarantine their late use. */
+	abandonUnsettledTasks(): AgentEvent[] {
+		const events: AgentEvent[] = [];
+		for (const taskId of this.unsettledTaskIds) {
+			this.abandonedTaskIds.add(taskId);
+			this.ignoredParentIds.add(taskId);
+			const resolved = this.resolveTask(taskId);
+			if (!resolved) continue;
+			const { current, toolId } = resolved;
+			this.ignoredParentIds.add(toolId);
+			const subagent: SubagentSnapshot = {
+				...current,
+				status: "interrupted",
+				currentStep: "Background subagent usage collection timed out",
+				endedAtMs: Date.now(),
+			};
+			this.snapshots.set(taskId, subagent);
+			events.push({ type: "tool_update", toolId, subagent });
+		}
+		this.unsettledTaskIds.clear();
+		this.finishQuery();
+		return events;
 	}
 
 	snapshotForTool(toolId: string): SubagentSnapshot | undefined {
@@ -297,6 +515,7 @@ class ClaudeSubagentTracker {
 		message: Extract<SDKMessage, { type: "tool_progress" }>,
 	): AgentEvent[] {
 		if (!message.task_id) return [];
+		if (this.abandonedTaskIds.has(message.task_id)) return [];
 		const current = this.snapshots.get(message.task_id);
 		const toolId = this.toolIds.get(message.task_id);
 		if (!current || !toolId) return [];
@@ -318,7 +537,13 @@ class ClaudeSubagentTracker {
 		const isSubagent =
 			message.task_type === "subagent" ||
 			typeof message.subagent_type === "string";
-		if (!taskId || !isSubagent || message.skip_transcript === true) return [];
+		if (message.skip_transcript === true) {
+			if (typeof message.tool_use_id === "string") {
+				this.queryOwnedParentIds.delete(message.tool_use_id);
+			}
+			return [];
+		}
+		if (!taskId || !isSubagent || this.abandonedTaskIds.has(taskId)) return [];
 		const originatingToolId =
 			typeof message.tool_use_id === "string" && message.tool_use_id
 				? message.tool_use_id
@@ -343,6 +568,9 @@ class ClaudeSubagentTracker {
 		};
 		this.snapshots.set(taskId, subagent);
 		this.toolIds.set(taskId, originatingToolId);
+		this.unsettledTaskIds.add(taskId);
+		this.queryOwnedParentIds.add(originatingToolId);
+		this.startedTaskVersion++;
 		if (typeof message.tool_use_id === "string" && message.tool_use_id) {
 			return [{ type: "tool_update", toolId: originatingToolId, subagent }];
 		}
@@ -359,6 +587,7 @@ class ClaudeSubagentTracker {
 
 	private handleProgress(message: ClaudeTaskMessage): AgentEvent[] {
 		const taskId = String(message.task_id ?? "");
+		if (this.abandonedTaskIds.has(taskId)) return [];
 		const { usage, summary } = this.extractUsageSummary(message);
 		return this.updateTask(taskId, (current) => {
 			const description =
@@ -385,6 +614,7 @@ class ClaudeSubagentTracker {
 
 	private handleUpdated(message: ClaudeTaskMessage): AgentEvent[] {
 		const taskId = String(message.task_id ?? "");
+		if (this.abandonedTaskIds.has(taskId)) return [];
 		const patch = (message.patch ?? {}) as Record<string, unknown>;
 		const rawStatus = String(patch.status ?? "");
 		const status: SubagentSnapshot["status"] =
@@ -398,6 +628,7 @@ class ClaudeSubagentTracker {
 							? "pending"
 							: "running";
 		const terminal = status === "completed" || status === "failed";
+		if (terminal) this.unsettledTaskIds.delete(taskId);
 		return this.updateTask(taskId, (current) => ({
 			...current,
 			status,
@@ -416,6 +647,7 @@ class ClaudeSubagentTracker {
 
 	private handleNotification(message: ClaudeTaskMessage): AgentEvent[] {
 		const taskId = String(message.task_id ?? "");
+		if (this.abandonedTaskIds.has(taskId)) return [];
 		const rawStatus = String(message.status ?? "");
 		const status: SubagentSnapshot["status"] =
 			rawStatus === "completed"
@@ -424,6 +656,7 @@ class ClaudeSubagentTracker {
 					? "interrupted"
 					: "failed";
 		const { usage, summary } = this.extractUsageSummary(message);
+		this.unsettledTaskIds.delete(taskId);
 		return this.updateTask(taskId, (current) => ({
 			...current,
 			status,
@@ -513,7 +746,7 @@ function translateAssistantMessage(
 			events.push({ type: "text_delta", text: block.text });
 		} else if (block.type === "tool_use") {
 			const subagent =
-				tracker.recordTool(block.id, block.input) ??
+				tracker.recordTool(block.id, block.input, block.name) ??
 				tracker.snapshotForTool(block.id);
 			events.push({
 				type: "tool_start",
@@ -638,6 +871,7 @@ class ClaudeAgentSession implements AgentSession {
 	private receivedAnyEvent = false;
 	private retriedWithoutResume = false;
 	private subagents = new ClaudeSubagentTracker();
+	private turnUsage = new ClaudeTurnUsageAccumulator();
 
 	constructor(
 		makeQuery: (
@@ -825,15 +1059,148 @@ class ClaudeAgentSession implements AgentSession {
 		return generator[Symbol.asyncIterator]();
 	}
 
+	private completeResult(
+		message: Extract<SDKMessage, { type: "result" }>,
+		done: Extract<AgentEvent, { type: "done" }>,
+	): Extract<AgentEvent, { type: "done" }> {
+		const reconciled = this.turnUsage.reconcile(message);
+		this.turnUsage.reset();
+		this.subagents.finishQuery();
+		if (!reconciled) return done;
+		return {
+			...done,
+			usage: {
+				inputTokens: reconciled.inputTokens,
+				outputTokens: reconciled.outputTokens,
+				cacheReadTokens: reconciled.cacheReadTokens,
+				cacheCreationTokens: reconciled.cacheCreationTokens,
+			},
+		};
+	}
+
 	private async *translateEvents(): AsyncGenerator<AgentEvent> {
 		const sdkQuery = this.sdkQuery;
 		if (!sdkQuery) return;
 		let hadText = false;
-		for await (const message of sdkQuery) {
-			this.receivedAnyEvent = true;
-			const translation = translateSdkMessage(message, hadText, this.subagents);
-			hadText = translation.hadText;
-			yield* translation.events;
+		const messages = sdkQuery[Symbol.asyncIterator]();
+		let nextMessage: Promise<IteratorResult<SDKMessage>> | null = null;
+		let pendingResult: {
+			message: Extract<SDKMessage, { type: "result" }>;
+			done: Extract<AgentEvent, { type: "done" }>;
+			deadlineMs: number;
+			awaitTaskVersion: number | null;
+			usageDrainDeadlineMs: number | null;
+		} | null = null;
+
+		try {
+			while (true) {
+				nextMessage ??= messages.next();
+				const waited = await waitForClaudeMessage(
+					nextMessage,
+					pendingResult
+						? Math.min(
+								pendingResult.deadlineMs,
+								pendingResult.usageDrainDeadlineMs ?? Number.POSITIVE_INFINITY,
+							) - Date.now()
+						: undefined,
+				);
+				if (waited.kind === "timeout") {
+					if (!pendingResult) continue;
+					const usageDrainComplete =
+						pendingResult.usageDrainDeadlineMs != null &&
+						Date.now() >= pendingResult.usageDrainDeadlineMs &&
+						!this.subagents.hasUnsettledTasks();
+					if (!usageDrainComplete) {
+						yield* this.subagents.abandonUnsettledTasks();
+					}
+					yield this.completeResult(pendingResult.message, pendingResult.done);
+					hadText = false;
+					pendingResult = null;
+					continue;
+				}
+				const next = waited.result;
+				nextMessage = null;
+				if (next.done) {
+					if (pendingResult) {
+						yield* this.subagents.abandonUnsettledTasks();
+						yield this.completeResult(
+							pendingResult.message,
+							pendingResult.done,
+						);
+					}
+					return;
+				}
+				const message = next.value;
+				this.receivedAnyEvent = true;
+				if (message.type === "assistant") {
+					const parentToolUseId = message.parent_tool_use_id;
+					if (this.subagents.shouldIgnoreChildUsage(parentToolUseId)) continue;
+					this.subagents.trackChildParent(parentToolUseId);
+					this.turnUsage.record(message);
+				}
+				const translation = translateSdkMessage(
+					message,
+					hadText,
+					this.subagents,
+				);
+				hadText = translation.hadText;
+				if (message.type !== "result") {
+					yield* translation.events;
+					if (pendingResult) {
+						const backgroundSettled =
+							!this.subagents.hasUnsettledTasks() &&
+							(pendingResult.awaitTaskVersion == null ||
+								this.subagents.taskVersion() > pendingResult.awaitTaskVersion ||
+								!this.subagents.hasOwnedTaskCandidates());
+						if (backgroundSettled) {
+							pendingResult.usageDrainDeadlineMs ??=
+								Date.now() + CLAUDE_BACKGROUND_USAGE_DRAIN_MS;
+						} else {
+							pendingResult.usageDrainDeadlineMs = null;
+						}
+					}
+					continue;
+				}
+				if (pendingResult) {
+					// A second root result cannot legitimately arrive before Hlid closes the
+					// previous query. Fail closed: quarantine any old child and complete its
+					// accounting before accepting the new boundary.
+					yield* this.subagents.abandonUnsettledTasks();
+					yield this.completeResult(pendingResult.message, pendingResult.done);
+					pendingResult = null;
+				}
+				const done = translation.events.find(
+					(event): event is Extract<AgentEvent, { type: "done" }> =>
+						event.type === "done",
+				);
+				for (const event of translation.events) {
+					if (event.type !== "done") yield event;
+				}
+				if (!done) continue;
+				const hasUnsettledTasks = this.subagents.hasUnsettledTasks();
+				const backgroundRequested =
+					message.terminal_reason === "background_requested" &&
+					this.subagents.hasOwnedTaskCandidates();
+				if (hasUnsettledTasks || backgroundRequested) {
+					pendingResult = {
+						message,
+						done,
+						deadlineMs: Date.now() + CLAUDE_BACKGROUND_SETTLE_TIMEOUT_MS,
+						awaitTaskVersion:
+							backgroundRequested && !hasUnsettledTasks
+								? this.subagents.taskVersion()
+								: null,
+						usageDrainDeadlineMs: null,
+					};
+					continue;
+				}
+				yield this.completeResult(message, done);
+				hadText = false;
+			}
+		} catch (error) {
+			if (!pendingResult) throw error;
+			yield* this.subagents.abandonUnsettledTasks();
+			yield this.completeResult(pendingResult.message, pendingResult.done);
 		}
 	}
 }

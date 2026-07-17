@@ -159,6 +159,7 @@ export class SessionPool {
 				agent_cwd: entry.agentCwd,
 				agent_name: entry.agentName,
 				state,
+				provider_id: entry.manager.getProviderId(),
 				model,
 				effort,
 				permission_mode,

@@ -85,6 +85,24 @@ function handleGetRoute(
 	return handler ? handler(context) : null;
 }
 
+function parseLedgerRange(
+	value: string | null,
+): db.LedgerStatsRange | undefined {
+	return value === "today" ||
+		value === "7d" ||
+		value === "30d" ||
+		value === "90d" ||
+		value === "all" ||
+		value === "custom"
+		? value
+		: undefined;
+}
+
+function ledgerDateParam(url: URL, name: "from" | "to"): string | undefined {
+	const value = url.searchParams.get(name);
+	return value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : undefined;
+}
+
 async function getSessions(url: URL): Promise<Response> {
 	const page = clampInt(url.searchParams.get("page"), 1, 1);
 	const size = clampInt(url.searchParams.get("size"), 20, 1, 100);
@@ -93,6 +111,7 @@ async function getSessions(url: URL): Promise<Response> {
 	const model = url.searchParams.get("model")?.trim() || undefined;
 	const provider = url.searchParams.get("provider")?.trim() || undefined;
 	const stop = url.searchParams.get("stop")?.trim() || undefined;
+	const range = parseLedgerRange(url.searchParams.get("range"));
 	const sortParam = url.searchParams.get("sort");
 	const sort =
 		sortParam === "cost" || sortParam === "tokens" || sortParam === "recent"
@@ -104,6 +123,9 @@ async function getSessions(url: URL): Promise<Response> {
 		model,
 		provider,
 		stop,
+		range,
+		from: ledgerDateParam(url, "from"),
+		to: ledgerDateParam(url, "to"),
 		sort,
 	});
 	return Response.json(result);
@@ -259,26 +281,14 @@ async function getActivity(): Promise<Response> {
 }
 
 async function getLedgerAnalytics(url: URL): Promise<Response> {
-	const rangeParam = url.searchParams.get("range");
-	const range: db.LedgerStatsRange =
-		rangeParam === "today" ||
-		rangeParam === "7d" ||
-		rangeParam === "90d" ||
-		rangeParam === "all" ||
-		rangeParam === "custom"
-			? rangeParam
-			: "30d";
-	const dateParam = (name: "from" | "to") => {
-		const value = url.searchParams.get(name);
-		return value && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : undefined;
-	};
+	const range = parseLedgerRange(url.searchParams.get("range")) ?? "30d";
 	const filter = {
 		range,
 		agent: url.searchParams.get("agent")?.trim() || undefined,
 		provider: url.searchParams.get("provider")?.trim() || undefined,
 		model: url.searchParams.get("model")?.trim() || undefined,
-		from: dateParam("from"),
-		to: dateParam("to"),
+		from: ledgerDateParam(url, "from"),
+		to: ledgerDateParam(url, "to"),
 	};
 	const key = JSON.stringify(filter);
 	const snapshot = await readAnalyticsSnapshot(

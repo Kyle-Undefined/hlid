@@ -109,6 +109,7 @@ describe("activity — getTopToolCalls", () => {
 
 		const [bash] = await getTopToolCalls();
 		expect(bash.count).toBe(4);
+		expect(bash.errorCount).toBe(3);
 		expect(bash.errorRate).toBeCloseTo(0.75, 5);
 	});
 
@@ -120,6 +121,7 @@ describe("activity — getTopToolCalls", () => {
 
 		const [read] = await getTopToolCalls();
 		expect(read.count).toBe(2);
+		expect(read.errorCount).toBe(0);
 		expect(read.errorRate).toBe(0);
 	});
 

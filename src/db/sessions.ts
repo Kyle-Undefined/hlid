@@ -1,5 +1,6 @@
 import { normalizeSearchText } from "../lib/search";
 import { markAnalyticsChanged } from "./analyticsRevision";
+import { type LedgerStatsRange, ledgerRangeCondition } from "./ledgerAnalytics";
 import type { Db } from "./schema";
 import { getDb } from "./schema";
 import type {
@@ -15,7 +16,7 @@ export async function setSessionAgentCwd(
 ): Promise<void> {
 	const db = await getDb();
 	db.run(`UPDATE sessions SET agent_cwd = ? WHERE id = ?`, [cwd, sessionId]);
-	markAnalyticsChanged(["stats"], "session_agent_cwd");
+	markAnalyticsChanged(["stats", "activity"], "session_agent_cwd");
 }
 
 export async function getSessionAgentCwd(
@@ -138,7 +139,7 @@ export async function setSessionProviderSession(
 		 WHERE id = ?`,
 		[providerId, providerSessionId, providerId, providerSessionId, sessionId],
 	);
-	markAnalyticsChanged(["stats"], "session_provider_session");
+	markAnalyticsChanged(["stats", "activity"], "session_provider_session");
 }
 
 export async function getSessionProviderSession(
@@ -172,7 +173,7 @@ export async function setSessionProviderId(
 		providerId,
 		sessionId,
 	]);
-	markAnalyticsChanged(["stats"], "session_provider");
+	markAnalyticsChanged(["stats", "activity"], "session_provider");
 }
 
 export async function getSessionProviderId(
@@ -252,13 +253,29 @@ export async function recordQuery(
 ): Promise<{ estimatedCost: number | null }> {
 	const database = await getDb();
 	const estimatedCost = data.estimated_cost ?? null;
+	const costKnown =
+		data.cost_known === true || data.cost !== 0 || estimatedCost !== null;
+	const unpriced = estimatedCost === null && !costKnown ? 1 : 0;
+	const sessionDimensions = database
+		.query<{ model: string | null; agent_cwd: string | null }, [string]>(
+			`SELECT COALESCE(NULLIF(selected_model, ''), NULLIF(actual_model, ''), NULLIF(model, '')) AS model,
+			        agent_cwd
+			 FROM sessions WHERE id = ?`,
+		)
+		.get(sessionId);
+	const queryModel = data.model ?? sessionDimensions?.model ?? null;
+	const queryAgentCwd =
+		data.agent_cwd === undefined
+			? (sessionDimensions?.agent_cwd ?? null)
+			: data.agent_cwd;
 	database.transaction(() => {
 		database.run(
-			`INSERT INTO queries (session_id, timestamp, cost, estimated_cost, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, duration_ms, turns, context_window, stop_reason, tokens_in_context)
-			 VALUES (?, unixepoch(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO queries (session_id, timestamp, cost, cost_known, estimated_cost, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, duration_ms, turns, context_window, stop_reason, tokens_in_context, provider_id, model, agent_cwd)
+			 VALUES (?, unixepoch(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				sessionId,
 				data.cost,
+				costKnown ? 1 : 0,
 				estimatedCost,
 				data.input_tokens,
 				data.output_tokens,
@@ -269,6 +286,9 @@ export async function recordQuery(
 				data.context_window,
 				data.stop_reason,
 				data.tokens_in_context ?? null,
+				providerId,
+				queryModel,
+				queryAgentCwd,
 			],
 		);
 		database.run(
@@ -287,7 +307,7 @@ export async function recordQuery(
 			[
 				data.cost,
 				estimatedCost ?? 0,
-				estimatedCost == null && providerId === "codex" ? 1 : 0,
+				unpriced,
 				data.input_tokens,
 				data.output_tokens,
 				data.cache_read_tokens,
@@ -312,7 +332,7 @@ export async function recordQuery(
 			[
 				data.cost,
 				estimatedCost ?? 0,
-				estimatedCost == null && providerId === "codex" ? 1 : 0,
+				unpriced,
 				data.input_tokens,
 				data.output_tokens,
 				data.cache_read_tokens,
@@ -321,19 +341,22 @@ export async function recordQuery(
 			],
 		);
 		database.run(
-			`INSERT INTO usage_queries (session_id, timestamp, cost, estimated_cost, unpriced, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, turns, provider_id)
-			 VALUES (?, unixepoch(), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO usage_queries (session_id, timestamp, cost, cost_known, estimated_cost, unpriced, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, turns, provider_id, model, agent_cwd)
+			 VALUES (?, unixepoch(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				sessionId,
 				data.cost,
+				costKnown ? 1 : 0,
 				estimatedCost,
-				estimatedCost == null && providerId === "codex" ? 1 : 0,
+				unpriced,
 				data.input_tokens,
 				data.output_tokens,
 				data.cache_read_tokens,
 				data.cache_creation_tokens,
 				data.turns,
 				providerId,
+				queryModel,
+				queryAgentCwd,
 			],
 		);
 	})();
@@ -355,7 +378,7 @@ export async function getSessionLastQueryContext(sessionId: string): Promise<{
 				`SELECT context_window,
 				        COALESCE(tokens_in_context, input_tokens + cache_read_tokens + cache_creation_tokens) AS last_context_used
 				 FROM queries
-				 WHERE session_id = ?
+				 WHERE session_id = ? AND COALESCE(stop_reason, '') <> 'turn_recap'
 				 ORDER BY timestamp DESC
 				 LIMIT 1`,
 			)
@@ -382,14 +405,15 @@ type SessionListOptions = {
 	model?: string;
 	provider?: string;
 	stop?: string;
+	range?: LedgerStatsRange;
+	from?: string;
+	to?: string;
 };
 
-function buildSessionFilter(
-	opts: Pick<
-		SessionListOptions,
-		"search" | "agent" | "model" | "provider" | "stop"
-	>,
-): { whereSql: string; params: string[] } {
+function buildSessionFilter(opts: Omit<SessionListOptions, "sort">): {
+	whereSql: string;
+	params: string[];
+} {
 	const conditions: string[] = [];
 	const params: string[] = [];
 	if (opts.search) {
@@ -402,25 +426,55 @@ function buildSessionFilter(
 		);
 		params.push(`%${normalizeSearchText(escaped)}%`);
 	}
-	if (opts.agent === "vault") {
-		conditions.push("(agent_cwd IS NULL OR TRIM(agent_cwd) = '')");
-	} else if (opts.agent) {
-		conditions.push("agent_cwd = ?");
-		params.push(opts.agent);
-	}
-	if (opts.model) {
-		conditions.push(`${SESSION_EFFECTIVE_MODEL_SQL} = ?`);
-		params.push(opts.model);
-	}
-	if (opts.provider) {
-		conditions.push("provider_id = ?");
-		params.push(opts.provider);
-	}
-	if (opts.stop) {
+	const queryScoped = opts.stop !== undefined || opts.range !== undefined;
+	if (!queryScoped) {
+		if (opts.agent === "vault") {
+			conditions.push("(agent_cwd IS NULL OR TRIM(agent_cwd) = '')");
+		} else if (opts.agent) {
+			conditions.push("agent_cwd = ?");
+			params.push(opts.agent);
+		}
+		if (opts.model) {
+			conditions.push(`${SESSION_EFFECTIVE_MODEL_SQL} = ?`);
+			params.push(opts.model);
+		}
+		if (opts.provider) {
+			conditions.push("provider_id = ?");
+			params.push(opts.provider);
+		}
+	} else {
+		const queryConditions = ["q_filter.session_id = sessions.id"];
+		if (opts.agent === "vault") {
+			queryConditions.push(
+				"(q_filter.agent_cwd IS NULL OR TRIM(q_filter.agent_cwd) = '')",
+			);
+		} else if (opts.agent) {
+			queryConditions.push("q_filter.agent_cwd = ?");
+			params.push(opts.agent);
+		}
+		if (opts.model) {
+			queryConditions.push("q_filter.model = ?");
+			params.push(opts.model);
+		}
+		if (opts.provider) {
+			queryConditions.push("q_filter.provider_id = ?");
+			params.push(opts.provider);
+		}
+		if (opts.stop) {
+			queryConditions.push("q_filter.stop_reason = ?");
+			params.push(opts.stop);
+		}
+		if (opts.range) {
+			const range = ledgerRangeCondition(
+				{ range: opts.range, from: opts.from, to: opts.to },
+				"q_filter.timestamp",
+			);
+			if (range.condition) queryConditions.push(range.condition);
+			params.push(...range.params);
+		}
 		conditions.push(
-			"EXISTS (SELECT 1 FROM queries q_filter WHERE q_filter.session_id = sessions.id AND q_filter.stop_reason = ?)",
+			`EXISTS (SELECT 1 FROM queries q_filter WHERE ${queryConditions.join(" AND ")})`,
 		);
-		params.push(opts.stop);
 	}
 	return {
 		whereSql: conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "",
@@ -458,7 +512,7 @@ export async function getSessionsPaginated(
 		.get(...params);
 	const oldest = db
 		.query<{ oldest: number | null }, []>(
-			`SELECT MIN(started_at) as oldest FROM sessions`,
+			`SELECT MIN(started_at) as oldest FROM sessions WHERE history_imported = 0`,
 		)
 		.get();
 	const agentCwds = db
@@ -554,7 +608,7 @@ export async function deleteSessionsOlderThan(
 	db.transaction(() => {
 		const sessionRows = db
 			.query<{ id: string }, [number]>(
-				`SELECT id FROM sessions WHERE started_at < ?`,
+				`SELECT id FROM sessions WHERE started_at < ? AND history_imported = 0`,
 			)
 			.all(cutoff);
 		ids = sessionRows.map((r) => r.id);
@@ -600,7 +654,8 @@ export async function getRecentSessions(limit = 14): Promise<SessionRow[]> {
 	const db = await getDb();
 	return db
 		.query<SessionRow, [number]>(
-			`SELECT * FROM sessions ORDER BY COALESCE(ended_at, started_at) DESC LIMIT ?`,
+			`SELECT * FROM sessions WHERE history_imported = 0
+			 ORDER BY COALESCE(ended_at, started_at) DESC LIMIT ?`,
 		)
 		.all(limit);
 }

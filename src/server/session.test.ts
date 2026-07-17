@@ -536,6 +536,31 @@ describe("SessionManager — setModel", () => {
 		expect(sm.getStatus().model).toBe("claude-fable-5");
 	});
 
+	it("rejects imported provider history before making it a live session", async () => {
+		const query = vi.fn<AgentProvider["query"]>();
+		const provider: AgentProvider = { providerId: "claude", query };
+		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
+			id: "history:claude:old-session",
+			label: "IMPORTED CLAUDE SESSION",
+			history_imported: 1,
+		} as never);
+		vi.mocked(dbMock.setCurrentSessionId).mockClear();
+		vi.mocked(dbMock.appendMessage).mockClear();
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await expect(
+			sm.runQuery("continue", () => {}, "history:claude:old-session"),
+		).rejects.toThrow(
+			"Imported provider history is read-only and cannot be resumed as a live session.",
+		);
+
+		expect(query).not.toHaveBeenCalled();
+		expect(dbMock.setCurrentSessionId).not.toHaveBeenCalled();
+		expect(dbMock.appendMessage).not.toHaveBeenCalled();
+		expect(sm.getCurrentSessionId()).toBeNull();
+		expect(sm.getStatus().state).toBe("idle");
+	});
+
 	it("restores saved effort and permission instead of current config defaults", async () => {
 		const { provider, captured } = makeCaptureProvider("claude");
 		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
@@ -3075,6 +3100,8 @@ describe("SessionManager — live tool_event persistence", () => {
 				"tu-1",
 				"Read",
 				{ file_path: "/a" },
+				undefined,
+				expect.objectContaining({ providerId: "claude", agentCwd: null }),
 			);
 		});
 		release();

@@ -34,6 +34,7 @@ const CATEGORIES = [
 		id: "overview",
 		label: "Overview",
 		description: "Updates, installation, startup, and storage",
+		sections: ["Updates", "Installation and startup", "Storage summary"],
 		keywords: "version install location launch login database attachments",
 		group: "primary",
 	},
@@ -41,6 +42,7 @@ const CATEGORIES = [
 		id: "workspace",
 		label: "Workspace",
 		description: "Vault identity, folders, and status vocabulary",
+		sections: ["Vault", "Status Vocabulary"],
 		keywords: "vault identity path folder mappings statuses",
 		group: "primary",
 	},
@@ -48,6 +50,7 @@ const CATEGORIES = [
 		id: "agents",
 		label: "Agents",
 		description: "Provider, model, permissions, limits, and recaps",
+		sections: ["Vault Agent", "Computer Use", "Auto-sleep on usage limit"],
 		keywords:
 			"provider model effort permissions turns recaps account computer use windows desktop auto sleep usage limit rate window resume",
 		group: "primary",
@@ -56,6 +59,7 @@ const CATEGORIES = [
 		id: "access",
 		label: "Access",
 		description: "Network, TLS, passwords, and trusted devices",
+		sections: ["Network", "App Password", "Trusted Devices"],
 		keywords:
 			"port local network tailscale tls password trusted devices lock logout sign out",
 		group: "primary",
@@ -64,6 +68,14 @@ const CATEGORIES = [
 		id: "experience",
 		label: "Experience",
 		description: "Themes, input, voice, and privacy",
+		sections: [
+			"UI",
+			"Custom theme",
+			"Custom palette",
+			"Voice input",
+			"Whisper models",
+			"Privacy",
+		],
 		keywords: "theme mobile enter skills plans whisper microphone demo",
 		group: "primary",
 	},
@@ -71,6 +83,14 @@ const CATEGORIES = [
 		id: "integrations",
 		label: "Integrations",
 		description: "MCP servers, external agents, and ACP",
+		sections: [
+			"MCP",
+			"Umbod policy",
+			"Generate agent hooks",
+			"Umbod activity",
+			"Call explorer",
+			"ACP Agent Catalog",
+		],
 		keywords: "mcp servers external agents acp catalog integrations",
 		group: "secondary",
 	},
@@ -78,6 +98,7 @@ const CATEGORIES = [
 		id: "developer",
 		label: "Developer",
 		description: "Event log and API reference",
+		sections: ["Event Log", "API Reference"],
 		keywords: "events logs api diagnostics endpoints",
 		group: "secondary",
 	},
@@ -85,6 +106,7 @@ const CATEGORIES = [
 		id: "advanced",
 		label: "Advanced",
 		description: "Maintenance and session lifecycle",
+		sections: ["Danger zone", "Session lifecycle"],
 		keywords: "optimize database reload session shutdown danger",
 		group: "secondary",
 	},
@@ -630,7 +652,7 @@ export function ForgeSettings({
 		return q
 			? CATEGORIES.filter((item) =>
 					includesSearchText(
-						`${item.label} ${item.description} ${item.keywords}`,
+						`${item.label} ${item.description} ${item.sections.join(" ")} ${item.keywords}`,
 						q,
 					),
 				)

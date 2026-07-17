@@ -397,6 +397,7 @@ describe("SessionPool.getSessionsStatus", () => {
 		expect(s.agent_cwd).toBe("/code/proj");
 		expect(s.agent_name).toBe("MyAgent");
 		expect(s.state).toBe("idle");
+		expect(s.provider_id).toBe("claude");
 		expect(s.model).toBe("claude-test");
 		expect(s.effort).toBe("medium");
 		expect(s.permission_mode).toBe("default");

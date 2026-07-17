@@ -44,7 +44,10 @@ const idle: SessionStatusEntry = {
 	agent_cwd: "/code/proj",
 	agent_name: "Proj",
 	state: "idle",
+	provider_id: "claude",
 	model: "claude-sonnet",
+	effort: "medium",
+	permission_mode: "default",
 	hasPendingPermissions: false,
 	hasDbSession: true,
 	db_session_id: null,
@@ -55,7 +58,10 @@ const running: SessionStatusEntry = {
 	agent_cwd: "/vault",
 	agent_name: "Vault",
 	state: "running",
+	provider_id: "codex",
 	model: "claude-sonnet",
+	effort: "high",
+	permission_mode: "acceptEdits",
 	hasPendingPermissions: false,
 	hasDbSession: true,
 	db_session_id: null,
@@ -158,6 +164,24 @@ describe("ActiveSessionsPanel", () => {
 		);
 		expect(screen.getAllByText(/idle/i).length).toBeGreaterThan(0);
 		expect(screen.getAllByText(/running/i).length).toBeGreaterThan(0);
+	});
+
+	it("shows provider, model, effort, and permission configuration", () => {
+		render(
+			<ActiveSessionsPanel
+				sessions={[idle, running]}
+				onStop={vi.fn()}
+				onClose={vi.fn()}
+			/>,
+		);
+		expect(
+			screen.getByText(
+				"claude · claude-sonnet · medium effort · default approvals",
+			),
+		).toBeDefined();
+		expect(
+			screen.getByText("codex · claude-sonnet · high effort · accept edits"),
+		).toBeDefined();
 	});
 
 	it("shows error state", () => {

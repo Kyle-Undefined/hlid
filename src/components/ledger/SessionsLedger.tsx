@@ -21,7 +21,7 @@ import {
 import { useIsDesktop } from "#/hooks/useIsDesktop";
 import type { LiveStats } from "#/hooks/wsLiveStatsStore";
 import { formatDisplayCost } from "#/lib/costDisplay";
-import { fmt, fmtDate, fmtDateUtc } from "#/lib/formatters";
+import { fmt, fmtDate, fmtDateUtc, fmtModel } from "#/lib/formatters";
 import type { LedgerAgentOption, SessionSortKey } from "#/lib/ledgerState";
 import type { SessionStatusEntry } from "#/server/protocol";
 
@@ -220,6 +220,14 @@ function SessionItem({
 		actionPanelRef,
 	);
 	const usage = sessionDisplayUsage(session, Boolean(isActive), liveStats);
+	const importedHistory = session.history_imported === 1;
+	const configuredModel = session.selected_model || session.model;
+	const providerModel = [
+		session.provider_id || "claude",
+		configuredModel ? fmtModel(configuredModel) : undefined,
+	]
+		.filter((part): part is string => Boolean(part))
+		.join(" · ");
 	const costSummary =
 		isActive && liveStats && liveStats.queries > 0
 			? liveStats
@@ -270,8 +278,10 @@ function SessionItem({
 	}
 
 	return (
-		<div className="relative flex items-center gap-2 border-b border-border last:border-0 group hover:bg-accent/20 transition-colors cursor-pointer">
-			{!editing && (
+		<div
+			className={`relative flex items-center gap-2 border-b border-border last:border-0 group hover:bg-accent/20 transition-colors ${importedHistory ? "cursor-default" : "cursor-pointer"}`}
+		>
+			{!editing && !importedHistory && (
 				<button
 					type="button"
 					onClick={() => onNavigate(session.id)}
@@ -330,6 +340,8 @@ function SessionItem({
 								"—"
 							)}{" "}
 							· {session.query_count}q
+							{providerModel ? ` · ${providerModel}` : ""}
+							{importedHistory ? " · imported usage" : ""}
 						</PrivacyMask>
 					</div>
 					<div className="text-right shrink-0">
@@ -342,54 +354,65 @@ function SessionItem({
 					</div>
 				</div>
 			)}
-			<div className={`relative pr-2 shrink-0 ${menuOpen ? "z-[70]" : "z-20"}`}>
-				<button
-					ref={actionButtonRef}
-					type="button"
-					onClick={() => setMenuOpen((open) => !open)}
-					className="w-11 h-11 flex items-center justify-center text-muted-foreground/50 hover:text-foreground md:opacity-0 md:group-hover:opacity-100 md:focus:opacity-100 transition-all"
-					aria-label="Session actions"
-					aria-expanded={menuOpen}
-				>
-					<Ellipsis size={17} />
-				</button>
-				{menuOpen && typeof document !== "undefined"
-					? createPortal(
-							<>
-								<button
-									type="button"
-									onClick={closeMenu}
-									className={`fixed inset-0 z-[60] ${isDesktop ? "bg-transparent" : "bg-black/10"}`}
-									aria-label="Dismiss session actions"
-								/>
-								{actionPosition && (
-									<SessionActionPanel
-										deleteConfirming={deleteConfirming}
-										renaming={!isDesktop && mobileRenaming}
-										renameValue={editValue}
-										onRenameValueChange={setEditValue}
-										onRename={() => {
-											if (isDesktop) {
-												closeMenu();
-												startEdit();
-											} else startMobileEdit();
-										}}
-										onCancelRename={closeMenu}
-										onConfirmRename={commitMobileEdit}
-										onRequestDelete={() => setDeleteConfirming(true)}
-										onCancelDelete={() => setDeleteConfirming(false)}
-										onConfirmDelete={() => {
-											onDelete(session.id);
-											closeMenu();
-										}}
-										position={actionPosition}
-										panelRef={actionPanelRef}
-									/>
-								)}
-							</>,
-							document.body,
-						)
-					: null}
+			<div
+				data-session-action-slot
+				className={`relative pr-2 shrink-0 ${menuOpen ? "z-[70]" : "z-20"}`}
+			>
+				{importedHistory ? (
+					// Imported accounting rows are intentionally read-only. Keep the
+					// normal action width reserved so their usage column stays aligned.
+					<div className="h-11 w-11" aria-hidden="true" />
+				) : (
+					<>
+						<button
+							ref={actionButtonRef}
+							type="button"
+							onClick={() => setMenuOpen((open) => !open)}
+							className="w-11 h-11 flex items-center justify-center text-muted-foreground/50 hover:text-foreground md:opacity-0 md:group-hover:opacity-100 md:focus:opacity-100 transition-all"
+							aria-label="Session actions"
+							aria-expanded={menuOpen}
+						>
+							<Ellipsis size={17} />
+						</button>
+						{menuOpen && typeof document !== "undefined"
+							? createPortal(
+									<>
+										<button
+											type="button"
+											onClick={closeMenu}
+											className={`fixed inset-0 z-[60] ${isDesktop ? "bg-transparent" : "bg-black/10"}`}
+											aria-label="Dismiss session actions"
+										/>
+										{actionPosition && (
+											<SessionActionPanel
+												deleteConfirming={deleteConfirming}
+												renaming={!isDesktop && mobileRenaming}
+												renameValue={editValue}
+												onRenameValueChange={setEditValue}
+												onRename={() => {
+													if (isDesktop) {
+														closeMenu();
+														startEdit();
+													} else startMobileEdit();
+												}}
+												onCancelRename={closeMenu}
+												onConfirmRename={commitMobileEdit}
+												onRequestDelete={() => setDeleteConfirming(true)}
+												onCancelDelete={() => setDeleteConfirming(false)}
+												onConfirmDelete={() => {
+													onDelete(session.id);
+													closeMenu();
+												}}
+												position={actionPosition}
+												panelRef={actionPanelRef}
+											/>
+										)}
+									</>,
+									document.body,
+								)
+							: null}
+					</>
+				)}
 			</div>
 		</div>
 	);

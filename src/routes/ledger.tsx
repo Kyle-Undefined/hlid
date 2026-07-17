@@ -10,6 +10,7 @@ import {
 	useState,
 	useSyncExternalStore,
 } from "react";
+import { z } from "zod";
 import { ThirtyDayGraph } from "#/components/cockpit/ThirtyDayGraph";
 import { ActiveSessionsPanel } from "#/components/ledger/ActiveSessionsPanel";
 import { CostBreakdown } from "#/components/ledger/CostBreakdown";
@@ -21,7 +22,7 @@ import { cacheHitPct, StatCell } from "#/components/ledger/LedgerStats";
 import { SessionsLedger } from "#/components/ledger/SessionsLedger";
 import { StatsFilterBar } from "#/components/ledger/StatsFilterBar";
 import { PrivacyMask } from "#/components/PrivacyMask";
-import type { LedgerAnalytics, SessionRow } from "#/db";
+import type { LedgerAnalytics, LedgerAnalyticsFilter, SessionRow } from "#/db";
 import { useLedgerSessionMutations } from "#/hooks/useLedgerSessionMutations";
 import {
 	type LedgerStatsSourceStatus,
@@ -40,7 +41,8 @@ import {
 	totalDisplayCost,
 } from "#/lib/costDisplay";
 import { dbFetch, dbJson, requireDbOk } from "#/lib/dbClient";
-import { fmt, fmtModel } from "#/lib/formatters";
+import { fmt } from "#/lib/formatters";
+import { isLedgerOpenSession } from "#/lib/ledgerSessions";
 import {
 	buildLedgerAgentOptions,
 	isValidSize,
@@ -57,14 +59,29 @@ import {
 	sessionRenameSchema,
 } from "#/lib/serverFnSchemas";
 import { getAgentListFn } from "#/lib/serverFns/agents";
-import { getActiveSessionRowFn } from "#/lib/serverFns/sessions";
+import {
+	getActiveSessionRowFn,
+	getSessionRowsByIdsFn,
+} from "#/lib/serverFns/sessions";
 import { buildSessionExport, downloadContent } from "#/lib/sessionExport";
 import type { ServerMessage } from "#/server/protocol";
 
 // ─── server fns ──────────────────────────────────────────────────────────────
 
+const ledgerSessionPageSchema = sessionPageSchema.extend({
+	range: z.enum(["today", "7d", "30d", "90d", "all", "custom"]).optional(),
+	from: z
+		.string()
+		.regex(/^\d{4}-\d{2}-\d{2}$/)
+		.optional(),
+	to: z
+		.string()
+		.regex(/^\d{4}-\d{2}-\d{2}$/)
+		.optional(),
+});
+
 const getSessionsPageFn = createServerFn({ method: "POST" })
-	.validator((raw) => sessionPageSchema.parse(raw))
+	.validator((raw) => ledgerSessionPageSchema.parse(raw))
 	.handler(({ data }) => {
 		const params = new URLSearchParams({
 			page: String(data.page),
@@ -75,6 +92,9 @@ const getSessionsPageFn = createServerFn({ method: "POST" })
 		if (data.model) params.set("model", data.model);
 		if (data.provider) params.set("provider", data.provider);
 		if (data.stop) params.set("stop", data.stop);
+		if (data.range) params.set("range", data.range);
+		if (data.from) params.set("from", data.from);
+		if (data.to) params.set("to", data.to);
 		if (data.sort && data.sort !== "recent") params.set("sort", data.sort);
 		return dbJson<{
 			sessions: SessionRow[];
@@ -172,6 +192,9 @@ export const Route = createFileRoute("/ledger")({
 						model: model || undefined,
 						provider: provider || undefined,
 						stop: stop || undefined,
+						range,
+						from: range === "custom" ? from : undefined,
+						to: range === "custom" ? to : undefined,
 						sort,
 					},
 				}),
@@ -204,124 +227,128 @@ export const Route = createFileRoute("/ledger")({
 
 type ActiveStat = { value: string; sub?: string; dim?: boolean };
 
-function activeCostStat(
-	stats: LiveStats,
-	activeSession: SessionRow | null,
-): ActiveStat {
-	if (stats.queries > 0) {
-		const pricedQueries = Math.max(
-			0,
-			stats.queries - (stats.unpriced_queries ?? 0),
-		);
-		return {
-			value: formatDisplayCost(stats),
-			sub:
-				costDisplayNote(stats) ??
-				(pricedQueries > 0
-					? `$${(totalDisplayCost(stats) / pricedQueries).toFixed(4)}/query`
-					: undefined),
-		};
-	}
-	if (activeSession) {
-		const pricedQueries = Math.max(
-			0,
-			activeSession.query_count - (activeSession.unpriced_query_count ?? 0),
-		);
-		return {
-			value: formatDisplayCost({
-				cost: activeSession.total_cost,
-				estimated_cost: activeSession.total_estimated_cost,
-				unpriced_queries: activeSession.unpriced_query_count ?? 0,
-			}),
-			sub:
-				(activeSession.total_estimated_cost ?? 0) > 0
-					? "API-equivalent estimate"
-					: pricedQueries > 0
-						? `$${(activeSession.total_cost / pricedQueries).toFixed(4)}/query`
-						: undefined,
-		};
-	}
+type OpenSessionTotals = {
+	cost: number;
+	estimatedCost: number;
+	unpricedQueries: number;
+	queries: number;
+	turns: number;
+	inputTokens: number;
+	outputTokens: number;
+	cacheReadTokens: number;
+	cacheCreationTokens: number;
+};
+
+function sumOpenSessionRows(rows: SessionRow[]): OpenSessionTotals {
+	return rows.reduce<OpenSessionTotals>(
+		(totals, row) => ({
+			cost: totals.cost + row.total_cost,
+			estimatedCost: totals.estimatedCost + (row.total_estimated_cost ?? 0),
+			unpricedQueries: totals.unpricedQueries + (row.unpriced_query_count ?? 0),
+			queries: totals.queries + row.query_count,
+			turns: totals.turns + row.total_turns,
+			inputTokens: totals.inputTokens + row.total_input_tokens,
+			outputTokens: totals.outputTokens + row.total_output_tokens,
+			cacheReadTokens: totals.cacheReadTokens + row.total_cache_read_tokens,
+			cacheCreationTokens:
+				totals.cacheCreationTokens + row.total_cache_creation_tokens,
+		}),
+		{
+			cost: 0,
+			estimatedCost: 0,
+			unpricedQueries: 0,
+			queries: 0,
+			turns: 0,
+			inputTokens: 0,
+			outputTokens: 0,
+			cacheReadTokens: 0,
+			cacheCreationTokens: 0,
+		},
+	);
+}
+
+function unavailableStat(): ActiveStat {
 	return { value: "--", dim: true };
 }
 
-function activeQueryStat(
-	stats: LiveStats,
-	activeSession: SessionRow | null,
-): ActiveStat {
-	if (stats.queries > 0) {
-		return { value: String(stats.queries), sub: `${stats.turns} turns` };
-	}
-	if (activeSession) {
-		return {
-			value: String(activeSession.query_count),
-			sub:
-				activeSession.total_turns > 0
-					? `${activeSession.total_turns} turns`
-					: undefined,
-		};
-	}
-	return { value: "--", dim: true };
+function openCostStat(totals: OpenSessionTotals, ready: boolean): ActiveStat {
+	if (!ready) return unavailableStat();
+	const pricedQueries = Math.max(0, totals.queries - totals.unpricedQueries);
+	const cost = {
+		cost: totals.cost,
+		estimated_cost: totals.estimatedCost,
+		unpriced_queries: totals.unpricedQueries,
+	};
+	return {
+		value: formatDisplayCost(cost),
+		sub:
+			costDisplayNote(cost) ??
+			(pricedQueries > 0
+				? `$${(totalDisplayCost(cost) / pricedQueries).toFixed(4)}/query`
+				: undefined),
+	};
 }
 
-function activeTokenStat(
-	stats: LiveStats,
-	activeSession: SessionRow | null,
-): ActiveStat {
-	if (stats.queries > 0) {
-		const cached = stats.cache_read_tokens + stats.cache_creation_tokens;
-		return {
-			value: fmt(
-				stats.input_tokens +
-					stats.output_tokens +
-					stats.cache_read_tokens +
-					stats.cache_creation_tokens,
-			),
-			sub: cached > 0 ? `${fmt(cached)} cached` : undefined,
-		};
-	}
-	if (activeSession) {
-		const cached =
-			activeSession.total_cache_read_tokens +
-			activeSession.total_cache_creation_tokens;
-		return {
-			value: fmt(
-				activeSession.total_input_tokens +
-					activeSession.total_output_tokens +
-					activeSession.total_cache_read_tokens +
-					activeSession.total_cache_creation_tokens,
-			),
-			sub: cached > 0 ? `${fmt(cached)} cached` : undefined,
-		};
-	}
-	return { value: "--", dim: true };
+function openQueryStat(totals: OpenSessionTotals, ready: boolean): ActiveStat {
+	if (!ready) return unavailableStat();
+	return {
+		value: String(totals.queries),
+		sub: totals.turns > 0 ? `${totals.turns} turns` : undefined,
+	};
 }
 
-function activeModelStat(
-	model: string,
-	actualModel: string | null,
-	activeSession: SessionRow | null,
-): ActiveStat {
-	const liveModel = actualModel || model;
-	if (liveModel) return { value: fmtModel(liveModel) };
-	if (activeSession?.model) return { value: fmtModel(activeSession.model) };
-	return { value: "--", dim: true };
+function openTokenStat(totals: OpenSessionTotals, ready: boolean): ActiveStat {
+	if (!ready) return unavailableStat();
+	const cached = totals.cacheReadTokens + totals.cacheCreationTokens;
+	return {
+		value: fmt(
+			totals.inputTokens +
+				totals.outputTokens +
+				totals.cacheReadTokens +
+				totals.cacheCreationTokens,
+		),
+		sub: cached > 0 ? `${fmt(cached)} cached` : undefined,
+	};
 }
 
-function ActiveSessionStatGrid({
-	stats,
-	activeSession,
-	model,
-	actualModel,
+function openSessionsStat(
+	sessions: ReturnType<typeof getSessionsStatus>,
+): ActiveStat {
+	const running = sessions.filter(
+		(session) => session.state === "running",
+	).length;
+	const errors = sessions.filter((session) => session.state === "error").length;
+	const waiting = sessions.filter(
+		(session) => session.hasPendingPermissions,
+	).length;
+	const detail = [
+		running > 0 ? `${running} running` : undefined,
+		waiting > 0 ? `${waiting} waiting` : undefined,
+		errors > 0 ? `${errors} error${errors === 1 ? "" : "s"}` : undefined,
+	]
+		.filter((part): part is string => Boolean(part))
+		.join(" · ");
+	return {
+		value: String(sessions.length),
+		sub: detail || "all idle",
+	};
+}
+
+function OpenSessionsStatGrid({
+	rows,
+	ready,
+	sessions,
 }: {
-	stats: LiveStats;
-	activeSession: SessionRow | null;
-	model: string;
-	actualModel: string | null;
+	rows: SessionRow[];
+	ready: boolean;
+	sessions: ReturnType<typeof getSessionsStatus>;
 }) {
-	const cost = activeCostStat(stats, activeSession);
-	const queries = activeQueryStat(stats, activeSession);
-	const tokens = activeTokenStat(stats, activeSession);
-	const activeModel = activeModelStat(model, actualModel, activeSession);
+	const openSessionStatuses = sessions.filter(isLedgerOpenSession);
+	const totals = sumOpenSessionRows(rows);
+	const cost = openCostStat(totals, ready);
+	const queries = openQueryStat(totals, ready);
+	const tokens = openTokenStat(totals, ready);
+	const openSessions = openSessionsStat(openSessionStatuses);
 	return (
 		<div className="grid grid-cols-2 sm:grid-cols-4 border-b border-border">
 			<div className="border-r border-b sm:border-b-0 border-border">
@@ -334,7 +361,7 @@ function ActiveSessionStatGrid({
 				<StatCell label="TOKENS" {...tokens} />
 			</div>
 			<div>
-				<StatCell label="MODEL" {...activeModel} />
+				<StatCell label="SESSIONS" {...openSessions} />
 			</div>
 		</div>
 	);
@@ -362,6 +389,7 @@ function useLedgerMutations(
 	listState: ListState,
 	sessionPage: Awaited<ReturnType<typeof getSessionsPageFn>>,
 	navigate: LedgerNavigate,
+	rangeActive: boolean,
 ) {
 	const { page, size, q, agent, model, provider, stop, range, from, to, sort } =
 		listState;
@@ -388,15 +416,28 @@ function useLedgerMutations(
 						model,
 						provider,
 						stop,
-						range,
-						from,
-						to,
+						range: rangeActive ? range : undefined,
+						from: rangeActive && range === "custom" ? from : undefined,
+						to: rangeActive && range === "custom" ? to : undefined,
 						sort,
 					},
 				});
 			},
 		}),
-		[navigate, size, q, agent, model, provider, stop, range, from, to, sort],
+		[
+			navigate,
+			size,
+			q,
+			agent,
+			model,
+			provider,
+			stop,
+			range,
+			from,
+			to,
+			sort,
+			rangeActive,
+		],
 	);
 	return useLedgerSessionMutations({ page, sessionPage, dependencies });
 }
@@ -406,19 +447,21 @@ function useSessionListSync({
 	initialSessions,
 	reconcile,
 	enabled,
+	rangeActive,
 }: {
 	listState: ListState;
 	initialSessions: Awaited<ReturnType<typeof getSessionsPageFn>>;
 	reconcile: (fresh: Awaited<ReturnType<typeof getSessionsPageFn>>) => void;
 	enabled: boolean;
+	rangeActive: boolean;
 }) {
 	const [sessionPage, setSessionPage] = useState(initialSessions);
 	// Mutate refs during render so they're always current before any event
 	// handler fires. useEffect would lag by one render cycle, causing
 	// refreshSessions to fetch with stale page/size if a `done` event arrives
 	// between render and effect commit.
-	const listStateRef = useRef(listState);
-	listStateRef.current = listState;
+	const requestStateRef = useRef({ listState, rangeActive });
+	requestStateRef.current = { listState, rangeActive };
 
 	// Monotonic counter: whichever fetch (loader sync or WS-triggered refresh)
 	// resolves last wins. Earlier results are silently discarded.
@@ -431,6 +474,9 @@ function useSessionListSync({
 		listState.model,
 		listState.provider,
 		listState.stop,
+		rangeActive ? listState.range : "",
+		rangeActive && listState.range === "custom" ? listState.from : "",
+		rangeActive && listState.range === "custom" ? listState.to : "",
 		listState.sort,
 	].join("\u0000");
 	const lastFetchedKeyRef = useRef(requestKey);
@@ -447,8 +493,21 @@ function useSessionListSync({
 
 	const refreshSessions = useCallback(async () => {
 		const v = ++fetchVersionRef.current;
-		const { page, size, q, agent, model, provider, stop, sort } =
-			listStateRef.current;
+		const { listState: current, rangeActive: currentRangeActive } =
+			requestStateRef.current;
+		const {
+			page,
+			size,
+			q,
+			agent,
+			model,
+			provider,
+			stop,
+			range,
+			from,
+			to,
+			sort,
+		} = current;
 		const fresh = await getSessionsPageFn({
 			data: {
 				page,
@@ -458,6 +517,15 @@ function useSessionListSync({
 				model: model || undefined,
 				provider: provider || undefined,
 				stop: stop || undefined,
+				range: currentRangeActive ? range : undefined,
+				from:
+					currentRangeActive && range === "custom"
+						? from || undefined
+						: undefined,
+				to:
+					currentRangeActive && range === "custom"
+						? to || undefined
+						: undefined,
 				sort,
 			},
 		});
@@ -533,6 +601,56 @@ function useSessionStatusRefresh(
 	}, [sessionsStatus, refreshSessions]);
 }
 
+function useOpenSessionRows(
+	sessionsStatus: ReturnType<typeof getSessionsStatus>,
+) {
+	const dbSessionIds = useMemo(
+		() =>
+			[
+				...new Set(
+					sessionsStatus
+						.filter(isLedgerOpenSession)
+						.flatMap((session) =>
+							session.db_session_id ? [session.db_session_id] : [],
+						),
+				),
+			].sort(),
+		[sessionsStatus],
+	);
+	const sessionKey = dbSessionIds.join("\u0000");
+	const [snapshot, setSnapshot] = useState<{
+		key: string;
+		rows: SessionRow[];
+	}>({ key: "", rows: [] });
+	const requestVersionRef = useRef(0);
+
+	const refresh = useCallback(async () => {
+		const version = ++requestVersionRef.current;
+		if (dbSessionIds.length === 0) {
+			setSnapshot({ key: sessionKey, rows: [] });
+			return;
+		}
+		try {
+			const rows = await getSessionRowsByIdsFn({ data: dbSessionIds });
+			if (requestVersionRef.current === version) {
+				setSnapshot({ key: sessionKey, rows });
+			}
+		} catch {
+			// Keep the last matching snapshot during a transient DB/API failure.
+		}
+	}, [dbSessionIds, sessionKey]);
+
+	useEffect(() => {
+		void refresh();
+	}, [refresh]);
+
+	return {
+		rows: snapshot.key === sessionKey ? snapshot.rows : [],
+		ready: snapshot.key === sessionKey,
+		refresh,
+	};
+}
+
 /** Live data driven by WS events: rate limits and the active session row. */
 function useLedgerLiveData(
 	initialActiveSession: SessionRow | null,
@@ -545,11 +663,7 @@ function useLedgerLiveData(
 		[initialActiveSession],
 	);
 
-	const {
-		model,
-		actualModel,
-		send: sendWs,
-	} = useWs(
+	const { send: sendWs } = useWs(
 		useCallback(
 			(msg: ServerMessage) => {
 				if (msg.type === "done") {
@@ -589,8 +703,6 @@ function useLedgerLiveData(
 
 	return {
 		activeSessionData,
-		model,
-		actualModel,
 		handleStopSession,
 		handleCloseSession,
 	};
@@ -600,15 +712,18 @@ function LedgerTabBar({
 	tab,
 	listState,
 	navigate,
+	rangeActive,
 }: {
 	tab: "stats" | "sessions";
 	listState: ListState;
 	navigate: LedgerNavigate;
+	rangeActive: boolean;
 }) {
 	const { page, size, q, agent, model, provider, stop, range, from, to, sort } =
 		listState;
 	function switchTab(next: "stats" | "sessions") {
 		if (next === "sessions") {
+			const preserveStatsRange = tab === "stats" || rangeActive;
 			navigate({
 				to: "/ledger",
 				search: {
@@ -620,9 +735,9 @@ function LedgerTabBar({
 					model,
 					provider,
 					stop,
-					range,
-					from,
-					to,
+					range: preserveStatsRange ? range : undefined,
+					from: preserveStatsRange && range === "custom" ? from : undefined,
+					to: preserveStatsRange && range === "custom" ? to : undefined,
 					sort,
 				},
 			});
@@ -637,7 +752,9 @@ function LedgerTabBar({
 					agent,
 					model,
 					provider,
-					stop,
+					// Stop reason is a Sessions drill-down, not a visible Stats
+					// filter. Do not carry a hidden, ignored constraint back.
+					stop: "",
 					range,
 					from,
 					to,
@@ -677,6 +794,7 @@ function SessionsTab({
 	oldestStartedAt,
 	cleanupReferenceTime,
 	configuredAgents,
+	rangeActive,
 }: {
 	sessionsStatus: ReturnType<typeof getSessionsStatus>;
 	live: ReturnType<typeof useLedgerLiveData>;
@@ -687,6 +805,7 @@ function SessionsTab({
 	oldestStartedAt: number | null;
 	cleanupReferenceTime: number;
 	configuredAgents: Awaited<ReturnType<typeof getAgentListFn>>;
+	rangeActive: boolean;
 }) {
 	const { page, size, q, agent, model, provider, stop, range, from, to, sort } =
 		listState;
@@ -711,9 +830,9 @@ function SessionsTab({
 				model,
 				provider,
 				stop,
-				range,
-				from,
-				to,
+				range: rangeActive ? range : undefined,
+				from: rangeActive && range === "custom" ? from : undefined,
+				to: rangeActive && range === "custom" ? to : undefined,
 				sort,
 				...next,
 			},
@@ -745,6 +864,29 @@ function SessionsTab({
 		configuredAgents,
 		mutations.sessionsData.agent_cwds ?? [],
 	);
+	const rangeLabel =
+		range === "all"
+			? "All time"
+			: range === "today"
+				? "Today"
+				: range === "custom"
+					? from && to
+						? `${from} – ${to}`
+						: "Custom range"
+					: `Last ${range.slice(0, -1)} days`;
+	const hasDrilldownFilters = Boolean(provider || stop || rangeActive);
+	const clearAllFilters = () =>
+		navigateList({
+			page: 1,
+			q: "",
+			agent: "",
+			model: "",
+			provider: "",
+			stop: "",
+			range: undefined,
+			from: undefined,
+			to: undefined,
+		});
 
 	return (
 		<div>
@@ -769,6 +911,60 @@ function SessionsTab({
 				/>
 			</div>
 			<div className="p-5">
+				{hasDrilldownFilters && (
+					<fieldset
+						className="mb-3 flex flex-wrap items-center gap-2 border border-border bg-muted/10 px-3 py-2"
+						aria-label="Active session drill-down filters"
+					>
+						<span className="text-[8px] tracking-widest text-muted-foreground uppercase">
+							Stats drill-down
+						</span>
+						{rangeActive && (
+							<button
+								type="button"
+								onClick={() =>
+									navigateList({
+										page: 1,
+										range: undefined,
+										from: undefined,
+										to: undefined,
+									})
+								}
+								className="border border-border px-2 py-1 text-[9px] text-foreground/70 hover:border-primary/40"
+								aria-label="Clear session date filter"
+							>
+								Date: {rangeLabel} ×
+							</button>
+						)}
+						{provider && (
+							<button
+								type="button"
+								onClick={() => navigateList({ page: 1, provider: "" })}
+								className="border border-border px-2 py-1 text-[9px] text-foreground/70 hover:border-primary/40"
+								aria-label="Clear session provider filter"
+							>
+								Provider: {provider} ×
+							</button>
+						)}
+						{stop && (
+							<button
+								type="button"
+								onClick={() => navigateList({ page: 1, stop: "" })}
+								className="border border-border px-2 py-1 text-[9px] text-foreground/70 hover:border-primary/40"
+								aria-label="Clear session stop reason filter"
+							>
+								Stop: {stop.replace(/_/g, " ")} ×
+							</button>
+						)}
+						<button
+							type="button"
+							onClick={clearAllFilters}
+							className="ml-auto text-[8px] tracking-widest text-muted-foreground uppercase hover:text-foreground"
+						>
+							Clear all
+						</button>
+					</fieldset>
+				)}
 				<SessionsLedger
 					data={mutations.sessionsData}
 					page={page}
@@ -809,9 +1005,7 @@ function SessionsTab({
 					onModelFilterChange={(nextModel) =>
 						navigateList({ page: 1, model: nextModel })
 					}
-					onClearFilters={() =>
-						navigateList({ page: 1, q: "", agent: "", model: "" })
-					}
+					onClearFilters={clearAllFilters}
 					oldestStartedAt={oldestStartedAt}
 					cleanupReferenceTime={cleanupReferenceTime}
 					onExport={(format) => void onExport(format)}
@@ -826,6 +1020,7 @@ function StatsPage() {
 		Route.useLoaderData();
 	const search = Route.useSearch();
 	const { tab } = search;
+	const sessionRangeActive = search.range !== undefined;
 	const listState: ListState = {
 		page: search.page ?? 1,
 		size: search.size ?? 20,
@@ -865,8 +1060,14 @@ function StatsPage() {
 		initialSessions,
 		reconcile,
 		enabled: tab === "sessions",
+		rangeActive: sessionRangeActive,
 	});
-	const mutations = useLedgerMutations(listState, sessionPage, navigate);
+	const mutations = useLedgerMutations(
+		listState,
+		sessionPage,
+		navigate,
+		sessionRangeActive,
+	);
 	mutationsRef.current = mutations;
 	const refreshVisibleSessions = useCallback(
 		() => (tab === "sessions" ? refreshSessions() : Promise.resolve()),
@@ -897,14 +1098,21 @@ function StatsPage() {
 		renderedAt,
 		statsFilter,
 	);
-	const live = useLedgerLiveData(
-		activeSession,
-		tab === "stats" ? ledgerStats.refresh : undefined,
-	);
+	const openSessionRows = useOpenSessionRows(sessionsStatus);
+	const refreshAfterDone = useCallback(() => {
+		void openSessionRows.refresh();
+		if (tab === "stats") void ledgerStats.refresh();
+	}, [ledgerStats.refresh, openSessionRows.refresh, tab]);
+	const live = useLedgerLiveData(activeSession, refreshAfterDone);
 
 	return (
 		<div className="flex flex-col h-full">
-			<LedgerTabBar tab={tab} listState={listState} navigate={navigate} />
+			<LedgerTabBar
+				tab={tab}
+				listState={listState}
+				navigate={navigate}
+				rangeActive={sessionRangeActive}
+			/>
 			{mutations.mutationError && (
 				<div
 					className="border-b border-destructive/30 bg-destructive/5 px-4 py-2 text-xs text-destructive"
@@ -923,17 +1131,17 @@ function StatsPage() {
 					<StatsTab
 						analytics={ledgerStats.analytics}
 						analyticsStatus={ledgerStats.analyticsStatus}
+						analyticsFilter={statsFilter}
 						listState={listState}
 						navigate={navigate}
 						configuredAgents={configuredAgents ?? []}
 					/>
 				) : (
 					<>
-						<ActiveSessionStatGrid
-							stats={stats}
-							activeSession={live.activeSessionData}
-							model={live.model}
-							actualModel={live.actualModel}
+						<OpenSessionsStatGrid
+							rows={openSessionRows.rows}
+							ready={openSessionRows.ready}
+							sessions={sessionsStatus}
 						/>
 						<SessionsTab
 							sessionsStatus={sessionsStatus}
@@ -945,6 +1153,7 @@ function StatsPage() {
 							oldestStartedAt={sessionPage.oldest_started_at ?? null}
 							cleanupReferenceTime={renderedAt}
 							configuredAgents={configuredAgents ?? []}
+							rangeActive={sessionRangeActive}
 						/>
 					</>
 				)}
@@ -972,12 +1181,14 @@ function StatsDataState({
 function StatsTab({
 	analytics,
 	analyticsStatus,
+	analyticsFilter,
 	listState,
 	navigate,
 	configuredAgents,
 }: {
 	analytics: LedgerAnalytics | null;
 	analyticsStatus: LedgerStatsSourceStatus;
+	analyticsFilter: LedgerAnalyticsFilter;
 	listState: ListState;
 	navigate: LedgerNavigate;
 	configuredAgents: Awaited<ReturnType<typeof getAgentListFn>>;
@@ -1152,7 +1363,7 @@ function StatsTab({
 						summary={`${analytics.topTools.length} ranked`}
 						privacySensitive
 					>
-						<TopToolsChart data={analytics.topTools} />
+						<TopToolsChart data={analytics.topTools} filter={analyticsFilter} />
 					</StatsSection>
 
 					<StatsSection

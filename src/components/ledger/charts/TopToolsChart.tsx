@@ -1,6 +1,10 @@
 import { X } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { ToolErrorEntry, TopToolCall } from "#/db";
+import type {
+	LedgerAnalyticsFilter,
+	LedgerToolErrorBreakdown,
+	TopToolCall,
+} from "#/db";
 import { useDialogFocus } from "#/hooks/useDialogFocus";
 import { getToolErrorsFn } from "#/lib/serverFns/stats";
 
@@ -17,38 +21,45 @@ function shortToolName(name: string): string {
  * Strip `<tool_use_error>...</tool_use_error>` wrapper if present, then trim.
  */
 function cleanErrorText(raw: string): string {
-	return raw
+	const cleaned = raw
 		.replace(/^<tool_use_error>\s*/i, "")
 		.replace(/\s*<\/tool_use_error>$/i, "")
 		.trim();
+	return cleaned || "No error details recorded.";
 }
 
 // ─── ErrorModal ───────────────────────────────────────────────────────────────
 
 function ErrorModal({
 	toolName,
+	filter,
+	expectedErrorCount,
 	onClose,
 }: {
 	toolName: string;
+	filter: LedgerAnalyticsFilter;
+	expectedErrorCount: number;
 	onClose: () => void;
 }) {
-	const [errors, setErrors] = useState<ToolErrorEntry[] | null>(null);
+	const [errors, setErrors] = useState<LedgerToolErrorBreakdown | null>(null);
 	const { dialogRef, onDialogKeyDown } =
 		useDialogFocus<HTMLDivElement>(onClose);
 
 	useEffect(() => {
 		let cancelled = false;
-		getToolErrorsFn({ data: toolName })
+		getToolErrorsFn({ data: { toolName, filter } })
 			.then((data) => {
 				if (!cancelled) setErrors(data);
 			})
 			.catch(() => {
-				if (!cancelled) setErrors([]);
+				if (!cancelled) {
+					setErrors({ total: 0, distinct: 0, groups: [] });
+				}
 			});
 		return () => {
 			cancelled = true;
 		};
-	}, [toolName]);
+	}, [filter, toolName]);
 
 	const displayName = shortToolName(toolName);
 
@@ -80,6 +91,11 @@ function ErrorModal({
 								{toolName}
 							</div>
 						)}
+						<div className="mt-1 text-[9px] tabular-nums text-muted-foreground">
+							{errors === null
+								? `${expectedErrorCount} errors in selected view`
+								: `${errors.total} errors · ${errors.distinct} distinct ${errors.distinct === 1 ? "message" : "messages"}`}
+						</div>
 					</div>
 					<button
 						type="button"
@@ -97,13 +113,13 @@ function ErrorModal({
 						<div className="text-[10px] text-muted-foreground animate-pulse">
 							Loading…
 						</div>
-					) : errors.length === 0 ? (
+					) : errors.total === 0 ? (
 						<div className="text-[10px] text-muted-foreground">
 							No error details found.
 						</div>
 					) : (
 						<div className="space-y-2">
-							{errors.map((e, i) => (
+							{errors.groups.map((e, i) => (
 								// biome-ignore lint/suspicious/noArrayIndexKey: stable order from DB, no reorder
 								<div key={i} className="flex gap-3 items-start">
 									<span className="shrink-0 text-[9px] tabular-nums text-muted-foreground pt-0.5 min-w-[24px] text-right">
@@ -114,6 +130,12 @@ function ErrorModal({
 									</span>
 								</div>
 							))}
+							{errors.groups.length < errors.distinct && (
+								<div className="pt-2 text-[9px] text-muted-foreground">
+									Showing the top {errors.groups.length} of {errors.distinct}
+									distinct messages.
+								</div>
+							)}
 						</div>
 					)}
 				</div>
@@ -124,15 +146,30 @@ function ErrorModal({
 
 // ─── TopToolsChart ────────────────────────────────────────────────────────────
 
-export function TopToolsChart({ data }: { data: TopToolCall[] }) {
-	const [selectedTool, setSelectedTool] = useState<string | null>(null);
+const ALL_TIME_FILTER: LedgerAnalyticsFilter = { range: "all" };
+
+export function TopToolsChart({
+	data,
+	filter = ALL_TIME_FILTER,
+}: {
+	data: TopToolCall[];
+	filter?: LedgerAnalyticsFilter;
+}) {
+	const [selectedTool, setSelectedTool] = useState<{
+		name: string;
+		errorCount: number;
+	} | null>(null);
 	const empty = data.length === 0;
-	const rows = data.map((d) => ({
-		name: shortToolName(d.name),
-		fullName: d.name,
-		count: d.count,
-		errorRate: d.errorRate,
-	}));
+	const rows = data.map((d) => {
+		const errorCount = d.errorCount ?? Math.round(d.count * d.errorRate);
+		return {
+			name: shortToolName(d.name),
+			fullName: d.name,
+			count: d.count,
+			errorCount,
+			errorRate: d.count > 0 ? errorCount / d.count : 0,
+		};
+	});
 	const max = Math.max(1, ...rows.map((row) => row.count));
 
 	return (
@@ -167,13 +204,18 @@ export function TopToolsChart({ data }: { data: TopToolCall[] }) {
 				) : (
 					<div className="divide-y divide-border/40 p-2">
 						{rows.map((row) => {
-							const errorCount = Math.round(row.count * row.errorRate);
+							const errorCount = row.errorCount;
 							return (
 								<button
 									key={row.fullName}
 									type="button"
-									disabled={row.errorRate <= 0}
-									onClick={() => setSelectedTool(row.fullName)}
+									disabled={errorCount <= 0}
+									onClick={() =>
+										setSelectedTool({
+											name: row.fullName,
+											errorCount,
+										})
+									}
 									className="block min-h-12 w-full px-2 py-2 text-left hover:bg-accent/30 disabled:cursor-default"
 								>
 									<div className="flex items-center justify-between gap-3">
@@ -212,7 +254,9 @@ export function TopToolsChart({ data }: { data: TopToolCall[] }) {
 
 			{selectedTool && (
 				<ErrorModal
-					toolName={selectedTool}
+					toolName={selectedTool.name}
+					filter={filter}
+					expectedErrorCount={selectedTool.errorCount}
 					onClose={() => setSelectedTool(null)}
 				/>
 			)}

@@ -36,6 +36,15 @@ function sdkGen(events: unknown[], mcpStatuses: unknown[] = []) {
 	return gen as any;
 }
 
+function sdkStream(factory: () => AsyncGenerator<unknown>) {
+	const gen = factory();
+	Object.assign(gen, {
+		mcpServerStatus: vi.fn().mockResolvedValue([]),
+	});
+	// biome-ignore lint/suspicious/noExplicitAny: test mock
+	return gen as any;
+}
+
 function baseParams(
 	overrides: Partial<AgentQueryParams> = {},
 ): AgentQueryParams {
@@ -521,6 +530,468 @@ describe("ClaudeProvider — event mapping", () => {
 			cacheReadTokens: 20,
 			cacheCreationTokens: 10,
 			model: "claude-sonnet-4-6",
+		});
+	});
+
+	it("adds deduplicated child API usage when Claude result usage is root-only", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "assistant",
+					parent_tool_use_id: null,
+					message: {
+						id: "msg-root",
+						content: [],
+						usage: {
+							input_tokens: 10,
+							output_tokens: 5,
+							cache_read_input_tokens: 4,
+							cache_creation_input_tokens: 3,
+						},
+					},
+				},
+				{
+					type: "assistant",
+					parent_tool_use_id: "agent-tool-1",
+					message: {
+						id: "msg-child",
+						content: [],
+						usage: {
+							input_tokens: 2,
+							output_tokens: 1,
+							cache_read_input_tokens: 20,
+							cache_creation_input_tokens: 7,
+						},
+					},
+				},
+				// Claude can stream a later, fuller snapshot for the same API id.
+				{
+					type: "assistant",
+					parent_tool_use_id: "agent-tool-1",
+					message: {
+						id: "msg-child",
+						content: [],
+						usage: {
+							input_tokens: 2,
+							output_tokens: 6,
+							cache_read_input_tokens: 20,
+							cache_creation_input_tokens: 7,
+						},
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0.1,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: {
+						input_tokens: 10,
+						output_tokens: 5,
+						cache_read_input_tokens: 4,
+						cache_creation_input_tokens: 3,
+					},
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		expect(events.find((event) => event.type === "done")).toMatchObject({
+			type: "done",
+			usage: {
+				inputTokens: 12,
+				outputTokens: 11,
+				cacheReadTokens: 24,
+				cacheCreationTokens: 10,
+			},
+		});
+	});
+
+	it("does not double count children when Claude already reports the combined total", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "assistant",
+					parent_tool_use_id: null,
+					message: {
+						id: "msg-root",
+						content: [],
+						usage: { input_tokens: 10, output_tokens: 5 },
+					},
+				},
+				{
+					type: "assistant",
+					parent_tool_use_id: "agent-tool-1",
+					message: {
+						id: "msg-child",
+						content: [],
+						usage: { input_tokens: 2, output_tokens: 6 },
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0.1,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 12, output_tokens: 11 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		expect(events.find((event) => event.type === "done")).toMatchObject({
+			usage: { inputTokens: 12, outputTokens: 11 },
+		});
+	});
+
+	it("waits when the root result precedes task start and includes usage emitted after task terminal", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "assistant",
+					parent_tool_use_id: null,
+					message: {
+						id: "msg-root-late",
+						content: [
+							{
+								type: "tool_use",
+								id: "agent-tool-late",
+								name: "Agent",
+								input: { prompt: "Inspect in the background" },
+							},
+						],
+						usage: { input_tokens: 10, output_tokens: 5 },
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					terminal_reason: "background_requested",
+					total_cost_usd: 0.1,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 10, output_tokens: 5 },
+				},
+				{
+					type: "system",
+					subtype: "task_started",
+					task_id: "task-late",
+					tool_use_id: "agent-tool-late",
+					task_type: "subagent",
+					subagent_type: "Explore",
+				},
+				{
+					type: "system",
+					subtype: "task_notification",
+					task_id: "task-late",
+					status: "completed",
+				},
+				{
+					type: "assistant",
+					parent_tool_use_id: "agent-tool-late",
+					message: {
+						id: "msg-child-late",
+						content: [],
+						usage: {
+							input_tokens: 2,
+							output_tokens: 6,
+							cache_read_input_tokens: 20,
+							cache_creation_input_tokens: 7,
+						},
+					},
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		expect(events.find((event) => event.type === "done")).toMatchObject({
+			usage: {
+				inputTokens: 12,
+				outputTokens: 11,
+				cacheReadTokens: 20,
+				cacheCreationTokens: 7,
+			},
+		});
+	});
+
+	it("does not hold a background_requested result for skip_transcript tasks", async () => {
+		let releaseTail = () => {};
+		const tail = new Promise<void>((resolve) => {
+			releaseTail = resolve;
+		});
+		vi.mocked(query).mockReturnValueOnce(
+			sdkStream(async function* () {
+				yield {
+					type: "assistant",
+					parent_tool_use_id: null,
+					message: {
+						id: "msg-root-skip",
+						content: [
+							{
+								type: "tool_use",
+								id: "agent-tool-skip",
+								name: "Agent",
+								input: {},
+							},
+						],
+						usage: { input_tokens: 7, output_tokens: 3 },
+					},
+				};
+				yield {
+					type: "system",
+					subtype: "task_started",
+					task_id: "task-skip",
+					tool_use_id: "agent-tool-skip",
+					task_type: "subagent",
+					skip_transcript: true,
+				};
+				yield {
+					type: "result",
+					subtype: "success",
+					terminal_reason: "background_requested",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 50,
+					usage: { input_tokens: 7, output_tokens: 3 },
+				};
+				await tail;
+			}),
+		);
+		const provider = new ClaudeProvider();
+		const session = provider.query(baseParams());
+		await session.send("turn");
+		const collected = (async () => {
+			const events: AgentEvent[] = [];
+			for await (const event of session) {
+				events.push(event);
+				if (event.type === "done") break;
+			}
+			return events;
+		})();
+		const outcome = await Promise.race([
+			collected,
+			new Promise<null>((resolve) => setTimeout(() => resolve(null), 100)),
+		]);
+		releaseTail();
+		session.cancel();
+		expect(outcome).not.toBeNull();
+		expect(outcome?.find((event) => event.type === "done")).toMatchObject({
+			usage: { inputTokens: 7, outputTokens: 3 },
+		});
+	});
+
+	it("preserves root usage when the SDK iterator errors while a background result is pending", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkStream(async function* () {
+				yield {
+					type: "assistant",
+					parent_tool_use_id: null,
+					message: {
+						id: "msg-root-error",
+						content: [],
+						usage: { input_tokens: 9, output_tokens: 4 },
+					},
+				};
+				yield {
+					type: "system",
+					subtype: "task_started",
+					task_id: "task-error",
+					tool_use_id: "agent-tool-error",
+					task_type: "subagent",
+				};
+				yield {
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0.1,
+					num_turns: 1,
+					duration_ms: 75,
+					usage: { input_tokens: 9, output_tokens: 4 },
+				};
+				throw new Error("background transport failed");
+			}),
+		);
+
+		const events = await collectEvents(baseParams());
+		expect(events.find((event) => event.type === "done")).toMatchObject({
+			usage: { inputTokens: 9, outputTokens: 4 },
+		});
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "tool_update",
+				subagent: expect.objectContaining({ status: "interrupted" }),
+			}),
+		);
+	});
+
+	it("times out, quarantines late child usage, and does not charge it to the next query", async () => {
+		vi.useFakeTimers();
+		try {
+			let releaseLate = () => {};
+			const late = new Promise<void>((resolve) => {
+				releaseLate = resolve;
+			});
+			vi.mocked(query).mockReturnValueOnce(
+				sdkStream(async function* () {
+					yield {
+						type: "assistant",
+						parent_tool_use_id: null,
+						message: {
+							id: "msg-root-timeout",
+							content: [
+								{
+									type: "tool_use",
+									id: "agent-tool-timeout",
+									name: "Agent",
+									input: {},
+								},
+							],
+							usage: { input_tokens: 10, output_tokens: 5 },
+						},
+					};
+					yield {
+						type: "system",
+						subtype: "task_started",
+						task_id: "task-timeout",
+						tool_use_id: "agent-tool-timeout",
+						task_type: "subagent",
+					};
+					yield {
+						type: "result",
+						subtype: "success",
+						terminal_reason: "background_requested",
+						total_cost_usd: 0.1,
+						num_turns: 1,
+						duration_ms: 100,
+						usage: { input_tokens: 10, output_tokens: 5 },
+					};
+					await late;
+					yield {
+						type: "assistant",
+						parent_tool_use_id: "agent-tool-timeout",
+						message: {
+							id: "msg-child-too-late",
+							content: [],
+							usage: { input_tokens: 100, output_tokens: 50 },
+						},
+					};
+					yield {
+						type: "system",
+						subtype: "task_notification",
+						task_id: "task-timeout",
+						status: "completed",
+					};
+					yield {
+						type: "assistant",
+						parent_tool_use_id: null,
+						message: {
+							id: "msg-root-next",
+							content: [],
+							usage: { input_tokens: 20, output_tokens: 8 },
+						},
+					};
+					yield {
+						type: "result",
+						subtype: "success",
+						total_cost_usd: 0.2,
+						num_turns: 1,
+						duration_ms: 100,
+						usage: { input_tokens: 20, output_tokens: 8 },
+					};
+				}),
+			);
+			const provider = new ClaudeProvider();
+			const session = provider.query(baseParams());
+			await session.send("first");
+			const firstPromise = (async () => {
+				const events: AgentEvent[] = [];
+				for await (const event of session) {
+					events.push(event);
+					if (event.type === "done") break;
+				}
+				return events;
+			})();
+			await vi.advanceTimersByTimeAsync(10 * 60_000);
+			const first = await firstPromise;
+			expect(first.find((event) => event.type === "done")).toMatchObject({
+				usage: { inputTokens: 10, outputTokens: 5 },
+			});
+			expect(first).toContainEqual(
+				expect.objectContaining({
+					type: "tool_update",
+					subagent: expect.objectContaining({ status: "interrupted" }),
+				}),
+			);
+
+			releaseLate();
+			await session.send("second");
+			const second: AgentEvent[] = [];
+			for await (const event of session) {
+				second.push(event);
+				if (event.type === "done") break;
+			}
+			expect(second.find((event) => event.type === "done")).toMatchObject({
+				usage: { inputTokens: 20, outputTokens: 8 },
+			});
+			session.cancel();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("preserves pending root usage when cancellation ends the SDK iterator", async () => {
+		let failTail = (_error: Error) => {};
+		let signalPending = () => {};
+		const pending = new Promise<void>((resolve) => {
+			signalPending = resolve;
+		});
+		const tail = new Promise<void>((_resolve, reject) => {
+			failTail = reject;
+		});
+		vi.mocked(query).mockReturnValueOnce(
+			sdkStream(async function* () {
+				yield {
+					type: "assistant",
+					parent_tool_use_id: null,
+					message: {
+						id: "msg-root-cancel",
+						content: [],
+						usage: { input_tokens: 13, output_tokens: 6 },
+					},
+				};
+				yield {
+					type: "system",
+					subtype: "task_started",
+					task_id: "task-cancel",
+					tool_use_id: "agent-tool-cancel",
+					task_type: "subagent",
+				};
+				yield {
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0.1,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 13, output_tokens: 6 },
+				};
+				signalPending();
+				await tail;
+			}),
+		);
+		const provider = new ClaudeProvider();
+		const session = provider.query(baseParams());
+		await session.send("turn");
+		const collected = (async () => {
+			const events: AgentEvent[] = [];
+			for await (const event of session) events.push(event);
+			return events;
+		})();
+		await pending;
+		session.cancel();
+		failTail(new Error("cancelled"));
+		const events = await collected;
+		expect(events.find((event) => event.type === "done")).toMatchObject({
+			usage: { inputTokens: 13, outputTokens: 6 },
 		});
 	});
 

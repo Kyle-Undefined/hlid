@@ -470,6 +470,16 @@ describe("AcpProvider — session lifecycle", () => {
 		session.cancel();
 	});
 
+	it("does not charge a resumed session's cumulative cost to its first new query", async () => {
+		const { events, session } = await run(
+			"usage-update",
+			params("allow", { sessionId: "resumed-session" }),
+		);
+		const done = events.find((event) => event.type === "done");
+		expect(done).not.toHaveProperty("cost");
+		session.cancel();
+	});
+
 	it("reports turns per Hlid query instead of cumulative session turns", async () => {
 		const session = makeProvider().query(params());
 		for (let query = 0; query < 2; query++) {

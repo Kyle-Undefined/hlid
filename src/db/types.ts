@@ -7,6 +7,7 @@ export type SessionRow = {
 	selected_permission_mode?: string | null;
 	provider_id?: string | null;
 	agent_cwd?: string | null;
+	history_imported?: number;
 	started_at: number;
 	ended_at: number | null;
 	query_count: number;
@@ -66,6 +67,12 @@ export type ToolEventDetailRow = Pick<
 
 export type QueryData = {
 	cost: number;
+	/**
+	 * True when `cost` is a provider-reported value, including a genuine zero.
+	 * False/omitted means a zero `cost` is only the storage fallback and must not
+	 * be presented as priced unless `estimated_cost` is available.
+	 */
+	cost_known?: boolean;
 	estimated_cost?: number | null;
 	input_tokens: number;
 	output_tokens: number;
@@ -76,6 +83,10 @@ export type QueryData = {
 	context_window: number | null;
 	stop_reason: string | null;
 	tokens_in_context?: number | null;
+	/** Provider model that produced this query, snapshotted for historical filters. */
+	model?: string | null;
+	/** Canonical agent/CWD owner at query time; null represents the vault. */
+	agent_cwd?: string | null;
 };
 
 export type AggWindow = {

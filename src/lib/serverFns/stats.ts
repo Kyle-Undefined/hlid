@@ -134,9 +134,14 @@ export const getLedgerAnalyticsFn = createServerFn({ method: "POST" })
 		);
 	});
 
-export const getToolErrorsFn = createServerFn({ method: "GET" })
-	.validator((raw) => z.string().min(1).parse(raw))
-	.handler(async ({ data: toolName }) => {
-		const { getToolErrors } = await import("#/db");
-		return getToolErrors(toolName, 10);
+const ledgerToolErrorsSchema = z.object({
+	toolName: z.string().min(1).max(512),
+	filter: ledgerAnalyticsFilterSchema,
+});
+
+export const getToolErrorsFn = createServerFn({ method: "POST" })
+	.validator((raw) => ledgerToolErrorsSchema.parse(raw))
+	.handler(async ({ data }) => {
+		const { getLedgerToolErrors } = await import("#/db");
+		return getLedgerToolErrors(data.toolName, data.filter);
 	});

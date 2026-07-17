@@ -48,6 +48,21 @@ const activity = (count: number) => ({
 	topTools: [{ name: "Read", count, errorRate: 0 }],
 });
 
+const filteredAnalytics = (queries: number) => ({
+	selected: {
+		...EMPTY_AGG.today,
+		queries,
+		sessions: queries > 0 ? 1 : 0,
+	},
+	trend: { days: [], total: queries },
+	topTools: [],
+	hourOfDay: [],
+	weekdayHour: [],
+	modelSplit: [],
+	stopReasonSplit: [],
+	facets: { agents: [], providers: [], models: [] },
+});
+
 beforeEach(() => {
 	vi.clearAllMocks();
 	resetLedgerStatsDataForTest();
@@ -189,5 +204,83 @@ describe("useLedgerStatsData", () => {
 				to: "2026-07-16",
 			}),
 		});
+	});
+
+	it("never exposes one filter's analytics under another filter", async () => {
+		const next =
+			deferred<NonNullable<Awaited<ReturnType<typeof getLedgerAnalyticsFn>>>>();
+		vi.mocked(getLedgerAnalyticsFn)
+			.mockResolvedValueOnce(filteredAnalytics(7))
+			.mockReturnValueOnce(next.promise);
+		const { result, rerender } = renderHook(
+			({ filter }) => useLedgerStatsData(true, undefined, filter),
+			{
+				initialProps: {
+					filter: {
+						range: "30d" as const,
+						provider: "claude" as string | undefined,
+					},
+				},
+			},
+		);
+		await waitFor(() =>
+			expect(result.current.analytics?.selected.queries).toBe(7),
+		);
+
+		rerender({ filter: { range: "30d", provider: "codex" } });
+
+		expect(result.current.analytics).toBeNull();
+		expect(result.current.analyticsStatus).toBe("loading");
+		next.resolve(filteredAnalytics(3));
+		await waitFor(() =>
+			expect(result.current.analytics?.selected.queries).toBe(3),
+		);
+	});
+
+	it("reports a failed new filter independently from the prior last-good result", async () => {
+		const next =
+			deferred<NonNullable<Awaited<ReturnType<typeof getLedgerAnalyticsFn>>>>();
+		vi.mocked(getLedgerAnalyticsFn)
+			.mockResolvedValueOnce(filteredAnalytics(7))
+			.mockReturnValueOnce(next.promise);
+		const { result, rerender } = renderHook(
+			({ filter }) => useLedgerStatsData(true, undefined, filter),
+			{
+				initialProps: {
+					filter: {
+						range: "30d" as const,
+						agent: "/agents/raven" as string | undefined,
+					},
+				},
+			},
+		);
+		await waitFor(() => expect(result.current.analyticsStatus).toBe("ready"));
+
+		rerender({ filter: { range: "30d", agent: "/agents/forge" } });
+		next.reject(new Error("offline"));
+
+		await waitFor(() =>
+			expect(result.current.analyticsStatus).toBe("unavailable"),
+		);
+		expect(result.current.analytics).toBeNull();
+	});
+
+	it("keeps last-good analytics during a same-filter refresh failure", async () => {
+		vi.mocked(getLedgerAnalyticsFn)
+			.mockResolvedValueOnce(filteredAnalytics(5))
+			.mockRejectedValueOnce(new Error("offline"));
+		const { result } = renderHook(() =>
+			useLedgerStatsData(true, undefined, {
+				range: "30d",
+				provider: "codex",
+			}),
+		);
+		await waitFor(() => expect(result.current.analyticsStatus).toBe("ready"));
+
+		act(() => result.current.refresh());
+		await waitFor(() => expect(getLedgerAnalyticsFn).toHaveBeenCalledTimes(2));
+
+		expect(result.current.analytics?.selected.queries).toBe(5);
+		expect(result.current.analyticsStatus).toBe("ready");
 	});
 });

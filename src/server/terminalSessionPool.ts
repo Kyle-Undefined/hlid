@@ -96,6 +96,7 @@ export class TerminalSessionPool extends PtySessionPoolBase<TerminalSessionEntry
 				agent_cwd: entry.cwd,
 				agent_name: entry.label || "Terminal session",
 				state: "running",
+				provider_id: "claude",
 				model: "claude-cli",
 				hasPendingPermissions: false,
 				// Terminal sessions pre-create their DB row (via ensureSessionFn) using

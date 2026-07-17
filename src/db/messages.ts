@@ -9,6 +9,12 @@ import type {
 
 export const TOOL_RESULT_PREVIEW_CHARS = 256;
 
+export type ToolEventDimensions = {
+	providerId?: string;
+	model?: string | null;
+	agentCwd?: string | null;
+};
+
 export async function appendMessage(
 	sessionId: string,
 	seq: number,
@@ -64,19 +70,41 @@ export async function appendToolEvent(
 	name: string,
 	input: unknown,
 	subagent?: SubagentSnapshot,
+	dimensions?: ToolEventDimensions,
 ): Promise<void> {
 	const db = await getDb();
-	db.run(
-		`INSERT INTO tool_events (session_id, assistant_seq, tool_id, name, input_json, subagent_json) VALUES (?, ?, ?, ?, ?, ?)`,
+	const hasModelSnapshot = dimensions?.model !== undefined;
+	const hasAgentSnapshot = dimensions?.agentCwd !== undefined;
+	const { changes } = db.run(
+		`INSERT INTO tool_events
+			(session_id, assistant_seq, tool_id, name, input_json, subagent_json,
+			 timestamp, provider_id, model, agent_cwd)
+		 SELECT s.id, ?, ?, ?, ?, ?, unixepoch(),
+		        COALESCE(?, s.provider_id, 'claude'),
+		        CASE WHEN ? = 1 THEN ?
+		             ELSE COALESCE(NULLIF(s.selected_model, ''),
+		                           NULLIF(s.actual_model, ''), NULLIF(s.model, '')) END,
+		        CASE WHEN ? = 1 THEN ? ELSE s.agent_cwd END
+		 FROM sessions s WHERE s.id = ?`,
 		[
-			sessionId,
 			assistantSeq,
 			toolId,
 			name,
 			input !== undefined ? JSON.stringify(input) : null,
 			subagent ? JSON.stringify(subagent) : null,
+			dimensions?.providerId ?? null,
+			hasModelSnapshot ? 1 : 0,
+			dimensions?.model ?? null,
+			hasAgentSnapshot ? 1 : 0,
+			dimensions?.agentCwd ?? null,
+			sessionId,
 		],
 	);
+	if (changes === 0) {
+		throw new Error(
+			`appendToolEvent: no session found for session=${sessionId}`,
+		);
+	}
 	markAnalyticsChanged(["activity"], "tool_event_recorded");
 }
 

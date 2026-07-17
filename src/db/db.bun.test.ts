@@ -131,6 +131,25 @@ describe("analytics revisions", () => {
 		expect(getAnalyticsRevision("providerUsage")).toBe(0);
 	});
 
+	it("invalidates Ledger activity snapshots when agent or provider metadata changes", async () => {
+		await createSession("revision-session", "Session", "sonnet");
+		for (const mutate of [
+			() => setSessionAgentCwd("revision-session", "/agents/raven"),
+			() => setSessionProviderId("revision-session", "codex"),
+			() =>
+				setSessionProviderSession(
+					"revision-session",
+					"claude",
+					"claude-session",
+				),
+		]) {
+			resetAnalyticsRevisionForTest();
+			await mutate();
+			expect(getAnalyticsRevision("stats")).toBeGreaterThan(0);
+			expect(getAnalyticsRevision("activity")).toBeGreaterThan(0);
+		}
+	});
+
 	it("invalidates provider snapshots for rate-limit settings only", async () => {
 		await saveSetting("theme", "dark");
 		expect(getAnalyticsRevision("providerUsage")).toBe(0);
@@ -276,6 +295,80 @@ describe("sessions — create & fetch", () => {
 		expect(exactModel.sessions.map((row) => row.id)).toEqual(["raven-fast"]);
 		// The facet remains owner-scoped so the user can switch models directly.
 		expect(exactModel.models).toEqual(["gpt-5.4", "gpt-5.4-pro"]);
+	});
+
+	it("getSessionsPaginated keeps model and stop drill-downs inside the selected dates", async () => {
+		const database = freshDb();
+		for (const [id, model, stopReason] of [
+			["inside-stop", "model-a", "max_tokens"],
+			["outside-stop", "model-a", "max_tokens"],
+			["inside-other", "model-a", "end_turn"],
+		] as const) {
+			await createSession(id, id, model);
+			await recordQuery(id, baseQuery({ stop_reason: stopReason }));
+		}
+		for (const [id, timestamp] of [
+			["inside-stop", Date.parse("2026-07-10T16:00:00Z") / 1000],
+			["outside-stop", Date.parse("2026-07-11T16:00:00Z") / 1000],
+			["inside-other", Date.parse("2026-07-10T17:00:00Z") / 1000],
+		] as const) {
+			database
+				.query("UPDATE queries SET timestamp = ? WHERE session_id = ?")
+				.run(timestamp, id);
+		}
+
+		const byModel = await getSessionsPaginated(1, 10, {
+			model: "model-a",
+			range: "custom",
+			from: "2026-07-10",
+			to: "2026-07-10",
+		});
+		expect(byModel.sessions.map((row) => row.id).sort()).toEqual([
+			"inside-other",
+			"inside-stop",
+		]);
+
+		const byStop = await getSessionsPaginated(1, 10, {
+			stop: "max_tokens",
+			range: "custom",
+			from: "2026-07-10",
+			to: "2026-07-10",
+		});
+		expect(byStop.sessions.map((row) => row.id)).toEqual(["inside-stop"]);
+
+		const allMatchingStop = await getSessionsPaginated(1, 10, {
+			stop: "max_tokens",
+			range: "all",
+		});
+		expect(allMatchingStop.total).toBe(2);
+	});
+
+	it("Stats drill-downs use query dimensions after a session switches", async () => {
+		await createSession("mixed", "Mixed", "model-a");
+		await recordQuery(
+			"mixed",
+			baseQuery({ model: "model-a", agent_cwd: "/agents/a" }),
+			"claude",
+		);
+		await setSessionModel("mixed", "model-b");
+		await setSessionAgentCwd("mixed", "/agents/b");
+		await setSessionProviderId("mixed", "codex");
+
+		const historical = await getSessionsPaginated(1, 10, {
+			agent: "/agents/a",
+			model: "model-a",
+			provider: "claude",
+			range: "all",
+		});
+		expect(historical.sessions.map((row) => row.id)).toEqual(["mixed"]);
+
+		const currentMetadata = await getSessionsPaginated(1, 10, {
+			agent: "/agents/b",
+			model: "model-b",
+			provider: "codex",
+			range: "all",
+		});
+		expect(currentMetadata.total).toBe(0);
 	});
 
 	it("getSessionsPaginated reports null oldest_started_at when empty", async () => {
@@ -514,6 +607,98 @@ describe("sessions — recordQuery", () => {
 		expect(agg.today.unpriced_queries).toBe(1);
 	});
 
+	it("marks missing pricing telemetry unpriced for every provider", async () => {
+		const database = freshDb();
+		await createSession("s1", "L", "provider-model");
+		await recordQuery(
+			"s1",
+			baseQuery({ cost: 0, cost_known: false, estimated_cost: null }),
+			"acp:example",
+		);
+
+		const rows = await getRecentSessions();
+		expect(rows[0].unpriced_query_count).toBe(1);
+		expect(
+			database
+				.query(`SELECT cost_known, unpriced, provider_id FROM usage_queries`)
+				.get(),
+		).toEqual({
+			cost_known: 0,
+			unpriced: 1,
+			provider_id: "acp:example",
+		});
+	});
+
+	it("preserves a provider-reported known zero cost", async () => {
+		const database = freshDb();
+		await createSession("s1", "L", "local-model");
+		await recordQuery(
+			"s1",
+			baseQuery({ cost: 0, cost_known: true, estimated_cost: null }),
+			"acp:local",
+		);
+
+		expect((await getRecentSessions())[0].unpriced_query_count).toBe(0);
+		expect(
+			database.query(`SELECT cost_known, unpriced FROM usage_queries`).get(),
+		).toEqual({ cost_known: 1, unpriced: 0 });
+	});
+
+	it("backfills provider-agnostic pricing provenance and aggregates", async () => {
+		const database = freshDb();
+		await createSession("unknown", "Unknown", "model");
+		await createSession("actual", "Actual", "model");
+		await createSession("estimated", "Estimated", "model");
+		await recordQuery(
+			"unknown",
+			baseQuery({ cost: 0, estimated_cost: null }),
+			"acp:example",
+		);
+		await recordQuery(
+			"actual",
+			baseQuery({ cost: 0.5, estimated_cost: null }),
+			"acp:example",
+		);
+		await recordQuery(
+			"estimated",
+			baseQuery({ cost: 0, estimated_cost: 0.25 }),
+			"claude",
+		);
+
+		// Simulate the legacy Codex-only provenance state, then rerun only the
+		// data backfill (the structural cost_known migration already ran).
+		database.run(`UPDATE queries SET cost_known = 0`);
+		database.run(`UPDATE usage_queries SET cost_known = 0, unpriced = 0`);
+		database.run(`UPDATE sessions SET unpriced_query_count = 0`);
+		database.run(`UPDATE usage_daily SET unpriced_queries = 0`);
+		database.run(
+			`DELETE FROM settings WHERE key = '_migrated_provider_agnostic_unpriced'`,
+		);
+		setDbForTest(database);
+
+		expect(
+			database
+				.query(
+					`SELECT session_id, cost_known, unpriced FROM usage_queries ORDER BY session_id`,
+				)
+				.all(),
+		).toEqual([
+			{ session_id: "actual", cost_known: 1, unpriced: 0 },
+			{ session_id: "estimated", cost_known: 1, unpriced: 0 },
+			{ session_id: "unknown", cost_known: 0, unpriced: 1 },
+		]);
+		expect(
+			database
+				.query(`SELECT id, unpriced_query_count FROM sessions ORDER BY id`)
+				.all(),
+		).toEqual([
+			{ id: "actual", unpriced_query_count: 0 },
+			{ id: "estimated", unpriced_query_count: 0 },
+			{ id: "unknown", unpriced_query_count: 1 },
+		]);
+		expect((await getAggregatedStats()).today.unpriced_queries).toBe(1);
+	});
+
 	it("getSessionLastQueryContext returns context_window from a query", async () => {
 		await createSession("s1", "L", "m");
 		await recordQuery(
@@ -523,6 +708,36 @@ describe("sessions — recordQuery", () => {
 		const ctx = await getSessionLastQueryContext("s1");
 		expect(ctx?.context_window).toBe(200_000);
 		expect(ctx?.last_context_used).toBe(5000);
+	});
+
+	it("does not let an auxiliary recap replace the chat context reading", async () => {
+		await createSession("s1", "L", "m");
+		await recordQuery(
+			"s1",
+			baseQuery({ context_window: 200_000, tokens_in_context: 5000 }),
+		);
+		await recordQuery(
+			"s1",
+			baseQuery({
+				context_window: 128_000,
+				tokens_in_context: 100,
+				stop_reason: "turn_recap",
+			}),
+		);
+
+		const ctx = await getSessionLastQueryContext("s1");
+		expect(ctx?.context_window).toBe(200_000);
+		expect(ctx?.last_context_used).toBe(5000);
+		const session = (await getRecentSessions())[0];
+		expect(session.query_count).toBe(2);
+		expect(session.total_input_tokens).toBe(200);
+		expect(session.total_output_tokens).toBe(100);
+		expect(session.total_turns).toBe(2);
+		expect(session.total_cost).toBeCloseTo(0.002);
+		const aggregate = await getAggregatedStats();
+		expect(aggregate.today.queries).toBe(2);
+		expect(aggregate.today.input_tokens).toBe(200);
+		expect(aggregate.today.output_tokens).toBe(100);
 	});
 
 	it("getSessionLastQueryContext returns null for unknown session", async () => {
@@ -668,6 +883,15 @@ describe("messages", () => {
 
 		expect(await getSessionNextMessageSeq("s1")).toBe(9);
 		expect(await getSessionNextMessageSeq("missing")).toBe(0);
+	});
+
+	it("appendToolEvent rejects a missing session instead of dropping the event", async () => {
+		await expect(
+			appendToolEvent("missing-session", 1, "missing-tool", "Read", {}),
+		).rejects.toThrow(
+			"appendToolEvent: no session found for session=missing-session",
+		);
+		expect(await getSessionToolEventSummaries("missing-session")).toEqual([]);
 	});
 
 	it("setMessageRecap updates the recap field", async () => {

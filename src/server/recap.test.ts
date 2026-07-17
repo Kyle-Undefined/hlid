@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../db", () => ({
 	setMessageRecap: vi.fn().mockResolvedValue(undefined),
+	recordQuery: vi.fn().mockResolvedValue({ estimatedCost: null }),
 }));
 
 import * as db from "../db";
@@ -18,6 +19,7 @@ import type {
 import { generateTurnRecap } from "./recap";
 
 const mockSetRecap = vi.mocked(db.setMessageRecap);
+const mockRecordQuery = vi.mocked(db.recordQuery);
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -457,6 +459,7 @@ describe("generateTurnRecap — DB persist", () => {
 			provider: stubReturns("Summary."),
 		});
 		expect(mockSetRecap).not.toHaveBeenCalled();
+		expect(mockRecordQuery).not.toHaveBeenCalled();
 	});
 
 	it("does not persist when assistantSeq is -1", async () => {
@@ -489,6 +492,7 @@ describe("generateTurnRecap — DB persist", () => {
 			provider: stubEmpty(),
 		});
 		expect(mockSetRecap).not.toHaveBeenCalled();
+		expect(mockRecordQuery).toHaveBeenCalledTimes(1);
 	});
 
 	it("persists at assistantSeq=0", async () => {
@@ -505,6 +509,136 @@ describe("generateTurnRecap — DB persist", () => {
 			provider: stubReturns("Zero seq summary."),
 		});
 		expect(mockSetRecap).toHaveBeenCalledWith("sess-1", 0, "Zero seq summary.");
+	});
+});
+
+describe("generateTurnRecap — usage accounting", () => {
+	it("records one auxiliary provider fact with recap dimensions", async () => {
+		const provider: AgentProvider = {
+			providerId: "codex",
+			query(params: AgentQueryParams): AgentSession {
+				capturedParams = params;
+				const completion: Extract<AgentEvent, { type: "done" }> = {
+					type: "done",
+					estimatedCost: 0.125,
+					turns: 1,
+					durationMs: 321,
+					stopReason: "end_turn",
+					modelUsage: {
+						"requested-alias": {
+							contextWindow: 128_000,
+							maxOutputTokens: 16_384,
+						},
+					},
+					usage: {
+						inputTokens: 10,
+						outputTokens: 3,
+						cacheReadTokens: 4,
+						cacheCreationTokens: 2,
+					},
+				};
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield {
+						type: "usage",
+						inputTokens: 10,
+						outputTokens: 3,
+						model: "gpt-5.3-codex",
+						contextWindow: 200_000,
+					};
+					yield { type: "text_delta", text: "Summary." };
+					yield completion;
+					// A duplicate terminal notification must not double-charge the recap.
+					yield completion;
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn(async (msg: string) => {
+						capturedSendArg = msg;
+					}),
+				};
+			},
+		};
+
+		await generateTurnRecap({
+			sessionId: "sess-usage",
+			assistantSeq: 2,
+			userMessage: "req",
+			toolEvents: [],
+			assistantText: "did work",
+			emit: vi.fn(),
+			vaultPath: "/vault",
+			provider,
+			recapModel: "requested-alias",
+			agentCwd: "/agents/forge",
+		});
+
+		expect(capturedParams?.persistSession).toBe(false);
+		expect(mockRecordQuery).toHaveBeenCalledTimes(1);
+		expect(mockRecordQuery).toHaveBeenCalledWith(
+			"sess-usage",
+			expect.objectContaining({
+				cost: 0,
+				cost_known: true,
+				estimated_cost: 0.125,
+				input_tokens: 10,
+				output_tokens: 3,
+				cache_read_tokens: 4,
+				cache_creation_tokens: 2,
+				duration_ms: 321,
+				turns: 1,
+				context_window: 128_000,
+				tokens_in_context: 16,
+				stop_reason: "turn_recap",
+				model: "gpt-5.3-codex",
+				agent_cwd: "/agents/forge",
+			}),
+			"codex",
+		);
+	});
+
+	it("lets a duplicate done retry after a transient record failure", async () => {
+		mockRecordQuery
+			.mockRejectedValueOnce(new Error("database busy"))
+			.mockResolvedValueOnce({ estimatedCost: null });
+		const completion: Extract<AgentEvent, { type: "done" }> = {
+			type: "done",
+			turns: 1,
+			durationMs: 10,
+			usage: { inputTokens: 5, outputTokens: 2 },
+		};
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield completion;
+					yield completion;
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn(),
+				};
+			},
+		};
+		const consoleError = vi
+			.spyOn(console, "error")
+			.mockImplementation(() => {});
+		try {
+			await generateTurnRecap({
+				sessionId: "sess-retry",
+				assistantSeq: 1,
+				userMessage: "req",
+				toolEvents: [],
+				assistantText: "done",
+				emit: vi.fn(),
+				vaultPath: "/vault",
+				provider,
+			});
+		} finally {
+			consoleError.mockRestore();
+		}
+		expect(mockRecordQuery).toHaveBeenCalledTimes(2);
 	});
 });
 

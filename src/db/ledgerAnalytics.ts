@@ -2,6 +2,7 @@ import type {
 	HourOfDayBucket,
 	ModelSplitEntry,
 	StopReasonEntry,
+	ToolErrorEntry,
 	TopToolCall,
 } from "./activity";
 import { getDb } from "./schema";
@@ -41,8 +42,40 @@ export type LedgerAnalytics = {
 	facets: { agents: string[]; providers: string[]; models: string[] };
 };
 
-const MODEL_SQL =
+export type LedgerToolErrorBreakdown = {
+	total: number;
+	distinct: number;
+	groups: ToolErrorEntry[];
+};
+
+const SESSION_MODEL_SQL =
 	"COALESCE(NULLIF(s.actual_model, ''), NULLIF(s.selected_model, ''), NULLIF(s.model, ''))";
+const TOOL_TIMESTAMP_SQL =
+	"COALESCE(te.timestamp, (SELECT MIN(m.timestamp) FROM messages m WHERE m.session_id = te.session_id AND m.seq = te.assistant_seq AND m.role = 'assistant'), s.started_at)";
+
+type AnalyticsDimensions = {
+	agent: string;
+	provider: string;
+	model: string;
+};
+
+const USAGE_DIMENSIONS: AnalyticsDimensions = {
+	agent: "uq.agent_cwd",
+	provider: "uq.provider_id",
+	model: "NULLIF(uq.model, '')",
+};
+
+const QUERY_DIMENSIONS: AnalyticsDimensions = {
+	agent: "q.agent_cwd",
+	provider: "q.provider_id",
+	model: "NULLIF(q.model, '')",
+};
+
+const TOOL_DIMENSIONS: AnalyticsDimensions = {
+	agent: "te.agent_cwd",
+	provider: "te.provider_id",
+	model: "NULLIF(te.model, '')",
+};
 
 function rangeDays(range: LedgerStatsRange): number | null {
 	if (range === "7d") return 7;
@@ -51,45 +84,56 @@ function rangeDays(range: LedgerStatsRange): number | null {
 	return null;
 }
 
+/** Local-calendar boundary shared by Stats analytics and session drill-downs. */
+export function ledgerRangeCondition(
+	filter: Pick<LedgerAnalyticsFilter, "range" | "from" | "to">,
+	timestampSql: string,
+): { condition: string | null; params: string[] } {
+	if (filter.range === "today") {
+		return {
+			condition: `${timestampSql} >= unixepoch('now', 'localtime', 'start of day', 'utc')`,
+			params: [],
+		};
+	}
+	if (filter.range === "custom") {
+		if (!filter.from || !filter.to) return { condition: "0", params: [] };
+		return {
+			condition: `${timestampSql} >= unixepoch(?, 'start of day', 'utc') AND ${timestampSql} < unixepoch(?, '+1 day', 'start of day', 'utc')`,
+			params: [filter.from, filter.to],
+		};
+	}
+	const days = rangeDays(filter.range);
+	if (days == null) return { condition: null, params: [] };
+	return {
+		condition: `${timestampSql} >= unixepoch('now', 'localtime', 'start of day', ?, 'utc')`,
+		params: [`-${days - 1} days`],
+	};
+}
+
 function sessionConditions(
 	filter: LedgerAnalyticsFilter,
 	timestampSql: string,
-	providerSql = "s.provider_id",
+	dimensions: AnalyticsDimensions,
 ): { sql: string; params: (string | number)[] } {
 	const conditions: string[] = [];
 	const params: (string | number)[] = [];
-	const days = rangeDays(filter.range);
-	if (filter.range === "today") {
-		conditions.push(
-			`${timestampSql} >= unixepoch('now', 'localtime', 'start of day', 'utc')`,
-		);
-	} else if (filter.range === "custom") {
-		if (!filter.from || !filter.to) {
-			conditions.push("0");
-		} else {
-			conditions.push(`${timestampSql} >= unixepoch(?, 'start of day', 'utc')`);
-			params.push(filter.from);
-			conditions.push(
-				`${timestampSql} < unixepoch(?, '+1 day', 'start of day', 'utc')`,
-			);
-			params.push(filter.to);
-		}
-	} else if (days != null) {
-		conditions.push(`${timestampSql} >= unixepoch('now', ?)`);
-		params.push(`-${days} days`);
-	}
+	const range = ledgerRangeCondition(filter, timestampSql);
+	if (range.condition) conditions.push(range.condition);
+	params.push(...range.params);
 	if (filter.agent === "vault") {
-		conditions.push("(s.agent_cwd IS NULL OR TRIM(s.agent_cwd) = '')");
+		conditions.push(
+			`(${dimensions.agent} IS NULL OR TRIM(${dimensions.agent}) = '')`,
+		);
 	} else if (filter.agent) {
-		conditions.push("s.agent_cwd = ?");
+		conditions.push(`${dimensions.agent} = ?`);
 		params.push(filter.agent);
 	}
 	if (filter.provider) {
-		conditions.push(`COALESCE(${providerSql}, s.provider_id) = ?`);
+		conditions.push(`${dimensions.provider} = ?`);
 		params.push(filter.provider);
 	}
 	if (filter.model) {
-		conditions.push(`${MODEL_SQL} = ?`);
+		conditions.push(`${dimensions.model} = ?`);
 		params.push(filter.model);
 	}
 	return {
@@ -102,12 +146,9 @@ export async function getLedgerAnalytics(
 	filter: LedgerAnalyticsFilter,
 ): Promise<LedgerAnalytics> {
 	const db = await getDb();
-	const usage = sessionConditions(filter, "uq.timestamp", "uq.provider_id");
-	const query = sessionConditions(filter, "q.timestamp");
-	const tool = sessionConditions(
-		filter,
-		"COALESCE((SELECT MIN(m.timestamp) FROM messages m WHERE m.session_id = te.session_id AND m.seq = te.assistant_seq AND m.role = 'assistant'), s.started_at)",
-	);
+	const usage = sessionConditions(filter, "uq.timestamp", USAGE_DIMENSIONS);
+	const query = sessionConditions(filter, "q.timestamp", QUERY_DIMENSIONS);
+	const tool = sessionConditions(filter, TOOL_TIMESTAMP_SQL, TOOL_DIMENSIONS);
 
 	type SelectedRow = AggWindow & { sessions: number };
 	const selected = db
@@ -158,6 +199,7 @@ export async function getLedgerAnalytics(
 	const topTools = db
 		.query<TopToolCall, (string | number)[]>(
 			`SELECT te.name, COUNT(*) AS count,
+			 SUM(CASE WHEN te.is_error = 1 THEN 1 ELSE 0 END) AS errorCount,
 			 CAST(SUM(CASE WHEN te.is_error = 1 THEN 1 ELSE 0 END) AS REAL) / COUNT(*) AS errorRate
 			 FROM tool_events te JOIN sessions s ON s.id = te.session_id
 			 ${tool.sql}
@@ -181,10 +223,10 @@ export async function getLedgerAnalytics(
 
 	const modelSplit = db
 		.query<ModelSplitEntry, (string | number)[]>(
-			`SELECT ${MODEL_SQL} AS model, COUNT(DISTINCT q.session_id) AS count
+			`SELECT ${QUERY_DIMENSIONS.model} AS model, COUNT(DISTINCT q.session_id) AS count
 			 FROM queries q JOIN sessions s ON s.id = q.session_id
-			 ${query.sql}${query.sql ? " AND" : " WHERE"} ${MODEL_SQL} IS NOT NULL
-			 GROUP BY ${MODEL_SQL} ORDER BY count DESC, model ASC`,
+			 ${query.sql}${query.sql ? " AND" : " WHERE"} ${QUERY_DIMENSIONS.model} IS NOT NULL
+			 GROUP BY ${QUERY_DIMENSIONS.model} ORDER BY count DESC, model ASC`,
 		)
 		.all(...query.params);
 	const stopReasonSplit = db
@@ -198,19 +240,37 @@ export async function getLedgerAnalytics(
 
 	const agents = db
 		.query<{ value: string }, []>(
-			"SELECT DISTINCT agent_cwd AS value FROM sessions WHERE agent_cwd IS NOT NULL AND TRIM(agent_cwd) <> '' ORDER BY value COLLATE NOCASE",
+			`SELECT DISTINCT value FROM (
+				SELECT agent_cwd AS value FROM sessions
+				UNION ALL SELECT agent_cwd FROM queries
+				UNION ALL SELECT agent_cwd FROM usage_queries
+				UNION ALL SELECT agent_cwd FROM tool_events
+			 ) WHERE value IS NOT NULL AND TRIM(value) <> ''
+			 ORDER BY value COLLATE NOCASE`,
 		)
 		.all()
 		.map((row) => row.value);
 	const providers = db
 		.query<{ value: string }, []>(
-			"SELECT DISTINCT provider_id AS value FROM sessions WHERE provider_id IS NOT NULL AND TRIM(provider_id) <> '' ORDER BY value COLLATE NOCASE",
+			`SELECT DISTINCT value FROM (
+				SELECT provider_id AS value FROM sessions
+				UNION ALL SELECT provider_id FROM queries
+				UNION ALL SELECT provider_id FROM usage_queries
+				UNION ALL SELECT provider_id FROM tool_events
+			 ) WHERE value IS NOT NULL AND TRIM(value) <> ''
+			 ORDER BY value COLLATE NOCASE`,
 		)
 		.all()
 		.map((row) => row.value);
 	const models = db
 		.query<{ value: string }, []>(
-			`SELECT DISTINCT ${MODEL_SQL} AS value FROM sessions s WHERE ${MODEL_SQL} IS NOT NULL ORDER BY value COLLATE NOCASE`,
+			`SELECT DISTINCT value FROM (
+				SELECT ${SESSION_MODEL_SQL} AS value FROM sessions s
+				UNION ALL SELECT model FROM queries
+				UNION ALL SELECT model FROM usage_queries
+				UNION ALL SELECT model FROM tool_events
+			 ) WHERE value IS NOT NULL AND TRIM(value) <> ''
+			 ORDER BY value COLLATE NOCASE`,
 		)
 		.all()
 		.map((row) => row.value);
@@ -225,4 +285,35 @@ export async function getLedgerAnalytics(
 		stopReasonSplit,
 		facets: { agents, providers, models },
 	};
+}
+
+/** Error groups for one chart row, using the exact same Ledger filters. */
+export async function getLedgerToolErrors(
+	toolName: string,
+	filter: LedgerAnalyticsFilter,
+	limit = 50,
+): Promise<LedgerToolErrorBreakdown> {
+	const db = await getDb();
+	const tool = sessionConditions(filter, TOOL_TIMESTAMP_SQL, TOOL_DIMENSIONS);
+	const where = `${tool.sql}${tool.sql ? " AND" : " WHERE"} te.name = ? AND te.is_error = 1`;
+	const params = [...tool.params, toolName];
+	const counts = db
+		.query<{ total: number; distinctCount: number }, (string | number)[]>(
+			`SELECT COUNT(*) AS total,
+			        COUNT(DISTINCT COALESCE(te.result_text, '')) AS distinctCount
+			 FROM tool_events te JOIN sessions s ON s.id = te.session_id
+			 ${where}`,
+		)
+		.get(...params) ?? { total: 0, distinctCount: 0 };
+	const groups = db
+		.query<ToolErrorEntry, (string | number)[]>(
+			`SELECT COALESCE(te.result_text, '') AS text, COUNT(*) AS count
+			 FROM tool_events te JOIN sessions s ON s.id = te.session_id
+			 ${where}
+			 GROUP BY COALESCE(te.result_text, '')
+			 ORDER BY count DESC, text ASC
+			 LIMIT ?`,
+		)
+		.all(...params, limit);
+	return { total: counts.total, distinct: counts.distinctCount, groups };
 }

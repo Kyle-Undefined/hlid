@@ -16,8 +16,13 @@ beforeEach(() => {
 });
 
 const data = [
-	{ name: "Bash", count: 40, errorRate: 0 },
-	{ name: "mcp__jira__create_issue", count: 10, errorRate: 0.2 },
+	{ name: "Bash", count: 40, errorCount: 0, errorRate: 0 },
+	{
+		name: "mcp__jira__create_issue",
+		count: 10,
+		errorCount: 2,
+		errorRate: 0.2,
+	},
 ];
 
 describe("TopToolsChart", () => {
@@ -40,9 +45,11 @@ describe("TopToolsChart", () => {
 	});
 
 	it("clicking an errored bar opens the error modal with cleaned text", async () => {
-		vi.mocked(getToolErrorsFn).mockResolvedValue([
-			{ count: 3, text: "<tool_use_error> boom </tool_use_error>" },
-		] as never);
+		vi.mocked(getToolErrorsFn).mockResolvedValue({
+			total: 3,
+			distinct: 1,
+			groups: [{ count: 3, text: "<tool_use_error> boom </tool_use_error>" }],
+		} as never);
 		render(<TopToolsChart data={data} />);
 		fireEvent.click(screen.getByRole("button", { name: /create_issue/i }));
 		expect(
@@ -50,6 +57,13 @@ describe("TopToolsChart", () => {
 		).toBeTruthy();
 		expect(await screen.findByText("boom")).toBeTruthy();
 		expect(screen.getByText("3×")).toBeTruthy();
+		expect(screen.getByText("3 errors · 1 distinct message")).toBeTruthy();
+		expect(getToolErrorsFn).toHaveBeenCalledWith({
+			data: {
+				toolName: "mcp__jira__create_issue",
+				filter: { range: "all" },
+			},
+		});
 		fireEvent.click(screen.getByRole("button", { name: "Close" }));
 		expect(screen.queryByRole("dialog")).toBeNull();
 	});
@@ -58,5 +72,34 @@ describe("TopToolsChart", () => {
 		render(<TopToolsChart data={data} />);
 		fireEvent.click(screen.getByRole("button", { name: /bash/i }));
 		expect(screen.queryByRole("dialog")).toBeNull();
+	});
+
+	it("keeps the exact event total visible when messages are grouped", async () => {
+		vi.mocked(getToolErrorsFn).mockResolvedValue({
+			total: 11,
+			distinct: 2,
+			groups: [
+				{ count: 10, text: "same failure" },
+				{ count: 1, text: "" },
+			],
+		} as never);
+		render(
+			<TopToolsChart
+				data={[{ name: "Bash", count: 20, errorCount: 11, errorRate: 0.55 }]}
+				filter={{ range: "today", provider: "codex" }}
+			/>,
+		);
+		fireEvent.click(screen.getByRole("button", { name: /bash/i }));
+		expect(
+			await screen.findByText("11 errors · 2 distinct messages"),
+		).toBeTruthy();
+		expect(screen.getByText("10×")).toBeTruthy();
+		expect(screen.getByText("No error details recorded.")).toBeTruthy();
+		expect(getToolErrorsFn).toHaveBeenCalledWith({
+			data: {
+				toolName: "Bash",
+				filter: { range: "today", provider: "codex" },
+			},
+		});
 	});
 });

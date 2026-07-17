@@ -8,6 +8,7 @@ import {
 	useAnchoredPopover,
 } from "#/hooks/useAnchoredPopover";
 import { useIsDesktop } from "#/hooks/useIsDesktop";
+import { isLedgerOpenSession } from "#/lib/ledgerSessions";
 import type { SessionStatusEntry } from "../../server/protocol";
 
 export type ActiveSessionsPanelProps = {
@@ -33,6 +34,27 @@ function shortId(sessionId: string): string {
 	return sessionId.replace(/-/g, "").slice(-8);
 }
 
+function permissionLabel(mode: string): string {
+	if (mode === "acceptEdits") return "accept edits";
+	if (mode === "bypassPermissions") return "bypass approvals";
+	if (mode === "plan") return "plan mode";
+	return mode === "default" ? "default approvals" : mode;
+}
+
+function sessionConfigLabel(session: SessionStatusEntry): string {
+	return [
+		session.provider_id,
+		session.model,
+		session.effort ? `${session.effort} effort` : undefined,
+		session.permission_mode
+			? permissionLabel(session.permission_mode)
+			: undefined,
+		session.mode === "terminal" ? "terminal" : undefined,
+	]
+		.filter((part): part is string => Boolean(part))
+		.join(" · ");
+}
+
 export function ActiveSessionsPanel({
 	sessions,
 	onStop,
@@ -43,7 +65,7 @@ export function ActiveSessionsPanel({
 	// Only show sessions that have started a DB chat — filters out vault
 	// placeholder and any freshly-created-but-never-used entries.
 	const used = sessions
-		.filter((s) => s.hasDbSession || s.state !== "idle")
+		.filter(isLedgerOpenSession)
 		.sort(
 			(a, b) => Number(b.state === "running") - Number(a.state === "running"),
 		);
@@ -164,6 +186,7 @@ function ActiveSessionRow({
 			dismissActions();
 		},
 	};
+	const configLabel = sessionConfigLabel(session);
 	return (
 		<tr
 			className={`border-b border-border/40 hover:bg-accent/30 transition-colors ${canNavigate ? "cursor-pointer" : ""}`}
@@ -188,6 +211,14 @@ function ActiveSessionRow({
 				{session.lastLabel && (
 					<div className="text-[9px] text-muted-foreground/50 uppercase tracking-widest mt-0.5">
 						{session.lastLabel}
+					</div>
+				)}
+				{configLabel && (
+					<div
+						className="mt-0.5 max-w-full truncate font-mono text-[9px] text-muted-foreground/60"
+						title={configLabel}
+					>
+						{configLabel}
 					</div>
 				)}
 				<div className="text-[9px] text-muted-foreground/30 font-mono mt-0.5">

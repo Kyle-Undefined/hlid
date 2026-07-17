@@ -130,6 +130,7 @@ const WINDOWS_COMPUTER_USE_NAMESPACE = "hlid";
 const WINDOWS_COMPUTER_USE_TOOL = "windows_computer_use";
 const DEFAULT_WINDOWS_COMPUTER_USE_MODEL = "gpt-5.4";
 const DEFAULT_WINDOWS_COMPUTER_USE_EFFORT = "medium";
+const CODEX_CHILD_SETTLE_TIMEOUT_MS = 10 * 60_000;
 
 type WindowsComputerUseResult = {
 	text: string;
@@ -138,6 +139,21 @@ type WindowsComputerUseResult = {
 	turns: number;
 	durationMs: number;
 	estimatedCost?: number | null;
+};
+
+class WindowsComputerUseError extends Error {
+	constructor(
+		message: string,
+		readonly completion?: WindowsComputerUseResult,
+	) {
+		super(message);
+		this.name = "WindowsComputerUseError";
+	}
+}
+
+type PendingCodexDone = {
+	turn: Record<string, unknown>;
+	timer: ReturnType<typeof setTimeout>;
 };
 
 export function windowsComputerUseModel(
@@ -842,29 +858,82 @@ export async function fetchCodexModels(opts?: {
 	}
 }
 
+function canonicalUsage(value: unknown): CanonicalTokenUsage | null {
+	const usage = asObj(value);
+	const inputValue = usage.inputTokens ?? usage.input_tokens ?? usage.input;
+	const outputValue = usage.outputTokens ?? usage.output_tokens ?? usage.output;
+	const cacheReadValue =
+		usage.cacheReadTokens ??
+		usage.cache_read_input_tokens ??
+		usage.cachedInputTokens ??
+		usage.cached_input_tokens;
+	const cacheCreationValue =
+		usage.cacheCreationTokens ??
+		usage.cache_creation_input_tokens ??
+		usage.cacheWriteInputTokens ??
+		usage.cache_write_input_tokens ??
+		usage.cacheWriteTokens ??
+		usage.cache_write_tokens;
+	if (
+		![inputValue, outputValue, cacheReadValue, cacheCreationValue].some(
+			(item) => typeof item === "number",
+		)
+	) {
+		return null;
+	}
+	return canonicalizeCodexUsage({
+		inputTokens: Number(inputValue) || 0,
+		outputTokens: Number(outputValue) || 0,
+		cacheReadTokens: Number(cacheReadValue) || undefined,
+		cacheCreationTokens: Number(cacheCreationValue) || undefined,
+	});
+}
+
+function tokenUsageEnvelope(value: unknown): Record<string, unknown> {
+	const obj = asObj(value);
+	return asObj(obj.usage ?? obj.tokenUsage ?? obj.tokens);
+}
+
+function maybeTotalUsage(value: unknown): CanonicalTokenUsage | null {
+	const tokenUsage = tokenUsageEnvelope(value);
+	return canonicalUsage(
+		tokenUsage.total ??
+			tokenUsage.totalTokenUsage ??
+			tokenUsage.total_token_usage,
+	);
+}
+
+function maybeLastUsage(value: unknown): CanonicalTokenUsage | null {
+	const tokenUsage = tokenUsageEnvelope(value);
+	return canonicalUsage(
+		tokenUsage.last ?? tokenUsage.lastTokenUsage ?? tokenUsage.last_token_usage,
+	);
+}
+
 function maybeUsage(value: unknown): AgentEvent | null {
 	const obj = asObj(value);
-	const tokenUsage = asObj(obj.usage ?? obj.tokenUsage ?? obj.tokens);
+	const tokenUsage = tokenUsageEnvelope(value);
 	// ThreadTokenUsage carries the serving model's real context window.
-	const contextWindow = Number(tokenUsage.modelContextWindow) || undefined;
-	const usage = asObj(tokenUsage.last ?? tokenUsage.total ?? tokenUsage);
-	const input =
-		Number(usage.inputTokens ?? usage.input_tokens ?? usage.input) || 0;
-	const output =
-		Number(usage.outputTokens ?? usage.output_tokens ?? usage.output) || 0;
-	if (input === 0 && output === 0) return null;
-	const canonical = canonicalizeCodexUsage({
-		inputTokens: input,
-		outputTokens: output,
-		cacheReadTokens:
-			Number(usage.cacheReadTokens ?? usage.cache_read_input_tokens) ||
-			Number(usage.cachedInputTokens) ||
-			undefined,
-		cacheCreationTokens:
-			Number(usage.cacheCreationTokens ?? usage.cache_creation_input_tokens) ||
-			Number(usage.cacheWriteTokens ?? usage.cache_write_tokens) ||
-			undefined,
-	});
+	const contextWindow =
+		Number(tokenUsage.modelContextWindow ?? tokenUsage.model_context_window) ||
+		undefined;
+	const canonical =
+		maybeLastUsage(value) ??
+		canonicalUsage(
+			tokenUsage.total ??
+				tokenUsage.totalTokenUsage ??
+				tokenUsage.total_token_usage ??
+				tokenUsage,
+		);
+	if (!canonical) return null;
+	if (
+		canonical.inputTokens === 0 &&
+		canonical.outputTokens === 0 &&
+		canonical.cacheReadTokens === 0 &&
+		canonical.cacheCreationTokens === 0
+	) {
+		return null;
+	}
 	return {
 		type: "usage",
 		inputTokens: canonical.inputTokens,
@@ -946,15 +1015,21 @@ class CodexAgentSession implements AgentSession {
 	private subagentByThread = new Map<string, string>();
 	private subagentSnapshots = new Map<string, SubagentSnapshot>();
 	private pendingSubagentToolIds = new Set<string>();
+	private queryChildThreadIds = new Set<string>();
+	private pendingDone: PendingCodexDone | null = null;
 	private threadHandler: ThreadHandler | null = null;
 	private approvedHtmlPlanItemId: string | null = null;
 	private htmlPlanReady = false;
 	private nativePlanText = "";
 	private lastUsage = emptyCodexUsage();
 	private queryUsage = emptyCodexUsage();
+	private queryEstimatedCost = 0;
+	private queryUsageIsPriced = true;
 	private queryTurns = 0;
 	private queryWebSearchItemIds = new Set<string>();
 	private childLastUsage = new Map<string, CanonicalTokenUsage>();
+	private cumulativeUsageByThread = new Map<string, CanonicalTokenUsage>();
+	private cumulativeUsageTurns = new Set<string>();
 	private resolvedModel: string | null = null;
 	private elicitationSequence = 0;
 	/** Dedicated transport owned by a one-shot Windows Computer Use worker. */
@@ -976,6 +1051,7 @@ class CodexAgentSession implements AgentSession {
 
 	cancel(): void {
 		this.canceled = true;
+		this.clearPendingDone();
 		this.events.close();
 		// Normal sessions share an app-server and must only detach. Delegated
 		// Computer Use workers own a fresh app-server so every task reloads the
@@ -1002,7 +1078,7 @@ class CodexAgentSession implements AgentSession {
 		// event stream is closed once the in-flight turn completes (see the
 		// turn/completed handler), which ends the caller's for-await loop.
 		this.endAfterTurn = true;
-		if (this.activeTurnId === null) {
+		if (this.activeTurnId === null && this.pendingDone === null) {
 			this.detachAllThreads();
 			this.conn = null;
 			this.events.close();
@@ -1232,6 +1308,10 @@ class CodexAgentSession implements AgentSession {
 				.catch((error) => {
 					const message =
 						error instanceof Error ? error.message : String(error);
+					const completion =
+						error instanceof WindowsComputerUseError
+							? error.completion
+							: undefined;
 					this.events.push({
 						type: "tool_result",
 						toolId,
@@ -1241,9 +1321,15 @@ class CodexAgentSession implements AgentSession {
 					this.events.push({ type: "local_command_output", content: message });
 					this.events.push({
 						type: "done",
-						turns: 1,
-						durationMs: 0,
+						turns: completion?.turns ?? 1,
+						durationMs: completion?.durationMs ?? 0,
 						stopReason: "error",
+						...(completion
+							? {
+									usage: completion.usage,
+									estimatedCost: completion.estimatedCost,
+								}
+							: {}),
 					});
 				});
 			return;
@@ -1669,6 +1755,28 @@ class CodexAgentSession implements AgentSession {
 				estimatedCost: completion.estimatedCost,
 			};
 		} catch (error) {
+			const usage = completion
+				? {
+						inputTokens: completion.usage?.inputTokens ?? 0,
+						outputTokens: completion.usage?.outputTokens ?? 0,
+						cacheReadTokens: completion.usage?.cacheReadTokens ?? 0,
+						cacheCreationTokens: completion.usage?.cacheCreationTokens ?? 0,
+					}
+				: null;
+			const enrichedError =
+				completion && usage
+					? new WindowsComputerUseError(
+							error instanceof Error ? error.message : String(error),
+							{
+								text: text.trim(),
+								threadId,
+								usage,
+								turns: completion.turns,
+								durationMs: completion.durationMs,
+								estimatedCost: completion.estimatedCost,
+							},
+						)
+					: error;
 			snapshot = {
 				...snapshot,
 				status: this.canceled ? "interrupted" : "failed",
@@ -1679,7 +1787,7 @@ class CodexAgentSession implements AgentSession {
 				endedAtMs: Date.now(),
 			};
 			this.emitSubagentUpdate(toolId, snapshot);
-			throw error;
+			throw enrichedError;
 		} finally {
 			// Computer Use opens a per-thread Node kernel. Ephemeral history alone
 			// does not tear that process down, so reset the owned MCP session and
@@ -1723,7 +1831,7 @@ class CodexAgentSession implements AgentSession {
 		);
 		try {
 			const result = await this.runWindowsComputerUse(task, context, toolId);
-			this.addQueryUsage(result.usage);
+			this.addQueryUsage(result.usage, result.estimatedCost);
 			this.queryTurns += result.turns;
 			return {
 				success: true,
@@ -1735,6 +1843,13 @@ class CodexAgentSession implements AgentSession {
 				],
 			};
 		} catch (error) {
+			if (error instanceof WindowsComputerUseError && error.completion) {
+				this.addQueryUsage(
+					error.completion.usage,
+					error.completion.estimatedCost,
+				);
+				this.queryTurns += error.completion.turns;
+			}
 			return {
 				success: false,
 				contentItems: [
@@ -1935,18 +2050,172 @@ class CodexAgentSession implements AgentSession {
 		this.nativePlanText = "";
 	}
 
-	private addQueryUsage(usage: CanonicalTokenUsage): void {
+	private addQueryUsage(
+		usage: CanonicalTokenUsage,
+		estimatedCost?: number | null,
+	): void {
 		this.queryUsage.inputTokens += usage.inputTokens;
 		this.queryUsage.outputTokens += usage.outputTokens;
 		this.queryUsage.cacheReadTokens += usage.cacheReadTokens;
 		this.queryUsage.cacheCreationTokens += usage.cacheCreationTokens;
+		const cost =
+			estimatedCost === undefined
+				? estimateCodexCost(this.resolvedModel ?? this.params.model, usage)
+				: estimatedCost;
+		if (cost == null) this.queryUsageIsPriced = false;
+		else this.queryEstimatedCost += cost;
+	}
+
+	private recordCumulativeUsage(threadId: string, value: unknown): boolean {
+		if (!threadId) return false;
+		const total = maybeTotalUsage(value);
+		if (!total) return false;
+		const previous = this.cumulativeUsageByThread.get(threadId);
+		const nondecreasing =
+			previous != null &&
+			total.inputTokens >= previous.inputTokens &&
+			total.outputTokens >= previous.outputTokens &&
+			total.cacheReadTokens >= previous.cacheReadTokens &&
+			total.cacheCreationTokens >= previous.cacheCreationTokens;
+		const fallback = maybeLastUsage(value) ?? total;
+		const increment = nondecreasing
+			? {
+					inputTokens: total.inputTokens - previous.inputTokens,
+					outputTokens: total.outputTokens - previous.outputTokens,
+					cacheReadTokens: total.cacheReadTokens - previous.cacheReadTokens,
+					cacheCreationTokens:
+						total.cacheCreationTokens - previous.cacheCreationTokens,
+				}
+			: fallback;
+		this.cumulativeUsageByThread.set(threadId, total);
+		this.cumulativeUsageTurns.add(threadId);
+		if (
+			increment.inputTokens > 0 ||
+			increment.outputTokens > 0 ||
+			increment.cacheReadTokens > 0 ||
+			increment.cacheCreationTokens > 0
+		) {
+			// Each cumulative snapshot advances by the usage of the model call that
+			// produced it. Price the delta independently so several short-context
+			// calls do not accidentally trigger the long-context multiplier merely
+			// because their query-wide sum crosses the threshold.
+			this.addQueryUsage(increment);
+		}
+		return true;
 	}
 
 	private resetQueryAccounting(): void {
+		this.clearPendingDone();
 		this.queryUsage = emptyCodexUsage();
+		this.queryEstimatedCost = 0;
+		this.queryUsageIsPriced = true;
 		this.queryTurns = 0;
 		this.queryWebSearchItemIds.clear();
 		this.childLastUsage.clear();
+		this.cumulativeUsageTurns.clear();
+		this.queryChildThreadIds.clear();
+	}
+
+	private clearPendingDone(): void {
+		if (!this.pendingDone) return;
+		clearTimeout(this.pendingDone.timer);
+		this.pendingDone = null;
+	}
+
+	private ownsOpenQuery(): boolean {
+		return this.activeTurnId !== null || this.pendingDone !== null;
+	}
+
+	private ownChildThread(threadId: string): void {
+		if (threadId && this.ownsOpenQuery()) {
+			this.queryChildThreadIds.add(threadId);
+		}
+	}
+
+	private hasUnsettledChildren(): boolean {
+		return (
+			this.pendingSubagentToolIds.size > 0 || this.queryChildThreadIds.size > 0
+		);
+	}
+
+	private abandonUnsettledChildren(): void {
+		for (const threadId of this.queryChildThreadIds) {
+			const toolId = this.subagentByThread.get(threadId);
+			const current = toolId ? this.subagentSnapshots.get(toolId) : undefined;
+			if (toolId && current) {
+				this.emitSubagentUpdate(toolId, {
+					...current,
+					status: "interrupted",
+					currentStep: "Usage collection timed out after parent completion",
+					endedAtMs: Date.now(),
+				});
+			}
+			this.conn?.detachThread(threadId);
+			this.attachedThreadIds.delete(threadId);
+			this.subagentByThread.delete(threadId);
+			this.childLastUsage.delete(threadId);
+			this.cumulativeUsageTurns.delete(threadId);
+		}
+		for (const toolId of this.pendingSubagentToolIds) {
+			const current = this.subagentSnapshots.get(toolId);
+			if (!current) continue;
+			this.emitSubagentUpdate(toolId, {
+				...current,
+				status: "interrupted",
+				currentStep:
+					"Subagent did not attach before usage collection timed out",
+				endedAtMs: Date.now(),
+			});
+		}
+		this.queryChildThreadIds.clear();
+		this.pendingSubagentToolIds.clear();
+	}
+
+	private finalizeQueryDone(turn: Record<string, unknown>): void {
+		const queryUsage = { ...this.queryUsage };
+		const queryTurns = this.queryTurns;
+		const webSearchCalls = this.queryWebSearchItemIds.size;
+		const hostedToolCost = estimateCodexCost(
+			this.resolvedModel ?? this.params.model,
+			emptyCodexUsage(),
+			{ webSearchCalls },
+		);
+		this.resetTurnTracking();
+		this.events.push({
+			type: "done",
+			estimatedCost:
+				this.queryUsageIsPriced && hostedToolCost != null
+					? this.queryEstimatedCost + hostedToolCost
+					: null,
+			turns: queryTurns,
+			durationMs: 0,
+			stopReason: typeof turn.status === "string" ? turn.status : undefined,
+			usage: queryUsage,
+		});
+		this.resetQueryAccounting();
+		if (!this.endAfterTurn) return;
+		this.detachAllThreads();
+		this.conn = null;
+		this.events.close();
+	}
+
+	private maybeFinalizePendingDone(): void {
+		if (!this.pendingDone || this.hasUnsettledChildren()) return;
+		const { turn } = this.pendingDone;
+		this.clearPendingDone();
+		this.finalizeQueryDone(turn);
+	}
+
+	private deferDoneForChildren(turn: Record<string, unknown>): void {
+		this.clearPendingDone();
+		const timer = setTimeout(() => {
+			const pending = this.pendingDone;
+			if (!pending) return;
+			this.abandonUnsettledChildren();
+			this.clearPendingDone();
+			this.finalizeQueryDone(pending.turn);
+		}, CODEX_CHILD_SETTLE_TIMEOUT_MS);
+		this.pendingDone = { turn, timer };
 	}
 
 	private recordHostedToolItem(item: Record<string, unknown>): void {
@@ -1963,8 +2232,12 @@ class CodexAgentSession implements AgentSession {
 	}
 
 	private handleTurnStarted(obj: Record<string, unknown>): void {
+		// A provider-driven continuation is still part of the same Hlid query.
+		// Cancel a provisional completion while retaining its accumulated usage.
+		this.clearPendingDone();
 		const id = asObj(obj.turn).id;
 		if (typeof id === "string") this.activeTurnId = id;
+		if (this.threadId) this.cumulativeUsageTurns.delete(this.threadId);
 		this.resetTurnTracking();
 		this.lastUsage = emptyCodexUsage();
 	}
@@ -2094,6 +2367,7 @@ class CodexAgentSession implements AgentSession {
 	private handleSubagentActivity(item: Record<string, unknown>): void {
 		const threadId = String(item.agentThreadId ?? "");
 		if (!threadId) return;
+		const alreadyMapped = this.subagentByThread.has(threadId);
 		const activityId = String(item.id ?? "");
 		const kind = item.kind as SubAgentActivityKind | undefined;
 		const agentPath =
@@ -2120,6 +2394,7 @@ class CodexAgentSession implements AgentSession {
 		if (toolId) {
 			this.pendingSubagentToolIds.delete(toolId);
 			this.subagentByThread.set(threadId, toolId);
+			if (!alreadyMapped) this.ownChildThread(threadId);
 			this.attachThread(threadId);
 			this.updateSubagentFromChild(threadId, {
 				...(agentName ? { name: agentName } : {}),
@@ -2149,6 +2424,7 @@ class CodexAgentSession implements AgentSession {
 			...(kind === "interrupted" ? { endedAtMs: now } : {}),
 		};
 		this.subagentByThread.set(threadId, activityId);
+		this.ownChildThread(threadId);
 		this.subagentSnapshots.set(activityId, subagent);
 		this.attachThread(threadId);
 		this.events.push({
@@ -2179,7 +2455,9 @@ class CodexAgentSession implements AgentSession {
 		}
 		for (const threadId of receiverThreadIds) {
 			if (sourceSnapshot && collabTool === "spawnAgent") {
+				const alreadyMapped = this.subagentByThread.has(threadId);
 				this.subagentByThread.set(threadId, sourceToolId);
+				if (!alreadyMapped) this.ownChildThread(threadId);
 				this.attachThread(threadId);
 			}
 			const spawnToolId = this.subagentByThread.get(threadId);
@@ -2256,6 +2534,7 @@ class CodexAgentSession implements AgentSession {
 			toolId: String(item.id ?? type),
 			content: JSON.stringify(item),
 		});
+		this.maybeFinalizePendingDone();
 	}
 
 	private recordUsage(usage: AgentEvent | null): void {
@@ -2273,6 +2552,7 @@ class CodexAgentSession implements AgentSession {
 		const usage = maybeUsage(params);
 		if (usage?.type !== "usage") return;
 		this.recordUsage(usage);
+		this.recordCumulativeUsage(this.threadId ?? "", params);
 		this.events.push(usage);
 	}
 
@@ -2280,6 +2560,7 @@ class CodexAgentSession implements AgentSession {
 		threadId: string,
 		params: unknown,
 	): void {
+		if (!this.queryChildThreadIds.has(threadId)) return;
 		const usage = maybeUsage(params);
 		if (usage?.type !== "usage") return;
 		this.childLastUsage.set(threadId, {
@@ -2288,6 +2569,7 @@ class CodexAgentSession implements AgentSession {
 			cacheReadTokens: usage.cacheReadTokens ?? 0,
 			cacheCreationTokens: usage.cacheCreationTokens ?? 0,
 		});
+		this.recordCumulativeUsage(threadId, params);
 	}
 
 	private handleMcpStartupStatus(obj: Record<string, unknown>): void {
@@ -2307,7 +2589,16 @@ class CodexAgentSession implements AgentSession {
 	): Promise<void> {
 		const turn = asObj(obj.turn);
 		this.recordUsage(maybeUsage(turn) ?? maybeUsage(params));
-		this.addQueryUsage(this.lastUsage);
+		const threadId = this.threadId ?? String(obj.threadId ?? "");
+		const capturedFinalTotal =
+			this.recordCumulativeUsage(threadId, turn) ||
+			this.recordCumulativeUsage(threadId, params);
+		if (!capturedFinalTotal && !this.cumulativeUsageTurns.has(threadId)) {
+			// Older app-server payloads expose only the final call. Preserve that
+			// fallback without double-counting modern cumulative snapshots.
+			this.addQueryUsage(this.lastUsage);
+		}
+		this.cumulativeUsageTurns.delete(threadId);
 		this.queryTurns += 1;
 		this.activeTurnId = null;
 		if (this.params.permissionMode === "plan") {
@@ -2347,34 +2638,22 @@ class CodexAgentSession implements AgentSession {
 				return;
 			}
 		}
-		const queryUsage = { ...this.queryUsage };
-		const queryTurns = this.queryTurns;
-		const webSearchCalls = this.queryWebSearchItemIds.size;
-		this.resetTurnTracking();
-		this.events.push({
-			type: "done",
-			estimatedCost: estimateCodexCost(
-				this.resolvedModel ?? this.params.model,
-				queryUsage,
-				{ webSearchCalls },
-			),
-			turns: queryTurns,
-			durationMs: 0,
-			stopReason: typeof turn.status === "string" ? turn.status : undefined,
-			usage: queryUsage,
-		});
-		this.resetQueryAccounting();
-		if (!this.endAfterTurn) return;
-		this.detachAllThreads();
-		this.conn = null;
-		this.events.close();
+		if (this.hasUnsettledChildren()) {
+			this.deferDoneForChildren(turn);
+			return;
+		}
+		this.finalizeQueryDone(turn);
 	}
 
 	private handleChildTurnCompleted(obj: Record<string, unknown>): void {
 		const threadId = String(obj.threadId ?? "");
 		if (!threadId || threadId === this.threadId) return;
+		if (!this.queryChildThreadIds.has(threadId)) return;
 		const turn = asObj(obj.turn);
 		const reportedUsage = maybeUsage(turn) ?? maybeUsage(obj);
+		const capturedFinalTotal =
+			this.recordCumulativeUsage(threadId, turn) ||
+			this.recordCumulativeUsage(threadId, obj);
 		const usage =
 			reportedUsage?.type === "usage"
 				? {
@@ -2384,11 +2663,16 @@ class CodexAgentSession implements AgentSession {
 						cacheCreationTokens: reportedUsage.cacheCreationTokens ?? 0,
 					}
 				: this.childLastUsage.get(threadId);
-		if (usage) {
+		if (
+			usage &&
+			!capturedFinalTotal &&
+			!this.cumulativeUsageTurns.has(threadId)
+		) {
 			this.addQueryUsage(usage);
 		}
 		this.queryTurns += 1;
 		this.childLastUsage.delete(threadId);
+		this.cumulativeUsageTurns.delete(threadId);
 		const rawStatus = String(turn.status ?? "completed");
 		const status: SubagentSnapshot["status"] =
 			rawStatus === "failed" || rawStatus === "errored"
@@ -2401,6 +2685,8 @@ class CodexAgentSession implements AgentSession {
 			endedAtMs:
 				typeof obj.completedAtMs === "number" ? obj.completedAtMs : Date.now(),
 		});
+		this.queryChildThreadIds.delete(threadId);
+		this.maybeFinalizePendingDone();
 	}
 
 	private handleNotification(method: string, params: unknown): void {

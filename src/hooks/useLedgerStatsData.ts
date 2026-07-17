@@ -27,7 +27,12 @@ export type LedgerStatsData = {
 
 export type LedgerStatsSourceStatus = "loading" | "ready" | "unavailable";
 
-const EMPTY_LEDGER_STATS: LedgerStatsData = {
+type LedgerStatsSnapshot = LedgerStatsData & {
+	/** Filter identity for the analytics payload/status stored in this snapshot. */
+	analyticsKey: string | null;
+};
+
+const EMPTY_LEDGER_STATS: LedgerStatsSnapshot = {
 	statsData: { agg: EMPTY_AGG },
 	thirtyDayStats: { days: [], total: 0 },
 	activity: EMPTY_ACTIVITY,
@@ -36,12 +41,13 @@ const EMPTY_LEDGER_STATS: LedgerStatsData = {
 	activityStatus: "loading",
 	analytics: null,
 	analyticsStatus: "loading",
+	analyticsKey: null,
 };
 
-let snapshot: LedgerStatsData = EMPTY_LEDGER_STATS;
+let snapshot: LedgerStatsSnapshot = EMPTY_LEDGER_STATS;
 const subscribers = new Set<() => void>();
 
-function getSnapshot(): LedgerStatsData {
+function getSnapshot(): LedgerStatsSnapshot {
 	return snapshot;
 }
 
@@ -50,9 +56,20 @@ function subscribe(callback: () => void): () => void {
 	return () => subscribers.delete(callback);
 }
 
-function updateSnapshot(patch: Partial<LedgerStatsData>): void {
+function updateSnapshot(patch: Partial<LedgerStatsSnapshot>): void {
 	snapshot = { ...snapshot, ...patch };
 	for (const subscriber of subscribers) subscriber();
+}
+
+function analyticsFilterKey(filter: LedgerAnalyticsFilter): string {
+	return JSON.stringify({
+		range: filter.range,
+		agent: filter.agent ?? "",
+		provider: filter.provider ?? "",
+		model: filter.model ?? "",
+		from: filter.range === "custom" ? (filter.from ?? "") : "",
+		to: filter.range === "custom" ? (filter.to ?? "") : "",
+	});
 }
 
 /**
@@ -77,12 +94,20 @@ export function useLedgerStatsData(
 	const filterAgent = filter.agent;
 	const filterProvider = filter.provider;
 	const filterModel = filter.model;
-	const filterFrom = filter.from;
-	const filterTo = filter.to;
+	const filterFrom = filter.range === "custom" ? filter.from : undefined;
+	const filterTo = filter.range === "custom" ? filter.to : undefined;
+	const filterKey = analyticsFilterKey(filter);
 
 	const refresh = useCallback(() => {
 		const generation = ++generationRef.current;
 		const isCurrent = () => generation === generationRef.current;
+		if (getSnapshot().analyticsKey !== filterKey) {
+			updateSnapshot({
+				analytics: null,
+				analyticsStatus: "loading",
+				analyticsKey: filterKey,
+			});
+		}
 
 		void getCockpitStatsFn()
 			.then((statsData) => {
@@ -129,19 +154,39 @@ export function useLedgerStatsData(
 			.then((analytics) => {
 				if (!isCurrent()) return;
 				if (analytics) {
-					updateSnapshot({ analytics, analyticsStatus: "ready" });
-				} else if (getSnapshot().analyticsStatus !== "ready") {
-					updateSnapshot({ analyticsStatus: "unavailable" });
+					updateSnapshot({
+						analytics,
+						analyticsStatus: "ready",
+						analyticsKey: filterKey,
+					});
+				} else if (
+					getSnapshot().analyticsKey !== filterKey ||
+					getSnapshot().analyticsStatus !== "ready"
+				) {
+					updateSnapshot({
+						analytics: null,
+						analyticsStatus: "unavailable",
+						analyticsKey: filterKey,
+					});
 				}
 			})
 			.catch(() => {
-				if (isCurrent() && getSnapshot().analyticsStatus !== "ready") {
-					updateSnapshot({ analyticsStatus: "unavailable" });
+				if (
+					isCurrent() &&
+					(getSnapshot().analyticsKey !== filterKey ||
+						getSnapshot().analyticsStatus !== "ready")
+				) {
+					updateSnapshot({
+						analytics: null,
+						analyticsStatus: "unavailable",
+						analyticsKey: filterKey,
+					});
 				}
 			});
 	}, [
 		filterAgent,
 		filterFrom,
+		filterKey,
 		filterModel,
 		filterProvider,
 		filterRange,
@@ -164,7 +209,13 @@ export function useLedgerStatsData(
 		[],
 	);
 
-	return { ...data, refresh };
+	const analyticsMatchesFilter = data.analyticsKey === filterKey;
+	return {
+		...data,
+		analytics: analyticsMatchesFilter ? data.analytics : null,
+		analyticsStatus: analyticsMatchesFilter ? data.analyticsStatus : "loading",
+		refresh,
+	};
 }
 
 /** Test-only reset for the client-memory last-good snapshot. */

@@ -155,8 +155,46 @@ describe("handleDbRoute — /db/sessions", () => {
 			search: undefined,
 			agent: "/agents/raven",
 			model: "gpt-5.4",
+			provider: undefined,
+			stop: undefined,
+			range: undefined,
+			from: undefined,
+			to: undefined,
 			sort: undefined,
 		});
+	});
+
+	it("forwards Stats drill-down dimensions and custom dates together", async () => {
+		mockGetSessionsPaginated.mockResolvedValue({
+			sessions: [],
+			total: 0,
+			oldest_started_at: null,
+			agent_cwds: [],
+			models: [],
+		});
+
+		await handleDbRoute(
+			makeUrl("/db/sessions", {
+				provider: "codex",
+				stop: "max_tokens",
+				range: "custom",
+				from: "2026-07-01",
+				to: "2026-07-16",
+			}),
+			makeRequest(),
+		);
+
+		expect(mockGetSessionsPaginated).toHaveBeenCalledWith(
+			1,
+			20,
+			expect.objectContaining({
+				provider: "codex",
+				stop: "max_tokens",
+				range: "custom",
+				from: "2026-07-01",
+				to: "2026-07-16",
+			}),
+		);
 	});
 });
 

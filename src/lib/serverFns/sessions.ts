@@ -41,6 +41,18 @@ export const getLiveSessionsFn = createServerFn({ method: "GET" }).handler(() =>
 	dbJson<SessionStatusEntry[]>("/db/live-sessions", []),
 );
 
+const sessionIdsSchema = z.array(sessionIdSchema).max(64);
+
+/** Fetch persisted totals for the DB chats currently attached to live sessions. */
+export const getSessionRowsByIdsFn = createServerFn({ method: "POST" })
+	.validator((raw) => sessionIdsSchema.parse(raw))
+	.handler(async ({ data: sessionIds }) => {
+		const { getSessionById } = await import("#/db");
+		const uniqueIds = [...new Set(sessionIds)];
+		const rows = await Promise.all(uniqueIds.map((id) => getSessionById(id)));
+		return rows.filter((row): row is SessionRow => row !== null);
+	});
+
 type EnrichedMessageRow = MessageRow & {
 	toolEvents?: ToolEventSummaryRow[];
 	attachments?: AttachmentRow[];

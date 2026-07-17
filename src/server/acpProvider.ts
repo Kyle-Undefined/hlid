@@ -510,6 +510,7 @@ class AcpSession implements AgentSession {
 	private elicitationSeq = 0;
 	private latestCostUsd: number | null = null;
 	private turnStartCostUsd: number | null = null;
+	private costBaselineKnown = true;
 	private mcpServers: McpServer[] = [];
 	private mcpStatuses: McpServerStatus[] = [];
 
@@ -758,6 +759,10 @@ class AcpSession implements AgentSession {
 		let modes: SessionModeState | null | undefined;
 		let configOptions: SessionConfigOption[] | null | undefined;
 		if (this.params.sessionId && initialized.agentCapabilities?.loadSession) {
+			// A usage_update cost is session-cumulative. Until the resumed agent
+			// supplies an idle baseline, its first in-turn update cannot be separated
+			// from historical spend and must not be charged to the new Hlid query.
+			this.costBaselineKnown = false;
 			const loaded = await connection.loadSession({
 				sessionId: this.params.sessionId,
 				cwd: this.params.cwd,
@@ -880,7 +885,8 @@ class AcpSession implements AgentSession {
 		}
 		this.events.push({
 			type: "done",
-			...(this.latestCostUsd != null
+			...(this.latestCostUsd != null &&
+			(this.turnStartCostUsd != null || this.costBaselineKnown)
 				? {
 						cost: Math.max(
 							0,
@@ -902,6 +908,7 @@ class AcpSession implements AgentSession {
 					}
 				: {}),
 		});
+		if (this.latestCostUsd != null) this.costBaselineKnown = true;
 		if (this.closeAfterTurn) await this.finishOneShot();
 	}
 

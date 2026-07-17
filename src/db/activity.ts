@@ -5,6 +5,8 @@ import { getDb } from "./schema";
 export type TopToolCall = {
 	name: string;
 	count: number;
+	/** Exact number of failed invocations. Older snapshots may omit this field. */
+	errorCount?: number;
 	/** 0..1 — fraction of invocations where is_error = 1. NULL counts as success. */
 	errorRate: number;
 };
@@ -57,11 +59,17 @@ const BUCKET_LABELS: readonly string[] = [
 
 export async function getTopToolCalls(limit = 10): Promise<TopToolCall[]> {
 	const db = await getDb();
-	type Row = { name: string; count: number; errorRate: number };
+	type Row = {
+		name: string;
+		count: number;
+		errorCount: number;
+		errorRate: number;
+	};
 	const rows = db
 		.query<Row, [number]>(
 			`SELECT name,
 			        COUNT(*) AS count,
+			        SUM(CASE WHEN is_error = 1 THEN 1 ELSE 0 END) AS errorCount,
 			        CAST(SUM(CASE WHEN is_error = 1 THEN 1 ELSE 0 END) AS REAL) / COUNT(*) AS errorRate
 			 FROM tool_events
 			 GROUP BY name
@@ -72,11 +80,10 @@ export async function getTopToolCalls(limit = 10): Promise<TopToolCall[]> {
 	return rows.map((r) => ({
 		name: r.name,
 		count: r.count,
+		errorCount: r.errorCount,
 		errorRate: r.errorRate ?? 0,
 	}));
 }
-
-// ─── getToolErrors ────────────────────────────────────────────────────────────
 
 export type ToolErrorEntry = {
 	/** Raw result_text from the tool event. */
@@ -84,28 +91,6 @@ export type ToolErrorEntry = {
 	/** How many times this exact message appeared. */
 	count: number;
 };
-
-/**
- * Returns the top distinct error messages for a given tool name, grouped by
- * result_text so repeated identical errors collapse into a single row.
- */
-export async function getToolErrors(
-	toolName: string,
-	limit = 10,
-): Promise<ToolErrorEntry[]> {
-	const db = await getDb();
-	type Row = { text: string; count: number };
-	return db
-		.query<Row, [string, number]>(
-			`SELECT result_text AS text, COUNT(*) AS count
-			 FROM tool_events
-			 WHERE name = ? AND is_error = 1 AND result_text IS NOT NULL
-			 GROUP BY result_text
-			 ORDER BY count DESC
-			 LIMIT ?`,
-		)
-		.all(toolName, limit);
-}
 
 // ─── getHourOfDayActivity ─────────────────────────────────────────────────────
 

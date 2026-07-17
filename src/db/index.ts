@@ -5,7 +5,6 @@ export type {
 	LatencyDistribution,
 	ModelSplitEntry,
 	StopReasonEntry,
-	ToolErrorEntry,
 	TopToolCall,
 } from "./activity";
 // Activity (charts aggregations)
@@ -14,7 +13,6 @@ export {
 	getLatencyDistribution,
 	getModelSplit,
 	getStopReasonSplit,
-	getToolErrors,
 	getTopToolCalls,
 } from "./activity";
 // Attachments
@@ -30,9 +28,10 @@ export type {
 	LedgerAnalytics,
 	LedgerAnalyticsFilter,
 	LedgerStatsRange,
+	LedgerToolErrorBreakdown,
 	WeekdayHourBucket,
 } from "./ledgerAnalytics";
-export { getLedgerAnalytics } from "./ledgerAnalytics";
+export { getLedgerAnalytics, getLedgerToolErrors } from "./ledgerAnalytics";
 // Event log
 export { appendLog, clearLogs, getLogs } from "./logs";
 export type { StorageStats } from "./maintenance";

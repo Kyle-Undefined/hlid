@@ -42,6 +42,27 @@ describe("UsageWindowSections", () => {
 		).toBe(true);
 	});
 
+	it("keeps mobile context counts compact after the UI text-size floor", () => {
+		render(<ContextWindowSection stats={stats(118_528, 258_400)} />);
+
+		const count = screen.getByTitle("118,528 / 258,400");
+		expect(count.className).toContain("whitespace-nowrap");
+		expect(count.className).toContain("tracking-normal");
+		expect(count.className).not.toContain("truncate");
+		expect(screen.getByText("119k / 258k").className).toContain("md:hidden");
+		expect(screen.getByText("118,528 / 258,400").className).toContain(
+			"hidden md:inline",
+		);
+	});
+
+	it("promotes mobile token counts through billion boundaries", () => {
+		render(
+			<ContextWindowSection stats={stats(1_157_300_000, 2_000_000_000)} />,
+		);
+
+		expect(screen.getByText("1.2B / 2B").className).toContain("md:hidden");
+	});
+
 	it("renders routines and provider usage details", () => {
 		const win = {
 			windowId: "five-hour",

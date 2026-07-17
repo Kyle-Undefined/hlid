@@ -1761,6 +1761,194 @@ describe("CodexAgentSession — notifications", () => {
 		expect(await events.next()).toEqual({ value: undefined, done: true });
 	});
 
+	it("accounts every cumulative model-call delta while emitting last-call context", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(baseCodexParams());
+		const events = session[Symbol.asyncIterator]();
+		await session.send("use a couple of tools");
+		await nextSessionEvent(events); // session_start
+
+		emitSessionNotification(proc, "thread/tokenUsage/updated", {
+			threadId: "thread-1",
+			tokenUsage: {
+				total: {
+					inputTokens: 120,
+					cachedInputTokens: 40,
+					outputTokens: 30,
+				},
+				last: {
+					inputTokens: 120,
+					cachedInputTokens: 40,
+					outputTokens: 30,
+				},
+				modelContextWindow: 258_400,
+			},
+		});
+		emitSessionNotification(proc, "thread/tokenUsage/updated", {
+			threadId: "thread-1",
+			tokenUsage: {
+				total: {
+					inputTokens: 300,
+					cachedInputTokens: 180,
+					outputTokens: 70,
+				},
+				last: {
+					inputTokens: 180,
+					cachedInputTokens: 140,
+					outputTokens: 40,
+				},
+				modelContextWindow: 258_400,
+			},
+		});
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: { id: "turn-1", status: "completed" },
+		});
+
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "usage",
+			inputTokens: 80,
+			outputTokens: 30,
+			cacheReadTokens: 40,
+			contextWindow: 258_400,
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "usage",
+			inputTokens: 40,
+			outputTokens: 40,
+			cacheReadTokens: 140,
+			contextWindow: 258_400,
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "done",
+			usage: {
+				inputTokens: 120,
+				outputTokens: 70,
+				cacheReadTokens: 180,
+				cacheCreationTokens: 0,
+			},
+		});
+		session.cancel();
+	});
+
+	it("accounts snake- and camel-case cache-write input token fields", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(baseCodexParams());
+		const events = session[Symbol.asyncIterator]();
+		await session.send("use prompt caching");
+		await nextSessionEvent(events); // session_start
+
+		emitSessionNotification(proc, "thread/tokenUsage/updated", {
+			threadId: "thread-1",
+			tokenUsage: {
+				total: {
+					inputTokens: 120,
+					cachedInputTokens: 40,
+					cache_write_input_tokens: 5,
+					outputTokens: 10,
+				},
+				last: {
+					inputTokens: 120,
+					cachedInputTokens: 40,
+					cache_write_input_tokens: 5,
+					outputTokens: 10,
+				},
+			},
+		});
+		emitSessionNotification(proc, "thread/tokenUsage/updated", {
+			threadId: "thread-1",
+			tokenUsage: {
+				total: {
+					inputTokens: 300,
+					cachedInputTokens: 180,
+					cacheWriteInputTokens: 8,
+					outputTokens: 50,
+				},
+				last: {
+					inputTokens: 180,
+					cachedInputTokens: 140,
+					cacheWriteInputTokens: 3,
+					outputTokens: 40,
+				},
+			},
+		});
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: { id: "turn-1", status: "completed" },
+		});
+
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "usage",
+			inputTokens: 75,
+			outputTokens: 10,
+			cacheReadTokens: 40,
+			cacheCreationTokens: 5,
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "usage",
+			inputTokens: 37,
+			outputTokens: 40,
+			cacheReadTokens: 140,
+			cacheCreationTokens: 3,
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "done",
+			usage: {
+				inputTokens: 112,
+				outputTokens: 50,
+				cacheReadTokens: 180,
+				cacheCreationTokens: 8,
+			},
+		});
+		session.cancel();
+	});
+
+	it("uses last-call usage as the first baseline for a resumed thread", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(
+			baseCodexParams({ sessionId: "existing-thread" }),
+		);
+		const events = session[Symbol.asyncIterator]();
+		await session.send("continue");
+		await nextSessionEvent(events); // session_start
+
+		emitSessionNotification(proc, "thread/tokenUsage/updated", {
+			threadId: "thread-1",
+			tokenUsage: {
+				total: {
+					inputTokens: 1_000,
+					cachedInputTokens: 800,
+					outputTokens: 100,
+				},
+				last: {
+					inputTokens: 100,
+					cachedInputTokens: 80,
+					outputTokens: 10,
+				},
+			},
+		});
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: { id: "turn-1", status: "completed" },
+		});
+
+		expect(await nextDoneEvent(events)).toMatchObject({
+			usage: {
+				inputTokens: 20,
+				outputTokens: 10,
+				cacheReadTokens: 80,
+				cacheCreationTokens: 0,
+			},
+		});
+		session.cancel();
+	});
+
 	it("keeps a spawn card live through child-thread activity and completion", async () => {
 		const { proc } = makeFakeSessionProc();
 		vi.mocked(spawn).mockReturnValue(proc as never);
@@ -1856,10 +2044,32 @@ describe("CodexAgentSession — notifications", () => {
 
 		emitSessionNotification(proc, "thread/tokenUsage/updated", {
 			threadId: "child-1",
-			usage: {
-				inputTokens: 20,
-				outputTokens: 5,
-				cacheReadTokens: 4,
+			tokenUsage: {
+				total: {
+					inputTokens: 20,
+					outputTokens: 5,
+					cachedInputTokens: 4,
+				},
+				last: {
+					inputTokens: 20,
+					outputTokens: 5,
+					cachedInputTokens: 4,
+				},
+			},
+		});
+		emitSessionNotification(proc, "thread/tokenUsage/updated", {
+			threadId: "child-1",
+			tokenUsage: {
+				total: {
+					inputTokens: 45,
+					outputTokens: 12,
+					cachedInputTokens: 14,
+				},
+				last: {
+					inputTokens: 25,
+					outputTokens: 7,
+					cachedInputTokens: 10,
+				},
 			},
 		});
 		emitSessionNotification(proc, "turn/completed", {
@@ -1875,10 +2085,17 @@ describe("CodexAgentSession — notifications", () => {
 
 		emitSessionNotification(proc, "thread/tokenUsage/updated", {
 			threadId: "thread-1",
-			usage: {
-				inputTokens: 10,
-				outputTokens: 2,
-				cacheReadTokens: 2,
+			tokenUsage: {
+				total: {
+					inputTokens: 10,
+					outputTokens: 2,
+					cachedInputTokens: 2,
+				},
+				last: {
+					inputTokens: 10,
+					outputTokens: 2,
+					cachedInputTokens: 2,
+				},
 			},
 		});
 		emitSessionNotification(proc, "turn/completed", {
@@ -1888,14 +2105,14 @@ describe("CodexAgentSession — notifications", () => {
 		expect(await nextSessionEvent(events)).toMatchObject({ type: "usage" });
 		expect(await nextSessionEvent(events)).toEqual({
 			type: "done",
-			estimatedCost: 0.0001665,
+			estimatedCost: 0.0003115,
 			turns: 2,
 			durationMs: 0,
 			stopReason: "completed",
 			usage: {
-				inputTokens: 24,
-				outputTokens: 7,
-				cacheReadTokens: 6,
+				inputTokens: 39,
+				outputTokens: 14,
+				cacheReadTokens: 16,
 				cacheCreationTokens: 0,
 			},
 		});
@@ -2073,6 +2290,137 @@ describe("CodexAgentSession — notifications", () => {
 		});
 	});
 
+	it("waits for a child that reports usage after its parent completes", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const session = new CodexProvider().query(baseCodexParams());
+		const events = session[Symbol.asyncIterator]();
+		await session.send("delegate this");
+		await nextSessionEvent(events); // session_start
+
+		emitSessionNotification(proc, "item/started", {
+			threadId: "thread-1",
+			item: {
+				id: "call-spawn-1",
+				type: "subAgentActivity",
+				agentThreadId: "child-1",
+				kind: "started",
+			},
+		});
+		await nextSessionEvent(events); // synthesized spawn_agent card
+
+		emitSessionNotification(proc, "thread/tokenUsage/updated", {
+			threadId: "thread-1",
+			tokenUsage: {
+				total: {
+					inputTokens: 10,
+					cachedInputTokens: 2,
+					outputTokens: 2,
+				},
+				last: {
+					inputTokens: 10,
+					cachedInputTokens: 2,
+					outputTokens: 2,
+				},
+			},
+		});
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: { id: "parent-turn", status: "completed" },
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({ type: "usage" });
+
+		let doneResolved = false;
+		const donePromise = nextDoneEvent(events).then((event) => {
+			doneResolved = true;
+			return event;
+		});
+		await Promise.resolve();
+		expect(doneResolved).toBe(false);
+
+		emitSessionNotification(proc, "thread/tokenUsage/updated", {
+			threadId: "child-1",
+			tokenUsage: {
+				total: {
+					inputTokens: 20,
+					cachedInputTokens: 4,
+					outputTokens: 5,
+				},
+				last: {
+					inputTokens: 20,
+					cachedInputTokens: 4,
+					outputTokens: 5,
+				},
+			},
+		});
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "child-1",
+			turn: { id: "child-turn", status: "completed" },
+		});
+
+		expect(await donePromise).toMatchObject({
+			turns: 2,
+			usage: {
+				inputTokens: 24,
+				outputTokens: 7,
+				cacheReadTokens: 6,
+				cacheCreationTokens: 0,
+			},
+		});
+		session.cancel();
+	});
+
+	it("bounds completion when an attached child never reports a terminal turn", async () => {
+		vi.useFakeTimers();
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(baseCodexParams());
+		try {
+			const events = session[Symbol.asyncIterator]();
+			await session.send("delegate this");
+			await nextSessionEvent(events); // session_start
+
+			emitSessionNotification(proc, "item/started", {
+				threadId: "thread-1",
+				item: {
+					id: "call-spawn-1",
+					type: "subAgentActivity",
+					agentThreadId: "child-1",
+					kind: "started",
+				},
+			});
+			await nextSessionEvent(events); // synthesized spawn_agent card
+
+			emitSessionNotification(proc, "turn/completed", {
+				threadId: "thread-1",
+				turn: {
+					id: "parent-turn",
+					status: "completed",
+					usage: { inputTokens: 12, outputTokens: 3 },
+				},
+			});
+			const donePromise = nextDoneEvent(events);
+			await vi.advanceTimersByTimeAsync(10 * 60_000);
+			expect(await donePromise).toMatchObject({
+				turns: 1,
+				usage: {
+					inputTokens: 12,
+					outputTokens: 3,
+					cacheReadTokens: 0,
+					cacheCreationTokens: 0,
+				},
+			});
+			const conn = acquireCodexAppServer("/usr/bin/codex");
+			expect(conn.threadCount).toBeLessThan(2);
+		} finally {
+			session.cancel();
+			vi.useRealTimers();
+		}
+	});
+
 	it("detaches parent and child threads after normal input closure", async () => {
 		const { proc } = makeFakeSessionProc();
 		vi.mocked(spawn).mockReturnValue(proc as never);
@@ -2101,8 +2449,12 @@ describe("CodexAgentSession — notifications", () => {
 			threadId: "thread-1",
 			turn: { id: "turn-1", status: "completed" },
 		});
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "child-1",
+			turn: { id: "child-turn", status: "completed" },
+		});
 
-		expect(await nextSessionEvent(events)).toMatchObject({ type: "done" });
+		expect(await nextDoneEvent(events)).toMatchObject({ type: "done" });
 		expect(await events.next()).toEqual({ value: undefined, done: true });
 		expect(conn.threadCount).toBe(0);
 	});

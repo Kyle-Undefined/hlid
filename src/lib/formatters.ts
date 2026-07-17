@@ -60,10 +60,41 @@ export function fmtModel(model: string): string {
 	);
 }
 
+const COMPACT_NUMBER_SUFFIXES = ["", "k", "M", "B", "T", "Q", "Qi"];
+
+/**
+ * Format a count in groups of 1,000 and promote values that round across the
+ * next boundary. For example, 999,950 renders as 1.0M instead of 1000.0k.
+ */
+export function fmtCompact(
+	n: number,
+	fractionDigits = 1,
+	trimTrailingZeros = false,
+): string {
+	if (!Number.isFinite(n)) return String(n);
+	const absolute = Math.abs(n);
+	if (absolute < 1_000) return String(n);
+
+	let unit = Math.min(
+		Math.floor(Math.log10(absolute) / 3),
+		COMPACT_NUMBER_SUFFIXES.length - 1,
+	);
+	let scaled = n / 1_000 ** unit;
+	let rounded = Number(scaled.toFixed(fractionDigits));
+	if (Math.abs(rounded) >= 1_000 && unit < COMPACT_NUMBER_SUFFIXES.length - 1) {
+		unit += 1;
+		scaled = n / 1_000 ** unit;
+		rounded = Number(scaled.toFixed(fractionDigits));
+	}
+
+	const value = trimTrailingZeros
+		? String(rounded)
+		: scaled.toFixed(fractionDigits);
+	return `${value}${COMPACT_NUMBER_SUFFIXES[unit]}`;
+}
+
 export function fmt(n: number): string {
-	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-	if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-	return String(n);
+	return fmtCompact(n);
 }
 
 export function fmtMs(ms: number): string {
