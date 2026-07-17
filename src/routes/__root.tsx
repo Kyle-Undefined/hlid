@@ -27,6 +27,13 @@ import {
 	serviceWorkerBuild,
 	shouldReloadForServiceWorkerBuild,
 } from "#/lib/serviceWorkerUpdate";
+import {
+	applyThemeToDocument,
+	type CustomThemePalette,
+	DARK_THEME,
+	THEME_COLOR_KEYS,
+	type ThemeName,
+} from "#/lib/theme";
 
 import appCss from "../styles.css?url";
 
@@ -144,18 +151,31 @@ function SyncThemeFromConfig() {
 			.then(
 				(
 					config: {
-						ui?: { theme?: "dark" | "tan"; mobile_theme?: "dark" | "tan" };
+						ui?: {
+							theme?: ThemeName;
+							mobile_theme?: ThemeName;
+							custom_theme?: CustomThemePalette;
+							mobile_custom_theme?: CustomThemePalette;
+						};
 					} | null,
 				) => {
 					if (!config?.ui?.theme) return;
+					const mobile = window.matchMedia("(pointer: coarse)").matches;
 					const selected =
-						config.ui.mobile_theme &&
-						window.matchMedia("(pointer: coarse)").matches
+						config.ui.mobile_theme && mobile
 							? config.ui.mobile_theme
 							: config.ui.theme;
+					const palette =
+						selected === "custom"
+							? mobile && config.ui.mobile_theme === "custom"
+								? (config.ui.mobile_custom_theme ?? config.ui.custom_theme)
+								: config.ui.custom_theme
+							: undefined;
 					localStorage.setItem("hlid-theme", selected);
-					document.documentElement.dataset.theme = selected;
-					document.documentElement.className = selected;
+					if (palette)
+						localStorage.setItem("hlid-theme-palette", JSON.stringify(palette));
+					else localStorage.removeItem("hlid-theme-palette");
+					applyThemeToDocument(selected, palette ?? DARK_THEME);
 				},
 			)
 			.catch(() => {});
@@ -218,9 +238,9 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 	useVisualViewportGuard(pathname, [shellRef, wrapperRef]);
 	const ravenRoute = isRavenPath(pathname);
 
-	// JSON.stringify on enum strings ("dark"|"tan"|"same") is XSS-safe.
+	// JSON.stringify on enum strings and the fixed color-key list is XSS-safe.
 	// Runs before first paint to prevent flash when mobile theme differs from desktop.
-	const themeInitScript = `(function(){var t=${JSON.stringify(theme)},m=${JSON.stringify(mobileTheme ?? null)};try{var s=localStorage.getItem("hlid-theme");if(s==="dark"||s==="tan")t=s;}catch(e){}if(m&&m!=="same"&&window.matchMedia("(pointer: coarse)").matches)t=m;document.documentElement.setAttribute("data-theme",t);document.documentElement.className=t;})();`;
+	const themeInitScript = `(function(){var t=${JSON.stringify(theme)},m=${JSON.stringify(mobileTheme ?? null)},k=${JSON.stringify(THEME_COLOR_KEYS)};try{var s=localStorage.getItem("hlid-theme");if(s==="dark"||s==="tan"||s==="custom")t=s;}catch(e){}if(m&&m!=="same"&&window.matchMedia("(pointer: coarse)").matches)t=m;var r=document.documentElement;r.setAttribute("data-theme",t);r.setAttribute("data-theme-appearance",t==="tan"?"light":"dark");r.className=t;if(t==="custom"){try{var p=JSON.parse(localStorage.getItem("hlid-theme-palette")||"null");if(p&&(p.color_scheme==="dark"||p.color_scheme==="light")){r.setAttribute("data-theme-appearance",p.color_scheme);r.style.colorScheme=p.color_scheme;k.forEach(function(x){var v=p[x];if(typeof v==="string"&&/^#[0-9a-fA-F]{6}$/.test(v))r.style.setProperty("--"+x.replaceAll("_","-"),v);});}}catch(e){}}})();`;
 
 	return (
 		// suppressHydrationWarning: inline script mutates data-theme/className before

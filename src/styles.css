@@ -189,7 +189,7 @@ body {
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: #222226 transparent;
+  scrollbar-color: var(--border) transparent;
 }
 
 *::-webkit-scrollbar {
@@ -202,11 +202,11 @@ body {
 }
 
 *::-webkit-scrollbar-thumb {
-  background: #222226;
+  background: var(--border);
 }
 
 *::-webkit-scrollbar-thumb:hover {
-  background: #38bdf8;
+  background: var(--primary);
 }
 
 html[data-theme="tan"] * {

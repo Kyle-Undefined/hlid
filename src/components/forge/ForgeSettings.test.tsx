@@ -7,6 +7,7 @@ import {
 	waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { TAN_THEME } from "#/lib/theme";
 import { ForgeSettings } from "./ForgeSettings";
 
 vi.mock("#/components/forge/SystemSection", () => ({
@@ -76,6 +77,12 @@ describe("ForgeSettings search", () => {
 						saving: false,
 						error: null,
 						savedMsg: null,
+						ui: {
+							theme: "tan",
+							mobileTheme: "same",
+							customTheme: TAN_THEME,
+							mobileCustomTheme: TAN_THEME,
+						},
 					} as never
 				}
 			/>,
@@ -116,7 +123,12 @@ function renderSettings() {
 					vocab: {},
 					autoSleep: {},
 					server: {},
-					ui: {},
+					ui: {
+						theme: "tan",
+						mobileTheme: "same",
+						customTheme: TAN_THEME,
+						mobileCustomTheme: TAN_THEME,
+					},
 					voice: {},
 					acpAgents: [],
 					umbod: {},
@@ -180,5 +192,18 @@ describe("ForgeSettings category navigation", () => {
 		expect(screen.getByText("Event log content")).toBeTruthy();
 		fireEvent.click(screen.getByRole("tab", { name: "API Reference" }));
 		expect(screen.getByText("API reference content")).toBeTruthy();
+	});
+
+	it("opens the custom theme editor as an Experience subpage", () => {
+		renderSettings();
+		fireEvent.change(screen.getByRole("combobox", { name: "Forge category" }), {
+			target: { value: "experience" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Open theme editor" }));
+		expect(screen.getByRole("heading", { name: "Custom Theme" })).toBeTruthy();
+		expect(screen.getByRole("tab", { name: "desktop" })).toBeTruthy();
+		expect(screen.getByLabelText("Background color")).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "← Experience" }));
+		expect(screen.getByRole("heading", { name: "Experience" })).toBeTruthy();
 	});
 });

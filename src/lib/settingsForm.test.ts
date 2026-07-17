@@ -91,6 +91,26 @@ describe("settings form conversion", () => {
 		expect(forms.ui.htmlPlans).toBe(false);
 	});
 
+	it("copies the selected built-in into new desktop and mobile custom palettes", () => {
+		const forms = createSettingsForms(
+			HlidConfigSchema.parse({
+				ui: { theme: "dark", mobile_theme: "tan" },
+			}),
+		);
+		expect(forms.ui.customTheme.background).toBe("#0f0f12");
+		expect(forms.ui.mobileCustomTheme.background).toBe("#f0e6d3");
+
+		forms.ui.theme = "custom";
+		forms.ui.mobileTheme = "custom";
+		const config = buildSettingsConfig(
+			HlidConfigSchema.parse({}),
+			forms,
+			false,
+		);
+		expect(config.ui.custom_theme).toEqual(forms.ui.customTheme);
+		expect(config.ui.mobile_custom_theme).toEqual(forms.ui.mobileCustomTheme);
+	});
+
 	it("round-trips auto-sleep through the percent form", () => {
 		const initial = HlidConfigSchema.parse({
 			auto_sleep: { enabled: true, threshold: 0.4, max_sleep_minutes: 120 },

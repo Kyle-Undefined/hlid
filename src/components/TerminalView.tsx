@@ -56,6 +56,14 @@ function closeWs(
 	ws?.close();
 }
 
+function currentTerminalTheme(): { background: string; foreground: string } {
+	const styles = getComputedStyle(document.documentElement);
+	return {
+		background: styles.getPropertyValue("--background").trim() || "#0d0d0d",
+		foreground: styles.getPropertyValue("--foreground").trim() || "#d4d4d4",
+	};
+}
+
 export interface TerminalViewProps {
 	sessionId: string;
 	cwd: string;
@@ -124,10 +132,7 @@ export function TerminalView({
 			cursorBlink: true,
 			fontFamily: "monospace",
 			fontSize: 14,
-			theme: {
-				background: "#0d0d0d",
-				foreground: "#d4d4d4",
-			},
+			theme: currentTerminalTheme(),
 		});
 		const fitAddon = new FitAddon();
 		const webLinksAddon = new WebLinksAddon((event, uri) => {
@@ -140,6 +145,13 @@ export function TerminalView({
 		fitAddon.fit();
 		termRef.current = term;
 		fitRef.current = fitAddon;
+		const themeObserver = new MutationObserver(() => {
+			term.options.theme = currentTerminalTheme();
+		});
+		themeObserver.observe(document.documentElement, {
+			attributes: true,
+			attributeFilter: ["class", "data-theme", "style"],
+		});
 
 		// xterm treats Ctrl+C/Ctrl+V as terminal control characters by default.
 		// Yield selected Ctrl+C and Ctrl+V back to the browser so xterm's own
@@ -237,6 +249,7 @@ export function TerminalView({
 
 		return () => {
 			ro.disconnect();
+			themeObserver.disconnect();
 			// Null out handlers before close so the abnormal-close path (code 1005
 			// is what browsers send for ws.close() with no args) doesn't fire
 			// setExited(true) and override the setExited(false) in the next effect run.
@@ -254,11 +267,7 @@ export function TerminalView({
 
 	return (
 		<div className="relative flex h-full w-full flex-col overflow-hidden">
-			<div
-				ref={containerRef}
-				className="h-full w-full"
-				style={{ background: "#0d0d0d" }}
-			/>
+			<div ref={containerRef} className="h-full w-full bg-background" />
 			{exited && (
 				<TerminalExitedOverlay exited={exited} onNewSession={onNewSession} />
 			)}

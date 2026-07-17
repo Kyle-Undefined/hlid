@@ -2,6 +2,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import {
+	isNearChatBottom,
 	isRavenPath,
 	loadOlderPreservingScroll,
 	ROUTE_SCROLL_RESTORATION_IDS,
@@ -10,6 +11,7 @@ import {
 	resetWindowScroll,
 	SCROLL_TO_TOP_SELECTORS,
 	scrollChatToBottom,
+	touchMovesTowardOlderMessages,
 } from "./scrollContainers";
 
 describe("route scroll containers", () => {
@@ -35,6 +37,17 @@ describe("route scroll containers", () => {
 	it("gives each route scroller a distinct restoration identity", () => {
 		const ids = Object.values(ROUTE_SCROLL_RESTORATION_IDS);
 		expect(new Set(ids).size).toBe(ids.length);
+	});
+
+	it("requires a tighter bottom lock on touch screens", () => {
+		const viewport = { scrollHeight: 1_000, scrollTop: 930, clientHeight: 50 };
+		expect(isNearChatBottom(viewport, false)).toBe(true);
+		expect(isNearChatBottom(viewport, true)).toBe(false);
+	});
+
+	it("recognizes a finger drag toward older messages immediately", () => {
+		expect(touchMovesTowardOlderMessages(200, 207)).toBe(true);
+		expect(touchMovesTowardOlderMessages(200, 197)).toBe(false);
 	});
 
 	it("declares both app and nested route reset targets", () => {

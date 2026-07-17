@@ -9,6 +9,7 @@ import {
 	DEFAULT_ATTACHMENTS_CONFIG,
 	DEFAULT_AUTO_SLEEP_CONFIG,
 } from "#/config";
+import { builtInThemePalette } from "#/lib/theme";
 import { buildVaultSection } from "#/lib/vaultConfig";
 
 export type CodexForm = {
@@ -149,9 +150,22 @@ function createServerForm(initial: HlidConfig): ServerForm {
 }
 
 function createUiForm(initial: HlidConfig): UiForm {
+	const desktopBase = initial.ui.theme === "dark" ? "dark" : "tan";
+	const mobileBase =
+		initial.ui.mobile_theme === "dark" || initial.ui.mobile_theme === "tan"
+			? initial.ui.mobile_theme
+			: desktopBase;
+	const customTheme =
+		initial.ui.custom_theme ?? builtInThemePalette(desktopBase);
 	return {
 		theme: initial.ui.theme,
 		mobileTheme: initial.ui.mobile_theme ?? "same",
+		customTheme,
+		mobileCustomTheme:
+			initial.ui.mobile_custom_theme ??
+			(initial.ui.mobile_theme === "custom"
+				? { ...customTheme }
+				: builtInThemePalette(mobileBase)),
 		enterToSubmit: initial.ui.enter_to_submit,
 		hideSkillsIndex: initial.ui.hide_skills_index,
 		htmlPlans: initial.ui.html_plans ?? false,
@@ -293,6 +307,8 @@ export function buildSettingsConfig(
 			theme: forms.ui.theme,
 			mobile_theme:
 				forms.ui.mobileTheme === "same" ? undefined : forms.ui.mobileTheme,
+			custom_theme: forms.ui.customTheme,
+			mobile_custom_theme: forms.ui.mobileCustomTheme,
 			html_plans: forms.ui.htmlPlans,
 		},
 		status_vocabulary: {

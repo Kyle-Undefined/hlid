@@ -33,7 +33,10 @@ import { PrivacyMask } from "#/components/PrivacyMask";
 import { TerminalView } from "#/components/TerminalView";
 import { ProviderUsageStrip } from "#/components/usage/ProviderUsageStrip";
 import { ContextWindowSection } from "#/components/usage/UsageWindowSections";
-import { rememberRavenSessionId } from "#/hooks/ravenSessionStore";
+import {
+	rememberedRavenAgent,
+	rememberRavenSessionId,
+} from "#/hooks/ravenSessionStore";
 import {
 	forgetRavenTerminal,
 	isRavenTerminalOpen,
@@ -75,10 +78,12 @@ import {
 	resolveActiveProviderId,
 } from "#/lib/providerOptions";
 import {
+	isNearChatBottom,
 	loadOlderPreservingScroll,
 	ROUTE_SCROLL_RESTORATION_IDS,
 	resetScrollAncestors,
 	scrollChatToBottom,
+	touchMovesTowardOlderMessages,
 } from "#/lib/scrollContainers";
 import { getAgentListFn } from "#/lib/serverFns/agents";
 import { getCockpitData } from "#/lib/serverFns/cockpit";
@@ -305,14 +310,12 @@ function restoredRavenSessionSelection(
 function useRavenSessionIdentity({
 	config,
 	existingSessionId,
-	interactiveMode,
 	initialAgentSkillContext,
 	routeSessionId,
 	navigate,
 }: {
 	config: RavenConfig;
 	existingSessionId: string | null;
-	interactiveMode: boolean;
 	initialAgentSkillContext: string | undefined;
 	routeSessionId: string | undefined;
 	navigate: RavenNavigate;
@@ -320,6 +323,7 @@ function useRavenSessionIdentity({
 	const [agentSkillContext, setAgentSkillContext] = useState(
 		initialAgentSkillContext,
 	);
+	const interactiveMode = interactiveModeForAgent(config, agentSkillContext);
 	const agentContextSentRef = useRef(false);
 	const sessionsStatus = useSyncExternalStore(
 		subscribeSessionsStatus,
@@ -327,7 +331,9 @@ function useRavenSessionIdentity({
 		() => [],
 	);
 	const [sessionId, setSessionId] = useState(
-		() => existingSessionId ?? (interactiveMode ? "" : uid()),
+		() =>
+			existingSessionId ??
+			(interactiveModeForAgent(config, initialAgentSkillContext) ? "" : uid()),
 	);
 	const sessionIdRef = useRef(sessionId);
 
@@ -354,23 +360,11 @@ function useRavenSessionIdentity({
 		activateNewSession(newId, false);
 	}, [activateNewSession]);
 
-	const selectAgent = useCallback(
-		(agent: string | undefined) => {
-			setAgentSkillContext(agent);
-			agentContextSentRef.current = false;
-			rememberRavenSessionId(sessionIdRef.current, agent);
-			void navigate({
-				to: "/raven",
-				search: (previous) => ({
-					...previous,
-					session: sessionIdRef.current,
-					agent,
-				}),
-				replace: true,
-			});
-		},
-		[navigate],
-	);
+	const selectAgent = useCallback((agent: string | undefined) => {
+		setAgentSkillContext(agent);
+		agentContextSentRef.current = false;
+		rememberRavenSessionId(sessionIdRef.current, agent);
+	}, []);
 
 	useEffect(() => {
 		sessionIdRef.current = sessionId;
@@ -378,6 +372,15 @@ function useRavenSessionIdentity({
 
 	useEffect(() => {
 		if (!sessionId) return;
+		const storedAgent =
+			initialAgentSkillContext === undefined && agentSkillContext === undefined
+				? rememberedRavenAgent(sessionId)
+				: undefined;
+		if (storedAgent) {
+			setAgentSkillContext(storedAgent);
+			agentContextSentRef.current = false;
+			return;
+		}
 		// Route navigation updates loader data before this hook's local session
 		// state catches up. Do not overwrite the newly selected route with the
 		// previous chat during that transition.
@@ -396,6 +399,7 @@ function useRavenSessionIdentity({
 	}, [
 		agentSkillContext,
 		existingSessionId,
+		initialAgentSkillContext,
 		navigate,
 		routeSessionId,
 		sessionId,
@@ -441,7 +445,9 @@ function useRavenSessionIdentity({
 			setSessionId(existingSessionId);
 			sessionIdRef.current = existingSessionId;
 		}
-		setAgentSkillContext(initialAgentSkillContext);
+		setAgentSkillContext(
+			initialAgentSkillContext ?? rememberedRavenAgent(existingSessionId ?? ""),
+		);
 		agentContextSentRef.current = false;
 	}, [existingSessionId]);
 
@@ -465,6 +471,7 @@ function useRavenSessionIdentity({
 			(status) =>
 				status.session_id === sessionId || status.db_session_id === sessionId,
 		),
+		interactiveMode,
 	};
 }
 
@@ -614,6 +621,9 @@ function useRavenViewport({
 	const bottomRef = useRef<HTMLDivElement>(null);
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const atBottomRef = useRef(true);
+	const touchActiveRef = useRef(false);
+	const touchStartYRef = useRef(0);
+	const touchAwayRef = useRef(false);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const modelBadgeRef = useRef<HTMLDivElement>(null);
 	const fileInputRef = useRef<HTMLInputElement>(null);
@@ -636,12 +646,50 @@ function useRavenViewport({
 	useEffect(() => {
 		const element = scrollRef.current;
 		if (!element) return;
+		const isCoarsePointer =
+			typeof window.matchMedia === "function" &&
+			window.matchMedia("(pointer: coarse)").matches;
 		const onScroll = () => {
-			atBottomRef.current =
-				element.scrollHeight - element.scrollTop - element.clientHeight < 80;
+			if (touchActiveRef.current && touchAwayRef.current) return;
+			atBottomRef.current = isNearChatBottom(element, isCoarsePointer);
+		};
+		const onTouchStart = (event: TouchEvent) => {
+			touchActiveRef.current = true;
+			touchAwayRef.current = false;
+			touchStartYRef.current = event.touches[0]?.clientY ?? 0;
+		};
+		const onTouchMove = (event: TouchEvent) => {
+			const currentY = event.touches[0]?.clientY;
+			if (
+				currentY !== undefined &&
+				touchMovesTowardOlderMessages(touchStartYRef.current, currentY)
+			) {
+				touchAwayRef.current = true;
+				atBottomRef.current = false;
+			}
+		};
+		const onTouchEnd = () => {
+			touchActiveRef.current = false;
+			if (!touchAwayRef.current)
+				atBottomRef.current = isNearChatBottom(element, isCoarsePointer);
+		};
+		const onWheel = (event: WheelEvent) => {
+			if (event.deltaY < 0) atBottomRef.current = false;
 		};
 		element.addEventListener("scroll", onScroll, { passive: true });
-		return () => element.removeEventListener("scroll", onScroll);
+		element.addEventListener("touchstart", onTouchStart, { passive: true });
+		element.addEventListener("touchmove", onTouchMove, { passive: true });
+		element.addEventListener("touchend", onTouchEnd, { passive: true });
+		element.addEventListener("touchcancel", onTouchEnd, { passive: true });
+		element.addEventListener("wheel", onWheel, { passive: true });
+		return () => {
+			element.removeEventListener("scroll", onScroll);
+			element.removeEventListener("touchstart", onTouchStart);
+			element.removeEventListener("touchmove", onTouchMove);
+			element.removeEventListener("touchend", onTouchEnd);
+			element.removeEventListener("touchcancel", onTouchEnd);
+			element.removeEventListener("wheel", onWheel);
+		};
 	}, []);
 
 	// Put restored/new chats at the bottom before their first paint. This avoids
@@ -1201,7 +1249,6 @@ export function ChatPage() {
 		sessionPermissionMode: initialSessionPermissionMode,
 		agentList,
 		vaultSkills,
-		interactiveMode,
 		providers: initialProviders,
 		voiceInfo: initialVoiceInfo,
 	} = Route.useLoaderData();
@@ -1244,12 +1291,12 @@ export function ChatPage() {
 	const session = useRavenSessionIdentity({
 		config,
 		existingSessionId,
-		interactiveMode,
 		initialAgentSkillContext,
 		routeSessionId: ravenSearch.session,
 		navigate,
 	});
-	const { agentSkillContext, sessionId, sessionIdRef } = session;
+	const { agentSkillContext, sessionId, sessionIdRef, interactiveMode } =
+		session;
 	const restoredSession = Boolean(
 		existingSessionId && agentSkillContext === initialAgentSkillContext,
 	);

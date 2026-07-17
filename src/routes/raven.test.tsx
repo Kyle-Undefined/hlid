@@ -5,6 +5,7 @@ import {
 	fireEvent,
 	render,
 	screen,
+	waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ServerMessage } from "#/server/protocol";
@@ -44,13 +45,19 @@ vi.mock("#/components/AgentSelect", () => ({
 	AgentSelect: ({
 		fullWidth,
 		onChange,
+		value,
 	}: {
 		fullWidth?: boolean;
 		onChange: (value: string) => void;
+		value: string;
 	}) => {
 		state.onAgentChange = onChange;
 		return (
-			<div data-testid="agent-select" data-full-width={String(fullWidth)} />
+			<div
+				data-testid="agent-select"
+				data-full-width={String(fullWidth)}
+				data-value={value}
+			/>
 		);
 	},
 }));
@@ -770,7 +777,7 @@ describe("Raven composed submission behavior", () => {
 		);
 	});
 
-	it("keeps a new chat and its agent selected across Raven reloads", () => {
+	it("keeps a new chat and its agent selected across Raven reloads", async () => {
 		state.search = { session: "previous-chat", agent: "/old-project" };
 		state.loaderData = {
 			...state.loaderData,
@@ -808,15 +815,25 @@ describe("Raven composed submission behavior", () => {
 			newSearch.session,
 		);
 
+		const navigationCount = state.navigate.mock.calls.length;
 		act(() => state.onAgentChange?.("/new-project"));
-		const agentNavigation = state.navigate.mock.calls.at(-1)?.[0] as {
-			search: (previous: Record<string, unknown>) => Record<string, unknown>;
-		};
-		expect(agentNavigation.search(newSearch)).toEqual({
-			session: newSearch.session,
-			agent: "/new-project",
-		});
+		expect(state.navigate).toHaveBeenCalledTimes(navigationCount);
+		expect(new URL(window.location.href).searchParams.get("agent")).toBeNull();
 		expect(localStorage.getItem("hlid:raven:last-agent")).toBe("/new-project");
+
+		cleanup();
+		state.search = newSearch;
+		state.loaderData = {
+			...state.loaderData,
+			existingSessionId: newSearch.session,
+			agentSkillContext: undefined,
+		};
+		render(<ChatPage />);
+		await waitFor(() =>
+			expect(screen.getByTestId("agent-select").dataset.value).toBe(
+				"/new-project",
+			),
+		);
 	});
 
 	it("does not swap a newly selected route back to the previous chat", () => {

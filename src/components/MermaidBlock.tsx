@@ -24,7 +24,13 @@ function loadMermaid() {
 function getActiveTheme(): "dark" | "default" {
 	if (typeof document === "undefined") return "dark";
 	const t = document.documentElement.getAttribute("data-theme");
-	return t === "tan" ? "default" : "dark";
+	if (t === "tan") return "default";
+	if (t === "custom") {
+		return getComputedStyle(document.documentElement).colorScheme === "light"
+			? "default"
+			: "dark";
+	}
+	return "dark";
 }
 
 export function MermaidBlock({ code }: { code: string }) {

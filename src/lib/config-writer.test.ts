@@ -23,6 +23,7 @@ import { renameSync, writeFileSync } from "node:fs";
 import { parse } from "smol-toml";
 import { type HlidConfig, HlidConfigSchema } from "../config";
 import { serializeConfig, writeConfig } from "./config-writer";
+import { builtInThemePalette } from "./theme";
 
 const mockWrite = vi.mocked(writeFileSync);
 const mockRename = vi.mocked(renameSync);
@@ -107,6 +108,19 @@ describe("writeConfig — persistence invariants", () => {
 
 		const reparsed = HlidConfigSchema.parse(parse(serializeConfig(config)));
 		expect(reparsed).toEqual(config);
+	});
+
+	it("round-trips separate desktop and mobile custom palettes", () => {
+		const config = HlidConfigSchema.parse({
+			ui: {
+				theme: "custom",
+				mobile_theme: "custom",
+				custom_theme: builtInThemePalette("dark"),
+				mobile_custom_theme: builtInThemePalette("tan"),
+			},
+		});
+		const parsed = HlidConfigSchema.parse(parse(serializeConfig(config)));
+		expect(parsed.ui).toEqual(config.ui);
 	});
 
 	it("writes to a private temporary file before atomically renaming it", () => {

@@ -3,6 +3,7 @@ import { AcpSection } from "#/components/forge/AcpSection";
 import { ApiSection } from "#/components/forge/ApiSection";
 import { AutoSleepSection } from "#/components/forge/AutoSleepSection";
 import { ClaudeSection } from "#/components/forge/ClaudeSection";
+import { CustomThemeSection } from "#/components/forge/CustomThemeSection";
 import { EventLogSection } from "#/components/forge/EventLogSection";
 import { McpSection } from "#/components/forge/McpSection";
 import { NetworkSection } from "#/components/forge/NetworkSection";
@@ -22,6 +23,7 @@ import type {
 	SettingsInitial,
 } from "#/hooks/useSettingsForm";
 import { ROUTE_SCROLL_RESTORATION_IDS } from "#/lib/scrollContainers";
+import { applyThemeToDocument, effectiveTheme } from "#/lib/theme";
 
 const CATEGORIES = [
 	{
@@ -85,6 +87,7 @@ const CATEGORIES = [
 ] as const;
 type Category = (typeof CATEGORIES)[number]["id"];
 type DeveloperView = "events" | "api";
+type ThemeTarget = "desktop" | "mobile";
 
 function AgentSettings({
 	state,
@@ -163,6 +166,40 @@ function UmbodPage({
 				description="Configure policy, generate hooks, and inspect tool-call decisions."
 			/>
 			<UmbodSection value={state.umbod} onChange={state.setUmbod} />
+		</>
+	);
+}
+
+function CustomThemePage({
+	state,
+	onBack,
+	target,
+	onTargetChange,
+}: {
+	state: SettingsFormState;
+	onBack: () => void;
+	target: ThemeTarget;
+	onTargetChange: (target: ThemeTarget) => void;
+}) {
+	return (
+		<>
+			<button
+				type="button"
+				onClick={onBack}
+				className="text-[10px] tracking-widest uppercase text-muted-foreground hover:text-foreground"
+			>
+				← Experience
+			</button>
+			<PageIntro
+				title="Custom Theme"
+				description="Shape separate desktop and mobile palettes with a live system-wide preview. Changes save automatically."
+			/>
+			<CustomThemeSection
+				ui={state.ui}
+				onChange={(patch) => state.setUi((ui) => ({ ...ui, ...patch }))}
+				target={target}
+				onTargetChange={onTargetChange}
+			/>
 		</>
 	);
 }
@@ -249,9 +286,11 @@ function AccessCategory({
 function ExperienceCategory({
 	state,
 	initial,
+	onShowTheme,
 }: {
 	state: SettingsFormState;
 	initial: SettingsInitial;
+	onShowTheme: () => void;
 }) {
 	return (
 		<>
@@ -263,6 +302,21 @@ function ExperienceCategory({
 				ui={state.ui}
 				onChange={(patch) => state.setUi((ui) => ({ ...ui, ...patch }))}
 			/>
+			<div className="border border-border bg-card p-4 flex items-center justify-between gap-4">
+				<div>
+					<div className="text-sm">Custom theme</div>
+					<p className="text-xs text-muted-foreground mt-0.5">
+						Edit desktop and mobile palettes on their own live-preview screen.
+					</p>
+				</div>
+				<button
+					type="button"
+					onClick={onShowTheme}
+					className="shrink-0 px-3 py-1.5 border border-border text-[10px] tracking-widest uppercase hover:bg-accent"
+				>
+					Open theme editor
+				</button>
+			</div>
 			<VoiceSection
 				voice={state.voice}
 				onChange={(patch) =>
@@ -392,6 +446,10 @@ function CategoryContent({
 	onShowCatalog,
 	showUmbod,
 	onShowUmbod,
+	showTheme,
+	onShowTheme,
+	themeTarget,
+	onThemeTarget,
 	developerView,
 	onDeveloperView,
 }: {
@@ -402,6 +460,10 @@ function CategoryContent({
 	onShowCatalog: (show: boolean) => void;
 	showUmbod: boolean;
 	onShowUmbod: (show: boolean) => void;
+	showTheme: boolean;
+	onShowTheme: (show: boolean) => void;
+	themeTarget: ThemeTarget;
+	onThemeTarget: (target: ThemeTarget) => void;
 	developerView: DeveloperView;
 	onDeveloperView: (view: DeveloperView) => void;
 }) {
@@ -415,6 +477,15 @@ function CategoryContent({
 		);
 	if (category === "integrations" && showUmbod)
 		return <UmbodPage state={state} onBack={() => onShowUmbod(false)} />;
+	if (category === "experience" && showTheme)
+		return (
+			<CustomThemePage
+				state={state}
+				onBack={() => onShowTheme(false)}
+				target={themeTarget}
+				onTargetChange={onThemeTarget}
+			/>
+		);
 	switch (category) {
 		case "overview":
 			return <OverviewCategory />;
@@ -425,7 +496,13 @@ function CategoryContent({
 		case "access":
 			return <AccessCategory state={state} initial={initial} />;
 		case "experience":
-			return <ExperienceCategory state={state} initial={initial} />;
+			return (
+				<ExperienceCategory
+					state={state}
+					initial={initial}
+					onShowTheme={() => onShowTheme(true)}
+				/>
+			);
 		case "integrations":
 			return (
 				<IntegrationsCategory
@@ -490,6 +567,8 @@ export function ForgeSettings({
 	const [search, setSearch] = useState("");
 	const [showCatalog, setShowCatalog] = useState(false);
 	const [showUmbod, setShowUmbod] = useState(false);
+	const [showTheme, setShowTheme] = useState(false);
+	const [themeTarget, setThemeTarget] = useState<ThemeTarget>("desktop");
 	const [developerView, setDeveloperView] = useState<DeveloperView>("events");
 	const shown = useMemo(() => {
 		const q = search.trim().toLowerCase();
@@ -507,12 +586,45 @@ export function ForgeSettings({
 		setCategory(shown[0].id);
 		setShowCatalog(false);
 		setShowUmbod(false);
+		setShowTheme(false);
 	}, [category, search, shown]);
 	function choose(next: Category) {
 		setCategory(next);
 		setShowCatalog(false);
 		setShowUmbod(false);
+		setShowTheme(false);
 	}
+	useEffect(() => {
+		const media =
+			typeof window.matchMedia === "function"
+				? window.matchMedia("(pointer: coarse)")
+				: null;
+		const apply = () => {
+			if (showTheme) {
+				applyThemeToDocument(
+					"custom",
+					themeTarget === "desktop"
+						? state.ui.customTheme
+						: state.ui.mobileCustomTheme,
+				);
+				return;
+			}
+			const selected = effectiveTheme(state.ui, media?.matches ?? false);
+			applyThemeToDocument(selected.name, selected.palette);
+			try {
+				localStorage.setItem("hlid-theme", selected.name);
+				if (selected.palette)
+					localStorage.setItem(
+						"hlid-theme-palette",
+						JSON.stringify(selected.palette),
+					);
+				else localStorage.removeItem("hlid-theme-palette");
+			} catch {}
+		};
+		apply();
+		media?.addEventListener("change", apply);
+		return () => media?.removeEventListener("change", apply);
+	}, [showTheme, state.ui, themeTarget]);
 	function showRestartControls() {
 		choose("advanced");
 		setTimeout(() => {
@@ -572,6 +684,10 @@ export function ForgeSettings({
 							onShowCatalog={setShowCatalog}
 							showUmbod={showUmbod}
 							onShowUmbod={setShowUmbod}
+							showTheme={showTheme}
+							onShowTheme={setShowTheme}
+							themeTarget={themeTarget}
+							onThemeTarget={setThemeTarget}
 							developerView={developerView}
 							onDeveloperView={setDeveloperView}
 						/>

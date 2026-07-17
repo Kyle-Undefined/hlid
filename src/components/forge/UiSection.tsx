@@ -1,10 +1,12 @@
-import { useEffect } from "react";
 import { THEME_OPTIONS } from "#/lib/agentOptions";
+import type { CustomThemePalette, ThemeName } from "#/lib/theme";
 import { Field, Section } from "./fields";
 
 export type UiForm = {
-	theme: "dark" | "tan";
-	mobileTheme: "dark" | "tan" | "same";
+	theme: ThemeName;
+	mobileTheme: ThemeName | "same";
+	customTheme: CustomThemePalette;
+	mobileCustomTheme: CustomThemePalette;
 	enterToSubmit: boolean;
 	hideSkillsIndex: boolean;
 	htmlPlans: boolean;
@@ -14,7 +16,12 @@ const MOBILE_THEME_OPTIONS = [
 	{ value: "same" as const, label: "Same", desc: "no override" },
 	{ value: "dark" as const, label: "Dark", desc: "neutral dark, sky blue" },
 	{ value: "tan" as const, label: "Tan", desc: "warm parchment, terracotta" },
-] satisfies { value: "dark" | "tan" | "same"; label: string; desc: string }[];
+	{ value: "custom" as const, label: "Custom", desc: "mobile custom palette" },
+] satisfies {
+	value: ThemeName | "same";
+	label: string;
+	desc: string;
+}[];
 
 export function UiSection({
 	ui,
@@ -23,26 +30,11 @@ export function UiSection({
 	ui: UiForm;
 	onChange: (patch: Partial<UiForm>) => void;
 }) {
-	useEffect(() => {
-		const mq = window.matchMedia("(pointer: coarse)");
-		const apply = () => {
-			const effective =
-				mq.matches && ui.mobileTheme !== "same" ? ui.mobileTheme : ui.theme;
-			document.documentElement.setAttribute("data-theme", effective);
-			const themes = ["dark", "tan"] as const;
-			for (const t of themes) document.documentElement.classList.remove(t);
-			document.documentElement.classList.add(effective);
-		};
-		apply();
-		mq.addEventListener("change", apply);
-		return () => mq.removeEventListener("change", apply);
-	}, [ui.theme, ui.mobileTheme]);
-
 	return (
 		<Section title="UI">
 			<div className="px-4 py-3 space-y-2">
 				<div className="text-sm text-foreground">Theme</div>
-				<div className="grid grid-cols-2 gap-2">
+				<div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
 					{THEME_OPTIONS.map((opt) => (
 						<button
 							key={opt.value}
@@ -68,7 +60,7 @@ export function UiSection({
 				<div className="text-xs text-muted-foreground mb-2">
 					override theme on touch devices
 				</div>
-				<div className="grid grid-cols-3 gap-2">
+				<div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
 					{MOBILE_THEME_OPTIONS.map((opt) => (
 						<button
 							key={opt.value}

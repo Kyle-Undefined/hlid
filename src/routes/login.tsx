@@ -1,13 +1,20 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { ShieldCheck } from "lucide-react";
 import { useEffect, useState } from "react";
+import {
+	applyThemeToDocument,
+	type CustomThemePalette,
+	type ThemeName,
+} from "#/lib/theme";
 import type { AuthState } from "#/server/auth";
 import { LoginForm } from "./-LoginForm";
 
 type AuthStatus = {
 	state: AuthState;
-	theme: "dark" | "tan";
-	mobileTheme?: "dark" | "tan";
+	theme: ThemeName;
+	mobileTheme?: ThemeName;
+	customTheme?: CustomThemePalette;
+	mobileCustomTheme?: CustomThemePalette;
 };
 
 function applyTheme(status: AuthStatus): void {
@@ -15,9 +22,18 @@ function applyTheme(status: AuthStatus): void {
 		status.mobileTheme && window.matchMedia("(pointer: coarse)").matches
 			? status.mobileTheme
 			: status.theme;
+	const palette =
+		selected === "custom"
+			? status.mobileTheme === "custom" &&
+				window.matchMedia("(pointer: coarse)").matches
+				? (status.mobileCustomTheme ?? status.customTheme)
+				: status.customTheme
+			: undefined;
 	localStorage.setItem("hlid-theme", selected);
-	document.documentElement.dataset.theme = selected;
-	document.documentElement.className = selected;
+	if (palette)
+		localStorage.setItem("hlid-theme-palette", JSON.stringify(palette));
+	else localStorage.removeItem("hlid-theme-palette");
+	applyThemeToDocument(selected, palette);
 }
 
 export const Route = createFileRoute("/login")({ component: LoginPage });

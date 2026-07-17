@@ -144,6 +144,17 @@ function serializeUi(config: HlidConfig["ui"]): string[] {
 	]);
 }
 
+function serializeThemePalette(
+	name: "ui.custom_theme" | "ui.mobile_custom_theme",
+	palette: HlidConfig["ui"]["custom_theme"],
+): string[] {
+	if (!palette) return [];
+	return section(
+		name,
+		Object.entries(palette).map(([key, value]) => `${key} = ${tomlVal(value)}`),
+	);
+}
+
 function serializeStatusVocabulary(
 	config: HlidConfig["status_vocabulary"],
 ): string[] {
@@ -234,6 +245,21 @@ export function serializeConfig(config: HlidConfig): string {
 			: []),
 		"",
 		...serializeUi(config.ui),
+		...(config.ui.custom_theme
+			? [
+					"",
+					...serializeThemePalette("ui.custom_theme", config.ui.custom_theme),
+				]
+			: []),
+		...(config.ui.mobile_custom_theme
+			? [
+					"",
+					...serializeThemePalette(
+						"ui.mobile_custom_theme",
+						config.ui.mobile_custom_theme,
+					),
+				]
+			: []),
 		"",
 		...serializeStatusVocabulary(config.status_vocabulary),
 		"",

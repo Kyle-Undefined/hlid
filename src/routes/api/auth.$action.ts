@@ -173,6 +173,8 @@ export const Route = createFileRoute("/api/auth/$action")({
 					state: await authState(request),
 					theme: ui.theme,
 					mobileTheme: ui.mobile_theme,
+					customTheme: ui.custom_theme,
+					mobileCustomTheme: ui.mobile_custom_theme,
 				});
 			},
 			POST: async ({ request, params }) => {

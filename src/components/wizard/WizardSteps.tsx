@@ -434,7 +434,7 @@ export function StructureStep({
 				name="theme"
 				label="Theme"
 				value={state.theme}
-				options={THEME_OPTIONS}
+				options={WIZARD_THEME_OPTIONS}
 				onChange={(theme) => onChange({ theme })}
 			/>
 
@@ -535,3 +535,10 @@ export function DoneStep({ onComplete }: { onComplete: () => void }) {
 		</div>
 	);
 }
+const WIZARD_THEME_OPTIONS = THEME_OPTIONS.filter(
+	(option) => option.value !== "custom",
+) as ReadonlyArray<{
+	value: "dark" | "tan";
+	label: string;
+	desc: string;
+}>;

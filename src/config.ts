@@ -1,5 +1,45 @@
 import { z } from "zod";
 
+const HexColorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/);
+const ThemePaletteSchema = z.object({
+	color_scheme: z.enum(["dark", "light"]),
+	background: HexColorSchema,
+	foreground: HexColorSchema,
+	card: HexColorSchema,
+	card_foreground: HexColorSchema,
+	popover: HexColorSchema,
+	popover_foreground: HexColorSchema,
+	primary: HexColorSchema,
+	primary_foreground: HexColorSchema,
+	secondary: HexColorSchema,
+	secondary_foreground: HexColorSchema,
+	muted: HexColorSchema,
+	muted_foreground: HexColorSchema,
+	accent: HexColorSchema,
+	accent_foreground: HexColorSchema,
+	destructive: HexColorSchema,
+	destructive_foreground: HexColorSchema,
+	border: HexColorSchema,
+	input: HexColorSchema,
+	ring: HexColorSchema,
+	sidebar: HexColorSchema,
+	sidebar_foreground: HexColorSchema,
+	sidebar_primary: HexColorSchema,
+	sidebar_primary_foreground: HexColorSchema,
+	sidebar_accent: HexColorSchema,
+	sidebar_accent_foreground: HexColorSchema,
+	sidebar_border: HexColorSchema,
+	sidebar_ring: HexColorSchema,
+	data: HexColorSchema,
+	chart_error: HexColorSchema,
+	status_success: HexColorSchema,
+	status_warning: HexColorSchema,
+	tool_panel: HexColorSchema,
+	tool_panel_border: HexColorSchema,
+	user_msg: HexColorSchema,
+	agent_msg: HexColorSchema,
+});
+
 const VaultSchema = z.object({
 	name: z.string().default("Vault"),
 	path: z.string().default(""),
@@ -67,8 +107,10 @@ const CodexSchema = z.object({
 const UiSchema = z.object({
 	enter_to_submit: z.boolean().default(true),
 	hide_skills_index: z.boolean().default(true),
-	theme: z.enum(["dark", "tan"]).default("tan"),
-	mobile_theme: z.enum(["dark", "tan"]).optional(),
+	theme: z.enum(["dark", "tan", "custom"]).default("tan"),
+	mobile_theme: z.enum(["dark", "tan", "custom"]).optional(),
+	custom_theme: ThemePaletteSchema.optional(),
+	mobile_custom_theme: ThemePaletteSchema.optional(),
 	/** Default for the per-session HTML-plans toggle in plan mode. */
 	html_plans: z.boolean().default(false),
 });

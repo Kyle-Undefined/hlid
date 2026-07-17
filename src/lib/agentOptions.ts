@@ -19,8 +19,13 @@ export const THEME_OPTIONS = [
 		label: "Tan",
 		desc: "warm parchment with terracotta accent, easy on the eyes",
 	},
+	{
+		value: "custom" as const,
+		label: "Custom",
+		desc: "your saved palette from Forge",
+	},
 ] satisfies ReadonlyArray<{
-	value: "dark" | "tan";
+	value: "dark" | "tan" | "custom";
 	label: string;
 	desc: string;
 }>;

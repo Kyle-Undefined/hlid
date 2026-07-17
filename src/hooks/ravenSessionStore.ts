@@ -67,6 +67,13 @@ export function rememberRavenSessionId(
 	for (const listener of listeners) listener();
 }
 
+export function rememberedRavenAgent(sessionId: string): string | undefined {
+	const validId = validSessionId(sessionId);
+	if (!validId) return undefined;
+	const stored = readStoredLocation();
+	return stored?.sessionId === validId ? stored.agent : undefined;
+}
+
 function subscribeLastRavenSession(listener: () => void): () => void {
 	listeners.add(listener);
 	return () => listeners.delete(listener);

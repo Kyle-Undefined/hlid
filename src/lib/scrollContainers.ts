@@ -23,6 +23,23 @@ export const SCROLL_TO_TOP_SELECTORS = [
 	'[data-scroll-to-top="route"]',
 ] as const;
 
+export function isNearChatBottom(
+	element: Pick<HTMLElement, "scrollHeight" | "scrollTop" | "clientHeight">,
+	isCoarsePointer: boolean,
+): boolean {
+	const threshold = isCoarsePointer ? 12 : 80;
+	return (
+		element.scrollHeight - element.scrollTop - element.clientHeight < threshold
+	);
+}
+
+export function touchMovesTowardOlderMessages(
+	startY: number,
+	currentY: number,
+): boolean {
+	return currentY - startY > 4;
+}
+
 /**
  * The app shell is a fixed-height overflow-hidden column, so the window itself
  * must never scroll. iOS still scrolls the layout viewport to reveal a focused
