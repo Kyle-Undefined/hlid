@@ -1,3 +1,4 @@
+import { startsWithSearchText } from "./search";
 import type { Skill } from "./skills";
 
 export type CommandAction = "review" | "computer-use";
@@ -93,9 +94,8 @@ export function commandMatches(
 	command: CommandDescriptor,
 	query: string,
 ): boolean {
-	const normalized = query.toLowerCase();
 	return [command.name, ...(command.aliases ?? [])].some((candidate) =>
-		candidate.toLowerCase().startsWith(normalized),
+		startsWithSearchText(candidate, query),
 	);
 }
 

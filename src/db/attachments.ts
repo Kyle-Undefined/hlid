@@ -1,3 +1,4 @@
+import { normalizeSearchText } from "../lib/search";
 import { getDb } from "./schema";
 import type {
 	AttachmentKind,
@@ -28,20 +29,26 @@ export async function createAttachment(row: {
 	sha256: string | null;
 }): Promise<void> {
 	const db = await getDb();
-	db.run(
-		`INSERT INTO attachments (id, session_id, message_seq, kind, filename, path, mime, size_bytes, sha256, created_at)
-     VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, unixepoch())`,
-		[
-			row.id,
-			row.session_id,
-			row.kind,
-			row.filename,
-			row.path,
-			row.mime,
-			row.size_bytes,
-			row.sha256,
-		],
-	);
+	db.transaction(() => {
+		db.run(
+			`INSERT INTO attachments (id, session_id, message_seq, kind, filename, path, mime, size_bytes, sha256, created_at)
+		 VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, unixepoch())`,
+			[
+				row.id,
+				row.session_id,
+				row.kind,
+				row.filename,
+				row.path,
+				row.mime,
+				row.size_bytes,
+				row.sha256,
+			],
+		);
+		db.run(
+			`INSERT INTO attachment_search (attachment_id, text) VALUES (?, ?)`,
+			[row.id, normalizeSearchText(row.filename)],
+		);
+	})();
 }
 
 export async function linkAttachmentToMessage(
@@ -141,8 +148,10 @@ export async function listAttachments(
 			.replace(/\\/g, "\\\\")
 			.replace(/%/g, "\\%")
 			.replace(/_/g, "\\_");
-		where.push("filename LIKE ? ESCAPE '\\'");
-		params.push(`%${escaped}%`);
+		where.push(
+			"EXISTS (SELECT 1 FROM attachment_search search_idx WHERE search_idx.attachment_id = attachments.id AND search_idx.text LIKE ? ESCAPE '\\')",
+		);
+		params.push(`%${normalizeSearchText(escaped)}%`);
 	}
 	if (filter.since != null) {
 		where.push("created_at >= ?");

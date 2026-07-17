@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import type { HlidConfig } from "#/config";
+import { includesSearchText } from "#/lib/search";
 import {
 	type AcpAuthMethod,
 	type AcpCatalogItem,
@@ -24,10 +25,10 @@ export function AcpSection({
 	const [auth, setAuth] = useState<Record<string, AcpAuthMethod[]>>({});
 	const [error, setError] = useState<string | null>(null);
 	const shown = useMemo(() => {
-		const query = search.trim().toLowerCase();
+		const query = search.trim();
 		return query
 			? catalog.filter((item) =>
-					`${item.name} ${item.description}`.toLowerCase().includes(query),
+					includesSearchText(`${item.name} ${item.description}`, query),
 				)
 			: catalog;
 	}, [catalog, search]);

@@ -2,6 +2,7 @@ import { readFile, rename, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { ApprovalDecision, ToolCall, Umbod } from "@umbod/core";
 import { APP_DIR } from "#/lib/paths";
+import { includesSearchText } from "#/lib/search";
 import { loadConfig } from "#/server/config";
 import {
 	defaultUmbodManifest,
@@ -283,6 +284,8 @@ export async function umbodCalls(
 	const umbod = await getUmbod();
 	if (!umbod)
 		return { entries: [], page: 1, pageSize: 50, total: 0, totalPages: 1 };
+	const search = searchParams.get("search")?.trim();
+	if (search) return normalizedUmbodCalls(umbod, searchParams, search);
 	const url = new URL("http://hlid/api/analytics/calls");
 	for (const [key, value] of searchParams) {
 		if (key !== "view") url.searchParams.set(key, value);
@@ -290,6 +293,62 @@ export async function umbodCalls(
 	const response = await Promise.resolve(umbod.fetch(new Request(url)));
 	if (!response) throw new Error("Umbod call explorer is unavailable");
 	return response.json();
+}
+
+type UmbodCallPage = {
+	entries: Array<{ command?: string } & Record<string, unknown>>;
+	page: number;
+	pageSize: number;
+	total: number;
+	totalPages: number;
+};
+
+/**
+ * Umbod's embedded SQLite search uses ASCII-only LIKE. Page through the
+ * already-filtered call stream here so its search behaves like Hlid's pages.
+ */
+async function normalizedUmbodCalls(
+	umbod: Umbod,
+	searchParams: URLSearchParams,
+	search: string,
+): Promise<UmbodCallPage> {
+	const requestedPage = Math.max(Number(searchParams.get("page")) || 1, 1);
+	const requestedPageSize = Math.min(
+		Math.max(Number(searchParams.get("pageSize")) || 50, 1),
+		200,
+	);
+	const url = new URL("http://hlid/api/analytics/calls");
+	for (const [key, value] of searchParams) {
+		if (!["view", "search", "page", "pageSize"].includes(key))
+			url.searchParams.set(key, value);
+	}
+	url.searchParams.set("pageSize", "200");
+
+	const matches: UmbodCallPage["entries"] = [];
+	let sourcePage = 1;
+	let sourcePages = 1;
+	do {
+		url.searchParams.set("page", String(sourcePage));
+		const response = await Promise.resolve(umbod.fetch(new Request(url)));
+		if (!response) throw new Error("Umbod call explorer is unavailable");
+		const page = (await response.json()) as UmbodCallPage;
+		matches.push(
+			...page.entries.filter((entry) =>
+				includesSearchText(entry.command ?? "", search),
+			),
+		);
+		sourcePages = Math.max(page.totalPages, 1);
+		sourcePage += 1;
+	} while (sourcePage <= sourcePages);
+
+	const offset = (requestedPage - 1) * requestedPageSize;
+	return {
+		entries: matches.slice(offset, offset + requestedPageSize),
+		page: requestedPage,
+		pageSize: requestedPageSize,
+		total: matches.length,
+		totalPages: Math.max(Math.ceil(matches.length / requestedPageSize), 1),
+	};
 }
 
 export async function umbodHookArtifacts(

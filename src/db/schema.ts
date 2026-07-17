@@ -1,6 +1,7 @@
 import { resolve } from "node:path";
 import { estimateCodexCost } from "../lib/codexPricing";
 import { APP_DIR } from "../lib/paths";
+import { normalizeSearchText } from "../lib/search";
 
 const DB_PATH = resolve(APP_DIR, "hlid.db");
 
@@ -637,5 +638,44 @@ function applyMigrations(db: Db): void {
 	// proposals.
 	runMigration(db, "_migrated_plan_proposals_html_attachment", (db) => {
 		db.run(`ALTER TABLE plan_proposals ADD COLUMN html_attachment_id TEXT`);
+	});
+
+	// SQLite's built-in NOCASE/LIKE only folds ASCII. Keep internal normalized
+	// indexes so paginated searches match labels and filenames with diacritics.
+	runMigration(db, "_migrated_normalized_search_indexes", (db) => {
+		db.run(`
+			CREATE TABLE session_search (
+				session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+				text TEXT NOT NULL
+			)
+		`);
+		db.run(`
+			CREATE TABLE attachment_search (
+				attachment_id TEXT PRIMARY KEY REFERENCES attachments(id) ON DELETE CASCADE,
+				text TEXT NOT NULL
+			)
+		`);
+
+		const insertSession = db.prepare(
+			`INSERT INTO session_search (session_id, text) VALUES (?, ?)`,
+		);
+		for (const row of db
+			.query<{ id: string; label: string | null }, []>(
+				`SELECT id, label FROM sessions`,
+			)
+			.all()) {
+			insertSession.run(row.id, normalizeSearchText(row.label ?? ""));
+		}
+
+		const insertAttachment = db.prepare(
+			`INSERT INTO attachment_search (attachment_id, text) VALUES (?, ?)`,
+		);
+		for (const row of db
+			.query<{ id: string; filename: string }, []>(
+				`SELECT id, filename FROM attachments`,
+			)
+			.all()) {
+			insertAttachment.run(row.id, normalizeSearchText(row.filename));
+		}
 	});
 }

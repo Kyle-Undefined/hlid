@@ -46,6 +46,14 @@ describe("commands", () => {
 		expect(commandMatches(commands[1], "wh")).toBe(true);
 	});
 
+	it("matches slash commands without requiring accent marks", () => {
+		const command = {
+			...skillCommand(skill),
+			name: "résumé",
+		};
+		expect(commandMatches(command, "resume")).toBe(true);
+	});
+
 	it("omits controls already owned by the UI", () => {
 		const commands = mergeCommands(
 			[],

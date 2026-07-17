@@ -26,6 +26,7 @@ import type {
 	SettingsInitial,
 } from "#/hooks/useSettingsForm";
 import { ROUTE_SCROLL_RESTORATION_IDS } from "#/lib/scrollContainers";
+import { includesSearchText } from "#/lib/search";
 import { applyThemeToDocument, effectiveTheme } from "#/lib/theme";
 
 const CATEGORIES = [
@@ -581,12 +582,13 @@ export function ForgeSettings({
 	const [themeTarget, setThemeTarget] = useState<ThemeTarget>("desktop");
 	const [developerView, setDeveloperView] = useState<DeveloperView>("events");
 	const shown = useMemo(() => {
-		const q = search.trim().toLowerCase();
+		const q = search.trim();
 		return q
 			? CATEGORIES.filter((item) =>
-					`${item.label} ${item.description} ${item.keywords}`
-						.toLowerCase()
-						.includes(q),
+					includesSearchText(
+						`${item.label} ${item.description} ${item.keywords}`,
+						q,
+					),
 				)
 			: CATEGORIES;
 	}, [search]);

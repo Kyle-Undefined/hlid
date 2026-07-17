@@ -227,6 +227,15 @@ describe("sessions — create & fetch", () => {
 		expect(byPercent.sessions[0].id).toBe("s2");
 	});
 
+	it("getSessionsPaginated searches labels without requiring accents", async () => {
+		await createSession("grimr", "Grímr planning", "m");
+		await createSession("other", "Other project", "m");
+
+		const result = await getSessionsPaginated(1, 10, { search: "Grimr" });
+		expect(result.total).toBe(1);
+		expect(result.sessions[0].id).toBe("grimr");
+	});
+
 	it("getSessionsPaginated sorts by cost and tokens", async () => {
 		await createSession("cheap", "A", "m");
 		await createSession("pricey", "B", "m");
@@ -1188,6 +1197,14 @@ describe("attachments — listAttachments", () => {
 		const { total, rows } = await listAttachments({ search: "report" });
 		expect(total).toBe(1);
 		expect(rows[0].filename).toBe("report-2024.pdf");
+	});
+
+	it("filters filenames without requiring accents", async () => {
+		await makeAttachment("accented", { filename: "résumé.pdf" });
+		await makeAttachment("other", { filename: "notes.txt" });
+		const { total, rows } = await listAttachments({ search: "resume" });
+		expect(total).toBe(1);
+		expect(rows[0].filename).toBe("résumé.pdf");
 	});
 
 	it("returns total_bytes sum", async () => {

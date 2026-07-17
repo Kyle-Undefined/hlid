@@ -48,6 +48,20 @@ describe("ProjectsTab", () => {
 		expect(screen.getByText("Project details")).not.toBeNull();
 	});
 
+	it("matches project names without requiring accent marks", () => {
+		render(
+			<ProjectsTab
+				initial={[
+					project({ file: "grimr.md", title: "Grímr" }),
+					project({ file: "other.md", title: "Other" }),
+				]}
+				query="Grimr"
+			/>,
+		);
+		expect(screen.getByText("Grímr")).not.toBeNull();
+		expect(screen.queryByText("Other")).toBeNull();
+	});
+
 	it("expands a folder project into child nodes", () => {
 		render(
 			<ProjectsTab

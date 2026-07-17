@@ -52,6 +52,7 @@ import {
 	closeUmbod,
 	registerUmbodApprovalSession,
 	saveUmbodManifest,
+	umbodCalls,
 	umbodHookArtifacts,
 } from "./umbod";
 
@@ -81,6 +82,46 @@ describe("saveUmbodManifest", () => {
 		expect(original?.stop).not.toHaveBeenCalled();
 		expect(testState.servers).toHaveLength(1);
 		expect(createUmbod).toHaveBeenCalledTimes(2);
+	});
+
+	it("searches audited commands without requiring accent marks", async () => {
+		mkdirSync(testState.root, { recursive: true });
+		writeFileSync(join(testState.root, "umbod.toml"), manifest("allow"));
+		await bootstrapUmbod();
+		const engine = vi.mocked(createUmbod).mock.results.at(-1)?.value as {
+			fetch: ReturnType<typeof vi.fn>;
+		};
+		engine.fetch.mockImplementation((request: Request) => {
+			const url = new URL(request.url);
+			expect(url.searchParams.has("search")).toBe(false);
+			return Promise.resolve(
+				Response.json({
+					entries: [
+						{ id: 2, command: "open Grímr notes" },
+						{ id: 1, command: "open other notes" },
+					],
+					page: 1,
+					pageSize: 200,
+					total: 2,
+					totalPages: 1,
+				}),
+			);
+		});
+
+		await expect(
+			umbodCalls(
+				new URLSearchParams({
+					view: "calls",
+					search: "Grimr",
+					page: "1",
+					pageSize: "25",
+				}),
+			),
+		).resolves.toMatchObject({
+			entries: [{ id: 2, command: "open Grímr notes" }],
+			total: 1,
+			totalPages: 1,
+		});
 	});
 
 	it("routes hook approvals to the owning session and reuses the decision", async () => {

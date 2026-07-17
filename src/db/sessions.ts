@@ -1,3 +1,4 @@
+import { normalizeSearchText } from "../lib/search";
 import { markAnalyticsChanged } from "./analyticsRevision";
 import type { Db } from "./schema";
 import { getDb } from "./schema";
@@ -217,19 +218,28 @@ export async function createSession(
 	selection: { effort?: string; permissionMode?: string } = {},
 ): Promise<void> {
 	const db = await getDb();
-	const { changes } = db.run(
-		`INSERT OR IGNORE INTO sessions
-		 (id, label, model, selected_model, selected_effort, selected_permission_mode, started_at)
-		 VALUES (?, ?, ?, ?, ?, ?, unixepoch())`,
-		[
-			id,
-			label,
-			model,
-			model,
-			selection.effort ?? null,
-			selection.permissionMode ?? null,
-		],
-	);
+	let changes = 0;
+	db.transaction(() => {
+		({ changes } = db.run(
+			`INSERT OR IGNORE INTO sessions
+			 (id, label, model, selected_model, selected_effort, selected_permission_mode, started_at)
+			 VALUES (?, ?, ?, ?, ?, ?, unixepoch())`,
+			[
+				id,
+				label,
+				model,
+				model,
+				selection.effort ?? null,
+				selection.permissionMode ?? null,
+			],
+		));
+		if (changes > 0) {
+			db.run(`INSERT INTO session_search (session_id, text) VALUES (?, ?)`, [
+				id,
+				normalizeSearchText(label),
+			]);
+		}
+	})();
 	if (changes > 0) {
 		markAnalyticsChanged(["stats", "activity"], "session_created");
 	}
@@ -387,8 +397,10 @@ function buildSessionFilter(
 			.replace(/\\/g, "\\\\")
 			.replace(/%/g, "\\%")
 			.replace(/_/g, "\\_");
-		conditions.push(`label LIKE ? ESCAPE '\\'`);
-		params.push(`%${escaped}%`);
+		conditions.push(
+			`EXISTS (SELECT 1 FROM session_search search_idx WHERE search_idx.session_id = sessions.id AND search_idx.text LIKE ? ESCAPE '\\')`,
+		);
+		params.push(`%${normalizeSearchText(escaped)}%`);
 	}
 	if (opts.agent === "vault") {
 		conditions.push("(agent_cwd IS NULL OR TRIM(agent_cwd) = '')");
@@ -558,10 +570,20 @@ export async function deleteSessionsOlderThan(
 
 export async function renameSession(id: string, label: string): Promise<void> {
 	const db = await getDb();
-	const { changes } = db.run(`UPDATE sessions SET label = ? WHERE id = ?`, [
-		label,
-		id,
-	]);
+	let changes = 0;
+	db.transaction(() => {
+		({ changes } = db.run(`UPDATE sessions SET label = ? WHERE id = ?`, [
+			label,
+			id,
+		]));
+		if (changes > 0) {
+			db.run(
+				`INSERT INTO session_search (session_id, text) VALUES (?, ?)
+				 ON CONFLICT(session_id) DO UPDATE SET text = excluded.text`,
+				[id, normalizeSearchText(label)],
+			);
+		}
+	})();
 	if (changes > 0) markAnalyticsChanged(["stats"], "session_renamed");
 }
 
