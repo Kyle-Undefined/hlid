@@ -853,6 +853,23 @@ async function handleMessage(
 		return;
 	}
 	if (handleRoutingMessage(context, msg)) return;
+	if (msg.type === "sync") {
+		const subscribedSessionId = context.ws.data.subscribedSessionId;
+		const subscribedEntry =
+			context.pool.get(subscribedSessionId) ??
+			context.pool.findByDbSessionId(subscribedSessionId);
+		if (!subscribedEntry) {
+			// Raven syncs immediately after archived history finishes loading. Keep
+			// that DB-only chat detached and idle instead of routing the sync through
+			// the live vault fallback, whose running state can make the archive look
+			// permanently hung.
+			await handleSubscribeSession(context, {
+				type: "subscribe_session",
+				session_id: subscribedSessionId,
+			});
+			return;
+		}
+	}
 	const requestedSettingsSession =
 		(msg.type === "set_provider" ||
 			msg.type === "set_model" ||

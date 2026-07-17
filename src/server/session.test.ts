@@ -102,6 +102,7 @@ import type {
 	McpServerStatus,
 } from "./agentProvider";
 import { loadConfig } from "./config";
+import { resolveExecutionContext } from "./executionContext";
 import type { RateLimitMessage, ServerMessage } from "./protocol";
 import { getWindowMark } from "./proxy";
 import { generateTurnRecap } from "./recap";
@@ -2704,6 +2705,34 @@ describe("SessionManager — provider resolution", () => {
 			model: "inherit",
 			effort: "medium",
 		});
+	});
+
+	it("translates Windows sandbox roots for a WSL-backed Codex session", async () => {
+		vi.mocked(resolveExecutionContext).mockReturnValueOnce({
+			activeCwd:
+				"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\development\\repos\\seidr",
+			extraDirs: new Set(["C:\\Users\\kyleu\\Documents\\Obsidian\\Fornbok"]),
+			executable: "C:\\Users\\kyleu\\AppData\\Local\\Hlid\\wrappers\\codex.cmd",
+		});
+		const { provider, captured } = makeCaptureProvider("codex");
+		const config = {
+			...makeConfig("gpt-5.6-sol"),
+			vault_provider: "codex",
+			codex: {
+				model: "gpt-5.6-sol",
+				effort: "low",
+				permission_mode: "default",
+				turn_recaps: false,
+			},
+		} as HlidConfig;
+		const sm = new SessionManager(config, makeProviders(provider));
+
+		await sm.runQuery("CU isolation test", () => {}, "wsl-codex-default");
+
+		expect(captured.params?.permissionMode).toBe("default");
+		expect(captured.params?.additionalDirectories).toEqual([
+			"/mnt/c/Users/kyleu/Documents/Obsidian/Fornbok",
+		]);
 	});
 });
 

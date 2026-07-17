@@ -14,6 +14,16 @@ export const CONFIG_PATH = resolve(APP_DIR, "hlid.config.toml");
 
 const isWindows = process.platform === "win32";
 
+function parseWslUncSyntax(
+	p: string,
+): { distro: string; posixPath: string } | null {
+	const m = p.match(/^\\\\(?:wsl\$|wsl\.localhost)\\([^\\]+)\\(.*)$/i);
+	if (!m) return null;
+	const distro = m[1];
+	const rest = m[2].replace(/\\/g, "/");
+	return { distro, posixPath: `/${rest}` };
+}
+
 export function expandTilde(p: string): string {
 	if (p === "~") return homedir();
 	if (p.startsWith("~/") || p.startsWith("~\\"))
@@ -53,11 +63,7 @@ export function parseWslUnc(
 	p: string,
 ): { distro: string; posixPath: string } | null {
 	if (!isWindows) return null;
-	const m = p.match(/^\\\\(?:wsl\$|wsl\.localhost)\\([^\\]+)\\(.*)$/i);
-	if (!m) return null;
-	const distro = m[1];
-	const rest = m[2].replace(/\\/g, "/");
-	return { distro, posixPath: `/${rest}` };
+	return parseWslUncSyntax(p);
 }
 
 // Translate a host-fs path into the form an in-WSL process expects.
@@ -68,4 +74,20 @@ export function parseWslUnc(
 export function toLogical(p: string): string {
 	const parsed = parseWslUnc(p);
 	return parsed ? parsed.posixPath : p;
+}
+
+/**
+ * Translate a host path for the provider process that owns `runtimeCwd`.
+ * A WSL-backed CLI needs both WSL UNC paths and Windows drive paths expressed
+ * in Linux form; native Windows and ordinary POSIX runtimes keep host paths.
+ */
+export function toProviderRuntimePath(runtimeCwd: string, p: string): string {
+	if (!parseWslUncSyntax(runtimeCwd)) return p;
+	const wslPath = parseWslUncSyntax(p);
+	if (wslPath) return wslPath.posixPath;
+	const drivePath = p.match(/^([A-Za-z]):[\\/](.*)$/);
+	if (!drivePath) return p;
+	const drive = drivePath[1].toLowerCase();
+	const rest = drivePath[2].replace(/\\/g, "/");
+	return rest ? `/mnt/${drive}/${rest}` : `/mnt/${drive}`;
 }

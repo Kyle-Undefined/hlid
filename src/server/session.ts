@@ -4,7 +4,12 @@ import type { ToolCall } from "@umbod/core";
 import type { HlidConfig } from "../config";
 import * as db from "../db";
 import { resolveClaudeExecutable } from "../lib/claudePath";
-import { expandTilde, pathStartsWith, toLogical } from "../lib/paths";
+import {
+	expandTilde,
+	pathStartsWith,
+	toLogical,
+	toProviderRuntimePath,
+} from "../lib/paths";
 import { SESSION_LABEL_LENGTH } from "../lib/utils";
 import {
 	computeAllowedAgentRealPaths,
@@ -226,7 +231,9 @@ function buildAgentQueryParams(options: {
 		sessionId: options.resumeProviderSessionId ?? undefined,
 		additionalDirectories:
 			options.extraDirs.size > 0
-				? Array.from(options.extraDirs).map(toLogical)
+				? Array.from(options.extraDirs).map((path) =>
+						toProviderRuntimePath(options.activeCwd, path),
+					)
 				: undefined,
 		signal: options.signal,
 		model:

@@ -10,6 +10,7 @@ import {
 	pathStartsWith,
 	samePath,
 	toLogical,
+	toProviderRuntimePath,
 } from "./paths";
 
 // ── CONFIG_PATH ───────────────────────────────────────────────────────────────
@@ -131,5 +132,36 @@ describe("toLogical", () => {
 		if (process.platform !== "win32") {
 			expect(toLogical("C:\\Users\\kyle")).toBe("C:\\Users\\kyle");
 		}
+	});
+});
+
+// ── toProviderRuntimePath ────────────────────────────────────────────────────
+
+describe("toProviderRuntimePath", () => {
+	const wslRuntime =
+		"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\development\\repos\\seidr";
+
+	it("maps a Windows drive root into the WSL mount namespace", () => {
+		expect(
+			toProviderRuntimePath(
+				wslRuntime,
+				"C:\\Users\\kyleu\\Documents\\Obsidian\\Fornbok",
+			),
+		).toBe("/mnt/c/Users/kyleu/Documents/Obsidian/Fornbok");
+	});
+
+	it("maps WSL UNC roots to their POSIX paths", () => {
+		expect(
+			toProviderRuntimePath(
+				wslRuntime,
+				"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\shared",
+			),
+		).toBe("/home/kyle/shared");
+	});
+
+	it("keeps host paths unchanged for native runtimes", () => {
+		const path = "C:\\Users\\kyleu\\project";
+		expect(toProviderRuntimePath("C:\\Users\\kyleu\\project", path)).toBe(path);
+		expect(toProviderRuntimePath("/home/kyle/project", path)).toBe(path);
 	});
 });

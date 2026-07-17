@@ -663,6 +663,40 @@ describe("message — subscribe_session", () => {
 			permission_mode: "bypassPermissions",
 		});
 	});
+
+	it("keeps an archived session idle when history loading sends sync", async () => {
+		const vault = makeEntry("vault-id");
+		vault.manager.getStatus.mockReturnValue({
+			state: "running",
+			model: "vault-model",
+			effort: "high",
+			permission_mode: "bypassPermissions",
+		});
+		const pool = makePool(vault);
+		pool.get.mockImplementation((id: string) =>
+			id === "vault-id" ? vault : undefined,
+		);
+		mockGetSessionSelection.mockResolvedValueOnce({
+			agentCwd: "/tmp",
+			providerId: "codex",
+			model: "archived-model",
+			effort: "medium",
+			permissionMode: "default",
+		});
+		const { message } = createWsHandlers(pool);
+		const ws = makeWs("archived-db-id");
+
+		await message(ws as never, JSON.stringify({ type: "sync" }));
+
+		expect(mockSend).toHaveBeenCalledWith(ws, {
+			type: "status",
+			state: "idle",
+			model: "archived-model",
+			effort: "medium",
+			permission_mode: "default",
+		});
+		expect(vault.manager.getQueueState).not.toHaveBeenCalled();
+	});
 });
 
 // ── stop_session ──────────────────────────────────────────────────────────────
