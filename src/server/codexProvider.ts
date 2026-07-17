@@ -126,6 +126,15 @@ const WINDOWS_COMPUTER_USE_TOOL = "windows_computer_use";
 const DEFAULT_WINDOWS_COMPUTER_USE_MODEL = "gpt-5.4";
 const DEFAULT_WINDOWS_COMPUTER_USE_EFFORT = "medium";
 
+type WindowsComputerUseResult = {
+	text: string;
+	threadId: string;
+	usage: CanonicalTokenUsage;
+	turns: number;
+	durationMs: number;
+	estimatedCost?: number | null;
+};
+
 export function windowsComputerUseModel(
 	override: string | undefined = process.env.HLID_WINDOWS_COMPUTER_USE_MODEL,
 ): string {
@@ -1194,15 +1203,17 @@ class CodexAgentSession implements AgentSession {
 				input: { task },
 			});
 			void this.runWindowsComputerUse(task, undefined, toolId)
-				.then(({ text, threadId }) => {
+				.then(({ text, threadId, usage, turns, durationMs, estimatedCost }) => {
 					const result = `Windows Computer Use thread ${threadId}\n\n${text || "Task completed without a text summary."}`;
 					this.events.push({ type: "tool_result", toolId, content: result });
 					this.events.push({ type: "text_delta", text: result });
 					this.events.push({
 						type: "done",
-						turns: 1,
-						durationMs: 0,
+						turns,
+						durationMs,
 						stopReason: "end_turn",
+						usage,
+						estimatedCost,
 					});
 				})
 				.catch((error) => {
@@ -1492,7 +1503,7 @@ class CodexAgentSession implements AgentSession {
 		task: string,
 		context: string | undefined,
 		toolId: string,
-	): Promise<{ text: string; threadId: string }> {
+	): Promise<WindowsComputerUseResult> {
 		const executable = resolveCodexExecutable();
 		if (!windowsComputerUseHostAvailable(process.platform, executable)) {
 			throw new Error(
@@ -1552,7 +1563,7 @@ class CodexAgentSession implements AgentSession {
 		);
 		let text = "";
 		let threadId = "";
-		let completed = false;
+		let completion: Extract<AgentEvent, { type: "done" }> | null = null;
 		try {
 			const prompt = [
 				"You are a Windows-native Codex Computer Use worker delegated by Hlid.",
@@ -1587,12 +1598,12 @@ class CodexAgentSession implements AgentSession {
 					};
 					this.emitSubagentUpdate(toolId, snapshot);
 				} else if (event.type === "done") {
-					completed = event.stopReason !== "error";
+					completion = event;
 				}
 			}
 			if (!threadId)
 				throw new Error("Windows Codex did not return a thread id");
-			if (!completed)
+			if (!completion || completion.stopReason === "error")
 				throw new Error(text || "Windows Computer Use did not complete");
 			if (!text.trim())
 				throw new Error(
@@ -1612,6 +1623,15 @@ class CodexAgentSession implements AgentSession {
 					? `Configuration note: ${resolved.notice}\n\n${text.trim()}`
 					: text.trim(),
 				threadId,
+				usage: {
+					inputTokens: completion.usage?.inputTokens ?? 0,
+					outputTokens: completion.usage?.outputTokens ?? 0,
+					cacheReadTokens: completion.usage?.cacheReadTokens ?? 0,
+					cacheCreationTokens: completion.usage?.cacheCreationTokens ?? 0,
+				},
+				turns: completion.turns,
+				durationMs: completion.durationMs,
+				estimatedCost: completion.estimatedCost,
 			};
 		} catch (error) {
 			snapshot = {
@@ -1668,6 +1688,8 @@ class CodexAgentSession implements AgentSession {
 		);
 		try {
 			const result = await this.runWindowsComputerUse(task, context, toolId);
+			this.addQueryUsage(result.usage);
+			this.queryTurns += result.turns;
 			return {
 				success: true,
 				contentItems: [

@@ -947,6 +947,15 @@ async function nextSessionEvent(
 	return result.value;
 }
 
+async function nextDoneEvent(
+	iterator: AsyncIterator<AgentEvent>,
+): Promise<Extract<AgentEvent, { type: "done" }>> {
+	for (;;) {
+		const event = await nextSessionEvent(iterator);
+		if (event.type === "done") return event;
+	}
+}
+
 function baseCodexParams(
 	overrides: Partial<AgentQueryParams> = {},
 ): AgentQueryParams {
@@ -1004,6 +1013,72 @@ describe("CodexAgentSession — commands", () => {
 			delivery: "inline",
 		});
 		session.cancel();
+	});
+
+	it("forwards native usage from direct Computer Use commands", async () => {
+		const platform = vi
+			.spyOn(process, "platform", "get")
+			.mockReturnValue("win32");
+		vi.stubEnv("HLID_WINDOWS_COMPUTER_USE_CWD", "/tmp/hlid-computer-use-test");
+		try {
+			const parent = makeFakeSessionProc({
+				skills: [{ name: "computer-use:computer-use" }],
+			});
+			const child = makeFakeSessionProc({
+				skills: [{ name: "computer-use:computer-use" }],
+			});
+			vi.mocked(spawn)
+				.mockReturnValueOnce(parent.proc as never)
+				.mockReturnValueOnce(child.proc as never);
+			vi.mocked(resolveCodexExecutable).mockReturnValue("C:\\bin\\codex.exe");
+
+			const session = new CodexProvider().query(baseCodexParams());
+			const events = session[Symbol.asyncIterator]();
+			await session.executeCommand?.("computer-use", "Open Calculator");
+			await vi.waitFor(() =>
+				expect(threadStartParams(child.writes)).toHaveLength(1),
+			);
+
+			emitSessionNotification(child.proc, "item/completed", {
+				threadId: "thread-1",
+				item: {
+					id: "computer-use-result",
+					type: "agentMessage",
+					text: "Calculator opened.",
+				},
+			});
+			emitSessionNotification(child.proc, "thread/tokenUsage/updated", {
+				threadId: "thread-1",
+				usage: {
+					inputTokens: 120,
+					cachedInputTokens: 40,
+					outputTokens: 30,
+				},
+			});
+			emitSessionNotification(child.proc, "turn/completed", {
+				threadId: "thread-1",
+				turn: { id: "turn-1", status: "completed" },
+			});
+
+			const done = await nextDoneEvent(events);
+			expect(done).toMatchObject({
+				type: "done",
+				turns: 1,
+				durationMs: 0,
+				stopReason: "end_turn",
+				usage: {
+					inputTokens: 80,
+					outputTokens: 30,
+					cacheReadTokens: 40,
+					cacheCreationTokens: 0,
+				},
+			});
+			expect(done.estimatedCost).toBeGreaterThan(0);
+			session.cancel();
+		} finally {
+			vi.unstubAllEnvs();
+			platform.mockRestore();
+		}
 	});
 
 	it("advertises the namespaced dynamic tool and slash command on Windows", async () => {
@@ -1159,6 +1234,14 @@ describe("CodexAgentSession — commands", () => {
 					text: "Calculator opened.",
 				},
 			});
+			emitSessionNotification(child.proc, "thread/tokenUsage/updated", {
+				threadId: "thread-1",
+				usage: {
+					inputTokens: 120,
+					cachedInputTokens: 40,
+					outputTokens: 30,
+				},
+			});
 			emitSessionNotification(child.proc, "turn/completed", {
 				threadId: "thread-1",
 				turn: { id: "turn-2", status: "completed" },
@@ -1169,6 +1252,28 @@ describe("CodexAgentSession — commands", () => {
 					.map((line) => JSON.parse(line))
 					.find((message) => message.id === 82);
 				expect(response?.result).toMatchObject({ success: true });
+			});
+			emitSessionNotification(parent.proc, "thread/tokenUsage/updated", {
+				threadId: "thread-1",
+				usage: {
+					inputTokens: 50,
+					cachedInputTokens: 20,
+					outputTokens: 10,
+				},
+			});
+			emitSessionNotification(parent.proc, "turn/completed", {
+				threadId: "thread-1",
+				turn: { id: "turn-1", status: "completed" },
+			});
+			expect(await nextDoneEvent(events)).toMatchObject({
+				type: "done",
+				turns: 2,
+				usage: {
+					inputTokens: 110,
+					outputTokens: 40,
+					cacheReadTokens: 60,
+					cacheCreationTokens: 0,
+				},
 			});
 			expect(
 				child.writes
