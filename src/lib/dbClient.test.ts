@@ -70,6 +70,31 @@ describe("internal API client", () => {
 		expect(warn).toHaveBeenCalledTimes(1);
 	});
 
+	it("aborts a stalled read and returns the fallback", async () => {
+		vi.useFakeTimers();
+		try {
+			const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+			fetchMock.mockImplementationOnce((_url, init) => {
+				return new Promise<Response>((_resolve, reject) => {
+					init?.signal?.addEventListener(
+						"abort",
+						() => reject(init.signal?.reason),
+						{ once: true },
+					);
+				});
+			});
+			const pending = dbJson("/db/stalled", { value: 0 });
+			await vi.advanceTimersByTimeAsync(5_000);
+			await expect(pending).resolves.toEqual({ value: 0 });
+			expect(fetchMock.mock.calls[0][1]?.signal).toBeInstanceOf(AbortSignal);
+			expect(warn).toHaveBeenCalledWith(
+				expect.stringContaining("internal API read timed out after 5000ms"),
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("requires mutation responses to succeed", async () => {
 		const ok = Response.json({ ok: true });
 		await expect(requireDbOk(ok, "save item")).resolves.toBe(ok);

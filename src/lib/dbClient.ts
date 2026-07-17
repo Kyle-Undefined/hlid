@@ -3,6 +3,7 @@ import { safeRequestPath } from "./httpDiagnostics";
 
 let _base: string | null = null;
 const SOFT_FAILURE_DEDUP_MS = 30_000;
+const INTERNAL_API_READ_TIMEOUT_MS = 5_000;
 const REQUEST_ID_HEADER = "x-hlid-request-id";
 const softFailureTimes = new Map<string, number>();
 
@@ -94,9 +95,20 @@ export async function requireDbOk(
 export async function dbJson<T>(path: string, fallback: T): Promise<T> {
 	const startedAt = performance.now();
 	const currentRequestId = requestId();
+	const abort = new AbortController();
+	const timeout = setTimeout(
+		() =>
+			abort.abort(
+				new Error(
+					`internal API read timed out after ${INTERNAL_API_READ_TIMEOUT_MS}ms`,
+				),
+			),
+		INTERNAL_API_READ_TIMEOUT_MS,
+	);
 	try {
 		const res = await dbFetch(path, {
 			headers: { [REQUEST_ID_HEADER]: currentRequestId },
+			signal: abort.signal,
 		});
 		if (!res.ok) {
 			reportSoftFailure(
@@ -126,6 +138,8 @@ export async function dbJson<T>(path: string, fallback: T): Promise<T> {
 			currentRequestId,
 		);
 		return fallback;
+	} finally {
+		clearTimeout(timeout);
 	}
 }
 

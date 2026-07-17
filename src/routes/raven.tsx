@@ -71,6 +71,7 @@ import {
 	responsiveComposerMaxHeight,
 } from "#/lib/composer";
 import { deriveModelMismatch, fmtModel } from "#/lib/formatters";
+import { loaderValueOrFallback } from "#/lib/loaderFallback";
 import { mapMcpServer } from "#/lib/mcp";
 import {
 	effortOptionsFor,
@@ -112,20 +113,7 @@ function optionalRavenLoaderValue<T>(
 	read: Promise<T>,
 	fallback: T,
 ): Promise<T> {
-	return new Promise((resolve) => {
-		let settled = false;
-		const finish = (value: T) => {
-			if (settled) return;
-			settled = true;
-			clearTimeout(timer);
-			resolve(value);
-		};
-		const timer = setTimeout(
-			() => finish(fallback),
-			RAVEN_OPTIONAL_LOADER_WAIT_MS,
-		);
-		void read.then(finish, () => finish(fallback));
-	});
+	return loaderValueOrFallback(read, fallback, RAVEN_OPTIONAL_LOADER_WAIT_MS);
 }
 
 function interactiveModeForAgent(
