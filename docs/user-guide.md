@@ -1,314 +1,416 @@
 # Hlið user guide
 
-Hlið is a local web interface for working with an Obsidian vault through Claude,
-Codex, or another installed Agent Client Protocol provider. This guide covers
-the packaged Windows app. For source development, see the contributor section
-in the [README](../README.md#contributor-setup).
+`Hlið` is a local web UI for working with an `Obsidian` vault through `Claude`,
+`Codex`, or another installed `Agent Client Protocol` provider. This guide is
+for the packaged `Windows` app. If you are running from source, the
+[README](../README.md#working-from-source) has the setup and validation commands.
 
 ## Install and first launch
 
 1. Download the current `hlid-vX.Y.Z-windows-x64.exe` from
    [GitHub Releases](https://github.com/Kyle-Undefined/hlid/releases/latest).
-2. Run the executable. Hlið is currently unsigned, so Windows may display a
-   SmartScreen warning. Review the publisher and filename, choose **More info**,
-   and then **Run anyway** if you trust the release.
-3. The downloaded executable installs the canonical copy at
+2. Run it. `Hlið` is currently unsigned, so `Windows SmartScreen` may get in
+   the way. Check the filename, choose **More info**, then **Run anyway** if you
+   trust the release.
+3. The downloaded executable installs the real copy at
    `%LOCALAPPDATA%\Hlid\hlid.exe`, refreshes the **Hlið** Start Menu shortcut,
-   starts the service, and opens `http://127.0.0.1:3000` in your browser.
+   starts the service, and opens `http://127.0.0.1:3000`.
 
-Future launches should use the Start Menu shortcut. Starting Hlið again while
-it is already running simply opens the existing interface. Autostart is
-optional and can be enabled later in Forge.
+Use the Start Menu shortcut after that. Running `Hlið` again while it is already
+up just opens the existing interface. Autostart is optional and lives in
+`Forge`.
 
 ### Create the app password
 
-The first browser on the Hlið machine displays **Create app password**. The
-password must contain 12–256 characters; Hlið does not require a particular mix
-of uppercase letters, numbers, or symbols.
+The first browser on the `Hlið` machine shows **Create app password**. Use
+12–256 characters. There is no uppercase, number, or symbol checklist.
 
-Initial password creation is allowed only from the host machine. After setup,
-other trusted devices can sign in over the configured HTTPS endpoint. A login
-remains trusted for 30 days unless you lock that browser, change the password,
-or revoke every device in Forge.
+Initial setup only works from the host machine. Once that is done, other trusted
+devices can sign in over the `HTTPS` endpoint. A browser stays trusted for 30
+days unless you lock it, change the password, or revoke every device in `Forge`.
 
 ![First-run vault selection and structure setup](images/first-run-vault-setup.png)
 
-*Select the local Obsidian vault that Hlið should use, then review the detected structure.*
+*Pick the local `Obsidian` vault, then make sure the detected structure actually matches it.*
 
 ## Connect a vault
 
-The first-run wizard walks through five short stages:
+The first-run wizard has five small steps:
 
-1. **Welcome** explains the application's page names.
-2. **Vault** selects an existing local Obsidian vault. Hidden folders are not
-   shown in the folder picker.
-3. **Structure** detects either a PARA or wiki-style layout and pre-fills known
-   folders. Review the vault name, folder mappings, provider permission mode,
-   and theme before saving. Empty optional mappings are allowed.
-4. **Primer** explains how Hlið works with the vault and its skills.
-5. **Done** opens the main interface.
+1. **Welcome** explains the page names.
+2. **Vault** picks an existing local `Obsidian` vault. Hidden folders stay out
+   of the folder picker.
+3. **Structure** detects a `PARA` or wiki-style layout and fills in the folders
+   it recognizes. Check the vault name, folder mappings, available default
+   provider, that provider's permission mode, and the theme. Empty optional
+   mappings are fine.
+4. **Primer** explains how `Hlið`, the vault, and its skills fit together.
+5. **Done** opens the app.
 
-The wizard writes `hlid.config.toml` beside the installed executable. You can
-later change the same settings under **FORGE → Workspace**. A moved, renamed, or
-inaccessible vault path must be corrected there before vault pages can load.
+The wizard writes `hlid.config.toml` beside the installed executable. The same
+settings live under **FORGE → Workspace** later. If the vault gets moved,
+renamed, or disconnected, fix the path there before wondering why the vault
+pages are empty.
 
-## Your first session
+## Run the first session
 
-Open **RAVEN** and choose the provider you want to use. The provider must already
-be available and authenticated in its configured runtime (Windows or a configured
-WSL wrapper). Select an existing session or create a new one, optionally load a
-vault or global skill, then send a prompt.
+Open **RAVEN** and pick a provider. That provider needs to exist and already be
+authenticated in its configured runtime, either native `Windows` or a `WSL`
+wrapper.
+
+Pick an old session or start a new one. Typing `/` opens the shared command
+picker, where vault skills, global skills, and provider-native commands live
+together. Compatible commands can be stacked. Their badges stay above the
+composer until they are removed or run.
 
 ![Raven conversation showing agent output and tool activity](images/raven-tool-activity.png)
 
-*Tool calls and their results remain inline with the conversation so you can inspect what the agent did.*
+*Tool calls stay in the conversation. No mystery spinner while the agent does who knows what.*
 
-While an agent is working:
+While a run is active:
 
-- Tool activity appears inline and can be expanded or collapsed.
-- A tool requiring approval displays a permission card. Approve it for the
-  current session or save the approval locally; a denial can include feedback.
-- Sending another prompt queues it. The queued item appears in the conversation
-  and can be canceled before it runs.
-- Agent questions appear as inline choices with an optional note field.
-- Plan mode presents a plan for approval, revision, or cancellation before the
-  implementation turn. The optional HTML toggle opens agent-authored plans in a
+- Tool calls show up inline and can be expanded when the details matter.
+- Permission cards can approve once, approve for the session, save a permanent
+  approval, or deny with feedback.
+- Another prompt gets queued instead of interrupting the current turn. It can
+  be promoted or canceled before it runs.
+- Agent questions show their choices inline, with a note field when the buttons
+  do not quite cover the answer.
+- Plan mode waits for approval, revisions, or cancellation before the
+  implementation turn. The `HTML` toggle opens an agent-authored plan in the
   sandboxed viewer.
-- Supported providers show subagent progress inline, including status, current
-  step, runtime, and usage details.
-- The copy action on a message copies its rendered text.
+- Supported providers show subagent status, current work, runtime, and usage.
+- Long chats load the newest history first. **LOAD OLDER HISTORY** pulls in the
+  earlier turns without jumping the scroll position around.
+- Agent output can render tables, alerts, highlighted text, `Mermaid`, and
+  `LaTeX` math using `$...$`, `$$...$$`, `\(...\)`, or `\[...\]`.
+- The message copy button copies the rendered text.
 
-Drag files onto the composer or use its attachment control before sending.
-Uploads can be temporary for that session or persistent vault attachments.
+Files can be dropped onto the composer or added with the attachment button.
+Uploads can stay temporary for one session or become managed vault attachments.
 
-## Page guide
+## The pages
 
 ### Watch
 
 ![Watch overview with activity, sessions, and skills](images/watch-overview.png)
 
-*Watch is the landing page for recent work and quick vault context.*
+*`Watch` is the landing page and the fastest way to throw work at an agent.*
 
-**WATCH** is both the landing dashboard and the quickest way to start work. Its
-composer can run a prompt or discovered vault/global skill, target a registered
-agent, attach files, use voice input, continue the current session, or leave the
-run in the background. It also shows live session state, provider usage, recent
-query cost, seven- and thirty-day activity, MCP status, and recent sessions.
+**WATCH** runs a prompt or a compatible mix of vault, global, and
+provider-native slash commands. It can target a registered agent, attach files,
+use voice input, continue the current session, or send the run into the
+background.
+
+The rest of the page keeps live session state, provider usage, recent query
+cost, seven- and thirty-day activity, the active provider's `MCP` status, and
+recent sessions in view. The draft survives navigation and refreshes until it
+is run or cleared. Small thing, but boy does losing a half-written prompt get
+old fast.
 
 ### Raven
 
-**RAVEN** is the main agent workspace. It combines conversation history,
-session/provider selection, skills, attachments, voice input, tool activity,
-permission requests, agent questions, plan review, subagent activity, and queued
-follow-ups. The model menu also exposes provider-supported model, effort, and
-permission choices.
+**RAVEN** is the full agent workspace. Conversation history, provider controls,
+slash commands, attachments, voice, tools, permissions, questions, plans,
+subagents, and queued follow-ups all live here.
 
-Use the **Plan** composer toggle when the agent should propose work before
-implementing it. Enable **HTML** alongside it for a styled plan preview; approve,
-cancel, or send revision feedback from the same plan card or viewer.
+The badge above the composer changes the provider, model, effort, and permission
+mode for that chat. Those choices stick to the session. So do the selected
+agent, queued prompts, and unsent draft. Navigating away or refreshing the page
+does not reset the whole thing back to whatever the vault default happens to be.
+
+`Codex` skills can be composed with each other. `Claude` accepts up to six
+compatible selections. An `ACP` session accepts one provider-native prompt
+command at a time, but that command can still use vault skills. Switching the
+active CLI drops commands that belong to the old provider instead of quietly
+sending nonsense to the new one.
+
+Turn on **Plan** when the agent should figure out the work before touching it.
+Turn on **HTML** beside it for the full styled plan. Approval, cancellation, and
+revision feedback all happen from the plan card or viewer.
 
 The **Terminal** toggle opens a real login shell in the current vault or
-registered-agent directory. Desktop layouts show it in a split panel below the
-chat; mobile layouts switch between Chat and Terminal tabs. Closing the terminal
-disconnects and ends that shell. If Claude interactive mode is enabled in Forge,
-Raven uses the Claude CLI in a full terminal instead of the structured chat
-timeline.
+registered-agent directory. Desktop puts it below the chat. Mobile switches
+between Chat and Terminal tabs. Toggling the terminal off ends the shell, but
+normal site navigation only detaches the browser. Come back to that chat and
+the shell is still there.
+
+If interactive `Claude` mode is enabled in `Forge`, `Raven` becomes a full
+`Claude CLI` terminal instead of the structured timeline.
 
 ![Raven conversation adapted to a mobile display](images/raven-mobile.png)
 
-*The same session controls and conversation are available from the responsive mobile interface.*
+*Same session and controls, just fitted to the smaller screen without turning into button soup.*
 
 ### Vault
 
 ![Vault browser showing configured note and project groupings](images/vault-browser.png)
 
-*Vault follows the folder mappings and status vocabulary selected during setup.*
+*`Vault` follows the folders and status words picked during setup.*
 
 **VAULT** browses the configured note, project, memory, and skill directories.
-Project grouping uses YAML front matter and the custom status vocabulary in
-your configuration rather than imposing fixed project labels.
+Projects come from `YAML` front matter and the status vocabulary in
+`hlid.config.toml`. `Hlið` does not impose its own project statuses on the
+vault.
+
+Text search ignores case and accents, so `Hlid` still matches `Hlið`. The same
+normalization is used by `Relics`, `Ledger`, `Forge`, and the slash-command
+picker.
 
 ### Relics
 
 ![Relics attachment management view](images/relics-attachments.png)
 
-*Relics searches and filters the files that have moved through Hlið sessions.*
+*`Relics` is everything that has moved through a `Hlið` session as a file.*
 
-**RELICS** manages attachments. Ephemeral files belong to the session in which
-they were uploaded; vault attachments persist in the configured vault. Search
-by filename or narrow the list by date. Deleting a vault attachment removes the
-managed record by default; deleting the source file is a separate opt-in Forge
-setting.
+**RELICS** manages attachments. Ephemeral files belong to the session that
+uploaded them. Vault attachments stay in the configured attachment folder.
+
+Filename search updates while you type. The list can be filtered by date,
+`MIME` group, or owning session, then sorted by size or creation time. If a new
+upload lands while the page is open, a **NEW RELICS** pill appears instead of
+yanking the list back to page one. Desktop gets the full table, while mobile
+uses compact cards.
+
+Deleting a vault attachment normally removes its managed record. Deleting the
+source file too is a separate opt-in setting in `Forge`, because those are two
+very different levels of "clean up."
 
 ### Ledger
 
-**LEDGER** reports token usage, query cost, cache behavior, context-window use,
-tool activity, and supported provider limit windows. It also manages session
-names and old session records.
+**LEDGER** has two views: **Sessions** and **Stats**.
+
+**Sessions** puts live processes above the recorded session list. Search labels
+as you type, filter by agent or model, and sort by recent activity, cost, or
+tokens. A drill-down from `Stats` carries its date, provider, model, or stop
+reason filters into the list.
+
+The overflow menu exports every session as `CSV` or `JSON`. It can also remove
+records older than 7, 30, or 90 days when the database actually has sessions
+that old. A row menu handles one rename or delete. Imported history rows are
+accounting-only, so they stay read-only and cannot be opened as chats.
+
+**Stats** filters by date range, agent, provider, and model. It breaks down cost,
+priced coverage, input/output/cache tokens, activity, model share, tool use,
+tool errors, stop reasons, and time-of-day patterns. Pick a model or stop-reason
+segment to drill into the matching sessions.
+
+Privacy mode masks the headline totals, sensitive chart labels, session names,
+and paths. Handy when a screenshot is the goal and leaking the whole workspace
+is not.
 
 ### Einherjar
 
-**EINHERJAR** registers other agent directories. A `context` entry loads either
-`AGENTS.md` or `CLAUDE.md` as a personality/instruction overlay while keeping
-the vault as the working directory. When both exist, `AGENTS.md` takes
-precedence because it is the provider-neutral ACP contract; `CLAUDE.md` remains
-the compatibility fallback. A `cwd` entry runs the agent from the registered
-directory. Paths outside the vault require the external-agent option in Forge.
+**EINHERJAR** adds other agent directories. A `context` entry loads `AGENTS.md`
+or `CLAUDE.md` as an instruction/personality overlay while keeping the vault as
+the working directory. If both files exist, `AGENTS.md` wins because it is the
+provider-neutral `ACP` contract. `CLAUDE.md` stays as the compatibility
+fallback.
+
+A `cwd` entry runs the agent from the registered directory instead. Paths
+outside the vault need the external-agent switch in `Forge`.
 
 ### Forge
 
 ![Forge overview and category navigation](images/forge-overview.png)
 
-*Forge groups settings by task and marks changes that need a restart.*
+*`Forge` groups settings by what you are trying to change, not by whichever config object owns it.*
 
-**FORGE** is organized into task-focused categories:
+**FORGE** is split into these categories:
 
-- **Overview** summarizes the current configuration and service state.
-- **Workspace** configures the vault, folder mappings, and vocabulary.
-- **Agents** configures the default provider, model, effort, permissions, usage
-  limits, recaps, and automatic usage-window sleep/resume behavior.
-- **Access** contains network, TLS, password, and trusted-device settings.
-- **Experience** controls themes, input behavior, HTML-plan defaults, voice, and
-  browser-local privacy mode.
-- **Integrations** manages MCP servers, Umbod tool policy, and the ACP catalog.
+- **Overview** shows the current config and service state.
+- **Workspace** holds the vault, folder mappings, and vocabulary.
+- **Agents** holds provider, model, effort, permissions, usage limits, recaps,
+  automatic usage-window sleep/resume behavior, and `Codex Computer Use`
+  defaults when the Windows capability exists.
+- **Access** has network, `TLS`, password, and trusted-device settings.
+- **Experience** has built-in or custom desktop/mobile themes, input behavior,
+  `HTML` plan defaults, voice, and browser-local privacy mode.
+- **Integrations** manages `MCP`, `Umbod`, and the `ACP` catalog.
 - **Developer** switches between the event log, local API reference, and pricing
   catalog.
-- **Advanced** contains database maintenance, provider-session reload, restart,
-  and shutdown controls.
+- **Advanced** has database maintenance, provider-session reload, restart, and
+  shutdown controls.
 
-Most edits save automatically. A visible restart marker means the server must
-restart before the new value applies; server, ACP, and Umbod configuration
-changes currently set that marker. MCP edits are synchronized to the live vault
-session. Reload a provider session after changing the working context it should
-receive; reloading clears that live provider conversation while its recorded
-Ledger history remains available.
+Most edits autosave. The header shows whether the form is saving, dirty, saved,
+or waiting on a restart. Server, `ACP`, and `Umbod` changes are the main things
+that set the restart marker. If a save or system inventory call fails, the same
+header has a retry action.
 
-Developer → Pricing shows Hlið's read-only built-in model and alias timelines
-and edits `pricing-overrides.toml`. Local model rates or aliases can be bounded
-with UTC `effective_from` and `effective_until` dates, so a moving label such as
-`codex-auto-review` can change without an application update. Saving validates
-the whole file before replacing it. Existing priced Ledger rows remain frozen;
-new fallback estimates use the rule active at the query timestamp.
+The search box filters whole setting categories. `MCP` edits sync into the live
+vault session. Working-context changes still need a provider-session reload,
+which clears the live provider conversation but leaves its recorded `Ledger`
+history alone.
+
+**Developer → Pricing** shows the built-in model and alias timelines, then edits
+`pricing-overrides.toml` for local rules. Rates and aliases can use UTC
+`effective_from` and `effective_until` dates, so a moving label like
+`codex-auto-review` can change without an app release. Saving validates the
+whole file before replacing it. Old priced rows stay frozen, and new fallback
+estimates use the rule that was active at the query time.
+
+The custom theme editor can start from the active, dark, tan, or desktop
+palette. App, navigation, chat, `Ledger`, and chart colors are separate.
+Desktop and mobile can have different palettes, and the native-control setting
+keeps browser menus, inputs, and scrollbars readable against the result.
 
 ## Remote and mobile access
 
-Hlið binds to `127.0.0.1` by default. Do not expose port 3000 directly to an
-untrusted network.
+`Hlið` binds to `127.0.0.1` by default. Do not put port `3000` directly on an
+untrusted network. Come on now.
 
-To use Hlið from another device:
+For another device:
 
-1. Install and authenticate Tailscale on the Windows host and the other device.
-2. Open **FORGE → Access → Network** and use **Set up with agent**, or follow
-   the displayed manual steps.
-3. Generate a Tailscale certificate for the host's MagicDNS name and store the
-   certificate and private key under `%LOCALAPPDATA%\Hlid`.
-4. Set the TLS certificate/key paths, enable network access, and restart Hlið.
-5. Open the HTTPS MagicDNS address shown in Forge. The default TLS proxy port is
-   `3443`.
-6. Sign in with the app password, then install Hlið from the browser's PWA action
-   if an app-like mobile or desktop window is desired.
+1. Install and authenticate `Tailscale` on the `Windows` host and the other
+   device.
+2. Open **FORGE → Access → Network** and use **Set up with agent**, or follow the
+   manual steps shown there.
+3. Generate a `Tailscale` certificate for the host's `MagicDNS` name and keep
+   the certificate and private key under `%LOCALAPPDATA%\Hlid`.
+4. Set the `TLS` certificate/key paths, turn on network access, and restart
+   `Hlið`.
+5. Open the `HTTPS` `MagicDNS` address shown in `Forge`. The default `TLS` proxy
+   port is `3443`.
+6. Sign in with the app password. The browser can install the `PWA` if an
+   app-shaped window is useful on that device.
 
-Remote password login and remote microphone capture both require HTTPS. Hlið
-accepts localhost and Tailscale CGNAT peers by default. Enable RFC1918 local
-network access only on a network you trust.
+Remote password login and microphone capture both need `HTTPS`. `Hlið` accepts
+localhost and `Tailscale CGNAT` peers by default. Only turn on regular `RFC1918`
+LAN access for a network you actually trust.
 
 ## Voice and attachments
 
 ### Voice input
 
-Open **FORGE → Experience → Voice**, download a Whisper model, select it, and
-enable voice. The chosen model is loaded locally and remains available for fast
-repeated transcription. Changing the selected model hot-loads it without a
-server restart.
+Open **FORGE → Experience → Voice**, download a `Whisper` model, select it, and
+turn voice on. The model loads locally and stays warm for repeated
+transcription. Switching models hot-loads the new one without a server restart.
 
-In Watch or Raven, tap the microphone once to begin and again to stop. On
-desktop, the configured recording shortcut (default `Alt+Shift+V`) controls the
-same action. The browser converts audio to mono 16 kHz WAV, and the Hlið host
-transcribes it locally. Audio is not stored as an attachment or database record.
-Transcribed text can be inserted into the editable draft or sent immediately,
-depending on the Forge setting.
+In `Watch` or `Raven`, tap the microphone once to record and again to stop. On
+desktop, the configured shortcut does the same thing. The default is
+`Alt+Shift+V`.
 
-Microphone capture on another device requires the configured HTTPS endpoint. If
-the microphone is unavailable, verify browser permission, HTTPS, the selected
-model, and the Forge voice toggle.
+The browser converts the recording to mono 16 kHz `WAV`, then the `Hlið` host
+transcribes it locally. Audio does not become an attachment or a database row.
+The text can fill the draft or send immediately, depending on the `Forge`
+setting.
+
+Remote microphone capture needs the `HTTPS` endpoint. If it is not working,
+check browser permission, `HTTPS`, the selected model, and the voice toggle.
 
 ### Attachments
 
-The default upload limit is 25 MB. The default allowlist includes images, PDF,
-plain text, Markdown, CSV, and JSON. Both the byte limit and allowed MIME types
-can be changed in `hlid.config.toml`.
+The default upload limit is 25 MB. Images, `PDF`, plain text, `Markdown`, `CSV`,
+and `JSON` are allowed out of the box. Both the byte limit and `MIME` allowlist
+live in `hlid.config.toml`.
 
-Use ephemeral attachments for short-lived session context. Use vault
-attachments when the file should remain available in the vault after the
-session ends.
+Use an ephemeral attachment for throwaway session context. Use a vault
+attachment when the file should still exist after the session is done.
+
+## Windows Computer Use
+
+`Windows Computer Use` only appears when `Hlið` runs on `Windows` with a native
+`Codex CLI` and the `computer-use:computer-use` plugin installed and enabled.
+Its status lives under **FORGE → Agents → Computer Use**.
+
+The one-shot worker can inherit the calling chat's model and effort or use fixed
+defaults. Select `/computer-use` in `Watch` or `Raven`, then describe the
+Windows desktop task. `Hlið` starts a fresh native `Codex` worker and shows its
+progress inline.
+
+Every app approval still goes through the normal `Hlið`/`Umbod` policy. Session
+and permanent approvals need an explicit choice. The worker closes when the job
+is done, while its turns, duration, tokens, cache use, and estimated cost stay
+in `Ledger`.
 
 ## Maintenance and troubleshooting
 
+### Import or repair provider usage
+
+These tools are for a source checkout, not the packaged app. They dry-run first
+and write a `JSON` manifest before changing anything.
+
+```bash
+bun scripts/import-provider-history.ts --db /path/to/hlid.db \
+  --codex-root /path/to/.codex/sessions \
+  --claude-root /path/to/.claude/projects
+
+bun scripts/repair-codex-usage.ts --db /path/to/hlid.db \
+  --rollout-root /path/to/.codex/sessions
+
+bun scripts/repair-claude-usage.ts --db /path/to/hlid.db \
+  --transcript-root /path/to/.claude/projects
+```
+
+Add another root flag for archive directories. Read the manifest, then repeat
+the command with `--apply` if the plan is right. Apply mode verifies source
+hashes and a standalone `SQLite` backup before touching the database. Stop
+`Hlið` before running maintenance against its live `hlid.db`.
+
 ### Updates and SmartScreen
 
-Hlið checks GitHub Releases at launch and can check manually from Forge. An
-update downloads a versioned executable and launches it through Windows so you
-can respond to SmartScreen. Accepting the launch replaces the canonical copy
-and restarts Hlið; dismissing it leaves the current version running.
+`Hlið` checks `GitHub Releases` at startup and can check again from `Forge`. An
+app update downloads a versioned executable and launches it through `Windows`
+so `SmartScreen` can do its thing. Accepting that launch replaces the canonical
+copy and restarts `Hlið`. Dismissing it leaves the current version alone.
 
-Hlið also detects the installed Claude and Codex CLI versions and, for enabled
-ACP agents, compares each agent's self-reported version with the ACP registry.
-Available agent updates appear in the global update banner and under
-**FORGE → Overview**, along with the update command for that installation.
-From a browser on the Hlið computer or an authenticated Tailscale connection,
-select **UPDATE** for a user-writable installation. Hlið warns before stopping
-active provider sessions, releases shared app-server processes, runs the known
-update command, and rechecks the installed version. Terminal sessions remain
-open.
+`Hlið` also checks the installed `Claude` and `Codex` CLI versions. Enabled
+`ACP` agents report their own versions, which get compared with the `ACP`
+registry. Updates show in the global banner and under **FORGE → Overview** with
+the command that belongs to that installation.
 
-Installations that require elevation, including a root-owned WSL global npm
-install, show **OPEN TERMINAL** instead. Hlið releases provider processes,
-copies the exact command, and opens an embedded terminal in the matching WSL
-distro and configured workspace. Paste the command there so `sudo` can prompt
-inside Forge. Hlið never asks for, stores, or relays the sudo password. Custom
-ACP executables continue to use their original installer.
+From a loopback browser or an authenticated `Tailscale` connection, **UPDATE**
+can handle a user-writable installation. `Hlið` warns before stopping active
+provider sessions, releases shared app-server processes, runs the known update
+command, then checks the installed version again. Terminal sessions stay open.
 
-CLI update actions are available from a loopback browser on the Hlið computer
-or an authenticated Tailscale connection. Other LAN clients can view versions
-and copy the displayed guidance, but cannot stop sessions or start an update.
+An install that needs elevation, like a root-owned global `npm` package inside
+`WSL`, gets **OPEN TERMINAL** instead. `Hlið` releases the provider, copies the
+exact command, and opens a terminal in the matching distro and workspace. Paste
+the command there so `sudo` can ask for the password itself. `Hlið` never asks
+for, stores, or relays that password. Custom `ACP` executables keep using their
+original installer.
 
-Installed PWA clients pick up new releases automatically: the service worker
-detects the new build, replaces previously cached assets, and refreshes on the
-next load. No manual cache clearing is needed.
+Other LAN clients can see versions and copy guidance, but they cannot stop
+sessions or launch an update.
+
+Installed `PWA` clients pick up a new build through the service worker. It swaps
+the cached assets and refreshes on the next load. No manual cache-clearing dance
+needed.
 
 ### Autostart and lifecycle
 
-Forge can add or remove the current executable from the Windows per-user Run
-key. Restart and shutdown controls are available in the same area. Autostart
-runs Hlið in the background without opening a browser.
+`Forge` can add or remove the current executable from the per-user `Windows`
+Run key. Restart and shutdown are in the same area. Autostart runs `Hlið` in the
+background without opening a browser.
 
 ### Session reloads
 
-Reload a session after changing its vault context or MCP configuration. A
-browser refresh only reloads the interface and is not a substitute for a server
-restart or provider session reload.
+Reload a provider session after changing its vault context or `MCP` setup. A
+browser refresh only reloads the interface. It does not replace a provider
+reload or a full `Hlið` restart.
 
 ### Reset a lost password
 
-Run the following command on the Windows host, then restart Hlið:
+Run this on the `Windows` host, then restart `Hlið`:
 
 ```powershell
 %LOCALAPPDATA%\Hlid\hlid.exe auth reset
 ```
 
-The reset deletes the password credential and all trusted-device sessions. It
-does not remove vault data or application configuration. The next local visit
-returns to **Create app password**.
+That removes the password credential and every trusted-device session. Vault
+data and application config stay put. The next local visit goes back to
+**Create app password**.
 
 ### Remote login does not work
 
-Check that the URL uses HTTPS, the device is connected to the same Tailscale
-network, Forge reports the expected MagicDNS name and certificate paths, network
-access is enabled, and Hlið was restarted after the network change. LAN IPs
-outside Tailscale additionally require the explicit local-network option.
+Check that the URL uses `HTTPS`, both devices are on the same `Tailscale`
+network, `Forge` shows the expected `MagicDNS` name and certificate paths,
+network access is on, and `Hlið` was restarted after the change. A normal LAN
+IP also needs the local-network switch.
 
-### The vault cannot be opened
+### The vault does not open
 
-Open **FORGE → Workspace** on the host and verify that the vault path still
-exists and is a directory. Update moved or renamed folder mappings, save, and
-reload the affected session.
+Open **FORGE → Workspace** on the host and check that the vault path still
+exists and is a directory. Fix moved or renamed folder mappings, save, then
+reload the provider session that uses them.

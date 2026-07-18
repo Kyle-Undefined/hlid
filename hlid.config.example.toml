@@ -18,14 +18,15 @@ auto_send = false
 hotkey = "Alt+Shift+KeyV"
 max_recording_seconds = 300
 
-# Windows-native Codex Computer Use workers can follow the active session
-# model, while keeping a predictable default effort. Forge edits these values.
+# A Windows-native Codex Computer Use worker can follow the calling session's
+# model while keeping its own default effort. This only works when Hlid runs on
+# Windows with a native Codex CLI and the computer-use plugin. Forge edits it.
 [codex.windows_computer_use]
 model = "inherit"
 effort = "medium"
 
-# Enable installed Agent Client Protocol agents from Forge. Installation
-# guidance is shown there; Hlid never runs installer commands automatically.
+# Installed Agent Client Protocol agents get enabled from Forge. It shows the
+# install command when one is missing, but Hlid does not run it automatically.
 # [[acp_agents]]
 # id = "opencode"
 # executable = "opencode"

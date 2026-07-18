@@ -1,153 +1,192 @@
 # Hlið
 
-*Short for Hliðskjálf, Óðinn's high seat from which he could see all nine realms.*
+*Short for Hliðskjálf, Óðinn's high seat where he could see all nine realms.*
 
-Hlið is a local command center for working with an Obsidian vault through AI
-agents. Chat with Claude, Codex, or an installed Agent Client Protocol provider,
-watch tool use, answer permission prompts, browse the vault, and manage agent
-settings from one desktop- and mobile-friendly interface.
+`Hlið` is a local command center for working with an `Obsidian` vault through
+AI agents. It puts `Claude`, `Codex`, and installed `Agent Client Protocol`
+providers in one interface, with visible tool use, permission prompts, vault
+browsing, and the settings needed to run the whole thing.
 
-It runs on your Windows machine, keeps its data local, and can be reached from
-your other devices over Tailscale. Hlið is built for personal use and works with
-PARA vaults, LLM wiki vaults, and custom folder vocabularies.
+It runs on a `Windows` machine, keeps its data local, and works from other
+devices over `Tailscale`. The vault can use `PARA`, an LLM wiki layout, or its
+own folder vocabulary. `Hlið` does not care as long as the paths are set up.
 
 ![Hlið Watch overview showing activity, sessions, and vault skills](docs/images/watch-overview.png)
 
-## What Hlið provides
+## What it does
 
-- Persistent agent sessions with live streaming, visible tool calls, approvals,
-  attachments, queued follow-ups, inline agent questions, plan review, and
-  subagent activity.
-- A vault browser, project/status views, skill discovery, attachment management,
-  and usage/cost reporting.
-- Claude, Codex, and installed ACP providers behind one session interface.
-- Local Whisper transcription with no cloud audio upload.
-- An optional project shell in Raven and an interactive Claude CLI mode.
-- Forge settings for vaults, providers, permissions, MCP servers, ACP agents,
-  Umbod tool policy, networking, updates, lifecycle controls, and diagnostics.
-- Update checks for Hlið itself plus installed agent CLIs (Claude, Codex) and
-  enabled ACP agents, with per-platform update guidance — Hlið never runs
-  installers automatically.
-- A responsive PWA with dark and light themes, pull-to-refresh, and a privacy
-  mode that obscures sensitive paths and filenames.
+- Keeps agent sessions around with live streaming, visible tool calls,
+  approvals, attachments, queued follow-ups, inline questions, plan review,
+  and subagent activity. The provider, model, effort, and permission mode stay
+  with the chat they belong to.
+- Pulls vault skills and provider-native slash commands into `Watch` and
+  `Raven`, including compatible multi-skill runs.
+- Browses notes and projects, searches without getting tripped up by accents,
+  manages attachments, and tracks usage and cost.
+- Puts `Claude`, `Codex`, and installed `ACP` providers behind the same session
+  interface.
+- Can hand a task to a fresh Windows-native `Codex Computer Use` worker, while
+  keeping approvals, `Umbod` policy, and usage accounting inside `Hlið`.
+- Runs `Whisper` locally for voice input. Audio never gets shipped to a cloud
+  transcription service.
+- Opens a real project shell in `Raven`, with an optional interactive `Claude
+  CLI` mode when the full terminal makes more sense than the structured chat UI.
+- Keeps vaults, providers, permissions, `MCP` servers, `ACP` agents, `Umbod`,
+  networking, updates, and lifecycle controls together in `Forge`.
+- Checks `Hlið`, `Claude`, `Codex`, and enabled `ACP` agents for updates. It
+  shows the right command or in-app flow for the installation, but it does not
+  silently run installers.
+- Works as a responsive `PWA` with built-in or custom desktop/mobile themes,
+  pull-to-refresh, and a privacy mode for paths, filenames, and `Ledger` totals.
 
 ![Hlið Raven conversation on a mobile display](docs/images/raven-mobile.png)
 
-## Download and install
+## Install it
 
-Hlið is Windows-first and distributed as a single x64 executable.
+`Hlið` is Windows-first and ships as one x64 executable.
 
-1. Download the latest `hlid-vX.Y.Z-windows-x64.exe` from
+1. Grab the latest `hlid-vX.Y.Z-windows-x64.exe` from
    [GitHub Releases](https://github.com/Kyle-Undefined/hlid/releases/latest).
-2. Run the downloaded file. Hlið is currently unsigned, so Windows may show a
-   SmartScreen prompt; review it, choose **More info**, then **Run anyway** if
+2. Run it. The executable is currently unsigned, so `Windows SmartScreen` may
+   complain. Check the filename, choose **More info**, then **Run anyway** if
    you trust the release.
-3. Hlið copies itself to `%LOCALAPPDATA%\Hlid\hlid.exe`, adds a Start Menu
-   shortcut, starts the local service, and opens it in your browser.
-4. Create the app password on the Windows machine running Hlið. Use 12–256
-   characters; there is no uppercase, number, or symbol composition rule.
-5. Select your Obsidian vault in the setup wizard and confirm the detected
-   folder structure, provider permissions, and theme.
+3. `Hlið` copies itself to `%LOCALAPPDATA%\Hlid\hlid.exe`, refreshes the Start
+   Menu shortcut, starts the local service, and opens the app in a browser.
+4. Create the app password on the machine running `Hlið`. It needs 12–256
+   characters, with no uppercase, number, or symbol ceremony.
+5. Pick the `Obsidian` vault, check the detected folders, choose the default
+   provider and permissions, then pick a theme.
 
-The default interface is `http://127.0.0.1:3000`. It listens only on the local
-machine until you explicitly enable network access. See the
-[user guide](docs/user-guide.md) for the complete first-run flow and optional
-Tailscale setup.
+The default address is `http://127.0.0.1:3000`. It stays on the local machine
+until network access is turned on. The [user guide](docs/user-guide.md) covers
+the full first-run flow and the optional `Tailscale` setup.
 
-## Start here
+## Where to start
 
-- Use **WATCH** to run a prompt or skill quickly, optionally in the background
-  or in the current session, while keeping recent activity and usage in view.
-- Open **RAVEN** for the full conversation, plan-review, and terminal workspace.
-- Browse notes, projects, memory, and skills in **VAULT**.
-- Open **FORGE** to configure providers, permissions, networking, voice, MCP and
-  ACP integrations, Umbod policy, updates, and lifecycle controls.
-- Follow the [user guide](docs/user-guide.md) for page explanations and common
-  workflows.
+- **WATCH** is for quick prompts, skills, and slash commands. A run can stay in
+  the current session or head into the background while the dashboard keeps an
+  eye on it.
+- **RAVEN** is the full chat workspace. This is where the per-chat provider
+  controls, plans, approvals, attachments, and project terminal live.
+- **VAULT** browses notes, projects, memory, and skills.
+- **FORGE** is where all the setup lives: providers, permissions, networking,
+  voice, `MCP`, `ACP`, `Umbod`, updates, and lifecycle controls.
+
+The [user guide](docs/user-guide.md) gets into the meat and potatoes of each
+page and the workflows that connect them.
 
 ## Pages
 
-| Page | Purpose |
+| Page | What it is for |
 |---|---|
-| **WATCH** (`/`) | Quick prompt/skill runs, usage, MCP state, recent sessions, and vault context. |
-| **VAULT** (`/vault`) | Browse configured folders, projects, notes, memory, and skills. |
-| **RELICS** (`/relics`) | Search, inspect, and manage session and vault attachments. |
-| **RAVEN** (`/raven`) | Full agent chat with plans, approvals, questions, attachments, queues, and a project terminal. |
-| **EINHERJAR** (`/einherjar`) | Register and configure additional working directories or personality contexts. |
-| **LEDGER** (`/ledger`) | Inspect token usage, costs, cache behavior, context, and provider limits. |
-| **FORGE** (`/forge`) | Configure Hlið, integrations, access, updates, and developer tools. |
+| **WATCH** (`/`) | Quick prompts, skills, slash commands, usage, `MCP` state, recent sessions, and vault context. |
+| **VAULT** (`/vault`) | Notes, projects, memory, skills, and whatever folder vocabulary the vault uses. |
+| **RELICS** (`/relics`) | Searching, filtering, sorting, previewing, and cleaning up attachments. |
+| **RAVEN** (`/raven`) | Full agent chat with provider controls, commands, plans, approvals, questions, queues, and a real project terminal. |
+| **EINHERJAR** (`/einherjar`) | Extra working directories or personality/context overlays. |
+| **LEDGER** (`/ledger`) | Sessions and analytics for tokens, cost, cache behavior, tools, stop reasons, context, and provider limits. |
+| **FORGE** (`/forge`) | Settings, integrations, access, updates, maintenance, and developer tools. |
 
 ## Configuration and data
 
-The packaged app stores its executable, configuration, database, downloaded
-voice models, and other runtime data under `%LOCALAPPDATA%\Hlid`.
-`hlid.config.toml` controls the vault layout, providers, server and TLS ports,
+The packaged app keeps its executable, config, database, downloaded voice
+models, and runtime data under `%LOCALAPPDATA%\Hlid`.
+
+`hlid.config.toml` holds the vault layout, providers, server and `TLS` ports,
 network access, attachments, voice, UI preferences, and registered agents. Most
-settings can be managed in **FORGE**. Settings marked as restart-required take
-effect only after Hlið restarts. Forge currently marks server, ACP, and Umbod
-configuration changes this way. Reload a provider session after changing the
-working context it should receive.
+of that can be changed in `Forge`. If a setting shows a restart marker, it does
+not take effect until `Hlið` restarts. Server, `ACP`, and `Umbod` changes are the
+main ones that need it.
+
+Changing the working context is different. Reload that provider session so the
+agent gets the new context. A browser refresh only reloads the UI.
 
 `pricing-overrides.toml`, managed from **FORGE → Developer → Pricing**, adds
-validated effective-dated model rates and aliases without modifying built-in
-pricing code. Existing priced Ledger rows are not rewritten.
+effective-dated model rates and aliases without touching the built-in pricing
+code. Old priced `Ledger` rows stay frozen, which keeps historical accounting
+honest.
 
-See [`hlid.config.example.toml`](hlid.config.example.toml) for a minimal example.
+`Forge` can also keep separate custom palettes for desktop and mobile. `Codex
+Computer Use` model and effort defaults live under **FORGE → Agents → Computer
+Use** and apply to the next one-shot Windows worker.
+
+There is a small starting point in
+[`hlid.config.example.toml`](hlid.config.example.toml).
 
 ## Remote access and security
 
-Hlið uses a single-owner app password. Passwords are stored as Argon2id hashes,
-and successful unlocks create an opaque HttpOnly trusted-device session with a
-fixed 30-day lifetime. Initial password creation is restricted to the Hlið
-machine, and remote password login is accepted only over HTTPS.
+`Hlið` uses one owner password. It stores an `Argon2id` hash, then gives a
+successful browser an opaque `HttpOnly` trusted-device session for 30 days.
+The first password can only be created on the `Hlið` machine, and remote
+password login only works over `HTTPS`.
 
-For remote or mobile access, use **FORGE → Access → Network** to enable network
-access and follow the guided Tailscale/TLS setup. By default Hlið accepts only
-localhost and Tailscale CGNAT peers; RFC1918 LAN peers require the separate
-local-network option. HTTP routes, API requests, chat WebSockets, and terminal
-WebSockets enforce the same server-side session.
+For another device, open **FORGE → Access → Network** and follow the guided
+`Tailscale`/`TLS` setup. By default, `Hlið` accepts localhost and `Tailscale
+CGNAT` peers. Regular `RFC1918` LAN devices need the separate local-network
+switch. The same server-side session protects HTTP routes, APIs, chat
+`WebSockets`, and terminal `WebSockets`.
 
-If the password is lost, run this on the Hlið machine and restart the app:
+Lost the password? Run this on the `Hlið` machine and restart it:
 
 ```powershell
 hlid.exe auth reset
 ```
 
-This deletes the credential and all trusted-device sessions without changing
-vault data or application configuration.
+That removes the credential and every trusted-device session. It leaves the
+vault and app config alone.
 
-## Contributor setup
+## Working from source
 
-Prerequisites: [Bun](https://bun.sh/) 1.3.14 or compatible, plus a local
-Obsidian vault for interactive testing.
+You need [Bun](https://bun.sh/) `1.3.14` or something compatible, plus a local
+`Obsidian` vault for interactive testing.
 
 ```bash
 bun install
 bun run dev:all
 ```
 
-`dev:all` runs the Vite UI and Bun API/WebSocket server. The TLS proxy also
-starts when certificate paths are configured in `hlid.config.toml`.
+`dev:all` starts the `Vite` UI and the `Bun` API/WebSocket server. The `TLS`
+proxy joins in when certificate paths exist in `hlid.config.toml`.
 
-Useful validation commands:
+The useful checks are pretty straightforward:
 
 ```bash
 bun run check          # Biome, TypeScript, and changed-code Fallow analysis
 bun run test           # Vitest suite
-bun run test:db        # Bun-only database/auth tests
+bun run test:db        # Bun-only database and auth tests
 bun run validate       # Static checks, merged coverage, and full Fallow analysis
 bun run build:win      # Windows executable build
 ```
 
-The application uses TanStack Start/Router, React, a Bun server, SQLite,
-WebSockets, and an `AgentProvider` abstraction. The Vite client and required
-runtime assets are embedded into the compiled executable, so a release does not
-need a sibling `dist` directory.
+There are also three dry-run-first maintenance tools for old provider history.
+They can import transcript usage or repair older rows that were recorded before
+the current accounting logic existed.
 
-Tagged releases validate on Linux, build and smoke-test the executable on
-Windows, and publish the executable plus a SHA-256 checksum. See
-[the release workflow](.github/workflows/release.yml) for the authoritative
-pipeline.
+```bash
+bun scripts/import-provider-history.ts --db /path/to/hlid.db \
+  --codex-root /path/to/.codex/sessions \
+  --claude-root /path/to/.claude/projects
+
+bun scripts/repair-codex-usage.ts --db /path/to/hlid.db \
+  --rollout-root /path/to/.codex/sessions
+
+bun scripts/repair-claude-usage.ts --db /path/to/hlid.db \
+  --transcript-root /path/to/.claude/projects
+```
+
+Each one writes a `JSON` manifest first. Read it. If the plan looks right, run
+the same command with `--apply`. Apply mode verifies a standalone `SQLite`
+backup before it touches `hlid.db`. Imported history is accounting-only, so it
+shows up as read-only rows in `Ledger`.
+
+Under the hood, `Hlið` uses `TanStack Start/Router`, `React`, a `Bun` server,
+`SQLite`, `WebSockets`, and an `AgentProvider` abstraction. The `Vite` client
+and runtime assets get embedded into the executable, so a release does not need
+a loose `dist` folder sitting beside it.
+
+Tagged releases validate on `Linux`, build and smoke-test the executable on
+`Windows`, then publish the executable and its `SHA-256` checksum. The
+[release workflow](.github/workflows/release.yml) is the source of truth there.
 
 ## License
 
