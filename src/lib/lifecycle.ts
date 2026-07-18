@@ -119,26 +119,49 @@ export function shutdown(): LifecycleResult {
 	return { ok: true };
 }
 
+export function buildRestartAppArgs(options: {
+	execPath: string;
+	argv: string[];
+	pid: number;
+	platform: NodeJS.Platform;
+}): string[] {
+	const runtime = basename(options.execPath).toLowerCase();
+	const compiled = runtime !== "bun" && runtime !== "bun.exe";
+	const args = compiled
+		? ["--restart", "--background"]
+		: [
+				...options.argv
+					.slice(1)
+					.filter(
+						(arg) =>
+							arg !== "--restart" && !arg.startsWith("--restart-parent="),
+					),
+				"--restart",
+			];
+
+	// The Windows VBS trampoline below already waits until this process has
+	// exited before it launches the replacement. Passing the parent PID as well
+	// makes Bun's Windows process probe wait a redundant 30 seconds and leaves
+	// enough time for a manual launch to win the ports. Non-Windows restarts
+	// spawn immediately and still need the child-side parent wait.
+	if (options.platform !== "win32") {
+		args.push(`--restart-parent=${options.pid}`);
+	}
+	return args;
+}
+
 export function restart(): LifecycleResult {
 	// Spawn a replacement after the response has flushed. On Windows an
 	// external PowerShell trampoline must own the relaunch: children spawned
 	// directly by the compiled Bun process are not guaranteed to survive its
 	// exit even when detached.
 	setTimeout(() => {
-		const runtime = basename(process.execPath).toLowerCase();
-		const compiled = runtime !== "bun" && runtime !== "bun.exe";
-		const appArgs = compiled
-			? ["--restart", "--background", `--restart-parent=${process.pid}`]
-			: [
-					...process.argv
-						.slice(1)
-						.filter(
-							(arg) =>
-								arg !== "--restart" && !arg.startsWith("--restart-parent="),
-						),
-					"--restart",
-					`--restart-parent=${process.pid}`,
-				];
+		const appArgs = buildRestartAppArgs({
+			execPath: process.execPath,
+			argv: process.argv,
+			pid: process.pid,
+			platform: process.platform,
+		});
 		if (process.platform === "win32") {
 			const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
 			const vbsQuote = (value: string) => value.replaceAll('"', '""');

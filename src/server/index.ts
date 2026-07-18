@@ -109,8 +109,8 @@ if (process.execPath.endsWith(".exe")) {
 startEventLoopLagMonitor();
 
 // CLI flags. `--background` = silent boot (used by the autostart registry entry).
-// `--restart` = post-update relaunch; implies background and skips the running-
-// instance probe (the old instance was just replaced, not still running).
+// `--restart` = post-update relaunch and implies background. Compiled launches
+// still probe for a newer competing instance before doing any startup work.
 // No flag = interactive launch (double-click); we'll open the browser once the
 // server is ready.
 const RESTART_MODE = process.argv.includes("--restart");
@@ -119,7 +119,7 @@ const BACKGROUND_MODE = RESTART_MODE || process.argv.includes("--background");
 const restartParentArg = process.argv.find((arg) =>
 	arg.startsWith("--restart-parent="),
 );
-if (restartParentArg) {
+if (restartParentArg && process.platform !== "win32") {
 	const parentPid = Number(restartParentArg.slice("--restart-parent=".length));
 	const deadline = Date.now() + 30_000;
 	while (
@@ -142,11 +142,12 @@ const config = loadConfig();
 // `local_network_access = true` in hlid.config.toml (requires restart).
 const BIND_HOST = config.server.local_network_access ? "0.0.0.0" : "127.0.0.1";
 
-// If a previous instance is already running on our UI port, treat this launch
-// as a "click to open", surface the running UI in a browser and exit. This
-// makes double-clicking hlid.exe a friendly no-op when it's already up.
-// Skipped on --restart: the old instance was deliberately replaced.
-if (process.execPath.endsWith(".exe") && !RESTART_MODE) {
+// If an instance is already running on our UI port, treat this launch as a
+// friendly no-op. This also covers a user manually launching Hlid while a
+// restart replacement is queued: the late replacement must not contend for
+// Umbod or UI ports. The restart trampoline has already waited for its old
+// parent, so any responder here is a newer competing instance.
+if (process.execPath.endsWith(".exe")) {
 	const runningUrl = await probeExistingInstance(config.server.port);
 	if (runningUrl) {
 		if (!BACKGROUND_MODE) openInBrowser(runningUrl);

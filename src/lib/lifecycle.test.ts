@@ -4,7 +4,7 @@ const spawnMock = vi.hoisted(() => vi.fn());
 
 vi.mock("node:child_process", () => ({ spawn: spawnMock }));
 
-import { restart } from "./lifecycle";
+import { buildRestartAppArgs, restart } from "./lifecycle";
 
 afterEach(() => {
 	vi.useRealTimers();
@@ -13,6 +13,28 @@ afterEach(() => {
 });
 
 describe("restart", () => {
+	it("lets the Windows trampoline own the complete parent wait", () => {
+		expect(
+			buildRestartAppArgs({
+				execPath: "C:\\Users\\kyleu\\AppData\\Local\\Hlid\\hlid.exe",
+				argv: ["hlid.exe"],
+				pid: 1234,
+				platform: "win32",
+			}),
+		).toEqual(["--restart", "--background"]);
+	});
+
+	it("keeps the child-side parent wait for non-Windows restarts", () => {
+		expect(
+			buildRestartAppArgs({
+				execPath: "/opt/hlid/hlid",
+				argv: ["/opt/hlid/hlid"],
+				pid: 1234,
+				platform: "linux",
+			}),
+		).toEqual(["--restart", "--background", "--restart-parent=1234"]);
+	});
+
 	it("detaches a replacement that waits for the current process", () => {
 		vi.useFakeTimers();
 		const unref = vi.fn();
