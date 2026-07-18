@@ -10,7 +10,8 @@
 	"dynamicallyLoaded": [
 		"src/server/pty-worker.cjs",
 		"src/server/vaultSnapshotWorker.ts",
-		"src/server/fixtures/fake-acp-agent.mjs"
+		"src/server/fixtures/fake-acp-agent.mjs",
+		"scripts/perf/fake-agent.mjs"
 	],
 	"ignoreDependencies": [
 		"@anthropic-ai/claude-agent-sdk-win32-x64",

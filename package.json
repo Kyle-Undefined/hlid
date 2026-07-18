@@ -1,7 +1,7 @@
 {
   "name": "hlid",
   "description": "Hliðskjálf - Watcher of Worlds",
-	"version": "0.0.184",
+	"version": "0.0.185",
   "private": true,
   "type": "module",
   "imports": {
@@ -16,6 +16,8 @@
     "postinstall": "bun scripts/embed-client.ts",
     "start": "bun src/server/index.ts",
     "preview": "vite preview",
+    "perf:gate": "bun scripts/perf/gate.ts",
+    "perf:smoke": "bun scripts/perf/gate.ts --idle-ms=10000 --label=smoke",
     "test": "node ./node_modules/vitest/vitest.mjs run",
     "test:coverage": "bun run test:coverage:vitest && bun run test:coverage:bun && bun run coverage:merge",
     "test:coverage:vitest": "node ./node_modules/vitest/vitest.mjs run --coverage",
@@ -97,6 +99,7 @@
     "istanbul-lib-report": "3.0.1",
     "istanbul-reports": "3.2.0",
     "jsdom": "28.1.0",
+    "playwright": "1.61.1",
     "png-to-ico": "3.0.1",
     "sharp": "0.34.5",
     "typescript": "5.9.3",

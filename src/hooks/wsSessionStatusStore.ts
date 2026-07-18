@@ -78,7 +78,7 @@ export function reconcileSessionStatus(
 	status: Pick<StatusMessage, "state" | "model" | "effort" | "permission_mode">,
 ): void {
 	let changed = false;
-	sessionsStatus = sessionsStatus.map((session) => {
+	const nextSessionsStatus = sessionsStatus.map((session) => {
 		if (
 			session.session_id !== sessionId &&
 			session.db_session_id !== sessionId
@@ -106,6 +106,7 @@ export function reconcileSessionStatus(
 		};
 	});
 	if (!changed) return;
+	sessionsStatus = nextSessionsStatus;
 	recomputeAggregateNavStatus();
 	notifySubscribers();
 }

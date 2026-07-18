@@ -168,6 +168,9 @@ const config = defineConfig({
 	define: { __HLID_BUILD__: JSON.stringify(BUILD_STAMP) },
 	resolve: { tsconfigPaths: true },
 	build: {
+		// Opt-in source maps keep production artifacts lean while allowing the
+		// performance gate to resolve sampled browser work back to source.
+		sourcemap: process.env.HLID_PERF_SOURCEMAP === "1",
 		// One feature-gated Langium parser chunk from Mermaid cannot be split at
 		// module boundaries. The custom budget plugin below caps that exception at
 		// 700 KiB while enforcing 500 KiB for every other client chunk.

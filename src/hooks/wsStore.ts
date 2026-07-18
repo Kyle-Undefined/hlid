@@ -703,30 +703,29 @@ export function removeFromQueue(id: string): QueuedChatMessage | undefined {
  */
 export function subscribeToSession(sessionId: string): void {
 	const sessionChanged = getSubscribedSessionId() !== sessionId;
+	if (!sessionChanged) return;
 	switchStatsContext(sessionId);
 	focusSession(sessionId);
-	if (sessionChanged) {
-		// The replay buffer belongs to the previously focused session. Keep replay
-		// during snapshot/reconnect reads, but never carry those events across a
-		// chat switch. Events from the newly subscribed session can refill it while
-		// that session's history is loading.
-		_messageBuffer = [];
-		// Session controls and run state are scoped to the focused chat. Do not
-		// display the previous chat's model/effort/permissions while waiting for
-		// the subscribed session's status response.
-		_snap = {
-			..._snap,
-			sessionState: "idle",
-			model: "",
-			actualModel: null,
-			permissionMode: null,
-			effort: null,
-			hasPendingPermissions: false,
-			runningTurnId: null,
-			sleepState: null,
-		};
-		_pendingPermCount = 0;
-	}
+	// The replay buffer belongs to the previously focused session. Keep replay
+	// during snapshot/reconnect reads, but never carry those events across a
+	// chat switch. Events from the newly subscribed session can refill it while
+	// that session's history is loading.
+	_messageBuffer = [];
+	// Session controls and run state are scoped to the focused chat. Do not
+	// display the previous chat's model/effort/permissions while waiting for
+	// the subscribed session's status response.
+	_snap = {
+		..._snap,
+		sessionState: "idle",
+		model: "",
+		actualModel: null,
+		permissionMode: null,
+		effort: null,
+		hasPendingPermissions: false,
+		runningTurnId: null,
+		sleepState: null,
+	};
+	_pendingPermCount = 0;
 	if (_ws?.readyState === WS_OPEN) {
 		try {
 			_ws.send(

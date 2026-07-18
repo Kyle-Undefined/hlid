@@ -301,6 +301,20 @@ describe("subscribeToSession / getSubscribedSessionId", () => {
 		unsub();
 	});
 
+	it("does not resubscribe or notify when the focused session is unchanged", () => {
+		const fn = vi.fn();
+		const unsub = wsStore.subscribeStatus(fn);
+		wsStore.subscribeToSession("session-a");
+		currentWs.send.mockClear();
+		fn.mockClear();
+
+		wsStore.subscribeToSession("session-a");
+
+		expect(currentWs.send).not.toHaveBeenCalled();
+		expect(fn).not.toHaveBeenCalled();
+		unsub();
+	});
+
 	it("multiple subscribeToSession calls update to the latest session", () => {
 		wsStore.subscribeToSession("session-a");
 		wsStore.subscribeToSession("session-b");
