@@ -1,5 +1,6 @@
 import { Plug } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { McpServerEntry } from "#/lib/mcp";
 
 const STATUS_ORDER: Record<McpServerEntry["status"], number> = {
@@ -77,8 +78,13 @@ export function McpIndicator({
 	label?: string;
 }) {
 	const [open, setOpen] = useState(false);
-	const [popoverOffset, setPopoverOffset] = useState<number | null>(null);
+	const [popoverPosition, setPopoverPosition] = useState<{
+		left: number;
+		top: number;
+		width: number;
+	} | null>(null);
 	const rootRef = useRef<HTMLDivElement>(null);
+	const popoverRef = useRef<HTMLDivElement>(null);
 	const sorted = [...servers].sort(
 		(a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status],
 	);
@@ -90,29 +96,45 @@ export function McpIndicator({
 	useEffect(() => {
 		if (!open) return;
 		const close = (event: MouseEvent) => {
-			if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+			const target = event.target as Node;
+			if (
+				!rootRef.current?.contains(target) &&
+				!popoverRef.current?.contains(target)
+			) {
+				setOpen(false);
+			}
 		};
 		document.addEventListener("mousedown", close);
 		return () => document.removeEventListener("mousedown", close);
 	}, [open]);
 
 	useEffect(() => {
-		if (!open || align !== "mobile-left") {
-			setPopoverOffset(null);
+		if (!open) {
+			setPopoverPosition(null);
 			return;
 		}
 		const reposition = () => {
-			const viewportWidth = window.visualViewport?.width ?? window.innerWidth;
+			const viewport = window.visualViewport;
+			const viewportLeft = viewport?.offsetLeft ?? 0;
+			const viewportWidth = viewport?.width ?? window.innerWidth;
 			const anchor = rootRef.current?.getBoundingClientRect();
 			if (!anchor) return;
-			setPopoverOffset(
-				mcpPopoverOffset(
-					viewportWidth,
-					anchor.left,
-					anchor.width,
-					viewportWidth >= 768,
-				),
-			);
+			const preferRight =
+				align === "right" || (align === "mobile-left" && viewportWidth >= 768);
+			const anchorLeft = anchor.left - viewportLeft;
+			setPopoverPosition({
+				left:
+					viewportLeft +
+					anchorLeft +
+					mcpPopoverOffset(
+						viewportWidth,
+						anchorLeft,
+						anchor.width,
+						preferRight,
+					),
+				top: anchor.top - 8,
+				width: Math.min(288, Math.max(0, viewportWidth - 32)),
+			});
 		};
 		reposition();
 		window.addEventListener("resize", reposition);
@@ -140,54 +162,59 @@ export function McpIndicator({
 					{servers.length ? `${connected}/${servers.length}` : "0"}
 				</span>
 			</button>
-			{open && (
-				<div
-					className={`absolute bottom-full z-50 mb-2 w-72 max-w-[calc(100vw-2rem)] border border-border bg-card shadow-xl ${align === "right" ? "right-0" : align === "left" ? "left-0" : "left-0 md:left-auto md:right-0"}`}
-					style={
-						align === "mobile-left" && popoverOffset !== null
-							? { left: `${popoverOffset}px`, right: "auto" }
-							: undefined
-					}
-				>
-					<div className="px-3 py-2 border-b border-border/60 text-[9px] tracking-widest uppercase text-muted-foreground/50">
-						{label}
-					</div>
-					{sorted.length === 0 ? (
-						<div className="px-3 py-3 text-[10px] text-muted-foreground/50">
-							No servers reported for this context.
+			{open &&
+				popoverPosition &&
+				createPortal(
+					<div
+						ref={popoverRef}
+						className="fixed z-50 border border-border bg-card shadow-xl"
+						style={{
+							left: `${popoverPosition.left}px`,
+							top: `${popoverPosition.top}px`,
+							width: `${popoverPosition.width}px`,
+							transform: "translateY(-100%)",
+						}}
+					>
+						<div className="px-3 py-2 border-b border-border/60 text-[9px] tracking-widest uppercase text-muted-foreground/50">
+							{label}
 						</div>
-					) : (
-						<div className="max-h-64 overflow-y-auto">
-							{sorted.map((server) => (
-								<div
-									key={`${server.providerId ?? "active"}:${server.name}`}
-									className="px-3 py-2 border-b border-border/40 last:border-b-0"
-								>
-									<div className="flex items-center gap-2">
-										<span
-											className={`w-1.5 h-1.5 rounded-full ${dotClass(server.status)}`}
-										/>
-										<span className="min-w-0 flex-1 truncate text-[10px] text-foreground/80">
-											{server.displayName}
-										</span>
-										<span className="text-[8px] tracking-widest uppercase text-muted-foreground/40">
-											{server.status}
-										</span>
-									</div>
-									<div className="pl-3.5 mt-1 text-[8px] tracking-wider text-muted-foreground/35">
-										{server.providerId ?? "provider"} · {server.source}
-									</div>
-									{server.error && (
-										<div className="pl-3.5 mt-1 text-[9px] text-destructive/70 line-clamp-2">
-											{server.error}
+						{sorted.length === 0 ? (
+							<div className="px-3 py-3 text-[10px] text-muted-foreground/50">
+								No servers reported for this context.
+							</div>
+						) : (
+							<div className="max-h-64 overflow-y-auto">
+								{sorted.map((server) => (
+									<div
+										key={`${server.providerId ?? "active"}:${server.name}`}
+										className="px-3 py-2 border-b border-border/40 last:border-b-0"
+									>
+										<div className="flex items-center gap-2">
+											<span
+												className={`w-1.5 h-1.5 rounded-full ${dotClass(server.status)}`}
+											/>
+											<span className="min-w-0 flex-1 truncate text-[10px] text-foreground/80">
+												{server.displayName}
+											</span>
+											<span className="text-[8px] tracking-widest uppercase text-muted-foreground/40">
+												{server.status}
+											</span>
 										</div>
-									)}
-								</div>
-							))}
-						</div>
-					)}
-				</div>
-			)}
+										<div className="pl-3.5 mt-1 text-[8px] tracking-wider text-muted-foreground/35">
+											{server.providerId ?? "provider"} · {server.source}
+										</div>
+										{server.error && (
+											<div className="pl-3.5 mt-1 text-[9px] text-destructive/70 line-clamp-2">
+												{server.error}
+											</div>
+										)}
+									</div>
+								))}
+							</div>
+						)}
+					</div>,
+					document.body,
+				)}
 		</div>
 	);
 }

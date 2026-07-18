@@ -54,14 +54,14 @@ describe("McpIndicator", () => {
 	});
 
 	it("anchors left on mobile and right on desktop when requested", () => {
-		const { container } = render(
-			<McpIndicator servers={[]} align="mobile-left" />,
-		);
+		render(<McpIndicator servers={[]} align="mobile-left" />);
 		fireEvent.click(screen.getByRole("button", { name: "MCP server status" }));
-		const popover = container.querySelector(".bottom-full");
-		expect(popover?.className).toContain("left-0");
-		expect(popover?.className).toContain("md:left-auto");
-		expect(popover?.className).toContain("md:right-0");
-		expect(popover?.className).toContain("max-w-[calc(100vw-2rem)]");
+		const popover = screen.getByText(
+			"MCP runtime · active provider",
+		).parentElement;
+		expect(popover?.className).toContain("fixed");
+		expect(popover?.parentElement).toBe(document.body);
+		expect(popover?.style.left).toBe("16px");
+		expect(popover?.style.width).toBe("288px");
 	});
 });
