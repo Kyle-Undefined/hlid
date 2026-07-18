@@ -40,6 +40,15 @@ function anchorBelow(element: HTMLElement): void {
 	});
 }
 
+function openMobileSessions(): HTMLElement {
+	const toggle = screen.getByRole("button", {
+		name: /show \d+ live sessions?/i,
+	});
+	anchorBelow(toggle);
+	fireEvent.click(toggle);
+	return screen.getByRole("dialog", { name: "Live sessions" });
+}
+
 const idle: SessionStatusEntry = {
 	session_id: "s1aabbcc-1234-5678-90ab-cdef01234567",
 	agent_cwd: "/code/proj",
@@ -333,6 +342,7 @@ describe("ActiveSessionsPanel", () => {
 				onClose={vi.fn()}
 			/>,
 		);
+		openMobileSessions();
 		anchorBelow(screen.getByRole("button", { name: /more actions for proj/i }));
 		fireEvent.click(
 			screen.getByRole("button", { name: /more actions for proj/i }),
@@ -349,6 +359,84 @@ describe("ActiveSessionsPanel", () => {
 		});
 		expect(dismiss.className).toContain("bg-black/10");
 		expect(dismiss.className).not.toContain("backdrop-blur");
+	});
+
+	// ── mobile sticky summary ─────────────────────────────────────────────────
+
+	it("collapses mobile sessions into a compact status summary", () => {
+		setMobileViewport();
+		render(
+			<ActiveSessionsPanel
+				sessions={[idle, running, errorSession]}
+				onStop={vi.fn()}
+				onClose={vi.fn()}
+			/>,
+		);
+
+		const toggle = screen.getByRole("button", {
+			name: "Show 3 live sessions",
+		});
+		expect(toggle.className).toContain("min-h-12");
+		expect(screen.getByText("1 running · 1 error · 1 idle")).toBeDefined();
+		expect(screen.queryByText("Proj")).toBeNull();
+		expect(screen.queryByRole("button", { name: /stop vault/i })).toBeNull();
+	});
+
+	it("opens mobile sessions in a capped, internally scrollable sheet", () => {
+		setMobileViewport();
+		render(
+			<ActiveSessionsPanel
+				sessions={[idle, running, errorSession]}
+				onStop={vi.fn()}
+				onClose={vi.fn()}
+			/>,
+		);
+
+		const sheet = openMobileSessions();
+		expect(sheet.parentElement).toBe(document.body);
+		expect(sheet.className).toContain("fixed");
+		expect(sheet.style.maxHeight).not.toBe("");
+		expect(sheet.querySelector(".overflow-y-auto")?.className).toContain(
+			"overscroll-contain",
+		);
+		expect(screen.getByText("Proj")).toBeDefined();
+		expect(screen.getByText("Vault")).toBeDefined();
+		expect(screen.getByText("Broken")).toBeDefined();
+		expect(screen.queryByText("/code/proj")).toBeNull();
+		expect(screen.queryByText(/#[0-9a-f]{8}/i)).toBeNull();
+	});
+
+	it("closes the mobile sheet when navigating to a session", () => {
+		setMobileViewport();
+		const onNavigate = vi.fn();
+		render(
+			<ActiveSessionsPanel
+				sessions={[{ ...idle, db_session_id: "db-session-1" }]}
+				onStop={vi.fn()}
+				onClose={vi.fn()}
+				onNavigate={onNavigate}
+			/>,
+		);
+
+		openMobileSessions();
+		fireEvent.click(screen.getByRole("button", { name: "Open Proj session" }));
+		expect(onNavigate).toHaveBeenCalledWith("db-session-1");
+		expect(screen.queryByRole("dialog", { name: "Live sessions" })).toBeNull();
+	});
+
+	it("dismisses the mobile sessions sheet with Escape", () => {
+		setMobileViewport();
+		render(
+			<ActiveSessionsPanel
+				sessions={[running]}
+				onStop={vi.fn()}
+				onClose={vi.fn()}
+			/>,
+		);
+
+		openMobileSessions();
+		fireEvent.keyDown(window, { key: "Escape" });
+		expect(screen.queryByRole("dialog", { name: "Live sessions" })).toBeNull();
 	});
 
 	// ── column headers ────────────────────────────────────────────────────────
