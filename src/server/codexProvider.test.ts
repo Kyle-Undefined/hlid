@@ -283,6 +283,7 @@ describe("CodexProvider host capabilities", () => {
 	beforeEach(() => {
 		__resetCodexAppServersForTesting();
 		__resetCodexHostCapabilitiesForTesting();
+		vi.mocked(spawn).mockClear();
 	});
 
 	it("reports the native Computer Use plugin as ready on Windows", async () => {
@@ -323,6 +324,9 @@ describe("CodexProvider host capabilities", () => {
 		const platform = vi
 			.spyOn(process, "platform", "get")
 			.mockReturnValue("win32");
+		const previousCwd = process.env.HLID_WINDOWS_COMPUTER_USE_CWD;
+		process.env.HLID_WINDOWS_COMPUTER_USE_CWD =
+			"/tmp/hlid-computer-use-background-test";
 		try {
 			const { proc } = makeFakeProc({ silent: true });
 			vi.mocked(spawn).mockReturnValue(proc as never);
@@ -336,9 +340,19 @@ describe("CodexProvider host capabilities", () => {
 				},
 			});
 			expect(spawn).toHaveBeenCalledOnce();
-
+			const refresh = refreshCodexHostCapabilities();
 			await vi.advanceTimersByTimeAsync(5_001);
+			await expect(refresh).resolves.toEqual({
+				windowsComputerUse: {
+					label: "Windows Computer Use",
+					available: false,
+					reason: "Capability check timed out",
+				},
+			});
 		} finally {
+			if (previousCwd === undefined)
+				delete process.env.HLID_WINDOWS_COMPUTER_USE_CWD;
+			else process.env.HLID_WINDOWS_COMPUTER_USE_CWD = previousCwd;
 			vi.useRealTimers();
 			platform.mockRestore();
 		}
