@@ -59,6 +59,32 @@ describe("evaluateSleep", () => {
 		expect(evaluateSleep(provider, cfg())).toBeNull();
 	});
 
+	it("falls back to weekly when no active five-hour window is reported", () => {
+		const resetsAt = now() + 5 * 86400;
+		updateWindowMark(provider, "weekly", 0.96, resetsAt);
+		expect(evaluateSleep(provider, cfg())).toMatchObject({
+			reason: "threshold",
+			windowId: "weekly",
+			utilization: 0.96,
+			targetResetsAt: resetsAt + 60,
+		});
+	});
+
+	it("prefers an active five-hour window over weekly", () => {
+		updateWindowMark(provider, "five_hour", 0.9, now() + 1200);
+		updateWindowMark(provider, "weekly", 0.99, now() + 5 * 86400);
+		expect(evaluateSleep(provider, cfg())).toBeNull();
+	});
+
+	it("falls back to weekly after a stale five-hour window expires", () => {
+		updateWindowMark(provider, "five_hour", 0.99, now() - 1);
+		updateWindowMark(provider, "weekly", 0.96, now() + 5 * 86400);
+		expect(evaluateSleep(provider, cfg())).toMatchObject({
+			windowId: "weekly",
+			utilization: 0.96,
+		});
+	});
+
 	it("reserves headroom before a 99% threshold for an in-flight request", () => {
 		const tight = cfg({ threshold: 0.99 });
 		updateWindowMark(provider, "five_hour", 0.979, now() + 1200);
@@ -110,9 +136,21 @@ describe("evaluateSleep", () => {
 		expect(evaluateSleep(provider, cfg())).toBeNull();
 	});
 
-	it("ignores weekly hard limits", () => {
+	it("sleeps on a weekly hard limit when five-hour is absent", () => {
 		reportRateLimitSignal(provider, "weekly", "rejected", now() + 600);
-		expect(evaluateSleep(provider, cfg())).toBeNull();
+		expect(evaluateSleep(provider, cfg())).toMatchObject({
+			reason: "limit_reached",
+			windowId: "weekly",
+		});
+	});
+
+	it("prefers five-hour when both windows report hard limits", () => {
+		reportRateLimitSignal(provider, "weekly", "rejected", now() + 86400);
+		reportRateLimitSignal(provider, "five_hour", "rejected", now() + 600);
+		expect(evaluateSleep(provider, cfg())).toMatchObject({
+			reason: "limit_reached",
+			windowId: "five_hour",
+		});
 	});
 
 	it("rechecks in 15-minute increments on a hard limit without resetsAt", () => {
@@ -190,8 +228,11 @@ describe("sleepUntilAllowed", () => {
 		expect(evaluateSleep(provider, cfg({ max_sleep_minutes: 2 }))).toBeNull();
 	});
 
-	it("skipSleep wakes all waiters and suppresses re-sleep", async () => {
-		updateWindowMark(provider, "five_hour", 0.99, now() + 3600);
+	it.each([
+		"five_hour",
+		"weekly",
+	] as const)("skipSleep wakes all %s waiters and suppresses re-sleep", async (windowId) => {
+		updateWindowMark(provider, windowId, 0.99, now() + 3600);
 		const wakes: string[] = [];
 		const first = sleepUntilAllowed({
 			providerId: provider,
@@ -204,7 +245,7 @@ describe("sleepUntilAllowed", () => {
 			onWake: (cause) => wakes.push(cause),
 		});
 		await vi.advanceTimersByTimeAsync(1000);
-		skipSleep(provider);
+		skipSleep(provider, windowId);
 		await vi.advanceTimersByTimeAsync(0);
 		await expect(first).resolves.toBe("proceeded");
 		await expect(second).resolves.toBe("proceeded");

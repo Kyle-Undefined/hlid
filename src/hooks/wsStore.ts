@@ -51,10 +51,11 @@ export type WsStatus = "connecting" | "connected" | "disconnected";
 /** Auto-sleep banner state from the latest agent_sleep message. */
 export type SleepBanner = {
 	providerId: string;
+	windowId: string | null;
 	/** Epoch seconds the sleep is expected to end, when known. */
 	until: number | null;
 	reason: "threshold" | "limit_reached" | null;
-	/** five_hour utilization 0–1 behind a threshold sleep. */
+	/** Provider-window utilization 0–1 behind a threshold sleep. */
 	utilization: number | null;
 };
 
@@ -302,6 +303,7 @@ function onAgentSleep(
 			msg.state === "sleeping"
 				? {
 						providerId: msg.providerId,
+						windowId: msg.windowId ?? null,
 						until: msg.until ?? null,
 						reason: msg.reason ?? null,
 						utilization: msg.utilization ?? null,

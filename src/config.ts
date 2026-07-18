@@ -200,7 +200,7 @@ export const DEFAULT_AUTO_SLEEP_CONFIG = {
 
 const AutoSleepSchema = z.object({
 	enabled: z.boolean().default(DEFAULT_AUTO_SLEEP_CONFIG.enabled),
-	/** five_hour utilization at/above which sessions sleep until reset. */
+	/** Preferred-window utilization at/above which sessions sleep until reset. */
 	threshold: z
 		.number()
 		.min(0.01)

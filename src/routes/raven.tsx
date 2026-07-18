@@ -2793,9 +2793,9 @@ function ChatComposer(props: ChatComposerProps) {
 							? ` until ${new Date(sleepState.until * 1000).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
 							: ""}
 						{sleepState.utilization != null
-							? ` — usage window at ${Math.round(sleepState.utilization * 100)}%`
+							? ` — ${sleepState.windowId === "weekly" ? "weekly" : "five-hour"} usage at ${Math.round(sleepState.utilization * 100)}%`
 							: sleepState.reason === "limit_reached"
-								? " — usage limit reached"
+								? ` — ${sleepState.windowId === "weekly" ? "weekly " : ""}usage limit reached`
 								: ""}
 					</span>
 					<button

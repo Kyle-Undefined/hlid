@@ -47,7 +47,7 @@ export function AutoSleepSection({
 	return (
 		<Section
 			title="Auto-sleep on usage limit"
-			description="Pause running sessions when the five-hour usage window fills up, then resume automatically after it resets."
+			description="Pause running sessions when the preferred usage window fills up, then resume automatically after it resets. Hlid uses weekly usage when a five-hour window is unavailable."
 		>
 			<Field
 				label="Auto-sleep"
@@ -65,7 +65,7 @@ export function AutoSleepSection({
 			</Field>
 			<Field
 				label="Utilization threshold"
-				hint="sleep near this much of the five-hour budget; Hlid reserves up to 1% so an in-flight request does not overshoot the limit"
+				hint="sleep near this much of the active budget; Hlid reserves up to 1% so an in-flight request does not overshoot the limit"
 			>
 				<NumberInput
 					value={value.thresholdPercent}

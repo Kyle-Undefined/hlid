@@ -10,8 +10,9 @@ import { getWindowMark } from "./proxy";
  * AbortSignal, and a per-provider waker set lets one "resume now" wake every
  * sleeping session on that provider (the budget is shared anyway).
  *
- * Only the five_hour window is ever slept on. Weekly exhaustion behaves as
- * before this module existed: the turn errors and the user decides.
+ * The five_hour window is preferred when the provider reports one. Providers
+ * that expose only a weekly window (as Codex sometimes does) fall back to that
+ * window instead.
  */
 
 type HardLimitRecord = {
@@ -24,11 +25,13 @@ type HardLimitRecord = {
 
 export type SleepReason = "threshold" | "limit_reached";
 
+export type SleepWindowId = "five_hour" | "weekly";
+
 export type SleepDecision = {
 	/** Epoch seconds to sleep until (already capped by max_sleep). */
 	until: number;
 	reason: SleepReason;
-	windowId: "five_hour";
+	windowId: SleepWindowId;
 	/** True when max_sleep truncated the wait short of the window reset. */
 	capApplied: boolean;
 	/** Untruncated resume target (resetsAt + buffer), when known. */
@@ -37,7 +40,7 @@ export type SleepDecision = {
 	utilization: number | null;
 };
 
-const SLEPT_WINDOW = "five_hour";
+const SLEEP_WINDOWS = ["five_hour", "weekly"] as const;
 /** Recheck interval while a hard limit reports no resetsAt. */
 const NULL_RESET_RECHECK_SECONDS = 15 * 60;
 /** skipUntil fallback when no reset timestamp is known. */
@@ -58,13 +61,38 @@ function epochNow(): number {
 	return Math.floor(Date.now() / 1000);
 }
 
-function hardLimitKey(providerId: string): string {
-	return `${providerId}:${SLEPT_WINDOW}`;
+function windowKey(providerId: string, windowId: SleepWindowId): string {
+	return `${providerId}:${windowId}`;
+}
+
+function isSleepWindow(windowId: string): windowId is SleepWindowId {
+	return (SLEEP_WINDOWS as readonly string[]).includes(windowId);
+}
+
+function activeWindow(
+	providerId: string,
+	windowId: SleepWindowId,
+	now: number,
+): boolean {
+	const key = windowKey(providerId, windowId);
+	const record = hardLimits.get(key);
+	if (record && (record.resetsAt == null || record.resetsAt > now)) return true;
+	if (record) hardLimits.delete(key);
+	const mark = getWindowMark(providerId, windowId);
+	return (
+		mark?.utilization != null && (mark.resetsAt == null || mark.resetsAt > now)
+	);
+}
+
+function selectedWindow(providerId: string, now: number): SleepWindowId | null {
+	if (activeWindow(providerId, "five_hour", now)) return "five_hour";
+	if (activeWindow(providerId, "weekly", now)) return "weekly";
+	return null;
 }
 
 /**
- * Record a provider rate-limit signal. Rejections register a hard limit for
- * the five_hour window; any later non-rejected reading for the same window
+ * Record a provider rate-limit signal. Rejections register a hard limit for a
+ * supported sleep window; any later non-rejected reading for the same window
  * clears it. A rejection without a window id is attributed to five_hour only
  * when its resetsAt is close enough to plausibly be the short window.
  */
@@ -82,10 +110,10 @@ export function reportRateLimitSignal(
 		const now = epochNow();
 		if (resetsAt == null || resetsAt <= now || resetsAt - now > maxSleepSecs)
 			return;
-		resolvedWindow = SLEPT_WINDOW;
+		resolvedWindow = "five_hour";
 	}
-	if (resolvedWindow !== SLEPT_WINDOW) return;
-	const key = hardLimitKey(providerId);
+	if (!isSleepWindow(resolvedWindow)) return;
+	const key = windowKey(providerId, resolvedWindow);
 	if (status === "rejected") {
 		hardLimits.set(key, { resetsAt, reportedAt: epochNow() });
 	} else {
@@ -104,27 +132,30 @@ export function evaluateSleep(
 ): SleepDecision | null {
 	if (!cfg?.enabled) return null;
 
-	const skip = skipUntil.get(providerId);
+	const maxSleepSecs = cfg.max_sleep_minutes * 60;
+	const windowId = selectedWindow(providerId, now);
+	if (!windowId) return null;
+	const key = windowKey(providerId, windowId);
+
+	const skip = skipUntil.get(key);
 	if (skip !== undefined) {
 		if (skip > now) return null;
-		skipUntil.delete(providerId);
+		skipUntil.delete(key);
 	}
 
-	const maxSleepSecs = cfg.max_sleep_minutes * 60;
-
-	const record = hardLimits.get(hardLimitKey(providerId));
+	const record = hardLimits.get(key);
 	if (record) {
 		if (record.resetsAt != null) {
 			if (record.resetsAt <= now) {
 				// Reset passed — record is stale.
-				hardLimits.delete(hardLimitKey(providerId));
+				hardLimits.delete(key);
 			} else {
 				const target = record.resetsAt + cfg.resume_buffer_seconds;
 				const cap = now + maxSleepSecs;
 				return {
 					until: Math.min(target, cap),
 					reason: "limit_reached",
-					windowId: SLEPT_WINDOW,
+					windowId,
 					capApplied: cap < target,
 					targetResetsAt: target,
 					utilization: null,
@@ -135,15 +166,15 @@ export function evaluateSleep(
 			// until the cumulative cap (anchored at reportedAt) runs out.
 			const capEnd = record.reportedAt + maxSleepSecs;
 			if (now >= capEnd) {
-				hardLimits.delete(hardLimitKey(providerId));
-				skipUntil.set(providerId, now + SKIP_FALLBACK_SECONDS);
+				hardLimits.delete(key);
+				skipUntil.set(key, now + SKIP_FALLBACK_SECONDS);
 				return null;
 			}
 			const until = Math.min(now + NULL_RESET_RECHECK_SECONDS, capEnd);
 			return {
 				until,
 				reason: "limit_reached",
-				windowId: SLEPT_WINDOW,
+				windowId,
 				capApplied: until === capEnd,
 				targetResetsAt: null,
 				utilization: null,
@@ -151,7 +182,7 @@ export function evaluateSleep(
 		}
 	}
 
-	const mark = getWindowMark(providerId, SLEPT_WINDOW);
+	const mark = getWindowMark(providerId, windowId);
 	const proactiveThreshold = Math.max(
 		0,
 		cfg.threshold - Math.min(IN_FLIGHT_HEADROOM, cfg.threshold * 0.1),
@@ -159,11 +190,11 @@ export function evaluateSleep(
 	if (mark?.utilization == null || mark.utilization < proactiveThreshold)
 		return null;
 	if (mark.resetsAt == null) {
-		const warnKey = `${providerId}:${SLEPT_WINDOW}`;
+		const warnKey = windowKey(providerId, windowId);
 		if (!warnedMissingReset.has(warnKey)) {
 			warnedMissingReset.add(warnKey);
 			console.warn(
-				`[usageGate] ${providerId} five_hour at ${Math.round(mark.utilization * 100)}% but no resetsAt reported; not sleeping`,
+				`[usageGate] ${providerId} ${windowId} at ${Math.round(mark.utilization * 100)}% but no resetsAt reported; not sleeping`,
 			);
 		}
 		return null;
@@ -174,7 +205,7 @@ export function evaluateSleep(
 	return {
 		until: Math.min(target, cap),
 		reason: "threshold",
-		windowId: SLEPT_WINDOW,
+		windowId,
 		capApplied: cap < target,
 		targetResetsAt: target,
 		utilization: mark.utilization,
@@ -261,7 +292,7 @@ export async function sleepUntilAllowed(options: {
 			// Proceed anyway and suppress re-sleeping until the real reset —
 			// hard 429s then surface exactly as they did before auto-sleep.
 			skipUntil.set(
-				providerId,
+				windowKey(providerId, effective.windowId),
 				effective.targetResetsAt ?? now + SKIP_FALLBACK_SECONDS,
 			);
 			if (sleeping) onWake?.("reset");
@@ -270,7 +301,8 @@ export async function sleepUntilAllowed(options: {
 		if (
 			!lastEmitted ||
 			lastEmitted.until !== effective.until ||
-			lastEmitted.reason !== effective.reason
+			lastEmitted.reason !== effective.reason ||
+			lastEmitted.windowId !== effective.windowId
 		) {
 			onSleep?.(effective);
 			lastEmitted = effective;
@@ -294,15 +326,24 @@ export async function sleepUntilAllowed(options: {
  * resets (or a short fallback when no reset is known), then wake every
  * session currently sleeping on it.
  */
-export function skipSleep(providerId: string): void {
+export function skipSleep(
+	providerId: string,
+	sleepingWindow?: SleepWindowId,
+): void {
 	const now = epochNow();
-	const record = hardLimits.get(hardLimitKey(providerId));
-	const mark = getWindowMark(providerId, SLEPT_WINDOW);
-	const resetsAt = record?.resetsAt ?? mark?.resetsAt ?? null;
-	skipUntil.set(
-		providerId,
-		resetsAt != null && resetsAt > now ? resetsAt : now + SKIP_FALLBACK_SECONDS,
-	);
+	const windowId = sleepingWindow ?? selectedWindow(providerId, now);
+	if (windowId) {
+		const key = windowKey(providerId, windowId);
+		const record = hardLimits.get(key);
+		const mark = getWindowMark(providerId, windowId);
+		const resetsAt = record?.resetsAt ?? mark?.resetsAt ?? null;
+		skipUntil.set(
+			key,
+			resetsAt != null && resetsAt > now
+				? resetsAt
+				: now + SKIP_FALLBACK_SECONDS,
+		);
+	}
 	const set = wakers.get(providerId);
 	if (!set) return;
 	for (const wake of [...set]) wake();

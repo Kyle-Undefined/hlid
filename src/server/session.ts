@@ -2145,9 +2145,10 @@ export class SessionManager {
 	}
 
 	/**
-	 * Auto-sleep gate. Blocks while the provider's five_hour window is at the
-	 * configured threshold (or hard-limited) and auto_sleep is enabled, waking
-	 * at the window reset, on "resume now", or on abort. Emits agent_sleep
+	 * Auto-sleep gate. Blocks while the provider's preferred usage window is at
+	 * the configured threshold (or hard-limited) and auto_sleep is enabled,
+	 * waking at the window reset, on "resume now", or on abort. The five-hour
+	 * window is preferred, with weekly as the fallback. Emits agent_sleep
 	 * transitions and tracks sleepState for sync replay.
 	 *
 	 * Provider sessions keep host pre-tool boundaries active while auto-sleep is
@@ -2263,7 +2264,13 @@ export class SessionManager {
 	/** "Resume now": wake every session sleeping on this session's provider. */
 	skipSleep(): void {
 		const providerId = this.resolveProvider(this.agentCwd).providerId;
-		skipProviderSleep(providerId);
+		const sleepingWindow = this.sleepState?.windowId;
+		skipProviderSleep(
+			providerId,
+			sleepingWindow === "five_hour" || sleepingWindow === "weekly"
+				? sleepingWindow
+				: undefined,
+		);
 		if (this.sleepEmit) {
 			this.clearSleepState(providerId, "skipped", this.sleepEmit);
 		}
