@@ -39,7 +39,8 @@
     "generate-icons": "bun scripts/generate-icons.ts",
     "repair:codex-usage": "bun scripts/repair-codex-usage.ts",
     "repair:claude-usage": "bun scripts/repair-claude-usage.ts",
-    "import:provider-history": "bun scripts/import-provider-history.ts"
+    "import:provider-history": "bun scripts/import-provider-history.ts",
+    "report:build-week": "bun scripts/generate-build-provenance.ts"
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "1.1.0",

@@ -159,6 +159,19 @@ bun run validate       # Static checks, merged coverage, and full Fallow analysi
 bun run build:win      # Windows executable build
 ```
 
+For OpenAI Build Week evidence, generate a self-contained interactive report
+that correlates Codex transcript commit output with the signed Git history:
+
+```bash
+bun run report:build-week
+```
+
+The default report is `reports/openai-build-week-provenance.html`. It includes
+session/model IDs, commit links, verification commands, and transcript hashes,
+but excludes prompts, developer instructions, arbitrary tool output, and
+personal home paths. Run the script with `--help` to change the repository, Codex
+roots, evidence window, baseline, title, or output path.
+
 There are also three dry-run-first maintenance tools for old provider history.
 They can import transcript usage or repair older rows that were recorded before
 the current accounting logic existed.
