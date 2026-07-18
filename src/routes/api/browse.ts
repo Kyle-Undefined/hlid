@@ -1,15 +1,21 @@
-import { execFileSync } from "node:child_process";
-import { readdirSync, realpathSync, statSync } from "node:fs";
+import { execFile } from "node:child_process";
+import { readdir, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
+import { promisify } from "node:util";
 import { createFileRoute } from "@tanstack/react-router";
 import { forbiddenResponse } from "#/lib/originGate";
 import { expandTilde, pathStartsWith } from "#/lib/paths";
 import { loadConfig } from "#/server/config";
 
-function safePath(reqPath: string, allowedRoots: string[]): string | null {
+const execFileAsync = promisify(execFile);
+
+async function safePath(
+	reqPath: string,
+	allowedRoots: string[],
+): Promise<string | null> {
 	try {
-		const real = realpathSync(resolve(expandTilde(reqPath)));
+		const real = await realpath(resolve(expandTilde(reqPath)));
 		if (allowedRoots.some((r) => pathStartsWith(r, real))) return real;
 		return null;
 	} catch {
@@ -17,10 +23,10 @@ function safePath(reqPath: string, allowedRoots: string[]): string | null {
 	}
 }
 
-function unrestrictedPath(reqPath: string): string | null {
+async function unrestrictedPath(reqPath: string): Promise<string | null> {
 	const r = resolve(expandTilde(reqPath));
 	try {
-		return realpathSync(r);
+		return await realpath(r);
 	} catch {
 		// UNC paths like \\wsl.localhost\ are valid on Windows but realpathSync may reject them.
 		if (r.startsWith("\\\\")) return r;
@@ -38,11 +44,16 @@ export async function handleBrowseRequest(request: Request): Promise<Response> {
 
 	if (url.searchParams.get("wsl") === "1") {
 		try {
-			const raw = execFileSync("wsl", ["-e", "sh", "-c", "wslpath -w ~"], {
-				encoding: "utf-8",
-				timeout: 5000,
-				windowsHide: true,
-			}).trim();
+			const { stdout } = await execFileAsync(
+				"wsl",
+				["-e", "sh", "-c", "wslpath -w ~"],
+				{
+					encoding: "utf-8",
+					timeout: 5000,
+					windowsHide: true,
+				},
+			);
+			const raw = stdout.trim();
 			if (!raw.startsWith("\\\\")) throw new Error("unexpected");
 			return Response.json({ wslHome: raw });
 		} catch {
@@ -58,7 +69,7 @@ export async function handleBrowseRequest(request: Request): Promise<Response> {
 	let safed: string | null;
 	if (externalAllowed) {
 		try {
-			defaultRoot = realpathSync(homedir());
+			defaultRoot = await realpath(homedir());
 		} catch {
 			return Response.json(
 				{ error: "Home directory not accessible" },
@@ -66,14 +77,14 @@ export async function handleBrowseRequest(request: Request): Promise<Response> {
 			);
 		}
 		const raw = url.searchParams.get("path") ?? defaultRoot;
-		safed = unrestrictedPath(raw);
+		safed = await unrestrictedPath(raw);
 	} else {
 		// First-run / no vault: allow browsing under the user's home directory so
 		// the wizard's FolderBrowser can pick a vault before one is configured.
 		let allowedRoots: string[];
 		if (!vaultPath) {
 			try {
-				defaultRoot = realpathSync(homedir());
+				defaultRoot = await realpath(homedir());
 			} catch {
 				return Response.json(
 					{ error: "Home directory not accessible" },
@@ -83,8 +94,8 @@ export async function handleBrowseRequest(request: Request): Promise<Response> {
 			allowedRoots = [defaultRoot];
 		} else {
 			try {
-				defaultRoot = realpathSync(expandTilde(vaultPath));
-				statSync(defaultRoot); // must exist
+				defaultRoot = await realpath(expandTilde(vaultPath));
+				await stat(defaultRoot); // must exist
 			} catch {
 				return Response.json(
 					{ error: "Vault path not accessible" },
@@ -94,7 +105,7 @@ export async function handleBrowseRequest(request: Request): Promise<Response> {
 			allowedRoots = [defaultRoot];
 		}
 		const raw = url.searchParams.get("path") ?? defaultRoot;
-		safed = safePath(raw, allowedRoots);
+		safed = await safePath(raw, allowedRoots);
 	}
 
 	if (!safed) {
@@ -102,7 +113,7 @@ export async function handleBrowseRequest(request: Request): Promise<Response> {
 	}
 
 	try {
-		const entries = readdirSync(safed, { withFileTypes: true });
+		const entries = await readdir(safed, { withFileTypes: true });
 		return Response.json({
 			path: safed,
 			entries: entries

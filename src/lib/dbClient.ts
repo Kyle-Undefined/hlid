@@ -8,6 +8,11 @@ const INTERNAL_API_RETRY_TIMEOUT_MS = 1_000;
 const REQUEST_ID_HEADER = "x-hlid-request-id";
 const softFailureTimes = new Map<string, number>();
 
+type DbJsonReadBudget = {
+	initialTimeoutMs?: number;
+	retryTimeoutMs?: number;
+};
+
 function requestId(): string {
 	return crypto.randomUUID();
 }
@@ -122,24 +127,23 @@ async function readInternalApi(
  * read-only server fns where a soft failure is preferable to a
  * loader crash.
  */
-export async function dbJson<T>(path: string, fallback: T): Promise<T> {
+export async function dbJson<T>(
+	path: string,
+	fallback: T,
+	budget: DbJsonReadBudget = {},
+): Promise<T> {
 	const startedAt = performance.now();
 	const currentRequestId = requestId();
+	const initialTimeoutMs =
+		budget.initialTimeoutMs ?? INTERNAL_API_READ_TIMEOUT_MS;
+	const retryTimeoutMs = budget.retryTimeoutMs ?? INTERNAL_API_RETRY_TIMEOUT_MS;
 	let res: Response;
 	try {
 		try {
-			res = await readInternalApi(
-				path,
-				currentRequestId,
-				INTERNAL_API_READ_TIMEOUT_MS,
-			);
+			res = await readInternalApi(path, currentRequestId, initialTimeoutMs);
 		} catch (initialError) {
 			try {
-				res = await readInternalApi(
-					path,
-					currentRequestId,
-					INTERNAL_API_RETRY_TIMEOUT_MS,
-				);
+				res = await readInternalApi(path, currentRequestId, retryTimeoutMs);
 			} catch (retryError) {
 				throw new Error(
 					`${describeError(initialError)}; retry failed: ${describeError(retryError)}`,

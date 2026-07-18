@@ -1,96 +1,36 @@
-import { type FSWatcher, readdirSync, watch } from "node:fs";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { type FSWatcher, watch } from "node:fs";
+import { resolve } from "node:path";
 import type { HlidConfig } from "../config";
-import {
-	assembleCockpitData,
-	type collectCockpitData,
-} from "../lib/cockpitData";
-import {
-	type FolderGroup,
-	type MemoryFile,
-	type Project,
-	type Skill,
-	scanFolderGroups,
-	scanMemory,
-	scanProjects,
-	scanSkills,
-} from "../lib/vault";
 import { loadConfig } from "./config";
 import {
 	bumpDataRevision,
 	getDataRevisions,
 	subscribeDataRevisions,
 } from "./dataRevision";
+import { safeErrorSummary } from "./requestDiagnostics";
+import {
+	buildSnapshotData,
+	CLAUDE_SKILLS_DIR,
+	emptySnapshotData,
+	snapshotContentKey,
+	VAULT_FOLDER_KEYS,
+	type VaultRouteSnapshot,
+	type VaultSnapshotData,
+} from "./vaultSnapshotBuilder";
+import { buildVaultSnapshotOffMainThread } from "./vaultSnapshotWorkerClient";
 
-type VaultFolderKey =
-	| "inbox"
-	| "projects"
-	| "areas"
-	| "resources"
-	| "archive"
-	| "raw"
-	| "wiki_folder"
-	| "skills"
-	| "memory"
-	| "outputs";
-
-const PARA_ORDER: VaultFolderKey[] = [
-	"inbox",
-	"projects",
-	"areas",
-	"resources",
-	"archive",
-	"skills",
-	"memory",
-	"outputs",
-];
-const WIKI_ORDER: VaultFolderKey[] = [
-	"raw",
-	"wiki_folder",
-	"outputs",
-	"skills",
-	"memory",
-];
-const FIELD_LABELS: Record<VaultFolderKey, string> = {
-	inbox: "INBOX",
-	projects: "PROJECTS",
-	areas: "AREAS",
-	resources: "RESOURCES",
-	archive: "ARCHIVE",
-	raw: "RAW",
-	wiki_folder: "WIKI",
-	skills: "SKILLS",
-	memory: "MEMORY",
-	outputs: "OUTPUTS",
-};
-
-export type VaultRouteSnapshot = {
-	tabConfig: { id: VaultFolderKey; label: string }[];
-	projects: Project[];
-	wikiPages: Project[];
-	resources: FolderGroup[];
-	archive: Project[];
-	skills: Skill[];
-	sectionOrder: string[];
-	memory: MemoryFile[];
-	inbox: MemoryFile[];
-	raw: MemoryFile[];
-	areas: FolderGroup[];
-	outputs: MemoryFile[];
-	vocab: HlidConfig["status_vocabulary"];
-};
+export type { VaultRouteSnapshot } from "./vaultSnapshotBuilder";
 
 export type VaultSnapshot = {
 	revision: number;
 	refreshedAt: number;
 	vault: VaultRouteSnapshot;
-	cockpit: ReturnType<typeof collectCockpitData>;
+	cockpit: VaultSnapshotData["cockpit"];
 };
 
 const SNAPSHOT_TTL_MS = 5_000;
 const WATCH_DEBOUNCE_MS = 200;
-const CLAUDE_SKILLS_DIR = resolve(homedir(), ".claude", "skills");
+const SNAPSHOT_FAILURE_RETRY_MS = 30_000;
 
 type SnapshotRecord = VaultSnapshot & {
 	configKey: string;
@@ -103,6 +43,7 @@ let dirty = false;
 let invalidationGeneration = 0;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let pendingConfig: HlidConfig | null = null;
+let retryAfter = 0;
 let watchSignature = "";
 let watchers: FSWatcher[] = [];
 
@@ -114,110 +55,11 @@ function configKey(config: HlidConfig): string {
 	});
 }
 
-function configuredVaultTabs(vault: HlidConfig["vault"]) {
-	const order = vault.style === "wiki" ? WIKI_ORDER : PARA_ORDER;
-	return order
-		.filter((key) => Boolean(vault[key]))
-		.map((key) => ({ id: key, label: FIELD_LABELS[key] }));
-}
-
-function scanConfiguredFolder<T>(
-	vault: HlidConfig["vault"],
-	key: VaultFolderKey,
-	scan: (root: string, folder: string) => T,
-	fallback: T,
-): T {
-	const folder = vault[key];
-	return vault.path && typeof folder === "string"
-		? scan(vault.path, folder)
-		: fallback;
-}
-
-function inboxMarkdownCount(config: HlidConfig): number {
-	const { vault } = config;
-	if (!(vault.path && vault.inbox)) return 0;
-	try {
-		return readdirSync(join(vault.path, vault.inbox)).filter((file) =>
-			file.endsWith(".md"),
-		).length;
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-			console.warn("Failed to read inbox directory:", error);
-		}
-		return 0;
-	}
-}
-
-function buildSnapshotData(config: HlidConfig): {
-	vault: VaultRouteSnapshot;
-	cockpit: ReturnType<typeof collectCockpitData>;
-} {
-	const { vault, status_vocabulary: vocab } = config;
-	const scanProjectFolder = (root: string, folder: string) =>
-		scanProjects(root, folder, vocab);
-	const projects = scanConfiguredFolder(
-		vault,
-		"projects",
-		scanProjectFolder,
-		[],
-	);
-	const wikiPages = scanConfiguredFolder(
-		vault,
-		"wiki_folder",
-		scanProjectFolder,
-		[],
-	);
-	const { skills, sectionOrder } = scanConfiguredFolder(
-		vault,
-		"skills",
-		(root, folder) => scanSkills(root, folder, config.ui.hide_skills_index),
-		{ skills: [], sectionOrder: [] },
-	);
-	const memory = scanConfiguredFolder(vault, "memory", scanMemory, []);
-	const inbox = scanConfiguredFolder(vault, "inbox", scanMemory, []);
-	const raw = scanConfiguredFolder(vault, "raw", scanMemory, []);
-	const areas = scanConfiguredFolder(vault, "areas", scanFolderGroups, []);
-	const resources = scanConfiguredFolder(
-		vault,
-		"resources",
-		scanFolderGroups,
-		[],
-	);
-	const archive = scanConfiguredFolder(vault, "archive", scanProjectFolder, []);
-	const outputs = scanConfiguredFolder(vault, "outputs", scanMemory, []);
-	const { skills: claudeSkills } = scanSkills(CLAUDE_SKILLS_DIR, ".", false);
-
-	return {
-		vault: {
-			tabConfig: configuredVaultTabs(vault),
-			projects,
-			wikiPages,
-			resources,
-			archive,
-			skills,
-			sectionOrder,
-			memory,
-			inbox,
-			raw,
-			areas,
-			outputs,
-			vocab,
-		},
-		cockpit: assembleCockpitData({
-			inboxCount: inboxMarkdownCount(config),
-			projects,
-			vaultSkills: skills,
-			sectionOrder,
-			claudeSkills,
-		}),
-	};
-}
-
 function configuredWatchPaths(config: HlidConfig): string[] {
 	const paths = new Set<string>([CLAUDE_SKILLS_DIR]);
 	if (config.vault.path) {
 		paths.add(resolve(config.vault.path));
-		for (const key of Object.keys(FIELD_LABELS) as VaultFolderKey[]) {
+		for (const key of VAULT_FOLDER_KEYS) {
 			const folder = config.vault[key];
 			if (typeof folder === "string") {
 				paths.add(resolve(config.vault.path, folder));
@@ -269,6 +111,7 @@ function emitChange(record: SnapshotRecord): void {
 function scheduleRefresh(config?: HlidConfig): void {
 	if (config) pendingConfig = config;
 	if (!current || refreshTimer) return;
+	const delay = Math.max(WATCH_DEBOUNCE_MS, retryAfter - Date.now());
 	refreshTimer = setTimeout(() => {
 		refreshTimer = null;
 		const nextConfig = pendingConfig ?? loadConfig();
@@ -276,7 +119,7 @@ function scheduleRefresh(config?: HlidConfig): void {
 		void refreshSnapshot(nextConfig).finally(() => {
 			if (dirty) scheduleRefresh();
 		});
-	}, WATCH_DEBOUNCE_MS);
+	}, delay);
 }
 
 async function refreshSnapshot(config: HlidConfig): Promise<SnapshotRecord> {
@@ -284,9 +127,34 @@ async function refreshSnapshot(config: HlidConfig): Promise<SnapshotRecord> {
 	const startedGeneration = invalidationGeneration;
 	const nextConfigKey = configKey(config);
 	const promise = Promise.resolve()
-		.then(() => buildSnapshotData(config))
-		.then((data) => {
-			const contentKey = JSON.stringify({ config: nextConfigKey, data });
+		.then(() =>
+			process.env.NODE_ENV === "test"
+				? (() => {
+						const data = buildSnapshotData(config);
+						const contentKey = snapshotContentKey(nextConfigKey, data);
+						return current?.contentKey === contentKey
+							? ({ changed: false, contentKey } as const)
+							: ({ changed: true, contentKey, data } as const);
+					})()
+				: buildVaultSnapshotOffMainThread(
+						config,
+						nextConfigKey,
+						current?.contentKey,
+					),
+		)
+		.then((result) => {
+			retryAfter = 0;
+			if (!result.changed && current?.configKey === nextConfigKey) {
+				const record = { ...current, refreshedAt: Date.now() };
+				current = record;
+				dirty = invalidationGeneration !== startedGeneration;
+				installWatchers(config);
+				return record;
+			}
+			if (!result.changed) {
+				throw new Error("Vault snapshot worker omitted changed snapshot data");
+			}
+			const { contentKey, data } = result;
 			const changed = current?.contentKey !== contentKey;
 			const record: SnapshotRecord = {
 				...data,
@@ -301,6 +169,28 @@ async function refreshSnapshot(config: HlidConfig): Promise<SnapshotRecord> {
 			dirty = invalidationGeneration !== startedGeneration;
 			installWatchers(config);
 			if (changed) emitChange(record);
+			return record;
+		})
+		.catch((error) => {
+			// Snapshot inventory is optional route enrichment. Preserve a last-good
+			// snapshot (or a safe empty shell on first boot) and retry later instead
+			// of turning a slow/unavailable filesystem into an app error boundary.
+			console.warn(
+				`[vaultSnapshot] refresh failed: ${safeErrorSummary(error)}`,
+			);
+			retryAfter = Date.now() + SNAPSHOT_FAILURE_RETRY_MS;
+			dirty = false;
+			if (current?.configKey === nextConfigKey) return current;
+			const data = emptySnapshotData(config);
+			const record: SnapshotRecord = {
+				...data,
+				revision: (current?.revision ?? 0) + 1,
+				refreshedAt: Date.now(),
+				configKey: nextConfigKey,
+				contentKey: snapshotContentKey(nextConfigKey, data),
+			};
+			current = record;
+			installWatchers(config);
 			return record;
 		})
 		.finally(() => {
@@ -319,6 +209,7 @@ export async function getVaultSnapshot(options: { refresh?: boolean } = {}) {
 	const config = loadConfig();
 	const nextConfigKey = configKey(config);
 	if (!current) return refreshSnapshot(config);
+	if (Date.now() < retryAfter) return current;
 
 	if (options.refresh) {
 		dirty = true;

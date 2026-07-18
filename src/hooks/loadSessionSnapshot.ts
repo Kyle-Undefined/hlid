@@ -182,6 +182,71 @@ async function hydrateSessionHistoryPage({
 	};
 }
 
+function sessionHistoryPageFromRows({
+	rows,
+	hasOlder,
+}: {
+	rows: SessionDataRow[];
+	hasOlder: boolean;
+}): SessionHistoryPage {
+	return {
+		rows,
+		items: mapSessionRows(rows, [], [], []),
+		hasOlder,
+		nextBeforeSeq: rows[0]?.seq ?? null,
+		nextBeforeId: rows[0]?.id ?? null,
+	};
+}
+
+async function loadNewestSessionRows({
+	sessionId,
+	pageSize,
+}: {
+	sessionId: string;
+	pageSize: number;
+}): Promise<SessionHistoryPage> {
+	const boundedPageSize = Math.max(1, Math.min(5_000, Math.trunc(pageSize)));
+	const pageRows = await getSessionDataFn({
+		data: { sessionId, limit: boundedPageSize + 1 },
+	});
+	const hasOlder = pageRows.length > boundedPageSize;
+	return sessionHistoryPageFromRows({
+		rows: hasOlder ? pageRows.slice(1) : pageRows,
+		hasOlder,
+	});
+}
+
+async function loadSessionWindowRows({
+	sessionId,
+	minSeq,
+	minId,
+	hasOlder,
+}: {
+	sessionId: string;
+	minSeq: number;
+	minId: number;
+	hasOlder: boolean;
+}): Promise<SessionHistoryPage> {
+	const rows = await getSessionDataFn({ data: { sessionId, minSeq, minId } });
+	return sessionHistoryPageFromRows({ rows, hasOlder });
+}
+
+async function loadSessionMetadata(
+	sessionId: string,
+	rows: SessionDataRow[],
+): Promise<SessionItems> {
+	const minSeq = rows[0]?.seq;
+	if (minSeq === undefined) return [];
+	const maxSeq = rows.at(-1)?.seq ?? minSeq;
+	const scopedPage = { sessionId, minSeq, maxSeq };
+	const [permEvents, planRows, aukRows] = await Promise.all([
+		getSessionPermissionsFn({ data: scopedPage }),
+		getSessionPlanProposalsFn({ data: scopedPage }),
+		getSessionAskUserQuestionsFn({ data: scopedPage }),
+	]);
+	return mapSessionRows(rows, permEvents, planRows, aukRows);
+}
+
 /**
  * Reads one backwards cursor page and maps every persisted transcript card
  * belonging to that message-sequence window. The extra message is lookahead:
@@ -216,30 +281,6 @@ export async function loadSessionHistoryPage({
 		sessionId,
 		// Marks an older page so standalone permission events are not repeated.
 		...(beforeSeq !== undefined ? { beforeSeq } : {}),
-	});
-}
-
-/**
- * Reconnect refreshes use an inclusive oldest sequence instead of a row count.
- * That keeps every page the user already revealed even when new rows arrived
- * while the socket was down.
- */
-async function loadSessionHistoryWindow({
-	sessionId,
-	minSeq,
-	minId,
-	hasOlder,
-}: {
-	sessionId: string;
-	minSeq: number;
-	minId: number;
-	hasOlder: boolean;
-}): Promise<SessionHistoryPage> {
-	const rows = await getSessionDataFn({ data: { sessionId, minSeq, minId } });
-	return hydrateSessionHistoryPage({
-		rows,
-		hasOlder,
-		sessionId,
 	});
 }
 
@@ -296,8 +337,9 @@ function applyCtx(ctx: CtxRow, sessionId: string): void {
 }
 
 /**
- * Fetches the newest page of a session's history plus context, applies it to
- * the reducer via LOAD_HISTORY, and seeds
+ * Fetches the newest page of a session's base transcript, applies it to the
+ * reducer via LOAD_HISTORY, then hydrates context and interaction cards without
+ * holding the transcript pending. Also seeds
  * a pending assistant bubble (reusing an in-flight assistant row if one was
  * persisted) when the session is still running — draining any buffered
  * events onto it. Shared by the initial load and reconnect-recovery effects
@@ -330,19 +372,20 @@ export async function loadSessionSnapshot({
 	/** Checked right after the fetch resolves; skips all dispatches if true (effect was cleaned up or superseded). */
 	isCancelled: () => boolean;
 }): Promise<SessionHistoryPage | null> {
-	const [page, ctx] = await Promise.all([
+	// Context and persisted interaction cards are useful enrichment, but neither
+	// should hold the base transcript blank. Start context in parallel and hydrate
+	// cards after LOAD_HISTORY, preserving any newer live socket state in reducer.
+	const ctxRead = getSessionContextFn({ data: sessionId });
+	const page =
 		preserveFromSeq === undefined
-			? loadSessionHistoryPage({ sessionId, pageSize })
-			: loadSessionHistoryWindow({
+			? await loadNewestSessionRows({ sessionId, pageSize })
+			: await loadSessionWindowRows({
 					sessionId,
 					minSeq: preserveFromSeq,
 					minId: preserveFromId ?? 0,
 					hasOlder: preserveHasOlder,
-				}),
-		getSessionContextFn({ data: sessionId }),
-	]);
+				});
 	if (isCancelled()) return null;
-	applyCtx(ctx, sessionId);
 	const { items } = page;
 	dispatch({ type: "LOAD_HISTORY", items });
 	// Dispatches are processed in order, so opening the gate here lets buffered
@@ -378,6 +421,21 @@ export async function loadSessionSnapshot({
 		// Session done before history loaded — DB has complete data, discard buffer.
 		wsStore.clearMessageBuffer();
 	}
+
+	void ctxRead.then(
+		(ctx) => {
+			if (!isCancelled()) applyCtx(ctx, sessionId);
+		},
+		(error) => console.error(error),
+	);
+	void loadSessionMetadata(sessionId, page.rows).then(
+		(hydratedItems) => {
+			if (!isCancelled() && hydratedItems.length > 0) {
+				dispatch({ type: "HYDRATE_HISTORY", items: hydratedItems });
+			}
+		},
+		(error) => console.error(error),
+	);
 
 	return page;
 }

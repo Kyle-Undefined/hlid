@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { access } from "node:fs/promises";
 import { join } from "node:path";
 
 export const AGENT_INSTRUCTION_FILE_NAMES = ["AGENTS.md", "CLAUDE.md"] as const;
@@ -21,6 +22,20 @@ export function findAgentInstructionFile(
 ): AgentInstructionFileName | null {
 	for (const filename of AGENT_INSTRUCTION_FILE_NAMES) {
 		if (existsSync(join(agentPath, filename))) return filename;
+	}
+	return null;
+}
+
+export async function findAgentInstructionFileAsync(
+	agentPath: string,
+): Promise<AgentInstructionFileName | null> {
+	for (const filename of AGENT_INSTRUCTION_FILE_NAMES) {
+		try {
+			await access(join(agentPath, filename));
+			return filename;
+		} catch {
+			// Try the compatibility fallback.
+		}
 	}
 	return null;
 }

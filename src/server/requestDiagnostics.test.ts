@@ -66,6 +66,34 @@ describe("request diagnostics", () => {
 		);
 	});
 
+	it("adds only a safe generated server-function name", async () => {
+		let now = 0;
+		const log = vi.fn();
+		const observe = createRequestObserver({
+			scope: "ui",
+			slowRequestMs: 1,
+			dedupeMs: 0,
+			now: () => now,
+			requestName: () => "getSessionSelectionFn",
+			log,
+		});
+
+		await observe(
+			new Request(
+				"http://localhost/_serverFn/41729594ce21ef9745474a11480dd8d4a36186c976f5ee341e7c5dc6a330db5c",
+			),
+			() => {
+				now = 2;
+				return new Response("ok");
+			},
+		);
+
+		expect(log).toHaveBeenCalledWith(
+			"warn",
+			"[ui] GET /_serverFn/:id server-fn=getSessionSelectionFn completed in 2ms with 200",
+		);
+	});
+
 	it("deduplicates a repeated signature and rethrows handler failures", async () => {
 		let now = 0;
 		const log = vi.fn();

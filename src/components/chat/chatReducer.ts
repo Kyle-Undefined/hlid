@@ -202,6 +202,11 @@ export type Action =
 			items: HistoryItem[];
 	  }
 	| {
+			/** Add optional persisted cards after the base transcript is visible. */
+			type: "HYDRATE_HISTORY";
+			items: HistoryItem[];
+	  }
+	| {
 			type: "ADD_ASK_USER_QUESTION";
 			id: string;
 			questions: AskQuestion[];
@@ -585,6 +590,23 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 				return true;
 			});
 			return older.length > 0 ? [...older, ...state] : state;
+		}
+		case "HYDRATE_HISTORY": {
+			// Existing live messages win so late DB enrichment cannot roll back
+			// streaming text or a socket-delivered decision.
+			const current = new Map(
+				state.map((message) => [`${message.role}:${message.id}`, message]),
+			);
+			const hydratedKeys = new Set<string>();
+			const hydrated = action.items.map(historyItemToMessage).map((message) => {
+				const key = `${message.role}:${message.id}`;
+				hydratedKeys.add(key);
+				return current.get(key) ?? message;
+			});
+			const liveOnly = state.filter(
+				(message) => !hydratedKeys.has(`${message.role}:${message.id}`),
+			);
+			return [...hydrated, ...liveOnly];
 		}
 		case "ADD_ASK_USER_QUESTION": {
 			// Dedup: LOAD_HISTORY may have already hydrated this id from DB. The

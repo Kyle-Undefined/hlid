@@ -17,6 +17,14 @@ import {
 } from "#/lib/serverFnSchemas";
 import type { SessionStatusEntry } from "#/server/protocol";
 
+// These reads enrich an already-readable transcript. A transient internal
+// transport miss should settle before the UI slow-request threshold instead
+// of consuming the generic five-second read timeout.
+const SESSION_METADATA_READ_BUDGET = {
+	initialTimeoutMs: 1_000,
+	retryTimeoutMs: 500,
+} as const;
+
 /** Returns the session_id of the currently active/last session, or null. */
 export const getCurrentSessionFn = createServerFn({ method: "GET" }).handler(
 	async () => {
@@ -164,6 +172,7 @@ export const getSessionPermissionsFn = createServerFn({ method: "GET" })
 				? `/db/session-permissions?session_id=${encodeURIComponent(data)}`
 				: sessionPagePath("/db/session-permissions", data),
 			[],
+			SESSION_METADATA_READ_BUDGET,
 		),
 	);
 
@@ -176,6 +185,7 @@ const getSessionRows = <T>(
 			? `${path}?session_id=${encodeURIComponent(data)}`
 			: sessionPagePath(path, data),
 		[],
+		SESSION_METADATA_READ_BUDGET,
 	);
 
 const validateSessionRowsRequest = (raw: unknown) =>
@@ -224,6 +234,7 @@ export const getSessionContextFn = createServerFn({ method: "GET" })
 		} | null>(
 			`/db/session-context?session_id=${encodeURIComponent(sessionId)}`,
 			null,
+			SESSION_METADATA_READ_BUDGET,
 		),
 	);
 

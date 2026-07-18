@@ -49,7 +49,7 @@ const winVersion = parts.slice(0, 4).join(".");
 const onWindows = process.platform === "win32";
 
 const result = await Bun.build({
-	entrypoints: [resolve(root, "src/server/index.ts")],
+	entrypoints: ["src/server/index.ts"],
 	plugins: [assetRedirectPlugin],
 	compile: {
 		target: "bun-windows-x64",

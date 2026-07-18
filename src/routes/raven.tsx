@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
 	FileCode,
+	LoaderCircle,
 	MessageSquare,
 	Mic,
 	Paperclip,
@@ -81,6 +82,7 @@ import {
 	normalizeEffortForPlanMode,
 	resolveActiveProviderId,
 } from "#/lib/providerOptions";
+import { loadRavenProviders } from "#/lib/ravenProviderCache";
 import {
 	createAnimationFrameCoalescer,
 	isNearChatBottom,
@@ -93,7 +95,10 @@ import {
 import { getAgentListFn } from "#/lib/serverFns/agents";
 import { getCockpitData } from "#/lib/serverFns/cockpit";
 import { getConfig } from "#/lib/serverFns/config";
-import { getProvidersFn, loadProviderUsages } from "#/lib/serverFns/providers";
+import {
+	type getProvidersFn,
+	loadProviderUsages,
+} from "#/lib/serverFns/providers";
 import {
 	ensureSessionFn,
 	getCurrentSessionFn,
@@ -186,10 +191,7 @@ async function loadRavenRoute(session?: string, agent?: string) {
 			getCockpitData().then((cockpit) => cockpit.skills),
 			[],
 		),
-		optionalRavenLoaderValue(
-			getProvidersFn({ data: { preferCachedModels: true } }),
-			[],
-		),
+		optionalRavenLoaderValue(loadRavenProviders(), []),
 		optionalRavenLoaderValue(getVoiceInfoFn(), {
 			status: { state: "unavailable", model: "" },
 			models: [],
@@ -266,8 +268,20 @@ export const Route = createFileRoute("/raven")({
 	// Otherwise its live stream remains visible (and scrollable) while the next
 	// session's loader resolves, making the app look stuck on the old reply.
 	pendingMs: 0,
+	pendingComponent: RavenSessionPending,
 	component: RavenRoutePage,
 });
+
+function RavenSessionPending() {
+	return (
+		<div
+			className="grid min-h-full place-items-center p-6"
+			data-testid="raven-session-pending"
+		>
+			<LoaderCircle className="w-5 h-5 text-muted-foreground/40 animate-spin" />
+		</div>
+	);
+}
 
 function RavenRoutePage() {
 	const { existingSessionId, agentSkillContext } = Route.useLoaderData();
@@ -628,6 +642,7 @@ function useRavenViewport({
 	const bottomRef = useRef<HTMLDivElement>(null);
 	const scrollRef = useRef<HTMLDivElement>(null);
 	const atBottomRef = useRef(true);
+	const wheelAwayRef = useRef(false);
 	const touchActiveRef = useRef(false);
 	const touchStartYRef = useRef(0);
 	const touchAwayRef = useRef(false);
@@ -645,6 +660,7 @@ function useRavenViewport({
 		scrollSessionRef.current = sessionId;
 		needsInitialBottomRef.current = true;
 		atBottomRef.current = true;
+		wheelAwayRef.current = false;
 	}
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: activeSkill triggers deferred focus
@@ -662,6 +678,12 @@ function useRavenViewport({
 			window.matchMedia("(pointer: coarse)").matches;
 		const onScroll = () => {
 			if (touchActiveRef.current && touchAwayRef.current) return;
+			if (wheelAwayRef.current) {
+				const distance =
+					element.scrollHeight - element.scrollTop - element.clientHeight;
+				if (distance > 1) return;
+				wheelAwayRef.current = false;
+			}
 			atBottomRef.current = isNearChatBottom(element, isCoarsePointer);
 		};
 		const onTouchStart = (event: TouchEvent) => {
@@ -685,7 +707,16 @@ function useRavenViewport({
 				atBottomRef.current = isNearChatBottom(element, isCoarsePointer);
 		};
 		const onWheel = (event: WheelEvent) => {
-			if (event.deltaY < 0) atBottomRef.current = false;
+			if (event.deltaY < 0) {
+				wheelAwayRef.current = true;
+				atBottomRef.current = false;
+			} else if (
+				event.deltaY > 0 &&
+				isNearChatBottom(element, isCoarsePointer)
+			) {
+				wheelAwayRef.current = false;
+				atBottomRef.current = true;
+			}
 		};
 		element.addEventListener("scroll", onScroll, { passive: true });
 		element.addEventListener("touchstart", onTouchStart, { passive: true });
@@ -1297,9 +1328,7 @@ export function ChatPage() {
 		setProviders(initialProviders);
 		if (initialProviders.length > 0) return;
 		let cancelled = false;
-		void Promise.resolve(
-			getProvidersFn({ data: { preferCachedModels: true } }),
-		).then(
+		void loadRavenProviders().then(
 			(next) => {
 				if (!cancelled && Array.isArray(next) && next.length > 0) {
 					setProviders(next);

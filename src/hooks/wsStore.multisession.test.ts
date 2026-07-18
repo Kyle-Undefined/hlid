@@ -307,6 +307,63 @@ describe("subscribeToSession / getSubscribedSessionId", () => {
 		expect(wsStore.getSubscribedSessionId()).toBe("session-b");
 	});
 
+	it("switches between running chats without replaying output from the old chat", () => {
+		receive({
+			type: "sessions_status",
+			sessions: [
+				{
+					session_id: "session-a",
+					agent_cwd: "/a",
+					agent_name: "A",
+					state: "running",
+					model: "codex",
+					hasPendingPermissions: false,
+				},
+				{
+					session_id: "session-b",
+					agent_cwd: "/b",
+					agent_name: "B",
+					state: "running",
+					model: "codex",
+					hasPendingPermissions: false,
+				},
+			],
+		});
+		wsStore.subscribeToSession("session-a");
+		wsStore.setBufferingEnabled(true);
+		receive({
+			type: "chunk",
+			text: "A before switch",
+			session_id: "session-a",
+		});
+
+		const delivered: string[] = [];
+		const unsubscribe = wsStore.subscribeMessage((message) => {
+			if (message.type === "chunk") delivered.push(message.text);
+		});
+		wsStore.subscribeToSession("session-b");
+		receive({
+			type: "chunk",
+			text: "A after switch",
+			session_id: "session-a",
+		});
+		receive({
+			type: "chunk",
+			text: "B after switch",
+			session_id: "session-b",
+		});
+
+		expect(delivered).toEqual(["B after switch"]);
+		expect(wsStore.drainMessageBuffer()).toEqual([
+			expect.objectContaining({
+				type: "chunk",
+				text: "B after switch",
+				session_id: "session-b",
+			}),
+		]);
+		unsubscribe();
+	});
+
 	it("clears session-scoped controls while the next session status loads", () => {
 		wsStore.subscribeToSession("session-a");
 		receive({

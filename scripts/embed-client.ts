@@ -6,11 +6,18 @@
 // Run after `vite build`, before `bun build --compile`.
 
 import { createHash } from "node:crypto";
-import { existsSync, readdirSync, statSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	readFileSync,
+	readdirSync,
+	statSync,
+	writeFileSync,
+} from "node:fs";
 import { posix, resolve } from "node:path";
 
 const root = resolve(import.meta.dir, "..");
 const clientDir = resolve(root, "dist", "client");
+const serverDir = resolve(root, "dist", "server");
 const out = resolve(root, "src", "server", "embedded-client.ts");
 
 const banner = `// @ts-nocheck
@@ -23,7 +30,10 @@ const banner = `// @ts-nocheck
 // No dist/client yet (fresh checkout, dev mode before first build).
 // Emit an empty stub so the import in src/server/index.ts resolves.
 if (!existsSync(clientDir)) {
-	writeFileSync(out, `${banner}\nexport const EMBEDDED_ASSETS: Record<string, string> = {};\n`);
+	writeFileSync(
+		out,
+		`${banner}\nexport const EMBEDDED_ASSETS: Record<string, string> = {};\nexport const SERVER_FN_NAMES: Record<string, string> = {};\n`,
+	);
 	console.log("dist/client missing, wrote empty embedded-client.ts stub");
 	process.exit(0);
 }
@@ -53,8 +63,26 @@ function safeIdent(p: string): string {
 
 const files = walk(clientDir).sort();
 
+function readServerFnNames(): Array<[string, string]> {
+	if (!existsSync(serverDir)) return [];
+	const entries = new Map<string, string>();
+	for (const rel of walk(serverDir).filter((path) => path.endsWith(".js"))) {
+		const source = readFileSync(resolve(serverDir, rel), "utf8");
+		const pattern =
+			/"([0-9a-f]{64})"\s*:\s*\{\s*functionName\s*:\s*"([A-Za-z][A-Za-z0-9_]*)_createServerFn_handler"/g;
+		for (const match of source.matchAll(pattern)) {
+			const [, id, name] = match;
+			if (id && name) entries.set(id, name);
+		}
+	}
+	return [...entries].sort(([left], [right]) => left.localeCompare(right));
+}
+
 const importLines: string[] = [];
 const mapLines: string[] = [];
+const serverFnLines = readServerFnNames().map(
+	([id, name]) => `\t${JSON.stringify(id)}: ${JSON.stringify(name)},`,
+);
 
 for (const rel of files) {
 	const ident = safeIdent(rel);
@@ -71,7 +99,13 @@ ${importLines.join("\n")}
 export const EMBEDDED_ASSETS: Record<string, string> = {
 ${mapLines.join("\n")}
 };
+
+export const SERVER_FN_NAMES: Record<string, string> = {
+${serverFnLines.join("\n")}
+};
 `;
 
 writeFileSync(out, content);
-console.log(`Embedded ${files.length} client files → src/server/embedded-client.ts`);
+console.log(
+	`Embedded ${files.length} client files and ${serverFnLines.length} server function names → src/server/embedded-client.ts`,
+);

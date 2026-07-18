@@ -155,6 +155,46 @@ describe("useLoadChatHistory — initial load", () => {
 		expect(liveStatsStore.resetLiveStats).not.toHaveBeenCalled();
 	});
 
+	it("shows base messages before optional question history finishes", async () => {
+		let resolveQuestions!: (value: []) => void;
+		vi.mocked(getSessionAskUserQuestionsFn).mockReturnValue(
+			new Promise((resolve) => {
+				resolveQuestions = resolve;
+			}),
+		);
+		vi.mocked(getSessionDataFn).mockResolvedValue([
+			makeRow("user", "visible immediately", 1000),
+		]);
+		const dispatch = vi.fn();
+
+		renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef: { current: null },
+			historyReadyRef: { current: false },
+			handleWsMessage: noopWsHandler,
+			wsStatus: "connected",
+			sessionIdRef: { current: "sess-1" },
+		});
+
+		await act(async () => {});
+		const load = dispatch.mock.calls.find(
+			([action]) => action.type === "LOAD_HISTORY",
+		)?.[0];
+		expect(load.items).toEqual([
+			expect.objectContaining({ text: "visible immediately" }),
+		]);
+		expect(
+			dispatch.mock.calls.some(([action]) => action.type === "HYDRATE_HISTORY"),
+		).toBe(false);
+
+		await act(async () => resolveQuestions([]));
+		expect(
+			dispatch.mock.calls.some(([action]) => action.type === "HYDRATE_HISTORY"),
+		).toBe(true);
+	});
+
 	it("restores persisted subagent snapshots on tool events", async () => {
 		const row = makeRow("assistant", "", 1000);
 		vi.mocked(getSessionDataFn).mockResolvedValue([

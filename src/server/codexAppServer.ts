@@ -151,6 +151,14 @@ function summarizeCodexStderr(line: string): string | null | undefined {
 					: typeof parsed.fields?.error === "string"
 						? parsed.fields.error
 						: "";
+			if (/models_manager::cache$/.test(target)) {
+				if (/failed to load models cache/i.test(raw)) {
+					return `${target}: model catalog cache could not be read; Codex will refresh it`;
+				}
+				if (/failed to write models cache/i.test(raw)) {
+					return `${target}: model catalog cache could not be saved; the current catalog remains available`;
+				}
+			}
 			if (
 				level === "ERROR" ||
 				target.includes("::tools::") ||

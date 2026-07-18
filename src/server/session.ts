@@ -39,7 +39,7 @@ import {
 	PermissionManager,
 	PlanModeManager,
 } from "./permissions";
-import { buildPlanHtmlInstructions, buildPrompt } from "./promptBuilder";
+import { buildPlanHtmlInstructions, buildPromptAsync } from "./promptBuilder";
 import type {
 	AgentSleepMessage,
 	AskUserQuestionAnswers,
@@ -3023,7 +3023,7 @@ export class SessionManager {
 		const turn = createTurnState();
 
 		try {
-			const { prompt, safeAttachments } = buildPrompt({
+			const { prompt, safeAttachments } = await buildPromptAsync({
 				vaultPath: this.vaultPath,
 				allowedAgentRealPaths: this.allowedAgentRealPaths,
 				agentMode: this.agentMode,

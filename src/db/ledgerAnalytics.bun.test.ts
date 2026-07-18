@@ -232,6 +232,37 @@ describe("Ledger filtered analytics", () => {
 		expect(result.trend.days).toEqual([{ date: "2026-07-10", count: 1 }]);
 	});
 
+	it("combines indexed tool timestamps with the legacy message fallback", async () => {
+		await createSession("fast-tool", "Fast tool", "gpt-test");
+		await appendMessage("fast-tool", 1, "assistant", "fast");
+		await appendToolEvent("fast-tool", 1, "fast-1", "Read", {});
+
+		await createSession("legacy-current", "Legacy current", "gpt-test");
+		await appendMessage("legacy-current", 1, "assistant", "current");
+		await appendToolEvent("legacy-current", 1, "legacy-1", "Read", {});
+		testDb
+			.query("UPDATE tool_events SET timestamp = NULL WHERE tool_id = ?")
+			.run("legacy-1");
+
+		await createSession("legacy-old", "Legacy old", "gpt-test");
+		await appendMessage("legacy-old", 1, "assistant", "old");
+		await appendToolEvent("legacy-old", 1, "legacy-old-1", "Read", {});
+		testDb
+			.query("UPDATE tool_events SET timestamp = NULL WHERE tool_id = ?")
+			.run("legacy-old-1");
+		testDb
+			.query(
+				"UPDATE messages SET timestamp = unixepoch('now', '-1 day') WHERE session_id = ?",
+			)
+			.run("legacy-old");
+
+		const result = await getLedgerAnalytics({ range: "today" });
+
+		expect(result.topTools).toEqual([
+			{ name: "Read", count: 2, errorCount: 0, errorRate: 0 },
+		]);
+	});
+
 	for (const [range, includedOffset, excludedOffset] of [
 		["7d", "-6 days", "-7 days"],
 		["30d", "-29 days", "-30 days"],

@@ -1,4 +1,4 @@
-import { statSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,7 +11,7 @@ vi.mock("#/server/config", () => ({ loadConfig: vi.fn() }));
 vi.mock("#/lib/originGate", () => ({ forbiddenResponse: vi.fn(() => null) }));
 vi.mock("#/lib/config-writer", () => ({ writeConfig: vi.fn() }));
 vi.mock("#/lib/dbClient", () => ({ dbFetch: vi.fn() }));
-vi.mock("node:fs", () => ({ statSync: vi.fn() }));
+vi.mock("node:fs/promises", () => ({ stat: vi.fn() }));
 
 const { loadConfig } = await import("#/server/config");
 const { forbiddenResponse } = await import("#/lib/originGate");
@@ -62,13 +62,13 @@ describe("POST /api/config — handlePostConfig", () => {
 	});
 
 	it("expands a tilde vault path before validation and persists the config", async () => {
-		vi.mocked(statSync).mockReturnValue({ isDirectory: () => true } as never);
+		vi.mocked(stat).mockResolvedValue({ isDirectory: () => true } as never);
 		const config = HlidConfigSchema.parse({ vault: { path: "~/vault" } });
 
 		const response = await handlePostConfig(post(config));
 
 		expect(response.status).toBe(200);
-		expect(statSync).toHaveBeenCalledWith(resolve(homedir(), "vault"));
+		expect(stat).toHaveBeenCalledWith(resolve(homedir(), "vault"));
 		expect(writeConfig).toHaveBeenCalledWith(config);
 		expect(dbFetch).toHaveBeenCalledWith("/voice/sync", { method: "POST" });
 	});
@@ -81,11 +81,8 @@ describe("POST /api/config — handlePostConfig", () => {
 			"vault.path is not a directory",
 		],
 	])("rejects %s without persisting", async (_label, result, error) => {
-		if (result instanceof Error)
-			vi.mocked(statSync).mockImplementation(() => {
-				throw result;
-			});
-		else vi.mocked(statSync).mockReturnValue(result as never);
+		if (result instanceof Error) vi.mocked(stat).mockRejectedValue(result);
+		else vi.mocked(stat).mockResolvedValue(result as never);
 		const response = await handlePostConfig(
 			post(HlidConfigSchema.parse({ vault: { path: "/vault" } })),
 		);

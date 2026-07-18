@@ -1,6 +1,9 @@
-import { realpathSync } from "node:fs";
+import { realpath } from "node:fs/promises";
 import { resolve } from "node:path";
-import { findAgentInstructionFile } from "../lib/agentInstructions";
+import {
+	type AgentInstructionFileName,
+	findAgentInstructionFileAsync,
+} from "../lib/agentInstructions";
 import { pathStartsWith, toLogical } from "../lib/paths";
 import type { ChatAttachment } from "./protocol";
 
@@ -53,86 +56,27 @@ the plan anyway. If the user requests revisions, overwrite the same file
 with the revised plan before presenting again.`;
 }
 
-/**
- * Validates and builds the prompt string for the SDK query.
- * Filters skill context and attachments to safe paths within vault/agent roots.
- * Returns the final prompt text and the filtered attachment list.
- */
-export function buildPrompt(opts: BuildPromptOptions): {
-	prompt: string;
-	safeAttachments: ChatAttachment[];
-} {
-	const {
-		vaultPath,
-		allowedAgentRealPaths,
-		agentMode,
-		agentCwd,
-		claudeSessionId,
-		userMessage,
-		skillContexts,
-		skillContext,
-		attachments,
-		planHtmlInstructions,
-	} = opts;
+function requestedSkillContexts(opts: BuildPromptOptions): string[] {
+	const requested = opts.skillContexts ?? opts.skillContext;
+	return Array.isArray(requested) ? requested : requested ? [requested] : [];
+}
 
-	// For vault skills: skillContext is the absolute file path.
-	// Validate it stays within the vault before interpolating into the prompt.
-	// For Claude skills (skillContext absent): message starts with '/' and CLI handles
-	// the slash command natively from ~/.claude/skills/. Keep the slash intact.
-	const vaultRoot = resolve(vaultPath);
-	let vaultRootReal: string;
-	try {
-		vaultRootReal = realpathSync(vaultRoot);
-	} catch {
-		vaultRootReal = vaultRoot;
-	}
-	const requestedSkillContexts = skillContexts ?? skillContext;
-	const safeSkillContexts = (
-		Array.isArray(requestedSkillContexts)
-			? requestedSkillContexts
-			: requestedSkillContexts
-				? [requestedSkillContexts]
-				: []
-	).flatMap((skillContext) => {
-		// Use realpath for consistency with safeAttachments: both must compare
-		// against vaultRootReal so symlinked paths resolve to the same base.
-		let real: string;
-		try {
-			real = realpathSync(resolve(skillContext));
-		} catch {
-			return [];
-		}
-		return pathStartsWith(vaultRootReal, real) ? [skillContext] : [];
-	});
-	const safeAttachments = (attachments ?? []).filter((a) => {
-		let real: string;
-		try {
-			real = realpathSync(resolve(a.path));
-		} catch {
-			return false;
-		}
-		if (pathStartsWith(vaultRootReal, real)) return true;
-		for (const root of allowedAgentRealPaths) {
-			if (pathStartsWith(root, real)) return true;
-		}
-		return false;
-	});
+function assemblePrompt(
+	opts: BuildPromptOptions,
+	safeSkillContexts: string[],
+	safeAttachments: ChatAttachment[],
+	instructionFile: AgentInstructionFileName | null,
+): { prompt: string; safeAttachments: ChatAttachment[] } {
+	const { agentCwd, userMessage, planHtmlInstructions } = opts;
 	const attachmentBlock =
 		safeAttachments.length > 0
 			? `Attachments (read with the Read tool when relevant):\n${safeAttachments
-					.map((a) => `- ${toLogical(a.path)} (${a.mime})`)
+					.map(
+						(attachment) =>
+							`- ${toLogical(attachment.path)} (${attachment.mime})`,
+					)
 					.join("\n")}\n\n`
 			: "";
-	// Context-mode persona preamble: inject whenever there is no captured
-	// SDK session to resume — i.e. on the first turn of a brand-new chat
-	// AND on the first turn of any pre-resume-migration chat (where
-	// messageSeq > 0 but claudeSessionId is still null). This guarantees
-	// the persona lands on the very turn that establishes the CLI-side
-	// session that subsequent turns will resume.
-	const instructionFile =
-		agentMode === "context" && agentCwd && claudeSessionId === null
-			? findAgentInstructionFile(agentCwd)
-			: null;
 	const personaBlock =
 		agentCwd && instructionFile
 			? `Please read \`${toLogical(agentCwd)}/${instructionFile}\` and adopt its persona/instructions for this conversation.\n\n`
@@ -152,4 +96,52 @@ export function buildPrompt(opts: BuildPromptOptions): {
 			: `${personaBlock}${attachmentBlock}${skillBlock}User: ${userMessage || "(no additional input)"}${planHtmlBlock}`
 		: `${personaBlock}${attachmentBlock}${userMessage}${planHtmlBlock}`;
 	return { prompt, safeAttachments };
+}
+
+/** Async server path: keeps WSL/UNC canonicalization off the main event loop. */
+export async function buildPromptAsync(
+	opts: BuildPromptOptions,
+): Promise<{ prompt: string; safeAttachments: ChatAttachment[] }> {
+	const vaultRoot = resolve(opts.vaultPath);
+	const vaultRootReal = await realpath(vaultRoot).catch(() => vaultRoot);
+	const safeSkillContexts = (
+		await Promise.all(
+			requestedSkillContexts(opts).map(async (skillContext) => {
+				const canonical = await realpath(resolve(skillContext)).catch(
+					() => null,
+				);
+				return canonical && pathStartsWith(vaultRootReal, canonical)
+					? skillContext
+					: null;
+			}),
+		)
+	).filter((value): value is string => value !== null);
+	const safeAttachments = (
+		await Promise.all(
+			(opts.attachments ?? []).map(async (attachment) => {
+				const canonical = await realpath(resolve(attachment.path)).catch(
+					() => null,
+				);
+				if (!canonical) return null;
+				if (pathStartsWith(vaultRootReal, canonical)) return attachment;
+				return opts.allowedAgentRealPaths.some((root) =>
+					pathStartsWith(root, canonical),
+				)
+					? attachment
+					: null;
+			}),
+		)
+	).filter((value): value is ChatAttachment => value !== null);
+	const instructionFile =
+		opts.agentMode === "context" &&
+		opts.agentCwd &&
+		opts.claudeSessionId === null
+			? await findAgentInstructionFileAsync(opts.agentCwd)
+			: null;
+	return assemblePrompt(
+		opts,
+		safeSkillContexts,
+		safeAttachments,
+		instructionFile,
+	);
 }

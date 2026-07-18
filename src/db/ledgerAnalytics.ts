@@ -50,8 +50,8 @@ export type LedgerToolErrorBreakdown = {
 
 const SESSION_MODEL_SQL =
 	"COALESCE(NULLIF(s.actual_model, ''), NULLIF(s.selected_model, ''), NULLIF(s.model, ''))";
-const TOOL_TIMESTAMP_SQL =
-	"COALESCE(te.timestamp, (SELECT MIN(m.timestamp) FROM messages m WHERE m.session_id = te.session_id AND m.seq = te.assistant_seq AND m.role = 'assistant'), s.started_at)";
+const TOOL_FALLBACK_TIMESTAMP_SQL =
+	"COALESCE((SELECT MIN(m.timestamp) FROM messages m WHERE m.session_id = te.session_id AND m.seq = te.assistant_seq AND m.role = 'assistant'), s.started_at)";
 
 type AnalyticsDimensions = {
 	agent: string;
@@ -142,13 +142,45 @@ function sessionConditions(
 	};
 }
 
+type SqlConditions = ReturnType<typeof sessionConditions>;
+
+function appendCondition(
+	conditions: SqlConditions,
+	condition: string,
+): SqlConditions {
+	return {
+		sql: `${conditions.sql}${conditions.sql ? " AND" : " WHERE"} ${condition}`,
+		params: conditions.params,
+	};
+}
+
+/**
+ * Keep the common timestamped tool-event path on the composite timestamp index.
+ * Only the small legacy NULL-timestamp set needs the correlated message fallback.
+ */
+function toolEventConditions(filter: LedgerAnalyticsFilter): SqlConditions[] {
+	if (filter.range === "all") {
+		return [sessionConditions(filter, "te.timestamp", TOOL_DIMENSIONS)];
+	}
+	return [
+		appendCondition(
+			sessionConditions(filter, "te.timestamp", TOOL_DIMENSIONS),
+			"te.timestamp IS NOT NULL",
+		),
+		appendCondition(
+			sessionConditions(filter, TOOL_FALLBACK_TIMESTAMP_SQL, TOOL_DIMENSIONS),
+			"te.timestamp IS NULL",
+		),
+	];
+}
+
 export async function getLedgerAnalytics(
 	filter: LedgerAnalyticsFilter,
 ): Promise<LedgerAnalytics> {
 	const db = await getDb();
 	const usage = sessionConditions(filter, "uq.timestamp", USAGE_DIMENSIONS);
 	const query = sessionConditions(filter, "q.timestamp", QUERY_DIMENSIONS);
-	const tool = sessionConditions(filter, TOOL_TIMESTAMP_SQL, TOOL_DIMENSIONS);
+	const toolSources = toolEventConditions(filter);
 
 	type SelectedRow = AggWindow & { sessions: number };
 	const selected = db
@@ -198,14 +230,20 @@ export async function getLedgerAnalytics(
 
 	const topTools = db
 		.query<TopToolCall, (string | number)[]>(
-			`SELECT te.name, COUNT(*) AS count,
-			 SUM(CASE WHEN te.is_error = 1 THEN 1 ELSE 0 END) AS errorCount,
-			 CAST(SUM(CASE WHEN te.is_error = 1 THEN 1 ELSE 0 END) AS REAL) / COUNT(*) AS errorRate
-			 FROM tool_events te JOIN sessions s ON s.id = te.session_id
-			 ${tool.sql}
-			 GROUP BY te.name ORDER BY count DESC, te.name ASC LIMIT 10`,
+			`SELECT name, COUNT(*) AS count,
+			 SUM(CASE WHEN is_error = 1 THEN 1 ELSE 0 END) AS errorCount,
+			 CAST(SUM(CASE WHEN is_error = 1 THEN 1 ELSE 0 END) AS REAL) / COUNT(*) AS errorRate
+			 FROM (${toolSources
+					.map(
+						(source) =>
+							`SELECT te.name, te.is_error
+							 FROM tool_events te JOIN sessions s ON s.id = te.session_id
+							 ${source.sql}`,
+					)
+					.join(" UNION ALL ")}) filtered_tool_events
+			 GROUP BY name ORDER BY count DESC, name ASC LIMIT 10`,
 		)
-		.all(...tool.params)
+		.all(...toolSources.flatMap((source) => source.params))
 		.map((row) => ({ ...row, errorRate: row.errorRate ?? 0 }));
 
 	const weekdayHour = db
@@ -294,23 +332,31 @@ export async function getLedgerToolErrors(
 	limit = 50,
 ): Promise<LedgerToolErrorBreakdown> {
 	const db = await getDb();
-	const tool = sessionConditions(filter, TOOL_TIMESTAMP_SQL, TOOL_DIMENSIONS);
-	const where = `${tool.sql}${tool.sql ? " AND" : " WHERE"} te.name = ? AND te.is_error = 1`;
-	const params = [...tool.params, toolName];
+	const toolSources = toolEventConditions(filter);
+	const rowsSql = toolSources
+		.map(
+			(source) =>
+				`SELECT te.name, te.is_error, te.result_text
+				 FROM tool_events te JOIN sessions s ON s.id = te.session_id
+				 ${source.sql}`,
+		)
+		.join(" UNION ALL ");
+	const sourceParams = toolSources.flatMap((source) => source.params);
+	const params = [...sourceParams, toolName];
 	const counts = db
 		.query<{ total: number; distinctCount: number }, (string | number)[]>(
 			`SELECT COUNT(*) AS total,
-			        COUNT(DISTINCT COALESCE(te.result_text, '')) AS distinctCount
-			 FROM tool_events te JOIN sessions s ON s.id = te.session_id
-			 ${where}`,
+			        COUNT(DISTINCT COALESCE(result_text, '')) AS distinctCount
+			 FROM (${rowsSql}) filtered_tool_events
+			 WHERE name = ? AND is_error = 1`,
 		)
 		.get(...params) ?? { total: 0, distinctCount: 0 };
 	const groups = db
 		.query<ToolErrorEntry, (string | number)[]>(
-			`SELECT COALESCE(te.result_text, '') AS text, COUNT(*) AS count
-			 FROM tool_events te JOIN sessions s ON s.id = te.session_id
-			 ${where}
-			 GROUP BY COALESCE(te.result_text, '')
+			`SELECT COALESCE(result_text, '') AS text, COUNT(*) AS count
+			 FROM (${rowsSql}) filtered_tool_events
+			 WHERE name = ? AND is_error = 1
+			 GROUP BY COALESCE(result_text, '')
 			 ORDER BY count DESC, text ASC
 			 LIMIT ?`,
 		)

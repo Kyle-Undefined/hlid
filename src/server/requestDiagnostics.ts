@@ -13,6 +13,8 @@ type SlowRequestThreshold = number | ((request: Request) => number | undefined);
 export type RequestObserverOptions = {
 	scope: string;
 	slowRequestMs?: SlowRequestThreshold;
+	/** Optional allowlisted operation label, such as a generated server-fn name. */
+	requestName?: (request: Request) => string | undefined;
 	dedupeMs?: number;
 	reportServerErrors?: boolean;
 	now?: () => number;
@@ -72,14 +74,28 @@ function safeRequestId(request: Request): string | null {
 	return value.slice(0, 12);
 }
 
-function requestLabels(request: Request): {
+function safeRequestName(value: string | undefined): string | null {
+	if (!value || !/^[A-Za-z][A-Za-z0-9_]{0,79}$/.test(value)) return null;
+	return value;
+}
+
+function requestLabels(
+	request: Request,
+	requestName?: (request: Request) => string | undefined,
+): {
 	label: string;
 	signature: string;
 } {
 	const method = request.method.toUpperCase().slice(0, 12);
 	const route = safeRequestPath(request);
 	const requestId = safeRequestId(request);
-	const signature = `${method} ${route}`;
+	let operation: string | null = null;
+	try {
+		operation = safeRequestName(requestName?.(request));
+	} catch {
+		// Diagnostics must never interfere with request handling.
+	}
+	const signature = `${method} ${route}${operation ? ` server-fn=${operation}` : ""}`;
 	return {
 		label: `${signature}${requestId ? ` request ${requestId}` : ""}`,
 		signature,
@@ -115,7 +131,7 @@ export function createRequestObserver(options: RequestObserverOptions) {
 		handle: () => Promise<T> | T,
 	): Promise<T> {
 		const startedAt = now();
-		const { label, signature } = requestLabels(request);
+		const { label, signature } = requestLabels(request, options.requestName);
 		try {
 			const response = await handle();
 			const elapsedMs = Math.max(0, Math.round(now() - startedAt));

@@ -73,6 +73,10 @@ vi.mock("./promptBuilder", () => ({
 		prompt: "test prompt",
 		safeAttachments: [],
 	}),
+	buildPromptAsync: vi.fn().mockResolvedValue({
+		prompt: "test prompt",
+		safeAttachments: [],
+	}),
 }));
 vi.mock("node:fs", () => ({
 	mkdirSync: vi.fn(),
@@ -4561,7 +4565,7 @@ describe("SessionManager — Slice B AgentSession reuse", () => {
 		if (!lastSendSpy) throw new Error("send spy was never assigned");
 		expect(lastSendSpy).toHaveBeenCalledTimes(1);
 		const sentArg = lastSendSpy.mock.calls[0][0] as string;
-		// buildPrompt is mocked at module level to return "test prompt", which
+		// buildPromptAsync is mocked at module level to return "test prompt", which
 		// SessionManager forwards verbatim to agentSession.send().
 		expect(sentArg).toBe("test prompt");
 		ctl.closeStream();

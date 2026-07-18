@@ -4,19 +4,15 @@ import { handleGetSkills } from "./skills";
 
 vi.mock("#/server/config", () => ({ loadConfig: vi.fn() }));
 vi.mock("#/lib/originGate", () => ({ forbiddenResponse: vi.fn(() => null) }));
-vi.mock("#/lib/vault", () => ({
-	scanSkills: vi.fn(),
-	scanMemory: vi.fn(),
-}));
+vi.mock("#/server/vaultSnapshot", () => ({ getVaultSnapshot: vi.fn() }));
 
 const { loadConfig } = await import("#/server/config");
 const { forbiddenResponse } = await import("#/lib/originGate");
-const { scanSkills, scanMemory } = await import("#/lib/vault");
+const { getVaultSnapshot } = await import("#/server/vaultSnapshot");
 
 const mockLoadConfig = vi.mocked(loadConfig);
 const mockForbiddenResponse = vi.mocked(forbiddenResponse);
-const mockScanSkills = vi.mocked(scanSkills);
-const mockScanMemory = vi.mocked(scanMemory);
+const mockGetVaultSnapshot = vi.mocked(getVaultSnapshot);
 
 function withVault(extras: Record<string, unknown> = {}) {
 	mockLoadConfig.mockReturnValue({
@@ -57,13 +53,15 @@ describe("handleGetSkills", () => {
 		expect(res.status).toBe(400);
 	});
 
-	it("delegates to scanSkills and returns skills + sectionOrder", async () => {
+	it("returns skills and section order from the shared snapshot", async () => {
 		withVault();
-		mockScanSkills.mockReturnValue({ skills: [], sectionOrder: ["A", "B"] });
+		mockGetVaultSnapshot.mockResolvedValue({
+			vault: { skills: [], sectionOrder: ["A", "B"] },
+		} as never);
 		const res = await handleGetSkills(getReq("/api/vault/skills"));
 		expect(res.status).toBe(200);
 		expect(await res.json()).toEqual({ skills: [], sectionOrder: ["A", "B"] });
-		expect(mockScanSkills).toHaveBeenCalledWith("/vault", "skills", false);
+		expect(mockGetVaultSnapshot).toHaveBeenCalledOnce();
 	});
 });
 
@@ -76,17 +74,19 @@ describe("handleGetMemory", () => {
 		expect(res.status).toBe(400);
 	});
 
-	it("delegates to scanMemory with correct args", async () => {
+	it("uses the shared snapshot", async () => {
 		withVault();
-		mockScanMemory.mockReturnValue([]);
+		mockGetVaultSnapshot.mockResolvedValue({ vault: { memory: [] } } as never);
 		await handleGetMemory(getReq("/api/vault/memory"));
-		expect(mockScanMemory).toHaveBeenCalledWith("/vault", "memory");
+		expect(mockGetVaultSnapshot).toHaveBeenCalledOnce();
 	});
 
 	it("returns memory files", async () => {
 		withVault();
 		const files = [{ path: "/vault/memory/note.md", name: "note" }];
-		mockScanMemory.mockReturnValue(files as never);
+		mockGetVaultSnapshot.mockResolvedValue({
+			vault: { memory: files },
+		} as never);
 		const res = await handleGetMemory(getReq("/api/vault/memory"));
 		expect(await res.json()).toEqual(files);
 	});

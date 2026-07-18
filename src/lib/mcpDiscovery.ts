@@ -10,7 +10,7 @@ type LiveMcpServer = {
 
 type McpDiscoveryDependencies = {
 	loadLiveServers: () => Promise<LiveMcpServer[]>;
-	readFile: (path: string) => string;
+	readFile: (path: string) => string | Promise<string>;
 	globalSettingsPath: string;
 	vaultMcpPath?: string;
 };
@@ -26,13 +26,13 @@ export function parseMcpServerNames(contents: string): string[] {
 	}
 }
 
-function readServerNames(
+async function readServerNames(
 	path: string | undefined,
-	readFile: (path: string) => string,
-): string[] {
+	readFile: (path: string) => string | Promise<string>,
+): Promise<string[]> {
 	if (!path) return [];
 	try {
-		return parseMcpServerNames(readFile(path));
+		return parseMcpServerNames(await readFile(path));
 	} catch {
 		return [];
 	}
@@ -48,14 +48,10 @@ export async function discoverMcpServers(
 		// The internal server may not be running yet; use static configuration.
 	}
 
-	const vaultServers = readServerNames(
-		dependencies.vaultMcpPath,
-		dependencies.readFile,
-	);
-	const globalServers = readServerNames(
-		dependencies.globalSettingsPath,
-		dependencies.readFile,
-	);
+	const [vaultServers, globalServers] = await Promise.all([
+		readServerNames(dependencies.vaultMcpPath, dependencies.readFile),
+		readServerNames(dependencies.globalSettingsPath, dependencies.readFile),
+	]);
 	const seen = new Set(vaultServers);
 	return [
 		...vaultServers.map((name) => ({

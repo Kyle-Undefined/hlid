@@ -1,4 +1,4 @@
-import { statSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { createFileRoute } from "@tanstack/react-router";
 import { HlidConfigSchema } from "#/config";
 import { writeConfig } from "#/lib/config-writer";
@@ -25,8 +25,8 @@ export async function handlePostConfig(request: Request): Promise<Response> {
 	}
 	if (config.vault.path) {
 		try {
-			const stat = statSync(expandTilde(config.vault.path));
-			if (!stat.isDirectory()) {
+			const vaultStat = await stat(expandTilde(config.vault.path));
+			if (!vaultStat.isDirectory()) {
 				return Response.json(
 					{ error: "vault.path is not a directory" },
 					{ status: 400 },

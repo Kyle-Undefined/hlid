@@ -704,6 +704,11 @@ export function subscribeToSession(sessionId: string): void {
 	switchStatsContext(sessionId);
 	focusSession(sessionId);
 	if (sessionChanged) {
+		// The replay buffer belongs to the previously focused session. Keep replay
+		// during snapshot/reconnect reads, but never carry those events across a
+		// chat switch. Events from the newly subscribed session can refill it while
+		// that session's history is loading.
+		_messageBuffer = [];
 		// Session controls and run state are scoped to the focused chat. Do not
 		// display the previous chat's model/effort/permissions while waiting for
 		// the subscribed session's status response.

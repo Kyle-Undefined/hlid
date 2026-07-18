@@ -589,12 +589,12 @@ function resolveChatEntry(
 	context: MessageContext,
 	entry: PoolEntry,
 	msg: MessageOf<"chat">,
-): PoolEntry | null {
+): { entry: PoolEntry; created: boolean } | null {
 	const needsNewSession = context.ws.data.pendingNewSession === true;
 	if (needsNewSession) context.ws.data.pendingNewSession = false;
 	const reused = reuseExistingChatEntry(context, entry, msg.session_id);
 	if (!shouldCreateChatEntry(entry, reused, msg, needsNewSession))
-		return reused;
+		return { entry: reused, created: false };
 	const targetCwd = msg.agent_cwd ?? context.pool.vaultEntry().agentCwd;
 	const created = createPoolEntry(
 		context,
@@ -604,9 +604,7 @@ function resolveChatEntry(
 	if (!created) return null;
 	subscribeToEntry(context, created);
 	sendSessionCreated(context, created);
-	broadcastSessionsStatus(context);
-	send(context.ws, { type: "status", ...created.manager.getStatus() });
-	return created;
+	return { entry: created, created: true };
 }
 
 function broadcastUserMessage(
@@ -706,8 +704,9 @@ async function handleChat(
 		send(context.ws, { type: "error", message: "Invalid message" });
 		return;
 	}
-	const chatEntry = resolveChatEntry(context, entry, msg);
-	if (!chatEntry) return;
+	const resolved = resolveChatEntry(context, entry, msg);
+	if (!resolved) return;
+	const { entry: chatEntry, created } = resolved;
 	const currentSessionId = chatEntry.manager.getCurrentSessionId();
 	const providerChanged =
 		msg.provider !== undefined &&
@@ -727,6 +726,27 @@ async function handleChat(
 			effort: msg.effort,
 			permissionMode: msg.permission_mode,
 		});
+	} else if (currentSessionId === null && !chatEntry.manager.isRunning()) {
+		// Picker changes made before the first submission are addressed to the
+		// not-yet-created DB chat. Apply every repeated control carried by the chat
+		// payload even when the provider itself was left at its configured default.
+		await Promise.all([
+			msg.model !== undefined
+				? chatEntry.manager.setModel(msg.model)
+				: Promise.resolve(),
+			msg.effort !== undefined
+				? chatEntry.manager.setEffort(msg.effort)
+				: Promise.resolve(),
+			msg.permission_mode !== undefined
+				? chatEntry.manager.setPermissionMode(msg.permission_mode)
+				: Promise.resolve(),
+		]);
+	}
+	if (created) {
+		// Do not publish the manager's configured defaults between session_created
+		// and the first-turn overrides; that transient status resets Raven's picker.
+		send(context.ws, { type: "status", ...chatEntry.manager.getStatus() });
+		broadcastSessionsStatus(context);
 	}
 	broadcastUserMessage(context.ws, chatEntry, msg);
 	claimChatOwnership(context.ws, chatEntry);

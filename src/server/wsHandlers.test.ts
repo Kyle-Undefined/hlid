@@ -113,6 +113,7 @@ function makeSession(overrides: Partial<SessionManager> = {}): SessionManager {
 		restoreMcpStatus: vi.fn(),
 		setModel: vi.fn().mockResolvedValue(undefined),
 		setProvider: vi.fn().mockResolvedValue(undefined),
+		setEffort: vi.fn().mockResolvedValue(undefined),
 		setPermissionMode: vi.fn().mockResolvedValue(undefined),
 		getAccountInfo: vi.fn().mockResolvedValue(null),
 		...overrides,
@@ -831,6 +832,59 @@ describe("message — chat", () => {
 			effort: "ultra",
 			permissionMode: "bypassPermissions",
 		});
+		expect(session.runQuery).toHaveBeenCalled();
+	});
+
+	it("applies partial first-turn controls without requiring a provider override", async () => {
+		const status = {
+			state: "idle" as const,
+			model: "configured-model",
+			effort: "medium",
+			permission_mode: "default" as const,
+		};
+		const session = makeSession({
+			getProviderId: vi.fn().mockReturnValue("codex"),
+			getCurrentSessionId: vi.fn().mockReturnValue(null),
+			getStatus: vi.fn(() => ({ ...status })),
+			setModel: vi.fn(async (model?: string) => {
+				status.model = model ?? "";
+			}),
+			setEffort: vi.fn(async (effort: string) => {
+				status.effort = effort;
+			}),
+			setPermissionMode: vi.fn(async (mode: string) => {
+				status.permission_mode = mode as "default";
+			}),
+		});
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "chat",
+				text: "first turn",
+				session_id: "new-session",
+				model: "gpt-5.6-sol",
+				effort: "ultra",
+				permission_mode: "bypassPermissions",
+			}),
+		);
+
+		expect(session.setProvider).not.toHaveBeenCalled();
+		expect(session.setModel).toHaveBeenCalledWith("gpt-5.6-sol");
+		expect(session.setEffort).toHaveBeenCalledWith("ultra");
+		expect(session.setPermissionMode).toHaveBeenCalledWith("bypassPermissions");
+		expect(mockSend).toHaveBeenCalledWith(
+			ws,
+			expect.objectContaining({
+				type: "status",
+				model: "gpt-5.6-sol",
+				effort: "ultra",
+				permission_mode: "bypassPermissions",
+			}),
+		);
 		expect(session.runQuery).toHaveBeenCalled();
 	});
 

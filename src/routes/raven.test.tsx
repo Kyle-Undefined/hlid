@@ -199,6 +199,7 @@ vi.mock("#/lib/serverFns/voice", () => ({
 vi.mock("#/lib/serverFns/config", () => ({ getConfig: vi.fn() }));
 
 import { resetRavenTerminalsForTesting } from "#/hooks/ravenTerminalStore";
+import { resetRavenProviderCacheForTesting } from "#/lib/ravenProviderCache";
 import { getAgentListFn } from "#/lib/serverFns/agents";
 import { getCockpitData } from "#/lib/serverFns/cockpit";
 import { getConfig } from "#/lib/serverFns/config";
@@ -215,6 +216,7 @@ afterEach(cleanup);
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	resetRavenProviderCacheForTesting();
 	localStorage.clear();
 	resetRavenTerminalsForTesting();
 	state.sessionState = "idle";
@@ -959,6 +961,8 @@ type RouteShape = {
 	loader: (input: {
 		deps: { session?: string; agent?: string };
 	}) => Promise<Record<string, unknown>>;
+	pendingMs?: number;
+	pendingComponent?: React.ComponentType;
 };
 
 const route = Route as unknown as RouteShape;
@@ -973,6 +977,15 @@ function makeLoaderConfig(overrides?: Record<string, unknown>) {
 }
 
 describe("raven route search/deps", () => {
+	it("replaces the previous transcript immediately while a session load is pending", () => {
+		expect(route.pendingMs).toBe(0);
+		const Pending = route.pendingComponent;
+		expect(Pending).toBeTypeOf("function");
+		if (!Pending) throw new Error("missing Raven pending component");
+		render(<Pending />);
+		expect(screen.getByTestId("raven-session-pending")).toBeTruthy();
+	});
+
 	it("validateSearch keeps only string params", () => {
 		expect(
 			route.validateSearch({
@@ -1030,6 +1043,26 @@ describe("raven route loader", () => {
 			expect(getProvidersFn).toHaveBeenCalledWith({
 				data: { preferCachedModels: true },
 			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("shares a stalled provider read across session switches", async () => {
+		vi.useFakeTimers();
+		try {
+			vi.mocked(getProvidersFn).mockImplementation(() => new Promise(() => {}));
+			const first = route.loader({ deps: { session: "switch-test-a" } });
+			await vi.advanceTimersByTimeAsync(501);
+			const firstData = await first;
+
+			const second = route.loader({ deps: { session: "switch-test-b" } });
+			await vi.advanceTimersByTimeAsync(501);
+			const secondData = await second;
+
+			expect(firstData.existingSessionId).toBe("switch-test-a");
+			expect(secondData.existingSessionId).toBe("switch-test-b");
+			expect(getProvidersFn).toHaveBeenCalledOnce();
 		} finally {
 			vi.useRealTimers();
 		}

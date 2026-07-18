@@ -207,6 +207,32 @@ describe("CodexAppServer idle lifecycle", () => {
 		warn.mockRestore();
 	});
 
+	it("explains recoverable model cache failures without exposing paths", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const { proc } = await create();
+
+		proc.stderr.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					level: "ERROR",
+					target: "codex_models_manager::cache",
+					fields: {
+						message:
+							"failed to load models cache: permission denied at C:\\Users\\private\\models_cache.json",
+					},
+				})}\n`,
+			),
+		);
+
+		expect(warn).toHaveBeenCalledWith(
+			"[codex app-server]",
+			"codex_models_manager::cache: model catalog cache could not be read; Codex will refresh it",
+		);
+		expect(warn.mock.calls.flat().join(" ")).not.toContain("private");
+		warn.mockRestore();
+	});
+
 	it("buffers stderr lines split across process chunks", async () => {
 		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 		const { proc } = await create();

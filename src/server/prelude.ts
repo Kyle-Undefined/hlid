@@ -13,7 +13,10 @@ import { dirname } from "node:path";
 
 if (process.execPath.endsWith(".exe")) {
 	const authReset = process.argv[2] === "auth" && process.argv[3] === "reset";
-	if (!authReset) {
+	const internalVaultWorker = process.argv.includes(
+		"--internal-vault-snapshot-worker",
+	);
+	if (!authReset && !internalVaultWorker) {
 		(process.stdout as unknown as { write: () => boolean }).write = () => true;
 		(process.stderr as unknown as { write: () => boolean }).write = () => true;
 	}
@@ -44,7 +47,7 @@ if (process.execPath.endsWith(".exe")) {
 	});
 
 	try {
-		if (process.env.HLID_SKIP_SELF_INSTALL !== "1") {
+		if (!internalVaultWorker && process.env.HLID_SKIP_SELF_INSTALL !== "1") {
 			const [{ maybeSelfInstall }, { cleanupStagingDir }] = await Promise.all([
 				import("../lib/install"),
 				import("../lib/updates"),

@@ -806,6 +806,41 @@ describe("LOAD_HISTORY", () => {
 		expect(state[1]).toMatchObject({ text: "current" });
 	});
 
+	it("hydrates optional history cards without rolling back live message state", () => {
+		const base = reducer(empty(), {
+			type: "LOAD_HISTORY",
+			items: [
+				{ kind: "message", id: "u1", role: "user", text: "hello" },
+				{ kind: "message", id: "a1", role: "assistant", text: "partial" },
+			],
+		});
+		const live = reducer(base, {
+			type: "APPEND_CHUNK",
+			id: "a1",
+			text: " response",
+		});
+		const state = reducer(live, {
+			type: "HYDRATE_HISTORY",
+			items: [
+				{ kind: "message", id: "u1", role: "user", text: "hello" },
+				{
+					kind: "ask_user_question",
+					id: "q1",
+					questions: [],
+					answers: null,
+				},
+				{ kind: "message", id: "a1", role: "assistant", text: "partial" },
+			],
+		});
+
+		expect(state.map((message) => `${message.role}:${message.id}`)).toEqual([
+			"user:u1",
+			"ask_user_question:q1",
+			"assistant:a1",
+		]);
+		expect(state[2]).toMatchObject({ text: "partial response" });
+	});
+
 	it("deduplicates repeated persisted cards within one older page", () => {
 		const state = reducer(empty(), {
 			type: "PREPEND_HISTORY",

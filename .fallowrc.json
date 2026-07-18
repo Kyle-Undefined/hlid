@@ -9,6 +9,7 @@
 	],
 	"dynamicallyLoaded": [
 		"src/server/pty-worker.cjs",
+		"src/server/vaultSnapshotWorker.ts",
 		"src/server/fixtures/fake-acp-agent.mjs"
 	],
 	"ignoreDependencies": [

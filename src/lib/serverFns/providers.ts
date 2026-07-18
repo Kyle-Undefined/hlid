@@ -14,6 +14,11 @@ const providerCatalogQuerySchema = z
 	})
 	.optional();
 
+const CACHED_PROVIDER_READ_BUDGET = {
+	initialTimeoutMs: 750,
+	retryTimeoutMs: 250,
+} as const;
+
 export function providerCatalogPath(
 	data: z.infer<typeof providerCatalogQuerySchema>,
 ): string {
@@ -29,9 +34,13 @@ export function providerCatalogPath(
 export const getProvidersFn = createServerFn({ method: "GET" })
 	.validator((raw) => providerCatalogQuerySchema.parse(raw))
 	.handler(({ data }) =>
-		dbJson<{ providers: ProviderInfo[] }>(providerCatalogPath(data), {
-			providers: [],
-		}).then((response) => response.providers),
+		dbJson<{ providers: ProviderInfo[] }>(
+			providerCatalogPath(data),
+			{
+				providers: [],
+			},
+			data?.refresh ? undefined : CACHED_PROVIDER_READ_BUDGET,
+		).then((response) => response.providers),
 	);
 
 /**

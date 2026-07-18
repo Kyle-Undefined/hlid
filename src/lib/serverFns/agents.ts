@@ -1,7 +1,6 @@
 /** Configured-agent listing server fns. */
 
-import { realpathSync } from "node:fs";
-import { basename, extname } from "node:path";
+import { basename, extname, resolve } from "node:path";
 import { createServerFn } from "@tanstack/react-start";
 import { expandTilde } from "#/lib/paths";
 import { getConfig } from "./config";
@@ -21,15 +20,13 @@ export const getAgentListFn = createServerFn({ method: "GET" }).handler(
 	async () => {
 		const config = await getConfig();
 		return (config.agents ?? []).map((a): AgentListItem => {
-			let resolvedPath: string | undefined;
-			try {
-				resolvedPath = realpathSync(expandTilde(a.path));
-			} catch {
-				// Keep a configured-but-not-currently-mounted agent selectable.
-			}
+			// Route inventory only needs a stable display path. Canonical filesystem
+			// resolution can block for tens of seconds on an unavailable Windows/WSL
+			// mount, so leave authoritative realpath validation to session start.
+			const resolvedPath = resolve(expandTilde(a.path));
 			return {
 				path: a.path,
-				...(resolvedPath ? { resolvedPath } : {}),
+				resolvedPath,
 				name:
 					a.name ??
 					basename(a.path, extname(a.path))

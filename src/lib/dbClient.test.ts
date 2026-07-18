@@ -121,6 +121,33 @@ describe("internal API client", () => {
 		}
 	});
 
+	it("supports a shorter budget for optional navigation inventory", async () => {
+		vi.useFakeTimers();
+		try {
+			vi.spyOn(console, "warn").mockImplementation(() => {});
+			fetchMock.mockImplementation((_url, init) => {
+				return new Promise<Response>((_resolve, reject) => {
+					init?.signal?.addEventListener(
+						"abort",
+						() => reject(init.signal?.reason),
+						{ once: true },
+					);
+				});
+			});
+			const pending = dbJson(
+				"/providers?cached_models=1",
+				{ providers: [] },
+				{ initialTimeoutMs: 750, retryTimeoutMs: 250 },
+			);
+			await vi.advanceTimersByTimeAsync(750);
+			expect(fetchMock).toHaveBeenCalledTimes(2);
+			await vi.advanceTimersByTimeAsync(250);
+			await expect(pending).resolves.toEqual({ providers: [] });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("gives direct internal GET reads a timeout signal", async () => {
 		fetchMock.mockResolvedValueOnce(Response.json({ ok: true }));
 		await dbFetch("/mcp-status");

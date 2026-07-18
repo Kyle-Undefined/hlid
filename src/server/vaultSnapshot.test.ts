@@ -129,6 +129,26 @@ describe("vault snapshot", () => {
 		}
 	});
 
+	it("does not publish or replace snapshot data after an unchanged refresh", async () => {
+		vi.useFakeTimers();
+		try {
+			const before = await getVaultSnapshot();
+			const beforeDataRevision = getDataRevisions().vault;
+			const scanCalls = mocks.scanProjects.mock.calls.length;
+			invalidateVaultSnapshot("unchanged-test");
+			await vi.advanceTimersByTimeAsync(201);
+			await Promise.resolve();
+
+			const refreshed = await getVaultSnapshot();
+			expect(refreshed.revision).toBe(before.revision);
+			expect(refreshed.vault).toBe(before.vault);
+			expect(getDataRevisions().vault).toBe(beforeDataRevision);
+			expect(mocks.scanProjects).toHaveBeenCalledTimes(scanCalls + 3);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("uses filesystem watchers to refresh while clients are idle", async () => {
 		vi.useFakeTimers();
 		try {
@@ -168,6 +188,31 @@ describe("vault snapshot", () => {
 			]);
 			expect(getDataRevisions().vault).toBe(beforeVaultRevision + 1);
 		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("keeps the last-good snapshot when a background scan fails", async () => {
+		vi.useFakeTimers();
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const before = await getVaultSnapshot();
+			const scanCalls = mocks.scanProjects.mock.calls.length;
+			mocks.scanProjects.mockImplementationOnce(() => {
+				throw new Error("mounted vault unavailable");
+			});
+			invalidateVaultSnapshot("test-failure");
+			await vi.advanceTimersByTimeAsync(201);
+			await Promise.resolve();
+
+			const recovered = await getVaultSnapshot();
+			expect(recovered).toBe(before);
+			expect(mocks.scanProjects).toHaveBeenCalledTimes(scanCalls + 1);
+			expect(warn).toHaveBeenCalledWith(
+				"[vaultSnapshot] refresh failed: Error: mounted vault unavailable",
+			);
+		} finally {
+			warn.mockRestore();
 			vi.useRealTimers();
 		}
 	});
