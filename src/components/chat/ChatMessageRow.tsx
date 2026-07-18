@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { AskUserQuestionCard } from "./AskUserQuestionCard";
 import { AssistantMsg } from "./AssistantMsg";
 import type { ChatMessage } from "./chatReducer";
@@ -6,8 +7,11 @@ import { PlanCard, type PlanDecision } from "./PlanCard";
 import { UserMsg, type UserMsgQueueState } from "./UserMsg";
 
 /** Dispatches a single transcript entry to its role-specific renderer. */
-export function ChatMessageRow({
+export const ChatMessageRow = memo(function ChatMessageRow({
 	message,
+	toolEventStartIndex = 0,
+	olderToolEventCount = 0,
+	onLoadOlderToolEvents,
 	permissionLabels,
 	queueState,
 	onDecide,
@@ -17,6 +21,9 @@ export function ChatMessageRow({
 	onPromoteQueued,
 }: {
 	message: ChatMessage;
+	toolEventStartIndex?: number;
+	olderToolEventCount?: number;
+	onLoadOlderToolEvents?: () => void;
 	permissionLabels: Map<string, string>;
 	queueState: UserMsgQueueState | undefined;
 	onDecide: (
@@ -52,7 +59,13 @@ export function ChatMessageRow({
 	}
 	if (message.role === "assistant") {
 		return (
-			<AssistantMsg message={message} permissionLabels={permissionLabels} />
+			<AssistantMsg
+				message={message}
+				permissionLabels={permissionLabels}
+				toolEventStartIndex={toolEventStartIndex}
+				olderToolEventCount={olderToolEventCount}
+				onLoadOlderToolEvents={onLoadOlderToolEvents}
+			/>
 		);
 	}
 	if (message.role === "ask_user_question") {
@@ -69,4 +82,4 @@ export function ChatMessageRow({
 		);
 	}
 	return null;
-}
+});

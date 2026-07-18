@@ -14,24 +14,42 @@ import {
 	cleanup,
 	fireEvent,
 	render,
+	renderHook,
 	screen,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as privacyStore from "#/hooks/privacyStore";
 import type { QueuedChatMessage } from "#/hooks/wsChatQueueStore";
-import type { ChatMessage, UserMessage } from "./chatReducer";
+import type { AssistantMessage, ChatMessage, UserMessage } from "./chatReducer";
 import { MessageList } from "./MessageList";
+import { useMessageListView } from "./useMessageListView";
 
 vi.mock("./ChatMessageRow", () => ({
 	ChatMessageRow: ({
 		message,
 		queueState,
+		toolEventStartIndex,
+		olderToolEventCount,
+		onLoadOlderToolEvents,
 	}: {
 		message: ChatMessage;
 		queueState?: { kind: string };
+		toolEventStartIndex?: number;
+		olderToolEventCount?: number;
+		onLoadOlderToolEvents?: () => void;
 	}) => (
-		<div data-queue-state={queueState?.kind}>
+		<div
+			data-testid={`message-${message.id}`}
+			data-queue-state={queueState?.kind}
+			data-tool-event-start={toolEventStartIndex}
+		>
 			{"text" in message ? message.text : message.id}
+			{Boolean(olderToolEventCount && onLoadOlderToolEvents) && (
+				<button type="button" onClick={onLoadOlderToolEvents}>
+					Show {olderToolEventCount} earlier tool{" "}
+					{olderToolEventCount === 1 ? "call" : "calls"}
+				</button>
+			)}
 		</div>
 	),
 }));
@@ -48,6 +66,22 @@ beforeEach(() => {
 
 function userMsg(id: string, text: string): UserMessage {
 	return { id, role: "user", text, attachments: [] };
+}
+
+function assistantMsg(id: string, toolCount: number): AssistantMessage {
+	return {
+		id,
+		role: "assistant",
+		text: id,
+		streaming: false,
+		cost: null,
+		toolEvents: Array.from({ length: toolCount }, (_, index) => ({
+			type: "tool_event" as const,
+			id: `${id}-tool-${index}`,
+			name: "Read",
+			input: {},
+		})),
+	};
 }
 
 function queued(
@@ -294,5 +328,73 @@ describe("MessageList — bounded history rendering", () => {
 				}) as HTMLButtonElement
 			).disabled,
 		).toBe(true);
+	});
+});
+
+describe("MessageList — bounded tool rendering", () => {
+	it("allocates the latest 200 tool calls across assistant messages", () => {
+		renderList({
+			messages: [
+				userMsg("first", "first submission"),
+				assistantMsg("older", 150),
+				assistantMsg("newer", 150),
+			],
+		});
+
+		expect(screen.getByTestId("message-older").dataset.toolEventStart).toBe(
+			"100",
+		);
+		expect(screen.getByTestId("message-newer").dataset.toolEventStart).toBe(
+			"0",
+		);
+		const reveal = screen.getByRole("button", {
+			name: "Show 100 earlier tool calls",
+		});
+		expect(reveal.closest("[data-testid]")).toBe(
+			screen.getByTestId("message-older"),
+		);
+		expect(
+			screen.getByText("first submission").compareDocumentPosition(reveal) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		fireEvent.click(reveal);
+		expect(screen.getByTestId("message-older").dataset.toolEventStart).toBe(
+			"0",
+		);
+		expect(
+			screen.queryByRole("button", { name: /earlier tool calls/i }),
+		).toBeNull();
+	});
+
+	it("keeps the permission lookup stable across unrelated streaming updates", () => {
+		const permission = {
+			id: "tool-1",
+			role: "permission" as const,
+			toolName: "Read",
+			title: "",
+			decision: "approved" as const,
+		};
+		const assistant = assistantMsg("assistant", 1);
+		const { result, rerender } = renderHook(
+			({ messages }: { messages: ChatMessage[] }) =>
+				useMessageListView({
+					messages,
+					chatQueue: [],
+					sessionId: "s1",
+					sessionState: "running",
+					runningTurnId: null,
+				}),
+			{ initialProps: { messages: [permission, assistant] } },
+		);
+		const firstLookup = result.current.permissionLabels;
+
+		rerender({
+			messages: [
+				permission,
+				{ ...assistant, text: "assistant streaming update", streaming: true },
+			],
+		});
+
+		expect(result.current.permissionLabels).toBe(firstLookup);
 	});
 });

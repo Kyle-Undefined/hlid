@@ -17,9 +17,15 @@ export function normalizeMd(text: string): string {
 export function AssistantMsg({
 	message,
 	permissionLabels,
+	toolEventStartIndex = 0,
+	olderToolEventCount = 0,
+	onLoadOlderToolEvents,
 }: {
 	message: AssistantMessage;
 	permissionLabels?: Map<string, string>;
+	toolEventStartIndex?: number;
+	olderToolEventCount?: number;
+	onLoadOlderToolEvents?: () => void;
 }) {
 	const { copy, copied } = useCopyToClipboard();
 	// Keep live subagents at the bottom of the active assistant turn. New parent
@@ -30,9 +36,9 @@ export function AssistantMsg({
 		const status = event.subagent?.status;
 		return status === "pending" || status === "running" || status === "paused";
 	});
-	const transcriptToolEvents = message.toolEvents.filter(
-		(event) => !activeSubagentEvents.includes(event),
-	);
+	const transcriptToolEvents = message.toolEvents
+		.slice(toolEventStartIndex)
+		.filter((event) => !activeSubagentEvents.includes(event));
 	const renderTool = (event: (typeof message.toolEvents)[number]) => (
 		<ToolBlock
 			key={event.id}
@@ -42,6 +48,18 @@ export function AssistantMsg({
 	);
 	return (
 		<div className="group w-full min-w-0 max-w-full overflow-hidden py-3 border-b border-border/40 space-y-1.5">
+			{olderToolEventCount > 0 && onLoadOlderToolEvents && (
+				<div className="my-1 flex w-full px-3 sm:justify-start">
+					<button
+						type="button"
+						onClick={onLoadOlderToolEvents}
+						className="flex min-h-9 w-full items-center justify-center border border-border px-3 py-1.5 text-[10px] tracking-widest text-muted-foreground uppercase transition-colors hover:bg-accent hover:text-foreground sm:w-auto"
+					>
+						Show {olderToolEventCount} earlier tool{" "}
+						{olderToolEventCount === 1 ? "call" : "calls"}
+					</button>
+				</div>
+			)}
 			{transcriptToolEvents.map(renderTool)}
 			{(message.text || message.streaming) && (
 				<div className="flex flex-wrap items-start gap-0 sm:flex-nowrap">

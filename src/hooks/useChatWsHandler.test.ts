@@ -228,6 +228,24 @@ describe("useChatWsHandler — immediate messages", () => {
 		],
 		[
 			{
+				type: "tool_result",
+				id: "tool-compact",
+				content: "preview",
+				resultTruncated: true,
+				resultLength: 50_000,
+				detailSessionId: "session-1",
+			},
+			{
+				type: "ADD_TOOL_RESULT",
+				toolUseId: "tool-compact",
+				content: "preview",
+				resultTruncated: true,
+				resultLength: 50_000,
+				detailSessionId: "session-1",
+			},
+		],
+		[
+			{
 				type: "tool_update",
 				id: "spawn-1",
 				subagent: {

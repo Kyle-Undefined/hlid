@@ -145,7 +145,13 @@ export const ToolBlock = memo(function ToolBlock({
 		<div className="my-0.5 min-w-0 max-w-full overflow-hidden">
 			<button
 				type="button"
-				onClick={() => setOpen(!open)}
+				onClick={() => {
+					const nextOpen = !open;
+					setOpen(nextOpen);
+					// The shared detail cache is byte-bounded. Drop this component's
+					// additional reference when it closes so evicted results can be GC'd.
+					if (!nextOpen && needsDetail) setDetail(null);
+				}}
 				aria-expanded={open}
 				className="flex items-center gap-2.5 w-full min-w-0 max-w-full overflow-hidden px-3 py-1.5 group hover:bg-primary/[0.03] transition-colors text-left"
 			>

@@ -82,6 +82,7 @@ import {
 	resolveActiveProviderId,
 } from "#/lib/providerOptions";
 import {
+	createAnimationFrameCoalescer,
 	isNearChatBottom,
 	loadOlderPreservingScroll,
 	ROUTE_SCROLL_RESTORATION_IDS,
@@ -636,6 +637,10 @@ function useRavenViewport({
 	const pendingSkillFocusRef = useRef(false);
 	const scrollSessionRef = useRef(sessionId);
 	const needsInitialBottomRef = useRef(true);
+	const streamingScrollSchedulerRef = useRef<ReturnType<
+		typeof createAnimationFrameCoalescer
+	> | null>(null);
+	streamingScrollSchedulerRef.current ??= createAnimationFrameCoalescer();
 	if (scrollSessionRef.current !== sessionId) {
 		scrollSessionRef.current = sessionId;
 		needsInitialBottomRef.current = true;
@@ -708,12 +713,23 @@ function useRavenViewport({
 	}, [messages, sessionId]);
 
 	// Streaming should stay pinned when the reader is already at the bottom, but
-	// it must not enqueue overlapping smooth-scroll animations for every chunk.
+	// multiple chunks in one frame should pay for only one layout/scroll update.
 	// biome-ignore lint/correctness/useExhaustiveDependencies: messages is the scroll trigger
 	useEffect(() => {
-		if (!needsInitialBottomRef.current && atBottomRef.current)
-			scrollChatToBottom(scrollRef.current, "auto");
+		if (needsInitialBottomRef.current || !atBottomRef.current) {
+			return;
+		}
+		streamingScrollSchedulerRef.current?.request(() => {
+			if (atBottomRef.current) scrollChatToBottom(scrollRef.current, "auto");
+		});
 	}, [messages]);
+
+	useEffect(
+		() => () => {
+			streamingScrollSchedulerRef.current?.cancel();
+		},
+		[],
+	);
 
 	const resizeTextarea = useCallback(() => {
 		const visibleHeight = window.visualViewport?.height ?? window.innerHeight;

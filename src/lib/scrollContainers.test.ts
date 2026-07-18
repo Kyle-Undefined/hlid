@@ -2,6 +2,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import {
+	createAnimationFrameCoalescer,
 	isNearChatBottom,
 	isRavenPath,
 	loadOlderPreservingScroll,
@@ -32,6 +33,31 @@ describe("route scroll containers", () => {
 			top: 1_200,
 			behavior: "smooth",
 		});
+	});
+
+	it("coalesces repeated streaming scroll requests into one animation frame", () => {
+		let scheduled: FrameRequestCallback | null = null;
+		const requestFrame = vi.fn((callback: FrameRequestCallback) => {
+			scheduled = callback;
+			return 7;
+		});
+		const cancelFrame = vi.fn();
+		const coalescer = createAnimationFrameCoalescer(requestFrame, cancelFrame);
+		const first = vi.fn();
+		const second = vi.fn();
+
+		expect(coalescer.request(first)).toBe(true);
+		expect(coalescer.request(second)).toBe(false);
+		expect(requestFrame).toHaveBeenCalledOnce();
+		const runScheduled = scheduled as FrameRequestCallback | null;
+		if (!runScheduled) throw new Error("frame was not scheduled");
+		runScheduled(16);
+		expect(first).toHaveBeenCalledWith(16);
+		expect(second).not.toHaveBeenCalled();
+
+		expect(coalescer.request(second)).toBe(true);
+		coalescer.cancel();
+		expect(cancelFrame).toHaveBeenCalledWith(7);
 	});
 
 	it("gives each route scroller a distinct restoration identity", () => {

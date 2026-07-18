@@ -1,5 +1,8 @@
 import type { SubagentSnapshot } from "./agentProvider";
 
+/** Maximum tool-result text carried inline in Raven transcript messages. */
+export const TOOL_RESULT_PREVIEW_CHARS = 256;
+
 // Server → client messages
 export type StatusMessage = {
 	type: "status";
@@ -61,8 +64,13 @@ export type ToolUpdateMessage = {
 
 export type ToolResultMessage = {
 	type: "tool_result";
+	/** Full result for small/unpersisted tools; otherwise a bounded preview. */
 	id: string;
 	content: string;
+	resultTruncated?: boolean;
+	resultLength?: number;
+	/** Session scope used to hydrate a compacted live result on expansion. */
+	detailSessionId?: string;
 	isError?: boolean;
 };
 

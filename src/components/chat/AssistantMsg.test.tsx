@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as privacyStore from "#/hooks/privacyStore";
 import { AssistantMsg, normalizeMd } from "./AssistantMsg";
@@ -88,6 +88,89 @@ describe("normalizeMd", () => {
 });
 
 describe("AssistantMsg", () => {
+	it("places the mobile reveal control directly before the tool rows it reveals", () => {
+		const onLoadOlderToolEvents = vi.fn();
+		render(
+			<AssistantMsg
+				toolEventStartIndex={1}
+				olderToolEventCount={1}
+				onLoadOlderToolEvents={onLoadOlderToolEvents}
+				message={makeMsg({
+					toolEvents: [
+						{
+							type: "tool_event",
+							id: "old-read",
+							name: "Read old",
+							input: {},
+						},
+						{
+							type: "tool_event",
+							id: "visible-read",
+							name: "Read visible",
+							input: {},
+						},
+					],
+				})}
+			/>,
+		);
+
+		const reveal = screen.getByRole("button", {
+			name: "Show 1 earlier tool call",
+		});
+		const visibleTool = screen.getByRole("button", { name: /read visible/i });
+		expect(
+			reveal.compareDocumentPosition(visibleTool) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		expect(reveal.className).toContain("w-full");
+		expect(reveal.className).toContain("sm:w-auto");
+		fireEvent.click(reveal);
+		expect(onLoadOlderToolEvents).toHaveBeenCalledOnce();
+	});
+
+	it("hides completed tool calls before the window but keeps active subagents visible", () => {
+		render(
+			<AssistantMsg
+				toolEventStartIndex={2}
+				message={makeMsg({
+					toolEvents: [
+						{
+							type: "tool_event",
+							id: "old-read",
+							name: "Read old",
+							input: {},
+						},
+						{
+							type: "tool_event",
+							id: "active-child",
+							name: "spawn_agent",
+							input: {},
+							subagent: {
+								provider: "codex",
+								agentId: "child-1",
+								name: "Active child",
+								status: "running",
+								startedAtMs: 1,
+							},
+						},
+						{
+							type: "tool_event",
+							id: "new-read",
+							name: "Read new",
+							input: {},
+						},
+					],
+				})}
+			/>,
+		);
+
+		expect(screen.queryByRole("button", { name: /read old/i })).toBeNull();
+		expect(screen.getByRole("button", { name: /read new/i })).toBeTruthy();
+		expect(
+			screen.getByRole("button", { name: /active child running/i }),
+		).toBeTruthy();
+	});
+
 	it("keeps active subagent cards below later parent tool calls and text", () => {
 		const { rerender } = render(
 			<AssistantMsg

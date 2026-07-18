@@ -108,6 +108,34 @@ export function scrollChatToBottom(
 	element.scrollTop = element.scrollHeight;
 }
 
+/** Coalesces repeated work requests so at most one callback runs per frame. */
+export function createAnimationFrameCoalescer(
+	requestFrame: (callback: FrameRequestCallback) => number = (callback) =>
+		window.requestAnimationFrame(callback),
+	cancelFrame: (handle: number) => void = (handle) =>
+		window.cancelAnimationFrame(handle),
+): {
+	request: (callback: FrameRequestCallback) => boolean;
+	cancel: () => void;
+} {
+	let pendingFrame: number | null = null;
+	return {
+		request(callback) {
+			if (pendingFrame !== null) return false;
+			pendingFrame = requestFrame((timestamp) => {
+				pendingFrame = null;
+				callback(timestamp);
+			});
+			return true;
+		},
+		cancel() {
+			if (pendingFrame === null) return;
+			cancelFrame(pendingFrame);
+			pendingFrame = null;
+		},
+	};
+}
+
 /**
  * Prepends transcript rows without moving the reader's viewport. The layout
  * adjustment waits one animation frame so React has committed the new rows.

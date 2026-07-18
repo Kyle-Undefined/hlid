@@ -1,4 +1,5 @@
 import type { SubagentSnapshot } from "../server/agentProvider";
+import { TOOL_RESULT_PREVIEW_CHARS } from "../server/protocol";
 import { markAnalyticsChanged } from "./analyticsRevision";
 import { getDb } from "./schema";
 import type {
@@ -6,8 +7,6 @@ import type {
 	ToolEventDetailRow,
 	ToolEventSummaryRow,
 } from "./types";
-
-export const TOOL_RESULT_PREVIEW_CHARS = 256;
 
 export type ToolEventDimensions = {
 	providerId?: string;

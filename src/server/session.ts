@@ -48,7 +48,7 @@ import type {
 	QueueStateSnapshot,
 	ServerMessage,
 } from "./protocol";
-import { mapMcpServer } from "./protocol";
+import { mapMcpServer, TOOL_RESULT_PREVIEW_CHARS } from "./protocol";
 import { applyReading, updateWindowMark } from "./proxy";
 import { generateTurnRecap } from "./recap";
 import { SessionTurnQueue } from "./sessionTurnQueue";
@@ -96,6 +96,8 @@ type TurnState = {
 	}[];
 	pendingToolResults: Map<string, { content: string; isError: boolean }>;
 	pendingToolUpdates: Map<string, SubagentSnapshot>;
+	/** In-flight inserts that tool results await before exposing lazy detail. */
+	pendingToolEventWrites: Map<string, Promise<boolean>>;
 	/**
 	 * Reserved seq for the assistant message of this turn. Allocated lazily on
 	 * the first text_delta or tool_start so live writes (text streaming, tool
@@ -402,6 +404,7 @@ function createTurnState(): TurnState {
 		pendingToolEvents: [],
 		pendingToolResults: new Map(),
 		pendingToolUpdates: new Map(),
+		pendingToolEventWrites: new Map(),
 		reservedAssistantSeq: null,
 		persistedToolIds: new Set(),
 		textWriteTimer: null,
@@ -1447,6 +1450,7 @@ export class SessionManager {
 				turn.pendingToolEvents.length = 0;
 				turn.pendingToolResults.clear();
 				turn.pendingToolUpdates.clear();
+				turn.pendingToolEventWrites.clear();
 				turn.persistedToolIds.clear();
 				turn.reservedAssistantSeq = null;
 				turn.assistantText = "";
@@ -1588,13 +1592,27 @@ export class SessionManager {
 						undefined,
 						dimensions,
 					);
-			void append
-				.then(async () => {
+			const persisted = append
+				.then(() => {
 					turn.persistedToolIds.add(toolId);
 					const latest = turn.pendingToolUpdates.get(toolId);
-					if (latest) await db.setToolEventSubagent(sessionId, toolId, latest);
+					if (latest) {
+						void db
+							.setToolEventSubagent(sessionId, toolId, latest)
+							.catch((e) => logDbError("setToolEventSubagent (live)", e));
+					}
+					return true;
 				})
-				.catch((e) => logDbError("appendToolEvent (live)", e));
+				.catch((e) => {
+					logDbError("appendToolEvent (live)", e);
+					return false;
+				});
+			turn.pendingToolEventWrites.set(toolId, persisted);
+			void persisted.finally(() => {
+				if (turn.pendingToolEventWrites.get(toolId) === persisted) {
+					turn.pendingToolEventWrites.delete(toolId);
+				}
+			});
 		}
 		turn.lastBlockType = "tool_use";
 	}
@@ -1661,32 +1679,60 @@ export class SessionManager {
 		}
 	}
 
-	private handleToolResult(
+	private async handleToolResult(
 		event: Extract<AgentEvent, { type: "tool_result" }>,
 		turn: TurnState,
 		sessionId: string | undefined,
 		emit: (msg: ServerMessage) => void,
-	): void {
-		emit({
-			type: "tool_result",
-			id: event.toolId,
-			content: event.content,
-			...(event.isError ? { isError: true } : {}),
-		});
+	): Promise<void> {
 		turn.pendingToolResults.set(event.toolId, {
 			content: event.content,
 			isError: event.isError === true,
 		});
-		if (sessionId && turn.persistedToolIds.has(event.toolId)) {
-			void db
-				.setToolEventResult(
-					sessionId,
-					event.toolId,
-					event.content,
-					event.isError === true,
-				)
-				.catch((e) => logDbError("setToolEventResult (live)", e));
+
+		let persisted = false;
+		if (sessionId) {
+			const pendingInsert = turn.pendingToolEventWrites.get(event.toolId);
+			persisted = pendingInsert
+				? await pendingInsert
+				: turn.persistedToolIds.has(event.toolId);
+			if (persisted) {
+				try {
+					await db.setToolEventResult(
+						sessionId,
+						event.toolId,
+						event.content,
+						event.isError === true,
+					);
+					// Once the database owns the complete result, the per-turn accumulator
+					// no longer needs another full-size reference.
+					turn.pendingToolResults.delete(event.toolId);
+				} catch (error) {
+					persisted = false;
+					logDbError("setToolEventResult (live)", error);
+				}
+			}
 		}
+
+		const compact =
+			persisted &&
+			Boolean(sessionId) &&
+			event.content.length > TOOL_RESULT_PREVIEW_CHARS;
+		emit({
+			type: "tool_result",
+			id: event.toolId,
+			content: compact
+				? event.content.slice(0, TOOL_RESULT_PREVIEW_CHARS)
+				: event.content,
+			...(compact
+				? {
+						resultTruncated: true,
+						resultLength: event.content.length,
+						detailSessionId: sessionId,
+					}
+				: {}),
+			...(event.isError ? { isError: true } : {}),
+		});
 	}
 
 	private handleUsage(
@@ -1751,7 +1797,7 @@ export class SessionManager {
 				this.handleToolUpdate(event, turn, sessionId, emit);
 				break;
 			case "tool_result":
-				this.handleToolResult(event, turn, sessionId, emit);
+				await this.handleToolResult(event, turn, sessionId, emit);
 				break;
 			case "usage":
 				this.handleUsage(event, turn, emit);

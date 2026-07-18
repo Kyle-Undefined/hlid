@@ -1,10 +1,25 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { QueuedChatMessage } from "#/hooks/wsChatQueueStore";
 import { approvedLabel } from "#/server/protocol";
 import type { ChatMessage } from "./chatReducer";
 import type { UserMsgQueueState } from "./UserMsg";
 
 const HISTORY_RENDER_PAGE_SIZE = 200;
+const TOOL_EVENT_RENDER_PAGE_SIZE = 200;
+
+function mapsEqual(a: Map<string, string>, b: Map<string, string>): boolean {
+	if (a.size !== b.size) return false;
+	for (const [key, value] of a) {
+		if (b.get(key) !== value) return false;
+	}
+	return true;
+}
+
+function isActiveSubagent(message: ChatMessage, index: number): boolean {
+	if (message.role !== "assistant") return false;
+	const status = message.toolEvents[index]?.subagent?.status;
+	return status === "pending" || status === "running" || status === "paused";
+}
 
 /**
  * Derives everything MessageList needs to render from the raw transcript +
@@ -34,6 +49,9 @@ export function useMessageListView({
 	const [visibleHistoryCount, setVisibleHistoryCount] = useState(
 		HISTORY_RENDER_PAGE_SIZE,
 	);
+	const [visibleToolEventCount, setVisibleToolEventCount] = useState(
+		TOOL_EVENT_RENDER_PAGE_SIZE,
+	);
 	const [isCursorLoadReserved, setIsCursorLoadReserved] = useState(false);
 	const activeCursorLoadRef = useRef<object | null>(null);
 	const currentSessionIdRef = useRef(sessionId);
@@ -43,6 +61,7 @@ export function useMessageListView({
 		activeCursorLoadRef.current = null;
 		setIsCursorLoadReserved(false);
 		setVisibleHistoryCount(HISTORY_RENDER_PAGE_SIZE);
+		setVisibleToolEventCount(TOOL_EVENT_RENDER_PAGE_SIZE);
 		return () => {
 			activeCursorLoadRef.current = null;
 		};
@@ -62,15 +81,64 @@ export function useMessageListView({
 	// Approved permissions render as a chip under the matching tool block
 	// (matched by toolUseID === ToolEvent.id) instead of a separate row, so a
 	// long run of approvals doesn't stack up above each tool call.
-	const permissionLabels = useMemo(() => {
-		const map = new Map<string, string>();
-		for (const m of messages) {
-			if (m.role !== "permission") continue;
-			const label = approvedLabel(m.decision);
-			if (label) map.set(m.id, label);
+	const permissionLabelsRef = useRef(new Map<string, string>());
+	const nextPermissionLabels = new Map<string, string>();
+	for (const m of messages) {
+		if (m.role !== "permission") continue;
+		const label = approvedLabel(m.decision);
+		if (label) nextPermissionLabels.set(m.id, label);
+	}
+	if (!mapsEqual(permissionLabelsRef.current, nextPermissionLabels)) {
+		permissionLabelsRef.current = nextPermissionLabels;
+	}
+	const permissionLabels = permissionLabelsRef.current;
+
+	// A message window alone is not enough: one assistant turn can contain
+	// hundreds of tool calls. Allocate a second newest-first budget across tool
+	// events so live turns cannot grow the mounted tool DOM without bound.
+	const {
+		toolEventStartByMessageId,
+		hiddenToolEventCount,
+		toolEventRevealMessageId,
+	} = useMemo(() => {
+		const starts = new Map<string, number>();
+		let remaining = visibleToolEventCount;
+		let hidden = 0;
+		let revealMessageId: string | null = null;
+		for (
+			let messageIndex = visibleMessages.length - 1;
+			messageIndex >= 0;
+			messageIndex--
+		) {
+			const message = visibleMessages[messageIndex];
+			if (message.role !== "assistant") continue;
+			const start = Math.max(0, message.toolEvents.length - remaining);
+			starts.set(message.id, start);
+			let hiddenInMessage = 0;
+			for (let toolIndex = 0; toolIndex < start; toolIndex++) {
+				if (!isActiveSubagent(message, toolIndex)) {
+					hidden++;
+					hiddenInMessage++;
+				}
+			}
+			// Traversal is newest-first. The first message with hidden calls is
+			// therefore the exact boundary where another page will appear.
+			if (revealMessageId === null && hiddenInMessage > 0) {
+				revealMessageId = message.id;
+			}
+			remaining = Math.max(0, remaining - message.toolEvents.length);
 		}
-		return map;
-	}, [messages]);
+		return {
+			toolEventStartByMessageId: starts,
+			hiddenToolEventCount: hidden,
+			toolEventRevealMessageId: revealMessageId,
+		};
+	}, [visibleMessages, visibleToolEventCount]);
+	const loadOlderToolEvents = useCallback(
+		() =>
+			setVisibleToolEventCount((count) => count + TOOL_EVENT_RENDER_PAGE_SIZE),
+		[],
+	);
 
 	// Slice C: build a lookup from queue.id → state. Match against the
 	// server-reported runningTurnId for "currently running" — positional
@@ -121,6 +189,10 @@ export function useMessageListView({
 			: hasOlderHistory
 				? HISTORY_RENDER_PAGE_SIZE
 				: 0;
+	const olderToolEventCount = Math.min(
+		TOOL_EVENT_RENDER_PAGE_SIZE,
+		hiddenToolEventCount,
+	);
 	const loadOlder = () => {
 		if (isLoadingOlderHistory) return;
 		if (hiddenHistoryCount > 0) {
@@ -169,11 +241,15 @@ export function useMessageListView({
 		olderHistoryCount,
 		isLoadingOlderHistory,
 		visibleMessages,
+		toolEventStartByMessageId,
+		toolEventRevealMessageId,
+		olderToolEventCount,
 		permissionLabels,
 		queueStateById,
 		orphanQueued,
 		loadOlder,
+		loadOlderToolEvents,
 	};
 }
 
-export { HISTORY_RENDER_PAGE_SIZE };
+export { HISTORY_RENDER_PAGE_SIZE, TOOL_EVENT_RENDER_PAGE_SIZE };

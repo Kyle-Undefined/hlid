@@ -282,6 +282,31 @@ describe("ADD_TOOL_RESULT", () => {
 		}
 	});
 
+	it("retains lazy metadata when the live result is already compacted", () => {
+		let state = reducer(withAssistant("a1"), {
+			type: "ADD_TOOL_EVENT",
+			id: "a1",
+			event: { type: "tool_event", id: "te1", name: "Read", input: {} },
+		});
+		state = reducer(state, {
+			type: "ADD_TOOL_RESULT",
+			toolUseId: "te1",
+			content: "preview",
+			resultTruncated: true,
+			resultLength: 50_000,
+			detailSessionId: "session-1",
+		});
+		const msg = state[0];
+		if (msg.role === "assistant") {
+			expect(msg.toolEvents[0]).toMatchObject({
+				result: "preview",
+				resultTruncated: true,
+				resultLength: 50_000,
+				detailSessionId: "session-1",
+			});
+		}
+	});
+
 	it("locates tool event across multiple assistant messages", () => {
 		let state = [...withAssistant("a1"), ...withAssistant("a2")];
 		state = reducer(state, {

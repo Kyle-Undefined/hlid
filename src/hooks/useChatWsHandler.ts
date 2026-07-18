@@ -87,6 +87,15 @@ function dispatchImmediateMessage(
 				type: "ADD_TOOL_RESULT",
 				toolUseId: msg.id,
 				content: msg.content,
+				...(msg.resultTruncated !== undefined
+					? { resultTruncated: msg.resultTruncated }
+					: {}),
+				...(msg.resultLength !== undefined
+					? { resultLength: msg.resultLength }
+					: {}),
+				...(msg.detailSessionId !== undefined
+					? { detailSessionId: msg.detailSessionId }
+					: {}),
 				...(msg.isError !== undefined ? { isError: msg.isError } : {}),
 			});
 			return true;

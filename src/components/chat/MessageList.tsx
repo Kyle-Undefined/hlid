@@ -56,11 +56,15 @@ export const MessageList = memo(function MessageList({
 }) {
 	const {
 		olderHistoryCount,
+		olderToolEventCount,
 		visibleMessages,
+		toolEventStartByMessageId,
+		toolEventRevealMessageId,
 		permissionLabels,
 		queueStateById,
 		orphanQueued,
 		loadOlder,
+		loadOlderToolEvents,
 	} = useMessageListView({
 		messages,
 		chatQueue,
@@ -92,6 +96,11 @@ export const MessageList = memo(function MessageList({
 				<ChatMessageRow
 					key={m.id}
 					message={m}
+					toolEventStartIndex={toolEventStartByMessageId.get(m.id) ?? 0}
+					olderToolEventCount={
+						m.id === toolEventRevealMessageId ? olderToolEventCount : 0
+					}
+					onLoadOlderToolEvents={loadOlderToolEvents}
 					permissionLabels={permissionLabels}
 					queueState={queueStateById.get(m.id)}
 					onDecide={handleDecide}

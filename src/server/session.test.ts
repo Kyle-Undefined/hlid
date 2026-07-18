@@ -3172,6 +3172,107 @@ describe("SessionManager — live tool_event persistence", () => {
 		await runPromise;
 	});
 
+	it("emits only a lazy preview after a large live tool result is persisted", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const fullResult = "x".repeat(400);
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{ type: "session_start", sessionId: "sdk-live-compact" },
+				{ type: "tool_start", toolId: "tu-compact", name: "Read", input: {} },
+				{
+					type: "tool_result",
+					toolId: "tu-compact",
+					content: fullResult,
+				},
+			],
+			gate,
+		);
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const runPromise = sm.runQuery(
+			"read",
+			(message) => emitted.push(message),
+			"sess-live-compact",
+		);
+		await gateReached;
+
+		expect(dbMock.setToolEventResult).toHaveBeenCalledWith(
+			"sess-live-compact",
+			"tu-compact",
+			fullResult,
+			false,
+		);
+		expect(
+			emitted.find(
+				(message) =>
+					message.type === "tool_result" && message.id === "tu-compact",
+			),
+		).toEqual({
+			type: "tool_result",
+			id: "tu-compact",
+			content: fullResult.slice(0, 256),
+			resultTruncated: true,
+			resultLength: fullResult.length,
+			detailSessionId: "sess-live-compact",
+		});
+
+		release();
+		await runPromise;
+	});
+
+	it("keeps the full live result when lazy-detail persistence fails", async () => {
+		vi.mocked(dbMock.setToolEventResult).mockRejectedValueOnce(
+			new Error("disk unavailable"),
+		);
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const fullResult = "y".repeat(400);
+		const { provider, gateReached } = makeControlledProvider(
+			[
+				{ type: "session_start", sessionId: "sdk-live-fallback" },
+				{
+					type: "tool_start",
+					toolId: "tu-fallback",
+					name: "Read",
+					input: {},
+				},
+				{
+					type: "tool_result",
+					toolId: "tu-fallback",
+					content: fullResult,
+				},
+			],
+			gate,
+		);
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const runPromise = sm.runQuery(
+			"read",
+			(message) => emitted.push(message),
+			"sess-live-fallback",
+		);
+		await gateReached;
+
+		expect(
+			emitted.find(
+				(message) =>
+					message.type === "tool_result" && message.id === "tu-fallback",
+			),
+		).toEqual({
+			type: "tool_result",
+			id: "tu-fallback",
+			content: fullResult,
+		});
+
+		release();
+		await runPromise;
+	});
+
 	it("persists the latest subagent snapshot when an update races the tool insert", async () => {
 		let releaseTurn!: () => void;
 		const turnGate = new Promise<void>((resolve) => {
