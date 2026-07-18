@@ -141,6 +141,7 @@ export type Action =
 			 */
 			afterUserId?: string;
 	  }
+	| { type: "RESUME_ASSISTANT"; id: string }
 	| { type: "APPEND_CHUNK"; id: string; text: string; offset?: number }
 	| { type: "ADD_TOOL_EVENT"; id: string; event: ToolEventMessage }
 	| {
@@ -450,6 +451,10 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 			}
 			return [...state, placeholder];
 		}
+		case "RESUME_ASSISTANT":
+			return patchMessage(state, action.id, "assistant", (m) =>
+				m.streaming ? m : { ...m, streaming: true },
+			);
 		case "APPEND_CHUNK":
 			return patchMessage(state, action.id, "assistant", (m) => {
 				if (action.offset === undefined) {

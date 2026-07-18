@@ -88,6 +88,30 @@ describe("ADD_ASSISTANT", () => {
 	});
 });
 
+describe("RESUME_ASSISTANT", () => {
+	it("restores streaming state on a persisted in-flight assistant", () => {
+		const history = reducer(empty(), {
+			type: "LOAD_HISTORY",
+			items: [
+				{
+					kind: "message",
+					id: "a1",
+					role: "assistant",
+					text: "partial response",
+				},
+			],
+		});
+		const state = reducer(history, { type: "RESUME_ASSISTANT", id: "a1" });
+		const message = state[0];
+		expect(message).toMatchObject({
+			id: "a1",
+			role: "assistant",
+			text: "partial response",
+			streaming: true,
+		});
+	});
+});
+
 // ── APPEND_CHUNK ──────────────────────────────────────────────────────────────
 
 describe("APPEND_CHUNK", () => {

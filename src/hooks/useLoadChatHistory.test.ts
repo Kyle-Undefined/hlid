@@ -978,6 +978,10 @@ describe("useLoadChatHistory — in-flight assistant reuse during running turn",
 			.reverse()
 			.find((i: { role: string; id: string }) => i.role === "assistant");
 		expect(pendingIdRef.current).toBe(placeholder?.id);
+		expect(dispatch).toHaveBeenCalledWith({
+			type: "RESUME_ASSISTANT",
+			id: placeholder?.id,
+		});
 	});
 
 	it("opens a fresh bubble when no placeholder exists (last row is user)", async () => {
@@ -1044,6 +1048,10 @@ describe("useLoadChatHistory — in-flight assistant reuse during running turn",
 		const items = loadCall?.[0].items as { role: string; id: string }[];
 		const assistant = items.find((item) => item.role === "assistant");
 		expect(pendingIdRef.current).toBe(assistant?.id);
+		expect(dispatch).toHaveBeenCalledWith({
+			type: "RESUME_ASSISTANT",
+			id: assistant?.id,
+		});
 	});
 
 	it("forwards replay events after reusing the persisted in-flight assistant", async () => {

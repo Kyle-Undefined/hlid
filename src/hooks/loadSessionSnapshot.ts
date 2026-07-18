@@ -403,9 +403,12 @@ export async function loadSessionSnapshot({
 	if (wsStore.getSnapshot().sessionState === "running") {
 		if (inFlightAssistant) {
 			// Reuse the in-flight assistant row loaded from DB instead of opening
-			// a fresh bubble. Offset-aware chunk replay and tool-id deduplication
-			// make repeated subscribe/remount recovery idempotent.
+			// a fresh bubble. History rows are non-streaming by default, so restore
+			// the live marker before replaying chunks and tool events onto this row.
+			// Offset-aware chunk replay and tool-id deduplication make repeated
+			// subscribe/remount recovery idempotent.
 			pendingIdRef.current = inFlightAssistant.id;
+			dispatch({ type: "RESUME_ASSISTANT", id: inFlightAssistant.id });
 			drainBufferDeduped(handleWsMessage, inFlightAssistant.text.length > 0);
 		} else {
 			const newId = uid();
