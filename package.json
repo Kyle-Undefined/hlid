@@ -1,7 +1,7 @@
 {
   "name": "hlid",
   "description": "Hliðskjálf - Watcher of Worlds",
-	"version": "0.0.181",
+	"version": "0.0.182",
   "private": true,
   "type": "module",
   "imports": {

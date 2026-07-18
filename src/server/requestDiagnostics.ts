@@ -178,6 +178,57 @@ export type EventLoopLagMonitorOptions = {
 	log?: (message: string) => void;
 };
 
+export type SlowOperationObserverOptions = {
+	scope: string;
+	thresholdMs?: number;
+	cooldownMs?: number;
+	now?: () => number;
+	log?: (message: string) => void;
+};
+
+/**
+ * Time an internal operation and emit one rate-limited warning when it is slow.
+ * Callers provide a stable signature separately from the human-readable label
+ * so cardinality stays bounded even when the label includes a useful count.
+ */
+export function createSlowOperationObserver(
+	options: SlowOperationObserverOptions,
+): <T>(
+	signature: string,
+	label: string,
+	operation: () => T | Promise<T>,
+) => Promise<T> {
+	const thresholdMs = options.thresholdMs ?? 250;
+	const cooldownMs = options.cooldownMs ?? 30_000;
+	const now = options.now ?? (() => performance.now());
+	const log = options.log ?? ((message: string) => console.warn(message));
+	const lastWarnings = new Map<string, number>();
+
+	return async <T>(
+		signature: string,
+		label: string,
+		operation: () => T | Promise<T>,
+	): Promise<T> => {
+		const startedAt = now();
+		try {
+			return await operation();
+		} finally {
+			const completedAt = now();
+			const elapsedMs = Math.max(0, Math.round(completedAt - startedAt));
+			const lastWarningAt =
+				lastWarnings.get(signature) ?? Number.NEGATIVE_INFINITY;
+			if (
+				elapsedMs >= thresholdMs &&
+				completedAt - lastWarningAt >= cooldownMs
+			) {
+				if (lastWarnings.size >= 200) lastWarnings.clear();
+				lastWarnings.set(signature, completedAt);
+				log(`[${options.scope}] ${label} took ${elapsedMs}ms`);
+			}
+		}
+	};
+}
+
 /**
  * Warn on sustained event-loop stalls, while ignoring long gaps caused by a
  * sleeping machine and suppressing repeated warnings during the same stall.

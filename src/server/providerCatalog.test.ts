@@ -23,6 +23,7 @@ import type { AgentProvider, ProviderModelInfo } from "./agentProvider";
 import {
 	createCachedList,
 	createModelCatalog,
+	createProviderCatalogSnapshot,
 	loadProviderCatalog,
 	providerCatalogRequestOptions,
 } from "./providerCatalog";
@@ -400,6 +401,79 @@ describe("loadProviderCatalog", () => {
 		expect(result[0]?.hostCapabilities).toEqual({
 			windowsComputerUse: { label: "Windows Computer Use", available: true },
 		});
+	});
+});
+
+describe("createProviderCatalogSnapshot", () => {
+	it("reuses one materialized response for capability and base reads", async () => {
+		const check = vi.fn().mockResolvedValue({ available: true });
+		const hostCapabilities = vi.fn().mockResolvedValue({
+			windowsComputerUse: { label: "Windows Computer Use", available: true },
+		});
+		const provider = makeProvider({
+			providerId: "codex",
+			check,
+			hostCapabilities,
+		});
+		const cachedModelsFor = vi
+			.fn()
+			.mockResolvedValue([{ value: "cached", label: "Cached" }]);
+		const snapshot = createProviderCatalogSnapshot([provider], {
+			modelsFor: vi.fn(),
+			cachedModelsFor,
+		});
+
+		const withCapabilities = await snapshot.get({
+			includeHostCapabilities: true,
+		});
+		const repeated = await snapshot.get({ includeHostCapabilities: true });
+		const base = await snapshot.get();
+
+		expect(repeated).toBe(withCapabilities);
+		expect(base[0]?.hostCapabilities).toBeUndefined();
+		expect(check).toHaveBeenCalledOnce();
+		expect(cachedModelsFor).toHaveBeenCalledOnce();
+		expect(hostCapabilities).toHaveBeenCalledOnce();
+	});
+
+	it("returns stale data immediately and revalidates it in the background", async () => {
+		let now = 0;
+		const check = vi
+			.fn()
+			.mockResolvedValueOnce({ available: true })
+			.mockResolvedValueOnce({ available: false, reason: "missing" });
+		const provider = makeProvider({ providerId: "codex", check });
+		const snapshot = createProviderCatalogSnapshot(
+			[provider],
+			{
+				modelsFor: vi.fn(),
+				cachedModelsFor: vi.fn().mockResolvedValue([]),
+			},
+			{ ttlMs: 100, now: () => now },
+		);
+
+		expect((await snapshot.get())[0]?.available).toBe(true);
+		now = 101;
+		expect((await snapshot.get())[0]?.available).toBe(true);
+		await vi.waitFor(() => expect(check).toHaveBeenCalledTimes(2));
+		await vi.waitFor(async () =>
+			expect((await snapshot.get())[0]?.available).toBe(false),
+		);
+	});
+
+	it("recomputes after explicit invalidation", async () => {
+		const check = vi.fn().mockResolvedValue({ available: true });
+		const provider = makeProvider({ providerId: "codex", check });
+		const snapshot = createProviderCatalogSnapshot([provider], {
+			modelsFor: vi.fn(),
+			cachedModelsFor: vi.fn().mockResolvedValue([]),
+		});
+
+		await snapshot.get();
+		snapshot.invalidate();
+		await snapshot.get();
+
+		expect(check).toHaveBeenCalledTimes(2);
 	});
 });
 

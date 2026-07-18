@@ -3,9 +3,11 @@ import { z } from "zod";
 import type { HlidConfig } from "../config";
 import { bumpDataRevision } from "./dataRevision";
 import { type CachedList, createCachedList } from "./providerCatalog";
+import { createSlowOperationObserver } from "./requestDiagnostics";
 
 const ACP_REGISTRY_URL =
 	"https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
+const ACP_AVAILABILITY_TTL_MS = 60_000;
 
 const InvocationSchema = z.object({
 	cmd: z.string(),
@@ -137,6 +139,18 @@ export function resolveAcpInvocation(
 
 export class AcpRegistry {
 	private readonly cache: CachedList<z.infer<typeof RegistrySchema>>;
+	private readonly which: (command: string) => string | null | undefined;
+	private readonly now: () => number;
+	private readonly availabilityTtlMs: number;
+	private readonly observeAvailability: ReturnType<
+		typeof createSlowOperationObserver
+	>;
+	private materializedCatalog: {
+		registryKey: string;
+		configKey: string;
+		value: AcpCatalogItem[];
+		refreshedAt: number;
+	} | null = null;
 
 	constructor(
 		fetcher: () => Promise<unknown> = async () => {
@@ -148,13 +162,28 @@ export class AcpRegistry {
 			return response.json();
 		},
 		onChange?: () => void,
+		options: {
+			which?: (command: string) => string | null | undefined;
+			now?: () => number;
+			availabilityTtlMs?: number;
+		} = {},
 	) {
+		this.which =
+			options.which ??
+			((command) => (typeof Bun === "undefined" ? null : Bun.which(command)));
+		this.now = options.now ?? Date.now;
+		this.availabilityTtlMs =
+			options.availabilityTtlMs ?? ACP_AVAILABILITY_TTL_MS;
+		this.observeAvailability = createSlowOperationObserver({
+			scope: "acp registry",
+		});
 		this.cache = createCachedList({
 			persistKey: "acp_registry_catalog",
 			ttlMs: 6 * 3600_000,
 			fetcher: async () => RegistrySchema.parse(await fetcher()),
 			fallback: FALLBACK,
 			onChange: () => {
+				this.materializedCatalog = null;
 				bumpDataRevision("providers");
 				onChange?.();
 			},
@@ -167,6 +196,7 @@ export class AcpRegistry {
 		config: HlidConfig,
 		refresh = false,
 	): Promise<AcpCatalogItem[]> {
+		if (refresh) this.materializedCatalog = null;
 		const { value } = refresh
 			? await this.cache.get(true)
 			: await this.cache.getCached();
@@ -176,34 +206,56 @@ export class AcpRegistry {
 			// concurrent tabs and PWAs on the same single flight.
 			void this.cache.get().catch(() => {});
 		}
-		return value.agents
-			.map((agent) => {
-				const override = (config.acp_agents ?? []).find(
-					(item) => item.id === agent.id,
-				);
-				const invocation = resolveAcpInvocation(agent, override);
-				const available = Boolean(
-					invocation.command && Bun.which(invocation.command),
-				);
-				return {
-					...agent,
-					providerId: `acp:${agent.id}`,
-					enabled: Boolean(override),
-					available,
-					unavailableReason: available
-						? undefined
-						: invocation.command
-							? `${invocation.command} is not installed`
-							: `No distribution for ${platformTarget()}`,
-					...invocation,
-				};
-			})
-			.sort((a, b) => {
-				const featured = ["opencode", "pi-acp"];
-				const ai = featured.indexOf(a.id);
-				const bi = featured.indexOf(b.id);
-				if (ai >= 0 || bi >= 0) return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
-				return a.name.localeCompare(b.name);
-			});
+		const registryKey = JSON.stringify(value);
+		const configKey = JSON.stringify(config.acp_agents ?? []);
+		const materialized = this.materializedCatalog;
+		if (
+			materialized &&
+			materialized.registryKey === registryKey &&
+			materialized.configKey === configKey &&
+			this.now() - materialized.refreshedAt < this.availabilityTtlMs
+		) {
+			return materialized.value;
+		}
+		const catalog = await this.observeAvailability(
+			"availability",
+			`availability scan for ${value.agents.length} agents`,
+			() =>
+				value.agents.map((agent) => {
+					const override = (config.acp_agents ?? []).find(
+						(item) => item.id === agent.id,
+					);
+					const invocation = resolveAcpInvocation(agent, override);
+					const available = Boolean(
+						invocation.command && this.which(invocation.command),
+					);
+					return {
+						...agent,
+						providerId: `acp:${agent.id}`,
+						enabled: Boolean(override),
+						available,
+						unavailableReason: available
+							? undefined
+							: invocation.command
+								? `${invocation.command} is not installed`
+								: `No distribution for ${platformTarget()}`,
+						...invocation,
+					};
+				}),
+		);
+		catalog.sort((a, b) => {
+			const featured = ["opencode", "pi-acp"];
+			const ai = featured.indexOf(a.id);
+			const bi = featured.indexOf(b.id);
+			if (ai >= 0 || bi >= 0) return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+			return a.name.localeCompare(b.name);
+		});
+		this.materializedCatalog = {
+			registryKey,
+			configKey,
+			value: catalog,
+			refreshedAt: this.now(),
+		};
+		return catalog;
 	}
 }

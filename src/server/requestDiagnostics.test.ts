@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { safeRequestPath } from "../lib/httpDiagnostics";
 import {
 	createRequestObserver,
+	createSlowOperationObserver,
 	safeErrorSummary,
 	startEventLoopLagMonitor,
 } from "./requestDiagnostics";
@@ -122,6 +123,43 @@ describe("request diagnostics", () => {
 		expect(log).toHaveBeenCalledWith(
 			"error",
 			"[ui] GET /raven request aaaaaaaa-aaa failed after 0ms: Error: render failed",
+		);
+	});
+
+	it("attributes slow internal operations once per cooldown", async () => {
+		let now = 0;
+		const log = vi.fn();
+		const observe = createSlowOperationObserver({
+			scope: "provider catalog",
+			thresholdMs: 250,
+			cooldownMs: 30_000,
+			now: () => now,
+			log,
+		});
+
+		await expect(
+			observe("models:codex", "codex model snapshot", () => {
+				now = 300;
+				return "cached";
+			}),
+		).resolves.toBe("cached");
+		now = 1_000;
+		await observe("models:codex", "codex model snapshot", () => {
+			now = 1_500;
+		});
+		now = 31_000;
+		await observe("models:codex", "codex model snapshot", () => {
+			now = 31_400;
+		});
+
+		expect(log).toHaveBeenCalledTimes(2);
+		expect(log).toHaveBeenNthCalledWith(
+			1,
+			"[provider catalog] codex model snapshot took 300ms",
+		);
+		expect(log).toHaveBeenNthCalledWith(
+			2,
+			"[provider catalog] codex model snapshot took 400ms",
 		);
 	});
 });

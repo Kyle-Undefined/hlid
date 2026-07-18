@@ -35,7 +35,8 @@ import { resolveExecutionContext } from "./executionContext";
 import { getLiveSessionsStatus } from "./liveSessions";
 import {
 	createModelCatalog,
-	loadProviderCatalog,
+	createProviderCatalogSnapshot,
+	type ProviderCatalogSnapshot,
 	providerCatalogRequestOptions,
 } from "./providerCatalog";
 import { startProviderProxy } from "./proxy";
@@ -201,9 +202,15 @@ for (const provider of providers.values()) {
 // Keep live model discovery demand-driven. In particular, Codex implements
 // `listModels()` through its app-server, so warming this cache during boot
 // would retain a roughly 100 MB helper process before anyone selects Codex.
+let providerCatalogSnapshot: ProviderCatalogSnapshot;
 const modelCatalog = createModelCatalog(providers, () => {
+	providerCatalogSnapshot.invalidate();
 	bumpDataRevision("providers");
 });
+providerCatalogSnapshot = createProviderCatalogSnapshot(
+	providers.values(),
+	modelCatalog,
+);
 subscribeDataRevisions((revisions) => {
 	broadcast({ type: "data_revisions", revisions });
 });
@@ -399,9 +406,7 @@ async function handleProviderRoute(url: URL, req: Request) {
 	) {
 		await refreshCodexHostCapabilities();
 	}
-	const list = await loadProviderCatalog(
-		providers.values(),
-		modelCatalog,
+	const list = await providerCatalogSnapshot.get(
 		providerCatalogRequestOptions(url.searchParams),
 	);
 	return Response.json({ providers: list });

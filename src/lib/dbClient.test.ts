@@ -121,7 +121,7 @@ describe("internal API client", () => {
 		}
 	});
 
-	it("supports a shorter budget for optional navigation inventory", async () => {
+	it("supports a single-attempt budget for cached navigation inventory", async () => {
 		vi.useFakeTimers();
 		try {
 			vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -137,11 +137,10 @@ describe("internal API client", () => {
 			const pending = dbJson(
 				"/providers?cached_models=1",
 				{ providers: [] },
-				{ initialTimeoutMs: 750, retryTimeoutMs: 250 },
+				{ initialTimeoutMs: 1_250, retryTimeoutMs: false },
 			);
-			await vi.advanceTimersByTimeAsync(750);
-			expect(fetchMock).toHaveBeenCalledTimes(2);
-			await vi.advanceTimersByTimeAsync(250);
+			await vi.advanceTimersByTimeAsync(1_250);
+			expect(fetchMock).toHaveBeenCalledOnce();
 			await expect(pending).resolves.toEqual({ providers: [] });
 		} finally {
 			vi.useRealTimers();

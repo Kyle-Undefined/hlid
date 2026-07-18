@@ -125,6 +125,27 @@ describe("AcpRegistry", () => {
 
 		expect(catalog[0]?.version).toBe("2.0.0");
 	});
+
+	it("caches the materialized availability scan until its inputs change", async () => {
+		const which = vi.fn((command: string) =>
+			command === "custom-open" ? "/bin/custom-open" : null,
+		);
+		const instance = new AcpRegistry(async () => registry, undefined, {
+			which,
+		});
+		const baseConfig = HlidConfigSchema.parse({});
+
+		await instance.catalog(baseConfig, true);
+		await instance.catalog(baseConfig);
+		expect(which).toHaveBeenCalledTimes(registry.agents.length);
+
+		await instance.catalog(
+			HlidConfigSchema.parse({
+				acp_agents: [{ id: "opencode", executable: "custom-open" }],
+			}),
+		);
+		expect(which).toHaveBeenCalledTimes(registry.agents.length * 2);
+	});
 });
 
 describe("resolveAcpInvocation", () => {

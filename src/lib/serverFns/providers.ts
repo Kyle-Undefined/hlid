@@ -15,8 +15,8 @@ const providerCatalogQuerySchema = z
 	.optional();
 
 const CACHED_PROVIDER_READ_BUDGET = {
-	initialTimeoutMs: 750,
-	retryTimeoutMs: 250,
+	initialTimeoutMs: 1_250,
+	retryTimeoutMs: false,
 } as const;
 
 export function providerCatalogPath(

@@ -8,6 +8,7 @@
 import * as db from "../db";
 import type { ProviderInfo } from "../lib/providerTypes";
 import type { AgentProvider, ProviderModelInfo } from "./agentProvider";
+import { createSlowOperationObserver } from "./requestDiagnostics";
 
 /** Where a `CachedList.get()` result came from. */
 export type CatalogSource = "live" | "memory" | "persisted" | "fallback";
@@ -25,6 +26,10 @@ export type CachedList<T> = {
 
 const DEFAULT_TTL_MS = 6 * 3600_000;
 const DEFAULT_FAILURE_TTL_MS = 60_000;
+const PROVIDER_SNAPSHOT_TTL_MS = 60_000;
+const observeCatalogStep = createSlowOperationObserver({
+	scope: "provider catalog",
+});
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
@@ -212,35 +217,140 @@ export async function loadProviderCatalog(
 	return Promise.all(
 		[...providers].map(async (provider) => {
 			const check = provider.check
-				? await provider
-						.check()
-						.catch(() => ({ available: false, reason: "check failed" }))
+				? await observeCatalogStep(
+						`check:${provider.providerId}`,
+						`${provider.providerId} availability check`,
+						() =>
+							provider
+								.check?.()
+								.catch(() => ({ available: false, reason: "check failed" })),
+					)
 				: null;
 			const providerRefresh =
 				options.refresh === true && check?.available !== false;
+			const [models, hostCapabilities] = await Promise.all([
+				observeCatalogStep(
+					`models:${provider.providerId}`,
+					`${provider.providerId} model snapshot`,
+					() =>
+						options.preferCachedModels && modelCatalog.cachedModelsFor
+							? modelCatalog.cachedModelsFor(provider)
+							: modelCatalog.modelsFor(provider, providerRefresh),
+				),
+				options.includeHostCapabilities && provider.hostCapabilities
+					? observeCatalogStep(
+							`capabilities:${provider.providerId}`,
+							`${provider.providerId} host-capability snapshot`,
+							() => provider.hostCapabilities?.().catch(() => ({})),
+						)
+					: undefined,
+			]);
 			return {
 				id: provider.providerId,
 				label: provider.label ?? provider.providerId,
 				available: check?.available ?? true,
 				unavailableReason:
 					check?.available === false ? check.reason : undefined,
-				models:
-					options.preferCachedModels && modelCatalog.cachedModelsFor
-						? await modelCatalog.cachedModelsFor(provider)
-						: await modelCatalog.modelsFor(provider, providerRefresh),
+				models,
 				effortLevels: provider.effortLevels
 					? [...provider.effortLevels]
 					: undefined,
 				permissionModes: provider.permissionModes
 					? [...provider.permissionModes]
 					: undefined,
-				hostCapabilities:
-					options.includeHostCapabilities && provider.hostCapabilities
-						? await provider.hostCapabilities().catch(() => ({}))
-						: undefined,
+				hostCapabilities,
 			};
 		}),
 	);
+}
+
+type ProviderCatalogLoadOptions = Parameters<typeof loadProviderCatalog>[2];
+
+export type ProviderCatalogSnapshot = {
+	get(options?: ProviderCatalogLoadOptions): Promise<ProviderInfo[]>;
+	invalidate(): void;
+};
+
+/**
+ * Cache the fully assembled provider response, not just each provider's model
+ * list. Normal UI reads become an in-memory snapshot while stale availability,
+ * model, and host-capability data revalidates in the background.
+ */
+export function createProviderCatalogSnapshot(
+	providers: Iterable<AgentProvider>,
+	modelCatalog: Parameters<typeof loadProviderCatalog>[1],
+	options: {
+		ttlMs?: number;
+		now?: () => number;
+		load?: typeof loadProviderCatalog;
+	} = {},
+): ProviderCatalogSnapshot {
+	const providerList = [...providers];
+	const ttlMs = options.ttlMs ?? PROVIDER_SNAPSHOT_TTL_MS;
+	const now = options.now ?? Date.now;
+	const load = options.load ?? loadProviderCatalog;
+	const snapshots = new Map<
+		string,
+		{ value: ProviderInfo[]; refreshedAt: number }
+	>();
+	const inflight = new Map<string, Promise<ProviderInfo[]>>();
+	const keyFor = (includeHostCapabilities: boolean) =>
+		includeHostCapabilities ? "with-capabilities" : "base";
+
+	function store(
+		includeHostCapabilities: boolean,
+		value: ProviderInfo[],
+	): ProviderInfo[] {
+		const refreshedAt = now();
+		snapshots.set(keyFor(includeHostCapabilities), { value, refreshedAt });
+		if (includeHostCapabilities) {
+			snapshots.set(keyFor(false), {
+				value: value.map(
+					({ hostCapabilities: _ignored, ...provider }) => provider,
+				),
+				refreshedAt,
+			});
+		}
+		return value;
+	}
+
+	function refresh(
+		loadOptions: ProviderCatalogLoadOptions,
+	): Promise<ProviderInfo[]> {
+		const includeHostCapabilities =
+			loadOptions?.includeHostCapabilities === true;
+		const snapshotKey = keyFor(includeHostCapabilities);
+		const flightKey = `${snapshotKey}:${loadOptions?.refresh ? "live" : "cached"}`;
+		const current = inflight.get(flightKey);
+		if (current) return current;
+		const pending = load(providerList, modelCatalog, loadOptions)
+			.then((value) => store(includeHostCapabilities, value))
+			.finally(() => inflight.delete(flightKey));
+		inflight.set(flightKey, pending);
+		return pending;
+	}
+
+	return {
+		get(loadOptions = {}) {
+			if (loadOptions.refresh) return refresh(loadOptions);
+			const includeHostCapabilities =
+				loadOptions.includeHostCapabilities === true;
+			const snapshot = snapshots.get(keyFor(includeHostCapabilities));
+			const cachedOptions = {
+				...loadOptions,
+				refresh: false,
+				preferCachedModels: true,
+			};
+			if (!snapshot) return refresh(cachedOptions);
+			if (now() - snapshot.refreshedAt >= ttlMs) {
+				void refresh(cachedOptions).catch(() => {});
+			}
+			return Promise.resolve(snapshot.value);
+		},
+		invalidate() {
+			snapshots.clear();
+		},
+	};
 }
 
 /**

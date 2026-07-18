@@ -10,7 +10,7 @@ const softFailureTimes = new Map<string, number>();
 
 type DbJsonReadBudget = {
 	initialTimeoutMs?: number;
-	retryTimeoutMs?: number;
+	retryTimeoutMs?: number | false;
 };
 
 function requestId(): string {
@@ -142,6 +142,7 @@ export async function dbJson<T>(
 		try {
 			res = await readInternalApi(path, currentRequestId, initialTimeoutMs);
 		} catch (initialError) {
+			if (retryTimeoutMs === false) throw initialError;
 			try {
 				res = await readInternalApi(path, currentRequestId, retryTimeoutMs);
 			} catch (retryError) {
