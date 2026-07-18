@@ -58,6 +58,11 @@ Open **RAVEN** and pick a provider. That provider needs to exist and already be
 authenticated in its configured runtime, either native `Windows` or a `WSL`
 wrapper.
 
+The packaged app checks `Claude` and `Codex` during startup so provider-native
+commands, models, subagents, and `MCP` status are ready before the first real
+chat. If a provider is slow, `Hlið` finishes the check in the background. It
+does not send a user turn or spend model tokens.
+
 Pick an old session or start a new one. Typing `/` opens the shared command
 picker, where vault skills, global skills, and provider-native commands live
 together. Compatible commands can be stacked. Their badges stay above the
@@ -104,9 +109,12 @@ background.
 
 The rest of the page keeps live session state, provider usage, recent query
 cost, seven- and thirty-day activity, the active provider's `MCP` status, and
-recent sessions in view. The draft survives navigation and refreshes until it
-is run or cleared. Small thing, but boy does losing a half-written prompt get
-old fast.
+recent sessions in view. When more than one provider reports usage, use the
+provider tabs above the usage strip to switch between their reported windows.
+`Hlið` keeps the last good readings in place while it loads new ones. Live
+provider updates and a regular refresh keep them current. The draft survives
+navigation and refreshes until it is run or cleared. Small thing, but boy does
+losing a half-written prompt get old fast.
 
 ### Raven
 
@@ -185,6 +193,11 @@ as you type, filter by agent or model, and sort by recent activity, cost, or
 tokens. A drill-down from `Stats` carries its date, provider, model, or stop
 reason filters into the list.
 
+On mobile, the live rows collapse into a **LIVE SESSIONS** summary. Open it to
+see sessions ordered with approvals and errors first, followed by running and
+idle work. A session can still be opened in `Raven`, stopped, or closed from
+that panel.
+
 The overflow menu exports every session as `CSV` or `JSON`. It can also remove
 records older than 7, 30, or 90 days when the database actually has sessions
 that old. A row menu handles one rename or delete. Imported history rows are
@@ -241,6 +254,14 @@ The search box filters whole setting categories. `MCP` edits sync into the live
 vault session. Working-context changes still need a provider-session reload,
 which clears the live provider conversation but leaves its recorded `Ledger`
 history alone.
+
+**Agents → Auto-sleep on usage limit** pauses work near the provider's usage
+threshold or after the provider reports a hard limit. `Hlið` uses the five-hour
+window when it is available and weekly usage when it is not. The `Raven` banner
+shows which window filled up and when the session should wake. **RESUME NOW**
+wakes every sleeping session on that provider and lets them keep going until
+the current window resets. Maximum sleep keeps a session from waiting longer
+than the configured cap.
 
 **Developer → Pricing** shows the built-in model and alias timelines, then edits
 `pricing-overrides.toml` for local rules. Rates and aliases can use UTC

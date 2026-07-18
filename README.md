@@ -22,7 +22,8 @@ own folder vocabulary. `Hlið` does not care as long as the paths are set up.
 - Pulls vault skills and provider-native slash commands into `Watch` and
   `Raven`, including compatible multi-skill runs.
 - Browses notes and projects, searches without getting tripped up by accents,
-  manages attachments, and tracks usage and cost.
+  manages attachments, and tracks usage and cost. It can pause running sessions
+  near a provider limit, then pick them back up after the window resets.
 - Puts `Claude`, `Codex`, and installed `ACP` providers behind the same session
   interface.
 - Can hand a task to a fresh Windows-native `Codex Computer Use` worker, while
@@ -84,7 +85,7 @@ page and the workflows that connect them.
 | **RELICS** (`/relics`) | Searching, filtering, sorting, previewing, and cleaning up attachments. |
 | **RAVEN** (`/raven`) | Full agent chat with provider controls, commands, plans, approvals, questions, queues, and a real project terminal. |
 | **EINHERJAR** (`/einherjar`) | Extra working directories or personality/context overlays. |
-| **LEDGER** (`/ledger`) | Sessions and analytics for tokens, cost, cache behavior, tools, stop reasons, context, and provider limits. |
+| **LEDGER** (`/ledger`) | Live-session controls plus recorded sessions and analytics for tokens, cost, cache behavior, tools, stop reasons, context, and provider limits. |
 | **FORGE** (`/forge`) | Settings, integrations, access, updates, maintenance, and developer tools. |
 
 ## Configuration and data
