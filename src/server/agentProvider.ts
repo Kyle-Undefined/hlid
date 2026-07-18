@@ -211,6 +211,8 @@ export type AgentQueryParams = {
 	cwd: string;
 	/** Resume token from a prior session; undefined starts fresh. */
 	sessionId?: string;
+	/** Imported Claude transcripts are resumed through the SDK SessionStore adapter. */
+	historyResumeMode?: "none" | "native" | "session-store";
 	additionalDirectories?: string[];
 	model?: string;
 	effort?: string;

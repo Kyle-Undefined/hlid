@@ -207,6 +207,7 @@ function configuredAgentSettings(
 function buildAgentQueryParams(options: {
 	activeCwd: string;
 	resumeProviderSessionId: string | null;
+	historyResumeMode: AgentQueryParams["historyResumeMode"];
 	extraDirs: Set<string>;
 	signal: AbortSignal | undefined;
 	agentSettings: AgentSettings | undefined;
@@ -232,6 +233,7 @@ function buildAgentQueryParams(options: {
 	return {
 		cwd: options.activeCwd,
 		sessionId: options.resumeProviderSessionId ?? undefined,
+		historyResumeMode: options.historyResumeMode,
 		additionalDirectories:
 			options.extraDirs.size > 0
 				? Array.from(options.extraDirs).map((path) =>
@@ -447,6 +449,7 @@ export class SessionManager {
 	// on subsequent turns so the provider manages history natively.
 	private providerSessionId: string | null = null;
 	private providerSessionProviderId: string | null = null;
+	private historyResumeMode: AgentQueryParams["historyResumeMode"] = "none";
 	private unregisterUmbodApprovalSession: (() => void) | null = null;
 	private permissions = new PermissionManager();
 	private askUserQuestions = new AskUserQuestionManager();
@@ -586,6 +589,7 @@ export class SessionManager {
 		this.currentSessionLabel = null;
 		this.providerSessionId = null;
 		this.providerSessionProviderId = null;
+		this.historyResumeMode = "none";
 		this.providerHandoffPending = false;
 		this.messageSeq = 0;
 		this.sessionAllowedTools.clear();
@@ -1054,6 +1058,7 @@ export class SessionManager {
 		this.currentSessionLabel = null;
 		this.providerSessionId = null;
 		this.providerSessionProviderId = null;
+		this.historyResumeMode = "none";
 		this.providerOverride = null;
 		this.providerHandoffPending = false;
 		this.messageSeq = 0;
@@ -1107,9 +1112,12 @@ export class SessionManager {
 				db.getSessionProviderId(sessionId),
 				db.getSessionProviderSession(sessionId),
 			]);
-			if (savedSession?.history_imported) {
+			if (
+				savedSession?.history_imported &&
+				(savedSession.history_resume_mode ?? "none") === "none"
+			) {
 				throw new Error(
-					"Imported provider history is read-only and cannot be resumed as a live session.",
+					"This imported provider history has accounting data only and cannot be resumed.",
 				);
 			}
 			this.agentCwd = undefined;
@@ -1123,6 +1131,7 @@ export class SessionManager {
 			this.currentSessionLabel = savedSession?.label ?? null;
 			this.providerSessionId = savedProviderSessionId;
 			this.providerSessionProviderId = savedProviderId;
+			this.historyResumeMode = savedSession?.history_resume_mode ?? "none";
 			if (
 				this.providerOverride &&
 				savedProviderId &&
@@ -2839,6 +2848,7 @@ export class SessionManager {
 			buildAgentQueryParams({
 				activeCwd,
 				resumeProviderSessionId,
+				historyResumeMode: this.historyResumeMode,
 				extraDirs,
 				signal: this.abortController?.signal,
 				agentSettings,
@@ -2903,6 +2913,7 @@ export class SessionManager {
 		if (!sameProvider) {
 			this.providerSessionId = null;
 			this.providerSessionProviderId = provider.providerId;
+			this.historyResumeMode = "none";
 		}
 		if (sessionId) {
 			void db

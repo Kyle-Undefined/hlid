@@ -761,8 +761,8 @@ function applyMigrations(db: Db): void {
 		        ON tool_events(timestamp, provider_id, model, agent_cwd)`);
 	});
 
-	// Usage-only provider history belongs in Ledger/Stats but is not a Raven
-	// transcript that can safely be resumed or cleaned up like a native chat.
+	// Provider history started as usage-only Ledger data. Newer imports retain
+	// this marker while explicit resume metadata distinguishes resumable rows.
 	runMigration(db, "_migrated_sessions_history_imported", (db) => {
 		db.run(
 			`ALTER TABLE sessions ADD COLUMN history_imported INTEGER NOT NULL DEFAULT 0`,
@@ -786,6 +786,57 @@ function applyMigrations(db: Db): void {
 			`CREATE INDEX IF NOT EXISTS idx_history_import_session
 			 ON history_import_items(imported_session_id)`,
 		);
+	});
+	runMigration(db, "_migrated_sessions_history_source", (db) => {
+		db.run(`ALTER TABLE sessions ADD COLUMN history_source TEXT`);
+	});
+	runMigration(db, "_migrated_sessions_history_source_backfill", (db) => {
+		db.run(`
+			UPDATE sessions
+			SET history_source = CASE provider_id
+				WHEN 'claude' THEN 'claude-cli'
+				WHEN 'codex' THEN 'codex-cli'
+				ELSE history_source
+			END
+			WHERE history_imported = 1 AND history_source IS NULL
+		`);
+	});
+	runMigration(db, "_migrated_provider_history_resume", (db) => {
+		db.run(
+			`ALTER TABLE sessions ADD COLUMN history_resume_mode TEXT NOT NULL DEFAULT 'none'`,
+		);
+		db.run(`ALTER TABLE sessions ADD COLUMN history_resume_path TEXT`);
+		db.run(`
+			CREATE TABLE IF NOT EXISTS provider_history_transcripts (
+				provider_id TEXT NOT NULL,
+				native_session_id TEXT NOT NULL,
+				subpath TEXT NOT NULL DEFAULT '',
+				source_path TEXT NOT NULL,
+				source_hash TEXT NOT NULL,
+				payload_json TEXT NOT NULL,
+				entry_count INTEGER NOT NULL,
+				updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+				PRIMARY KEY (provider_id, native_session_id, subpath)
+			)
+		`);
+		db.run(
+			`CREATE INDEX IF NOT EXISTS idx_provider_history_transcript_session
+			 ON provider_history_transcripts(provider_id, native_session_id)`,
+		);
+	});
+	runMigration(db, "_migrated_codex_history_source_classification", (db) => {
+		db.run(`
+			UPDATE sessions
+			SET history_source = CASE
+				WHEN label LIKE 'Imported Codex Codex Desktop %' THEN 'codex-desktop'
+				WHEN label LIKE 'Imported Codex codex_vscode %' THEN 'codex-desktop'
+				WHEN label LIKE 'Imported Codex t3code_desktop %' THEN 'codex-desktop'
+				WHEN label LIKE 'Imported Codex codex-tui %' THEN 'codex-cli'
+				WHEN label LIKE 'Imported Codex codex_cli_rs %' THEN 'codex-cli'
+				ELSE history_source
+			END
+			WHERE history_imported = 1 AND provider_id = 'codex'
+		`);
 	});
 
 	// Rename Anthropic-specific settings keys to provider-namespaced format.

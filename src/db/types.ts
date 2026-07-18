@@ -8,6 +8,12 @@ export type SessionRow = {
 	provider_id?: string | null;
 	agent_cwd?: string | null;
 	history_imported?: number;
+	/** Provider surface that produced an imported history-only session. */
+	history_source?: string | null;
+	/** none = accounting only, native = provider thread id, session-store = stored Claude JSONL. */
+	history_resume_mode?: "none" | "native" | "session-store";
+	/** Original provider transcript path, retained for diagnostics and native fallback. */
+	history_resume_path?: string | null;
 	started_at: number;
 	ended_at: number | null;
 	query_count: number;

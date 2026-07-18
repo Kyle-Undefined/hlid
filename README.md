@@ -172,14 +172,20 @@ but excludes prompts, developer instructions, arbitrary tool output, and
 personal home paths. Run the script with `--help` to change the repository, Codex
 roots, evidence window, baseline, title, or output path.
 
-There are also three dry-run-first maintenance tools for old provider history.
-They can import transcript usage or repair older rows that were recorded before
-the current accounting logic existed.
+Ledger's **Import provider history** action discovers Claude CLI/SDK/Cowork and
+Codex CLI/Desktop/editor sessions, stores their transcripts in Hlid, and makes
+imported rows resumable in Raven. Sessions created through Hlid's Codex bridge
+are always excluded. The dry-run-first CLI remains available for advanced
+recovery work.
 
 ```bash
 bun scripts/import-provider-history.ts --db /path/to/hlid.db \
   --codex-root /path/to/.codex/sessions \
   --claude-root /path/to/.claude/projects
+
+# Discover Claude and Codex history automatically.
+bun scripts/import-provider-history.ts --db /path/to/hlid.db \
+  --discover-claude --discover-codex
 
 bun scripts/repair-codex-usage.ts --db /path/to/hlid.db \
   --rollout-root /path/to/.codex/sessions
@@ -190,8 +196,9 @@ bun scripts/repair-claude-usage.ts --db /path/to/hlid.db \
 
 Each one writes a `JSON` manifest first. Read it. If the plan looks right, run
 the same command with `--apply`. Apply mode verifies a standalone `SQLite`
-backup before it touches `hlid.db`. Imported history is accounting-only, so it
-shows up as read-only rows in `Ledger`.
+backup before it touches `hlid.db`. Imported history remains non-resumable, but
+its `Ledger` rows can be renamed or deleted and retain their source surface.
+The same Claude discovery/import is available from `Ledger`'s actions menu.
 
 Under the hood, `Hlið` uses `TanStack Start/Router`, `React`, a `Bun` server,
 `SQLite`, `WebSockets`, and an `AgentProvider` abstraction. The `Vite` client

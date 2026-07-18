@@ -27,6 +27,7 @@ const CODEX_DESKTOP_STORE_ID = "9PLM9XGG6VKS";
 const CODEX_DESKTOP_PACKAGE_IDENTITY = "OpenAI.Codex";
 const CODEX_DESKTOP_STORE_UPDATE_MANIFEST_URL =
 	"https://persistent.oaistatic.com/codex-app-prod/windows-store-update.json";
+const CLAUDE_DESKTOP_WINGET_ID = "Anthropic.Claude";
 
 type NativeCliId = "codex" | "claude";
 
@@ -399,6 +400,49 @@ async function readInstalledCodexDesktopVersions(): Promise<{
 	return { packageVersion, appVersion };
 }
 
+async function readInstalledClaudeDesktopVersions(): Promise<{
+	packageVersion: string;
+	appVersion: string | null;
+} | null> {
+	const result = await runBoundedProcess(
+		"powershell.exe",
+		[
+			"-NoProfile",
+			"-NonInteractive",
+			"-Command",
+			"$package = Get-AppxPackage -Name Claude -ErrorAction SilentlyContinue; if ($package) { [pscustomobject]@{ packageVersion = $package.Version.ToString(); installLocation = $package.InstallLocation } | ConvertTo-Json -Compress }",
+		],
+		{
+			timeoutMs: COMMAND_TIMEOUT_MS,
+			timeoutError: "Claude desktop version check timed out",
+		},
+	);
+	if (result.code !== 0) {
+		throw new Error(`PowerShell version check exited ${result.code}`);
+	}
+	if (!result.output.trim()) return null;
+	let installed: { packageVersion?: unknown; installLocation?: unknown };
+	try {
+		installed = JSON.parse(result.output.trim()) as typeof installed;
+	} catch {
+		throw new Error("PowerShell version output was not recognized");
+	}
+	const packageVersion =
+		typeof installed.packageVersion === "string"
+			? parseCliVersion(installed.packageVersion)
+			: null;
+	if (!packageVersion) {
+		throw new Error("PowerShell package version was not recognized");
+	}
+	const appVersion =
+		typeof installed.installLocation === "string"
+			? await readElectronAsarPackageVersion(
+					join(installed.installLocation, "app", "resources", "app.asar"),
+				)
+			: null;
+	return { packageVersion, appVersion };
+}
+
 async function readWingetCodexDesktopStoreVersions(): Promise<{
 	installedVersion: string;
 	latestVersion: string;
@@ -425,6 +469,36 @@ async function readWingetCodexDesktopStoreVersions(): Promise<{
 	}
 	const versions = parseWindowsStoreVersions(result.output);
 	if (!versions) throw new Error("winget Store output was not recognized");
+	return versions;
+}
+
+async function readWingetClaudeDesktopVersions(): Promise<{
+	installedVersion: string;
+	latestVersion: string;
+}> {
+	const result = await runBoundedProcess(
+		"winget.exe",
+		[
+			"list",
+			"--id",
+			CLAUDE_DESKTOP_WINGET_ID,
+			"--exact",
+			"--accept-source-agreements",
+			"--disable-interactivity",
+		],
+		{
+			timeoutMs: STORE_TIMEOUT_MS,
+			timeoutError: "Claude desktop Winget check timed out",
+		},
+	);
+	if (result.code !== 0) {
+		throw new Error(`winget check exited ${result.code}`);
+	}
+	const versions = parseWindowsStoreVersions(
+		result.output,
+		CLAUDE_DESKTOP_WINGET_ID,
+	);
+	if (!versions) throw new Error("winget output was not recognized");
 	return versions;
 }
 
@@ -493,6 +567,16 @@ const defaultWindowsDesktopDependencies: WindowsDesktopUpdateDependencies = {
 	now: Date.now,
 };
 
+const defaultClaudeDesktopDependencies: WindowsDesktopUpdateDependencies = {
+	isWindows: () => process.platform === "win32",
+	readInstalledVersions: readInstalledClaudeDesktopVersions,
+	readStoreVersions: async () => ({
+		...(await readWingetClaudeDesktopVersions()),
+		automaticUpdateAvailable: true,
+	}),
+	now: Date.now,
+};
+
 function windowsDesktopUpdateAction(): CliUpdateAction {
 	const args = [
 		"upgrade",
@@ -508,6 +592,28 @@ function windowsDesktopUpdateAction(): CliUpdateAction {
 	];
 	return {
 		id: "codex-desktop",
+		displayCommand: `winget ${args.join(" ")}`,
+		command: "winget.exe",
+		args,
+		automatic: true,
+		requiresElevation: false,
+		drainSessions: false,
+	};
+}
+
+function claudeDesktopUpdateAction(): CliUpdateAction {
+	const args = [
+		"upgrade",
+		"--id",
+		CLAUDE_DESKTOP_WINGET_ID,
+		"--exact",
+		"--silent",
+		"--accept-source-agreements",
+		"--accept-package-agreements",
+		"--disable-interactivity",
+	];
+	return {
+		id: "claude-desktop",
 		displayCommand: `winget ${args.join(" ")}`,
 		command: "winget.exe",
 		args,
@@ -775,6 +881,57 @@ export async function inspectWindowsDesktopUpdates(
 	];
 }
 
+export async function inspectClaudeDesktopUpdates(
+	dependencies: WindowsDesktopUpdateDependencies = defaultClaudeDesktopDependencies,
+): Promise<CliUpdateStatus[]> {
+	if (!dependencies.isWindows()) return [];
+	const installedVersions = await dependencies.readInstalledVersions();
+	if (!installedVersions) return [];
+	const { packageVersion: installedVersion, appVersion } = installedVersions;
+	const [storeResult] = await Promise.allSettled([
+		dependencies.readStoreVersions(),
+	]);
+	const storeVersions =
+		storeResult.status === "fulfilled" ? storeResult.value : null;
+	const latestVersion = storeVersions?.latestVersion ?? null;
+	const available =
+		latestVersion != null &&
+		compareCliVersions(latestVersion, installedVersion) > 0;
+	const action = claudeDesktopUpdateAction();
+	return [
+		{
+			id: "claude-desktop",
+			label: "Claude desktop app",
+			surface: "desktop",
+			appVersion,
+			installedVersion,
+			latestVersion,
+			available,
+			updateCommand: action.displayCommand,
+			updateMode: "automatic",
+			requiresElevation: false,
+			checkedAt: dependencies.now(),
+			...(storeResult.status === "rejected"
+				? {
+						error: `latest version: ${storeResult.reason instanceof Error ? storeResult.reason.message : String(storeResult.reason)}`,
+					}
+				: {}),
+		} satisfies CliUpdateStatus,
+	];
+}
+
+export async function inspectAllWindowsDesktopUpdates(): Promise<
+	CliUpdateStatus[]
+> {
+	const results = await Promise.allSettled([
+		inspectWindowsDesktopUpdates(),
+		inspectClaudeDesktopUpdates(),
+	]);
+	return results.flatMap((result) =>
+		result.status === "fulfilled" ? result.value : [],
+	);
+}
+
 export async function inspectAcpUpdates(
 	dependencies: AcpUpdateDependencies = defaultAcpDependencies,
 ): Promise<CliUpdateStatus[]> {
@@ -881,6 +1038,7 @@ export async function resolveCliUpdateAction(
 	id: string,
 ): Promise<CliUpdateAction | null> {
 	if (id === "codex-desktop") return windowsDesktopUpdateAction();
+	if (id === "claude-desktop") return claudeDesktopUpdateAction();
 	if (id === "codex" || id === "claude") {
 		const executable = defaultDependencies.resolveExecutable(id);
 		return executable ? (nativeUpdateAction(id, executable) ?? null) : null;
@@ -937,6 +1095,7 @@ function isPersistedStatus(value: unknown): value is CliUpdateStatus {
 		(status.id === "codex" ||
 			status.id === "claude" ||
 			status.id === "codex-desktop" ||
+			status.id === "claude-desktop" ||
 			/^wsl:[^:]+:(?:codex|claude)$/.test(status.id) ||
 			/^acp:.+/.test(status.id)) &&
 		typeof status.label === "string" &&
@@ -1009,7 +1168,7 @@ const defaultStatusDependencies: CliUpdateStatusDependencies = {
 	readCache: readPersistedCache,
 	writeCache: writePersistedCache,
 	inspectNative: inspectCliUpdates,
-	inspectDesktop: inspectWindowsDesktopUpdates,
+	inspectDesktop: inspectAllWindowsDesktopUpdates,
 	inspectWsl: inspectWslUpdates,
 	inspectAcp: inspectAcpUpdates,
 };
@@ -1091,7 +1250,8 @@ export async function getCliUpdateStatuses(
 	const now = dependencies.now();
 	if (!opts?.force && cached && now - cached.checkedAt < CHECK_TTL_MS) {
 		const desktopStatus = cached.statuses.find(
-			(status) => status.id === "codex-desktop",
+			(status) =>
+				status.id === "codex-desktop" || status.id === "claude-desktop",
 		);
 		if (
 			opts?.background &&

@@ -559,7 +559,7 @@ describe("SessionManager — setModel", () => {
 		await expect(
 			sm.runQuery("continue", () => {}, "history:claude:old-session"),
 		).rejects.toThrow(
-			"Imported provider history is read-only and cannot be resumed as a live session.",
+			"This imported provider history has accounting data only and cannot be resumed.",
 		);
 
 		expect(query).not.toHaveBeenCalled();
@@ -567,6 +567,29 @@ describe("SessionManager — setModel", () => {
 		expect(dbMock.appendMessage).not.toHaveBeenCalled();
 		expect(sm.getCurrentSessionId()).toBeNull();
 		expect(sm.getStatus().state).toBe("idle");
+	});
+
+	it("resumes an imported session when provider resume metadata is present", async () => {
+		const { provider, captured } = makeCaptureProvider("claude");
+		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
+			id: "history:claude:resumable",
+			label: "Imported Claude CLI",
+			history_imported: 1,
+			history_resume_mode: "session-store",
+		} as never);
+		vi.mocked(dbMock.getSessionProviderId).mockResolvedValueOnce("claude");
+		vi.mocked(dbMock.getSessionProviderSession).mockResolvedValueOnce(
+			"claude-native-id",
+		);
+		vi.mocked(dbMock.getSessionMessages).mockResolvedValueOnce([
+			{ role: "user", text: "prior" },
+		] as never);
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await sm.runQuery("continue", () => {}, "history:claude:resumable");
+
+		expect(captured.params?.sessionId).toBe("claude-native-id");
+		expect(captured.params?.historyResumeMode).toBe("session-store");
 	});
 
 	it("restores saved effort and permission instead of current config defaults", async () => {

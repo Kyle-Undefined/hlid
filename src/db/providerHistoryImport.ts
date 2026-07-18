@@ -1,8 +1,11 @@
 import type { Database } from "bun:sqlite";
 import { realpathSync } from "node:fs";
+import { readdir, realpath, stat } from "node:fs/promises";
+import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { estimateClaudeCost } from "../lib/claudePricing";
 import { estimateCodexCost } from "../lib/codexPricing";
+import { normalizeSearchText } from "../lib/search";
 import {
 	codexChildrenByParent,
 	codexDirectChildIds,
@@ -18,7 +21,7 @@ import {
 	usageTokenTotal,
 } from "./usageRepairShared";
 
-export const PROVIDER_HISTORY_IMPORT_VERSION = 3 as const;
+export const PROVIDER_HISTORY_IMPORT_VERSION = 4 as const;
 
 export type HistoryProviderId = "codex" | "claude";
 
@@ -27,6 +30,11 @@ export type HistoryTokenBuckets = UsageTokenBuckets;
 export type ProviderHistorySourceFile = {
 	path: string;
 	sha256: string;
+};
+
+export type ProviderHistoryTranscriptFile = ProviderHistorySourceFile & {
+	/** Empty for the main transcript; Claude subagents use SDK-compatible subpaths. */
+	subpath: string;
 };
 
 export type ProviderHistoryQuery = {
@@ -66,6 +74,10 @@ export type ProviderHistorySession = {
 	model: string | null;
 	cwd: string | null;
 	sourceSurface: string;
+	historySource: string;
+	resumeMode: "native" | "session-store";
+	resumePath: string;
+	transcriptFiles: ProviderHistoryTranscriptFile[];
 	startedAt: number;
 	endedAt: number;
 	queries: ProviderHistoryQuery[];
@@ -76,6 +88,7 @@ export type ProviderHistoryImportSkipped = {
 	nativeSessionId: string | null;
 	reason:
 		| "originated-in-hlid"
+		| "excluded-source"
 		| "existing-native-session"
 		| "import-tombstone"
 		| "unsupported-entrypoint"
@@ -119,6 +132,8 @@ export type ApplyProviderHistoryImportResult = {
 	alreadyImportedQueries: number;
 	tombstonedSessions: number;
 	affectedDates: number;
+	transcriptSessions: number;
+	insertedMessages: number;
 };
 
 type ProvenanceRow = {
@@ -146,6 +161,86 @@ type CodexTerminalTurn = CodexTurn & {
 };
 
 export const historyTokenTotal = usageTokenTotal;
+
+async function isDirectory(path: string): Promise<boolean> {
+	return (await stat(path).catch(() => null))?.isDirectory() === true;
+}
+
+async function findNestedClaudeProjectRoots(
+	root: string,
+	maxDepth = 8,
+): Promise<string[]> {
+	const found: string[] = [];
+	async function visit(path: string, depth: number): Promise<void> {
+		if (depth > maxDepth) return;
+		if (
+			basename(path) === "projects" &&
+			basename(dirname(path)) === ".claude"
+		) {
+			found.push(path);
+			return;
+		}
+		const entries = await readdir(path, { withFileTypes: true }).catch(
+			() => [],
+		);
+		await Promise.all(
+			entries
+				.filter((entry) => entry.isDirectory() && !entry.isSymbolicLink())
+				.map((entry) => visit(join(path, entry.name), depth + 1)),
+		);
+	}
+	if (await isDirectory(root)) await visit(root, 0);
+	return found;
+}
+
+/** Discover Claude CLI/Code and Desktop-local Cowork transcript roots. */
+export async function discoverClaudeHistoryRoots(
+	options: { home?: string; appData?: string | null } = {},
+): Promise<string[]> {
+	const home = options.home ?? homedir();
+	const appData =
+		options.appData === undefined
+			? (process.env.APPDATA ?? null)
+			: options.appData;
+	const candidates = [join(home, ".claude", "projects")];
+	if (appData) {
+		const claudeData = join(appData, "Claude");
+		for (const container of [
+			"local-agent-mode-sessions",
+			"claude-code-sessions",
+		]) {
+			candidates.push(
+				...(await findNestedClaudeProjectRoots(join(claudeData, container))),
+			);
+		}
+	}
+	const roots = new Map<string, string>();
+	for (const candidate of candidates) {
+		if (!(await isDirectory(candidate))) continue;
+		const resolved = await realpath(candidate).catch(() => candidate);
+		const key =
+			process.platform === "win32" ? resolved.toLocaleLowerCase() : resolved;
+		roots.set(key, resolved);
+	}
+	return [...roots.values()].sort((a, b) => a.localeCompare(b));
+}
+
+/** Discover Codex CLI/Desktop rollout roots for the current operating-system user. */
+export async function discoverCodexHistoryRoots(
+	options: { home?: string } = {},
+): Promise<string[]> {
+	const home = options.home ?? homedir();
+	const candidates = [
+		join(home, ".codex", "sessions"),
+		join(home, ".codex", "archived_sessions"),
+	];
+	const roots: string[] = [];
+	for (const candidate of candidates) {
+		if (!(await isDirectory(candidate))) continue;
+		roots.push(await realpath(candidate).catch(() => candidate));
+	}
+	return roots.sort((a, b) => a.localeCompare(b));
+}
 
 function positiveUsage(usage: HistoryTokenBuckets): boolean {
 	return historyTokenTotal(usage) > 0;
@@ -562,6 +657,50 @@ function formatImportDate(timestampSeconds: number): string {
 	return new Date(timestampSeconds * 1_000).toISOString().slice(0, 10);
 }
 
+function sessionNeedsTranscriptUpgrade(
+	db: Database,
+	session: ProviderHistorySession,
+): boolean {
+	const sessionColumns = tableColumns(db, "sessions");
+	if (
+		!sessionColumns.has("history_resume_mode") ||
+		!sessionColumns.has("history_source")
+	) {
+		return true;
+	}
+	const stored = db
+		.query<
+			{
+				provider_session_id: string | null;
+				history_resume_mode: string | null;
+				history_source: string | null;
+			},
+			[string]
+		>(`
+			SELECT provider_session_id, history_resume_mode, history_source
+			FROM sessions WHERE id = ?
+		`)
+		.get(session.importedSessionId);
+	if (
+		!stored ||
+		stored.provider_session_id !== session.nativeSessionId ||
+		stored.history_resume_mode !== session.resumeMode ||
+		stored.history_source !== session.historySource
+	) {
+		return true;
+	}
+	if (!tableExists(db, "provider_history_transcripts")) return true;
+	const main = session.transcriptFiles.find((file) => file.subpath === "");
+	if (!main) return false;
+	const transcript = db
+		.query<{ source_hash: string }, [string, string]>(`
+			SELECT source_hash FROM provider_history_transcripts
+			WHERE provider_id = ? AND native_session_id = ? AND subpath = ''
+		`)
+		.get(session.providerId, session.nativeSessionId);
+	return transcript?.source_hash !== main.sha256;
+}
+
 type PlannerState = {
 	provenance: Map<string, ProvenanceRow>;
 	skipped: ProviderHistoryImportSkipped[];
@@ -636,6 +775,25 @@ async function planCodexSessions(args: {
 				providerId: "codex",
 				nativeSessionId: root.threadId,
 				reason: "originated-in-hlid",
+			});
+			continue;
+		}
+		const desktopOriginators = new Set([
+			"Codex Desktop",
+			"codex_vscode",
+			"t3code_desktop",
+		]);
+		const cliOriginators = new Set(["codex-tui", "codex_cli_rs"]);
+		const isDesktop = root.originator
+			? desktopOriginators.has(root.originator)
+			: false;
+		const isCli = cliOriginators.has(root.originator ?? "");
+		if (!isDesktop && !isCli) {
+			args.state.skipped.push({
+				providerId: "codex",
+				nativeSessionId: root.threadId,
+				reason: "excluded-source",
+				detail: root.originator ?? "unknown Codex originator",
 			});
 			continue;
 		}
@@ -794,6 +952,10 @@ async function planCodexSessions(args: {
 			model,
 			cwd: metadata.cwd,
 			sourceSurface: metadata.sourceSurface,
+			historySource: isDesktop ? "codex-desktop" : "codex-cli",
+			resumeMode: "native",
+			resumePath: root.path,
+			transcriptFiles: [{ path: root.path, sha256: root.sha256, subpath: "" }],
 			startedAt,
 			endedAt,
 			queries,
@@ -919,17 +1081,25 @@ async function planCodexSessions(args: {
 		}
 	}
 
-	const safeSessions = sessions.filter((session) => session.queries.length > 0);
+	const safeSessions = sessions.filter(
+		(session) =>
+			session.queries.length > 0 ||
+			(!session.createSession &&
+				sessionNeedsTranscriptUpgrade(args.db, session)),
+	);
 	for (const session of safeSessions) {
-		session.startedAt = Math.min(
-			...session.queries.map((query) => query.startedAt),
-		);
-		session.endedAt = Math.max(
-			...session.queries.map((query) => query.timestamp),
-		);
-		session.model =
-			[...session.queries].reverse().find((query) => query.model)?.model ??
-			null;
+		if (session.queries.length > 0) {
+			session.startedAt = Math.min(
+				...session.queries.map((query) => query.startedAt),
+			);
+			session.endedAt = Math.max(
+				...session.queries.map((query) => query.timestamp),
+			);
+			session.model =
+				[...session.queries].reverse().find((query) => query.model)?.model ??
+				null;
+		}
+		includeSources(args.state, session.transcriptFiles);
 		for (const query of session.queries) {
 			includeSources(args.state, query.evidence.sources);
 		}
@@ -1113,6 +1283,7 @@ type ClaudeQueryCandidate = {
 	root: ClaudeFile;
 	children: ClaudeFile[];
 	cwd: string | null;
+	sourceSurface: string;
 };
 
 type ClaudeSessionCandidate = {
@@ -1122,6 +1293,9 @@ type ClaudeSessionCandidate = {
 	sourceId: string;
 	sourceHash: string;
 	cwd: string | null;
+	sourceSurface: string;
+	root: ClaudeFile;
+	children: ClaudeFile[];
 	queries: ClaudeQueryCandidate[];
 };
 
@@ -1211,7 +1385,7 @@ function buildClaudeQuery(
 		stopReason: finalCall?.stopReason ?? null,
 		model,
 		cwd: candidate.cwd,
-		sourceSurface: "claude-cli",
+		sourceSurface: candidate.sourceSurface,
 		contextWindow: null,
 		tokensInContext: finalCall
 			? finalCall.usage.inputTokens +
@@ -1236,6 +1410,7 @@ async function planClaudeRoot(args: {
 	nativeSessionId: string;
 	importedSessionId: string;
 	createSession: boolean;
+	sourceSurface: string;
 	state: PlannerState;
 }): Promise<ClaudeSessionCandidate | null> {
 	const recordsByUuid = new Map<string, ClaudeRecord>();
@@ -1398,6 +1573,7 @@ async function planClaudeRoot(args: {
 			root: args.root,
 			children: args.children,
 			cwd,
+			sourceSurface: args.sourceSurface,
 		});
 	}
 	if (queries.length === 0) return null;
@@ -1410,16 +1586,28 @@ async function planClaudeRoot(args: {
 			provider: "claude",
 			nativeSessionId: args.nativeSessionId,
 			cwd,
-			sourceSurface: "claude-cli",
+			sourceSurface: args.sourceSurface,
 		}),
 		createSession: args.createSession,
 		cwd,
+		sourceSurface: args.sourceSurface,
+		root: args.root,
+		children: args.children,
 		queries,
 	};
 }
 
 function claudeCandidateSourceId(candidate: ClaudeQueryCandidate): string {
 	return `prompt:${candidate.nativeSessionId}:${candidate.promptKey}`;
+}
+
+function claudeHistorySurface(entrypoints: Set<string>): string | null {
+	if (entrypoints.has("local-agent")) return "claude-desktop-cowork";
+	if (entrypoints.has("cli")) return "claude-cli";
+	if (entrypoints.has("sdk-cli") || entrypoints.has("sdk-ts")) {
+		return "claude-sdk";
+	}
+	return null;
 }
 
 function existingClaudeCallOwners(
@@ -1451,6 +1639,7 @@ function existingClaudeCallOwners(
 function reconcileClaudeCallsGlobally(
 	sessions: ClaudeSessionCandidate[],
 	state: PlannerState,
+	db: Database,
 ): ProviderHistorySession[] {
 	type Occurrence = {
 		candidate: ClaudeQueryCandidate;
@@ -1518,30 +1707,80 @@ function reconcileClaudeCallsGlobally(
 			queries.push(query);
 			includeSources(state, query.evidence.sources);
 		}
-		if (queries.length === 0) continue;
 		queries.sort(
 			(a, b) =>
 				a.startedAt - b.startedAt || a.sourceId.localeCompare(b.sourceId),
 		);
-		const startedAt = Math.min(...queries.map((query) => query.startedAt));
-		const endedAt = Math.max(...queries.map((query) => query.timestamp));
+		const recordTimes = candidateSession.root.records
+			.map(claudeTimestamp)
+			.filter((value) => value > 0)
+			.map((value) => Math.floor(value / 1_000));
+		const fallbackStartedAt = recordTimes[0] ?? 0;
+		const fallbackEndedAt = recordTimes.at(-1) ?? fallbackStartedAt;
+		const startedAt =
+			queries.length > 0
+				? Math.min(...queries.map((query) => query.startedAt))
+				: fallbackStartedAt;
+		const endedAt =
+			queries.length > 0
+				? Math.max(...queries.map((query) => query.timestamp))
+				: fallbackEndedAt;
 		const model =
 			[...queries].reverse().find((query) => query.model)?.model ?? null;
-		result.push({
+		const sourceLabel =
+			candidateSession.sourceSurface === "claude-desktop-cowork"
+				? "Claude Desktop Cowork"
+				: candidateSession.sourceSurface === "claude-sdk"
+					? "Claude SDK"
+					: "Claude CLI";
+		const session: ProviderHistorySession = {
 			providerId: "claude",
 			nativeSessionId: candidateSession.nativeSessionId,
 			importedSessionId: candidateSession.importedSessionId,
 			sourceId: candidateSession.sourceId,
 			sourceHash: candidateSession.sourceHash,
 			createSession: candidateSession.createSession,
-			label: `Imported Claude CLI · ${formatImportDate(startedAt)}`,
+			label: `Imported ${sourceLabel} · ${formatImportDate(startedAt)}`,
 			model,
 			cwd: candidateSession.cwd,
-			sourceSurface: "claude-cli",
+			sourceSurface: candidateSession.sourceSurface,
+			historySource: candidateSession.sourceSurface,
+			resumeMode: "session-store",
+			resumePath: candidateSession.root.path,
+			transcriptFiles: [
+				{
+					path: candidateSession.root.path,
+					sha256: candidateSession.root.sha256,
+					subpath: "",
+				},
+				...candidateSession.children.map((child) => ({
+					path: child.path,
+					sha256: child.sha256,
+					subpath: `subagents/${basename(child.path, ".jsonl")}`,
+				})),
+			],
 			startedAt,
 			endedAt,
 			queries,
-		});
+		};
+		if (
+			queries.length === 0 &&
+			(candidateSession.createSession ||
+				!sessionNeedsTranscriptUpgrade(db, session))
+		) {
+			continue;
+		}
+		result.push(session);
+		includeSources(state, [
+			{
+				path: candidateSession.root.path,
+				sha256: candidateSession.root.sha256,
+			},
+			...candidateSession.children.map((child) => ({
+				path: child.path,
+				sha256: child.sha256,
+			})),
+		]);
 	}
 	return result;
 }
@@ -1603,7 +1842,8 @@ async function planClaudeSessions(args: {
 						.map((record) => record.entrypoint)
 						.filter((entry): entry is string => typeof entry === "string"),
 				);
-				if (!entrypoints.has("cli")) {
+				const sourceSurface = claudeHistorySurface(entrypoints);
+				if (!sourceSurface) {
 					args.state.skipped.push({
 						providerId: "claude",
 						nativeSessionId,
@@ -1620,6 +1860,7 @@ async function planClaudeSessions(args: {
 					nativeSessionId,
 					importedSessionId: disposition.importedSessionId,
 					createSession: disposition.kind === "new",
+					sourceSurface,
 					state: args.state,
 				});
 				if (session) candidates.push(session);
@@ -1644,7 +1885,7 @@ async function planClaudeSessions(args: {
 		}
 	}
 	return {
-		sessions: reconcileClaudeCallsGlobally(candidates, args.state),
+		sessions: reconcileClaudeCallsGlobally(candidates, args.state, args.db),
 		rootSessions,
 		subagentFiles,
 	};
@@ -1745,6 +1986,12 @@ function insertDynamic(
 	const entries = Object.entries(values).filter(([column]) =>
 		available.has(column),
 	);
+	const undefinedEntry = entries.find(([, value]) => value === undefined);
+	if (undefinedEntry) {
+		throw new Error(
+			`History import value is undefined: ${table}.${undefinedEntry[0]}`,
+		);
+	}
 	const columns = entries.map(([column]) => column);
 	const placeholders = entries.map(() => "?");
 	const result = db.run(
@@ -1752,6 +1999,175 @@ function insertDynamic(
 		entries.map(([, value]) => value),
 	);
 	return Number(result.lastInsertRowid);
+}
+
+type LoadedHistoryTranscript = ProviderHistoryTranscriptFile & {
+	records: Record<string, unknown>[];
+	payloadJson: string;
+};
+
+function transcriptText(content: unknown): string {
+	if (typeof content === "string") return content.trim();
+	if (!Array.isArray(content)) return "";
+	return content
+		.map((item) => {
+			const block = asObject(item);
+			if (
+				block.type !== "text" &&
+				block.type !== "input_text" &&
+				block.type !== "output_text"
+			) {
+				return "";
+			}
+			return typeof block.text === "string" ? block.text : "";
+		})
+		.filter(Boolean)
+		.join("\n")
+		.trim();
+}
+
+function normalizedTranscriptMessages(
+	providerId: HistoryProviderId,
+	records: Record<string, unknown>[],
+	fallbackTimestamp: number,
+): Array<{ role: "user" | "assistant"; text: string; timestamp: number }> {
+	type Item = {
+		role: "user" | "assistant";
+		text: string;
+		timestamp: number;
+		order: number;
+		identity: string;
+	};
+	const items: Item[] = [];
+	for (const [order, record] of records.entries()) {
+		const at =
+			typeof record.timestamp === "string"
+				? Math.floor(Date.parse(record.timestamp) / 1_000)
+				: fallbackTimestamp;
+		const timestamp = Number.isFinite(at) ? at : fallbackTimestamp;
+		if (providerId === "claude") {
+			if (
+				(record.type !== "user" && record.type !== "assistant") ||
+				record.isMeta === true ||
+				record.isSidechain === true
+			) {
+				continue;
+			}
+			const message = asObject(record.message);
+			const text = transcriptText(message.content);
+			if (!text) continue;
+			const role = record.type;
+			const identity =
+				(typeof message.id === "string" ? message.id : null) ??
+				(typeof record.uuid === "string" ? record.uuid : `${role}:${order}`);
+			items.push({ role, text, timestamp, order, identity });
+			continue;
+		}
+		if (record.type !== "response_item") continue;
+		const payload = asObject(record.payload);
+		if (
+			payload.type !== "message" ||
+			(payload.role !== "user" && payload.role !== "assistant")
+		) {
+			continue;
+		}
+		const text = transcriptText(payload.content);
+		if (!text) continue;
+		const role = payload.role;
+		const identity =
+			(typeof payload.id === "string" ? payload.id : null) ??
+			`${role}:${timestamp}:${text}`;
+		items.push({ role, text, timestamp, order, identity });
+	}
+	const latest = new Map<string, Item>();
+	for (const item of items) latest.set(`${item.role}:${item.identity}`, item);
+	return [...latest.values()]
+		.sort((a, b) => a.timestamp - b.timestamp || a.order - b.order)
+		.map(({ role, text, timestamp }) => ({ role, text, timestamp }));
+}
+
+async function loadManifestTranscripts(
+	manifest: ProviderHistoryImportManifest,
+): Promise<Map<string, LoadedHistoryTranscript[]>> {
+	const loaded = new Map<string, LoadedHistoryTranscript[]>();
+	for (const session of manifest.sessions) {
+		const files: LoadedHistoryTranscript[] = [];
+		for (const source of session.transcriptFiles) {
+			const { records } = await readJsonlObjects(source.path);
+			files.push({
+				...source,
+				records,
+				payloadJson: JSON.stringify(records),
+			});
+		}
+		loaded.set(session.importedSessionId, files);
+	}
+	return loaded;
+}
+
+function upsertSessionTranscript(
+	db: Database,
+	session: ProviderHistorySession,
+	files: LoadedHistoryTranscript[],
+): number {
+	for (const file of files) {
+		db.run(
+			`INSERT INTO provider_history_transcripts
+			 (provider_id, native_session_id, subpath, source_path, source_hash,
+			  payload_json, entry_count, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch())
+			 ON CONFLICT(provider_id, native_session_id, subpath) DO UPDATE SET
+			  source_path = excluded.source_path,
+			  source_hash = excluded.source_hash,
+			  payload_json = excluded.payload_json,
+			  entry_count = excluded.entry_count,
+			  updated_at = excluded.updated_at`,
+			[
+				session.providerId,
+				session.nativeSessionId,
+				file.subpath,
+				file.path,
+				file.sha256,
+				file.payloadJson,
+				file.records.length,
+			],
+		);
+	}
+	const existing = db
+		.query<{ count: number }, [string]>(
+			`SELECT COUNT(*) AS count FROM messages WHERE session_id = ?`,
+		)
+		.get(session.importedSessionId)?.count;
+	if (existing) return 0;
+	const main = files.find((file) => file.subpath === "");
+	if (!main) return 0;
+	const messages = normalizedTranscriptMessages(
+		session.providerId,
+		main.records,
+		session.startedAt,
+	);
+	for (const [seq, message] of messages.entries()) {
+		db.run(
+			`INSERT INTO messages (session_id, seq, role, text, timestamp)
+			 VALUES (?, ?, ?, ?, ?)`,
+			[
+				session.importedSessionId,
+				seq,
+				message.role,
+				message.text,
+				message.timestamp,
+			],
+		);
+	}
+	if (messages.length > 0 && tableExists(db, "session_search")) {
+		db.run(`UPDATE session_search SET text = ? WHERE session_id = ?`, [
+			normalizeSearchText(
+				`${session.label} ${messages.map((message) => message.text).join(" ")}`,
+			),
+			session.importedSessionId,
+		]);
+	}
+	return messages.length;
 }
 
 function insertSession(db: Database, session: ProviderHistorySession): void {
@@ -1774,11 +2190,13 @@ function insertSession(db: Database, session: ProviderHistorySession): void {
 		total_turns: 0,
 		agent_cwd: session.cwd,
 		provider_id: session.providerId,
-		// Imported usage rows are historical facts, not resumable chats. The
-		// provider-native identity remains canonical in history_import_items.
-		provider_session_id: null,
-		claude_session_id: null,
+		provider_session_id: session.nativeSessionId,
+		claude_session_id:
+			session.providerId === "claude" ? session.nativeSessionId : null,
 		history_imported: 1,
+		history_source: session.historySource,
+		history_resume_mode: session.resumeMode,
+		history_resume_path: session.resumePath,
 	});
 	if (tableExists(db, "session_search")) {
 		db.run(
@@ -2072,11 +2490,14 @@ export async function applyProviderHistoryImport(
 		);
 	}
 	await verifyManifestSources(manifest);
+	const loadedTranscripts = await loadManifestTranscripts(manifest);
 	let createdSessions = 0;
 	let insertedQueries = 0;
 	let alreadyImportedSessions = 0;
 	let alreadyImportedQueries = 0;
 	let tombstonedSessions = 0;
+	let transcriptSessions = 0;
+	let insertedMessages = 0;
 	const affectedSessions = new Set<string>();
 	const affectedDates = new Set<string>();
 	db.run("BEGIN IMMEDIATE");
@@ -2141,6 +2562,31 @@ export async function applyProviderHistoryImport(
 				});
 				createdSessions++;
 			}
+			db.run(
+				`UPDATE sessions SET provider_session_id = ?,
+				 claude_session_id = CASE WHEN ? = 'claude' THEN ? ELSE claude_session_id END,
+				 history_source = ?, history_resume_mode = ?, history_resume_path = ?
+				 WHERE id = ?`,
+				[
+					session.nativeSessionId,
+					session.providerId,
+					session.nativeSessionId,
+					session.historySource,
+					session.resumeMode,
+					session.resumePath,
+					session.importedSessionId,
+				],
+			);
+			const transcriptFiles =
+				loadedTranscripts.get(session.importedSessionId) ?? [];
+			if (transcriptFiles.length > 0) {
+				transcriptSessions++;
+				insertedMessages += upsertSessionTranscript(
+					db,
+					session,
+					transcriptFiles,
+				);
+			}
 
 			for (const query of session.queries) {
 				const provenance = selectProvenance(
@@ -2192,12 +2638,14 @@ export async function applyProviderHistoryImport(
 			db.run(
 				`UPDATE sessions
 				 SET started_at = MIN(started_at, ?),
-				     ended_at = MAX(COALESCE(ended_at, ?), ?)
+				     ended_at = MAX(COALESCE(ended_at, ?), ?),
+				     history_source = COALESCE(history_source, ?)
 				 WHERE id = ?`,
 				[
 					session.startedAt,
 					session.endedAt,
 					session.endedAt,
+					session.sourceSurface,
 					session.importedSessionId,
 				],
 			);
@@ -2228,5 +2676,7 @@ export async function applyProviderHistoryImport(
 		alreadyImportedQueries,
 		tombstonedSessions,
 		affectedDates: affectedDates.size,
+		transcriptSessions,
+		insertedMessages,
 	};
 }

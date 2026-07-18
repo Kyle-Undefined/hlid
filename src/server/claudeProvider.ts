@@ -22,6 +22,7 @@ import type {
 	SlashCommand,
 	SubagentSnapshot,
 } from "./agentProvider";
+import { createClaudeHistorySessionStore } from "./claudeHistorySessionStore";
 
 /**
  * Permission modes hlid's AgentQueryParams/agent-agnostic layer knows about.
@@ -1512,6 +1513,9 @@ export class ClaudeProvider implements AgentProvider {
 						: {}),
 					settingSources: params.settingSources ?? ["user", "project", "local"],
 					...(resumeId !== undefined ? { resume: resumeId } : {}),
+					...(params.historyResumeMode === "session-store"
+						? { sessionStore: createClaudeHistorySessionStore() }
+						: {}),
 					...(params.persistSession === false ? { persistSession: false } : {}),
 					// biome-ignore lint/suspicious/noExplicitAny: SDK canUseTool type changed between versions
 					canUseTool: params.canUseTool as any,

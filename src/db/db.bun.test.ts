@@ -432,6 +432,37 @@ describe("sessions — provider sessions", () => {
 	});
 });
 
+describe("sessions — imported history source migration", () => {
+	it("backfills source labels for imports created before source tracking", async () => {
+		const database = freshDb();
+		await createSession("claude-import", "Claude import", "m");
+		await createSession("codex-import", "Codex import", "m");
+		database.run(`
+			UPDATE sessions
+			SET history_imported = 1,
+			    provider_id = CASE id
+					WHEN 'claude-import' THEN 'claude'
+					ELSE 'codex'
+				END,
+			    history_source = NULL
+		`);
+		database.run(
+			`DELETE FROM settings WHERE key = '_migrated_sessions_history_source_backfill'`,
+		);
+
+		setDbForTest(database);
+
+		expect(
+			database
+				.query(`SELECT id, history_source FROM sessions ORDER BY id`)
+				.all(),
+		).toEqual([
+			{ id: "claude-import", history_source: "claude-cli" },
+			{ id: "codex-import", history_source: "codex-cli" },
+		]);
+	});
+});
+
 describe("sessions — agent_cwd & actual_model", () => {
 	beforeEach(() => freshDb());
 
@@ -1647,7 +1678,10 @@ describe("sessions — deleteSessionsOlderThan", () => {
 // ── sessions — cascade delete completeness ───────────────────────────────────
 
 describe("sessions — cascade delete completeness", () => {
-	beforeEach(() => freshDb());
+	let db: Database;
+	beforeEach(() => {
+		db = freshDb();
+	});
 
 	it("deleteSession removes tool_events and permission_events", async () => {
 		await createSession("s1", "L", "m");
@@ -1686,6 +1720,32 @@ describe("sessions — cascade delete completeness", () => {
 		expect(att).not.toBeNull();
 		expect(att?.session_id).toBeNull();
 		expect(att?.message_seq).toBeNull();
+	});
+
+	it("deleteSession removes the stored transcript for an imported session", async () => {
+		db.run(
+			`INSERT INTO sessions
+			 (id, label, model, started_at, provider_id, provider_session_id,
+			  history_imported, history_resume_mode)
+			 VALUES ('imported', 'Imported', 'm', 1, 'claude', 'native-id', 1,
+			         'session-store')`,
+		);
+		db.run(
+			`INSERT INTO provider_history_transcripts
+			 (provider_id, native_session_id, subpath, source_path, source_hash,
+			  payload_json, entry_count)
+			 VALUES ('claude', 'native-id', '', 'source.jsonl', 'hash', '[]', 0)`,
+		);
+
+		await deleteSession("imported");
+
+		expect(
+			db
+				.query<{ count: number }, []>(
+					"SELECT COUNT(*) AS count FROM provider_history_transcripts",
+				)
+				.get()?.count,
+		).toBe(0);
 	});
 });
 

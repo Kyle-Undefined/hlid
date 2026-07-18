@@ -8,6 +8,11 @@ import {
 import { unlinkPaths } from "./attachments";
 import { bumpDataRevision } from "./dataRevision";
 import { getLiveSessionsStatus, hasLiveTerminalSession } from "./liveSessions";
+import {
+	getProviderHistorySyncStatus,
+	startProviderHistorySync,
+	syncClaudeProviderHistory,
+} from "./providerHistorySync";
 import { getWindowMark } from "./proxy";
 import { broadcast } from "./runState";
 import type { SessionPool } from "./sessionPool";
@@ -76,6 +81,10 @@ const DB_GET_HANDLERS: Record<string, DbGetHandler> = {
 	"/db/storage": async () => Response.json(await db.getStorageStats()),
 	"/db/live-sessions": ({ pool, terminalPool }) =>
 		Response.json(getLiveSessionsStatus(pool, terminalPool)),
+	"/db/provider-history/import/status": ({ url }) =>
+		Response.json(
+			getProviderHistorySyncStatus(url.searchParams.get("job_id") ?? undefined),
+		),
 };
 
 function handleGetRoute(
@@ -531,6 +540,13 @@ async function handlePostRoute(
 		}
 		case "/db/sessions/cleanup":
 			return cleanupSessions(context);
+		case "/db/provider-history/claude/import": {
+			const result = await syncClaudeProviderHistory();
+			return Response.json(result);
+		}
+		case "/db/provider-history/import": {
+			return Response.json(startProviderHistorySync(), { status: 202 });
+		}
 		case "/db/live-sessions/stop":
 			return stopLiveSession(context);
 		case "/db/live-sessions/close":

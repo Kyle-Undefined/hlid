@@ -1,6 +1,8 @@
 import { dirname, join } from "node:path";
 import {
 	applyProviderHistoryImport,
+	discoverClaudeHistoryRoots,
+	discoverCodexHistoryRoots,
 	historyTokenTotal,
 	planProviderHistoryImport,
 	type ProviderHistoryImportManifest,
@@ -25,6 +27,8 @@ function usage(): never {
 			"  bun scripts/import-provider-history.ts --db <hlid.db>",
 			"    [--codex-root <sessions-or-archive-dir> ...]",
 			"    [--claude-root <projects-dir> ...]",
+			"    [--discover-claude]",
+			"    [--discover-codex]",
 			"    [--manifest <report.json>] [--apply] [--backup-dir <dir>]",
 			"",
 			"At least one provider root is required. Dry-run is the default.",
@@ -67,7 +71,19 @@ function summarize(manifest: ProviderHistoryImportManifest): Record<string, unkn
 	};
 }
 
-const options = parseMaintenanceArgs(process.argv.slice(2), {
+const rawArgs = process.argv.slice(2);
+const discoverClaude = rawArgs.includes("--discover-claude");
+const discoverCodex = rawArgs.includes("--discover-codex");
+const discoveredRoots = discoverClaude ? await discoverClaudeHistoryRoots() : [];
+const discoveredCodexRoots = discoverCodex
+	? await discoverCodexHistoryRoots()
+	: [];
+const args = rawArgs.filter(
+	(arg) => arg !== "--discover-claude" && arg !== "--discover-codex",
+);
+for (const root of discoveredRoots) args.push("--claude-root", root);
+for (const root of discoveredCodexRoots) args.push("--codex-root", root);
+const options = parseMaintenanceArgs(args, {
 	rootFlags: ["--codex-root", "--claude-root"],
 	usage,
 });

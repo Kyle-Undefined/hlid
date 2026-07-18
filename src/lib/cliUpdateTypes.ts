@@ -3,6 +3,7 @@ export type CliUpdateStatus = {
 		| "codex"
 		| "claude"
 		| "codex-desktop"
+		| "claude-desktop"
 		| `wsl:${string}:codex`
 		| `wsl:${string}:claude`
 		| `acp:${string}`;

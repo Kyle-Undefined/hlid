@@ -166,7 +166,7 @@ describe("SessionsLedger session actions", () => {
 		expect(props.onNavigate).toHaveBeenCalledWith("session-1");
 	});
 
-	it("renders imported usage as read-only instead of a resumable chat", () => {
+	it("keeps imported usage non-resumable but exposes row actions", () => {
 		const props = renderLedger({
 			data: {
 				sessions: [{ ...session, history_imported: 1 }],
@@ -179,17 +179,17 @@ describe("SessionsLedger session actions", () => {
 			screen.queryByRole("button", { name: /open original name/i }),
 		).toBeNull();
 		expect(
-			screen.queryByRole("button", { name: "Session actions" }),
-		).toBeNull();
+			screen.getByRole("button", { name: "Session actions" }),
+		).toBeDefined();
 		const importedMarker = screen.getByText(/imported usage/i);
 		const actionSlot = importedMarker
 			.closest(".group")
 			?.querySelector("[data-session-action-slot]");
 		expect(actionSlot).not.toBeNull();
 		expect(actionSlot?.className).toContain("pr-2");
-		expect(
-			actionSlot?.querySelector("[aria-hidden='true']")?.className,
-		).toContain("w-11");
+		fireEvent.click(screen.getByRole("button", { name: "Session actions" }));
+		expect(screen.getByText("Rename")).toBeDefined();
+		expect(screen.getByText("Delete")).toBeDefined();
 		expect(props.onNavigate).not.toHaveBeenCalled();
 	});
 
@@ -292,6 +292,22 @@ describe("SessionsLedger header controls", () => {
 			name: "Clear session search",
 		});
 		expect(clearButtons[clearButtons.length - 1].className).toContain("w-10");
+	});
+
+	it("offers an in-app provider history import action", () => {
+		const onImportClaude = vi.fn();
+		renderLedger({
+			onImportClaude,
+			claudeImportStatus: "Claude history is already up to date.",
+		});
+		fireEvent.click(
+			screen.getByRole("button", { name: "More session list actions" }),
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: "Import provider history" }),
+		);
+		expect(onImportClaude).toHaveBeenCalledOnce();
+		expect(screen.getByText(/already up to date/i)).toBeDefined();
 	});
 
 	it("keeps the mobile secondary-actions backdrop transparent enough to retain context", () => {

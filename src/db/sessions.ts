@@ -602,6 +602,17 @@ function cascadeDeleteSessionIds(db: Db, ids: string[]): string[] {
 	db.run(`DELETE FROM permission_events WHERE session_id IN (${ph})`, ids);
 	db.run(`DELETE FROM messages WHERE session_id IN (${ph})`, ids);
 	db.run(`DELETE FROM queries WHERE session_id IN (${ph})`, ids);
+	db.run(
+		`DELETE FROM provider_history_transcripts
+		 WHERE EXISTS (
+		   SELECT 1 FROM sessions s
+		   WHERE s.id IN (${ph})
+		     AND s.history_imported = 1
+		     AND s.provider_id = provider_history_transcripts.provider_id
+		     AND s.provider_session_id = provider_history_transcripts.native_session_id
+		 )`,
+		ids,
+	);
 	// usage_queries intentionally NOT deleted — immutable ledger for all-time stats
 	db.run(`DELETE FROM sessions WHERE id IN (${ph})`, ids);
 	return ephemeralPaths;

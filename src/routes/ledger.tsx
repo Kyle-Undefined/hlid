@@ -155,6 +155,87 @@ const cleanupSessionsFn = createServerFn({ method: "POST" })
 		return res.json() as Promise<{ deleted: number }>;
 	});
 
+type ProviderHistoryImportResult = {
+	plannedSessions: number;
+	plannedQueries: number;
+	createdSessions: number;
+	insertedQueries: number;
+	transcriptSessions: number;
+	insertedMessages: number;
+};
+
+type ProviderHistoryImportJob =
+	| { state: "idle"; jobId: null }
+	| { state: "running"; jobId: string; startedAt: number }
+	| {
+			state: "completed";
+			jobId: string;
+			startedAt: number;
+			completedAt: number;
+			result: ProviderHistoryImportResult;
+	  }
+	| {
+			state: "failed";
+			jobId: string;
+			startedAt: number;
+			completedAt: number;
+			error: string;
+	  };
+
+const importProviderHistoryFn = createServerFn({ method: "POST" }).handler(
+	async () => {
+		const res = await requireDbOk(
+			await dbFetch("/db/provider-history/import", {
+				method: "POST",
+			}),
+			"import provider history",
+		);
+		return res.json() as Promise<ProviderHistoryImportJob>;
+	},
+);
+
+const getProviderHistoryImportStatusFn = createServerFn({ method: "GET" })
+	.validator((raw) => z.string().uuid().parse(raw))
+	.handler(async ({ data }) => {
+		const res = await requireDbOk(
+			await dbFetch(
+				`/db/provider-history/import/status?job_id=${encodeURIComponent(data)}`,
+			),
+			"check provider history import",
+		);
+		return res.json() as Promise<ProviderHistoryImportJob>;
+	});
+
+const PROVIDER_IMPORT_POLL_MS = 500;
+const PROVIDER_IMPORT_TIMEOUT_MS = 15 * 60_000;
+
+async function waitForProviderHistoryImport(
+	initial: ProviderHistoryImportJob,
+): Promise<ProviderHistoryImportResult> {
+	let status = initial;
+	let lastPollError: unknown;
+	const deadline = Date.now() + PROVIDER_IMPORT_TIMEOUT_MS;
+	while (status.state === "running" && Date.now() < deadline) {
+		await new Promise((resolve) =>
+			setTimeout(resolve, PROVIDER_IMPORT_POLL_MS),
+		);
+		try {
+			status = await getProviderHistoryImportStatusFn({ data: status.jobId });
+			lastPollError = undefined;
+		} catch (error) {
+			// A dropped poll must not cancel the import running in the data server.
+			lastPollError = error;
+		}
+	}
+	if (status.state === "completed") return status.result;
+	if (status.state === "failed") throw new Error(status.error);
+	if (status.state === "idle") {
+		throw new Error("Provider history import status was lost");
+	}
+	if (lastPollError instanceof Error) throw lastPollError;
+	throw new Error("Provider history import is still running");
+}
+
 // ─── route ───────────────────────────────────────────────────────────────────
 
 export const Route = createFileRoute("/ledger")({
@@ -808,6 +889,7 @@ function SessionsTab({
 	cleanupReferenceTime,
 	configuredAgents,
 	rangeActive,
+	refreshSessions,
 }: {
 	sessionsStatus: ReturnType<typeof getSessionsStatus>;
 	live: ReturnType<typeof useLedgerLiveData>;
@@ -819,7 +901,12 @@ function SessionsTab({
 	cleanupReferenceTime: number;
 	configuredAgents: Awaited<ReturnType<typeof getAgentListFn>>;
 	rangeActive: boolean;
+	refreshSessions: () => Promise<void>;
 }) {
+	const [claudeImportBusy, setClaudeImportBusy] = useState(false);
+	const [claudeImportStatus, setClaudeImportStatus] = useState<string | null>(
+		null,
+	);
 	const { page, size, q, agent, model, provider, stop, range, from, to, sort } =
 		listState;
 	const totalPages = Math.max(
@@ -871,6 +958,30 @@ function SessionsTab({
 		const rows = await exportSessionsFn();
 		const { content, mime, filename } = buildSessionExport(rows, format);
 		downloadContent(content, mime, filename);
+	}
+
+	async function onImportClaude() {
+		setClaudeImportBusy(true);
+		setClaudeImportStatus(null);
+		try {
+			const job = await importProviderHistoryFn();
+			const result = await waitForProviderHistoryImport(job);
+			await refreshSessions();
+			const changed = result.insertedQueries + result.insertedMessages;
+			setClaudeImportStatus(
+				changed > 0
+					? `Imported/upgraded ${result.transcriptSessions} resumable sessions (${result.insertedMessages} messages, ${result.insertedQueries} queries).`
+					: "Provider history is already up to date.",
+			);
+		} catch (error) {
+			setClaudeImportStatus(
+				error instanceof Error
+					? error.message
+					: "Provider history import failed",
+			);
+		} finally {
+			setClaudeImportBusy(false);
+		}
 	}
 
 	const agentOptions = buildLedgerAgentOptions(
@@ -1022,6 +1133,9 @@ function SessionsTab({
 					oldestStartedAt={oldestStartedAt}
 					cleanupReferenceTime={cleanupReferenceTime}
 					onExport={(format) => void onExport(format)}
+					onImportClaude={() => void onImportClaude()}
+					claudeImportStatus={claudeImportStatus}
+					claudeImportBusy={claudeImportBusy}
 				/>
 			</div>
 		</div>
@@ -1170,6 +1284,7 @@ function StatsPage() {
 							cleanupReferenceTime={renderedAt}
 							configuredAgents={configuredAgents ?? []}
 							rangeActive={sessionRangeActive}
+							refreshSessions={refreshSessions}
 						/>
 					</>
 				)}

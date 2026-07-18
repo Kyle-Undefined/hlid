@@ -1879,6 +1879,43 @@ describe("ClaudeProvider — session resume", () => {
 		);
 	});
 
+	it("supplies Hlid's transcript store for imported Claude resumes", async () => {
+		let capturedOptions: unknown;
+		vi.mocked(query).mockImplementationOnce(
+			({ options }: { prompt: unknown; options?: unknown }) => {
+				capturedOptions = options;
+				return sdkGen([
+					{
+						type: "result",
+						subtype: "success",
+						total_cost_usd: 0,
+						num_turns: 1,
+						duration_ms: 100,
+						usage: { input_tokens: 10, output_tokens: 5 },
+					},
+				]);
+			},
+		);
+
+		const provider = new ClaudeProvider();
+		for await (const _ of provider.query(
+			baseParams({
+				sessionId: "imported-claude-id",
+				historyResumeMode: "session-store",
+			}),
+		)) {
+			// drain
+		}
+
+		const options = capturedOptions as {
+			resume?: string;
+			sessionStore?: { load?: unknown; append?: unknown };
+		};
+		expect(options.resume).toBe("imported-claude-id");
+		expect(typeof options.sessionStore?.load).toBe("function");
+		expect(typeof options.sessionStore?.append).toBe("function");
+	});
+
 	it("does not pass resume option when sessionId is undefined", async () => {
 		let capturedOptions: unknown;
 		vi.mocked(query).mockImplementationOnce(

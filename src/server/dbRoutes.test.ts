@@ -22,6 +22,9 @@ const {
 	mockGetAggregatedStats,
 	mockGetRecentSessions,
 	mockGetSessionsPaginated,
+	mockSyncClaudeProviderHistory,
+	mockStartProviderHistorySync,
+	mockGetProviderHistorySyncStatus,
 } = vi.hoisted(() => ({
 	mockGetSessionById: vi.fn(),
 	mockListAttachments: vi.fn(),
@@ -35,6 +38,9 @@ const {
 	mockGetAggregatedStats: vi.fn(),
 	mockGetRecentSessions: vi.fn(),
 	mockGetSessionsPaginated: vi.fn(),
+	mockSyncClaudeProviderHistory: vi.fn(),
+	mockStartProviderHistorySync: vi.fn(),
+	mockGetProviderHistorySyncStatus: vi.fn(),
 }));
 
 vi.mock("../db", () => ({
@@ -59,6 +65,12 @@ vi.mock("./attachments", () => ({
 
 vi.mock("./proxy", () => ({
 	getWindowMark: vi.fn().mockReturnValue(null),
+}));
+
+vi.mock("./providerHistorySync", () => ({
+	getProviderHistorySyncStatus: mockGetProviderHistorySyncStatus,
+	startProviderHistorySync: mockStartProviderHistorySync,
+	syncClaudeProviderHistory: mockSyncClaudeProviderHistory,
 }));
 
 import type { SessionStatusEntry } from "./protocol";
@@ -104,8 +116,16 @@ function makeUrl(pathname: string, params?: Record<string, string>): URL {
 	return url;
 }
 
-function makeRequest(method = "GET"): Request {
-	return new Request("http://localhost/", { method });
+function makeRequest(method = "GET", body?: unknown): Request {
+	return new Request("http://localhost/", {
+		method,
+		...(body === undefined
+			? {}
+			: {
+					headers: { "Content-Type": "application/json" },
+					body: JSON.stringify(body),
+				}),
+	});
 }
 
 const sampleRow: SessionRow = {
@@ -122,6 +142,70 @@ const sampleRow: SessionRow = {
 	total_cache_creation_tokens: 100,
 	total_turns: 3,
 };
+
+describe("handleDbRoute — POST Claude history import", () => {
+	it("returns the provider-history sync result", async () => {
+		mockSyncClaudeProviderHistory.mockResolvedValueOnce({
+			roots: ["C:\\Users\\Kyle\\.claude\\projects"],
+			plannedSessions: 2,
+			plannedQueries: 5,
+			createdSessions: 2,
+			insertedQueries: 5,
+			alreadyImportedSessions: 0,
+			alreadyImportedQueries: 0,
+			skipped: {},
+			backupPath: "C:\\Hlid\\backups\\before.db",
+		});
+
+		const response = await handleDbRoute(
+			makeUrl("/db/provider-history/claude/import"),
+			makeRequest("POST"),
+		);
+
+		expect(response?.status).toBe(200);
+		expect(await response?.json()).toMatchObject({
+			createdSessions: 2,
+			insertedQueries: 5,
+		});
+	});
+});
+
+describe("handleDbRoute — POST provider history import", () => {
+	it("starts the default all-provider import without waiting for it", async () => {
+		mockStartProviderHistorySync.mockReturnValueOnce({
+			state: "running",
+			jobId: "1b8c5a24-a93c-4e7d-8a92-19a43dd4c30e",
+			startedAt: 1_700_000_000_000,
+		});
+		const response = await handleDbRoute(
+			makeUrl("/db/provider-history/import"),
+			makeRequest("POST"),
+		);
+
+		expect(response?.status).toBe(202);
+		expect(mockStartProviderHistorySync).toHaveBeenCalledWith();
+		expect(await response?.json()).toMatchObject({ state: "running" });
+	});
+
+	it("returns the requested import job status", async () => {
+		const jobId = "1b8c5a24-a93c-4e7d-8a92-19a43dd4c30e";
+		mockGetProviderHistorySyncStatus.mockReturnValueOnce({
+			state: "completed",
+			jobId,
+			startedAt: 1_700_000_000_000,
+			completedAt: 1_700_000_001_000,
+			result: { insertedQueries: 0, insertedMessages: 0 },
+		});
+		const response = await handleDbRoute(
+			makeUrl("/db/provider-history/import/status", { job_id: jobId }),
+			makeRequest(),
+		);
+
+		expect(response?.status).toBe(200);
+		expect(mockGetProviderHistorySyncStatus).toHaveBeenCalledWith(jobId);
+		expect(await response?.json()).toMatchObject({ state: "completed", jobId });
+	});
+});
 
 // ── tests ─────────────────────────────────────────────────────────────────────
 

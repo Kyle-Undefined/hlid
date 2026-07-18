@@ -33,6 +33,15 @@ const SORT_LABELS: Record<SessionSortKey, string> = {
 	tokens: "tokens",
 };
 
+function importedSourceLabel(source: string | null | undefined): string {
+	if (source === "claude-desktop-cowork") return "Claude Desktop Cowork import";
+	if (source === "claude-sdk") return "Claude SDK import";
+	if (source === "claude-cli") return "Claude CLI import";
+	if (source === "codex-cli") return "Codex CLI import";
+	if (source === "codex-desktop") return "Codex Desktop/editor import";
+	return "imported usage";
+}
+
 export function sessionDisplayUsage(
 	session: SessionRow,
 	isActive: boolean,
@@ -221,6 +230,9 @@ function SessionItem({
 	);
 	const usage = sessionDisplayUsage(session, Boolean(isActive), liveStats);
 	const importedHistory = session.history_imported === 1;
+	const resumableHistory =
+		importedHistory && (session.history_resume_mode ?? "none") !== "none";
+	const canNavigate = !importedHistory || resumableHistory;
 	const configuredModel = session.selected_model || session.model;
 	const providerModel = [
 		session.provider_id || "claude",
@@ -279,9 +291,9 @@ function SessionItem({
 
 	return (
 		<div
-			className={`relative flex items-center gap-2 border-b border-border last:border-0 group hover:bg-accent/20 transition-colors ${importedHistory ? "cursor-default" : "cursor-pointer"}`}
+			className={`relative flex items-center gap-2 border-b border-border last:border-0 group hover:bg-accent/20 transition-colors ${canNavigate ? "cursor-pointer" : "cursor-default"}`}
 		>
-			{!editing && !importedHistory && (
+			{!editing && canNavigate && (
 				<button
 					type="button"
 					onClick={() => onNavigate(session.id)}
@@ -341,7 +353,9 @@ function SessionItem({
 							)}{" "}
 							· {session.query_count}q
 							{providerModel ? ` · ${providerModel}` : ""}
-							{importedHistory ? " · imported usage" : ""}
+							{importedHistory
+								? ` · ${importedSourceLabel(session.history_source)}${resumableHistory ? " · resumable" : ""}`
+								: ""}
 						</PrivacyMask>
 					</div>
 					<div className="text-right shrink-0">
@@ -358,61 +372,53 @@ function SessionItem({
 				data-session-action-slot
 				className={`relative pr-2 shrink-0 ${menuOpen ? "z-[70]" : "z-20"}`}
 			>
-				{importedHistory ? (
-					// Imported accounting rows are intentionally read-only. Keep the
-					// normal action width reserved so their usage column stays aligned.
-					<div className="h-11 w-11" aria-hidden="true" />
-				) : (
-					<>
-						<button
-							ref={actionButtonRef}
-							type="button"
-							onClick={() => setMenuOpen((open) => !open)}
-							className="w-11 h-11 flex items-center justify-center text-muted-foreground/50 hover:text-foreground md:opacity-0 md:group-hover:opacity-100 md:focus:opacity-100 transition-all"
-							aria-label="Session actions"
-							aria-expanded={menuOpen}
-						>
-							<Ellipsis size={17} />
-						</button>
-						{menuOpen && typeof document !== "undefined"
-							? createPortal(
-									<>
-										<button
-											type="button"
-											onClick={closeMenu}
-											className={`fixed inset-0 z-[60] ${isDesktop ? "bg-transparent" : "bg-black/10"}`}
-											aria-label="Dismiss session actions"
-										/>
-										{actionPosition && (
-											<SessionActionPanel
-												deleteConfirming={deleteConfirming}
-												renaming={!isDesktop && mobileRenaming}
-												renameValue={editValue}
-												onRenameValueChange={setEditValue}
-												onRename={() => {
-													if (isDesktop) {
-														closeMenu();
-														startEdit();
-													} else startMobileEdit();
-												}}
-												onCancelRename={closeMenu}
-												onConfirmRename={commitMobileEdit}
-												onRequestDelete={() => setDeleteConfirming(true)}
-												onCancelDelete={() => setDeleteConfirming(false)}
-												onConfirmDelete={() => {
-													onDelete(session.id);
-													closeMenu();
-												}}
-												position={actionPosition}
-												panelRef={actionPanelRef}
-											/>
-										)}
-									</>,
-									document.body,
-								)
-							: null}
-					</>
-				)}
+				<button
+					ref={actionButtonRef}
+					type="button"
+					onClick={() => setMenuOpen((open) => !open)}
+					className="w-11 h-11 flex items-center justify-center text-muted-foreground/50 hover:text-foreground md:opacity-0 md:group-hover:opacity-100 md:focus:opacity-100 transition-all"
+					aria-label="Session actions"
+					aria-expanded={menuOpen}
+				>
+					<Ellipsis size={17} />
+				</button>
+				{menuOpen && typeof document !== "undefined"
+					? createPortal(
+							<>
+								<button
+									type="button"
+									onClick={closeMenu}
+									className={`fixed inset-0 z-[60] ${isDesktop ? "bg-transparent" : "bg-black/10"}`}
+									aria-label="Dismiss session actions"
+								/>
+								{actionPosition && (
+									<SessionActionPanel
+										deleteConfirming={deleteConfirming}
+										renaming={!isDesktop && mobileRenaming}
+										renameValue={editValue}
+										onRenameValueChange={setEditValue}
+										onRename={() => {
+											if (isDesktop) {
+												closeMenu();
+												startEdit();
+											} else startMobileEdit();
+										}}
+										onCancelRename={closeMenu}
+										onConfirmRename={commitMobileEdit}
+										onRequestDelete={() => setDeleteConfirming(true)}
+										onCancelDelete={() => setDeleteConfirming(false)}
+										onConfirmDelete={() => {
+											onDelete(session.id);
+											closeMenu();
+										}}
+										position={actionPosition}
+										panelRef={actionPanelRef}
+									/>
+								)}
+							</>,
+							document.body,
+						)
+					: null}
 			</div>
 		</div>
 	);
@@ -595,6 +601,9 @@ function SecondaryActionsMenu({
 	cleanupReferenceTime,
 	onCleanup,
 	onExport,
+	onImportClaude,
+	claudeImportStatus,
+	claudeImportBusy = false,
 	compact = false,
 }: {
 	open: boolean;
@@ -603,6 +612,9 @@ function SecondaryActionsMenu({
 	cleanupReferenceTime: number;
 	onCleanup: (days: number) => void;
 	onExport?: (format: "csv" | "json") => void;
+	onImportClaude?: () => void;
+	claudeImportStatus?: string | null;
+	claudeImportBusy?: boolean;
 	compact?: boolean;
 }) {
 	const buttonRef = useRef<HTMLButtonElement>(null);
@@ -645,6 +657,26 @@ function SecondaryActionsMenu({
 					onCleanup={onCleanup}
 				/>
 			</div>
+			{onImportClaude && (
+				<div>
+					<div className="mb-1.5 text-[8px] tracking-widest text-muted-foreground uppercase">
+						Provider history
+					</div>
+					<button
+						type="button"
+						onClick={onImportClaude}
+						disabled={claudeImportBusy}
+						className="min-h-9 w-full border border-border px-2 text-[9px] tracking-widest uppercase hover:text-foreground disabled:opacity-40"
+					>
+						{claudeImportBusy ? "Importing…" : "Import provider history"}
+					</button>
+					{claudeImportStatus && (
+						<div className="mt-1.5 text-[9px] text-muted-foreground">
+							{claudeImportStatus}
+						</div>
+					)}
+				</div>
+			)}
 			{onExport && (
 				<div>
 					<div className="mb-1.5 text-[8px] tracking-widest text-muted-foreground uppercase">
@@ -733,6 +765,9 @@ export function SessionsLedger({
 	oldestStartedAt = null,
 	cleanupReferenceTime = 0,
 	onExport,
+	onImportClaude,
+	claudeImportStatus,
+	claudeImportBusy = false,
 }: {
 	data: { sessions: SessionRow[]; total: number };
 	page: number;
@@ -765,6 +800,9 @@ export function SessionsLedger({
 	/** Serialized loader time keeps cleanup options identical during hydration. */
 	cleanupReferenceTime?: number;
 	onExport?: (format: "csv" | "json") => void;
+	onImportClaude?: () => void;
+	claudeImportStatus?: string | null;
+	claudeImportBusy?: boolean;
 }) {
 	const isDesktop = useIsDesktop();
 	const [mobilePanel, setMobilePanel] = useState<
@@ -874,6 +912,9 @@ export function SessionsLedger({
 						cleanupReferenceTime={cleanupReferenceTime}
 						onCleanup={onCleanup}
 						onExport={onExport}
+						onImportClaude={onImportClaude}
+						claudeImportStatus={claudeImportStatus}
+						claudeImportBusy={claudeImportBusy}
 					/>
 				</div>
 				<div className="flex w-full md:hidden items-center gap-1.5">
@@ -963,6 +1004,9 @@ export function SessionsLedger({
 									cleanupReferenceTime={cleanupReferenceTime}
 									onCleanup={onCleanup}
 									onExport={onExport}
+									onImportClaude={onImportClaude}
+									claudeImportStatus={claudeImportStatus}
+									claudeImportBusy={claudeImportBusy}
 									compact
 								/>
 							</div>

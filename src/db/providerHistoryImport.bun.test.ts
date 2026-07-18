@@ -9,8 +9,10 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { createClaudeHistorySessionStore } from "../server/claudeHistorySessionStore";
 import {
 	applyProviderHistoryImport,
+	discoverClaudeHistoryRoots,
 	historyTokenTotal,
 	planProviderHistoryImport,
 } from "./providerHistoryImport";
@@ -410,6 +412,62 @@ describe("provider history import", () => {
 		).toBe(165);
 	});
 
+	it("imports standalone Codex editor roots but excludes Hlid Computer Use", async () => {
+		const codexRoot = join(scratch, "codex-desktop-policy");
+		writeJsonl(join(codexRoot, "rollout-desktop.jsonl"), [
+			codexMeta({
+				id: "desktop-root",
+				originator: "codex_vscode",
+				timestamp: "2026-07-04T00:00:00.000Z",
+			}),
+			codexTaskStarted("desktop-turn", 1_783_123_201, "2026-07-04T00:00:01Z"),
+			codexToken({
+				timestamp: "2026-07-04T00:00:02Z",
+				input: 10,
+				output: 2,
+				lastInput: 10,
+				lastOutput: 2,
+			}),
+			codexTerminal("task_complete", "2026-07-04T00:00:03Z"),
+		]);
+		writeJsonl(join(codexRoot, "rollout-hlid.jsonl"), [
+			codexMeta({
+				id: "hlid-root",
+				originator: "hlid",
+				timestamp: "2026-07-04T01:00:00.000Z",
+			}),
+		]);
+		writeJsonl(join(codexRoot, "rollout-computer-use.jsonl"), [
+			codexMeta({
+				id: "computer-use-child",
+				originator: "Codex Desktop",
+				parentThreadId: "hlid-root",
+				timestamp: "2026-07-04T01:00:01.000Z",
+			}),
+		]);
+
+		const plan = await planProviderHistoryImport({
+			db,
+			codexRoots: [codexRoot],
+		});
+		expect(plan.sessions).toHaveLength(1);
+		expect(plan.sessions[0].nativeSessionId).toBe("desktop-root");
+		expect(plan.sessions[0].historySource).toBe("codex-desktop");
+		expect(plan.sessions[0].resumeMode).toBe("native");
+		expect(
+			plan.skipped.some(
+				(row) =>
+					row.nativeSessionId === "hlid-root" &&
+					row.reason === "originated-in-hlid",
+			),
+		).toBe(true);
+		expect(
+			plan.sessions.some(
+				(session) => session.nativeSessionId === "computer-use-child",
+			),
+		).toBe(false);
+	});
+
 	it("time-attributes a child completed after its parent as a standalone query", async () => {
 		const codexRoot = join(scratch, "codex-late-child");
 		writeJsonl(join(codexRoot, "rollout-root.jsonl"), [
@@ -562,7 +620,7 @@ describe("provider history import", () => {
 			manifest.skipped.some(
 				(row) =>
 					row.nativeSessionId === "sdk-session" &&
-					row.reason === "unsupported-entrypoint",
+					row.reason === "no-terminal-usage",
 			),
 		).toBe(true);
 
@@ -623,8 +681,97 @@ describe("provider history import", () => {
 			ledger_cwd: "/work/claude",
 			query_cost_known: 1,
 			ledger_cost_known: 1,
-			provider_session_id: null,
+			provider_session_id: "claude-external",
 		});
+		expect(
+			db
+				.query<{ history_resume_mode: string; transcripts: number }, []>(`
+					SELECT s.history_resume_mode,
+					       COUNT(t.native_session_id) AS transcripts
+					FROM sessions s
+					LEFT JOIN provider_history_transcripts t
+					  ON t.provider_id = s.provider_id
+					 AND t.native_session_id = s.provider_session_id
+					WHERE s.provider_session_id = 'claude-external'
+				`)
+				.get(),
+		).toEqual({ history_resume_mode: "session-store", transcripts: 2 });
+		const restored = await createClaudeHistorySessionStore().load({
+			projectKey: "/work/claude",
+			sessionId: "claude-external",
+		});
+		expect(restored?.some((entry) => entry.type === "user")).toBe(true);
+	});
+
+	it("imports Desktop Cowork usage with an actionable source identity", async () => {
+		const projectsRoot = join(scratch, "desktop", ".claude", "projects");
+		const sessionId = "desktop-cowork-session";
+		writeJsonl(join(projectsRoot, "-sessions-cowork", `${sessionId}.jsonl`), [
+			claudeUser({
+				sessionId,
+				uuid: "cowork-user",
+				promptId: "cowork-prompt",
+				timestamp: "2026-07-12T00:00:00.000Z",
+				entrypoint: "local-agent",
+			}),
+			claudeAssistant({
+				sessionId,
+				uuid: "cowork-assistant",
+				parentUuid: "cowork-user",
+				messageId: "cowork-message",
+				timestamp: "2026-07-12T00:00:02.000Z",
+				input: 40,
+				output: 10,
+			}),
+		]);
+
+		const manifest = await planProviderHistoryImport({
+			db,
+			claudeRoots: [projectsRoot],
+		});
+		expect(manifest.sessions).toHaveLength(1);
+		expect(manifest.sessions[0]).toMatchObject({
+			nativeSessionId: sessionId,
+			sourceSurface: "claude-desktop-cowork",
+		});
+		expect(manifest.sessions[0].label).toContain("Claude Desktop Cowork");
+		expect(manifest.sessions[0].queries[0].sourceSurface).toBe(
+			"claude-desktop-cowork",
+		);
+
+		await applyProviderHistoryImport(db, manifest);
+		expect(
+			db
+				.query<{ history_imported: number; history_source: string | null }, []>(
+					"SELECT history_imported, history_source FROM sessions WHERE id = 'history:claude:desktop-cowork-session'",
+				)
+				.get(),
+		).toEqual({
+			history_imported: 1,
+			history_source: "claude-desktop-cowork",
+		});
+	});
+
+	it("discovers standard and Desktop-local Claude project roots", async () => {
+		const home = join(scratch, "home");
+		const appData = join(scratch, "appdata");
+		const standard = join(home, ".claude", "projects");
+		const cowork = join(
+			appData,
+			"Claude",
+			"local-agent-mode-sessions",
+			"account",
+			"session",
+			"local_worker",
+			".claude",
+			"projects",
+		);
+		mkdirSync(standard, { recursive: true });
+		mkdirSync(cowork, { recursive: true });
+
+		await expect(
+			discoverClaudeHistoryRoots({ home, appData }),
+		).resolves.toEqual([cowork, standard].sort((a, b) => a.localeCompare(b)));
 	});
 
 	it("globally assigns overlapping Claude calls to the original query", async () => {
@@ -847,6 +994,7 @@ describe("provider history import", () => {
 		await applyProviderHistoryImport(db, fresh);
 		const importedId = fresh.sessions[0].importedSessionId;
 		db.run("DELETE FROM queries WHERE session_id = ?", [importedId]);
+		db.run("DELETE FROM messages WHERE session_id = ?", [importedId]);
 		db.run("DELETE FROM sessions WHERE id = ?", [importedId]);
 		const afterDeletion = await planProviderHistoryImport({
 			db,

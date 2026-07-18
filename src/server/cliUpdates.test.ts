@@ -8,6 +8,7 @@ import {
 	compareCliVersions,
 	getCliUpdateStatuses,
 	inspectAcpUpdates,
+	inspectClaudeDesktopUpdates,
 	inspectCliUpdates,
 	inspectWindowsDesktopUpdates,
 	inspectWslUpdates,
@@ -163,6 +164,38 @@ ChatGPT 9PLM9XGG6VKS 26.707.9981.0 26.708.10000.0 msstore
 			}),
 		).toEqual([]);
 		expect(readInstalledVersions).not.toHaveBeenCalled();
+	});
+
+	it("tracks the installed Claude desktop app against Winget", async () => {
+		const statuses = await inspectClaudeDesktopUpdates({
+			isWindows: () => true,
+			readInstalledVersions: vi.fn().mockResolvedValue({
+				packageVersion: "1.22209.0.0",
+				appVersion: "1.22209.0",
+			}),
+			readStoreVersions: vi.fn().mockResolvedValue({
+				installedVersion: "1.22209.0",
+				latestVersion: "1.22210.0",
+			}),
+			now: () => 1_800_000_000_000,
+		});
+
+		expect(statuses).toEqual([
+			{
+				id: "claude-desktop",
+				label: "Claude desktop app",
+				surface: "desktop",
+				appVersion: "1.22209.0",
+				installedVersion: "1.22209.0.0",
+				latestVersion: "1.22210.0",
+				available: true,
+				updateCommand:
+					"winget upgrade --id Anthropic.Claude --exact --silent --accept-source-agreements --accept-package-agreements --disable-interactivity",
+				updateMode: "automatic",
+				requiresElevation: false,
+				checkedAt: 1_800_000_000_000,
+			},
+		]);
 	});
 
 	it("reports a manifest update that winget cannot apply yet", async () => {
