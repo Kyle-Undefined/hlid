@@ -1,5 +1,13 @@
 import { gunzipSync } from "node:zlib";
 import { describe, expect, it, vi } from "vitest";
+
+vi.mock("./embedded-server-fn-names", () => ({
+	SERVER_FN_NAMES: {
+		aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:
+			"getLedgerAnalyticsFn",
+	},
+}));
+
 import { createTlsHttpForwarder, MAX_TLS_PUBLIC_BODY_BYTES } from "./tlsProxy";
 
 function request(
@@ -341,6 +349,26 @@ describe("TLS HTTP proxy limits", () => {
 		expect(await response.text()).toBe("Service Unavailable");
 		expect(log).toHaveBeenCalledWith(
 			"[tls-proxy] GET /api/private failed after 0ms: Error: connect failed",
+		);
+		log.mockRestore();
+	});
+
+	it("identifies generated server functions in forwarding failures", async () => {
+		const log = vi.spyOn(console, "error").mockImplementation(() => {});
+		const response = await forwarder({
+			forward: async () => {
+				throw new Error("connect failed");
+			},
+		})(
+			new Request(
+				"https://hlid.test/_serverFn/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				{ method: "POST", body: "body" },
+			),
+		);
+
+		expect(response.status).toBe(503);
+		expect(log).toHaveBeenCalledWith(
+			"[tls-proxy] POST /_serverFn/:id server-fn=getLedgerAnalyticsFn failed after 0ms: Error: connect failed",
 		);
 		log.mockRestore();
 	});

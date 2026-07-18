@@ -29,6 +29,7 @@ import type {
 	SubagentSnapshot,
 } from "./agentProvider";
 import { ingestPlanHtml } from "./attachments";
+import { waitForClaudeWarmupSnapshot } from "./claudeWarmup";
 import { loadConfig } from "./config";
 import { bumpDataRevision } from "./dataRevision";
 import { resolveExecutionContext } from "./executionContext";
@@ -832,12 +833,12 @@ export class SessionManager {
 	private async runProbe(
 		inspect: (session: AgentSession) => Promise<void>,
 		agentCwd?: string,
+		providerOverride?: AgentProvider,
 	): Promise<void> {
 		const run = async () => {
-			const provider = this.resolveProvider(agentCwd);
-			// A turn-gated provider cannot promise that its first streamed event is
-			// pre-inference. Public probe paths use the active chat session instead;
-			// keep this helper metadata-only so it can never create hidden usage.
+			const provider = providerOverride ?? this.resolveProvider(agentCwd);
+			// Providers such as Claude require an initialized chat process for these
+			// methods. Their no-session metadata is served from the startup cache.
 			if (provider.probeRequiresTurn) return;
 			const ac = new AbortController();
 			const timeout = setTimeout(() => ac.abort(), 30_000);
@@ -871,29 +872,41 @@ export class SessionManager {
 		await queued;
 	}
 
-	private resolveProbeContext(scope: { agentCwd?: string }): {
+	private resolveProbeContext(scope: {
+		agentCwd?: string;
+		providerId?: string;
+	}): {
 		activeAgentCwd?: string;
 		provider: AgentProvider;
 		providerId: string;
 	} {
 		const activeAgentCwd = scope.agentCwd ?? this.getAgentCwd();
+		const configuredProvider = this.resolveProvider(activeAgentCwd);
+		const provider = scope.providerId
+			? (this.providers.get(scope.providerId) ?? configuredProvider)
+			: configuredProvider;
 		return {
 			activeAgentCwd,
-			provider: this.resolveProvider(activeAgentCwd),
-			providerId: this.getProviderId(activeAgentCwd),
+			provider,
+			providerId: provider.providerId,
 		};
 	}
 
 	async probeMcpStatus(
 		emit: (msg: ServerMessage) => void,
-		scope: { agentCwd?: string; sessionId?: string } = {},
+		scope: { agentCwd?: string; sessionId?: string; providerId?: string } = {},
 	): Promise<void> {
-		const { provider, providerId } = this.resolveProbeContext(scope);
+		const { activeAgentCwd, provider, providerId } =
+			this.resolveProbeContext(scope);
+		const targetsLiveScope =
+			(!scope.agentCwd || scope.agentCwd === this.agentCwd) &&
+			(!scope.sessionId || scope.sessionId === this.currentSessionId) &&
+			providerId === this.getProviderId(activeAgentCwd);
 		const publish = (statuses: McpServerStatus[]) => {
 			// Archived-session probes may be proxied through the vault manager. Keep
 			// their scoped result out of the vault cache or Watch will inherit the
 			// wrong provider context on its next connection.
-			if (!scope.agentCwd || scope.agentCwd === this.agentCwd) {
+			if (targetsLiveScope) {
 				this.mcpStatusByProvider.set(providerId, statuses);
 			}
 			emit({
@@ -905,21 +918,37 @@ export class SessionManager {
 			});
 		};
 		if (provider.probeRequiresTurn) {
-			if (!this.agentSession?.mcpServerStatus) return;
-			publish(await this.agentSession.mcpServerStatus());
+			if (targetsLiveScope && this.agentSession?.mcpServerStatus) {
+				publish(await this.agentSession.mcpServerStatus());
+				return;
+			}
+			const cached =
+				providerId === "claude"
+					? await waitForClaudeWarmupSnapshot(activeAgentCwd ?? this.vaultPath)
+					: null;
+			publish(cached?.mcpServers ?? []);
 			return;
 		}
-		await this.runProbe(async (session) => {
-			const statuses = (await session.mcpServerStatus?.()) ?? [];
-			publish(statuses);
-		}, scope.agentCwd);
+		await this.runProbe(
+			async (session) => {
+				const statuses = (await session.mcpServerStatus?.()) ?? [];
+				publish(statuses);
+			},
+			scope.agentCwd,
+			provider,
+		);
 	}
 
 	async probeSlashCommands(
 		emit: (msg: ServerMessage) => void,
-		scope: { agentCwd?: string; sessionId?: string } = {},
+		scope: { agentCwd?: string; sessionId?: string; providerId?: string } = {},
 	): Promise<void> {
-		const { provider, providerId } = this.resolveProbeContext(scope);
+		const { activeAgentCwd, provider, providerId } =
+			this.resolveProbeContext(scope);
+		const targetsLiveScope =
+			(!scope.agentCwd || scope.agentCwd === this.agentCwd) &&
+			(!scope.sessionId || scope.sessionId === this.currentSessionId) &&
+			providerId === this.getProviderId(activeAgentCwd);
 		const publish = (commands: SlashCommand[]) =>
 			emit({
 				type: "slash_commands",
@@ -929,13 +958,25 @@ export class SessionManager {
 				commands,
 			});
 		if (provider.probeRequiresTurn) {
-			publish((await this.agentSession?.supportedCommands?.()) ?? []);
+			if (targetsLiveScope && this.agentSession?.supportedCommands) {
+				publish(await this.agentSession.supportedCommands());
+				return;
+			}
+			const cached =
+				providerId === "claude"
+					? await waitForClaudeWarmupSnapshot(activeAgentCwd ?? this.vaultPath)
+					: null;
+			publish(cached?.commands ?? []);
 			return;
 		}
-		await this.runProbe(async (session) => {
-			const commands = (await session.supportedCommands?.()) ?? [];
-			publish(commands);
-		}, scope.agentCwd);
+		await this.runProbe(
+			async (session) => {
+				const commands = (await session.supportedCommands?.()) ?? [];
+				publish(commands);
+			},
+			scope.agentCwd,
+			provider,
+		);
 	}
 
 	isRunning(): boolean {

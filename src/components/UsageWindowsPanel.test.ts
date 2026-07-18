@@ -321,6 +321,34 @@ describe("mergeProviderSnapshot", () => {
 		expect(merged[0].windows[0].utilization).toBe(0.2);
 		expect(merged[1].windows[0].utilization).toBe(0.1);
 	});
+
+	it("keeps the last good snapshots when a transient refresh is empty", () => {
+		const previous = [
+			makeSnapshot(0.2, FUTURE_NEAR),
+			{ ...makeSnapshot(0.4, FUTURE_NEAR), providerId: "codex" },
+		];
+
+		expect(mergeFreshProviderSnapshots([], previous)).toEqual(previous);
+	});
+
+	it("keeps providers omitted by a partial refresh", () => {
+		const claude = makeSnapshot(0.2, FUTURE_NEAR);
+		const codex = {
+			...makeSnapshot(0.4, FUTURE_NEAR),
+			providerId: "codex",
+		};
+
+		const merged = mergeFreshProviderSnapshots(
+			[makeSnapshot(0.3, FUTURE_FAR)],
+			[claude, codex],
+		);
+
+		expect(merged.map((snapshot) => snapshot.providerId)).toEqual([
+			"claude",
+			"codex",
+		]);
+		expect(merged[1]).toBe(codex);
+	});
 });
 
 describe("providerWindowUsage", () => {

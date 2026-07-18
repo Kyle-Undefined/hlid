@@ -46,15 +46,62 @@ vi.mock("#/lib/serverFns/voice", () => ({
 	getVoiceInfoFn: mocks.getVoiceInfoFn,
 }));
 
-import { Route } from "./index";
+import {
+	cacheCockpitOptionalData,
+	clearCockpitOptionalDataCacheForTesting,
+	preserveCockpitDataDuringFallback,
+	Route,
+	restoreCachedCockpitOptionalData,
+} from "./index";
 
 describe("Watch route loader", () => {
+	it("restores the last complete dashboard snapshot across navigation", () => {
+		vi.stubGlobal("window", {});
+		try {
+			const populated = {
+				weeklyStats: { total: 8 },
+				thirtyDayStats: { total: 21 },
+			} as never;
+			const fallback = {
+				weeklyStats: { total: 0 },
+				thirtyDayStats: { total: 0 },
+			} as never;
+
+			cacheCockpitOptionalData(populated);
+			expect(restoreCachedCockpitOptionalData(fallback)).toBe(populated);
+		} finally {
+			clearCockpitOptionalDataCacheForTesting();
+			vi.unstubAllGlobals();
+		}
+	});
+
+	it("keeps populated dashboard data while a loader fallback recovers", () => {
+		const populated = { thirtyDayTotal: 14, weeklyTotal: 5 };
+		const emptyFallback = { thirtyDayTotal: 0, weeklyTotal: 0 };
+
+		expect(
+			preserveCockpitDataDuringFallback(
+				populated,
+				emptyFallback,
+				"unavailable",
+			),
+		).toBe(populated);
+		expect(
+			preserveCockpitDataDuringFallback(populated, emptyFallback, "ready"),
+		).toBe(emptyFallback);
+	});
+
 	it("does not hold navigation behind provider discovery", async () => {
 		const loader = (Route as unknown as { loader: () => Promise<unknown> })
 			.loader;
 		const loaded = await loader();
 
-		expect(loaded).toMatchObject({ providerUsages: [] });
+		expect(loaded).toMatchObject({
+			providerUsages: [
+				expect.objectContaining({ providerId: "claude" }),
+				expect.objectContaining({ providerId: "codex" }),
+			],
+		});
 		expect(mocks.loadProviderUsages).not.toHaveBeenCalled();
 	});
 

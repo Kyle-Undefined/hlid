@@ -18,6 +18,7 @@ const state = vi.hoisted(() => ({
 	subscribeToSession: vi.fn(),
 	enqueueChat: vi.fn(),
 	sessionState: "idle" as "idle" | "running" | "error",
+	wsStatus: "connected" as "connecting" | "connected" | "disconnected",
 	actualModel: null as string | null,
 	model: "claude-sonnet-4-6",
 	effort: "high",
@@ -144,7 +145,7 @@ vi.mock("#/hooks/useWs", () => ({
 	useWs: (onMessage?: (message: ServerMessage) => void) => {
 		state.onMessage = onMessage ?? null;
 		return {
-			wsStatus: "connected",
+			wsStatus: state.wsStatus,
 			sessionState: state.sessionState,
 			model: state.model,
 			actualModel: state.actualModel,
@@ -220,6 +221,7 @@ beforeEach(() => {
 	localStorage.clear();
 	resetRavenTerminalsForTesting();
 	state.sessionState = "idle";
+	state.wsStatus = "connected";
 	state.actualModel = null;
 	state.model = "claude-sonnet-4-6";
 	state.effort = "high";
@@ -265,6 +267,29 @@ beforeEach(() => {
 });
 
 describe("Raven composed submission behavior", () => {
+	it("requests MCP and command metadata automatically when the WebSocket connects", async () => {
+		state.wsStatus = "connecting";
+		const { rerender } = render(<ChatPage />);
+		expect(state.send).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "probe_mcp" }),
+		);
+
+		state.wsStatus = "connected";
+		rerender(<ChatPage />);
+
+		await waitFor(() => {
+			expect(state.send).toHaveBeenCalledWith({ type: "sync_mcp_list" });
+			expect(state.send).toHaveBeenCalledWith({
+				type: "probe_mcp",
+				session_id: expect.any(String),
+			});
+			expect(state.send).toHaveBeenCalledWith({
+				type: "probe_slash_commands",
+				session_id: expect.any(String),
+			});
+		});
+	});
+
 	it("shows the configured agent name for a WSL UNC session path", () => {
 		state.loaderData = {
 			...state.loaderData,
@@ -797,6 +822,35 @@ describe("Raven composed submission behavior", () => {
 		expect(
 			screen.getByRole("button", { name: "MCP server status" }).textContent,
 		).toContain("1/1");
+	});
+
+	it("ignores vault MCP updates from a different provider than the archived session", () => {
+		state.loaderData = {
+			...state.loaderData,
+			existingSessionId: "archived-claude-session",
+			isExplicitSession: true,
+			sessionProviderId: "claude",
+			config: {
+				...(state.loaderData.config as Record<string, unknown>),
+				vault_provider: "codex",
+			},
+		};
+		render(<ChatPage />);
+
+		act(() => {
+			state.onMessage?.({
+				type: "mcp_status",
+				provider_id: "codex",
+				servers: [
+					{ name: "codex_apps", status: "connected", scope: "global" },
+					{ name: "node_repl", status: "connected", scope: "global" },
+				],
+			});
+		});
+
+		expect(
+			screen.getByRole("button", { name: "MCP server status" }).textContent,
+		).toContain("0");
 	});
 
 	it("sends an idle message through the WebSocket boundary", () => {

@@ -226,6 +226,8 @@ export type QueueStateMessage = QueueStateSnapshot & {
 
 export type McpStatusMessage = {
 	type: "mcp_status";
+	/** Full cross-provider inventory; provider-scoped updates omit this flag. */
+	inventory?: boolean;
 	/** Provider that produced this runtime snapshot. Optional for legacy cached payloads. */
 	provider_id?: string;
 	servers: Array<{

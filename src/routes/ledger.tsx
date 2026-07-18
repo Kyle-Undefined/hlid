@@ -80,7 +80,15 @@ const ledgerSessionPageSchema = sessionPageSchema.extend({
 		.optional(),
 });
 
-const getSessionsPageFn = createServerFn({ method: "POST" })
+const EMPTY_SESSION_PAGE = {
+	sessions: [] as SessionRow[],
+	total: 0,
+	oldest_started_at: null as number | null,
+	agent_cwds: [] as string[],
+	models: [] as string[],
+};
+
+const getSessionsPageFn = createServerFn({ method: "GET" })
 	.validator((raw) => ledgerSessionPageSchema.parse(raw))
 	.handler(({ data }) => {
 		const params = new URLSearchParams({
@@ -102,13 +110,7 @@ const getSessionsPageFn = createServerFn({ method: "POST" })
 			oldest_started_at: number | null;
 			agent_cwds: string[];
 			models: string[];
-		}>(`/db/sessions?${params.toString()}`, {
-			sessions: [],
-			total: 0,
-			oldest_started_at: null,
-			agent_cwds: [],
-			models: [],
-		});
+		}>(`/db/sessions?${params.toString()}`, EMPTY_SESSION_PAGE);
 	});
 
 const exportSessionsFn = createServerFn({ method: "GET" }).handler(() =>
@@ -168,6 +170,7 @@ export const Route = createFileRoute("/ledger")({
 	shouldReload: ({ cause }) => cause !== "stay",
 	loader: async ({ location }) => {
 		const {
+			tab,
 			page,
 			size,
 			q,
@@ -181,26 +184,29 @@ export const Route = createFileRoute("/ledger")({
 			sort,
 		} = parseLedgerSearch(location.search);
 		const renderedAt = Math.floor(Date.now() / 1000);
+		const configuredAgentsPromise = getAgentListFn();
 		const [initialSessions, activeSession, configuredAgents] =
-			await Promise.all([
-				getSessionsPageFn({
-					data: {
-						page,
-						size,
-						q: q || undefined,
-						agent: agent || undefined,
-						model: model || undefined,
-						provider: provider || undefined,
-						stop: stop || undefined,
-						range,
-						from: range === "custom" ? from : undefined,
-						to: range === "custom" ? to : undefined,
-						sort,
-					},
-				}),
-				getActiveSessionRowFn(),
-				getAgentListFn(),
-			]);
+			tab === "stats"
+				? [EMPTY_SESSION_PAGE, null, await configuredAgentsPromise]
+				: await Promise.all([
+						getSessionsPageFn({
+							data: {
+								page,
+								size,
+								q: q || undefined,
+								agent: agent || undefined,
+								model: model || undefined,
+								provider: provider || undefined,
+								stop: stop || undefined,
+								range,
+								from: range === "custom" ? from : undefined,
+								to: range === "custom" ? to : undefined,
+								sort,
+							},
+						}),
+						getActiveSessionRowFn(),
+						configuredAgentsPromise,
+					]);
 
 		return {
 			initialSessions,
@@ -480,6 +486,7 @@ function useSessionListSync({
 		listState.sort,
 	].join("\u0000");
 	const lastFetchedKeyRef = useRef(requestKey);
+	const wasEnabledRef = useRef(enabled);
 
 	// Sync when a route entry or explicit invalidation supplies a new loader seed.
 	useEffect(() => {
@@ -541,7 +548,13 @@ function useSessionListSync({
 	// Route search changes no longer rerun the loader. Keep the previous rows on
 	// screen while fetching the next page/filter result, then swap atomically.
 	useEffect(() => {
-		if (!enabled || lastFetchedKeyRef.current === requestKey) return;
+		const becameEnabled = enabled && !wasEnabledRef.current;
+		wasEnabledRef.current = enabled;
+		if (
+			!enabled ||
+			(!becameEnabled && lastFetchedKeyRef.current === requestKey)
+		)
+			return;
 		lastFetchedKeyRef.current = requestKey;
 		void refreshSessions();
 	}, [enabled, refreshSessions, requestKey]);

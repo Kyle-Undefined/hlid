@@ -2,6 +2,7 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ProviderUsageSnapshot } from "#/db";
+import { builtInProviderUsageShells } from "#/lib/usageWindows";
 import { ProviderUsageStrip } from "./ProviderUsageStrip";
 
 const initial: ProviderUsageSnapshot[] = [
@@ -35,6 +36,7 @@ beforeEach(() => {
 	vi.useFakeTimers();
 	setVisibility("visible");
 	localStorage.clear();
+	sessionStorage.clear();
 });
 
 afterEach(() => {
@@ -43,6 +45,93 @@ afterEach(() => {
 });
 
 describe("ProviderUsageStrip polling", () => {
+	it("keeps the provider window shell mounted while Cockpit hydrates", () => {
+		const fetchFn = vi.fn(() => new Promise<ProviderUsageSnapshot[]>(() => {}));
+		render(
+			<ProviderUsageStrip
+				initial={builtInProviderUsageShells()}
+				initialStale
+				liveQueryCount={0}
+				rateLimit={null}
+				fetchFn={fetchFn}
+			/>,
+		);
+
+		expect(screen.getByText("5-HOUR")).not.toBeNull();
+		expect(screen.getByText("7-DAY")).not.toBeNull();
+		expect(fetchFn).toHaveBeenCalledOnce();
+	});
+
+	it("restores last-known usage into the stable shell before a refresh resolves", async () => {
+		const cached = [
+			{
+				providerId: "codex",
+				providerLabel: "Codex",
+				windows: [
+					{
+						...builtInProviderUsageShells()[1].windows[0],
+						queries: 7,
+						cost: 4.25,
+					},
+				],
+			},
+		] satisfies ProviderUsageSnapshot[];
+		sessionStorage.setItem(
+			"hlid_provider_usage_snapshots",
+			JSON.stringify(cached),
+		);
+		localStorage.setItem("hlid_active_provider", "codex");
+
+		render(
+			<ProviderUsageStrip
+				initial={builtInProviderUsageShells()}
+				initialStale
+				liveQueryCount={0}
+				rateLimit={null}
+				fetchFn={vi.fn(() => new Promise<ProviderUsageSnapshot[]>(() => {}))}
+			/>,
+		);
+		await act(async () => {});
+
+		expect(screen.getByText("7 queries")).not.toBeNull();
+		expect(screen.getByText("~$4.25")).not.toBeNull();
+	});
+
+	it("does not let a route-invalidated layout shell clear fresh usage", async () => {
+		const fresh = builtInProviderUsageShells().map((snapshot) => ({
+			...snapshot,
+			windows: snapshot.windows.map((window) => ({
+				...window,
+				queries: 9,
+				cost: 6.5,
+			})),
+		}));
+		const view = render(
+			<ProviderUsageStrip
+				initial={builtInProviderUsageShells()}
+				initialStale
+				liveQueryCount={0}
+				rateLimit={null}
+				fetchFn={vi.fn().mockResolvedValue(fresh)}
+			/>,
+		);
+		await act(async () => {});
+		expect(screen.getAllByText("9 queries").length).toBeGreaterThan(0);
+
+		view.rerender(
+			<ProviderUsageStrip
+				initial={builtInProviderUsageShells()}
+				initialStale
+				liveQueryCount={0}
+				rateLimit={null}
+				fetchFn={vi.fn().mockResolvedValue(fresh)}
+			/>,
+		);
+
+		expect(screen.getAllByText("9 queries").length).toBeGreaterThan(0);
+		expect(screen.queryByText("0 queries")).toBeNull();
+	});
+
 	it("shows provider data that arrives after immediate ledger hydration", async () => {
 		const loaded: ProviderUsageSnapshot[] = [
 			{

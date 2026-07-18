@@ -8,6 +8,35 @@ import {
 import type { RateLimitMessage } from "#/server/protocol";
 
 const PROVIDER_STRIP_KEY = "hlid_active_provider";
+const PROVIDER_USAGE_CACHE_KEY = "hlid_provider_usage_snapshots";
+
+function cachedProviderUsages(): ProviderUsageSnapshot[] {
+	try {
+		const parsed = JSON.parse(
+			sessionStorage.getItem(PROVIDER_USAGE_CACHE_KEY) ?? "[]",
+		) as unknown;
+		if (!Array.isArray(parsed)) return [];
+		return parsed.filter(
+			(snapshot): snapshot is ProviderUsageSnapshot =>
+				typeof snapshot === "object" &&
+				snapshot !== null &&
+				typeof snapshot.providerId === "string" &&
+				typeof snapshot.providerLabel === "string" &&
+				Array.isArray(snapshot.windows),
+		);
+	} catch {
+		return [];
+	}
+}
+
+function cacheProviderUsages(snapshots: ProviderUsageSnapshot[]): void {
+	if (snapshots.length === 0) return;
+	try {
+		sessionStorage.setItem(PROVIDER_USAGE_CACHE_KEY, JSON.stringify(snapshots));
+	} catch {
+		// The stable shell still works if browser storage is unavailable.
+	}
+}
 
 function initialProvider(
 	providerIds: string[],
@@ -42,6 +71,7 @@ export function ProviderUsageStrip({
 	liveQueryCount,
 	rateLimit,
 	preferredProviderId,
+	initialStale = false,
 	tail,
 	fetchFn,
 }: {
@@ -49,6 +79,8 @@ export function ProviderUsageStrip({
 	liveQueryCount: number;
 	rateLimit: RateLimitMessage | null;
 	preferredProviderId?: string;
+	/** Initial data is a layout shell and should refresh immediately. */
+	initialStale?: boolean;
 	tail?: React.ReactNode;
 	fetchFn: () => Promise<ProviderUsageSnapshot[]>;
 }) {
@@ -77,9 +109,11 @@ export function ProviderUsageStrip({
 				// query is committed. If that refresh races the post-done refresh, an
 				// older zero-query response must not overwrite the newer ledger totals.
 				if (sequence !== refreshSequenceRef.current) return;
-				setSnapshots((previous) =>
-					mergeFreshProviderSnapshots(fresh, previous),
-				);
+				setSnapshots((previous) => {
+					const merged = mergeFreshProviderSnapshots(fresh, previous);
+					cacheProviderUsages(merged);
+					return merged;
+				});
 			})
 			.catch(() => {});
 	});
@@ -88,15 +122,24 @@ export function ProviderUsageStrip({
 	// each authoritative server snapshot when it arrives without discarding a
 	// newer live high-water reading already shown in this strip.
 	useEffect(() => {
+		// Cockpit passes a stable layout shell on every route invalidation. It is
+		// never authoritative data and must not zero a populated usage snapshot.
+		if (initialStale) return;
 		setSnapshots((previous) => mergeFreshProviderSnapshots(initial, previous));
-	}, [initial]);
+		cacheProviderUsages(initial);
+	}, [initial, initialStale]);
 
 	useEffect(() => {
+		const cached = cachedProviderUsages();
+		if (cached.length > 0) {
+			setSnapshots((previous) => mergeFreshProviderSnapshots(cached, previous));
+		}
+
 		// Routes may intentionally omit provider inventory from their blocking
-		// loader. Hydrate an empty strip after first paint instead of making page
-		// navigation depend on host/provider discovery.
-		if (initial.length === 0) refreshRef.current();
-	}, [initial.length]);
+		// loader or provide only a stable layout shell. Hydrate after first paint
+		// instead of making page navigation depend on host/provider discovery.
+		if (initialStale || initial.length === 0) refreshRef.current();
+	}, [initial.length, initialStale]);
 
 	useEffect(() => {
 		if (preferredProviderId) return;
@@ -145,9 +188,13 @@ export function ProviderUsageStrip({
 
 	useEffect(() => {
 		if (!rateLimit) return;
-		setSnapshots((previous) =>
-			previous.map((snapshot) => applyRateLimitToSnapshot(snapshot, rateLimit)),
-		);
+		setSnapshots((previous) => {
+			const updated = previous.map((snapshot) =>
+				applyRateLimitToSnapshot(snapshot, rateLimit),
+			);
+			cacheProviderUsages(updated);
+			return updated;
+		});
 		// Re-read the authoritative query cost/token totals after the provider
 		// window event. The server persists structured window data before done,
 		// so this single refresh keeps every figure in the cell coherent.

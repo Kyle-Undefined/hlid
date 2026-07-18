@@ -16,11 +16,13 @@ import { useCockpitLiveData } from "./useCockpitLiveData";
 let onMessage: ((message: ServerMessage) => void) | undefined;
 let onSessionsStatus: (() => void) | undefined;
 let sessionsStatus: Array<{ db_session_id?: string | null }> = [];
+let wsStatus: "connecting" | "connected" = "connected";
+const wsSend = vi.fn();
 
 vi.mock("#/hooks/useWs", () => ({
 	useWs: vi.fn((callback) => {
 		onMessage = callback;
-		return { send: vi.fn(), wsStatus: "connected" };
+		return { send: wsSend, wsStatus };
 	}),
 }));
 
@@ -99,6 +101,7 @@ beforeEach(() => {
 	vi.clearAllMocks();
 	onSessionsStatus = undefined;
 	sessionsStatus = [];
+	wsStatus = "connected";
 	vi.mocked(liveStatsStore.getPendingSessionToday).mockReturnValue(false);
 	vi.mocked(getActiveSessionRowFn).mockResolvedValue(null);
 	vi.mocked(getCockpitStatsFn).mockResolvedValue({ agg: initial.agg });
@@ -118,6 +121,98 @@ describe("useCockpitLiveData refreshes", () => {
 				inventory: true,
 			}),
 		);
+	});
+
+	it("requests MCP inventory automatically when the WebSocket connects", async () => {
+		wsStatus = "connecting";
+		const { rerender } = renderHook(() => useCockpitLiveData(initial));
+		expect(wsSend).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "sync_mcp_list" }),
+		);
+
+		wsStatus = "connected";
+		rerender();
+
+		await waitFor(() =>
+			expect(wsSend).toHaveBeenCalledWith({
+				type: "sync_mcp_list",
+				inventory: true,
+			}),
+		);
+	});
+
+	it("preserves Claude inventory across Codex-scoped and loader updates", () => {
+		const initialData: Parameters<typeof useCockpitLiveData>[0] = initial;
+		const { result, rerender } = renderHook(
+			({ data }: { data: Parameters<typeof useCockpitLiveData>[0] }) =>
+				useCockpitLiveData(data),
+			{ initialProps: { data: initialData } },
+		);
+
+		act(() =>
+			onMessage?.({
+				type: "mcp_status",
+				inventory: true,
+				servers: [
+					{
+						name: "codex_apps",
+						status: "connected",
+						provider_id: "codex",
+					},
+					{
+						name: "node_repl",
+						status: "connected",
+						provider_id: "codex",
+					},
+					{
+						name: "claude.ai Excalidraw",
+						status: "connected",
+						provider_id: "claude",
+						scope: "claudeai",
+					},
+				],
+			}),
+		);
+		expect(result.current.mcpServers.map((server) => server.name)).toEqual([
+			"codex_apps",
+			"node_repl",
+			"claude.ai Excalidraw",
+		]);
+
+		act(() =>
+			onMessage?.({
+				type: "mcp_status",
+				provider_id: "codex",
+				servers: [
+					{ name: "codex_apps", status: "connected" },
+					{ name: "node_repl", status: "connected" },
+				],
+			}),
+		);
+
+		rerender({
+			data: {
+				...initial,
+				mcpServers: [
+					{
+						name: "codex_apps",
+						displayName: "codex_apps",
+						source: "global",
+						status: "connected",
+					},
+					{
+						name: "node_repl",
+						displayName: "node_repl",
+						source: "global",
+						status: "connected",
+					},
+				],
+			},
+		});
+
+		expect(
+			result.current.mcpServers.map((server) => server.name).sort(),
+		).toEqual(["claude.ai Excalidraw", "codex_apps", "node_repl"]);
 	});
 
 	it("ignores an older completion that resolves after a newer refresh", async () => {

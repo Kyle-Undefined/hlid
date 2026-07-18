@@ -118,7 +118,7 @@ const ledgerAnalyticsFilterSchema = z.object({
 		.optional(),
 });
 
-export const getLedgerAnalyticsFn = createServerFn({ method: "POST" })
+export const getLedgerAnalyticsFn = createServerFn({ method: "GET" })
 	.validator((raw) => ledgerAnalyticsFilterSchema.parse(raw))
 	.handler(({ data }) => {
 		const filter = data as LedgerAnalyticsFilter;
@@ -139,7 +139,7 @@ const ledgerToolErrorsSchema = z.object({
 	filter: ledgerAnalyticsFilterSchema,
 });
 
-export const getToolErrorsFn = createServerFn({ method: "POST" })
+export const getToolErrorsFn = createServerFn({ method: "GET" })
 	.validator((raw) => ledgerToolErrorsSchema.parse(raw))
 	.handler(async ({ data }) => {
 		const { getLedgerToolErrors } = await import("#/db");

@@ -56,6 +56,9 @@ vi.mock("../db", () => ({
 vi.mock("./recap", () => ({
 	generateTurnRecap: vi.fn().mockResolvedValue(undefined),
 }));
+vi.mock("./claudeWarmup", () => ({
+	waitForClaudeWarmupSnapshot: vi.fn().mockResolvedValue(null),
+}));
 vi.mock("./umbod", () => ({
 	authorizeHlidTool: vi.fn().mockResolvedValue(null),
 	registerUmbodApprovalSession: vi.fn(() => vi.fn()),
@@ -105,6 +108,7 @@ import type {
 	AgentToolDecision,
 	McpServerStatus,
 } from "./agentProvider";
+import { waitForClaudeWarmupSnapshot } from "./claudeWarmup";
 import { loadConfig } from "./config";
 import { resolveExecutionContext } from "./executionContext";
 import type { RateLimitMessage, ServerMessage } from "./protocol";
@@ -4860,13 +4864,24 @@ describe("SessionManager — probeSlashCommands", () => {
 		expect(sm.getLastMcpStatus()).toBeNull();
 	});
 
-	it("does not start a hidden assistant turn for turn-gated providers", async () => {
+	it("answers turn-gated probes from the startup cache without creating a session", async () => {
 		const query = vi.fn();
 		const provider: AgentProvider = {
 			providerId: "claude",
 			probeRequiresTurn: true,
 			query,
 		};
+		vi.mocked(waitForClaudeWarmupSnapshot).mockResolvedValueOnce({
+			commands: [
+				{ name: "review", description: "Review changes", argumentHint: "" },
+			],
+			agents: [],
+			mcpServers: [],
+			modelCount: 0,
+			cwd: "/tmp/project",
+			warmedAt: 1,
+			durationMs: 100,
+		});
 		const emitted: ServerMessage[] = [];
 		const sm = new SessionManager(makeConfig(), makeProviders(provider));
 		await sm.probeSlashCommands((message) => emitted.push(message), {
@@ -4880,8 +4895,100 @@ describe("SessionManager — probeSlashCommands", () => {
 				provider_id: "claude",
 				agent_cwd: "/tmp/project",
 				session_id: "session-1",
-				commands: [],
+				commands: [
+					{ name: "review", description: "Review changes", argumentHint: "" },
+				],
 			},
+		]);
+	});
+
+	it("serves cached Claude MCP status without creating a chat process", async () => {
+		const query = vi.fn();
+		const provider: AgentProvider = {
+			providerId: "claude",
+			probeRequiresTurn: true,
+			query,
+		};
+		vi.mocked(waitForClaudeWarmupSnapshot).mockResolvedValueOnce({
+			commands: [],
+			agents: [],
+			mcpServers: [{ name: "github", status: "connected" }],
+			modelCount: 0,
+			cwd: "/tmp/project",
+			warmedAt: 1,
+			durationMs: 100,
+		});
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.probeMcpStatus((message) => emitted.push(message), {
+			agentCwd: "/tmp/project",
+			sessionId: "session-1",
+		});
+
+		expect(query).not.toHaveBeenCalled();
+		expect(emitted).toEqual([
+			{
+				type: "mcp_status",
+				provider_id: "claude",
+				agent_cwd: "/tmp/project",
+				session_id: "session-1",
+				servers: [
+					expect.objectContaining({
+						name: "github",
+						status: "connected",
+					}),
+				],
+			},
+		]);
+	});
+
+	it("uses an archived session's saved provider for cached MCP discovery", async () => {
+		const codexQuery = vi.fn();
+		const claudeQuery = vi.fn();
+		const providers = new Map<string, AgentProvider>([
+			["codex", { providerId: "codex", query: codexQuery }],
+			[
+				"claude",
+				{
+					providerId: "claude",
+					probeRequiresTurn: true,
+					query: claudeQuery,
+				},
+			],
+		]);
+		const config = { ...makeConfig(), vault_provider: "codex" } as HlidConfig;
+		vi.mocked(waitForClaudeWarmupSnapshot).mockResolvedValueOnce({
+			commands: [],
+			agents: [],
+			mcpServers: [{ name: "claude.ai Excalidraw", status: "connected" }],
+			modelCount: 0,
+			cwd: "/tmp/project",
+			warmedAt: 1,
+			durationMs: 100,
+		});
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(config, providers);
+
+		await sm.probeMcpStatus((message) => emitted.push(message), {
+			agentCwd: "/tmp/project",
+			sessionId: "archived-claude-session",
+			providerId: "claude",
+		});
+
+		expect(codexQuery).not.toHaveBeenCalled();
+		expect(claudeQuery).not.toHaveBeenCalled();
+		expect(emitted).toEqual([
+			expect.objectContaining({
+				type: "mcp_status",
+				provider_id: "claude",
+				session_id: "archived-claude-session",
+				servers: [
+					expect.objectContaining({
+						name: "claude.ai Excalidraw",
+						status: "connected",
+					}),
+				],
+			}),
 		]);
 	});
 

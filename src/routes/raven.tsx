@@ -501,11 +501,13 @@ function useRavenChatRuntime({
 	isExplicitSession,
 	sessionIdRef,
 	agentCwd,
+	expectedProviderId,
 }: {
 	existingSessionId: string | null;
 	isExplicitSession: boolean;
 	sessionIdRef: { current: string };
 	agentCwd?: string;
+	expectedProviderId?: string;
 }) {
 	const [sdkSlashCommands, setSdkSlashCommands] = useState<
 		Array<{
@@ -538,6 +540,14 @@ function useRavenChatRuntime({
 		(message: Parameters<typeof handleWsMessage>[0]) => {
 			if (message.type === "mcp_status") {
 				if ((message.agent_cwd ?? "") !== (agentCwd ?? "")) return;
+				const messageProviderId =
+					message.provider_id ?? message.servers[0]?.provider_id;
+				if (
+					expectedProviderId &&
+					messageProviderId &&
+					messageProviderId !== expectedProviderId
+				)
+					return;
 				setMcpServers(
 					message.servers.map((server) =>
 						mapMcpServer({
@@ -556,7 +566,7 @@ function useRavenChatRuntime({
 			}
 			handleWsMessage(message);
 		},
-		[handleWsMessage, agentCwd],
+		[handleWsMessage, agentCwd, expectedProviderId],
 	);
 	const connection = useWs(handleAllMessages);
 
@@ -576,9 +586,10 @@ function useRavenChatRuntime({
 		setSdkSlashCommands([]);
 		setSdkSlashCommandProviderId(null);
 		setMcpServers([]);
-	}, [agentCwd, existingSessionId]);
+	}, [agentCwd, existingSessionId, expectedProviderId]);
 
 	useEffect(() => {
+		if (connection.wsStatus !== "connected") return;
 		connection.send({
 			type: "sync_mcp_list",
 			...(agentCwd ? { agent_cwd: agentCwd } : {}),
@@ -593,7 +604,7 @@ function useRavenChatRuntime({
 			session_id: sessionIdRef.current,
 			...(agentCwd ? { agent_cwd: agentCwd } : {}),
 		});
-	}, [connection.send, agentCwd, sessionIdRef]);
+	}, [connection.send, connection.wsStatus, agentCwd, sessionIdRef]);
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: session navigation is the reset trigger
 	useEffect(() => {
@@ -1426,11 +1437,20 @@ export function ChatPage() {
 
 	const liveStats = useWsLiveStats();
 	const chatQueue = useWsChatQueue();
+	const metadataProviderId =
+		sessionSelection.providerId ??
+		(restoredSession ? initialSessionProviderId : null) ??
+		resolveActiveProviderId(
+			agentList,
+			agentSkillContext,
+			config.vault_provider,
+		);
 	const runtime = useRavenChatRuntime({
 		existingSessionId,
 		isExplicitSession,
 		sessionIdRef,
 		agentCwd: agentSkillContext,
+		expectedProviderId: metadataProviderId,
 	});
 	const {
 		wsStatus,

@@ -5,6 +5,7 @@ import { registerBunServer } from "../lib/lifecycle";
 import { isPublicPath } from "../lib/publicPath";
 import { unauthenticatedResponse } from "../lib/uiRequestSecurity";
 import { authenticateRequest } from "./auth";
+import { SERVER_FN_NAMES } from "./embedded-server-fn-names";
 import { compressHttpResponse } from "./httpCompression";
 import { createRequestObserver } from "./requestDiagnostics";
 import { createConcurrencyGate, readRequestBodyLimited } from "./requestLimits";
@@ -24,6 +25,12 @@ const VOICE_FORWARD_TIMEOUT_MS = 70_000;
 const TLS_IDLE_TIMEOUT_SECONDS = 75;
 const observeTlsForward = createRequestObserver({
 	scope: "tls-proxy",
+	requestName: (request) => {
+		const pathname = new URL(request.url).pathname;
+		if (!pathname.startsWith("/_serverFn/")) return undefined;
+		const id = pathname.slice("/_serverFn/".length).split("/")[0];
+		return id ? SERVER_FN_NAMES[id] : undefined;
+	},
 	slowRequestMs: () => undefined,
 	// The UI listener records returned 5xx responses with richer context. The
 	// proxy only needs to record failures that prevent reaching that listener.

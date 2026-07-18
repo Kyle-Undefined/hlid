@@ -5,6 +5,43 @@ import type {
 } from "#/db";
 import type { RateLimitMessage } from "#/server/protocol";
 
+const EMPTY_PROVIDER_WINDOW = {
+	tokens: 0,
+	queries: 0,
+	sessions: 0,
+	cost: 0,
+	utilization: null,
+	remaining: null,
+	limit: null,
+	resetsAt: null,
+} as const;
+
+/**
+ * Stable Cockpit shell for the built-in provider windows. Usage hydration is
+ * intentionally non-blocking, so keep the panel geometry present while its
+ * last-known or fresh readings are restored.
+ */
+export function builtInProviderUsageShells(): ProviderUsageSnapshot[] {
+	return ["claude", "codex"].map((providerId) => ({
+		providerId,
+		providerLabel: providerId === "claude" ? "Claude" : "Codex",
+		windows: [
+			{
+				...EMPTY_PROVIDER_WINDOW,
+				windowId: "five_hour",
+				label: "5-HOUR",
+				windowSecs: 5 * 3600,
+			},
+			{
+				...EMPTY_PROVIDER_WINDOW,
+				windowId: "weekly",
+				label: "7-DAY",
+				windowSecs: 7 * 86400,
+			},
+		],
+	}));
+}
+
 export function applyRateLimitToWindowData(
 	prev: UsageWindows | null,
 	rateLimit: Pick<
@@ -146,13 +183,23 @@ export function mergeFreshProviderSnapshots(
 	fresh: ProviderUsageSnapshot[],
 	previous: ProviderUsageSnapshot[],
 ): ProviderUsageSnapshot[] {
-	return fresh.map((snapshot) =>
+	const refreshed = fresh.map((snapshot) =>
 		mergeProviderSnapshot(
 			snapshot,
 			previous.find((item) => item.providerId === snapshot.providerId),
 			null,
 		),
 	);
+	const refreshedIds = new Set(
+		refreshed.map((snapshot) => snapshot.providerId),
+	);
+	// Read-only server functions intentionally return [] on a transient timeout.
+	// Keep the last good providers when a background refresh is empty or partial
+	// so the usage strip cannot disappear until the next successful poll.
+	return [
+		...refreshed,
+		...previous.filter((snapshot) => !refreshedIds.has(snapshot.providerId)),
+	];
 }
 
 export function providerWindowUsage(window: ProviderWindowEntry): {

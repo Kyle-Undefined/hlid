@@ -48,6 +48,22 @@ function initialThirtyDayStats(stats: ThirtyDayStats): ThirtyDayStats {
 	return getPendingSessionToday() ? incrementThirtyDayStats(stats) : stats;
 }
 
+function mergeProviderMcpServers(
+	previous: McpServerEntry[],
+	incoming: McpServerEntry[],
+	providerId: string,
+): McpServerEntry[] {
+	const incomingNames = new Set(incoming.map((server) => server.name));
+	return [
+		...previous.filter(
+			(server) =>
+				server.providerId !== providerId &&
+				!(server.providerId === undefined && incomingNames.has(server.name)),
+		),
+		...incoming,
+	];
+}
+
 export function useCockpitLiveData(
 	initial: InitialCockpitLiveData,
 	commandAgentCwd?: string,
@@ -105,7 +121,14 @@ export function useCockpitLiveData(
 		() => setLiveActiveSession(initial.activeSession),
 		[initial.activeSession],
 	);
-	useEffect(() => setMcpServers(initial.mcpServers), [initial.mcpServers]);
+	useEffect(() => {
+		// Optional loader recovery is a vault-provider fallback, while the WS
+		// inventory is cross-provider. It may seed an empty view, but must never
+		// replace an aggregate inventory that has already arrived.
+		setMcpServers((previous) =>
+			previous.length > 0 ? previous : initial.mcpServers,
+		);
+	}, [initial.mcpServers]);
 
 	const refreshRecentRuns = useCallback((): void => {
 		const generation = ++recentRefreshGenerationRef.current;
@@ -160,13 +183,16 @@ export function useCockpitLiveData(
 		if (message.type === "rate_limit") setRateLimit(message);
 		if (message.type === "mcp_status") {
 			if ((message.agent_cwd ?? "") !== (commandAgentCwd ?? "")) return;
-			setMcpServers(
-				message.servers.map((server) =>
-					mapMcpServer({
-						...server,
-						providerId: server.provider_id ?? message.provider_id,
-					}),
-				),
+			const incoming = message.servers.map((server) =>
+				mapMcpServer({
+					...server,
+					providerId: server.provider_id ?? message.provider_id,
+				}),
+			);
+			setMcpServers((previous) =>
+				message.inventory || !message.provider_id
+					? incoming
+					: mergeProviderMcpServers(previous, incoming, message.provider_id),
 			);
 		}
 		if (message.type === "slash_commands") {
@@ -183,6 +209,7 @@ export function useCockpitLiveData(
 	}, [commandAgentCwd]);
 
 	useEffect(() => {
+		if (ws.wsStatus !== "connected") return;
 		ws.send({
 			type: "sync_mcp_list",
 			inventory: true,
@@ -192,7 +219,7 @@ export function useCockpitLiveData(
 			type: "probe_slash_commands",
 			...(commandAgentCwd ? { agent_cwd: commandAgentCwd } : {}),
 		});
-	}, [ws.send, commandAgentCwd]);
+	}, [ws.send, ws.wsStatus, commandAgentCwd]);
 
 	useEffect(() => {
 		const nextIds = new Set(

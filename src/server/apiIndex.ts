@@ -107,6 +107,12 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 	// ── Codex app-server maintenance (api port) ───────────────────────────────
 	{
 		method: "GET",
+		path: "/claude/warmup",
+		server: "api",
+		desc: "Latest cached Claude provider metadata: discovered commands/skills, agents, MCP status, and timings. Null before startup discovery completes.",
+	},
+	{
+		method: "GET",
 		path: "/codex/app-servers",
 		server: "api",
 		desc: "Shared codex app-server processes: executable, alive, attached thread count.",

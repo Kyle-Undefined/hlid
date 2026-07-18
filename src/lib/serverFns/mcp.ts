@@ -7,12 +7,19 @@ import { dbFetch } from "#/lib/dbClient";
 import { discoverMcpServers } from "#/lib/mcpDiscovery";
 import { getConfig } from "./config";
 
+const MCP_LIVE_FALLBACK_TIMEOUT_MS = 750;
+
 export const getMcpServersFn = createServerFn({ method: "GET" }).handler(
 	async () => {
 		const config = await getConfig();
 		return discoverMcpServers({
 			loadLiveServers: async () => {
-				const response = await dbFetch("/mcp-status");
+				// WebSocket inventory is authoritative once Cockpit mounts. Keep this
+				// loader fallback short so a stalled loopback read cannot hold the
+				// dashboard recovery batch for the generic five-second DB budget.
+				const response = await dbFetch("/mcp-status", {
+					signal: AbortSignal.timeout(MCP_LIVE_FALLBACK_TIMEOUT_MS),
+				});
 				if (!response.ok) return [];
 				return response.json();
 			},

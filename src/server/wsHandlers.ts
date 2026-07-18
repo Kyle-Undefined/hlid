@@ -5,6 +5,10 @@ import { readAgentMcpFile } from "../lib/agentMcp";
 import { expandTilde } from "../lib/paths";
 import { readVaultMcpFile } from "../lib/vaultMcp";
 import { computeAllowedAgentRealPaths, isAllowedAgentPath } from "./agentPaths";
+import {
+	waitForAllClaudeWarmupSnapshots,
+	waitForClaudeWarmupSnapshot,
+} from "./claudeWarmup";
 import { loadConfig } from "./config";
 import { getDataRevisions } from "./dataRevision";
 import { getLiveSessionsStatus } from "./liveSessions";
@@ -378,11 +382,11 @@ function readVaultServers(vaultPath: string) {
 	}
 }
 
-function syncMcpInventory(
+async function syncMcpInventory(
 	ws: ServerWebSocket<WsData>,
 	pool: SessionPool,
 	agentCwd?: string,
-): void {
+): Promise<void> {
 	const config = loadConfig();
 	let resolvedAgent: string | undefined;
 	if (agentCwd) {
@@ -418,6 +422,21 @@ function syncMcpInventory(
 		);
 	}
 
+	// Claude metadata is discovered and cached at startup independently of chat
+	// sessions. Cockpit is a cross-provider inventory, so include that cache even
+	// when no Claude SessionManager has ever been started.
+	const claudeSnapshots = resolvedAgent
+		? [await waitForClaudeWarmupSnapshot(resolvedAgent)]
+		: await waitForAllClaudeWarmupSnapshots();
+	for (const snapshot of claudeSnapshots) {
+		for (const server of snapshot?.mcpServers ?? []) {
+			inventory.set(
+				`claude:${server.name}`,
+				mapMcpServer({ ...server, providerId: "claude" }),
+			);
+		}
+	}
+
 	for (const entry of pool.getAllEntries()) {
 		if (resolvedAgent && entry.agentCwd !== resolvedAgent) continue;
 		for (const snapshot of entry.manager.getMcpSnapshots()) {
@@ -432,6 +451,7 @@ function syncMcpInventory(
 
 	send(ws, {
 		type: "mcp_status",
+		inventory: true,
 		...(agentCwd ? { agent_cwd: agentCwd } : {}),
 		servers: [...inventory.values()],
 	});
@@ -768,6 +788,19 @@ async function handleSessionMessage(
 			send(context.ws, event);
 		}
 	};
+	const resolveProbeScope = async (scope: {
+		agent_cwd?: string;
+		session_id?: string;
+	}) => {
+		const selection = scope.session_id
+			? await db.getSessionSelection(scope.session_id).catch(() => null)
+			: null;
+		return {
+			agentCwd: scope.agent_cwd ?? selection?.agentCwd ?? undefined,
+			sessionId: scope.session_id,
+			providerId: selection?.providerId ?? undefined,
+		};
+	};
 	switch (msg.type) {
 		case "sync":
 			handleSync(context.ws, entry);
@@ -792,16 +825,16 @@ async function handleSessionMessage(
 			handleReloadSession(context.pool, context.terminalPool, entry);
 			return;
 		case "probe_mcp":
-			void entry.manager.probeMcpStatus(sendProbeResult, {
-				agentCwd: msg.agent_cwd,
-				sessionId: msg.session_id,
-			});
+			await entry.manager.probeMcpStatus(
+				sendProbeResult,
+				await resolveProbeScope(msg),
+			);
 			return;
 		case "probe_slash_commands":
-			void entry.manager.probeSlashCommands(sendProbeResult, {
-				agentCwd: msg.agent_cwd,
-				sessionId: msg.session_id,
-			});
+			await entry.manager.probeSlashCommands(
+				sendProbeResult,
+				await resolveProbeScope(msg),
+			);
 			return;
 		case "set_provider": {
 			await entry.manager.setProvider(msg.provider, {
@@ -853,7 +886,7 @@ async function handleSessionMessage(
 			return;
 		case "sync_mcp_list":
 			if (msg.inventory)
-				syncMcpInventory(context.ws, context.pool, msg.agent_cwd);
+				await syncMcpInventory(context.ws, context.pool, msg.agent_cwd);
 			else if (msg.agent_cwd)
 				syncAgentMcpList(context.ws, entry, msg.agent_cwd);
 			else syncVaultMcpList(context.pool);

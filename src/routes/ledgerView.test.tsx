@@ -343,6 +343,23 @@ describe("ledger route loader", () => {
 		expect(getThirtyDayStatsFn).not.toHaveBeenCalled();
 		expect(getActivityStatsFn).not.toHaveBeenCalled();
 	});
+
+	it("does not hold Stats navigation behind the Sessions page seed", async () => {
+		const loaded = await ledgerRoute.loader({
+			location: {
+				search: { tab: "stats", page: 1, size: 20 },
+			},
+		});
+
+		expect(loaded.initialSessions).toEqual({
+			sessions: [],
+			total: 0,
+			oldest_started_at: null,
+			agent_cwds: [],
+			models: [],
+		});
+		expect(loaded.activeSession).toBeNull();
+	});
 });
 
 describe("ledger stats view", () => {

@@ -20,16 +20,26 @@ vi.mock("../db", () => ({
 	appendLog: vi.fn().mockResolvedValue(undefined),
 	saveSetting: vi.fn().mockResolvedValue(undefined),
 	setAskUserQuestionResolution: vi.fn().mockResolvedValue(undefined),
+	getSessionSelection: vi.fn().mockResolvedValue(null),
 }));
 
 // vi.mock factories are hoisted before module-level code, so vars referenced
 // inside them must also be hoisted via vi.hoisted().
-const { wsState, mockSend, mockBroadcast, mockLoadConfig } = vi.hoisted(() => ({
+const {
+	wsState,
+	mockSend,
+	mockBroadcast,
+	mockLoadConfig,
+	mockWaitForClaudeWarmupSnapshot,
+	mockWaitForAllClaudeWarmupSnapshots,
+} = vi.hoisted(() => ({
 	wsState: {
 		clients: new Set<object>(),
 	},
 	mockSend: vi.fn(),
 	mockBroadcast: vi.fn(),
+	mockWaitForClaudeWarmupSnapshot: vi.fn().mockResolvedValue(null),
+	mockWaitForAllClaudeWarmupSnapshots: vi.fn().mockResolvedValue([]),
 	mockLoadConfig: vi.fn().mockReturnValue({
 		vault: { path: "/tmp/test", name: "Test Vault" },
 		claude: {
@@ -52,8 +62,14 @@ vi.mock("./runState", () => ({
 	broadcast: mockBroadcast,
 }));
 
+vi.mock("./claudeWarmup", () => ({
+	waitForClaudeWarmupSnapshot: mockWaitForClaudeWarmupSnapshot,
+	waitForAllClaudeWarmupSnapshots: mockWaitForAllClaudeWarmupSnapshots,
+}));
+
 // ── import after mocks ────────────────────────────────────────────────────────
 
+import * as dbMock from "../db";
 import { createWsHandlers } from "./wsHandlers";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -163,6 +179,13 @@ beforeEach(() => {
 
 describe("message — provider probes", () => {
 	it("replies directly when an archived session is detached from the live pool", async () => {
+		vi.mocked(dbMock.getSessionSelection).mockResolvedValueOnce({
+			agentCwd: "/tmp/test",
+			providerId: "claude",
+			model: "claude-sonnet-5",
+			effort: "high",
+			permissionMode: "default",
+		});
 		const probeMcpStatus = vi.fn(
 			async (emit: (message: ServerMessage) => void) => {
 				emit({
@@ -188,7 +211,11 @@ describe("message — provider probes", () => {
 			}),
 		);
 
-		expect(probeMcpStatus).toHaveBeenCalled();
+		expect(probeMcpStatus).toHaveBeenCalledWith(expect.any(Function), {
+			agentCwd: "/tmp/test",
+			sessionId: "archived-session",
+			providerId: "claude",
+		});
 		expect(mockSend).toHaveBeenCalledWith(
 			ws,
 			expect.objectContaining({
@@ -1437,6 +1464,8 @@ describe("message — sync_mcp_list (agent_cwd)", () => {
 				{ path: agentDir, name: "test", mode: "cwd", provider: "claude" },
 			],
 		});
+		mockWaitForClaudeWarmupSnapshot.mockResolvedValue(null);
+		mockWaitForAllClaudeWarmupSnapshots.mockResolvedValue([]);
 	});
 
 	afterEach(() => {
@@ -1465,7 +1494,7 @@ describe("message — sync_mcp_list (agent_cwd)", () => {
 		);
 	});
 
-	it("returns Cockpit inventory across cached provider sessions", async () => {
+	it("returns Cockpit inventory across live Codex and startup-cached Claude metadata", async () => {
 		const codexSession = makeSession({
 			getMcpSnapshots: vi.fn().mockReturnValue([
 				{
@@ -1474,28 +1503,25 @@ describe("message — sync_mcp_list (agent_cwd)", () => {
 				},
 			]),
 		});
-		const claudeSession = makeSession({
-			getMcpSnapshots: vi.fn().mockReturnValue([
-				{
-					providerId: "claude",
-					servers: [
-						{
-							name: "claude.ai Excalidraw",
-							status: "connected",
-							scope: "claudeai",
-						},
-					],
-				},
-			]),
-		});
+		mockWaitForAllClaudeWarmupSnapshots.mockResolvedValueOnce([
+			{
+				commands: [],
+				agents: [],
+				mcpServers: [
+					{
+						name: "claude.ai Excalidraw",
+						status: "connected",
+						scope: "claudeai",
+					},
+				],
+				modelCount: 0,
+				cwd: "/tmp/test",
+				warmedAt: 1,
+				durationMs: 100,
+			},
+		]);
 		const { pool, entry } = wrapSession(codexSession);
-		const claudeEntry = {
-			...entry,
-			sessionId: "claude-live",
-			agentCwd: agentDir,
-			manager: claudeSession,
-		};
-		pool.getAllEntries.mockReturnValue([entry, claudeEntry][Symbol.iterator]());
+		pool.getAllEntries.mockReturnValue([entry][Symbol.iterator]());
 		const { message } = createWsHandlers(pool as never);
 		const ws = makeWs();
 
@@ -1508,9 +1534,11 @@ describe("message — sync_mcp_list (agent_cwd)", () => {
 			(call) => call[0] === ws && call[1]?.type === "mcp_status",
 		)?.[1] as
 			| {
+					inventory?: boolean;
 					servers: Array<{ name: string; provider_id?: string }>;
 			  }
 			| undefined;
+		expect(inventory?.inventory).toBe(true);
 		expect(inventory?.servers).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({ name: "github", provider_id: "codex" }),

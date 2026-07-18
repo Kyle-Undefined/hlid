@@ -66,9 +66,14 @@ export const getProviderUsagesFn = createServerFn({ method: "GET" })
 		);
 	});
 
-function providerUsageIds(providers: ProviderInfo[]): string[] {
+const BUILT_IN_USAGE_PROVIDER_IDS = ["claude", "codex"];
+
+export function providerUsageIds(providers: ProviderInfo[]): string[] {
 	const ids = providers.map((provider) => provider.id);
-	return ids.length > 0 ? ids : ["claude"];
+	// Provider catalog reads use a deliberately short cached-read budget. If
+	// that discovery times out, still hydrate the two built-in providers instead
+	// of returning a valid-but-empty usage strip.
+	return ids.length > 0 ? ids : BUILT_IN_USAGE_PROVIDER_IDS;
 }
 
 export function loadProviderUsages(providers?: ProviderInfo[]) {

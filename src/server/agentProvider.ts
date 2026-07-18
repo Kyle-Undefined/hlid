@@ -363,11 +363,9 @@ export interface AgentProvider {
 		windowSecs: number;
 	}>;
 	/**
-	 * True when mcpServerStatus()/supportedCommands() need a real assistant
-	 * turn first to initialize the underlying session (the Claude SDK's
-	 * streaming-input query is lazy until the first send()). Providers that
-	 * can answer these over a plain RPC connection (codex app-server) leave
-	 * this unset so probes never spend a turn.
+	 * True when mcpServerStatus()/supportedCommands() require an initialized
+	 * chat process. Public metadata probes must use a provider cache when no
+	 * live session exists rather than creating a hidden chat process.
 	 */
 	readonly probeRequiresTurn?: boolean;
 	/** Optional availability check. Returns false + reason if provider can't run. */

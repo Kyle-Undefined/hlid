@@ -2,12 +2,14 @@ import "./prelude";
 import type { Server, ServerWebSocket } from "bun";
 import * as db from "../db";
 import { isAllowedOrigin, isAllowedOriginHeader } from "../lib/allowedOrigin";
+import { resolveClaudeExecutable } from "../lib/claudePath";
 import { resolveCodexExecutable } from "../lib/codexPath";
 import { registerBunServer } from "../lib/lifecycle";
 import { loadToken, verifyToken } from "../lib/token";
 import { AcpProvider } from "./acpProvider";
 import { AcpRegistry } from "./acpRegistry";
 import { createAcpRouteHandler } from "./acpRoutes";
+import { computeAllowedAgentRealPaths } from "./agentPaths";
 import type { AgentProvider, McpServerStatus } from "./agentProvider";
 import { buildApiIndex } from "./apiIndex";
 import { handleAttachmentRoute } from "./attachmentRoutes";
@@ -18,6 +20,7 @@ import {
 } from "./auth";
 import { openInBrowser } from "./browser";
 import { ClaudeProvider } from "./claudeProvider";
+import { getClaudeWarmupSnapshot, prewarmClaudeCli } from "./claudeWarmup";
 import {
 	closeAllCodexAppServers,
 	listCodexAppServers,
@@ -28,6 +31,7 @@ import { loadConfig } from "./config";
 import { formatPersistentConsoleMessage } from "./consoleLog";
 import { bumpDataRevision, subscribeDataRevisions } from "./dataRevision";
 import { handleDbRoute } from "./dbRoutes";
+import { resolveExecutionContext } from "./executionContext";
 import { getLiveSessionsStatus } from "./liveSessions";
 import {
 	createModelCatalog,
@@ -373,6 +377,9 @@ async function handleWebSocketRoute(
 }
 
 function handleCodexRoute(url: URL, req: Request): Response | null {
+	if (url.pathname === "/claude/warmup" && req.method === "GET") {
+		return Response.json(getClaudeWarmupSnapshot());
+	}
 	if (url.pathname === "/codex/app-servers" && req.method === "GET") {
 		return Response.json(listCodexAppServers());
 	}
@@ -640,29 +647,85 @@ for (const result of providerProxyResults) {
 		);
 	}
 }
-// Include the Codex handshake in readiness when it is quick, but never hold the
-// splash for more than three seconds. A timed-out handshake keeps running in the
-// background. Once initialized, the shared helper follows the normal idle-reap
-// lifecycle so desktop plugin/runtime updates do not leave it stale indefinitely.
+// Populate provider metadata while the splash is visible, but never hold it
+// for more than three seconds. Codex keeps its shared app-server available for
+// metadata RPCs. Claude snapshots commands/skills and MCP status for the vault
+// and configured agent scopes, then closes each metadata-only process. Raven
+// reads those snapshots without starting a chat process.
 if (isCompiled) {
+	const warmups: Promise<void>[] = [];
 	const codexExecutable = config.codex.executable ?? resolveCodexExecutable();
 	if (codexExecutable) {
-		try {
-			const warmed = await prewarmCodexAppServer(
-				codexExecutable,
-				CODEX_STARTUP_WARM_TIMEOUT_MS,
-			);
-			if (!warmed) {
-				console.warn(
-					"[codex app-server] startup warm-up exceeded 3000ms; continuing in background",
-				);
-			}
-		} catch (error) {
-			console.warn(
-				"[codex app-server] startup warm-up failed:",
-				error instanceof Error ? error.message : String(error),
-			);
-		}
+		warmups.push(
+			prewarmCodexAppServer(codexExecutable, CODEX_STARTUP_WARM_TIMEOUT_MS)
+				.then((warmed) => {
+					if (!warmed) {
+						console.warn(
+							"[codex app-server] startup warm-up exceeded 3000ms; continuing in background",
+						);
+					}
+				})
+				.catch((error) => {
+					console.warn(
+						"[codex app-server] startup warm-up failed:",
+						error instanceof Error ? error.message : String(error),
+					);
+				}),
+		);
 	}
+	const vaultPath = config.vault.path || process.cwd();
+	const claudeExecutable = resolveClaudeExecutable();
+	const allowedAgentRealPaths = computeAllowedAgentRealPaths(config);
+	const claudeScopes = [
+		{
+			cacheCwd: vaultPath,
+			agentCwd: undefined,
+			agentMode: "cwd" as const,
+		},
+		...(config.agents ?? []).map((agent) => ({
+			cacheCwd: agent.path,
+			agentCwd: agent.path,
+			agentMode: agent.mode,
+		})),
+	];
+	const uniqueClaudeScopes = [
+		...new Map(claudeScopes.map((scope) => [scope.cacheCwd, scope])).values(),
+	];
+	warmups.push(
+		Promise.all(
+			uniqueClaudeScopes.map((scope) => {
+				const execution = resolveExecutionContext({
+					agentMode: scope.agentMode,
+					agentCwd: scope.agentCwd,
+					vaultPath,
+					allowedAgentRealPaths,
+					claudeExecutable,
+					safeAttachments: [],
+				});
+				return prewarmClaudeCli({
+					executable: execution.executable,
+					cwd: execution.activeCwd,
+					cacheCwd: scope.cacheCwd,
+					additionalDirectories: [...execution.extraDirs],
+					waitTimeoutMs: CODEX_STARTUP_WARM_TIMEOUT_MS,
+				});
+			}),
+		)
+			.then((results) => {
+				const continuing = results.filter((warmed) => !warmed).length;
+				if (continuing > 0) {
+					console.warn(
+						`[claude metadata] ${continuing} startup scan(s) exceeded 3000ms; continuing in background`,
+					);
+				}
+			})
+			.catch((error) => {
+				console.warn(
+					"[claude metadata] startup scan failed:",
+					error instanceof Error ? error.message : String(error),
+				);
+			}),
+	);
+	await Promise.all(warmups);
 	markUiServerReady();
 }

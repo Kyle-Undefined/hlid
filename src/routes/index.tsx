@@ -60,6 +60,7 @@ import {
 } from "#/lib/serverFns/stats";
 import { getVoiceInfoFn } from "#/lib/serverFns/voice";
 import { groupSkills, type Skill } from "#/lib/skills";
+import { builtInProviderUsageShells } from "#/lib/usageWindows";
 
 // ─── route ───────────────────────────────────────────────────────────────────
 
@@ -126,6 +127,40 @@ const UNAVAILABLE_VOICE_INFO: Awaited<ReturnType<typeof getVoiceInfoFn>> = {
 	},
 	models: [],
 };
+
+type CockpitOptionalData = {
+	data: Awaited<ReturnType<typeof getCockpitData>>;
+	recentSessions: Awaited<ReturnType<typeof getRecentSessionsFn>>;
+	statsData: Awaited<ReturnType<typeof getCockpitStatsFn>>;
+	mcpServers: Awaited<ReturnType<typeof getMcpServersFn>>;
+	weeklyStats: Awaited<ReturnType<typeof getWeeklyStatsFn>>;
+	thirtyDayStats: Awaited<ReturnType<typeof getThirtyDayStatsFn>>;
+	agentList: Awaited<ReturnType<typeof getAgentListFn>>;
+	activeSession: Awaited<ReturnType<typeof getActiveSessionRowFn>>;
+	voiceInfo: Awaited<ReturnType<typeof getVoiceInfoFn>>;
+};
+
+let cachedCockpitOptionalData: CockpitOptionalData | null = null;
+
+export function restoreCachedCockpitOptionalData(
+	incoming: CockpitOptionalData,
+): CockpitOptionalData {
+	return typeof window === "undefined"
+		? incoming
+		: (cachedCockpitOptionalData ?? incoming);
+}
+
+export function cacheCockpitOptionalData(
+	data: CockpitOptionalData,
+): CockpitOptionalData {
+	if (typeof window !== "undefined") cachedCockpitOptionalData = data;
+	return data;
+}
+
+/** @internal */
+export function clearCockpitOptionalDataCacheForTesting(): void {
+	cachedCockpitOptionalData = null;
+}
 
 export const Route = createFileRoute("/")({
 	loader: async () => {
@@ -203,7 +238,7 @@ export const Route = createFileRoute("/")({
 			// Provider discovery is optional dashboard decoration and can involve a
 			// busy host CLI. Let the mounted usage strip hydrate it in the background
 			// so navigating to Watch never waits on /providers.
-			providerUsages: [],
+			providerUsages: builtInProviderUsageShells(),
 			thirtyDayStats: thirtyDayStats.value,
 			agentList: agentList.value,
 			activeSession: activeSession.value,
@@ -382,6 +417,7 @@ function CockpitTopPanels({
 			{/* Usage windows */}
 			<ProviderUsageStrip
 				initial={initialProviderUsages}
+				initialStale
 				liveQueryCount={liveStats?.queries ?? 0}
 				rateLimit={live.rateLimit}
 				fetchFn={loadProviderUsages}
@@ -553,25 +589,19 @@ function OptionalDataNotice({
 	);
 }
 
+export function preserveCockpitDataDuringFallback<T>(
+	current: T,
+	incoming: T,
+	status: "ready" | "unavailable",
+): T {
+	return status === "ready" ? incoming : current;
+}
+
 function CockpitPage() {
 	const loader = Route.useLoaderData();
 	const { config } = loader;
-	const [optionalData, setOptionalData] = useState(() => ({
-		data: loader.data,
-		recentSessions: loader.recentSessions,
-		statsData: loader.statsData,
-		mcpServers: loader.mcpServers,
-		weeklyStats: loader.weeklyStats,
-		thirtyDayStats: loader.thirtyDayStats,
-		agentList: loader.agentList,
-		activeSession: loader.activeSession,
-		voiceInfo: loader.voiceInfo,
-	}));
-	const [optionalDataStatus, setOptionalDataStatus] = useState<
-		"loading" | "ready" | "unavailable"
-	>(loader.optionalDataStatus);
-	useEffect(() => {
-		setOptionalData({
+	const [optionalData, setOptionalData] = useState(() =>
+		restoreCachedCockpitOptionalData({
 			data: loader.data,
 			recentSessions: loader.recentSessions,
 			statsData: loader.statsData,
@@ -581,7 +611,32 @@ function CockpitPage() {
 			agentList: loader.agentList,
 			activeSession: loader.activeSession,
 			voiceInfo: loader.voiceInfo,
-		});
+		}),
+	);
+	const [optionalDataStatus, setOptionalDataStatus] = useState<
+		"loading" | "ready" | "unavailable"
+	>(loader.optionalDataStatus);
+	useEffect(() => {
+		const incoming = {
+			data: loader.data,
+			recentSessions: loader.recentSessions,
+			statsData: loader.statsData,
+			mcpServers: loader.mcpServers,
+			weeklyStats: loader.weeklyStats,
+			thirtyDayStats: loader.thirtyDayStats,
+			agentList: loader.agentList,
+			activeSession: loader.activeSession,
+			voiceInfo: loader.voiceInfo,
+		};
+		setOptionalData((current) =>
+			cacheCockpitOptionalData(
+				preserveCockpitDataDuringFallback(
+					current,
+					incoming,
+					loader.optionalDataStatus,
+				),
+			),
+		);
 		setOptionalDataStatus(loader.optionalDataStatus);
 	}, [
 		loader.data,
@@ -644,31 +699,35 @@ function CockpitPage() {
 				WATCH_OPTIONAL_RECOVERY_WAIT_MS,
 			),
 		]);
-		setOptionalData((current) => ({
-			data: results[0].status === "ready" ? results[0].value : current.data,
-			recentSessions:
-				results[1].status === "ready"
-					? results[1].value
-					: current.recentSessions,
-			statsData:
-				results[2].status === "ready" ? results[2].value : current.statsData,
-			mcpServers:
-				results[3].status === "ready" ? results[3].value : current.mcpServers,
-			weeklyStats:
-				results[4].status === "ready" ? results[4].value : current.weeklyStats,
-			thirtyDayStats:
-				results[5].status === "ready"
-					? results[5].value
-					: current.thirtyDayStats,
-			agentList:
-				results[6].status === "ready" ? results[6].value : current.agentList,
-			activeSession:
-				results[7].status === "ready"
-					? results[7].value
-					: current.activeSession,
-			voiceInfo:
-				results[8].status === "ready" ? results[8].value : current.voiceInfo,
-		}));
+		setOptionalData((current) =>
+			cacheCockpitOptionalData({
+				data: results[0].status === "ready" ? results[0].value : current.data,
+				recentSessions:
+					results[1].status === "ready"
+						? results[1].value
+						: current.recentSessions,
+				statsData:
+					results[2].status === "ready" ? results[2].value : current.statsData,
+				mcpServers:
+					results[3].status === "ready" ? results[3].value : current.mcpServers,
+				weeklyStats:
+					results[4].status === "ready"
+						? results[4].value
+						: current.weeklyStats,
+				thirtyDayStats:
+					results[5].status === "ready"
+						? results[5].value
+						: current.thirtyDayStats,
+				agentList:
+					results[6].status === "ready" ? results[6].value : current.agentList,
+				activeSession:
+					results[7].status === "ready"
+						? results[7].value
+						: current.activeSession,
+				voiceInfo:
+					results[8].status === "ready" ? results[8].value : current.voiceInfo,
+			}),
+		);
 		setOptionalDataStatus(
 			results.every((result) => result.status === "ready")
 				? "ready"
