@@ -634,10 +634,10 @@ const CLIPROXY_ROUTE_HANDLERS: Record<string, ServerRouteHandler> = {
 		if (!["codex", "claude", "antigravity", "kimi", "xai"].includes(provider)) {
 			throw new Error("unsupported CLIProxy OAuth provider");
 		}
-		await cliProxy.beginOAuth(
+		const status = cliProxy.beginOAuth(
 			provider as import("./cliproxyManager").CliProxyOAuthProviderId,
 		);
-		return Response.json(cliProxy.status(), { status: 202 });
+		return Response.json(status, { status: 202 });
 	},
 	"DELETE /cliproxy": async () => {
 		writeManagedCliProxyConfig(false);

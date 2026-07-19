@@ -6,6 +6,7 @@ import { HlidConfigSchema } from "../config";
 import {
 	CliProxyManager,
 	checksumForAsset,
+	extractCliProxyOAuthPrompt,
 	managedCliProxyConfig,
 	selectCliProxyReleaseAssets,
 } from "./cliproxyManager";
@@ -59,6 +60,25 @@ describe("CLIProxy release verification", () => {
 });
 
 describe("managed CLIProxy configuration", () => {
+	it("extracts browser and device-code prompts from CLI output", () => {
+		expect(
+			extractCliProxyOAuthPrompt(
+				"Visit the following URL to continue authentication:\nhttps://auth.example.test/oauth?state=abc\n",
+			),
+		).toEqual({
+			url: "https://auth.example.test/oauth?state=abc",
+			code: undefined,
+		});
+		expect(
+			extractCliProxyOAuthPrompt(
+				"To authenticate, please visit:\nhttps://auth.example.test/device\nThen enter this code: ABCD-EFGH\n",
+			),
+		).toEqual({
+			url: "https://auth.example.test/device",
+			code: "ABCD-EFGH",
+		});
+	});
+
 	it("binds loopback, disables management, and embeds only the private client key", () => {
 		const yaml = managedCliProxyConfig("C:\\Hlid\\auth", "private-client-key");
 		expect(yaml).toContain('host: "127.0.0.1"');

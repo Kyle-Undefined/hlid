@@ -16,6 +16,7 @@ import type { HlidConfig } from "#/config";
 import { CLIPROXY_DIR } from "#/lib/paths";
 import { runBoundedProcess } from "#/lib/process";
 import * as db from "../db";
+import { openInBrowser } from "./browser";
 
 const RELEASE_URL =
 	"https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest";
@@ -78,6 +79,9 @@ export type CliProxyStatus = {
 	oauth: CliProxyOAuthState;
 	accounts: Record<CliProxyOAuthProviderId, CliProxyOAuthState>;
 	activeOAuth?: CliProxyOAuthProviderId;
+	oauthUrl?: string;
+	oauthCode?: string;
+	oauthBrowserOpened?: boolean;
 	error?: string;
 	download?: { received: number; total: number | null };
 };
@@ -90,6 +94,29 @@ function emptyAccounts(): Record<CliProxyOAuthProviderId, CliProxyOAuthState> {
 		kimi: "idle",
 		xai: "idle",
 	};
+}
+
+export function extractCliProxyOAuthPrompt(output: string): {
+	url?: string;
+	code?: string;
+} {
+	const url = output
+		.match(/https?:\/\/[^\s<>"']+/i)?.[0]
+		?.replace(/[),.;]+$/, "");
+	const code = output.match(
+		/(?:user code:|then enter this code:)\s*([A-Z0-9-]{4,})/i,
+	)?.[1];
+	return { url, code };
+}
+
+function oauthFailureDetail(output: string): string | undefined {
+	const lines = output
+		.replace(/https?:\/\/[^\s<>"']+/gi, "[authorization URL]")
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.filter((line) => /error|fail|timed? out|port.+use/i.test(line));
+	const detail = lines.at(-1)?.replace(/[A-Za-z0-9_-]{48,}/g, "[redacted]");
+	return detail?.slice(0, 500);
 }
 
 function safeVersion(tag: string): string {
@@ -238,6 +265,7 @@ export class CliProxyManager {
 	private config: HlidConfig["cliproxy"];
 	private runtime: ChildProcess | null = null;
 	private oauthProcess: ChildProcess | null = null;
+	private oauthLaunchTimer: ReturnType<typeof setTimeout> | null = null;
 	private releaseCache: { value: Release; at: number } | null = null;
 	private statusValue: CliProxyStatus;
 	private operation: Promise<void> | null = null;
@@ -246,6 +274,7 @@ export class CliProxyManager {
 		config: HlidConfig["cliproxy"],
 		private readonly root = CLIPROXY_DIR,
 		private readonly platform = process.platform,
+		private readonly browserOpen: (url: string) => boolean = openInBrowser,
 	) {
 		this.config = config;
 		const installed = this.installed();
@@ -645,10 +674,12 @@ export class CliProxyManager {
 		};
 	}
 
-	async beginOAuth(
-		providerId: CliProxyOAuthProviderId = "codex",
-	): Promise<void> {
-		if (this.oauthProcess && this.oauthProcess.exitCode === null) {
+	beginOAuth(providerId: CliProxyOAuthProviderId = "codex"): CliProxyStatus {
+		if (
+			this.oauthLaunchTimer ||
+			(this.oauthProcess && this.oauthProcess.exitCode === null) ||
+			this.statusValue.activeOAuth
+		) {
 			throw new Error("another CLIProxy sign-in is already running");
 		}
 		const provider = CLIPROXY_OAUTH_PROVIDERS.find(
@@ -662,18 +693,57 @@ export class CliProxyManager {
 		this.statusValue.activeOAuth = providerId;
 		if (providerId === "codex") this.statusValue.oauth = "running";
 		this.statusValue.error = undefined;
-		const child = spawn(
-			installed.executable,
-			["--config", this.configPath, provider.flag],
-			{
-				cwd: dirname(installed.executable),
-				// OAuth output can contain the temporary authorization URL. Let the
-				// CLI open it on the Hlid host, but never persist it in Hlid logs.
-				stdio: "ignore",
-				windowsHide: true,
-			},
-		);
+		this.statusValue.oauthUrl = undefined;
+		this.statusValue.oauthCode = undefined;
+		this.statusValue.oauthBrowserOpened = undefined;
+		// A freshly downloaded Windows executable can block briefly in CreateProcess
+		// while security scanning runs. Launch after the initiating response has had
+		// time to flush so Forge never hangs on the OAuth subprocess lifecycle.
+		this.oauthLaunchTimer = setTimeout(() => {
+			this.oauthLaunchTimer = null;
+			this.launchOAuth(installed, provider);
+		}, 250);
+		return this.status();
+	}
+
+	private launchOAuth(
+		installed: InstalledState,
+		provider: (typeof CLIPROXY_OAUTH_PROVIDERS)[number],
+	): void {
+		const providerId = provider.id;
+		let output = "";
+		let child: ChildProcess;
+		try {
+			child = spawn(
+				installed.executable,
+				["--config", this.configPath, provider.flag, "--no-browser"],
+				{
+					cwd: dirname(installed.executable),
+					// The authorization URL is held in memory only long enough to open it
+					// and offer an authenticated fallback link in Forge.
+					stdio: ["ignore", "pipe", "pipe"],
+					windowsHide: true,
+				},
+			);
+		} catch (error) {
+			this.finishOAuthWithError(
+				providerId,
+				error instanceof Error ? error.message : String(error),
+			);
+			return;
+		}
 		this.oauthProcess = child;
+		const capture = (chunk: Buffer | string) => {
+			output = `${output}${chunk.toString()}`.slice(-32_000);
+			const prompt = extractCliProxyOAuthPrompt(output);
+			if (prompt.code) this.statusValue.oauthCode = prompt.code;
+			if (prompt.url && !this.statusValue.oauthUrl) {
+				this.statusValue.oauthUrl = prompt.url;
+				this.statusValue.oauthBrowserOpened = this.browserOpen(prompt.url);
+			}
+		};
+		child.stdout?.on("data", capture);
+		child.stderr?.on("data", capture);
 		child.once("exit", (code) => {
 			if (this.oauthProcess !== child) return;
 			this.oauthProcess = null;
@@ -683,22 +753,43 @@ export class CliProxyManager {
 			if (!authenticated) {
 				this.statusValue.accounts[providerId] = "error";
 				if (providerId === "codex") this.statusValue.oauth = "error";
-				this.statusValue.error = `${provider.label} sign-in did not complete`;
+				const detail = oauthFailureDetail(output);
+				const suffix = detail
+					? `: ${detail}`
+					: code === null
+						? ""
+						: ` (exit ${code})`;
+				this.statusValue.error = `${provider.label} sign-in did not complete${suffix}`;
 			}
 			this.statusValue.activeOAuth = undefined;
+			this.statusValue.oauthUrl = undefined;
+			this.statusValue.oauthCode = undefined;
+			this.statusValue.oauthBrowserOpened = undefined;
 		});
 		child.once("error", (error) => {
 			if (this.oauthProcess !== child) return;
 			this.oauthProcess = null;
-			this.statusValue.accounts[providerId] = "error";
-			if (providerId === "codex") this.statusValue.oauth = "error";
-			this.statusValue.activeOAuth = undefined;
-			this.statusValue.error = error.message;
+			this.finishOAuthWithError(providerId, error.message);
 		});
+	}
+
+	private finishOAuthWithError(
+		providerId: CliProxyOAuthProviderId,
+		message: string,
+	): void {
+		this.statusValue.accounts[providerId] = "error";
+		if (providerId === "codex") this.statusValue.oauth = "error";
+		this.statusValue.activeOAuth = undefined;
+		this.statusValue.oauthUrl = undefined;
+		this.statusValue.oauthCode = undefined;
+		this.statusValue.oauthBrowserOpened = undefined;
+		this.statusValue.error = message;
 	}
 
 	async remove(): Promise<void> {
 		await this.stop();
+		if (this.oauthLaunchTimer) clearTimeout(this.oauthLaunchTimer);
+		this.oauthLaunchTimer = null;
 		if (this.oauthProcess && this.oauthProcess.exitCode === null)
 			this.oauthProcess.kill();
 		this.oauthProcess = null;
@@ -713,6 +804,8 @@ export class CliProxyManager {
 	}
 
 	close(): void {
+		if (this.oauthLaunchTimer) clearTimeout(this.oauthLaunchTimer);
+		this.oauthLaunchTimer = null;
 		if (this.runtime && this.runtime.exitCode === null) this.runtime.kill();
 		if (this.oauthProcess && this.oauthProcess.exitCode === null)
 			this.oauthProcess.kill();
