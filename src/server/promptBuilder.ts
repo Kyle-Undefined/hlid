@@ -4,7 +4,13 @@ import {
 	type AgentInstructionFileName,
 	findAgentInstructionFileAsync,
 } from "../lib/agentInstructions";
-import { pathStartsWith, toLogical } from "../lib/paths";
+import {
+	isPathAccessibleFromRuntime,
+	pathStartsWith,
+	toLogical,
+	toProviderRuntimePath,
+} from "../lib/paths";
+import { artifactsDirectory, managedSkillsDirectory } from "./libraryStore";
 import type { ChatAttachment } from "./protocol";
 
 export type BuildPromptOptions = {
@@ -12,6 +18,8 @@ export type BuildPromptOptions = {
 	allowedAgentRealPaths: string[];
 	agentMode: "cwd" | "context";
 	agentCwd: string | undefined;
+	/** Provider working directory used to translate host-owned resource paths. */
+	runtimeCwd?: string;
 	claudeSessionId: string | null;
 	userMessage: string;
 	/** Legacy single-skill field retained for queued turns created by older clients. */
@@ -66,51 +74,74 @@ function assemblePrompt(
 	safeSkillContexts: string[],
 	safeAttachments: ChatAttachment[],
 	instructionFile: AgentInstructionFileName | null,
-): { prompt: string; safeAttachments: ChatAttachment[] } {
+): {
+	prompt: string;
+	safeAttachments: ChatAttachment[];
+	resourcePaths: string[];
+} {
 	const { agentCwd, userMessage, planHtmlInstructions } = opts;
+	const runtimePath = (path: string) =>
+		opts.runtimeCwd
+			? toProviderRuntimePath(opts.runtimeCwd, path)
+			: toLogical(path);
 	const attachmentBlock =
 		safeAttachments.length > 0
 			? `Attachments (read with the Read tool when relevant):\n${safeAttachments
 					.map(
 						(attachment) =>
-							`- ${toLogical(attachment.path)} (${attachment.mime})`,
+							`- ${runtimePath(attachment.path)} (${attachment.mime})`,
 					)
 					.join("\n")}\n\n`
 			: "";
 	const personaBlock =
 		agentCwd && instructionFile
-			? `Please read \`${toLogical(agentCwd)}/${instructionFile}\` and adopt its persona/instructions for this conversation.\n\n`
+			? `Please read \`${runtimePath(agentCwd)}/${instructionFile}\` and adopt its persona/instructions for this conversation.\n\n`
 			: "";
 	const planHtmlBlock = planHtmlInstructions
 		? `\n\n${planHtmlInstructions}`
 		: "";
 	const skillBlock =
 		safeSkillContexts.length === 1
-			? `Please read the skill file at \`${toLogical(safeSkillContexts[0])}\` and follow its instructions.\n\n`
+			? `Please read the skill file at \`${runtimePath(safeSkillContexts[0])}\` and follow its instructions.\n\n`
 			: safeSkillContexts.length > 1
-				? `Please read the following skill files and follow all of their instructions:\n${safeSkillContexts.map((skillContext) => `- \`${toLogical(skillContext)}\``).join("\n")}\n\n`
+				? `Please read the following skill files and follow all of their instructions:\n${safeSkillContexts.map((skillContext) => `- \`${runtimePath(skillContext)}\``).join("\n")}\n\n`
 				: "";
 	const prompt = skillBlock
 		? userMessage.startsWith("/")
 			? `${userMessage}\n\n${personaBlock}${attachmentBlock}${skillBlock}${planHtmlBlock}`
 			: `${personaBlock}${attachmentBlock}${skillBlock}User: ${userMessage || "(no additional input)"}${planHtmlBlock}`
 		: `${personaBlock}${attachmentBlock}${userMessage}${planHtmlBlock}`;
-	return { prompt, safeAttachments };
+	return {
+		prompt,
+		safeAttachments,
+		resourcePaths: [
+			...safeSkillContexts,
+			...safeAttachments.map((item) => item.path),
+		],
+	};
 }
 
 /** Async server path: keeps WSL/UNC canonicalization off the main event loop. */
-export async function buildPromptAsync(
-	opts: BuildPromptOptions,
-): Promise<{ prompt: string; safeAttachments: ChatAttachment[] }> {
+export async function buildPromptAsync(opts: BuildPromptOptions): Promise<{
+	prompt: string;
+	safeAttachments: ChatAttachment[];
+	resourcePaths: string[];
+}> {
 	const vaultRoot = resolve(opts.vaultPath);
 	const vaultRootReal = await realpath(vaultRoot).catch(() => vaultRoot);
+	const managedSkillsRoot = managedSkillsDirectory();
+	const managedSkillsRootReal = await realpath(managedSkillsRoot).catch(
+		() => managedSkillsRoot,
+	);
 	const safeSkillContexts = (
 		await Promise.all(
 			requestedSkillContexts(opts).map(async (skillContext) => {
 				const canonical = await realpath(resolve(skillContext)).catch(
 					() => null,
 				);
-				return canonical && pathStartsWith(vaultRootReal, canonical)
+				return canonical &&
+					(pathStartsWith(vaultRootReal, canonical) ||
+						pathStartsWith(managedSkillsRootReal, canonical))
 					? skillContext
 					: null;
 			}),
@@ -119,11 +150,18 @@ export async function buildPromptAsync(
 	const safeAttachments = (
 		await Promise.all(
 			(opts.attachments ?? []).map(async (attachment) => {
+				if (
+					opts.runtimeCwd &&
+					!isPathAccessibleFromRuntime(opts.runtimeCwd, attachment.path)
+				) {
+					return null;
+				}
 				const canonical = await realpath(resolve(attachment.path)).catch(
 					() => null,
 				);
 				if (!canonical) return null;
 				if (pathStartsWith(vaultRootReal, canonical)) return attachment;
+				if (pathStartsWith(artifactsDirectory(), canonical)) return attachment;
 				return opts.allowedAgentRealPaths.some((root) =>
 					pathStartsWith(root, canonical),
 				)

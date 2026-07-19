@@ -4,20 +4,24 @@ import {
 	ArrowUpRight,
 	ChevronDown,
 	ChevronRight,
+	Download,
 	File as FileIcon,
 	ListFilter,
+	RefreshCw,
 	Search,
 	Trash2,
 	X,
 } from "lucide-react";
 import {
 	Fragment,
+	type MouseEvent,
 	useCallback,
 	useEffect,
 	useRef,
 	useState,
 	useSyncExternalStore,
 } from "react";
+import { createPortal } from "react-dom";
 import { ConfirmAction } from "#/components/ConfirmAction";
 import {
 	ClickableImage,
@@ -26,13 +30,14 @@ import {
 import { MarkdownBody } from "#/components/MarkdownBody";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { AttachmentRow } from "#/db";
+import { useDialogFocus } from "#/hooks/useDialogFocus";
 import { useIsDesktop } from "#/hooks/useIsDesktop";
 import { useWs } from "#/hooks/useWs";
 import {
 	getDataRevisionSnapshot,
 	subscribeDataRevisionSnapshot,
 } from "#/hooks/wsDataRevisionStore";
-import { dbFetch } from "#/lib/dbClient";
+import { dbFetch, requireDbOk } from "#/lib/dbClient";
 import { fmtBytes, fmtDate } from "#/lib/formatters";
 import { ROUTE_SCROLL_RESTORATION_IDS } from "#/lib/scrollContainers";
 import type { ServerMessage } from "#/server/protocol";
@@ -44,6 +49,7 @@ type ListResult = {
 };
 
 type TypeFilter = "all" | "image" | "pdf" | "text" | "other";
+type CategoryFilter = "all" | "upload" | "plan" | "report" | "other";
 type SortCol = "created_at" | "size_bytes";
 type SortDir = "asc" | "desc";
 
@@ -51,6 +57,7 @@ type ListInput = {
 	search?: string;
 	session_id?: string;
 	type?: Exclude<TypeFilter, "all">;
+	category?: Exclude<CategoryFilter, "all">;
 	sort?: SortCol;
 	dir?: SortDir;
 	limit: number;
@@ -66,6 +73,7 @@ const listAttachmentsFn = createServerFn({ method: "POST" })
 		if (data.search) params.set("search", data.search);
 		if (data.session_id) params.set("session_id", data.session_id);
 		if (data.type) params.set("type", data.type);
+		if (data.category) params.set("category", data.category);
 		if (data.sort) params.set("sort", data.sort);
 		if (data.dir) params.set("dir", data.dir);
 		params.set("limit", String(data.limit));
@@ -75,6 +83,83 @@ const listAttachmentsFn = createServerFn({ method: "POST" })
 			throw new Error(`Failed to fetch attachments: ${res.status}`);
 		}
 		return res.json() as Promise<ListResult>;
+	});
+
+export type SkillCatalogItem = {
+	id: string;
+	name: string;
+	description: string;
+	source: "claude" | "codex" | "acp" | "agent";
+	providerId: string;
+	providerLabel: string;
+	environment: "windows" | "wsl" | "host";
+	environmentLabel: string;
+	scope: string;
+	enabled: boolean | null;
+	alreadyImported: boolean;
+	managedId: string | null;
+	fileCount: number;
+	bytes: number;
+};
+
+type SkillImportResult = {
+	ok: boolean;
+	imported: Array<{ id: string; name: string; source: string }>;
+	failed: Array<{ id: string; name: string; message: string }>;
+};
+
+type SkillDocumentResult = {
+	id: string;
+	name: string;
+	content: string;
+};
+
+type SkillRemoveResult = {
+	ok: true;
+	removed: { id: string; name: string };
+};
+
+const discoverSkillsFn = createServerFn({ method: "GET" }).handler(async () => {
+	const response = await dbFetch("/skills/catalog", {
+		signal: AbortSignal.timeout(15_000),
+	});
+	await requireDbOk(response, "Discover skills");
+	return response.json() as Promise<{ skills: SkillCatalogItem[] }>;
+});
+
+const readSkillDocumentFn = createServerFn({ method: "GET" })
+	.validator((data: { id: string }) => data)
+	.handler(async ({ data }) => {
+		const response = await dbFetch(
+			`/skills/content?id=${encodeURIComponent(data.id)}`,
+			{ signal: AbortSignal.timeout(15_000) },
+		);
+		await requireDbOk(response, "Read SKILL.md");
+		return response.json() as Promise<SkillDocumentResult>;
+	});
+
+const importSkillsFn = createServerFn({ method: "POST" })
+	.validator((data: { ids: string[] }) => data)
+	.handler(async ({ data }) => {
+		const response = await dbFetch("/skills/import", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(data),
+		});
+		await requireDbOk(response, "Import skills");
+		return response.json() as Promise<SkillImportResult>;
+	});
+
+const removeSkillFn = createServerFn({ method: "POST" })
+	.validator((data: { id: string }) => data)
+	.handler(async ({ data }) => {
+		const response = await dbFetch("/skills/remove", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(data),
+		});
+		await requireDbOk(response, "Remove skill");
+		return response.json() as Promise<SkillRemoveResult>;
 	});
 
 export const Route = createFileRoute("/relics")({
@@ -99,10 +184,18 @@ const TYPE_FILTERS: { value: TypeFilter; label: string }[] = [
 	{ value: "text", label: "Text" },
 	{ value: "other", label: "Other" },
 ];
+const CATEGORY_FILTERS: { value: CategoryFilter; label: string }[] = [
+	{ value: "all", label: "All origins" },
+	{ value: "upload", label: "Uploads" },
+	{ value: "plan", label: "Plans" },
+	{ value: "report", label: "Reports" },
+	{ value: "other", label: "Other" },
+];
 
 type Filters = {
 	search: string;
 	type: TypeFilter;
+	category: CategoryFilter;
 	session: string | null;
 	sort: SortCol;
 	dir: SortDir;
@@ -111,6 +204,7 @@ type Filters = {
 const DEFAULT_FILTERS: Filters = {
 	search: "",
 	type: "all",
+	category: "all",
 	session: null,
 	sort: "created_at",
 	dir: "desc",
@@ -123,6 +217,7 @@ function buildListInput(filters: Filters, page: number): ListInput {
 		offset: (page - 1) * PAGE_SIZE,
 	};
 	if (filters.type !== "all") input.type = filters.type;
+	if (filters.category !== "all") input.category = filters.category;
 	if (filters.session) input.session_id = filters.session;
 	// Default order (created_at desc) omitted so the server default applies.
 	if (filters.sort !== "created_at" || filters.dir !== "desc") {
@@ -136,6 +231,7 @@ function filtersActive(filters: Filters): boolean {
 	return (
 		filters.search.trim() !== "" ||
 		filters.type !== "all" ||
+		filters.category !== "all" ||
 		filters.session !== null
 	);
 }
@@ -471,6 +567,22 @@ function RelicsHeader({ list }: { list: RelicsList }) {
 						{label}
 					</button>
 				))}
+				<span className="mx-1 h-4 border-l border-border" aria-hidden="true" />
+				{CATEGORY_FILTERS.map(({ value, label }) => (
+					<button
+						key={value}
+						type="button"
+						onClick={() => applyFilters({ category: value })}
+						aria-pressed={filters.category === value}
+						className={`px-2.5 py-1 text-[9px] tracking-widest uppercase border transition-colors ${
+							filters.category === value
+								? "border-primary text-primary"
+								: "border-border text-muted-foreground hover:text-foreground"
+						}`}
+					>
+						{label}
+					</button>
+				))}
 				{filters.session && (
 					<span className="inline-flex items-center gap-1.5 px-2.5 py-1 text-[9px] tracking-widest uppercase border border-primary/50 text-primary">
 						session
@@ -491,7 +603,459 @@ function RelicsHeader({ list }: { list: RelicsList }) {
 			{error && (
 				<div className="mt-2 text-[11px] text-destructive/80">{error}</div>
 			)}
+			<SkillImportPanel />
 		</div>
+	);
+}
+
+function SkillImportPanel() {
+	const [open, setOpen] = useState(false);
+	const [result, setResult] = useState<string | null>(null);
+	return (
+		<div className="mt-3 pt-3 border-t border-border/60 flex flex-wrap items-center gap-2">
+			<span className="text-[9px] tracking-widest uppercase text-muted-foreground whitespace-nowrap">
+				Skills
+			</span>
+			<button
+				type="button"
+				onClick={() => setOpen(true)}
+				className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[9px] tracking-widest uppercase border border-border hover:text-primary"
+			>
+				<Download className="w-3 h-3" />
+				Browse installed skills
+			</button>
+			{result && (
+				<span className="text-[10px] text-muted-foreground">{result}</span>
+			)}
+			{open &&
+				createPortal(
+					<SkillImportDialog
+						onClose={() => setOpen(false)}
+						onImported={(message) => setResult(message)}
+					/>,
+					document.body,
+				)}
+		</div>
+	);
+}
+
+export function SkillImportDialog({
+	onClose,
+	onImported,
+	discover = discoverSkillsFn,
+	readSkill = readSkillDocumentFn,
+	importSelected = importSkillsFn,
+	removeSkill = removeSkillFn,
+}: {
+	onClose: () => void;
+	onImported?: (message: string) => void;
+	discover?: () => Promise<{ skills: SkillCatalogItem[] }>;
+	readSkill?: (input: { data: { id: string } }) => Promise<SkillDocumentResult>;
+	importSelected?: (input: {
+		data: { ids: string[] };
+	}) => Promise<SkillImportResult>;
+	removeSkill?: (input: { data: { id: string } }) => Promise<SkillRemoveResult>;
+}) {
+	const { dialogRef, onDialogKeyDown } =
+		useDialogFocus<HTMLDivElement>(onClose);
+	const [skills, setSkills] = useState<SkillCatalogItem[]>([]);
+	const [selected, setSelected] = useState<Set<string>>(new Set());
+	const [search, setSearch] = useState("");
+	const [loading, setLoading] = useState(true);
+	const [importing, setImporting] = useState(false);
+	const [removing, setRemoving] = useState<string | null>(null);
+	const [error, setError] = useState<string | null>(null);
+	const [notice, setNotice] = useState<string | null>(null);
+
+	const refresh = useCallback(async () => {
+		setLoading(true);
+		setError(null);
+		setNotice(null);
+		try {
+			const result = await discover();
+			setSkills(result.skills);
+			setSelected(new Set());
+		} catch (cause) {
+			setError(
+				cause instanceof Error ? cause.message : "Skill discovery failed",
+			);
+		} finally {
+			setLoading(false);
+		}
+	}, [discover]);
+
+	useEffect(() => {
+		void refresh();
+	}, [refresh]);
+
+	const query = search.trim().toLowerCase();
+	const visible = skills.filter(
+		(skill) =>
+			!query ||
+			skill.name.toLowerCase().includes(query) ||
+			skill.description.toLowerCase().includes(query) ||
+			skill.providerLabel.toLowerCase().includes(query) ||
+			skill.environmentLabel.toLowerCase().includes(query),
+	);
+	const groups = Array.from(
+		visible.reduce((map, skill) => {
+			const key = `${skill.providerId}\0${skill.providerLabel}`;
+			const group = map.get(key) ?? {
+				id: skill.providerId,
+				label: skill.providerLabel,
+				skills: [] as SkillCatalogItem[],
+			};
+			group.skills.push(skill);
+			map.set(key, group);
+			return map;
+		}, new Map<
+			string,
+			{ id: string; label: string; skills: SkillCatalogItem[] }
+		>()),
+	).map(([, group]) => group);
+	const selectable = visible.filter((skill) => !skill.alreadyImported);
+	const allVisibleSelected =
+		selectable.length > 0 &&
+		selectable.every((skill) => selected.has(skill.id));
+
+	const runImport = async () => {
+		if (selected.size === 0 || importing) return;
+		setImporting(true);
+		setError(null);
+		setNotice(null);
+		try {
+			const result = await importSelected({ data: { ids: [...selected] } });
+			const importedIds = new Set(result.imported.map((item) => item.id));
+			const refreshed =
+				importedIds.size > 0 ? await discover().catch(() => null) : null;
+			setSkills((current) =>
+				refreshed
+					? refreshed.skills
+					: current.map((skill) =>
+							importedIds.has(skill.id)
+								? { ...skill, alreadyImported: true }
+								: skill,
+						),
+			);
+			setSelected(new Set([...selected].filter((id) => !importedIds.has(id))));
+			const summary = `Import complete · ${result.imported.length} skill${result.imported.length === 1 ? "" : "s"} added to Hlid${result.failed.length ? ` · ${result.failed.length} failed` : ""}`;
+			if (result.imported.length > 0) setNotice(summary);
+			onImported?.(summary);
+			if (result.failed.length > 0) {
+				setError(
+					result.failed
+						.map((item) => `${item.name}: ${item.message}`)
+						.join(" · "),
+				);
+			}
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : "Import failed");
+		} finally {
+			setImporting(false);
+		}
+	};
+
+	const runRemove = async (id: string) => {
+		if (removing) return;
+		setRemoving(id);
+		setError(null);
+		setNotice(null);
+		try {
+			const result = await removeSkill({ data: { id } });
+			setSkills((current) =>
+				current.map((skill) =>
+					skill.managedId === id
+						? { ...skill, alreadyImported: false, managedId: null }
+						: skill,
+				),
+			);
+			const summary = `${result.removed.name} removed from Hlid`;
+			setNotice(summary);
+			onImported?.(summary);
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : "Remove failed");
+		} finally {
+			setRemoving(null);
+		}
+	};
+
+	return (
+		<div className="fixed inset-0 z-50 bg-background/90 backdrop-blur-sm flex items-center justify-center p-2 md:p-4">
+			<div
+				ref={dialogRef}
+				tabIndex={-1}
+				role="dialog"
+				aria-modal="true"
+				aria-labelledby="skill-import-title"
+				className="w-full max-w-2xl h-[min(88dvh,760px)] bg-card border border-border shadow-2xl flex flex-col overflow-hidden focus:outline-none"
+				onKeyDown={onDialogKeyDown}
+			>
+				<div className="shrink-0 px-4 py-3 border-b border-border flex items-start justify-between gap-4">
+					<div>
+						<div
+							id="skill-import-title"
+							className="text-[10px] tracking-widest uppercase text-foreground"
+						>
+							Import installed skills
+						</div>
+						<p className="mt-1 text-[10px] text-muted-foreground">
+							Review skills discovered from provider CLIs and configured ACP
+							workspaces.
+						</p>
+					</div>
+					<button
+						type="button"
+						onClick={onClose}
+						className="text-[9px] tracking-widest uppercase text-muted-foreground hover:text-foreground"
+					>
+						{notice ? "Done" : "Close"}
+					</button>
+				</div>
+				<div className="shrink-0 p-3 border-b border-border flex items-center gap-2">
+					<div className="flex-1 flex items-center border border-border min-w-0">
+						<Search className="w-3 h-3 mx-2 text-muted-foreground/60" />
+						<input
+							value={search}
+							onChange={(event) => setSearch(event.target.value)}
+							placeholder="Search skills or providers…"
+							aria-label="Search installed skills"
+							className="min-w-0 flex-1 bg-transparent py-2 pr-2 text-[11px] focus:outline-none"
+						/>
+					</div>
+					<button
+						type="button"
+						onClick={() => void refresh()}
+						disabled={loading || importing || Boolean(removing)}
+						aria-label="Refresh installed skills"
+						className="p-2 border border-border text-muted-foreground hover:text-primary disabled:opacity-30"
+					>
+						<RefreshCw
+							className={`w-3.5 h-3.5 ${loading ? "animate-spin" : ""}`}
+						/>
+					</button>
+				</div>
+				<div className="flex-1 overflow-y-auto overscroll-contain p-3 md:p-4 space-y-4">
+					{loading ? (
+						<div className="py-16 text-center text-[10px] tracking-widest uppercase text-muted-foreground">
+							Scanning installed skills…
+						</div>
+					) : groups.length === 0 ? (
+						<div className="py-16 text-center text-[10px] text-muted-foreground">
+							{error
+								? "Skill discovery could not complete."
+								: query
+									? "No skills match this search."
+									: "No importable skills were discovered."}
+						</div>
+					) : (
+						groups.map((group) => (
+							<section key={`${group.id}:${group.label}`} className="space-y-2">
+								<div className="flex items-center justify-between">
+									<h3 className="text-[9px] tracking-widest uppercase text-primary">
+										{group.label}
+									</h3>
+									<span className="text-[9px] text-muted-foreground/60">
+										{group.skills.length} skill
+										{group.skills.length === 1 ? "" : "s"}
+									</span>
+								</div>
+								<div className="border border-border divide-y divide-border/60">
+									{group.skills.map((skill) => (
+										<div
+											key={skill.id}
+											className="flex items-start gap-3 p-3 hover:bg-secondary/20"
+										>
+											<input
+												type="checkbox"
+												checked={selected.has(skill.id)}
+												disabled={skill.alreadyImported}
+												onChange={() =>
+													setSelected((current) => {
+														const next = new Set(current);
+														if (next.has(skill.id)) next.delete(skill.id);
+														else next.add(skill.id);
+														return next;
+													})
+												}
+												aria-label={`Select ${skill.name}`}
+												className="mt-0.5"
+											/>
+											<span className="min-w-0 flex-1">
+												<span className="flex flex-wrap items-center gap-2">
+													<span className="text-[11px] text-foreground">
+														{skill.name}
+													</span>
+													<span className="text-[8px] tracking-widest uppercase border border-border px-1.5 py-0.5 text-muted-foreground">
+														{skill.scope}
+													</span>
+													<span
+														className={`text-[8px] tracking-widest uppercase border px-1.5 py-0.5 ${skill.environment === "wsl" ? "border-primary/40 text-primary" : "border-border text-muted-foreground"}`}
+													>
+														{skill.environmentLabel}
+													</span>
+													{skill.enabled === false && (
+														<span className="text-[8px] tracking-widest uppercase text-status-warning">
+															disabled
+														</span>
+													)}
+													{skill.alreadyImported && (
+														<span className="text-[8px] tracking-widest uppercase text-status-success">
+															in Hlid
+														</span>
+													)}
+												</span>
+												{skill.description && (
+													<span className="mt-1 block text-[10px] leading-relaxed text-muted-foreground line-clamp-3">
+														{skill.description}
+													</span>
+												)}
+												<span className="mt-1.5 block text-[9px] text-muted-foreground/50 tabular-nums">
+													{skill.fileCount} file
+													{skill.fileCount === 1 ? "" : "s"} ·{" "}
+													{fmtBytes(skill.bytes)}
+												</span>
+												<SkillDocumentToggle
+													skill={skill}
+													readSkill={readSkill}
+												/>
+												{skill.managedId && (
+													<ConfirmAction
+														label={`remove ${skill.name}?`}
+														confirmText="remove"
+														onConfirm={() =>
+															void runRemove(skill.managedId as string)
+														}
+														className="mt-2"
+														trigger={(open) => (
+															<button
+																type="button"
+																onClick={open}
+																disabled={Boolean(removing)}
+																className="mt-2 text-[9px] tracking-widest uppercase text-destructive/70 hover:text-destructive disabled:opacity-30"
+															>
+																{removing === skill.managedId
+																	? "Removing…"
+																	: "Remove from Hlid"}
+															</button>
+														)}
+													/>
+												)}
+											</span>
+										</div>
+									))}
+								</div>
+							</section>
+						))
+					)}
+				</div>
+				{notice && (
+					<output className="block shrink-0 px-4 py-2 border-t border-border text-[10px] text-status-success">
+						{notice}
+					</output>
+				)}
+				{error && (
+					<div className="shrink-0 px-4 py-2 border-t border-border text-[10px] text-destructive/80">
+						{error}
+					</div>
+				)}
+				<div className="shrink-0 px-3 py-3 border-t border-border flex flex-wrap items-center justify-between gap-2 bg-card">
+					<button
+						type="button"
+						onClick={() =>
+							setSelected((current) => {
+								const next = new Set(current);
+								for (const skill of selectable) {
+									if (allVisibleSelected) next.delete(skill.id);
+									else next.add(skill.id);
+								}
+								return next;
+							})
+						}
+						disabled={selectable.length === 0 || importing || Boolean(removing)}
+						className="text-[9px] tracking-widest uppercase text-muted-foreground hover:text-foreground disabled:opacity-30"
+					>
+						{allVisibleSelected ? "Clear visible" : "Select visible"}
+					</button>
+					<button
+						type="button"
+						onClick={() => void runImport()}
+						disabled={selected.size === 0 || importing || Boolean(removing)}
+						className="px-4 py-2 text-[9px] tracking-widest uppercase border border-primary text-primary hover:bg-primary/10 disabled:opacity-30"
+					>
+						{importing ? "Importing…" : `Import ${selected.size || "selected"}`}
+					</button>
+				</div>
+			</div>
+		</div>
+	);
+}
+
+function SkillDocumentToggle({
+	skill,
+	readSkill,
+}: {
+	skill: SkillCatalogItem;
+	readSkill: (input: { data: { id: string } }) => Promise<SkillDocumentResult>;
+}) {
+	const [expanded, setExpanded] = useState(false);
+	const [loading, setLoading] = useState(false);
+	const [content, setContent] = useState<string | null>(null);
+	const [error, setError] = useState<string | null>(null);
+	const contentId = `skill-document-${skill.id}`;
+
+	const toggle = async (event: MouseEvent<HTMLButtonElement>) => {
+		event.preventDefault();
+		event.stopPropagation();
+		if (expanded) {
+			setExpanded(false);
+			return;
+		}
+		setExpanded(true);
+		if (content !== null || loading) return;
+		setLoading(true);
+		setError(null);
+		try {
+			const result = await readSkill({ data: { id: skill.id } });
+			setContent(result.content);
+		} catch (cause) {
+			setError(
+				cause instanceof Error ? cause.message : "Unable to read SKILL.md",
+			);
+		} finally {
+			setLoading(false);
+		}
+	};
+
+	return (
+		<span className="mt-2 block">
+			<button
+				type="button"
+				onClick={(event) => void toggle(event)}
+				aria-expanded={expanded}
+				aria-controls={contentId}
+				className="text-[9px] tracking-widest uppercase text-primary hover:text-primary/80"
+			>
+				{expanded ? "Hide SKILL.md" : "Read SKILL.md"}
+			</button>
+			{expanded && (
+				<span
+					id={contentId}
+					className="mt-2 block max-h-72 overflow-auto border border-border bg-background/70 p-3"
+				>
+					{loading ? (
+						<span className="text-[10px] text-muted-foreground">
+							Loading SKILL.md…
+						</span>
+					) : error ? (
+						<span className="text-[10px] text-destructive/80">{error}</span>
+					) : (
+						<pre className="whitespace-pre-wrap break-words font-mono text-[10px] leading-relaxed text-foreground select-text">
+							{content}
+						</pre>
+					)}
+				</span>
+			)}
+		</span>
 	);
 }
 
@@ -739,6 +1303,11 @@ function RelicRow({
 					)}
 					<RelicThumb row={row} onView={onView} />
 					<RelicName row={row} onView={onView} variant="table" />
+					{row.category && (
+						<span className="px-1.5 py-0.5 text-[8px] tracking-widest uppercase border border-border text-muted-foreground/70">
+							{row.category}
+						</span>
+					)}
 				</div>
 			</td>
 			<td className="px-3 py-2 text-right font-mono tabular-nums text-muted-foreground">
@@ -950,6 +1519,8 @@ function RelicCard({
 						<span className="flex items-center gap-2 flex-wrap">
 							<PrivacyMask inline>{fmtBytes(row.size_bytes)}</PrivacyMask>
 							<span className="font-mono">{row.mime}</span>
+							{row.category && <span>{row.category}</span>}
+							{row.retention && <span>{row.retention}</span>}
 							<span>{fmtDate(row.created_at)}</span>
 						</span>
 					</button>

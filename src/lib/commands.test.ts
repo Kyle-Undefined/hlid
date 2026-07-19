@@ -101,6 +101,20 @@ describe("commands", () => {
 		});
 	});
 
+	it("keeps Hlid-managed skill imports provider-neutral", () => {
+		const managed: Skill = {
+			...skill,
+			filePath: "/hlid/library/skills/garden-check/SKILL.md",
+			source: "hlid",
+		};
+		const command = mergeCommands([managed], [], "codex")[0];
+		expect(command).toMatchObject({
+			source: "library",
+			execution: { kind: "skill", filePath: managed.filePath },
+		});
+		expect(mergeCommands([managed], [], "claude")).toHaveLength(1);
+	});
+
 	it("shows provider-owned skills only for their provider", () => {
 		const claudeSkill: Skill = {
 			...skill,

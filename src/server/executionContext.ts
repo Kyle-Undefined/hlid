@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { parseWslUnc, pathStartsWith, samePath } from "../lib/paths";
+import { artifactsDirectory, managedSkillsDirectory } from "./libraryStore";
 import type { ChatAttachment } from "./protocol";
 import { wrapperPathForAgent, writeWrapper } from "./wrappers";
 
@@ -12,6 +13,8 @@ export type ResolveExecutionContextOptions = {
 	claudeExecutable: string | undefined;
 	wrapperCommand?: "claude" | "codex";
 	safeAttachments: ChatAttachment[];
+	/** Exact Hlid-owned files referenced by the prompt (artifacts or skills). */
+	resourcePaths?: string[];
 };
 
 /**
@@ -33,6 +36,7 @@ export function resolveExecutionContext(opts: ResolveExecutionContextOptions): {
 		claudeExecutable,
 		wrapperCommand = "claude",
 		safeAttachments,
+		resourcePaths = [],
 	} = opts;
 
 	const activeCwd = agentMode === "cwd" && agentCwd ? agentCwd : vaultPath;
@@ -47,10 +51,24 @@ export function resolveExecutionContext(opts: ResolveExecutionContextOptions): {
 	const activeCwdReal = resolve(activeCwd);
 	for (const a of safeAttachments) {
 		const p = resolve(a.path);
+		if (pathStartsWith(artifactsDirectory(), p)) {
+			// Grant only the immutable artifact directory, never the whole library.
+			extraDirs.add(dirname(p));
+			continue;
+		}
 		for (const root of allowedAgentRealPaths) {
 			if (!samePath(root, activeCwdReal) && pathStartsWith(root, p)) {
 				extraDirs.add(root);
 			}
+		}
+	}
+	for (const resourcePath of resourcePaths) {
+		const p = resolve(resourcePath);
+		if (
+			pathStartsWith(artifactsDirectory(), p) ||
+			pathStartsWith(managedSkillsDirectory(), p)
+		) {
+			extraDirs.add(dirname(p));
 		}
 	}
 	// WSL agents run the selected CLI inside Linux via a generated wrapper .cmd that

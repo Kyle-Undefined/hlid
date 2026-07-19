@@ -10,10 +10,17 @@ import {
 	unlink,
 	writeFile,
 } from "node:fs/promises";
-import { basename, dirname, extname, join, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import type { HlidConfig } from "../config";
 import * as db from "../db";
 import { expandTilde, pathStartsWith, samePath } from "../lib/paths";
+import {
+	artifactDirectory,
+	artifactPath,
+	planStagingDirectory,
+	prepareLibrary,
+	storageKey,
+} from "./libraryStore";
 import {
 	contentLengthExceeds,
 	MULTIPART_OVERHEAD_BYTES,
@@ -39,24 +46,6 @@ function resolveRegisteredAgent(
 		}
 	}
 	return null;
-}
-
-async function checkGitignore(
-	agentRoot: string,
-): Promise<{ has_gitignore: boolean; covers_hlid: boolean }> {
-	try {
-		const text = await readFile(join(agentRoot, ".gitignore"), "utf-8");
-		const covers = text
-			.split("\n")
-			.map((l) => l.trim())
-			.some(
-				(l) =>
-					l === ".hlid" || l === ".hlid/" || l === "/.hlid" || l === "/.hlid/",
-			);
-		return { has_gitignore: true, covers_hlid: covers };
-	} catch {
-		return { has_gitignore: false, covers_hlid: false };
-	}
 }
 
 const FILENAME_SAFE = /[^a-zA-Z0-9._-]+/g;
@@ -103,34 +92,6 @@ function sanitizeFilename(name: string): string {
 	return cleaned || "file";
 }
 
-function ensureWithin(parent: string, child: string): void {
-	if (!pathStartsWith(parent, child)) {
-		throw new Error("path escapes allowed root");
-	}
-}
-
-async function writeUnique(
-	dir: string,
-	filename: string,
-	data: Buffer,
-): Promise<string> {
-	const ext = extname(filename);
-	const stem = filename.slice(0, filename.length - ext.length);
-	let candidate = join(dir, filename);
-	let n = 1;
-	while (true) {
-		ensureWithin(dir, candidate);
-		try {
-			await writeFile(candidate, data, { flag: "wx" });
-			return candidate;
-		} catch (err: unknown) {
-			if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-			candidate = join(dir, `${stem}-${n}${ext}`);
-			n++;
-		}
-	}
-}
-
 type UploadResult = {
 	id: string;
 	session_id: string | null;
@@ -141,7 +102,11 @@ type UploadResult = {
 	size_bytes: number;
 	sha256: string;
 	created_at: number;
-	gitignore_suggestion?: { agent_root: string; missing_entry: ".hlid/" };
+	storage_key: string;
+	category: "upload";
+	retention: "session";
+	origin: "upload";
+	agent_cwd: string | null;
 };
 
 export async function handleUpload(
@@ -153,12 +118,6 @@ export async function handleUpload(
 	if (contentLengthExceeds(req, maxBodyBytes)) {
 		return payloadTooLarge(maxBodyBytes);
 	}
-	const vaultPath = config.vault.path;
-	if (!vaultPath) {
-		return new Response("Vault path not configured", { status: 400 });
-	}
-	const vaultRoot = resolve(vaultPath);
-
 	let form: FormData;
 	try {
 		form = await req.formData();
@@ -194,8 +153,6 @@ export async function handleUpload(
 	const filename = sanitizeFilename(file.name);
 	const kind: db.AttachmentKind = "ephemeral";
 
-	const sub = sessionIdStr ? sanitizeFilename(sessionIdStr) : "_unsessioned";
-
 	const agentCwdField = form.get("agent_cwd");
 	const agentCwdRaw =
 		typeof agentCwdField === "string" && agentCwdField.length > 0
@@ -204,11 +161,9 @@ export async function handleUpload(
 	const agentRoot = agentCwdRaw
 		? resolveRegisteredAgent(config, agentCwdRaw)
 		: null;
-
-	const storageRoot = agentRoot ?? vaultRoot;
-	const targetDir = resolve(storageRoot, ".hlid", "attachments", sub);
-	ensureWithin(storageRoot, targetDir);
-	await mkdir(targetDir, { recursive: true });
+	if (agentCwdRaw && !agentRoot) {
+		return new Response("Agent path is not registered", { status: 403 });
+	}
 
 	const buf = Buffer.from(await file.arrayBuffer());
 
@@ -224,10 +179,13 @@ export async function handleUpload(
 		}
 	}
 
-	const finalPath = await writeUnique(targetDir, filename, buf);
-
 	const sha256 = createHash("sha256").update(buf).digest("hex");
 	const id = randomUUID();
+	await prepareLibrary();
+	const targetDir = artifactDirectory(id);
+	await mkdir(targetDir, { recursive: true, mode: 0o700 });
+	const finalPath = artifactPath(id, filename);
+	await writeFile(finalPath, buf, { flag: "wx", mode: 0o600 });
 
 	try {
 		await db.createAttachment({
@@ -239,18 +197,15 @@ export async function handleUpload(
 			mime,
 			size_bytes: buf.byteLength,
 			sha256,
+			storage_key: storageKey(finalPath),
+			category: "upload",
+			retention: "session",
+			origin: "upload",
+			agent_cwd: agentRoot,
 		});
 	} catch (error) {
 		await unlink(finalPath).catch(() => {});
 		throw error;
-	}
-
-	let gitignoreSuggestion: UploadResult["gitignore_suggestion"];
-	if (agentRoot) {
-		const gi = await checkGitignore(agentRoot);
-		if (!gi.covers_hlid) {
-			gitignoreSuggestion = { agent_root: agentRoot, missing_entry: ".hlid/" };
-		}
 	}
 
 	const result: UploadResult = {
@@ -263,9 +218,11 @@ export async function handleUpload(
 		size_bytes: buf.byteLength,
 		sha256,
 		created_at: Math.floor(Date.now() / 1000),
-		...(gitignoreSuggestion
-			? { gitignore_suggestion: gitignoreSuggestion }
-			: {}),
+		storage_key: storageKey(finalPath),
+		category: "upload",
+		retention: "session",
+		origin: "upload",
+		agent_cwd: agentRoot,
 	};
 	onUploaded?.(id, kind);
 	return Response.json(result);
@@ -317,8 +274,6 @@ const PLAN_HTML_MAX_BYTES = 5 * 1024 * 1024;
  */
 export async function ingestPlanHtml(opts: {
 	sourcePath: string;
-	plansDir: string;
-	storageRoot: string;
 	sessionId: string;
 	planSeq: number;
 	maxBytes: number;
@@ -336,25 +291,20 @@ export async function ingestPlanHtml(opts: {
 			return null;
 		}
 		const real = await realpath(opts.sourcePath);
-		if (!pathStartsWith(resolve(opts.plansDir), real)) {
+		if (!pathStartsWith(planStagingDirectory(), real)) {
 			console.warn(
-				`[attachments] plan html rejected: ${real} escapes ${opts.plansDir}`,
+				`[attachments] plan html rejected: ${real} escapes Hlid plan staging`,
 			);
 			return null;
 		}
 
 		const buf = Buffer.from(await readFile(real));
-		const targetDir = resolve(
-			opts.storageRoot,
-			".hlid",
-			"attachments",
-			sanitizeFilename(opts.sessionId),
-		);
-		ensureWithin(resolve(opts.storageRoot), targetDir);
-		await mkdir(targetDir, { recursive: true });
-		finalPath = await writeUnique(targetDir, `plan-${opts.planSeq}.html`, buf);
-
 		const id = randomUUID();
+		await prepareLibrary();
+		const targetDir = artifactDirectory(id);
+		await mkdir(targetDir, { recursive: true, mode: 0o700 });
+		finalPath = artifactPath(id, `plan-${opts.planSeq}.html`);
+		await writeFile(finalPath, buf, { flag: "wx", mode: 0o600 });
 		await db.createAttachment({
 			id,
 			session_id: opts.sessionId,
@@ -364,6 +314,10 @@ export async function ingestPlanHtml(opts: {
 			mime: "text/html",
 			size_bytes: buf.byteLength,
 			sha256: createHash("sha256").update(buf).digest("hex"),
+			storage_key: storageKey(finalPath),
+			category: "plan",
+			retention: "retained",
+			origin: "generated",
 		});
 		createdId = id;
 		const linked = await db.linkAttachmentToMessage(

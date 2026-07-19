@@ -38,7 +38,12 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
 	};
 });
 
-import { AttachmentsPage, deleteRelicRows, RelicPreview } from "./relics";
+import {
+	AttachmentsPage,
+	deleteRelicRows,
+	RelicPreview,
+	SkillImportDialog,
+} from "./relics";
 
 afterEach(() => {
 	cleanup();
@@ -314,6 +319,198 @@ describe("AttachmentsPage", () => {
 		expect(
 			(screen.getByPlaceholderText("filename…") as HTMLInputElement).value,
 		).toBe("");
+	});
+});
+
+describe("SkillImportDialog", () => {
+	it("groups discovered provider skills and imports only checked rows", async () => {
+		const discover = vi.fn().mockResolvedValue({
+			skills: [
+				{
+					id: "a".repeat(24),
+					name: "review",
+					description: "Review a working tree",
+					source: "codex",
+					providerId: "codex",
+					providerLabel: "Codex",
+					environment: "windows",
+					environmentLabel: "Windows",
+					scope: "user",
+					enabled: true,
+					alreadyImported: false,
+					managedId: null,
+					fileCount: 2,
+					bytes: 1024,
+				},
+				{
+					id: "b".repeat(24),
+					name: "voice",
+					description: "Write in the configured voice",
+					source: "claude",
+					providerId: "claude",
+					providerLabel: "Claude",
+					environment: "wsl",
+					environmentLabel: "WSL · Ubuntu-24.04",
+					scope: "user",
+					enabled: null,
+					alreadyImported: true,
+					managedId: "c".repeat(24),
+					fileCount: 1,
+					bytes: 512,
+				},
+			],
+		});
+		const importSelected = vi.fn().mockResolvedValue({
+			ok: true,
+			imported: [{ id: "a".repeat(24), name: "review", source: "codex" }],
+			failed: [],
+		});
+		const readSkill = vi.fn().mockResolvedValue({
+			id: "a".repeat(24),
+			name: "review",
+			content: "---\nname: review\n---\n# Review instructions",
+		});
+		const removeSkill = vi.fn().mockResolvedValue({
+			ok: true,
+			removed: { id: "c".repeat(24), name: "voice" },
+		});
+		const onImported = vi.fn();
+		render(
+			<SkillImportDialog
+				onClose={vi.fn()}
+				onImported={onImported}
+				discover={discover}
+				readSkill={readSkill}
+				importSelected={importSelected}
+				removeSkill={removeSkill}
+			/>,
+		);
+
+		expect(await screen.findByText("Review a working tree")).toBeDefined();
+		expect(screen.getByText("Codex")).toBeDefined();
+		expect(screen.getByText("Claude")).toBeDefined();
+		expect(screen.getByText("Windows")).toBeDefined();
+		expect(screen.getByText("WSL · Ubuntu-24.04")).toBeDefined();
+		fireEvent.click(
+			screen.getAllByRole("button", { name: "Read SKILL.md" })[0],
+		);
+		expect(await screen.findByText(/# Review instructions/)).toBeDefined();
+		expect(readSkill).toHaveBeenCalledWith({
+			data: { id: "a".repeat(24) },
+		});
+		expect(
+			(
+				screen.getByRole("checkbox", {
+					name: "Select review",
+				}) as HTMLInputElement
+			).checked,
+		).toBe(false);
+		expect(
+			(
+				screen.getByRole("checkbox", {
+					name: "Select voice",
+				}) as HTMLInputElement
+			).disabled,
+		).toBe(true);
+		fireEvent.click(screen.getByRole("checkbox", { name: "Select review" }));
+		fireEvent.click(screen.getByRole("button", { name: "Import 1" }));
+
+		await waitFor(() =>
+			expect(importSelected).toHaveBeenCalledWith({
+				data: { ids: ["a".repeat(24)] },
+			}),
+		);
+		expect(onImported).toHaveBeenCalledWith(
+			"Import complete · 1 skill added to Hlid",
+		);
+		expect(
+			screen.getByText("Import complete · 1 skill added to Hlid"),
+		).toBeDefined();
+
+		fireEvent.click(screen.getByRole("button", { name: "Remove from Hlid" }));
+		fireEvent.click(screen.getByRole("button", { name: "remove" }));
+		expect(await screen.findByText("voice removed from Hlid")).toBeDefined();
+		expect(removeSkill).toHaveBeenCalledWith({
+			data: { id: "c".repeat(24) },
+		});
+	});
+
+	it("filters the scrollable catalog without selecting hidden rows", async () => {
+		const discover = vi.fn().mockResolvedValue({
+			skills: [
+				{
+					id: "a".repeat(24),
+					name: "review",
+					description: "Review code",
+					source: "codex",
+					providerId: "codex",
+					providerLabel: "Codex",
+					environment: "windows",
+					environmentLabel: "Windows",
+					scope: "user",
+					enabled: true,
+					alreadyImported: false,
+					managedId: null,
+					fileCount: 1,
+					bytes: 1,
+				},
+				{
+					id: "b".repeat(24),
+					name: "voice",
+					description: "Voice rules",
+					source: "claude",
+					providerId: "claude",
+					providerLabel: "Claude",
+					environment: "wsl",
+					environmentLabel: "WSL · Ubuntu-24.04",
+					scope: "user",
+					enabled: true,
+					alreadyImported: false,
+					managedId: null,
+					fileCount: 1,
+					bytes: 1,
+				},
+			],
+		});
+		render(
+			<SkillImportDialog
+				onClose={vi.fn()}
+				discover={discover}
+				importSelected={vi.fn()}
+			/>,
+		);
+		await screen.findByText("Review code");
+		fireEvent.change(screen.getByLabelText("Search installed skills"), {
+			target: { value: "ubuntu-24.04" },
+		});
+		expect(screen.queryByText("Review code")).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "Select visible" }));
+		expect(
+			(
+				screen.getByRole("checkbox", {
+					name: "Select voice",
+				}) as HTMLInputElement
+			).checked,
+		).toBe(true);
+	});
+
+	it("does not report an empty catalog when discovery fails", async () => {
+		render(
+			<SkillImportDialog
+				onClose={vi.fn()}
+				discover={vi
+					.fn()
+					.mockRejectedValue(new Error("The operation timed out."))}
+				importSelected={vi.fn()}
+			/>,
+		);
+		expect(
+			await screen.findByText("Skill discovery could not complete."),
+		).toBeDefined();
+		expect(screen.getByText("The operation timed out.")).toBeDefined();
+		expect(
+			screen.queryByText("No importable skills were discovered."),
+		).toBeNull();
 	});
 });
 

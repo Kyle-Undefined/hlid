@@ -97,6 +97,7 @@ export function buildFirstRunConfig(s: StructureState): HlidConfig {
 		ui: {
 			enter_to_submit: true,
 			hide_skills_index: true,
+			show_provider_entries: false,
 			theme: s.theme,
 			html_plans: false,
 		},

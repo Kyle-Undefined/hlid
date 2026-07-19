@@ -779,6 +779,31 @@ describe("CodexProvider.listModels", () => {
 	});
 });
 
+describe("CodexProvider.listSkills", () => {
+	beforeEach(() => {
+		__resetCodexAppServersForTesting();
+	});
+
+	it("maps native skills/list metadata including package paths", async () => {
+		const skill = {
+			name: "review",
+			description: "Review the working tree",
+			path: "/home/test/.codex/skills/review/SKILL.md",
+			scope: "user",
+			enabled: true,
+		};
+		const { proc } = makeFakeSessionProc({ skills: [skill] });
+		vi.mocked(spawn).mockReturnValue(proc as never);
+
+		await expect(
+			new CodexProvider().listSkills?.({
+				cwd: "/work/project",
+				executable: "/usr/bin/codex",
+			}),
+		).resolves.toEqual([skill]);
+	});
+});
+
 // ── CodexAgentSession mid-session model/permission switching ──────────────────
 
 /**
@@ -2919,7 +2944,10 @@ describe("CodexAgentSession — notifications", () => {
 			message: "Plan was cancelled by the user.",
 		});
 		const session = new CodexProvider().query(
-			baseCodexParams({ permissionMode: "plan", canUseTool }),
+			baseCodexParams({
+				permissionMode: "plan",
+				canUseTool,
+			}),
 		);
 		const events = session[Symbol.asyncIterator]();
 		await session.send("make a plan");
@@ -2960,7 +2988,11 @@ describe("CodexAgentSession — notifications", () => {
 		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
 		const canUseTool = vi.fn().mockResolvedValue({ behavior: "allow" });
 		const session = new CodexProvider().query(
-			baseCodexParams({ permissionMode: "plan", canUseTool }),
+			baseCodexParams({
+				permissionMode: "plan",
+				planHtmlPath: "/vault/.hlid/plans/plan-session.html",
+				canUseTool,
+			}),
 		);
 		const events = session[Symbol.asyncIterator]();
 		await session.send("make a plan");

@@ -355,6 +355,26 @@ function applyMigrations(db: Db): void {
 		db.run(`ALTER TABLE sessions ADD COLUMN agent_cwd TEXT`);
 	});
 
+	runMigration(db, "_migrated_attachments_library_metadata", (db) => {
+		db.run(`ALTER TABLE attachments ADD COLUMN storage_key TEXT`);
+		db.run(
+			`ALTER TABLE attachments ADD COLUMN category TEXT NOT NULL DEFAULT 'other'`,
+		);
+		db.run(
+			`ALTER TABLE attachments ADD COLUMN retention TEXT NOT NULL DEFAULT 'session'`,
+		);
+		db.run(
+			`ALTER TABLE attachments ADD COLUMN origin TEXT NOT NULL DEFAULT 'legacy'`,
+		);
+		db.run(`ALTER TABLE attachments ADD COLUMN agent_cwd TEXT`);
+		db.run(
+			`CREATE INDEX IF NOT EXISTS idx_attachments_category ON attachments(category)`,
+		);
+		db.run(
+			`CREATE INDEX IF NOT EXISTS idx_attachments_retention ON attachments(retention)`,
+		);
+	});
+
 	// claude_session_id: the SDK's internal session UUID for `resume`. Captured
 	// from the `system/init` event on the first turn of each chat and reused
 	// thereafter so the CLI manages conversation history natively (no manual

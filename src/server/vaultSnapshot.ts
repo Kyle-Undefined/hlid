@@ -7,6 +7,7 @@ import {
 	getDataRevisions,
 	subscribeDataRevisions,
 } from "./dataRevision";
+import { managedSkillsDirectory } from "./libraryStore";
 import { safeErrorSummary } from "./requestDiagnostics";
 import {
 	buildSnapshotData,
@@ -56,7 +57,7 @@ function configKey(config: HlidConfig): string {
 }
 
 function configuredWatchPaths(config: HlidConfig): string[] {
-	const paths = new Set<string>([CLAUDE_SKILLS_DIR]);
+	const paths = new Set<string>([CLAUDE_SKILLS_DIR, managedSkillsDirectory()]);
 	if (config.vault.path) {
 		paths.add(resolve(config.vault.path));
 		for (const key of VAULT_FOLDER_KEYS) {

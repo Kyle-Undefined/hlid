@@ -90,6 +90,7 @@ describe("AcpProvider — plan mode", () => {
 			params("allow", {
 				permissionMode: "plan",
 				implementationPermissionMode: "bypassPermissions",
+				planHtmlPath: "/vault/.hlid/plans/plan-fake.html",
 				canUseTool,
 			}),
 		);

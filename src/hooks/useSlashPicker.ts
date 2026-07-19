@@ -36,6 +36,7 @@ export function useSlashPicker(
 	commands: CommandDescriptor[],
 	selectedCommands: CommandDescriptor[] | CommandDescriptor | null = [],
 	providerId?: string,
+	showProviderEntries = true,
 ): SlashPickerState {
 	const selected = Array.isArray(selectedCommands)
 		? selectedCommands
@@ -57,6 +58,7 @@ export function useSlashPicker(
 	const items = shouldOpen
 		? commands.filter(
 				(command) =>
+					(showProviderEntries || command.source !== "provider") &&
 					commandMatches(command, query) &&
 					canSelectCommand(selected, command, providerId),
 			)

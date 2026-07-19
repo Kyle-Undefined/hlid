@@ -586,16 +586,16 @@ function cascadeDeleteSessionIds(db: Db, ids: string[]): string[] {
 	const ph = ids.map(() => "?").join(",");
 	const rows = db
 		.query<{ path: string }, string[]>(
-			`SELECT path FROM attachments WHERE kind = 'ephemeral' AND session_id IN (${ph})`,
+			`SELECT path FROM attachments WHERE kind = 'ephemeral' AND retention = 'session' AND session_id IN (${ph})`,
 		)
 		.all(...ids);
 	const ephemeralPaths = rows.map((r) => r.path);
 	db.run(
-		`DELETE FROM attachments WHERE kind = 'ephemeral' AND session_id IN (${ph})`,
+		`DELETE FROM attachments WHERE kind = 'ephemeral' AND retention = 'session' AND session_id IN (${ph})`,
 		ids,
 	);
 	db.run(
-		`UPDATE attachments SET session_id = NULL, message_seq = NULL WHERE kind = 'vault' AND session_id IN (${ph})`,
+		`UPDATE attachments SET session_id = NULL, message_seq = NULL WHERE (kind = 'vault' OR retention != 'session') AND session_id IN (${ph})`,
 		ids,
 	);
 	db.run(`DELETE FROM tool_events WHERE session_id IN (${ph})`, ids);

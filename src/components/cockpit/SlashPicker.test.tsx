@@ -63,6 +63,18 @@ describe("SlashPicker – rendering", () => {
 		expect(screen.getAllByText(/compact/i).length).toBeGreaterThan(0);
 	});
 
+	it("labels managed library skills as Hlid", () => {
+		const managed = skillCommand({
+			...makeSkill("managed"),
+			source: "hlid",
+		});
+		render(
+			<SlashPicker items={[managed]} selectedIndex={0} onSelect={vi.fn()} />,
+		);
+		expect(screen.getByText("hlid")).toBeDefined();
+		expect(screen.queryByText("library")).toBeNull();
+	});
+
 	it("contains long provider descriptions without horizontal overflow", () => {
 		const command = skillCommand(
 			makeSkill(

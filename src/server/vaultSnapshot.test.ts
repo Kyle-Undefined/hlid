@@ -89,7 +89,8 @@ describe("vault snapshot", () => {
 
 		expect(concurrent).toBe(first);
 		expect(mocks.scanProjects).toHaveBeenCalledTimes(3);
-		expect(mocks.scanSkills).toHaveBeenCalledTimes(2);
+		// Vault, provider-global, and Hlid-managed skill roots share one snapshot.
+		expect(mocks.scanSkills).toHaveBeenCalledTimes(3);
 		expect(mocks.scanMemory).toHaveBeenCalledTimes(4);
 		expect(mocks.scanFolderGroups).toHaveBeenCalledTimes(2);
 		expect(first.vault.projects[0]?.file).toBe("Projects-1.md");

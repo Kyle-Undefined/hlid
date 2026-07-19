@@ -23,6 +23,8 @@ export {
 	getAttachmentsForSession,
 	linkAttachmentToMessage,
 	listAttachments,
+	listLegacyManagedAttachments,
+	moveAttachmentIntoLibrary,
 } from "./attachments";
 export type {
 	LedgerAnalytics,

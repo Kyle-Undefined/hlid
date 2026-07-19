@@ -1,13 +1,12 @@
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { basename, dirname, resolve, sep } from "node:path";
 
 // When running as a compiled exe, resolve data files relative to the exe dir
 // so the Windows Run-key CWD (System32) doesn't break config/DB paths.
 const _exe = basename(process.execPath);
-export const APP_DIR =
-	_exe !== "bun" && _exe !== "bun.exe"
-		? dirname(process.execPath)
-		: process.cwd();
+export const APP_DIR = /^hlid(?:-.+)?(?:\.exe)?$/i.test(_exe)
+	? dirname(process.execPath)
+	: process.cwd();
 
 /** Canonical path to `hlid.config.toml`. Single source of truth — import this instead of re-computing. */
 export const CONFIG_PATH = resolve(APP_DIR, "hlid.config.toml");
@@ -18,9 +17,15 @@ export const PRICING_OVERRIDES_PATH = resolve(
 	"pricing-overrides.toml",
 );
 
+/** Hlid-owned durable content. Repositories and vaults remain linked sources. */
+export const LIBRARY_DIR =
+	process.env.NODE_ENV === "test"
+		? resolve(tmpdir(), "hlid-test-library")
+		: resolve(APP_DIR, "library");
+
 const isWindows = process.platform === "win32";
 
-function parseWslUncSyntax(
+export function parseWslUncSyntax(
 	p: string,
 ): { distro: string; posixPath: string } | null {
 	const m = p.match(/^\\\\(?:wsl\$|wsl\.localhost)\\([^\\]+)\\(.*)$/i);
@@ -88,12 +93,33 @@ export function toLogical(p: string): string {
  * in Linux form; native Windows and ordinary POSIX runtimes keep host paths.
  */
 export function toProviderRuntimePath(runtimeCwd: string, p: string): string {
-	if (!parseWslUncSyntax(runtimeCwd)) return p;
+	const runtime = parseWslUncSyntax(runtimeCwd);
+	if (!runtime) return p;
 	const wslPath = parseWslUncSyntax(p);
-	if (wslPath) return wslPath.posixPath;
+	// UNC paths are only meaningful inside the distro they name. Returning a
+	// POSIX path for another distro would silently grant the wrong resource.
+	if (wslPath) {
+		return wslPath.distro.toLowerCase() === runtime.distro.toLowerCase()
+			? wslPath.posixPath
+			: p;
+	}
 	const drivePath = p.match(/^([A-Za-z]):[\\/](.*)$/);
 	if (!drivePath) return p;
 	const drive = drivePath[1].toLowerCase();
 	const rest = drivePath[2].replace(/\\/g, "/");
 	return rest ? `/mnt/${drive}/${rest}` : `/mnt/${drive}`;
+}
+
+/** Reject WSL UNC resources owned by a distro other than the active runtime. */
+export function isPathAccessibleFromRuntime(
+	runtimeCwd: string,
+	p: string,
+): boolean {
+	const runtime = parseWslUncSyntax(runtimeCwd);
+	const resource = parseWslUncSyntax(p);
+	return !(
+		runtime &&
+		resource &&
+		runtime.distro.toLowerCase() !== resource.distro.toLowerCase()
+	);
 }

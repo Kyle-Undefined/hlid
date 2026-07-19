@@ -75,6 +75,31 @@ describe("handleGetAgents", () => {
 		expect(body[0].name).toBe("My Cool Project");
 	});
 
+	it("does not synchronously probe configured WSL paths", async () => {
+		mockLoadConfig.mockReturnValue({
+			agents: [
+				{
+					path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\project",
+					name: "WSL project",
+					mode: "cwd",
+					provider: "codex",
+				},
+			],
+		} as never);
+
+		const res = await handleGetAgents(getReq());
+		const body = (await res.json()) as Array<{
+			dirExists: boolean;
+			instructionFile: string | null;
+		}>;
+
+		expect(body[0]).toMatchObject({
+			dirExists: true,
+			instructionFile: null,
+		});
+		expect(mockExistsSync).not.toHaveBeenCalled();
+	});
+
 	it("returns 403 when origin blocked", async () => {
 		mockForbiddenResponse.mockReturnValue(new Response("x", { status: 403 }));
 		const res = await handleGetAgents(getReq());

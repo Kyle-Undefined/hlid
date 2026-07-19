@@ -119,6 +119,8 @@ const CodexSchema = z.object({
 const UiSchema = z.object({
 	enter_to_submit: z.boolean().default(true),
 	hide_skills_index: z.boolean().default(true),
+	/** Include provider-owned skills, commands, and plugin entries in the picker. */
+	show_provider_entries: z.boolean().default(false),
 	theme: z.enum(["dark", "tan", "custom"]).default("tan"),
 	mobile_theme: z.enum(["dark", "tan", "custom"]).optional(),
 	custom_theme: ThemePaletteSchema.optional(),
@@ -278,6 +280,7 @@ export const HlidConfigSchema = z.object({
 	ui: UiSchema.default(() => ({
 		enter_to_submit: true,
 		hide_skills_index: true,
+		show_provider_entries: false,
 		theme: "tan" as const,
 		html_plans: false,
 	})),

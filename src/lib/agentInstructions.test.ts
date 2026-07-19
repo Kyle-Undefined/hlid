@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	findAgentInstructionFile,
 	readAgentInstructions,
+	readAgentInstructionsAsync,
 } from "./agentInstructions";
 
 let agentDir: string;
@@ -28,6 +29,14 @@ describe("agent instruction files", () => {
 		expect(readAgentInstructions(agentDir)).toEqual({
 			filename: "AGENTS.md",
 			content: "# Codex persona",
+		});
+	});
+
+	it("reads AGENTS.md asynchronously for navigation-safe callers", async () => {
+		writeFileSync(join(agentDir, "AGENTS.md"), "# Async persona");
+		await expect(readAgentInstructionsAsync(agentDir)).resolves.toEqual({
+			filename: "AGENTS.md",
+			content: "# Async persona",
 		});
 	});
 

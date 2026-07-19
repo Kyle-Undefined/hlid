@@ -9,7 +9,7 @@ import type {
 	AgentProviderSettings,
 } from "#/components/einherjar/AgentCard";
 import { AgentCard, AgentEmptyState } from "#/components/einherjar/AgentCard";
-import { readAgentInstructions } from "#/lib/agentInstructions";
+import { readAgentInstructionsAsync } from "#/lib/agentInstructions";
 import { agentConfigToEntry, inspectAgentPath } from "#/lib/agentMcp";
 import { writeConfig } from "#/lib/config-writer";
 import { expandTilde, samePath } from "#/lib/paths";
@@ -54,7 +54,17 @@ const readAgentInstructionsFn = createServerFn({ method: "GET" })
 		const requested = resolve(expandTilde(agentPath));
 		if (!allowedPaths.some((p) => samePath(p, requested)))
 			throw new Error("Unauthorized");
-		return readAgentInstructions(requested);
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			return await Promise.race([
+				readAgentInstructionsAsync(requested),
+				new Promise<null>((resolveTimeout) => {
+					timer = setTimeout(() => resolveTimeout(null), 2_000);
+				}),
+			]);
+		} finally {
+			if (timer) clearTimeout(timer);
+		}
 	});
 
 const getExternalAllowedFn = createServerFn({ method: "GET" }).handler(

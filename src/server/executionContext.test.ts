@@ -1,9 +1,10 @@
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ResolveExecutionContextOptions } from "./executionContext";
 import { resolveExecutionContext } from "./executionContext";
+import { artifactPath, managedSkillsDirectory } from "./libraryStore";
 
 let vault: string;
 let agent1: string;
@@ -125,6 +126,28 @@ describe("resolveExecutionContext — extraDirs", () => {
 		);
 		// vault is in extraDirs for cwd+agentCwd, but agent1 itself is not added again
 		expect([...extraDirs]).not.toContain(agent1);
+	});
+
+	it("grants only exact Hlid-owned artifact and skill package directories", () => {
+		const artifact = artifactPath("artifact-1", "report.html");
+		const skill = join(managedSkillsDirectory(), "review", "SKILL.md");
+		const { extraDirs } = resolveExecutionContext(
+			base({
+				safeAttachments: [
+					{
+						id: "artifact-1",
+						path: artifact,
+						filename: "report.html",
+						mime: "text/html",
+						kind: "ephemeral",
+					},
+				],
+				resourcePaths: [artifact, skill],
+			}),
+		);
+		expect([...extraDirs]).toContain(join(managedSkillsDirectory(), "review"));
+		expect([...extraDirs]).toContain(join(dirname(artifact)));
+		expect([...extraDirs]).not.toContain(managedSkillsDirectory());
 	});
 });
 

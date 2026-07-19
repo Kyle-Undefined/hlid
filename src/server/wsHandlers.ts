@@ -2,6 +2,7 @@ import { realpathSync } from "node:fs";
 import type { ServerWebSocket } from "bun";
 import * as db from "../db";
 import { readAgentMcpFile } from "../lib/agentMcp";
+import { type McpRegistryEntry, mergeMcpRegistry } from "../lib/mcpRegistry";
 import { expandTilde } from "../lib/paths";
 import { readVaultMcpFile } from "../lib/vaultMcp";
 import { computeAllowedAgentRealPaths, isAllowedAgentPath } from "./agentPaths";
@@ -401,7 +402,7 @@ async function syncMcpInventory(
 			return;
 	}
 
-	const inventory = new Map<string, ReturnType<typeof mapMcpServer>>();
+	const inventory: McpRegistryEntry[] = [];
 	const configuredProvider = pool
 		.vaultEntry()
 		.manager.getProviderId(resolvedAgent);
@@ -411,15 +412,13 @@ async function syncMcpInventory(
 			? readVaultServers(config.vault.path)
 			: [];
 	for (const { name, disabled } of configuredServers) {
-		inventory.set(
-			`${configuredProvider}:${name}`,
-			mapMcpServer({
-				name,
-				providerId: configuredProvider,
-				status: disabled ? "disabled" : "pending",
-				scope: "project",
-			}),
-		);
+		inventory.push({
+			name,
+			providerId: configuredProvider,
+			status: disabled ? "disabled" : "pending",
+			scope: resolvedAgent ? "agent" : "vault",
+			source: resolvedAgent ? "agent" : "vault",
+		});
 	}
 
 	// Claude metadata is discovered and cached at startup independently of chat
@@ -430,10 +429,12 @@ async function syncMcpInventory(
 		: await waitForAllClaudeWarmupSnapshots();
 	for (const snapshot of claudeSnapshots) {
 		for (const server of snapshot?.mcpServers ?? []) {
-			inventory.set(
-				`claude:${server.name}`,
-				mapMcpServer({ ...server, providerId: "claude" }),
-			);
+			inventory.push({
+				...server,
+				providerId: "claude",
+				scope: "provider",
+				source: "provider",
+			});
 		}
 	}
 
@@ -441,10 +442,12 @@ async function syncMcpInventory(
 		if (resolvedAgent && entry.agentCwd !== resolvedAgent) continue;
 		for (const snapshot of entry.manager.getMcpSnapshots()) {
 			for (const server of snapshot.servers) {
-				inventory.set(
-					`${snapshot.providerId}:${server.name}`,
-					mapMcpServer({ ...server, providerId: snapshot.providerId }),
-				);
+				inventory.push({
+					...server,
+					providerId: snapshot.providerId,
+					scope: "provider",
+					source: "runtime",
+				});
 			}
 		}
 	}
@@ -453,7 +456,7 @@ async function syncMcpInventory(
 		type: "mcp_status",
 		inventory: true,
 		...(agentCwd ? { agent_cwd: agentCwd } : {}),
-		servers: [...inventory.values()],
+		servers: mergeMcpRegistry(inventory).map(mapMcpServer),
 	});
 }
 

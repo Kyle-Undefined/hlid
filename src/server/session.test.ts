@@ -70,6 +70,11 @@ vi.mock("./executionContext", () => ({
 		executable: undefined,
 	}),
 }));
+vi.mock("./libraryStore", () => ({
+	planStagingPath: (sessionId: string) =>
+		`/tmp/hlid-test-library/staging/plans/plan-${sessionId}.html`,
+	prepareLibrary: vi.fn().mockResolvedValue(undefined),
+}));
 vi.mock("./promptBuilder", () => ({
 	buildPlanHtmlInstructions: vi.fn((path: string) => `HTML plan: ${path}`),
 	buildPrompt: vi.fn().mockReturnValue({
@@ -853,7 +858,7 @@ describe("SessionManager — per-turn plan mode", () => {
 		expect(setPermissionMode).toHaveBeenNthCalledWith(2, "default");
 		expect(setPlanHtmlPath).toHaveBeenNthCalledWith(
 			1,
-			"/tmp/hlid-test-vault/.hlid/plans/plan-session-plan-toggle.html",
+			"/tmp/hlid-test-library/staging/plans/plan-session-plan-toggle.html",
 		);
 		expect(setPlanHtmlPath).toHaveBeenNthCalledWith(2, undefined);
 	});

@@ -114,6 +114,60 @@ describe("useSlashPicker – items", () => {
 		expect(names).toContain("compact");
 	});
 
+	it("hides every provider-badged skill and command", () => {
+		const providerSkill = skillCommand({
+			...makeSkill("provider-voice", "claude"),
+			providerId: "claude",
+		});
+		const providerCommand: CommandDescriptor = {
+			id: "provider:claude:compact",
+			name: "compact",
+			description: "Compact the conversation",
+			source: "provider",
+			providerId: "claude",
+			execution: { kind: "prompt" },
+		};
+		const { result } = renderHook(() =>
+			useSlashPicker(
+				"/",
+				[skillCommand(makeSkill("imported")), providerSkill, providerCommand],
+				null,
+				"claude",
+				false,
+			),
+		);
+
+		expect(result.current.items.map((command) => command.name)).toEqual([
+			"imported",
+		]);
+	});
+
+	it("shows provider entries when the preference is enabled", () => {
+		const providerSkill = skillCommand({
+			...makeSkill("provider-voice", "claude"),
+			providerId: "claude",
+		});
+		const providerCommand: CommandDescriptor = {
+			id: "provider:claude:compact",
+			name: "compact",
+			description: "Compact the conversation",
+			source: "provider",
+			providerId: "claude",
+			execution: { kind: "prompt" },
+		};
+		const { result } = renderHook(() =>
+			useSlashPicker(
+				"/",
+				[providerSkill, providerCommand],
+				null,
+				"claude",
+				true,
+			),
+		);
+
+		expect(result.current.items).toEqual([providerSkill, providerCommand]);
+	});
+
 	it("returns empty items when nothing matches", () => {
 		const { result } = renderHook(() => useSlashPicker("/zzz", SKILLS, null));
 		expect(result.current.items).toHaveLength(0);

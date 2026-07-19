@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { HlidConfigSchema } from "#/config";
-import { collectCockpitData } from "./cockpitData";
+import { assembleCockpitData, collectCockpitData } from "./cockpitData";
 
 function skill(name: string) {
 	return {
@@ -13,6 +13,41 @@ function skill(name: string) {
 }
 
 describe("collectCockpitData", () => {
+	it("merges Hlid-managed skills without coupling them to a provider", () => {
+		const result = assembleCockpitData({
+			inboxCount: 0,
+			projects: [],
+			vaultSkills: [skill("Vault")],
+			sectionOrder: [],
+			managedSkills: [skill("Managed")],
+			claudeSkills: [],
+		});
+		expect(result.sectionOrder).toEqual(["hlid"]);
+		expect(result.skills[1]).toMatchObject({
+			name: "Managed",
+			section: "hlid",
+			source: "hlid",
+		});
+	});
+
+	it("prefers an imported Hlid copy over a same-named provider skill", () => {
+		const result = assembleCockpitData({
+			inboxCount: 0,
+			projects: [],
+			vaultSkills: [],
+			sectionOrder: [],
+			managedSkills: [skill("Shared")],
+			claudeSkills: [skill("Shared")],
+		});
+		expect(result.skills).toHaveLength(1);
+		expect(result.skills[0]).toMatchObject({
+			name: "Shared",
+			section: "hlid",
+			source: "hlid",
+		});
+		expect(result.skills[0]).not.toHaveProperty("providerId");
+	});
+
 	it("aggregates projects and merges Claude skills without duplicates", () => {
 		const readDirectory = vi.fn(() => ["one.md", "two.txt", "three.md"]);
 		const scanProjects = vi.fn(() => [

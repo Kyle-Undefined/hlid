@@ -9,6 +9,7 @@ export type UiForm = {
 	mobileCustomTheme: CustomThemePalette;
 	enterToSubmit: boolean;
 	hideSkillsIndex: boolean;
+	showProviderEntries: boolean;
 	htmlPlans: boolean;
 };
 
@@ -107,6 +108,25 @@ export function UiSection({
 					/>
 					<span className="text-xs text-muted-foreground">
 						{ui.hideSkillsIndex ? "on" : "off"}
+					</span>
+				</label>
+			</Field>
+			<Field
+				label="Show provider entries in / picker"
+				hint="controls every provider-badged skill, command, and plugin entry; Hlid and vault entries stay visible"
+			>
+				<label className="flex items-center gap-2 cursor-pointer">
+					<input
+						type="checkbox"
+						aria-label="Show provider entries in slash picker"
+						checked={ui.showProviderEntries}
+						onChange={(e) =>
+							onChange({ showProviderEntries: e.target.checked })
+						}
+						className="accent-primary w-3.5 h-3.5"
+					/>
+					<span className="text-xs text-muted-foreground">
+						{ui.showProviderEntries ? "shown" : "hidden"}
 					</span>
 				</label>
 			</Field>

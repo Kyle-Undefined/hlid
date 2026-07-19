@@ -488,6 +488,7 @@ function CockpitPromptWiring({
 		commands,
 		composer.activeSkills,
 		commandProviderId,
+		config.ui.show_provider_entries,
 	);
 	const isConnected = live.wsStatus === "connected";
 	const isRunning =

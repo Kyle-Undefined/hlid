@@ -93,7 +93,7 @@ export function SlashPicker({
 						</span>
 					)}
 					<span className="text-[8px] tracking-widest uppercase text-muted-foreground/35">
-						{command.source}
+						{command.source === "library" ? "hlid" : command.source}
 					</span>
 				</div>
 			))}

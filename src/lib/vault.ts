@@ -275,9 +275,12 @@ export function scanSkills(
 			if (stat.isDirectory()) {
 				// skill folder, find the .md file directly inside (one level only)
 				const inner = readdirSync(full).filter((f) => f.endsWith(".md"));
-				// prefer file matching folder name, else first .md
+				// Provider skill packages use SKILL.md. Vault-native folders may use
+				// the folder name instead, so retain that as the second preference.
 				const match =
-					inner.find((f) => f.replace(/\.md$/, "") === entry) ?? inner[0];
+					inner.find((f) => f.toLowerCase() === "skill.md") ??
+					inner.find((f) => f.replace(/\.md$/, "") === entry) ??
+					inner[0];
 				if (match)
 					skillFiles.push({
 						file: join(entry, match),

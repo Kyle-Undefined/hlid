@@ -96,13 +96,13 @@ afterEach(() => vi.clearAllMocks());
 // ── handleUpload — config / request validation ────────────────────────────────
 
 describe("handleUpload — configuration guards", () => {
-	it("returns 400 when vault path is not configured", async () => {
+	it("stores uploads in the Hlid library even when no vault is configured", async () => {
 		const config = makeConfig("");
 		const form = makeFormData(
 			new File(["hello"], "test.txt", { type: "text/plain" }),
 		);
 		const res = await handleUpload(makeRequest(form), config);
-		expect(res.status).toBe(400);
+		expect(res.status).toBe(200);
 	});
 });
 
@@ -412,7 +412,10 @@ describe("handleUpload — successful upload", () => {
 		const config = makeConfig();
 		const form = makeFormData(new File(["x"], "f.txt", { type: "text/plain" }));
 		await handleUpload(makeRequest(form), config);
-		expect(mkdir).toHaveBeenCalledWith(expect.any(String), { recursive: true });
+		expect(mkdir).toHaveBeenCalledWith(expect.any(String), {
+			recursive: true,
+			mode: 0o700,
+		});
 	});
 
 	it("calls onUploaded callback with the new attachment id", async () => {

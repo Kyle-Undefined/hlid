@@ -37,14 +37,13 @@ export function AgentCardHeader({
 			<button
 				type="button"
 				onClick={onToggleView}
-				disabled={!agent.instructionFile}
 				aria-expanded={expanded}
 				aria-label={
 					expanded
 						? `Collapse ${agent.instructionFile ?? "instructions"}`
 						: `Expand ${agent.instructionFile ?? "instructions"}`
 				}
-				className="flex flex-1 items-center gap-3 text-left min-w-0 disabled:cursor-default"
+				className="flex flex-1 items-center gap-3 text-left min-w-0"
 			>
 				<span className="shrink-0 text-muted-foreground/40 transition-colors">
 					{expanded ? (

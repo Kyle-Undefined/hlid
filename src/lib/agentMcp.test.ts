@@ -53,6 +53,7 @@ function makeConfig(agentPaths: string[] = []): HlidConfig {
 		ui: {
 			enter_to_submit: true,
 			hide_skills_index: false,
+			show_provider_entries: false,
 			theme: "tan",
 			html_plans: false,
 		},

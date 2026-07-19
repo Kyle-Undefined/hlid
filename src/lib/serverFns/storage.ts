@@ -10,6 +10,7 @@ const EMPTY_STORAGE_STATS: StorageStats = {
 	reclaimableBytes: 0,
 	trackedAttachmentBytes: 0,
 	trackedAttachments: 0,
+	libraryBytes: 0,
 	sessions: 0,
 	messages: 0,
 	usageQueries: 0,

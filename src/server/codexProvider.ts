@@ -15,6 +15,7 @@ import type {
 	McpServerStatus,
 	ProviderEffortInfo,
 	ProviderModelInfo,
+	ProviderSkillInfo,
 	ProviderWindowReading,
 	SendOptions,
 	SlashCommand,
@@ -49,6 +50,7 @@ import type {
 	TurnStartParams,
 } from "./codexProtocol";
 import { bumpDataRevision } from "./dataRevision";
+import { isHtmlPlanPath } from "./htmlPlanPath";
 
 /**
  * Union of the RESPONSE shapes hlid can send back for the server-initiated
@@ -571,10 +573,6 @@ function filePathFromItem(value: unknown): string | null {
 		}
 	}
 	return null;
-}
-
-function isHtmlPlanPath(path: string): boolean {
-	return /(?:^|[\\/])\.hlid[\\/]plans[\\/]plan-[^\\/]+\.html$/i.test(path);
 }
 
 export function codexSubagentStatus(
@@ -1975,7 +1973,7 @@ class CodexAgentSession implements AgentSession {
 			allowed &&
 			this.params.permissionMode === "plan" &&
 			filePath &&
-			isHtmlPlanPath(filePath)
+			isHtmlPlanPath(filePath, this.params.planHtmlPath)
 		) {
 			this.approvedHtmlPlanItemId = itemId;
 		}
@@ -2782,6 +2780,35 @@ export class CodexProvider implements AgentProvider {
 		const exe = resolveCodexExecutable();
 		if (!exe) return { available: false, reason: "Codex CLI not found" };
 		return { available: true };
+	}
+
+	// fallow-ignore-next-line unused-class-member -- Invoked through AgentProvider.listSkills by the provider skill catalog.
+	async listSkills(context: {
+		cwd: string;
+		executable?: string;
+	}): Promise<ProviderSkillInfo[]> {
+		const launch = codexLaunchConfig(context);
+		const conn = acquireCodexAppServer(launch.executable);
+		await conn.ready;
+		const result = await conn.request("skills/list", {
+			cwds: [launch.rpcCwd],
+		});
+		return skillsFromListResponse(result).flatMap((skill) => {
+			const name = typeof skill.name === "string" ? skill.name.trim() : "";
+			if (!name) return [];
+			return [
+				{
+					name,
+					description:
+						typeof skill.description === "string" ? skill.description : "",
+					...(typeof skill.path === "string" ? { path: skill.path } : {}),
+					...(typeof skill.scope === "string" ? { scope: skill.scope } : {}),
+					...(typeof skill.enabled === "boolean"
+						? { enabled: skill.enabled }
+						: {}),
+				},
+			];
+		});
 	}
 
 	async hostCapabilities(): Promise<

@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 export const AGENT_INSTRUCTION_FILE_NAMES = ["AGENTS.md", "CLAUDE.md"] as const;
@@ -48,5 +48,17 @@ export function readAgentInstructions(
 	return {
 		filename,
 		content: readFileSync(join(agentPath, filename), "utf-8"),
+	};
+}
+
+/** Read instructions without putting network/WSL filesystem latency on the JS thread. */
+export async function readAgentInstructionsAsync(
+	agentPath: string,
+): Promise<AgentInstructions | null> {
+	const filename = await findAgentInstructionFileAsync(agentPath);
+	if (!filename) return null;
+	return {
+		filename,
+		content: await readFile(join(agentPath, filename), "utf-8"),
 	};
 }

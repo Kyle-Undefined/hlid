@@ -1,8 +1,11 @@
 import { normalizeSearchText } from "../lib/search";
 import { getDb } from "./schema";
 import type {
+	AttachmentCategory,
 	AttachmentKind,
 	AttachmentListFilter,
+	AttachmentOrigin,
+	AttachmentRetention,
 	AttachmentRow,
 	AttachmentTypeFilter,
 } from "./types";
@@ -27,12 +30,17 @@ export async function createAttachment(row: {
 	mime: string;
 	size_bytes: number;
 	sha256: string | null;
+	storage_key?: string | null;
+	category?: AttachmentCategory;
+	retention?: AttachmentRetention;
+	origin?: AttachmentOrigin;
+	agent_cwd?: string | null;
 }): Promise<void> {
 	const db = await getDb();
 	db.transaction(() => {
 		db.run(
-			`INSERT INTO attachments (id, session_id, message_seq, kind, filename, path, mime, size_bytes, sha256, created_at)
-		 VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, unixepoch())`,
+			`INSERT INTO attachments (id, session_id, message_seq, kind, filename, path, mime, size_bytes, sha256, created_at, storage_key, category, retention, origin, agent_cwd)
+		 VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, unixepoch(), ?, ?, ?, ?, ?)`,
 			[
 				row.id,
 				row.session_id,
@@ -42,6 +50,11 @@ export async function createAttachment(row: {
 				row.mime,
 				row.size_bytes,
 				row.sha256,
+				row.storage_key ?? null,
+				row.category ?? "other",
+				row.retention ?? "session",
+				row.origin ?? "legacy",
+				row.agent_cwd ?? null,
 			],
 		);
 		db.run(
@@ -136,6 +149,18 @@ export async function listAttachments(
 		where.push("kind = ?");
 		params.push(filter.kind);
 	}
+	if (filter.category != null) {
+		where.push("category = ?");
+		params.push(filter.category);
+	}
+	if (filter.retention != null) {
+		where.push("retention = ?");
+		params.push(filter.retention);
+	}
+	if (filter.origin != null) {
+		where.push("origin = ?");
+		params.push(filter.origin);
+	}
 	if (filter.sessionId != null) {
 		where.push("session_id = ?");
 		params.push(filter.sessionId);
@@ -181,4 +206,41 @@ export async function listAttachments(
 		.all(...params, limit, offset);
 
 	return { rows, total: totals.total, total_bytes: totals.total_bytes };
+}
+
+/** Legacy Hlid-owned files that still live under a vault or agent `.hlid`. */
+export async function listLegacyManagedAttachments(): Promise<AttachmentRow[]> {
+	const db = await getDb();
+	return db
+		.query<AttachmentRow, []>(
+			`SELECT * FROM attachments WHERE kind = 'ephemeral' AND storage_key IS NULL ORDER BY created_at ASC`,
+		)
+		.all();
+}
+
+export async function moveAttachmentIntoLibrary(
+	id: string,
+	metadata: {
+		path: string;
+		storage_key: string;
+		category: AttachmentCategory;
+		retention: AttachmentRetention;
+		origin: AttachmentOrigin;
+	},
+): Promise<boolean> {
+	const db = await getDb();
+	const result = db.run(
+		`UPDATE attachments
+		 SET path = ?, storage_key = ?, category = ?, retention = ?, origin = ?
+		 WHERE id = ? AND storage_key IS NULL`,
+		[
+			metadata.path,
+			metadata.storage_key,
+			metadata.category,
+			metadata.retention,
+			metadata.origin,
+			id,
+		],
+	);
+	return result.changes > 0;
 }

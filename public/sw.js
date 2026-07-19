@@ -6,6 +6,22 @@ const BUILD = "__HLID_BUILD__";
 const CACHE = `hlid-${BUILD}`;
 const STATIC_EXTS = [".js", ".css", ".png", ".svg", ".ico", ".woff2"];
 const OFFLINE_URL = "/offline.html";
+const DYNAMIC_RETRY_DELAYS_MS = [150, 500];
+
+async function fetchDynamic(request) {
+	let lastError;
+	for (let attempt = 0; attempt <= DYNAMIC_RETRY_DELAYS_MS.length; attempt++) {
+		try {
+			return await fetch(request);
+		} catch (error) {
+			lastError = error;
+			const delay = DYNAMIC_RETRY_DELAYS_MS[attempt];
+			if (delay === undefined) break;
+			await new Promise((resolve) => setTimeout(resolve, delay));
+		}
+	}
+	throw lastError;
+}
 
 self.addEventListener("install", (e) => {
 	e.waitUntil(caches.open(CACHE).then((c) => c.add(OFFLINE_URL)));
@@ -56,7 +72,7 @@ self.addEventListener("fetch", (e) => {
 		);
 	} else {
 		e.respondWith(
-			fetch(e.request).catch(async () => {
+			fetchDynamic(e.request).catch(async () => {
 				const fallback = await caches.match(e.request);
 				if (fallback) return fallback;
 				if (e.request.mode === "navigate") {

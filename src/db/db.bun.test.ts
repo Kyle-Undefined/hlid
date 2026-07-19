@@ -1722,6 +1722,32 @@ describe("sessions — cascade delete completeness", () => {
 		expect(att?.message_seq).toBeNull();
 	});
 
+	it("deleteSession retains library artifacts with retained policy", async () => {
+		await createSession("s1", "L", "m");
+		await createAttachment({
+			id: "att-plan",
+			session_id: "s1",
+			kind: "ephemeral",
+			filename: "plan.html",
+			path: "/library/artifacts/att-plan/plan.html",
+			mime: "text/html",
+			size_bytes: 12,
+			sha256: null,
+			storage_key: "artifacts/att-plan/plan.html",
+			category: "plan",
+			retention: "retained",
+			origin: "generated",
+		});
+
+		const { ephemeralPaths } = await deleteSession("s1");
+		expect(ephemeralPaths).not.toContain(
+			"/library/artifacts/att-plan/plan.html",
+		);
+		const attachment = await getAttachment("att-plan");
+		expect(attachment?.session_id).toBeNull();
+		expect(attachment?.retention).toBe("retained");
+	});
+
 	it("deleteSession removes the stored transcript for an imported session", async () => {
 		db.run(
 			`INSERT INTO sessions

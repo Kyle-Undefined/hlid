@@ -13,6 +13,8 @@ export type Skill = {
 	section?: string;
 	/** Provider-native skill directory that owns this entry. Vault skills omit it. */
 	providerId?: string;
+	/** Hlid-managed imports are provider-neutral but remain distinguishable from vault files. */
+	source?: "vault" | "hlid" | "provider";
 };
 
 export type SkillGroup = {

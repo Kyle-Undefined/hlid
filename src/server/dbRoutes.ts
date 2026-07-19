@@ -455,6 +455,21 @@ export function parseAttachmentListFilter(url: URL): AttachmentListFilter {
 	const kindParam = url.searchParams.get("kind");
 	const kind =
 		kindParam === "ephemeral" || kindParam === "vault" ? kindParam : undefined;
+	const categoryParam = url.searchParams.get("category");
+	const category =
+		categoryParam === "upload" ||
+		categoryParam === "plan" ||
+		categoryParam === "report" ||
+		categoryParam === "other"
+			? categoryParam
+			: undefined;
+	const retentionParam = url.searchParams.get("retention");
+	const retention =
+		retentionParam === "session" ||
+		retentionParam === "retained" ||
+		retentionParam === "linked"
+			? retentionParam
+			: undefined;
 	const sessionId = url.searchParams.get("session_id") ?? undefined;
 	const search = url.searchParams.get("search") ?? undefined;
 	const typeParam = url.searchParams.get("type");
@@ -480,6 +495,8 @@ export function parseAttachmentListFilter(url: URL): AttachmentListFilter {
 	const offset = clampInt(url.searchParams.get("offset"), 0, 0);
 	return {
 		kind,
+		category,
+		retention,
 		sessionId,
 		search,
 		type,

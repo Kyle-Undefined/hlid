@@ -11,7 +11,7 @@ import { basename, isAbsolute, relative, resolve } from "node:path";
 import type { Agent, HlidConfig } from "../config";
 import { findAgentInstructionFile } from "./agentInstructions";
 import { legacyProjectMcpAdapter } from "./mcpConfig";
-import { expandTilde, samePath } from "./paths";
+import { expandTilde, parseWslUncSyntax, samePath } from "./paths";
 
 // ─── Name helper ─────────────────────────────────────────────────────────────
 
@@ -29,13 +29,19 @@ function deriveAgentName(p: string): string {
 
 export function agentConfigToEntry(agent: Agent) {
 	const resolved = expandTilde(agent.path);
+	// Windows can block the entire JS thread for tens of seconds when a sync fs
+	// call touches a busy or unavailable WSL UNC share. Agent rosters are loaded
+	// by route preloads, so probing these paths here can make an unrelated page
+	// navigation look frozen. A configured WSL agent is treated as available for
+	// roster actions; add/session-start validation remains authoritative.
+	const isWslAgent = parseWslUncSyntax(resolved) !== null;
 	return {
 		path: agent.path,
 		name: agent.name ?? deriveAgentName(resolved),
 		mode: agent.mode ?? "cwd",
 		provider: agent.provider ?? "claude",
-		instructionFile: findAgentInstructionFile(resolved),
-		dirExists: existsSync(resolved),
+		instructionFile: isWslAgent ? null : findAgentInstructionFile(resolved),
+		dirExists: isWslAgent || existsSync(resolved),
 		model: agent.model,
 		effort: agent.effort,
 		maxTurns:

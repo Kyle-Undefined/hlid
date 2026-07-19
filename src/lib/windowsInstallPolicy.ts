@@ -42,6 +42,7 @@ export function migrateInstallData(input: {
 	canonicalDir: string;
 	exists: (path: string) => boolean;
 	copy: (source: string, destination: string) => void;
+	copyTree?: (source: string, destination: string) => void;
 }): string[] {
 	if (
 		!input.legacyDir ||
@@ -56,6 +57,11 @@ export function migrateInstallData(input: {
 		if (!input.exists(source)) continue;
 		input.copy(source, win32.join(input.canonicalDir, name));
 		copied.push(name);
+	}
+	const legacyLibrary = win32.join(input.legacyDir, "library");
+	if (input.copyTree && input.exists(legacyLibrary)) {
+		input.copyTree(legacyLibrary, win32.join(input.canonicalDir, "library"));
+		copied.push("library/");
 	}
 	return copied;
 }

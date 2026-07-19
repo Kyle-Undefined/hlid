@@ -10,6 +10,11 @@ tls_proxy_port = 3443
 local_network_access = false
 allow_external_agents = false
 
+[ui]
+# Hlid and vault entries always remain in the slash picker. Turn this on to also
+# show provider-owned skills, commands, and plugin entries.
+show_provider_entries = false
+
 [voice]
 enabled = false
 model = ""

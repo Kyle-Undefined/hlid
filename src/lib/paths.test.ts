@@ -1,4 +1,4 @@
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { resolve, sep } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
@@ -6,6 +6,8 @@ import {
 	CONFIG_PATH,
 	canonical,
 	expandTilde,
+	isPathAccessibleFromRuntime,
+	LIBRARY_DIR,
 	PRICING_OVERRIDES_PATH,
 	parseWslUnc,
 	pathStartsWith,
@@ -26,6 +28,16 @@ describe("PRICING_OVERRIDES_PATH", () => {
 	it("resolves to pricing-overrides.toml inside APP_DIR", () => {
 		expect(PRICING_OVERRIDES_PATH).toBe(
 			resolve(APP_DIR, "pricing-overrides.toml"),
+		);
+	});
+});
+
+describe("LIBRARY_DIR", () => {
+	it("uses isolated storage in tests and APP_DIR in production", () => {
+		expect(LIBRARY_DIR).toBe(
+			process.env.NODE_ENV === "test"
+				? resolve(tmpdir(), "hlid-test-library")
+				: resolve(APP_DIR, "library"),
 		);
 	});
 });
@@ -166,6 +178,24 @@ describe("toProviderRuntimePath", () => {
 				"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\shared",
 			),
 		).toBe("/home/kyle/shared");
+	});
+
+	it("does not translate a UNC path owned by another distro", () => {
+		const other = "\\\\wsl.localhost\\Debian\\home\\kyle\\shared";
+		expect(toProviderRuntimePath(wslRuntime, other)).toBe(other);
+		expect(isPathAccessibleFromRuntime(wslRuntime, other)).toBe(false);
+	});
+
+	it("allows Windows drive resources and same-distro UNC paths", () => {
+		expect(
+			isPathAccessibleFromRuntime(wslRuntime, "C:\\Users\\kyle\\file"),
+		).toBe(true);
+		expect(
+			isPathAccessibleFromRuntime(
+				wslRuntime,
+				"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\file",
+			),
+		).toBe(true);
 	});
 
 	it("keeps host paths unchanged for native runtimes", () => {

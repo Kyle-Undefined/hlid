@@ -26,6 +26,7 @@ import type {
 	ProviderModelInfo,
 	SlashCommand,
 } from "./agentProvider";
+import { isHtmlPlanPath } from "./htmlPlanPath";
 
 export type AcpProviderOptions = {
 	id: string;
@@ -256,10 +257,6 @@ function filePathFromToolInput(value: unknown): string | null {
 		if (typeof input[key] === "string") return input[key];
 	}
 	return null;
-}
-
-function isHtmlPlanPath(path: string): boolean {
-	return /(?:^|[\\/])\.hlid[\\/]plans[\\/]plan-[^\\/]+\.html$/i.test(path);
 }
 
 function acpToolName(toolCall: ToolCallUpdate): string {
@@ -663,7 +660,7 @@ class AcpSession implements AgentSession {
 					this.params.permissionMode === "plan" &&
 					toolName === "Write" &&
 					filePath &&
-					isHtmlPlanPath(filePath)
+					isHtmlPlanPath(filePath, this.params.planHtmlPath)
 				) {
 					this.approvedHtmlPlanToolIds.add(toolCall.toolCallId);
 				}

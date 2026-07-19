@@ -168,6 +168,7 @@ function createUiForm(initial: HlidConfig): UiForm {
 				: builtInThemePalette(mobileBase)),
 		enterToSubmit: initial.ui.enter_to_submit,
 		hideSkillsIndex: initial.ui.hide_skills_index,
+		showProviderEntries: initial.ui.show_provider_entries,
 		htmlPlans: initial.ui.html_plans ?? false,
 	};
 }
@@ -304,6 +305,7 @@ export function buildSettingsConfig(
 		ui: {
 			enter_to_submit: forms.ui.enterToSubmit,
 			hide_skills_index: forms.ui.hideSkillsIndex,
+			show_provider_entries: forms.ui.showProviderEntries,
 			theme: forms.ui.theme,
 			mobile_theme:
 				forms.ui.mobileTheme === "same" ? undefined : forms.ui.mobileTheme,

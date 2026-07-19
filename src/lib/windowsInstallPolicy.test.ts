@@ -71,6 +71,24 @@ describe("Windows install policy", () => {
 		expect(copy).toHaveBeenCalledTimes(4);
 	});
 
+	it("copies an existing Hlid library with the legacy install", () => {
+		const copyTree = vi.fn();
+		expect(
+			migrateInstallData({
+				legacyDir: "C:\\Legacy",
+				canonicalDir: "C:\\Canonical",
+				exists: (path) =>
+					path === "C:\\Legacy\\hlid.db" || path === "C:\\Legacy\\library",
+				copy: vi.fn(),
+				copyTree,
+			}),
+		).toContain("library/");
+		expect(copyTree).toHaveBeenCalledWith(
+			"C:\\Legacy\\library",
+			"C:\\Canonical\\library",
+		);
+	});
+
 	it("does not overwrite an established canonical database", () => {
 		const copy = vi.fn();
 		migrateInstallData({

@@ -25,6 +25,7 @@ export function assembleCockpitData(options: {
 	vaultSkills: Skill[];
 	sectionOrder: string[];
 	claudeSkills: Skill[];
+	managedSkills?: Skill[];
 }) {
 	const {
 		inboxCount,
@@ -32,26 +33,39 @@ export function assembleCockpitData(options: {
 		vaultSkills,
 		sectionOrder,
 		claudeSkills: rawClaudeSkills,
+		managedSkills: rawManagedSkills = [],
 	} = options;
 	const vaultSkillNames = new Set(
 		vaultSkills.map((skill) => skill.name.toLowerCase()),
 	);
-	const claudeSkills = rawClaudeSkills
+	const managedSkills = rawManagedSkills
 		.filter((skill) => !vaultSkillNames.has(skill.name.toLowerCase()))
+		.map((skill) => ({ ...skill, section: "hlid", source: "hlid" as const }));
+	const occupiedNames = new Set(
+		[...vaultSkills, ...managedSkills].map((skill) => skill.name.toLowerCase()),
+	);
+	const claudeSkills = rawClaudeSkills
+		.filter((skill) => !occupiedNames.has(skill.name.toLowerCase()))
 		.map((skill) => ({
 			...skill,
 			section: "claude",
 			providerId: "claude",
 		}));
+	const namedSections = [...sectionOrder];
+	if (managedSkills.length > 0 && !namedSections.includes("hlid")) {
+		namedSections.push("hlid");
+	}
+	if (claudeSkills.length > 0 && !namedSections.includes("claude")) {
+		namedSections.push("claude");
+	}
 
 	return {
 		inboxCount,
 		activeCount: projects.filter((project) => project.status === "active")
 			.length,
 		totalCount: projects.length,
-		skills: [...vaultSkills, ...claudeSkills],
-		sectionOrder:
-			claudeSkills.length > 0 ? [...sectionOrder, "claude"] : sectionOrder,
+		skills: [...vaultSkills, ...managedSkills, ...claudeSkills],
+		sectionOrder: namedSections,
 	};
 }
 

@@ -127,6 +127,14 @@ export type AggStats = {
 };
 
 export type AttachmentKind = "ephemeral" | "vault";
+export type AttachmentCategory = "upload" | "plan" | "report" | "other";
+export type AttachmentRetention = "session" | "retained" | "linked";
+export type AttachmentOrigin =
+	| "upload"
+	| "generated"
+	| "imported"
+	| "vault"
+	| "legacy";
 
 export type AttachmentRow = {
 	id: string;
@@ -139,6 +147,11 @@ export type AttachmentRow = {
 	size_bytes: number;
 	sha256: string | null;
 	created_at: number;
+	storage_key?: string | null;
+	category?: AttachmentCategory;
+	retention?: AttachmentRetention;
+	origin?: AttachmentOrigin;
+	agent_cwd?: string | null;
 };
 
 export type LogLevel = "error" | "warn" | "info";
@@ -227,6 +240,9 @@ export type SortDir = "asc" | "desc";
 
 export type AttachmentListFilter = {
 	kind?: AttachmentKind;
+	category?: AttachmentCategory;
+	retention?: AttachmentRetention;
+	origin?: AttachmentOrigin;
 	sessionId?: string;
 	search?: string;
 	/** Broad MIME class filter (image/pdf/text/other). */

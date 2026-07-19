@@ -133,6 +133,11 @@ command at a time, but that command can still use vault skills. Switching the
 active CLI drops commands that belong to the old provider instead of quietly
 sending nonsense to the new one.
 
+The picker keeps three execution types distinct: vault or Hlid-managed skills
+inject a skill file, provider-native commands go back to that provider, and
+Hlid capabilities such as `/review` and `/computer-use` use Hlid's own routing,
+approval, audit, and accounting path.
+
 Turn on **Plan** when the agent should figure out the work before touching it.
 Turn on **HTML** beside it for the full styled plan. Approval, cancellation, and
 revision feedback all happen from the plan card or viewer.
@@ -171,11 +176,32 @@ picker.
 
 *`Relics` is everything that has moved through a `Hlið` session as a file.*
 
-**RELICS** manages attachments. Ephemeral files belong to the session that
-uploaded them. Vault attachments stay in the configured attachment folder.
+**RELICS** is the browser for Hlid-owned files. Uploads, generated HTML plans,
+reports, and imported skill packages live under the installed app's `library`
+directory rather than inside a repository or agent folder. The Obsidian vault
+and WSL workspaces remain linked sources; Hlid does not copy or relocate them.
 
-Filename search updates while you type. The list can be filtered by date,
-`MIME` group, or owning session, then sorted by size or creation time. If a new
+Use **Browse installed skills** to open a review dialog populated from the
+installed Claude and Codex registries plus configured ACP workspaces. Discovery
+does not start an agent or CLI process, so it remains responsive while those
+providers are busy. Hlid groups the results by provider and shows scope, known
+enabled state, Windows or WSL runtime, description, file count, and size. The
+runtime badge includes the WSL distribution name without exposing source paths.
+Use **Read SKILL.md** on any row to expand the complete source document before
+selecting it; the file is loaded on demand and its filesystem path stays on the
+server.
+Select the packages you want and import them together; no filesystem paths need
+to be copied into the browser. Imported packages appear in the Watch and Raven
+skill picker as provider-neutral Hlid skills, including when an installed
+provider has a same-named copy. Import completion is shown inside the dialog.
+Use **Remove from Hlid** on an imported row to delete the managed copy after an
+inline confirmation; the provider's original package is left untouched and can
+be imported again. Each copy records its source, so
+the managed package remains usable without coupling the provider's original
+directory to the vault.
+
+Filename search updates while you type. The list can be filtered by artifact
+category, date, `MIME` group, or owning session, then sorted by size or creation time. If a new
 upload lands while the page is open, a **NEW RELICS** pill appears instead of
 yanking the list back to page one. Desktop gets the full table, while mobile
 uses compact cards.
@@ -238,7 +264,9 @@ outside the vault need the external-agent switch in `Forge`.
   defaults when the Windows capability exists.
 - **Access** has network, `TLS`, password, and trusted-device settings.
 - **Experience** has built-in or custom desktop/mobile themes, input behavior,
-  `HTML` plan defaults, voice, and browser-local privacy mode.
+	the provider-entry visibility toggle for the `/` picker, `HTML` plan defaults,
+	voice, and browser-local privacy mode. Hlid and vault entries always remain
+	visible; the toggle controls every provider-badged skill, command, or plugin.
 - **Integrations** manages `MCP`, `Umbod`, and the `ACP` catalog.
 - **Developer** switches between the event log, local API reference, and pricing
   catalog.
@@ -250,8 +278,12 @@ or waiting on a restart. Server, `ACP`, and `Umbod` changes are the main things
 that set the restart marker. If a save or system inventory call fails, the same
 header has a retry action.
 
-The search box filters whole setting categories. `MCP` edits sync into the live
-vault session. Working-context changes still need a provider-session reload,
+The search box filters whole setting categories. Vault MCP configuration stays
+vault-scoped. Each Einherjar entry keeps its own MCP configuration on that
+agent's page. Hlid merges those compatibility files with provider-native and
+live runtime discovery into one scoped inventory; it does not flatten servers
+from unrelated agents into a global list. `MCP` edits sync into the live vault
+session. Working-context changes still need a provider-session reload,
 which clears the live provider conversation but leaves its recorded `Ledger`
 history alone.
 
@@ -338,6 +370,11 @@ The one-shot worker can inherit the calling chat's model and effort or use fixed
 defaults. Select `/computer-use` in `Watch` or `Raven`, then describe the
 Windows desktop task. `Hlið` starts a fresh native `Codex` worker and shows its
 progress inline.
+
+This works from a WSL-backed chat because `/computer-use` is an Hlid capability,
+not a command executed inside that WSL process. Hlid authorizes and audits the
+handoff, then delegates the desktop task to the Windows-native worker. Codex's
+native per-application approval store remains the final app-access boundary.
 
 Every app approval still goes through the normal `Hlið`/`Umbod` policy. Session
 and permanent approvals need an explicit choice. The worker closes when the job

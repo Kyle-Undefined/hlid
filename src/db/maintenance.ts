@@ -1,6 +1,6 @@
-import { stat } from "node:fs/promises";
-import { resolve } from "node:path";
-import { APP_DIR } from "../lib/paths";
+import { readdir, stat } from "node:fs/promises";
+import { join, resolve } from "node:path";
+import { APP_DIR, LIBRARY_DIR } from "../lib/paths";
 import { getDb } from "./schema";
 
 const DB_PATH = resolve(APP_DIR, "hlid.db");
@@ -11,6 +11,7 @@ export type StorageStats = {
 	reclaimableBytes: number;
 	trackedAttachmentBytes: number;
 	trackedAttachments: number;
+	libraryBytes: number;
 	sessions: number;
 	messages: number;
 	usageQueries: number;
@@ -22,6 +23,18 @@ async function fileSize(path: string): Promise<number> {
 	} catch {
 		return 0;
 	}
+}
+
+async function directorySize(path: string): Promise<number> {
+	let total = 0;
+	for (const entry of await readdir(path, { withFileTypes: true }).catch(
+		() => [],
+	)) {
+		const child = join(path, entry.name);
+		if (entry.isDirectory()) total += await directorySize(child);
+		else if (entry.isFile()) total += await fileSize(child);
+	}
+	return total;
 }
 
 export async function getStorageStats(): Promise<StorageStats> {
@@ -47,9 +60,10 @@ export async function getStorageStats(): Promise<StorageStats> {
 				(SELECT COUNT(*) FROM usage_queries) AS usageQueries`)
 		.get() ?? { sessions: 0, messages: 0, usageQueries: 0 };
 
-	const [databaseBytes, walBytes] = await Promise.all([
+	const [databaseBytes, walBytes, libraryBytes] = await Promise.all([
 		fileSize(DB_PATH),
 		fileSize(`${DB_PATH}-wal`),
+		directorySize(LIBRARY_DIR),
 	]);
 	return {
 		databaseBytes,
@@ -57,6 +71,7 @@ export async function getStorageStats(): Promise<StorageStats> {
 		reclaimableBytes: pageSize * freePages,
 		trackedAttachmentBytes: attachments.bytes,
 		trackedAttachments: attachments.count,
+		libraryBytes,
 		...counts,
 	};
 }

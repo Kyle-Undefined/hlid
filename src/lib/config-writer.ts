@@ -138,6 +138,7 @@ function serializeUi(config: HlidConfig["ui"]): string[] {
 	return section("ui", [
 		`enter_to_submit = ${tomlVal(config.enter_to_submit)}`,
 		`hide_skills_index = ${tomlVal(config.hide_skills_index)}`,
+		`show_provider_entries = ${tomlVal(config.show_provider_entries)}`,
 		`html_plans = ${tomlVal(config.html_plans)}`,
 		`theme = ${tomlVal(config.theme)}`,
 		...optionalEntry("mobile_theme", config.mobile_theme),

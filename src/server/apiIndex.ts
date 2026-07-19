@@ -100,6 +100,30 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 	},
 	{
 		method: "GET",
+		path: "/skills/catalog",
+		server: "api",
+		desc: "Installed-registry and workspace skill packages available for review and import; source paths remain server-side.",
+	},
+	{
+		method: "GET",
+		path: "/skills/content?id=",
+		server: "api",
+		desc: "Read one discovered SKILL.md by opaque catalog ID; source paths remain server-side.",
+	},
+	{
+		method: "POST",
+		path: "/skills/import",
+		server: "api",
+		desc: 'Copy selected provider-discovered packages into the Hlid library. Body: {"ids": string[]}.',
+	},
+	{
+		method: "POST",
+		path: "/skills/remove",
+		server: "api",
+		desc: 'Remove one Hlid-managed skill by its opaque managed ID. Body: {"id": string}.',
+	},
+	{
+		method: "GET",
 		path: "/voice",
 		server: "api",
 		desc: "Local Whisper runtime status and cached model catalog; ?refresh=1 refreshes the catalog.",

@@ -16,7 +16,7 @@ const fsState = {
 		isFile: () => boolean;
 		size: number;
 	},
-	realpathResult: "/agent/.hlid/plans/plan-sess-1.html",
+	realpathResult: "/hlid/library/staging/plans/plan-sess-1.html",
 	readFileResult: Buffer.from("<h1>plan</h1>"),
 };
 
@@ -35,6 +35,15 @@ vi.mock("node:fs", () => ({
 	realpathSync: vi.fn().mockImplementation((p: string) => p),
 }));
 
+vi.mock("./libraryStore", () => ({
+	artifactDirectory: (id: string) => `/hlid/library/artifacts/${id}`,
+	artifactPath: (id: string, filename: string) =>
+		`/hlid/library/artifacts/${id}/${filename}`,
+	planStagingDirectory: () => "/hlid/library/staging/plans",
+	prepareLibrary: vi.fn().mockResolvedValue(undefined),
+	storageKey: (path: string) => path.replace("/hlid/library/", ""),
+}));
+
 vi.mock("node:crypto", () => {
 	// eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
 	const actual = require("node:crypto") as typeof import("node:crypto");
@@ -49,9 +58,7 @@ import * as db from "../db";
 import { ingestPlanHtml } from "./attachments";
 
 const baseOpts = {
-	sourcePath: "/agent/.hlid/plans/plan-sess-1.html",
-	plansDir: "/agent/.hlid/plans",
-	storageRoot: "/agent",
+	sourcePath: "/hlid/library/staging/plans/plan-sess-1.html",
 	sessionId: "sess-1",
 	planSeq: 3,
 	maxBytes: 25 * 1024 * 1024,
@@ -60,7 +67,7 @@ const baseOpts = {
 afterEach(() => {
 	vi.clearAllMocks();
 	fsState.lstatResult = { isFile: () => true, size: 100 };
-	fsState.realpathResult = "/agent/.hlid/plans/plan-sess-1.html";
+	fsState.realpathResult = "/hlid/library/staging/plans/plan-sess-1.html";
 	fsState.readFileResult = Buffer.from("<h1>plan</h1>");
 });
 
@@ -126,7 +133,7 @@ describe("ingestPlanHtml — rejections fall back to null", () => {
 
 		await expect(ingestPlanHtml(baseOpts)).resolves.toBeNull();
 		expect(unlink).toHaveBeenCalledWith(
-			"/agent/.hlid/attachments/sess-1/plan-3.html",
+			"/hlid/library/artifacts/00000000-0000-0000-0000-000000000042/plan-3.html",
 		);
 		expect(db.deleteAttachment).not.toHaveBeenCalled();
 		expect(unlink).not.toHaveBeenCalledWith(fsState.realpathResult);
@@ -146,7 +153,7 @@ describe("ingestPlanHtml — rejections fall back to null", () => {
 			"00000000-0000-0000-0000-000000000042",
 		);
 		expect(unlink).toHaveBeenCalledWith(
-			"/agent/.hlid/attachments/sess-1/plan-3.html",
+			"/hlid/library/artifacts/00000000-0000-0000-0000-000000000042/plan-3.html",
 		);
 		expect(unlink).not.toHaveBeenCalledWith(fsState.realpathResult);
 	});

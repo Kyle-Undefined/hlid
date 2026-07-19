@@ -19,8 +19,8 @@ own folder vocabulary. `Hlið` does not care as long as the paths are set up.
   approvals, attachments, queued follow-ups, inline questions, plan review,
   and subagent activity. The provider, model, effort, and permission mode stay
   with the chat they belong to.
-- Pulls vault skills and provider-native slash commands into `Watch` and
-  `Raven`, including compatible multi-skill runs.
+- Pulls vault skills, Hlid-managed skill imports, and provider-native slash
+  commands into `Watch` and `Raven`, including compatible multi-skill runs.
 - Browses notes and projects, searches without getting tripped up by accents,
   manages attachments, and tracks usage and cost. It can pause running sessions
   near a provider limit, then pick them back up after the window resets.
@@ -32,8 +32,9 @@ own folder vocabulary. `Hlið` does not care as long as the paths are set up.
   transcription service.
 - Opens a real project shell in `Raven`, with an optional interactive `Claude
   CLI` mode when the full terminal makes more sense than the structured chat UI.
-- Keeps vaults, providers, permissions, `MCP` servers, `ACP` agents, `Umbod`,
-  networking, updates, and lifecycle controls together in `Forge`.
+- Keeps linked vaults and workspaces, provider commands, permissions, scoped
+  `MCP` servers, `ACP` agents, `Umbod`, networking, updates, and lifecycle
+  controls together without moving source repositories out of `WSL`.
 - Checks `Hlið`, `Claude`, `Codex`, and enabled `ACP` agents for updates. It
   shows the right command or in-app flow for the installation, but it does not
   silently run installers.

@@ -207,6 +207,21 @@ describe("AgentCard edit options", () => {
 		expect(onReadInstructions).toHaveBeenCalledOnce();
 	});
 
+	it("loads instructions on demand when the roster skipped path inspection", async () => {
+		const onReadInstructions = vi.fn().mockResolvedValue({
+			filename: "AGENTS.md",
+			content: "# WSL agent instructions",
+		});
+		renderCard(makeAgent({ instructionFile: null }), [claudeProvider], {
+			onReadInstructions,
+		});
+
+		fireEvent.click(screen.getByLabelText("Expand instructions"));
+
+		expect(await screen.findByText("WSL agent instructions")).not.toBeNull();
+		expect(onReadInstructions).toHaveBeenCalledOnce();
+	});
+
 	it("delegates mode and chat actions without changing persisted props", () => {
 		const onModeChange = vi.fn();
 		const onChat = vi.fn();

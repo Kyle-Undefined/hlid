@@ -17,7 +17,7 @@ describe("settings form conversion", () => {
 			},
 			server: { port: 4000, tls_proxy_port: 4443 },
 			status_vocabulary: { active: ["Doing"], planning: [], done: ["Done"] },
-			ui: { html_plans: true },
+			ui: { html_plans: true, show_provider_entries: true },
 		});
 		const forms = createSettingsForms(initial);
 
@@ -31,6 +31,7 @@ describe("settings form conversion", () => {
 		expect(forms.codex.windowsComputerUseEffort).toBe("inherit");
 		expect(forms.server).toMatchObject({ port: "4000", tlsProxyPort: "4443" });
 		expect(forms.ui.htmlPlans).toBe(true);
+		expect(forms.ui.showProviderEntries).toBe(true);
 		expect(forms.vocab).toEqual({
 			active: "Doing",
 			planning: "",
@@ -89,6 +90,7 @@ describe("settings form conversion", () => {
 	it("defaults HTML plans off when the setting is absent", () => {
 		const forms = createSettingsForms(HlidConfigSchema.parse({}));
 		expect(forms.ui.htmlPlans).toBe(false);
+		expect(forms.ui.showProviderEntries).toBe(false);
 	});
 
 	it("copies the selected built-in into new desktop and mobile custom palettes", () => {

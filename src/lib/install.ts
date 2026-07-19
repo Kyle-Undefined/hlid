@@ -9,6 +9,7 @@
 import {
 	closeSync,
 	copyFileSync,
+	cpSync,
 	existsSync,
 	mkdirSync,
 	openSync,
@@ -303,6 +304,12 @@ export async function maybeSelfInstall(): Promise<void> {
 				canonicalDir,
 				exists: existsSync,
 				copy: copyFileSync,
+				copyTree: (source, destination) =>
+					cpSync(source, destination, {
+						recursive: true,
+						errorOnExist: true,
+						force: false,
+					}),
 			});
 		},
 		waitForUnlock: (path) => waitForUnlock(path, FILE_UNLOCK_TIMEOUT_MS),

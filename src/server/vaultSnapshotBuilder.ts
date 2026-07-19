@@ -17,6 +17,7 @@ import {
 	scanProjects,
 	scanSkills,
 } from "../lib/vault";
+import { managedSkillsDirectory } from "./libraryStore";
 
 export type VaultFolderKey =
 	| "inbox"
@@ -153,6 +154,11 @@ export function buildSnapshotData(config: HlidConfig): VaultSnapshotData {
 	const archive = scanConfiguredFolder(vault, "archive", scanProjectFolder, []);
 	const outputs = scanConfiguredFolder(vault, "outputs", scanMemory, []);
 	const { skills: claudeSkills } = scanSkills(CLAUDE_SKILLS_DIR, ".", false);
+	const { skills: managedSkills } = scanSkills(
+		managedSkillsDirectory(),
+		".",
+		false,
+	);
 
 	return {
 		vault: {
@@ -176,6 +182,7 @@ export function buildSnapshotData(config: HlidConfig): VaultSnapshotData {
 			vaultSkills: skills,
 			sectionOrder,
 			claudeSkills,
+			managedSkills,
 		}),
 	};
 }

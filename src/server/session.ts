@@ -1,13 +1,13 @@
-import { mkdirSync, realpathSync } from "node:fs";
-import { dirname, resolve as resolvePath } from "node:path";
+import { realpathSync } from "node:fs";
+import { unlink } from "node:fs/promises";
+import { resolve as resolvePath } from "node:path";
 import type { ToolCall } from "@umbod/core";
 import type { HlidConfig } from "../config";
 import * as db from "../db";
 import { resolveClaudeExecutable } from "../lib/claudePath";
 import {
 	expandTilde,
-	pathStartsWith,
-	toLogical,
+	isPathAccessibleFromRuntime,
 	toProviderRuntimePath,
 } from "../lib/paths";
 import { SESSION_LABEL_LENGTH } from "../lib/utils";
@@ -33,6 +33,7 @@ import { waitForClaudeWarmupSnapshot } from "./claudeWarmup";
 import { loadConfig } from "./config";
 import { bumpDataRevision } from "./dataRevision";
 import { resolveExecutionContext } from "./executionContext";
+import { planStagingPath, prepareLibrary } from "./libraryStore";
 import { parseAskUserQuestion } from "./parseAskUserQuestion";
 import { persistAlwaysAllowedTool } from "./permissionStore";
 import {
@@ -192,6 +193,12 @@ export type ConfiguredSessionDefaults = {
 	recapModel: string;
 };
 
+type ProviderProbeScope = {
+	agentCwd?: string;
+	sessionId?: string;
+	providerId?: string;
+};
+
 function configuredAgentSettings(
 	agent: NonNullable<HlidConfig["agents"]>[number],
 ): AgentSettings | null {
@@ -236,9 +243,11 @@ function buildAgentQueryParams(options: {
 		historyResumeMode: options.historyResumeMode,
 		additionalDirectories:
 			options.extraDirs.size > 0
-				? Array.from(options.extraDirs).map((path) =>
-						toProviderRuntimePath(options.activeCwd, path),
-					)
+				? Array.from(options.extraDirs)
+						.filter((path) =>
+							isPathAccessibleFromRuntime(options.activeCwd, path),
+						)
+						.map((path) => toProviderRuntimePath(options.activeCwd, path))
 				: undefined,
 		signal: options.signal,
 		model:
@@ -252,7 +261,12 @@ function buildAgentQueryParams(options: {
 		usageGateEnforced: options.usageGateEnforced,
 		...(options.planMode ? { implementationPermissionMode } : {}),
 		...(options.planMode && options.planHtmlPath
-			? { planHtmlPath: toLogical(options.planHtmlPath) }
+			? {
+					planHtmlPath: toProviderRuntimePath(
+						options.activeCwd,
+						options.planHtmlPath,
+					),
+				}
 			: {}),
 		effort:
 			options.effortOverride ??
@@ -455,10 +469,9 @@ export class SessionManager {
 	private askUserQuestions = new AskUserQuestionManager();
 	private planModeManager = new PlanModeManager();
 	// Deterministic path the agent is asked to write its HTML plan to (plan
-	// mode + html_plans on). Set per turn in runOneTurn; the storage root pairs
-	// with it for relic ingestion at the ExitPlanMode intercept.
+	// mode + html_plans on). Set per turn in runOneTurn and ingested into the
+	// Hlid library at the ExitPlanMode intercept.
 	private planHtmlPath: string | null = null;
-	private planHtmlStorageRoot: string | null = null;
 	/** Tools approved for the entire hlid session (survives provider subprocess restarts). */
 	private sessionAllowedTools = new Set<string>();
 	private currentSessionId: string | null = null;
@@ -876,36 +889,35 @@ export class SessionManager {
 		await queued;
 	}
 
-	private resolveProbeContext(scope: {
-		agentCwd?: string;
-		providerId?: string;
-	}): {
+	private resolveProbeContext(scope: ProviderProbeScope): {
 		activeAgentCwd?: string;
 		provider: AgentProvider;
 		providerId: string;
+		targetsLiveScope: boolean;
 	} {
 		const activeAgentCwd = scope.agentCwd ?? this.getAgentCwd();
 		const configuredProvider = this.resolveProvider(activeAgentCwd);
 		const provider = scope.providerId
 			? (this.providers.get(scope.providerId) ?? configuredProvider)
 			: configuredProvider;
+		const providerId = provider.providerId;
 		return {
 			activeAgentCwd,
 			provider,
-			providerId: provider.providerId,
+			providerId,
+			targetsLiveScope:
+				(!scope.agentCwd || scope.agentCwd === this.agentCwd) &&
+				(!scope.sessionId || scope.sessionId === this.currentSessionId) &&
+				providerId === this.getProviderId(activeAgentCwd),
 		};
 	}
 
 	async probeMcpStatus(
 		emit: (msg: ServerMessage) => void,
-		scope: { agentCwd?: string; sessionId?: string; providerId?: string } = {},
+		scope: ProviderProbeScope = {},
 	): Promise<void> {
-		const { activeAgentCwd, provider, providerId } =
+		const { activeAgentCwd, provider, providerId, targetsLiveScope } =
 			this.resolveProbeContext(scope);
-		const targetsLiveScope =
-			(!scope.agentCwd || scope.agentCwd === this.agentCwd) &&
-			(!scope.sessionId || scope.sessionId === this.currentSessionId) &&
-			providerId === this.getProviderId(activeAgentCwd);
 		const publish = (statuses: McpServerStatus[]) => {
 			// Archived-session probes may be proxied through the vault manager. Keep
 			// their scoped result out of the vault cache or Watch will inherit the
@@ -945,14 +957,10 @@ export class SessionManager {
 
 	async probeSlashCommands(
 		emit: (msg: ServerMessage) => void,
-		scope: { agentCwd?: string; sessionId?: string; providerId?: string } = {},
+		scope: ProviderProbeScope = {},
 	): Promise<void> {
-		const { activeAgentCwd, provider, providerId } =
+		const { activeAgentCwd, provider, providerId, targetsLiveScope } =
 			this.resolveProbeContext(scope);
-		const targetsLiveScope =
-			(!scope.agentCwd || scope.agentCwd === this.agentCwd) &&
-			(!scope.sessionId || scope.sessionId === this.currentSessionId) &&
-			providerId === this.getProviderId(activeAgentCwd);
 		const publish = (commands: SlashCommand[]) =>
 			emit({
 				type: "slash_commands",
@@ -2412,7 +2420,13 @@ export class SessionManager {
 				(toolName === "Write" || toolName === "Edit") &&
 				typeof passInput.file_path === "string" &&
 				(resolvePath(passInput.file_path) === this.planHtmlPath ||
-					passInput.file_path === toLogical(this.planHtmlPath)),
+					passInput.file_path ===
+						toProviderRuntimePath(
+							this.agentMode === "cwd" && this.agentCwd
+								? this.agentCwd
+								: this.vaultPath,
+							this.planHtmlPath,
+						)),
 		);
 	}
 
@@ -2434,11 +2448,9 @@ export class SessionManager {
 		this.emitRunningStatus(emit);
 		void (async () => {
 			let htmlRelicId: string | null = null;
-			if (this.planHtmlPath && this.planHtmlStorageRoot && sessionId) {
+			if (this.planHtmlPath && sessionId) {
 				htmlRelicId = await ingestPlanHtml({
 					sourcePath: this.planHtmlPath,
-					plansDir: resolvePath(this.planHtmlStorageRoot, ".hlid", "plans"),
-					storageRoot: this.planHtmlStorageRoot,
 					sessionId,
 					planSeq,
 					maxBytes: loadConfig().attachments.max_bytes,
@@ -2746,39 +2758,26 @@ export class SessionManager {
 	 * handler auto-allows that exact path, and the ExitPlanMode intercept
 	 * ingests the file as an ephemeral relic.
 	 */
-	private syncPlanHtmlPath(
+	private async syncPlanHtmlPath(
 		enabled: boolean,
 		sessionId: string | undefined,
-	): void {
+	): Promise<void> {
 		if (!enabled || !sessionId) {
 			this.planHtmlPath = null;
-			this.planHtmlStorageRoot = null;
 			return;
 		}
-		const storageRoot = resolvePath(
-			expandTilde(this.agentCwd ?? this.vaultPath),
-		);
-		const path = resolvePath(
-			storageRoot,
-			".hlid",
-			"plans",
-			`plan-${sessionId}.html`,
-		);
-		if (!pathStartsWith(storageRoot, path)) {
-			this.planHtmlPath = null;
-			this.planHtmlStorageRoot = null;
-			return;
-		}
+		const path = planStagingPath(sessionId);
 		try {
-			mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+			await prepareLibrary();
+			await unlink(path).catch((error: NodeJS.ErrnoException) => {
+				if (error.code !== "ENOENT") throw error;
+			});
 		} catch (error) {
 			console.warn("[session] could not prepare HTML plan directory:", error);
 			this.planHtmlPath = null;
-			this.planHtmlStorageRoot = null;
 			return;
 		}
 		this.planHtmlPath = path;
-		this.planHtmlStorageRoot = storageRoot;
 	}
 
 	private async persistUserMessage(
@@ -3061,7 +3060,7 @@ export class SessionManager {
 		] = args;
 		this.currentTurnId = turnId;
 		await this.initSessionContext(sessionId, agentCwd, userMessage);
-		this.syncPlanHtmlPath(Boolean(planMode && planHtml), sessionId);
+		await this.syncPlanHtmlPath(Boolean(planMode && planHtml), sessionId);
 
 		// Slice C: emit status=running AFTER initSessionContext so getCurrentSessionId()
 		// is non-null when clients receive this event. This lets the ledger detect new
@@ -3082,23 +3081,32 @@ export class SessionManager {
 		const turn = createTurnState();
 
 		try {
-			const { prompt, safeAttachments } = await buildPromptAsync({
-				vaultPath: this.vaultPath,
-				allowedAgentRealPaths: this.allowedAgentRealPaths,
-				agentMode: this.agentMode,
-				agentCwd: this.agentCwd,
-				claudeSessionId: resumeProviderSessionId,
-				userMessage,
-				skillContexts,
-				attachments,
-				...(this.planHtmlPath
-					? {
-							planHtmlInstructions: buildPlanHtmlInstructions(
-								this.planHtmlPath,
-							),
-						}
-					: {}),
-			});
+			const runtimeCwd =
+				this.agentMode === "cwd" && this.agentCwd
+					? this.agentCwd
+					: this.vaultPath;
+			const runtimePlanHtmlPath = this.planHtmlPath
+				? toProviderRuntimePath(runtimeCwd, this.planHtmlPath)
+				: undefined;
+			const { prompt, safeAttachments, resourcePaths } = await buildPromptAsync(
+				{
+					vaultPath: this.vaultPath,
+					allowedAgentRealPaths: this.allowedAgentRealPaths,
+					agentMode: this.agentMode,
+					agentCwd: this.agentCwd,
+					claudeSessionId: resumeProviderSessionId,
+					runtimeCwd,
+					userMessage,
+					skillContexts,
+					attachments,
+					...(runtimePlanHtmlPath
+						? {
+								planHtmlInstructions:
+									buildPlanHtmlInstructions(runtimePlanHtmlPath),
+							}
+						: {}),
+				},
+			);
 			let providerPrompt = prompt;
 			if (this.providerHandoffPending && sessionId) {
 				try {
@@ -3131,6 +3139,7 @@ export class SessionManager {
 				wrapperCommand:
 					currentProvider.providerId === "codex" ? "codex" : "claude",
 				safeAttachments,
+				resourcePaths,
 			});
 			let commandArgs: string | undefined;
 			if (commandAction) {
@@ -3169,9 +3178,7 @@ export class SessionManager {
 			await agentSession.setPermissionMode?.(
 				planMode ? "plan" : configuredPermissionMode,
 			);
-			agentSession.setPlanHtmlPath?.(
-				this.planHtmlPath ? toLogical(this.planHtmlPath) : undefined,
-			);
+			agentSession.setPlanHtmlPath?.(runtimePlanHtmlPath);
 
 			// Slice B: deliver this turn's user message via send() rather than
 			// passing it as a one-shot prompt. The long-lived stream pushes it

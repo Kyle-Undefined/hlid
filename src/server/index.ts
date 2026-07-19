@@ -32,6 +32,7 @@ import { formatPersistentConsoleMessage } from "./consoleLog";
 import { bumpDataRevision, subscribeDataRevisions } from "./dataRevision";
 import { handleDbRoute } from "./dbRoutes";
 import { resolveExecutionContext } from "./executionContext";
+import { migrateLegacyAttachmentsToLibrary } from "./libraryMigration";
 import { getLiveSessionsStatus } from "./liveSessions";
 import {
 	createModelCatalog,
@@ -59,6 +60,7 @@ import {
 import { SessionPool } from "./sessionPool";
 import { ShellSessionPool } from "./shellSessionPool";
 import { createShellUpgradeHandler } from "./shellUpgrade";
+import { handleSkillRoute } from "./skillRoutes";
 import { probeExistingInstance } from "./startupProbe";
 import { resolveAllowedTerminalCwd } from "./terminalAccess";
 import { TerminalSessionPool } from "./terminalSessionPool";
@@ -159,6 +161,12 @@ if (process.execPath.endsWith(".exe")) {
 // A friendly second launch should not contend for Umbod's port, rewrite
 // wrappers, or start provider proxies before it exits.
 syncWrappers(config.agents ?? []);
+await migrateLegacyAttachmentsToLibrary().catch((error) => {
+	console.warn(
+		"[library] legacy relic migration deferred:",
+		error instanceof Error ? error.message : String(error),
+	);
+});
 await bootstrapUmbod().catch((error) => {
 	console.error(
 		"[umbod] failed to initialize:",
@@ -516,6 +524,7 @@ const handleAuthenticatedRoute = createAuthenticatedRouteHandler({
 		handleAcpRoute,
 		handleVoiceRoute,
 		handleAccountRoute,
+		(url, request) => handleSkillRoute(url, request, config, providers),
 	],
 	getMcpStatus: () => pool.vaultEntry().manager.getLastMcpStatus() ?? [],
 	handleDb: (url, req) => handleDbRoute(url, req, pool, terminalPool),

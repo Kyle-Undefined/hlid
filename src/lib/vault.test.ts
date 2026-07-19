@@ -198,6 +198,20 @@ describe("scanSkills", () => {
 		expect(skills.map((s) => s.file)).toContain("index.md");
 	});
 
+	it("prefers SKILL.md inside a provider package", () => {
+		const dir = join(root, "skills", "review");
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, "README.md"), md("readme", { name: "wrong" }));
+		writeFileSync(
+			join(dir, "SKILL.md"),
+			md("instructions", { name: "review" }),
+		);
+		const { skills } = scanSkills(root, "skills");
+		expect(skills).toHaveLength(1);
+		expect(skills[0].name).toBe("review");
+		expect(skills[0].file).toBe(join("review", "SKILL.md"));
+	});
+
 	it("skips symlinks inside skills dir", () => {
 		const dir = join(root, "skills");
 		mkdirSync(dir);

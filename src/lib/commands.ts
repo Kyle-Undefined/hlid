@@ -15,7 +15,7 @@ export type CommandDescriptor = {
 	description: string;
 	argumentHint?: string;
 	aliases?: string[];
-	source: "vault" | "provider" | "hlid";
+	source: "vault" | "library" | "provider" | "hlid";
 	providerId?: string;
 	execution: CommandExecution;
 };
@@ -56,7 +56,11 @@ export function skillCommand(skill: Skill): CommandDescriptor {
 		id: `skill:${skill.file}`,
 		name: skill.name,
 		description: skill.description,
-		source: providerOwned ? "provider" : "vault",
+		source: providerOwned
+			? "provider"
+			: skill.source === "hlid"
+				? "library"
+				: "vault",
 		...(skill.providerId ? { providerId: skill.providerId } : {}),
 		execution: providerOwned
 			? { kind: "prompt" }

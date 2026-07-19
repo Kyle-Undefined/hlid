@@ -344,15 +344,19 @@ function StorageSummary({
 				</span>
 			</Field>
 			<Field
-				label="Tracked attachments"
+				label="Hlid library"
 				hint={
 					storage
-						? `${storage.trackedAttachments.toLocaleString()} files`
+						? `${storage.trackedAttachments.toLocaleString()} tracked relics · plans, uploads, reports, and imported skills`
 						: "checking…"
 				}
 			>
 				<span className="text-xs tabular-nums text-muted-foreground">
-					{storage ? formatBytes(storage.trackedAttachmentBytes) : "—"}
+					{storage
+						? formatBytes(
+								storage.libraryBytes ?? storage.trackedAttachmentBytes,
+							)
+						: "—"}
 				</span>
 			</Field>
 			{showOptimize && (

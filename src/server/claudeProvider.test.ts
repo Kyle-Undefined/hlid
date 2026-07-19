@@ -1446,6 +1446,26 @@ describe("ClaudeProvider — supportedCommands", () => {
 	});
 });
 
+describe("ClaudeProvider — listSkills", () => {
+	it("uses the SDK catalog without sending a prompt", async () => {
+		const commands = [
+			{
+				name: "voice",
+				description: "Apply voice rules",
+				argumentHint: "",
+			},
+		];
+		const gen = sdkGen([]);
+		gen.supportedCommands = vi.fn().mockResolvedValue(commands);
+		vi.mocked(query).mockReturnValueOnce(gen);
+
+		await expect(
+			new ClaudeProvider().listSkills?.({ cwd: "/work/project" }),
+		).resolves.toEqual([{ name: "voice", description: "Apply voice rules" }]);
+		expect(gen.supportedCommands).toHaveBeenCalledOnce();
+	});
+});
+
 // ── mcpServerStatus ───────────────────────────────────────────────────────────
 
 describe("ClaudeProvider — mcpServerStatus", () => {

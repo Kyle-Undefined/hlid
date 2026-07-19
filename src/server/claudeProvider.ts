@@ -17,6 +17,7 @@ import type {
 	ProviderContextUsage,
 	ProviderEffortInfo,
 	ProviderModelInfo,
+	ProviderSkillInfo,
 	ProviderWindowReading,
 	SendOptions,
 	SlashCommand,
@@ -1425,6 +1426,43 @@ export class ClaudeProvider implements AgentProvider {
 		});
 		try {
 			return mapClaudeModels(await withTimeout(q.supportedModels(), 10_000));
+		} finally {
+			ac.abort();
+		}
+	}
+
+	// fallow-ignore-next-line unused-class-member -- Invoked through AgentProvider.listSkills by the provider skill catalog.
+	async listSkills(context: {
+		cwd: string;
+		executable?: string;
+	}): Promise<ProviderSkillInfo[]> {
+		const executable = context.executable ?? resolveClaudeExecutable();
+		const ac = new AbortController();
+		// biome-ignore lint/suspicious/noExplicitAny: SDK canUseTool type changed between versions
+		const denyAllCanUseTool: any = async () => ({
+			behavior: "deny",
+			message: "skill catalog probe",
+		});
+		const q = query({
+			prompt: (async function* (): AsyncGenerator<SdkUserMessage> {
+				await new Promise<never>(() => {});
+			})(),
+			options: {
+				cwd: context.cwd,
+				abortController: ac,
+				persistSession: false,
+				settingSources: ["user", "project", "local"],
+				maxTurns: 1,
+				...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
+				canUseTool: denyAllCanUseTool,
+			},
+		});
+		try {
+			const commands = await withTimeout(q.supportedCommands(), 10_000);
+			return commands.map((command) => ({
+				name: command.name,
+				description: command.description,
+			}));
 		} finally {
 			ac.abort();
 		}

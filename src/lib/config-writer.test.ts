@@ -49,6 +49,7 @@ function makeConfig(overrides: Partial<HlidConfig> = {}): HlidConfig {
 		ui: {
 			enter_to_submit: true,
 			hide_skills_index: true,
+			show_provider_entries: false,
 			theme: "tan",
 		},
 		status_vocabulary: {

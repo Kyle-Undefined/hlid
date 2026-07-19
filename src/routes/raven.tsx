@@ -1541,6 +1541,7 @@ export function ChatPage() {
 		commands,
 		activeSkills,
 		commandProviderId,
+		config.ui.show_provider_entries,
 	);
 
 	function handleSkillSelect(command: CommandDescriptor) {

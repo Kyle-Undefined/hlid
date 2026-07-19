@@ -45,6 +45,16 @@ export type SlashCommand = {
 	action?: "review" | "computer-use";
 };
 
+/** Provider-native skill metadata used by Hlid's review-before-import catalog. */
+export type ProviderSkillInfo = {
+	name: string;
+	description: string;
+	/** Present when the provider SDK exposes the package's SKILL.md location. */
+	path?: string;
+	scope?: string;
+	enabled?: boolean;
+};
+
 /**
  * Provider-agnostic account info shape — a subset of the SDK's AccountInfo
  * (email, organization, subscriptionType only; tokenSource/apiKeySource/
@@ -378,6 +388,11 @@ export interface AgentProvider {
 	>;
 	/** Live-fetch the provider's model catalog. Falls back to the static `models` list on failure. */
 	listModels?(): Promise<ProviderModelInfo[]>;
+	/** Discover skills visible to this provider for a concrete working directory. */
+	listSkills?(context: {
+		cwd: string;
+		executable?: string;
+	}): Promise<ProviderSkillInfo[]>;
 	query(params: AgentQueryParams): AgentSession;
 	/**
 	 * When present, the generic proxy infra will spin up an HTTP proxy for this
