@@ -56,6 +56,10 @@ const liveStats: LiveStats = {
 	output_tokens: 75,
 	cache_read_tokens: 0,
 	cache_creation_tokens: 0,
+	pending_input_tokens: 0,
+	pending_output_tokens: 0,
+	pending_cache_read_tokens: 0,
+	pending_cache_creation_tokens: 0,
 	context_window: null,
 	max_output_tokens: null,
 	last_context_used: null,
@@ -125,6 +129,30 @@ describe("sessionDisplayUsage", () => {
 		expect(
 			sessionDisplayUsage(session, true, { ...liveStats, queries: 0 }),
 		).toEqual({ cost: 1.25, tokens: 150 });
+	});
+
+	it("adds the in-flight query snapshot before the first query completes", () => {
+		expect(
+			sessionDisplayUsage(session, true, {
+				...liveStats,
+				queries: 0,
+				pending_input_tokens: 120,
+				pending_output_tokens: 30,
+				pending_cache_read_tokens: 40,
+				pending_cache_creation_tokens: 5,
+			}),
+		).toEqual({ cost: 1.25, tokens: 345 });
+	});
+
+	it("adds the in-flight query snapshot to completed live totals", () => {
+		expect(
+			sessionDisplayUsage(session, true, {
+				...liveStats,
+				pending_input_tokens: 20,
+				pending_output_tokens: 10,
+				pending_cache_read_tokens: 5,
+			}),
+		).toEqual({ cost: 2.5, tokens: 410 });
 	});
 });
 

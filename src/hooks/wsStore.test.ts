@@ -189,6 +189,85 @@ describe("wsStore state management", () => {
 	// ── live stats ────────────────────────────────────────────────────────────
 
 	describe("live stats", () => {
+		it("replaces the in-flight query snapshot as usage updates arrive", () => {
+			store.applyUsageUpdate({
+				type: "usage_update",
+				input_tokens: 80,
+				output_tokens: 30,
+				cache_read_tokens: 40,
+				cache_creation_tokens: 0,
+				query_input_tokens: 80,
+				query_output_tokens: 30,
+				query_cache_read_tokens: 40,
+				query_cache_creation_tokens: 0,
+				tokens_in_context: 120,
+				context_window: 258_400,
+			});
+			store.applyUsageUpdate({
+				type: "usage_update",
+				input_tokens: 40,
+				output_tokens: 40,
+				cache_read_tokens: 140,
+				cache_creation_tokens: 0,
+				query_input_tokens: 120,
+				query_output_tokens: 70,
+				query_cache_read_tokens: 180,
+				query_cache_creation_tokens: 0,
+				tokens_in_context: 180,
+				context_window: 258_400,
+			});
+
+			expect(store.getLiveStats()).toMatchObject({
+				pending_input_tokens: 120,
+				pending_output_tokens: 70,
+				pending_cache_read_tokens: 180,
+				pending_cache_creation_tokens: 0,
+				queries: 0,
+			});
+		});
+
+		it("reconciles the pending snapshot exactly once when done arrives", () => {
+			store.applyUsageUpdate({
+				type: "usage_update",
+				input_tokens: 120,
+				output_tokens: 70,
+				cache_read_tokens: 180,
+				cache_creation_tokens: 0,
+				query_input_tokens: 120,
+				query_output_tokens: 70,
+				query_cache_read_tokens: 180,
+				query_cache_creation_tokens: 0,
+				tokens_in_context: 300,
+				context_window: 258_400,
+			});
+			store.applyDone({
+				type: "done",
+				cost: null,
+				estimated_cost: 0.01,
+				turns: 1,
+				duration_ms: 500,
+				input_tokens: 120,
+				output_tokens: 70,
+				cache_read_tokens: 180,
+				cache_creation_tokens: 0,
+				context_window: 258_400,
+				max_output_tokens: null,
+				stop_reason: "completed",
+				tokens_in_context: 300,
+			});
+
+			expect(store.getLiveStats()).toMatchObject({
+				input_tokens: 120,
+				output_tokens: 70,
+				cache_read_tokens: 180,
+				pending_input_tokens: 0,
+				pending_output_tokens: 0,
+				pending_cache_read_tokens: 0,
+				pending_cache_creation_tokens: 0,
+				queries: 1,
+			});
+		});
+
 		it("seedContextStats updates context_window and last_context_used", () => {
 			store.seedContextStats(200_000, 50_000);
 			const s = store.getLiveStats();

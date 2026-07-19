@@ -22,6 +22,7 @@ import {
 	applyContextUpdate,
 	applyDone,
 	applyUsageUpdate,
+	clearPendingUsage,
 	resetLiveStatsForTesting,
 	setPendingSessionToday,
 	switchStatsContext,
@@ -274,6 +275,7 @@ function setSnap(next: Partial<Snapshot>) {
 // ─── Message handlers ────────────────────────────────────────────────────────
 
 function onStatus(msg: Extract<ServerMessage, { type: "status" }>): void {
+	if (msg.state !== "running") clearPendingUsage();
 	// Do not clear actualModel on run start — let usage_update update it
 	// naturally. This preserves the mismatch badge across submits so it only
 	// changes when the actual model actually changes. handleClear calls

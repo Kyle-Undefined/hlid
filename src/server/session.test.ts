@@ -4686,6 +4686,10 @@ describe("SessionManager — exact context usage", () => {
 		expect(emitted).toContainEqual(
 			expect.objectContaining({
 				type: "usage_update",
+				query_input_tokens: 0,
+				query_output_tokens: 0,
+				query_cache_read_tokens: 0,
+				query_cache_creation_tokens: 0,
 				tokens_in_context: 1_234,
 				context_window: 8_192,
 			}),

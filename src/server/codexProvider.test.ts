@@ -1782,6 +1782,12 @@ describe("CodexAgentSession — notifications", () => {
 			contextWindow: 128_000,
 			cacheReadTokens: 3,
 			cacheCreationTokens: undefined,
+			queryUsage: {
+				inputTokens: 9,
+				outputTokens: 7,
+				cacheReadTokens: 3,
+				cacheCreationTokens: 0,
+			},
 			model: undefined,
 		});
 		expect(await nextSessionEvent(events)).toEqual({
@@ -1852,6 +1858,12 @@ describe("CodexAgentSession — notifications", () => {
 			outputTokens: 30,
 			cacheReadTokens: 40,
 			contextWindow: 258_400,
+			queryUsage: {
+				inputTokens: 80,
+				outputTokens: 30,
+				cacheReadTokens: 40,
+				cacheCreationTokens: 0,
+			},
 		});
 		expect(await nextSessionEvent(events)).toMatchObject({
 			type: "usage",
@@ -1859,6 +1871,12 @@ describe("CodexAgentSession — notifications", () => {
 			outputTokens: 40,
 			cacheReadTokens: 140,
 			contextWindow: 258_400,
+			queryUsage: {
+				inputTokens: 120,
+				outputTokens: 70,
+				cacheReadTokens: 180,
+				cacheCreationTokens: 0,
+			},
 		});
 		expect(await nextSessionEvent(events)).toMatchObject({
 			type: "done",

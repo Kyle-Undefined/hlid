@@ -87,6 +87,12 @@ type TurnState = {
 		cache_read_input_tokens?: number;
 		cache_creation_input_tokens?: number;
 	} | null;
+	liveQueryUsage: {
+		inputTokens: number;
+		outputTokens: number;
+		cacheReadTokens: number;
+		cacheCreationTokens: number;
+	};
 	lastKnownContextWindow: number | null;
 	lastContextTokens: number | null;
 	hadToolEvents: boolean;
@@ -416,6 +422,12 @@ function createTurnState(): TurnState {
 		lastBlockType: null,
 		lastActualModel: null,
 		lastTurnUsage: null,
+		liveQueryUsage: {
+			inputTokens: 0,
+			outputTokens: 0,
+			cacheReadTokens: 0,
+			cacheCreationTokens: 0,
+		},
 		lastKnownContextWindow: null,
 		lastContextTokens: null,
 		hadToolEvents: false,
@@ -1802,6 +1814,15 @@ export class SessionManager {
 	): void {
 		const cacheRead = event.cacheReadTokens ?? 0;
 		const cacheCreation = event.cacheCreationTokens ?? 0;
+		turn.liveQueryUsage = event.queryUsage
+			? { ...event.queryUsage }
+			: {
+					inputTokens: turn.liveQueryUsage.inputTokens + event.inputTokens,
+					outputTokens: turn.liveQueryUsage.outputTokens + event.outputTokens,
+					cacheReadTokens: turn.liveQueryUsage.cacheReadTokens + cacheRead,
+					cacheCreationTokens:
+						turn.liveQueryUsage.cacheCreationTokens + cacheCreation,
+				};
 		turn.lastTurnUsage = {
 			input_tokens: event.inputTokens,
 			cache_read_input_tokens: event.cacheReadTokens,
@@ -1819,6 +1840,10 @@ export class SessionManager {
 			output_tokens: event.outputTokens,
 			cache_read_tokens: cacheRead,
 			cache_creation_tokens: cacheCreation,
+			query_input_tokens: turn.liveQueryUsage.inputTokens,
+			query_output_tokens: turn.liveQueryUsage.outputTokens,
+			query_cache_read_tokens: turn.liveQueryUsage.cacheReadTokens,
+			query_cache_creation_tokens: turn.liveQueryUsage.cacheCreationTokens,
 			tokens_in_context: tokensInContext,
 			actualModel: event.model,
 			context_window: turn.lastKnownContextWindow ?? DEFAULT_CONTEXT_WINDOW,

@@ -15,6 +15,7 @@ import {
 	resetRavenTerminalsForTesting,
 } from "./ravenTerminalStore";
 import * as wsDataRevisionStore from "./wsDataRevisionStore";
+import * as wsLiveStatsStore from "./wsLiveStatsStore";
 import * as wsSessionStatusStore from "./wsSessionStatusStore";
 import * as wsTransport from "./wsStore";
 import { type MockWs, makeMockWs, WS_STATES } from "./wsStore.test-utils";
@@ -23,6 +24,7 @@ const wsStore = {
 	...wsTransport,
 	...wsSessionStatusStore,
 	...wsDataRevisionStore,
+	...wsLiveStatsStore,
 };
 
 let currentWs: MockWs;
@@ -264,6 +266,26 @@ describe("pending interaction status", () => {
 			decision: "approved",
 		});
 		expect(wsStore.getSnapshot().hasPendingPermissions).toBe(false);
+	});
+
+	it("clears an unfinished token snapshot when the session stops running", () => {
+		receive({
+			type: "usage_update",
+			input_tokens: 20,
+			output_tokens: 5,
+			cache_read_tokens: 10,
+			cache_creation_tokens: 0,
+			query_input_tokens: 20,
+			query_output_tokens: 5,
+			query_cache_read_tokens: 10,
+			query_cache_creation_tokens: 0,
+			tokens_in_context: 30,
+			context_window: 200_000,
+		});
+		expect(wsStore.getLiveStats().pending_input_tokens).toBe(20);
+
+		receive({ type: "status", state: "error", model: "codex" });
+		expect(wsStore.getLiveStats().pending_input_tokens).toBe(0);
 	});
 });
 

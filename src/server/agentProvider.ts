@@ -148,6 +148,13 @@ export type AgentEvent =
 			outputTokens: number;
 			cacheReadTokens?: number;
 			cacheCreationTokens?: number;
+			/** Authoritative cumulative usage for the active query, when available. */
+			queryUsage?: {
+				inputTokens: number;
+				outputTokens: number;
+				cacheReadTokens: number;
+				cacheCreationTokens: number;
+			};
 			model?: string;
 			/** Context window of the model serving this turn, when the provider reports it. */
 			contextWindow?: number;

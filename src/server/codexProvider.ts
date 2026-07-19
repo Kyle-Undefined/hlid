@@ -2550,8 +2550,25 @@ class CodexAgentSession implements AgentSession {
 		const usage = maybeUsage(params);
 		if (usage?.type !== "usage") return;
 		this.recordUsage(usage);
-		this.recordCumulativeUsage(this.threadId ?? "", params);
-		this.events.push(usage);
+		const capturedCumulative = this.recordCumulativeUsage(
+			this.threadId ?? "",
+			params,
+		);
+		const queryUsage = capturedCumulative
+			? this.queryUsage
+			: {
+					inputTokens: this.queryUsage.inputTokens + usage.inputTokens,
+					outputTokens: this.queryUsage.outputTokens + usage.outputTokens,
+					cacheReadTokens:
+						this.queryUsage.cacheReadTokens + (usage.cacheReadTokens ?? 0),
+					cacheCreationTokens:
+						this.queryUsage.cacheCreationTokens +
+						(usage.cacheCreationTokens ?? 0),
+				};
+		this.events.push({
+			...usage,
+			queryUsage: { ...queryUsage },
+		});
 	}
 
 	private handleChildTokenUsageUpdated(

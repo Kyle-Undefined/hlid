@@ -126,16 +126,20 @@ export type AgentSleepMessage = {
 	session_id?: string;
 };
 
-// Per-turn usage snapshot, emitted on every assistant message so the UI
-// can update the context gauge / live stats without waiting for `done`.
-// Cumulative fields (cost, duration, num_turns, stop_reason, total tokens)
-// are NOT included here — those only land at the result boundary.
+// Per-call usage snapshot, emitted while a query is active so the UI can update
+// the context gauge and display in-flight tokens without waiting for `done`.
+// Cost, duration, turns, and stop reason remain result-boundary fields.
 export type UsageUpdateMessage = {
 	type: "usage_update";
 	input_tokens: number;
 	output_tokens: number;
 	cache_read_tokens: number;
 	cache_creation_tokens: number;
+	/** Authoritative cumulative token buckets for the active query so far. */
+	query_input_tokens: number;
+	query_output_tokens: number;
+	query_cache_read_tokens: number;
+	query_cache_creation_tokens: number;
 	tokens_in_context: number;
 	// The model the CLI actually used for this inference. May differ from
 	// the configured vault model if an agent's CLAUDE.md frontmatter, slash

@@ -47,6 +47,12 @@ export function sessionDisplayUsage(
 	isActive: boolean,
 	liveStats?: LiveStats,
 ): { cost: number; tokens: number } {
+	const pendingTokens = liveStats
+		? liveStats.pending_input_tokens +
+			liveStats.pending_output_tokens +
+			liveStats.pending_cache_read_tokens +
+			liveStats.pending_cache_creation_tokens
+		: 0;
 	if (isActive && liveStats && liveStats.queries > 0) {
 		return {
 			cost: liveStats.cost + (liveStats.estimated_cost ?? 0),
@@ -54,7 +60,8 @@ export function sessionDisplayUsage(
 				liveStats.input_tokens +
 				liveStats.output_tokens +
 				liveStats.cache_read_tokens +
-				liveStats.cache_creation_tokens,
+				liveStats.cache_creation_tokens +
+				pendingTokens,
 		};
 	}
 	return {
@@ -63,7 +70,8 @@ export function sessionDisplayUsage(
 			(session.total_input_tokens ?? 0) +
 			(session.total_output_tokens ?? 0) +
 			(session.total_cache_read_tokens ?? 0) +
-			(session.total_cache_creation_tokens ?? 0),
+			(session.total_cache_creation_tokens ?? 0) +
+			(isActive ? pendingTokens : 0),
 	};
 }
 
