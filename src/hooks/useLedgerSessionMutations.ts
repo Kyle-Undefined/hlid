@@ -50,6 +50,14 @@ export function useLedgerSessionMutations({
 		setForkStatus(null);
 	}, [page]);
 
+	// forkStatus is a transient confirmation, not a persistent banner — auto-
+	// dismiss it so it doesn't sit on screen forever after a fork lands.
+	useEffect(() => {
+		if (!forkStatus) return;
+		const timer = setTimeout(() => setForkStatus(null), 5_000);
+		return () => clearTimeout(timer);
+	}, [forkStatus]);
+
 	const sessionsData = useMemo(
 		() => ({
 			...sessionPage,
@@ -161,6 +169,7 @@ export function useLedgerSessionMutations({
 		forkSession,
 		forkingIds,
 		forkStatus,
+		dismissForkStatus: useCallback(() => setForkStatus(null), []),
 		cleanupSessions,
 	};
 }

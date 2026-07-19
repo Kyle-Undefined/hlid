@@ -1,6 +1,6 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, X } from "lucide-react";
 import type { ReactNode } from "react";
 import {
 	useCallback,
@@ -1271,8 +1271,16 @@ function StatsPage() {
 				</div>
 			)}
 			{!mutations.mutationError && mutations.forkStatus && (
-				<output className="block border-b border-primary/30 bg-primary/5 px-4 py-2 text-xs text-primary">
+				<output className="flex items-center justify-between gap-3 border-b border-primary/30 bg-primary/5 px-4 py-2 text-xs text-primary">
 					{mutations.forkStatus}
+					<button
+						type="button"
+						onClick={mutations.dismissForkStatus}
+						aria-label="Dismiss"
+						className="shrink-0 text-primary/60 hover:text-primary"
+					>
+						<X className="h-3 w-3" />
+					</button>
 				</output>
 			)}
 

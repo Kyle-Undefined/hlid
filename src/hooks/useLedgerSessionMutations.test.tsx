@@ -115,6 +115,46 @@ describe("useLedgerSessionMutations", () => {
 		expect(result.current.mutationError).toBeNull();
 	});
 
+	it("auto-dismisses the fork status banner after a few seconds", async () => {
+		vi.useFakeTimers();
+		try {
+			const deps = dependencies();
+			const { result } = renderHook(() =>
+				useLedgerSessionMutations({
+					page: 1,
+					sessionPage: { sessions: [session("one")], total: 1 },
+					dependencies: deps,
+				}),
+			);
+
+			await act(() => result.current.forkSession("one"));
+			expect(result.current.forkStatus).not.toBeNull();
+
+			await act(async () => {
+				vi.advanceTimersByTime(5_000);
+			});
+			expect(result.current.forkStatus).toBeNull();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("dismissForkStatus clears the banner immediately", async () => {
+		const deps = dependencies();
+		const { result } = renderHook(() =>
+			useLedgerSessionMutations({
+				page: 1,
+				sessionPage: { sessions: [session("one")], total: 1 },
+				dependencies: deps,
+			}),
+		);
+
+		await act(() => result.current.forkSession("one"));
+		expect(result.current.forkStatus).not.toBeNull();
+		act(() => result.current.dismissForkStatus());
+		expect(result.current.forkStatus).toBeNull();
+	});
+
 	it("surfaces a fork failure without reloading", async () => {
 		const deps = dependencies();
 		deps.forkSession.mockRejectedValue(new Error("fork failed"));
