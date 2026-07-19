@@ -14,6 +14,12 @@ function initialSettings(): SettingsInitial {
 			status: { state: "disabled", model: "" },
 			models: [],
 		},
+		cliProxyInfo: {
+			state: "not_installed",
+			managed: false,
+			authenticated: false,
+			oauth: "idle",
+		},
 		acpCatalog: [],
 	};
 }

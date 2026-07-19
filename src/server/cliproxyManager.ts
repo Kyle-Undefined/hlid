@@ -1,0 +1,665 @@
+import type { ChildProcess } from "node:child_process";
+import { spawn } from "node:child_process";
+import { createHash, randomBytes } from "node:crypto";
+import {
+	chmodSync,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
+import { basename, dirname, isAbsolute, join, relative } from "node:path";
+import type { HlidConfig } from "#/config";
+import { CLIPROXY_DIR } from "#/lib/paths";
+import { runBoundedProcess } from "#/lib/process";
+import * as db from "../db";
+
+const RELEASE_URL =
+	"https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest";
+const USER_AGENT = "hlid-cliproxy-integration";
+const MAX_ARCHIVE_BYTES = 100 * 1024 * 1024;
+const MAX_CHECKSUM_BYTES = 128 * 1024;
+const MANAGED_BASE_URL = "http://127.0.0.1:8317";
+const RELEASE_CACHE_MS = 10 * 60 * 1000;
+
+type ReleaseAsset = {
+	name: string;
+	browser_download_url: string;
+	size?: number;
+};
+
+type Release = {
+	tag_name: string;
+	assets: ReleaseAsset[];
+};
+
+type InstalledState = {
+	version: string;
+	installDir: string;
+	executable: string;
+	clientKey: string;
+};
+
+export type CliProxyInstallState =
+	| "unsupported"
+	| "not_installed"
+	| "installed"
+	| "starting"
+	| "running"
+	| "downloading"
+	| "error";
+
+export type CliProxyStatus = {
+	state: CliProxyInstallState;
+	managed: boolean;
+	installedVersion?: string;
+	latestVersion?: string;
+	updateAvailable?: boolean;
+	authenticated: boolean;
+	oauth: "idle" | "running" | "connected" | "error";
+	error?: string;
+	download?: { received: number; total: number | null };
+};
+
+function safeVersion(tag: string): string {
+	const version = tag.replace(/^v/i, "").trim();
+	if (!/^\d+(?:\.\d+){1,3}(?:[-+][A-Za-z0-9.-]+)?$/.test(version)) {
+		throw new Error("release returned an invalid version");
+	}
+	return version;
+}
+
+function assetSuffix(arch = process.arch): string {
+	return arch === "arm64" ? "windows_arm64.zip" : "windows_amd64.zip";
+}
+
+export function selectCliProxyReleaseAssets(
+	release: Release,
+	arch = process.arch,
+): { version: string; archive: ReleaseAsset; checksums: ReleaseAsset } {
+	const suffix = assetSuffix(arch);
+	const archive = release.assets.find((asset) => asset.name.endsWith(suffix));
+	const checksums = release.assets.find(
+		(asset) => asset.name.toLowerCase() === "checksums.txt",
+	);
+	if (!archive || !checksums) {
+		throw new Error(`release is missing ${suffix} or checksums.txt`);
+	}
+	if ((archive.size ?? 0) > MAX_ARCHIVE_BYTES) {
+		throw new Error("release archive exceeds the safety limit");
+	}
+	return { version: safeVersion(release.tag_name), archive, checksums };
+}
+
+export function checksumForAsset(text: string, assetName: string): string {
+	for (const line of text.split(/\r?\n/)) {
+		const match = line.trim().match(/^([a-fA-F0-9]{64})\s+\*?(.+)$/);
+		if (match && basename(match[2]) === assetName)
+			return match[1].toLowerCase();
+	}
+	throw new Error(`checksum not found for ${assetName}`);
+}
+
+function yamlString(value: string): string {
+	return JSON.stringify(value);
+}
+
+export function managedCliProxyConfig(
+	authDir: string,
+	clientKey: string,
+): string {
+	return [
+		`host: ${yamlString("127.0.0.1")}`,
+		"port: 8317",
+		`auth-dir: ${yamlString(authDir)}`,
+		"api-keys:",
+		`  - ${yamlString(clientKey)}`,
+		"remote-management:",
+		"  allow-remote: false",
+		`  secret-key: ${yamlString("")}`,
+		"  disable-control-panel: true",
+		"usage-statistics-enabled: false",
+		"logging-to-file: false",
+		"",
+	].join("\n");
+}
+
+async function boundedDownload(
+	url: string,
+	limit: number,
+	onProgress?: (received: number, total: number | null) => void,
+): Promise<Buffer> {
+	const response = await fetch(url, {
+		headers: { "User-Agent": USER_AGENT, Accept: "application/octet-stream" },
+		signal: AbortSignal.timeout(120_000),
+	});
+	if (!response.ok || !response.body) {
+		throw new Error(`download failed with HTTP ${response.status}`);
+	}
+	const declared = Number(response.headers.get("content-length")) || null;
+	if (declared && declared > limit)
+		throw new Error("download exceeds safety limit");
+	const reader = response.body.getReader();
+	const chunks: Uint8Array[] = [];
+	let received = 0;
+	for (;;) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		received += value.byteLength;
+		if (received > limit) {
+			await reader.cancel();
+			throw new Error("download exceeds safety limit");
+		}
+		chunks.push(value);
+		onProgress?.(received, declared);
+	}
+	return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)));
+}
+
+function findExecutable(root: string): string {
+	for (const entry of readdirSync(root, { withFileTypes: true })) {
+		const candidate = join(root, entry.name);
+		if (entry.isDirectory()) {
+			const nested = findExecutable(candidate);
+			if (nested) return nested;
+		} else if (/^(?:cli-proxy-api|cliproxyapi)\.exe$/i.test(entry.name)) {
+			return candidate;
+		}
+	}
+	return "";
+}
+
+function parseState(path: string): InstalledState | null {
+	try {
+		const value = JSON.parse(readFileSync(path, "utf8")) as InstalledState;
+		if (
+			typeof value.version !== "string" ||
+			typeof value.installDir !== "string" ||
+			typeof value.executable !== "string" ||
+			typeof value.clientKey !== "string" ||
+			!existsSync(value.executable)
+		) {
+			return null;
+		}
+		const rel = relative(dirname(path), value.executable);
+		if (rel.startsWith("..") || isAbsolute(rel) || rel === "") return null;
+		const installRel = relative(dirname(path), value.installDir);
+		if (
+			installRel.startsWith("..") ||
+			isAbsolute(installRel) ||
+			installRel === ""
+		)
+			return null;
+		const executableRel = relative(value.installDir, value.executable);
+		if (
+			executableRel.startsWith("..") ||
+			isAbsolute(executableRel) ||
+			executableRel === ""
+		)
+			return null;
+		return value;
+	} catch {
+		return null;
+	}
+}
+
+export class CliProxyManager {
+	private config: HlidConfig["cliproxy"];
+	private runtime: ChildProcess | null = null;
+	private oauthProcess: ChildProcess | null = null;
+	private releaseCache: { value: Release; at: number } | null = null;
+	private statusValue: CliProxyStatus;
+	private operation: Promise<void> | null = null;
+
+	constructor(
+		config: HlidConfig["cliproxy"],
+		private readonly root = CLIPROXY_DIR,
+		private readonly platform = process.platform,
+	) {
+		this.config = config;
+		const installed = this.installed();
+		this.statusValue = {
+			state:
+				platform !== "win32"
+					? "unsupported"
+					: installed
+						? "installed"
+						: "not_installed",
+			managed: config.mode === "managed",
+			installedVersion: installed?.version,
+			authenticated: false,
+			oauth: "idle",
+		};
+	}
+
+	private get statePath(): string {
+		return join(this.root, "managed.json");
+	}
+
+	private get authDir(): string {
+		return join(this.root, "auth");
+	}
+
+	private get configPath(): string {
+		return join(this.root, "config.yaml");
+	}
+
+	private installed(): InstalledState | null {
+		return parseState(this.statePath);
+	}
+
+	private hasCodexAuth(): boolean {
+		if (!existsSync(this.authDir)) return false;
+		for (const entry of readdirSync(this.authDir, { withFileTypes: true })) {
+			if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+			try {
+				const value = JSON.parse(
+					readFileSync(join(this.authDir, entry.name), "utf8"),
+				) as Record<string, unknown>;
+				if (
+					[value.type, value.provider].some(
+						(item) =>
+							typeof item === "string" && item.toLowerCase() === "codex",
+					)
+				) {
+					return true;
+				}
+			} catch {}
+		}
+		return false;
+	}
+
+	status(): CliProxyStatus {
+		return { ...this.statusValue };
+	}
+
+	connection(): { base_url: string; api_key: string } | null {
+		if (this.config.mode === "external") {
+			return this.config.enabled
+				? { base_url: this.config.base_url, api_key: this.config.api_key }
+				: null;
+		}
+		const installed = this.installed();
+		return this.config.enabled && installed
+			? { base_url: MANAGED_BASE_URL, api_key: installed.clientKey }
+			: null;
+	}
+
+	async initialize(): Promise<void> {
+		const authenticated = this.hasCodexAuth();
+		this.statusValue.authenticated = authenticated;
+		this.statusValue.oauth = authenticated ? "connected" : "idle";
+		if (
+			this.config.mode === "managed" &&
+			this.config.enabled &&
+			this.installed()
+		) {
+			await this.start();
+		}
+	}
+
+	async syncConfig(config: HlidConfig["cliproxy"]): Promise<void> {
+		this.config = config;
+		this.statusValue.managed = config.mode === "managed";
+		if (config.mode !== "managed" || !config.enabled) await this.stop();
+		else if (this.installed()) await this.start();
+	}
+
+	private async release(refresh = false): Promise<Release> {
+		if (
+			!refresh &&
+			this.releaseCache &&
+			Date.now() - this.releaseCache.at < RELEASE_CACHE_MS
+		) {
+			return this.releaseCache.value;
+		}
+		const response = await fetch(RELEASE_URL, {
+			headers: {
+				"User-Agent": USER_AGENT,
+				Accept: "application/vnd.github+json",
+			},
+			signal: AbortSignal.timeout(10_000),
+		});
+		if (!response.ok)
+			throw new Error(`release check failed with HTTP ${response.status}`);
+		const value = (await response.json()) as Release;
+		if (!Array.isArray(value.assets))
+			throw new Error("release response is invalid");
+		this.releaseCache = { value, at: Date.now() };
+		return value;
+	}
+
+	async refreshRelease(): Promise<CliProxyStatus> {
+		try {
+			const selected = selectCliProxyReleaseAssets(await this.release(true));
+			const installed = this.installed();
+			this.statusValue.latestVersion = selected.version;
+			this.statusValue.updateAvailable =
+				Boolean(installed) && installed?.version !== selected.version;
+			this.statusValue.error = undefined;
+		} catch (error) {
+			this.statusValue.error =
+				error instanceof Error ? error.message : "release check failed";
+		}
+		return this.status();
+	}
+
+	async install(): Promise<void> {
+		if (this.platform !== "win32")
+			throw new Error("managed CLIProxy requires Windows");
+		if (this.operation) throw new Error("another CLIProxy operation is active");
+		this.operation = this.installInner()
+			.catch((error) => {
+				this.statusValue = {
+					...this.statusValue,
+					state:
+						this.runtime && this.runtime.exitCode === null
+							? "running"
+							: "error",
+					download: undefined,
+					error:
+						error instanceof Error ? error.message : "CLIProxy install failed",
+				};
+				throw error;
+			})
+			.finally(() => {
+				this.operation = null;
+			});
+		return this.operation;
+	}
+
+	private async installInner(): Promise<void> {
+		const prior = this.installed();
+		const priorWasRunning = Boolean(
+			this.runtime && this.runtime.exitCode === null,
+		);
+		this.statusValue = {
+			...this.statusValue,
+			state: "downloading",
+			error: undefined,
+			download: { received: 0, total: null },
+		};
+		const selected = selectCliProxyReleaseAssets(await this.release(true));
+		const checksums = await boundedDownload(
+			selected.checksums.browser_download_url,
+			MAX_CHECKSUM_BYTES,
+		);
+		const expected = checksumForAsset(
+			checksums.toString("utf8"),
+			selected.archive.name,
+		);
+		const archive = await boundedDownload(
+			selected.archive.browser_download_url,
+			MAX_ARCHIVE_BYTES,
+			(received, total) => {
+				this.statusValue.download = { received, total };
+			},
+		);
+		const actual = createHash("sha256").update(archive).digest("hex");
+		if (actual !== expected) throw new Error("download checksum did not match");
+
+		await this.stop();
+		mkdirSync(this.root, { recursive: true });
+		const stage = join(this.root, `.stage-${randomBytes(8).toString("hex")}`);
+		const archivePath = join(stage, selected.archive.name);
+		const extractPath = join(stage, "extract");
+		mkdirSync(extractPath, { recursive: true });
+		writeFileSync(archivePath, archive, { mode: 0o600 });
+		try {
+			const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
+			const result = await runBoundedProcess(
+				"powershell.exe",
+				[
+					"-NoProfile",
+					"-NonInteractive",
+					"-Command",
+					`Expand-Archive -LiteralPath ${literal(archivePath)} -DestinationPath ${literal(extractPath)} -Force`,
+				],
+				{ timeoutMs: 60_000, timeoutError: "CLIProxy extraction timed out" },
+			);
+			if (result.code !== 0)
+				throw new Error("PowerShell could not extract CLIProxy");
+			const stagedExecutable = findExecutable(extractPath);
+			if (!stagedExecutable)
+				throw new Error("release archive did not contain cli-proxy-api.exe");
+			const versionDir = join(
+				this.root,
+				"versions",
+				`${selected.version}-${randomBytes(6).toString("hex")}`,
+			);
+			mkdirSync(dirname(versionDir), { recursive: true });
+			renameSync(extractPath, versionDir);
+			const executable = join(
+				versionDir,
+				relative(extractPath, stagedExecutable),
+			);
+			const clientKey =
+				prior?.clientKey ?? randomBytes(32).toString("base64url");
+			mkdirSync(this.authDir, { recursive: true, mode: 0o700 });
+			writeFileSync(
+				this.configPath,
+				managedCliProxyConfig(this.authDir, clientKey),
+				{ mode: 0o600 },
+			);
+			writeFileSync(
+				this.statePath,
+				JSON.stringify(
+					{
+						version: selected.version,
+						installDir: versionDir,
+						executable,
+						clientKey,
+					},
+					null,
+					2,
+				),
+				{ mode: 0o600 },
+			);
+			chmodSync(this.statePath, 0o600);
+			this.statusValue = {
+				...this.statusValue,
+				state: "installed",
+				installedVersion: selected.version,
+				latestVersion: selected.version,
+				updateAvailable: false,
+				download: undefined,
+			};
+		} finally {
+			rmSync(stage, { recursive: true, force: true });
+		}
+		try {
+			await this.start(true);
+		} catch (error) {
+			const failed = this.installed();
+			if (prior) {
+				writeFileSync(this.statePath, JSON.stringify(prior, null, 2), {
+					mode: 0o600,
+				});
+				writeFileSync(
+					this.configPath,
+					managedCliProxyConfig(this.authDir, prior.clientKey),
+					{ mode: 0o600 },
+				);
+				this.statusValue.installedVersion = prior.version;
+				if (
+					priorWasRunning ||
+					(this.config.mode === "managed" && this.config.enabled)
+				) {
+					await this.start(true).catch(() => {});
+				}
+			} else {
+				rmSync(this.statePath, { force: true });
+				rmSync(this.configPath, { force: true });
+				this.statusValue.installedVersion = undefined;
+			}
+			if (failed && failed.executable !== prior?.executable) {
+				rmSync(failed.installDir, { recursive: true, force: true });
+			}
+			throw error;
+		}
+		const current = this.installed();
+		const versionsDir = join(this.root, "versions");
+		if (current && existsSync(versionsDir)) {
+			for (const entry of readdirSync(versionsDir, { withFileTypes: true })) {
+				if (!entry.isDirectory()) continue;
+				const candidate = join(versionsDir, entry.name);
+				if (candidate !== current.installDir) {
+					rmSync(candidate, { recursive: true, force: true });
+				}
+			}
+		}
+	}
+
+	async start(force = false): Promise<void> {
+		if (this.runtime && this.runtime.exitCode === null) return;
+		if (!force && (this.config.mode !== "managed" || !this.config.enabled))
+			return;
+		const installed = this.installed();
+		if (!installed) throw new Error("CLIProxy is not installed");
+		mkdirSync(this.authDir, { recursive: true, mode: 0o700 });
+		writeFileSync(
+			this.configPath,
+			managedCliProxyConfig(this.authDir, installed.clientKey),
+			{ mode: 0o600 },
+		);
+		this.statusValue.state = "starting";
+		this.statusValue.error = undefined;
+		const child = spawn(installed.executable, ["--config", this.configPath], {
+			cwd: dirname(installed.executable),
+			stdio: ["ignore", "pipe", "pipe"],
+			windowsHide: true,
+		});
+		this.runtime = child;
+		this.drainLogs(child, installed.clientKey);
+		child.once("error", (error) => {
+			if (this.runtime !== child) return;
+			this.statusValue = {
+				...this.statusValue,
+				state: "error",
+				error: error.message,
+			};
+		});
+		child.once("exit", (code) => {
+			if (this.runtime !== child) return;
+			this.runtime = null;
+			if (this.statusValue.state !== "installed") {
+				this.statusValue = {
+					...this.statusValue,
+					state: "error",
+					error: `CLIProxy exited with code ${code ?? "unknown"}`,
+				};
+			}
+		});
+		const deadline = Date.now() + 15_000;
+		while (Date.now() < deadline) {
+			if (child.exitCode !== null) break;
+			try {
+				const response = await fetch(`${MANAGED_BASE_URL}/v1/models`, {
+					headers: { Authorization: `Bearer ${installed.clientKey}` },
+					signal: AbortSignal.timeout(500),
+				});
+				if (response.ok) {
+					this.statusValue.state = "running";
+					return;
+				}
+			} catch {}
+			await Bun.sleep(200);
+		}
+		await this.stop();
+		this.statusValue = {
+			...this.statusValue,
+			state: "error",
+			error: "CLIProxy did not become ready",
+		};
+	}
+
+	private drainLogs(child: ChildProcess, secret: string): void {
+		const drain = (level: "info" | "error", chunk: Buffer | string) => {
+			const message = chunk.toString().replaceAll(secret, "[redacted]").trim();
+			if (message)
+				void db.appendLog(level, "cliproxy", message.slice(0, 8_000));
+		};
+		child.stdout?.on("data", (chunk) => drain("info", chunk));
+		child.stderr?.on("data", (chunk) => drain("error", chunk));
+	}
+
+	async stop(): Promise<void> {
+		const child = this.runtime;
+		this.runtime = null;
+		if (child && child.exitCode === null) child.kill();
+		const installed = this.installed();
+		this.statusValue = {
+			...this.statusValue,
+			state: installed
+				? "installed"
+				: this.platform === "win32"
+					? "not_installed"
+					: "unsupported",
+			installedVersion: installed?.version,
+		};
+	}
+
+	async beginOAuth(): Promise<void> {
+		if (this.oauthProcess && this.oauthProcess.exitCode === null) {
+			throw new Error("Codex sign-in is already running");
+		}
+		const installed = this.installed();
+		if (!installed) throw new Error("install CLIProxy before connecting Codex");
+		this.statusValue.oauth = "running";
+		this.statusValue.error = undefined;
+		const child = spawn(
+			installed.executable,
+			["--config", this.configPath, "--codex-login"],
+			{
+				cwd: dirname(installed.executable),
+				// OAuth output can contain the temporary authorization URL. Let the
+				// CLI open it on the Hlid host, but never persist it in Hlid logs.
+				stdio: "ignore",
+				windowsHide: true,
+			},
+		);
+		this.oauthProcess = child;
+		child.once("exit", (code) => {
+			if (this.oauthProcess !== child) return;
+			this.oauthProcess = null;
+			const authenticated = code === 0 && this.hasCodexAuth();
+			this.statusValue.authenticated = authenticated;
+			this.statusValue.oauth = authenticated ? "connected" : "error";
+			if (!authenticated)
+				this.statusValue.error = "Codex sign-in did not complete";
+		});
+		child.once("error", (error) => {
+			if (this.oauthProcess !== child) return;
+			this.oauthProcess = null;
+			this.statusValue.oauth = "error";
+			this.statusValue.error = error.message;
+		});
+	}
+
+	async remove(): Promise<void> {
+		await this.stop();
+		if (this.oauthProcess && this.oauthProcess.exitCode === null)
+			this.oauthProcess.kill();
+		this.oauthProcess = null;
+		rmSync(this.root, { recursive: true, force: true });
+		this.statusValue = {
+			state: this.platform === "win32" ? "not_installed" : "unsupported",
+			managed: true,
+			authenticated: false,
+			oauth: "idle",
+		};
+	}
+
+	close(): void {
+		if (this.runtime && this.runtime.exitCode === null) this.runtime.kill();
+		if (this.oauthProcess && this.oauthProcess.exitCode === null)
+			this.oauthProcess.kill();
+		this.runtime = null;
+		this.oauthProcess = null;
+	}
+}
+
+export const MANAGED_CLIPROXY_BASE_URL = MANAGED_BASE_URL;

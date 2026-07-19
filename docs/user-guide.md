@@ -68,6 +68,61 @@ picker, where vault skills, global skills, and provider-native commands live
 together. Compatible commands can be stacked. Their badges stay above the
 composer until they are removed or run.
 
+### CLIProxyAPI integration
+
+`Hlið` can expose a separate **Claude Code · Codex** provider. Claude Code still
+owns the agent loop, tools, commands, permissions, and `MCP` behavior, while
+[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) translates its model
+requests to a Codex OAuth account. This is an optional route alongside the
+normal Claude and Codex providers.
+
+Open **Forge → Integrations → CLIProxyAPI** and choose **Install managed**. On
+Windows, Hlid downloads the latest release and checksum manifest, verifies the
+archive, creates a loopback-only configuration, and owns the process lifecycle.
+Choose **Connect Codex** to open the Codex OAuth flow on the Windows machine
+running Hlid. Hlid starts the integration with the app, offers explicit update
+and repair controls, and can remove the binaries and saved Codex sign-in.
+
+The generated client key and Codex tokens remain in Hlid's private integration
+directory and are never returned to Forge. Remote management and the CLIProxyAPI
+control panel are disabled because Hlid does not use either one.
+
+For an existing, externally managed CLIProxyAPI process, configure advanced
+mode in `hlid.config.toml`:
+
+```toml
+[cliproxy]
+enabled = true
+mode = "external"
+base_url = "http://127.0.0.1:8317"
+api_key = "replace-with-a-long-local-key"
+model = "gpt-5.6-sol"
+effort = "xhigh"
+permission_mode = "default"
+turn_recaps = true
+```
+
+Keep an external process on loopback. The `api_key` is a CLIProxyAPI
+client-facing `api-keys` value, not a management secret. Hlid stores it in the
+local config file but redacts it from browser config responses. The provider
+health check verifies the Claude Code executable and the proxy model catalog.
+Forge and Raven then use the catalog's GPT models; Hlid passes effort through
+CLIProxyAPI's model suffix.
+
+Ledger stores these turns under provider `cliproxy-codex`, labeled **Claude
+Code · Codex**. It records the session-scoped token buckets and actual response
+model that Claude Code returns. Hlid intentionally ignores Claude Code's dollar
+field for this route and estimates from Hlid's effective-dated Codex pricing
+catalog instead. The number is an API-equivalent comparison, not the amount
+charged to a ChatGPT subscription. Existing priced rows stay frozen when rates
+change.
+
+Hlid does not consume CLIProxyAPI's short-lived usage queue or import traffic
+from other clients. Ledger therefore covers requests made through Hlid only.
+CLIProxyAPI account-wide quotas and subscription limits are not available as
+Hlid usage windows, so automatic usage-window sleep does not apply to this
+route.
+
 ![Raven conversation showing agent output and tool activity](images/raven-tool-activity.png)
 
 *Tool calls stay in the conversation. No mystery spinner while the agent does who knows what.*

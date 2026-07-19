@@ -86,6 +86,16 @@ export function buildFirstRunConfig(s: StructureState): HlidConfig {
 			turn_recaps: true,
 			interactive_mode: false,
 		},
+		cliproxy: {
+			enabled: false,
+			mode: "external",
+			base_url: "http://127.0.0.1:8317",
+			api_key: "",
+			model: "gpt-5.6-sol",
+			effort: "xhigh",
+			permission_mode: "default",
+			turn_recaps: true,
+		},
 		codex: {
 			model: "",
 			effort: "medium",

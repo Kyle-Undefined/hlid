@@ -17,6 +17,9 @@ export const PRICING_OVERRIDES_PATH = resolve(
 	"pricing-overrides.toml",
 );
 
+/** Hlid-owned CLIProxy binaries, credentials, and provider auth files. */
+export const CLIPROXY_DIR = resolve(APP_DIR, "integrations", "cliproxy");
+
 /** Hlid-owned durable content. Repositories and vaults remain linked sources. */
 export const LIBRARY_DIR =
 	process.env.NODE_ENV === "test"

@@ -10,6 +10,7 @@ import {
 	isPathAccessibleFromRuntime,
 	toProviderRuntimePath,
 } from "../lib/paths";
+import { isClaudeRuntimeProvider } from "../lib/providerRuntime";
 import { SESSION_LABEL_LENGTH } from "../lib/utils";
 import { formatVaultReferencedMessage } from "../lib/vaultReferences";
 import {
@@ -385,7 +386,12 @@ function configuredSessionDefaultsFromMaps(
 		permission_mode: "default" as const,
 		turn_recaps: true,
 	};
-	const providerDefaults = providerId === "codex" ? codexConfig : config.claude;
+	const providerDefaults =
+		providerId === "codex"
+			? codexConfig
+			: providerId === "cliproxy-codex"
+				? config.cliproxy
+				: config.claude;
 	return {
 		...(configuredAgentPath ? { agentCwd: configuredAgentPath } : {}),
 		providerId,
@@ -398,7 +404,9 @@ function configuredSessionDefaultsFromMaps(
 		recapModel:
 			configuredAgent?.recapModel ??
 			providerDefaults.recap_model ??
-			(providerId === "codex" ? "" : "claude-haiku-4-5"),
+			(isClaudeRuntimeProvider(providerId) && providerId === "claude"
+				? "claude-haiku-4-5"
+				: ""),
 	};
 }
 
@@ -883,10 +891,9 @@ export class SessionManager {
 					maxTurns: 1,
 					persistSession: false,
 					settingSources: ["user", "project"],
-					executable:
-						provider.providerId === "claude"
-							? this.claudeExecutable
-							: this.codexExecutable,
+					executable: isClaudeRuntimeProvider(provider.providerId)
+						? this.claudeExecutable
+						: this.codexExecutable,
 					canUseTool: () =>
 						Promise.resolve({ behavior: "deny" as const, message: "probe" }),
 				});
@@ -952,10 +959,9 @@ export class SessionManager {
 				publish(await this.agentSession.mcpServerStatus());
 				return;
 			}
-			const cached =
-				providerId === "claude"
-					? await waitForClaudeWarmupSnapshot(activeAgentCwd ?? this.vaultPath)
-					: null;
+			const cached = isClaudeRuntimeProvider(providerId)
+				? await waitForClaudeWarmupSnapshot(activeAgentCwd ?? this.vaultPath)
+				: null;
 			publish(cached?.mcpServers ?? []);
 			return;
 		}
@@ -988,10 +994,9 @@ export class SessionManager {
 				publish(await this.agentSession.supportedCommands());
 				return;
 			}
-			const cached =
-				providerId === "claude"
-					? await waitForClaudeWarmupSnapshot(activeAgentCwd ?? this.vaultPath)
-					: null;
+			const cached = isClaudeRuntimeProvider(providerId)
+				? await waitForClaudeWarmupSnapshot(activeAgentCwd ?? this.vaultPath)
+				: null;
 			publish(cached?.commands ?? []);
 			return;
 		}
@@ -2973,10 +2978,9 @@ export class SessionManager {
 			options;
 		if (!turn.hadToolEvents || !this.turnRecaps || !turn.lastAssistantText)
 			return;
-		const executable =
-			provider.providerId === "claude"
-				? this.claudeExecutable
-				: this.codexExecutable;
+		const executable = isClaudeRuntimeProvider(provider.providerId)
+			? this.claudeExecutable
+			: this.codexExecutable;
 		void generateTurnRecap({
 			sessionId: sessionId ?? null,
 			assistantSeq: turn.lastAssistantSeq,
@@ -3177,10 +3181,9 @@ export class SessionManager {
 				agentCwd: this.agentCwd,
 				vaultPath: this.vaultPath,
 				allowedAgentRealPaths: this.allowedAgentRealPaths,
-				claudeExecutable:
-					currentProvider.providerId === "claude"
-						? this.claudeExecutable
-						: this.codexExecutable,
+				claudeExecutable: isClaudeRuntimeProvider(currentProvider.providerId)
+					? this.claudeExecutable
+					: this.codexExecutable,
 				wrapperCommand:
 					currentProvider.providerId === "codex" ? "codex" : "claude",
 				safeAttachments,

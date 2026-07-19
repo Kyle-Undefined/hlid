@@ -23,6 +23,20 @@ auto_send = false
 hotkey = "Alt+Shift+KeyV"
 max_recording_seconds = 300
 
+# Optional advanced mode: connect an externally managed CLIProxyAPI process.
+# The normal setup is Forge > Integrations > CLIProxyAPI, which downloads,
+# configures, starts, and updates a loopback-only Windows build for Hlid.
+# [cliproxy]
+# enabled = true
+# mode = "external"
+# base_url = "http://127.0.0.1:8317"
+# The api_key is a client-facing `api-keys` value, not a management key.
+# api_key = "replace-with-a-long-local-key"
+# model = "gpt-5.6-sol"
+# effort = "xhigh"
+# permission_mode = "default"
+# turn_recaps = true
+
 # A Windows-native Codex Computer Use worker can follow the calling session's
 # model while keeping its own default effort. This only works when Hlid runs on
 # Windows with a native Codex CLI and the computer-use plugin. Forge edits it.

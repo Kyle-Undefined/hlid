@@ -39,8 +39,11 @@ describe("GET /api/config — handleGetConfig", () => {
 	});
 
 	it("returns 200 with full config as JSON", async () => {
-		const config = { vault: { path: "/v", name: "V" }, server: { port: 3000 } };
-		mockLoadConfig.mockReturnValue(config as never);
+		const config = HlidConfigSchema.parse({
+			vault: { path: "/v", name: "V" },
+			server: { port: 3000 },
+		});
+		mockLoadConfig.mockReturnValue(config);
 		const res = await handleGetConfig(makeRequest());
 		expect(res.status).toBe(200);
 		expect(await res.json()).toEqual(config);
@@ -71,6 +74,25 @@ describe("POST /api/config — handlePostConfig", () => {
 		expect(stat).toHaveBeenCalledWith(resolve(homedir(), "vault"));
 		expect(writeConfig).toHaveBeenCalledWith(config);
 		expect(dbFetch).toHaveBeenCalledWith("/voice/sync", { method: "POST" });
+		expect(dbFetch).toHaveBeenCalledWith("/cliproxy/sync", { method: "POST" });
+	});
+
+	it("keeps an existing CLIProxy key out of GET responses and preserves it on save", async () => {
+		const current = HlidConfigSchema.parse({
+			cliproxy: {
+				enabled: true,
+				mode: "external",
+				api_key: "external-secret",
+			},
+		});
+		mockLoadConfig.mockReturnValue(current);
+		const getResponse = await handleGetConfig(makeRequest());
+		const publicValue = (await getResponse.json()) as typeof current;
+		expect(publicValue.cliproxy.api_key).toBe("__HLID_SECRET_SET__");
+
+		const postResponse = await handlePostConfig(post(publicValue));
+		expect(postResponse.status).toBe(200);
+		expect(writeConfig).toHaveBeenCalledWith(current);
 	});
 
 	it.each([

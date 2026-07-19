@@ -26,6 +26,9 @@ own folder vocabulary. `Hlið` does not care as long as the paths are set up.
   near a provider limit, then pick them back up after the window resets.
 - Puts `Claude`, `Codex`, and installed `ACP` providers behind the same session
   interface.
+- Can run Codex models through `Claude Code` with a Forge-managed `CLIProxyAPI`
+  integration. Those turns keep their own provider identity and use Codex
+  API-equivalent estimates in `Ledger`.
 - Can hand a task to a fresh Windows-native `Codex Computer Use` worker, while
   keeping approvals, `Umbod` policy, and usage accounting inside `Hlið`.
 - Runs `Whisper` locally for voice input. Audio never gets shipped to a cloud
@@ -114,6 +117,8 @@ Use** and apply to the next one-shot Windows worker.
 
 There is a small starting point in
 [`hlid.config.example.toml`](hlid.config.example.toml).
+The [CLIProxyAPI integration](docs/user-guide.md#cliproxyapi-integration) covers
+the optional `Claude Code · Codex` route and exactly what Hlid records for it.
 
 ## Remote access and security
 

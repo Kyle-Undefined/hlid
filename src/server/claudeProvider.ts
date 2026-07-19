@@ -728,6 +728,7 @@ function translateAssistantMessage(
 	message: Extract<SDKMessage, { type: "assistant" }>,
 	hadText: boolean,
 	tracker: ClaudeSubagentTracker,
+	normalizeModel: (model: string) => string,
 ): EventTranslation {
 	const events: AgentEvent[] = [];
 	const usage = message.message.usage;
@@ -738,7 +739,7 @@ function translateAssistantMessage(
 			outputTokens: usage.output_tokens,
 			cacheReadTokens: usage.cache_read_input_tokens ?? undefined,
 			cacheCreationTokens: usage.cache_creation_input_tokens ?? undefined,
-			model: message.message.model,
+			model: normalizeModel(message.message.model),
 		});
 	}
 	let nextHadText = hadText;
@@ -808,6 +809,7 @@ function resultUsage(
 function translateResultMessage(
 	message: Extract<SDKMessage, { type: "result" }>,
 	hadText: boolean,
+	includeEstimatedCost: boolean,
 ): EventTranslation {
 	const events: AgentEvent[] = [];
 	if (!hadText && message.subtype === "success" && message.result) {
@@ -819,7 +821,7 @@ function translateResultMessage(
 		// invoice-authoritative charge. Subscription runs incur no per-turn API
 		// bill, and gateways may apply their own routing, discounts, or markup.
 		// Keep it estimated unless a future billing integration supplies actuals.
-		estimatedCost: message.total_cost_usd,
+		...(includeEstimatedCost ? { estimatedCost: message.total_cost_usd } : {}),
 		turns: message.num_turns,
 		durationMs: message.duration_ms ?? 0,
 		stopReason: message.stop_reason ?? undefined,
@@ -835,6 +837,8 @@ function translateSdkMessage(
 	message: SDKMessage,
 	hadText: boolean,
 	tracker: ClaudeSubagentTracker,
+	includeEstimatedCost: boolean,
+	normalizeModel: (model: string) => string,
 ): EventTranslation {
 	switch (message.type) {
 		case "system":
@@ -842,7 +846,12 @@ function translateSdkMessage(
 		case "user":
 			return translateUserMessage(message, hadText);
 		case "assistant":
-			return translateAssistantMessage(message, hadText, tracker);
+			return translateAssistantMessage(
+				message,
+				hadText,
+				tracker,
+				normalizeModel,
+			);
 		case "tool_use_summary":
 			return {
 				events: [{ type: "summary", text: message.summary }],
@@ -853,7 +862,7 @@ function translateSdkMessage(
 		case "rate_limit_event":
 			return translateRateLimitMessage(message, hadText);
 		case "result":
-			return translateResultMessage(message, hadText);
+			return translateResultMessage(message, hadText, includeEstimatedCost);
 		default:
 			return { events: [], hadText };
 	}
@@ -883,6 +892,11 @@ class ClaudeAgentSession implements AgentSession {
 		abortController: AbortController,
 		resumeId: string | undefined,
 		private readonly policyEnforced: boolean,
+		private readonly includeEstimatedCost: boolean,
+		private readonly requestModel: (model: string) => string,
+		private readonly normalizeModel: (model: string) => string,
+		private readonly exposeUsageWindows: boolean,
+		private readonly exposeAccountInfo: boolean,
 	) {
 		this.makeQuery = makeQuery;
 		this.abortController = abortController;
@@ -927,6 +941,7 @@ class ClaudeAgentSession implements AgentSession {
 	}
 
 	async usageWindows(): Promise<ProviderWindowReading[]> {
+		if (!this.exposeUsageWindows) return [];
 		if (!this.sdkQuery) return [];
 		try {
 			const usage =
@@ -964,7 +979,7 @@ class ClaudeAgentSession implements AgentSession {
 	 */
 	async setModel(model?: string): Promise<void> {
 		if (!this.sdkQuery) return;
-		await this.sdkQuery.setModel(model);
+		await this.sdkQuery.setModel(model ? this.requestModel(model) : model);
 	}
 
 	/**
@@ -993,6 +1008,7 @@ class ClaudeAgentSession implements AgentSession {
 	 * null-guard) or when the SDK call itself fails (e.g. not logged in).
 	 */
 	async accountInfo(): Promise<ProviderAccountInfo | null> {
+		if (!this.exposeAccountInfo) return null;
 		if (!this.sdkQuery) return null;
 		try {
 			const info = await this.sdkQuery.accountInfo();
@@ -1144,6 +1160,8 @@ class ClaudeAgentSession implements AgentSession {
 					message,
 					hadText,
 					this.subagents,
+					this.includeEstimatedCost,
+					this.normalizeModel,
 				);
 				hadText = translation.hadText;
 				if (message.type !== "result") {
@@ -1330,38 +1348,60 @@ function parseAnthropicHeaders(headers: Headers): ProviderWindowReading[] {
 	return readings;
 }
 
+export type ClaudeProviderOptions = {
+	providerId?: string;
+	label?: string;
+	models?: ReadonlyArray<{ value: string; label: string }>;
+	effortLevels?: AgentProvider["effortLevels"];
+	usageWindows?: AgentProvider["usageWindows"];
+	sdkEnv?: Record<string, string | undefined>;
+	includeSdkEstimatedCost?: boolean;
+	requestModel?: (model: string, effort: string | undefined) => string;
+	normalizeModel?: (model: string) => string;
+	passSdkEffort?: boolean;
+	exposeUsageWindows?: boolean;
+	exposeAccountInfo?: boolean;
+	proxyConfig?: AgentProvider["proxyConfig"] | null;
+};
+
+const CLAUDE_MODELS = [
+	{ value: "claude-opus-4-8", label: "Opus 4.8" },
+	{ value: "claude-opus-4-7", label: "Opus 4.7" },
+	{ value: "claude-sonnet-4-6", label: "Sonnet 4.6" },
+	{ value: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
+] as const;
+
+const CLAUDE_EFFORT_LEVELS = [
+	{ value: "low", label: "Low", desc: "minimal thinking, quick turnaround" },
+	{ value: "medium", label: "Medium", desc: "some thinking, pretty balanced" },
+	{
+		value: "high",
+		label: "High",
+		desc: "solid reasoning, this is the default",
+	},
+	{ value: "xhigh", label: "X-High", desc: "goes deeper, Opus only" },
+	{ value: "max", label: "Max", desc: "everything Claude has, Opus only" },
+] as const;
+
+const CLAUDE_USAGE_WINDOWS = [
+	{ windowId: "five_hour", label: "5-HOUR", windowSecs: 5 * 3600 },
+	{ windowId: "weekly", label: "7-DAY", windowSecs: 7 * 86400 },
+] as const;
+
+const CLAUDE_PROXY_CONFIG = {
+	envVar: "ANTHROPIC_BASE_URL",
+	windowIds: ["five_hour", "weekly", "weekly_sonnet"],
+	parseHeaders: parseAnthropicHeaders,
+};
+
 export class ClaudeProvider implements AgentProvider {
-	readonly providerId = "claude";
-	readonly label = "Claude";
+	readonly providerId: string;
+	readonly label: string;
 	// The SDK's streaming-input query is lazy — probes must send a turn first.
 	readonly probeRequiresTurn = true;
 
-	readonly models = [
-		{ value: "claude-opus-4-8", label: "Opus 4.8" },
-		{ value: "claude-opus-4-7", label: "Opus 4.7" },
-		{ value: "claude-sonnet-4-6", label: "Sonnet 4.6" },
-		{ value: "claude-haiku-4-5-20251001", label: "Haiku 4.5" },
-	] as const;
-
-	readonly effortLevels = [
-		{ value: "low", label: "Low", desc: "minimal thinking, quick turnaround" },
-		{
-			value: "medium",
-			label: "Medium",
-			desc: "some thinking, pretty balanced",
-		},
-		{
-			value: "high",
-			label: "High",
-			desc: "solid reasoning, this is the default",
-		},
-		{ value: "xhigh", label: "X-High", desc: "goes deeper, Opus only" },
-		{
-			value: "max",
-			label: "Max",
-			desc: "everything Claude has, Opus only",
-		},
-	] as const;
+	readonly models: ReadonlyArray<{ value: string; label: string }>;
+	readonly effortLevels: AgentProvider["effortLevels"];
 
 	readonly permissionModes = [
 		{
@@ -1382,10 +1422,38 @@ export class ClaudeProvider implements AgentProvider {
 	] as const;
 
 	// Anthropic retired the Sonnet-only weekly limit — no weekly_sonnet window.
-	readonly usageWindows = [
-		{ windowId: "five_hour", label: "5-HOUR", windowSecs: 5 * 3600 },
-		{ windowId: "weekly", label: "7-DAY", windowSecs: 7 * 86400 },
-	] as const;
+	readonly usageWindows?: AgentProvider["usageWindows"];
+	readonly proxyConfig: NonNullable<AgentProvider["proxyConfig"]>;
+	private readonly sdkEnv?: Record<string, string | undefined>;
+	private readonly includeSdkEstimatedCost: boolean;
+	private readonly requestModel: (
+		model: string,
+		effort: string | undefined,
+	) => string;
+	private readonly normalizeModel: (model: string) => string;
+	private readonly passSdkEffort: boolean;
+	private readonly exposeUsageWindows: boolean;
+	private readonly exposeAccountInfo: boolean;
+
+	constructor(options: ClaudeProviderOptions = {}) {
+		this.providerId = options.providerId ?? "claude";
+		this.label = options.label ?? "Claude";
+		this.models = options.models ?? CLAUDE_MODELS;
+		this.effortLevels = options.effortLevels ?? CLAUDE_EFFORT_LEVELS;
+		this.usageWindows = options.usageWindows ?? CLAUDE_USAGE_WINDOWS;
+		this.sdkEnv = options.sdkEnv;
+		this.includeSdkEstimatedCost = options.includeSdkEstimatedCost ?? true;
+		this.requestModel = options.requestModel ?? ((model) => model);
+		this.normalizeModel = options.normalizeModel ?? ((model) => model);
+		this.passSdkEffort = options.passSdkEffort ?? true;
+		this.exposeUsageWindows = options.exposeUsageWindows ?? true;
+		this.exposeAccountInfo = options.exposeAccountInfo ?? true;
+		this.proxyConfig = (
+			options.proxyConfig === undefined
+				? CLAUDE_PROXY_CONFIG
+				: options.proxyConfig
+		) as NonNullable<AgentProvider["proxyConfig"]>;
+	}
 
 	async check(): Promise<{ available: boolean; reason?: string }> {
 		const exe = resolveClaudeExecutable();
@@ -1422,6 +1490,7 @@ export class ClaudeProvider implements AgentProvider {
 				maxTurns: 1,
 				...(exe ? { pathToClaudeCodeExecutable: exe } : {}),
 				canUseTool: denyAllCanUseTool,
+				...(this.sdkEnv ? { env: this.sdkEnv } : {}),
 			},
 		});
 		try {
@@ -1455,6 +1524,7 @@ export class ClaudeProvider implements AgentProvider {
 				maxTurns: 1,
 				...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
 				canUseTool: denyAllCanUseTool,
+				...(this.sdkEnv ? { env: this.sdkEnv } : {}),
 			},
 		});
 		try {
@@ -1467,12 +1537,6 @@ export class ClaudeProvider implements AgentProvider {
 			ac.abort();
 		}
 	}
-
-	readonly proxyConfig = {
-		envVar: "ANTHROPIC_BASE_URL",
-		windowIds: ["five_hour", "weekly", "weekly_sonnet"],
-		parseHeaders: parseAnthropicHeaders,
-	};
 
 	query(params: AgentQueryParams): AgentSession {
 		const abortController = new AbortController();
@@ -1499,12 +1563,17 @@ export class ClaudeProvider implements AgentProvider {
 						? { additionalDirectories: params.additionalDirectories }
 						: {}),
 					abortController,
-					...(params.model ? { model: params.model } : {}),
+					...(params.model
+						? { model: this.requestModel(params.model, params.effort) }
+						: {}),
 					permissionMode: effectiveSdkPermissionMode(
 						params.permissionMode,
 						params.policyEnforced ?? false,
 					),
-					effort: (params.effort ?? "medium") as SdkEffortLevel,
+					...(this.passSdkEffort
+						? { effort: (params.effort ?? "medium") as SdkEffortLevel }
+						: {}),
+					...(this.sdkEnv ? { env: this.sdkEnv } : {}),
 					...(params.maxTurns !== undefined
 						? { maxTurns: params.maxTurns }
 						: {}),
@@ -1565,6 +1634,11 @@ export class ClaudeProvider implements AgentProvider {
 			abortController,
 			params.sessionId,
 			params.policyEnforced ?? false,
+			this.includeSdkEstimatedCost,
+			(model) => this.requestModel(model, params.effort),
+			this.normalizeModel,
+			this.exposeUsageWindows,
+			this.exposeAccountInfo,
 		);
 	}
 }

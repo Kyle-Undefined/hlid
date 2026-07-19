@@ -1160,6 +1160,13 @@ function configuredVaultSelection(
 			permissionMode: config.codex?.permission_mode,
 		};
 	}
+	if (providerId === "cliproxy-codex") {
+		return {
+			model: config.cliproxy?.model,
+			effort: config.cliproxy?.effort,
+			permissionMode: config.cliproxy?.permission_mode,
+		};
+	}
 	if (providerId === "claude") {
 		return {
 			model: config.claude?.model,

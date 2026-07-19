@@ -90,6 +90,17 @@ describe("writeConfig — persistence invariants", () => {
 			codex: {
 				windows_computer_use: { model: "gpt-5.5", effort: "high" },
 			},
+			cliproxy: {
+				enabled: true,
+				base_url: "http://127.0.0.1:8317",
+				api_key: "sidecar-key",
+				model: "gpt-5.6-sol",
+				effort: "xhigh",
+				max_turns: 20,
+				permission_mode: "acceptEdits",
+				turn_recaps: false,
+				recap_model: "gpt-5.6-luna",
+			},
 			auto_sleep: {
 				enabled: true,
 				threshold: 0.8,

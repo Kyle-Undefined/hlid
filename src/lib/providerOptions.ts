@@ -81,6 +81,9 @@ export function resolveActiveProviderId(
 /** Model explicitly configured for the vault's provider (never live-session state). */
 export function configuredVaultModel(config: HlidConfig): string | null {
 	if (config.vault_provider === "codex") return config.codex?.model || null;
+	if (config.vault_provider === "cliproxy-codex") {
+		return config.cliproxy.model || null;
+	}
 	if (config.vault_provider === "claude") return config.claude?.model || null;
 	return null;
 }

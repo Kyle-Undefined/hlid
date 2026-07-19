@@ -475,6 +475,24 @@ describe("createProviderCatalogSnapshot", () => {
 
 		expect(check).toHaveBeenCalledTimes(2);
 	});
+
+	it("reads a live provider collection after an integration is registered", async () => {
+		const providers = [makeProvider({ providerId: "codex" })];
+		const snapshot = createProviderCatalogSnapshot(() => providers, {
+			modelsFor: vi.fn(),
+			cachedModelsFor: vi.fn().mockResolvedValue([]),
+		});
+
+		expect((await snapshot.get()).map((provider) => provider.id)).toEqual([
+			"codex",
+		]);
+		providers.push(makeProvider({ providerId: "cliproxy-codex" }));
+		snapshot.invalidate();
+		expect((await snapshot.get()).map((provider) => provider.id)).toEqual([
+			"codex",
+			"cliproxy-codex",
+		]);
+	});
 });
 
 describe("providerCatalogRequestOptions", () => {

@@ -152,21 +152,47 @@ describe("settings form conversion", () => {
 describe("agent form routing", () => {
 	it("routes provider selection to Claude and model fields to the active provider", () => {
 		const forms = createSettingsForms(HlidConfigSchema.parse({}));
-		const selected = applyAgentFormPatch(forms.claude, forms.codex, {
-			vaultProvider: "codex",
-		});
+		const selected = applyAgentFormPatch(
+			forms.claude,
+			forms.codex,
+			forms.cliproxy,
+			{ vaultProvider: "codex" },
+		);
 		expect(selected.claude.vaultProvider).toBe("codex");
 
-		const edited = applyAgentFormPatch(selected.claude, selected.codex, {
-			model: "gpt-5.5",
-			effort: "high",
-			maxTurns: "15",
-		});
+		const edited = applyAgentFormPatch(
+			selected.claude,
+			selected.codex,
+			selected.cliproxy,
+			{
+				model: "gpt-5.5",
+				effort: "high",
+				maxTurns: "15",
+			},
+		);
 		expect(edited.codex).toMatchObject({
 			model: "gpt-5.5",
 			effort: "high",
 			maxTurns: "15",
 		});
 		expect(edited.claude.model).toBe(forms.claude.model);
+
+		const selectedProxy = applyAgentFormPatch(
+			edited.claude,
+			edited.codex,
+			edited.cliproxy,
+			{ vaultProvider: "cliproxy-codex" },
+		);
+		const editedProxy = applyAgentFormPatch(
+			selectedProxy.claude,
+			selectedProxy.codex,
+			selectedProxy.cliproxy,
+			{ model: "gpt-5.6-sol", effort: "xhigh" },
+		);
+		expect(editedProxy.cliproxy).toMatchObject({
+			model: "gpt-5.6-sol",
+			effort: "xhigh",
+		});
+		expect(editedProxy.codex.model).toBe("gpt-5.5");
 	});
 });

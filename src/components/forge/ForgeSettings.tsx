@@ -6,6 +6,7 @@ import {
 	ClaudeSection,
 	ComputerUseSection,
 } from "#/components/forge/ClaudeSection";
+import { CliProxySection } from "#/components/forge/CliProxySection";
 import { CustomThemeSection } from "#/components/forge/CustomThemeSection";
 import { EventLogSection } from "#/components/forge/EventLogSection";
 import { InstructionFilesSection } from "#/components/forge/InstructionFilesSection";
@@ -27,6 +28,7 @@ import type {
 	SettingsFormState,
 	SettingsInitial,
 } from "#/hooks/useSettingsForm";
+import { CLIPROXY_CODEX_PROVIDER_ID } from "#/lib/providerIds";
 import { ROUTE_SCROLL_RESTORATION_IDS } from "#/lib/scrollContainers";
 import { includesSearchText } from "#/lib/search";
 import { applyThemeToDocument, effectiveTheme } from "#/lib/theme";
@@ -92,13 +94,15 @@ const CATEGORIES = [
 		description: "MCP servers, external agents, and ACP",
 		sections: [
 			"MCP",
+			"CLIProxyAPI",
 			"Umbod policy",
 			"Generate agent hooks",
 			"Umbod activity",
 			"Call explorer",
 			"ACP Agent Catalog",
 		],
-		keywords: "mcp servers external agents acp catalog integrations",
+		keywords:
+			"mcp servers cliproxy codex claude code oauth external agents acp catalog integrations",
 		group: "secondary",
 	},
 	{
@@ -130,14 +134,19 @@ function AgentSettings({
 	state: SettingsFormState;
 	initial: SettingsInitial;
 }) {
-	const agentForm =
+	const providerForm =
 		state.claude.vaultProvider === "codex"
 			? {
 					...state.codex,
-					vaultProvider: state.claude.vaultProvider,
-					interactiveMode: state.claude.interactiveMode,
 				}
-			: state.claude;
+			: state.claude.vaultProvider === CLIPROXY_CODEX_PROVIDER_ID
+				? state.cliproxy
+				: state.claude;
+	const agentForm = {
+		...providerForm,
+		vaultProvider: state.claude.vaultProvider,
+		interactiveMode: state.claude.interactiveMode,
+	};
 	return (
 		<>
 			<ClaudeSection
@@ -373,10 +382,12 @@ function ExperienceCategory({
 
 function IntegrationsCategory({
 	state,
+	initial,
 	onShowUmbod,
 	onShowCatalog,
 }: {
 	state: SettingsFormState;
+	initial: SettingsInitial;
 	onShowUmbod: () => void;
 	onShowCatalog: () => void;
 }) {
@@ -387,6 +398,10 @@ function IntegrationsCategory({
 				description="Connect tools and agents without crowding core agent settings."
 			/>
 			<McpSection vaultPath={state.vault.path} />
+			<CliProxySection
+				config={initial.cliproxy}
+				initialInfo={initial.cliProxyInfo}
+			/>
 			<div className="border border-border bg-card p-4 flex items-center justify-between gap-4">
 				<div>
 					<div className="text-sm">Umbod policy</div>
@@ -556,6 +571,7 @@ function CategoryContent({
 			return (
 				<IntegrationsCategory
 					state={state}
+					initial={initial}
 					onShowUmbod={() => onShowUmbod(true)}
 					onShowCatalog={() => onShowCatalog(true)}
 				/>

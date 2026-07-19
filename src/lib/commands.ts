@@ -1,3 +1,4 @@
+import { isClaudeRuntimeProvider } from "./providerRuntime";
 import { startsWithSearchText } from "./search";
 import type { Skill } from "./skills";
 
@@ -141,7 +142,8 @@ export function canSelectCommand(
 		(command) => command.execution.kind !== "provider-action",
 	);
 	if (
-		providerId === "claude" &&
+		providerId !== undefined &&
+		isClaudeRuntimeProvider(providerId) &&
 		composable.length >= CLAUDE_COMMAND_SELECTION_LIMIT
 	)
 		return false;

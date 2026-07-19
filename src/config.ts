@@ -93,6 +93,55 @@ const ClaudeSchema = z.object({
 	interactive_mode: z.boolean().default(false),
 });
 
+export const DEFAULT_CLIPROXY_CONFIG = {
+	enabled: false,
+	mode: "external" as const,
+	base_url: "http://127.0.0.1:8317",
+	api_key: "",
+	model: "gpt-5.6-sol",
+	effort: "xhigh",
+	permission_mode: "default" as const,
+	turn_recaps: true,
+};
+
+const CliProxySchema = z
+	.object({
+		enabled: z.boolean().default(false),
+		mode: z.enum(["managed", "external"]).default("external"),
+		base_url: z.string().url().default("http://127.0.0.1:8317"),
+		api_key: z.string().default(""),
+		model: z.string().default("gpt-5.6-sol"),
+		effort: z.string().default("xhigh"),
+		max_turns: z.number().int().positive().optional(),
+		permission_mode: z
+			.enum(["default", "acceptEdits", "bypassPermissions", "plan"])
+			.default("default"),
+		turn_recaps: z.boolean().default(true),
+		recap_model: z.string().optional(),
+	})
+	.superRefine((value, ctx) => {
+		if (
+			value.enabled &&
+			value.mode === "external" &&
+			value.api_key.trim() === ""
+		) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["api_key"],
+				message: "api_key is required when CLIProxy is enabled",
+			});
+		}
+		if (!value.enabled) return;
+		const hostname = new URL(value.base_url).hostname.toLowerCase();
+		if (!["127.0.0.1", "localhost", "::1"].includes(hostname)) {
+			ctx.addIssue({
+				code: "custom",
+				path: ["base_url"],
+				message: "CLIProxy must use a loopback URL",
+			});
+		}
+	});
+
 const WindowsComputerUseSchema = z.object({
 	/** "inherit" follows the active Hlid Codex session model. */
 	model: z.string().default("inherit"),
@@ -270,6 +319,7 @@ export const HlidConfigSchema = z.object({
 		turn_recaps: true,
 		interactive_mode: false,
 	})),
+	cliproxy: CliProxySchema.default(() => ({ ...DEFAULT_CLIPROXY_CONFIG })),
 	codex: CodexSchema.default(() => ({
 		model: "",
 		effort: "medium" as const,

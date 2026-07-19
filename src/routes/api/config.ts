@@ -5,12 +5,13 @@ import { writeConfig } from "#/lib/config-writer";
 import { dbFetch } from "#/lib/dbClient";
 import { forbiddenResponse } from "#/lib/originGate";
 import { expandTilde } from "#/lib/paths";
+import { publicConfig, restoreConfigSecrets } from "#/lib/publicConfig";
 import { loadConfig } from "#/server/config";
 
 export async function handleGetConfig(request: Request): Promise<Response> {
 	const forbidden = forbiddenResponse(request);
 	if (forbidden) return forbidden;
-	return Response.json(loadConfig());
+	return Response.json(publicConfig(loadConfig()));
 }
 
 export async function handlePostConfig(request: Request): Promise<Response> {
@@ -18,7 +19,9 @@ export async function handlePostConfig(request: Request): Promise<Response> {
 	if (forbidden) return forbidden;
 	let config: ReturnType<typeof HlidConfigSchema.parse>;
 	try {
-		config = HlidConfigSchema.parse(await request.json());
+		config = HlidConfigSchema.parse(
+			restoreConfigSecrets(await request.json(), loadConfig()),
+		);
 	} catch (error) {
 		const message = error instanceof Error ? error.message : "Invalid config";
 		return Response.json({ error: message }, { status: 400 });
@@ -58,6 +61,7 @@ export async function handlePostConfig(request: Request): Promise<Response> {
 		return Response.json({ error: "Failed to write config" }, { status: 500 });
 	}
 	void dbFetch("/voice/sync", { method: "POST" }).catch(() => {});
+	void dbFetch("/cliproxy/sync", { method: "POST" }).catch(() => {});
 	return Response.json({ ok: true });
 }
 

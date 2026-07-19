@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ClaudeForm } from "#/components/forge/ClaudeSection";
 import type { HlidConfig } from "#/config";
 import type { getAcpRegistryFn } from "#/lib/serverFns/acp";
+import type { getCliProxyInfoFn } from "#/lib/serverFns/cliproxy";
 import type {
 	getAccountInfoFn,
 	getProvidersFn,
@@ -18,6 +19,7 @@ export type SettingsInitial = HlidConfig & {
 	providers: Awaited<ReturnType<typeof getProvidersFn>>;
 	accountInfo: Awaited<ReturnType<typeof getAccountInfoFn>>;
 	voiceInfo: Awaited<ReturnType<typeof getVoiceInfoFn>>;
+	cliProxyInfo: Awaited<ReturnType<typeof getCliProxyInfoFn>>;
 	acpCatalog: Awaited<ReturnType<typeof getAcpRegistryFn>>;
 };
 
@@ -39,6 +41,7 @@ export function useSettingsForm(
 	const [vault, setVault] = useState(initialForms.vault);
 	const [claude, setClaude] = useState(initialForms.claude);
 	const [codex, setCodex] = useState(initialForms.codex);
+	const [cliproxy, setCliProxy] = useState(initialForms.cliproxy);
 	const [voice, setVoice] = useState(initialForms.voice);
 	const [acpAgents, setAcpAgents] = useState(initialForms.acpAgents);
 	const [umbod, setUmbod] = useState(initialForms.umbod);
@@ -67,6 +70,7 @@ export function useSettingsForm(
 		vault,
 		claude,
 		codex,
+		cliproxy,
 		voice,
 		server,
 		ui,
@@ -142,6 +146,7 @@ export function useSettingsForm(
 			vault === initialForms.vault &&
 			claude === initialForms.claude &&
 			codex === initialForms.codex &&
+			cliproxy === initialForms.cliproxy &&
 			voice === initialForms.voice &&
 			ui === initialForms.ui &&
 			vocab === initialForms.vocab &&
@@ -172,6 +177,7 @@ export function useSettingsForm(
 		vault,
 		claude,
 		codex,
+		cliproxy,
 		voice,
 		ui,
 		vocab,
@@ -204,9 +210,10 @@ export function useSettingsForm(
 	);
 
 	const changeClaude = (patch: Partial<ClaudeForm>) => {
-		const next = applyAgentFormPatch(claude, codex, patch);
+		const next = applyAgentFormPatch(claude, codex, cliproxy, patch);
 		setClaude(next.claude);
 		setCodex(next.codex);
+		setCliProxy(next.cliproxy);
 	};
 
 	return {
@@ -214,6 +221,7 @@ export function useSettingsForm(
 		setVault,
 		claude,
 		codex,
+		cliproxy,
 		changeClaude,
 		voice,
 		setVoice,

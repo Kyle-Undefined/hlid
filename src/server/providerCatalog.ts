@@ -151,12 +151,13 @@ export function createModelCatalog(
 ): {
 	modelsFor(p: AgentProvider, refresh?: boolean): Promise<ProviderModelInfo[]>;
 	cachedModelsFor(p: AgentProvider): Promise<ProviderModelInfo[]>;
+	register(p: AgentProvider): void;
 	/** Fire-and-forget warm-up of every provider's cache; never rejects. */
 	warm(): void;
 } {
 	const caches = new Map<string, CachedList<ProviderModelInfo[]>>();
-	for (const p of providers.values()) {
-		if (!p.listModels) continue;
+	const register = (p: AgentProvider) => {
+		if (!p.listModels) return;
 		const listModels = p.listModels.bind(p);
 		caches.set(
 			p.providerId,
@@ -168,9 +169,11 @@ export function createModelCatalog(
 				onChange: () => onChange?.(p.providerId),
 			}),
 		);
-	}
+	};
+	for (const p of providers.values()) register(p);
 
 	return {
+		register,
 		async modelsFor(p, refresh) {
 			const cache = caches.get(p.providerId);
 			if (!cache) return staticModels(p);
@@ -277,7 +280,7 @@ export type ProviderCatalogSnapshot = {
  * model, and host-capability data revalidates in the background.
  */
 export function createProviderCatalogSnapshot(
-	providers: Iterable<AgentProvider>,
+	providers: Iterable<AgentProvider> | (() => Iterable<AgentProvider>),
 	modelCatalog: Parameters<typeof loadProviderCatalog>[1],
 	options: {
 		ttlMs?: number;
@@ -285,7 +288,9 @@ export function createProviderCatalogSnapshot(
 		load?: typeof loadProviderCatalog;
 	} = {},
 ): ProviderCatalogSnapshot {
-	const providerList = [...providers];
+	const providerList = () => [
+		...(typeof providers === "function" ? providers() : providers),
+	];
 	const ttlMs = options.ttlMs ?? PROVIDER_SNAPSHOT_TTL_MS;
 	const now = options.now ?? Date.now;
 	const load = options.load ?? loadProviderCatalog;
@@ -323,7 +328,7 @@ export function createProviderCatalogSnapshot(
 		const flightKey = `${snapshotKey}:${loadOptions?.refresh ? "live" : "cached"}`;
 		const current = inflight.get(flightKey);
 		if (current) return current;
-		const pending = load(providerList, modelCatalog, loadOptions)
+		const pending = load(providerList(), modelCatalog, loadOptions)
 			.then((value) => store(includeHostCapabilities, value))
 			.finally(() => inflight.delete(flightKey));
 		inflight.set(flightKey, pending);

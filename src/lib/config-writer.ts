@@ -1,6 +1,7 @@
 import {
 	DEFAULT_ATTACHMENTS_CONFIG,
 	DEFAULT_AUTO_SLEEP_CONFIG,
+	DEFAULT_CLIPROXY_CONFIG,
 	DEFAULT_VOICE_CONFIG,
 	type HlidConfig,
 } from "../config";
@@ -110,6 +111,21 @@ function serializeClaude(config: HlidConfig["claude"]): string[] {
 		...optionalEntry("max_turns", config.max_turns),
 		...optionalEntry("recap_model", config.recap_model),
 		...optionalEntry("interactive_mode", true, config.interactive_mode),
+	]);
+}
+
+function serializeCliProxy(config: HlidConfig["cliproxy"]): string[] {
+	return section("cliproxy", [
+		`enabled = ${tomlVal(config.enabled)}`,
+		`mode = ${tomlVal(config.mode)}`,
+		`base_url = ${tomlVal(config.base_url)}`,
+		`api_key = ${tomlVal(config.api_key)}`,
+		`model = ${tomlVal(config.model)}`,
+		`effort = ${tomlVal(config.effort)}`,
+		`permission_mode = ${tomlVal(config.permission_mode)}`,
+		`turn_recaps = ${tomlVal(config.turn_recaps)}`,
+		...optionalEntry("max_turns", config.max_turns),
+		...optionalEntry("recap_model", config.recap_model),
 	]);
 }
 
@@ -236,6 +252,8 @@ export function serializeConfig(config: HlidConfig): string {
 		...serializeAutoSleep(config.auto_sleep),
 		"",
 		...serializeClaude(config.claude),
+		"",
+		...serializeCliProxy(config.cliproxy ?? DEFAULT_CLIPROXY_CONFIG),
 		...(config.codex
 			? [
 					"",

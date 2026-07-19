@@ -4,7 +4,9 @@ import * as db from "../db";
 import { isAllowedOrigin, isAllowedOriginHeader } from "../lib/allowedOrigin";
 import { resolveClaudeExecutable } from "../lib/claudePath";
 import { resolveCodexExecutable } from "../lib/codexPath";
+import { writeConfig } from "../lib/config-writer";
 import { registerBunServer } from "../lib/lifecycle";
+import { CLIPROXY_CODEX_PROVIDER_ID } from "../lib/providerIds";
 import { loadToken, verifyToken } from "../lib/token";
 import { AcpProvider } from "./acpProvider";
 import { AcpRegistry } from "./acpRegistry";
@@ -21,6 +23,8 @@ import {
 import { openInBrowser } from "./browser";
 import { ClaudeProvider } from "./claudeProvider";
 import { getClaudeWarmupSnapshot, prewarmClaudeCli } from "./claudeWarmup";
+import { CliProxyManager, MANAGED_CLIPROXY_BASE_URL } from "./cliproxyManager";
+import { CliProxyCodexProvider } from "./cliproxyProvider";
 import {
 	closeAllCodexAppServers,
 	listCodexAppServers,
@@ -180,10 +184,18 @@ const handleAcpRoute = createAcpRouteHandler({
 	loadConfig,
 });
 const acpCatalog = await acpRegistry.catalog(config);
+const cliProxy = new CliProxyManager(config.cliproxy);
 const providers = new Map<string, AgentProvider>([
 	["claude", new ClaudeProvider()],
 	["codex", new CodexProvider()],
 ]);
+const initialCliProxyConnection = cliProxy.connection();
+if (initialCliProxyConnection) {
+	providers.set(
+		CLIPROXY_CODEX_PROVIDER_ID,
+		new CliProxyCodexProvider(initialCliProxyConnection),
+	);
+}
 for (const item of acpCatalog.filter((candidate) => candidate.enabled)) {
 	const configured = (config.acp_agents ?? []).find(
 		(agent) => agent.id === item.id,
@@ -200,13 +212,11 @@ for (const item of acpCatalog.filter((candidate) => candidate.enabled)) {
 	);
 }
 for (const provider of providers.values()) {
-	if (provider.usageWindows) {
-		db.registerProvider(
-			provider.providerId,
-			provider.label ?? provider.providerId,
-			[...provider.usageWindows],
-		);
-	}
+	db.registerProvider(
+		provider.providerId,
+		provider.label ?? provider.providerId,
+		provider.usageWindows ? [...provider.usageWindows] : [],
+	);
 }
 // Keep live model discovery demand-driven. In particular, Codex implements
 // `listModels()` through its app-server, so warming this cache during boot
@@ -217,7 +227,7 @@ const modelCatalog = createModelCatalog(providers, () => {
 	bumpDataRevision("providers");
 });
 providerCatalogSnapshot = createProviderCatalogSnapshot(
-	providers.values(),
+	() => providers.values(),
 	modelCatalog,
 );
 subscribeDataRevisions((revisions) => {
@@ -225,6 +235,12 @@ subscribeDataRevisions((revisions) => {
 });
 warmVaultSnapshot();
 const pool = new SessionPool(config, providers);
+void cliProxy.initialize().catch((error) => {
+	console.error(
+		"[cliproxy] failed to initialize:",
+		error instanceof Error ? error.message : String(error),
+	);
+});
 const voice = new VoiceModelManager(
 	config.voice,
 	await bootstrapVoiceRuntime(),
@@ -255,6 +271,7 @@ void db.getSetting("mcp_status_cache").then((cached) => {
 
 // Graceful shutdown: abort all running sessions on SIGTERM / SIGINT
 process.on("SIGTERM", () => {
+	cliProxy.close();
 	voice.close();
 	pool.closeAll();
 	terminalPool.closeAll();
@@ -264,6 +281,7 @@ process.on("SIGTERM", () => {
 	process.exit(0);
 });
 process.on("SIGINT", () => {
+	cliProxy.close();
 	voice.close();
 	pool.closeAll();
 	terminalPool.closeAll();
@@ -480,6 +498,93 @@ type ServerRouteHandler = (
 	request: Request,
 ) => Response | Promise<Response>;
 
+async function syncCliProxyRuntime(): Promise<void> {
+	const latest = loadConfig();
+	await cliProxy.syncConfig(latest.cliproxy);
+	pool.syncConfig(latest);
+	const connection = cliProxy.connection();
+	if (connection) {
+		const provider = new CliProxyCodexProvider(connection);
+		providers.set(CLIPROXY_CODEX_PROVIDER_ID, provider);
+		modelCatalog.register(provider);
+		db.registerProvider(
+			provider.providerId,
+			provider.label ?? provider.providerId,
+			[],
+		);
+	} else {
+		providers.delete(CLIPROXY_CODEX_PROVIDER_ID);
+	}
+	providerCatalogSnapshot.invalidate();
+	bumpDataRevision("providers");
+}
+
+function writeManagedCliProxyConfig(enabled: boolean): void {
+	const latest = loadConfig();
+	writeConfig({
+		...latest,
+		cliproxy: {
+			...latest.cliproxy,
+			enabled,
+			mode: "managed",
+			base_url: MANAGED_CLIPROXY_BASE_URL,
+			api_key: "",
+		},
+	});
+}
+
+const CLIPROXY_ROUTE_HANDLERS: Record<string, ServerRouteHandler> = {
+	"GET /cliproxy": async (url) => {
+		if (url.searchParams.get("refresh") === "1") {
+			await cliProxy.refreshRelease();
+		}
+		return Response.json(cliProxy.status());
+	},
+	"POST /cliproxy/sync": async () => {
+		await syncCliProxyRuntime();
+		return Response.json(cliProxy.status());
+	},
+	"POST /cliproxy/install": async () => {
+		await cliProxy.install();
+		writeManagedCliProxyConfig(true);
+		await syncCliProxyRuntime();
+		return Response.json(cliProxy.status());
+	},
+	"POST /cliproxy/start": async () => {
+		writeManagedCliProxyConfig(true);
+		await syncCliProxyRuntime();
+		return Response.json(cliProxy.status());
+	},
+	"POST /cliproxy/stop": async () => {
+		writeManagedCliProxyConfig(false);
+		await syncCliProxyRuntime();
+		return Response.json(cliProxy.status());
+	},
+	"POST /cliproxy/oauth": async () => {
+		await cliProxy.beginOAuth();
+		return Response.json(cliProxy.status(), { status: 202 });
+	},
+	"DELETE /cliproxy": async () => {
+		writeManagedCliProxyConfig(false);
+		await cliProxy.remove();
+		await syncCliProxyRuntime();
+		return Response.json(cliProxy.status());
+	},
+};
+
+async function handleCliProxyRoute(url: URL, req: Request) {
+	const handler = CLIPROXY_ROUTE_HANDLERS[`${req.method} ${url.pathname}`];
+	if (!handler) return null;
+	try {
+		return await handler(url, req);
+	} catch (error) {
+		return Response.json(
+			{ error: error instanceof Error ? error.message : String(error) },
+			{ status: 409 },
+		);
+	}
+}
+
 const VOICE_ROUTE_HANDLERS: Record<string, ServerRouteHandler> = {
 	"GET /voice": async (url) => {
 		const refresh = url.searchParams.get("refresh") === "1";
@@ -522,6 +627,7 @@ const handleAuthenticatedRoute = createAuthenticatedRouteHandler({
 		handleCodexRoute,
 		handleProviderRoute,
 		handleAcpRoute,
+		handleCliProxyRoute,
 		handleVoiceRoute,
 		handleAccountRoute,
 		(url, request) => handleSkillRoute(url, request, config, providers),

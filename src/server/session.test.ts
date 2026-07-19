@@ -120,7 +120,7 @@ import { buildPromptAsync } from "./promptBuilder";
 import type { RateLimitMessage, ServerMessage } from "./protocol";
 import { getWindowMark } from "./proxy";
 import { generateTurnRecap } from "./recap";
-import { SessionManager } from "./session";
+import { resolveConfiguredSessionDefaults, SessionManager } from "./session";
 import { authorizeHlidTool, registerUmbodApprovalSession } from "./umbod";
 import {
 	evaluateSleep,
@@ -207,6 +207,29 @@ function makeProvider(
 // ── getStatus / initial state ─────────────────────────────────────────────────
 
 describe("SessionManager — initial state", () => {
+	it("uses separate CLIProxy defaults for the proxied Codex route", () => {
+		const config = {
+			...makeConfig(),
+			vault_provider: "cliproxy-codex",
+			cliproxy: {
+				enabled: true,
+				base_url: "http://127.0.0.1:8317",
+				api_key: "key",
+				model: "gpt-5.6-sol",
+				effort: "xhigh",
+				permission_mode: "acceptEdits",
+				turn_recaps: true,
+			},
+		} as HlidConfig;
+		expect(resolveConfiguredSessionDefaults(config)).toMatchObject({
+			providerId: "cliproxy-codex",
+			model: "gpt-5.6-sol",
+			effort: "xhigh",
+			permissionMode: "acceptEdits",
+			recapModel: "",
+		});
+	});
+
 	it("reports idle state and configured model", () => {
 		const sm = new SessionManager(
 			makeConfig("model-x"),

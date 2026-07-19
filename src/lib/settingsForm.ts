@@ -23,6 +23,15 @@ export type CodexForm = {
 	windowsComputerUseEffort: string;
 };
 
+export type CliProxyForm = {
+	model: string;
+	effort: HlidConfig["cliproxy"]["effort"];
+	maxTurns: string;
+	permissionMode: HlidConfig["cliproxy"]["permission_mode"];
+	turnRecaps: boolean;
+	recapModel: string;
+};
+
 export type AutoSleepForm = {
 	enabled: boolean;
 	/** Percent 1–100; stored in config as a 0.01–1 fraction. */
@@ -35,6 +44,7 @@ export type SettingsForms = {
 	vault: VaultForm;
 	claude: ClaudeForm;
 	codex: CodexForm;
+	cliproxy: CliProxyForm;
 	voice: VoiceForm;
 	server: ServerForm;
 	ui: UiForm;
@@ -47,42 +57,64 @@ export type SettingsForms = {
 export function applyAgentFormPatch(
 	claude: ClaudeForm,
 	codex: CodexForm,
+	cliproxy: CliProxyForm,
 	patch: Partial<ClaudeForm>,
-): { claude: ClaudeForm; codex: CodexForm } {
+): { claude: ClaudeForm; codex: CodexForm; cliproxy: CliProxyForm } {
 	if (patch.vaultProvider) {
-		return { claude: { ...claude, vaultProvider: patch.vaultProvider }, codex };
+		return {
+			claude: { ...claude, vaultProvider: patch.vaultProvider },
+			codex,
+			cliproxy,
+		};
 	}
-	if (claude.vaultProvider !== "codex") {
-		return { claude: { ...claude, ...patch }, codex };
+	if (claude.vaultProvider === "claude") {
+		return { claude: { ...claude, ...patch }, codex, cliproxy };
 	}
-	return {
-		claude,
-		codex: {
-			...codex,
-			...(patch.model !== undefined ? { model: patch.model } : {}),
-			...(patch.effort !== undefined
-				? { effort: patch.effort as CodexForm["effort"] }
-				: {}),
-			...(patch.maxTurns !== undefined ? { maxTurns: patch.maxTurns } : {}),
-			...(patch.permissionMode !== undefined
-				? {
-						permissionMode: patch.permissionMode as CodexForm["permissionMode"],
-					}
-				: {}),
-			...(patch.turnRecaps !== undefined
-				? { turnRecaps: patch.turnRecaps }
-				: {}),
-			...(patch.recapModel !== undefined
-				? { recapModel: patch.recapModel }
-				: {}),
-			...(patch.windowsComputerUseModel !== undefined
-				? { windowsComputerUseModel: patch.windowsComputerUseModel }
-				: {}),
-			...(patch.windowsComputerUseEffort !== undefined
-				? { windowsComputerUseEffort: patch.windowsComputerUseEffort }
-				: {}),
-		},
+	const providerForm = claude.vaultProvider === "codex" ? codex : cliproxy;
+	const next = {
+		...providerForm,
+		...(patch.model !== undefined ? { model: patch.model } : {}),
+		...(patch.effort !== undefined ? { effort: patch.effort } : {}),
+		...(patch.maxTurns !== undefined ? { maxTurns: patch.maxTurns } : {}),
+		...(patch.permissionMode !== undefined
+			? { permissionMode: patch.permissionMode }
+			: {}),
+		...(patch.turnRecaps !== undefined ? { turnRecaps: patch.turnRecaps } : {}),
+		...(patch.recapModel !== undefined ? { recapModel: patch.recapModel } : {}),
 	};
+	if (claude.vaultProvider === "codex") {
+		return {
+			claude,
+			cliproxy,
+			codex: {
+				...codex,
+				...(patch.model !== undefined ? { model: patch.model } : {}),
+				...(patch.effort !== undefined
+					? { effort: patch.effort as CodexForm["effort"] }
+					: {}),
+				...(patch.maxTurns !== undefined ? { maxTurns: patch.maxTurns } : {}),
+				...(patch.permissionMode !== undefined
+					? {
+							permissionMode:
+								patch.permissionMode as CodexForm["permissionMode"],
+						}
+					: {}),
+				...(patch.turnRecaps !== undefined
+					? { turnRecaps: patch.turnRecaps }
+					: {}),
+				...(patch.recapModel !== undefined
+					? { recapModel: patch.recapModel }
+					: {}),
+				...(patch.windowsComputerUseModel !== undefined
+					? { windowsComputerUseModel: patch.windowsComputerUseModel }
+					: {}),
+				...(patch.windowsComputerUseEffort !== undefined
+					? { windowsComputerUseEffort: patch.windowsComputerUseEffort }
+					: {}),
+			},
+		};
+	}
+	return { claude, codex, cliproxy: next as CliProxyForm };
 }
 
 function optionalNumber(value: number | undefined): string {
@@ -132,6 +164,17 @@ function createCodexForm(initial: HlidConfig): CodexForm {
 			initial.codex.windows_computer_use?.model ?? "inherit",
 		windowsComputerUseEffort:
 			initial.codex.windows_computer_use?.effort ?? "medium",
+	};
+}
+
+function createCliProxyForm(initial: HlidConfig): CliProxyForm {
+	return {
+		model: initial.cliproxy.model,
+		effort: initial.cliproxy.effort,
+		maxTurns: optionalNumber(initial.cliproxy.max_turns),
+		permissionMode: initial.cliproxy.permission_mode,
+		turnRecaps: initial.cliproxy.turn_recaps,
+		recapModel: initial.cliproxy.recap_model ?? "",
 	};
 }
 
@@ -195,6 +238,7 @@ export function createSettingsForms(initial: HlidConfig): SettingsForms {
 		vault: createVaultForm(initial),
 		claude: createClaudeForm(initial),
 		codex: createCodexForm(initial),
+		cliproxy: createCliProxyForm(initial),
 		voice: initial.voice,
 		acpAgents: initial.acp_agents ?? [],
 		umbod: initial.umbod,
@@ -301,6 +345,15 @@ export function buildSettingsConfig(
 				model: forms.codex.windowsComputerUseModel || "inherit",
 				effort: forms.codex.windowsComputerUseEffort || "medium",
 			},
+		},
+		cliproxy: {
+			...initial.cliproxy,
+			model: forms.cliproxy.model,
+			effort: forms.cliproxy.effort,
+			max_turns: parsedMaxTurns(forms.cliproxy.maxTurns),
+			permission_mode: forms.cliproxy.permissionMode,
+			turn_recaps: forms.cliproxy.turnRecaps,
+			recap_model: forms.cliproxy.recapModel || undefined,
 		},
 		ui: {
 			enter_to_submit: forms.ui.enterToSubmit,
