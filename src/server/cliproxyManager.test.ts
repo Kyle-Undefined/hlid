@@ -8,6 +8,7 @@ import {
 	CLIPROXY_OAUTH_PROVIDERS,
 	CliProxyManager,
 	checksumForAsset,
+	cliProxyLaunchError,
 	extractCliProxyOAuthPrompt,
 	managedCliProxyConfig,
 	selectCliProxyReleaseAssets,
@@ -63,6 +64,19 @@ describe("CLIProxy release verification", () => {
 });
 
 describe("managed CLIProxy configuration", () => {
+	it("explains when Windows Security may have removed the executable", () => {
+		expect(
+			cliProxyLaunchError(
+				new Error("EUNKNOWN: unknown error, uv_spawn"),
+				false,
+				"win32",
+			).message,
+		).toContain("Windows Security may have quarantined it");
+		expect(
+			cliProxyLaunchError(new Error("spawn failed"), true, "win32").message,
+		).toBe("CLIProxy could not start: spawn failed");
+	});
+
 	it("waits for a child process to exit after requesting termination", async () => {
 		class FakeChild extends EventEmitter {
 			exitCode: number | null = null;

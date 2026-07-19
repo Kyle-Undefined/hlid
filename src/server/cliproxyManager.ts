@@ -109,6 +109,20 @@ export function extractCliProxyOAuthPrompt(output: string): {
 	return { url, code };
 }
 
+export function cliProxyLaunchError(
+	error: unknown,
+	executableExists: boolean,
+	platform = process.platform,
+): Error {
+	if (platform === "win32" && !executableExists) {
+		return new Error(
+			"CLIProxy executable is missing after extraction. Windows Security may have quarantined it. Review Windows Security > Protection history before retrying.",
+		);
+	}
+	const detail = error instanceof Error ? error.message : String(error);
+	return new Error(`CLIProxy could not start: ${detail}`);
+}
+
 function oauthFailureDetail(output: string): string | undefined {
 	const lines = output
 		.replace(/https?:\/\/[^\s<>"']+/gi, "[authorization URL]")
@@ -617,6 +631,13 @@ export class CliProxyManager {
 			return;
 		const installed = this.installed();
 		if (!installed) throw new Error("CLIProxy is not installed");
+		if (!existsSync(installed.executable)) {
+			throw cliProxyLaunchError(
+				new Error("installed executable was not found"),
+				false,
+				this.platform,
+			);
+		}
 		mkdirSync(this.authDir, { recursive: true, mode: 0o700 });
 		writeFileSync(
 			this.configPath,
@@ -625,19 +646,34 @@ export class CliProxyManager {
 		);
 		this.statusValue.state = "starting";
 		this.statusValue.error = undefined;
-		const child = spawn(installed.executable, ["--config", this.configPath], {
-			cwd: dirname(installed.executable),
-			stdio: ["ignore", "pipe", "pipe"],
-			windowsHide: true,
-		});
+		let child: ChildProcess;
+		try {
+			child = spawn(installed.executable, ["--config", this.configPath], {
+				cwd: dirname(installed.executable),
+				stdio: ["ignore", "pipe", "pipe"],
+				windowsHide: true,
+			});
+		} catch (error) {
+			throw cliProxyLaunchError(
+				error,
+				existsSync(installed.executable),
+				this.platform,
+			);
+		}
 		this.runtime = child;
 		this.drainLogs(child, installed.clientKey);
+		let launchError: Error | undefined;
 		child.once("error", (error) => {
 			if (this.runtime !== child) return;
+			launchError = cliProxyLaunchError(
+				error,
+				existsSync(installed.executable),
+				this.platform,
+			);
 			this.statusValue = {
 				...this.statusValue,
 				state: "error",
-				error: error.message,
+				error: launchError.message,
 			};
 		});
 		child.once("exit", (code) => {
@@ -653,6 +689,7 @@ export class CliProxyManager {
 		});
 		const deadline = Date.now() + 15_000;
 		while (Date.now() < deadline) {
+			if (launchError) break;
 			if (child.exitCode !== null) break;
 			try {
 				const response = await fetch(`${MANAGED_BASE_URL}/v1/models`, {
@@ -667,11 +704,15 @@ export class CliProxyManager {
 			await Bun.sleep(200);
 		}
 		await this.stop();
+		const error =
+			launchError ??
+			new Error("CLIProxy did not become ready within 15 seconds");
 		this.statusValue = {
 			...this.statusValue,
 			state: "error",
-			error: "CLIProxy did not become ready",
+			error: error.message,
 		};
+		throw error;
 	}
 
 	private drainLogs(child: ChildProcess, secret: string): void {
@@ -754,7 +795,11 @@ export class CliProxyManager {
 		} catch (error) {
 			this.finishOAuthWithError(
 				providerId,
-				error instanceof Error ? error.message : String(error),
+				cliProxyLaunchError(
+					error,
+					existsSync(installed.executable),
+					this.platform,
+				).message,
 			);
 			return;
 		}
@@ -795,7 +840,14 @@ export class CliProxyManager {
 		child.once("error", (error) => {
 			if (this.oauthProcess !== child) return;
 			this.oauthProcess = null;
-			this.finishOAuthWithError(providerId, error.message);
+			this.finishOAuthWithError(
+				providerId,
+				cliProxyLaunchError(
+					error,
+					existsSync(installed.executable),
+					this.platform,
+				).message,
+			);
 		});
 	}
 
