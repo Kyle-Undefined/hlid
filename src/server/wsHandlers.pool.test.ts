@@ -529,6 +529,44 @@ describe("message — subscribe_session", () => {
 		expect(calls.some((c) => c[1].type === "chunk")).toBe(true);
 	});
 
+	it("replays pending questions and plans when another device owns the run", async () => {
+		const vault = makeEntry("vault-id");
+		const other = makeEntry("other-id");
+		other.manager.isRunning.mockReturnValue(true);
+		other.manager.getPendingAskUserQuestions.mockReturnValue([
+			{
+				type: "ask_user_question",
+				id: "question-1",
+				questions: [
+					{ question: "Which scope?", options: ["A", "B"], multiSelect: false },
+				],
+			},
+		]);
+		other.manager.getPendingPlanModeExits.mockReturnValue([
+			{ type: "plan_mode_exit", id: "plan-1", input: { plan: "The plan" } },
+		]);
+		other.runState.ownerWs = makeWs("other-id") as never;
+		const pool = makePool(vault);
+		pool.get.mockImplementation((id: string) => {
+			if (id === "vault-id") return vault;
+			if (id === "other-id") return other;
+			return undefined;
+		});
+		const { message } = createWsHandlers(pool);
+		const ws = makeWs("vault-id");
+
+		await message(
+			ws as never,
+			JSON.stringify({ type: "subscribe_session", session_id: "other-id" }),
+		);
+
+		const types = mockSend.mock.calls
+			.filter((call) => call[0] === ws)
+			.map((call) => call[1].type);
+		expect(types).toContain("ask_user_question");
+		expect(types).toContain("plan_mode_exit");
+	});
+
 	it("replays auto-sleep state when switching to a sleeping live session", async () => {
 		const vault = makeEntry("vault-id");
 		const other = makeEntry("other-id");

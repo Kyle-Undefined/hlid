@@ -237,8 +237,12 @@ async function loadSessionMetadata(
 ): Promise<SessionItems> {
 	const minSeq = rows[0]?.seq;
 	if (minSeq === undefined) return [];
-	const maxSeq = rows.at(-1)?.seq ?? minSeq;
-	const scopedPage = { sessionId, minSeq, maxSeq };
+	// The newest/reconnect window must include interaction cards emitted after
+	// the last persisted message. Ask-user questions and plan proposals consume
+	// their own sequence values, so bounding metadata to rows.at(-1).seq hides
+	// the exact pending card that left the run waiting. Older cursor pages remain
+	// bounded in hydrateSessionHistoryPage so they cannot duplicate newer cards.
+	const scopedPage = { sessionId, minSeq };
 	const [permEvents, planRows, aukRows] = await Promise.all([
 		getSessionPermissionsFn({ data: scopedPage }),
 		getSessionPlanProposalsFn({ data: scopedPage }),

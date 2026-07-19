@@ -415,7 +415,7 @@ describe("open", () => {
 		});
 	});
 
-	it("does NOT replay ask_user_questions when another client already owns the session", () => {
+	it("replays ask_user_questions when another client already owns the session", () => {
 		const pendingQ = {
 			type: "ask_user_question" as const,
 			id: "aqq-1",
@@ -438,9 +438,8 @@ describe("open", () => {
 		runState.ownerWs = owner; // pre-set an existing owner
 		open(other as never);
 		const calls = mockSend.mock.calls.filter((c) => c[0] === other);
-		expect(
-			calls.find((c) => c[1].type === "ask_user_question"),
-		).toBeUndefined();
+		const question = calls.find((c) => c[1].type === "ask_user_question")?.[1];
+		expect(question).toMatchObject({ id: "aqq-1" });
 	});
 });
 
@@ -510,6 +509,40 @@ describe("message — sync", () => {
 			.filter((c) => c[0] === ws)
 			.map((c) => (c[1] as { type: string }).type);
 		expect(types).toContain("status");
+	});
+
+	it("replays pending questions and plans without taking ownership", async () => {
+		const pendingQuestion = {
+			type: "ask_user_question" as const,
+			id: "question-1",
+			questions: [
+				{ question: "Which scope?", options: ["A", "B"], multiSelect: false },
+			],
+		};
+		const pendingPlan = {
+			type: "plan_mode_exit" as const,
+			id: "plan-1",
+			input: { plan: "The plan" },
+		};
+		const session = makeSession({
+			isRunning: vi.fn().mockReturnValue(true),
+			getPendingAskUserQuestions: vi.fn().mockReturnValue([pendingQuestion]),
+			getPendingPlanModeExits: vi.fn().mockReturnValue([pendingPlan]),
+		});
+		const { pool, runState } = wrapSession(session);
+		const owner = makeWs();
+		const other = makeWs();
+		runState.ownerWs = owner;
+		const { message } = createWsHandlers(pool as never);
+
+		await message(other as never, JSON.stringify({ type: "sync" }));
+
+		expect(runState.ownerWs).toBe(owner);
+		const types = mockSend.mock.calls
+			.filter((call) => call[0] === other)
+			.map((call) => call[1].type);
+		expect(types).toContain("ask_user_question");
+		expect(types).toContain("plan_mode_exit");
 	});
 });
 

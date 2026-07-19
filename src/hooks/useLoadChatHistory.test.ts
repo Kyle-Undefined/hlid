@@ -195,6 +195,74 @@ describe("useLoadChatHistory — initial load", () => {
 		).toBe(true);
 	});
 
+	it("hydrates trailing pending questions and plans newer than the latest message", async () => {
+		vi.mocked(getSessionDataFn).mockResolvedValue([
+			{
+				...makeRow("user", "make a plan", 1000),
+				seq: 0,
+			},
+			{
+				...makeRow("assistant", "I need two choices first", 2000),
+				seq: 1,
+			},
+		]);
+		vi.mocked(getSessionAskUserQuestionsFn).mockResolvedValue([
+			{
+				request_id: "question-1",
+				seq: 2,
+				questions_json: JSON.stringify([
+					{ question: "Which scope?", options: ["A", "B"], multiSelect: false },
+				]),
+				answers_json: null,
+				notes_json: null,
+				timestamp: 3000,
+			},
+		]);
+		vi.mocked(getSessionPlanProposalsFn).mockResolvedValue([
+			{
+				proposal_id: "plan-1",
+				seq: 3,
+				plan: "The pending plan",
+				decision: "pending",
+				html_attachment_id: null,
+				timestamp: 4000,
+			},
+		]);
+		const dispatch = vi.fn();
+
+		renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef: { current: null },
+			historyReadyRef: { current: false },
+			handleWsMessage: noopWsHandler,
+			wsStatus: "connected",
+			sessionIdRef: { current: "sess-1" },
+		});
+
+		await act(async () => {});
+
+		expect(getSessionAskUserQuestionsFn).toHaveBeenCalledWith({
+			data: { sessionId: "sess-1", minSeq: 0 },
+		});
+		expect(getSessionPlanProposalsFn).toHaveBeenCalledWith({
+			data: { sessionId: "sess-1", minSeq: 0 },
+		});
+		const hydrated = dispatch.mock.calls.find(
+			([action]) => action.type === "HYDRATE_HISTORY",
+		)?.[0].items;
+		expect(hydrated).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					kind: "ask_user_question",
+					id: "question-1",
+				}),
+				expect.objectContaining({ kind: "plan_proposal", id: "plan-1" }),
+			]),
+		);
+	});
+
 	it("restores persisted subagent snapshots on tool events", async () => {
 		const row = makeRow("assistant", "", 1000);
 		vi.mocked(getSessionDataFn).mockResolvedValue([

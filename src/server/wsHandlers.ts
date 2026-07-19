@@ -125,6 +125,22 @@ function broadcastQueueState(entry: PoolEntry): void {
 	entry.runState.broadcast(queueStateMessage(entry));
 }
 
+/** Re-send durable pending prompts whenever a client focuses a running session. */
+function sendPendingInteractions(
+	ws: ServerWebSocket<WsData>,
+	entry: PoolEntry,
+): void {
+	for (const request of entry.manager.getPendingPermissionRequests()) {
+		send(ws, request);
+	}
+	for (const question of entry.manager.getPendingAskUserQuestions()) {
+		send(ws, question);
+	}
+	for (const exit of entry.manager.getPendingPlanModeExits()) {
+		send(ws, exit);
+	}
+}
+
 function handleNewSession(
 	context: MessageContext,
 	msg: MessageOf<"new_session">,
@@ -210,6 +226,7 @@ async function handleSubscribeSession(
 	if (context) entry.runState.send(ws, context);
 	if (entry.manager.isRunning()) {
 		for (const buffered of entry.runState.getReplayBuffer()) send(ws, buffered);
+		sendPendingInteractions(ws, entry);
 	}
 	// Auto-sleep is transient session state rather than a transcript event, so
 	// it is not part of the normal replay buffer. Re-send it when Raven switches
@@ -294,12 +311,11 @@ function handleSync(ws: ServerWebSocket<WsData>, entry: PoolEntry): void {
 	// prompt owner.
 	const sleep = entry.manager.getSleepState();
 	if (sleep) send(ws, sleep);
-	if (!entry.manager.isRunning() || entry.runState.ownerWs !== null) return;
-	entry.runState.ownerWs = ws;
-	for (const request of entry.manager.getPendingPermissionRequests())
-		entry.runState.send(ws, request);
-	for (const exit of entry.manager.getPendingPlanModeExits())
-		entry.runState.send(ws, exit);
+	if (!entry.manager.isRunning()) return;
+	if (entry.runState.ownerWs === null) entry.runState.ownerWs = ws;
+	// Ownership controls which connection launched the turn, not whether another
+	// subscribed device can see and answer the interaction blocking that turn.
+	sendPendingInteractions(ws, entry);
 }
 
 function handleReloadSession(
@@ -1001,19 +1017,10 @@ export function createWsHandlers(
 				}
 				const sleep = vault.manager.getSleepState();
 				if (sleep) send(ws, sleep);
-				// Claim ownership and replay pending prompts if no owner yet (page refresh).
-				if (vault.runState.ownerWs === null) {
-					vault.runState.ownerWs = ws;
-					for (const req of vault.manager.getPendingPermissionRequests()) {
-						send(ws, req);
-					}
-					for (const q of vault.manager.getPendingAskUserQuestions()) {
-						send(ws, q);
-					}
-					for (const exit of vault.manager.getPendingPlanModeExits()) {
-						send(ws, exit);
-					}
-				}
+				// A reconnecting client may claim an unowned run, but every connected
+				// client should see the prompt currently blocking that run.
+				if (vault.runState.ownerWs === null) vault.runState.ownerWs = ws;
+				sendPendingInteractions(ws, vault);
 			}
 
 			// Send cached MCP status so clients see server list immediately on connect.
