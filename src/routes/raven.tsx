@@ -82,6 +82,7 @@ import {
 import { deriveModelMismatch, fmtModel } from "#/lib/formatters";
 import { loaderValueOrFallback } from "#/lib/loaderFallback";
 import { mapMcpServer } from "#/lib/mcp";
+import { isCliProxyProvider } from "#/lib/providerIds";
 import {
 	effortOptionsFor,
 	modelOptions,
@@ -1162,7 +1163,7 @@ function configuredVaultSelection(
 			permissionMode: config.codex?.permission_mode,
 		};
 	}
-	if (providerId === "cliproxy-codex") {
+	if (isCliProxyProvider(providerId)) {
 		return {
 			model: config.cliproxy?.model,
 			effort: config.cliproxy?.effort,

@@ -1,9 +1,22 @@
-import { describe, expect, it } from "vitest";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { HlidConfigSchema } from "../config";
 import {
+	CliProxyManager,
 	checksumForAsset,
 	managedCliProxyConfig,
 	selectCliProxyReleaseAssets,
 } from "./cliproxyManager";
+
+const temporaryRoots: string[] = [];
+
+afterEach(() => {
+	for (const root of temporaryRoots.splice(0)) {
+		rmSync(root, { recursive: true, force: true });
+	}
+});
 
 describe("CLIProxy release verification", () => {
 	it("selects the current Windows architecture and checksum manifest", () => {
@@ -54,5 +67,35 @@ describe("managed CLIProxy configuration", () => {
 		expect(yaml).toContain("allow-remote: false");
 		expect(yaml).toContain("disable-control-panel: true");
 		expect(yaml).toContain("usage-statistics-enabled: false");
+	});
+
+	it("reports every OAuth account found in the private auth directory", async () => {
+		const root = mkdtempSync(join(tmpdir(), "hlid-cliproxy-test-"));
+		temporaryRoots.push(root);
+		const auth = join(root, "auth");
+		mkdirSync(auth);
+		writeFileSync(join(auth, "openai.json"), JSON.stringify({ type: "codex" }));
+		writeFileSync(
+			join(auth, "anthropic.json"),
+			JSON.stringify({ provider: "claude" }),
+		);
+		writeFileSync(
+			join(auth, "moonshot.json"),
+			JSON.stringify({ type: "kimi" }),
+		);
+
+		const manager = new CliProxyManager(
+			HlidConfigSchema.parse({}).cliproxy,
+			root,
+			"win32",
+		);
+		await manager.initialize();
+		expect(manager.status().accounts).toMatchObject({
+			codex: "connected",
+			claude: "connected",
+			kimi: "connected",
+			antigravity: "idle",
+			xai: "idle",
+		});
 	});
 });

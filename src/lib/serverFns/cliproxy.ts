@@ -7,6 +7,13 @@ const FALLBACK: CliProxyStatus = {
 	managed: false,
 	authenticated: false,
 	oauth: "idle",
+	accounts: {
+		codex: "idle",
+		claude: "idle",
+		antigravity: "idle",
+		kimi: "idle",
+		xai: "idle",
+	},
 	error: "CLIProxy integration unavailable",
 };
 
@@ -41,6 +48,22 @@ export const stopCliProxyFn = createServerFn({ method: "POST" }).handler(() =>
 export const connectCliProxyCodexFn = createServerFn({
 	method: "POST",
 }).handler(() => action("/cliproxy/oauth"));
+
+export const connectCliProxyClaudeFn = createServerFn({
+	method: "POST",
+}).handler(() => action("/cliproxy/oauth?provider=claude"));
+
+export const connectCliProxyAntigravityFn = createServerFn({
+	method: "POST",
+}).handler(() => action("/cliproxy/oauth?provider=antigravity"));
+
+export const connectCliProxyKimiFn = createServerFn({ method: "POST" }).handler(
+	() => action("/cliproxy/oauth?provider=kimi"),
+);
+
+export const connectCliProxyXaiFn = createServerFn({ method: "POST" }).handler(
+	() => action("/cliproxy/oauth?provider=xai"),
+);
 
 export const removeCliProxyFn = createServerFn({ method: "POST" }).handler(() =>
 	action("/cliproxy", "DELETE"),

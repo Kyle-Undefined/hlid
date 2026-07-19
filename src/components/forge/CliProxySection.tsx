@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { DEFAULT_CLIPROXY_CONFIG, type HlidConfig } from "#/config";
 import {
+	connectCliProxyAntigravityFn,
+	connectCliProxyClaudeFn,
 	connectCliProxyCodexFn,
+	connectCliProxyKimiFn,
+	connectCliProxyXaiFn,
 	getCliProxyInfoFn,
 	installCliProxyFn,
 	refreshCliProxyInfoFn,
@@ -16,8 +20,23 @@ const UNAVAILABLE_INFO: CliProxyStatus = {
 	managed: false,
 	authenticated: false,
 	oauth: "idle",
+	accounts: {
+		codex: "idle",
+		claude: "idle",
+		antigravity: "idle",
+		kimi: "idle",
+		xai: "idle",
+	},
 	error: "CLIProxy integration unavailable",
 };
+
+const OAUTH_ACCOUNTS = [
+	{ id: "codex", label: "OpenAI Codex" },
+	{ id: "claude", label: "Anthropic Claude" },
+	{ id: "antigravity", label: "Google Antigravity" },
+	{ id: "kimi", label: "Moonshot Kimi" },
+	{ id: "xai", label: "xAI" },
+] as const;
 
 function bytes(value: number): string {
 	if (value < 1024 * 1024) return `${Math.round(value / 1024)} KB`;
@@ -48,11 +67,10 @@ export function CliProxySection({
 	}, []);
 
 	useEffect(() => {
-		if (!busy && info.oauth !== "running" && info.state !== "downloading")
-			return;
+		if (!busy && !info.activeOAuth && info.state !== "downloading") return;
 		const timer = window.setInterval(() => void refresh(), 1000);
 		return () => window.clearInterval(timer);
-	}, [busy, info.oauth, info.state, refresh]);
+	}, [busy, info.activeOAuth, info.state, refresh]);
 
 	async function run(
 		label: string,
@@ -72,6 +90,14 @@ export function CliProxySection({
 		}
 	}
 
+	function connectAccount(id: (typeof OAUTH_ACCOUNTS)[number]["id"]) {
+		if (id === "codex") return connectCliProxyCodexFn();
+		if (id === "claude") return connectCliProxyClaudeFn();
+		if (id === "antigravity") return connectCliProxyAntigravityFn();
+		if (id === "kimi") return connectCliProxyKimiFn();
+		return connectCliProxyXaiFn();
+	}
+
 	const installed = Boolean(info.installedVersion);
 	const running = info.state === "running" || info.state === "starting";
 	const integrationConfig = config ?? DEFAULT_CLIPROXY_CONFIG;
@@ -84,8 +110,8 @@ export function CliProxySection({
 				<div>
 					<h2 className="text-sm">CLIProxyAPI</h2>
 					<p className="text-xs text-muted-foreground mt-0.5 max-w-2xl">
-						Run Codex models through Claude Code while Hlid owns the proxy,
-						credentials, startup, and lifecycle.
+						Route models from connected OAuth accounts through Claude Code,
+						Codex, or OpenCode while Hlid owns the proxy and lifecycle.
 					</p>
 				</div>
 				<div className="text-right">
@@ -113,24 +139,33 @@ export function CliProxySection({
 				<div className="grid gap-3 sm:grid-cols-2">
 					<div className="border border-border/70 bg-background/40 p-3">
 						<div className="text-[10px] tracking-widest uppercase text-muted-foreground">
-							Codex account
+							OAuth accounts
 						</div>
-						<div className="text-sm mt-1">
-							{info.authenticated ? "Connected" : "Not connected"}
+						<div className="flex flex-wrap gap-x-3 gap-y-1 mt-1 text-xs">
+							{OAUTH_ACCOUNTS.map((account) => (
+								<span key={account.id}>
+									{account.label}:{" "}
+									{info.accounts[account.id] === "connected"
+										? "Connected"
+										: info.accounts[account.id] === "running"
+											? "Waiting"
+											: "Not connected"}
+								</span>
+							))}
 						</div>
 						<p className="text-xs text-muted-foreground mt-1">
-							Sign-in opens on the Windows machine running Hlid. Tokens stay in
-							Hlid's private integration directory.
+							Sign-in opens on the Windows host. Tokens stay in Hlid's private
+							integration directory.
 						</p>
 					</div>
 					<div className="border border-border/70 bg-background/40 p-3">
 						<div className="text-[10px] tracking-widest uppercase text-muted-foreground">
 							Accounting
 						</div>
-						<div className="text-sm mt-1">Separate provider estimate</div>
+						<div className="text-sm mt-1">Harness + model attribution</div>
 						<p className="text-xs text-muted-foreground mt-1">
-							Ledger records SDK tokens and model under Claude Code · Codex,
-							then estimates cost from Hlid's Codex pricing catalog.
+							Ledger records the harness route and actual model. Hlid estimates
+							known OpenAI and Anthropic models; other families remain unpriced.
 						</p>
 					</div>
 				</div>
@@ -179,18 +214,27 @@ export function CliProxySection({
 						Disable
 					</button>
 				)}
-				{installed && !external && !info.authenticated && (
-					<button
-						type="button"
-						disabled={Boolean(busy) || info.oauth === "running"}
-						onClick={() => void run("oauth", connectCliProxyCodexFn)}
-						className="px-3 py-1.5 border border-border text-[10px] tracking-widest uppercase disabled:opacity-50"
-					>
-						{info.oauth === "running"
-							? "Waiting for sign-in…"
-							: "Connect Codex"}
-					</button>
-				)}
+				{installed &&
+					!external &&
+					OAUTH_ACCOUNTS.map((account) => (
+						<button
+							key={account.id}
+							type="button"
+							disabled={Boolean(busy) || Boolean(info.activeOAuth)}
+							onClick={() =>
+								void run(`oauth-${account.id}`, () =>
+									connectAccount(account.id),
+								)
+							}
+							className="px-3 py-1.5 border border-border text-[10px] tracking-widest uppercase disabled:opacity-50"
+						>
+							{info.activeOAuth === account.id
+								? "Waiting for sign-in…"
+								: info.accounts[account.id] === "connected"
+									? `Reconnect ${account.label}`
+									: `Connect ${account.label}`}
+						</button>
+					))}
 				{installed && !external && (
 					<>
 						<button
@@ -209,7 +253,7 @@ export function CliProxySection({
 							onClick={() => {
 								if (
 									!window.confirm(
-										"Remove CLIProxyAPI and its saved Codex sign-in from this machine?",
+										"Remove CLIProxyAPI and all of its saved OAuth accounts from this machine?",
 									)
 								)
 									return;

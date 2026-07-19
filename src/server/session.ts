@@ -10,6 +10,7 @@ import {
 	isPathAccessibleFromRuntime,
 	toProviderRuntimePath,
 } from "../lib/paths";
+import { isCliProxyProvider } from "../lib/providerIds";
 import { isClaudeRuntimeProvider } from "../lib/providerRuntime";
 import { SESSION_LABEL_LENGTH } from "../lib/utils";
 import { formatVaultReferencedMessage } from "../lib/vaultReferences";
@@ -397,7 +398,7 @@ function configuredSessionDefaultsFromMaps(
 	const providerDefaults =
 		providerId === "codex"
 			? codexConfig
-			: providerId === "cliproxy-codex"
+			: isCliProxyProvider(providerId)
 				? config.cliproxy
 				: config.claude;
 	return {

@@ -24,6 +24,7 @@ import type {
 import {
 	acquireCodexAppServer,
 	CodexAppServer,
+	type CodexAppServerLaunch,
 	type ThreadHandler,
 } from "./codexAppServer";
 import type {
@@ -715,11 +716,15 @@ export function codexSandboxPolicy(
 export type CodexLaunchConfig = {
 	executable: string;
 	rpcCwd: string;
+	appServer: CodexAppServerLaunch;
 };
+
+export type CodexProviderProfile = Omit<CodexAppServerLaunch, "executable">;
 
 export function codexLaunchConfig(params: {
 	cwd: string;
 	executable?: string;
+	profile?: CodexProviderProfile;
 }): CodexLaunchConfig {
 	// The shared app-server process is spawned without a cwd (see
 	// codexAppServer.ts) — the session's working directory travels as rpcCwd
@@ -730,6 +735,7 @@ export function codexLaunchConfig(params: {
 	return {
 		executable,
 		rpcCwd: toLogical(params.cwd),
+		appServer: { executable, ...params.profile },
 	};
 }
 
@@ -820,12 +826,14 @@ export async function fetchCodexModels(opts?: {
 	timeoutMs?: number;
 	executable?: string;
 	cwd?: string;
+	profile?: CodexProviderProfile;
 }): Promise<ProviderModelInfo[]> {
 	const launch = codexLaunchConfig({
 		cwd: opts?.cwd ?? process.cwd(),
 		executable: opts?.executable,
+		profile: opts?.profile,
 	});
-	const conn = acquireCodexAppServer(launch.executable);
+	const conn = acquireCodexAppServer(launch.appServer);
 	const timeoutMs = opts?.timeoutMs ?? 10_000;
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
@@ -1039,6 +1047,7 @@ class CodexAgentSession implements AgentSession {
 		private params: AgentQueryParams,
 		private readonly delegatedWindowsComputerUse = false,
 		private readonly delegatedWindowsComputerUseTask?: string,
+		private readonly providerProfile?: CodexProviderProfile,
 	) {}
 
 	private canUseWindowsComputerUse(): boolean {
@@ -1210,8 +1219,9 @@ class CodexAgentSession implements AgentSession {
 			codexLaunchConfig({
 				cwd: this.params.cwd,
 				executable: this.params.executable,
+				profile: this.providerProfile,
 			});
-		const conn = this.conn ?? acquireCodexAppServer(launch.executable);
+		const conn = this.conn ?? acquireCodexAppServer(launch.appServer);
 		await conn.ready;
 		return { conn, launch };
 	}
@@ -1405,11 +1415,12 @@ class CodexAgentSession implements AgentSession {
 		const launch = codexLaunchConfig({
 			cwd: this.params.cwd,
 			executable: this.params.executable,
+			profile: this.providerProfile,
 		});
 		this.launch = launch;
 		const conn = this.delegatedWindowsComputerUse
-			? new CodexAppServer(launch.executable)
-			: acquireCodexAppServer(launch.executable);
+			? new CodexAppServer(launch.appServer)
+			: acquireCodexAppServer(launch.appServer);
 		if (this.delegatedWindowsComputerUse) this.ownedConnection = conn;
 		this.conn = conn;
 		if (this.params.signal) {
@@ -1562,7 +1573,7 @@ class CodexAgentSession implements AgentSession {
 			? this.ownedConnection
 			: this.conn?.alive
 				? this.conn
-				: acquireCodexAppServer(this.launch.executable);
+				: acquireCodexAppServer(this.launch.appServer);
 		await conn.ready;
 		await conn.request("mcpServer/tool/call", {
 			threadId: this.threadId,
@@ -2750,8 +2761,21 @@ class CodexAgentSession implements AgentSession {
 }
 
 export class CodexProvider implements AgentProvider {
-	readonly providerId = "codex";
-	readonly label = "Codex";
+	readonly providerId: string;
+	readonly label: string;
+	protected readonly providerProfile?: CodexProviderProfile;
+
+	constructor(
+		options: {
+			providerId?: string;
+			label?: string;
+			profile?: CodexProviderProfile;
+		} = {},
+	) {
+		this.providerId = options.providerId ?? "codex";
+		this.label = options.label ?? "Codex";
+		this.providerProfile = options.profile;
+	}
 
 	/** Offline fallback for listModels() — used when the live `model/list` RPC fails. */
 	readonly models = [
@@ -2788,7 +2812,11 @@ export class CodexProvider implements AgentProvider {
 		},
 	] as const;
 
-	readonly usageWindows = [
+	readonly usageWindows: ReadonlyArray<{
+		windowId: string;
+		label: string;
+		windowSecs: number;
+	}> = [
 		{ windowId: "five_hour", label: "5-HOUR", windowSecs: 5 * 3600 },
 		{ windowId: "weekly", label: "7-DAY", windowSecs: 7 * 86400 },
 	] as const;
@@ -2804,8 +2832,11 @@ export class CodexProvider implements AgentProvider {
 		cwd: string;
 		executable?: string;
 	}): Promise<ProviderSkillInfo[]> {
-		const launch = codexLaunchConfig(context);
-		const conn = acquireCodexAppServer(launch.executable);
+		const launch = codexLaunchConfig({
+			...context,
+			profile: this.providerProfile,
+		});
+		const conn = acquireCodexAppServer(launch.appServer);
 		await conn.ready;
 		const result = await conn.request("skills/list", {
 			cwds: [launch.rpcCwd],
@@ -2835,10 +2866,15 @@ export class CodexProvider implements AgentProvider {
 	}
 
 	async listModels(): Promise<ProviderModelInfo[]> {
-		return fetchCodexModels();
+		return fetchCodexModels({ profile: this.providerProfile });
 	}
 
 	query(params: AgentQueryParams): AgentSession {
-		return new CodexAgentSession(params);
+		return new CodexAgentSession(
+			params,
+			false,
+			undefined,
+			this.providerProfile,
+		);
 	}
 }

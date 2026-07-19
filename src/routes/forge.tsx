@@ -29,6 +29,13 @@ const UNAVAILABLE_CLIPROXY_INFO = {
 	managed: false,
 	authenticated: false,
 	oauth: "idle" as const,
+	accounts: {
+		codex: "idle" as const,
+		claude: "idle" as const,
+		antigravity: "idle" as const,
+		kimi: "idle" as const,
+		xai: "idle" as const,
+	},
 	error: "CLIProxy integration unavailable",
 };
 

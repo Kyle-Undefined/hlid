@@ -33,8 +33,18 @@ export type AcpProviderOptions = {
 	label: string;
 	command: string;
 	args?: string[];
-	env?: Record<string, string>;
+	env?:
+		| Record<string, string>
+		| (() => Record<string, string> | Promise<Record<string, string>>);
+	/** Translate Hlid's persisted model id into the ACP agent's config value. */
+	requestModel?: (model: string) => string;
 };
+
+async function resolveAcpEnv(
+	env: AcpProviderOptions["env"],
+): Promise<Record<string, string>> {
+	return typeof env === "function" ? await env() : (env ?? {});
+}
 
 type QueueResult<T> = IteratorResult<T>;
 
@@ -619,9 +629,10 @@ class AcpSession implements AgentSession {
 
 	private async doInitialize(): Promise<void> {
 		if (this.cancelled) return;
+		const providerEnv = await resolveAcpEnv(this.options.env);
 		const child = spawn(this.options.command, this.options.args ?? [], {
 			cwd: this.params.cwd,
-			env: { ...process.env, ...this.options.env },
+			env: { ...process.env, ...providerEnv },
 			stdio: ["pipe", "pipe", "pipe"],
 			windowsHide: true,
 		});
@@ -787,7 +798,12 @@ class AcpSession implements AgentSession {
 				this.modes.availableModes.find((mode) => mode.id !== planningModeId)
 					?.id ?? null;
 		}
-		await this.setConfigValue("model", this.params.model);
+		await this.setConfigValue(
+			"model",
+			this.params.model && this.options.requestModel
+				? this.options.requestModel(this.params.model)
+				: this.params.model,
+		);
 		await this.setConfigValue("thought_level", this.params.effort);
 		await this.syncPermissionMode(this.params.permissionMode ?? "default");
 		this.events.push({ type: "session_start", sessionId: this.sessionId });
@@ -966,7 +982,12 @@ class AcpSession implements AgentSession {
 
 	async setModel(model?: string): Promise<void> {
 		this.params.model = model;
-		await this.setConfigValue("model", model);
+		await this.setConfigValue(
+			"model",
+			model && this.options.requestModel
+				? this.options.requestModel(model)
+				: model,
+		);
 	}
 
 	async setEffort(effort: string): Promise<void> {
@@ -1032,13 +1053,16 @@ export class AcpProvider implements AgentProvider {
 	}
 }
 
-function createInspectionConnection(options: AcpProviderOptions): {
+async function createInspectionConnection(
+	options: AcpProviderOptions,
+): Promise<{
 	child: ChildProcessWithoutNullStreams;
 	connection: ClientSideConnection;
-} {
+}> {
+	const providerEnv = await resolveAcpEnv(options.env);
 	const child = spawn(options.command, options.args ?? [], {
 		cwd: process.cwd(),
-		env: { ...process.env, ...options.env },
+		env: { ...process.env, ...providerEnv },
 		stdio: ["pipe", "pipe", "pipe"],
 		windowsHide: true,
 	});
@@ -1059,7 +1083,7 @@ function createInspectionConnection(options: AcpProviderOptions): {
 async function inspectAcpSessionConfig(
 	options: AcpProviderOptions,
 ): Promise<SessionConfigOption[]> {
-	const { child, connection } = createInspectionConnection(options);
+	const { child, connection } = await createInspectionConnection(options);
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
 		return await Promise.race([
@@ -1092,7 +1116,7 @@ export async function inspectAcpAgent(
 	options: AcpProviderOptions,
 	methodId?: string,
 ): Promise<InitializeResponse> {
-	const { child, connection } = createInspectionConnection(options);
+	const { child, connection } = await createInspectionConnection(options);
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
 		return await Promise.race([

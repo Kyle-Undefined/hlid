@@ -301,6 +301,49 @@ describe("CodexAppServer idle lifecycle", () => {
 		]);
 	});
 
+	it("isolates provider profiles that share the same Codex executable", async () => {
+		vi.stubEnv("HLID_CODEX_APP_SERVER_IDLE_MS", "1000");
+		const nativeFake = makeFakeProc();
+		const routedFake = makeFakeProc();
+		vi.mocked(spawn)
+			.mockReturnValueOnce(nativeFake.proc as never)
+			.mockReturnValueOnce(routedFake.proc as never);
+
+		const native = acquireCodexAppServer("/usr/bin/codex");
+		const routed = acquireCodexAppServer({
+			executable: "/usr/bin/codex",
+			registryKey: "cliproxy:http://127.0.0.1:8317",
+			args: ["-c", 'model_provider="hlid_cliproxy"'],
+			env: { HLID_CLIPROXY_API_KEY: "secret" },
+		});
+		await Promise.all([native.ready, routed.ready]);
+
+		expect(routed).not.toBe(native);
+		expect(spawn).toHaveBeenNthCalledWith(
+			2,
+			"/usr/bin/codex",
+			[
+				"-c",
+				'model_provider="hlid_cliproxy"',
+				"app-server",
+				"--listen",
+				"stdio://",
+			],
+			expect.objectContaining({
+				env: expect.objectContaining({ HLID_CLIPROXY_API_KEY: "secret" }),
+			}),
+		);
+		expect(listCodexAppServers()).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ executable: "/usr/bin/codex" }),
+				expect.objectContaining({
+					executable: "/usr/bin/codex",
+					profile: "cliproxy:http://127.0.0.1:8317",
+				}),
+			]),
+		);
+	});
+
 	it("does not deregister a replacement acquired by an exit handler", async () => {
 		vi.stubEnv("HLID_CODEX_APP_SERVER_IDLE_MS", "1000");
 		const firstFake = makeFakeProc();

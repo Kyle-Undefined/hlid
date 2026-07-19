@@ -6,6 +6,7 @@
  */
 
 import type { HlidConfig } from "../config";
+import { isCliProxyProvider } from "./providerIds";
 import type { ProviderInfo } from "./providerTypes";
 import type { AgentListItem } from "./serverFns/agents";
 
@@ -81,7 +82,7 @@ export function resolveActiveProviderId(
 /** Model explicitly configured for the vault's provider (never live-session state). */
 export function configuredVaultModel(config: HlidConfig): string | null {
 	if (config.vault_provider === "codex") return config.codex?.model || null;
-	if (config.vault_provider === "cliproxy-codex") {
+	if (isCliProxyProvider(config.vault_provider)) {
 		return config.cliproxy.model || null;
 	}
 	if (config.vault_provider === "claude") return config.claude?.model || null;

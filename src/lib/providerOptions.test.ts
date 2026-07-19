@@ -161,6 +161,7 @@ describe("configuredVaultModel", () => {
 		vault_provider: "claude",
 		claude: { model: "claude-sonnet-4-6" },
 		codex: { model: "gpt-5.6-sol" },
+		cliproxy: { model: "kimi-k2.5" },
 	};
 
 	it("uses vault configuration instead of whichever session is focused", () => {
@@ -168,6 +169,21 @@ describe("configuredVaultModel", () => {
 		expect(
 			configuredVaultModel({ ...config, vault_provider: "codex" } as never),
 		).toBe("gpt-5.6-sol");
+	});
+
+	it("uses the shared routed model for every CLIProxy harness", () => {
+		for (const providerId of [
+			"cliproxy-codex",
+			"cliproxy:codex",
+			"cliproxy:opencode",
+		]) {
+			expect(
+				configuredVaultModel({
+					...config,
+					vault_provider: providerId,
+				} as never),
+			).toBe("kimi-k2.5");
+		}
 	});
 
 	it("does not invent a model for providers without vault model fields", () => {

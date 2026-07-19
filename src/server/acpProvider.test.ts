@@ -553,6 +553,30 @@ describe("AcpProvider — session lifecycle", () => {
 		});
 		session.cancel();
 	});
+
+	it("translates persisted model ids for a routed ACP harness", async () => {
+		const provider = new AcpProvider({
+			id: "acp:routed",
+			label: "Routed ACP",
+			command: "bun",
+			args: [fixture],
+			requestModel: (model) => `proxy/${model}`,
+		});
+		const session = provider.query(
+			params("allow", { model: "fake-smart", effort: "high" }),
+		);
+		await session.send("report-config");
+		const events: AgentEvent[] = [];
+		for await (const event of session) {
+			events.push(event);
+			if (event.type === "done") break;
+		}
+		expect(events).toContainEqual({
+			type: "text_delta",
+			text: "proxy/fake-smart/high",
+		});
+		session.cancel();
+	});
 });
 
 describe("AcpProvider — MCP status", () => {

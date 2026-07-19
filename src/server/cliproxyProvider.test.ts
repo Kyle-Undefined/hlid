@@ -10,7 +10,9 @@ import { HlidConfigSchema } from "../config";
 import type { AgentEvent } from "./agentProvider";
 import {
 	CliProxyCodexProvider,
+	cliProxyCodexProfile,
 	cliProxyModelWithEffort,
+	cliProxyOpenCodeConfig,
 	normalizeCliProxyBaseUrl,
 	stripCliProxyThinkingSuffix,
 } from "./cliproxyProvider";
@@ -106,14 +108,17 @@ describe("CLIProxy model routing", () => {
 		);
 	});
 
-	it("reads only GPT models from the sidecar catalog", async () => {
+	it("reads every routed model and preserves its upstream owner", async () => {
 		vi.stubGlobal(
 			"fetch",
 			vi.fn().mockImplementation(() =>
 				Promise.resolve(
 					new Response(
 						JSON.stringify({
-							data: [{ id: "gpt-5.6-sol" }, { id: "claude-sonnet-4-6" }],
+							data: [
+								{ id: "gpt-5.6-sol", owned_by: "openai" },
+								{ id: "claude-sonnet-4-6", owned_by: "anthropic" },
+							],
 						}),
 						{ status: 200 },
 					),
@@ -122,7 +127,8 @@ describe("CLIProxy model routing", () => {
 		);
 		const provider = new CliProxyCodexProvider(config());
 		expect(await provider.listModels()).toEqual([
-			{ value: "gpt-5.6-sol", label: "GPT-5.6-Sol" },
+			{ value: "claude-sonnet-4-6", label: "Claude-Sonnet-4-6 · Anthropic" },
+			{ value: "gpt-5.6-sol", label: "GPT-5.6-Sol · OpenAI" },
 		]);
 		expect(await provider.check()).toEqual({ available: true });
 		expect(fetch).toHaveBeenCalledWith(
@@ -131,5 +137,28 @@ describe("CLIProxy model routing", () => {
 				headers: { Authorization: "Bearer local-secret" },
 			}),
 		);
+	});
+
+	it("isolates Codex provider overrides and keeps the key in the environment", () => {
+		const profile = cliProxyCodexProfile(config());
+		expect(profile.registryKey).toMatch(
+			/^cliproxy:http:\/\/127\.0\.0\.1:8317:[a-f0-9]{12}$/,
+		);
+		expect(profile.args).toContain('model_provider="hlid_cliproxy"');
+		expect(profile.args?.join(" ")).toContain(
+			'model_providers.hlid_cliproxy.env_key="HLID_CLIPROXY_API_KEY"',
+		);
+		expect(profile.args?.join(" ")).not.toContain("local-secret");
+		expect(profile.env).toEqual({ HLID_CLIPROXY_API_KEY: "local-secret" });
+	});
+
+	it("builds an inline OpenCode overlay without embedding the key", () => {
+		const content = cliProxyOpenCodeConfig("http://127.0.0.1:8317", [
+			{ value: "claude-sonnet-4-6", label: "Claude · Anthropic" },
+		]);
+		expect(content).toContain("@ai-sdk/openai-compatible");
+		expect(content).toContain("{env:HLID_CLIPROXY_API_KEY}");
+		expect(content).toContain("claude-sonnet-4-6");
+		expect(content).not.toContain("local-secret");
 	});
 });

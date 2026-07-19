@@ -369,6 +369,7 @@ describe("codexLaunchConfig", () => {
 		expect(cfg).toEqual({
 			executable: "/home/kyle/.bun/bin/codex",
 			rpcCwd: "/home/kyle/development/repos/hlid",
+			appServer: { executable: "/home/kyle/.bun/bin/codex" },
 		});
 	});
 

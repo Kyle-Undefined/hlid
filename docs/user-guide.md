@@ -70,22 +70,31 @@ composer until they are removed or run.
 
 ### CLIProxyAPI integration
 
-`Hlið` can expose a separate **Claude Code · Codex** provider. Claude Code still
-owns the agent loop, tools, commands, permissions, and `MCP` behavior, while
-[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) translates its model
-requests to a Codex OAuth account. This is an optional route alongside the
-normal Claude and Codex providers.
+`Hlið` can expose separate **Claude Code · CLIProxy**, **Codex · CLIProxy**, and
+**OpenCode · CLIProxy** providers. The selected harness still owns its agent
+loop, tools, commands, permissions, and `MCP` behavior, while
+[CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) translates model
+requests to a connected OAuth account. These are optional routes alongside the
+normal Claude, Codex, and ACP providers.
 
 Open **Forge → Integrations → CLIProxyAPI** and choose **Install managed**. On
 Windows, Hlid downloads the latest release and checksum manifest, verifies the
 archive, creates a loopback-only configuration, and owns the process lifecycle.
-Choose **Connect Codex** to open the Codex OAuth flow on the Windows machine
-running Hlid. Hlid starts the integration with the app, offers explicit update
-and repair controls, and can remove the binaries and saved Codex sign-in.
+Connect any supported account shown in Forge: OpenAI Codex, Anthropic Claude,
+Google Antigravity, Moonshot Kimi, or xAI. The OAuth flow opens on the Windows
+machine running Hlid. Hlid starts the integration with the app, offers explicit
+update and repair controls, and can remove the binaries and all saved accounts.
 
-The generated client key and Codex tokens remain in Hlid's private integration
+The generated client key and OAuth tokens remain in Hlid's private integration
 directory and are never returned to Forge. Remote management and the CLIProxyAPI
 control panel are disabled because Hlid does not use either one.
+
+After CLIProxy is enabled, choose one of its routed providers anywhere Hlid
+offers a provider picker. Claude Code and Codex routes appear when their CLIs
+are installed. The OpenCode route appears when OpenCode's ACP command is
+installed. Hlid injects runtime-only provider configuration for Codex and
+OpenCode, so it does not rewrite `~/.codex/config.toml`, `opencode.json`, or
+either harness's saved credentials.
 
 For an existing, externally managed CLIProxyAPI process, configure advanced
 mode in `hlid.config.toml`:
@@ -105,17 +114,16 @@ turn_recaps = true
 Keep an external process on loopback. The `api_key` is a CLIProxyAPI
 client-facing `api-keys` value, not a management secret. Hlid stores it in the
 local config file but redacts it from browser config responses. The provider
-health check verifies the Claude Code executable and the proxy model catalog.
-Forge and Raven then use the catalog's GPT models; Hlid passes effort through
-CLIProxyAPI's model suffix.
+health check verifies the selected harness executable and the proxy model
+catalog. Forge and Raven use every model returned by the catalog and show its
+upstream owner in the model label.
 
-Ledger stores these turns under provider `cliproxy-codex`, labeled **Claude
-Code · Codex**. It records the session-scoped token buckets and actual response
-model that Claude Code returns. Hlid intentionally ignores Claude Code's dollar
-field for this route and estimates from Hlid's effective-dated Codex pricing
-catalog instead. The number is an API-equivalent comparison, not the amount
-charged to a ChatGPT subscription. Existing priced rows stay frozen when rates
-change.
+Ledger stores the routed harness and actual response model. Hlid estimates
+known OpenAI and Anthropic models from its effective-dated pricing catalogs.
+Models without a matching catalog rule, including supported Google, Moonshot,
+or xAI models, remain explicitly unpriced. Estimates are API-equivalent
+comparisons, not the amount charged to an OAuth subscription. Existing priced
+rows stay frozen when rates change.
 
 Hlid does not consume CLIProxyAPI's short-lived usage queue or import traffic
 from other clients. Ledger therefore covers requests made through Hlid only.

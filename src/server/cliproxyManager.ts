@@ -52,6 +52,22 @@ export type CliProxyInstallState =
 	| "downloading"
 	| "error";
 
+export const CLIPROXY_OAUTH_PROVIDERS = [
+	{ id: "codex", label: "OpenAI Codex", flag: "--codex-login" },
+	{ id: "claude", label: "Anthropic Claude", flag: "--claude-login" },
+	{
+		id: "antigravity",
+		label: "Google Antigravity",
+		flag: "--antigravity-login",
+	},
+	{ id: "kimi", label: "Moonshot Kimi", flag: "--kimi-login" },
+	{ id: "xai", label: "xAI", flag: "--xai-login" },
+] as const;
+
+export type CliProxyOAuthProviderId =
+	(typeof CLIPROXY_OAUTH_PROVIDERS)[number]["id"];
+export type CliProxyOAuthState = "idle" | "running" | "connected" | "error";
+
 export type CliProxyStatus = {
 	state: CliProxyInstallState;
 	managed: boolean;
@@ -59,10 +75,22 @@ export type CliProxyStatus = {
 	latestVersion?: string;
 	updateAvailable?: boolean;
 	authenticated: boolean;
-	oauth: "idle" | "running" | "connected" | "error";
+	oauth: CliProxyOAuthState;
+	accounts: Record<CliProxyOAuthProviderId, CliProxyOAuthState>;
+	activeOAuth?: CliProxyOAuthProviderId;
 	error?: string;
 	download?: { received: number; total: number | null };
 };
+
+function emptyAccounts(): Record<CliProxyOAuthProviderId, CliProxyOAuthState> {
+	return {
+		codex: "idle",
+		claude: "idle",
+		antigravity: "idle",
+		kimi: "idle",
+		xai: "idle",
+	};
+}
 
 function safeVersion(tag: string): string {
 	const version = tag.replace(/^v/i, "").trim();
@@ -232,6 +260,7 @@ export class CliProxyManager {
 			installedVersion: installed?.version,
 			authenticated: false,
 			oauth: "idle",
+			accounts: emptyAccounts(),
 		};
 	}
 
@@ -251,29 +280,45 @@ export class CliProxyManager {
 		return parseState(this.statePath);
 	}
 
-	private hasCodexAuth(): boolean {
-		if (!existsSync(this.authDir)) return false;
+	private connectedAccounts(): Set<CliProxyOAuthProviderId> {
+		const found = new Set<CliProxyOAuthProviderId>();
+		if (!existsSync(this.authDir)) return found;
 		for (const entry of readdirSync(this.authDir, { withFileTypes: true })) {
 			if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
 			try {
 				const value = JSON.parse(
 					readFileSync(join(this.authDir, entry.name), "utf8"),
 				) as Record<string, unknown>;
-				if (
-					[value.type, value.provider].some(
-						(item) =>
-							typeof item === "string" && item.toLowerCase() === "codex",
-					)
-				) {
-					return true;
+				for (const item of [value.type, value.provider]) {
+					if (typeof item !== "string") continue;
+					const normalized = item.toLowerCase();
+					if (
+						CLIPROXY_OAUTH_PROVIDERS.some(
+							(provider) => provider.id === normalized,
+						)
+					) {
+						found.add(normalized as CliProxyOAuthProviderId);
+					}
 				}
 			} catch {}
 		}
-		return false;
+		return found;
+	}
+
+	private refreshAccounts(): void {
+		const connected = this.connectedAccounts();
+		const accounts = emptyAccounts();
+		for (const provider of connected) accounts[provider] = "connected";
+		this.statusValue.accounts = accounts;
+		this.statusValue.authenticated = connected.has("codex");
+		this.statusValue.oauth = connected.has("codex") ? "connected" : "idle";
 	}
 
 	status(): CliProxyStatus {
-		return { ...this.statusValue };
+		return {
+			...this.statusValue,
+			accounts: { ...this.statusValue.accounts },
+		};
 	}
 
 	connection(): { base_url: string; api_key: string } | null {
@@ -289,9 +334,7 @@ export class CliProxyManager {
 	}
 
 	async initialize(): Promise<void> {
-		const authenticated = this.hasCodexAuth();
-		this.statusValue.authenticated = authenticated;
-		this.statusValue.oauth = authenticated ? "connected" : "idle";
+		this.refreshAccounts();
 		if (
 			this.config.mode === "managed" &&
 			this.config.enabled &&
@@ -602,17 +645,26 @@ export class CliProxyManager {
 		};
 	}
 
-	async beginOAuth(): Promise<void> {
+	async beginOAuth(
+		providerId: CliProxyOAuthProviderId = "codex",
+	): Promise<void> {
 		if (this.oauthProcess && this.oauthProcess.exitCode === null) {
-			throw new Error("Codex sign-in is already running");
+			throw new Error("another CLIProxy sign-in is already running");
 		}
+		const provider = CLIPROXY_OAUTH_PROVIDERS.find(
+			(candidate) => candidate.id === providerId,
+		);
+		if (!provider) throw new Error("unsupported CLIProxy OAuth provider");
 		const installed = this.installed();
-		if (!installed) throw new Error("install CLIProxy before connecting Codex");
-		this.statusValue.oauth = "running";
+		if (!installed)
+			throw new Error("install CLIProxy before connecting an account");
+		this.statusValue.accounts[providerId] = "running";
+		this.statusValue.activeOAuth = providerId;
+		if (providerId === "codex") this.statusValue.oauth = "running";
 		this.statusValue.error = undefined;
 		const child = spawn(
 			installed.executable,
-			["--config", this.configPath, "--codex-login"],
+			["--config", this.configPath, provider.flag],
 			{
 				cwd: dirname(installed.executable),
 				// OAuth output can contain the temporary authorization URL. Let the
@@ -625,16 +677,22 @@ export class CliProxyManager {
 		child.once("exit", (code) => {
 			if (this.oauthProcess !== child) return;
 			this.oauthProcess = null;
-			const authenticated = code === 0 && this.hasCodexAuth();
-			this.statusValue.authenticated = authenticated;
-			this.statusValue.oauth = authenticated ? "connected" : "error";
-			if (!authenticated)
-				this.statusValue.error = "Codex sign-in did not complete";
+			this.refreshAccounts();
+			const authenticated =
+				code === 0 && this.statusValue.accounts[providerId] === "connected";
+			if (!authenticated) {
+				this.statusValue.accounts[providerId] = "error";
+				if (providerId === "codex") this.statusValue.oauth = "error";
+				this.statusValue.error = `${provider.label} sign-in did not complete`;
+			}
+			this.statusValue.activeOAuth = undefined;
 		});
 		child.once("error", (error) => {
 			if (this.oauthProcess !== child) return;
 			this.oauthProcess = null;
-			this.statusValue.oauth = "error";
+			this.statusValue.accounts[providerId] = "error";
+			if (providerId === "codex") this.statusValue.oauth = "error";
+			this.statusValue.activeOAuth = undefined;
 			this.statusValue.error = error.message;
 		});
 	}
@@ -650,6 +708,7 @@ export class CliProxyManager {
 			managed: true,
 			authenticated: false,
 			oauth: "idle",
+			accounts: emptyAccounts(),
 		};
 	}
 

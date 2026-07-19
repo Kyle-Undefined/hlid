@@ -6,7 +6,11 @@ import { resolveClaudeExecutable } from "../lib/claudePath";
 import { resolveCodexExecutable } from "../lib/codexPath";
 import { writeConfig } from "../lib/config-writer";
 import { registerBunServer } from "../lib/lifecycle";
-import { CLIPROXY_CODEX_PROVIDER_ID } from "../lib/providerIds";
+import {
+	CLIPROXY_CODEX_HARNESS_PROVIDER_ID,
+	CLIPROXY_CODEX_PROVIDER_ID,
+	CLIPROXY_OPENCODE_PROVIDER_ID,
+} from "../lib/providerIds";
 import { loadToken, verifyToken } from "../lib/token";
 import { AcpProvider } from "./acpProvider";
 import { AcpRegistry } from "./acpRegistry";
@@ -24,7 +28,12 @@ import { openInBrowser } from "./browser";
 import { ClaudeProvider } from "./claudeProvider";
 import { getClaudeWarmupSnapshot, prewarmClaudeCli } from "./claudeWarmup";
 import { CliProxyManager, MANAGED_CLIPROXY_BASE_URL } from "./cliproxyManager";
-import { CliProxyCodexProvider } from "./cliproxyProvider";
+import {
+	CliProxyCodexProvider,
+	type CliProxyConnection,
+	CliProxyNativeCodexProvider,
+	CliProxyOpenCodeProvider,
+} from "./cliproxyProvider";
 import {
 	closeAllCodexAppServers,
 	listCodexAppServers,
@@ -189,12 +198,30 @@ const providers = new Map<string, AgentProvider>([
 	["claude", new ClaudeProvider()],
 	["codex", new CodexProvider()],
 ]);
+function cliProxyProviders(connection: CliProxyConnection): AgentProvider[] {
+	const routed: AgentProvider[] = [
+		new CliProxyCodexProvider(connection),
+		new CliProxyNativeCodexProvider(connection),
+	];
+	const openCode = acpCatalog.find(
+		(candidate) => candidate.id === "opencode" && candidate.available,
+	);
+	if (openCode) {
+		routed.push(
+			new CliProxyOpenCodeProvider(connection, {
+				command: openCode.command,
+				args: openCode.args,
+				env: openCode.env,
+			}),
+		);
+	}
+	return routed;
+}
 const initialCliProxyConnection = cliProxy.connection();
 if (initialCliProxyConnection) {
-	providers.set(
-		CLIPROXY_CODEX_PROVIDER_ID,
-		new CliProxyCodexProvider(initialCliProxyConnection),
-	);
+	for (const provider of cliProxyProviders(initialCliProxyConnection)) {
+		providers.set(provider.providerId, provider);
+	}
 }
 for (const item of acpCatalog.filter((candidate) => candidate.enabled)) {
 	const configured = (config.acp_agents ?? []).find(
@@ -230,6 +257,7 @@ providerCatalogSnapshot = createProviderCatalogSnapshot(
 	() => providers.values(),
 	modelCatalog,
 );
+let cliProxyAccountsKey = JSON.stringify(cliProxy.status().accounts);
 subscribeDataRevisions((revisions) => {
 	broadcast({ type: "data_revisions", revisions });
 });
@@ -503,17 +531,39 @@ async function syncCliProxyRuntime(): Promise<void> {
 	await cliProxy.syncConfig(latest.cliproxy);
 	pool.syncConfig(latest);
 	const connection = cliProxy.connection();
+	for (const providerId of [
+		CLIPROXY_CODEX_PROVIDER_ID,
+		CLIPROXY_CODEX_HARNESS_PROVIDER_ID,
+		CLIPROXY_OPENCODE_PROVIDER_ID,
+	]) {
+		providers.delete(providerId);
+	}
 	if (connection) {
-		const provider = new CliProxyCodexProvider(connection);
-		providers.set(CLIPROXY_CODEX_PROVIDER_ID, provider);
-		modelCatalog.register(provider);
-		db.registerProvider(
-			provider.providerId,
-			provider.label ?? provider.providerId,
-			[],
-		);
-	} else {
-		providers.delete(CLIPROXY_CODEX_PROVIDER_ID);
+		for (const provider of cliProxyProviders(connection)) {
+			providers.set(provider.providerId, provider);
+			modelCatalog.register(provider);
+			db.registerProvider(
+				provider.providerId,
+				provider.label ?? provider.providerId,
+				provider.usageWindows ? [...provider.usageWindows] : [],
+			);
+		}
+	}
+	providerCatalogSnapshot.invalidate();
+	bumpDataRevision("providers");
+}
+
+function syncCliProxyAccountCatalogs(): void {
+	const nextKey = JSON.stringify(cliProxy.status().accounts);
+	if (nextKey === cliProxyAccountsKey) return;
+	cliProxyAccountsKey = nextKey;
+	for (const providerId of [
+		CLIPROXY_CODEX_PROVIDER_ID,
+		CLIPROXY_CODEX_HARNESS_PROVIDER_ID,
+		CLIPROXY_OPENCODE_PROVIDER_ID,
+	]) {
+		const provider = providers.get(providerId);
+		if (provider) modelCatalog.register(provider);
 	}
 	providerCatalogSnapshot.invalidate();
 	bumpDataRevision("providers");
@@ -538,6 +588,7 @@ const CLIPROXY_ROUTE_HANDLERS: Record<string, ServerRouteHandler> = {
 		if (url.searchParams.get("refresh") === "1") {
 			await cliProxy.refreshRelease();
 		}
+		syncCliProxyAccountCatalogs();
 		return Response.json(cliProxy.status());
 	},
 	"POST /cliproxy/sync": async () => {
@@ -560,8 +611,14 @@ const CLIPROXY_ROUTE_HANDLERS: Record<string, ServerRouteHandler> = {
 		await syncCliProxyRuntime();
 		return Response.json(cliProxy.status());
 	},
-	"POST /cliproxy/oauth": async () => {
-		await cliProxy.beginOAuth();
+	"POST /cliproxy/oauth": async (url) => {
+		const provider = url.searchParams.get("provider") ?? "codex";
+		if (!["codex", "claude", "antigravity", "kimi", "xai"].includes(provider)) {
+			throw new Error("unsupported CLIProxy OAuth provider");
+		}
+		await cliProxy.beginOAuth(
+			provider as import("./cliproxyManager").CliProxyOAuthProviderId,
+		);
 		return Response.json(cliProxy.status(), { status: 202 });
 	},
 	"DELETE /cliproxy": async () => {

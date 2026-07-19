@@ -19,6 +19,13 @@ function initialSettings(): SettingsInitial {
 			managed: false,
 			authenticated: false,
 			oauth: "idle",
+			accounts: {
+				codex: "idle",
+				claude: "idle",
+				antigravity: "idle",
+				kimi: "idle",
+				xai: "idle",
+			},
 		},
 		acpCatalog: [],
 	};

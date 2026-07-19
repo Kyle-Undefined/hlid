@@ -231,6 +231,33 @@ describe("SessionManager — initial state", () => {
 		});
 	});
 
+	it("shares CLIProxy defaults across Codex and OpenCode harness routes", () => {
+		const base = {
+			...makeConfig(),
+			cliproxy: {
+				enabled: true,
+				base_url: "http://127.0.0.1:8317",
+				api_key: "key",
+				model: "claude-sonnet-4-6",
+				effort: "high",
+				permission_mode: "default",
+				turn_recaps: true,
+			},
+		} as HlidConfig;
+		for (const providerId of ["cliproxy:codex", "cliproxy:opencode"]) {
+			expect(
+				resolveConfiguredSessionDefaults({
+					...base,
+					vault_provider: providerId,
+				}),
+			).toMatchObject({
+				providerId,
+				model: "claude-sonnet-4-6",
+				effort: "high",
+			});
+		}
+	});
+
 	it("reports idle state and configured model", () => {
 		const sm = new SessionManager(
 			makeConfig("model-x"),

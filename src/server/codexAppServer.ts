@@ -19,6 +19,25 @@
  */
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 
+export type CodexAppServerLaunch = {
+	executable: string;
+	/** Distinguishes app servers that share an executable but use different providers. */
+	registryKey?: string;
+	/** Global Codex arguments placed before the app-server subcommand. */
+	args?: string[];
+	env?: Record<string, string>;
+};
+
+function normalizeLaunch(
+	launch: string | CodexAppServerLaunch,
+): CodexAppServerLaunch {
+	return typeof launch === "string" ? { executable: launch } : launch;
+}
+
+function launchRegistryKey(launch: CodexAppServerLaunch): string {
+	return `${launch.executable}\0${launch.registryKey ?? "native"}`;
+}
+
 type JsonRpcMessage = {
 	id?: number | string;
 	method?: string;
@@ -202,7 +221,7 @@ export class CodexAppServer {
 	readonly ready: Promise<void>;
 
 	constructor(
-		readonly executable: string,
+		launchValue: string | CodexAppServerLaunch,
 		idleTimeoutMs = configuredIdleTimeoutMs(),
 		private readonly onClosed?: (server: CodexAppServer) => void,
 		metadataIdleTimeoutMs = Math.min(
@@ -210,16 +229,24 @@ export class CodexAppServer {
 			configuredMetadataIdleTimeoutMs(),
 		),
 	) {
+		const launch = normalizeLaunch(launchValue);
+		this.executable = launch.executable;
+		this.registryKey = launch.registryKey;
 		this.idleTimeoutMs = Math.max(0, idleTimeoutMs);
 		this.metadataIdleTimeoutMs = Math.max(0, metadataIdleTimeoutMs);
 		// No cwd: the wrapper .cmd sets its own WSL cwd via `wsl --cd`, and for
 		// native codex every thread passes an explicit cwd at thread/start and
 		// turn/start, so the process cwd is irrelevant. windowsHide passes
 		// CREATE_NO_WINDOW so the .cmd/console child never shows a window.
-		this.proc = spawn(executable, ["app-server", "--listen", "stdio://"], {
-			stdio: "pipe",
-			windowsHide: true,
-		});
+		this.proc = spawn(
+			launch.executable,
+			[...(launch.args ?? []), "app-server", "--listen", "stdio://"],
+			{
+				stdio: "pipe",
+				windowsHide: true,
+				...(launch.env ? { env: { ...process.env, ...launch.env } } : {}),
+			},
+		);
 		this.proc.on("error", (err) => this.fail(err));
 		this.proc.on("exit", (code) => {
 			this.fail(new Error(`Codex app-server exited (code ${code ?? "null"})`));
@@ -242,6 +269,9 @@ export class CodexAppServer {
 		// trigger an unhandled-rejection crash.
 		this.ready.catch(() => {});
 	}
+
+	readonly executable: string;
+	readonly registryKey?: string;
 
 	get alive(): boolean {
 		return !this.dead;
@@ -522,18 +552,22 @@ const servers = new Map<string, CodexAppServer>();
  * Get the shared app-server for `executable`, spawning (or respawning after a
  * crash) as needed. Await `.ready` before issuing RPCs.
  */
-export function acquireCodexAppServer(executable: string): CodexAppServer {
-	const existing = servers.get(executable);
+export function acquireCodexAppServer(
+	launchValue: string | CodexAppServerLaunch,
+): CodexAppServer {
+	const launch = normalizeLaunch(launchValue);
+	const key = launchRegistryKey(launch);
+	const existing = servers.get(key);
 	if (existing?.alive) {
 		existing.touch();
 		return existing;
 	}
-	const server = new CodexAppServer(executable, undefined, (closed) => {
+	const server = new CodexAppServer(launch, undefined, (closed) => {
 		// A thread's onExit callback can synchronously acquire a replacement.
 		// Never let the closing instance delete that newer registry entry.
-		if (servers.get(executable) === closed) servers.delete(executable);
+		if (servers.get(key) === closed) servers.delete(key);
 	});
-	servers.set(executable, server);
+	servers.set(key, server);
 	return server;
 }
 
@@ -578,11 +612,13 @@ export function closeAllCodexAppServers(): void {
  */
 export function listCodexAppServers(): Array<{
 	executable: string;
+	profile?: string;
 	alive: boolean;
 	threads: number;
 }> {
 	return [...servers.values()].map((server) => ({
 		executable: server.executable,
+		...(server.registryKey ? { profile: server.registryKey } : {}),
 		alive: server.alive,
 		threads: server.threadCount,
 	}));
