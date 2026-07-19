@@ -54,17 +54,6 @@ export function sessionDisplayUsage(
 			liveStats.pending_cache_read_tokens +
 			liveStats.pending_cache_creation_tokens
 		: 0;
-	if (isActive && liveStats && liveStats.queries > 0) {
-		return {
-			cost: liveStats.cost + (liveStats.estimated_cost ?? 0),
-			tokens:
-				liveStats.input_tokens +
-				liveStats.output_tokens +
-				liveStats.cache_read_tokens +
-				liveStats.cache_creation_tokens +
-				pendingTokens,
-		};
-	}
 	return {
 		cost: (session.total_cost ?? 0) + (session.total_estimated_cost ?? 0),
 		tokens:
@@ -218,6 +207,7 @@ function SessionActionPanel({
 
 function SessionItem({
 	session,
+	usageSession,
 	onDelete,
 	onNavigate,
 	onRename,
@@ -228,6 +218,7 @@ function SessionItem({
 	isDesktop,
 }: {
 	session: SessionRow;
+	usageSession?: SessionRow;
 	onDelete: (id: string) => void;
 	onNavigate: (id: string) => void;
 	onRename: (id: string, label: string) => void;
@@ -263,7 +254,8 @@ function SessionItem({
 		mobileRenaming ? 210 : deleteConfirming ? 170 : 112 + (canFork ? 44 : 0),
 		actionPanelRef,
 	);
-	const usage = sessionDisplayUsage(session, Boolean(isActive), liveStats);
+	const usageSource = usageSession?.id === session.id ? usageSession : session;
+	const usage = sessionDisplayUsage(usageSource, Boolean(isActive), liveStats);
 	const configuredModel = session.selected_model || session.model;
 	const providerModel = [
 		session.provider_id || "claude",
@@ -271,14 +263,11 @@ function SessionItem({
 	]
 		.filter((part): part is string => Boolean(part))
 		.join(" · ");
-	const costSummary =
-		isActive && liveStats && liveStats.queries > 0
-			? liveStats
-			: {
-					cost: session.total_cost ?? 0,
-					estimated_cost: session.total_estimated_cost ?? 0,
-					unpriced_queries: session.unpriced_query_count ?? 0,
-				};
+	const costSummary = {
+		cost: usageSource.total_cost ?? 0,
+		estimated_cost: usageSource.total_estimated_cost ?? 0,
+		unpriced_queries: usageSource.unpriced_query_count ?? 0,
+	};
 
 	function startEdit() {
 		setEditValue(session.label ?? "");
@@ -786,6 +775,7 @@ export function SessionsLedger({
 	onNavigate,
 	onCleanup,
 	activeSessionId,
+	activeSession,
 	sessionsStatus,
 	liveStats,
 	search = "",
@@ -820,6 +810,7 @@ export function SessionsLedger({
 	onNavigate: (id: string) => void;
 	onCleanup: (days: number) => void;
 	activeSessionId?: string | null;
+	activeSession?: SessionRow | null;
 	sessionsStatus?: SessionStatusEntry[];
 	liveStats?: LiveStats;
 	search?: string;
@@ -1097,6 +1088,11 @@ export function SessionsLedger({
 					<SessionItem
 						key={s.id}
 						session={s}
+						usageSession={
+							activeSessionId === s.id
+								? (activeSession ?? undefined)
+								: undefined
+						}
 						onDelete={onDelete}
 						onRename={onRename}
 						onFork={onFork}

@@ -1113,6 +1113,7 @@ function SessionsTab({
 					}
 					onCleanup={mutations.cleanupSessions}
 					activeSessionId={live.activeSessionData?.id}
+					activeSession={live.activeSessionData}
 					sessionsStatus={sessionsStatus}
 					liveStats={liveStats}
 					search={q}

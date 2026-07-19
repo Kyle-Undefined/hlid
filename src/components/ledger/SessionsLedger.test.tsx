@@ -122,10 +122,10 @@ describe("sessionDisplayUsage", () => {
 		});
 	});
 
-	it("uses live values only after an active session has a query", () => {
+	it("keeps whole-session totals after a live query completes", () => {
 		expect(sessionDisplayUsage(session, true, liveStats)).toEqual({
-			cost: 2.5,
-			tokens: 375,
+			cost: 1.25,
+			tokens: 150,
 		});
 		expect(
 			sessionDisplayUsage(session, true, { ...liveStats, queries: 0 }),
@@ -145,7 +145,7 @@ describe("sessionDisplayUsage", () => {
 		).toEqual({ cost: 1.25, tokens: 345 });
 	});
 
-	it("adds the in-flight query snapshot to completed live totals", () => {
+	it("adds the in-flight query snapshot to persisted whole-session totals", () => {
 		expect(
 			sessionDisplayUsage(session, true, {
 				...liveStats,
@@ -153,7 +153,7 @@ describe("sessionDisplayUsage", () => {
 				pending_output_tokens: 10,
 				pending_cache_read_tokens: 5,
 			}),
-		).toEqual({ cost: 2.5, tokens: 410 });
+		).toEqual({ cost: 1.25, tokens: 185 });
 	});
 });
 
@@ -299,10 +299,27 @@ describe("SessionsLedger session actions", () => {
 		expect(props.onDelete).toHaveBeenCalledWith("session-1");
 	});
 
-	it("renders live values for the active session", () => {
+	it("does not replace whole-session values with browser-local live totals", () => {
 		renderLedger({ activeSessionId: "session-1", liveStats });
-		expect(screen.getByText("$2.5000")).toBeDefined();
-		expect(screen.getByText("375 tok")).toBeDefined();
+		expect(screen.getByText("$1.2500")).toBeDefined();
+		expect(screen.getByText("150 tok")).toBeDefined();
+	});
+
+	it("uses the freshly fetched active-session totals after completion", () => {
+		renderLedger({
+			activeSessionId: "session-1",
+			activeSession: {
+				...session,
+				query_count: 3,
+				total_cost: 1.75,
+				total_input_tokens: 200,
+				total_output_tokens: 80,
+				total_cache_read_tokens: 20,
+			},
+			liveStats,
+		});
+		expect(screen.getByText("$1.7500")).toBeDefined();
+		expect(screen.getByText("300 tok")).toBeDefined();
 	});
 });
 
