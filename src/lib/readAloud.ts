@@ -1,12 +1,18 @@
 export const READ_ALOUD_PREFERENCES_KEY = "hlid:read-aloud";
 
+export type ReadAloudProvider = "device" | "microsoft";
+
 export type ReadAloudPreferences = {
+	provider: ReadAloudProvider;
 	voiceURI: string;
+	microsoftVoiceId: string;
 	rate: number;
 };
 
 export const DEFAULT_READ_ALOUD_PREFERENCES: ReadAloudPreferences = {
+	provider: "device",
 	voiceURI: "",
+	microsoftVoiceId: "",
 	rate: 1,
 };
 
@@ -130,7 +136,12 @@ export function normalizeReadAloudPreferences(
 		return DEFAULT_READ_ALOUD_PREFERENCES;
 	const candidate = value as Partial<ReadAloudPreferences>;
 	return {
+		provider: candidate.provider === "microsoft" ? "microsoft" : "device",
 		voiceURI: typeof candidate.voiceURI === "string" ? candidate.voiceURI : "",
+		microsoftVoiceId:
+			typeof candidate.microsoftVoiceId === "string"
+				? candidate.microsoftVoiceId
+				: "",
 		rate:
 			typeof candidate.rate === "number" &&
 			Number.isFinite(candidate.rate) &&

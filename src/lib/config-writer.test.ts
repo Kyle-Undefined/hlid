@@ -200,6 +200,21 @@ describe("writeConfig — voice section", () => {
 		expect(toml).toContain('vocabulary = ["Claude", "Codex", "Hlið"]');
 	});
 
+	it("writes shared read-aloud settings", () => {
+		const config = HlidConfigSchema.parse({
+			voice: {
+				read_aloud_provider: "microsoft",
+				read_aloud_voice: "voice-mark",
+				read_aloud_rate: 1.25,
+			},
+		});
+		writeConfig(config);
+		const toml = capturedToml();
+		expect(toml).toContain('read_aloud_provider = "microsoft"');
+		expect(toml).toContain('read_aloud_voice = "voice-mark"');
+		expect(toml).toContain("read_aloud_rate = 1.25");
+	});
+
 	it("allows the recording hotkey to be cleared", () => {
 		writeConfig(
 			makeConfig({
@@ -208,6 +223,9 @@ describe("writeConfig — voice section", () => {
 					model: "base",
 					language: "auto",
 					auto_send: false,
+					read_aloud_provider: "device",
+					read_aloud_voice: "",
+					read_aloud_rate: 1,
 					hotkey: "",
 					max_recording_seconds: 300,
 					threads: 4,

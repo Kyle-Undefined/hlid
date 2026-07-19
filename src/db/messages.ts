@@ -105,6 +105,19 @@ export async function getMessageForFork(
 		: null;
 }
 
+/** Resolve persisted assistant prose for authenticated host-side read aloud. */
+export async function getAssistantMessageText(
+	id: number,
+): Promise<string | null> {
+	const db = await getDb();
+	const row = db
+		.query<{ text: string }, [number]>(
+			`SELECT text FROM messages WHERE id = ? AND role = 'assistant'`,
+		)
+		.get(id);
+	return row?.text ?? null;
+}
+
 /**
  * Bulk-inserts a forked session's hydrated transcript (see
  * ClaudeProvider.forkSession's `messages` result field) so Raven can render

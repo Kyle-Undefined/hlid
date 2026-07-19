@@ -72,8 +72,29 @@ describe("estimateReadAloudResumeIndex", () => {
 describe("normalizeReadAloudPreferences", () => {
 	it("accepts an in-range rate and device voice", () => {
 		expect(
-			normalizeReadAloudPreferences({ voiceURI: "local:voice", rate: 1.25 }),
-		).toEqual({ voiceURI: "local:voice", rate: 1.25 });
+			normalizeReadAloudPreferences({
+				provider: "microsoft",
+				voiceURI: "local:voice",
+				microsoftVoiceId: "windows:mark",
+				rate: 1.25,
+			}),
+		).toEqual({
+			provider: "microsoft",
+			voiceURI: "local:voice",
+			microsoftVoiceId: "windows:mark",
+			rate: 1.25,
+		});
+	});
+
+	it("migrates existing browser-only preferences", () => {
+		expect(
+			normalizeReadAloudPreferences({ voiceURI: "local:voice", rate: 1.5 }),
+		).toEqual({
+			provider: "device",
+			voiceURI: "local:voice",
+			microsoftVoiceId: "",
+			rate: 1.5,
+		});
 	});
 
 	it("falls back for invalid stored preferences", () => {

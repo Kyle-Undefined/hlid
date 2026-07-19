@@ -44,6 +44,7 @@ export {
 	appendMessage,
 	appendPlanProposal,
 	appendToolEvent,
+	getAssistantMessageText,
 	getMessageForFork,
 	getSessionAskUserQuestions,
 	getSessionMessages,

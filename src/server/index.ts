@@ -47,6 +47,7 @@ import { handleDbRoute } from "./dbRoutes";
 import { resolveExecutionContext } from "./executionContext";
 import { migrateLegacyAttachmentsToLibrary } from "./libraryMigration";
 import { getLiveSessionsStatus } from "./liveSessions";
+import { MicrosoftSpeechManager } from "./microsoftSpeech";
 import {
 	createModelCatalog,
 	createProviderCatalogSnapshot,
@@ -55,6 +56,7 @@ import {
 } from "./providerCatalog";
 import { startProviderProxy } from "./proxy";
 import { bootstrapPtyRuntime } from "./pty-bootstrap";
+import { createReadAloudRouteHandler } from "./readAloudRoutes";
 import {
 	createRequestObserver,
 	startEventLoopLagMonitor,
@@ -275,6 +277,11 @@ const voice = new VoiceModelManager(
 );
 voice.warmCatalog();
 void voice.initialize();
+const microsoftSpeech = new MicrosoftSpeechManager();
+const handleReadAloudRoute = createReadAloudRouteHandler({
+	speech: microsoftSpeech,
+	getAssistantMessageText: db.getAssistantMessageText,
+});
 const ptyWorkerPath = await bootstrapPtyRuntime();
 const terminalPool = new TerminalSessionPool(ptyWorkerPath, () => {
 	broadcast({
@@ -686,6 +693,7 @@ const handleAuthenticatedRoute = createAuthenticatedRouteHandler({
 		handleAcpRoute,
 		handleCliProxyRoute,
 		handleVoiceRoute,
+		handleReadAloudRoute,
 		handleAccountRoute,
 		(url, request) => handleSkillRoute(url, request, config, providers),
 	],

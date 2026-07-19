@@ -6,10 +6,16 @@ import {
 	normalizeReadAloudPreferences,
 	READ_ALOUD_PREFERENCES_KEY,
 	type ReadAloudPreferences,
+	type ReadAloudProvider,
 	readableTextFromMarkdown,
 } from "#/lib/readAloud";
 
-export type ReadAloudPhase = "idle" | "speaking" | "paused" | "error";
+export type ReadAloudPhase =
+	| "idle"
+	| "loading"
+	| "speaking"
+	| "paused"
+	| "error";
 
 export type ReadAloudState = {
 	messageId: string | null;
@@ -38,6 +44,8 @@ let preferencesInitialized = false;
 let generation = 0;
 let utteranceGeneration = 0;
 let activeUtterance: SpeechSynthesisUtterance | null = null;
+let activeAudio: HTMLAudioElement | null = null;
+let sharedPreferencesRequest: Promise<void> | null = null;
 
 type ActiveReading = {
 	messageId: string;
@@ -82,6 +90,17 @@ function releaseActiveUtterance(): void {
 	utterance.onerror = null;
 }
 
+function releaseActiveAudio(): void {
+	const audio = activeAudio;
+	activeAudio = null;
+	if (!audio) return;
+	audio.onplaying = null;
+	audio.onended = null;
+	audio.onerror = null;
+	audio.pause();
+	if (audio.src) audio.removeAttribute("src");
+}
+
 function speechController(): SpeechSynthesis | null {
 	return typeof window !== "undefined" && "speechSynthesis" in window
 		? window.speechSynthesis
@@ -111,10 +130,86 @@ function initializePreferences(): void {
 	preferencesInitialized = true;
 	try {
 		const stored = localStorage.getItem(READ_ALOUD_PREFERENCES_KEY);
-		if (stored)
-			preferencesSnapshot = normalizeReadAloudPreferences(JSON.parse(stored));
+		if (stored) {
+			const local = normalizeReadAloudPreferences(JSON.parse(stored));
+			preferencesSnapshot = {
+				...preferencesSnapshot,
+				voiceURI: local.voiceURI,
+			};
+			localStorage.setItem(
+				READ_ALOUD_PREFERENCES_KEY,
+				JSON.stringify({ voiceURI: local.voiceURI }),
+			);
+		}
 	} catch {}
 	emit(preferenceSubscribers);
+}
+
+function preferencesEqual(
+	left: ReadAloudPreferences,
+	right: ReadAloudPreferences,
+): boolean {
+	return (
+		left.provider === right.provider &&
+		left.voiceURI === right.voiceURI &&
+		left.microsoftVoiceId === right.microsoftVoiceId &&
+		left.rate === right.rate
+	);
+}
+
+export function applyReadAloudSharedPreferences(
+	preferences: Pick<
+		ReadAloudPreferences,
+		"provider" | "microsoftVoiceId" | "rate"
+	>,
+): void {
+	initializePreferences();
+	const next = normalizeReadAloudPreferences({
+		...preferencesSnapshot,
+		...preferences,
+		voiceURI: preferencesSnapshot.voiceURI,
+	});
+	if (preferencesEqual(next, preferencesSnapshot)) return;
+	preferencesSnapshot = next;
+	emit(preferenceSubscribers);
+	if (
+		stateSnapshot.phase === "loading" ||
+		stateSnapshot.phase === "speaking" ||
+		stateSnapshot.phase === "paused"
+	)
+		stopReadAloud();
+}
+
+export function refreshReadAloudPreferences(): Promise<void> {
+	if (sharedPreferencesRequest) return sharedPreferencesRequest;
+	sharedPreferencesRequest = (async () => {
+		const response = await fetch("/api/config", { cache: "no-store" });
+		if (!response.ok)
+			throw new Error(`read-aloud settings failed (${response.status})`);
+		const config = (await response.json()) as {
+			voice?: {
+				read_aloud_provider?: unknown;
+				read_aloud_voice?: unknown;
+				read_aloud_rate?: unknown;
+			};
+		};
+		const voice = config.voice;
+		applyReadAloudSharedPreferences({
+			provider:
+				voice?.read_aloud_provider === "microsoft" ? "microsoft" : "device",
+			microsoftVoiceId:
+				typeof voice?.read_aloud_voice === "string"
+					? voice.read_aloud_voice
+					: "",
+			rate:
+				typeof voice?.read_aloud_rate === "number"
+					? voice.read_aloud_rate
+					: DEFAULT_READ_ALOUD_PREFERENCES.rate,
+		});
+	})().finally(() => {
+		sharedPreferencesRequest = null;
+	});
+	return sharedPreferencesRequest;
 }
 
 function selectedVoice(
@@ -252,14 +347,17 @@ function speakCurrentChunk(reading: ActiveReading): void {
 	speech.speak(utterance);
 }
 
-export function readAloudSupported(): boolean {
+export function readAloudSupported(provider?: ReadAloudProvider): boolean {
+	initializePreferences();
+	if ((provider ?? preferencesSnapshot.provider) === "microsoft")
+		return typeof Audio !== "undefined";
 	return (
 		speechController() !== null &&
 		typeof SpeechSynthesisUtterance !== "undefined"
 	);
 }
 
-export function startReadAloud(messageId: string, markdown: string): void {
+function startDeviceReadAloud(messageId: string, markdown: string): void {
 	const speech = speechController();
 	if (!speech || typeof SpeechSynthesisUtterance === "undefined") {
 		updateState({
@@ -291,6 +389,7 @@ export function startReadAloud(messageId: string, markdown: string): void {
 
 	const currentGeneration = ++generation;
 	utteranceGeneration++;
+	releaseActiveAudio();
 	speech.cancel();
 	const voice = selectedVoice(voices);
 	const reading: ActiveReading = {
@@ -311,10 +410,120 @@ export function startReadAloud(messageId: string, markdown: string): void {
 	speakCurrentChunk(reading);
 }
 
-export function toggleReadAloud(messageId: string, markdown: string): void {
+function startMicrosoftReadAloud(messageId: string, dbId?: number): void {
+	if (typeof Audio === "undefined") {
+		updateState({
+			messageId,
+			phase: "error",
+			error: "Audio playback is not supported by this browser",
+		});
+		return;
+	}
+	if (!dbId) {
+		updateState({
+			messageId,
+			phase: "error",
+			error: "This response is not ready for Microsoft speech yet",
+		});
+		return;
+	}
+
+	const currentGeneration = ++generation;
+	utteranceGeneration++;
+	releaseActiveUtterance();
+	activeReading = null;
+	speechController()?.cancel();
+	releaseActiveAudio();
+	const query = new URLSearchParams({ message_id: String(dbId) });
+	if (preferencesSnapshot.microsoftVoiceId)
+		query.set("voice_id", preferencesSnapshot.microsoftVoiceId);
+	const audio = new Audio(`/api/read-aloud/audio?${query}`);
+	audio.preload = "auto";
+	audio.playbackRate = preferencesSnapshot.rate;
+	audio.onplaying = () => {
+		if (activeAudio !== audio || currentGeneration !== generation) return;
+		updateState({ messageId, phase: "speaking", error: null });
+	};
+	audio.onended = () => {
+		if (activeAudio !== audio || currentGeneration !== generation) return;
+		releaseActiveAudio();
+		updateState(IDLE_STATE);
+	};
+	audio.onerror = () => {
+		if (activeAudio !== audio || currentGeneration !== generation) return;
+		generation++;
+		releaseActiveAudio();
+		updateState({
+			messageId,
+			phase: "error",
+			error: "Microsoft speech could not prepare this response",
+		});
+	};
+	activeAudio = audio;
+	updateState({ messageId, phase: "loading", error: null });
+	void audio.play().catch((error) => {
+		if (activeAudio !== audio || currentGeneration !== generation) return;
+		generation++;
+		releaseActiveAudio();
+		updateState({
+			messageId,
+			phase: "error",
+			error:
+				error instanceof Error
+					? `Microsoft speech playback failed: ${error.message}`
+					: "Microsoft speech playback failed",
+		});
+	});
+}
+
+export function startReadAloud(
+	messageId: string,
+	markdown: string,
+	dbId?: number,
+): void {
+	initializePreferences();
+	if (preferencesSnapshot.provider === "microsoft") {
+		startMicrosoftReadAloud(messageId, dbId);
+		return;
+	}
+	startDeviceReadAloud(messageId, markdown);
+}
+
+export function toggleReadAloud(
+	messageId: string,
+	markdown: string,
+	dbId?: number,
+): void {
 	const speech = speechController();
 	if (stateSnapshot.messageId !== messageId) {
-		startReadAloud(messageId, markdown);
+		startReadAloud(messageId, markdown, dbId);
+		return;
+	}
+	if (stateSnapshot.phase === "loading") {
+		stopReadAloud();
+		return;
+	}
+	if (stateSnapshot.phase === "speaking" && activeAudio) {
+		activeAudio.pause();
+		updateState({ ...stateSnapshot, phase: "paused" });
+		return;
+	}
+	if (stateSnapshot.phase === "paused" && activeAudio) {
+		const audio = activeAudio;
+		updateState({ ...stateSnapshot, phase: "speaking" });
+		void audio.play().catch((error) => {
+			if (activeAudio !== audio) return;
+			generation++;
+			releaseActiveAudio();
+			updateState({
+				messageId,
+				phase: "error",
+				error:
+					error instanceof Error
+						? `Microsoft speech playback failed: ${error.message}`
+						: "Microsoft speech playback failed",
+			});
+		});
 		return;
 	}
 	if (stateSnapshot.phase === "speaking" && speech) {
@@ -333,7 +542,7 @@ export function toggleReadAloud(messageId: string, markdown: string): void {
 		speakCurrentChunk(activeReading);
 		return;
 	}
-	startReadAloud(messageId, markdown);
+	startReadAloud(messageId, markdown, dbId);
 }
 
 export function stopReadAloud(): void {
@@ -342,6 +551,7 @@ export function stopReadAloud(): void {
 	releaseActiveUtterance();
 	activeReading = null;
 	speechController()?.cancel();
+	releaseActiveAudio();
 	updateState(IDLE_STATE);
 }
 
@@ -353,18 +563,25 @@ export function setReadAloudPreferences(
 	patch: Partial<ReadAloudPreferences>,
 ): void {
 	initializePreferences();
-	preferencesSnapshot = normalizeReadAloudPreferences({
+	const next = normalizeReadAloudPreferences({
 		...preferencesSnapshot,
 		...patch,
 	});
-	try {
-		localStorage.setItem(
-			READ_ALOUD_PREFERENCES_KEY,
-			JSON.stringify(preferencesSnapshot),
-		);
-	} catch {}
+	if (preferencesEqual(next, preferencesSnapshot)) return;
+	preferencesSnapshot = next;
+	if (patch.voiceURI !== undefined)
+		try {
+			localStorage.setItem(
+				READ_ALOUD_PREFERENCES_KEY,
+				JSON.stringify({ voiceURI: preferencesSnapshot.voiceURI }),
+			);
+		} catch {}
 	emit(preferenceSubscribers);
-	if (stateSnapshot.phase === "speaking" || stateSnapshot.phase === "paused")
+	if (
+		stateSnapshot.phase === "loading" ||
+		stateSnapshot.phase === "speaking" ||
+		stateSnapshot.phase === "paused"
+	)
 		stopReadAloud();
 }
 
@@ -376,8 +593,22 @@ export function useReadAloudState(): ReadAloudState {
 	);
 }
 
-export function useReadAloudPreferences(): ReadAloudPreferences {
-	useEffect(initializePreferences, []);
+export function useReadAloudPreferences(
+	refreshSharedPreferences = true,
+): ReadAloudPreferences {
+	useEffect(() => {
+		initializePreferences();
+		if (!refreshSharedPreferences || typeof fetch !== "function") return;
+		const refresh = () => void refreshReadAloudPreferences().catch(() => {});
+		refresh();
+		if (typeof document === "undefined") return;
+		const onVisibilityChange = () => {
+			if (document.visibilityState === "visible") refresh();
+		};
+		document.addEventListener("visibilitychange", onVisibilityChange);
+		return () =>
+			document.removeEventListener("visibilitychange", onVisibilityChange);
+	}, [refreshSharedPreferences]);
 	return useSyncExternalStore(
 		(subscriber) => subscribe(preferenceSubscribers, subscriber),
 		() => preferencesSnapshot,
@@ -406,10 +637,12 @@ export function __resetReadAloudForTesting(): void {
 	utteranceGeneration++;
 	releaseActiveUtterance();
 	activeReading = null;
+	releaseActiveAudio();
 	stateSnapshot = IDLE_STATE;
 	preferencesSnapshot = DEFAULT_READ_ALOUD_PREFERENCES;
 	voicesSnapshot = [];
 	preferencesInitialized = false;
+	sharedPreferencesRequest = null;
 	stateSubscribers.clear();
 	preferenceSubscribers.clear();
 	voiceSubscribers.clear();

@@ -409,11 +409,20 @@ Every completed assistant reply in `Raven` has a speaker control beside the
 copy action. It starts only when tapped. While it is reading, the same control
 pauses or resumes and a separate stop control ends playback.
 
-Reading happens through a local speech voice on the device viewing `Raven`.
-`Hlið` excludes voices that the browser reports as remote. Open **FORGE →
-Experience → Read aloud** to choose among the local voices on the current
-device and set the reading speed. Those preferences stay in that browser
-because each phone or computer has its own voice inventory.
+Open **FORGE → Experience → Read aloud** to choose the speech engine, voice,
+and reading speed. **Device browser** uses a local speech voice on the device
+viewing `Raven`. `Hlið` excludes voices that the browser reports as remote.
+**Microsoft host** uses a voice installed on the Windows computer running
+`Hlið`, then plays the result as regular audio on the viewing device. That
+option works from a phone connected through `Tailscale` and gives the browser
+exact media pause and resume behavior.
+
+The speech engine, Microsoft voice, and reading speed are saved in the Hlið
+configuration and apply to every device. The selected device-browser voice
+stays on that device because each browser can expose a different voice list.
+Microsoft speech and device speech both run locally without a cloud speech
+service. Microsoft speech audio does travel from the `Hlið` host to the viewing
+device over the current Hlið connection.
 
 Read aloud skips fenced code blocks, link addresses, and Markdown formatting.
 It reads the finished response text, not tool activity or a reply that is still

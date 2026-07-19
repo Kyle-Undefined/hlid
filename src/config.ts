@@ -219,6 +219,9 @@ export const DEFAULT_VOICE_CONFIG = {
 	model: "",
 	language: "auto",
 	auto_send: false,
+	read_aloud_provider: "device" as const,
+	read_aloud_voice: "",
+	read_aloud_rate: 1,
 	hotkey: "Alt+Shift+KeyV",
 	max_recording_seconds: 300,
 	threads: 4,
@@ -243,6 +246,15 @@ const VoiceSchema = z.object({
 	model: z.string().default(DEFAULT_VOICE_CONFIG.model),
 	language: z.string().min(1).default(DEFAULT_VOICE_CONFIG.language),
 	auto_send: z.boolean().default(DEFAULT_VOICE_CONFIG.auto_send),
+	read_aloud_provider: z
+		.enum(["device", "microsoft"])
+		.default(DEFAULT_VOICE_CONFIG.read_aloud_provider),
+	read_aloud_voice: z.string().default(DEFAULT_VOICE_CONFIG.read_aloud_voice),
+	read_aloud_rate: z
+		.number()
+		.min(0.5)
+		.max(2)
+		.default(DEFAULT_VOICE_CONFIG.read_aloud_rate),
 	hotkey: z.string().default(DEFAULT_VOICE_CONFIG.hotkey),
 	max_recording_seconds: z
 		.number()

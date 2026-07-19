@@ -30,6 +30,8 @@ import { Route as ApiAgentsIndexRouteImport } from './routes/api/agents/index'
 import { Route as ApiVoiceTranscribeRouteImport } from './routes/api/voice/transcribe'
 import { Route as ApiVaultSkillsRouteImport } from './routes/api/vault/skills'
 import { Route as ApiVaultMemoryRouteImport } from './routes/api/vault/memory'
+import { Route as ApiReadAloudVoicesRouteImport } from './routes/api/read-aloud/voices'
+import { Route as ApiReadAloudAudioRouteImport } from './routes/api/read-aloud/audio'
 import { Route as ApiMcpVaultRouteImport } from './routes/api/mcp/vault'
 import { Route as ApiMcpAgentRouteImport } from './routes/api/mcp/agent'
 import { Route as ApiAuthActionRouteImport } from './routes/api/auth.$action'
@@ -146,6 +148,16 @@ const ApiVaultMemoryRoute = ApiVaultMemoryRouteImport.update({
   path: '/api/vault/memory',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiReadAloudVoicesRoute = ApiReadAloudVoicesRouteImport.update({
+  id: '/api/read-aloud/voices',
+  path: '/api/read-aloud/voices',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiReadAloudAudioRoute = ApiReadAloudAudioRouteImport.update({
+  id: '/api/read-aloud/audio',
+  path: '/api/read-aloud/audio',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiMcpVaultRoute = ApiMcpVaultRouteImport.update({
   id: '/api/mcp/vault',
   path: '/api/mcp/vault',
@@ -222,6 +234,8 @@ export interface FileRoutesByFullPath {
   '/api/auth/$action': typeof ApiAuthActionRoute
   '/api/mcp/agent': typeof ApiMcpAgentRouteWithChildren
   '/api/mcp/vault': typeof ApiMcpVaultRouteWithChildren
+  '/api/read-aloud/audio': typeof ApiReadAloudAudioRoute
+  '/api/read-aloud/voices': typeof ApiReadAloudVoicesRoute
   '/api/vault/memory': typeof ApiVaultMemoryRoute
   '/api/vault/skills': typeof ApiVaultSkillsRoute
   '/api/voice/transcribe': typeof ApiVoiceTranscribeRoute
@@ -255,6 +269,8 @@ export interface FileRoutesByTo {
   '/api/auth/$action': typeof ApiAuthActionRoute
   '/api/mcp/agent': typeof ApiMcpAgentRouteWithChildren
   '/api/mcp/vault': typeof ApiMcpVaultRouteWithChildren
+  '/api/read-aloud/audio': typeof ApiReadAloudAudioRoute
+  '/api/read-aloud/voices': typeof ApiReadAloudVoicesRoute
   '/api/vault/memory': typeof ApiVaultMemoryRoute
   '/api/vault/skills': typeof ApiVaultSkillsRoute
   '/api/voice/transcribe': typeof ApiVoiceTranscribeRoute
@@ -289,6 +305,8 @@ export interface FileRoutesById {
   '/api/auth/$action': typeof ApiAuthActionRoute
   '/api/mcp/agent': typeof ApiMcpAgentRouteWithChildren
   '/api/mcp/vault': typeof ApiMcpVaultRouteWithChildren
+  '/api/read-aloud/audio': typeof ApiReadAloudAudioRoute
+  '/api/read-aloud/voices': typeof ApiReadAloudVoicesRoute
   '/api/vault/memory': typeof ApiVaultMemoryRoute
   '/api/vault/skills': typeof ApiVaultSkillsRoute
   '/api/voice/transcribe': typeof ApiVoiceTranscribeRoute
@@ -324,6 +342,8 @@ export interface FileRouteTypes {
     | '/api/auth/$action'
     | '/api/mcp/agent'
     | '/api/mcp/vault'
+    | '/api/read-aloud/audio'
+    | '/api/read-aloud/voices'
     | '/api/vault/memory'
     | '/api/vault/skills'
     | '/api/voice/transcribe'
@@ -357,6 +377,8 @@ export interface FileRouteTypes {
     | '/api/auth/$action'
     | '/api/mcp/agent'
     | '/api/mcp/vault'
+    | '/api/read-aloud/audio'
+    | '/api/read-aloud/voices'
     | '/api/vault/memory'
     | '/api/vault/skills'
     | '/api/voice/transcribe'
@@ -390,6 +412,8 @@ export interface FileRouteTypes {
     | '/api/auth/$action'
     | '/api/mcp/agent'
     | '/api/mcp/vault'
+    | '/api/read-aloud/audio'
+    | '/api/read-aloud/voices'
     | '/api/vault/memory'
     | '/api/vault/skills'
     | '/api/voice/transcribe'
@@ -424,6 +448,8 @@ export interface RootRouteChildren {
   ApiAuthActionRoute: typeof ApiAuthActionRoute
   ApiMcpAgentRoute: typeof ApiMcpAgentRouteWithChildren
   ApiMcpVaultRoute: typeof ApiMcpVaultRouteWithChildren
+  ApiReadAloudAudioRoute: typeof ApiReadAloudAudioRoute
+  ApiReadAloudVoicesRoute: typeof ApiReadAloudVoicesRoute
   ApiVaultMemoryRoute: typeof ApiVaultMemoryRoute
   ApiVaultSkillsRoute: typeof ApiVaultSkillsRoute
   ApiVoiceTranscribeRoute: typeof ApiVoiceTranscribeRoute
@@ -579,6 +605,20 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiVaultMemoryRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/read-aloud/voices': {
+      id: '/api/read-aloud/voices'
+      path: '/api/read-aloud/voices'
+      fullPath: '/api/read-aloud/voices'
+      preLoaderRoute: typeof ApiReadAloudVoicesRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/read-aloud/audio': {
+      id: '/api/read-aloud/audio'
+      path: '/api/read-aloud/audio'
+      fullPath: '/api/read-aloud/audio'
+      preLoaderRoute: typeof ApiReadAloudAudioRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/mcp/vault': {
       id: '/api/mcp/vault'
       path: '/api/mcp/vault'
@@ -712,6 +752,8 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAuthActionRoute: ApiAuthActionRoute,
   ApiMcpAgentRoute: ApiMcpAgentRouteWithChildren,
   ApiMcpVaultRoute: ApiMcpVaultRouteWithChildren,
+  ApiReadAloudAudioRoute: ApiReadAloudAudioRoute,
+  ApiReadAloudVoicesRoute: ApiReadAloudVoicesRoute,
   ApiVaultMemoryRoute: ApiVaultMemoryRoute,
   ApiVaultSkillsRoute: ApiVaultSkillsRoute,
   ApiVoiceTranscribeRoute: ApiVoiceTranscribeRoute,

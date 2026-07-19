@@ -49,7 +49,7 @@ export function VoiceSection({
 
 	return (
 		<div className="space-y-6">
-			<ReadAloudSection />
+			<ReadAloudSection voice={voice} onChange={onChange} />
 			<VoiceInputFields
 				voice={voice}
 				onChange={onChange}

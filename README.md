@@ -33,7 +33,7 @@ own folder vocabulary. `Hlið` does not care as long as the paths are set up.
   keeping approvals, `Umbod` policy, and usage accounting inside `Hlið`.
 - Runs `Whisper` locally for voice input. Audio never gets shipped to a cloud
   transcription service. Completed replies can also be read aloud through a
-  local voice on the device viewing `Raven`.
+  local voice on the viewing device or Microsoft speech on the Windows host.
 - Opens a real project shell in `Raven`, with an optional interactive `Claude
   CLI` mode when the full terminal makes more sense than the structured chat UI.
 - Keeps linked vaults and workspaces, provider commands, permissions, scoped

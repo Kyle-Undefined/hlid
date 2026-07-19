@@ -126,6 +126,7 @@ export function AssistantMsg({
 							<ReadAloudButton
 								messageId={message.id}
 								text={message.text}
+								dbId={message.dbId}
 								className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100"
 							/>
 							{canBranch && message.dbId != null && onBranch && (

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { READ_ALOUD_PREFERENCES_KEY } from "#/lib/readAloud";
 import {
 	__resetReadAloudForTesting,
+	refreshReadAloudPreferences,
 	setReadAloudPreferences,
 	startReadAloud,
 	stopReadAloud,
@@ -23,6 +24,26 @@ class MockUtterance {
 	onstart: (() => void) | null = null;
 
 	constructor(readonly text: string) {}
+}
+
+class MockAudio {
+	static instances: MockAudio[] = [];
+	preload = "";
+	playbackRate = 1;
+	currentTime = 0;
+	onplaying: (() => void) | null = null;
+	onended: (() => void) | null = null;
+	onerror: (() => void) | null = null;
+	play = vi.fn(() => Promise.resolve());
+	pause = vi.fn();
+
+	constructor(public src: string) {
+		MockAudio.instances.push(this);
+	}
+
+	removeAttribute(name: string) {
+		if (name === "src") this.src = "";
+	}
 }
 
 const localVoice = {
@@ -55,11 +76,13 @@ beforeEach(() => {
 	__resetReadAloudForTesting();
 	localStorage.clear();
 	vi.clearAllMocks();
+	MockAudio.instances = [];
 	Object.defineProperty(window, "speechSynthesis", {
 		value: speech,
 		configurable: true,
 	});
 	vi.stubGlobal("SpeechSynthesisUtterance", MockUtterance);
+	vi.stubGlobal("Audio", MockAudio);
 });
 
 afterEach(() => {
@@ -153,18 +176,92 @@ describe("readAloudStore", () => {
 		expect(utterance.lang).toBe("");
 	});
 
-	it("exposes and persists per-device preferences", () => {
-		const { result } = renderHook(() => useReadAloudPreferences());
+	it("persists only the device-specific browser voice locally", () => {
+		const { result } = renderHook(() => useReadAloudPreferences(false));
 		act(() =>
 			setReadAloudPreferences({ voiceURI: localVoice.voiceURI, rate: 1.5 }),
 		);
 		expect(result.current).toEqual({
+			provider: "device",
 			voiceURI: localVoice.voiceURI,
+			microsoftVoiceId: "",
 			rate: 1.5,
 		});
 		expect(
 			JSON.parse(localStorage.getItem(READ_ALOUD_PREFERENCES_KEY) ?? "{}"),
-		).toEqual(result.current);
+		).toEqual({ voiceURI: localVoice.voiceURI });
+	});
+
+	it("loads shared read-aloud choices from Hlid while preserving the device voice", async () => {
+		localStorage.setItem(
+			READ_ALOUD_PREFERENCES_KEY,
+			JSON.stringify({
+				provider: "device",
+				voiceURI: localVoice.voiceURI,
+				microsoftVoiceId: "old-local-voice",
+				rate: 0.75,
+			}),
+		);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue(
+				Response.json({
+					voice: {
+						read_aloud_provider: "microsoft",
+						read_aloud_voice: "windows:mark",
+						read_aloud_rate: 1.5,
+					},
+				}),
+			),
+		);
+		const { result } = renderHook(() => useReadAloudPreferences(false));
+
+		await act(refreshReadAloudPreferences);
+
+		expect(result.current).toEqual({
+			provider: "microsoft",
+			voiceURI: localVoice.voiceURI,
+			microsoftVoiceId: "windows:mark",
+			rate: 1.5,
+		});
+		expect(
+			JSON.parse(localStorage.getItem(READ_ALOUD_PREFERENCES_KEY) ?? "{}"),
+		).toEqual({ voiceURI: localVoice.voiceURI });
+	});
+
+	it("plays Microsoft host audio with exact media pause and resume", () => {
+		const { result } = renderHook(() => useReadAloudState());
+		act(() =>
+			setReadAloudPreferences({
+				provider: "microsoft",
+				microsoftVoiceId: "windows:mark",
+				rate: 1.25,
+			}),
+		);
+		act(() => startReadAloud("message-1", "Stored text", 42));
+		const audio = MockAudio.instances[0];
+		expect(audio?.src).toBe(
+			"/api/read-aloud/audio?message_id=42&voice_id=windows%3Amark",
+		);
+		expect(audio?.playbackRate).toBe(1.25);
+		expect(audio?.play).toHaveBeenCalledOnce();
+		expect(result.current.phase).toBe("loading");
+
+		act(() => audio?.onplaying?.());
+		expect(result.current.phase).toBe("speaking");
+		if (audio) audio.currentTime = 12.5;
+		act(() => toggleReadAloud("message-1", "Stored text", 42));
+		expect(audio?.pause).toHaveBeenCalledOnce();
+		expect(result.current.phase).toBe("paused");
+
+		act(() => toggleReadAloud("message-1", "Stored text", 42));
+		expect(audio?.play).toHaveBeenCalledTimes(2);
+		expect(audio?.currentTime).toBe(12.5);
+		expect(result.current.phase).toBe("speaking");
+		expect(speech.speak).not.toHaveBeenCalled();
+
+		act(() => audio?.onended?.());
+		expect(result.current.phase).toBe("idle");
 	});
 
 	it("only lists voices the browser reports as local", () => {
