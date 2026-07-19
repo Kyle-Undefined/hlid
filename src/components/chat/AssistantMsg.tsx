@@ -1,3 +1,4 @@
+import { GitFork, LoaderCircle } from "lucide-react";
 import { MarkdownBody } from "#/components/MarkdownBody";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import { useCopyToClipboard } from "#/hooks/useCopyToClipboard";
@@ -20,12 +21,20 @@ export function AssistantMsg({
 	toolEventStartIndex = 0,
 	olderToolEventCount = 0,
 	onLoadOlderToolEvents,
+	canBranch = false,
+	branching = false,
+	onBranch,
 }: {
 	message: AssistantMessage;
 	permissionLabels?: Map<string, string>;
 	toolEventStartIndex?: number;
 	olderToolEventCount?: number;
 	onLoadOlderToolEvents?: () => void;
+	/** Whole-session precondition (Claude-only, session idle) — see raven.tsx. */
+	canBranch?: boolean;
+	/** True while this specific row's branch fork is in flight. */
+	branching?: boolean;
+	onBranch?: (dbId: number) => void;
 }) {
 	const { copy, copied } = useCopyToClipboard();
 	// Keep live subagents at the bottom of the active assistant turn. New parent
@@ -113,6 +122,22 @@ export function AssistantMsg({
 								copied={copied}
 								className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity"
 							/>
+							{canBranch && message.dbId != null && onBranch && (
+								<button
+									type="button"
+									onClick={() => onBranch(message.dbId as number)}
+									disabled={branching}
+									aria-label="Branch from here"
+									title="Fork a new session from this point in the conversation"
+									className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 disabled:opacity-40 text-muted-foreground/50 hover:text-foreground transition-opacity"
+								>
+									{branching ? (
+										<LoaderCircle className="w-3 h-3 animate-spin" />
+									) : (
+										<GitFork className="w-3 h-3" />
+									)}
+								</button>
+							)}
 						</div>
 					)}
 				</div>

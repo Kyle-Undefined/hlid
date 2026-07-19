@@ -28,6 +28,7 @@ vi.mock("../db", () => ({
 	setAskUserQuestionResolution: vi.fn().mockResolvedValue(undefined),
 	setMessageText: vi.fn().mockResolvedValue(undefined),
 	setMessageRecap: vi.fn().mockResolvedValue(undefined),
+	setMessageSdkUuid: vi.fn().mockResolvedValue(undefined),
 	setToolEventResult: vi.fn().mockResolvedValue(undefined),
 	setToolEventSubagent: vi.fn().mockResolvedValue(undefined),
 	appendLog: vi.fn().mockResolvedValue(undefined),
@@ -5697,5 +5698,57 @@ describe("SessionManager — auto-sleep gates", () => {
 		sm.skipSleep();
 		await turn;
 		expect(sm.getSleepState()).toBeNull();
+	});
+});
+
+// ── assistant_message_id → sdk_uuid capture ────────────────────────────────────
+
+describe("SessionManager — assistant_message_id capture", () => {
+	it("stamps the turn's row with the last of several raw SDK message uuids", async () => {
+		vi.mocked(dbMock.setMessageSdkUuid).mockClear();
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(_params: AgentQueryParams): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-s1" };
+					// Turn spans two raw SDK messages: text, then a tool call from a
+					// second message, then more text from a third — each with its
+					// own uuid, same displayed turn/row.
+					yield { type: "assistant_message_id", id: "sdk-msg-uuid-1" };
+					yield { type: "text_delta", text: "First. " };
+					yield { type: "assistant_message_id", id: "sdk-msg-uuid-2" };
+					yield { type: "tool_start", toolId: "t1", name: "Bash", input: {} };
+					yield { type: "assistant_message_id", id: "sdk-msg-uuid-3" };
+					yield { type: "text_delta", text: "Second." };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("hello", () => {}, "sess-uuid");
+
+		const calls = vi.mocked(dbMock.setMessageSdkUuid).mock.calls;
+		expect(calls.length).toBeGreaterThanOrEqual(3);
+		// Every call lands on the same (sessionId, seq) — one row for the whole
+		// turn — and the row ends up holding the *last* uuid seen.
+		const [sessionId, seq] = calls[0];
+		for (const call of calls) {
+			expect(call[0]).toBe(sessionId);
+			expect(call[1]).toBe(seq);
+		}
+		expect(calls.at(-1)?.[2]).toBe("sdk-msg-uuid-3");
 	});
 });

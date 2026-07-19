@@ -1617,6 +1617,27 @@ export class SessionManager {
 		turn.lastBlockType = "text";
 	}
 
+	/**
+	 * Stamps the current turn's row with the native transcript id of whichever
+	 * raw SDK message is contributing right now. Fires once per incoming SDK
+	 * message (not throttled like scheduleTextWrite) so a tool-only content
+	 * block — text_delta never fires, so the throttled text-write path never
+	 * runs — still gets its uuid recorded. The row ends up holding the *last*
+	 * uuid seen, i.e. the whole turn, which is what forkSession's
+	 * upToMessageId needs to branch "up to and including this displayed row".
+	 */
+	private handleAssistantMessageId(
+		event: Extract<AgentEvent, { type: "assistant_message_id" }>,
+		turn: TurnState,
+		sessionId: string | undefined,
+	): void {
+		if (!sessionId) return;
+		const seq = this.ensureAssistantRow(turn, sessionId);
+		void db
+			.setMessageSdkUuid(sessionId, seq, event.id)
+			.catch((e) => logDbError("setMessageSdkUuid", e));
+	}
+
 	private handleToolStart(
 		event: Extract<AgentEvent, { type: "tool_start" }>,
 		turn: TurnState,
@@ -1879,6 +1900,9 @@ export class SessionManager {
 				break;
 			case "text_delta":
 				this.handleTextDelta(event, turn, sessionId, emit);
+				break;
+			case "assistant_message_id":
+				this.handleAssistantMessageId(event, turn, sessionId);
 				break;
 			case "tool_start":
 				this.handleToolStart(event, turn, sessionId, emit, provider);

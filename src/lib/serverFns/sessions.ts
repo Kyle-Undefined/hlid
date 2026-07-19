@@ -11,7 +11,7 @@ import type {
 } from "#/db";
 import { dbFetch, dbJson, requireDbOk } from "#/lib/dbClient";
 import {
-	sessionDeleteSchema,
+	sessionForkSchema,
 	sessionIdSchema,
 	sessionToolEventSchema,
 	terminalSessionSchema,
@@ -253,17 +253,19 @@ export const ensureSessionFn = createServerFn({ method: "POST" })
 
 /**
  * Fork a session's transcript into a brand-new session (Claude-only today —
- * see AgentProvider.forkSession). Used by both Ledger's row action and
- * Raven's in-session fork button.
+ * see AgentProvider.forkSession). Used by Ledger's row action, Raven's
+ * in-session fork button, and Raven's per-message "branch from here" action
+ * (pass `messageId` to branch up to and including that assistant row instead
+ * of the whole session).
  */
 export const forkSessionFn = createServerFn({ method: "POST" })
-	.validator((raw) => sessionDeleteSchema.parse(raw))
+	.validator((raw) => sessionForkSchema.parse(raw))
 	.handler(async ({ data }) => {
 		const res = await requireDbOk(
 			await dbFetch("/db/session/fork", {
 				method: "POST",
 				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ id: data.id }),
+				body: JSON.stringify({ id: data.id, messageId: data.messageId }),
 			}),
 			"fork session",
 		);

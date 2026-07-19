@@ -272,4 +272,56 @@ describe("AssistantMsg", () => {
 			expect(screen.queryByRole("button", { name: /copy/i })).toBeNull();
 		});
 	});
+
+	describe("branch from here", () => {
+		it("is not rendered when canBranch is false", () => {
+			render(
+				<AssistantMsg
+					message={makeMsg({ dbId: 42 })}
+					canBranch={false}
+					onBranch={vi.fn()}
+				/>,
+			);
+			expect(
+				screen.queryByRole("button", { name: /branch from here/i }),
+			).toBeNull();
+		});
+
+		it("is not rendered when the message has no dbId yet (still arriving live)", () => {
+			render(<AssistantMsg message={makeMsg()} canBranch onBranch={vi.fn()} />);
+			expect(
+				screen.queryByRole("button", { name: /branch from here/i }),
+			).toBeNull();
+		});
+
+		it("calls onBranch with the message's dbId when clicked", () => {
+			const onBranch = vi.fn();
+			render(
+				<AssistantMsg
+					message={makeMsg({ dbId: 42 })}
+					canBranch
+					onBranch={onBranch}
+				/>,
+			);
+			fireEvent.click(
+				screen.getByRole("button", { name: /branch from here/i }),
+			);
+			expect(onBranch).toHaveBeenCalledWith(42);
+		});
+
+		it("disables the button while this row's branch is in flight", () => {
+			render(
+				<AssistantMsg
+					message={makeMsg({ dbId: 42 })}
+					canBranch
+					branching
+					onBranch={vi.fn()}
+				/>,
+			);
+			const btn = screen.getByRole("button", {
+				name: /branch from here/i,
+			}) as HTMLButtonElement;
+			expect(btn.disabled).toBe(true);
+		});
+	});
 });

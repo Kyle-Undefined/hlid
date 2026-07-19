@@ -45,6 +45,8 @@ export type MessageRow = {
 	recap: string | null;
 	/** Stable queued-turn identity for user messages created by Raven. */
 	turn_id?: string | null;
+	/** Claude's native transcript UUID for the last SDK message in this turn. */
+	sdk_uuid?: string | null;
 };
 
 type ToolEventRow = {

@@ -19,6 +19,9 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 	onPlanDecide,
 	onCancelQueued,
 	onPromoteQueued,
+	canBranch,
+	forkingMessageId,
+	onBranch,
 }: {
 	message: ChatMessage;
 	toolEventStartIndex?: number;
@@ -40,6 +43,9 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 	onPlanDecide: (id: string, decision: PlanDecision, feedback?: string) => void;
 	onCancelQueued: (id: string) => void;
 	onPromoteQueued: (id: string) => void;
+	canBranch?: boolean;
+	forkingMessageId?: number | null;
+	onBranch?: (dbId: number) => void;
 }) {
 	if (message.role === "user") {
 		return (
@@ -65,6 +71,9 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 				toolEventStartIndex={toolEventStartIndex}
 				olderToolEventCount={olderToolEventCount}
 				onLoadOlderToolEvents={onLoadOlderToolEvents}
+				canBranch={canBranch}
+				branching={message.dbId != null && forkingMessageId === message.dbId}
+				onBranch={onBranch}
 			/>
 		);
 	}

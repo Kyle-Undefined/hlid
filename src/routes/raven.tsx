@@ -1923,6 +1923,7 @@ function RavenMessagePane({
 	chatQueue,
 	viewport,
 	actions,
+	composerProps,
 }: ChatPageContentProps) {
 	const { sessionId } = session;
 	const { wsStatus, sessionState, runningTurnId, messages } = runtime;
@@ -1940,6 +1941,20 @@ function RavenMessagePane({
 			runtime.loadOlderHistory,
 		);
 	}, [runtime.loadOlderHistory, scrollRef]);
+	const {
+		fork: forkFromMessage,
+		forkingMessageId,
+		forkError,
+		dismissForkError,
+	} = useForkSession(sessionId);
+	const handleBranch = useCallback(
+		(dbId: number) => void forkFromMessage(dbId),
+		[forkFromMessage],
+	);
+	// Same preconditions as the composer's whole-session Fork button — see
+	// ChatActionButtons.
+	const canBranch =
+		composerProps.activeProviderId === "claude" && !runtime.isRunning;
 	// Below md, the Terminal tab fully replaces chat (RavenShellTabBar); md+
 	// always shows chat regardless (desktop split panel is chunk 4).
 	const mobileHideChat = terminalOpen && shellTab === "terminal";
@@ -1947,49 +1962,74 @@ function RavenMessagePane({
 		<>
 			{/* Messages, inner min-h-full + justify-end anchors messages to bottom */}
 			{!interactiveMode && (
-				<div
-					ref={scrollRef}
-					data-scroll-restoration-id={
-						ROUTE_SCROLL_RESTORATION_IDS.ravenTranscript
-					}
-					className={`flex-1 min-h-0 overflow-y-auto overflow-x-hidden ${
-						mobileHideChat ? "hidden md:block" : ""
-					}`}
-				>
-					<div className="min-h-full flex flex-col justify-end px-5 pt-2 pb-7 min-w-0">
-						{messages.length === 0 ? (
-							<div className="flex-1 flex flex-col items-center justify-center gap-3">
-								<div className="text-2xl font-bold tracking-widest text-foreground/20 uppercase select-none">
-									{wsStatus !== "connected"
-										? "CONNECTING"
-										: "THE WATCHER LISTENS"}
-								</div>
-								{wsStatus === "connected" && (
-									<div className="text-[9px] tracking-[0.35em] text-muted-foreground/35">
-										↵ send · ⇧↵ newline
+				<>
+					{forkError && (
+						<div
+							role="alert"
+							className="flex items-center justify-between gap-3 border-b border-destructive/30 bg-destructive/5 px-4 py-2 text-xs text-destructive shrink-0"
+						>
+							{forkError}
+							<button
+								type="button"
+								onClick={dismissForkError}
+								aria-label="Dismiss"
+								className="text-destructive/60 hover:text-destructive shrink-0"
+							>
+								<X className="h-3 w-3" />
+							</button>
+						</div>
+					)}
+					<div
+						ref={scrollRef}
+						data-scroll-restoration-id={
+							ROUTE_SCROLL_RESTORATION_IDS.ravenTranscript
+						}
+						className={`flex-1 min-h-0 overflow-y-auto overflow-x-hidden ${
+							mobileHideChat ? "hidden md:block" : ""
+						}`}
+					>
+						<div className="min-h-full flex flex-col justify-end px-5 pt-2 pb-7 min-w-0">
+							{messages.length === 0 ? (
+								<div className="flex-1 flex flex-col items-center justify-center gap-3">
+									<div className="text-2xl font-bold tracking-widest text-foreground/20 uppercase select-none">
+										{wsStatus !== "connected"
+											? "CONNECTING"
+											: "THE WATCHER LISTENS"}
 									</div>
-								)}
-							</div>
-						) : (
-							<MessageList
-								messages={messages}
-								chatQueue={chatQueue}
-								sessionId={sessionId}
-								sessionState={sessionState}
-								runningTurnId={runningTurnId}
-								hasOlderHistory={runtime.hasOlderHistory}
-								isLoadingOlderHistory={runtime.isLoadingOlderHistory}
-								onLoadOlderHistory={handleLoadOlderHistory}
-								handleDecide={handleDecide}
-								handleSubmitAnswers={handleSubmitAnswers}
-								handlePlanDecide={handlePlanDecide}
-								handleCancelQueued={handleCancelQueued}
-								handlePromoteQueued={handlePromoteQueued}
-								bottomRef={bottomRef}
-							/>
-						)}
+									{wsStatus === "connected" && (
+										<div className="text-[9px] tracking-[0.35em] text-muted-foreground/35">
+											↵ send · ⇧↵ newline
+										</div>
+									)}
+								</div>
+							) : (
+								<MessageList
+									messages={messages}
+									chatQueue={chatQueue}
+									sessionId={sessionId}
+									sessionState={sessionState}
+									runningTurnId={runningTurnId}
+									hasOlderHistory={runtime.hasOlderHistory}
+									isLoadingOlderHistory={runtime.isLoadingOlderHistory}
+									onLoadOlderHistory={handleLoadOlderHistory}
+									handleDecide={handleDecide}
+									handleSubmitAnswers={handleSubmitAnswers}
+									handlePlanDecide={handlePlanDecide}
+									handleCancelQueued={handleCancelQueued}
+									handlePromoteQueued={handlePromoteQueued}
+									bottomRef={bottomRef}
+									canBranch={canBranch}
+									forkingMessageId={
+										typeof forkingMessageId === "number"
+											? forkingMessageId
+											: null
+									}
+									onBranch={handleBranch}
+								/>
+							)}
+						</div>
 					</div>
-				</div>
+				</>
 			)}
 		</>
 	);
@@ -2685,6 +2725,53 @@ function ChatTextarea(props: ChatComposerProps) {
 	);
 }
 
+/**
+ * Shared fork-and-navigate logic for both the whole-session composer Fork
+ * button and the per-message "branch from here" action. `fork()` with no
+ * `messageId` forks the whole session; with one, branches up to and
+ * including that assistant row (see POST /db/session/fork).
+ *
+ * `forkingMessageId` distinguishes which of the two triggered the in-flight
+ * fork: "session" for the composer button, a message's dbId for a branch
+ * button. Each call site gets its own hook instance (composer vs message
+ * list), so the two never contend over the same loading/error state — the
+ * error banner shows up near whichever one was actually clicked.
+ */
+function useForkSession(sessionId: string) {
+	const navigate = useNavigate();
+	const [forkingMessageId, setForkingMessageId] = useState<
+		"session" | number | null
+	>(null);
+	const [forkError, setForkError] = useState<string | null>(null);
+
+	const fork = useCallback(
+		async (messageId?: number) => {
+			setForkError(null);
+			setForkingMessageId(messageId ?? "session");
+			try {
+				const { id: newId } = await forkSessionFn({
+					data: { id: sessionId, messageId },
+				});
+				void navigate({
+					to: "/raven",
+					search: (previous) => ({ ...previous, session: newId }),
+				});
+			} catch (error) {
+				setForkError(error instanceof Error ? error.message : "Fork failed");
+				setForkingMessageId(null);
+			}
+		},
+		[sessionId, navigate],
+	);
+
+	return {
+		fork,
+		forkingMessageId,
+		forkError,
+		dismissForkError: useCallback(() => setForkError(null), []),
+	};
+}
+
 function ChatActionButtons({
 	runtime,
 	canSend,
@@ -2695,31 +2782,14 @@ function ChatActionButtons({
 	activeProviderId,
 }: ChatComposerProps) {
 	const { send, isRunning, messages } = runtime;
-	const navigate = useNavigate();
-	const [forking, setForking] = useState(false);
-	const [forkError, setForkError] = useState<string | null>(null);
+	const { fork, forkingMessageId, forkError, dismissForkError } =
+		useForkSession(session.sessionId);
+	const forking = forkingMessageId === "session";
 	// Claude-only for now — AgentProvider.forkSession isn't implemented by
 	// other providers yet. Idle + non-empty mirrors the same preconditions
 	// the server enforces in POST /db/session/fork.
 	const canFork =
 		activeProviderId === "claude" && !isRunning && messages.length > 0;
-
-	async function handleFork() {
-		setForkError(null);
-		setForking(true);
-		try {
-			const { id: newId } = await forkSessionFn({
-				data: { id: session.sessionId },
-			});
-			void navigate({
-				to: "/raven",
-				search: (previous) => ({ ...previous, session: newId }),
-			});
-		} catch (error) {
-			setForkError(error instanceof Error ? error.message : "Fork failed");
-			setForking(false);
-		}
-	}
 
 	return (
 		<>
@@ -2731,7 +2801,7 @@ function ChatActionButtons({
 					{forkError}
 					<button
 						type="button"
-						onClick={() => setForkError(null)}
+						onClick={dismissForkError}
 						aria-label="Dismiss fork error"
 						className="text-destructive/50 hover:text-destructive"
 					>
@@ -2742,7 +2812,7 @@ function ChatActionButtons({
 			{canFork && (
 				<button
 					type="button"
-					onClick={handleFork}
+					onClick={() => fork()}
 					disabled={forking}
 					className="px-3 py-3 text-muted-foreground/45 hover:text-muted-foreground disabled:opacity-40 transition-colors shrink-0"
 					aria-label="Fork session"

@@ -638,8 +638,10 @@ async function closeLiveSession({
 /**
  * Fork a (necessarily idle) session's transcript into a brand-new session
  * via the owning provider's forkSession() capability, then create a new
- * hlid session row pointing at the resulting native id. Whole-session only
- * — no branch-from-message-N support yet.
+ * hlid session row pointing at the resulting native id. Whole-session by
+ * default; pass `messageId` (a `messages.id` primary key) to branch up to
+ * and including that assistant row instead — resolved to the provider's
+ * native transcript uuid via db.getMessageForFork.
  */
 async function forkSession({
 	req,
@@ -651,6 +653,10 @@ async function forkSession({
 	if (!sourceId || typeof sourceId !== "string") {
 		return new Response("Missing id", { status: 400 });
 	}
+	const messageId = body?.messageId;
+	if (messageId !== undefined && typeof messageId !== "number") {
+		return new Response("Invalid messageId", { status: 400 });
+	}
 
 	if (pool?.get(sourceId) || hasLiveTerminalSession(terminalPool, sourceId)) {
 		return new Response("Cannot fork a live session — stop it first", {
@@ -660,6 +666,23 @@ async function forkSession({
 
 	const source = await db.getSessionById(sourceId);
 	if (!source) return new Response("Session not found", { status: 404 });
+
+	let upToMessageId: string | undefined;
+	if (messageId !== undefined) {
+		const message = await db.getMessageForFork(messageId);
+		if (!message || message.sessionId !== sourceId) {
+			return new Response("Message not found in this session", {
+				status: 404,
+			});
+		}
+		if (!message.sdkUuid) {
+			return new Response(
+				"This message can't be branched from yet — no transcript id captured",
+				{ status: 422 },
+			);
+		}
+		upToMessageId = message.sdkUuid;
+	}
 
 	const providerId = source.provider_id ?? "claude";
 	const provider = pool?.getProvider(providerId);
@@ -674,6 +697,7 @@ async function forkSession({
 		sessionId: nativeId,
 		cwd: source.agent_cwd ?? undefined,
 		historyResumeMode: source.history_resume_mode,
+		upToMessageId,
 	});
 	const newId = uid();
 	await db.createForkedSessionRow(sourceId, newId, newNativeId);

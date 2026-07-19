@@ -116,6 +116,39 @@ describe("ClaudeProvider — event mapping", () => {
 		expect(events[0]).toEqual({ type: "session_start", sessionId: "sid-abc" });
 	});
 
+	it("yields assistant_message_id with the SDK message's uuid before its content-block events", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "assistant",
+					uuid: "sdk-msg-uuid-1",
+					message: {
+						content: [{ type: "text", text: "Hello world" }],
+						usage: { input_tokens: 10, output_tokens: 5 },
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 10, output_tokens: 5 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		const idIndex = events.findIndex((e) => e.type === "assistant_message_id");
+		const textIndex = events.findIndex((e) => e.type === "text_delta");
+		expect(events[idIndex]).toEqual({
+			type: "assistant_message_id",
+			id: "sdk-msg-uuid-1",
+		});
+		expect(idIndex).toBeGreaterThanOrEqual(0);
+		expect(idIndex).toBeLessThan(textIndex);
+	});
+
 	it("yields text_delta for assistant text content blocks", async () => {
 		vi.mocked(query).mockReturnValueOnce(
 			sdkGen([
@@ -1514,6 +1547,37 @@ describe("ClaudeProvider — forkSession", () => {
 		expect(sdkForkSession).toHaveBeenCalledWith("source-session-id", {
 			title: "My fork",
 		});
+	});
+
+	it("forwards upToMessageId when branching from a specific message", async () => {
+		vi.mocked(sdkForkSession).mockResolvedValueOnce({
+			sessionId: "forked-session-id",
+		});
+
+		await new ClaudeProvider().forkSession?.({
+			sessionId: "source-session-id",
+			cwd: "/work/project",
+			upToMessageId: "sdk-msg-uuid-1",
+		});
+
+		expect(sdkForkSession).toHaveBeenCalledWith("source-session-id", {
+			title: undefined,
+			upToMessageId: "sdk-msg-uuid-1",
+		});
+	});
+
+	it("omits upToMessageId for a whole-session fork", async () => {
+		vi.mocked(sdkForkSession).mockResolvedValueOnce({
+			sessionId: "forked-session-id",
+		});
+
+		await new ClaudeProvider().forkSession?.({
+			sessionId: "source-session-id",
+			cwd: "/work/project",
+		});
+
+		const call = vi.mocked(sdkForkSession).mock.calls.at(-1);
+		expect(call?.[1]?.upToMessageId).toBeUndefined();
 	});
 
 	it("passes the DB-backed sessionStore for session-store-resumed sessions", async () => {

@@ -24,6 +24,12 @@ export type AssistantMessage = {
 	cost: number | null;
 	costEstimated?: boolean;
 	recap?: string;
+	/**
+	 * messages.id primary key, once persisted — undefined for messages still
+	 * arriving live before the DB row is confirmed. Lets Raven offer "branch
+	 * from here" only on rows the fork API can actually resolve.
+	 */
+	dbId?: number;
 };
 
 export type PermissionMessage = {
@@ -82,6 +88,8 @@ export type HistoryItem =
 	| {
 			kind: "message";
 			id: string;
+			/** messages.id primary key. See AssistantMessage.dbId. */
+			dbId?: number;
 			role: string;
 			text: string;
 			toolEvents?: ToolEventMessage[];
@@ -396,6 +404,7 @@ function historyItemToMessage(item: HistoryItem): ChatMessage {
 			streaming: false,
 			cost: null,
 			recap: item.recap ?? undefined,
+			dbId: item.dbId,
 		};
 	}
 	return {

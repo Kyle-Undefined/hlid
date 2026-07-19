@@ -49,6 +49,10 @@ function mapSessionRows(
 		// the running-turn event cannot render the same prompt twice.
 		id:
 			r.role === "user" && r.turn_id ? r.turn_id : `persisted-message:${r.id}`,
+		// Real messages.id primary key, exposed separately from the synthetic
+		// `id` above so callers don't have to parse it back out of a string.
+		// Used by the "branch from here" fork action (assistant rows only).
+		dbId: r.id,
 		role: r.role,
 		text: r.text,
 		toolEvents: r.toolEvents?.map((te) => ({

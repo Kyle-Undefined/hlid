@@ -27,6 +27,7 @@ const {
 	mockGetProviderHistorySyncStatus,
 	mockGetSessionProviderSession,
 	mockCreateForkedSessionRow,
+	mockGetMessageForFork,
 } = vi.hoisted(() => ({
 	mockGetSessionById: vi.fn(),
 	mockListAttachments: vi.fn(),
@@ -45,6 +46,7 @@ const {
 	mockGetProviderHistorySyncStatus: vi.fn(),
 	mockGetSessionProviderSession: vi.fn(),
 	mockCreateForkedSessionRow: vi.fn(),
+	mockGetMessageForFork: vi.fn(),
 }));
 
 vi.mock("../db", () => ({
@@ -62,6 +64,7 @@ vi.mock("../db", () => ({
 	getSessionsPaginated: mockGetSessionsPaginated,
 	getSessionProviderSession: mockGetSessionProviderSession,
 	createForkedSessionRow: mockCreateForkedSessionRow,
+	getMessageForFork: mockGetMessageForFork,
 }));
 
 // dbRoutes also imports from ./attachments and ./proxy — stub them out.
@@ -690,6 +693,7 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 		mockGetSessionById.mockReset();
 		mockGetSessionProviderSession.mockReset();
 		mockCreateForkedSessionRow.mockReset();
+		mockGetMessageForFork.mockReset();
 	});
 
 	function forkRequest(body: unknown): Request {
@@ -709,6 +713,99 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 		);
 		if (!res) throw new Error("Expected a Response, got null");
 		expect(res.status).toBe(400);
+	});
+
+	it("returns 400 when messageId is not a number", async () => {
+		const pool = makePool();
+		const res = await handleDbRoute(
+			makeUrl("/db/session/fork"),
+			forkRequest({ id: "abc-123", messageId: "not-a-number" }),
+			pool,
+		);
+		if (!res) throw new Error("Expected a Response, got null");
+		expect(res.status).toBe(400);
+	});
+
+	it("returns 404 when messageId belongs to a different session", async () => {
+		mockGetSessionById.mockResolvedValue({
+			...sampleRow,
+			provider_id: "claude",
+			agent_cwd: "/work/project",
+		});
+		mockGetMessageForFork.mockResolvedValue({
+			sessionId: "some-other-session",
+			role: "assistant",
+			sdkUuid: "sdk-msg-uuid-1",
+		});
+		const pool = makePool();
+		const res = await handleDbRoute(
+			makeUrl("/db/session/fork"),
+			forkRequest({ id: "abc-123", messageId: 42 }),
+			pool,
+		);
+		if (!res) throw new Error("Expected a Response, got null");
+		expect(res.status).toBe(404);
+	});
+
+	it("returns 422 when the message has no captured transcript id", async () => {
+		mockGetSessionById.mockResolvedValue({
+			...sampleRow,
+			provider_id: "claude",
+			agent_cwd: "/work/project",
+		});
+		mockGetMessageForFork.mockResolvedValue({
+			sessionId: "abc-123",
+			role: "assistant",
+			sdkUuid: null,
+		});
+		const pool = makePool();
+		const res = await handleDbRoute(
+			makeUrl("/db/session/fork"),
+			forkRequest({ id: "abc-123", messageId: 42 }),
+			pool,
+		);
+		if (!res) throw new Error("Expected a Response, got null");
+		expect(res.status).toBe(422);
+	});
+
+	it("resolves messageId to a native uuid and forwards it as upToMessageId", async () => {
+		mockGetSessionById.mockResolvedValue({
+			...sampleRow,
+			provider_id: "claude",
+			agent_cwd: "/work/project",
+			history_resume_mode: "none",
+		});
+		mockGetMessageForFork.mockResolvedValue({
+			sessionId: "abc-123",
+			role: "assistant",
+			sdkUuid: "sdk-msg-uuid-1",
+		});
+		mockGetSessionProviderSession.mockResolvedValue("native-source-id");
+		const mockForkSession = vi
+			.fn()
+			.mockResolvedValue({ sessionId: "native-forked-id" });
+		const pool = makePool({
+			getProvider: vi.fn().mockReturnValue({
+				providerId: "claude",
+				forkSession: mockForkSession,
+			}),
+		});
+
+		const res = await handleDbRoute(
+			makeUrl("/db/session/fork"),
+			forkRequest({ id: "abc-123", messageId: 42 }),
+			pool,
+		);
+
+		if (!res) throw new Error("Expected a Response, got null");
+		expect(res.status).toBe(200);
+		expect(mockGetMessageForFork).toHaveBeenCalledWith(42);
+		expect(mockForkSession).toHaveBeenCalledWith({
+			sessionId: "native-source-id",
+			cwd: "/work/project",
+			historyResumeMode: "none",
+			upToMessageId: "sdk-msg-uuid-1",
+		});
 	});
 
 	it("returns 409 when the source session is live in the pool", async () => {

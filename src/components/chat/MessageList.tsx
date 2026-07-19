@@ -26,6 +26,9 @@ export const MessageList = memo(function MessageList({
 	hasOlderHistory = false,
 	isLoadingOlderHistory = false,
 	onLoadOlderHistory,
+	canBranch,
+	forkingMessageId,
+	onBranch,
 }: {
 	messages: ChatMessage[];
 	chatQueue: QueuedChatMessage[];
@@ -54,6 +57,10 @@ export const MessageList = memo(function MessageList({
 	hasOlderHistory?: boolean;
 	isLoadingOlderHistory?: boolean;
 	onLoadOlderHistory?: () => Promise<number>;
+	/** "Branch from here" precondition (Claude-only, session idle). */
+	canBranch?: boolean;
+	forkingMessageId?: number | null;
+	onBranch?: (dbId: number) => void;
 }) {
 	const {
 		olderHistoryCount,
@@ -109,6 +116,9 @@ export const MessageList = memo(function MessageList({
 					onPlanDecide={handlePlanDecide}
 					onCancelQueued={handleCancelQueued}
 					onPromoteQueued={handlePromoteQueued}
+					canBranch={canBranch}
+					forkingMessageId={forkingMessageId}
+					onBranch={onBranch}
 				/>
 			))}
 			{orphanQueued.map((qm) => (

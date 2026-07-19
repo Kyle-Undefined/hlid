@@ -126,6 +126,13 @@ export type AgentEvent =
 	| { type: "commands_changed"; commands: SlashCommand[] }
 	| { type: "transport_error"; message: string }
 	| { type: "text_delta"; text: string }
+	/**
+	 * Native transcript id of the raw provider message currently contributing
+	 * to this turn. Claude-only today (SDKAssistantMessage.uuid) — used to
+	 * persist a fork cutoff (forkSession's upToMessageId) per displayed
+	 * assistant row. Other providers simply never emit this.
+	 */
+	| { type: "assistant_message_id"; id: string }
 	| { type: "local_command_output"; content: string }
 	| {
 			type: "tool_start";
@@ -364,6 +371,14 @@ export type ForkSessionParams = {
 	historyResumeMode?: "none" | "native" | "session-store";
 	/** Custom title for the forked session. If omitted, the provider picks a default. */
 	title?: string;
+	/**
+	 * Slice the transcript up to (and including) this native message id
+	 * instead of copying the whole session. Claude-native SDK message uuid,
+	 * captured per assistant row via the `assistant_message_id` AgentEvent —
+	 * see src/db/messages.ts's setMessageSdkUuid. Omit for a whole-session
+	 * fork.
+	 */
+	upToMessageId?: string;
 };
 
 export type ForkSessionResult = {

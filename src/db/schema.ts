@@ -428,6 +428,14 @@ function applyMigrations(db: Db): void {
 		db.run(`ALTER TABLE messages ADD COLUMN turn_id TEXT`);
 	});
 
+	// Claude's native transcript UUID for the last raw SDK message that fed
+	// this row. Lets forkSession() branch precisely at this turn via
+	// upToMessageId. NULL for rows written before this column existed, and
+	// for user rows (see ForkSessionParams.upToMessageId — assistant only).
+	runMigration(db, "_migrated_messages_sdk_uuid", (db) => {
+		db.run(`ALTER TABLE messages ADD COLUMN sdk_uuid TEXT`);
+	});
+
 	runMigration(db, "_migrated_tool_events_result", (db) => {
 		db.run(`ALTER TABLE tool_events ADD COLUMN result_text TEXT`);
 		db.run(`ALTER TABLE tool_events ADD COLUMN is_error INTEGER`);

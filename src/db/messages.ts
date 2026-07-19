@@ -62,6 +62,47 @@ export async function setMessageRecap(
 	}
 }
 
+/**
+ * Records the native Claude transcript UUID of the latest SDK message that
+ * fed this row. A turn can span several raw SDK messages (text → tool_use →
+ * more text), each with its own UUID — called once per incoming SDK message,
+ * so the row always ends up holding the *last* one, which is exactly the
+ * "branch up to and including this displayed turn" cutoff forkSession()
+ * needs.
+ */
+export async function setMessageSdkUuid(
+	sessionId: string,
+	seq: number,
+	sdkUuid: string,
+): Promise<void> {
+	const db = await getDb();
+	const { changes } = db.run(
+		`UPDATE messages SET sdk_uuid = ? WHERE session_id = ? AND seq = ?`,
+		[sdkUuid, sessionId, seq],
+	);
+	if (changes === 0) {
+		throw new Error(
+			`setMessageSdkUuid: no row found for session=${sessionId} seq=${seq}`,
+		);
+	}
+}
+
+/** Ownership + branch-point lookup for POST /db/session/fork's messageId. */
+export async function getMessageForFork(
+	id: number,
+): Promise<{ sessionId: string; role: string; sdkUuid: string | null } | null> {
+	const db = await getDb();
+	const row = db
+		.query<
+			{ session_id: string; role: string; sdk_uuid: string | null },
+			[number]
+		>(`SELECT session_id, role, sdk_uuid FROM messages WHERE id = ?`)
+		.get(id);
+	return row
+		? { sessionId: row.session_id, role: row.role, sdkUuid: row.sdk_uuid }
+		: null;
+}
+
 export async function appendToolEvent(
 	sessionId: string,
 	assistantSeq: number,

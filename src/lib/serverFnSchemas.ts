@@ -37,6 +37,12 @@ export const sessionPageSchema = z.object({
 
 export const sessionDeleteSchema = z.object({ id: sessionIdSchema });
 
+export const sessionForkSchema = z.object({
+	id: sessionIdSchema,
+	/** messages.id primary key — branch up to and including this assistant row. */
+	messageId: z.number().int().positive().optional(),
+});
+
 export const sessionRenameSchema = z.object({
 	id: sessionIdSchema,
 	label: z.string().trim().min(1).max(200),

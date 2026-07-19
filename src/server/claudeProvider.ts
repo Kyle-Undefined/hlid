@@ -737,7 +737,12 @@ function translateAssistantMessage(
 	tracker: ClaudeSubagentTracker,
 	normalizeModel: (model: string) => string,
 ): EventTranslation {
-	const events: AgentEvent[] = [];
+	// Always first: session.ts uses this to stamp the current turn's row with
+	// the native transcript id of the SDK message contributing right now, so
+	// forkSession's upToMessageId can branch precisely at a displayed turn.
+	const events: AgentEvent[] = [
+		{ type: "assistant_message_id", id: message.uuid },
+	];
 	const usage = message.message.usage;
 	if (usage) {
 		events.push({
@@ -1749,6 +1754,7 @@ export class ClaudeProvider implements AgentProvider {
 		const result = await withClaudeConfigDirOverride(wslConfigDir, () =>
 			forkClaudeSession(params.sessionId, {
 				title: params.title,
+				upToMessageId: params.upToMessageId,
 				...(params.historyResumeMode === "session-store"
 					? { sessionStore: createClaudeHistorySessionStore() }
 					: {}),
