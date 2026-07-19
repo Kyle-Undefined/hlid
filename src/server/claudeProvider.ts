@@ -10,6 +10,8 @@ import {
 	query,
 } from "@anthropic-ai/claude-agent-sdk";
 import { resolveClaudeExecutable } from "../lib/claudePath";
+import { parseWslUnc } from "../lib/paths";
+import { runBoundedProcess } from "../lib/process";
 import type {
 	AgentEvent,
 	AgentProvider,
@@ -1399,6 +1401,88 @@ const CLAUDE_PROXY_CONFIG = {
 	parseHeaders: parseAnthropicHeaders,
 };
 
+const WSL_CLAUDE_CONFIG_DIR_MARKER = "__HLID_FORK_CLAUDE_CONFIG_DIR__";
+const WSL_CLAUDE_CONFIG_DIR_TIMEOUT_MS = 4_000;
+
+/**
+ * When a session's project lives inside WSL, Claude Code's own process for
+ * that project runs inside that distro too and writes ~/.claude/projects
+ * under WSL's home — not under hlid's own (Windows) os.homedir(). The
+ * standalone SDK forkSession()/listSessions() functions run in-process here
+ * and have no per-call override for that root, only the CLAUDE_CONFIG_DIR
+ * env var (checked before falling back to os.homedir()). This probes WSL
+ * for its real $HOME/.claude so forkSession() can point that env var at the
+ * right place for the duration of one call. Returns undefined on non-WSL
+ * cwds (including plain Windows/POSIX projects) — those keep working
+ * exactly as before, unaffected.
+ */
+async function resolveWslClaudeConfigDir(
+	cwd: string | undefined,
+): Promise<string | undefined> {
+	const parsed = cwd ? parseWslUnc(cwd) : null;
+	if (!parsed) return undefined;
+	try {
+		const result = await runBoundedProcess(
+			"wsl.exe",
+			[
+				"-d",
+				parsed.distro,
+				"--",
+				"sh",
+				"-lc",
+				`printf '${WSL_CLAUDE_CONFIG_DIR_MARKER}%s' "$HOME/.claude"`,
+			],
+			{
+				timeoutMs: WSL_CLAUDE_CONFIG_DIR_TIMEOUT_MS,
+				timeoutError: "WSL $HOME/.claude probe timed out",
+			},
+		);
+		if (result.code !== 0) return undefined;
+		const markerIndex = result.output.lastIndexOf(WSL_CLAUDE_CONFIG_DIR_MARKER);
+		if (markerIndex < 0) return undefined;
+		const posixPath = result.output
+			.slice(markerIndex + WSL_CLAUDE_CONFIG_DIR_MARKER.length)
+			.trim();
+		if (!posixPath.startsWith("/") || /[\r\n]/.test(posixPath)) {
+			return undefined;
+		}
+		return `\\\\wsl.localhost\\${parsed.distro}${posixPath.replaceAll("/", "\\")}`;
+	} catch {
+		return undefined;
+	}
+}
+
+// Serializes CLAUDE_CONFIG_DIR mutation windows across concurrent
+// forkSession() calls so two overlapping forks (e.g. different WSL distros)
+// can't clobber each other's override. Does NOT protect against a
+// concurrent live query() spawn reading process.env mid-window — the
+// mutation is scoped as tightly as possible (immediately around the single
+// forkClaudeSession() call, restored in a finally) to minimize that gap.
+let claudeConfigDirQueue: Promise<unknown> = Promise.resolve();
+
+async function withClaudeConfigDirOverride<T>(
+	dir: string | undefined,
+	fn: () => Promise<T>,
+): Promise<T> {
+	if (!dir) return fn();
+	const run = async () => {
+		const previous = process.env.CLAUDE_CONFIG_DIR;
+		process.env.CLAUDE_CONFIG_DIR = dir;
+		try {
+			return await fn();
+		} finally {
+			if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+			else process.env.CLAUDE_CONFIG_DIR = previous;
+		}
+	};
+	const result = claudeConfigDirQueue.then(run, run);
+	claudeConfigDirQueue = result.then(
+		() => undefined,
+		() => undefined,
+	);
+	return result;
+}
+
 export class ClaudeProvider implements AgentProvider {
 	readonly providerId: string;
 	readonly label: string;
@@ -1649,18 +1733,27 @@ export class ClaudeProvider implements AgentProvider {
 
 	// fallow-ignore-next-line unused-class-member -- Invoked through the optional AgentProvider.forkSession capability in dbRoutes.
 	async forkSession(params: ForkSessionParams): Promise<ForkSessionResult> {
-		// Deliberately omit `dir`: hlid's stored agent_cwd doesn't reliably match
-		// the exact literal path form the CLI indexed the project under on disk
-		// (WSL UNC vs POSIX, trailing slashes, etc.), which made dir-scoped
-		// lookups fail even for sessions that exist. Session ids are UUIDs, so
-		// the unscoped "search every project directory" the SDK falls back to
-		// when dir is omitted is both safe and far more reliable in practice.
-		const result = await forkClaudeSession(params.sessionId, {
-			title: params.title,
-			...(params.historyResumeMode === "session-store"
-				? { sessionStore: createClaudeHistorySessionStore() }
-				: {}),
-		});
+		// `dir` is deliberately omitted from the SDK call: hlid's stored
+		// agent_cwd doesn't reliably match the exact literal path form the CLI
+		// indexed the project under, so scoping the lookup to it just fails for
+		// sessions that exist. Session ids are UUIDs, so an unscoped lookup
+		// across every project directory is safe.
+		//
+		// That's not enough on its own for WSL-hosted projects though: Claude
+		// Code's own process for those runs inside WSL and writes
+		// ~/.claude/projects under WSL's home, not hlid's (Windows)
+		// os.homedir() — no `dir` value fixes a wrong root, only
+		// CLAUDE_CONFIG_DIR does. Resolve and apply that override for the
+		// duration of this call when the project cwd is a WSL path.
+		const wslConfigDir = await resolveWslClaudeConfigDir(params.cwd);
+		const result = await withClaudeConfigDirOverride(wslConfigDir, () =>
+			forkClaudeSession(params.sessionId, {
+				title: params.title,
+				...(params.historyResumeMode === "session-store"
+					? { sessionStore: createClaudeHistorySessionStore() }
+					: {}),
+			}),
+		);
 		return { sessionId: result.sessionId };
 	}
 }

@@ -11,6 +11,13 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
 vi.mock("../lib/claudePath", () => ({
 	resolveClaudeExecutable: vi.fn(),
 }));
+vi.mock("../lib/paths", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("../lib/paths")>();
+	return { ...actual, parseWslUnc: vi.fn().mockReturnValue(null) };
+});
+vi.mock("../lib/process", () => ({
+	runBoundedProcess: vi.fn(),
+}));
 // Wrap (not replace) the real store — its shape is exercised by the
 // "imported Claude resumes" test below and by forkSession's session-store
 // path; both only need load/append to be present, never actually call them
@@ -32,6 +39,8 @@ import {
 	forkSession as sdkForkSession,
 } from "@anthropic-ai/claude-agent-sdk";
 import { resolveClaudeExecutable } from "../lib/claudePath";
+import { parseWslUnc } from "../lib/paths";
+import { runBoundedProcess } from "../lib/process";
 import type { AgentEvent, AgentQueryParams, CanUseTool } from "./agentProvider";
 import { createClaudeHistorySessionStore } from "./claudeHistorySessionStore";
 import {
@@ -1524,6 +1533,97 @@ describe("ClaudeProvider — forkSession", () => {
 		expect(call?.[1]).toMatchObject({ title: undefined });
 		expect(call?.[1]).not.toHaveProperty("dir");
 		expect(typeof call?.[1]?.sessionStore?.load).toBe("function");
+	});
+
+	it("points CLAUDE_CONFIG_DIR at the WSL distro's real $HOME/.claude for the duration of a WSL-project fork, then restores it", async () => {
+		const originalConfigDir = process.env.CLAUDE_CONFIG_DIR;
+		delete process.env.CLAUDE_CONFIG_DIR;
+		try {
+			vi.mocked(parseWslUnc).mockReturnValueOnce({
+				distro: "Ubuntu-24.04",
+				posixPath: "/home/kyle/dev/repo",
+			});
+			vi.mocked(runBoundedProcess).mockResolvedValueOnce({
+				output: "__HLID_FORK_CLAUDE_CONFIG_DIR__/home/kyle/.claude",
+				code: 0,
+			});
+			let configDirDuringCall: string | undefined;
+			vi.mocked(sdkForkSession).mockImplementationOnce(async () => {
+				configDirDuringCall = process.env.CLAUDE_CONFIG_DIR;
+				return { sessionId: "forked-session-id" };
+			});
+
+			await new ClaudeProvider().forkSession?.({
+				sessionId: "source-session-id",
+				cwd: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\dev\\repo",
+			});
+
+			expect(runBoundedProcess).toHaveBeenCalledWith(
+				"wsl.exe",
+				expect.arrayContaining(["-d", "Ubuntu-24.04"]),
+				expect.anything(),
+			);
+			expect(configDirDuringCall).toBe(
+				"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\.claude",
+			);
+			expect(process.env.CLAUDE_CONFIG_DIR).toBeUndefined();
+		} finally {
+			if (originalConfigDir === undefined) {
+				delete process.env.CLAUDE_CONFIG_DIR;
+			} else {
+				process.env.CLAUDE_CONFIG_DIR = originalConfigDir;
+			}
+		}
+	});
+
+	it("restores CLAUDE_CONFIG_DIR even when the SDK call throws", async () => {
+		const originalConfigDir = process.env.CLAUDE_CONFIG_DIR;
+		delete process.env.CLAUDE_CONFIG_DIR;
+		try {
+			vi.mocked(parseWslUnc).mockReturnValueOnce({
+				distro: "Ubuntu-24.04",
+				posixPath: "/home/kyle/dev/repo",
+			});
+			vi.mocked(runBoundedProcess).mockResolvedValueOnce({
+				output: "__HLID_FORK_CLAUDE_CONFIG_DIR__/home/kyle/.claude",
+				code: 0,
+			});
+			vi.mocked(sdkForkSession).mockRejectedValueOnce(
+				new Error("Session not found"),
+			);
+
+			await expect(
+				new ClaudeProvider().forkSession?.({
+					sessionId: "source-session-id",
+					cwd: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\dev\\repo",
+				}),
+			).rejects.toThrow("Session not found");
+
+			expect(process.env.CLAUDE_CONFIG_DIR).toBeUndefined();
+		} finally {
+			if (originalConfigDir === undefined) {
+				delete process.env.CLAUDE_CONFIG_DIR;
+			} else {
+				process.env.CLAUDE_CONFIG_DIR = originalConfigDir;
+			}
+		}
+	});
+
+	it("skips the WSL probe entirely for a non-WSL cwd", async () => {
+		// Earlier tests in this suite exercise the WSL branch and leave calls
+		// on this mock's history — clear it so the assertion below reflects
+		// only this test.
+		vi.mocked(runBoundedProcess).mockClear();
+		vi.mocked(sdkForkSession).mockResolvedValueOnce({
+			sessionId: "forked-session-id",
+		});
+
+		await new ClaudeProvider().forkSession?.({
+			sessionId: "source-session-id",
+			cwd: "/work/project",
+		});
+
+		expect(runBoundedProcess).not.toHaveBeenCalled();
 	});
 });
 
