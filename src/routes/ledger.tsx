@@ -1105,6 +1105,7 @@ function SessionsTab({
 					onDelete={mutations.deleteSession}
 					onRename={mutations.renameSession}
 					onFork={mutations.forkSession}
+					forkingIds={mutations.forkingIds}
 					onNavigate={(id) =>
 						navigate({
 							to: "/raven",
@@ -1253,6 +1254,11 @@ function StatsPage() {
 				>
 					{mutations.mutationError}
 				</div>
+			)}
+			{!mutations.mutationError && mutations.forkStatus && (
+				<output className="block border-b border-primary/30 bg-primary/5 px-4 py-2 text-xs text-primary">
+					{mutations.forkStatus}
+				</output>
 			)}
 
 			<div

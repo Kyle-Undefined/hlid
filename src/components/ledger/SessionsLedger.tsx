@@ -2,6 +2,7 @@ import {
 	ArrowUpDown,
 	Ellipsis,
 	GitFork,
+	LoaderCircle,
 	Pencil,
 	Search,
 	SlidersHorizontal,
@@ -77,6 +78,7 @@ function SessionActionPanel({
 	onCancelDelete,
 	onConfirmDelete,
 	canFork,
+	forking,
 	onFork,
 	position,
 	panelRef,
@@ -92,6 +94,7 @@ function SessionActionPanel({
 	onCancelDelete: () => void;
 	onConfirmDelete: () => void;
 	canFork: boolean;
+	forking: boolean;
 	onFork: () => void;
 	position: AnchoredPopoverPosition;
 	panelRef: RefObject<HTMLDivElement | null>;
@@ -187,9 +190,15 @@ function SessionActionPanel({
 						<button
 							type="button"
 							onClick={onFork}
-							className="flex min-h-11 w-full items-center gap-2 px-3 text-[10px] tracking-wider text-foreground/80 hover:bg-accent/40"
+							disabled={forking}
+							className="flex min-h-11 w-full items-center gap-2 px-3 text-[10px] tracking-wider text-foreground/80 hover:bg-accent/40 disabled:opacity-60"
 						>
-							<GitFork size={14} /> Fork
+							{forking ? (
+								<LoaderCircle size={14} className="animate-spin" />
+							) : (
+								<GitFork size={14} />
+							)}
+							{forking ? "Forking…" : "Fork"}
 						</button>
 					)}
 					<button
@@ -212,6 +221,7 @@ function SessionItem({
 	onNavigate,
 	onRename,
 	onFork,
+	isForking = false,
 	isActive,
 	poolSession,
 	liveStats,
@@ -223,6 +233,7 @@ function SessionItem({
 	onNavigate: (id: string) => void;
 	onRename: (id: string, label: string) => void;
 	onFork: (id: string) => void;
+	isForking?: boolean;
 	isActive?: boolean;
 	poolSession?: SessionStatusEntry;
 	liveStats?: LiveStats;
@@ -308,6 +319,21 @@ function SessionItem({
 		}
 		closeMenu();
 	}
+
+	// Fork can take a few seconds (WSL probe) — keep the menu open showing a
+	// spinner instead of closing immediately like the other actions, then
+	// close it once this row's fork settles (success or failure). Inlines
+	// closeMenu's state resets directly rather than depending on closeMenu
+	// itself, which is redefined every render.
+	const wasForkingRef = useRef(false);
+	useEffect(() => {
+		if (wasForkingRef.current && !isForking) {
+			setMenuOpen(false);
+			setDeleteConfirming(false);
+			setMobileRenaming(false);
+		}
+		wasForkingRef.current = isForking;
+	}, [isForking]);
 
 	return (
 		<div
@@ -432,10 +458,8 @@ function SessionItem({
 											closeMenu();
 										}}
 										canFork={canFork}
-										onFork={() => {
-											onFork(session.id);
-											closeMenu();
-										}}
+										forking={isForking}
+										onFork={() => onFork(session.id)}
 										position={actionPosition}
 										panelRef={actionPanelRef}
 									/>
@@ -772,6 +796,7 @@ export function SessionsLedger({
 	onDelete,
 	onRename,
 	onFork,
+	forkingIds,
 	onNavigate,
 	onCleanup,
 	activeSessionId,
@@ -807,6 +832,7 @@ export function SessionsLedger({
 	onDelete: (id: string) => void;
 	onRename: (id: string, label: string) => void;
 	onFork: (id: string) => void;
+	forkingIds?: Set<string>;
 	onNavigate: (id: string) => void;
 	onCleanup: (days: number) => void;
 	activeSessionId?: string | null;
@@ -1096,6 +1122,7 @@ export function SessionsLedger({
 						onDelete={onDelete}
 						onRename={onRename}
 						onFork={onFork}
+						isForking={forkingIds?.has(s.id) ?? false}
 						onNavigate={onNavigate}
 						isActive={activeSessionId != null && s.id === activeSessionId}
 						poolSession={sessionsStatus?.find((p) => p.db_session_id === s.id)}

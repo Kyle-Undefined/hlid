@@ -31,12 +31,15 @@ export function useLedgerSessionMutations({
 		new Map(),
 	);
 	const [mutationError, setMutationError] = useState<string | null>(null);
+	const [forkingIds, setForkingIds] = useState<Set<string>>(new Set());
+	const [forkStatus, setForkStatus] = useState<string | null>(null);
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: page identity resets optimistic route state
 	useEffect(() => {
 		setDeletedIds(new Set());
 		setRenamedLabels(new Map());
 		setMutationError(null);
+		setForkStatus(null);
 	}, [page]);
 
 	const sessionsData = useMemo(
@@ -104,17 +107,29 @@ export function useLedgerSessionMutations({
 	 * there's no optimistic patch to apply (unlike rename/delete) — on success
 	 * we just force a reload of the current page via navigateToPage, the same
 	 * "re-fetch after a mutation with no client-side patch" mechanism
-	 * cleanupSessions below already relies on.
+	 * cleanupSessions below already relies on. The WSL probe backing a fork
+	 * can take a few seconds, so forkingIds/forkStatus exist purely so the UI
+	 * can show a spinner while pending and a confirmation once it lands —
+	 * without them a multi-second fork looks hung.
 	 */
 	async function forkSession(id: string) {
 		setMutationError(null);
+		setForkStatus(null);
+		setForkingIds((previous) => new Set(previous).add(id));
 		try {
 			await dependencies.forkSession(id);
 			dependencies.navigateToPage(page);
+			setForkStatus("Session forked — new row added to the list.");
 		} catch (error) {
 			setMutationError(
 				error instanceof Error ? error.message : "Failed to fork session",
 			);
+		} finally {
+			setForkingIds((previous) => {
+				const next = new Set(previous);
+				next.delete(id);
+				return next;
+			});
 		}
 	}
 
@@ -137,6 +152,8 @@ export function useLedgerSessionMutations({
 		deleteSession,
 		renameSession,
 		forkSession,
+		forkingIds,
+		forkStatus,
 		cleanupSessions,
 	};
 }

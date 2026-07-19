@@ -299,6 +299,49 @@ describe("SessionsLedger session actions", () => {
 		expect(props.onDelete).toHaveBeenCalledWith("session-1");
 	});
 
+	it("forks without closing the menu, shows a spinner while pending, and auto-closes once it settles", () => {
+		const onFork = vi.fn();
+		const baseProps: Parameters<typeof SessionsLedger>[0] = {
+			data: { sessions: [session], total: 1 },
+			page: 1,
+			pageSize: 20,
+			pageSizeOptions: [10, 20, 50],
+			totalPages: 1,
+			loading: false,
+			onPageChange: vi.fn(),
+			onPageSizeChange: vi.fn(),
+			onDelete: vi.fn(),
+			onRename: vi.fn(),
+			onFork,
+			forkingIds: new Set<string>(),
+			onNavigate: vi.fn(),
+			onCleanup: vi.fn(),
+		};
+		const { rerender } = render(<SessionsLedger {...baseProps} />);
+		openSessionActions();
+
+		fireEvent.click(screen.getByRole("button", { name: /fork/i }));
+		expect(onFork).toHaveBeenCalledWith("session-1");
+		// Unlike delete/rename, fork doesn't close the menu on click — the
+		// caller flips `forkingIds` async once the mutation actually starts.
+		expect(
+			screen.getByRole("dialog", { name: "Session actions" }),
+		).toBeDefined();
+
+		rerender(
+			<SessionsLedger {...baseProps} forkingIds={new Set(["session-1"])} />,
+		);
+		const forkButton = screen.getByRole("button", {
+			name: /forking/i,
+		}) as HTMLButtonElement;
+		expect(forkButton.disabled).toBe(true);
+
+		rerender(<SessionsLedger {...baseProps} forkingIds={new Set()} />);
+		expect(
+			screen.queryByRole("dialog", { name: "Session actions" }),
+		).toBeNull();
+	});
+
 	it("does not replace whole-session values with browser-local live totals", () => {
 		renderLedger({ activeSessionId: "session-1", liveStats });
 		expect(screen.getByText("$1.2500")).toBeDefined();
