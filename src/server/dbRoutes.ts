@@ -664,7 +664,7 @@ async function forkSession({
 	const providerId = source.provider_id ?? "claude";
 	const provider = pool?.getProvider(providerId);
 	const nativeId = await db.getSessionProviderSession(sourceId, providerId);
-	if (!provider?.forkSession || !nativeId || !source.agent_cwd) {
+	if (!provider?.forkSession || !nativeId) {
 		return new Response("Forking is not supported for this session", {
 			status: 422,
 		});
@@ -672,7 +672,7 @@ async function forkSession({
 
 	const { sessionId: newNativeId } = await provider.forkSession({
 		sessionId: nativeId,
-		cwd: source.agent_cwd,
+		cwd: source.agent_cwd ?? undefined,
 		historyResumeMode: source.history_resume_mode,
 	});
 	const newId = uid();

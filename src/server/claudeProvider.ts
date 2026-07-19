@@ -1649,8 +1649,13 @@ export class ClaudeProvider implements AgentProvider {
 
 	// fallow-ignore-next-line unused-class-member -- Invoked through the optional AgentProvider.forkSession capability in dbRoutes.
 	async forkSession(params: ForkSessionParams): Promise<ForkSessionResult> {
+		// Deliberately omit `dir`: hlid's stored agent_cwd doesn't reliably match
+		// the exact literal path form the CLI indexed the project under on disk
+		// (WSL UNC vs POSIX, trailing slashes, etc.), which made dir-scoped
+		// lookups fail even for sessions that exist. Session ids are UUIDs, so
+		// the unscoped "search every project directory" the SDK falls back to
+		// when dir is omitted is both safe and far more reliable in practice.
 		const result = await forkClaudeSession(params.sessionId, {
-			dir: params.cwd,
 			title: params.title,
 			...(params.historyResumeMode === "session-store"
 				? { sessionStore: createClaudeHistorySessionStore() }

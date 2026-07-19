@@ -351,8 +351,15 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 export type ForkSessionParams = {
 	/** Native provider session id to fork from (not hlid's own session id). */
 	sessionId: string;
-	/** Project working directory the source session belongs to. */
-	cwd: string;
+	/**
+	 * Project working directory the source session belongs to, when known.
+	 * Not required for lookup — providers that key sessions by UUID (Claude)
+	 * can and should search across all project directories rather than
+	 * trusting this to exactly match the on-disk indexed path (it often
+	 * doesn't, e.g. WSL UNC vs POSIX form). Kept optional for providers that
+	 * need it to scope the fork.
+	 */
+	cwd?: string;
 	/** From SessionRow.history_resume_mode — selects the right transcript source. */
 	historyResumeMode?: "none" | "native" | "session-store";
 	/** Custom title for the forked session. If omitted, the provider picks a default. */

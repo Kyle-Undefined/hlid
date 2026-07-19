@@ -1490,7 +1490,7 @@ describe("ClaudeProvider — listSkills", () => {
 // ── forkSession ───────────────────────────────────────────────────────────────
 
 describe("ClaudeProvider — forkSession", () => {
-	it("forks via the SDK with dir + title, no sessionStore for plain resume", async () => {
+	it("forks via the SDK by session id alone — no dir, so lookup isn't tied to hlid's stored agent_cwd matching the on-disk indexed path", async () => {
 		vi.mocked(sdkForkSession).mockResolvedValueOnce({
 			sessionId: "forked-session-id",
 		});
@@ -1503,7 +1503,6 @@ describe("ClaudeProvider — forkSession", () => {
 
 		expect(result).toEqual({ sessionId: "forked-session-id" });
 		expect(sdkForkSession).toHaveBeenCalledWith("source-session-id", {
-			dir: "/work/project",
 			title: "My fork",
 		});
 	});
@@ -1522,7 +1521,8 @@ describe("ClaudeProvider — forkSession", () => {
 		expect(createClaudeHistorySessionStore).toHaveBeenCalledOnce();
 		const call = vi.mocked(sdkForkSession).mock.calls.at(-1);
 		expect(call?.[0]).toBe("source-session-id");
-		expect(call?.[1]).toMatchObject({ dir: "/work/project", title: undefined });
+		expect(call?.[1]).toMatchObject({ title: undefined });
+		expect(call?.[1]).not.toHaveProperty("dir");
 		expect(typeof call?.[1]?.sessionStore?.load).toBe("function");
 	});
 });
