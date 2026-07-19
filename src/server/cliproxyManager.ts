@@ -54,7 +54,7 @@ export type CliProxyInstallState =
 	| "error";
 
 export const CLIPROXY_OAUTH_PROVIDERS = [
-	{ id: "codex", label: "OpenAI Codex", flag: "--codex-login" },
+	{ id: "codex", label: "OpenAI Codex", flag: "--codex-device-login" },
 	{ id: "claude", label: "Anthropic Claude", flag: "--claude-login" },
 	{
 		id: "antigravity",
@@ -104,7 +104,7 @@ export function extractCliProxyOAuthPrompt(output: string): {
 		.match(/https?:\/\/[^\s<>"']+/i)?.[0]
 		?.replace(/[),.;]+$/, "");
 	const code = output.match(
-		/(?:user code:|then enter this code:)\s*([A-Z0-9-]{4,})/i,
+		/(?:codex device code:|user code:|then enter this code:)\s*([A-Z0-9-]{4,})/i,
 	)?.[1];
 	return { url, code };
 }

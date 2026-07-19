@@ -71,7 +71,7 @@ describe("managed CLIProxy configuration", () => {
 		});
 		expect(
 			extractCliProxyOAuthPrompt(
-				"To authenticate, please visit:\nhttps://auth.example.test/device\nThen enter this code: ABCD-EFGH\n",
+				"Starting Codex device authentication...\nCodex device URL: https://auth.example.test/device\nCodex device code: ABCD-EFGH\n",
 			),
 		).toEqual({
 			url: "https://auth.example.test/device",
