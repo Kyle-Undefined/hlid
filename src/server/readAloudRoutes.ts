@@ -19,7 +19,7 @@ export function createReadAloudRouteHandler({
 			try {
 				return Response.json({
 					available: true,
-					voices: await speech.voices(),
+					voices: await speech.voices(url.searchParams.get("refresh") === "1"),
 				});
 			} catch (error) {
 				return Response.json({

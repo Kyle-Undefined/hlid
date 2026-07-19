@@ -7,7 +7,11 @@ export async function handleMicrosoftVoices(
 ): Promise<Response> {
 	const forbidden = forbiddenResponse(request);
 	if (forbidden) return forbidden;
-	return dbFetch("/read-aloud/voices", {
+	const requestUrl = new URL(request.url);
+	const query = new URLSearchParams();
+	if (requestUrl.searchParams.get("refresh") === "1") query.set("refresh", "1");
+	const suffix = query.size > 0 ? `?${query}` : "";
+	return dbFetch(`/read-aloud/voices${suffix}`, {
 		signal: request.signal,
 	});
 }

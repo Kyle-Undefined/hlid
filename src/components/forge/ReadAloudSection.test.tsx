@@ -104,4 +104,41 @@ describe("ReadAloudSection", () => {
 			).toBe(true),
 		);
 	});
+
+	it("refreshes the Windows voice inventory from Forge", async () => {
+		const fetch = vi
+			.fn()
+			.mockResolvedValueOnce(Response.json({ available: true, voices: [] }))
+			.mockResolvedValueOnce(
+				Response.json({
+					available: true,
+					voices: [
+						{
+							id: "voice-zira",
+							name: "Microsoft Zira",
+							language: "en-US",
+							gender: "Female",
+							default: false,
+						},
+					],
+				}),
+			);
+		vi.stubGlobal("fetch", fetch);
+
+		render(<Harness />);
+		const engine = screen.getByLabelText("Read aloud speech engine");
+		await waitFor(() => expect(fetch).toHaveBeenCalledOnce());
+		fireEvent.change(engine, { target: { value: "microsoft" } });
+		fireEvent.click(screen.getByRole("button", { name: "Refresh voices" }));
+
+		await waitFor(() =>
+			expect(fetch).toHaveBeenLastCalledWith(
+				"/api/read-aloud/voices?refresh=1",
+				{ cache: "no-store" },
+			),
+		);
+		expect(
+			await screen.findByRole("option", { name: "Microsoft Zira · en-US" }),
+		).toBeTruthy();
+	});
 });

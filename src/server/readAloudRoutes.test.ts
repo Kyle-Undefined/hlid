@@ -15,9 +15,10 @@ function request(path: string): Request {
 
 describe("read aloud internal routes", () => {
 	it("reports Microsoft voice availability", async () => {
+		const voices = vi.fn().mockResolvedValue([voice]);
 		const handler = createReadAloudRouteHandler({
 			speech: {
-				voices: vi.fn().mockResolvedValue([voice]),
+				voices,
 				synthesize: vi.fn(),
 			},
 			getAssistantMessageText: vi.fn(),
@@ -30,6 +31,20 @@ describe("read aloud internal routes", () => {
 			available: true,
 			voices: [voice],
 		});
+		expect(voices).toHaveBeenCalledWith(false);
+	});
+
+	it("refreshes the Microsoft voice inventory on request", async () => {
+		const voices = vi.fn().mockResolvedValue([voice]);
+		const handler = createReadAloudRouteHandler({
+			speech: { voices, synthesize: vi.fn() },
+			getAssistantMessageText: vi.fn(),
+		});
+		await handler(
+			new URL("http://localhost/read-aloud/voices?refresh=1"),
+			request("/read-aloud/voices?refresh=1"),
+		);
+		expect(voices).toHaveBeenCalledWith(true);
 	});
 
 	it("returns unavailable inventory without exposing an endpoint failure", async () => {

@@ -9,6 +9,8 @@ import {
 import { Field, Section } from "./fields";
 
 const RATE_OPTIONS = [0.75, 1, 1.25, 1.5, 2] as const;
+const WINDOWS_VOICE_GUIDE =
+	"https://support.microsoft.com/en-us/accessibility/windows/narrator/appendix-a-supported-languages-and-voices";
 
 type MicrosoftVoice = {
 	id: string;
@@ -46,6 +48,7 @@ export function ReadAloudSection({
 	};
 	const voices = useLocalReadAloudVoices();
 	const [microsoft, setMicrosoft] = useState<MicrosoftInventory | null>(null);
+	const [refreshingMicrosoft, setRefreshingMicrosoft] = useState(false);
 	const updateShared = (patch: Partial<SharedPatch>) => {
 		const next = { ...voice, ...patch };
 		onChange(patch);
@@ -88,6 +91,25 @@ export function ReadAloudSection({
 			});
 		return () => abort.abort();
 	}, []);
+	const refreshMicrosoftVoices = async () => {
+		setRefreshingMicrosoft(true);
+		try {
+			const response = await fetch("/api/read-aloud/voices?refresh=1", {
+				cache: "no-store",
+			});
+			if (!response.ok)
+				throw new Error(`voice refresh failed (${response.status})`);
+			setMicrosoft((await response.json()) as MicrosoftInventory);
+		} catch (error) {
+			setMicrosoft({
+				available: false,
+				voices: [],
+				error: error instanceof Error ? error.message : String(error),
+			});
+		} finally {
+			setRefreshingMicrosoft(false);
+		}
+	};
 	const selectedVoiceURI = voices.some(
 		(voice) => voice.voiceURI === preferences.voiceURI,
 	)
@@ -138,34 +160,64 @@ export function ReadAloudSection({
 					</select>
 				</Field>
 			) : (
-				<Field
-					label="Microsoft voice"
-					hint={
-						microsoft === null
-							? "checking voices installed on the Hlid Windows host"
-							: microsoft.available
-								? "speech is generated on the Hlid host and played as audio on this device"
-								: microsoft.error || "Microsoft speech is unavailable"
-					}
-				>
-					<select
-						value={preferences.microsoftVoiceId}
-						onChange={(event) =>
-							updateShared({ read_aloud_voice: event.target.value })
+				<>
+					<Field
+						label="Microsoft voice"
+						hint={
+							microsoft === null
+								? "checking voices installed on the Hlid Windows host"
+								: microsoft.available
+									? "speech is generated on the Hlid host and played as audio on this device"
+									: microsoft.error || "Microsoft speech is unavailable"
 						}
-						disabled={!microsoft?.available}
-						aria-label="Read aloud Microsoft voice"
-						className="w-48 sm:w-64 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 disabled:opacity-50"
 					>
-						<option value="">Microsoft default</option>
-						{microsoft?.voices.map((voice) => (
-							<option key={voice.id} value={voice.id}>
-								{voice.name} · {voice.language}
-								{voice.default ? " · default" : ""}
-							</option>
-						))}
-					</select>
-				</Field>
+						<select
+							value={preferences.microsoftVoiceId}
+							onChange={(event) =>
+								updateShared({ read_aloud_voice: event.target.value })
+							}
+							disabled={!microsoft?.available}
+							aria-label="Read aloud Microsoft voice"
+							className="w-48 sm:w-64 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 disabled:opacity-50"
+						>
+							<option value="">Microsoft default</option>
+							{microsoft?.voices.map((voice) => (
+								<option key={voice.id} value={voice.id}>
+									{voice.name} · {voice.language}
+									{voice.default ? " · default" : ""}
+								</option>
+							))}
+						</select>
+					</Field>
+					<Field
+						label="More Windows voices"
+						hint="On the Windows host, add natural voices in Narrator settings or language voices in Time & language > Speech. Hlid can use voices Windows exposes to apps."
+					>
+						<div className="flex items-center justify-end gap-2">
+							<button
+								type="button"
+								onClick={() =>
+									window.open(
+										WINDOWS_VOICE_GUIDE,
+										"_blank",
+										"noopener,noreferrer",
+									)
+								}
+								className="px-3 py-1.5 border border-border text-[10px] tracking-widest uppercase text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+							>
+								Setup guide
+							</button>
+							<button
+								type="button"
+								onClick={() => void refreshMicrosoftVoices()}
+								disabled={refreshingMicrosoft}
+								className="px-3 py-1.5 border border-border text-[10px] tracking-widest uppercase disabled:opacity-40"
+							>
+								{refreshingMicrosoft ? "Refreshing…" : "Refresh voices"}
+							</button>
+						</div>
+					</Field>
+				</>
 			)}
 			<Field
 				label="Reading speed"

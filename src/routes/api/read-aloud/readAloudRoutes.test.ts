@@ -37,6 +37,16 @@ describe("read aloud route adapters", () => {
 		);
 	});
 
+	it("forwards an explicit Microsoft voice refresh", async () => {
+		await handleMicrosoftVoices(
+			new Request("http://localhost/api/read-aloud/voices?refresh=1"),
+		);
+		expect(mockDbFetch).toHaveBeenCalledWith(
+			"/read-aloud/voices?refresh=1",
+			expect.objectContaining({ signal: expect.any(AbortSignal) }),
+		);
+	});
+
 	it("forwards only the bounded audio lookup parameters", async () => {
 		await handleMicrosoftAudio(
 			new Request(
