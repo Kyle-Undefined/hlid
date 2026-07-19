@@ -298,8 +298,8 @@ export function CliProxySection({
 						>
 							{installing
 								? "Installing…"
-								: info.updateAvailable
-									? `Update to v${info.latestVersion}`
+								: info.versionMismatch
+									? `Use approved v${info.approvedVersion}`
 									: "Check / repair"}
 						</button>
 						<ConfirmAction

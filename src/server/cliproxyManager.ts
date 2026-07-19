@@ -11,30 +11,43 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { basename, dirname, isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import type { HlidConfig } from "#/config";
 import { CLIPROXY_DIR } from "#/lib/paths";
 import { runBoundedProcess } from "#/lib/process";
 import * as db from "../db";
 import { openInBrowser } from "./browser";
 
-const RELEASE_URL =
-	"https://api.github.com/repos/router-for-me/CLIProxyAPI/releases/latest";
 const USER_AGENT = "hlid-cliproxy-integration";
 const MAX_ARCHIVE_BYTES = 100 * 1024 * 1024;
-const MAX_CHECKSUM_BYTES = 128 * 1024;
 const MANAGED_BASE_URL = "http://127.0.0.1:8317";
-const RELEASE_CACHE_MS = 10 * 60 * 1000;
 
-type ReleaseAsset = {
-	name: string;
-	browser_download_url: string;
-	size?: number;
+export const CLIPROXY_APPROVED_VERSION = "7.2.88";
+
+type ApprovedRelease = {
+	version: string;
+	archiveName: string;
+	downloadUrl: string;
+	sha256: string;
 };
 
-type Release = {
-	tag_name: string;
-	assets: ReleaseAsset[];
+// Managed CLIProxy releases advance only through reviewed Hlid changes. Keep the
+// archive digest here rather than trusting a checksum fetched beside the binary.
+const APPROVED_RELEASES: Record<"x64" | "arm64", ApprovedRelease> = {
+	x64: {
+		version: CLIPROXY_APPROVED_VERSION,
+		archiveName: "CLIProxyAPI_7.2.88_windows_amd64.zip",
+		downloadUrl:
+			"https://github.com/router-for-me/CLIProxyAPI/releases/download/v7.2.88/CLIProxyAPI_7.2.88_windows_amd64.zip",
+		sha256: "426340530acc2c24f77b3072c03252d344a426025ffdc3f39662a0d4a8f105ac",
+	},
+	arm64: {
+		version: CLIPROXY_APPROVED_VERSION,
+		archiveName: "CLIProxyAPI_7.2.88_windows_aarch64.zip",
+		downloadUrl:
+			"https://github.com/router-for-me/CLIProxyAPI/releases/download/v7.2.88/CLIProxyAPI_7.2.88_windows_aarch64.zip",
+		sha256: "50c7826d2ce3ef6246064bf83d4ee43308c180bee215f3c3e80fce062c357dc7",
+	},
 };
 
 type InstalledState = {
@@ -73,8 +86,8 @@ export type CliProxyStatus = {
 	state: CliProxyInstallState;
 	managed: boolean;
 	installedVersion?: string;
-	latestVersion?: string;
-	updateAvailable?: boolean;
+	approvedVersion?: string;
+	versionMismatch?: boolean;
 	authenticated: boolean;
 	oauth: CliProxyOAuthState;
 	accounts: Record<CliProxyOAuthProviderId, CliProxyOAuthState>;
@@ -159,43 +172,11 @@ export async function terminateCliProxyChild(
 	});
 }
 
-function safeVersion(tag: string): string {
-	const version = tag.replace(/^v/i, "").trim();
-	if (!/^\d+(?:\.\d+){1,3}(?:[-+][A-Za-z0-9.-]+)?$/.test(version)) {
-		throw new Error("release returned an invalid version");
+export function approvedCliProxyRelease(arch = process.arch): ApprovedRelease {
+	if (arch !== "x64" && arch !== "arm64") {
+		throw new Error(`managed CLIProxy does not support ${arch}`);
 	}
-	return version;
-}
-
-function assetSuffix(arch = process.arch): string {
-	return arch === "arm64" ? "windows_arm64.zip" : "windows_amd64.zip";
-}
-
-export function selectCliProxyReleaseAssets(
-	release: Release,
-	arch = process.arch,
-): { version: string; archive: ReleaseAsset; checksums: ReleaseAsset } {
-	const suffix = assetSuffix(arch);
-	const archive = release.assets.find((asset) => asset.name.endsWith(suffix));
-	const checksums = release.assets.find(
-		(asset) => asset.name.toLowerCase() === "checksums.txt",
-	);
-	if (!archive || !checksums) {
-		throw new Error(`release is missing ${suffix} or checksums.txt`);
-	}
-	if ((archive.size ?? 0) > MAX_ARCHIVE_BYTES) {
-		throw new Error("release archive exceeds the safety limit");
-	}
-	return { version: safeVersion(release.tag_name), archive, checksums };
-}
-
-export function checksumForAsset(text: string, assetName: string): string {
-	for (const line of text.split(/\r?\n/)) {
-		const match = line.trim().match(/^([a-fA-F0-9]{64})\s+\*?(.+)$/);
-		if (match && basename(match[2]) === assetName)
-			return match[1].toLowerCase();
-	}
-	throw new Error(`checksum not found for ${assetName}`);
+	return APPROVED_RELEASES[arch];
 }
 
 function yamlString(value: string): string {
@@ -306,7 +287,6 @@ export class CliProxyManager {
 	private runtime: ChildProcess | null = null;
 	private oauthProcess: ChildProcess | null = null;
 	private oauthLaunchTimer: ReturnType<typeof setTimeout> | null = null;
-	private releaseCache: { value: Release; at: number } | null = null;
 	private statusValue: CliProxyStatus;
 	private operation: Promise<void> | null = null;
 
@@ -327,6 +307,9 @@ export class CliProxyManager {
 						: "not_installed",
 			managed: config.mode === "managed",
 			installedVersion: installed?.version,
+			approvedVersion: CLIPROXY_APPROVED_VERSION,
+			versionMismatch:
+				Boolean(installed) && installed?.version !== CLIPROXY_APPROVED_VERSION,
 			authenticated: false,
 			oauth: "idle",
 			accounts: emptyAccounts(),
@@ -420,42 +403,12 @@ export class CliProxyManager {
 		else if (this.installed()) await this.start();
 	}
 
-	private async release(refresh = false): Promise<Release> {
-		if (
-			!refresh &&
-			this.releaseCache &&
-			Date.now() - this.releaseCache.at < RELEASE_CACHE_MS
-		) {
-			return this.releaseCache.value;
-		}
-		const response = await fetch(RELEASE_URL, {
-			headers: {
-				"User-Agent": USER_AGENT,
-				Accept: "application/vnd.github+json",
-			},
-			signal: AbortSignal.timeout(10_000),
-		});
-		if (!response.ok)
-			throw new Error(`release check failed with HTTP ${response.status}`);
-		const value = (await response.json()) as Release;
-		if (!Array.isArray(value.assets))
-			throw new Error("release response is invalid");
-		this.releaseCache = { value, at: Date.now() };
-		return value;
-	}
-
 	async refreshRelease(): Promise<CliProxyStatus> {
-		try {
-			const selected = selectCliProxyReleaseAssets(await this.release(true));
-			const installed = this.installed();
-			this.statusValue.latestVersion = selected.version;
-			this.statusValue.updateAvailable =
-				Boolean(installed) && installed?.version !== selected.version;
-			this.statusValue.error = undefined;
-		} catch (error) {
-			this.statusValue.error =
-				error instanceof Error ? error.message : "release check failed";
-		}
+		const installed = this.installed();
+		this.statusValue.approvedVersion = CLIPROXY_APPROVED_VERSION;
+		this.statusValue.versionMismatch =
+			Boolean(installed) && installed?.version !== CLIPROXY_APPROVED_VERSION;
+		this.statusValue.error = undefined;
 		return this.status();
 	}
 
@@ -494,29 +447,22 @@ export class CliProxyManager {
 			error: undefined,
 			download: { received: 0, total: null },
 		};
-		const selected = selectCliProxyReleaseAssets(await this.release(true));
-		const checksums = await boundedDownload(
-			selected.checksums.browser_download_url,
-			MAX_CHECKSUM_BYTES,
-		);
-		const expected = checksumForAsset(
-			checksums.toString("utf8"),
-			selected.archive.name,
-		);
+		const selected = approvedCliProxyRelease();
 		const archive = await boundedDownload(
-			selected.archive.browser_download_url,
+			selected.downloadUrl,
 			MAX_ARCHIVE_BYTES,
 			(received, total) => {
 				this.statusValue.download = { received, total };
 			},
 		);
 		const actual = createHash("sha256").update(archive).digest("hex");
-		if (actual !== expected) throw new Error("download checksum did not match");
+		if (actual !== selected.sha256)
+			throw new Error("download checksum did not match the approved release");
 
 		await this.stop();
 		mkdirSync(this.root, { recursive: true });
 		const stage = join(this.root, `.stage-${randomBytes(8).toString("hex")}`);
-		const archivePath = join(stage, selected.archive.name);
+		const archivePath = join(stage, selected.archiveName);
 		const extractPath = join(stage, "extract");
 		mkdirSync(extractPath, { recursive: true });
 		writeFileSync(archivePath, archive, { mode: 0o600 });
@@ -575,8 +521,8 @@ export class CliProxyManager {
 				...this.statusValue,
 				state: "installed",
 				installedVersion: selected.version,
-				latestVersion: selected.version,
-				updateAvailable: false,
+				approvedVersion: selected.version,
+				versionMismatch: false,
 				download: undefined,
 			};
 		} finally {

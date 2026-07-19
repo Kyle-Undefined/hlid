@@ -5,13 +5,13 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HlidConfigSchema } from "../config";
 import {
+	approvedCliProxyRelease,
+	CLIPROXY_APPROVED_VERSION,
 	CLIPROXY_OAUTH_PROVIDERS,
 	CliProxyManager,
-	checksumForAsset,
 	cliProxyLaunchError,
 	extractCliProxyOAuthPrompt,
 	managedCliProxyConfig,
-	selectCliProxyReleaseAssets,
 	terminateCliProxyChild,
 } from "./cliproxyManager";
 
@@ -24,42 +24,20 @@ afterEach(() => {
 });
 
 describe("CLIProxy release verification", () => {
-	it("selects the current Windows architecture and checksum manifest", () => {
-		const selected = selectCliProxyReleaseAssets(
-			{
-				tag_name: "v7.2.88",
-				assets: [
-					{
-						name: "CLIProxyAPI_7.2.88_windows_amd64.zip",
-						browser_download_url: "https://example.test/amd64.zip",
-					},
-					{
-						name: "CLIProxyAPI_7.2.88_windows_arm64.zip",
-						browser_download_url: "https://example.test/arm64.zip",
-					},
-					{
-						name: "checksums.txt",
-						browser_download_url: "https://example.test/checksums.txt",
-					},
-				],
-			},
-			"arm64",
-		);
-		expect(selected.version).toBe("7.2.88");
-		expect(selected.archive.name).toContain("windows_arm64.zip");
+	it("pins the approved Windows archives and SHA-256 digests", () => {
+		const x64 = approvedCliProxyRelease("x64");
+		const arm64 = approvedCliProxyRelease("arm64");
+		expect(x64.version).toBe(CLIPROXY_APPROVED_VERSION);
+		expect(x64.archiveName).toBe("CLIProxyAPI_7.2.88_windows_amd64.zip");
+		expect(x64.sha256).toMatch(/^[a-f0-9]{64}$/);
+		expect(arm64.archiveName).toBe("CLIProxyAPI_7.2.88_windows_aarch64.zip");
+		expect(arm64.sha256).toMatch(/^[a-f0-9]{64}$/);
 	});
 
-	it("requires an exact SHA-256 entry for the selected archive", () => {
-		const digest = "a".repeat(64);
-		expect(
-			checksumForAsset(
-				`${digest}  CLIProxyAPI_7.2.88_windows_amd64.zip\n`,
-				"CLIProxyAPI_7.2.88_windows_amd64.zip",
-			),
-		).toBe(digest);
-		expect(() =>
-			checksumForAsset(`${digest}  another.zip`, "wanted.zip"),
-		).toThrow("checksum not found");
+	it("rejects unsupported Windows architectures", () => {
+		expect(() => approvedCliProxyRelease("ia32")).toThrow(
+			"managed CLIProxy does not support ia32",
+		);
 	});
 });
 
