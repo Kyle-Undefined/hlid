@@ -5751,4 +5751,43 @@ describe("SessionManager — assistant_message_id capture", () => {
 		}
 		expect(calls.at(-1)?.[2]).toBe("sdk-msg-uuid-3");
 	});
+
+	it("includes db_id in the 'done' message once the assistant row is persisted, so a live message can be branched from without a reload", async () => {
+		// appendMessage also fires once for the user turn before the assistant
+		// placeholder row — key off `role` so 777 lands on the row we're
+		// actually asserting on.
+		vi.mocked(dbMock.appendMessage).mockImplementation(
+			async (_s, _seq, role) => (role === "assistant" ? 777 : 1),
+		);
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(_params: AgentQueryParams): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-s1" };
+					yield { type: "text_delta", text: "Hi." };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("hello", (m) => emitted.push(m), "sess-dbid");
+
+		const done = emitted.find((m) => m.type === "done");
+		expect(done).toMatchObject({ db_id: 777 });
+		vi.mocked(dbMock.appendMessage).mockResolvedValue(1);
+	});
 });

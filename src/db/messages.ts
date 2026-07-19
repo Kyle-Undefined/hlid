@@ -14,18 +14,20 @@ export type ToolEventDimensions = {
 	agentCwd?: string | null;
 };
 
+/** @returns the new row's messages.id primary key. */
 export async function appendMessage(
 	sessionId: string,
 	seq: number,
 	role: string,
 	text: string,
 	turnId?: string,
-): Promise<void> {
+): Promise<number> {
 	const db = await getDb();
-	db.run(
+	const result = db.run(
 		`INSERT INTO messages (session_id, seq, role, text, timestamp, turn_id) VALUES (?, ?, ?, ?, unixepoch(), ?)`,
 		[sessionId, seq, role, text, turnId ?? null],
 	);
+	return Number(result.lastInsertRowid);
 }
 
 export async function setMessageText(

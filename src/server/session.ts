@@ -114,6 +114,14 @@ type TurnState = {
 	 * event inserts) attach to a real row that mid-turn reloads can render.
 	 */
 	reservedAssistantSeq: number | null;
+	/**
+	 * messages.id (DB primary key) for the row reservedAssistantSeq points at,
+	 * once the placeholder INSERT resolves. Sent to the client on "done" so a
+	 * live-streamed message can offer "branch from here" without waiting for
+	 * a history reload (loadSessionSnapshot.ts is otherwise the only place
+	 * that learns a message's dbId).
+	 */
+	dbMessageId: number | null;
 	persistedToolIds: Set<string>;
 	/**
 	 * Throttled text-write state: a setTimeout handle that flushes the current
@@ -445,6 +453,7 @@ function createTurnState(): TurnState {
 		pendingToolUpdates: new Map(),
 		pendingToolEventWrites: new Map(),
 		reservedAssistantSeq: null,
+		dbMessageId: null,
 		persistedToolIds: new Set(),
 		textWriteTimer: null,
 		textWriteDirty: false,
@@ -1495,6 +1504,9 @@ export class SessionManager {
 			event,
 			turn,
 		);
+		// Captured before any reset below — sent on "done" so the client can
+		// offer "branch from here" on this row without a history reload.
+		const dbMessageId = turn.dbMessageId;
 		if (sessionId) {
 			queryData.agent_cwd = this.agentCwd ?? null;
 			const recorded = await db.recordQuery(
@@ -1530,6 +1542,7 @@ export class SessionManager {
 				turn.pendingToolEventWrites.clear();
 				turn.persistedToolIds.clear();
 				turn.reservedAssistantSeq = null;
+				turn.dbMessageId = null;
 				turn.assistantText = "";
 			}
 		}
@@ -1539,6 +1552,7 @@ export class SessionManager {
 			...(this.currentTurnId !== undefined
 				? { turn_id: this.currentTurnId }
 				: {}),
+			...(dbMessageId != null ? { db_id: dbMessageId } : {}),
 			cost: event.cost ?? null,
 			estimated_cost: queryData.estimated_cost ?? null,
 			turns: event.turns,
@@ -1591,6 +1605,9 @@ export class SessionManager {
 		turn.reservedAssistantSeq = seq;
 		void db
 			.appendMessage(sessionId, seq, "assistant", "")
+			.then((dbId) => {
+				turn.dbMessageId = dbId;
+			})
 			.catch((e) => logDbError("appendMessage (placeholder)", e));
 		return seq;
 	}

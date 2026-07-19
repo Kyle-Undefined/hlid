@@ -138,6 +138,42 @@ describe("useChatWsHandler — session id domains", () => {
 		});
 		expect(refs.pendingIdRef.current).toBeNull();
 	});
+
+	it("forwards db_id from a done message as dbId so the row can be branched from without a reload", () => {
+		const dispatch = vi.fn();
+		const setRateLimit = vi.fn();
+		const refs = makeRefs();
+		refs.sessionIdRef.current = "db-session-id";
+		refs.pendingIdRef.current = "assistant-1";
+
+		const { result } = renderHook(() =>
+			useChatWsHandler({ dispatch, ...refs, setRateLimit }),
+		);
+
+		result.current({
+			type: "done",
+			session_id: "pool-session-id",
+			db_id: 42,
+			cost: null,
+			turns: 1,
+			duration_ms: 0,
+			input_tokens: 0,
+			output_tokens: 0,
+			cache_read_tokens: 0,
+			cache_creation_tokens: 0,
+			context_window: null,
+			max_output_tokens: null,
+			stop_reason: null,
+			tokens_in_context: null,
+		});
+
+		expect(dispatch).toHaveBeenCalledWith({
+			type: "DONE",
+			id: "assistant-1",
+			cost: null,
+			dbId: 42,
+		});
+	});
 });
 
 describe("useChatWsHandler — immediate messages", () => {

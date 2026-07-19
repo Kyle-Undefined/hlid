@@ -187,6 +187,8 @@ export type Action =
 			id: string;
 			cost: number | null;
 			costEstimated?: boolean;
+			/** messages.id primary key — lets this row offer "branch from here" immediately. */
+			dbId?: number;
 	  }
 	| { type: "SET_RECAP"; id: string; recap: string }
 	| { type: "ADD_PERMISSION"; msg: PermissionRequestMessage }
@@ -538,6 +540,7 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 				streaming: false,
 				cost: action.cost,
 				costEstimated: action.costEstimated,
+				...(action.dbId !== undefined ? { dbId: action.dbId } : {}),
 			}));
 		case "SET_RECAP":
 			return patchMessage(state, action.id, "assistant", (m) => ({

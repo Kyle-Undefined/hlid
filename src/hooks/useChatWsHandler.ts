@@ -154,6 +154,7 @@ function dispatchActiveMessage(
 				id: activeId,
 				cost: msg.estimated_cost ?? msg.cost,
 				...(msg.estimated_cost != null ? { costEstimated: true } : {}),
+				...(msg.db_id != null ? { dbId: msg.db_id } : {}),
 			});
 			lastAssistantIdRef.current = activeId;
 			pendingIdRef.current = null;

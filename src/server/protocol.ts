@@ -84,6 +84,12 @@ export type DoneMessage = {
 	 * (e.g. legacy clients or server-internal turns).
 	 */
 	turn_id?: string;
+	/**
+	 * messages.id (DB primary key) for this turn's assistant row, when one was
+	 * persisted. Lets the client offer "branch from here" on a live-streamed
+	 * message immediately, instead of only after a history reload.
+	 */
+	db_id?: number;
 	cost: number | null;
 	estimated_cost?: number | null;
 	turns: number;

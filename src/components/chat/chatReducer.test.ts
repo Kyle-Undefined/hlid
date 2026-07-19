@@ -637,6 +637,27 @@ describe("DONE", () => {
 		const msg = state[0];
 		if (msg.role === "assistant") expect(msg.cost).toBeNull();
 	});
+
+	it("sets dbId when the server reports one, so a live message can be branched from without a reload", () => {
+		const state = reducer(withAssistant("a1"), {
+			type: "DONE",
+			id: "a1",
+			cost: 0,
+			dbId: 42,
+		});
+		const msg = state[0];
+		if (msg.role === "assistant") expect(msg.dbId).toBe(42);
+	});
+
+	it("leaves dbId unset when the server doesn't report one", () => {
+		const state = reducer(withAssistant("a1"), {
+			type: "DONE",
+			id: "a1",
+			cost: 0,
+		});
+		const msg = state[0];
+		if (msg.role === "assistant") expect(msg.dbId).toBeUndefined();
+	});
 });
 
 // ── SET_RECAP ─────────────────────────────────────────────────────────────────
