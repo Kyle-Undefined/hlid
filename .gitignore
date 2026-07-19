@@ -17,6 +17,7 @@ hlid.db-*
 auth.json
 .cta.json
 logs/
+library/
 hlid.config.toml
 .vscode
 src/server/embedded-client.ts
