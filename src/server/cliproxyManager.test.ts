@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { HlidConfigSchema } from "../config";
 import {
+	CLIPROXY_OAUTH_PROVIDERS,
 	CliProxyManager,
 	checksumForAsset,
 	extractCliProxyOAuthPrompt,
@@ -60,6 +61,23 @@ describe("CLIProxy release verification", () => {
 });
 
 describe("managed CLIProxy configuration", () => {
+	it("uses CLIProxy's device flow for OpenAI while retaining provider login commands", () => {
+		expect(
+			Object.fromEntries(
+				CLIPROXY_OAUTH_PROVIDERS.map((provider) => [
+					provider.id,
+					provider.flag,
+				]),
+			),
+		).toMatchObject({
+			codex: "--codex-device-login",
+			claude: "--claude-login",
+			antigravity: "--antigravity-login",
+			kimi: "--kimi-login",
+			xai: "--xai-login",
+		});
+	});
+
 	it("extracts browser and device-code prompts from CLI output", () => {
 		expect(
 			extractCliProxyOAuthPrompt(
@@ -76,6 +94,22 @@ describe("managed CLIProxy configuration", () => {
 		).toEqual({
 			url: "https://auth.example.test/device",
 			code: "ABCD-EFGH",
+		});
+		expect(
+			extractCliProxyOAuthPrompt(
+				"To authenticate, please visit:\nhttps://auth.example.test/kimi\nUser code: KIMI-1234\n",
+			),
+		).toEqual({
+			url: "https://auth.example.test/kimi",
+			code: "KIMI-1234",
+		});
+		expect(
+			extractCliProxyOAuthPrompt(
+				"To authenticate, please visit:\nhttps://auth.example.test/xai\nThen enter this code: XAI-5678\n",
+			),
+		).toEqual({
+			url: "https://auth.example.test/xai",
+			code: "XAI-5678",
 		});
 	});
 

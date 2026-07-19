@@ -81,12 +81,13 @@ Open **Forge → Integrations → CLIProxyAPI** and choose **Install managed**. 
 Windows, Hlid downloads the latest release and checksum manifest, verifies the
 archive, creates a loopback-only configuration, and owns the process lifecycle.
 Connect any supported account shown in Forge: OpenAI Codex, Anthropic Claude,
-Google Antigravity, Moonshot Kimi, or xAI. OpenAI uses a device-code flow, so
-you can finish its sign-in from the Hlid desktop or a mobile browser without a
-localhost callback. Forge opens the authorization page, keeps a fallback link
-visible, and shows the verification code when one is required. Hlid starts the
-integration with the app, offers explicit update and repair controls, and can
-remove the binaries and all saved accounts.
+Google Antigravity, Moonshot Kimi, or xAI. OpenAI, Kimi, and xAI use device-code
+flows, so you can finish their sign-in from the Hlid desktop or a mobile browser
+without a localhost callback. Claude and Antigravity keep their browser-callback
+flows on the Windows host. Forge opens the authorization page, keeps a fallback
+link visible, and shows the verification code when one is required. Hlid starts
+the integration with the app, offers explicit update and repair controls, and
+can remove the binaries and all saved accounts.
 
 The generated client key and OAuth tokens remain in Hlid's private integration
 directory and are never returned to Forge. Remote management and the CLIProxyAPI

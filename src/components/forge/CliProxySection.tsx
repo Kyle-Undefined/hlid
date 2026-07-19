@@ -166,8 +166,9 @@ export function CliProxySection({
 							))}
 						</div>
 						<p className="text-xs text-muted-foreground mt-1">
-							Sign-in opens on the Windows host. Tokens stay in Hlid's private
-							integration directory.
+							OpenAI, Kimi, and xAI can be approved from any browser. Claude and
+							Antigravity callbacks open on the Windows host. Tokens stay in
+							Hlid's private integration directory.
 						</p>
 					</div>
 					<div className="border border-border/70 bg-background/40 p-3">
