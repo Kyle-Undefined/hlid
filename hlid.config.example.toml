@@ -22,6 +22,8 @@ language = "auto"
 auto_send = false
 hotkey = "Alt+Shift+KeyV"
 max_recording_seconds = 300
+threads = 4
+vocabulary = ["Claude", "Codex", "Hlið", "Raven", "Forge", "Umbod", "MCP", "Anthropic", "OpenAI", "TypeScript", "GitHub", "Bun"]
 
 # Optional advanced mode: connect an externally managed CLIProxyAPI process.
 # The normal setup is Forge > Integrations > CLIProxyAPI, which downloads,

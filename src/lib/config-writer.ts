@@ -81,6 +81,8 @@ function serializeVoice(config: HlidConfig["voice"]): string[] {
 		`auto_send = ${tomlVal(voice.auto_send)}`,
 		`hotkey = ${tomlVal(voice.hotkey)}`,
 		`max_recording_seconds = ${tomlVal(voice.max_recording_seconds)}`,
+		`threads = ${tomlVal(voice.threads)}`,
+		`vocabulary = ${tomlVal(voice.vocabulary)}`,
 	]);
 }
 

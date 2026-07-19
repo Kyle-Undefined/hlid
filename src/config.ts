@@ -221,6 +221,21 @@ export const DEFAULT_VOICE_CONFIG = {
 	auto_send: false,
 	hotkey: "Alt+Shift+KeyV",
 	max_recording_seconds: 300,
+	threads: 4,
+	vocabulary: [
+		"Claude",
+		"Codex",
+		"Hlið",
+		"Raven",
+		"Forge",
+		"Umbod",
+		"MCP",
+		"Anthropic",
+		"OpenAI",
+		"TypeScript",
+		"GitHub",
+		"Bun",
+	],
 };
 
 const VoiceSchema = z.object({
@@ -235,6 +250,16 @@ const VoiceSchema = z.object({
 		.min(1)
 		.max(1800)
 		.default(DEFAULT_VOICE_CONFIG.max_recording_seconds),
+	threads: z
+		.number()
+		.int()
+		.min(1)
+		.max(32)
+		.default(DEFAULT_VOICE_CONFIG.threads),
+	vocabulary: z
+		.array(z.string().trim().min(1).max(80))
+		.max(50)
+		.default(DEFAULT_VOICE_CONFIG.vocabulary),
 });
 
 const UmbodSchema = z.object({

@@ -190,6 +190,16 @@ describe("writeConfig — voice section", () => {
 		expect(capturedToml()).toContain('hotkey = "Alt+Shift+KeyV"');
 	});
 
+	it("writes thread and vocabulary settings", () => {
+		const config = HlidConfigSchema.parse({
+			voice: { threads: 8, vocabulary: ["Claude", "Codex", "Hlið"] },
+		});
+		writeConfig(config);
+		const toml = capturedToml();
+		expect(toml).toContain("threads = 8");
+		expect(toml).toContain('vocabulary = ["Claude", "Codex", "Hlið"]');
+	});
+
 	it("allows the recording hotkey to be cleared", () => {
 		writeConfig(
 			makeConfig({
@@ -200,6 +210,8 @@ describe("writeConfig — voice section", () => {
 					auto_send: false,
 					hotkey: "",
 					max_recording_seconds: 300,
+					threads: 4,
+					vocabulary: ["Claude", "Codex"],
 				},
 			}),
 		);

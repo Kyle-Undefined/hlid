@@ -76,6 +76,8 @@ function makeConfig(agentPaths: string[] = []): HlidConfig {
 			auto_send: false,
 			hotkey: "Alt+Shift+KeyV",
 			max_recording_seconds: 300,
+			threads: 4,
+			vocabulary: ["Claude", "Codex"],
 		},
 		umbod: { enabled: false, manifest_path: "umbod.toml" },
 		auto_sleep: {

@@ -18,6 +18,8 @@ const config = {
 	auto_send: false,
 	hotkey: "Alt+Shift+KeyV",
 	max_recording_seconds: 300,
+	threads: 4,
+	vocabulary: ["Claude", "Codex"],
 };
 
 class FakeMediaRecorder {

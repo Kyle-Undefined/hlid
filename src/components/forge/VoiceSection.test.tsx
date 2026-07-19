@@ -149,7 +149,19 @@ describe("VoiceSection", () => {
 		fireEvent.keyDown(screen.getByLabelText("Voice recording hotkey"), {
 			key: "Escape",
 		});
+		fireEvent.change(screen.getByLabelText("Whisper threads"), {
+			target: { value: "8" },
+		});
+		const vocabulary = screen.getByLabelText("Voice vocabulary hints");
+		fireEvent.change(vocabulary, {
+			target: { value: "Claude\nCodex\nKubernetes" },
+		});
+		fireEvent.blur(vocabulary);
 		expect(onChange).toHaveBeenCalledWith({ enabled: true });
 		expect(onChange).toHaveBeenCalledWith({ hotkey: "" });
+		expect(onChange).toHaveBeenCalledWith({ threads: 8 });
+		expect(onChange).toHaveBeenCalledWith({
+			vocabulary: ["Claude", "Codex", "Kubernetes"],
+		});
 	});
 });

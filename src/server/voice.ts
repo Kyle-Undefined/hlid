@@ -106,6 +106,24 @@ const MODEL_DEFS: ModelDef[] = [
 ];
 
 const HF_BASE = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
+const MAX_VOCABULARY_PROMPT_CHARS = 800;
+
+export function voiceVocabularyPrompt(terms: readonly string[]): string {
+	const selected: string[] = [];
+	const seen = new Set<string>();
+	let length = 0;
+	for (const raw of terms) {
+		const term = raw.trim();
+		const key = term.toLowerCase();
+		if (!term || seen.has(key)) continue;
+		const added = (selected.length ? 2 : 0) + term.length;
+		if (length + added > MAX_VOCABULARY_PROMPT_CHARS) continue;
+		selected.push(term);
+		seen.add(key);
+		length += added;
+	}
+	return selected.join(", ");
+}
 
 export async function validateVoiceRecording(
 	audio: Blob,
@@ -269,7 +287,11 @@ export class VoiceModelManager {
 			this.statusValue = { state: "unconfigured", model: config.model };
 			return;
 		}
-		if (!this.runtime || prior.model !== config.model)
+		if (
+			!this.runtime ||
+			prior.model !== config.model ||
+			prior.threads !== config.threads
+		)
 			await this.load(config.model);
 	}
 
@@ -345,6 +367,8 @@ export class VoiceModelManager {
 				String(port),
 				"--model",
 				installedModel,
+				"--threads",
+				String(this.config.threads),
 				"--convert",
 				"--tmp-dir",
 				tempDir,
@@ -490,6 +514,11 @@ export class VoiceModelManager {
 			form.set("file", audio, "recording.wav");
 			form.set("response_format", "json");
 			if (language !== "auto") form.set("language", language);
+			const prompt = voiceVocabularyPrompt(this.config.vocabulary);
+			if (prompt) {
+				form.set("prompt", prompt);
+				form.set("carry_initial_prompt", "true");
+			}
 			const response = await fetch(
 				`http://127.0.0.1:${this.runtime?.port}/inference`,
 				{

@@ -9,7 +9,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_VOICE_CONFIG } from "../config";
-import { VoiceModelManager, validateVoiceRecording } from "./voice";
+import {
+	VoiceModelManager,
+	validateVoiceRecording,
+	voiceVocabularyPrompt,
+} from "./voice";
 
 function wavBlob(payloadBytes: number, bytesPerSecond = 16_000): Blob {
 	const bytes = new Uint8Array(44 + payloadBytes);
@@ -36,6 +40,20 @@ function fakeProcess() {
 }
 
 describe("VoiceModelManager", () => {
+	it("builds a bounded, de-duplicated vocabulary prompt", () => {
+		expect(
+			voiceVocabularyPrompt([" Claude ", "Codex", "claude", "", "Hlið"]),
+		).toBe("Claude, Codex, Hlið");
+		expect(voiceVocabularyPrompt(Array(20).fill("x".repeat(80))).length).toBe(
+			80,
+		);
+		expect(
+			voiceVocabularyPrompt(
+				Array.from({ length: 20 }, (_, index) => `${index}-${"x".repeat(75)}`),
+			).length,
+		).toBeLessThanOrEqual(800);
+	});
+
 	it("stays disabled without affecting server startup", async () => {
 		const manager = new VoiceModelManager(DEFAULT_VOICE_CONFIG, null);
 		await manager.initialize();
@@ -246,6 +264,22 @@ describe.sequential("VoiceModelManager load lifecycle", () => {
 		manager.close();
 	});
 
+	it("passes configured threads to the runtime and reloads when they change", async () => {
+		const { manager, spawn } = await readyManager();
+		expect(spawn.mock.calls[0]?.[0]).toEqual(
+			expect.arrayContaining(["--threads", "4"]),
+		);
+		const load = vi.spyOn(manager, "load").mockResolvedValue(undefined);
+		await manager.syncConfig({
+			...DEFAULT_VOICE_CONFIG,
+			enabled: true,
+			model: "tiny",
+			threads: 8,
+		});
+		expect(load).toHaveBeenCalledWith("tiny");
+		manager.close();
+	});
+
 	it("kills an in-flight load and cannot resurrect it after disable", async () => {
 		const { health, loading, manager, process, spawn } = startPendingLoad();
 		await vi.waitFor(() => expect(spawn).toHaveBeenCalledOnce());
@@ -360,6 +394,8 @@ describe.sequential("VoiceModelManager load lifecycle", () => {
 		expect(inferenceCalls[0]?.[1]).toMatchObject({ method: "POST" });
 		const secondBody = inferenceCalls[1]?.[1]?.body as FormData;
 		expect(secondBody.get("language")).toBe("en");
+		expect(secondBody.get("prompt")).toContain("Claude, Codex, Hlið");
+		expect(secondBody.get("carry_initial_prompt")).toBe("true");
 		manager.close();
 	});
 

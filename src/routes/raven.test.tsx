@@ -241,6 +241,8 @@ beforeEach(() => {
 				auto_send: false,
 				hotkey: "Alt+Shift+KeyV",
 				max_recording_seconds: 300,
+				threads: 4,
+				vocabulary: ["Claude", "Codex"],
 			},
 			ui: { enter_to_submit: true },
 			claude: { interactive_mode: false },

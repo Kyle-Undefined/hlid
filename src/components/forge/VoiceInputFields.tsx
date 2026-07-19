@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import type { VoiceInfo } from "#/lib/serverFns/voice";
 import { displayVoiceHotkey, voiceHotkeyFromEvent } from "#/lib/voiceHotkey";
 import { Field, Section, StatusIndicator } from "./fields";
@@ -15,6 +16,26 @@ const LANGUAGES = [
 	["zh", "Chinese"],
 ] as const;
 
+const THREAD_OPTIONS = [
+	[1, "Single core"],
+	[2, "Minimal"],
+	[4, "Low impact"],
+	[6, "Moderate"],
+	[8, "Balanced"],
+	[12, "Fast"],
+	[16, "Heavy"],
+	[24, "Very heavy"],
+	[32, "Maximum setting"],
+] as const;
+
+function parseVocabulary(value: string): string[] {
+	return value
+		.split("\n")
+		.map((term) => term.trim().slice(0, 80))
+		.filter(Boolean)
+		.slice(0, 50);
+}
+
 /** Enable toggle, runtime status, language, auto-send, and hotkey capture. */
 export function VoiceInputFields({
 	voice,
@@ -25,6 +46,12 @@ export function VoiceInputFields({
 	onChange: (patch: Partial<VoiceForm>) => void;
 	status: VoiceInfo["status"];
 }) {
+	const [vocabularyText, setVocabularyText] = useState(
+		voice.vocabulary.join("\n"),
+	);
+	useEffect(() => {
+		setVocabularyText(voice.vocabulary.join("\n"));
+	}, [voice.vocabulary]);
 	const runtimeOk =
 		status.state === "ready"
 			? true
@@ -83,6 +110,42 @@ export function VoiceInputFields({
 					<option value="review">Review draft</option>
 					<option value="send">Send immediately</option>
 				</select>
+			</Field>
+			<Field
+				label="Whisper threads"
+				hint="higher values use more CPU while transcribing and reload the voice model"
+			>
+				<select
+					value={voice.threads}
+					onChange={(e) => onChange({ threads: Number(e.target.value) })}
+					aria-label="Whisper threads"
+					className="w-40 sm:w-52 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
+				>
+					{!THREAD_OPTIONS.some(([value]) => value === voice.threads) && (
+						<option value={voice.threads}>{voice.threads} · Custom</option>
+					)}
+					{THREAD_OPTIONS.map(([value, label]) => (
+						<option key={value} value={value}>
+							{value} · {label}
+						</option>
+					))}
+				</select>
+			</Field>
+			<Field
+				label="Vocabulary hints"
+				hint="one preferred spelling per line, up to 50; short lists work best"
+			>
+				<textarea
+					value={vocabularyText}
+					onChange={(event) => setVocabularyText(event.target.value)}
+					onBlur={() =>
+						onChange({ vocabulary: parseVocabulary(vocabularyText) })
+					}
+					rows={5}
+					maxLength={4_000}
+					aria-label="Voice vocabulary hints"
+					className="w-56 sm:w-80 resize-y bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/50"
+				/>
 			</Field>
 			<Field
 				label="Recording hotkey"
