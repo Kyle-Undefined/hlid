@@ -28,6 +28,7 @@ function dependencies() {
 		forkSession: vi.fn().mockResolvedValue(undefined),
 		cleanupSessions: vi.fn().mockResolvedValue(undefined),
 		navigateToPage: vi.fn(),
+		reloadCurrentPage: vi.fn().mockResolvedValue(undefined),
 	};
 }
 
@@ -95,7 +96,7 @@ describe("useLedgerSessionMutations", () => {
 		expect(result.current.mutationError).toBe("rename failed");
 	});
 
-	it("reloads the current page after a successful fork", async () => {
+	it("re-fetches the current page/filters (not a navigate) after a successful fork", async () => {
 		const deps = dependencies();
 		const { result } = renderHook(() =>
 			useLedgerSessionMutations({
@@ -107,11 +108,14 @@ describe("useLedgerSessionMutations", () => {
 
 		await act(() => result.current.forkSession("one"));
 		expect(deps.forkSession).toHaveBeenCalledWith("one");
-		expect(deps.navigateToPage).toHaveBeenCalledWith(2);
+		expect(deps.reloadCurrentPage).toHaveBeenCalledOnce();
+		// No URL navigation — a same-page navigate is a no-op under an active
+		// filter, which is exactly what hid a freshly forked row before.
+		expect(deps.navigateToPage).not.toHaveBeenCalled();
 		expect(result.current.mutationError).toBeNull();
 	});
 
-	it("surfaces a fork failure without navigating", async () => {
+	it("surfaces a fork failure without reloading", async () => {
 		const deps = dependencies();
 		deps.forkSession.mockRejectedValue(new Error("fork failed"));
 		const { result } = renderHook(() =>
@@ -124,7 +128,7 @@ describe("useLedgerSessionMutations", () => {
 
 		await act(() => result.current.forkSession("one"));
 		expect(result.current.mutationError).toBe("fork failed");
-		expect(deps.navigateToPage).not.toHaveBeenCalled();
+		expect(deps.reloadCurrentPage).not.toHaveBeenCalled();
 	});
 
 	it("navigates to page one only after cleanup succeeds", async () => {

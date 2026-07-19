@@ -478,6 +478,7 @@ function useLedgerMutations(
 	sessionPage: Awaited<ReturnType<typeof getSessionsPageFn>>,
 	navigate: LedgerNavigate,
 	rangeActive: boolean,
+	reloadCurrentPage: () => Promise<void>,
 ) {
 	const { page, size, q, agent, model, provider, stop, range, from, to, sort } =
 		listState;
@@ -514,6 +515,7 @@ function useLedgerMutations(
 					},
 				});
 			},
+			reloadCurrentPage,
 		}),
 		[
 			navigate,
@@ -528,6 +530,7 @@ function useLedgerMutations(
 			to,
 			sort,
 			rangeActive,
+			reloadCurrentPage,
 		],
 	);
 	return useLedgerSessionMutations({ page, sessionPage, dependencies });
@@ -1196,17 +1199,29 @@ function StatsPage() {
 		enabled: tab === "sessions",
 		rangeActive: sessionRangeActive,
 	});
+	// Same forward-reference problem as mutationsRef above: mutations needs a
+	// stable reloadCurrentPage callback before refreshVisibleSessions (which
+	// depends on refreshSessions/tab) is computed below.
+	const refreshVisibleSessionsRef = useRef<() => Promise<void>>(() =>
+		Promise.resolve(),
+	);
+	const reloadCurrentPage = useCallback(
+		() => refreshVisibleSessionsRef.current(),
+		[],
+	);
 	const mutations = useLedgerMutations(
 		listState,
 		sessionPage,
 		navigate,
 		sessionRangeActive,
+		reloadCurrentPage,
 	);
 	mutationsRef.current = mutations;
 	const refreshVisibleSessions = useCallback(
 		() => (tab === "sessions" ? refreshSessions() : Promise.resolve()),
 		[tab, refreshSessions],
 	);
+	refreshVisibleSessionsRef.current = refreshVisibleSessions;
 	useSessionStatusRefresh(sessionsStatus, refreshVisibleSessions);
 	const statsFilter = useMemo(
 		() => ({

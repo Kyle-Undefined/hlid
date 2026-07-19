@@ -15,6 +15,14 @@ type LedgerMutationDependencies = {
 	forkSession(id: string): Promise<void>;
 	cleanupSessions(days: number): Promise<void>;
 	navigateToPage(page: number): void;
+	/**
+	 * Re-fetches the current page with the current filters applied, without
+	 * changing the URL. navigateToPage(page) is a no-op when `page` is
+	 * already the current page (very common — most forks happen from page 1
+	 * with no page change), so it can't be relied on to reveal a freshly
+	 * forked row, especially under an active filter.
+	 */
+	reloadCurrentPage(): Promise<void>;
 };
 
 export function useLedgerSessionMutations({
@@ -104,13 +112,12 @@ export function useLedgerSessionMutations({
 
 	/**
 	 * Forking adds a row rather than modifying one already on this page, so
-	 * there's no optimistic patch to apply (unlike rename/delete) — on success
-	 * we just force a reload of the current page via navigateToPage, the same
-	 * "re-fetch after a mutation with no client-side patch" mechanism
-	 * cleanupSessions below already relies on. The WSL probe backing a fork
-	 * can take a few seconds, so forkingIds/forkStatus exist purely so the UI
-	 * can show a spinner while pending and a confirmation once it lands —
-	 * without them a multi-second fork looks hung.
+	 * there's no optimistic patch to apply (unlike rename/delete) — on
+	 * success we force a re-fetch of the current page/filters via
+	 * reloadCurrentPage(). The WSL probe backing a fork can take a few
+	 * seconds, so forkingIds/forkStatus exist purely so the UI can show a
+	 * spinner while pending and a confirmation once it lands — without them
+	 * a multi-second fork looks hung.
 	 */
 	async function forkSession(id: string) {
 		setMutationError(null);
@@ -118,7 +125,7 @@ export function useLedgerSessionMutations({
 		setForkingIds((previous) => new Set(previous).add(id));
 		try {
 			await dependencies.forkSession(id);
-			dependencies.navigateToPage(page);
+			await dependencies.reloadCurrentPage();
 			setForkStatus("Session forked — new row added to the list.");
 		} catch (error) {
 			setMutationError(
