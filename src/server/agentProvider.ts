@@ -384,6 +384,15 @@ export type ForkSessionParams = {
 export type ForkSessionResult = {
 	/** New native provider session id, resumable like any other. */
 	sessionId: string;
+	/**
+	 * Best-effort transcript hydration for hlid's own DB. forkSession() only
+	 * writes the native provider transcript file — hlid's own `messages`
+	 * table (what Raven actually renders from) has no rows for the new
+	 * session otherwise. Undefined/empty means the caller should leave the
+	 * new hlid session row message-less; it'll backfill from a live turn or
+	 * a manual history reload, same as before this existed.
+	 */
+	messages?: { role: "user" | "assistant"; text: string; uuid?: string }[];
 };
 
 export interface AgentProvider {

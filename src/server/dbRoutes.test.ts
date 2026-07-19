@@ -28,6 +28,7 @@ const {
 	mockGetSessionProviderSession,
 	mockCreateForkedSessionRow,
 	mockGetMessageForFork,
+	mockInsertForkedMessages,
 } = vi.hoisted(() => ({
 	mockGetSessionById: vi.fn(),
 	mockListAttachments: vi.fn(),
@@ -47,6 +48,7 @@ const {
 	mockGetSessionProviderSession: vi.fn(),
 	mockCreateForkedSessionRow: vi.fn(),
 	mockGetMessageForFork: vi.fn(),
+	mockInsertForkedMessages: vi.fn(),
 }));
 
 vi.mock("../db", () => ({
@@ -65,6 +67,7 @@ vi.mock("../db", () => ({
 	getSessionProviderSession: mockGetSessionProviderSession,
 	createForkedSessionRow: mockCreateForkedSessionRow,
 	getMessageForFork: mockGetMessageForFork,
+	insertForkedMessages: mockInsertForkedMessages,
 }));
 
 // dbRoutes also imports from ./attachments and ./proxy — stub them out.
@@ -694,6 +697,7 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 		mockGetSessionProviderSession.mockReset();
 		mockCreateForkedSessionRow.mockReset();
 		mockGetMessageForFork.mockReset();
+		mockInsertForkedMessages.mockReset();
 	});
 
 	function forkRequest(body: unknown): Request {
@@ -891,6 +895,45 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 			"abc-123",
 			json.id,
 			"native-forked-id",
+		);
+		expect(mockInsertForkedMessages).not.toHaveBeenCalled();
+	});
+
+	it("hydrates hlid's messages table when the provider's fork result includes a transcript read-back", async () => {
+		mockGetSessionById.mockResolvedValue({
+			...sampleRow,
+			provider_id: "claude",
+			agent_cwd: "/work/project",
+			history_resume_mode: "none",
+		});
+		mockGetSessionProviderSession.mockResolvedValue("native-source-id");
+		const forkedMessages = [
+			{ role: "user" as const, text: "Hello", uuid: "u1" },
+			{ role: "assistant" as const, text: "Hi there", uuid: "u2" },
+		];
+		const mockForkSession = vi.fn().mockResolvedValue({
+			sessionId: "native-forked-id",
+			messages: forkedMessages,
+		});
+		const pool = makePool({
+			getProvider: vi.fn().mockReturnValue({
+				providerId: "claude",
+				forkSession: mockForkSession,
+			}),
+		});
+
+		const res = await handleDbRoute(
+			makeUrl("/db/session/fork"),
+			forkRequest({ id: "abc-123" }),
+			pool,
+		);
+
+		if (!res) throw new Error("Expected a Response, got null");
+		expect(res.status).toBe(200);
+		const json = (await res.json()) as { ok: true; id: string };
+		expect(mockInsertForkedMessages).toHaveBeenCalledWith(
+			json.id,
+			forkedMessages,
 		);
 	});
 });

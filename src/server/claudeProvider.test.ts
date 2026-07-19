@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
 	query: vi.fn(),
 	forkSession: vi.fn(),
+	getSessionMessages: vi.fn().mockResolvedValue([]),
 }));
 vi.mock("../lib/claudePath", () => ({
 	resolveClaudeExecutable: vi.fn(),
@@ -35,6 +36,7 @@ vi.mock("./claudeHistorySessionStore", async (importOriginal) => {
 
 import type { HookCallback } from "@anthropic-ai/claude-agent-sdk";
 import {
+	getSessionMessages as getSdkSessionMessages,
 	query,
 	forkSession as sdkForkSession,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -1543,10 +1545,81 @@ describe("ClaudeProvider — forkSession", () => {
 			title: "My fork",
 		});
 
-		expect(result).toEqual({ sessionId: "forked-session-id" });
+		expect(result).toEqual({ sessionId: "forked-session-id", messages: [] });
 		expect(sdkForkSession).toHaveBeenCalledWith("source-session-id", {
 			title: "My fork",
 		});
+	});
+
+	it("hydrates hlid's messages from the SDK's own getSessionMessages() read-back, since forkSession() only writes the native transcript file", async () => {
+		vi.mocked(sdkForkSession).mockResolvedValueOnce({
+			sessionId: "forked-session-id",
+		});
+		vi.mocked(getSdkSessionMessages).mockResolvedValueOnce([
+			{
+				type: "user",
+				uuid: "u1",
+				session_id: "forked-session-id",
+				parent_tool_use_id: null,
+				message: { content: "Hello" },
+			},
+			{
+				type: "assistant",
+				uuid: "u2",
+				session_id: "forked-session-id",
+				parent_tool_use_id: null,
+				message: {
+					content: [
+						{ type: "text", text: "Hi " },
+						{ type: "text", text: "there" },
+						{ type: "tool_use", id: "t1", name: "Bash", input: {} },
+					],
+				},
+			},
+			// System messages and empty-text turns should be dropped.
+			{
+				type: "system",
+				uuid: "u3",
+				session_id: "forked-session-id",
+				parent_tool_use_id: null,
+				message: {},
+			},
+			{
+				type: "user",
+				uuid: "u4",
+				session_id: "forked-session-id",
+				parent_tool_use_id: null,
+				message: { content: [{ type: "tool_use", id: "t2" }] },
+			},
+			// biome-ignore lint/suspicious/noExplicitAny: partial SDK SessionMessage fixture for this test
+		] as any);
+
+		const result = await new ClaudeProvider().forkSession?.({
+			sessionId: "source-session-id",
+			cwd: "/work/project",
+		});
+
+		expect(getSdkSessionMessages).toHaveBeenCalledWith("forked-session-id", {});
+		expect(result?.messages).toEqual([
+			{ role: "user", text: "Hello", uuid: "u1" },
+			{ role: "assistant", text: "Hi \nthere", uuid: "u2" },
+		]);
+	});
+
+	it("returns an empty messages array (not a thrown error) when the transcript read-back fails", async () => {
+		vi.mocked(sdkForkSession).mockResolvedValueOnce({
+			sessionId: "forked-session-id",
+		});
+		vi.mocked(getSdkSessionMessages).mockRejectedValueOnce(
+			new Error("read failed"),
+		);
+
+		const result = await new ClaudeProvider().forkSession?.({
+			sessionId: "source-session-id",
+			cwd: "/work/project",
+		});
+
+		expect(result).toEqual({ sessionId: "forked-session-id", messages: [] });
 	});
 
 	it("forwards upToMessageId when branching from a specific message", async () => {
@@ -1591,12 +1664,17 @@ describe("ClaudeProvider — forkSession", () => {
 			historyResumeMode: "session-store",
 		});
 
-		expect(createClaudeHistorySessionStore).toHaveBeenCalledOnce();
+		// Once for the fork call itself, once more for the getSessionMessages()
+		// read-back used to hydrate hlid's messages table — both need the
+		// store option for a session-store-backed source session.
+		expect(createClaudeHistorySessionStore).toHaveBeenCalledTimes(2);
 		const call = vi.mocked(sdkForkSession).mock.calls.at(-1);
 		expect(call?.[0]).toBe("source-session-id");
 		expect(call?.[1]).toMatchObject({ title: undefined });
 		expect(call?.[1]).not.toHaveProperty("dir");
 		expect(typeof call?.[1]?.sessionStore?.load).toBe("function");
+		const readBackCall = vi.mocked(getSdkSessionMessages).mock.calls.at(-1);
+		expect(typeof readBackCall?.[1]?.sessionStore?.load).toBe("function");
 	});
 
 	it("points CLAUDE_CONFIG_DIR at the WSL distro's real $HOME/.claude for the duration of a WSL-project fork, then restores it", async () => {

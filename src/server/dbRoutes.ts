@@ -693,7 +693,7 @@ async function forkSession({
 		});
 	}
 
-	const { sessionId: newNativeId } = await provider.forkSession({
+	const { sessionId: newNativeId, messages } = await provider.forkSession({
 		sessionId: nativeId,
 		cwd: source.agent_cwd ?? undefined,
 		historyResumeMode: source.history_resume_mode,
@@ -701,6 +701,10 @@ async function forkSession({
 	});
 	const newId = uid();
 	await db.createForkedSessionRow(sourceId, newId, newNativeId);
+	// forkSession() only writes the native transcript file — hydrate hlid's
+	// own messages table so Raven doesn't show a blank transcript for the
+	// new session until a live turn or a manual history reload backfills it.
+	if (messages?.length) await db.insertForkedMessages(newId, messages);
 	bumpDataRevision("sessions");
 	return Response.json({ ok: true, id: newId });
 }

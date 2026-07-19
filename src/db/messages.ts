@@ -105,6 +105,38 @@ export async function getMessageForFork(
 		: null;
 }
 
+/**
+ * Bulk-inserts a forked session's hydrated transcript (see
+ * ClaudeProvider.forkSession's `messages` result field) so Raven can render
+ * it immediately instead of showing a blank transcript until a live turn or
+ * a manual history reload backfills it. Timestamps are synthetic — evenly
+ * spaced, ending "now" — since getSessionMessages() doesn't expose per-
+ * message timestamps and display ordering only depends on `seq`.
+ */
+export async function insertForkedMessages(
+	sessionId: string,
+	messages: { role: "user" | "assistant"; text: string; uuid?: string }[],
+): Promise<void> {
+	if (messages.length === 0) return;
+	const db = await getDb();
+	const now = Math.floor(Date.now() / 1000);
+	db.transaction(() => {
+		messages.forEach((message, seq) => {
+			db.run(
+				`INSERT INTO messages (session_id, seq, role, text, timestamp, sdk_uuid) VALUES (?, ?, ?, ?, ?, ?)`,
+				[
+					sessionId,
+					seq,
+					message.role,
+					message.text,
+					now - (messages.length - seq),
+					message.uuid ?? null,
+				],
+			);
+		});
+	})();
+}
+
 export async function appendToolEvent(
 	sessionId: string,
 	assistantSeq: number,

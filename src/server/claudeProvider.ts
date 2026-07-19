@@ -7,6 +7,7 @@ import type {
 } from "@anthropic-ai/claude-agent-sdk";
 import {
 	forkSession as forkClaudeSession,
+	getSessionMessages as getSdkSessionMessages,
 	query,
 } from "@anthropic-ai/claude-agent-sdk";
 import { resolveClaudeExecutable } from "../lib/claudePath";
@@ -1488,6 +1489,59 @@ async function withClaudeConfigDirOverride<T>(
 	return result;
 }
 
+/** Extracts plain text from an Anthropic message's content blocks (or a bare string). */
+function extractMessageText(content: unknown): string {
+	if (typeof content === "string") return content.trim();
+	if (!Array.isArray(content)) return "";
+	return content
+		.map((block) => {
+			if (!block || typeof block !== "object") return "";
+			const { type, text } = block as { type?: unknown; text?: unknown };
+			return type === "text" && typeof text === "string" ? text : "";
+		})
+		.filter(Boolean)
+		.join("\n")
+		.trim();
+}
+
+/**
+ * Best-effort read-back of a freshly forked session's transcript, via the
+ * SDK's own getSessionMessages() — forkSession() only writes the native
+ * Claude transcript file, never hlid's own `messages` table (what Raven
+ * actually renders), so without this a forked session's transcript stays
+ * blank until a live turn or a manual history reload backfills it. Must be
+ * called from inside the same withClaudeConfigDirOverride window as the
+ * forkSession() call, for the same WSL-root reasons. Never throws: a failed
+ * read just leaves the row message-less rather than failing the fork.
+ */
+async function hydrateForkedMessages(
+	nativeSessionId: string,
+	params: ForkSessionParams,
+): Promise<NonNullable<ForkSessionResult["messages"]>> {
+	try {
+		const sdkMessages = await getSdkSessionMessages(nativeSessionId, {
+			...(params.historyResumeMode === "session-store"
+				? { sessionStore: createClaudeHistorySessionStore() }
+				: {}),
+		});
+		return sdkMessages
+			.filter(
+				(m): m is typeof m & { type: "user" | "assistant" } =>
+					m.type === "user" || m.type === "assistant",
+			)
+			.map((m) => ({
+				role: m.type,
+				text: extractMessageText(
+					(m.message as { content?: unknown } | undefined)?.content,
+				),
+				uuid: m.uuid,
+			}))
+			.filter((m) => m.text.length > 0);
+	} catch {
+		return [];
+	}
+}
+
 export class ClaudeProvider implements AgentProvider {
 	readonly providerId: string;
 	readonly label: string;
@@ -1751,15 +1805,16 @@ export class ClaudeProvider implements AgentProvider {
 		// CLAUDE_CONFIG_DIR does. Resolve and apply that override for the
 		// duration of this call when the project cwd is a WSL path.
 		const wslConfigDir = await resolveWslClaudeConfigDir(params.cwd);
-		const result = await withClaudeConfigDirOverride(wslConfigDir, () =>
-			forkClaudeSession(params.sessionId, {
+		return withClaudeConfigDirOverride(wslConfigDir, async () => {
+			const result = await forkClaudeSession(params.sessionId, {
 				title: params.title,
 				upToMessageId: params.upToMessageId,
 				...(params.historyResumeMode === "session-store"
 					? { sessionStore: createClaudeHistorySessionStore() }
 					: {}),
-			}),
-		);
-		return { sessionId: result.sessionId };
+			});
+			const messages = await hydrateForkedMessages(result.sessionId, params);
+			return { sessionId: result.sessionId, messages };
+		});
 	}
 }

@@ -51,6 +51,7 @@ export {
 	getSessionPlanProposals,
 	getSessionToolEventDetail,
 	getSessionToolEventSummaries,
+	insertForkedMessages,
 	setAskUserQuestionResolution,
 	setMessageRecap,
 	setMessageSdkUuid,
