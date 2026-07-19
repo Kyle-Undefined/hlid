@@ -12,6 +12,7 @@ type SessionPage = {
 type LedgerMutationDependencies = {
 	deleteSession(id: string): Promise<void>;
 	renameSession(id: string, label: string): Promise<void>;
+	forkSession(id: string): Promise<void>;
 	cleanupSessions(days: number): Promise<void>;
 	navigateToPage(page: number): void;
 };
@@ -98,6 +99,25 @@ export function useLedgerSessionMutations({
 		}
 	}
 
+	/**
+	 * Forking adds a row rather than modifying one already on this page, so
+	 * there's no optimistic patch to apply (unlike rename/delete) — on success
+	 * we just force a reload of the current page via navigateToPage, the same
+	 * "re-fetch after a mutation with no client-side patch" mechanism
+	 * cleanupSessions below already relies on.
+	 */
+	async function forkSession(id: string) {
+		setMutationError(null);
+		try {
+			await dependencies.forkSession(id);
+			dependencies.navigateToPage(page);
+		} catch (error) {
+			setMutationError(
+				error instanceof Error ? error.message : "Failed to fork session",
+			);
+		}
+	}
+
 	async function cleanupSessions(days: number) {
 		setMutationError(null);
 		try {
@@ -116,6 +136,7 @@ export function useLedgerSessionMutations({
 		reconcile,
 		deleteSession,
 		renameSession,
+		forkSession,
 		cleanupSessions,
 	};
 }

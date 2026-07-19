@@ -60,6 +60,7 @@ import {
 } from "#/lib/serverFnSchemas";
 import { getAgentListFn } from "#/lib/serverFns/agents";
 import {
+	forkSessionFn,
 	getActiveSessionRowFn,
 	getSessionRowsByIdsFn,
 } from "#/lib/serverFns/sessions";
@@ -487,6 +488,9 @@ function useLedgerMutations(
 			},
 			renameSession: async (id: string, label: string) => {
 				await renameSessionFn({ data: { id, label } });
+			},
+			forkSession: async (id: string) => {
+				await forkSessionFn({ data: { id } });
 			},
 			cleanupSessions: async (days: number) => {
 				await cleanupSessionsFn({ data: { days } });
@@ -1100,6 +1104,7 @@ function SessionsTab({
 					onPageSizeChange={onPageSizeChange}
 					onDelete={mutations.deleteSession}
 					onRename={mutations.renameSession}
+					onFork={mutations.forkSession}
 					onNavigate={(id) =>
 						navigate({
 							to: "/raven",

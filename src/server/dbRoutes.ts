@@ -1,6 +1,6 @@
 import * as db from "../db";
 import type { AttachmentListFilter } from "../db/types";
-import { clampInt } from "../lib/utils";
+import { clampInt, uid } from "../lib/utils";
 import {
 	msUntilNextLocalDay,
 	readAnalyticsSnapshot,
@@ -568,6 +568,8 @@ async function handlePostRoute(
 			return stopLiveSession(context);
 		case "/db/live-sessions/close":
 			return closeLiveSession(context);
+		case "/db/session/fork":
+			return forkSession(context);
 		default:
 			return null;
 	}
@@ -631,4 +633,50 @@ async function closeLiveSession({
 	if (entry) pool?.close(id);
 	else terminalPool?.close(id);
 	return Response.json({ ok: true });
+}
+
+/**
+ * Fork a (necessarily idle) session's transcript into a brand-new session
+ * via the owning provider's forkSession() capability, then create a new
+ * hlid session row pointing at the resulting native id. Whole-session only
+ * — no branch-from-message-N support yet.
+ */
+async function forkSession({
+	req,
+	pool,
+	terminalPool,
+}: DbRouteContext): Promise<Response> {
+	const body = await req.json().catch(() => null);
+	const sourceId = body?.id;
+	if (!sourceId || typeof sourceId !== "string") {
+		return new Response("Missing id", { status: 400 });
+	}
+
+	if (pool?.get(sourceId) || hasLiveTerminalSession(terminalPool, sourceId)) {
+		return new Response("Cannot fork a live session — stop it first", {
+			status: 409,
+		});
+	}
+
+	const source = await db.getSessionById(sourceId);
+	if (!source) return new Response("Session not found", { status: 404 });
+
+	const providerId = source.provider_id ?? "claude";
+	const provider = pool?.getProvider(providerId);
+	const nativeId = await db.getSessionProviderSession(sourceId, providerId);
+	if (!provider?.forkSession || !nativeId || !source.agent_cwd) {
+		return new Response("Forking is not supported for this session", {
+			status: 422,
+		});
+	}
+
+	const { sessionId: newNativeId } = await provider.forkSession({
+		sessionId: nativeId,
+		cwd: source.agent_cwd,
+		historyResumeMode: source.history_resume_mode,
+	});
+	const newId = uid();
+	await db.createForkedSessionRow(sourceId, newId, newNativeId);
+	bumpDataRevision("sessions");
+	return Response.json({ ok: true, id: newId });
 }

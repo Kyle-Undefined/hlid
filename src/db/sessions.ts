@@ -251,6 +251,37 @@ export async function createSession(
 	}
 }
 
+/**
+ * Create a new session row copying the durable selection (model/effort/
+ * permission mode/cwd/provider) from an existing source session, pointing it
+ * at an already-forked native provider session id. Used by the fork-session
+ * flow — the transcript fork itself happens provider-side before this runs.
+ */
+export async function createForkedSessionRow(
+	sourceId: string,
+	newId: string,
+	newProviderSessionId: string,
+): Promise<void> {
+	const source = await getSessionById(sourceId);
+	if (!source) throw new Error("Source session not found");
+	const label = source.label ? `${source.label} (fork)` : "Forked session";
+	await createSession(
+		newId,
+		label,
+		source.selected_model ?? source.model ?? "",
+		{
+			effort: source.selected_effort ?? undefined,
+			permissionMode: source.selected_permission_mode ?? undefined,
+		},
+	);
+	if (source.agent_cwd) await setSessionAgentCwd(newId, source.agent_cwd);
+	await setSessionProviderSession(
+		newId,
+		source.provider_id ?? "claude",
+		newProviderSessionId,
+	);
+}
+
 export async function recordQuery(
 	sessionId: string,
 	data: QueryData,

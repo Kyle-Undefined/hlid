@@ -1,6 +1,7 @@
 import {
 	ArrowUpDown,
 	Ellipsis,
+	GitFork,
 	Pencil,
 	Search,
 	SlidersHorizontal,
@@ -86,6 +87,8 @@ function SessionActionPanel({
 	onRequestDelete,
 	onCancelDelete,
 	onConfirmDelete,
+	canFork,
+	onFork,
 	position,
 	panelRef,
 }: {
@@ -99,6 +102,8 @@ function SessionActionPanel({
 	onRequestDelete: () => void;
 	onCancelDelete: () => void;
 	onConfirmDelete: () => void;
+	canFork: boolean;
+	onFork: () => void;
 	position: AnchoredPopoverPosition;
 	panelRef: RefObject<HTMLDivElement | null>;
 }) {
@@ -189,6 +194,15 @@ function SessionActionPanel({
 					>
 						<Pencil size={14} /> Rename
 					</button>
+					{canFork && (
+						<button
+							type="button"
+							onClick={onFork}
+							className="flex min-h-11 w-full items-center gap-2 px-3 text-[10px] tracking-wider text-foreground/80 hover:bg-accent/40"
+						>
+							<GitFork size={14} /> Fork
+						</button>
+					)}
 					<button
 						type="button"
 						onClick={onRequestDelete}
@@ -207,6 +221,7 @@ function SessionItem({
 	onDelete,
 	onNavigate,
 	onRename,
+	onFork,
 	isActive,
 	poolSession,
 	liveStats,
@@ -216,6 +231,7 @@ function SessionItem({
 	onDelete: (id: string) => void;
 	onNavigate: (id: string) => void;
 	onRename: (id: string, label: string) => void;
+	onFork: (id: string) => void;
 	isActive?: boolean;
 	poolSession?: SessionStatusEntry;
 	liveStats?: LiveStats;
@@ -229,18 +245,25 @@ function SessionItem({
 	const inputRef = useRef<HTMLInputElement>(null);
 	const actionButtonRef = useRef<HTMLButtonElement>(null);
 	const actionPanelRef = useRef<HTMLDivElement>(null);
-	const actionPosition = useAnchoredPopover(
-		menuOpen,
-		actionButtonRef,
-		isDesktop ? 160 : mobileRenaming ? 320 : 208,
-		mobileRenaming ? 210 : deleteConfirming ? 170 : 112,
-		actionPanelRef,
-	);
-	const usage = sessionDisplayUsage(session, Boolean(isActive), liveStats);
 	const importedHistory = session.history_imported === 1;
 	const resumableHistory =
 		importedHistory && (session.history_resume_mode ?? "none") !== "none";
 	const canNavigate = !importedHistory || resumableHistory;
+	// Fork is Claude-only for now (AgentProvider.forkSession isn't implemented
+	// by other providers) and unsafe against a live/registered pool entry —
+	// mirrors the same checks the server enforces in POST /db/session/fork.
+	const canFork =
+		(session.provider_id || "claude") === "claude" &&
+		!poolSession &&
+		canNavigate;
+	const actionPosition = useAnchoredPopover(
+		menuOpen,
+		actionButtonRef,
+		isDesktop ? 160 : mobileRenaming ? 320 : 208,
+		mobileRenaming ? 210 : deleteConfirming ? 170 : 112 + (canFork ? 44 : 0),
+		actionPanelRef,
+	);
+	const usage = sessionDisplayUsage(session, Boolean(isActive), liveStats);
 	const configuredModel = session.selected_model || session.model;
 	const providerModel = [
 		session.provider_id || "claude",
@@ -417,6 +440,11 @@ function SessionItem({
 										onCancelDelete={() => setDeleteConfirming(false)}
 										onConfirmDelete={() => {
 											onDelete(session.id);
+											closeMenu();
+										}}
+										canFork={canFork}
+										onFork={() => {
+											onFork(session.id);
 											closeMenu();
 										}}
 										position={actionPosition}
@@ -754,6 +782,7 @@ export function SessionsLedger({
 	onPageSizeChange,
 	onDelete,
 	onRename,
+	onFork,
 	onNavigate,
 	onCleanup,
 	activeSessionId,
@@ -787,6 +816,7 @@ export function SessionsLedger({
 	onPageSizeChange: (size: number) => void;
 	onDelete: (id: string) => void;
 	onRename: (id: string, label: string) => void;
+	onFork: (id: string) => void;
 	onNavigate: (id: string) => void;
 	onCleanup: (days: number) => void;
 	activeSessionId?: string | null;
@@ -1069,6 +1099,7 @@ export function SessionsLedger({
 						session={s}
 						onDelete={onDelete}
 						onRename={onRename}
+						onFork={onFork}
 						onNavigate={onNavigate}
 						isActive={activeSessionId != null && s.id === activeSessionId}
 						poolSession={sessionsStatus?.find((p) => p.db_session_id === s.id)}

@@ -81,6 +81,11 @@ export class SessionPool {
 		return this.entries.get(sessionId);
 	}
 
+	/** Look up a registered provider by id (e.g. "claude"). Returns undefined if not registered. */
+	getProvider(providerId: string): AgentProvider | undefined {
+		return this.providers.get(providerId);
+	}
+
 	/**
 	 * Abort and remove a session from the pool.
 	 * Calls manager.abort() to terminate any in-flight subprocess.

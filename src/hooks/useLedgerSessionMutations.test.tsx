@@ -25,6 +25,7 @@ function dependencies() {
 	return {
 		deleteSession: vi.fn().mockResolvedValue(undefined),
 		renameSession: vi.fn().mockResolvedValue(undefined),
+		forkSession: vi.fn().mockResolvedValue(undefined),
 		cleanupSessions: vi.fn().mockResolvedValue(undefined),
 		navigateToPage: vi.fn(),
 	};
@@ -92,6 +93,38 @@ describe("useLedgerSessionMutations", () => {
 		await act(() => result.current.renameSession("one", "Changed"));
 		expect(result.current.sessionsData.sessions[0]?.label).toBe("Original");
 		expect(result.current.mutationError).toBe("rename failed");
+	});
+
+	it("reloads the current page after a successful fork", async () => {
+		const deps = dependencies();
+		const { result } = renderHook(() =>
+			useLedgerSessionMutations({
+				page: 2,
+				sessionPage: { sessions: [session("one")], total: 1 },
+				dependencies: deps,
+			}),
+		);
+
+		await act(() => result.current.forkSession("one"));
+		expect(deps.forkSession).toHaveBeenCalledWith("one");
+		expect(deps.navigateToPage).toHaveBeenCalledWith(2);
+		expect(result.current.mutationError).toBeNull();
+	});
+
+	it("surfaces a fork failure without navigating", async () => {
+		const deps = dependencies();
+		deps.forkSession.mockRejectedValue(new Error("fork failed"));
+		const { result } = renderHook(() =>
+			useLedgerSessionMutations({
+				page: 1,
+				sessionPage: { sessions: [session("one")], total: 1 },
+				dependencies: deps,
+			}),
+		);
+
+		await act(() => result.current.forkSession("one"));
+		expect(result.current.mutationError).toBe("fork failed");
+		expect(deps.navigateToPage).not.toHaveBeenCalled();
 	});
 
 	it("navigates to page one only after cleanup succeeds", async () => {

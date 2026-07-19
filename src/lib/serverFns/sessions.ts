@@ -9,8 +9,9 @@ import type {
 	ToolEventDetailRow,
 	ToolEventSummaryRow,
 } from "#/db";
-import { dbJson } from "#/lib/dbClient";
+import { dbFetch, dbJson, requireDbOk } from "#/lib/dbClient";
 import {
+	sessionDeleteSchema,
 	sessionIdSchema,
 	sessionToolEventSchema,
 	terminalSessionSchema,
@@ -248,4 +249,23 @@ export const ensureSessionFn = createServerFn({ method: "POST" })
 	.handler(async ({ data: { id, label, model } }) => {
 		const { createSession } = await import("#/db");
 		await createSession(id, label, model);
+	});
+
+/**
+ * Fork a session's transcript into a brand-new session (Claude-only today —
+ * see AgentProvider.forkSession). Used by both Ledger's row action and
+ * Raven's in-session fork button.
+ */
+export const forkSessionFn = createServerFn({ method: "POST" })
+	.validator((raw) => sessionDeleteSchema.parse(raw))
+	.handler(async ({ data }) => {
+		const res = await requireDbOk(
+			await dbFetch("/db/session/fork", {
+				method: "POST",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ id: data.id }),
+			}),
+			"fork session",
+		);
+		return res.json() as Promise<{ ok: true; id: string }>;
 	});

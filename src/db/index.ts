@@ -66,6 +66,7 @@ export {
 export { getDb } from "./schema";
 // Sessions
 export {
+	createForkedSessionRow,
 	createSession,
 	deleteSession,
 	deleteSessionsOlderThan,

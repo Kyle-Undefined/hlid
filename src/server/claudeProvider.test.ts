@@ -4,15 +4,36 @@
  */
 import { describe, expect, it, vi } from "vitest";
 
-vi.mock("@anthropic-ai/claude-agent-sdk", () => ({ query: vi.fn() }));
+vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
+	query: vi.fn(),
+	forkSession: vi.fn(),
+}));
 vi.mock("../lib/claudePath", () => ({
 	resolveClaudeExecutable: vi.fn(),
 }));
+// Wrap (not replace) the real store — its shape is exercised by the
+// "imported Claude resumes" test below and by forkSession's session-store
+// path; both only need load/append to be present, never actually call them
+// (so no getDb()/DB access happens), so the real factory is safe here.
+vi.mock("./claudeHistorySessionStore", async (importOriginal) => {
+	const actual =
+		await importOriginal<typeof import("./claudeHistorySessionStore")>();
+	return {
+		...actual,
+		createClaudeHistorySessionStore: vi.fn(
+			actual.createClaudeHistorySessionStore,
+		),
+	};
+});
 
 import type { HookCallback } from "@anthropic-ai/claude-agent-sdk";
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import {
+	query,
+	forkSession as sdkForkSession,
+} from "@anthropic-ai/claude-agent-sdk";
 import { resolveClaudeExecutable } from "../lib/claudePath";
 import type { AgentEvent, AgentQueryParams, CanUseTool } from "./agentProvider";
+import { createClaudeHistorySessionStore } from "./claudeHistorySessionStore";
 import {
 	ClaudeProvider,
 	mapClaudeModels,
@@ -1463,6 +1484,46 @@ describe("ClaudeProvider — listSkills", () => {
 			new ClaudeProvider().listSkills?.({ cwd: "/work/project" }),
 		).resolves.toEqual([{ name: "voice", description: "Apply voice rules" }]);
 		expect(gen.supportedCommands).toHaveBeenCalledOnce();
+	});
+});
+
+// ── forkSession ───────────────────────────────────────────────────────────────
+
+describe("ClaudeProvider — forkSession", () => {
+	it("forks via the SDK with dir + title, no sessionStore for plain resume", async () => {
+		vi.mocked(sdkForkSession).mockResolvedValueOnce({
+			sessionId: "forked-session-id",
+		});
+
+		const result = await new ClaudeProvider().forkSession?.({
+			sessionId: "source-session-id",
+			cwd: "/work/project",
+			title: "My fork",
+		});
+
+		expect(result).toEqual({ sessionId: "forked-session-id" });
+		expect(sdkForkSession).toHaveBeenCalledWith("source-session-id", {
+			dir: "/work/project",
+			title: "My fork",
+		});
+	});
+
+	it("passes the DB-backed sessionStore for session-store-resumed sessions", async () => {
+		vi.mocked(sdkForkSession).mockResolvedValueOnce({
+			sessionId: "forked-session-id",
+		});
+
+		await new ClaudeProvider().forkSession?.({
+			sessionId: "source-session-id",
+			cwd: "/work/project",
+			historyResumeMode: "session-store",
+		});
+
+		expect(createClaudeHistorySessionStore).toHaveBeenCalledOnce();
+		const call = vi.mocked(sdkForkSession).mock.calls.at(-1);
+		expect(call?.[0]).toBe("source-session-id");
+		expect(call?.[1]).toMatchObject({ dir: "/work/project", title: undefined });
+		expect(typeof call?.[1]?.sessionStore?.load).toBe("function");
 	});
 });
 

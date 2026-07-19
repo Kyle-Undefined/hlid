@@ -5,13 +5,18 @@ import type {
 	ModelInfo as SdkModelInfo,
 	PermissionMode as SdkPermissionMode,
 } from "@anthropic-ai/claude-agent-sdk";
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import {
+	forkSession as forkClaudeSession,
+	query,
+} from "@anthropic-ai/claude-agent-sdk";
 import { resolveClaudeExecutable } from "../lib/claudePath";
 import type {
 	AgentEvent,
 	AgentProvider,
 	AgentQueryParams,
 	AgentSession,
+	ForkSessionParams,
+	ForkSessionResult,
 	McpServerStatus,
 	ProviderAccountInfo,
 	ProviderContextUsage,
@@ -1640,5 +1645,17 @@ export class ClaudeProvider implements AgentProvider {
 			this.exposeUsageWindows,
 			this.exposeAccountInfo,
 		);
+	}
+
+	// fallow-ignore-next-line unused-class-member -- Invoked through the optional AgentProvider.forkSession capability in dbRoutes.
+	async forkSession(params: ForkSessionParams): Promise<ForkSessionResult> {
+		const result = await forkClaudeSession(params.sessionId, {
+			dir: params.cwd,
+			title: params.title,
+			...(params.historyResumeMode === "session-store"
+				? { sessionStore: createClaudeHistorySessionStore() }
+				: {}),
+		});
+		return { sessionId: result.sessionId };
 	}
 }

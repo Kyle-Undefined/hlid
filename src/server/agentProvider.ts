@@ -347,6 +347,23 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 	accountInfo?(): Promise<ProviderAccountInfo | null>;
 }
 
+/** Params for AgentProvider.forkSession — branch a session's transcript into a new one. */
+export type ForkSessionParams = {
+	/** Native provider session id to fork from (not hlid's own session id). */
+	sessionId: string;
+	/** Project working directory the source session belongs to. */
+	cwd: string;
+	/** From SessionRow.history_resume_mode — selects the right transcript source. */
+	historyResumeMode?: "none" | "native" | "session-store";
+	/** Custom title for the forked session. If omitted, the provider picks a default. */
+	title?: string;
+};
+
+export type ForkSessionResult = {
+	/** New native provider session id, resumable like any other. */
+	sessionId: string;
+};
+
 export interface AgentProvider {
 	/** Stable identifier used to namespace DB keys and UI tabs, e.g. "claude". */
 	readonly providerId: string;
@@ -401,6 +418,13 @@ export interface AgentProvider {
 		executable?: string;
 	}): Promise<ProviderSkillInfo[]>;
 	query(params: AgentQueryParams): AgentSession;
+	/**
+	 * Fork an existing (typically idle) session's transcript into a brand-new
+	 * session without a live query. Providers that can't do this omit the
+	 * method entirely — callers must feature-detect with
+	 * `typeof provider.forkSession === "function"`.
+	 */
+	forkSession?(params: ForkSessionParams): Promise<ForkSessionResult>;
 	/**
 	 * When present, the generic proxy infra will spin up an HTTP proxy for this
 	 * provider, set `envVar` in the environment, and call `parseHeaders` on every

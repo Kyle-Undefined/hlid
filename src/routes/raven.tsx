@@ -1,6 +1,7 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
 	FileCode,
+	GitFork,
 	LoaderCircle,
 	MessageSquare,
 	Mic,
@@ -106,6 +107,7 @@ import {
 } from "#/lib/serverFns/providers";
 import {
 	ensureSessionFn,
+	forkSessionFn,
 	getCurrentSessionFn,
 	getLiveSessionsFn,
 	getSessionSelectionFn,
@@ -2689,10 +2691,70 @@ function ChatActionButtons({
 	canQueue,
 	handleSend,
 	handleClear,
+	session,
+	activeProviderId,
 }: ChatComposerProps) {
 	const { send, isRunning, messages } = runtime;
+	const navigate = useNavigate();
+	const [forking, setForking] = useState(false);
+	const [forkError, setForkError] = useState<string | null>(null);
+	// Claude-only for now — AgentProvider.forkSession isn't implemented by
+	// other providers yet. Idle + non-empty mirrors the same preconditions
+	// the server enforces in POST /db/session/fork.
+	const canFork =
+		activeProviderId === "claude" && !isRunning && messages.length > 0;
+
+	async function handleFork() {
+		setForkError(null);
+		setForking(true);
+		try {
+			const { id: newId } = await forkSessionFn({
+				data: { id: session.sessionId },
+			});
+			void navigate({
+				to: "/raven",
+				search: (previous) => ({ ...previous, session: newId }),
+			});
+		} catch (error) {
+			setForkError(error instanceof Error ? error.message : "Fork failed");
+			setForking(false);
+		}
+	}
+
 	return (
 		<>
+			{forkError && (
+				<div
+					role="alert"
+					className="flex items-center gap-1.5 text-[9px] text-destructive/80 shrink-0"
+				>
+					{forkError}
+					<button
+						type="button"
+						onClick={() => setForkError(null)}
+						aria-label="Dismiss fork error"
+						className="text-destructive/50 hover:text-destructive"
+					>
+						<X className="w-3 h-3" />
+					</button>
+				</div>
+			)}
+			{canFork && (
+				<button
+					type="button"
+					onClick={handleFork}
+					disabled={forking}
+					className="px-3 py-3 text-muted-foreground/45 hover:text-muted-foreground disabled:opacity-40 transition-colors shrink-0"
+					aria-label="Fork session"
+					title="Fork this session into a new one"
+				>
+					{forking ? (
+						<LoaderCircle className="w-3.5 h-3.5 animate-spin" />
+					) : (
+						<GitFork className="w-3.5 h-3.5" />
+					)}
+				</button>
+			)}
 			{isRunning && (
 				<button
 					type="button"

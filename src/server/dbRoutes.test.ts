@@ -25,6 +25,8 @@ const {
 	mockSyncClaudeProviderHistory,
 	mockStartProviderHistorySync,
 	mockGetProviderHistorySyncStatus,
+	mockGetSessionProviderSession,
+	mockCreateForkedSessionRow,
 } = vi.hoisted(() => ({
 	mockGetSessionById: vi.fn(),
 	mockListAttachments: vi.fn(),
@@ -41,6 +43,8 @@ const {
 	mockSyncClaudeProviderHistory: vi.fn(),
 	mockStartProviderHistorySync: vi.fn(),
 	mockGetProviderHistorySyncStatus: vi.fn(),
+	mockGetSessionProviderSession: vi.fn(),
+	mockCreateForkedSessionRow: vi.fn(),
 }));
 
 vi.mock("../db", () => ({
@@ -56,6 +60,8 @@ vi.mock("../db", () => ({
 	getAggregatedStats: mockGetAggregatedStats,
 	getRecentSessions: mockGetRecentSessions,
 	getSessionsPaginated: mockGetSessionsPaginated,
+	getSessionProviderSession: mockGetSessionProviderSession,
+	createForkedSessionRow: mockCreateForkedSessionRow,
 }));
 
 // dbRoutes also imports from ./attachments and ./proxy — stub them out.
@@ -84,6 +90,7 @@ function makePool(
 		get: (id: string) => unknown;
 		close: (id: string) => void;
 		isVaultSession: (id: string) => boolean;
+		getProvider: (id: string) => unknown;
 	}> = {},
 ): SessionPool {
 	return {
@@ -91,6 +98,7 @@ function makePool(
 		get: vi.fn().mockReturnValue(undefined),
 		close: vi.fn(),
 		isVaultSession: vi.fn().mockReturnValue(false),
+		getProvider: vi.fn().mockReturnValue(undefined),
 		...overrides,
 	} as unknown as SessionPool;
 }
@@ -672,6 +680,121 @@ describe("handleDbRoute — POST /db/live-sessions/close", () => {
 		const res = await handleDbRoute(url, req, pool);
 
 		expect(res).toBeNull();
+	});
+});
+
+// ── POST /db/session/fork ─────────────────────────────────────────────────────
+
+describe("handleDbRoute — POST /db/session/fork", () => {
+	beforeEach(() => {
+		mockGetSessionById.mockReset();
+		mockGetSessionProviderSession.mockReset();
+		mockCreateForkedSessionRow.mockReset();
+	});
+
+	function forkRequest(body: unknown): Request {
+		return new Request("http://localhost/db/session/fork", {
+			method: "POST",
+			body: typeof body === "string" ? body : JSON.stringify(body),
+			headers: { "Content-Type": "application/json" },
+		});
+	}
+
+	it("returns 400 when id is missing", async () => {
+		const pool = makePool();
+		const res = await handleDbRoute(
+			makeUrl("/db/session/fork"),
+			forkRequest({}),
+			pool,
+		);
+		if (!res) throw new Error("Expected a Response, got null");
+		expect(res.status).toBe(400);
+	});
+
+	it("returns 409 when the source session is live in the pool", async () => {
+		const pool = makePool({ get: vi.fn().mockReturnValue({}) });
+		const res = await handleDbRoute(
+			makeUrl("/db/session/fork"),
+			forkRequest({ id: "live-session" }),
+			pool,
+		);
+		if (!res) throw new Error("Expected a Response, got null");
+		expect(res.status).toBe(409);
+		expect(mockGetSessionById).not.toHaveBeenCalled();
+	});
+
+	it("returns 404 when the source session doesn't exist", async () => {
+		mockGetSessionById.mockResolvedValue(null);
+		const pool = makePool();
+		const res = await handleDbRoute(
+			makeUrl("/db/session/fork"),
+			forkRequest({ id: "missing" }),
+			pool,
+		);
+		if (!res) throw new Error("Expected a Response, got null");
+		expect(res.status).toBe(404);
+	});
+
+	it("returns 422 when the provider doesn't support forkSession", async () => {
+		mockGetSessionById.mockResolvedValue({
+			...sampleRow,
+			provider_id: "codex",
+			agent_cwd: "/work/project",
+		});
+		mockGetSessionProviderSession.mockResolvedValue("native-id");
+		const pool = makePool({
+			getProvider: vi.fn().mockReturnValue({ providerId: "codex" }), // no forkSession()
+		});
+		const res = await handleDbRoute(
+			makeUrl("/db/session/fork"),
+			forkRequest({ id: "abc-123" }),
+			pool,
+		);
+		if (!res) throw new Error("Expected a Response, got null");
+		expect(res.status).toBe(422);
+	});
+
+	it("forks via the provider and creates a new row on success", async () => {
+		mockGetSessionById.mockResolvedValue({
+			...sampleRow,
+			provider_id: "claude",
+			agent_cwd: "/work/project",
+			history_resume_mode: "none",
+		});
+		mockGetSessionProviderSession.mockResolvedValue("native-source-id");
+		const mockForkSession = vi
+			.fn()
+			.mockResolvedValue({ sessionId: "native-forked-id" });
+		const pool = makePool({
+			getProvider: vi.fn().mockReturnValue({
+				providerId: "claude",
+				forkSession: mockForkSession,
+			}),
+		});
+
+		const res = await handleDbRoute(
+			makeUrl("/db/session/fork"),
+			forkRequest({ id: "abc-123" }),
+			pool,
+		);
+
+		if (!res) throw new Error("Expected a Response, got null");
+		expect(res.status).toBe(200);
+		const json = (await res.json()) as { ok: true; id: string };
+		expect(json.ok).toBe(true);
+		expect(typeof json.id).toBe("string");
+		expect(json.id).not.toBe("abc-123");
+
+		expect(mockForkSession).toHaveBeenCalledWith({
+			sessionId: "native-source-id",
+			cwd: "/work/project",
+			historyResumeMode: "none",
+		});
+		expect(mockCreateForkedSessionRow).toHaveBeenCalledWith(
+			"abc-123",
+			json.id,
+			"native-forked-id",
+		);
 	});
 });
 
