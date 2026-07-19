@@ -32,7 +32,8 @@ own folder vocabulary. `Hlið` does not care as long as the paths are set up.
 - Can hand a task to a fresh Windows-native `Codex Computer Use` worker, while
   keeping approvals, `Umbod` policy, and usage accounting inside `Hlið`.
 - Runs `Whisper` locally for voice input. Audio never gets shipped to a cloud
-  transcription service.
+  transcription service. Completed replies can also be read aloud through a
+  local voice on the device viewing `Raven`.
 - Opens a real project shell in `Raven`, with an optional interactive `Claude
   CLI` mode when the full terminal makes more sense than the structured chat UI.
 - Keeps linked vaults and workspaces, provider commands, permissions, scoped

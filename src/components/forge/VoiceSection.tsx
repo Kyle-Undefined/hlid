@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { HlidConfig } from "#/config";
 import { getVoiceInfoFn, type VoiceInfo } from "#/lib/serverFns/voice";
+import { ReadAloudSection } from "./ReadAloudSection";
 import { VoiceInputFields } from "./VoiceInputFields";
 import { WhisperModelsSection } from "./WhisperModelsSection";
 
@@ -48,6 +49,7 @@ export function VoiceSection({
 
 	return (
 		<div className="space-y-6">
+			<ReadAloudSection />
 			<VoiceInputFields
 				voice={voice}
 				onChange={onChange}

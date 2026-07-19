@@ -4,6 +4,7 @@ import { PrivacyMask } from "#/components/PrivacyMask";
 import { useCopyToClipboard } from "#/hooks/useCopyToClipboard";
 import { CopyButton } from "./CopyButton";
 import type { AssistantMessage } from "./chatReducer";
+import { ReadAloudButton } from "./ReadAloudButton";
 import { ToolBlock } from "./ToolBlock";
 
 export function normalizeMd(text: string): string {
@@ -121,6 +122,11 @@ export function AssistantMsg({
 								onCopy={() => copy(message.text ?? "")}
 								copied={copied}
 								className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity"
+							/>
+							<ReadAloudButton
+								messageId={message.id}
+								text={message.text}
+								className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100"
 							/>
 							{canBranch && message.dbId != null && onBranch && (
 								<button

@@ -199,7 +199,7 @@ describe("AssistantMsg", () => {
 				})}
 			/>,
 		);
-		const read = screen.getByRole("button", { name: /read/i });
+		const read = screen.getByRole("button", { name: /^Read path:/ });
 		const active = screen.getByRole("button", { name: /explorer running/i });
 		expect(
 			read.compareDocumentPosition(active) & Node.DOCUMENT_POSITION_FOLLOWING,
@@ -260,11 +260,18 @@ describe("AssistantMsg", () => {
 			expect(btn.className).toContain("[@media(hover:none)]:opacity-100");
 		});
 
+		it("offers read aloud beside copy for completed responses", () => {
+			render(<AssistantMsg message={makeMsg()} />);
+			const button = screen.getByRole("button", { name: "Read aloud" });
+			expect(button.className).toContain("[@media(hover:none)]:opacity-100");
+		});
+
 		it("copy button not rendered when streaming", () => {
 			render(
 				<AssistantMsg message={makeMsg({ streaming: true, text: "hi" })} />,
 			);
 			expect(screen.queryByRole("button", { name: /copy/i })).toBeNull();
+			expect(screen.queryByRole("button", { name: /read aloud/i })).toBeNull();
 		});
 
 		it("copy button not rendered when no text", () => {

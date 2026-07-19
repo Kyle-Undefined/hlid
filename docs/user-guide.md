@@ -403,6 +403,22 @@ LAN access for a network you actually trust.
 
 ## Voice and attachments
 
+### Read aloud
+
+Every completed assistant reply in `Raven` has a speaker control beside the
+copy action. It starts only when tapped. While it is reading, the same control
+pauses or resumes and a separate stop control ends playback.
+
+Reading happens through a local speech voice on the device viewing `Raven`.
+`Hlið` excludes voices that the browser reports as remote. Open **FORGE →
+Experience → Read aloud** to choose among the local voices on the current
+device and set the reading speed. Those preferences stay in that browser
+because each phone or computer has its own voice inventory.
+
+Read aloud skips fenced code blocks, link addresses, and Markdown formatting.
+It reads the finished response text, not tool activity or a reply that is still
+streaming.
+
 ### Voice input
 
 Open **FORGE → Experience → Voice**, download a `Whisper` model, select it, and

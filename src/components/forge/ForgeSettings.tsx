@@ -81,11 +81,13 @@ const CATEGORIES = [
 			"UI",
 			"Custom theme",
 			"Custom palette",
+			"Read aloud",
 			"Voice input",
 			"Whisper models",
 			"Privacy",
 		],
-		keywords: "theme mobile enter skills plans whisper microphone demo",
+		keywords:
+			"theme mobile enter skills plans read aloud speech speaker whisper microphone demo",
 		group: "primary",
 	},
 	{
