@@ -119,6 +119,32 @@ function oauthFailureDetail(output: string): string | undefined {
 	return detail?.slice(0, 500);
 }
 
+export async function terminateCliProxyChild(
+	child: ChildProcess | null,
+	timeoutMs = 5_000,
+): Promise<void> {
+	if (!child || child.exitCode !== null) return;
+	await new Promise<void>((resolve) => {
+		let settled = false;
+		const finish = () => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timeout);
+			child.off("exit", finish);
+			child.off("error", finish);
+			resolve();
+		};
+		const timeout = setTimeout(finish, timeoutMs);
+		child.once("exit", finish);
+		child.once("error", finish);
+		try {
+			child.kill();
+		} catch {
+			finish();
+		}
+	});
+}
+
 function safeVersion(tag: string): string {
 	const version = tag.replace(/^v/i, "").trim();
 	if (!/^\d+(?:\.\d+){1,3}(?:[-+][A-Za-z0-9.-]+)?$/.test(version)) {
@@ -661,7 +687,7 @@ export class CliProxyManager {
 	async stop(): Promise<void> {
 		const child = this.runtime;
 		this.runtime = null;
-		if (child && child.exitCode === null) child.kill();
+		await terminateCliProxyChild(child);
 		const installed = this.installed();
 		this.statusValue = {
 			...this.statusValue,
@@ -787,13 +813,18 @@ export class CliProxyManager {
 	}
 
 	async remove(): Promise<void> {
-		await this.stop();
 		if (this.oauthLaunchTimer) clearTimeout(this.oauthLaunchTimer);
 		this.oauthLaunchTimer = null;
-		if (this.oauthProcess && this.oauthProcess.exitCode === null)
-			this.oauthProcess.kill();
+		await this.stop();
+		const oauthProcess = this.oauthProcess;
 		this.oauthProcess = null;
-		rmSync(this.root, { recursive: true, force: true });
+		await terminateCliProxyChild(oauthProcess);
+		rmSync(this.root, {
+			recursive: true,
+			force: true,
+			maxRetries: 10,
+			retryDelay: 100,
+		});
 		this.statusValue = {
 			state: this.platform === "win32" ? "not_installed" : "unsupported",
 			managed: true,

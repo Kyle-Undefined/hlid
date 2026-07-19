@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { ConfirmAction } from "#/components/ConfirmAction";
 import { DEFAULT_CLIPROXY_CONFIG, type HlidConfig } from "#/config";
 import {
 	connectCliProxyAntigravityFn,
@@ -301,22 +302,21 @@ export function CliProxySection({
 									? `Update to v${info.latestVersion}`
 									: "Check / repair"}
 						</button>
-						<button
-							type="button"
-							disabled={Boolean(busy)}
-							onClick={() => {
-								if (
-									!window.confirm(
-										"Remove CLIProxyAPI and all of its saved OAuth accounts from this machine?",
-									)
-								)
-									return;
-								void run("remove", removeCliProxyFn);
-							}}
-							className="px-3 py-1.5 border border-destructive/50 text-destructive text-[10px] tracking-widest uppercase disabled:opacity-50"
-						>
-							Remove
-						</button>
+						<ConfirmAction
+							label="remove CLIProxy and saved accounts?"
+							confirmText="remove"
+							onConfirm={() => void run("remove", removeCliProxyFn)}
+							trigger={(open) => (
+								<button
+									type="button"
+									disabled={Boolean(busy)}
+									onClick={open}
+									className="px-3 py-1.5 border border-destructive/50 text-destructive text-[10px] tracking-widest uppercase disabled:opacity-50"
+								>
+									Remove
+								</button>
+							)}
+						/>
 					</>
 				)}
 				<button

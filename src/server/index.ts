@@ -640,8 +640,8 @@ const CLIPROXY_ROUTE_HANDLERS: Record<string, ServerRouteHandler> = {
 		return Response.json(status, { status: 202 });
 	},
 	"DELETE /cliproxy": async () => {
-		writeManagedCliProxyConfig(false);
 		await cliProxy.remove();
+		writeManagedCliProxyConfig(false);
 		await syncCliProxyRuntime();
 		return Response.json(cliProxy.status());
 	},

@@ -1,7 +1,8 @@
+import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { HlidConfigSchema } from "../config";
 import {
 	CLIPROXY_OAUTH_PROVIDERS,
@@ -10,6 +11,7 @@ import {
 	extractCliProxyOAuthPrompt,
 	managedCliProxyConfig,
 	selectCliProxyReleaseAssets,
+	terminateCliProxyChild,
 } from "./cliproxyManager";
 
 const temporaryRoots: string[] = [];
@@ -61,6 +63,26 @@ describe("CLIProxy release verification", () => {
 });
 
 describe("managed CLIProxy configuration", () => {
+	it("waits for a child process to exit after requesting termination", async () => {
+		class FakeChild extends EventEmitter {
+			exitCode: number | null = null;
+			kill = vi.fn(() => {
+				setTimeout(() => {
+					this.exitCode = 0;
+					this.emit("exit", 0);
+				}, 10);
+				return true;
+			});
+		}
+		const child = new FakeChild();
+		await terminateCliProxyChild(
+			child as unknown as import("node:child_process").ChildProcess,
+			100,
+		);
+		expect(child.kill).toHaveBeenCalledOnce();
+		expect(child.exitCode).toBe(0);
+	});
+
 	it("uses CLIProxy's device flow for OpenAI while retaining provider login commands", () => {
 		expect(
 			Object.fromEntries(
