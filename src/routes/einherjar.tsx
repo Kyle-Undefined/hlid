@@ -1,22 +1,21 @@
-import { resolve } from "node:path";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import { Plus } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AddAgentPanel } from "#/components/einherjar/AddAgentPanel";
 import type {
 	AgentEntry,
 	AgentProviderSettings,
 } from "#/components/einherjar/AgentCard";
 import { AgentCard, AgentEmptyState } from "#/components/einherjar/AgentCard";
-import { readAgentInstructionsAsync } from "#/lib/agentInstructions";
 import { agentConfigToEntry, inspectAgentPath } from "#/lib/agentMcp";
 import { writeConfig } from "#/lib/config-writer";
-import { expandTilde, samePath } from "#/lib/paths";
+import type { InstructionFileTarget } from "#/lib/instructionFileTypes";
 import type { ProviderInfo } from "#/lib/providerTypes";
 import { ROUTE_SCROLL_RESTORATION_IDS } from "#/lib/scrollContainers";
 import { agentListSchema, agentPathSchema } from "#/lib/serverFnSchemas";
 import { getConfig } from "#/lib/serverFns/config";
+import { getInstructionFileTargetsFn } from "#/lib/serverFns/instructionFiles";
 import { getProvidersFn } from "#/lib/serverFns/providers";
 import { uid } from "#/lib/utils";
 import { useAgentRoster } from "./-useAgentRoster";
@@ -42,29 +41,6 @@ const saveAgentsFn = createServerFn({ method: "POST" })
 	.handler(async ({ data: agentList }) => {
 		const config = await getConfig();
 		writeConfig({ ...config, agents: agentList });
-	});
-
-const readAgentInstructionsFn = createServerFn({ method: "GET" })
-	.validator((raw) => agentPathSchema.parse(raw))
-	.handler(async ({ data: agentPath }) => {
-		const config = await getConfig();
-		const allowedPaths = (config.agents ?? []).map((a) =>
-			resolve(expandTilde(a.path)),
-		);
-		const requested = resolve(expandTilde(agentPath));
-		if (!allowedPaths.some((p) => samePath(p, requested)))
-			throw new Error("Unauthorized");
-		let timer: ReturnType<typeof setTimeout> | undefined;
-		try {
-			return await Promise.race([
-				readAgentInstructionsAsync(requested),
-				new Promise<null>((resolveTimeout) => {
-					timer = setTimeout(() => resolveTimeout(null), 2_000);
-				}),
-			]);
-		} finally {
-			if (timer) clearTimeout(timer);
-		}
 	});
 
 const getExternalAllowedFn = createServerFn({ method: "GET" }).handler(
@@ -114,6 +90,25 @@ function EinherjarPage() {
 			getAgentsFn,
 		});
 	const [showAdd, setShowAdd] = useState(false);
+	const [instructionTargets, setInstructionTargets] = useState<
+		InstructionFileTarget[]
+	>([]);
+
+	useEffect(() => {
+		let cancelled = false;
+		void getInstructionFileTargetsFn()
+			.then((targets) => {
+				if (!cancelled) {
+					setInstructionTargets(
+						targets.filter((target) => target.owner === "agent"),
+					);
+				}
+			})
+			.catch(() => {});
+		return () => {
+			cancelled = true;
+		};
+	}, []);
 
 	async function handleAddSubmit(
 		path: string,
@@ -123,6 +118,11 @@ function EinherjarPage() {
 		settings: AgentProviderSettings,
 	) {
 		await handleAdd(path, name, mode, provider, settings);
+		setInstructionTargets(
+			(await getInstructionFileTargetsFn()).filter(
+				(target) => target.owner === "agent",
+			),
+		);
 		setShowAdd(false);
 	}
 
@@ -187,9 +187,9 @@ function EinherjarPage() {
 								onSaveEdit={(name, mode, provider, settings) =>
 									handleSaveEdit(agent.path, name, mode, provider, settings)
 								}
-								onReadInstructions={() =>
-									readAgentInstructionsFn({ data: agent.path })
-								}
+								instructionTargets={instructionTargets.filter(
+									(target) => target.agentPath === agent.path,
+								)}
 								providers={providers}
 							/>
 						))

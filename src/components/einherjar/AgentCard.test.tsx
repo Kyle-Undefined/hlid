@@ -11,6 +11,7 @@
  */
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { InstructionFileTarget } from "#/lib/instructionFileTypes";
 import type { ProviderInfo } from "#/lib/providerTypes";
 import { AgentCard, type AgentEntry } from "./AgentCard";
 
@@ -67,11 +68,31 @@ function renderCard(
 		onModeChange: vi.fn(),
 		onChat: vi.fn(),
 		onSaveEdit: vi.fn().mockResolvedValue(undefined),
-		onReadInstructions: vi.fn().mockResolvedValue(null),
+		instructionTargets: [],
 		providers,
 		...overrides,
 	};
 	return render(<AgentCard {...props} />);
+}
+
+function instructionTarget(
+	filename: "AGENTS.md" | "CLAUDE.md",
+): InstructionFileTarget {
+	return {
+		id: `instructions:${filename}`,
+		owner: "agent",
+		provider: filename === "AGENTS.md" ? "codex" : "claude",
+		filename,
+		scopeLabel: "Foo",
+		environment: "host",
+		environmentLabel: "Host",
+		path: `/agents/foo/${filename}`,
+		agentPath: "/agents/foo",
+		exists: filename === "AGENTS.md",
+		size: filename === "AGENTS.md" ? 20 : null,
+		revision: filename === "AGENTS.md" ? "a".repeat(64) : null,
+		writable: true,
+	};
 }
 
 describe("AgentCard edit options", () => {
@@ -191,35 +212,33 @@ describe("AgentCard edit options", () => {
 		expect(onRemove).toHaveBeenCalledOnce();
 	});
 
-	it("keeps instruction expansion usable when loading fails", async () => {
-		const onReadInstructions = vi
-			.fn()
-			.mockRejectedValue(new Error("read failed"));
+	it("shows both provider instruction files, including a missing file", () => {
 		renderCard(makeAgent({ instructionFile: "AGENTS.md" }), [claudeProvider], {
-			onReadInstructions,
+			instructionTargets: [
+				instructionTarget("AGENTS.md"),
+				instructionTarget("CLAUDE.md"),
+			],
 		});
 
 		fireEvent.click(screen.getByLabelText("Expand AGENTS.md"));
-		await screen.findByLabelText("Collapse AGENTS.md");
-		fireEvent.click(screen.getByLabelText("Collapse AGENTS.md"));
-		fireEvent.click(screen.getByLabelText("Expand AGENTS.md"));
 
-		expect(onReadInstructions).toHaveBeenCalledOnce();
+		expect(screen.getByText("AGENTS.md")).not.toBeNull();
+		expect(screen.getByText("CLAUDE.md")).not.toBeNull();
+		expect(screen.getByText("Create")).not.toBeNull();
 	});
 
-	it("loads instructions on demand when the roster skipped path inspection", async () => {
-		const onReadInstructions = vi.fn().mockResolvedValue({
-			filename: "AGENTS.md",
-			content: "# WSL agent instructions",
-		});
+	it("keeps instruction expansion available when no file exists yet", () => {
 		renderCard(makeAgent({ instructionFile: null }), [claudeProvider], {
-			onReadInstructions,
+			instructionTargets: [
+				instructionTarget("AGENTS.md"),
+				instructionTarget("CLAUDE.md"),
+			],
 		});
 
 		fireEvent.click(screen.getByLabelText("Expand instructions"));
 
-		expect(await screen.findByText("WSL agent instructions")).not.toBeNull();
-		expect(onReadInstructions).toHaveBeenCalledOnce();
+		expect(screen.getByText("AGENTS.md")).not.toBeNull();
+		expect(screen.getByText("CLAUDE.md")).not.toBeNull();
 	});
 
 	it("delegates mode and chat actions without changing persisted props", () => {

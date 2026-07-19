@@ -249,6 +249,10 @@ fallback.
 A `cwd` entry runs the agent from the registered directory instead. Paths
 outside the vault need the external-agent switch in `Forge`.
 
+Expand an Einherjar entry to preview or edit its root `AGENTS.md` and
+`CLAUDE.md`. Missing files can be created in place. Hlid keeps the two files
+separate because Codex and Claude load different native instruction names.
+
 ### Forge
 
 ![Forge overview and category navigation](images/forge-overview.png)
@@ -260,8 +264,11 @@ outside the vault need the external-agent switch in `Forge`.
 - **Overview** shows the current config and service state.
 - **Workspace** holds the vault, folder mappings, and vocabulary.
 - **Agents** holds provider, model, effort, permissions, usage limits, recaps,
-  automatic usage-window sleep/resume behavior, and `Codex Computer Use`
-  defaults when the Windows capability exists.
+  vault and global instruction-file editors, automatic usage-window
+  sleep/resume behavior, and `Codex Computer Use` defaults when the Windows
+  capability exists. Global files are grouped by their Windows or WSL runtime,
+  and edits take effect when the matching provider conversation starts or
+  reloads.
 - **Access** has network, `TLS`, password, and trusted-device settings.
 - **Experience** has built-in or custom desktop/mobile themes, input behavior,
 	the provider-entry visibility toggle for the `/` picker, `HTML` plan defaults,

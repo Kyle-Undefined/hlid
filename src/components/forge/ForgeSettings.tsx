@@ -8,6 +8,7 @@ import {
 } from "#/components/forge/ClaudeSection";
 import { CustomThemeSection } from "#/components/forge/CustomThemeSection";
 import { EventLogSection } from "#/components/forge/EventLogSection";
+import { InstructionFilesSection } from "#/components/forge/InstructionFilesSection";
 import { McpSection } from "#/components/forge/McpSection";
 import { NetworkSection } from "#/components/forge/NetworkSection";
 import { PricingSection } from "#/components/forge/PricingSection";
@@ -51,9 +52,14 @@ const CATEGORIES = [
 		id: "agents",
 		label: "Agents",
 		description: "Provider, model, permissions, limits, and recaps",
-		sections: ["Vault Agent", "Computer Use", "Auto-sleep on usage limit"],
+		sections: [
+			"Vault Agent",
+			"Agent Instructions",
+			"Computer Use",
+			"Auto-sleep on usage limit",
+		],
 		keywords:
-			"provider model effort permissions turns recaps account computer use windows desktop auto sleep usage limit rate window resume",
+			"provider model effort permissions turns recaps account instructions agents md claude global wsl computer use windows desktop auto sleep usage limit rate window resume",
 		group: "primary",
 	},
 	{
@@ -140,6 +146,7 @@ function AgentSettings({
 				providers={initial.providers}
 				accountInfo={initial.accountInfo}
 			/>
+			<InstructionFilesSection />
 			<ComputerUseSection
 				claude={agentForm}
 				onChange={state.changeClaude}

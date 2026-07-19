@@ -1,12 +1,9 @@
 import { Bot } from "lucide-react";
 import { useState } from "react";
 import { AgentMcpSection } from "#/components/forge/McpSection";
-import { MarkdownBody } from "#/components/MarkdownBody";
-import { PrivacyMask } from "#/components/PrivacyMask";
-import type {
-	AgentInstructionFileName,
-	AgentInstructions,
-} from "#/lib/agentInstructions";
+import { InstructionFilesPanel } from "#/components/instructions/InstructionFilesPanel";
+import type { AgentInstructionFileName } from "#/lib/agentInstructions";
+import type { InstructionFileTarget } from "#/lib/instructionFileTypes";
 import type { ProviderInfo } from "#/lib/providerTypes";
 import {
 	AgentCardEditForm,
@@ -45,7 +42,7 @@ export function AgentCard({
 	onModeChange,
 	onChat,
 	onSaveEdit,
-	onReadInstructions,
+	instructionTargets,
 	providers,
 }: {
 	agent: AgentEntry;
@@ -58,32 +55,15 @@ export function AgentCard({
 		provider: string,
 		settings: AgentProviderSettings,
 	) => Promise<void>;
-	onReadInstructions: () => Promise<AgentInstructions | null>;
+	instructionTargets: InstructionFileTarget[];
 	providers: ProviderInfo[];
 }) {
 	const [editing, setEditing] = useState<EditState | null>(null);
 	const [expanded, setExpanded] = useState(false);
-	const [instructions, setInstructions] = useState<AgentInstructions | null>(
-		null,
-	);
-	const [instructionsLoaded, setInstructionsLoaded] = useState(false);
 	const [showMcp, setShowMcp] = useState(false);
 
-	async function handleToggleView() {
-		if (expanded) {
-			setExpanded(false);
-			return;
-		}
-		if (!instructionsLoaded) {
-			try {
-				setInstructions(await onReadInstructions());
-			} catch {
-				setInstructions(null);
-			} finally {
-				setInstructionsLoaded(true);
-			}
-		}
-		setExpanded(true);
+	function handleToggleView() {
+		setExpanded((current) => !current);
 	}
 
 	async function handleSaveEdit() {
@@ -118,7 +98,7 @@ export function AgentCard({
 				agent={agent}
 				expanded={expanded}
 				showMcp={showMcp}
-				onToggleView={() => void handleToggleView()}
+				onToggleView={handleToggleView}
 				onModeChange={onModeChange}
 				onChat={onChat}
 				onEdit={() => setEditing(editStateFromAgent(agent))}
@@ -138,14 +118,15 @@ export function AgentCard({
 				/>
 			)}
 
-			{expanded && instructionsLoaded && (
-				<div className="px-6 py-4 bg-secondary/30 text-xs text-foreground/80 leading-relaxed">
-					<div className="mb-3 text-[9px] tracking-widest text-muted-foreground/50 uppercase">
-						{instructions?.filename ?? "Instructions unavailable"}
-					</div>
-					<PrivacyMask>
-						<MarkdownBody content={instructions?.content ?? ""} />
-					</PrivacyMask>
+			{expanded && (
+				<div className="bg-secondary/10">
+					{instructionTargets.length > 0 ? (
+						<InstructionFilesPanel targets={instructionTargets} />
+					) : (
+						<div className="px-6 py-4 text-xs text-muted-foreground">
+							Discovering instruction files…
+						</div>
+					)}
 				</div>
 			)}
 

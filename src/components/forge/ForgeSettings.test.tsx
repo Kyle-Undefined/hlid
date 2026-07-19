@@ -36,6 +36,9 @@ vi.mock("#/components/forge/ClaudeSection", () => ({
 vi.mock("#/components/forge/EventLogSection", () => ({
 	EventLogSection: () => <div>Event log content</div>,
 }));
+vi.mock("#/components/forge/InstructionFilesSection", () => ({
+	InstructionFilesSection: () => <div>Agent Instructions content</div>,
+}));
 vi.mock("#/components/forge/McpSection", () => ({
 	McpSection: () => <div>MCP content</div>,
 }));
