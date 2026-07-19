@@ -27,6 +27,7 @@ import {
 import { openInBrowser } from "./browser";
 import { ClaudeProvider } from "./claudeProvider";
 import { getClaudeWarmupSnapshot, prewarmClaudeCli } from "./claudeWarmup";
+import { observeCliProxyInstallJob } from "./cliproxyInstallJob";
 import { CliProxyManager, MANAGED_CLIPROXY_BASE_URL } from "./cliproxyManager";
 import {
 	CliProxyCodexProvider,
@@ -603,10 +604,20 @@ const CLIPROXY_ROUTE_HANDLERS: Record<string, ServerRouteHandler> = {
 		return Response.json(cliProxy.status());
 	},
 	"POST /cliproxy/install": async () => {
-		await cliProxy.install();
-		writeManagedCliProxyConfig(true);
-		await syncCliProxyRuntime();
-		return Response.json(cliProxy.status());
+		const status = observeCliProxyInstallJob(
+			cliProxy.startInstall(),
+			async () => {
+				writeManagedCliProxyConfig(true);
+				await syncCliProxyRuntime();
+			},
+			(error) => {
+				console.error(
+					"[cliproxy] install failed:",
+					error instanceof Error ? error.message : String(error),
+				);
+			},
+		);
+		return Response.json(status, { status: 202 });
 	},
 	"POST /cliproxy/start": async () => {
 		writeManagedCliProxyConfig(true);

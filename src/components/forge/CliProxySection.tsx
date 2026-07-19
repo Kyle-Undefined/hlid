@@ -59,6 +59,7 @@ export function CliProxySection({
 	const [info, setInfo] = useState(initialInfo ?? UNAVAILABLE_INFO);
 	const [busy, setBusy] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	const [reloadAfterInstall, setReloadAfterInstall] = useState(false);
 
 	const refresh = useCallback(async (release = false) => {
 		try {
@@ -67,10 +68,26 @@ export function CliProxySection({
 	}, []);
 
 	useEffect(() => {
-		if (!busy && !info.activeOAuth && info.state !== "downloading") return;
+		if (
+			!busy &&
+			!reloadAfterInstall &&
+			!info.activeOAuth &&
+			info.state !== "downloading" &&
+			info.state !== "starting"
+		)
+			return;
 		const timer = window.setInterval(() => void refresh(), 1000);
 		return () => window.clearInterval(timer);
-	}, [busy, info.activeOAuth, info.state, refresh]);
+	}, [busy, info.activeOAuth, info.state, refresh, reloadAfterInstall]);
+
+	useEffect(() => {
+		if (!reloadAfterInstall) return;
+		if (info.error || info.state === "error") {
+			setReloadAfterInstall(false);
+			return;
+		}
+		if (info.state === "running") window.location.reload();
+	}, [info.error, info.state, reloadAfterInstall]);
 
 	async function run(
 		label: string,
@@ -100,6 +117,7 @@ export function CliProxySection({
 
 	const installed = Boolean(info.installedVersion);
 	const running = info.state === "running" || info.state === "starting";
+	const installing = info.state === "downloading";
 	const integrationConfig = config ?? DEFAULT_CLIPROXY_CONFIG;
 	const external =
 		integrationConfig.mode === "external" && integrationConfig.enabled;
@@ -187,11 +205,18 @@ export function CliProxySection({
 				{(!installed || external) && (
 					<button
 						type="button"
-						disabled={Boolean(busy) || info.state === "unsupported"}
-						onClick={() => void run("install", installCliProxyFn, true)}
+						disabled={
+							Boolean(busy) || installing || info.state === "unsupported"
+						}
+						onClick={() => {
+							setReloadAfterInstall(true);
+							void run("install", installCliProxyFn);
+						}}
 						className="px-3 py-1.5 bg-primary text-primary-foreground text-[10px] tracking-widest uppercase disabled:opacity-50"
 					>
-						{busy === "install" ? "Installing…" : "Install managed"}
+						{busy === "install" || installing
+							? "Installing…"
+							: "Install managed"}
 					</button>
 				)}
 				{installed && !external && !running && (
@@ -239,13 +264,18 @@ export function CliProxySection({
 					<>
 						<button
 							type="button"
-							disabled={Boolean(busy)}
-							onClick={() => void run("update", installCliProxyFn, true)}
+							disabled={Boolean(busy) || installing}
+							onClick={() => {
+								setReloadAfterInstall(true);
+								void run("update", installCliProxyFn);
+							}}
 							className="px-3 py-1.5 border border-border text-[10px] tracking-widest uppercase disabled:opacity-50"
 						>
-							{info.updateAvailable
-								? `Update to v${info.latestVersion}`
-								: "Check / repair"}
+							{installing
+								? "Installing…"
+								: info.updateAvailable
+									? `Update to v${info.latestVersion}`
+									: "Check / repair"}
 						</button>
 						<button
 							type="button"

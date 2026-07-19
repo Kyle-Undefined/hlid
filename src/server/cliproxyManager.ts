@@ -390,7 +390,7 @@ export class CliProxyManager {
 		return this.status();
 	}
 
-	async install(): Promise<void> {
+	startInstall(): { status: CliProxyStatus; completion: Promise<void> } {
 		if (this.platform !== "win32")
 			throw new Error("managed CLIProxy requires Windows");
 		if (this.operation) throw new Error("another CLIProxy operation is active");
@@ -411,7 +411,7 @@ export class CliProxyManager {
 			.finally(() => {
 				this.operation = null;
 			});
-		return this.operation;
+		return { status: this.status(), completion: this.operation };
 	}
 
 	private async installInner(): Promise<void> {
