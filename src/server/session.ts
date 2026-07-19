@@ -11,6 +11,7 @@ import {
 	toProviderRuntimePath,
 } from "../lib/paths";
 import { SESSION_LABEL_LENGTH } from "../lib/utils";
+import { formatVaultReferencedMessage } from "../lib/vaultReferences";
 import {
 	computeAllowedAgentRealPaths,
 	isAllowedAgentPath,
@@ -142,6 +143,7 @@ type RunQueryArgs = [
 	planMode?: boolean,
 	planHtml?: boolean,
 	commandAction?: "review" | "computer-use",
+	vaultReferences?: string[],
 ];
 
 export type SessionState = "idle" | "running" | "error";
@@ -2080,6 +2082,7 @@ export class SessionManager {
 					...(turn.args[7] !== undefined ? { plan_mode: turn.args[7] } : {}),
 					...(turn.args[8] !== undefined ? { plan_html: turn.args[8] } : {}),
 					...(turn.args[9] ? { command_action: turn.args[9] } : {}),
+					...(turn.args[10]?.length ? { vault_references: turn.args[10] } : {}),
 				},
 			];
 		});
@@ -2785,13 +2788,24 @@ export class SessionManager {
 		userMessage: string,
 		attachments: ChatAttachment[],
 		turnId?: string,
+		vaultReferences: string[] = [],
 	): Promise<void> {
 		const userSeq = this.messageSeq++;
 		if (!sessionId) return;
+		const persistedMessage = formatVaultReferencedMessage(
+			userMessage,
+			vaultReferences,
+		);
 		if (turnId) {
-			await db.appendMessage(sessionId, userSeq, "user", userMessage, turnId);
+			await db.appendMessage(
+				sessionId,
+				userSeq,
+				"user",
+				persistedMessage,
+				turnId,
+			);
 		} else {
-			await db.appendMessage(sessionId, userSeq, "user", userMessage);
+			await db.appendMessage(sessionId, userSeq, "user", persistedMessage);
 		}
 		for (const attachment of attachments) {
 			await db
@@ -3057,6 +3071,7 @@ export class SessionManager {
 			planMode,
 			planHtml,
 			commandAction,
+			vaultReferences,
 		] = args;
 		this.currentTurnId = turnId;
 		await this.initSessionContext(sessionId, agentCwd, userMessage);
@@ -3088,25 +3103,29 @@ export class SessionManager {
 			const runtimePlanHtmlPath = this.planHtmlPath
 				? toProviderRuntimePath(runtimeCwd, this.planHtmlPath)
 				: undefined;
-			const { prompt, safeAttachments, resourcePaths } = await buildPromptAsync(
-				{
-					vaultPath: this.vaultPath,
-					allowedAgentRealPaths: this.allowedAgentRealPaths,
-					agentMode: this.agentMode,
-					agentCwd: this.agentCwd,
-					claudeSessionId: resumeProviderSessionId,
-					runtimeCwd,
-					userMessage,
-					skillContexts,
-					attachments,
-					...(runtimePlanHtmlPath
-						? {
-								planHtmlInstructions:
-									buildPlanHtmlInstructions(runtimePlanHtmlPath),
-							}
-						: {}),
-				},
-			);
+			const {
+				prompt,
+				safeAttachments,
+				resourcePaths,
+				safeVaultReferences = [],
+			} = await buildPromptAsync({
+				vaultPath: this.vaultPath,
+				allowedAgentRealPaths: this.allowedAgentRealPaths,
+				agentMode: this.agentMode,
+				agentCwd: this.agentCwd,
+				claudeSessionId: resumeProviderSessionId,
+				runtimeCwd,
+				userMessage,
+				skillContexts,
+				attachments,
+				vaultReferences,
+				...(runtimePlanHtmlPath
+					? {
+							planHtmlInstructions:
+								buildPlanHtmlInstructions(runtimePlanHtmlPath),
+						}
+					: {}),
+			});
 			let providerPrompt = prompt;
 			if (this.providerHandoffPending && sessionId) {
 				try {
@@ -3125,6 +3144,7 @@ export class SessionManager {
 				userMessage,
 				safeAttachments,
 				turnId,
+				safeVaultReferences.map((reference) => reference.relativePath),
 			);
 
 			const { activeCwd, extraDirs, executable } = resolveExecutionContext({
@@ -3146,9 +3166,21 @@ export class SessionManager {
 				commandArgs = userMessage
 					.replace(new RegExp(`^/${commandAction}(?:\\s+|:\\s*)?`, "i"), "")
 					.trim();
+				if (commandAction === "computer-use" && !commandArgs) {
+					throw new Error("/computer-use requires a Windows desktop task");
+				}
+				if (safeVaultReferences.length > 0) {
+					const referenceLines = safeVaultReferences.map((reference) => {
+						const path =
+							commandAction === "computer-use"
+								? reference.path
+								: toProviderRuntimePath(runtimeCwd, reference.path);
+						return `- ${path} (Vault: ${reference.relativePath})`;
+					});
+					commandArgs =
+						`${commandArgs}\n\nVault references:\n${referenceLines.join("\n")}`.trim();
+				}
 				if (commandAction === "computer-use") {
-					if (!commandArgs)
-						throw new Error("/computer-use requires a Windows desktop task");
 					await this.authorizeWindowsComputerUseCommand({
 						provider: currentProvider,
 						activeCwd,

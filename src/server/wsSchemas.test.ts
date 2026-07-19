@@ -72,6 +72,34 @@ describe("chat WebSocket runtime schema", () => {
 		).toBeNull();
 	});
 
+	it("accepts vault-reference-only chat and bounds the selection", () => {
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "chat",
+					text: "",
+					vault_references: ["Projects/Hlid.md"],
+				}),
+			),
+		).toEqual({
+			type: "chat",
+			text: "",
+			vault_references: ["Projects/Hlid.md"],
+		});
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "chat",
+					text: "",
+					vault_references: Array.from(
+						{ length: 33 },
+						(_, index) => `Note-${index}.md`,
+					),
+				}),
+			),
+		).toBeNull();
+	});
+
 	it("accepts the computer-use capability action", () => {
 		expect(
 			parseClientMessage(

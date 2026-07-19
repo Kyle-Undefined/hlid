@@ -28,6 +28,10 @@ import { AttachmentStrip } from "#/components/AttachmentStrip";
 import { ActiveCommandBadges } from "#/components/chat/ActiveCommandBadge";
 import { reducer } from "#/components/chat/chatReducer";
 import { MessageList } from "#/components/chat/MessageList";
+import {
+	VaultReferenceBadges,
+	VaultReferencePicker,
+} from "#/components/chat/VaultReferencePicker";
 import { SlashPicker } from "#/components/cockpit/SlashPicker";
 import { McpIndicator } from "#/components/McpIndicator";
 import { PrivacyMask } from "#/components/PrivacyMask";
@@ -49,6 +53,7 @@ import { useDraft } from "#/hooks/useDraft";
 import { useFileUpload } from "#/hooks/useFileUpload";
 import { useLoadChatHistory } from "#/hooks/useLoadChatHistory";
 import { useSlashPicker } from "#/hooks/useSlashPicker";
+import { useVaultReferencePicker } from "#/hooks/useVaultReferencePicker";
 import { useVoiceInput } from "#/hooks/useVoiceInput";
 import { useWs } from "#/hooks/useWs";
 import { useWsChatQueue, useWsLiveStats } from "#/hooks/useWsSelectors";
@@ -857,6 +862,7 @@ type RavenActionProps = {
 	session: ReturnType<typeof useRavenSessionIdentity>;
 	runtime: ReturnType<typeof useRavenChatRuntime>;
 	upload: ReturnType<typeof useFileUpload>;
+	vaultPicker: ReturnType<typeof useVaultReferencePicker>;
 	viewport: ReturnType<typeof useRavenViewport>;
 	chatQueue: ReturnType<typeof useWsChatQueue>;
 };
@@ -938,6 +944,7 @@ function useRavenSend(props: RavenActionProps) {
 	const { sessionState, send, dispatch } = props.runtime;
 	const { pendingAttachments, clearPending: clearPendingAttachments } =
 		props.upload;
+	const { referencePaths, clear: clearVaultReferences } = props.vaultPicker;
 	const { atBottomRef } = props.viewport;
 
 	return useCallback(
@@ -958,6 +965,7 @@ function useRavenSend(props: RavenActionProps) {
 				skillContexts,
 				commandAction,
 				attachments: pendingAttachments,
+				vaultReferences: referencePaths,
 				agentCwd: agentSkillContext ?? undefined,
 				agentContextAlreadySent: agentContextSentRef.current,
 				planMode,
@@ -982,6 +990,7 @@ function useRavenSend(props: RavenActionProps) {
 			setInput("");
 			setActiveSkills([]);
 			clearPendingAttachments();
+			clearVaultReferences();
 		},
 		[
 			input,
@@ -992,9 +1001,11 @@ function useRavenSend(props: RavenActionProps) {
 			send,
 			sessionId,
 			pendingAttachments,
+			referencePaths,
 			agentSkillContext,
 			clearDraft,
 			clearPendingAttachments,
+			clearVaultReferences,
 			planMode,
 			planHtml,
 			sessionSelection,
@@ -1082,6 +1093,7 @@ function useRavenQueueActions(props: RavenActionProps) {
 
 function useRavenClear(props: RavenActionProps) {
 	const { clearDraft, setPlanMode, setSessionSelection } = props;
+	const clearVaultReferences = props.vaultPicker.clear;
 	const { setAgentSkillContext, agentContextSentRef, activateNewSession } =
 		props.session;
 	const { send, dispatch, pendingIdRef, lastAssistantIdRef } = props.runtime;
@@ -1101,6 +1113,7 @@ function useRavenClear(props: RavenActionProps) {
 		wsStore.seedActualModel(null);
 		wsStore.clearMessageBuffer();
 		clearChatQueue();
+		clearVaultReferences();
 		setSessionSelection({});
 		const newId = uid();
 		setAgentSkillContext(undefined);
@@ -1116,6 +1129,7 @@ function useRavenClear(props: RavenActionProps) {
 		setAgentSkillContext,
 		setPlanMode,
 		setSessionSelection,
+		clearVaultReferences,
 	]);
 }
 
@@ -1199,6 +1213,7 @@ function deriveRavenComposerState({
 	input,
 	activeSkills,
 	pendingAttachmentCount,
+	pendingVaultReferenceCount,
 	uploadingCount,
 	wsStatus,
 	isRunning,
@@ -1216,6 +1231,7 @@ function deriveRavenComposerState({
 	input: string;
 	activeSkills: ActiveRavenSkill[];
 	pendingAttachmentCount: number;
+	pendingVaultReferenceCount: number;
 	uploadingCount: number;
 	wsStatus: string;
 	isRunning: boolean;
@@ -1229,7 +1245,8 @@ function deriveRavenComposerState({
 	const hasInput =
 		(input.trim().length > 0 ||
 			activeSkills.length > 0 ||
-			pendingAttachmentCount > 0) &&
+			pendingAttachmentCount > 0 ||
+			pendingVaultReferenceCount > 0) &&
 		uploadingCount === 0 &&
 		wsStatus === "connected";
 	const selectedAgent = agentSkillContext
@@ -1473,6 +1490,7 @@ export function ChatPage() {
 				replace: true,
 			}),
 	});
+	const vaultPicker = useVaultReferencePicker(input, setInput);
 	const upload = useFileUpload({ agentCwd: agentSkillContext, sessionId });
 	const { pendingAttachments, uploadingCount } = upload;
 	const [planMode, setPlanMode] = useState(false);
@@ -1580,6 +1598,7 @@ export function ChatPage() {
 		session,
 		runtime,
 		upload,
+		vaultPicker,
 		viewport,
 		chatQueue,
 	});
@@ -1610,6 +1629,7 @@ export function ChatPage() {
 		input,
 		activeSkills,
 		pendingAttachmentCount: pendingAttachments.length,
+		pendingVaultReferenceCount: vaultPicker.selected.length,
 		uploadingCount,
 		wsStatus,
 		isRunning,
@@ -1627,6 +1647,7 @@ export function ChatPage() {
 		session,
 		runtime,
 		upload,
+		vaultPicker,
 		viewport,
 		picker,
 		voice,
@@ -2291,6 +2312,7 @@ function ChatInputNotices({
 	setSessionSelection,
 	activeSkills,
 	clearActiveSkill,
+	vaultPicker,
 }: ChatComposerProps) {
 	const { agentSkillContext, selectAgent, sessionId } = session;
 	const { messages, effort, send } = runtime;
@@ -2305,6 +2327,10 @@ function ChatInputNotices({
 	return (
 		<>
 			<ActiveCommandBadges commands={activeSkills} onClear={clearActiveSkill} />
+			<VaultReferenceBadges
+				references={vaultPicker.selected}
+				onRemove={vaultPicker.remove}
+			/>
 			{gitignoreHint && (
 				<div className="px-4 py-2 flex items-start gap-2 border-b border-border/40 bg-yellow-500/5">
 					<div className="flex-1 text-[10px] text-foreground/70 leading-relaxed">
@@ -2530,14 +2556,22 @@ function ChatVoiceControls({ config, runtime, voice }: ChatComposerProps) {
 
 function handleComposerKeyDown(
 	event: ReactKeyboardEvent<HTMLTextAreaElement>,
-	{ config, picker, handleSkillSelect, handleSend }: ChatComposerProps,
+	{
+		config,
+		picker,
+		vaultPicker,
+		handleSkillSelect,
+		handleSend,
+		viewport,
+	}: ChatComposerProps,
 ): void {
+	const vaultPickerOpen = vaultPicker.isOpen;
 	const action = composerKeyAction({
 		key: event.key,
 		shiftKey: event.shiftKey,
 		metaKey: event.metaKey,
 		ctrlKey: event.ctrlKey,
-		pickerOpen: picker.isOpen,
+		pickerOpen: vaultPickerOpen || picker.isOpen,
 		isTouch:
 			typeof window !== "undefined" &&
 			window.matchMedia("(pointer: coarse)").matches,
@@ -2545,11 +2579,18 @@ function handleComposerKeyDown(
 	});
 	if (!action) return;
 	event.preventDefault();
-	if (action === "picker-next") picker.navigate(1);
-	if (action === "picker-previous") picker.navigate(-1);
-	if (action === "picker-close") picker.close();
-	if (action === "picker-select" && picker.items.length > 0)
-		handleSkillSelect(picker.items[picker.selectedIndex]);
+	const activePicker = vaultPickerOpen ? vaultPicker : picker;
+	if (action === "picker-next") activePicker.navigate(1);
+	if (action === "picker-previous") activePicker.navigate(-1);
+	if (action === "picker-close") activePicker.close();
+	if (action === "picker-select" && activePicker.items.length > 0) {
+		if (vaultPickerOpen) {
+			vaultPicker.select(vaultPicker.items[vaultPicker.selectedIndex]);
+			requestAnimationFrame(() => viewport.textareaRef.current?.focus());
+		} else {
+			handleSkillSelect(picker.items[picker.selectedIndex]);
+		}
+	}
 	if (action === "submit") handleSend();
 }
 
@@ -2557,12 +2598,14 @@ function composerPlaceholder(
 	voice: RavenVoice,
 	wsStatus: string,
 	activeSkills: ActiveRavenSkill[],
+	vaultReferenceCount: number,
 	isRunning: boolean,
 ): string {
 	if (voice.phase === "recording") return `recording… ${voice.seconds}s`;
 	if (voice.phase === "transcribing") return "transcribing locally…";
 	if (wsStatus !== "connected") return "connecting…";
-	if (activeSkills.length > 0) return "add more context or another /command…";
+	if (activeSkills.length > 0 || vaultReferenceCount > 0)
+		return "add more context, @file, or /command…";
 	return isRunning ? "type to queue next…" : "speak to the watcher…";
 }
 
@@ -2587,6 +2630,7 @@ function ChatTextarea(props: ChatComposerProps) {
 	const { uploadFiles } = upload;
 	const { textareaRef } = viewport;
 	const { isOpen: pickerOpen, selectedIndex: pickerIndex } = picker;
+	const vaultPickerOpen = props.vaultPicker.isOpen;
 	return (
 		<>
 			<textarea
@@ -2602,17 +2646,24 @@ function ChatTextarea(props: ChatComposerProps) {
 				}}
 				onKeyDown={(event) => handleComposerKeyDown(event, props)}
 				role="combobox"
-				aria-expanded={pickerOpen}
-				aria-controls="slash-picker"
+				aria-expanded={vaultPickerOpen || pickerOpen}
+				aria-controls={
+					vaultPickerOpen ? "vault-reference-picker" : "slash-picker"
+				}
 				aria-autocomplete="list"
 				aria-activedescendant={
-					pickerOpen ? `slash-picker-opt-${pickerIndex}` : undefined
+					vaultPickerOpen && props.vaultPicker.items.length > 0
+						? `vault-reference-picker-opt-${props.vaultPicker.selectedIndex}`
+						: pickerOpen
+							? `slash-picker-opt-${pickerIndex}`
+							: undefined
 				}
 				rows={1}
 				placeholder={composerPlaceholder(
 					voice,
 					wsStatus,
 					activeSkills,
+					props.vaultPicker.selected.length,
 					isRunning,
 				)}
 				disabled={wsStatus !== "connected" || voice.phase === "transcribing"}
@@ -2685,6 +2736,7 @@ type RavenChatRuntime = ReturnType<typeof useRavenChatRuntime>;
 type RavenUpload = ReturnType<typeof useFileUpload>;
 type RavenViewport = ReturnType<typeof useRavenViewport>;
 type RavenPicker = ReturnType<typeof useSlashPicker>;
+type RavenVaultPicker = ReturnType<typeof useVaultReferencePicker>;
 type RavenVoice = ReturnType<typeof useVoiceInput>;
 
 interface ChatComposerProps {
@@ -2696,6 +2748,7 @@ interface ChatComposerProps {
 	upload: RavenUpload;
 	viewport: RavenViewport;
 	picker: RavenPicker;
+	vaultPicker: RavenVaultPicker;
 	voice: RavenVoice;
 	input: string;
 	setInput: ReturnType<typeof useDraft>["setInput"];
@@ -2744,6 +2797,7 @@ function ChatComposer(props: ChatComposerProps) {
 		session,
 		runtime,
 		picker,
+		vaultPicker,
 		handleSkillSelect,
 		hideOnMobile = false,
 	} = props;
@@ -2760,14 +2814,32 @@ function ChatComposer(props: ChatComposerProps) {
 		<div
 			className={`shrink-0 relative ${hideOnMobile ? "hidden md:block" : ""}`}
 		>
-			{pickerOpen && (
+			{vaultPicker.isOpen ? (
+				<VaultReferencePicker
+					rootLabel={vaultPicker.rootLabel}
+					query={vaultPicker.query}
+					items={vaultPicker.items}
+					selectedIndex={vaultPicker.selectedIndex}
+					loading={vaultPicker.loading}
+					error={vaultPicker.error}
+					total={vaultPicker.total}
+					truncated={vaultPicker.truncated}
+					onSelect={(reference) => {
+						vaultPicker.select(reference);
+						requestAnimationFrame(() =>
+							props.viewport.textareaRef.current?.focus(),
+						);
+					}}
+					direction="up"
+				/>
+			) : pickerOpen ? (
 				<SlashPicker
 					items={pickerItems}
 					selectedIndex={pickerIndex}
 					onSelect={handleSkillSelect}
 					direction="up"
 				/>
-			)}
+			) : null}
 			{agentSkillContext && (
 				<div className="absolute -top-5 left-3 z-10">
 					<button

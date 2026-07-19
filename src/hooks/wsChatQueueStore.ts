@@ -10,6 +10,7 @@ export type QueuedChatMessage = {
 	command_action?: CommandAction;
 	agent_cwd?: string;
 	attachments?: ChatAttachment[];
+	vault_references?: string[];
 	plan_mode?: boolean;
 	plan_html?: boolean;
 	provider?: string;

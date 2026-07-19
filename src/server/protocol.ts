@@ -181,6 +181,7 @@ export type UserMessageEvent = {
 	text: string;
 	session_id?: string;
 	attachments?: ChatAttachment[];
+	vault_references?: string[];
 	/**
 	 * Slice C: turn id from the originating ClientChatMessage. Originating
 	 * client uses this to correlate UserMsg → chatQueue entry (so the queued
@@ -205,6 +206,7 @@ export type PendingTurnSnapshot = {
 	command_action?: "review" | "computer-use";
 	agent_cwd?: string;
 	attachments?: ChatAttachment[];
+	vault_references?: string[];
 	plan_mode?: boolean;
 	plan_html?: boolean;
 };
@@ -483,6 +485,8 @@ export type ClientChatMessage = {
 	command_action?: "review" | "computer-use";
 	agent_cwd?: string;
 	attachments?: ChatAttachment[];
+	/** Vault-root-relative files selected with the @ picker. */
+	vault_references?: string[];
 	/**
 	 * Slice C: client-generated turn id. Server stores it on the QueuedTurn
 	 * and echoes it back in the matching `done` event so the client can

@@ -31,6 +31,7 @@ import { useCommands } from "#/hooks/useCommands";
 import { useDraft } from "#/hooks/useDraft";
 import { useFileUpload } from "#/hooks/useFileUpload";
 import { useSlashPicker } from "#/hooks/useSlashPicker";
+import { useVaultReferencePicker } from "#/hooks/useVaultReferencePicker";
 import { useVoiceInput } from "#/hooks/useVoiceInput";
 import { useWsLiveStats } from "#/hooks/useWsSelectors";
 import {
@@ -261,6 +262,7 @@ function useCockpitComposer(initialPlanHtml: boolean) {
 	const [sameSession, setSameSession] = useState(false);
 	const [planMode, setPlanMode] = useState(false);
 	const [planHtml, setPlanHtml] = useState(initialPlanHtml);
+	const vaultPicker = useVaultReferencePicker(prompt, setPrompt);
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -300,6 +302,7 @@ function useCockpitComposer(initialPlanHtml: boolean) {
 	function handleClear() {
 		setPrompt("");
 		setActiveSkills([]);
+		vaultPicker.clear();
 	}
 
 	return {
@@ -319,6 +322,7 @@ function useCockpitComposer(initialPlanHtml: boolean) {
 		setPlanHtml,
 		textareaRef,
 		fileInputRef,
+		vaultPicker,
 		handleSkillSelect,
 		handleCommandSelect,
 		handleClear,
@@ -357,7 +361,9 @@ function useCockpitRunWiring({
 		planHtml: composer.planHtml,
 		attachSessionIdRef: upload.uploadSessionIdRef,
 		pendingAttachments: upload.pendingAttachments,
+		vaultReferences: composer.vaultPicker.referencePaths,
 		clearPendingAttachments: upload.clearPending,
+		clearVaultReferences: composer.vaultPicker.clear,
 		selectedAgentPath: composer.selectedAgentPath,
 		vaultPath,
 		background: composer.background,
@@ -503,7 +509,8 @@ function CockpitPromptWiring({
 	const canRun =
 		(composer.activeSkills.length > 0 ||
 			composer.prompt.trim().length > 0 ||
-			upload.pendingAttachments.length > 0) &&
+			upload.pendingAttachments.length > 0 ||
+			composer.vaultPicker.selected.length > 0) &&
 		upload.uploadingCount === 0 &&
 		isConnected;
 	return (
@@ -512,6 +519,7 @@ function CockpitPromptWiring({
 			prompt={composer.prompt}
 			setPrompt={composer.setPrompt}
 			activeSkills={composer.activeSkills}
+			vaultPicker={composer.vaultPicker}
 			isConnected={isConnected}
 			isRunning={isRunning}
 			canRun={canRun}

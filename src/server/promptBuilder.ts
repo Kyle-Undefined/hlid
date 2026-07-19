@@ -12,6 +12,10 @@ import {
 } from "../lib/paths";
 import { artifactsDirectory, managedSkillsDirectory } from "./libraryStore";
 import type { ChatAttachment } from "./protocol";
+import {
+	type ResolvedVaultReference,
+	resolveVaultReferences,
+} from "./vaultReferences";
 
 export type BuildPromptOptions = {
 	vaultPath: string;
@@ -26,6 +30,8 @@ export type BuildPromptOptions = {
 	skillContext?: string;
 	skillContexts?: string | string[];
 	attachments: ChatAttachment[] | undefined;
+	/** Vault-root-relative files selected by the user with the @ picker. */
+	vaultReferences?: string[];
 	/** Plan-mode HTML instructions (from buildPlanHtmlInstructions), appended after the user message. */
 	planHtmlInstructions?: string;
 };
@@ -73,11 +79,13 @@ function assemblePrompt(
 	opts: BuildPromptOptions,
 	safeSkillContexts: string[],
 	safeAttachments: ChatAttachment[],
+	safeVaultReferences: ResolvedVaultReference[],
 	instructionFile: AgentInstructionFileName | null,
 ): {
 	prompt: string;
 	safeAttachments: ChatAttachment[];
 	resourcePaths: string[];
+	safeVaultReferences: ResolvedVaultReference[];
 } {
 	const { agentCwd, userMessage, planHtmlInstructions } = opts;
 	const runtimePath = (path: string) =>
@@ -90,6 +98,15 @@ function assemblePrompt(
 					.map(
 						(attachment) =>
 							`- ${runtimePath(attachment.path)} (${attachment.mime})`,
+					)
+					.join("\n")}\n\n`
+			: "";
+	const vaultReferenceBlock =
+		safeVaultReferences.length > 0
+			? `Vault references (read or edit these exact files when relevant):\n${safeVaultReferences
+					.map(
+						(reference) =>
+							`- \`${runtimePath(reference.path)}\` (Vault: ${reference.relativePath})`,
 					)
 					.join("\n")}\n\n`
 			: "";
@@ -108,16 +125,18 @@ function assemblePrompt(
 				: "";
 	const prompt = skillBlock
 		? userMessage.startsWith("/")
-			? `${userMessage}\n\n${personaBlock}${attachmentBlock}${skillBlock}${planHtmlBlock}`
-			: `${personaBlock}${attachmentBlock}${skillBlock}User: ${userMessage || "(no additional input)"}${planHtmlBlock}`
-		: `${personaBlock}${attachmentBlock}${userMessage}${planHtmlBlock}`;
+			? `${userMessage}\n\n${personaBlock}${attachmentBlock}${vaultReferenceBlock}${skillBlock}${planHtmlBlock}`
+			: `${personaBlock}${attachmentBlock}${vaultReferenceBlock}${skillBlock}User: ${userMessage || "(no additional input)"}${planHtmlBlock}`
+		: `${personaBlock}${attachmentBlock}${vaultReferenceBlock}${userMessage || (safeVaultReferences.length > 0 ? "User: (no additional input)" : "")}${planHtmlBlock}`;
 	return {
 		prompt,
 		safeAttachments,
 		resourcePaths: [
 			...safeSkillContexts,
 			...safeAttachments.map((item) => item.path),
+			...safeVaultReferences.map((item) => item.path),
 		],
+		safeVaultReferences,
 	};
 }
 
@@ -126,6 +145,7 @@ export async function buildPromptAsync(opts: BuildPromptOptions): Promise<{
 	prompt: string;
 	safeAttachments: ChatAttachment[];
 	resourcePaths: string[];
+	safeVaultReferences: ResolvedVaultReference[];
 }> {
 	const vaultRoot = resolve(opts.vaultPath);
 	const vaultRootReal = await realpath(vaultRoot).catch(() => vaultRoot);
@@ -170,6 +190,11 @@ export async function buildPromptAsync(opts: BuildPromptOptions): Promise<{
 			}),
 		)
 	).filter((value): value is ChatAttachment => value !== null);
+	const safeVaultReferences = await resolveVaultReferences({
+		vaultPath: opts.vaultPath,
+		references: opts.vaultReferences,
+		runtimeCwd: opts.runtimeCwd,
+	});
 	const instructionFile =
 		opts.agentMode === "context" &&
 		opts.agentCwd &&
@@ -180,6 +205,7 @@ export async function buildPromptAsync(opts: BuildPromptOptions): Promise<{
 		opts,
 		safeSkillContexts,
 		safeAttachments,
+		safeVaultReferences,
 		instructionFile,
 	);
 }

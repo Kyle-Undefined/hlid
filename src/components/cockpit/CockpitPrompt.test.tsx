@@ -42,6 +42,24 @@ function makeProps(overrides?: Partial<Props>): Props {
 		prompt: "",
 		setPrompt: vi.fn(),
 		activeSkills: [],
+		vaultPicker: {
+			isOpen: false,
+			query: "",
+			items: [],
+			rootLabel: "Vault",
+			total: 0,
+			truncated: false,
+			loading: false,
+			error: null,
+			selectedIndex: 0,
+			selected: [],
+			referencePaths: [],
+			navigate: vi.fn(),
+			select: vi.fn(),
+			close: vi.fn(),
+			remove: vi.fn(),
+			clear: vi.fn(),
+		},
 		isConnected: true,
 		isRunning: false,
 		canRun: true,
@@ -138,7 +156,7 @@ describe("CockpitPrompt placeholder", () => {
 			/>,
 		);
 		expect(textarea().placeholder).toBe(
-			"add more context or another /command…",
+			"add more context, @file, or /command…",
 		);
 		expect(screen.getByTestId("active-command").textContent).toContain(
 			"skill/review",
@@ -204,6 +222,34 @@ describe("CockpitPrompt composer keys", () => {
 		);
 		fireEvent.keyDown(textarea(), { key: "Escape" });
 		expect(close).toHaveBeenCalledOnce();
+	});
+
+	it("routes navigation and selection to the open @ vault picker", () => {
+		const navigate = vi.fn();
+		const select = vi.fn();
+		const reference = {
+			relativePath: "Projects/Hlid.md",
+			name: "Hlid.md",
+			directory: "Projects",
+		};
+		const props = makeProps();
+		render(
+			<CockpitPrompt
+				{...props}
+				vaultPicker={{
+					...props.vaultPicker,
+					isOpen: true,
+					items: [reference],
+					total: 1,
+					navigate,
+					select,
+				}}
+			/>,
+		);
+		fireEvent.keyDown(textarea(), { key: "ArrowDown" });
+		expect(navigate).toHaveBeenCalledWith(1);
+		fireEvent.keyDown(textarea(), { key: "Enter" });
+		expect(select).toHaveBeenCalledWith(reference);
 	});
 
 	it("Enter selects highlighted skill while picker open", () => {

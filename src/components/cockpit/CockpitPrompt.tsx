@@ -3,8 +3,13 @@ import type { RefObject } from "react";
 import { AgentSelect } from "#/components/AgentSelect";
 import { AttachmentStrip } from "#/components/AttachmentStrip";
 import { ActiveCommandBadges } from "#/components/chat/ActiveCommandBadge";
+import {
+	VaultReferenceBadges,
+	VaultReferencePicker,
+} from "#/components/chat/VaultReferencePicker";
 import { SlashPicker } from "#/components/cockpit/SlashPicker";
 import type { useFileUpload } from "#/hooks/useFileUpload";
+import type { useVaultReferencePicker } from "#/hooks/useVaultReferencePicker";
 import type { useVoiceInput } from "#/hooks/useVoiceInput";
 import type { CommandDescriptor } from "#/lib/commands";
 import { type ComposerKeyAction, composerKeyAction } from "#/lib/composer";
@@ -18,12 +23,14 @@ type CockpitConfig = Awaited<ReturnType<typeof getConfig>>;
 type AgentList = Awaited<ReturnType<typeof getAgentListFn>>;
 type UploadState = ReturnType<typeof useFileUpload>;
 type VoiceState = ReturnType<typeof useVoiceInput>;
+type VaultPickerState = ReturnType<typeof useVaultReferencePicker>;
 
 type PromptProps = {
 	config: CockpitConfig;
 	prompt: string;
 	setPrompt: (value: string) => void;
 	activeSkills: ActiveCockpitSkill[];
+	vaultPicker: VaultPickerState;
 	isConnected: boolean;
 	isRunning: boolean;
 	canRun: boolean;
@@ -88,23 +95,37 @@ function promptPlaceholder(
 	voice: VoiceState,
 	isConnected: boolean,
 	activeSkills: ActiveCockpitSkill[],
+	vaultReferenceCount: number,
 ): string {
 	if (voice.phase === "recording") return `recording… ${voice.seconds}s`;
 	if (voice.phase === "transcribing") return "transcribing locally…";
 	if (!isConnected) return "server offline…";
-	if (activeSkills.length > 0) return "add more context or another /command…";
+	if (activeSkills.length > 0 || vaultReferenceCount > 0)
+		return "add more context, @file, or /command…";
 	return "type a prompt, or pick a skill below";
 }
 
 function runComposerAction(
 	action: ComposerKeyAction,
-	props: Pick<PromptProps, "picker" | "onSkillSelect" | "onRun">,
+	props: Pick<
+		PromptProps,
+		"picker" | "vaultPicker" | "onSkillSelect" | "onRun" | "textareaRef"
+	>,
 ): void {
-	if (action === "picker-next") props.picker.navigate(1);
-	if (action === "picker-previous") props.picker.navigate(-1);
-	if (action === "picker-close") props.picker.close();
-	if (action === "picker-select" && props.picker.items.length > 0) {
-		props.onSkillSelect(props.picker.items[props.picker.index]);
+	const vaultOpen = props.vaultPicker.isOpen;
+	const activePicker = vaultOpen ? props.vaultPicker : props.picker;
+	if (action === "picker-next") activePicker.navigate(1);
+	if (action === "picker-previous") activePicker.navigate(-1);
+	if (action === "picker-close") activePicker.close();
+	if (action === "picker-select" && activePicker.items.length > 0) {
+		if (vaultOpen) {
+			props.vaultPicker.select(
+				props.vaultPicker.items[props.vaultPicker.selectedIndex],
+			);
+			requestAnimationFrame(() => props.textareaRef.current?.focus());
+		} else {
+			props.onSkillSelect(props.picker.items[props.picker.index]);
+		}
 	}
 	if (action === "submit") props.onRun();
 }
@@ -119,7 +140,7 @@ function PromptTextarea(props: PromptProps) {
 			shiftKey: event.shiftKey,
 			metaKey: event.metaKey,
 			ctrlKey: event.ctrlKey,
-			pickerOpen: props.picker.open,
+			pickerOpen: props.vaultPicker.isOpen || props.picker.open,
 			isTouch,
 			enterToSubmit: props.config.ui.enter_to_submit,
 		});
@@ -145,19 +166,24 @@ function PromptTextarea(props: PromptProps) {
 				}}
 				onKeyDown={onKeyDown}
 				role="combobox"
-				aria-expanded={props.picker.open}
-				aria-controls="slash-picker"
+				aria-expanded={props.vaultPicker.isOpen || props.picker.open}
+				aria-controls={
+					props.vaultPicker.isOpen ? "vault-reference-picker" : "slash-picker"
+				}
 				aria-autocomplete="list"
 				aria-activedescendant={
-					props.picker.open
-						? `slash-picker-opt-${props.picker.index}`
-						: undefined
+					props.vaultPicker.isOpen && props.vaultPicker.items.length > 0
+						? `vault-reference-picker-opt-${props.vaultPicker.selectedIndex}`
+						: props.picker.open
+							? `slash-picker-opt-${props.picker.index}`
+							: undefined
 				}
 				rows={3}
 				placeholder={promptPlaceholder(
 					props.voice,
 					props.isConnected,
 					props.activeSkills,
+					props.vaultPicker.selected.length,
 				)}
 				disabled={!props.isConnected || props.voice.phase === "transcribing"}
 				className={`min-w-0 flex-1 resize-none bg-transparent py-2.5 pr-3 text-sm text-foreground focus:outline-none disabled:opacity-30 overflow-hidden min-h-[72px] ${!props.isConnected ? "placeholder:text-foreground/50" : "placeholder:text-muted-foreground/25"}`}
@@ -339,7 +365,9 @@ function ComposerToolbar(props: PromptProps) {
 				)}
 			</div>
 			<div className="ml-auto flex shrink-0 gap-2">
-				{(props.prompt || props.activeSkills.length > 0) && (
+				{(props.prompt ||
+					props.activeSkills.length > 0 ||
+					props.vaultPicker.selected.length > 0) && (
 					<button
 						type="button"
 						onClick={props.onClear}
@@ -383,16 +411,35 @@ export function CockpitPrompt(props: PromptProps) {
 				onDragOver={onDragOver}
 				onDrop={onDrop}
 			>
-				{props.picker.open && (
+				{props.vaultPicker.isOpen ? (
+					<VaultReferencePicker
+						rootLabel={props.vaultPicker.rootLabel}
+						query={props.vaultPicker.query}
+						items={props.vaultPicker.items}
+						selectedIndex={props.vaultPicker.selectedIndex}
+						loading={props.vaultPicker.loading}
+						error={props.vaultPicker.error}
+						total={props.vaultPicker.total}
+						truncated={props.vaultPicker.truncated}
+						onSelect={(reference) => {
+							props.vaultPicker.select(reference);
+							requestAnimationFrame(() => props.textareaRef.current?.focus());
+						}}
+					/>
+				) : props.picker.open ? (
 					<SlashPicker
 						items={props.picker.items}
 						selectedIndex={props.picker.index}
 						onSelect={props.onSkillSelect}
 					/>
-				)}
+				) : null}
 				<ActiveCommandBadges
 					commands={props.activeSkills}
 					onClear={props.onClearSkill}
+				/>
+				<VaultReferenceBadges
+					references={props.vaultPicker.selected}
+					onRemove={props.vaultPicker.remove}
 				/>
 				<AttachmentStrip
 					attachments={props.upload.pendingAttachments}

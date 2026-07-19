@@ -1071,6 +1071,35 @@ describe("message — chat", () => {
 		);
 	});
 
+	it("forwards vault references to session.runQuery", async () => {
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "chat",
+				text: "compare these",
+				session_id: "sess-1",
+				vault_references: ["Projects/Hlid.md", "Notes/Decision.md"],
+			}),
+		);
+		expect(session.runQuery).toHaveBeenCalledWith(
+			"compare these",
+			expect.any(Function),
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			["Projects/Hlid.md", "Notes/Decision.md"],
+		);
+	});
+
 	it("broadcasts status via runState when syncConfig reports model changed", async () => {
 		const session = makeSession({
 			syncConfig: vi.fn().mockReturnValue(true),

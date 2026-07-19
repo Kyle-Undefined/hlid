@@ -1,3 +1,4 @@
+import { formatVaultReferencedMessage } from "../lib/vaultReferences";
 import type { ClientMessage, ServerMessage } from "../server/protocol";
 import type { SessionState } from "../server/session";
 import { forgetRavenTerminal } from "./ravenTerminalStore";
@@ -144,10 +145,11 @@ function sendChatToServer(msg: QueuedChatMessage): boolean {
 	if (_ws?.readyState !== WS_OPEN) return false;
 	const userEvent: ServerMessage = {
 		type: "user_message",
-		text: msg.text,
+		text: formatVaultReferencedMessage(msg.text, msg.vault_references ?? []),
 		session_id: msg.session_id,
 		id: msg.id,
 		...(msg.attachments ? { attachments: msg.attachments } : {}),
+		...(msg.vault_references ? { vault_references: msg.vault_references } : {}),
 	};
 	for (const fn of messageSubs) fn(userEvent);
 	setPendingSessionToday(true);
@@ -166,6 +168,9 @@ function sendChatToServer(msg: QueuedChatMessage): boolean {
 	if (msg.skill_contexts?.length) payload.skill_contexts = msg.skill_contexts;
 	if (msg.attachments && msg.attachments.length > 0) {
 		payload.attachments = msg.attachments;
+	}
+	if (msg.vault_references && msg.vault_references.length > 0) {
+		payload.vault_references = msg.vault_references;
 	}
 	if (msg.plan_mode) payload.plan_mode = true;
 	if (msg.plan_html) payload.plan_html = true;
@@ -212,10 +217,16 @@ function consumeRunningQueuedUser(turnId: string | undefined): void {
 	if (!queued) return;
 	const userEvent: ServerMessage = {
 		type: "user_message",
-		text: queued.text,
+		text: formatVaultReferencedMessage(
+			queued.text,
+			queued.vault_references ?? [],
+		),
 		session_id: queued.session_id,
 		id: queued.id,
 		...(queued.attachments ? { attachments: queued.attachments } : {}),
+		...(queued.vault_references
+			? { vault_references: queued.vault_references }
+			: {}),
 	};
 	for (const subscriber of messageSubs) subscriber(userEvent);
 	// A running turn is no longer queued. Remove it only after re-emitting its

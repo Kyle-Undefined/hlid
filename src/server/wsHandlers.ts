@@ -716,7 +716,11 @@ async function runChatQuery(
 			msg.plan_mode,
 			msg.plan_html,
 		] as Parameters<typeof entry.manager.runQuery>;
-		if (msg.command_action) queryArgs.push(msg.command_action);
+		if (msg.vault_references?.length) {
+			queryArgs.push(msg.command_action, msg.vault_references);
+		} else if (msg.command_action) {
+			queryArgs.push(msg.command_action);
+		}
 		const completion = entry.manager.runQuery(...queryArgs);
 		// Publish the queued content immediately. Other tabs/devices can now render
 		// it without relying on the originating browser's localStorage copy.

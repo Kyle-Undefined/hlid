@@ -80,7 +80,9 @@ type CockpitRunOptions = {
 	planHtml: boolean;
 	attachSessionIdRef: { current: string | null };
 	pendingAttachments: Attachment[];
+	vaultReferences: string[];
 	clearPendingAttachments: () => void;
+	clearVaultReferences: () => void;
 	selectedAgentPath: string;
 	vaultPath: string;
 	background: boolean;
@@ -161,6 +163,7 @@ async function resolveRunSession(options: CockpitRunOptions): Promise<string> {
 function clearComposer(options: CockpitRunOptions): void {
 	options.setPrompt("");
 	options.setActiveSkills([]);
+	options.clearVaultReferences();
 }
 
 function navigateAfterRun(
@@ -181,6 +184,7 @@ function enqueueRun(
 		skillContexts?: string[];
 		commandAction?: "review" | "computer-use";
 		attachments: Attachment[];
+		vaultReferences: string[];
 	},
 ): void {
 	wsStore.enqueueChat({
@@ -191,6 +195,8 @@ function enqueueRun(
 		command_action: params.commandAction,
 		agent_cwd: options.selectedAgentPath || undefined,
 		attachments: params.attachments.length > 0 ? params.attachments : undefined,
+		vault_references:
+			params.vaultReferences.length > 0 ? params.vaultReferences : undefined,
 		plan_mode: options.planMode || undefined,
 		plan_html: (options.planMode && options.planHtml) || undefined,
 	});
@@ -206,6 +212,7 @@ function startRun(
 		skillContexts?: string[];
 		commandAction?: "review" | "computer-use";
 		attachments: Attachment[];
+		vaultReferences: string[];
 	},
 ): void {
 	if (!options.sameSession) resetLiveStats();
@@ -217,12 +224,17 @@ function startRun(
 		command_action: params.commandAction,
 		agent_cwd: options.selectedAgentPath || undefined,
 		attachments: params.attachments.length > 0 ? params.attachments : undefined,
+		vault_references:
+			params.vaultReferences.length > 0 ? params.vaultReferences : undefined,
 		plan_mode: options.planMode || undefined,
 		plan_html: (options.planMode && options.planHtml) || undefined,
 	});
 	if (!options.sameSession) {
 		const activityText =
-			params.text || params.attachments[0]?.filename || "attachment";
+			params.text ||
+			params.attachments[0]?.filename ||
+			params.vaultReferences[0] ||
+			"vault reference";
 		options.setRecentRuns((runs) =>
 			prependPendingRun(runs, {
 				sessionId: params.sessionId,
@@ -246,7 +258,9 @@ export function useCockpitRun(options: CockpitRunOptions) {
 			options.commands,
 		);
 		if (
-			(!text && options.pendingAttachments.length === 0) ||
+			(!text &&
+				options.pendingAttachments.length === 0 &&
+				options.vaultReferences.length === 0) ||
 			options.wsStatus !== "connected"
 		)
 			return;
@@ -262,6 +276,7 @@ export function useCockpitRun(options: CockpitRunOptions) {
 		}
 		options.attachSessionIdRef.current = null;
 		const attachments = options.pendingAttachments;
+		const vaultReferences = options.vaultReferences;
 		options.clearPendingAttachments();
 		const params = {
 			sessionId,
@@ -269,6 +284,7 @@ export function useCockpitRun(options: CockpitRunOptions) {
 			skillContexts,
 			commandAction,
 			attachments,
+			vaultReferences,
 		};
 		if (
 			isCockpitQueueTarget({

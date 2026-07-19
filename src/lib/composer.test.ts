@@ -111,6 +111,23 @@ describe("chat submission policy", () => {
 		});
 	});
 
+	it("allows a vault-reference-only submission and preserves it on the wire", () => {
+		const result = submission({
+			text: "",
+			vaultReferences: ["Projects/Hlid.md"],
+		});
+		expect(result).toMatchObject({
+			kind: "immediate",
+			user: {
+				text: "Vault references:\n- Projects/Hlid.md",
+			},
+			message: {
+				text: "",
+				vault_references: ["Projects/Hlid.md"],
+			},
+		});
+	});
+
 	it("builds a queued message with skill, attachment, and agent context", () => {
 		expect(
 			submission({

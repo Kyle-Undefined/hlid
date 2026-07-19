@@ -1,6 +1,7 @@
 import type { QueuedChatMessage } from "#/hooks/wsChatQueueStore";
 import type { ChatAttachment, ClientChatMessage } from "#/server/protocol";
 import type { CommandAction } from "./commands";
+import { formatVaultReferencedMessage } from "./vaultReferences";
 
 export type ComposerKeyAction =
 	| "picker-next"
@@ -116,6 +117,7 @@ export function prepareChatSubmission(input: {
 	skillContexts?: string[];
 	commandAction?: CommandAction;
 	attachments: ChatAttachment[];
+	vaultReferences?: string[];
 	agentCwd?: string;
 	agentContextAlreadySent: boolean;
 	planMode: boolean;
@@ -125,7 +127,12 @@ export function prepareChatSubmission(input: {
 	effort?: string;
 	permissionMode?: string;
 }): ChatSubmission | null {
-	if (!input.text && input.attachments.length === 0) return null;
+	if (
+		!input.text &&
+		input.attachments.length === 0 &&
+		(input.vaultReferences?.length ?? 0) === 0
+	)
+		return null;
 	const attachments =
 		input.attachments.length > 0 ? [...input.attachments] : undefined;
 	const sessionControls = sessionControlFields(input);
@@ -139,6 +146,7 @@ export function prepareChatSubmission(input: {
 				skill_contexts: input.skillContexts,
 				command_action: input.commandAction,
 				attachments,
+				vault_references: input.vaultReferences,
 				agent_cwd: input.agentCwd,
 				...sessionControls,
 			},
@@ -151,7 +159,14 @@ export function prepareChatSubmission(input: {
 			: undefined;
 	return {
 		kind: "immediate",
-		user: { id: input.id, text: input.text, attachments: input.attachments },
+		user: {
+			id: input.id,
+			text: formatVaultReferencedMessage(
+				input.text,
+				input.vaultReferences ?? [],
+			),
+			attachments: input.attachments,
+		},
 		message: {
 			type: "chat",
 			text: input.text,
@@ -159,6 +174,7 @@ export function prepareChatSubmission(input: {
 			skill_contexts: input.skillContexts,
 			command_action: input.commandAction,
 			attachments,
+			vault_references: input.vaultReferences,
 			agent_cwd: agentCwd,
 			...sessionControls,
 		},

@@ -116,6 +116,7 @@ import type {
 import { waitForClaudeWarmupSnapshot } from "./claudeWarmup";
 import { loadConfig } from "./config";
 import { resolveExecutionContext } from "./executionContext";
+import { buildPromptAsync } from "./promptBuilder";
 import type { RateLimitMessage, ServerMessage } from "./protocol";
 import { getWindowMark } from "./proxy";
 import { generateTurnRecap } from "./recap";
@@ -1904,6 +1905,7 @@ describe("SessionManager — session-scoped permission persistence", () => {
 			sm: SessionManager,
 			emit: (message: ServerMessage) => void,
 			turnId = "computer-use-turn",
+			vaultReferences?: string[],
 		) {
 			return sm.runQuery(
 				"/computer-use open Docker",
@@ -1916,6 +1918,7 @@ describe("SessionManager — session-scoped permission persistence", () => {
 				undefined,
 				undefined,
 				"computer-use",
+				vaultReferences,
 			);
 		}
 
@@ -1947,6 +1950,42 @@ describe("SessionManager — session-scoped permission persistence", () => {
 			expect(
 				emitted.some((message) => message.type === "permission_request"),
 			).toBe(false);
+		});
+
+		it("passes validated vault references into capability tasks and history", async () => {
+			vi.mocked(authorizeHlidTool).mockResolvedValueOnce({
+				decision: "allow",
+				policyDecision: "allow",
+				reason: "matched capability allow rule",
+			});
+			vi.mocked(buildPromptAsync).mockResolvedValueOnce({
+				prompt: "test prompt",
+				safeAttachments: [],
+				resourcePaths: ["C:\\Vault\\Projects\\Hlid.md"],
+				safeVaultReferences: [
+					{
+						relativePath: "Projects/Hlid.md",
+						path: "C:\\Vault\\Projects\\Hlid.md",
+					},
+				],
+			});
+			const { sm, executeCommand } = setup();
+
+			await run(sm, () => {}, "computer-use-turn", ["Projects/Hlid.md"]);
+
+			const task =
+				"open Docker\n\nVault references:\n- C:\\Vault\\Projects\\Hlid.md (Vault: Projects/Hlid.md)";
+			expect(authorizeHlidTool).toHaveBeenCalledWith(
+				expect.objectContaining({ input: { task } }),
+			);
+			expect(executeCommand).toHaveBeenCalledWith("computer-use", task);
+			expect(dbMock.appendMessage).toHaveBeenCalledWith(
+				"sess-1",
+				expect.any(Number),
+				"user",
+				"/computer-use open Docker\n\nVault references:\n- Projects/Hlid.md",
+				"computer-use-turn",
+			);
 		});
 
 		it("routes an Umbod approve decision to a capability-level card", async () => {

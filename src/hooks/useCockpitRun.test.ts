@@ -67,7 +67,9 @@ function runOptions(
 		planHtml: false,
 		attachSessionIdRef: { current: "attached-session" },
 		pendingAttachments: [],
+		vaultReferences: [],
 		clearPendingAttachments: vi.fn(),
+		clearVaultReferences: vi.fn(),
 		selectedAgentPath: "/agent",
 		vaultPath: "/vault",
 		background: false,
@@ -287,6 +289,26 @@ describe("cockpit run controller", () => {
 			}),
 		);
 		expect(options.clearPendingAttachments).toHaveBeenCalledOnce();
+	});
+
+	it("starts a vault-reference-only run and clears the selection", async () => {
+		const options = runOptions({
+			prompt: "",
+			sameSession: false,
+			background: true,
+			vaultReferences: ["Projects/Hlid.md", "Notes/Decision.md"],
+		});
+
+		await useCockpitRun(options)();
+
+		expect(options.send).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "chat",
+				text: "",
+				vault_references: ["Projects/Hlid.md", "Notes/Decision.md"],
+			}),
+		);
+		expect(options.clearVaultReferences).toHaveBeenCalledOnce();
 	});
 
 	it("starts a new chat when Same Session targets another project", async () => {

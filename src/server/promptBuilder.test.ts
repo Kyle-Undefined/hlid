@@ -44,6 +44,43 @@ describe("buildPrompt — basic", async () => {
 	});
 });
 
+describe("buildPrompt — vault references", async () => {
+	it("resolves selected relative paths into exact provider instructions", async () => {
+		mkdirSync(join(tmp, "Projects"), { recursive: true });
+		writeFileSync(join(tmp, "Projects", "Hlid.md"), "# Hlid");
+		const result = await buildPromptAsync(
+			base({ vaultReferences: ["Projects/Hlid.md"] }),
+		);
+		expect(result.prompt).toContain(
+			"Vault references (read or edit these exact files when relevant)",
+		);
+		expect(result.prompt).toContain(join(tmp, "Projects", "Hlid.md"));
+		expect(result.prompt).toContain("(Vault: Projects/Hlid.md)");
+		expect(result.safeVaultReferences).toEqual([
+			{
+				relativePath: "Projects/Hlid.md",
+				path: join(tmp, "Projects", "Hlid.md"),
+			},
+		]);
+		expect(result.resourcePaths).toContain(join(tmp, "Projects", "Hlid.md"));
+	});
+
+	it("supports a reference-only prompt and drops unsafe paths", async () => {
+		writeFileSync(join(tmp, "Note.md"), "note");
+		const result = await buildPromptAsync(
+			base({
+				userMessage: "",
+				vaultReferences: ["Note.md", "../outside.md"],
+			}),
+		);
+		expect(result.prompt).toContain("User: (no additional input)");
+		expect(result.safeVaultReferences).toEqual([
+			{ relativePath: "Note.md", path: join(tmp, "Note.md") },
+		]);
+		expect(result.prompt).not.toContain("outside.md");
+	});
+});
+
 // ── skillContext ──────────────────────────────────────────────────────────────
 
 describe("buildPrompt — skillContext", async () => {

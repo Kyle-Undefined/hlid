@@ -1,5 +1,6 @@
 import { memo } from "react";
 import type { QueuedChatMessage } from "#/hooks/wsChatQueueStore";
+import { formatVaultReferencedMessage } from "#/lib/vaultReferences";
 import { ChatMessageRow } from "./ChatMessageRow";
 import type { ChatMessage } from "./chatReducer";
 import type { PlanDecision } from "./PlanCard";
@@ -116,7 +117,10 @@ export const MessageList = memo(function MessageList({
 					message={{
 						id: qm.id,
 						role: "user" as const,
-						text: qm.text,
+						text: formatVaultReferencedMessage(
+							qm.text,
+							qm.vault_references ?? [],
+						),
 						attachments: qm.attachments,
 					}}
 					queueState={queueStateById.get(qm.id)}

@@ -34,6 +34,7 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 			command_action: z.enum(["review", "computer-use"]).optional(),
 			agent_cwd: path.optional(),
 			attachments: z.array(attachment).max(32).optional(),
+			vault_references: z.array(path).max(32).optional(),
 			turn_id: id.optional(),
 			plan_mode: z.boolean().optional(),
 			plan_html: z.boolean().optional(),
@@ -44,8 +45,10 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 		})
 		.refine(
 			(message) =>
-				message.text.length > 0 || (message.attachments?.length ?? 0) > 0,
-			{ message: "chat requires text or an attachment" },
+				message.text.length > 0 ||
+				(message.attachments?.length ?? 0) > 0 ||
+				(message.vault_references?.length ?? 0) > 0,
+			{ message: "chat requires text, an attachment, or a vault reference" },
 		),
 	z.strictObject({ type: z.literal("cancel_queued"), turn_id: id }),
 	z.strictObject({ type: z.literal("promote_queued"), turn_id: id }),
