@@ -14,6 +14,7 @@ import {
 	managedCliProxyConfig,
 	terminateCliProxyChild,
 	windowsPathToWsl,
+	windowsSystemExecutable,
 	wslCliProxyLaunchArgs,
 } from "./cliproxyManager";
 
@@ -76,6 +77,12 @@ describe("managed CLIProxy configuration", () => {
 		expect(() =>
 			wslCliProxyLaunchArgs("Ubuntu;bad", "pid", "exe", "config"),
 		).toThrow("invalid WSL distro name");
+	});
+
+	it("uses the Windows system tar instead of a PATH-shadowing executable", () => {
+		expect(windowsSystemExecutable("tar.exe", "D:\\Windows")).toBe(
+			"D:\\Windows\\System32\\tar.exe",
+		);
 	});
 
 	it("explains when Windows Security may have removed the executable", () => {

@@ -11,7 +11,7 @@ import {
 	rmSync,
 	writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative, win32 } from "node:path";
 import type { HlidConfig } from "#/config";
 import { CLIPROXY_DIR, parseWslUncSyntax } from "#/lib/paths";
 import { runBoundedProcess } from "#/lib/process";
@@ -221,6 +221,13 @@ export function windowsPathToWsl(value: string): string {
 	const match = value.match(/^([A-Za-z]):[\\/](.*)$/);
 	if (!match) throw new Error("CLIProxy WSL path is not on a Windows drive");
 	return `/mnt/${match[1].toLowerCase()}/${match[2].replaceAll("\\", "/")}`;
+}
+
+export function windowsSystemExecutable(
+	name: string,
+	systemRoot = process.env.SystemRoot,
+): string {
+	return win32.join(systemRoot?.trim() || "C:\\Windows", "System32", name);
 }
 
 const WSL_DISTRO_RE = /^[A-Za-z0-9._-]+$/;
@@ -708,15 +715,19 @@ export class CliProxyManager {
 			if (result.code !== 0)
 				throw new Error("PowerShell could not extract CLIProxy");
 			const linuxResult = await runBoundedProcess(
-				"tar.exe",
+				windowsSystemExecutable("tar.exe"),
 				["-xzf", linuxArchivePath, "-C", linuxExtractPath],
 				{
 					timeoutMs: 60_000,
 					timeoutError: "CLIProxy WSL extraction timed out",
 				},
 			);
-			if (linuxResult.code !== 0)
-				throw new Error("tar could not extract CLIProxy for WSL");
+			if (linuxResult.code !== 0) {
+				const detail = linuxResult.output.trim().slice(0, 500);
+				throw new Error(
+					`Windows tar could not extract CLIProxy for WSL${detail ? `: ${detail}` : ""}`,
+				);
+			}
 			const stagedExecutable = findExecutable(windowsExtractPath, "windows");
 			if (!stagedExecutable)
 				throw new Error("release archive did not contain cli-proxy-api.exe");
