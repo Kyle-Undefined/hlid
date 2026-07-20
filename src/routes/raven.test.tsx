@@ -426,6 +426,68 @@ describe("Raven composed submission behavior", () => {
 		expect(terminalPane?.className).toContain("md:order-last");
 	});
 
+	it("keeps following async tool-card growth until the reader wheels away", () => {
+		let resizeCallback: ResizeObserverCallback | null = null;
+		const frames: FrameRequestCallback[] = [];
+		class MockResizeObserver {
+			constructor(callback: ResizeObserverCallback) {
+				resizeCallback = callback;
+			}
+			observe() {}
+			disconnect() {}
+			unobserve() {}
+		}
+		vi.stubGlobal("ResizeObserver", MockResizeObserver);
+		const requestFrame = vi
+			.spyOn(window, "requestAnimationFrame")
+			.mockImplementation((callback) => {
+				frames.push(callback);
+				return frames.length;
+			});
+
+		try {
+			render(<ChatPage />);
+			act(() => {
+				while (frames.length > 0) frames.shift()?.(0);
+			});
+			const scroller = document.querySelector(
+				'[data-scroll-restoration-id="raven-transcript"]',
+			) as HTMLDivElement;
+			let scrollHeight = 1_000;
+			Object.defineProperty(scroller, "scrollHeight", {
+				configurable: true,
+				get: () => scrollHeight,
+			});
+			Object.defineProperty(scroller, "clientHeight", {
+				configurable: true,
+				value: 500,
+			});
+			scroller.scrollTop = 500;
+			scroller.scrollTo = vi.fn(({ top }) => {
+				scroller.scrollTop = Number(top);
+			});
+
+			scrollHeight = 1_200;
+			act(() => {
+				resizeCallback?.([], {} as ResizeObserver);
+				frames.shift()?.(16);
+			});
+			expect(scroller.scrollTop).toBe(1_200);
+
+			scroller.scrollTop = 900;
+			fireEvent.wheel(scroller, { deltaY: -20 });
+			scrollHeight = 1_400;
+			act(() => {
+				resizeCallback?.([], {} as ResizeObserver);
+				frames.shift()?.(32);
+			});
+			expect(scroller.scrollTop).toBe(900);
+		} finally {
+			requestFrame.mockRestore();
+			vi.unstubAllGlobals();
+		}
+	});
+
 	it("restores an open project terminal after navigating away without terminating it", () => {
 		state.loaderData = {
 			...state.loaderData,

@@ -875,6 +875,25 @@ export function SessionsLedger({
 		onPageChange,
 		onPageSizeChange,
 	};
+	const runningSessionIds = new Set(
+		(sessionsStatus ?? []).flatMap((session) =>
+			session.state === "running" && session.db_session_id
+				? [session.db_session_id]
+				: [],
+		),
+	);
+	const displayedSessions =
+		sort === "recent" && runningSessionIds.size > 0
+			? data.sessions
+					.map((session, index) => ({ session, index }))
+					.sort((a, b) => {
+						const runningOrder =
+							Number(runningSessionIds.has(b.session.id)) -
+							Number(runningSessionIds.has(a.session.id));
+						return runningOrder || a.index - b.index;
+					})
+					.map(({ session }) => session)
+			: data.sessions;
 
 	return (
 		<div className="border border-border bg-card">
@@ -1111,7 +1130,7 @@ export function SessionsLedger({
 					)}
 				</div>
 			) : (
-				data.sessions.map((s) => (
+				displayedSessions.map((s) => (
 					<SessionItem
 						key={s.id}
 						session={s}

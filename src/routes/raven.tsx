@@ -661,8 +661,11 @@ function useRavenViewport({
 }) {
 	const bottomRef = useRef<HTMLDivElement>(null);
 	const scrollRef = useRef<HTMLDivElement>(null);
+	const transcriptContentRef = useRef<HTMLDivElement>(null);
 	const atBottomRef = useRef(true);
 	const wheelAwayRef = useRef(false);
+	const pointerScrollingRef = useRef(false);
+	const lastScrollTopRef = useRef(0);
 	const touchActiveRef = useRef(false);
 	const touchStartYRef = useRef(0);
 	const touchAwayRef = useRef(false);
@@ -697,14 +700,26 @@ function useRavenViewport({
 			typeof window.matchMedia === "function" &&
 			window.matchMedia("(pointer: coarse)").matches;
 		const onScroll = () => {
+			const nextScrollTop = element.scrollTop;
+			const movedTowardOlder = nextScrollTop < lastScrollTopRef.current - 1;
+			lastScrollTopRef.current = nextScrollTop;
 			if (touchActiveRef.current && touchAwayRef.current) return;
+			if (pointerScrollingRef.current && movedTowardOlder) {
+				atBottomRef.current = false;
+				return;
+			}
 			if (wheelAwayRef.current) {
 				const distance =
 					element.scrollHeight - element.scrollTop - element.clientHeight;
 				if (distance > 1) return;
 				wheelAwayRef.current = false;
 			}
-			atBottomRef.current = isNearChatBottom(element, isCoarsePointer);
+			// Content growth can emit scroll events without user intent. Do not drop
+			// bottom-follow just because a tool card expanded past the proximity zone;
+			// explicit wheel/touch/scrollbar movement owns detaching instead.
+			if (isNearChatBottom(element, isCoarsePointer)) {
+				atBottomRef.current = true;
+			}
 		};
 		const onTouchStart = (event: TouchEvent) => {
 			touchActiveRef.current = true;
@@ -738,12 +753,22 @@ function useRavenViewport({
 				atBottomRef.current = true;
 			}
 		};
+		const onPointerDown = () => {
+			pointerScrollingRef.current = true;
+			lastScrollTopRef.current = element.scrollTop;
+		};
+		const onPointerUp = () => {
+			pointerScrollingRef.current = false;
+		};
 		element.addEventListener("scroll", onScroll, { passive: true });
 		element.addEventListener("touchstart", onTouchStart, { passive: true });
 		element.addEventListener("touchmove", onTouchMove, { passive: true });
 		element.addEventListener("touchend", onTouchEnd, { passive: true });
 		element.addEventListener("touchcancel", onTouchEnd, { passive: true });
 		element.addEventListener("wheel", onWheel, { passive: true });
+		element.addEventListener("pointerdown", onPointerDown, { passive: true });
+		window.addEventListener("pointerup", onPointerUp, { passive: true });
+		window.addEventListener("pointercancel", onPointerUp, { passive: true });
 		return () => {
 			element.removeEventListener("scroll", onScroll);
 			element.removeEventListener("touchstart", onTouchStart);
@@ -751,7 +776,26 @@ function useRavenViewport({
 			element.removeEventListener("touchend", onTouchEnd);
 			element.removeEventListener("touchcancel", onTouchEnd);
 			element.removeEventListener("wheel", onWheel);
+			element.removeEventListener("pointerdown", onPointerDown);
+			window.removeEventListener("pointerup", onPointerUp);
+			window.removeEventListener("pointercancel", onPointerUp);
 		};
+	}, []);
+
+	// Tool rows can grow after the message update that created them (results,
+	// subagent progress, async markdown). Observe the committed transcript size
+	// so a reader who is following the turn stays pinned through those changes.
+	useEffect(() => {
+		const content = transcriptContentRef.current;
+		if (!content || typeof ResizeObserver === "undefined") return;
+		const observer = new ResizeObserver(() => {
+			if (!atBottomRef.current) return;
+			streamingScrollSchedulerRef.current?.request(() => {
+				if (atBottomRef.current) scrollChatToBottom(scrollRef.current, "auto");
+			});
+		});
+		observer.observe(content);
+		return () => observer.disconnect();
 	}, []);
 
 	// Put restored/new chats at the bottom before their first paint. This avoids
@@ -838,6 +882,7 @@ function useRavenViewport({
 	return {
 		bottomRef,
 		scrollRef,
+		transcriptContentRef,
 		atBottomRef,
 		textareaRef,
 		modelBadgeRef,
@@ -1929,7 +1974,7 @@ function RavenMessagePane({
 }: ChatPageContentProps) {
 	const { sessionId } = session;
 	const { wsStatus, sessionState, runningTurnId, messages } = runtime;
-	const { scrollRef, bottomRef } = viewport;
+	const { scrollRef, bottomRef, transcriptContentRef } = viewport;
 	const {
 		handleDecide,
 		handleSubmitAnswers,
@@ -1991,7 +2036,10 @@ function RavenMessagePane({
 							mobileHideChat ? "hidden md:block" : ""
 						}`}
 					>
-						<div className="min-h-full flex flex-col justify-end px-5 pt-2 pb-7 min-w-0">
+						<div
+							ref={transcriptContentRef}
+							className="min-h-full flex flex-col justify-end px-5 pt-2 pb-7 min-w-0"
+						>
 							{messages.length === 0 ? (
 								<div className="flex-1 flex flex-col items-center justify-center gap-3">
 									<div className="text-2xl font-bold tracking-widest text-foreground/20 uppercase select-none">

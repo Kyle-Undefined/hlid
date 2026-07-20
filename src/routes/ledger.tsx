@@ -1025,7 +1025,7 @@ function SessionsTab({
 			<div
 				className={
 					sessionsStatus.some((session) => session.state === "running")
-						? "sticky top-0 z-20 border-b border-border"
+						? "sticky top-0 z-30 border-b border-border bg-background"
 						: "border-b border-border"
 				}
 			>

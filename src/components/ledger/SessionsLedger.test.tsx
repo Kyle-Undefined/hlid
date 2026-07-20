@@ -9,6 +9,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionRow } from "#/db";
 import type { LiveStats } from "#/hooks/wsLiveStatsStore";
+import type { SessionStatusEntry } from "#/server/protocol";
 import { SessionsLedger, sessionDisplayUsage } from "./SessionsLedger";
 
 afterEach(() => {
@@ -158,6 +159,68 @@ describe("sessionDisplayUsage", () => {
 });
 
 describe("SessionsLedger session actions", () => {
+	it("promotes a resumed session immediately while sorted by recent", () => {
+		const olderSession = {
+			...session,
+			id: "session-2",
+			label: "Older resumed session",
+			started_at: session.started_at - 100,
+		};
+		const resumedStatus: SessionStatusEntry = {
+			session_id: "pool-2",
+			agent_cwd: "/code/proj",
+			agent_name: "Proj",
+			state: "running",
+			model: "model",
+			hasPendingPermissions: false,
+			hasDbSession: true,
+			db_session_id: "session-2",
+		};
+		renderLedger({
+			data: { sessions: [session, olderSession], total: 2 },
+			sort: "recent",
+			sessionsStatus: [resumedStatus],
+		});
+
+		const openButtons = screen.getAllByRole("button", {
+			name: /^Open .* session$/,
+		});
+		expect(openButtons[0].getAttribute("aria-label")).toBe(
+			"Open Older resumed session session",
+		);
+	});
+
+	it("preserves explicit non-recent sorting while a session is running", () => {
+		const lowerCostRunning = {
+			...session,
+			id: "session-2",
+			label: "Lower cost running session",
+			total_cost: 0.1,
+		};
+		const runningStatus: SessionStatusEntry = {
+			session_id: "pool-2",
+			agent_cwd: "/code/proj",
+			agent_name: "Proj",
+			state: "running",
+			model: "model",
+			hasPendingPermissions: false,
+			hasDbSession: true,
+			db_session_id: "session-2",
+		};
+		renderLedger({
+			data: { sessions: [session, lowerCostRunning], total: 2 },
+			sort: "cost",
+			sessionsStatus: [runningStatus],
+		});
+
+		const openButtons = screen.getAllByRole("button", {
+			name: /^Open .* session$/,
+		});
+		expect(openButtons[0].getAttribute("aria-label")).toBe(
+			"Open Original name session",
+		);
+	});
+
 	it("portals desktop actions outside the Ledger scroll container", () => {
 		renderLedger();
 		anchorBelow(screen.getByRole("button", { name: "Session actions" }));

@@ -135,6 +135,58 @@ describe("ActiveSessionsPanel", () => {
 		expect(screen.getByText("Vault")).toBeDefined();
 	});
 
+	it("keeps the desktop session table open by default and lets it collapse", () => {
+		render(
+			<ActiveSessionsPanel
+				sessions={[idle, running]}
+				onStop={vi.fn()}
+				onClose={vi.fn()}
+			/>,
+		);
+
+		const toggle = screen.getByRole("button", {
+			name: "Hide 2 live sessions",
+		});
+		expect(toggle.getAttribute("aria-expanded")).toBe("true");
+		expect(screen.getByText("Session / Agent")).toBeDefined();
+
+		fireEvent.click(toggle);
+
+		expect(
+			screen
+				.getByRole("button", { name: "Show 2 live sessions" })
+				.getAttribute("aria-expanded"),
+		).toBe("false");
+		expect(screen.queryByText("Session / Agent")).toBeNull();
+		expect(screen.getByText("1 running · 1 idle")).toBeDefined();
+	});
+
+	it("moves a resumed live session ahead of sessions that were already running", () => {
+		const { rerender } = render(
+			<ActiveSessionsPanel
+				sessions={[running, idle]}
+				onStop={vi.fn()}
+				onClose={vi.fn()}
+			/>,
+		);
+		const rowLabels = () =>
+			screen
+				.getAllByRole("row")
+				.slice(1)
+				.map((row) => row.textContent);
+		expect(rowLabels()[0]).toContain("Vault");
+
+		rerender(
+			<ActiveSessionsPanel
+				sessions={[running, { ...idle, state: "running" }]}
+				onStop={vi.fn()}
+				onClose={vi.fn()}
+			/>,
+		);
+
+		expect(rowLabels()[0]).toContain("Proj");
+	});
+
 	it("opens a persisted session from the keyboard", () => {
 		const onNavigate = vi.fn();
 		render(
@@ -449,7 +501,7 @@ describe("ActiveSessionsPanel", () => {
 				onClose={vi.fn()}
 			/>,
 		);
-		expect(screen.getByText(/session|agent/i)).toBeDefined();
+		expect(screen.getByText("Session / Agent")).toBeDefined();
 		expect(screen.getByText(/state/i)).toBeDefined();
 	});
 

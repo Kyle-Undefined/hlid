@@ -63,15 +63,44 @@ export function ActiveSessionsPanel({
 }: ActiveSessionsPanelProps) {
 	const isDesktop = useIsDesktop();
 	const [mobileOpen, setMobileOpen] = useState(false);
+	const [desktopOpen, setDesktopOpen] = useState(true);
+	const previousStatesRef = useRef<Map<string, SessionStatusEntry["state"]>>(
+		new Map(),
+	);
+	const runningOrderRef = useRef(new Map<string, number>());
+	const runningSequenceRef = useRef(0);
+	const orderInitializedRef = useRef(false);
 	// Only show sessions that have started a DB chat — filters out vault
 	// placeholder and any freshly-created-but-never-used entries.
-	const used = sessions
-		.filter(isLedgerOpenSession)
-		.sort(
-			(a, b) => Number(b.state === "running") - Number(a.state === "running"),
+	const used = sessions.filter(isLedgerOpenSession);
+	if (orderInitializedRef.current) {
+		for (const session of used) {
+			const previousState = previousStatesRef.current.get(session.session_id);
+			if (session.state === "running" && previousState !== "running") {
+				runningOrderRef.current.set(
+					session.session_id,
+					++runningSequenceRef.current,
+				);
+			}
+		}
+	} else {
+		orderInitializedRef.current = true;
+	}
+	previousStatesRef.current = new Map(
+		used.map((session) => [session.session_id, session.state]),
+	);
+	const ordered = [...used].sort((a, b) => {
+		const stateOrder =
+			Number(b.state === "running") - Number(a.state === "running");
+		if (stateOrder !== 0) return stateOrder;
+		if (a.state !== "running") return 0;
+		return (
+			(runningOrderRef.current.get(b.session_id) ?? 0) -
+			(runningOrderRef.current.get(a.session_id) ?? 0)
 		);
+	});
 
-	if (used.length === 0) {
+	if (ordered.length === 0) {
 		return (
 			<div className="flex flex-col items-center justify-center py-16 gap-2">
 				<p className="text-[10px] tracking-widest text-muted-foreground/40 uppercase">
@@ -83,7 +112,7 @@ export function ActiveSessionsPanel({
 	if (!isDesktop) {
 		return (
 			<MobileActiveSessionsPanel
-				sessions={used}
+				sessions={ordered}
 				onStop={onStop}
 				onClose={onClose}
 				onNavigate={onNavigate}
@@ -92,39 +121,66 @@ export function ActiveSessionsPanel({
 			/>
 		);
 	}
+	const sessionWord = ordered.length === 1 ? "session" : "sessions";
+	const summary = mobileSessionSummary(ordered);
 
 	return (
 		<div className="overflow-hidden bg-background/95">
-			<table className="w-full table-fixed text-[11px] md:table-auto">
-				<thead>
-					<tr className="border-b border-border text-left">
-						<th className="px-3 py-2 text-[9px] tracking-widest text-muted-foreground/50 uppercase font-normal md:px-4">
-							Session / Agent
-						</th>
-						<th className="px-4 py-2 text-[9px] tracking-widest text-muted-foreground/50 uppercase font-normal hidden md:table-cell">
-							CWD
-						</th>
-						<th className="w-16 px-2 py-2 text-[9px] tracking-widest text-muted-foreground/50 uppercase font-normal md:w-auto md:px-4">
-							State
-						</th>
-						<th className="w-24 px-2 py-2 text-[9px] tracking-widest text-muted-foreground/50 uppercase font-normal md:w-auto md:px-4">
-							Actions
-						</th>
-					</tr>
-				</thead>
-				<tbody>
-					{used.map((session) => (
-						<ActiveSessionRow
-							key={session.session_id}
-							session={session}
-							onStop={onStop}
-							onClose={onClose}
-							onNavigate={onNavigate}
-							isDesktop={isDesktop}
-						/>
-					))}
-				</tbody>
-			</table>
+			<button
+				type="button"
+				onClick={() => setDesktopOpen((open) => !open)}
+				aria-expanded={desktopOpen}
+				aria-controls="desktop-active-sessions-list"
+				aria-label={`${desktopOpen ? "Hide" : "Show"} ${ordered.length} live ${sessionWord}`}
+				className="flex min-h-10 w-full items-center gap-3 border-b border-border px-4 text-left"
+			>
+				<span className="shrink-0 text-[9px] tracking-widest text-foreground/80 uppercase">
+					Live sessions
+				</span>
+				<span className="h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
+				<span className="min-w-0 flex-1 truncate font-mono text-[9px] text-muted-foreground/70">
+					{summary}
+				</span>
+				{desktopOpen ? (
+					<ChevronUp className="h-4 w-4 shrink-0 text-muted-foreground" />
+				) : (
+					<ChevronDown className="h-4 w-4 shrink-0 text-muted-foreground" />
+				)}
+			</button>
+			{desktopOpen && (
+				<div id="desktop-active-sessions-list">
+					<table className="w-full table-fixed text-[11px] md:table-auto">
+						<thead>
+							<tr className="border-b border-border text-left">
+								<th className="px-3 py-2 text-[9px] tracking-widest text-muted-foreground/50 uppercase font-normal md:px-4">
+									Session / Agent
+								</th>
+								<th className="px-4 py-2 text-[9px] tracking-widest text-muted-foreground/50 uppercase font-normal hidden md:table-cell">
+									CWD
+								</th>
+								<th className="w-16 px-2 py-2 text-[9px] tracking-widest text-muted-foreground/50 uppercase font-normal md:w-auto md:px-4">
+									State
+								</th>
+								<th className="w-24 px-2 py-2 text-[9px] tracking-widest text-muted-foreground/50 uppercase font-normal md:w-auto md:px-4">
+									Actions
+								</th>
+							</tr>
+						</thead>
+						<tbody>
+							{ordered.map((session) => (
+								<ActiveSessionRow
+									key={session.session_id}
+									session={session}
+									onStop={onStop}
+									onClose={onClose}
+									onNavigate={onNavigate}
+									isDesktop={isDesktop}
+								/>
+							))}
+						</tbody>
+					</table>
+				</div>
+			)}
 		</div>
 	);
 }
