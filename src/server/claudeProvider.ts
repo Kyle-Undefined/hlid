@@ -37,6 +37,7 @@ import { createClaudeHistorySessionStore } from "./claudeHistorySessionStore";
 import {
 	executeObsidianAgentTool,
 	OBSIDIAN_AGENT_NAMESPACE,
+	OBSIDIAN_AGENT_NAMESPACE_DESCRIPTION,
 	OBSIDIAN_AGENT_TOOL_SPECS,
 	obsidianAgentSchemas,
 } from "./obsidianAgentTools";
@@ -73,8 +74,7 @@ function createObsidianSdkServer() {
 	return createSdkMcpServer({
 		name: OBSIDIAN_AGENT_NAMESPACE,
 		version: "1",
-		instructions:
-			"Read-only access to Obsidian's indexed view of Hlid's configured vault. Prefer these tools for vault search, the current note, backlinks, tasks, properties, Bases, and file history. They cannot modify vault data.",
+		instructions: OBSIDIAN_AGENT_NAMESPACE_DESCRIPTION,
 		tools: OBSIDIAN_AGENT_TOOL_SPECS.map((spec) =>
 			tool(
 				spec.name,
@@ -105,9 +105,9 @@ function createObsidianSdkServer() {
 				},
 				{
 					annotations: {
-						readOnlyHint: true,
+						readOnlyHint: spec.readOnly,
 						destructiveHint: false,
-						idempotentHint: true,
+						idempotentHint: spec.readOnly,
 					},
 					alwaysLoad: true,
 				},

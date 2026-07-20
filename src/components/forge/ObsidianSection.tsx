@@ -83,10 +83,10 @@ export function ObsidianSection() {
 				<>
 					<Field
 						label="Agent access"
-						hint="Claude, Codex, and ACP agents receive Hlid's curated Obsidian tools automatically. These tools are read-only."
+						hint="Claude, Codex, and ACP agents receive Hlid's curated Obsidian tools automatically. Vault reads prefer Obsidian's index; note changes follow the active agent permission policy."
 					>
 						<StatusIndicator ok={true}>
-							{status.agentTools.length} read-only tools
+							{status.agentTools.length} curated tools
 						</StatusIndicator>
 					</Field>
 					<Field

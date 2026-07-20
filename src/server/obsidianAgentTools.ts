@@ -1,7 +1,12 @@
 import { z } from "zod";
 import { loadConfig } from "./config";
 import {
+	createObsidianNote,
+	listObsidianTemplates,
 	MAX_OBSIDIAN_AGENT_OUTPUT_CHARS,
+	MAX_OBSIDIAN_APPEND_CHARS,
+	MAX_OBSIDIAN_CREATE_CHARS,
+	mutateObsidianNote,
 	queryObsidianBase,
 	queryObsidianCurrentNote,
 	queryObsidianHistory,
@@ -9,9 +14,12 @@ import {
 	queryObsidianProperties,
 	queryObsidianSearch,
 	queryObsidianTasks,
+	readObsidianTemplate,
 } from "./obsidianCli";
 
 export const OBSIDIAN_AGENT_NAMESPACE = "hlid_obsidian";
+export const OBSIDIAN_AGENT_NAMESPACE_DESCRIPTION =
+	"Obsidian-native access to Hlid's configured vault. When the user asks about their vault or Obsidian, use these tools before shell or filesystem operations whenever they support the task. Reads use Obsidian's index and vault semantics. Writes use curated note operations and follow the active agent permission policy.";
 
 const vaultPath = z.string().trim().min(1).max(4_096);
 const resultLimit = z.number().int().min(1).max(200).optional();
@@ -75,6 +83,34 @@ export const obsidianAgentSchemas = {
 		limit: resultLimit,
 		countOnly,
 	}),
+	list_templates: z.object({
+		limit: resultLimit,
+		countOnly,
+	}),
+	read_template: z.object({
+		name: z.string().trim().min(1).max(256),
+		resolve: z.boolean().optional(),
+		title: z.string().trim().min(1).max(512).optional(),
+		limit: resultLimit,
+	}),
+	create_note: z.object({
+		path: vaultPath,
+		template: z.string().trim().min(1).max(256).optional(),
+		content: z.string().max(MAX_OBSIDIAN_CREATE_CHARS).optional(),
+		open: z.boolean().optional(),
+	}),
+	append_note: z.object({
+		target: z.enum(["active", "daily", "path"]),
+		path: vaultPath.optional(),
+		content: z.string().min(1).max(MAX_OBSIDIAN_APPEND_CHARS),
+		open: z.boolean().optional(),
+	}),
+	prepend_note: z.object({
+		target: z.enum(["active", "daily", "path"]),
+		path: vaultPath.optional(),
+		content: z.string().min(1).max(MAX_OBSIDIAN_APPEND_CHARS),
+		open: z.boolean().optional(),
+	}),
 } as const;
 
 export type ObsidianAgentToolName = keyof typeof obsidianAgentSchemas;
@@ -98,6 +134,7 @@ export type ObsidianAgentToolSpec = {
 	name: ObsidianAgentToolName;
 	description: string;
 	inputSchema: JsonSchema;
+	readOnly: boolean;
 };
 
 const budgetSchemaProperties: Record<string, JsonValue> = {
@@ -119,7 +156,8 @@ export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
 	{
 		name: "search",
 		description:
-			"Search the configured Obsidian vault by indexed text. Can return matching note paths, matching lines with context, or only the matching file count. Returns a bounded JSON envelope.",
+			"Search the configured Obsidian vault by indexed text. Use this instead of shell or filesystem search for vault queries. Can return matching note paths, matching lines with context, or only the matching file count. Returns a bounded JSON envelope.",
+		readOnly: true,
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -150,6 +188,7 @@ export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
 		name: "current_note",
 		description:
 			"Inspect the note currently active in Obsidian. Read its content, return its heading outline, or show file metadata. Returns a bounded JSON envelope.",
+		readOnly: true,
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -167,6 +206,7 @@ export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
 		name: "links",
 		description:
 			"Read Obsidian's link graph for the configured vault. Supports backlinks, outgoing links, unresolved links, orphan notes, and dead-end notes. Returns a bounded JSON envelope with total, returned, and truncated metadata.",
+		readOnly: true,
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -193,6 +233,7 @@ export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
 		name: "tasks",
 		description:
 			"Read tasks known to Obsidian, including task status, source note, and line information. Returns a bounded JSON envelope with total, returned, and truncated metadata.",
+		readOnly: true,
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -217,6 +258,7 @@ export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
 		name: "properties",
 		description:
 			"Read Obsidian properties from one note, the active note, or the configured vault. Returns a bounded JSON envelope with total, returned, and truncated metadata.",
+		readOnly: true,
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -238,6 +280,7 @@ export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
 		name: "base_query",
 		description:
 			"Run a read-only Obsidian Bases query. Returns a bounded JSON envelope with total, returned, and truncated metadata.",
+		readOnly: true,
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -256,6 +299,7 @@ export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
 		name: "history",
 		description:
 			"Read Obsidian local file history or compare historical versions. Returns a bounded JSON envelope and cannot restore or modify a note.",
+		readOnly: true,
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -277,7 +321,107 @@ export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
 			additionalProperties: false,
 		},
 	},
+	{
+		name: "list_templates",
+		description:
+			"List templates available to Obsidian in the configured vault. Use this before choosing a template for note creation. Returns a bounded JSON envelope.",
+		readOnly: true,
+		inputSchema: {
+			type: "object",
+			properties: { ...budgetSchemaProperties },
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "read_template",
+		description:
+			"Read an Obsidian template before using it. Core template variables can be resolved for a prospective title; Templater syntax is returned as source. Returns a bounded JSON envelope.",
+		readOnly: true,
+		inputSchema: {
+			type: "object",
+			properties: {
+				name: { type: "string", description: "Exact template name." },
+				resolve: {
+					type: "boolean",
+					description:
+						"Resolve core Templates variables such as date, time, and title.",
+				},
+				title: {
+					type: "string",
+					description:
+						"Prospective note title used for core variable resolution.",
+				},
+				limit: budgetSchemaProperties.limit,
+			},
+			required: ["name"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "create_note",
+		description:
+			"Create a Markdown note through Obsidian, optionally using a named core Templates or Templater template. Templater routing runs inside Obsidian and the result reports the final path. Interactive Templater prompts are rejected. Existing notes are never overwritten.",
+		readOnly: false,
+		inputSchema: {
+			type: "object",
+			properties: {
+				path: {
+					type: "string",
+					description:
+						"Requested vault-relative .md path. A Templater template may route the finished note elsewhere.",
+				},
+				template: {
+					type: "string",
+					description: "Exact template name returned by list_templates.",
+				},
+				content: {
+					type: "string",
+					description: "Optional content appended after the template runs.",
+				},
+				open: {
+					type: "boolean",
+					description: "Open the finished note in Obsidian.",
+				},
+			},
+			required: ["path"],
+			additionalProperties: false,
+		},
+	},
+	...(["append_note", "prepend_note"] as const).map(
+		(name): ObsidianAgentToolSpec => ({
+			name,
+			description: `${name === "append_note" ? "Append" : "Prepend"} content through Obsidian to the active note, daily note, or an exact vault-relative note path. The result reports the updated path.`,
+			readOnly: false,
+			inputSchema: {
+				type: "object",
+				properties: {
+					target: {
+						type: "string",
+						enum: ["active", "daily", "path"],
+					},
+					path: {
+						type: "string",
+						description: "Required when target is path.",
+					},
+					content: { type: "string" },
+					open: {
+						type: "boolean",
+						description: "Open the updated note in Obsidian.",
+					},
+				},
+				required: ["target", "content"],
+				additionalProperties: false,
+			},
+		}),
+	),
 ];
+
+export function isObsidianAgentToolReadOnly(name: string): boolean {
+	return (
+		OBSIDIAN_AGENT_TOOL_SPECS.find((spec) => spec.name === name)?.readOnly ??
+		true
+	);
+}
 
 type BudgetOptions = {
 	limit?: number;
@@ -506,6 +650,40 @@ export async function executeObsidianAgentTool(
 			return budgetObsidianAgentOutput(
 				await queryObsidianHistory(vaultName, parsed),
 				{ ...parsed, expectedJson: false },
+			);
+		}
+		case "list_templates": {
+			const parsed = obsidianAgentSchemas.list_templates.parse(input);
+			return budgetObsidianAgentOutput(
+				await listObsidianTemplates(vaultName, parsed.countOnly === true),
+				{
+					...parsed,
+					expectedJson: false,
+					nativeCountOnly: parsed.countOnly,
+				},
+			);
+		}
+		case "read_template": {
+			const parsed = obsidianAgentSchemas.read_template.parse(input);
+			return budgetObsidianAgentOutput(
+				await readObsidianTemplate(vaultName, parsed),
+				{ limit: parsed.limit, expectedJson: false },
+			);
+		}
+		case "create_note": {
+			const parsed = obsidianAgentSchemas.create_note.parse(input);
+			return JSON.stringify(await createObsidianNote(vaultName, parsed));
+		}
+		case "append_note": {
+			const parsed = obsidianAgentSchemas.append_note.parse(input);
+			return JSON.stringify(
+				await mutateObsidianNote(vaultName, "append", parsed),
+			);
+		}
+		case "prepend_note": {
+			const parsed = obsidianAgentSchemas.prepend_note.parse(input);
+			return JSON.stringify(
+				await mutateObsidianNote(vaultName, "prepend", parsed),
 			);
 		}
 		default:

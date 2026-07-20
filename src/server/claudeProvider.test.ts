@@ -2510,7 +2510,7 @@ describe("ClaudeProvider — check()", () => {
 // ── Slice B: streaming-input mode ─────────────────────────────────────────────
 
 describe("ClaudeProvider — Slice B streaming-input", () => {
-	it("registers Hlid's read-only Obsidian MCP tools on user sessions", async () => {
+	it("registers Hlid's curated Obsidian MCP tools on user sessions", async () => {
 		vi.mocked(query).mockReturnValueOnce(sdkGen([]));
 		const session = new ClaudeProvider().query(baseParams());
 		await session.send("inspect my vault");
@@ -2536,6 +2536,11 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 			"properties",
 			"base_query",
 			"history",
+			"list_templates",
+			"read_template",
+			"create_note",
+			"append_note",
+			"prepend_note",
 		]);
 		const tasks = server.instance.options.tools.find(
 			(item) => item.name === "tasks",
@@ -2544,6 +2549,10 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 			limit: expect.anything(),
 			countOnly: expect.anything(),
 		});
+		const createNote = server.instance.options.tools.find(
+			(item) => item.name === "create_note",
+		) as { annotations?: { readOnlyHint?: boolean } } | undefined;
+		expect(createNote?.annotations?.readOnlyHint).toBe(false);
 		session.cancel();
 	});
 

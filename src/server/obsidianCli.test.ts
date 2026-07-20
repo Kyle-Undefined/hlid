@@ -1,9 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import {
 	appendToObsidian,
+	createObsidianNote,
 	getActiveObsidianNote,
 	getObsidianCliStatus,
+	listObsidianTemplates,
 	MAX_OBSIDIAN_APPEND_CHARS,
+	mutateObsidianNote,
 	obsidianReferenceItem,
 	openObsidianNote,
 	queryObsidianBase,
@@ -13,6 +16,7 @@ import {
 	queryObsidianProperties,
 	queryObsidianSearch,
 	queryObsidianTasks,
+	readObsidianTemplate,
 	testObsidianConnection,
 } from "./obsidianCli";
 
@@ -187,6 +191,151 @@ describe("Obsidian CLI bridge", () => {
 			),
 		).rejects.toThrow("limited");
 		expect(run).not.toHaveBeenCalled();
+	});
+
+	it("lists and reads templates through curated CLI commands", async () => {
+		const list = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "New Note\nNew Project", code: 0 },
+		]);
+		await expect(
+			listObsidianTemplates("Fornbok", false, list.dependencies),
+		).resolves.toBe("New Note\nNew Project");
+		expect(list.run.mock.calls[1]?.[1]).toEqual(["vault=Fornbok", "templates"]);
+
+		const read = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "# Project", code: 0 },
+		]);
+		await readObsidianTemplate(
+			"Fornbok",
+			{ name: "New Project", resolve: true, title: "Hlid" },
+			read.dependencies,
+		);
+		expect(read.run.mock.calls[1]?.[1]).toEqual([
+			"vault=Fornbok",
+			"template:read",
+			"name=New Project",
+			"resolve",
+			"title=Hlid",
+		]);
+	});
+
+	it("creates core-template notes without permitting overwrite", async () => {
+		const { dependencies, run } = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "# {{title}}", code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{ output: "Created", code: 0 },
+		]);
+
+		await expect(
+			createObsidianNote(
+				"Fornbok",
+				{
+					path: "0 Inbox/One.md",
+					template: "New Note",
+					content: "Body",
+					open: true,
+				},
+				dependencies,
+			),
+		).resolves.toEqual({ path: "0 Inbox/One.md" });
+		expect(run.mock.calls[3]?.[1]).toEqual([
+			"vault=Fornbok",
+			"create",
+			"path=0 Inbox/One.md",
+			"template=New Note",
+			"content=Body",
+			"open",
+		]);
+		expect(run.mock.calls[3]?.[1]).not.toContain("overwrite");
+	});
+
+	it("runs Templater templates inside Obsidian and returns their routed path", async () => {
+		const { dependencies, run } = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "# <% tp.file.title %>", code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{ output: '=> {"path":"1 Projects/One.md"}', code: 0 },
+		]);
+
+		await expect(
+			createObsidianNote(
+				"Fornbok",
+				{
+					path: "0 Inbox/One.md",
+					template: "New Project",
+					content: "Private body",
+				},
+				dependencies,
+			),
+		).resolves.toEqual({ path: "1 Projects/One.md" });
+		const args = run.mock.calls[3]?.[1] ?? [];
+		expect(args.slice(0, 2)).toEqual(["vault=Fornbok", "eval"]);
+		expect(args[2]).toContain("create_new_note_from_template");
+		expect(args[2]).not.toContain("Private body");
+	});
+
+	it("rejects interactive Templater templates before creating a file", async () => {
+		const { dependencies, run } = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: '<% await tp.system.prompt("Folder") %>', code: 0 },
+		]);
+
+		await expect(
+			createObsidianNote(
+				"Fornbok",
+				{ path: "Notes/One.md", template: "Interactive" },
+				dependencies,
+			),
+		).rejects.toThrow("requires interactive Templater input");
+		expect(run).toHaveBeenCalledTimes(2);
+	});
+
+	it("appends and prepends through Obsidian and reports the updated path", async () => {
+		const exact = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "", code: 0 },
+		]);
+		await expect(
+			mutateObsidianNote(
+				"Fornbok",
+				"prepend",
+				{
+					target: "path",
+					path: "Notes/One.md",
+					content: "Heading",
+				},
+				exact.dependencies,
+			),
+		).resolves.toEqual({ path: "Notes/One.md" });
+		expect(exact.run.mock.calls[1]?.[1]).toEqual([
+			"vault=Fornbok",
+			"prepend",
+			"path=Notes/One.md",
+			"content=Heading",
+		]);
+
+		const daily = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "", code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{ output: "0 Inbox/2026-07-20.md", code: 0 },
+		]);
+		await expect(
+			mutateObsidianNote(
+				"Fornbok",
+				"append",
+				{ target: "daily", content: "Done" },
+				daily.dependencies,
+			),
+		).resolves.toEqual({ path: "0 Inbox/2026-07-20.md" });
+		expect(daily.run.mock.calls[1]?.[1]).toEqual([
+			"vault=Fornbok",
+			"daily:append",
+			"content=Done",
+		]);
 	});
 
 	it("tests both the CLI version and configured vault", async () => {

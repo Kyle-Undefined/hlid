@@ -38,6 +38,11 @@ describe("ObsidianSection", () => {
 				"properties",
 				"base_query",
 				"history",
+				"list_templates",
+				"read_template",
+				"create_note",
+				"append_note",
+				"prepend_note",
 			],
 		});
 		serverFns.testObsidianConnectionFn.mockResolvedValue({
@@ -47,7 +52,7 @@ describe("ObsidianSection", () => {
 		render(<ObsidianSection />);
 
 		await waitFor(() => expect(screen.getByText("v1.12.7")).toBeTruthy());
-		expect(screen.getByText("7 read-only tools")).toBeTruthy();
+		expect(screen.getByText("12 curated tools")).toBeTruthy();
 		expect(screen.getByText("not registered")).toBeTruthy();
 		expect(serverFns.testObsidianConnectionFn).not.toHaveBeenCalled();
 

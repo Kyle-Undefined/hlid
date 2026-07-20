@@ -2,6 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const bridge = vi.hoisted(() => ({
 	MAX_OBSIDIAN_AGENT_OUTPUT_CHARS: 120_000,
+	MAX_OBSIDIAN_APPEND_CHARS: 20_000,
+	MAX_OBSIDIAN_CREATE_CHARS: 20_000,
+	createObsidianNote: vi.fn(),
+	listObsidianTemplates: vi.fn(),
+	mutateObsidianNote: vi.fn(),
 	queryObsidianBase: vi.fn(),
 	queryObsidianCurrentNote: vi.fn(),
 	queryObsidianHistory: vi.fn(),
@@ -9,6 +14,7 @@ const bridge = vi.hoisted(() => ({
 	queryObsidianProperties: vi.fn(),
 	queryObsidianSearch: vi.fn(),
 	queryObsidianTasks: vi.fn(),
+	readObsidianTemplate: vi.fn(),
 }));
 
 vi.mock("./config", () => ({
@@ -29,7 +35,7 @@ describe("Obsidian agent tools", () => {
 		}
 	});
 
-	it("publishes only the seven curated read-only capabilities", () => {
+	it("publishes curated vault reads and non-destructive note writes", () => {
 		expect(OBSIDIAN_AGENT_TOOL_SPECS.map((tool) => tool.name)).toEqual([
 			"search",
 			"current_note",
@@ -38,21 +44,76 @@ describe("Obsidian agent tools", () => {
 			"properties",
 			"base_query",
 			"history",
+			"list_templates",
+			"read_template",
+			"create_note",
+			"append_note",
+			"prepend_note",
 		]);
 		expect(
 			JSON.stringify(
-				OBSIDIAN_AGENT_TOOL_SPECS.map((tool) => ({
-					name: tool.name,
-					schema: tool.inputSchema,
-				})),
+				OBSIDIAN_AGENT_TOOL_SPECS.filter((tool) => tool.readOnly).map(
+					(tool) => ({
+						name: tool.name,
+						schema: tool.inputSchema,
+					}),
+				),
 			),
 		).not.toMatch(/restore|eval|install|write/i);
-		for (const tool of OBSIDIAN_AGENT_TOOL_SPECS) {
+		for (const tool of OBSIDIAN_AGENT_TOOL_SPECS.filter(
+			(tool) => tool.readOnly && tool.name !== "read_template",
+		)) {
 			expect(tool.inputSchema.properties).toMatchObject({
 				limit: { type: "integer", minimum: 1, maximum: 200 },
 				countOnly: { type: "boolean" },
 			});
 		}
+		expect(
+			OBSIDIAN_AGENT_TOOL_SPECS.filter((tool) => !tool.readOnly).map(
+				(tool) => tool.name,
+			),
+		).toEqual(["create_note", "append_note", "prepend_note"]);
+	});
+
+	it("lists, reads, creates, and updates notes through the shared bridge", async () => {
+		bridge.listObsidianTemplates.mockResolvedValueOnce("New Note\nNew Project");
+		expect(
+			JSON.parse(
+				await executeObsidianAgentTool("list_templates", { limit: 1 }),
+			),
+		).toMatchObject({ total: 2, returned: 1, data: ["New Note"] });
+		expect(bridge.listObsidianTemplates).toHaveBeenCalledWith("Fornbok", false);
+
+		bridge.readObsidianTemplate.mockResolvedValueOnce("# <% tp.file.title %>");
+		expect(
+			JSON.parse(
+				await executeObsidianAgentTool("read_template", {
+					name: "New Note",
+				}),
+			),
+		).toMatchObject({ returned: 1, data: ["# <% tp.file.title %>"] });
+
+		bridge.createObsidianNote.mockResolvedValueOnce({
+			path: "0 Inbox/One.md",
+		});
+		await expect(
+			executeObsidianAgentTool("create_note", {
+				path: "0 Inbox/One.md",
+				template: "New Note",
+			}),
+		).resolves.toBe('{"path":"0 Inbox/One.md"}');
+
+		bridge.mutateObsidianNote.mockResolvedValue({ path: "Notes/One.md" });
+		await executeObsidianAgentTool("append_note", {
+			target: "path",
+			path: "Notes/One.md",
+			content: "Body",
+		});
+		expect(bridge.mutateObsidianNote).toHaveBeenCalledWith(
+			"Fornbok",
+			"append",
+			expect.objectContaining({ content: "Body" }),
+		);
 	});
 
 	it("searches indexed vault text with bounded path and context results", async () => {

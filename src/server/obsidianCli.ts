@@ -6,6 +6,7 @@ const DETECTION_TIMEOUT_MS = 5_000;
 const COMMAND_TIMEOUT_MS = 20_000;
 const MAX_COMMAND_OUTPUT_CHARS = 256_000;
 export const MAX_OBSIDIAN_APPEND_CHARS = 20_000;
+export const MAX_OBSIDIAN_CREATE_CHARS = 20_000;
 export const MAX_OBSIDIAN_AGENT_OUTPUT_CHARS = 120_000;
 
 type ProcessRunner = typeof runBoundedProcess;
@@ -365,6 +366,34 @@ function safeVaultPath(path: string, label = "path"): string {
 	return portable;
 }
 
+function safeTemplateName(name: string): string {
+	const template = safeVaultPath(name.trim(), "template name").replace(
+		/\.md$/i,
+		"",
+	);
+	if (template.length > 256) {
+		throw new Error("Obsidian template name is too long.");
+	}
+	return template;
+}
+
+function safeNoteContent(content: string | undefined, limit: number): string {
+	if (content === undefined) return "";
+	if (content.length > limit || content.includes("\0")) {
+		throw new Error(
+			`Obsidian note content is limited to ${limit.toLocaleString()} characters.`,
+		);
+	}
+	return content;
+}
+
+function cliError(output: string): string | null {
+	const detail = output.trim();
+	return /^Error:\s*/i.test(detail)
+		? detail.replace(/^Error:\s*/i, "").trim()
+		: null;
+}
+
 function optionalPathArgument(path: string | undefined): string[] {
 	return path ? [`path=${safeVaultPath(path)}`] : [];
 }
@@ -610,6 +639,205 @@ export async function queryObsidianCurrentNote(
 	return runObsidianCommand(vaultName, args, dependencies);
 }
 
+export async function listObsidianTemplates(
+	vaultName: string,
+	countOnly = false,
+	dependencies: ObsidianBridgeDependencies = {},
+): Promise<string> {
+	return runObsidianCommand(
+		vaultName,
+		["templates", ...(countOnly ? ["total"] : [])],
+		dependencies,
+	);
+}
+
+export async function readObsidianTemplate(
+	vaultName: string,
+	input: { name: string; resolve?: boolean; title?: string },
+	dependencies: ObsidianBridgeDependencies = {},
+): Promise<string> {
+	const name = safeTemplateName(input.name);
+	const title = input.title?.trim();
+	if (title && (title.length > 512 || /[\r\n\0]/.test(title))) {
+		throw new Error("Obsidian template title is invalid.");
+	}
+	const output = await runObsidianCommand(
+		vaultName,
+		[
+			"template:read",
+			`name=${name}`,
+			...(input.resolve ? ["resolve"] : []),
+			...(title ? [`title=${title}`] : []),
+		],
+		dependencies,
+	);
+	const error = cliError(output);
+	if (error) throw new Error(`Obsidian CLI failed: ${error}`);
+	return output;
+}
+
+export type ObsidianCreateNoteInput = {
+	path: string;
+	template?: string;
+	content?: string;
+	open?: boolean;
+};
+
+function templaterCreateCode(input: {
+	path: string;
+	template: string;
+	content: string;
+	open: boolean;
+}): string {
+	const payload = Buffer.from(JSON.stringify(input), "utf8").toString("base64");
+	return [
+		"(async()=>{",
+		`const bytes=Uint8Array.from(atob("${payload}"),c=>c.charCodeAt(0));`,
+		"const data=JSON.parse(new TextDecoder().decode(bytes));",
+		'const plugin=app.plugins.plugins["templater-obsidian"];',
+		'if(!plugin?.templater?.create_new_note_from_template)throw new Error("Templater is not enabled");',
+		'const folder=String(plugin.settings?.templates_folder||"").replace(/^\\/+|\\/+$/g,"");',
+		'const templatePath=[folder,data.template+".md"].filter(Boolean).join("/");',
+		"const template=app.vault.getAbstractFileByPath(templatePath);",
+		'if(!template)throw new Error("Template not found: "+data.template);',
+		'const slash=data.path.lastIndexOf("/");',
+		'const parent=slash<0?"":data.path.slice(0,slash);',
+		'const name=(slash<0?data.path:data.path.slice(slash+1)).replace(/\\.md$/i,"");',
+		"const file=await plugin.templater.create_new_note_from_template(template,parent,name,data.open);",
+		'if(!file)throw new Error("Templater did not create the note");',
+		"if(data.content)await app.vault.append(file,data.content);",
+		"return JSON.stringify({path:file.path});",
+		"})()",
+	].join("");
+}
+
+function parseObsidianEvalJson(output: string): Record<string, unknown> {
+	const error = cliError(output);
+	if (error) throw new Error(`Obsidian CLI failed: ${error}`);
+	const json = output.trim().replace(/^=>\s*/, "");
+	try {
+		return JSON.parse(json) as Record<string, unknown>;
+	} catch {
+		throw new Error("Obsidian returned an invalid note creation result.");
+	}
+}
+
+export async function createObsidianNote(
+	vaultName: string,
+	input: ObsidianCreateNoteInput,
+	dependencies: ObsidianBridgeDependencies = {},
+): Promise<{ path: string }> {
+	const path = safeVaultPath(input.path, "note path");
+	if (!path.toLowerCase().endsWith(".md")) {
+		throw new Error("Obsidian note creation requires a .md path.");
+	}
+	const content = safeNoteContent(input.content, MAX_OBSIDIAN_CREATE_CHARS);
+	const template = input.template
+		? safeTemplateName(input.template)
+		: undefined;
+
+	if (template) {
+		const source = await readObsidianTemplate(
+			vaultName,
+			{ name: template },
+			dependencies,
+		);
+		if (/tp\.system\.(?:prompt|suggester)\s*\(/.test(source)) {
+			throw new Error(
+				`Obsidian template "${template}" requires interactive Templater input and cannot run unattended.`,
+			);
+		}
+		if (source.includes("<%")) {
+			const output = await runObsidianCommand(
+				vaultName,
+				[
+					"eval",
+					`code=${templaterCreateCode({
+						path,
+						template,
+						content,
+						open: input.open === true,
+					})}`,
+				],
+				dependencies,
+			);
+			const result = parseObsidianEvalJson(output);
+			if (typeof result.path !== "string") {
+				throw new Error("Templater did not report the created note path.");
+			}
+			return { path: safeVaultPath(result.path, "created note path") };
+		}
+	}
+
+	const output = await runObsidianCommand(
+		vaultName,
+		[
+			"create",
+			`path=${path}`,
+			...(template ? [`template=${template}`] : []),
+			...(content ? [`content=${content}`] : []),
+			...(input.open ? ["open"] : []),
+		],
+		dependencies,
+	);
+	const error = cliError(output);
+	if (error) throw new Error(`Obsidian CLI failed: ${error}`);
+	return { path };
+}
+
+export type ObsidianNoteMutationInput = {
+	target: "active" | "daily" | "path";
+	path?: string;
+	content: string;
+	open?: boolean;
+};
+
+export async function mutateObsidianNote(
+	vaultName: string,
+	action: "append" | "prepend",
+	input: ObsidianNoteMutationInput,
+	dependencies: ObsidianBridgeDependencies = {},
+): Promise<{ path: string }> {
+	const content = safeNoteContent(
+		input.content,
+		MAX_OBSIDIAN_APPEND_CHARS,
+	).trim();
+	if (!content) throw new Error("There is nothing to save to Obsidian.");
+	if (input.target === "path" && !input.path) {
+		throw new Error(
+			"An exact vault path is required for this Obsidian target.",
+		);
+	}
+	const exactPath = input.path
+		? safeVaultPath(input.path, "note path")
+		: undefined;
+	const pathBeforeMutation =
+		input.target === "active"
+			? await getActiveObsidianNote(vaultName, dependencies)
+			: exactPath;
+	const command = input.target === "daily" ? `daily:${action}` : action;
+	const output = await runObsidianCommand(
+		vaultName,
+		[
+			command,
+			...(input.target === "path" && exactPath ? [`path=${exactPath}`] : []),
+			`content=${content}`,
+		],
+		dependencies,
+	);
+	const error = cliError(output);
+	if (error) throw new Error(`Obsidian CLI failed: ${error}`);
+	const path =
+		input.target === "daily"
+			? portableVaultPath(
+					await runObsidianCommand(vaultName, ["daily:path"], dependencies),
+				)
+			: pathBeforeMutation;
+	if (!path) throw new Error("Obsidian did not report the updated note path.");
+	if (input.open) await openObsidianNote(vaultName, path, dependencies);
+	return { path };
+}
+
 // fallow-ignore-next-line unused-export -- Loaded dynamically by the Obsidian server functions to keep host process code out of the client bundle.
 export async function testObsidianConnection(
 	vaultName: string,
@@ -638,7 +866,6 @@ export async function testObsidianConnection(
 	return { version, vaultPath };
 }
 
-// fallow-ignore-next-line unused-export -- Loaded dynamically by the Obsidian server functions to keep host process code out of the client bundle.
 export async function getActiveObsidianNote(
 	vaultName: string,
 	dependencies: ObsidianBridgeDependencies = {},
@@ -650,7 +877,6 @@ export async function getActiveObsidianNote(
 	return portableVaultPath(path);
 }
 
-// fallow-ignore-next-line unused-export -- Loaded dynamically by the Obsidian server functions to keep host process code out of the client bundle.
 export async function openObsidianNote(
 	vaultName: string,
 	relativePath: string,

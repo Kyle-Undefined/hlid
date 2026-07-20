@@ -54,7 +54,9 @@ import { bumpDataRevision } from "./dataRevision";
 import { isHtmlPlanPath } from "./htmlPlanPath";
 import {
 	executeObsidianAgentTool,
+	isObsidianAgentToolReadOnly,
 	OBSIDIAN_AGENT_NAMESPACE,
+	OBSIDIAN_AGENT_NAMESPACE_DESCRIPTION,
 	OBSIDIAN_AGENT_TOOL_SPECS,
 } from "./obsidianAgentTools";
 
@@ -493,7 +495,7 @@ function obsidianTools(): DynamicToolSpec[] {
 		{
 			type: "namespace",
 			name: OBSIDIAN_AGENT_NAMESPACE,
-			description: "Read-only access to Hlid's configured Obsidian vault",
+			description: OBSIDIAN_AGENT_NAMESPACE_DESCRIPTION,
 			tools: OBSIDIAN_AGENT_TOOL_SPECS.map((spec) => ({
 				type: "function" as const,
 				name: spec.name,
@@ -1152,6 +1154,12 @@ class CodexAgentSession implements AgentSession {
 		const params: TurnStartParamsWithCollaboration = {
 			threadId: this.threadId,
 			input: [{ type: "text", text: message, text_elements: [] }],
+			additionalContext: {
+				hlid_obsidian: {
+					kind: "application",
+					value: OBSIDIAN_AGENT_NAMESPACE_DESCRIPTION,
+				},
+			},
 			// Native Codex Plan Mode forbids every write at the instruction layer,
 			// even when the sandbox grants the HTML plan directory. HTML plans use
 			// Hlið-managed planning while plain Markdown plans stay native. A thread
@@ -1837,15 +1845,41 @@ class CodexAgentSession implements AgentSession {
 	): Promise<DynamicToolCallResponse> {
 		if (params.namespace === OBSIDIAN_AGENT_NAMESPACE) {
 			try {
+				const toolName = String(params.tool ?? "");
+				if (
+					!isObsidianAgentToolReadOnly(toolName) &&
+					(this.params.permissionMode !== "bypassPermissions" ||
+						this.params.policyEnforced)
+				) {
+					const decision = await this.params.canUseTool(
+						`mcp__${OBSIDIAN_AGENT_NAMESPACE}__${toolName}`,
+						params.arguments,
+						{
+							toolUseID: String(params.callId ?? `${toolName}-${Date.now()}`),
+							signal: this.params.signal ?? new AbortController().signal,
+							title: `Obsidian ${toolName.replaceAll("_", " ")}`,
+						},
+					);
+					if (decision.behavior === "deny") {
+						return {
+							success: false,
+							contentItems: [
+								{
+									type: "inputText",
+									text:
+										decision.message ??
+										"The Obsidian note change was not approved.",
+								},
+							],
+						};
+					}
+				}
 				return {
 					success: true,
 					contentItems: [
 						{
 							type: "inputText",
-							text: await executeObsidianAgentTool(
-								String(params.tool ?? ""),
-								params.arguments,
-							),
+							text: await executeObsidianAgentTool(toolName, params.arguments),
 						},
 					],
 				};

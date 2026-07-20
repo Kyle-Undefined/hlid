@@ -6,7 +6,10 @@ import { describe, expect, it, vi } from "vitest";
 const getObsidianCliStatus = vi.hoisted(() =>
 	vi.fn().mockResolvedValue({ installed: false }),
 );
-vi.mock("./obsidianCli", () => ({ getObsidianCliStatus }));
+vi.mock("./obsidianCli", async (importOriginal) => ({
+	...(await importOriginal<typeof import("./obsidianCli")>()),
+	getObsidianCliStatus,
+}));
 
 import { AcpProvider, inspectAcpAgent } from "./acpProvider";
 import type { AgentEvent, AgentQueryParams } from "./agentProvider";
@@ -631,7 +634,7 @@ describe("AcpProvider — MCP status", () => {
 		}
 	});
 
-	it("adds Hlid's read-only Obsidian MCP server when the CLI is installed", async () => {
+	it("adds Hlid's curated Obsidian MCP server when the CLI is installed", async () => {
 		getObsidianCliStatus.mockResolvedValueOnce({ installed: true });
 		const { events, session } = await run("report-mcp");
 		expect(events).toContainEqual({ type: "text_delta", text: "1" });

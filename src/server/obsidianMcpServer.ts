@@ -3,6 +3,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import {
 	executeObsidianAgentTool,
 	OBSIDIAN_AGENT_NAMESPACE,
+	OBSIDIAN_AGENT_NAMESPACE_DESCRIPTION,
 	OBSIDIAN_AGENT_TOOL_SPECS,
 	obsidianAgentSchemas,
 } from "./obsidianAgentTools";
@@ -53,8 +54,7 @@ export async function runObsidianMcpServer(): Promise<void> {
 	const server = new McpServer(
 		{ name: OBSIDIAN_AGENT_NAMESPACE, version: "1" },
 		{
-			instructions:
-				"Read-only access to Obsidian's indexed view of Hlid's configured vault, including search and the current note. These tools cannot modify vault data.",
+			instructions: OBSIDIAN_AGENT_NAMESPACE_DESCRIPTION,
 		},
 	);
 	for (const spec of OBSIDIAN_AGENT_TOOL_SPECS) {
@@ -65,9 +65,9 @@ export async function runObsidianMcpServer(): Promise<void> {
 				// biome-ignore lint/suspicious/noExplicitAny: registerTool accepts each tool's Zod shape, while the loop widens them to a union.
 				inputSchema: obsidianAgentSchemas[spec.name].shape as any,
 				annotations: {
-					readOnlyHint: true,
+					readOnlyHint: spec.readOnly,
 					destructiveHint: false,
-					idempotentHint: true,
+					idempotentHint: spec.readOnly,
 				},
 			},
 			async (input: unknown) => {

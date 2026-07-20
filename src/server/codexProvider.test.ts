@@ -1198,15 +1198,27 @@ describe("CodexAgentSession — commands", () => {
 		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
 		const session = new CodexProvider().query(baseCodexParams());
 		await session.send("inspect backlinks");
+		expect(turnStartParams(writes)[0].additionalContext).toEqual({
+			hlid_obsidian: {
+				kind: "application",
+				value: expect.stringContaining(
+					"use these tools before shell or filesystem operations",
+				),
+			},
+		});
 		const obsidianNamespace = (
 			threadStartParams(writes)[0].dynamicTools as Array<{
 				name: string;
+				description: string;
 				tools: Array<{
 					name: string;
 					inputSchema: { properties: Record<string, unknown> };
 				}>;
 			}>
 		).find((tool) => tool.name === "hlid_obsidian");
+		expect(obsidianNamespace?.description).toContain(
+			"use these tools before shell or filesystem operations",
+		);
 		expect(
 			obsidianNamespace?.tools.find((tool) => tool.name === "tasks")
 				?.inputSchema.properties,
@@ -1222,6 +1234,14 @@ describe("CodexAgentSession — commands", () => {
 			context: { type: "boolean" },
 			limit: { type: "integer", minimum: 1, maximum: 200 },
 			countOnly: { type: "boolean" },
+		});
+		expect(
+			obsidianNamespace?.tools.find((tool) => tool.name === "create_note")
+				?.inputSchema.properties,
+		).toMatchObject({
+			path: { type: "string" },
+			template: { type: "string" },
+			content: { type: "string" },
 		});
 		proc.stdout.emit(
 			"data",
@@ -1253,6 +1273,95 @@ describe("CodexAgentSession — commands", () => {
 			kind: "backlinks",
 			path: "Notes/One.md",
 		});
+		session.cancel();
+	});
+
+	it("routes Obsidian note writes through Hlid approval", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const canUseTool = vi.fn().mockResolvedValue({ behavior: "allow" });
+		const session = new CodexProvider().query(baseCodexParams({ canUseTool }));
+		await session.send("create a note");
+		proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: 93,
+					method: "item/tool/call",
+					params: {
+						threadId: "thread-1",
+						callId: "obsidian-write-1",
+						namespace: "hlid_obsidian",
+						tool: "create_note",
+						arguments: {
+							path: "0 Inbox/One.md",
+							template: "New Note",
+						},
+					},
+				})}\n`,
+			),
+		);
+		await vi.waitFor(() =>
+			expect(
+				writes
+					.map((line) => JSON.parse(line))
+					.find((message) => message.id === 93)?.result,
+			).toMatchObject({ success: true }),
+		);
+		expect(canUseTool).toHaveBeenCalledWith(
+			"mcp__hlid_obsidian__create_note",
+			{ path: "0 Inbox/One.md", template: "New Note" },
+			expect.objectContaining({
+				toolUseID: "obsidian-write-1",
+				title: "Obsidian create note",
+			}),
+		);
+		expect(executeObsidianAgentTool).toHaveBeenCalledWith("create_note", {
+			path: "0 Inbox/One.md",
+			template: "New Note",
+		});
+		session.cancel();
+	});
+
+	it("does not execute a denied Obsidian note write", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const canUseTool = vi.fn().mockResolvedValue({
+			behavior: "deny",
+			message: "Keep the vault unchanged",
+		});
+		const session = new CodexProvider().query(baseCodexParams({ canUseTool }));
+		await session.send("create a note");
+		vi.mocked(executeObsidianAgentTool).mockClear();
+		proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: 94,
+					method: "item/tool/call",
+					params: {
+						threadId: "thread-1",
+						callId: "obsidian-write-2",
+						namespace: "hlid_obsidian",
+						tool: "append_note",
+						arguments: { target: "daily", content: "No" },
+					},
+				})}\n`,
+			),
+		);
+		await vi.waitFor(() =>
+			expect(
+				writes
+					.map((line) => JSON.parse(line))
+					.find((message) => message.id === 94)?.result,
+			).toMatchObject({
+				success: false,
+				contentItems: [{ type: "inputText", text: "Keep the vault unchanged" }],
+			}),
+		);
+		expect(executeObsidianAgentTool).not.toHaveBeenCalled();
 		session.cancel();
 	});
 
