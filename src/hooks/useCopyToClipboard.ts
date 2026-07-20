@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from "react";
+import { TRANSIENT_FEEDBACK_MS } from "#/lib/transientFeedback";
 
 /**
  * Returns { copy, copied } where copied briefly flips true then resets after 2s.
@@ -14,7 +15,10 @@ export function useCopyToClipboard() {
 			.then(() => {
 				if (timerRef.current) clearTimeout(timerRef.current);
 				setCopied(true);
-				timerRef.current = setTimeout(() => setCopied(false), 2000);
+				timerRef.current = setTimeout(
+					() => setCopied(false),
+					TRANSIENT_FEEDBACK_MS,
+				);
 			})
 			.catch(() => {
 				// clipboard write failed (e.g. permissions denied) — leave copied = false

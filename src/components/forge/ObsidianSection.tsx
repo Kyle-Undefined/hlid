@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import {
 	getObsidianStatusFn,
-	type ObsidianConnection,
 	type ObsidianIntegrationStatus,
 	testObsidianConnectionFn,
 } from "#/lib/serverFns/obsidian";
@@ -10,7 +9,6 @@ import { Field, Section, StatusIndicator } from "./fields";
 
 export function ObsidianSection() {
 	const [status, setStatus] = useState<ObsidianIntegrationStatus | null>(null);
-	const [connection, setConnection] = useState<ObsidianConnection | null>(null);
 	const [checking, setChecking] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 
@@ -18,7 +16,8 @@ export function ObsidianSection() {
 		setChecking(true);
 		setError(null);
 		try {
-			setStatus(await getObsidianStatusFn());
+			const nextStatus = await getObsidianStatusFn();
+			setStatus(nextStatus);
 		} catch (cause) {
 			setError(
 				cause instanceof Error
@@ -40,19 +39,49 @@ export function ObsidianSection() {
 	async function testConnection() {
 		setChecking(true);
 		setError(null);
-		setConnection(null);
 		try {
-			setConnection(await testObsidianConnectionFn());
+			const connection = await testObsidianConnectionFn();
+			setStatus((current) =>
+				current
+					? {
+							...current,
+							connection: {
+								vaultName: current.connection.vaultName,
+								state: "connected",
+								connection,
+								error: null,
+								checkedAt: Date.now(),
+							},
+						}
+					: current,
+			);
 		} catch (cause) {
-			setError(
+			const message =
 				cause instanceof Error
 					? cause.message
-					: "Could not connect to Obsidian",
+					: "Could not connect to Obsidian";
+			setStatus((current) =>
+				current
+					? {
+							...current,
+							connection: {
+								vaultName: current.connection.vaultName,
+								state: "failed",
+								connection: null,
+								error: message,
+								checkedAt: Date.now(),
+							},
+						}
+					: current,
 			);
+			setError(message);
 		} finally {
 			setChecking(false);
 		}
 	}
+
+	const connectionSnapshot = status?.connection;
+	const connection = connectionSnapshot?.connection;
 
 	return (
 		<Section title="Obsidian desktop">
@@ -79,7 +108,7 @@ export function ObsidianSection() {
 					</button>
 				</div>
 			</Field>
-			{status?.installed && (
+			{status?.installed && connectionSnapshot && (
 				<>
 					<Field
 						label="Agent access"
@@ -90,22 +119,27 @@ export function ObsidianSection() {
 						</StatusIndicator>
 					</Field>
 					<Field
-						label="Shell command"
-						hint="Hlid can use the installed redirector directly even when it is not on PATH."
-					>
-						<StatusIndicator ok={status.registered}>
-							{status.registered ? "registered" : "not registered"}
-						</StatusIndicator>
-					</Field>
-					<Field
 						label="Configured vault"
-						hint="Testing may start Obsidian if the desktop app is closed."
+						hint={
+							connectionSnapshot.error ??
+							"Checked once when Hlid starts. Testing may start Obsidian if the desktop app is closed."
+						}
 					>
 						<div className="flex flex-wrap items-center gap-3">
-							<StatusIndicator ok={connection ? true : null}>
+							<StatusIndicator
+								ok={
+									connection
+										? true
+										: connectionSnapshot.state === "failed"
+											? false
+											: null
+								}
+							>
 								{connection
 									? `connected with v${connection.version}`
-									: "not tested"}
+									: connectionSnapshot.state === "checking"
+										? "checking…"
+										: "not connected"}
 							</StatusIndicator>
 							<button
 								type="button"

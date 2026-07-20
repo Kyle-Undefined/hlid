@@ -5,8 +5,9 @@ import {
 	LoaderCircle,
 	X,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { getActiveObsidianNoteFn } from "#/lib/serverFns/obsidian";
+import { TRANSIENT_FEEDBACK_MS } from "#/lib/transientFeedback";
 import type { VaultReferenceItem } from "#/lib/vaultReferences";
 
 export function ObsidianActiveNoteError({
@@ -47,6 +48,12 @@ export function ObsidianActiveNoteButton({
 		"idle",
 	);
 	const [error, setError] = useState<string | null>(null);
+
+	useEffect(() => {
+		if (state !== "added") return;
+		const timer = setTimeout(() => setState("idle"), TRANSIENT_FEEDBACK_MS);
+		return () => clearTimeout(timer);
+	}, [state]);
 
 	function fail(cause: unknown) {
 		setError(

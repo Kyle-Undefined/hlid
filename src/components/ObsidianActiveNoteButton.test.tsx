@@ -18,6 +18,7 @@ const serverFns = vi.hoisted(() => ({
 }));
 
 vi.mock("#/lib/serverFns/obsidian", () => serverFns);
+vi.mock("#/lib/transientFeedback", () => ({ TRANSIENT_FEEDBACK_MS: 10 }));
 
 beforeEach(() => serverFns.getActiveObsidianNoteFn.mockReset());
 afterEach(cleanup);
@@ -45,6 +46,11 @@ describe("ObsidianActiveNoteButton", () => {
 				name: "Active Obsidian note attached",
 			}),
 		).toBeTruthy();
+		await waitFor(() =>
+			expect(
+				screen.getByRole("button", { name: "Attach active Obsidian note" }),
+			).toBeTruthy(),
+		);
 	});
 
 	it("shows a dismissible error message on touch-sized controls", async () => {

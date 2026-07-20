@@ -6,12 +6,13 @@ import {
 	LoaderCircle,
 	NotebookPen,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ObsidianCaptureDestination } from "#/lib/obsidianCapture";
 import {
 	appendToObsidianFn,
 	captureReplyToObsidianFn,
 } from "#/lib/serverFns/obsidian";
+import { TRANSIENT_FEEDBACK_MS } from "#/lib/transientFeedback";
 
 type Destination = "active" | "daily" | "capture";
 
@@ -25,6 +26,12 @@ export function SaveToObsidianActions({
 	const [busy, setBusy] = useState<Destination | null>(null);
 	const [saved, setSaved] = useState<Destination | null>(null);
 	const [error, setError] = useState<string | null>(null);
+
+	useEffect(() => {
+		if (!saved) return;
+		const timer = setTimeout(() => setSaved(null), TRANSIENT_FEEDBACK_MS);
+		return () => clearTimeout(timer);
+	}, [saved]);
 
 	function save(destination: Destination) {
 		setBusy(destination);

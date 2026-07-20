@@ -14,6 +14,7 @@ const serverFns = vi.hoisted(() => ({
 	captureReplyToObsidianFn: vi.fn(),
 }));
 vi.mock("#/lib/serverFns/obsidian", () => serverFns);
+vi.mock("#/lib/transientFeedback", () => ({ TRANSIENT_FEEDBACK_MS: 10 }));
 
 beforeEach(() => {
 	serverFns.appendToObsidianFn.mockReset();
@@ -40,6 +41,9 @@ describe("SaveToObsidianActions", () => {
 				`saved to ${destination === "active" ? "active note" : "daily note"}`,
 			),
 		).toBeTruthy();
+		await waitFor(() =>
+			expect(screen.queryByText(/saved to (active|daily) note/)).toBeNull(),
+		);
 	});
 
 	it("creates a new note in the configured capture destination", async () => {
@@ -72,6 +76,9 @@ describe("SaveToObsidianActions", () => {
 			}),
 		);
 		expect(await screen.findByText("saved to Inbox")).toBeTruthy();
+		await waitFor(() =>
+			expect(screen.queryByText("saved to Inbox")).toBeNull(),
+		);
 	});
 
 	it("hides capture when the workspace has no Inbox or Raw folder", () => {

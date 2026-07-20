@@ -50,6 +50,7 @@ import { resolveExecutionContext } from "./executionContext";
 import { migrateLegacyAttachmentsToLibrary } from "./libraryMigration";
 import { getLiveSessionsStatus } from "./liveSessions";
 import { MicrosoftSpeechManager } from "./microsoftSpeech";
+import { warmObsidianConnection } from "./obsidianConnectionCache";
 import {
 	INTERNAL_OBSIDIAN_MCP_FLAG,
 	runObsidianMcpServer,
@@ -275,6 +276,7 @@ subscribeDataRevisions((revisions) => {
 	broadcast({ type: "data_revisions", revisions });
 });
 warmVaultSnapshot();
+warmObsidianConnection(config.vault.name);
 const pool = new SessionPool(config, providers);
 void cliProxy
 	.initialize()

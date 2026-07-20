@@ -1370,7 +1370,6 @@ export async function mutateObsidianNote(
 	return { path };
 }
 
-// fallow-ignore-next-line unused-export -- Loaded dynamically by the Obsidian server functions to keep host process code out of the client bundle.
 export async function testObsidianConnection(
 	vaultName: string,
 	dependencies: ObsidianBridgeDependencies = {},

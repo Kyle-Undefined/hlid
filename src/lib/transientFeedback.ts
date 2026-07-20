@@ -1,0 +1,1 @@
+export const TRANSIENT_FEEDBACK_MS = 2_000;

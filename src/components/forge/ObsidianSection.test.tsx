@@ -22,7 +22,7 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe("ObsidianSection", () => {
-	it("shows passive installation state before offering an explicit connection test", async () => {
+	it("restores the startup-cached connection without testing again", async () => {
 		serverFns.getObsidianStatusFn.mockResolvedValue({
 			supported: true,
 			installed: true,
@@ -53,23 +53,34 @@ describe("ObsidianSection", () => {
 				"rename_file",
 				"run_command",
 			],
+			connection: {
+				vaultName: "Fornbok",
+				state: "connected",
+				connection: {
+					version: "1.12.7",
+					vaultPath: "C:\\Vaults\\Fornbok",
+				},
+				error: null,
+				checkedAt: 1,
+			},
 		});
 		serverFns.testObsidianConnectionFn.mockResolvedValue({
-			version: "1.12.7",
+			version: "1.12.8",
 			vaultPath: "C:\\Vaults\\Fornbok",
 		});
 		render(<ObsidianSection />);
 
 		await waitFor(() => expect(screen.getByText("v1.12.7")).toBeTruthy());
 		expect(screen.getByText("21 curated tools")).toBeTruthy();
-		expect(screen.getByText("not registered")).toBeTruthy();
+		expect(screen.queryByText("not registered")).toBeNull();
+		expect(screen.getByText("connected with v1.12.7")).toBeTruthy();
+		expect(screen.getByText("C:\\Vaults\\Fornbok")).toBeTruthy();
 		expect(serverFns.testObsidianConnectionFn).not.toHaveBeenCalled();
 
 		fireEvent.click(screen.getByRole("button", { name: "Test connection" }));
 		await waitFor(() =>
-			expect(screen.getByText("connected with v1.12.7")).toBeTruthy(),
+			expect(screen.getByText("connected with v1.12.8")).toBeTruthy(),
 		);
-		expect(screen.getByText("C:\\Vaults\\Fornbok")).toBeTruthy();
 	});
 
 	it("links to setup when the CLI is not installed", async () => {
@@ -81,6 +92,13 @@ describe("ObsidianSection", () => {
 			state: "not_installed",
 			detail: "Not found",
 			agentTools: [],
+			connection: {
+				vaultName: "Fornbok",
+				state: "failed",
+				connection: null,
+				error: "Obsidian CLI was not found.",
+				checkedAt: 1,
+			},
 		});
 		render(<ObsidianSection />);
 		await waitFor(() => expect(screen.getByText("not detected")).toBeTruthy());

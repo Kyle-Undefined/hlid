@@ -23,20 +23,26 @@ export type ObsidianIntegrationStatus = ObsidianCliStatus & {
 	agentTools: Array<
 		import("#/server/obsidianAgentTools").ObsidianAgentToolName
 	>;
+	connection: import("#/server/obsidianConnectionCache").ObsidianConnectionSnapshot;
 };
-export type ObsidianConnection =
-	import("#/server/obsidianCli").ObsidianConnection;
-
 export const getObsidianStatusFn = createServerFn({ method: "GET" }).handler(
 	async () => {
-		const [{ getObsidianCliStatus }, { OBSIDIAN_AGENT_TOOL_SPECS }] =
-			await Promise.all([
-				import("#/server/obsidianCli"),
-				import("#/server/obsidianAgentTools"),
-			]);
+		const [
+			{ loadConfig },
+			{ getObsidianCliStatus },
+			{ OBSIDIAN_AGENT_TOOL_SPECS },
+			{ getOrCheckObsidianConnection },
+		] = await Promise.all([
+			import("#/server/config"),
+			import("#/server/obsidianCli"),
+			import("#/server/obsidianAgentTools"),
+			import("#/server/obsidianConnectionCache"),
+		]);
+		const config = loadConfig();
 		return {
 			...(await getObsidianCliStatus()),
 			agentTools: OBSIDIAN_AGENT_TOOL_SPECS.map((tool) => tool.name),
+			connection: await getOrCheckObsidianConnection(config.vault.name),
 		} satisfies ObsidianIntegrationStatus;
 	},
 );
@@ -44,11 +50,11 @@ export const getObsidianStatusFn = createServerFn({ method: "GET" }).handler(
 export const testObsidianConnectionFn = createServerFn({
 	method: "POST",
 }).handler(async () => {
-	const [{ loadConfig }, { testObsidianConnection }] = await Promise.all([
+	const [{ loadConfig }, { checkObsidianConnection }] = await Promise.all([
 		import("#/server/config"),
-		import("#/server/obsidianCli"),
+		import("#/server/obsidianConnectionCache"),
 	]);
-	return testObsidianConnection(loadConfig().vault.name);
+	return checkObsidianConnection(loadConfig().vault.name, { force: true });
 });
 
 export const listObsidianTemplatesFn = createServerFn({
