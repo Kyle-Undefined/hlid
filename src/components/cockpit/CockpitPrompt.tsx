@@ -12,7 +12,7 @@ import type { useFileUpload } from "#/hooks/useFileUpload";
 import type { useVaultReferencePicker } from "#/hooks/useVaultReferencePicker";
 import type { useVoiceInput } from "#/hooks/useVoiceInput";
 import type { CommandDescriptor } from "#/lib/commands";
-import { type ComposerKeyAction, composerKeyAction } from "#/lib/composer";
+import { composerKeyAction, runComposerPickerAction } from "#/lib/composer";
 import type { getAgentListFn } from "#/lib/serverFns/agents";
 import type { getConfig } from "#/lib/serverFns/config";
 import { displayVoiceHotkey } from "#/lib/voiceHotkey";
@@ -106,7 +106,7 @@ function promptPlaceholder(
 }
 
 function runComposerAction(
-	action: ComposerKeyAction,
+	action: ReturnType<typeof composerKeyAction>,
 	props: Pick<
 		PromptProps,
 		"picker" | "vaultPicker" | "onSkillSelect" | "onRun" | "textareaRef"
@@ -114,10 +114,7 @@ function runComposerAction(
 ): void {
 	const vaultOpen = props.vaultPicker.isOpen;
 	const activePicker = vaultOpen ? props.vaultPicker : props.picker;
-	if (action === "picker-next") activePicker.navigate(1);
-	if (action === "picker-previous") activePicker.navigate(-1);
-	if (action === "picker-close") activePicker.close();
-	if (action === "picker-select" && activePicker.items.length > 0) {
+	const submit = runComposerPickerAction(action, activePicker, () => {
 		if (vaultOpen) {
 			props.vaultPicker.select(
 				props.vaultPicker.items[props.vaultPicker.selectedIndex],
@@ -126,8 +123,8 @@ function runComposerAction(
 		} else {
 			props.onSkillSelect(props.picker.items[props.picker.index]);
 		}
-	}
-	if (action === "submit") props.onRun();
+	});
+	if (submit) props.onRun();
 }
 
 function PromptTextarea(props: PromptProps) {

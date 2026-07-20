@@ -40,6 +40,22 @@ export function composerKeyAction(input: {
 	return null;
 }
 
+export function runComposerPickerAction(
+	action: ComposerKeyAction,
+	picker: {
+		items: readonly unknown[];
+		navigate: (direction: 1 | -1) => void;
+		close: () => void;
+	},
+	select: () => void,
+): boolean {
+	if (action === "picker-next") picker.navigate(1);
+	if (action === "picker-previous") picker.navigate(-1);
+	if (action === "picker-close") picker.close();
+	if (action === "picker-select" && picker.items.length > 0) select();
+	return action === "submit";
+}
+
 export function insertAtSelection(
 	value: string,
 	text: string,

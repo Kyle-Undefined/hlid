@@ -1,4 +1,3 @@
-import { dirname, join } from "node:path";
 import {
 	applyCodexUsageRepair,
 	planCodexUsageRepair,
@@ -7,14 +6,11 @@ import {
 } from "../src/db/codexUsageRepair";
 import {
 	countByReason,
-	createVerifiedBackup,
 	finalizeMaintenanceDatabase,
 	openPlanningDatabase,
-	openWritableDatabase,
 	parseMaintenanceArgs,
+	prepareMaintenanceRun,
 	prettyJson,
-	timestampSlug,
-	writeJsonManifest,
 } from "../src/db/usageMaintenanceCli";
 
 function usage(): never {
@@ -57,28 +53,12 @@ const manifest = await planCodexUsageRepair({
 });
 planningDb.close();
 
-const defaultManifestPath = join(
-	options.backupDir ?? dirname(options.dbPath),
-	`codex-usage-repair-${timestampSlug()}.json`,
-);
-const manifestPath = options.manifestPath ?? defaultManifestPath;
-await writeJsonManifest(manifest, manifestPath);
-
-if (!options.apply) {
-	console.log(
-		prettyJson({ mode: "dry-run", manifestPath, ...summarize(manifest) }),
-	);
-	process.exit(0);
-}
-
-const db = openWritableDatabase(options.dbPath);
-const backupDir = options.backupDir ?? join(dirname(options.dbPath), "backups");
-const backupPath = await createVerifiedBackup(
-	db,
-	options.dbPath,
-	backupDir,
-	"codex-usage-repair",
-);
+const { db, manifestPath, backupPath } = await prepareMaintenanceRun({
+	options,
+	manifest,
+	operationSlug: "codex-usage-repair",
+	summarize,
+});
 const result = applyCodexUsageRepair(db, manifest);
 finalizeMaintenanceDatabase(db);
 

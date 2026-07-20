@@ -1,10 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
 	composerKeyAction,
 	insertAtSelection,
 	prepareChatSubmission,
 	resizeComposer,
 	responsiveComposerMaxHeight,
+	runComposerPickerAction,
 } from "./composer";
 
 const key = (
@@ -37,6 +38,23 @@ describe("composer keyboard decisions", () => {
 		expect(key({ key: "Enter", shiftKey: true })).toBeNull();
 		expect(key({ key: "Enter", isTouch: true })).toBeNull();
 		expect(key({ key: "Enter", enterToSubmit: false })).toBeNull();
+	});
+
+	it("runs shared picker actions and reports submission", () => {
+		const picker = {
+			items: ["one"],
+			navigate: vi.fn(),
+			close: vi.fn(),
+		};
+		const select = vi.fn();
+
+		expect(runComposerPickerAction("picker-next", picker, select)).toBe(false);
+		expect(picker.navigate).toHaveBeenCalledWith(1);
+		expect(runComposerPickerAction("picker-select", picker, select)).toBe(
+			false,
+		);
+		expect(select).toHaveBeenCalledOnce();
+		expect(runComposerPickerAction("submit", picker, select)).toBe(true);
 	});
 });
 

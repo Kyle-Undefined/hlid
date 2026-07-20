@@ -831,19 +831,48 @@ export async function inspectCliUpdates(
 	).filter((status) => status != null);
 }
 
-export async function inspectWindowsDesktopUpdates(
-	dependencies: WindowsDesktopUpdateDependencies = defaultWindowsDesktopDependencies,
-): Promise<CliUpdateStatus[]> {
-	if (!dependencies.isWindows()) return [];
+async function readWindowsDesktopVersionState(
+	dependencies: WindowsDesktopUpdateDependencies,
+): Promise<{
+	installedVersion: string;
+	appVersion: string | null;
+	storeResult: PromiseSettledResult<
+		Awaited<ReturnType<WindowsDesktopUpdateDependencies["readStoreVersions"]>>
+	>;
+	storeVersions: Awaited<
+		ReturnType<WindowsDesktopUpdateDependencies["readStoreVersions"]>
+	> | null;
+	latestVersion: string | null;
+} | null> {
+	if (!dependencies.isWindows()) return null;
 	const installedVersions = await dependencies.readInstalledVersions();
-	if (!installedVersions) return [];
-	const { packageVersion: installedVersion, appVersion } = installedVersions;
-	const storeResult = await Promise.allSettled([
+	if (!installedVersions) return null;
+	const [storeResult] = await Promise.allSettled([
 		dependencies.readStoreVersions(),
 	]);
 	const storeVersions =
-		storeResult[0].status === "fulfilled" ? storeResult[0].value : null;
-	const latestVersion = storeVersions?.latestVersion ?? null;
+		storeResult.status === "fulfilled" ? storeResult.value : null;
+	return {
+		installedVersion: installedVersions.packageVersion,
+		appVersion: installedVersions.appVersion,
+		storeResult,
+		storeVersions,
+		latestVersion: storeVersions?.latestVersion ?? null,
+	};
+}
+
+export async function inspectWindowsDesktopUpdates(
+	dependencies: WindowsDesktopUpdateDependencies = defaultWindowsDesktopDependencies,
+): Promise<CliUpdateStatus[]> {
+	const versions = await readWindowsDesktopVersionState(dependencies);
+	if (!versions) return [];
+	const {
+		installedVersion,
+		appVersion,
+		storeResult,
+		storeVersions,
+		latestVersion,
+	} = versions;
 	const available =
 		latestVersion != null &&
 		compareCliVersions(latestVersion, installedVersion) > 0;
@@ -872,9 +901,9 @@ export async function inspectWindowsDesktopUpdates(
 						}
 					: {}),
 			checkedAt: dependencies.now(),
-			...(storeResult[0].status === "rejected"
+			...(storeResult.status === "rejected"
 				? {
-						error: `latest version: ${storeResult[0].reason instanceof Error ? storeResult[0].reason.message : String(storeResult[0].reason)}`,
+						error: `latest version: ${storeResult.reason instanceof Error ? storeResult.reason.message : String(storeResult.reason)}`,
 					}
 				: {}),
 		} satisfies CliUpdateStatus,
@@ -884,16 +913,9 @@ export async function inspectWindowsDesktopUpdates(
 export async function inspectClaudeDesktopUpdates(
 	dependencies: WindowsDesktopUpdateDependencies = defaultClaudeDesktopDependencies,
 ): Promise<CliUpdateStatus[]> {
-	if (!dependencies.isWindows()) return [];
-	const installedVersions = await dependencies.readInstalledVersions();
-	if (!installedVersions) return [];
-	const { packageVersion: installedVersion, appVersion } = installedVersions;
-	const [storeResult] = await Promise.allSettled([
-		dependencies.readStoreVersions(),
-	]);
-	const storeVersions =
-		storeResult.status === "fulfilled" ? storeResult.value : null;
-	const latestVersion = storeVersions?.latestVersion ?? null;
+	const versions = await readWindowsDesktopVersionState(dependencies);
+	if (!versions) return [];
+	const { installedVersion, appVersion, storeResult, latestVersion } = versions;
 	const available =
 		latestVersion != null &&
 		compareCliVersions(latestVersion, installedVersion) > 0;

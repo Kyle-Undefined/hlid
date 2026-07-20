@@ -2,7 +2,7 @@ import type { Database } from "bun:sqlite";
 import { canonicalizeCodexUsage, estimateCodexCost } from "../lib/codexPricing";
 import {
 	codexChildrenByParent as childIdsByParent,
-	codexDirectChildIds,
+	expandCodexChildTurns,
 } from "./codexRolloutGraph";
 import { asJsonObject as asObject, readJsonlObjects } from "./jsonl";
 import {
@@ -533,66 +533,23 @@ function expandChildTree(args: {
 	rollouts: Map<string, ParsedCodexRollout>;
 	children: Map<string, string[]>;
 }): ChildTree {
-	type Pending = {
-		id: string;
-		startMs: number;
-		endMs: number;
-	};
-	const queue: Pending[] = codexDirectChildIds({
+	const expanded = expandCodexChildTurns({
 		owner: args.owner,
-		turn: args.ownerTurn,
+		ownerTurn: args.ownerTurn,
 		rollouts: args.rollouts,
 		children: args.children,
-	}).map((id) => ({
-		id,
-		startMs: args.ownerTurn.startedAtMs,
-		endMs: args.ownerTurn.endedAtMs,
-	}));
-	const selected: TurnEvidence[] = [];
-	const threadIds = new Set<string>();
-	const hashes = new Set<string>();
-	const turnKeys = new Set<string>();
-	let exact = true;
-	while (queue.length > 0) {
-		const pending = queue.shift();
-		if (!pending) continue;
-		const rollout = args.rollouts.get(pending.id);
-		if (!rollout) {
-			exact = false;
-			continue;
-		}
-		const turns = completedTurns(rollout).filter(
-			(turn) =>
-				turn.startedAtMs >= pending.startMs - 1_000 &&
-				turn.startedAtMs <= pending.endMs + 1_000,
-		);
-		if (turns.length === 0) {
-			exact = false;
-			continue;
-		}
-		threadIds.add(rollout.threadId);
-		hashes.add(rollout.sha256);
-		for (const turn of turns) {
-			const key = `${rollout.threadId}:${turn.id}`;
-			if (turnKeys.has(key)) continue;
-			turnKeys.add(key);
-			selected.push({ rollout, turn });
-			for (const id of codexDirectChildIds({
-				owner: rollout,
-				turn,
-				rollouts: args.rollouts,
-				children: args.children,
-			})) {
-				queue.push({ id, startMs: turn.startedAtMs, endMs: turn.endedAtMs });
-			}
-		}
-	}
+		selectTurns: (rollout, pending) => ({
+			turns: completedTurns(rollout).filter(
+				(turn) =>
+					turn.startedAtMs >= pending.startMs - 1_000 &&
+					turn.startedAtMs <= pending.endMs + 1_000,
+			),
+			exact: false,
+		}),
+	});
 	return {
-		turns: selected,
-		threadIds: [...threadIds],
-		hashes: [...hashes],
-		turnKeys: [...turnKeys],
-		exact,
+		...expanded,
+		hashes: [...new Set(expanded.turns.map(({ rollout }) => rollout.sha256))],
 	};
 }
 
@@ -1109,6 +1066,16 @@ function rebuildSession(db: Database, sessionId: string): void {
 	);
 }
 
+function selectCodexRepairTarget(
+	db: Database,
+	row: CodexUsageRepairRow,
+): { query: StoredQuery | null; usageQuery: StoredUsageQuery | null } {
+	return {
+		query: selectQueryById(db, row.query.id),
+		usageQuery: selectUsageQueryById(db, row.usageQuery.id),
+	};
+}
+
 export function applyCodexUsageRepair(
 	db: Database,
 	manifest: CodexUsageRepairManifest,
@@ -1133,8 +1100,7 @@ export function applyCodexUsageRepair(
 	const transaction = db.transaction(() => {
 		ensureUsageRepairRunsTable(db);
 		for (const row of manifest.rows) {
-			const query = selectQueryById(db, row.query.id);
-			const usageQuery = selectUsageQueryById(db, row.usageQuery.id);
+			const { query, usageQuery } = selectCodexRepairTarget(db, row);
 			if (!query || !usageQuery) {
 				throw new Error(`Repair target disappeared for query ${row.query.id}`);
 			}
@@ -1241,8 +1207,7 @@ export function applyCodexUsageRepair(
 		for (const sessionId of affectedSessions) rebuildSession(db, sessionId);
 		for (const date of affectedDates) rebuildUsageDate(db, date);
 		for (const row of manifest.rows) {
-			const query = selectQueryById(db, row.query.id);
-			const usageQuery = selectUsageQueryById(db, row.usageQuery.id);
+			const { query, usageQuery } = selectCodexRepairTarget(db, row);
 			if (!query || !usageQuery || !rowAlreadyCorrect(query, usageQuery, row)) {
 				throw new Error(
 					`Post-repair verification failed for query ${row.query.id}`,

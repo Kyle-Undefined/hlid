@@ -1,4 +1,3 @@
-import { dirname, join } from "node:path";
 import {
 	applyProviderHistoryImport,
 	discoverClaudeHistoryRoots,
@@ -10,14 +9,11 @@ import {
 import { initializeSchema } from "../src/db/schema";
 import {
 	countByReason,
-	createVerifiedBackup,
 	finalizeMaintenanceDatabase,
 	openPlanningDatabase,
-	openWritableDatabase,
 	parseMaintenanceArgs,
+	prepareMaintenanceRun,
 	prettyJson,
-	timestampSlug,
-	writeJsonManifest,
 } from "../src/db/usageMaintenanceCli";
 
 function usage(): never {
@@ -96,28 +92,13 @@ const manifest = await planProviderHistoryImport({
 });
 planningDb.close();
 
-const defaultManifestPath = join(
-	options.backupDir ?? dirname(options.dbPath),
-	`provider-history-import-${timestampSlug()}.json`,
-);
-const manifestPath = options.manifestPath ?? defaultManifestPath;
-await writeJsonManifest(manifest, manifestPath);
-
-if (!options.apply) {
-	console.log(
-		prettyJson({ mode: "dry-run", manifestPath, ...summarize(manifest) }),
-	);
-	process.exit(0);
-}
-
-const db = openWritableDatabase(options.dbPath, { foreignKeys: true });
-const backupDir = options.backupDir ?? join(dirname(options.dbPath), "backups");
-const backupPath = await createVerifiedBackup(
-	db,
-	options.dbPath,
-	backupDir,
-	"provider-history-import",
-);
+const { db, manifestPath, backupPath } = await prepareMaintenanceRun({
+	options,
+	manifest,
+	operationSlug: "provider-history-import",
+	summarize,
+	databaseOptions: { foreignKeys: true },
+});
 initializeSchema(db);
 const result = await applyProviderHistoryImport(db, manifest);
 finalizeMaintenanceDatabase(db);

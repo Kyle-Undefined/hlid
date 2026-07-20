@@ -652,6 +652,16 @@ function rebuildSession(db: Database, sessionId: string): void {
 	);
 }
 
+function selectClaudeRepairTarget(
+	db: Database,
+	repair: ClaudeUsageRepairRow,
+): { query: StoredQuery | null; ledger: StoredUsageQuery | null } {
+	return {
+		query: selectQuery(db, repair.query.id),
+		ledger: selectUsageQuery(db, repair.usageQuery.id),
+	};
+}
+
 export function applyClaudeUsageRepair(
 	db: Database,
 	manifest: ClaudeUsageRepairManifest,
@@ -668,8 +678,7 @@ export function applyClaudeUsageRepair(
 	const transaction = db.transaction(() => {
 		ensureUsageRepairRunsTable(db);
 		for (const repair of manifest.rows) {
-			const query = selectQuery(db, repair.query.id);
-			const ledger = selectUsageQuery(db, repair.usageQuery.id);
+			const { query, ledger } = selectClaudeRepairTarget(db, repair);
 			if (!query || !ledger) {
 				throw new Error(
 					`Repair target disappeared for query ${repair.query.id}`,
@@ -718,8 +727,7 @@ export function applyClaudeUsageRepair(
 		for (const sessionId of affectedSessions) rebuildSession(db, sessionId);
 		for (const date of affectedDates) rebuildUsageDate(db, date);
 		for (const repair of manifest.rows) {
-			const query = selectQuery(db, repair.query.id);
-			const ledger = selectUsageQuery(db, repair.usageQuery.id);
+			const { query, ledger } = selectClaudeRepairTarget(db, repair);
 			if (
 				!query ||
 				!ledger ||

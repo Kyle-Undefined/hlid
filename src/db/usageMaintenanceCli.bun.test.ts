@@ -10,6 +10,7 @@ import {
 	openPlanningDatabase,
 	openWritableDatabase,
 	parseMaintenanceArgs,
+	prepareMaintenanceRun,
 	prettyJson,
 	timestampSlug,
 	writeJsonManifest,
@@ -131,6 +132,40 @@ describe("usage maintenance CLI helpers", () => {
 			backup.query<{ value: string }, []>("SELECT value FROM sample").get(),
 		).toEqual({ value: "kept" });
 		backup.close();
+	});
+
+	test("prepares an apply run with its manifest and verified backup", async () => {
+		const directory = await temporaryDirectory();
+		const dbPath = join(directory, "hlid.db");
+		const manifestPath = join(directory, "reports", "repair.json");
+		const seed = new Database(dbPath);
+		seed.run("CREATE TABLE sample (value TEXT NOT NULL)");
+		seed.run("INSERT INTO sample (value) VALUES ('kept')");
+		seed.close();
+
+		const prepared = await prepareMaintenanceRun({
+			options: {
+				dbPath,
+				roots: { "--root": [directory] },
+				manifestPath,
+				backupDir: join(directory, "backups"),
+				apply: true,
+			},
+			manifest: { rows: [1, 2] },
+			operationSlug: "usage-repair",
+			summarize: (manifest) => ({ rows: manifest.rows.length }),
+		});
+
+		expect(prepared.manifestPath).toBe(manifestPath);
+		expect(await readFile(manifestPath, "utf8")).toBe(
+			'{\n  "rows": [\n    1,\n    2\n  ]\n}\n',
+		);
+		const backup = new Database(prepared.backupPath, { readonly: true });
+		expect(
+			backup.query<{ value: string }, []>("SELECT value FROM sample").get(),
+		).toEqual({ value: "kept" });
+		backup.close();
+		finalizeMaintenanceDatabase(prepared.db);
 	});
 
 	test("opens planning and writable databases with expected safety settings", async () => {

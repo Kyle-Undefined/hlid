@@ -127,6 +127,41 @@ export function openWritableDatabase(
 	return db;
 }
 
+export async function prepareMaintenanceRun<TManifest>(args: {
+	options: MaintenanceCliOptions;
+	manifest: TManifest;
+	operationSlug: string;
+	summarize: (manifest: TManifest) => Record<string, unknown>;
+	databaseOptions?: { foreignKeys?: boolean };
+}): Promise<{ db: Database; manifestPath: string; backupPath: string }> {
+	const { options, manifest, operationSlug } = args;
+	const manifestPath =
+		options.manifestPath ??
+		join(
+			options.backupDir ?? dirname(options.dbPath),
+			`${operationSlug}-${timestampSlug()}.json`,
+		);
+	await writeJsonManifest(manifest, manifestPath);
+	if (!options.apply) {
+		console.log(
+			prettyJson({
+				mode: "dry-run",
+				manifestPath,
+				...args.summarize(manifest),
+			}),
+		);
+		process.exit(0);
+	}
+	const db = openWritableDatabase(options.dbPath, args.databaseOptions);
+	const backupPath = await createVerifiedBackup(
+		db,
+		options.dbPath,
+		options.backupDir ?? join(dirname(options.dbPath), "backups"),
+		operationSlug,
+	);
+	return { db, manifestPath, backupPath };
+}
+
 export function finalizeMaintenanceDatabase(db: Database): void {
 	try {
 		const foreignKeys = db.query("PRAGMA foreign_key_check").all();

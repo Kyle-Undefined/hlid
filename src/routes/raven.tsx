@@ -78,6 +78,7 @@ import {
 	prepareChatSubmission,
 	resizeComposer,
 	responsiveComposerMaxHeight,
+	runComposerPickerAction,
 } from "#/lib/composer";
 import { deriveModelMismatch, fmtModel } from "#/lib/formatters";
 import { loaderValueOrFallback } from "#/lib/loaderFallback";
@@ -2723,18 +2724,15 @@ function handleComposerKeyDown(
 	if (!action) return;
 	event.preventDefault();
 	const activePicker = vaultPickerOpen ? vaultPicker : picker;
-	if (action === "picker-next") activePicker.navigate(1);
-	if (action === "picker-previous") activePicker.navigate(-1);
-	if (action === "picker-close") activePicker.close();
-	if (action === "picker-select" && activePicker.items.length > 0) {
+	const submit = runComposerPickerAction(action, activePicker, () => {
 		if (vaultPickerOpen) {
 			vaultPicker.select(vaultPicker.items[vaultPicker.selectedIndex]);
 			requestAnimationFrame(() => viewport.textareaRef.current?.focus());
 		} else {
 			handleSkillSelect(picker.items[picker.selectedIndex]);
 		}
-	}
-	if (action === "submit") handleSend();
+	});
+	if (submit) handleSend();
 }
 
 function composerPlaceholder(

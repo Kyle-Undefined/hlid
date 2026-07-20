@@ -311,27 +311,20 @@ void db.getSetting("mcp_status_cache").then((cached) => {
 	} catch {}
 });
 
+function shutdown(): never {
+	cliProxy.close();
+	voice.close();
+	pool.closeAll();
+	terminalPool.closeAll();
+	shellPool.closeAll();
+	closeAllCodexAppServers();
+	closeUmbod();
+	process.exit(0);
+}
+
 // Graceful shutdown: abort all running sessions on SIGTERM / SIGINT
-process.on("SIGTERM", () => {
-	cliProxy.close();
-	voice.close();
-	pool.closeAll();
-	terminalPool.closeAll();
-	shellPool.closeAll();
-	closeAllCodexAppServers();
-	closeUmbod();
-	process.exit(0);
-});
-process.on("SIGINT", () => {
-	cliProxy.close();
-	voice.close();
-	pool.closeAll();
-	terminalPool.closeAll();
-	shellPool.closeAll();
-	closeAllCodexAppServers();
-	closeUmbod();
-	process.exit(0);
-});
+process.on("SIGTERM", shutdown);
+process.on("SIGINT", shutdown);
 
 const PORT = config.server.port + 1; // 3001 when TanStack Start is on 3000
 const UI_PORT = config.server.port;

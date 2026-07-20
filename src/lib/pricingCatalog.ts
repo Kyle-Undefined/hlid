@@ -432,6 +432,25 @@ function assertNoLocalOverlap<
 	}
 }
 
+function applyOverrideMetadata<
+	T extends {
+		effectiveFrom?: string;
+		effectiveUntil?: string;
+		note?: string;
+	},
+>(
+	result: T,
+	rule: {
+		effective_from?: string;
+		effective_until?: string;
+		note?: string;
+	},
+): void {
+	if (rule.effective_from) result.effectiveFrom = rule.effective_from;
+	if (rule.effective_until) result.effectiveUntil = rule.effective_until;
+	if (rule.note) result.note = rule.note;
+}
+
 function normalizeOverrides(
 	parsed: z.infer<typeof PricingOverrideFileSchema>,
 ): PricingOverrides {
@@ -466,9 +485,7 @@ function normalizeOverrides(
 								}),
 					},
 		};
-		if (rule.effective_from) result.effectiveFrom = rule.effective_from;
-		if (rule.effective_until) result.effectiveUntil = rule.effective_until;
-		if (rule.note) result.note = rule.note;
+		applyOverrideMetadata(result, rule);
 		assertDateRange(result, `Model ${rule.provider}:${rule.model}`);
 		return result;
 	});
@@ -478,9 +495,7 @@ function normalizeOverrides(
 			alias: rule.alias,
 			model: rule.model,
 		};
-		if (rule.effective_from) result.effectiveFrom = rule.effective_from;
-		if (rule.effective_until) result.effectiveUntil = rule.effective_until;
-		if (rule.note) result.note = rule.note;
+		applyOverrideMetadata(result, rule);
 		assertDateRange(result, `Alias ${rule.provider}:${rule.alias}`);
 		return result;
 	});

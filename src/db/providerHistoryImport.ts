@@ -8,7 +8,7 @@ import { estimateCodexCost } from "../lib/codexPricing";
 import { normalizeSearchText } from "../lib/search";
 import {
 	codexChildrenByParent,
-	codexDirectChildIds,
+	expandCodexChildTurns,
 } from "./codexRolloutGraph";
 import { loadCodexRollouts, type ParsedCodexRollout } from "./codexUsageRepair";
 import { asJsonObject as asObject, readJsonlObjects } from "./jsonl";
@@ -499,74 +499,34 @@ function expandCodexChildTree(args: {
 	rollouts: Map<string, ParsedCodexRollout>;
 	children: Map<string, string[]>;
 }): CodexChildTree {
-	type Pending = { id: string; startMs: number; endMs: number };
-	const queue: Pending[] = codexDirectChildIds({
+	const expanded = expandCodexChildTurns({
 		owner: args.owner,
-		turn: args.ownerTurn,
+		ownerTurn: args.ownerTurn,
 		rollouts: args.rollouts,
 		children: args.children,
-	}).map((id) => ({
-		id,
-		startMs: args.ownerTurn.startedAtMs,
-		endMs: args.ownerTurn.endedAtMs,
-	}));
-	const selected: CodexTurnEvidence[] = [];
-	const threadIds = new Set<string>();
+		selectTurns: (rollout, pending) => {
+			const terminal = terminalTurns(rollout);
+			return {
+				turns: terminal.filter(
+					(turn) =>
+						turn.startedAtMs >= pending.startMs - 1_000 &&
+						turn.startedAtMs <= pending.endMs + 1_000 &&
+						turn.endedAtMs <= pending.endMs,
+				),
+				// Long-lived workers can have only later, independently terminal turns.
+				// They are imported as standalone usage queries below. A child with no
+				// terminal evidence at all is still unsafe to fold into this query.
+				exact: terminal.length > 0,
+			};
+		},
+	});
 	const sources = new Map<string, ProviderHistorySourceFile>();
-	const turnKeys = new Set<string>();
-	let exact = true;
-	while (queue.length > 0) {
-		const pending = queue.shift();
-		if (!pending) continue;
-		const rollout = args.rollouts.get(pending.id);
-		if (!rollout) {
-			exact = false;
-			continue;
-		}
-		const terminal = terminalTurns(rollout);
-		const turns = terminal.filter(
-			(turn) =>
-				turn.startedAtMs >= pending.startMs - 1_000 &&
-				turn.startedAtMs <= pending.endMs + 1_000 &&
-				turn.endedAtMs <= pending.endMs,
-		);
-		if (turns.length === 0) {
-			// Long-lived workers can have only later, independently terminal turns.
-			// They are imported as standalone usage queries below. A child with no
-			// terminal evidence at all is still unsafe to fold into this query.
-			if (terminal.length === 0) exact = false;
-			continue;
-		}
-		threadIds.add(rollout.threadId);
-		sources.set(rollout.path, {
-			path: rollout.path,
-			sha256: rollout.sha256,
-		});
-		for (const turn of turns) {
-			const key = `${rollout.threadId}:${turn.id}`;
-			if (turnKeys.has(key)) continue;
-			turnKeys.add(key);
-			selected.push({ rollout, turn });
-			for (const id of codexDirectChildIds({
-				owner: rollout,
-				turn,
-				rollouts: args.rollouts,
-				children: args.children,
-			})) {
-				queue.push({
-					id,
-					startMs: turn.startedAtMs,
-					endMs: turn.endedAtMs,
-				});
-			}
-		}
+	for (const { rollout } of expanded.turns) {
+		sources.set(rollout.path, { path: rollout.path, sha256: rollout.sha256 });
 	}
 	return {
-		turns: selected,
-		threadIds: [...threadIds],
+		...expanded,
 		sources: [...sources.values()],
-		turnKeys: [...turnKeys],
-		exact,
 	};
 }
 
