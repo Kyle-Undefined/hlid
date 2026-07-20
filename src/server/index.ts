@@ -266,12 +266,17 @@ subscribeDataRevisions((revisions) => {
 });
 warmVaultSnapshot();
 const pool = new SessionPool(config, providers);
-void cliProxy.initialize().catch((error) => {
-	console.error(
-		"[cliproxy] failed to initialize:",
-		error instanceof Error ? error.message : String(error),
-	);
-});
+void cliProxy
+	.initialize()
+	.then(() =>
+		cliProxy.syncWslAgents((config.agents ?? []).map((agent) => agent.path)),
+	)
+	.catch((error) => {
+		console.error(
+			"[cliproxy] failed to initialize:",
+			error instanceof Error ? error.message : String(error),
+		);
+	});
 const voice = new VoiceModelManager(
 	config.voice,
 	await bootstrapVoiceRuntime(),
@@ -537,6 +542,9 @@ type ServerRouteHandler = (
 async function syncCliProxyRuntime(): Promise<void> {
 	const latest = loadConfig();
 	await cliProxy.syncConfig(latest.cliproxy);
+	await cliProxy.syncWslAgents(
+		(latest.agents ?? []).map((agent) => agent.path),
+	);
 	pool.syncConfig(latest);
 	const connection = cliProxy.connection();
 	for (const providerId of [

@@ -300,7 +300,9 @@ export function CliProxySection({
 								? "Installing…"
 								: info.versionMismatch
 									? `Use approved v${info.approvedVersion}`
-									: "Check / repair"}
+									: !info.wslInstalled
+										? "Add WSL support"
+										: "Check / repair"}
 						</button>
 						<ConfirmAction
 							label="remove CLIProxy and saved accounts?"

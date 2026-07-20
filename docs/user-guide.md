@@ -81,7 +81,10 @@ Open **Forge → Integrations → CLIProxyAPI** and choose **Install managed**. 
 Windows, Hlid downloads a reviewed, pinned release, verifies it against the
 SHA-256 digest shipped with Hlid, creates a loopback-only configuration, and
 owns the process lifecycle. CLIProxy updates advance only with an Hlid release
-after the new archive has had time to settle.
+after the new archive has had time to settle. The managed install includes
+matching Windows and Linux binaries. Hlid starts the Linux sidecar inside each
+configured WSL distro so WSL-backed Claude Code and Codex harnesses keep their
+native toolchain while using the same OAuth accounts.
 Connect any supported account shown in Forge: OpenAI Codex, Anthropic Claude,
 Google Antigravity, Moonshot Kimi, or xAI. OpenAI, Kimi, and xAI use device-code
 flows, so you can finish their sign-in from the Hlid desktop or a mobile browser

@@ -13,6 +13,8 @@ import {
 	extractCliProxyOAuthPrompt,
 	managedCliProxyConfig,
 	terminateCliProxyChild,
+	windowsPathToWsl,
+	wslCliProxyLaunchArgs,
 } from "./cliproxyManager";
 
 const temporaryRoots: string[] = [];
@@ -34,6 +36,17 @@ describe("CLIProxy release verification", () => {
 		expect(arm64.sha256).toMatch(/^[a-f0-9]{64}$/);
 	});
 
+	it("pins matching Linux archives for WSL sidecars", () => {
+		const x64 = approvedCliProxyRelease("x64", "linux");
+		const arm64 = approvedCliProxyRelease("arm64", "linux");
+		expect(x64.archiveName).toBe("CLIProxyAPI_7.2.88_linux_amd64.tar.gz");
+		expect(x64.sha256).toBe(
+			"2cc3b38e3ba2474d0cdeb7a3f25b026891ba34e34d3a7e0501d4efd03c01f6fe",
+		);
+		expect(arm64.archiveName).toBe("CLIProxyAPI_7.2.88_linux_aarch64.tar.gz");
+		expect(arm64.sha256).toMatch(/^[a-f0-9]{64}$/);
+	});
+
 	it("rejects unsupported Windows architectures", () => {
 		expect(() => approvedCliProxyRelease("ia32")).toThrow(
 			"managed CLIProxy does not support ia32",
@@ -42,6 +55,29 @@ describe("CLIProxy release verification", () => {
 });
 
 describe("managed CLIProxy configuration", () => {
+	it("builds safe WSL paths and direct launch arguments", () => {
+		expect(windowsPathToWsl("C:\\Hlid\\cliproxy\\cli-proxy-api")).toBe(
+			"/mnt/c/Hlid/cliproxy/cli-proxy-api",
+		);
+		const args = wslCliProxyLaunchArgs(
+			"Ubuntu-24.04",
+			"/mnt/c/Hlid/runtime.pid",
+			"/mnt/c/Hlid/cli-proxy-api",
+			"/mnt/c/Hlid/config.yaml",
+		);
+		expect(args.slice(0, 6)).toEqual([
+			"-d",
+			"Ubuntu-24.04",
+			"--exec",
+			"sh",
+			"-c",
+			expect.stringContaining('exec "$2" --config "$3"'),
+		]);
+		expect(() =>
+			wslCliProxyLaunchArgs("Ubuntu;bad", "pid", "exe", "config"),
+		).toThrow("invalid WSL distro name");
+	});
+
 	it("explains when Windows Security may have removed the executable", () => {
 		expect(
 			cliProxyLaunchError(

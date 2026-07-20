@@ -58,6 +58,11 @@ export function wrapperContent(
 	const dollar = String.fromCharCode(36);
 	return [
 		"@echo off",
+		"setlocal",
+		'if defined ANTHROPIC_BASE_URL set "WSLENV=ANTHROPIC_BASE_URL/u:%WSLENV%"',
+		'if defined ANTHROPIC_AUTH_TOKEN set "WSLENV=ANTHROPIC_AUTH_TOKEN/u:%WSLENV%"',
+		'if defined HLID_CLIPROXY_API_KEY set "WSLENV=HLID_CLIPROXY_API_KEY/u:%WSLENV%"',
+		'if defined OPENCODE_CONFIG_CONTENT set "WSLENV=OPENCODE_CONFIG_CONTENT/u:%WSLENV%"',
 		dq +
 			"%SystemRoot%" +
 			bs +
@@ -71,14 +76,18 @@ export function wrapperContent(
 			dq +
 			posixPath +
 			dq +
-			" -- bash -l -c '" +
+			" --exec bash -l -c " +
+			dq +
 			command +
 			" " +
+			bs +
 			dq +
 			dollar +
 			"@" +
+			bs +
 			dq +
-			"' -- %*",
+			dq +
+			" -- %*",
 		"",
 	].join("\r\n");
 }

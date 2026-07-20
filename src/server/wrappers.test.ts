@@ -95,19 +95,31 @@ describe("wrapperContent", () => {
 		expect(out).toContain("%*");
 	});
 
+	it("forwards CLIProxy provider environment into WSL", () => {
+		const out = wrapperContent("Ubuntu", "/home/kyle");
+		expect(out).toContain("ANTHROPIC_BASE_URL/u:%WSLENV%");
+		expect(out).toContain("ANTHROPIC_AUTH_TOKEN/u:%WSLENV%");
+		expect(out).toContain("HLID_CLIPROXY_API_KEY/u:%WSLENV%");
+	});
+
 	it("uses bash -l so login profile is sourced", () => {
 		const out = wrapperContent("Ubuntu", "/home/kyle");
-		expect(out).toContain("bash -l");
+		expect(out).toContain("--exec bash -l");
+	});
+
+	it("bypasses WSL's default shell when forwarding model arguments", () => {
+		const out = wrapperContent("Ubuntu", "/home/kyle");
+		expect(out).toContain("--exec bash -l -c");
 	});
 
 	it("defaults to launching Claude with forwarded args", () => {
 		const out = wrapperContent("Ubuntu", "/home/kyle");
-		expect(out).toContain(`claude ${String.fromCharCode(34, 36, 64, 34)}`);
+		expect(out).toContain('claude \\"$@\\"');
 	});
 
 	it("can launch Codex with forwarded args", () => {
 		const out = wrapperContent("Ubuntu", "/home/kyle", "codex");
-		expect(out).toContain(`codex ${String.fromCharCode(34, 36, 64, 34)}`);
+		expect(out).toContain('codex \\"$@\\"');
 	});
 });
 

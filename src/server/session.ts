@@ -11,7 +11,10 @@ import {
 	toProviderRuntimePath,
 } from "../lib/paths";
 import { isCliProxyProvider } from "../lib/providerIds";
-import { isClaudeRuntimeProvider } from "../lib/providerRuntime";
+import {
+	isClaudeRuntimeProvider,
+	isCodexRuntimeProvider,
+} from "../lib/providerRuntime";
 import { SESSION_LABEL_LENGTH } from "../lib/utils";
 import { formatVaultReferencedMessage } from "../lib/vaultReferences";
 import {
@@ -3226,8 +3229,9 @@ export class SessionManager {
 				claudeExecutable: isClaudeRuntimeProvider(currentProvider.providerId)
 					? this.claudeExecutable
 					: this.codexExecutable,
-				wrapperCommand:
-					currentProvider.providerId === "codex" ? "codex" : "claude",
+				wrapperCommand: isCodexRuntimeProvider(currentProvider.providerId)
+					? "codex"
+					: "claude",
 				safeAttachments,
 				resourcePaths,
 			});
