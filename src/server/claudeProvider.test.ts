@@ -2519,7 +2519,14 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 			hlid_obsidian: { type: "sdk", name: "hlid_obsidian" },
 		});
 		const server = options?.mcpServers?.hlid_obsidian as unknown as {
-			instance: { options: { tools: Array<{ name: string }> } };
+			instance: {
+				options: {
+					tools: Array<{
+						name: string;
+						inputSchema: Record<string, unknown>;
+					}>;
+				};
+			};
 		};
 		expect(server.instance.options.tools.map((item) => item.name)).toEqual([
 			"links",
@@ -2528,6 +2535,13 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 			"base_query",
 			"history",
 		]);
+		const tasks = server.instance.options.tools.find(
+			(item) => item.name === "tasks",
+		);
+		expect(tasks?.inputSchema).toMatchObject({
+			limit: expect.anything(),
+			countOnly: expect.anything(),
+		});
 		session.cancel();
 	});
 

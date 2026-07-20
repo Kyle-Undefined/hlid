@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { EventEmitter } from "node:events";
+import { describe, expect, it, vi } from "vitest";
 import {
+	closeObsidianMcpOnInputEnd,
 	INTERNAL_OBSIDIAN_MCP_FLAG,
 	obsidianMcpProcessCommand,
 } from "./obsidianMcpServer";
@@ -17,5 +19,19 @@ describe("Obsidian MCP process", () => {
 		} finally {
 			process.argv = argv;
 		}
+	});
+
+	it("closes the MCP transport when its stdio client disconnects", async () => {
+		const input = new EventEmitter();
+		const close = vi.fn(async () => {});
+		const stopWatching = closeObsidianMcpOnInputEnd({ close }, input);
+
+		input.emit("end");
+		input.emit("close");
+		await vi.waitFor(() => expect(close).toHaveBeenCalledTimes(1));
+
+		stopWatching();
+		expect(input.listenerCount("end")).toBe(0);
+		expect(input.listenerCount("close")).toBe(0);
 	});
 });

@@ -366,11 +366,6 @@ function safeVaultPath(path: string, label = "path"): string {
 	return portable;
 }
 
-function boundedAgentOutput(output: string): string {
-	if (output.length <= MAX_OBSIDIAN_AGENT_OUTPUT_CHARS) return output;
-	return `${output.slice(0, MAX_OBSIDIAN_AGENT_OUTPUT_CHARS)}\n\n[Output truncated by Hlid]`;
-}
-
 function optionalPathArgument(path: string | undefined): string[] {
 	return path ? [`path=${safeVaultPath(path)}`] : [];
 }
@@ -379,6 +374,7 @@ export type ObsidianLinksQuery = {
 	kind: "backlinks" | "outgoing" | "unresolved" | "orphans" | "deadends";
 	path?: string;
 	counts?: boolean;
+	countOnly?: boolean;
 };
 
 export async function queryObsidianLinks(
@@ -392,31 +388,34 @@ export async function queryObsidianLinks(
 			args = [
 				"backlinks",
 				...optionalPathArgument(query.path),
-				...(query.counts ? ["counts"] : []),
-				"format=json",
+				...(query.countOnly
+					? ["total"]
+					: [...(query.counts ? ["counts"] : []), "format=json"]),
 			];
 			break;
 		case "outgoing":
-			args = ["links", ...optionalPathArgument(query.path)];
+			args = [
+				"links",
+				...optionalPathArgument(query.path),
+				...(query.countOnly ? ["total"] : []),
+			];
 			break;
 		case "unresolved":
 			args = [
 				"unresolved",
-				...(query.counts ? ["counts"] : []),
-				"verbose",
-				"format=json",
+				...(query.countOnly
+					? ["total"]
+					: [...(query.counts ? ["counts"] : []), "verbose", "format=json"]),
 			];
 			break;
 		case "orphans":
-			args = ["orphans"];
+			args = ["orphans", ...(query.countOnly ? ["total"] : [])];
 			break;
 		case "deadends":
-			args = ["deadends"];
+			args = ["deadends", ...(query.countOnly ? ["total"] : [])];
 			break;
 	}
-	return boundedAgentOutput(
-		await runObsidianCommand(vaultName, args, dependencies),
-	);
+	return runObsidianCommand(vaultName, args, dependencies);
 }
 
 export type ObsidianTasksQuery = {
@@ -424,6 +423,7 @@ export type ObsidianTasksQuery = {
 	state?: "all" | "todo" | "done";
 	status?: string;
 	source?: "vault" | "active" | "daily";
+	countOnly?: boolean;
 };
 
 export async function queryObsidianTasks(
@@ -443,18 +443,16 @@ export async function queryObsidianTasks(
 		...(query.state === "todo" ? ["todo"] : []),
 		...(query.state === "done" ? ["done"] : []),
 		...(status ? [`status=${status}`] : []),
-		"verbose",
-		"format=json",
+		...(query.countOnly ? ["total"] : ["verbose", "format=json"]),
 	];
-	return boundedAgentOutput(
-		await runObsidianCommand(vaultName, args, dependencies),
-	);
+	return runObsidianCommand(vaultName, args, dependencies);
 }
 
 export type ObsidianPropertiesQuery = {
 	path?: string;
 	name?: string;
 	active?: boolean;
+	countOnly?: boolean;
 };
 
 export async function queryObsidianProperties(
@@ -471,11 +469,9 @@ export async function queryObsidianProperties(
 		...optionalPathArgument(query.path),
 		...(query.active ? ["active"] : []),
 		...(name ? [`name=${name}`] : []),
-		"format=json",
+		...(query.countOnly ? ["total"] : ["format=json"]),
 	];
-	return boundedAgentOutput(
-		await runObsidianCommand(vaultName, args, dependencies),
-	);
+	return runObsidianCommand(vaultName, args, dependencies);
 }
 
 export async function queryObsidianBase(
@@ -492,17 +488,15 @@ export async function queryObsidianBase(
 	if (viewName && (viewName.length > 256 || /[\r\n\0]/.test(viewName))) {
 		throw new Error("Obsidian Base view name is invalid.");
 	}
-	return boundedAgentOutput(
-		await runObsidianCommand(
-			vaultName,
-			[
-				"base:query",
-				`path=${safePath}`,
-				...(viewName ? [`view=${viewName}`] : []),
-				"format=json",
-			],
-			dependencies,
-		),
+	return runObsidianCommand(
+		vaultName,
+		[
+			"base:query",
+			`path=${safePath}`,
+			...(viewName ? [`view=${viewName}`] : []),
+			"format=json",
+		],
+		dependencies,
 	);
 }
 
@@ -558,9 +552,7 @@ export async function queryObsidianHistory(
 			];
 			break;
 	}
-	return boundedAgentOutput(
-		await runObsidianCommand(vaultName, args, dependencies),
-	);
+	return runObsidianCommand(vaultName, args, dependencies);
 }
 
 // fallow-ignore-next-line unused-export -- Loaded dynamically by the Obsidian server functions to keep host process code out of the client bundle.

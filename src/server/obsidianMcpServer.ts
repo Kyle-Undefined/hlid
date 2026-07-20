@@ -9,6 +9,27 @@ import {
 
 export const INTERNAL_OBSIDIAN_MCP_FLAG = "--internal-obsidian-mcp";
 
+export function closeObsidianMcpOnInputEnd(
+	transport: Pick<StdioServerTransport, "close">,
+	input: {
+		once(event: "end" | "close", listener: () => void): unknown;
+		off(event: "end" | "close", listener: () => void): unknown;
+	} = process.stdin,
+): () => void {
+	let closing = false;
+	const close = () => {
+		if (closing) return;
+		closing = true;
+		void transport.close().catch(() => {});
+	};
+	input.once("end", close);
+	input.once("close", close);
+	return () => {
+		input.off("end", close);
+		input.off("close", close);
+	};
+}
+
 export function obsidianMcpProcessCommand(): {
 	command: string;
 	args: string[];
@@ -74,8 +95,14 @@ export async function runObsidianMcpServer(): Promise<void> {
 		);
 	}
 	const transport = new StdioServerTransport();
-	await server.connect(transport);
-	await new Promise<void>((resolve) => {
+	const closed = new Promise<void>((resolve) => {
 		server.server.onclose = resolve;
 	});
+	const stopWatchingInput = closeObsidianMcpOnInputEnd(transport);
+	try {
+		await server.connect(transport);
+		await closed;
+	} finally {
+		stopWatchingInput();
+	}
 }

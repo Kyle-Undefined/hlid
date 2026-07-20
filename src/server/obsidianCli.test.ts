@@ -324,6 +324,54 @@ describe("Obsidian CLI bridge", () => {
 		]);
 	});
 
+	it("uses native count-only commands for broad agent queries", async () => {
+		const links = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "10", code: 0 },
+		]);
+		await queryObsidianLinks(
+			"Fornbok",
+			{ kind: "unresolved", countOnly: true },
+			links.dependencies,
+		);
+		expect(links.run.mock.calls[1]?.[1]).toEqual([
+			"vault=Fornbok",
+			"unresolved",
+			"total",
+		]);
+
+		const tasks = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "494", code: 0 },
+		]);
+		await queryObsidianTasks(
+			"Fornbok",
+			{ state: "todo", countOnly: true },
+			tasks.dependencies,
+		);
+		expect(tasks.run.mock.calls[1]?.[1]).toEqual([
+			"vault=Fornbok",
+			"tasks",
+			"todo",
+			"total",
+		]);
+
+		const properties = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "48", code: 0 },
+		]);
+		await queryObsidianProperties(
+			"Fornbok",
+			{ countOnly: true },
+			properties.dependencies,
+		);
+		expect(properties.run.mock.calls[1]?.[1]).toEqual([
+			"vault=Fornbok",
+			"properties",
+			"total",
+		]);
+	});
+
 	it("maps Base and history reads without exposing restore operations", async () => {
 		const base = wslDependencies([
 			{ output: windowsDetection, code: 0 },

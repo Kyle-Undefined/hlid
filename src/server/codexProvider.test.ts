@@ -1198,6 +1198,22 @@ describe("CodexAgentSession — commands", () => {
 		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
 		const session = new CodexProvider().query(baseCodexParams());
 		await session.send("inspect backlinks");
+		const obsidianNamespace = (
+			threadStartParams(writes)[0].dynamicTools as Array<{
+				name: string;
+				tools: Array<{
+					name: string;
+					inputSchema: { properties: Record<string, unknown> };
+				}>;
+			}>
+		).find((tool) => tool.name === "hlid_obsidian");
+		expect(
+			obsidianNamespace?.tools.find((tool) => tool.name === "tasks")
+				?.inputSchema.properties,
+		).toMatchObject({
+			limit: { type: "integer", minimum: 1, maximum: 200 },
+			countOnly: { type: "boolean" },
+		});
 		proc.stdout.emit(
 			"data",
 			Buffer.from(
