@@ -47,6 +47,33 @@ describe("ObsidianVaultChangeReview", () => {
 				{ id: "templater-obsidian:insert-templater" },
 				'{"ok":true,"id":"templater-obsidian:insert-templater"}',
 			),
+			event(
+				"base",
+				"mcp__hlid_obsidian__base_create",
+				{
+					path: "Projects.base",
+					name: "New item",
+					content: "# New item",
+				},
+				'{"basePath":"Projects.base","name":"New item"}',
+			),
+			event(
+				"task",
+				"mcp__hlid_obsidian__task_update",
+				{ path: "Notes/New.md", line: 8, action: "done" },
+				'{"path":"Notes/New.md","line":8,"action":"done"}',
+			),
+			event(
+				"property",
+				"mcp__hlid_obsidian__property_set",
+				{
+					path: "Notes/New.md",
+					name: "status",
+					type: "text",
+					value: "Active",
+				},
+				'{"path":"Notes/New.md","name":"status","type":"text","value":"Active"}',
+			),
 			{
 				...event("failed", "hlid_obsidian:rename_file", {
 					path: "Notes/Old.md",
@@ -83,7 +110,58 @@ describe("ObsidianVaultChangeReview", () => {
 				kind: "command",
 				commandId: "templater-obsidian:insert-templater",
 			},
+			{
+				id: "base",
+				kind: "base",
+				summary: "New item via Projects.base",
+				content: "# New item",
+			},
+			{
+				id: "task",
+				kind: "task",
+				path: "Notes/New.md",
+				summary: "Notes/New.md:8 · done",
+			},
+			{
+				id: "property",
+				kind: "property-set",
+				path: "Notes/New.md",
+				summary: 'Notes/New.md · status = "Active"',
+			},
 		]);
+	});
+
+	it("renders task, property, and Base activity without verification claims", () => {
+		render(
+			<ObsidianVaultChangeReview
+				toolEvents={[
+					event(
+						"base",
+						"mcp__hlid_obsidian__base_create",
+						{ path: "Projects.base", name: "New item" },
+						'{"basePath":"Projects.base","name":"New item"}',
+					),
+					event(
+						"task",
+						"mcp__hlid_obsidian__task_update",
+						{ path: "Notes/New.md", line: 8, action: "done" },
+						'{"path":"Notes/New.md","line":8,"action":"done"}',
+					),
+					event(
+						"property",
+						"mcp__hlid_obsidian__property_remove",
+						{ path: "Notes/New.md", name: "status" },
+						'{"path":"Notes/New.md","name":"status"}',
+					),
+				]}
+			/>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: /vault activity.*3/i }));
+		expect(screen.getByText("New item via Projects.base")).toBeTruthy();
+		expect(screen.getByText("Notes/New.md:8 · done")).toBeTruthy();
+		expect(screen.getByText("Notes/New.md · removed status")).toBeTruthy();
+		expect(screen.queryByText(/verified/i)).toBeNull();
 	});
 
 	it("shows a compact per-turn review with paths and added-content previews", () => {

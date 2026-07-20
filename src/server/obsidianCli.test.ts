@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
 	appendToObsidian,
+	createObsidianBaseItem,
 	createObsidianNote,
 	executeObsidianCommand,
 	getActiveObsidianNote,
@@ -22,8 +23,11 @@ import {
 	queryObsidianVaultInfo,
 	readObsidianNote,
 	readObsidianTemplate,
+	removeObsidianProperty,
 	renameObsidianFile,
+	setObsidianProperty,
 	testObsidianConnection,
+	updateObsidianTask,
 } from "./obsidianCli";
 
 const windowsDetection = JSON.stringify({
@@ -829,6 +833,119 @@ describe("Obsidian CLI bridge", () => {
 		]);
 	});
 
+	it("updates exact tasks and typed properties through native commands", async () => {
+		const task = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "", code: 0 },
+		]);
+		await expect(
+			updateObsidianTask(
+				"Fornbok",
+				{ path: "Projects/Ship.md", line: 14, action: "done" },
+				task.dependencies,
+			),
+		).resolves.toEqual({
+			path: "Projects/Ship.md",
+			line: 14,
+			action: "done",
+		});
+		expect(task.run.mock.calls[1]?.[1]).toEqual([
+			"vault=Fornbok",
+			"task",
+			"path=Projects/Ship.md",
+			"line=14",
+			"done",
+		]);
+
+		const customTask = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "", code: 0 },
+		]);
+		await updateObsidianTask(
+			"Fornbok",
+			{
+				path: "Projects/Ship.md",
+				line: 15,
+				action: "status",
+				status: "?",
+			},
+			customTask.dependencies,
+		);
+		expect(customTask.run.mock.calls[1]?.[1]).toEqual([
+			"vault=Fornbok",
+			"task",
+			"path=Projects/Ship.md",
+			"line=15",
+			"status=?",
+		]);
+
+		const property = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "", code: 0 },
+		]);
+		await expect(
+			setObsidianProperty(
+				"Fornbok",
+				{
+					path: "Projects/Ship.md",
+					name: "owners",
+					type: "list",
+					value: ["Kyle", "Munin"],
+				},
+				property.dependencies,
+			),
+		).resolves.toEqual({
+			path: "Projects/Ship.md",
+			name: "owners",
+			type: "list",
+			value: ["Kyle", "Munin"],
+		});
+		expect(property.run.mock.calls[1]?.[1]).toEqual([
+			"vault=Fornbok",
+			"property:set",
+			"path=Projects/Ship.md",
+			"name=owners",
+			"value=Kyle,Munin",
+			"type=list",
+		]);
+
+		const remove = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "", code: 0 },
+		]);
+		await expect(
+			removeObsidianProperty(
+				"Fornbok",
+				{ path: "Projects/Ship.md", name: "owners" },
+				remove.dependencies,
+			),
+		).resolves.toEqual({ path: "Projects/Ship.md", name: "owners" });
+		expect(remove.run.mock.calls[1]?.[1]).toEqual([
+			"vault=Fornbok",
+			"property:remove",
+			"path=Projects/Ship.md",
+			"name=owners",
+		]);
+	});
+
+	it("rejects invalid task and typed property values before invoking Obsidian", async () => {
+		await expect(
+			updateObsidianTask("Fornbok", {
+				path: "Projects/Ship.md",
+				line: 14,
+				action: "status",
+			}),
+		).rejects.toThrow("one character");
+		await expect(
+			setObsidianProperty("Fornbok", {
+				path: "Projects/Ship.md",
+				name: "done",
+				type: "checkbox",
+				value: "yes",
+			}),
+		).rejects.toThrow("require a boolean");
+	});
+
 	it("uses native count-only commands for broad agent queries", async () => {
 		const links = wslDependencies([
 			{ output: windowsDetection, code: 0 },
@@ -894,6 +1011,37 @@ describe("Obsidian CLI bridge", () => {
 			"path=Dashboards/Work.base",
 			"view=Open",
 			"format=json",
+		]);
+
+		const create = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "", code: 0 },
+		]);
+		await expect(
+			createObsidianBaseItem(
+				"Fornbok",
+				{
+					path: "Dashboards/Work.base",
+					view: "Open",
+					name: "New item",
+					content: "# New item",
+					open: true,
+				},
+				create.dependencies,
+			),
+		).resolves.toEqual({
+			basePath: "Dashboards/Work.base",
+			view: "Open",
+			name: "New item",
+		});
+		expect(create.run.mock.calls[1]?.[1]).toEqual([
+			"vault=Fornbok",
+			"base:create",
+			"path=Dashboards/Work.base",
+			"view=Open",
+			"name=New item",
+			"content=# New item",
+			"open",
 		]);
 
 		const history = wslDependencies([

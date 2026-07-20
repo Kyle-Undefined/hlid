@@ -43,8 +43,12 @@ describe("ObsidianSection", () => {
 				"list_templates",
 				"read_template",
 				"create_note",
+				"base_create",
 				"append_note",
 				"prepend_note",
+				"task_update",
+				"property_set",
+				"property_remove",
 				"move_file",
 				"rename_file",
 				"run_command",
@@ -57,7 +61,7 @@ describe("ObsidianSection", () => {
 		render(<ObsidianSection />);
 
 		await waitFor(() => expect(screen.getByText("v1.12.7")).toBeTruthy());
-		expect(screen.getByText("17 curated tools")).toBeTruthy();
+		expect(screen.getByText("21 curated tools")).toBeTruthy();
 		expect(screen.getByText("not registered")).toBeTruthy();
 		expect(serverFns.testObsidianConnectionFn).not.toHaveBeenCalled();
 

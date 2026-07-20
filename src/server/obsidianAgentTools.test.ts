@@ -4,6 +4,7 @@ const bridge = vi.hoisted(() => ({
 	MAX_OBSIDIAN_AGENT_OUTPUT_CHARS: 120_000,
 	MAX_OBSIDIAN_APPEND_CHARS: 20_000,
 	MAX_OBSIDIAN_CREATE_CHARS: 20_000,
+	createObsidianBaseItem: vi.fn(),
 	createObsidianNote: vi.fn(),
 	executeObsidianCommand: vi.fn(),
 	listObsidianTemplates: vi.fn(),
@@ -19,7 +20,10 @@ const bridge = vi.hoisted(() => ({
 	queryObsidianVaultInfo: vi.fn(),
 	readObsidianNote: vi.fn(),
 	readObsidianTemplate: vi.fn(),
+	removeObsidianProperty: vi.fn(),
 	renameObsidianFile: vi.fn(),
+	setObsidianProperty: vi.fn(),
+	updateObsidianTask: vi.fn(),
 }));
 
 const config = vi.hoisted(() => ({
@@ -58,8 +62,12 @@ describe("Obsidian agent tools", () => {
 			"list_templates",
 			"read_template",
 			"create_note",
+			"base_create",
 			"append_note",
 			"prepend_note",
+			"task_update",
+			"property_set",
+			"property_remove",
 			"move_file",
 			"rename_file",
 			"run_command",
@@ -91,8 +99,12 @@ describe("Obsidian agent tools", () => {
 			),
 		).toEqual([
 			"create_note",
+			"base_create",
 			"append_note",
 			"prepend_note",
+			"task_update",
+			"property_set",
+			"property_remove",
 			"move_file",
 			"rename_file",
 			"run_command",
@@ -161,6 +173,22 @@ describe("Obsidian agent tools", () => {
 			}),
 		).resolves.toBe('{"path":"0 Inbox/One.md"}');
 
+		bridge.createObsidianBaseItem.mockResolvedValueOnce({
+			basePath: "Projects.base",
+			view: "Active",
+			name: "One",
+		});
+		await executeObsidianAgentTool("base_create", {
+			path: "Projects.base",
+			view: "Active",
+			name: "One",
+		});
+		expect(bridge.createObsidianBaseItem).toHaveBeenCalledWith("Fornbok", {
+			path: "Projects.base",
+			view: "Active",
+			name: "One",
+		});
+
 		bridge.mutateObsidianNote.mockResolvedValue({ path: "Notes/One.md" });
 		await executeObsidianAgentTool("append_note", {
 			target: "path",
@@ -172,6 +200,54 @@ describe("Obsidian agent tools", () => {
 			"append",
 			expect.objectContaining({ content: "Body" }),
 		);
+
+		bridge.updateObsidianTask.mockResolvedValueOnce({
+			path: "Notes/One.md",
+			line: 8,
+			action: "done",
+		});
+		await executeObsidianAgentTool("task_update", {
+			path: "Notes/One.md",
+			line: 8,
+			action: "done",
+		});
+		expect(bridge.updateObsidianTask).toHaveBeenCalledWith("Fornbok", {
+			path: "Notes/One.md",
+			line: 8,
+			action: "done",
+		});
+
+		bridge.setObsidianProperty.mockResolvedValueOnce({
+			path: "Notes/One.md",
+			name: "status",
+			type: "text",
+			value: "Active",
+		});
+		await executeObsidianAgentTool("property_set", {
+			path: "Notes/One.md",
+			name: "status",
+			type: "text",
+			value: "Active",
+		});
+		expect(bridge.setObsidianProperty).toHaveBeenCalledWith("Fornbok", {
+			path: "Notes/One.md",
+			name: "status",
+			type: "text",
+			value: "Active",
+		});
+
+		bridge.removeObsidianProperty.mockResolvedValueOnce({
+			path: "Notes/One.md",
+			name: "status",
+		});
+		await executeObsidianAgentTool("property_remove", {
+			path: "Notes/One.md",
+			name: "status",
+		});
+		expect(bridge.removeObsidianProperty).toHaveBeenCalledWith("Fornbok", {
+			path: "Notes/One.md",
+			name: "status",
+		});
 
 		bridge.moveObsidianFile.mockResolvedValue({ path: "Archive/One.md" });
 		await executeObsidianAgentTool("move_file", {

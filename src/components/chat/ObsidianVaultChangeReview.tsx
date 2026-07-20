@@ -10,6 +10,10 @@ type VaultChangeKind =
 	| "prepended"
 	| "moved"
 	| "renamed"
+	| "base"
+	| "task"
+	| "property-set"
+	| "property-remove"
 	| "command";
 
 export type ObsidianVaultChange = {
@@ -19,6 +23,7 @@ export type ObsidianVaultChange = {
 	from?: string;
 	content?: string;
 	commandId?: string;
+	summary?: string;
 };
 
 const OPERATION_NAMES: Record<string, VaultChangeKind> = {
@@ -27,6 +32,10 @@ const OPERATION_NAMES: Record<string, VaultChangeKind> = {
 	prepend_note: "prepended",
 	move_file: "moved",
 	rename_file: "renamed",
+	base_create: "base",
+	task_update: "task",
+	property_set: "property-set",
+	property_remove: "property-remove",
 	run_command: "command",
 };
 
@@ -71,6 +80,12 @@ function renamedPath(source: string, name: string): string {
 	return slash < 0 ? name : `${source.slice(0, slash)}/${name}`;
 }
 
+function inlineValue(value: unknown): string {
+	const serialized = JSON.stringify(value);
+	if (serialized === undefined) return "unknown";
+	return serialized.length > 240 ? `${serialized.slice(0, 240)}…` : serialized;
+}
+
 export function obsidianVaultChanges(
 	toolEvents: ToolEventMessage[],
 ): ObsidianVaultChange[] {
@@ -90,6 +105,57 @@ export function obsidianVaultChanges(
 						},
 					]
 				: [];
+		}
+		if (operation === "base_create") {
+			const basePath = typeof input.path === "string" ? input.path : null;
+			const name = typeof input.name === "string" ? input.name : null;
+			if (!basePath || !name) return [];
+			return [
+				{
+					id: event.id,
+					kind: "base" as const,
+					summary: `${name} via ${basePath}`,
+					...(typeof input.content === "string" && input.content
+						? { content: input.content }
+						: {}),
+				},
+			];
+		}
+		if (operation === "task_update") {
+			const path = typeof input.path === "string" ? input.path : null;
+			const line = typeof input.line === "number" ? input.line : null;
+			const action = typeof input.action === "string" ? input.action : null;
+			if (!path || line === null || !action) return [];
+			const status = typeof input.status === "string" ? input.status : null;
+			return [
+				{
+					id: event.id,
+					kind: "task" as const,
+					path,
+					summary: `${path}:${line} · ${action === "status" && status ? `status ${status}` : action}`,
+				},
+			];
+		}
+		if (operation === "property_set" || operation === "property_remove") {
+			const path = typeof input.path === "string" ? input.path : null;
+			const name = typeof input.name === "string" ? input.name : null;
+			if (!path || !name) return [];
+			const value =
+				operation === "property_set" ? inlineValue(input.value) : null;
+			return [
+				{
+					id: event.id,
+					kind:
+						operation === "property_set"
+							? ("property-set" as const)
+							: ("property-remove" as const),
+					path,
+					summary:
+						operation === "property_set"
+							? `${path} · ${name} = ${value}`
+							: `${path} · removed ${name}`,
+				},
+			];
 		}
 		const source = typeof input.path === "string" ? input.path : null;
 		const reportedPath = resultPath(event.result);
@@ -137,6 +203,14 @@ function changeLabel(kind: VaultChangeKind): string {
 			return "Moved";
 		case "renamed":
 			return "Renamed";
+		case "base":
+			return "Base item";
+		case "task":
+			return "Task";
+		case "property-set":
+			return "Property";
+		case "property-remove":
+			return "Property";
 		case "command":
 			return "Command";
 	}
@@ -192,6 +266,7 @@ export function ObsidianVaultChangeReview({
 								<div className="min-w-0 flex-1">
 									<PrivacyMask className="font-mono text-primary/75">
 										{change.commandId ??
+											change.summary ??
 											(change.from
 												? `${change.from} → ${change.path}`
 												: change.path)}

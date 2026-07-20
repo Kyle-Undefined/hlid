@@ -448,6 +448,16 @@ function cliError(output: string): string | null {
 		: null;
 }
 
+async function runObsidianMutationCommand(
+	vaultName: string,
+	args: string[],
+	dependencies: ObsidianBridgeDependencies,
+): Promise<void> {
+	const output = await runObsidianCommand(vaultName, args, dependencies);
+	const error = cliError(output);
+	if (error) throw new Error(`Obsidian CLI failed: ${error}`);
+}
+
 function optionalPathArgument(path: string | undefined): string[] {
 	return path ? [`path=${safeVaultPath(path)}`] : [];
 }
@@ -773,6 +783,51 @@ export async function queryObsidianTasks(
 	return runObsidianCommand(vaultName, args, dependencies);
 }
 
+export type ObsidianTaskUpdateInput = {
+	path: string;
+	line: number;
+	action: "toggle" | "done" | "todo" | "status";
+	status?: string;
+};
+
+export async function updateObsidianTask(
+	vaultName: string,
+	input: ObsidianTaskUpdateInput,
+	dependencies: ObsidianBridgeDependencies = {},
+): Promise<ObsidianTaskUpdateInput> {
+	const path = safeVaultPath(input.path, "task note path");
+	if (
+		!Number.isInteger(input.line) ||
+		input.line < 1 ||
+		input.line > 1_000_000
+	) {
+		throw new Error("Obsidian task line must be a positive integer.");
+	}
+	const status = input.status?.trim();
+	if (
+		input.action === "status" &&
+		(!status || status.length !== 1 || /[\r\n\0]/.test(status))
+	) {
+		throw new Error("Obsidian custom task status must be one character.");
+	}
+	await runObsidianMutationCommand(
+		vaultName,
+		[
+			"task",
+			`path=${path}`,
+			`line=${input.line}`,
+			input.action === "status" ? `status=${status}` : input.action,
+		],
+		dependencies,
+	);
+	return {
+		path,
+		line: input.line,
+		action: input.action,
+		...(input.action === "status" ? { status } : {}),
+	};
+}
+
 export type ObsidianPropertiesQuery = {
 	path?: string;
 	name?: string;
@@ -799,6 +854,115 @@ export async function queryObsidianProperties(
 	return runObsidianCommand(vaultName, args, dependencies);
 }
 
+export type ObsidianPropertyType =
+	| "text"
+	| "list"
+	| "number"
+	| "checkbox"
+	| "date"
+	| "datetime";
+
+export type ObsidianPropertyValue = string | number | boolean | string[];
+
+function safePropertyName(name: string): string {
+	const trimmed = name.trim();
+	if (!trimmed || trimmed.length > 256 || /[\r\n\0]/.test(trimmed)) {
+		throw new Error("Obsidian property name is invalid.");
+	}
+	return trimmed;
+}
+
+function propertyCliValue(
+	type: ObsidianPropertyType,
+	value: ObsidianPropertyValue,
+): string {
+	if (type === "list") {
+		if (
+			!Array.isArray(value) ||
+			value.length > 100 ||
+			value.some(
+				(item) => !item.trim() || item.length > 512 || /[,\r\n\0]/.test(item),
+			)
+		) {
+			throw new Error(
+				"Obsidian list properties require up to 100 non-empty string items without commas.",
+			);
+		}
+		return value.join(",");
+	}
+	if (type === "number") {
+		if (typeof value !== "number" || !Number.isFinite(value)) {
+			throw new Error("Obsidian number properties require a finite number.");
+		}
+		return String(value);
+	}
+	if (type === "checkbox") {
+		if (typeof value !== "boolean") {
+			throw new Error("Obsidian checkbox properties require a boolean.");
+		}
+		return value ? "true" : "false";
+	}
+	if (type !== "text" && type !== "date" && type !== "datetime") {
+		throw new Error("Obsidian property type is invalid.");
+	}
+	if (
+		typeof value !== "string" ||
+		!value.trim() ||
+		value.length > 4_096 ||
+		/[\r\n\0]/.test(value)
+	) {
+		throw new Error(`Obsidian ${type} properties require a non-empty string.`);
+	}
+	return value;
+}
+
+export async function setObsidianProperty(
+	vaultName: string,
+	input: {
+		path: string;
+		name: string;
+		type: ObsidianPropertyType;
+		value: ObsidianPropertyValue;
+	},
+	dependencies: ObsidianBridgeDependencies = {},
+): Promise<{
+	path: string;
+	name: string;
+	type: ObsidianPropertyType;
+	value: ObsidianPropertyValue;
+}> {
+	const path = safeVaultPath(input.path, "property note path");
+	const name = safePropertyName(input.name);
+	const value = propertyCliValue(input.type, input.value);
+	await runObsidianMutationCommand(
+		vaultName,
+		[
+			"property:set",
+			`path=${path}`,
+			`name=${name}`,
+			`value=${value}`,
+			`type=${input.type}`,
+		],
+		dependencies,
+	);
+	return { path, name, type: input.type, value: input.value };
+}
+
+export async function removeObsidianProperty(
+	vaultName: string,
+	input: { path: string; name: string },
+	dependencies: ObsidianBridgeDependencies = {},
+): Promise<{ path: string; name: string }> {
+	const path = safeVaultPath(input.path, "property note path");
+	const name = safePropertyName(input.name);
+	await runObsidianMutationCommand(
+		vaultName,
+		["property:remove", `path=${path}`, `name=${name}`],
+		dependencies,
+	);
+	return { path, name };
+}
+
 export async function queryObsidianBase(
 	vaultName: string,
 	path: string,
@@ -823,6 +987,42 @@ export async function queryObsidianBase(
 		],
 		dependencies,
 	);
+}
+
+export async function createObsidianBaseItem(
+	vaultName: string,
+	input: {
+		path: string;
+		view?: string;
+		name: string;
+		content?: string;
+		open?: boolean;
+	},
+	dependencies: ObsidianBridgeDependencies = {},
+): Promise<{ basePath: string; view?: string; name: string }> {
+	const basePath = safeVaultPath(input.path, "Base path");
+	if (!basePath.toLowerCase().endsWith(".base")) {
+		throw new Error("Obsidian Base item creation requires a .base file.");
+	}
+	const view = input.view?.trim();
+	if (view && (view.length > 256 || /[\r\n\0]/.test(view))) {
+		throw new Error("Obsidian Base view name is invalid.");
+	}
+	const name = safeVaultFilename(input.name);
+	const content = safeNoteContent(input.content, MAX_OBSIDIAN_CREATE_CHARS);
+	await runObsidianMutationCommand(
+		vaultName,
+		[
+			"base:create",
+			`path=${basePath}`,
+			...(view ? [`view=${view}`] : []),
+			`name=${name}`,
+			...(content ? [`content=${content}`] : []),
+			...(input.open ? ["open"] : []),
+		],
+		dependencies,
+	);
+	return { basePath, ...(view ? { view } : {}), name };
 }
 
 export type ObsidianHistoryQuery = {

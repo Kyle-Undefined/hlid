@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { loadConfig } from "./config";
 import {
+	createObsidianBaseItem,
 	createObsidianNote,
 	executeObsidianCommand,
 	listObsidianTemplates,
@@ -19,7 +20,10 @@ import {
 	queryObsidianVaultInfo,
 	readObsidianNote,
 	readObsidianTemplate,
+	removeObsidianProperty,
 	renameObsidianFile,
+	setObsidianProperty,
+	updateObsidianTask,
 } from "./obsidianCli";
 
 export const OBSIDIAN_AGENT_NAMESPACE = "hlid_obsidian";
@@ -112,6 +116,13 @@ export const obsidianAgentSchemas = {
 		content: z.string().max(MAX_OBSIDIAN_CREATE_CHARS).optional(),
 		open: z.boolean().optional(),
 	}),
+	base_create: z.object({
+		path: vaultPath,
+		view: z.string().trim().min(1).max(256).optional(),
+		name: z.string().trim().min(1).max(255),
+		content: z.string().max(MAX_OBSIDIAN_CREATE_CHARS).optional(),
+		open: z.boolean().optional(),
+	}),
 	append_note: z.object({
 		target: z.enum(["active", "daily", "path"]),
 		path: vaultPath.optional(),
@@ -123,6 +134,27 @@ export const obsidianAgentSchemas = {
 		path: vaultPath.optional(),
 		content: z.string().min(1).max(MAX_OBSIDIAN_APPEND_CHARS),
 		open: z.boolean().optional(),
+	}),
+	task_update: z.object({
+		path: vaultPath,
+		line: z.number().int().min(1).max(1_000_000),
+		action: z.enum(["toggle", "done", "todo", "status"]),
+		status: z.string().min(1).max(1).optional(),
+	}),
+	property_set: z.object({
+		path: vaultPath,
+		name: z.string().trim().min(1).max(256),
+		type: z.enum(["text", "list", "number", "checkbox", "date", "datetime"]),
+		value: z.union([
+			z.string(),
+			z.number(),
+			z.boolean(),
+			z.array(z.string()).max(100),
+		]),
+	}),
+	property_remove: z.object({
+		path: vaultPath,
+		name: z.string().trim().min(1).max(256),
 	}),
 	move_file: z.object({
 		path: vaultPath,
@@ -451,6 +483,33 @@ export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
 			additionalProperties: false,
 		},
 	},
+	{
+		name: "base_create",
+		description:
+			"Create a new note through an exact Obsidian Base and optional view. Obsidian applies the Base's configured item location and properties. This does not edit the Base schema or views.",
+		readOnly: false,
+		inputSchema: {
+			type: "object",
+			properties: {
+				path: {
+					type: "string",
+					description: "Exact vault-relative path to a .base file.",
+				},
+				view: { type: "string", description: "Optional Base view name." },
+				name: {
+					type: "string",
+					description: "Filename for the new Base item.",
+				},
+				content: { type: "string", description: "Optional initial content." },
+				open: {
+					type: "boolean",
+					description: "Open the created item in Obsidian.",
+				},
+			},
+			required: ["path", "name"],
+			additionalProperties: false,
+		},
+	},
 	...(["append_note", "prepend_note"] as const).map(
 		(name): ObsidianAgentToolSpec => ({
 			name,
@@ -478,6 +537,77 @@ export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
 			},
 		}),
 	),
+	{
+		name: "task_update",
+		description:
+			"Update one exact Obsidian task by vault-relative note path and one-based line number returned by tasks. Toggle it, mark it done or todo, or set one custom status character.",
+		readOnly: false,
+		inputSchema: {
+			type: "object",
+			properties: {
+				path: { type: "string", description: "Exact task note path." },
+				line: {
+					type: "integer",
+					minimum: 1,
+					maximum: 1_000_000,
+					description: "One-based task line number returned by tasks.",
+				},
+				action: {
+					type: "string",
+					enum: ["toggle", "done", "todo", "status"],
+				},
+				status: {
+					type: "string",
+					minLength: 1,
+					maxLength: 1,
+					description: "Required only when action is status.",
+				},
+			},
+			required: ["path", "line", "action"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "property_set",
+		description:
+			"Set one typed Obsidian property on an exact note. Use a string for text, date, or datetime; an array of strings for list; a number for number; and a boolean for checkbox.",
+		readOnly: false,
+		inputSchema: {
+			type: "object",
+			properties: {
+				path: { type: "string", description: "Exact note path." },
+				name: { type: "string", description: "Exact property name." },
+				type: {
+					type: "string",
+					enum: ["text", "list", "number", "checkbox", "date", "datetime"],
+				},
+				value: {
+					oneOf: [
+						{ type: "string" },
+						{ type: "number" },
+						{ type: "boolean" },
+						{ type: "array", items: { type: "string" }, maxItems: 100 },
+					],
+				},
+			},
+			required: ["path", "name", "type", "value"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "property_remove",
+		description: "Remove one exact Obsidian property from an exact note.",
+		readOnly: false,
+		inputSchema: {
+			type: "object",
+			properties: {
+				path: { type: "string", description: "Exact note path." },
+				name: { type: "string", description: "Exact property name." },
+			},
+			required: ["path", "name"],
+			additionalProperties: false,
+		},
+	},
 	{
 		name: "move_file",
 		description:
@@ -803,6 +933,10 @@ export async function executeObsidianAgentTool(
 			const parsed = obsidianAgentSchemas.create_note.parse(input);
 			return JSON.stringify(await createObsidianNote(vaultName, parsed));
 		}
+		case "base_create": {
+			const parsed = obsidianAgentSchemas.base_create.parse(input);
+			return JSON.stringify(await createObsidianBaseItem(vaultName, parsed));
+		}
 		case "append_note": {
 			const parsed = obsidianAgentSchemas.append_note.parse(input);
 			return JSON.stringify(
@@ -814,6 +948,18 @@ export async function executeObsidianAgentTool(
 			return JSON.stringify(
 				await mutateObsidianNote(vaultName, "prepend", parsed),
 			);
+		}
+		case "task_update": {
+			const parsed = obsidianAgentSchemas.task_update.parse(input);
+			return JSON.stringify(await updateObsidianTask(vaultName, parsed));
+		}
+		case "property_set": {
+			const parsed = obsidianAgentSchemas.property_set.parse(input);
+			return JSON.stringify(await setObsidianProperty(vaultName, parsed));
+		}
+		case "property_remove": {
+			const parsed = obsidianAgentSchemas.property_remove.parse(input);
+			return JSON.stringify(await removeObsidianProperty(vaultName, parsed));
 		}
 		case "move_file": {
 			const parsed = obsidianAgentSchemas.move_file.parse(input);
