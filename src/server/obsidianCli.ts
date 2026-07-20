@@ -15,6 +15,7 @@ export type ObsidianBridgeDependencies = {
 	env?: NodeJS.ProcessEnv;
 	exists?: (path: string) => boolean;
 	run?: ProcessRunner;
+	wait?: (milliseconds: number) => Promise<void>;
 };
 
 export type ObsidianCliStatus = {
@@ -33,6 +34,7 @@ export type ObsidianConnection = {
 
 type ResolvedObsidianCli = ObsidianCliStatus & {
 	executable: string | null;
+	windowsAppExecutable: string | null;
 };
 
 function isWsl(env: NodeJS.ProcessEnv): boolean {
@@ -130,6 +132,10 @@ async function detectObsidianCli(
 					? windowsPathForWsl(windowsExecutable)
 					: windowsExecutable;
 			if (executable && exists(executable)) {
+				const windowsAppExecutable = windowsExecutable?.replace(
+					/Obsidian\.com$/i,
+					"Obsidian.exe",
+				);
 				return {
 					supported: true,
 					installed: true,
@@ -140,6 +146,10 @@ async function detectObsidianCli(
 						? "Obsidian CLI is installed and registered."
 						: "Obsidian CLI is installed. Enable it in Obsidian settings if connection fails.",
 					executable,
+					windowsAppExecutable:
+						windowsAppExecutable !== windowsExecutable
+							? (windowsAppExecutable ?? null)
+							: null,
 				};
 			}
 		} catch {
@@ -154,6 +164,7 @@ async function detectObsidianCli(
 			state: "not_installed",
 			detail: "Obsidian 1.12.7 or newer was not detected on the Windows host.",
 			executable: null,
+			windowsAppExecutable: null,
 		};
 	}
 
@@ -168,6 +179,7 @@ async function detectObsidianCli(
 				state: "available",
 				detail: "Obsidian CLI is installed and registered.",
 				executable,
+				windowsAppExecutable: null,
 			};
 		}
 		return {
@@ -178,6 +190,7 @@ async function detectObsidianCli(
 			state: "not_installed",
 			detail: "Obsidian CLI was not found on this host.",
 			executable: null,
+			windowsAppExecutable: null,
 		};
 	}
 
@@ -189,6 +202,7 @@ async function detectObsidianCli(
 		state: "unsupported",
 		detail: "Obsidian CLI is not supported on this host.",
 		executable: null,
+		windowsAppExecutable: null,
 	};
 }
 
@@ -226,8 +240,11 @@ async function resolveObsidianCli(
 export async function getObsidianCliStatus(
 	dependencies: ObsidianBridgeDependencies = {},
 ): Promise<ObsidianCliStatus> {
-	const { executable: _executable, ...status } =
-		await resolveObsidianCli(dependencies);
+	const {
+		executable: _executable,
+		windowsAppExecutable: _windowsAppExecutable,
+		...status
+	} = await resolveObsidianCli(dependencies);
 	return status;
 }
 
@@ -257,18 +274,59 @@ async function runResolvedObsidianCommand(
 	dependencies: ObsidianBridgeDependencies,
 ): Promise<string> {
 	if (!resolved.executable) throw new Error(resolved.detail);
+	const executable = resolved.executable;
+	const windowsAppExecutable = resolved.windowsAppExecutable;
 	const run = dependencies.run ?? runBoundedProcess;
-	const result = await run(
-		resolved.executable,
-		[targetVaultArgument(vaultName), ...args],
-		{
+	const invoke = () =>
+		run(executable, [targetVaultArgument(vaultName), ...args], {
 			timeoutMs: COMMAND_TIMEOUT_MS,
 			timeoutError: "Obsidian did not respond in time.",
 			maxOutputChars: MAX_COMMAND_OUTPUT_CHARS,
-		},
-	);
-	if (result.code !== 0) {
-		const detail = result.output.trim();
+		});
+	let result = await invoke();
+	if (
+		result.code !== 0 &&
+		windowsAppExecutable &&
+		/unable to find obsidian/i.test(result.output)
+	) {
+		const launched = await run(
+			"powershell.exe",
+			[
+				"-NoLogo",
+				"-NoProfile",
+				"-NonInteractive",
+				"-Command",
+				"& { param([string]$path) Start-Process -FilePath $path }",
+				windowsAppExecutable,
+			],
+			{
+				timeoutMs: DETECTION_TIMEOUT_MS,
+				timeoutError: "Obsidian desktop did not start in time.",
+				maxOutputChars: 16_384,
+			},
+		);
+		if (launched.code !== 0) {
+			throw new Error(
+				launched.output.trim() || "Obsidian desktop could not be started.",
+			);
+		}
+		const wait =
+			dependencies.wait ??
+			((milliseconds: number) =>
+				new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
+		for (let attempt = 0; attempt < 6; attempt++) {
+			await wait(500);
+			result = await invoke();
+			if (
+				result.code === 0 ||
+				!/unable to find obsidian/i.test(result.output)
+			) {
+				break;
+			}
+		}
+	}
+	const detail = result.output.trim();
+	if (result.code !== 0 || /^vault not found\.?$/i.test(detail)) {
 		throw new Error(
 			detail
 				? `Obsidian CLI failed: ${detail}`

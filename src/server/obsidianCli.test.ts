@@ -83,6 +83,17 @@ describe("Obsidian CLI bridge", () => {
 		expect(status.installed).toBe(false);
 	});
 
+	it("treats Obsidian's zero-exit missing-vault response as an error", async () => {
+		const { dependencies } = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "Vault not found.", code: 0 },
+		]);
+
+		await expect(
+			queryObsidianLinks("Missing", { kind: "unresolved" }, dependencies),
+		).rejects.toThrow("Vault not found");
+	});
+
 	it("detects a registered native Unix CLI from PATH", async () => {
 		const status = await getObsidianCliStatus({
 			platform: "darwin",
@@ -195,6 +206,40 @@ describe("Obsidian CLI bridge", () => {
 			"vault",
 			"info=path",
 		]);
+	});
+
+	it("starts the trusted Windows desktop app and retries when the redirector cannot find it", async () => {
+		const { dependencies, run } = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{
+				output:
+					"The CLI is unable to find Obsidian. Please make sure Obsidian is running and try again.",
+				code: 1,
+			},
+			{ output: "", code: 0 },
+			{ output: "1.12.7", code: 0 },
+			{ output: "C:\\Vaults\\Fornbok", code: 0 },
+		]);
+		const wait = vi.fn(async () => {});
+		const retryDependencies = { ...dependencies, wait };
+
+		await expect(
+			testObsidianConnection("Fornbok", retryDependencies),
+		).resolves.toEqual({
+			version: "1.12.7",
+			vaultPath: "C:\\Vaults\\Fornbok",
+		});
+		expect(run.mock.calls[2]?.[0]).toBe("powershell.exe");
+		expect(run.mock.calls[2]?.[1]).toEqual([
+			"-NoLogo",
+			"-NoProfile",
+			"-NonInteractive",
+			"-Command",
+			"& { param([string]$path) Start-Process -FilePath $path }",
+			"C:\\Users\\kyle\\AppData\\Local\\Programs\\Obsidian\\Obsidian.exe",
+		]);
+		expect(wait).toHaveBeenCalledWith(500);
+		expect(run.mock.calls[3]?.[1]).toEqual(["vault=Fornbok", "version"]);
 	});
 
 	it("creates a composer reference without exposing an absolute path", () => {
