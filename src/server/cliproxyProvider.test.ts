@@ -1,6 +1,20 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("@anthropic-ai/claude-agent-sdk", () => ({ query: vi.fn() }));
+vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
+	query: vi.fn(),
+	createSdkMcpServer: vi.fn((options) => ({
+		type: "sdk",
+		name: options.name,
+		instance: { options },
+	})),
+	tool: vi.fn((name, description, inputSchema, handler, extras) => ({
+		name,
+		description,
+		inputSchema,
+		handler,
+		...extras,
+	})),
+}));
 vi.mock("../lib/claudePath", () => ({
 	resolveClaudeExecutable: vi.fn(() => "C:\\claude.exe"),
 }));

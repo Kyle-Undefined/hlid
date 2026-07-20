@@ -14,6 +14,7 @@ export type { Skill } from "./skills";
 export type ProjectNode = {
 	name: string;
 	path: string;
+	vaultRelativePath?: string;
 	isFolder: boolean;
 	content?: string;
 	children?: ProjectNode[];
@@ -21,6 +22,7 @@ export type ProjectNode = {
 
 export type Project = {
 	file: string;
+	vaultRelativePath?: string;
 	title: string;
 	status: ProjectStatus;
 	rawStatus: string;
@@ -344,6 +346,7 @@ export function scanSkills(
 
 export type MemoryFile = {
 	path: string;
+	vaultRelativePath?: string;
 	name: string;
 	content: string;
 };

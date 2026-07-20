@@ -52,6 +52,11 @@ import type {
 } from "./codexProtocol";
 import { bumpDataRevision } from "./dataRevision";
 import { isHtmlPlanPath } from "./htmlPlanPath";
+import {
+	executeObsidianAgentTool,
+	OBSIDIAN_AGENT_NAMESPACE,
+	OBSIDIAN_AGENT_TOOL_SPECS,
+} from "./obsidianAgentTools";
 
 /**
  * Union of the RESPONSE shapes hlid can send back for the server-initiated
@@ -480,6 +485,29 @@ function windowsComputerUseTools(): DynamicToolSpec[] {
 				},
 			],
 		},
+	];
+}
+
+function obsidianTools(): DynamicToolSpec[] {
+	return [
+		{
+			type: "namespace",
+			name: OBSIDIAN_AGENT_NAMESPACE,
+			description: "Read-only access to Hlid's configured Obsidian vault",
+			tools: OBSIDIAN_AGENT_TOOL_SPECS.map((spec) => ({
+				type: "function" as const,
+				name: spec.name,
+				description: spec.description,
+				inputSchema: spec.inputSchema,
+			})),
+		},
+	];
+}
+
+function hlidDynamicTools(computerUseAvailable: boolean): DynamicToolSpec[] {
+	return [
+		...obsidianTools(),
+		...(computerUseAvailable ? windowsComputerUseTools() : []),
 	];
 }
 
@@ -1450,9 +1478,7 @@ class CodexAgentSession implements AgentSession {
 						sandbox: sandboxMode(this.params.permissionMode),
 					}
 				: {}),
-			...(computerUseAvailable
-				? { dynamicTools: windowsComputerUseTools() }
-				: {}),
+			dynamicTools: hlidDynamicTools(computerUseAvailable),
 		};
 		let rawResult: unknown;
 		let replacedMissingRollout = false;
@@ -1809,6 +1835,32 @@ class CodexAgentSession implements AgentSession {
 	private async handleDynamicToolCall(
 		params: Record<string, unknown>,
 	): Promise<DynamicToolCallResponse> {
+		if (params.namespace === OBSIDIAN_AGENT_NAMESPACE) {
+			try {
+				return {
+					success: true,
+					contentItems: [
+						{
+							type: "inputText",
+							text: await executeObsidianAgentTool(
+								String(params.tool ?? ""),
+								params.arguments,
+							),
+						},
+					],
+				};
+			} catch (error) {
+				return {
+					success: false,
+					contentItems: [
+						{
+							type: "inputText",
+							text: error instanceof Error ? error.message : String(error),
+						},
+					],
+				};
+			}
+		}
 		if (
 			params.namespace !== WINDOWS_COMPUTER_USE_NAMESPACE ||
 			params.tool !== WINDOWS_COMPUTER_USE_TOOL

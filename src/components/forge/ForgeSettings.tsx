@@ -12,6 +12,7 @@ import { EventLogSection } from "#/components/forge/EventLogSection";
 import { InstructionFilesSection } from "#/components/forge/InstructionFilesSection";
 import { McpSection } from "#/components/forge/McpSection";
 import { NetworkSection } from "#/components/forge/NetworkSection";
+import { ObsidianSection } from "#/components/forge/ObsidianSection";
 import { PricingSection } from "#/components/forge/PricingSection";
 import { SecuritySection } from "#/components/forge/SecuritySection";
 import { SessionSection } from "#/components/forge/SessionSection";
@@ -46,8 +47,9 @@ const CATEGORIES = [
 		id: "workspace",
 		label: "Workspace",
 		description: "Vault identity, folders, and status vocabulary",
-		sections: ["Vault", "Status Vocabulary"],
-		keywords: "vault identity path folder mappings statuses",
+		sections: ["Vault", "Obsidian desktop", "Status Vocabulary"],
+		keywords:
+			"vault identity path folder mappings statuses obsidian desktop cli active note daily backlinks",
 		group: "primary",
 	},
 	{
@@ -281,6 +283,7 @@ function WorkspaceCategory({ state }: { state: SettingsFormState }) {
 				vault={state.vault}
 				onChange={(patch) => state.setVault((v) => ({ ...v, ...patch }))}
 			/>
+			<ObsidianSection />
 			<VocabSection
 				vocab={state.vocab}
 				onChange={(patch) => state.setVocab((v) => ({ ...v, ...patch }))}

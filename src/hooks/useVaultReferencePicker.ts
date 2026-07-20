@@ -113,12 +113,7 @@ export function useVaultReferencePicker(
 
 	function select(reference: ComposerReferenceItem) {
 		if (reference.source === "vault") {
-			if (selected.length >= MAX_VAULT_REFERENCES) return;
-			setSelected((current) =>
-				current.some((item) => item.relativePath === reference.relativePath)
-					? current
-					: [...current, reference],
-			);
+			addVaultReference(reference);
 		} else {
 			if (selectedRelics.length >= MAX_RELIC_REFERENCES) return;
 			setSelectedRelics((current) =>
@@ -128,6 +123,18 @@ export function useVaultReferencePicker(
 			);
 		}
 		setPrompt(query?.promptWithoutQuery ?? prompt);
+	}
+
+	function addVaultReference(reference: VaultReferenceItem) {
+		setSelected((current) => {
+			if (
+				current.length >= MAX_VAULT_REFERENCES ||
+				current.some((item) => item.relativePath === reference.relativePath)
+			) {
+				return current;
+			}
+			return [...current, reference];
+		});
 	}
 
 	return {
@@ -155,6 +162,7 @@ export function useVaultReferencePicker(
 		})),
 		navigate,
 		select,
+		addVaultReference,
 		close: () => setForceClosed(true),
 		remove: (relativePath: string) =>
 			setSelected((current) =>

@@ -45,6 +45,7 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "1.1.0",
     "@anthropic-ai/claude-agent-sdk": "0.3.196",
+    "@modelcontextprotocol/sdk": "1.29.0",
     "@tanstack/react-router": "1.170.16",
     "@tanstack/react-start": "1.168.26",
     "@tanstack/router-plugin": "1.168.18",

@@ -5,6 +5,7 @@ import { useCopyToClipboard } from "#/hooks/useCopyToClipboard";
 import { CopyButton } from "./CopyButton";
 import type { AssistantMessage } from "./chatReducer";
 import { ReadAloudButton } from "./ReadAloudButton";
+import { SaveToObsidianActions } from "./SaveToObsidianActions";
 import { ToolBlock } from "./ToolBlock";
 
 export function normalizeMd(text: string): string {
@@ -129,6 +130,7 @@ export function AssistantMsg({
 								dbId={message.dbId}
 								className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100"
 							/>
+							<SaveToObsidianActions text={message.text} />
 							{canBranch && message.dbId != null && onBranch && (
 								<button
 									type="button"

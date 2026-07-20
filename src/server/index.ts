@@ -51,6 +51,10 @@ import { migrateLegacyAttachmentsToLibrary } from "./libraryMigration";
 import { getLiveSessionsStatus } from "./liveSessions";
 import { MicrosoftSpeechManager } from "./microsoftSpeech";
 import {
+	INTERNAL_OBSIDIAN_MCP_FLAG,
+	runObsidianMcpServer,
+} from "./obsidianMcpServer";
+import {
 	createModelCatalog,
 	createProviderCatalogSnapshot,
 	type ProviderCatalogSnapshot,
@@ -97,6 +101,11 @@ import {
 	type TerminalWsData,
 } from "./wsHandlers.terminal";
 import { MAX_WS_PAYLOAD_BYTES } from "./wsSchemas";
+
+if (process.argv.includes(INTERNAL_OBSIDIAN_MCP_FLAG)) {
+	await runObsidianMcpServer();
+	process.exit(0);
+}
 
 if (process.argv[2] === "auth" && process.argv[3] === "reset") {
 	await resetAuthentication();

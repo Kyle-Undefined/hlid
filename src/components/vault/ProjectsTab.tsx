@@ -1,6 +1,7 @@
 import { ChevronDown, ChevronRight, Folder } from "lucide-react";
 import { useMemo, useState } from "react";
 import { MarkdownBody } from "#/components/MarkdownBody";
+import { ObsidianOpenButton } from "#/components/ObsidianOpenButton";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import { Section } from "#/components/shell/Section";
 import {
@@ -92,6 +93,13 @@ export function ProjectNodeItem({
 					<PrivacyMask>
 						<MarkdownBody content={node.content} />
 					</PrivacyMask>
+					{node.vaultRelativePath && (
+						<ObsidianOpenButton
+							relativePath={node.vaultRelativePath}
+							labeled
+							className="mt-3 text-[9px] tracking-widest uppercase"
+						/>
+					)}
 				</div>
 			)}
 		</div>
@@ -148,6 +156,13 @@ function ProjectCard({ project }: { project: Project }) {
 						<PrivacyMask>
 							<MarkdownBody content={project.content} />
 						</PrivacyMask>
+						{project.vaultRelativePath && (
+							<ObsidianOpenButton
+								relativePath={project.vaultRelativePath}
+								labeled
+								className="mt-3 text-[9px] tracking-widest uppercase"
+							/>
+						)}
 					</div>
 				</div>
 			)}

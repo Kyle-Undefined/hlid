@@ -94,6 +94,10 @@ describe("vault snapshot", () => {
 		expect(mocks.scanMemory).toHaveBeenCalledTimes(4);
 		expect(mocks.scanFolderGroups).toHaveBeenCalledTimes(2);
 		expect(first.vault.projects[0]?.file).toBe("Projects-1.md");
+		expect(first.vault.projects[0]?.vaultRelativePath).toBe(
+			"Projects/Projects-1.md",
+		);
+		expect(first.vault.memory[0]?.vaultRelativePath).toBe("Memory/Memory.md");
 		expect(first.cockpit).toMatchObject({
 			inboxCount: 2,
 			activeCount: 1,

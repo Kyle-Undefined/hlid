@@ -8,6 +8,7 @@ import {
 	VaultReferencePicker,
 } from "#/components/chat/VaultReferencePicker";
 import { SlashPicker } from "#/components/cockpit/SlashPicker";
+import { ObsidianActiveNoteButton } from "#/components/ObsidianActiveNoteButton";
 import type { useFileUpload } from "#/hooks/useFileUpload";
 import type { useVaultReferencePicker } from "#/hooks/useVaultReferencePicker";
 import type { useVoiceInput } from "#/hooks/useVoiceInput";
@@ -323,6 +324,7 @@ function ComposerToolbar(props: PromptProps) {
 				>
 					<Paperclip className="w-3.5 h-3.5" />
 				</button>
+				<ObsidianActiveNoteButton onAdd={props.vaultPicker.addVaultReference} />
 				<VoiceButton {...props} />
 				<AgentPicker
 					agents={props.agentList}

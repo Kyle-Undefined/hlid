@@ -8,6 +8,18 @@ vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
 	query: vi.fn(),
 	forkSession: vi.fn(),
 	getSessionMessages: vi.fn().mockResolvedValue([]),
+	createSdkMcpServer: vi.fn((options) => ({
+		type: "sdk",
+		name: options.name,
+		instance: { options },
+	})),
+	tool: vi.fn((name, description, inputSchema, handler, extras) => ({
+		name,
+		description,
+		inputSchema,
+		handler,
+		...extras,
+	})),
 }));
 vi.mock("../lib/claudePath", () => ({
 	resolveClaudeExecutable: vi.fn(),
@@ -2498,6 +2510,27 @@ describe("ClaudeProvider — check()", () => {
 // ── Slice B: streaming-input mode ─────────────────────────────────────────────
 
 describe("ClaudeProvider — Slice B streaming-input", () => {
+	it("registers Hlid's read-only Obsidian MCP tools on user sessions", async () => {
+		vi.mocked(query).mockReturnValueOnce(sdkGen([]));
+		const session = new ClaudeProvider().query(baseParams());
+		await session.send("inspect my vault");
+		const options = vi.mocked(query).mock.calls.at(-1)?.[0].options;
+		expect(options?.mcpServers).toMatchObject({
+			hlid_obsidian: { type: "sdk", name: "hlid_obsidian" },
+		});
+		const server = options?.mcpServers?.hlid_obsidian as unknown as {
+			instance: { options: { tools: Array<{ name: string }> } };
+		};
+		expect(server.instance.options.tools.map((item) => item.name)).toEqual([
+			"links",
+			"tasks",
+			"properties",
+			"base_query",
+			"history",
+		]);
+		session.cancel();
+	});
+
 	it("opens SDK query with AsyncIterable prompt (not a string)", async () => {
 		let capturedPrompt: unknown;
 		vi.mocked(query).mockImplementationOnce(

@@ -1,6 +1,7 @@
 import { Folder } from "lucide-react";
 import { useMemo, useState } from "react";
 import { MarkdownBody } from "#/components/MarkdownBody";
+import { ObsidianOpenButton } from "#/components/ObsidianOpenButton";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import { Section } from "#/components/shell/Section";
 import {
@@ -44,6 +45,13 @@ function MemoryCard({ file }: { file: MemoryFile }) {
 						<PrivacyMask>
 							<MarkdownBody content={file.content} />
 						</PrivacyMask>
+						{file.vaultRelativePath && (
+							<ObsidianOpenButton
+								relativePath={file.vaultRelativePath}
+								labeled
+								className="mt-3 text-[9px] tracking-widest uppercase"
+							/>
+						)}
 					</div>
 				</div>
 			)}

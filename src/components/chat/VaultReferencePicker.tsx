@@ -1,5 +1,6 @@
 import { Archive, FileText, X } from "lucide-react";
 import { Fragment, useEffect, useRef } from "react";
+import { ObsidianOpenButton } from "#/components/ObsidianOpenButton";
 import type {
 	ComposerReferenceItem,
 	VaultReferenceItem,
@@ -25,6 +26,7 @@ export function VaultReferenceBadges({
 					<span className="min-w-0 truncate font-mono text-[10px]">
 						@{reference.relativePath}
 					</span>
+					<ObsidianOpenButton relativePath={reference.relativePath} />
 					<button
 						type="button"
 						onClick={() => onRemove(reference.relativePath)}

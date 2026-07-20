@@ -60,6 +60,7 @@ function makeProps(overrides?: Partial<Props>): Props {
 			relicAttachments: [],
 			navigate: vi.fn(),
 			select: vi.fn(),
+			addVaultReference: vi.fn(),
 			close: vi.fn(),
 			remove: vi.fn(),
 			removeRelic: vi.fn(),

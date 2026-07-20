@@ -27,6 +27,9 @@ import type {
 	SlashCommand,
 } from "./agentProvider";
 import { isHtmlPlanPath } from "./htmlPlanPath";
+import { OBSIDIAN_AGENT_NAMESPACE } from "./obsidianAgentTools";
+import { getObsidianCliStatus } from "./obsidianCli";
+import { obsidianMcpProcessCommand } from "./obsidianMcpServer";
 
 export type AcpProviderOptions = {
 	id: string;
@@ -629,7 +632,26 @@ class AcpSession implements AgentSession {
 
 	private async doInitialize(): Promise<void> {
 		if (this.cancelled) return;
-		const providerEnv = await resolveAcpEnv(this.options.env);
+		const [providerEnv, obsidianStatus] = await Promise.all([
+			resolveAcpEnv(this.options.env),
+			getObsidianCliStatus(),
+		]);
+		if (
+			obsidianStatus.installed &&
+			!this.mcpServers.some(
+				(server) => server.name === OBSIDIAN_AGENT_NAMESPACE,
+			)
+		) {
+			this.mcpServers.unshift({
+				name: OBSIDIAN_AGENT_NAMESPACE,
+				...obsidianMcpProcessCommand(),
+			});
+			this.mcpStatuses.unshift({
+				name: OBSIDIAN_AGENT_NAMESPACE,
+				status: "pending",
+				scope: "provider",
+			});
+		}
 		const child = spawn(this.options.command, this.options.args ?? [], {
 			cwd: this.params.cwd,
 			env: { ...process.env, ...providerEnv },

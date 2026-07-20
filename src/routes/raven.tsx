@@ -35,6 +35,7 @@ import {
 } from "#/components/chat/VaultReferencePicker";
 import { SlashPicker } from "#/components/cockpit/SlashPicker";
 import { McpIndicator } from "#/components/McpIndicator";
+import { ObsidianActiveNoteButton } from "#/components/ObsidianActiveNoteButton";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import { TerminalView } from "#/components/TerminalView";
 import { ProviderUsageStrip } from "#/components/usage/ProviderUsageStrip";
@@ -2639,6 +2640,10 @@ function ChatInputControls(props: ChatComposerProps) {
 				>
 					<Paperclip className="w-3.5 h-3.5" />
 				</button>
+				<ObsidianActiveNoteButton
+					onAdd={props.vaultPicker.addVaultReference}
+					className="md:order-3 px-2 py-2 md:py-3 shrink-0"
+				/>
 				<ChatVoiceControls {...props} />
 			</div>
 			<ChatTextarea {...props} />
@@ -2663,7 +2668,7 @@ function ChatVoiceControls({ config, runtime, voice }: ChatComposerProps) {
 					(!voice.ready && voice.phase !== "recording") ||
 					voice.phase === "transcribing"
 				}
-				className={`md:order-3 px-2 py-2 md:py-3 transition-colors shrink-0 disabled:opacity-30 ${voice.phase === "recording" ? "text-destructive" : "text-muted-foreground/45 hover:text-muted-foreground"}`}
+				className={`md:order-4 px-2 py-2 md:py-3 transition-colors shrink-0 disabled:opacity-30 ${voice.phase === "recording" ? "text-destructive" : "text-muted-foreground/45 hover:text-muted-foreground"}`}
 				aria-label={
 					voice.phase === "recording" ? "Stop recording" : "Start voice input"
 				}

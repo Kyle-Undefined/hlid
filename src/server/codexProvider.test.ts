@@ -3,6 +3,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("node:child_process", () => ({ spawn: vi.fn() }));
 vi.mock("../lib/codexPath", () => ({ resolveCodexExecutable: vi.fn() }));
+vi.mock("./obsidianAgentTools", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./obsidianAgentTools")>();
+	return { ...actual, executeObsidianAgentTool: vi.fn() };
+});
 
 import { spawn } from "node:child_process";
 import { resolveCodexExecutable } from "../lib/codexPath";
@@ -33,6 +37,7 @@ import {
 	windowsComputerUseHostAvailable,
 	windowsComputerUseModel,
 } from "./codexProvider";
+import { executeObsidianAgentTool } from "./obsidianAgentTools";
 
 // ── fetchCodexModels test helpers ──────────────────────────────────────────
 
@@ -1032,6 +1037,7 @@ describe("CodexAgentSession — commands", () => {
 	beforeEach(() => {
 		__resetCodexAppServersForTesting();
 		__resetCodexHostCapabilitiesForTesting();
+		vi.mocked(executeObsidianAgentTool).mockResolvedValue("obsidian result");
 	});
 
 	it("advertises Hlid review beside provider-discovered skills", async () => {
@@ -1165,23 +1171,64 @@ describe("CodexAgentSession — commands", () => {
 				action: "computer-use",
 			});
 			await session.send("hello");
-			expect(threadStartParams(writes)[0].dynamicTools).toEqual([
-				expect.objectContaining({
-					type: "namespace",
-					name: "hlid",
-					tools: [
-						expect.objectContaining({
-							type: "function",
-							name: "windows_computer_use",
-						}),
-					],
-				}),
-			]);
+			expect(threadStartParams(writes)[0].dynamicTools).toEqual(
+				expect.arrayContaining([
+					expect.objectContaining({
+						type: "namespace",
+						name: "hlid",
+						tools: [
+							expect.objectContaining({
+								type: "function",
+								name: "windows_computer_use",
+							}),
+						],
+					}),
+				]),
+			);
 			session.cancel();
 		} finally {
 			vi.unstubAllEnvs();
 			platform.mockRestore();
 		}
+	});
+
+	it("executes an Obsidian dynamic tool through Hlid's shared handler", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(baseCodexParams());
+		await session.send("inspect backlinks");
+		proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: 92,
+					method: "item/tool/call",
+					params: {
+						threadId: "thread-1",
+						callId: "obsidian-1",
+						namespace: "hlid_obsidian",
+						tool: "links",
+						arguments: { kind: "backlinks", path: "Notes/One.md" },
+					},
+				})}\n`,
+			),
+		);
+		await vi.waitFor(() =>
+			expect(
+				writes
+					.map((line) => JSON.parse(line))
+					.find((message) => message.id === 92)?.result,
+			).toMatchObject({
+				success: true,
+				contentItems: [{ type: "inputText", text: "obsidian result" }],
+			}),
+		);
+		expect(executeObsidianAgentTool).toHaveBeenCalledWith("links", {
+			kind: "backlinks",
+			path: "Notes/One.md",
+		});
+		session.cancel();
 	});
 
 	it("runs Hlid-owned Computer Use workers as ephemeral native threads", async () => {

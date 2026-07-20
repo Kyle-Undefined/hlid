@@ -85,6 +85,63 @@ export type VaultSnapshotData = {
 	cockpit: ReturnType<typeof collectCockpitData>;
 };
 
+function portableVaultPath(...parts: Array<string | undefined>): string {
+	return parts
+		.filter((part): part is string => Boolean(part))
+		.flatMap((part) => part.split(/[\\/]+/))
+		.filter(Boolean)
+		.join("/");
+}
+
+function withNodeVaultPaths(
+	nodes: Project["children"],
+	prefix: string,
+): Project["children"] {
+	return nodes?.map((node) => ({
+		...node,
+		vaultRelativePath: portableVaultPath(prefix, node.path),
+		children: withNodeVaultPaths(node.children, prefix),
+	}));
+}
+
+function withProjectVaultPaths(
+	projects: Project[],
+	folder: string | undefined,
+): Project[] {
+	if (!folder) return projects;
+	return projects.map((project) => ({
+		...project,
+		vaultRelativePath: portableVaultPath(folder, project.file),
+		children: withNodeVaultPaths(project.children, folder),
+	}));
+}
+
+function withMemoryVaultPaths(
+	files: MemoryFile[],
+	folder: string | undefined,
+): MemoryFile[] {
+	if (!folder) return files;
+	return files.map((file) => ({
+		...file,
+		vaultRelativePath: portableVaultPath(folder, file.path),
+	}));
+}
+
+function withGroupVaultPaths(
+	groups: FolderGroup[],
+	folder: string | undefined,
+): FolderGroup[] {
+	if (!folder) return groups;
+	return groups.map((group) => ({
+		...group,
+		children:
+			withNodeVaultPaths(
+				group.children,
+				portableVaultPath(folder, group.name),
+			) ?? [],
+	}));
+}
+
 function configuredVaultTabs(vault: HlidConfig["vault"]) {
 	const order = vault.style === "wiki" ? WIKI_ORDER : PARA_ORDER;
 	return order
@@ -123,17 +180,13 @@ export function buildSnapshotData(config: HlidConfig): VaultSnapshotData {
 	const { vault, status_vocabulary: vocab } = config;
 	const scanProjectFolder = (root: string, folder: string) =>
 		scanProjects(root, folder, vocab);
-	const projects = scanConfiguredFolder(
-		vault,
-		"projects",
-		scanProjectFolder,
-		[],
+	const projects = withProjectVaultPaths(
+		scanConfiguredFolder(vault, "projects", scanProjectFolder, []),
+		vault.projects,
 	);
-	const wikiPages = scanConfiguredFolder(
-		vault,
-		"wiki_folder",
-		scanProjectFolder,
-		[],
+	const wikiPages = withProjectVaultPaths(
+		scanConfiguredFolder(vault, "wiki_folder", scanProjectFolder, []),
+		vault.wiki_folder,
 	);
 	const { skills, sectionOrder } = scanConfiguredFolder(
 		vault,
@@ -141,18 +194,34 @@ export function buildSnapshotData(config: HlidConfig): VaultSnapshotData {
 		(root, folder) => scanSkills(root, folder, config.ui.hide_skills_index),
 		{ skills: [], sectionOrder: [] },
 	);
-	const memory = scanConfiguredFolder(vault, "memory", scanMemory, []);
-	const inbox = scanConfiguredFolder(vault, "inbox", scanMemory, []);
-	const raw = scanConfiguredFolder(vault, "raw", scanMemory, []);
-	const areas = scanConfiguredFolder(vault, "areas", scanFolderGroups, []);
-	const resources = scanConfiguredFolder(
-		vault,
-		"resources",
-		scanFolderGroups,
-		[],
+	const memory = withMemoryVaultPaths(
+		scanConfiguredFolder(vault, "memory", scanMemory, []),
+		vault.memory,
 	);
-	const archive = scanConfiguredFolder(vault, "archive", scanProjectFolder, []);
-	const outputs = scanConfiguredFolder(vault, "outputs", scanMemory, []);
+	const inbox = withMemoryVaultPaths(
+		scanConfiguredFolder(vault, "inbox", scanMemory, []),
+		vault.inbox,
+	);
+	const raw = withMemoryVaultPaths(
+		scanConfiguredFolder(vault, "raw", scanMemory, []),
+		vault.raw,
+	);
+	const areas = withGroupVaultPaths(
+		scanConfiguredFolder(vault, "areas", scanFolderGroups, []),
+		vault.areas,
+	);
+	const resources = withGroupVaultPaths(
+		scanConfiguredFolder(vault, "resources", scanFolderGroups, []),
+		vault.resources,
+	);
+	const archive = withProjectVaultPaths(
+		scanConfiguredFolder(vault, "archive", scanProjectFolder, []),
+		vault.archive,
+	);
+	const outputs = withMemoryVaultPaths(
+		scanConfiguredFolder(vault, "outputs", scanMemory, []),
+		vault.outputs,
+	);
 	const { skills: claudeSkills } = scanSkills(CLAUDE_SKILLS_DIR, ".", false);
 	const { skills: managedSkills } = scanSkills(
 		managedSkillsDirectory(),

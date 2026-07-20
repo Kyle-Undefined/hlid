@@ -6,9 +6,11 @@ import type {
 	PermissionMode as SdkPermissionMode,
 } from "@anthropic-ai/claude-agent-sdk";
 import {
+	createSdkMcpServer,
 	forkSession as forkClaudeSession,
 	getSessionMessages as getSdkSessionMessages,
 	query,
+	tool,
 } from "@anthropic-ai/claude-agent-sdk";
 import { resolveClaudeExecutable } from "../lib/claudePath";
 import { parseWslUnc } from "../lib/paths";
@@ -32,6 +34,12 @@ import type {
 	SubagentSnapshot,
 } from "./agentProvider";
 import { createClaudeHistorySessionStore } from "./claudeHistorySessionStore";
+import {
+	executeObsidianAgentTool,
+	OBSIDIAN_AGENT_NAMESPACE,
+	OBSIDIAN_AGENT_TOOL_SPECS,
+	obsidianAgentSchemas,
+} from "./obsidianAgentTools";
 
 /**
  * Permission modes hlid's AgentQueryParams/agent-agnostic layer knows about.
@@ -60,6 +68,53 @@ function effectiveSdkPermissionMode(
 }
 
 type SdkQuery = ReturnType<typeof query>;
+
+function createObsidianSdkServer() {
+	return createSdkMcpServer({
+		name: OBSIDIAN_AGENT_NAMESPACE,
+		version: "1",
+		instructions:
+			"Read-only access to Obsidian's indexed view of Hlid's configured vault. Prefer these tools for backlinks, tasks, properties, Bases, and file history. They cannot modify vault data.",
+		tools: OBSIDIAN_AGENT_TOOL_SPECS.map((spec) =>
+			tool(
+				spec.name,
+				spec.description,
+				// biome-ignore lint/suspicious/noExplicitAny: the SDK accepts the Zod shape for each discriminated tool, while map() widens it to their union.
+				obsidianAgentSchemas[spec.name].shape as any,
+				async (input) => {
+					try {
+						return {
+							content: [
+								{
+									type: "text" as const,
+									text: await executeObsidianAgentTool(spec.name, input),
+								},
+							],
+						};
+					} catch (error) {
+						return {
+							isError: true,
+							content: [
+								{
+									type: "text" as const,
+									text: error instanceof Error ? error.message : String(error),
+								},
+							],
+						};
+					}
+				},
+				{
+					annotations: {
+						readOnlyHint: true,
+						destructiveHint: false,
+						idempotentHint: true,
+					},
+					alwaysLoad: true,
+				},
+			),
+		),
+	});
+}
 
 type ClaudeUsageWindow = {
 	utilization: number | null;
@@ -1707,6 +1762,9 @@ export class ClaudeProvider implements AgentProvider {
 				prompt: input as unknown as Parameters<typeof query>[0]["prompt"],
 				options: {
 					cwd: params.cwd,
+					mcpServers: {
+						[OBSIDIAN_AGENT_NAMESPACE]: createObsidianSdkServer(),
+					},
 					...(params.additionalDirectories?.length
 						? { additionalDirectories: params.additionalDirectories }
 						: {}),
