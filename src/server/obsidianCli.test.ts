@@ -7,9 +7,11 @@ import {
 	obsidianReferenceItem,
 	openObsidianNote,
 	queryObsidianBase,
+	queryObsidianCurrentNote,
 	queryObsidianHistory,
 	queryObsidianLinks,
 	queryObsidianProperties,
+	queryObsidianSearch,
 	queryObsidianTasks,
 	testObsidianConnection,
 } from "./obsidianCli";
@@ -286,6 +288,115 @@ describe("Obsidian CLI bridge", () => {
 		]);
 	});
 
+	it("maps bounded vault search to indexed path, context, and count commands", async () => {
+		const paths = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "[]", code: 0 },
+		]);
+		await queryObsidianSearch(
+			"Fornbok",
+			{
+				query: "project ship",
+				path: "1 Projects",
+				caseSensitive: true,
+			},
+			paths.dependencies,
+		);
+		expect(paths.run.mock.calls[1]?.[1]).toEqual([
+			"vault=Fornbok",
+			"search",
+			"query=project ship",
+			"path=1 Projects",
+			"case",
+			"format=json",
+		]);
+
+		const context = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "1 Projects/Hlid.md:8: project ship", code: 0 },
+		]);
+		await queryObsidianSearch(
+			"Fornbok",
+			{ query: "project ship", context: true },
+			context.dependencies,
+		);
+		expect(context.run.mock.calls[1]?.[1]).toEqual([
+			"vault=Fornbok",
+			"search:context",
+			"query=project ship",
+		]);
+
+		const total = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "12", code: 0 },
+		]);
+		await queryObsidianSearch(
+			"Fornbok",
+			{ query: "project ship", context: true, countOnly: true },
+			total.dependencies,
+		);
+		expect(total.run.mock.calls[1]?.[1]).toEqual([
+			"vault=Fornbok",
+			"search",
+			"query=project ship",
+			"total",
+		]);
+	});
+
+	it("maps current-note reads, outlines, and metadata without a file path", async () => {
+		const read = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "# Current", code: 0 },
+		]);
+		await queryObsidianCurrentNote(
+			"Fornbok",
+			{ action: "read" },
+			read.dependencies,
+		);
+		expect(read.run.mock.calls[1]?.[1]).toEqual(["vault=Fornbok", "read"]);
+
+		const outline = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "[]", code: 0 },
+		]);
+		await queryObsidianCurrentNote(
+			"Fornbok",
+			{ action: "outline" },
+			outline.dependencies,
+		);
+		expect(outline.run.mock.calls[1]?.[1]).toEqual([
+			"vault=Fornbok",
+			"outline",
+			"format=json",
+		]);
+
+		const total = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "4", code: 0 },
+		]);
+		await queryObsidianCurrentNote(
+			"Fornbok",
+			{ action: "outline", countOnly: true },
+			total.dependencies,
+		);
+		expect(total.run.mock.calls[1]?.[1]).toEqual([
+			"vault=Fornbok",
+			"outline",
+			"total",
+		]);
+
+		const info = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "path Notes/Current.md", code: 0 },
+		]);
+		await queryObsidianCurrentNote(
+			"Fornbok",
+			{ action: "info" },
+			info.dependencies,
+		);
+		expect(info.run.mock.calls[1]?.[1]).toEqual(["vault=Fornbok", "file"]);
+	});
+
 	it("maps task and property queries to structured output", async () => {
 		const tasks = wslDependencies([
 			{ output: windowsDetection, code: 0 },
@@ -425,6 +536,14 @@ describe("Obsidian CLI bridge", () => {
 				dependencies,
 			),
 		).rejects.toThrow("inside the configured vault");
+		expect(run).not.toHaveBeenCalled();
+	});
+
+	it("rejects unsafe search input before launching Obsidian", async () => {
+		const { dependencies, run } = wslDependencies([]);
+		await expect(
+			queryObsidianSearch("Fornbok", { query: "one\ntwo" }, dependencies),
+		).rejects.toThrow("search query is invalid");
 		expect(run).not.toHaveBeenCalled();
 	});
 });

@@ -1214,6 +1214,15 @@ describe("CodexAgentSession — commands", () => {
 			limit: { type: "integer", minimum: 1, maximum: 200 },
 			countOnly: { type: "boolean" },
 		});
+		expect(
+			obsidianNamespace?.tools.find((tool) => tool.name === "search")
+				?.inputSchema.properties,
+		).toMatchObject({
+			query: { type: "string" },
+			context: { type: "boolean" },
+			limit: { type: "integer", minimum: 1, maximum: 200 },
+			countOnly: { type: "boolean" },
+		});
 		proc.stdout.emit(
 			"data",
 			Buffer.from(

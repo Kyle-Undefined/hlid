@@ -3,9 +3,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const bridge = vi.hoisted(() => ({
 	MAX_OBSIDIAN_AGENT_OUTPUT_CHARS: 120_000,
 	queryObsidianBase: vi.fn(),
+	queryObsidianCurrentNote: vi.fn(),
 	queryObsidianHistory: vi.fn(),
 	queryObsidianLinks: vi.fn(),
 	queryObsidianProperties: vi.fn(),
+	queryObsidianSearch: vi.fn(),
 	queryObsidianTasks: vi.fn(),
 }));
 
@@ -27,8 +29,10 @@ describe("Obsidian agent tools", () => {
 		}
 	});
 
-	it("publishes only the five curated read-only capabilities", () => {
+	it("publishes only the seven curated read-only capabilities", () => {
 		expect(OBSIDIAN_AGENT_TOOL_SPECS.map((tool) => tool.name)).toEqual([
+			"search",
+			"current_note",
 			"links",
 			"tasks",
 			"properties",
@@ -49,6 +53,75 @@ describe("Obsidian agent tools", () => {
 				countOnly: { type: "boolean" },
 			});
 		}
+	});
+
+	it("searches indexed vault text with bounded path and context results", async () => {
+		bridge.queryObsidianSearch.mockResolvedValueOnce(
+			"Notes/One.md:4: ship it\nNotes/Two.md:9: ship it",
+		);
+		const output = JSON.parse(
+			await executeObsidianAgentTool("search", {
+				query: "ship it",
+				path: "Notes",
+				context: true,
+				limit: 1,
+			}),
+		);
+
+		expect(output).toMatchObject({
+			sourceFormat: "text",
+			total: 2,
+			returned: 1,
+			truncated: true,
+			data: ["Notes/One.md:4: ship it"],
+		});
+		expect(bridge.queryObsidianSearch).toHaveBeenCalledWith("Fornbok", {
+			query: "ship it",
+			path: "Notes",
+			context: true,
+			limit: 1,
+		});
+	});
+
+	it("reads and outlines the note currently active in Obsidian", async () => {
+		bridge.queryObsidianCurrentNote.mockResolvedValueOnce("# One\nBody");
+		const note = JSON.parse(
+			await executeObsidianAgentTool("current_note", {
+				action: "read",
+				limit: 1,
+			}),
+		);
+		expect(note).toMatchObject({
+			sourceFormat: "text",
+			total: 2,
+			returned: 1,
+			truncated: true,
+			data: ["# One"],
+		});
+
+		bridge.queryObsidianCurrentNote.mockResolvedValueOnce(
+			JSON.stringify([{ heading: "One", level: 1 }]),
+		);
+		const outline = JSON.parse(
+			await executeObsidianAgentTool("current_note", { action: "outline" }),
+		);
+		expect(outline).toMatchObject({
+			sourceFormat: "json",
+			total: 1,
+			returned: 1,
+			data: [{ heading: "One", level: 1 }],
+		});
+	});
+
+	it("does not mistake numeric current-note content for a native count", async () => {
+		bridge.queryObsidianCurrentNote.mockResolvedValueOnce("123");
+		const output = JSON.parse(
+			await executeObsidianAgentTool("current_note", {
+				action: "read",
+				countOnly: true,
+			}),
+		);
+		expect(output).toMatchObject({ total: 1, returned: 0, countOnly: true });
 	});
 
 	it("validates and dispatches a graph query to the configured vault", async () => {

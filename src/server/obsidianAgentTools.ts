@@ -3,9 +3,11 @@ import { loadConfig } from "./config";
 import {
 	MAX_OBSIDIAN_AGENT_OUTPUT_CHARS,
 	queryObsidianBase,
+	queryObsidianCurrentNote,
 	queryObsidianHistory,
 	queryObsidianLinks,
 	queryObsidianProperties,
+	queryObsidianSearch,
 	queryObsidianTasks,
 } from "./obsidianCli";
 
@@ -16,6 +18,19 @@ const resultLimit = z.number().int().min(1).max(200).optional();
 const countOnly = z.boolean().optional();
 
 export const obsidianAgentSchemas = {
+	search: z.object({
+		query: z.string().trim().min(1).max(4_096),
+		path: vaultPath.optional(),
+		caseSensitive: z.boolean().optional(),
+		context: z.boolean().optional(),
+		limit: resultLimit,
+		countOnly,
+	}),
+	current_note: z.object({
+		action: z.enum(["read", "outline", "info"]),
+		limit: resultLimit,
+		countOnly,
+	}),
 	links: z.object({
 		kind: z.enum([
 			"backlinks",
@@ -101,6 +116,53 @@ const budgetSchemaProperties: Record<string, JsonValue> = {
 };
 
 export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
+	{
+		name: "search",
+		description:
+			"Search the configured Obsidian vault by indexed text. Can return matching note paths, matching lines with context, or only the matching file count. Returns a bounded JSON envelope.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				query: {
+					type: "string",
+					description: "Obsidian search query.",
+				},
+				path: {
+					type: "string",
+					description: "Optional vault-relative folder to search within.",
+				},
+				caseSensitive: {
+					type: "boolean",
+					description: "Match letter case exactly.",
+				},
+				context: {
+					type: "boolean",
+					description:
+						"Include matching line numbers and text instead of returning only note paths.",
+				},
+				...budgetSchemaProperties,
+			},
+			required: ["query"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "current_note",
+		description:
+			"Inspect the note currently active in Obsidian. Read its content, return its heading outline, or show file metadata. Returns a bounded JSON envelope.",
+		inputSchema: {
+			type: "object",
+			properties: {
+				action: {
+					type: "string",
+					enum: ["read", "outline", "info"],
+				},
+				...budgetSchemaProperties,
+			},
+			required: ["action"],
+			additionalProperties: false,
+		},
+	},
 	{
 		name: "links",
 		description:
@@ -221,6 +283,7 @@ type BudgetOptions = {
 	limit?: number;
 	countOnly?: boolean;
 	expectedJson: boolean;
+	nativeCountOnly?: boolean;
 };
 
 type ResultEnvelope = {
@@ -318,7 +381,9 @@ function textEnvelope(output: string, options: BudgetOptions): string {
 	const lines = output ? output.split(/\r?\n/) : [];
 	const total = lines.length;
 	if (options.countOnly) {
-		const nativeTotal = Number(output.trim());
+		const nativeTotal = options.nativeCountOnly
+			? Number(output.trim())
+			: Number.NaN;
 		return JSON.stringify({
 			sourceFormat: "text",
 			total:
@@ -346,7 +411,7 @@ function budgetObsidianAgentOutput(
 ): string {
 	const trimmed = output.trim();
 	if (!trimmed) return textEnvelope("", options);
-	if (options.countOnly && /^\d+$/.test(trimmed)) {
+	if (options.countOnly && options.nativeCountOnly && /^\d+$/.test(trimmed)) {
 		return textEnvelope(trimmed, options);
 	}
 	try {
@@ -378,9 +443,32 @@ export async function executeObsidianAgentTool(
 				await queryObsidianLinks(vaultName, parsed),
 				{
 					...parsed,
+					nativeCountOnly: parsed.countOnly,
 					expectedJson:
 						!parsed.countOnly &&
 						(parsed.kind === "backlinks" || parsed.kind === "unresolved"),
+				},
+			);
+		}
+		case "search": {
+			const parsed = obsidianAgentSchemas.search.parse(input);
+			return budgetObsidianAgentOutput(
+				await queryObsidianSearch(vaultName, parsed),
+				{
+					...parsed,
+					nativeCountOnly: parsed.countOnly,
+					expectedJson: !parsed.context && !parsed.countOnly,
+				},
+			);
+		}
+		case "current_note": {
+			const parsed = obsidianAgentSchemas.current_note.parse(input);
+			return budgetObsidianAgentOutput(
+				await queryObsidianCurrentNote(vaultName, parsed),
+				{
+					...parsed,
+					nativeCountOnly: parsed.countOnly && parsed.action === "outline",
+					expectedJson: parsed.action === "outline" && !parsed.countOnly,
 				},
 			);
 		}
@@ -388,14 +476,22 @@ export async function executeObsidianAgentTool(
 			const parsed = obsidianAgentSchemas.tasks.parse(input);
 			return budgetObsidianAgentOutput(
 				await queryObsidianTasks(vaultName, parsed),
-				{ ...parsed, expectedJson: !parsed.countOnly },
+				{
+					...parsed,
+					expectedJson: !parsed.countOnly,
+					nativeCountOnly: parsed.countOnly,
+				},
 			);
 		}
 		case "properties": {
 			const parsed = obsidianAgentSchemas.properties.parse(input);
 			return budgetObsidianAgentOutput(
 				await queryObsidianProperties(vaultName, parsed),
-				{ ...parsed, expectedJson: !parsed.countOnly },
+				{
+					...parsed,
+					expectedJson: !parsed.countOnly,
+					nativeCountOnly: parsed.countOnly,
+				},
 			);
 		}
 		case "base_query": {

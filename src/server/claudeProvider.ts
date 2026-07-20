@@ -74,7 +74,7 @@ function createObsidianSdkServer() {
 		name: OBSIDIAN_AGENT_NAMESPACE,
 		version: "1",
 		instructions:
-			"Read-only access to Obsidian's indexed view of Hlid's configured vault. Prefer these tools for backlinks, tasks, properties, Bases, and file history. They cannot modify vault data.",
+			"Read-only access to Obsidian's indexed view of Hlid's configured vault. Prefer these tools for vault search, the current note, backlinks, tasks, properties, Bases, and file history. They cannot modify vault data.",
 		tools: OBSIDIAN_AGENT_TOOL_SPECS.map((spec) =>
 			tool(
 				spec.name,

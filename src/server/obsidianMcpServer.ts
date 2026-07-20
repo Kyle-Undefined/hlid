@@ -54,7 +54,7 @@ export async function runObsidianMcpServer(): Promise<void> {
 		{ name: OBSIDIAN_AGENT_NAMESPACE, version: "1" },
 		{
 			instructions:
-				"Read-only access to Obsidian's indexed view of Hlid's configured vault. These tools cannot modify vault data.",
+				"Read-only access to Obsidian's indexed view of Hlid's configured vault, including search and the current note. These tools cannot modify vault data.",
 		},
 	);
 	for (const spec of OBSIDIAN_AGENT_TOOL_SPECS) {

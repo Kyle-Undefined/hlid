@@ -2529,6 +2529,8 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 			};
 		};
 		expect(server.instance.options.tools.map((item) => item.name)).toEqual([
+			"search",
+			"current_note",
 			"links",
 			"tasks",
 			"properties",

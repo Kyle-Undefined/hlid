@@ -377,6 +377,37 @@ export type ObsidianLinksQuery = {
 	countOnly?: boolean;
 };
 
+export type ObsidianSearchQuery = {
+	query: string;
+	path?: string;
+	caseSensitive?: boolean;
+	context?: boolean;
+	countOnly?: boolean;
+};
+
+export async function queryObsidianSearch(
+	vaultName: string,
+	query: ObsidianSearchQuery,
+	dependencies: ObsidianBridgeDependencies = {},
+): Promise<string> {
+	const searchQuery = query.query.trim();
+	if (
+		!searchQuery ||
+		searchQuery.length > 4_096 ||
+		/[\r\n\0]/.test(searchQuery)
+	) {
+		throw new Error("Obsidian search query is invalid.");
+	}
+	const args = [
+		query.context && !query.countOnly ? "search:context" : "search",
+		`query=${searchQuery}`,
+		...optionalPathArgument(query.path),
+		...(query.caseSensitive ? ["case"] : []),
+		...(query.countOnly ? ["total"] : query.context ? [] : ["format=json"]),
+	];
+	return runObsidianCommand(vaultName, args, dependencies);
+}
+
 export async function queryObsidianLinks(
 	vaultName: string,
 	query: ObsidianLinksQuery,
@@ -550,6 +581,31 @@ export async function queryObsidianHistory(
 					? [`filter=${query.filter}`]
 					: []),
 			];
+			break;
+	}
+	return runObsidianCommand(vaultName, args, dependencies);
+}
+
+export type ObsidianCurrentNoteQuery = {
+	action: "read" | "outline" | "info";
+	countOnly?: boolean;
+};
+
+export async function queryObsidianCurrentNote(
+	vaultName: string,
+	query: ObsidianCurrentNoteQuery,
+	dependencies: ObsidianBridgeDependencies = {},
+): Promise<string> {
+	let args: string[];
+	switch (query.action) {
+		case "read":
+			args = ["read"];
+			break;
+		case "outline":
+			args = ["outline", ...(query.countOnly ? ["total"] : ["format=json"])];
+			break;
+		case "info":
+			args = ["file"];
 			break;
 	}
 	return runObsidianCommand(vaultName, args, dependencies);
