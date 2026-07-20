@@ -18,6 +18,7 @@ const BASE = {
 	outputs: "outputs",
 	skills: "skills",
 	memory: "memory",
+	saveToObsidianTemplate: "Capture",
 };
 
 // ── para style ────────────────────────────────────────────────────────────────
@@ -49,6 +50,20 @@ describe("buildVaultSection — para style", () => {
 		const s = buildVaultSection({ ...BASE, style: "para" });
 		expect(s.skills).toBe("skills");
 		expect(s.memory).toBe("memory");
+	});
+
+	it("preserves the optional Obsidian save template", () => {
+		const s = buildVaultSection({ ...BASE, style: "para" });
+		expect(s.save_to_obsidian_template).toBe("Capture");
+	});
+
+	it("omits an empty Obsidian save template", () => {
+		const s = buildVaultSection({
+			...BASE,
+			style: "para",
+			saveToObsidianTemplate: "",
+		});
+		expect(s.save_to_obsidian_template).toBeUndefined();
 	});
 
 	it("empty string para fields become undefined", () => {

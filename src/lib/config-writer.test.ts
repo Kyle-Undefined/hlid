@@ -81,6 +81,7 @@ describe("writeConfig — persistence invariants", () => {
 				name: "Round trip",
 				path: "/vault",
 				style: "wiki",
+				save_to_obsidian_template: "Quick Capture",
 				delete_vault_attachments: true,
 			},
 			attachments: {
@@ -258,6 +259,7 @@ describe("writeConfig — vault section", () => {
 					projects: "projects",
 					skills: "skills",
 					memory: "memory",
+					save_to_obsidian_template: "Quick Capture",
 					delete_vault_attachments: false,
 				},
 			}),
@@ -268,6 +270,7 @@ describe("writeConfig — vault section", () => {
 		expect(toml).toContain('projects = "projects"');
 		expect(toml).toContain('skills = "skills"');
 		expect(toml).toContain('memory = "memory"');
+		expect(toml).toContain('save_to_obsidian_template = "Quick Capture"');
 		expect(toml).toContain("delete_vault_attachments = false");
 	});
 
@@ -277,6 +280,7 @@ describe("writeConfig — vault section", () => {
 		expect(toml).not.toMatch(/^inbox\s*=/m);
 		expect(toml).not.toMatch(/^projects\s*=/m);
 		expect(toml).not.toMatch(/^style\s*=/m);
+		expect(toml).not.toMatch(/^save_to_obsidian_template\s*=/m);
 	});
 });
 

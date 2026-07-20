@@ -1,5 +1,6 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
+import { parseObsidianTemplateNames } from "#/lib/obsidianTemplates";
 
 const relativePathSchema = z.string().trim().min(1).max(4_096);
 
@@ -40,6 +41,21 @@ export const testObsidianConnectionFn = createServerFn({
 		import("#/server/obsidianCli"),
 	]);
 	return testObsidianConnection(loadConfig().vault.name);
+});
+
+export const listObsidianTemplatesFn = createServerFn({
+	method: "GET",
+}).handler(async () => {
+	const [{ loadConfig }, { listObsidianTemplates }] = await Promise.all([
+		import("#/server/config"),
+		import("#/server/obsidianCli"),
+	]);
+	const config = loadConfig();
+	const output = await listObsidianTemplates(config.vault.name);
+	return {
+		vaultName: config.vault.name,
+		templates: parseObsidianTemplateNames(output),
+	};
 });
 
 export const getActiveObsidianNoteFn = createServerFn({

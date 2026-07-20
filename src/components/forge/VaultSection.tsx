@@ -1,4 +1,6 @@
+import { useCallback, useEffect, useRef, useState } from "react";
 import { RelativeFolderField } from "#/components/wizard/RelativeFolderField";
+import { listObsidianTemplatesFn } from "#/lib/serverFns/obsidian";
 import { Field, PathField, Section, TextInput } from "./fields";
 
 export type VaultForm = {
@@ -15,7 +17,11 @@ export type VaultForm = {
 	outputs: string;
 	skills: string;
 	memory: string;
+	saveToObsidianTemplate: string;
 };
+
+const selectClass =
+	"w-32 sm:w-48 bg-secondary border border-border px-2.5 py-1.5 text-sm text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer disabled:cursor-default disabled:opacity-60";
 
 export function VaultSection({
 	vault,
@@ -24,6 +30,44 @@ export function VaultSection({
 	vault: VaultForm;
 	onChange: (patch: Partial<VaultForm>) => void;
 }) {
+	const [templates, setTemplates] = useState<string[]>([]);
+	const [templatesLoading, setTemplatesLoading] = useState(true);
+	const [templatesError, setTemplatesError] = useState<string | null>(null);
+	const requestId = useRef(0);
+
+	const refreshTemplates = useCallback(async () => {
+		const currentRequest = ++requestId.current;
+		setTemplatesLoading(true);
+		setTemplatesError(null);
+		try {
+			const result = await listObsidianTemplatesFn();
+			if (requestId.current === currentRequest) {
+				setTemplates(result.templates);
+			}
+		} catch (cause) {
+			if (requestId.current === currentRequest) {
+				setTemplatesError(
+					cause instanceof Error
+						? cause.message
+						: "Could not load Obsidian templates",
+				);
+			}
+		} finally {
+			if (requestId.current === currentRequest) setTemplatesLoading(false);
+		}
+	}, []);
+
+	useEffect(() => {
+		void refreshTemplates();
+		return () => {
+			requestId.current += 1;
+		};
+	}, [refreshTemplates]);
+
+	const selectedTemplateMissing =
+		vault.saveToObsidianTemplate !== "" &&
+		!templates.includes(vault.saveToObsidianTemplate);
+
 	return (
 		<Section title="Vault">
 			<div className="px-4 py-3 space-y-2">
@@ -78,6 +122,46 @@ export function VaultSection({
 			<Field label="Path">
 				<PathField value={vault.path} onChange={(v) => onChange({ path: v })} />
 			</Field>
+			<Field
+				label="Save to Obsidian Template"
+				hint="optional template for new notes saved to Inbox or Raw"
+			>
+				<div className="flex items-center gap-2">
+					<select
+						value={vault.saveToObsidianTemplate}
+						onChange={(event) =>
+							onChange({ saveToObsidianTemplate: event.target.value })
+						}
+						className={selectClass}
+					>
+						<option value="">None</option>
+						{selectedTemplateMissing && (
+							<option value={vault.saveToObsidianTemplate}>
+								{vault.saveToObsidianTemplate}
+								{templatesLoading || templatesError ? "" : " (not found)"}
+							</option>
+						)}
+						{templates.map((template) => (
+							<option key={template} value={template}>
+								{template}
+							</option>
+						))}
+					</select>
+					<button
+						type="button"
+						onClick={() => void refreshTemplates()}
+						disabled={templatesLoading}
+						className="px-2 py-1 border border-border text-[10px] tracking-widest text-muted-foreground hover:bg-accent hover:text-foreground uppercase disabled:opacity-40"
+					>
+						{templatesLoading ? "…" : "Refresh"}
+					</button>
+				</div>
+			</Field>
+			{templatesError && (
+				<div className="px-4 pb-3 text-xs text-destructive" role="alert">
+					{templatesError}
+				</div>
+			)}
 			{vault.style === "para" ? (
 				<>
 					<Field label="Inbox folder" hint="quick captures, unprocessed notes">

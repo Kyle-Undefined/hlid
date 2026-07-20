@@ -136,6 +136,7 @@ function createVaultForm(initial: HlidConfig): VaultForm {
 		outputs: initial.vault.outputs ?? "",
 		skills: initial.vault.skills ?? "",
 		memory: initial.vault.memory ?? "",
+		saveToObsidianTemplate: initial.vault.save_to_obsidian_template ?? "",
 	};
 }
 

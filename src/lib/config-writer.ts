@@ -53,6 +53,10 @@ function serializeVault(config: HlidConfig["vault"]): string[] {
 		...optionalEntry("skills", config.skills),
 		...optionalEntry("memory", config.memory),
 		...optionalEntry("outputs", config.outputs),
+		...optionalEntry(
+			"save_to_obsidian_template",
+			config.save_to_obsidian_template,
+		),
 		`delete_vault_attachments = ${tomlVal(config.delete_vault_attachments)}`,
 	]);
 }

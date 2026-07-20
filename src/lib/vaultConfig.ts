@@ -16,6 +16,7 @@ export type VaultFields = {
 	outputs?: string;
 	skills?: string;
 	memory?: string;
+	saveToObsidianTemplate?: string;
 };
 
 /**
@@ -39,6 +40,7 @@ export function buildVaultSection(f: VaultFields): HlidConfig["vault"] {
 		outputs: isWiki ? f.outputs || undefined : undefined,
 		skills: f.skills || undefined,
 		memory: f.memory || undefined,
+		save_to_obsidian_template: f.saveToObsidianTemplate || undefined,
 		delete_vault_attachments: false,
 	};
 }

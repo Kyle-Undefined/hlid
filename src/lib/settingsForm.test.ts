@@ -10,6 +10,7 @@ describe("settings form conversion", () => {
 	it("creates editable string forms from persisted config", () => {
 		const initial = HlidConfigSchema.parse({
 			vault_provider: "codex",
+			vault: { save_to_obsidian_template: "Quick Capture" },
 			claude: { max_turns: 12, interactive_mode: true },
 			codex: {
 				max_turns: 8,
@@ -27,6 +28,7 @@ describe("settings form conversion", () => {
 			interactiveMode: true,
 		});
 		expect(forms.codex.maxTurns).toBe("8");
+		expect(forms.vault.saveToObsidianTemplate).toBe("Quick Capture");
 		expect(forms.codex.windowsComputerUseModel).toBe("gpt-5.5");
 		expect(forms.codex.windowsComputerUseEffort).toBe("inherit");
 		expect(forms.server).toMatchObject({ port: "4000", tlsProxyPort: "4443" });
@@ -37,6 +39,16 @@ describe("settings form conversion", () => {
 			planning: "",
 			done: "Done",
 		});
+	});
+
+	it("round-trips an empty workspace Obsidian template selection", () => {
+		const initial = HlidConfigSchema.parse({});
+		const forms = createSettingsForms(initial);
+		expect(forms.vault.saveToObsidianTemplate).toBe("");
+		expect(
+			buildSettingsConfig(initial, forms, false).vault
+				.save_to_obsidian_template,
+		).toBeUndefined();
 	});
 
 	it("keeps persisted network values for auto-save and commits them explicitly", () => {
