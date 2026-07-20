@@ -1,5 +1,7 @@
 import { z } from "zod";
+import { configuredObsidianCapture } from "#/lib/obsidianCapture";
 import { loadConfig } from "./config";
+import { captureObsidianNote } from "./obsidianCaptureNote";
 import {
 	createObsidianBaseItem,
 	createObsidianNote,
@@ -10,6 +12,7 @@ import {
 	MAX_OBSIDIAN_CREATE_CHARS,
 	moveObsidianFile,
 	mutateObsidianNote,
+	openObsidianDailyNote,
 	queryObsidianBase,
 	queryObsidianCurrentNote,
 	queryObsidianHistory,
@@ -18,6 +21,7 @@ import {
 	queryObsidianSearch,
 	queryObsidianTasks,
 	queryObsidianVaultInfo,
+	readObsidianDailyNote,
 	readObsidianNote,
 	readObsidianTemplate,
 	removeObsidianProperty,
@@ -53,6 +57,10 @@ export const obsidianAgentSchemas = {
 	}),
 	current_note: z.object({
 		action: z.enum(["read", "outline", "info"]),
+		limit: resultLimit,
+		countOnly,
+	}),
+	daily_note: z.object({
 		limit: resultLimit,
 		countOnly,
 	}),
@@ -116,6 +124,11 @@ export const obsidianAgentSchemas = {
 		content: z.string().max(MAX_OBSIDIAN_CREATE_CHARS).optional(),
 		open: z.boolean().optional(),
 	}),
+	capture_note: z.object({
+		content: z.string().min(1).max(MAX_OBSIDIAN_CREATE_CHARS),
+		open: z.boolean().optional(),
+	}),
+	open_daily_note: z.object({}),
 	base_create: z.object({
 		path: vaultPath,
 		view: z.string().trim().min(1).max(256).optional(),
@@ -295,6 +308,17 @@ export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
 				...budgetSchemaProperties,
 			},
 			required: ["action"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "daily_note",
+		description:
+			"Read today's daily note through Obsidian and return its exact vault-relative path with bounded content. Use this instead of guessing the daily-note folder or filename.",
+		readOnly: true,
+		inputSchema: {
+			type: "object",
+			properties: { ...budgetSchemaProperties },
 			additionalProperties: false,
 		},
 	},
@@ -480,6 +504,35 @@ export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
 				},
 			},
 			required: ["path"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "capture_note",
+		description:
+			"Create a Markdown note in this workspace's configured Obsidian Inbox or Raw folder. Hlid chooses the configured destination, workspace template, and collision-safe timestamped filename; the agent supplies only the content and whether to open it.",
+		readOnly: false,
+		inputSchema: {
+			type: "object",
+			properties: {
+				content: { type: "string" },
+				open: {
+					type: "boolean",
+					description: "Open the captured note in Obsidian.",
+				},
+			},
+			required: ["content"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "open_daily_note",
+		description:
+			"Create today's daily note if needed and open it in Obsidian. Obsidian applies the vault's Daily notes folder, format, and template settings.",
+		readOnly: false,
+		inputSchema: {
+			type: "object",
+			properties: {},
 			additionalProperties: false,
 		},
 	},
@@ -827,10 +880,18 @@ export async function executeObsidianAgentTool(
 	switch (name as ObsidianAgentToolName) {
 		case "vault_info": {
 			obsidianAgentSchemas.vault_info.parse(input);
+			const capture = configuredObsidianCapture(config.vault);
 			return JSON.stringify({
 				...(await queryObsidianVaultInfo(vaultName)),
 				capabilities: OBSIDIAN_AGENT_TOOL_SPECS.map((tool) => tool.name),
 				allowedCommands: config.vault.obsidian_command_allowlist ?? [],
+				capture: capture
+					? {
+							label: capture.label,
+							folder: capture.folder,
+							template: capture.template,
+						}
+					: null,
 			});
 		}
 		case "links": {
@@ -874,6 +935,17 @@ export async function executeObsidianAgentTool(
 					expectedJson: parsed.action === "outline" && !parsed.countOnly,
 				},
 			);
+		}
+		case "daily_note": {
+			const parsed = obsidianAgentSchemas.daily_note.parse(input);
+			const daily = await readObsidianDailyNote(vaultName);
+			const bounded = JSON.parse(
+				budgetObsidianAgentOutput(daily.content, {
+					...parsed,
+					expectedJson: false,
+				}),
+			) as Record<string, unknown>;
+			return JSON.stringify({ ...bounded, path: daily.path });
 		}
 		case "tasks": {
 			const parsed = obsidianAgentSchemas.tasks.parse(input);
@@ -932,6 +1004,14 @@ export async function executeObsidianAgentTool(
 		case "create_note": {
 			const parsed = obsidianAgentSchemas.create_note.parse(input);
 			return JSON.stringify(await createObsidianNote(vaultName, parsed));
+		}
+		case "capture_note": {
+			const parsed = obsidianAgentSchemas.capture_note.parse(input);
+			return JSON.stringify(await captureObsidianNote(config.vault, parsed));
+		}
+		case "open_daily_note": {
+			obsidianAgentSchemas.open_daily_note.parse(input);
+			return JSON.stringify(await openObsidianDailyNote(vaultName));
 		}
 		case "base_create": {
 			const parsed = obsidianAgentSchemas.base_create.parse(input);

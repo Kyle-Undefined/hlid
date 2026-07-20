@@ -10,6 +10,7 @@ const bridge = vi.hoisted(() => ({
 	listObsidianTemplates: vi.fn(),
 	mutateObsidianNote: vi.fn(),
 	moveObsidianFile: vi.fn(),
+	openObsidianDailyNote: vi.fn(),
 	queryObsidianBase: vi.fn(),
 	queryObsidianCurrentNote: vi.fn(),
 	queryObsidianHistory: vi.fn(),
@@ -18,6 +19,7 @@ const bridge = vi.hoisted(() => ({
 	queryObsidianSearch: vi.fn(),
 	queryObsidianTasks: vi.fn(),
 	queryObsidianVaultInfo: vi.fn(),
+	readObsidianDailyNote: vi.fn(),
 	readObsidianNote: vi.fn(),
 	readObsidianTemplate: vi.fn(),
 	removeObsidianProperty: vi.fn(),
@@ -26,14 +28,20 @@ const bridge = vi.hoisted(() => ({
 	updateObsidianTask: vi.fn(),
 }));
 
+const capture = vi.hoisted(() => ({ captureObsidianNote: vi.fn() }));
+
 const config = vi.hoisted(() => ({
 	vault: {
 		name: "Fornbok",
+		style: "para",
+		inbox: "0 Inbox",
+		save_to_obsidian_template: "Quick Capture",
 		obsidian_command_allowlist: ["templater-obsidian:insert-templater"],
 	},
 }));
 vi.mock("./config", () => ({ loadConfig: () => config }));
 vi.mock("./obsidianCli", () => bridge);
+vi.mock("./obsidianCaptureNote", () => capture);
 
 import {
 	executeObsidianAgentTool,
@@ -54,6 +62,7 @@ describe("Obsidian agent tools", () => {
 			"search",
 			"read_note",
 			"current_note",
+			"daily_note",
 			"links",
 			"tasks",
 			"properties",
@@ -62,6 +71,8 @@ describe("Obsidian agent tools", () => {
 			"list_templates",
 			"read_template",
 			"create_note",
+			"capture_note",
+			"open_daily_note",
 			"base_create",
 			"append_note",
 			"prepend_note",
@@ -99,6 +110,8 @@ describe("Obsidian agent tools", () => {
 			),
 		).toEqual([
 			"create_note",
+			"capture_note",
+			"open_daily_note",
 			"base_create",
 			"append_note",
 			"prepend_note",
@@ -121,6 +134,9 @@ describe("Obsidian agent tools", () => {
 		expect(info).toContain('"name":"Fornbok"');
 		expect(info).toContain(
 			'"allowedCommands":["templater-obsidian:insert-templater"]',
+		);
+		expect(info).toContain(
+			'"capture":{"label":"Inbox","folder":"0 Inbox","template":"Quick Capture"}',
 		);
 
 		bridge.readObsidianNote.mockResolvedValueOnce(
@@ -374,6 +390,46 @@ describe("Obsidian agent tools", () => {
 			total: 1,
 			returned: 1,
 			data: [{ heading: "One", level: 1 }],
+		});
+	});
+
+	it("reads, opens, and captures daily workspace notes without guessed paths", async () => {
+		bridge.readObsidianDailyNote.mockResolvedValueOnce({
+			path: "Journal/2026-07-20.md",
+			content: "# Daily\nOne\nTwo",
+		});
+		const daily = JSON.parse(
+			await executeObsidianAgentTool("daily_note", { limit: 2 }),
+		);
+		expect(daily).toMatchObject({
+			path: "Journal/2026-07-20.md",
+			total: 3,
+			returned: 2,
+			data: ["# Daily", "One"],
+		});
+		expect(bridge.readObsidianDailyNote).toHaveBeenCalledWith("Fornbok");
+
+		bridge.openObsidianDailyNote.mockResolvedValueOnce({
+			path: "Journal/2026-07-20.md",
+		});
+		await expect(executeObsidianAgentTool("open_daily_note", {})).resolves.toBe(
+			'{"path":"Journal/2026-07-20.md"}',
+		);
+
+		capture.captureObsidianNote.mockResolvedValueOnce({
+			path: "0 Inbox/Hlid capture.md",
+			destination: "Inbox",
+			template: "Quick Capture",
+		});
+		await expect(
+			executeObsidianAgentTool("capture_note", {
+				content: "Captured by an agent",
+				open: true,
+			}),
+		).resolves.toContain('"destination":"Inbox"');
+		expect(capture.captureObsidianNote).toHaveBeenCalledWith(config.vault, {
+			content: "Captured by an agent",
+			open: true,
 		});
 	});
 

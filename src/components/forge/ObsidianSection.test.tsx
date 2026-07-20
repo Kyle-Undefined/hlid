@@ -35,6 +35,7 @@ describe("ObsidianSection", () => {
 				"search",
 				"read_note",
 				"current_note",
+				"daily_note",
 				"links",
 				"tasks",
 				"properties",
@@ -43,6 +44,8 @@ describe("ObsidianSection", () => {
 				"list_templates",
 				"read_template",
 				"create_note",
+				"capture_note",
+				"open_daily_note",
 				"base_create",
 				"append_note",
 				"prepend_note",
@@ -71,7 +74,7 @@ describe("ObsidianSection", () => {
 		render(<ObsidianSection />);
 
 		await waitFor(() => expect(screen.getByText("v1.12.7")).toBeTruthy());
-		expect(screen.getByText("21 curated tools")).toBeTruthy();
+		expect(screen.getByText("24 curated tools")).toBeTruthy();
 		expect(screen.queryByText("not registered")).toBeNull();
 		expect(screen.getByText("connected with v1.12.7")).toBeTruthy();
 		expect(screen.getByText("C:\\Vaults\\Fornbok")).toBeTruthy();

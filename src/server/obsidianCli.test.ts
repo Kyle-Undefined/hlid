@@ -12,6 +12,7 @@ import {
 	moveObsidianFile,
 	mutateObsidianNote,
 	obsidianReferenceItem,
+	openObsidianDailyNote,
 	openObsidianNote,
 	queryObsidianBase,
 	queryObsidianCurrentNote,
@@ -21,6 +22,7 @@ import {
 	queryObsidianSearch,
 	queryObsidianTasks,
 	queryObsidianVaultInfo,
+	readObsidianDailyNote,
 	readObsidianNote,
 	readObsidianTemplate,
 	removeObsidianProperty,
@@ -759,6 +761,42 @@ describe("Obsidian CLI bridge", () => {
 			info.dependencies,
 		);
 		expect(info.run.mock.calls[1]?.[1]).toEqual(["vault=Fornbok", "file"]);
+	});
+
+	it("reads and opens today's daily note through Obsidian's native commands", async () => {
+		const read = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "Journal\\2026-07-20.md", code: 0 },
+			{ output: "# Daily\nBody", code: 0 },
+		]);
+		await expect(
+			readObsidianDailyNote("Fornbok", read.dependencies),
+		).resolves.toEqual({
+			path: "Journal/2026-07-20.md",
+			content: "# Daily\nBody",
+		});
+		expect(read.run.mock.calls[1]?.[1]).toEqual([
+			"vault=Fornbok",
+			"daily:path",
+		]);
+		expect(read.run.mock.calls[2]?.[1]).toEqual([
+			"vault=Fornbok",
+			"daily:read",
+		]);
+
+		const open = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "Opened", code: 0 },
+			{ output: "Journal\\2026-07-20.md", code: 0 },
+		]);
+		await expect(
+			openObsidianDailyNote("Fornbok", open.dependencies),
+		).resolves.toEqual({ path: "Journal/2026-07-20.md" });
+		expect(open.run.mock.calls[1]?.[1]).toEqual(["vault=Fornbok", "daily"]);
+		expect(open.run.mock.calls[2]?.[1]).toEqual([
+			"vault=Fornbok",
+			"daily:path",
+		]);
 	});
 
 	it("reads one exact vault path and reports first-class vault identity", async () => {

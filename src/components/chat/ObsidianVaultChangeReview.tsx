@@ -28,6 +28,7 @@ export type ObsidianVaultChange = {
 
 const OPERATION_NAMES: Record<string, VaultChangeKind> = {
 	create_note: "created",
+	capture_note: "created",
 	append_note: "appended",
 	prepend_note: "prepended",
 	move_file: "moved",

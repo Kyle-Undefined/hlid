@@ -1117,6 +1117,52 @@ export async function queryObsidianCurrentNote(
 	return runObsidianCommand(vaultName, args, dependencies);
 }
 
+export async function readObsidianDailyNote(
+	vaultName: string,
+	dependencies: ObsidianBridgeDependencies = {},
+): Promise<{ path: string; content: string }> {
+	const resolved = await resolveObsidianCli(dependencies);
+	const path = safeVaultPath(
+		await runResolvedObsidianCommand(
+			resolved,
+			vaultName,
+			["daily:path"],
+			dependencies,
+		),
+		"daily note path",
+	);
+	const content = await runResolvedObsidianCommand(
+		resolved,
+		vaultName,
+		["daily:read"],
+		dependencies,
+	);
+	return { path, content };
+}
+
+export async function openObsidianDailyNote(
+	vaultName: string,
+	dependencies: ObsidianBridgeDependencies = {},
+): Promise<{ path: string }> {
+	const resolved = await resolveObsidianCli(dependencies);
+	await runResolvedObsidianCommand(
+		resolved,
+		vaultName,
+		["daily"],
+		dependencies,
+	);
+	const path = safeVaultPath(
+		await runResolvedObsidianCommand(
+			resolved,
+			vaultName,
+			["daily:path"],
+			dependencies,
+		),
+		"daily note path",
+	);
+	return { path };
+}
+
 export type ObsidianVaultInfo = {
 	name: string;
 	version: string;

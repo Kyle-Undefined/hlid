@@ -24,6 +24,12 @@ describe("ObsidianVaultChangeReview", () => {
 	it("collects successful mutations across provider tool naming formats", () => {
 		const changes = obsidianVaultChanges([
 			event(
+				"capture",
+				"mcp__hlid_obsidian__capture_note",
+				{ content: "Captured body" },
+				'{"path":"0 Inbox/Hlid capture.md","destination":"Inbox"}',
+			),
+			event(
 				"create",
 				"mcp__hlid_obsidian__create_note",
 				{ path: "Notes/New.md", content: "Body" },
@@ -87,6 +93,12 @@ describe("ObsidianVaultChangeReview", () => {
 		]);
 
 		expect(changes).toEqual([
+			{
+				id: "capture",
+				kind: "created",
+				path: "0 Inbox/Hlid capture.md",
+				content: "Captured body",
+			},
 			{
 				id: "create",
 				kind: "created",

@@ -1,9 +1,5 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
-import {
-	configuredObsidianCapture,
-	obsidianCaptureNotePath,
-} from "#/lib/obsidianCapture";
 import { parseObsidianTemplateNames } from "#/lib/obsidianTemplates";
 
 const relativePathSchema = z.string().trim().min(1).max(4_096);
@@ -147,32 +143,15 @@ export const appendToObsidianFn = createServerFn({ method: "POST" })
 export const captureReplyToObsidianFn = createServerFn({ method: "POST" })
 	.validator((raw) => captureSchema.parse(raw))
 	.handler(async ({ data }) => {
-		const [{ randomUUID }, { loadConfig }, { createObsidianNote }] =
-			await Promise.all([
-				import("node:crypto"),
-				import("#/server/config"),
-				import("#/server/obsidianCli"),
-			]);
+		const [{ loadConfig }, { captureObsidianNote }] = await Promise.all([
+			import("#/server/config"),
+			import("#/server/obsidianCaptureNote"),
+		]);
 		const config = loadConfig();
-		const destination = configuredObsidianCapture(config.vault);
-		if (!destination) {
-			throw new Error(
-				"This workspace does not have an Obsidian Inbox or Raw folder configured.",
-			);
-		}
-		const requestedPath = obsidianCaptureNotePath(
-			destination,
-			new Date(),
-			randomUUID(),
-		);
-		const result = await createObsidianNote(config.vault.name, {
-			path: requestedPath,
-			template: destination.template ?? undefined,
-			content: data.content,
-		});
+		const result = await captureObsidianNote(config.vault, data);
 		return {
 			ok: true,
 			path: result.path,
-			destination: destination.label,
+			destination: result.destination,
 		};
 	});
