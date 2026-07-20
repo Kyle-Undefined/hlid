@@ -108,6 +108,11 @@ describe("CLIProxy model routing", () => {
 		);
 	});
 
+	it("retains Claude Code transcript forking through CLIProxy", () => {
+		const provider = new CliProxyCodexProvider(config());
+		expect(typeof provider.forkSession).toBe("function");
+	});
+
 	it("reads every routed model and preserves its upstream owner", async () => {
 		vi.stubGlobal(
 			"fetch",

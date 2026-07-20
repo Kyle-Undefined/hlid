@@ -342,6 +342,21 @@ describe("SessionsLedger session actions", () => {
 		).toBeNull();
 	});
 
+	it("offers fork for Claude Code sessions routed through CLIProxy", () => {
+		const onFork = vi.fn();
+		renderLedger({
+			data: {
+				sessions: [{ ...session, provider_id: "cliproxy-codex" }],
+				total: 1,
+			},
+			onFork,
+		});
+		openSessionActions();
+
+		fireEvent.click(screen.getByRole("button", { name: "Fork" }));
+		expect(onFork).toHaveBeenCalledWith("session-1");
+	});
+
 	it("does not replace whole-session values with browser-local live totals", () => {
 		renderLedger({ activeSessionId: "session-1", liveStats });
 		expect(screen.getByText("$1.2500")).toBeDefined();

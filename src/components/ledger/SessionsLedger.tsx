@@ -25,6 +25,7 @@ import type { LiveStats } from "#/hooks/wsLiveStatsStore";
 import { formatDisplayCost } from "#/lib/costDisplay";
 import { fmt, fmtDate, fmtDateUtc, fmtModel } from "#/lib/formatters";
 import type { LedgerAgentOption, SessionSortKey } from "#/lib/ledgerState";
+import { isClaudeRuntimeProvider } from "#/lib/providerRuntime";
 import type { SessionStatusEntry } from "#/server/protocol";
 
 const CLEANUP_DAY_OPTIONS = [7, 30, 90] as const;
@@ -251,11 +252,11 @@ function SessionItem({
 	const resumableHistory =
 		importedHistory && (session.history_resume_mode ?? "none") !== "none";
 	const canNavigate = !importedHistory || resumableHistory;
-	// Fork is Claude-only for now (AgentProvider.forkSession isn't implemented
-	// by other providers) and unsafe against a live/registered pool entry —
+	// Fork is available for Claude runtimes (including Claude Code via CLIProxy)
+	// and unsafe against a live/registered pool entry —
 	// mirrors the same checks the server enforces in POST /db/session/fork.
 	const canFork =
-		(session.provider_id || "claude") === "claude" &&
+		isClaudeRuntimeProvider(session.provider_id || "claude") &&
 		!poolSession &&
 		canNavigate;
 	const actionPosition = useAnchoredPopover(

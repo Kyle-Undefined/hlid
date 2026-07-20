@@ -19,7 +19,9 @@ export function normalizeModel(model: string): string {
  * those provider-side spellings do not create a false "different" badge.
  */
 export function modelComparisonKey(model: string): string {
-	const normalized = normalizeModel(model).toLowerCase();
+	const normalized = normalizeModel(model)
+		.replace(/\((?:none|auto|minimal|low|medium|high|xhigh|\d+)\)$/i, "")
+		.toLowerCase();
 	for (const family of ["fable", "sonnet", "opus"] as const) {
 		if (new RegExp(`(^|[^a-z])${family}([^a-z]|$)`).test(normalized)) {
 			return family;

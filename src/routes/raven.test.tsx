@@ -516,6 +516,63 @@ describe("Raven composed submission behavior", () => {
 		expect(badge.textContent).not.toMatch(/claude|medium/i);
 	});
 
+	it("keeps the CLIProxy model badge compact on mobile", () => {
+		state.actualModel = "gpt-5.6-sol(high)";
+		state.model = "gpt-5.6-sol";
+		state.effort = "high";
+		state.permissionMode = "bypassPermissions";
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as object),
+				agents: [
+					{
+						path: "/cliproxy-project",
+						provider: "cliproxy-codex",
+						model: "gpt-5.6-sol",
+						effort: "high",
+						permission_mode: "bypassPermissions",
+					},
+				],
+			},
+			agentSkillContext: "/cliproxy-project",
+			agentList: [
+				{
+					path: "/cliproxy-project",
+					name: "CLIProxy project",
+					provider: "cliproxy-codex",
+					model: "gpt-5.6-sol",
+				},
+			],
+			providers: [
+				{
+					id: "cliproxy-codex",
+					label: "Claude Code · CLIProxy",
+					available: true,
+					models: [{ value: "gpt-5.6-sol", label: "GPT-5.6-Sol" }],
+					effortLevels: [{ value: "high", label: "High" }],
+					permissionModes: [
+						{ value: "bypassPermissions", label: "Auto-approve all" },
+					],
+				},
+			],
+		};
+
+		render(<ChatPage />);
+
+		const badge = screen.getByRole("button", {
+			name: /Claude Code.*CLIProxy.*gpt-5\.6-sol.*high.*auto/i,
+		});
+		expect(badge.className).toContain("max-w-full");
+		expect(badge.parentElement?.className).toContain(
+			"max-w-[calc(100vw-1.5rem)]",
+		);
+		expect(
+			screen.getByText("CLIProxy · gpt-5.6-sol · high · auto"),
+		).toBeTruthy();
+		expect(badge.className).not.toContain("text-amber");
+	});
+
 	it("keeps model settings open while changing multiple options", () => {
 		state.loaderData = {
 			...state.loaderData,

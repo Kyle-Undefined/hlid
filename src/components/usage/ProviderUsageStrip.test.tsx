@@ -301,6 +301,40 @@ describe("ProviderUsageStrip polling", () => {
 		);
 	});
 
+	it("shows CLIProxy as Other with context instead of unsupported quota windows", () => {
+		const providers: ProviderUsageSnapshot[] = [
+			...builtInProviderUsageShells(),
+			{
+				providerId: "cliproxy-codex",
+				providerLabel: "Claude Code · CLIProxy",
+				windows: [],
+			},
+			{
+				providerId: "cliproxy:codex",
+				providerLabel: "Codex · CLIProxy",
+				windows: [],
+			},
+		];
+		render(
+			<ProviderUsageStrip
+				initial={providers}
+				liveQueryCount={0}
+				rateLimit={null}
+				preferredProviderId="cliproxy-codex"
+				tail={<div>CONTEXT ONLY</div>}
+				fetchFn={vi.fn().mockResolvedValue(providers)}
+			/>,
+		);
+
+		expect(screen.getByRole("button", { name: "Other" }).className).toContain(
+			"text-foreground/70",
+		);
+		expect(screen.queryByRole("button", { name: /CLIProxy/i })).toBeNull();
+		expect(screen.queryByText("5-HOUR")).toBeNull();
+		expect(screen.queryByText("7-DAY")).toBeNull();
+		expect(screen.getByText("CONTEXT ONLY")).not.toBeNull();
+	});
+
 	it("marks Claude SDK cost as estimated", () => {
 		const claudeWithUsage: ProviderUsageSnapshot[] = [
 			{

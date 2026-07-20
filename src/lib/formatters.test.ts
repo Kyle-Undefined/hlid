@@ -44,6 +44,13 @@ describe("modelComparisonKey", () => {
 		expect(modelComparisonKey("gpt-5.4")).toBe("gpt-5.4");
 		expect(modelComparisonKey("gpt-5.5")).toBe("gpt-5.5");
 	});
+
+	it("ignores a CLIProxy thinking suffix", () => {
+		expect(modelComparisonKey("gpt-5.6-sol(high)")).toBe("gpt-5.6-sol");
+		expect(
+			deriveModelMismatch("gpt-5.6-sol", "gpt-5.6-sol(high)", null).mismatch,
+		).toBe(false);
+	});
 });
 
 // ── fmtModel ──────────────────────────────────────────────────────────────────

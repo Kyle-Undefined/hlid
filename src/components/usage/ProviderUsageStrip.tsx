@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ProviderWindowCell } from "#/components/usage/UsageWindowSections";
 import type { ProviderUsageSnapshot } from "#/db";
+import { isCliProxyProvider } from "#/lib/providerIds";
 import {
 	applyRateLimitToSnapshot,
 	mergeFreshProviderSnapshots,
@@ -85,11 +86,30 @@ export function ProviderUsageStrip({
 	fetchFn: () => Promise<ProviderUsageSnapshot[]>;
 }) {
 	const [snapshots, setSnapshots] = useState(initial);
+	const displayedSnapshots = useMemo(() => {
+		const withoutCliProxy = snapshots.filter(
+			(snapshot) => !isCliProxyProvider(snapshot.providerId),
+		);
+		if (!preferredProviderId || !isCliProxyProvider(preferredProviderId)) {
+			return withoutCliProxy;
+		}
+		const active = snapshots.find(
+			(snapshot) => snapshot.providerId === preferredProviderId,
+		);
+		return [
+			...withoutCliProxy,
+			{
+				providerId: preferredProviderId,
+				providerLabel: "Other",
+				windows: active?.windows ?? [],
+			},
+		];
+	}, [preferredProviderId, snapshots]);
 	const fetchFnRef = useRef(fetchFn);
 	fetchFnRef.current = fetchFn;
 	const providerIds = useMemo(
-		() => snapshots.map((snapshot) => snapshot.providerId),
-		[snapshots],
+		() => displayedSnapshots.map((snapshot) => snapshot.providerId),
+		[displayedSnapshots],
 	);
 	const providerIdsRef = useRef(providerIds);
 	providerIdsRef.current = providerIds;
@@ -97,7 +117,7 @@ export function ProviderUsageStrip({
 	const [activeProvider, setActiveProvider] = useState(() =>
 		initialProvider(providerIds, preferredProviderId),
 	);
-	const activeSnapshot = snapshots.find(
+	const activeSnapshot = displayedSnapshots.find(
 		(snapshot) => snapshot.providerId === activeProvider,
 	);
 	const refreshRef = useRef(() => {
@@ -217,9 +237,9 @@ export function ProviderUsageStrip({
 
 	return (
 		<div className="border-b border-border shrink-0 overflow-hidden">
-			{snapshots.length > 1 && (
+			{displayedSnapshots.length > 1 && (
 				<div className="flex items-center gap-1 px-3 pt-1.5 pb-0 border-b border-border/30">
-					{snapshots.map((snapshot) => (
+					{displayedSnapshots.map((snapshot) => (
 						<button
 							key={snapshot.providerId}
 							type="button"

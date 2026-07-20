@@ -89,6 +89,7 @@ import {
 	normalizeEffortForPlanMode,
 	resolveActiveProviderId,
 } from "#/lib/providerOptions";
+import { isClaudeRuntimeProvider } from "#/lib/providerRuntime";
 import { loadRavenProviders } from "#/lib/ravenProviderCache";
 import {
 	createAnimationFrameCoalescer,
@@ -1955,7 +1956,8 @@ function RavenMessagePane({
 	// Same preconditions as the composer's whole-session Fork button — see
 	// ChatActionButtons.
 	const canBranch =
-		composerProps.activeProviderId === "claude" && !runtime.isRunning;
+		isClaudeRuntimeProvider(composerProps.activeProviderId) &&
+		!runtime.isRunning;
 	// Below md, the Terminal tab fully replaces chat (RavenShellTabBar); md+
 	// always shows chat regardless (desktop split panel is chunk 4).
 	const mobileHideChat = terminalOpen && shellTab === "terminal";
@@ -2115,17 +2117,33 @@ function ChatModelBadge({
 	const displayedModel = activeModel ?? model;
 	const displayedEffort = activeEffort ?? effort;
 	const displayedPermissionMode = activePermissionMode ?? permissionMode;
-	const badgeParts = [
-		activeProviderLabel,
-		actualModelShort ?? modelShort,
-		displayedEffort,
+	const permissionBadge =
 		displayedPermissionMode === "bypassPermissions"
 			? "auto"
 			: displayedPermissionMode === "acceptEdits"
 				? "edits"
 				: displayedPermissionMode === "default"
 					? "ask"
-					: displayedPermissionMode,
+					: displayedPermissionMode;
+	const rawModelBadge = actualModelShort ?? modelShort;
+	const duplicateEffortSuffix = displayedEffort ? `(${displayedEffort})` : null;
+	const modelBadge =
+		rawModelBadge &&
+		duplicateEffortSuffix &&
+		rawModelBadge.toLowerCase().endsWith(duplicateEffortSuffix.toLowerCase())
+			? rawModelBadge.slice(0, -duplicateEffortSuffix.length)
+			: rawModelBadge;
+	const badgeParts = [
+		activeProviderLabel,
+		modelBadge,
+		displayedEffort,
+		permissionBadge,
+	].filter(Boolean);
+	const compactBadgeParts = [
+		isCliProxyProvider(activeProviderId) ? "CLIProxy" : activeProviderLabel,
+		modelBadge,
+		displayedEffort,
+		permissionBadge,
 	].filter(Boolean);
 	const { modelBadgeRef } = viewport;
 	const popupRef = useRef<HTMLDivElement>(null);
@@ -2135,22 +2153,34 @@ function ChatModelBadge({
 	return (
 		<>
 			{activeProviderLabel && (
-				<div ref={modelBadgeRef} className="absolute -top-5 right-3 z-10">
+				<div
+					ref={modelBadgeRef}
+					className="absolute -top-5 right-3 z-10 max-w-[calc(100vw-1.5rem)]"
+				>
 					<button
 						type="button"
 						aria-haspopup="dialog"
 						aria-expanded={showModelPopup}
+						aria-label={badgeParts.join(" · ")}
 						onClick={(e) => {
 							e.stopPropagation();
 							setShowModelPopup((v) => !v);
 						}}
-						className={`text-[9px] tracking-widest px-2 py-0.5 uppercase bg-background border cursor-pointer transition-colors ${
+						className={`block max-w-full text-[9px] tracking-widest px-2 py-0.5 uppercase bg-background border cursor-pointer transition-colors ${
 							modelMismatch
 								? "text-amber-500/80 border-amber-500/60"
 								: "text-muted-foreground/50 border-border/70 hover:text-foreground/70 hover:border-primary/40"
 						}`}
 					>
-						{badgeParts.join(" · ")}
+						<span
+							aria-hidden
+							className="block md:hidden truncate whitespace-nowrap"
+						>
+							{compactBadgeParts.join(" · ")}
+						</span>
+						<span aria-hidden className="hidden md:block whitespace-nowrap">
+							{badgeParts.join(" · ")}
+						</span>
 					</button>
 					{showModelPopup && (
 						<div
@@ -2786,11 +2816,13 @@ function ChatActionButtons({
 	const { fork, forkingMessageId, forkError, dismissForkError } =
 		useForkSession(session.sessionId);
 	const forking = forkingMessageId === "session";
-	// Claude-only for now — AgentProvider.forkSession isn't implemented by
-	// other providers yet. Idle + non-empty mirrors the same preconditions
+	// Claude runtimes expose AgentProvider.forkSession, including Claude Code
+	// routed through CLIProxy. Idle + non-empty mirrors the same preconditions
 	// the server enforces in POST /db/session/fork.
 	const canFork =
-		activeProviderId === "claude" && !isRunning && messages.length > 0;
+		isClaudeRuntimeProvider(activeProviderId) &&
+		!isRunning &&
+		messages.length > 0;
 
 	return (
 		<>
