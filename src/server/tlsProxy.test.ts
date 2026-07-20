@@ -322,6 +322,29 @@ describe("TLS HTTP proxy limits", () => {
 		}
 	});
 
+	it("times out an in-process forward that does not observe abort signals", async () => {
+		vi.useFakeTimers();
+		const log = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			const forward = vi.fn(() => new Promise<Response>(() => {}));
+			const pending = forwarder({ forward })(
+				new Request("https://hlid.test/api/private"),
+			);
+			await vi.waitFor(() => expect(forward).toHaveBeenCalledOnce());
+
+			await vi.advanceTimersByTimeAsync(5_000);
+			expect(forward).toHaveBeenCalledTimes(2);
+			await vi.advanceTimersByTimeAsync(25_000);
+
+			await expect(pending).resolves.toEqual(
+				expect.objectContaining({ status: 503 }),
+			);
+		} finally {
+			log.mockRestore();
+			vi.useRealTimers();
+		}
+	});
+
 	it("does not retry failed mutation requests", async () => {
 		const log = vi.spyOn(console, "error").mockImplementation(() => {});
 		const forward = vi.fn(async () => {

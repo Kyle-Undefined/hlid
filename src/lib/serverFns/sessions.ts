@@ -53,7 +53,7 @@ export const getLiveSessionsFn = createServerFn({ method: "GET" }).handler(() =>
 const sessionIdsSchema = z.array(sessionIdSchema).max(64);
 
 /** Fetch persisted totals for the DB chats currently attached to live sessions. */
-export const getSessionRowsByIdsFn = createServerFn({ method: "POST" })
+export const getSessionRowsByIdsFn = createServerFn({ method: "GET" })
 	.validator((raw) => sessionIdsSchema.parse(raw))
 	.handler(async ({ data: sessionIds }) => {
 		const { getSessionById } = await import("#/db");

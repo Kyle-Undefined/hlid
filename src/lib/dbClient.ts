@@ -1,5 +1,6 @@
 import { getConfig } from "#/lib/serverFns/config";
 import { safeRequestPath } from "./httpDiagnostics";
+import { getInternalApiHandler } from "./internalApiTransport";
 
 let _base: string | null = null;
 const SOFT_FAILURE_DEDUP_MS = 30_000;
@@ -19,6 +20,29 @@ function requestId(): string {
 
 function describeError(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
+}
+
+async function dispatchDirect(
+	handler: NonNullable<ReturnType<typeof getInternalApiHandler>>,
+	request: Request,
+	signal: AbortSignal | undefined,
+): Promise<Response> {
+	if (!signal) return handler(request);
+	if (signal.aborted) throw signal.reason;
+	return new Promise<Response>((resolve, reject) => {
+		const abort = () => reject(signal.reason);
+		signal.addEventListener("abort", abort, { once: true });
+		void handler(request).then(
+			(response) => {
+				signal.removeEventListener("abort", abort);
+				resolve(response);
+			},
+			(error) => {
+				signal.removeEventListener("abort", abort);
+				reject(error);
+			},
+		);
+	});
 }
 
 function reportSoftFailure(
@@ -68,7 +92,16 @@ export async function dbFetch(
 		(method === "GET"
 			? AbortSignal.timeout(INTERNAL_API_READ_TIMEOUT_MS)
 			: undefined);
-	return fetch(`${base}${path}`, { ...init, headers, signal });
+	const url = `${base}${path}`;
+	const directHandler = getInternalApiHandler();
+	if (directHandler) {
+		return dispatchDirect(
+			directHandler,
+			new Request(url, { ...init, headers, signal }),
+			signal,
+		);
+	}
+	return fetch(url, { ...init, headers, signal });
 }
 
 export class InternalApiError extends Error {

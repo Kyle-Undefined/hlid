@@ -8,6 +8,12 @@ import { compressHttpResponse } from "./httpCompression";
 import { createRequestObserver } from "./requestDiagnostics";
 import { uiStartupGateResponse } from "./uiStartupGate";
 
+export type UiForward = (input: string, init: RequestInit) => Promise<Response>;
+
+type UiServerContext = {
+	requestIP(request: Request): { address: string } | null;
+};
+
 const UI_MIME: Record<string, string> = {
 	".js": "application/javascript",
 	".mjs": "application/javascript",
@@ -61,7 +67,7 @@ function tryUiStatic(pathname: string): Response | null {
 export async function startUiServer(
 	port: number,
 	bindHost: string,
-): Promise<void> {
+): Promise<UiForward> {
 	// Lazy import — only resolves in the compiled exe after `vite build`.
 	// Keeping this dynamic prevents the SSR bundle (and its bundled React)
 	// from loading during `bun run dev:server`, which would corrupt React's
@@ -71,52 +77,63 @@ export async function startUiServer(
 
 	// On --restart the old canonical's TCP socket may still be held by the OS
 	// briefly after the process exits. Retry until the socket is released.
+	const handleRequest = async (
+		req: Request,
+		srv: UiServerContext,
+		peerOverride?: string,
+	): Promise<Response> => {
+		const startupResponse = uiStartupGateResponse(req);
+		if (startupResponse) return startupResponse;
+		const url = new URL(req.url);
+		const staticRes = tryUiStatic(url.pathname);
+		if (staticRes) return compressHttpResponse(req, staticRes);
+		// h3-v2 expects req.ip (or req.context.clientAddress). Bun surfaces the
+		// peer address via server.requestIP; attach it before delegating. Direct
+		// TLS dispatch is authenticated as the loopback proxy and supplies the
+		// original client in the forwarded headers.
+		const peer = peerOverride ?? srv.requestIP(req)?.address;
+		if (peer && !(req as Request & { ip?: string }).ip) {
+			Object.defineProperty(req, "ip", {
+				value: peer,
+				configurable: true,
+			});
+		}
+		try {
+			const response = await observeUiRequest(req, () =>
+				(
+					uiHandler as {
+						fetch: (r: Request, s: unknown) => Promise<Response>;
+					}
+				).fetch(req, srv),
+			);
+			return compressHttpResponse(req, response);
+		} catch {
+			// The observer persisted the scrubbed cause and request context.
+			// Keep raw exception details out of the HTTP response.
+			return new Response("Internal Server Error", {
+				status: 500,
+				headers: {
+					"cache-control": "no-store",
+					"content-type": "text/plain; charset=utf-8",
+				},
+			});
+		}
+	};
+
 	const deadline = Date.now() + 30_000;
+	let uiServer: UiServerContext;
 	while (true) {
 		try {
-			registerBunServer(
-				Bun.serve({
-					port,
-					hostname: bindHost,
-					idleTimeout: 60,
-					async fetch(req, srv) {
-						const startupResponse = uiStartupGateResponse(req);
-						if (startupResponse) return startupResponse;
-						const url = new URL(req.url);
-						const staticRes = tryUiStatic(url.pathname);
-						if (staticRes) return compressHttpResponse(req, staticRes);
-						// h3-v2 expects req.ip (or req.context.clientAddress). Bun surfaces the
-						// peer address via server.requestIP; attach it before delegating.
-						const peer = srv.requestIP(req)?.address;
-						if (peer && !(req as Request & { ip?: string }).ip) {
-							Object.defineProperty(req, "ip", {
-								value: peer,
-								configurable: true,
-							});
-						}
-						try {
-							const response = await observeUiRequest(req, () =>
-								(
-									uiHandler as {
-										fetch: (r: Request, s: unknown) => Promise<Response>;
-									}
-								).fetch(req, srv),
-							);
-							return compressHttpResponse(req, response);
-						} catch {
-							// The observer persisted the scrubbed cause and request context.
-							// Keep raw exception details out of the HTTP response.
-							return new Response("Internal Server Error", {
-								status: 500,
-								headers: {
-									"cache-control": "no-store",
-									"content-type": "text/plain; charset=utf-8",
-								},
-							});
-						}
-					},
-				}),
-			);
+			const server = Bun.serve({
+				port,
+				hostname: bindHost,
+				idleTimeout: 60,
+				fetch(req, srv) {
+					return handleRequest(req, srv);
+				},
+			});
+			uiServer = server;
+			registerBunServer(server);
 			break;
 		} catch (e) {
 			if (Date.now() >= deadline) throw e;
@@ -124,4 +141,6 @@ export async function startUiServer(
 		}
 	}
 	console.log(`Hlid UI on :${port}`);
+	return (input, init) =>
+		handleRequest(new Request(input, init), uiServer, "127.0.0.1");
 }

@@ -5,6 +5,7 @@ import { isAllowedOrigin, isAllowedOriginHeader } from "../lib/allowedOrigin";
 import { resolveClaudeExecutable } from "../lib/claudePath";
 import { resolveCodexExecutable } from "../lib/codexPath";
 import { writeConfig } from "../lib/config-writer";
+import { registerInternalApiHandler } from "../lib/internalApiTransport";
 import { registerBunServer } from "../lib/lifecycle";
 import {
 	CLIPROXY_CODEX_HARNESS_PROVIDER_ID,
@@ -367,9 +368,10 @@ for (const provider of providers.values()) {
 // port 3000 and serves the UI with HMR.
 
 const isCompiled = process.execPath.endsWith(".exe");
+let directUiForward: import("./uiServer").UiForward | undefined;
 
 if (isCompiled) {
-	await startUiServer(UI_PORT, BIND_HOST);
+	directUiForward = await startUiServer(UI_PORT, BIND_HOST);
 
 	// Interactive launch (double-click) gets a browser pop. Autostart-at-login
 	// (registry value carries `--background`) does not.
@@ -771,52 +773,57 @@ async function handleServerFetch(
 	return observeApiRequest(req, () => dispatchServerFetch(req, server));
 }
 
-registerBunServer(
-	Bun.serve<WsData | TerminalWsData | ShellWsData>({
-		port: PORT,
-		hostname: BIND_HOST,
-		maxRequestBodySize: Math.max(
-			MAX_VOICE_BODY_BYTES,
-			config.attachments.max_bytes + MULTIPART_OVERHEAD_BYTES,
-		),
-		...tlsConfig,
+const internalApiServer = Bun.serve<WsData | TerminalWsData | ShellWsData>({
+	port: PORT,
+	hostname: BIND_HOST,
+	maxRequestBodySize: Math.max(
+		MAX_VOICE_BODY_BYTES,
+		config.attachments.max_bytes + MULTIPART_OVERHEAD_BYTES,
+	),
+	...tlsConfig,
 
-		fetch: handleServerFetch,
+	fetch: handleServerFetch,
 
-		websocket: (() => {
-			const chatHandlers = createWsHandlers(pool, terminalPool, shellPool);
-			const termHandlers = createTerminalWsHandlers(terminalPool);
-			const shellHandlers = createShellWsHandlers(shellPool);
-			type ChatWs = Parameters<typeof chatHandlers.open>[0];
-			type TerminalWs = ServerWebSocket<TerminalWsData>;
-			type ShellWs = ServerWebSocket<ShellWsData>;
-			type AppWs = ChatWs | TerminalWs | ShellWs;
-			type WsMessage = Parameters<typeof chatHandlers.message>[1];
-			const isTerminalWs = (ws: AppWs): ws is TerminalWs =>
-				"isTerminal" in ws.data && ws.data.isTerminal === true;
-			const isShellWs = (ws: AppWs): ws is ShellWs =>
-				"isShell" in ws.data && ws.data.isShell === true;
-			return {
-				maxPayloadLength: MAX_WS_PAYLOAD_BYTES,
-				open(ws: AppWs) {
-					if (isTerminalWs(ws)) termHandlers.open(ws);
-					else if (isShellWs(ws)) shellHandlers.open(ws);
-					else chatHandlers.open(ws);
-				},
-				message(ws: AppWs, data: WsMessage) {
-					if (isTerminalWs(ws)) termHandlers.message(ws, data);
-					else if (isShellWs(ws)) shellHandlers.message(ws, data);
-					else chatHandlers.message(ws, data);
-				},
-				close(ws: AppWs) {
-					if (isTerminalWs(ws)) termHandlers.close(ws);
-					else if (isShellWs(ws)) shellHandlers.close(ws);
-					else chatHandlers.close(ws);
-				},
-			};
-		})(),
-	}),
-);
+	websocket: (() => {
+		const chatHandlers = createWsHandlers(pool, terminalPool, shellPool);
+		const termHandlers = createTerminalWsHandlers(terminalPool);
+		const shellHandlers = createShellWsHandlers(shellPool);
+		type ChatWs = Parameters<typeof chatHandlers.open>[0];
+		type TerminalWs = ServerWebSocket<TerminalWsData>;
+		type ShellWs = ServerWebSocket<ShellWsData>;
+		type AppWs = ChatWs | TerminalWs | ShellWs;
+		type WsMessage = Parameters<typeof chatHandlers.message>[1];
+		const isTerminalWs = (ws: AppWs): ws is TerminalWs =>
+			"isTerminal" in ws.data && ws.data.isTerminal === true;
+		const isShellWs = (ws: AppWs): ws is ShellWs =>
+			"isShell" in ws.data && ws.data.isShell === true;
+		return {
+			maxPayloadLength: MAX_WS_PAYLOAD_BYTES,
+			open(ws: AppWs) {
+				if (isTerminalWs(ws)) termHandlers.open(ws);
+				else if (isShellWs(ws)) shellHandlers.open(ws);
+				else chatHandlers.open(ws);
+			},
+			message(ws: AppWs, data: WsMessage) {
+				if (isTerminalWs(ws)) termHandlers.message(ws, data);
+				else if (isShellWs(ws)) shellHandlers.message(ws, data);
+				else chatHandlers.message(ws, data);
+			},
+			close(ws: AppWs) {
+				if (isTerminalWs(ws)) termHandlers.close(ws);
+				else if (isShellWs(ws)) shellHandlers.close(ws);
+				else chatHandlers.close(ws);
+			},
+		};
+	})(),
+});
+registerBunServer(internalApiServer);
+registerInternalApiHandler(async (request) => {
+	const response = await observeApiRequest(request, () =>
+		handleServerRequest(request, "127.0.0.1", internalApiServer),
+	);
+	return response ?? new Response("Not found", { status: 404 });
+});
 
 console.log(`Hlid server on :${PORT}${process.env.HLID_TLS ? " (TLS)" : ""}`);
 
@@ -837,6 +844,7 @@ if (config.server.tls_cert_path && config.server.tls_key_path) {
 			MAX_VOICE_BODY_BYTES,
 			config.attachments.max_bytes + MULTIPART_OVERHEAD_BYTES,
 		),
+		forward: directUiForward,
 	});
 }
 

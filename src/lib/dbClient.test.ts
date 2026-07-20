@@ -12,19 +12,59 @@ import {
 	requireDbOk,
 	resetDbClientForTesting,
 } from "./dbClient";
+import {
+	registerInternalApiHandler,
+	resetInternalApiHandlerForTesting,
+} from "./internalApiTransport";
 
 describe("internal API client", () => {
 	const fetchMock = vi.fn<typeof fetch>();
 
 	beforeEach(() => {
 		resetDbClientForTesting();
+		resetInternalApiHandlerForTesting();
 		fetchMock.mockReset();
 		vi.stubGlobal("fetch", fetchMock);
 	});
 
 	afterEach(() => {
+		resetInternalApiHandlerForTesting();
 		vi.unstubAllGlobals();
 		vi.restoreAllMocks();
+	});
+
+	it("dispatches through the in-process handler when one is registered", async () => {
+		const directHandler = vi.fn(async (request: Request) => {
+			expect(request.url).toBe("http://127.0.0.1:3001/db/value");
+			expect(request.headers.get("x-hlid-internal")).toBe("test-token");
+			return Response.json({ value: 42 });
+		});
+		registerInternalApiHandler(directHandler);
+
+		await expect(dbJson("/db/value", { value: 0 })).resolves.toEqual({
+			value: 42,
+		});
+		expect(directHandler).toHaveBeenCalledOnce();
+		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("keeps timeout and retry budgets for an in-process handler", async () => {
+		vi.useFakeTimers();
+		try {
+			vi.spyOn(console, "warn").mockImplementation(() => {});
+			const directHandler = vi.fn(() => new Promise<Response>(() => {}));
+			registerInternalApiHandler(directHandler);
+			const pending = dbJson("/db/stalled", { value: 0 });
+
+			await vi.advanceTimersByTimeAsync(5_000);
+			expect(directHandler).toHaveBeenCalledTimes(2);
+			await vi.advanceTimersByTimeAsync(1_000);
+
+			await expect(pending).resolves.toEqual({ value: 0 });
+			expect(fetchMock).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("returns successful JSON and sends the internal token", async () => {

@@ -36,6 +36,8 @@ const IDLE_STATE: ReadAloudState = {
 	error: null,
 };
 const EMPTY_VOICES: LocalReadAloudVoice[] = [];
+const VOICE_DISCOVERY_TIMEOUT_MS = 2_000;
+const VOICE_DISCOVERY_POLL_MS = 100;
 
 let stateSnapshot = IDLE_STATE;
 let preferencesSnapshot = DEFAULT_READ_ALOUD_PREFERENCES;
@@ -46,6 +48,7 @@ let utteranceGeneration = 0;
 let activeUtterance: SpeechSynthesisUtterance | null = null;
 let activeAudio: HTMLAudioElement | null = null;
 let sharedPreferencesRequest: Promise<void> | null = null;
+let pendingVoiceDiscoveryCleanup: (() => void) | null = null;
 
 type ActiveReading = {
 	messageId: string;
@@ -99,6 +102,12 @@ function releaseActiveAudio(): void {
 	audio.onerror = null;
 	audio.pause();
 	if (audio.src) audio.removeAttribute("src");
+}
+
+function releasePendingVoiceDiscovery(): void {
+	const cleanup = pendingVoiceDiscoveryCleanup;
+	pendingVoiceDiscoveryCleanup = null;
+	cleanup?.();
 }
 
 function speechController(): SpeechSynthesis | null {
@@ -357,40 +366,13 @@ export function readAloudSupported(provider?: ReadAloudProvider): boolean {
 	);
 }
 
-function startDeviceReadAloud(messageId: string, markdown: string): void {
-	const speech = speechController();
-	if (!speech || typeof SpeechSynthesisUtterance === "undefined") {
-		updateState({
-			messageId,
-			phase: "error",
-			error: "Read aloud is not supported by this browser",
-		});
-		return;
-	}
-	initializePreferences();
-	const voices = browserLocalVoices();
-	if (voices.length === 0) {
-		updateState({
-			messageId,
-			phase: "error",
-			error: "No local speech voices are available on this device",
-		});
-		return;
-	}
-	const chunks = chunkReadAloudText(readableTextFromMarkdown(markdown));
-	if (chunks.length === 0) {
-		updateState({
-			messageId,
-			phase: "error",
-			error: "This response has no readable text",
-		});
-		return;
-	}
-
-	const currentGeneration = ++generation;
-	utteranceGeneration++;
-	releaseActiveAudio();
-	speech.cancel();
+function beginDeviceReadAloud(
+	messageId: string,
+	chunks: string[],
+	voices: SpeechSynthesisVoice[],
+	currentGeneration: number,
+): void {
+	if (currentGeneration !== generation) return;
 	const voice = selectedVoice(voices);
 	const reading: ActiveReading = {
 		messageId,
@@ -408,6 +390,92 @@ function startDeviceReadAloud(messageId: string, markdown: string): void {
 	releaseActiveUtterance();
 	updateState({ messageId, phase: "speaking", error: null });
 	speakCurrentChunk(reading);
+}
+
+function waitForDeviceVoices(
+	messageId: string,
+	chunks: string[],
+	speech: SpeechSynthesis,
+	currentGeneration: number,
+): void {
+	let settled = false;
+	let pollId: ReturnType<typeof setInterval> | undefined;
+	let timeoutId: ReturnType<typeof setTimeout> | undefined;
+	const cleanup = () => {
+		if (settled) return;
+		settled = true;
+		speech.removeEventListener("voiceschanged", checkVoices);
+		if (pollId !== undefined) clearInterval(pollId);
+		if (timeoutId !== undefined) clearTimeout(timeoutId);
+		if (pendingVoiceDiscoveryCleanup === cleanup)
+			pendingVoiceDiscoveryCleanup = null;
+	};
+	const checkVoices = () => {
+		if (currentGeneration !== generation) {
+			cleanup();
+			return;
+		}
+		const voices = browserLocalVoices();
+		if (voices.length === 0) return;
+		cleanup();
+		beginDeviceReadAloud(messageId, chunks, voices, currentGeneration);
+	};
+	pendingVoiceDiscoveryCleanup = cleanup;
+	speech.addEventListener("voiceschanged", checkVoices);
+	pollId = setInterval(checkVoices, VOICE_DISCOVERY_POLL_MS);
+	timeoutId = setTimeout(() => {
+		if (currentGeneration !== generation) {
+			cleanup();
+			return;
+		}
+		cleanup();
+		updateState({
+			messageId,
+			phase: "error",
+			error: "No local speech voices are available on this device",
+		});
+	}, VOICE_DISCOVERY_TIMEOUT_MS);
+}
+
+function startDeviceReadAloud(messageId: string, markdown: string): void {
+	const speech = speechController();
+	if (!speech || typeof SpeechSynthesisUtterance === "undefined") {
+		updateState({
+			messageId,
+			phase: "error",
+			error: "Read aloud is not supported by this browser",
+		});
+		return;
+	}
+	initializePreferences();
+	const chunks = chunkReadAloudText(readableTextFromMarkdown(markdown));
+	if (chunks.length === 0) {
+		updateState({
+			messageId,
+			phase: "error",
+			error: "This response has no readable text",
+		});
+		return;
+	}
+
+	const replacingDeviceReading =
+		activeReading !== null || activeUtterance !== null;
+	const currentGeneration = ++generation;
+	utteranceGeneration++;
+	releasePendingVoiceDiscovery();
+	releaseActiveAudio();
+	releaseActiveUtterance();
+	activeReading = null;
+	// Calling cancel immediately before Chrome's first speak() can cause that
+	// first utterance to be dropped. Only cancel when replacing speech we own.
+	if (replacingDeviceReading) speech.cancel();
+	const voices = browserLocalVoices();
+	if (voices.length > 0) {
+		beginDeviceReadAloud(messageId, chunks, voices, currentGeneration);
+		return;
+	}
+	updateState({ messageId, phase: "loading", error: null });
+	waitForDeviceVoices(messageId, chunks, speech, currentGeneration);
 }
 
 function startMicrosoftReadAloud(messageId: string, dbId?: number): void {
@@ -430,6 +498,7 @@ function startMicrosoftReadAloud(messageId: string, dbId?: number): void {
 
 	const currentGeneration = ++generation;
 	utteranceGeneration++;
+	releasePendingVoiceDiscovery();
 	releaseActiveUtterance();
 	activeReading = null;
 	speechController()?.cancel();
@@ -548,6 +617,7 @@ export function toggleReadAloud(
 export function stopReadAloud(): void {
 	generation++;
 	utteranceGeneration++;
+	releasePendingVoiceDiscovery();
 	releaseActiveUtterance();
 	activeReading = null;
 	speechController()?.cancel();
@@ -635,6 +705,7 @@ export function useLocalReadAloudVoices(): LocalReadAloudVoice[] {
 export function __resetReadAloudForTesting(): void {
 	generation++;
 	utteranceGeneration++;
+	releasePendingVoiceDiscovery();
 	releaseActiveUtterance();
 	activeReading = null;
 	releaseActiveAudio();

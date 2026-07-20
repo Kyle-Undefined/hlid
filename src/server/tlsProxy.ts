@@ -9,6 +9,7 @@ import { SERVER_FN_NAMES } from "./embedded-server-fn-names";
 import { compressHttpResponse } from "./httpCompression";
 import { createRequestObserver } from "./requestDiagnostics";
 import { createConcurrencyGate, readRequestBodyLimited } from "./requestLimits";
+import type { UiForward } from "./uiServer";
 
 type WsData = {
 	wsTarget: string;
@@ -97,9 +98,19 @@ async function forwardAttempt(
 	timeoutMs: number,
 ): Promise<Response> {
 	const controller = new AbortController();
-	const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+	let rejectTimeout: ((reason?: unknown) => void) | undefined;
+	const timeoutPromise = new Promise<Response>((_resolve, reject) => {
+		rejectTimeout = reject;
+	});
+	const timeoutId = setTimeout(() => {
+		controller.abort();
+		rejectTimeout?.(controller.signal.reason);
+	}, timeoutMs);
 	try {
-		return await forward(input, { ...init, signal: controller.signal });
+		return await Promise.race([
+			forward(input, { ...init, signal: controller.signal }),
+			timeoutPromise,
+		]);
 	} finally {
 		clearTimeout(timeoutId);
 	}
@@ -219,6 +230,7 @@ export type TlsProxyOptions = {
 	localNetworkAccess: boolean;
 	internalToken: string;
 	maxBodyBytes: number;
+	forward?: UiForward;
 };
 
 export function startTlsProxy({
@@ -231,6 +243,7 @@ export function startTlsProxy({
 	localNetworkAccess,
 	internalToken,
 	maxBodyBytes,
+	forward,
 }: TlsProxyOptions): void {
 	const certBuf = readFileSync(certPath);
 	const x509 = new X509Certificate(certBuf);
@@ -241,6 +254,7 @@ export function startTlsProxy({
 		uiPort,
 		internalToken,
 		maxBodyBytes,
+		forward,
 	});
 
 	registerBunServer(

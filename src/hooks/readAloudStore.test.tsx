@@ -76,6 +76,7 @@ beforeEach(() => {
 	__resetReadAloudForTesting();
 	localStorage.clear();
 	vi.clearAllMocks();
+	speech.getVoices.mockReturnValue([remoteVoice, localVoice]);
 	MockAudio.instances = [];
 	Object.defineProperty(window, "speechSynthesis", {
 		value: speech,
@@ -111,9 +112,37 @@ describe("readAloudStore", () => {
 		expect(utterance.voice).toBe(localVoice);
 		expect(utterance.rate).toBe(1.25);
 		expect(speech.speak).toHaveBeenCalledTimes(1);
+		expect(speech.cancel).not.toHaveBeenCalled();
 
 		act(() => utterance.onend?.());
 		expect(result.current.phase).toBe("idle");
+	});
+
+	it("starts from the initial click when Chrome loads voices asynchronously", () => {
+		let voicesChanged: (() => void) | undefined;
+		speech.getVoices.mockReturnValue([]);
+		speech.addEventListener.mockImplementation((event, listener) => {
+			if (event === "voiceschanged") voicesChanged = listener as () => void;
+		});
+		const { result } = renderHook(() => useReadAloudState());
+
+		act(() => startReadAloud("message-1", "First click should speak."));
+		expect(result.current).toEqual({
+			messageId: "message-1",
+			phase: "loading",
+			error: null,
+		});
+		expect(speech.speak).not.toHaveBeenCalled();
+		expect(speech.cancel).not.toHaveBeenCalled();
+
+		speech.getVoices.mockReturnValue([remoteVoice, localVoice]);
+		act(() => voicesChanged?.());
+
+		expect(result.current.phase).toBe("speaking");
+		expect(speech.speak).toHaveBeenCalledOnce();
+		expect((speech.speak.mock.calls[0]?.[0] as MockUtterance).text).toBe(
+			"First click should speak.",
+		);
 	});
 
 	it("resumes through a fresh utterance from Chrome's latest word boundary", () => {
