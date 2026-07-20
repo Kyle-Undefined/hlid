@@ -14,23 +14,32 @@ import {
 	queryObsidianProperties,
 	queryObsidianSearch,
 	queryObsidianTasks,
+	queryObsidianVaultInfo,
+	readObsidianNote,
 	readObsidianTemplate,
 } from "./obsidianCli";
 
 export const OBSIDIAN_AGENT_NAMESPACE = "hlid_obsidian";
 export const OBSIDIAN_AGENT_NAMESPACE_DESCRIPTION =
-	"Obsidian-native access to Hlid's configured vault. When the user asks about their vault or Obsidian, use these tools before shell or filesystem operations whenever they support the task. Reads use Obsidian's index and vault semantics. Writes use curated note operations and follow the active agent permission policy.";
+	"First-class Obsidian access to Hlid's configured vault from every provider, working directory, Windows host, or WSL agent. Use these tools instead of shell or filesystem operations whenever they support a vault task. Reads use Obsidian's index and vault semantics. Writes use curated note operations and follow the active agent permission policy. Hlid @ references select exact notes only; never expand their links, backlinks, embeds, or related notes unless the user asks.";
 
 const vaultPath = z.string().trim().min(1).max(4_096);
 const resultLimit = z.number().int().min(1).max(200).optional();
 const countOnly = z.boolean().optional();
 
 export const obsidianAgentSchemas = {
+	vault_info: z.object({}),
 	search: z.object({
 		query: z.string().trim().min(1).max(4_096),
 		path: vaultPath.optional(),
 		caseSensitive: z.boolean().optional(),
 		context: z.boolean().optional(),
+		limit: resultLimit,
+		countOnly,
+	}),
+	read_note: z.object({
+		path: vaultPath,
+		startLine: z.number().int().min(1).max(1_000_000).optional(),
 		limit: resultLimit,
 		countOnly,
 	}),
@@ -154,6 +163,17 @@ const budgetSchemaProperties: Record<string, JsonValue> = {
 
 export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
 	{
+		name: "vault_info",
+		description:
+			"Confirm the configured Obsidian vault connection and return its name, Obsidian version, active note when available, and Hlid's native vault capabilities. The agent never needs the vault's absolute Windows or WSL filesystem path.",
+		readOnly: true,
+		inputSchema: {
+			type: "object",
+			properties: {},
+			additionalProperties: false,
+		},
+	},
+	{
 		name: "search",
 		description:
 			"Search the configured Obsidian vault by indexed text. Use this instead of shell or filesystem search for vault queries. Can return matching note paths, matching lines with context, or only the matching file count. Returns a bounded JSON envelope.",
@@ -181,6 +201,30 @@ export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
 				...budgetSchemaProperties,
 			},
 			required: ["query"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "read_note",
+		description:
+			"Read one exact vault-relative note through Obsidian. This never searches for related notes or expands links, backlinks, embeds, or attachments. Use the path returned by search or supplied by an exact Hlid @ reference.",
+		readOnly: true,
+		inputSchema: {
+			type: "object",
+			properties: {
+				path: {
+					type: "string",
+					description: "Exact vault-relative note path.",
+				},
+				startLine: {
+					type: "integer",
+					minimum: 1,
+					maximum: 1_000_000,
+					description: "First one-based line to return. Defaults to 1.",
+				},
+				...budgetSchemaProperties,
+			},
+			required: ["path"],
 			additionalProperties: false,
 		},
 	},
@@ -425,6 +469,7 @@ export function isObsidianAgentToolReadOnly(name: string): boolean {
 
 type BudgetOptions = {
 	limit?: number;
+	startLine?: number;
 	countOnly?: boolean;
 	expectedJson: boolean;
 	nativeCountOnly?: boolean;
@@ -537,12 +582,13 @@ function textEnvelope(output: string, options: BudgetOptions): string {
 			countOnly: true,
 		} satisfies ResultEnvelope);
 	}
-	const selected = lines.slice(0, options.limit ?? 50);
+	const offset = Math.min(Math.max((options.startLine ?? 1) - 1, 0), total);
+	const selected = lines.slice(offset, offset + (options.limit ?? 50));
 	const envelope: ResultEnvelope = {
 		sourceFormat: "text",
 		total,
 		returned: selected.length,
-		truncated: selected.length < total,
+		truncated: offset > 0 || offset + selected.length < total,
 		countOnly: false,
 		data: selected,
 	};
@@ -581,6 +627,13 @@ export async function executeObsidianAgentTool(
 ): Promise<string> {
 	const vaultName = loadConfig().vault.name;
 	switch (name as ObsidianAgentToolName) {
+		case "vault_info": {
+			obsidianAgentSchemas.vault_info.parse(input);
+			return JSON.stringify({
+				...(await queryObsidianVaultInfo(vaultName)),
+				capabilities: OBSIDIAN_AGENT_TOOL_SPECS.map((tool) => tool.name),
+			});
+		}
 		case "links": {
 			const parsed = obsidianAgentSchemas.links.parse(input);
 			return budgetObsidianAgentOutput(
@@ -603,6 +656,13 @@ export async function executeObsidianAgentTool(
 					nativeCountOnly: parsed.countOnly,
 					expectedJson: !parsed.context && !parsed.countOnly,
 				},
+			);
+		}
+		case "read_note": {
+			const parsed = obsidianAgentSchemas.read_note.parse(input);
+			return budgetObsidianAgentOutput(
+				await readObsidianNote(vaultName, parsed.path),
+				{ ...parsed, expectedJson: false },
 			);
 		}
 		case "current_note": {

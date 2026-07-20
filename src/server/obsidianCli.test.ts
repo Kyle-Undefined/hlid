@@ -16,6 +16,8 @@ import {
 	queryObsidianProperties,
 	queryObsidianSearch,
 	queryObsidianTasks,
+	queryObsidianVaultInfo,
+	readObsidianNote,
 	readObsidianTemplate,
 	testObsidianConnection,
 } from "./obsidianCli";
@@ -544,6 +546,40 @@ describe("Obsidian CLI bridge", () => {
 			info.dependencies,
 		);
 		expect(info.run.mock.calls[1]?.[1]).toEqual(["vault=Fornbok", "file"]);
+	});
+
+	it("reads one exact vault path and reports first-class vault identity", async () => {
+		const exact = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "# Yggdrasil", code: 0 },
+		]);
+		await expect(
+			readObsidianNote(
+				"Fornbok",
+				"1 Projects/Yggdrasil.md",
+				exact.dependencies,
+			),
+		).resolves.toBe("# Yggdrasil");
+		expect(exact.run.mock.calls[1]?.[1]).toEqual([
+			"vault=Fornbok",
+			"read",
+			"path=1 Projects/Yggdrasil.md",
+		]);
+
+		const info = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "1.12.7", code: 0 },
+			{ output: "path: Notes/Current.md", code: 0 },
+		]);
+		await expect(
+			queryObsidianVaultInfo("Fornbok", info.dependencies),
+		).resolves.toEqual({
+			name: "Fornbok",
+			version: "1.12.7",
+			activeNote: "Notes/Current.md",
+		});
+		expect(info.run.mock.calls[1]?.[1]).toEqual(["vault=Fornbok", "version"]);
+		expect(info.run.mock.calls[2]?.[1]).toEqual(["vault=Fornbok", "file"]);
 	});
 
 	it("maps task and property queries to structured output", async () => {

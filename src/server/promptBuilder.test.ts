@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { BuildPromptOptions } from "./promptBuilder";
 import { buildPlanHtmlInstructions, buildPromptAsync } from "./promptBuilder";
 
@@ -45,6 +45,29 @@ describe("buildPrompt — basic", async () => {
 });
 
 describe("buildPrompt — vault references", async () => {
+	it("hydrates one exact @ note through Obsidian without granting its path", async () => {
+		mkdirSync(join(tmp, "Projects"), { recursive: true });
+		writeFileSync(join(tmp, "Projects", "Yggdrasil.md"), "filesystem copy");
+		const readVaultReference = vi.fn(async () => "# Yggdrasil\nNative body");
+		const result = await buildPromptAsync(
+			base({
+				vaultName: "Fornbok",
+				vaultReferences: ["Projects/Yggdrasil.md"],
+				readVaultReference,
+			}),
+		);
+
+		expect(readVaultReference).toHaveBeenCalledWith("Projects/Yggdrasil.md");
+		expect(result.prompt).toContain('Configured Obsidian vault: "Fornbok"');
+		expect(result.prompt).toContain('"path":"Projects/Yggdrasil.md"');
+		expect(result.prompt).toContain("# Yggdrasil\\nNative body");
+		expect(result.prompt).toContain("Never expand");
+		expect(result.prompt).not.toContain(join(tmp, "Projects/Yggdrasil.md"));
+		expect(result.resourcePaths).not.toContain(
+			join(tmp, "Projects/Yggdrasil.md"),
+		);
+	});
+
 	it("resolves selected relative paths into exact provider instructions", async () => {
 		mkdirSync(join(tmp, "Projects"), { recursive: true });
 		writeFileSync(join(tmp, "Projects", "Hlid.md"), "# Hlid");

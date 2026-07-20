@@ -40,6 +40,7 @@ import { loadConfig } from "./config";
 import { bumpDataRevision } from "./dataRevision";
 import { resolveExecutionContext } from "./executionContext";
 import { planStagingPath, prepareLibrary } from "./libraryStore";
+import { readObsidianNote } from "./obsidianCli";
 import { parseAskUserQuestion } from "./parseAskUserQuestion";
 import { persistAlwaysAllowedTool } from "./permissionStore";
 import {
@@ -487,6 +488,7 @@ export class SessionManager {
 	private restartAgentSessionForEffort = false;
 	private maxTurns: number | undefined;
 	private vaultPath!: string;
+	private vaultName!: string;
 	private permissionMode!: PermissionMode;
 	private claudeExecutable: string | undefined;
 	private codexExecutable: string | undefined;
@@ -586,6 +588,7 @@ export class SessionManager {
 		preserveSessionOverrides = false,
 	): void {
 		this.vaultPath = config.vault.path || process.env.HOME || "/";
+		this.vaultName = config.vault.name;
 		this.vaultProviderId = config.vault_provider ?? "claude";
 		const agentMaps = buildAgentMaps(config);
 		this.agentProviderMap = agentMaps.providers;
@@ -3188,6 +3191,7 @@ export class SessionManager {
 				safeVaultReferences = [],
 			} = await buildPromptAsync({
 				vaultPath: this.vaultPath,
+				vaultName: this.vaultName,
 				allowedAgentRealPaths: this.allowedAgentRealPaths,
 				agentMode: this.agentMode,
 				agentCwd: this.agentCwd,
@@ -3197,6 +3201,12 @@ export class SessionManager {
 				skillContexts,
 				attachments,
 				vaultReferences,
+				...(commandAction
+					? {}
+					: {
+							readVaultReference: (relativePath: string) =>
+								readObsidianNote(this.vaultName, relativePath),
+						}),
 				...(runtimePlanHtmlPath
 					? {
 							planHtmlInstructions:

@@ -87,6 +87,9 @@ vi.mock("./promptBuilder", () => ({
 		safeAttachments: [],
 	}),
 }));
+vi.mock("./obsidianCli", () => ({
+	readObsidianNote: vi.fn().mockResolvedValue("# Native note"),
+}));
 vi.mock("node:fs", () => ({
 	mkdirSync: vi.fn(),
 	readFileSync: vi.fn((path: string) => {
@@ -117,6 +120,7 @@ import type {
 import { waitForClaudeWarmupSnapshot } from "./claudeWarmup";
 import { loadConfig } from "./config";
 import { resolveExecutionContext } from "./executionContext";
+import { readObsidianNote } from "./obsidianCli";
 import { buildPromptAsync } from "./promptBuilder";
 import type { RateLimitMessage, ServerMessage } from "./protocol";
 import { getWindowMark } from "./proxy";
@@ -208,6 +212,43 @@ function makeProvider(
 // ── getStatus / initial state ─────────────────────────────────────────────────
 
 describe("SessionManager — initial state", () => {
+	it("attaches first-class vault identity and an Obsidian-native exact-note reader", async () => {
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(): AgentSession {
+				return {
+					async *[Symbol.asyncIterator]() {
+						yield {
+							type: "done",
+							cost: 0,
+							turns: 1,
+							durationMs: 0,
+							usage: { inputTokens: 1, outputTokens: 1 },
+						};
+					},
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+				};
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await sm.runQuery("hello", () => {}, "vault-context-session");
+
+		const options = vi.mocked(buildPromptAsync).mock.calls.at(-1)?.[0];
+		expect(options).toMatchObject({
+			vaultName: "Test",
+			vaultPath: "/tmp/hlid-test-vault",
+		});
+		await expect(
+			options?.readVaultReference?.("Projects/Yggdrasil.md"),
+		).resolves.toBe("# Native note");
+		expect(readObsidianNote).toHaveBeenCalledWith(
+			"Test",
+			"Projects/Yggdrasil.md",
+		);
+	});
+
 	it("persists selected Relics without re-linking their attachment rows", async () => {
 		const attachment = {
 			id: "relic-1",

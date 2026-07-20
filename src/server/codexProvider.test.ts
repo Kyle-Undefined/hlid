@@ -1202,7 +1202,7 @@ describe("CodexAgentSession — commands", () => {
 			hlid_obsidian: {
 				kind: "application",
 				value: expect.stringContaining(
-					"use these tools before shell or filesystem operations",
+					"Use these tools instead of shell or filesystem operations",
 				),
 			},
 		});
@@ -1217,7 +1217,7 @@ describe("CodexAgentSession — commands", () => {
 			}>
 		).find((tool) => tool.name === "hlid_obsidian");
 		expect(obsidianNamespace?.description).toContain(
-			"use these tools before shell or filesystem operations",
+			"Use these tools instead of shell or filesystem operations",
 		);
 		expect(
 			obsidianNamespace?.tools.find((tool) => tool.name === "tasks")

@@ -14,6 +14,8 @@ const bridge = vi.hoisted(() => ({
 	queryObsidianProperties: vi.fn(),
 	queryObsidianSearch: vi.fn(),
 	queryObsidianTasks: vi.fn(),
+	queryObsidianVaultInfo: vi.fn(),
+	readObsidianNote: vi.fn(),
 	readObsidianTemplate: vi.fn(),
 }));
 
@@ -37,7 +39,9 @@ describe("Obsidian agent tools", () => {
 
 	it("publishes curated vault reads and non-destructive note writes", () => {
 		expect(OBSIDIAN_AGENT_TOOL_SPECS.map((tool) => tool.name)).toEqual([
+			"vault_info",
 			"search",
+			"read_note",
 			"current_note",
 			"links",
 			"tasks",
@@ -61,7 +65,10 @@ describe("Obsidian agent tools", () => {
 			),
 		).not.toMatch(/restore|eval|install|write/i);
 		for (const tool of OBSIDIAN_AGENT_TOOL_SPECS.filter(
-			(tool) => tool.readOnly && tool.name !== "read_template",
+			(tool) =>
+				tool.readOnly &&
+				tool.name !== "read_template" &&
+				tool.name !== "vault_info",
 		)) {
 			expect(tool.inputSchema.properties).toMatchObject({
 				limit: { type: "integer", minimum: 1, maximum: 200 },
@@ -73,6 +80,38 @@ describe("Obsidian agent tools", () => {
 				(tool) => tool.name,
 			),
 		).toEqual(["create_note", "append_note", "prepend_note"]);
+	});
+
+	it("reports the native vault connection and reads one exact note", async () => {
+		bridge.queryObsidianVaultInfo.mockResolvedValueOnce({
+			name: "Fornbok",
+			version: "1.12.7",
+			activeNote: "Notes/Current.md",
+		});
+		await expect(executeObsidianAgentTool("vault_info", {})).resolves.toContain(
+			'"name":"Fornbok"',
+		);
+
+		bridge.readObsidianNote.mockResolvedValueOnce(
+			["one", "two", "three", "four"].join("\n"),
+		);
+		const output = JSON.parse(
+			await executeObsidianAgentTool("read_note", {
+				path: "Notes/One.md",
+				startLine: 2,
+				limit: 2,
+			}),
+		);
+		expect(output).toMatchObject({
+			total: 4,
+			returned: 2,
+			truncated: true,
+			data: ["two", "three"],
+		});
+		expect(bridge.readObsidianNote).toHaveBeenCalledWith(
+			"Fornbok",
+			"Notes/One.md",
+		);
 	});
 
 	it("lists, reads, creates, and updates notes through the shared bridge", async () => {

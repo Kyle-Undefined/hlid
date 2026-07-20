@@ -31,7 +31,9 @@ describe("ObsidianSection", () => {
 			state: "available",
 			detail: "Obsidian CLI is installed.",
 			agentTools: [
+				"vault_info",
 				"search",
+				"read_note",
 				"current_note",
 				"links",
 				"tasks",
@@ -52,7 +54,7 @@ describe("ObsidianSection", () => {
 		render(<ObsidianSection />);
 
 		await waitFor(() => expect(screen.getByText("v1.12.7")).toBeTruthy());
-		expect(screen.getByText("12 curated tools")).toBeTruthy();
+		expect(screen.getByText("14 curated tools")).toBeTruthy();
 		expect(screen.getByText("not registered")).toBeTruthy();
 		expect(serverFns.testObsidianConnectionFn).not.toHaveBeenCalled();
 

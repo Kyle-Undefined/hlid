@@ -619,6 +619,18 @@ export type ObsidianCurrentNoteQuery = {
 	countOnly?: boolean;
 };
 
+export async function readObsidianNote(
+	vaultName: string,
+	path: string,
+	dependencies: ObsidianBridgeDependencies = {},
+): Promise<string> {
+	return runObsidianCommand(
+		vaultName,
+		["read", `path=${safeVaultPath(path, "note path")}`],
+		dependencies,
+	);
+}
+
 export async function queryObsidianCurrentNote(
 	vaultName: string,
 	query: ObsidianCurrentNoteQuery,
@@ -637,6 +649,34 @@ export async function queryObsidianCurrentNote(
 			break;
 	}
 	return runObsidianCommand(vaultName, args, dependencies);
+}
+
+export type ObsidianVaultInfo = {
+	name: string;
+	version: string;
+	activeNote: string | null;
+};
+
+export async function queryObsidianVaultInfo(
+	vaultName: string,
+	dependencies: ObsidianBridgeDependencies = {},
+): Promise<ObsidianVaultInfo> {
+	const resolved = await resolveObsidianCli(dependencies);
+	const version = await runResolvedObsidianCommand(
+		resolved,
+		vaultName,
+		["version"],
+		dependencies,
+	);
+	const activeOutput = await runResolvedObsidianCommand(
+		resolved,
+		vaultName,
+		["file"],
+		dependencies,
+	);
+	const activePath = outputField(activeOutput, "path");
+	const activeNote = activePath ? portableVaultPath(activePath) : null;
+	return { name: vaultName, version, activeNote };
 }
 
 export async function listObsidianTemplates(
