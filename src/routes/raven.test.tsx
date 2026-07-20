@@ -427,14 +427,19 @@ describe("Raven composed submission behavior", () => {
 		expect(modelBadge?.parentElement?.className).toContain("-top-5");
 	});
 
-	it("keeps attachment and voice in a compact mobile control grid", () => {
+	it("keeps attachment and voice on the first mobile grid row", () => {
 		render(<ChatPage />);
 
 		const attach = screen.getByRole("button", { name: "Attach file" });
 		const voice = screen.getByRole("button", { name: "Start voice input" });
+		const activeNote = screen.getByRole("button", {
+			name: "Attach active Obsidian note",
+		});
 		const controlGrid = attach.parentElement;
+		const activeNoteContainer = activeNote.parentElement as HTMLElement;
 
 		expect(voice.parentElement).toBe(controlGrid);
+		expect(activeNoteContainer?.parentElement).toBe(controlGrid);
 		expect(controlGrid?.className).toContain("grid-cols-2");
 		expect(controlGrid?.className).toContain("grid-rows-2");
 		expect(controlGrid?.className).toContain("gap-y-1");
@@ -444,6 +449,11 @@ describe("Raven composed submission behavior", () => {
 		expect(
 			attach.compareDocumentPosition(voice) & Node.DOCUMENT_POSITION_FOLLOWING,
 		).toBeTruthy();
+		expect(
+			voice.compareDocumentPosition(activeNoteContainer) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		expect(activeNoteContainer?.className).toContain("md:order-3");
 	});
 
 	it("stacks Fork beneath New chat on mobile and desktop", () => {

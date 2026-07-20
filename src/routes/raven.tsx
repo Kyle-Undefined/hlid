@@ -2640,11 +2640,12 @@ function ChatInputControls(props: ChatComposerProps) {
 				>
 					<Paperclip className="w-3.5 h-3.5" />
 				</button>
+				<ChatVoiceControls {...props} />
 				<ObsidianActiveNoteButton
 					onAdd={props.vaultPicker.addVaultReference}
-					className="md:order-3 px-2 py-2 md:py-3 shrink-0"
+					className="px-2 py-2 md:py-3"
+					containerClassName="md:order-3"
 				/>
-				<ChatVoiceControls {...props} />
 			</div>
 			<ChatTextarea {...props} />
 			<ChatActionButtons {...props} sessionFork={sessionFork} />
