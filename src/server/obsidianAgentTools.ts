@@ -37,6 +37,7 @@ export const obsidianAgentSchemas = {
 		path: vaultPath.optional(),
 		caseSensitive: z.boolean().optional(),
 		context: z.boolean().optional(),
+		includeGraph: z.boolean().optional(),
 		limit: resultLimit,
 		countOnly,
 	}),
@@ -190,7 +191,7 @@ export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
 	{
 		name: "search",
 		description:
-			"Search the configured Obsidian vault by indexed content and matching Markdown paths. Use this instead of shell or filesystem search for vault queries. Can return hybrid note paths, matching content lines with context, or only the indexed-content count. Use links afterward only when the user asks for related notes or backlinks. Returns a bounded JSON envelope.",
+			"Search the configured Obsidian vault by indexed content and matching Markdown paths. Use this instead of shell or filesystem search for vault queries. When the user explicitly asks for related notes, connections, or graph-aware results, set includeGraph to combine direct content and filename matches with their backlinks and outgoing links in one ranked result. A direct result reports graphUnavailable when part of its graph could not be read, while the remaining results still return. Leave includeGraph off for ordinary searches and exact Hlid @ references. Can otherwise return matching content lines with context or only the indexed-content count. Returns a bounded JSON envelope.",
 		readOnly: true,
 		inputSchema: {
 			type: "object",
@@ -211,6 +212,11 @@ export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
 					type: "boolean",
 					description:
 						"Include matching line numbers and text instead of returning only note paths.",
+				},
+				includeGraph: {
+					type: "boolean",
+					description:
+						"Include one-hop backlinks and outgoing links around direct content and filename matches. Use only when the user asks for related or connected notes; cannot be combined with context or countOnly.",
 				},
 				...budgetSchemaProperties,
 			},

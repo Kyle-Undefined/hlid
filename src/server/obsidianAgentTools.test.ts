@@ -239,6 +239,38 @@ describe("Obsidian agent tools", () => {
 		});
 	});
 
+	it("passes explicit graph-aware searches through the curated search tool", async () => {
+		bridge.queryObsidianSearch.mockResolvedValueOnce(
+			JSON.stringify([
+				{
+					path: "Notes/Related.md",
+					sources: ["backlink"],
+					relatedTo: ["Notes/One.md"],
+				},
+			]),
+		);
+		const output = JSON.parse(
+			await executeObsidianAgentTool("search", {
+				query: "One",
+				includeGraph: true,
+				limit: 20,
+			}),
+		);
+
+		expect(output.data).toEqual([
+			{
+				path: "Notes/Related.md",
+				sources: ["backlink"],
+				relatedTo: ["Notes/One.md"],
+			},
+		]);
+		expect(bridge.queryObsidianSearch).toHaveBeenCalledWith("Fornbok", {
+			query: "One",
+			includeGraph: true,
+			limit: 20,
+		});
+	});
+
 	it("reads and outlines the note currently active in Obsidian", async () => {
 		bridge.queryObsidianCurrentNote.mockResolvedValueOnce("# One\nBody");
 		const note = JSON.parse(

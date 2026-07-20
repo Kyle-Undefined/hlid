@@ -464,9 +464,162 @@ export type ObsidianSearchQuery = {
 	path?: string;
 	caseSensitive?: boolean;
 	context?: boolean;
+	includeGraph?: boolean;
 	countOnly?: boolean;
 	limit?: number;
 };
+
+export type ObsidianHybridSearchResult = {
+	path: string;
+	sources: Array<"filename" | "content" | "backlink" | "outgoing">;
+	relatedTo?: string[];
+	graphUnavailable?: Array<"backlinks" | "outgoing">;
+};
+
+const MAX_GRAPH_SEARCH_SEEDS = 12;
+
+function parseBacklinkPaths(output: string): string[] {
+	try {
+		const parsed: unknown = JSON.parse(output.trim());
+		if (!Array.isArray(parsed)) return [];
+		return parsed.flatMap((item) => {
+			if (typeof item === "string") return [portableVaultPath(item)];
+			if (!item || typeof item !== "object") return [];
+			const file = (item as { file?: unknown }).file;
+			return typeof file === "string" ? [portableVaultPath(file)] : [];
+		});
+	} catch {
+		return [];
+	}
+}
+
+function parseOutgoingLinkPaths(output: string): string[] {
+	return output
+		.split(/\r?\n/)
+		.map((path) => portableVaultPath(path.trim()))
+		.filter((path) => path.toLowerCase().endsWith(".md"));
+}
+
+function pathIsWithinFolder(path: string, folder: string | undefined): boolean {
+	if (!folder) return true;
+	const prefix = `${portableVaultPath(folder).replace(/\/$/, "")}/`;
+	return path === prefix.slice(0, -1) || path.startsWith(prefix);
+}
+
+async function graphAwareSearchResults(
+	vaultName: string,
+	directPaths: string[],
+	filenamePaths: Set<string>,
+	contentPaths: Set<string>,
+	query: ObsidianSearchQuery,
+	dependencies: ObsidianBridgeDependencies,
+): Promise<ObsidianHybridSearchResult[]> {
+	const results = new Map<string, ObsidianHybridSearchResult>();
+	const add = (
+		path: string,
+		source: ObsidianHybridSearchResult["sources"][number],
+		relatedTo?: string,
+	) => {
+		const portable = portableVaultPath(path);
+		if (
+			!portable.toLowerCase().endsWith(".md") ||
+			!pathIsWithinFolder(portable, query.path)
+		) {
+			return;
+		}
+		const current = results.get(portable) ?? { path: portable, sources: [] };
+		if (!current.sources.includes(source)) current.sources.push(source);
+		if (relatedTo) {
+			current.relatedTo ??= [];
+			if (!current.relatedTo.includes(relatedTo)) {
+				current.relatedTo.push(relatedTo);
+			}
+		}
+		results.set(portable, current);
+	};
+	const markGraphUnavailable = (
+		path: string,
+		direction: NonNullable<
+			ObsidianHybridSearchResult["graphUnavailable"]
+		>[number],
+	) => {
+		const current = results.get(path);
+		if (!current) return;
+		current.graphUnavailable ??= [];
+		if (!current.graphUnavailable.includes(direction)) {
+			current.graphUnavailable.push(direction);
+		}
+	};
+
+	for (const path of directPaths) {
+		if (filenamePaths.has(path)) add(path, "filename");
+		if (contentPaths.has(path)) add(path, "content");
+	}
+
+	for (const seed of directPaths.slice(0, MAX_GRAPH_SEARCH_SEEDS)) {
+		const [backlinks, outgoing] = await Promise.allSettled([
+			queryObsidianLinks(
+				vaultName,
+				{ kind: "backlinks", path: seed },
+				dependencies,
+			),
+			queryObsidianLinks(
+				vaultName,
+				{ kind: "outgoing", path: seed },
+				dependencies,
+			),
+		]);
+		if (backlinks.status === "fulfilled") {
+			for (const path of parseBacklinkPaths(backlinks.value)) {
+				if (portableVaultPath(path) === seed) continue;
+				add(path, "backlink", seed);
+			}
+		} else {
+			markGraphUnavailable(seed, "backlinks");
+		}
+		if (outgoing.status === "fulfilled") {
+			for (const path of parseOutgoingLinkPaths(outgoing.value)) {
+				if (portableVaultPath(path) === seed) continue;
+				add(path, "outgoing", seed);
+			}
+		} else {
+			markGraphUnavailable(seed, "outgoing");
+		}
+	}
+
+	const sourceWeight: Record<
+		ObsidianHybridSearchResult["sources"][number],
+		number
+	> = { filename: 8, content: 4, backlink: 2, outgoing: 1 };
+	const ranked = Array.from(results.values()).sort((left, right) => {
+		const leftScore =
+			left.sources.reduce((total, source) => total + sourceWeight[source], 0) +
+			(left.relatedTo?.length ?? 0) * 2;
+		const rightScore =
+			right.sources.reduce((total, source) => total + sourceWeight[source], 0) +
+			(right.relatedTo?.length ?? 0) * 2;
+		return rightScore - leftScore || left.path.localeCompare(right.path);
+	});
+	const limit = query.limit ?? 200;
+	const direct = ranked.filter((result) =>
+		result.sources.some(
+			(source) => source === "filename" || source === "content",
+		),
+	);
+	const graphOnly = ranked.filter((result) =>
+		result.sources.every(
+			(source) => source !== "filename" && source !== "content",
+		),
+	);
+	const graphSlots = Math.min(
+		graphOnly.length,
+		Math.max(1, Math.ceil(limit / 3)),
+	);
+	return [
+		...direct.slice(0, Math.max(0, limit - graphSlots)),
+		...graphOnly.slice(0, graphSlots),
+	].slice(0, limit);
+}
 
 export async function queryObsidianSearch(
 	vaultName: string,
@@ -480,6 +633,11 @@ export async function queryObsidianSearch(
 		/[\r\n\0]/.test(searchQuery)
 	) {
 		throw new Error("Obsidian search query is invalid.");
+	}
+	if (query.includeGraph && (query.context || query.countOnly)) {
+		throw new Error(
+			"Graph-aware Obsidian search returns ranked note paths and cannot be combined with context or countOnly.",
+		);
 	}
 	const args = [
 		query.context && !query.countOnly ? "search:context" : "search",
@@ -529,6 +687,18 @@ export async function queryObsidianSearch(
 			return candidate.includes(needle);
 		});
 	const combined = Array.from(new Set([...filenamePaths, ...contentPaths]));
+	if (query.includeGraph) {
+		return JSON.stringify(
+			await graphAwareSearchResults(
+				vaultName,
+				combined,
+				new Set(filenamePaths),
+				new Set(contentPaths),
+				query,
+				dependencies,
+			),
+		);
+	}
 	return JSON.stringify(combined.slice(0, query.limit ?? 200));
 }
 

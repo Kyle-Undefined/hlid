@@ -5,6 +5,7 @@ import { useCopyToClipboard } from "#/hooks/useCopyToClipboard";
 import type { ObsidianCaptureDestination } from "#/lib/obsidianCapture";
 import { CopyButton } from "./CopyButton";
 import type { AssistantMessage } from "./chatReducer";
+import { ObsidianVaultChangeReview } from "./ObsidianVaultChangeReview";
 import { ReadAloudButton } from "./ReadAloudButton";
 import { SaveToObsidianActions } from "./SaveToObsidianActions";
 import { ToolBlock } from "./ToolBlock";
@@ -156,6 +157,9 @@ export function AssistantMsg({
 						</div>
 					)}
 				</div>
+			)}
+			{!message.streaming && (
+				<ObsidianVaultChangeReview toolEvents={message.toolEvents} />
 			)}
 			{message.recap && !message.streaming && (
 				<div className="my-0.5">

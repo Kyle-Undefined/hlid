@@ -606,6 +606,103 @@ describe("Obsidian CLI bridge", () => {
 		]);
 	});
 
+	it("combines filename, content, backlinks, and outgoing links when requested", async () => {
+		const graph = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: '["Projects/Yggdrasil.md"]', code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{ output: "Projects/Yggdrasil.md\nProjects/Other.md", code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{
+				output:
+					'[{"file":"Projects/Gandr.md"},{"file":"Projects/Yggdrasil.md"}]',
+				code: 0,
+			},
+			{ output: "Projects/Galdur.md\nProjects/Gandr.md", code: 0 },
+		]);
+
+		await expect(
+			queryObsidianSearch(
+				"Fornbok",
+				{ query: "Yggdrasil", includeGraph: true, limit: 10 },
+				graph.dependencies,
+			),
+		).resolves.toBe(
+			JSON.stringify([
+				{
+					path: "Projects/Yggdrasil.md",
+					sources: ["filename", "content"],
+				},
+				{
+					path: "Projects/Gandr.md",
+					sources: ["backlink", "outgoing"],
+					relatedTo: ["Projects/Yggdrasil.md"],
+				},
+				{
+					path: "Projects/Galdur.md",
+					sources: ["outgoing"],
+					relatedTo: ["Projects/Yggdrasil.md"],
+				},
+			]),
+		);
+		expect(graph.run.mock.calls[6]?.[1]).toEqual([
+			"vault=Fornbok",
+			"backlinks",
+			"path=Projects/Yggdrasil.md",
+			"format=json",
+		]);
+		expect(graph.run.mock.calls[7]?.[1]).toEqual([
+			"vault=Fornbok",
+			"links",
+			"path=Projects/Yggdrasil.md",
+		]);
+	});
+
+	it("preserves direct results when part of graph expansion fails", async () => {
+		const graph = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: '["Projects/Yggdrasil.md"]', code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{ output: "Projects/Yggdrasil.md", code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{ output: "Backlinks temporarily unavailable", code: 1 },
+			{ output: "Projects/Galdur.md", code: 0 },
+		]);
+
+		await expect(
+			queryObsidianSearch(
+				"Fornbok",
+				{ query: "Yggdrasil", includeGraph: true, limit: 10 },
+				graph.dependencies,
+			),
+		).resolves.toBe(
+			JSON.stringify([
+				{
+					path: "Projects/Yggdrasil.md",
+					sources: ["filename", "content"],
+					graphUnavailable: ["backlinks"],
+				},
+				{
+					path: "Projects/Galdur.md",
+					sources: ["outgoing"],
+					relatedTo: ["Projects/Yggdrasil.md"],
+				},
+			]),
+		);
+	});
+
+	it("keeps graph expansion separate from context and count searches", async () => {
+		await expect(
+			queryObsidianSearch("Fornbok", {
+				query: "Yggdrasil",
+				context: true,
+				includeGraph: true,
+			}),
+		).rejects.toThrow("cannot be combined");
+	});
+
 	it("maps current-note reads, outlines, and metadata without a file path", async () => {
 		const read = wslDependencies([
 			{ output: windowsDetection, code: 0 },
