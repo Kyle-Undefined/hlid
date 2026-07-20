@@ -178,6 +178,27 @@ describe("buildPrompt — attachments", async () => {
 		expect(prompt).toContain("Attachments");
 	});
 
+	it("labels a selected Relic as existing context", async () => {
+		const relicPath = join(tmp, "report.pdf");
+		writeFileSync(relicPath, "fake-pdf");
+		const { prompt, safeAttachments } = await buildPromptAsync(
+			base({
+				attachments: [
+					{
+						id: "relic-1",
+						path: relicPath,
+						filename: "report.pdf",
+						mime: "application/pdf",
+						kind: "vault",
+						reference: "relic",
+					},
+				],
+			}),
+		);
+		expect(safeAttachments).toHaveLength(1);
+		expect(prompt).toContain("application/pdf, Relic: report.pdf");
+	});
+
 	it("excludes attachment outside vault and not in allowed agent paths", async () => {
 		const outsideDir = mkdtempSync(join(tmpdir(), "outside-att-"));
 		const outsideFile = join(outsideDir, "secret.txt");

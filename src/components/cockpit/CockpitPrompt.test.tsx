@@ -48,16 +48,21 @@ function makeProps(overrides?: Partial<Props>): Props {
 			items: [],
 			rootLabel: "Vault",
 			total: 0,
+			vaultTotal: 0,
+			relicTotal: 0,
 			truncated: false,
 			loading: false,
 			error: null,
 			selectedIndex: 0,
 			selected: [],
+			selectedRelics: [],
 			referencePaths: [],
+			relicAttachments: [],
 			navigate: vi.fn(),
 			select: vi.fn(),
 			close: vi.fn(),
 			remove: vi.fn(),
+			removeRelic: vi.fn(),
 			clear: vi.fn(),
 		},
 		isConnected: true,
@@ -228,6 +233,7 @@ describe("CockpitPrompt composer keys", () => {
 		const navigate = vi.fn();
 		const select = vi.fn();
 		const reference = {
+			source: "vault" as const,
 			relativePath: "Projects/Hlid.md",
 			name: "Hlid.md",
 			directory: "Projects",
@@ -240,7 +246,7 @@ describe("CockpitPrompt composer keys", () => {
 					...props.vaultPicker,
 					isOpen: true,
 					items: [reference],
-					total: 1,
+					vaultTotal: 1,
 					navigate,
 					select,
 				}}

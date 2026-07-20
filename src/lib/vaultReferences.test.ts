@@ -39,4 +39,22 @@ describe("formatVaultReferencedMessage", () => {
 			"Vault references:\n- Projects/Hlid.md",
 		);
 	});
+
+	it("persists Vault and Relic references as separate sections", () => {
+		expect(
+			formatVaultReferencedMessage(
+				"Compare these",
+				["Projects/Hlid.md"],
+				["release-plan.html"],
+			),
+		).toBe(
+			"Compare these\n\nVault references:\n- Projects/Hlid.md\n\nRelic references:\n- release-plan.html",
+		);
+	});
+
+	it("supports a Relic-only turn", () => {
+		expect(formatVaultReferencedMessage("", [], ["report.pdf"])).toBe(
+			"Relic references:\n- report.pdf",
+		);
+	});
 });

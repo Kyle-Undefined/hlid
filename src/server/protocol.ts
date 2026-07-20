@@ -482,6 +482,8 @@ export type ChatAttachment = {
 	filename: string;
 	mime: string;
 	kind: string;
+	/** Existing Relic selected as context, not a newly uploaded attachment. */
+	reference?: "relic";
 };
 
 // Client → server messages

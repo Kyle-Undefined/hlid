@@ -208,6 +208,64 @@ function makeProvider(
 // ── getStatus / initial state ─────────────────────────────────────────────────
 
 describe("SessionManager — initial state", () => {
+	it("persists selected Relics without re-linking their attachment rows", async () => {
+		const attachment = {
+			id: "relic-1",
+			path: "/tmp/hlid-test-vault/report.pdf",
+			filename: "report.pdf",
+			mime: "application/pdf",
+			kind: "vault",
+			reference: "relic" as const,
+		};
+		vi.mocked(buildPromptAsync).mockResolvedValueOnce({
+			prompt: "test prompt",
+			safeAttachments: [attachment],
+			resourcePaths: [attachment.path],
+			safeVaultReferences: [],
+		});
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(): AgentSession {
+				return {
+					async *[Symbol.asyncIterator]() {
+						yield {
+							type: "done",
+							cost: 0,
+							turns: 1,
+							durationMs: 0,
+							usage: { inputTokens: 1, outputTokens: 1 },
+						};
+					},
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+				};
+			},
+		};
+		const linkCallsBefore = vi.mocked(dbMock.linkAttachmentToMessage).mock.calls
+			.length;
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery(
+			"Review this",
+			() => {},
+			"relic-session",
+			undefined,
+			[attachment],
+			undefined,
+			"relic-turn",
+		);
+
+		expect(dbMock.appendMessage).toHaveBeenCalledWith(
+			"relic-session",
+			expect.any(Number),
+			"user",
+			"Review this\n\nRelic references:\n- report.pdf",
+			"relic-turn",
+		);
+		expect(vi.mocked(dbMock.linkAttachmentToMessage).mock.calls).toHaveLength(
+			linkCallsBefore,
+		);
+	});
+
 	it("uses separate CLIProxy defaults for the proxied Codex route", () => {
 		const config = {
 			...makeConfig(),

@@ -993,7 +993,11 @@ function useRavenSend(props: RavenActionProps) {
 	const { sessionState, send, dispatch } = props.runtime;
 	const { pendingAttachments, clearPending: clearPendingAttachments } =
 		props.upload;
-	const { referencePaths, clear: clearVaultReferences } = props.vaultPicker;
+	const {
+		referencePaths,
+		relicAttachments,
+		clear: clearVaultReferences,
+	} = props.vaultPicker;
 	const { atBottomRef } = props.viewport;
 
 	return useCallback(
@@ -1013,7 +1017,7 @@ function useRavenSend(props: RavenActionProps) {
 				running: sessionState === "running",
 				skillContexts,
 				commandAction,
-				attachments: pendingAttachments,
+				attachments: [...pendingAttachments, ...relicAttachments],
 				vaultReferences: referencePaths,
 				agentCwd: agentSkillContext ?? undefined,
 				agentContextAlreadySent: agentContextSentRef.current,
@@ -1050,6 +1054,7 @@ function useRavenSend(props: RavenActionProps) {
 			send,
 			sessionId,
 			pendingAttachments,
+			relicAttachments,
 			referencePaths,
 			agentSkillContext,
 			clearDraft,
@@ -1684,7 +1689,8 @@ export function ChatPage() {
 		agentSkillContext,
 		input,
 		activeSkills,
-		pendingAttachmentCount: pendingAttachments.length,
+		pendingAttachmentCount:
+			pendingAttachments.length + vaultPicker.selectedRelics.length,
 		pendingVaultReferenceCount: vaultPicker.selected.length,
 		uploadingCount,
 		wsStatus,
@@ -2485,10 +2491,16 @@ function ChatInputNotices({
 				</div>
 			)}
 			<AttachmentStrip
-				attachments={pendingAttachments}
+				attachments={[...pendingAttachments, ...vaultPicker.relicAttachments]}
 				uploadingCount={uploadingCount}
 				uploadError={uploadError}
-				onRemove={removePending}
+				onRemove={(id) => {
+					if (vaultPicker.selectedRelics.some((relic) => relic.id === id)) {
+						vaultPicker.removeRelic(id);
+					} else {
+						removePending(id);
+					}
+				}}
 			/>
 			{voice.error && (
 				<div
@@ -2791,7 +2803,8 @@ function ChatTextarea(props: ChatComposerProps) {
 					voice,
 					wsStatus,
 					activeSkills,
-					props.vaultPicker.selected.length,
+					props.vaultPicker.selected.length +
+						props.vaultPicker.selectedRelics.length,
 					isRunning,
 				)}
 				disabled={wsStatus !== "connected" || voice.phase === "transcribing"}
@@ -3042,7 +3055,8 @@ function ChatComposer(props: ChatComposerProps) {
 					selectedIndex={vaultPicker.selectedIndex}
 					loading={vaultPicker.loading}
 					error={vaultPicker.error}
-					total={vaultPicker.total}
+					vaultTotal={vaultPicker.vaultTotal}
+					relicTotal={vaultPicker.relicTotal}
 					truncated={vaultPicker.truncated}
 					onSelect={(reference) => {
 						vaultPicker.select(reference);

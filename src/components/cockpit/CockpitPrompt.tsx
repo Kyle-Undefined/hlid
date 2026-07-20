@@ -183,7 +183,8 @@ function PromptTextarea(props: PromptProps) {
 					props.voice,
 					props.isConnected,
 					props.activeSkills,
-					props.vaultPicker.selected.length,
+					props.vaultPicker.selected.length +
+						props.vaultPicker.selectedRelics.length,
 				)}
 				disabled={!props.isConnected || props.voice.phase === "transcribing"}
 				className={`min-w-0 flex-1 resize-none bg-transparent py-2.5 pr-3 text-sm text-foreground focus:outline-none disabled:opacity-30 overflow-hidden min-h-[72px] ${!props.isConnected ? "placeholder:text-foreground/50" : "placeholder:text-muted-foreground/25"}`}
@@ -367,7 +368,8 @@ function ComposerToolbar(props: PromptProps) {
 			<div className="ml-auto flex shrink-0 gap-2">
 				{(props.prompt ||
 					props.activeSkills.length > 0 ||
-					props.vaultPicker.selected.length > 0) && (
+					props.vaultPicker.selected.length > 0 ||
+					props.vaultPicker.selectedRelics.length > 0) && (
 					<button
 						type="button"
 						onClick={props.onClear}
@@ -419,7 +421,8 @@ export function CockpitPrompt(props: PromptProps) {
 						selectedIndex={props.vaultPicker.selectedIndex}
 						loading={props.vaultPicker.loading}
 						error={props.vaultPicker.error}
-						total={props.vaultPicker.total}
+						vaultTotal={props.vaultPicker.vaultTotal}
+						relicTotal={props.vaultPicker.relicTotal}
 						truncated={props.vaultPicker.truncated}
 						onSelect={(reference) => {
 							props.vaultPicker.select(reference);

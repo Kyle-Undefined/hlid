@@ -360,7 +360,10 @@ function useCockpitRunWiring({
 		planMode: composer.planMode,
 		planHtml: composer.planHtml,
 		attachSessionIdRef: upload.uploadSessionIdRef,
-		pendingAttachments: upload.pendingAttachments,
+		pendingAttachments: [
+			...upload.pendingAttachments,
+			...composer.vaultPicker.relicAttachments,
+		],
 		vaultReferences: composer.vaultPicker.referencePaths,
 		clearPendingAttachments: upload.clearPending,
 		clearVaultReferences: composer.vaultPicker.clear,
@@ -510,7 +513,8 @@ function CockpitPromptWiring({
 		(composer.activeSkills.length > 0 ||
 			composer.prompt.trim().length > 0 ||
 			upload.pendingAttachments.length > 0 ||
-			composer.vaultPicker.selected.length > 0) &&
+			composer.vaultPicker.selected.length > 0 ||
+			composer.vaultPicker.selectedRelics.length > 0) &&
 		upload.uploadingCount === 0 &&
 		isConnected;
 	return (
@@ -537,11 +541,22 @@ function CockpitPromptWiring({
 			textareaRef={composer.textareaRef}
 			fileInputRef={composer.fileInputRef}
 			upload={{
-				pendingAttachments: upload.pendingAttachments,
+				pendingAttachments: [
+					...upload.pendingAttachments,
+					...composer.vaultPicker.relicAttachments,
+				],
 				uploadingCount: upload.uploadingCount,
 				uploadError: upload.uploadError,
 				uploadFiles: upload.uploadFiles,
-				removePending: upload.removePending,
+				removePending: (id) => {
+					if (
+						composer.vaultPicker.selectedRelics.some((relic) => relic.id === id)
+					) {
+						composer.vaultPicker.removeRelic(id);
+					} else {
+						upload.removePending(id);
+					}
+				},
 			}}
 			voice={voice}
 			picker={{

@@ -97,7 +97,7 @@ function assemblePrompt(
 			? `Attachments (read with the Read tool when relevant):\n${safeAttachments
 					.map(
 						(attachment) =>
-							`- ${runtimePath(attachment.path)} (${attachment.mime})`,
+							`- ${runtimePath(attachment.path)} (${attachment.mime}${attachment.reference === "relic" ? `, Relic: ${attachment.filename}` : ""})`,
 					)
 					.join("\n")}\n\n`
 			: "";

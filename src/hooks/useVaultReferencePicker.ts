@@ -1,7 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { searchVaultReferencesFn } from "#/lib/serverFns/vaultReferences";
 import {
+	searchRelicReferencesFn,
+	searchVaultReferencesFn,
+} from "#/lib/serverFns/vaultReferences";
+import {
+	type ComposerReferenceItem,
+	MAX_RELIC_REFERENCES,
 	MAX_VAULT_REFERENCES,
+	type RelicReferenceItem,
 	type VaultReferenceItem,
 	vaultReferenceQuery,
 } from "#/lib/vaultReferences";
@@ -14,9 +20,13 @@ export function useVaultReferencePicker(
 ) {
 	const query = useMemo(() => vaultReferenceQuery(prompt), [prompt]);
 	const [selected, setSelected] = useState<VaultReferenceItem[]>([]);
-	const [items, setItems] = useState<VaultReferenceItem[]>([]);
+	const [selectedRelics, setSelectedRelics] = useState<RelicReferenceItem[]>(
+		[],
+	);
+	const [items, setItems] = useState<ComposerReferenceItem[]>([]);
 	const [rootLabel, setRootLabel] = useState("Vault");
-	const [total, setTotal] = useState(0);
+	const [vaultTotal, setVaultTotal] = useState(0);
+	const [relicTotal, setRelicTotal] = useState(0);
 	const [truncated, setTruncated] = useState(false);
 	const [loading, setLoading] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -38,22 +48,36 @@ export function useVaultReferencePicker(
 		setError(null);
 		const timer = window.setTimeout(
 			() => {
-				void searchVaultReferencesFn({
-					data: { query: query.query, limit: 48 },
-				})
-					.then((result) => {
+				const vaultLimit = query.query ? 24 : 16;
+				const relicLimit = query.query ? 8 : 6;
+				void Promise.all([
+					searchVaultReferencesFn({
+						data: { query: query.query, limit: vaultLimit },
+					}),
+					searchRelicReferencesFn({
+						data: { query: query.query, limit: relicLimit },
+					}),
+				])
+					.then(([vaultResult, relicResult]) => {
 						if (requestId.current !== currentRequest) return;
 						const selectedPaths = new Set(
 							selected.map((reference) => reference.relativePath),
 						);
-						setItems(
-							result.items.filter(
-								(item) => !selectedPaths.has(item.relativePath),
-							),
+						const selectedRelicIds = new Set(
+							selectedRelics.map((item) => item.id),
 						);
-						setRootLabel(result.rootLabel);
-						setTotal(result.total);
-						setTruncated(result.truncated);
+						setItems([
+							...vaultResult.items
+								.filter((item) => !selectedPaths.has(item.relativePath))
+								.map((item) => ({ source: "vault" as const, ...item })),
+							...relicResult.items
+								.filter((item) => !selectedRelicIds.has(item.id))
+								.map((item) => ({ source: "relic" as const, ...item })),
+						]);
+						setRootLabel(vaultResult.rootLabel);
+						setVaultTotal(vaultResult.total);
+						setRelicTotal(relicResult.total);
+						setTruncated(vaultResult.truncated || relicResult.truncated);
 					})
 					.catch((cause) => {
 						if (requestId.current !== currentRequest) return;
@@ -74,7 +98,7 @@ export function useVaultReferencePicker(
 			window.clearTimeout(timer);
 			if (requestId.current === currentRequest) requestId.current++;
 		};
-	}, [query, selected]);
+	}, [query, selected, selectedRelics]);
 
 	const clampedIndex =
 		items.length === 0 ? 0 : Math.min(selectedIndex, items.length - 1);
@@ -87,13 +111,22 @@ export function useVaultReferencePicker(
 		});
 	}
 
-	function select(reference: VaultReferenceItem) {
-		if (selected.length >= MAX_VAULT_REFERENCES) return;
-		setSelected((current) =>
-			current.some((item) => item.relativePath === reference.relativePath)
-				? current
-				: [...current, reference],
-		);
+	function select(reference: ComposerReferenceItem) {
+		if (reference.source === "vault") {
+			if (selected.length >= MAX_VAULT_REFERENCES) return;
+			setSelected((current) =>
+				current.some((item) => item.relativePath === reference.relativePath)
+					? current
+					: [...current, reference],
+			);
+		} else {
+			if (selectedRelics.length >= MAX_RELIC_REFERENCES) return;
+			setSelectedRelics((current) =>
+				current.some((item) => item.id === reference.id)
+					? current
+					: [...current, reference],
+			);
+		}
 		setPrompt(query?.promptWithoutQuery ?? prompt);
 	}
 
@@ -102,13 +135,24 @@ export function useVaultReferencePicker(
 		query: query?.query ?? "",
 		items,
 		rootLabel,
-		total,
+		total: vaultTotal + relicTotal,
+		vaultTotal,
+		relicTotal,
 		truncated,
 		loading,
 		error,
 		selectedIndex: clampedIndex,
 		selected,
+		selectedRelics,
 		referencePaths: selected.map((reference) => reference.relativePath),
+		relicAttachments: selectedRelics.map((relic) => ({
+			id: relic.id,
+			path: relic.path,
+			filename: relic.filename,
+			mime: relic.mime,
+			kind: relic.kind,
+			reference: "relic" as const,
+		})),
 		navigate,
 		select,
 		close: () => setForceClosed(true),
@@ -116,6 +160,11 @@ export function useVaultReferencePicker(
 			setSelected((current) =>
 				current.filter((item) => item.relativePath !== relativePath),
 			),
-		clear: () => setSelected([]),
+		removeRelic: (id: string) =>
+			setSelectedRelics((current) => current.filter((item) => item.id !== id)),
+		clear: () => {
+			setSelected([]);
+			setSelectedRelics([]);
+		},
 	};
 }

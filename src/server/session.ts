@@ -2870,6 +2870,9 @@ export class SessionManager {
 		const persistedMessage = formatVaultReferencedMessage(
 			userMessage,
 			vaultReferences,
+			attachments
+				.filter((attachment) => attachment.reference === "relic")
+				.map((attachment) => attachment.filename),
 		);
 		if (turnId) {
 			await db.appendMessage(
@@ -2883,6 +2886,7 @@ export class SessionManager {
 			await db.appendMessage(sessionId, userSeq, "user", persistedMessage);
 		}
 		for (const attachment of attachments) {
+			if (attachment.reference === "relic") continue;
 			await db
 				.linkAttachmentToMessage(attachment.id, sessionId, userSeq)
 				.catch((error) => {
