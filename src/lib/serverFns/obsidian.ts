@@ -10,13 +10,25 @@ const appendSchema = z.object({
 
 export type ObsidianCliStatus =
 	import("#/server/obsidianCli").ObsidianCliStatus;
+export type ObsidianIntegrationStatus = ObsidianCliStatus & {
+	agentTools: Array<
+		import("#/server/obsidianAgentTools").ObsidianAgentToolName
+	>;
+};
 export type ObsidianConnection =
 	import("#/server/obsidianCli").ObsidianConnection;
 
 export const getObsidianStatusFn = createServerFn({ method: "GET" }).handler(
 	async () => {
-		const { getObsidianCliStatus } = await import("#/server/obsidianCli");
-		return getObsidianCliStatus();
+		const [{ getObsidianCliStatus }, { OBSIDIAN_AGENT_TOOL_SPECS }] =
+			await Promise.all([
+				import("#/server/obsidianCli"),
+				import("#/server/obsidianAgentTools"),
+			]);
+		return {
+			...(await getObsidianCliStatus()),
+			agentTools: OBSIDIAN_AGENT_TOOL_SPECS.map((tool) => tool.name),
+		} satisfies ObsidianIntegrationStatus;
 	},
 );
 

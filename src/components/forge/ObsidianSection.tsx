@@ -2,14 +2,14 @@ import { useEffect, useState } from "react";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import {
 	getObsidianStatusFn,
-	type ObsidianCliStatus,
 	type ObsidianConnection,
+	type ObsidianIntegrationStatus,
 	testObsidianConnectionFn,
 } from "#/lib/serverFns/obsidian";
 import { Field, Section, StatusIndicator } from "./fields";
 
 export function ObsidianSection() {
-	const [status, setStatus] = useState<ObsidianCliStatus | null>(null);
+	const [status, setStatus] = useState<ObsidianIntegrationStatus | null>(null);
 	const [connection, setConnection] = useState<ObsidianConnection | null>(null);
 	const [checking, setChecking] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -83,9 +83,11 @@ export function ObsidianSection() {
 				<>
 					<Field
 						label="Agent access"
-						hint="Claude, Codex, and ACP agents can query links, tasks, properties, Bases, and file history. These tools are read-only."
+						hint="Claude, Codex, and ACP agents receive Hlid's curated Obsidian tools automatically. These tools are read-only."
 					>
-						<StatusIndicator ok={true}>5 read-only tools</StatusIndicator>
+						<StatusIndicator ok={true}>
+							{status.agentTools.length} read-only tools
+						</StatusIndicator>
 					</Field>
 					<Field
 						label="Shell command"

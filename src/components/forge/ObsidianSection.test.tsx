@@ -30,6 +30,15 @@ describe("ObsidianSection", () => {
 			version: "1.12.7",
 			state: "available",
 			detail: "Obsidian CLI is installed.",
+			agentTools: [
+				"search",
+				"current_note",
+				"links",
+				"tasks",
+				"properties",
+				"base_query",
+				"history",
+			],
 		});
 		serverFns.testObsidianConnectionFn.mockResolvedValue({
 			version: "1.12.7",
@@ -38,7 +47,7 @@ describe("ObsidianSection", () => {
 		render(<ObsidianSection />);
 
 		await waitFor(() => expect(screen.getByText("v1.12.7")).toBeTruthy());
-		expect(screen.getByText("5 read-only tools")).toBeTruthy();
+		expect(screen.getByText("7 read-only tools")).toBeTruthy();
 		expect(screen.getByText("not registered")).toBeTruthy();
 		expect(serverFns.testObsidianConnectionFn).not.toHaveBeenCalled();
 
@@ -57,6 +66,7 @@ describe("ObsidianSection", () => {
 			version: null,
 			state: "not_installed",
 			detail: "Not found",
+			agentTools: [],
 		});
 		render(<ObsidianSection />);
 		await waitFor(() => expect(screen.getByText("not detected")).toBeTruthy());
