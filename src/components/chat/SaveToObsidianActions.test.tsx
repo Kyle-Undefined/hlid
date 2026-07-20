@@ -29,5 +29,10 @@ describe("SaveToObsidianActions", () => {
 				data: { destination, content: "Useful answer" },
 			}),
 		);
+		expect(
+			await screen.findByText(
+				`saved to ${destination === "active" ? "active note" : "daily note"}`,
+			),
+		).toBeTruthy();
 	});
 });

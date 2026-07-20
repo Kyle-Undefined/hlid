@@ -66,10 +66,19 @@ export function SaveToObsidianActions({ text }: { text: string }) {
 				{icon("daily")}
 			</button>
 			{error && (
-				<span title={error} className="text-destructive">
+				<span
+					title={error}
+					className="inline-flex max-w-48 items-start gap-1 text-[9px] leading-tight text-destructive"
+					role="alert"
+				>
 					<AlertCircle className="h-3 w-3" />
-					<span className="sr-only">{error}</span>
+					<span>{error}</span>
 				</span>
+			)}
+			{saved && (
+				<output className="whitespace-nowrap text-[9px] text-primary/70">
+					saved to {saved === "active" ? "active note" : "daily note"}
+				</output>
 			)}
 		</>
 	);

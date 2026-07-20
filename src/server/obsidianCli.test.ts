@@ -114,7 +114,7 @@ describe("Obsidian CLI bridge", () => {
 			{ output: windowsDetection, code: 0 },
 			{
 				output:
-					"path Notes\\Current note.md\r\nname Current note\r\nextension md",
+					"path\tNotes\\Current note.md\r\nname\tCurrent note\r\nextension\tmd",
 				code: 0,
 			},
 		]);

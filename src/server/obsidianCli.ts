@@ -337,12 +337,11 @@ async function runResolvedObsidianCommand(
 }
 
 function outputField(output: string, field: string): string | null {
-	const prefix = `${field.toLowerCase()} `;
 	for (const rawLine of output.split(/\r?\n/)) {
 		const line = rawLine.trim();
-		if (line.toLowerCase().startsWith(prefix)) {
-			return line.slice(prefix.length).trim() || null;
-		}
+		const parsed = line.match(/^([^:\s]+)(?:\s*:\s*|\s+)(.*)$/);
+		if (parsed?.[1]?.toLowerCase() !== field.toLowerCase()) continue;
+		return parsed[2]?.trim() || null;
 	}
 	return null;
 }
