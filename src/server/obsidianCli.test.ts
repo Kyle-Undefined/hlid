@@ -369,7 +369,10 @@ describe("Obsidian CLI bridge", () => {
 					"The CLI is unable to find Obsidian. Please make sure Obsidian is running and try again.",
 				code: 1,
 			},
-			{ output: "", code: 0 },
+			{
+				output: JSON.stringify({ running: true, started: true, id: 1234 }),
+				code: 0,
+			},
 			{ output: "1.12.7", code: 0 },
 			{ output: "C:\\Vaults\\Fornbok", code: 0 },
 		]);
@@ -388,11 +391,37 @@ describe("Obsidian CLI bridge", () => {
 			"-NoProfile",
 			"-NonInteractive",
 			"-Command",
-			"& { param([string]$path) Start-Process -FilePath $path }",
+			expect.stringContaining("Get-Process -Name Obsidian"),
 			"C:\\Users\\kyle\\AppData\\Local\\Programs\\Obsidian\\Obsidian.exe",
 		]);
 		expect(wait).toHaveBeenCalledWith(500);
 		expect(run.mock.calls[3]?.[1]).toEqual(["vault=Fornbok", "version"]);
+	});
+
+	it("waits up to the bounded cold-start timeout for the Obsidian CLI", async () => {
+		const unavailable = {
+			output:
+				"The CLI is unable to find Obsidian. Please make sure Obsidian is running and try again.",
+			code: 1,
+		};
+		const { dependencies } = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			unavailable,
+			{
+				output: JSON.stringify({ running: true, started: false, id: 1234 }),
+				code: 0,
+			},
+			...Array.from({ length: 40 }, () => unavailable),
+		]);
+		const wait = vi.fn(async () => {});
+
+		await expect(
+			getActiveObsidianNote("Fornbok", { ...dependencies, wait }),
+		).rejects.toThrow(
+			"Obsidian is running, but its CLI was not ready after 20 seconds.",
+		);
+		expect(wait).toHaveBeenCalledTimes(40);
+		expect(wait).toHaveBeenLastCalledWith(500);
 	});
 
 	it("creates a composer reference without exposing an absolute path", () => {

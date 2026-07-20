@@ -4,6 +4,8 @@ import { runBoundedProcess } from "#/lib/process";
 
 const DETECTION_TIMEOUT_MS = 5_000;
 const COMMAND_TIMEOUT_MS = 20_000;
+const STARTUP_TIMEOUT_MS = 20_000;
+const STARTUP_POLL_MS = 500;
 const MAX_COMMAND_OUTPUT_CHARS = 256_000;
 export const MAX_OBSIDIAN_APPEND_CHARS = 20_000;
 export const MAX_OBSIDIAN_CREATE_CHARS = 20_000;
@@ -98,6 +100,33 @@ const WINDOWS_DETECTION_SCRIPT = [
 	"$executable = $candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1",
 	"[pscustomobject]@{ executable = $executable; registered = [bool]$registered; version = if ($entry) { $entry.DisplayVersion } else { $null } } | ConvertTo-Json -Compress",
 ].join("; ");
+
+const WINDOWS_START_SCRIPT = [
+	"& { param([string]$path)",
+	"$process = Get-Process -Name Obsidian -ErrorAction SilentlyContinue | Select-Object -First 1",
+	"$started = $false",
+	"if (-not $process) { $process = Start-Process -FilePath $path -PassThru; $started = $true }",
+	"[pscustomobject]@{ running = [bool]$process; started = $started; id = if ($process) { $process.Id } else { $null } } | ConvertTo-Json -Compress",
+	"}",
+].join("; ");
+
+function parseWindowsStartOutput(output: string): {
+	running: boolean;
+	started: boolean;
+} | null {
+	try {
+		const parsed = JSON.parse(output.trim()) as {
+			running?: unknown;
+			started?: unknown;
+		};
+		return {
+			running: parsed.running === true,
+			started: parsed.started === true,
+		};
+	} catch {
+		return null;
+	}
+}
 
 async function detectObsidianCli(
 	dependencies: ObsidianBridgeDependencies = {},
@@ -297,7 +326,7 @@ async function runResolvedObsidianCommand(
 				"-NoProfile",
 				"-NonInteractive",
 				"-Command",
-				"& { param([string]$path) Start-Process -FilePath $path }",
+				WINDOWS_START_SCRIPT,
 				windowsAppExecutable,
 			],
 			{
@@ -306,17 +335,21 @@ async function runResolvedObsidianCommand(
 				maxOutputChars: 16_384,
 			},
 		);
-		if (launched.code !== 0) {
+		const processState =
+			launched.code === 0 ? parseWindowsStartOutput(launched.output) : null;
+		if (launched.code !== 0 || !processState?.running) {
 			throw new Error(
-				launched.output.trim() || "Obsidian desktop could not be started.",
+				launched.output.trim() ||
+					"Obsidian desktop did not report a running process.",
 			);
 		}
 		const wait =
 			dependencies.wait ??
 			((milliseconds: number) =>
 				new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
-		for (let attempt = 0; attempt < 6; attempt++) {
-			await wait(500);
+		const attempts = Math.ceil(STARTUP_TIMEOUT_MS / STARTUP_POLL_MS);
+		for (let attempt = 0; attempt < attempts; attempt++) {
+			await wait(STARTUP_POLL_MS);
 			result = await invoke();
 			if (
 				result.code === 0 ||
@@ -324,6 +357,11 @@ async function runResolvedObsidianCommand(
 			) {
 				break;
 			}
+		}
+		if (result.code !== 0 && /unable to find obsidian/i.test(result.output)) {
+			throw new Error(
+				`Obsidian ${processState.started ? "started" : "is running"}, but its CLI was not ready after ${STARTUP_TIMEOUT_MS / 1_000} seconds.`,
+			);
 		}
 	}
 	const detail = result.output.trim();
