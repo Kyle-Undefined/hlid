@@ -55,12 +55,27 @@ export function insertAtSelection(
 }
 
 export function resizeComposer(
-	element: { scrollHeight: number; style: { height: string } } | null,
+	element: {
+		scrollHeight: number;
+		scrollTop: number;
+		selectionEnd: number;
+		value: string;
+		style: { height: string; overflowY: string };
+	} | null,
 	maxHeight: number,
 ): void {
 	if (!element) return;
 	element.style.height = "auto";
-	element.style.height = `${Math.min(element.scrollHeight, maxHeight)}px`;
+	const contentHeight = element.scrollHeight;
+	const capped = contentHeight > maxHeight;
+	element.style.height = `${Math.min(contentHeight, maxHeight)}px`;
+	element.style.overflowY = capped ? "auto" : "hidden";
+	// Do not restore an older scroll offset after resizing: that can leave the
+	// active caret below the visible editor. When composing at the end, follow
+	// the new bottom explicitly; native textarea behavior handles middle edits.
+	if (capped && element.selectionEnd === element.value.length) {
+		element.scrollTop = contentHeight;
+	}
 }
 
 /**
@@ -74,8 +89,8 @@ export function responsiveComposerMaxHeight(
 	viewportHeight: number,
 ): number {
 	const mobile = viewportWidth < 768;
-	const fixedMax = mobile ? 240 : 480;
-	const viewportShare = mobile ? 0.35 : 0.5;
+	const fixedMax = mobile ? 320 : 480;
+	const viewportShare = 0.5;
 	return Math.max(
 		60,
 		Math.min(fixedMax, Math.floor(viewportHeight * viewportShare)),

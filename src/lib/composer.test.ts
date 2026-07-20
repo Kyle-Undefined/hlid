@@ -56,14 +56,47 @@ describe("composer text behavior", () => {
 	});
 
 	it("resizes through one bounded helper", () => {
-		const element = { scrollHeight: 500, style: { height: "10px" } };
+		const element = {
+			scrollHeight: 500,
+			scrollTop: 120,
+			selectionEnd: 5,
+			value: "draft",
+			style: { height: "10px", overflowY: "hidden" },
+		};
 		resizeComposer(element, 280);
 		expect(element.style.height).toBe("280px");
+		expect(element.style.overflowY).toBe("auto");
+		expect(element.scrollTop).toBe(500);
+	});
+
+	it("keeps short composers free of an internal scroll region", () => {
+		const element = {
+			scrollHeight: 120,
+			scrollTop: 0,
+			selectionEnd: 5,
+			value: "draft",
+			style: { height: "280px", overflowY: "auto" },
+		};
+		resizeComposer(element, 280);
+		expect(element.style.height).toBe("120px");
+		expect(element.style.overflowY).toBe("hidden");
+	});
+
+	it("leaves middle-edit scrolling to the native textarea", () => {
+		const element = {
+			scrollHeight: 500,
+			scrollTop: 120,
+			selectionEnd: 2,
+			value: "draft",
+			style: { height: "280px", overflowY: "auto" },
+		};
+		resizeComposer(element, 280);
+		expect(element.scrollTop).toBe(120);
 	});
 
 	it("caps mobile composers against the visible viewport height", () => {
-		expect(responsiveComposerMaxHeight(390, 844)).toBe(240);
-		expect(responsiveComposerMaxHeight(720, 320)).toBe(112);
+		expect(responsiveComposerMaxHeight(390, 844)).toBe(320);
+		expect(responsiveComposerMaxHeight(720, 320)).toBe(160);
 		expect(responsiveComposerMaxHeight(720, 120)).toBe(60);
 	});
 

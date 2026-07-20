@@ -2611,34 +2611,37 @@ function ChatInputControls(props: ChatComposerProps) {
 	const { wsStatus } = runtime;
 	const { uploadFiles } = upload;
 	const { fileInputRef } = viewport;
+	const sessionFork = useChatSessionFork(props);
 	return (
 		<div className="flex min-w-0 items-start">
-			<span className="text-primary text-sm px-4 py-3 shrink-0 select-none">
+			<span className="md:order-1 text-primary text-sm px-4 py-3 shrink-0 select-none">
 				›
 			</span>
-			<input
-				ref={fileInputRef}
-				type="file"
-				multiple
-				className="hidden"
-				onChange={(e) => {
-					if (e.target.files) void uploadFiles(e.target.files);
-					e.target.value = "";
-				}}
-			/>
-			<button
-				type="button"
-				onClick={() => fileInputRef.current?.click()}
-				disabled={wsStatus !== "connected"}
-				className="px-2 py-3 text-muted-foreground/45 hover:text-muted-foreground transition-colors shrink-0 disabled:opacity-30"
-				aria-label="Attach file"
-				title="Attach file"
-			>
-				<Paperclip className="w-3.5 h-3.5" />
-			</button>
-			<ChatVoiceControls {...props} />
+			<div className="grid shrink-0 grid-cols-2 grid-rows-2 gap-y-1 md:contents">
+				<input
+					ref={fileInputRef}
+					type="file"
+					multiple
+					className="hidden"
+					onChange={(e) => {
+						if (e.target.files) void uploadFiles(e.target.files);
+						e.target.value = "";
+					}}
+				/>
+				<button
+					type="button"
+					onClick={() => fileInputRef.current?.click()}
+					disabled={wsStatus !== "connected"}
+					className="md:order-2 px-2 py-2 md:py-3 text-muted-foreground/45 hover:text-muted-foreground transition-colors shrink-0 disabled:opacity-30"
+					aria-label="Attach file"
+					title="Attach file"
+				>
+					<Paperclip className="w-3.5 h-3.5" />
+				</button>
+				<ChatVoiceControls {...props} />
+			</div>
 			<ChatTextarea {...props} />
-			<ChatActionButtons {...props} />
+			<ChatActionButtons {...props} sessionFork={sessionFork} />
 		</div>
 	);
 }
@@ -2659,7 +2662,7 @@ function ChatVoiceControls({ config, runtime, voice }: ChatComposerProps) {
 					(!voice.ready && voice.phase !== "recording") ||
 					voice.phase === "transcribing"
 				}
-				className={`px-2 py-3 transition-colors shrink-0 disabled:opacity-30 ${voice.phase === "recording" ? "text-destructive" : "text-muted-foreground/45 hover:text-muted-foreground"}`}
+				className={`md:order-3 px-2 py-2 md:py-3 transition-colors shrink-0 disabled:opacity-30 ${voice.phase === "recording" ? "text-destructive" : "text-muted-foreground/45 hover:text-muted-foreground"}`}
 				aria-label={
 					voice.phase === "recording" ? "Stop recording" : "Start voice input"
 				}
@@ -2683,7 +2686,7 @@ function ChatVoiceControls({ config, runtime, voice }: ChatComposerProps) {
 				<button
 					type="button"
 					onClick={voice.cancel}
-					className="px-1 py-3 text-muted-foreground/45 hover:text-muted-foreground"
+					className="px-1 py-2 md:py-3 text-muted-foreground/45 hover:text-muted-foreground"
 					aria-label="Cancel recording"
 					title="Cancel recording"
 				>
@@ -2808,7 +2811,7 @@ function ChatTextarea(props: ChatComposerProps) {
 					isRunning,
 				)}
 				disabled={wsStatus !== "connected" || voice.phase === "transcribing"}
-				className={`flex-1 min-w-0 resize-none bg-transparent py-3 pr-2 text-sm text-foreground focus:outline-none disabled:opacity-30 overflow-y-hidden min-h-[60px] md:min-h-[120px] ${wsStatus !== "connected" ? "placeholder:text-foreground/50" : "placeholder:text-muted-foreground/35"}`}
+				className={`md:order-4 flex-1 min-w-0 resize-none bg-transparent pt-1 pb-2 md:py-3 pr-2 text-sm leading-6 text-foreground focus:outline-none disabled:opacity-30 overflow-y-auto overscroll-contain touch-pan-y scroll-py-3 min-h-[60px] md:min-h-[120px] ${wsStatus !== "connected" ? "placeholder:text-foreground/50" : "placeholder:text-muted-foreground/35"}`}
 			/>
 			<span className="sr-only" aria-live="polite">
 				{voiceAnnouncement(voice)}
@@ -2864,33 +2867,45 @@ function useForkSession(sessionId: string) {
 	};
 }
 
+function useChatSessionFork({
+	runtime,
+	session,
+	activeProviderId,
+}: ChatComposerProps) {
+	const { isRunning, messages } = runtime;
+	const forkState = useForkSession(session.sessionId);
+	return {
+		...forkState,
+		forking: forkState.forkingMessageId === "session",
+		// Claude runtimes expose AgentProvider.forkSession, including Claude Code
+		// routed through CLIProxy. Idle + non-empty mirrors the same preconditions
+		// the server enforces in POST /db/session/fork.
+		canFork:
+			isClaudeRuntimeProvider(activeProviderId) &&
+			!isRunning &&
+			messages.length > 0,
+	};
+}
+
+type ChatSessionFork = ReturnType<typeof useChatSessionFork>;
+
 function ChatActionButtons({
 	runtime,
 	canSend,
 	canQueue,
 	handleSend,
 	handleClear,
-	session,
-	activeProviderId,
-}: ChatComposerProps) {
+	sessionFork,
+}: ChatComposerProps & { sessionFork: ChatSessionFork }) {
 	const { send, isRunning, messages } = runtime;
-	const { fork, forkingMessageId, forkError, dismissForkError } =
-		useForkSession(session.sessionId);
-	const forking = forkingMessageId === "session";
-	// Claude runtimes expose AgentProvider.forkSession, including Claude Code
-	// routed through CLIProxy. Idle + non-empty mirrors the same preconditions
-	// the server enforces in POST /db/session/fork.
-	const canFork =
-		isClaudeRuntimeProvider(activeProviderId) &&
-		!isRunning &&
-		messages.length > 0;
+	const { forkError, dismissForkError } = sessionFork;
 
 	return (
 		<>
 			{forkError && (
 				<div
 					role="alert"
-					className="flex items-center gap-1.5 text-[9px] text-destructive/80 shrink-0"
+					className="order-6 md:order-5 flex items-center gap-1.5 text-[9px] text-destructive/80 shrink-0"
 				>
 					{forkError}
 					<button
@@ -2903,62 +2918,66 @@ function ChatActionButtons({
 					</button>
 				</div>
 			)}
-			{canFork && (
-				<button
-					type="button"
-					onClick={() => fork()}
-					disabled={forking}
-					className="px-3 py-3 text-muted-foreground/45 hover:text-muted-foreground disabled:opacity-40 transition-colors shrink-0"
-					aria-label="Fork session"
-					title="Fork this session into a new one"
-				>
-					{forking ? (
-						<LoaderCircle className="w-3.5 h-3.5 animate-spin" />
-					) : (
-						<GitFork className="w-3.5 h-3.5" />
-					)}
-				</button>
-			)}
-			{isRunning && (
-				<button
-					type="button"
-					onClick={() => send({ type: "abort" })}
-					className="px-2.5 md:px-4 py-3 text-[10px] tracking-widest text-destructive/70 hover:text-destructive transition-colors shrink-0 uppercase font-bold"
-					aria-label="Abort"
-				>
-					STOP
-				</button>
-			)}
 			{isRunning ? (
-				<button
-					type="button"
-					onClick={() => handleSend()}
-					disabled={!canQueue}
-					className="px-2.5 md:px-4 py-3 text-[10px] tracking-widest text-primary/70 hover:text-primary disabled:text-muted-foreground/35 transition-colors shrink-0 uppercase font-bold"
-					aria-label="Queue message"
-				>
-					QUEUE
-				</button>
+				<div className="grid shrink-0 grid-rows-2 gap-y-1 md:contents">
+					<button
+						type="button"
+						onClick={() => send({ type: "abort" })}
+						className="order-7 w-full px-2 md:w-auto md:px-4 py-2 md:py-3 text-[10px] tracking-widest text-destructive/70 hover:text-destructive transition-colors shrink-0 uppercase font-bold"
+						aria-label="Abort"
+					>
+						STOP
+					</button>
+					<button
+						type="button"
+						onClick={() => handleSend()}
+						disabled={!canQueue}
+						className="order-8 w-full px-2 md:w-auto md:px-4 py-2 md:py-3 text-[10px] tracking-widest text-primary/70 hover:text-primary disabled:text-muted-foreground/35 transition-colors shrink-0 uppercase font-bold"
+						aria-label="Queue message"
+					>
+						QUEUE
+					</button>
+				</div>
 			) : (
 				<button
 					type="button"
 					onClick={() => handleSend()}
 					disabled={!canSend}
-					className="px-4 py-3 text-[10px] tracking-widest text-primary/70 hover:text-primary disabled:text-muted-foreground/35 transition-colors shrink-0 uppercase font-bold"
+					className="order-8 self-start px-4 py-2 md:py-3 text-[10px] tracking-widest text-primary/70 hover:text-primary disabled:text-muted-foreground/35 transition-colors shrink-0 uppercase font-bold"
 					aria-label="Send"
 				>
 					RUN
 				</button>
 			)}
 			{messages.length > 0 && (
-				<button
-					type="button"
-					onClick={handleClear}
-					className="px-3 py-3 text-muted-foreground/45 hover:text-muted-foreground transition-colors shrink-0"
-					aria-label="New chat"
+				<div
+					className={`order-9 grid shrink-0 ${sessionFork.canFork ? "grid-rows-2 gap-y-1" : ""}`}
 				>
-					<SquarePen className="w-3.5 h-3.5" />
-				</button>
+					<button
+						type="button"
+						onClick={handleClear}
+						className="w-full px-3 py-2 text-muted-foreground/45 hover:text-muted-foreground transition-colors shrink-0"
+						aria-label="New chat"
+					>
+						<SquarePen className="w-3.5 h-3.5" />
+					</button>
+					{sessionFork.canFork && (
+						<button
+							type="button"
+							onClick={() => sessionFork.fork()}
+							disabled={sessionFork.forking}
+							className="w-full px-3 py-2 text-muted-foreground/45 hover:text-muted-foreground disabled:opacity-40 transition-colors shrink-0"
+							aria-label="Fork session"
+							title="Fork this session into a new one"
+						>
+							{sessionFork.forking ? (
+								<LoaderCircle className="w-3.5 h-3.5 animate-spin" />
+							) : (
+								<GitFork className="w-3.5 h-3.5" />
+							)}
+						</button>
+					)}
+				</div>
 			)}
 		</>
 	);
@@ -3078,7 +3097,7 @@ function ChatComposer(props: ChatComposerProps) {
 				<div className="absolute -top-5 left-3 z-10">
 					<button
 						type="button"
-						className="text-[9px] tracking-widest px-2 py-0.5 uppercase bg-background border border-primary/30 text-primary/60 cursor-default"
+						className="block text-[9px] tracking-widest px-2 py-0.5 uppercase bg-background border border-primary/30 text-primary/60 cursor-default"
 					>
 						<PrivacyMask inline>
 							{agentDisplayName(agentSkillContext, [

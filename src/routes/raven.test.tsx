@@ -405,6 +405,113 @@ describe("Raven composed submission behavior", () => {
 		expect(screen.getByRole("button", { name: "html" })).toBeTruthy();
 	});
 
+	it("aligns the agent and model badges to the same top edge", () => {
+		state.loaderData = {
+			...state.loaderData,
+			agentSkillContext: "/project",
+			config: {
+				...(state.loaderData.config as Record<string, unknown>),
+				agents: [{ path: "/project", name: "Hlid", provider: "claude" }],
+			},
+		};
+		render(<ChatPage />);
+
+		const agentBadge = screen.getByRole("button", { name: "Hlid" });
+		const modelBadge = document.querySelector<HTMLButtonElement>(
+			'button[aria-haspopup="dialog"]',
+		);
+
+		expect(agentBadge.className).toContain("block");
+		expect(modelBadge?.className).toContain("block");
+		expect(agentBadge.parentElement?.className).toContain("-top-5");
+		expect(modelBadge?.parentElement?.className).toContain("-top-5");
+	});
+
+	it("keeps attachment and voice in a compact mobile control grid", () => {
+		render(<ChatPage />);
+
+		const attach = screen.getByRole("button", { name: "Attach file" });
+		const voice = screen.getByRole("button", { name: "Start voice input" });
+		const controlGrid = attach.parentElement;
+
+		expect(voice.parentElement).toBe(controlGrid);
+		expect(controlGrid?.className).toContain("grid-cols-2");
+		expect(controlGrid?.className).toContain("grid-rows-2");
+		expect(controlGrid?.className).toContain("gap-y-1");
+		expect(controlGrid?.className).toContain("md:contents");
+		expect(attach.className).toContain("py-2");
+		expect(voice.className).toContain("py-2");
+		expect(
+			attach.compareDocumentPosition(voice) & Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+	});
+
+	it("stacks Fork beneath New chat on mobile and desktop", () => {
+		render(<ChatPage />);
+		fireEvent.change(screen.getByRole("combobox"), {
+			target: { value: "create a forkable turn" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+		const newChat = screen.getByRole("button", { name: "New chat" });
+		const fork = screen.getByRole("button", { name: "Fork session" });
+		const sessionStack = newChat.parentElement;
+
+		expect(fork.parentElement).toBe(sessionStack);
+		expect(sessionStack?.className).toContain("grid-rows-2");
+		expect(sessionStack?.className).toContain("gap-y-1");
+		expect(sessionStack?.className).not.toContain("md:contents");
+		expect(
+			newChat.compareDocumentPosition(fork) & Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		expect(newChat.className).toContain("w-full");
+		expect(fork.className).toContain("w-full");
+	});
+
+	it("makes long mobile drafts independently touch-scrollable", () => {
+		render(<ChatPage />);
+		const composer = screen.getByRole("combobox");
+
+		expect(composer.className).toContain("overflow-y-auto");
+		expect(composer.className).toContain("overscroll-contain");
+		expect(composer.className).toContain("touch-pan-y");
+		expect(composer.className).toContain("scroll-py-3");
+		expect(composer.className).not.toContain("overflow-y-hidden");
+	});
+
+	it("top-aligns mobile input text and Run with the control row", () => {
+		render(<ChatPage />);
+		const composer = screen.getByRole("combobox");
+		const run = screen.getByRole("button", { name: "Send" });
+
+		expect(composer.className).toContain("pt-1");
+		expect(composer.className).toContain("pb-2");
+		expect(composer.className).toContain("md:py-3");
+		expect(run.className).toContain("self-start");
+		expect(run.className).toContain("py-2");
+		expect(run.className).toContain("md:py-3");
+	});
+
+	it("stacks Stop and Queue evenly on mobile", () => {
+		state.sessionState = "running";
+		render(<ChatPage />);
+
+		const stop = screen.getByRole("button", { name: "Abort" });
+		const queue = screen.getByRole("button", { name: "Queue message" });
+		const actionStack = stop.parentElement;
+
+		expect(queue.parentElement).toBe(actionStack);
+		expect(actionStack?.className).toContain("grid-rows-2");
+		expect(actionStack?.className).toContain("gap-y-1");
+		expect(actionStack?.className).toContain("md:contents");
+		expect(stop.className).toContain("py-2");
+		expect(queue.className).toContain("py-2");
+		expect(stop.className).toContain("w-full");
+		expect(queue.className).toContain("w-full");
+		expect(stop.className).toContain("md:w-auto");
+		expect(queue.className).toContain("md:w-auto");
+	});
+
 	it("keeps mobile terminal tab content above the composer while desktop orders it last", () => {
 		render(<ChatPage />);
 
