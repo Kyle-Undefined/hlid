@@ -17,6 +17,7 @@ import {
 	getAttachmentsForSession,
 	linkAttachmentToMessage,
 	listAttachments,
+	promoteAttachmentToVault,
 } from "./attachments";
 import { appendLog, clearLogs, getLogs } from "./logs";
 import {
@@ -1541,6 +1542,35 @@ describe("attachments — CRUD", () => {
 
 	it("deleteAttachment returns null for unknown id", async () => {
 		expect(await deleteAttachment("ghost")).toBeNull();
+	});
+
+	it("promotes an ephemeral attachment to a vault-owned relic", async () => {
+		await makeAttachment("capture", { filename: "upload.png" });
+		expect(
+			await promoteAttachmentToVault("capture", {
+				filename: "upload.png",
+				path: "/vault/0 Inbox/upload.png",
+			}),
+		).toBe(true);
+		expect(await getAttachment("capture")).toMatchObject({
+			kind: "vault",
+			filename: "upload.png",
+			path: "/vault/0 Inbox/upload.png",
+			storage_key: null,
+			retention: "linked",
+			origin: "vault",
+		});
+		expect((await listAttachments({ search: "upload" })).total).toBe(1);
+	});
+
+	it("does not re-promote a vault attachment", async () => {
+		await makeAttachment("capture", { kind: "vault" });
+		expect(
+			await promoteAttachmentToVault("capture", {
+				filename: "moved.txt",
+				path: "/vault/moved.txt",
+			}),
+		).toBe(false);
 	});
 });
 

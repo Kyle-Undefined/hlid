@@ -84,6 +84,7 @@ import {
 import { deriveModelMismatch, fmtModel } from "#/lib/formatters";
 import { loaderValueOrFallback } from "#/lib/loaderFallback";
 import { mapMcpServer } from "#/lib/mcp";
+import { configuredObsidianCapture } from "#/lib/obsidianCapture";
 import { isCliProxyProvider } from "#/lib/providerIds";
 import {
 	effortOptionsFor,
@@ -1970,6 +1971,7 @@ function RavenTerminalPane({
 }
 
 function RavenMessagePane({
+	config,
 	interactiveMode,
 	terminalOpen,
 	shellTab,
@@ -2084,6 +2086,7 @@ function RavenMessagePane({
 											: null
 									}
 									onBranch={handleBranch}
+									obsidianCapture={configuredObsidianCapture(config.vault)}
 								/>
 							)}
 						</div>

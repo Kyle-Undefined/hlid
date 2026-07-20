@@ -415,6 +415,22 @@ function safeTemplateName(name: string): string {
 	return template;
 }
 
+function safeVaultFilename(name: string): string {
+	const filename = name.trim();
+	if (
+		!filename ||
+		filename.length > 255 ||
+		filename === "." ||
+		filename === ".." ||
+		filename.includes("/") ||
+		filename.includes("\\") ||
+		/[\r\n\0]/.test(filename)
+	) {
+		throw new Error("Obsidian filename is invalid.");
+	}
+	return filename;
+}
+
 function safeNoteContent(content: string | undefined, limit: number): string {
 	if (content === undefined) return "";
 	if (content.length > limit || content.includes("\0")) {
@@ -449,6 +465,7 @@ export type ObsidianSearchQuery = {
 	caseSensitive?: boolean;
 	context?: boolean;
 	countOnly?: boolean;
+	limit?: number;
 };
 
 export async function queryObsidianSearch(
@@ -469,9 +486,50 @@ export async function queryObsidianSearch(
 		`query=${searchQuery}`,
 		...optionalPathArgument(query.path),
 		...(query.caseSensitive ? ["case"] : []),
+		...(query.limit && !query.countOnly ? [`limit=${query.limit}`] : []),
 		...(query.countOnly ? ["total"] : query.context ? [] : ["format=json"]),
 	];
-	return runObsidianCommand(vaultName, args, dependencies);
+	const contentOutput = await runObsidianCommand(vaultName, args, dependencies);
+	if (
+		query.context ||
+		query.countOnly ||
+		!/^[\p{L}\p{N}\s._-]+$/u.test(searchQuery)
+	) {
+		return contentOutput;
+	}
+	let contentPaths: string[];
+	try {
+		const parsed: unknown = JSON.parse(contentOutput.trim());
+		if (
+			!Array.isArray(parsed) ||
+			!parsed.every((item) => typeof item === "string")
+		) {
+			return contentOutput;
+		}
+		contentPaths = parsed;
+	} catch {
+		return contentOutput;
+	}
+	const filesOutput = await runObsidianCommand(
+		vaultName,
+		[
+			"files",
+			...(query.path ? [`folder=${safeVaultPath(query.path)}`] : []),
+			"ext=md",
+		],
+		dependencies,
+	);
+	const needle = query.caseSensitive ? searchQuery : searchQuery.toLowerCase();
+	const filenamePaths = filesOutput
+		.split(/\r?\n/)
+		.map((path) => path.trim())
+		.filter(Boolean)
+		.filter((path) => {
+			const candidate = query.caseSensitive ? path : path.toLowerCase();
+			return candidate.includes(needle);
+		});
+	const combined = Array.from(new Set([...filenamePaths, ...contentPaths]));
+	return JSON.stringify(combined.slice(0, query.limit ?? 200));
 }
 
 export async function queryObsidianLinks(
@@ -729,6 +787,32 @@ export async function listObsidianTemplates(
 	);
 }
 
+// fallow-ignore-next-line unused-export -- Loaded dynamically by Forge's Obsidian server function to keep the host bridge out of the client bundle.
+export async function listObsidianCommands(
+	vaultName: string,
+	dependencies: ObsidianBridgeDependencies = {},
+): Promise<string> {
+	return runObsidianCommand(vaultName, ["commands"], dependencies);
+}
+
+export async function executeObsidianCommand(
+	vaultName: string,
+	id: string,
+	dependencies: ObsidianBridgeDependencies = {},
+): Promise<void> {
+	const commandId = id.trim();
+	if (!commandId || commandId.length > 512 || /[\r\n\0]/.test(commandId)) {
+		throw new Error("Obsidian command ID is invalid.");
+	}
+	const output = await runObsidianCommand(
+		vaultName,
+		["command", `id=${commandId}`],
+		dependencies,
+	);
+	const error = cliError(output);
+	if (error) throw new Error(`Obsidian CLI failed: ${error}`);
+}
+
 export async function readObsidianTemplate(
 	vaultName: string,
 	input: { name: string; resolve?: boolean; title?: string },
@@ -965,6 +1049,43 @@ export async function openObsidianNote(
 		["open", `path=${portableVaultPath(relativePath)}`],
 		dependencies,
 	);
+}
+
+export async function moveObsidianFile(
+	vaultName: string,
+	input: { path: string; to: string },
+	dependencies: ObsidianBridgeDependencies = {},
+): Promise<{ path: string }> {
+	const source = safeVaultPath(input.path, "source path");
+	const destination = safeVaultPath(input.to, "destination path");
+	const output = await runObsidianCommand(
+		vaultName,
+		["move", `path=${source}`, `to=${destination}`],
+		dependencies,
+	);
+	const error = cliError(output);
+	if (error) throw new Error(`Obsidian CLI failed: ${error}`);
+	return { path: destination };
+}
+
+export async function renameObsidianFile(
+	vaultName: string,
+	input: { path: string; name: string },
+	dependencies: ObsidianBridgeDependencies = {},
+): Promise<{ path: string }> {
+	const source = safeVaultPath(input.path, "source path");
+	const name = safeVaultFilename(input.name);
+	const output = await runObsidianCommand(
+		vaultName,
+		["rename", `path=${source}`, `name=${name}`],
+		dependencies,
+	);
+	const error = cliError(output);
+	if (error) throw new Error(`Obsidian CLI failed: ${error}`);
+	const parent = dirname(source);
+	return {
+		path: parent === "." ? name : `${portableVaultPath(parent)}/${name}`,
+	};
 }
 
 // fallow-ignore-next-line unused-export -- Loaded dynamically by the Obsidian server functions to keep host process code out of the client bundle.

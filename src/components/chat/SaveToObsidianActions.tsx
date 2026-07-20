@@ -2,15 +2,26 @@ import {
 	AlertCircle,
 	CalendarPlus,
 	Check,
+	Inbox,
 	LoaderCircle,
 	NotebookPen,
 } from "lucide-react";
 import { useState } from "react";
-import { appendToObsidianFn } from "#/lib/serverFns/obsidian";
+import type { ObsidianCaptureDestination } from "#/lib/obsidianCapture";
+import {
+	appendToObsidianFn,
+	captureReplyToObsidianFn,
+} from "#/lib/serverFns/obsidian";
 
-type Destination = "active" | "daily";
+type Destination = "active" | "daily" | "capture";
 
-export function SaveToObsidianActions({ text }: { text: string }) {
+export function SaveToObsidianActions({
+	text,
+	capture,
+}: {
+	text: string;
+	capture?: ObsidianCaptureDestination | null;
+}) {
 	const [busy, setBusy] = useState<Destination | null>(null);
 	const [saved, setSaved] = useState<Destination | null>(null);
 	const [error, setError] = useState<string | null>(null);
@@ -20,7 +31,11 @@ export function SaveToObsidianActions({ text }: { text: string }) {
 		setSaved(null);
 		setError(null);
 		void Promise.resolve()
-			.then(() => appendToObsidianFn({ data: { destination, content: text } }))
+			.then(() =>
+				destination === "capture"
+					? captureReplyToObsidianFn({ data: { content: text } })
+					: appendToObsidianFn({ data: { destination, content: text } }),
+			)
 			.then(() => setSaved(destination))
 			.catch((cause: unknown) => {
 				setError(
@@ -38,8 +53,10 @@ export function SaveToObsidianActions({ text }: { text: string }) {
 		if (saved === destination) return <Check className="h-3 w-3" />;
 		return destination === "active" ? (
 			<NotebookPen className="h-3 w-3" />
-		) : (
+		) : destination === "daily" ? (
 			<CalendarPlus className="h-3 w-3" />
+		) : (
+			<Inbox className="h-3 w-3" />
 		);
 	}
 
@@ -65,6 +82,18 @@ export function SaveToObsidianActions({ text }: { text: string }) {
 			>
 				{icon("daily")}
 			</button>
+			{capture && (
+				<button
+					type="button"
+					onClick={() => save("capture")}
+					disabled={busy !== null}
+					aria-label={`Send reply to Obsidian ${capture.label}`}
+					title={`Send to ${capture.label}\n${capture.vaultName}/${capture.folder}`}
+					className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 disabled:opacity-40 text-muted-foreground/50 hover:text-foreground transition-opacity"
+				>
+					{icon("capture")}
+				</button>
+			)}
 			{error && (
 				<span
 					title={error}
@@ -77,7 +106,12 @@ export function SaveToObsidianActions({ text }: { text: string }) {
 			)}
 			{saved && (
 				<output className="whitespace-nowrap text-[9px] text-primary/70">
-					saved to {saved === "active" ? "active note" : "daily note"}
+					saved to{" "}
+					{saved === "active"
+						? "active note"
+						: saved === "daily"
+							? "daily note"
+							: capture?.label}
 				</output>
 			)}
 		</>

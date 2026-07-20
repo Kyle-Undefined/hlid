@@ -17,6 +17,7 @@ export type VaultFields = {
 	skills?: string;
 	memory?: string;
 	saveToObsidianTemplate?: string;
+	obsidianCommandAllowlist?: string[];
 };
 
 /**
@@ -41,6 +42,10 @@ export function buildVaultSection(f: VaultFields): HlidConfig["vault"] {
 		skills: f.skills || undefined,
 		memory: f.memory || undefined,
 		save_to_obsidian_template: f.saveToObsidianTemplate || undefined,
+		obsidian_command_allowlist:
+			f.obsidianCommandAllowlist && f.obsidianCommandAllowlist.length > 0
+				? f.obsidianCommandAllowlist
+				: undefined,
 		delete_vault_attachments: false,
 	};
 }

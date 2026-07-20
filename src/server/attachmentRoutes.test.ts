@@ -5,6 +5,8 @@ const mocks = vi.hoisted(() => ({
 	handleUpload: vi.fn(),
 	removeAttachment: vi.fn(),
 	serveAttachment: vi.fn(),
+	promoteAttachmentToObsidian: vi.fn(),
+	openAttachmentInObsidian: vi.fn(),
 	loadConfig: vi.fn(),
 	broadcast: vi.fn(),
 }));
@@ -13,6 +15,8 @@ vi.mock("./attachments", () => ({
 	handleUpload: mocks.handleUpload,
 	removeAttachment: mocks.removeAttachment,
 	serveAttachment: mocks.serveAttachment,
+	promoteAttachmentToObsidian: mocks.promoteAttachmentToObsidian,
+	openAttachmentInObsidian: mocks.openAttachmentInObsidian,
 }));
 vi.mock("./config", () => ({ loadConfig: mocks.loadConfig }));
 vi.mock("./runState", () => ({ broadcast: mocks.broadcast }));
@@ -26,6 +30,10 @@ beforeEach(() => {
 	mocks.handleUpload.mockResolvedValue(new Response("uploaded"));
 	mocks.removeAttachment.mockResolvedValue(new Response("removed"));
 	mocks.serveAttachment.mockResolvedValue(new Response("raw"));
+	mocks.promoteAttachmentToObsidian.mockResolvedValue(
+		Response.json({ ok: true }),
+	);
+	mocks.openAttachmentInObsidian.mockResolvedValue(Response.json({ ok: true }));
 	mocks.broadcast.mockResolvedValue(undefined);
 });
 
@@ -83,6 +91,36 @@ describe("attachment route dispatch", () => {
 			fallbackConfig,
 		);
 		expect(mocks.removeAttachment).toHaveBeenCalledWith("item", fallbackConfig);
+	});
+
+	it("promotes and opens safe attachment ids through Obsidian routes", async () => {
+		const promoteUrl = new URL(
+			"http://localhost/api/attachments/item_1/promote-to-obsidian",
+		);
+		const promote = await handleAttachmentRoute(
+			promoteUrl,
+			new Request(promoteUrl, { method: "POST" }),
+			fallbackConfig,
+		);
+		expect(promote?.status).toBe(200);
+		expect(mocks.promoteAttachmentToObsidian).toHaveBeenCalledWith(
+			"item_1",
+			fallbackConfig,
+		);
+
+		const openUrl = new URL(
+			"http://localhost/api/attachments/item_1/open-in-obsidian",
+		);
+		const open = await handleAttachmentRoute(
+			openUrl,
+			new Request(openUrl, { method: "POST" }),
+			fallbackConfig,
+		);
+		expect(open?.status).toBe(200);
+		expect(mocks.openAttachmentInObsidian).toHaveBeenCalledWith(
+			"item_1",
+			fallbackConfig,
+		);
 	});
 
 	it("contains broadcast failures after a successful upload", async () => {

@@ -5,7 +5,9 @@ import {
 	ChevronDown,
 	ChevronRight,
 	Download,
+	ExternalLink,
 	File as FileIcon,
+	Inbox,
 	ListFilter,
 	RefreshCw,
 	Search,
@@ -39,7 +41,12 @@ import {
 } from "#/hooks/wsDataRevisionStore";
 import { dbFetch, requireDbOk } from "#/lib/dbClient";
 import { fmtBytes, fmtDate } from "#/lib/formatters";
+import {
+	configuredObsidianCapture,
+	type ObsidianCaptureDestination,
+} from "#/lib/obsidianCapture";
 import { ROUTE_SCROLL_RESTORATION_IDS } from "#/lib/scrollContainers";
+import { getConfig } from "#/lib/serverFns/config";
 import type { ServerMessage } from "#/server/protocol";
 
 type ListResult = {
@@ -164,15 +171,19 @@ const removeSkillFn = createServerFn({ method: "POST" })
 
 export const Route = createFileRoute("/relics")({
 	loader: async () => {
-		const initial = await listAttachmentsFn({ data: { limit: 50, offset: 0 } });
-		return { initial };
+		const [initial, config] = await Promise.all([
+			listAttachmentsFn({ data: { limit: 50, offset: 0 } }),
+			getConfig(),
+		]);
+		return { initial, capture: configuredObsidianCapture(config.vault) };
 	},
 	staleTime: 0,
 	component: RelicsRoutePage,
 });
 
 function RelicsRoutePage() {
-	return <AttachmentsPage initial={Route.useLoaderData().initial} />;
+	const { initial, capture } = Route.useLoaderData();
+	return <AttachmentsPage initial={initial} capture={capture} />;
 }
 
 const PAGE_SIZE = 50;
@@ -489,6 +500,42 @@ function useRelicDeletes(list: RelicsList, request: typeof fetch) {
 	};
 
 	return { deleteOne, deleteSelected };
+}
+
+async function relicActionError(response: Response): Promise<string> {
+	try {
+		const data = (await response.json()) as { message?: unknown };
+		if (typeof data.message === "string" && data.message) return data.message;
+	} catch {
+		// Fall back to the status below.
+	}
+	return `Obsidian action failed: ${response.status}`;
+}
+
+function useRelicObsidianActions(list: RelicsList, request: typeof fetch) {
+	const { page, setBusy, setError, reload } = list;
+	return async (row: AttachmentRow) => {
+		setBusy(true);
+		setError(null);
+		try {
+			const action =
+				row.kind === "vault" ? "open-in-obsidian" : "promote-to-obsidian";
+			const response = await request(`/api/attachments/${row.id}/${action}`, {
+				method: "POST",
+			});
+			if (!response.ok) {
+				setError(await relicActionError(response));
+				return;
+			}
+			if (row.kind === "ephemeral") await reload(page);
+		} catch (cause) {
+			setError(
+				cause instanceof Error ? cause.message : "Obsidian action failed",
+			);
+		} finally {
+			setBusy(false);
+		}
+	};
 }
 
 function RelicsSearchBox({ list }: { list: RelicsList }) {
@@ -1267,6 +1314,44 @@ function DeleteButton({
 	);
 }
 
+function RelicObsidianButton({
+	row,
+	capture,
+	busy,
+	onAction,
+}: {
+	row: AttachmentRow;
+	capture?: ObsidianCaptureDestination | null;
+	busy: boolean;
+	onAction: () => void;
+}) {
+	if (row.kind !== "vault" && !capture) return null;
+	const label =
+		row.kind === "vault"
+			? `Open ${row.filename} in Obsidian`
+			: `Send ${row.filename} to Obsidian ${capture?.label}`;
+	const title =
+		row.kind === "vault"
+			? label
+			: `Send to ${capture?.label}\n${capture?.vaultName}/${capture?.folder}`;
+	return (
+		<button
+			type="button"
+			onClick={onAction}
+			disabled={busy}
+			aria-label={label}
+			title={title}
+			className="text-primary/45 hover:text-primary disabled:opacity-30"
+		>
+			{row.kind === "vault" ? (
+				<ExternalLink className="w-3.5 h-3.5" />
+			) : (
+				<Inbox className="w-3.5 h-3.5" />
+			)}
+		</button>
+	);
+}
+
 function RelicRow({
 	row,
 	list,
@@ -1274,6 +1359,8 @@ function RelicRow({
 	onToggleExpand,
 	onView,
 	onDelete,
+	capture,
+	onObsidianAction,
 }: {
 	row: AttachmentRow;
 	list: RelicsList;
@@ -1281,6 +1368,8 @@ function RelicRow({
 	onToggleExpand: () => void;
 	onView: (img: ViewerImage) => void;
 	onDelete: () => void;
+	capture?: ObsidianCaptureDestination | null;
+	onObsidianAction: () => void;
 }) {
 	const stop = {
 		onClick: (e: React.SyntheticEvent) => e.stopPropagation(),
@@ -1326,12 +1415,20 @@ function RelicRow({
 				{fmtDate(row.created_at)}
 			</td>
 			<td className="px-3 py-2 text-right" {...stop}>
-				<DeleteButton
-					row={row}
-					busy={list.busy}
-					onDelete={onDelete}
-					className="justify-end"
-				/>
+				<span className="inline-flex items-center justify-end gap-2">
+					<RelicObsidianButton
+						row={row}
+						capture={capture}
+						busy={list.busy}
+						onAction={onObsidianAction}
+					/>
+					<DeleteButton
+						row={row}
+						busy={list.busy}
+						onDelete={onDelete}
+						className="justify-end"
+					/>
+				</span>
 			</td>
 		</tr>
 	);
@@ -1390,12 +1487,16 @@ function RelicsTable({
 	setExpandedId,
 	onView,
 	onDelete,
+	capture,
+	onObsidianAction,
 }: {
 	list: RelicsList;
 	expandedId: string | null;
 	setExpandedId: (id: string | null) => void;
 	onView: (img: ViewerImage) => void;
 	onDelete: (id: string) => void;
+	capture?: ObsidianCaptureDestination | null;
+	onObsidianAction: (row: AttachmentRow) => void;
 }) {
 	const { rows, selected, setSelected } = list;
 	return (
@@ -1452,6 +1553,8 @@ function RelicsTable({
 								}
 								onView={onView}
 								onDelete={() => onDelete(r.id)}
+								capture={capture}
+								onObsidianAction={() => onObsidianAction(r)}
 							/>
 							{expandedId === r.id && (
 								<tr className="border-b border-border/40 bg-secondary/20">
@@ -1478,6 +1581,8 @@ function RelicCard({
 	onToggleExpand,
 	onView,
 	onDelete,
+	capture,
+	onObsidianAction,
 }: {
 	row: AttachmentRow;
 	list: RelicsList;
@@ -1485,6 +1590,8 @@ function RelicCard({
 	onToggleExpand: () => void;
 	onView: (img: ViewerImage) => void;
 	onDelete: () => void;
+	capture?: ObsidianCaptureDestination | null;
+	onObsidianAction: () => void;
 }) {
 	return (
 		<div className="border-b border-border/40">
@@ -1530,7 +1637,15 @@ function RelicCard({
 						</div>
 					)}
 				</div>
-				<DeleteButton row={row} busy={list.busy} onDelete={onDelete} />
+				<span className="inline-flex items-center gap-2">
+					<RelicObsidianButton
+						row={row}
+						capture={capture}
+						busy={list.busy}
+						onAction={onObsidianAction}
+					/>
+					<DeleteButton row={row} busy={list.busy} onDelete={onDelete} />
+				</span>
 			</div>
 			{expanded && (
 				<div className="px-4 pb-4 bg-secondary/20">
@@ -1549,12 +1664,16 @@ function RelicsCardList({
 	setExpandedId,
 	onView,
 	onDelete,
+	capture,
+	onObsidianAction,
 }: {
 	list: RelicsList;
 	expandedId: string | null;
 	setExpandedId: (id: string | null) => void;
 	onView: (img: ViewerImage) => void;
 	onDelete: (id: string) => void;
+	capture?: ObsidianCaptureDestination | null;
+	onObsidianAction: (row: AttachmentRow) => void;
 }) {
 	const { rows } = list;
 	if (rows.length === 0) {
@@ -1577,6 +1696,8 @@ function RelicsCardList({
 					}
 					onView={onView}
 					onDelete={() => onDelete(r.id)}
+					capture={capture}
+					onObsidianAction={() => onObsidianAction(r)}
 				/>
 			))}
 		</div>
@@ -1614,15 +1735,18 @@ function RelicsPagination({ list }: { list: RelicsList }) {
 
 export function AttachmentsPage({
 	initial,
+	capture,
 	listAttachments = listAttachmentsFn as ListAttachments,
 	request = fetch,
 }: {
 	initial: ListResult;
+	capture?: ObsidianCaptureDestination | null;
 	listAttachments?: ListAttachments;
 	request?: typeof fetch;
 }) {
 	const list = useRelicsList(initial, listAttachments);
 	const { deleteOne, deleteSelected } = useRelicDeletes(list, request);
+	const runObsidianAction = useRelicObsidianActions(list, request);
 	const [expandedId, setExpandedId] = useState<string | null>(null);
 	const [viewerImg, setViewerImg] = useState<ViewerImage | null>(null);
 	const isDesktop = useIsDesktop();
@@ -1650,6 +1774,8 @@ export function AttachmentsPage({
 						setExpandedId={setExpandedId}
 						onView={setViewerImg}
 						onDelete={(id) => void deleteOne(id)}
+						capture={capture}
+						onObsidianAction={(row) => void runObsidianAction(row)}
 					/>
 				) : (
 					<RelicsCardList
@@ -1658,6 +1784,8 @@ export function AttachmentsPage({
 						setExpandedId={setExpandedId}
 						onView={setViewerImg}
 						onDelete={(id) => void deleteOne(id)}
+						capture={capture}
+						onObsidianAction={(row) => void runObsidianAction(row)}
 					/>
 				)}
 			</div>

@@ -1,4 +1,5 @@
 import { memo } from "react";
+import type { ObsidianCaptureDestination } from "#/lib/obsidianCapture";
 import { AskUserQuestionCard } from "./AskUserQuestionCard";
 import { AssistantMsg } from "./AssistantMsg";
 import type { ChatMessage } from "./chatReducer";
@@ -22,6 +23,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 	canBranch,
 	forkingMessageId,
 	onBranch,
+	obsidianCapture,
 }: {
 	message: ChatMessage;
 	toolEventStartIndex?: number;
@@ -46,6 +48,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 	canBranch?: boolean;
 	forkingMessageId?: number | null;
 	onBranch?: (dbId: number) => void;
+	obsidianCapture?: ObsidianCaptureDestination | null;
 }) {
 	if (message.role === "user") {
 		return (
@@ -74,6 +77,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 				canBranch={canBranch}
 				branching={message.dbId != null && forkingMessageId === message.dbId}
 				onBranch={onBranch}
+				obsidianCapture={obsidianCapture}
 			/>
 		);
 	}

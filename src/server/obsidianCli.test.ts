@@ -2,10 +2,13 @@ import { describe, expect, it, vi } from "vitest";
 import {
 	appendToObsidian,
 	createObsidianNote,
+	executeObsidianCommand,
 	getActiveObsidianNote,
 	getObsidianCliStatus,
+	listObsidianCommands,
 	listObsidianTemplates,
 	MAX_OBSIDIAN_APPEND_CHARS,
+	moveObsidianFile,
 	mutateObsidianNote,
 	obsidianReferenceItem,
 	openObsidianNote,
@@ -19,6 +22,7 @@ import {
 	queryObsidianVaultInfo,
 	readObsidianNote,
 	readObsidianTemplate,
+	renameObsidianFile,
 	testObsidianConnection,
 } from "./obsidianCli";
 
@@ -148,6 +152,44 @@ describe("Obsidian CLI bridge", () => {
 		]);
 	});
 
+	it("moves and renames files through Obsidian so links stay correct", async () => {
+		const move = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "Moved", code: 0 },
+		]);
+		await expect(
+			moveObsidianFile(
+				"Fornbok",
+				{ path: "Notes/Old.md", to: "Archive/Old.md" },
+				move.dependencies,
+			),
+		).resolves.toEqual({ path: "Archive/Old.md" });
+		expect(move.run.mock.calls[1]?.[1]).toEqual([
+			"vault=Fornbok",
+			"move",
+			"path=Notes/Old.md",
+			"to=Archive/Old.md",
+		]);
+
+		const rename = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "Renamed", code: 0 },
+		]);
+		await expect(
+			renameObsidianFile(
+				"Fornbok",
+				{ path: "Notes/Old.md", name: "New.md" },
+				rename.dependencies,
+			),
+		).resolves.toEqual({ path: "Notes/New.md" });
+		expect(rename.run.mock.calls[1]?.[1]).toEqual([
+			"vault=Fornbok",
+			"rename",
+			"path=Notes/Old.md",
+			"name=New.md",
+		]);
+	});
+
 	it("uses separate safe commands for active and daily appends", async () => {
 		const active = wslDependencies([
 			{ output: windowsDetection, code: 0 },
@@ -220,6 +262,32 @@ describe("Obsidian CLI bridge", () => {
 			"name=New Project",
 			"resolve",
 			"title=Hlid",
+		]);
+	});
+
+	it("lists commands and executes one exact command ID", async () => {
+		const list = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "templater-obsidian:insert-templater", code: 0 },
+		]);
+		await expect(
+			listObsidianCommands("Fornbok", list.dependencies),
+		).resolves.toBe("templater-obsidian:insert-templater");
+		expect(list.run.mock.calls[1]?.[1]).toEqual(["vault=Fornbok", "commands"]);
+
+		const execute = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "Executed", code: 0 },
+		]);
+		await executeObsidianCommand(
+			"Fornbok",
+			"templater-obsidian:insert-templater",
+			execute.dependencies,
+		);
+		expect(execute.run.mock.calls[1]?.[1]).toEqual([
+			"vault=Fornbok",
+			"command",
+			"id=templater-obsidian:insert-templater",
 		]);
 	});
 
@@ -471,24 +539,39 @@ describe("Obsidian CLI bridge", () => {
 	it("maps bounded vault search to indexed path, context, and count commands", async () => {
 		const paths = wslDependencies([
 			{ output: windowsDetection, code: 0 },
-			{ output: "[]", code: 0 },
-		]);
-		await queryObsidianSearch(
-			"Fornbok",
+			{ output: '["1 Projects/Body.md"]', code: 0 },
+			{ output: windowsDetection, code: 0 },
 			{
-				query: "project ship",
-				path: "1 Projects",
-				caseSensitive: true,
+				output: "1 Projects/project ship.md\n1 Projects/Other.md",
+				code: 0,
 			},
-			paths.dependencies,
-		);
+		]);
+		await expect(
+			queryObsidianSearch(
+				"Fornbok",
+				{
+					query: "project ship",
+					path: "1 Projects",
+					caseSensitive: true,
+					limit: 10,
+				},
+				paths.dependencies,
+			),
+		).resolves.toBe('["1 Projects/project ship.md","1 Projects/Body.md"]');
 		expect(paths.run.mock.calls[1]?.[1]).toEqual([
 			"vault=Fornbok",
 			"search",
 			"query=project ship",
 			"path=1 Projects",
 			"case",
+			"limit=10",
 			"format=json",
+		]);
+		expect(paths.run.mock.calls[3]?.[1]).toEqual([
+			"vault=Fornbok",
+			"files",
+			"folder=1 Projects",
+			"ext=md",
 		]);
 
 		const context = wslDependencies([

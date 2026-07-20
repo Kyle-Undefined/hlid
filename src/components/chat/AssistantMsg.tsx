@@ -2,6 +2,7 @@ import { GitFork, LoaderCircle } from "lucide-react";
 import { MarkdownBody } from "#/components/MarkdownBody";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import { useCopyToClipboard } from "#/hooks/useCopyToClipboard";
+import type { ObsidianCaptureDestination } from "#/lib/obsidianCapture";
 import { CopyButton } from "./CopyButton";
 import type { AssistantMessage } from "./chatReducer";
 import { ReadAloudButton } from "./ReadAloudButton";
@@ -26,6 +27,7 @@ export function AssistantMsg({
 	canBranch = false,
 	branching = false,
 	onBranch,
+	obsidianCapture,
 }: {
 	message: AssistantMessage;
 	permissionLabels?: Map<string, string>;
@@ -37,6 +39,7 @@ export function AssistantMsg({
 	/** True while this specific row's branch fork is in flight. */
 	branching?: boolean;
 	onBranch?: (dbId: number) => void;
+	obsidianCapture?: ObsidianCaptureDestination | null;
 }) {
 	const { copy, copied } = useCopyToClipboard();
 	// Keep live subagents at the bottom of the active assistant turn. New parent
@@ -130,7 +133,10 @@ export function AssistantMsg({
 								dbId={message.dbId}
 								className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100"
 							/>
-							<SaveToObsidianActions text={message.text} />
+							<SaveToObsidianActions
+								text={message.text}
+								capture={obsidianCapture}
+							/>
 							{canBranch && message.dbId != null && onBranch && (
 								<button
 									type="button"

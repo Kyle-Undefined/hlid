@@ -52,6 +52,56 @@ afterEach(() => {
 });
 
 describe("AttachmentsPage", () => {
+	it("promotes Relics to the configured capture folder and opens vault artifacts", async () => {
+		const request = vi
+			.fn<typeof fetch>()
+			.mockResolvedValue(Response.json({ ok: true }));
+		const listAttachments = vi.fn().mockResolvedValue({
+			rows: [{ ...rows[0], kind: "vault" }],
+			total: 1,
+			total_bytes: 3,
+		});
+		render(
+			<AttachmentsPage
+				initial={{ rows, total: 2, total_bytes: 7 }}
+				capture={{
+					kind: "inbox",
+					label: "Inbox",
+					folder: "0 Inbox",
+					vaultName: "Fornbok",
+					template: null,
+				}}
+				listAttachments={listAttachments}
+				request={request}
+			/>,
+		);
+
+		const promote = screen.getByRole("button", {
+			name: "Send one.txt to Obsidian Inbox",
+		});
+		expect(promote.getAttribute("title")).toBe(
+			"Send to Inbox\nFornbok/0 Inbox",
+		);
+		fireEvent.click(promote);
+		await waitFor(() =>
+			expect(request).toHaveBeenCalledWith(
+				"/api/attachments/one/promote-to-obsidian",
+				{ method: "POST" },
+			),
+		);
+		await waitFor(() => expect(listAttachments).toHaveBeenCalled());
+
+		fireEvent.click(
+			screen.getByRole("button", { name: "Open one.txt in Obsidian" }),
+		);
+		await waitFor(() =>
+			expect(request).toHaveBeenCalledWith(
+				"/api/attachments/one/open-in-obsidian",
+				{ method: "POST" },
+			),
+		);
+	});
+
 	it("searches from the first page and replaces list totals", async () => {
 		const listAttachments = vi.fn().mockResolvedValue({
 			rows: [rows[1]],

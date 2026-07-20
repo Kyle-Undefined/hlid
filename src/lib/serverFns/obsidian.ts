@@ -1,11 +1,19 @@
 import { createServerFn } from "@tanstack/react-start";
 import { z } from "zod";
+import {
+	configuredObsidianCapture,
+	obsidianCaptureNotePath,
+} from "#/lib/obsidianCapture";
 import { parseObsidianTemplateNames } from "#/lib/obsidianTemplates";
 
 const relativePathSchema = z.string().trim().min(1).max(4_096);
 
 const appendSchema = z.object({
 	destination: z.enum(["active", "daily"]),
+	content: z.string().min(1).max(20_000),
+});
+
+const captureSchema = z.object({
 	content: z.string().min(1).max(20_000),
 });
 
@@ -55,6 +63,21 @@ export const listObsidianTemplatesFn = createServerFn({
 	return {
 		vaultName: config.vault.name,
 		templates: parseObsidianTemplateNames(output),
+	};
+});
+
+export const listObsidianCommandsFn = createServerFn({
+	method: "GET",
+}).handler(async () => {
+	const [{ loadConfig }, { listObsidianCommands }] = await Promise.all([
+		import("#/server/config"),
+		import("#/server/obsidianCli"),
+	]);
+	const config = loadConfig();
+	const output = await listObsidianCommands(config.vault.name);
+	return {
+		vaultName: config.vault.name,
+		commands: parseObsidianTemplateNames(output),
 	};
 });
 
@@ -113,4 +136,37 @@ export const appendToObsidianFn = createServerFn({ method: "POST" })
 			data.content,
 		);
 		return { ok: true };
+	});
+
+export const captureReplyToObsidianFn = createServerFn({ method: "POST" })
+	.validator((raw) => captureSchema.parse(raw))
+	.handler(async ({ data }) => {
+		const [{ randomUUID }, { loadConfig }, { createObsidianNote }] =
+			await Promise.all([
+				import("node:crypto"),
+				import("#/server/config"),
+				import("#/server/obsidianCli"),
+			]);
+		const config = loadConfig();
+		const destination = configuredObsidianCapture(config.vault);
+		if (!destination) {
+			throw new Error(
+				"This workspace does not have an Obsidian Inbox or Raw folder configured.",
+			);
+		}
+		const requestedPath = obsidianCaptureNotePath(
+			destination,
+			new Date(),
+			randomUUID(),
+		);
+		const result = await createObsidianNote(config.vault.name, {
+			path: requestedPath,
+			template: destination.template ?? undefined,
+			content: data.content,
+		});
+		return {
+			ok: true,
+			path: result.path,
+			destination: destination.label,
+		};
 	});

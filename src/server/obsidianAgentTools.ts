@@ -2,10 +2,12 @@ import { z } from "zod";
 import { loadConfig } from "./config";
 import {
 	createObsidianNote,
+	executeObsidianCommand,
 	listObsidianTemplates,
 	MAX_OBSIDIAN_AGENT_OUTPUT_CHARS,
 	MAX_OBSIDIAN_APPEND_CHARS,
 	MAX_OBSIDIAN_CREATE_CHARS,
+	moveObsidianFile,
 	mutateObsidianNote,
 	queryObsidianBase,
 	queryObsidianCurrentNote,
@@ -17,6 +19,7 @@ import {
 	queryObsidianVaultInfo,
 	readObsidianNote,
 	readObsidianTemplate,
+	renameObsidianFile,
 } from "./obsidianCli";
 
 export const OBSIDIAN_AGENT_NAMESPACE = "hlid_obsidian";
@@ -120,6 +123,17 @@ export const obsidianAgentSchemas = {
 		content: z.string().min(1).max(MAX_OBSIDIAN_APPEND_CHARS),
 		open: z.boolean().optional(),
 	}),
+	move_file: z.object({
+		path: vaultPath,
+		to: vaultPath,
+	}),
+	rename_file: z.object({
+		path: vaultPath,
+		name: z.string().trim().min(1).max(255),
+	}),
+	run_command: z.object({
+		id: z.string().trim().min(1).max(512),
+	}),
 } as const;
 
 export type ObsidianAgentToolName = keyof typeof obsidianAgentSchemas;
@@ -165,7 +179,7 @@ export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
 	{
 		name: "vault_info",
 		description:
-			"Confirm the configured Obsidian vault connection and return its name, Obsidian version, active note when available, and Hlid's native vault capabilities. The agent never needs the vault's absolute Windows or WSL filesystem path.",
+			"Confirm the configured Obsidian vault connection and return its name, Obsidian version, active note when available, Hlid's native vault capabilities, and command IDs explicitly allowed for this workspace. The agent never needs the vault's absolute Windows or WSL filesystem path.",
 		readOnly: true,
 		inputSchema: {
 			type: "object",
@@ -176,7 +190,7 @@ export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
 	{
 		name: "search",
 		description:
-			"Search the configured Obsidian vault by indexed text. Use this instead of shell or filesystem search for vault queries. Can return matching note paths, matching lines with context, or only the matching file count. Returns a bounded JSON envelope.",
+			"Search the configured Obsidian vault by indexed content and matching Markdown paths. Use this instead of shell or filesystem search for vault queries. Can return hybrid note paths, matching content lines with context, or only the indexed-content count. Use links afterward only when the user asks for related notes or backlinks. Returns a bounded JSON envelope.",
 		readOnly: true,
 		inputSchema: {
 			type: "object",
@@ -458,6 +472,53 @@ export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
 			},
 		}),
 	),
+	{
+		name: "move_file",
+		description:
+			"Move one exact vault file through Obsidian so Obsidian can update links. The destination must be the exact desired vault-relative path.",
+		readOnly: false,
+		inputSchema: {
+			type: "object",
+			properties: {
+				path: { type: "string", description: "Current exact vault path." },
+				to: { type: "string", description: "New exact vault path." },
+			},
+			required: ["path", "to"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "rename_file",
+		description:
+			"Rename one exact vault file through Obsidian so Obsidian can update links. The name is a filename only, not a path.",
+		readOnly: false,
+		inputSchema: {
+			type: "object",
+			properties: {
+				path: { type: "string", description: "Current exact vault path." },
+				name: { type: "string", description: "New filename." },
+			},
+			required: ["path", "name"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "run_command",
+		description:
+			"Run one Obsidian command that the user explicitly allowed for this workspace in Forge. Every other command ID is rejected server-side.",
+		readOnly: false,
+		inputSchema: {
+			type: "object",
+			properties: {
+				id: {
+					type: "string",
+					description: "Exact command ID from the workspace allowlist.",
+				},
+			},
+			required: ["id"],
+			additionalProperties: false,
+		},
+	},
 ];
 
 export function isObsidianAgentToolReadOnly(name: string): boolean {
@@ -625,13 +686,15 @@ export async function executeObsidianAgentTool(
 	name: string,
 	input: unknown,
 ): Promise<string> {
-	const vaultName = loadConfig().vault.name;
+	const config = loadConfig();
+	const vaultName = config.vault.name;
 	switch (name as ObsidianAgentToolName) {
 		case "vault_info": {
 			obsidianAgentSchemas.vault_info.parse(input);
 			return JSON.stringify({
 				...(await queryObsidianVaultInfo(vaultName)),
 				capabilities: OBSIDIAN_AGENT_TOOL_SPECS.map((tool) => tool.name),
+				allowedCommands: config.vault.obsidian_command_allowlist ?? [],
 			});
 		}
 		case "links": {
@@ -745,6 +808,26 @@ export async function executeObsidianAgentTool(
 			return JSON.stringify(
 				await mutateObsidianNote(vaultName, "prepend", parsed),
 			);
+		}
+		case "move_file": {
+			const parsed = obsidianAgentSchemas.move_file.parse(input);
+			return JSON.stringify(await moveObsidianFile(vaultName, parsed));
+		}
+		case "rename_file": {
+			const parsed = obsidianAgentSchemas.rename_file.parse(input);
+			return JSON.stringify(await renameObsidianFile(vaultName, parsed));
+		}
+		case "run_command": {
+			const parsed = obsidianAgentSchemas.run_command.parse(input);
+			if (
+				!(config.vault.obsidian_command_allowlist ?? []).includes(parsed.id)
+			) {
+				throw new Error(
+					`Obsidian command "${parsed.id}" is not allowed for this workspace.`,
+				);
+			}
+			await executeObsidianCommand(vaultName, parsed.id);
+			return JSON.stringify({ ok: true, id: parsed.id });
 		}
 		default:
 			throw new Error(`Unknown Hlid Obsidian tool: ${name}`);

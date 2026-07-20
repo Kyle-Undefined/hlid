@@ -67,6 +67,7 @@ const VaultSchema = z.object({
 	memory: z.string().optional(),
 	outputs: z.string().optional(),
 	save_to_obsidian_template: z.string().optional(),
+	obsidian_command_allowlist: z.array(z.string()).optional(),
 	// When true, deleting a vault attachment from Relics also removes the file
 	// from disk. Default false — vault files are owned by the vault, not hlid.
 	delete_vault_attachments: z.boolean().default(false),

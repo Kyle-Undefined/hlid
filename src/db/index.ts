@@ -25,6 +25,7 @@ export {
 	listAttachments,
 	listLegacyManagedAttachments,
 	moveAttachmentIntoLibrary,
+	promoteAttachmentToVault,
 } from "./attachments";
 export type {
 	LedgerAnalytics,

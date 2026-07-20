@@ -1,5 +1,6 @@
 import { memo } from "react";
 import type { QueuedChatMessage } from "#/hooks/wsChatQueueStore";
+import type { ObsidianCaptureDestination } from "#/lib/obsidianCapture";
 import { formatVaultReferencedMessage } from "#/lib/vaultReferences";
 import { ChatMessageRow } from "./ChatMessageRow";
 import type { ChatMessage } from "./chatReducer";
@@ -29,6 +30,7 @@ export const MessageList = memo(function MessageList({
 	canBranch,
 	forkingMessageId,
 	onBranch,
+	obsidianCapture,
 }: {
 	messages: ChatMessage[];
 	chatQueue: QueuedChatMessage[];
@@ -61,6 +63,7 @@ export const MessageList = memo(function MessageList({
 	canBranch?: boolean;
 	forkingMessageId?: number | null;
 	onBranch?: (dbId: number) => void;
+	obsidianCapture?: ObsidianCaptureDestination | null;
 }) {
 	const {
 		olderHistoryCount,
@@ -119,6 +122,7 @@ export const MessageList = memo(function MessageList({
 					canBranch={canBranch}
 					forkingMessageId={forkingMessageId}
 					onBranch={onBranch}
+					obsidianCapture={obsidianCapture}
 				/>
 			))}
 			{orphanQueued.map((qm) => (

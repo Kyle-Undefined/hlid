@@ -244,3 +244,28 @@ export async function moveAttachmentIntoLibrary(
 	);
 	return result.changes > 0;
 }
+
+export async function promoteAttachmentToVault(
+	id: string,
+	metadata: { filename: string; path: string },
+): Promise<boolean> {
+	const db = await getDb();
+	let changed = false;
+	db.transaction(() => {
+		const result = db.run(
+			`UPDATE attachments
+			 SET kind = 'vault', filename = ?, path = ?, storage_key = NULL,
+			     retention = 'linked', origin = 'vault'
+			 WHERE id = ? AND kind = 'ephemeral'`,
+			[metadata.filename, metadata.path, id],
+		);
+		changed = result.changes > 0;
+		if (changed) {
+			db.run(`UPDATE attachment_search SET text = ? WHERE attachment_id = ?`, [
+				normalizeSearchText(metadata.filename),
+				id,
+			]);
+		}
+	})();
+	return changed;
+}

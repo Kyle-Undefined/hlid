@@ -13,10 +13,14 @@ vi.mock("../db", () => ({
 	createAttachment: vi.fn().mockResolvedValue(undefined),
 	getAttachment: vi.fn().mockResolvedValue(null),
 	deleteAttachment: vi.fn().mockResolvedValue(undefined),
+	promoteAttachmentToVault: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock("node:fs/promises", () => ({
 	mkdir: vi.fn().mockResolvedValue(undefined),
+	copyFile: vi.fn().mockResolvedValue(undefined),
+	lstat: vi.fn().mockResolvedValue({ isFile: () => true }),
+	realpath: vi.fn().mockImplementation(async (path: string) => path),
 	writeFile: vi.fn().mockResolvedValue(undefined),
 	unlink: vi.fn().mockResolvedValue(undefined),
 	readdir: vi.fn().mockResolvedValue([]),
@@ -28,6 +32,7 @@ vi.mock("node:fs/promises", () => ({
 // present). For tests without an agent, we don't need this mock, but provide it
 // to avoid "Bun.file" references pulling in unexpected module resolution.
 vi.mock("node:fs", () => ({
+	constants: { COPYFILE_EXCL: 1 },
 	realpathSync: vi.fn().mockImplementation((p: string) => p),
 }));
 
@@ -42,12 +47,17 @@ vi.mock("node:crypto", () => {
 
 // ── imports after mocks ───────────────────────────────────────────────────────
 
-import { mkdir, unlink } from "node:fs/promises";
+import { copyFile, mkdir, unlink } from "node:fs/promises";
 import type { HlidConfig } from "../config";
 
 import { DEFAULT_ATTACHMENTS_CONFIG } from "../config";
 import * as db from "../db";
-import { handleUpload, removeAttachment, unlinkPaths } from "./attachments";
+import {
+	handleUpload,
+	promoteAttachmentToObsidian,
+	removeAttachment,
+	unlinkPaths,
+} from "./attachments";
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
 
@@ -607,5 +617,55 @@ describe("removeAttachment", () => {
 		const res = await removeAttachment("att-e", config);
 		expect(res.status).toBe(200);
 		expect(unlink).toHaveBeenCalledWith("/tmp/.hlid/attachments/s1/file.txt");
+	});
+});
+
+describe("promoteAttachmentToObsidian", () => {
+	it("moves an ephemeral Relic into the configured PARA Inbox", async () => {
+		vi.mocked(db.getAttachment).mockResolvedValueOnce({
+			id: "att-promote",
+			path: "/tmp/library/note.txt",
+			filename: "note.txt",
+			mime: "text/plain",
+			kind: "ephemeral",
+			size_bytes: 5,
+			sha256: "abc",
+			session_id: "s1",
+			created_at: 0,
+		} as never);
+		const config = makeConfig();
+		config.vault.style = "para";
+		config.vault.inbox = "0 Inbox";
+
+		const response = await promoteAttachmentToObsidian("att-promote", config);
+		expect(response.status).toBe(200);
+		expect(copyFile).toHaveBeenCalledWith(
+			"/tmp/library/note.txt",
+			"/tmp/test-vault/0 Inbox/note.txt",
+			1,
+		);
+		expect(db.promoteAttachmentToVault).toHaveBeenCalledWith("att-promote", {
+			filename: "note.txt",
+			path: "/tmp/test-vault/0 Inbox/note.txt",
+		});
+		expect(unlink).toHaveBeenCalledWith("/tmp/library/note.txt");
+		expect(await response.json()).toMatchObject({
+			path: "0 Inbox/note.txt",
+			destination: "Inbox",
+			alreadyPromoted: false,
+		});
+	});
+
+	it("does not offer promotion without an Inbox or Raw folder", async () => {
+		vi.mocked(db.getAttachment).mockResolvedValueOnce({
+			id: "att-promote",
+			kind: "ephemeral",
+		} as never);
+		const response = await promoteAttachmentToObsidian(
+			"att-promote",
+			makeConfig(),
+		);
+		expect(response.status).toBe(409);
+		expect(copyFile).not.toHaveBeenCalled();
 	});
 });

@@ -5,8 +5,10 @@ const bridge = vi.hoisted(() => ({
 	MAX_OBSIDIAN_APPEND_CHARS: 20_000,
 	MAX_OBSIDIAN_CREATE_CHARS: 20_000,
 	createObsidianNote: vi.fn(),
+	executeObsidianCommand: vi.fn(),
 	listObsidianTemplates: vi.fn(),
 	mutateObsidianNote: vi.fn(),
+	moveObsidianFile: vi.fn(),
 	queryObsidianBase: vi.fn(),
 	queryObsidianCurrentNote: vi.fn(),
 	queryObsidianHistory: vi.fn(),
@@ -17,11 +19,16 @@ const bridge = vi.hoisted(() => ({
 	queryObsidianVaultInfo: vi.fn(),
 	readObsidianNote: vi.fn(),
 	readObsidianTemplate: vi.fn(),
+	renameObsidianFile: vi.fn(),
 }));
 
-vi.mock("./config", () => ({
-	loadConfig: () => ({ vault: { name: "Fornbok" } }),
+const config = vi.hoisted(() => ({
+	vault: {
+		name: "Fornbok",
+		obsidian_command_allowlist: ["templater-obsidian:insert-templater"],
+	},
 }));
+vi.mock("./config", () => ({ loadConfig: () => config }));
 vi.mock("./obsidianCli", () => bridge);
 
 import {
@@ -53,6 +60,9 @@ describe("Obsidian agent tools", () => {
 			"create_note",
 			"append_note",
 			"prepend_note",
+			"move_file",
+			"rename_file",
+			"run_command",
 		]);
 		expect(
 			JSON.stringify(
@@ -79,7 +89,14 @@ describe("Obsidian agent tools", () => {
 			OBSIDIAN_AGENT_TOOL_SPECS.filter((tool) => !tool.readOnly).map(
 				(tool) => tool.name,
 			),
-		).toEqual(["create_note", "append_note", "prepend_note"]);
+		).toEqual([
+			"create_note",
+			"append_note",
+			"prepend_note",
+			"move_file",
+			"rename_file",
+			"run_command",
+		]);
 	});
 
 	it("reports the native vault connection and reads one exact note", async () => {
@@ -88,8 +105,10 @@ describe("Obsidian agent tools", () => {
 			version: "1.12.7",
 			activeNote: "Notes/Current.md",
 		});
-		await expect(executeObsidianAgentTool("vault_info", {})).resolves.toContain(
-			'"name":"Fornbok"',
+		const info = await executeObsidianAgentTool("vault_info", {});
+		expect(info).toContain('"name":"Fornbok"');
+		expect(info).toContain(
+			'"allowedCommands":["templater-obsidian:insert-templater"]',
 		);
 
 		bridge.readObsidianNote.mockResolvedValueOnce(
@@ -153,6 +172,43 @@ describe("Obsidian agent tools", () => {
 			"append",
 			expect.objectContaining({ content: "Body" }),
 		);
+
+		bridge.moveObsidianFile.mockResolvedValue({ path: "Archive/One.md" });
+		await executeObsidianAgentTool("move_file", {
+			path: "Notes/One.md",
+			to: "Archive/One.md",
+		});
+		expect(bridge.moveObsidianFile).toHaveBeenCalledWith("Fornbok", {
+			path: "Notes/One.md",
+			to: "Archive/One.md",
+		});
+
+		bridge.renameObsidianFile.mockResolvedValue({ path: "Notes/Renamed.md" });
+		await executeObsidianAgentTool("rename_file", {
+			path: "Notes/One.md",
+			name: "Renamed.md",
+		});
+		expect(bridge.renameObsidianFile).toHaveBeenCalledWith("Fornbok", {
+			path: "Notes/One.md",
+			name: "Renamed.md",
+		});
+
+		await executeObsidianAgentTool("run_command", {
+			id: "templater-obsidian:insert-templater",
+		});
+		expect(bridge.executeObsidianCommand).toHaveBeenCalledWith(
+			"Fornbok",
+			"templater-obsidian:insert-templater",
+		);
+	});
+
+	it("rejects Obsidian commands outside the workspace allowlist", async () => {
+		await expect(
+			executeObsidianAgentTool("run_command", {
+				id: "workspace:delete",
+			}),
+		).rejects.toThrow("not allowed");
+		expect(bridge.executeObsidianCommand).not.toHaveBeenCalled();
 	});
 
 	it("searches indexed vault text with bounded path and context results", async () => {

@@ -11,6 +11,7 @@ import { type VaultForm, VaultSection } from "./VaultSection";
 
 const serverFns = vi.hoisted(() => ({
 	listObsidianTemplatesFn: vi.fn(),
+	listObsidianCommandsFn: vi.fn(),
 }));
 
 vi.mock("#/lib/serverFns/obsidian", () => serverFns);
@@ -30,10 +31,60 @@ const vault: VaultForm = {
 	skills: "Skills",
 	memory: "Memory",
 	saveToObsidianTemplate: "",
+	obsidianCommandAllowlist: [],
 };
 
 beforeEach(() => {
 	serverFns.listObsidianTemplatesFn.mockReset();
+	serverFns.listObsidianCommandsFn.mockReset();
+	serverFns.listObsidianCommandsFn.mockResolvedValue({
+		vaultName: "Fornbok",
+		commands: [],
+	});
+});
+
+describe("VaultSection Obsidian command allowlist", () => {
+	it("adds and removes commands from the live Obsidian inventory", async () => {
+		serverFns.listObsidianTemplatesFn.mockResolvedValue({
+			vaultName: "Fornbok",
+			templates: [],
+		});
+		serverFns.listObsidianCommandsFn.mockResolvedValue({
+			vaultName: "Fornbok",
+			commands: ["templater-obsidian:insert-templater"],
+		});
+		const onChange = vi.fn();
+		const { rerender } = render(
+			<VaultSection vault={vault} onChange={onChange} />,
+		);
+		const select = await screen.findByRole("combobox", {
+			name: "Allowed Obsidian Commands",
+		});
+		fireEvent.change(select, {
+			target: { value: "templater-obsidian:insert-templater" },
+		});
+		expect(onChange).toHaveBeenCalledWith({
+			obsidianCommandAllowlist: ["templater-obsidian:insert-templater"],
+		});
+
+		rerender(
+			<VaultSection
+				vault={{
+					...vault,
+					obsidianCommandAllowlist: ["templater-obsidian:insert-templater"],
+				}}
+				onChange={onChange}
+			/>,
+		);
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: "Remove allowed Obsidian command templater-obsidian:insert-templater",
+			}),
+		);
+		expect(onChange).toHaveBeenLastCalledWith({
+			obsidianCommandAllowlist: [],
+		});
+	});
 });
 afterEach(cleanup);
 

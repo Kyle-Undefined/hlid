@@ -1,5 +1,11 @@
 import type { HlidConfig } from "../config";
-import { handleUpload, removeAttachment, serveAttachment } from "./attachments";
+import {
+	handleUpload,
+	openAttachmentInObsidian,
+	promoteAttachmentToObsidian,
+	removeAttachment,
+	serveAttachment,
+} from "./attachments";
 import { loadConfig } from "./config";
 import { bumpDataRevision } from "./dataRevision";
 import { broadcast } from "./runState";
@@ -60,20 +66,51 @@ export async function handleAttachmentRoute(
 		return serveAttachment(rawMatch[1]);
 	}
 
+	const promoteMatch = url.pathname.match(
+		/^\/api\/attachments\/([a-zA-Z0-9_-]+)\/promote-to-obsidian$/,
+	);
+	if (promoteMatch) {
+		if (req.method !== "POST")
+			return new Response("Method Not Allowed", { status: 405 });
+		const response = await promoteAttachmentToObsidian(
+			promoteMatch[1],
+			loadCurrentConfig(fallbackConfig),
+		);
+		if (response.ok) bumpDataRevision("relics", "storage");
+		return response;
+	}
+
+	const openObsidianMatch = url.pathname.match(
+		/^\/api\/attachments\/([a-zA-Z0-9_-]+)\/open-in-obsidian$/,
+	);
+	if (openObsidianMatch) {
+		if (req.method !== "POST")
+			return new Response("Method Not Allowed", { status: 405 });
+		return openAttachmentInObsidian(
+			openObsidianMatch[1],
+			loadCurrentConfig(fallbackConfig),
+		);
+	}
+
 	const idMatch = url.pathname.match(/^\/api\/attachments\/([a-zA-Z0-9_-]+)$/);
 	if (idMatch) {
 		if (req.method !== "DELETE")
 			return new Response("Method Not Allowed", { status: 405 });
-		let deleteConfig = fallbackConfig;
-		try {
-			deleteConfig = loadConfig();
-		} catch {
-			// fallback config already set
-		}
-		const response = await removeAttachment(idMatch[1], deleteConfig);
+		const response = await removeAttachment(
+			idMatch[1],
+			loadCurrentConfig(fallbackConfig),
+		);
 		if (response.ok) bumpDataRevision("relics", "storage");
 		return response;
 	}
 
 	return null;
+}
+
+function loadCurrentConfig(fallbackConfig: HlidConfig): HlidConfig {
+	try {
+		return loadConfig();
+	} catch {
+		return fallbackConfig;
+	}
 }

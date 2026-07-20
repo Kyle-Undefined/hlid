@@ -2543,6 +2543,9 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 			"create_note",
 			"append_note",
 			"prepend_note",
+			"move_file",
+			"rename_file",
+			"run_command",
 		]);
 		const tasks = server.instance.options.tools.find(
 			(item) => item.name === "tasks",

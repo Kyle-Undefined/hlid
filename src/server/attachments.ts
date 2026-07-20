@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
-import { realpathSync } from "node:fs";
+import { constants, realpathSync } from "node:fs";
 import {
+	copyFile,
 	lstat,
 	mkdir,
 	readdir,
@@ -10,9 +11,13 @@ import {
 	unlink,
 	writeFile,
 } from "node:fs/promises";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, extname, relative, resolve } from "node:path";
 import type { HlidConfig } from "../config";
 import * as db from "../db";
+import {
+	configuredObsidianCapture,
+	obsidianCaptureTimestamp,
+} from "../lib/obsidianCapture";
 import { expandTilde, pathStartsWith, samePath } from "../lib/paths";
 import {
 	artifactDirectory,
@@ -365,6 +370,191 @@ export async function removeAttachment(
 		}
 	}
 	return Response.json({ ok: true, id });
+}
+
+function attachmentPromotionError(message: string, status = 400): Response {
+	return Response.json(
+		{ error: "attachment_promotion_failed", message },
+		{ status },
+	);
+}
+
+async function configuredVaultRoot(config: HlidConfig): Promise<string> {
+	const configured = resolve(expandTilde(config.vault.path));
+	try {
+		return await realpath(configured);
+	} catch {
+		throw new Error("Hlid's configured vault path was not found.");
+	}
+}
+
+async function vaultRelativeAttachmentPath(
+	path: string,
+	config: HlidConfig,
+): Promise<string> {
+	const root = await configuredVaultRoot(config);
+	const file = await realpath(path);
+	if (!pathStartsWith(root, file)) {
+		throw new Error("This Relic is not inside Hlid's configured vault.");
+	}
+	return relative(root, file).replaceAll("\\", "/");
+}
+
+async function copyIntoCaptureFolder(
+	source: string,
+	directory: string,
+	filename: string,
+): Promise<string> {
+	const extension = extname(filename);
+	const stem = basename(filename, extension);
+	for (let attempt = 0; attempt < 4; attempt++) {
+		const candidate =
+			attempt === 0
+				? filename
+				: `${stem} ${obsidianCaptureTimestamp(new Date())} ${randomUUID().slice(0, 8)}${extension}`;
+		const target = resolve(directory, candidate);
+		try {
+			await copyFile(source, target, constants.COPYFILE_EXCL);
+			return target;
+		} catch (cause) {
+			if ((cause as NodeJS.ErrnoException).code !== "EEXIST") throw cause;
+		}
+	}
+	throw new Error("Could not create a unique filename in the capture folder.");
+}
+
+export async function promoteAttachmentToObsidian(
+	id: string,
+	config: HlidConfig,
+): Promise<Response> {
+	const row = await db.getAttachment(id);
+	if (!row) return new Response("Not found", { status: 404 });
+	const destination = configuredObsidianCapture(config.vault);
+	if (!destination) {
+		return attachmentPromotionError(
+			"This workspace does not have an Obsidian Inbox or Raw folder configured.",
+			409,
+		);
+	}
+	if (row.kind === "vault") {
+		try {
+			return Response.json({
+				ok: true,
+				id,
+				path: await vaultRelativeAttachmentPath(row.path, config),
+				destination: destination.label,
+				alreadyPromoted: true,
+			});
+		} catch (cause) {
+			return attachmentPromotionError(
+				cause instanceof Error
+					? cause.message
+					: "Could not resolve this Relic.",
+				409,
+			);
+		}
+	}
+
+	let source: string;
+	let captureDirectory: string;
+	try {
+		const sourceInfo = await lstat(row.path);
+		if (!sourceInfo.isFile()) {
+			return attachmentPromotionError(
+				"Only regular Relic files can be promoted.",
+			);
+		}
+		source = await realpath(row.path);
+		const root = await configuredVaultRoot(config);
+		const requestedDirectory = resolve(root, destination.folder);
+		if (!pathStartsWith(root, requestedDirectory)) {
+			return attachmentPromotionError(
+				"The configured capture folder must stay inside the vault.",
+			);
+		}
+		await mkdir(requestedDirectory, { recursive: true });
+		captureDirectory = await realpath(requestedDirectory);
+		if (!pathStartsWith(root, captureDirectory)) {
+			return attachmentPromotionError(
+				"The configured capture folder resolves outside the vault.",
+			);
+		}
+	} catch (cause) {
+		return attachmentPromotionError(
+			cause instanceof Error ? cause.message : "Could not prepare this Relic.",
+		);
+	}
+
+	let promotedPath: string | null = null;
+	try {
+		promotedPath = await copyIntoCaptureFolder(
+			source,
+			captureDirectory,
+			sanitizeFilename(row.filename),
+		);
+		const promoted = await db.promoteAttachmentToVault(id, {
+			filename: basename(promotedPath),
+			path: promotedPath,
+		});
+		if (!promoted) {
+			await unlink(promotedPath).catch(() => {});
+			return attachmentPromotionError("This Relic was already promoted.", 409);
+		}
+	} catch (cause) {
+		if (promotedPath) await unlink(promotedPath).catch(() => {});
+		return attachmentPromotionError(
+			cause instanceof Error ? cause.message : "Could not promote this Relic.",
+			500,
+		);
+	}
+
+	await unlink(source).catch((cause) => {
+		console.warn(
+			`[attachments] promoted source cleanup failed for ${source}:`,
+			cause,
+		);
+	});
+	const sourceDirectory = dirname(source);
+	const remaining = await readdir(sourceDirectory).catch(() => null);
+	if (remaining?.length === 0) await rmdir(sourceDirectory).catch(() => {});
+
+	return Response.json({
+		ok: true,
+		id,
+		path: relative(await configuredVaultRoot(config), promotedPath).replaceAll(
+			"\\",
+			"/",
+		),
+		destination: destination.label,
+		alreadyPromoted: false,
+	});
+}
+
+export async function openAttachmentInObsidian(
+	id: string,
+	config: HlidConfig,
+): Promise<Response> {
+	const row = await db.getAttachment(id);
+	if (!row) return new Response("Not found", { status: 404 });
+	if (row.kind !== "vault") {
+		return attachmentPromotionError(
+			"Promote this Relic to the vault before opening it in Obsidian.",
+			409,
+		);
+	}
+	try {
+		const path = await vaultRelativeAttachmentPath(row.path, config);
+		const { openObsidianNote } = await import("./obsidianCli");
+		await openObsidianNote(config.vault.name, path);
+		return Response.json({ ok: true, id, path });
+	} catch (cause) {
+		return attachmentPromotionError(
+			cause instanceof Error
+				? cause.message
+				: "Could not open this Relic in Obsidian.",
+			500,
+		);
+	}
 }
 
 export async function unlinkPaths(paths: string[]): Promise<void> {

@@ -19,6 +19,7 @@ const BASE = {
 	skills: "skills",
 	memory: "memory",
 	saveToObsidianTemplate: "Capture",
+	obsidianCommandAllowlist: ["templater-obsidian:insert-templater"],
 };
 
 // ── para style ────────────────────────────────────────────────────────────────
@@ -64,6 +65,13 @@ describe("buildVaultSection — para style", () => {
 			saveToObsidianTemplate: "",
 		});
 		expect(s.save_to_obsidian_template).toBeUndefined();
+	});
+
+	it("preserves the explicit Obsidian command allowlist", () => {
+		const s = buildVaultSection({ ...BASE, style: "para" });
+		expect(s.obsidian_command_allowlist).toEqual([
+			"templater-obsidian:insert-templater",
+		]);
 	});
 
 	it("empty string para fields become undefined", () => {
