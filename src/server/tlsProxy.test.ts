@@ -371,7 +371,9 @@ describe("TLS HTTP proxy limits", () => {
 		expect(response.status).toBe(503);
 		expect(await response.text()).toBe("Service Unavailable");
 		expect(log).toHaveBeenCalledWith(
-			"[tls-proxy] GET /api/private failed after 0ms: Error: connect failed",
+			expect.stringMatching(
+				/^\[tls-proxy\] GET \/api\/private failed after \d+ms: Error: connect failed$/,
+			),
 		);
 		log.mockRestore();
 	});
@@ -391,7 +393,9 @@ describe("TLS HTTP proxy limits", () => {
 
 		expect(response.status).toBe(503);
 		expect(log).toHaveBeenCalledWith(
-			"[tls-proxy] POST /_serverFn/:id server-fn=getLedgerAnalyticsFn failed after 0ms: Error: connect failed",
+			expect.stringMatching(
+				/^\[tls-proxy\] POST \/_serverFn\/:id server-fn=getLedgerAnalyticsFn failed after \d+ms: Error: connect failed$/,
+			),
 		);
 		log.mockRestore();
 	});
