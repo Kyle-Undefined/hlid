@@ -283,7 +283,15 @@ function WorkspaceCategory({ state }: { state: SettingsFormState }) {
 				vault={state.vault}
 				onChange={(patch) => state.setVault((v) => ({ ...v, ...patch }))}
 			/>
-			<ObsidianSection />
+			<ObsidianSection
+				rememberedCommands={state.vault.obsidianCommandAllowlist}
+				onRememberedCommandsChange={(commands) =>
+					state.setVault((vault) => ({
+						...vault,
+						obsidianCommandAllowlist: commands,
+					}))
+				}
+			/>
 			<VocabSection
 				vocab={state.vocab}
 				onChange={(patch) => state.setVocab((v) => ({ ...v, ...patch }))}

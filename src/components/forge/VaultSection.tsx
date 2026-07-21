@@ -1,9 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { RelativeFolderField } from "#/components/wizard/RelativeFolderField";
-import {
-	listObsidianCommandsFn,
-	listObsidianTemplatesFn,
-} from "#/lib/serverFns/obsidian";
+import { listObsidianTemplatesFn } from "#/lib/serverFns/obsidian";
 import { Field, PathField, Section, TextInput } from "./fields";
 
 export type VaultForm = {
@@ -38,10 +35,6 @@ export function VaultSection({
 	const [templatesLoading, setTemplatesLoading] = useState(true);
 	const [templatesError, setTemplatesError] = useState<string | null>(null);
 	const requestId = useRef(0);
-	const [commands, setCommands] = useState<string[]>([]);
-	const [commandsLoading, setCommandsLoading] = useState(true);
-	const [commandsError, setCommandsError] = useState<string | null>(null);
-	const commandRequestId = useRef(0);
 
 	const refreshTemplates = useCallback(async () => {
 		const currentRequest = ++requestId.current;
@@ -65,38 +58,12 @@ export function VaultSection({
 		}
 	}, []);
 
-	const refreshCommands = useCallback(async () => {
-		const currentRequest = ++commandRequestId.current;
-		setCommandsLoading(true);
-		setCommandsError(null);
-		try {
-			const result = await listObsidianCommandsFn();
-			if (commandRequestId.current === currentRequest) {
-				setCommands(result.commands);
-			}
-		} catch (cause) {
-			if (commandRequestId.current === currentRequest) {
-				setCommandsError(
-					cause instanceof Error
-						? cause.message
-						: "Could not load Obsidian commands",
-				);
-			}
-		} finally {
-			if (commandRequestId.current === currentRequest) {
-				setCommandsLoading(false);
-			}
-		}
-	}, []);
-
 	useEffect(() => {
 		void refreshTemplates();
-		void refreshCommands();
 		return () => {
 			requestId.current += 1;
-			commandRequestId.current += 1;
 		};
-	}, [refreshCommands, refreshTemplates]);
+	}, [refreshTemplates]);
 
 	const selectedTemplateMissing =
 		vault.saveToObsidianTemplate !== "" &&
@@ -194,86 +161,6 @@ export function VaultSection({
 			{templatesError && (
 				<div className="px-4 pb-3 text-xs text-destructive" role="alert">
 					{templatesError}
-				</div>
-			)}
-			<Field
-				label="Allowed Obsidian Commands"
-				hint="explicit allowlist for agent-run Obsidian commands"
-			>
-				<div className="w-48 space-y-2">
-					<div className="flex items-center gap-2">
-						<select
-							value=""
-							onChange={(event) => {
-								const command = event.target.value;
-								if (!command) return;
-								onChange({
-									obsidianCommandAllowlist: [
-										...vault.obsidianCommandAllowlist,
-										command,
-									],
-								});
-							}}
-							disabled={commandsLoading}
-							className={selectClass}
-						>
-							<option value="">
-								{commandsLoading ? "Loading…" : "Add command…"}
-							</option>
-							{commands
-								.filter(
-									(command) =>
-										!vault.obsidianCommandAllowlist.includes(command),
-								)
-								.map((command) => (
-									<option key={command} value={command}>
-										{command}
-									</option>
-								))}
-						</select>
-						<button
-							type="button"
-							onClick={() => void refreshCommands()}
-							disabled={commandsLoading}
-							className="px-2 py-1 border border-border text-[10px] tracking-widest text-muted-foreground hover:bg-accent hover:text-foreground uppercase disabled:opacity-40"
-						>
-							{commandsLoading ? "…" : "Refresh"}
-						</button>
-					</div>
-					{vault.obsidianCommandAllowlist.length > 0 && (
-						<div className="flex flex-wrap gap-1">
-							{vault.obsidianCommandAllowlist.map((command) => (
-								<span
-									key={command}
-									className="inline-flex max-w-full items-center gap-1 border border-border px-1.5 py-0.5 font-mono text-[9px] text-muted-foreground"
-								>
-									<span className="truncate" title={command}>
-										{command}
-									</span>
-									<button
-										type="button"
-										onClick={() =>
-											onChange({
-												obsidianCommandAllowlist:
-													vault.obsidianCommandAllowlist.filter(
-														(item) => item !== command,
-													),
-											})
-										}
-										aria-label={`Remove allowed Obsidian command ${command}`}
-										className="hover:text-destructive"
-									>
-										×
-									</button>
-								</span>
-							))}
-						</div>
-					)}
-				</div>
-			</Field>
-			{commandsError && (
-				<div className="px-4 pb-3 text-xs text-destructive" role="alert">
-					{commandsError}
 				</div>
 			)}
 			{vault.style === "para" ? (

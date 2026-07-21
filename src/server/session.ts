@@ -42,7 +42,10 @@ import { resolveExecutionContext } from "./executionContext";
 import { planStagingPath, prepareLibrary } from "./libraryStore";
 import { readObsidianNote } from "./obsidianCli";
 import { parseAskUserQuestion } from "./parseAskUserQuestion";
-import { persistAlwaysAllowedTool } from "./permissionStore";
+import {
+	persistAlwaysAllowedObsidianCommand,
+	persistAlwaysAllowedTool,
+} from "./permissionStore";
 import {
 	AskUserQuestionManager,
 	PermissionManager,
@@ -176,6 +179,39 @@ const KNOWN_PERMISSION_MODES: ReadonlySet<string> = new Set([
 	"bypassPermissions",
 	"plan",
 ]);
+
+type ObsidianCommandPermission = {
+	commandId: string;
+	key: string;
+};
+
+function obsidianCommandPermission(
+	toolName: string,
+	input: Record<string, unknown>,
+	vaultName: string,
+): ObsidianCommandPermission | null {
+	const normalized = toolName.toLocaleLowerCase();
+	const isRunCommand =
+		normalized === "run_command" ||
+		normalized === "run command" ||
+		((normalized.endsWith("__run_command") ||
+			normalized.endsWith(".run_command") ||
+			normalized.endsWith("/run_command") ||
+			normalized.endsWith(":run_command")) &&
+			normalized.includes("hlid_obsidian")) ||
+		(normalized.includes("obsidian") &&
+			normalized.includes("command") &&
+			(normalized.includes("run") || normalized.includes("execute")));
+	if (!isRunCommand || typeof input.id !== "string") return null;
+	const commandId = input.id.trim();
+	if (!commandId || commandId.length > 512 || /[\r\n\0]/.test(commandId)) {
+		return null;
+	}
+	return {
+		commandId,
+		key: `hlid_obsidian:run_command:${vaultName}:${commandId}`,
+	};
+}
 
 function buildProviderHandoff(
 	messages: ReadonlyArray<{ role: string; text: string }>,
@@ -511,6 +547,8 @@ export class SessionManager {
 	private planHtmlPath: string | null = null;
 	/** Tools approved for the entire hlid session (survives provider subprocess restarts). */
 	private sessionAllowedTools = new Set<string>();
+	/** Exact Obsidian command IDs remembered for this workspace's configured vault. */
+	private rememberedObsidianCommands = new Set<string>();
 	private currentSessionId: string | null = null;
 	private currentSessionLabel: string | null = null;
 	private messageSeq = 0;
@@ -589,6 +627,9 @@ export class SessionManager {
 	): void {
 		this.vaultPath = config.vault.path || process.env.HOME || "/";
 		this.vaultName = config.vault.name;
+		this.rememberedObsidianCommands = new Set(
+			config.vault.obsidian_command_allowlist ?? [],
+		);
 		this.vaultProviderId = config.vault_provider ?? "claude";
 		const agentMaps = buildAgentMaps(config);
 		this.agentProviderMap = agentMaps.providers;
@@ -2696,15 +2737,26 @@ export class SessionManager {
 			autoApproveTools,
 			resolve,
 		} = options;
+		const obsidianCommand = obsidianCommandPermission(
+			toolName,
+			passInput,
+			this.vaultName,
+		);
+		const permissionKey = obsidianCommand?.key ?? toolName;
 		const request = {
 			type: "permission_request" as const,
 			id: toolUseID,
 			toolName,
 			title:
-				title ??
-				`${provider.label ?? provider.providerId} wants to use ${toolName}`,
-			displayName,
-			description,
+				obsidianCommand !== null
+					? `Run an Obsidian command in ${this.vaultName}?`
+					: (title ??
+						`${provider.label ?? provider.providerId} wants to use ${toolName}`),
+			displayName: obsidianCommand !== null ? "Obsidian command" : displayName,
+			description:
+				obsidianCommand !== null
+					? `Always applies only to command ${obsidianCommand.commandId} in the configured ${this.vaultName} vault.`
+					: description,
 			input: passInput as Record<string, unknown> | undefined,
 			...(toolName.startsWith("hlid.windows_computer_use:")
 				? { allowOnce: false }
@@ -2717,7 +2769,11 @@ export class SessionManager {
 		);
 		const prompt = (reason?: string) =>
 			new Promise<"allow" | "block">((finish) => {
-				if (this.sessionAllowedTools.has(toolName)) {
+				if (
+					this.sessionAllowedTools.has(permissionKey) ||
+					(obsidianCommand !== null &&
+						this.rememberedObsidianCommands.has(obsidianCommand.commandId))
+				) {
 					approvalSaveScope = "session";
 					finish("allow");
 					return;
@@ -2733,10 +2789,23 @@ export class SessionManager {
 							return;
 						}
 						approvalSaveScope = saveScope;
-						if (saveScope === "session") this.sessionAllowedTools.add(toolName);
+						if (saveScope === "session") {
+							this.sessionAllowedTools.add(permissionKey);
+						}
 						if (saveScope === "local" && !isWindowsComputerUseApproval) {
 							try {
-								persistAlwaysAllowedTool(activeCwd, toolName);
+								if (obsidianCommand !== null) {
+									persistAlwaysAllowedObsidianCommand(
+										this.vaultName,
+										this.vaultPath,
+										obsidianCommand.commandId,
+									);
+									this.rememberedObsidianCommands.add(
+										obsidianCommand.commandId,
+									);
+								} else {
+									persistAlwaysAllowedTool(activeCwd, toolName);
+								}
 							} catch (error) {
 								console.error(
 									"[session] failed to write always-allow rule:",
@@ -2762,7 +2831,9 @@ export class SessionManager {
 						? {
 								behavior: "allow",
 								updatedInput: passInput,
-								...(approvalSaveScope ? { saveScope: approvalSaveScope } : {}),
+								...(approvalSaveScope && obsidianCommand === null
+									? { saveScope: approvalSaveScope }
+									: {}),
 							}
 						: {
 								behavior: "deny",
@@ -2800,7 +2871,9 @@ export class SessionManager {
 						? {
 								behavior: "allow",
 								updatedInput: passInput,
-								...(approvalSaveScope ? { saveScope: approvalSaveScope } : {}),
+								...(approvalSaveScope && obsidianCommand === null
+									? { saveScope: approvalSaveScope }
+									: {}),
 							}
 						: {
 								behavior: "deny",

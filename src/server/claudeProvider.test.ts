@@ -2540,6 +2540,7 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 			"base_query",
 			"history",
 			"list_templates",
+			"list_commands",
 			"read_template",
 			"create_note",
 			"capture_note",

@@ -7,7 +7,13 @@ import {
 } from "#/lib/serverFns/obsidian";
 import { Field, Section, StatusIndicator } from "./fields";
 
-export function ObsidianSection() {
+export function ObsidianSection({
+	rememberedCommands,
+	onRememberedCommandsChange,
+}: {
+	rememberedCommands: string[];
+	onRememberedCommandsChange: (commands: string[]) => void;
+}) {
 	const [status, setStatus] = useState<ObsidianIntegrationStatus | null>(null);
 	const [checking, setChecking] = useState(false);
 	const [error, setError] = useState<string | null>(null);
@@ -117,6 +123,42 @@ export function ObsidianSection() {
 						<StatusIndicator ok={true}>
 							{status.agentTools.length} curated tools
 						</StatusIndicator>
+					</Field>
+					<Field
+						label="Remembered command approvals"
+						hint="commands trusted with Always for this configured vault"
+					>
+						{rememberedCommands.length === 0 ? (
+							<span className="text-xs text-muted-foreground">
+								None yet. Agents discover commands and request approval when
+								needed.
+							</span>
+						) : (
+							<div className="flex w-48 flex-wrap gap-1">
+								{rememberedCommands.map((command) => (
+									<span
+										key={command}
+										className="inline-flex max-w-full items-center gap-1 border border-border px-1.5 py-0.5 font-mono text-[9px] text-muted-foreground"
+									>
+										<span className="truncate" title={command}>
+											{command}
+										</span>
+										<button
+											type="button"
+											onClick={() =>
+												onRememberedCommandsChange(
+													rememberedCommands.filter((item) => item !== command),
+												)
+											}
+											aria-label={`Forget approved Obsidian command ${command}`}
+											className="hover:text-destructive"
+										>
+											×
+										</button>
+									</span>
+								))}
+							</div>
+						)}
 					</Field>
 					<Field
 						label="Configured vault"

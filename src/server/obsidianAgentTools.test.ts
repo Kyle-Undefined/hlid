@@ -7,6 +7,7 @@ const bridge = vi.hoisted(() => ({
 	createObsidianBaseItem: vi.fn(),
 	createObsidianNote: vi.fn(),
 	executeObsidianCommand: vi.fn(),
+	listObsidianCommands: vi.fn(),
 	listObsidianTemplates: vi.fn(),
 	mutateObsidianNote: vi.fn(),
 	moveObsidianFile: vi.fn(),
@@ -69,6 +70,7 @@ describe("Obsidian agent tools", () => {
 			"base_query",
 			"history",
 			"list_templates",
+			"list_commands",
 			"read_template",
 			"create_note",
 			"capture_note",
@@ -133,8 +135,9 @@ describe("Obsidian agent tools", () => {
 		const info = await executeObsidianAgentTool("vault_info", {});
 		expect(info).toContain('"name":"Fornbok"');
 		expect(info).toContain(
-			'"allowedCommands":["templater-obsidian:insert-templater"]',
+			'"rememberedCommands":["templater-obsidian:insert-templater"]',
 		);
+		expect(info).toContain('"commandDiscovery":"list_commands"');
 		expect(info).toContain(
 			'"capture":{"label":"Inbox","folder":"0 Inbox","template":"Quick Capture"}',
 		);
@@ -294,13 +297,40 @@ describe("Obsidian agent tools", () => {
 		);
 	});
 
-	it("rejects Obsidian commands outside the workspace allowlist", async () => {
+	it("searches the live command inventory without exposing it in every prompt", async () => {
+		bridge.listObsidianCommands.mockResolvedValueOnce(
+			[
+				"app:go-back",
+				"templater-obsidian:insert-templater",
+				"templater-obsidian:create-new-note-from-template",
+			].join("\n"),
+		);
 		await expect(
-			executeObsidianAgentTool("run_command", {
-				id: "workspace:delete",
+			executeObsidianAgentTool("list_commands", {
+				query: "templater",
+				limit: 1,
 			}),
-		).rejects.toThrow("not allowed");
-		expect(bridge.executeObsidianCommand).not.toHaveBeenCalled();
+		).resolves.toBe(
+			JSON.stringify({
+				sourceFormat: "json",
+				total: 2,
+				returned: 1,
+				truncated: true,
+				countOnly: false,
+				data: ["templater-obsidian:insert-templater"],
+			}),
+		);
+		expect(bridge.listObsidianCommands).toHaveBeenCalledWith("Fornbok");
+	});
+
+	it("dispatches a command without requiring a Forge pre-allowlist", async () => {
+		await executeObsidianAgentTool("run_command", {
+			id: "app:go-back",
+		});
+		expect(bridge.executeObsidianCommand).toHaveBeenCalledWith(
+			"Fornbok",
+			"app:go-back",
+		);
 	});
 
 	it("searches indexed vault text with bounded path and context results", async () => {

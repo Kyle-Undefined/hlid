@@ -2030,6 +2030,139 @@ describe("SessionManager — session-scoped permission persistence", () => {
 		expect(authorizeHlidTool).not.toHaveBeenCalled();
 	});
 
+	it("keeps Obsidian session approval scoped to the exact command ID", async () => {
+		const toolName = "mcp__hlid_obsidian__run_command";
+		const decisions: AgentToolDecision[] = [];
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				const call = (id: string, commandId: string, name = toolName) =>
+					params.canUseTool(
+						name,
+						{ id: commandId },
+						{
+							toolUseID: id,
+							signal: new AbortController().signal,
+						},
+					);
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-session-1" };
+					decisions.push(await call("command-1", "app:go-back"));
+					decisions.push(
+						await call(
+							"command-1-again",
+							"app:go-back",
+							"Run Obsidian command",
+						),
+					);
+					decisions.push(await call("command-2", "app:go-forward"));
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const emitted: ServerMessage[] = [];
+		const turn = sm.runQuery(
+			"navigate in Obsidian",
+			(event) => emitted.push(event),
+			"sess-command",
+		);
+
+		await waitFor(() =>
+			expect(sm.getPendingPermissionRequests()[0]?.id).toBe("command-1"),
+		);
+		expect(emitted).toContainEqual(
+			expect.objectContaining({
+				type: "permission_request",
+				id: "command-1",
+				displayName: "Obsidian command",
+				title: "Run an Obsidian command in Test?",
+				input: { id: "app:go-back" },
+			}),
+		);
+		sm.handlePermissionResponse("command-1", true, "session");
+		await waitFor(() =>
+			expect(sm.getPendingPermissionRequests()[0]?.id).toBe("command-2"),
+		);
+		expect(
+			emitted.filter((event) => event.type === "permission_request"),
+		).toEqual([
+			expect.objectContaining({ id: "command-1" }),
+			expect.objectContaining({ id: "command-2" }),
+		]);
+		sm.handlePermissionResponse("command-2", false);
+		await turn;
+
+		expect(decisions).toEqual([
+			{ behavior: "allow", updatedInput: { id: "app:go-back" } },
+			{ behavior: "allow", updatedInput: { id: "app:go-back" } },
+			{ behavior: "deny", message: "Denied by user" },
+		]);
+	});
+
+	it("uses remembered Obsidian command approval without prompting", async () => {
+		let decision: AgentToolDecision | undefined;
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-session-1" };
+					decision = await params.canUseTool(
+						"mcp__hlid_obsidian__run_command",
+						{ id: "app:go-back" },
+						{
+							toolUseID: "remembered-command",
+							signal: new AbortController().signal,
+						},
+					);
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		const config = makeConfig();
+		config.vault.obsidian_command_allowlist = ["app:go-back"];
+		const sm = new SessionManager(config, makeProviders(provider));
+		const emitted: ServerMessage[] = [];
+
+		await sm.runQuery(
+			"go back in Obsidian",
+			(event) => emitted.push(event),
+			"sess-remembered-command",
+		);
+
+		expect(emitted.some((event) => event.type === "permission_request")).toBe(
+			false,
+		);
+		expect(decision).toEqual({
+			behavior: "allow",
+			updatedInput: { id: "app:go-back" },
+		});
+	});
+
 	describe("Computer Use capability policy", () => {
 		function setup() {
 			const executeCommand = vi.fn().mockResolvedValue(undefined);

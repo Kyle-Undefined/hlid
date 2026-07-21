@@ -1,11 +1,13 @@
 import { z } from "zod";
 import { configuredObsidianCapture } from "#/lib/obsidianCapture";
+import { parseObsidianTemplateNames } from "#/lib/obsidianTemplates";
 import { loadConfig } from "./config";
 import { captureObsidianNote } from "./obsidianCaptureNote";
 import {
 	createObsidianBaseItem,
 	createObsidianNote,
 	executeObsidianCommand,
+	listObsidianCommands,
 	listObsidianTemplates,
 	MAX_OBSIDIAN_AGENT_OUTPUT_CHARS,
 	MAX_OBSIDIAN_APPEND_CHARS,
@@ -35,6 +37,7 @@ export const OBSIDIAN_AGENT_NAMESPACE_DESCRIPTION =
 	"First-class Obsidian access to Hlid's configured vault from every provider, working directory, Windows host, or WSL agent. Use these tools instead of shell or filesystem operations whenever they support a vault task. Reads use Obsidian's index and vault semantics. Writes use curated note operations and follow the active agent permission policy. Hlid @ references select exact notes only; never expand their links, backlinks, embeds, or related notes unless the user asks.";
 
 const vaultPath = z.string().trim().min(1).max(4_096);
+const DEFAULT_RESULT_LIMIT = 50;
 const resultLimit = z.number().int().min(1).max(200).optional();
 const countOnly = z.boolean().optional();
 
@@ -109,6 +112,11 @@ export const obsidianAgentSchemas = {
 		countOnly,
 	}),
 	list_templates: z.object({
+		limit: resultLimit,
+		countOnly,
+	}),
+	list_commands: z.object({
+		query: z.string().trim().min(1).max(512).optional(),
 		limit: resultLimit,
 		countOnly,
 	}),
@@ -225,7 +233,7 @@ export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
 	{
 		name: "vault_info",
 		description:
-			"Confirm the configured Obsidian vault connection and return its name, Obsidian version, active note when available, Hlid's native vault capabilities, and command IDs explicitly allowed for this workspace. The agent never needs the vault's absolute Windows or WSL filesystem path.",
+			"Confirm the configured Obsidian vault connection and return its name, Obsidian version, active note when available, Hlid's native vault capabilities, and remembered command approvals. The agent never needs the vault's absolute Windows or WSL filesystem path.",
 		readOnly: true,
 		inputSchema: {
 			type: "object",
@@ -449,6 +457,24 @@ export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
 		inputSchema: {
 			type: "object",
 			properties: { ...budgetSchemaProperties },
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "list_commands",
+		description:
+			"Discover Obsidian core and plugin command IDs available in the configured vault. Use query to search the live inventory before run_command. This is read-only and returns a bounded JSON envelope.",
+		readOnly: true,
+		inputSchema: {
+			type: "object",
+			properties: {
+				query: {
+					type: "string",
+					description:
+						"Optional case-insensitive text to match against command IDs.",
+				},
+				...budgetSchemaProperties,
+			},
 			additionalProperties: false,
 		},
 	},
@@ -694,14 +720,14 @@ export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
 	{
 		name: "run_command",
 		description:
-			"Run one Obsidian command that the user explicitly allowed for this workspace in Forge. Every other command ID is rejected server-side.",
+			"Run one exact command ID returned by list_commands. This is a mutation and follows the active Hlid approval policy. Commands remembered with Always are trusted only for this configured vault.",
 		readOnly: false,
 		inputSchema: {
 			type: "object",
 			properties: {
 				id: {
 					type: "string",
-					description: "Exact command ID from the workspace allowlist.",
+					description: "Exact command ID returned by list_commands.",
 				},
 			},
 			required: ["id"],
@@ -771,7 +797,7 @@ function collectionEnvelope(data: unknown[], options: BudgetOptions): string {
 			countOnly: true,
 		} satisfies ResultEnvelope);
 	}
-	const selected = data.slice(0, options.limit ?? 50);
+	const selected = data.slice(0, options.limit ?? DEFAULT_RESULT_LIMIT);
 	const envelope: ResultEnvelope = {
 		sourceFormat: "json",
 		total,
@@ -798,7 +824,7 @@ function objectEnvelope(
 			countOnly: true,
 		} satisfies ResultEnvelope);
 	}
-	const selected = entries.slice(0, options.limit ?? 50);
+	const selected = entries.slice(0, options.limit ?? DEFAULT_RESULT_LIMIT);
 	const selectedObject = Object.fromEntries(selected);
 	const envelope: ResultEnvelope = {
 		sourceFormat: "json",
@@ -833,7 +859,10 @@ function textEnvelope(output: string, options: BudgetOptions): string {
 		} satisfies ResultEnvelope);
 	}
 	const offset = Math.min(Math.max((options.startLine ?? 1) - 1, 0), total);
-	const selected = lines.slice(offset, offset + (options.limit ?? 50));
+	const selected = lines.slice(
+		offset,
+		offset + (options.limit ?? DEFAULT_RESULT_LIMIT),
+	);
 	const envelope: ResultEnvelope = {
 		sourceFormat: "text",
 		total,
@@ -884,7 +913,8 @@ export async function executeObsidianAgentTool(
 			return JSON.stringify({
 				...(await queryObsidianVaultInfo(vaultName)),
 				capabilities: OBSIDIAN_AGENT_TOOL_SPECS.map((tool) => tool.name),
-				allowedCommands: config.vault.obsidian_command_allowlist ?? [],
+				rememberedCommands: config.vault.obsidian_command_allowlist ?? [],
+				commandDiscovery: "list_commands",
 				capture: capture
 					? {
 							label: capture.label,
@@ -994,6 +1024,23 @@ export async function executeObsidianAgentTool(
 				},
 			);
 		}
+		case "list_commands": {
+			const parsed = obsidianAgentSchemas.list_commands.parse(input);
+			const commands = parseObsidianTemplateNames(
+				await listObsidianCommands(vaultName),
+			);
+			const query = parsed.query?.toLocaleLowerCase();
+			const matching = query
+				? commands.filter((command) =>
+						command.toLocaleLowerCase().includes(query),
+					)
+				: commands;
+			return collectionEnvelope(matching, {
+				limit: parsed.limit,
+				countOnly: parsed.countOnly,
+				expectedJson: false,
+			});
+		}
 		case "read_template": {
 			const parsed = obsidianAgentSchemas.read_template.parse(input);
 			return budgetObsidianAgentOutput(
@@ -1051,13 +1098,6 @@ export async function executeObsidianAgentTool(
 		}
 		case "run_command": {
 			const parsed = obsidianAgentSchemas.run_command.parse(input);
-			if (
-				!(config.vault.obsidian_command_allowlist ?? []).includes(parsed.id)
-			) {
-				throw new Error(
-					`Obsidian command "${parsed.id}" is not allowed for this workspace.`,
-				);
-			}
 			await executeObsidianCommand(vaultName, parsed.id);
 			return JSON.stringify({ ok: true, id: parsed.id });
 		}

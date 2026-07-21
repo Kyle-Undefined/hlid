@@ -1203,7 +1203,6 @@ export async function listObsidianTemplates(
 	);
 }
 
-// fallow-ignore-next-line unused-export -- Loaded dynamically by Forge's Obsidian server function to keep the host bridge out of the client bundle.
 export async function listObsidianCommands(
 	vaultName: string,
 	dependencies: ObsidianBridgeDependencies = {},

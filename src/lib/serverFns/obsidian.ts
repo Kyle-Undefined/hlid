@@ -68,21 +68,6 @@ export const listObsidianTemplatesFn = createServerFn({
 	};
 });
 
-export const listObsidianCommandsFn = createServerFn({
-	method: "GET",
-}).handler(async () => {
-	const [{ loadConfig }, { listObsidianCommands }] = await Promise.all([
-		import("#/server/config"),
-		import("#/server/obsidianCli"),
-	]);
-	const config = loadConfig();
-	const output = await listObsidianCommands(config.vault.name);
-	return {
-		vaultName: config.vault.name,
-		commands: parseObsidianTemplateNames(output),
-	};
-});
-
 export const getActiveObsidianNoteFn = createServerFn({
 	method: "GET",
 }).handler(async () => {
