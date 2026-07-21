@@ -64,9 +64,20 @@ chat. If a provider is slow, `Hlið` finishes the check in the background. It
 does not send a user turn or spend model tokens.
 
 Pick an old session or start a new one. Typing `/` opens the shared command
-picker, where vault skills, global skills, and provider-native commands live
-together. Compatible commands can be stacked. Their badges stay above the
-composer until they are removed or run.
+picker, where vault skills, Hlid-managed imports, global skills, and
+provider-native commands live together. Compatible commands can be stacked.
+Their badges stay above the composer until they are removed or run.
+
+Need to point the agent at something without pasting half the vault? Type `@`
+in the `Watch` or `Raven` composer. The picker searches exact vault files and
+recent `Relics`, then keeps each selection attached to that turn. Hlid resolves
+the real path on the server and translates it for the selected Windows, WSL, or
+ACP runtime. The same references survive when a prompt gets queued behind a
+running turn.
+
+The book button beside the normal attachment control grabs whichever note is
+active in the Obsidian desktop and adds it as the same kind of exact vault
+reference. Handy when the prompt is basically "look at what I am looking at."
 
 ### CLIProxyAPI integration
 
@@ -93,6 +104,10 @@ flows on the Windows host. Forge opens the authorization page, keeps a fallback
 link visible, and shows the verification code when one is required. Hlid starts
 the integration with the app, offers an explicit repair control, and
 can remove the binaries and all saved accounts.
+
+If Windows Security quarantines the executable after extraction, check
+**Protection history** before retrying. Once the reviewed file is allowed,
+**Check / repair** puts the managed install back together.
 
 The generated client key and OAuth tokens remain in Hlid's private integration
 directory and are never returned to Forge. Remote management and the CLIProxyAPI
@@ -155,7 +170,8 @@ While a run is active:
   do not quite cover the answer.
 - Plan mode waits for approval, revisions, or cancellation before the
   implementation turn. The `HTML` toggle opens an agent-authored plan in the
-  sandboxed viewer.
+  sandboxed viewer. A pending plan stays visible when another trusted device
+  opens the same session.
 - Supported providers show subagent status, current work, runtime, and usage.
 - Long chats load the newest history first. **LOAD OLDER HISTORY** pulls in the
   earlier turns without jumping the scroll position around.
@@ -214,11 +230,25 @@ Turn on **Plan** when the agent should figure out the work before touching it.
 Turn on **HTML** beside it for the full styled plan. Approval, cancellation, and
 revision feedback all happen from the plan card or viewer.
 
+Completed assistant replies have Obsidian actions beside copy and read aloud.
+One appends the reply to the active note, and another appends it to today's
+daily note. If the vault has an Inbox or Raw folder mapped, a third action makes
+a new timestamped note there. That capture can use the template selected under
+**FORGE → Workspace → Vault**. Each action only sends the finished reply text,
+and one save is limited to 20,000 characters.
+
 The **Terminal** toggle opens a real login shell in the current vault or
 registered-agent directory. Desktop puts it below the chat. Mobile switches
 between Chat and Terminal tabs. Toggling the terminal off ends the shell, but
 normal site navigation only detaches the browser. Come back to that chat and
 the shell is still there.
+
+An idle Claude-backed chat also gets a fork control beside the new-chat button.
+That copies the whole conversation into a new session without touching the
+original. Use **Branch from here** beside a completed assistant reply when only
+the conversation through that point should come along. The same whole-session
+fork is available from the row menu in `Ledger`. Codex and ACP sessions do not
+offer this yet.
 
 If interactive `Claude` mode is enabled in `Forge`, `Raven` becomes a full
 `Claude CLI` terminal instead of the structured timeline.
@@ -242,11 +272,17 @@ Text search ignores case and accents, so `Hlid` still matches `Hlið`. The same
 normalization is used by `Relics`, `Ledger`, `Forge`, and the slash-command
 picker.
 
+Expand a note or project and **Open in Obsidian** jumps the desktop app straight
+to that file. Selected vault references in `Watch` and `Raven` get the same
+shortcut, which is pretty useful when an agent points out the exact note that
+needs a human pass.
+
 ### Relics
 
 ![Relics attachment management view](images/relics-attachments.png)
 
-*`Relics` is everything that has moved through a `Hlið` session as a file.*
+*`Relics` is the Hlid-owned library for attachments, plans, reports, and
+imported skills.*
 
 **RELICS** is the browser for Hlid-owned files. Uploads, generated HTML plans,
 reports, and imported skill packages live under the installed app's `library`
@@ -272,11 +308,16 @@ be imported again. Each copy records its source, so
 the managed package remains usable without coupling the provider's original
 directory to the vault.
 
+The same managed files show up under `Relics` in the composer `@` picker. Pick
+one there when an existing attachment, report, or generated plan needs to go
+back into a prompt. It stays a reference to Hlid's managed copy, so there is no
+second upload to clean up later.
+
 Filename search updates while you type. The list can be filtered by artifact
-category, date, `MIME` group, or owning session, then sorted by size or creation time. If a new
-upload lands while the page is open, a **NEW RELICS** pill appears instead of
-yanking the list back to page one. Desktop gets the full table, while mobile
-uses compact cards.
+category, date, `MIME` group, or owning session, then sorted by size or creation
+time. If a new upload lands while the page is open, a **NEW RELICS** pill
+appears instead of yanking the list back to page one. Desktop gets the full
+table, while mobile uses compact cards.
 
 Deleting a vault attachment normally removes its managed record. Deleting the
 source file too is a separate opt-in setting in `Forge`, because those are two
@@ -298,8 +339,17 @@ that panel.
 
 The overflow menu exports every session as `CSV` or `JSON`. It can also remove
 records older than 7, 30, or 90 days when the database actually has sessions
-that old. A row menu handles one rename or delete. Imported history rows are
-accounting-only, so they stay read-only and cannot be opened as chats.
+that old. A row menu handles one rename or delete. Claude-backed rows also get
+a fork action when the session is idle.
+
+**Import provider history** discovers Claude CLI/SDK/Cowork and Codex
+CLI/Desktop/editor sessions from Windows and every configured WSL distro. Hlid
+makes a checked `SQLite` backup, imports the transcripts and usage, and marks
+the original surface on each row. Current imports can be opened and resumed in
+`Raven`. Sessions that already came through Hlid's Codex bridge are skipped so
+their usage is not counted twice. Running the import again upgrades what it can
+and leaves anything already current alone. Older usage-only imports remain
+read-only if their original transcript is no longer available.
 
 **Stats** filters by date range, agent, provider, and model. It breaks down cost,
 priced coverage, input/output/cache tokens, activity, model share, tool use,
@@ -334,7 +384,8 @@ separate because Codex and Claude load different native instruction names.
 **FORGE** is split into these categories:
 
 - **Overview** shows the current config and service state.
-- **Workspace** holds the vault, folder mappings, and vocabulary.
+- **Workspace** holds the vault, folder mappings, vocabulary, and the optional
+  Obsidian desktop CLI connection.
 - **Agents** holds provider, model, effort, permissions, usage limits, recaps,
   vault and global instruction-file editors, automatic usage-window
   sleep/resume behavior, and `Codex Computer Use` defaults when the Windows
@@ -343,10 +394,10 @@ separate because Codex and Claude load different native instruction names.
   reloads.
 - **Access** has network, `TLS`, password, and trusted-device settings.
 - **Experience** has built-in or custom desktop/mobile themes, input behavior,
-	the provider-entry visibility toggle for the `/` picker, `HTML` plan defaults,
-	voice, and browser-local privacy mode. Hlid and vault entries always remain
-	visible; the toggle controls every provider-badged skill, command, or plugin.
-- **Integrations** manages `MCP`, `Umbod`, and the `ACP` catalog.
+  the provider-entry visibility toggle for the `/` picker, `HTML` plan defaults,
+  voice, and browser-local privacy mode. Hlid and vault entries always remain
+  visible; the toggle controls every provider-badged skill, command, or plugin.
+- **Integrations** manages `CLIProxyAPI`, `MCP`, `Umbod`, and the `ACP` catalog.
 - **Developer** switches between the event log, local API reference, and pricing
   catalog.
 - **Advanced** has database maintenance, provider-session reload, restart, and
@@ -385,6 +436,52 @@ The custom theme editor can start from the active, dark, tan, or desktop
 palette. App, navigation, chat, `Ledger`, and chart colors are separate.
 Desktop and mobile can have different palettes, and the native-control setting
 keeps browser menus, inputs, and scrollbars readable against the result.
+
+## Obsidian CLI
+
+`Hlið` still reads the configured vault directly, so the Obsidian CLI is an
+optional extra rather than a new requirement. It is there for the bits where
+Obsidian's own index and desktop state know more than a filesystem scan does.
+
+Install `Obsidian 1.12.7` or newer and turn on **Settings → General → Command
+line interface** inside Obsidian. Then open **FORGE → Workspace → Obsidian
+desktop**. **Recheck** detects the installation without launching anything.
+**Test connection** verifies the configured vault and may start the Obsidian
+desktop if it is closed.
+
+Hlid can find the installed Windows redirector even when `obsidian` is not on
+`PATH`. A source build running inside `WSL` can use that same Windows install,
+so there is no second Obsidian setup hiding in the sauce.
+
+When the bridge is available, `Claude`, `Codex`, and installed `ACP` agents get
+the same curated Obsidian tools. They can search indexed text, inspect the
+active or daily note, read exact notes, follow the link graph when asked, find
+unresolved or orphaned notes, query tasks and properties, run Bases views, and
+inspect or compare local file history. Broad queries come back with totals and
+truncation details instead of dumping the whole vault out the wazoo. The agent
+can narrow by path, status, view, or version, or ask for a count when that is
+all it needs.
+
+The write side is curated too. Agents can create notes with a core Templates or
+Templater template, capture a quick note into the mapped Inbox or Raw folder,
+open today's daily note, append or prepend text, add an item through a Base,
+update one exact task or property, and move or rename a file through Obsidian so
+its links can follow along. `Raven` groups successful changes into a **Vault
+activity** card with the affected paths, added-text previews, and shortcuts
+back into Obsidian. File history stays read-only, so recovery still happens in
+Obsidian itself.
+
+Every note change follows the active agent permission policy. Running an
+arbitrary Obsidian command is stricter: the agent discovers the exact command
+ID first, and a new command still asks for approval even when the chat would
+normally bypass permission prompts. **Always** trusts only that command in the
+configured vault. Remembered commands show under **FORGE → Workspace → Obsidian
+desktop**, where they can be forgotten again.
+
+A command's vault activity shows the active note before and after when Obsidian
+can report it. That is useful context, not a complete file diff, because a
+plugin command can touch more than the active note. Open the note in Obsidian
+for the full history and recovery options.
 
 ## Remote and mobile access
 
@@ -443,6 +540,12 @@ Open **FORGE → Experience → Voice**, download a `Whisper` model, select it, 
 turn voice on. The model loads locally and stays warm for repeated
 transcription. Switching models hot-loads the new one without a server restart.
 
+**Whisper threads** controls how much CPU a transcription can use. Higher is
+faster, but boy does it make the machine work for it. Changing the value reloads
+the voice model. **Vocabulary hints** gives Whisper up to 50 preferred spellings,
+one per line, which is handy for project names and technical terms the old
+noggin does not want to correct after every recording.
+
 In `Watch` or `Raven`, tap the microphone once to record and again to stop. On
 desktop, the configured shortcut does the same thing. The default is
 `Alt+Shift+V`.
@@ -497,6 +600,10 @@ bun scripts/import-provider-history.ts --db /path/to/hlid.db \
   --codex-root /path/to/.codex/sessions \
   --claude-root /path/to/.claude/projects
 
+# Discover the current user's Claude and Codex history automatically.
+bun scripts/import-provider-history.ts --db /path/to/hlid.db \
+  --discover-claude --discover-codex
+
 bun scripts/repair-codex-usage.ts --db /path/to/hlid.db \
   --rollout-root /path/to/.codex/sessions
 
@@ -506,8 +613,10 @@ bun scripts/repair-claude-usage.ts --db /path/to/hlid.db \
 
 Add another root flag for archive directories. Read the manifest, then repeat
 the command with `--apply` if the plan is right. Apply mode verifies source
-hashes and a standalone `SQLite` backup before touching the database. Stop
-`Hlið` before running maintenance against its live `hlid.db`.
+hashes and a standalone `SQLite` backup before touching the database. Current
+imports include the transcript needed to resume from `Raven`; old
+accounting-only rows can be upgraded when their original source is still
+available. Stop `Hlið` before running maintenance against its live `hlid.db`.
 
 ### Updates and SmartScreen
 

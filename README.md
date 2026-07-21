@@ -17,10 +17,18 @@ own folder vocabulary. `Hlið` does not care as long as the paths are set up.
 
 - Keeps agent sessions around with live streaming, visible tool calls,
   approvals, attachments, queued follow-ups, inline questions, plan review,
-  and subagent activity. The provider, model, effort, and permission mode stay
+  and subagent activity. Claude-backed chats can be forked whole or branched
+  from a specific reply. The provider, model, effort, and permission mode stay
   with the chat they belong to.
 - Pulls vault skills, Hlid-managed skill imports, and provider-native slash
   commands into `Watch` and `Raven`, including compatible multi-skill runs.
+- Points prompts at exact vault files and managed `Relics` through the shared
+  `@` picker. No copying paths around just to give the agent some context.
+- Uses the official `Obsidian CLI` for the parts only Obsidian knows: the active
+  note, indexed search, backlinks, tasks, properties, Bases, and local file
+  history. Agents get curated tools for reading and changing the vault through
+  Obsidian itself. Writes follow the chat's permission mode, and `Raven` keeps
+  a vault activity summary of what changed.
 - Browses notes and projects, searches without getting tripped up by accents,
   manages attachments, and tracks usage and cost. It can pause running sessions
   near a provider limit, then pick them back up after the window resets.
@@ -67,16 +75,24 @@ The default address is `http://127.0.0.1:3000`. It stays on the local machine
 until network access is turned on. The [user guide](docs/user-guide.md) covers
 the full first-run flow and the optional `Tailscale` setup.
 
+The `Obsidian CLI` integration is optional. With `Obsidian 1.12.7` or newer,
+enable **Settings → General → Command line interface**, then check the
+connection under **FORGE → Workspace → Obsidian desktop**. Hlid still browses
+the vault directly when the CLI is not available.
+
 ## Where to start
 
 - **WATCH** is for quick prompts, skills, and slash commands. A run can stay in
   the current session or head into the background while the dashboard keeps an
   eye on it.
 - **RAVEN** is the full chat workspace. This is where the per-chat provider
-  controls, plans, approvals, attachments, and project terminal live.
-- **VAULT** browses notes, projects, memory, and skills.
+  controls, plans, approvals, attachments, Obsidian actions, and project
+  terminal live.
+- **VAULT** browses notes, projects, memory, and skills, with a jump back into
+  the Obsidian desktop when the CLI is connected.
 - **FORGE** is where all the setup lives: providers, permissions, networking,
-  voice, `MCP`, `ACP`, `Umbod`, updates, and lifecycle controls.
+  voice, `Obsidian CLI`, `CLIProxyAPI`, `MCP`, `ACP`, `Umbod`, updates, and
+  lifecycle controls.
 
 The [user guide](docs/user-guide.md) gets into the meat and potatoes of each
 page and the workflows that connect them.
@@ -86,11 +102,11 @@ page and the workflows that connect them.
 | Page | What it is for |
 |---|---|
 | **WATCH** (`/`) | Quick prompts, skills, slash commands, usage, `MCP` state, recent sessions, and vault context. |
-| **VAULT** (`/vault`) | Notes, projects, memory, skills, and whatever folder vocabulary the vault uses. |
-| **RELICS** (`/relics`) | Searching, filtering, sorting, previewing, and cleaning up attachments. |
-| **RAVEN** (`/raven`) | Full agent chat with provider controls, commands, plans, approvals, questions, queues, and a real project terminal. |
+| **VAULT** (`/vault`) | Notes, projects, memory, skills, and a jump into the matching Obsidian desktop note. |
+| **RELICS** (`/relics`) | Hlid-owned attachments, plans, reports, and imported skill packages. |
+| **RAVEN** (`/raven`) | Full agent chat with provider controls, commands, `@` references, plans, approvals, questions, queues, branching, and a real project terminal. |
 | **EINHERJAR** (`/einherjar`) | Extra working directories or personality/context overlays. |
-| **LEDGER** (`/ledger`) | Live-session controls plus recorded sessions and analytics for tokens, cost, cache behavior, tools, stop reasons, context, and provider limits. |
+| **LEDGER** (`/ledger`) | Live-session controls, provider-history import, recorded sessions, and analytics for tokens, cost, cache behavior, tools, stop reasons, context, and provider limits. |
 | **FORGE** (`/forge`) | Settings, integrations, access, updates, maintenance, and developer tools. |
 
 ## Configuration and data
@@ -118,6 +134,8 @@ Use** and apply to the next one-shot Windows worker.
 
 There is a small starting point in
 [`hlid.config.example.toml`](hlid.config.example.toml).
+The [Obsidian CLI bridge](docs/user-guide.md#obsidian-cli) covers the optional
+desktop setup, note actions, agent tools, and approval behavior.
 The [CLIProxyAPI integration](docs/user-guide.md#cliproxyapi-integration) covers
 the routed harnesses, OAuth accounts, and exactly what Hlid records for them.
 
@@ -166,24 +184,12 @@ bun run validate       # Static checks, merged coverage, and full Fallow analysi
 bun run build:win      # Windows executable build
 ```
 
-For OpenAI Build Week evidence, generate a self-contained interactive report
-that correlates Codex transcript commit output with the signed Git history:
-
-```bash
-bun run report:build-week
-```
-
-The default report is `reports/openai-build-week-provenance.html`. It includes
-session/model IDs, commit links, verification commands, and transcript hashes,
-but excludes prompts, developer instructions, arbitrary tool output, and
-personal home paths. Run the script with `--help` to change the repository, Codex
-roots, evidence window, baseline, title, or output path.
-
 Ledger's **Import provider history** action discovers Claude CLI/SDK/Cowork and
-Codex CLI/Desktop/editor sessions, stores their transcripts in Hlid, and makes
-imported rows resumable in Raven. Sessions created through Hlid's Codex bridge
-are always excluded. The dry-run-first CLI remains available for advanced
-recovery work.
+Codex CLI/Desktop/editor sessions on Windows and configured WSL distros. It
+stores the transcripts and usage in Hlid, then makes those sessions resumable
+in Raven. Sessions created through Hlid's Codex bridge are excluded so the same
+work does not get counted twice. The dry-run-first CLI remains available for
+advanced recovery work.
 
 ```bash
 bun scripts/import-provider-history.ts --db /path/to/hlid.db \
@@ -203,9 +209,11 @@ bun scripts/repair-claude-usage.ts --db /path/to/hlid.db \
 
 Each one writes a `JSON` manifest first. Read it. If the plan looks right, run
 the same command with `--apply`. Apply mode verifies a standalone `SQLite`
-backup before it touches `hlid.db`. Imported history remains non-resumable, but
-its `Ledger` rows can be renamed or deleted and retain their source surface.
-The same Claude discovery/import is available from `Ledger`'s actions menu.
+backup before it touches `hlid.db`. Current imports retain their source surface
+and can be resumed in `Raven`. Older usage-only rows stay read-only until the
+original transcript is found and imported again. The same provider-history
+discovery is available from `Ledger`'s actions menu, where Hlid handles the
+backup automatically.
 
 Under the hood, `Hlið` uses `TanStack Start/Router`, `React`, a `Bun` server,
 `SQLite`, `WebSockets`, and an `AgentProvider` abstraction. The `Vite` client
