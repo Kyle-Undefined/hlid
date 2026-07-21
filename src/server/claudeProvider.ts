@@ -20,6 +20,7 @@ import type {
 	AgentProvider,
 	AgentQueryParams,
 	AgentSession,
+	CanUseTool,
 	ForkSessionParams,
 	ForkSessionResult,
 	McpServerStatus,
@@ -70,7 +71,10 @@ function effectiveSdkPermissionMode(
 
 type SdkQuery = ReturnType<typeof query>;
 
-function createObsidianSdkServer() {
+function createObsidianSdkServer(
+	forceRunCommandApproval?: CanUseTool,
+	signal?: AbortSignal,
+) {
 	return createSdkMcpServer({
 		name: OBSIDIAN_AGENT_NAMESPACE,
 		version: "1",
@@ -83,6 +87,30 @@ function createObsidianSdkServer() {
 				obsidianAgentSchemas[spec.name].shape as any,
 				async (input) => {
 					try {
+						if (spec.name === "run_command" && forceRunCommandApproval) {
+							const decision = await forceRunCommandApproval(
+								`mcp__${OBSIDIAN_AGENT_NAMESPACE}__run_command`,
+								input,
+								{
+									toolUseID: `hlid-obsidian-run-command-${crypto.randomUUID()}`,
+									signal: signal ?? new AbortController().signal,
+									title: "Obsidian run command",
+								},
+							);
+							if (decision.behavior === "deny") {
+								return {
+									isError: true,
+									content: [
+										{
+											type: "text" as const,
+											text:
+												decision.message ??
+												"The Obsidian command was not approved.",
+										},
+									],
+								};
+							}
+						}
 						return {
 							content: [
 								{
@@ -1763,7 +1791,13 @@ export class ClaudeProvider implements AgentProvider {
 				options: {
 					cwd: params.cwd,
 					mcpServers: {
-						[OBSIDIAN_AGENT_NAMESPACE]: createObsidianSdkServer(),
+						[OBSIDIAN_AGENT_NAMESPACE]: createObsidianSdkServer(
+							params.permissionMode === "bypassPermissions" &&
+								!params.policyEnforced
+								? params.canUseTool
+								: undefined,
+							abortController.signal,
+						),
 					},
 					...(params.additionalDirectories?.length
 						? { additionalDirectories: params.additionalDirectories }

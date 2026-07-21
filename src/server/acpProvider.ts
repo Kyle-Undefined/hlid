@@ -29,6 +29,7 @@ import type {
 import { isHtmlPlanPath } from "./htmlPlanPath";
 import { OBSIDIAN_AGENT_NAMESPACE } from "./obsidianAgentTools";
 import { getObsidianCliStatus } from "./obsidianCli";
+import { isObsidianRunCommandRequest } from "./obsidianCommandApproval";
 import { obsidianMcpProcessCommand } from "./obsidianMcpServer";
 
 export type AcpProviderOptions = {
@@ -678,9 +679,14 @@ class AcpSession implements AgentSession {
 				const filePath = filePathFromToolInput(toolCall.rawInput);
 				const toolName = acpToolName(toolCall);
 				const toolInput = acpToolInput(toolCall);
+				const requiresObsidianCommandApproval = isObsidianRunCommandRequest(
+					toolName,
+					toolInput,
+				);
 				const decision =
 					this.params.permissionMode === "bypassPermissions" &&
-					!this.params.policyEnforced
+					!this.params.policyEnforced &&
+					!requiresObsidianCommandApproval
 						? { behavior: "allow" as const }
 						: await this.params.canUseTool(toolName, toolInput, {
 								toolUseID: toolCall.toolCallId,

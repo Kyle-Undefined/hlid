@@ -178,6 +178,30 @@ describe("AcpProvider — permission modes", () => {
 		session.cancel();
 	});
 
+	it("still requests exact Obsidian command approval in bypassPermissions", async () => {
+		const canUseTool = vi.fn(async () => ({
+			behavior: "deny" as const,
+			message: "Command needs approval",
+		}));
+		const { events, session } = await run(
+			"obsidian-command",
+			params("allow", { permissionMode: "bypassPermissions", canUseTool }),
+		);
+		expect(canUseTool).toHaveBeenCalledWith(
+			"Obsidian run command",
+			{ id: "app:toggle-left-sidebar" },
+			expect.objectContaining({ toolUseID: "tool-1" }),
+		);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "tool_result",
+				toolId: "tool-1",
+				content: "permission_denied",
+			}),
+		);
+		session.cancel();
+	});
+
 	it("applies a mid-session switch to bypassPermissions", async () => {
 		const canUseTool = vi.fn();
 		const session = makeProvider().query(params("deny", { canUseTool }));

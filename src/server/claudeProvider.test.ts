@@ -31,6 +31,10 @@ vi.mock("../lib/paths", async (importOriginal) => {
 vi.mock("../lib/process", () => ({
 	runBoundedProcess: vi.fn(),
 }));
+vi.mock("./obsidianAgentTools", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./obsidianAgentTools")>();
+	return { ...actual, executeObsidianAgentTool: vi.fn() };
+});
 // Wrap (not replace) the real store — its shape is exercised by the
 // "imported Claude resumes" test below and by forkSession's session-store
 // path; both only need load/append to be present, never actually call them
@@ -62,6 +66,7 @@ import {
 	mapClaudeModels,
 	mapClaudeUsageWindows,
 } from "./claudeProvider";
+import { executeObsidianAgentTool } from "./obsidianAgentTools";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -2566,6 +2571,50 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 			(item) => item.name === "create_note",
 		) as { annotations?: { readOnlyHint?: boolean } } | undefined;
 		expect(createNote?.annotations?.readOnlyHint).toBe(false);
+		session.cancel();
+	});
+
+	it("still requests exact Obsidian command approval in bypass mode", async () => {
+		vi.mocked(query).mockReturnValueOnce(sdkGen([]));
+		const canUseTool = vi.fn().mockResolvedValue({
+			behavior: "deny",
+			message: "Command needs approval",
+		});
+		const session = new ClaudeProvider().query(
+			baseParams({ permissionMode: "bypassPermissions", canUseTool }),
+		);
+		await session.send("run an Obsidian command");
+		const options = vi.mocked(query).mock.calls.at(-1)?.[0].options;
+		const server = options?.mcpServers?.hlid_obsidian as unknown as {
+			instance: {
+				options: {
+					tools: Array<{
+						name: string;
+						handler: (input: unknown) => Promise<{
+							isError?: boolean;
+							content: Array<{ type: string; text: string }>;
+						}>;
+					}>;
+				};
+			};
+		};
+		const runCommand = server.instance.options.tools.find(
+			(item) => item.name === "run_command",
+		);
+		const result = await runCommand?.handler({
+			id: "app:toggle-left-sidebar",
+		});
+
+		expect(canUseTool).toHaveBeenCalledWith(
+			"mcp__hlid_obsidian__run_command",
+			{ id: "app:toggle-left-sidebar" },
+			expect.objectContaining({ title: "Obsidian run command" }),
+		);
+		expect(result).toEqual({
+			isError: true,
+			content: [{ type: "text", text: "Command needs approval" }],
+		});
+		expect(executeObsidianAgentTool).not.toHaveBeenCalled();
 		session.cancel();
 	});
 

@@ -1848,7 +1848,8 @@ class CodexAgentSession implements AgentSession {
 				const toolName = String(params.tool ?? "");
 				if (
 					!isObsidianAgentToolReadOnly(toolName) &&
-					(this.params.permissionMode !== "bypassPermissions" ||
+					(toolName === "run_command" ||
+						this.params.permissionMode !== "bypassPermissions" ||
 						this.params.policyEnforced)
 				) {
 					const decision = await this.params.canUseTool(

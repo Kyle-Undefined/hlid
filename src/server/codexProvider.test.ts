@@ -1365,6 +1365,57 @@ describe("CodexAgentSession — commands", () => {
 		session.cancel();
 	});
 
+	it("still requests exact Obsidian command approval in bypass mode", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const canUseTool = vi.fn().mockResolvedValue({
+			behavior: "deny",
+			message: "Command needs approval",
+		});
+		const session = new CodexProvider().query(
+			baseCodexParams({
+				canUseTool,
+				permissionMode: "bypassPermissions",
+			}),
+		);
+		await session.send("run an Obsidian command");
+		vi.mocked(executeObsidianAgentTool).mockClear();
+		proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: 95,
+					method: "item/tool/call",
+					params: {
+						threadId: "thread-1",
+						callId: "obsidian-command-1",
+						namespace: "hlid_obsidian",
+						tool: "run_command",
+						arguments: { id: "app:toggle-left-sidebar" },
+					},
+				})}\n`,
+			),
+		);
+		await vi.waitFor(() =>
+			expect(
+				writes
+					.map((line) => JSON.parse(line))
+					.find((message) => message.id === 95)?.result,
+			).toMatchObject({
+				success: false,
+				contentItems: [{ type: "inputText", text: "Command needs approval" }],
+			}),
+		);
+		expect(canUseTool).toHaveBeenCalledWith(
+			"mcp__hlid_obsidian__run_command",
+			{ id: "app:toggle-left-sidebar" },
+			expect.objectContaining({ toolUseID: "obsidian-command-1" }),
+		);
+		expect(executeObsidianAgentTool).not.toHaveBeenCalled();
+		session.cancel();
+	});
+
 	it("runs Hlid-owned Computer Use workers as ephemeral native threads", async () => {
 		const platform = vi
 			.spyOn(process, "platform", "get")

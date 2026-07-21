@@ -315,14 +315,27 @@ agent({ name: "hlid-fake-agent" })
 				content: { type: "text", text: "world" },
 			},
 		});
+		const obsidianCommand = text === "obsidian-command";
 		const tool = {
 			toolCallId: "tool-1",
-			title: text === "read-permission" ? "Read file" : "Write file",
-			kind: text === "read-permission" ? "read" : "edit",
-			rawInput: {
-				path:
-					text === "html-plan" ? "/vault/.hlid/plans/plan-fake.html" : "a.txt",
-			},
+			title: obsidianCommand
+				? "Obsidian run command"
+				: text === "read-permission"
+					? "Read file"
+					: "Write file",
+			kind: obsidianCommand
+				? "other"
+				: text === "read-permission"
+					? "read"
+					: "edit",
+			rawInput: obsidianCommand
+				? { id: "app:toggle-left-sidebar" }
+				: {
+						path:
+							text === "html-plan"
+								? "/vault/.hlid/plans/plan-fake.html"
+								: "a.txt",
+					},
 		};
 		await client.notify(methods.client.session.update, {
 			sessionId: params.sessionId,

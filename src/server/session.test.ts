@@ -462,6 +462,74 @@ describe("SessionManager — Umbod hook approval routing", () => {
 		sm.handlePermissionResponse("hook-tool-1", true);
 		await expect(approval).resolves.toBe("allow");
 	});
+
+	it("keeps hook approvals scoped to the exact Obsidian command", async () => {
+		const provider: AgentProvider = {
+			providerId: "codex",
+			query(): AgentSession {
+				return {
+					async *[Symbol.asyncIterator]() {
+						yield { type: "session_start", sessionId: "codex-thread-1" };
+						yield {
+							type: "done",
+							cost: 0,
+							turns: 1,
+							durationMs: 0,
+							usage: { inputTokens: 1, outputTokens: 1 },
+						};
+					},
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+				};
+			},
+		};
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("hello", (event) => emitted.push(event), "db-session");
+		const handler = vi
+			.mocked(registerUmbodApprovalSession)
+			.mock.calls.at(-1)?.[1];
+		const commandCall = (toolUseId: string, id: string) =>
+			handler?.(
+				{
+					agent: "codex",
+					tool: "mcp__hlid_obsidian__run_command",
+					command: `run ${id}`,
+					inputs: { id },
+					workingDirectory: "/tmp/project",
+					timestamp: new Date().toISOString(),
+					sessionId: "codex-thread-1",
+					toolUseId,
+				},
+				"matched approval rule",
+			);
+		const first = commandCall("hook-command-1", "app:go-back");
+
+		await waitFor(() =>
+			expect(sm.getPendingPermissionRequests()[0]?.id).toBe("hook-command-1"),
+		);
+		expect(emitted).toContainEqual(
+			expect.objectContaining({
+				type: "permission_request",
+				id: "hook-command-1",
+				displayName: "Obsidian command",
+				title: "Run an Obsidian command in Test?",
+				input: { id: "app:go-back" },
+			}),
+		);
+		sm.handlePermissionResponse("hook-command-1", true, "session");
+		await expect(first).resolves.toBe("allow");
+
+		await expect(commandCall("hook-command-2", "app:go-back")).resolves.toBe(
+			"allow",
+		);
+		const second = commandCall("hook-command-3", "app:go-forward");
+		await waitFor(() =>
+			expect(sm.getPendingPermissionRequests()[0]?.id).toBe("hook-command-3"),
+		);
+		sm.handlePermissionResponse("hook-command-3", false);
+		await expect(second).resolves.toBe("block");
+	});
 });
 
 // ── restoreMcpStatus ──────────────────────────────────────────────────────────
@@ -2161,6 +2229,164 @@ describe("SessionManager — session-scoped permission persistence", () => {
 			behavior: "allow",
 			updatedInput: { id: "app:go-back" },
 		});
+	});
+
+	it("requires exact command approval when Umbod generically allows the tool", async () => {
+		vi.mocked(authorizeHlidTool).mockResolvedValueOnce({
+			decision: "allow",
+			policyDecision: "allow",
+			reason: "default allow",
+		});
+		let decision: AgentToolDecision | undefined;
+		const provider: AgentProvider = {
+			providerId: "codex",
+			query(params: AgentQueryParams): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "codex-session-1" };
+					decision = await params.canUseTool(
+						"mcp__hlid_obsidian__run_command",
+						{ id: "file-explorer:new-file" },
+						{
+							toolUseID: "umbod-command",
+							signal: new AbortController().signal,
+						},
+					);
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		const config = { ...makeConfig(), umbod: { enabled: true } } as HlidConfig;
+		const sm = new SessionManager(config, makeProviders(provider));
+		const turn = sm.runQuery("create a file", () => {}, "sess-command-policy");
+
+		await waitFor(() =>
+			expect(sm.getPendingPermissionRequests()[0]?.id).toBe("umbod-command"),
+		);
+		sm.handlePermissionResponse("umbod-command", true);
+		await turn;
+
+		expect(decision).toEqual({
+			behavior: "allow",
+			updatedInput: { id: "file-explorer:new-file" },
+		});
+	});
+
+	it("honors an explicit Umbod block without prompting for the command", async () => {
+		vi.mocked(authorizeHlidTool).mockResolvedValueOnce({
+			decision: "block",
+			policyDecision: "block",
+			reason: "command blocked by policy",
+		});
+		let decision: AgentToolDecision | undefined;
+		const provider: AgentProvider = {
+			providerId: "codex",
+			query(params: AgentQueryParams): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "codex-session-1" };
+					decision = await params.canUseTool(
+						"mcp__hlid_obsidian__run_command",
+						{ id: "file-explorer:new-file" },
+						{
+							toolUseID: "blocked-command",
+							signal: new AbortController().signal,
+						},
+					);
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		const config = { ...makeConfig(), umbod: { enabled: true } } as HlidConfig;
+		const sm = new SessionManager(config, makeProviders(provider));
+		const emitted: ServerMessage[] = [];
+
+		await sm.runQuery(
+			"create a file",
+			(event) => emitted.push(event),
+			"sess-command-block",
+		);
+
+		expect(emitted.some((event) => event.type === "permission_request")).toBe(
+			false,
+		);
+		expect(decision).toEqual({
+			behavior: "deny",
+			message: "command blocked by policy",
+		});
+	});
+
+	it("does not let provider bypass mode auto-approve an unknown command", async () => {
+		let decision: AgentToolDecision | undefined;
+		const commandProvider: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-session-1" };
+					decision = await params.canUseTool(
+						"mcp__hlid_obsidian__run_command",
+						{ id: "app:toggle-left-sidebar" },
+						{
+							toolUseID: "bypass-command",
+							signal: new AbortController().signal,
+						},
+					);
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		const config = makeConfig();
+		config.claude.permission_mode = "bypassPermissions";
+		config.auto_sleep = {
+			enabled: true,
+			threshold: 0.95,
+			max_sleep_minutes: 360,
+			resume_buffer_seconds: 0,
+		};
+		const sm = new SessionManager(config, makeProviders(commandProvider));
+		const turn = sm.runQuery("toggle sidebar", () => {}, "sess-command-bypass");
+
+		await waitFor(() =>
+			expect(sm.getPendingPermissionRequests()[0]?.id).toBe("bypass-command"),
+		);
+		sm.handlePermissionResponse("bypass-command", false);
+		await turn;
+
+		expect(decision).toEqual({ behavior: "deny", message: "Denied by user" });
 	});
 
 	describe("Computer Use capability policy", () => {

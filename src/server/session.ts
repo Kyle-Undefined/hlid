@@ -41,6 +41,7 @@ import { bumpDataRevision } from "./dataRevision";
 import { resolveExecutionContext } from "./executionContext";
 import { planStagingPath, prepareLibrary } from "./libraryStore";
 import { readObsidianNote } from "./obsidianCli";
+import { resolveObsidianCommandPermission } from "./obsidianCommandApproval";
 import { parseAskUserQuestion } from "./parseAskUserQuestion";
 import {
 	persistAlwaysAllowedObsidianCommand,
@@ -179,39 +180,6 @@ const KNOWN_PERMISSION_MODES: ReadonlySet<string> = new Set([
 	"bypassPermissions",
 	"plan",
 ]);
-
-type ObsidianCommandPermission = {
-	commandId: string;
-	key: string;
-};
-
-function obsidianCommandPermission(
-	toolName: string,
-	input: Record<string, unknown>,
-	vaultName: string,
-): ObsidianCommandPermission | null {
-	const normalized = toolName.toLocaleLowerCase();
-	const isRunCommand =
-		normalized === "run_command" ||
-		normalized === "run command" ||
-		((normalized.endsWith("__run_command") ||
-			normalized.endsWith(".run_command") ||
-			normalized.endsWith("/run_command") ||
-			normalized.endsWith(":run_command")) &&
-			normalized.includes("hlid_obsidian")) ||
-		(normalized.includes("obsidian") &&
-			normalized.includes("command") &&
-			(normalized.includes("run") || normalized.includes("execute")));
-	if (!isRunCommand || typeof input.id !== "string") return null;
-	const commandId = input.id.trim();
-	if (!commandId || commandId.length > 512 || /[\r\n\0]/.test(commandId)) {
-		return null;
-	}
-	return {
-		commandId,
-		key: `hlid_obsidian:run_command:${vaultName}:${commandId}`,
-	};
-}
 
 function buildProviderHandoff(
 	messages: ReadonlyArray<{ role: string; text: string }>,
@@ -1344,28 +1312,54 @@ export class SessionManager {
 	): Promise<"allow" | "block"> {
 		const toolUseID = call.toolUseId ?? `umbod-${Date.now()}`;
 		const toolName = call.tool;
+		const obsidianCommand = resolveObsidianCommandPermission(
+			toolName,
+			call.inputs,
+			this.vaultName,
+		);
+		const permissionKey = obsidianCommand?.key ?? toolName;
 		const request = {
 			type: "permission_request" as const,
 			id: toolUseID,
 			toolName,
-			title: `${provider.label ?? provider.providerId} wants to use ${toolName}`,
-			description: reason,
+			title:
+				obsidianCommand !== null
+					? `Run an Obsidian command in ${this.vaultName}?`
+					: `${provider.label ?? provider.providerId} wants to use ${toolName}`,
+			displayName: obsidianCommand !== null ? "Obsidian command" : undefined,
+			description:
+				obsidianCommand !== null
+					? `${reason}\n\nAlways applies only to command ${obsidianCommand.commandId} in the configured ${this.vaultName} vault.`
+					: reason,
 			input: call.inputs,
 		};
 		return new Promise((finish) => {
-			if (this.sessionAllowedTools.has(toolName)) {
+			if (
+				this.sessionAllowedTools.has(permissionKey) ||
+				(obsidianCommand !== null &&
+					this.rememberedObsidianCommands.has(obsidianCommand.commandId))
+			) {
 				finish("allow");
 				return;
 			}
 			this.permissions.register(toolUseID, request, (approved, saveScope) => {
 				if (approved && saveScope === "session")
-					this.sessionAllowedTools.add(toolName);
+					this.sessionAllowedTools.add(permissionKey);
 				if (approved && saveScope === "local") {
 					try {
-						persistAlwaysAllowedTool(
-							call.workingDirectory ?? this.vaultPath,
-							toolName,
-						);
+						if (obsidianCommand !== null) {
+							persistAlwaysAllowedObsidianCommand(
+								this.vaultName,
+								this.vaultPath,
+								obsidianCommand.commandId,
+							);
+							this.rememberedObsidianCommands.add(obsidianCommand.commandId);
+						} else {
+							persistAlwaysAllowedTool(
+								call.workingDirectory ?? this.vaultPath,
+								toolName,
+							);
+						}
 					} catch (error) {
 						console.error(
 							"[session] failed to write always-allow rule:",
@@ -2737,7 +2731,7 @@ export class SessionManager {
 			autoApproveTools,
 			resolve,
 		} = options;
-		const obsidianCommand = obsidianCommandPermission(
+		const obsidianCommand = resolveObsidianCommandPermission(
 			toolName,
 			passInput,
 			this.vaultName,
@@ -2847,7 +2841,7 @@ export class SessionManager {
 		// createToolPermissionHandler has already applied the usage gate to every
 		// tool path, including special question/plan paths. Preserve bypass mode
 		// as an auto-allow only after that gate has had a chance to sleep.
-		if (autoApproveTools) {
+		if (autoApproveTools && obsidianCommand === null) {
 			resolve({ behavior: "allow", updatedInput: passInput });
 			return;
 		}
@@ -2865,7 +2859,21 @@ export class SessionManager {
 			prompt: (reason) => prompt(reason),
 		})
 			.then(async (policy) => {
-				const decision = policy?.decision ?? (await prompt());
+				let decision: "allow" | "block";
+				if (policy?.policyDecision === "block") {
+					decision = "block";
+				} else if (
+					obsidianCommand !== null &&
+					policy?.policyDecision !== "approve"
+				) {
+					// A generic policy allow cannot grant a newly discovered Obsidian
+					// command. The exact command ID must be remembered or approved in
+					// the originating chat. An Umbod approve rule already invoked this
+					// same prompt callback, so reuse its decision without asking twice.
+					decision = await prompt();
+				} else {
+					decision = policy?.decision ?? (await prompt());
+				}
 				resolve(
 					decision === "allow"
 						? {
