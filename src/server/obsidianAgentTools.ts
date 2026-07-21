@@ -7,6 +7,7 @@ import {
 	createObsidianBaseItem,
 	createObsidianNote,
 	executeObsidianCommand,
+	getActiveObsidianNote,
 	listObsidianCommands,
 	listObsidianTemplates,
 	MAX_OBSIDIAN_AGENT_OUTPUT_CHARS,
@@ -40,6 +41,17 @@ const vaultPath = z.string().trim().min(1).max(4_096);
 const DEFAULT_RESULT_LIMIT = 50;
 const resultLimit = z.number().int().min(1).max(200).optional();
 const countOnly = z.boolean().optional();
+
+async function activeObsidianNoteOrNull(
+	vaultName: string,
+	launchIfNeeded: boolean,
+): Promise<string | null> {
+	try {
+		return await getActiveObsidianNote(vaultName, {}, { launchIfNeeded });
+	} catch {
+		return null;
+	}
+}
 
 export const obsidianAgentSchemas = {
 	vault_info: z.object({}),
@@ -720,7 +732,7 @@ export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
 	{
 		name: "run_command",
 		description:
-			"Run one exact command ID returned by list_commands. This is a mutation and follows the active Hlid approval policy. Commands remembered with Always are trusted only for this configured vault.",
+			"Run one exact command ID returned by list_commands. This is a mutation and follows the active Hlid approval policy. Commands remembered with Always are trusted only for this configured vault. The result reports active-note context immediately before and after when available, not a complete affected-file list.",
 		readOnly: false,
 		inputSchema: {
 			type: "object",
@@ -1098,8 +1110,15 @@ export async function executeObsidianAgentTool(
 		}
 		case "run_command": {
 			const parsed = obsidianAgentSchemas.run_command.parse(input);
+			const activeBefore = await activeObsidianNoteOrNull(vaultName, true);
 			await executeObsidianCommand(vaultName, parsed.id);
-			return JSON.stringify({ ok: true, id: parsed.id });
+			const activeAfter = await activeObsidianNoteOrNull(vaultName, false);
+			return JSON.stringify({
+				ok: true,
+				id: parsed.id,
+				activeBefore,
+				activeAfter,
+			});
 		}
 		default:
 			throw new Error(`Unknown Hlid Obsidian tool: ${name}`);

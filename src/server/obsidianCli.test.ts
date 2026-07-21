@@ -498,6 +498,29 @@ describe("Obsidian CLI bridge", () => {
 		expect(wait).toHaveBeenLastCalledWith(500);
 	});
 
+	it("does not relaunch Obsidian for a post-command active-note snapshot", async () => {
+		const unavailable =
+			"The CLI is unable to find Obsidian. Please make sure Obsidian is running and try again.";
+		const { dependencies, run } = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: unavailable, code: 1 },
+		]);
+
+		await expect(
+			getActiveObsidianNote("Fornbok", dependencies, {
+				launchIfNeeded: false,
+			}),
+		).rejects.toThrow("unable to find Obsidian");
+		expect(run).toHaveBeenCalledTimes(2);
+		expect(
+			run.mock.calls.some(([command]) => command === "powershell.exe"),
+		).toBe(true);
+		// The only PowerShell call is CLI detection. No desktop start attempt follows.
+		expect(
+			run.mock.calls.filter(([command]) => command === "powershell.exe"),
+		).toHaveLength(1);
+	});
+
 	it("creates a composer reference without exposing an absolute path", () => {
 		expect(obsidianReferenceItem("Projects/One thing.md")).toEqual({
 			relativePath: "Projects/One thing.md",

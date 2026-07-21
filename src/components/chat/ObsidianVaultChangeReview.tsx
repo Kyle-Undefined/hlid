@@ -23,6 +23,8 @@ export type ObsidianVaultChange = {
 	from?: string;
 	content?: string;
 	commandId?: string;
+	activeBefore?: string;
+	activeAfter?: string;
 	summary?: string;
 };
 
@@ -62,18 +64,35 @@ function operationFromToolName(name: string): string | null {
 	return null;
 }
 
-function resultPath(result: string | undefined): string | null {
+function resultRecord(
+	result: string | undefined,
+): Record<string, unknown> | null {
 	if (!result) return null;
 	try {
 		const parsed: unknown = JSON.parse(result);
 		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
 			return null;
 		}
-		const path = (parsed as { path?: unknown }).path;
-		return typeof path === "string" && path ? path : null;
+		const direct = parsed as Record<string, unknown>;
+		for (const key of ["contentItems", "content"]) {
+			const items = direct[key];
+			if (!Array.isArray(items)) continue;
+			for (const item of items) {
+				const nested = record(item);
+				if (typeof nested.text !== "string") continue;
+				const unwrapped = resultRecord(nested.text);
+				if (unwrapped) return unwrapped;
+			}
+		}
+		return direct;
 	} catch {
 		return null;
 	}
+}
+
+function resultPath(result: string | undefined): string | null {
+	const path = resultRecord(result)?.path;
+	return typeof path === "string" && path ? path : null;
 }
 
 function renamedPath(source: string, name: string): string {
@@ -97,12 +116,23 @@ export function obsidianVaultChanges(
 		const input = record(event.input);
 		if (operation === "run_command") {
 			const commandId = typeof input.id === "string" ? input.id : null;
+			const result = resultRecord(event.result);
+			const activeBefore =
+				typeof result?.activeBefore === "string" && result.activeBefore
+					? result.activeBefore
+					: null;
+			const activeAfter =
+				typeof result?.activeAfter === "string" && result.activeAfter
+					? result.activeAfter
+					: null;
 			return commandId
 				? [
 						{
 							id: event.id,
 							kind: "command" as const,
 							commandId,
+							...(activeBefore ? { activeBefore } : {}),
+							...(activeAfter ? { activeAfter } : {}),
 						},
 					]
 				: [];
@@ -273,9 +303,51 @@ export function ObsidianVaultChangeReview({
 												: change.path)}
 									</PrivacyMask>
 									{change.kind === "command" && (
-										<p className="mt-0.5 text-[9px] text-muted-foreground/50">
-											Affected files unknown
-										</p>
+										<div className="mt-1 space-y-0.5 text-[9px] text-muted-foreground/55">
+											{change.activeBefore &&
+											change.activeBefore === change.activeAfter ? (
+												<div className="flex min-w-0 items-center gap-1.5">
+													<span className="shrink-0">Active note when run</span>
+													<PrivacyMask className="min-w-0 truncate font-mono text-primary/65">
+														{change.activeBefore}
+													</PrivacyMask>
+													<ObsidianOpenButton
+														relativePath={change.activeBefore}
+													/>
+												</div>
+											) : (
+												<>
+													{change.activeBefore && (
+														<div className="flex min-w-0 items-center gap-1.5">
+															<span className="shrink-0">Active before</span>
+															<PrivacyMask className="min-w-0 truncate font-mono text-primary/65">
+																{change.activeBefore}
+															</PrivacyMask>
+															<ObsidianOpenButton
+																relativePath={change.activeBefore}
+															/>
+														</div>
+													)}
+													{change.activeAfter && (
+														<div className="flex min-w-0 items-center gap-1.5">
+															<span className="shrink-0">Active after</span>
+															<PrivacyMask className="min-w-0 truncate font-mono text-primary/65">
+																{change.activeAfter}
+															</PrivacyMask>
+															<ObsidianOpenButton
+																relativePath={change.activeAfter}
+															/>
+														</div>
+													)}
+												</>
+											)}
+											{!change.activeBefore && !change.activeAfter && (
+												<p>Active-note context unavailable</p>
+											)}
+											<p className="text-muted-foreground/45">
+												Commands may affect other vault files.
+											</p>
+										</div>
 									)}
 								</div>
 								{change.path && (

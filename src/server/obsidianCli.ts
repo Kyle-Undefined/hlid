@@ -40,6 +40,10 @@ type ResolvedObsidianCli = ObsidianCliStatus & {
 	windowsAppExecutable: string | null;
 };
 
+type ObsidianCommandOptions = {
+	launchIfNeeded?: boolean;
+};
+
 function isWsl(env: NodeJS.ProcessEnv): boolean {
 	return Boolean(env.WSL_DISTRO_NAME || env.WSL_INTEROP);
 }
@@ -292,9 +296,16 @@ async function runObsidianCommand(
 	vaultName: string,
 	args: string[],
 	dependencies: ObsidianBridgeDependencies = {},
+	options: ObsidianCommandOptions = {},
 ): Promise<string> {
 	const resolved = await resolveObsidianCli(dependencies);
-	return runResolvedObsidianCommand(resolved, vaultName, args, dependencies);
+	return runResolvedObsidianCommand(
+		resolved,
+		vaultName,
+		args,
+		dependencies,
+		options,
+	);
 }
 
 async function runResolvedObsidianCommand(
@@ -302,6 +313,7 @@ async function runResolvedObsidianCommand(
 	vaultName: string,
 	args: string[],
 	dependencies: ObsidianBridgeDependencies,
+	options: ObsidianCommandOptions = {},
 ): Promise<string> {
 	if (!resolved.executable) throw new Error(resolved.detail);
 	const executable = resolved.executable;
@@ -317,6 +329,7 @@ async function runResolvedObsidianCommand(
 	if (
 		result.code !== 0 &&
 		windowsAppExecutable &&
+		options.launchIfNeeded !== false &&
 		/unable to find obsidian/i.test(result.output)
 	) {
 		const launched = await run(
@@ -1445,8 +1458,14 @@ export async function testObsidianConnection(
 export async function getActiveObsidianNote(
 	vaultName: string,
 	dependencies: ObsidianBridgeDependencies = {},
+	options: ObsidianCommandOptions = {},
 ): Promise<string> {
-	const output = await runObsidianCommand(vaultName, ["file"], dependencies);
+	const output = await runObsidianCommand(
+		vaultName,
+		["file"],
+		dependencies,
+		options,
+	);
 	const path = outputField(output, "path");
 	if (!path)
 		throw new Error("No active Obsidian note was found in this vault.");

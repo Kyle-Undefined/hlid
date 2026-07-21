@@ -7,6 +7,7 @@ const bridge = vi.hoisted(() => ({
 	createObsidianBaseItem: vi.fn(),
 	createObsidianNote: vi.fn(),
 	executeObsidianCommand: vi.fn(),
+	getActiveObsidianNote: vi.fn(),
 	listObsidianCommands: vi.fn(),
 	listObsidianTemplates: vi.fn(),
 	mutateObsidianNote: vi.fn(),
@@ -324,9 +325,49 @@ describe("Obsidian agent tools", () => {
 	});
 
 	it("dispatches a command without requiring a Forge pre-allowlist", async () => {
-		await executeObsidianAgentTool("run_command", {
+		bridge.getActiveObsidianNote
+			.mockResolvedValueOnce("Notes/Before.md")
+			.mockResolvedValueOnce("Notes/After.md");
+		const output = await executeObsidianAgentTool("run_command", {
 			id: "app:go-back",
 		});
+		expect(bridge.executeObsidianCommand).toHaveBeenCalledWith(
+			"Fornbok",
+			"app:go-back",
+		);
+		expect(bridge.getActiveObsidianNote).toHaveBeenNthCalledWith(
+			1,
+			"Fornbok",
+			{},
+			{ launchIfNeeded: true },
+		);
+		expect(bridge.getActiveObsidianNote).toHaveBeenNthCalledWith(
+			2,
+			"Fornbok",
+			{},
+			{ launchIfNeeded: false },
+		);
+		expect(JSON.parse(output)).toEqual({
+			ok: true,
+			id: "app:go-back",
+			activeBefore: "Notes/Before.md",
+			activeAfter: "Notes/After.md",
+		});
+	});
+
+	it("still runs a command when active-note context is unavailable", async () => {
+		bridge.getActiveObsidianNote.mockRejectedValue(new Error("No active note"));
+
+		await expect(
+			executeObsidianAgentTool("run_command", { id: "app:go-back" }),
+		).resolves.toBe(
+			JSON.stringify({
+				ok: true,
+				id: "app:go-back",
+				activeBefore: null,
+				activeAfter: null,
+			}),
+		);
 		expect(bridge.executeObsidianCommand).toHaveBeenCalledWith(
 			"Fornbok",
 			"app:go-back",

@@ -51,7 +51,7 @@ describe("ObsidianVaultChangeReview", () => {
 				"command",
 				"mcp__hlid_obsidian__run_command",
 				{ id: "templater-obsidian:insert-templater" },
-				'{"ok":true,"id":"templater-obsidian:insert-templater"}',
+				'{"ok":true,"id":"templater-obsidian:insert-templater","activeBefore":"Notes/Before.md","activeAfter":"Notes/After.md"}',
 			),
 			event(
 				"base",
@@ -121,6 +121,8 @@ describe("ObsidianVaultChangeReview", () => {
 				id: "command",
 				kind: "command",
 				commandId: "templater-obsidian:insert-templater",
+				activeBefore: "Notes/Before.md",
+				activeAfter: "Notes/After.md",
 			},
 			{
 				id: "base",
@@ -189,7 +191,20 @@ describe("ObsidianVaultChangeReview", () => {
 						"command",
 						"mcp__hlid_obsidian__run_command",
 						{ id: "templater-obsidian:insert-templater" },
-						'{"ok":true,"id":"templater-obsidian:insert-templater"}',
+						JSON.stringify({
+							type: "dynamicToolCall",
+							contentItems: [
+								{
+									type: "inputText",
+									text: JSON.stringify({
+										ok: true,
+										id: "templater-obsidian:insert-templater",
+										activeBefore: "Notes/Active.md",
+										activeAfter: "Notes/Active.md",
+									}),
+								},
+							],
+						}),
 					),
 				]}
 			/>,
@@ -203,12 +218,43 @@ describe("ObsidianVaultChangeReview", () => {
 		expect(
 			screen.getByText("templater-obsidian:insert-templater"),
 		).toBeTruthy();
-		expect(screen.getByText("Affected files unknown")).toBeTruthy();
+		expect(screen.getByText("Active note when run")).toBeTruthy();
+		expect(screen.getByText("Notes/Active.md")).toBeTruthy();
+		expect(
+			screen.getByText("Commands may affect other vault files."),
+		).toBeTruthy();
 		expect(
 			screen.getByRole("button", {
 				name: "Open Notes/Changed.md in Obsidian",
 			}),
 		).toBeTruthy();
+		expect(
+			screen.getByRole("button", {
+				name: "Open Notes/Active.md in Obsidian",
+			}),
+		).toBeTruthy();
+	});
+
+	it("shows active-note transitions without claiming a complete diff", () => {
+		render(
+			<ObsidianVaultChangeReview
+				toolEvents={[
+					event(
+						"command",
+						"run_command",
+						{ id: "daily-notes" },
+						'{"ok":true,"id":"daily-notes","activeBefore":"0 Inbox/Test.md","activeAfter":"0 Inbox/2026-07-20.md"}',
+					),
+				]}
+			/>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: /vault activity.*1/i }));
+		expect(screen.getByText("Active before")).toBeTruthy();
+		expect(screen.getByText("0 Inbox/Test.md")).toBeTruthy();
+		expect(screen.getByText("Active after")).toBeTruthy();
+		expect(screen.getByText("0 Inbox/2026-07-20.md")).toBeTruthy();
+		expect(screen.queryByText(/affected files unknown/i)).toBeNull();
 	});
 
 	it("does not render when the turn made no successful vault changes", () => {
