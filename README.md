@@ -13,6 +13,41 @@ own folder vocabulary. `Hlið` does not care as long as the paths are set up.
 
 ![Hlið Watch overview showing activity, sessions, and vault skills](docs/images/watch-overview.png)
 
+## OpenAI Build Week
+
+Hlið existed before OpenAI Build Week. During the official July 13 through
+July 21, 2026 window, it was meaningfully extended with Codex and GPT-5.6. The
+work included Windows Computer Use delegation, provider-history recovery,
+cross-provider session controls, long-session performance work, managed
+CLIProxy routing, local read-aloud paths, and first-class Obsidian CLI tools.
+
+Codex accelerated the repo-wide part of that work: tracing behavior across the
+Windows host, WSL runtime, browser client, WebSocket server, and SQLite data;
+implementing narrow changes; writing regression tests; running validation; and
+correlating completed work with Git commits. GPT-5.6 was used in the Codex
+sessions represented by the Build Week provenance report.
+
+The product and engineering calls remained human decisions. Those included
+keeping Hlið provider-neutral, preserving local data and approval boundaries,
+using curated Obsidian operations instead of exposing unrestricted vault
+access, avoiding UI that could not report truthful provider state, and holding
+Windows behavior to the same validation standard as the browser experience.
+
+The repository includes a privacy-conscious report generator that shows the
+complete commit history through the current `HEAD`, highlights the official
+Build Week window, lists primary Git authors plus `Co-Authored-By` credits, and
+correlates project-scoped
+Codex and Claude sessions with token totals, tool-call counts, models,
+verification commands, and commits when the transcript contains direct
+`git commit` output. Claude history is deduplicated through the same
+provider-history planner used by Ledger, including Fable, Sonnet, and
+Claude-hosted GPT sessions. The report excludes raw prompts, arbitrary tool
+output, developer instructions, and environment details.
+
+The generated snapshot is written to
+`openai-build-week-provenance.html` in the repository root so it can be
+regenerated and committed with the Build Week branch.
+
 ## What it does
 
 - Keeps agent sessions around with live streaming, visible tool calls,
