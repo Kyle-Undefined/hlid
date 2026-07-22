@@ -138,8 +138,8 @@ function LevelTabs({
 }) {
 	return (
 		<div className="border-b border-border">
-			<div className="flex items-center justify-between px-4 py-2">
-				<div className="flex items-center gap-3">
+			<div className="flex flex-wrap items-center gap-x-4 gap-y-2 px-4 py-2">
+				<div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
 					{LEVEL_TABS.map((tab) => {
 						const count =
 							tab === "all"
@@ -166,11 +166,12 @@ function LevelTabs({
 					<ConfirmAction
 						label="clear all?"
 						onConfirm={onClear}
+						className="ml-auto w-full shrink-0 justify-end sm:w-auto"
 						trigger={(open) => (
 							<button
 								type="button"
 								onClick={open}
-								className="text-[8px] tracking-widest text-muted-foreground/30 hover:text-muted-foreground/60 uppercase transition-colors"
+								className="ml-auto text-[8px] tracking-widest text-muted-foreground/30 hover:text-muted-foreground/60 uppercase transition-colors"
 							>
 								clear
 							</button>
