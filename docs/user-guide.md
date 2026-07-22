@@ -289,6 +289,13 @@ reports, and imported skill packages live under the installed app's `library`
 directory rather than inside a repository or agent folder. The Obsidian vault
 and WSL workspaces remain linked sources; Hlid does not copy or relocate them.
 
+When you ask for a durable deliverable, agents can publish generated HTML,
+PDFs, images, and other reports directly into `Relics` from an ordinary chat.
+Hlid copies workspace files across the Windows or WSL boundary into managed
+storage, associates them with the chat, and returns a link that opens through
+the existing Relics viewer. General HTML reports do not require plan mode;
+HTML plan proposals continue to use the separate plan review workflow.
+
 Use **Browse installed skills** to open a review dialog populated from the
 installed Claude and Codex registries plus configured ACP workspaces. Discovery
 does not start an agent or CLI process, so it remains responsive while those

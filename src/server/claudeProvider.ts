@@ -36,6 +36,13 @@ import type {
 } from "./agentProvider";
 import { createClaudeHistorySessionStore } from "./claudeHistorySessionStore";
 import {
+	executeHlidAgentTool,
+	HLID_AGENT_NAMESPACE,
+	HLID_AGENT_NAMESPACE_DESCRIPTION,
+	HLID_AGENT_TOOL_SPECS,
+	hlidAgentSchemas,
+} from "./hlidAgentTools";
+import {
 	executeObsidianAgentTool,
 	OBSIDIAN_AGENT_NAMESPACE,
 	OBSIDIAN_AGENT_NAMESPACE_DESCRIPTION,
@@ -70,6 +77,56 @@ function effectiveSdkPermissionMode(
 }
 
 type SdkQuery = ReturnType<typeof query>;
+
+function createHlidSdkServer(params: AgentQueryParams) {
+	return createSdkMcpServer({
+		name: HLID_AGENT_NAMESPACE,
+		version: "1",
+		instructions: HLID_AGENT_NAMESPACE_DESCRIPTION,
+		tools: HLID_AGENT_TOOL_SPECS.map((spec) =>
+			tool(
+				spec.name,
+				spec.description,
+				// biome-ignore lint/suspicious/noExplicitAny: the SDK accepts each Zod shape, while map() widens them to a union.
+				hlidAgentSchemas[spec.name].shape as any,
+				async (input) => {
+					try {
+						return {
+							content: [
+								{
+									type: "text" as const,
+									text: await executeHlidAgentTool(spec.name, input, {
+										runtimeCwd: params.cwd,
+										sessionId: params.hostSessionId,
+									}),
+								},
+							],
+						};
+					} catch (error) {
+						return {
+							isError: true,
+							content: [
+								{
+									type: "text" as const,
+									text: error instanceof Error ? error.message : String(error),
+								},
+							],
+						};
+					}
+				},
+				{
+					annotations: {
+						readOnlyHint: spec.readOnly,
+						destructiveHint: false,
+						idempotentHint: false,
+					},
+					searchHint: "publish generated report HTML PDF image Relic",
+					alwaysLoad: !spec.deferLoading,
+				},
+			),
+		),
+	});
+}
 
 function createObsidianSdkServer(
 	forceRunCommandApproval?: CanUseTool,
@@ -1791,6 +1848,7 @@ export class ClaudeProvider implements AgentProvider {
 				options: {
 					cwd: params.cwd,
 					mcpServers: {
+						[HLID_AGENT_NAMESPACE]: createHlidSdkServer(params),
 						[OBSIDIAN_AGENT_NAMESPACE]: createObsidianSdkServer(
 							params.permissionMode === "bypassPermissions" &&
 								!params.policyEnforced

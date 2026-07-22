@@ -1,5 +1,6 @@
 import type { HlidConfig } from "../config";
 import {
+	handleGeneratedRelicPublish,
 	handleUpload,
 	openAttachmentInObsidian,
 	promoteAttachmentToObsidian,
@@ -24,6 +25,36 @@ export async function handleAttachmentRoute(
 	req: Request,
 	fallbackConfig: HlidConfig,
 ): Promise<Response | null> {
+	if (url.pathname === "/api/relics/publish" && req.method === "POST") {
+		if (activeUploads >= MAX_CONCURRENT_UPLOADS) {
+			return Response.json(
+				{ error: "upload_capacity_reached" },
+				{ status: 429, headers: { "retry-after": "1" } },
+			);
+		}
+		activeUploads++;
+		try {
+			return await handleGeneratedRelicPublish(
+				req,
+				loadCurrentConfig(fallbackConfig),
+				async (id) => {
+					bumpDataRevision("relics", "storage");
+					try {
+						await broadcast({
+							type: "attachment_created",
+							id,
+							kind: "ephemeral",
+						});
+					} catch (err) {
+						console.warn("[relics] broadcast failed:", err);
+					}
+				},
+			);
+		} finally {
+			activeUploads--;
+		}
+	}
+
 	if (url.pathname === "/api/attachments/upload" && req.method === "POST") {
 		// Re-read config so newly-added agents route correctly without a restart.
 		// Falls back to the captured startup config if disk read fails.

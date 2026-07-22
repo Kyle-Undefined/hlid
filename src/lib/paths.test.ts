@@ -12,6 +12,7 @@ import {
 	parseWslUnc,
 	pathStartsWith,
 	samePath,
+	toHostRuntimePath,
 	toLogical,
 	toProviderRuntimePath,
 } from "./paths";
@@ -202,5 +203,23 @@ describe("toProviderRuntimePath", () => {
 		const path = "C:\\Users\\kyleu\\project";
 		expect(toProviderRuntimePath("C:\\Users\\kyleu\\project", path)).toBe(path);
 		expect(toProviderRuntimePath("/home/kyle/project", path)).toBe(path);
+	});
+});
+
+describe("toHostRuntimePath", () => {
+	it("resolves native relative paths against the provider cwd", () => {
+		expect(toHostRuntimePath("/work/project", "reports/a.html")).toBe(
+			"/work/project/reports/a.html",
+		);
+	});
+
+	it("maps WSL provider paths back to the host UNC share", () => {
+		const cwd = "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\project";
+		expect(toHostRuntimePath(cwd, "reports/a.html")).toBe(
+			"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\project\\reports\\a.html",
+		);
+		expect(toHostRuntimePath(cwd, "/tmp/a.pdf")).toBe(
+			"\\\\wsl.localhost\\Ubuntu-24.04\\tmp\\a.pdf",
+		);
 	});
 });

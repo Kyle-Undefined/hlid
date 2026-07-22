@@ -1,5 +1,5 @@
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, resolve, sep } from "node:path";
+import { basename, dirname, posix, resolve, sep } from "node:path";
 
 // When running as a compiled exe, resolve data files relative to the exe dir
 // so the Windows Run-key CWD (System32) doesn't break config/DB paths.
@@ -111,6 +111,30 @@ export function toProviderRuntimePath(runtimeCwd: string, p: string): string {
 	const drive = drivePath[1].toLowerCase();
 	const rest = drivePath[2].replace(/\\/g, "/");
 	return rest ? `/mnt/${drive}/${rest}` : `/mnt/${drive}`;
+}
+
+/**
+ * Translate a provider-visible path back into the filesystem form used by the
+ * Hlid host. Relative paths resolve against the provider's working directory.
+ * A WSL-backed provider reports POSIX paths, while the Windows Hlid process
+ * needs the matching UNC path to copy the generated file into managed storage.
+ */
+export function toHostRuntimePath(runtimeCwd: string, p: string): string {
+	const runtime = parseWslUncSyntax(runtimeCwd);
+	if (!runtime) return resolve(runtimeCwd, p);
+
+	const existingUnc = parseWslUncSyntax(p);
+	if (existingUnc) return p;
+	if (/^[A-Za-z]:[\\/]/.test(p) || /^\\\\/.test(p)) return p;
+
+	const share = runtimeCwd.match(
+		/^(\\\\(?:wsl\$|wsl\.localhost)\\[^\\]+)/i,
+	)?.[1];
+	if (!share) return p;
+	const logical = p.startsWith("/")
+		? posix.normalize(p)
+		: posix.resolve(runtime.posixPath, p);
+	return `${share}\\${logical.slice(1).replaceAll("/", "\\")}`;
 }
 
 /** Reject WSL UNC resources owned by a distro other than the active runtime. */

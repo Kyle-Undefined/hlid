@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import {
-	closeObsidianMcpOnInputEnd,
+	closeInternalMcpOnInputEnd,
 	INTERNAL_OBSIDIAN_MCP_FLAG,
 	obsidianMcpProcessCommand,
 } from "./obsidianMcpServer";
@@ -24,7 +24,7 @@ describe("Obsidian MCP process", () => {
 	it("closes the MCP transport when its stdio client disconnects", async () => {
 		const input = new EventEmitter();
 		const close = vi.fn(async () => {});
-		const stopWatching = closeObsidianMcpOnInputEnd({ close }, input);
+		const stopWatching = closeInternalMcpOnInputEnd({ close }, input);
 
 		input.emit("end");
 		input.emit("close");

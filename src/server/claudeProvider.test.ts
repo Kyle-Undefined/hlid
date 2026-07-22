@@ -35,6 +35,10 @@ vi.mock("./obsidianAgentTools", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./obsidianAgentTools")>();
 	return { ...actual, executeObsidianAgentTool: vi.fn() };
 });
+vi.mock("./hlidAgentTools", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./hlidAgentTools")>();
+	return { ...actual, executeHlidAgentTool: vi.fn() };
+});
 // Wrap (not replace) the real store — its shape is exercised by the
 // "imported Claude resumes" test below and by forkSession's session-store
 // path; both only need load/append to be present, never actually call them
@@ -66,6 +70,7 @@ import {
 	mapClaudeModels,
 	mapClaudeUsageWindows,
 } from "./claudeProvider";
+import { executeHlidAgentTool } from "./hlidAgentTools";
 import { executeObsidianAgentTool } from "./obsidianAgentTools";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -2515,14 +2520,46 @@ describe("ClaudeProvider — check()", () => {
 // ── Slice B: streaming-input mode ─────────────────────────────────────────────
 
 describe("ClaudeProvider — Slice B streaming-input", () => {
-	it("registers Hlid's curated Obsidian MCP tools on user sessions", async () => {
+	it("registers Hlid's deferred Relic publisher and curated Obsidian tools", async () => {
 		vi.mocked(query).mockReturnValueOnce(sdkGen([]));
-		const session = new ClaudeProvider().query(baseParams());
+		const session = new ClaudeProvider().query(
+			baseParams({ hostSessionId: "host-session-1" }),
+		);
 		await session.send("inspect my vault");
 		const options = vi.mocked(query).mock.calls.at(-1)?.[0].options;
 		expect(options?.mcpServers).toMatchObject({
+			hlid: { type: "sdk", name: "hlid" },
 			hlid_obsidian: { type: "sdk", name: "hlid_obsidian" },
 		});
+		const hlidServer = options?.mcpServers?.hlid as unknown as {
+			instance: {
+				options: {
+					tools: Array<{
+						name: string;
+						alwaysLoad?: boolean;
+						handler: (input: unknown) => Promise<{
+							content: Array<{ type: string; text: string }>;
+						}>;
+					}>;
+				};
+			};
+		};
+		const publishRelic = hlidServer.instance.options.tools.find(
+			(item) => item.name === "publish_relic",
+		);
+		expect(publishRelic?.alwaysLoad).toBe(false);
+		vi.mocked(executeHlidAgentTool).mockResolvedValueOnce('{"id":"relic-1"}');
+		expect(
+			await publishRelic?.handler({
+				filename: "report.html",
+				content: "<h1>Report</h1>",
+			}),
+		).toEqual({ content: [{ type: "text", text: '{"id":"relic-1"}' }] });
+		expect(executeHlidAgentTool).toHaveBeenCalledWith(
+			"publish_relic",
+			{ filename: "report.html", content: "<h1>Report</h1>" },
+			{ runtimeCwd: "/tmp/test", sessionId: "host-session-1" },
+		);
 		const server = options?.mcpServers?.hlid_obsidian as unknown as {
 			instance: {
 				options: {

@@ -26,6 +26,8 @@ import type {
 	ProviderModelInfo,
 	SlashCommand,
 } from "./agentProvider";
+import { HLID_AGENT_NAMESPACE } from "./hlidAgentTools";
+import { hlidMcpProcessCommand } from "./hlidMcpServer";
 import { isHtmlPlanPath } from "./htmlPlanPath";
 import { OBSIDIAN_AGENT_NAMESPACE } from "./obsidianAgentTools";
 import { getObsidianCliStatus } from "./obsidianCli";
@@ -637,6 +639,22 @@ class AcpSession implements AgentSession {
 			resolveAcpEnv(this.options.env),
 			getObsidianCliStatus(),
 		]);
+		if (
+			!this.mcpServers.some((server) => server.name === HLID_AGENT_NAMESPACE)
+		) {
+			this.mcpServers.unshift({
+				name: HLID_AGENT_NAMESPACE,
+				...hlidMcpProcessCommand({
+					runtimeCwd: this.params.cwd,
+					sessionId: this.params.hostSessionId,
+				}),
+			});
+			this.mcpStatuses.unshift({
+				name: HLID_AGENT_NAMESPACE,
+				status: "pending",
+				scope: "provider",
+			});
+		}
 		if (
 			obsidianStatus.installed &&
 			!this.mcpServers.some(

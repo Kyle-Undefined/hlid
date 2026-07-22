@@ -233,6 +233,8 @@ export type BeforeToolUse = (
 
 export type AgentQueryParams = {
 	cwd: string;
+	/** Owning Hlid conversation id for host-managed artifacts and auditing. */
+	hostSessionId?: string;
 	/** Resume token from a prior session; undefined starts fresh. */
 	sessionId?: string;
 	/** Imported Claude transcripts are resumed through the SDK SessionStore adapter. */

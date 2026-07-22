@@ -10,7 +10,7 @@ import {
 
 export const INTERNAL_OBSIDIAN_MCP_FLAG = "--internal-obsidian-mcp";
 
-export function closeObsidianMcpOnInputEnd(
+export function closeInternalMcpOnInputEnd(
 	transport: Pick<StdioServerTransport, "close">,
 	input: {
 		once(event: "end" | "close", listener: () => void): unknown;
@@ -31,7 +31,10 @@ export function closeObsidianMcpOnInputEnd(
 	};
 }
 
-export function obsidianMcpProcessCommand(): {
+export function internalMcpProcessCommand(
+	flag: string,
+	env: Array<{ name: string; value: string }> = [],
+): {
 	command: string;
 	args: string[];
 	env: Array<{ name: string; value: string }>;
@@ -39,15 +42,21 @@ export function obsidianMcpProcessCommand(): {
 	const compiled = process.execPath.endsWith(".exe");
 	const entrypoint = process.argv[1];
 	if (!compiled && !entrypoint) {
-		throw new Error("Hlid could not resolve its Obsidian MCP entrypoint.");
+		throw new Error("Hlid could not resolve its internal MCP entrypoint.");
 	}
 	return {
 		command: process.execPath,
-		args: compiled
-			? [INTERNAL_OBSIDIAN_MCP_FLAG]
-			: [entrypoint as string, INTERNAL_OBSIDIAN_MCP_FLAG],
-		env: [{ name: "HLID_SKIP_SELF_INSTALL", value: "1" }],
+		args: compiled ? [flag] : [entrypoint as string, flag],
+		env: [{ name: "HLID_SKIP_SELF_INSTALL", value: "1" }, ...env],
 	};
+}
+
+export function obsidianMcpProcessCommand(): {
+	command: string;
+	args: string[];
+	env: Array<{ name: string; value: string }>;
+} {
+	return internalMcpProcessCommand(INTERNAL_OBSIDIAN_MCP_FLAG);
 }
 
 export async function runObsidianMcpServer(): Promise<void> {
@@ -98,7 +107,7 @@ export async function runObsidianMcpServer(): Promise<void> {
 	const closed = new Promise<void>((resolve) => {
 		server.server.onclose = resolve;
 	});
-	const stopWatchingInput = closeObsidianMcpOnInputEnd(transport);
+	const stopWatchingInput = closeInternalMcpOnInputEnd(transport);
 	try {
 		await server.connect(transport);
 		await closed;

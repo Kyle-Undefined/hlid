@@ -651,7 +651,7 @@ describe("AcpProvider — MCP status", () => {
 				events.push(event);
 				if (event.type === "done") break;
 			}
-			expect(events).toContainEqual({ type: "text_delta", text: "2" });
+			expect(events).toContainEqual({ type: "text_delta", text: "3" });
 			session.cancel();
 		} finally {
 			rmSync(cwd, { recursive: true, force: true });
@@ -661,9 +661,28 @@ describe("AcpProvider — MCP status", () => {
 	it("adds Hlid's curated Obsidian MCP server when the CLI is installed", async () => {
 		getObsidianCliStatus.mockResolvedValueOnce({ installed: true });
 		const { events, session } = await run("report-mcp");
-		expect(events).toContainEqual({ type: "text_delta", text: "1" });
+		expect(events).toContainEqual({ type: "text_delta", text: "2" });
+		expect(await session.mcpServerStatus?.()).toContainEqual({
+			name: "hlid",
+			status: "pending",
+			scope: "provider",
+		});
 		expect(await session.mcpServerStatus?.()).toContainEqual({
 			name: "hlid_obsidian",
+			status: "pending",
+			scope: "provider",
+		});
+		session.cancel();
+	});
+
+	it("always adds the lean Hlid capability even without Obsidian", async () => {
+		const { events, session } = await run(
+			"report-mcp",
+			params("allow", { hostSessionId: "host-session-1" }),
+		);
+		expect(events).toContainEqual({ type: "text_delta", text: "1" });
+		expect(await session.mcpServerStatus?.()).toContainEqual({
+			name: "hlid",
 			status: "pending",
 			scope: "provider",
 		});

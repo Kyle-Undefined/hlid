@@ -18,7 +18,12 @@ import {
 	configuredObsidianCapture,
 	obsidianCaptureTimestamp,
 } from "../lib/obsidianCapture";
-import { expandTilde, pathStartsWith, samePath } from "../lib/paths";
+import {
+	expandTilde,
+	pathStartsWith,
+	samePath,
+	toHostRuntimePath,
+} from "../lib/paths";
 import {
 	artifactDirectory,
 	artifactPath,
@@ -30,6 +35,7 @@ import {
 	contentLengthExceeds,
 	MULTIPART_OVERHEAD_BYTES,
 	payloadTooLarge,
+	readRequestBodyLimited,
 } from "./requestLimits";
 
 function resolveRegisteredAgent(
@@ -95,6 +101,264 @@ function sanitizeFilename(name: string): string {
 	const base = basename(name).slice(0, 200);
 	const cleaned = base.replace(FILENAME_SAFE, "_").replace(/^\.+/, "_");
 	return cleaned || "file";
+}
+
+const GENERATED_RELIC_MIMES: Record<string, string> = {
+	".csv": "text/csv",
+	".gif": "image/gif",
+	".htm": "text/html",
+	".html": "text/html",
+	".jpeg": "image/jpeg",
+	".jpg": "image/jpeg",
+	".json": "application/json",
+	".md": "text/markdown",
+	".pdf": "application/pdf",
+	".png": "image/png",
+	".txt": "text/plain",
+	".webp": "image/webp",
+};
+
+function generatedRelicMime(filename: string, requested?: string): string {
+	const inferred = GENERATED_RELIC_MIMES[extname(filename).toLowerCase()];
+	const declared = requested?.split(";")[0].trim().toLowerCase();
+	if (declared && inferred && declared !== inferred) {
+		throw new Error(
+			`Declared MIME ${declared} does not match the filename type ${inferred}.`,
+		);
+	}
+	return declared || inferred || "application/octet-stream";
+}
+
+type GeneratedRelicRequest = {
+	runtime_cwd?: string;
+	session_id?: string;
+	source_path?: string;
+	filename?: string;
+	content?: string;
+	mime?: string;
+	category?: "report" | "other";
+};
+
+type GeneratedRelicResult = {
+	id: string;
+	filename: string;
+	mime: string;
+	size_bytes: number;
+	category: "report" | "other";
+	open_url: string;
+};
+
+function generatedRelicError(
+	error: string,
+	message: string,
+	status = 400,
+): Response {
+	return Response.json({ error, message }, { status });
+}
+
+/**
+ * Publish an agent-generated deliverable into Hlid-owned Relics. This is
+ * intentionally separate from browser uploads and HTML plan ingestion: it
+ * creates a durable generated artifact without entering the plan lifecycle.
+ */
+export async function handleGeneratedRelicPublish(
+	req: Request,
+	config: HlidConfig,
+	onPublished?: (id: string) => void | Promise<void>,
+): Promise<Response> {
+	const maxBodyBytes = config.attachments.max_bytes * 2 + 64 * 1024;
+	const limited = await readRequestBodyLimited(req, maxBodyBytes);
+	if (!limited.ok) return limited.response;
+
+	let input: GeneratedRelicRequest;
+	try {
+		const parsed = JSON.parse(new TextDecoder().decode(limited.body));
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+			throw new Error("invalid JSON object");
+		}
+		input = parsed as GeneratedRelicRequest;
+	} catch {
+		return generatedRelicError("invalid_request", "Expected a JSON body.");
+	}
+
+	const hasSource =
+		typeof input.source_path === "string" &&
+		input.source_path.trim().length > 0;
+	const hasContent = typeof input.content === "string";
+	if (hasSource === hasContent) {
+		return generatedRelicError(
+			"invalid_source",
+			"Provide exactly one of source_path or content.",
+		);
+	}
+	if (hasContent && !input.content) {
+		return generatedRelicError(
+			"empty_content",
+			"Generated Relic content cannot be empty.",
+		);
+	}
+
+	let buf: Buffer;
+	let requestedFilename = input.filename?.trim() ?? "";
+	try {
+		if (hasSource) {
+			const runtimeCwd = input.runtime_cwd?.trim();
+			if (!runtimeCwd) {
+				return generatedRelicError(
+					"missing_runtime_cwd",
+					"A provider working directory is required for source_path.",
+				);
+			}
+			const source = toHostRuntimePath(runtimeCwd, input.source_path as string);
+			const [root, realSource] = await Promise.all([
+				realpath(runtimeCwd),
+				realpath(source),
+			]);
+			if (!pathStartsWith(root, realSource)) {
+				return generatedRelicError(
+					"source_outside_workspace",
+					"Generated Relics must come from the active workspace.",
+					403,
+				);
+			}
+			const stat = await lstat(realSource);
+			if (!stat.isFile()) {
+				return generatedRelicError(
+					"invalid_source",
+					"The generated Relic source must be a regular file.",
+				);
+			}
+			if (stat.size === 0) {
+				return generatedRelicError(
+					"empty_content",
+					"Generated Relic files cannot be empty.",
+				);
+			}
+			if (stat.size > config.attachments.max_bytes) {
+				return generatedRelicError(
+					"file_too_large",
+					`Generated Relic exceeds the ${config.attachments.max_bytes} byte limit.`,
+					413,
+				);
+			}
+			requestedFilename ||= basename(realSource);
+			buf = Buffer.from(await readFile(realSource));
+			if (buf.byteLength > config.attachments.max_bytes) {
+				return generatedRelicError(
+					"file_too_large",
+					`Generated Relic exceeds the ${config.attachments.max_bytes} byte limit.`,
+					413,
+				);
+			}
+		} else {
+			if (!requestedFilename) {
+				return generatedRelicError(
+					"missing_filename",
+					"A filename is required when publishing direct content.",
+				);
+			}
+			buf = Buffer.from(input.content as string, "utf8");
+			if (buf.byteLength > config.attachments.max_bytes) {
+				return generatedRelicError(
+					"file_too_large",
+					`Generated Relic exceeds the ${config.attachments.max_bytes} byte limit.`,
+					413,
+				);
+			}
+		}
+	} catch (cause) {
+		return generatedRelicError(
+			"source_unavailable",
+			cause instanceof Error
+				? cause.message
+				: "Could not read the generated Relic source.",
+			404,
+		);
+	}
+
+	const filename = sanitizeFilename(requestedFilename);
+	let mime: string;
+	try {
+		mime = generatedRelicMime(filename, input.mime);
+	} catch (cause) {
+		return generatedRelicError(
+			"mime_mismatch",
+			cause instanceof Error ? cause.message : "MIME type mismatch.",
+			415,
+		);
+	}
+	const allowedMimes = new Set([
+		...config.attachments.allowed_mimes,
+		"application/octet-stream",
+		"text/html",
+	]);
+	if (!allowedMimes.has(mime)) {
+		return generatedRelicError(
+			"mime_not_allowed",
+			`Generated Relics do not allow ${mime}.`,
+			415,
+		);
+	}
+	if (mime.startsWith("image/") || mime === "application/pdf") {
+		const sniffed = sniffMime(buf);
+		if (sniffed !== mime) {
+			return generatedRelicError(
+				"mime_mismatch",
+				`Generated Relic bytes do not match ${mime}.`,
+				415,
+			);
+		}
+	}
+
+	const id = randomUUID();
+	const category = input.category === "other" ? "other" : "report";
+	let finalPath: string | null = null;
+	let created = false;
+	try {
+		await prepareLibrary();
+		await mkdir(artifactDirectory(id), { recursive: true, mode: 0o700 });
+		finalPath = artifactPath(id, filename);
+		await writeFile(finalPath, buf, { flag: "wx", mode: 0o600 });
+		await db.createAttachment({
+			id,
+			session_id:
+				typeof input.session_id === "string" && input.session_id
+					? input.session_id
+					: null,
+			kind: "ephemeral",
+			filename: basename(finalPath),
+			path: finalPath,
+			mime,
+			size_bytes: buf.byteLength,
+			sha256: createHash("sha256").update(buf).digest("hex"),
+			storage_key: storageKey(finalPath),
+			category,
+			retention: "retained",
+			origin: "generated",
+			agent_cwd: input.runtime_cwd?.trim() || null,
+		});
+		created = true;
+		await onPublished?.(id);
+		const result: GeneratedRelicResult = {
+			id,
+			filename: basename(finalPath),
+			mime,
+			size_bytes: buf.byteLength,
+			category,
+			open_url: `/api/attachments/${id}/raw`,
+		};
+		return Response.json(result);
+	} catch (cause) {
+		if (created) await db.deleteAttachment(id).catch(() => {});
+		if (finalPath) await unlink(finalPath).catch(() => {});
+		return generatedRelicError(
+			"publish_failed",
+			cause instanceof Error
+				? cause.message
+				: "Could not publish the generated Relic.",
+			500,
+		);
+	}
 }
 
 type UploadResult = {

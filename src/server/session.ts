@@ -239,6 +239,7 @@ function configuredAgentSettings(
 
 function buildAgentQueryParams(options: {
 	activeCwd: string;
+	hostSessionId: string | undefined;
 	resumeProviderSessionId: string | null;
 	historyResumeMode: AgentQueryParams["historyResumeMode"];
 	extraDirs: Set<string>;
@@ -265,6 +266,7 @@ function buildAgentQueryParams(options: {
 			: options.configuredPermissionMode;
 	return {
 		cwd: options.activeCwd,
+		hostSessionId: options.hostSessionId,
 		sessionId: options.resumeProviderSessionId ?? undefined,
 		historyResumeMode: options.historyResumeMode,
 		additionalDirectories:
@@ -3023,6 +3025,7 @@ export class SessionManager {
 		const session = provider.query(
 			buildAgentQueryParams({
 				activeCwd,
+				hostSessionId: sessionId,
 				resumeProviderSessionId,
 				historyResumeMode: this.historyResumeMode,
 				extraDirs,

@@ -24,6 +24,9 @@ own folder vocabulary. `Hlið` does not care as long as the paths are set up.
   commands into `Watch` and `Raven`, including compatible multi-skill runs.
 - Points prompts at exact vault files and managed `Relics` through the shared
   `@` picker. No copying paths around just to give the agent some context.
+- Lets agents publish generated HTML, PDFs, images, and reports directly into
+  `Relics` from ordinary chats. The existing Relics previews remain the viewer,
+  and publishing does not require an HTML plan turn.
 - Uses the official `Obsidian CLI` for the parts only Obsidian knows: the active
   note, indexed search, backlinks, tasks, properties, Bases, and local file
   history. Agents get curated tools for reading and changing the vault through

@@ -7,6 +7,10 @@ vi.mock("./obsidianAgentTools", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./obsidianAgentTools")>();
 	return { ...actual, executeObsidianAgentTool: vi.fn() };
 });
+vi.mock("./hlidAgentTools", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("./hlidAgentTools")>();
+	return { ...actual, executeHlidAgentTool: vi.fn() };
+});
 
 import { spawn } from "node:child_process";
 import { resolveCodexExecutable } from "../lib/codexPath";
@@ -37,6 +41,7 @@ import {
 	windowsComputerUseHostAvailable,
 	windowsComputerUseModel,
 } from "./codexProvider";
+import { executeHlidAgentTool } from "./hlidAgentTools";
 import { executeObsidianAgentTool } from "./obsidianAgentTools";
 
 // ── fetchCodexModels test helpers ──────────────────────────────────────────
@@ -1176,12 +1181,12 @@ describe("CodexAgentSession — commands", () => {
 					expect.objectContaining({
 						type: "namespace",
 						name: "hlid",
-						tools: [
+						tools: expect.arrayContaining([
 							expect.objectContaining({
 								type: "function",
 								name: "windows_computer_use",
 							}),
-						],
+						]),
 					}),
 				]),
 			);
@@ -1199,6 +1204,10 @@ describe("CodexAgentSession — commands", () => {
 		const session = new CodexProvider().query(baseCodexParams());
 		await session.send("inspect backlinks");
 		expect(turnStartParams(writes)[0].additionalContext).toEqual({
+			hlid: {
+				kind: "application",
+				value: expect.stringContaining("generated report"),
+			},
 			hlid_obsidian: {
 				kind: "application",
 				value: expect.stringContaining(
@@ -1273,6 +1282,76 @@ describe("CodexAgentSession — commands", () => {
 			kind: "backlinks",
 			path: "Notes/One.md",
 		});
+		session.cancel();
+	});
+
+	it("publishes a generated Relic through the deferred Hlid tool", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		vi.mocked(executeHlidAgentTool).mockResolvedValueOnce(
+			JSON.stringify({
+				id: "relic-1",
+				open_url: "/api/attachments/relic-1/raw",
+			}),
+		);
+		const canUseTool = vi.fn().mockResolvedValue({ behavior: "allow" });
+		const session = new CodexProvider().query(
+			baseCodexParams({
+				canUseTool,
+				hostSessionId: "host-session-1",
+			}),
+		);
+		await session.send("publish the report");
+		const hlidNamespace = (
+			threadStartParams(writes)[0].dynamicTools as Array<{
+				name: string;
+				tools: Array<{ name: string; deferLoading?: boolean }>;
+			}>
+		).find((tool) => tool.name === "hlid");
+		expect(hlidNamespace?.tools).toContainEqual(
+			expect.objectContaining({
+				name: "publish_relic",
+				deferLoading: true,
+			}),
+		);
+
+		proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: 96,
+					method: "item/tool/call",
+					params: {
+						threadId: "thread-1",
+						callId: "publish-1",
+						namespace: "hlid",
+						tool: "publish_relic",
+						arguments: { source_path: "reports/review.pdf" },
+					},
+				})}\n`,
+			),
+		);
+		await vi.waitFor(() =>
+			expect(
+				writes
+					.map((line) => JSON.parse(line))
+					.find((message) => message.id === 96)?.result,
+			).toMatchObject({ success: true }),
+		);
+		expect(canUseTool).toHaveBeenCalledWith(
+			"mcp__hlid__publish_relic",
+			{ source_path: "reports/review.pdf" },
+			expect.objectContaining({
+				toolUseID: "publish-1",
+				title: "Hlid publish Relic",
+			}),
+		);
+		expect(executeHlidAgentTool).toHaveBeenCalledWith(
+			"publish_relic",
+			{ source_path: "reports/review.pdf" },
+			{ runtimeCwd: "/tmp/codex-test", sessionId: "host-session-1" },
+		);
 		session.cancel();
 	});
 

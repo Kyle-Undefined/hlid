@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { HlidConfig } from "../config";
 
 const mocks = vi.hoisted(() => ({
+	handleGeneratedRelicPublish: vi.fn(),
 	handleUpload: vi.fn(),
 	removeAttachment: vi.fn(),
 	serveAttachment: vi.fn(),
@@ -12,6 +13,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock("./attachments", () => ({
+	handleGeneratedRelicPublish: mocks.handleGeneratedRelicPublish,
 	handleUpload: mocks.handleUpload,
 	removeAttachment: mocks.removeAttachment,
 	serveAttachment: mocks.serveAttachment,
@@ -27,6 +29,9 @@ const fallbackConfig = { server: {} } as HlidConfig;
 beforeEach(() => {
 	vi.clearAllMocks();
 	mocks.loadConfig.mockReturnValue(fallbackConfig);
+	mocks.handleGeneratedRelicPublish.mockResolvedValue(
+		Response.json({ id: "relic-1" }),
+	);
 	mocks.handleUpload.mockResolvedValue(new Response("uploaded"));
 	mocks.removeAttachment.mockResolvedValue(new Response("removed"));
 	mocks.serveAttachment.mockResolvedValue(new Response("raw"));
@@ -121,6 +126,37 @@ describe("attachment route dispatch", () => {
 			"item_1",
 			fallbackConfig,
 		);
+	});
+
+	it("publishes generated Relics and announces them through existing revisions", async () => {
+		mocks.handleGeneratedRelicPublish.mockImplementation(
+			async (
+				_request: Request,
+				_config: HlidConfig,
+				published: (id: string) => Promise<void>,
+			) => {
+				await published("generated-1");
+				return Response.json({ id: "generated-1" });
+			},
+		);
+		const url = new URL("http://localhost/api/relics/publish");
+		const response = await handleAttachmentRoute(
+			url,
+			new Request(url, { method: "POST", body: "{}" }),
+			fallbackConfig,
+		);
+
+		expect(response?.status).toBe(200);
+		expect(mocks.handleGeneratedRelicPublish).toHaveBeenCalledWith(
+			expect.any(Request),
+			fallbackConfig,
+			expect.any(Function),
+		);
+		expect(mocks.broadcast).toHaveBeenCalledWith({
+			type: "attachment_created",
+			id: "generated-1",
+			kind: "ephemeral",
+		});
 	});
 
 	it("contains broadcast failures after a successful upload", async () => {

@@ -51,6 +51,12 @@ import type {
 	TurnStartParams,
 } from "./codexProtocol";
 import { bumpDataRevision } from "./dataRevision";
+import {
+	executeHlidAgentTool,
+	HLID_AGENT_NAMESPACE,
+	HLID_AGENT_NAMESPACE_DESCRIPTION,
+	HLID_AGENT_TOOL_SPECS,
+} from "./hlidAgentTools";
 import { isHtmlPlanPath } from "./htmlPlanPath";
 import {
 	executeObsidianAgentTool,
@@ -136,7 +142,7 @@ function skillsFromListResponse(value: unknown): Record<string, unknown>[] {
 	});
 }
 
-const WINDOWS_COMPUTER_USE_NAMESPACE = "hlid";
+const WINDOWS_COMPUTER_USE_NAMESPACE = HLID_AGENT_NAMESPACE;
 const WINDOWS_COMPUTER_USE_TOOL = "windows_computer_use";
 const DEFAULT_WINDOWS_COMPUTER_USE_MODEL = "gpt-5.4";
 const DEFAULT_WINDOWS_COMPUTER_USE_EFFORT = "medium";
@@ -454,37 +460,47 @@ export function __resetCodexHostCapabilitiesForTesting(): void {
 	hostCapabilityFailedAt = 0;
 	hostCapabilityInflight = null;
 }
-
-function windowsComputerUseTools(): DynamicToolSpec[] {
+function hlidHostTools(computerUseAvailable: boolean): DynamicToolSpec[] {
 	return [
 		{
 			type: "namespace",
-			name: WINDOWS_COMPUTER_USE_NAMESPACE,
-			description: "Hlid host capabilities",
+			name: HLID_AGENT_NAMESPACE,
+			description: HLID_AGENT_NAMESPACE_DESCRIPTION,
 			tools: [
-				{
-					type: "function",
-					name: WINDOWS_COMPUTER_USE_TOOL,
-					description:
-						"Delegate a Windows desktop task to a Windows-native Codex thread with Computer Use. Use this when the task requires interacting with installed Windows applications or the desktop.",
-					inputSchema: {
-						type: "object",
-						properties: {
-							task: {
-								type: "string",
+				...HLID_AGENT_TOOL_SPECS.map((spec) => ({
+					type: "function" as const,
+					name: spec.name,
+					description: spec.description,
+					inputSchema: spec.inputSchema,
+					deferLoading: spec.deferLoading,
+				})),
+				...(computerUseAvailable
+					? [
+							{
+								type: "function" as const,
+								name: WINDOWS_COMPUTER_USE_TOOL,
 								description:
-									"A precise description of the Windows desktop task to complete.",
+									"Delegate a Windows desktop task to a Windows-native Codex thread with Computer Use. Use this when the task requires interacting with installed Windows applications or the desktop.",
+								inputSchema: {
+									type: "object",
+									properties: {
+										task: {
+											type: "string",
+											description:
+												"A precise description of the Windows desktop task to complete.",
+										},
+										context: {
+											type: "string",
+											description:
+												"Optional context or success criteria for the delegated task.",
+										},
+									},
+									required: ["task"],
+									additionalProperties: false,
+								},
 							},
-							context: {
-								type: "string",
-								description:
-									"Optional context or success criteria for the delegated task.",
-							},
-						},
-						required: ["task"],
-						additionalProperties: false,
-					},
-				},
+						]
+					: []),
 			],
 		},
 	];
@@ -507,10 +523,7 @@ function obsidianTools(): DynamicToolSpec[] {
 }
 
 function hlidDynamicTools(computerUseAvailable: boolean): DynamicToolSpec[] {
-	return [
-		...obsidianTools(),
-		...(computerUseAvailable ? windowsComputerUseTools() : []),
-	];
+	return [...obsidianTools(), ...hlidHostTools(computerUseAvailable)];
 }
 
 function findNestedString(
@@ -1155,6 +1168,10 @@ class CodexAgentSession implements AgentSession {
 			threadId: this.threadId,
 			input: [{ type: "text", text: message, text_elements: [] }],
 			additionalContext: {
+				hlid: {
+					kind: "application",
+					value: HLID_AGENT_NAMESPACE_DESCRIPTION,
+				},
 				hlid_obsidian: {
 					kind: "application",
 					value: OBSIDIAN_AGENT_NAMESPACE_DESCRIPTION,
@@ -1881,6 +1898,66 @@ class CodexAgentSession implements AgentSession {
 						{
 							type: "inputText",
 							text: await executeObsidianAgentTool(toolName, params.arguments),
+						},
+					],
+				};
+			} catch (error) {
+				return {
+					success: false,
+					contentItems: [
+						{
+							type: "inputText",
+							text: error instanceof Error ? error.message : String(error),
+						},
+					],
+				};
+			}
+		}
+		if (
+			params.namespace === HLID_AGENT_NAMESPACE &&
+			params.tool === "publish_relic"
+		) {
+			try {
+				if (
+					this.params.permissionMode !== "bypassPermissions" ||
+					this.params.policyEnforced
+				) {
+					const decision = await this.params.canUseTool(
+						`mcp__${HLID_AGENT_NAMESPACE}__publish_relic`,
+						params.arguments,
+						{
+							toolUseID: String(params.callId ?? `publish-relic-${Date.now()}`),
+							signal: this.params.signal ?? new AbortController().signal,
+							title: "Hlid publish Relic",
+						},
+					);
+					if (decision.behavior === "deny") {
+						return {
+							success: false,
+							contentItems: [
+								{
+									type: "inputText",
+									text:
+										decision.message ??
+										"Publishing the generated Relic was not approved.",
+								},
+							],
+						};
+					}
+				}
+				return {
+					success: true,
+					contentItems: [
+						{
+							type: "inputText",
+							text: await executeHlidAgentTool(
+								"publish_relic",
+								params.arguments,
+								{
+									runtimeCwd: this.params.cwd,
+									sessionId: this.params.hostSessionId,
+								},
+							),
 						},
 					],
 				};

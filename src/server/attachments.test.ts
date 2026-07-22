@@ -47,12 +47,13 @@ vi.mock("node:crypto", () => {
 
 // ── imports after mocks ───────────────────────────────────────────────────────
 
-import { copyFile, mkdir, unlink } from "node:fs/promises";
+import { copyFile, lstat, mkdir, readFile, unlink } from "node:fs/promises";
 import type { HlidConfig } from "../config";
 
 import { DEFAULT_ATTACHMENTS_CONFIG } from "../config";
 import * as db from "../db";
 import {
+	handleGeneratedRelicPublish,
 	handleUpload,
 	promoteAttachmentToObsidian,
 	removeAttachment,
@@ -102,6 +103,109 @@ function makeRequest(form: FormData): Request {
 }
 
 afterEach(() => vi.clearAllMocks());
+
+describe("handleGeneratedRelicPublish", () => {
+	it("publishes direct HTML as a retained generated report", async () => {
+		const request = new Request("http://localhost/api/relics/publish", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				filename: "review.html",
+				content: "<!doctype html><title>Review</title>",
+				session_id: "session-1",
+			}),
+		});
+		const published = vi.fn();
+		const response = await handleGeneratedRelicPublish(
+			request,
+			makeConfig(),
+			published,
+		);
+
+		expect(response.status).toBe(200);
+		expect(db.createAttachment).toHaveBeenCalledWith(
+			expect.objectContaining({
+				session_id: "session-1",
+				filename: "review.html",
+				mime: "text/html",
+				category: "report",
+				retention: "retained",
+				origin: "generated",
+			}),
+		);
+		expect(published).toHaveBeenCalledWith(
+			"00000000-0000-0000-0000-000000000001",
+		);
+		expect(await response.json()).toMatchObject({
+			filename: "review.html",
+			open_url: "/api/attachments/00000000-0000-0000-0000-000000000001/raw",
+		});
+	});
+
+	it("copies a generated PDF from the active workspace", async () => {
+		const pdf = Buffer.from("%PDF-1.7 report");
+		vi.mocked(readFile).mockResolvedValueOnce(pdf);
+		vi.mocked(lstat).mockResolvedValueOnce({
+			isFile: () => true,
+			size: pdf.byteLength,
+		} as never);
+		const request = new Request("http://localhost/api/relics/publish", {
+			method: "POST",
+			body: JSON.stringify({
+				runtime_cwd: "/work/project",
+				source_path: "reports/review.pdf",
+			}),
+		});
+		const response = await handleGeneratedRelicPublish(request, makeConfig());
+
+		expect(response.status).toBe(200);
+		expect(readFile).toHaveBeenCalledWith("/work/project/reports/review.pdf");
+		expect(db.createAttachment).toHaveBeenCalledWith(
+			expect.objectContaining({
+				filename: "review.pdf",
+				mime: "application/pdf",
+				agent_cwd: "/work/project",
+			}),
+		);
+	});
+
+	it("rejects generated files outside the active workspace", async () => {
+		const request = new Request("http://localhost/api/relics/publish", {
+			method: "POST",
+			body: JSON.stringify({
+				runtime_cwd: "/work/project",
+				source_path: "/tmp/private.html",
+			}),
+		});
+		const response = await handleGeneratedRelicPublish(request, makeConfig());
+
+		expect(response.status).toBe(403);
+		expect(db.createAttachment).not.toHaveBeenCalled();
+	});
+
+	it("removes the managed record and file when publication finalization fails", async () => {
+		const request = new Request("http://localhost/api/relics/publish", {
+			method: "POST",
+			body: JSON.stringify({
+				filename: "review.html",
+				content: "<p>Review</p>",
+			}),
+		});
+		const response = await handleGeneratedRelicPublish(
+			request,
+			makeConfig(),
+			async () => {
+				throw new Error("revision unavailable");
+			},
+		);
+
+		expect(response.status).toBe(500);
+		expect(db.deleteAttachment).toHaveBeenCalledWith(
+			"00000000-0000-0000-0000-000000000001",
+		);
+		expect(unlink).toHaveBeenCalled();
+	});
+});
 
 // ── handleUpload — config / request validation ────────────────────────────────
 

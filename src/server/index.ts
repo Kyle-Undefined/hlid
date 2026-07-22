@@ -47,6 +47,7 @@ import { formatPersistentConsoleMessage } from "./consoleLog";
 import { bumpDataRevision, subscribeDataRevisions } from "./dataRevision";
 import { handleDbRoute } from "./dbRoutes";
 import { resolveExecutionContext } from "./executionContext";
+import { INTERNAL_HLID_MCP_FLAG, runHlidMcpServer } from "./hlidMcpServer";
 import { migrateLegacyAttachmentsToLibrary } from "./libraryMigration";
 import { getLiveSessionsStatus } from "./liveSessions";
 import { MicrosoftSpeechManager } from "./microsoftSpeech";
@@ -102,6 +103,11 @@ import {
 	type TerminalWsData,
 } from "./wsHandlers.terminal";
 import { MAX_WS_PAYLOAD_BYTES } from "./wsSchemas";
+
+if (process.argv.includes(INTERNAL_HLID_MCP_FLAG)) {
+	await runHlidMcpServer();
+	process.exit(0);
+}
 
 if (process.argv.includes(INTERNAL_OBSIDIAN_MCP_FLAG)) {
 	await runObsidianMcpServer();
