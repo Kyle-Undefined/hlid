@@ -6,6 +6,7 @@ import {
 	filterProviderCompatibleCommands,
 	mergeCommands,
 	resolveCommandSubmission,
+	routineProviderCommandText,
 	skillCommand,
 } from "./commands";
 import type { Skill } from "./skills";
@@ -274,5 +275,17 @@ describe("commands", () => {
 		expect(
 			addCommandSelection([acpCommands[0]], skillCommand(skill), "acp:test"),
 		).toHaveLength(2);
+	});
+
+	it("formats saved Routine skills with provider-native syntax", () => {
+		expect(
+			routineProviderCommandText("claude", ["research"], "weekly report"),
+		).toBe("/research weekly report");
+		expect(
+			routineProviderCommandText("codex", ["github", "yeet"], "ship it"),
+		).toBe("$github $yeet\n\nship it");
+		expect(
+			routineProviderCommandText("acp:test", ["review", "release"], "go"),
+		).toBe("Use these skills/commands together: /review, /release.\n\ngo");
 	});
 });

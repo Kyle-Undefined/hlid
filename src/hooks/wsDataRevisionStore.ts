@@ -13,6 +13,7 @@ export const EMPTY_DATA_REVISIONS: DataRevisionSnapshot = {
 	config: 0,
 	mcp: 0,
 	storage: 0,
+	routines: 0,
 };
 
 let snapshot: DataRevisionSnapshot = { ...EMPTY_DATA_REVISIONS };

@@ -69,16 +69,31 @@ export function ContextWindowSection({ stats }: { stats: LiveStats }) {
 	);
 }
 
-export function RoutinesWindowSection() {
+export function RoutinesWindowSection({
+	count = 0,
+	nextRunAt = null,
+	onOpen,
+}: {
+	count?: number;
+	nextRunAt?: number | null;
+	onOpen?: () => void;
+}) {
 	return (
-		<div className="flex-1 px-4 py-2.5 min-w-0">
+		<button
+			type="button"
+			onClick={onOpen}
+			disabled={!onOpen}
+			className="flex-1 px-4 py-2.5 min-w-0 text-left hover:bg-primary/5 disabled:hover:bg-transparent"
+		>
 			<div className="text-[9px] tracking-widest text-muted-foreground/40 uppercase mb-1.5">
 				ROUTINES
 			</div>
 			<span className="text-[10px] tracking-widest text-muted-foreground/50">
-				no routines configured
+				{count === 0
+					? "no routines configured"
+					: `${count} configured${nextRunAt ? ` · next ${new Date(nextRunAt * 1_000).toLocaleString()}` : ""}`}
 			</span>
-		</div>
+		</button>
 	);
 }
 

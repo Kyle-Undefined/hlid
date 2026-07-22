@@ -175,15 +175,26 @@ describe("CockpitPrompt placeholder", () => {
 });
 
 describe("CockpitPrompt mobile sizing", () => {
+	it("opens Schedule without requiring Watch input", () => {
+		const onSchedule = vi.fn();
+		render(<CockpitPrompt {...makeProps({ onSchedule })} />);
+		const schedule = screen.getByRole("button", { name: "Schedule" });
+		expect((schedule as HTMLButtonElement).disabled).toBe(false);
+		fireEvent.click(schedule);
+		expect(onSchedule).toHaveBeenCalledOnce();
+	});
+
 	it("allows controls to wrap when prompt actions are visible", () => {
 		render(<CockpitPrompt {...makeProps({ prompt: "/review" })} />);
-		const clearGroup = screen.getByRole("button", {
+		const actionGroup = screen.getByRole("button", {
 			name: "CLEAR",
 		}).parentElement;
-		const toolbar = clearGroup?.parentElement;
+		const toolbar = actionGroup?.parentElement;
 		expect(toolbar?.className).toContain("flex-wrap");
 		expect(toolbar?.className).toContain("min-w-0");
-		expect(clearGroup?.className).toContain("shrink-0");
+		expect(actionGroup?.className).toContain("w-full");
+		expect(actionGroup?.className).toContain("flex-wrap");
+		expect(actionGroup?.className).toContain("sm:w-auto");
 	});
 });
 

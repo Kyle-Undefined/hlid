@@ -1097,4 +1097,122 @@ function applyMigrations(db: Db): void {
 			 ON sessions(pinned DESC, ended_at DESC, started_at DESC)`,
 		);
 	});
+
+	runMigration(db, "_migrated_routines_v1", (db) => {
+		db.run(`
+			CREATE TABLE routines (
+				id TEXT PRIMARY KEY,
+				name TEXT NOT NULL,
+				prompt TEXT NOT NULL,
+				enabled INTEGER NOT NULL DEFAULT 0,
+				archived INTEGER NOT NULL DEFAULT 0,
+				revision INTEGER NOT NULL DEFAULT 1,
+				schedule_json TEXT NOT NULL,
+				timezone TEXT NOT NULL,
+				next_run_at INTEGER,
+				provider_id TEXT NOT NULL,
+				model TEXT NOT NULL DEFAULT '',
+				effort TEXT NOT NULL DEFAULT '',
+				agent_cwd TEXT NOT NULL,
+				agent_name TEXT NOT NULL,
+				skill_contexts_json TEXT NOT NULL DEFAULT '[]',
+				vault_references_json TEXT NOT NULL DEFAULT '[]',
+				relic_ids_json TEXT NOT NULL DEFAULT '[]',
+				permission_mode TEXT NOT NULL DEFAULT 'preapproved',
+				deliveries_json TEXT NOT NULL DEFAULT '[]',
+				catch_up_window_minutes INTEGER NOT NULL DEFAULT 360,
+				no_overlap INTEGER NOT NULL DEFAULT 1,
+				paused_reason TEXT,
+				authorization_fingerprint TEXT NOT NULL,
+				created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+				updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+			)
+		`);
+		db.run(
+			`CREATE INDEX idx_routines_due ON routines(enabled, archived, next_run_at)`,
+		);
+		db.run(`
+			CREATE TABLE routine_permission_profiles (
+				id TEXT PRIMARY KEY,
+				routine_id TEXT NOT NULL REFERENCES routines(id),
+				revision INTEGER NOT NULL,
+				authorization_fingerprint TEXT NOT NULL,
+				mode TEXT NOT NULL,
+				reviewed_at INTEGER NOT NULL DEFAULT (unixepoch()),
+				expires_at INTEGER,
+				revoked_at INTEGER,
+				UNIQUE(routine_id, revision)
+			)
+		`);
+		db.run(`
+			CREATE TABLE routine_permission_grants (
+				id TEXT PRIMARY KEY,
+				profile_id TEXT NOT NULL REFERENCES routine_permission_profiles(id),
+				capability TEXT NOT NULL,
+				tool TEXT,
+				constraints_json TEXT NOT NULL DEFAULT '{}',
+				matcher_version INTEGER NOT NULL DEFAULT 1,
+				max_uses_per_run INTEGER,
+				expires_at INTEGER,
+				revoked_at INTEGER,
+				created_at INTEGER NOT NULL DEFAULT (unixepoch())
+			)
+		`);
+		db.run(
+			`CREATE INDEX idx_routine_grants_profile ON routine_permission_grants(profile_id)`,
+		);
+		db.run(`
+			CREATE TABLE routine_runs (
+				id TEXT PRIMARY KEY,
+				routine_id TEXT NOT NULL REFERENCES routines(id),
+				routine_revision INTEGER NOT NULL,
+				profile_id TEXT,
+				authorization_fingerprint TEXT NOT NULL,
+				trigger TEXT NOT NULL,
+				scheduled_for INTEGER NOT NULL,
+				claimed_at INTEGER,
+				lease_owner TEXT,
+				lease_expires_at INTEGER,
+				started_at INTEGER,
+				finished_at INTEGER,
+				status TEXT NOT NULL,
+				session_id TEXT,
+				provider_used TEXT,
+				error TEXT,
+				action_required TEXT,
+				delivery_json TEXT,
+				created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+				UNIQUE(routine_id, scheduled_for, trigger)
+			)
+		`);
+		db.run(
+			`CREATE INDEX idx_routine_runs_status_lease ON routine_runs(status, lease_expires_at)`,
+		);
+		db.run(
+			`CREATE INDEX idx_routine_runs_history ON routine_runs(routine_id, scheduled_for DESC)`,
+		);
+		db.run(`
+			CREATE TABLE routine_grant_uses (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				run_id TEXT NOT NULL REFERENCES routine_runs(id),
+				grant_id TEXT NOT NULL,
+				tool_use_id TEXT NOT NULL,
+				capability TEXT NOT NULL,
+				request_json TEXT NOT NULL,
+				input_digest TEXT NOT NULL,
+				umbod_decision TEXT,
+				decision TEXT NOT NULL,
+				timestamp INTEGER NOT NULL DEFAULT (unixepoch())
+			)
+		`);
+		db.run(
+			`CREATE INDEX idx_routine_grant_uses_run ON routine_grant_uses(run_id, timestamp)`,
+		);
+	});
+
+	runMigration(db, "_migrated_routines_provider_commands", (db) => {
+		db.run(
+			`ALTER TABLE routines ADD COLUMN provider_commands_json TEXT NOT NULL DEFAULT '[]'`,
+		);
+	});
 }

@@ -244,6 +244,8 @@ export type AgentQueryParams = {
 	effort?: string;
 	maxTurns?: number;
 	permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan";
+	/** Narrow a provider sandbox independently of its conversational mode. */
+	sandboxModeOverride?: "read-only";
 	/** A host policy layer must see calls even when interactive prompts are bypassed. */
 	policyEnforced?: boolean;
 	/** Keep provider host boundaries active so auto-sleep can gate continuation. */

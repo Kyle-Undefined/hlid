@@ -53,6 +53,20 @@ describe("searchVaultReferences", () => {
 			"Projects/Hlið Plan.md",
 		]);
 	});
+
+	it("can limit a selector to Markdown notes", async () => {
+		writeFileSync(join(vault, "Projects", "cover.png"), "image");
+		resetVaultReferenceIndexForTesting();
+		const result = await searchVaultReferences({
+			vaultPath: vault,
+			notesOnly: true,
+		});
+		expect(result.items.map((item) => item.relativePath)).toEqual([
+			"Root.md",
+			"Projects/Hlið Plan.md",
+		]);
+		expect(result.total).toBe(2);
+	});
 });
 
 describe("resolveVaultReferences", () => {

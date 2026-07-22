@@ -1,7 +1,7 @@
 {
   "name": "hlid",
   "description": "Hliðskjálf - Watcher of Worlds",
-	"version": "0.0.211",
+  "version": "0.0.212",
   "private": true,
   "type": "module",
   "imports": {
@@ -11,7 +11,7 @@
     "dev": "vite dev --port 3000",
     "dev:server": "bun --watch src/server/index.ts",
     "dev:all": "concurrently -n ui,server -c cyan,magenta 'bun --bun run dev' 'bun run dev:server'",
-		"build": "bun scripts/bundle-vault-worker.ts && vite build && bun scripts/embed-client.ts",
+    "build": "bun scripts/bundle-vault-worker.ts && vite build && bun scripts/embed-client.ts",
     "build:win": "bun run build && bun scripts/bundle-pty-assets.ts && bun scripts/bundle-whisper-assets.ts && bun scripts/build-win.ts",
     "postinstall": "bun scripts/embed-client.ts",
     "start": "bun src/server/index.ts",
@@ -45,6 +45,7 @@
   "dependencies": {
     "@agentclientprotocol/sdk": "1.1.0",
     "@anthropic-ai/claude-agent-sdk": "0.3.196",
+    "@js-temporal/polyfill": "0.5.1",
     "@modelcontextprotocol/sdk": "1.29.0",
     "@tanstack/react-router": "1.170.16",
     "@tanstack/react-start": "1.168.26",

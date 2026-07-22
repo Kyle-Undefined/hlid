@@ -130,6 +130,7 @@ export async function searchVaultReferences(options: {
 	vaultName?: string;
 	query?: string;
 	limit?: number;
+	notesOnly?: boolean;
 }): Promise<VaultReferenceSearchResult> {
 	const root = resolve(options.vaultPath);
 	const rootLabel = options.vaultName?.trim() || basename(root) || "Vault";
@@ -142,7 +143,12 @@ export async function searchVaultReferences(options: {
 		1,
 		Math.min(options.limit ?? DEFAULT_RESULT_LIMIT, MAX_RESULT_LIMIT),
 	);
-	const matches = index.items
+	const sourceItems = options.notesOnly
+		? index.items.filter((item) =>
+				item.relativePath.toLowerCase().endsWith(".md"),
+			)
+		: index.items;
+	const matches = sourceItems
 		.map((item, ordinal) => ({ item, ordinal, rank: matchRank(item, query) }))
 		.filter((entry) => entry.rank >= 0)
 		.sort(

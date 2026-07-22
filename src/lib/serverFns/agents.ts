@@ -11,6 +11,7 @@ export type AgentListItem = {
 	resolvedPath?: string;
 	name: string;
 	model?: string;
+	effort?: string;
 	/** Provider this agent runs on, e.g. "claude" or "codex". Defaults to "claude". */
 	provider: string;
 };
@@ -34,6 +35,7 @@ export const getAgentListFn = createServerFn({ method: "GET" }).handler(
 						.map((w: string) => w.charAt(0).toUpperCase() + w.slice(1))
 						.join(" "),
 				...(a.model ? { model: a.model } : {}),
+				...(a.effort ? { effort: a.effort } : {}),
 				provider: a.provider ?? "claude",
 			};
 		});

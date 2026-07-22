@@ -3,7 +3,14 @@ import {
 	useNavigate,
 	useRouter,
 } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+	useCallback,
+	useEffect,
+	useMemo,
+	useRef,
+	useState,
+	useSyncExternalStore,
+} from "react";
 import {
 	CockpitHeader,
 	CockpitRunError,
@@ -22,6 +29,10 @@ import { MobileContextBand } from "#/components/cockpit/MobileContextBand";
 import { MobileStatsPanel } from "#/components/cockpit/MobileStatsPanel";
 import { ThirtyDayGraph } from "#/components/cockpit/ThirtyDayGraph";
 import { PrivacyMask } from "#/components/PrivacyMask";
+import {
+	RoutineManagerDialog,
+	type RoutineTarget,
+} from "#/components/routines/RoutineManagerDialog";
 import { ProviderUsageStrip } from "#/components/usage/ProviderUsageStrip";
 import { RoutinesWindowSection } from "#/components/usage/UsageWindowSections";
 import { FirstRunWizard } from "#/components/wizard/FirstRunWizard";
@@ -35,6 +46,10 @@ import { useVaultReferencePicker } from "#/hooks/useVaultReferencePicker";
 import { useVoiceInput } from "#/hooks/useVoiceInput";
 import { useWsLiveStats } from "#/hooks/useWsSelectors";
 import {
+	getDataRevisionSnapshot,
+	subscribeDataRevisionSnapshot,
+} from "#/hooks/wsDataRevisionStore";
+import {
 	addCommandSelection,
 	type CommandDescriptor,
 	filterProviderCompatibleCommands,
@@ -43,15 +58,20 @@ import {
 import { insertAtSelection, resizeComposer } from "#/lib/composer";
 import { fmtModel } from "#/lib/formatters";
 import { optionalLoaderValue } from "#/lib/loaderFallback";
+import { isCliProxyProvider } from "#/lib/providerIds";
 import {
 	configuredVaultModel,
 	resolveActiveProviderId,
 } from "#/lib/providerOptions";
+import type { ProviderInfo } from "#/lib/providerTypes";
+import { localTimeInTimezone } from "#/lib/routineSchedule";
+import type { RoutineDefinition, RoutineSummary } from "#/lib/routines";
 import { getAgentListFn } from "#/lib/serverFns/agents";
 import { getCockpitData } from "#/lib/serverFns/cockpit";
 import { getConfig } from "#/lib/serverFns/config";
 import { getMcpServersFn } from "#/lib/serverFns/mcp";
-import { loadProviderUsages } from "#/lib/serverFns/providers";
+import { getProvidersFn, loadProviderUsages } from "#/lib/serverFns/providers";
+import { listRoutinesFn } from "#/lib/serverFns/routines";
 import { getActiveSessionRowFn } from "#/lib/serverFns/sessions";
 import {
 	getCockpitStatsFn,
@@ -128,6 +148,22 @@ const UNAVAILABLE_VOICE_INFO: Awaited<ReturnType<typeof getVoiceInfoFn>> = {
 	},
 	models: [],
 };
+
+function configuredProviderSelection(
+	config: Awaited<ReturnType<typeof getConfig>>,
+	providerId: string,
+): { model: string; effort: string } {
+	if (providerId === "claude") {
+		return { model: config.claude.model, effort: config.claude.effort };
+	}
+	if (providerId === "codex") {
+		return { model: config.codex.model, effort: config.codex.effort };
+	}
+	if (isCliProxyProvider(providerId)) {
+		return { model: config.cliproxy.model, effort: config.cliproxy.effort };
+	}
+	return { model: "", effort: "" };
+}
 
 type CockpitOptionalData = {
 	data: Awaited<ReturnType<typeof getCockpitData>>;
@@ -414,11 +450,15 @@ function CockpitTopPanels({
 	liveStats,
 	initialProviderUsages,
 	navigate,
+	routines,
+	onOpenRoutines,
 }: {
 	live: CockpitLive;
 	liveStats: ReturnType<typeof useWsLiveStats>;
 	initialProviderUsages: Awaited<ReturnType<typeof loadProviderUsages>>;
 	navigate: CockpitNavigate;
+	routines: RoutineSummary[];
+	onOpenRoutines: () => void;
 }) {
 	const isConnected = live.wsStatus === "connected";
 	return (
@@ -430,7 +470,18 @@ function CockpitTopPanels({
 				liveQueryCount={liveStats?.queries ?? 0}
 				rateLimit={live.rateLimit}
 				fetchFn={loadProviderUsages}
-				tail={<RoutinesWindowSection />}
+				tail={
+					<RoutinesWindowSection
+						count={routines.length}
+						nextRunAt={
+							routines
+								.filter((routine) => routine.enabled && routine.nextRunAt)
+								.map((routine) => routine.nextRunAt as number)
+								.sort((a, b) => a - b)[0] ?? null
+						}
+						onOpen={onOpenRoutines}
+					/>
+				}
 			/>
 
 			{/* Mobile context band, shows context % when active */}
@@ -472,6 +523,7 @@ function CockpitPromptWiring({
 	agentList,
 	commands,
 	onRun,
+	onSchedule,
 }: {
 	config: Awaited<ReturnType<typeof getConfig>>;
 	composer: CockpitComposer;
@@ -481,6 +533,7 @@ function CockpitPromptWiring({
 	agentList: Awaited<ReturnType<typeof getAgentListFn>>;
 	commands: CommandDescriptor[];
 	onRun: () => void;
+	onSchedule: () => void;
 }) {
 	const commandProviderId = resolveActiveProviderId(
 		agentList,
@@ -581,6 +634,7 @@ function CockpitPromptWiring({
 			}}
 			onClear={composer.handleClear}
 			onRun={onRun}
+			onSchedule={onSchedule}
 		/>
 	);
 }
@@ -640,6 +694,35 @@ function CockpitPage() {
 	const [optionalDataStatus, setOptionalDataStatus] = useState<
 		"loading" | "ready" | "unavailable"
 	>(loader.optionalDataStatus);
+	const [routines, setRoutines] = useState<RoutineSummary[]>([]);
+	const [routineDialogOpen, setRoutineDialogOpen] = useState(false);
+	const [routineDraft, setRoutineDraft] = useState<RoutineDefinition | null>(
+		null,
+	);
+	const [routineProviders, setRoutineProviders] = useState<ProviderInfo[]>([]);
+	const routinesRevision = useSyncExternalStore(
+		subscribeDataRevisionSnapshot,
+		() => getDataRevisionSnapshot().routines,
+		() => 0,
+	);
+	const refreshRoutines = useCallback(async () => {
+		setRoutines(await listRoutinesFn({ data: {} }));
+	}, []);
+	useEffect(() => {
+		// Re-fetch when the scheduler or another client advances this domain.
+		void routinesRevision;
+		void refreshRoutines().catch((cause) =>
+			console.error("[watch] unable to load routines", cause),
+		);
+	}, [refreshRoutines, routinesRevision]);
+	useEffect(() => {
+		if (!routineDialogOpen || routineProviders.length > 0) return;
+		void getProvidersFn({ data: { preferCachedModels: true } })
+			.then(setRoutineProviders)
+			.catch((cause) =>
+				console.error("[watch] unable to load Routine harnesses", cause),
+			);
+	}, [routineDialogOpen, routineProviders.length]);
 	useEffect(() => {
 		const incoming = {
 			data: loader.data,
@@ -806,6 +889,124 @@ function CockpitPage() {
 		? (agentList.find((agent) => agent.path === composer.selectedAgentPath)
 				?.model ?? vaultModel)
 		: vaultModel;
+	const routineTargets = useMemo<RoutineTarget[]>(() => {
+		const vaultSelection = configuredProviderSelection(
+			config,
+			config.vault_provider,
+		);
+		return [
+			{
+				path: config.vault.path,
+				name: config.vault.name || "Vault",
+				providerId: config.vault_provider,
+				...vaultSelection,
+			},
+			...agentList.map((agent) => {
+				const selection = configuredProviderSelection(config, agent.provider);
+				return {
+					path: agent.path,
+					name: agent.name,
+					providerId: agent.provider,
+					model: agent.model ?? selection.model,
+					effort: agent.effort ?? selection.effort,
+				};
+			}),
+		];
+	}, [agentList, config]);
+	const routineDefaultDefinition = useMemo<RoutineDefinition>(() => {
+		const target = routineTargets[0];
+		const timezone =
+			typeof Intl !== "undefined"
+				? Intl.DateTimeFormat().resolvedOptions().timeZone
+				: "UTC";
+		const time = localTimeInTimezone(timezone);
+		return {
+			name: "New Routine",
+			prompt: "",
+			enabled: false,
+			schedule: { kind: "daily", time },
+			timezone,
+			providerId: target?.providerId ?? config.vault_provider,
+			model: target?.model ?? "",
+			effort: target?.effort ?? "",
+			agentCwd: target?.path ?? config.vault.path,
+			agentName: target?.name ?? config.vault.name,
+			skillContexts: [],
+			providerCommands: [],
+			vaultReferences: [],
+			relicIds: [],
+			permissionMode: "read_only",
+			grants: [],
+			deliveries: [],
+			catchUpWindowMinutes: 360,
+			noOverlap: true,
+		};
+	}, [
+		config.vault.name,
+		config.vault.path,
+		config.vault_provider,
+		routineTargets,
+	]);
+	const openRoutineDraft = useCallback(() => {
+		const hasInteractiveAction = composer.activeSkills.some(
+			(command) => command.execution.kind === "provider-action",
+		);
+		const canSeedFromWatch =
+			!composer.planMode &&
+			!hasInteractiveAction &&
+			upload.uploadingCount === 0 &&
+			upload.pendingAttachments.length === 0;
+		if (!canSeedFromWatch) {
+			setRoutineDraft(routineDefaultDefinition);
+			setRoutineDialogOpen(true);
+			return;
+		}
+		const selectedTarget =
+			routineTargets.find(
+				(target) => target.path === composer.selectedAgentPath,
+			) ?? routineTargets[0];
+		setRoutineDraft({
+			...routineDefaultDefinition,
+			name:
+				composer.prompt.trim().split(/\n/)[0]?.slice(0, 80) || "New Routine",
+			prompt: composer.prompt,
+			providerId:
+				commandProviderId ??
+				selectedTarget?.providerId ??
+				config.vault_provider,
+			model: configuredRunModel ?? "",
+			effort: selectedTarget?.effort ?? "",
+			agentCwd: selectedTarget?.path ?? config.vault.path,
+			agentName: selectedTarget?.name ?? config.vault.name,
+			skillContexts: composer.activeSkills.flatMap((command) =>
+				command.execution.kind === "skill" ? [command.execution.filePath] : [],
+			),
+			providerCommands: composer.activeSkills.flatMap((command) =>
+				command.execution.kind === "prompt" && command.source === "provider"
+					? [command.name]
+					: [],
+			),
+			vaultReferences: composer.vaultPicker.referencePaths,
+			relicIds: composer.vaultPicker.selectedRelics.map((relic) => relic.id),
+		});
+		setRoutineDialogOpen(true);
+	}, [
+		commandProviderId,
+		composer.activeSkills,
+		composer.prompt,
+		composer.planMode,
+		composer.selectedAgentPath,
+		composer.vaultPicker.referencePaths,
+		composer.vaultPicker.selectedRelics,
+		config.vault.path,
+		config.vault.name,
+		config.vault_provider,
+		configuredRunModel,
+		routineDefaultDefinition,
+		routineTargets,
+		upload.pendingAttachments.length,
+		upload.uploadingCount,
+	]);
 	const handleRun = useCockpitRunWiring({
 		composer,
 		live,
@@ -838,6 +1039,11 @@ function CockpitPage() {
 				liveStats={liveStats}
 				initialProviderUsages={loader.providerUsages}
 				navigate={navigate}
+				routines={routines}
+				onOpenRoutines={() => {
+					setRoutineDraft(null);
+					setRoutineDialogOpen(true);
+				}}
 			/>
 
 			{/* Two-column body */}
@@ -853,6 +1059,7 @@ function CockpitPage() {
 						agentList={agentList}
 						commands={commands}
 						onRun={() => void handleRun()}
+						onSchedule={openRoutineDraft}
 					/>
 
 					<CockpitRunError error={live.runError} />
@@ -881,6 +1088,23 @@ function CockpitPage() {
 					className="hidden md:flex"
 				/>
 			</div>
+			{routineDialogOpen && (
+				<RoutineManagerDialog
+					routines={routines}
+					initialDefinition={null}
+					watchDefinition={routineDraft}
+					defaultDefinition={routineDefaultDefinition}
+					targets={routineTargets}
+					providers={routineProviders}
+					skills={data.skills}
+					commands={commands}
+					onClose={() => {
+						setRoutineDialogOpen(false);
+						setRoutineDraft(null);
+					}}
+					onRefresh={refreshRoutines}
+				/>
+			)}
 		</div>
 	);
 }

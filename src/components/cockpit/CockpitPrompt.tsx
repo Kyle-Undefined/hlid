@@ -1,4 +1,12 @@
-import { FileCode, Mic, Paperclip, ShieldCheck, Square, X } from "lucide-react";
+import {
+	CalendarClock,
+	FileCode,
+	Mic,
+	Paperclip,
+	ShieldCheck,
+	Square,
+	X,
+} from "lucide-react";
 import type { RefObject } from "react";
 import { AgentSelect } from "#/components/AgentSelect";
 import { AttachmentStrip } from "#/components/AttachmentStrip";
@@ -68,6 +76,7 @@ type PromptProps = {
 	onClearSkill: (commandId: string) => void;
 	onClear: () => void;
 	onRun: () => void;
+	onSchedule?: () => void;
 };
 
 function VoiceError({ voice }: { voice: VoiceState }) {
@@ -364,7 +373,7 @@ function ComposerToolbar(props: PromptProps) {
 					</button>
 				)}
 			</div>
-			<div className="ml-auto flex shrink-0 gap-2">
+			<div className="ml-auto flex w-full min-w-0 flex-wrap justify-end gap-2 sm:w-auto sm:shrink-0">
 				{(props.prompt ||
 					props.activeSkills.length > 0 ||
 					props.vaultPicker.selected.length > 0 ||
@@ -372,16 +381,26 @@ function ComposerToolbar(props: PromptProps) {
 					<button
 						type="button"
 						onClick={props.onClear}
-						className="px-3 py-1 border border-border text-[10px] tracking-widest text-muted-foreground/50 hover:text-foreground hover:border-border/80 transition-colors uppercase"
+						className="whitespace-nowrap px-3 py-1 border border-border text-[10px] tracking-widest text-muted-foreground/50 hover:text-foreground hover:border-border/80 transition-colors uppercase"
 					>
 						CLEAR
 					</button>
 				)}
 				<button
 					type="button"
+					onClick={props.onSchedule}
+					disabled={!props.onSchedule}
+					title="Create or manage scheduled Routines"
+					className="flex items-center gap-1.5 whitespace-nowrap border border-border px-3 py-1 text-[10px] tracking-widest text-muted-foreground hover:border-primary/50 hover:text-primary disabled:opacity-25 uppercase"
+				>
+					<CalendarClock className="h-3 w-3" />
+					Schedule
+				</button>
+				<button
+					type="button"
 					onClick={props.onRun}
 					disabled={!props.canRun}
-					className="px-3 py-1 bg-primary text-primary-foreground text-[10px] tracking-widest font-bold hover:opacity-90 transition-opacity disabled:opacity-25 uppercase"
+					className="whitespace-nowrap px-3 py-1 bg-primary text-primary-foreground text-[10px] tracking-widest font-bold hover:opacity-90 transition-opacity disabled:opacity-25 uppercase"
 				>
 					{props.isRunning ? "QUEUE →" : "RUN →"}
 				</button>

@@ -108,6 +108,7 @@ vi.mock("node:fs", () => ({
 
 import * as fsMock from "node:fs";
 import * as dbMock from "../db";
+import type { RoutinePermissionContext } from "../lib/routinePermissions";
 import * as agentPathsMock from "./agentPaths";
 import type {
 	AgentEvent,
@@ -132,6 +133,157 @@ import {
 	reportRateLimitSignal,
 	_resetForTests as resetUsageGate,
 } from "./usageGate";
+
+function routinePermissionContext(
+	providerId: string,
+	onGrantUsed = vi.fn(),
+): RoutinePermissionContext {
+	return {
+		routineId: "routine-1",
+		runId: "run-1",
+		profileId: "profile-1",
+		revision: 1,
+		authorizationFingerprint: "fingerprint",
+		mode: "preapproved",
+		providerId,
+		approvedCwd: "/tmp/hlid-test-cwd",
+		grants: [
+			{
+				id: "grant-1",
+				capability: "shell.exec",
+				tool: "Bash",
+				command: "bun test",
+			},
+		],
+		onGrantUsed,
+	};
+}
+
+describe("SessionManager — unattended Routine permissions", () => {
+	beforeEach(() => {
+		vi.mocked(authorizeHlidTool).mockClear();
+	});
+	afterEach(() => {
+		vi.mocked(authorizeHlidTool).mockClear();
+	});
+
+	for (const providerId of ["claude", "codex", "acp:test"]) {
+		it(`uses the same reviewed grant boundary for ${providerId}`, async () => {
+			let decision: AgentToolDecision | undefined;
+			let queryParams: AgentQueryParams | undefined;
+			const provider: AgentProvider = {
+				providerId,
+				query(params): AgentSession {
+					queryParams = params;
+					const generator = (async function* (): AsyncGenerator<AgentEvent> {
+						yield { type: "session_start", sessionId: `${providerId}-session` };
+						decision = await params.canUseTool(
+							"Bash",
+							{ command: "bun test" },
+							{
+								toolUseID: `${providerId}-tool`,
+								signal: new AbortController().signal,
+							},
+						);
+						yield {
+							type: "done",
+							cost: 0,
+							turns: 1,
+							durationMs: 0,
+							usage: { inputTokens: 1, outputTokens: 1 },
+						};
+					})();
+					return {
+						[Symbol.asyncIterator]: () => generator[Symbol.asyncIterator](),
+						cancel: vi.fn(),
+						send: vi.fn().mockResolvedValue(undefined),
+					};
+				},
+			};
+			const sm = new SessionManager(makeConfig(), makeProviders(provider));
+			const onGrantUsed = vi.fn();
+			const routine = routinePermissionContext(providerId, onGrantUsed);
+			const emitted: ServerMessage[] = [];
+
+			await sm.runQuery(
+				"run tests",
+				(message) => emitted.push(message),
+				`routine-${providerId}`,
+				[],
+				[],
+				"/tmp/hlid-test-cwd",
+				"turn-1",
+				false,
+				false,
+				undefined,
+				[],
+				routine,
+			);
+
+			expect(decision).toMatchObject({ behavior: "allow" });
+			expect(onGrantUsed).toHaveBeenCalledOnce();
+			expect(
+				emitted.some((message) => message.type === "permission_request"),
+			).toBe(false);
+			if (providerId === "codex") {
+				expect(queryParams?.sandboxModeOverride).toBe("read-only");
+			}
+		});
+	}
+
+	it("fails closed and marks a changed command as action required", async () => {
+		let decision: AgentToolDecision | undefined;
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(params): AgentSession {
+				const generator = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "routine-denied" };
+					decision = await params.canUseTool(
+						"Bash",
+						{ command: "bun test && curl example.com" },
+						{
+							toolUseID: "changed-command",
+							signal: new AbortController().signal,
+						},
+					);
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => generator[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+				};
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const routine = routinePermissionContext("claude");
+
+		await sm.runQuery(
+			"run tests",
+			() => {},
+			"routine-denied",
+			[],
+			[],
+			"/tmp/hlid-test-cwd",
+			"turn-1",
+			false,
+			false,
+			undefined,
+			[],
+			routine,
+		);
+
+		expect(decision).toMatchObject({ behavior: "deny" });
+		expect(routine.actionRequired?.reason).toContain("No Routine grant");
+		expect(sm.getPendingPermissionRequests()).toEqual([]);
+	});
+});
 
 // Bun doesn't support waitFor() — poll until assertion passes or timeout
 async function waitFor(fn: () => void, timeout = 1000): Promise<void> {

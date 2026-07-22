@@ -15,6 +15,10 @@ import {
 	isClaudeRuntimeProvider,
 	isCodexRuntimeProvider,
 } from "../lib/providerRuntime";
+import {
+	authorizeRoutineCapability,
+	type RoutinePermissionContext,
+} from "../lib/routinePermissions";
 import { SESSION_LABEL_LENGTH } from "../lib/utils";
 import { formatVaultReferencedMessage } from "../lib/vaultReferences";
 import {
@@ -168,6 +172,7 @@ type RunQueryArgs = [
 	planHtml?: boolean,
 	commandAction?: "review" | "computer-use",
 	vaultReferences?: string[],
+	routineContext?: RoutinePermissionContext,
 ];
 
 export type SessionState = "idle" | "running" | "error";
@@ -259,6 +264,7 @@ function buildAgentQueryParams(options: {
 	beforeToolUse: AgentQueryParams["beforeToolUse"];
 	policyEnforced: boolean;
 	usageGateEnforced: boolean;
+	sandboxModeOverride?: AgentQueryParams["sandboxModeOverride"];
 }): AgentQueryParams {
 	const implementationPermissionMode =
 		options.configuredPermissionMode === "plan"
@@ -285,6 +291,7 @@ function buildAgentQueryParams(options: {
 		permissionMode: options.planMode
 			? "plan"
 			: options.configuredPermissionMode,
+		sandboxModeOverride: options.sandboxModeOverride,
 		policyEnforced: options.policyEnforced,
 		usageGateEnforced: options.usageGateEnforced,
 		...(options.planMode ? { implementationPermissionMode } : {}),
@@ -519,6 +526,8 @@ export class SessionManager {
 	private sessionAllowedTools = new Set<string>();
 	/** Exact Obsidian command IDs remembered for this workspace's configured vault. */
 	private rememberedObsidianCommands = new Set<string>();
+	/** Present only while a server-owned scheduled Routine turn is executing. */
+	private activeRoutineContext: RoutinePermissionContext | null = null;
 	private currentSessionId: string | null = null;
 	private currentSessionLabel: string | null = null;
 	private messageSeq = 0;
@@ -1363,6 +1372,21 @@ export class SessionManager {
 			this.vaultName,
 		);
 		const permissionKey = obsidianCommand?.key ?? toolName;
+		if (this.activeRoutineContext) {
+			const routineInput =
+				call.inputs &&
+				typeof call.inputs === "object" &&
+				!Array.isArray(call.inputs)
+					? (call.inputs as Record<string, unknown>)
+					: {};
+			return authorizeRoutineCapability({
+				context: this.activeRoutineContext,
+				tool: toolName,
+				input: routineInput,
+				cwd: call.workingDirectory ?? this.vaultPath,
+				toolUseId: toolUseID,
+			}).then((result) => (result.allowed ? "allow" : "block"));
+		}
 		const request = {
 			type: "permission_request" as const,
 			id: toolUseID,
@@ -2480,6 +2504,17 @@ export class SessionManager {
 			return new Promise((resolve) => {
 				const passInput = input as Record<string, unknown>;
 				if (toolName === "AskUserQuestion") {
+					if (this.activeRoutineContext) {
+						const reason =
+							"AskUserQuestion requires an interactive response and cannot run unattended";
+						this.activeRoutineContext.actionRequired ??= {
+							tool: toolName,
+							reason,
+						};
+						void this.activeRoutineContext.onActionRequired?.(reason);
+						resolve({ behavior: "deny", message: reason });
+						return;
+					}
 					this.interceptAskUserQuestion(
 						passInput,
 						toolUseID,
@@ -2495,6 +2530,17 @@ export class SessionManager {
 					return;
 				}
 				if (toolName === "ExitPlanMode") {
+					if (this.activeRoutineContext) {
+						const reason =
+							"ExitPlanMode requires interactive approval and cannot run unattended";
+						this.activeRoutineContext.actionRequired ??= {
+							tool: toolName,
+							reason,
+						};
+						void this.activeRoutineContext.onActionRequired?.(reason);
+						resolve({ behavior: "deny", message: reason });
+						return;
+					}
 					this.interceptExitPlanMode(
 						passInput,
 						toolUseID,
@@ -2685,6 +2731,16 @@ export class SessionManager {
 		emit: (msg: ServerMessage) => void;
 	}): Promise<void> {
 		const { provider, activeCwd, sessionId, turnId, task, emit } = options;
+		if (this.activeRoutineContext) {
+			const reason =
+				"Windows Computer Use cannot be preapproved for unattended Routines";
+			this.activeRoutineContext.actionRequired ??= {
+				tool: "hlid.windows_computer_use",
+				reason,
+			};
+			await this.activeRoutineContext.onActionRequired?.(reason);
+			throw new Error(reason);
+		}
 		const toolName = "hlid.windows_computer_use";
 		const toolUseId = `hlid-windows-computer-use-${turnId ?? Date.now()}`;
 		let denyMessage: string | undefined;
@@ -2806,8 +2862,24 @@ export class SessionManager {
 		const isWindowsComputerUseApproval = toolName.startsWith(
 			"hlid.windows_computer_use:",
 		);
-		const prompt = (reason?: string) =>
-			new Promise<"allow" | "block">((finish) => {
+		let routineDecision: Promise<"allow" | "block"> | null = null;
+		const prompt = (reason?: string) => {
+			if (this.activeRoutineContext) {
+				if (!routineDecision) {
+					routineDecision = authorizeRoutineCapability({
+						context: this.activeRoutineContext,
+						tool: toolName,
+						input: passInput,
+						cwd: activeCwd,
+						toolUseId: toolUseID,
+					}).then((result) => {
+						if (!result.allowed && reason) denyMessage = reason;
+						return result.allowed ? "allow" : "block";
+					});
+				}
+				return routineDecision;
+			}
+			return new Promise<"allow" | "block">((finish) => {
 				if (
 					this.sessionAllowedTools.has(permissionKey) ||
 					(obsidianCommand !== null &&
@@ -2857,6 +2929,7 @@ export class SessionManager {
 				);
 				emit({ ...request, description: reason ?? request.description });
 			});
+		};
 
 		// Windows Computer Use has its own per-app approval boundary. The app ID is
 		// part of toolName, so session persistence remains scoped to that exact app.
@@ -2886,7 +2959,11 @@ export class SessionManager {
 		// createToolPermissionHandler has already applied the usage gate to every
 		// tool path, including special question/plan paths. Preserve bypass mode
 		// as an auto-allow only after that gate has had a chance to sleep.
-		if (autoApproveTools && obsidianCommand === null) {
+		if (
+			autoApproveTools &&
+			obsidianCommand === null &&
+			this.activeRoutineContext === null
+		) {
 			resolve({ behavior: "allow", updatedInput: passInput });
 			return;
 		}
@@ -2907,6 +2984,18 @@ export class SessionManager {
 				let decision: "allow" | "block";
 				if (policy?.policyDecision === "block") {
 					decision = "block";
+					if (this.activeRoutineContext) {
+						const reason = policy.reason ?? `${toolName} was blocked by Umbod`;
+						this.activeRoutineContext.actionRequired ??= {
+							tool: toolName,
+							reason,
+						};
+						await this.activeRoutineContext.onActionRequired?.(reason);
+					}
+				} else if (this.activeRoutineContext) {
+					// Routine permissions are an envelope, not an Umbod bypass. Even a
+					// broad Umbod allow must also match the reviewed Routine profile.
+					decision = await prompt(policy?.reason);
 				} else if (
 					obsidianCommand !== null &&
 					policy?.policyDecision !== "approve"
@@ -2938,6 +3027,14 @@ export class SessionManager {
 				);
 			})
 			.catch((error) => {
+				if (this.activeRoutineContext) {
+					const reason = `Umbod policy error: ${error instanceof Error ? error.message : String(error)}`;
+					this.activeRoutineContext.actionRequired ??= {
+						tool: toolName,
+						reason,
+					};
+					void this.activeRoutineContext.onActionRequired?.(reason);
+				}
 				resolve({
 					behavior: "deny",
 					message: `Umbod policy error: ${error instanceof Error ? error.message : String(error)}`,
@@ -3057,10 +3154,13 @@ export class SessionManager {
 			this.restartAgentSessionForEffort = false;
 		}
 		if (this.agentSession) return this.agentSession;
-		const configuredPermissionMode =
-			this.permissionModeOverride ??
-			agentSettings?.permissionMode ??
-			this.permissionMode;
+		const configuredPermissionMode = this.activeRoutineContext
+			? this.activeRoutineContext.mode === "full_access"
+				? "bypassPermissions"
+				: "default"
+			: (this.permissionModeOverride ??
+				agentSettings?.permissionMode ??
+				this.permissionMode);
 		const autoApproveTools =
 			configuredPermissionMode === "bypassPermissions" &&
 			!this.policyEnforced &&
@@ -3086,6 +3186,11 @@ export class SessionManager {
 				windowsComputerUse: this.windowsComputerUse,
 				policyEnforced: this.policyEnforced,
 				usageGateEnforced: this.usageGateEnforced,
+				sandboxModeOverride:
+					this.activeRoutineContext &&
+					this.activeRoutineContext.mode !== "full_access"
+						? "read-only"
+						: undefined,
 				// Configured Claude/Codex hooks use the normalized embedded Umbod
 				// path. Provider-native boundaries are a fallback when Umbod is off.
 				beforeToolUse:
@@ -3280,6 +3385,7 @@ export class SessionManager {
 			planHtml,
 			commandAction,
 			vaultReferences,
+			routineContext,
 		] = args;
 		this.currentTurnId = turnId;
 		await this.initSessionContext(sessionId, agentCwd, userMessage);
@@ -3301,6 +3407,7 @@ export class SessionManager {
 		// State stays "running" while sleeping; agent_sleep carries the nuance.
 		if ((await this.gateOnUsage(currentProvider, emit)) === "aborted") return;
 
+		this.activeRoutineContext = routineContext ?? null;
 		const turn = createTurnState();
 
 		try {
@@ -3418,10 +3525,13 @@ export class SessionManager {
 				planMode,
 				emit,
 			});
-			const configuredPermissionMode =
-				this.permissionModeOverride ??
-				agentSettings?.permissionMode ??
-				this.permissionMode;
+			const configuredPermissionMode = this.activeRoutineContext
+				? this.activeRoutineContext.mode === "full_access"
+					? "bypassPermissions"
+					: "default"
+				: (this.permissionModeOverride ??
+					agentSettings?.permissionMode ??
+					this.permissionMode);
 			await agentSession.setPermissionMode?.(
 				planMode ? "plan" : configuredPermissionMode,
 			);
@@ -3507,6 +3617,7 @@ export class SessionManager {
 			// reset after the queue fully drains. We intentionally do not emit
 			// per-turn status here so queued turns never see a transient idle
 			// flicker between turns.
+			this.activeRoutineContext = null;
 		}
 	}
 }

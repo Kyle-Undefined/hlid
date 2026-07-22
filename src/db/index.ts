@@ -67,6 +67,20 @@ export {
 	getSessionPermissionEvents,
 	recordPermissionEvent,
 } from "./permissions";
+export type { RoutineRunRow } from "./routines";
+// Routines
+export {
+	claimDueRoutineRuns,
+	claimManualRoutineRun,
+	finishRoutineRun,
+	getRoutine,
+	interruptStaleRoutineRuns,
+	listRoutines,
+	markRoutineRunRunning,
+	pauseRoutine,
+	recordRoutineGrantUse,
+	renewRoutineRunLease,
+} from "./routines";
 // Schema / DB handle
 export { getDb } from "./schema";
 // Sessions

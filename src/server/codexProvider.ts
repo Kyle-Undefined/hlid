@@ -733,8 +733,9 @@ export function codexSandboxPolicy(
 	mode: AgentQueryParams["permissionMode"],
 	writableRoots: string[],
 	planHtmlPath?: string,
+	override?: AgentQueryParams["sandboxModeOverride"],
 ): CodexSandboxPolicy {
-	const sandbox = sandboxMode(mode);
+	const sandbox = override ?? sandboxMode(mode);
 	if (sandbox === "danger-full-access") return { type: "dangerFullAccess" };
 	if (sandbox === "read-only" && planHtmlPath) {
 		return {
@@ -1193,6 +1194,7 @@ class CodexAgentSession implements AgentSession {
 							this.params.permissionMode,
 							this.params.additionalDirectories ?? [],
 							this.params.planHtmlPath,
+							this.params.sandboxModeOverride,
 						),
 					}
 				: {}),
@@ -1500,7 +1502,9 @@ class CodexAgentSession implements AgentSession {
 			...(this.params.permissionMode
 				? {
 						approvalPolicy: effectiveApprovalPolicy(this.params),
-						sandbox: sandboxMode(this.params.permissionMode),
+						sandbox:
+							this.params.sandboxModeOverride ??
+							sandboxMode(this.params.permissionMode),
 					}
 				: {}),
 			dynamicTools: hlidDynamicTools(computerUseAvailable),

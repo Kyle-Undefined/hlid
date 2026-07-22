@@ -75,6 +75,11 @@ import {
 	MULTIPART_OVERHEAD_BYTES,
 	payloadTooLarge,
 } from "./requestLimits";
+import {
+	runRoutineNow,
+	startRoutineScheduler,
+	stopRoutineScheduler,
+} from "./routineScheduler";
 import { broadcast } from "./runState";
 import {
 	createAuthenticatedRouteHandler,
@@ -285,6 +290,12 @@ subscribeDataRevisions((revisions) => {
 warmVaultSnapshot();
 warmObsidianConnection(config.vault.name);
 const pool = new SessionPool(config, providers);
+await startRoutineScheduler(pool).catch((error) => {
+	console.error(
+		"[routines] failed to initialize:",
+		error instanceof Error ? error.message : String(error),
+	);
+});
 void cliProxy
 	.initialize()
 	.then(() =>
@@ -330,6 +341,7 @@ void db.getSetting("mcp_status_cache").then((cached) => {
 });
 
 function shutdown(): never {
+	stopRoutineScheduler();
 	cliProxy.close();
 	voice.close();
 	pool.closeAll();
@@ -727,6 +739,30 @@ async function handleAccountRoute(url: URL, req: Request) {
 	return Response.json(null);
 }
 
+async function handleRoutineRoute(url: URL, req: Request) {
+	if (req.method !== "POST") return null;
+	if (url.pathname === "/routines/changed") {
+		bumpDataRevision("routines");
+		return Response.json({ ok: true });
+	}
+	if (url.pathname !== "/routines/run") return null;
+	try {
+		const body = (await req.json()) as { id?: unknown };
+		if (typeof body.id !== "string" || !body.id) {
+			return Response.json(
+				{ error: "Routine id is required" },
+				{ status: 400 },
+			);
+		}
+		return Response.json(await runRoutineNow(body.id), { status: 202 });
+	} catch (error) {
+		return Response.json(
+			{ error: error instanceof Error ? error.message : String(error) },
+			{ status: 409 },
+		);
+	}
+}
+
 const handleAuthenticatedRoute = createAuthenticatedRouteHandler({
 	getStatus: () => pool.vaultEntry().manager.getStatus(),
 	getApiIndex: () => buildApiIndex(PORT, UI_PORT),
@@ -738,6 +774,7 @@ const handleAuthenticatedRoute = createAuthenticatedRouteHandler({
 		handleVoiceRoute,
 		handleReadAloudRoute,
 		handleAccountRoute,
+		handleRoutineRoute,
 		(url, request) => handleSkillRoute(url, request, config, providers),
 	],
 	getMcpStatus: () => pool.vaultEntry().manager.getLastMcpStatus() ?? [],

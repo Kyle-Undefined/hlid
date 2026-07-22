@@ -201,6 +201,27 @@ function providerCommandText(
 	return `Use these skills/commands together: ${mentions}.${vaultInstruction}${typed ? `\n\n${typed}` : ""}`;
 }
 
+/** Build the prompt prefix for provider-native skills saved on a Routine. */
+export function routineProviderCommandText(
+	providerId: string,
+	commandNames: readonly string[],
+	typed: string,
+): string {
+	const names = [
+		...new Set(commandNames.map((name) => name.trim()).filter(Boolean)),
+	];
+	if (names.length === 0) return typed;
+	if (providerId === "codex") {
+		const mentions = names.map((name) => `$${name}`).join(" ");
+		return typed ? `${mentions}\n\n${typed}` : mentions;
+	}
+	if (names.length === 1) {
+		return `/${names[0]}${typed ? ` ${typed}` : ""}`;
+	}
+	const mentions = names.map((name) => `/${name}`).join(", ");
+	return `Use these skills/commands together: ${mentions}.${typed ? `\n\n${typed}` : ""}`;
+}
+
 /** Resolve a selected or manually typed slash command into a chat submission. */
 export function resolveCommandSubmission(
 	activeCommands: CommandDescriptor | CommandDescriptor[] | null,

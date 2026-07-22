@@ -15,6 +15,7 @@ const revisions: DataRevisionSnapshot = {
 	config: 0,
 	mcp: 0,
 	storage: 0,
+	routines: 0,
 };
 const subscribers = new Set<(snapshot: DataRevisionSnapshot) => void>();
 
