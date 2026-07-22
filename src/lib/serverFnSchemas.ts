@@ -48,6 +48,11 @@ export const sessionRenameSchema = z.object({
 	label: z.string().trim().min(1).max(200),
 });
 
+export const sessionPinSchema = z.object({
+	id: sessionIdSchema,
+	pinned: z.boolean(),
+});
+
 export const sessionCleanupSchema = z.object({
 	days: z.number().int().min(1).max(36_500),
 });

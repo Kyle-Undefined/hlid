@@ -7,6 +7,8 @@ export type SessionRow = {
 	selected_permission_mode?: string | null;
 	provider_id?: string | null;
 	agent_cwd?: string | null;
+	/** 1 when the user keeps this session above unpinned rows in Ledger. */
+	pinned?: number;
 	history_imported?: number;
 	/** Provider surface that produced an imported history-only session. */
 	history_source?: string | null;

@@ -150,8 +150,15 @@ async function handlePatchRoute({
 	const id = url.searchParams.get("id");
 	if (!id) return new Response("Missing id", { status: 400 });
 	const body = await req.json().catch(() => null);
-	if (!body || typeof body.label !== "string")
-		return new Response("Missing label", { status: 400 });
+	if (!body) return new Response("Invalid session update", { status: 400 });
+	if (typeof body.pinned === "boolean") {
+		await db.setSessionPinned(id, body.pinned);
+		bumpDataRevision("sessions");
+		return Response.json({ ok: true });
+	}
+	if (typeof body.label !== "string") {
+		return new Response("Missing label or pinned state", { status: 400 });
+	}
 	await db.renameSession(id, body.label);
 	bumpDataRevision("sessions");
 	terminalPool?.setSessionLabel(id, body.label);

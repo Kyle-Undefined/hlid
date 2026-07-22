@@ -94,6 +94,7 @@ export {
 	setSessionEffort,
 	setSessionModel,
 	setSessionPermissionMode,
+	setSessionPinned,
 	setSessionProviderId,
 	setSessionProviderSession,
 } from "./sessions";

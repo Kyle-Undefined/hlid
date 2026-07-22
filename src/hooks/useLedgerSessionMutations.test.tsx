@@ -25,6 +25,7 @@ function dependencies() {
 	return {
 		deleteSession: vi.fn().mockResolvedValue(undefined),
 		renameSession: vi.fn().mockResolvedValue(undefined),
+		setSessionPinned: vi.fn().mockResolvedValue(undefined),
 		forkSession: vi.fn().mockResolvedValue(undefined),
 		cleanupSessions: vi.fn().mockResolvedValue(undefined),
 		navigateToPage: vi.fn(),
@@ -94,6 +95,41 @@ describe("useLedgerSessionMutations", () => {
 		await act(() => result.current.renameSession("one", "Changed"));
 		expect(result.current.sessionsData.sessions[0]?.label).toBe("Original");
 		expect(result.current.mutationError).toBe("rename failed");
+	});
+
+	it("keeps pin changes on the current page for batch pinning", async () => {
+		const deps = dependencies();
+		const { result } = renderHook(() =>
+			useLedgerSessionMutations({
+				page: 3,
+				sessionPage: { sessions: [session("one")], total: 41 },
+				dependencies: deps,
+			}),
+		);
+
+		await act(() => result.current.setSessionPinned("one", true));
+		expect(deps.setSessionPinned).toHaveBeenCalledWith("one", true);
+		expect(result.current.sessionsData.sessions[0]?.pinned).toBe(1);
+		expect(deps.reloadCurrentPage).not.toHaveBeenCalled();
+		expect(deps.navigateToPage).not.toHaveBeenCalled();
+	});
+
+	it("surfaces pin failures without moving the current page", async () => {
+		const deps = dependencies();
+		deps.setSessionPinned.mockRejectedValue(new Error("pin failed"));
+		const { result } = renderHook(() =>
+			useLedgerSessionMutations({
+				page: 2,
+				sessionPage: { sessions: [session("one")], total: 21 },
+				dependencies: deps,
+			}),
+		);
+
+		await act(() => result.current.setSessionPinned("one", true));
+		expect(result.current.mutationError).toBe("pin failed");
+		expect(result.current.sessionsData.sessions[0]?.pinned ?? 0).toBe(0);
+		expect(deps.reloadCurrentPage).not.toHaveBeenCalled();
+		expect(deps.navigateToPage).not.toHaveBeenCalled();
 	});
 
 	it("re-fetches the current page/filters (not a navigate) after a successful fork", async () => {

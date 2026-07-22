@@ -82,6 +82,7 @@ function renderLedger(
 		onPageSizeChange: vi.fn(),
 		onDelete: vi.fn(),
 		onRename: vi.fn(),
+		onPin: vi.fn(),
 		onFork: vi.fn(),
 		onNavigate: vi.fn(),
 		onCleanup: vi.fn(),
@@ -362,6 +363,45 @@ describe("SessionsLedger session actions", () => {
 		expect(props.onDelete).toHaveBeenCalledWith("session-1");
 	});
 
+	it("pins and unpins sessions from the row actions", () => {
+		const props = renderLedger();
+		openSessionActions();
+		fireEvent.click(screen.getByRole("button", { name: "Pin to top" }));
+		expect(props.onPin).toHaveBeenCalledWith("session-1", true);
+
+		cleanup();
+		const pinnedProps = renderLedger({
+			data: { sessions: [{ ...session, pinned: 1 }], total: 1 },
+		});
+		expect(screen.getByLabelText("Pinned session")).toBeDefined();
+		openSessionActions();
+		fireEvent.click(screen.getByRole("button", { name: "Unpin" }));
+		expect(pinnedProps.onPin).toHaveBeenCalledWith("session-1", false);
+	});
+
+	it("keeps pinned rows above running unpinned rows", () => {
+		const pinned = { ...session, id: "pinned", label: "Pinned", pinned: 1 };
+		const running = { ...session, id: "running", label: "Running", pinned: 0 };
+		renderLedger({
+			data: { sessions: [running, pinned], total: 2 },
+			sort: "recent",
+			sessionsStatus: [
+				{
+					session_id: "pool-running",
+					db_session_id: "running",
+					state: "running",
+					mode: "sdk",
+				} as SessionStatusEntry,
+			],
+		});
+		const openButtons = screen.getAllByRole("button", {
+			name: /^Open .* session$/,
+		});
+		expect(
+			openButtons.map((button) => button.getAttribute("aria-label")),
+		).toEqual(["Open Pinned session", "Open Running session"]);
+	});
+
 	it("forks without closing the menu, shows a spinner while pending, and auto-closes once it settles", () => {
 		const onFork = vi.fn();
 		const baseProps: Parameters<typeof SessionsLedger>[0] = {
@@ -375,6 +415,7 @@ describe("SessionsLedger session actions", () => {
 			onPageSizeChange: vi.fn(),
 			onDelete: vi.fn(),
 			onRename: vi.fn(),
+			onPin: vi.fn(),
 			onFork,
 			forkingIds: new Set<string>(),
 			onNavigate: vi.fn(),
@@ -632,6 +673,7 @@ describe("SessionsLedger header controls", () => {
 				onPageSizeChange: vi.fn(),
 				onDelete: vi.fn(),
 				onRename: vi.fn(),
+				onPin: vi.fn(),
 				onFork: vi.fn(),
 				onNavigate: vi.fn(),
 				onCleanup: vi.fn(),

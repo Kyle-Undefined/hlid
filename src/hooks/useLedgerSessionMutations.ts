@@ -12,6 +12,7 @@ type SessionPage = {
 type LedgerMutationDependencies = {
 	deleteSession(id: string): Promise<void>;
 	renameSession(id: string, label: string): Promise<void>;
+	setSessionPinned(id: string, pinned: boolean): Promise<void>;
 	forkSession(id: string): Promise<void>;
 	cleanupSessions(days: number): Promise<void>;
 	navigateToPage(page: number): void;
@@ -38,6 +39,9 @@ export function useLedgerSessionMutations({
 	const [renamedLabels, setRenamedLabels] = useState<Map<string, string>>(
 		new Map(),
 	);
+	const [pinnedStates, setPinnedStates] = useState<Map<string, number>>(
+		new Map(),
+	);
 	const [mutationError, setMutationError] = useState<string | null>(null);
 	const [forkingIds, setForkingIds] = useState<Set<string>>(new Set());
 	const [forkStatus, setForkStatus] = useState<string | null>(null);
@@ -46,6 +50,7 @@ export function useLedgerSessionMutations({
 	useEffect(() => {
 		setDeletedIds(new Set());
 		setRenamedLabels(new Map());
+		setPinnedStates(new Map());
 		setMutationError(null);
 		setForkStatus(null);
 	}, [page]);
@@ -63,23 +68,33 @@ export function useLedgerSessionMutations({
 			...sessionPage,
 			sessions: sessionPage.sessions
 				.filter((session) => !deletedIds.has(session.id))
-				.map((session) =>
-					renamedLabels.has(session.id)
-						? {
-								...session,
-								label: renamedLabels.get(session.id) as string,
-							}
-						: session,
-				),
+				.map((session) => ({
+					...session,
+					...(renamedLabels.has(session.id)
+						? { label: renamedLabels.get(session.id) as string }
+						: {}),
+					...(pinnedStates.has(session.id)
+						? { pinned: pinnedStates.get(session.id) as number }
+						: {}),
+				})),
 			total: Math.max(0, sessionPage.total - deletedIds.size),
 		}),
-		[sessionPage, deletedIds, renamedLabels],
+		[sessionPage, deletedIds, renamedLabels, pinnedStates],
 	);
 
 	const reconcile = useCallback((fresh: SessionPage) => {
 		const freshIds = new Set(fresh.sessions.map((session) => session.id));
 		setDeletedIds((previous) => filterOptimisticIds(previous, freshIds));
 		setRenamedLabels((previous) => filterOptimisticLabels(previous, freshIds));
+		setPinnedStates((previous) => {
+			const next = new Map(previous);
+			for (const session of fresh.sessions) {
+				if (next.get(session.id) === (session.pinned ?? 0)) {
+					next.delete(session.id);
+				}
+			}
+			return next;
+		});
 	}, []);
 
 	async function deleteSession(id: string) {
@@ -114,6 +129,25 @@ export function useLedgerSessionMutations({
 			});
 			setMutationError(
 				error instanceof Error ? error.message : "Failed to rename session",
+			);
+		}
+	}
+
+	async function setSessionPinned(id: string, pinned: boolean) {
+		setMutationError(null);
+		setPinnedStates((previous) => new Map(previous).set(id, pinned ? 1 : 0));
+		try {
+			await dependencies.setSessionPinned(id, pinned);
+		} catch (error) {
+			setPinnedStates((previous) => {
+				const next = new Map(previous);
+				next.delete(id);
+				return next;
+			});
+			setMutationError(
+				error instanceof Error
+					? error.message
+					: `Failed to ${pinned ? "pin" : "unpin"} session`,
 			);
 		}
 	}
@@ -166,6 +200,7 @@ export function useLedgerSessionMutations({
 		reconcile,
 		deleteSession,
 		renameSession,
+		setSessionPinned,
 		forkSession,
 		forkingIds,
 		forkStatus,

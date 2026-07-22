@@ -13,6 +13,7 @@ const {
 	mockGetSessionById,
 	mockListAttachments,
 	mockRenameSession,
+	mockSetSessionPinned,
 	mockGetSessionMessages,
 	mockGetSessionToolEventSummaries,
 	mockGetSessionToolEventDetail,
@@ -33,6 +34,7 @@ const {
 	mockGetSessionById: vi.fn(),
 	mockListAttachments: vi.fn(),
 	mockRenameSession: vi.fn(),
+	mockSetSessionPinned: vi.fn(),
 	mockGetSessionMessages: vi.fn(),
 	mockGetSessionToolEventSummaries: vi.fn(),
 	mockGetSessionToolEventDetail: vi.fn(),
@@ -55,6 +57,7 @@ vi.mock("../db", () => ({
 	getSessionById: mockGetSessionById,
 	listAttachments: mockListAttachments,
 	renameSession: mockRenameSession,
+	setSessionPinned: mockSetSessionPinned,
 	getSessionMessages: mockGetSessionMessages,
 	getSessionToolEventSummaries: mockGetSessionToolEventSummaries,
 	getSessionToolEventDetail: mockGetSessionToolEventDetail,
@@ -1047,6 +1050,21 @@ describe("handleDbRoute — PATCH /db/session", () => {
 		expect(setSessionLabel).toHaveBeenCalledWith("s1", "renamed");
 		expect(matching.setSessionLabel).toHaveBeenCalledWith("renamed");
 		expect(other.setSessionLabel).not.toHaveBeenCalled();
+	});
+
+	it("persists pin state without rewriting live session labels", async () => {
+		mockSetSessionPinned.mockResolvedValue(undefined);
+		const pool = makePool();
+		const res = await handleDbRoute(
+			makeUrl("/db/session", { id: "s1" }),
+			patchRequest({ pinned: true }),
+			pool,
+		);
+
+		expect(res?.status).toBe(200);
+		expect(await res?.json()).toEqual({ ok: true });
+		expect(mockSetSessionPinned).toHaveBeenCalledWith("s1", true);
+		expect(mockRenameSession).not.toHaveBeenCalled();
 	});
 });
 

@@ -62,6 +62,7 @@ import {
 	setSessionEffort,
 	setSessionModel,
 	setSessionPermissionMode,
+	setSessionPinned,
 	setSessionProviderId,
 	setSessionProviderSession,
 } from "./sessions";
@@ -229,6 +230,21 @@ describe("sessions — create & fetch", () => {
 		const { sessions, total } = await getSessionsPaginated(1, 3);
 		expect(total).toBe(5);
 		expect(sessions).toHaveLength(3);
+	});
+
+	it("keeps pinned sessions above the selected list sort", async () => {
+		const db = freshDb();
+		await createSession("newest", "Newest", "m");
+		await createSession("pinned", "Pinned", "m");
+		db.run(
+			`UPDATE sessions SET started_at = CASE id
+			 WHEN 'newest' THEN 200 WHEN 'pinned' THEN 100 END`,
+		);
+		await setSessionPinned("pinned", true);
+
+		const recent = await getSessionsPaginated(1, 20, { sort: "recent" });
+		expect(recent.sessions.map((row) => row.id)).toEqual(["pinned", "newest"]);
+		expect(recent.sessions[0]?.pinned).toBe(1);
 	});
 
 	it("getSessionsPaginated filters by label search with LIKE escaping", async () => {

@@ -212,7 +212,7 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 		method: "PATCH",
 		path: "/db/session?id=",
 		server: "api",
-		desc: 'Rename a session. Body: {"label": string}. Live sessions update immediately.',
+		desc: 'Rename or pin a session. Body: {"label": string} or {"pinned": boolean}. Live labels update immediately.',
 	},
 	{
 		method: "DELETE",

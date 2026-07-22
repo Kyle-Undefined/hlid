@@ -1089,4 +1089,12 @@ function applyMigrations(db: Db): void {
 			GROUP BY DATE(timestamp, 'unixepoch', 'localtime')
 		`);
 	});
+
+	runMigration(db, "_migrated_sessions_pinned", (db) => {
+		db.run(`ALTER TABLE sessions ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`);
+		db.run(
+			`CREATE INDEX idx_sessions_pinned_recent
+			 ON sessions(pinned DESC, ended_at DESC, started_at DESC)`,
+		);
+	});
 }

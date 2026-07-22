@@ -554,7 +554,8 @@ export async function getSessionsPaginated(
 	const orderSql = SESSION_SORT_SQL[opts.sort ?? "recent"];
 	const sessions = db
 		.query<SessionRow, (string | number)[]>(
-			`SELECT * FROM sessions ${whereSql} ORDER BY ${orderSql} LIMIT ? OFFSET ?`,
+			`SELECT * FROM sessions ${whereSql}
+			 ORDER BY pinned DESC, ${orderSql} LIMIT ? OFFSET ?`,
 		)
 		.all(...params, pageSize, offset);
 	const row = db
@@ -702,6 +703,14 @@ export async function renameSession(id: string, label: string): Promise<void> {
 		}
 	})();
 	if (changes > 0) markAnalyticsChanged(["stats"], "session_renamed");
+}
+
+export async function setSessionPinned(
+	id: string,
+	pinned: boolean,
+): Promise<void> {
+	const db = await getDb();
+	db.run(`UPDATE sessions SET pinned = ? WHERE id = ?`, [pinned ? 1 : 0, id]);
 }
 
 export async function getSessionById(id: string): Promise<SessionRow | null> {

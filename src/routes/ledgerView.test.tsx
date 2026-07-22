@@ -132,6 +132,9 @@ vi.mock("#/hooks/useLedgerSessionMutations", () => ({
 		reconcile: vi.fn(),
 		deleteSession: vi.fn(),
 		renameSession: vi.fn(),
+		setSessionPinned: vi.fn(),
+		forkSession: vi.fn(),
+		forkingIds: new Set<string>(),
 		cleanupSessions: vi.fn(),
 	}),
 }));

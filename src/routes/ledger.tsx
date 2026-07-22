@@ -56,6 +56,7 @@ import {
 	sessionCleanupSchema,
 	sessionDeleteSchema,
 	sessionPageSchema,
+	sessionPinSchema,
 	sessionRenameSchema,
 } from "#/lib/serverFnSchemas";
 import { getAgentListFn } from "#/lib/serverFns/agents";
@@ -140,6 +141,20 @@ const renameSessionFn = createServerFn({ method: "POST" })
 				body: JSON.stringify({ label: data.label }),
 			}),
 			"rename session",
+		);
+		return { ok: true };
+	});
+
+const pinSessionFn = createServerFn({ method: "POST" })
+	.validator((raw) => sessionPinSchema.parse(raw))
+	.handler(async ({ data }) => {
+		await requireDbOk(
+			await dbFetch(`/db/session?id=${encodeURIComponent(data.id)}`, {
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ pinned: data.pinned }),
+			}),
+			data.pinned ? "pin session" : "unpin session",
 		);
 		return { ok: true };
 	});
@@ -492,6 +507,9 @@ function useLedgerMutations(
 			},
 			forkSession: async (id: string) => {
 				await forkSessionFn({ data: { id } });
+			},
+			setSessionPinned: async (id: string, pinned: boolean) => {
+				await pinSessionFn({ data: { id, pinned } });
 			},
 			cleanupSessions: async (days: number) => {
 				await cleanupSessionsFn({ data: { days } });
@@ -1107,6 +1125,7 @@ function SessionsTab({
 					onPageSizeChange={onPageSizeChange}
 					onDelete={mutations.deleteSession}
 					onRename={mutations.renameSession}
+					onPin={mutations.setSessionPinned}
 					onFork={mutations.forkSession}
 					forkingIds={mutations.forkingIds}
 					onNavigate={(id) =>

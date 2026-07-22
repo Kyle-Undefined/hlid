@@ -4,6 +4,8 @@ import {
 	GitFork,
 	LoaderCircle,
 	Pencil,
+	Pin,
+	PinOff,
 	Search,
 	SlidersHorizontal,
 	X,
@@ -75,6 +77,8 @@ function SessionActionPanel({
 	onRename,
 	onCancelRename,
 	onConfirmRename,
+	pinned,
+	onTogglePin,
 	onRequestDelete,
 	onCancelDelete,
 	onConfirmDelete,
@@ -92,6 +96,8 @@ function SessionActionPanel({
 	onRename: () => void;
 	onCancelRename: () => void;
 	onConfirmRename: () => void;
+	pinned: boolean;
+	onTogglePin: () => void;
 	onRequestDelete: () => void;
 	onCancelDelete: () => void;
 	onConfirmDelete: () => void;
@@ -184,6 +190,14 @@ function SessionActionPanel({
 				<>
 					<button
 						type="button"
+						onClick={onTogglePin}
+						className="flex min-h-11 w-full items-center gap-2 px-3 text-[10px] tracking-wider text-foreground/80 hover:bg-accent/40"
+					>
+						{pinned ? <PinOff size={14} /> : <Pin size={14} />}
+						{pinned ? "Unpin" : "Pin to top"}
+					</button>
+					<button
+						type="button"
 						onClick={onRename}
 						className="flex min-h-11 w-full items-center gap-2 px-3 text-[10px] tracking-wider text-foreground/80 hover:bg-accent/40"
 					>
@@ -228,6 +242,7 @@ function SessionItem({
 	onDelete,
 	onNavigate,
 	onRename,
+	onPin,
 	onFork,
 	isForking = false,
 	isActive,
@@ -240,6 +255,7 @@ function SessionItem({
 	onDelete: (id: string) => void;
 	onNavigate: (id: string) => void;
 	onRename: (id: string, label: string) => void;
+	onPin: (id: string, pinned: boolean) => void;
 	onFork: (id: string) => void;
 	isForking?: boolean;
 	isActive?: boolean;
@@ -256,6 +272,7 @@ function SessionItem({
 	const actionButtonRef = useRef<HTMLButtonElement>(null);
 	const actionPanelRef = useRef<HTMLDivElement>(null);
 	const importedHistory = session.history_imported === 1;
+	const pinned = session.pinned === 1;
 	const resumableHistory =
 		importedHistory && (session.history_resume_mode ?? "none") !== "none";
 	const canNavigate = !importedHistory || resumableHistory;
@@ -270,7 +287,7 @@ function SessionItem({
 		menuOpen,
 		actionButtonRef,
 		isDesktop ? 160 : mobileRenaming ? 320 : 208,
-		mobileRenaming ? 210 : deleteConfirming ? 170 : 112 + (canFork ? 44 : 0),
+		mobileRenaming ? 210 : deleteConfirming ? 170 : 156 + (canFork ? 44 : 0),
 		actionPanelRef,
 	);
 	const usageSource = usageSession?.id === session.id ? usageSession : session;
@@ -385,6 +402,13 @@ function SessionItem({
 				</>
 			) : (
 				<div className="pointer-events-none relative z-10 flex items-center gap-3 flex-1 min-w-0 px-4 py-2.5 text-left">
+					{pinned && (
+						<Pin
+							size={12}
+							className="shrink-0 text-primary/70"
+							aria-label="Pinned session"
+						/>
+					)}
 					{poolSession && (
 						<div
 							className={`w-1.5 h-1.5 rounded-full shrink-0 ${sessionEntryDotClass(poolSession)}`}
@@ -459,6 +483,11 @@ function SessionItem({
 										}}
 										onCancelRename={closeMenu}
 										onConfirmRename={commitMobileEdit}
+										pinned={pinned}
+										onTogglePin={() => {
+											onPin(session.id, !pinned);
+											closeMenu();
+										}}
 										onRequestDelete={() => setDeleteConfirming(true)}
 										onCancelDelete={() => setDeleteConfirming(false)}
 										onConfirmDelete={() => {
@@ -804,6 +833,7 @@ export function SessionsLedger({
 	onPageSizeChange,
 	onDelete,
 	onRename,
+	onPin,
 	onFork,
 	forkingIds,
 	onNavigate,
@@ -840,6 +870,7 @@ export function SessionsLedger({
 	onPageSizeChange: (size: number) => void;
 	onDelete: (id: string) => void;
 	onRename: (id: string, label: string) => void;
+	onPin: (id: string, pinned: boolean) => void;
 	onFork: (id: string) => void;
 	forkingIds?: Set<string>;
 	onNavigate: (id: string) => void;
@@ -890,18 +921,19 @@ export function SessionsLedger({
 				: [],
 		),
 	);
-	const displayedSessions =
-		sort === "recent" && runningSessionIds.size > 0
-			? data.sessions
-					.map((session, index) => ({ session, index }))
-					.sort((a, b) => {
-						const runningOrder =
-							Number(runningSessionIds.has(b.session.id)) -
-							Number(runningSessionIds.has(a.session.id));
-						return runningOrder || a.index - b.index;
-					})
-					.map(({ session }) => session)
-			: data.sessions;
+	const displayedSessions = data.sessions
+		.map((session, index) => ({ session, index }))
+		.sort((a, b) => {
+			const pinnedOrder =
+				Number(b.session.pinned === 1) - Number(a.session.pinned === 1);
+			const runningOrder =
+				sort === "recent"
+					? Number(runningSessionIds.has(b.session.id)) -
+						Number(runningSessionIds.has(a.session.id))
+					: 0;
+			return pinnedOrder || runningOrder || a.index - b.index;
+		})
+		.map(({ session }) => session);
 
 	return (
 		<div className="border border-border bg-card">
@@ -1149,6 +1181,7 @@ export function SessionsLedger({
 						}
 						onDelete={onDelete}
 						onRename={onRename}
+						onPin={onPin}
 						onFork={onFork}
 						isForking={forkingIds?.has(s.id) ?? false}
 						onNavigate={onNavigate}
