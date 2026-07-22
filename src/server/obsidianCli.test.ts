@@ -328,12 +328,15 @@ describe("Obsidian CLI bridge", () => {
 		expect(run.mock.calls[3]?.[1]).not.toContain("overwrite");
 	});
 
-	it("runs Templater templates inside Obsidian and returns their routed path", async () => {
+	it("keeps note content out of Templater eval and appends to the routed path", async () => {
+		const privateBody = "Private body".repeat(1_000);
 		const { dependencies, run } = wslDependencies([
 			{ output: windowsDetection, code: 0 },
 			{ output: "# <% tp.file.title %>", code: 0 },
 			{ output: windowsDetection, code: 0 },
 			{ output: '=> {"path":"1 Projects/One.md"}', code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{ output: "Appended", code: 0 },
 		]);
 
 		await expect(
@@ -342,7 +345,7 @@ describe("Obsidian CLI bridge", () => {
 				{
 					path: "0 Inbox/One.md",
 					template: "New Project",
-					content: "Private body",
+					content: privateBody,
 				},
 				dependencies,
 			),
@@ -350,7 +353,23 @@ describe("Obsidian CLI bridge", () => {
 		const args = run.mock.calls[3]?.[1] ?? [];
 		expect(args.slice(0, 2)).toEqual(["vault=Fornbok", "eval"]);
 		expect(args[2]).toContain("create_new_note_from_template");
-		expect(args[2]).not.toContain("Private body");
+		expect(args[2]?.length).toBeLessThan(2_000);
+		const encodedPayload = args[2]?.match(/atob\("([^"]+)"\)/)?.[1];
+		expect(encodedPayload).toBeTruthy();
+		expect(
+			JSON.parse(Buffer.from(encodedPayload ?? "", "base64").toString("utf8")),
+		).toEqual({
+			path: "0 Inbox/One.md",
+			template: "New Project",
+			open: false,
+		});
+		expect(run.mock.calls[5]?.[1]).toEqual([
+			"vault=Fornbok",
+			"append",
+			"path=1 Projects/One.md",
+			`content=${privateBody}`,
+			"inline",
+		]);
 	});
 
 	it("rejects interactive Templater templates before creating a file", async () => {

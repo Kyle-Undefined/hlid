@@ -1276,7 +1276,6 @@ export type ObsidianCreateNoteInput = {
 function templaterCreateCode(input: {
 	path: string;
 	template: string;
-	content: string;
 	open: boolean;
 }): string {
 	const payload = Buffer.from(JSON.stringify(input), "utf8").toString("base64");
@@ -1295,7 +1294,6 @@ function templaterCreateCode(input: {
 		'const name=(slash<0?data.path:data.path.slice(slash+1)).replace(/\\.md$/i,"");',
 		"const file=await plugin.templater.create_new_note_from_template(template,parent,name,data.open);",
 		'if(!file)throw new Error("Templater did not create the note");',
-		"if(data.content)await app.vault.append(file,data.content);",
 		"return JSON.stringify({path:file.path});",
 		"})()",
 	].join("");
@@ -1345,7 +1343,6 @@ export async function createObsidianNote(
 					`code=${templaterCreateCode({
 						path,
 						template,
-						content,
 						open: input.open === true,
 					})}`,
 				],
@@ -1355,7 +1352,15 @@ export async function createObsidianNote(
 			if (typeof result.path !== "string") {
 				throw new Error("Templater did not report the created note path.");
 			}
-			return { path: safeVaultPath(result.path, "created note path") };
+			const createdPath = safeVaultPath(result.path, "created note path");
+			if (content) {
+				await runObsidianMutationCommand(
+					vaultName,
+					["append", `path=${createdPath}`, `content=${content}`, "inline"],
+					dependencies,
+				);
+			}
+			return { path: createdPath };
 		}
 	}
 
