@@ -47,6 +47,23 @@ function updateHint(
 	return "you're on the latest version";
 }
 
+function cliVersionHint(update: CliUpdateStatus): string {
+	if (update.error) {
+		if (
+			update.installedVersion &&
+			!update.latestVersion &&
+			update.error.startsWith("latest version:")
+		) {
+			return `installed version detected; latest version unavailable: ${update.error.slice("latest version:".length).trim()}`;
+		}
+		return `check incomplete: ${update.error}`;
+	}
+	if (!update.available) return "you're on the latest version";
+	return update.surface === "desktop"
+		? `Store update available: package v${update.latestVersion}`
+		: `update available: v${update.latestVersion}`;
+}
+
 function releaseDate(publishedAt: string | null): string | null {
 	if (!publishedAt) return null;
 	const date = new Date(publishedAt);
@@ -259,15 +276,7 @@ function UpdatesView({
 					label={
 						update.surface === "desktop" ? update.label : `${update.label} CLI`
 					}
-					hint={
-						update.error
-							? `check incomplete: ${update.error}`
-							: update.available
-								? update.surface === "desktop"
-									? `Store update available: package v${update.latestVersion}`
-									: `update available: v${update.latestVersion}`
-								: "you're on the latest version"
-					}
+					hint={cliVersionHint(update)}
 				>
 					<div className="flex flex-col items-end gap-1.5 min-w-0">
 						<span className="text-xs font-mono text-muted-foreground">

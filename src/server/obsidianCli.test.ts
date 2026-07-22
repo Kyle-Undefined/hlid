@@ -329,12 +329,10 @@ describe("Obsidian CLI bridge", () => {
 	});
 
 	it("chunks long direct note content without splitting Unicode", async () => {
-		const body = `${"x".repeat(3_999)}😀${"y".repeat(4_000)}`;
+		const body = "😀".repeat(1_500);
 		const { dependencies, run } = wslDependencies([
 			{ output: windowsDetection, code: 0 },
 			{ output: "Created", code: 0 },
-			{ output: windowsDetection, code: 0 },
-			{ output: "Appended", code: 0 },
 			{ output: windowsDetection, code: 0 },
 			{ output: "Appended", code: 0 },
 			{ output: windowsDetection, code: 0 },
@@ -353,12 +351,15 @@ describe("Obsidian CLI bridge", () => {
 			"create",
 			"path=0 Inbox/Long.md",
 		]);
-		const chunks = [3, 5, 7].map((index) =>
+		const chunks = [3, 5].map((index) =>
 			run.mock.calls[index]?.[1]?.[3]?.replace(/^content=/, ""),
 		);
 		expect(chunks.join("")).toBe(body);
-		expect(chunks[0]?.length).toBe(3_999);
-		for (const index of [3, 5, 7]) {
+		expect(Buffer.byteLength(chunks[0] ?? "", "utf8")).toBe(4_000);
+		for (const index of [3, 5]) {
+			expect(
+				Buffer.byteLength(run.mock.calls[index]?.[1]?.[3] ?? "", "utf8"),
+			).toBeLessThan(4_096);
 			expect(run.mock.calls[index]?.[1]?.[4]).toBe("inline");
 		}
 	});
@@ -412,7 +413,7 @@ describe("Obsidian CLI bridge", () => {
 				"append",
 				"path=1 Projects/One.md",
 			]);
-			expect(args?.[3]?.length).toBeLessThanOrEqual(4_008);
+			expect(Buffer.byteLength(args?.[3] ?? "", "utf8")).toBeLessThan(4_096);
 			expect(args?.[4]).toBe("inline");
 		}
 	});

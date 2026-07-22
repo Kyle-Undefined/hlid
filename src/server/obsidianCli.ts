@@ -9,10 +9,10 @@ const STARTUP_POLL_MS = 500;
 const MAX_COMMAND_OUTPUT_CHARS = 256_000;
 const OBSIDIAN_CLI_RECOVERY_GUIDANCE =
 	"Check Obsidian for a blocking error dialog, then fully close and reopen Obsidian. Retry after your vault finishes loading.";
-// Obsidian.com's Windows redirector can drop oversized argv entries and send
-// malformed JSON to the running app. Keep content arguments comfortably below
-// that boundary and preserve exact text across sequential inline mutations.
-const MAX_OBSIDIAN_CLI_CONTENT_CHARS = 4_000;
+// Obsidian.com's Windows redirector converts each argv entry into a fixed
+// 4,096-byte UTF-8 buffer. Keep content= arguments comfortably below that byte
+// boundary and preserve exact text across sequential inline mutations.
+const MAX_OBSIDIAN_CLI_CONTENT_BYTES = 4_000;
 export const MAX_OBSIDIAN_APPEND_CHARS = 20_000;
 export const MAX_OBSIDIAN_CREATE_CHARS = 20_000;
 export const MAX_OBSIDIAN_AGENT_OUTPUT_CHARS = 120_000;
@@ -479,24 +479,19 @@ async function runObsidianMutationCommand(
 
 function obsidianCliContentChunks(content: string): string[] {
 	const chunks: string[] = [];
-	let start = 0;
-	while (start < content.length) {
-		let end = Math.min(start + MAX_OBSIDIAN_CLI_CONTENT_CHARS, content.length);
-		if (end < content.length) {
-			const last = content.charCodeAt(end - 1);
-			const next = content.charCodeAt(end);
-			if (
-				last >= 0xd800 &&
-				last <= 0xdbff &&
-				next >= 0xdc00 &&
-				next <= 0xdfff
-			) {
-				end -= 1;
-			}
+	let chunk = "";
+	let chunkBytes = 0;
+	for (const character of content) {
+		const characterBytes = Buffer.byteLength(character, "utf8");
+		if (chunk && chunkBytes + characterBytes > MAX_OBSIDIAN_CLI_CONTENT_BYTES) {
+			chunks.push(chunk);
+			chunk = "";
+			chunkBytes = 0;
 		}
-		chunks.push(content.slice(start, end));
-		start = end;
+		chunk += character;
+		chunkBytes += characterBytes;
 	}
+	if (chunk) chunks.push(chunk);
 	return chunks;
 }
 
@@ -1421,7 +1416,9 @@ export async function createObsidianNote(
 	}
 
 	const createContent =
-		content.length <= MAX_OBSIDIAN_CLI_CONTENT_CHARS ? content : "";
+		Buffer.byteLength(content, "utf8") <= MAX_OBSIDIAN_CLI_CONTENT_BYTES
+			? content
+			: "";
 	const output = await runObsidianCommand(
 		vaultName,
 		[

@@ -244,14 +244,14 @@ describe("AssistantMsg", () => {
 	});
 
 	describe("CopyButton mobile visibility", () => {
-		it("keeps completed actions on a separate mobile row so text width stays stable", () => {
+		it("keeps completed actions after the response at every viewport", () => {
 			render(<AssistantMsg message={makeMsg()} />);
 			const btn = screen.getByRole("button", { name: /copy/i });
 			const actions = btn.parentElement;
 			expect(actions?.className).toContain("basis-full");
-			expect(actions?.className).toContain("sm:basis-auto");
+			expect(actions?.className).not.toContain("sm:basis-auto");
 			expect(actions?.parentElement?.className).toContain("flex-wrap");
-			expect(actions?.parentElement?.className).toContain("sm:flex-nowrap");
+			expect(actions?.parentElement?.className).not.toContain("sm:flex-nowrap");
 		});
 
 		it("copy button has [@media(hover:none)]:opacity-100 class so it shows on touch devices", () => {

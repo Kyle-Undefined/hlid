@@ -175,6 +175,32 @@ describe("UpdatesSection", () => {
 		).toBeTruthy();
 	});
 
+	it("distinguishes a latest-version timeout from CLI detection failure", async () => {
+		stubFetch(
+			makeStatus({
+				cliUpdates: [
+					{
+						id: "codex",
+						label: "Codex",
+						installedVersion: "0.144.6",
+						latestVersion: null,
+						available: false,
+						checkedAt: Date.now(),
+						error: "latest version: registry request timed out",
+					},
+				],
+			}),
+		);
+		render(<UpdatesSection />);
+		expect(await screen.findByText("Codex CLI")).toBeTruthy();
+		expect(screen.getByText("v0.144.6")).toBeTruthy();
+		expect(
+			screen.getByText(
+				"installed version detected; latest version unavailable: registry request timed out",
+			),
+		).toBeTruthy();
+	});
+
 	it("shows and applies a Microsoft Store desktop app update", async () => {
 		const fetchMock = stubFetch(
 			makeStatus({

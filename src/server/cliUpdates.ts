@@ -20,7 +20,7 @@ const CHECK_TTL_MS = 6 * 60 * 60 * 1000;
 const DESKTOP_CHECK_TTL_MS = 5 * 60 * 1000;
 const COMMAND_TIMEOUT_MS = 4_000;
 const STORE_TIMEOUT_MS = 15_000;
-const REGISTRY_TIMEOUT_MS = 5_000;
+const REGISTRY_TIMEOUT_MS = 15_000;
 const CACHE_SCHEMA_VERSION = 4;
 const BACKGROUND_REFRESH_DELAY_MS = 1_500;
 const CODEX_DESKTOP_STORE_ID = "9PLM9XGG6VKS";
@@ -179,13 +179,27 @@ async function readInstalledVersion(executable: string): Promise<string> {
 }
 
 async function fetchLatestPackageVersion(packageName: string): Promise<string> {
-	const response = await fetch(
-		`https://registry.npmjs.org/${encodeURIComponent(packageName)}/latest`,
-		{
-			headers: { Accept: "application/json", "User-Agent": "hlid-cli-updater" },
-			signal: AbortSignal.timeout(REGISTRY_TIMEOUT_MS),
-		},
-	);
+	let response: Response;
+	try {
+		response = await fetch(
+			`https://registry.npmjs.org/${encodeURIComponent(packageName)}/latest`,
+			{
+				headers: {
+					Accept: "application/json",
+					"User-Agent": "hlid-cli-updater",
+				},
+				signal: AbortSignal.timeout(REGISTRY_TIMEOUT_MS),
+			},
+		);
+	} catch (error) {
+		if (
+			error instanceof Error &&
+			(error.name === "TimeoutError" || /timed out/i.test(error.message))
+		) {
+			throw new Error("registry request timed out");
+		}
+		throw error;
+	}
 	if (!response.ok)
 		throw new Error(`registry returned HTTP ${response.status}`);
 	const body = (await response.json()) as { version?: unknown };
