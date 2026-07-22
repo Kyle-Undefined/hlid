@@ -2413,6 +2413,81 @@ describe("ClaudeProvider — persistSession", () => {
 // ── providerId + proxyConfig ───────────────────────────────────────────────────
 
 describe("ClaudeProvider — providerId + proxyConfig", () => {
+	it("removes the Windows loopback proxy from direct WSL Claude launches", async () => {
+		const previous = process.env.ANTHROPIC_BASE_URL;
+		process.env.ANTHROPIC_BASE_URL = "http://127.0.0.1:55884";
+		vi.mocked(parseWslUnc).mockReturnValueOnce({
+			distro: "Ubuntu-24.04",
+			posixPath: "/home/kyle/project",
+		});
+		let capturedEnv: Record<string, string | undefined> | undefined;
+		vi.mocked(query).mockImplementationOnce(({ options }) => {
+			capturedEnv = options?.env;
+			return sdkGen([
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 1,
+					usage: { input_tokens: 1, output_tokens: 1 },
+				},
+			]);
+		});
+
+		try {
+			const provider = new ClaudeProvider();
+			for await (const _ of provider.query(
+				baseParams({
+					cwd: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\project",
+				}),
+			)) {
+				// drain
+			}
+			expect(capturedEnv).toBeDefined();
+			expect(capturedEnv).not.toHaveProperty("ANTHROPIC_BASE_URL");
+		} finally {
+			if (previous === undefined) delete process.env.ANTHROPIC_BASE_URL;
+			else process.env.ANTHROPIC_BASE_URL = previous;
+		}
+	});
+
+	it("preserves an explicit WSL-local CLIProxy environment", async () => {
+		vi.mocked(parseWslUnc).mockReturnValueOnce({
+			distro: "Ubuntu-24.04",
+			posixPath: "/home/kyle/project",
+		});
+		const sdkEnv = {
+			ANTHROPIC_BASE_URL: "http://127.0.0.1:8317",
+			ANTHROPIC_AUTH_TOKEN: "private-key",
+		};
+		let capturedEnv: Record<string, string | undefined> | undefined;
+		vi.mocked(query).mockImplementationOnce(({ options }) => {
+			capturedEnv = options?.env;
+			return sdkGen([
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 1,
+					usage: { input_tokens: 1, output_tokens: 1 },
+				},
+			]);
+		});
+
+		const provider = new ClaudeProvider({ sdkEnv });
+		for await (const _ of provider.query(
+			baseParams({
+				cwd: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\project",
+			}),
+		)) {
+			// drain
+		}
+
+		expect(capturedEnv).toBe(sdkEnv);
+	});
+
 	it("has providerId = 'claude'", () => {
 		const provider = new ClaudeProvider();
 		expect(provider.providerId).toBe("claude");

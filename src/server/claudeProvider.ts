@@ -1550,6 +1550,40 @@ const CLAUDE_PROXY_CONFIG = {
 const WSL_CLAUDE_CONFIG_DIR_MARKER = "__HLID_FORK_CLAUDE_CONFIG_DIR__";
 const WSL_CLAUDE_CONFIG_DIR_TIMEOUT_MS = 4_000;
 
+function isLoopbackHttpUrl(value: string | undefined): boolean {
+	if (!value) return false;
+	try {
+		const hostname = new URL(value).hostname.toLowerCase();
+		return (
+			hostname === "127.0.0.1" ||
+			hostname === "localhost" ||
+			hostname === "[::1]"
+		);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * Direct WSL Claude sessions cannot reach a proxy bound to the Windows host's
+ * loopback interface. Hlid's transparent Anthropic usage proxy is published
+ * through ANTHROPIC_BASE_URL, so remove only that unreachable loopback value
+ * for direct WSL launches. Routed providers supply an explicit SDK environment
+ * and keep their WSL-local CLIProxy endpoint.
+ */
+function claudeSdkEnv(
+	cwd: string,
+	explicit: Record<string, string | undefined> | undefined,
+): Record<string, string | undefined> | undefined {
+	if (explicit) return explicit;
+	if (!parseWslUnc(cwd) || !isLoopbackHttpUrl(process.env.ANTHROPIC_BASE_URL)) {
+		return undefined;
+	}
+	const env: Record<string, string | undefined> = { ...process.env };
+	delete env.ANTHROPIC_BASE_URL;
+	return env;
+}
+
 /**
  * When a session's project lives inside WSL, Claude Code's own process for
  * that project runs inside that distro too and writes ~/.claude/projects
@@ -1794,6 +1828,7 @@ export class ClaudeProvider implements AgentProvider {
 		executable?: string;
 	}): Promise<ProviderSkillInfo[]> {
 		const executable = context.executable ?? resolveClaudeExecutable();
+		const sdkEnv = claudeSdkEnv(context.cwd, this.sdkEnv);
 		const ac = new AbortController();
 		// biome-ignore lint/suspicious/noExplicitAny: SDK canUseTool type changed between versions
 		const denyAllCanUseTool: any = async () => ({
@@ -1812,7 +1847,7 @@ export class ClaudeProvider implements AgentProvider {
 				maxTurns: 1,
 				...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
 				canUseTool: denyAllCanUseTool,
-				...(this.sdkEnv ? { env: this.sdkEnv } : {}),
+				...(sdkEnv ? { env: sdkEnv } : {}),
 			},
 		});
 		try {
@@ -1828,6 +1863,7 @@ export class ClaudeProvider implements AgentProvider {
 
 	query(params: AgentQueryParams): AgentSession {
 		const abortController = new AbortController();
+		const sdkEnv = claudeSdkEnv(params.cwd, this.sdkEnv);
 
 		if (params.signal) {
 			if (params.signal.aborted) {
@@ -1871,7 +1907,7 @@ export class ClaudeProvider implements AgentProvider {
 					...(this.passSdkEffort
 						? { effort: (params.effort ?? "medium") as SdkEffortLevel }
 						: {}),
-					...(this.sdkEnv ? { env: this.sdkEnv } : {}),
+					...(sdkEnv ? { env: sdkEnv } : {}),
 					...(params.maxTurns !== undefined
 						? { maxTurns: params.maxTurns }
 						: {}),

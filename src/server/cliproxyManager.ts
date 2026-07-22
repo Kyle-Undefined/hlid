@@ -379,6 +379,25 @@ function parseState(path: string): InstalledState | null {
 	}
 }
 
+function authRecordIsUsable(
+	value: Record<string, unknown>,
+	now = Date.now(),
+): boolean {
+	if (value.disabled === true || value.expired === true) return false;
+	for (const key of ["expired", "expires_at", "expiresAt"] as const) {
+		const raw = value[key];
+		let expiresAt: number | undefined;
+		if (typeof raw === "number" && Number.isFinite(raw)) {
+			expiresAt = raw < 10_000_000_000 ? raw * 1_000 : raw;
+		} else if (typeof raw === "string") {
+			const parsed = Date.parse(raw);
+			if (Number.isFinite(parsed)) expiresAt = parsed;
+		}
+		if (expiresAt !== undefined && expiresAt <= now) return false;
+	}
+	return true;
+}
+
 export class CliProxyManager {
 	private config: HlidConfig["cliproxy"];
 	private runtime: ChildProcess | null = null;
@@ -440,6 +459,7 @@ export class CliProxyManager {
 				const value = JSON.parse(
 					readFileSync(join(this.authDir, entry.name), "utf8"),
 				) as Record<string, unknown>;
+				if (!authRecordIsUsable(value)) continue;
 				for (const item of [value.type, value.provider]) {
 					if (typeof item !== "string") continue;
 					const normalized = item.toLowerCase();
@@ -466,6 +486,10 @@ export class CliProxyManager {
 	}
 
 	status(): CliProxyStatus {
+		// OAuth files can expire while Hlid remains open. Re-evaluate them on
+		// every ordinary status read so Forge never reports a stale file as a
+		// healthy connected account. Do not disturb an in-progress login state.
+		if (!this.statusValue.activeOAuth) this.refreshAccounts();
 		return {
 			...this.statusValue,
 			accounts: { ...this.statusValue.accounts },

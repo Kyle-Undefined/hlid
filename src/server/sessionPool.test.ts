@@ -17,6 +17,8 @@ import type { AgentProvider } from "./agentProvider";
  */
 const mockInstances: {
 	abort: ReturnType<typeof vi.fn>;
+	syncConfig: ReturnType<typeof vi.fn>;
+	retireProviderSessions: ReturnType<typeof vi.fn>;
 	getStatus: ReturnType<typeof vi.fn>;
 	getPendingPermissionRequests: ReturnType<typeof vi.fn>;
 	getPendingAskUserQuestions: ReturnType<typeof vi.fn>;
@@ -32,6 +34,8 @@ vi.mock("./session", () => ({
 	SessionManager: vi.fn().mockImplementation(function () {
 		const instance = {
 			abort: vi.fn(),
+			syncConfig: vi.fn().mockReturnValue(false),
+			retireProviderSessions: vi.fn().mockReturnValue(false),
 			getStatus: vi.fn().mockReturnValue({
 				state: "idle",
 				model: "claude-test",
@@ -541,5 +545,34 @@ describe("SessionPool.getAllEntries", () => {
 	it("returns empty iterator for empty pool", () => {
 		const pool = makePool();
 		expect([...pool.getAllEntries()]).toHaveLength(0);
+	});
+});
+
+describe("SessionPool runtime refresh", () => {
+	it("pushes hot config changes into already-open sessions", () => {
+		const pool = makePool();
+		pool.create("/a", "A");
+		pool.create("/b", "B");
+		const next = makeConfig("/next", "Next");
+
+		pool.syncConfig(next);
+
+		expect(mockInstances[0]?.syncConfig).toHaveBeenCalledWith(next);
+		expect(mockInstances[1]?.syncConfig).toHaveBeenCalledWith(next);
+	});
+
+	it("retires removed providers across every live session", () => {
+		const pool = makePool();
+		pool.create("/a", "A");
+		pool.create("/b", "B");
+
+		pool.retireProviderSessions(["cliproxy-codex", "cliproxy:codex"]);
+
+		for (const instance of mockInstances) {
+			expect(instance.retireProviderSessions).toHaveBeenCalledOnce();
+			expect(instance.retireProviderSessions.mock.calls[0]?.[0]).toEqual(
+				new Set(["cliproxy-codex", "cliproxy:codex"]),
+			);
+		}
 	});
 });

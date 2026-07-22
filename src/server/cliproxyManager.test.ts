@@ -209,4 +209,66 @@ describe("managed CLIProxy configuration", () => {
 			xai: "idle",
 		});
 	});
+
+	it("does not report expired or disabled OAuth files as connected", async () => {
+		const root = mkdtempSync(join(tmpdir(), "hlid-cliproxy-test-"));
+		temporaryRoots.push(root);
+		const auth = join(root, "auth");
+		mkdirSync(auth);
+		writeFileSync(
+			join(auth, "expired-claude.json"),
+			JSON.stringify({
+				type: "claude",
+				expired: new Date(Date.now() - 60_000).toISOString(),
+			}),
+		);
+		writeFileSync(
+			join(auth, "disabled-codex.json"),
+			JSON.stringify({ type: "codex", disabled: true }),
+		);
+
+		const manager = new CliProxyManager(
+			HlidConfigSchema.parse({}).cliproxy,
+			root,
+			"win32",
+		);
+		await manager.initialize();
+
+		expect(manager.status().accounts).toMatchObject({
+			claude: "idle",
+			codex: "idle",
+		});
+	});
+
+	it("refreshes account expiry while Hlid remains open", async () => {
+		const root = mkdtempSync(join(tmpdir(), "hlid-cliproxy-test-"));
+		temporaryRoots.push(root);
+		const auth = join(root, "auth");
+		mkdirSync(auth);
+		const authPath = join(auth, "claude.json");
+		writeFileSync(
+			authPath,
+			JSON.stringify({
+				type: "claude",
+				expired: new Date(Date.now() + 60_000).toISOString(),
+			}),
+		);
+		const manager = new CliProxyManager(
+			HlidConfigSchema.parse({}).cliproxy,
+			root,
+			"win32",
+		);
+		await manager.initialize();
+		expect(manager.status().accounts.claude).toBe("connected");
+
+		writeFileSync(
+			authPath,
+			JSON.stringify({
+				type: "claude",
+				expired: new Date(Date.now() - 60_000).toISOString(),
+			}),
+		);
+
+		expect(manager.status().accounts.claude).toBe("idle");
+	});
 });

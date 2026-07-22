@@ -969,6 +969,45 @@ describe("SessionManager — setProvider", () => {
 			"Unknown or unavailable provider: missing",
 		);
 	});
+
+	it("retires a live CLIProxy session and falls back to the configured provider", async () => {
+		const proxyCancel = vi.fn();
+		const makeCli = (providerId: string, cancel = vi.fn()) => ({
+			providerId,
+			query: (): AgentSession => {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: `${providerId}-session` };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel,
+					send: vi.fn().mockResolvedValue(undefined),
+				};
+			},
+		});
+		const providers = new Map([
+			["claude", makeCli("claude")],
+			["cliproxy-codex", makeCli("cliproxy-codex", proxyCancel)],
+		]);
+		const sm = new SessionManager(makeConfig("claude-sonnet-4-6"), providers);
+		await sm.setProvider("cliproxy-codex", { model: "gpt-5.6-sol" });
+		await sm.runQuery("first", () => {}, "retire-proxy-chat");
+
+		providers.delete("cliproxy-codex");
+		expect(sm.retireProviderSessions(new Set(["cliproxy-codex"]))).toBe(true);
+		sm.syncConfig(makeConfig("claude-sonnet-4-6"));
+
+		expect(proxyCancel).toHaveBeenCalledOnce();
+		expect(sm.getProviderId()).toBe("claude");
+		expect(sm.getStatus().model).toBe("claude-sonnet-4-6");
+	});
 });
 
 describe("SessionManager — setEffort", () => {

@@ -1059,6 +1059,49 @@ export class SessionManager {
 		this.restartAgentSessionForEffort = false;
 	}
 
+	/**
+	 * Tear down provider-native state when a runtime integration disappears.
+	 * The Hlid transcript remains intact and the next turn hands it to the
+	 * configured fallback provider instead of talking to a stopped sidecar.
+	 */
+	retireProviderSessions(providerIds: ReadonlySet<string>): boolean {
+		const activeProviderId = this.agentSessionKey?.split("|", 1)[0];
+		const retiresActiveSession = Boolean(
+			activeProviderId && providerIds.has(activeProviderId),
+		);
+		const retiresResumeSession = Boolean(
+			this.providerSessionProviderId &&
+				providerIds.has(this.providerSessionProviderId),
+		);
+		const retiresOverride = Boolean(
+			this.providerOverride && providerIds.has(this.providerOverride),
+		);
+		if (!retiresActiveSession && !retiresResumeSession && !retiresOverride) {
+			return false;
+		}
+
+		if (retiresActiveSession) {
+			this.agentSession?.cancel();
+			this.agentSession = null;
+			this.agentSessionKey = null;
+			this.restartAgentSessionForEffort = false;
+		}
+		if (retiresResumeSession) {
+			this.providerSessionId = null;
+			this.providerSessionProviderId = null;
+			this.historyResumeMode = "none";
+			this.providerHandoffPending =
+				this.currentSessionId !== null && this.messageSeq > 0;
+		}
+		if (retiresOverride) {
+			this.providerOverride = null;
+			this.modelOverride = null;
+			this.effortOverride = null;
+			this.permissionModeOverride = null;
+		}
+		return true;
+	}
+
 	handlePermissionResponse(
 		id: string,
 		approved: boolean,

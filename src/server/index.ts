@@ -238,6 +238,7 @@ function cliProxyProviders(connection: CliProxyConnection): AgentProvider[] {
 	return routed;
 }
 const initialCliProxyConnection = cliProxy.connection();
+let activeCliProxyConnection = initialCliProxyConnection;
 if (initialCliProxyConnection) {
 	for (const provider of cliProxyProviders(initialCliProxyConnection)) {
 		providers.set(provider.providerId, provider);
@@ -557,28 +558,39 @@ async function syncCliProxyRuntime(): Promise<void> {
 	await cliProxy.syncWslAgents(
 		(latest.agents ?? []).map((agent) => agent.path),
 	);
-	pool.syncConfig(latest);
 	const connection = cliProxy.connection();
-	for (const providerId of [
+	const connectionChanged =
+		connection?.base_url !== activeCliProxyConnection?.base_url ||
+		connection?.api_key !== activeCliProxyConnection?.api_key;
+	const cliProxyProviderIds = [
 		CLIPROXY_CODEX_PROVIDER_ID,
 		CLIPROXY_CODEX_HARNESS_PROVIDER_ID,
 		CLIPROXY_OPENCODE_PROVIDER_ID,
-	]) {
-		providers.delete(providerId);
-	}
-	if (connection) {
-		for (const provider of cliProxyProviders(connection)) {
-			providers.set(provider.providerId, provider);
-			modelCatalog.register(provider);
-			db.registerProvider(
-				provider.providerId,
-				provider.label ?? provider.providerId,
-				provider.usageWindows ? [...provider.usageWindows] : [],
-			);
+	] as const;
+	if (connectionChanged) {
+		const retiredProviderIds = cliProxyProviderIds.filter((providerId) =>
+			providers.has(providerId),
+		);
+		for (const providerId of retiredProviderIds) {
+			providers.delete(providerId);
 		}
+		pool.retireProviderSessions(retiredProviderIds);
+		if (connection) {
+			for (const provider of cliProxyProviders(connection)) {
+				providers.set(provider.providerId, provider);
+				modelCatalog.register(provider);
+				db.registerProvider(
+					provider.providerId,
+					provider.label ?? provider.providerId,
+					provider.usageWindows ? [...provider.usageWindows] : [],
+				);
+			}
+		}
+		activeCliProxyConnection = connection;
+		providerCatalogSnapshot.invalidate();
+		bumpDataRevision("providers");
 	}
-	providerCatalogSnapshot.invalidate();
-	bumpDataRevision("providers");
+	pool.syncConfig(latest);
 }
 
 function syncCliProxyAccountCatalogs(): void {

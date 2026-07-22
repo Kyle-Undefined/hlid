@@ -204,8 +204,20 @@ export class SessionPool {
 		return undefined;
 	}
 
-	/** Update the config reference (called on hot-reload). */
+	/** Update future and already-open sessions during hot reload. */
 	syncConfig(config: HlidConfig): void {
 		this.config = config;
+		for (const entry of this.entries.values()) {
+			entry.manager.syncConfig(config);
+		}
+	}
+
+	/** Retire live provider-native sessions after a runtime provider is removed. */
+	retireProviderSessions(providerIds: Iterable<string>): void {
+		const retired = new Set(providerIds);
+		if (retired.size === 0) return;
+		for (const entry of this.entries.values()) {
+			entry.manager.retireProviderSessions(retired);
+		}
 	}
 }
