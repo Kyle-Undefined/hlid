@@ -7,6 +7,12 @@ const COMMAND_TIMEOUT_MS = 20_000;
 const STARTUP_TIMEOUT_MS = 20_000;
 const STARTUP_POLL_MS = 500;
 const MAX_COMMAND_OUTPUT_CHARS = 256_000;
+const OBSIDIAN_CLI_RECOVERY_GUIDANCE =
+	"Check Obsidian for a blocking error dialog, then fully close and reopen Obsidian. Retry after your vault finishes loading.";
+// Obsidian.com's Windows redirector can drop oversized argv entries and send
+// malformed JSON to the running app. Keep content arguments comfortably below
+// that boundary and preserve exact text across sequential inline mutations.
+const MAX_OBSIDIAN_CLI_CONTENT_CHARS = 4_000;
 export const MAX_OBSIDIAN_APPEND_CHARS = 20_000;
 export const MAX_OBSIDIAN_CREATE_CHARS = 20_000;
 export const MAX_OBSIDIAN_AGENT_OUTPUT_CHARS = 120_000;
@@ -322,7 +328,7 @@ async function runResolvedObsidianCommand(
 	const invoke = () =>
 		run(executable, [targetVaultArgument(vaultName), ...args], {
 			timeoutMs: COMMAND_TIMEOUT_MS,
-			timeoutError: "Obsidian did not respond in time.",
+			timeoutError: `Obsidian did not respond in time. ${OBSIDIAN_CLI_RECOVERY_GUIDANCE}`,
 			maxOutputChars: MAX_COMMAND_OUTPUT_CHARS,
 		});
 	let result = await invoke();
@@ -373,7 +379,7 @@ async function runResolvedObsidianCommand(
 		}
 		if (result.code !== 0 && /unable to find obsidian/i.test(result.output)) {
 			throw new Error(
-				`Obsidian ${processState.started ? "started" : "is running"}, but its CLI was not ready after ${STARTUP_TIMEOUT_MS / 1_000} seconds.`,
+				`Obsidian ${processState.started ? "started" : "is running"}, but its CLI was not ready after ${STARTUP_TIMEOUT_MS / 1_000} seconds. ${OBSIDIAN_CLI_RECOVERY_GUIDANCE}`,
 			);
 		}
 	}
@@ -469,6 +475,53 @@ async function runObsidianMutationCommand(
 	const output = await runObsidianCommand(vaultName, args, dependencies);
 	const error = cliError(output);
 	if (error) throw new Error(`Obsidian CLI failed: ${error}`);
+}
+
+function obsidianCliContentChunks(content: string): string[] {
+	const chunks: string[] = [];
+	let start = 0;
+	while (start < content.length) {
+		let end = Math.min(start + MAX_OBSIDIAN_CLI_CONTENT_CHARS, content.length);
+		if (end < content.length) {
+			const last = content.charCodeAt(end - 1);
+			const next = content.charCodeAt(end);
+			if (
+				last >= 0xd800 &&
+				last <= 0xdbff &&
+				next >= 0xdc00 &&
+				next <= 0xdfff
+			) {
+				end -= 1;
+			}
+		}
+		chunks.push(content.slice(start, end));
+		start = end;
+	}
+	return chunks;
+}
+
+async function runObsidianContentMutation(
+	vaultName: string,
+	command: "append" | "prepend" | "daily:append" | "daily:prepend",
+	targetArgs: string[],
+	content: string,
+	dependencies: ObsidianBridgeDependencies,
+	options: { inline?: boolean; reverse?: boolean } = {},
+): Promise<void> {
+	const chunks = obsidianCliContentChunks(content);
+	if (options.reverse) chunks.reverse();
+	for (const [index, chunk] of chunks.entries()) {
+		await runObsidianMutationCommand(
+			vaultName,
+			[
+				command,
+				...targetArgs,
+				`content=${chunk}`,
+				...(options.inline || index > 0 ? ["inline"] : []),
+			],
+			dependencies,
+		);
+	}
 }
 
 function optionalPathArgument(path: string | undefined): string[] {
@@ -1354,29 +1407,44 @@ export async function createObsidianNote(
 			}
 			const createdPath = safeVaultPath(result.path, "created note path");
 			if (content) {
-				await runObsidianMutationCommand(
+				await runObsidianContentMutation(
 					vaultName,
-					["append", `path=${createdPath}`, `content=${content}`, "inline"],
+					"append",
+					[`path=${createdPath}`],
+					content,
 					dependencies,
+					{ inline: true },
 				);
 			}
 			return { path: createdPath };
 		}
 	}
 
+	const createContent =
+		content.length <= MAX_OBSIDIAN_CLI_CONTENT_CHARS ? content : "";
 	const output = await runObsidianCommand(
 		vaultName,
 		[
 			"create",
 			`path=${path}`,
 			...(template ? [`template=${template}`] : []),
-			...(content ? [`content=${content}`] : []),
+			...(createContent ? [`content=${createContent}`] : []),
 			...(input.open ? ["open"] : []),
 		],
 		dependencies,
 	);
 	const error = cliError(output);
 	if (error) throw new Error(`Obsidian CLI failed: ${error}`);
+	if (content && !createContent) {
+		await runObsidianContentMutation(
+			vaultName,
+			"append",
+			[`path=${path}`],
+			content,
+			dependencies,
+			{ inline: true },
+		);
+	}
 	return { path };
 }
 
@@ -1410,18 +1478,20 @@ export async function mutateObsidianNote(
 		input.target === "active"
 			? await getActiveObsidianNote(vaultName, dependencies)
 			: exactPath;
-	const command = input.target === "daily" ? `daily:${action}` : action;
-	const output = await runObsidianCommand(
+	const command =
+		input.target === "daily"
+			? action === "append"
+				? "daily:append"
+				: "daily:prepend"
+			: action;
+	await runObsidianContentMutation(
 		vaultName,
-		[
-			command,
-			...(input.target === "path" && exactPath ? [`path=${exactPath}`] : []),
-			`content=${content}`,
-		],
+		command,
+		input.target === "path" && exactPath ? [`path=${exactPath}`] : [],
+		content,
 		dependencies,
+		{ reverse: action === "prepend" },
 	);
-	const error = cliError(output);
-	if (error) throw new Error(`Obsidian CLI failed: ${error}`);
 	const path =
 		input.target === "daily"
 			? portableVaultPath(
@@ -1540,9 +1610,11 @@ export async function appendToObsidian(
 			`Obsidian append is limited to ${MAX_OBSIDIAN_APPEND_CHARS.toLocaleString()} characters.`,
 		);
 	}
-	await runObsidianCommand(
+	await runObsidianContentMutation(
 		vaultName,
-		[destination === "daily" ? "daily:append" : "append", `content=${trimmed}`],
+		destination === "daily" ? "daily:append" : "append",
+		[],
+		trimmed,
 		dependencies,
 	);
 }

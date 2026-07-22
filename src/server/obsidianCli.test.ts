@@ -328,6 +328,41 @@ describe("Obsidian CLI bridge", () => {
 		expect(run.mock.calls[3]?.[1]).not.toContain("overwrite");
 	});
 
+	it("chunks long direct note content without splitting Unicode", async () => {
+		const body = `${"x".repeat(3_999)}😀${"y".repeat(4_000)}`;
+		const { dependencies, run } = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "Created", code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{ output: "Appended", code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{ output: "Appended", code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{ output: "Appended", code: 0 },
+		]);
+
+		await expect(
+			createObsidianNote(
+				"Fornbok",
+				{ path: "0 Inbox/Long.md", content: body },
+				dependencies,
+			),
+		).resolves.toEqual({ path: "0 Inbox/Long.md" });
+		expect(run.mock.calls[1]?.[1]).toEqual([
+			"vault=Fornbok",
+			"create",
+			"path=0 Inbox/Long.md",
+		]);
+		const chunks = [3, 5, 7].map((index) =>
+			run.mock.calls[index]?.[1]?.[3]?.replace(/^content=/, ""),
+		);
+		expect(chunks.join("")).toBe(body);
+		expect(chunks[0]?.length).toBe(3_999);
+		for (const index of [3, 5, 7]) {
+			expect(run.mock.calls[index]?.[1]?.[4]).toBe("inline");
+		}
+	});
+
 	it("keeps note content out of Templater eval and appends to the routed path", async () => {
 		const privateBody = "Private body".repeat(1_000);
 		const { dependencies, run } = wslDependencies([
@@ -335,6 +370,10 @@ describe("Obsidian CLI bridge", () => {
 			{ output: "# <% tp.file.title %>", code: 0 },
 			{ output: windowsDetection, code: 0 },
 			{ output: '=> {"path":"1 Projects/One.md"}', code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{ output: "Appended", code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{ output: "Appended", code: 0 },
 			{ output: windowsDetection, code: 0 },
 			{ output: "Appended", code: 0 },
 		]);
@@ -363,13 +402,19 @@ describe("Obsidian CLI bridge", () => {
 			template: "New Project",
 			open: false,
 		});
-		expect(run.mock.calls[5]?.[1]).toEqual([
-			"vault=Fornbok",
-			"append",
-			"path=1 Projects/One.md",
-			`content=${privateBody}`,
-			"inline",
-		]);
+		const appendCalls = [5, 7, 9].map((index) => run.mock.calls[index]?.[1]);
+		expect(
+			appendCalls.map((args) => args?.[3]?.replace(/^content=/, "")).join(""),
+		).toBe(privateBody);
+		for (const args of appendCalls) {
+			expect(args?.slice(0, 3)).toEqual([
+				"vault=Fornbok",
+				"append",
+				"path=1 Projects/One.md",
+			]);
+			expect(args?.[3]?.length).toBeLessThanOrEqual(4_008);
+			expect(args?.[4]).toBe("inline");
+		}
 	});
 
 	it("rejects interactive Templater templates before creating a file", async () => {
@@ -511,7 +556,7 @@ describe("Obsidian CLI bridge", () => {
 		await expect(
 			getActiveObsidianNote("Fornbok", { ...dependencies, wait }),
 		).rejects.toThrow(
-			"Obsidian is running, but its CLI was not ready after 20 seconds.",
+			"Obsidian is running, but its CLI was not ready after 20 seconds. Check Obsidian for a blocking error dialog, then fully close and reopen Obsidian. Retry after your vault finishes loading.",
 		);
 		expect(wait).toHaveBeenCalledTimes(40);
 		expect(wait).toHaveBeenLastCalledWith(500);
