@@ -2665,6 +2665,20 @@ class CodexAgentSession implements AgentSession {
 		if (text) this.events.push({ type: "text_delta", text });
 	}
 
+	private completedItemIsError(item: Record<string, unknown>): boolean {
+		if (item.success === false) return true;
+		const status =
+			typeof item.status === "string" ? item.status.toLowerCase() : "";
+		return [
+			"failed",
+			"error",
+			"errored",
+			"cancelled",
+			"canceled",
+			"declined",
+		].includes(status);
+	}
+
 	private handleItemCompleted(obj: Record<string, unknown>): void {
 		const item = asObj(obj.item);
 		this.recordHostedToolItem(item);
@@ -2706,6 +2720,7 @@ class CodexAgentSession implements AgentSession {
 			type: "tool_result",
 			toolId: String(item.id ?? type),
 			content: JSON.stringify(item),
+			...(this.completedItemIsError(item) ? { isError: true } : {}),
 		});
 		this.maybeFinalizePendingDone();
 	}

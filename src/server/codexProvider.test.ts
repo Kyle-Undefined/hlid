@@ -2118,6 +2118,48 @@ describe("CodexAgentSession — notifications", () => {
 		expect(await events.next()).toEqual({ value: undefined, done: true });
 	});
 
+	it("marks failed completed tool items as errors", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const session = new CodexProvider().query(baseCodexParams());
+		const events = session[Symbol.asyncIterator]();
+		await session.send("move a vault note");
+		await nextSessionEvent(events); // session_start
+
+		emitSessionNotification(proc, "item/started", {
+			threadId: "thread-1",
+			item: {
+				id: "move-1",
+				type: "dynamicToolCall",
+				tool: "mcp__hlid_obsidian__move_file",
+				arguments: { path: "Notes/Old.md", to: "Archive/Old.md" },
+			},
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "tool_start",
+			toolId: "move-1",
+		});
+
+		emitSessionNotification(proc, "item/completed", {
+			threadId: "thread-1",
+			item: {
+				id: "move-1",
+				type: "dynamicToolCall",
+				tool: "mcp__hlid_obsidian__move_file",
+				status: "failed",
+				success: false,
+			},
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "tool_result",
+			toolId: "move-1",
+			isError: true,
+		});
+		session.cancel();
+	});
+
 	it("accounts every cumulative model-call delta while emitting last-call context", async () => {
 		const { proc } = makeFakeSessionProc();
 		vi.mocked(spawn).mockReturnValue(proc as never);

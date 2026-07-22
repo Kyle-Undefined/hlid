@@ -145,6 +145,31 @@ describe("ObsidianVaultChangeReview", () => {
 		]);
 	});
 
+	it("ignores failed Codex mutation payloads from existing sessions", () => {
+		const changes = obsidianVaultChanges([
+			event(
+				"failed-move",
+				"mcp__hlid_obsidian__move_file",
+				{ path: "Notes/Old.md", to: "Archive/Old.md" },
+				JSON.stringify({
+					type: "dynamicToolCall",
+					status: "failed",
+					success: false,
+					contentItems: [
+						{
+							type: "inputText",
+							text: JSON.stringify({
+								error: "ENOENT",
+							}),
+						},
+					],
+				}),
+			),
+		]);
+
+		expect(changes).toEqual([]);
+	});
+
 	it("renders task, property, and Base activity without verification claims", () => {
 		render(
 			<ObsidianVaultChangeReview

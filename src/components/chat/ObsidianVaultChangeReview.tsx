@@ -90,6 +90,25 @@ function resultRecord(
 	}
 }
 
+function resultIndicatesFailure(result: string): boolean {
+	try {
+		const parsed = record(JSON.parse(result));
+		if (parsed.success === false) return true;
+		const status =
+			typeof parsed.status === "string" ? parsed.status.toLowerCase() : "";
+		return [
+			"failed",
+			"error",
+			"errored",
+			"cancelled",
+			"canceled",
+			"declined",
+		].includes(status);
+	} catch {
+		return false;
+	}
+}
+
 function resultPath(result: string | undefined): string | null {
 	const path = resultRecord(result)?.path;
 	return typeof path === "string" && path ? path : null;
@@ -111,7 +130,12 @@ export function obsidianVaultChanges(
 ): ObsidianVaultChange[] {
 	return toolEvents.flatMap<ObsidianVaultChange>((event) => {
 		const operation = operationFromToolName(event.name);
-		if (!operation || event.isError || typeof event.result !== "string")
+		if (
+			!operation ||
+			event.isError ||
+			typeof event.result !== "string" ||
+			resultIndicatesFailure(event.result)
+		)
 			return [];
 		const input = record(event.input);
 		if (operation === "run_command") {
