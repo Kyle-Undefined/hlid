@@ -420,6 +420,48 @@ describe("SessionsLedger session actions", () => {
 		expect(onFork).toHaveBeenCalledWith("session-1");
 	});
 
+	it("offers fork immediately for an idle live WSL Claude session", () => {
+		const onFork = vi.fn();
+		const idleStatus: SessionStatusEntry = {
+			session_id: "pool-1",
+			agent_cwd: "//wsl.localhost/Ubuntu/work/project",
+			agent_name: "Project",
+			state: "idle",
+			provider_id: "claude",
+			model: "claude-sonnet-4-6",
+			hasPendingPermissions: false,
+			hasDbSession: true,
+			db_session_id: "session-1",
+		};
+		renderLedger({ sessionsStatus: [idleStatus], onFork });
+		openSessionActions();
+
+		fireEvent.click(screen.getByRole("button", { name: "Fork" }));
+		expect(onFork).toHaveBeenCalledWith("session-1");
+	});
+
+	it("keeps fork visible but disabled while the Claude turn is running", () => {
+		const onFork = vi.fn();
+		const runningStatus: SessionStatusEntry = {
+			session_id: "pool-1",
+			agent_cwd: "/work/project",
+			agent_name: "Project",
+			state: "running",
+			provider_id: "claude",
+			model: "claude-sonnet-4-6",
+			hasPendingPermissions: false,
+			hasDbSession: true,
+			db_session_id: "session-1",
+		};
+		renderLedger({ sessionsStatus: [runningStatus], onFork });
+		openSessionActions();
+
+		const fork = screen.getByRole("button", { name: "Fork" });
+		expect((fork as HTMLButtonElement).disabled).toBe(true);
+		fireEvent.click(fork);
+		expect(onFork).not.toHaveBeenCalled();
+	});
+
 	it("does not replace whole-session values with browser-local live totals", () => {
 		renderLedger({ activeSessionId: "session-1", liveStats });
 		expect(screen.getByText("$1.2500")).toBeDefined();

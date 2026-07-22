@@ -79,6 +79,7 @@ function SessionActionPanel({
 	onCancelDelete,
 	onConfirmDelete,
 	canFork,
+	forkBlocked,
 	forking,
 	onFork,
 	position,
@@ -95,6 +96,7 @@ function SessionActionPanel({
 	onCancelDelete: () => void;
 	onConfirmDelete: () => void;
 	canFork: boolean;
+	forkBlocked: boolean;
 	forking: boolean;
 	onFork: () => void;
 	position: AnchoredPopoverPosition;
@@ -191,7 +193,12 @@ function SessionActionPanel({
 						<button
 							type="button"
 							onClick={onFork}
-							disabled={forking}
+							disabled={forking || forkBlocked}
+							title={
+								forkBlocked
+									? "Stop the active turn before forking this session"
+									: "Fork this session into a new one"
+							}
 							className="flex min-h-11 w-full items-center gap-2 px-3 text-[10px] tracking-wider text-foreground/80 hover:bg-accent/40 disabled:opacity-60"
 						>
 							{forking ? (
@@ -252,13 +259,13 @@ function SessionItem({
 	const resumableHistory =
 		importedHistory && (session.history_resume_mode ?? "none") !== "none";
 	const canNavigate = !importedHistory || resumableHistory;
-	// Fork is available for Claude runtimes (including Claude Code via CLIProxy)
-	// and unsafe against a live/registered pool entry —
-	// mirrors the same checks the server enforces in POST /db/session/fork.
+	// Keep fork availability tied to persisted session identity. A pool entry is
+	// transient UI state, so using its mere presence made Fork disappear until a
+	// reload closed or repopulated that entry. Idle Claude sessions are safe to
+	// fork; only an active turn temporarily blocks the action.
 	const canFork =
-		isClaudeRuntimeProvider(session.provider_id || "claude") &&
-		!poolSession &&
-		canNavigate;
+		isClaudeRuntimeProvider(session.provider_id || "claude") && canNavigate;
+	const forkBlocked = poolSession?.state === "running";
 	const actionPosition = useAnchoredPopover(
 		menuOpen,
 		actionButtonRef,
@@ -459,6 +466,7 @@ function SessionItem({
 											closeMenu();
 										}}
 										canFork={canFork}
+										forkBlocked={forkBlocked}
 										forking={isForking}
 										onFork={() => onFork(session.id)}
 										position={actionPosition}

@@ -636,7 +636,7 @@ async function closeLiveSession({
 }
 
 /**
- * Fork a (necessarily idle) session's transcript into a brand-new session
+ * Fork an idle session's transcript into a brand-new session
  * via the owning provider's forkSession() capability, then create a new
  * hlid session row pointing at the resulting native id. Whole-session by
  * default; pass `messageId` (a `messages.id` primary key) to branch up to
@@ -658,8 +658,10 @@ async function forkSession({
 		return new Response("Invalid messageId", { status: 400 });
 	}
 
-	if (pool?.get(sourceId) || hasLiveTerminalSession(terminalPool, sourceId)) {
-		return new Response("Cannot fork a live session — stop it first", {
+	const liveEntry = pool?.findByDbSessionId(sourceId) ?? pool?.get(sourceId);
+	const hasRunningTurn = liveEntry?.manager.getStatus().state === "running";
+	if (hasRunningTurn || hasLiveTerminalSession(terminalPool, sourceId)) {
+		return new Response("Cannot fork a running session — stop it first", {
 			status: 409,
 		});
 	}

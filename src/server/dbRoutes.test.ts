@@ -94,6 +94,7 @@ function makePool(
 	overrides: Partial<{
 		getSessionsStatus: () => SessionStatusEntry[];
 		get: (id: string) => unknown;
+		findByDbSessionId: (id: string) => unknown;
 		close: (id: string) => void;
 		isVaultSession: (id: string) => boolean;
 		getProvider: (id: string) => unknown;
@@ -102,6 +103,7 @@ function makePool(
 	return {
 		getSessionsStatus: vi.fn().mockReturnValue([]),
 		get: vi.fn().mockReturnValue(undefined),
+		findByDbSessionId: vi.fn().mockReturnValue(undefined),
 		close: vi.fn(),
 		isVaultSession: vi.fn().mockReturnValue(false),
 		getProvider: vi.fn().mockReturnValue(undefined),
@@ -812,8 +814,12 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 		});
 	});
 
-	it("returns 409 when the source session is live in the pool", async () => {
-		const pool = makePool({ get: vi.fn().mockReturnValue({}) });
+	it("returns 409 when the source session has a running turn", async () => {
+		const pool = makePool({
+			findByDbSessionId: vi.fn().mockReturnValue({
+				manager: { getStatus: () => ({ state: "running" }) },
+			}),
+		});
 		const res = await handleDbRoute(
 			makeUrl("/db/session/fork"),
 			forkRequest({ id: "live-session" }),
@@ -822,6 +828,38 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 		if (!res) throw new Error("Expected a Response, got null");
 		expect(res.status).toBe(409);
 		expect(mockGetSessionById).not.toHaveBeenCalled();
+	});
+
+	it("allows an idle live session to fork without a reload", async () => {
+		mockGetSessionById.mockResolvedValue({
+			...sampleRow,
+			provider_id: "claude",
+			agent_cwd: "/work/project",
+			history_resume_mode: "none",
+		});
+		mockGetSessionProviderSession.mockResolvedValue("native-source-id");
+		const mockForkSession = vi
+			.fn()
+			.mockResolvedValue({ sessionId: "native-forked-id" });
+		const pool = makePool({
+			findByDbSessionId: vi.fn().mockReturnValue({
+				manager: { getStatus: () => ({ state: "idle" }) },
+			}),
+			getProvider: vi.fn().mockReturnValue({
+				providerId: "claude",
+				forkSession: mockForkSession,
+			}),
+		});
+
+		const res = await handleDbRoute(
+			makeUrl("/db/session/fork"),
+			forkRequest({ id: "abc-123" }),
+			pool,
+		);
+
+		if (!res) throw new Error("Expected a Response, got null");
+		expect(res.status).toBe(200);
+		expect(mockForkSession).toHaveBeenCalledOnce();
 	});
 
 	it("returns 404 when the source session doesn't exist", async () => {
