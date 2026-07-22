@@ -9,6 +9,7 @@ import {
 	File as FileIcon,
 	Inbox,
 	ListFilter,
+	Package,
 	RefreshCw,
 	Search,
 	Trash2,
@@ -31,6 +32,12 @@ import {
 } from "#/components/ImageViewerModal";
 import { MarkdownBody } from "#/components/MarkdownBody";
 import { PrivacyMask } from "#/components/PrivacyMask";
+import {
+	type ManagedAgentSkill,
+	type RemoteSkillDiscovery,
+	SkillManagerDialog,
+	type StagedAgentSkill,
+} from "#/components/relics/SkillManagerDialog";
 import type { AttachmentRow } from "#/db";
 import { useDialogFocus } from "#/hooks/useDialogFocus";
 import { useIsDesktop } from "#/hooks/useIsDesktop";
@@ -167,6 +174,88 @@ const removeSkillFn = createServerFn({ method: "POST" })
 		});
 		await requireDbOk(response, "Remove skill");
 		return response.json() as Promise<SkillRemoveResult>;
+	});
+
+const listManagedSkillsFn = createServerFn({ method: "GET" }).handler(
+	async () => {
+		const response = await dbFetch("/skills/managed");
+		await requireDbOk(response, "Load managed skills");
+		return response.json() as Promise<{ skills: ManagedAgentSkill[] }>;
+	},
+);
+
+const discoverRemoteSkillsFn = createServerFn({ method: "POST" })
+	.validator((data: { source: string }) => data)
+	.handler(async ({ data }) => {
+		const response = await dbFetch("/skills/discover", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(data),
+			signal: AbortSignal.timeout(20_000),
+		});
+		await requireDbOk(response, "Discover skills");
+		return response.json() as Promise<{
+			ok: true;
+			discovery: RemoteSkillDiscovery;
+		}>;
+	});
+
+const stageSkillFn = createServerFn({ method: "POST" })
+	.validator((data: { sourceUrl: string }) => data)
+	.handler(async ({ data }) => {
+		const response = await dbFetch("/skills/stage", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(data),
+		});
+		await requireDbOk(response, "Stage skill for review");
+		return response.json() as Promise<{ ok: true; skill: StagedAgentSkill }>;
+	});
+
+const readStagedSkillFileFn = createServerFn({ method: "GET" })
+	.validator((data: { id: string; path: string }) => data)
+	.handler(async ({ data }) => {
+		const params = new URLSearchParams({ id: data.id, path: data.path });
+		const response = await dbFetch(`/skills/staged/content?${params}`);
+		await requireDbOk(response, "Read staged skill file");
+		return response.json() as Promise<{ path: string; content: string }>;
+	});
+
+const installStagedSkillFn = createServerFn({ method: "POST" })
+	.validator((data: { id: string }) => data)
+	.handler(async ({ data }) => {
+		const response = await dbFetch("/skills/install", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(data),
+		});
+		await requireDbOk(response, "Add skill to Hlid");
+		return response.json() as Promise<{
+			ok: true;
+			installed: { id: string; name: string };
+		}>;
+	});
+
+const discardStagedSkillFn = createServerFn({ method: "POST" })
+	.validator((data: { id: string }) => data)
+	.handler(async ({ data }) => {
+		const response = await dbFetch("/skills/discard", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(data),
+		});
+		await requireDbOk(response, "Decline staged skill");
+		return response.json() as Promise<{ ok: true }>;
+	});
+
+const readManagedSkillFn = createServerFn({ method: "GET" })
+	.validator((data: { id: string }) => data)
+	.handler(async ({ data }) => {
+		const response = await dbFetch(
+			`/skills/managed/content?id=${encodeURIComponent(data.id)}`,
+		);
+		await requireDbOk(response, "Read managed SKILL.md");
+		return response.json() as Promise<SkillDocumentResult>;
 	});
 
 export const Route = createFileRoute("/relics")({
@@ -656,7 +745,8 @@ function RelicsHeader({ list }: { list: RelicsList }) {
 }
 
 function SkillImportPanel() {
-	const [open, setOpen] = useState(false);
+	const [managerOpen, setManagerOpen] = useState(false);
+	const [importOpen, setImportOpen] = useState(false);
 	const [result, setResult] = useState<string | null>(null);
 	return (
 		<div className="mt-3 pt-3 border-t border-border/60 flex flex-wrap items-center gap-2">
@@ -665,19 +755,43 @@ function SkillImportPanel() {
 			</span>
 			<button
 				type="button"
-				onClick={() => setOpen(true)}
+				onClick={() => setManagerOpen(true)}
+				className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[9px] tracking-widest uppercase border border-border hover:text-primary"
+			>
+				<Package className="w-3 h-3" />
+				Skills
+			</button>
+			<button
+				type="button"
+				onClick={() => setImportOpen(true)}
 				className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[9px] tracking-widest uppercase border border-border hover:text-primary"
 			>
 				<Download className="w-3 h-3" />
-				Browse installed skills
+				Import
 			</button>
 			{result && (
 				<span className="text-[10px] text-muted-foreground">{result}</span>
 			)}
-			{open &&
+			{managerOpen &&
+				createPortal(
+					<SkillManagerDialog
+						onClose={() => setManagerOpen(false)}
+						onChanged={(message) => setResult(message)}
+						listManaged={listManagedSkillsFn}
+						discoverSkills={discoverRemoteSkillsFn}
+						stageSkill={stageSkillFn}
+						readStagedFile={readStagedSkillFileFn}
+						installSkill={installStagedSkillFn}
+						discardSkill={discardStagedSkillFn}
+						readManagedSkill={readManagedSkillFn}
+						removeSkill={removeSkillFn}
+					/>,
+					document.body,
+				)}
+			{importOpen &&
 				createPortal(
 					<SkillImportDialog
-						onClose={() => setOpen(false)}
+						onClose={() => setImportOpen(false)}
 						onImported={(message) => setResult(message)}
 					/>,
 					document.body,
@@ -692,7 +806,6 @@ export function SkillImportDialog({
 	discover = discoverSkillsFn,
 	readSkill = readSkillDocumentFn,
 	importSelected = importSkillsFn,
-	removeSkill = removeSkillFn,
 }: {
 	onClose: () => void;
 	onImported?: (message: string) => void;
@@ -701,7 +814,6 @@ export function SkillImportDialog({
 	importSelected?: (input: {
 		data: { ids: string[] };
 	}) => Promise<SkillImportResult>;
-	removeSkill?: (input: { data: { id: string } }) => Promise<SkillRemoveResult>;
 }) {
 	const { dialogRef, onDialogKeyDown } =
 		useDialogFocus<HTMLDivElement>(onClose);
@@ -710,7 +822,6 @@ export function SkillImportDialog({
 	const [search, setSearch] = useState("");
 	const [loading, setLoading] = useState(true);
 	const [importing, setImporting] = useState(false);
-	const [removing, setRemoving] = useState<string | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [notice, setNotice] = useState<string | null>(null);
 
@@ -802,30 +913,6 @@ export function SkillImportDialog({
 		}
 	};
 
-	const runRemove = async (id: string) => {
-		if (removing) return;
-		setRemoving(id);
-		setError(null);
-		setNotice(null);
-		try {
-			const result = await removeSkill({ data: { id } });
-			setSkills((current) =>
-				current.map((skill) =>
-					skill.managedId === id
-						? { ...skill, alreadyImported: false, managedId: null }
-						: skill,
-				),
-			);
-			const summary = `${result.removed.name} removed from Hlid`;
-			setNotice(summary);
-			onImported?.(summary);
-		} catch (cause) {
-			setError(cause instanceof Error ? cause.message : "Remove failed");
-		} finally {
-			setRemoving(null);
-		}
-	};
-
 	return (
 		<div className="fixed inset-0 z-50 bg-background/90 backdrop-blur-sm flex items-center justify-center p-2 md:p-4">
 			<div
@@ -872,7 +959,7 @@ export function SkillImportDialog({
 					<button
 						type="button"
 						onClick={() => void refresh()}
-						disabled={loading || importing || Boolean(removing)}
+						disabled={loading || importing}
 						aria-label="Refresh installed skills"
 						className="p-2 border border-border text-muted-foreground hover:text-primary disabled:opacity-30"
 					>
@@ -965,28 +1052,6 @@ export function SkillImportDialog({
 													skill={skill}
 													readSkill={readSkill}
 												/>
-												{skill.managedId && (
-													<ConfirmAction
-														label={`remove ${skill.name}?`}
-														confirmText="remove"
-														onConfirm={() =>
-															void runRemove(skill.managedId as string)
-														}
-														className="mt-2"
-														trigger={(open) => (
-															<button
-																type="button"
-																onClick={open}
-																disabled={Boolean(removing)}
-																className="mt-2 text-[9px] tracking-widest uppercase text-destructive/70 hover:text-destructive disabled:opacity-30"
-															>
-																{removing === skill.managedId
-																	? "Removing…"
-																	: "Remove from Hlid"}
-															</button>
-														)}
-													/>
-												)}
 											</span>
 										</div>
 									))}
@@ -1018,7 +1083,7 @@ export function SkillImportDialog({
 								return next;
 							})
 						}
-						disabled={selectable.length === 0 || importing || Boolean(removing)}
+						disabled={selectable.length === 0 || importing}
 						className="text-[9px] tracking-widest uppercase text-muted-foreground hover:text-foreground disabled:opacity-30"
 					>
 						{allVisibleSelected ? "Clear visible" : "Select visible"}
@@ -1026,7 +1091,7 @@ export function SkillImportDialog({
 					<button
 						type="button"
 						onClick={() => void runImport()}
-						disabled={selected.size === 0 || importing || Boolean(removing)}
+						disabled={selected.size === 0 || importing}
 						className="px-4 py-2 text-[9px] tracking-widest uppercase border border-primary text-primary hover:bg-primary/10 disabled:opacity-30"
 					>
 						{importing ? "Importing…" : `Import ${selected.size || "selected"}`}

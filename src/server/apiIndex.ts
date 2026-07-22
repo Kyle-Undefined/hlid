@@ -106,6 +106,42 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 	},
 	{
 		method: "GET",
+		path: "/skills/managed",
+		server: "api",
+		desc: "Agent skill packages currently managed by Hlid, including provenance and package summaries.",
+	},
+	{
+		method: "POST",
+		path: "/skills/discover",
+		server: "api",
+		desc: 'Discover SKILL.md packages from owner/repo, GitHub, or skills.sh sources before staging. Body: {"source": string}.',
+	},
+	{
+		method: "POST",
+		path: "/skills/stage",
+		server: "api",
+		desc: 'Download a GitHub skill into temporary review storage. Body: {"sourceUrl": string}.',
+	},
+	{
+		method: "GET",
+		path: "/skills/staged/content?id=&path=",
+		server: "api",
+		desc: "Read one text file from a staged skill before deciding whether to install it.",
+	},
+	{
+		method: "POST",
+		path: "/skills/install",
+		server: "api",
+		desc: 'Approve one staged skill and move it into Hlid-managed storage. Body: {"id": string}.',
+	},
+	{
+		method: "POST",
+		path: "/skills/discard",
+		server: "api",
+		desc: 'Decline one staged skill and delete its temporary review copy. Body: {"id": string}.',
+	},
+	{
+		method: "GET",
 		path: "/skills/content?id=",
 		server: "api",
 		desc: "Read one discovered SKILL.md by opaque catalog ID; source paths remain server-side.",

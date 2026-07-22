@@ -420,10 +420,6 @@ describe("SkillImportDialog", () => {
 			name: "review",
 			content: "---\nname: review\n---\n# Review instructions",
 		});
-		const removeSkill = vi.fn().mockResolvedValue({
-			ok: true,
-			removed: { id: "c".repeat(24), name: "voice" },
-		});
 		const onImported = vi.fn();
 		render(
 			<SkillImportDialog
@@ -432,7 +428,6 @@ describe("SkillImportDialog", () => {
 				discover={discover}
 				readSkill={readSkill}
 				importSelected={importSelected}
-				removeSkill={removeSkill}
 			/>,
 		);
 
@@ -476,13 +471,6 @@ describe("SkillImportDialog", () => {
 		expect(
 			screen.getByText("Import complete · 1 skill added to Hlid"),
 		).toBeDefined();
-
-		fireEvent.click(screen.getByRole("button", { name: "Remove from Hlid" }));
-		fireEvent.click(screen.getByRole("button", { name: "remove" }));
-		expect(await screen.findByText("voice removed from Hlid")).toBeDefined();
-		expect(removeSkill).toHaveBeenCalledWith({
-			data: { id: "c".repeat(24) },
-		});
 	});
 
 	it("filters the scrollable catalog without selecting hidden rows", async () => {

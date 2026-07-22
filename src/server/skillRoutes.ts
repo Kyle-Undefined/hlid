@@ -7,6 +7,15 @@ import {
 	readDiscoveredSkillDocument,
 	removeManagedSkill,
 } from "./skillImports";
+import {
+	discardStagedSkill,
+	discoverRemoteSkills,
+	installStagedSkill,
+	listManagedSkills,
+	readManagedSkillDocument,
+	readStagedSkillFile,
+	stageGitHubSkill,
+} from "./skillInstalls";
 import { getVaultSnapshot, invalidateVaultSnapshot } from "./vaultSnapshot";
 
 const MAX_BATCH_IMPORT = 100;
@@ -49,6 +58,142 @@ export async function handleSkillRoute(
 		return Response.json({
 			skills: await discoverSkillPackages(config, providers),
 		});
+	}
+	if (url.pathname === "/skills/managed") {
+		if (request.method !== "GET") {
+			return new Response("Method Not Allowed", { status: 405 });
+		}
+		return Response.json({ skills: await listManagedSkills() });
+	}
+	if (url.pathname === "/skills/discover") {
+		const parsed = await readPostJson<{ source?: unknown }>(request);
+		if (!parsed.ok) return parsed.response;
+		if (
+			typeof parsed.body.source !== "string" ||
+			!parsed.body.source.trim() ||
+			parsed.body.source.length > 2_048
+		) {
+			return Response.json({ error: "invalid_skill_source" }, { status: 400 });
+		}
+		try {
+			return Response.json({
+				ok: true,
+				discovery: await discoverRemoteSkills(parsed.body.source),
+			});
+		} catch (error) {
+			return Response.json(
+				{
+					error: "skill_discovery_failed",
+					message: error instanceof Error ? error.message : "Discovery failed",
+				},
+				{ status: 400 },
+			);
+		}
+	}
+	if (url.pathname === "/skills/managed/content") {
+		if (request.method !== "GET") {
+			return new Response("Method Not Allowed", { status: 405 });
+		}
+		const id = url.searchParams.get("id");
+		if (!id || !/^[0-9a-f]{24}$/.test(id)) {
+			return Response.json({ error: "invalid_managed_skill" }, { status: 400 });
+		}
+		const document = await readManagedSkillDocument(id);
+		return document
+			? Response.json(document)
+			: Response.json({ error: "managed_skill_not_found" }, { status: 404 });
+	}
+	if (url.pathname === "/skills/staged/content") {
+		if (request.method !== "GET") {
+			return new Response("Method Not Allowed", { status: 405 });
+		}
+		const id = url.searchParams.get("id");
+		const path = url.searchParams.get("path");
+		if (!id || !/^[0-9a-f]{24}$/.test(id) || !path || path.length > 1_024) {
+			return Response.json(
+				{ error: "invalid_staged_skill_file" },
+				{ status: 400 },
+			);
+		}
+		try {
+			const file = await readStagedSkillFile(id, path);
+			return file
+				? Response.json(file)
+				: Response.json(
+						{ error: "staged_skill_file_not_found" },
+						{ status: 404 },
+					);
+		} catch (error) {
+			return Response.json(
+				{
+					error: "staged_skill_read_failed",
+					message: error instanceof Error ? error.message : "Read failed",
+				},
+				{ status: 400 },
+			);
+		}
+	}
+	if (url.pathname === "/skills/stage") {
+		const parsed = await readPostJson<{ sourceUrl?: unknown }>(request);
+		if (!parsed.ok) return parsed.response;
+		if (
+			typeof parsed.body.sourceUrl !== "string" ||
+			!parsed.body.sourceUrl.trim() ||
+			parsed.body.sourceUrl.length > 2_048
+		) {
+			return Response.json({ error: "invalid_skill_source" }, { status: 400 });
+		}
+		try {
+			return Response.json({
+				ok: true,
+				skill: await stageGitHubSkill(parsed.body.sourceUrl),
+			});
+		} catch (error) {
+			return Response.json(
+				{
+					error: "skill_stage_failed",
+					message: error instanceof Error ? error.message : "Review failed",
+				},
+				{ status: 400 },
+			);
+		}
+	}
+	if (
+		url.pathname === "/skills/install" ||
+		url.pathname === "/skills/discard"
+	) {
+		const parsed = await readPostJson<{ id?: unknown }>(request);
+		if (!parsed.ok) return parsed.response;
+		if (
+			typeof parsed.body.id !== "string" ||
+			!/^[0-9a-f]{24}$/.test(parsed.body.id)
+		) {
+			return Response.json({ error: "invalid_staged_skill" }, { status: 400 });
+		}
+		try {
+			if (url.pathname === "/skills/discard") {
+				const discarded = await discardStagedSkill(parsed.body.id);
+				return discarded
+					? Response.json({ ok: true })
+					: Response.json({ error: "staged_skill_not_found" }, { status: 404 });
+			}
+			const installed = await installStagedSkill(parsed.body.id);
+			invalidateVaultSnapshot("skill-install", config);
+			await getVaultSnapshot({ refresh: true });
+			return Response.json({ ok: true, installed });
+		} catch (error) {
+			return Response.json(
+				{
+					error:
+						url.pathname === "/skills/install"
+							? "skill_install_failed"
+							: "skill_discard_failed",
+					message:
+						error instanceof Error ? error.message : "Skill action failed",
+				},
+				{ status: 400 },
+			);
+		}
 	}
 	if (url.pathname === "/skills/content") {
 		if (request.method !== "GET") {

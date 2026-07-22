@@ -6,6 +6,13 @@ const mocks = vi.hoisted(() => ({
 	importDiscoveredSkillPackages: vi.fn(),
 	readDiscoveredSkillDocument: vi.fn(),
 	removeManagedSkill: vi.fn(),
+	listManagedSkills: vi.fn(),
+	discoverRemoteSkills: vi.fn(),
+	readManagedSkillDocument: vi.fn(),
+	readStagedSkillFile: vi.fn(),
+	stageGitHubSkill: vi.fn(),
+	installStagedSkill: vi.fn(),
+	discardStagedSkill: vi.fn(),
 	loadConfig: vi.fn(),
 	invalidateVaultSnapshot: vi.fn(),
 	getVaultSnapshot: vi.fn(),
@@ -16,6 +23,15 @@ vi.mock("./skillImports", () => ({
 	importDiscoveredSkillPackages: mocks.importDiscoveredSkillPackages,
 	readDiscoveredSkillDocument: mocks.readDiscoveredSkillDocument,
 	removeManagedSkill: mocks.removeManagedSkill,
+}));
+vi.mock("./skillInstalls", () => ({
+	listManagedSkills: mocks.listManagedSkills,
+	discoverRemoteSkills: mocks.discoverRemoteSkills,
+	readManagedSkillDocument: mocks.readManagedSkillDocument,
+	readStagedSkillFile: mocks.readStagedSkillFile,
+	stageGitHubSkill: mocks.stageGitHubSkill,
+	installStagedSkill: mocks.installStagedSkill,
+	discardStagedSkill: mocks.discardStagedSkill,
 }));
 vi.mock("./config", () => ({ loadConfig: mocks.loadConfig }));
 vi.mock("./vaultSnapshot", () => ({
@@ -55,6 +71,33 @@ beforeEach(() => {
 		id: "c".repeat(24),
 		name: "review",
 	});
+	mocks.listManagedSkills.mockResolvedValue([
+		{ id: "c".repeat(24), name: "review" },
+	]);
+	mocks.discoverRemoteSkills.mockResolvedValue({
+		repository: "openai/skills",
+		requestedRef: "main",
+		resolvedSha: "e".repeat(40),
+		skills: [{ name: "review" }],
+	});
+	mocks.readManagedSkillDocument.mockResolvedValue({
+		id: "c".repeat(24),
+		name: "review",
+		content: "# Managed review\n",
+	});
+	mocks.readStagedSkillFile.mockResolvedValue({
+		path: "helper.md",
+		content: "# Helper\n",
+	});
+	mocks.stageGitHubSkill.mockResolvedValue({
+		id: "d".repeat(24),
+		name: "review",
+	});
+	mocks.installStagedSkill.mockResolvedValue({
+		id: "d".repeat(24),
+		name: "review",
+	});
+	mocks.discardStagedSkill.mockResolvedValue(true);
 	mocks.getVaultSnapshot.mockResolvedValue({});
 });
 
@@ -93,6 +136,82 @@ describe("handleSkillRoute", () => {
 			config,
 		);
 		expect(mocks.getVaultSnapshot).toHaveBeenCalledWith({ refresh: true });
+	});
+
+	it("lists managed skills separately from provider imports", async () => {
+		const managed = await handleSkillRoute(
+			new URL("http://localhost/skills/managed"),
+			request("/skills/managed", undefined, "GET"),
+			config,
+		);
+		expect(await managed?.json()).toEqual({
+			skills: [{ id: "c".repeat(24), name: "review" }],
+		});
+	});
+
+	it("discovers remote repository skills without staging them", async () => {
+		const response = await handleSkillRoute(
+			new URL("http://localhost/skills/discover"),
+			request("/skills/discover", { source: "openai/skills" }),
+			config,
+		);
+		expect(await response?.json()).toEqual({
+			ok: true,
+			discovery: {
+				repository: "openai/skills",
+				requestedRef: "main",
+				resolvedSha: "e".repeat(40),
+				skills: [{ name: "review" }],
+			},
+		});
+		expect(mocks.discoverRemoteSkills).toHaveBeenCalledWith("openai/skills");
+		expect(mocks.stageGitHubSkill).not.toHaveBeenCalled();
+	});
+
+	it("stages a GitHub skill without refreshing the active snapshot", async () => {
+		const sourceUrl =
+			"https://github.com/openai/skills/tree/main/skills/review";
+		const response = await handleSkillRoute(
+			new URL("http://localhost/skills/stage"),
+			request("/skills/stage", { sourceUrl }),
+			config,
+		);
+		expect(await response?.json()).toEqual({
+			ok: true,
+			skill: { id: "d".repeat(24), name: "review" },
+		});
+		expect(mocks.stageGitHubSkill).toHaveBeenCalledWith(sourceUrl);
+		expect(mocks.invalidateVaultSnapshot).not.toHaveBeenCalled();
+	});
+
+	it("installs an approved stage and refreshes the shared skill snapshot", async () => {
+		const id = "d".repeat(24);
+		const response = await handleSkillRoute(
+			new URL("http://localhost/skills/install"),
+			request("/skills/install", { id }),
+			config,
+		);
+		expect(await response?.json()).toEqual({
+			ok: true,
+			installed: { id, name: "review" },
+		});
+		expect(mocks.invalidateVaultSnapshot).toHaveBeenCalledWith(
+			"skill-install",
+			config,
+		);
+		expect(mocks.getVaultSnapshot).toHaveBeenCalledWith({ refresh: true });
+	});
+
+	it("discards a declined stage without refreshing the snapshot", async () => {
+		const id = "d".repeat(24);
+		const response = await handleSkillRoute(
+			new URL("http://localhost/skills/discard"),
+			request("/skills/discard", { id }),
+			config,
+		);
+		expect(await response?.json()).toEqual({ ok: true });
+		expect(mocks.discardStagedSkill).toHaveBeenCalledWith(id);
+		expect(mocks.invalidateVaultSnapshot).not.toHaveBeenCalled();
 	});
 
 	it("removes a managed skill and refreshes the picker snapshot", async () => {
@@ -158,6 +277,10 @@ describe("handleSkillRoute", () => {
 	it.each([
 		"/skills/import",
 		"/skills/remove",
+		"/skills/discover",
+		"/skills/stage",
+		"/skills/install",
+		"/skills/discard",
 	])("shares method and JSON validation for %s", async (path) => {
 		const methodResponse = await handleSkillRoute(
 			new URL(`http://localhost${path}`),

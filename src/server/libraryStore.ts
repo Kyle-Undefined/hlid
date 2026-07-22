@@ -47,6 +47,16 @@ export function planStagingPath(sessionId: string): string {
 	);
 }
 
+export function skillStagingDirectory(): string {
+	return withinLibrary(resolve(LIBRARY_DIR, "staging", "skills"));
+}
+
+export function stagedSkillDirectory(id: string): string {
+	return withinLibrary(
+		resolve(skillStagingDirectory(), safeLibrarySegment(id, "skill")),
+	);
+}
+
 export function managedSkillsDirectory(): string {
 	return withinLibrary(resolve(LIBRARY_DIR, "skills"));
 }
@@ -60,6 +70,7 @@ export async function prepareLibrary(): Promise<void> {
 	await Promise.all([
 		mkdir(artifactsDirectory(), { recursive: true, mode: 0o700 }),
 		mkdir(planStagingDirectory(), { recursive: true, mode: 0o700 }),
+		mkdir(skillStagingDirectory(), { recursive: true, mode: 0o700 }),
 		mkdir(managedSkillsDirectory(), { recursive: true, mode: 0o700 }),
 	]);
 }

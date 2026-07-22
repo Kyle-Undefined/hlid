@@ -65,7 +65,7 @@ type SkillRoot = {
 
 type InternalDiscoveredSkill = DiscoveredSkillPackage & { sourcePath: string };
 
-async function validatePackageTree(
+export async function validatePackageTree(
 	root: string,
 ): Promise<{ fileCount: number; bytes: number }> {
 	let files = 0;
@@ -302,7 +302,7 @@ function managedSkillId(packagePath: string): string {
 		.slice(0, 24);
 }
 
-async function managedSkillPackages(): Promise<
+export async function managedSkillPackages(): Promise<
 	Array<{ id: string; name: string; path: string; sourcePath: string }>
 > {
 	const root = managedSkillsDirectory();
