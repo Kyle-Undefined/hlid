@@ -161,6 +161,29 @@ describe("wsStore — Slice A: immediate-send drain", () => {
 		unsubscribe();
 	});
 
+	it("buffers a live vault-referenced user row while history is loading", () => {
+		wsStore.setBufferingEnabled(true);
+		currentWs.onmessage?.({
+			data: JSON.stringify({
+				type: "user_message",
+				id: "m1",
+				text: "Compare these",
+				session_id: "s1",
+				vault_references: ["Projects/Hlid.md"],
+			}),
+		});
+
+		expect(wsStore.drainMessageBuffer()).toEqual([
+			{
+				type: "user_message",
+				id: "m1",
+				text: "Compare these",
+				session_id: "s1",
+				vault_references: ["Projects/Hlid.md"],
+			},
+		]);
+	});
+
 	it("done event removes the queued item matching its turn_id (not just the head)", () => {
 		wsStore.enqueueChat({ id: "m1", text: "first", session_id: "s1" });
 		wsStore.enqueueChat({ id: "m2", text: "second", session_id: "s1" });

@@ -1,4 +1,3 @@
-import { formatVaultReferencedMessage } from "../lib/vaultReferences";
 import type { ClientMessage, ServerMessage } from "../server/protocol";
 import type { SessionState } from "../server/session";
 import { forgetRavenTerminal } from "./ravenTerminalStore";
@@ -146,7 +145,7 @@ function sendChatToServer(msg: QueuedChatMessage): boolean {
 	if (_ws?.readyState !== WS_OPEN) return false;
 	const userEvent: ServerMessage = {
 		type: "user_message",
-		text: formatVaultReferencedMessage(msg.text, msg.vault_references ?? []),
+		text: msg.text,
 		session_id: msg.session_id,
 		id: msg.id,
 		...(msg.attachments ? { attachments: msg.attachments } : {}),
@@ -218,10 +217,7 @@ function consumeRunningQueuedUser(turnId: string | undefined): void {
 	if (!queued) return;
 	const userEvent: ServerMessage = {
 		type: "user_message",
-		text: formatVaultReferencedMessage(
-			queued.text,
-			queued.vault_references ?? [],
-		),
+		text: queued.text,
 		session_id: queued.session_id,
 		id: queued.id,
 		...(queued.attachments ? { attachments: queued.attachments } : {}),
@@ -467,6 +463,7 @@ function applySessionMessage(msg: ServerMessage): boolean {
 }
 
 const BUFFERED_MESSAGE_TYPES: ReadonlySet<ServerMessage["type"]> = new Set([
+	"user_message",
 	"chunk",
 	"tool_event",
 	"tool_update",

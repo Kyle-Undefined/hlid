@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 import type { Action } from "#/components/chat/chatReducer";
 import { uid } from "#/lib/utils";
+import { formatVaultReferencedMessage } from "#/lib/vaultReferences";
 import type { RateLimitMessage, ServerMessage } from "#/server/protocol";
 
 type ChatWsHandlerContext = {
@@ -29,7 +30,10 @@ function dispatchImmediateMessage(
 			dispatch({
 				type: "ADD_USER",
 				id: msg.id ?? uid(),
-				text: msg.text,
+				text: formatVaultReferencedMessage(
+					msg.text,
+					msg.vault_references ?? [],
+				),
 				...(msg.attachments ? { attachments: msg.attachments } : {}),
 			});
 			return true;

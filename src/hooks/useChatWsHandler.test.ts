@@ -177,6 +177,22 @@ describe("useChatWsHandler — session id domains", () => {
 });
 
 describe("useChatWsHandler — immediate messages", () => {
+	it("renders live vault references without waiting for history refresh", () => {
+		const { handler, dispatch } = renderHandler();
+		handler({
+			type: "user_message",
+			id: "user-1",
+			text: "Compare these",
+			vault_references: ["Projects/Hlid.md", "Notes/Decision.md"],
+		});
+
+		expect(dispatch).toHaveBeenCalledWith({
+			type: "ADD_USER",
+			id: "user-1",
+			text: "Compare these\n\nVault references:\n- Projects/Hlid.md\n- Notes/Decision.md",
+		});
+	});
+
 	it.each([
 		"idle",
 		"error",

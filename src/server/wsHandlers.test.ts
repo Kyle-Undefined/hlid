@@ -1100,6 +1100,37 @@ describe("message — chat", () => {
 		);
 	});
 
+	it("broadcasts vault references to another live view before persistence", async () => {
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const sender = makeWs();
+		const other = makeWs();
+		wsState.clients.add(sender as never);
+		wsState.clients.add(other as never);
+
+		await message(
+			sender as never,
+			JSON.stringify({
+				type: "chat",
+				text: "compare these",
+				session_id: "sess-1",
+				turn_id: "turn-1",
+				vault_references: ["Projects/Hlid.md"],
+			}),
+		);
+
+		expect(other.send).toHaveBeenCalledWith(
+			JSON.stringify({
+				type: "user_message",
+				text: "compare these",
+				session_id: "vault-id",
+				id: "turn-1",
+				vault_references: ["Projects/Hlid.md"],
+			}),
+		);
+	});
+
 	it("broadcasts status via runState when syncConfig reports model changed", async () => {
 		const session = makeSession({
 			syncConfig: vi.fn().mockReturnValue(true),

@@ -174,6 +174,7 @@ describe("chat submission policy", () => {
 			},
 			message: {
 				text: "",
+				turn_id: "turn-1",
 				vault_references: ["Projects/Hlid.md"],
 			},
 		});

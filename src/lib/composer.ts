@@ -202,6 +202,10 @@ export function prepareChatSubmission(input: {
 			type: "chat",
 			text: input.text,
 			session_id: input.sessionId,
+			// Use the same stable identity for the optimistic row, live WS echo,
+			// and persisted history row so a late snapshot cannot replace it with
+			// an incomplete copy that only becomes correct after refresh.
+			turn_id: input.id,
 			skill_contexts: input.skillContexts,
 			command_action: input.commandAction,
 			attachments,

@@ -657,6 +657,9 @@ function broadcastUserMessage(
 		session_id: entry.sessionId,
 		...(msg.turn_id !== undefined ? { id: msg.turn_id } : {}),
 		...(msg.attachments !== undefined ? { attachments: msg.attachments } : {}),
+		...(msg.vault_references !== undefined
+			? { vault_references: msg.vault_references }
+			: {}),
 	});
 	for (const client of wsState.clients) {
 		if (client === ws) continue;
