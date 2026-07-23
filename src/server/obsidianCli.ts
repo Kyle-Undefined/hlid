@@ -1531,7 +1531,8 @@ function exactNotePatchCode(input: {
 		"const data=JSON.parse(new TextDecoder().decode(bytes));",
 		"const payloadFile=app.vault.getAbstractFileByPath(data.payloadPath);",
 		'if(!payloadFile||typeof payloadFile.path!=="string")throw new Error("Hlid edit payload was not found");',
-		"const payload=JSON.parse(await app.vault.read(payloadFile));",
+		"const payloadBytes=Uint8Array.from(atob((await app.vault.read(payloadFile)).trim()),c=>c.charCodeAt(0));",
+		"const payload=JSON.parse(new TextDecoder().decode(payloadBytes));",
 		"const target=app.vault.getAbstractFileByPath(data.path);",
 		"await app.vault.delete(payloadFile);",
 		'if(!target||target.extension!=="md")throw new Error("Exact Markdown note was not found: "+data.path);',
@@ -1567,9 +1568,12 @@ async function stageObsidianEditPayload(
 	// requested path has another extension. Keep every later lookup and cleanup
 	// on the exact path Obsidian creates.
 	const path = `Hlid edit payload ${randomUUID()}.md`;
+	// Obsidian's CLI expands escape sequences in content= arguments. Base64 keeps
+	// JSON newlines, backslashes, tabs, and Unicode intact across inline chunks.
+	const encodedContent = Buffer.from(content, "utf8").toString("base64");
 	const inlineContent =
-		Buffer.byteLength(content, "utf8") <= MAX_OBSIDIAN_CLI_CONTENT_BYTES
-			? content
+		Buffer.byteLength(encodedContent, "utf8") <= MAX_OBSIDIAN_CLI_CONTENT_BYTES
+			? encodedContent
 			: "";
 	await runObsidianMutationCommand(
 		vaultName,
@@ -1585,7 +1589,7 @@ async function stageObsidianEditPayload(
 			vaultName,
 			"append",
 			[`path=${path}`],
-			content,
+			encodedContent,
 			dependencies,
 			{ inline: true },
 		);

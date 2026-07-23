@@ -498,8 +498,8 @@ describe("Obsidian CLI bridge", () => {
 				"Fornbok",
 				{
 					path: "Notes/One.md",
-					oldText: "Before",
-					newText: "After",
+					oldText: "Before\nTabbed\tvalue",
+					newText: "After\\literal",
 				},
 				dependencies,
 			),
@@ -508,9 +508,17 @@ describe("Obsidian CLI bridge", () => {
 		const createArgs = run.mock.calls[1]?.[1] ?? [];
 		expect(createArgs.slice(0, 2)).toEqual(["vault=Fornbok", "create"]);
 		expect(createArgs[2]).toMatch(/^path=Hlid edit payload [0-9a-f-]+\.md$/);
-		expect(createArgs[3]).toBe(
-			'content={"replacements":[{"oldText":"Before","newText":"After"}]}',
-		);
+		const encodedPayload = createArgs[3]?.replace(/^content=/, "") ?? "";
+		expect(
+			JSON.parse(Buffer.from(encodedPayload, "base64").toString("utf8")),
+		).toEqual({
+			replacements: [
+				{
+					oldText: "Before\nTabbed\tvalue",
+					newText: "After\\literal",
+				},
+			],
+		});
 
 		const evalArgs = run.mock.calls[3]?.[1] ?? [];
 		expect(evalArgs.slice(0, 2)).toEqual(["vault=Fornbok", "eval"]);
@@ -518,8 +526,9 @@ describe("Obsidian CLI bridge", () => {
 		expect(code).toContain("app.vault.process");
 		expect(code).toContain("next.indexOf(replacement.oldText,first+1)");
 		expect(code).toContain("app.vault.delete(payloadFile)");
-		expect(code).not.toContain("Before");
-		expect(code).not.toContain("After");
+		expect(code).toContain("atob((await app.vault.read(payloadFile)).trim())");
+		expect(code).not.toContain("Before\nTabbed\tvalue");
+		expect(code).not.toContain("After\\literal");
 	});
 
 	it("keeps chunked edit payload creation, append, and eval on one Markdown path", async () => {
@@ -558,6 +567,20 @@ describe("Obsidian CLI bridge", () => {
 		expect(run.mock.calls[5]?.[1]?.[2]).toBe(payloadArgument);
 		expect(run.mock.calls[3]?.[1]?.at(-1)).toBe("inline");
 		expect(run.mock.calls[5]?.[1]?.at(-1)).toBe("inline");
+		const encodedPayload = [3, 5]
+			.map((index) =>
+				(
+					run.mock.calls[index]?.[1]?.find((arg) =>
+						arg.startsWith("content="),
+					) ?? ""
+				).replace(/^content=/, ""),
+			)
+			.join("");
+		expect(
+			JSON.parse(Buffer.from(encodedPayload, "base64").toString("utf8")),
+		).toEqual({
+			replacements: [{ oldText, newText: "After" }],
+		});
 		expect(run.mock.calls[7]?.[1]?.slice(0, 2)).toEqual([
 			"vault=Fornbok",
 			"eval",
@@ -624,9 +647,16 @@ describe("Obsidian CLI bridge", () => {
 			),
 		).resolves.toEqual({ path: "Notes/One.md", replacements: 2 });
 
-		expect(run.mock.calls[1]?.[1]?.[3]).toBe(
-			'content={"replacements":[{"oldText":"One","newText":"First"},{"oldText":"Two","newText":"Second"}]}',
-		);
+		const encodedPayload =
+			run.mock.calls[1]?.[1]?.[3]?.replace(/^content=/, "") ?? "";
+		expect(
+			JSON.parse(Buffer.from(encodedPayload, "base64").toString("utf8")),
+		).toEqual({
+			replacements: [
+				{ oldText: "One", newText: "First" },
+				{ oldText: "Two", newText: "Second" },
+			],
+		});
 		const code = run.mock.calls[3]?.[1]?.[2] ?? "";
 		expect(code).toContain(
 			"for(let index=0;index<payload.replacements.length;index++)",
