@@ -65,12 +65,6 @@ const USAGE_DIMENSIONS: AnalyticsDimensions = {
 	model: "NULLIF(uq.model, '')",
 };
 
-const QUERY_DIMENSIONS: AnalyticsDimensions = {
-	agent: "q.agent_cwd",
-	provider: "q.provider_id",
-	model: "NULLIF(q.model, '')",
-};
-
 const TOOL_DIMENSIONS: AnalyticsDimensions = {
 	agent: "te.agent_cwd",
 	provider: "te.provider_id",
@@ -179,7 +173,6 @@ export async function getLedgerAnalytics(
 ): Promise<LedgerAnalytics> {
 	const db = await getDb();
 	const usage = sessionConditions(filter, "uq.timestamp", USAGE_DIMENSIONS);
-	const query = sessionConditions(filter, "q.timestamp", QUERY_DIMENSIONS);
 	const toolSources = toolEventConditions(filter);
 
 	type SelectedRow = AggWindow & { sessions: number };
@@ -246,35 +239,37 @@ export async function getLedgerAnalytics(
 		.all(...toolSources.flatMap((source) => source.params))
 		.map((row) => ({ ...row, errorRate: row.errorRate ?? 0 }));
 
+	// Charts read the immutable usage ledger (not queries, which cascade-delete
+	// with their session) so splits stay consistent with the cost tiles above.
 	const weekdayHour = db
 		.query<WeekdayHourBucket, (string | number)[]>(
-			`SELECT CAST(strftime('%w', q.timestamp, 'unixepoch', 'localtime') AS INTEGER) AS weekday,
-			 CAST(strftime('%H', q.timestamp, 'unixepoch', 'localtime') AS INTEGER) AS hour,
+			`SELECT CAST(strftime('%w', uq.timestamp, 'unixepoch', 'localtime') AS INTEGER) AS weekday,
+			 CAST(strftime('%H', uq.timestamp, 'unixepoch', 'localtime') AS INTEGER) AS hour,
 			 COUNT(*) AS count
-			 FROM queries q JOIN sessions s ON s.id = q.session_id
-			 ${query.sql}
+			 FROM usage_queries uq
+			 ${usage.sql}
 			 GROUP BY weekday, hour`,
 		)
-		.all(...query.params);
+		.all(...usage.params);
 	const hourCounts = new Array<number>(24).fill(0);
 	for (const row of weekdayHour) hourCounts[row.hour] += row.count;
 
 	const modelSplit = db
 		.query<ModelSplitEntry, (string | number)[]>(
-			`SELECT ${QUERY_DIMENSIONS.model} AS model, COUNT(DISTINCT q.session_id) AS count
-			 FROM queries q JOIN sessions s ON s.id = q.session_id
-			 ${query.sql}${query.sql ? " AND" : " WHERE"} ${QUERY_DIMENSIONS.model} IS NOT NULL
-			 GROUP BY ${QUERY_DIMENSIONS.model} ORDER BY count DESC, model ASC`,
+			`SELECT ${USAGE_DIMENSIONS.model} AS model, COUNT(DISTINCT uq.session_id) AS count
+			 FROM usage_queries uq
+			 ${usage.sql}${usage.sql ? " AND" : " WHERE"} ${USAGE_DIMENSIONS.model} IS NOT NULL
+			 GROUP BY ${USAGE_DIMENSIONS.model} ORDER BY count DESC, model ASC`,
 		)
-		.all(...query.params);
+		.all(...usage.params);
 	const stopReasonSplit = db
 		.query<StopReasonEntry, (string | number)[]>(
-			`SELECT q.stop_reason AS reason, COUNT(*) AS count
-			 FROM queries q JOIN sessions s ON s.id = q.session_id
-			 ${query.sql}${query.sql ? " AND" : " WHERE"} q.stop_reason IS NOT NULL
-			 GROUP BY q.stop_reason ORDER BY count DESC, reason ASC`,
+			`SELECT uq.stop_reason AS reason, COUNT(*) AS count
+			 FROM usage_queries uq
+			 ${usage.sql}${usage.sql ? " AND" : " WHERE"} uq.stop_reason IS NOT NULL
+			 GROUP BY uq.stop_reason ORDER BY count DESC, reason ASC`,
 		)
-		.all(...query.params);
+		.all(...usage.params);
 
 	const agents = db
 		.query<{ value: string }, []>(

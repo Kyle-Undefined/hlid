@@ -409,8 +409,8 @@ export async function recordQuery(
 			],
 		);
 		database.run(
-			`INSERT INTO usage_queries (session_id, timestamp, cost, cost_known, estimated_cost, unpriced, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, turns, provider_id, model, agent_cwd)
-			 VALUES (?, unixepoch(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO usage_queries (session_id, timestamp, cost, cost_known, estimated_cost, unpriced, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, turns, stop_reason, provider_id, model, agent_cwd)
+			 VALUES (?, unixepoch(), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			[
 				sessionId,
 				data.cost,
@@ -422,6 +422,7 @@ export async function recordQuery(
 				data.cache_read_tokens,
 				data.cache_creation_tokens,
 				data.turns,
+				data.stop_reason,
 				providerId,
 				queryModel,
 				queryAgentCwd,

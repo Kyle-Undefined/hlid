@@ -5,6 +5,7 @@ import { appendMessage, appendToolEvent, setToolEventResult } from "./messages";
 import { setDbForTest } from "./schema";
 import {
 	createSession,
+	deleteSession,
 	recordQuery,
 	setSessionAgentCwd,
 	setSessionModel,
@@ -175,6 +176,29 @@ describe("Ledger filtered analytics", () => {
 			distinct: 2,
 			groups: [{ text: "same error", count: 2 }],
 		});
+	});
+
+	it("keeps deleted-session usage in every split, matching the cost tiles", async () => {
+		await createSession("kept", "Kept", "kept-model");
+		await recordQuery("kept", query("end_turn", 1), "claude");
+		await createSession("deleted", "Deleted", "deleted-model");
+		await recordQuery("deleted", query("max_tokens", 2), "claude");
+		await deleteSession("deleted");
+
+		const result = await getLedgerAnalytics({ range: "all" });
+
+		expect(result.selected.queries).toBe(2);
+		expect(result.selected.cost).toBe(3);
+		expect(result.selected.sessions).toBe(2);
+		expect(result.modelSplit).toEqual([
+			{ model: "deleted-model", count: 1 },
+			{ model: "kept-model", count: 1 },
+		]);
+		expect(result.stopReasonSplit).toEqual([
+			{ reason: "end_turn", count: 1 },
+			{ reason: "max_tokens", count: 1 },
+		]);
+		expect(result.weekdayHour.reduce((sum, row) => sum + row.count, 0)).toBe(2);
 	});
 
 	it("treats Today as the current local calendar day", async () => {

@@ -1230,4 +1230,33 @@ function applyMigrations(db: Db): void {
 			`ALTER TABLE routines ADD COLUMN provider_commands_json TEXT NOT NULL DEFAULT '[]'`,
 		);
 	});
+
+	// Ledger analytics should read the immutable usage ledger for every split,
+	// but stop_reason previously lived only on queries — which cascade-delete
+	// with their session — so the stop-reason chart silently dropped deleted
+	// sessions while the cost tiles kept them. Copy stop_reason onto
+	// usage_queries, pairing rows by per-session insert order (both tables are
+	// written in the same recordQuery transaction, so ranks always align).
+	runMigration(db, "_migrated_usage_queries_stop_reason", (db) => {
+		db.run(`ALTER TABLE usage_queries ADD COLUMN stop_reason TEXT`);
+		db.run(`
+			WITH ranked_q AS (
+				SELECT session_id, stop_reason,
+				       ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY id) AS rn
+				FROM queries
+			), ranked_uq AS (
+				SELECT id, session_id,
+				       ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY id) AS rn
+				FROM usage_queries
+			)
+			UPDATE usage_queries
+			SET stop_reason = (
+				SELECT ranked_q.stop_reason
+				FROM ranked_uq JOIN ranked_q
+					ON ranked_q.session_id = ranked_uq.session_id
+					AND ranked_q.rn = ranked_uq.rn
+				WHERE ranked_uq.id = usage_queries.id
+			)
+		`);
+	});
 }
