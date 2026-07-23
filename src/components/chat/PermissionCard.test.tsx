@@ -83,6 +83,26 @@ describe("PermissionCard", () => {
 		expect(screen.getByText("/tmp/output")).not.toBeNull();
 	});
 
+	it("shows the active note for an Obsidian command approval", () => {
+		render(
+			<PermissionCard
+				message={permission({
+					toolName: "mcp__hlid_obsidian__run_command",
+					displayName: "Obsidian command",
+					input: {
+						id: "app:delete-file",
+						activeNote: "1 Projects/Hlid/Current plan.md",
+					},
+				})}
+				onDecide={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByText("Active note")).not.toBeNull();
+		expect(screen.getByText("1 Projects/Hlid/Current plan.md")).not.toBeNull();
+		expect(screen.getByText("app:delete-file")).not.toBeNull();
+	});
+
 	it("makes native Computer Use app identity and Always scope explicit", () => {
 		render(
 			<PermissionCard

@@ -89,6 +89,7 @@ vi.mock("./promptBuilder", () => ({
 	}),
 }));
 vi.mock("./obsidianCli", () => ({
+	getActiveObsidianNote: vi.fn().mockResolvedValue(null),
 	readObsidianNote: vi.fn().mockResolvedValue("# Native note"),
 }));
 vi.mock("node:fs", () => ({
@@ -122,7 +123,7 @@ import type {
 import { waitForClaudeWarmupSnapshot } from "./claudeWarmup";
 import { loadConfig } from "./config";
 import { resolveExecutionContext } from "./executionContext";
-import { readObsidianNote } from "./obsidianCli";
+import { getActiveObsidianNote, readObsidianNote } from "./obsidianCli";
 import { buildPromptAsync } from "./promptBuilder";
 import type { RateLimitMessage, ServerMessage } from "./protocol";
 import { getWindowMark } from "./proxy";
@@ -617,6 +618,7 @@ describe("SessionManager — Umbod hook approval routing", () => {
 	});
 
 	it("keeps hook approvals scoped to the exact Obsidian command", async () => {
+		vi.mocked(getActiveObsidianNote).mockResolvedValueOnce("Notes/Active.md");
 		const provider: AgentProvider = {
 			providerId: "codex",
 			query(): AgentSession {
@@ -667,7 +669,7 @@ describe("SessionManager — Umbod hook approval routing", () => {
 				id: "hook-command-1",
 				displayName: "Obsidian command",
 				title: "Run an Obsidian command in Test?",
-				input: { id: "app:go-back" },
+				input: { id: "app:go-back", activeNote: "Notes/Active.md" },
 			}),
 		);
 		sm.handlePermissionResponse("hook-command-1", true, "session");
@@ -2518,6 +2520,7 @@ describe("SessionManager — session-scoped permission persistence", () => {
 	});
 
 	it("keeps Obsidian session approval scoped to the exact command ID", async () => {
+		vi.mocked(getActiveObsidianNote).mockResolvedValueOnce("Notes/Active.md");
 		const toolName = "mcp__hlid_obsidian__run_command";
 		const decisions: AgentToolDecision[] = [];
 		const provider: AgentProvider = {
@@ -2576,7 +2579,7 @@ describe("SessionManager — session-scoped permission persistence", () => {
 				id: "command-1",
 				displayName: "Obsidian command",
 				title: "Run an Obsidian command in Test?",
-				input: { id: "app:go-back" },
+				input: { id: "app:go-back", activeNote: "Notes/Active.md" },
 			}),
 		);
 		sm.handlePermissionResponse("command-1", true, "session");

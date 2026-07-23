@@ -47,7 +47,7 @@ import { loadConfig } from "./config";
 import { bumpDataRevision } from "./dataRevision";
 import { resolveExecutionContext } from "./executionContext";
 import { planStagingPath, prepareLibrary } from "./libraryStore";
-import { readObsidianNote } from "./obsidianCli";
+import { getActiveObsidianNote, readObsidianNote } from "./obsidianCli";
 import { resolveObsidianCommandPermission } from "./obsidianCommandApproval";
 import { parseAskUserQuestion } from "./parseAskUserQuestion";
 import {
@@ -94,6 +94,26 @@ function logDbError(operation: string, err: unknown): void {
 	void db.appendLog("error", "db", `${operation} failed`, {
 		error: String(err),
 	});
+}
+
+async function obsidianCommandApprovalInput(
+	toolName: string,
+	input: Record<string, unknown>,
+	vaultName: string,
+): Promise<Record<string, unknown>> {
+	if (resolveObsidianCommandPermission(toolName, input, vaultName) === null) {
+		return input;
+	}
+	try {
+		const activeNote = await getActiveObsidianNote(
+			vaultName,
+			{},
+			{ launchIfNeeded: false },
+		);
+		return activeNote ? { ...input, activeNote } : input;
+	} catch {
+		return input;
+	}
 }
 
 /** Mutable accumulator for per-turn SDK event state, threaded through the event loop. */
@@ -1640,7 +1660,7 @@ export class SessionManager {
 		}
 	}
 
-	private promptForHookApproval(
+	private async promptForHookApproval(
 		call: ToolCall,
 		reason: string,
 		provider: AgentProvider,
@@ -1648,9 +1668,15 @@ export class SessionManager {
 	): Promise<"allow" | "block"> {
 		const toolUseID = call.toolUseId ?? `umbod-${Date.now()}`;
 		const toolName = call.tool;
+		const toolInput =
+			call.inputs &&
+			typeof call.inputs === "object" &&
+			!Array.isArray(call.inputs)
+				? (call.inputs as Record<string, unknown>)
+				: {};
 		const obsidianCommand = resolveObsidianCommandPermission(
 			toolName,
-			call.inputs,
+			toolInput,
 			this.vaultName,
 		);
 		const permissionKey = obsidianCommand?.key ?? toolName;
@@ -1669,6 +1695,18 @@ export class SessionManager {
 				toolUseId: toolUseID,
 			}).then((result) => (result.allowed ? "allow" : "block"));
 		}
+		if (
+			this.sessionAllowedTools.has(permissionKey) ||
+			(obsidianCommand !== null &&
+				this.rememberedObsidianCommands.has(obsidianCommand.commandId))
+		) {
+			return "allow";
+		}
+		const approvalInput = await obsidianCommandApprovalInput(
+			toolName,
+			toolInput,
+			this.vaultName,
+		);
 		const request = {
 			type: "permission_request" as const,
 			id: toolUseID,
@@ -1682,17 +1720,9 @@ export class SessionManager {
 				obsidianCommand !== null
 					? `${reason}\n\nAlways applies only to command ${obsidianCommand.commandId} in the configured ${this.vaultName} vault.`
 					: reason,
-			input: call.inputs,
+			input: approvalInput,
 		};
 		return new Promise((finish) => {
-			if (
-				this.sessionAllowedTools.has(permissionKey) ||
-				(obsidianCommand !== null &&
-					this.rememberedObsidianCommands.has(obsidianCommand.commandId))
-			) {
-				finish("allow");
-				return;
-			}
 			this.permissions.register(toolUseID, request, (approved, saveScope) => {
 				if (approved && saveScope === "session")
 					this.sessionAllowedTools.add(permissionKey);
@@ -3177,7 +3207,7 @@ export class SessionManager {
 			"hlid.windows_computer_use:",
 		);
 		let routineDecision: Promise<"allow" | "block"> | null = null;
-		const prompt = (reason?: string) => {
+		const prompt = async (reason?: string) => {
 			if (this.activeRoutineContext) {
 				if (!routineDecision) {
 					routineDecision = authorizeRoutineCapability({
@@ -3193,19 +3223,27 @@ export class SessionManager {
 				}
 				return routineDecision;
 			}
+			if (
+				this.sessionAllowedTools.has(permissionKey) ||
+				(obsidianCommand !== null &&
+					this.rememberedObsidianCommands.has(obsidianCommand.commandId))
+			) {
+				if (obsidianCommand === null) approvalSaveScope = "session";
+				return "allow" as const;
+			}
+			const approvalInput = await obsidianCommandApprovalInput(
+				toolName,
+				passInput,
+				this.vaultName,
+			);
+			const approvalRequest = { ...request, input: approvalInput };
 			return new Promise<"allow" | "block">((finish) => {
-				if (
-					this.sessionAllowedTools.has(permissionKey) ||
-					(obsidianCommand !== null &&
-						this.rememberedObsidianCommands.has(obsidianCommand.commandId))
-				) {
-					approvalSaveScope = "session";
-					finish("allow");
-					return;
-				}
 				this.permissions.register(
 					toolUseID,
-					{ ...request, description: reason ?? request.description },
+					{
+						...approvalRequest,
+						description: reason ?? approvalRequest.description,
+					},
 					(approved, saveScope, customDenyMessage) => {
 						this.permissions.delete(toolUseID);
 						if (!approved) {
@@ -3241,7 +3279,10 @@ export class SessionManager {
 						finish("allow");
 					},
 				);
-				emit({ ...request, description: reason ?? request.description });
+				emit({
+					...approvalRequest,
+					description: reason ?? approvalRequest.description,
+				});
 			});
 		};
 

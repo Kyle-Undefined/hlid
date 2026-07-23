@@ -53,6 +53,10 @@ export function PermissionCard({
 	const appId =
 		typeof message.input?.appId === "string" ? message.input.appId : undefined;
 	const appIdentity = appName ?? appId;
+	const activeNote =
+		typeof message.input?.activeNote === "string"
+			? message.input.activeNote
+			: undefined;
 	const inputPreview =
 		message.input && !appIdentity
 			? ((message.input.command as string | undefined) ??
@@ -100,6 +104,16 @@ export function PermissionCard({
 							)}
 							<div className="mt-1.5 text-[9px] text-muted-foreground/55">
 								Always applies only to this application.
+							</div>
+						</div>
+					)}
+					{activeNote && (
+						<div className="min-w-0 max-w-full mt-2 px-2 py-2 bg-secondary/60 border border-border overflow-hidden">
+							<div className="text-[8px] tracking-widest text-muted-foreground/55 uppercase">
+								Active note
+							</div>
+							<div className="mt-0.5 font-mono text-[11px] text-foreground/85 whitespace-pre-wrap break-all">
+								{activeNote}
 							</div>
 						</div>
 					)}
