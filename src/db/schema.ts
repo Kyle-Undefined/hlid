@@ -1113,6 +1113,14 @@ function applyMigrations(db: Db): void {
 		);
 	});
 
+	runMigration(db, "_migrated_sessions_archived_at", (db) => {
+		db.run(`ALTER TABLE sessions ADD COLUMN archived_at INTEGER`);
+		db.run(
+			`CREATE INDEX idx_sessions_archived_recent
+			 ON sessions(archived_at, pinned DESC, ended_at DESC, started_at DESC)`,
+		);
+	});
+
 	runMigration(db, "_migrated_routines_v1", (db) => {
 		db.run(`
 			CREATE TABLE routines (

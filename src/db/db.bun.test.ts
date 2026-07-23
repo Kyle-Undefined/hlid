@@ -63,6 +63,7 @@ import {
 	recordQuery,
 	setSessionActualModel,
 	setSessionAgentCwd,
+	setSessionArchived,
 	setSessionClaudeId,
 	setSessionEffort,
 	setSessionModel,
@@ -250,6 +251,29 @@ describe("sessions — create & fetch", () => {
 		const recent = await getSessionsPaginated(1, 20, { sort: "recent" });
 		expect(recent.sessions.map((row) => row.id)).toEqual(["pinned", "newest"]);
 		expect(recent.sessions[0]?.pinned).toBe(1);
+	});
+
+	it("archives sessions reversibly, removes pinning, and protects cleanup", async () => {
+		const db = freshDb();
+		await createSession("kept", "Keep me", "m");
+		await setSessionPinned("kept", true);
+		db.run(`UPDATE sessions SET started_at = 1 WHERE id = 'kept'`);
+
+		await setSessionArchived("kept", true);
+		expect((await getSessionById("kept"))?.pinned).toBe(0);
+		expect((await getSessionById("kept"))?.archived_at).not.toBeNull();
+		expect((await getSessionsPaginated(1, 20)).sessions).toHaveLength(0);
+		expect(
+			(await getSessionsPaginated(1, 20, { archived: true })).sessions.map(
+				(row) => row.id,
+			),
+		).toEqual(["kept"]);
+		expect(await getRecentSessions()).toHaveLength(0);
+		expect((await deleteSessionsOlderThan(1)).count).toBe(0);
+
+		await setSessionArchived("kept", false);
+		expect((await getSessionById("kept"))?.archived_at).toBeNull();
+		expect((await getSessionsPaginated(1, 20)).sessions[0]?.id).toBe("kept");
 	});
 
 	it("getSessionsPaginated filters by label search with LIKE escaping", async () => {

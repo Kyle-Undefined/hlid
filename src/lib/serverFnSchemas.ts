@@ -33,6 +33,7 @@ export const sessionPageSchema = z.object({
 	provider: z.string().trim().min(1).max(100).optional(),
 	stop: z.string().trim().min(1).max(100).optional(),
 	sort: z.enum(["recent", "cost", "tokens"]).optional(),
+	archived: z.boolean().optional(),
 });
 
 export const sessionDeleteSchema = z.object({ id: sessionIdSchema });
@@ -51,6 +52,11 @@ export const sessionRenameSchema = z.object({
 export const sessionPinSchema = z.object({
 	id: sessionIdSchema,
 	pinned: z.boolean(),
+});
+
+export const sessionArchiveSchema = z.object({
+	id: sessionIdSchema,
+	archived: z.boolean(),
 });
 
 export const sessionCleanupSchema = z.object({

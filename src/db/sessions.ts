@@ -469,6 +469,8 @@ const SESSION_EFFECTIVE_MODEL_SQL =
 type SessionListOptions = {
 	search?: string;
 	sort?: SessionSort;
+	/** False/default lists active sessions; true lists archived sessions. */
+	archived?: boolean;
 	/** "vault" matches rows without an agent cwd; any other value is exact. */
 	agent?: string;
 	model?: string;
@@ -483,7 +485,9 @@ function buildSessionFilter(opts: Omit<SessionListOptions, "sort">): {
 	whereSql: string;
 	params: string[];
 } {
-	const conditions: string[] = [];
+	const conditions: string[] = [
+		opts.archived ? "archived_at IS NOT NULL" : "archived_at IS NULL",
+	];
 	const params: string[] = [];
 	if (opts.search) {
 		const escaped = opts.search
@@ -582,7 +586,8 @@ export async function getSessionsPaginated(
 		.get(...params);
 	const oldest = db
 		.query<{ oldest: number | null }, []>(
-			`SELECT MIN(started_at) as oldest FROM sessions WHERE history_imported = 0`,
+			`SELECT MIN(started_at) as oldest FROM sessions
+			 WHERE history_imported = 0 AND archived_at IS NULL`,
 		)
 		.get();
 	const agentCwds = db
@@ -590,11 +595,15 @@ export async function getSessionsPaginated(
 			`SELECT DISTINCT agent_cwd
 			 FROM sessions
 			 WHERE agent_cwd IS NOT NULL AND TRIM(agent_cwd) <> ''
+			   AND archived_at ${opts.archived ? "IS NOT NULL" : "IS NULL"}
 			 ORDER BY agent_cwd COLLATE NOCASE ASC`,
 		)
 		.all()
 		.map((row) => row.agent_cwd);
-	const agentFilter = buildSessionFilter({ agent: opts.agent });
+	const agentFilter = buildSessionFilter({
+		agent: opts.agent,
+		archived: opts.archived,
+	});
 	const modelWhere = agentFilter.whereSql
 		? `${agentFilter.whereSql} AND ${SESSION_EFFECTIVE_MODEL_SQL} IS NOT NULL`
 		: `WHERE ${SESSION_EFFECTIVE_MODEL_SQL} IS NOT NULL`;
@@ -689,7 +698,9 @@ export async function deleteSessionsOlderThan(
 	db.transaction(() => {
 		const sessionRows = db
 			.query<{ id: string }, [number]>(
-				`SELECT id FROM sessions WHERE started_at < ? AND history_imported = 0`,
+				`SELECT id FROM sessions
+				 WHERE started_at < ? AND history_imported = 0
+				   AND archived_at IS NULL`,
 			)
 			.all(cutoff);
 		ids = sessionRows.map((r) => r.id);
@@ -730,6 +741,31 @@ export async function setSessionPinned(
 	db.run(`UPDATE sessions SET pinned = ? WHERE id = ?`, [pinned ? 1 : 0, id]);
 }
 
+export async function setSessionArchived(
+	id: string,
+	archived: boolean,
+): Promise<void> {
+	const db = await getDb();
+	const result = archived
+		? db.run(
+				`UPDATE sessions
+				 SET archived_at = unixepoch(), pinned = 0
+				 WHERE id = ? AND archived_at IS NULL`,
+				[id],
+			)
+		: db.run(
+				`UPDATE sessions SET archived_at = NULL
+				 WHERE id = ? AND archived_at IS NOT NULL`,
+				[id],
+			);
+	if (result.changes === 0) {
+		const existing = db
+			.query<{ id: string }, [string]>(`SELECT id FROM sessions WHERE id = ?`)
+			.get(id);
+		if (!existing) throw new Error("Session not found");
+	}
+}
+
 export async function getSessionById(id: string): Promise<SessionRow | null> {
 	const db = await getDb();
 	return (
@@ -743,7 +779,8 @@ export async function getRecentSessions(limit = 14): Promise<SessionRow[]> {
 	const db = await getDb();
 	return db
 		.query<SessionRow, [number]>(
-			`SELECT * FROM sessions WHERE history_imported = 0
+			`SELECT * FROM sessions
+			 WHERE history_imported = 0 AND archived_at IS NULL
 			 ORDER BY COALESCE(ended_at, started_at) DESC LIMIT ?`,
 		)
 		.all(limit);

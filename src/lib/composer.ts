@@ -146,7 +146,7 @@ export function prepareChatSubmission(input: {
 	sessionId: string;
 	running: boolean;
 	skillContexts?: string[];
-	commandAction?: Exclude<CommandAction, "goal" | "mcp">;
+	commandAction?: Exclude<CommandAction, "goal" | "mcp" | "rename" | "archive">;
 	attachments: ChatAttachment[];
 	vaultReferences?: string[];
 	agentCwd?: string;

@@ -267,6 +267,12 @@ export function useCockpitRun(options: CockpitRunOptions) {
 			);
 			return;
 		}
+		if (commandAction === "rename" || commandAction === "archive") {
+			options.setRunError(
+				`Session ${commandAction} is managed from an existing Raven session.`,
+			);
+			return;
+		}
 		if (
 			(!text &&
 				options.pendingAttachments.length === 0 &&

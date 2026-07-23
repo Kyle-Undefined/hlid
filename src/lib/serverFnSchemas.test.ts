@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
 	agentListSchema,
 	eventLogQuerySchema,
+	sessionArchiveSchema,
 	sessionCleanupSchema,
 	sessionDeleteSchema,
 	sessionPageSchema,
@@ -62,6 +63,10 @@ describe("server function boundary schemas", () => {
 			sessionRenameSchema.safeParse({ id: "s1", label: "x".repeat(201) })
 				.success,
 		).toBe(false);
+		expect(sessionArchiveSchema.parse({ id: "s1", archived: true })).toEqual({
+			id: "s1",
+			archived: true,
+		});
 	});
 
 	it("validates session-scoped tool detail reads", () => {

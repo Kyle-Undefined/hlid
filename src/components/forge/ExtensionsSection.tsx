@@ -862,20 +862,22 @@ export function ExtensionsSection() {
 				const result = response.result;
 				const subject = result.subject || result.pluginId || "Extension";
 				setMutationNotice(
-					result.action === "install"
-						? `${subject} installed in ${result.environmentLabel}.`
-						: result.action === "update"
-							? `${subject} updated in ${result.environmentLabel}.`
-							: result.action === "uninstall"
-								? `${subject} removed from ${result.environmentLabel}.`
-								: result.action === "set_enabled" &&
-										input.action === "set_enabled"
-									? `${subject} ${input.enabled ? "enabled" : "disabled"} in ${result.environmentLabel}.`
-									: result.action === "add_marketplace"
-										? `${subject} added in ${result.environmentLabel}.`
-										: result.action === "upgrade_marketplace"
-											? `${subject} updated in ${result.environmentLabel}.`
-											: `${subject} removed from ${result.environmentLabel}.`,
+					`${
+						result.action === "install"
+							? `${subject} installed in ${result.environmentLabel}.`
+							: result.action === "update"
+								? `${subject} updated in ${result.environmentLabel}.`
+								: result.action === "uninstall"
+									? `${subject} removed from ${result.environmentLabel}.`
+									: result.action === "set_enabled" &&
+											input.action === "set_enabled"
+										? `${subject} ${input.enabled ? "enabled" : "disabled"} in ${result.environmentLabel}.`
+										: result.action === "add_marketplace"
+											? `${subject} added in ${result.environmentLabel}.`
+											: result.action === "upgrade_marketplace"
+												? `${subject} updated in ${result.environmentLabel}.`
+												: `${subject} removed from ${result.environmentLabel}.`
+					}${result.warning ? ` ${result.warning}` : ""}`,
 				);
 				if (result.action === "add_marketplace") {
 					setMarketplaceSource("");
@@ -888,6 +890,9 @@ export function ExtensionsSection() {
 				setMutationError(
 					cause instanceof Error ? cause.message : "Extension action failed",
 				);
+				// Native CLIs can change provider state before returning a failure.
+				// Always replace the visible catalog with a fresh provider snapshot.
+				await load().catch(() => {});
 			} finally {
 				setMutatingId(null);
 			}

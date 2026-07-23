@@ -6,6 +6,7 @@ import {
 	filterProviderCompatibleCommands,
 	mergeCommands,
 	parseGoalCommand,
+	parseRenameCommand,
 	resolveCommandSubmission,
 	routineProviderCommandText,
 	skillCommand,
@@ -59,6 +60,8 @@ describe("commands", () => {
 			"provider",
 			"hlid",
 			"hlid",
+			"hlid",
+			"hlid",
 		]);
 		expect(commandMatches(commands[1], "wh")).toBe(true);
 	});
@@ -80,7 +83,12 @@ describe("commands", () => {
 				{ name: "explain", description: "Explain", argumentHint: "" },
 			],
 		);
-		expect(commands.map(({ name }) => name)).toEqual(["explain", "mcp"]);
+		expect(commands.map(({ name }) => name)).toEqual([
+			"explain",
+			"mcp",
+			"rename",
+			"archive",
+		]);
 	});
 
 	it("maps MCP to Raven's scoped UI and keeps it out of Watch", () => {
@@ -146,7 +154,7 @@ describe("commands", () => {
 			source: "library",
 			execution: { kind: "skill", filePath: managed.filePath },
 		});
-		expect(mergeCommands([managed], [], "claude")).toHaveLength(2);
+		expect(mergeCommands([managed], [], "claude")).toHaveLength(4);
 	});
 
 	it("shows provider-owned skills only for their provider", () => {
@@ -161,7 +169,7 @@ describe("commands", () => {
 			mergeCommands([skill, claudeSkill], [], "codex").map(
 				(command) => command.name,
 			),
-		).toEqual(["garden-check", "mcp"]);
+		).toEqual(["garden-check", "mcp", "rename", "archive"]);
 
 		const commands = mergeCommands([skill, claudeSkill], [], "claude");
 		const claude = commands.find((command) => command.name === "kyle-voice");
@@ -239,6 +247,13 @@ describe("commands", () => {
 			action: "set",
 			objective: "Finish the release gate",
 		});
+	});
+
+	it("parses Hlid-owned rename input without preserving command syntax", () => {
+		expect(parseRenameCommand("/rename Release follow-up")).toBe(
+			"Release follow-up",
+		);
+		expect(parseRenameCommand("/rename")).toBeNull();
 	});
 
 	it("resolves computer-use as a namespaced Hlid capability action", () => {

@@ -13,6 +13,7 @@ type LedgerMutationDependencies = {
 	deleteSession(id: string): Promise<void>;
 	renameSession(id: string, label: string): Promise<void>;
 	setSessionPinned(id: string, pinned: boolean): Promise<void>;
+	setSessionArchived?(id: string, archived: boolean): Promise<void>;
 	forkSession(id: string): Promise<void>;
 	cleanupSessions(days: number): Promise<void>;
 	navigateToPage(page: number): void;
@@ -28,14 +29,18 @@ type LedgerMutationDependencies = {
 
 export function useLedgerSessionMutations({
 	page,
+	scopeKey = "",
 	sessionPage,
 	dependencies,
 }: {
 	page: number;
+	/** Changes when the Ledger switches between distinct list surfaces. */
+	scopeKey?: string;
 	sessionPage: SessionPage;
 	dependencies: LedgerMutationDependencies;
 }) {
 	const [deletedIds, setDeletedIds] = useState<Set<string>>(new Set());
+	const [archivedIds, setArchivedIds] = useState<Set<string>>(new Set());
 	const [renamedLabels, setRenamedLabels] = useState<Map<string, string>>(
 		new Map(),
 	);
@@ -46,14 +51,18 @@ export function useLedgerSessionMutations({
 	const [forkingIds, setForkingIds] = useState<Set<string>>(new Set());
 	const [forkStatus, setForkStatus] = useState<string | null>(null);
 
-	// biome-ignore lint/correctness/useExhaustiveDependencies: page identity resets optimistic route state
+	// Optimistic overrides belong to one page and one list surface. In
+	// particular, a pin override from Active must not leak into Archived after
+	// the archive mutation has forced the persisted pin back to zero.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: route identity intentionally resets optimistic state
 	useEffect(() => {
 		setDeletedIds(new Set());
+		setArchivedIds(new Set());
 		setRenamedLabels(new Map());
 		setPinnedStates(new Map());
 		setMutationError(null);
 		setForkStatus(null);
-	}, [page]);
+	}, [page, scopeKey]);
 
 	// forkStatus is a transient confirmation, not a persistent banner — auto-
 	// dismiss it so it doesn't sit on screen forever after a fork lands.
@@ -67,7 +76,10 @@ export function useLedgerSessionMutations({
 		() => ({
 			...sessionPage,
 			sessions: sessionPage.sessions
-				.filter((session) => !deletedIds.has(session.id))
+				.filter(
+					(session) =>
+						!deletedIds.has(session.id) && !archivedIds.has(session.id),
+				)
 				.map((session) => ({
 					...session,
 					...(renamedLabels.has(session.id)
@@ -77,14 +89,18 @@ export function useLedgerSessionMutations({
 						? { pinned: pinnedStates.get(session.id) as number }
 						: {}),
 				})),
-			total: Math.max(0, sessionPage.total - deletedIds.size),
+			total: Math.max(
+				0,
+				sessionPage.total - new Set([...deletedIds, ...archivedIds]).size,
+			),
 		}),
-		[sessionPage, deletedIds, renamedLabels, pinnedStates],
+		[sessionPage, deletedIds, archivedIds, renamedLabels, pinnedStates],
 	);
 
 	const reconcile = useCallback((fresh: SessionPage) => {
 		const freshIds = new Set(fresh.sessions.map((session) => session.id));
 		setDeletedIds((previous) => filterOptimisticIds(previous, freshIds));
+		setArchivedIds((previous) => filterOptimisticIds(previous, freshIds));
 		setRenamedLabels((previous) => filterOptimisticLabels(previous, freshIds));
 		setPinnedStates((previous) => {
 			const next = new Map(previous);
@@ -152,6 +168,31 @@ export function useLedgerSessionMutations({
 		}
 	}
 
+	async function setSessionArchived(id: string, archived: boolean) {
+		setMutationError(null);
+		const wasLastOnPage = sessionsData.sessions.length <= 1;
+		setArchivedIds((previous) => new Set(previous).add(id));
+		try {
+			if (!dependencies.setSessionArchived) {
+				throw new Error("Session archive operation is unavailable");
+			}
+			await dependencies.setSessionArchived(id, archived);
+			if (wasLastOnPage && page > 1) dependencies.navigateToPage(page - 1);
+			else await dependencies.reloadCurrentPage();
+		} catch (error) {
+			setArchivedIds((previous) => {
+				const next = new Set(previous);
+				next.delete(id);
+				return next;
+			});
+			setMutationError(
+				error instanceof Error
+					? error.message
+					: `Failed to ${archived ? "archive" : "restore"} session`,
+			);
+		}
+	}
+
 	/**
 	 * Forking adds a row rather than modifying one already on this page, so
 	 * there's no optimistic patch to apply (unlike rename/delete) — on
@@ -201,6 +242,7 @@ export function useLedgerSessionMutations({
 		deleteSession,
 		renameSession,
 		setSessionPinned,
+		setSessionArchived,
 		forkSession,
 		forkingIds,
 		forkStatus,

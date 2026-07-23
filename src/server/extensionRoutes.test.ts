@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { HlidConfig } from "../config";
 import type { ExtensionInventory, ExtensionReview } from "./extensionInventory";
+import { ExtensionMutationError } from "./extensionMutations";
 import { createExtensionRouteHandler } from "./extensionRoutes";
 
 const inventory: ExtensionInventory = {
@@ -259,6 +260,36 @@ describe("extension inventory routes", () => {
 		expect(response?.status).toBe(400);
 		expect(await response?.json()).toEqual({ error: "native CLI failed" });
 		expect(onChanged).not.toHaveBeenCalled();
+	});
+
+	it("refreshes dependent provider state after a partial native mutation", async () => {
+		const onChanged = vi.fn();
+		const handle = createExtensionRouteHandler({
+			loadConfig: () => ({}) as HlidConfig,
+			mutate: vi
+				.fn()
+				.mockRejectedValue(
+					new ExtensionMutationError("provider state changed", true),
+				),
+			onChanged,
+		});
+		const request = new Request("http://localhost/extensions/mutate", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				action: "uninstall",
+				id: "0123456789abcdef01234567",
+				expectedVersion: "1.0.0",
+			}),
+		});
+		const response = await handle(new URL(request.url), request);
+
+		expect(response?.status).toBe(400);
+		expect(await response?.json()).toEqual({
+			error: "provider state changed",
+			stateChanged: true,
+		});
+		expect(onChanged).toHaveBeenCalledOnce();
 	});
 
 	it("ignores unsupported methods and unrelated paths", async () => {

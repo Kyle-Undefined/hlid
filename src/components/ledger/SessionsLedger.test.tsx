@@ -83,6 +83,7 @@ function renderLedger(
 		onDelete: vi.fn(),
 		onRename: vi.fn(),
 		onPin: vi.fn(),
+		onArchive: vi.fn(),
 		onFork: vi.fn(),
 		onNavigate: vi.fn(),
 		onCleanup: vi.fn(),
@@ -379,6 +380,27 @@ describe("SessionsLedger session actions", () => {
 		expect(pinnedProps.onPin).toHaveBeenCalledWith("session-1", false);
 	});
 
+	it("archives active sessions and restores archived sessions", () => {
+		const props = renderLedger();
+		openSessionActions();
+		fireEvent.click(screen.getByRole("button", { name: "Archive" }));
+		expect(props.onArchive).toHaveBeenCalledWith("session-1", true);
+
+		cleanup();
+		const archivedProps = renderLedger({ archived: true });
+		openSessionActions();
+		expect(screen.queryByRole("button", { name: "Pin to top" })).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+		expect(archivedProps.onArchive).toHaveBeenCalledWith("session-1", false);
+	});
+
+	it("switches between active and archived session lists", () => {
+		const onArchivedChange = vi.fn();
+		renderLedger({ archived: false, onArchivedChange });
+		fireEvent.click(screen.getByRole("button", { name: "Archived" }));
+		expect(onArchivedChange).toHaveBeenCalledWith(true);
+	});
+
 	it("keeps pinned rows above running unpinned rows", () => {
 		const pinned = { ...session, id: "pinned", label: "Pinned", pinned: 1 };
 		const running = { ...session, id: "running", label: "Running", pinned: 0 };
@@ -416,6 +438,7 @@ describe("SessionsLedger session actions", () => {
 			onDelete: vi.fn(),
 			onRename: vi.fn(),
 			onPin: vi.fn(),
+			onArchive: vi.fn(),
 			onFork,
 			forkingIds: new Set<string>(),
 			onNavigate: vi.fn(),
@@ -708,6 +731,7 @@ describe("SessionsLedger header controls", () => {
 				onDelete: vi.fn(),
 				onRename: vi.fn(),
 				onPin: vi.fn(),
+				onArchive: vi.fn(),
 				onFork: vi.fn(),
 				onNavigate: vi.fn(),
 				onCleanup: vi.fn(),

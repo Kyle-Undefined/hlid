@@ -74,6 +74,7 @@ import {
 	type CommandDescriptor,
 	filterProviderCompatibleCommands,
 	parseGoalCommand,
+	parseRenameCommand,
 	resolveCommandSubmission,
 } from "#/lib/commands";
 import {
@@ -120,6 +121,8 @@ import {
 	getLiveSessionsFn,
 	getSessionRowFn,
 	getSessionSelectionFn,
+	renameSessionFn,
+	setSessionArchivedFn,
 } from "#/lib/serverFns/sessions";
 import { getVoiceInfoFn } from "#/lib/serverFns/voice";
 import { uid } from "#/lib/utils";
@@ -1124,6 +1127,7 @@ function useRavenDecisionActions({ runtime, setPlanMode }: RavenActionProps) {
 }
 
 function useRavenSend(props: RavenActionProps) {
+	const navigate = useNavigate();
 	const {
 		input,
 		setInput,
@@ -1190,6 +1194,67 @@ function useRavenSend(props: RavenActionProps) {
 				clearDraft();
 				setInput("");
 				setActiveSkills([]);
+				return;
+			}
+			if (commandAction === "rename") {
+				const label = parseRenameCommand(text);
+				clearDraft();
+				setInput("");
+				setActiveSkills([]);
+				if (!label) {
+					dispatch({
+						type: "ADD_LOCAL_COMMAND_OUTPUT",
+						id: uid(),
+						content: "Usage: /rename <name>",
+					});
+					return;
+				}
+				void renameSessionFn({ data: { id: sessionId, label } }).then(
+					() =>
+						dispatch({
+							type: "ADD_LOCAL_COMMAND_OUTPUT",
+							id: uid(),
+							content: `Session renamed to “${label}”.`,
+						}),
+					(error) =>
+						dispatch({
+							type: "ADD_LOCAL_COMMAND_OUTPUT",
+							id: uid(),
+							content:
+								error instanceof Error
+									? `Rename failed: ${error.message}`
+									: "Rename failed.",
+						}),
+				);
+				return;
+			}
+			if (commandAction === "archive") {
+				clearDraft();
+				setInput("");
+				setActiveSkills([]);
+				void setSessionArchivedFn({
+					data: { id: sessionId, archived: true },
+				}).then(
+					() =>
+						navigate({
+							to: "/ledger",
+							search: {
+								tab: "sessions",
+								page: 1,
+								size: 20,
+								archived: true,
+							},
+						}),
+					(error) =>
+						dispatch({
+							type: "ADD_LOCAL_COMMAND_OUTPUT",
+							id: uid(),
+							content:
+								error instanceof Error
+									? `Archive failed: ${error.message}`
+									: "Archive failed.",
+						}),
+				);
 				return;
 			}
 			const id = uid();
@@ -1262,6 +1327,7 @@ function useRavenSend(props: RavenActionProps) {
 			openGoalEditor,
 			closeGoalEditor,
 			openMcp,
+			navigate,
 		],
 	);
 }

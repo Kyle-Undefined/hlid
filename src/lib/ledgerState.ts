@@ -85,6 +85,8 @@ export function parseLedgerSearch(search: Record<string, unknown>): {
 	to?: string;
 	/** Session sort; omitted from the URL for the default ("recent"). */
 	sort?: SessionSortKey;
+	/** True when browsing sessions hidden from the active Ledger list. */
+	archived?: boolean;
 } {
 	const tab = search.tab === "stats" ? "stats" : "sessions";
 	const page = parsePage(search.page);
@@ -99,6 +101,13 @@ export function parseLedgerSearch(search: Record<string, unknown>): {
 	const to = parseDateValue(search.to);
 	const parsedSort = parseEnumValue(search.sort, SESSION_SORTS);
 	const sort = parsedSort === "recent" ? undefined : parsedSort;
+	const archived =
+		search.archived === true ||
+		search.archived === "true" ||
+		search.archived === 1 ||
+		search.archived === "1"
+			? true
+			: undefined;
 	return {
 		tab,
 		page,
@@ -112,6 +121,7 @@ export function parseLedgerSearch(search: Record<string, unknown>): {
 		from,
 		to,
 		sort,
+		archived,
 	};
 }
 

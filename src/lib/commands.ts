@@ -7,7 +7,9 @@ export type CommandAction =
 	| "computer-use"
 	| "goal"
 	| "compact"
-	| "mcp";
+	| "mcp"
+	| "rename"
+	| "archive";
 
 export type CommandCapability = {
 	name: CommandAction;
@@ -65,6 +67,21 @@ export const COMMAND_CAPABILITY_REGISTRY: Record<
 		description: "Refresh and inspect MCP servers for this session",
 		surfaces: ["raven"],
 	},
+	rename: {
+		name: "rename",
+		owner: "hlid",
+		lifecycle: "control",
+		description: "Rename this Raven session",
+		argumentHint: "<name>",
+		surfaces: ["raven"],
+	},
+	archive: {
+		name: "archive",
+		owner: "hlid",
+		lifecycle: "control",
+		description: "Archive this session without deleting its history",
+		surfaces: ["raven"],
+	},
 };
 
 export type CommandExecution =
@@ -111,6 +128,8 @@ const UI_OWNED_COMMANDS = new Set([
 	"new",
 	"status",
 	"mcp",
+	"rename",
+	"archive",
 ]);
 
 function hlidSurfaceCommands(surface: "raven" | "watch"): CommandDescriptor[] {
@@ -223,6 +242,15 @@ export function parseGoalCommand(text: string): GoalCommandIntent {
 		return { action };
 	}
 	return { action: "set", objective: value };
+}
+
+/** Extract and validate the Hlid-owned session label from `/rename`. */
+export function parseRenameCommand(text: string): string | null {
+	const value = text
+		.trim()
+		.replace(/^\/rename(?:\s+|$)/i, "")
+		.trim();
+	return value || null;
 }
 
 export const CLAUDE_COMMAND_SELECTION_LIMIT = 6;

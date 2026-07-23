@@ -6,6 +6,7 @@ import {
 	reviewAvailableExtension,
 } from "./extensionInventory";
 import {
+	ExtensionMutationError,
 	type ExtensionMutationInput,
 	type ExtensionMutationResult,
 	mutateProviderExtension,
@@ -94,12 +95,22 @@ export function createExtensionRouteHandler(
 				await dependencies.onChanged?.(config);
 				return Response.json({ ok: true, result });
 			} catch (error) {
+				const stateChanged =
+					error instanceof ExtensionMutationError && error.stateChanged;
+				if (stateChanged) {
+					try {
+						await dependencies.onChanged?.(dependencies.loadConfig());
+					} catch {
+						// Preserve the original mutation failure for the user.
+					}
+				}
 				return Response.json(
 					{
 						error:
 							error instanceof Error
 								? error.message
 								: "Extension mutation failed",
+						...(stateChanged ? { stateChanged: true } : {}),
 					},
 					{ status: 400 },
 				);

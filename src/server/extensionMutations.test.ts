@@ -487,6 +487,67 @@ enabled = true
 		).rejects.toThrow("permission denied");
 	});
 
+	it("accepts a nonzero removal when refreshed state confirms completion", async () => {
+		discover
+			.mockResolvedValueOnce(inventory({ extensions: [installed] }))
+			.mockResolvedValueOnce(inventory({}));
+		run.mockResolvedValue({
+			output: "provider metadata cleanup failed",
+			code: 1,
+		});
+
+		await expect(
+			mutateProviderExtension(
+				config,
+				{
+					action: "uninstall",
+					id: installed.id,
+					expectedVersion: installed.version,
+				},
+				{
+					homes: () => [home],
+					discover,
+					run,
+					resolveClaude: () => "/usr/bin/claude",
+				},
+			),
+		).resolves.toMatchObject({
+			action: "uninstall",
+			warning: expect.stringContaining("refreshed state confirms"),
+		});
+	});
+
+	it("reports unexpected partial provider state instead of suggesting a blind retry", async () => {
+		discover
+			.mockResolvedValueOnce(inventory({ extensions: [installed] }))
+			.mockResolvedValueOnce(
+				inventory({
+					extensions: [{ ...installed, version: "1.2.4" }],
+				}),
+			);
+		run.mockResolvedValue({ output: "removal failed", code: 1 });
+
+		await expect(
+			mutateProviderExtension(
+				config,
+				{
+					action: "uninstall",
+					id: installed.id,
+					expectedVersion: installed.version,
+				},
+				{
+					homes: () => [home],
+					discover,
+					run,
+					resolveClaude: () => "/usr/bin/claude",
+				},
+			),
+		).rejects.toMatchObject({
+			message: expect.stringContaining("state changed unexpectedly"),
+			stateChanged: true,
+		});
+	});
+
 	it("adds a Claude marketplace to one exact provider environment", async () => {
 		const added = marketplace();
 		discover
@@ -644,6 +705,38 @@ enabled = true
 				timeoutError: "Marketplace removal timed out",
 			}),
 		);
+	});
+
+	it("treats a nonzero marketplace removal as complete when the source is gone", async () => {
+		const current = marketplace();
+		discover
+			.mockResolvedValueOnce(inventory({ marketplaces: [current] }))
+			.mockResolvedValueOnce(inventory({ marketplaces: [current] }))
+			.mockResolvedValueOnce(inventory({}));
+		run.mockResolvedValue({
+			output: "marketplace is not declared in user settings",
+			code: 1,
+		});
+
+		await expect(
+			mutateProviderExtension(
+				config,
+				{
+					action: "remove_marketplace",
+					id: current.id,
+					expectedSource: current.source,
+				},
+				{
+					homes: () => [home],
+					discover,
+					run,
+					resolveClaude: () => "/usr/bin/claude",
+				},
+			),
+		).resolves.toMatchObject({
+			action: "remove_marketplace",
+			warning: expect.stringContaining("refreshed state confirms"),
+		});
 	});
 
 	it("retries one transient marketplace update network failure", async () => {

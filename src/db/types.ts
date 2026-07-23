@@ -9,6 +9,8 @@ export type SessionRow = {
 	agent_cwd?: string | null;
 	/** 1 when the user keeps this session above unpinned rows in Ledger. */
 	pinned?: number;
+	/** Unix seconds when hidden from active session lists; null while active. */
+	archived_at?: number | null;
 	history_imported?: number;
 	/** Provider surface that produced an imported history-only session. */
 	history_source?: string | null;

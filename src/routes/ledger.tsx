@@ -58,7 +58,6 @@ import {
 	sessionDeleteSchema,
 	sessionPageSchema,
 	sessionPinSchema,
-	sessionRenameSchema,
 } from "#/lib/serverFnSchemas";
 import { getAgentListFn } from "#/lib/serverFns/agents";
 import { getProvidersFn } from "#/lib/serverFns/providers";
@@ -66,6 +65,8 @@ import {
 	forkSessionFn,
 	getActiveSessionRowFn,
 	getSessionRowsByIdsFn,
+	renameSessionFn,
+	setSessionArchivedFn,
 } from "#/lib/serverFns/sessions";
 import { buildSessionExport, downloadContent } from "#/lib/sessionExport";
 import type { ServerMessage } from "#/server/protocol";
@@ -104,6 +105,7 @@ const getSessionsPageFn = createServerFn({ method: "GET" })
 		if (data.model) params.set("model", data.model);
 		if (data.provider) params.set("provider", data.provider);
 		if (data.stop) params.set("stop", data.stop);
+		if (data.archived) params.set("archived", "1");
 		if (data.range) params.set("range", data.range);
 		if (data.from) params.set("from", data.from);
 		if (data.to) params.set("to", data.to);
@@ -129,20 +131,6 @@ const deleteSessionFn = createServerFn({ method: "POST" })
 				method: "DELETE",
 			}),
 			"delete session",
-		);
-		return { ok: true };
-	});
-
-const renameSessionFn = createServerFn({ method: "POST" })
-	.validator((raw) => sessionRenameSchema.parse(raw))
-	.handler(async ({ data }) => {
-		await requireDbOk(
-			await dbFetch(`/db/session?id=${encodeURIComponent(data.id)}`, {
-				method: "PATCH",
-				headers: { "Content-Type": "application/json" },
-				body: JSON.stringify({ label: data.label }),
-			}),
-			"rename session",
 		);
 		return { ok: true };
 	});
@@ -281,6 +269,7 @@ export const Route = createFileRoute("/ledger")({
 			from,
 			to,
 			sort,
+			archived,
 		} = parseLedgerSearch(location.search);
 		const renderedAt = Math.floor(Date.now() / 1000);
 		const configuredAgentsPromise = getAgentListFn();
@@ -311,6 +300,7 @@ export const Route = createFileRoute("/ledger")({
 								from: range === "custom" ? from : undefined,
 								to: range === "custom" ? to : undefined,
 								sort,
+								archived,
 							},
 						}),
 						getActiveSessionRowFn(),
@@ -331,6 +321,7 @@ export const Route = createFileRoute("/ledger")({
 			from,
 			to,
 			sort,
+			archived,
 			activeSession,
 			configuredAgents,
 			providerCatalog,
@@ -500,6 +491,7 @@ type ListState = {
 	from: string;
 	to: string;
 	sort: SessionSortKey;
+	archived: boolean;
 };
 
 function useLedgerMutations(
@@ -509,8 +501,20 @@ function useLedgerMutations(
 	rangeActive: boolean,
 	reloadCurrentPage: () => Promise<void>,
 ) {
-	const { page, size, q, agent, model, provider, stop, range, from, to, sort } =
-		listState;
+	const {
+		page,
+		size,
+		q,
+		agent,
+		model,
+		provider,
+		stop,
+		range,
+		from,
+		to,
+		sort,
+		archived,
+	} = listState;
 	const dependencies = useMemo(
 		() => ({
 			deleteSession: async (id: string) => {
@@ -524,6 +528,11 @@ function useLedgerMutations(
 			},
 			setSessionPinned: async (id: string, pinned: boolean) => {
 				await pinSessionFn({ data: { id, pinned } });
+			},
+			setSessionArchived: async (id: string, nextArchived: boolean) => {
+				await setSessionArchivedFn({
+					data: { id, archived: nextArchived },
+				});
 			},
 			cleanupSessions: async (days: number) => {
 				await cleanupSessionsFn({ data: { days } });
@@ -544,6 +553,7 @@ function useLedgerMutations(
 						from: rangeActive && range === "custom" ? from : undefined,
 						to: rangeActive && range === "custom" ? to : undefined,
 						sort,
+						archived,
 					},
 				});
 			},
@@ -561,11 +571,17 @@ function useLedgerMutations(
 			from,
 			to,
 			sort,
+			archived,
 			rangeActive,
 			reloadCurrentPage,
 		],
 	);
-	return useLedgerSessionMutations({ page, sessionPage, dependencies });
+	return useLedgerSessionMutations({
+		page,
+		scopeKey: archived ? "archived" : "active",
+		sessionPage,
+		dependencies,
+	});
 }
 
 function useSessionListSync({
@@ -604,6 +620,7 @@ function useSessionListSync({
 		rangeActive && listState.range === "custom" ? listState.from : "",
 		rangeActive && listState.range === "custom" ? listState.to : "",
 		listState.sort,
+		listState.archived,
 	].join("\u0000");
 	const lastFetchedKeyRef = useRef(requestKey);
 	const wasEnabledRef = useRef(enabled);
@@ -634,6 +651,7 @@ function useSessionListSync({
 			from,
 			to,
 			sort,
+			archived,
 		} = current;
 		const fresh = await getSessionsPageFn({
 			data: {
@@ -654,6 +672,7 @@ function useSessionListSync({
 						? to || undefined
 						: undefined,
 				sort,
+				archived,
 			},
 		});
 		// Discard if a newer fetch (loader sync or another WS done) already landed.
@@ -852,8 +871,20 @@ function LedgerTabBar({
 	navigate: LedgerNavigate;
 	rangeActive: boolean;
 }) {
-	const { page, size, q, agent, model, provider, stop, range, from, to, sort } =
-		listState;
+	const {
+		page,
+		size,
+		q,
+		agent,
+		model,
+		provider,
+		stop,
+		range,
+		from,
+		to,
+		sort,
+		archived,
+	} = listState;
 	function switchTab(next: "stats" | "sessions") {
 		if (next === "sessions") {
 			const preserveStatsRange = tab === "stats" || rangeActive;
@@ -872,6 +903,7 @@ function LedgerTabBar({
 					from: preserveStatsRange && range === "custom" ? from : undefined,
 					to: preserveStatsRange && range === "custom" ? to : undefined,
 					sort,
+					archived,
 				},
 			});
 		} else {
@@ -892,6 +924,7 @@ function LedgerTabBar({
 					from,
 					to,
 					sort,
+					archived,
 				},
 			});
 		}
@@ -948,8 +981,20 @@ function SessionsTab({
 	const [claudeImportStatus, setClaudeImportStatus] = useState<string | null>(
 		null,
 	);
-	const { page, size, q, agent, model, provider, stop, range, from, to, sort } =
-		listState;
+	const {
+		page,
+		size,
+		q,
+		agent,
+		model,
+		provider,
+		stop,
+		range,
+		from,
+		to,
+		sort,
+		archived,
+	} = listState;
 	const totalPages = Math.max(
 		1,
 		Math.ceil(mutations.sessionsData.total / size),
@@ -975,6 +1020,7 @@ function SessionsTab({
 				from: rangeActive && range === "custom" ? from : undefined,
 				to: rangeActive && range === "custom" ? to : undefined,
 				sort,
+				archived,
 				...next,
 			},
 			replace,
@@ -1142,6 +1188,7 @@ function SessionsTab({
 					onDelete={mutations.deleteSession}
 					onRename={mutations.renameSession}
 					onPin={mutations.setSessionPinned}
+					onArchive={mutations.setSessionArchived}
 					onFork={mutations.forkSession}
 					forkingIds={mutations.forkingIds}
 					forkProviderIds={forkProviderIds}
@@ -1157,6 +1204,10 @@ function SessionsTab({
 					sessionsStatus={sessionsStatus}
 					liveStats={liveStats}
 					search={q}
+					archived={archived}
+					onArchivedChange={(nextArchived) =>
+						navigateList({ archived: nextArchived, page: 1 }, false, true)
+					}
 					onSearchChange={(nextQ) =>
 						// replace: live search fires per typing pause — one history
 						// entry per keystroke burst would bury the back button.
@@ -1220,6 +1271,7 @@ function StatsPage() {
 		from: search.from ?? "",
 		to: search.to ?? "",
 		sort: search.sort ?? "recent",
+		archived: search.archived ?? false,
 	};
 	const navigate = useNavigate();
 	const stats = useWsLiveStats();

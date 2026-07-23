@@ -26,6 +26,7 @@ function dependencies() {
 		deleteSession: vi.fn().mockResolvedValue(undefined),
 		renameSession: vi.fn().mockResolvedValue(undefined),
 		setSessionPinned: vi.fn().mockResolvedValue(undefined),
+		setSessionArchived: vi.fn().mockResolvedValue(undefined),
 		forkSession: vi.fn().mockResolvedValue(undefined),
 		cleanupSessions: vi.fn().mockResolvedValue(undefined),
 		navigateToPage: vi.fn(),
@@ -34,6 +35,57 @@ function dependencies() {
 }
 
 describe("useLedgerSessionMutations", () => {
+	it("optimistically moves archived rows out of the current view", async () => {
+		const deps = dependencies();
+		const { result } = renderHook(() =>
+			useLedgerSessionMutations({
+				page: 1,
+				sessionPage: { sessions: [session("one"), session("two")], total: 2 },
+				dependencies: deps,
+			}),
+		);
+
+		await act(() => result.current.setSessionArchived("one", true));
+		expect(deps.setSessionArchived).toHaveBeenCalledWith("one", true);
+		expect(result.current.sessionsData.sessions.map(({ id }) => id)).toEqual([
+			"two",
+		]);
+		expect(deps.reloadCurrentPage).toHaveBeenCalled();
+	});
+
+	it("drops an active pin override when entering the archived view", async () => {
+		const deps = dependencies();
+		let scopeKey = "active";
+		let sessionPage = {
+			sessions: [{ ...session("one"), pinned: 0 }],
+			total: 1,
+		};
+		const { result, rerender } = renderHook(() =>
+			useLedgerSessionMutations({
+				page: 1,
+				scopeKey,
+				sessionPage,
+				dependencies: deps,
+			}),
+		);
+
+		await act(() => result.current.setSessionPinned("one", true));
+		expect(result.current.sessionsData.sessions[0]?.pinned).toBe(1);
+		await act(() => result.current.setSessionArchived("one", true));
+
+		scopeKey = "archived";
+		sessionPage = {
+			sessions: [{ ...session("one"), pinned: 0, archived_at: 123 }],
+			total: 1,
+		};
+		rerender();
+
+		await waitFor(() => {
+			expect(result.current.sessionsData.sessions[0]?.id).toBe("one");
+			expect(result.current.sessionsData.sessions[0]?.pinned).toBe(0);
+		});
+	});
+
 	it("optimistically hides a delete and rolls it back on failure", async () => {
 		const deps = dependencies();
 		let rejectDelete: (error: Error) => void = () => {};

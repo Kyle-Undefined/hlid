@@ -107,6 +107,7 @@ export {
 	renameSession,
 	setSessionActualModel,
 	setSessionAgentCwd,
+	setSessionArchived,
 	setSessionEffort,
 	setSessionModel,
 	setSessionPermissionMode,

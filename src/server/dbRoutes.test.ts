@@ -11,8 +11,11 @@ import type { SessionRow } from "../db";
 // inside them must also be hoisted via vi.hoisted().
 const {
 	mockGetSessionById,
+	mockGetCurrentSessionId,
+	mockClearCurrentSessionId,
 	mockListAttachments,
 	mockRenameSession,
+	mockSetSessionArchived,
 	mockSetSessionPinned,
 	mockGetSessionMessages,
 	mockGetSessionToolEventSummaries,
@@ -33,8 +36,11 @@ const {
 	mockCopyForkedSessionTranscript,
 } = vi.hoisted(() => ({
 	mockGetSessionById: vi.fn(),
+	mockGetCurrentSessionId: vi.fn(),
+	mockClearCurrentSessionId: vi.fn(),
 	mockListAttachments: vi.fn(),
 	mockRenameSession: vi.fn(),
+	mockSetSessionArchived: vi.fn(),
 	mockSetSessionPinned: vi.fn(),
 	mockGetSessionMessages: vi.fn(),
 	mockGetSessionToolEventSummaries: vi.fn(),
@@ -57,8 +63,11 @@ const {
 
 vi.mock("../db", () => ({
 	getSessionById: mockGetSessionById,
+	getCurrentSessionId: mockGetCurrentSessionId,
+	clearCurrentSessionId: mockClearCurrentSessionId,
 	listAttachments: mockListAttachments,
 	renameSession: mockRenameSession,
+	setSessionArchived: mockSetSessionArchived,
 	setSessionPinned: mockSetSessionPinned,
 	getSessionMessages: mockGetSessionMessages,
 	getSessionToolEventSummaries: mockGetSessionToolEventSummaries,
@@ -1210,6 +1219,57 @@ describe("handleDbRoute — PATCH /db/session", () => {
 		expect(await res?.json()).toEqual({ ok: true });
 		expect(mockSetSessionPinned).toHaveBeenCalledWith("s1", true);
 		expect(mockRenameSession).not.toHaveBeenCalled();
+	});
+
+	it("archives an idle session and rejects a running one", async () => {
+		mockSetSessionArchived.mockResolvedValue(undefined);
+		mockGetCurrentSessionId.mockResolvedValue("s1");
+		const idle = makePool({
+			findByDbSessionId: vi.fn().mockReturnValue({
+				sessionId: "pool-s1",
+				manager: { getStatus: () => ({ state: "idle" }) },
+			}),
+		});
+		const archived = await handleDbRoute(
+			makeUrl("/db/session", { id: "s1" }),
+			patchRequest({ archived: true }),
+			idle,
+		);
+		expect(archived?.status).toBe(200);
+		expect(mockSetSessionArchived).toHaveBeenCalledWith("s1", true);
+		expect(mockClearCurrentSessionId).toHaveBeenCalledOnce();
+		expect(idle.close).toHaveBeenCalledWith("pool-s1");
+
+		mockSetSessionArchived.mockClear();
+		const running = makePool({
+			findByDbSessionId: vi.fn().mockReturnValue({
+				manager: { getStatus: () => ({ state: "running" }) },
+			}),
+		});
+		const blocked = await handleDbRoute(
+			makeUrl("/db/session", { id: "s1" }),
+			patchRequest({ archived: true }),
+			running,
+		);
+		expect(blocked?.status).toBe(409);
+		expect(await blocked?.text()).toMatch(/stop it first/i);
+		expect(mockSetSessionArchived).not.toHaveBeenCalled();
+	});
+
+	it("restores an archived session even when its provider is running", async () => {
+		mockSetSessionArchived.mockResolvedValue(undefined);
+		const running = makePool({
+			findByDbSessionId: vi.fn().mockReturnValue({
+				manager: { getStatus: () => ({ state: "running" }) },
+			}),
+		});
+		const restored = await handleDbRoute(
+			makeUrl("/db/session", { id: "s1" }),
+			patchRequest({ archived: false }),
+			running,
+		);
+		expect(restored?.status).toBe(200);
+		expect(mockSetSessionArchived).toHaveBeenCalledWith("s1", false);
 	});
 });
 

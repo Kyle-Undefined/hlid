@@ -1,4 +1,6 @@
 import {
+	Archive,
+	ArchiveRestore,
 	ArrowUpDown,
 	Ellipsis,
 	GitFork,
@@ -81,7 +83,9 @@ function SessionActionPanel({
 	onCancelRename,
 	onConfirmRename,
 	pinned,
+	archived,
 	onTogglePin,
+	onToggleArchived,
 	onRequestDelete,
 	onCancelDelete,
 	onConfirmDelete,
@@ -100,7 +104,9 @@ function SessionActionPanel({
 	onCancelRename: () => void;
 	onConfirmRename: () => void;
 	pinned: boolean;
+	archived: boolean;
 	onTogglePin: () => void;
+	onToggleArchived: () => void;
 	onRequestDelete: () => void;
 	onCancelDelete: () => void;
 	onConfirmDelete: () => void;
@@ -191,14 +197,16 @@ function SessionActionPanel({
 				</div>
 			) : (
 				<>
-					<button
-						type="button"
-						onClick={onTogglePin}
-						className="flex min-h-11 w-full items-center gap-2 px-3 text-[10px] tracking-wider text-foreground/80 hover:bg-accent/40"
-					>
-						{pinned ? <PinOff size={14} /> : <Pin size={14} />}
-						{pinned ? "Unpin" : "Pin to top"}
-					</button>
+					{!archived && (
+						<button
+							type="button"
+							onClick={onTogglePin}
+							className="flex min-h-11 w-full items-center gap-2 px-3 text-[10px] tracking-wider text-foreground/80 hover:bg-accent/40"
+						>
+							{pinned ? <PinOff size={14} /> : <Pin size={14} />}
+							{pinned ? "Unpin" : "Pin to top"}
+						</button>
+					)}
 					<button
 						type="button"
 						onClick={onRename}
@@ -228,6 +236,22 @@ function SessionActionPanel({
 					)}
 					<button
 						type="button"
+						onClick={onToggleArchived}
+						disabled={forkBlocked}
+						title={
+							forkBlocked
+								? "Stop the active turn before archiving this session"
+								: archived
+									? "Restore this session to the active list"
+									: "Hide this session without deleting its history"
+						}
+						className="flex min-h-11 w-full items-center gap-2 px-3 text-[10px] tracking-wider text-foreground/80 hover:bg-accent/40 disabled:opacity-60"
+					>
+						{archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
+						{archived ? "Restore" : "Archive"}
+					</button>
+					<button
+						type="button"
 						onClick={onRequestDelete}
 						className="flex min-h-11 w-full items-center gap-2 px-3 text-[10px] tracking-wider text-destructive/80 hover:bg-accent/40"
 					>
@@ -246,7 +270,9 @@ function SessionItem({
 	onNavigate,
 	onRename,
 	onPin,
+	onArchive,
 	onFork,
+	archived = false,
 	isForking = false,
 	isActive,
 	poolSession,
@@ -260,7 +286,9 @@ function SessionItem({
 	onNavigate: (id: string) => void;
 	onRename: (id: string, label: string) => void;
 	onPin: (id: string, pinned: boolean) => void;
+	onArchive: (id: string, archived: boolean) => void;
 	onFork: (id: string) => void;
+	archived?: boolean;
 	isForking?: boolean;
 	isActive?: boolean;
 	poolSession?: SessionStatusEntry;
@@ -296,7 +324,11 @@ function SessionItem({
 		menuOpen,
 		actionButtonRef,
 		isDesktop ? 160 : mobileRenaming ? 320 : 208,
-		mobileRenaming ? 210 : deleteConfirming ? 170 : 156 + (canFork ? 44 : 0),
+		mobileRenaming
+			? 210
+			: deleteConfirming
+				? 170
+				: 156 + (canFork ? 44 : 0) + (archived ? 0 : 44),
 		actionPanelRef,
 	);
 	const usageSource = usageSession?.id === session.id ? usageSession : session;
@@ -494,8 +526,13 @@ function SessionItem({
 										onCancelRename={closeMenu}
 										onConfirmRename={commitMobileEdit}
 										pinned={pinned}
+										archived={archived}
 										onTogglePin={() => {
 											onPin(session.id, !pinned);
+											closeMenu();
+										}}
+										onToggleArchived={() => {
+											onArchive(session.id, !archived);
 											closeMenu();
 										}}
 										onRequestDelete={() => setDeleteConfirming(true)}
@@ -707,7 +744,7 @@ function SecondaryActionsMenu({
 	onOpenChange: (open: boolean) => void;
 	oldestStartedAt: number | null;
 	cleanupReferenceTime: number;
-	onCleanup: (days: number) => void;
+	onCleanup?: (days: number) => void;
 	onExport?: (format: "csv" | "json") => void;
 	onImportClaude?: () => void;
 	claudeImportStatus?: string | null;
@@ -744,16 +781,18 @@ function SecondaryActionsMenu({
 			role="dialog"
 			aria-label="Session list actions"
 		>
-			<div>
-				<div className="mb-1.5 text-[8px] tracking-widest text-muted-foreground uppercase">
-					Maintenance
+			{onCleanup && (
+				<div>
+					<div className="mb-1.5 text-[8px] tracking-widest text-muted-foreground uppercase">
+						Maintenance
+					</div>
+					<CleanupControl
+						oldestStartedAt={oldestStartedAt}
+						referenceTime={cleanupReferenceTime}
+						onCleanup={onCleanup}
+					/>
 				</div>
-				<CleanupControl
-					oldestStartedAt={oldestStartedAt}
-					referenceTime={cleanupReferenceTime}
-					onCleanup={onCleanup}
-				/>
-			</div>
+			)}
 			{onImportClaude && (
 				<div>
 					<div className="mb-1.5 text-[8px] tracking-widest text-muted-foreground uppercase">
@@ -844,6 +883,7 @@ export function SessionsLedger({
 	onDelete,
 	onRename,
 	onPin,
+	onArchive,
 	onFork,
 	forkingIds,
 	onNavigate,
@@ -870,6 +910,8 @@ export function SessionsLedger({
 	claudeImportStatus,
 	claudeImportBusy = false,
 	forkProviderIds,
+	archived = false,
+	onArchivedChange,
 }: {
 	data: { sessions: SessionRow[]; total: number };
 	page: number;
@@ -882,6 +924,7 @@ export function SessionsLedger({
 	onDelete: (id: string) => void;
 	onRename: (id: string, label: string) => void;
 	onPin: (id: string, pinned: boolean) => void;
+	onArchive: (id: string, archived: boolean) => void;
 	onFork: (id: string) => void;
 	forkingIds?: Set<string>;
 	onNavigate: (id: string) => void;
@@ -910,6 +953,8 @@ export function SessionsLedger({
 	claudeImportStatus?: string | null;
 	claudeImportBusy?: boolean;
 	forkProviderIds?: ReadonlySet<string>;
+	archived?: boolean;
+	onArchivedChange?: (archived: boolean) => void;
 }) {
 	const isDesktop = useIsDesktop();
 	const [mobilePanel, setMobilePanel] = useState<
@@ -957,6 +1002,28 @@ export function SessionsLedger({
 					<span className="text-[9px] tabular-nums text-muted-foreground/40">
 						{data.total}
 					</span>
+					{onArchivedChange && (
+						<div className="flex border border-border">
+							{[
+								{ label: "Active", value: false },
+								{ label: "Archived", value: true },
+							].map((option) => (
+								<button
+									key={option.label}
+									type="button"
+									onClick={() => onArchivedChange(option.value)}
+									aria-pressed={archived === option.value}
+									className={`px-2 py-1 text-[8px] tracking-widest uppercase ${
+										archived === option.value
+											? "bg-primary/10 text-primary"
+											: "text-muted-foreground hover:text-foreground"
+									}`}
+								>
+									{option.label}
+								</button>
+							))}
+						</div>
+					)}
 				</div>
 				<div className="hidden md:flex items-center gap-3 flex-wrap">
 					{onAgentFilterChange && (
@@ -1037,7 +1104,7 @@ export function SessionsLedger({
 						onOpenChange={setDesktopMoreOpen}
 						oldestStartedAt={oldestStartedAt}
 						cleanupReferenceTime={cleanupReferenceTime}
-						onCleanup={onCleanup}
+						onCleanup={archived ? undefined : onCleanup}
 						onExport={onExport}
 						onImportClaude={onImportClaude}
 						claudeImportStatus={claudeImportStatus}
@@ -1129,7 +1196,7 @@ export function SessionsLedger({
 									onOpenChange={setMobileMoreOpen}
 									oldestStartedAt={oldestStartedAt}
 									cleanupReferenceTime={cleanupReferenceTime}
-									onCleanup={onCleanup}
+									onCleanup={archived ? undefined : onCleanup}
 									onExport={onExport}
 									onImportClaude={onImportClaude}
 									claudeImportStatus={claudeImportStatus}
@@ -1177,6 +1244,8 @@ export function SessionsLedger({
 								clear filters
 							</button>
 						</>
+					) : archived ? (
+						"no archived sessions"
 					) : (
 						"no sessions"
 					)}
@@ -1194,7 +1263,9 @@ export function SessionsLedger({
 						onDelete={onDelete}
 						onRename={onRename}
 						onPin={onPin}
+						onArchive={onArchive}
 						onFork={onFork}
+						archived={archived}
 						isForking={forkingIds?.has(s.id) ?? false}
 						onNavigate={onNavigate}
 						isActive={activeSessionId != null && s.id === activeSessionId}

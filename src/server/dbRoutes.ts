@@ -120,6 +120,9 @@ async function getSessions(url: URL): Promise<Response> {
 	const model = url.searchParams.get("model")?.trim() || undefined;
 	const provider = url.searchParams.get("provider")?.trim() || undefined;
 	const stop = url.searchParams.get("stop")?.trim() || undefined;
+	const archived =
+		url.searchParams.get("archived") === "1" ||
+		url.searchParams.get("archived") === "true";
 	const range = parseLedgerRange(url.searchParams.get("range"));
 	const sortParam = url.searchParams.get("sort");
 	const sort =
@@ -136,6 +139,7 @@ async function getSessions(url: URL): Promise<Response> {
 		from: ledgerDateParam(url, "from"),
 		to: ledgerDateParam(url, "to"),
 		sort,
+		...(archived ? { archived: true } : {}),
 	});
 	return Response.json(result);
 }
@@ -151,13 +155,47 @@ async function handlePatchRoute({
 	if (!id) return new Response("Missing id", { status: 400 });
 	const body = await req.json().catch(() => null);
 	if (!body) return new Response("Invalid session update", { status: 400 });
+	if (typeof body.archived === "boolean") {
+		const liveEntry = pool?.findByDbSessionId(id) ?? pool?.get(id);
+		const hasRunningTurn = liveEntry?.manager.getStatus().state === "running";
+		if (
+			body.archived &&
+			(hasRunningTurn || hasLiveTerminalSession(terminalPool, id))
+		) {
+			return new Response("Cannot archive a running session — stop it first", {
+				status: 409,
+			});
+		}
+		try {
+			await db.setSessionArchived(id, body.archived);
+		} catch (error) {
+			if (error instanceof Error && error.message === "Session not found") {
+				return new Response(error.message, { status: 404 });
+			}
+			throw error;
+		}
+		if (body.archived) {
+			if ((await db.getCurrentSessionId()) === id) {
+				await db.clearCurrentSessionId();
+			}
+			if (liveEntry) pool?.close(liveEntry.sessionId);
+			broadcast({
+				type: "sessions_status",
+				sessions: getLiveSessionsStatus(pool, terminalPool),
+			});
+		}
+		bumpDataRevision("sessions");
+		return Response.json({ ok: true });
+	}
 	if (typeof body.pinned === "boolean") {
 		await db.setSessionPinned(id, body.pinned);
 		bumpDataRevision("sessions");
 		return Response.json({ ok: true });
 	}
 	if (typeof body.label !== "string") {
-		return new Response("Missing label or pinned state", { status: 400 });
+		return new Response("Missing label, pinned, or archived state", {
+			status: 400,
+		});
 	}
 	await db.renameSession(id, body.label);
 	bumpDataRevision("sessions");

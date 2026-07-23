@@ -11,8 +11,10 @@ import type {
 } from "#/db";
 import { dbFetch, dbJson, requireDbOk } from "#/lib/dbClient";
 import {
+	sessionArchiveSchema,
 	sessionForkSchema,
 	sessionIdSchema,
+	sessionRenameSchema,
 	sessionToolEventSchema,
 	terminalSessionSchema,
 } from "#/lib/serverFnSchemas";
@@ -59,6 +61,34 @@ export const getSessionRowFn = createServerFn({ method: "GET" })
 export const getLiveSessionsFn = createServerFn({ method: "GET" }).handler(() =>
 	dbJson<SessionStatusEntry[]>("/db/live-sessions", []),
 );
+
+export const renameSessionFn = createServerFn({ method: "POST" })
+	.validator((raw) => sessionRenameSchema.parse(raw))
+	.handler(async ({ data }) => {
+		await requireDbOk(
+			await dbFetch(`/db/session?id=${encodeURIComponent(data.id)}`, {
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ label: data.label }),
+			}),
+			"rename session",
+		);
+		return { ok: true };
+	});
+
+export const setSessionArchivedFn = createServerFn({ method: "POST" })
+	.validator((raw) => sessionArchiveSchema.parse(raw))
+	.handler(async ({ data }) => {
+		await requireDbOk(
+			await dbFetch(`/db/session?id=${encodeURIComponent(data.id)}`, {
+				method: "PATCH",
+				headers: { "Content-Type": "application/json" },
+				body: JSON.stringify({ archived: data.archived }),
+			}),
+			data.archived ? "archive session" : "restore session",
+		);
+		return { ok: true };
+	});
 
 const sessionIdsSchema = z.array(sessionIdSchema).max(64);
 

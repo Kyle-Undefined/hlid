@@ -34,6 +34,13 @@ describe("cacheHitPct", () => {
 });
 
 describe("parseLedgerSearch", () => {
+	it("enables archived browsing only for explicit truthy URL values", () => {
+		expect(parseLedgerSearch({ archived: true }).archived).toBe(true);
+		expect(parseLedgerSearch({ archived: "1" }).archived).toBe(true);
+		expect(parseLedgerSearch({ archived: false }).archived).toBeUndefined();
+		expect(parseLedgerSearch({ archived: "false" }).archived).toBeUndefined();
+	});
+
 	it("defaults tab to 'sessions' when not provided", () => {
 		expect(parseLedgerSearch({})).toMatchObject({ tab: "sessions" });
 	});
