@@ -9,6 +9,7 @@ import {
 import { CliProxySection } from "#/components/forge/CliProxySection";
 import { CustomThemeSection } from "#/components/forge/CustomThemeSection";
 import { EventLogSection } from "#/components/forge/EventLogSection";
+import { ExtensionsSection } from "#/components/forge/ExtensionsSection";
 import { InstructionFilesSection } from "#/components/forge/InstructionFilesSection";
 import { McpSection } from "#/components/forge/McpSection";
 import { NetworkSection } from "#/components/forge/NetworkSection";
@@ -107,6 +108,15 @@ const CATEGORIES = [
 		],
 		keywords:
 			"mcp servers cliproxy codex claude code oauth external agents acp catalog integrations",
+		group: "secondary",
+	},
+	{
+		id: "extensions",
+		label: "Extensions",
+		description: "Installed Claude and Codex plugins and marketplaces",
+		sections: ["Provider Extensions"],
+		keywords:
+			"plugins extensions marketplaces claude codex manifests skills agents hooks mcp apps scripts trust",
 		group: "secondary",
 	},
 	{
@@ -502,6 +512,18 @@ function DeveloperCategory({
 	);
 }
 
+function ExtensionsCategory() {
+	return (
+		<>
+			<PageIntro
+				title="Extensions"
+				description="Inspect what each provider has installed and what capabilities those packages bring into agent sessions."
+			/>
+			<ExtensionsSection />
+		</>
+	);
+}
+
 function AdvancedCategory() {
 	return (
 		<>
@@ -589,6 +611,8 @@ function CategoryContent({
 					onShowCatalog={() => onShowCatalog(true)}
 				/>
 			);
+		case "extensions":
+			return <ExtensionsCategory />;
 		case "developer":
 			return (
 				<DeveloperCategory

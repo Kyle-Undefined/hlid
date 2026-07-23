@@ -2399,6 +2399,65 @@ describe("CodexAgentSession — notifications", () => {
 		session.cancel();
 	});
 
+	it("unwraps dynamic tool text results without duplicating long arguments", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const session = new CodexProvider().query(baseCodexParams());
+		const events = session[Symbol.asyncIterator]();
+		await session.send("append a long vault update");
+		await nextSessionEvent(events); // session_start
+
+		emitSessionNotification(proc, "item/started", {
+			threadId: "thread-1",
+			item: {
+				id: "append-1",
+				type: "dynamicToolCall",
+				namespace: "hlid_obsidian",
+				tool: "append_note",
+				arguments: {
+					target: "path",
+					path: "Projects/Hlid.md",
+					content: "x".repeat(2_000),
+				},
+			},
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "tool_start",
+			toolId: "append-1",
+		});
+
+		emitSessionNotification(proc, "item/completed", {
+			threadId: "thread-1",
+			item: {
+				id: "append-1",
+				type: "dynamicToolCall",
+				namespace: "hlid_obsidian",
+				tool: "append_note",
+				arguments: {
+					target: "path",
+					path: "Projects/Hlid.md",
+					content: "x".repeat(2_000),
+				},
+				status: "completed",
+				success: true,
+				contentItems: [
+					{
+						type: "inputText",
+						text: '{"path":"Projects/Hlid.md"}',
+					},
+				],
+			},
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "tool_result",
+			toolId: "append-1",
+			content: '{"path":"Projects/Hlid.md"}',
+		});
+		session.cancel();
+	});
+
 	it("accounts every cumulative model-call delta while emitting last-call context", async () => {
 		const { proc } = makeFakeSessionProc();
 		vi.mocked(spawn).mockReturnValue(proc as never);

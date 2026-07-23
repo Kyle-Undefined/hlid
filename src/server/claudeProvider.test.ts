@@ -511,6 +511,69 @@ describe("ClaudeProvider — event mapping", () => {
 		]);
 	});
 
+	it("keeps long Obsidian inputs separate from the returned path", async () => {
+		const content = "x".repeat(2_000);
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "assistant",
+					message: {
+						content: [
+							{
+								type: "tool_use",
+								id: "obsidian-long-1",
+								name: "mcp__hlid_obsidian__append_note",
+								input: {
+									target: "path",
+									path: "Projects/Hlid.md",
+									content,
+								},
+							},
+						],
+						usage: { input_tokens: 10, output_tokens: 5 },
+					},
+				},
+				{
+					type: "user",
+					message: {
+						content: [
+							{
+								type: "tool_result",
+								tool_use_id: "obsidian-long-1",
+								content: '{"path":"Projects/Hlid.md"}',
+							},
+						],
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 10, output_tokens: 5 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		expect(events).toContainEqual({
+			type: "tool_start",
+			toolId: "obsidian-long-1",
+			name: "mcp__hlid_obsidian__append_note",
+			input: {
+				target: "path",
+				path: "Projects/Hlid.md",
+				content,
+			},
+		});
+		expect(events).toContainEqual({
+			type: "tool_result",
+			toolId: "obsidian-long-1",
+			content: '{"path":"Projects/Hlid.md"}',
+		});
+	});
+
 	it("yields tool_result with isError=true and concatenates text array content", async () => {
 		vi.mocked(query).mockReturnValueOnce(
 			sdkGen([

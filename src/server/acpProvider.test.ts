@@ -312,6 +312,27 @@ describe("AcpProvider — event mapping", () => {
 		session.cancel();
 	});
 
+	it("prefers compact structured Obsidian output over verbose ACP raw output", async () => {
+		const { events, session } = await run("obsidian-long-result");
+		expect(events).toContainEqual({
+			type: "tool_start",
+			toolId: "obsidian-long-1",
+			name: "hlid_obsidian.append_note",
+			input: {
+				target: "path",
+				path: "Projects/Hlid.md",
+				content: "x".repeat(2_000),
+			},
+		});
+		expect(events).toContainEqual({
+			type: "tool_result",
+			toolId: "obsidian-long-1",
+			content: '{"path":"Projects/Hlid.md"}',
+			isError: false,
+		});
+		session.cancel();
+	});
+
 	it("yields usage event with token counts from ACP usage report", async () => {
 		const { events, session } = await run();
 		expect(events).toContainEqual({

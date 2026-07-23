@@ -243,6 +243,43 @@ agent({ name: "hlid-fake-agent" })
 			});
 			return { stopReason: "end_turn" };
 		}
+		if (text === "obsidian-long-result") {
+			const path = "Projects/Hlid.md";
+			const content = "x".repeat(2_000);
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "tool_call",
+					toolCallId: "obsidian-long-1",
+					title: "hlid_obsidian.append_note",
+					kind: "other",
+					status: "pending",
+					rawInput: { target: "path", path, content },
+				},
+			});
+			await client.notify(methods.client.session.update, {
+				sessionId: params.sessionId,
+				update: {
+					sessionUpdate: "tool_call_update",
+					toolCallId: "obsidian-long-1",
+					status: "completed",
+					rawOutput: {
+						arguments: { target: "path", path, content },
+						result: { path },
+					},
+					content: [
+						{
+							type: "content",
+							content: {
+								type: "text",
+								text: JSON.stringify({ path }),
+							},
+						},
+					],
+				},
+			});
+			return { stopReason: "end_turn" };
+		}
 		if (text === "tool-kind-matrix") {
 			const tools = [
 				["read", "Read file"],

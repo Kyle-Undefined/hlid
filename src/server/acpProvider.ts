@@ -137,9 +137,11 @@ function toolContentText(
 }
 
 function toolResultText(update: ToolCallUpdate): string {
+	const content = toolContentText(update.content);
+	if (content) return content;
 	if (typeof update.rawOutput === "string") return update.rawOutput;
 	if (update.rawOutput != null) return json(update.rawOutput);
-	return toolContentText(update.content) || "";
+	return "";
 }
 
 function planEntriesText(

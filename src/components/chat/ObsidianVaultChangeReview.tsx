@@ -216,6 +216,13 @@ export function obsidianVaultChanges(
 		const reportedPath = resultPath(event.result);
 		let path = reportedPath;
 		if (!path && operation === "create_note") path = source;
+		if (
+			!path &&
+			(operation === "append_note" || operation === "prepend_note") &&
+			input.target === "path"
+		) {
+			path = source;
+		}
 		if (!path && operation === "move_file" && typeof input.to === "string") {
 			path = input.to;
 		}

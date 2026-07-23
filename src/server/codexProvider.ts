@@ -2803,6 +2803,19 @@ class CodexAgentSession implements AgentSession {
 		].includes(status);
 	}
 
+	private completedToolResultContent(item: Record<string, unknown>): string {
+		if (item.type === "dynamicToolCall" && Array.isArray(item.contentItems)) {
+			const text = item.contentItems.map((contentItem) => {
+				const content = asObj(contentItem);
+				return typeof content.text === "string" ? content.text : null;
+			});
+			if (text.length > 0 && text.every((value) => value !== null)) {
+				return text.join("\n");
+			}
+		}
+		return JSON.stringify(item);
+	}
+
 	private handleItemCompleted(obj: Record<string, unknown>): void {
 		const item = asObj(obj.item);
 		this.recordHostedToolItem(item);
@@ -2843,7 +2856,7 @@ class CodexAgentSession implements AgentSession {
 		this.events.push({
 			type: "tool_result",
 			toolId: String(item.id ?? type),
-			content: JSON.stringify(item),
+			content: this.completedToolResultContent(item),
 			...(this.completedItemIsError(item) ? { isError: true } : {}),
 		});
 		this.maybeFinalizePendingDone();

@@ -16,6 +16,7 @@ export type BoundedProcessOptions = {
 	timeoutError: string;
 	maxOutputChars?: number;
 	shell?: boolean;
+	cwd?: string;
 };
 
 /** Run a child with bounded combined output and a hard timeout. */
@@ -29,6 +30,7 @@ export function runBoundedProcess(
 			stdio: ["ignore", "pipe", "pipe"],
 			windowsHide: true,
 			shell: options.shell ?? false,
+			cwd: options.cwd,
 		});
 		let output = "";
 		let settled = false;

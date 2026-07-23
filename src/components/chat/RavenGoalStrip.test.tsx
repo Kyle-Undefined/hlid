@@ -50,6 +50,8 @@ describe("RavenGoalStrip", () => {
 	});
 
 	it("shows native goal progress and controls", () => {
+		vi.useFakeTimers();
+		vi.setSystemTime(goal.updated_at * 1_000);
 		const value = props();
 		render(<RavenGoalStrip {...value} />);
 		expect(screen.getByText("Finish the release gate")).not.toBeNull();

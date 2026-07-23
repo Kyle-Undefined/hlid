@@ -1,4 +1,10 @@
-import { type ReactNode, useEffect, useRef, useState } from "react";
+import {
+	type ReactNode,
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+} from "react";
 
 /**
  * Inline confirm/cancel guard. Wraps any trigger; on click shows
@@ -15,6 +21,8 @@ export function ConfirmAction({
 	onConfirm,
 	trigger,
 	className,
+	stacked = false,
+	onOpenChange,
 }: {
 	label?: string;
 	/** Text on the destructive button (default "confirm"). */
@@ -25,9 +33,20 @@ export function ConfirmAction({
 	trigger: (open: () => void) => ReactNode;
 	/** Extra classes on the confirming wrapper div. */
 	className?: string;
+	/** Put the explanation on its own row above the action buttons. */
+	stacked?: boolean;
+	/** Observe the inline confirmation opening or closing. */
+	onOpenChange?: (open: boolean) => void;
 }) {
 	const [confirming, setConfirming] = useState(false);
 	const confirmBtnRef = useRef<HTMLButtonElement>(null);
+	const setOpen = useCallback(
+		(open: boolean) => {
+			setConfirming(open);
+			onOpenChange?.(open);
+		},
+		[onOpenChange],
+	);
 
 	useEffect(() => {
 		if (confirming) confirmBtnRef.current?.focus();
@@ -36,11 +55,11 @@ export function ConfirmAction({
 	useEffect(() => {
 		if (!confirming) return;
 		const handler = (e: KeyboardEvent) => {
-			if (e.key === "Escape") setConfirming(false);
+			if (e.key === "Escape") setOpen(false);
 		};
 		window.addEventListener("keydown", handler);
 		return () => window.removeEventListener("keydown", handler);
-	}, [confirming]);
+	}, [confirming, setOpen]);
 
 	if (confirming) {
 		const confirmCls =
@@ -50,26 +69,36 @@ export function ConfirmAction({
 		return (
 			<div
 				aria-live="polite"
-				className={`flex items-center gap-2 ${className ?? ""}`}
+				className={`flex items-center gap-2 ${
+					stacked ? "w-full flex-wrap justify-end gap-y-1.5" : ""
+				} ${className ?? ""}`}
 			>
 				{label && (
-					<span className="text-[9px] text-muted-foreground/50">{label}</span>
+					<span
+						className={`text-[9px] text-muted-foreground/50 ${
+							stacked
+								? "w-full min-w-0 text-right leading-relaxed break-all"
+								: ""
+						}`}
+					>
+						{label}
+					</span>
 				)}
 				<button
 					ref={confirmBtnRef}
 					type="button"
 					onClick={() => {
-						setConfirming(false);
+						setOpen(false);
 						onConfirm();
 					}}
-					className={`text-[9px] tracking-widest uppercase transition-colors ${confirmCls}`}
+					className={`shrink-0 text-[9px] tracking-widest uppercase transition-colors ${confirmCls}`}
 				>
 					{confirmText}
 				</button>
 				<button
 					type="button"
-					onClick={() => setConfirming(false)}
-					className="text-[9px] tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 uppercase transition-colors"
+					onClick={() => setOpen(false)}
+					className="shrink-0 text-[9px] tracking-widest text-muted-foreground/50 hover:text-muted-foreground/80 uppercase transition-colors"
 				>
 					cancel
 				</button>
@@ -77,5 +106,5 @@ export function ConfirmAction({
 		);
 	}
 
-	return <>{trigger(() => setConfirming(true))}</>;
+	return <>{trigger(() => setOpen(true))}</>;
 }

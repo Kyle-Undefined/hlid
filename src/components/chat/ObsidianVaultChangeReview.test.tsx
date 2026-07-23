@@ -170,6 +170,30 @@ describe("ObsidianVaultChangeReview", () => {
 		expect(changes).toEqual([]);
 	});
 
+	it("recovers path-targeted appends from legacy truncated Codex results", () => {
+		const changes = obsidianVaultChanges([
+			event(
+				"long-append",
+				"append_note",
+				{
+					target: "path",
+					path: "Projects/Hlid.md",
+					content: "Long update",
+				},
+				'{"type":"dynamicToolCall","id":"long-append","namespace":"hlid_obsidian","tool":"append_note","arguments":{"target":"path","path":"Projects/Hlid.md","content":"Long update',
+			),
+		]);
+
+		expect(changes).toEqual([
+			{
+				id: "long-append",
+				kind: "appended",
+				path: "Projects/Hlid.md",
+				content: "Long update",
+			},
+		]);
+	});
+
 	it("renders task, property, and Base activity without verification claims", () => {
 		render(
 			<ObsidianVaultChangeReview

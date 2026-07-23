@@ -47,6 +47,7 @@ import { formatPersistentConsoleMessage } from "./consoleLog";
 import { bumpDataRevision, subscribeDataRevisions } from "./dataRevision";
 import { handleDbRoute } from "./dbRoutes";
 import { resolveExecutionContext } from "./executionContext";
+import { createExtensionRouteHandler } from "./extensionRoutes";
 import { INTERNAL_HLID_MCP_FLAG, runHlidMcpServer } from "./hlidMcpServer";
 import { migrateLegacyAttachmentsToLibrary } from "./libraryMigration";
 import { getLiveSessionsStatus } from "./liveSessions";
@@ -97,7 +98,7 @@ import { startTlsProxy } from "./tlsProxy";
 import { startUiServer } from "./uiServer";
 import { markUiServerReady } from "./uiStartupGate";
 import { bootstrapUmbod, closeUmbod } from "./umbod";
-import { warmVaultSnapshot } from "./vaultSnapshot";
+import { invalidateVaultSnapshot, warmVaultSnapshot } from "./vaultSnapshot";
 import { VoiceModelManager } from "./voice";
 import { bootstrapVoiceRuntime } from "./voice-bootstrap";
 import { syncWrappers } from "./wrappers";
@@ -216,6 +217,13 @@ const acpRegistry = new AcpRegistry();
 const handleAcpRoute = createAcpRouteHandler({
 	registry: acpRegistry,
 	loadConfig,
+});
+const handleExtensionRoute = createExtensionRouteHandler({
+	loadConfig,
+	onChanged: (latest) => {
+		invalidateVaultSnapshot("provider-extension-mutation", latest);
+		bumpDataRevision("providers", "mcp", "vault");
+	},
 });
 const acpCatalog = await acpRegistry.catalog(config);
 const cliProxy = new CliProxyManager(config.cliproxy);
@@ -770,6 +778,7 @@ const handleAuthenticatedRoute = createAuthenticatedRouteHandler({
 		handleCodexRoute,
 		handleProviderRoute,
 		handleAcpRoute,
+		handleExtensionRoute,
 		handleCliProxyRoute,
 		handleVoiceRoute,
 		handleReadAloudRoute,

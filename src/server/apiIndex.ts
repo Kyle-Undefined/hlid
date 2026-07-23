@@ -106,6 +106,24 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 	},
 	{
 		method: "GET",
+		path: "/extensions/catalog",
+		server: "api",
+		desc: "Claude and Codex plugin inventory plus configured native marketplace snapshots across detected Windows and WSL provider homes.",
+	},
+	{
+		method: "GET",
+		path: "/extensions/review?id=...",
+		server: "api",
+		desc: "Lazy read-only trust review for one opaque marketplace listing ID, using locally cached package files when available and clearly labeling metadata-only results.",
+	},
+	{
+		method: "POST",
+		path: "/extensions/mutate",
+		server: "api",
+		desc: "Install, enable, disable, or uninstall provider extensions, and add, refresh, or remove native marketplace sources. Mutations use provider-native controls when available, guarded Codex configuration updates otherwise, and opaque IDs plus review, version, status, or source guards.",
+	},
+	{
+		method: "GET",
 		path: "/skills/managed",
 		server: "api",
 		desc: "Agent skill packages currently managed by Hlid, including provenance and package summaries.",
