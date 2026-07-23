@@ -125,6 +125,69 @@ describe("chat WebSocket runtime schema", () => {
 		).toBeNull();
 	});
 
+	it("validates native goal controls", () => {
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "goal_control",
+					request_id: "request-1",
+					session_id: "session-1",
+					action: "set",
+					objective: "Finish the release gate",
+					token_budget: 50_000,
+				}),
+			),
+		).toMatchObject({ action: "set", token_budget: 50_000 });
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "goal_control",
+					request_id: "request-1",
+					session_id: "session-1",
+					action: "set",
+				}),
+			),
+		).toBeNull();
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "goal_control",
+					request_id: "request-1",
+					session_id: "session-1",
+					action: "pause",
+					token_budget: 50_000,
+				}),
+			),
+		).toBeNull();
+	});
+
+	it("validates a goal attached to its starting chat turn", () => {
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "chat",
+					text: "Finish the release gate",
+					goal: {
+						objective: "Finish the release gate",
+						token_budget: 50_000,
+					},
+				}),
+			),
+		).toMatchObject({
+			type: "chat",
+			goal: { objective: "Finish the release gate", token_budget: 50_000 },
+		});
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "chat",
+					text: "Finish the release gate",
+					goal: { objective: "" },
+				}),
+			),
+		).toBeNull();
+	});
+
 	it("accepts plan_mode and plan_html flags", () => {
 		expect(
 			parseClientMessage(

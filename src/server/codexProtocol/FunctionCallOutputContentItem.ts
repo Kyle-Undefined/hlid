@@ -1,6 +1,6 @@
 // AUTO-GENERATED — vendored from codex-cli's `codex app-server generate-ts`.
-// CLI version: codex-cli 0.144.4 (pinned to 0.144.4 in scripts/generate-codex-types.ts)
-// Generated: 2026-07-15
+// CLI version: codex-cli 0.145.0 (pinned to 0.145.0 in scripts/generate-codex-types.ts)
+// Generated: 2026-07-23
 // Regenerate via `bun scripts/generate-codex-types.ts`; version bumps are
 // deliberate manual updates, not run automatically on every build.
 
@@ -13,4 +13,4 @@ import type { ImageDetail } from "./ImageDetail";
  * Responses API compatible content items that can be returned by a tool call.
  * This is a subset of ContentItem with the types we support as function call outputs.
  */
-export type FunctionCallOutputContentItem = { "type": "input_text", text: string, } | { "type": "input_image", image_url: string, detail?: ImageDetail, } | { "type": "encrypted_content", encrypted_content: string, };
+export type FunctionCallOutputContentItem = { "type": "input_text", text: string, } | { "type": "input_image", image_url: string, detail?: ImageDetail, } | { "type": "input_audio", audio_url: string, } | { "type": "encrypted_content", encrypted_content: string, };

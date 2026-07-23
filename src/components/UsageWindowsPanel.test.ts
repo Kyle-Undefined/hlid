@@ -3,11 +3,26 @@ import type { ProviderUsageSnapshot, UsageWindow, UsageWindows } from "#/db";
 import {
 	applyRateLimitToSnapshot,
 	applyRateLimitToWindowData,
+	builtInProviderUsageShells,
 	mergeFreshProviderSnapshots,
 	mergeProviderSnapshot,
 	mergeUsageWindows,
 	providerWindowUsage,
 } from "#/lib/usageWindows";
+
+describe("builtInProviderUsageShells", () => {
+	it("does not invent an unreported Codex spend-control window", () => {
+		const shells = builtInProviderUsageShells();
+		expect(
+			shells.find((item) => item.providerId === "claude")?.windows,
+		).toHaveLength(2);
+		expect(
+			shells
+				.find((item) => item.providerId === "codex")
+				?.windows.map((window) => window.windowId),
+		).toEqual(["five_hour", "weekly"]);
+	});
+});
 
 function makeWindows(
 	utilization: number | null,

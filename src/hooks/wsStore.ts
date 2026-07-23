@@ -178,6 +178,7 @@ function sendChatToServer(msg: QueuedChatMessage): boolean {
 	if (msg.model) payload.model = msg.model;
 	if (msg.effort) payload.effort = msg.effort;
 	if (msg.permission_mode) payload.permission_mode = msg.permission_mode;
+	if (msg.goal) payload.goal = msg.goal;
 	try {
 		_ws.send(JSON.stringify(payload));
 		return true;
@@ -400,6 +401,11 @@ function handleGlobalMessage(msg: ServerMessage): boolean {
 }
 
 function isMessageFromAnotherSession(msg: ServerMessage): boolean {
+	// Goal responses carry the durable DB chat ID because that is what Raven
+	// addresses, while a newly created live entry temporarily focuses the pool
+	// UUID. The Raven goal consumer performs its own canonical session check, so
+	// let these events reach it instead of dropping a valid first-turn goal here.
+	if (msg.type === "goal_state" || msg.type === "goal_error") return false;
 	const messageSessionId = (msg as { session_id?: string }).session_id;
 	const subscribedSessionId = getSubscribedSessionId();
 	return (

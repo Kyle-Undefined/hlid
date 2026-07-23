@@ -850,7 +850,11 @@ function makeFakeSessionProc(
 	proc.stdin = {
 		write: vi.fn((data: string) => {
 			writes.push(data);
-			const msg = JSON.parse(data) as { id?: number; method?: string };
+			const msg = JSON.parse(data) as {
+				id?: number;
+				method?: string;
+				params?: Record<string, unknown>;
+			};
 			queueMicrotask(() => {
 				if (msg.method === "initialize") {
 					stdout.emit(
@@ -935,6 +939,41 @@ function makeFakeSessionProc(
 								id: msg.id,
 								result: { turn: { id: `review-${turnCounter}` } },
 							})}\n`,
+						),
+					);
+				} else if (msg.method === "thread/goal/get") {
+					stdout.emit(
+						"data",
+						Buffer.from(
+							`${JSON.stringify({ id: msg.id, result: { goal: null } })}\n`,
+						),
+					);
+				} else if (msg.method === "thread/goal/set") {
+					stdout.emit(
+						"data",
+						Buffer.from(
+							`${JSON.stringify({
+								id: msg.id,
+								result: {
+									goal: {
+										threadId: "thread-1",
+										objective: msg.params?.objective ?? "Existing goal",
+										status: msg.params?.status ?? "active",
+										tokenBudget: msg.params?.tokenBudget ?? null,
+										tokensUsed: 0,
+										timeUsedSeconds: 0,
+										createdAt: 1,
+										updatedAt: 1,
+									},
+								},
+							})}\n`,
+						),
+					);
+				} else if (msg.method === "thread/goal/clear") {
+					stdout.emit(
+						"data",
+						Buffer.from(
+							`${JSON.stringify({ id: msg.id, result: { cleared: true } })}\n`,
 						),
 					);
 				} else if (msg.method === "skills/list") {
@@ -1059,6 +1098,12 @@ describe("CodexAgentSession — commands", () => {
 				argumentHint: "",
 			},
 			{
+				name: "goal",
+				description: "Set, inspect, pause, resume, or clear the Codex goal",
+				argumentHint: "[objective | pause | resume | clear]",
+				action: "goal",
+			},
+			{
 				name: "review",
 				description: "Review the working tree",
 				argumentHint: "[instructions]",
@@ -1066,6 +1111,42 @@ describe("CodexAgentSession — commands", () => {
 			},
 		]);
 		expect(writeMethods(writes)).not.toContain("thread/start");
+		session.cancel();
+	});
+
+	it("controls goals through native thread methods", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(baseCodexParams());
+		await expect(
+			session.controlGoal?.({
+				action: "set",
+				objective: "Finish the release gate",
+				tokenBudget: 50_000,
+			}),
+		).resolves.toMatchObject({
+			providerSessionId: "thread-1",
+			goal: {
+				objective: "Finish the release gate",
+				status: "active",
+				tokenBudget: 50_000,
+			},
+		});
+		await session.controlGoal?.({ action: "pause" });
+		await session.controlGoal?.({ action: "resume" });
+		await session.controlGoal?.({ action: "clear" });
+		const goalCalls = writes
+			.map((value) => JSON.parse(value) as Record<string, unknown>)
+			.filter((value) => String(value.method).startsWith("thread/goal/"));
+		expect(goalCalls.map((value) => value.method)).toEqual([
+			"thread/goal/set",
+			"thread/goal/set",
+			"thread/goal/set",
+			"thread/goal/clear",
+		]);
+		expect(goalCalls[1]?.params).toMatchObject({ status: "paused" });
+		expect(goalCalls[2]?.params).toMatchObject({ status: "active" });
 		session.cancel();
 	});
 
@@ -1711,6 +1792,35 @@ describe("CodexAgentSession — usage windows", () => {
 		session.cancel();
 	});
 
+	it("maps workspace spend control usage as its own provider window", async () => {
+		const { proc } = makeFakeSessionProc({
+			rateLimits: {
+				individualLimit: {
+					limit: "100",
+					used: "75.5",
+					remainingPercent: 24.5,
+					resetsAt: 1_800_600_000_000,
+				},
+				spendControlReached: false,
+			},
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const session = new CodexProvider().query(baseCodexParams());
+		expect(await session.usageWindows?.()).toEqual([
+			{
+				windowId: "spend_control",
+				label: "SPEND",
+				utilization: 0.755,
+				remaining: 24.5,
+				limit: 100,
+				resetsAt: 1_800_600_000,
+			},
+		]);
+		session.cancel();
+	});
+
 	it("uses the reported duration when Codex returns only a weekly primary", async () => {
 		const { proc } = makeFakeSessionProc({
 			rateLimits: {
@@ -1977,6 +2087,45 @@ describe("CodexAgentSession — setPermissionMode", () => {
 describe("CodexAgentSession — notifications", () => {
 	beforeEach(() => {
 		__resetCodexAppServersForTesting();
+	});
+
+	it("publishes goal updates through a replaceable session handler", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const initial = vi.fn();
+		const replacement = vi.fn();
+		const session = new CodexProvider().query(
+			baseCodexParams({ onGoalChange: initial }),
+		);
+		await session.controlGoal?.({ action: "get" });
+		session.setGoalChangeHandler?.(replacement);
+		emitSessionNotification(proc, "thread/goal/updated", {
+			threadId: "thread-1",
+			turnId: null,
+			goal: {
+				threadId: "thread-1",
+				objective: "Finish the release gate",
+				status: "active",
+				tokenBudget: null,
+				tokensUsed: 10,
+				timeUsedSeconds: 2,
+				createdAt: 1,
+				updatedAt: 2,
+			},
+		});
+		emitSessionNotification(proc, "thread/goal/cleared", {
+			threadId: "thread-1",
+		});
+		await vi.waitFor(() => {
+			expect(replacement).toHaveBeenNthCalledWith(
+				1,
+				expect.objectContaining({ objective: "Finish the release gate" }),
+			);
+			expect(replacement).toHaveBeenNthCalledWith(2, null);
+		});
+		expect(initial).not.toHaveBeenCalled();
+		session.cancel();
 	});
 
 	it("maps inbound notification families and deduplicates streamed content", async () => {
@@ -2964,6 +3113,37 @@ describe("CodexAgentSession — notifications", () => {
 			status: "rejected",
 			rateLimitType: "five_hour",
 			resetsAt: 42,
+		});
+		session.cancel();
+	});
+
+	it("surfaces a reached workspace spend control as a hard limit", async () => {
+		const { proc } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const session = new CodexProvider().query(baseCodexParams());
+		const events = session[Symbol.asyncIterator]();
+		await session.send("hello");
+		await nextSessionEvent(events); // session_start
+
+		emitSessionNotification(proc, "account/rateLimits/updated", {
+			rateLimits: {
+				spendControlReached: true,
+				individualLimit: {
+					limit: "100",
+					used: "100",
+					remainingPercent: 0,
+					resetsAt: 1_800_600_000,
+				},
+			},
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "rate_limit",
+			status: "rejected",
+			rateLimitType: "spend_control",
+			utilization: 1,
+			resetsAt: 1_800_600_000,
 		});
 		session.cancel();
 	});

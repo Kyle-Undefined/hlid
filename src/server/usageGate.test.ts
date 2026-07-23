@@ -144,6 +144,16 @@ describe("evaluateSleep", () => {
 		});
 	});
 
+	it("treats a workspace spend control as a first-class hard limit", () => {
+		const resetsAt = now() + 3600;
+		reportRateLimitSignal(provider, "spend_control", "rejected", resetsAt);
+		expect(evaluateSleep(provider, cfg())).toMatchObject({
+			reason: "limit_reached",
+			windowId: "spend_control",
+			targetResetsAt: resetsAt + 60,
+		});
+	});
+
 	it("prefers five-hour when both windows report hard limits", () => {
 		reportRateLimitSignal(provider, "weekly", "rejected", now() + 86400);
 		reportRateLimitSignal(provider, "five_hour", "rejected", now() + 600);

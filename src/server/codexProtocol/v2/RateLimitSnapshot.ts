@@ -1,6 +1,6 @@
 // AUTO-GENERATED — vendored from codex-cli's `codex app-server generate-ts`.
-// CLI version: codex-cli 0.144.4 (pinned to 0.144.4 in scripts/generate-codex-types.ts)
-// Generated: 2026-07-15
+// CLI version: codex-cli 0.145.0 (pinned to 0.145.0 in scripts/generate-codex-types.ts)
+// Generated: 2026-07-23
 // Regenerate via `bun scripts/generate-codex-types.ts`; version bumps are
 // deliberate manual updates, not run automatically on every build.
 
@@ -13,4 +13,8 @@ import type { RateLimitReachedType } from "./RateLimitReachedType";
 import type { RateLimitWindow } from "./RateLimitWindow";
 import type { SpendControlLimitSnapshot } from "./SpendControlLimitSnapshot";
 
-export type RateLimitSnapshot = { limitId: string | null, limitName: string | null, primary: RateLimitWindow | null, secondary: RateLimitWindow | null, credits: CreditsSnapshot | null, individualLimit: SpendControlLimitSnapshot | null, planType: PlanType | null, rateLimitReachedType: RateLimitReachedType | null, };
+export type RateLimitSnapshot = { limitId: string | null, limitName: string | null, primary: RateLimitWindow | null, secondary: RateLimitWindow | null, credits: CreditsSnapshot | null, individualLimit: SpendControlLimitSnapshot | null,
+/**
+ * Backend-reported spend-control state. `None` is unavailable, not a sparse-update recovery.
+ */
+spendControlReached: boolean | null, planType: PlanType | null, rateLimitReachedType: RateLimitReachedType | null, };

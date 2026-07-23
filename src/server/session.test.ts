@@ -869,6 +869,233 @@ function makeSwitchableProvider(
 	return { provider, getSession: () => session };
 }
 
+describe("SessionManager — native Codex goals", () => {
+	it("sets the goal before sending the same objective as the starting turn", async () => {
+		const goal = {
+			threadId: "sdk-session-1",
+			objective: "Finish the release gate",
+			status: "active" as const,
+			tokenBudget: 50_000,
+			tokensUsed: 0,
+			timeUsedSeconds: 0,
+			createdAt: 1,
+			updatedAt: 1,
+		};
+		const controlGoal = vi.fn().mockResolvedValue({
+			providerSessionId: "sdk-session-1",
+			goal,
+		});
+		const send = vi.fn().mockResolvedValue(undefined);
+		const { provider } = makeSwitchableProvider({ controlGoal, send }, "codex");
+		const config = {
+			...makeConfig("gpt-5.6-sol"),
+			vault_provider: "codex",
+			codex: {
+				model: "gpt-5.6-sol",
+				effort: "high",
+				permission_mode: "default",
+				turn_recaps: false,
+			},
+		} as HlidConfig;
+		const sm = new SessionManager(config, makeProviders(provider));
+		const emitted: ServerMessage[] = [];
+
+		await sm.runQuery(
+			"Finish the release gate",
+			(message) => emitted.push(message),
+			"goal-session",
+			undefined,
+			undefined,
+			undefined,
+			"goal-turn",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			{ objective: "Finish the release gate", tokenBudget: 50_000 },
+		);
+
+		expect(controlGoal).toHaveBeenCalledWith({
+			action: "set",
+			objective: "Finish the release gate",
+			tokenBudget: 50_000,
+		});
+		expect(send).toHaveBeenCalledWith("test prompt");
+		expect(controlGoal.mock.invocationCallOrder[0]).toBeLessThan(
+			send.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+		);
+		expect(emitted).toContainEqual({
+			type: "goal_state",
+			session_id: "goal-session",
+			provider_id: "codex",
+			goal: {
+				thread_id: "sdk-session-1",
+				objective: "Finish the release gate",
+				status: "active",
+				token_budget: 50_000,
+				tokens_used: 0,
+				time_used_seconds: 0,
+				created_at: 1,
+				updated_at: 1,
+			},
+		});
+	});
+
+	it("drains a resumed goal as an active Raven continuation", async () => {
+		let releaseContinuation: () => void = () => {};
+		const continuationGate = new Promise<void>((resolve) => {
+			releaseContinuation = resolve;
+		});
+		let iteratorCount = 0;
+		const send = vi.fn().mockResolvedValue(undefined);
+		const controlGoal = vi.fn().mockResolvedValue({
+			providerSessionId: "sdk-goal-session",
+			goal: {
+				threadId: "sdk-goal-session",
+				objective: "Finish the release gate",
+				status: "active" as const,
+				tokenBudget: 50_000,
+				tokensUsed: 120,
+				timeUsedSeconds: 12,
+				createdAt: 1,
+				updatedAt: 2,
+			},
+		});
+		const session: AgentSession = {
+			[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
+				iteratorCount += 1;
+				if (iteratorCount === 1) {
+					return (async function* (): AsyncGenerator<AgentEvent> {
+						yield {
+							type: "session_start",
+							sessionId: "sdk-goal-session",
+						};
+						yield {
+							type: "done",
+							cost: 0,
+							turns: 1,
+							durationMs: 0,
+							usage: { inputTokens: 10, outputTokens: 5 },
+						};
+					})();
+				}
+				return (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "text_delta", text: "Continued work" };
+					await continuationGate;
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 100,
+						usage: { inputTokens: 20, outputTokens: 8 },
+					};
+				})();
+			},
+			cancel: vi.fn(),
+			send,
+			controlGoal,
+		};
+		const provider: AgentProvider = {
+			providerId: "codex",
+			query: vi.fn(() => session),
+		};
+		const base = makeConfig("gpt-5.6-sol");
+		const config = {
+			...base,
+			vault_provider: "codex",
+			codex: {
+				model: "gpt-5.6-sol",
+				effort: "high",
+				permission_mode: "default",
+				turn_recaps: false,
+			},
+		} as HlidConfig;
+		const sm = new SessionManager(config, makeProviders(provider));
+		const emitted: ServerMessage[] = [];
+
+		await sm.runQuery(
+			"Start",
+			(message) => emitted.push(message),
+			"goal-session",
+		);
+		vi.mocked(dbMock.recordQuery).mockClear();
+		vi.mocked(dbMock.appendMessage).mockClear();
+		vi.mocked(dbMock.setMessageText).mockClear();
+		emitted.length = 0;
+
+		await sm.controlGoal(
+			{ action: "resume" },
+			{
+				sessionId: "goal-session",
+				emit: (message) => emitted.push(message),
+			},
+		);
+
+		expect(sm.getStatus().state).toBe("running");
+		await waitFor(() => {
+			expect(emitted).toContainEqual(
+				expect.objectContaining({ type: "status", state: "running" }),
+			);
+			expect(emitted).toContainEqual({
+				type: "chunk",
+				text: "Continued work",
+				offset: 0,
+			});
+		});
+		expect(send).toHaveBeenCalledOnce();
+
+		releaseContinuation();
+		await waitFor(() => expect(sm.getStatus().state).toBe("idle"));
+
+		expect(dbMock.recordQuery).toHaveBeenCalledOnce();
+		expect(dbMock.appendMessage).toHaveBeenCalledWith(
+			"goal-session",
+			expect.any(Number),
+			"assistant",
+			"",
+		);
+		expect(dbMock.setMessageText).toHaveBeenCalledWith(
+			"goal-session",
+			expect.any(Number),
+			"Continued work",
+		);
+		expect(emitted).toContainEqual(
+			expect.objectContaining({ type: "done", session_id: "goal-session" }),
+		);
+		expect(emitted).toContainEqual(
+			expect.objectContaining({ type: "status", state: "idle" }),
+		);
+	});
+
+	it("does not create an empty DB chat for a standalone goal control", async () => {
+		vi.mocked(dbMock.createSession).mockClear();
+		const { provider } = makeSwitchableProvider({}, "codex");
+		const config = {
+			...makeConfig("gpt-5.6-sol"),
+			vault_provider: "codex",
+			codex: {
+				model: "gpt-5.6-sol",
+				effort: "high",
+				permission_mode: "default",
+				turn_recaps: false,
+			},
+		} as HlidConfig;
+		const sm = new SessionManager(config, makeProviders(provider));
+
+		await expect(
+			sm.controlGoal(
+				{ action: "set", objective: "Do not create a blank chat" },
+				{
+					sessionId: "missing-session",
+					emit: vi.fn(),
+				},
+			),
+		).rejects.toThrow("Start the goal by submitting it from Raven.");
+		expect(dbMock.createSession).not.toHaveBeenCalled();
+	});
+});
+
 describe("SessionManager — setModel", () => {
 	it("updates getStatus().model with no active AgentSession (no-op delegate)", async () => {
 		const sm = new SessionManager(

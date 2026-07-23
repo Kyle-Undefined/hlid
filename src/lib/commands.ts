@@ -2,7 +2,7 @@ import { isClaudeRuntimeProvider } from "./providerRuntime";
 import { startsWithSearchText } from "./search";
 import type { Skill } from "./skills";
 
-export type CommandAction = "review" | "computer-use";
+export type CommandAction = "review" | "computer-use" | "goal";
 
 export type CommandExecution =
 	| { kind: "skill"; filePath: string }
@@ -119,6 +119,25 @@ export type CommandSubmission = {
 	skillContexts?: string[];
 	commandAction?: CommandAction;
 };
+
+export type GoalCommandIntent =
+	| { action: "edit" }
+	| { action: "pause" | "resume" | "clear" }
+	| { action: "set"; objective: string };
+
+/** Turn Raven's native `/goal` syntax into an explicit app-server operation. */
+export function parseGoalCommand(text: string): GoalCommandIntent {
+	const value = text
+		.trim()
+		.replace(/^\/goal(?:\s+|$)/i, "")
+		.trim();
+	if (!value || value.toLowerCase() === "edit") return { action: "edit" };
+	const action = value.toLowerCase();
+	if (action === "pause" || action === "resume" || action === "clear") {
+		return { action };
+	}
+	return { action: "set", objective: value };
+}
 
 export const CLAUDE_COMMAND_SELECTION_LIMIT = 6;
 

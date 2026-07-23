@@ -25,7 +25,7 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, normalize } from "node:path";
 
-const CLI_VERSION_PIN = "0.144.4";
+const CLI_VERSION_PIN = "0.145.0";
 
 const root = join(import.meta.dir, "..");
 const outDir = join(root, "src", "server", "codexProtocol");
@@ -34,6 +34,21 @@ const outDir = join(root, "src", "server", "codexProtocol");
 const SEEDS: Array<[name: string, relPath: string]> = [
 	["ThreadStartParams", "v2/ThreadStartParams.ts"],
 	["ThreadResumeParams", "v2/ThreadResumeParams.ts"],
+	["ThreadGoal", "v2/ThreadGoal.ts"],
+	["ThreadGoalSetParams", "v2/ThreadGoalSetParams.ts"],
+	["ThreadGoalSetResponse", "v2/ThreadGoalSetResponse.ts"],
+	["ThreadGoalGetParams", "v2/ThreadGoalGetParams.ts"],
+	["ThreadGoalGetResponse", "v2/ThreadGoalGetResponse.ts"],
+	["ThreadGoalClearParams", "v2/ThreadGoalClearParams.ts"],
+	["ThreadGoalClearResponse", "v2/ThreadGoalClearResponse.ts"],
+	[
+		"ThreadGoalUpdatedNotification",
+		"v2/ThreadGoalUpdatedNotification.ts",
+	],
+	[
+		"ThreadGoalClearedNotification",
+		"v2/ThreadGoalClearedNotification.ts",
+	],
 	["TurnStartParams", "v2/TurnStartParams.ts"],
 	["SandboxPolicy", "v2/SandboxPolicy.ts"],
 	["SandboxMode", "v2/SandboxMode.ts"],

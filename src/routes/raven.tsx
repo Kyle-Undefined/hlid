@@ -29,6 +29,7 @@ import { AttachmentStrip } from "#/components/AttachmentStrip";
 import { ActiveCommandBadges } from "#/components/chat/ActiveCommandBadge";
 import { reducer } from "#/components/chat/chatReducer";
 import { MessageList } from "#/components/chat/MessageList";
+import { RavenGoalStrip } from "#/components/chat/RavenGoalStrip";
 import {
 	VaultReferenceBadges,
 	VaultReferencePicker,
@@ -62,6 +63,7 @@ import { useWsChatQueue, useWsLiveStats } from "#/hooks/useWsSelectors";
 import { clearChatQueue } from "#/hooks/wsChatQueueStore";
 import { resetLiveStats } from "#/hooks/wsLiveStatsStore";
 import {
+	canonicalSessionId,
 	getSessionsStatus,
 	subscribeSessionsStatus,
 } from "#/hooks/wsSessionStatusStore";
@@ -71,6 +73,7 @@ import {
 	addCommandSelection,
 	type CommandDescriptor,
 	filterProviderCompatibleCommands,
+	parseGoalCommand,
 	resolveCommandSubmission,
 } from "#/lib/commands";
 import {
@@ -92,7 +95,10 @@ import {
 	normalizeEffortForPlanMode,
 	resolveActiveProviderId,
 } from "#/lib/providerOptions";
-import { isClaudeRuntimeProvider } from "#/lib/providerRuntime";
+import {
+	isClaudeRuntimeProvider,
+	isCodexRuntimeProvider,
+} from "#/lib/providerRuntime";
 import { loadRavenProviders } from "#/lib/ravenProviderCache";
 import {
 	createAnimationFrameCoalescer,
@@ -120,7 +126,11 @@ import {
 import { getVoiceInfoFn } from "#/lib/serverFns/voice";
 import { uid } from "#/lib/utils";
 import { displayVoiceHotkey } from "#/lib/voiceHotkey";
-import { decisionFromScope, type RateLimitMessage } from "#/server/protocol";
+import {
+	decisionFromScope,
+	type GoalState,
+	type RateLimitMessage,
+} from "#/server/protocol";
 
 // ─── route ───────────────────────────────────────────────────────────────────
 
@@ -527,13 +537,19 @@ function useRavenChatRuntime({
 			description: string;
 			argumentHint: string;
 			aliases?: string[];
-			action?: "review" | "computer-use";
+			action?: "review" | "computer-use" | "goal";
 		}>
 	>([]);
 	const [sdkSlashCommandProviderId, setSdkSlashCommandProviderId] = useState<
 		string | null
 	>(null);
 	const [rateLimit, setRateLimit] = useState<RateLimitMessage | null>(null);
+	const [goal, setGoal] = useState<GoalState | null>(null);
+	const [goalEditorOpen, setGoalEditorOpen] = useState(false);
+	const [goalPending, setGoalPending] = useState(false);
+	const [goalError, setGoalError] = useState<string | null>(null);
+	const goalRequestIdRef = useRef<string | null>(null);
+	const goalStartPendingRef = useRef(false);
 	const [mcpServers, setMcpServers] = useState<
 		ReturnType<typeof mapMcpServer>[]
 	>([]);
@@ -550,6 +566,44 @@ function useRavenChatRuntime({
 	});
 	const handleAllMessages = useCallback(
 		(message: Parameters<typeof handleWsMessage>[0]) => {
+			if (message.type === "goal_state") {
+				if (expectedProviderId && !isCodexRuntimeProvider(expectedProviderId))
+					return;
+				if (
+					canonicalSessionId(message.session_id) !==
+					canonicalSessionId(sessionIdRef.current)
+				)
+					return;
+				setGoal(message.goal);
+				if (
+					goalStartPendingRef.current ||
+					message.request_id === goalRequestIdRef.current
+				) {
+					goalStartPendingRef.current = false;
+					goalRequestIdRef.current = null;
+					setGoalPending(false);
+					setGoalError(null);
+				}
+				return;
+			}
+			if (message.type === "goal_error") {
+				if (
+					canonicalSessionId(message.session_id) !==
+						canonicalSessionId(sessionIdRef.current) ||
+					message.request_id !== goalRequestIdRef.current
+				)
+					return;
+				goalRequestIdRef.current = null;
+				setGoalPending(false);
+				setGoalError(message.message);
+				return;
+			}
+			if (message.type === "error" && goalStartPendingRef.current) {
+				goalStartPendingRef.current = false;
+				setGoal(null);
+				setGoalPending(false);
+				setGoalError(message.message);
+			}
 			if (message.type === "mcp_status") {
 				if ((message.agent_cwd ?? "") !== (agentCwd ?? "")) return;
 				const messageProviderId =
@@ -578,9 +632,41 @@ function useRavenChatRuntime({
 			}
 			handleWsMessage(message);
 		},
-		[handleWsMessage, agentCwd, expectedProviderId],
+		[handleWsMessage, agentCwd, expectedProviderId, sessionIdRef],
 	);
 	const connection = useWs(handleAllMessages);
+	const controlGoal = useCallback(
+		(
+			control:
+				| { action: "get" | "pause" | "resume" | "clear" }
+				| {
+						action: "set";
+						objective: string;
+						tokenBudget?: number | null;
+				  },
+		) => {
+			const requestId = uid();
+			goalRequestIdRef.current = requestId;
+			setGoalPending(true);
+			setGoalError(null);
+			connection.send({
+				type: "goal_control",
+				request_id: requestId,
+				session_id: sessionIdRef.current,
+				action: control.action,
+				...(control.action === "set"
+					? {
+							objective: control.objective,
+							...(control.tokenBudget !== undefined
+								? { token_budget: control.tokenBudget }
+								: {}),
+						}
+					: {}),
+				...(agentCwd ? { agent_cwd: agentCwd } : {}),
+			});
+		},
+		[agentCwd, connection.send, sessionIdRef],
+	);
 
 	const historyPagination = useLoadChatHistory({
 		existingSessionId,
@@ -598,6 +684,12 @@ function useRavenChatRuntime({
 		setSdkSlashCommands([]);
 		setSdkSlashCommandProviderId(null);
 		setMcpServers([]);
+		setGoal(null);
+		setGoalEditorOpen(false);
+		setGoalPending(false);
+		setGoalError(null);
+		goalRequestIdRef.current = null;
+		goalStartPendingRef.current = false;
 	}, [agentCwd, existingSessionId, expectedProviderId]);
 
 	useEffect(() => {
@@ -616,7 +708,17 @@ function useRavenChatRuntime({
 			session_id: sessionIdRef.current,
 			...(agentCwd ? { agent_cwd: agentCwd } : {}),
 		});
-	}, [connection.send, connection.wsStatus, agentCwd, sessionIdRef]);
+		if (expectedProviderId && isCodexRuntimeProvider(expectedProviderId)) {
+			controlGoal({ action: "get" });
+		}
+	}, [
+		connection.send,
+		connection.wsStatus,
+		agentCwd,
+		expectedProviderId,
+		sessionIdRef,
+		controlGoal,
+	]);
 
 	// biome-ignore lint/correctness/useExhaustiveDependencies: session navigation is the reset trigger
 	useEffect(() => {
@@ -640,6 +742,30 @@ function useRavenChatRuntime({
 		mcpServers,
 		rateLimit,
 		setRateLimit,
+		goal,
+		goalEditorOpen,
+		goalPending,
+		goalError,
+		stageGoalStart: (objective: string, tokenBudget?: number | null) => {
+			const now = Math.floor(Date.now() / 1000);
+			goalStartPendingRef.current = true;
+			setGoalPending(true);
+			setGoalError(null);
+			setGoal({
+				thread_id: "",
+				objective,
+				status: "active",
+				token_budget: tokenBudget ?? null,
+				tokens_used: 0,
+				time_used_seconds: 0,
+				created_at: now,
+				updated_at: now,
+			});
+		},
+		controlGoal,
+		openGoalEditor: () => setGoalEditorOpen(true),
+		closeGoalEditor: () => setGoalEditorOpen(false),
+		dismissGoalError: () => setGoalError(null),
 		messages,
 		dispatch,
 		pendingIdRef,
@@ -993,7 +1119,14 @@ function useRavenSend(props: RavenActionProps) {
 		sessionSelection,
 	} = props;
 	const { agentSkillContext, agentContextSentRef, sessionId } = props.session;
-	const { sessionState, send, dispatch } = props.runtime;
+	const {
+		sessionState,
+		send,
+		dispatch,
+		controlGoal,
+		openGoalEditor,
+		closeGoalEditor,
+	} = props.runtime;
 	const { pendingAttachments, clearPending: clearPendingAttachments } =
 		props.upload;
 	const {
@@ -1004,14 +1137,36 @@ function useRavenSend(props: RavenActionProps) {
 	const { atBottomRef } = props.viewport;
 
 	return useCallback(
-		(overrideText?: string) => {
+		(
+			overrideText?: string,
+			explicitGoal?: { objective: string; tokenBudget?: number | null },
+		) => {
 			const typed = (overrideText ?? input).trim();
 
-			const { text, skillContexts, commandAction } = resolveCommandSubmission(
-				activeSkills,
-				typed,
-				commands,
-			);
+			const resolved = resolveCommandSubmission(activeSkills, typed, commands);
+			let { text } = resolved;
+			const { skillContexts, commandAction } = resolved;
+			let goalStart = explicitGoal;
+			if (commandAction === "goal") {
+				if (!goalStart) {
+					const intent = parseGoalCommand(text);
+					if (intent.action === "edit") openGoalEditor();
+					else if (intent.action === "set") goalStart = intent;
+					else {
+						controlGoal(intent);
+						closeGoalEditor();
+					}
+					if (intent.action !== "set") {
+						clearDraft();
+						setInput("");
+						setActiveSkills([]);
+						return;
+					}
+				}
+				if (!goalStart) return;
+				text = goalStart.objective;
+				closeGoalEditor();
+			}
 			const id = uid();
 			const submission = prepareChatSubmission({
 				id,
@@ -1019,7 +1174,7 @@ function useRavenSend(props: RavenActionProps) {
 				sessionId,
 				running: sessionState === "running",
 				skillContexts,
-				commandAction,
+				commandAction: commandAction === "goal" ? undefined : commandAction,
 				attachments: [...pendingAttachments, ...relicAttachments],
 				vaultReferences: referencePaths,
 				agentCwd: agentSkillContext ?? undefined,
@@ -1030,6 +1185,14 @@ function useRavenSend(props: RavenActionProps) {
 				model: sessionSelection.model,
 				effort: sessionSelection.effort,
 				permissionMode: sessionSelection.permissionMode,
+				goal: goalStart
+					? {
+							objective: goalStart.objective,
+							...(goalStart.tokenBudget !== undefined
+								? { token_budget: goalStart.tokenBudget }
+								: {}),
+						}
+					: undefined,
 			});
 			if (!submission) return;
 
@@ -1070,6 +1233,9 @@ function useRavenSend(props: RavenActionProps) {
 			atBottomRef,
 			agentContextSentRef,
 			setActiveSkills,
+			controlGoal,
+			openGoalEditor,
+			closeGoalEditor,
 		],
 	);
 }
@@ -1832,6 +1998,34 @@ function ChatPageContent(props: ChatPageContentProps) {
 				preferredProviderId={composerProps.activeProviderId}
 				fetchFn={loadProviderUsages}
 				tail={<ContextWindowSection stats={liveStats} />}
+			/>
+			<RavenGoalStrip
+				goal={props.runtime.goal}
+				editorOpen={props.runtime.goalEditorOpen}
+				pending={props.runtime.goalPending}
+				error={props.runtime.goalError}
+				onOpenEditor={props.runtime.openGoalEditor}
+				onCloseEditor={props.runtime.closeGoalEditor}
+				onSet={(objective, tokenBudget) => {
+					if (props.runtime.goal) {
+						props.runtime.controlGoal({
+							action: "set",
+							objective,
+							tokenBudget,
+						});
+					} else {
+						props.runtime.stageGoalStart(objective, tokenBudget);
+						props.composerProps.handleSend(objective, {
+							objective,
+							tokenBudget,
+						});
+					}
+					props.runtime.closeGoalEditor();
+				}}
+				onPause={() => props.runtime.controlGoal({ action: "pause" })}
+				onResume={() => props.runtime.controlGoal({ action: "resume" })}
+				onClear={() => props.runtime.controlGoal({ action: "clear" })}
+				onDismissError={props.runtime.dismissGoalError}
 			/>
 
 			<RavenTerminalPane {...props} />
@@ -2898,6 +3092,8 @@ type ChatSessionFork = ReturnType<typeof useChatSessionFork>;
 
 function ChatActionButtons({
 	runtime,
+	input,
+	activeSkills,
 	canSend,
 	canQueue,
 	handleSend,
@@ -2906,6 +3102,13 @@ function ChatActionButtons({
 }: ChatComposerProps & { sessionFork: ChatSessionFork }) {
 	const { send, isRunning, messages } = runtime;
 	const { forkError, dismissForkError } = sessionFork;
+	const nativeGoalCommand =
+		/^\/goal(?:\s|$)/i.test(input.trim()) ||
+		activeSkills.some(
+			(command) =>
+				command.execution.kind === "provider-action" &&
+				command.execution.action === "goal",
+		);
 
 	return (
 		<>
@@ -2940,9 +3143,11 @@ function ChatActionButtons({
 						onClick={() => handleSend()}
 						disabled={!canQueue}
 						className="order-8 w-full px-2 md:w-auto md:px-4 py-2 md:py-3 text-[10px] tracking-widest text-primary/70 hover:text-primary disabled:text-muted-foreground/35 transition-colors shrink-0 uppercase font-bold"
-						aria-label="Queue message"
+						aria-label={
+							nativeGoalCommand ? "Run goal command" : "Queue message"
+						}
 					>
-						QUEUE
+						{nativeGoalCommand ? "APPLY" : "QUEUE"}
 					</button>
 				</div>
 			) : (
@@ -3043,7 +3248,10 @@ interface ChatComposerProps {
 	canSend: boolean;
 	canQueue: boolean;
 	handleSkillSelect: (command: CommandDescriptor) => void;
-	handleSend: (overrideText?: string) => void;
+	handleSend: (
+		overrideText?: string,
+		goal?: { objective: string; tokenBudget?: number | null },
+	) => void;
 	handleClear: () => void;
 	hideOnMobile?: boolean;
 }

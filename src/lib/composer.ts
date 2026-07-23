@@ -146,7 +146,7 @@ export function prepareChatSubmission(input: {
 	sessionId: string;
 	running: boolean;
 	skillContexts?: string[];
-	commandAction?: CommandAction;
+	commandAction?: Exclude<CommandAction, "goal">;
 	attachments: ChatAttachment[];
 	vaultReferences?: string[];
 	agentCwd?: string;
@@ -157,6 +157,7 @@ export function prepareChatSubmission(input: {
 	model?: string;
 	effort?: string;
 	permissionMode?: string;
+	goal?: ClientChatMessage["goal"];
 }): ChatSubmission | null {
 	if (
 		!input.text &&
@@ -180,6 +181,7 @@ export function prepareChatSubmission(input: {
 				vault_references: input.vaultReferences,
 				agent_cwd: input.agentCwd,
 				...sessionControls,
+				goal: input.goal,
 			},
 		};
 	}
@@ -212,6 +214,7 @@ export function prepareChatSubmission(input: {
 			vault_references: input.vaultReferences,
 			agent_cwd: agentCwd,
 			...sessionControls,
+			goal: input.goal,
 		},
 		marksAgentContextSent: agentCwd !== undefined,
 	};

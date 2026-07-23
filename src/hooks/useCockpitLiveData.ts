@@ -86,7 +86,7 @@ export function useCockpitLiveData(
 			description: string;
 			argumentHint: string;
 			aliases?: string[];
-			action?: "review" | "computer-use";
+			action?: "review" | "computer-use" | "goal";
 		}>
 	>([]);
 	const [sdkSlashCommandProviderId, setSdkSlashCommandProviderId] = useState<
@@ -197,7 +197,10 @@ export function useCockpitLiveData(
 		}
 		if (message.type === "slash_commands") {
 			if ((message.agent_cwd ?? "") !== (commandAgentCwd ?? "")) return;
-			setSdkSlashCommands(message.commands);
+			// Goals belong to one durable Raven thread, not Watch's new-run composer.
+			setSdkSlashCommands(
+				message.commands.filter((command) => command.action !== "goal"),
+			);
 			setSdkSlashCommandProviderId(message.provider_id);
 		}
 	});

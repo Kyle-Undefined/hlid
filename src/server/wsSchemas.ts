@@ -16,6 +16,11 @@ const attachment = z.strictObject({
 	kind: z.string().min(1).max(64),
 });
 
+const goalStart = z.strictObject({
+	objective: z.string().trim().min(1).max(4000),
+	token_budget: z.number().int().positive().nullable().optional(),
+});
+
 const answers = z
 	.record(shortText, z.array(shortText).max(20))
 	.refine((value) => Object.keys(value).length <= 20, "too many answers");
@@ -42,6 +47,7 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 			model: shortText.optional(),
 			effort: shortText.optional(),
 			permission_mode: shortText.optional(),
+			goal: goalStart.optional(),
 		})
 		.refine(
 			(message) =>
@@ -74,6 +80,39 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 		agent_cwd: path.optional(),
 		session_id: id.optional(),
 	}),
+	z
+		.strictObject({
+			type: z.literal("goal_control"),
+			request_id: id,
+			session_id: id,
+			action: z.enum(["get", "set", "pause", "resume", "clear"]),
+			objective: z.string().max(4000).optional(),
+			token_budget: z.number().int().positive().nullable().optional(),
+			agent_cwd: path.optional(),
+		})
+		.superRefine((value, context) => {
+			if (value.action === "set" && !value.objective?.trim()) {
+				context.addIssue({
+					code: "custom",
+					message: "objective is required when setting a goal",
+					path: ["objective"],
+				});
+			}
+			if (value.action !== "set" && value.objective !== undefined) {
+				context.addIssue({
+					code: "custom",
+					message: "objective is only valid when setting a goal",
+					path: ["objective"],
+				});
+			}
+			if (value.action !== "set" && value.token_budget !== undefined) {
+				context.addIssue({
+					code: "custom",
+					message: "token_budget is only valid when setting a goal",
+					path: ["token_budget"],
+				});
+			}
+		}),
 	z.strictObject({
 		type: z.literal("sync_mcp_list"),
 		agent_cwd: path.optional(),

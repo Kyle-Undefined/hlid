@@ -257,6 +257,10 @@ export function useCockpitRun(options: CockpitRunOptions) {
 			typed,
 			options.commands,
 		);
+		if (commandAction === "goal") {
+			options.setRunError("Goals are managed from an existing Raven session.");
+			return;
+		}
 		if (
 			(!text &&
 				options.pendingAttachments.length === 0 &&

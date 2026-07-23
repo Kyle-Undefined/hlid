@@ -5,6 +5,7 @@ import {
 	commandMatches,
 	filterProviderCompatibleCommands,
 	mergeCommands,
+	parseGoalCommand,
 	resolveCommandSubmission,
 	routineProviderCommandText,
 	skillCommand,
@@ -193,6 +194,18 @@ describe("commands", () => {
 		).toEqual({
 			text: "/review focus on auth",
 			commandAction: "review",
+		});
+	});
+
+	it("parses native goal controls without turning them into prompts", () => {
+		expect(parseGoalCommand("/goal")).toEqual({ action: "edit" });
+		expect(parseGoalCommand("/goal edit")).toEqual({ action: "edit" });
+		expect(parseGoalCommand("/goal pause")).toEqual({ action: "pause" });
+		expect(parseGoalCommand("/goal resume")).toEqual({ action: "resume" });
+		expect(parseGoalCommand("/goal clear")).toEqual({ action: "clear" });
+		expect(parseGoalCommand("/goal Finish the release gate")).toEqual({
+			action: "set",
+			objective: "Finish the release gate",
 		});
 	});
 

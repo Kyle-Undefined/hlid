@@ -205,6 +205,29 @@ describe("chat submission policy", () => {
 		});
 	});
 
+	it("carries a native goal start with the normal chat turn", () => {
+		expect(
+			submission({
+				text: "Finish the release gate",
+				goal: {
+					objective: "Finish the release gate",
+					token_budget: 50_000,
+				},
+			}),
+		).toMatchObject({
+			kind: "immediate",
+			user: { text: "Finish the release gate" },
+			message: {
+				type: "chat",
+				text: "Finish the release gate",
+				goal: {
+					objective: "Finish the release gate",
+					token_budget: 50_000,
+				},
+			},
+		});
+	});
+
 	it("sends agent context once and enables HTML only with plan mode", () => {
 		const first = submission({
 			agentCwd: "/agents/reviewer",

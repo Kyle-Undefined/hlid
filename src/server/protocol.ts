@@ -1,4 +1,8 @@
-import type { SubagentSnapshot } from "./agentProvider";
+import type {
+	ProviderGoalStatus,
+	ProviderThreadGoal,
+	SubagentSnapshot,
+} from "./agentProvider";
 
 /** Maximum tool-result text carried inline in Raven transcript messages. */
 export const TOOL_RESULT_PREVIEW_CHARS = 256;
@@ -219,6 +223,7 @@ export type PendingTurnSnapshot = {
 	vault_references?: string[];
 	plan_mode?: boolean;
 	plan_html?: boolean;
+	goal?: GoalStartRequest;
 };
 
 export type QueueStateSnapshot = {
@@ -282,9 +287,48 @@ export type SlashCommandsMessage = {
 		description: string;
 		argumentHint: string;
 		aliases?: string[];
-		action?: "review" | "computer-use";
+		action?: "review" | "computer-use" | "goal";
 	}>;
 };
+
+export type GoalState = {
+	thread_id: string;
+	objective: string;
+	status: ProviderGoalStatus;
+	token_budget: number | null;
+	tokens_used: number;
+	time_used_seconds: number;
+	created_at: number;
+	updated_at: number;
+};
+
+export type GoalStateMessage = {
+	type: "goal_state";
+	session_id: string;
+	provider_id: string;
+	request_id?: string;
+	goal: GoalState | null;
+};
+
+export type GoalErrorMessage = {
+	type: "goal_error";
+	session_id: string;
+	request_id: string;
+	message: string;
+};
+
+export function mapProviderGoal(goal: ProviderThreadGoal): GoalState {
+	return {
+		thread_id: goal.threadId,
+		objective: goal.objective,
+		status: goal.status,
+		token_budget: goal.tokenBudget,
+		tokens_used: goal.tokensUsed,
+		time_used_seconds: goal.timeUsedSeconds,
+		created_at: goal.createdAt,
+		updated_at: goal.updatedAt,
+	};
+}
 
 export type AskQuestion = {
 	question: string;
@@ -471,6 +515,8 @@ export type ServerMessage =
 	| PlanModeExitResolvedMessage
 	| LocalCommandOutputMessage
 	| SlashCommandsMessage
+	| GoalStateMessage
+	| GoalErrorMessage
 	| SessionsStatusMessage
 	| SessionClosedMessage
 	| SessionCreatedMessage
@@ -484,6 +530,11 @@ export type ChatAttachment = {
 	kind: string;
 	/** Existing Relic selected as context, not a newly uploaded attachment. */
 	reference?: "relic";
+};
+
+export type GoalStartRequest = {
+	objective: string;
+	token_budget?: number | null;
 };
 
 // Client → server messages
@@ -514,6 +565,8 @@ export type ClientChatMessage = {
 	model?: string;
 	effort?: string;
 	permission_mode?: string;
+	/** Start or replace the native Codex goal before submitting this turn. */
+	goal?: GoalStartRequest;
 };
 
 export type ClientCancelQueuedMessage = {
@@ -567,6 +620,16 @@ export type ClientProbeSlashCommandsMessage = {
 	type: "probe_slash_commands";
 	agent_cwd?: string;
 	session_id?: string;
+};
+
+export type ClientGoalControlMessage = {
+	type: "goal_control";
+	request_id: string;
+	session_id: string;
+	action: "get" | "set" | "pause" | "resume" | "clear";
+	objective?: string;
+	token_budget?: number | null;
+	agent_cwd?: string;
 };
 
 export type ClientSyncMcpListMessage = {
@@ -682,6 +745,7 @@ export type ClientMessage =
 	| ClientSyncMessage
 	| ClientProbeMcpMessage
 	| ClientProbeSlashCommandsMessage
+	| ClientGoalControlMessage
 	| ClientSyncMcpListMessage
 	| ClientAskUserQuestionResponseMessage
 	| ClientPlanModeExitResponseMessage

@@ -17,6 +17,7 @@ import {
 	type ClientMessage,
 	decisionFromScope,
 	mapMcpServer,
+	mapProviderGoal,
 	type QueueStateMessage,
 	type StatusMessage,
 } from "./protocol";
@@ -123,6 +124,85 @@ function sendQueueState(ws: ServerWebSocket<WsData>, entry: PoolEntry): void {
 
 function broadcastQueueState(entry: PoolEntry): void {
 	entry.runState.broadcast(queueStateMessage(entry));
+}
+
+async function resolveGoalEntry(
+	context: MessageContext,
+	msg: MessageOf<"goal_control">,
+): Promise<PoolEntry | null> {
+	const existing =
+		context.pool.get(msg.session_id) ??
+		context.pool.findByDbSessionId(msg.session_id);
+	if (existing) return existing;
+	const selection = await db.getSessionSelection(msg.session_id);
+	// Goal hydration is observational. Opening a detached/closed chat must not
+	// recreate its provider process merely to ask for goal state.
+	if (msg.action === "get" || !selection) return null;
+	const targetCwd =
+		msg.agent_cwd ?? selection?.agentCwd ?? context.pool.vaultEntry().agentCwd;
+	const created = createPoolEntry(
+		context,
+		targetCwd,
+		resolveAgentName(targetCwd),
+	);
+	if (!created) return null;
+	subscribeToEntry(context, created);
+	return created;
+}
+
+async function handleGoalControl(
+	context: MessageContext,
+	msg: MessageOf<"goal_control">,
+): Promise<void> {
+	try {
+		const entry = await resolveGoalEntry(context, msg);
+		if (!entry) {
+			if (msg.action === "get") {
+				send(context.ws, {
+					type: "goal_state",
+					session_id: msg.session_id,
+					provider_id: "codex",
+					request_id: msg.request_id,
+					goal: null,
+				});
+				return;
+			}
+			throw new Error("This session is not available.");
+		}
+		const control =
+			msg.action === "set"
+				? {
+						action: "set" as const,
+						objective: msg.objective ?? "",
+						...(msg.token_budget !== undefined
+							? { tokenBudget: msg.token_budget }
+							: {}),
+					}
+				: { action: msg.action };
+		const result = await entry.manager.controlGoal(control, {
+			sessionId: msg.session_id,
+			agentCwd: msg.agent_cwd,
+			emit: (event) => {
+				entry.runState.broadcast(event);
+				if (event.type === "status") broadcastSessionsStatus(context);
+			},
+		});
+		entry.runState.broadcast({
+			type: "goal_state",
+			session_id: msg.session_id,
+			provider_id: result.providerId,
+			request_id: msg.request_id,
+			goal: result.goal ? mapProviderGoal(result.goal) : null,
+		});
+		broadcastSessionsStatus(context);
+	} catch (error) {
+		send(context.ws, {
+			type: "goal_error",
+			session_id: msg.session_id,
+			request_id: msg.request_id,
+			message: error instanceof Error ? error.message : "Goal command failed",
+		});
+	}
 }
 
 /** Re-send durable pending prompts whenever a client focuses a running session. */
@@ -719,10 +799,16 @@ async function runChatQuery(
 			msg.plan_mode,
 			msg.plan_html,
 		] as Parameters<typeof entry.manager.runQuery>;
-		if (msg.vault_references?.length) {
+		if (msg.vault_references?.length || msg.command_action || msg.goal) {
 			queryArgs.push(msg.command_action, msg.vault_references);
-		} else if (msg.command_action) {
-			queryArgs.push(msg.command_action);
+		}
+		if (msg.goal) {
+			queryArgs.push(undefined, {
+				objective: msg.goal.objective,
+				...(msg.goal.token_budget !== undefined
+					? { tokenBudget: msg.goal.token_budget }
+					: {}),
+			});
 		}
 		const completion = entry.manager.runQuery(...queryArgs);
 		// Publish the queued content immediately. Other tabs/devices can now render
@@ -942,6 +1028,10 @@ async function handleMessage(
 	}
 	if (msg.type === "subscribe_session") {
 		await handleSubscribeSession(context, msg);
+		return;
+	}
+	if (msg.type === "goal_control") {
+		await handleGoalControl(context, msg);
 		return;
 	}
 	if (handleRoutingMessage(context, msg)) return;

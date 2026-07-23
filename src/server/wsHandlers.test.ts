@@ -126,6 +126,7 @@ function makeSession(overrides: Partial<SessionManager> = {}): SessionManager {
 		handlePlanModeExitResponse: vi.fn(),
 		probeMcpStatus: vi.fn().mockResolvedValue(undefined),
 		probeSlashCommands: vi.fn().mockResolvedValue(undefined),
+		controlGoal: vi.fn().mockResolvedValue({ providerId: "codex", goal: null }),
 		restoreMcpStatus: vi.fn(),
 		setModel: vi.fn().mockResolvedValue(undefined),
 		setProvider: vi.fn().mockResolvedValue(undefined),
@@ -175,6 +176,121 @@ beforeEach(() => {
 	wsState.clients.clear();
 	mockSend.mockClear();
 	mockBroadcast.mockClear();
+});
+
+describe("message — goal_control", () => {
+	it("routes a native goal update and broadcasts the resulting state", async () => {
+		const goal = {
+			threadId: "thread-1",
+			objective: "Finish the release gate",
+			status: "active" as const,
+			tokenBudget: 50_000,
+			tokensUsed: 12,
+			timeUsedSeconds: 3,
+			createdAt: 1,
+			updatedAt: 2,
+		};
+		const controlGoal = vi.fn(
+			async (
+				_control: unknown,
+				options: { emit: (message: ServerMessage) => void },
+			) => {
+				options.emit({
+					type: "status",
+					state: "running",
+					model: "gpt-5.6-sol",
+					permission_mode: "default",
+					effort: "high",
+				});
+				return { providerId: "codex", goal };
+			},
+		);
+		const session = makeSession({ controlGoal });
+		const { pool, entry, runState } = wrapSession(session);
+		pool.findByDbSessionId.mockReturnValue(entry);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "goal_control",
+				request_id: "request-1",
+				session_id: "mock-db-session",
+				action: "set",
+				objective: "Finish the release gate",
+				token_budget: 50_000,
+			}),
+		);
+		expect(controlGoal).toHaveBeenCalledWith(
+			{
+				action: "set",
+				objective: "Finish the release gate",
+				tokenBudget: 50_000,
+			},
+			expect.objectContaining({ sessionId: "mock-db-session" }),
+		);
+		expect(runState.broadcast).toHaveBeenCalledWith({
+			type: "goal_state",
+			session_id: "mock-db-session",
+			provider_id: "codex",
+			request_id: "request-1",
+			goal: {
+				thread_id: "thread-1",
+				objective: "Finish the release gate",
+				status: "active",
+				token_budget: 50_000,
+				tokens_used: 12,
+				time_used_seconds: 3,
+				created_at: 1,
+				updated_at: 2,
+			},
+		});
+		expect(runState.broadcast).toHaveBeenCalledWith({
+			type: "status",
+			state: "running",
+			model: "gpt-5.6-sol",
+			permission_mode: "default",
+			effort: "high",
+		});
+		expect(mockBroadcast).toHaveBeenCalledWith({
+			type: "sessions_status",
+			sessions: [],
+		});
+	});
+
+	it("does not revive a detached session to hydrate goal state", async () => {
+		vi.mocked(dbMock.getSessionSelection).mockResolvedValueOnce({
+			agentCwd: "/tmp/test",
+			providerId: "codex",
+			model: "gpt-5.6-sol",
+			effort: "high",
+			permissionMode: "default",
+		});
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs("archived-session");
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "goal_control",
+				request_id: "goal-hydration",
+				session_id: "archived-session",
+				action: "get",
+			}),
+		);
+
+		expect(pool.create).not.toHaveBeenCalled();
+		expect(session.controlGoal).not.toHaveBeenCalled();
+		expect(lastSentTo(ws)).toEqual({
+			type: "goal_state",
+			session_id: "archived-session",
+			provider_id: "codex",
+			request_id: "goal-hydration",
+			goal: null,
+		});
+	});
 });
 
 describe("message — provider probes", () => {
@@ -1097,6 +1213,40 @@ describe("message — chat", () => {
 			undefined,
 			undefined,
 			["Projects/Hlid.md", "Notes/Decision.md"],
+		);
+	});
+
+	it("forwards a native goal with its normal starting turn", async () => {
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "chat",
+				text: "Finish the release gate",
+				session_id: "sess-goal",
+				goal: {
+					objective: "Finish the release gate",
+					token_budget: 50_000,
+				},
+			}),
+		);
+		expect(session.runQuery).toHaveBeenCalledWith(
+			"Finish the release gate",
+			expect.any(Function),
+			"sess-goal",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			{ objective: "Finish the release gate", tokenBudget: 50_000 },
 		);
 	});
 

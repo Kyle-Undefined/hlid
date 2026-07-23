@@ -14,8 +14,11 @@ import type {
 	AgentSession,
 	McpServerStatus,
 	ProviderEffortInfo,
+	ProviderGoalControl,
+	ProviderGoalControlResult,
 	ProviderModelInfo,
 	ProviderSkillInfo,
+	ProviderThreadGoal,
 	ProviderWindowReading,
 	SendOptions,
 	SlashCommand,
@@ -46,6 +49,14 @@ import type {
 	ReasoningEffortOption,
 	SandboxPolicy,
 	SubAgentActivityKind,
+	ThreadGoalClearedNotification,
+	ThreadGoalClearParams,
+	ThreadGoalClearResponse,
+	ThreadGoalGetParams,
+	ThreadGoalGetResponse,
+	ThreadGoalSetParams,
+	ThreadGoalSetResponse,
+	ThreadGoalUpdatedNotification,
 	ThreadResumeParams,
 	ThreadStartParams,
 	TurnStartParams,
@@ -1006,15 +1017,26 @@ function emptyCodexUsage(): CanonicalTokenUsage {
 
 type CodexWindowReading = Pick<
 	ProviderWindowReading,
-	"windowId" | "label" | "utilization" | "resetsAt"
+	"windowId" | "label" | "utilization" | "remaining" | "limit" | "resetsAt"
 >;
+
+function codexEpochSeconds(raw: unknown): number | null {
+	if (typeof raw !== "number" || !Number.isFinite(raw)) return null;
+	return raw > 1e12 ? Math.round(raw / 1000) : raw;
+}
+
+function codexDecimal(raw: unknown): number | null {
+	if (typeof raw !== "string" && typeof raw !== "number") return null;
+	const parsed = Number(raw);
+	return Number.isFinite(parsed) ? parsed : null;
+}
 
 function mapCodexRateLimitWindows(
 	raw: unknown,
 	includeMissingUtilization = false,
 ): CodexWindowReading[] {
 	const snapshot = asObj(raw) as Partial<RateLimitSnapshot>;
-	return (
+	const rolling = (
 		[
 			[snapshot.primary, "five_hour"],
 			[snapshot.secondary, "weekly"],
@@ -1040,13 +1062,33 @@ function mapCodexRateLimitWindows(
 				windowId,
 				label: windowId === "five_hour" ? "5-HOUR" : "7-DAY",
 				utilization: usedPercent == null ? null : usedPercent / 100,
-				resetsAt:
-					rawReset != null && rawReset > 1e12
-						? Math.round(rawReset / 1000)
-						: rawReset,
+				remaining: null,
+				limit: null,
+				resetsAt: codexEpochSeconds(rawReset),
 			},
 		];
 	});
+	const spend = asObj(snapshot.individualLimit);
+	if (Object.keys(spend).length === 0) return rolling;
+	const remainingPercent =
+		typeof spend.remainingPercent === "number" ? spend.remainingPercent : null;
+	const limit = codexDecimal(spend.limit);
+	const used = codexDecimal(spend.used);
+	return [
+		...rolling,
+		{
+			windowId: "spend_control",
+			label: "SPEND",
+			utilization:
+				remainingPercent == null
+					? null
+					: Math.min(1, Math.max(0, 1 - remainingPercent / 100)),
+			remaining:
+				limit != null && used != null ? Math.max(0, limit - used) : null,
+			limit,
+			resetsAt: codexEpochSeconds(spend.resetsAt),
+		},
+	];
 }
 
 class CodexAgentSession implements AgentSession {
@@ -1084,6 +1126,7 @@ class CodexAgentSession implements AgentSession {
 	private elicitationSequence = 0;
 	/** Dedicated transport owned by a one-shot Windows Computer Use worker. */
 	private ownedConnection: CodexAppServer | null = null;
+	private goalChangeHandler: AgentQueryParams["onGoalChange"];
 
 	private launch: CodexLaunchConfig | null = null;
 
@@ -1092,7 +1135,13 @@ class CodexAgentSession implements AgentSession {
 		private readonly delegatedWindowsComputerUse = false,
 		private readonly delegatedWindowsComputerUseTask?: string,
 		private readonly providerProfile?: CodexProviderProfile,
-	) {}
+	) {
+		this.goalChangeHandler = params.onGoalChange;
+	}
+
+	setGoalChangeHandler(handler: AgentQueryParams["onGoalChange"]): void {
+		this.goalChangeHandler = handler;
+	}
 
 	private canUseWindowsComputerUse(): boolean {
 		return (
@@ -1288,6 +1337,12 @@ class CodexAgentSession implements AgentSession {
 		const computerUseAvailable = this.canUseWindowsComputerUse();
 		const hlidCommands: SlashCommand[] = [
 			{
+				name: "goal",
+				description: "Set, inspect, pause, resume, or clear the Codex goal",
+				argumentHint: "[objective | pause | resume | clear]",
+				action: "goal",
+			},
+			{
 				name: "review",
 				description: "Review the working tree",
 				argumentHint: "[instructions]",
@@ -1412,6 +1467,48 @@ class CodexAgentSession implements AgentSession {
 		if (typeof turn.id === "string") this.activeTurnId = turn.id;
 	}
 
+	async controlGoal(
+		control: ProviderGoalControl,
+	): Promise<ProviderGoalControlResult> {
+		await this.ensureReady();
+		const threadId = this.threadId;
+		if (!threadId) throw new Error("Codex thread did not start");
+		if (control.action === "get") {
+			const params: ThreadGoalGetParams = { threadId };
+			const result = (await this.request(
+				"thread/goal/get",
+				params,
+			)) as ThreadGoalGetResponse;
+			return { providerSessionId: threadId, goal: result.goal };
+		}
+		if (control.action === "clear") {
+			const params: ThreadGoalClearParams = { threadId };
+			const result = (await this.request(
+				"thread/goal/clear",
+				params,
+			)) as ThreadGoalClearResponse;
+			if (!result.cleared) throw new Error("Codex did not clear the goal");
+			return { providerSessionId: threadId, goal: null };
+		}
+		const params: ThreadGoalSetParams = {
+			threadId,
+			...(control.action === "set"
+				? {
+						objective: control.objective.trim(),
+						status: "active" as const,
+						...(control.tokenBudget !== undefined
+							? { tokenBudget: control.tokenBudget }
+							: {}),
+					}
+				: { status: control.action === "pause" ? "paused" : "active" }),
+		};
+		const result = (await this.request(
+			"thread/goal/set",
+			params,
+		)) as ThreadGoalSetResponse;
+		return { providerSessionId: threadId, goal: result.goal };
+	}
+
 	async mcpServerStatus(): Promise<McpServerStatus[]> {
 		try {
 			const { conn } = await this.metadataConnection();
@@ -1446,11 +1543,7 @@ class CodexAgentSession implements AgentSession {
 		const response = asObj(
 			await this.request("account/rateLimits/read", undefined),
 		);
-		return mapCodexRateLimitWindows(response.rateLimits).map((reading) => ({
-			...reading,
-			remaining: null,
-			limit: null,
-		}));
+		return mapCodexRateLimitWindows(response.rateLimits);
 	}
 
 	[Symbol.asyncIterator](): AsyncIterator<AgentEvent> {
@@ -1639,39 +1732,58 @@ class CodexAgentSession implements AgentSession {
 	}
 
 	/**
-	 * Map a codex RateLimitSnapshot (primary/secondary RateLimitWindow) onto
-	 * hlid rate_limit events. Window identity comes from windowDurationMins —
-	 * codex reports a rolling ~5h primary and ~7d secondary; ≤24h maps to
-	 * five_hour, longer to weekly (matching CodexProvider.usageWindows).
+	 * Map a Codex RateLimitSnapshot onto Hlid rate_limit events. Rolling window
+	 * identity comes from windowDurationMins, while an individual workspace
+	 * spend control remains its own provider window.
 	 */
 	private emitRateLimits(raw: unknown): void {
 		// Inbound payload — cast for shape hints, keep runtime guards.
 		const snapshot = asObj(raw) as Partial<RateLimitSnapshot>;
 		const reached = snapshot.rateLimitReachedType;
+		const spendControlReached = snapshot.spendControlReached === true;
 		// Credits-depleted variants don't reset with the window, so sleeping on
 		// them is pointless — they stay "ok". The usage/rate-limit variants are
 		// hard limits that lift at the window reset.
-		const hardLimited =
+		const rollingHardLimited =
 			reached === "rate_limit_reached" ||
 			reached === "workspace_owner_usage_limit_reached" ||
 			reached === "workspace_member_usage_limit_reached";
 		// A window with no reading is normally skipped, but a hard limit must
 		// still surface so downstream sleep logic sees the rejection.
-		const windows = mapCodexRateLimitWindows(raw, hardLimited);
+		const windows = mapCodexRateLimitWindows(raw, rollingHardLimited);
+		if (
+			spendControlReached &&
+			!windows.some((window) => window.windowId === "spend_control")
+		) {
+			windows.push({
+				windowId: "spend_control",
+				label: "SPEND",
+				utilization: null,
+				remaining: null,
+				limit: null,
+				resetsAt: null,
+			});
+		}
 		// rateLimitReachedType is snapshot-level and doesn't name the window that
 		// tripped; attribute the rejection to the most-utilized reported window
 		// (five_hour on ties or when no readings exist) so an exhausted weekly
 		// doesn't masquerade as a five_hour limit.
 		let rejectedId: string | null = null;
-		if (hardLimited && windows.length > 0) {
-			rejectedId = windows.reduce((best, w) =>
+		const rollingWindows = windows.filter(
+			(window) => window.windowId !== "spend_control",
+		);
+		if (rollingHardLimited && rollingWindows.length > 0) {
+			rejectedId = rollingWindows.reduce((best, w) =>
 				(w.utilization ?? -1) > (best.utilization ?? -1) ? w : best,
 			).windowId;
 		}
 		for (const w of windows) {
+			const rejected =
+				w.windowId === rejectedId ||
+				(w.windowId === "spend_control" && spendControlReached);
 			this.events.push({
 				type: "rate_limit",
-				status: w.windowId === rejectedId ? "rejected" : "ok",
+				status: rejected ? "rejected" : "ok",
 				rateLimitType: w.windowId,
 				...(w.utilization != null ? { utilization: w.utilization } : {}),
 				resetsAt: w.resetsAt,
@@ -2906,6 +3018,20 @@ class CodexAgentSession implements AgentSession {
 		const childNotification =
 			notificationThreadId.length > 0 && notificationThreadId !== this.threadId;
 		switch (method) {
+			case "thread/goal/updated": {
+				const notification = params as ThreadGoalUpdatedNotification;
+				if (!childNotification && notification.goal) {
+					this.goalChangeHandler?.(notification.goal as ProviderThreadGoal);
+				}
+				break;
+			}
+			case "thread/goal/cleared": {
+				const notification = params as ThreadGoalClearedNotification;
+				if (!childNotification && notification.threadId === this.threadId) {
+					this.goalChangeHandler?.(null);
+				}
+				break;
+			}
 			case "thread/started":
 				if (!childNotification) this.handleThreadStarted(obj);
 				break;
@@ -2999,9 +3125,16 @@ export class CodexProvider implements AgentProvider {
 		windowId: string;
 		label: string;
 		windowSecs: number;
+		optional?: boolean;
 	}> = [
 		{ windowId: "five_hour", label: "5-HOUR", windowSecs: 5 * 3600 },
 		{ windowId: "weekly", label: "7-DAY", windowSecs: 7 * 86400 },
+		{
+			windowId: "spend_control",
+			label: "SPEND",
+			windowSecs: 30 * 86400,
+			optional: true,
+		},
 	] as const;
 
 	async check(): Promise<{ available: boolean; reason?: string }> {

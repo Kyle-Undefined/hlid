@@ -226,6 +226,8 @@ export type ProviderWindowDef = {
 	windowId: string;
 	label: string;
 	windowSecs: number;
+	/** Hide the window until the provider reports a current reset period. */
+	optional?: boolean;
 };
 
 /**
@@ -347,6 +349,7 @@ export async function getProviderUsage(
 				)
 				.get(`rl_${providerId}_${def.windowId}`),
 		);
+		if (def.optional && rl.resetsAt == null) continue;
 
 		windows.push({
 			windowId: def.windowId,

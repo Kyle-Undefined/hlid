@@ -25,7 +25,7 @@ type HardLimitRecord = {
 
 export type SleepReason = "threshold" | "limit_reached";
 
-export type SleepWindowId = "five_hour" | "weekly";
+export type SleepWindowId = "five_hour" | "weekly" | "spend_control";
 
 export type SleepDecision = {
 	/** Epoch seconds to sleep until (already capped by max_sleep). */
@@ -40,7 +40,7 @@ export type SleepDecision = {
 	utilization: number | null;
 };
 
-const SLEEP_WINDOWS = ["five_hour", "weekly"] as const;
+const SLEEP_WINDOWS = ["five_hour", "weekly", "spend_control"] as const;
 /** Recheck interval while a hard limit reports no resetsAt. */
 const NULL_RESET_RECHECK_SECONDS = 15 * 60;
 /** skipUntil fallback when no reset timestamp is known. */
@@ -85,6 +85,7 @@ function activeWindow(
 }
 
 function selectedWindow(providerId: string, now: number): SleepWindowId | null {
+	if (activeWindow(providerId, "spend_control", now)) return "spend_control";
 	if (activeWindow(providerId, "five_hour", now)) return "five_hour";
 	if (activeWindow(providerId, "weekly", now)) return "weekly";
 	return null;

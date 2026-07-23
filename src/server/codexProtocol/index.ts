@@ -1,11 +1,20 @@
 // AUTO-GENERATED — vendored from codex-cli's `codex app-server generate-ts`.
-// CLI version: codex-cli 0.144.4 (pinned to 0.144.4 in scripts/generate-codex-types.ts)
-// Generated: 2026-07-15
+// CLI version: codex-cli 0.145.0 (pinned to 0.145.0 in scripts/generate-codex-types.ts)
+// Generated: 2026-07-23
 // Regenerate via `bun scripts/generate-codex-types.ts`; version bumps are
 // deliberate manual updates, not run automatically on every build.
 
 export type { ThreadStartParams } from "./v2/ThreadStartParams";
 export type { ThreadResumeParams } from "./v2/ThreadResumeParams";
+export type { ThreadGoal } from "./v2/ThreadGoal";
+export type { ThreadGoalSetParams } from "./v2/ThreadGoalSetParams";
+export type { ThreadGoalSetResponse } from "./v2/ThreadGoalSetResponse";
+export type { ThreadGoalGetParams } from "./v2/ThreadGoalGetParams";
+export type { ThreadGoalGetResponse } from "./v2/ThreadGoalGetResponse";
+export type { ThreadGoalClearParams } from "./v2/ThreadGoalClearParams";
+export type { ThreadGoalClearResponse } from "./v2/ThreadGoalClearResponse";
+export type { ThreadGoalUpdatedNotification } from "./v2/ThreadGoalUpdatedNotification";
+export type { ThreadGoalClearedNotification } from "./v2/ThreadGoalClearedNotification";
 export type { TurnStartParams } from "./v2/TurnStartParams";
 export type { SandboxPolicy } from "./v2/SandboxPolicy";
 export type { SandboxMode } from "./v2/SandboxMode";

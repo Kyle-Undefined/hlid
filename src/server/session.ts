@@ -35,6 +35,9 @@ import type {
 	CanUseTool,
 	McpServerStatus,
 	ProviderAccountInfo,
+	ProviderGoalControl,
+	ProviderGoalControlResult,
+	ProviderThreadGoal,
 	SlashCommand,
 	SubagentSnapshot,
 } from "./agentProvider";
@@ -65,7 +68,11 @@ import type {
 	QueueStateSnapshot,
 	ServerMessage,
 } from "./protocol";
-import { mapMcpServer, TOOL_RESULT_PREVIEW_CHARS } from "./protocol";
+import {
+	mapMcpServer,
+	mapProviderGoal,
+	TOOL_RESULT_PREVIEW_CHARS,
+} from "./protocol";
 import { applyReading, updateWindowMark } from "./proxy";
 import { generateTurnRecap } from "./recap";
 import { SessionTurnQueue } from "./sessionTurnQueue";
@@ -173,6 +180,7 @@ type RunQueryArgs = [
 	commandAction?: "review" | "computer-use",
 	vaultReferences?: string[],
 	routineContext?: RoutinePermissionContext,
+	goalStart?: { objective: string; tokenBudget?: number | null },
 ];
 
 export type SessionState = "idle" | "running" | "error";
@@ -260,6 +268,7 @@ function buildAgentQueryParams(options: {
 	defaultMaxTurns: number | undefined;
 	executable: string | undefined;
 	windowsComputerUse: AgentQueryParams["windowsComputerUse"];
+	onGoalChange?: AgentQueryParams["onGoalChange"];
 	canUseTool: CanUseTool;
 	beforeToolUse: AgentQueryParams["beforeToolUse"];
 	policyEnforced: boolean;
@@ -310,6 +319,7 @@ function buildAgentQueryParams(options: {
 		maxTurns: options.agentSettings?.maxTurns ?? options.defaultMaxTurns,
 		executable: options.executable,
 		windowsComputerUse: options.windowsComputerUse,
+		onGoalChange: options.onGoalChange,
 		settingSources: ["user", "project", "local"],
 		canUseTool: options.canUseTool,
 		beforeToolUse: options.beforeToolUse,
@@ -1046,6 +1056,215 @@ export class SessionManager {
 		);
 	}
 
+	// fallow-ignore-next-line unused-class-member -- Called by the WebSocket goal_control dispatch in wsHandlers.
+	async controlGoal(
+		control: ProviderGoalControl,
+		options: {
+			sessionId: string;
+			agentCwd?: string;
+			emit: (msg: ServerMessage) => void;
+		},
+	): Promise<{ providerId: string; goal: ProviderThreadGoal | null }> {
+		if (this.currentSessionId !== options.sessionId) {
+			const saved = await db.getSessionById(options.sessionId);
+			if (!saved) {
+				if (control.action === "get")
+					return { providerId: "codex", goal: null };
+				throw new Error(
+					control.action === "set"
+						? "Start the goal by submitting it from Raven."
+						: "This session does not have an active goal.",
+				);
+			}
+		}
+		await this.initSessionContext(
+			options.sessionId,
+			options.agentCwd,
+			control.action === "set" ? control.objective : "",
+		);
+		const { provider, agentSettings, resumeProviderSessionId } =
+			this.prepareProviderForTurn(options.sessionId);
+		if (!isCodexRuntimeProvider(provider.providerId)) {
+			throw new Error("/goal is only available for Codex sessions.");
+		}
+		if (
+			control.action !== "set" &&
+			!resumeProviderSessionId &&
+			!this.agentSession
+		) {
+			if (control.action === "get") {
+				return { providerId: provider.providerId, goal: null };
+			}
+			throw new Error("This Codex session does not have an active goal.");
+		}
+		const { activeCwd, extraDirs, executable } = resolveExecutionContext({
+			agentMode: this.agentMode,
+			agentCwd: this.agentCwd,
+			vaultPath: this.vaultPath,
+			allowedAgentRealPaths: this.allowedAgentRealPaths,
+			claudeExecutable: this.codexExecutable,
+			wrapperCommand: "codex",
+			safeAttachments: [],
+		});
+		const publishGoal = (goal: ProviderThreadGoal | null) =>
+			options.emit({
+				type: "goal_state",
+				session_id: options.sessionId,
+				provider_id: provider.providerId,
+				goal: goal ? mapProviderGoal(goal) : null,
+			});
+		const ownsContinuationDrain =
+			(control.action === "resume" || control.action === "set") &&
+			!this.isDraining;
+		if (ownsContinuationDrain) {
+			this.isDraining = true;
+			this.state = "running";
+			this.currentTurnId = undefined;
+			this.abortController = new AbortController();
+			this.emitRunningStatus(options.emit);
+			if ((await this.gateOnUsage(provider, options.emit)) === "aborted") {
+				this.finishGoalContinuation(options.emit);
+				throw new Error("Goal continuation was cancelled.");
+			}
+		}
+		let continuationLaunched = false;
+		try {
+			const agentSession = this.getOrCreateAgentSession({
+				provider,
+				sessionId: options.sessionId,
+				resumeProviderSessionId,
+				activeCwd,
+				extraDirs,
+				executable,
+				agentSettings,
+				planMode: false,
+				emit: options.emit,
+				onGoalChange: publishGoal,
+			});
+			if (!agentSession.controlGoal) {
+				throw new Error("The active Codex version does not support goals.");
+			}
+			const result: ProviderGoalControlResult =
+				await agentSession.controlGoal(control);
+			this.providerSessionId = result.providerSessionId;
+			this.providerSessionProviderId = provider.providerId;
+			await db.setSessionProviderSession(
+				options.sessionId,
+				provider.providerId,
+				result.providerSessionId,
+			);
+			if (ownsContinuationDrain) {
+				this.runGoalContinuation({
+					agentSession,
+					sessionId: options.sessionId,
+					emit: options.emit,
+					provider,
+					agentSettings,
+					objective: result.goal?.objective ?? "Goal continuation",
+				});
+				continuationLaunched = true;
+			}
+			return { providerId: provider.providerId, goal: result.goal };
+		} catch (error) {
+			if (ownsContinuationDrain && !continuationLaunched) {
+				this.finishGoalContinuation(options.emit);
+			}
+			throw error;
+		}
+	}
+
+	private runGoalContinuation(options: {
+		agentSession: AgentSession;
+		sessionId: string;
+		emit: (msg: ServerMessage) => void;
+		provider: AgentProvider;
+		agentSettings: AgentSettings | undefined;
+		objective: string;
+	}): void {
+		const {
+			agentSession,
+			sessionId,
+			emit,
+			provider,
+			agentSettings,
+			objective,
+		} = options;
+		const turn = createTurnState();
+		void (async () => {
+			try {
+				await this.iterateConversation(
+					agentSession,
+					sessionId,
+					emit,
+					turn,
+					provider,
+				);
+				this.scheduleTurnRecap({
+					turn,
+					sessionId,
+					userMessage: objective,
+					emit,
+					provider,
+					agentSettings,
+				});
+			} catch (error) {
+				this.state = "error";
+				const message =
+					error instanceof Error ? error.message : "Goal continuation failed";
+				void db.appendLog("error", "session", "goal continuation error", {
+					message,
+					name: error instanceof Error ? error.name : undefined,
+					stack:
+						error instanceof Error ? error.stack?.slice(0, 500) : undefined,
+				});
+				emit({ type: "error", message });
+				this.agentSession?.cancel();
+				this.agentSession = null;
+				this.agentSessionKey = null;
+				this.restartAgentSessionForEffort = false;
+			} finally {
+				if (turn.assistantText) {
+					try {
+						const assistantSeq = await this.persistAssistantMessage(
+							sessionId,
+							turn,
+						);
+						this.persistPendingToolEvents(
+							sessionId,
+							assistantSeq,
+							turn,
+							"goal continuation",
+							provider.providerId,
+						);
+					} catch (error) {
+						logDbError("appendMessage (goal continuation)", error);
+					}
+				}
+				this.finishGoalContinuation(emit);
+			}
+		})();
+	}
+
+	private finishGoalContinuation(emit: (msg: ServerMessage) => void): void {
+		this.isDraining = false;
+		this.currentTurnId = undefined;
+		if (this.turnQueue.length > 0) {
+			void this.drainTurnQueue();
+			return;
+		}
+		this.abortController = null;
+		if (this.state === "running") this.state = "idle";
+		this.sleepState = null;
+		this.sleepEmit = null;
+		emit({
+			type: "status",
+			state: this.state,
+			model: this.model,
+			permission_mode: this.permissionMode,
+			effort: this.effort,
+		});
+	}
+
 	isRunning(): boolean {
 		return this.state === "running";
 	}
@@ -1197,6 +1416,9 @@ export class SessionManager {
 		agentCwd: string | undefined,
 		userMessage: string,
 	): Promise<void> {
+		let sessionExists = Boolean(
+			sessionId && sessionId === this.currentSessionId,
+		);
 		if (sessionId && sessionId !== this.currentSessionId) {
 			const [
 				savedSession,
@@ -1218,6 +1440,7 @@ export class SessionManager {
 				db.getSessionProviderId(sessionId),
 				db.getSessionProviderSession(sessionId),
 			]);
+			sessionExists = Boolean(savedSession);
 			if (
 				savedSession?.history_imported &&
 				(savedSession.history_resume_mode ?? "none") === "none"
@@ -1295,7 +1518,7 @@ export class SessionManager {
 		}
 
 		// Create DB session record for new sessions
-		if (sessionId && this.messageSeq === 0) {
+		if (sessionId && this.messageSeq === 0 && !sessionExists) {
 			const label = userMessage.slice(0, SESSION_LABEL_LENGTH).toUpperCase();
 			this.currentSessionLabel = label;
 			const agentSettings = this.agentCwd
@@ -2265,6 +2488,16 @@ export class SessionManager {
 					...(turn.args[8] !== undefined ? { plan_html: turn.args[8] } : {}),
 					...(turn.args[9] ? { command_action: turn.args[9] } : {}),
 					...(turn.args[10]?.length ? { vault_references: turn.args[10] } : {}),
+					...(turn.args[12]
+						? {
+								goal: {
+									objective: turn.args[12].objective,
+									...(turn.args[12].tokenBudget !== undefined
+										? { token_budget: turn.args[12].tokenBudget }
+										: {}),
+								},
+							}
+						: {}),
 				},
 			];
 		});
@@ -3131,6 +3364,7 @@ export class SessionManager {
 		agentSettings: AgentSettings | undefined;
 		planMode: boolean | undefined;
 		emit: (msg: ServerMessage) => void;
+		onGoalChange?: AgentQueryParams["onGoalChange"];
 	}): AgentSession {
 		const {
 			provider,
@@ -3142,6 +3376,7 @@ export class SessionManager {
 			agentSettings,
 			planMode,
 			emit,
+			onGoalChange,
 		} = options;
 		const desiredKey = `${provider.providerId}|${sessionId ?? "ephemeral"}|${this.agentCwd ?? ""}`;
 		if (
@@ -3153,7 +3388,12 @@ export class SessionManager {
 			this.agentSessionKey = null;
 			this.restartAgentSessionForEffort = false;
 		}
-		if (this.agentSession) return this.agentSession;
+		if (this.agentSession) {
+			if (onGoalChange) {
+				this.agentSession.setGoalChangeHandler?.(onGoalChange);
+			}
+			return this.agentSession;
+		}
 		const configuredPermissionMode = this.activeRoutineContext
 			? this.activeRoutineContext.mode === "full_access"
 				? "bypassPermissions"
@@ -3184,6 +3424,7 @@ export class SessionManager {
 				defaultMaxTurns: this.maxTurns,
 				executable,
 				windowsComputerUse: this.windowsComputerUse,
+				onGoalChange,
 				policyEnforced: this.policyEnforced,
 				usageGateEnforced: this.usageGateEnforced,
 				sandboxModeOverride:
@@ -3386,6 +3627,7 @@ export class SessionManager {
 			commandAction,
 			vaultReferences,
 			routineContext,
+			goalStart,
 		] = args;
 		this.currentTurnId = turnId;
 		await this.initSessionContext(sessionId, agentCwd, userMessage);
@@ -3525,6 +3767,36 @@ export class SessionManager {
 				planMode,
 				emit,
 			});
+			if (goalStart) {
+				if (!isCodexRuntimeProvider(currentProvider.providerId)) {
+					throw new Error("/goal is only available for Codex sessions.");
+				}
+				if (!agentSession.controlGoal) {
+					throw new Error("The active Codex version does not support goals.");
+				}
+				const result = await agentSession.controlGoal({
+					action: "set",
+					objective: goalStart.objective,
+					...(goalStart.tokenBudget !== undefined
+						? { tokenBudget: goalStart.tokenBudget }
+						: {}),
+				});
+				this.providerSessionId = result.providerSessionId;
+				this.providerSessionProviderId = currentProvider.providerId;
+				if (sessionId) {
+					await db.setSessionProviderSession(
+						sessionId,
+						currentProvider.providerId,
+						result.providerSessionId,
+					);
+				}
+				emit({
+					type: "goal_state",
+					session_id: sessionId ?? result.providerSessionId,
+					provider_id: currentProvider.providerId,
+					goal: result.goal ? mapProviderGoal(result.goal) : null,
+				});
+			}
 			const configuredPermissionMode = this.activeRoutineContext
 				? this.activeRoutineContext.mode === "full_access"
 					? "bypassPermissions"

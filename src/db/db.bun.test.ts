@@ -2191,6 +2191,35 @@ describe("usage — registerProvider", () => {
 		});
 	});
 
+	it("only exposes optional windows after a current provider reading", async () => {
+		const resetsAt = Math.floor(Date.now() / 1000) + 3_600;
+		registerProvider("optional-provider", "Optional Provider", [
+			{ windowId: "standard", label: "STANDARD", windowSecs: 3_600 },
+			{
+				windowId: "spend_control",
+				label: "SPEND",
+				windowSecs: 30 * 86_400,
+				optional: true,
+			},
+		]);
+
+		expect(
+			(await getProviderUsage("optional-provider")).windows.map(
+				(window) => window.windowId,
+			),
+		).toEqual(["standard"]);
+
+		await saveSetting(
+			"rl_optional-provider_spend_control",
+			JSON.stringify({ utilization: 0.5, resetsAt }),
+		);
+		expect(
+			(await getProviderUsage("optional-provider")).windows.map(
+				(window) => window.windowId,
+			),
+		).toEqual(["standard", "spend_control"]);
+	});
+
 	it("contains malformed or stale persisted rate-limit metadata", async () => {
 		registerProvider("invalid-provider", "Invalid Provider", [
 			{ windowId: "malformed", label: "Malformed", windowSecs: 3_600 },

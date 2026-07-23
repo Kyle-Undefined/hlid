@@ -42,7 +42,39 @@ export type SlashCommand = {
 	argumentHint: string;
 	aliases?: string[];
 	/** Hlid capability action. Omitted commands are sent as provider-native prompts. */
-	action?: "review" | "computer-use";
+	action?: "review" | "computer-use" | "goal";
+};
+
+export type ProviderGoalStatus =
+	| "active"
+	| "paused"
+	| "blocked"
+	| "usageLimited"
+	| "budgetLimited"
+	| "complete";
+
+/** Provider-owned durable objective attached to one native session. */
+export type ProviderThreadGoal = {
+	threadId: string;
+	objective: string;
+	status: ProviderGoalStatus;
+	tokenBudget: number | null;
+	tokensUsed: number;
+	timeUsedSeconds: number;
+	createdAt: number;
+	updatedAt: number;
+};
+
+export type ProviderGoalControl =
+	| { action: "get" }
+	| { action: "set"; objective: string; tokenBudget?: number | null }
+	| { action: "pause" }
+	| { action: "resume" }
+	| { action: "clear" };
+
+export type ProviderGoalControlResult = {
+	providerSessionId: string;
+	goal: ProviderThreadGoal | null;
 };
 
 /** Provider-native skill metadata used by Hlid's review-before-import catalog. */
@@ -267,6 +299,8 @@ export type AgentQueryParams = {
 	executable?: string;
 	/** Windows-native Codex Computer Use delegation preferences. */
 	windowsComputerUse?: { model: string; effort: string };
+	/** Provider-owned goal changes that can arrive outside a normal chat turn. */
+	onGoalChange?: (goal: ProviderThreadGoal | null) => void;
 };
 
 /**
@@ -310,6 +344,12 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 		action: "review" | "computer-use",
 		args?: string,
 	): Promise<void>;
+	/** Read or mutate a provider-owned durable objective without a chat turn. */
+	controlGoal?(
+		request: ProviderGoalControl,
+	): Promise<ProviderGoalControlResult>;
+	/** Replace the live goal notification sink when a persisted session is reattached. */
+	setGoalChangeHandler?(handler: AgentQueryParams["onGoalChange"]): void;
 	/**
 	 * Fetch the provider's current subscription/rate-limit windows. Unlike
 	 * passive rate-limit events, this can return a reading even when the
@@ -432,6 +472,7 @@ export interface AgentProvider {
 		windowId: string;
 		label: string;
 		windowSecs: number;
+		optional?: boolean;
 	}>;
 	/**
 	 * True when mcpServerStatus()/supportedCommands() require an initialized

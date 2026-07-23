@@ -1,5 +1,5 @@
 import type { CommandAction } from "../lib/commands";
-import type { ChatAttachment } from "../server/protocol";
+import type { ChatAttachment, GoalStartRequest } from "../server/protocol";
 
 export type QueuedChatMessage = {
 	id: string;
@@ -17,6 +17,7 @@ export type QueuedChatMessage = {
 	model?: string;
 	effort?: string;
 	permission_mode?: string;
+	goal?: GoalStartRequest;
 	/** True after the message has been delivered to the server. */
 	_sent?: boolean;
 	/** True while the server is interrupting the active turn to promote this one. */

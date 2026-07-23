@@ -482,6 +482,45 @@ describe("session message filtering", () => {
 		unsub();
 	});
 
+	it("delivers durable goal state while a new chat is focused by its live pool id", () => {
+		receive({
+			type: "session_created",
+			session_id: "live-pool-id",
+			agent_cwd: "/agent",
+			agent_name: "Agent",
+		});
+		const received: unknown[] = [];
+		const unsub = wsStore.subscribeMessage((message) => received.push(message));
+
+		receive({
+			type: "chunk",
+			text: "wrong chat",
+			session_id: "durable-chat-id",
+		});
+		receive({
+			type: "goal_state",
+			session_id: "durable-chat-id",
+			provider_id: "codex",
+			goal: {
+				thread_id: "thread-1",
+				objective: "Finish the goal",
+				status: "active",
+				token_budget: null,
+				tokens_used: 0,
+				time_used_seconds: 0,
+				created_at: 1,
+				updated_at: 1,
+			},
+		});
+
+		expect(received).toHaveLength(1);
+		expect(received[0]).toMatchObject({
+			type: "goal_state",
+			session_id: "durable-chat-id",
+		});
+		unsub();
+	});
+
 	it("status with no session_id is NOT filtered (backward compat)", () => {
 		wsStore.subscribeToSession("session-a");
 		receive({ type: "status", state: "running", model: "claude" });
