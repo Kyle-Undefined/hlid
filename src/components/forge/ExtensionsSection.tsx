@@ -461,14 +461,39 @@ function ExtensionCard({
 	onUninstall: () => void;
 	mutating: boolean;
 }) {
+	const [review, setReview] = useState<ExtensionReview | null>(null);
+	const [reviewing, setReviewing] = useState(false);
+	const [reviewError, setReviewError] = useState<string | null>(null);
+	const reviewComponents = review?.components ?? extension.components;
 	const trustSignals = [
-		...extension.capabilities,
-		...extension.components
+		...(review?.capabilities ?? extension.capabilities),
+		...reviewComponents
 			.filter((item) => ["hooks", "mcp", "scripts", "apps"].includes(item.kind))
 			.map((item) => item.label),
 	];
+	const loadReview = useCallback(async () => {
+		if (review || reviewing) return;
+		setReviewing(true);
+		setReviewError(null);
+		try {
+			setReview(await getExtensionReviewFn({ data: { id: extension.id } }));
+		} catch (cause) {
+			setReviewError(
+				cause instanceof Error
+					? cause.message
+					: "Unable to load the installed package review",
+			);
+		} finally {
+			setReviewing(false);
+		}
+	}, [extension.id, review, reviewing]);
 	return (
-		<details className="group border border-border bg-card">
+		<details
+			className="group border border-border bg-card"
+			onToggle={(event) => {
+				if (event.currentTarget.open) void loadReview();
+			}}
+		>
 			<summary className="cursor-pointer list-none px-4 py-3 [&::-webkit-details-marker]:hidden">
 				<div className="grid grid-cols-1 items-start gap-3 sm:grid-cols-[minmax(0,1fr)_auto]">
 					<div className="min-w-0">
@@ -581,13 +606,13 @@ function ExtensionCard({
 					value={extension.installPath}
 					mono
 				/>
-				{extension.components.length > 0 && (
+				{reviewComponents.length > 0 && (
 					<div>
 						<div className="text-[9px] tracking-widest uppercase text-muted-foreground">
 							Bundled components
 						</div>
 						<div className="mt-2 flex flex-wrap gap-1.5">
-							{extension.components.map((component) => (
+							{reviewComponents.map((component) => (
 								<span
 									key={component.kind}
 									title={component.names.join(", ")}
@@ -599,7 +624,17 @@ function ExtensionCard({
 						</div>
 					</div>
 				)}
-				<PackageFilesReview files={extension.skillFiles} />
+				{reviewing && (
+					<div className="border border-border/70 bg-secondary/25 px-3 py-2 text-xs text-muted-foreground">
+						Loading package files…
+					</div>
+				)}
+				{reviewError && (
+					<div className="border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+						{reviewError}
+					</div>
+				)}
+				<PackageFilesReview files={review?.skillFiles ?? []} />
 				<div>
 					<div className="text-[9px] tracking-widest uppercase text-muted-foreground">
 						Trust review

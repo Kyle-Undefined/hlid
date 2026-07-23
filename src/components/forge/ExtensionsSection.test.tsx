@@ -64,16 +64,8 @@ const inventory: ExtensionInventory = {
 			installedAt: "",
 			lastUpdated: "",
 			capabilities: ["Write"],
-			components: [
-				{ kind: "hooks", label: "Hooks", count: 1, names: ["PreToolUse"] },
-			],
-			skillFiles: [
-				{
-					path: "skills/review/SKILL.md",
-					content: "# Review\n\nReview changes carefully.",
-					truncated: false,
-				},
-			],
+			components: [],
+			skillFiles: [],
 			manifestPath: "/plugin.json",
 			manifestText: '{\n  "name": "reviewer"\n}',
 			errors: [],
@@ -176,12 +168,40 @@ afterEach(() => {
 describe("ExtensionsSection", () => {
 	it("shows provider-specific inventories and folded manifest review", async () => {
 		mocks.getExtensionInventory.mockResolvedValue(inventory);
+		mocks.getExtensionReview.mockResolvedValue({
+			...inventory.available[0],
+			id: "claude-extension",
+			installed: true,
+			enabled: true,
+			reviewMessage:
+				"Complete package review from the provider's installed plugin cache.",
+			reviewToken: "f".repeat(64),
+			manifestPath: "/plugin.json",
+			manifestText: '{"name":"reviewer"}',
+			capabilities: ["Write"],
+			components: [
+				{ kind: "hooks", label: "Hooks", count: 1, names: ["PreToolUse"] },
+			],
+			skillFiles: [
+				{
+					path: "skills/review/SKILL.md",
+					content: "# Review\n\nReview changes carefully.",
+					truncated: false,
+				},
+			],
+			errors: [],
+		});
 		render(<ExtensionsSection />);
 
 		await waitFor(() => expect(screen.getByText("Reviewer")).toBeTruthy());
 		expect(screen.getByText("WSL · Ubuntu")).toBeTruthy();
 		expect(screen.getByText("12 available")).toBeTruthy();
-		expect(screen.getByText("skills/review/SKILL.md")).toBeTruthy();
+		expect(screen.queryByText("skills/review/SKILL.md")).toBeNull();
+		fireEvent.click(screen.getByText("Reviewer"));
+		expect(await screen.findByText("skills/review/SKILL.md")).toBeTruthy();
+		expect(mocks.getExtensionReview).toHaveBeenCalledWith({
+			id: "claude-extension",
+		});
 		expect(screen.queryByText("GitHub")).toBeNull();
 
 		fireEvent.click(screen.getByRole("tab", { name: "Codex" }));

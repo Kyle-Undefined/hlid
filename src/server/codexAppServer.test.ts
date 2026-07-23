@@ -387,6 +387,30 @@ describe("CodexAppServer idle lifecycle", () => {
 		expect(proc.kill).toHaveBeenCalledOnce();
 	});
 
+	it("keeps chat threads alive when optional metadata times out", async () => {
+		const { server, proc } = await create();
+		const handler: ThreadHandler = {
+			onNotification: vi.fn(),
+			onRequest: vi.fn(async () => ({})),
+			onExit: vi.fn(),
+		};
+		server.attachThread("thread-1", handler);
+
+		const request = server
+			.requestOptional("mcpServerStatus/list", {}, 20)
+			.catch((error: unknown) => error);
+		await vi.advanceTimersByTimeAsync(20);
+
+		expect(await request).toEqual(
+			expect.objectContaining({
+				message: expect.stringMatching(/mcpServerStatus\/list timed out/i),
+			}),
+		);
+		expect(server.alive).toBe(true);
+		expect(proc.kill).not.toHaveBeenCalled();
+		expect(handler.onExit).not.toHaveBeenCalled();
+	});
+
 	it("cancels stale reap timers when a thread reattaches", async () => {
 		const { server, proc } = await create();
 		const handler: ThreadHandler = {

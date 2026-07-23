@@ -1552,7 +1552,9 @@ class CodexAgentSession implements AgentSession {
 	async mcpServerStatus(): Promise<McpServerStatus[]> {
 		try {
 			const { conn } = await this.metadataConnection();
-			const result = asObj(await conn.request("mcpServerStatus/list", {}));
+			const result = asObj(
+				await conn.requestOptional("mcpServerStatus/list", {}, 5_000),
+			);
 			const servers = Array.isArray(result.data)
 				? result.data
 				: Array.isArray(result.servers)

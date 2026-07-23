@@ -304,18 +304,8 @@ source = "example/team-tools"
 					pluginId: "reviewer@official",
 					enabled: true,
 					environmentLabel: "Test host",
-					components: expect.arrayContaining([
-						expect.objectContaining({ kind: "skills", count: 1 }),
-						expect.objectContaining({ kind: "hooks", count: 1 }),
-						expect.objectContaining({ kind: "mcp", count: 1 }),
-					]),
-					skillFiles: expect.arrayContaining([
-						expect.objectContaining({
-							path: "skills/review/SKILL.md",
-							content: "# Review",
-							truncated: false,
-						}),
-					]),
+					components: [],
+					skillFiles: [],
 				}),
 				expect.objectContaining({
 					providerId: "codex",
@@ -323,10 +313,7 @@ source = "example/team-tools"
 					enabled: false,
 					version: "0.4.0",
 					capabilities: ["Interactive", "Write"],
-					components: expect.arrayContaining([
-						expect.objectContaining({ kind: "apps", count: 1 }),
-						expect.objectContaining({ kind: "scripts", count: 1 }),
-					]),
+					components: [],
 				}),
 			]),
 		);
@@ -334,6 +321,30 @@ source = "example/team-tools"
 			inventory.extensions.find((item) => item.providerId === "codex")
 				?.manifestText,
 		).toContain('"displayName": "GitHub"');
+		const installedReviewer = inventory.extensions.find(
+			(item) => item.pluginId === "reviewer@official",
+		);
+		const installedReview = await reviewAvailableExtension(
+			config(),
+			installedReviewer?.id ?? "",
+			[home],
+		);
+		expect(installedReview).toMatchObject({
+			installed: true,
+			reviewLevel: "package",
+			components: expect.arrayContaining([
+				expect.objectContaining({ kind: "skills", count: 1 }),
+				expect.objectContaining({ kind: "hooks", count: 1 }),
+				expect.objectContaining({ kind: "mcp", count: 1 }),
+			]),
+			skillFiles: expect.arrayContaining([
+				expect.objectContaining({
+					path: "skills/review/SKILL.md",
+					content: "# Review",
+					truncated: false,
+				}),
+			]),
+		});
 		expect(inventory.marketplaces).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({

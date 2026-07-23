@@ -287,6 +287,27 @@ export class CodexAppServer {
 		params: unknown,
 		timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
 	): Promise<unknown> {
+		return this.sendRequest(method, params, timeoutMs, true);
+	}
+
+	/**
+	 * Issue optional metadata work without letting its timeout tear down active
+	 * chat threads on the shared transport. A late response is safely ignored.
+	 */
+	requestOptional(
+		method: string,
+		params: unknown,
+		timeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
+	): Promise<unknown> {
+		return this.sendRequest(method, params, timeoutMs, false);
+	}
+
+	private sendRequest(
+		method: string,
+		params: unknown,
+		timeoutMs: number,
+		terminateOnTimeout: boolean,
+	): Promise<unknown> {
 		if (this.dead)
 			return Promise.reject(new Error("Codex app-server is not running"));
 		this.cancelIdleReap();
@@ -296,10 +317,18 @@ export class CodexAppServer {
 				const error = new Error(
 					`Codex app-server ${method} timed out after ${timeoutMs}ms`,
 				);
-				// A live process that no longer answers RPCs is not reusable. Mark the
-				// shared connection dead and terminate it so the next acquire respawns
-				// a clean app-server instead of attaching to a poisoned singleton.
-				this.terminate(error);
+				if (terminateOnTimeout) {
+					// A live process that no longer answers a required RPC is not
+					// reusable. Respawn instead of attaching to a poisoned singleton.
+					this.terminate(error);
+					return;
+				}
+				// Optional metadata can fail independently of conversation traffic.
+				// Reject only this call so a plugin or MCP inventory stall cannot
+				// disconnect every attached chat thread.
+				if (!this.pending.delete(id)) return;
+				reject(error);
+				this.scheduleIdleReap();
 			}, timeoutMs);
 			this.pending.set(id, { resolve, reject, timer });
 			this.write({ id, method, params });

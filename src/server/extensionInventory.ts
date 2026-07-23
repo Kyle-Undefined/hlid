@@ -180,11 +180,17 @@ type ExtensionReviewTarget = {
 	marketplaceEntryPath: string;
 };
 
+type InstalledExtensionReviewTarget = {
+	extension: ProviderExtension;
+	boundary: string;
+};
+
 type ProviderInspection = {
 	extensions: ProviderExtension[];
 	marketplaces: ProviderMarketplace[];
 	available: AvailableExtension[];
 	reviewTargets: ExtensionReviewTarget[];
+	installedReviewTargets: InstalledExtensionReviewTarget[];
 	errors: ExtensionInventoryError[];
 };
 
@@ -435,6 +441,14 @@ function inventoryError(
 
 async function readJson(path: string): Promise<unknown> {
 	return JSON.parse(await readFile(path, "utf8")) as unknown;
+}
+
+function parseJsonRecord(raw: string): JsonRecord {
+	try {
+		return recordValue(JSON.parse(raw) as unknown);
+	} catch {
+		return {};
+	}
 }
 
 async function readOptionalJson(path: string): Promise<unknown | null> {
@@ -824,6 +838,7 @@ async function inspectClaudeHome(
 	const marketplaces: ProviderMarketplace[] = [];
 	const available: AvailableExtension[] = [];
 	const reviewTargets: ExtensionReviewTarget[] = [];
+	const installedReviewTargets: InstalledExtensionReviewTarget[] = [];
 	const errors: ExtensionInventoryError[] = [];
 	const marketplaceEntries = new Map<
 		string,
@@ -967,14 +982,7 @@ async function inspectClaudeHome(
 				...(marketplaceEntry?.value ?? {}),
 				...manifest.value,
 			};
-			const rootIsSafe = await rootWithinBoundary(safeRoot, pluginHome);
-			const [components, skillFiles] = rootIsSafe
-				? await Promise.all([
-						inspectComponents(safeRoot, metadata),
-						inspectSkillFiles(safeRoot, pluginHome),
-					])
-				: [[], []];
-			extensions.push({
+			const extension: ProviderExtension = {
 				id: extensionId(providerId, home, pluginId, safeRoot),
 				providerId,
 				providerLabel: "Claude",
@@ -1000,12 +1008,17 @@ async function inspectClaudeHome(
 				installedAt: stringValue(install.installedAt),
 				lastUpdated: stringValue(install.lastUpdated),
 				capabilities: manifestCapabilities(metadata),
-				components,
-				skillFiles,
+				// Package bodies and recursive component counts are loaded only
+				// when the user opens the installed review. Keeping them out of
+				// the catalog avoids scanning every plugin on each Forge visit.
+				components: [],
+				skillFiles: [],
 				manifestPath: manifest.path,
 				manifestText: manifest.raw,
 				errors: pluginErrors,
-			});
+			};
+			extensions.push(extension);
+			installedReviewTargets.push({ extension, boundary: pluginHome });
 		}
 	}
 
@@ -1040,7 +1053,14 @@ async function inspectClaudeHome(
 			marketplaceEntryPath: entry.path,
 		});
 	}
-	return { extensions, marketplaces, available, reviewTargets, errors };
+	return {
+		extensions,
+		marketplaces,
+		available,
+		reviewTargets,
+		installedReviewTargets,
+		errors,
+	};
 }
 
 async function codexPluginRoot(
@@ -1091,6 +1111,7 @@ async function inspectCodexHome(
 	const marketplaces: ProviderMarketplace[] = [];
 	const available: AvailableExtension[] = [];
 	const reviewTargets: ExtensionReviewTarget[] = [];
+	const installedReviewTargets: InstalledExtensionReviewTarget[] = [];
 	const errors: ExtensionInventoryError[] = [];
 	let config: JsonRecord = {};
 	try {
@@ -1143,14 +1164,7 @@ async function inspectCodexHome(
 			cacheRoot,
 		);
 		const pluginErrors = manifest.error ? [manifest.error] : [];
-		const rootIsSafe = await rootWithinBoundary(installPath, cacheRoot);
-		const [components, skillFiles] = rootIsSafe
-			? await Promise.all([
-					inspectComponents(installPath, manifest.value),
-					inspectSkillFiles(installPath, cacheRoot),
-				])
-			: [[], []];
-		extensions.push({
+		const extension: ProviderExtension = {
 			id: extensionId(providerId, home, pluginId, installPath),
 			providerId,
 			providerLabel: "Codex",
@@ -1175,12 +1189,16 @@ async function inspectCodexHome(
 			installedAt: "",
 			lastUpdated: "",
 			capabilities: manifestCapabilities(manifest.value),
-			components,
-			skillFiles,
+			// Full package contents and recursive component counts belong to the
+			// explicit review request, not the catalog response.
+			components: [],
+			skillFiles: [],
 			manifestPath: manifest.path,
 			manifestText: manifest.raw,
 			errors: pluginErrors,
-		});
+		};
+		extensions.push(extension);
+		installedReviewTargets.push({ extension, boundary: cacheRoot });
 	}
 
 	const marketplaceRoots = [
@@ -1308,7 +1326,14 @@ async function inspectCodexHome(
 			canManage: false,
 		});
 	}
-	return { extensions, marketplaces, available, reviewTargets, errors };
+	return {
+		extensions,
+		marketplaces,
+		available,
+		reviewTargets,
+		installedReviewTargets,
+		errors,
+	};
 }
 
 async function inspectProviderHomes(
@@ -1379,6 +1404,63 @@ export async function reviewAvailableExtension(
 	dependencies: ExtensionInventoryDependencies = {},
 ): Promise<ExtensionReview | null> {
 	const results = await inspectProviderHomes(config, homes, dependencies);
+	const installedTarget = results
+		.flatMap((result) => result.installedReviewTargets)
+		.find((item) => item.extension.id === id);
+	if (installedTarget) {
+		const extension = installedTarget.extension;
+		const rootIsSafe = await rootWithinBoundary(
+			extension.installPath,
+			installedTarget.boundary,
+		);
+		const [components, skillFiles] = rootIsSafe
+			? await Promise.all([
+					inspectComponents(
+						extension.installPath,
+						parseJsonRecord(extension.manifestText),
+					),
+					inspectSkillFiles(extension.installPath, installedTarget.boundary),
+				])
+			: [[], []];
+		const reviewToken = createHash("sha256")
+			.update(
+				JSON.stringify({
+					id: extension.id,
+					manifestText: extension.manifestText,
+					skillFiles,
+				}),
+			)
+			.digest("hex");
+		return {
+			id: extension.id,
+			providerId: extension.providerId,
+			providerLabel: extension.providerLabel,
+			environment: extension.environment,
+			environmentLabel: extension.environmentLabel,
+			pluginId: extension.pluginId,
+			name: extension.name,
+			displayName: extension.displayName,
+			marketplace: extension.marketplace,
+			version: extension.version,
+			description: extension.description,
+			author: extension.author,
+			category: "",
+			source: extension.source,
+			homepage: extension.homepage,
+			installed: true,
+			enabled: extension.enabled,
+			reviewLevel: "package",
+			reviewMessage:
+				"Complete package review from the provider's installed plugin cache.",
+			reviewToken,
+			manifestPath: extension.manifestPath,
+			manifestText: extension.manifestText,
+			capabilities: extension.capabilities,
+			components,
+			skillFiles,
+			errors: extension.errors,
+		};
+	}
 	const target = results
 		.flatMap((result) => result.reviewTargets)
 		.find((item) => item.available.id === id);
