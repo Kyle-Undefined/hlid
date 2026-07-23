@@ -17,11 +17,16 @@ own folder vocabulary. `Hlið` does not care as long as the paths are set up.
 
 - Keeps agent sessions around with live streaming, visible tool calls,
   approvals, attachments, queued follow-ups, inline questions, plan review,
-  and subagent activity. Claude-backed chats can be forked whole or branched
-  from a specific reply. The provider, model, effort, and permission mode stay
-  with the chat they belong to.
-- Pulls vault skills, Hlid-managed skill imports, and provider-native slash
-  commands into `Watch` and `Raven`, including compatible multi-skill runs.
+  and subagent activity. Supported Claude and Codex chats can be forked whole,
+  while Claude can also branch from a specific reply. Native Codex chats keep
+  their goals and token budgets visible too. The provider, model, effort, and
+  permission mode stay with the chat they belong to.
+- Pulls vault skills, reviewed Hlid-managed skills, provider-native imports,
+  and slash commands into `Watch` and `Raven`, including compatible multi-skill
+  runs.
+- Schedules one-time or repeating `Routines` from `Watch`. Each run keeps its
+  provider context, follows a narrow unattended permission policy, and can
+  deliver the result to `Relics` or the vault.
 - Points prompts at exact vault files and managed `Relics` through the shared
   `@` picker. No copying paths around just to give the agent some context.
 - Lets agents publish generated HTML, PDFs, images, and reports directly into
@@ -42,14 +47,16 @@ own folder vocabulary. `Hlið` does not care as long as the paths are set up.
   harness and actual model identity in `Ledger`.
 - Can hand a task to a fresh Windows-native `Codex Computer Use` worker, while
   keeping approvals, `Umbod` policy, and usage accounting inside `Hlið`.
-- Runs `Whisper` locally for voice input. Audio never gets shipped to a cloud
-  transcription service. Completed replies can also be read aloud through a
-  local voice on the viewing device or Microsoft speech on the Windows host.
+- Runs `Whisper` locally for editable dictation. Native Codex chats can also
+  take a recorded audio turn or use the separately gated `Raven Live` mode.
+  Completed replies can be read aloud through a local device voice, Microsoft
+  speech on the Windows host, or supported Codex realtime audio.
 - Opens a real project shell in `Raven`, with an optional interactive `Claude
   CLI` mode when the full terminal makes more sense than the structured chat UI.
 - Keeps linked vaults and workspaces, provider commands, permissions, scoped
-  `MCP` servers, `ACP` agents, `Umbod`, networking, updates, and lifecycle
-  controls together without moving source repositories out of `WSL`.
+  `MCP` servers, `ACP` agents, provider extensions, `Umbod`, networking,
+  updates, and lifecycle controls together without moving source repositories
+  out of `WSL`.
 - Checks `Hlið`, `Claude`, `Codex`, and enabled `ACP` agents for updates. It
   shows the right command or in-app flow for the installation, but it does not
   silently run installers.
@@ -85,17 +92,17 @@ the vault directly when the CLI is not available.
 
 ## Where to start
 
-- **WATCH** is for quick prompts, skills, and slash commands. A run can stay in
-  the current session or head into the background while the dashboard keeps an
-  eye on it.
+- **WATCH** is for quick prompts, skills, slash commands, and scheduled
+  `Routines`. A run can stay in the current session or head into the background
+  while the dashboard keeps an eye on it.
 - **RAVEN** is the full chat workspace. This is where the per-chat provider
-  controls, plans, approvals, attachments, Obsidian actions, and project
-  terminal live.
+  controls, goals, forks, voice, plans, approvals, attachments, Obsidian
+  actions, and project terminal live.
 - **VAULT** browses notes, projects, memory, and skills, with a jump back into
   the Obsidian desktop when the CLI is connected.
 - **FORGE** is where all the setup lives: providers, permissions, networking,
-  voice, `Obsidian CLI`, `CLIProxyAPI`, `MCP`, `ACP`, `Umbod`, updates, and
-  lifecycle controls.
+  voice, provider extensions, `Obsidian CLI`, `CLIProxyAPI`, `MCP`, `ACP`,
+  `Umbod`, updates, and lifecycle controls.
 
 The [user guide](docs/user-guide.md) gets into the meat and potatoes of each
 page and the workflows that connect them.
@@ -104,13 +111,13 @@ page and the workflows that connect them.
 
 | Page | What it is for |
 |---|---|
-| **WATCH** (`/`) | Quick prompts, skills, slash commands, usage, `MCP` state, recent sessions, and vault context. |
+| **WATCH** (`/`) | Quick prompts, skills, slash commands, scheduled `Routines`, usage, `MCP` state, recent sessions, and vault context. |
 | **VAULT** (`/vault`) | Notes, projects, memory, skills, and a jump into the matching Obsidian desktop note. |
-| **RELICS** (`/relics`) | Hlid-owned attachments, plans, reports, and imported skill packages. |
-| **RAVEN** (`/raven`) | Full agent chat with provider controls, commands, `@` references, plans, approvals, questions, queues, branching, and a real project terminal. |
+| **RELICS** (`/relics`) | Hlid-owned attachments, plans, reports, and reviewed Agent Skill packages. |
+| **RAVEN** (`/raven`) | Full agent chat with provider controls, commands, goals, exact forks, voice, `@` references, plans, approvals, questions, queues, and a real project terminal. |
 | **EINHERJAR** (`/einherjar`) | Extra working directories or personality/context overlays. |
-| **LEDGER** (`/ledger`) | Live-session controls, provider-history import, recorded sessions, and analytics for tokens, cost, cache behavior, tools, stop reasons, context, and provider limits. |
-| **FORGE** (`/forge`) | Settings, integrations, access, updates, maintenance, and developer tools. |
+| **LEDGER** (`/ledger`) | Live-session controls, pinned and archived sessions, provider-history import, and analytics for tokens, cost, cache behavior, tools, stop reasons, context, and provider limits. |
+| **FORGE** (`/forge`) | Settings, provider extensions, integrations, access, updates, maintenance, and developer tools. |
 
 ## Configuration and data
 

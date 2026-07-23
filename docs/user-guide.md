@@ -204,6 +204,27 @@ provider updates and a regular refresh keep them current. The draft survives
 navigation and refreshes until it is run or cleared. Small thing, but boy does
 losing a half-written prompt get old fast.
 
+Use **Schedule** to turn the current prompt into a `Routine`, or open it with an
+empty draft to build one from scratch. A routine can run once, at a fixed
+interval, daily, or on selected weekdays. It freezes the provider, model,
+effort, agent directory, prompt inputs, and timezone with the definition, so a
+later default change does not quietly alter the job.
+
+Routine inputs can include prompts, skills, provider commands, exact vault
+references, and retained `Relics`. Results can stay as a Markdown Relic, append
+to the daily note or an exact note, or create a new note in the mapped Inbox or
+Raw folder. **Run now** is there for the sensible test before trusting a
+schedule. The manager also shows run history and can pause, resume, or archive
+the definition.
+
+Unattended access is explicit. A routine can be read-only, use a reviewed set
+of exact grants, or run with full access when `Umbod` also allows it. Exact
+grants can cover a file operation, shell command, Obsidian action, `MCP` call,
+or Hlid tool. Agent questions, plan exits, and Windows Computer Use are never
+preapproved. If a run reaches anything outside its policy, it stops at
+**Action required** instead of guessing what you meant. Overlapping runs are
+skipped rather than piled on top of each other.
+
 ### Raven
 
 **RAVEN** is the full agent workspace. Conversation history, provider controls,
@@ -226,6 +247,18 @@ inject a skill file, provider-native commands go back to that provider, and
 Hlid capabilities such as `/review` and `/computer-use` use Hlid's own routing,
 approval, audit, and accounting path.
 
+Structured provider actions stay out of the prompt text too. `/compact` asks a
+supported Claude or Codex runtime to compact its active conversation, `/mcp`
+refreshes the session's `MCP` inventory, and `/goal` manages a native Codex goal
+without making the model interpret a pretend slash command.
+
+Native Codex chats show their current goal above the conversation. Use `/goal`
+to open the editor, set an objective, and optionally give it a token budget.
+`/goal pause`, `/goal resume`, and `/goal clear` manage it directly. The strip
+shows elapsed time and token use, plus whether the goal is active, paused,
+blocked, usage-limited, budget-limited, or complete. The goal stays with the
+Codex thread.
+
 Turn on **Plan** when the agent should figure out the work before touching it.
 Turn on **HTML** beside it for the full styled plan. Approval, cancellation, and
 revision feedback all happen from the plan card or viewer.
@@ -243,12 +276,13 @@ between Chat and Terminal tabs. Toggling the terminal off ends the shell, but
 normal site navigation only detaches the browser. Come back to that chat and
 the shell is still there.
 
-An idle Claude-backed chat also gets a fork control beside the new-chat button.
-That copies the whole conversation into a new session without touching the
-original. Use **Branch from here** beside a completed assistant reply when only
-the conversation through that point should come along. The same whole-session
-fork is available from the row menu in `Ledger`. Codex and ACP sessions do not
-offer this yet.
+An idle supported Claude or Codex chat gets a fork control beside the new-chat
+button. It asks the provider for an exact copy of the whole conversation,
+opens the copy, and leaves the source alone. The fork keeps a link back to its
+source. Claude also offers **Branch from here** beside a completed assistant
+reply when only the conversation through that point should come along. The
+same whole-session fork is available from the row menu in `Ledger`. Current
+ACP agents do not expose an exact fork.
 
 If interactive `Claude` mode is enabled in `Forge`, `Raven` becomes a full
 `Claude CLI` terminal instead of the structured timeline.
@@ -296,24 +330,24 @@ storage, associates them with the chat, and returns a link that opens through
 the existing Relics viewer. General HTML reports do not require plan mode;
 HTML plan proposals continue to use the separate plan review workflow.
 
-Use **Browse installed skills** to open a review dialog populated from the
-installed Claude and Codex registries plus configured ACP workspaces. Discovery
-does not start an agent or CLI process, so it remains responsive while those
-providers are busy. Hlid groups the results by provider and shows scope, known
-enabled state, Windows or WSL runtime, description, file count, and size. The
-runtime badge includes the WSL distribution name without exposing source paths.
-Use **Read SKILL.md** on any row to expand the complete source document before
-selecting it; the file is loaded on demand and its filesystem path stays on the
-server.
-Select the packages you want and import them together; no filesystem paths need
-to be copied into the browser. Imported packages appear in the Watch and Raven
-skill picker as provider-neutral Hlid skills, including when an installed
-provider has a same-named copy. Import completion is shown inside the dialog.
-Use **Remove from Hlid** on an imported row to delete the managed copy after an
-inline confirmation; the provider's original package is left untouched and can
-be imported again. Each copy records its source, so
-the managed package remains usable without coupling the provider's original
-directory to the vault.
+Use **Skills** to install a managed Agent Skill from a GitHub repository,
+repository URL, or `skills.sh` URL. Hlid discovers the available packages,
+stages the selected revision, and shows every readable file for review before
+anything is installed. Approve one package at a time when its instructions and
+supporting files make sense. The installed copy then appears in the Watch and
+Raven skill picker and can be removed from Hlid later without changing its
+source repository.
+
+Use **Import** for skills that are already installed in a Claude or Codex
+registry or a configured ACP workspace. Discovery does not start an agent or
+CLI process, so it remains responsive while those providers are busy. Hlid
+groups the results by provider and shows scope, known enabled state, Windows or
+WSL runtime, description, file count, and size. **Read SKILL.md** loads the
+complete source document on demand without sending its filesystem path to the
+browser. Select the packages you want and import them together. The
+provider-neutral Hlid copies work even when a provider has a same-named skill.
+Removing an imported copy leaves the provider's original alone, ready to
+import again if that seemed like a better idea tomorrow.
 
 The same managed files show up under `Relics` in the composer `@` picker. Pick
 one there when an existing attachment, report, or generated plan needs to go
@@ -346,8 +380,10 @@ that panel.
 
 The overflow menu exports every session as `CSV` or `JSON`. It can also remove
 records older than 7, 30, or 90 days when the database actually has sessions
-that old. A row menu handles one rename or delete. Claude-backed rows also get
-a fork action when the session is idle.
+that old. A row menu handles one rename or delete, pins a useful session to the
+top, or moves it into the archived view. Archiving is reversible, clears its
+pin, and protects the session from age-based cleanup. Supported idle Claude and
+Codex rows also get the exact fork action.
 
 **Import provider history** discovers Claude CLI/SDK/Cowork and Codex
 CLI/Desktop/editor sessions from Windows and every configured WSL distro. Hlid
@@ -405,6 +441,8 @@ separate because Codex and Claude load different native instruction names.
   voice, and browser-local privacy mode. Hlid and vault entries always remain
   visible; the toggle controls every provider-badged skill, command, or plugin.
 - **Integrations** manages `CLIProxyAPI`, `MCP`, `Umbod`, and the `ACP` catalog.
+- **Extensions** manages installed Claude and Codex plugins and their
+  marketplaces.
 - **Developer** switches between the event log, local API reference, and pricing
   catalog.
 - **Advanced** has database maintenance, provider-session reload, restart, and
@@ -423,6 +461,15 @@ from unrelated agents into a global list. `MCP` edits sync into the live vault
 session. Working-context changes still need a provider-session reload,
 which clears the live provider conversation but leaves its recorded `Ledger`
 history alone.
+
+**Extensions** keeps the Claude and Codex inventories separate. Browse an
+installed package or marketplace, filter by environment or category, and
+review one package before installing it. The review includes its files and the
+capabilities it declares, such as hooks, `MCP` servers, scripts, or apps. You
+can also add or remove a marketplace source, then enable, disable, update, or
+remove its packages through the provider's native registry. An idle runtime
+refreshes immediately. If a turn is running, Hlid leaves it alone and reloads
+the extensions before the next turn.
 
 **Agents → Auto-sleep on usage limit** pauses work near the provider's usage
 threshold or after the provider reports a hard limit. `Hlið` uses the five-hour
@@ -535,6 +582,11 @@ viewing `Raven`. `Hlið` excludes voices that the browser reports as remote.
 option works from a phone connected through `Tailscale` and gives the browser
 exact media pause and resume behavior.
 
+When **Codex realtime Developer Preview** is available for the signed-in Codex
+account, **Codex realtime** appears as another read-aloud engine with its own
+voice. This is a separately gated Codex capability. The local device and
+Microsoft choices remain available without it.
+
 The speech engine, Microsoft voice, and reading speed are saved in the Hlið
 configuration and apply to every device. The selected device-browser voice
 stays on that device because each browser can expose a different voice list.
@@ -548,9 +600,11 @@ streaming.
 
 ### Voice input
 
-Open **FORGE → Experience → Voice**, download a `Whisper` model, select it, and
-turn voice on. The model loads locally and stays warm for repeated
-transcription. Switching models hot-loads the new one without a server restart.
+Open **FORGE → Experience → Voice** and choose what the microphone should do.
+**Dictate with Whisper** creates editable text locally. Download a `Whisper`
+model, select it, and turn voice on. The model loads locally and stays warm for
+repeated transcription. Switching models hot-loads the new one without a
+server restart.
 
 **Whisper threads** controls how much CPU a transcription can use. Higher is
 faster, but boy does it make the machine work for it. Changing the value reloads
@@ -566,6 +620,16 @@ The browser converts the recording to mono 16 kHz `WAV`, then the `Hlið` host
 transcribes it locally. Audio does not become an attachment or a database row.
 The text can fill the draft or send immediately, depending on the `Forge`
 setting.
+
+**Talk to Codex** records the full clip and sends it as a normal audio turn to
+the selected native Codex model. It appears only when that model and account
+support audio. Unlike dictation, it does not turn the recording into an
+editable draft first.
+
+With the same separately gated Codex realtime capability, an idle native Codex
+chat also shows **Raven Live**. It opens a live microphone session with
+two-way audio and a running transcript. It is its own mode, not a replacement
+for local Whisper or the normal recorded audio turn.
 
 Remote microphone capture needs the `HTTPS` endpoint. If it is not working,
 check browser permission, `HTTPS`, the selected model, and the voice toggle.
