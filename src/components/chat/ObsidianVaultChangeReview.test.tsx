@@ -42,10 +42,38 @@ describe("ObsidianVaultChangeReview", () => {
 				'{"path":"Journal/2026-07-20.md"}',
 			),
 			event(
+				"replace",
+				"hlid_obsidian.replace_note_text",
+				{
+					path: "Notes/New.md",
+					oldText: "Before",
+					newText: "After",
+				},
+				'{"path":"Notes/New.md","replacements":1}',
+			),
+			event(
+				"patch",
+				"hlid_obsidian.patch_note",
+				{
+					path: "Notes/New.md",
+					replacements: [
+						{ oldText: "One", newText: "First" },
+						{ oldText: "Two", newText: "Second" },
+					],
+				},
+				'{"path":"Notes/New.md","replacements":2}',
+			),
+			event(
 				"move",
 				"hlid_obsidian/move_file",
 				{ path: "Notes/Old.md", to: "Archive/Old.md" },
 				'{"path":"Archive/Old.md"}',
+			),
+			event(
+				"trash",
+				"hlid_obsidian.trash_file",
+				{ path: "Notes/Discard.md" },
+				'{"path":"Notes/Discard.md","trashed":true}',
 			),
 			event(
 				"command",
@@ -112,10 +140,31 @@ describe("ObsidianVaultChangeReview", () => {
 				content: "Daily body",
 			},
 			{
+				id: "replace",
+				kind: "replaced",
+				path: "Notes/New.md",
+				previousContent: "Before",
+				content: "After",
+			},
+			{
+				id: "patch",
+				kind: "patched",
+				path: "Notes/New.md",
+				summary: "Notes/New.md · 2 replacements",
+				previousContent: "[1]\nOne\n\n[2]\nTwo",
+				content: "[1]\nFirst\n\n[2]\nSecond",
+			},
+			{
 				id: "move",
 				kind: "moved",
 				path: "Archive/Old.md",
 				from: "Notes/Old.md",
+			},
+			{
+				id: "trash",
+				kind: "trashed",
+				path: "Notes/Discard.md",
+				summary: "Notes/Discard.md",
 			},
 			{
 				id: "command",
@@ -282,6 +331,68 @@ describe("ObsidianVaultChangeReview", () => {
 				name: "Open Notes/Active.md in Obsidian",
 			}),
 		).toBeTruthy();
+	});
+
+	it("shows exact note replacements as removed and added text", () => {
+		render(
+			<ObsidianVaultChangeReview
+				toolEvents={[
+					event(
+						"replace",
+						"mcp__hlid_obsidian__replace_note_text",
+						{
+							path: "Notes/Changed.md",
+							oldText: "Old line",
+							newText: "New line",
+						},
+						'{"path":"Notes/Changed.md","replacements":1}',
+					),
+				]}
+			/>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: /vault activity.*1/i }));
+		expect(screen.getByText("Replaced")).toBeTruthy();
+		expect(screen.getByText("- Old line")).toBeTruthy();
+		expect(screen.getByText("+ New line")).toBeTruthy();
+	});
+
+	it("shows atomic patches and recoverable trash without a stale open action", () => {
+		render(
+			<ObsidianVaultChangeReview
+				toolEvents={[
+					event(
+						"patch",
+						"mcp__hlid_obsidian__patch_note",
+						{
+							path: "Notes/Changed.md",
+							replacements: [
+								{ oldText: "One", newText: "First" },
+								{ oldText: "Two", newText: "Second" },
+							],
+						},
+						'{"path":"Notes/Changed.md","replacements":2}',
+					),
+					event(
+						"trash",
+						"mcp__hlid_obsidian__trash_file",
+						{ path: "Notes/Discard.md" },
+						'{"path":"Notes/Discard.md","trashed":true}',
+					),
+				]}
+			/>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: /vault activity.*2/i }));
+		expect(screen.getByText("Patched")).toBeTruthy();
+		expect(screen.getByText("Notes/Changed.md · 2 replacements")).toBeTruthy();
+		expect(screen.getByText("Trashed")).toBeTruthy();
+		expect(screen.getByText("Notes/Discard.md")).toBeTruthy();
+		expect(
+			screen.queryByRole("button", {
+				name: "Open Notes/Discard.md in Obsidian",
+			}),
+		).toBeNull();
 	});
 
 	it("shows active-note transitions without claiming a complete diff", () => {

@@ -14,6 +14,7 @@ import {
 	obsidianReferenceItem,
 	openObsidianDailyNote,
 	openObsidianNote,
+	patchObsidianNoteText,
 	queryObsidianBase,
 	queryObsidianCurrentNote,
 	queryObsidianHistory,
@@ -27,8 +28,10 @@ import {
 	readObsidianTemplate,
 	removeObsidianProperty,
 	renameObsidianFile,
+	replaceObsidianNoteText,
 	setObsidianProperty,
 	testObsidianConnection,
+	trashObsidianFile,
 	updateObsidianTask,
 } from "./obsidianCli";
 
@@ -477,6 +480,132 @@ describe("Obsidian CLI bridge", () => {
 			"daily:append",
 			"content=Done",
 		]);
+	});
+
+	it("replaces one exact note block through an atomic Obsidian process", async () => {
+		const { dependencies, run } = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "Created", code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{
+				output: '=> {"path":"Notes/One.md","replacements":1,"changed":true}',
+				code: 0,
+			},
+		]);
+
+		await expect(
+			replaceObsidianNoteText(
+				"Fornbok",
+				{
+					path: "Notes/One.md",
+					oldText: "Before",
+					newText: "After",
+				},
+				dependencies,
+			),
+		).resolves.toEqual({ path: "Notes/One.md", replacements: 1 });
+
+		const createArgs = run.mock.calls[1]?.[1] ?? [];
+		expect(createArgs.slice(0, 2)).toEqual(["vault=Fornbok", "create"]);
+		expect(createArgs[2]).toMatch(/^path=Hlid edit payload [0-9a-f-]+\.json$/);
+		expect(createArgs[3]).toBe(
+			'content={"replacements":[{"oldText":"Before","newText":"After"}]}',
+		);
+
+		const evalArgs = run.mock.calls[3]?.[1] ?? [];
+		expect(evalArgs.slice(0, 2)).toEqual(["vault=Fornbok", "eval"]);
+		const code = evalArgs[2]?.replace(/^code=/, "") ?? "";
+		expect(code).toContain("app.vault.process");
+		expect(code).toContain("next.indexOf(replacement.oldText,first+1)");
+		expect(code).toContain("app.vault.delete(payloadFile)");
+		expect(code).not.toContain("Before");
+		expect(code).not.toContain("After");
+	});
+
+	it("cleans up a staged edit payload when exact replacement fails", async () => {
+		const { dependencies, run } = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "Created", code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{
+				output: "Error: Expected text occurs more than once in Notes/One.md",
+				code: 0,
+			},
+			{ output: windowsDetection, code: 0 },
+			{ output: "Deleted", code: 0 },
+		]);
+
+		await expect(
+			replaceObsidianNoteText(
+				"Fornbok",
+				{
+					path: "Notes/One.md",
+					oldText: "Repeated",
+					newText: "Once",
+				},
+				dependencies,
+			),
+		).rejects.toThrow("occurs more than once");
+
+		const payloadPath = run.mock.calls[1]?.[1]?.[2];
+		expect(run.mock.calls[5]?.[1]).toEqual([
+			"vault=Fornbok",
+			"delete",
+			payloadPath,
+			"permanent",
+		]);
+	});
+
+	it("applies multiple exact replacements as one atomic note patch", async () => {
+		const { dependencies, run } = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "Created", code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{
+				output: '=> {"path":"Notes/One.md","replacements":2,"changed":true}',
+				code: 0,
+			},
+		]);
+
+		await expect(
+			patchObsidianNoteText(
+				"Fornbok",
+				{
+					path: "Notes/One.md",
+					replacements: [
+						{ oldText: "One", newText: "First" },
+						{ oldText: "Two", newText: "Second" },
+					],
+				},
+				dependencies,
+			),
+		).resolves.toEqual({ path: "Notes/One.md", replacements: 2 });
+
+		expect(run.mock.calls[1]?.[1]?.[3]).toBe(
+			'content={"replacements":[{"oldText":"One","newText":"First"},{"oldText":"Two","newText":"Second"}]}',
+		);
+		const code = run.mock.calls[3]?.[1]?.[2] ?? "";
+		expect(code).toContain(
+			"for(let index=0;index<payload.replacements.length;index++)",
+		);
+		expect(code).toContain("Replacement ");
+	});
+
+	it("trashes one exact file without exposing permanent deletion", async () => {
+		const { dependencies, run } = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "Deleted", code: 0 },
+		]);
+
+		await expect(
+			trashObsidianFile("Fornbok", { path: "Notes/Old.md" }, dependencies),
+		).resolves.toEqual({ path: "Notes/Old.md", trashed: true });
+		expect(run.mock.calls[1]?.[1]).toEqual([
+			"vault=Fornbok",
+			"delete",
+			"path=Notes/Old.md",
+		]);
+		expect(run.mock.calls[1]?.[1]).not.toContain("permanent");
 	});
 
 	it("tests both the CLI version and configured vault", async () => {

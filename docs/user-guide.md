@@ -471,12 +471,17 @@ all it needs.
 
 The write side is curated too. Agents can create notes with a core Templates or
 Templater template, capture a quick note into the mapped Inbox or Raw folder,
-open today's daily note, append or prepend text, add an item through a Base,
-update one exact task or property, and move or rename a file through Obsidian so
-its links can follow along. `Raven` groups successful changes into a **Vault
-activity** card with the affected paths, added-text previews, and shortcuts
-back into Obsidian. File history stays read-only, so recovery still happens in
-Obsidian itself.
+open today's daily note, append or prepend text, replace one exact block in an
+existing note, or apply several exact replacements as one atomic patch. They
+can also add an item through a Base, update one exact task or property, move or
+rename a file through Obsidian so its links can follow along, and send one exact
+file to trash through Obsidian's default delete behavior. Hlid does not expose
+the permanent flag. Exact replacement first requires the agent to read the
+note. It fails without a change when expected text is missing or occurs more
+than once. An atomic patch applies every replacement or none of them. `Raven`
+groups successful changes into a **Vault activity** card with the affected
+paths, added and removed text previews, and shortcuts back into Obsidian. File
+history stays read-only, so recovery still happens in Obsidian itself.
 
 Every note change follows the active agent permission policy. Running an
 arbitrary Obsidian command is stricter: the agent discovers the exact command

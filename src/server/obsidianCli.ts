@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { runBoundedProcess } from "#/lib/process";
@@ -15,6 +16,9 @@ const OBSIDIAN_CLI_RECOVERY_GUIDANCE =
 const MAX_OBSIDIAN_CLI_CONTENT_BYTES = 4_000;
 export const MAX_OBSIDIAN_APPEND_CHARS = 20_000;
 export const MAX_OBSIDIAN_CREATE_CHARS = 20_000;
+export const MAX_OBSIDIAN_REPLACE_CHARS = 20_000;
+export const MAX_OBSIDIAN_PATCH_CHARS = 80_000;
+export const MAX_OBSIDIAN_PATCH_REPLACEMENTS = 20;
 export const MAX_OBSIDIAN_AGENT_OUTPUT_CHARS = 120_000;
 
 type ProcessRunner = typeof runBoundedProcess;
@@ -1347,14 +1351,17 @@ function templaterCreateCode(input: {
 	].join("");
 }
 
-function parseObsidianEvalJson(output: string): Record<string, unknown> {
+function parseObsidianEvalJson(
+	output: string,
+	invalidResultMessage = "Obsidian returned an invalid note creation result.",
+): Record<string, unknown> {
 	const error = cliError(output);
 	if (error) throw new Error(`Obsidian CLI failed: ${error}`);
 	const json = output.trim().replace(/^=>\s*/, "");
 	try {
 		return JSON.parse(json) as Record<string, unknown>;
 	} catch {
-		throw new Error("Obsidian returned an invalid note creation result.");
+		throw new Error(invalidResultMessage);
 	}
 }
 
@@ -1498,6 +1505,223 @@ export async function mutateObsidianNote(
 	if (!path) throw new Error("Obsidian did not report the updated note path.");
 	if (input.open) await openObsidianNote(vaultName, path, dependencies);
 	return { path };
+}
+
+export type ObsidianReplaceNoteTextInput = {
+	path: string;
+	oldText: string;
+	newText: string;
+	open?: boolean;
+};
+
+export type ObsidianPatchNoteInput = {
+	path: string;
+	replacements: Array<{ oldText: string; newText: string }>;
+	open?: boolean;
+};
+
+function exactNotePatchCode(input: {
+	path: string;
+	payloadPath: string;
+}): string {
+	const encoded = Buffer.from(JSON.stringify(input), "utf8").toString("base64");
+	return [
+		"(async()=>{",
+		`const bytes=Uint8Array.from(atob("${encoded}"),c=>c.charCodeAt(0));`,
+		"const data=JSON.parse(new TextDecoder().decode(bytes));",
+		"const payloadFile=app.vault.getAbstractFileByPath(data.payloadPath);",
+		'if(!payloadFile||typeof payloadFile.path!=="string")throw new Error("Hlid edit payload was not found");',
+		"const payload=JSON.parse(await app.vault.read(payloadFile));",
+		"const target=app.vault.getAbstractFileByPath(data.path);",
+		"await app.vault.delete(payloadFile);",
+		'if(!target||target.extension!=="md")throw new Error("Exact Markdown note was not found: "+data.path);',
+		'if(!Array.isArray(payload.replacements)||!payload.replacements.length)throw new Error("Hlid edit payload was invalid");',
+		"let replacements=0;",
+		"let changed=false;",
+		"await app.vault.process(target,current=>{",
+		"let next=current;",
+		"for(let index=0;index<payload.replacements.length;index++){",
+		"const replacement=payload.replacements[index];",
+		'if(!replacement||typeof replacement.oldText!=="string"||!replacement.oldText.length||typeof replacement.newText!=="string")throw new Error("Replacement "+(index+1)+" was invalid");',
+		"const first=next.indexOf(replacement.oldText);",
+		'if(first<0)throw new Error("Replacement "+(index+1)+": expected text was not found in "+data.path);',
+		"const second=next.indexOf(replacement.oldText,first+1);",
+		'if(second>=0)throw new Error("Replacement "+(index+1)+": expected text occurs more than once in "+data.path);',
+		"next=next.slice(0,first)+replacement.newText+next.slice(first+replacement.oldText.length);",
+		"}",
+		"replacements=payload.replacements.length;",
+		"changed=next!==current;",
+		"return next;",
+		"});",
+		"return JSON.stringify({path:target.path,replacements,changed});",
+		"})()",
+	].join("");
+}
+
+async function stageObsidianEditPayload(
+	vaultName: string,
+	content: string,
+	dependencies: ObsidianBridgeDependencies,
+): Promise<string> {
+	const path = `Hlid edit payload ${randomUUID()}.json`;
+	const inlineContent =
+		Buffer.byteLength(content, "utf8") <= MAX_OBSIDIAN_CLI_CONTENT_BYTES
+			? content
+			: "";
+	await runObsidianMutationCommand(
+		vaultName,
+		[
+			"create",
+			`path=${path}`,
+			...(inlineContent ? [`content=${inlineContent}`] : []),
+		],
+		dependencies,
+	);
+	if (!inlineContent) {
+		await runObsidianContentMutation(
+			vaultName,
+			"append",
+			[`path=${path}`],
+			content,
+			dependencies,
+			{ inline: true },
+		);
+	}
+	return path;
+}
+
+async function discardObsidianEditPayload(
+	vaultName: string,
+	path: string,
+	dependencies: ObsidianBridgeDependencies,
+): Promise<void> {
+	try {
+		await runObsidianMutationCommand(
+			vaultName,
+			["delete", `path=${path}`, "permanent"],
+			dependencies,
+		);
+	} catch {
+		// The in-app edit deletes its payload before touching the target note.
+		// Cleanup here is only for failures before that fixed script can run.
+	}
+}
+
+function validateObsidianNoteReplacements(
+	replacements: Array<{ oldText: string; newText: string }>,
+): Array<{ oldText: string; newText: string }> {
+	if (
+		replacements.length === 0 ||
+		replacements.length > MAX_OBSIDIAN_PATCH_REPLACEMENTS
+	) {
+		throw new Error(
+			`Obsidian note patches require between 1 and ${MAX_OBSIDIAN_PATCH_REPLACEMENTS} replacements.`,
+		);
+	}
+	const validated = replacements.map((replacement, index) => {
+		const oldText = safeNoteContent(
+			replacement.oldText,
+			MAX_OBSIDIAN_REPLACE_CHARS,
+		);
+		const newText = safeNoteContent(
+			replacement.newText,
+			MAX_OBSIDIAN_REPLACE_CHARS,
+		);
+		if (!oldText) {
+			throw new Error(
+				`Obsidian replacement ${index + 1} requires expected old text.`,
+			);
+		}
+		if (oldText === newText) {
+			throw new Error(
+				`Obsidian replacement ${index + 1} must change the note.`,
+			);
+		}
+		return { oldText, newText };
+	});
+	const totalChars = validated.reduce(
+		(total, replacement) =>
+			total + replacement.oldText.length + replacement.newText.length,
+		0,
+	);
+	if (totalChars > MAX_OBSIDIAN_PATCH_CHARS) {
+		throw new Error(
+			`Obsidian note patches are limited to ${MAX_OBSIDIAN_PATCH_CHARS.toLocaleString()} total characters.`,
+		);
+	}
+	return validated;
+}
+
+export async function patchObsidianNoteText(
+	vaultName: string,
+	input: ObsidianPatchNoteInput,
+	dependencies: ObsidianBridgeDependencies = {},
+): Promise<{ path: string; replacements: number }> {
+	const path = safeVaultPath(input.path, "note path");
+	if (!path.toLowerCase().endsWith(".md")) {
+		throw new Error("Obsidian note patches require a .md note path.");
+	}
+	const replacements = validateObsidianNoteReplacements(input.replacements);
+
+	const payloadPath = await stageObsidianEditPayload(
+		vaultName,
+		JSON.stringify({ replacements }),
+		dependencies,
+	);
+	try {
+		const output = await runObsidianCommand(
+			vaultName,
+			["eval", `code=${exactNotePatchCode({ path, payloadPath })}`],
+			dependencies,
+		);
+		const result = parseObsidianEvalJson(
+			output,
+			"Obsidian returned an invalid text replacement result.",
+		);
+		if (
+			result.path !== path ||
+			result.replacements !== replacements.length ||
+			result.changed !== true
+		) {
+			throw new Error("Obsidian did not confirm the exact note patch.");
+		}
+		if (input.open) await openObsidianNote(vaultName, path, dependencies);
+		return { path, replacements: replacements.length };
+	} catch (error) {
+		await discardObsidianEditPayload(vaultName, payloadPath, dependencies);
+		throw error;
+	}
+}
+
+export async function replaceObsidianNoteText(
+	vaultName: string,
+	input: ObsidianReplaceNoteTextInput,
+	dependencies: ObsidianBridgeDependencies = {},
+): Promise<{ path: string; replacements: 1 }> {
+	await patchObsidianNoteText(
+		vaultName,
+		{
+			path: input.path,
+			replacements: [{ oldText: input.oldText, newText: input.newText }],
+			open: input.open,
+		},
+		dependencies,
+	);
+	return { path: safeVaultPath(input.path, "note path"), replacements: 1 };
+}
+
+export async function trashObsidianFile(
+	vaultName: string,
+	input: { path: string },
+	dependencies: ObsidianBridgeDependencies = {},
+): Promise<{ path: string; trashed: true }> {
+	const path = safeVaultPath(input.path, "file path");
+	await runObsidianMutationCommand(
+		vaultName,
+		["delete", `path=${path}`],
+		dependencies,
+	);
+	return { path, trashed: true };
 }
 
 export async function testObsidianConnection(

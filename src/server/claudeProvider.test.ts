@@ -2728,11 +2728,14 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 			"base_create",
 			"append_note",
 			"prepend_note",
+			"replace_note_text",
+			"patch_note",
 			"task_update",
 			"property_set",
 			"property_remove",
 			"move_file",
 			"rename_file",
+			"trash_file",
 			"run_command",
 		]);
 		const tasks = server.instance.options.tools.find(

@@ -8,8 +8,11 @@ type VaultChangeKind =
 	| "created"
 	| "appended"
 	| "prepended"
+	| "replaced"
+	| "patched"
 	| "moved"
 	| "renamed"
+	| "trashed"
 	| "base"
 	| "task"
 	| "property-set"
@@ -22,6 +25,7 @@ export type ObsidianVaultChange = {
 	path?: string;
 	from?: string;
 	content?: string;
+	previousContent?: string;
 	commandId?: string;
 	activeBefore?: string;
 	activeAfter?: string;
@@ -33,8 +37,11 @@ const OPERATION_NAMES: Record<string, VaultChangeKind> = {
 	capture_note: "created",
 	append_note: "appended",
 	prepend_note: "prepended",
+	replace_note_text: "replaced",
+	patch_note: "patched",
 	move_file: "moved",
 	rename_file: "renamed",
+	trash_file: "trashed",
 	base_create: "base",
 	task_update: "task",
 	property_set: "property-set",
@@ -125,6 +132,20 @@ function inlineValue(value: unknown): string {
 	return serialized.length > 240 ? `${serialized.slice(0, 240)}…` : serialized;
 }
 
+function patchContent(
+	replacements: unknown[],
+	key: "oldText" | "newText",
+): string {
+	return replacements
+		.map((item, index) => {
+			const value = record(item)[key];
+			return typeof value === "string"
+				? `[${index + 1}]\n${value}`
+				: `[${index + 1}]`;
+		})
+		.join("\n\n");
+}
+
 export function obsidianVaultChanges(
 	toolEvents: ToolEventMessage[],
 ): ObsidianVaultChange[] {
@@ -212,6 +233,39 @@ export function obsidianVaultChanges(
 				},
 			];
 		}
+		if (operation === "patch_note") {
+			const source = typeof input.path === "string" ? input.path : null;
+			const replacements = Array.isArray(input.replacements)
+				? input.replacements
+				: [];
+			const path = resultPath(event.result) ?? source;
+			if (!path || replacements.length === 0) return [];
+			return [
+				{
+					id: event.id,
+					kind: "patched" as const,
+					path,
+					summary: `${path} · ${replacements.length} replacements`,
+					previousContent: patchContent(replacements, "oldText"),
+					content: patchContent(replacements, "newText"),
+				},
+			];
+		}
+		if (operation === "trash_file") {
+			const path =
+				resultPath(event.result) ??
+				(typeof input.path === "string" ? input.path : null);
+			return path
+				? [
+						{
+							id: event.id,
+							kind: "trashed" as const,
+							path,
+							summary: path,
+						},
+					]
+				: [];
+		}
 		const source = typeof input.path === "string" ? input.path : null;
 		const reportedPath = resultPath(event.result);
 		let path = reportedPath;
@@ -248,6 +302,15 @@ export function obsidianVaultChanges(
 				...(typeof input.content === "string" && input.content
 					? { content: input.content }
 					: {}),
+				...(operation === "replace_note_text" &&
+				typeof input.oldText === "string" &&
+				input.oldText
+					? { previousContent: input.oldText }
+					: {}),
+				...(operation === "replace_note_text" &&
+				typeof input.newText === "string"
+					? { content: input.newText }
+					: {}),
 			},
 		];
 	});
@@ -261,10 +324,16 @@ function changeLabel(kind: VaultChangeKind): string {
 			return "Appended";
 		case "prepended":
 			return "Prepended";
+		case "replaced":
+			return "Replaced";
+		case "patched":
+			return "Patched";
 		case "moved":
 			return "Moved";
 		case "renamed":
 			return "Renamed";
+		case "trashed":
+			return "Trashed";
 		case "base":
 			return "Base item";
 		case "task":
@@ -278,12 +347,12 @@ function changeLabel(kind: VaultChangeKind): string {
 	}
 }
 
-function addedContentPreview(content: string): string {
+function changedContentPreview(content: string, prefix: "+" | "-"): string {
 	const bounded =
 		content.length > 1_200 ? `${content.slice(0, 1_200)}\n…` : content;
 	return bounded
 		.split("\n")
-		.map((line) => `+ ${line}`)
+		.map((line) => `${prefix} ${line}`)
 		.join("\n");
 }
 
@@ -381,20 +450,25 @@ export function ObsidianVaultChangeReview({
 										</div>
 									)}
 								</div>
-								{change.path && (
+								{change.path && change.kind !== "trashed" && (
 									<ObsidianOpenButton relativePath={change.path} />
 								)}
 							</div>
+							{change.previousContent && (
+								<PrivacyMask className="mt-1 ml-16 max-h-28 overflow-auto whitespace-pre-wrap border-l border-red-600/25 pl-2 font-mono text-[10px] leading-relaxed text-red-700/70 dark:text-red-400/60">
+									{changedContentPreview(change.previousContent, "-")}
+								</PrivacyMask>
+							)}
 							{change.content && (
 								<PrivacyMask className="mt-1 ml-16 max-h-28 overflow-auto whitespace-pre-wrap border-l border-green-600/25 pl-2 font-mono text-[10px] leading-relaxed text-green-700/70 dark:text-green-400/60">
-									{addedContentPreview(change.content)}
+									{changedContentPreview(change.content, "+")}
 								</PrivacyMask>
 							)}
 						</div>
 					))}
 					{hasFileChanges && (
 						<p className="pl-16 text-[9px] text-muted-foreground/45">
-							Open a note in Obsidian for its full history and recovery options.
+							Use Obsidian for full history and recovery options.
 						</p>
 					)}
 				</div>

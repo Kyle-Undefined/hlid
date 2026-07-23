@@ -4,6 +4,8 @@ const bridge = vi.hoisted(() => ({
 	MAX_OBSIDIAN_AGENT_OUTPUT_CHARS: 120_000,
 	MAX_OBSIDIAN_APPEND_CHARS: 20_000,
 	MAX_OBSIDIAN_CREATE_CHARS: 20_000,
+	MAX_OBSIDIAN_PATCH_REPLACEMENTS: 20,
+	MAX_OBSIDIAN_REPLACE_CHARS: 20_000,
 	createObsidianBaseItem: vi.fn(),
 	createObsidianNote: vi.fn(),
 	executeObsidianCommand: vi.fn(),
@@ -13,6 +15,7 @@ const bridge = vi.hoisted(() => ({
 	mutateObsidianNote: vi.fn(),
 	moveObsidianFile: vi.fn(),
 	openObsidianDailyNote: vi.fn(),
+	patchObsidianNoteText: vi.fn(),
 	queryObsidianBase: vi.fn(),
 	queryObsidianCurrentNote: vi.fn(),
 	queryObsidianHistory: vi.fn(),
@@ -26,7 +29,9 @@ const bridge = vi.hoisted(() => ({
 	readObsidianTemplate: vi.fn(),
 	removeObsidianProperty: vi.fn(),
 	renameObsidianFile: vi.fn(),
+	replaceObsidianNoteText: vi.fn(),
 	setObsidianProperty: vi.fn(),
+	trashObsidianFile: vi.fn(),
 	updateObsidianTask: vi.fn(),
 }));
 
@@ -79,11 +84,14 @@ describe("Obsidian agent tools", () => {
 			"base_create",
 			"append_note",
 			"prepend_note",
+			"replace_note_text",
+			"patch_note",
 			"task_update",
 			"property_set",
 			"property_remove",
 			"move_file",
 			"rename_file",
+			"trash_file",
 			"run_command",
 		]);
 		expect(
@@ -118,11 +126,14 @@ describe("Obsidian agent tools", () => {
 			"base_create",
 			"append_note",
 			"prepend_note",
+			"replace_note_text",
+			"patch_note",
 			"task_update",
 			"property_set",
 			"property_remove",
 			"move_file",
 			"rename_file",
+			"trash_file",
 			"run_command",
 		]);
 	});
@@ -221,6 +232,44 @@ describe("Obsidian agent tools", () => {
 			expect.objectContaining({ content: "Body" }),
 		);
 
+		bridge.replaceObsidianNoteText.mockResolvedValueOnce({
+			path: "Notes/One.md",
+			replacements: 1,
+		});
+		await expect(
+			executeObsidianAgentTool("replace_note_text", {
+				path: "Notes/One.md",
+				oldText: "Before",
+				newText: "After",
+			}),
+		).resolves.toBe('{"path":"Notes/One.md","replacements":1}');
+		expect(bridge.replaceObsidianNoteText).toHaveBeenCalledWith("Fornbok", {
+			path: "Notes/One.md",
+			oldText: "Before",
+			newText: "After",
+		});
+
+		bridge.patchObsidianNoteText.mockResolvedValueOnce({
+			path: "Notes/One.md",
+			replacements: 2,
+		});
+		await expect(
+			executeObsidianAgentTool("patch_note", {
+				path: "Notes/One.md",
+				replacements: [
+					{ oldText: "One", newText: "First" },
+					{ oldText: "Two", newText: "Second" },
+				],
+			}),
+		).resolves.toBe('{"path":"Notes/One.md","replacements":2}');
+		expect(bridge.patchObsidianNoteText).toHaveBeenCalledWith("Fornbok", {
+			path: "Notes/One.md",
+			replacements: [
+				{ oldText: "One", newText: "First" },
+				{ oldText: "Two", newText: "Second" },
+			],
+		});
+
 		bridge.updateObsidianTask.mockResolvedValueOnce({
 			path: "Notes/One.md",
 			line: 8,
@@ -287,6 +336,19 @@ describe("Obsidian agent tools", () => {
 		expect(bridge.renameObsidianFile).toHaveBeenCalledWith("Fornbok", {
 			path: "Notes/One.md",
 			name: "Renamed.md",
+		});
+
+		bridge.trashObsidianFile.mockResolvedValueOnce({
+			path: "Notes/Old.md",
+			trashed: true,
+		});
+		await expect(
+			executeObsidianAgentTool("trash_file", {
+				path: "Notes/Old.md",
+			}),
+		).resolves.toBe('{"path":"Notes/Old.md","trashed":true}');
+		expect(bridge.trashObsidianFile).toHaveBeenCalledWith("Fornbok", {
+			path: "Notes/Old.md",
 		});
 
 		await executeObsidianAgentTool("run_command", {

@@ -13,9 +13,12 @@ import {
 	MAX_OBSIDIAN_AGENT_OUTPUT_CHARS,
 	MAX_OBSIDIAN_APPEND_CHARS,
 	MAX_OBSIDIAN_CREATE_CHARS,
+	MAX_OBSIDIAN_PATCH_REPLACEMENTS,
+	MAX_OBSIDIAN_REPLACE_CHARS,
 	moveObsidianFile,
 	mutateObsidianNote,
 	openObsidianDailyNote,
+	patchObsidianNoteText,
 	queryObsidianBase,
 	queryObsidianCurrentNote,
 	queryObsidianHistory,
@@ -29,7 +32,9 @@ import {
 	readObsidianTemplate,
 	removeObsidianProperty,
 	renameObsidianFile,
+	replaceObsidianNoteText,
 	setObsidianProperty,
+	trashObsidianFile,
 	updateObsidianTask,
 } from "./obsidianCli";
 
@@ -168,6 +173,25 @@ export const obsidianAgentSchemas = {
 		content: z.string().min(1).max(MAX_OBSIDIAN_APPEND_CHARS),
 		open: z.boolean().optional(),
 	}),
+	replace_note_text: z.object({
+		path: vaultPath,
+		oldText: z.string().min(1).max(MAX_OBSIDIAN_REPLACE_CHARS),
+		newText: z.string().max(MAX_OBSIDIAN_REPLACE_CHARS),
+		open: z.boolean().optional(),
+	}),
+	patch_note: z.object({
+		path: vaultPath,
+		replacements: z
+			.array(
+				z.object({
+					oldText: z.string().min(1).max(MAX_OBSIDIAN_REPLACE_CHARS),
+					newText: z.string().max(MAX_OBSIDIAN_REPLACE_CHARS),
+				}),
+			)
+			.min(1)
+			.max(MAX_OBSIDIAN_PATCH_REPLACEMENTS),
+		open: z.boolean().optional(),
+	}),
 	task_update: z.object({
 		path: vaultPath,
 		line: z.number().int().min(1).max(1_000_000),
@@ -196,6 +220,9 @@ export const obsidianAgentSchemas = {
 	rename_file: z.object({
 		path: vaultPath,
 		name: z.string().trim().min(1).max(255),
+	}),
+	trash_file: z.object({
+		path: vaultPath,
 	}),
 	run_command: z.object({
 		id: z.string().trim().min(1).max(512),
@@ -629,6 +656,80 @@ export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
 		}),
 	),
 	{
+		name: "replace_note_text",
+		description:
+			"Replace one exact block of text in one exact existing Markdown note through Obsidian. Read the note first and supply the exact old text. The edit succeeds only when that text occurs once; missing or ambiguous matches fail without changing the note. New text may be empty to delete the matched block.",
+		readOnly: false,
+		inputSchema: {
+			type: "object",
+			properties: {
+				path: {
+					type: "string",
+					description: "Exact vault-relative .md note path.",
+				},
+				oldText: {
+					type: "string",
+					description:
+						"Exact existing text expected to occur once in the note.",
+				},
+				newText: {
+					type: "string",
+					description:
+						"Replacement text. Use an empty string to delete the matched block.",
+				},
+				open: {
+					type: "boolean",
+					description: "Open the updated note in Obsidian.",
+				},
+			},
+			required: ["path", "oldText", "newText"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "patch_note",
+		description:
+			"Apply multiple exact text replacements to one exact existing Markdown note as one atomic Obsidian transaction. Read the note first. Replacements run in order against the evolving content, and every oldText must occur exactly once at its step. If any replacement is missing or ambiguous, the entire patch fails without changing the note.",
+		readOnly: false,
+		inputSchema: {
+			type: "object",
+			properties: {
+				path: {
+					type: "string",
+					description: "Exact vault-relative .md note path.",
+				},
+				replacements: {
+					type: "array",
+					minItems: 1,
+					maxItems: MAX_OBSIDIAN_PATCH_REPLACEMENTS,
+					items: {
+						type: "object",
+						properties: {
+							oldText: {
+								type: "string",
+								description:
+									"Exact existing text expected to occur once at this step.",
+							},
+							newText: {
+								type: "string",
+								description:
+									"Replacement text. Use an empty string to delete the matched block.",
+							},
+						},
+						required: ["oldText", "newText"],
+						additionalProperties: false,
+					},
+				},
+				open: {
+					type: "boolean",
+					description: "Open the updated note in Obsidian.",
+				},
+			},
+			required: ["path", "replacements"],
+			additionalProperties: false,
+		},
+	},
+	{
 		name: "task_update",
 		description:
 			"Update one exact Obsidian task by vault-relative note path and one-based line number returned by tasks. Toggle it, mark it done or todo, or set one custom status character.",
@@ -726,6 +827,23 @@ export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
 				name: { type: "string", description: "New filename." },
 			},
 			required: ["path", "name"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "trash_file",
+		description:
+			"Move one exact vault file to trash through Obsidian's default delete behavior. Hlid never passes the permanent flag. This is a recoverable but important mutation and requires the active agent permission policy.",
+		readOnly: false,
+		inputSchema: {
+			type: "object",
+			properties: {
+				path: {
+					type: "string",
+					description: "Exact vault-relative file path.",
+				},
+			},
+			required: ["path"],
 			additionalProperties: false,
 		},
 	},
@@ -1088,6 +1206,14 @@ export async function executeObsidianAgentTool(
 				await mutateObsidianNote(vaultName, "prepend", parsed),
 			);
 		}
+		case "replace_note_text": {
+			const parsed = obsidianAgentSchemas.replace_note_text.parse(input);
+			return JSON.stringify(await replaceObsidianNoteText(vaultName, parsed));
+		}
+		case "patch_note": {
+			const parsed = obsidianAgentSchemas.patch_note.parse(input);
+			return JSON.stringify(await patchObsidianNoteText(vaultName, parsed));
+		}
 		case "task_update": {
 			const parsed = obsidianAgentSchemas.task_update.parse(input);
 			return JSON.stringify(await updateObsidianTask(vaultName, parsed));
@@ -1107,6 +1233,10 @@ export async function executeObsidianAgentTool(
 		case "rename_file": {
 			const parsed = obsidianAgentSchemas.rename_file.parse(input);
 			return JSON.stringify(await renameObsidianFile(vaultName, parsed));
+		}
+		case "trash_file": {
+			const parsed = obsidianAgentSchemas.trash_file.parse(input);
+			return JSON.stringify(await trashObsidianFile(vaultName, parsed));
 		}
 		case "run_command": {
 			const parsed = obsidianAgentSchemas.run_command.parse(input);

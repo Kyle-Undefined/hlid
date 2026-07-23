@@ -50,11 +50,14 @@ describe("ObsidianSection", () => {
 				"base_create",
 				"append_note",
 				"prepend_note",
+				"replace_note_text",
+				"patch_note",
 				"task_update",
 				"property_set",
 				"property_remove",
 				"move_file",
 				"rename_file",
+				"trash_file",
 				"run_command",
 			],
 			connection: {
@@ -80,7 +83,7 @@ describe("ObsidianSection", () => {
 		);
 
 		await waitFor(() => expect(screen.getByText("v1.12.7")).toBeTruthy());
-		expect(screen.getByText("25 curated tools")).toBeTruthy();
+		expect(screen.getByText("28 curated tools")).toBeTruthy();
 		expect(
 			screen.getByText(
 				"None yet. Agents discover commands and request approval when needed.",
