@@ -676,44 +676,70 @@ async function forkSession({
 	const source = await db.getSessionById(sourceId);
 	if (!source) return new Response("Session not found", { status: 404 });
 
-	let upToMessageId: string | undefined;
+	const providerId = source.provider_id ?? "claude";
+	const provider = pool?.getProvider(providerId);
+	const nativeId = await db.getSessionProviderSession(sourceId, providerId);
+
+	let forkMessage: Awaited<ReturnType<typeof db.getMessageForFork>> | undefined;
+	let throughSeq: number | undefined;
 	if (messageId !== undefined) {
 		const message = await db.getMessageForFork(messageId);
-		if (!message || message.sessionId !== sourceId) {
+		if (
+			!message ||
+			message.sessionId !== sourceId ||
+			message.role !== "assistant"
+		) {
 			return new Response("Message not found in this session", {
 				status: 404,
 			});
 		}
-		if (!message.sdkUuid) {
-			return new Response(
-				"This message can't be branched from yet — no transcript id captured",
-				{ status: 422 },
-			);
-		}
-		upToMessageId = message.sdkUuid;
+		forkMessage = message;
+		throughSeq = message.seq;
 	}
 
-	const providerId = source.provider_id ?? "claude";
-	const provider = pool?.getProvider(providerId);
-	const nativeId = await db.getSessionProviderSession(sourceId, providerId);
-	if (!provider?.forkSession || !nativeId) {
+	if (!provider?.forkSession || !provider.forkCapability || !nativeId) {
 		return new Response("Forking is not supported for this session", {
 			status: 422,
 		});
+	}
+
+	let cutoff: { kind: "message" | "turn"; id: string } | undefined;
+	if (forkMessage) {
+		const cutoffId =
+			provider.forkCapability.cutoff === "turn"
+				? forkMessage.providerTurnId
+				: forkMessage.sdkUuid;
+		if (!cutoffId) {
+			return new Response(
+				"This message can't be branched from yet — no native fork boundary was captured",
+				{ status: 422 },
+			);
+		}
+		cutoff = { kind: provider.forkCapability.cutoff, id: cutoffId };
 	}
 
 	const { sessionId: newNativeId, messages } = await provider.forkSession({
 		sessionId: nativeId,
 		cwd: source.agent_cwd ?? undefined,
 		historyResumeMode: source.history_resume_mode,
-		upToMessageId,
+		cutoff,
 	});
 	const newId = uid();
-	await db.createForkedSessionRow(sourceId, newId, newNativeId);
-	// forkSession() only writes the native transcript file — hydrate hlid's
-	// own messages table so Raven doesn't show a blank transcript for the
-	// new session until a live turn or a manual history reload backfills it.
-	if (messages?.length) await db.insertForkedMessages(newId, messages);
+	await db.createForkedSessionRow(sourceId, newId, newNativeId, {
+		...(messageId !== undefined ? { parentMessageId: messageId } : {}),
+		forkKind: "exact",
+	});
+	// Preserve Hlid's visible transcript and tool activity through the same
+	// branch boundary. Provider read-back remains a fallback for legacy/imported
+	// sessions whose visible transcript has not been hydrated into Hlid yet.
+	const copied = await db.copyForkedSessionTranscript(
+		sourceId,
+		newId,
+		throughSeq,
+	);
+	if (copied === 0 && messages?.length) {
+		await db.insertForkedMessages(newId, messages);
+	}
 	bumpDataRevision("sessions");
 	return Response.json({ ok: true, id: newId });
 }

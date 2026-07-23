@@ -17,6 +17,18 @@ export type ResolveExecutionContextOptions = {
 	resourcePaths?: string[];
 };
 
+/** Resolve the native or per-WSL wrapper executable that owns a provider cwd. */
+export function resolveProviderExecutableForCwd(
+	activeCwd: string,
+	executable: string | undefined,
+	wrapperCommand: "claude" | "codex",
+): string | undefined {
+	if (!parseWslUnc(activeCwd)) return executable;
+	const wrapper = wrapperPathForAgent(activeCwd, wrapperCommand);
+	if (existsSync(wrapper)) return wrapper;
+	return writeWrapper(activeCwd, wrapperCommand) ?? executable;
+}
+
 /**
  * Resolves the working directory, extra readable directories, and Claude
  * executable path for the current query.
@@ -75,18 +87,10 @@ export function resolveExecutionContext(opts: ResolveExecutionContextOptions): {
 	// invokes `wsl.exe -d <distro> --cd <posix> -- <command>`. Native paths use
 	// the standard Windows-side resolution. Selection is per-session based
 	// on the active cwd's form.
-	const wslParsed = parseWslUnc(activeCwd);
-	let executable = claudeExecutable;
-	if (wslParsed) {
-		const wrapper = wrapperPathForAgent(activeCwd, wrapperCommand);
-		if (existsSync(wrapper)) {
-			executable = wrapper;
-		} else {
-			// Defensive: regenerate if config-writer never ran or file was
-			// removed manually. Falls back to default exe on failure.
-			const written = writeWrapper(activeCwd, wrapperCommand);
-			if (written) executable = written;
-		}
-	}
+	const executable = resolveProviderExecutableForCwd(
+		activeCwd,
+		claudeExecutable,
+		wrapperCommand,
+	);
 	return { activeCwd, extraDirs, executable };
 }

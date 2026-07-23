@@ -34,6 +34,8 @@ const outDir = join(root, "src", "server", "codexProtocol");
 const SEEDS: Array<[name: string, relPath: string]> = [
 	["ThreadStartParams", "v2/ThreadStartParams.ts"],
 	["ThreadResumeParams", "v2/ThreadResumeParams.ts"],
+	["ThreadForkParams", "v2/ThreadForkParams.ts"],
+	["ThreadForkResponse", "v2/ThreadForkResponse.ts"],
 	["ThreadGoal", "v2/ThreadGoal.ts"],
 	["ThreadGoalSetParams", "v2/ThreadGoalSetParams.ts"],
 	["ThreadGoalSetResponse", "v2/ThreadGoalSetResponse.ts"],

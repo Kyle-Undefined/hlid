@@ -51,6 +51,7 @@ import {
 	type SessionSortKey,
 	VALID_PAGE_SIZES,
 } from "#/lib/ledgerState";
+import { loaderValueOrFallback } from "#/lib/loaderFallback";
 import { ROUTE_SCROLL_RESTORATION_IDS } from "#/lib/scrollContainers";
 import {
 	sessionCleanupSchema,
@@ -60,6 +61,7 @@ import {
 	sessionRenameSchema,
 } from "#/lib/serverFnSchemas";
 import { getAgentListFn } from "#/lib/serverFns/agents";
+import { getProvidersFn } from "#/lib/serverFns/providers";
 import {
 	forkSessionFn,
 	getActiveSessionRowFn,
@@ -282,9 +284,19 @@ export const Route = createFileRoute("/ledger")({
 		} = parseLedgerSearch(location.search);
 		const renderedAt = Math.floor(Date.now() / 1000);
 		const configuredAgentsPromise = getAgentListFn();
-		const [initialSessions, activeSession, configuredAgents] =
+		const providerCatalogPromise = loaderValueOrFallback(
+			getProvidersFn({ data: { preferCachedModels: true } }),
+			[],
+			500,
+		);
+		const [initialSessions, activeSession, configuredAgents, providerCatalog] =
 			tab === "stats"
-				? [EMPTY_SESSION_PAGE, null, await configuredAgentsPromise]
+				? [
+						EMPTY_SESSION_PAGE,
+						null,
+						await configuredAgentsPromise,
+						await providerCatalogPromise,
+					]
 				: await Promise.all([
 						getSessionsPageFn({
 							data: {
@@ -303,6 +315,7 @@ export const Route = createFileRoute("/ledger")({
 						}),
 						getActiveSessionRowFn(),
 						configuredAgentsPromise,
+						providerCatalogPromise,
 					]);
 
 		return {
@@ -320,6 +333,7 @@ export const Route = createFileRoute("/ledger")({
 			sort,
 			activeSession,
 			configuredAgents,
+			providerCatalog,
 			renderedAt,
 		};
 	},
@@ -915,6 +929,7 @@ function SessionsTab({
 	configuredAgents,
 	rangeActive,
 	refreshSessions,
+	forkProviderIds,
 }: {
 	sessionsStatus: ReturnType<typeof getSessionsStatus>;
 	live: ReturnType<typeof useLedgerLiveData>;
@@ -927,6 +942,7 @@ function SessionsTab({
 	configuredAgents: Awaited<ReturnType<typeof getAgentListFn>>;
 	rangeActive: boolean;
 	refreshSessions: () => Promise<void>;
+	forkProviderIds: ReadonlySet<string>;
 }) {
 	const [claudeImportBusy, setClaudeImportBusy] = useState(false);
 	const [claudeImportStatus, setClaudeImportStatus] = useState<string | null>(
@@ -1128,6 +1144,7 @@ function SessionsTab({
 					onPin={mutations.setSessionPinned}
 					onFork={mutations.forkSession}
 					forkingIds={mutations.forkingIds}
+					forkProviderIds={forkProviderIds}
 					onNavigate={(id) =>
 						navigate({
 							to: "/raven",
@@ -1172,8 +1189,22 @@ function SessionsTab({
 }
 
 function StatsPage() {
-	const { initialSessions, activeSession, configuredAgents, renderedAt } =
-		Route.useLoaderData();
+	const {
+		initialSessions,
+		activeSession,
+		configuredAgents,
+		providerCatalog,
+		renderedAt,
+	} = Route.useLoaderData();
+	const forkProviderIds = useMemo(
+		() =>
+			new Set(
+				providerCatalog
+					.filter((provider) => provider.forkCapability?.kind === "exact")
+					.map((provider) => provider.id),
+			),
+		[providerCatalog],
+	);
 	const search = Route.useSearch();
 	const { tab } = search;
 	const sessionRangeActive = search.range !== undefined;
@@ -1339,6 +1370,7 @@ function StatsPage() {
 							configuredAgents={configuredAgents ?? []}
 							rangeActive={sessionRangeActive}
 							refreshSessions={refreshSessions}
+							forkProviderIds={forkProviderIds}
 						/>
 					</>
 				)}

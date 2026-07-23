@@ -165,6 +165,8 @@ export type AgentEvent =
 	 * assistant row. Other providers simply never emit this.
 	 */
 	| { type: "assistant_message_id"; id: string }
+	/** Native provider turn id used for exact turn-boundary forks (Codex). */
+	| { type: "provider_turn_id"; id: string }
 	| { type: "local_command_output"; content: string }
 	| {
 			type: "tool_start";
@@ -399,6 +401,13 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 }
 
 /** Params for AgentProvider.forkSession — branch a session's transcript into a new one. */
+export type ProviderForkCapability = {
+	kind: "exact";
+	cutoff: "message" | "turn";
+	wholeSession: true;
+	throughMessage: true;
+};
+
 export type ForkSessionParams = {
 	/** Native provider session id to fork from (not hlid's own session id). */
 	sessionId: string;
@@ -415,26 +424,18 @@ export type ForkSessionParams = {
 	historyResumeMode?: "none" | "native" | "session-store";
 	/** Custom title for the forked session. If omitted, the provider picks a default. */
 	title?: string;
-	/**
-	 * Slice the transcript up to (and including) this native message id
-	 * instead of copying the whole session. Claude-native SDK message uuid,
-	 * captured per assistant row via the `assistant_message_id` AgentEvent —
-	 * see src/db/messages.ts's setMessageSdkUuid. Omit for a whole-session
-	 * fork.
-	 */
-	upToMessageId?: string;
+	/** Native inclusive cutoff for a branch through one displayed assistant row. */
+	cutoff?: { kind: "message" | "turn"; id: string };
 };
 
 export type ForkSessionResult = {
 	/** New native provider session id, resumable like any other. */
 	sessionId: string;
 	/**
-	 * Best-effort transcript hydration for hlid's own DB. forkSession() only
-	 * writes the native provider transcript file — hlid's own `messages`
-	 * table (what Raven actually renders from) has no rows for the new
-	 * session otherwise. Undefined/empty means the caller should leave the
-	 * new hlid session row message-less; it'll backfill from a live turn or
-	 * a manual history reload, same as before this existed.
+	 * Best-effort transcript read-back for legacy or imported sessions whose
+	 * visible transcript is not already stored by Hlid. Normal exact forks copy
+	 * Hlid's own messages and tool events through the selected branch boundary;
+	 * this provider result is only the fallback when that copy is empty.
 	 */
 	messages?: { role: "user" | "assistant"; text: string; uuid?: string }[];
 };
@@ -480,6 +481,8 @@ export interface AgentProvider {
 	 * live session exists rather than creating a hidden chat process.
 	 */
 	readonly probeRequiresTurn?: boolean;
+	/** Exact native fork behavior, when the provider implements it. */
+	readonly forkCapability?: ProviderForkCapability;
 	/** Optional availability check. Returns false + reason if provider can't run. */
 	check?(): Promise<{ available: boolean; reason?: string }>;
 	/** Optional host-only capabilities surfaced in Forge diagnostics. */

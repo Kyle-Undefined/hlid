@@ -6,6 +6,8 @@
 
 export type { ThreadStartParams } from "./v2/ThreadStartParams";
 export type { ThreadResumeParams } from "./v2/ThreadResumeParams";
+export type { ThreadForkParams } from "./v2/ThreadForkParams";
+export type { ThreadForkResponse } from "./v2/ThreadForkResponse";
 export type { ThreadGoal } from "./v2/ThreadGoal";
 export type { ThreadGoalSetParams } from "./v2/ThreadGoalSetParams";
 export type { ThreadGoalSetResponse } from "./v2/ThreadGoalSetResponse";

@@ -25,6 +25,8 @@ import {
 	appendMessage,
 	appendPlanProposal,
 	appendToolEvent,
+	copyForkedSessionTranscript,
+	getMessageForFork,
 	getSessionAskUserQuestions,
 	getSessionMessages,
 	getSessionNextMessageSeq,
@@ -32,6 +34,7 @@ import {
 	getSessionToolEventDetail,
 	getSessionToolEventSummaries,
 	setAskUserQuestionResolution,
+	setMessageProviderTurnId,
 	setMessageRecap,
 	setToolEventResult,
 	setToolEventSubagent,
@@ -42,12 +45,14 @@ import {
 } from "./permissions";
 import { setDbForTest } from "./schema";
 import {
+	createForkedSessionRow,
 	createSession,
 	deleteSession,
 	deleteSessionsOlderThan,
 	getRecentSessions,
 	getSessionActualModel,
 	getSessionAgentCwd,
+	getSessionById,
 	getSessionClaudeId,
 	getSessionLastQueryContext,
 	getSessionModel,
@@ -1079,6 +1084,81 @@ describe("messages", () => {
 		await expect(setMessageRecap("s1", 99, "orphan")).rejects.toThrow(
 			"no row found",
 		);
+	});
+
+	it("copies an exact fork transcript through its provider turn boundary", async () => {
+		await createSession("source", "Codex work", "gpt-5.6-sol", {
+			effort: "high",
+			permissionMode: "default",
+		});
+		await setSessionAgentCwd("source", "/work/project");
+		await setSessionProviderSession("source", "codex", "thread-source");
+		await appendMessage("source", 0, "user", "First prompt", "turn-1");
+		const assistantId = await appendMessage(
+			"source",
+			1,
+			"assistant",
+			"First answer",
+			"turn-1",
+		);
+		await setMessageProviderTurnId("source", 1, "provider-turn-1");
+		await appendToolEvent(
+			"source",
+			1,
+			"tool-1",
+			"Read",
+			{ path: "README.md" },
+			undefined,
+			{ providerId: "codex", model: "gpt-5.6-sol", agentCwd: "/work/project" },
+		);
+		await setToolEventResult("source", "tool-1", "contents", false);
+		await appendMessage("source", 2, "user", "Later prompt", "turn-2");
+		await appendMessage("source", 3, "assistant", "Later answer", "turn-2");
+
+		await createForkedSessionRow("source", "fork", "thread-fork", {
+			parentMessageId: assistantId,
+			forkKind: "exact",
+		});
+		expect(await copyForkedSessionTranscript("source", "fork", 1)).toBe(2);
+
+		const fork = await getSessionById("fork");
+		expect(fork).toMatchObject({
+			label: "Codex work (fork)",
+			provider_id: "codex",
+			agent_cwd: "/work/project",
+			selected_model: "gpt-5.6-sol",
+			selected_effort: "high",
+			selected_permission_mode: "default",
+			fork_parent_session_id: "source",
+			fork_parent_message_id: assistantId,
+			fork_kind: "exact",
+		});
+		expect(await getSessionProviderSession("fork", "codex")).toBe(
+			"thread-fork",
+		);
+		const messages = await getSessionMessages("fork");
+		expect(messages.map((message) => message.text)).toEqual([
+			"First prompt",
+			"First answer",
+		]);
+		expect(messages[1].provider_turn_id).toBe("provider-turn-1");
+		expect(await getMessageForFork(messages[1].id)).toMatchObject({
+			sessionId: "fork",
+			seq: 1,
+			providerTurnId: "provider-turn-1",
+		});
+		expect(await getSessionToolEventSummaries("fork")).toMatchObject([
+			{
+				assistant_seq: 1,
+				tool_id: "tool-1",
+				name: "Read",
+			},
+		]);
+		expect(await getSessionToolEventDetail("fork", "tool-1")).toEqual({
+			tool_id: "tool-1",
+			result_text: "contents",
+			is_error: 0,
+		});
 	});
 });
 

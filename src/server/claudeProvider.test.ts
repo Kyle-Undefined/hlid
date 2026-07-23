@@ -1652,7 +1652,7 @@ describe("ClaudeProvider — forkSession", () => {
 		await new ClaudeProvider().forkSession?.({
 			sessionId: "source-session-id",
 			cwd: "/work/project",
-			upToMessageId: "sdk-msg-uuid-1",
+			cutoff: { kind: "message", id: "sdk-msg-uuid-1" },
 		});
 
 		expect(sdkForkSession).toHaveBeenCalledWith("source-session-id", {

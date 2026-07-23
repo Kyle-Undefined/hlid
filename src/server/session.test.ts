@@ -29,6 +29,7 @@ vi.mock("../db", () => ({
 	setMessageText: vi.fn().mockResolvedValue(undefined),
 	setMessageRecap: vi.fn().mockResolvedValue(undefined),
 	setMessageSdkUuid: vi.fn().mockResolvedValue(undefined),
+	setMessageProviderTurnId: vi.fn().mockResolvedValue(undefined),
 	setToolEventResult: vi.fn().mockResolvedValue(undefined),
 	setToolEventSubagent: vi.fn().mockResolvedValue(undefined),
 	appendLog: vi.fn().mockResolvedValue(undefined),
@@ -6607,6 +6608,42 @@ describe("SessionManager — auto-sleep gates", () => {
 // ── assistant_message_id → sdk_uuid capture ────────────────────────────────────
 
 describe("SessionManager — assistant_message_id capture", () => {
+	it("stamps the assistant row with the native provider turn id", async () => {
+		vi.mocked(dbMock.setMessageProviderTurnId).mockClear();
+		const provider: AgentProvider = {
+			providerId: "codex",
+			query(_params: AgentQueryParams): AgentSession {
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "thread-1" };
+					yield { type: "provider_turn_id", id: "turn-7" };
+					yield { type: "text_delta", text: "Hi." };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 10, outputTokens: 5 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("hello", () => {}, "sess-turn-id");
+
+		expect(dbMock.setMessageProviderTurnId).toHaveBeenCalledWith(
+			"sess-turn-id",
+			expect.any(Number),
+			"turn-7",
+		);
+	});
+
 	it("stamps the turn's row with the last of several raw SDK message uuids", async () => {
 		vi.mocked(dbMock.setMessageSdkUuid).mockClear();
 		const provider: AgentProvider = {

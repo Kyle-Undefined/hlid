@@ -461,6 +461,40 @@ describe("SessionsLedger session actions", () => {
 		expect(onFork).toHaveBeenCalledWith("session-1");
 	});
 
+	it("offers fork for Codex when the provider catalog declares exact support", () => {
+		const onFork = vi.fn();
+		renderLedger({
+			data: {
+				sessions: [{ ...session, provider_id: "codex" }],
+				total: 1,
+			},
+			forkProviderIds: new Set(["codex"]),
+			onFork,
+		});
+		openSessionActions();
+
+		fireEvent.click(screen.getByRole("button", { name: "Fork" }));
+		expect(onFork).toHaveBeenCalledWith("session-1");
+	});
+
+	it("shows exact-fork provenance in the session metadata", () => {
+		renderLedger({
+			data: {
+				sessions: [
+					{
+						...session,
+						provider_id: "codex",
+						fork_parent_session_id: "source-session",
+						fork_kind: "exact",
+					},
+				],
+				total: 1,
+			},
+		});
+
+		expect(screen.getByText(/exact fork/i)).toBeTruthy();
+	});
+
 	it("offers fork immediately for an idle live WSL Claude session", () => {
 		const onFork = vi.fn();
 		const idleStatus: SessionStatusEntry = {

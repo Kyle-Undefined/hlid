@@ -436,6 +436,21 @@ function applyMigrations(db: Db): void {
 		db.run(`ALTER TABLE messages ADD COLUMN sdk_uuid TEXT`);
 	});
 
+	// Codex branches at native turn boundaries rather than raw assistant
+	// message UUIDs. Keep the identifiers separate so provider adapters cannot
+	// accidentally send one provider's cutoff shape to another.
+	runMigration(db, "_migrated_messages_provider_turn_id", (db) => {
+		db.run(`ALTER TABLE messages ADD COLUMN provider_turn_id TEXT`);
+	});
+
+	// Durable provenance lets Raven and Ledger link an exact fork back to its
+	// source even after both provider processes and Hlid itself restart.
+	runMigration(db, "_migrated_sessions_fork_provenance", (db) => {
+		db.run(`ALTER TABLE sessions ADD COLUMN fork_parent_session_id TEXT`);
+		db.run(`ALTER TABLE sessions ADD COLUMN fork_parent_message_id INTEGER`);
+		db.run(`ALTER TABLE sessions ADD COLUMN fork_kind TEXT`);
+	});
+
 	runMigration(db, "_migrated_tool_events_result", (db) => {
 		db.run(`ALTER TABLE tool_events ADD COLUMN result_text TEXT`);
 		db.run(`ALTER TABLE tool_events ADD COLUMN is_error INTEGER`);

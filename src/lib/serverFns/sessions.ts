@@ -46,6 +46,16 @@ export const getActiveSessionRowFn = createServerFn({
 	method: "GET",
 }).handler(() => dbJson<SessionRow | null>("/db/active-session", null));
 
+export const getSessionRowFn = createServerFn({ method: "GET" })
+	.validator((raw) => sessionIdSchema.parse(raw))
+	.handler(({ data }) =>
+		dbJson<SessionRow | null>(
+			`/db/session-row?id=${encodeURIComponent(data)}`,
+			null,
+			SESSION_METADATA_READ_BUDGET,
+		),
+	);
+
 export const getLiveSessionsFn = createServerFn({ method: "GET" }).handler(() =>
 	dbJson<SessionStatusEntry[]>("/db/live-sessions", []),
 );

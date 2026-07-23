@@ -134,6 +134,8 @@ type TurnState = {
 	 * event inserts) attach to a real row that mid-turn reloads can render.
 	 */
 	reservedAssistantSeq: number | null;
+	/** Latest native provider turn contributing to this displayed row. */
+	providerTurnId: string | null;
 	/**
 	 * messages.id (DB primary key) for the row reservedAssistantSeq points at,
 	 * once the placeholder INSERT resolves. Sent to the client on "done" so a
@@ -481,6 +483,7 @@ function createTurnState(): TurnState {
 		pendingToolUpdates: new Map(),
 		pendingToolEventWrites: new Map(),
 		reservedAssistantSeq: null,
+		providerTurnId: null,
 		dbMessageId: null,
 		persistedToolIds: new Set(),
 		textWriteTimer: null,
@@ -1939,8 +1942,15 @@ export class SessionManager {
 		turn.reservedAssistantSeq = seq;
 		void db
 			.appendMessage(sessionId, seq, "assistant", "")
-			.then((dbId) => {
+			.then(async (dbId) => {
 				turn.dbMessageId = dbId;
+				if (turn.providerTurnId) {
+					await db.setMessageProviderTurnId(
+						sessionId,
+						seq,
+						turn.providerTurnId,
+					);
+				}
 			})
 			.catch((e) => logDbError("appendMessage (placeholder)", e));
 		return seq;
@@ -1987,6 +1997,18 @@ export class SessionManager {
 		void db
 			.setMessageSdkUuid(sessionId, seq, event.id)
 			.catch((e) => logDbError("setMessageSdkUuid", e));
+	}
+
+	private handleProviderTurnId(
+		event: Extract<AgentEvent, { type: "provider_turn_id" }>,
+		turn: TurnState,
+		sessionId: string | undefined,
+	): void {
+		turn.providerTurnId = event.id;
+		if (!sessionId || turn.reservedAssistantSeq == null) return;
+		void db
+			.setMessageProviderTurnId(sessionId, turn.reservedAssistantSeq, event.id)
+			.catch((e) => logDbError("setMessageProviderTurnId", e));
 	}
 
 	private handleToolStart(
@@ -2254,6 +2276,9 @@ export class SessionManager {
 				break;
 			case "assistant_message_id":
 				this.handleAssistantMessageId(event, turn, sessionId);
+				break;
+			case "provider_turn_id":
+				this.handleProviderTurnId(event, turn, sessionId);
 				break;
 			case "tool_start":
 				this.handleToolStart(event, turn, sessionId, emit, provider);

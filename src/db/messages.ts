@@ -89,20 +89,104 @@ export async function setMessageSdkUuid(
 	}
 }
 
+export async function setMessageProviderTurnId(
+	sessionId: string,
+	seq: number,
+	providerTurnId: string,
+): Promise<void> {
+	const db = await getDb();
+	const { changes } = db.run(
+		`UPDATE messages SET provider_turn_id = ? WHERE session_id = ? AND seq = ?`,
+		[providerTurnId, sessionId, seq],
+	);
+	if (changes === 0) {
+		throw new Error(
+			`setMessageProviderTurnId: no row found for session=${sessionId} seq=${seq}`,
+		);
+	}
+}
+
 /** Ownership + branch-point lookup for POST /db/session/fork's messageId. */
-export async function getMessageForFork(
-	id: number,
-): Promise<{ sessionId: string; role: string; sdkUuid: string | null } | null> {
+export async function getMessageForFork(id: number): Promise<{
+	sessionId: string;
+	seq: number;
+	role: string;
+	sdkUuid: string | null;
+	providerTurnId: string | null;
+} | null> {
 	const db = await getDb();
 	const row = db
 		.query<
-			{ session_id: string; role: string; sdk_uuid: string | null },
+			{
+				session_id: string;
+				seq: number;
+				role: string;
+				sdk_uuid: string | null;
+				provider_turn_id: string | null;
+			},
 			[number]
-		>(`SELECT session_id, role, sdk_uuid FROM messages WHERE id = ?`)
+		>(
+			`SELECT session_id, seq, role, sdk_uuid, provider_turn_id FROM messages WHERE id = ?`,
+		)
 		.get(id);
 	return row
-		? { sessionId: row.session_id, role: row.role, sdkUuid: row.sdk_uuid }
+		? {
+				sessionId: row.session_id,
+				seq: row.seq,
+				role: row.role,
+				sdkUuid: row.sdk_uuid,
+				providerTurnId: row.provider_turn_id,
+			}
 		: null;
+}
+
+/**
+ * Clone Hlid's visible transcript into a native provider fork. Usage queries,
+ * permission decisions, and pending interactions intentionally remain owned by
+ * the source session. Retained Relics remain globally addressable; attachment
+ * rows are not duplicated because session-retained files have single-owner
+ * cleanup semantics.
+ */
+export async function copyForkedSessionTranscript(
+	sourceSessionId: string,
+	targetSessionId: string,
+	throughSeq?: number,
+): Promise<number> {
+	const db = await getDb();
+	let copied = 0;
+	db.transaction(() => {
+		const messageFilter = throughSeq === undefined ? "" : " AND seq <= ?";
+		const messageParams =
+			throughSeq === undefined
+				? [targetSessionId, sourceSessionId]
+				: [targetSessionId, sourceSessionId, throughSeq];
+		const result = db.run(
+			`INSERT INTO messages
+			 (session_id, seq, role, text, timestamp, recap, turn_id, sdk_uuid, provider_turn_id)
+			 SELECT ?, seq, role, text, timestamp, recap, turn_id, sdk_uuid, provider_turn_id
+			 FROM messages WHERE session_id = ?${messageFilter}
+			 ORDER BY seq ASC, id ASC`,
+			messageParams,
+		);
+		copied = result.changes;
+		const toolFilter =
+			throughSeq === undefined ? "" : " AND assistant_seq <= ?";
+		const toolParams =
+			throughSeq === undefined
+				? [targetSessionId, sourceSessionId]
+				: [targetSessionId, sourceSessionId, throughSeq];
+		db.run(
+			`INSERT INTO tool_events
+			 (session_id, assistant_seq, tool_id, name, input_json, result_text,
+			  is_error, subagent_json, timestamp, provider_id, model, agent_cwd)
+			 SELECT ?, assistant_seq, tool_id, name, input_json, result_text,
+			        is_error, subagent_json, timestamp, provider_id, model, agent_cwd
+			 FROM tool_events WHERE session_id = ?${toolFilter}
+			 ORDER BY assistant_seq ASC, id ASC`,
+			toolParams,
+		);
+	})();
+	return copied;
 }
 
 /** Resolve persisted assistant prose for authenticated host-side read aloud. */

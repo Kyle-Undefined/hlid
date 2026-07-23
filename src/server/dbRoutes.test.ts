@@ -30,6 +30,7 @@ const {
 	mockCreateForkedSessionRow,
 	mockGetMessageForFork,
 	mockInsertForkedMessages,
+	mockCopyForkedSessionTranscript,
 } = vi.hoisted(() => ({
 	mockGetSessionById: vi.fn(),
 	mockListAttachments: vi.fn(),
@@ -51,6 +52,7 @@ const {
 	mockCreateForkedSessionRow: vi.fn(),
 	mockGetMessageForFork: vi.fn(),
 	mockInsertForkedMessages: vi.fn(),
+	mockCopyForkedSessionTranscript: vi.fn(),
 }));
 
 vi.mock("../db", () => ({
@@ -71,6 +73,7 @@ vi.mock("../db", () => ({
 	createForkedSessionRow: mockCreateForkedSessionRow,
 	getMessageForFork: mockGetMessageForFork,
 	insertForkedMessages: mockInsertForkedMessages,
+	copyForkedSessionTranscript: mockCopyForkedSessionTranscript,
 }));
 
 // dbRoutes also imports from ./attachments and ./proxy — stub them out.
@@ -703,6 +706,8 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 		mockCreateForkedSessionRow.mockReset();
 		mockGetMessageForFork.mockReset();
 		mockInsertForkedMessages.mockReset();
+		mockCopyForkedSessionTranscript.mockReset();
+		mockCopyForkedSessionTranscript.mockResolvedValue(2);
 	});
 
 	function forkRequest(body: unknown): Request {
@@ -743,8 +748,10 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 		});
 		mockGetMessageForFork.mockResolvedValue({
 			sessionId: "some-other-session",
+			seq: 3,
 			role: "assistant",
 			sdkUuid: "sdk-msg-uuid-1",
+			providerTurnId: null,
 		});
 		const pool = makePool();
 		const res = await handleDbRoute(
@@ -764,8 +771,10 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 		});
 		mockGetMessageForFork.mockResolvedValue({
 			sessionId: "abc-123",
+			seq: 3,
 			role: "assistant",
 			sdkUuid: null,
+			providerTurnId: null,
 		});
 		const pool = makePool();
 		const res = await handleDbRoute(
@@ -777,7 +786,7 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 		expect(res.status).toBe(422);
 	});
 
-	it("resolves messageId to a native uuid and forwards it as upToMessageId", async () => {
+	it("resolves messageId to a native uuid and forwards a typed message cutoff", async () => {
 		mockGetSessionById.mockResolvedValue({
 			...sampleRow,
 			provider_id: "claude",
@@ -786,8 +795,10 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 		});
 		mockGetMessageForFork.mockResolvedValue({
 			sessionId: "abc-123",
+			seq: 3,
 			role: "assistant",
 			sdkUuid: "sdk-msg-uuid-1",
+			providerTurnId: null,
 		});
 		mockGetSessionProviderSession.mockResolvedValue("native-source-id");
 		const mockForkSession = vi
@@ -796,6 +807,12 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 		const pool = makePool({
 			getProvider: vi.fn().mockReturnValue({
 				providerId: "claude",
+				forkCapability: {
+					kind: "exact",
+					cutoff: "message",
+					wholeSession: true,
+					throughMessage: true,
+				},
 				forkSession: mockForkSession,
 			}),
 		});
@@ -813,8 +830,13 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 			sessionId: "native-source-id",
 			cwd: "/work/project",
 			historyResumeMode: "none",
-			upToMessageId: "sdk-msg-uuid-1",
+			cutoff: { kind: "message", id: "sdk-msg-uuid-1" },
 		});
+		expect(mockCopyForkedSessionTranscript).toHaveBeenCalledWith(
+			"abc-123",
+			expect.any(String),
+			3,
+		);
 	});
 
 	it("returns 409 when the source session has a running turn", async () => {
@@ -850,6 +872,12 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 			}),
 			getProvider: vi.fn().mockReturnValue({
 				providerId: "claude",
+				forkCapability: {
+					kind: "exact",
+					cutoff: "message",
+					wholeSession: true,
+					throughMessage: true,
+				},
 				forkSession: mockForkSession,
 			}),
 		});
@@ -910,6 +938,12 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 		const pool = makePool({
 			getProvider: vi.fn().mockReturnValue({
 				providerId: "claude",
+				forkCapability: {
+					kind: "exact",
+					cutoff: "message",
+					wholeSession: true,
+					throughMessage: true,
+				},
 				forkSession: mockForkSession,
 			}),
 		});
@@ -936,6 +970,12 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 			"abc-123",
 			json.id,
 			"native-forked-id",
+			{ forkKind: "exact" },
+		);
+		expect(mockCopyForkedSessionTranscript).toHaveBeenCalledWith(
+			"abc-123",
+			json.id,
+			undefined,
 		);
 		expect(mockInsertForkedMessages).not.toHaveBeenCalled();
 	});
@@ -959,10 +999,17 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 		const pool = makePool({
 			getProvider: vi.fn().mockReturnValue({
 				providerId: "claude",
+				forkCapability: {
+					kind: "exact",
+					cutoff: "message",
+					wholeSession: true,
+					throughMessage: true,
+				},
 				forkSession: mockForkSession,
 			}),
 		});
 
+		mockCopyForkedSessionTranscript.mockResolvedValueOnce(0);
 		const res = await handleDbRoute(
 			makeUrl("/db/session/fork"),
 			forkRequest({ id: "abc-123" }),
@@ -975,6 +1022,65 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 		expect(mockInsertForkedMessages).toHaveBeenCalledWith(
 			json.id,
 			forkedMessages,
+		);
+	});
+
+	it("uses a captured Codex turn id for a per-message exact fork", async () => {
+		mockGetSessionById.mockResolvedValue({
+			...sampleRow,
+			provider_id: "codex",
+			agent_cwd: "/work/project",
+			history_resume_mode: "none",
+		});
+		mockGetMessageForFork.mockResolvedValue({
+			sessionId: "abc-123",
+			seq: 5,
+			role: "assistant",
+			sdkUuid: null,
+			providerTurnId: "turn-5",
+		});
+		mockGetSessionProviderSession.mockResolvedValue("thread-source");
+		const mockForkSession = vi
+			.fn()
+			.mockResolvedValue({ sessionId: "thread-fork" });
+		const pool = makePool({
+			getProvider: vi.fn().mockReturnValue({
+				providerId: "codex",
+				forkCapability: {
+					kind: "exact",
+					cutoff: "turn",
+					wholeSession: true,
+					throughMessage: true,
+				},
+				forkSession: mockForkSession,
+			}),
+		});
+
+		const res = await handleDbRoute(
+			makeUrl("/db/session/fork"),
+			forkRequest({ id: "abc-123", messageId: 42 }),
+			pool,
+		);
+
+		if (!res) throw new Error("Expected a Response, got null");
+		expect(res.status).toBe(200);
+		const json = (await res.json()) as { id: string };
+		expect(mockForkSession).toHaveBeenCalledWith({
+			sessionId: "thread-source",
+			cwd: "/work/project",
+			historyResumeMode: "none",
+			cutoff: { kind: "turn", id: "turn-5" },
+		});
+		expect(mockCreateForkedSessionRow).toHaveBeenCalledWith(
+			"abc-123",
+			json.id,
+			"thread-fork",
+			{ parentMessageId: 42, forkKind: "exact" },
+		);
+		expect(mockCopyForkedSessionTranscript).toHaveBeenCalledWith(
+			"abc-123",
+			json.id,
+			5,
 		);
 	});
 });

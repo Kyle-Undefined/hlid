@@ -1719,6 +1719,12 @@ async function hydrateForkedMessages(
 export class ClaudeProvider implements AgentProvider {
 	readonly providerId: string;
 	readonly label: string;
+	readonly forkCapability = {
+		kind: "exact",
+		cutoff: "message",
+		wholeSession: true,
+		throughMessage: true,
+	} as const;
 	// The SDK's streaming-input query is lazy — probes must send a turn first.
 	readonly probeRequiresTurn = true;
 
@@ -1992,9 +1998,12 @@ export class ClaudeProvider implements AgentProvider {
 		// duration of this call when the project cwd is a WSL path.
 		const wslConfigDir = await resolveWslClaudeConfigDir(params.cwd);
 		return withClaudeConfigDirOverride(wslConfigDir, async () => {
+			if (params.cutoff && params.cutoff.kind !== "message") {
+				throw new Error("Claude exact forks require a native message cutoff");
+			}
 			const result = await forkClaudeSession(params.sessionId, {
 				title: params.title,
-				upToMessageId: params.upToMessageId,
+				upToMessageId: params.cutoff?.id,
 				...(params.historyResumeMode === "session-store"
 					? { sessionStore: createClaudeHistorySessionStore() }
 					: {}),

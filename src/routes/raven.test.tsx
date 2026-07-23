@@ -182,6 +182,7 @@ vi.mock("#/lib/serverFns/sessions", () => ({
 	ensureSessionFn: vi.fn(),
 	getCurrentSessionFn: vi.fn(),
 	getLiveSessionsFn: vi.fn(),
+	getSessionRowFn: vi.fn(),
 	getSessionSelectionFn: vi.fn(),
 }));
 vi.mock("#/lib/serverFns/agents", () => ({
@@ -208,6 +209,7 @@ import { getProvidersFn, loadProviderUsages } from "#/lib/serverFns/providers";
 import {
 	getCurrentSessionFn,
 	getLiveSessionsFn,
+	getSessionRowFn,
 	getSessionSelectionFn,
 } from "#/lib/serverFns/sessions";
 import { getVoiceInfoFn } from "#/lib/serverFns/voice";
@@ -260,7 +262,21 @@ beforeEach(() => {
 		agentList: [],
 		vaultSkills: [],
 		interactiveMode: false,
-		providers: [{ id: "claude", label: "Claude", available: true }],
+		providers: [
+			{
+				id: "claude",
+				label: "Claude",
+				available: true,
+				forkCapability: {
+					kind: "exact",
+					cutoff: "message",
+					wholeSession: true,
+					throughMessage: true,
+				},
+			},
+		],
+		forkParentSessionId: null,
+		forkKind: null,
 		voiceInfo: {
 			status: { state: "unavailable", model: "" },
 			models: [],
@@ -427,7 +443,7 @@ describe("Raven composed submission behavior", () => {
 		expect(modelBadge?.parentElement?.className).toContain("-top-5");
 	});
 
-	it("keeps attachment and voice on the first mobile grid row", () => {
+	it("keeps composer controls in DOM order inside the mobile grid", () => {
 		render(<ChatPage />);
 
 		const attach = screen.getByRole("button", { name: "Attach file" });
@@ -441,41 +457,87 @@ describe("Raven composed submission behavior", () => {
 		expect(voice.parentElement).toBe(controlGrid);
 		expect(activeNoteContainer?.parentElement).toBe(controlGrid);
 		expect(controlGrid?.className).toContain("grid-cols-2");
-		expect(controlGrid?.className).toContain("grid-rows-2");
 		expect(controlGrid?.className).toContain("gap-y-1");
 		expect(controlGrid?.className).toContain("md:contents");
 		expect(attach.className).toContain("py-2");
 		expect(voice.className).toContain("py-2");
+		expect(attach.className).not.toContain("md:order");
+		expect(voice.className).not.toContain("md:order");
+		expect(activeNoteContainer?.className).not.toContain("md:order");
 		expect(
-			attach.compareDocumentPosition(voice) & Node.DOCUMENT_POSITION_FOLLOWING,
-		).toBeTruthy();
-		expect(
-			voice.compareDocumentPosition(activeNoteContainer) &
+			attach.compareDocumentPosition(activeNoteContainer) &
 				Node.DOCUMENT_POSITION_FOLLOWING,
 		).toBeTruthy();
-		expect(activeNoteContainer?.className).toContain("md:order-3");
+		expect(
+			activeNoteContainer.compareDocumentPosition(voice) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
 	});
 
-	it("stacks Fork beneath New chat on mobile and desktop", () => {
+	it("places Fork in the left control cluster next to voice", () => {
 		render(<ChatPage />);
 		fireEvent.change(screen.getByRole("combobox"), {
 			target: { value: "create a forkable turn" },
 		});
 		fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
+		const attach = screen.getByRole("button", { name: "Attach file" });
+		const voice = screen.getByRole("button", { name: "Start voice input" });
 		const newChat = screen.getByRole("button", { name: "New chat" });
 		const fork = screen.getByRole("button", { name: "Fork session" });
-		const sessionStack = newChat.parentElement;
 
-		expect(fork.parentElement).toBe(sessionStack);
-		expect(sessionStack?.className).toContain("grid-rows-2");
-		expect(sessionStack?.className).toContain("gap-y-1");
-		expect(sessionStack?.className).not.toContain("md:contents");
+		expect(fork.parentElement).toBe(attach.parentElement);
+		expect(fork.parentElement).not.toBe(newChat.parentElement);
 		expect(
-			newChat.compareDocumentPosition(fork) & Node.DOCUMENT_POSITION_FOLLOWING,
+			voice.compareDocumentPosition(fork) & Node.DOCUMENT_POSITION_FOLLOWING,
 		).toBeTruthy();
-		expect(newChat.className).toContain("w-full");
-		expect(fork.className).toContain("w-full");
+		expect(fork.className).toContain("px-2");
+		expect(fork.className).not.toContain("w-full");
+	});
+
+	it("offers the same exact-fork action for Codex sessions", () => {
+		state.loaderData = {
+			...state.loaderData,
+			existingSessionId: "codex-session",
+			sessionProviderId: "codex",
+			providers: [
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					forkCapability: {
+						kind: "exact",
+						cutoff: "turn",
+						wholeSession: true,
+						throughMessage: true,
+					},
+				},
+			],
+		};
+		render(<ChatPage />);
+		fireEvent.change(screen.getByRole("combobox"), {
+			target: { value: "create a Codex turn" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+		expect(screen.getByRole("button", { name: "Fork session" })).toBeTruthy();
+	});
+
+	it("shows durable exact-fork provenance with a source-session link", () => {
+		state.loaderData = {
+			...state.loaderData,
+			existingSessionId: "fork-session",
+			forkParentSessionId: "source-session",
+			forkKind: "exact",
+		};
+		render(<ChatPage />);
+
+		expect(screen.getByText("Exact fork")).toBeTruthy();
+		fireEvent.click(screen.getByRole("button", { name: "Open source" }));
+		expect(state.navigate).toHaveBeenCalledWith({
+			to: "/raven",
+			search: { session: "source-session", agent: undefined },
+		});
 	});
 
 	it("makes long mobile drafts independently touch-scrollable", () => {
@@ -1313,6 +1375,7 @@ describe("raven route loader", () => {
 		vi.mocked(loadProviderUsages).mockResolvedValue([] as never);
 		vi.mocked(getLiveSessionsFn).mockResolvedValue([] as never);
 		vi.mocked(getCurrentSessionFn).mockResolvedValue(null as never);
+		vi.mocked(getSessionRowFn).mockResolvedValue(null as never);
 		vi.mocked(getSessionSelectionFn).mockResolvedValue(null as never);
 	});
 
@@ -1449,6 +1512,22 @@ describe("raven route loader", () => {
 			sessionPermissionMode: "bypassPermissions",
 		});
 		expect(getSessionSelectionFn).toHaveBeenCalledWith({ data: "cur" });
+	});
+
+	it("loads durable fork provenance for the resolved session", async () => {
+		vi.mocked(getCurrentSessionFn).mockResolvedValue("fork" as never);
+		vi.mocked(getSessionRowFn).mockResolvedValue({
+			fork_parent_session_id: "source",
+			fork_kind: "exact",
+		} as never);
+
+		const data = await route.loader({ deps: {} });
+
+		expect(data).toMatchObject({
+			forkParentSessionId: "source",
+			forkKind: "exact",
+		});
+		expect(getSessionRowFn).toHaveBeenCalledWith({ data: "fork" });
 	});
 
 	it("attaches to a running terminal session in interactive vault mode", async () => {

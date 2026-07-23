@@ -261,6 +261,10 @@ export async function createForkedSessionRow(
 	sourceId: string,
 	newId: string,
 	newProviderSessionId: string,
+	options: {
+		parentMessageId?: number;
+		forkKind?: "exact" | "recap";
+	} = {},
 ): Promise<void> {
 	const source = await getSessionById(sourceId);
 	if (!source) throw new Error("Source session not found");
@@ -279,6 +283,18 @@ export async function createForkedSessionRow(
 		newId,
 		source.provider_id ?? "claude",
 		newProviderSessionId,
+	);
+	const db = await getDb();
+	db.run(
+		`UPDATE sessions
+		 SET fork_parent_session_id = ?, fork_parent_message_id = ?, fork_kind = ?
+		 WHERE id = ?`,
+		[
+			sourceId,
+			options.parentMessageId ?? null,
+			options.forkKind ?? "exact",
+			newId,
+		],
 	);
 }
 

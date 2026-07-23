@@ -11,6 +11,7 @@ import {
 import type { ComponentType } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as privacyStore from "#/hooks/privacyStore";
+import { getProvidersFn } from "#/lib/serverFns/providers";
 
 const testState = vi.hoisted(() => ({
 	loaderData: {} as Record<string, unknown>,
@@ -166,6 +167,9 @@ vi.mock("#/lib/serverFns/sessions", () => ({
 	getActiveSessionRowFn: vi.fn(async () => testState.activeSession),
 	getSessionRowsByIdsFn: vi.fn(async () => testState.openSessionRows),
 }));
+vi.mock("#/lib/serverFns/providers", () => ({
+	getProvidersFn: vi.fn().mockResolvedValue([]),
+}));
 vi.mock("#/lib/serverFns/stats", () => ({
 	EMPTY_AGG: {},
 	getActivityStatsFn: vi.fn(),
@@ -266,6 +270,7 @@ function setLoader(active: Record<string, unknown> | null): void {
 			facets: { agents: [], providers: [], models: [] },
 		},
 		analyticsStatus: "ready",
+		providerCatalog: [],
 	};
 }
 
@@ -345,6 +350,26 @@ describe("ledger route loader", () => {
 		expect(loaded).toHaveProperty("initialSessions");
 		expect(getThirtyDayStatsFn).not.toHaveBeenCalled();
 		expect(getActivityStatsFn).not.toHaveBeenCalled();
+	});
+
+	it("does not let a stalled provider catalog hold Ledger navigation pending", async () => {
+		vi.useFakeTimers();
+		try {
+			vi.mocked(getProvidersFn).mockImplementationOnce(
+				() => new Promise(() => {}),
+			);
+			const pending = ledgerRoute.loader({
+				location: {
+					search: { tab: "sessions", page: 1, size: 20 },
+				},
+			});
+
+			await vi.advanceTimersByTimeAsync(501);
+			const loaded = await pending;
+			expect(loaded.providerCatalog).toEqual([]);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("does not hold Stats navigation behind the Sessions page seed", async () => {

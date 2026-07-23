@@ -261,6 +261,7 @@ export async function loadProviderCatalog(
 				permissionModes: provider.permissionModes
 					? [...provider.permissionModes]
 					: undefined,
+				forkCapability: provider.forkCapability,
 				hostCapabilities,
 			};
 		}),

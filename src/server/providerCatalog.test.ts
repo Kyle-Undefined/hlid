@@ -345,6 +345,29 @@ describe("createModelCatalog", () => {
 });
 
 describe("loadProviderCatalog", () => {
+	it("publishes exact fork capabilities to Raven and Ledger", async () => {
+		const provider = makeProvider({
+			providerId: "codex",
+			forkCapability: {
+				kind: "exact",
+				cutoff: "turn",
+				wholeSession: true,
+				throughMessage: true,
+			},
+		});
+
+		const result = await loadProviderCatalog([provider], {
+			modelsFor: vi.fn().mockResolvedValue([]),
+		});
+
+		expect(result[0]?.forkCapability).toEqual({
+			kind: "exact",
+			cutoff: "turn",
+			wholeSession: true,
+			throughMessage: true,
+		});
+	});
+
 	it("uses cached models for navigation-sensitive loaders", async () => {
 		const provider = makeProvider({ providerId: "codex" });
 		const modelsFor = vi.fn(() => new Promise<ProviderModelInfo[]>(() => {}));

@@ -31,6 +31,14 @@ export type ProviderInfo = {
 	effortLevels?: Array<{ value: string; label: string; desc?: string }>;
 	/** Permission gate modes the provider honours. */
 	permissionModes?: Array<{ value: string; label: string; desc?: string }>;
+	/** Provider-native session forking exposed through Hlid. */
+	forkCapability?: {
+		kind: "exact";
+		/** Native identifier needed for a branch through one displayed turn. */
+		cutoff: "message" | "turn";
+		wholeSession: true;
+		throughMessage: true;
+	};
 	/** Host-only provider capabilities and their live readiness. */
 	hostCapabilities?: Record<
 		string,

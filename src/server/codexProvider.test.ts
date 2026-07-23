@@ -160,6 +160,10 @@ describe("codexReasoningText", () => {
 });
 
 describe("CodexProvider capability declarations", () => {
+	beforeEach(() => {
+		__resetCodexAppServersForTesting();
+	});
+
 	it("exposes codex model options for UI selectors", () => {
 		const p = new CodexProvider();
 		const models = p.models ?? [];
@@ -177,10 +181,74 @@ describe("CodexProvider capability declarations", () => {
 		}
 	});
 
+	it("declares exact whole-session and per-turn fork support", () => {
+		expect(new CodexProvider().forkCapability).toEqual({
+			kind: "exact",
+			cutoff: "turn",
+			wholeSession: true,
+			throughMessage: true,
+		});
+	});
+
+	it("forks a Codex thread through the captured turn without auto-continuing its goal", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const result = await new CodexProvider().forkSession?.({
+			sessionId: "thread-source",
+			cwd: "/work/project",
+			cutoff: { kind: "turn", id: "turn-7" },
+		});
+
+		expect(result).toEqual({ sessionId: "thread-fork" });
+		const fork = writes
+			.map(
+				(value) => JSON.parse(value) as { method?: string; params?: unknown },
+			)
+			.find((message) => message.method === "thread/fork");
+		expect(fork?.params).toEqual({
+			threadId: "thread-source",
+			lastTurnId: "turn-7",
+			cwd: "/work/project",
+			excludeTurns: true,
+			deferGoalContinuation: true,
+		});
+	});
+
+	it("omits the turn boundary for a whole-session Codex fork", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		await new CodexProvider().forkSession?.({ sessionId: "thread-source" });
+
+		const fork = writes
+			.map(
+				(value) => JSON.parse(value) as { method?: string; params?: unknown },
+			)
+			.find((message) => message.method === "thread/fork");
+		expect(fork?.params).toEqual({
+			threadId: "thread-source",
+			excludeTurns: true,
+			deferGoalContinuation: true,
+		});
+	});
+
+	it("rejects a message cutoff for a Codex fork", async () => {
+		await expect(
+			new CodexProvider().forkSession?.({
+				sessionId: "thread-source",
+				cutoff: { kind: "message", id: "message-1" },
+			}),
+		).rejects.toThrow("native turn cutoff");
+	});
+
 	it("only enables Windows Computer Use on a Windows host with native Codex", () => {
 		expect(windowsComputerUseHostAvailable("win32", "C:\\bin\\codex.exe")).toBe(
 			true,
 		);
+		vi.mocked(resolveCodexExecutable).mockReturnValue(undefined);
 		expect(windowsComputerUseHostAvailable("win32", undefined)).toBe(false);
 		expect(windowsComputerUseHostAvailable("linux", "/usr/bin/codex")).toBe(
 			false,
@@ -896,6 +964,16 @@ function makeFakeSessionProc(
 											: { model: opts.threadModel ?? "gpt-5.4" }),
 									},
 								},
+							})}\n`,
+						),
+					);
+				} else if (msg.method === "thread/fork") {
+					stdout.emit(
+						"data",
+						Buffer.from(
+							`${JSON.stringify({
+								id: msg.id,
+								result: { thread: { id: "thread-fork" } },
 							})}\n`,
 						),
 					);
@@ -1931,6 +2009,10 @@ describe("CodexAgentSession — shared transport recovery", () => {
 			threadId: "thread-1",
 			turn: { id: "turn-1" },
 		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "provider_turn_id",
+			id: "turn-1",
+		});
 		emitSessionNotification(first.proc, "turn/completed", {
 			threadId: "thread-1",
 			turn: { id: "turn-1", status: "completed" },
@@ -1965,6 +2047,10 @@ describe("CodexAgentSession — shared transport recovery", () => {
 		emitSessionNotification(proc, "turn/started", {
 			threadId: "thread-1",
 			turn: { id: "turn-1" },
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "provider_turn_id",
+			id: "turn-1",
 		});
 		proc.emit("exit", 1);
 
@@ -2202,6 +2288,10 @@ describe("CodexAgentSession — notifications", () => {
 			turn: { id: "turn-1", status: "completed" },
 		});
 
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "provider_turn_id",
+			id: "turn-1",
+		});
 		expect(await nextSessionEvent(events)).toEqual({
 			type: "text_delta",
 			text: "Streamed response",
@@ -3483,6 +3573,10 @@ describe("CodexAgentSession — notifications", () => {
 				expect.objectContaining({ toolUseID: "codex-plan-turn-1" }),
 			);
 		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "provider_turn_id",
+			id: "turn-1",
+		});
 		expect(await nextSessionEvent(events)).toMatchObject({ type: "done" });
 		session.cancel();
 	});
@@ -3529,6 +3623,10 @@ describe("CodexAgentSession — notifications", () => {
 					toolUseID: "codex-plan-turn-native",
 				}),
 			);
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "provider_turn_id",
+			id: "turn-native",
 		});
 		expect(await nextSessionEvent(events)).toMatchObject({ type: "done" });
 		session.cancel();
@@ -3679,7 +3777,15 @@ describe("CodexAgentSession — notifications", () => {
 			turn: { id: "implementation-turn", status: "completed" },
 		});
 
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "provider_turn_id",
+			id: "plan-turn",
+		});
 		expect(await nextSessionEvent(events)).toMatchObject({ type: "usage" });
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "provider_turn_id",
+			id: "implementation-turn",
+		});
 		expect(await nextSessionEvent(events)).toMatchObject({
 			type: "tool_start",
 			name: "webSearch",

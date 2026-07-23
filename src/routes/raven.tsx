@@ -95,10 +95,7 @@ import {
 	normalizeEffortForPlanMode,
 	resolveActiveProviderId,
 } from "#/lib/providerOptions";
-import {
-	isClaudeRuntimeProvider,
-	isCodexRuntimeProvider,
-} from "#/lib/providerRuntime";
+import { isCodexRuntimeProvider } from "#/lib/providerRuntime";
 import { loadRavenProviders } from "#/lib/ravenProviderCache";
 import {
 	createAnimationFrameCoalescer,
@@ -121,6 +118,7 @@ import {
 	forkSessionFn,
 	getCurrentSessionFn,
 	getLiveSessionsFn,
+	getSessionRowFn,
 	getSessionSelectionFn,
 } from "#/lib/serverFns/sessions";
 import { getVoiceInfoFn } from "#/lib/serverFns/voice";
@@ -236,16 +234,22 @@ async function loadRavenRoute(session?: string, agent?: string) {
 	let sessionProviderId: string | null = null;
 	let sessionEffort: string | null = null;
 	let sessionPermissionMode: string | null = null;
+	let forkParentSessionId: string | null = null;
+	let forkKind: "exact" | "recap" | null = null;
 	if (resolvedSessionId) {
-		const savedSelection =
+		const [savedSelection, savedRow] = await Promise.all([
 			resolvedSessionId === session
 				? explicitSessionSelection
-				: await getSessionSelectionFn({ data: resolvedSessionId });
+				: getSessionSelectionFn({ data: resolvedSessionId }),
+			getSessionRowFn({ data: resolvedSessionId }),
+		]);
 		agentSkillContext ||= savedSelection?.agentCwd ?? undefined;
 		sessionModel = savedSelection?.model ?? null;
 		sessionProviderId = savedSelection?.providerId ?? null;
 		sessionEffort = savedSelection?.effort ?? null;
 		sessionPermissionMode = savedSelection?.permissionMode ?? null;
+		forkParentSessionId = savedRow?.fork_parent_session_id ?? null;
+		forkKind = savedRow?.fork_kind ?? null;
 	}
 	const interactiveMode = interactiveModeForAgent(config, agentSkillContext);
 	resolvedSessionId = resolveTerminalSession(
@@ -266,6 +270,8 @@ async function loadRavenRoute(session?: string, agent?: string) {
 		sessionProviderId,
 		sessionEffort,
 		sessionPermissionMode,
+		forkParentSessionId,
+		forkKind,
 		agentList,
 		vaultSkills,
 		interactiveMode,
@@ -1558,6 +1564,8 @@ export function ChatPage() {
 		sessionProviderId: initialSessionProviderId,
 		sessionEffort: initialSessionEffort,
 		sessionPermissionMode: initialSessionPermissionMode,
+		forkParentSessionId,
+		forkKind,
 		agentList: initialAgentList,
 		vaultSkills,
 		providers: initialProviders,
@@ -1932,6 +1940,8 @@ export function ChatPage() {
 			initialProviderUsages={providerUsages}
 			liveStats={liveStats}
 			rateLimit={rateLimit}
+			forkParentSessionId={forkParentSessionId}
+			forkKind={forkKind}
 			interactiveMode={interactiveMode}
 			terminalOpen={terminalOpen}
 			terminalClosingSessionId={terminalClosingSessionId}
@@ -1958,6 +1968,8 @@ interface ChatPageContentProps {
 	initialProviderUsages: Awaited<ReturnType<typeof loadProviderUsages>>;
 	liveStats: ReturnType<typeof useWsLiveStats>;
 	rateLimit: RateLimitMessage | null;
+	forkParentSessionId: string | null;
+	forkKind: "exact" | "recap" | null;
 	interactiveMode: boolean;
 	terminalOpen: boolean;
 	terminalClosingSessionId: string | null;
@@ -1979,6 +1991,7 @@ interface ChatPageContentProps {
 }
 
 function ChatPageContent(props: ChatPageContentProps) {
+	const navigate = useNavigate();
 	const {
 		initialProviderUsages,
 		liveStats,
@@ -2027,6 +2040,28 @@ function ChatPageContent(props: ChatPageContentProps) {
 				onClear={() => props.runtime.controlGoal({ action: "clear" })}
 				onDismissError={props.runtime.dismissGoalError}
 			/>
+			{props.forkParentSessionId && (
+				<div className="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-muted/15 px-4 py-1.5">
+					<span className="text-[9px] tracking-widest text-muted-foreground uppercase">
+						{props.forkKind === "exact" ? "Exact fork" : "Fork"}
+					</span>
+					<button
+						type="button"
+						onClick={() =>
+							void navigate({
+								to: "/raven",
+								search: {
+									session: props.forkParentSessionId ?? undefined,
+									agent: undefined,
+								},
+							})
+						}
+						className="text-[9px] tracking-widest text-primary/70 hover:text-primary uppercase"
+					>
+						Open source
+					</button>
+				</div>
+			)}
 
 			<RavenTerminalPane {...props} />
 			{!interactiveMode && terminalOpen && (
@@ -2205,8 +2240,9 @@ function RavenMessagePane({
 	// Same preconditions as the composer's whole-session Fork button — see
 	// ChatActionButtons.
 	const canBranch =
-		isClaudeRuntimeProvider(composerProps.activeProviderId) &&
-		!runtime.isRunning;
+		composerProps.providers.find(
+			(provider) => provider.id === composerProps.activeProviderId,
+		)?.forkCapability?.throughMessage === true && !runtime.isRunning;
 	// Below md, the Terminal tab fully replaces chat (RavenShellTabBar); md+
 	// always shows chat regardless (desktop split panel is chunk 4).
 	const mobileHideChat = terminalOpen && shellTab === "terminal";
@@ -2813,10 +2849,10 @@ function ChatInputControls(props: ChatComposerProps) {
 	const sessionFork = useChatSessionFork(props);
 	return (
 		<div className="flex min-w-0 items-start">
-			<span className="md:order-1 text-primary text-sm px-4 py-3 shrink-0 select-none">
+			<span className="text-primary text-sm px-4 py-3 shrink-0 select-none">
 				›
 			</span>
-			<div className="grid shrink-0 grid-cols-2 grid-rows-2 gap-y-1 md:contents">
+			<div className="grid shrink-0 grid-cols-2 gap-y-1 md:contents">
 				<input
 					ref={fileInputRef}
 					type="file"
@@ -2831,18 +2867,33 @@ function ChatInputControls(props: ChatComposerProps) {
 					type="button"
 					onClick={() => fileInputRef.current?.click()}
 					disabled={wsStatus !== "connected"}
-					className="md:order-2 px-2 py-2 md:py-3 text-muted-foreground/45 hover:text-muted-foreground transition-colors shrink-0 disabled:opacity-30"
+					className="px-2 py-2 md:py-3 text-muted-foreground/45 hover:text-muted-foreground transition-colors shrink-0 disabled:opacity-30"
 					aria-label="Attach file"
 					title="Attach file"
 				>
 					<Paperclip className="w-3.5 h-3.5" />
 				</button>
-				<ChatVoiceControls {...props} />
 				<ObsidianActiveNoteButton
 					onAdd={props.vaultPicker.addVaultReference}
 					className="px-2 py-2 md:py-3"
-					containerClassName="md:order-3"
 				/>
+				<ChatVoiceControls {...props} />
+				{sessionFork.canFork && (
+					<button
+						type="button"
+						onClick={() => sessionFork.fork()}
+						disabled={sessionFork.forking}
+						className="px-2 py-2 md:py-3 text-muted-foreground/45 hover:text-muted-foreground disabled:opacity-40 transition-colors shrink-0"
+						aria-label="Fork session"
+						title="Fork this session into a new one"
+					>
+						{sessionFork.forking ? (
+							<LoaderCircle className="w-3.5 h-3.5 animate-spin" />
+						) : (
+							<GitFork className="w-3.5 h-3.5" />
+						)}
+					</button>
+				)}
 			</div>
 			<ChatTextarea {...props} />
 			<ChatActionButtons {...props} sessionFork={sessionFork} />
@@ -2866,7 +2917,7 @@ function ChatVoiceControls({ config, runtime, voice }: ChatComposerProps) {
 					(!voice.ready && voice.phase !== "recording") ||
 					voice.phase === "transcribing"
 				}
-				className={`md:order-4 px-2 py-2 md:py-3 transition-colors shrink-0 disabled:opacity-30 ${voice.phase === "recording" ? "text-destructive" : "text-muted-foreground/45 hover:text-muted-foreground"}`}
+				className={`px-2 py-2 md:py-3 transition-colors shrink-0 disabled:opacity-30 ${voice.phase === "recording" ? "text-destructive" : "text-muted-foreground/45 hover:text-muted-foreground"}`}
 				aria-label={
 					voice.phase === "recording" ? "Stop recording" : "Start voice input"
 				}
@@ -2890,7 +2941,7 @@ function ChatVoiceControls({ config, runtime, voice }: ChatComposerProps) {
 				<button
 					type="button"
 					onClick={voice.cancel}
-					className="px-1 py-2 md:py-3 text-muted-foreground/45 hover:text-muted-foreground"
+					className="px-2 py-2 md:py-3 text-muted-foreground/45 hover:text-muted-foreground transition-colors shrink-0"
 					aria-label="Cancel recording"
 					title="Cancel recording"
 				>
@@ -3072,19 +3123,18 @@ function useChatSessionFork({
 	runtime,
 	session,
 	activeProviderId,
+	providers,
 }: ChatComposerProps) {
 	const { isRunning, messages } = runtime;
 	const forkState = useForkSession(session.sessionId);
+	const forkCapability = providers.find(
+		(provider) => provider.id === activeProviderId,
+	)?.forkCapability;
 	return {
 		...forkState,
 		forking: forkState.forkingMessageId === "session",
-		// Claude runtimes expose AgentProvider.forkSession, including Claude Code
-		// routed through CLIProxy. Idle + non-empty mirrors the same preconditions
-		// the server enforces in POST /db/session/fork.
 		canFork:
-			isClaudeRuntimeProvider(activeProviderId) &&
-			!isRunning &&
-			messages.length > 0,
+			forkCapability?.kind === "exact" && !isRunning && messages.length > 0,
 	};
 }
 
@@ -3162,34 +3212,14 @@ function ChatActionButtons({
 				</button>
 			)}
 			{messages.length > 0 && (
-				<div
-					className={`order-9 grid shrink-0 ${sessionFork.canFork ? "grid-rows-2 gap-y-1" : ""}`}
+				<button
+					type="button"
+					onClick={handleClear}
+					className="order-9 px-3 py-2 md:py-3 text-muted-foreground/45 hover:text-muted-foreground transition-colors shrink-0"
+					aria-label="New chat"
 				>
-					<button
-						type="button"
-						onClick={handleClear}
-						className="w-full px-3 py-2 text-muted-foreground/45 hover:text-muted-foreground transition-colors shrink-0"
-						aria-label="New chat"
-					>
-						<SquarePen className="w-3.5 h-3.5" />
-					</button>
-					{sessionFork.canFork && (
-						<button
-							type="button"
-							onClick={() => sessionFork.fork()}
-							disabled={sessionFork.forking}
-							className="w-full px-3 py-2 text-muted-foreground/45 hover:text-muted-foreground disabled:opacity-40 transition-colors shrink-0"
-							aria-label="Fork session"
-							title="Fork this session into a new one"
-						>
-							{sessionFork.forking ? (
-								<LoaderCircle className="w-3.5 h-3.5 animate-spin" />
-							) : (
-								<GitFork className="w-3.5 h-3.5" />
-							)}
-						</button>
-					)}
-				</div>
+					<SquarePen className="w-3.5 h-3.5" />
+				</button>
 			)}
 		</>
 	);

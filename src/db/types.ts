@@ -16,6 +16,11 @@ export type SessionRow = {
 	history_resume_mode?: "none" | "native" | "session-store";
 	/** Original provider transcript path, retained for diagnostics and native fallback. */
 	history_resume_path?: string | null;
+	/** Hlid session this row was forked from, retained without a destructive FK. */
+	fork_parent_session_id?: string | null;
+	/** Source messages.id cutoff for a through-message fork; null for whole-session. */
+	fork_parent_message_id?: number | null;
+	fork_kind?: "exact" | "recap" | null;
 	started_at: number;
 	ended_at: number | null;
 	query_count: number;
@@ -49,6 +54,8 @@ export type MessageRow = {
 	turn_id?: string | null;
 	/** Claude's native transcript UUID for the last SDK message in this turn. */
 	sdk_uuid?: string | null;
+	/** Provider-native turn id for exact turn-boundary forks (Codex). */
+	provider_turn_id?: string | null;
 };
 
 type ToolEventRow = {

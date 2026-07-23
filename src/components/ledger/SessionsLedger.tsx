@@ -27,7 +27,10 @@ import type { LiveStats } from "#/hooks/wsLiveStatsStore";
 import { formatDisplayCost } from "#/lib/costDisplay";
 import { fmt, fmtDate, fmtDateUtc, fmtModel } from "#/lib/formatters";
 import type { LedgerAgentOption, SessionSortKey } from "#/lib/ledgerState";
-import { isClaudeRuntimeProvider } from "#/lib/providerRuntime";
+import {
+	isClaudeRuntimeProvider,
+	isCodexRuntimeProvider,
+} from "#/lib/providerRuntime";
 import type { SessionStatusEntry } from "#/server/protocol";
 
 const CLEANUP_DAY_OPTIONS = [7, 30, 90] as const;
@@ -249,6 +252,7 @@ function SessionItem({
 	poolSession,
 	liveStats,
 	isDesktop,
+	forkProviderIds,
 }: {
 	session: SessionRow;
 	usageSession?: SessionRow;
@@ -262,6 +266,7 @@ function SessionItem({
 	poolSession?: SessionStatusEntry;
 	liveStats?: LiveStats;
 	isDesktop: boolean;
+	forkProviderIds?: ReadonlySet<string>;
 }) {
 	const [editing, setEditing] = useState(false);
 	const [editValue, setEditValue] = useState("");
@@ -280,8 +285,12 @@ function SessionItem({
 	// transient UI state, so using its mere presence made Fork disappear until a
 	// reload closed or repopulated that entry. Idle Claude sessions are safe to
 	// fork; only an active turn temporarily blocks the action.
+	const providerId = session.provider_id || "claude";
 	const canFork =
-		isClaudeRuntimeProvider(session.provider_id || "claude") && canNavigate;
+		(forkProviderIds?.has(providerId) ??
+			(isClaudeRuntimeProvider(providerId) ||
+				isCodexRuntimeProvider(providerId))) &&
+		canNavigate;
 	const forkBlocked = poolSession?.state === "running";
 	const actionPosition = useAnchoredPopover(
 		menuOpen,
@@ -434,6 +443,7 @@ function SessionItem({
 							{importedHistory
 								? ` · ${importedSourceLabel(session.history_source)}${resumableHistory ? " · resumable" : ""}`
 								: ""}
+							{session.fork_kind === "exact" ? " · exact fork" : ""}
 						</PrivacyMask>
 					</div>
 					<div className="text-right shrink-0">
@@ -859,6 +869,7 @@ export function SessionsLedger({
 	onImportClaude,
 	claudeImportStatus,
 	claudeImportBusy = false,
+	forkProviderIds,
 }: {
 	data: { sessions: SessionRow[]; total: number };
 	page: number;
@@ -898,6 +909,7 @@ export function SessionsLedger({
 	onImportClaude?: () => void;
 	claudeImportStatus?: string | null;
 	claudeImportBusy?: boolean;
+	forkProviderIds?: ReadonlySet<string>;
 }) {
 	const isDesktop = useIsDesktop();
 	const [mobilePanel, setMobilePanel] = useState<
@@ -1189,6 +1201,7 @@ export function SessionsLedger({
 						poolSession={sessionsStatus?.find((p) => p.db_session_id === s.id)}
 						liveStats={liveStats}
 						isDesktop={isDesktop}
+						forkProviderIds={forkProviderIds}
 					/>
 				))
 			)}

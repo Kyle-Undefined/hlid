@@ -12,6 +12,8 @@ import type {
 	AgentProvider,
 	AgentQueryParams,
 	AgentSession,
+	ForkSessionParams,
+	ForkSessionResult,
 	McpServerStatus,
 	ProviderEffortInfo,
 	ProviderGoalControl,
@@ -49,6 +51,8 @@ import type {
 	ReasoningEffortOption,
 	SandboxPolicy,
 	SubAgentActivityKind,
+	ThreadForkParams,
+	ThreadForkResponse,
 	ThreadGoalClearedNotification,
 	ThreadGoalClearParams,
 	ThreadGoalClearResponse,
@@ -62,6 +66,7 @@ import type {
 	TurnStartParams,
 } from "./codexProtocol";
 import { bumpDataRevision } from "./dataRevision";
+import { resolveProviderExecutableForCwd } from "./executionContext";
 import {
 	executeHlidAgentTool,
 	HLID_AGENT_NAMESPACE,
@@ -2525,7 +2530,10 @@ class CodexAgentSession implements AgentSession {
 		// Cancel a provisional completion while retaining its accumulated usage.
 		this.clearPendingDone();
 		const id = asObj(obj.turn).id;
-		if (typeof id === "string") this.activeTurnId = id;
+		if (typeof id === "string") {
+			this.activeTurnId = id;
+			this.events.push({ type: "provider_turn_id", id });
+		}
 		if (this.threadId) this.cumulativeUsageTurns.delete(this.threadId);
 		this.resetTurnTracking();
 		this.lastUsage = emptyCodexUsage();
@@ -3072,6 +3080,12 @@ class CodexAgentSession implements AgentSession {
 export class CodexProvider implements AgentProvider {
 	readonly providerId: string;
 	readonly label: string;
+	readonly forkCapability = {
+		kind: "exact",
+		cutoff: "turn",
+		wholeSession: true,
+		throughMessage: true,
+	} as const;
 	protected readonly providerProfile?: CodexProviderProfile;
 
 	constructor(
@@ -3183,6 +3197,46 @@ export class CodexProvider implements AgentProvider {
 
 	async listModels(): Promise<ProviderModelInfo[]> {
 		return fetchCodexModels({ profile: this.providerProfile });
+	}
+
+	// fallow-ignore-next-line unused-class-member -- Invoked through AgentProvider.forkSession by dbRoutes.
+	async forkSession(params: ForkSessionParams): Promise<ForkSessionResult> {
+		if (params.cutoff && params.cutoff.kind !== "turn") {
+			throw new Error("Codex exact forks require a native turn cutoff");
+		}
+		const cwd = params.cwd ?? process.cwd();
+		const executable = resolveProviderExecutableForCwd(
+			cwd,
+			resolveCodexExecutable(),
+			"codex",
+		);
+		const launch = codexLaunchConfig({
+			cwd,
+			executable,
+			profile: this.providerProfile,
+		});
+		const conn = acquireCodexAppServer(launch.appServer);
+		await conn.ready;
+		const forkParams: ThreadForkParams = {
+			threadId: params.sessionId,
+			...(params.cutoff ? { lastTurnId: params.cutoff.id } : {}),
+			...(params.cwd ? { cwd: launch.rpcCwd } : {}),
+			// Hlid hydrates its visible transcript from the source session, so avoid
+			// returning the potentially large provider turn collection here.
+			excludeTurns: true,
+			// Preserve an active native goal without letting the new thread start
+			// invisible work before Raven has attached to the fork.
+			deferGoalContinuation: true,
+		};
+		const result = (await conn.request(
+			"thread/fork",
+			forkParams,
+		)) as ThreadForkResponse;
+		const threadId = asObj(result.thread).id;
+		if (typeof threadId !== "string" || !threadId) {
+			throw new Error("Codex did not return a forked thread id");
+		}
+		return { sessionId: threadId };
 	}
 
 	query(params: AgentQueryParams): AgentSession {
