@@ -201,6 +201,27 @@ describe("buildPrompt — attachments", async () => {
 		expect(prompt).toContain("Attachments");
 	});
 
+	it("keeps native audio safe without telling Codex to read it as a file", async () => {
+		const audioPath = join(tmp, "voice-message.wav");
+		writeFileSync(audioPath, "RIFF....WAVE");
+		const { prompt, safeAttachments } = await buildPromptAsync(
+			base({
+				nativeAudio: true,
+				attachments: [
+					{
+						id: "voice-1",
+						path: audioPath,
+						filename: "voice-message.wav",
+						mime: "audio/wav",
+						kind: "ephemeral",
+					},
+				],
+			}),
+		);
+		expect(safeAttachments).toHaveLength(1);
+		expect(prompt).toBe("hello");
+	});
+
 	it("labels a selected Relic as existing context", async () => {
 		const relicPath = join(tmp, "report.pdf");
 		writeFileSync(relicPath, "fake-pdf");

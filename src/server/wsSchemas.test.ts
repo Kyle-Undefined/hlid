@@ -161,6 +161,39 @@ describe("chat WebSocket runtime schema", () => {
 		).toBeNull();
 	});
 
+	it("validates Codex realtime voice controls", () => {
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "realtime_start",
+					session_id: "session-1",
+					mode: "live",
+					sdp: "v=0\r\n",
+					voice: "marin",
+				}),
+			),
+		).toMatchObject({ type: "realtime_start", mode: "live", voice: "marin" });
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "realtime_speak",
+					session_id: "session-1",
+					text: "Read this response",
+				}),
+			),
+		).toMatchObject({ type: "realtime_speak" });
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "realtime_start",
+					session_id: "session-1",
+					mode: "unknown",
+					sdp: "v=0\r\n",
+				}),
+			),
+		).toBeNull();
+	});
+
 	it("validates a goal attached to its starting chat turn", () => {
 		expect(
 			parseClientMessage(

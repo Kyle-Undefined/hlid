@@ -193,6 +193,7 @@ const DEFAULT_ATTACHMENT_MIMES = [
 	"image/jpeg",
 	"image/gif",
 	"image/webp",
+	"audio/wav",
 	"application/pdf",
 	"text/plain",
 	"text/markdown",
@@ -218,12 +219,15 @@ const AttachmentsSchema = z.object({
 
 export const DEFAULT_VOICE_CONFIG = {
 	enabled: false,
+	input_provider: "local" as const,
 	model: "",
 	language: "auto",
 	auto_send: false,
 	read_aloud_provider: "device" as const,
 	read_aloud_voice: "",
 	read_aloud_rate: 1,
+	codex_voice: "marin" as const,
+	codex_live_mode: false,
 	hotkey: "Alt+Shift+KeyV",
 	max_recording_seconds: 300,
 	threads: 4,
@@ -245,11 +249,14 @@ export const DEFAULT_VOICE_CONFIG = {
 
 const VoiceSchema = z.object({
 	enabled: z.boolean().default(DEFAULT_VOICE_CONFIG.enabled),
+	input_provider: z
+		.enum(["local", "codex"])
+		.default(DEFAULT_VOICE_CONFIG.input_provider),
 	model: z.string().default(DEFAULT_VOICE_CONFIG.model),
 	language: z.string().min(1).default(DEFAULT_VOICE_CONFIG.language),
 	auto_send: z.boolean().default(DEFAULT_VOICE_CONFIG.auto_send),
 	read_aloud_provider: z
-		.enum(["device", "microsoft"])
+		.enum(["device", "microsoft", "codex"])
 		.default(DEFAULT_VOICE_CONFIG.read_aloud_provider),
 	read_aloud_voice: z.string().default(DEFAULT_VOICE_CONFIG.read_aloud_voice),
 	read_aloud_rate: z
@@ -257,6 +264,30 @@ const VoiceSchema = z.object({
 		.min(0.5)
 		.max(2)
 		.default(DEFAULT_VOICE_CONFIG.read_aloud_rate),
+	codex_voice: z
+		.enum([
+			"alloy",
+			"arbor",
+			"ash",
+			"ballad",
+			"breeze",
+			"cedar",
+			"coral",
+			"cove",
+			"echo",
+			"ember",
+			"juniper",
+			"maple",
+			"marin",
+			"sage",
+			"shimmer",
+			"sol",
+			"spruce",
+			"vale",
+			"verse",
+		])
+		.default(DEFAULT_VOICE_CONFIG.codex_voice),
+	codex_live_mode: z.boolean().default(DEFAULT_VOICE_CONFIG.codex_live_mode),
 	hotkey: z.string().default(DEFAULT_VOICE_CONFIG.hotkey),
 	max_recording_seconds: z
 		.number()

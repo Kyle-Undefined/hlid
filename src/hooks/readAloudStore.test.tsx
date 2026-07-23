@@ -258,6 +258,25 @@ describe("readAloudStore", () => {
 		).toEqual({ voiceURI: localVoice.voiceURI });
 	});
 
+	it("falls back to device speech when Codex realtime preview is disabled", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue(
+				Response.json({
+					voice: {
+						read_aloud_provider: "codex",
+						codex_live_mode: false,
+					},
+				}),
+			),
+		);
+		const { result } = renderHook(() => useReadAloudPreferences(false));
+
+		await act(refreshReadAloudPreferences);
+
+		expect(result.current.provider).toBe("device");
+	});
+
 	it("plays Microsoft host audio with exact media pause and resume", () => {
 		const { result } = renderHook(() => useReadAloudState());
 		act(() =>

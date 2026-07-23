@@ -82,6 +82,12 @@ const MIME_SIGNATURES: MimeSig[] = [
 		offset2: 8,
 		sig2: [0x57, 0x45, 0x42, 0x50],
 	},
+	{
+		mime: "audio/wav",
+		sig: [0x52, 0x49, 0x46, 0x46],
+		offset2: 8,
+		sig2: [0x57, 0x41, 0x56, 0x45],
+	},
 ];
 
 function sniffMime(buf: Buffer): string | null {
@@ -414,12 +420,29 @@ export async function handleUpload(
 		);
 	}
 
-	const mime = (file.type || "application/octet-stream").split(";")[0].trim();
-	if (!config.attachments.allowed_mimes.includes(mime)) {
-		return Response.json({ error: "mime_not_allowed", mime }, { status: 415 });
+	const filename = sanitizeFilename(file.name);
+	const declaredMime = (file.type || "application/octet-stream")
+		.split(";")[0]
+		.trim()
+		.toLowerCase();
+	const wavMimeAliases = new Set([
+		"audio/wav",
+		"audio/x-wav",
+		"audio/wave",
+		"audio/vnd.wave",
+		"application/octet-stream",
+	]);
+	const isWavUpload =
+		extname(filename).toLowerCase() === ".wav" &&
+		wavMimeAliases.has(declaredMime);
+	const mime = isWavUpload ? "audio/wav" : declaredMime;
+	if (!config.attachments.allowed_mimes.includes(mime) && !isWavUpload) {
+		return Response.json(
+			{ error: "mime_not_allowed", mime: declaredMime },
+			{ status: 415 },
+		);
 	}
 
-	const filename = sanitizeFilename(file.name);
 	const kind: db.AttachmentKind = "ephemeral";
 
 	const agentCwdField = form.get("agent_cwd");
@@ -437,7 +460,10 @@ export async function handleUpload(
 	const buf = Buffer.from(await file.arrayBuffer());
 
 	// For binary types, verify declared MIME matches actual file bytes.
-	const isBinaryMime = mime.startsWith("image/") || mime === "application/pdf";
+	const isBinaryMime =
+		mime.startsWith("image/") ||
+		mime === "application/pdf" ||
+		mime === "audio/wav";
 	if (isBinaryMime) {
 		const sniffed = sniffMime(buf);
 		if (sniffed !== mime) {

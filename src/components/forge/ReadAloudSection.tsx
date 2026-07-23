@@ -11,6 +11,27 @@ import { Field, Section } from "./fields";
 const RATE_OPTIONS = [0.75, 1, 1.25, 1.5, 2] as const;
 const WINDOWS_VOICE_GUIDE =
 	"https://support.microsoft.com/en-us/accessibility/windows/narrator/appendix-a-supported-languages-and-voices";
+const CODEX_VOICES = [
+	"alloy",
+	"arbor",
+	"ash",
+	"ballad",
+	"breeze",
+	"cedar",
+	"coral",
+	"cove",
+	"echo",
+	"ember",
+	"juniper",
+	"maple",
+	"marin",
+	"sage",
+	"shimmer",
+	"sol",
+	"spruce",
+	"vale",
+	"verse",
+] as const;
 
 type MicrosoftVoice = {
 	id: string;
@@ -29,7 +50,7 @@ type MicrosoftInventory = {
 type VoiceConfig = HlidConfig["voice"];
 type SharedPatch = Pick<
 	VoiceConfig,
-	"read_aloud_provider" | "read_aloud_voice" | "read_aloud_rate"
+	"read_aloud_provider" | "read_aloud_voice" | "read_aloud_rate" | "codex_voice"
 >;
 
 export function ReadAloudSection({
@@ -45,6 +66,7 @@ export function ReadAloudSection({
 		voiceURI: browserPreferences.voiceURI,
 		microsoftVoiceId: voice.read_aloud_voice,
 		rate: voice.read_aloud_rate,
+		codexVoice: voice.codex_voice,
 	};
 	const voices = useLocalReadAloudVoices();
 	const [microsoft, setMicrosoft] = useState<MicrosoftInventory | null>(null);
@@ -123,7 +145,10 @@ export function ReadAloudSection({
 					onChange={(event) =>
 						updateShared({
 							read_aloud_provider:
-								event.target.value === "microsoft" ? "microsoft" : "device",
+								event.target.value === "microsoft" ||
+								event.target.value === "codex"
+									? event.target.value
+									: "device",
 						})
 					}
 					aria-label="Read aloud speech engine"
@@ -133,6 +158,9 @@ export function ReadAloudSection({
 					<option value="microsoft" disabled={microsoft?.available === false}>
 						Microsoft host
 					</option>
+					{(voice.codex_live_mode || preferences.provider === "codex") && (
+						<option value="codex">Codex realtime · Developer Preview</option>
+					)}
 				</select>
 			</Field>
 			{preferences.provider === "device" ? (
@@ -159,7 +187,7 @@ export function ReadAloudSection({
 						))}
 					</select>
 				</Field>
-			) : (
+			) : preferences.provider === "microsoft" ? (
 				<>
 					<Field
 						label="Microsoft voice"
@@ -218,29 +246,53 @@ export function ReadAloudSection({
 						</div>
 					</Field>
 				</>
-			)}
-			<Field
-				label="Reading speed"
-				hint="applied during playback and saved for every device"
-			>
-				<select
-					value={preferences.rate}
-					onChange={(event) =>
-						updateShared({ read_aloud_rate: Number(event.target.value) })
-					}
-					aria-label="Read aloud speed"
-					className="w-32 sm:w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
+			) : (
+				<Field
+					label="Codex voice"
+					hint="used for experimental Codex read aloud and Raven Live"
 				>
-					{!RATE_OPTIONS.includes(
-						preferences.rate as (typeof RATE_OPTIONS)[number],
-					) && <option value={preferences.rate}>{preferences.rate}×</option>}
-					{RATE_OPTIONS.map((rate) => (
-						<option key={rate} value={rate}>
-							{rate}×
-						</option>
-					))}
-				</select>
-			</Field>
+					<select
+						value={preferences.codexVoice}
+						onChange={(event) =>
+							updateShared({
+								codex_voice: event.target.value as VoiceConfig["codex_voice"],
+							})
+						}
+						aria-label="Codex realtime voice"
+						className="w-48 sm:w-64 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
+					>
+						{CODEX_VOICES.map((voice) => (
+							<option key={voice} value={voice}>
+								{voice}
+							</option>
+						))}
+					</select>
+				</Field>
+			)}
+			{preferences.provider !== "codex" && (
+				<Field
+					label="Reading speed"
+					hint="applied during playback and saved for every device"
+				>
+					<select
+						value={preferences.rate}
+						onChange={(event) =>
+							updateShared({ read_aloud_rate: Number(event.target.value) })
+						}
+						aria-label="Read aloud speed"
+						className="w-32 sm:w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
+					>
+						{!RATE_OPTIONS.includes(
+							preferences.rate as (typeof RATE_OPTIONS)[number],
+						) && <option value={preferences.rate}>{preferences.rate}×</option>}
+						{RATE_OPTIONS.map((rate) => (
+							<option key={rate} value={rate}>
+								{rate}×
+							</option>
+						))}
+					</select>
+				</Field>
+			)}
 		</Section>
 	);
 }

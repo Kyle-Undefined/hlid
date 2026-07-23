@@ -9,6 +9,7 @@ import {
 	type ReadAloudProvider,
 	readableTextFromMarkdown,
 } from "#/lib/readAloud";
+import { startCodexReadAloud, stopCodexReadAloud } from "./codexRealtimeStore";
 
 export type ReadAloudPhase =
 	| "idle"
@@ -200,12 +201,17 @@ export function refreshReadAloudPreferences(): Promise<void> {
 				read_aloud_provider?: unknown;
 				read_aloud_voice?: unknown;
 				read_aloud_rate?: unknown;
+				codex_live_mode?: unknown;
 			};
 		};
 		const voice = config.voice;
 		applyReadAloudSharedPreferences({
 			provider:
-				voice?.read_aloud_provider === "microsoft" ? "microsoft" : "device",
+				voice?.read_aloud_provider === "microsoft" ||
+				(voice?.read_aloud_provider === "codex" &&
+					voice.codex_live_mode === true)
+					? voice.read_aloud_provider
+					: "device",
 			microsoftVoiceId:
 				typeof voice?.read_aloud_voice === "string"
 					? voice.read_aloud_voice
@@ -358,6 +364,8 @@ function speakCurrentChunk(reading: ActiveReading): void {
 
 export function readAloudSupported(provider?: ReadAloudProvider): boolean {
 	initializePreferences();
+	if ((provider ?? preferencesSnapshot.provider) === "codex")
+		return typeof RTCPeerConnection !== "undefined";
 	if ((provider ?? preferencesSnapshot.provider) === "microsoft")
 		return typeof Audio !== "undefined";
 	return (
@@ -545,6 +553,55 @@ function startMicrosoftReadAloud(messageId: string, dbId?: number): void {
 	});
 }
 
+function startCodexProviderReadAloud(
+	messageId: string,
+	markdown: string,
+): void {
+	if (typeof RTCPeerConnection === "undefined") {
+		updateState({
+			messageId,
+			phase: "error",
+			error: "Codex read aloud is not supported by this browser",
+		});
+		return;
+	}
+	const text = readableTextFromMarkdown(markdown);
+	if (!text) {
+		updateState({
+			messageId,
+			phase: "error",
+			error: "This response has no readable text",
+		});
+		return;
+	}
+	const currentGeneration = ++generation;
+	utteranceGeneration++;
+	releasePendingVoiceDiscovery();
+	releaseActiveUtterance();
+	activeReading = null;
+	speechController()?.cancel();
+	releaseActiveAudio();
+	updateState({ messageId, phase: "loading", error: null });
+	startCodexReadAloud(text, {
+		onPlaying: () => {
+			if (currentGeneration !== generation) return;
+			updateState({ messageId, phase: "speaking", error: null });
+		},
+		onEnded: () => {
+			if (currentGeneration !== generation) return;
+			updateState(IDLE_STATE);
+		},
+		onError: (message) => {
+			if (currentGeneration !== generation) return;
+			updateState({
+				messageId,
+				phase: "error",
+				error: `Codex read aloud failed: ${message}`,
+			});
+		},
+	});
+}
+
 export function startReadAloud(
 	messageId: string,
 	markdown: string,
@@ -553,6 +610,10 @@ export function startReadAloud(
 	initializePreferences();
 	if (preferencesSnapshot.provider === "microsoft") {
 		startMicrosoftReadAloud(messageId, dbId);
+		return;
+	}
+	if (preferencesSnapshot.provider === "codex") {
+		startCodexProviderReadAloud(messageId, markdown);
 		return;
 	}
 	startDeviceReadAloud(messageId, markdown);
@@ -566,6 +627,13 @@ export function toggleReadAloud(
 	const speech = speechController();
 	if (stateSnapshot.messageId !== messageId) {
 		startReadAloud(messageId, markdown, dbId);
+		return;
+	}
+	if (
+		preferencesSnapshot.provider === "codex" &&
+		(stateSnapshot.phase === "loading" || stateSnapshot.phase === "speaking")
+	) {
+		stopReadAloud();
 		return;
 	}
 	if (stateSnapshot.phase === "loading") {
@@ -622,6 +690,7 @@ export function stopReadAloud(): void {
 	activeReading = null;
 	speechController()?.cancel();
 	releaseActiveAudio();
+	stopCodexReadAloud();
 	updateState(IDLE_STATE);
 }
 

@@ -3,6 +3,7 @@ import {
 	configuredVaultModel,
 	defaultEffortFor,
 	effortOptionsFor,
+	modelInputAvailability,
 	modelOptions,
 	normalizeEffortForPlanMode,
 	resolveActiveProviderId,
@@ -44,6 +45,55 @@ describe("modelOptions", () => {
 
 	it("returns [] when provider has no models", () => {
 		expect(modelOptions({ id: "x", label: "X", available: true })).toEqual([]);
+	});
+});
+
+describe("modelInputAvailability", () => {
+	const codex: ProviderInfo = {
+		id: "codex",
+		label: "Codex",
+		available: true,
+		models: [
+			{
+				value: "text-model",
+				label: "Text Model",
+				isDefault: true,
+				inputModalities: ["text", "image"],
+			},
+			{
+				value: "audio-model",
+				label: "Audio Model",
+				inputModalities: ["text", "image", "audio"],
+			},
+		],
+	};
+
+	it("uses the selected model's advertised input modalities", () => {
+		expect(modelInputAvailability(codex, "audio-model", "audio")).toEqual({
+			available: true,
+			modelLabel: "Audio Model",
+		});
+		expect(modelInputAvailability(codex, "text-model", "audio")).toEqual({
+			available: false,
+			modelLabel: "Text Model",
+			reason: "Text Model does not support audio input.",
+		});
+	});
+
+	it("uses the catalog default when no model is configured", () => {
+		expect(modelInputAvailability(codex, undefined, "audio")).toEqual({
+			available: false,
+			modelLabel: "Text Model",
+			reason: "Text Model does not support audio input.",
+		});
+	});
+
+	it("does not assume support when the catalog has no capability data", () => {
+		expect(modelInputAvailability(provider, "sonnet", "audio")).toEqual({
+			available: false,
+			modelLabel: "Sonnet",
+			reason: "Sonnet has not reported audio input support.",
+		});
 	});
 });
 

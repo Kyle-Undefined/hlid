@@ -77,6 +77,27 @@ export type ProviderGoalControlResult = {
 	goal: ProviderThreadGoal | null;
 };
 
+export type ProviderRealtimeMode = "dictation" | "live" | "read-aloud";
+
+export type ProviderRealtimeEvent =
+	| { type: "started" }
+	| { type: "sdp"; sdp: string }
+	| { type: "transcript_delta"; role: string; delta: string }
+	| { type: "transcript_done"; role: string; text: string }
+	| { type: "error"; message: string }
+	| { type: "closed"; reason?: string };
+
+export type ProviderRealtimeStart = {
+	mode: ProviderRealtimeMode;
+	sdp: string;
+	voice?: string;
+	onEvent: (event: ProviderRealtimeEvent) => void;
+};
+
+export type ProviderRealtimeStartResult = {
+	providerSessionId: string;
+};
+
 /** Provider-native skill metadata used by Hlid's review-before-import catalog. */
 export type ProviderSkillInfo = {
 	name: string;
@@ -117,6 +138,8 @@ export type ProviderModelInfo = {
 	description?: string;
 	isDefault?: boolean;
 	hidden?: boolean;
+	/** Input kinds the provider says this model accepts. */
+	inputModalities?: Array<"text" | "image" | "audio">;
 	efforts?: ProviderEffortInfo[];
 };
 
@@ -303,6 +326,8 @@ export type AgentQueryParams = {
 	windowsComputerUse?: { model: string; effort: string };
 	/** Provider-owned goal changes that can arrive outside a normal chat turn. */
 	onGoalChange?: (goal: ProviderThreadGoal | null) => void;
+	/** Explicitly enable Codex's under-development realtime conversation RPCs. */
+	codexRealtimeEnabled?: boolean;
 };
 
 /**
@@ -313,6 +338,8 @@ export type AgentQueryParams = {
  */
 export type SendOptions = {
 	priority?: "now" | "next" | "later";
+	/** Provider-visible paths to audio files included as native turn input. */
+	audioPaths?: string[];
 };
 
 export interface AgentSession extends AsyncIterable<AgentEvent> {
@@ -350,6 +377,14 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 	controlGoal?(
 		request: ProviderGoalControl,
 	): Promise<ProviderGoalControlResult>;
+	/** Start the provider's native low-latency voice transport for this thread. */
+	startRealtime?(
+		request: ProviderRealtimeStart,
+	): Promise<ProviderRealtimeStartResult>;
+	/** Add text that should be spoken by an active native realtime session. */
+	appendRealtimeSpeech?(text: string): Promise<void>;
+	/** Stop the active native realtime session without closing the agent thread. */
+	stopRealtime?(): Promise<void>;
 	/** Replace the live goal notification sink when a persisted session is reattached. */
 	setGoalChangeHandler?(handler: AgentQueryParams["onGoalChange"]): void;
 	/**

@@ -19,6 +19,9 @@ import type {
 	ProviderGoalControl,
 	ProviderGoalControlResult,
 	ProviderModelInfo,
+	ProviderRealtimeEvent,
+	ProviderRealtimeStart,
+	ProviderRealtimeStartResult,
 	ProviderSkillInfo,
 	ProviderThreadGoal,
 	ProviderWindowReading,
@@ -48,6 +51,7 @@ import type {
 	ModelListResponse,
 	PermissionsRequestApprovalResponse,
 	RateLimitSnapshot,
+	RealtimeVoice,
 	ReasoningEffortOption,
 	SandboxPolicy,
 	SubAgentActivityKind,
@@ -63,9 +67,19 @@ import type {
 	ThreadGoalSetParams,
 	ThreadGoalSetResponse,
 	ThreadGoalUpdatedNotification,
+	ThreadRealtimeAppendSpeechParams,
+	ThreadRealtimeClosedNotification,
+	ThreadRealtimeErrorNotification,
+	ThreadRealtimeSdpNotification,
+	ThreadRealtimeStartedNotification,
+	ThreadRealtimeStartParams,
+	ThreadRealtimeStopParams,
+	ThreadRealtimeTranscriptDeltaNotification,
+	ThreadRealtimeTranscriptDoneNotification,
 	ThreadResumeParams,
 	ThreadStartParams,
 	TurnStartParams,
+	UserInput,
 } from "./codexProtocol";
 import { bumpDataRevision } from "./dataRevision";
 import { resolveProviderExecutableForCwd } from "./executionContext";
@@ -783,10 +797,36 @@ export type CodexLaunchConfig = {
 
 export type CodexProviderProfile = Omit<CodexAppServerLaunch, "executable">;
 
+export function codexRealtimeVersion(
+	_mode: ProviderRealtimeStart["mode"],
+): "v3" {
+	// The AVAS WebRTC transport accepts v1/v3, while text output accepts only
+	// v2. Dictation therefore runs on v3 audio and consumes only input
+	// transcript notifications; the browser deliberately does not play its
+	// remote audio track.
+	return "v3";
+}
+
+export function codexRealtimeOutputModality(): "audio" {
+	return "audio";
+}
+
+export function codexRealtimeErrorMessage(error: unknown): string {
+	const message = error instanceof Error ? error.message : String(error);
+	if (
+		/unexpected status 404 Not Found/i.test(message) &&
+		/backend-api\/codex\/realtime\/calls/i.test(message)
+	) {
+		return "Codex realtime voice is not available for this ChatGPT account yet.";
+	}
+	return message;
+}
+
 export function codexLaunchConfig(params: {
 	cwd: string;
 	executable?: string;
 	profile?: CodexProviderProfile;
+	enableRealtime?: boolean;
 }): CodexLaunchConfig {
 	// The shared app-server process is spawned without a cwd (see
 	// codexAppServer.ts) — the session's working directory travels as rpcCwd
@@ -797,7 +837,14 @@ export function codexLaunchConfig(params: {
 	return {
 		executable,
 		rpcCwd: toLogical(params.cwd),
-		appServer: { executable, ...params.profile },
+		appServer: {
+			...params.profile,
+			executable,
+			args: [
+				...(params.enableRealtime ? ["--enable", "realtime_conversation"] : []),
+				...(params.profile?.args ?? []),
+			],
+		},
 	};
 }
 
@@ -831,6 +878,13 @@ export function mapCodexModels(raw: unknown): ProviderModelInfo[] {
 		const description =
 			typeof item.description === "string" ? item.description : undefined;
 		const hidden = item.hidden === true ? true : undefined;
+		const isDefault = item.isDefault === true ? true : undefined;
+		const inputModalities = Array.isArray(item.inputModalities)
+			? item.inputModalities.filter(
+					(modality): modality is "text" | "image" | "audio" =>
+						modality === "text" || modality === "image" || modality === "audio",
+				)
+			: undefined;
 		const defaultEffort =
 			typeof item.defaultReasoningEffort === "string"
 				? item.defaultReasoningEffort
@@ -869,8 +923,9 @@ export function mapCodexModels(raw: unknown): ProviderModelInfo[] {
 				value,
 				label,
 				description,
-				isDefault: undefined,
+				isDefault,
 				hidden,
+				inputModalities,
 				efforts,
 			},
 		];
@@ -1134,6 +1189,10 @@ class CodexAgentSession implements AgentSession {
 	/** Dedicated transport owned by a one-shot Windows Computer Use worker. */
 	private ownedConnection: CodexAppServer | null = null;
 	private goalChangeHandler: AgentQueryParams["onGoalChange"];
+	private realtimeEventHandler:
+		| ((event: ProviderRealtimeEvent) => void)
+		| null = null;
+	private realtimeMode: ProviderRealtimeStart["mode"] | null = null;
 
 	private launch: CodexLaunchConfig | null = null;
 
@@ -1164,6 +1223,11 @@ class CodexAgentSession implements AgentSession {
 		// Computer Use workers own a fresh app-server so every task reloads the
 		// desktop app's current plugin path, Node REPL, and native approval pipe.
 		if (this.conn && this.threadId) {
+			if (this.realtimeEventHandler) {
+				void this.conn
+					.request("thread/realtime/stop", { threadId: this.threadId })
+					.catch(() => {});
+			}
 			if (this.activeTurnId) {
 				void this.conn
 					.request("turn/interrupt", {
@@ -1177,6 +1241,8 @@ class CodexAgentSession implements AgentSession {
 		this.ownedConnection?.kill(new Error("Windows Computer Use worker closed"));
 		this.ownedConnection = null;
 		this.conn = null;
+		this.realtimeEventHandler = null;
+		this.realtimeMode = null;
 	}
 
 	closeInput(): void {
@@ -1201,9 +1267,12 @@ class CodexAgentSession implements AgentSession {
 		});
 	}
 
-	async send(message: string, _opts?: SendOptions): Promise<void> {
+	async send(message: string, opts?: SendOptions): Promise<void> {
 		await this.ensureReady();
 		if (!this.threadId) throw new Error("Codex thread did not start");
+		if ((opts?.audioPaths?.length ?? 0) > 0) {
+			await this.assertAudioInputSupported();
+		}
 		const cwd = this.launch?.rpcCwd ?? this.params.cwd;
 		const collaborationModel = this.params.model ?? this.resolvedModel;
 		const collaborationMode =
@@ -1221,9 +1290,15 @@ class CodexAgentSession implements AgentSession {
 						},
 					}
 				: undefined;
+		const input: UserInput[] = [
+			{ type: "text", text: message, text_elements: [] },
+			...(opts?.audioPaths ?? []).map(
+				(path): UserInput => ({ type: "localAudio", path }),
+			),
+		];
 		const params: TurnStartParamsWithCollaboration = {
 			threadId: this.threadId,
-			input: [{ type: "text", text: message, text_elements: [] }],
+			input,
 			additionalContext: {
 				hlid: {
 					kind: "application",
@@ -1258,6 +1333,30 @@ class CodexAgentSession implements AgentSession {
 		const result = asObj(await this.request("turn/start", params));
 		const turn = asObj(result.turn);
 		if (typeof turn.id === "string") this.activeTurnId = turn.id;
+	}
+
+	private async assertAudioInputSupported(): Promise<void> {
+		const activeModel = this.resolvedModel ?? this.params.model;
+		let models: ProviderModelInfo[];
+		try {
+			const raw = await this.request("model/list", {
+				includeHidden: true,
+			} satisfies ModelListParams);
+			models = mapCodexModels(raw);
+		} catch (error) {
+			const detail = error instanceof Error ? error.message : String(error);
+			throw new Error(
+				`Talk to Codex is unavailable because Hlid could not verify audio support in the Codex model catalog: ${detail}`,
+			);
+		}
+		const model = activeModel
+			? models.find((candidate) => candidate.value === activeModel)
+			: (models.find((candidate) => candidate.isDefault) ?? models[0]);
+		if (model?.inputModalities?.includes("audio")) return;
+		const label = model?.label ?? activeModel ?? "The active Codex model";
+		throw new Error(
+			`Talk to Codex is unavailable because ${label} does not support audio input. Use Dictate with Whisper, or choose an audio-capable Codex model if one appears in your Codex model catalog.`,
+		);
 	}
 
 	/**
@@ -1331,6 +1430,7 @@ class CodexAgentSession implements AgentSession {
 				cwd: this.params.cwd,
 				executable: this.params.executable,
 				profile: this.providerProfile,
+				enableRealtime: this.params.codexRealtimeEnabled,
 			});
 		const conn = this.conn ?? acquireCodexAppServer(launch.appServer);
 		await conn.ready;
@@ -1549,6 +1649,79 @@ class CodexAgentSession implements AgentSession {
 		}
 	}
 
+	async startRealtime(
+		request: ProviderRealtimeStart,
+	): Promise<ProviderRealtimeStartResult> {
+		try {
+			if (!this.params.codexRealtimeEnabled) {
+				throw new Error(
+					"Codex realtime voice is disabled. Enable the Developer Preview in Forge first.",
+				);
+			}
+			await this.ensureReady();
+			const threadId = this.threadId;
+			if (!threadId) throw new Error("Codex thread did not start");
+			this.realtimeEventHandler = request.onEvent;
+			this.realtimeMode = request.mode;
+			const params: ThreadRealtimeStartParams = {
+				threadId,
+				outputModality: codexRealtimeOutputModality(),
+				transport: { type: "webrtc", sdp: request.sdp },
+				version: codexRealtimeVersion(request.mode),
+				voice: request.voice as RealtimeVoice | undefined,
+				includeStartupContext: request.mode === "live",
+				clientManagedHandoffs: request.mode !== "live",
+				flushTranscriptTailOnSessionEnd: request.mode === "dictation",
+				...(request.mode === "dictation"
+					? {
+							prompt:
+								"Transcribe the user's speech faithfully. Do not answer or act on it.",
+						}
+					: {}),
+			};
+			await this.request("thread/realtime/start", params);
+			return { providerSessionId: threadId };
+		} catch (error) {
+			this.realtimeEventHandler = null;
+			this.realtimeMode = null;
+			const message = codexRealtimeErrorMessage(error);
+			if (
+				/method not found|unknown method|-32601|realtime_conversation/i.test(
+					message,
+				)
+			) {
+				throw new Error(
+					"Codex voice requires Codex CLI 0.145.0 or newer with realtime conversation support.",
+				);
+			}
+			throw error;
+		}
+	}
+
+	async appendRealtimeSpeech(text: string): Promise<void> {
+		await this.ensureReady();
+		const threadId = this.threadId;
+		if (!threadId) throw new Error("Codex thread did not start");
+		const params: ThreadRealtimeAppendSpeechParams = { threadId, text };
+		await this.request("thread/realtime/appendSpeech", params);
+	}
+
+	async stopRealtime(): Promise<void> {
+		if (!this.realtimeEventHandler && !this.realtimeMode) return;
+		try {
+			await this.ensureReady();
+			const threadId = this.threadId;
+			if (!threadId) return;
+			const params: ThreadRealtimeStopParams = { threadId };
+			await this.request("thread/realtime/stop", params);
+		} finally {
+			// The stop response is authoritative even if Codex does not emit a
+			// separate closed notification afterward.
+			this.realtimeEventHandler = null;
+			this.realtimeMode = null;
+		}
+	}
+
 	async mcpServerStatus(): Promise<McpServerStatus[]> {
 		try {
 			const { conn } = await this.metadataConnection();
@@ -1606,6 +1779,7 @@ class CodexAgentSession implements AgentSession {
 			cwd: this.params.cwd,
 			executable: this.params.executable,
 			profile: this.providerProfile,
+			enableRealtime: this.params.codexRealtimeEnabled,
 		});
 		this.launch = launch;
 		const conn = this.delegatedWindowsComputerUse
@@ -3075,7 +3249,73 @@ class CodexAgentSession implements AgentSession {
 		);
 		const childNotification =
 			notificationThreadId.length > 0 && notificationThreadId !== this.threadId;
+		if (
+			this.realtimeMode === "live" &&
+			(method.startsWith("turn/") || method.startsWith("item/"))
+		) {
+			// Live voice receives its user-visible transcript and audio through
+			// the realtime channel. Do not leave a second, unconsumed copy of
+			// its background Codex turn in the ordinary AgentEvent queue.
+			return;
+		}
 		switch (method) {
+			case "thread/realtime/started": {
+				const notification = params as ThreadRealtimeStartedNotification;
+				if (!childNotification && notification.threadId === this.threadId)
+					this.realtimeEventHandler?.({ type: "started" });
+				break;
+			}
+			case "thread/realtime/sdp": {
+				const notification = params as ThreadRealtimeSdpNotification;
+				if (!childNotification && notification.threadId === this.threadId)
+					this.realtimeEventHandler?.({
+						type: "sdp",
+						sdp: notification.sdp,
+					});
+				break;
+			}
+			case "thread/realtime/transcript/delta": {
+				const notification =
+					params as ThreadRealtimeTranscriptDeltaNotification;
+				if (!childNotification && notification.threadId === this.threadId)
+					this.realtimeEventHandler?.({
+						type: "transcript_delta",
+						role: notification.role,
+						delta: notification.delta,
+					});
+				break;
+			}
+			case "thread/realtime/transcript/done": {
+				const notification = params as ThreadRealtimeTranscriptDoneNotification;
+				if (!childNotification && notification.threadId === this.threadId)
+					this.realtimeEventHandler?.({
+						type: "transcript_done",
+						role: notification.role,
+						text: notification.text,
+					});
+				break;
+			}
+			case "thread/realtime/error": {
+				const notification = params as ThreadRealtimeErrorNotification;
+				if (!childNotification && notification.threadId === this.threadId)
+					this.realtimeEventHandler?.({
+						type: "error",
+						message: codexRealtimeErrorMessage(notification.message),
+					});
+				break;
+			}
+			case "thread/realtime/closed": {
+				const notification = params as ThreadRealtimeClosedNotification;
+				if (!childNotification && notification.threadId === this.threadId) {
+					this.realtimeEventHandler?.({
+						type: "closed",
+						...(notification.reason ? { reason: notification.reason } : {}),
+					});
+					this.realtimeEventHandler = null;
+					this.realtimeMode = null;
+				}
+				break;
+			}
 			case "thread/goal/updated": {
 				const notification = params as ThreadGoalUpdatedNotification;
 				if (!childNotification && notification.goal) {

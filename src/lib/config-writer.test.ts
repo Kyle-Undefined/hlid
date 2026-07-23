@@ -217,17 +217,37 @@ describe("writeConfig — voice section", () => {
 		expect(toml).toContain("read_aloud_rate = 1.25");
 	});
 
+	it("preserves Talk to Codex input and realtime Developer Preview", () => {
+		const config = HlidConfigSchema.parse({
+			voice: {
+				input_provider: "codex",
+				read_aloud_provider: "codex",
+				codex_voice: "cedar",
+				codex_live_mode: true,
+			},
+		});
+		writeConfig(config);
+		const toml = capturedToml();
+		expect(toml).toContain('input_provider = "codex"');
+		expect(toml).toContain('read_aloud_provider = "codex"');
+		expect(toml).toContain('codex_voice = "cedar"');
+		expect(toml).toContain("codex_live_mode = true");
+	});
+
 	it("allows the recording hotkey to be cleared", () => {
 		writeConfig(
 			makeConfig({
 				voice: {
 					enabled: true,
+					input_provider: "local",
 					model: "base",
 					language: "auto",
 					auto_send: false,
 					read_aloud_provider: "device",
 					read_aloud_voice: "",
 					read_aloud_rate: 1,
+					codex_voice: "marin",
+					codex_live_mode: false,
 					hotkey: "",
 					max_recording_seconds: 300,
 					threads: 4,

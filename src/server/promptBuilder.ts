@@ -38,6 +38,8 @@ export type BuildPromptOptions = {
 	readVaultReference?: (relativePath: string) => Promise<string>;
 	/** Plan-mode HTML instructions (from buildPlanHtmlInstructions), appended after the user message. */
 	planHtmlInstructions?: string;
+	/** The active provider receives audio attachments as native turn inputs. */
+	nativeAudio?: boolean;
 };
 
 const MAX_NATIVE_REFERENCE_COUNT = 8;
@@ -145,9 +147,14 @@ function assemblePrompt(
 		opts.runtimeCwd
 			? toProviderRuntimePath(opts.runtimeCwd, path)
 			: toLogical(path);
+	const promptAttachments = opts.nativeAudio
+		? safeAttachments.filter(
+				(attachment) => !attachment.mime.startsWith("audio/"),
+			)
+		: safeAttachments;
 	const attachmentBlock =
-		safeAttachments.length > 0
-			? `Attachments (read with the Read tool when relevant):\n${safeAttachments
+		promptAttachments.length > 0
+			? `Attachments (read with the Read tool when relevant):\n${promptAttachments
 					.map(
 						(attachment) =>
 							`- ${runtimePath(attachment.path)} (${attachment.mime}${attachment.reference === "relic" ? `, Relic: ${attachment.filename}` : ""})`,

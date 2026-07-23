@@ -11,8 +11,9 @@ export type ProviderInfo = {
 	/**
 	 * Models the provider supports. Use to populate model picker in UI.
 	 * Strict superset of the original `{value,label}` shape — additive fields
-	 * (`description`/`isDefault`/`hidden`/`efforts`) come from the live model
-	 * catalog (see ProviderModelInfo in server/agentProvider.ts) when available.
+	 * (`description`/`isDefault`/`hidden`/`inputModalities`/`efforts`) come
+	 * from the live model catalog (see ProviderModelInfo in
+	 * server/agentProvider.ts) when available.
 	 */
 	models?: Array<{
 		value: string;
@@ -20,6 +21,7 @@ export type ProviderInfo = {
 		description?: string;
 		isDefault?: boolean;
 		hidden?: boolean;
+		inputModalities?: Array<"text" | "image" | "audio">;
 		efforts?: Array<{
 			value: string;
 			label: string;

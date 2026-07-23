@@ -43,7 +43,7 @@ import { useDraft } from "#/hooks/useDraft";
 import { useFileUpload } from "#/hooks/useFileUpload";
 import { useSlashPicker } from "#/hooks/useSlashPicker";
 import { useVaultReferencePicker } from "#/hooks/useVaultReferencePicker";
-import { useVoiceInput } from "#/hooks/useVoiceInput";
+import { uploadVoiceRecording, useVoiceInput } from "#/hooks/useVoiceInput";
 import { useWsLiveStats } from "#/hooks/useWsSelectors";
 import {
 	getDataRevisionSnapshot,
@@ -59,8 +59,10 @@ import { insertAtSelection, resizeComposer } from "#/lib/composer";
 import { fmtModel } from "#/lib/formatters";
 import { optionalLoaderValue } from "#/lib/loaderFallback";
 import { isCliProxyProvider } from "#/lib/providerIds";
+import type { ModelInputAvailability } from "#/lib/providerOptions";
 import {
 	configuredVaultModel,
+	modelInputAvailability,
 	resolveActiveProviderId,
 } from "#/lib/providerOptions";
 import type { ProviderInfo } from "#/lib/providerTypes";
@@ -82,6 +84,8 @@ import {
 import { getVoiceInfoFn } from "#/lib/serverFns/voice";
 import { groupSkills, type Skill } from "#/lib/skills";
 import { builtInProviderUsageShells } from "#/lib/usageWindows";
+import { uid } from "#/lib/utils";
+import type { ChatAttachment } from "#/server/protocol";
 
 // ─── route ───────────────────────────────────────────────────────────────────
 
@@ -424,7 +428,13 @@ function useCockpitVoice(
 	config: Awaited<ReturnType<typeof getConfig>>,
 	initialVoiceInfo: Awaited<ReturnType<typeof getVoiceInfoFn>>,
 	composer: CockpitComposer,
-	handleRun: (overrideText?: string) => Promise<void>,
+	upload: CockpitUpload,
+	providerId: string,
+	codexAudio: ModelInputAvailability,
+	handleRun: (
+		overrideText?: string,
+		overrideAttachments?: ChatAttachment[],
+	) => Promise<void>,
 ) {
 	const { prompt, setPrompt, textareaRef } = composer;
 	return useVoiceInput({
@@ -441,6 +451,20 @@ function useCockpitVoice(
 			setPrompt(insertAtSelection(prompt, text, start, end));
 			requestAnimationFrame(() => textareaRef.current?.focus());
 		},
+		onAudioTurn: async (audio) => {
+			if (providerId !== "codex") {
+				throw new Error("Talk to Codex requires the native Codex provider");
+			}
+			const sessionId = upload.uploadSessionIdRef.current ?? uid();
+			upload.uploadSessionIdRef.current = sessionId;
+			const attachment = await uploadVoiceRecording(audio, {
+				sessionId,
+				agentCwd: composer.selectedAgentPath,
+			});
+			await handleRun("Voice message", [attachment]);
+		},
+		codexTurnAvailable: providerId === "codex" && codexAudio.available,
+		codexTurnUnavailableReason: codexAudio.reason,
 	});
 }
 
@@ -716,13 +740,17 @@ function CockpitPage() {
 		);
 	}, [refreshRoutines, routinesRevision]);
 	useEffect(() => {
-		if (!routineDialogOpen || routineProviders.length > 0) return;
+		if (
+			(!routineDialogOpen && config.voice.input_provider !== "codex") ||
+			routineProviders.length > 0
+		)
+			return;
 		void getProvidersFn({ data: { preferCachedModels: true } })
 			.then(setRoutineProviders)
 			.catch((cause) =>
 				console.error("[watch] unable to load Routine harnesses", cause),
 			);
-	}, [routineDialogOpen, routineProviders.length]);
+	}, [config.voice.input_provider, routineDialogOpen, routineProviders.length]);
 	useEffect(() => {
 		const incoming = {
 			data: loader.data,
@@ -1021,6 +1049,13 @@ function CockpitPage() {
 		config,
 		optionalData.voiceInfo,
 		composer,
+		upload,
+		commandProviderId,
+		modelInputAvailability(
+			routineProviders.find((provider) => provider.id === "codex"),
+			configuredRunModel,
+			"audio",
+		),
 		handleRun,
 	);
 

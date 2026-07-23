@@ -26,6 +26,11 @@ const state = vi.hoisted(() => ({
 	sessions: [] as unknown[],
 	onMessage: null as ((message: ServerMessage) => void) | null,
 	onAgentChange: null as ((value: string) => void) | null,
+	voiceOptions: null as null | {
+		onAudioTurn?: (audio: Blob) => void | Promise<void>;
+		codexTurnAvailable?: boolean;
+	},
+	uploadVoiceRecording: vi.fn(),
 	terminalProps: null as null | {
 		active: boolean;
 		terminateOnDisconnect?: boolean;
@@ -115,18 +120,23 @@ vi.mock("#/hooks/useChatWsHandler", () => ({
 }));
 vi.mock("#/hooks/useLoadChatHistory", () => ({ useLoadChatHistory: vi.fn() }));
 vi.mock("#/hooks/useVoiceInput", () => ({
-	useVoiceInput: () => ({
-		phase: "idle",
-		seconds: 0,
-		error: null,
-		ready: false,
-		status: { state: "unavailable", model: "" },
-		start: vi.fn(),
-		stop: vi.fn(),
-		cancel: vi.fn(),
-		refresh: vi.fn(),
-		clearError: vi.fn(),
-	}),
+	uploadVoiceRecording: state.uploadVoiceRecording,
+	useVoiceInput: (options: typeof state.voiceOptions) => {
+		state.voiceOptions = options;
+		return {
+			phase: "idle",
+			engine: "local",
+			seconds: 0,
+			error: null,
+			ready: false,
+			status: { state: "unavailable", model: "" },
+			start: vi.fn(),
+			stop: vi.fn(),
+			cancel: vi.fn(),
+			refresh: vi.fn(),
+			clearError: vi.fn(),
+		};
+	},
 }));
 vi.mock("#/hooks/useFileUpload", () => ({
 	useFileUpload: () => ({
@@ -162,6 +172,8 @@ vi.mock("#/hooks/useWsSelectors", () => ({
 }));
 vi.mock("#/hooks/wsStore", () => ({
 	subscribeToSession: state.subscribeToSession,
+	subscribeMessage: vi.fn(() => () => {}),
+	send: state.send,
 	enqueueChat: state.enqueueChat,
 	removeFromQueue: vi.fn(),
 	promoteQueued: vi.fn(),
@@ -231,6 +243,14 @@ beforeEach(() => {
 	state.sessions = [];
 	state.onMessage = null;
 	state.onAgentChange = null;
+	state.voiceOptions = null;
+	state.uploadVoiceRecording.mockResolvedValue({
+		id: "voice-1",
+		path: "/library/voice-1/voice-message.wav",
+		filename: "voice-message.wav",
+		mime: "audio/wav",
+		kind: "ephemeral",
+	});
 	state.terminalProps = null;
 	state.search = {};
 	state.loaderData = {
@@ -285,6 +305,62 @@ beforeEach(() => {
 });
 
 describe("Raven composed submission behavior", () => {
+	it("sends a staged microphone recording as a normal Codex turn", async () => {
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as Record<string, unknown>),
+				vault_provider: "codex",
+				voice: {
+					...(state.loaderData.config as { voice: Record<string, unknown> })
+						.voice,
+					enabled: true,
+					input_provider: "codex",
+				},
+				codex: { model: "gpt-audio" },
+			},
+			providers: [
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					models: [
+						{
+							value: "gpt-audio",
+							label: "GPT Audio",
+							inputModalities: ["text", "image", "audio"],
+						},
+					],
+				},
+			],
+		};
+		render(<ChatPage />);
+
+		expect(state.voiceOptions?.codexTurnAvailable).toBe(true);
+		await act(async () => {
+			await state.voiceOptions?.onAudioTurn?.(
+				new Blob(["recording"], { type: "audio/wav" }),
+			);
+		});
+
+		expect(state.uploadVoiceRecording).toHaveBeenCalledWith(
+			expect.any(Blob),
+			expect.objectContaining({ sessionId: expect.any(String) }),
+		);
+		expect(state.send).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "chat",
+				text: "Voice message",
+				attachments: [
+					expect.objectContaining({
+						id: "voice-1",
+						mime: "audio/wav",
+					}),
+				],
+			}),
+		);
+	});
+
 	it("requests MCP and command metadata automatically when the WebSocket connects", async () => {
 		state.wsStatus = "connecting";
 		const { rerender } = render(<ChatPage />);
@@ -447,7 +523,7 @@ describe("Raven composed submission behavior", () => {
 		render(<ChatPage />);
 
 		const attach = screen.getByRole("button", { name: "Attach file" });
-		const voice = screen.getByRole("button", { name: "Start voice input" });
+		const voice = screen.getByRole("button", { name: "Dictate with Whisper" });
 		const activeNote = screen.getByRole("button", {
 			name: "Attach active Obsidian note",
 		});
@@ -482,7 +558,7 @@ describe("Raven composed submission behavior", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Send" }));
 
 		const attach = screen.getByRole("button", { name: "Attach file" });
-		const voice = screen.getByRole("button", { name: "Start voice input" });
+		const voice = screen.getByRole("button", { name: "Dictate with Whisper" });
 		const newChat = screen.getByRole("button", { name: "New chat" });
 		const fork = screen.getByRole("button", { name: "Fork session" });
 

@@ -13,6 +13,7 @@ const transcriptionGate = createConcurrencyGate(2);
 
 export async function handleVoiceTranscription(
 	request: Request,
+	backendPath = "/voice/transcribe",
 ): Promise<Response> {
 	const forbidden = forbiddenResponse(request);
 	if (forbidden) return forbidden;
@@ -36,7 +37,7 @@ export async function handleVoiceTranscription(
 		}
 		const limited = await readRequestBodyLimited(request, MAX_VOICE_BODY_BYTES);
 		if (!limited.ok) return limited.response;
-		return dbFetch("/voice/transcribe", {
+		return dbFetch(backendPath, {
 			method: "POST",
 			headers: { "content-type": contentType },
 			body: limited.body,

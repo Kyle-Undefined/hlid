@@ -18,9 +18,52 @@ type EffortOption = {
 	isDefault?: boolean;
 };
 
+export type ModelInputAvailability = {
+	available: boolean;
+	modelLabel?: string;
+	reason?: string;
+};
+
 /** Models the provider exposes for picking, with `hidden: true` entries filtered out. */
 export function modelOptions(p: ProviderInfo | undefined): ModelOptions {
 	return (p?.models ?? []).filter((m) => m.hidden !== true);
+}
+
+/** Resolve whether the active catalog model accepts a particular input kind. */
+export function modelInputAvailability(
+	p: ProviderInfo | undefined,
+	modelValue: string | null | undefined,
+	modality: "text" | "image" | "audio",
+): ModelInputAvailability {
+	if (!p) {
+		return {
+			available: false,
+			reason: "The provider model catalog is still loading.",
+		};
+	}
+	const visibleModels = modelOptions(p);
+	const model = modelValue
+		? p.models?.find((candidate) => candidate.value === modelValue)
+		: (visibleModels.find((candidate) => candidate.isDefault) ??
+			visibleModels[0]);
+	if (!model) {
+		return {
+			available: false,
+			reason: modelValue
+				? `${modelValue} is not present in the current ${p.label} model catalog.`
+				: `${p.label} did not report an active model.`,
+		};
+	}
+	if (model.inputModalities?.includes(modality)) {
+		return { available: true, modelLabel: model.label };
+	}
+	return {
+		available: false,
+		modelLabel: model.label,
+		reason: model.inputModalities
+			? `${model.label} does not support ${modality} input.`
+			: `${model.label} has not reported ${modality} input support.`,
+	};
 }
 
 /**

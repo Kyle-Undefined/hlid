@@ -15,10 +15,12 @@ import { ReadAloudSection } from "./ReadAloudSection";
 
 function Harness({
 	onChange = vi.fn(),
+	initialVoice = DEFAULT_VOICE_CONFIG,
 }: {
 	onChange?: (patch: Partial<HlidConfig["voice"]>) => void;
+	initialVoice?: HlidConfig["voice"];
 }) {
-	const [voice, setVoice] = useState<HlidConfig["voice"]>(DEFAULT_VOICE_CONFIG);
+	const [voice, setVoice] = useState<HlidConfig["voice"]>(initialVoice);
 	return (
 		<ReadAloudSection
 			voice={voice}
@@ -103,6 +105,45 @@ describe("ReadAloudSection", () => {
 					?.hasAttribute("disabled"),
 			).toBe(true),
 		);
+	});
+
+	it("offers Codex read aloud and its native voices", () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue(
+				Response.json({
+					available: false,
+					voices: [],
+				}),
+			),
+		);
+		const onChange = vi.fn();
+		render(
+			<Harness
+				onChange={onChange}
+				initialVoice={{ ...DEFAULT_VOICE_CONFIG, codex_live_mode: true }}
+			/>,
+		);
+		fireEvent.change(screen.getByLabelText("Read aloud speech engine"), {
+			target: { value: "codex" },
+		});
+		fireEvent.change(screen.getByLabelText("Codex realtime voice"), {
+			target: { value: "cedar" },
+		});
+		expect(onChange).toHaveBeenCalledWith({
+			read_aloud_provider: "codex",
+		});
+		expect(onChange).toHaveBeenCalledWith({ codex_voice: "cedar" });
+		expect(screen.queryByLabelText("Read aloud speed")).toBeNull();
+	});
+
+	it("keeps Codex realtime read aloud hidden outside Developer Preview", () => {
+		render(<Harness />);
+		expect(
+			screen
+				.getByLabelText("Read aloud speech engine")
+				.querySelector('option[value="codex"]'),
+		).toBeNull();
 	});
 
 	it("refreshes the Windows voice inventory from Forge", async () => {

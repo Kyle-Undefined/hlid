@@ -5,7 +5,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("#/lib/serverFns/voice", () => ({ getVoiceInfoFn: vi.fn() }));
 
 import { getVoiceInfoFn } from "#/lib/serverFns/voice";
-import { useVoiceInput } from "./useVoiceInput";
+import {
+	readTranscriptionResponse,
+	uploadVoiceRecording,
+	useVoiceInput,
+} from "./useVoiceInput";
 
 const readyInfo = {
 	status: { state: "ready" as const, model: "tiny" },
@@ -13,12 +17,15 @@ const readyInfo = {
 };
 const config = {
 	enabled: true,
+	input_provider: "local" as const,
 	model: "tiny",
 	language: "auto",
 	auto_send: false,
 	read_aloud_provider: "device" as const,
 	read_aloud_voice: "",
 	read_aloud_rate: 1,
+	codex_voice: "marin" as const,
+	codex_live_mode: false,
 	hotkey: "Alt+Shift+KeyV",
 	max_recording_seconds: 300,
 	threads: 4,
@@ -54,6 +61,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	vi.unstubAllGlobals();
+	vi.restoreAllMocks();
 });
 
 describe("useVoiceInput", () => {
@@ -80,6 +88,19 @@ describe("useVoiceInput", () => {
 		act(() => result.current.clearError());
 		expect(result.current.phase).toBe("idle");
 		expect(result.current.error).toBeNull();
+	});
+
+	it("replaces an HTML route miss with a concise upgrade error", async () => {
+		const html = "<!DOCTYPE html><html><body>Hlid page not found</body></html>";
+		const response = new Response(html, {
+			status: 404,
+			statusText: "Not Found",
+			headers: { "content-type": "text/html" },
+		});
+
+		await expect(readTranscriptionResponse(response)).rejects.toThrow(
+			"Voice transcription is unavailable in this Hlid build",
+		);
 	});
 
 	it("starts and cancels recording while releasing microphone tracks", async () => {
@@ -224,6 +245,88 @@ describe("useVoiceInput", () => {
 		const header = new DataView(await wav.arrayBuffer());
 		expect(header.getUint32(0, false)).toBe(0x52494646);
 		expect(header.getUint32(8, false)).toBe(0x57415645);
+	});
+
+	it("sends the complete WAV to a Codex turn without transcribing it", async () => {
+		const stream = {
+			getTracks: () => [{ stop: vi.fn() }],
+		} as unknown as MediaStream;
+		Object.defineProperty(navigator, "mediaDevices", {
+			value: { getUserMedia: vi.fn(async () => stream) },
+			configurable: true,
+		});
+		vi.stubGlobal("MediaRecorder", FakeMediaRecorder);
+		vi.stubGlobal(
+			"AudioContext",
+			class {
+				decodeAudioData = vi.fn(async () => ({ duration: 3 / 16_000 }));
+				close = vi.fn();
+			},
+		);
+		vi.stubGlobal(
+			"OfflineAudioContext",
+			class {
+				destination = {};
+				createBufferSource = vi.fn(() => ({
+					buffer: null,
+					connect: vi.fn(),
+					start: vi.fn(),
+				}));
+				startRendering = vi.fn(async () => ({
+					getChannelData: () => new Float32Array([-1, 0, 1]),
+				}));
+			},
+		);
+		const fetchMock = vi.spyOn(globalThis, "fetch");
+		const onAudioTurn = vi.fn(async (_audio: Blob) => {});
+		const onTranscription = vi.fn();
+		const { result } = renderHook(() =>
+			useVoiceInput({
+				config: { ...config, input_provider: "codex" },
+				initialInfo: readyInfo,
+				onTranscription,
+				onAudioTurn,
+				codexTurnAvailable: true,
+			}),
+		);
+
+		await act(() => result.current.start());
+		const recorder = FakeMediaRecorder.instances[0];
+		recorder?.ondataavailable?.({ data: new Blob(["recorded audio"]) });
+		act(() => recorder?.stop());
+		await waitFor(() => expect(onAudioTurn).toHaveBeenCalledOnce());
+
+		const wav = onAudioTurn.mock.calls[0]?.[0] as Blob;
+		expect(wav.type).toBe("audio/wav");
+		expect(onTranscription).not.toHaveBeenCalled();
+		expect(fetchMock).not.toHaveBeenCalled();
+		expect(result.current.phase).toBe("idle");
+	});
+
+	it("stages a WAV as a managed voice attachment", async () => {
+		const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			Response.json({
+				id: "voice-1",
+				path: "/library/voice-1/voice-message.wav",
+				filename: "voice-message.wav",
+				mime: "audio/wav",
+				kind: "ephemeral",
+			}),
+		);
+
+		await expect(
+			uploadVoiceRecording(new Blob(["RIFF"], { type: "audio/wav" }), {
+				sessionId: "session-1",
+				agentCwd: "/project",
+			}),
+		).resolves.toMatchObject({
+			id: "voice-1",
+			mime: "audio/wav",
+		});
+		const body = fetchMock.mock.calls[0]?.[1]?.body as FormData;
+		expect(body.get("purpose")).toBe("voice");
+		expect(body.get("session_id")).toBe("session-1");
+		expect(body.get("agent_cwd")).toBe("/project");
 	});
 
 	it("refreshes the model status through the real hook boundary", async () => {

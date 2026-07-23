@@ -205,6 +205,95 @@ async function handleGoalControl(
 	}
 }
 
+async function handleRealtimeControl(
+	context: MessageContext,
+	msg: MessageOf<"realtime_start" | "realtime_speak" | "realtime_stop">,
+): Promise<void> {
+	let entry =
+		context.pool.get(msg.session_id) ??
+		context.pool.findByDbSessionId(msg.session_id);
+	let createdForRealtime = false;
+	if (!entry && msg.type === "realtime_start") {
+		const selection = await db
+			.getSessionSelection(msg.session_id)
+			.catch(() => null);
+		const targetCwd =
+			msg.agent_cwd ??
+			selection?.agentCwd ??
+			context.pool.vaultEntry().agentCwd;
+		const created = createPoolEntry(
+			context,
+			targetCwd,
+			resolveAgentName(targetCwd),
+		);
+		if (!created) return;
+		entry = created;
+		createdForRealtime = true;
+		subscribeToEntry(context, entry);
+		sendSessionCreated(context, entry);
+		send(context.ws, { type: "status", ...entry.manager.getStatus() });
+		broadcastSessionsStatus(context);
+	}
+	if (!entry) {
+		// A late browser stop after server-owned error teardown is intentionally
+		// idempotent. Never route it into the permanent vault session.
+		if (msg.type === "realtime_stop") return;
+		send(context.ws, {
+			type: "error",
+			message: "No Codex voice session is active.",
+		});
+		return;
+	}
+	let retired = false;
+	const retireFailedRealtimeEntry = () => {
+		if (!createdForRealtime || retired) return;
+		retired = true;
+		context.pool.close(entry.sessionId);
+		resubscribeClosedSessionClients(context.pool, entry.sessionId);
+		broadcast({ type: "session_closed", session_id: entry.sessionId });
+		broadcastSessionsStatus(context);
+	};
+	try {
+		const control =
+			msg.type === "realtime_start"
+				? {
+						action: "start" as const,
+						mode: msg.mode,
+						sdp: msg.sdp,
+						voice: msg.voice,
+					}
+				: msg.type === "realtime_speak"
+					? { action: "speak" as const, text: msg.text }
+					: { action: "stop" as const };
+		await entry.manager.controlRealtime(control, {
+			sessionId: msg.session_id,
+			agentCwd: msg.type === "realtime_start" ? msg.agent_cwd : undefined,
+			emit: (event) => {
+				send(context.ws, event);
+				if (event.type === "realtime_error") {
+					retireFailedRealtimeEntry();
+				}
+			},
+		});
+	} catch (error) {
+		if (msg.type === "realtime_start") {
+			send(context.ws, {
+				type: "realtime_error",
+				session_id: msg.session_id,
+				mode: msg.mode,
+				message: error instanceof Error ? error.message : "Codex voice failed",
+			});
+			retireFailedRealtimeEntry();
+			return;
+		}
+		send(context.ws, {
+			type: "error",
+			message:
+				error instanceof Error ? error.message : "Codex voice control failed",
+		});
+	}
+}
+
 /** Re-send durable pending prompts whenever a client focuses a running session. */
 function sendPendingInteractions(
 	ws: ServerWebSocket<WsData>,
@@ -1032,6 +1121,14 @@ async function handleMessage(
 	}
 	if (msg.type === "goal_control") {
 		await handleGoalControl(context, msg);
+		return;
+	}
+	if (
+		msg.type === "realtime_start" ||
+		msg.type === "realtime_speak" ||
+		msg.type === "realtime_stop"
+	) {
+		await handleRealtimeControl(context, msg);
 		return;
 	}
 	if (handleRoutingMessage(context, msg)) return;

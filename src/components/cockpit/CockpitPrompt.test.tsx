@@ -20,6 +20,7 @@ type Props = Parameters<typeof CockpitPrompt>[0];
 function makeVoice(overrides?: Partial<Props["voice"]>): Props["voice"] {
 	return {
 		phase: "idle",
+		engine: "local",
 		seconds: 0,
 		error: null,
 		ready: true,
@@ -123,7 +124,7 @@ describe("CockpitPrompt placeholder", () => {
 				})}
 			/>,
 		);
-		expect(textarea().placeholder).toBe("recording… 7s");
+		expect(textarea().placeholder).toBe("recording for Whisper… 7s");
 	});
 
 	it("shows transcribing state and disables textarea", () => {
@@ -328,7 +329,9 @@ describe("VoiceButton", () => {
 	it("starts voice input on click when ready", () => {
 		const voice = makeVoice();
 		render(<CockpitPrompt {...makeProps({ voice })} />);
-		fireEvent.click(screen.getByRole("button", { name: "Start voice input" }));
+		fireEvent.click(
+			screen.getByRole("button", { name: "Dictate with Whisper" }),
+		);
 		expect(voice.start).toHaveBeenCalledOnce();
 	});
 
@@ -356,7 +359,7 @@ describe("VoiceButton", () => {
 		);
 		expect(
 			screen
-				.getByRole("button", { name: "Start voice input" })
+				.getByRole("button", { name: "Dictate with Whisper" })
 				.getAttribute("title"),
 		).toBe("Enable voice in Forge");
 	});
@@ -368,7 +371,7 @@ describe("VoiceButton", () => {
 		} as never);
 		render(<CockpitPrompt {...makeProps({ voice })} />);
 		const btn = screen.getByRole("button", {
-			name: "Start voice input",
+			name: "Dictate with Whisper",
 		}) as HTMLButtonElement;
 		expect(btn.title).toBe("Voice loading");
 		expect(btn.disabled).toBe(true);

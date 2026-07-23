@@ -127,6 +127,7 @@ function makeSession(overrides: Partial<SessionManager> = {}): SessionManager {
 		probeMcpStatus: vi.fn().mockResolvedValue(undefined),
 		probeSlashCommands: vi.fn().mockResolvedValue(undefined),
 		controlGoal: vi.fn().mockResolvedValue({ providerId: "codex", goal: null }),
+		controlRealtime: vi.fn().mockResolvedValue(undefined),
 		restoreMcpStatus: vi.fn(),
 		setModel: vi.fn().mockResolvedValue(undefined),
 		setProvider: vi.fn().mockResolvedValue(undefined),
@@ -290,6 +291,142 @@ describe("message — goal_control", () => {
 			request_id: "goal-hydration",
 			goal: null,
 		});
+	});
+});
+
+describe("message — realtime control", () => {
+	function setupDetachedRealtime(controlRealtime: ReturnType<typeof vi.fn>) {
+		const vaultSession = makeSession({
+			getCurrentSessionId: vi.fn().mockReturnValue(null),
+		});
+		const { pool, entry: vaultEntry } = wrapSession(vaultSession);
+		const voiceRunState = makeRunState("voice-pool");
+		const voiceEntry = {
+			sessionId: "voice-pool",
+			agentCwd: "/tmp/voice-agent",
+			agentName: "Voice Agent",
+			manager: makeSession({
+				controlRealtime:
+					controlRealtime as unknown as SessionManager["controlRealtime"],
+				getCurrentSessionId: vi.fn().mockReturnValue("detached-chat"),
+			}),
+			runState: voiceRunState,
+		};
+		pool.create.mockReturnValue(voiceEntry);
+		pool.get.mockImplementation((id: string) => {
+			if (id === "vault-id") return vaultEntry;
+			if (id === "voice-pool") return voiceEntry;
+			return undefined;
+		});
+		return { pool, vaultSession, voiceEntry };
+	}
+
+	it("does not route a detached voice start through the permanent vault session", async () => {
+		vi.mocked(dbMock.getSessionSelection).mockResolvedValueOnce({
+			agentCwd: "/tmp/voice-agent",
+			providerId: "codex",
+			model: "gpt-5.6-sol",
+			effort: "high",
+			permissionMode: "default",
+		});
+		const controlRealtime = vi
+			.fn()
+			.mockRejectedValue(
+				new Error("Codex realtime voice is not available for this account."),
+			);
+		const { pool, vaultSession, voiceEntry } =
+			setupDetachedRealtime(controlRealtime);
+		const ws = makeWs("detached-chat");
+		wsState.clients.add(ws);
+		const { message } = createWsHandlers(pool as never);
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "realtime_start",
+				session_id: "detached-chat",
+				mode: "dictation",
+				sdp: "v=0\r\no=hlid",
+				agent_cwd: "/tmp/voice-agent",
+			}),
+		);
+
+		expect(pool.create).toHaveBeenCalledWith("/tmp/voice-agent", "voice-agent");
+		expect(vaultSession.controlRealtime).not.toHaveBeenCalled();
+		expect(controlRealtime).toHaveBeenCalledWith(
+			expect.objectContaining({ action: "start", mode: "dictation" }),
+			expect.objectContaining({ sessionId: "detached-chat" }),
+		);
+		expect(pool.close).toHaveBeenCalledWith(voiceEntry.sessionId);
+		expect(ws.data.subscribedSessionId).toBe("vault-id");
+		expect(lastSentTo(ws)).toEqual({
+			type: "realtime_error",
+			session_id: "detached-chat",
+			mode: "dictation",
+			message: "Codex realtime voice is not available for this account.",
+		});
+	});
+
+	it("retires a voice-only entry when the provider reports a late error", async () => {
+		let emit: ((message: ServerMessage) => void) | undefined;
+		const controlRealtime = vi.fn(
+			async (
+				_control: unknown,
+				options: { emit: (message: ServerMessage) => void },
+			) => {
+				emit = options.emit;
+			},
+		);
+		const { pool, voiceEntry } = setupDetachedRealtime(controlRealtime);
+		const ws = makeWs("detached-chat");
+		wsState.clients.add(ws);
+		const { message } = createWsHandlers(pool as never);
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "realtime_start",
+				session_id: "detached-chat",
+				mode: "dictation",
+				sdp: "v=0\r\no=hlid",
+			}),
+		);
+		expect(pool.close).not.toHaveBeenCalled();
+
+		emit?.({
+			type: "realtime_error",
+			session_id: "detached-chat",
+			mode: "dictation",
+			message: "Realtime failed after startup.",
+		});
+
+		expect(pool.close).toHaveBeenCalledWith(voiceEntry.sessionId);
+		expect(ws.data.subscribedSessionId).toBe("vault-id");
+		expect(mockBroadcast).toHaveBeenCalledWith({
+			type: "session_closed",
+			session_id: voiceEntry.sessionId,
+		});
+	});
+
+	it("treats a late stop for a retired voice session as a no-op", async () => {
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		const ws = makeWs("detached-chat");
+		const { message } = createWsHandlers(pool as never);
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "realtime_stop",
+				session_id: "detached-chat",
+			}),
+		);
+
+		expect(session.controlRealtime).not.toHaveBeenCalled();
+		expect(mockSend).not.toHaveBeenCalledWith(
+			ws,
+			expect.objectContaining({ type: "error" }),
+		);
 	});
 });
 

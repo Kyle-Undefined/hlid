@@ -324,6 +324,50 @@ describe("handleUpload — MIME allowlist", () => {
 		// text/plain is allowed — should proceed past MIME check (mkdir/write mocked)
 		expect(res.status).not.toBe(415);
 	});
+
+	it("accepts a validated voice WAV even with an older MIME allowlist", async () => {
+		const config = makeConfig();
+		config.attachments.allowed_mimes = config.attachments.allowed_mimes.filter(
+			(mime) => mime !== "audio/wav",
+		);
+		const wav = Buffer.concat([
+			Buffer.from("RIFF"),
+			Buffer.alloc(4),
+			Buffer.from("WAVE"),
+			Buffer.alloc(8),
+		]);
+		const form = makeFormData(
+			new File([wav], "voice-message.wav", {
+				type: "application/octet-stream",
+			}),
+			{ purpose: "voice" },
+		);
+
+		const res = await handleUpload(makeRequest(form), config);
+
+		expect(res.status).toBe(200);
+		expect(db.createAttachment).toHaveBeenCalledWith(
+			expect.objectContaining({ mime: "audio/wav", origin: "upload" }),
+		);
+	});
+
+	it("rejects a fake WAV even when its filename and MIME look valid", async () => {
+		const config = makeConfig();
+		const form = makeFormData(
+			new File(["not audio"], "voice-message.wav", {
+				type: "application/octet-stream",
+			}),
+			{ purpose: "voice" },
+		);
+
+		const res = await handleUpload(makeRequest(form), config);
+
+		expect(res.status).toBe(415);
+		await expect(res.json()).resolves.toMatchObject({
+			error: "mime_mismatch",
+			declared: "audio/wav",
+		});
+	});
 });
 
 // ── handleUpload — MIME sniffing (binary magic bytes) ────────────────────────

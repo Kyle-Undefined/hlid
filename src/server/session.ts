@@ -37,6 +37,9 @@ import type {
 	ProviderAccountInfo,
 	ProviderGoalControl,
 	ProviderGoalControlResult,
+	ProviderRealtimeEvent,
+	ProviderRealtimeMode,
+	ProviderRealtimeStartResult,
 	ProviderThreadGoal,
 	SlashCommand,
 	SubagentSnapshot,
@@ -296,6 +299,7 @@ function buildAgentQueryParams(options: {
 	policyEnforced: boolean;
 	usageGateEnforced: boolean;
 	sandboxModeOverride?: AgentQueryParams["sandboxModeOverride"];
+	codexRealtimeEnabled: boolean;
 }): AgentQueryParams {
 	const implementationPermissionMode =
 		options.configuredPermissionMode === "plan"
@@ -342,6 +346,7 @@ function buildAgentQueryParams(options: {
 		executable: options.executable,
 		windowsComputerUse: options.windowsComputerUse,
 		onGoalChange: options.onGoalChange,
+		codexRealtimeEnabled: options.codexRealtimeEnabled,
 		settingSources: ["user", "project", "local"],
 		canUseTool: options.canUseTool,
 		beforeToolUse: options.beforeToolUse,
@@ -589,6 +594,9 @@ export class SessionManager {
 	// chat switch / clearHistory / abort.
 	private agentSession: AgentSession | null = null;
 	private agentSessionKey: string | null = null;
+	private realtimeMode: ProviderRealtimeMode | null = null;
+	private realtimeStopPromise: Promise<void> | null = null;
+	private codexRealtimeEnabled = false;
 	// Slice C: turn id of the currently running turn — threaded into the
 	// emitted `done` event so clients can correlate completions to specific
 	// submissions (and pop their queue display FIFO by id).
@@ -681,6 +689,7 @@ export class SessionManager {
 		this.allowedAgentRealPaths = computeAllowedAgentRealPaths(config);
 		this.policyEnforced = config.umbod?.enabled ?? false;
 		this.usageGateEnforced = config.auto_sleep?.enabled ?? false;
+		this.codexRealtimeEnabled = config.voice?.codex_live_mode ?? false;
 	}
 
 	reinitialize(config: HlidConfig): void {
@@ -709,6 +718,7 @@ export class SessionManager {
 	// Returns true if an effective status field changed (so callers can broadcast it).
 	syncConfig(config: HlidConfig): boolean {
 		const previous = this.getStatus();
+		const previousCodexRealtimeEnabled = this.codexRealtimeEnabled;
 		const nextProviderId = config.vault_provider ?? "claude";
 		const providerChanged =
 			this.providerOverride === null && nextProviderId !== this.vaultProviderId;
@@ -719,6 +729,21 @@ export class SessionManager {
 			this.permissionModeOverride = null;
 		}
 		this.applyConfig(config, !providerChanged);
+		if (
+			previousCodexRealtimeEnabled !== this.codexRealtimeEnabled &&
+			this.agentSession &&
+			isCodexRuntimeProvider(
+				this.providerSessionProviderId ?? this.getProviderId(),
+			)
+		) {
+			if (this.state === "running") {
+				this.restartProviderRuntimeAfterTurn = true;
+			} else {
+				this.agentSession.cancel();
+				this.agentSession = null;
+				this.agentSessionKey = null;
+			}
+		}
 		void this.agentSession?.setWindowsComputerUse?.(this.windowsComputerUse);
 		const current = this.getStatus();
 		return (
@@ -1252,6 +1277,193 @@ export class SessionManager {
 		}
 	}
 
+	// fallow-ignore-next-line unused-class-member -- Called by WebSocket realtime controls in wsHandlers.
+	async controlRealtime(
+		control:
+			| {
+					action: "start";
+					mode: ProviderRealtimeMode;
+					sdp: string;
+					voice?: string;
+			  }
+			| { action: "speak"; text: string }
+			| { action: "stop" },
+		options: {
+			sessionId: string;
+			agentCwd?: string;
+			emit: (msg: ServerMessage) => void;
+		},
+	): Promise<void> {
+		if (control.action === "speak") {
+			if (!this.agentSession?.appendRealtimeSpeech || !this.realtimeMode)
+				throw new Error("No Codex voice session is active.");
+			await this.agentSession.appendRealtimeSpeech(control.text);
+			return;
+		}
+		if (control.action === "stop") {
+			await this.stopRealtimeSession();
+			return;
+		}
+		if (!this.codexRealtimeEnabled) {
+			throw new Error(
+				"Codex realtime voice is disabled. Enable the Developer Preview in Forge first.",
+			);
+		}
+		if (this.isRunning()) {
+			throw new Error(
+				"Wait for the current turn to finish before starting Live.",
+			);
+		}
+		if (this.realtimeMode) {
+			await this.stopRealtimeSession().catch(() => {});
+		}
+		await this.initSessionContext(
+			options.sessionId,
+			options.agentCwd,
+			control.mode === "live" ? "Live voice" : "Voice",
+		);
+		const { provider, agentSettings, resumeProviderSessionId } =
+			this.prepareProviderForTurn(options.sessionId);
+		if (provider.providerId !== "codex") {
+			throw new Error(
+				"Codex voice is only available in native Codex sessions.",
+			);
+		}
+		const { activeCwd, extraDirs, executable } = resolveExecutionContext({
+			agentMode: this.agentMode,
+			agentCwd: this.agentCwd,
+			vaultPath: this.vaultPath,
+			allowedAgentRealPaths: this.allowedAgentRealPaths,
+			claudeExecutable: this.codexExecutable,
+			wrapperCommand: "codex",
+			safeAttachments: [],
+		});
+		const agentSession = this.getOrCreateAgentSession({
+			provider,
+			sessionId: options.sessionId,
+			resumeProviderSessionId,
+			activeCwd,
+			extraDirs,
+			executable,
+			agentSettings,
+			planMode: false,
+			emit: options.emit,
+		});
+		if (!agentSession.startRealtime) {
+			throw new Error(
+				"The active Codex version does not support realtime voice.",
+			);
+		}
+		const publish = (event: ProviderRealtimeEvent) => {
+			switch (event.type) {
+				case "started":
+					options.emit({
+						type: "realtime_state",
+						session_id: options.sessionId,
+						mode: control.mode,
+						state: "connected",
+					});
+					break;
+				case "sdp":
+					options.emit({
+						type: "realtime_sdp",
+						session_id: options.sessionId,
+						mode: control.mode,
+						sdp: event.sdp,
+					});
+					break;
+				case "transcript_delta":
+					options.emit({
+						type: "realtime_transcript",
+						session_id: options.sessionId,
+						mode: control.mode,
+						role: event.role,
+						text: event.delta,
+						done: false,
+					});
+					break;
+				case "transcript_done":
+					options.emit({
+						type: "realtime_transcript",
+						session_id: options.sessionId,
+						mode: control.mode,
+						role: event.role,
+						text: event.text,
+						done: true,
+					});
+					break;
+				case "error":
+					// Capture and begin provider teardown before publishing the error.
+					// The WebSocket layer may retire a voice-only pool entry as soon
+					// as it receives this terminal event.
+					void this.stopRealtimeSession().catch(() => {});
+					options.emit({
+						type: "realtime_error",
+						session_id: options.sessionId,
+						mode: control.mode,
+						message: event.message,
+					});
+					break;
+				case "closed":
+					options.emit({
+						type: "realtime_state",
+						session_id: options.sessionId,
+						mode: control.mode,
+						state: "closed",
+						...(event.reason ? { reason: event.reason } : {}),
+					});
+					this.realtimeMode = null;
+					break;
+			}
+		};
+		options.emit({
+			type: "realtime_state",
+			session_id: options.sessionId,
+			mode: control.mode,
+			state: "starting",
+		});
+		this.realtimeMode = control.mode;
+		let result: ProviderRealtimeStartResult;
+		try {
+			result = await agentSession.startRealtime({
+				mode: control.mode,
+				sdp: control.sdp,
+				voice: control.voice,
+				onEvent: publish,
+			});
+		} catch (error) {
+			this.realtimeMode = null;
+			throw error;
+		}
+		this.providerSessionId = result.providerSessionId;
+		this.providerSessionProviderId = provider.providerId;
+		await db.setSessionProviderSession(
+			options.sessionId,
+			provider.providerId,
+			result.providerSessionId,
+		);
+	}
+
+	private stopRealtimeSession(): Promise<void> {
+		if (this.realtimeStopPromise) return this.realtimeStopPromise;
+		const agentSession = this.agentSession;
+		const stopping = (async () => {
+			try {
+				await agentSession?.stopRealtime?.();
+			} finally {
+				this.realtimeMode = null;
+			}
+		})();
+		this.realtimeStopPromise = stopping;
+		const clearStopping = () => {
+			if (this.realtimeStopPromise === stopping) {
+				this.realtimeStopPromise = null;
+			}
+		};
+		void stopping.then(clearStopping, clearStopping);
+		return stopping;
+	}
+
 	private runGoalContinuation(options: {
 		agentSession: AgentSession;
 		sessionId: string;
@@ -1363,6 +1575,8 @@ export class SessionManager {
 		this.agentSession?.cancel();
 		this.agentSession = null;
 		this.agentSessionKey = null;
+		this.realtimeMode = null;
+		this.realtimeStopPromise = null;
 		this.restartAgentSessionForEffort = false;
 	}
 
@@ -3553,6 +3767,7 @@ export class SessionManager {
 				onGoalChange,
 				policyEnforced: this.policyEnforced,
 				usageGateEnforced: this.usageGateEnforced,
+				codexRealtimeEnabled: this.codexRealtimeEnabled,
 				sandboxModeOverride:
 					this.activeRoutineContext &&
 					this.activeRoutineContext.mode !== "full_access"
@@ -3803,6 +4018,7 @@ export class SessionManager {
 				skillContexts,
 				attachments,
 				vaultReferences,
+				nativeAudio: currentProvider.providerId === "codex",
 				...(commandAction
 					? {}
 					: {
@@ -3947,7 +4163,19 @@ export class SessionManager {
 				}
 				await agentSession.executeCommand(commandAction, commandArgs);
 			} else {
-				await agentSession.send(providerPrompt);
+				const audioPaths =
+					currentProvider.providerId === "codex"
+						? safeAttachments
+								.filter((attachment) => attachment.mime.startsWith("audio/"))
+								.map((attachment) =>
+									toProviderRuntimePath(activeCwd, attachment.path),
+								)
+						: [];
+				if (audioPaths.length > 0) {
+					await agentSession.send(providerPrompt, { audioPaths });
+				} else {
+					await agentSession.send(providerPrompt);
+				}
 			}
 			this.providerHandoffPending = false;
 

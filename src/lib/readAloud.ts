@@ -1,6 +1,6 @@
 export const READ_ALOUD_PREFERENCES_KEY = "hlid:read-aloud";
 
-export type ReadAloudProvider = "device" | "microsoft";
+export type ReadAloudProvider = "device" | "microsoft" | "codex";
 
 export type ReadAloudPreferences = {
 	provider: ReadAloudProvider;
@@ -136,7 +136,10 @@ export function normalizeReadAloudPreferences(
 		return DEFAULT_READ_ALOUD_PREFERENCES;
 	const candidate = value as Partial<ReadAloudPreferences>;
 	return {
-		provider: candidate.provider === "microsoft" ? "microsoft" : "device",
+		provider:
+			candidate.provider === "microsoft" || candidate.provider === "codex"
+				? candidate.provider
+				: "device",
 		voiceURI: typeof candidate.voiceURI === "string" ? candidate.voiceURI : "",
 		microsoftVoiceId:
 			typeof candidate.microsoftVoiceId === "string"

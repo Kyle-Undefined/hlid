@@ -185,6 +185,7 @@ function enqueueRun(
 		commandAction?: "review" | "computer-use" | "compact";
 		attachments: Attachment[];
 		vaultReferences: string[];
+		preserveComposer?: boolean;
 	},
 ): void {
 	wsStore.enqueueChat({
@@ -200,7 +201,7 @@ function enqueueRun(
 		plan_mode: options.planMode || undefined,
 		plan_html: (options.planMode && options.planHtml) || undefined,
 	});
-	clearComposer(options);
+	if (!params.preserveComposer) clearComposer(options);
 	navigateAfterRun(options, params.sessionId);
 }
 
@@ -213,6 +214,7 @@ function startRun(
 		commandAction?: "review" | "computer-use" | "compact";
 		attachments: Attachment[];
 		vaultReferences: string[];
+		preserveComposer?: boolean;
 	},
 ): void {
 	if (!options.sameSession) resetLiveStats();
@@ -245,15 +247,19 @@ function startRun(
 		options.setThirtyDayStats((stats) => incrementThirtyDayStats(stats));
 		options.setWeeklyStats((stats) => incrementWeeklyStats(stats));
 	}
-	clearComposer(options);
+	if (!params.preserveComposer) clearComposer(options);
 	navigateAfterRun(options, params.sessionId, params.text);
 }
 
 export function useCockpitRun(options: CockpitRunOptions) {
-	return async (overrideText?: string): Promise<void> => {
+	return async (
+		overrideText?: string,
+		overrideAttachments?: Attachment[],
+	): Promise<void> => {
 		const typed = (overrideText ?? options.prompt).trim();
+		const voiceTurn = overrideAttachments !== undefined;
 		const { text, skillContexts, commandAction } = resolveCommandSubmission(
-			options.activeSkills,
+			voiceTurn ? [] : options.activeSkills,
 			typed,
 			options.commands,
 		);
@@ -275,8 +281,10 @@ export function useCockpitRun(options: CockpitRunOptions) {
 		}
 		if (
 			(!text &&
-				options.pendingAttachments.length === 0 &&
-				options.vaultReferences.length === 0) ||
+				(voiceTurn
+					? overrideAttachments.length === 0
+					: options.pendingAttachments.length === 0 &&
+						options.vaultReferences.length === 0)) ||
 			options.wsStatus !== "connected"
 		)
 			return;
@@ -291,9 +299,11 @@ export function useCockpitRun(options: CockpitRunOptions) {
 			return;
 		}
 		options.attachSessionIdRef.current = null;
-		const attachments = options.pendingAttachments;
-		const vaultReferences = options.vaultReferences;
-		options.clearPendingAttachments();
+		const attachments = voiceTurn
+			? overrideAttachments
+			: options.pendingAttachments;
+		const vaultReferences = voiceTurn ? [] : options.vaultReferences;
+		if (!voiceTurn) options.clearPendingAttachments();
 		const params = {
 			sessionId,
 			text,
@@ -301,6 +311,7 @@ export function useCockpitRun(options: CockpitRunOptions) {
 			commandAction,
 			attachments,
 			vaultReferences,
+			preserveComposer: voiceTurn,
 		};
 		if (
 			isCockpitQueueTarget({

@@ -397,6 +397,10 @@ function ExperienceCategory({
 					state.setVoice((voice) => ({ ...voice, ...patch }))
 				}
 				initialInfo={initial.voiceInfo}
+				codexProvider={initial.providers.find(
+					(provider) => provider.id === "codex",
+				)}
+				codexModel={state.codex.model}
 			/>
 			<SessionSection view="privacy" />
 		</>

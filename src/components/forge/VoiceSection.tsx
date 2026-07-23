@@ -1,5 +1,7 @@
 import { useEffect, useState } from "react";
 import type { HlidConfig } from "#/config";
+import { modelInputAvailability } from "#/lib/providerOptions";
+import type { ProviderInfo } from "#/lib/providerTypes";
 import { getVoiceInfoFn, type VoiceInfo } from "#/lib/serverFns/voice";
 import { ReadAloudSection } from "./ReadAloudSection";
 import { VoiceInputFields } from "./VoiceInputFields";
@@ -11,10 +13,14 @@ export function VoiceSection({
 	voice,
 	onChange,
 	initialInfo,
+	codexProvider,
+	codexModel,
 }: {
 	voice: VoiceForm;
 	onChange: (patch: Partial<VoiceForm>) => void;
 	initialInfo: VoiceInfo;
+	codexProvider?: ProviderInfo;
+	codexModel?: string;
 }) {
 	const [info, setInfo] = useState(initialInfo);
 	const [busy, setBusy] = useState<string | null>(null);
@@ -54,6 +60,7 @@ export function VoiceSection({
 				voice={voice}
 				onChange={onChange}
 				status={info.status}
+				codexAudio={modelInputAvailability(codexProvider, codexModel, "audio")}
 			/>
 			<WhisperModelsSection
 				voice={voice}

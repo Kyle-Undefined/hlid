@@ -2,6 +2,7 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import {
 	FileCode,
 	GitFork,
+	Headphones,
 	LoaderCircle,
 	MessageSquare,
 	Mic,
@@ -41,6 +42,7 @@ import { PrivacyMask } from "#/components/PrivacyMask";
 import { TerminalView } from "#/components/TerminalView";
 import { ProviderUsageStrip } from "#/components/usage/ProviderUsageStrip";
 import { ContextWindowSection } from "#/components/usage/UsageWindowSections";
+import { useCodexRealtime } from "#/hooks/codexRealtimeStore";
 import {
 	rememberedRavenAgent,
 	rememberRavenSessionId,
@@ -57,7 +59,7 @@ import { useFileUpload } from "#/hooks/useFileUpload";
 import { useLoadChatHistory } from "#/hooks/useLoadChatHistory";
 import { useSlashPicker } from "#/hooks/useSlashPicker";
 import { useVaultReferencePicker } from "#/hooks/useVaultReferencePicker";
-import { useVoiceInput } from "#/hooks/useVoiceInput";
+import { uploadVoiceRecording, useVoiceInput } from "#/hooks/useVoiceInput";
 import { useWs } from "#/hooks/useWs";
 import { useWsChatQueue, useWsLiveStats } from "#/hooks/useWsSelectors";
 import { clearChatQueue } from "#/hooks/wsChatQueueStore";
@@ -92,6 +94,7 @@ import { configuredObsidianCapture } from "#/lib/obsidianCapture";
 import { isCliProxyProvider } from "#/lib/providerIds";
 import {
 	effortOptionsFor,
+	modelInputAvailability,
 	modelOptions,
 	normalizeEffortForPlanMode,
 	resolveActiveProviderId,
@@ -128,6 +131,7 @@ import { getVoiceInfoFn } from "#/lib/serverFns/voice";
 import { uid } from "#/lib/utils";
 import { displayVoiceHotkey } from "#/lib/voiceHotkey";
 import {
+	type ChatAttachment,
 	decisionFromScope,
 	type GoalState,
 	type RateLimitMessage,
@@ -1063,6 +1067,7 @@ type RavenActionProps = {
 	vaultPicker: ReturnType<typeof useVaultReferencePicker>;
 	viewport: ReturnType<typeof useRavenViewport>;
 	chatQueue: ReturnType<typeof useWsChatQueue>;
+	providers: RavenProviders;
 };
 
 /** Permission / question / plan-proposal card decisions. */
@@ -1162,10 +1167,16 @@ function useRavenSend(props: RavenActionProps) {
 		(
 			overrideText?: string,
 			explicitGoal?: { objective: string; tokenBudget?: number | null },
+			voiceAttachments?: ChatAttachment[],
 		) => {
 			const typed = (overrideText ?? input).trim();
+			const voiceTurn = voiceAttachments !== undefined;
 
-			const resolved = resolveCommandSubmission(activeSkills, typed, commands);
+			const resolved = resolveCommandSubmission(
+				voiceTurn ? [] : activeSkills,
+				typed,
+				commands,
+			);
 			let { text } = resolved;
 			const { skillContexts, commandAction } = resolved;
 			let goalStart = explicitGoal;
@@ -1265,8 +1276,10 @@ function useRavenSend(props: RavenActionProps) {
 				running: sessionState === "running",
 				skillContexts,
 				commandAction: commandAction === "goal" ? undefined : commandAction,
-				attachments: [...pendingAttachments, ...relicAttachments],
-				vaultReferences: referencePaths,
+				attachments: voiceTurn
+					? voiceAttachments
+					: [...pendingAttachments, ...relicAttachments],
+				vaultReferences: voiceTurn ? [] : referencePaths,
 				agentCwd: agentSkillContext ?? undefined,
 				agentContextAlreadySent: agentContextSentRef.current,
 				planMode,
@@ -1295,11 +1308,13 @@ function useRavenSend(props: RavenActionProps) {
 					agentContextSentRef.current = true;
 				send(submission.message);
 			}
-			clearDraft();
-			setInput("");
-			setActiveSkills([]);
-			clearPendingAttachments();
-			clearVaultReferences();
+			if (!voiceTurn) {
+				clearDraft();
+				setInput("");
+				setActiveSkills([]);
+				clearPendingAttachments();
+				clearVaultReferences();
+			}
 		},
 		[
 			input,
@@ -1334,14 +1349,17 @@ function useRavenSend(props: RavenActionProps) {
 
 function useRavenVoice(
 	props: RavenActionProps,
-	handleSend: (overrideText?: string) => void,
+	handleSend: (
+		overrideText?: string,
+		goal?: { objective: string; tokenBudget?: number | null },
+		voiceAttachments?: ChatAttachment[],
+	) => void,
 ) {
-	const { config, initialVoiceInfo, input, setInput } = props;
+	const { config, initialVoiceInfo, input, setInput, providers } = props;
 	const { textareaRef } = props.viewport;
-	return useVoiceInput({
-		config: config.voice,
-		initialInfo: initialVoiceInfo,
-		onTranscription: (text) => {
+	const onTranscription = useCallback(
+		(text: string) => {
+			if (!text) return;
 			if (config.voice.auto_send) {
 				handleSend(text);
 				return;
@@ -1352,7 +1370,92 @@ function useRavenVoice(
 			setInput(insertAtSelection(input, text, start, end));
 			requestAnimationFrame(() => textareaRef.current?.focus());
 		},
+		[config.voice.auto_send, handleSend, input, setInput, textareaRef],
+	);
+	const configuredProvider =
+		(config.agents ?? []).find(
+			(agent) => agent.path === props.session.agentSkillContext,
+		)?.provider ?? config.vault_provider;
+	const providerId =
+		props.sessionSelection.providerId ??
+		props.session.liveSessionStatus?.provider_id ??
+		configuredProvider;
+	const selectedAgent = (config.agents ?? []).find(
+		(agent) => agent.path === props.session.agentSkillContext,
+	);
+	const activeModel =
+		props.sessionSelection.model ??
+		props.session.liveSessionStatus?.model ??
+		selectedAgent?.model ??
+		config.codex?.model;
+	const codexAudio =
+		providerId === "codex"
+			? modelInputAvailability(
+					providers.find((provider) => provider.id === "codex"),
+					activeModel,
+					"audio",
+				)
+			: {
+					available: false,
+					reason: "Talk to Codex requires the native Codex provider.",
+				};
+	const onAudioTurn = useCallback(
+		async (audio: Blob) => {
+			if (providerId !== "codex") {
+				throw new Error("Talk to Codex requires the native Codex provider");
+			}
+			const sessionId = props.session.sessionIdRef.current;
+			if (!sessionId) throw new Error("No Raven session is available");
+			const attachment = await uploadVoiceRecording(audio, {
+				sessionId,
+				agentCwd: props.session.agentSkillContext,
+			});
+			handleSend("Voice message", undefined, [attachment]);
+		},
+		[
+			handleSend,
+			props.session.agentSkillContext,
+			props.session.sessionIdRef,
+			providerId,
+		],
+	);
+	const voice = useVoiceInput({
+		config: config.voice,
+		initialInfo: initialVoiceInfo,
+		onTranscription,
+		onAudioTurn,
+		codexTurnAvailable: providerId === "codex" && codexAudio.available,
+		codexTurnUnavailableReason: codexAudio.reason,
 	});
+	const realtime = useCodexRealtime({
+		sessionId: props.session.sessionIdRef.current,
+		agentCwd: props.session.agentSkillContext,
+		providerId,
+		voice: config.voice.codex_voice,
+		onDictation: onTranscription,
+	});
+	return {
+		...voice,
+		error:
+			realtime.phase === "error" && realtime.mode === "live"
+				? realtime.error
+				: voice.error,
+		errorLabel:
+			realtime.mode === "live"
+				? "Raven Live failed"
+				: config.voice.input_provider === "codex"
+					? "voice message failed"
+					: "voice transcription failed",
+		clearError: () => {
+			voice.clearError();
+			if (realtime.mode === "live") realtime.clearError();
+		},
+		livePhase: realtime.mode === "live" ? realtime.phase : "idle",
+		liveTranscript: realtime.mode === "live" ? realtime.transcript : "",
+		liveUnavailable: realtime.unavailableReason,
+		startLive: () => realtime.start("live"),
+		stopLive: realtime.stop,
+	};
 }
 
 function useRavenQueueActions(props: RavenActionProps) {
@@ -1926,6 +2029,7 @@ export function ChatPage() {
 		vaultPicker,
 		viewport,
 		chatQueue,
+		providers,
 	});
 
 	const {
@@ -2831,7 +2935,7 @@ function ChatInputNotices({
 					role="alert"
 				>
 					<div className="flex-1 text-[10px] text-destructive/80 leading-relaxed">
-						voice transcription failed: {voice.error}
+						{voice.errorLabel}: {voice.error}
 					</div>
 					<button
 						type="button"
@@ -2842,6 +2946,13 @@ function ChatInputNotices({
 						<X className="w-3 h-3" />
 					</button>
 				</div>
+			)}
+			{(voice.livePhase === "starting" || voice.livePhase === "connected") && (
+				<output className="block px-4 py-2 border-b border-primary/20 bg-primary/5 text-[10px] text-primary/80 leading-relaxed">
+					Raven Live ·{" "}
+					{voice.liveTranscript ||
+						(voice.livePhase === "starting" ? "connecting…" : "listening…")}
+				</output>
 			)}
 			<div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-1.5 border-b border-border/40">
 				{messages.length === 0 && agentList.length > 0 && (
@@ -2999,8 +3110,15 @@ function ChatInputControls(props: ChatComposerProps) {
 	);
 }
 
-function ChatVoiceControls({ config, runtime, voice }: ChatComposerProps) {
-	const { wsStatus } = runtime;
+function ChatVoiceControls(props: ChatVoiceControlsProps) {
+	const { config, runtime, voice } = props;
+	const { wsStatus, isRunning } = runtime;
+	const processing =
+		voice.phase === "transcribing" || voice.phase === "submitting";
+	const actionLabel =
+		voice.engine === "codex" ? "Talk to Codex" : "Dictate with Whisper";
+	const liveActive =
+		voice.livePhase === "starting" || voice.livePhase === "connected";
 	return (
 		<>
 			<button
@@ -3013,20 +3131,22 @@ function ChatVoiceControls({ config, runtime, voice }: ChatComposerProps) {
 				disabled={
 					wsStatus !== "connected" ||
 					(!voice.ready && voice.phase !== "recording") ||
-					voice.phase === "transcribing"
+					processing
 				}
 				className={`px-2 py-2 md:py-3 transition-colors shrink-0 disabled:opacity-30 ${voice.phase === "recording" ? "text-destructive" : "text-muted-foreground/45 hover:text-muted-foreground"}`}
 				aria-label={
-					voice.phase === "recording" ? "Stop recording" : "Start voice input"
+					voice.phase === "recording" ? "Stop recording" : actionLabel
 				}
 				title={
 					!config.voice.enabled
 						? "Enable voice in Forge"
-						: voice.status.state !== "ready"
-							? `Voice ${voice.status.state}`
-							: config.voice.hotkey
-								? `Voice input (${displayVoiceHotkey(config.voice.hotkey)})`
-								: "Start voice input"
+						: voice.engine === "codex" && !voice.ready
+							? (voice.unavailableReason ?? "Talk to Codex is unavailable")
+							: voice.engine === "local" && voice.status.state !== "ready"
+								? `Voice ${voice.status.state}`
+								: config.voice.hotkey
+									? `${actionLabel} (${displayVoiceHotkey(config.voice.hotkey)})`
+									: actionLabel
 				}
 			>
 				{voice.phase === "recording" ? (
@@ -3044,6 +3164,43 @@ function ChatVoiceControls({ config, runtime, voice }: ChatComposerProps) {
 					title="Cancel recording"
 				>
 					<X className="w-3.5 h-3.5" />
+				</button>
+			)}
+			{config.voice.codex_live_mode && (
+				<button
+					type="button"
+					onClick={() =>
+						liveActive ? voice.stopLive() : void voice.startLive()
+					}
+					disabled={
+						wsStatus !== "connected" ||
+						props.activeProviderId !== "codex" ||
+						isRunning ||
+						voice.liveUnavailable !== null
+					}
+					className={`px-2 py-2 md:py-3 transition-colors shrink-0 disabled:opacity-30 ${
+						liveActive
+							? "text-primary"
+							: "text-muted-foreground/45 hover:text-muted-foreground"
+					}`}
+					aria-label={liveActive ? "Stop Raven Live" : "Start Raven Live"}
+					title={
+						props.activeProviderId !== "codex"
+							? "Raven Live requires a native Codex session"
+							: voice.liveUnavailable
+								? voice.liveUnavailable
+								: isRunning
+									? "Wait for the current turn to finish"
+									: liveActive
+										? "Stop Raven Live"
+										: "Start Raven Live"
+					}
+				>
+					{liveActive ? (
+						<Square className="w-3.5 h-3.5 fill-current" />
+					) : (
+						<Headphones className="w-3.5 h-3.5" />
+					)}
 				</button>
 			)}
 		</>
@@ -3094,8 +3251,11 @@ function composerPlaceholder(
 	vaultReferenceCount: number,
 	isRunning: boolean,
 ): string {
-	if (voice.phase === "recording") return `recording… ${voice.seconds}s`;
+	if (voice.phase === "recording") {
+		return `${voice.engine === "codex" ? "recording for Codex" : "recording for Whisper"}… ${voice.seconds}s`;
+	}
 	if (voice.phase === "transcribing") return "transcribing locally…";
+	if (voice.phase === "submitting") return "sending voice message to Codex…";
 	if (wsStatus !== "connected") return "connecting…";
 	if (activeSkills.length > 0 || vaultReferenceCount > 0)
 		return "add more context, @file, or /command…";
@@ -3103,8 +3263,16 @@ function composerPlaceholder(
 }
 
 function voiceAnnouncement(voice: RavenVoice): string {
-	if (voice.phase === "recording") return `Recording, ${voice.seconds} seconds`;
+	if (voice.livePhase === "starting") return "Starting Raven Live";
+	if (voice.livePhase === "connected")
+		return voice.liveTranscript
+			? `Raven Live: ${voice.liveTranscript}`
+			: "Raven Live connected";
+	if (voice.phase === "recording") {
+		return `${voice.engine === "codex" ? "Recording a Codex voice message" : "Recording for Local Whisper"}, ${voice.seconds} seconds`;
+	}
 	if (voice.phase === "transcribing") return "Transcribing audio locally";
+	if (voice.phase === "submitting") return "Sending voice message to Codex";
 	return voice.error ?? "";
 }
 
@@ -3160,7 +3328,11 @@ function ChatTextarea(props: ChatComposerProps) {
 						props.vaultPicker.selectedRelics.length,
 					isRunning,
 				)}
-				disabled={wsStatus !== "connected" || voice.phase === "transcribing"}
+				disabled={
+					wsStatus !== "connected" ||
+					voice.phase === "transcribing" ||
+					voice.phase === "submitting"
+				}
 				className={`md:order-4 flex-1 min-w-0 resize-none bg-transparent pt-1 pb-2 md:py-3 pr-2 text-sm leading-6 text-foreground focus:outline-none disabled:opacity-30 overflow-y-auto overscroll-contain touch-pan-y scroll-py-3 min-h-[60px] md:min-h-[120px] ${wsStatus !== "connected" ? "placeholder:text-foreground/50" : "placeholder:text-muted-foreground/35"}`}
 			/>
 			<span className="sr-only" aria-live="polite">
@@ -3329,7 +3501,7 @@ type RavenUpload = ReturnType<typeof useFileUpload>;
 type RavenViewport = ReturnType<typeof useRavenViewport>;
 type RavenPicker = ReturnType<typeof useSlashPicker>;
 type RavenVaultPicker = ReturnType<typeof useVaultReferencePicker>;
-type RavenVoice = ReturnType<typeof useVoiceInput>;
+type RavenVoice = ReturnType<typeof useRavenVoice>;
 
 interface ChatComposerProps {
 	interactiveMode: boolean;
@@ -3379,10 +3551,16 @@ interface ChatComposerProps {
 	handleSend: (
 		overrideText?: string,
 		goal?: { objective: string; tokenBudget?: number | null },
+		voiceAttachments?: ChatAttachment[],
 	) => void;
 	handleClear: () => void;
 	hideOnMobile?: boolean;
 }
+
+type ChatVoiceControlsProps = Pick<
+	ChatComposerProps,
+	"config" | "runtime" | "voice" | "activeProviderId"
+>;
 
 function ChatComposer(props: ChatComposerProps) {
 	const {

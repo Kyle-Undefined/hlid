@@ -87,7 +87,10 @@ function VoiceError({ voice }: { voice: VoiceState }) {
 			role="alert"
 		>
 			<div className="flex-1 text-[10px] text-destructive/80 leading-relaxed">
-				voice transcription failed: {voice.error}
+				{voice.engine === "codex"
+					? "voice message failed"
+					: "voice transcription failed"}
+				: {voice.error}
 			</div>
 			<button
 				type="button"
@@ -107,8 +110,10 @@ function promptPlaceholder(
 	activeSkills: ActiveCockpitSkill[],
 	vaultReferenceCount: number,
 ): string {
-	if (voice.phase === "recording") return `recording… ${voice.seconds}s`;
+	if (voice.phase === "recording")
+		return `${voice.engine === "codex" ? "recording for Codex" : "recording for Whisper"}… ${voice.seconds}s`;
 	if (voice.phase === "transcribing") return "transcribing locally…";
+	if (voice.phase === "submitting") return "sending voice message to Codex…";
 	if (!isConnected) return "server offline…";
 	if (activeSkills.length > 0 || vaultReferenceCount > 0)
 		return "add more context, @file, or /command…";
@@ -193,7 +198,11 @@ function PromptTextarea(props: PromptProps) {
 					props.vaultPicker.selected.length +
 						props.vaultPicker.selectedRelics.length,
 				)}
-				disabled={!props.isConnected || props.voice.phase === "transcribing"}
+				disabled={
+					!props.isConnected ||
+					props.voice.phase === "transcribing" ||
+					props.voice.phase === "submitting"
+				}
 				className={`min-w-0 flex-1 resize-none bg-transparent py-2.5 pr-3 text-sm text-foreground focus:outline-none disabled:opacity-30 overflow-hidden min-h-[72px] ${!props.isConnected ? "placeholder:text-foreground/50" : "placeholder:text-muted-foreground/25"}`}
 			/>
 		</div>
@@ -236,13 +245,17 @@ function VoiceButton({
 	isConnected,
 }: Pick<PromptProps, "config" | "voice" | "isConnected">) {
 	const recording = voice.phase === "recording";
+	const actionLabel =
+		voice.engine === "codex" ? "Talk to Codex" : "Dictate with Whisper";
 	const title = !config.voice.enabled
 		? "Enable voice in Forge"
-		: voice.status.state !== "ready"
-			? `Voice ${voice.status.state}`
-			: config.voice.hotkey
-				? `Voice input (${displayVoiceHotkey(config.voice.hotkey)})`
-				: "Start voice input";
+		: voice.engine === "codex" && !voice.ready
+			? (voice.unavailableReason ?? "Talk to Codex is unavailable")
+			: voice.engine === "local" && voice.status.state !== "ready"
+				? `Voice ${voice.status.state}`
+				: config.voice.hotkey
+					? `${actionLabel} (${displayVoiceHotkey(config.voice.hotkey)})`
+					: actionLabel;
 	return (
 		<>
 			<button
@@ -252,10 +265,11 @@ function VoiceButton({
 				disabled={
 					!isConnected ||
 					(!voice.ready && !recording) ||
-					voice.phase === "transcribing"
+					voice.phase === "transcribing" ||
+					voice.phase === "submitting"
 				}
 				className={`transition-colors shrink-0 disabled:opacity-30 ${recording ? "text-destructive" : "text-muted-foreground/45 hover:text-muted-foreground"}`}
-				aria-label={recording ? "Stop recording" : "Start voice input"}
+				aria-label={recording ? "Stop recording" : actionLabel}
 				title={title}
 			>
 				{recording ? (

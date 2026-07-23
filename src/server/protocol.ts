@@ -490,6 +490,37 @@ export type DataRevisionsMessage = {
 	revisions: import("../lib/dataRevision").DataRevisionSnapshot;
 };
 
+export type RealtimeMode = "dictation" | "live" | "read-aloud";
+
+export type RealtimeEventMessage =
+	| {
+			type: "realtime_state";
+			session_id: string;
+			mode: RealtimeMode;
+			state: "starting" | "connected" | "closed";
+			reason?: string;
+	  }
+	| {
+			type: "realtime_sdp";
+			session_id: string;
+			mode: RealtimeMode;
+			sdp: string;
+	  }
+	| {
+			type: "realtime_transcript";
+			session_id: string;
+			mode: RealtimeMode;
+			role: string;
+			text: string;
+			done: boolean;
+	  }
+	| {
+			type: "realtime_error";
+			session_id: string;
+			mode: RealtimeMode;
+			message: string;
+	  };
+
 export type ServerMessage =
 	| StatusMessage
 	| ChunkMessage
@@ -520,6 +551,7 @@ export type ServerMessage =
 	| SessionsStatusMessage
 	| SessionClosedMessage
 	| SessionCreatedMessage
+	| RealtimeEventMessage
 	| DataRevisionsMessage;
 
 export type ChatAttachment = {
@@ -631,6 +663,25 @@ export type ClientGoalControlMessage = {
 	token_budget?: number | null;
 	agent_cwd?: string;
 };
+
+export type ClientRealtimeMessage =
+	| {
+			type: "realtime_start";
+			session_id: string;
+			mode: RealtimeMode;
+			sdp: string;
+			voice?: string;
+			agent_cwd?: string;
+	  }
+	| {
+			type: "realtime_speak";
+			session_id: string;
+			text: string;
+	  }
+	| {
+			type: "realtime_stop";
+			session_id: string;
+	  };
 
 export type ClientSyncMcpListMessage = {
 	type: "sync_mcp_list";
@@ -746,6 +797,7 @@ export type ClientMessage =
 	| ClientProbeMcpMessage
 	| ClientProbeSlashCommandsMessage
 	| ClientGoalControlMessage
+	| ClientRealtimeMessage
 	| ClientSyncMcpListMessage
 	| ClientAskUserQuestionResponseMessage
 	| ClientPlanModeExitResponseMessage

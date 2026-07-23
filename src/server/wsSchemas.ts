@@ -114,6 +114,30 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 			}
 		}),
 	z.strictObject({
+		type: z.literal("realtime_start"),
+		session_id: id,
+		mode: z.enum(["dictation", "live", "read-aloud"]),
+		sdp: z
+			.string()
+			.min(1)
+			.max(512 * 1024),
+		voice: z.string().min(1).max(64).optional(),
+		agent_cwd: path.optional(),
+	}),
+	z.strictObject({
+		type: z.literal("realtime_speak"),
+		session_id: id,
+		text: z
+			.string()
+			.trim()
+			.min(1)
+			.max(1024 * 1024),
+	}),
+	z.strictObject({
+		type: z.literal("realtime_stop"),
+		session_id: id,
+	}),
+	z.strictObject({
 		type: z.literal("sync_mcp_list"),
 		agent_cwd: path.optional(),
 		inventory: z.boolean().optional(),

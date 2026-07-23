@@ -85,12 +85,15 @@ function serializeVoice(config: HlidConfig["voice"]): string[] {
 	const voice = config ?? DEFAULT_VOICE_CONFIG;
 	return section("voice", [
 		`enabled = ${tomlVal(voice.enabled)}`,
+		`input_provider = ${tomlVal(voice.input_provider)}`,
 		`model = ${tomlVal(voice.model)}`,
 		`language = ${tomlVal(voice.language)}`,
 		`auto_send = ${tomlVal(voice.auto_send)}`,
 		`read_aloud_provider = ${tomlVal(voice.read_aloud_provider)}`,
 		`read_aloud_voice = ${tomlVal(voice.read_aloud_voice)}`,
 		`read_aloud_rate = ${tomlVal(voice.read_aloud_rate)}`,
+		`codex_voice = ${tomlVal(voice.codex_voice)}`,
+		`codex_live_mode = ${tomlVal(voice.codex_live_mode)}`,
 		`hotkey = ${tomlVal(voice.hotkey)}`,
 		`max_recording_seconds = ${tomlVal(voice.max_recording_seconds)}`,
 		`threads = ${tomlVal(voice.threads)}`,

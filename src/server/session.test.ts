@@ -1099,6 +1099,71 @@ describe("SessionManager — native Codex goals", () => {
 	});
 });
 
+describe("SessionManager — native Codex realtime", () => {
+	it("rejects realtime unless the Forge Developer Preview is enabled", async () => {
+		const { provider } = makeSwitchableProvider(
+			{ startRealtime: vi.fn() },
+			"codex",
+		);
+		const manager = new SessionManager(
+			{ ...makeConfig(), vault_provider: "codex" } as HlidConfig,
+			makeProviders(provider),
+		);
+
+		await expect(
+			manager.controlRealtime(
+				{ action: "start", mode: "live", sdp: "v=0\r\no=hlid" },
+				{ sessionId: "voice-session", emit: vi.fn() },
+			),
+		).rejects.toThrow("Enable the Developer Preview in Forge");
+	});
+
+	it("tears down the provider on error and coalesces a browser stop", async () => {
+		let publishRealtime:
+			| ((event: { type: "error"; message: string }) => void)
+			| undefined;
+		const stopRealtime = vi.fn().mockResolvedValue(undefined);
+		const startRealtime = vi.fn().mockImplementation(async (request) => {
+			publishRealtime = request.onEvent;
+			return { providerSessionId: "sdk-session-1" };
+		});
+		const { provider } = makeSwitchableProvider(
+			{ startRealtime, stopRealtime },
+			"codex",
+		);
+		const base = makeConfig("gpt-5.6-sol");
+		const config = {
+			...base,
+			vault_provider: "codex",
+			codex: {
+				model: "gpt-5.6-sol",
+				effort: "high",
+				permission_mode: "default",
+				turn_recaps: false,
+			},
+			voice: { codex_live_mode: true } as HlidConfig["voice"],
+		} as HlidConfig;
+		const sm = new SessionManager(config, makeProviders(provider));
+
+		await sm.controlRealtime(
+			{
+				action: "start",
+				mode: "dictation",
+				sdp: "v=0\r\no=hlid",
+			},
+			{ sessionId: "voice-session", emit: vi.fn() },
+		);
+		publishRealtime?.({ type: "error", message: "Realtime failed" });
+		expect(stopRealtime).toHaveBeenCalledOnce();
+		await sm.controlRealtime(
+			{ action: "stop" },
+			{ sessionId: "voice-session", emit: vi.fn() },
+		);
+
+		expect(stopRealtime).toHaveBeenCalledOnce();
+	});
+});
+
 describe("SessionManager — setModel", () => {
 	it("updates getStatus().model with no active AgentSession (no-op delegate)", async () => {
 		const sm = new SessionManager(
@@ -5570,6 +5635,48 @@ describe("SessionManager — Slice B AgentSession reuse", () => {
 		// buildPromptAsync is mocked at module level to return "test prompt", which
 		// SessionManager forwards verbatim to agentSession.send().
 		expect(sentArg).toBe("test prompt");
+		ctl.closeStream();
+	});
+
+	it("passes managed audio attachments to a native Codex turn", async () => {
+		const attachment = {
+			id: "voice-1",
+			path: "/tmp/hlid-test-vault/voice-message.wav",
+			filename: "voice-message.wav",
+			mime: "audio/wav",
+			kind: "ephemeral",
+		};
+		vi.mocked(buildPromptAsync).mockResolvedValueOnce({
+			prompt: "Voice message",
+			safeAttachments: [attachment],
+			resourcePaths: [attachment.path],
+			safeVaultReferences: [],
+		});
+		const ctl = makeLongLivedProvider();
+		let sendSpy: ReturnType<typeof vi.fn> | undefined;
+		const provider: AgentProvider = {
+			providerId: "codex",
+			query(p: AgentQueryParams): AgentSession {
+				const session = ctl.provider.query(p);
+				sendSpy = session.send as ReturnType<typeof vi.fn>;
+				return session;
+			},
+		};
+		const sm = new SessionManager(
+			{ ...makeConfig(), vault_provider: "codex" } as HlidConfig,
+			makeProviders(provider),
+		);
+
+		await sm.runQuery("Voice message", () => {}, "voice-session", undefined, [
+			attachment,
+		]);
+
+		expect(sendSpy).toHaveBeenCalledWith("Voice message", {
+			audioPaths: [attachment.path],
+		});
+		expect(vi.mocked(buildPromptAsync).mock.calls.at(-1)?.[0]).toMatchObject({
+			nativeAudio: true,
+		});
 		ctl.closeStream();
 	});
 });

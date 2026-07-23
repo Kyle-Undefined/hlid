@@ -45,6 +45,37 @@ const SEEDS: Array<[name: string, relPath: string]> = [
 	["ThreadGoalGetResponse", "v2/ThreadGoalGetResponse.ts"],
 	["ThreadGoalClearParams", "v2/ThreadGoalClearParams.ts"],
 	["ThreadGoalClearResponse", "v2/ThreadGoalClearResponse.ts"],
+	["RealtimeVoice", "RealtimeVoice.ts"],
+	["ThreadRealtimeStartParams", "v2/ThreadRealtimeStartParams.ts"],
+	[
+		"ThreadRealtimeStartedNotification",
+		"v2/ThreadRealtimeStartedNotification.ts",
+	],
+	[
+		"ThreadRealtimeSdpNotification",
+		"v2/ThreadRealtimeSdpNotification.ts",
+	],
+	[
+		"ThreadRealtimeTranscriptDeltaNotification",
+		"v2/ThreadRealtimeTranscriptDeltaNotification.ts",
+	],
+	[
+		"ThreadRealtimeTranscriptDoneNotification",
+		"v2/ThreadRealtimeTranscriptDoneNotification.ts",
+	],
+	[
+		"ThreadRealtimeErrorNotification",
+		"v2/ThreadRealtimeErrorNotification.ts",
+	],
+	[
+		"ThreadRealtimeClosedNotification",
+		"v2/ThreadRealtimeClosedNotification.ts",
+	],
+	[
+		"ThreadRealtimeAppendSpeechParams",
+		"v2/ThreadRealtimeAppendSpeechParams.ts",
+	],
+	["ThreadRealtimeStopParams", "v2/ThreadRealtimeStopParams.ts"],
 	[
 		"ThreadGoalUpdatedNotification",
 		"v2/ThreadGoalUpdatedNotification.ts",
@@ -54,6 +85,7 @@ const SEEDS: Array<[name: string, relPath: string]> = [
 		"v2/ThreadGoalClearedNotification.ts",
 	],
 	["TurnStartParams", "v2/TurnStartParams.ts"],
+	["UserInput", "v2/UserInput.ts"],
 	["SandboxPolicy", "v2/SandboxPolicy.ts"],
 	["SandboxMode", "v2/SandboxMode.ts"],
 	["AskForApproval", "v2/AskForApproval.ts"],

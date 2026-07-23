@@ -145,7 +145,7 @@ describe("VoiceSection", () => {
 				initialInfo={baseInfo}
 			/>,
 		);
-		fireEvent.click(screen.getByRole("checkbox"));
+		fireEvent.click(screen.getByRole("checkbox", { name: "Voice" }));
 		fireEvent.keyDown(screen.getByLabelText("Voice recording hotkey"), {
 			key: "Escape",
 		});
@@ -162,6 +162,30 @@ describe("VoiceSection", () => {
 		expect(onChange).toHaveBeenCalledWith({ threads: 8 });
 		expect(onChange).toHaveBeenCalledWith({
 			vocabulary: ["Claude", "Codex", "Kubernetes"],
+		});
+	});
+
+	it("keeps microphone actions separate from realtime Developer Preview", () => {
+		const onChange = vi.fn();
+		render(
+			<VoiceSection
+				voice={DEFAULT_VOICE_CONFIG}
+				onChange={onChange}
+				initialInfo={baseInfo}
+			/>,
+		);
+
+		expect(
+			(screen.getByLabelText("Microphone action") as HTMLSelectElement).value,
+		).toBe("local");
+		fireEvent.change(screen.getByLabelText("Microphone action"), {
+			target: { value: "codex" },
+		});
+		expect(onChange).toHaveBeenCalledWith({ input_provider: "codex" });
+		fireEvent.click(screen.getByRole("checkbox", { name: "Codex realtime" }));
+
+		expect(onChange).toHaveBeenCalledWith({
+			codex_live_mode: true,
 		});
 	});
 });

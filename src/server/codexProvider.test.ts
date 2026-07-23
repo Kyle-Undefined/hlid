@@ -29,6 +29,9 @@ import {
 	CodexProvider,
 	codexChildStep,
 	codexLaunchConfig,
+	codexRealtimeErrorMessage,
+	codexRealtimeOutputModality,
+	codexRealtimeVersion,
 	codexReasoningText,
 	codexSandboxPolicy,
 	codexSubagentStatus,
@@ -46,7 +49,7 @@ import { executeObsidianAgentTool } from "./obsidianAgentTools";
 
 // ── fetchCodexModels test helpers ──────────────────────────────────────────
 
-/** Live-verified codex-cli 0.142.4 `model/list` RPC response shape. */
+/** Live-verified codex-cli 0.145.0 `model/list` RPC response shape. */
 const MODEL_LIST_FIXTURE = {
 	data: [
 		{
@@ -56,6 +59,8 @@ const MODEL_LIST_FIXTURE = {
 			description:
 				"Frontier model for complex coding, research, and real-world work.",
 			hidden: false,
+			isDefault: true,
+			inputModalities: ["text", "image"],
 			supportedReasoningEfforts: [
 				{
 					reasoningEffort: "low",
@@ -447,8 +452,21 @@ describe("codexLaunchConfig", () => {
 		expect(cfg).toEqual({
 			executable: "/home/kyle/.bun/bin/codex",
 			rpcCwd: "/home/kyle/development/repos/hlid",
-			appServer: { executable: "/home/kyle/.bun/bin/codex" },
+			appServer: {
+				executable: "/home/kyle/.bun/bin/codex",
+				args: [],
+			},
 		});
+	});
+
+	it("enables realtime conversation only for an explicit preview session", () => {
+		const cfg = codexLaunchConfig({
+			cwd: "/home/kyle/development/repos/hlid",
+			executable: "/home/kyle/.bun/bin/codex",
+			enableRealtime: true,
+		});
+
+		expect(cfg.appServer.args).toEqual(["--enable", "realtime_conversation"]);
 	});
 
 	it("translates a WSL UNC cwd to the POSIX rpcCwd", () => {
@@ -479,6 +497,27 @@ describe("codexLaunchConfig", () => {
 			executable: "/home/kyle/.bun/bin/codex",
 		});
 		expect(posixCfg.rpcCwd).toBe("/home/kyle/project");
+	});
+});
+
+describe("codexRealtimeVersion", () => {
+	it("uses AVAS-compatible v3 for every WebRTC voice mode", () => {
+		expect(codexRealtimeVersion("dictation")).toBe("v3");
+		expect(codexRealtimeVersion("live")).toBe("v3");
+		expect(codexRealtimeVersion("read-aloud")).toBe("v3");
+		expect(codexRealtimeOutputModality()).toBe("audio");
+	});
+
+	it("turns an account-gated ChatGPT call endpoint into an actionable message", () => {
+		expect(
+			codexRealtimeErrorMessage(
+				new Error(
+					'unexpected status 404 Not Found: {"detail":"Not Found"}, url: https://chatgpt.com/backend-api/codex/realtime/calls?intent=quicksilver&architecture=avas',
+				),
+			),
+		).toBe(
+			"Codex realtime voice is not available for this ChatGPT account yet.",
+		);
 	});
 });
 
@@ -580,8 +619,9 @@ describe("mapCodexModels", () => {
 				label: "GPT-5.5",
 				description:
 					"Frontier model for complex coding, research, and real-world work.",
-				isDefault: undefined,
+				isDefault: true,
 				hidden: undefined,
+				inputModalities: ["text", "image"],
 				efforts: [
 					{
 						value: "low",
@@ -693,7 +733,7 @@ describe("fetchCodexModels", () => {
 		expect(proc.kill).not.toHaveBeenCalled();
 	});
 
-	it("leaves Codex hooks enabled for the catalog-only app server", async () => {
+	it("leaves realtime disabled for the catalog-only app server", async () => {
 		const { proc } = makeFakeProc();
 		vi.mocked(spawn).mockReturnValue(proc as never);
 		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
@@ -1973,6 +2013,51 @@ describe("CodexAgentSession — setModel", () => {
 		expect(turns).toHaveLength(2);
 		expect(turns[0].model).toBe("gpt-5.4");
 		expect(turns[1].model).toBe("gpt-5.5");
+	});
+
+	it("includes local audio paths as native Codex turn input", async () => {
+		const { proc, writes } = makeFakeSessionProc({
+			modelListResult: {
+				data: [
+					{
+						id: "gpt-5.4",
+						model: "gpt-5.4",
+						displayName: "GPT-5.4",
+						inputModalities: ["text", "image", "audio"],
+					},
+				],
+			},
+		});
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(baseCodexParams());
+
+		await session.send("Voice message", {
+			audioPaths: ["/tmp/voice-message.wav"],
+		});
+
+		expect(turnStartParams(writes)[0].input).toEqual([
+			{ type: "text", text: "Voice message", text_elements: [] },
+			{ type: "localAudio", path: "/tmp/voice-message.wav" },
+		]);
+		session.cancel();
+	});
+
+	it("rejects audio before turn/start when the active model is text-only", async () => {
+		const { proc, writes } = makeFakeSessionProc({ threadModel: "gpt-5.5" });
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(baseCodexParams());
+
+		await expect(
+			session.send("Voice message", {
+				audioPaths: ["/tmp/voice-message.wav"],
+			}),
+		).rejects.toThrow(
+			"GPT-5.5 does not support audio input. Use Dictate with Whisper",
+		);
+		expect(turnStartParams(writes)).toEqual([]);
+		session.cancel();
 	});
 
 	it("omits `model` from the next turn/start call when reset to undefined", async () => {
