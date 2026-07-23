@@ -14,6 +14,10 @@ minimumReleaseAge = 432000 # 5 days in seconds
 #     needs to bypass the floor for a CVE fix.
 #   - tailwind-merge 3.6.0 (2026-05-10) adds Tailwind v4.3 support, matching the
 #     tailwindcss version pinned in package.json.
+#   - fast-uri 3.1.4 (2026-07-19) patches GHSA-v2hh-gcrm-f6hx and
+#     GHSA-4c8g-83qw-93j6. The previous locked version is directly exposed
+#     through AJV, so the security fix is allowed through before the floor.
 minimumReleaseAgeExcludes = [
+  "fast-uri",
   "tailwind-merge",
 ]
