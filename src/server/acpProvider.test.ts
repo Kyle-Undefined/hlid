@@ -728,6 +728,32 @@ describe("AcpProvider — model catalog", () => {
 	});
 });
 
+describe("AcpProvider — native session forking", () => {
+	it("negotiates and executes whole-session forks", async () => {
+		const provider = makeProvider();
+		await expect(provider.resolveForkCapability()).resolves.toEqual({
+			kind: "exact",
+			wholeSession: true,
+			throughMessage: false,
+		});
+		await expect(
+			provider.forkSession({
+				sessionId: "fake-session",
+				cwd: process.cwd(),
+			}),
+		).resolves.toEqual({ sessionId: "fake-session-fork" });
+	});
+
+	it("rejects a message cutoff the ACP protocol cannot express", async () => {
+		await expect(
+			makeProvider().forkSession({
+				sessionId: "fake-session",
+				cutoff: { kind: "message", id: "message-1" },
+			}),
+		).rejects.toThrow("whole-session");
+	});
+});
+
 describe("AcpProvider — error handling", () => {
 	it("propagates ACP transport errors from send", async () => {
 		const session = makeProvider().query(params());

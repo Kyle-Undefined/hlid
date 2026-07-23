@@ -217,7 +217,7 @@ export type PendingTurnSnapshot = {
 	session_id: string;
 	skill_context?: string;
 	skill_contexts?: string[];
-	command_action?: "review" | "computer-use";
+	command_action?: "review" | "computer-use" | "compact";
 	agent_cwd?: string;
 	attachments?: ChatAttachment[];
 	vault_references?: string[];
@@ -287,7 +287,7 @@ export type SlashCommandsMessage = {
 		description: string;
 		argumentHint: string;
 		aliases?: string[];
-		action?: "review" | "computer-use" | "goal";
+		action?: "review" | "computer-use" | "goal" | "compact";
 	}>;
 };
 
@@ -545,7 +545,7 @@ export type ClientChatMessage = {
 	skill_context?: string;
 	skill_contexts?: string[];
 	/** Hlid-owned capability action, executed directly instead of prompt passthrough. */
-	command_action?: "review" | "computer-use";
+	command_action?: "review" | "computer-use" | "compact";
 	agent_cwd?: string;
 	attachments?: ChatAttachment[];
 	/** Vault-root-relative files selected with the @ picker. */

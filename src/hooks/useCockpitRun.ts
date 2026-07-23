@@ -182,7 +182,7 @@ function enqueueRun(
 		sessionId: string;
 		text: string;
 		skillContexts?: string[];
-		commandAction?: "review" | "computer-use";
+		commandAction?: "review" | "computer-use" | "compact";
 		attachments: Attachment[];
 		vaultReferences: string[];
 	},
@@ -210,7 +210,7 @@ function startRun(
 		sessionId: string;
 		text: string;
 		skillContexts?: string[];
-		commandAction?: "review" | "computer-use";
+		commandAction?: "review" | "computer-use" | "compact";
 		attachments: Attachment[];
 		vaultReferences: string[];
 	},
@@ -259,6 +259,12 @@ export function useCockpitRun(options: CockpitRunOptions) {
 		);
 		if (commandAction === "goal") {
 			options.setRunError("Goals are managed from an existing Raven session.");
+			return;
+		}
+		if (commandAction === "mcp") {
+			options.setRunError(
+				"MCP status is inspected from an existing Raven session.",
+			);
 			return;
 		}
 		if (

@@ -607,6 +607,21 @@ export function closeAllCodexAppServers(): void {
 }
 
 /**
+ * Restart provider metadata without interrupting attached conversations.
+ * Extension mutations use this after idle SessionManagers have detached.
+ */
+export function closeIdleCodexAppServers(): number {
+	let closed = 0;
+	for (const [key, server] of servers) {
+		if (server.threadCount > 0) continue;
+		server.kill(new Error("Codex app-server reloading provider extensions"));
+		servers.delete(key);
+		closed++;
+	}
+	return closed;
+}
+
+/**
  * Snapshot of the shared app-server registry for diagnostics
  * (GET /codex/app-servers).
  */

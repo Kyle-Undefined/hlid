@@ -368,6 +368,28 @@ describe("loadProviderCatalog", () => {
 		});
 	});
 
+	it("publishes a negotiated whole-session-only ACP fork capability", async () => {
+		const provider = makeProvider({
+			providerId: "acp:test",
+			resolveForkCapability: vi.fn().mockResolvedValue({
+				kind: "exact",
+				wholeSession: true,
+				throughMessage: false,
+			}),
+		});
+
+		const result = await loadProviderCatalog([provider], {
+			modelsFor: vi.fn().mockResolvedValue([]),
+		});
+
+		expect(result[0]?.forkCapability).toEqual({
+			kind: "exact",
+			wholeSession: true,
+			throughMessage: false,
+		});
+		expect(provider.resolveForkCapability).toHaveBeenCalledOnce();
+	});
+
 	it("uses cached models for navigation-sensitive loaders", async () => {
 		const provider = makeProvider({ providerId: "codex" });
 		const modelsFor = vi.fn(() => new Promise<ProviderModelInfo[]>(() => {}));

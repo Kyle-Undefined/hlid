@@ -42,7 +42,7 @@ export type SlashCommand = {
 	argumentHint: string;
 	aliases?: string[];
 	/** Hlid capability action. Omitted commands are sent as provider-native prompts. */
-	action?: "review" | "computer-use" | "goal";
+	action?: "review" | "computer-use" | "goal" | "compact";
 };
 
 export type ProviderGoalStatus =
@@ -343,7 +343,7 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 	supportedCommands?(): Promise<SlashCommand[]>;
 	/** Execute a provider capability without relying on prompt-parsed CLI syntax. */
 	executeCommand?(
-		action: "review" | "computer-use",
+		action: "review" | "computer-use" | "compact",
 		args?: string,
 	): Promise<void>;
 	/** Read or mutate a provider-owned durable objective without a chat turn. */
@@ -403,9 +403,10 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 /** Params for AgentProvider.forkSession — branch a session's transcript into a new one. */
 export type ProviderForkCapability = {
 	kind: "exact";
-	cutoff: "message" | "turn";
+	/** Native cutoff identifier, absent when only whole-session forks exist. */
+	cutoff?: "message" | "turn";
 	wholeSession: true;
-	throughMessage: true;
+	throughMessage: boolean;
 };
 
 export type ForkSessionParams = {
@@ -483,6 +484,8 @@ export interface AgentProvider {
 	readonly probeRequiresTurn?: boolean;
 	/** Exact native fork behavior, when the provider implements it. */
 	readonly forkCapability?: ProviderForkCapability;
+	/** Negotiate a runtime fork capability when the provider protocol requires it. */
+	resolveForkCapability?(): Promise<ProviderForkCapability | undefined>;
 	/** Optional availability check. Returns false + reason if provider can't run. */
 	check?(): Promise<{ available: boolean; reason?: string }>;
 	/** Optional host-only capabilities surfaced in Forge diagnostics. */

@@ -40,6 +40,11 @@ export type ExtensionMutationInput =
 			expectedVersion: string;
 	  }
 	| {
+			action: "update";
+			id: string;
+			expectedVersion: string;
+	  }
+	| {
 			action: "set_enabled";
 			id: string;
 			expectedVersion: string;
@@ -356,11 +361,18 @@ function commandForMutation(
 			? target.scope
 			: "user";
 	const providerCommand = target.providerId;
+	if (action === "update" && target.providerId !== "claude") {
+		throw new Error(
+			"Codex does not expose an installed-plugin update command. Update its marketplace source, then reinstall if needed.",
+		);
+	}
 	const operation =
 		target.providerId === "claude"
 			? action === "install"
 				? "install"
-				: "uninstall"
+				: action === "update"
+					? "update"
+					: "uninstall"
 			: action === "install"
 				? "add"
 				: "remove";
@@ -397,13 +409,15 @@ function failureMessage(
 	const label =
 		action === "install"
 			? "Plugin installation"
-			: action === "uninstall"
-				? "Plugin removal"
-				: action === "add_marketplace"
-					? "Marketplace addition"
-					: action === "upgrade_marketplace"
-						? "Marketplace update"
-						: "Marketplace removal";
+			: action === "update"
+				? "Plugin update"
+				: action === "uninstall"
+					? "Plugin removal"
+					: action === "add_marketplace"
+						? "Marketplace addition"
+						: action === "upgrade_marketplace"
+							? "Marketplace update"
+							: "Marketplace removal";
 	return detail
 		? `${label} exited ${code ?? "without a status"}: ${detail}`
 		: `${label} exited ${code ?? "without a status"}`;
@@ -781,7 +795,9 @@ export async function mutateProviderExtension(
 			}
 		} else if (target.version !== input.expectedVersion) {
 			throw new Error(
-				"The installed version changed. Refresh before removing this extension.",
+				`The installed version changed. Refresh before ${
+					input.action === "update" ? "updating" : "removing"
+				} this extension.`,
 			);
 		}
 
@@ -799,7 +815,9 @@ export async function mutateProviderExtension(
 				timeoutError:
 					input.action === "install"
 						? "Plugin installation timed out"
-						: "Plugin removal timed out",
+						: input.action === "update"
+							? "Plugin update timed out"
+							: "Plugin removal timed out",
 				maxOutputChars: MAX_OUTPUT_CHARS,
 				shell: command.shell,
 				cwd: command.cwd,
@@ -815,11 +833,17 @@ export async function mutateProviderExtension(
 		const stillInstalled = refreshed.extensions.some(
 			(item) => item.id === input.id || item.pluginId === target.pluginId,
 		);
-		if (input.action === "install" ? !stillInstalled : stillInstalled) {
+		if (
+			(input.action === "install" && !stillInstalled) ||
+			(input.action === "uninstall" && stillInstalled) ||
+			(input.action === "update" && !stillInstalled)
+		) {
 			throw new Error(
 				input.action === "install"
 					? "The provider command completed, but the extension was not installed"
-					: "The provider command completed, but the extension is still installed",
+					: input.action === "update"
+						? "The provider command completed, but the extension disappeared"
+						: "The provider command completed, but the extension is still installed",
 			);
 		}
 

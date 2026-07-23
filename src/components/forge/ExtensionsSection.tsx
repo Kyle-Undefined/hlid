@@ -66,12 +66,12 @@ function MetaValue({
 	);
 }
 
-function SkillFilesReview({ files }: { files: ExtensionSkillFile[] }) {
+function PackageFilesReview({ files }: { files: ExtensionSkillFile[] }) {
 	if (files.length === 0) return null;
 	return (
 		<div>
 			<div className="text-[9px] tracking-widest uppercase text-muted-foreground">
-				Skill files · {files.length}
+				Package files · {files.length}
 			</div>
 			<div className="mt-2 space-y-2">
 				{files.map((file) => (
@@ -81,6 +81,9 @@ function SkillFilesReview({ files }: { files: ExtensionSkillFile[] }) {
 					>
 						<summary className="cursor-pointer px-3 py-2 text-[10px] font-mono break-all">
 							{file.path}
+							{file.size !== undefined
+								? ` · ${file.size.toLocaleString()} bytes`
+								: ""}
 						</summary>
 						<div className="border-t border-border/70">
 							{file.truncated && (
@@ -88,9 +91,15 @@ function SkillFilesReview({ files }: { files: ExtensionSkillFile[] }) {
 									Preview truncated at the extension review limit.
 								</div>
 							)}
-							<pre className="max-h-[32rem] overflow-auto p-3 text-[10px] leading-relaxed whitespace-pre-wrap break-words">
-								{file.content}
-							</pre>
+							{file.binary ? (
+								<div className="p-3 text-[10px] text-muted-foreground">
+									Binary file. Content is not rendered in the review.
+								</div>
+							) : (
+								<pre className="max-h-[32rem] overflow-auto p-3 text-[10px] leading-relaxed whitespace-pre-wrap break-words">
+									{file.content}
+								</pre>
+							)}
 						</div>
 					</details>
 				))}
@@ -312,8 +321,8 @@ function AvailableExtensionCard({
 									<>
 										Install the reviewed package through{" "}
 										{extension.providerLabel} in {extension.environmentLabel}.
-										Existing provider sessions may need to be reopened before
-										the extension appears.
+										Idle runtimes refresh immediately; a running turn reloads
+										the provider before its next turn.
 									</>
 								) : (
 									<>
@@ -395,7 +404,7 @@ function AvailableExtensionCard({
 							</div>
 						</div>
 					)}
-					<SkillFilesReview files={review.skillFiles} />
+					<PackageFilesReview files={review.skillFiles} />
 					<div>
 						<div className="text-[9px] tracking-widest uppercase text-muted-foreground">
 							Trust review
@@ -441,11 +450,13 @@ function AvailableExtensionCard({
 
 function ExtensionCard({
 	extension,
+	onUpdate,
 	onSetEnabled,
 	onUninstall,
 	mutating,
 }: {
 	extension: ProviderExtension;
+	onUpdate?: () => void;
 	onSetEnabled: () => void;
 	onUninstall: () => void;
 	mutating: boolean;
@@ -507,8 +518,8 @@ function ExtensionCard({
 						<span className="text-foreground/85">
 							{extension.enabled ? "Enabled" : "Disabled"}
 						</span>{" "}
-						in {extension.providerLabel}. Existing provider sessions may need to
-						be reopened before this change applies.
+						in {extension.providerLabel}. Idle runtimes refresh immediately; a
+						running turn reloads the provider before its next turn.
 					</div>
 					<button
 						type="button"
@@ -523,6 +534,31 @@ function ExtensionCard({
 						{mutating ? "Working…" : extension.enabled ? "Disable" : "Enable"}
 					</button>
 				</div>
+				{onUpdate && (
+					<div className="flex flex-wrap items-center justify-between gap-3 border border-border/70 bg-secondary/25 px-3 py-2">
+						<div className="text-xs text-muted-foreground">
+							Check the configured Claude marketplace and update this installed
+							plugin in place.
+						</div>
+						<ConfirmAction
+							label={`update ${extension.name}?`}
+							confirmText="update"
+							onConfirm={onUpdate}
+							stacked
+							className="justify-end flex-wrap"
+							trigger={(open) => (
+								<button
+									type="button"
+									disabled={mutating}
+									onClick={open}
+									className="border border-primary/40 px-3 py-1.5 text-[10px] tracking-widest uppercase text-primary hover:bg-primary/10 disabled:opacity-40"
+								>
+									{mutating ? "Updating…" : "Update"}
+								</button>
+							)}
+						/>
+					</div>
+				)}
 				<div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
 					<MetaValue label="Plugin ID" value={extension.pluginId} mono />
 					<MetaValue label="Marketplace" value={extension.marketplace} />
@@ -563,7 +599,7 @@ function ExtensionCard({
 						</div>
 					</div>
 				)}
-				<SkillFilesReview files={extension.skillFiles} />
+				<PackageFilesReview files={extension.skillFiles} />
 				<div>
 					<div className="text-[9px] tracking-widest uppercase text-muted-foreground">
 						Trust review
@@ -601,8 +637,8 @@ function ExtensionCard({
 				<div className="flex flex-wrap items-center justify-between gap-3 border border-destructive/20 bg-destructive/5 px-3 py-2">
 					<div className="text-xs text-muted-foreground">
 						Remove from {extension.providerLabel} in{" "}
-						{extension.environmentLabel}. Existing provider sessions may keep
-						the extension until reopened.
+						{extension.environmentLabel}. Idle runtimes refresh immediately; a
+						running turn reloads the provider before its next turn.
 					</div>
 					<ConfirmAction
 						label={`remove ${extension.name}?`}
@@ -793,16 +829,18 @@ export function ExtensionsSection() {
 				setMutationNotice(
 					result.action === "install"
 						? `${subject} installed in ${result.environmentLabel}.`
-						: result.action === "uninstall"
-							? `${subject} removed from ${result.environmentLabel}.`
-							: result.action === "set_enabled" &&
-									input.action === "set_enabled"
-								? `${subject} ${input.enabled ? "enabled" : "disabled"} in ${result.environmentLabel}.`
-								: result.action === "add_marketplace"
-									? `${subject} added in ${result.environmentLabel}.`
-									: result.action === "upgrade_marketplace"
-										? `${subject} updated in ${result.environmentLabel}.`
-										: `${subject} removed from ${result.environmentLabel}.`,
+						: result.action === "update"
+							? `${subject} updated in ${result.environmentLabel}.`
+							: result.action === "uninstall"
+								? `${subject} removed from ${result.environmentLabel}.`
+								: result.action === "set_enabled" &&
+										input.action === "set_enabled"
+									? `${subject} ${input.enabled ? "enabled" : "disabled"} in ${result.environmentLabel}.`
+									: result.action === "add_marketplace"
+										? `${subject} added in ${result.environmentLabel}.`
+										: result.action === "upgrade_marketplace"
+											? `${subject} updated in ${result.environmentLabel}.`
+											: `${subject} removed from ${result.environmentLabel}.`,
 				);
 				if (result.action === "add_marketplace") {
 					setMarketplaceSource("");
@@ -1199,6 +1237,16 @@ export function ExtensionsSection() {
 											key={extension.id}
 											extension={extension}
 											mutating={mutatingId === extension.id}
+											onUpdate={
+												extension.providerId === "claude"
+													? () =>
+															void mutateExtension({
+																action: "update",
+																id: extension.id,
+																expectedVersion: extension.version,
+															})
+													: undefined
+											}
 											onSetEnabled={() =>
 												void mutateExtension({
 													action: "set_enabled",

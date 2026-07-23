@@ -879,6 +879,7 @@ function CockpitPage() {
 			? live.sdkSlashCommands
 			: [],
 		commandProviderId,
+		"watch",
 	);
 	const skillGroups = useMemo(
 		() => groupSkills(visibleSkills, data.sectionOrder),
@@ -949,7 +950,7 @@ function CockpitPage() {
 	]);
 	const openRoutineDraft = useCallback(() => {
 		const hasInteractiveAction = composer.activeSkills.some(
-			(command) => command.execution.kind === "provider-action",
+			(command) => command.execution.kind === "capability-action",
 		);
 		const canSeedFromWatch =
 			!composer.planMode &&

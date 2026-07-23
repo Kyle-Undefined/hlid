@@ -86,7 +86,7 @@ export function useCockpitLiveData(
 			description: string;
 			argumentHint: string;
 			aliases?: string[];
-			action?: "review" | "computer-use" | "goal";
+			action?: "review" | "computer-use" | "goal" | "compact";
 		}>
 	>([]);
 	const [sdkSlashCommandProviderId, setSdkSlashCommandProviderId] = useState<

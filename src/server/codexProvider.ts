@@ -51,6 +51,8 @@ import type {
 	ReasoningEffortOption,
 	SandboxPolicy,
 	SubAgentActivityKind,
+	ThreadCompactStartParams,
+	ThreadCompactStartResponse,
 	ThreadForkParams,
 	ThreadForkResponse,
 	ThreadGoalClearedNotification,
@@ -1348,6 +1350,12 @@ class CodexAgentSession implements AgentSession {
 				action: "goal",
 			},
 			{
+				name: "compact",
+				description: "Compact the active Codex conversation",
+				argumentHint: "",
+				action: "compact",
+			},
+			{
 				name: "review",
 				description: "Review the working tree",
 				argumentHint: "[instructions]",
@@ -1393,7 +1401,7 @@ class CodexAgentSession implements AgentSession {
 	}
 
 	async executeCommand(
-		action: "review" | "computer-use",
+		action: "review" | "computer-use" | "compact",
 		args?: string,
 	): Promise<void> {
 		await this.ensureReady();
@@ -1457,6 +1465,23 @@ class CodexAgentSession implements AgentSession {
 				});
 			return;
 		}
+		if (action === "compact") {
+			if (args?.trim()) throw new Error("/compact does not accept arguments");
+			const params: ThreadCompactStartParams = { threadId: this.threadId };
+			(await this.request(
+				"thread/compact/start",
+				params,
+			)) as ThreadCompactStartResponse;
+			const content = "Conversation compacted.";
+			this.events.push({ type: "local_command_output", content });
+			this.events.push({
+				type: "done",
+				turns: 0,
+				durationMs: 0,
+				stopReason: "end_turn",
+			});
+			return;
+		}
 		if (action !== "review") throw new Error(`Unsupported command: ${action}`);
 		const target = args?.trim()
 			? { type: "custom", instructions: args.trim() }
@@ -1475,43 +1500,53 @@ class CodexAgentSession implements AgentSession {
 	async controlGoal(
 		control: ProviderGoalControl,
 	): Promise<ProviderGoalControlResult> {
-		await this.ensureReady();
-		const threadId = this.threadId;
-		if (!threadId) throw new Error("Codex thread did not start");
-		if (control.action === "get") {
-			const params: ThreadGoalGetParams = { threadId };
+		try {
+			await this.ensureReady();
+			const threadId = this.threadId;
+			if (!threadId) throw new Error("Codex thread did not start");
+			if (control.action === "get") {
+				const params: ThreadGoalGetParams = { threadId };
+				const result = (await this.request(
+					"thread/goal/get",
+					params,
+				)) as ThreadGoalGetResponse;
+				return { providerSessionId: threadId, goal: result.goal };
+			}
+			if (control.action === "clear") {
+				const params: ThreadGoalClearParams = { threadId };
+				const result = (await this.request(
+					"thread/goal/clear",
+					params,
+				)) as ThreadGoalClearResponse;
+				if (!result.cleared) throw new Error("Codex did not clear the goal");
+				return { providerSessionId: threadId, goal: null };
+			}
+			const params: ThreadGoalSetParams = {
+				threadId,
+				...(control.action === "set"
+					? {
+							objective: control.objective.trim(),
+							status: "active" as const,
+							...(control.tokenBudget !== undefined
+								? { tokenBudget: control.tokenBudget }
+								: {}),
+						}
+					: { status: control.action === "pause" ? "paused" : "active" }),
+			};
 			const result = (await this.request(
-				"thread/goal/get",
+				"thread/goal/set",
 				params,
-			)) as ThreadGoalGetResponse;
+			)) as ThreadGoalSetResponse;
 			return { providerSessionId: threadId, goal: result.goal };
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			if (/method not found|unknown method|-32601/i.test(message)) {
+				throw new Error(
+					"Goals require a newer Codex CLI. Update the Codex installation used by this session, then reopen it.",
+				);
+			}
+			throw error;
 		}
-		if (control.action === "clear") {
-			const params: ThreadGoalClearParams = { threadId };
-			const result = (await this.request(
-				"thread/goal/clear",
-				params,
-			)) as ThreadGoalClearResponse;
-			if (!result.cleared) throw new Error("Codex did not clear the goal");
-			return { providerSessionId: threadId, goal: null };
-		}
-		const params: ThreadGoalSetParams = {
-			threadId,
-			...(control.action === "set"
-				? {
-						objective: control.objective.trim(),
-						status: "active" as const,
-						...(control.tokenBudget !== undefined
-							? { tokenBudget: control.tokenBudget }
-							: {}),
-					}
-				: { status: control.action === "pause" ? "paused" : "active" }),
-		};
-		const result = (await this.request(
-			"thread/goal/set",
-			params,
-		)) as ThreadGoalSetResponse;
-		return { providerSessionId: threadId, goal: result.goal };
 	}
 
 	async mcpServerStatus(): Promise<McpServerStatus[]> {

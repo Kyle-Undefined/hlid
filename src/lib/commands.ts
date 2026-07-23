@@ -2,12 +2,75 @@ import { isClaudeRuntimeProvider } from "./providerRuntime";
 import { startsWithSearchText } from "./search";
 import type { Skill } from "./skills";
 
-export type CommandAction = "review" | "computer-use" | "goal";
+export type CommandAction =
+	| "review"
+	| "computer-use"
+	| "goal"
+	| "compact"
+	| "mcp";
+
+export type CommandCapability = {
+	name: CommandAction;
+	owner: "hlid" | "provider";
+	lifecycle: "ui" | "control" | "activity";
+	description: string;
+	argumentHint?: string;
+	surfaces: Array<"raven" | "watch">;
+};
+
+/**
+ * Structured commands Hlid understands without relying on prompt parsing.
+ * Provider command discovery still decides whether provider-owned entries are
+ * available for the active runtime; Hlid-owned UI actions are added per surface.
+ */
+export const COMMAND_CAPABILITY_REGISTRY: Record<
+	CommandAction,
+	CommandCapability
+> = {
+	goal: {
+		name: "goal",
+		owner: "provider",
+		lifecycle: "control",
+		description: "Set, inspect, pause, resume, or clear the Codex goal",
+		argumentHint: "[objective | pause | resume | clear]",
+		surfaces: ["raven"],
+	},
+	compact: {
+		name: "compact",
+		owner: "provider",
+		lifecycle: "activity",
+		description: "Compact the active provider conversation",
+		surfaces: ["raven"],
+	},
+	review: {
+		name: "review",
+		owner: "provider",
+		lifecycle: "activity",
+		description: "Review the working tree",
+		argumentHint: "[instructions]",
+		surfaces: ["raven", "watch"],
+	},
+	"computer-use": {
+		name: "computer-use",
+		owner: "provider",
+		lifecycle: "activity",
+		description: "Run a task in a Windows-native Codex Computer Use thread",
+		argumentHint: "<Windows desktop task>",
+		surfaces: ["raven", "watch"],
+	},
+	mcp: {
+		name: "mcp",
+		owner: "hlid",
+		lifecycle: "ui",
+		description: "Refresh and inspect MCP servers for this session",
+		surfaces: ["raven"],
+	},
+};
 
 export type CommandExecution =
 	| { kind: "skill"; filePath: string }
 	| { kind: "prompt" }
-	| { kind: "provider-action"; action: CommandAction };
+	| { kind: "capability-action"; action: CommandAction };
 
 /** A slash command that Hlid can offer for the active provider/session. */
 export type CommandDescriptor = {
@@ -46,10 +109,30 @@ const UI_OWNED_COMMANDS = new Set([
 	"plan",
 	"usage",
 	"new",
-	"compact",
 	"status",
 	"mcp",
 ]);
+
+function hlidSurfaceCommands(surface: "raven" | "watch"): CommandDescriptor[] {
+	return Object.values(COMMAND_CAPABILITY_REGISTRY)
+		.filter(
+			(capability) =>
+				capability.owner === "hlid" && capability.surfaces.includes(surface),
+		)
+		.map((capability) => ({
+			id: `hlid:${capability.name}`,
+			name: capability.name,
+			description: capability.description,
+			...(capability.argumentHint
+				? { argumentHint: capability.argumentHint }
+				: {}),
+			source: "hlid" as const,
+			execution: {
+				kind: "capability-action" as const,
+				action: capability.name,
+			},
+		}));
+}
 
 export function skillCommand(skill: Skill): CommandDescriptor {
 	const providerOwned = Boolean(skill.providerId);
@@ -73,10 +156,13 @@ export function mergeCommands(
 	vaultSkills: Skill[],
 	providerCommands: ProviderCommand[],
 	providerId?: string,
+	surface: "raven" | "watch" = "raven",
 ): CommandDescriptor[] {
-	const commands = vaultSkills
-		.filter((skill) => !skill.providerId || skill.providerId === providerId)
-		.map(skillCommand);
+	const commands = [
+		...vaultSkills
+			.filter((skill) => !skill.providerId || skill.providerId === providerId)
+			.map(skillCommand),
+	];
 	for (const command of providerCommands) {
 		if (/\(user\)/i.test(command.name)) continue;
 		const normalized = command.name.replace(/\s*\(user\)\s*$/i, "");
@@ -98,11 +184,11 @@ export function mergeCommands(
 			source: command.action ? "hlid" : "provider",
 			...(providerId ? { providerId } : {}),
 			execution: command.action
-				? { kind: "provider-action", action: command.action }
+				? { kind: "capability-action", action: command.action }
 				: { kind: "prompt" },
 		});
 	}
-	return commands;
+	return [...commands, ...hlidSurfaceCommands(surface)];
 }
 
 export function commandMatches(
@@ -156,9 +242,9 @@ export function canSelectCommand(
 	providerId?: string,
 ): boolean {
 	if (selected.some((command) => command.id === candidate.id)) return false;
-	if (candidate.execution.kind === "provider-action") return true;
+	if (candidate.execution.kind === "capability-action") return true;
 	const composable = selected.filter(
-		(command) => command.execution.kind !== "provider-action",
+		(command) => command.execution.kind !== "capability-action",
 	);
 	if (
 		providerId !== undefined &&
@@ -181,9 +267,9 @@ export function addCommandSelection(
 	providerId?: string,
 ): CommandDescriptor[] {
 	if (!canSelectCommand(selected, candidate, providerId)) return selected;
-	if (candidate.execution.kind === "provider-action") return [candidate];
+	if (candidate.execution.kind === "capability-action") return [candidate];
 	const withoutAction = selected.filter(
-		(command) => command.execution.kind !== "provider-action",
+		(command) => command.execution.kind !== "capability-action",
 	);
 	return [...withoutAction, candidate];
 }
@@ -265,16 +351,16 @@ export function resolveCommandSubmission(
 			command.aliases?.some((alias) => alias.toLowerCase() === slashName),
 	);
 	const manualMatch =
-		matches.find((command) => command.execution.kind === "provider-action") ??
+		matches.find((command) => command.execution.kind === "capability-action") ??
 		matches[0];
 	const resolved =
 		selected.length > 0 ? selected : manualMatch ? [manualMatch] : [];
 	if (resolved.length === 0) return { text: commandText };
 
 	const action = resolved.find(
-		(command) => command.execution.kind === "provider-action",
+		(command) => command.execution.kind === "capability-action",
 	);
-	if (action?.execution.kind === "provider-action") {
+	if (action?.execution.kind === "capability-action") {
 		return {
 			text:
 				selected.length > 0

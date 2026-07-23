@@ -36,7 +36,7 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 			session_id: id.optional(),
 			skill_context: path.optional(),
 			skill_contexts: z.array(path).optional(),
-			command_action: z.enum(["review", "computer-use"]).optional(),
+			command_action: z.enum(["review", "computer-use", "compact"]).optional(),
 			agent_cwd: path.optional(),
 			attachments: z.array(attachment).max(32).optional(),
 			vault_references: z.array(path).max(32).optional(),

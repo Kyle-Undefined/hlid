@@ -53,6 +53,10 @@ export function createExtensionRouteHandler(
 					validId(input.id) &&
 					typeof input.expectedVersion === "string" &&
 					input.expectedVersion.length <= 128) ||
+				(input.action === "update" &&
+					validId(input.id) &&
+					typeof input.expectedVersion === "string" &&
+					input.expectedVersion.length <= 128) ||
 				(input.action === "set_enabled" &&
 					validId(input.id) &&
 					typeof input.expectedVersion === "string" &&

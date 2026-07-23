@@ -839,6 +839,45 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 		);
 	});
 
+	it("rejects per-message forks when negotiated ACP support is whole-session only", async () => {
+		mockGetSessionById.mockResolvedValue({
+			...sampleRow,
+			provider_id: "acp:test",
+			agent_cwd: "/work/project",
+		});
+		mockGetMessageForFork.mockResolvedValue({
+			sessionId: "abc-123",
+			seq: 3,
+			role: "assistant",
+			sdkUuid: "sdk-msg-uuid-1",
+			providerTurnId: null,
+		});
+		mockGetSessionProviderSession.mockResolvedValue("native-source-id");
+		const forkSession = vi.fn();
+		const pool = makePool({
+			getProvider: vi.fn().mockReturnValue({
+				providerId: "acp:test",
+				resolveForkCapability: vi.fn().mockResolvedValue({
+					kind: "exact",
+					wholeSession: true,
+					throughMessage: false,
+				}),
+				forkSession,
+			}),
+		});
+
+		const res = await handleDbRoute(
+			makeUrl("/db/session/fork"),
+			forkRequest({ id: "abc-123", messageId: 42 }),
+			pool,
+		);
+
+		if (!res) throw new Error("Expected a Response, got null");
+		expect(res.status).toBe(422);
+		expect(await res.text()).toContain("whole-session");
+		expect(forkSession).not.toHaveBeenCalled();
+	});
+
 	it("returns 409 when the source session has a running turn", async () => {
 		const pool = makePool({
 			findByDbSessionId: vi.fn().mockReturnValue({

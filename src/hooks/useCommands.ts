@@ -6,9 +6,10 @@ export function useCommands(
 	vaultSkills: Skill[],
 	providerCommands: ProviderCommand[],
 	providerId?: string,
+	surface: "raven" | "watch" = "raven",
 ) {
 	return useMemo(
-		() => mergeCommands(vaultSkills, providerCommands, providerId),
-		[vaultSkills, providerCommands, providerId],
+		() => mergeCommands(vaultSkills, providerCommands, providerId, surface),
+		[vaultSkills, providerCommands, providerId, surface],
 	);
 }

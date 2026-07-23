@@ -35,9 +35,9 @@ export type ProviderInfo = {
 	forkCapability?: {
 		kind: "exact";
 		/** Native identifier needed for a branch through one displayed turn. */
-		cutoff: "message" | "turn";
+		cutoff?: "message" | "turn";
 		wholeSession: true;
-		throughMessage: true;
+		throughMessage: boolean;
 	};
 	/** Host-only provider capabilities and their live readiness. */
 	hostCapabilities?: Record<

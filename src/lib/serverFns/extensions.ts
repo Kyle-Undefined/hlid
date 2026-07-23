@@ -49,6 +49,11 @@ const extensionMutationSchema = z.discriminatedUnion("action", [
 		expectedVersion: z.string().max(128),
 	}),
 	z.object({
+		action: z.literal("update"),
+		id: z.string().regex(/^[0-9a-f]{24}$/),
+		expectedVersion: z.string().max(128),
+	}),
+	z.object({
 		action: z.literal("set_enabled"),
 		id: z.string().regex(/^[0-9a-f]{24}$/),
 		expectedVersion: z.string().max(128),
@@ -93,11 +98,13 @@ export const mutateExtensionFn = createServerFn({ method: "POST" })
 				payload.error ??
 					(data.action === "install"
 						? "Extension installation failed"
-						: data.action === "uninstall"
-							? "Extension removal failed"
-							: data.action === "set_enabled"
-								? "Extension status change failed"
-								: "Marketplace action failed"),
+						: data.action === "update"
+							? "Extension update failed"
+							: data.action === "uninstall"
+								? "Extension removal failed"
+								: data.action === "set_enabled"
+									? "Extension status change failed"
+									: "Marketplace action failed"),
 			);
 		}
 		return {

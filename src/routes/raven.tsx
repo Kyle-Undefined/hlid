@@ -543,7 +543,7 @@ function useRavenChatRuntime({
 			description: string;
 			argumentHint: string;
 			aliases?: string[];
-			action?: "review" | "computer-use" | "goal";
+			action?: "review" | "computer-use" | "goal" | "compact";
 		}>
 	>([]);
 	const [sdkSlashCommandProviderId, setSdkSlashCommandProviderId] = useState<
@@ -559,6 +559,7 @@ function useRavenChatRuntime({
 	const [mcpServers, setMcpServers] = useState<
 		ReturnType<typeof mapMcpServer>[]
 	>([]);
+	const [mcpOpenSignal, setMcpOpenSignal] = useState(0);
 	const [messages, dispatch] = useReducer(reducer, []);
 	const pendingIdRef = useRef<string | null>(null);
 	const lastAssistantIdRef = useRef<string | null>(null);
@@ -673,6 +674,14 @@ function useRavenChatRuntime({
 		},
 		[agentCwd, connection.send, sessionIdRef],
 	);
+	const openMcp = useCallback(() => {
+		connection.send({
+			type: "probe_mcp",
+			session_id: sessionIdRef.current,
+			...(agentCwd ? { agent_cwd: agentCwd } : {}),
+		});
+		setMcpOpenSignal((value) => value + 1);
+	}, [agentCwd, connection.send, sessionIdRef]);
 
 	const historyPagination = useLoadChatHistory({
 		existingSessionId,
@@ -746,6 +755,8 @@ function useRavenChatRuntime({
 		sdkSlashCommands,
 		sdkSlashCommandProviderId,
 		mcpServers,
+		mcpOpenSignal,
+		openMcp,
 		rateLimit,
 		setRateLimit,
 		goal,
@@ -1132,6 +1143,7 @@ function useRavenSend(props: RavenActionProps) {
 		controlGoal,
 		openGoalEditor,
 		closeGoalEditor,
+		openMcp,
 	} = props.runtime;
 	const { pendingAttachments, clearPending: clearPendingAttachments } =
 		props.upload;
@@ -1172,6 +1184,13 @@ function useRavenSend(props: RavenActionProps) {
 				if (!goalStart) return;
 				text = goalStart.objective;
 				closeGoalEditor();
+			}
+			if (commandAction === "mcp") {
+				openMcp();
+				clearDraft();
+				setInput("");
+				setActiveSkills([]);
+				return;
 			}
 			const id = uid();
 			const submission = prepareChatSubmission({
@@ -1242,6 +1261,7 @@ function useRavenSend(props: RavenActionProps) {
 			controlGoal,
 			openGoalEditor,
 			closeGoalEditor,
+			openMcp,
 		],
 	);
 }
@@ -1790,6 +1810,7 @@ export function ChatPage() {
 		vaultSkills,
 		sdkSlashCommandProviderId === commandProviderId ? sdkSlashCommands : [],
 		commandProviderId,
+		"raven",
 	);
 
 	const picker = useSlashPicker(
@@ -2665,6 +2686,7 @@ function ChatInputArea(props: ChatComposerProps) {
 }
 
 function ChatInputNotices({
+	config,
 	agentList,
 	session,
 	runtime,
@@ -2769,7 +2791,17 @@ function ChatInputNotices({
 					</div>
 				)}
 				<div className="flex w-full min-w-0 items-center justify-end gap-3 md:w-auto">
-					<McpIndicator servers={runtime.mcpServers} align="mobile-left" />
+					<McpIndicator
+						servers={runtime.mcpServers}
+						align="mobile-left"
+						openSignal={runtime.mcpOpenSignal}
+						label={`MCP runtime · ${
+							agentList.find((agent) => agent.path === agentSkillContext)
+								?.name ??
+							config.vault.name ??
+							"Vault"
+						}`}
+					/>
 					<button
 						type="button"
 						onClick={() => {
@@ -3156,7 +3188,7 @@ function ChatActionButtons({
 		/^\/goal(?:\s|$)/i.test(input.trim()) ||
 		activeSkills.some(
 			(command) =>
-				command.execution.kind === "provider-action" &&
+				command.execution.kind === "capability-action" &&
 				command.execution.action === "goal",
 		);
 

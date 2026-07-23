@@ -231,7 +231,7 @@ export async function loadProviderCatalog(
 				: null;
 			const providerRefresh =
 				options.refresh === true && check?.available !== false;
-			const [models, hostCapabilities] = await Promise.all([
+			const [models, hostCapabilities, forkCapability] = await Promise.all([
 				observeCatalogStep(
 					`models:${provider.providerId}`,
 					`${provider.providerId} model snapshot`,
@@ -247,6 +247,13 @@ export async function loadProviderCatalog(
 							() => provider.hostCapabilities?.().catch(() => ({})),
 						)
 					: undefined,
+				provider.resolveForkCapability && check?.available !== false
+					? observeCatalogStep(
+							`fork:${provider.providerId}`,
+							`${provider.providerId} fork-capability negotiation`,
+							() => provider.resolveForkCapability?.().catch(() => undefined),
+						)
+					: provider.forkCapability,
 			]);
 			return {
 				id: provider.providerId,
@@ -261,7 +268,7 @@ export async function loadProviderCatalog(
 				permissionModes: provider.permissionModes
 					? [...provider.permissionModes]
 					: undefined,
-				forkCapability: provider.forkCapability,
+				forkCapability,
 				hostCapabilities,
 			};
 		}),

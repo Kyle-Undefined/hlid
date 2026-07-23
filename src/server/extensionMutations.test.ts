@@ -207,6 +207,43 @@ describe("mutateProviderExtension", () => {
 		);
 	});
 
+	it("updates an installed Claude extension through the native CLI", async () => {
+		discover
+			.mockResolvedValueOnce(inventory({ extensions: [installed] }))
+			.mockResolvedValueOnce(
+				inventory({
+					extensions: [{ ...installed, version: "1.2.4" }],
+				}),
+			);
+
+		await expect(
+			mutateProviderExtension(
+				config,
+				{
+					action: "update",
+					id: installed.id,
+					expectedVersion: installed.version,
+				},
+				{
+					homes: () => [home],
+					discover,
+					run,
+					resolveClaude: () => "/usr/bin/claude",
+				},
+			),
+		).resolves.toMatchObject({
+			action: "update",
+			pluginId: "reviewer@official",
+		});
+		expect(run).toHaveBeenCalledWith(
+			"/usr/bin/claude",
+			["plugin", "update", "reviewer@official", "--scope", "user"],
+			expect.objectContaining({
+				timeoutError: "Plugin update timed out",
+			}),
+		);
+	});
+
 	it("enables and disables Claude plugins through the exact installed scope", async () => {
 		discover
 			.mockResolvedValueOnce(inventory({ extensions: [installed] }))

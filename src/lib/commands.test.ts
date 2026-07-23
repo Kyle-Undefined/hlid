@@ -58,6 +58,7 @@ describe("commands", () => {
 			"vault",
 			"provider",
 			"hlid",
+			"hlid",
 		]);
 		expect(commandMatches(commands[1], "wh")).toBe(true);
 	});
@@ -79,7 +80,38 @@ describe("commands", () => {
 				{ name: "explain", description: "Explain", argumentHint: "" },
 			],
 		);
-		expect(commands.map(({ name }) => name)).toEqual(["explain"]);
+		expect(commands.map(({ name }) => name)).toEqual(["explain", "mcp"]);
+	});
+
+	it("maps MCP to Raven's scoped UI and keeps it out of Watch", () => {
+		const raven = mergeCommands([], [], "codex", "raven");
+		expect(raven).toContainEqual(
+			expect.objectContaining({
+				name: "mcp",
+				source: "hlid",
+				execution: { kind: "capability-action", action: "mcp" },
+			}),
+		);
+		expect(mergeCommands([], [], "codex", "watch")).toEqual([]);
+	});
+
+	it("resolves provider-advertised compact as a structured activity", () => {
+		const commands = mergeCommands(
+			[],
+			[
+				{
+					name: "compact",
+					description: "Compact",
+					argumentHint: "",
+					action: "compact",
+				},
+			],
+			"codex",
+		);
+		expect(resolveCommandSubmission(null, "/compact", commands)).toEqual({
+			text: "/compact",
+			commandAction: "compact",
+		});
 	});
 
 	it("resolves vault skills to context and provider commands to prompts", () => {
@@ -114,7 +146,7 @@ describe("commands", () => {
 			source: "library",
 			execution: { kind: "skill", filePath: managed.filePath },
 		});
-		expect(mergeCommands([managed], [], "claude")).toHaveLength(1);
+		expect(mergeCommands([managed], [], "claude")).toHaveLength(2);
 	});
 
 	it("shows provider-owned skills only for their provider", () => {
@@ -129,7 +161,7 @@ describe("commands", () => {
 			mergeCommands([skill, claudeSkill], [], "codex").map(
 				(command) => command.name,
 			),
-		).toEqual(["garden-check"]);
+		).toEqual(["garden-check", "mcp"]);
 
 		const commands = mergeCommands([skill, claudeSkill], [], "claude");
 		const claude = commands.find((command) => command.name === "kyle-voice");
@@ -244,6 +276,7 @@ describe("commands", () => {
 				{ name: "yeet", description: "Publish", argumentHint: "" },
 			],
 			"codex",
+			"watch",
 		);
 		expect(
 			resolveCommandSubmission(
@@ -271,6 +304,7 @@ describe("commands", () => {
 						},
 					],
 					"claude",
+					"watch",
 				)[0],
 		);
 		expect(

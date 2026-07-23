@@ -41,7 +41,10 @@ const stream = ndJsonStream(
 agent({ name: "hlid-fake-agent" })
 	.onRequest("initialize", () => ({
 		protocolVersion: PROTOCOL_VERSION,
-		agentCapabilities: { loadSession: true },
+		agentCapabilities: {
+			loadSession: true,
+			sessionCapabilities: { fork: {} },
+		},
 		authMethods: [{ id: "fake-login", name: "Fake login" }],
 		agentInfo: { name: "fake-acp", version: "1.0.0" },
 	}))
@@ -78,6 +81,32 @@ agent({ name: "hlid-fake-agent" })
 		};
 		sessions.set(params.sessionId, session);
 		return {
+			modes: {
+				currentModeId: session.mode,
+				availableModes: [
+					{ id: "code", name: "Code" },
+					{ id: "plan", name: "Plan" },
+				],
+			},
+			configOptions: configOptions(session),
+		};
+	})
+	.onRequest("session/fork", ({ params }) => {
+		const source = sessions.get(params.sessionId);
+		const sessionId = `${params.sessionId}-fork`;
+		const session = {
+			...(source ?? {
+				cancelled: false,
+				mode: "code",
+				model: "fake-fast",
+				effort: "medium",
+			}),
+			cancelled: false,
+			mcpCount: params.mcpServers?.length ?? 0,
+		};
+		sessions.set(sessionId, session);
+		return {
+			sessionId,
 			modes: {
 				currentModeId: session.mode,
 				availableModes: [

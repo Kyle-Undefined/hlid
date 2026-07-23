@@ -18,9 +18,10 @@ import { writeWrapper } from "./wrappers";
 const MAX_MANIFEST_BYTES = 256 * 1024;
 const MAX_COMPONENT_FILES = 500;
 const MAX_COMPONENT_DEPTH = 5;
-const MAX_SKILL_FILES = 20;
-const MAX_SKILL_FILE_BYTES = 128 * 1024;
-const MAX_SKILL_TOTAL_BYTES = 512 * 1024;
+const MAX_PACKAGE_FILES = 200;
+const MAX_PACKAGE_DEPTH = 12;
+const MAX_PACKAGE_FILE_BYTES = 64 * 1024;
+const MAX_PACKAGE_TOTAL_BYTES = 1024 * 1024;
 const MARKETPLACE_LIST_TIMEOUT_MS = 10_000;
 const MAX_MARKETPLACE_LIST_OUTPUT_CHARS = 256 * 1024;
 
@@ -59,6 +60,9 @@ export type ExtensionSkillFile = {
 	path: string;
 	content: string;
 	truncated: boolean;
+	/** Binary package files are listed but never decoded into the review. */
+	binary?: boolean;
+	size?: number;
 };
 
 export type ProviderExtension = {
@@ -560,7 +564,6 @@ async function inspectSkillFiles(
 	root: string,
 	boundary: string,
 ): Promise<ExtensionSkillFile[]> {
-	const skillRoot = resolve(root, "skills");
 	const files: ExtensionSkillFile[] = [];
 	let totalBytes = 0;
 	let realBoundary: string;
@@ -572,9 +575,9 @@ async function inspectSkillFiles(
 
 	const visit = async (directory: string, depth: number): Promise<void> => {
 		if (
-			depth > MAX_COMPONENT_DEPTH ||
-			files.length >= MAX_SKILL_FILES ||
-			totalBytes >= MAX_SKILL_TOTAL_BYTES
+			depth > MAX_PACKAGE_DEPTH ||
+			files.length >= MAX_PACKAGE_FILES ||
+			totalBytes >= MAX_PACKAGE_TOTAL_BYTES
 		) {
 			return;
 		}
@@ -584,8 +587,8 @@ async function inspectSkillFiles(
 		entries.sort((a, b) => a.name.localeCompare(b.name));
 		for (const entry of entries) {
 			if (
-				files.length >= MAX_SKILL_FILES ||
-				totalBytes >= MAX_SKILL_TOTAL_BYTES
+				files.length >= MAX_PACKAGE_FILES ||
+				totalBytes >= MAX_PACKAGE_TOTAL_BYTES
 			) {
 				break;
 			}
@@ -593,16 +596,17 @@ async function inspectSkillFiles(
 			const info = await lstat(path).catch(() => null);
 			if (!info || info.isSymbolicLink()) continue;
 			if (info.isDirectory()) {
+				if (entry.name === ".git" || entry.name === "node_modules") continue;
 				await visit(path, depth + 1);
 				continue;
 			}
-			if (!info.isFile() || !/^skill\.md$/i.test(entry.name)) continue;
+			if (!info.isFile()) continue;
 			const realFile = await realpath(path).catch(() => "");
 			if (!realFile || !pathStartsWith(realBoundary, realFile)) continue;
 
 			const byteLimit = Math.min(
-				MAX_SKILL_FILE_BYTES,
-				MAX_SKILL_TOTAL_BYTES - totalBytes,
+				MAX_PACKAGE_FILE_BYTES,
+				MAX_PACKAGE_TOTAL_BYTES - totalBytes,
 			);
 			const handle = await open(path, "r").catch(() => null);
 			if (!handle) continue;
@@ -610,10 +614,14 @@ async function inspectSkillFiles(
 				const buffer = Buffer.alloc(byteLimit);
 				const { bytesRead } = await handle.read(buffer, 0, byteLimit, 0);
 				totalBytes += bytesRead;
+				const slice = buffer.subarray(0, bytesRead);
+				const binary = slice.includes(0);
 				files.push({
 					path: relative(root, path).replaceAll("\\", "/"),
-					content: buffer.subarray(0, bytesRead).toString("utf8"),
+					content: binary ? "" : slice.toString("utf8"),
 					truncated: info.size > bytesRead,
+					binary,
+					size: info.size,
 				});
 			} finally {
 				await handle.close();
@@ -621,7 +629,7 @@ async function inspectSkillFiles(
 		}
 	};
 
-	await visit(skillRoot, 0);
+	await visit(root, 0);
 	return files;
 }
 

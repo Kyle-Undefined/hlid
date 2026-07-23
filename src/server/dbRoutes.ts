@@ -697,16 +697,30 @@ async function forkSession({
 		throughSeq = message.seq;
 	}
 
-	if (!provider?.forkSession || !provider.forkCapability || !nativeId) {
+	const forkCapability =
+		(await provider?.resolveForkCapability?.()) ?? provider?.forkCapability;
+	if (!provider?.forkSession || !forkCapability || !nativeId) {
 		return new Response("Forking is not supported for this session", {
 			status: 422,
 		});
 	}
+	if (messageId !== undefined && !forkCapability.throughMessage) {
+		return new Response(
+			"This provider supports whole-session forks, but not forks through a specific message",
+			{ status: 422 },
+		);
+	}
 
 	let cutoff: { kind: "message" | "turn"; id: string } | undefined;
 	if (forkMessage) {
+		if (!forkCapability.cutoff) {
+			return new Response(
+				"This provider did not advertise a native message fork boundary",
+				{ status: 422 },
+			);
+		}
 		const cutoffId =
-			provider.forkCapability.cutoff === "turn"
+			forkCapability.cutoff === "turn"
 				? forkMessage.providerTurnId
 				: forkMessage.sdkUuid;
 		if (!cutoffId) {
@@ -715,7 +729,7 @@ async function forkSession({
 				{ status: 422 },
 			);
 		}
-		cutoff = { kind: provider.forkCapability.cutoff, id: cutoffId };
+		cutoff = { kind: forkCapability.cutoff, id: cutoffId };
 	}
 
 	const { sessionId: newNativeId, messages } = await provider.forkSession({

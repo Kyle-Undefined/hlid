@@ -309,13 +309,13 @@ source = "example/team-tools"
 						expect.objectContaining({ kind: "hooks", count: 1 }),
 						expect.objectContaining({ kind: "mcp", count: 1 }),
 					]),
-					skillFiles: [
-						{
+					skillFiles: expect.arrayContaining([
+						expect.objectContaining({
 							path: "skills/review/SKILL.md",
 							content: "# Review",
 							truncated: false,
-						},
-					],
+						}),
+					]),
 				}),
 				expect.objectContaining({
 					providerId: "codex",
@@ -388,13 +388,13 @@ source = "example/team-tools"
 			components: expect.arrayContaining([
 				expect.objectContaining({ kind: "skills", count: 1 }),
 			]),
-			skillFiles: [
+			skillFiles: expect.arrayContaining([
 				expect.objectContaining({
 					path: "skills/review/SKILL.md",
 					content: "# Review",
 					truncated: false,
 				}),
-			],
+			]),
 		});
 
 		const remote = inventory.available.find(
@@ -509,7 +509,11 @@ source = "example/team-tools"
 		});
 
 		const inventory = await discoverExtensionInventory(config(), [home]);
-		expect(inventory.extensions[0]?.skillFiles).toEqual([]);
+		expect(
+			inventory.extensions[0]?.skillFiles.some(
+				(file) => file.path === "skills/outside/SKILL.md",
+			),
+		).toBe(false);
 		expect(inventory.extensions[0]?.components).not.toEqual(
 			expect.arrayContaining([expect.objectContaining({ kind: "skills" })]),
 		);

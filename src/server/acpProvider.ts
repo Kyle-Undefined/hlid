@@ -22,7 +22,10 @@ import type {
 	AgentProvider,
 	AgentQueryParams,
 	AgentSession,
+	ForkSessionParams,
+	ForkSessionResult,
 	McpServerStatus,
+	ProviderForkCapability,
 	ProviderModelInfo,
 	SlashCommand,
 } from "./agentProvider";
@@ -1059,6 +1062,12 @@ export class AcpProvider implements AgentProvider {
 		{ value: "default", label: "Ask" },
 		{ value: "bypassPermissions", label: "Allow all" },
 	] as const;
+	private forkCapabilityCache:
+		| { value: ProviderForkCapability | undefined; expiresAt: number }
+		| undefined;
+	private forkCapabilityProbe: Promise<
+		ProviderForkCapability | undefined
+	> | null = null;
 
 	constructor(readonly options: AcpProviderOptions) {
 		this.providerId = options.id;
@@ -1094,6 +1103,88 @@ export class AcpProvider implements AgentProvider {
 			...entry,
 			...(efforts.length > 0 ? { efforts } : {}),
 		}));
+	}
+
+	async resolveForkCapability(): Promise<ProviderForkCapability | undefined> {
+		if (
+			this.forkCapabilityCache &&
+			this.forkCapabilityCache.expiresAt > Date.now()
+		) {
+			return this.forkCapabilityCache.value;
+		}
+		if (this.forkCapabilityProbe) return this.forkCapabilityProbe;
+		this.forkCapabilityProbe = (async () => {
+			const initialized = await inspectAcpAgent(this.options);
+			const value = initialized.agentCapabilities?.sessionCapabilities?.fork
+				? ({
+						kind: "exact",
+						wholeSession: true,
+						throughMessage: false,
+					} satisfies ProviderForkCapability)
+				: undefined;
+			this.forkCapabilityCache = {
+				value,
+				expiresAt: Date.now() + 60_000,
+			};
+			return value;
+		})().finally(() => {
+			this.forkCapabilityProbe = null;
+		});
+		return this.forkCapabilityProbe;
+	}
+
+	// fallow-ignore-next-line unused-class-member -- Called through AgentProvider by dbRoutes after capability negotiation.
+	async forkSession(params: ForkSessionParams): Promise<ForkSessionResult> {
+		if (params.cutoff) {
+			throw new Error("ACP session/fork only supports whole-session forks");
+		}
+		const { child, connection } = await createInspectionConnection(
+			this.options,
+		);
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			return await Promise.race([
+				(async () => {
+					const initialized = await connection.initialize({
+						protocolVersion: PROTOCOL_VERSION,
+						clientCapabilities: {},
+						clientInfo: { name: "Hlid", version: "1" },
+					});
+					if (!initialized.agentCapabilities?.sessionCapabilities?.fork) {
+						this.forkCapabilityCache = {
+							value: undefined,
+							expiresAt: Date.now() + 60_000,
+						};
+						throw new Error(
+							"The ACP agent did not advertise session/fork support",
+						);
+					}
+					const result = await connection.unstable_forkSession({
+						sessionId: params.sessionId,
+						cwd: params.cwd ?? process.cwd(),
+						mcpServers: [],
+					});
+					this.forkCapabilityCache = {
+						value: {
+							kind: "exact",
+							wholeSession: true,
+							throughMessage: false,
+						},
+						expiresAt: Date.now() + 60_000,
+					};
+					return { sessionId: result.sessionId };
+				})(),
+				new Promise<never>((_, reject) => {
+					timer = setTimeout(
+						() => reject(new Error("ACP session fork timed out")),
+						15_000,
+					);
+				}),
+			]);
+		} finally {
+			if (timer !== undefined) clearTimeout(timer);
+			child.kill();
+		}
 	}
 
 	query(params: AgentQueryParams): AgentSession {

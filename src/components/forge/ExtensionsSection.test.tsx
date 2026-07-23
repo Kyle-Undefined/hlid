@@ -284,6 +284,38 @@ describe("ExtensionsSection", () => {
 		);
 	});
 
+	it("updates installed Claude plugins without offering a fake Codex update", async () => {
+		mocks.getExtensionInventory.mockResolvedValue(inventory);
+		mocks.mutateExtension.mockResolvedValue({
+			ok: true,
+			result: {
+				action: "update",
+				providerId: "claude",
+				subject: "reviewer@official",
+				pluginId: "reviewer@official",
+				environmentLabel: "WSL · Ubuntu",
+				output: "updated",
+			},
+		});
+		render(<ExtensionsSection />);
+		await waitFor(() => expect(screen.getByText("Reviewer")).toBeTruthy());
+
+		fireEvent.click(screen.getByText("Reviewer"));
+		fireEvent.click(screen.getByRole("button", { name: "Update" }));
+		fireEvent.click(screen.getByRole("button", { name: "update" }));
+		await waitFor(() =>
+			expect(mocks.mutateExtension).toHaveBeenCalledWith({
+				action: "update",
+				id: "claude-extension",
+				expectedVersion: "1.2.3",
+			}),
+		);
+
+		fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
+		fireEvent.click(await screen.findByText("GitHub"));
+		expect(screen.queryByRole("button", { name: "Update" })).toBeNull();
+	});
+
 	it("keeps card actions aligned and toggles installed plugin status", async () => {
 		const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
 		mocks.getExtensionInventory

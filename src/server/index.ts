@@ -38,6 +38,7 @@ import {
 } from "./cliproxyProvider";
 import {
 	closeAllCodexAppServers,
+	closeIdleCodexAppServers,
 	listCodexAppServers,
 	prewarmCodexAppServer,
 } from "./codexAppServer";
@@ -220,8 +221,28 @@ const handleAcpRoute = createAcpRouteHandler({
 });
 const handleExtensionRoute = createExtensionRouteHandler({
 	loadConfig,
-	onChanged: (latest) => {
+	onChanged: async (latest) => {
 		invalidateVaultSnapshot("provider-extension-mutation", latest);
+		providerCatalogSnapshot.invalidate();
+		const idleEntries = [...pool.getAllEntries()].filter((entry) =>
+			entry.manager.retireProviderRuntime(),
+		);
+		closeIdleCodexAppServers();
+		await Promise.all(
+			idleEntries.map((entry) =>
+				entry.manager
+					.refreshProviderMetadata((message) =>
+						entry.runState.broadcast(message),
+					)
+					.catch((error) => {
+						console.warn(
+							"[extensions] provider refresh deferred:",
+							error instanceof Error ? error.message : String(error),
+						);
+						return false;
+					}),
+			),
+		);
 		bumpDataRevision("providers", "mcp", "vault");
 	},
 });

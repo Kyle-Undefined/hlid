@@ -36,6 +36,8 @@ const SEEDS: Array<[name: string, relPath: string]> = [
 	["ThreadResumeParams", "v2/ThreadResumeParams.ts"],
 	["ThreadForkParams", "v2/ThreadForkParams.ts"],
 	["ThreadForkResponse", "v2/ThreadForkResponse.ts"],
+	["ThreadCompactStartParams", "v2/ThreadCompactStartParams.ts"],
+	["ThreadCompactStartResponse", "v2/ThreadCompactStartResponse.ts"],
 	["ThreadGoal", "v2/ThreadGoal.ts"],
 	["ThreadGoalSetParams", "v2/ThreadGoalSetParams.ts"],
 	["ThreadGoalSetResponse", "v2/ThreadGoalSetResponse.ts"],

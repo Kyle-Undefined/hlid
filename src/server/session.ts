@@ -42,7 +42,7 @@ import type {
 	SubagentSnapshot,
 } from "./agentProvider";
 import { ingestPlanHtml } from "./attachments";
-import { waitForClaudeWarmupSnapshot } from "./claudeWarmup";
+import { prewarmClaudeCli, waitForClaudeWarmupSnapshot } from "./claudeWarmup";
 import { loadConfig } from "./config";
 import { bumpDataRevision } from "./dataRevision";
 import { resolveExecutionContext } from "./executionContext";
@@ -179,7 +179,7 @@ type RunQueryArgs = [
 	turnId?: string,
 	planMode?: boolean,
 	planHtml?: boolean,
-	commandAction?: "review" | "computer-use",
+	commandAction?: "review" | "computer-use" | "compact",
 	vaultReferences?: string[],
 	routineContext?: RoutinePermissionContext,
 	goalStart?: { objective: string; tokenBudget?: number | null },
@@ -512,6 +512,8 @@ export class SessionManager {
 	private providerHandoffPending = false;
 	/** Providers without a live effort control (currently Claude) restart on the next turn. */
 	private restartAgentSessionForEffort = false;
+	/** Extension changes made mid-turn retire the native runtime before its next turn. */
+	private restartProviderRuntimeAfterTurn = false;
 	private maxTurns: number | undefined;
 	private vaultPath!: string;
 	private vaultName!: string;
@@ -916,6 +918,60 @@ export class SessionManager {
 		providerId = this.getProviderId(),
 	): void {
 		this.mcpStatusByProvider.set(providerId, statuses);
+	}
+
+	/**
+	 * Apply provider-extension changes without interrupting active work.
+	 * Idle native processes are retired so the next turn reloads plugins, then
+	 * scoped command and MCP metadata is refreshed for connected clients.
+	 */
+	// fallow-ignore-next-line unused-class-member -- Called by the extension mutation refresh hook in server/index.
+	retireProviderRuntime(): boolean {
+		if (this.state === "running") {
+			this.restartProviderRuntimeAfterTurn = true;
+			return false;
+		}
+		const provider = this.resolveProvider(this.agentCwd);
+		this.agentSession?.cancel();
+		this.agentSession = null;
+		this.agentSessionKey = null;
+		this.mcpStatusByProvider.delete(provider.providerId);
+		this.restartProviderRuntimeAfterTurn = false;
+		return true;
+	}
+
+	// fallow-ignore-next-line unused-class-member -- Called by the extension mutation refresh hook in server/index.
+	async refreshProviderMetadata(
+		emit: (msg: ServerMessage) => void,
+	): Promise<void> {
+		const provider = this.resolveProvider(this.agentCwd);
+		if (isClaudeRuntimeProvider(provider.providerId)) {
+			const execution = resolveExecutionContext({
+				agentMode: this.agentMode,
+				agentCwd: this.agentCwd,
+				vaultPath: this.vaultPath,
+				allowedAgentRealPaths: this.allowedAgentRealPaths,
+				claudeExecutable: this.claudeExecutable,
+				wrapperCommand: "claude",
+				safeAttachments: [],
+			});
+			await prewarmClaudeCli({
+				executable: execution.executable,
+				cwd: execution.activeCwd,
+				cacheCwd: this.agentCwd ?? this.vaultPath,
+				additionalDirectories: [...execution.extraDirs],
+				waitTimeoutMs: 10_000,
+			});
+		}
+
+		const scope = {
+			...(this.agentCwd ? { agentCwd: this.agentCwd } : {}),
+			...(this.currentSessionId ? { sessionId: this.currentSessionId } : {}),
+		};
+		await Promise.all([
+			this.probeMcpStatus(emit, scope),
+			this.probeSlashCommands(emit, scope),
+		]);
 	}
 
 	private async runProbe(
@@ -3406,12 +3462,15 @@ export class SessionManager {
 		const desiredKey = `${provider.providerId}|${sessionId ?? "ephemeral"}|${this.agentCwd ?? ""}`;
 		if (
 			this.agentSession &&
-			(this.agentSessionKey !== desiredKey || this.restartAgentSessionForEffort)
+			(this.agentSessionKey !== desiredKey ||
+				this.restartAgentSessionForEffort ||
+				this.restartProviderRuntimeAfterTurn)
 		) {
 			this.agentSession.cancel();
 			this.agentSession = null;
 			this.agentSessionKey = null;
 			this.restartAgentSessionForEffort = false;
+			this.restartProviderRuntimeAfterTurn = false;
 		}
 		if (this.agentSession) {
 			if (onGoalChange) {
@@ -3419,6 +3478,7 @@ export class SessionManager {
 			}
 			return this.agentSession;
 		}
+		this.restartProviderRuntimeAfterTurn = false;
 		const configuredPermissionMode = this.activeRoutineContext
 			? this.activeRoutineContext.mode === "full_access"
 				? "bypassPermissions"

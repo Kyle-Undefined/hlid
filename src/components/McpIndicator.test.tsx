@@ -64,4 +64,17 @@ describe("McpIndicator", () => {
 		expect(popover?.style.left).toBe("16px");
 		expect(popover?.style.width).toBe("288px");
 	});
+
+	it("opens from a slash-command signal without opening on mount", () => {
+		const { rerender } = render(
+			<McpIndicator servers={[]} openSignal={0} label="MCP runtime · Vault" />,
+		);
+		const button = screen.getByRole("button", { name: "MCP server status" });
+		expect(button.getAttribute("aria-pressed")).toBe("false");
+		rerender(
+			<McpIndicator servers={[]} openSignal={1} label="MCP runtime · Vault" />,
+		);
+		expect(button.getAttribute("aria-pressed")).toBe("true");
+		expect(screen.getByText("MCP runtime · Vault")).toBeTruthy();
+	});
 });

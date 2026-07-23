@@ -72,10 +72,13 @@ export function McpIndicator({
 	servers,
 	align = "right",
 	label = "MCP runtime · active provider",
+	openSignal,
 }: {
 	servers: McpServerEntry[];
 	align?: "left" | "right" | "mobile-left";
 	label?: string;
+	/** Increment to open the scoped MCP popover from a command surface. */
+	openSignal?: number;
 }) {
 	const [open, setOpen] = useState(false);
 	const [popoverPosition, setPopoverPosition] = useState<{
@@ -85,6 +88,7 @@ export function McpIndicator({
 	} | null>(null);
 	const rootRef = useRef<HTMLDivElement>(null);
 	const popoverRef = useRef<HTMLDivElement>(null);
+	const previousOpenSignalRef = useRef(openSignal);
 	const sorted = [...servers].sort(
 		(a, b) => STATUS_ORDER[a.status] - STATUS_ORDER[b.status],
 	);
@@ -92,6 +96,17 @@ export function McpIndicator({
 		(server) => server.status === "connected",
 	).length;
 	const status = aggregateStatus(servers);
+
+	useEffect(() => {
+		if (
+			openSignal === undefined ||
+			openSignal === previousOpenSignalRef.current
+		) {
+			return;
+		}
+		previousOpenSignalRef.current = openSignal;
+		setOpen(true);
+	}, [openSignal]);
 
 	useEffect(() => {
 		if (!open) return;

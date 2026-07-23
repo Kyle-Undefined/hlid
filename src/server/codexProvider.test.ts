@@ -1019,6 +1019,11 @@ function makeFakeSessionProc(
 							})}\n`,
 						),
 					);
+				} else if (msg.method === "thread/compact/start") {
+					stdout.emit(
+						"data",
+						Buffer.from(`${JSON.stringify({ id: msg.id, result: {} })}\n`),
+					);
 				} else if (msg.method === "thread/goal/get") {
 					stdout.emit(
 						"data",
@@ -1182,6 +1187,12 @@ describe("CodexAgentSession — commands", () => {
 				action: "goal",
 			},
 			{
+				name: "compact",
+				description: "Compact the active Codex conversation",
+				argumentHint: "",
+				action: "compact",
+			},
+			{
 				name: "review",
 				description: "Review the working tree",
 				argumentHint: "[instructions]",
@@ -1242,6 +1253,19 @@ describe("CodexAgentSession — commands", () => {
 			target: { type: "custom", instructions: "focus on auth" },
 			delivery: "inline",
 		});
+		session.cancel();
+	});
+
+	it("executes compact through the structured thread operation", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(baseCodexParams());
+		await session.executeCommand?.("compact");
+		const request = writes
+			.map((value) => JSON.parse(value) as Record<string, unknown>)
+			.find((value) => value.method === "thread/compact/start");
+		expect(request?.params).toEqual({ threadId: "thread-1" });
 		session.cancel();
 	});
 
