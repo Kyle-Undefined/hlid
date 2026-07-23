@@ -507,7 +507,7 @@ describe("Obsidian CLI bridge", () => {
 
 		const createArgs = run.mock.calls[1]?.[1] ?? [];
 		expect(createArgs.slice(0, 2)).toEqual(["vault=Fornbok", "create"]);
-		expect(createArgs[2]).toMatch(/^path=Hlid edit payload [0-9a-f-]+\.json$/);
+		expect(createArgs[2]).toMatch(/^path=Hlid edit payload [0-9a-f-]+\.md$/);
 		expect(createArgs[3]).toBe(
 			'content={"replacements":[{"oldText":"Before","newText":"After"}]}',
 		);
@@ -520,6 +520,48 @@ describe("Obsidian CLI bridge", () => {
 		expect(code).toContain("app.vault.delete(payloadFile)");
 		expect(code).not.toContain("Before");
 		expect(code).not.toContain("After");
+	});
+
+	it("keeps chunked edit payload creation, append, and eval on one Markdown path", async () => {
+		const { dependencies, run } = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "Created", code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{ output: "Appended", code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{ output: "Appended", code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{
+				output: '=> {"path":"Notes/One.md","replacements":1,"changed":true}',
+				code: 0,
+			},
+		]);
+		const oldText = "x".repeat(4_100);
+
+		await expect(
+			replaceObsidianNoteText(
+				"Fornbok",
+				{
+					path: "Notes/One.md",
+					oldText,
+					newText: "After",
+				},
+				dependencies,
+			),
+		).resolves.toEqual({ path: "Notes/One.md", replacements: 1 });
+
+		const createArgs = run.mock.calls[1]?.[1] ?? [];
+		const payloadArgument = createArgs[2];
+		expect(payloadArgument).toMatch(/^path=Hlid edit payload [0-9a-f-]+\.md$/);
+		expect(createArgs).toHaveLength(3);
+		expect(run.mock.calls[3]?.[1]?.[2]).toBe(payloadArgument);
+		expect(run.mock.calls[5]?.[1]?.[2]).toBe(payloadArgument);
+		expect(run.mock.calls[3]?.[1]?.at(-1)).toBe("inline");
+		expect(run.mock.calls[5]?.[1]?.at(-1)).toBe("inline");
+		expect(run.mock.calls[7]?.[1]?.slice(0, 2)).toEqual([
+			"vault=Fornbok",
+			"eval",
+		]);
 	});
 
 	it("cleans up a staged edit payload when exact replacement fails", async () => {
@@ -548,6 +590,7 @@ describe("Obsidian CLI bridge", () => {
 		).rejects.toThrow("occurs more than once");
 
 		const payloadPath = run.mock.calls[1]?.[1]?.[2];
+		expect(payloadPath).toMatch(/^path=Hlid edit payload [0-9a-f-]+\.md$/);
 		expect(run.mock.calls[5]?.[1]).toEqual([
 			"vault=Fornbok",
 			"delete",

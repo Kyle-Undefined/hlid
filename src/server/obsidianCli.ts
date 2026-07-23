@@ -1563,7 +1563,10 @@ async function stageObsidianEditPayload(
 	content: string,
 	dependencies: ObsidianBridgeDependencies,
 ): Promise<string> {
-	const path = `Hlid edit payload ${randomUUID()}.json`;
+	// Obsidian's `create` command always creates a Markdown note, even when the
+	// requested path has another extension. Keep every later lookup and cleanup
+	// on the exact path Obsidian creates.
+	const path = `Hlid edit payload ${randomUUID()}.md`;
 	const inlineContent =
 		Buffer.byteLength(content, "utf8") <= MAX_OBSIDIAN_CLI_CONTENT_BYTES
 			? content
