@@ -1,0 +1,34 @@
+{
+	"$schema": "https://example.invalid/claude-marketplace.schema.json",
+	"name": "official",
+	"description": "Example Claude extensions",
+	"owner": {
+		"name": "Example"
+	},
+	"plugins": [
+		{
+			"name": "reviewer",
+			"displayName": "Reviewer",
+			"description": "Reviews changes",
+			"version": "1.2.3",
+			"category": "Development",
+			"author": {
+				"name": "Example"
+			},
+			"homepage": "https://example.invalid/reviewer",
+			"source": "./plugins/reviewer"
+		},
+		{
+			"name": "remote-helper",
+			"description": "Remote metadata only",
+			"category": "Utilities",
+			"source": {
+				"source": "url",
+				"url": "https://example.invalid/remote-helper.git",
+				"path": ".",
+				"sha": "abcdef0123456789"
+			}
+		}
+	],
+	"renames": {}
+}

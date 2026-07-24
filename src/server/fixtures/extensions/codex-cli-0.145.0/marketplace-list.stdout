@@ -1,0 +1,8 @@
+{
+  "marketplaces": [
+    {
+      "name": "openai-curated",
+      "root": "{{CODEX_MARKETPLACE_ROOT}}"
+    }
+  ]
+}

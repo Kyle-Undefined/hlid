@@ -1,0 +1,19 @@
+{
+	"name": "openai-curated",
+	"interface": {
+		"displayName": "OpenAI curated"
+	},
+	"plugins": [
+		{
+			"name": "reviewer",
+			"category": "Development",
+			"policy": {
+				"installation": "review"
+			},
+			"source": {
+				"source": "local",
+				"path": "plugins/reviewer"
+			}
+		}
+	]
+}

@@ -1,0 +1,15 @@
+{
+	"version": 2,
+	"plugins": {
+		"reviewer@official": [
+			{
+				"scope": "user",
+				"version": "1.2.3",
+				"installPath": "{{CLAUDE_INSTALL_PATH}}",
+				"installedAt": "2026-07-20T00:00:00.000Z",
+				"lastUpdated": "2026-07-21T00:00:00.000Z",
+				"gitCommitSha": "0123456789abcdef0123456789abcdef01234567"
+			}
+		]
+	}
+}

@@ -1,0 +1,10 @@
+{
+	"official": {
+		"source": {
+			"source": "github",
+			"repo": "example/extensions"
+		},
+		"installLocation": "{{CLAUDE_MARKETPLACE_ROOT}}",
+		"lastUpdated": "2026-07-21T00:00:00.000Z"
+	}
+}
