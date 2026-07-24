@@ -197,7 +197,14 @@ async function handlePatchRoute({
 			status: 400,
 		});
 	}
-	await db.renameSession(id, body.label);
+	try {
+		await db.renameSession(id, body.label);
+	} catch (error) {
+		if (error instanceof Error && error.message === "Session not found") {
+			return new Response(error.message, { status: 404 });
+		}
+		throw error;
+	}
 	bumpDataRevision("sessions");
 	terminalPool?.setSessionLabel(id, body.label);
 	// Live pool entries cache the label in-memory — sync + rebroadcast so
@@ -777,20 +784,33 @@ async function forkSession({
 		cutoff,
 	});
 	const newId = uid();
-	await db.createForkedSessionRow(sourceId, newId, newNativeId, {
-		...(messageId !== undefined ? { parentMessageId: messageId } : {}),
-		forkKind: "exact",
-	});
-	// Preserve Hlid's visible transcript and tool activity through the same
-	// branch boundary. Provider read-back remains a fallback for legacy/imported
-	// sessions whose visible transcript has not been hydrated into Hlid yet.
-	const copied = await db.copyForkedSessionTranscript(
-		sourceId,
-		newId,
-		throughSeq,
-	);
-	if (copied === 0 && messages?.length) {
-		await db.insertForkedMessages(newId, messages);
+	try {
+		await db.createForkedSessionRow(sourceId, newId, newNativeId, {
+			...(messageId !== undefined ? { parentMessageId: messageId } : {}),
+			forkKind: "exact",
+		});
+		// Preserve Hlid's visible transcript and tool activity through the same
+		// branch boundary. Provider read-back remains a fallback for legacy/imported
+		// sessions whose visible transcript has not been hydrated into Hlid yet.
+		const copied = await db.copyForkedSessionTranscript(
+			sourceId,
+			newId,
+			throughSeq,
+		);
+		if (copied === 0 && messages?.length) {
+			await db.insertForkedMessages(newId, messages);
+		}
+	} catch (error) {
+		// The provider fork has already succeeded. Keep Hlid atomic even when
+		// persistence or transcript hydration fails after that point.
+		try {
+			const { ephemeralPaths } = await db.deleteSession(newId);
+			await unlinkPaths(ephemeralPaths);
+		} catch {
+			// Preserve the original fork failure. Cleanup is best-effort because
+			// the row may not have been created yet.
+		}
+		throw error;
 	}
 	bumpDataRevision("sessions");
 	return Response.json({ ok: true, id: newId });

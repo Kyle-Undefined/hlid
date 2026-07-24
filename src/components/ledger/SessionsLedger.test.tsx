@@ -396,6 +396,30 @@ describe("SessionsLedger session actions", () => {
 		expect(archivedProps.onArchive).toHaveBeenCalledWith("session-1", false);
 	});
 
+	it("keeps archive and restore actions scoped on mobile without navigating", () => {
+		setMobileViewport();
+		const activeProps = renderLedger();
+		anchorBelow(screen.getByRole("button", { name: "Session actions" }));
+		openSessionActions();
+		fireEvent.click(screen.getByRole("button", { name: "Archive" }));
+		expect(activeProps.onArchive).toHaveBeenCalledWith("session-1", true);
+		expect(activeProps.onNavigate).not.toHaveBeenCalled();
+
+		cleanup();
+		const archivedProps = renderLedger({
+			archived: true,
+			data: {
+				sessions: [{ ...session, archived_at: 1_700_000_100 }],
+				total: 1,
+			},
+		});
+		anchorBelow(screen.getByRole("button", { name: "Session actions" }));
+		openSessionActions();
+		fireEvent.click(screen.getByRole("button", { name: "Restore" }));
+		expect(archivedProps.onArchive).toHaveBeenCalledWith("session-1", false);
+		expect(archivedProps.onNavigate).not.toHaveBeenCalled();
+	});
+
 	it("switches between active and archived session lists", () => {
 		const onArchivedChange = vi.fn();
 		renderLedger({ archived: false, onArchivedChange });

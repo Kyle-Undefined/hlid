@@ -61,6 +61,7 @@ import {
 	getSessionSelection,
 	getSessionsPaginated,
 	recordQuery,
+	renameSession,
 	setSessionActualModel,
 	setSessionAgentCwd,
 	setSessionArchived,
@@ -274,6 +275,45 @@ describe("sessions — create & fetch", () => {
 		await setSessionArchived("kept", false);
 		expect((await getSessionById("kept"))?.archived_at).toBeNull();
 		expect((await getSessionsPaginated(1, 20)).sessions[0]?.id).toBe("kept");
+	});
+
+	it("preserves renamed fork provenance through archive and restore", async () => {
+		freshDb();
+		await createSession("source", "Original parent", "gpt-test");
+		await setSessionProviderSession("source", "codex", "thread-source");
+		await setSessionAgentCwd("source", "/work/project");
+		await renameSession("source", "Renamed parent");
+		await createForkedSessionRow("source", "child", "thread-child", {
+			forkKind: "exact",
+		});
+		await renameSession("child", "Renamed child");
+		await setSessionPinned("child", true);
+
+		await setSessionArchived("child", true);
+		await setSessionArchived("child", false);
+
+		expect(await getSessionById("source")).toMatchObject({
+			label: "Renamed parent",
+		});
+		expect(await getSessionById("child")).toMatchObject({
+			label: "Renamed child",
+			pinned: 0,
+			archived_at: null,
+			fork_parent_session_id: "source",
+			fork_kind: "exact",
+			provider_id: "codex",
+			agent_cwd: "/work/project",
+		});
+		expect(
+			(await getSessionsPaginated(1, 20, { search: "renamed child" })).sessions,
+		).toMatchObject([{ id: "child", label: "Renamed child" }]);
+	});
+
+	it("rejects rename for a missing session", async () => {
+		freshDb();
+		await expect(renameSession("missing", "New label")).rejects.toThrow(
+			"Session not found",
+		);
 	});
 
 	it("getSessionsPaginated filters by label search with LIKE escaping", async () => {

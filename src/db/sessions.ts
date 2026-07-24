@@ -730,6 +730,7 @@ export async function renameSession(id: string, label: string): Promise<void> {
 			);
 		}
 	})();
+	if (changes === 0) throw new Error("Session not found");
 	if (changes > 0) markAnalyticsChanged(["stats"], "session_renamed");
 }
 

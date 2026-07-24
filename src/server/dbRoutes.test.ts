@@ -31,6 +31,7 @@ const {
 	mockGetProviderHistorySyncStatus,
 	mockGetSessionProviderSession,
 	mockCreateForkedSessionRow,
+	mockDeleteSession,
 	mockGetMessageForFork,
 	mockInsertForkedMessages,
 	mockCopyForkedSessionTranscript,
@@ -56,6 +57,7 @@ const {
 	mockGetProviderHistorySyncStatus: vi.fn(),
 	mockGetSessionProviderSession: vi.fn(),
 	mockCreateForkedSessionRow: vi.fn(),
+	mockDeleteSession: vi.fn(),
 	mockGetMessageForFork: vi.fn(),
 	mockInsertForkedMessages: vi.fn(),
 	mockCopyForkedSessionTranscript: vi.fn(),
@@ -80,6 +82,7 @@ vi.mock("../db", () => ({
 	getSessionsPaginated: mockGetSessionsPaginated,
 	getSessionProviderSession: mockGetSessionProviderSession,
 	createForkedSessionRow: mockCreateForkedSessionRow,
+	deleteSession: mockDeleteSession,
 	getMessageForFork: mockGetMessageForFork,
 	insertForkedMessages: mockInsertForkedMessages,
 	copyForkedSessionTranscript: mockCopyForkedSessionTranscript,
@@ -713,6 +716,8 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 		mockGetSessionById.mockReset();
 		mockGetSessionProviderSession.mockReset();
 		mockCreateForkedSessionRow.mockReset();
+		mockDeleteSession.mockReset();
+		mockDeleteSession.mockResolvedValue({ ephemeralPaths: [] });
 		mockGetMessageForFork.mockReset();
 		mockInsertForkedMessages.mockReset();
 		mockCopyForkedSessionTranscript.mockReset();
@@ -972,6 +977,75 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 		expect(res.status).toBe(422);
 	});
 
+	it("does not create Hlid state when the provider's native thread is gone", async () => {
+		mockGetSessionById.mockResolvedValue({
+			...sampleRow,
+			provider_id: "codex",
+			agent_cwd: "/work/project",
+		});
+		mockGetSessionProviderSession.mockResolvedValue("thread-source");
+		const forkSession = vi
+			.fn()
+			.mockRejectedValue(new Error("Native thread no longer exists"));
+		const pool = makePool({
+			getProvider: vi.fn().mockReturnValue({
+				providerId: "codex",
+				forkCapability: {
+					kind: "exact",
+					cutoff: "turn",
+					wholeSession: true,
+					throughMessage: true,
+				},
+				forkSession,
+			}),
+		});
+
+		await expect(
+			handleDbRoute(
+				makeUrl("/db/session/fork"),
+				forkRequest({ id: "abc-123" }),
+				pool,
+			),
+		).rejects.toThrow("Native thread no longer exists");
+		expect(mockCreateForkedSessionRow).not.toHaveBeenCalled();
+		expect(mockCopyForkedSessionTranscript).not.toHaveBeenCalled();
+		expect(mockDeleteSession).not.toHaveBeenCalled();
+	});
+
+	it("keeps Hlid empty when advertised ACP fork support fails at runtime", async () => {
+		mockGetSessionById.mockResolvedValue({
+			...sampleRow,
+			provider_id: "acp:test",
+			agent_cwd: "/work/project",
+		});
+		mockGetSessionProviderSession.mockResolvedValue("acp-source");
+		const forkSession = vi
+			.fn()
+			.mockRejectedValue(new Error("ACP fork was rejected"));
+		const pool = makePool({
+			getProvider: vi.fn().mockReturnValue({
+				providerId: "acp:test",
+				resolveForkCapability: vi.fn().mockResolvedValue({
+					kind: "exact",
+					wholeSession: true,
+					throughMessage: false,
+				}),
+				forkSession,
+			}),
+		});
+
+		await expect(
+			handleDbRoute(
+				makeUrl("/db/session/fork"),
+				forkRequest({ id: "abc-123" }),
+				pool,
+			),
+		).rejects.toThrow("ACP fork was rejected");
+		expect(mockCreateForkedSessionRow).not.toHaveBeenCalled();
+		expect(mockCopyForkedSessionTranscript).not.toHaveBeenCalled();
+		expect(mockDeleteSession).not.toHaveBeenCalled();
+	});
+
 	it("forks via the provider and creates a new row on success", async () => {
 		mockGetSessionById.mockResolvedValue({
 			...sampleRow,
@@ -1025,6 +1099,45 @@ describe("handleDbRoute — POST /db/session/fork", () => {
 			json.id,
 			undefined,
 		);
+		expect(mockInsertForkedMessages).not.toHaveBeenCalled();
+	});
+
+	it("rolls back a partial Hlid child when transcript persistence fails", async () => {
+		mockGetSessionById.mockResolvedValue({
+			...sampleRow,
+			provider_id: "claude",
+			agent_cwd: "/work/project",
+			history_resume_mode: "none",
+		});
+		mockGetSessionProviderSession.mockResolvedValue("native-source-id");
+		mockCopyForkedSessionTranscript.mockRejectedValue(
+			new Error("Transcript copy failed"),
+		);
+		const pool = makePool({
+			getProvider: vi.fn().mockReturnValue({
+				providerId: "claude",
+				forkCapability: {
+					kind: "exact",
+					cutoff: "message",
+					wholeSession: true,
+					throughMessage: true,
+				},
+				forkSession: vi
+					.fn()
+					.mockResolvedValue({ sessionId: "native-forked-id" }),
+			}),
+		});
+
+		await expect(
+			handleDbRoute(
+				makeUrl("/db/session/fork"),
+				forkRequest({ id: "abc-123" }),
+				pool,
+			),
+		).rejects.toThrow("Transcript copy failed");
+		const newId = mockCreateForkedSessionRow.mock.calls[0]?.[1];
+		expect(newId).toEqual(expect.any(String));
+		expect(mockDeleteSession).toHaveBeenCalledWith(newId);
 		expect(mockInsertForkedMessages).not.toHaveBeenCalled();
 	});
 
@@ -1204,6 +1317,22 @@ describe("handleDbRoute — PATCH /db/session", () => {
 		expect(setSessionLabel).toHaveBeenCalledWith("s1", "renamed");
 		expect(matching.setSessionLabel).toHaveBeenCalledWith("renamed");
 		expect(other.setSessionLabel).not.toHaveBeenCalled();
+	});
+
+	it("returns 404 instead of broadcasting a rename for a missing session", async () => {
+		mockRenameSession.mockRejectedValueOnce(new Error("Session not found"));
+		const pool = makePool();
+
+		const res = await handleDbRoute(
+			makeUrl("/db/session", { id: "missing" }),
+			patchRequest({ label: "renamed" }),
+			pool,
+		);
+
+		expect(res?.status).toBe(404);
+		expect(await res?.text()).toBe("Session not found");
+		expect(mockRenameSession).toHaveBeenCalledWith("missing", "renamed");
+		expect(pool.getSessionsStatus).not.toHaveBeenCalled();
 	});
 
 	it("persists pin state without rewriting live session labels", async () => {
