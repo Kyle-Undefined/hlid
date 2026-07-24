@@ -1417,6 +1417,54 @@ function RelicObsidianButton({
 	);
 }
 
+/** Shared by `RelicRow` and `RelicCard` — same relic, two layouts. */
+type RelicRowProps = {
+	row: AttachmentRow;
+	list: RelicsList;
+	expanded: boolean;
+	onToggleExpand: () => void;
+	onView: (img: ViewerImage) => void;
+	onDelete: () => void;
+	capture?: ObsidianCaptureDestination | null;
+	onObsidianAction: () => void;
+};
+
+/** Shared by `RelicsTable` and `RelicsCardList` — same relic list, two layouts. */
+type RelicsListProps = {
+	list: RelicsList;
+	expandedId: string | null;
+	setExpandedId: (id: string | null) => void;
+	onView: (img: ViewerImage) => void;
+	onDelete: (id: string) => void;
+	capture?: ObsidianCaptureDestination | null;
+	onObsidianAction: (row: AttachmentRow) => void;
+};
+
+/** Builds one row's `RelicRowProps` from its containing list's props. */
+function relicRowProps(
+	row: AttachmentRow,
+	{
+		list,
+		expandedId,
+		setExpandedId,
+		onView,
+		onDelete,
+		capture,
+		onObsidianAction,
+	}: RelicsListProps,
+): RelicRowProps {
+	return {
+		row,
+		list,
+		expanded: expandedId === row.id,
+		onToggleExpand: () => setExpandedId(expandedId === row.id ? null : row.id),
+		onView,
+		onDelete: () => onDelete(row.id),
+		capture,
+		onObsidianAction: () => onObsidianAction(row),
+	};
+}
+
 function RelicRow({
 	row,
 	list,
@@ -1426,16 +1474,7 @@ function RelicRow({
 	onDelete,
 	capture,
 	onObsidianAction,
-}: {
-	row: AttachmentRow;
-	list: RelicsList;
-	expanded: boolean;
-	onToggleExpand: () => void;
-	onView: (img: ViewerImage) => void;
-	onDelete: () => void;
-	capture?: ObsidianCaptureDestination | null;
-	onObsidianAction: () => void;
-}) {
+}: RelicRowProps) {
 	const stop = {
 		onClick: (e: React.SyntheticEvent) => e.stopPropagation(),
 		onKeyDown: (e: React.SyntheticEvent) => e.stopPropagation(),
@@ -1554,15 +1593,7 @@ function RelicsTable({
 	onDelete,
 	capture,
 	onObsidianAction,
-}: {
-	list: RelicsList;
-	expandedId: string | null;
-	setExpandedId: (id: string | null) => void;
-	onView: (img: ViewerImage) => void;
-	onDelete: (id: string) => void;
-	capture?: ObsidianCaptureDestination | null;
-	onObsidianAction: (row: AttachmentRow) => void;
-}) {
+}: RelicsListProps) {
 	const { rows, selected, setSelected } = list;
 	return (
 		<table className="w-full min-w-[720px] text-[11px]">
@@ -1610,16 +1641,15 @@ function RelicsTable({
 					rows.map((r) => (
 						<Fragment key={r.id}>
 							<RelicRow
-								row={r}
-								list={list}
-								expanded={expandedId === r.id}
-								onToggleExpand={() =>
-									setExpandedId(expandedId === r.id ? null : r.id)
-								}
-								onView={onView}
-								onDelete={() => onDelete(r.id)}
-								capture={capture}
-								onObsidianAction={() => onObsidianAction(r)}
+								{...relicRowProps(r, {
+									list,
+									expandedId,
+									setExpandedId,
+									onView,
+									onDelete,
+									capture,
+									onObsidianAction,
+								})}
 							/>
 							{expandedId === r.id && (
 								<tr className="border-b border-border/40 bg-secondary/20">
@@ -1648,16 +1678,7 @@ function RelicCard({
 	onDelete,
 	capture,
 	onObsidianAction,
-}: {
-	row: AttachmentRow;
-	list: RelicsList;
-	expanded: boolean;
-	onToggleExpand: () => void;
-	onView: (img: ViewerImage) => void;
-	onDelete: () => void;
-	capture?: ObsidianCaptureDestination | null;
-	onObsidianAction: () => void;
-}) {
+}: RelicRowProps) {
 	return (
 		<div className="border-b border-border/40">
 			<div className="px-4 py-3 flex items-start gap-3">
@@ -1731,15 +1752,7 @@ function RelicsCardList({
 	onDelete,
 	capture,
 	onObsidianAction,
-}: {
-	list: RelicsList;
-	expandedId: string | null;
-	setExpandedId: (id: string | null) => void;
-	onView: (img: ViewerImage) => void;
-	onDelete: (id: string) => void;
-	capture?: ObsidianCaptureDestination | null;
-	onObsidianAction: (row: AttachmentRow) => void;
-}) {
+}: RelicsListProps) {
 	const { rows } = list;
 	if (rows.length === 0) {
 		return (
@@ -1753,16 +1766,15 @@ function RelicsCardList({
 			{rows.map((r) => (
 				<RelicCard
 					key={r.id}
-					row={r}
-					list={list}
-					expanded={expandedId === r.id}
-					onToggleExpand={() =>
-						setExpandedId(expandedId === r.id ? null : r.id)
-					}
-					onView={onView}
-					onDelete={() => onDelete(r.id)}
-					capture={capture}
-					onObsidianAction={() => onObsidianAction(r)}
+					{...relicRowProps(r, {
+						list,
+						expandedId,
+						setExpandedId,
+						onView,
+						onDelete,
+						capture,
+						onObsidianAction,
+					})}
 				/>
 			))}
 		</div>

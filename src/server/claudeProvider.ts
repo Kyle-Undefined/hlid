@@ -34,6 +34,7 @@ import type {
 	SlashCommand,
 	SubagentSnapshot,
 } from "./agentProvider";
+import { toAgentToolCallResult } from "./agentToolResult";
 import { createClaudeHistorySessionStore } from "./claudeHistorySessionStore";
 import {
 	executeHlidAgentTool,
@@ -89,31 +90,13 @@ function createHlidSdkServer(params: AgentQueryParams) {
 				spec.description,
 				// biome-ignore lint/suspicious/noExplicitAny: the SDK accepts each Zod shape, while map() widens them to a union.
 				hlidAgentSchemas[spec.name].shape as any,
-				async (input) => {
-					try {
-						return {
-							content: [
-								{
-									type: "text" as const,
-									text: await executeHlidAgentTool(spec.name, input, {
-										runtimeCwd: params.cwd,
-										sessionId: params.hostSessionId,
-									}),
-								},
-							],
-						};
-					} catch (error) {
-						return {
-							isError: true,
-							content: [
-								{
-									type: "text" as const,
-									text: error instanceof Error ? error.message : String(error),
-								},
-							],
-						};
-					}
-				},
+				(input) =>
+					toAgentToolCallResult(() =>
+						executeHlidAgentTool(spec.name, input, {
+							runtimeCwd: params.cwd,
+							sessionId: params.hostSessionId,
+						}),
+					),
 				{
 					annotations: {
 						readOnlyHint: spec.readOnly,
@@ -142,8 +125,8 @@ function createObsidianSdkServer(
 				spec.description,
 				// biome-ignore lint/suspicious/noExplicitAny: the SDK accepts the Zod shape for each discriminated tool, while map() widens it to their union.
 				obsidianAgentSchemas[spec.name].shape as any,
-				async (input) => {
-					try {
+				(input) =>
+					toAgentToolCallResult(async () => {
 						if (spec.name === "run_command" && forceRunCommandApproval) {
 							const decision = await forceRunCommandApproval(
 								`mcp__${OBSIDIAN_AGENT_NAMESPACE}__run_command`,
@@ -155,39 +138,13 @@ function createObsidianSdkServer(
 								},
 							);
 							if (decision.behavior === "deny") {
-								return {
-									isError: true,
-									content: [
-										{
-											type: "text" as const,
-											text:
-												decision.message ??
-												"The Obsidian command was not approved.",
-										},
-									],
-								};
+								throw new Error(
+									decision.message ?? "The Obsidian command was not approved.",
+								);
 							}
 						}
-						return {
-							content: [
-								{
-									type: "text" as const,
-									text: await executeObsidianAgentTool(spec.name, input),
-								},
-							],
-						};
-					} catch (error) {
-						return {
-							isError: true,
-							content: [
-								{
-									type: "text" as const,
-									text: error instanceof Error ? error.message : String(error),
-								},
-							],
-						};
-					}
-				},
+						return executeObsidianAgentTool(spec.name, input);
+					}),
 				{
 					annotations: {
 						readOnlyHint: spec.readOnly,

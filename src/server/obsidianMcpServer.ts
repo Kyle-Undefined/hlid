@@ -1,5 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { toAgentToolCallResult } from "./agentToolResult";
 import {
 	executeObsidianAgentTool,
 	OBSIDIAN_AGENT_NAMESPACE,
@@ -59,48 +60,48 @@ export function obsidianMcpProcessCommand(): {
 	return internalMcpProcessCommand(INTERNAL_OBSIDIAN_MCP_FLAG);
 }
 
-export async function runObsidianMcpServer(): Promise<void> {
+export type InternalMcpToolSpec = {
+	name: string;
+	description: string;
+	readOnly: boolean;
+};
+
+/**
+ * Runs one of Hlid's internal MCP servers over stdio: register every tool
+ * spec, wrap each call in the standard MCP success/error result shape,
+ * connect, and stay up until stdin closes. Shared by every internal MCP
+ * server Hlid spawns for itself — currently the Obsidian vault tools and the
+ * Hlid agent tools — so this wiring only exists once.
+ */
+export async function runInternalMcpToolServer<
+	Spec extends InternalMcpToolSpec,
+>(options: {
+	namespace: string;
+	description: string;
+	specs: readonly Spec[];
+	// biome-ignore lint/suspicious/noExplicitAny: registerTool accepts each tool's own Zod shape; callers narrow this per tool.
+	schemaFor: (spec: Spec) => any;
+	idempotentHint: (spec: Spec) => boolean;
+	execute: (spec: Spec, input: unknown) => Promise<string>;
+}): Promise<void> {
 	const server = new McpServer(
-		{ name: OBSIDIAN_AGENT_NAMESPACE, version: "1" },
-		{
-			instructions: OBSIDIAN_AGENT_NAMESPACE_DESCRIPTION,
-		},
+		{ name: options.namespace, version: "1" },
+		{ instructions: options.description },
 	);
-	for (const spec of OBSIDIAN_AGENT_TOOL_SPECS) {
+	for (const spec of options.specs) {
 		server.registerTool(
 			spec.name,
 			{
 				description: spec.description,
-				// biome-ignore lint/suspicious/noExplicitAny: registerTool accepts each tool's Zod shape, while the loop widens them to a union.
-				inputSchema: obsidianAgentSchemas[spec.name].shape as any,
+				inputSchema: options.schemaFor(spec),
 				annotations: {
 					readOnlyHint: spec.readOnly,
 					destructiveHint: false,
-					idempotentHint: spec.readOnly,
+					idempotentHint: options.idempotentHint(spec),
 				},
 			},
-			async (input: unknown) => {
-				try {
-					return {
-						content: [
-							{
-								type: "text" as const,
-								text: await executeObsidianAgentTool(spec.name, input),
-							},
-						],
-					};
-				} catch (error) {
-					return {
-						isError: true,
-						content: [
-							{
-								type: "text" as const,
-								text: error instanceof Error ? error.message : String(error),
-							},
-						],
-					};
-				}
-			},
+			(input: unknown) =>
+				toAgentToolCallResult(() => options.execute(spec, input)),
 		);
 	}
 	const transport = new StdioServerTransport();
@@ -114,4 +115,15 @@ export async function runObsidianMcpServer(): Promise<void> {
 	} finally {
 		stopWatchingInput();
 	}
+}
+
+export async function runObsidianMcpServer(): Promise<void> {
+	await runInternalMcpToolServer({
+		namespace: OBSIDIAN_AGENT_NAMESPACE,
+		description: OBSIDIAN_AGENT_NAMESPACE_DESCRIPTION,
+		specs: OBSIDIAN_AGENT_TOOL_SPECS,
+		schemaFor: (spec) => obsidianAgentSchemas[spec.name].shape,
+		idempotentHint: (spec) => spec.readOnly,
+		execute: (spec, input) => executeObsidianAgentTool(spec.name, input),
+	});
 }

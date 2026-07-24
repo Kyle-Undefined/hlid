@@ -1,4 +1,5 @@
 import {
+	Fragment,
 	useCallback,
 	useEffect,
 	useRef,
@@ -15,6 +16,11 @@ import {
 	type UpdateStatus,
 } from "#/hooks/updateStore";
 import type { CliUpdateStatus } from "#/lib/cliUpdateTypes";
+import {
+	type ClaudeDesktopMcpStatus,
+	getClaudeDesktopMcpStatusFn,
+	registerHlidInClaudeDesktopFn,
+} from "#/lib/serverFns/claudeDesktop";
 import type { ReleaseNotes } from "#/lib/updates";
 import { CliUpdateTerminalModal } from "./CliUpdateTerminalModal";
 import { Field, Section } from "./fields";
@@ -213,6 +219,66 @@ function UpdateNotices({
 	) : null;
 }
 
+/**
+ * Registers Hlid's own MCP servers (agent tools and Obsidian vault tools)
+ * into the standalone Claude Desktop app's config, next to the Claude
+ * Desktop update row above — that's where Hlid already knows the app is
+ * installed. Re-running is safe: it re-syncs the entry if Hlid's install
+ * path changed.
+ */
+function ClaudeDesktopMcpAction() {
+	const [status, setStatus] = useState<ClaudeDesktopMcpStatus | null>(null);
+	const [busy, setBusy] = useState(false);
+	const [error, setError] = useState<string | null>(null);
+	const [justRegistered, setJustRegistered] = useState(false);
+
+	useEffect(() => {
+		void getClaudeDesktopMcpStatusFn()
+			.then(setStatus)
+			.catch((e) =>
+				setError(e instanceof Error ? e.message : "status check failed"),
+			);
+	}, []);
+
+	if (status && !status.available) return null;
+
+	async function register() {
+		setBusy(true);
+		setError(null);
+		try {
+			setStatus(await registerHlidInClaudeDesktopFn());
+			setJustRegistered(true);
+		} catch (e) {
+			setError(e instanceof Error ? e.message : "registration failed");
+		} finally {
+			setBusy(false);
+		}
+	}
+
+	const hint = error
+		? error
+		: justRegistered
+			? "registered — restart Claude Desktop to pick it up"
+			: status?.registered
+				? "already registered; Hlid's agent and vault tools are available"
+				: status
+					? "adds Hlid's agent and vault tools to Claude Desktop"
+					: "checking…";
+
+	return (
+		<Field label="Hlid MCP in Claude Desktop" hint={hint}>
+			<button
+				type="button"
+				disabled={busy || !status}
+				onClick={() => void register()}
+				className="text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors uppercase disabled:opacity-40"
+			>
+				{busy ? "ADDING…" : status?.registered ? "RE-ADD" : "ADD"}
+			</button>
+		</Field>
+	);
+}
+
 function UpdatesView({
 	status,
 	state,
@@ -271,80 +337,84 @@ function UpdatesView({
 				onLaunch={onLaunch}
 			/>
 			{status?.cliUpdates?.map((update) => (
-				<Field
-					key={update.id}
-					label={
-						update.surface === "desktop" ? update.label : `${update.label} CLI`
-					}
-					hint={cliVersionHint(update)}
-				>
-					<div className="flex flex-col items-end gap-1.5 min-w-0">
-						<span className="text-xs font-mono text-muted-foreground">
-							v{update.appVersion ?? update.installedVersion ?? "—"}
-							{(update.surface !== "desktop" || !update.appVersion) &&
-								update.available &&
-								update.latestVersion && (
-									<span className="text-foreground">
-										{" "}
-										→ v{update.latestVersion}
+				<Fragment key={update.id}>
+					<Field
+						label={
+							update.surface === "desktop"
+								? update.label
+								: `${update.label} CLI`
+						}
+						hint={cliVersionHint(update)}
+					>
+						<div className="flex flex-col items-end gap-1.5 min-w-0">
+							<span className="text-xs font-mono text-muted-foreground">
+								v{update.appVersion ?? update.installedVersion ?? "—"}
+								{(update.surface !== "desktop" || !update.appVersion) &&
+									update.available &&
+									update.latestVersion && (
+										<span className="text-foreground">
+											{" "}
+											→ v{update.latestVersion}
+										</span>
+									)}
+							</span>
+							{update.surface === "desktop" &&
+								update.appVersion &&
+								update.installedVersion && (
+									<span className="text-[9px] font-mono text-muted-foreground/60">
+										Store package v{update.installedVersion}
+										{update.available && update.latestVersion
+											? ` → v${update.latestVersion}`
+											: ""}
 									</span>
 								)}
-						</span>
-						{update.surface === "desktop" &&
-							update.appVersion &&
-							update.installedVersion && (
-								<span className="text-[9px] font-mono text-muted-foreground/60">
-									Store package v{update.installedVersion}
-									{update.available && update.latestVersion
-										? ` → v${update.latestVersion}`
-										: ""}
+							{update.available && (
+								<span className="max-w-full break-words text-right text-[9px] text-primary/75">
+									{update.updateInstructions ??
+										update.updateCommand ??
+										"update using the original installer"}
 								</span>
 							)}
-						{update.available && (
-							<span className="max-w-full break-words text-right text-[9px] text-primary/75">
-								{update.updateInstructions ??
-									update.updateCommand ??
-									"update using the original installer"}
-							</span>
-						)}
-						{update.available &&
-							update.updateCommand &&
-							update.updateMode &&
-							status.cliUpdateActionsAllowed && (
-								<ConfirmAction
-									label={
-										update.surface === "desktop"
-											? "update desktop app?"
-											: update.updateMode === "automatic"
-												? "stop sessions and update?"
-												: "stop sessions and open terminal?"
-									}
-									confirmText={
-										update.updateMode === "automatic" ? "update" : "open"
-									}
-									variant="primary"
-									onConfirm={() => onCliUpdate(update)}
-									className="justify-end flex-wrap"
-									trigger={(open) => (
-										<button
-											type="button"
-											disabled={cliBusyId !== null}
-											onClick={open}
-											className="text-[9px] tracking-widest px-2.5 py-1 border border-primary/40 text-primary hover:bg-primary/10 transition-colors uppercase disabled:opacity-40"
-										>
-											{cliBusyId === update.id
-												? update.updateMode === "automatic"
-													? "UPDATING…"
-													: "OPENING…"
+							{update.available &&
+								update.updateCommand &&
+								update.updateMode &&
+								status.cliUpdateActionsAllowed && (
+									<ConfirmAction
+										label={
+											update.surface === "desktop"
+												? "update desktop app?"
 												: update.updateMode === "automatic"
-													? "UPDATE"
-													: "OPEN TERMINAL"}
-										</button>
-									)}
-								/>
-							)}
-					</div>
-				</Field>
+													? "stop sessions and update?"
+													: "stop sessions and open terminal?"
+										}
+										confirmText={
+											update.updateMode === "automatic" ? "update" : "open"
+										}
+										variant="primary"
+										onConfirm={() => onCliUpdate(update)}
+										className="justify-end flex-wrap"
+										trigger={(open) => (
+											<button
+												type="button"
+												disabled={cliBusyId !== null}
+												onClick={open}
+												className="text-[9px] tracking-widest px-2.5 py-1 border border-primary/40 text-primary hover:bg-primary/10 transition-colors uppercase disabled:opacity-40"
+											>
+												{cliBusyId === update.id
+													? update.updateMode === "automatic"
+														? "UPDATING…"
+														: "OPENING…"
+													: update.updateMode === "automatic"
+														? "UPDATE"
+														: "OPEN TERMINAL"}
+											</button>
+										)}
+									/>
+								)}
+						</div>
+					</Field>
+					{update.id === "claude-desktop" && <ClaudeDesktopMcpAction />}
+				</Fragment>
 			))}
 			{cliNotice && (
 				<div className="px-4 py-2 text-xs text-muted-foreground">

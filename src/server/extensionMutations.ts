@@ -6,7 +6,11 @@ import { writeFileAtomicSync } from "../lib/atomicFile";
 import { resolveClaudeExecutable } from "../lib/claudePath";
 import { resolveCodexExecutable } from "../lib/codexPath";
 import { parseWslUncSyntax } from "../lib/paths";
-import { type BoundedProcessResult, runBoundedProcess } from "../lib/process";
+import {
+	type BoundedProcessOptions,
+	type BoundedProcessResult,
+	runBoundedProcess,
+} from "../lib/process";
 import {
 	discoverExtensionInventory,
 	type ExtensionProviderId,
@@ -504,6 +508,53 @@ function wait(milliseconds: number): Promise<void> {
 	);
 }
 
+/**
+ * Serializes mutations against the same provider environment. Every mutation
+ * branch below claims this lock before touching a provider's CLI or config
+ * and releases it once the branch settles, success or failure.
+ */
+async function withMutationLock<T>(
+	providerId: string,
+	homePath: string,
+	environmentLabel: string,
+	run: () => Promise<T>,
+): Promise<T> {
+	const mutationKey = `${providerId}\0${homePath}`;
+	if (activeMutations.has(mutationKey)) {
+		throw new Error(
+			`Another ${providerId} extension action is already running in ${environmentLabel}`,
+		);
+	}
+	activeMutations.add(mutationKey);
+	try {
+		return await run();
+	} finally {
+		activeMutations.delete(mutationKey);
+	}
+}
+
+/**
+ * Runs a provider CLI command and turns a thrown error into the same
+ * synthetic failed result shape a nonzero exit already produces, so callers
+ * only need one failure path.
+ */
+async function runProviderCommand(
+	run: typeof runBoundedProcess,
+	executable: string,
+	args: string[],
+	options: BoundedProcessOptions,
+): Promise<BoundedProcessResult> {
+	try {
+		return await run(executable, args, options);
+	} catch (error) {
+		return {
+			code: null,
+			output:
+				error instanceof Error ? error.message : "Provider command failed",
+		};
+	}
+}
+
 function marketplaceCommand(
 	config: HlidConfig,
 	home: ProviderExtensionHome,
@@ -586,38 +637,34 @@ export async function mutateProviderExtension(
 			throw new Error("The installed plugin already has that status");
 		}
 
-		const mutationKey = `${target.providerId}\0${target.home.path}`;
-		if (activeMutations.has(mutationKey)) {
-			throw new Error(
-				`Another ${target.providerId} extension action is already running in ${target.environmentLabel}`,
-			);
-		}
-		activeMutations.add(mutationKey);
-		try {
-			let output: string;
-			let providerExitCode: number | null = 0;
-			if (target.providerId === "claude") {
-				validatePluginId(target.pluginId);
-				const scope =
-					target.scope === "project" || target.scope === "local"
-						? target.scope
-						: "user";
-				const command = resolveProviderCommand(
-					config,
-					target.home,
-					target.providerId,
-					dependencies,
-				);
-				const args = [
-					"plugin",
-					input.enabled ? "enable" : "disable",
-					target.pluginId,
-					"--scope",
-					scope,
-				];
-				let result: BoundedProcessResult;
-				try {
-					result = await (dependencies.run ?? runBoundedProcess)(
+		return withMutationLock(
+			target.providerId,
+			target.home.path,
+			target.environmentLabel,
+			async () => {
+				let output: string;
+				let providerExitCode: number | null = 0;
+				if (target.providerId === "claude") {
+					validatePluginId(target.pluginId);
+					const scope =
+						target.scope === "project" || target.scope === "local"
+							? target.scope
+							: "user";
+					const command = resolveProviderCommand(
+						config,
+						target.home,
+						target.providerId,
+						dependencies,
+					);
+					const args = [
+						"plugin",
+						input.enabled ? "enable" : "disable",
+						target.pluginId,
+						"--scope",
+						scope,
+					];
+					const result = await runProviderCommand(
+						dependencies.run ?? runBoundedProcess,
 						command.executable,
 						args,
 						{
@@ -630,79 +677,69 @@ export async function mutateProviderExtension(
 							cwd: command.cwd,
 						},
 					);
-				} catch (error) {
-					result = {
-						code: null,
-						output:
-							error instanceof Error
-								? error.message
-								: "Provider command failed",
-					};
+					providerExitCode = result.code;
+					output = result.output.trim();
+				} else {
+					const configPath = resolve(target.home.path, ".codex", "config.toml");
+					(dependencies.setCodexPluginEnabled ?? setCodexPluginEnabled)(
+						configPath,
+						target.pluginId,
+						input.expectedEnabled,
+						input.enabled,
+					);
+					output = `Codex plugin ${input.enabled ? "enabled" : "disabled"}`;
 				}
-				providerExitCode = result.code;
-				output = result.output.trim();
-			} else {
-				const configPath = resolve(target.home.path, ".codex", "config.toml");
-				(dependencies.setCodexPluginEnabled ?? setCodexPluginEnabled)(
-					configPath,
-					target.pluginId,
-					input.expectedEnabled,
-					input.enabled,
-				);
-				output = `Codex plugin ${input.enabled ? "enabled" : "disabled"}`;
-			}
 
-			const refreshed = await discoverAfterMutation(
-				config,
-				target.home,
-				dependencies,
-				providerExitCode !== 0
-					? `Plugin ${input.enabled ? "enable" : "disable"} exited ${providerExitCode ?? "without a status"}: ${output}`
-					: undefined,
-			);
-			const updated = refreshed.extensions.find(
-				(item) => item.id === input.id || item.pluginId === target.pluginId,
-			);
-			const stateChanged =
-				!updated ||
-				updated.version !== target.version ||
-				updated.enabled !== target.enabled;
-			if (providerExitCode !== 0 && updated?.enabled !== input.enabled) {
-				const detail = output.trim().split(/\r?\n/).slice(-6).join(" ");
-				const failure = detail
-					? `Plugin ${input.enabled ? "enable" : "disable"} exited ${providerExitCode ?? "without a status"}: ${detail}`
-					: `Plugin ${input.enabled ? "enable" : "disable"} exited ${providerExitCode ?? "without a status"}`;
-				throw new ExtensionMutationError(
-					`${failure} ${recoveryMessage(stateChanged)}`,
-					stateChanged,
+				const refreshed = await discoverAfterMutation(
+					config,
+					target.home,
+					dependencies,
+					providerExitCode !== 0
+						? `Plugin ${input.enabled ? "enable" : "disable"} exited ${providerExitCode ?? "without a status"}: ${output}`
+						: undefined,
 				);
-			}
-			if (!updated || updated.enabled !== input.enabled) {
-				throw new ExtensionMutationError(
-					`The provider action completed, but the plugin is still ${
-						input.enabled ? "disabled" : "enabled"
-					}. ${recoveryMessage(stateChanged)}`,
-					stateChanged,
+				const updated = refreshed.extensions.find(
+					(item) => item.id === input.id || item.pluginId === target.pluginId,
 				);
-			}
-			return {
-				action: input.action,
-				providerId: target.providerId,
-				subject: target.pluginId,
-				pluginId: target.pluginId,
-				environmentLabel: target.environmentLabel,
-				output,
-				...(providerExitCode !== 0
-					? {
-							warning: providerErrorWarning(
-								`plugin ${input.enabled ? "enable" : "disable"}`,
-							),
-						}
-					: {}),
-			};
-		} finally {
-			activeMutations.delete(mutationKey);
-		}
+				const stateChanged =
+					!updated ||
+					updated.version !== target.version ||
+					updated.enabled !== target.enabled;
+				if (providerExitCode !== 0 && updated?.enabled !== input.enabled) {
+					const detail = output.trim().split(/\r?\n/).slice(-6).join(" ");
+					const failure = detail
+						? `Plugin ${input.enabled ? "enable" : "disable"} exited ${providerExitCode ?? "without a status"}: ${detail}`
+						: `Plugin ${input.enabled ? "enable" : "disable"} exited ${providerExitCode ?? "without a status"}`;
+					throw new ExtensionMutationError(
+						`${failure} ${recoveryMessage(stateChanged)}`,
+						stateChanged,
+					);
+				}
+				if (!updated || updated.enabled !== input.enabled) {
+					throw new ExtensionMutationError(
+						`The provider action completed, but the plugin is still ${
+							input.enabled ? "disabled" : "enabled"
+						}. ${recoveryMessage(stateChanged)}`,
+						stateChanged,
+					);
+				}
+				return {
+					action: input.action,
+					providerId: target.providerId,
+					subject: target.pluginId,
+					pluginId: target.pluginId,
+					environmentLabel: target.environmentLabel,
+					output,
+					...(providerExitCode !== 0
+						? {
+								warning: providerErrorWarning(
+									`plugin ${input.enabled ? "enable" : "disable"}`,
+								),
+							}
+						: {}),
+				};
+			},
+		);
 	}
 
 	if (
@@ -739,160 +776,155 @@ export async function mutateProviderExtension(
 			}
 		}
 
-		const mutationKey = `${providerId}\0${home.path}`;
-		if (activeMutations.has(mutationKey)) {
-			throw new Error(
-				`Another ${providerId} extension action is already running in ${home.environmentLabel}`,
-			);
-		}
-		activeMutations.add(mutationKey);
-		try {
-			const discover = dependencies.discover ?? discoverExtensionInventory;
-			const before = await discover(config, [home]);
-			const beforeIds = new Set(
-				before.marketplaces
-					.filter((item) => item.providerId === providerId && item.canManage)
-					.map((item) => item.id),
-			);
-			const command = marketplaceCommand(
-				config,
-				home,
-				providerId,
-				input,
-				marketplace?.name ?? null,
-				dependencies,
-			);
-			const run = dependencies.run ?? runBoundedProcess;
-			const processOptions = {
-				timeoutMs: MUTATION_TIMEOUT_MS,
-				timeoutError:
-					input.action === "add_marketplace"
-						? "Marketplace addition timed out"
-						: input.action === "upgrade_marketplace"
-							? "Marketplace update timed out"
-							: "Marketplace removal timed out",
-				maxOutputChars: MAX_OUTPUT_CHARS,
-				shell: command.shell,
-				cwd: command.cwd,
-			};
-			const runProviderCommand = async () => {
-				try {
-					return await run(command.executable, command.args, processOptions);
-				} catch (error) {
-					return {
-						code: null,
-						output:
-							error instanceof Error
-								? error.message
-								: "Provider command failed",
-					};
-				}
-			};
-			let result = await runProviderCommand();
-			let retriedTransientFailure = false;
-			if (
-				input.action === "upgrade_marketplace" &&
-				result.code !== 0 &&
-				isTransientMarketplaceNetworkFailure(result.output)
-			) {
-				retriedTransientFailure = true;
-				await (dependencies.wait ?? wait)(MARKETPLACE_UPDATE_RETRY_DELAY_MS);
-				result = await runProviderCommand();
-			}
-			const providerFailure =
-				result.code !== 0
-					? `${
-							retriedTransientFailure
-								? `${failureMessage(input.action, result.code, result.output)} Hlið retried once after a transient network failure.`
-								: failureMessage(input.action, result.code, result.output)
-						}`
-					: undefined;
-			const refreshed = await discoverAfterMutation(
-				config,
-				home,
-				dependencies,
-				providerFailure,
-			);
-			const providerMarketplaces = refreshed.marketplaces.filter(
-				(item) => item.providerId === providerId,
-			);
-			const refreshedMarketplace = marketplace
-				? providerMarketplaces.find(
-						(item) => item.id === marketplace.id && item.canManage,
-					)
-				: providerMarketplaces.find(
-						(item) => item.canManage && !beforeIds.has(item.id),
-					);
-			const desiredStateReached =
-				input.action === "add_marketplace"
-					? Boolean(refreshedMarketplace)
-					: input.action === "remove_marketplace"
-						? !refreshedMarketplace
-						: Boolean(
-								refreshedMarketplace &&
-									marketplace &&
-									(refreshedMarketplace.lastUpdated !==
-										marketplace.lastUpdated ||
-										refreshedMarketplace.source !== marketplace.source ||
-										refreshedMarketplace.path !== marketplace.path ||
-										refreshedMarketplace.pluginCount !==
-											marketplace.pluginCount),
-							);
-			const providerStateChanged =
-				marketplaceStateFingerprint(before.marketplaces, providerId) !==
-				marketplaceStateFingerprint(refreshed.marketplaces, providerId);
-			if (result.code !== 0 && !desiredStateReached) {
-				const message = failureMessage(
-					input.action,
-					result.code,
-					result.output,
+		return withMutationLock(
+			providerId,
+			home.path,
+			home.environmentLabel,
+			async () => {
+				const discover = dependencies.discover ?? discoverExtensionInventory;
+				const before = await discover(config, [home]);
+				const beforeIds = new Set(
+					before.marketplaces
+						.filter((item) => item.providerId === providerId && item.canManage)
+						.map((item) => item.id),
 				);
-				throw new ExtensionMutationError(
-					`${
-						retriedTransientFailure
-							? `${message} Hlið retried once after a transient network failure.`
-							: message
-					} ${recoveryMessage(providerStateChanged)}`,
-					providerStateChanged,
+				const command = marketplaceCommand(
+					config,
+					home,
+					providerId,
+					input,
+					marketplace?.name ?? null,
+					dependencies,
 				);
-			}
-			if (
-				(input.action === "add_marketplace" && !refreshedMarketplace) ||
-				(input.action === "upgrade_marketplace" && !refreshedMarketplace) ||
-				(input.action === "remove_marketplace" && refreshedMarketplace)
-			) {
-				throw new ExtensionMutationError(
-					`${
+				const run = dependencies.run ?? runBoundedProcess;
+				const processOptions = {
+					timeoutMs: MUTATION_TIMEOUT_MS,
+					timeoutError:
 						input.action === "add_marketplace"
-							? "The provider command completed, but no marketplace was added"
+							? "Marketplace addition timed out"
 							: input.action === "upgrade_marketplace"
-								? "The provider command completed, but the marketplace disappeared"
-								: "The provider command completed, but the marketplace is still configured"
-					}. ${recoveryMessage(providerStateChanged)}`,
-					providerStateChanged,
+								? "Marketplace update timed out"
+								: "Marketplace removal timed out",
+					maxOutputChars: MAX_OUTPUT_CHARS,
+					shell: command.shell,
+					cwd: command.cwd,
+				};
+				let result = await runProviderCommand(
+					run,
+					command.executable,
+					command.args,
+					processOptions,
 				);
-			}
-			const subject =
-				marketplace?.name ??
-				refreshedMarketplace?.name ??
-				(input.action === "add_marketplace"
-					? normalizedMarketplaceSource(input.source)
-					: "Marketplace");
-			return {
-				action: input.action,
-				providerId,
-				subject,
-				environmentLabel: home.environmentLabel,
-				output: result.output.trim(),
-				...(result.code !== 0
-					? {
-							warning: providerErrorWarning(input.action.replaceAll("_", " ")),
-						}
-					: {}),
-			};
-		} finally {
-			activeMutations.delete(mutationKey);
-		}
+				let retriedTransientFailure = false;
+				if (
+					input.action === "upgrade_marketplace" &&
+					result.code !== 0 &&
+					isTransientMarketplaceNetworkFailure(result.output)
+				) {
+					retriedTransientFailure = true;
+					await (dependencies.wait ?? wait)(MARKETPLACE_UPDATE_RETRY_DELAY_MS);
+					result = await runProviderCommand(
+						run,
+						command.executable,
+						command.args,
+						processOptions,
+					);
+				}
+				const providerFailure =
+					result.code !== 0
+						? `${
+								retriedTransientFailure
+									? `${failureMessage(input.action, result.code, result.output)} Hlið retried once after a transient network failure.`
+									: failureMessage(input.action, result.code, result.output)
+							}`
+						: undefined;
+				const refreshed = await discoverAfterMutation(
+					config,
+					home,
+					dependencies,
+					providerFailure,
+				);
+				const providerMarketplaces = refreshed.marketplaces.filter(
+					(item) => item.providerId === providerId,
+				);
+				const refreshedMarketplace = marketplace
+					? providerMarketplaces.find(
+							(item) => item.id === marketplace.id && item.canManage,
+						)
+					: providerMarketplaces.find(
+							(item) => item.canManage && !beforeIds.has(item.id),
+						);
+				const desiredStateReached =
+					input.action === "add_marketplace"
+						? Boolean(refreshedMarketplace)
+						: input.action === "remove_marketplace"
+							? !refreshedMarketplace
+							: Boolean(
+									refreshedMarketplace &&
+										marketplace &&
+										(refreshedMarketplace.lastUpdated !==
+											marketplace.lastUpdated ||
+											refreshedMarketplace.source !== marketplace.source ||
+											refreshedMarketplace.path !== marketplace.path ||
+											refreshedMarketplace.pluginCount !==
+												marketplace.pluginCount),
+								);
+				const providerStateChanged =
+					marketplaceStateFingerprint(before.marketplaces, providerId) !==
+					marketplaceStateFingerprint(refreshed.marketplaces, providerId);
+				if (result.code !== 0 && !desiredStateReached) {
+					const message = failureMessage(
+						input.action,
+						result.code,
+						result.output,
+					);
+					throw new ExtensionMutationError(
+						`${
+							retriedTransientFailure
+								? `${message} Hlið retried once after a transient network failure.`
+								: message
+						} ${recoveryMessage(providerStateChanged)}`,
+						providerStateChanged,
+					);
+				}
+				if (
+					(input.action === "add_marketplace" && !refreshedMarketplace) ||
+					(input.action === "upgrade_marketplace" && !refreshedMarketplace) ||
+					(input.action === "remove_marketplace" && refreshedMarketplace)
+				) {
+					throw new ExtensionMutationError(
+						`${
+							input.action === "add_marketplace"
+								? "The provider command completed, but no marketplace was added"
+								: input.action === "upgrade_marketplace"
+									? "The provider command completed, but the marketplace disappeared"
+									: "The provider command completed, but the marketplace is still configured"
+						}. ${recoveryMessage(providerStateChanged)}`,
+						providerStateChanged,
+					);
+				}
+				const subject =
+					marketplace?.name ??
+					refreshedMarketplace?.name ??
+					(input.action === "add_marketplace"
+						? normalizedMarketplaceSource(input.source)
+						: "Marketplace");
+				return {
+					action: input.action,
+					providerId,
+					subject,
+					environmentLabel: home.environmentLabel,
+					output: result.output.trim(),
+					...(result.code !== 0
+						? {
+								warning: providerErrorWarning(
+									input.action.replaceAll("_", " "),
+								),
+							}
+						: {}),
+				};
+			},
+		);
 	}
 
 	const kind = input.action === "install" ? "available" : "installed";
@@ -905,55 +937,51 @@ export async function mutateProviderExtension(
 		);
 	}
 
-	const mutationKey = `${target.providerId}\0${target.home.path}`;
-	if (activeMutations.has(mutationKey)) {
-		throw new Error(
-			`Another ${target.providerId} extension action is already running in ${target.environmentLabel}`,
-		);
-	}
-	activeMutations.add(mutationKey);
-	try {
-		if (input.action === "install") {
-			const current = await (
-				dependencies.discover ?? discoverExtensionInventory
-			)(config, [target.home]);
-			if (
-				current.extensions.some(
-					(item) =>
-						item.providerId === target.providerId &&
-						item.pluginId === target.pluginId,
-				)
-			) {
-				throw new Error("This extension is already installed");
-			}
-			const review = await (dependencies.review ?? reviewAvailableExtension)(
-				config,
-				input.id,
-				[target.home],
-			);
-			if (!review) throw new Error("Extension review was not found");
-			if (review.reviewToken !== input.reviewToken) {
+	return withMutationLock(
+		target.providerId,
+		target.home.path,
+		target.environmentLabel,
+		async () => {
+			if (input.action === "install") {
+				const current = await (
+					dependencies.discover ?? discoverExtensionInventory
+				)(config, [target.home]);
+				if (
+					current.extensions.some(
+						(item) =>
+							item.providerId === target.providerId &&
+							item.pluginId === target.pluginId,
+					)
+				) {
+					throw new Error("This extension is already installed");
+				}
+				const review = await (dependencies.review ?? reviewAvailableExtension)(
+					config,
+					input.id,
+					[target.home],
+				);
+				if (!review) throw new Error("Extension review was not found");
+				if (review.reviewToken !== input.reviewToken) {
+					throw new Error(
+						"The cached package changed after review. Review it again before installing.",
+					);
+				}
+			} else if (target.version !== input.expectedVersion) {
 				throw new Error(
-					"The cached package changed after review. Review it again before installing.",
+					`The installed version changed. Refresh before ${
+						input.action === "update" ? "updating" : "removing"
+					} this extension.`,
 				);
 			}
-		} else if (target.version !== input.expectedVersion) {
-			throw new Error(
-				`The installed version changed. Refresh before ${
-					input.action === "update" ? "updating" : "removing"
-				} this extension.`,
-			);
-		}
 
-		const command = commandForMutation(
-			config,
-			target,
-			input.action,
-			dependencies,
-		);
-		let result: BoundedProcessResult;
-		try {
-			result = await (dependencies.run ?? runBoundedProcess)(
+			const command = commandForMutation(
+				config,
+				target,
+				input.action,
+				dependencies,
+			);
+			const result = await runProviderCommand(
+				dependencies.run ?? runBoundedProcess,
 				command.executable,
 				command.args,
 				{
@@ -969,75 +997,67 @@ export async function mutateProviderExtension(
 					cwd: command.cwd,
 				},
 			);
-		} catch (error) {
-			result = {
-				code: null,
-				output:
-					error instanceof Error ? error.message : "Provider command failed",
-			};
-		}
-		const refreshed = await discoverAfterMutation(
-			config,
-			target.home,
-			dependencies,
-			result.code !== 0
-				? failureMessage(input.action, result.code, result.output)
-				: undefined,
-		);
-		const refreshedExtension = refreshed.extensions.find(
-			(item) => item.id === input.id || item.pluginId === target.pluginId,
-		);
-		const stillInstalled = Boolean(refreshedExtension);
-		const desiredStateReached =
-			input.action === "install"
-				? stillInstalled
-				: input.action === "uninstall"
-					? !stillInstalled
-					: Boolean(
-							refreshedExtension &&
-								refreshedExtension.version !== input.expectedVersion,
-						);
-		const providerStateChanged =
-			input.action === "install"
-				? stillInstalled
-				: !refreshedExtension ||
-					refreshedExtension.version !== target.version ||
-					refreshedExtension.enabled !== target.enabled;
-		if (result.code !== 0 && !desiredStateReached) {
-			throw new ExtensionMutationError(
-				`${failureMessage(input.action, result.code, result.output)} ${recoveryMessage(providerStateChanged)}`,
-				providerStateChanged,
+			const refreshed = await discoverAfterMutation(
+				config,
+				target.home,
+				dependencies,
+				result.code !== 0
+					? failureMessage(input.action, result.code, result.output)
+					: undefined,
 			);
-		}
-		if (
-			(input.action === "install" && !stillInstalled) ||
-			(input.action === "uninstall" && stillInstalled) ||
-			(input.action === "update" && !stillInstalled)
-		) {
-			throw new ExtensionMutationError(
-				`${
-					input.action === "install"
-						? "The provider command completed, but the extension was not installed"
-						: input.action === "update"
-							? "The provider command completed, but the extension disappeared"
-							: "The provider command completed, but the extension is still installed"
-				}. ${recoveryMessage(providerStateChanged)}`,
-				providerStateChanged,
+			const refreshedExtension = refreshed.extensions.find(
+				(item) => item.id === input.id || item.pluginId === target.pluginId,
 			);
-		}
+			const stillInstalled = Boolean(refreshedExtension);
+			const desiredStateReached =
+				input.action === "install"
+					? stillInstalled
+					: input.action === "uninstall"
+						? !stillInstalled
+						: Boolean(
+								refreshedExtension &&
+									refreshedExtension.version !== input.expectedVersion,
+							);
+			const providerStateChanged =
+				input.action === "install"
+					? stillInstalled
+					: !refreshedExtension ||
+						refreshedExtension.version !== target.version ||
+						refreshedExtension.enabled !== target.enabled;
+			if (result.code !== 0 && !desiredStateReached) {
+				throw new ExtensionMutationError(
+					`${failureMessage(input.action, result.code, result.output)} ${recoveryMessage(providerStateChanged)}`,
+					providerStateChanged,
+				);
+			}
+			if (
+				(input.action === "install" && !stillInstalled) ||
+				(input.action === "uninstall" && stillInstalled) ||
+				(input.action === "update" && !stillInstalled)
+			) {
+				throw new ExtensionMutationError(
+					`${
+						input.action === "install"
+							? "The provider command completed, but the extension was not installed"
+							: input.action === "update"
+								? "The provider command completed, but the extension disappeared"
+								: "The provider command completed, but the extension is still installed"
+					}. ${recoveryMessage(providerStateChanged)}`,
+					providerStateChanged,
+				);
+			}
 
-		return {
-			action: input.action,
-			providerId: target.providerId,
-			subject: target.pluginId,
-			pluginId: target.pluginId,
-			environmentLabel: target.environmentLabel,
-			output: result.output.trim(),
-			...(result.code !== 0
-				? { warning: providerErrorWarning(`plugin ${input.action}`) }
-				: {}),
-		};
-	} finally {
-		activeMutations.delete(mutationKey);
-	}
+			return {
+				action: input.action,
+				providerId: target.providerId,
+				subject: target.pluginId,
+				pluginId: target.pluginId,
+				environmentLabel: target.environmentLabel,
+				output: result.output.trim(),
+				...(result.code !== 0
+					? { warning: providerErrorWarning(`plugin ${input.action}`) }
+					: {}),
+			};
+		},
+	);
 }

@@ -108,6 +108,67 @@ function PackageFilesReview({ files }: { files: ExtensionSkillFile[] }) {
 	);
 }
 
+/**
+ * Shared tail of both extension card variants: package-file review, trust
+ * signals rolled up from declared capabilities, and the raw manifest. The
+ * two callers differ only in their data source and a couple of labels.
+ */
+function TrustReviewAndManifest({
+	skillFiles,
+	trustSignals,
+	trustFallbackMessage,
+	manifestSummary,
+	manifestPath,
+	manifestText,
+}: {
+	skillFiles: ExtensionSkillFile[];
+	trustSignals: string[];
+	trustFallbackMessage: string;
+	manifestSummary: string;
+	manifestPath: string;
+	manifestText: string;
+}) {
+	return (
+		<>
+			<PackageFilesReview files={skillFiles} />
+			<div>
+				<div className="text-[9px] tracking-widest uppercase text-muted-foreground">
+					Trust review
+				</div>
+				{trustSignals.length > 0 ? (
+					<div className="mt-2 flex flex-wrap gap-1.5">
+						{[...new Set(trustSignals)].map((signal) => (
+							<span
+								key={signal}
+								className="border border-amber-500/30 bg-amber-500/5 px-2 py-1 text-[10px] text-[var(--status-warning)]"
+							>
+								{signal}
+							</span>
+						))}
+					</div>
+				) : (
+					<p className="mt-1 text-xs text-muted-foreground">
+						{trustFallbackMessage}
+					</p>
+				)}
+			</div>
+			<details className="border border-border/70 bg-secondary/30">
+				<summary className="cursor-pointer px-3 py-2 text-[10px] tracking-widest uppercase">
+					{manifestSummary}
+				</summary>
+				<div className="border-t border-border/70">
+					<div className="px-3 py-2 text-[10px] font-mono text-muted-foreground break-all">
+						{manifestPath}
+					</div>
+					<pre className="max-h-96 overflow-auto border-t border-border/70 p-3 text-[10px] leading-relaxed whitespace-pre-wrap break-words">
+						{manifestText}
+					</pre>
+				</div>
+			</details>
+		</>
+	);
+}
+
 function MarketplaceCard({
 	marketplace,
 	mutating,
@@ -208,6 +269,43 @@ function MarketplaceCard({
 					</div>
 				)}
 			</div>
+		</div>
+	);
+}
+
+/** Grid of marketplace sources for one provider environment, shared by the flat and grouped-by-environment marketplace views. */
+function MarketplaceGrid({
+	marketplaces,
+	mutatingId,
+	mutateExtension,
+}: {
+	marketplaces: ProviderMarketplace[];
+	mutatingId: string | null;
+	mutateExtension: (input: ExtensionMutationInput) => void | Promise<void>;
+}) {
+	return (
+		<div className="grid gap-2 sm:grid-cols-2">
+			{marketplaces.map((marketplace) => (
+				<MarketplaceCard
+					key={marketplace.id}
+					marketplace={marketplace}
+					mutating={mutatingId === marketplace.id}
+					onUpgrade={() =>
+						void mutateExtension({
+							action: "upgrade_marketplace",
+							id: marketplace.id,
+							expectedSource: marketplace.source,
+						})
+					}
+					onRemove={() =>
+						void mutateExtension({
+							action: "remove_marketplace",
+							id: marketplace.id,
+							expectedSource: marketplace.source,
+						})
+					}
+				/>
+			))}
 		</div>
 	);
 }
@@ -404,44 +502,18 @@ function AvailableExtensionCard({
 							</div>
 						</div>
 					)}
-					<PackageFilesReview files={review.skillFiles} />
-					<div>
-						<div className="text-[9px] tracking-widest uppercase text-muted-foreground">
-							Trust review
-						</div>
-						{trustSignals.length > 0 ? (
-							<div className="mt-2 flex flex-wrap gap-1.5">
-								{[...new Set(trustSignals)].map((signal) => (
-									<span
-										key={signal}
-										className="border border-amber-500/30 bg-amber-500/5 px-2 py-1 text-[10px] text-[var(--status-warning)]"
-									>
-										{signal}
-									</span>
-								))}
-							</div>
-						) : (
-							<p className="mt-1 text-xs text-muted-foreground">
-								The reviewed data does not declare additional trust
-								capabilities.
-							</p>
-						)}
-					</div>
-					<details className="border border-border/70 bg-secondary/30">
-						<summary className="cursor-pointer px-3 py-2 text-[10px] tracking-widest uppercase">
-							{review.reviewLevel === "package"
+					<TrustReviewAndManifest
+						skillFiles={review.skillFiles}
+						trustSignals={trustSignals}
+						trustFallbackMessage="The reviewed data does not declare additional trust capabilities."
+						manifestSummary={
+							review.reviewLevel === "package"
 								? "Complete manifest"
-								: "Marketplace entry"}
-						</summary>
-						<div className="border-t border-border/70">
-							<div className="px-3 py-2 text-[10px] font-mono text-muted-foreground break-all">
-								{review.manifestPath}
-							</div>
-							<pre className="max-h-96 overflow-auto border-t border-border/70 p-3 text-[10px] leading-relaxed whitespace-pre-wrap break-words">
-								{review.manifestText}
-							</pre>
-						</div>
-					</details>
+								: "Marketplace entry"
+						}
+						manifestPath={review.manifestPath}
+						manifestText={review.manifestText}
+					/>
 				</div>
 			)}
 		</div>
@@ -634,41 +706,14 @@ function ExtensionCard({
 						{reviewError}
 					</div>
 				)}
-				<PackageFilesReview files={review?.skillFiles ?? []} />
-				<div>
-					<div className="text-[9px] tracking-widest uppercase text-muted-foreground">
-						Trust review
-					</div>
-					{trustSignals.length > 0 ? (
-						<div className="mt-2 flex flex-wrap gap-1.5">
-							{[...new Set(trustSignals)].map((signal) => (
-								<span
-									key={signal}
-									className="border border-amber-500/30 bg-amber-500/5 px-2 py-1 text-[10px] text-[var(--status-warning)]"
-								>
-									{signal}
-								</span>
-							))}
-						</div>
-					) : (
-						<p className="mt-1 text-xs text-muted-foreground">
-							The manifest does not declare additional trust capabilities.
-						</p>
-					)}
-				</div>
-				<details className="border border-border/70 bg-secondary/30">
-					<summary className="cursor-pointer px-3 py-2 text-[10px] tracking-widest uppercase">
-						Complete manifest
-					</summary>
-					<div className="border-t border-border/70">
-						<div className="px-3 py-2 text-[10px] font-mono text-muted-foreground break-all">
-							{extension.manifestPath}
-						</div>
-						<pre className="max-h-96 overflow-auto border-t border-border/70 p-3 text-[10px] leading-relaxed whitespace-pre-wrap break-words">
-							{extension.manifestText || "Manifest unavailable"}
-						</pre>
-					</div>
-				</details>
+				<TrustReviewAndManifest
+					skillFiles={review?.skillFiles ?? []}
+					trustSignals={trustSignals}
+					trustFallbackMessage="The manifest does not declare additional trust capabilities."
+					manifestSummary="Complete manifest"
+					manifestPath={extension.manifestPath}
+					manifestText={extension.manifestText || "Manifest unavailable"}
+				/>
 				<div className="flex flex-wrap items-center justify-between gap-3 border border-destructive/20 bg-destructive/5 px-3 py-2">
 					<div className="text-xs text-muted-foreground">
 						Remove from {extension.providerLabel} in{" "}
@@ -1156,29 +1201,11 @@ export function ExtensionsSection() {
 							</span>
 						</div>
 						{providerMarketplaces.length > 0 ? (
-							<div className="grid gap-2 sm:grid-cols-2">
-								{providerMarketplaces.map((marketplace) => (
-									<MarketplaceCard
-										key={marketplace.id}
-										marketplace={marketplace}
-										mutating={mutatingId === marketplace.id}
-										onUpgrade={() =>
-											void mutateExtension({
-												action: "upgrade_marketplace",
-												id: marketplace.id,
-												expectedSource: marketplace.source,
-											})
-										}
-										onRemove={() =>
-											void mutateExtension({
-												action: "remove_marketplace",
-												id: marketplace.id,
-												expectedSource: marketplace.source,
-											})
-										}
-									/>
-								))}
-							</div>
+							<MarketplaceGrid
+								marketplaces={providerMarketplaces}
+								mutatingId={mutatingId}
+								mutateExtension={mutateExtension}
+							/>
 						) : (
 							<p className="text-xs text-muted-foreground">
 								No marketplace sources are configured for this provider.
@@ -1247,29 +1274,11 @@ export function ExtensionsSection() {
 									</span>
 								</div>
 								{marketplaces.length > 0 && (
-									<div className="grid gap-2 sm:grid-cols-2">
-										{marketplaces.map((marketplace) => (
-											<MarketplaceCard
-												key={marketplace.id}
-												marketplace={marketplace}
-												mutating={mutatingId === marketplace.id}
-												onUpgrade={() =>
-													void mutateExtension({
-														action: "upgrade_marketplace",
-														id: marketplace.id,
-														expectedSource: marketplace.source,
-													})
-												}
-												onRemove={() =>
-													void mutateExtension({
-														action: "remove_marketplace",
-														id: marketplace.id,
-														expectedSource: marketplace.source,
-													})
-												}
-											/>
-										))}
-									</div>
+									<MarketplaceGrid
+										marketplaces={marketplaces}
+										mutatingId={mutatingId}
+										mutateExtension={mutateExtension}
+									/>
 								)}
 								<div className="space-y-2">
 									{extensions.map((extension) => (

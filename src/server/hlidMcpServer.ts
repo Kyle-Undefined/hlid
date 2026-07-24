@@ -1,5 +1,3 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
 	executeHlidAgentTool,
 	HLID_AGENT_NAMESPACE,
@@ -9,8 +7,8 @@ import {
 	hlidAgentSchemas,
 } from "./hlidAgentTools";
 import {
-	closeInternalMcpOnInputEnd,
 	internalMcpProcessCommand,
+	runInternalMcpToolServer,
 } from "./obsidianMcpServer";
 
 export const INTERNAL_HLID_MCP_FLAG = "--internal-hlid-mcp";
@@ -40,57 +38,13 @@ function processContext(): HlidAgentToolContext {
 }
 
 export async function runHlidMcpServer(): Promise<void> {
-	const server = new McpServer(
-		{ name: HLID_AGENT_NAMESPACE, version: "1" },
-		{ instructions: HLID_AGENT_NAMESPACE_DESCRIPTION },
-	);
 	const context = processContext();
-	for (const spec of HLID_AGENT_TOOL_SPECS) {
-		server.registerTool(
-			spec.name,
-			{
-				description: spec.description,
-				// biome-ignore lint/suspicious/noExplicitAny: registerTool accepts each tool's Zod shape, while the loop widens them to a union.
-				inputSchema: hlidAgentSchemas[spec.name].shape as any,
-				annotations: {
-					readOnlyHint: spec.readOnly,
-					destructiveHint: false,
-					idempotentHint: false,
-				},
-			},
-			async (input: unknown) => {
-				try {
-					return {
-						content: [
-							{
-								type: "text" as const,
-								text: await executeHlidAgentTool(spec.name, input, context),
-							},
-						],
-					};
-				} catch (error) {
-					return {
-						isError: true,
-						content: [
-							{
-								type: "text" as const,
-								text: error instanceof Error ? error.message : String(error),
-							},
-						],
-					};
-				}
-			},
-		);
-	}
-	const transport = new StdioServerTransport();
-	const closed = new Promise<void>((resolve) => {
-		server.server.onclose = resolve;
+	await runInternalMcpToolServer({
+		namespace: HLID_AGENT_NAMESPACE,
+		description: HLID_AGENT_NAMESPACE_DESCRIPTION,
+		specs: HLID_AGENT_TOOL_SPECS,
+		schemaFor: (spec) => hlidAgentSchemas[spec.name].shape,
+		idempotentHint: () => false,
+		execute: (spec, input) => executeHlidAgentTool(spec.name, input, context),
 	});
-	const stopWatchingInput = closeInternalMcpOnInputEnd(transport);
-	try {
-		await server.connect(transport);
-		await closed;
-	} finally {
-		stopWatchingInput();
-	}
 }
