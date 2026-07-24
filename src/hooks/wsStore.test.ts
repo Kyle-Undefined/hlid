@@ -200,6 +200,7 @@ describe("wsStore state management", () => {
 				query_output_tokens: 30,
 				query_cache_read_tokens: 40,
 				query_cache_creation_tokens: 0,
+				query_estimated_cost: 0.004,
 				tokens_in_context: 120,
 				context_window: 258_400,
 			});
@@ -213,6 +214,7 @@ describe("wsStore state management", () => {
 				query_output_tokens: 70,
 				query_cache_read_tokens: 180,
 				query_cache_creation_tokens: 0,
+				query_estimated_cost: 0.012,
 				tokens_in_context: 180,
 				context_window: 258_400,
 			});
@@ -222,6 +224,7 @@ describe("wsStore state management", () => {
 				pending_output_tokens: 70,
 				pending_cache_read_tokens: 180,
 				pending_cache_creation_tokens: 0,
+				pending_estimated_cost: 0.012,
 				queries: 0,
 			});
 		});
@@ -237,6 +240,7 @@ describe("wsStore state management", () => {
 				query_output_tokens: 70,
 				query_cache_read_tokens: 180,
 				query_cache_creation_tokens: 0,
+				query_estimated_cost: 0.01,
 				tokens_in_context: 300,
 				context_window: 258_400,
 			});
@@ -264,6 +268,7 @@ describe("wsStore state management", () => {
 				pending_output_tokens: 0,
 				pending_cache_read_tokens: 0,
 				pending_cache_creation_tokens: 0,
+				pending_estimated_cost: 0,
 				queries: 1,
 			});
 		});

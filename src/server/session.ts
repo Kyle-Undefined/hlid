@@ -11,6 +11,7 @@ import {
 	toProviderRuntimePath,
 } from "../lib/paths";
 import { isCliProxyProvider } from "../lib/providerIds";
+import { estimateProviderCost } from "../lib/providerPricing";
 import {
 	isClaudeRuntimeProvider,
 	isCodexRuntimeProvider,
@@ -2510,6 +2511,7 @@ export class SessionManager {
 		event: Extract<AgentEvent, { type: "usage" }>,
 		turn: TurnState,
 		emit: (msg: ServerMessage) => void,
+		provider: AgentProvider,
 	): void {
 		const cacheRead = event.cacheReadTokens ?? 0;
 		const cacheCreation = event.cacheCreationTokens ?? 0;
@@ -2543,6 +2545,11 @@ export class SessionManager {
 			query_output_tokens: turn.liveQueryUsage.outputTokens,
 			query_cache_read_tokens: turn.liveQueryUsage.cacheReadTokens,
 			query_cache_creation_tokens: turn.liveQueryUsage.cacheCreationTokens,
+			query_estimated_cost: estimateProviderCost(
+				provider.providerId,
+				event.model ?? this.model,
+				turn.liveQueryUsage,
+			),
 			tokens_in_context: tokensInContext,
 			actualModel: event.model,
 			context_window: turn.lastKnownContextWindow ?? DEFAULT_CONTEXT_WINDOW,
@@ -2590,7 +2597,7 @@ export class SessionManager {
 				await this.handleToolResult(event, turn, sessionId, emit);
 				break;
 			case "usage":
-				this.handleUsage(event, turn, emit);
+				this.handleUsage(event, turn, emit, provider);
 				break;
 			case "summary":
 				turn.sdkSummary = event.text;

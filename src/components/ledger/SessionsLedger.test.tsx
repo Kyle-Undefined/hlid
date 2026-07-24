@@ -61,6 +61,7 @@ const liveStats: LiveStats = {
 	pending_output_tokens: 0,
 	pending_cache_read_tokens: 0,
 	pending_cache_creation_tokens: 0,
+	pending_estimated_cost: 0,
 	context_window: null,
 	max_output_tokens: null,
 	last_context_used: null,
@@ -144,8 +145,9 @@ describe("sessionDisplayUsage", () => {
 				pending_output_tokens: 30,
 				pending_cache_read_tokens: 40,
 				pending_cache_creation_tokens: 5,
+				pending_estimated_cost: 0.02,
 			}),
-		).toEqual({ cost: 1.25, tokens: 345 });
+		).toEqual({ cost: 1.27, tokens: 345 });
 	});
 
 	it("adds the in-flight query snapshot to persisted whole-session totals", () => {

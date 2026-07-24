@@ -1567,10 +1567,26 @@ describe("usage — getThirtyDayStats", () => {
 		expect(total).toBe(0);
 	});
 
+	it("reads the immutable query ledger instead of a drifted daily aggregate", async () => {
+		const db = freshDb();
+		await createSession("s1", "L", "m");
+		await recordQuery("s1", baseQuery());
+		db.run(
+			`UPDATE usage_daily SET queries = 99 WHERE date = DATE('now', 'localtime')`,
+		);
+
+		const { days, total } = await getThirtyDayStats();
+		expect(total).toBe(1);
+		expect(days.at(-1)?.count).toBe(1);
+	});
+
 	it("days array contains today's date", async () => {
+		const db = freshDb();
 		const { days } = await getThirtyDayStats();
-		const now = new Date();
-		const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+		const today =
+			db
+				.query<{ date: string }, []>(`SELECT DATE('now', 'localtime') AS date`)
+				.get()?.date ?? "";
 		expect(days[days.length - 1].date).toBe(today);
 	});
 });

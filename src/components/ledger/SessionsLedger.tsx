@@ -64,7 +64,10 @@ export function sessionDisplayUsage(
 			liveStats.pending_cache_creation_tokens
 		: 0;
 	return {
-		cost: (session.total_cost ?? 0) + (session.total_estimated_cost ?? 0),
+		cost:
+			(session.total_cost ?? 0) +
+			(session.total_estimated_cost ?? 0) +
+			(isActive ? (liveStats?.pending_estimated_cost ?? 0) : 0),
 		tokens:
 			(session.total_input_tokens ?? 0) +
 			(session.total_output_tokens ?? 0) +

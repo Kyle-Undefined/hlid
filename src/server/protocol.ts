@@ -150,6 +150,8 @@ export type UsageUpdateMessage = {
 	query_output_tokens: number;
 	query_cache_read_tokens: number;
 	query_cache_creation_tokens: number;
+	/** Hlid's current API-equivalent estimate for the active query. */
+	query_estimated_cost?: number | null;
 	tokens_in_context: number;
 	// The model the CLI actually used for this inference. May differ from
 	// the configured vault model if an agent's CLAUDE.md frontmatter, slash

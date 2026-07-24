@@ -13,7 +13,17 @@ export function DashboardHeader({
 	agg: AggStats;
 	isConnected: boolean;
 }) {
-	const idle = stats.queries === 0;
+	const pendingTokens =
+		(stats.pending_input_tokens ?? 0) +
+		(stats.pending_output_tokens ?? 0) +
+		(stats.pending_cache_read_tokens ?? 0) +
+		(stats.pending_cache_creation_tokens ?? 0);
+	const idle = stats.queries === 0 && pendingTokens === 0;
+	const sessionCost = {
+		...stats,
+		estimated_cost:
+			(stats.estimated_cost ?? 0) + (stats.pending_estimated_cost ?? 0),
+	};
 
 	return (
 		<div className="border-b border-border shrink-0">
@@ -27,12 +37,16 @@ export function DashboardHeader({
 					<div
 						className={`text-lg md:text-2xl font-bold tabular-nums leading-none ${idle && !isConnected ? "text-muted-foreground/20" : "text-[var(--data)]"}`}
 					>
-						{isConnected || totalDisplayCost(stats) > 0
-							? formatDisplayCost(stats)
+						{isConnected || totalDisplayCost(sessionCost) > 0
+							? formatDisplayCost(sessionCost)
 							: "--"}
 					</div>
 					<div className="mt-1 md:mt-1.5 text-[9px] tracking-wider text-muted-foreground/40">
-						{idle ? "idle" : `${stats.queries}q · ${fmtMs(stats.duration_ms)}`}
+						{idle
+							? "idle"
+							: stats.queries > 0
+								? `${stats.queries}q · ${fmtMs(stats.duration_ms)}`
+								: "active"}
 					</div>
 				</div>
 

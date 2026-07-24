@@ -39,6 +39,28 @@ describe("DashboardHeader", () => {
 		expect(screen.getByText("3q · 4.0s")).toBeTruthy();
 	});
 
+	it("shows an in-flight estimate as active before the first query completes", () => {
+		render(
+			<DashboardHeader
+				stats={makeStats({
+					cost: 0,
+					estimated_cost: 0,
+					queries: 0,
+					duration_ms: 0,
+					pending_input_tokens: 100,
+					pending_output_tokens: 20,
+					pending_cache_read_tokens: 300,
+					pending_cache_creation_tokens: 0,
+					pending_estimated_cost: 0.0123,
+				})}
+				agg={makeAgg()}
+				isConnected
+			/>,
+		);
+		expect(screen.getByText("~$0.0123")).toBeTruthy();
+		expect(screen.getByText("active")).toBeTruthy();
+	});
+
 	it("shows -- and idle when disconnected with no session cost", () => {
 		render(
 			<DashboardHeader

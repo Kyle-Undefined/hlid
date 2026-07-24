@@ -376,27 +376,30 @@ export async function getProviderUsage(
 
 export async function getThirtyDayStats(): Promise<ThirtyDayStats> {
 	const db = await getDb();
-	const rows = db
+	const days = db
 		.query<{ date: string; count: number }, []>(`
-    SELECT date, queries as count
-    FROM usage_daily
-    WHERE date >= DATE('now', 'localtime', '-29 days')
-    ORDER BY date ASC
+    WITH RECURSIVE days(date) AS (
+      SELECT DATE('now', 'localtime', '-29 days')
+      UNION ALL
+      SELECT DATE(date, '+1 day')
+      FROM days
+      WHERE date < DATE('now', 'localtime')
+    ),
+    counts AS (
+      SELECT DATE(timestamp, 'unixepoch', 'localtime') AS date, COUNT(*) AS count
+      FROM usage_queries
+      WHERE timestamp >= unixepoch(
+        'now', 'localtime', 'start of day', '-29 days', 'utc'
+      )
+      GROUP BY date
+    )
+    SELECT days.date, COALESCE(counts.count, 0) AS count
+    FROM days
+    LEFT JOIN counts USING (date)
+    ORDER BY days.date ASC
   `)
 		.all();
-
-	const map = new Map(rows.map((r) => [r.date, r.count]));
-	const total = rows.reduce((a, r) => a + r.count, 0);
-	const days: { date: string; count: number }[] = [];
-	for (let i = 29; i >= 0; i--) {
-		const d = new Date();
-		d.setDate(d.getDate() - i);
-		const y = d.getFullYear();
-		const mo = String(d.getMonth() + 1).padStart(2, "0");
-		const dy = String(d.getDate()).padStart(2, "0");
-		const date = `${y}-${mo}-${dy}`;
-		days.push({ date, count: map.get(date) ?? 0 });
-	}
+	const total = days.reduce((sum, day) => sum + day.count, 0);
 	return { days, total };
 }
 

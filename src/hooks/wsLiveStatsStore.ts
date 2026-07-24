@@ -18,6 +18,7 @@ export type LiveStats = {
 	pending_output_tokens: number;
 	pending_cache_read_tokens: number;
 	pending_cache_creation_tokens: number;
+	pending_estimated_cost?: number;
 	context_window: number | null;
 	max_output_tokens: number | null;
 	last_context_used: number | null;
@@ -39,6 +40,7 @@ export const EMPTY_STATS: LiveStats = {
 	pending_output_tokens: 0,
 	pending_cache_read_tokens: 0,
 	pending_cache_creation_tokens: 0,
+	pending_estimated_cost: 0,
 	context_window: null,
 	max_output_tokens: null,
 	last_context_used: null,
@@ -131,6 +133,7 @@ export function applyUsageUpdate(
 		pending_output_tokens: msg.query_output_tokens,
 		pending_cache_read_tokens: msg.query_cache_read_tokens,
 		pending_cache_creation_tokens: msg.query_cache_creation_tokens,
+		pending_estimated_cost: msg.query_estimated_cost ?? 0,
 		last_context_used: msg.tokens_in_context,
 		last_output_tokens: msg.output_tokens,
 		context_window: msg.context_window ?? liveStats.context_window,
@@ -157,7 +160,8 @@ export function clearPendingUsage(): void {
 		liveStats.pending_input_tokens === 0 &&
 		liveStats.pending_output_tokens === 0 &&
 		liveStats.pending_cache_read_tokens === 0 &&
-		liveStats.pending_cache_creation_tokens === 0
+		liveStats.pending_cache_creation_tokens === 0 &&
+		(liveStats.pending_estimated_cost ?? 0) === 0
 	)
 		return;
 	liveStats = {
@@ -166,6 +170,7 @@ export function clearPendingUsage(): void {
 		pending_output_tokens: 0,
 		pending_cache_read_tokens: 0,
 		pending_cache_creation_tokens: 0,
+		pending_estimated_cost: 0,
 	};
 	persistStats(liveStats);
 	notifySubscribers();
@@ -191,6 +196,7 @@ export function applyDone(msg: Extract<ServerMessage, { type: "done" }>): void {
 		pending_output_tokens: 0,
 		pending_cache_read_tokens: 0,
 		pending_cache_creation_tokens: 0,
+		pending_estimated_cost: 0,
 		context_window: msg.context_window ?? liveStats.context_window,
 		max_output_tokens: msg.max_output_tokens ?? liveStats.max_output_tokens,
 		last_context_used:

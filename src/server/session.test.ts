@@ -5689,13 +5689,14 @@ describe("SessionManager — Slice B AgentSession reuse", () => {
 describe("SessionManager — exact context usage", () => {
 	it("prefers provider-reported context occupancy over turn input estimates", async () => {
 		const provider: AgentProvider = {
-			providerId: "acp:test",
+			providerId: "codex",
 			query(): AgentSession {
 				const gen = (async function* (): AsyncGenerator<AgentEvent> {
 					yield {
 						type: "usage",
-						inputTokens: 0,
-						outputTokens: 0,
+						inputTokens: 100,
+						outputTokens: 20,
+						model: "gpt-5.6-terra",
 						contextTokens: 1_234,
 						contextWindow: 8_192,
 					};
@@ -5724,10 +5725,11 @@ describe("SessionManager — exact context usage", () => {
 		expect(emitted).toContainEqual(
 			expect.objectContaining({
 				type: "usage_update",
-				query_input_tokens: 0,
-				query_output_tokens: 0,
+				query_input_tokens: 100,
+				query_output_tokens: 20,
 				query_cache_read_tokens: 0,
 				query_cache_creation_tokens: 0,
+				query_estimated_cost: expect.any(Number),
 				tokens_in_context: 1_234,
 				context_window: 8_192,
 			}),

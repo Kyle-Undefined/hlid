@@ -279,6 +279,7 @@ describe("pending interaction status", () => {
 			query_output_tokens: 5,
 			query_cache_read_tokens: 10,
 			query_cache_creation_tokens: 0,
+			query_estimated_cost: 0.003,
 			tokens_in_context: 30,
 			context_window: 200_000,
 		});
