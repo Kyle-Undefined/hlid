@@ -75,6 +75,32 @@ describe("wsStore — Slice A: immediate-send drain", () => {
 		});
 	});
 
+	it("preserves multiple workspace revisions through send and browser reload", () => {
+		const workspaceReferences = [
+			{ relativePath: "src/app.ts", sha256: "a".repeat(64) },
+			{ relativePath: "screens/pixel.png", sha256: "b".repeat(64) },
+		];
+		wsStore.enqueueChat({
+			id: "workspace-1",
+			text: "compare these",
+			session_id: "s1",
+			workspace_references: workspaceReferences,
+		});
+
+		const sent = currentWs.send.mock.calls
+			.map((call) => JSON.parse(call[0] as string))
+			.find((message) => message.type === "chat");
+		expect(sent.workspace_references).toEqual(workspaceReferences);
+		const persisted = localStorage.getItem("hlid:raven:chat-queue");
+
+		wsStore.__resetForTesting();
+		localStorage.setItem("hlid:raven:chat-queue", persisted ?? "[]");
+		wsStore.resetChatQueueForTesting(true);
+		expect(wsStore.getQueue()[0]?.workspace_references).toEqual(
+			workspaceReferences,
+		);
+	});
+
 	it("enqueueChat retains the item in the client queue after sending", () => {
 		wsStore.enqueueChat({ id: "m1", text: "hello", session_id: "s1" });
 		expect(wsStore.getQueue()).toHaveLength(1);

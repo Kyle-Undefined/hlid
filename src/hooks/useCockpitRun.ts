@@ -15,6 +15,7 @@ import { getCurrentSessionFn } from "#/lib/serverFns/sessions";
 import { getRecentSessionsFn } from "#/lib/serverFns/stats";
 import { resolveSessionId } from "#/lib/sessionRouting";
 import { SESSION_LABEL_LENGTH, uid } from "#/lib/utils";
+import type { WorkspaceReferenceRequest } from "#/lib/vaultReferences";
 import type { SessionStatusEntry } from "#/server/protocol";
 
 type Attachment = ReturnType<
@@ -81,6 +82,7 @@ type CockpitRunOptions = {
 	attachSessionIdRef: { current: string | null };
 	pendingAttachments: Attachment[];
 	vaultReferences: string[];
+	workspaceReferences: WorkspaceReferenceRequest[];
 	clearPendingAttachments: () => void;
 	clearVaultReferences: () => void;
 	selectedAgentPath: string;
@@ -185,6 +187,7 @@ function enqueueRun(
 		commandAction?: "review" | "computer-use" | "compact";
 		attachments: Attachment[];
 		vaultReferences: string[];
+		workspaceReferences: WorkspaceReferenceRequest[];
 		preserveComposer?: boolean;
 	},
 ): void {
@@ -198,6 +201,10 @@ function enqueueRun(
 		attachments: params.attachments.length > 0 ? params.attachments : undefined,
 		vault_references:
 			params.vaultReferences.length > 0 ? params.vaultReferences : undefined,
+		workspace_references:
+			params.workspaceReferences.length > 0
+				? params.workspaceReferences
+				: undefined,
 		plan_mode: options.planMode || undefined,
 		plan_html: (options.planMode && options.planHtml) || undefined,
 	});
@@ -214,6 +221,7 @@ function startRun(
 		commandAction?: "review" | "computer-use" | "compact";
 		attachments: Attachment[];
 		vaultReferences: string[];
+		workspaceReferences: WorkspaceReferenceRequest[];
 		preserveComposer?: boolean;
 	},
 ): void {
@@ -228,6 +236,10 @@ function startRun(
 		attachments: params.attachments.length > 0 ? params.attachments : undefined,
 		vault_references:
 			params.vaultReferences.length > 0 ? params.vaultReferences : undefined,
+		workspace_references:
+			params.workspaceReferences.length > 0
+				? params.workspaceReferences
+				: undefined,
 		plan_mode: options.planMode || undefined,
 		plan_html: (options.planMode && options.planHtml) || undefined,
 	});
@@ -236,6 +248,7 @@ function startRun(
 			params.text ||
 			params.attachments[0]?.filename ||
 			params.vaultReferences[0] ||
+			params.workspaceReferences[0]?.relativePath ||
 			"vault reference";
 		options.setRecentRuns((runs) =>
 			prependPendingRun(runs, {
@@ -284,7 +297,8 @@ export function useCockpitRun(options: CockpitRunOptions) {
 				(voiceTurn
 					? overrideAttachments.length === 0
 					: options.pendingAttachments.length === 0 &&
-						options.vaultReferences.length === 0)) ||
+						options.vaultReferences.length === 0 &&
+						options.workspaceReferences.length === 0)) ||
 			options.wsStatus !== "connected"
 		)
 			return;
@@ -303,6 +317,7 @@ export function useCockpitRun(options: CockpitRunOptions) {
 			? overrideAttachments
 			: options.pendingAttachments;
 		const vaultReferences = voiceTurn ? [] : options.vaultReferences;
+		const workspaceReferences = voiceTurn ? [] : options.workspaceReferences;
 		if (!voiceTurn) options.clearPendingAttachments();
 		const params = {
 			sessionId,
@@ -311,6 +326,7 @@ export function useCockpitRun(options: CockpitRunOptions) {
 			commandAction,
 			attachments,
 			vaultReferences,
+			workspaceReferences,
 			preserveComposer: voiceTurn,
 		};
 		if (

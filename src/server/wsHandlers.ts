@@ -829,6 +829,9 @@ function broadcastUserMessage(
 		...(msg.vault_references !== undefined
 			? { vault_references: msg.vault_references }
 			: {}),
+		...(msg.workspace_references !== undefined
+			? { workspace_references: msg.workspace_references }
+			: {}),
 	});
 	for (const client of wsState.clients) {
 		if (client === ws) continue;
@@ -888,16 +891,29 @@ async function runChatQuery(
 			msg.plan_mode,
 			msg.plan_html,
 		] as Parameters<typeof entry.manager.runQuery>;
-		if (msg.vault_references?.length || msg.command_action || msg.goal) {
+		if (
+			msg.vault_references?.length ||
+			msg.command_action ||
+			msg.goal ||
+			msg.workspace_references?.length
+		) {
 			queryArgs.push(msg.command_action, msg.vault_references);
 		}
-		if (msg.goal) {
-			queryArgs.push(undefined, {
-				objective: msg.goal.objective,
-				...(msg.goal.token_budget !== undefined
-					? { tokenBudget: msg.goal.token_budget }
-					: {}),
-			});
+		if (msg.goal || msg.workspace_references?.length) {
+			queryArgs.push(
+				undefined,
+				msg.goal
+					? {
+							objective: msg.goal.objective,
+							...(msg.goal.token_budget !== undefined
+								? { tokenBudget: msg.goal.token_budget }
+								: {}),
+						}
+					: undefined,
+			);
+		}
+		if (msg.workspace_references?.length) {
+			queryArgs.push(msg.workspace_references);
 		}
 		const completion = entry.manager.runQuery(...queryArgs);
 		// Publish the queued content immediately. Other tabs/devices can now render

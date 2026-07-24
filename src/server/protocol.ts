@@ -1,3 +1,4 @@
+import type { WorkspaceReferenceRequest } from "../lib/vaultReferences";
 import type {
 	ProviderGoalStatus,
 	ProviderThreadGoal,
@@ -198,6 +199,7 @@ export type UserMessageEvent = {
 	session_id?: string;
 	attachments?: ChatAttachment[];
 	vault_references?: string[];
+	workspace_references?: WorkspaceReferenceRequest[];
 	/**
 	 * Slice C: turn id from the originating ClientChatMessage. Originating
 	 * client uses this to correlate UserMsg → chatQueue entry (so the queued
@@ -223,6 +225,7 @@ export type PendingTurnSnapshot = {
 	agent_cwd?: string;
 	attachments?: ChatAttachment[];
 	vault_references?: string[];
+	workspace_references?: WorkspaceReferenceRequest[];
 	plan_mode?: boolean;
 	plan_html?: boolean;
 	goal?: GoalStartRequest;
@@ -584,6 +587,8 @@ export type ClientChatMessage = {
 	attachments?: ChatAttachment[];
 	/** Vault-root-relative files selected with the @ picker. */
 	vault_references?: string[];
+	/** Exact active-workspace files selected after previewing this revision. */
+	workspace_references?: WorkspaceReferenceRequest[];
 	/**
 	 * Slice C: client-generated turn id. Server stores it on the QueuedTurn
 	 * and echoes it back in the matching `done` event so the client can

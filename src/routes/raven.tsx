@@ -38,6 +38,7 @@ import { RavenGoalStrip } from "#/components/chat/RavenGoalStrip";
 import {
 	VaultReferenceBadges,
 	VaultReferencePicker,
+	WorkspaceReferenceBadges,
 } from "#/components/chat/VaultReferencePicker";
 import { SlashPicker } from "#/components/cockpit/SlashPicker";
 import { McpIndicator } from "#/components/McpIndicator";
@@ -1163,6 +1164,7 @@ function useRavenSend(props: RavenActionProps) {
 	const {
 		referencePaths,
 		relicAttachments,
+		selectedWorkspace,
 		clear: clearVaultReferences,
 	} = props.vaultPicker;
 	const { atBottomRef } = props.viewport;
@@ -1284,6 +1286,7 @@ function useRavenSend(props: RavenActionProps) {
 					? voiceAttachments
 					: [...pendingAttachments, ...relicAttachments],
 				vaultReferences: voiceTurn ? [] : referencePaths,
+				workspaceReferences: voiceTurn ? [] : selectedWorkspace,
 				agentCwd: agentSkillContext ?? undefined,
 				agentContextAlreadySent: agentContextSentRef.current,
 				planMode,
@@ -1331,6 +1334,7 @@ function useRavenSend(props: RavenActionProps) {
 			pendingAttachments,
 			relicAttachments,
 			referencePaths,
+			selectedWorkspace,
 			agentSkillContext,
 			clearDraft,
 			clearPendingAttachments,
@@ -1921,7 +1925,9 @@ export function ChatPage() {
 				replace: true,
 			}),
 	});
-	const vaultPicker = useVaultReferencePicker(input, setInput);
+	const vaultPicker = useVaultReferencePicker(input, setInput, {
+		workspaceAgentCwd: agentSkillContext,
+	});
 	const upload = useFileUpload({ agentCwd: agentSkillContext, sessionId });
 	const { pendingAttachments, uploadingCount } = upload;
 	const [planMode, setPlanMode] = useState(false);
@@ -2063,7 +2069,8 @@ export function ChatPage() {
 		activeSkills,
 		pendingAttachmentCount:
 			pendingAttachments.length + vaultPicker.selectedRelics.length,
-		pendingVaultReferenceCount: vaultPicker.selected.length,
+		pendingVaultReferenceCount:
+			vaultPicker.selected.length + vaultPicker.selectedWorkspace.length,
 		uploadingCount,
 		wsStatus,
 		isRunning,
@@ -2925,6 +2932,10 @@ function ChatInputNotices({
 				references={vaultPicker.selected}
 				onRemove={vaultPicker.remove}
 			/>
+			<WorkspaceReferenceBadges
+				references={vaultPicker.selectedWorkspace}
+				onRemove={vaultPicker.removeWorkspace}
+			/>
 			{gitignoreHint && (
 				<div className="px-4 py-2 flex items-start gap-2 border-b border-border/40 bg-yellow-500/5">
 					<div className="flex-1 text-[10px] text-foreground/70 leading-relaxed">
@@ -3266,7 +3277,12 @@ function handleComposerKeyDown(
 	const activePicker = vaultPickerOpen ? vaultPicker : picker;
 	const submit = runComposerPickerAction(action, activePicker, () => {
 		if (vaultPickerOpen) {
-			vaultPicker.select(vaultPicker.items[vaultPicker.selectedIndex]);
+			if (vaultPicker.referencePreviewOpen) {
+				vaultPicker.confirmReferencePreview();
+			} else {
+				const reference = vaultPicker.items[vaultPicker.selectedIndex];
+				if (reference) vaultPicker.select(reference);
+			}
 			requestAnimationFrame(() => viewport.textareaRef.current?.focus());
 		} else {
 			handleSkillSelect(picker.items[picker.selectedIndex]);
@@ -3356,7 +3372,8 @@ function ChatTextarea(props: ChatComposerProps) {
 					wsStatus,
 					activeSkills,
 					props.vaultPicker.selected.length +
-						props.vaultPicker.selectedRelics.length,
+						props.vaultPicker.selectedRelics.length +
+						props.vaultPicker.selectedWorkspace.length,
 					isRunning,
 				)}
 				disabled={
@@ -3621,6 +3638,8 @@ function ChatComposer(props: ChatComposerProps) {
 			{vaultPicker.isOpen ? (
 				<VaultReferencePicker
 					rootLabel={vaultPicker.rootLabel}
+					workspaceRootLabel={vaultPicker.workspaceRootLabel}
+					workspaceEnvironmentLabel={vaultPicker.workspaceEnvironmentLabel}
 					query={vaultPicker.query}
 					items={vaultPicker.items}
 					selectedIndex={vaultPicker.selectedIndex}
@@ -3628,7 +3647,20 @@ function ChatComposer(props: ChatComposerProps) {
 					error={vaultPicker.error}
 					vaultTotal={vaultPicker.vaultTotal}
 					relicTotal={vaultPicker.relicTotal}
+					workspaceTotal={vaultPicker.workspaceTotal}
+					workspaceAvailable={vaultPicker.workspaceAvailable}
+					activeSource={vaultPicker.activeSource}
 					truncated={vaultPicker.truncated}
+					workspacePreview={vaultPicker.workspacePreview}
+					vaultPreview={vaultPicker.vaultPreview}
+					relicPreview={vaultPicker.relicPreview}
+					previewLoading={vaultPicker.previewLoading}
+					previewError={vaultPicker.previewError}
+					workspaceSelectionLoading={vaultPicker.workspaceSelectionLoading}
+					onSourceChange={vaultPicker.setActiveSource}
+					onPreviewReference={vaultPicker.previewReference}
+					onConfirmReference={vaultPicker.confirmReferencePreview}
+					onCancelReferencePreview={vaultPicker.cancelReferencePreview}
 					onSelect={(reference) => {
 						vaultPicker.select(reference);
 						requestAnimationFrame(() =>

@@ -33,6 +33,8 @@ function dispatchImmediateMessage(
 				text: formatVaultReferencedMessage(
 					msg.text,
 					msg.vault_references ?? [],
+					[],
+					msg.workspace_references ?? [],
 				),
 				...(msg.attachments ? { attachments: msg.attachments } : {}),
 			});

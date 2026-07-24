@@ -10,12 +10,17 @@ import {
 	toLogical,
 	toProviderRuntimePath,
 } from "../lib/paths";
+import type { WorkspaceReferenceRequest } from "../lib/vaultReferences";
 import { artifactsDirectory, managedSkillsDirectory } from "./libraryStore";
 import type { ChatAttachment } from "./protocol";
 import {
 	type ResolvedVaultReference,
 	resolveVaultReferences,
 } from "./vaultReferences";
+import {
+	type ResolvedWorkspaceReference,
+	resolveWorkspaceReferences,
+} from "./workspaceReferences";
 
 export type BuildPromptOptions = {
 	vaultPath: string;
@@ -34,6 +39,8 @@ export type BuildPromptOptions = {
 	attachments: ChatAttachment[] | undefined;
 	/** Vault-root-relative files selected by the user with the @ picker. */
 	vaultReferences?: string[];
+	/** Exact active-workspace files selected after previewing this revision. */
+	workspaceReferences?: WorkspaceReferenceRequest[];
 	/** Native Obsidian reader used to hydrate exact @ references without provider filesystem access. */
 	readVaultReference?: (relativePath: string) => Promise<string>;
 	/** Plan-mode HTML instructions (from buildPlanHtmlInstructions), appended after the user message. */
@@ -135,12 +142,14 @@ function assemblePrompt(
 	safeSkillContexts: string[],
 	safeAttachments: ChatAttachment[],
 	safeVaultReferences: NativeVaultReference[],
+	safeWorkspaceReferences: ResolvedWorkspaceReference[],
 	instructionFile: AgentInstructionFileName | null,
 ): {
 	prompt: string;
 	safeAttachments: ChatAttachment[];
 	resourcePaths: string[];
 	safeVaultReferences: ResolvedVaultReference[];
+	safeWorkspaceReferences: ResolvedWorkspaceReference[];
 } {
 	const { agentCwd, userMessage, planHtmlInstructions } = opts;
 	const runtimePath = (path: string) =>
@@ -184,6 +193,17 @@ function assemblePrompt(
 						)
 						.join("\n")}\n\n`
 			: "";
+	const workspaceReferenceBlock =
+		safeWorkspaceReferences.length > 0
+			? `Workspace references selected by the user:\n${safeWorkspaceReferences
+					.map(
+						(reference) =>
+							`- \`${runtimePath(reference.path)}\` (Workspace: ${reference.relativePath}, ${reference.mime}, ${reference.environmentLabel}, sha256:${reference.sha256})`,
+					)
+					.join(
+						"\n",
+					)}\nThese are exact file selections. Read them when relevant, but do not expand to imports, neighboring files, directories, Git history, or related notes unless the user asks.\n\n`
+			: "";
 	const personaBlock =
 		agentCwd && instructionFile
 			? `Please read \`${runtimePath(agentCwd)}/${instructionFile}\` and adopt its persona/instructions for this conversation.\n\n`
@@ -197,12 +217,12 @@ function assemblePrompt(
 			: safeSkillContexts.length > 1
 				? `Please read the following skill files and follow all of their instructions:\n${safeSkillContexts.map((skillContext) => `- \`${runtimePath(skillContext)}\``).join("\n")}\n\n`
 				: "";
-	const contextBlock = `${personaBlock}${attachmentBlock}${vaultContextBlock}${vaultReferenceBlock}${skillBlock}`;
+	const contextBlock = `${personaBlock}${attachmentBlock}${vaultContextBlock}${vaultReferenceBlock}${workspaceReferenceBlock}${skillBlock}`;
 	const prompt = userMessage.startsWith("/")
 		? `${userMessage}\n\n${contextBlock}${planHtmlBlock}`
 		: skillBlock
 			? `${contextBlock}User: ${userMessage || "(no additional input)"}${planHtmlBlock}`
-			: `${contextBlock}${userMessage || (safeVaultReferences.length > 0 ? "User: (no additional input)" : "")}${planHtmlBlock}`;
+			: `${contextBlock}${userMessage || (safeVaultReferences.length > 0 || safeWorkspaceReferences.length > 0 ? "User: (no additional input)" : "")}${planHtmlBlock}`;
 	return {
 		prompt,
 		safeAttachments,
@@ -212,8 +232,10 @@ function assemblePrompt(
 			...(opts.readVaultReference
 				? []
 				: safeVaultReferences.map((item) => item.path)),
+			...safeWorkspaceReferences.map((item) => item.path),
 		],
 		safeVaultReferences,
+		safeWorkspaceReferences,
 	};
 }
 
@@ -223,6 +245,7 @@ export async function buildPromptAsync(opts: BuildPromptOptions): Promise<{
 	safeAttachments: ChatAttachment[];
 	resourcePaths: string[];
 	safeVaultReferences: ResolvedVaultReference[];
+	safeWorkspaceReferences: ResolvedWorkspaceReference[];
 }> {
 	const vaultRoot = resolve(opts.vaultPath);
 	const vaultRootReal = await realpath(vaultRoot).catch(() => vaultRoot);
@@ -279,6 +302,12 @@ export async function buildPromptAsync(opts: BuildPromptOptions): Promise<{
 		safeVaultReferences,
 		opts.readVaultReference,
 	);
+	const safeWorkspaceReferences = await resolveWorkspaceReferences({
+		allowedWorkspaceRoots: [opts.vaultPath, ...opts.allowedAgentRealPaths],
+		agentCwd: opts.agentCwd,
+		runtimeCwd: opts.runtimeCwd,
+		references: opts.workspaceReferences,
+	});
 	const instructionFile =
 		opts.agentMode === "context" &&
 		opts.agentCwd &&
@@ -290,6 +319,7 @@ export async function buildPromptAsync(opts: BuildPromptOptions): Promise<{
 		safeSkillContexts,
 		safeAttachments,
 		hydratedVaultReferences,
+		safeWorkspaceReferences,
 		instructionFile,
 	);
 }

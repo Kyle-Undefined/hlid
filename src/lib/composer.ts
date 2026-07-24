@@ -1,7 +1,10 @@
 import type { QueuedChatMessage } from "#/hooks/wsChatQueueStore";
 import type { ChatAttachment, ClientChatMessage } from "#/server/protocol";
 import type { CommandAction } from "./commands";
-import { formatVaultReferencedMessage } from "./vaultReferences";
+import {
+	formatVaultReferencedMessage,
+	type WorkspaceReferenceSelection,
+} from "./vaultReferences";
 
 export type ComposerKeyAction =
 	| "picker-next"
@@ -149,6 +152,7 @@ export function prepareChatSubmission(input: {
 	commandAction?: Exclude<CommandAction, "goal" | "mcp" | "rename" | "archive">;
 	attachments: ChatAttachment[];
 	vaultReferences?: string[];
+	workspaceReferences?: WorkspaceReferenceSelection[];
 	agentCwd?: string;
 	agentContextAlreadySent: boolean;
 	planMode: boolean;
@@ -162,7 +166,8 @@ export function prepareChatSubmission(input: {
 	if (
 		!input.text &&
 		input.attachments.length === 0 &&
-		(input.vaultReferences?.length ?? 0) === 0
+		(input.vaultReferences?.length ?? 0) === 0 &&
+		(input.workspaceReferences?.length ?? 0) === 0
 	)
 		return null;
 	const attachments =
@@ -179,6 +184,9 @@ export function prepareChatSubmission(input: {
 				command_action: input.commandAction,
 				attachments,
 				vault_references: input.vaultReferences,
+				workspace_references: input.workspaceReferences?.map(
+					({ relativePath, sha256 }) => ({ relativePath, sha256 }),
+				),
 				agent_cwd: input.agentCwd,
 				...sessionControls,
 				goal: input.goal,
@@ -197,6 +205,8 @@ export function prepareChatSubmission(input: {
 			text: formatVaultReferencedMessage(
 				input.text,
 				input.vaultReferences ?? [],
+				[],
+				input.workspaceReferences ?? [],
 			),
 			attachments: input.attachments,
 		},
@@ -212,6 +222,9 @@ export function prepareChatSubmission(input: {
 			command_action: input.commandAction,
 			attachments,
 			vault_references: input.vaultReferences,
+			workspace_references: input.workspaceReferences?.map(
+				({ relativePath, sha256 }) => ({ relativePath, sha256 }),
+			),
 			agent_cwd: agentCwd,
 			...sessionControls,
 			goal: input.goal,

@@ -150,6 +150,9 @@ function sendChatToServer(msg: QueuedChatMessage): boolean {
 		id: msg.id,
 		...(msg.attachments ? { attachments: msg.attachments } : {}),
 		...(msg.vault_references ? { vault_references: msg.vault_references } : {}),
+		...(msg.workspace_references
+			? { workspace_references: msg.workspace_references }
+			: {}),
 	};
 	for (const fn of messageSubs) fn(userEvent);
 	setPendingSessionToday(true);
@@ -171,6 +174,9 @@ function sendChatToServer(msg: QueuedChatMessage): boolean {
 	}
 	if (msg.vault_references && msg.vault_references.length > 0) {
 		payload.vault_references = msg.vault_references;
+	}
+	if (msg.workspace_references && msg.workspace_references.length > 0) {
+		payload.workspace_references = msg.workspace_references;
 	}
 	if (msg.plan_mode) payload.plan_mode = true;
 	if (msg.plan_html) payload.plan_html = true;
@@ -224,6 +230,9 @@ function consumeRunningQueuedUser(turnId: string | undefined): void {
 		...(queued.attachments ? { attachments: queued.attachments } : {}),
 		...(queued.vault_references
 			? { vault_references: queued.vault_references }
+			: {}),
+		...(queued.workspace_references
+			? { workspace_references: queued.workspace_references }
 			: {}),
 	};
 	for (const subscriber of messageSubs) subscriber(userEvent);

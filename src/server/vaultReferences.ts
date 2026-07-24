@@ -13,6 +13,7 @@ const INDEX_TTL_MS = 30_000;
 const MAX_INDEX_FILES = 20_000;
 const DEFAULT_RESULT_LIMIT = 48;
 const MAX_RESULT_LIMIT = 100;
+const MAX_PREVIEW_CHARS = 64 * 1024;
 const IGNORED_DIRECTORIES = new Set([
 	".git",
 	".obsidian",
@@ -214,6 +215,30 @@ export async function resolveVaultReferences(options: {
 	return resolved.filter(
 		(reference): reference is ResolvedVaultReference => reference !== null,
 	);
+}
+
+// fallow-ignore-next-line unused-export -- Loaded dynamically by the vault-reference server function to keep Node and Obsidian access out of the client bundle.
+export async function previewVaultReference(options: {
+	vaultPath: string;
+	relativePath: string;
+	read: (relativePath: string) => Promise<string>;
+}): Promise<import("#/lib/vaultReferences").VaultReferencePreview> {
+	const [resolved] = await resolveVaultReferences({
+		vaultPath: options.vaultPath,
+		references: [options.relativePath],
+	});
+	if (!resolved) throw new Error("The requested vault note was not found.");
+	const content = await options.read(resolved.relativePath);
+	return {
+		relativePath: resolved.relativePath,
+		name: basename(resolved.relativePath),
+		directory: portableRelativePath(
+			resolve(options.vaultPath),
+			resolve(resolved.path, ".."),
+		),
+		content: content.slice(0, MAX_PREVIEW_CHARS),
+		truncated: content.length > MAX_PREVIEW_CHARS,
+	};
 }
 
 // fallow-ignore-next-line unused-export -- test-only cache reset

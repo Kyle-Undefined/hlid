@@ -68,6 +68,7 @@ function runOptions(
 		attachSessionIdRef: { current: "attached-session" },
 		pendingAttachments: [],
 		vaultReferences: [],
+		workspaceReferences: [],
 		clearPendingAttachments: vi.fn(),
 		clearVaultReferences: vi.fn(),
 		selectedAgentPath: "/agent",
@@ -200,7 +201,10 @@ describe("cockpit run controller", () => {
 				state: "running",
 			},
 		];
-		const options = runOptions({ background: true });
+		const workspaceReferences = [
+			{ relativePath: "src/server/session.ts", sha256: "a".repeat(64) },
+		];
+		const options = runOptions({ background: true, workspaceReferences });
 
 		await useCockpitRun(options)();
 
@@ -208,6 +212,7 @@ describe("cockpit run controller", () => {
 			expect.objectContaining({
 				text: "ship the fix",
 				session_id: "active-session",
+				workspace_references: workspaceReferences,
 			}),
 		);
 		expect(options.send).not.toHaveBeenCalled();
@@ -306,6 +311,31 @@ describe("cockpit run controller", () => {
 				type: "chat",
 				text: "",
 				vault_references: ["Projects/Hlid.md", "Notes/Decision.md"],
+			}),
+		);
+		expect(options.clearVaultReferences).toHaveBeenCalledOnce();
+	});
+
+	it("starts a workspace-reference-only Watch run for the selected project", async () => {
+		const workspaceReferences = [
+			{ relativePath: "screens/pixel.png", sha256: "b".repeat(64) },
+			{ relativePath: "src/app.ts", sha256: "c".repeat(64) },
+		];
+		const options = runOptions({
+			prompt: "",
+			sameSession: false,
+			background: true,
+			workspaceReferences,
+		});
+
+		await useCockpitRun(options)();
+
+		expect(options.send).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "chat",
+				text: "",
+				agent_cwd: "/agent",
+				workspace_references: workspaceReferences,
 			}),
 		);
 		expect(options.clearVaultReferences).toHaveBeenCalledOnce();

@@ -100,6 +100,96 @@ describe("chat WebSocket runtime schema", () => {
 		).toBeNull();
 	});
 
+	it("accepts bounded hashed workspace references and rejects invalid revisions", () => {
+		const reference = {
+			relativePath: "src/server/session.ts",
+			sha256: "a".repeat(64),
+		};
+		const references = Array.from({ length: 8 }, (_, index) => ({
+			...reference,
+			relativePath: `src/file-${index}.ts`,
+		}));
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "chat",
+					text: "",
+					workspace_references: references,
+				}),
+			),
+		).toEqual({
+			type: "chat",
+			text: "",
+			workspace_references: references,
+		});
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "chat",
+					text: "",
+					workspace_references: [
+						...references,
+						{ ...reference, relativePath: "ninth.ts" },
+					],
+				}),
+			),
+		).toBeNull();
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "chat",
+					text: "",
+					workspace_references: [
+						{ relativePath: reference.relativePath, sha256: "not-a-hash" },
+					],
+				}),
+			),
+		).toBeNull();
+	});
+
+	it("caps mixed Vault, Workspace, and Relic references per turn", () => {
+		const workspaceReferences = Array.from({ length: 8 }, (_, index) => ({
+			relativePath: `src/file-${index}.ts`,
+			sha256: "a".repeat(64),
+		}));
+		const relic = {
+			id: "relic-1",
+			path: "/tmp/report.pdf",
+			filename: "report.pdf",
+			mime: "application/pdf",
+			kind: "retained",
+			reference: "relic",
+		};
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "chat",
+					text: "",
+					vault_references: Array.from(
+						{ length: 23 },
+						(_, index) => `Note-${index}.md`,
+					),
+					workspace_references: workspaceReferences,
+					attachments: [relic],
+				}),
+			),
+		).not.toBeNull();
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "chat",
+					text: "",
+					vault_references: Array.from(
+						{ length: 24 },
+						(_, index) => `Note-${index}.md`,
+					),
+					workspace_references: workspaceReferences,
+					attachments: [relic],
+				}),
+			),
+		).toBeNull();
+	});
+
 	it("accepts the computer-use capability action", () => {
 		expect(
 			parseClientMessage(

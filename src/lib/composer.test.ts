@@ -180,6 +180,41 @@ describe("chat submission policy", () => {
 		});
 	});
 
+	it("allows a workspace-reference-only submission with preview provenance", () => {
+		const workspaceReference = {
+			relativePath: "src/server/session.ts",
+			name: "session.ts",
+			directory: "src/server",
+			content: "export class Session {}",
+			sizeBytes: 23,
+			truncated: false,
+			sha256: "a".repeat(64),
+			environment: "wsl" as const,
+			environmentLabel: "WSL · Ubuntu",
+			previewKind: "text" as const,
+			mime: "text/plain",
+		};
+		const result = submission({
+			text: "",
+			workspaceReferences: [workspaceReference],
+		});
+		expect(result).toMatchObject({
+			kind: "immediate",
+			user: {
+				text: `Workspace references:\n- src/server/session.ts (WSL · Ubuntu, sha256:${"a".repeat(64)})`,
+			},
+			message: {
+				text: "",
+				workspace_references: [
+					{
+						relativePath: "src/server/session.ts",
+						sha256: "a".repeat(64),
+					},
+				],
+			},
+		});
+	});
+
 	it("builds a queued message with skill, attachment, and agent context", () => {
 		expect(
 			submission({

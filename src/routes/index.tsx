@@ -302,7 +302,9 @@ function useCockpitComposer(initialPlanHtml: boolean) {
 	const [sameSession, setSameSession] = useState(false);
 	const [planMode, setPlanMode] = useState(false);
 	const [planHtml, setPlanHtml] = useState(initialPlanHtml);
-	const vaultPicker = useVaultReferencePicker(prompt, setPrompt);
+	const vaultPicker = useVaultReferencePicker(prompt, setPrompt, {
+		workspaceAgentCwd: selectedAgentPath || undefined,
+	});
 	const textareaRef = useRef<HTMLTextAreaElement>(null);
 	const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -405,6 +407,7 @@ function useCockpitRunWiring({
 			...composer.vaultPicker.relicAttachments,
 		],
 		vaultReferences: composer.vaultPicker.referencePaths,
+		workspaceReferences: composer.vaultPicker.workspaceReferences,
 		clearPendingAttachments: upload.clearPending,
 		clearVaultReferences: composer.vaultPicker.clear,
 		selectedAgentPath: composer.selectedAgentPath,
@@ -591,7 +594,8 @@ function CockpitPromptWiring({
 			composer.prompt.trim().length > 0 ||
 			upload.pendingAttachments.length > 0 ||
 			composer.vaultPicker.selected.length > 0 ||
-			composer.vaultPicker.selectedRelics.length > 0) &&
+			composer.vaultPicker.selectedRelics.length > 0 ||
+			composer.vaultPicker.selectedWorkspace.length > 0) &&
 		upload.uploadingCount === 0 &&
 		isConnected;
 	return (
@@ -984,7 +988,8 @@ function CockpitPage() {
 			!composer.planMode &&
 			!hasInteractiveAction &&
 			upload.uploadingCount === 0 &&
-			upload.pendingAttachments.length === 0;
+			upload.pendingAttachments.length === 0 &&
+			composer.vaultPicker.selectedWorkspace.length === 0;
 		if (!canSeedFromWatch) {
 			setRoutineDraft(routineDefaultDefinition);
 			setRoutineDialogOpen(true);
@@ -1027,6 +1032,7 @@ function CockpitPage() {
 		composer.selectedAgentPath,
 		composer.vaultPicker.referencePaths,
 		composer.vaultPicker.selectedRelics,
+		composer.vaultPicker.selectedWorkspace.length,
 		config.vault.path,
 		config.vault.name,
 		config.vault_provider,

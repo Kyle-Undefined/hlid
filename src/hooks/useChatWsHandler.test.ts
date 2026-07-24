@@ -193,6 +193,25 @@ describe("useChatWsHandler — immediate messages", () => {
 		});
 	});
 
+	it("renders multiple live workspace revisions without waiting for history refresh", () => {
+		const { handler, dispatch } = renderHandler();
+		handler({
+			type: "user_message",
+			id: "user-workspace",
+			text: "Compare these",
+			workspace_references: [
+				{ relativePath: "src/app.ts", sha256: "a".repeat(64) },
+				{ relativePath: "screens/pixel.png", sha256: "b".repeat(64) },
+			],
+		});
+
+		expect(dispatch).toHaveBeenCalledWith({
+			type: "ADD_USER",
+			id: "user-workspace",
+			text: `Compare these\n\nWorkspace references:\n- src/app.ts (sha256:${"a".repeat(64)})\n- screens/pixel.png (sha256:${"b".repeat(64)})`,
+		});
+	});
+
 	it.each([
 		"idle",
 		"error",

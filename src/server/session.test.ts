@@ -417,6 +417,7 @@ describe("SessionManager — initial state", () => {
 			safeAttachments: [attachment],
 			resourcePaths: [attachment.path],
 			safeVaultReferences: [],
+			safeWorkspaceReferences: [],
 		});
 		const provider: AgentProvider = {
 			providerId: "claude",
@@ -2964,6 +2965,7 @@ describe("SessionManager — session-scoped permission persistence", () => {
 						path: "C:\\Vault\\Projects\\Hlid.md",
 					},
 				],
+				safeWorkspaceReferences: [],
 			});
 			const { sm, executeCommand } = setup();
 
@@ -5651,6 +5653,7 @@ describe("SessionManager — Slice B AgentSession reuse", () => {
 			safeAttachments: [attachment],
 			resourcePaths: [attachment.path],
 			safeVaultReferences: [],
+			safeWorkspaceReferences: [],
 		});
 		const ctl = makeLongLivedProvider();
 		let sendSpy: ReturnType<typeof vi.fn> | undefined;

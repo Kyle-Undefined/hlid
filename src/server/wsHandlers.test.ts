@@ -1353,6 +1353,44 @@ describe("message — chat", () => {
 		);
 	});
 
+	it("forwards the previewed workspace revision to session.runQuery", async () => {
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+		const workspaceReferences = [
+			{
+				relativePath: "src/server/session.ts",
+				sha256: "a".repeat(64),
+			},
+		];
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "chat",
+				text: "review this",
+				session_id: "sess-1",
+				workspace_references: workspaceReferences,
+			}),
+		);
+		expect(session.runQuery).toHaveBeenCalledWith(
+			"review this",
+			expect.any(Function),
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			workspaceReferences,
+		);
+	});
+
 	it("forwards a native goal with its normal starting turn", async () => {
 		const session = makeSession();
 		const { pool } = wrapSession(session);

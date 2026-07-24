@@ -1,4 +1,8 @@
 import { z } from "zod";
+import {
+	MAX_COMPOSER_REFERENCES,
+	MAX_WORKSPACE_REFERENCES,
+} from "../lib/vaultReferences";
 import type { ClientMessage } from "./protocol";
 
 export const MAX_WS_PAYLOAD_BYTES = 2 * 1024 * 1024;
@@ -14,6 +18,12 @@ const attachment = z.strictObject({
 	filename: z.string().min(1).max(512),
 	mime: z.string().min(1).max(256),
 	kind: z.string().min(1).max(64),
+	reference: z.literal("relic").optional(),
+});
+
+const workspaceReference = z.strictObject({
+	relativePath: path,
+	sha256: z.string().regex(/^[a-f0-9]{64}$/),
 });
 
 const goalStart = z.strictObject({
@@ -40,6 +50,10 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 			agent_cwd: path.optional(),
 			attachments: z.array(attachment).max(32).optional(),
 			vault_references: z.array(path).max(32).optional(),
+			workspace_references: z
+				.array(workspaceReference)
+				.max(MAX_WORKSPACE_REFERENCES)
+				.optional(),
 			turn_id: id.optional(),
 			plan_mode: z.boolean().optional(),
 			plan_html: z.boolean().optional(),
@@ -53,8 +67,19 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 			(message) =>
 				message.text.length > 0 ||
 				(message.attachments?.length ?? 0) > 0 ||
-				(message.vault_references?.length ?? 0) > 0,
+				(message.vault_references?.length ?? 0) > 0 ||
+				(message.workspace_references?.length ?? 0) > 0,
 			{ message: "chat requires text, an attachment, or a vault reference" },
+		)
+		.refine(
+			(message) =>
+				(message.vault_references?.length ?? 0) +
+					(message.workspace_references?.length ?? 0) +
+					(message.attachments?.filter(
+						(attachment) => attachment.reference === "relic",
+					).length ?? 0) <=
+				MAX_COMPOSER_REFERENCES,
+			{ message: "chat has too many exact references" },
 		),
 	z.strictObject({ type: z.literal("cancel_queued"), turn_id: id }),
 	z.strictObject({ type: z.literal("promote_queued"), turn_id: id }),

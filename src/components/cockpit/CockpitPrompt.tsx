@@ -14,6 +14,7 @@ import { ActiveCommandBadges } from "#/components/chat/ActiveCommandBadge";
 import {
 	VaultReferenceBadges,
 	VaultReferencePicker,
+	WorkspaceReferenceBadges,
 } from "#/components/chat/VaultReferencePicker";
 import { SlashPicker } from "#/components/cockpit/SlashPicker";
 import { ObsidianActiveNoteButton } from "#/components/ObsidianActiveNoteButton";
@@ -131,9 +132,13 @@ function runComposerAction(
 	const activePicker = vaultOpen ? props.vaultPicker : props.picker;
 	const submit = runComposerPickerAction(action, activePicker, () => {
 		if (vaultOpen) {
-			props.vaultPicker.select(
-				props.vaultPicker.items[props.vaultPicker.selectedIndex],
-			);
+			if (props.vaultPicker.referencePreviewOpen) {
+				props.vaultPicker.confirmReferencePreview();
+			} else {
+				const reference =
+					props.vaultPicker.items[props.vaultPicker.selectedIndex];
+				if (reference) props.vaultPicker.select(reference);
+			}
 			requestAnimationFrame(() => props.textareaRef.current?.focus());
 		} else {
 			props.onSkillSelect(props.picker.items[props.picker.index]);
@@ -196,7 +201,8 @@ function PromptTextarea(props: PromptProps) {
 					props.isConnected,
 					props.activeSkills,
 					props.vaultPicker.selected.length +
-						props.vaultPicker.selectedRelics.length,
+						props.vaultPicker.selectedRelics.length +
+						props.vaultPicker.selectedWorkspace.length,
 				)}
 				disabled={
 					!props.isConnected ||
@@ -391,7 +397,8 @@ function ComposerToolbar(props: PromptProps) {
 				{(props.prompt ||
 					props.activeSkills.length > 0 ||
 					props.vaultPicker.selected.length > 0 ||
-					props.vaultPicker.selectedRelics.length > 0) && (
+					props.vaultPicker.selectedRelics.length > 0 ||
+					props.vaultPicker.selectedWorkspace.length > 0) && (
 					<button
 						type="button"
 						onClick={props.onClear}
@@ -448,6 +455,10 @@ export function CockpitPrompt(props: PromptProps) {
 				{props.vaultPicker.isOpen ? (
 					<VaultReferencePicker
 						rootLabel={props.vaultPicker.rootLabel}
+						workspaceRootLabel={props.vaultPicker.workspaceRootLabel}
+						workspaceEnvironmentLabel={
+							props.vaultPicker.workspaceEnvironmentLabel
+						}
 						query={props.vaultPicker.query}
 						items={props.vaultPicker.items}
 						selectedIndex={props.vaultPicker.selectedIndex}
@@ -455,7 +466,22 @@ export function CockpitPrompt(props: PromptProps) {
 						error={props.vaultPicker.error}
 						vaultTotal={props.vaultPicker.vaultTotal}
 						relicTotal={props.vaultPicker.relicTotal}
+						workspaceTotal={props.vaultPicker.workspaceTotal}
+						workspaceAvailable={props.vaultPicker.workspaceAvailable}
+						activeSource={props.vaultPicker.activeSource}
 						truncated={props.vaultPicker.truncated}
+						workspacePreview={props.vaultPicker.workspacePreview}
+						vaultPreview={props.vaultPicker.vaultPreview}
+						relicPreview={props.vaultPicker.relicPreview}
+						previewLoading={props.vaultPicker.previewLoading}
+						previewError={props.vaultPicker.previewError}
+						workspaceSelectionLoading={
+							props.vaultPicker.workspaceSelectionLoading
+						}
+						onSourceChange={props.vaultPicker.setActiveSource}
+						onPreviewReference={props.vaultPicker.previewReference}
+						onConfirmReference={props.vaultPicker.confirmReferencePreview}
+						onCancelReferencePreview={props.vaultPicker.cancelReferencePreview}
 						onSelect={(reference) => {
 							props.vaultPicker.select(reference);
 							requestAnimationFrame(() => props.textareaRef.current?.focus());
@@ -475,6 +501,10 @@ export function CockpitPrompt(props: PromptProps) {
 				<VaultReferenceBadges
 					references={props.vaultPicker.selected}
 					onRemove={props.vaultPicker.remove}
+				/>
+				<WorkspaceReferenceBadges
+					references={props.vaultPicker.selectedWorkspace}
+					onRemove={props.vaultPicker.removeWorkspace}
 				/>
 				<AttachmentStrip
 					attachments={props.upload.pendingAttachments}

@@ -14,6 +14,21 @@ const relicReferenceSearchSchema = z.object({
 	ids: z.array(z.string().uuid()).max(16).optional(),
 });
 
+const workspaceReferenceSearchSchema = z.object({
+	agentCwd: z.string().min(1).max(4096),
+	query: z.string().max(512).optional(),
+	limit: z.number().int().min(1).max(100).optional(),
+});
+
+const workspaceReferencePreviewSchema = z.object({
+	agentCwd: z.string().min(1).max(4096),
+	relativePath: z.string().min(1).max(4096),
+});
+
+const vaultReferencePreviewSchema = z.object({
+	relativePath: z.string().min(1).max(4096),
+});
+
 function relicReferenceItem(row: {
 	id: string;
 	path: string;
@@ -51,6 +66,23 @@ export const searchVaultReferencesFn = createServerFn({ method: "GET" })
 		});
 	});
 
+export const previewVaultReferenceFn = createServerFn({ method: "GET" })
+	.validator((raw) => vaultReferencePreviewSchema.parse(raw))
+	.handler(async ({ data }) => {
+		const [{ loadConfig }, { readObsidianNote }, { previewVaultReference }] =
+			await Promise.all([
+				import("#/server/config"),
+				import("#/server/obsidianCli"),
+				import("#/server/vaultReferences"),
+			]);
+		const config = loadConfig();
+		return previewVaultReference({
+			vaultPath: config.vault.path,
+			relativePath: data.relativePath,
+			read: (relativePath) => readObsidianNote(config.vault.name, relativePath),
+		});
+	});
+
 export const searchRelicReferencesFn = createServerFn({ method: "GET" })
 	.validator((raw) => relicReferenceSearchSchema.parse(raw))
 	.handler(async ({ data }) => {
@@ -80,4 +112,47 @@ export const searchRelicReferencesFn = createServerFn({ method: "GET" })
 			total: result.total,
 			truncated: result.total > result.rows.length,
 		};
+	});
+
+export const searchWorkspaceReferencesFn = createServerFn({ method: "GET" })
+	.validator((raw) => workspaceReferenceSearchSchema.parse(raw))
+	.handler(async ({ data }) => {
+		const [{ loadConfig }, { searchWorkspaceReferences }] = await Promise.all([
+			import("#/server/config"),
+			import("#/server/workspaceReferences"),
+		]);
+		return searchWorkspaceReferences({
+			config: loadConfig(),
+			agentCwd: data.agentCwd,
+			query: data.query,
+			limit: data.limit,
+		});
+	});
+
+export const previewWorkspaceReferenceFn = createServerFn({ method: "GET" })
+	.validator((raw) => workspaceReferencePreviewSchema.parse(raw))
+	.handler(async ({ data }) => {
+		const [{ loadConfig }, { previewWorkspaceReference }] = await Promise.all([
+			import("#/server/config"),
+			import("#/server/workspaceReferences"),
+		]);
+		return previewWorkspaceReference({
+			config: loadConfig(),
+			agentCwd: data.agentCwd,
+			relativePath: data.relativePath,
+		});
+	});
+
+export const selectWorkspaceReferenceFn = createServerFn({ method: "GET" })
+	.validator((raw) => workspaceReferencePreviewSchema.parse(raw))
+	.handler(async ({ data }) => {
+		const [{ loadConfig }, { selectWorkspaceReference }] = await Promise.all([
+			import("#/server/config"),
+			import("#/server/workspaceReferences"),
+		]);
+		return selectWorkspaceReference({
+			config: loadConfig(),
+			agentCwd: data.agentCwd,
+			relativePath: data.relativePath,
+		});
 	});

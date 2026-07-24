@@ -38,12 +38,8 @@ vi.mock("@tanstack/react-router", async (importOriginal) => {
 	};
 });
 
-import {
-	AttachmentsPage,
-	deleteRelicRows,
-	RelicPreview,
-	SkillImportDialog,
-} from "./relics";
+import { RelicPreview } from "#/components/relics/RelicPreview";
+import { AttachmentsPage, deleteRelicRows, SkillImportDialog } from "./relics";
 
 afterEach(() => {
 	cleanup();

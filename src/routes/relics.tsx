@@ -26,12 +26,9 @@ import {
 } from "react";
 import { createPortal } from "react-dom";
 import { ConfirmAction } from "#/components/ConfirmAction";
-import {
-	ClickableImage,
-	ImageViewerModal,
-} from "#/components/ImageViewerModal";
-import { MarkdownBody } from "#/components/MarkdownBody";
+import { ImageViewerModal } from "#/components/ImageViewerModal";
 import { PrivacyMask } from "#/components/PrivacyMask";
+import { RelicPreview } from "#/components/relics/RelicPreview";
 import {
 	type ManagedAgentSkill,
 	type RemoteSkillDiscovery,
@@ -333,79 +330,6 @@ function filtersActive(filters: Filters): boolean {
 		filters.type !== "all" ||
 		filters.category !== "all" ||
 		filters.session !== null
-	);
-}
-
-function TextPreview({ id, mime }: { id: string; mime: string }) {
-	const [text, setText] = useState<string | null>(null);
-	const [loading, setLoading] = useState(false);
-	const [err, setErr] = useState<string | null>(null);
-
-	useEffect(() => {
-		const controller = new AbortController();
-		setLoading(true);
-		fetch(`/api/attachments/${id}/raw`, { signal: controller.signal })
-			.then((r) => {
-				if (!r.ok)
-					throw new Error(`fetch failed (${r.status} ${r.statusText})`);
-				return r.text();
-			})
-			.then(setText)
-			.catch((e) => {
-				if (e instanceof Error && e.name === "AbortError") return;
-				setErr(e instanceof Error ? e.message : "fetch failed");
-			})
-			.finally(() => setLoading(false));
-		return () => controller.abort();
-	}, [id]);
-
-	if (loading)
-		return (
-			<span className="text-[11px] text-muted-foreground/50">loading…</span>
-		);
-	if (err)
-		return <span className="text-[11px] text-destructive/70">{err}</span>;
-	if (text === null) return null;
-	if (mime === "text/markdown") return <MarkdownBody content={text} />;
-	return (
-		<pre className="text-[11px] whitespace-pre-wrap break-words font-mono">
-			{text}
-		</pre>
-	);
-}
-
-export function RelicPreview({ id, mime }: { id: string; mime: string }) {
-	const rawUrl = `/api/attachments/${id}/raw`;
-	if (mime.startsWith("image/")) {
-		return (
-			<ClickableImage src={rawUrl} alt="" className="max-h-96 max-w-full" />
-		);
-	}
-	if (mime === "application/pdf") {
-		return (
-			<iframe
-				src={rawUrl}
-				className="w-full h-96 border-0"
-				title="pdf preview"
-			/>
-		);
-	}
-	if (mime === "text/html") {
-		return (
-			<iframe
-				src={rawUrl}
-				sandbox="allow-scripts"
-				referrerPolicy="no-referrer"
-				className="w-full h-96 bg-white border-0"
-				title="html preview"
-			/>
-		);
-	}
-	if (mime.startsWith("text/") || mime === "application/json") {
-		return <TextPreview id={id} mime={mime} />;
-	}
-	return (
-		<span className="text-[11px] text-muted-foreground/50">no preview</span>
 	);
 }
 

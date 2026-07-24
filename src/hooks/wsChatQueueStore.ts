@@ -1,4 +1,5 @@
 import type { CommandAction } from "../lib/commands";
+import type { WorkspaceReferenceRequest } from "../lib/vaultReferences";
 import type { ChatAttachment, GoalStartRequest } from "../server/protocol";
 
 export type QueuedChatMessage = {
@@ -11,6 +12,7 @@ export type QueuedChatMessage = {
 	agent_cwd?: string;
 	attachments?: ChatAttachment[];
 	vault_references?: string[];
+	workspace_references?: WorkspaceReferenceRequest[];
 	plan_mode?: boolean;
 	plan_html?: boolean;
 	provider?: string;

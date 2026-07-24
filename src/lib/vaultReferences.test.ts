@@ -57,4 +57,23 @@ describe("formatVaultReferencedMessage", () => {
 			"Relic references:\n- report.pdf",
 		);
 	});
+
+	it("persists exact workspace revision provenance separately", () => {
+		expect(
+			formatVaultReferencedMessage(
+				"Review this",
+				[],
+				[],
+				[
+					{
+						relativePath: "src/server/session.ts",
+						sha256: "a".repeat(64),
+						environmentLabel: "WSL · Ubuntu",
+					},
+				],
+			),
+		).toBe(
+			`Review this\n\nWorkspace references:\n- src/server/session.ts (WSL · Ubuntu, sha256:${"a".repeat(64)})`,
+		);
+	});
 });

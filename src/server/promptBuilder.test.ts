@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -101,6 +102,37 @@ describe("buildPrompt — vault references", async () => {
 			{ relativePath: "Note.md", path: join(tmp, "Note.md") },
 		]);
 		expect(result.prompt).not.toContain("outside.md");
+	});
+});
+
+describe("buildPrompt — workspace references", async () => {
+	it("adds the exact previewed revision as a native provider path", async () => {
+		const content = "export const ready = true;\n";
+		writeFileSync(join(tmp, "feature.ts"), content);
+		const sha256 = createHash("sha256").update(content).digest("hex");
+		const result = await buildPromptAsync(
+			base({
+				agentCwd: tmp,
+				allowedAgentRealPaths: [tmp],
+				workspaceReferences: [{ relativePath: "feature.ts", sha256 }],
+			}),
+		);
+		expect(result.prompt).toContain(
+			"Workspace references selected by the user",
+		);
+		expect(result.prompt).toContain(join(tmp, "feature.ts"));
+		expect(result.prompt).toContain(`sha256:${sha256}`);
+		expect(result.prompt).toContain(
+			"do not expand to imports, neighboring files, directories, Git history",
+		);
+		expect(result.safeWorkspaceReferences).toEqual([
+			expect.objectContaining({
+				relativePath: "feature.ts",
+				path: join(tmp, "feature.ts"),
+				sha256,
+			}),
+		]);
+		expect(result.resourcePaths).toContain(join(tmp, "feature.ts"));
 	});
 });
 

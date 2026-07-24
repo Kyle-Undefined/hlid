@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	previewVaultReference,
 	resetVaultReferenceIndexForTesting,
 	resolveVaultReferences,
 	searchVaultReferences,
@@ -70,6 +71,25 @@ describe("searchVaultReferences", () => {
 });
 
 describe("resolveVaultReferences", () => {
+	it("previews one exact vault note through the supplied Obsidian reader", async () => {
+		const read = async (relativePath: string) =>
+			relativePath === "Projects/Hlið Plan.md" ? "# Plan" : "unexpected";
+
+		await expect(
+			previewVaultReference({
+				vaultPath: vault,
+				relativePath: "Projects/Hlið Plan.md",
+				read,
+			}),
+		).resolves.toEqual({
+			relativePath: "Projects/Hlið Plan.md",
+			name: "Hlið Plan.md",
+			directory: "Projects",
+			content: "# Plan",
+			truncated: false,
+		});
+	});
+
 	it("resolves existing files but rejects escapes and directories", async () => {
 		const result = await resolveVaultReferences({
 			vaultPath: vault,

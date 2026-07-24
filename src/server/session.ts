@@ -21,7 +21,10 @@ import {
 	type RoutinePermissionContext,
 } from "../lib/routinePermissions";
 import { SESSION_LABEL_LENGTH } from "../lib/utils";
-import { formatVaultReferencedMessage } from "../lib/vaultReferences";
+import {
+	formatVaultReferencedMessage,
+	type WorkspaceReferenceRequest,
+} from "../lib/vaultReferences";
 import {
 	computeAllowedAgentRealPaths,
 	isAllowedAgentPath,
@@ -88,6 +91,7 @@ import {
 	skipSleep as skipProviderSleep,
 	sleepUntilAllowed,
 } from "./usageGate";
+import type { ResolvedWorkspaceReference } from "./workspaceReferences";
 
 /** Fallback context window size when the SDK omits it from result metadata. */
 const DEFAULT_CONTEXT_WINDOW = 200_000;
@@ -207,6 +211,7 @@ type RunQueryArgs = [
 	vaultReferences?: string[],
 	routineContext?: RoutinePermissionContext,
 	goalStart?: { objective: string; tokenBudget?: number | null },
+	workspaceReferences?: WorkspaceReferenceRequest[],
 ];
 
 export type SessionState = "idle" | "running" | "error";
@@ -2820,6 +2825,9 @@ export class SessionManager {
 					...(turn.args[8] !== undefined ? { plan_html: turn.args[8] } : {}),
 					...(turn.args[9] ? { command_action: turn.args[9] } : {}),
 					...(turn.args[10]?.length ? { vault_references: turn.args[10] } : {}),
+					...(turn.args[13]?.length
+						? { workspace_references: turn.args[13] }
+						: {}),
 					...(turn.args[12]
 						? {
 								goal: {
@@ -3666,6 +3674,7 @@ export class SessionManager {
 		attachments: ChatAttachment[],
 		turnId?: string,
 		vaultReferences: string[] = [],
+		workspaceReferences: ResolvedWorkspaceReference[] = [],
 	): Promise<void> {
 		const userSeq = this.messageSeq++;
 		if (!sessionId) return;
@@ -3675,6 +3684,7 @@ export class SessionManager {
 			attachments
 				.filter((attachment) => attachment.reference === "relic")
 				.map((attachment) => attachment.filename),
+			workspaceReferences,
 		);
 		if (turnId) {
 			await db.appendMessage(
@@ -3976,6 +3986,7 @@ export class SessionManager {
 			vaultReferences,
 			routineContext,
 			goalStart,
+			workspaceReferences,
 		] = args;
 		this.currentTurnId = turnId;
 		await this.initSessionContext(sessionId, agentCwd, userMessage);
@@ -4013,6 +4024,7 @@ export class SessionManager {
 				safeAttachments,
 				resourcePaths,
 				safeVaultReferences = [],
+				safeWorkspaceReferences = [],
 			} = await buildPromptAsync({
 				vaultPath: this.vaultPath,
 				vaultName: this.vaultName,
@@ -4025,6 +4037,7 @@ export class SessionManager {
 				skillContexts,
 				attachments,
 				vaultReferences,
+				workspaceReferences,
 				nativeAudio: currentProvider.providerId === "codex",
 				...(commandAction
 					? {}
@@ -4058,6 +4071,7 @@ export class SessionManager {
 				safeAttachments,
 				turnId,
 				safeVaultReferences.map((reference) => reference.relativePath),
+				safeWorkspaceReferences,
 			);
 
 			const { activeCwd, extraDirs, executable } = resolveExecutionContext({
@@ -4092,6 +4106,17 @@ export class SessionManager {
 					});
 					commandArgs =
 						`${commandArgs}\n\nVault references:\n${referenceLines.join("\n")}`.trim();
+				}
+				if (safeWorkspaceReferences.length > 0) {
+					const referenceLines = safeWorkspaceReferences.map((reference) => {
+						const path =
+							commandAction === "computer-use"
+								? reference.path
+								: toProviderRuntimePath(runtimeCwd, reference.path);
+						return `- ${path} (Workspace: ${reference.relativePath}, ${reference.mime}, sha256:${reference.sha256})`;
+					});
+					commandArgs =
+						`${commandArgs}\n\nWorkspace references:\n${referenceLines.join("\n")}`.trim();
 				}
 				if (commandAction === "computer-use") {
 					await this.authorizeWindowsComputerUseCommand({
