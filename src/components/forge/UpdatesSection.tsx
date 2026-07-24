@@ -20,6 +20,7 @@ import {
 	type ClaudeDesktopMcpStatus,
 	getClaudeDesktopMcpStatusFn,
 	registerHlidInClaudeDesktopFn,
+	unregisterHlidFromClaudeDesktopFn,
 } from "#/lib/serverFns/claudeDesktop";
 import type { ReleaseNotes } from "#/lib/updates";
 import { CliUpdateTerminalModal } from "./CliUpdateTerminalModal";
@@ -228,9 +229,13 @@ function UpdateNotices({
  */
 function ClaudeDesktopMcpAction() {
 	const [status, setStatus] = useState<ClaudeDesktopMcpStatus | null>(null);
-	const [busy, setBusy] = useState(false);
+	const [busyAction, setBusyAction] = useState<"register" | "remove" | null>(
+		null,
+	);
 	const [error, setError] = useState<string | null>(null);
-	const [justRegistered, setJustRegistered] = useState(false);
+	const [lastAction, setLastAction] = useState<"registered" | "removed" | null>(
+		null,
+	);
 
 	useEffect(() => {
 		void getClaudeDesktopMcpStatusFn()
@@ -243,38 +248,81 @@ function ClaudeDesktopMcpAction() {
 	if (status && !status.available) return null;
 
 	async function register() {
-		setBusy(true);
+		setBusyAction("register");
 		setError(null);
+		setLastAction(null);
 		try {
 			setStatus(await registerHlidInClaudeDesktopFn());
-			setJustRegistered(true);
+			setLastAction("registered");
 		} catch (e) {
 			setError(e instanceof Error ? e.message : "registration failed");
 		} finally {
-			setBusy(false);
+			setBusyAction(null);
+		}
+	}
+
+	async function unregister() {
+		setBusyAction("remove");
+		setError(null);
+		setLastAction(null);
+		try {
+			setStatus(await unregisterHlidFromClaudeDesktopFn());
+			setLastAction("removed");
+		} catch (e) {
+			setError(e instanceof Error ? e.message : "removal failed");
+		} finally {
+			setBusyAction(null);
 		}
 	}
 
 	const hint = error
 		? error
-		: justRegistered
-			? "registered — restart Claude Desktop to pick it up"
-			: status?.registered
-				? "already registered; Hlid's agent and vault tools are available"
-				: status
-					? "adds Hlid's agent and vault tools to Claude Desktop"
-					: "checking…";
+		: lastAction === "registered"
+			? "registered; restart Claude Desktop to pick it up"
+			: lastAction === "removed"
+				? "removed; restart Claude Desktop to apply the change"
+				: status?.registered
+					? "already registered; Hlid's agent and vault tools are available"
+					: status?.managedServerCount
+						? "partially registered; add repairs it or remove clears Hlid's entries"
+						: status
+							? "adds Hlid's agent and vault tools to Claude Desktop"
+							: "checking…";
 
 	return (
 		<Field label="Hlid MCP in Claude Desktop" hint={hint}>
-			<button
-				type="button"
-				disabled={busy || !status}
-				onClick={() => void register()}
-				className="text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors uppercase disabled:opacity-40"
-			>
-				{busy ? "ADDING…" : status?.registered ? "RE-ADD" : "ADD"}
-			</button>
+			<div className="flex items-center justify-end gap-2">
+				<button
+					type="button"
+					disabled={busyAction !== null || !status}
+					onClick={() => void register()}
+					className="text-[10px] tracking-widest px-3 py-1.5 border border-border text-muted-foreground hover:text-foreground hover:bg-accent transition-colors uppercase disabled:opacity-40"
+				>
+					{busyAction === "register"
+						? "ADDING…"
+						: status?.registered
+							? "RE-ADD"
+							: "ADD"}
+				</button>
+				{status && status.managedServerCount > 0 && (
+					<ConfirmAction
+						label="remove Hlid's agent and vault tools?"
+						confirmText="remove"
+						onConfirm={() => void unregister()}
+						className="justify-end flex-wrap"
+						trigger={(open) => (
+							<button
+								type="button"
+								disabled={busyAction !== null}
+								onClick={open}
+								className="text-[10px] tracking-widest px-3 py-1.5 border border-destructive/40 text-destructive/70 hover:text-destructive hover:bg-destructive/10 transition-colors uppercase disabled:opacity-40"
+							>
+								{busyAction === "remove" ? "REMOVING…" : "REMOVE"}
+							</button>
+						)}
+					/>
+				)}
+			</div>
 		</Field>
 	);
 }

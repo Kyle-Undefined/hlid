@@ -2,17 +2,25 @@
  * claudeDesktopMcp — unit tests for the Claude Desktop config path helper
  * and the read/merge/write logic. Uses real temp directories; no fs mocking.
  */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	claudeDesktopConfigPath,
+	countHlidClaudeDesktopEntries,
 	HLID_DESKTOP_MCP_KEY,
 	HLID_OBSIDIAN_DESKTOP_MCP_KEY,
 	isHlidRegisteredInClaudeDesktop,
 	readClaudeDesktopConfig,
 	registerHlidInClaudeDesktop,
+	unregisterHlidFromClaudeDesktop,
 } from "./claudeDesktopMcp";
 
 let dir: string;
@@ -72,30 +80,42 @@ describe("readClaudeDesktopConfig", () => {
 		writeFileSync(path, "[]");
 		expect(() => readClaudeDesktopConfig(path)).toThrow(/not a JSON object/);
 	});
+
+	it("throws when mcpServers is not a JSON object", () => {
+		const path = join(dir, "invalid-servers.json");
+		writeFileSync(
+			path,
+			JSON.stringify({ mcpServers: ["not", "an", "object"] }),
+		);
+		expect(() => readClaudeDesktopConfig(path)).toThrow(
+			/invalid mcpServers value/,
+		);
+	});
 });
 
 describe("isHlidRegisteredInClaudeDesktop", () => {
 	it("is false with no mcpServers", () => {
+		expect(countHlidClaudeDesktopEntries({})).toBe(0);
 		expect(isHlidRegisteredInClaudeDesktop({})).toBe(false);
 	});
 
 	it("is false when only one of the two Hlid keys is present", () => {
-		expect(
-			isHlidRegisteredInClaudeDesktop({
-				mcpServers: { [HLID_DESKTOP_MCP_KEY]: { command: "x", args: [] } },
-			}),
-		).toBe(false);
+		const config = {
+			mcpServers: { [HLID_DESKTOP_MCP_KEY]: { command: "x", args: [] } },
+		};
+		expect(countHlidClaudeDesktopEntries(config)).toBe(1);
+		expect(isHlidRegisteredInClaudeDesktop(config)).toBe(false);
 	});
 
 	it("is true when both Hlid keys are present", () => {
-		expect(
-			isHlidRegisteredInClaudeDesktop({
-				mcpServers: {
-					[HLID_DESKTOP_MCP_KEY]: { command: "x", args: [] },
-					[HLID_OBSIDIAN_DESKTOP_MCP_KEY]: { command: "x", args: [] },
-				},
-			}),
-		).toBe(true);
+		const config = {
+			mcpServers: {
+				[HLID_DESKTOP_MCP_KEY]: { command: "x", args: [] },
+				[HLID_OBSIDIAN_DESKTOP_MCP_KEY]: { command: "x", args: [] },
+			},
+		};
+		expect(countHlidClaudeDesktopEntries(config)).toBe(2);
+		expect(isHlidRegisteredInClaudeDesktop(config)).toBe(true);
 	});
 });
 
@@ -151,6 +171,82 @@ describe("registerHlidInClaudeDesktop", () => {
 		const path = join(dir, "config.json");
 		writeFileSync(path, "{ broken");
 		expect(() => registerHlidInClaudeDesktop(path)).toThrow(/not valid JSON/);
+		expect(readFileSync(path, "utf8")).toBe("{ broken");
+	});
+});
+
+describe("unregisterHlidFromClaudeDesktop", () => {
+	it("removes only Hlid entries and preserves other config", () => {
+		const path = join(dir, "config.json");
+		writeFileSync(
+			path,
+			JSON.stringify({
+				someOtherSetting: true,
+				mcpServers: {
+					other: { command: "keep-me", args: ["--flag"] },
+					[HLID_DESKTOP_MCP_KEY]: { command: "remove-me", args: [] },
+					[HLID_OBSIDIAN_DESKTOP_MCP_KEY]: {
+						command: "remove-me-too",
+						args: [],
+					},
+				},
+			}),
+		);
+
+		const result = unregisterHlidFromClaudeDesktop(path);
+
+		expect(result).toEqual({
+			someOtherSetting: true,
+			mcpServers: { other: { command: "keep-me", args: ["--flag"] } },
+		});
+		expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(result);
+	});
+
+	it("removes a partial registration", () => {
+		const path = join(dir, "config.json");
+		writeFileSync(
+			path,
+			JSON.stringify({
+				mcpServers: {
+					[HLID_OBSIDIAN_DESKTOP_MCP_KEY]: {
+						command: "remove-me",
+						args: [],
+					},
+				},
+			}),
+		);
+
+		const result = unregisterHlidFromClaudeDesktop(path);
+
+		expect(result).toEqual({ mcpServers: {} });
+		expect(countHlidClaudeDesktopEntries(result)).toBe(0);
+	});
+
+	it("is an idempotent no-op when Hlid entries are already absent", () => {
+		const path = join(dir, "config.json");
+		const original = '{"mcpServers":{"other":{"command":"keep-format"}}}\n';
+		writeFileSync(path, original);
+
+		expect(unregisterHlidFromClaudeDesktop(path)).toEqual({
+			mcpServers: { other: { command: "keep-format" } },
+		});
+		expect(readFileSync(path, "utf8")).toBe(original);
+	});
+
+	it("does not create a missing config when there is nothing to remove", () => {
+		const path = join(dir, "missing.json");
+
+		expect(unregisterHlidFromClaudeDesktop(path)).toEqual({});
+		expect(existsSync(path)).toBe(false);
+	});
+
+	it("throws and leaves the file untouched when existing JSON is corrupt", () => {
+		const path = join(dir, "config.json");
+		writeFileSync(path, "{ broken");
+
+		expect(() => unregisterHlidFromClaudeDesktop(path)).toThrow(
+			/not valid JSON/,
+		);
 		expect(readFileSync(path, "utf8")).toBe("{ broken");
 	});
 });

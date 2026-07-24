@@ -6,6 +6,8 @@ export type ClaudeDesktopMcpStatus = {
 	available: boolean;
 	configPath: string | null;
 	registered: boolean;
+	/** Number of Hlid-owned entries present, including partial registration. */
+	managedServerCount: number;
 	/** Count of mcpServers entries other than Hlid's own, for context only. */
 	otherServerCount: number;
 };
@@ -13,6 +15,7 @@ export type ClaudeDesktopMcpStatus = {
 async function readStatus(): Promise<ClaudeDesktopMcpStatus> {
 	const {
 		claudeDesktopConfigPath,
+		countHlidClaudeDesktopEntries,
 		isHlidRegisteredInClaudeDesktop,
 		readClaudeDesktopConfig,
 		HLID_DESKTOP_MCP_KEY,
@@ -23,6 +26,7 @@ async function readStatus(): Promise<ClaudeDesktopMcpStatus> {
 			available: false,
 			configPath: null,
 			registered: false,
+			managedServerCount: 0,
 			otherServerCount: 0,
 		};
 	}
@@ -32,6 +36,7 @@ async function readStatus(): Promise<ClaudeDesktopMcpStatus> {
 			available: false,
 			configPath: null,
 			registered: false,
+			managedServerCount: 0,
 			otherServerCount: 0,
 		};
 	}
@@ -45,6 +50,7 @@ async function readStatus(): Promise<ClaudeDesktopMcpStatus> {
 		available: true,
 		configPath,
 		registered: isHlidRegisteredInClaudeDesktop(config),
+		managedServerCount: countHlidClaudeDesktopEntries(config),
 		otherServerCount,
 	};
 }
@@ -67,5 +73,21 @@ export const registerHlidInClaudeDesktopFn = createServerFn({
 		throw new Error("Could not resolve the Claude Desktop config path.");
 	}
 	registerHlidInClaudeDesktop(configPath);
+	return readStatus();
+});
+
+export const unregisterHlidFromClaudeDesktopFn = createServerFn({
+	method: "POST",
+}).handler(async () => {
+	if (process.platform !== "win32") {
+		throw new Error("Claude Desktop unregistration is Windows-only.");
+	}
+	const { claudeDesktopConfigPath, unregisterHlidFromClaudeDesktop } =
+		await import("#/server/claudeDesktopMcp");
+	const configPath = claudeDesktopConfigPath();
+	if (!configPath) {
+		throw new Error("Could not resolve the Claude Desktop config path.");
+	}
+	unregisterHlidFromClaudeDesktop(configPath);
 	return readStatus();
 });

@@ -101,18 +101,36 @@ export function readClaudeDesktopConfig(path: string): ClaudeDesktopConfig {
 			`Claude Desktop config at ${path} was not a JSON object. Fix or back it up before registering Hlid.`,
 		);
 	}
-	return parsed as ClaudeDesktopConfig;
+	const config = parsed as ClaudeDesktopConfig;
+	if (
+		config.mcpServers !== undefined &&
+		(config.mcpServers === null ||
+			typeof config.mcpServers !== "object" ||
+			Array.isArray(config.mcpServers))
+	) {
+		throw new Error(
+			`Claude Desktop config at ${path} has an invalid mcpServers value. Fix or back it up before changing Hlid registration.`,
+		);
+	}
+	return config;
+}
+
+/** Number of Hlid-owned MCP entries currently present in the config. */
+export function countHlidClaudeDesktopEntries(
+	config: ClaudeDesktopConfig,
+): number {
+	const servers = config.mcpServers;
+	if (!servers || typeof servers !== "object") return 0;
+	return [HLID_DESKTOP_MCP_KEY, HLID_OBSIDIAN_DESKTOP_MCP_KEY].filter((key) =>
+		Object.hasOwn(servers, key),
+	).length;
 }
 
 /** True when both Hlid MCP entries are already present in the config. */
 export function isHlidRegisteredInClaudeDesktop(
 	config: ClaudeDesktopConfig,
 ): boolean {
-	const servers = config.mcpServers;
-	if (!servers || typeof servers !== "object") return false;
-	return (
-		HLID_DESKTOP_MCP_KEY in servers && HLID_OBSIDIAN_DESKTOP_MCP_KEY in servers
-	);
+	return countHlidClaudeDesktopEntries(config) === 2;
 }
 
 /**
@@ -133,5 +151,27 @@ export function registerHlidInClaudeDesktop(path: string): ClaudeDesktopConfig {
 	writeFileAtomicSync(path, `${JSON.stringify(next, null, 2)}\n`, {
 		createParent: true,
 	});
+	return next;
+}
+
+/**
+ * Remove only Hlid's two MCP entries from the Claude Desktop config. Other
+ * servers and top-level settings are preserved exactly. Missing entries are
+ * a no-op, so repeated removal does not create or rewrite the config file.
+ */
+export function unregisterHlidFromClaudeDesktop(
+	path: string,
+): ClaudeDesktopConfig {
+	const current = readClaudeDesktopConfig(path);
+	if (countHlidClaudeDesktopEntries(current) === 0) return current;
+
+	const servers = { ...(current.mcpServers ?? {}) };
+	delete servers[HLID_DESKTOP_MCP_KEY];
+	delete servers[HLID_OBSIDIAN_DESKTOP_MCP_KEY];
+	const next: ClaudeDesktopConfig = {
+		...current,
+		mcpServers: servers,
+	};
+	writeFileAtomicSync(path, `${JSON.stringify(next, null, 2)}\n`);
 	return next;
 }

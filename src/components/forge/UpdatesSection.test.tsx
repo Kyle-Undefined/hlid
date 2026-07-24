@@ -16,6 +16,18 @@ import type { CliUpdateStatus } from "#/lib/cliUpdateTypes";
 import type { ReleaseNotes } from "#/lib/updates";
 import { UpdatesSection } from "./UpdatesSection";
 
+const claudeDesktopMcpMocks = vi.hoisted(() => ({
+	getStatus: vi.fn(),
+	register: vi.fn(),
+	unregister: vi.fn(),
+}));
+
+vi.mock("#/lib/serverFns/claudeDesktop", () => ({
+	getClaudeDesktopMcpStatusFn: claudeDesktopMcpMocks.getStatus,
+	registerHlidInClaudeDesktopFn: claudeDesktopMcpMocks.register,
+	unregisterHlidFromClaudeDesktopFn: claudeDesktopMcpMocks.unregister,
+}));
+
 vi.mock("#/components/TerminalView", () => ({
 	TerminalView: (props: {
 		cwd: string;
@@ -91,6 +103,15 @@ describe("UpdatesSection", () => {
 	beforeEach(() => {
 		vi.restoreAllMocks();
 		resetUpdateStore();
+		claudeDesktopMcpMocks.getStatus.mockReset().mockResolvedValue({
+			available: false,
+			configPath: null,
+			registered: false,
+			managedServerCount: 0,
+			otherServerCount: 0,
+		});
+		claudeDesktopMcpMocks.register.mockReset();
+		claudeDesktopMcpMocks.unregister.mockReset();
 	});
 
 	it("shows current version and up-to-date hint", async () => {
@@ -107,6 +128,92 @@ describe("UpdatesSection", () => {
 		expect(await screen.findByText("update available: v1.1.0")).toBeTruthy();
 		expect(screen.getByText("→ v1.1.0")).toBeTruthy();
 		expect(screen.getByRole("button", { name: "DOWNLOAD" })).toBeTruthy();
+	});
+
+	it("confirms before removing Hlid from Claude Desktop", async () => {
+		claudeDesktopMcpMocks.getStatus.mockResolvedValue({
+			available: true,
+			configPath: "C:\\Users\\Kyle\\AppData\\Roaming\\Claude\\config.json",
+			registered: true,
+			managedServerCount: 2,
+			otherServerCount: 1,
+		});
+		claudeDesktopMcpMocks.unregister.mockResolvedValue({
+			available: true,
+			configPath: "C:\\Users\\Kyle\\AppData\\Roaming\\Claude\\config.json",
+			registered: false,
+			managedServerCount: 0,
+			otherServerCount: 1,
+		});
+		stubFetch(
+			makeStatus({
+				cliUpdates: [
+					{
+						id: "claude-desktop",
+						label: "Claude Desktop",
+						surface: "desktop",
+						appVersion: "1.0.0",
+						installedVersion: "1.0.0",
+						latestVersion: "1.0.0",
+						available: false,
+						checkedAt: Date.now(),
+					},
+				],
+			}),
+		);
+		render(<UpdatesSection />);
+
+		fireEvent.click(await screen.findByRole("button", { name: "REMOVE" }));
+		expect(
+			screen.getByText("remove Hlid's agent and vault tools?"),
+		).toBeTruthy();
+		expect(claudeDesktopMcpMocks.unregister).not.toHaveBeenCalled();
+
+		fireEvent.click(screen.getByRole("button", { name: "remove" }));
+
+		expect(
+			await screen.findByText(
+				"removed; restart Claude Desktop to apply the change",
+			),
+		).toBeTruthy();
+		expect(claudeDesktopMcpMocks.unregister).toHaveBeenCalledOnce();
+		expect(screen.queryByRole("button", { name: "REMOVE" })).toBeNull();
+		expect(screen.getByRole("button", { name: "ADD" })).toBeTruthy();
+	});
+
+	it("offers repair or removal for a partial Claude Desktop registration", async () => {
+		claudeDesktopMcpMocks.getStatus.mockResolvedValue({
+			available: true,
+			configPath: "C:\\Users\\Kyle\\AppData\\Roaming\\Claude\\config.json",
+			registered: false,
+			managedServerCount: 1,
+			otherServerCount: 0,
+		});
+		stubFetch(
+			makeStatus({
+				cliUpdates: [
+					{
+						id: "claude-desktop",
+						label: "Claude Desktop",
+						surface: "desktop",
+						appVersion: "1.0.0",
+						installedVersion: "1.0.0",
+						latestVersion: "1.0.0",
+						available: false,
+						checkedAt: Date.now(),
+					},
+				],
+			}),
+		);
+		render(<UpdatesSection />);
+
+		expect(
+			await screen.findByText(
+				"partially registered; add repairs it or remove clears Hlid's entries",
+			),
+		).toBeTruthy();
+		expect(screen.getByRole("button", { name: "ADD" })).toBeTruthy();
+		expect(screen.getByRole("button", { name: "REMOVE" })).toBeTruthy();
 	});
 
 	it("applies the shared background reconciliation while Forge stays mounted", async () => {
