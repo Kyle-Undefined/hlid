@@ -23,9 +23,54 @@ type ExtensionRouteDependencies = {
 	onChanged?: (config: HlidConfig) => void | Promise<void>;
 };
 
+const EXTENSION_CATALOG_CACHE_MS = 5_000;
+
 export function createExtensionRouteHandler(
 	dependencies: ExtensionRouteDependencies,
 ) {
+	let catalogCache:
+		| { inventory: ExtensionInventory; expiresAt: number; generation: number }
+		| undefined;
+	let catalogInflight:
+		| { promise: Promise<ExtensionInventory>; generation: number }
+		| undefined;
+	let catalogGeneration = 0;
+
+	const invalidateCatalog = () => {
+		catalogGeneration += 1;
+		catalogCache = undefined;
+	};
+	const readCatalog = async (): Promise<ExtensionInventory> => {
+		const now = Date.now();
+		if (
+			catalogCache &&
+			catalogCache.generation === catalogGeneration &&
+			catalogCache.expiresAt > now
+		) {
+			return catalogCache.inventory;
+		}
+		if (catalogInflight?.generation === catalogGeneration) {
+			return catalogInflight.promise;
+		}
+		const generation = catalogGeneration;
+		const discover = dependencies.discover ?? discoverExtensionInventory;
+		const promise = discover(dependencies.loadConfig());
+		catalogInflight = { promise, generation };
+		try {
+			const inventory = await promise;
+			if (generation === catalogGeneration) {
+				catalogCache = {
+					inventory,
+					expiresAt: Date.now() + EXTENSION_CATALOG_CACHE_MS,
+					generation,
+				};
+			}
+			return inventory;
+		} finally {
+			if (catalogInflight?.promise === promise) catalogInflight = undefined;
+		}
+	};
+
 	return async (url: URL, request: Request): Promise<Response | null> => {
 		if (request.method === "POST" && url.pathname === "/extensions/mutate") {
 			let body: unknown;
@@ -92,12 +137,14 @@ export function createExtensionRouteHandler(
 				const config = dependencies.loadConfig();
 				const mutate = dependencies.mutate ?? mutateProviderExtension;
 				const result = await mutate(config, input as ExtensionMutationInput);
+				invalidateCatalog();
 				await dependencies.onChanged?.(config);
 				return Response.json({ ok: true, result });
 			} catch (error) {
 				const stateChanged =
 					error instanceof ExtensionMutationError && error.stateChanged;
 				if (stateChanged) {
+					invalidateCatalog();
 					try {
 						await dependencies.onChanged?.(dependencies.loadConfig());
 					} catch {
@@ -120,8 +167,7 @@ export function createExtensionRouteHandler(
 			return null;
 		}
 		if (url.pathname === "/extensions/catalog") {
-			const discover = dependencies.discover ?? discoverExtensionInventory;
-			return Response.json(await discover(dependencies.loadConfig()));
+			return Response.json(await readCatalog());
 		}
 		if (url.pathname === "/extensions/review") {
 			const id = url.searchParams.get("id") ?? "";

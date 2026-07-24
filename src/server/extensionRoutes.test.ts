@@ -60,6 +60,66 @@ describe("extension inventory routes", () => {
 		expect(await response?.json()).toEqual(inventory);
 	});
 
+	it("coalesces concurrent catalog scans and briefly reuses the result", async () => {
+		let resolveInventory: ((value: ExtensionInventory) => void) | undefined;
+		const discover = vi.fn(
+			() =>
+				new Promise<ExtensionInventory>((resolve) => {
+					resolveInventory = resolve;
+				}),
+		);
+		const handle = createExtensionRouteHandler({
+			loadConfig: () => ({}) as HlidConfig,
+			discover,
+		});
+		const request = () => new Request("http://localhost/extensions/catalog");
+
+		const first = handle(new URL(request().url), request());
+		const second = handle(new URL(request().url), request());
+		expect(discover).toHaveBeenCalledOnce();
+		resolveInventory?.(inventory);
+		expect(await (await first)?.json()).toEqual(inventory);
+		expect(await (await second)?.json()).toEqual(inventory);
+
+		expect(
+			await (await handle(new URL(request().url), request()))?.json(),
+		).toEqual(inventory);
+		expect(discover).toHaveBeenCalledOnce();
+	});
+
+	it("invalidates the catalog cache after provider state changes", async () => {
+		const discover = vi.fn().mockResolvedValue(inventory);
+		const mutate = vi.fn().mockResolvedValue({
+			action: "uninstall",
+			providerId: "codex",
+			subject: "github@curated",
+			environmentLabel: "Host",
+			output: "removed",
+		});
+		const handle = createExtensionRouteHandler({
+			loadConfig: () => ({}) as HlidConfig,
+			discover,
+			mutate,
+		});
+		const catalog = new Request("http://localhost/extensions/catalog");
+		await handle(new URL(catalog.url), catalog);
+		await handle(
+			new URL("http://localhost/extensions/mutate"),
+			new Request("http://localhost/extensions/mutate", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					action: "uninstall",
+					id: "0123456789abcdef01234567",
+					expectedVersion: "1.0.0",
+				}),
+			}),
+		);
+		await handle(new URL(catalog.url), catalog);
+
+		expect(discover).toHaveBeenCalledTimes(2);
+	});
+
 	it("loads one opaque read-only marketplace review", async () => {
 		const config = { vault: { name: "Test", path: "" } } as HlidConfig;
 		const inspect = vi.fn().mockResolvedValue(review);

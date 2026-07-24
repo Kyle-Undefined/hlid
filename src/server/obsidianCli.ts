@@ -466,9 +466,12 @@ function safeNoteContent(content: string | undefined, limit: number): string {
 
 function cliError(output: string): string | null {
 	const detail = output.trim();
-	return /^Error:\s*/i.test(detail)
-		? detail.replace(/^Error:\s*/i, "").trim()
-		: null;
+	const errorLine = detail
+		.split(/\r?\n/)
+		.map((line) => line.trim())
+		.reverse()
+		.find((line) => /^Error:\s*/i.test(line));
+	return errorLine ? errorLine.replace(/^Error:\s*/i, "").trim() : null;
 }
 
 async function runObsidianMutationCommand(
@@ -714,6 +717,11 @@ export async function queryObsidianSearch(
 			"Graph-aware Obsidian search returns ranked note paths and cannot be combined with context or countOnly.",
 		);
 	}
+	if (query.path && safeVaultPath(query.path).toLowerCase().endsWith(".md")) {
+		throw new Error(
+			"Obsidian search path must be a vault-relative folder. Use read_note for one exact note.",
+		);
+	}
 	const args = [
 		query.context && !query.countOnly ? "search:context" : "search",
 		`query=${searchQuery}`,
@@ -723,6 +731,11 @@ export async function queryObsidianSearch(
 		...(query.countOnly ? ["total"] : query.context ? [] : ["format=json"]),
 	];
 	const contentOutput = await runObsidianCommand(vaultName, args, dependencies);
+	if (/^No matches found\.?$/i.test(contentOutput.trim())) {
+		if (query.countOnly) return "0";
+		if (query.context) return "";
+		return "[]";
+	}
 	if (
 		query.context ||
 		query.countOnly ||
@@ -1357,12 +1370,55 @@ function parseObsidianEvalJson(
 ): Record<string, unknown> {
 	const error = cliError(output);
 	if (error) throw new Error(`Obsidian CLI failed: ${error}`);
-	const json = output.trim().replace(/^=>\s*/, "");
-	try {
-		return JSON.parse(json) as Record<string, unknown>;
-	} catch {
-		throw new Error(invalidResultMessage);
+	const candidates = [
+		output.trim().replace(/^=>\s*/, ""),
+		...output
+			.split(/\r?\n/)
+			.map((line) => line.trim().replace(/^=>\s*/, ""))
+			.reverse(),
+	];
+	for (const candidate of candidates) {
+		if (!candidate) continue;
+		try {
+			const parsed: unknown = JSON.parse(candidate);
+			if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+				return parsed as Record<string, unknown>;
+			}
+		} catch {
+			// Try the next complete output line before treating the response as
+			// ambiguous. Obsidian can decorate an otherwise valid eval result.
+		}
 	}
+	throw new InvalidObsidianEvalResultError(invalidResultMessage, output);
+}
+
+class InvalidObsidianEvalResultError extends Error {
+	constructor(
+		message: string,
+		readonly output: string,
+	) {
+		super(message);
+		this.name = "InvalidObsidianEvalResultError";
+	}
+}
+
+function summarizeObsidianEvalOutput(
+	output: string,
+	redactions: string[],
+): string {
+	let preview = output;
+	for (const redaction of redactions) {
+		if (redaction) preview = preview.split(redaction).join("[path]");
+	}
+	preview = preview
+		.replace(/[^\P{C}\t\r\n]/gu, "?")
+		.replace(/\r/g, "")
+		.slice(0, 1_000);
+	return JSON.stringify({
+		chars: output.length,
+		lines: output.split(/\r?\n/).length,
+		preview,
+	});
 }
 
 export async function createObsidianNote(
@@ -1534,7 +1590,6 @@ function exactNotePatchCode(input: {
 		"const payloadBytes=Uint8Array.from(atob((await app.vault.read(payloadFile)).trim()),c=>c.charCodeAt(0));",
 		"const payload=JSON.parse(new TextDecoder().decode(payloadBytes));",
 		"const target=app.vault.getAbstractFileByPath(data.path);",
-		"await app.vault.delete(payloadFile);",
 		'if(!target||target.extension!=="md")throw new Error("Exact Markdown note was not found: "+data.path);',
 		'if(!Array.isArray(payload.replacements)||!payload.replacements.length)throw new Error("Hlid edit payload was invalid");',
 		"let replacements=0;",
@@ -1554,7 +1609,12 @@ function exactNotePatchCode(input: {
 		"changed=next!==current;",
 		"return next;",
 		"});",
-		"return JSON.stringify({path:target.path,replacements,changed});",
+		"const receipt={path:target.path,replacements,changed};",
+		"const receiptBytes=new TextEncoder().encode(JSON.stringify(receipt));",
+		'let receiptText="";',
+		"for(const byte of receiptBytes)receiptText+=String.fromCharCode(byte);",
+		"await app.vault.modify(payloadFile,btoa(receiptText));",
+		"return JSON.stringify(receipt);",
 		"})()",
 	].join("");
 }
@@ -1609,8 +1669,53 @@ async function discardObsidianEditPayload(
 			dependencies,
 		);
 	} catch {
-		// The in-app edit deletes its payload before touching the target note.
-		// Cleanup here is only for failures before that fixed script can run.
+		// Cleanup is best effort. A failed command must preserve the primary edit
+		// result or error rather than replacing it with payload cleanup noise.
+	}
+}
+
+type ObsidianPatchReceipt = {
+	path: string;
+	replacements: number;
+	changed: boolean;
+};
+
+function parseObsidianPatchReceipt(
+	encoded: string,
+): ObsidianPatchReceipt | null {
+	try {
+		const parsed = JSON.parse(
+			Buffer.from(encoded.trim(), "base64").toString("utf8"),
+		) as Partial<ObsidianPatchReceipt>;
+		return typeof parsed.path === "string" &&
+			typeof parsed.replacements === "number" &&
+			typeof parsed.changed === "boolean"
+			? {
+					path: parsed.path,
+					replacements: parsed.replacements,
+					changed: parsed.changed,
+				}
+			: null;
+	} catch {
+		return null;
+	}
+}
+
+async function readObsidianPatchReceipt(
+	vaultName: string,
+	payloadPath: string,
+	dependencies: ObsidianBridgeDependencies,
+): Promise<ObsidianPatchReceipt | null> {
+	try {
+		const output = await runObsidianCommand(
+			vaultName,
+			["read", `path=${payloadPath}`],
+			dependencies,
+			{ launchIfNeeded: false },
+		);
+		return parseObsidianPatchReceipt(output);
+	} catch {
+		return null;
 	}
 }
 
@@ -1676,27 +1781,74 @@ export async function patchObsidianNoteText(
 		dependencies,
 	);
 	try {
-		const output = await runObsidianCommand(
-			vaultName,
-			["eval", `code=${exactNotePatchCode({ path, payloadPath })}`],
-			dependencies,
-		);
-		const result = parseObsidianEvalJson(
-			output,
-			"Obsidian returned an invalid text replacement result.",
-		);
+		let result: Record<string, unknown> | undefined;
+		let output = "";
+		try {
+			output = await runObsidianCommand(
+				vaultName,
+				["eval", `code=${exactNotePatchCode({ path, payloadPath })}`],
+				dependencies,
+			);
+		} catch (commandError) {
+			const receipt = await readObsidianPatchReceipt(
+				vaultName,
+				payloadPath,
+				dependencies,
+			);
+			if (!receipt) throw commandError;
+			const summary = summarizeObsidianEvalOutput(
+				commandError instanceof Error
+					? `${commandError.name}: ${commandError.message}`
+					: String(commandError),
+				[path, payloadPath],
+			);
+			console.warn(
+				`[obsidian] recovered note patch confirmation after its CLI command failed ${summary}`,
+			);
+			result = receipt;
+		}
+		if (!result) {
+			try {
+				result = parseObsidianEvalJson(
+					output,
+					"Obsidian returned an invalid text replacement acknowledgement. The edit state is unknown; read the note before retrying.",
+				);
+			} catch (error) {
+				if (!(error instanceof InvalidObsidianEvalResultError)) throw error;
+				const receipt = await readObsidianPatchReceipt(
+					vaultName,
+					payloadPath,
+					dependencies,
+				);
+				const summary = summarizeObsidianEvalOutput(error.output, [
+					path,
+					payloadPath,
+				]);
+				if (!receipt) {
+					console.warn(
+						`[obsidian] note patch returned an invalid acknowledgement ${summary}`,
+					);
+					throw error;
+				}
+				console.warn(
+					`[obsidian] recovered note patch confirmation from its staged receipt ${summary}`,
+				);
+				result = receipt;
+			}
+		}
 		if (
 			result.path !== path ||
 			result.replacements !== replacements.length ||
 			result.changed !== true
 		) {
-			throw new Error("Obsidian did not confirm the exact note patch.");
+			throw new Error(
+				"Obsidian did not confirm the exact note patch. The edit state is unknown; read the note before retrying.",
+			);
 		}
 		if (input.open) await openObsidianNote(vaultName, path, dependencies);
 		return { path, replacements: replacements.length };
-	} catch (error) {
+	} finally {
 		await discardObsidianEditPayload(vaultName, payloadPath, dependencies);
-		throw error;
 	}
 }
 

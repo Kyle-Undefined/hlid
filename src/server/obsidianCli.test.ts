@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	appendToObsidian,
 	createObsidianBaseItem,
@@ -66,6 +66,10 @@ function wslDependencies(
 		run,
 	};
 }
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
 
 describe("Obsidian CLI bridge", () => {
 	it("passively detects the Windows CLI from WSL without launching Obsidian", async () => {
@@ -525,10 +529,155 @@ describe("Obsidian CLI bridge", () => {
 		const code = evalArgs[2]?.replace(/^code=/, "") ?? "";
 		expect(code).toContain("app.vault.process");
 		expect(code).toContain("next.indexOf(replacement.oldText,first+1)");
-		expect(code).toContain("app.vault.delete(payloadFile)");
+		expect(code).toContain("app.vault.modify(payloadFile");
 		expect(code).toContain("atob((await app.vault.read(payloadFile)).trim())");
 		expect(code).not.toContain("Before\nTabbed\tvalue");
 		expect(code).not.toContain("After\\literal");
+	});
+
+	it("recovers an applied patch from its staged receipt when eval output is invalid", async () => {
+		const receipt = Buffer.from(
+			JSON.stringify({
+				path: "Notes/One.md",
+				replacements: 1,
+				changed: true,
+			}),
+			"utf8",
+		).toString("base64");
+		const { dependencies, run } = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "Created", code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{ output: "Obsidian notice without a JSON result", code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{ output: receipt, code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{ output: "Deleted", code: 0 },
+		]);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		await expect(
+			replaceObsidianNoteText(
+				"Fornbok",
+				{
+					path: "Notes/One.md",
+					oldText: "Before",
+					newText: "After",
+				},
+				dependencies,
+			),
+		).resolves.toEqual({ path: "Notes/One.md", replacements: 1 });
+
+		const payloadPath = run.mock.calls[1]?.[1]?.[2];
+		expect(run.mock.calls[5]?.[1]).toEqual([
+			"vault=Fornbok",
+			"read",
+			payloadPath,
+		]);
+		expect(run.mock.calls[7]?.[1]).toEqual([
+			"vault=Fornbok",
+			"delete",
+			payloadPath,
+			"permanent",
+		]);
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining(
+				"recovered note patch confirmation from its staged receipt",
+			),
+		);
+		expect(warn.mock.calls[0]?.[0]).not.toContain("Notes/One.md");
+	});
+
+	it("recovers an applied patch receipt after the CLI command fails", async () => {
+		const receipt = Buffer.from(
+			JSON.stringify({
+				path: "Notes/One.md",
+				replacements: 1,
+				changed: true,
+			}),
+			"utf8",
+		).toString("base64");
+		const { dependencies } = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "Created", code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{ output: "redirector exited after dispatch", code: 1 },
+			{ output: windowsDetection, code: 0 },
+			{ output: receipt, code: 0 },
+		]);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		await expect(
+			replaceObsidianNoteText(
+				"Fornbok",
+				{
+					path: "Notes/One.md",
+					oldText: "Before",
+					newText: "After",
+				},
+				dependencies,
+			),
+		).resolves.toEqual({ path: "Notes/One.md", replacements: 1 });
+		expect(warn).toHaveBeenCalledWith(
+			expect.stringContaining(
+				"recovered note patch confirmation after its CLI command failed",
+			),
+		);
+	});
+
+	it("accepts a valid eval result surrounded by Obsidian notices", async () => {
+		const { dependencies } = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "Created", code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{
+				output:
+					'Obsidian notice\n=> {"path":"Notes/One.md","replacements":1,"changed":true}\nFinished',
+				code: 0,
+			},
+		]);
+
+		await expect(
+			replaceObsidianNoteText(
+				"Fornbok",
+				{
+					path: "Notes/One.md",
+					oldText: "Before",
+					newText: "After",
+				},
+				dependencies,
+			),
+		).resolves.toEqual({ path: "Notes/One.md", replacements: 1 });
+	});
+
+	it("reports an unknown edit state when invalid output has no receipt", async () => {
+		const originalPayload = Buffer.from(
+			JSON.stringify({
+				replacements: [{ oldText: "Before", newText: "After" }],
+			}),
+			"utf8",
+		).toString("base64");
+		const { dependencies } = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "Created", code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{ output: "Obsidian notice without a JSON result", code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{ output: originalPayload, code: 0 },
+		]);
+		vi.spyOn(console, "warn").mockImplementation(() => {});
+
+		await expect(
+			replaceObsidianNoteText(
+				"Fornbok",
+				{
+					path: "Notes/One.md",
+					oldText: "Before",
+					newText: "After",
+				},
+				dependencies,
+			),
+		).rejects.toThrow("read the note before retrying");
 	});
 
 	it("keeps chunked edit payload creation, append, and eval on one Markdown path", async () => {
@@ -900,6 +1049,27 @@ describe("Obsidian CLI bridge", () => {
 			"query=project ship",
 			"total",
 		]);
+	});
+
+	it("normalizes native no-match search output and rejects file path filters", async () => {
+		const paths = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "No matches found.", code: 0 },
+		]);
+		await expect(
+			queryObsidianSearch(
+				"Fornbok",
+				{ query: "missing", path: "1 Projects" },
+				paths.dependencies,
+			),
+		).resolves.toBe("[]");
+
+		await expect(
+			queryObsidianSearch("Fornbok", {
+				query: "missing",
+				path: "1 Projects/Hlid.md",
+			}),
+		).rejects.toThrow("path must be a vault-relative folder");
 	});
 
 	it("combines filename, content, backlinks, and outgoing links when requested", async () => {

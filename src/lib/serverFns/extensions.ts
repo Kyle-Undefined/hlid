@@ -20,10 +20,19 @@ const EMPTY_EXTENSION_INVENTORY: ExtensionInventory = {
 	errors: [],
 };
 
+const EXTENSION_READ_BUDGET = {
+	initialTimeoutMs: 15_000,
+	retryTimeoutMs: false,
+} as const;
+
 export const getExtensionInventoryFn = createServerFn({
 	method: "GET",
 }).handler(() =>
-	dbJson<ExtensionInventory>("/extensions/catalog", EMPTY_EXTENSION_INVENTORY),
+	dbJson<ExtensionInventory>(
+		"/extensions/catalog",
+		EMPTY_EXTENSION_INVENTORY,
+		EXTENSION_READ_BUDGET,
+	),
 );
 
 export const getExtensionReviewFn = createServerFn({ method: "GET" })
@@ -34,6 +43,7 @@ export const getExtensionReviewFn = createServerFn({ method: "GET" })
 		dbJson<ExtensionReview | null>(
 			`/extensions/review?id=${encodeURIComponent(data.id)}`,
 			null,
+			EXTENSION_READ_BUDGET,
 		),
 	);
 
