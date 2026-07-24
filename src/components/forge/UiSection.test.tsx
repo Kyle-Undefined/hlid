@@ -13,6 +13,7 @@ function uiForm(showProviderEntries: boolean): UiForm {
 		customTheme: builtInThemePalette("tan"),
 		mobileCustomTheme: builtInThemePalette("tan"),
 		enterToSubmit: true,
+		liveSessionsHotkey: "Alt+Shift+KeyS",
 		hideSkillsIndex: true,
 		showProviderEntries,
 		htmlPlans: false,
@@ -30,5 +31,31 @@ describe("UiSection provider skills preference", () => {
 		expect((toggle as HTMLInputElement).checked).toBe(false);
 		fireEvent.click(toggle);
 		expect(onChange).toHaveBeenCalledWith({ showProviderEntries: true });
+	});
+
+	it("captures, clears, and reports a conflicting live sessions hotkey", () => {
+		const onChange = vi.fn();
+		render(
+			<UiSection
+				ui={uiForm(false)}
+				onChange={onChange}
+				voiceHotkey="Alt+Shift+KeyS"
+			/>,
+		);
+		const input = screen.getByLabelText("Live sessions hotkey");
+		expect((input as HTMLInputElement).value).toBe("Alt + Shift + S");
+		expect(screen.getByRole("alert").textContent).toContain("Voice recording");
+
+		fireEvent.keyDown(input, {
+			ctrlKey: true,
+			altKey: true,
+			code: "Digit1",
+		});
+		expect(onChange).toHaveBeenCalledWith({
+			liveSessionsHotkey: "Ctrl+Alt+Digit1",
+		});
+
+		fireEvent.keyDown(input, { key: "Backspace" });
+		expect(onChange).toHaveBeenCalledWith({ liveSessionsHotkey: "" });
 	});
 });

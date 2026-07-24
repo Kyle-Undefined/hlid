@@ -29,6 +29,10 @@ import { AgentSelect } from "#/components/AgentSelect";
 import { AttachmentStrip } from "#/components/AttachmentStrip";
 import { ActiveCommandBadges } from "#/components/chat/ActiveCommandBadge";
 import { reducer } from "#/components/chat/chatReducer";
+import {
+	LiveSessionSwitcher,
+	LiveSessionToggle,
+} from "#/components/chat/LiveSessionSwitcher";
 import { MessageList } from "#/components/chat/MessageList";
 import { RavenGoalStrip } from "#/components/chat/RavenGoalStrip";
 import {
@@ -2194,7 +2198,36 @@ function ChatPageContent(props: ChatPageContentProps) {
 		setShellTab,
 	} = props;
 	return (
-		<div className="h-full min-h-0 flex flex-col overflow-hidden">
+		<LiveSessionSwitcher
+			currentSessionId={props.session.sessionId}
+			hotkey={props.config.ui.live_sessions_hotkey}
+			voiceHotkey={
+				props.config.voice.enabled ? props.config.voice.hotkey : undefined
+			}
+			onSelectSession={(sessionId, replace) =>
+				void navigate({
+					to: "/raven",
+					search: (previous) => ({
+						...previous,
+						session: sessionId,
+						agent: undefined,
+						prompt: undefined,
+					}),
+					replace,
+				})
+			}
+			onOpenLedger={(replace) =>
+				void navigate({
+					to: "/ledger",
+					search: {
+						tab: "sessions",
+						page: 1,
+						size: 20,
+					},
+					replace,
+				})
+			}
+		>
 			<ProviderUsageStrip
 				initial={initialProviderUsages}
 				liveQueryCount={liveStats?.queries ?? 0}
@@ -2264,7 +2297,7 @@ function ChatPageContent(props: ChatPageContentProps) {
 				{...composerProps}
 				hideOnMobile={terminalOpen && shellTab === "terminal"}
 			/>
-		</div>
+		</LiveSessionSwitcher>
 	);
 }
 
@@ -3058,9 +3091,7 @@ function ChatInputControls(props: ChatComposerProps) {
 	const sessionFork = useChatSessionFork(props);
 	return (
 		<div className="flex min-w-0 items-start">
-			<span className="text-primary text-sm px-4 py-3 shrink-0 select-none">
-				›
-			</span>
+			<LiveSessionToggle />
 			<div className="grid shrink-0 grid-cols-2 gap-y-1 md:contents">
 				<input
 					ref={fileInputRef}

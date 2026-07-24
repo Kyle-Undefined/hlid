@@ -106,6 +106,7 @@ export function buildFirstRunConfig(s: StructureState): HlidConfig {
 		},
 		ui: {
 			enter_to_submit: true,
+			live_sessions_hotkey: "Alt+Shift+KeyS",
 			hide_skills_index: true,
 			show_provider_entries: false,
 			theme: s.theme,

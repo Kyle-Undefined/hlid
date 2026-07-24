@@ -8,7 +8,7 @@ import {
 	waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ServerMessage } from "#/server/protocol";
+import type { ServerMessage, SessionStatusEntry } from "#/server/protocol";
 
 const state = vi.hoisted(() => ({
 	loaderData: {} as Record<string, unknown>,
@@ -495,6 +495,91 @@ describe("Raven composed submission behavior", () => {
 		expect(modeRow?.className).toContain("w-full");
 		expect(toolbar?.className).toContain("flex-wrap");
 		expect(screen.getByRole("button", { name: "html" })).toBeTruthy();
+	});
+
+	it("switches live sessions through the Raven route and preserves the current draft", () => {
+		state.search = { session: "chat-current" };
+		state.loaderData = {
+			...state.loaderData,
+			existingSessionId: "chat-current",
+			isExplicitSession: true,
+		};
+		state.sessions = [
+			{
+				session_id: "pool-placeholder",
+				agent_cwd: "/unused",
+				agent_name: "Unused",
+				state: "idle",
+				model: "sonnet",
+				hasPendingPermissions: false,
+				hasDbSession: false,
+				db_session_id: null,
+			},
+			{
+				session_id: "pool-current",
+				agent_cwd: "/current",
+				agent_name: "Current agent",
+				lastLabel: "Current work",
+				state: "idle",
+				provider_id: "claude",
+				model: "sonnet",
+				hasPendingPermissions: false,
+				hasDbSession: true,
+				db_session_id: "chat-current",
+			},
+			{
+				session_id: "pool-other",
+				agent_cwd: "/other",
+				agent_name: "Other agent",
+				lastLabel: "Other work",
+				state: "running",
+				provider_id: "codex",
+				model: "gpt-5.6-sol",
+				hasPendingPermissions: false,
+				hasDbSession: true,
+				db_session_id: "chat-other",
+			},
+		] satisfies SessionStatusEntry[];
+		render(<ChatPage />);
+		fireEvent.change(screen.getByRole("combobox"), {
+			target: { value: "draft before switching" },
+		});
+		state.navigate.mockClear();
+
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: "Open live sessions, 2 total, work in progress",
+			}),
+		);
+		expect(
+			screen
+				.getByRole("button", { name: "Open Current work session" })
+				.getAttribute("aria-current"),
+		).toBe("page");
+		fireEvent.click(
+			screen.getByRole("button", { name: "Open Other work session" }),
+		);
+
+		const switchNavigation = state.navigate.mock.calls
+			.map(([options]) => options as { to?: string; search?: unknown })
+			.find((options) => {
+				if (options.to !== "/raven" || typeof options.search !== "function") {
+					return false;
+				}
+				return (
+					(
+						options.search as (
+							previous: Record<string, unknown>,
+						) => Record<string, unknown>
+					)(state.search).session === "chat-other"
+				);
+			});
+		expect(switchNavigation).toBeTruthy();
+
+		cleanup();
+		expect(localStorage.getItem("hlid:draft:chat-current")).toBe(
+			"draft before switching",
+		);
 	});
 
 	it("aligns the agent and model badges to the same top edge", () => {
@@ -1348,7 +1433,11 @@ describe("Raven composer keyboard", () => {
 	beforeEach(() => {
 		vi.stubGlobal(
 			"matchMedia",
-			vi.fn(() => ({ matches: false })),
+			vi.fn(() => ({
+				matches: false,
+				addEventListener: vi.fn(),
+				removeEventListener: vi.fn(),
+			})),
 		);
 	});
 

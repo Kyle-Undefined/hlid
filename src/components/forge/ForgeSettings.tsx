@@ -375,6 +375,7 @@ function ExperienceCategory({
 			<UiSection
 				ui={state.ui}
 				onChange={(patch) => state.setUi((ui) => ({ ...ui, ...patch }))}
+				voiceHotkey={state.voice.enabled ? state.voice.hotkey : ""}
 			/>
 			<div className="border border-border bg-card p-4 flex items-center justify-between gap-4">
 				<div>

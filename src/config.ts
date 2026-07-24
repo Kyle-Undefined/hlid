@@ -169,6 +169,7 @@ const CodexSchema = z.object({
 
 const UiSchema = z.object({
 	enter_to_submit: z.boolean().default(true),
+	live_sessions_hotkey: z.string().default("Alt+Shift+KeyS"),
 	hide_skills_index: z.boolean().default(true),
 	/** Include provider-owned skills, commands, and plugin entries in the picker. */
 	show_provider_entries: z.boolean().default(false),
@@ -399,6 +400,7 @@ export const HlidConfigSchema = z.object({
 	})),
 	ui: UiSchema.default(() => ({
 		enter_to_submit: true,
+		live_sessions_hotkey: "Alt+Shift+KeyS",
 		hide_skills_index: true,
 		show_provider_entries: false,
 		theme: "tan" as const,

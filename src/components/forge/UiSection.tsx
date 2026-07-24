@@ -1,5 +1,6 @@
 import { THEME_OPTIONS } from "#/lib/agentOptions";
 import type { CustomThemePalette, ThemeName } from "#/lib/theme";
+import { displayHotkey, hotkeyFromEvent } from "#/lib/voiceHotkey";
 import { Field, Section } from "./fields";
 
 export type UiForm = {
@@ -8,6 +9,7 @@ export type UiForm = {
 	customTheme: CustomThemePalette;
 	mobileCustomTheme: CustomThemePalette;
 	enterToSubmit: boolean;
+	liveSessionsHotkey: string;
 	hideSkillsIndex: boolean;
 	showProviderEntries: boolean;
 	htmlPlans: boolean;
@@ -27,10 +29,14 @@ const MOBILE_THEME_OPTIONS = [
 export function UiSection({
 	ui,
 	onChange,
+	voiceHotkey = "",
 }: {
 	ui: UiForm;
 	onChange: (patch: Partial<UiForm>) => void;
+	voiceHotkey?: string;
 }) {
+	const hotkeyConflict =
+		Boolean(ui.liveSessionsHotkey) && ui.liveSessionsHotkey === voiceHotkey;
 	return (
 		<Section title="UI">
 			<div className="px-4 py-3 space-y-2">
@@ -97,6 +103,45 @@ export function UiSection({
 						{ui.enterToSubmit ? "on" : "off"}
 					</span>
 				</label>
+			</Field>
+			<Field
+				label="Live sessions hotkey"
+				hint="desktop shortcut; Escape or Backspace clears it"
+			>
+				<div className="space-y-1">
+					<input
+						type="text"
+						readOnly
+						value={
+							ui.liveSessionsHotkey ? displayHotkey(ui.liveSessionsHotkey) : ""
+						}
+						placeholder="Click and press shortcut"
+						onKeyDown={(event) => {
+							event.preventDefault();
+							if (event.key === "Escape" || event.key === "Backspace") {
+								onChange({ liveSessionsHotkey: "" });
+								return;
+							}
+							const hotkey = hotkeyFromEvent(event.nativeEvent);
+							if (hotkey) onChange({ liveSessionsHotkey: hotkey });
+						}}
+						aria-label="Live sessions hotkey"
+						aria-invalid={hotkeyConflict || undefined}
+						aria-describedby={
+							hotkeyConflict ? "live-sessions-hotkey-conflict" : undefined
+						}
+						className="w-40 sm:w-52 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/50 cursor-pointer"
+					/>
+					{hotkeyConflict && (
+						<div
+							id="live-sessions-hotkey-conflict"
+							role="alert"
+							className="text-[10px] text-amber-400"
+						>
+							Voice recording currently uses this shortcut.
+						</div>
+					)}
+				</div>
 			</Field>
 			<Field label="Hide skills index.md">
 				<label className="flex items-center gap-2 cursor-pointer">

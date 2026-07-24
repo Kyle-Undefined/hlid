@@ -170,6 +170,7 @@ function serializeWindowsComputerUse(
 function serializeUi(config: HlidConfig["ui"]): string[] {
 	return section("ui", [
 		`enter_to_submit = ${tomlVal(config.enter_to_submit)}`,
+		`live_sessions_hotkey = ${tomlVal(config.live_sessions_hotkey)}`,
 		`hide_skills_index = ${tomlVal(config.hide_skills_index)}`,
 		`show_provider_entries = ${tomlVal(config.show_provider_entries)}`,
 		`html_plans = ${tomlVal(config.html_plans)}`,

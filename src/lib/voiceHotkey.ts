@@ -9,7 +9,7 @@ const MODIFIER_CODES = new Set([
 	"ShiftRight",
 ]);
 
-export function voiceHotkeyFromEvent(
+export function hotkeyFromEvent(
 	event: Pick<
 		KeyboardEvent,
 		"altKey" | "ctrlKey" | "metaKey" | "shiftKey" | "code"
@@ -26,17 +26,17 @@ export function voiceHotkeyFromEvent(
 	return parts.join("+");
 }
 
-export function matchesVoiceHotkey(
+export function matchesHotkey(
 	event: Pick<
 		KeyboardEvent,
 		"altKey" | "ctrlKey" | "metaKey" | "shiftKey" | "code"
 	>,
 	hotkey: string,
 ): boolean {
-	return voiceHotkeyFromEvent(event) === hotkey;
+	return hotkeyFromEvent(event) === hotkey;
 }
 
-export function displayVoiceHotkey(hotkey: string): string {
+export function displayHotkey(hotkey: string): string {
 	return hotkey
 		.split("+")
 		.map((part) =>
@@ -48,3 +48,7 @@ export function displayVoiceHotkey(hotkey: string): string {
 		)
 		.join(" + ");
 }
+
+export const voiceHotkeyFromEvent = hotkeyFromEvent;
+export const matchesVoiceHotkey = matchesHotkey;
+export const displayVoiceHotkey = displayHotkey;

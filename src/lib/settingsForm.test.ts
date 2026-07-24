@@ -40,6 +40,7 @@ describe("settings form conversion", () => {
 		expect(forms.server).toMatchObject({ port: "4000", tlsProxyPort: "4443" });
 		expect(forms.ui.htmlPlans).toBe(true);
 		expect(forms.ui.showProviderEntries).toBe(true);
+		expect(forms.ui.liveSessionsHotkey).toBe("Alt+Shift+KeyS");
 		expect(forms.vocab).toEqual({
 			active: "Doing",
 			planning: "",
@@ -103,12 +104,14 @@ describe("settings form conversion", () => {
 		});
 		expect(config.ui.mobile_theme).toBeUndefined();
 		expect(config.ui.html_plans).toBe(true);
+		expect(config.ui.live_sessions_hotkey).toBe("Alt+Shift+KeyS");
 	});
 
 	it("defaults HTML plans off when the setting is absent", () => {
 		const forms = createSettingsForms(HlidConfigSchema.parse({}));
 		expect(forms.ui.htmlPlans).toBe(false);
 		expect(forms.ui.showProviderEntries).toBe(false);
+		expect(forms.ui.liveSessionsHotkey).toBe("Alt+Shift+KeyS");
 	});
 
 	it("copies the selected built-in into new desktop and mobile custom palettes", () => {
