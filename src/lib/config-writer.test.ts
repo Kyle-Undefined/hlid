@@ -147,6 +147,7 @@ describe("writeConfig — persistence invariants", () => {
 		delete legacyPalette.token_output;
 		delete legacyPalette.cache_read;
 		delete legacyPalette.cache_write;
+		delete legacyPalette.status_info;
 		const config = HlidConfigSchema.parse({
 			ui: { theme: "custom", custom_theme: legacyPalette },
 		});
@@ -155,6 +156,7 @@ describe("writeConfig — persistence invariants", () => {
 			token_output: "#ca8a04",
 			cache_read: "#16a34a",
 			cache_write: "#ea580c",
+			status_info: "#8c4e35",
 		});
 	});
 

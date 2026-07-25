@@ -1,6 +1,6 @@
 /**
  * Simple tri-state status indicator dot.
- *   ok=true  → green
+ *   ok=true  → success
  *   ok=false → red/destructive
  *   ok=null  → muted grey (unknown / loading)
  */
@@ -13,7 +13,7 @@ export function StatusDot({
 }) {
 	const cls =
 		ok === true
-			? "bg-emerald-500"
+			? "bg-status-success"
 			: ok === false
 				? "bg-destructive"
 				: "bg-muted-foreground/40";

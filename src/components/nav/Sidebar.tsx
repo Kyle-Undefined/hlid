@@ -1,6 +1,7 @@
 import { Link } from "@tanstack/react-router";
 import { useEffect, useState } from "react";
 import { useLastRavenSession } from "#/hooks/ravenSessionStore";
+import { semanticStatusClass, themeSurfaceClass } from "#/lib/themeClasses";
 import { version } from "../../../package.json";
 import {
 	fetchUpdateStatus,
@@ -36,10 +37,12 @@ export function Sidebar() {
 	const latestVersion = updateStatus?.latest;
 
 	return (
-		<aside className="hidden md:flex flex-col w-44 shrink-0 bg-sidebar border-r border-sidebar-border">
+		<aside
+			className={`hidden md:flex flex-col w-44 shrink-0 border-r border-sidebar-border ${themeSurfaceClass.sidebar}`}
+		>
 			<div className="px-4 py-4 border-b border-sidebar-border">
 				<div className="flex items-center gap-2">
-					<div className="text-[13px] font-bold tracking-[0.25em] text-primary">
+					<div className="text-[13px] font-bold tracking-[0.25em] text-sidebar-primary">
 						Hlið
 					</div>
 					<Link
@@ -53,10 +56,10 @@ export function Sidebar() {
 							<span
 								className={`absolute -top-1.5 -right-2.5 font-mono text-[8px] leading-none tabular-nums ${
 									attentionTone === "needs_attention"
-										? "text-status-warning"
+										? semanticStatusClass.warning.text
 										: attentionTone === "working"
-											? "text-primary/70"
-											: "text-sky-400/70"
+											? "text-sidebar-primary/70"
+											: semanticStatusClass.info.textMuted
 								}`}
 							>
 								{attentionCount > 9 ? "9+" : attentionCount}
@@ -64,13 +67,13 @@ export function Sidebar() {
 						)}
 					</Link>
 				</div>
-				<div className="text-[9px] tracking-widest text-muted-foreground/50 mt-0.5 uppercase">
+				<div className="text-[9px] tracking-widest text-sidebar-foreground/50 mt-0.5 uppercase">
 					watcher of worlds
 				</div>
-				<div className="text-[9px] tabular-nums text-muted-foreground/30 mt-0.5 font-mono flex items-center gap-1">
+				<div className="text-[9px] tabular-nums text-sidebar-foreground/30 mt-0.5 font-mono flex items-center gap-1">
 					v{version}
 					{updateAvailable && latestVersion && (
-						<span className="text-primary/70" title="Update available">
+						<span className="text-sidebar-primary/70" title="Update available">
 							→ v{latestVersion}
 						</span>
 					)}
@@ -83,10 +86,10 @@ export function Sidebar() {
 						key={to}
 						to={to}
 						search={navSearch(to, lastRavenSession)}
-						className="flex items-center gap-3 px-4 py-2.5 text-[11px] tracking-widest text-muted-foreground hover:text-foreground hover:bg-accent transition-colors duration-100 border-l-2 border-transparent"
+						className={`flex items-center gap-3 px-4 py-2.5 text-[11px] tracking-widest text-sidebar-foreground/70 transition-colors duration-100 border-l-2 border-transparent ${themeSurfaceClass.sidebarAction}`}
 						activeProps={{
 							className:
-								"flex items-center gap-3 px-4 py-2.5 text-[11px] tracking-widest text-primary border-l-2 border-primary bg-primary/5 transition-colors duration-100",
+								"flex items-center gap-3 px-4 py-2.5 text-[11px] tracking-widest text-sidebar-primary border-l-2 border-sidebar-primary bg-sidebar-primary/5 transition-colors duration-100",
 						}}
 						activeOptions={navActiveOptions(exact)}
 					>

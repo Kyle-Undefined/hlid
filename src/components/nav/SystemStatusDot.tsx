@@ -44,7 +44,7 @@ function aggregateDotClass(
 		return "bg-status-warning animate-pulse";
 	if (state === "running" || agg.workingCount > 0)
 		return "bg-primary animate-pulse";
-	if (agg.queuedCount > 0) return "bg-sky-400";
+	if (agg.queuedCount > 0) return "bg-status-info";
 	return "bg-status-success";
 }
 
@@ -53,6 +53,18 @@ export type SystemAttentionTone =
 	| "working"
 	| "queued"
 	| "none";
+
+const SERVER_AGGREGATE_NAV_STATUS: AggregateNavStatus = {
+	state: "idle",
+	sessionCount: 0,
+	runningCount: 0,
+	pendingPermissions: false,
+	attentionSessionCount: 0,
+	needsAttentionCount: 0,
+	workingCount: 0,
+	queuedCount: 0,
+	recentCount: 0,
+};
 
 function attentionHeadline(agg: AggregateNavStatus): {
 	count: number;
@@ -81,17 +93,7 @@ export function useSystemStatusIndicator() {
 	const agg = useSyncExternalStore(
 		subscribeSessionsStatus,
 		getAggregateNavStatus,
-		() => ({
-			state: "idle" as const,
-			sessionCount: 0,
-			runningCount: 0,
-			pendingPermissions: false,
-			attentionSessionCount: 0,
-			needsAttentionCount: 0,
-			workingCount: 0,
-			queuedCount: 0,
-			recentCount: 0,
-		}),
+		() => SERVER_AGGREGATE_NAV_STATUS,
 	);
 	const headline =
 		wsStatus === "connected"
@@ -155,7 +157,7 @@ export function WsStatusDot() {
 			? "text-status-warning"
 			: attentionTone === "working"
 				? "text-primary"
-				: "text-sky-400";
+				: "text-status-info";
 
 	return (
 		<div

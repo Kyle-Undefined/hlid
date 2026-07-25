@@ -8,6 +8,7 @@ import {
 } from "react";
 import { ConfirmAction } from "#/components/ConfirmAction";
 import { useWs } from "#/hooks/useWs";
+import { semanticStatusClass } from "#/lib/themeClasses";
 import type { ServerMessage } from "#/server/protocol";
 import { Section } from "./fields";
 import type { VaultMcpConfig, VaultMcpServer } from "./McpServerForm";
@@ -31,13 +32,13 @@ import {
 function statusDot(liveStatus: Map<string, string>, name: string): string {
 	switch (liveStatus.get(name)) {
 		case "connected":
-			return "bg-green-500/80";
+			return semanticStatusClass.success.dot;
 		case "needs-auth":
-			return "bg-amber-400/70";
+			return semanticStatusClass.warning.dot;
 		case "failed":
-			return "bg-red-500/70";
+			return semanticStatusClass.danger.dot;
 		case "pending":
-			return "bg-orange-500/60 animate-pulse";
+			return `${semanticStatusClass.warning.dot} animate-pulse`;
 		default:
 			return "bg-primary/20";
 	}

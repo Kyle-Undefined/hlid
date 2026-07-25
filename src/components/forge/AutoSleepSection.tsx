@@ -30,7 +30,7 @@ function NumberInput({
 				disabled={disabled}
 				onChange={(e) => onChange(e.target.value)}
 				aria-label={ariaLabel}
-				className="w-20 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
+				className="w-20 bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
 			/>
 			<span className="text-xs text-muted-foreground">{unit}</span>
 		</label>

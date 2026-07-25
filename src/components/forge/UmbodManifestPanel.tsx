@@ -57,7 +57,7 @@ export function UmbodManifestPanel({
 			<label className="block text-xs space-y-1">
 				<span className="text-muted-foreground">Manifest path</span>
 				<input
-					className="w-full bg-secondary border border-border px-3 py-2"
+					className="w-full bg-input border border-border px-3 py-2"
 					value={value.manifest_path}
 					onChange={(event) =>
 						onChange({ ...value, manifest_path: event.target.value })
@@ -67,7 +67,7 @@ export function UmbodManifestPanel({
 			<textarea
 				aria-label="Umbod manifest TOML"
 				spellCheck={false}
-				className="w-full min-h-64 bg-secondary border border-border p-3 font-mono text-xs"
+				className="w-full min-h-64 bg-input border border-border p-3 font-mono text-xs"
 				value={source}
 				onChange={(event) => setSource(event.target.value)}
 			/>

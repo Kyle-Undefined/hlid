@@ -1,10 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("node:crypto", () => ({
-	X509Certificate: class {
-		subjectAltName = "DNS:hlid.test";
-	},
-}));
+vi.mock("node:crypto", async (importOriginal) => {
+	const actual = await importOriginal<typeof import("node:crypto")>();
+	return {
+		...actual,
+		X509Certificate: class {
+			subjectAltName = "DNS:hlid.test";
+		},
+	};
+});
 
 vi.mock("node:fs", () => ({
 	readFileSync: vi.fn(() => Buffer.from("test certificate")),
@@ -16,6 +20,15 @@ vi.mock("../lib/lifecycle", () => ({
 
 vi.mock("./auth", () => ({
 	authenticateRequest: vi.fn(),
+	readCookie: vi.fn((request: Request, name = "hlid_session") => {
+		for (const cookie of (request.headers.get("cookie") ?? "").split(/;\s*/)) {
+			const equals = cookie.indexOf("=");
+			if (equals >= 0 && cookie.slice(0, equals) === name) {
+				return cookie.slice(equals + 1);
+			}
+		}
+		return null;
+	}),
 }));
 
 import { registerBunServer } from "../lib/lifecycle";
@@ -283,5 +296,80 @@ describe("TLS proxy server boundary", () => {
 			"http://127.0.0.1:3001/api/project-previews/11111111-1111-4111-8111-111111111111/relay/app",
 			expect.any(Object),
 		);
+
+		const selectedRoot = await preview.fetch(
+			new Request("https://hlid.test/settings", {
+				headers: {
+					cookie:
+						"hlid_session=parent; __hlid_preview_selection=11111111-1111-4111-8111-111111111111",
+				},
+			}),
+			requestServer(),
+		);
+		expect(selectedRoot?.status).toBe(200);
+		expect(upstreamFetch).toHaveBeenCalledWith(
+			"http://127.0.0.1:3001/settings",
+			expect.any(Object),
+		);
+
+		await preview.fetch(
+			new Request(
+				"https://hlid.test/api/project-previews/22222222-2222-4222-8222-222222222222/relay/login?__hlid_preview_open=1",
+				{ headers: { cookie: "hlid_session=mobile" } },
+			),
+			requestServer(),
+		);
+		const mobileRoot = await preview.fetch(
+			new Request("https://hlid.test/login", {
+				headers: { cookie: "hlid_session=mobile" },
+			}),
+			requestServer(),
+		);
+		expect(mobileRoot?.status).toBe(200);
+		expect(upstreamFetch).toHaveBeenLastCalledWith(
+			"http://127.0.0.1:3001/login",
+			expect.objectContaining({
+				headers: expect.any(Headers),
+			}),
+		);
+		const mobileHeaders = new Headers(
+			upstreamFetch.mock.lastCall?.[1]?.headers,
+		);
+		expect(mobileHeaders.get("cookie")).toContain(
+			"__hlid_preview_selection=22222222-2222-4222-8222-222222222222",
+		);
+		expect(mobileHeaders.get("x-hlid-preview-origin")).toBe("1");
+
+		const upgradeServer = requestServer();
+		const upgraded = await preview.fetch(
+			new Request(
+				"https://hlid.test/api/project-previews/11111111-1111-4111-8111-111111111111/relay/ws",
+				{
+					headers: {
+						upgrade: "websocket",
+						origin: "https://localhost",
+						"sec-websocket-protocol": "vite-hmr",
+						cookie:
+							"hlid_session=parent; __hlid_preview_11111111111141118111111111111111__app_session=preview",
+					},
+				},
+			),
+			upgradeServer,
+		);
+		expect(upgraded).toBeUndefined();
+		expect(upgradeServer.upgrade).toHaveBeenCalledWith(expect.any(Request), {
+			data: {
+				wsTarget:
+					"ws://127.0.0.1:3001/api/project-previews/11111111-1111-4111-8111-111111111111/relay/ws",
+				back: null,
+				queue: [],
+				protocols: ["vite-hmr"],
+				forwardHeaders: {
+					cookie:
+						"hlid_session=parent; __hlid_preview_11111111111141118111111111111111__app_session=preview",
+					"x-hlid-preview-origin": "1",
+				},
+			},
+		});
 	});
 });

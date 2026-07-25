@@ -23,14 +23,9 @@ function loadMermaid() {
 
 function getActiveTheme(): "dark" | "default" {
 	if (typeof document === "undefined") return "dark";
-	const t = document.documentElement.getAttribute("data-theme");
-	if (t === "tan") return "default";
-	if (t === "custom") {
-		return getComputedStyle(document.documentElement).colorScheme === "light"
-			? "default"
-			: "dark";
-	}
-	return "dark";
+	return document.documentElement.dataset.themeAppearance === "light"
+		? "default"
+		: "dark";
 }
 
 export function MermaidBlock({ code }: { code: string }) {
@@ -46,7 +41,7 @@ export function MermaidBlock({ code }: { code: string }) {
 		const observer = new MutationObserver(() => setThemeTick((n) => n + 1));
 		observer.observe(document.documentElement, {
 			attributes: true,
-			attributeFilter: ["data-theme"],
+			attributeFilter: ["data-theme", "data-theme-appearance"],
 		});
 		return () => observer.disconnect();
 	}, []);

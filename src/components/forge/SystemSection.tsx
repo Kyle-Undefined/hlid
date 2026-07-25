@@ -107,7 +107,7 @@ function RestartAction({
 						type="button"
 						onClick={open}
 						disabled={busy}
-						className="text-[10px] tracking-widest px-3 py-1.5 border border-amber-500/40 text-amber-500 hover:bg-amber-500/10 transition-colors uppercase disabled:opacity-40"
+						className="text-[10px] tracking-widest px-3 py-1.5 border border-status-warning/40 text-status-warning hover:bg-status-warning/10 transition-colors uppercase disabled:opacity-40"
 					>
 						{busy ? "RESTARTING…" : "RESTART"}
 					</button>

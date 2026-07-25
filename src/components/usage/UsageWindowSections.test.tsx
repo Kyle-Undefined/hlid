@@ -29,7 +29,7 @@ describe("UsageWindowSections", () => {
 		expect(screen.getByText("70%")).not.toBeNull();
 		expect(
 			Array.from(container.querySelectorAll("div")).some((element) =>
-				element.classList.contains("bg-yellow-600/60"),
+				element.classList.contains("bg-status-warning/60"),
 			),
 		).toBe(true);
 

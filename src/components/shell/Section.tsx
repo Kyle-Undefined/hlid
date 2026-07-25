@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { themeSurfaceClass } from "#/lib/themeClasses";
 
 /**
  * Shared bordered section panel with an optional uppercase eyebrow header.
@@ -37,7 +38,9 @@ export function Section({
 					)}
 				</div>
 			)}
-			<div className="border border-border bg-card divide-y divide-border">
+			<div
+				className={`border border-border divide-y divide-border ${themeSurfaceClass.card}`}
+			>
 				{children}
 			</div>
 		</div>

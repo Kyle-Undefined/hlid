@@ -331,7 +331,7 @@ function MaxTurnsField({
 					}
 				}}
 				placeholder="unlimited"
-				className="w-32 sm:w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+				className="w-32 sm:w-48 bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
 			/>
 		</Field>
 	);
@@ -413,7 +413,7 @@ export function ClaudeSection({
 								<span
 									className={
 										capability.available
-											? "text-[10px] text-green-600/80"
+											? "text-[10px] text-status-success/80"
 											: "text-[10px] text-destructive/70"
 									}
 								>

@@ -678,7 +678,7 @@ function OptionalDataNotice({
 }) {
 	if (status === "ready") return null;
 	return (
-		<output className="mx-4 mt-3 flex items-center justify-between gap-3 border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-[10px] tracking-wider text-[var(--status-warning)] uppercase">
+		<output className="mx-4 mt-3 flex items-center justify-between gap-3 border border-status-warning/30 bg-status-warning/5 px-3 py-2 text-[10px] tracking-wider text-status-warning uppercase">
 			<span>
 				{status === "loading"
 					? "Restoring dashboard data…"
@@ -688,7 +688,7 @@ function OptionalDataNotice({
 				<button
 					type="button"
 					onClick={onRetry}
-					className="shrink-0 border border-amber-500/40 px-2 py-1 hover:bg-amber-500/10"
+					className="shrink-0 border border-status-warning/40 px-2 py-1 hover:bg-status-warning/10"
 				>
 					Retry
 				</button>

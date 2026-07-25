@@ -29,7 +29,7 @@ export function PlanDecisionBar({
 					type="button"
 					onClick={onApprove}
 					aria-label="Approve plan"
-					className="min-w-0 flex items-center justify-center gap-1.5 sm:gap-2 px-1 py-2 text-[10px] tracking-widest text-green-500/70 hover:bg-green-500/5 transition-colors uppercase border-b border-border sm:border-b-0 sm:border-l"
+					className="min-w-0 flex items-center justify-center gap-1.5 sm:gap-2 px-1 py-2 text-[10px] tracking-widest text-status-success/70 hover:bg-status-success/5 transition-colors uppercase border-b border-border sm:border-b-0 sm:border-l"
 				>
 					<Check className="w-3 h-3 shrink-0" /> APPROVE
 				</button>
@@ -38,7 +38,7 @@ export function PlanDecisionBar({
 					onClick={onRevise}
 					disabled={!feedback.trim()}
 					aria-label="Send revisions"
-					className="col-span-2 sm:col-span-1 min-w-0 flex items-center justify-center gap-1.5 sm:gap-2 px-1 py-2 text-[10px] tracking-widest text-amber-500/80 hover:bg-amber-500/5 disabled:opacity-30 disabled:hover:bg-transparent transition-colors uppercase sm:border-l border-border"
+					className="col-span-2 sm:col-span-1 min-w-0 flex items-center justify-center gap-1.5 sm:gap-2 px-1 py-2 text-[10px] tracking-widest text-status-warning/80 hover:bg-status-warning/5 disabled:opacity-30 disabled:hover:bg-transparent transition-colors uppercase sm:border-l border-border"
 				>
 					<CornerDownLeft className="w-3 h-3 shrink-0" /> REVISE
 				</button>

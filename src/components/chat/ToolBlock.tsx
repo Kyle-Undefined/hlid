@@ -204,7 +204,7 @@ export const ToolBlock = memo(function ToolBlock({
 			</button>
 			{permissionLabel && (
 				<div className="flex items-center gap-1.5 pl-8 pr-3 pb-1 -mt-0.5 text-[9px] tracking-widest text-muted-foreground/55 uppercase">
-					<Check className="w-2.5 h-2.5 text-green-600/55" />
+					<Check className="w-2.5 h-2.5 text-status-success/55" />
 					<span>{permissionLabel}</span>
 				</div>
 			)}

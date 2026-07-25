@@ -153,7 +153,7 @@ describe("WsStatusDot", () => {
 			},
 		);
 		render(<WsStatusDot />);
-		expect(statusDot().className).toContain("bg-sky-400");
+		expect(statusDot().className).toContain("bg-status-info");
 		expect(dot().getAttribute("aria-label")).toBe("3 sessions queued");
 		expect(dot().textContent).toBe("3");
 	});

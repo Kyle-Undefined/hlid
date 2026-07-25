@@ -25,6 +25,7 @@ import {
 	liveSessionStateLabel,
 	liveSessionToggleTone,
 } from "#/lib/liveSessionSwitcher";
+import { semanticStatusClass, themeSurfaceClass } from "#/lib/themeClasses";
 import { displayHotkey, matchesHotkey } from "#/lib/voiceHotkey";
 
 const MOBILE_HISTORY_KEY = "__hlidLiveSessionSwitcher";
@@ -39,23 +40,23 @@ type LiveSessionSwitcherProps = {
 };
 
 function toneClass(tone: ReturnType<typeof liveSessionToggleTone>): string {
-	if (tone === "needs_attention") return "text-amber-400";
+	if (tone === "needs_attention") return semanticStatusClass.warning.text;
 	if (tone === "working") return "text-primary";
-	if (tone === "queued") return "text-sky-400";
+	if (tone === "queued") return semanticStatusClass.info.text;
 	return "text-muted-foreground/55";
 }
 
 function stateClass(state: LiveSessionState): string {
-	if (state === "needs_attention") return "text-amber-400";
+	if (state === "needs_attention") return semanticStatusClass.warning.text;
 	if (state === "working") return "text-primary";
-	if (state === "queued") return "text-sky-400";
+	if (state === "queued") return semanticStatusClass.info.text;
 	return "text-muted-foreground/55";
 }
 
 function dotClass(state: LiveSessionState): string {
-	if (state === "needs_attention") return "bg-amber-400";
+	if (state === "needs_attention") return semanticStatusClass.warning.dot;
 	if (state === "working") return "bg-primary";
-	if (state === "queued") return "bg-sky-400";
+	if (state === "queued") return semanticStatusClass.info.dot;
 	return "bg-muted-foreground/35";
 }
 
@@ -199,14 +200,14 @@ function LiveSessionDrawer({
 				role="dialog"
 				aria-modal="true"
 				aria-label="Live sessions"
-				className="absolute inset-y-0 left-0 z-40 flex w-[88vw] max-w-80 flex-col overflow-hidden border-r border-border bg-popover shadow-2xl md:w-80"
+				className={`absolute inset-y-0 left-0 z-40 flex w-[88vw] max-w-80 flex-col overflow-hidden border-r border-border shadow-2xl md:w-80 ${themeSurfaceClass.popover}`}
 			>
 				<header className="flex min-h-14 shrink-0 items-center gap-3 border-b border-border px-4">
 					<div className="min-w-0 flex-1">
-						<div className="text-[10px] tracking-widest text-foreground/85 uppercase">
+						<div className="text-[10px] tracking-widest text-popover-foreground/85 uppercase">
 							Live sessions
 						</div>
-						<div className="font-mono text-[9px] text-muted-foreground/55">
+						<div className="font-mono text-[9px] text-popover-foreground/55">
 							{rows.length} process-backed
 						</div>
 					</div>
@@ -214,7 +215,7 @@ function LiveSessionDrawer({
 
 				<div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
 					{retainedRows.length === 0 ? (
-						<div className="px-4 py-10 text-center text-[10px] tracking-widest text-muted-foreground/45 uppercase">
+						<div className="px-4 py-10 text-center text-[10px] tracking-widest text-popover-foreground/45 uppercase">
 							No live sessions
 						</div>
 					) : (
@@ -233,7 +234,7 @@ function LiveSessionDrawer({
 							return (
 								<Fragment key={session.session_id}>
 									{showGroup && (
-										<div className="border-b border-border/45 bg-muted/20 px-4 py-1.5 text-[8px] tracking-widest text-muted-foreground/55 uppercase">
+										<div className="border-b border-border/45 bg-accent/20 px-4 py-1.5 text-[8px] tracking-widest text-accent-foreground/55 uppercase">
 											{liveSessionStateLabel(row.groupState)}
 										</div>
 									)}
@@ -243,7 +244,7 @@ function LiveSessionDrawer({
 										onClick={() => onSelect(row.dbSessionId)}
 										aria-label={`Open ${label} session`}
 										aria-current={current ? "page" : undefined}
-										className="flex min-h-16 w-full items-center gap-3 border-b border-border/45 px-4 py-2.5 text-left transition-colors hover:bg-accent/35 disabled:cursor-default disabled:opacity-45"
+										className={`flex min-h-16 w-full items-center gap-3 border-b border-border/45 px-4 py-2.5 text-left transition-colors disabled:cursor-default disabled:opacity-45 ${themeSurfaceClass.accentAction}`}
 									>
 										<span
 											className={`h-1.5 w-1.5 shrink-0 rounded-full ${
@@ -259,7 +260,7 @@ function LiveSessionDrawer({
 											</span>
 										)}
 										<span className="min-w-0 flex-1">
-											<PrivacyMask className="block min-w-0 truncate text-[11px] font-medium text-foreground/90">
+											<PrivacyMask className="block min-w-0 truncate text-[11px] font-medium text-popover-foreground/90">
 												{label}
 											</PrivacyMask>
 											{context && (
@@ -279,7 +280,9 @@ function LiveSessionDrawer({
 												</span>
 											)}
 											{queueLabel && (
-												<span className="mt-0.5 block font-mono text-[8px] text-sky-400/75">
+												<span
+													className={`mt-0.5 block font-mono text-[8px] ${semanticStatusClass.info.textMuted}`}
+												>
 													{queueLabel}
 												</span>
 											)}
@@ -331,7 +334,7 @@ function LiveSessionDrawer({
 					<button
 						type="button"
 						onClick={onOpenLedger}
-						className="flex min-h-12 min-w-0 flex-1 items-center justify-center gap-2 text-[9px] tracking-widest text-muted-foreground/65 uppercase transition-colors hover:bg-accent/30 hover:text-foreground"
+						className={`flex min-h-12 min-w-0 flex-1 items-center justify-center gap-2 text-[9px] tracking-widest text-popover-foreground/65 uppercase transition-colors ${themeSurfaceClass.accentAction}`}
 					>
 						<Scroll className="h-3.5 w-3.5" />
 						Open Ledger

@@ -98,7 +98,7 @@ function SubagentHeader({
 		subagent.status === "failed" || subagent.status === "interrupted"
 			? "text-destructive/75"
 			: subagent.status === "completed"
-				? "text-green-600/70"
+				? "text-status-success/70"
 				: "text-primary/65";
 
 	return (

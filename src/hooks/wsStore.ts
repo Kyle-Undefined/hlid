@@ -555,6 +555,12 @@ function scheduleReconnect(): void {
 
 function connect() {
 	if (typeof window === "undefined") return;
+	if (
+		window.location.pathname === "/login" ||
+		window.location.pathname === "/login/"
+	) {
+		return;
+	}
 	if (_ws && (_ws.readyState === WS_CONNECTING || _ws.readyState === WS_OPEN)) {
 		return;
 	}

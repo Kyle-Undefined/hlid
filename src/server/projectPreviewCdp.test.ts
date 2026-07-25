@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	createProjectPreviewEventWaiter,
 	isSupportedProjectPreviewBrowser,
 	orderProjectPreviewBrowserCandidates,
 	PROJECT_PREVIEW_ATTACHED_TARGET_PARAMS,
@@ -117,5 +118,43 @@ describe("Project Preview browser selection", () => {
 			`return ${PROJECT_PREVIEW_SETTLE_EXPRESSION}`,
 		) as () => Promise<unknown>;
 		await expect(settle()).resolves.toBe(true);
+	});
+
+	it("cancels a pending page event without leaving its timeout active", async () => {
+		let listener: ((params: Record<string, unknown>) => void) | null = null;
+		let removed = false;
+		const waiter = createProjectPreviewEventWaiter(
+			(next) => {
+				listener = next;
+				return () => {
+					removed = true;
+					listener = null;
+				};
+			},
+			"Page.domContentEventFired",
+			1,
+		);
+
+		waiter.cancel();
+
+		await expect(waiter.promise).resolves.toEqual({});
+		expect(listener).toBeNull();
+		expect(removed).toBe(true);
+	});
+
+	it("reports a page event timeout to its caller", async () => {
+		let removed = false;
+		const waiter = createProjectPreviewEventWaiter(
+			() => () => {
+				removed = true;
+			},
+			"Page.domContentEventFired",
+			1,
+		);
+
+		await expect(waiter.promise).rejects.toThrow(
+			"Timed out waiting for Page.domContentEventFired.",
+		);
+		expect(removed).toBe(true);
 	});
 });

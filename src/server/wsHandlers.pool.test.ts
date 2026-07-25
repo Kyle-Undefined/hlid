@@ -15,6 +15,7 @@ const {
 	mockBroadcast,
 	mockLoadConfig,
 	mockGetSessionSelection,
+	mockGetLatestProjectPreviewForSession,
 } = vi.hoisted(() => ({
 	wsState: {
 		clients: new Set<object>(),
@@ -22,6 +23,7 @@ const {
 	mockSend: vi.fn(),
 	mockBroadcast: vi.fn(),
 	mockGetSessionSelection: vi.fn().mockResolvedValue(null),
+	mockGetLatestProjectPreviewForSession: vi.fn().mockResolvedValue(null),
 	mockLoadConfig: vi.fn().mockReturnValue({
 		vault: { path: "/tmp/test", name: "Test Vault" },
 		claude: {
@@ -40,6 +42,7 @@ vi.mock("../db", () => ({
 	saveSetting: vi.fn().mockResolvedValue(undefined),
 	setAskUserQuestionResolution: vi.fn().mockResolvedValue(undefined),
 	getSessionSelection: mockGetSessionSelection,
+	getLatestProjectPreviewForSession: mockGetLatestProjectPreviewForSession,
 }));
 
 vi.mock("./config", () => ({ loadConfig: mockLoadConfig }));
@@ -503,6 +506,50 @@ describe("message — subscribe_session", () => {
 		expect(statusMsg?.[1]).toMatchObject({
 			state: "running",
 			model: "model-x",
+		});
+	});
+
+	it("restores the latest Project Preview when a client reconnects", async () => {
+		const vault = makeEntry("vault-id");
+		const other = makeEntry("other-id");
+		const pool = makePool(vault);
+		pool.get.mockImplementation((id: string) => {
+			if (id === "vault-id") return vault;
+			if (id === "other-id") return other;
+			return undefined;
+		});
+		mockGetLatestProjectPreviewForSession.mockResolvedValueOnce({
+			id: "123e4567-e89b-42d3-a456-426614174000",
+			session_id: "other-id",
+			label: "Web app",
+			command: "bun run dev",
+			cwd: "/work/web",
+			port: 4173,
+			path: "/login",
+			url: "http://127.0.0.1:4173/login",
+			relay_url:
+				"/api/project-previews/123e4567-e89b-42d3-a456-426614174000/relay/login",
+			state: "ready",
+			present: true,
+			started_at: "2026-07-25T18:00:00.000Z",
+			expires_at: "2026-07-25T22:00:00.000Z",
+			logs: [],
+		});
+		const { message } = createWsHandlers(pool);
+		const ws = makeWs("vault-id");
+
+		await message(
+			ws as never,
+			JSON.stringify({ type: "subscribe_session", session_id: "other-id" }),
+		);
+
+		expect(mockSend).toHaveBeenCalledWith(ws, {
+			type: "project_preview_status",
+			session_id: "other-id",
+			preview: expect.objectContaining({
+				id: "123e4567-e89b-42d3-a456-426614174000",
+				state: "ready",
+			}),
 		});
 	});
 

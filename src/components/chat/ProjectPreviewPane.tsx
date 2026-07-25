@@ -498,7 +498,7 @@ export function ProjectPreviewPane({
 						}}
 					>
 						<iframe
-							key={frameKey}
+							key={`${preview.id}:${frameKey}`}
 							ref={iframeRef}
 							title={preview.label}
 							src={previewUrl}

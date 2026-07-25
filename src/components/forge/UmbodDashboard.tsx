@@ -68,11 +68,11 @@ const fieldClass =
 
 function chipClass(value: string): string {
 	if (value === "allow" || value === "active")
-		return "border-emerald-500/40 bg-emerald-500/10 text-emerald-400";
+		return "border-status-success/40 bg-status-success/10 text-status-success";
 	if (value === "approve" || value === "stale")
-		return "border-amber-500/40 bg-amber-500/10 text-amber-400";
+		return "border-status-warning/40 bg-status-warning/10 text-status-warning";
 	if (value === "block" || value === "invalid")
-		return "border-red-500/40 bg-red-500/10 text-red-400";
+		return "border-destructive/40 bg-destructive/10 text-destructive";
 	return "border-border bg-secondary text-muted-foreground";
 }
 
@@ -111,9 +111,9 @@ function ToolUsagePanel({ tools }: { tools?: ToolUsage }) {
 			<div className="flex items-center justify-between">
 				<h4 className="text-xs font-medium">Tool use</h4>
 				<div className="flex gap-2 text-[9px] uppercase tracking-wider">
-					<span className="text-emerald-400">Allow</span>
-					<span className="text-amber-400">Review</span>
-					<span className="text-red-400">Block</span>
+					<span className="text-status-success">Allow</span>
+					<span className="text-status-warning">Review</span>
+					<span className="text-destructive">Block</span>
 				</div>
 			</div>
 			{tools?.byTool?.slice(0, 8).map((row) => (
@@ -129,15 +129,15 @@ function ToolUsagePanel({ tools }: { tools?: ToolUsage }) {
 					</div>
 					<div className="flex h-1.5 overflow-hidden bg-secondary">
 						<span
-							className="bg-emerald-500"
+							className="bg-status-success"
 							style={{ width: `${(row.decisions.allow / row.count) * 100}%` }}
 						/>
 						<span
-							className="bg-amber-500"
+							className="bg-status-warning"
 							style={{ width: `${(row.decisions.approve / row.count) * 100}%` }}
 						/>
 						<span
-							className="bg-red-500"
+							className="bg-destructive"
 							style={{ width: `${(row.decisions.block / row.count) * 100}%` }}
 						/>
 					</div>

@@ -60,10 +60,32 @@ describe("ProjectPreviewPane", () => {
 		expect(frame.src).toContain(
 			"/api/project-previews/123e4567-e89b-12d3-a456-426614174000/relay/",
 		);
+		expect(frame.src).not.toContain("__hlid_preview_open");
 		const viewport = screen.getByLabelText("Preview viewport");
 		fireEvent.change(viewport, { target: { value: "mobile" } });
 		expect(frame.parentElement?.style.width).toBe("390px");
 		expect(screen.getByLabelText("Show agent view")).not.toBeNull();
+	});
+
+	it("remounts the user iframe when a replacement preview becomes active", () => {
+		const initial = preview();
+		const { rerender } = render(<ProjectPreviewPane preview={initial} />);
+		const oldFrame = screen.getByTitle("Web app");
+		const replacementId = "223e4567-e89b-42d3-a456-426614174001";
+		rerender(
+			<ProjectPreviewPane
+				preview={{
+					...initial,
+					id: replacementId,
+					relay_url: `/api/project-previews/${replacementId}/relay/`,
+				}}
+			/>,
+		);
+		const newFrame = screen.getByTitle("Web app") as HTMLIFrameElement;
+		expect(newFrame).not.toBe(oldFrame);
+		expect(newFrame.src).toContain(
+			`/api/project-previews/${replacementId}/relay/`,
+		);
 	});
 
 	it("toggles maximize and restores through the parent layout", () => {

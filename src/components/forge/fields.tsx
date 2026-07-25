@@ -18,6 +18,7 @@ import {
 } from "#/components/wizard/BrowseFieldParts";
 import { FileBrowser } from "#/components/wizard/FileBrowser";
 import { FolderBrowser } from "#/components/wizard/FolderBrowser";
+import { themeSurfaceClass } from "#/lib/themeClasses";
 
 export { useFieldControlProps } from "#/components/form/FieldControlContext";
 // Section moved to the shared shell; re-exported so existing imports keep working.
@@ -130,7 +131,7 @@ export function TextInput({
 			value={value}
 			onChange={(e) => onChange(e.target.value)}
 			placeholder={placeholder}
-			className={`w-32 sm:w-48 bg-secondary border border-border px-2.5 py-1.5 text-sm text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors ${mono ? "font-mono text-xs" : ""}`}
+			className={`w-32 sm:w-48 border border-border px-2.5 py-1.5 text-sm placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors ${themeSurfaceClass.input} ${mono ? "font-mono text-xs" : ""}`}
 		/>
 	);
 }
@@ -158,7 +159,7 @@ export function VocabRow({
 				type="text"
 				value={value}
 				onChange={(e) => onChange(e.target.value)}
-				className="w-full bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+				className={`w-full border border-border px-2.5 py-1.5 text-xs font-mono placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors ${themeSurfaceClass.input}`}
 				placeholder="comma separated values"
 			/>
 		</div>

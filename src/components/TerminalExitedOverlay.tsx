@@ -7,10 +7,10 @@ export function TerminalExitedOverlay({
 	onNewSession?: () => void;
 }) {
 	return (
-		<div className="absolute inset-0 flex items-center justify-center bg-black/60">
-			<div className="rounded-lg border border-stone-700 bg-stone-900 px-6 py-4 text-center">
-				<p className="text-sm text-stone-300">Session ended</p>
-				<p className="mt-1 text-xs text-stone-500">
+		<div className="absolute inset-0 flex items-center justify-center bg-background/75 backdrop-blur-[1px]">
+			<div className="rounded-lg border border-border bg-card px-6 py-4 text-center text-card-foreground shadow-2xl">
+				<p className="text-sm">Session ended</p>
+				<p className="mt-1 text-xs text-muted-foreground">
 					{exited.wsError
 						? "Could not connect to terminal server."
 						: exited.code !== undefined
@@ -21,7 +21,7 @@ export function TerminalExitedOverlay({
 					<button
 						type="button"
 						onClick={onNewSession}
-						className="mt-3 rounded border border-stone-600 bg-stone-800 px-3 py-1.5 text-xs text-stone-300 hover:border-stone-500 hover:bg-stone-700 hover:text-stone-100 transition-colors"
+						className="mt-3 rounded border border-border bg-secondary px-3 py-1.5 text-xs text-secondary-foreground hover:border-primary/50 hover:bg-accent hover:text-accent-foreground transition-colors"
 					>
 						New Session
 					</button>

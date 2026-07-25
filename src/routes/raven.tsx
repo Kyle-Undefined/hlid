@@ -157,14 +157,6 @@ export function ravenTabAfterProjectPreviewStops(
 	return tab === "preview" ? "chat" : tab;
 }
 
-export function shouldAutoPresentProjectPreview(
-	startedAt: string,
-	sessionEnteredAt: number,
-): boolean {
-	const startedAtMs = Date.parse(startedAt);
-	return Number.isFinite(startedAtMs) && startedAtMs > sessionEnteredAt;
-}
-
 export function isNewProjectPreviewPresentationRequest(
 	request: number,
 	requestAtSessionEntry: number,
@@ -2244,16 +2236,6 @@ function ChatPageContent(props: ChatPageContentProps) {
 	const [previewMaximized, setPreviewMaximized] = useState(false);
 	const [previewResizing, setPreviewResizing] = useState(false);
 	const previewResizeCleanupRef = useRef<(() => void) | null>(null);
-	const previewSessionEntryRef = useRef({
-		sessionId: props.session.sessionId,
-		enteredAt: Date.now(),
-	});
-	if (previewSessionEntryRef.current.sessionId !== props.session.sessionId) {
-		previewSessionEntryRef.current = {
-			sessionId: props.session.sessionId,
-			enteredAt: Date.now(),
-		};
-	}
 	const previewPresentationEntryRef = useRef({
 		sessionId: props.session.sessionId,
 		request: previewPresentationRequest,
@@ -2297,16 +2279,7 @@ function ChatPageContent(props: ChatPageContentProps) {
 			previewId: preview.id,
 		};
 		setPreviewPaneOpen(true);
-		if (
-			shouldAutoPresentProjectPreview(
-				preview.started_at,
-				previewSessionEntryRef.current.enteredAt,
-			) &&
-			window.matchMedia("(max-width: 767px)").matches
-		) {
-			setShellTab("preview");
-		}
-	}, [preview, setShellTab]);
+	}, [preview]);
 	useEffect(() => {
 		if (
 			!isNewProjectPreviewPresentationRequest(
@@ -2999,7 +2972,7 @@ function ChatModelBadge({
 						}}
 						className={`block max-w-full text-[9px] tracking-widest px-2 py-0.5 uppercase bg-background border cursor-pointer transition-colors ${
 							modelMismatch
-								? "text-amber-500/80 border-amber-500/60"
+								? "text-status-warning/80 border-status-warning/60"
 								: "text-muted-foreground/50 border-border/70 hover:text-foreground/70 hover:border-primary/40"
 						}`}
 					>
@@ -3040,7 +3013,7 @@ function ChatModelBadge({
 									</div>
 									<div>
 										<span className="text-muted-foreground/50">current </span>
-										<span className="text-amber-400">
+										<span className="text-status-warning">
 											{activeProviderLabel}
 											{actualModelShort || modelShort
 												? ` · ${actualModelShort ?? modelShort}`
@@ -3248,9 +3221,9 @@ function ChatInputNotices({
 				onRemove={vaultPicker.removeWorkspace}
 			/>
 			{gitignoreHint && (
-				<div className="px-4 py-2 flex items-start gap-2 border-b border-border/40 bg-yellow-500/5">
+				<div className="px-4 py-2 flex items-start gap-2 border-b border-border/40 bg-status-info/5">
 					<div className="flex-1 text-[10px] text-foreground/70 leading-relaxed">
-						<span className="text-yellow-500/80">tip:</span> attachments stored
+						<span className="text-status-info/80">tip:</span> attachments stored
 						at{" "}
 						<code className="text-[10px] font-mono text-foreground/90">
 							{gitignoreHint.agent_root}/.hlid/

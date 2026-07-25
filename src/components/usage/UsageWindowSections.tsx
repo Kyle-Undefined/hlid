@@ -22,7 +22,7 @@ export function ContextWindowSection({ stats }: { stats: LiveStats }) {
 		utilization != null && utilization > 80
 			? "bg-destructive/60"
 			: utilization != null && utilization > 60
-				? "bg-yellow-600/60"
+				? "bg-status-warning/60"
 				: "bg-primary/60";
 	return (
 		<div className="flex-1 px-2 py-2 md:px-4 md:py-2.5 min-w-0 space-y-1">

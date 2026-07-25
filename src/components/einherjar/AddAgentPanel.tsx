@@ -115,7 +115,7 @@ export function AddAgentPanel({
 								setError(null);
 							}}
 							placeholder="/path/to/agent-dir"
-							className="flex-1 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+							className="flex-1 bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
 						/>
 						<button
 							type="button"
@@ -136,7 +136,7 @@ export function AddAgentPanel({
 							setForm((current) => ({ ...current, name: event.target.value }))
 						}
 						placeholder="Display name (optional)"
-						className="w-full bg-secondary border border-border px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+						className="w-full bg-input border border-border px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
 					/>
 					<AgentConfigurationFields
 						value={form}

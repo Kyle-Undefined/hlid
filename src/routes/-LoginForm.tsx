@@ -53,7 +53,7 @@ export function LoginForm({
 					aria-describedby={
 						state === "setup-required" ? "new-password-requirements" : undefined
 					}
-					className="w-full bg-secondary border border-border px-3 py-2 text-sm focus:outline-none focus:border-primary/60"
+					className="w-full bg-input border border-border px-3 py-2 text-sm focus:outline-none focus:border-primary/60"
 				/>
 				{state === "setup-required" && (
 					<span
@@ -82,7 +82,7 @@ export function LoginForm({
 						minLength={12}
 						maxLength={256}
 						required
-						className="w-full bg-secondary border border-border px-3 py-2 text-sm focus:outline-none focus:border-primary/60"
+						className="w-full bg-input border border-border px-3 py-2 text-sm focus:outline-none focus:border-primary/60"
 					/>
 				</div>
 			)}

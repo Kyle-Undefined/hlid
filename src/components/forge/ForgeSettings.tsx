@@ -664,17 +664,17 @@ function SaveStatus({
 				</span>
 			)}
 			{!state.saving && !state.error && state.dirty && (
-				<span className="text-[var(--status-warning)]">Unsaved changes…</span>
+				<span className="text-status-warning">Unsaved changes…</span>
 			)}
 			{!state.dirty && state.savedMsg === "saved" && (
-				<span className="text-green-500">Saved</span>
+				<span className="text-status-success">Saved</span>
 			)}
 			{state.savedMsg === "restart" && (
-				<span className="inline-flex items-center gap-2 text-amber-500">
+				<span className="inline-flex items-center gap-2 text-status-warning">
 					<button
 						type="button"
 						onClick={onRestartRequired}
-						className="border border-amber-500/40 px-1.5 py-0.5 hover:bg-amber-500/10"
+						className="border border-status-warning/40 px-1.5 py-0.5 hover:bg-status-warning/10"
 					>
 						Restart required
 					</button>{" "}
@@ -704,7 +704,7 @@ function InventoryStatus({
 		<button
 			type="button"
 			onClick={onRetry}
-			className="border border-amber-500/40 px-2 py-1 text-[10px] tracking-wider text-[var(--status-warning)] hover:bg-amber-500/10 uppercase"
+			className="border border-status-warning/40 px-2 py-1 text-[10px] tracking-wider text-status-warning hover:bg-status-warning/10 uppercase"
 		>
 			Inventory unavailable · Retry
 		</button>
@@ -811,7 +811,7 @@ export function ForgeSettings({
 						value={shown.some((item) => item.id === category) ? category : ""}
 						onChange={(e) => choose(e.target.value as Category)}
 						aria-label="Filtered Forge category"
-						className="md:hidden w-full min-w-0 bg-secondary border border-border px-2 py-1.5 text-xs"
+						className="md:hidden w-full min-w-0 bg-input border border-border px-2 py-1.5 text-xs"
 					>
 						{shown.length === 0 && <option value="">No matches</option>}
 						{shown.map((item) => (
@@ -825,7 +825,7 @@ export function ForgeSettings({
 						onChange={(e) => setSearch(e.target.value)}
 						placeholder="Filter setting categories"
 						aria-label="Filter setting categories"
-						className="col-span-2 row-start-2 w-full bg-secondary border border-border px-3 py-1.5 text-xs focus:outline-none focus:border-primary/50 md:col-span-1 md:row-auto md:ml-auto md:max-w-sm"
+						className="col-span-2 row-start-2 w-full bg-input border border-border px-3 py-1.5 text-xs focus:outline-none focus:border-primary/50 md:col-span-1 md:row-auto md:ml-auto md:max-w-sm"
 					/>
 					<InventoryStatus
 						status={inventoryStatus}

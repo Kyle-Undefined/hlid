@@ -66,6 +66,10 @@ import {
 	createProjectPreviewRelayWsHandlers,
 	type ProjectPreviewRelayWsData,
 	parseProjectPreviewRelayWebSocket,
+	projectPreviewUpstreamCookieHeader,
+	projectPreviewUpstreamTarget,
+	projectPreviewWebSocketProtocols,
+	selectedProjectPreviewRelayUrl,
 } from "./projectPreviewRelay";
 import { handleProjectPreviewRoute } from "./projectPreviewRoutes";
 import {
@@ -496,13 +500,30 @@ const upgradeShellWebSocket = createShellUpgradeHandler({
 	resolveCwd: (requestedCwd) => resolveAllowedTerminalCwd(config, requestedCwd),
 });
 
+function isProjectPreviewOriginRequest(req: Request, url: URL): boolean {
+	if (req.headers.get("x-hlid-preview-origin") === "1") return true;
+	const port = Number(url.port || (url.protocol === "https:" ? "443" : "80"));
+	return (
+		port === PORT &&
+		!req.headers.has("x-hlid-internal") &&
+		!req.headers.has("x-hlid-proxy-token")
+	);
+}
+
 async function handleWebSocketRoute(
 	req: Request,
 	server: AppServer,
 	url: URL,
 	peerIp: string | undefined,
 ): Promise<Response | undefined | null> {
-	const previewRelay = parseProjectPreviewRelayWebSocket(req, url.pathname);
+	const selectedUrl = isProjectPreviewOriginRequest(req, url)
+		? selectedProjectPreviewRelayUrl(url, req.headers.get("cookie"))
+		: null;
+	const effectiveUrl = selectedUrl ?? url;
+	const previewRelay = parseProjectPreviewRelayWebSocket(
+		req,
+		effectiveUrl.pathname,
+	);
 	if (
 		url.pathname !== "/ws" &&
 		url.pathname !== "/ws/terminal" &&
@@ -528,13 +549,27 @@ async function handleWebSocketRoute(
 		} catch {
 			return new Response("Project Preview is unavailable", { status: 404 });
 		}
+		const upstreamTarget = projectPreviewUpstreamTarget(
+			target.port,
+			previewRelay.targetPath,
+		);
 		if (
 			server.upgrade(req, {
 				data: {
 					isProjectPreviewRelay: true,
-					wsTarget: `ws://127.0.0.1:${target.port}${previewRelay.targetPath}${url.search}`,
+					wsTarget: `ws://127.0.0.1:${upstreamTarget.port}${upstreamTarget.path}${effectiveUrl.search}`,
 					back: null,
 					queue: [],
+					protocols: projectPreviewWebSocketProtocols(req),
+					upstreamHeaders: (() => {
+						const cookie = projectPreviewUpstreamCookieHeader(
+							req.headers.get("cookie"),
+							previewRelay.previewId,
+						);
+						const headers: Record<string, string> = {};
+						if (cookie) headers.cookie = cookie;
+						return headers;
+					})(),
 				},
 			})
 		) {
@@ -907,6 +942,14 @@ async function dispatchServerFetch(
 			ok: true,
 			data: { sessions, appServers },
 		});
+	}
+	if (req.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+		const selectedUrl = isProjectPreviewOriginRequest(req, url)
+			? selectedProjectPreviewRelayUrl(url, req.headers.get("cookie"))
+			: null;
+		if (selectedUrl) {
+			return handleServerRequest(new Request(selectedUrl, req), peerIp, server);
+		}
 	}
 	return handleServerRequest(req, peerIp, server);
 }

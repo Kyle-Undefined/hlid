@@ -81,7 +81,7 @@ export function AcpSection({
 						value={search}
 						onChange={(event) => setSearch(event.target.value)}
 						placeholder="Search ACP agents"
-						className="min-w-0 flex-1 bg-secondary border border-border px-2.5 py-1.5 text-xs"
+						className="min-w-0 flex-1 bg-input border border-border px-2.5 py-1.5 text-xs"
 					/>
 					<button
 						type="button"

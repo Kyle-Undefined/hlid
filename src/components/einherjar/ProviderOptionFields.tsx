@@ -130,7 +130,7 @@ export function ProviderOptionFields({
 						});
 					}}
 					placeholder="vault default"
-					className="flex-1 bg-secondary border border-border px-2 py-1 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+					className="flex-1 bg-input border border-border px-2 py-1 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
 				/>
 			</FieldRow>
 

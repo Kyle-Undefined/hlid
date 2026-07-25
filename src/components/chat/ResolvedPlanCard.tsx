@@ -29,9 +29,9 @@ export function ResolvedPlanCard({
 	const label = RESOLVED_LABEL[message.decision];
 	const isApproved = message.decision === "approved";
 	const labelColor = isApproved
-		? "text-green-600/70"
+		? "text-status-success/70"
 		: message.decision === "edited"
-			? "text-amber-500/80"
+			? "text-status-warning/80"
 			: "text-destructive/70";
 
 	// Revised plans: hide content — they're superseded by the next proposal.

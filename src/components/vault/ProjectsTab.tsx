@@ -27,7 +27,7 @@ const STATUS_LABEL: Record<ProjectStatus, string> = {
 };
 
 const STATUS_DOT: Record<ProjectStatus, string> = {
-	active: "bg-green-600",
+	active: "bg-status-success",
 	planning: "bg-primary",
 	done: "bg-muted-foreground/40",
 	unknown: "bg-muted-foreground/20",

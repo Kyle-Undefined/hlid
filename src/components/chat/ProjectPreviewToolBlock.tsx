@@ -315,7 +315,10 @@ export function ProjectPreviewCaptureToolBlock({
 				</div>
 			</div>
 			{complete && (
-				<Check className="h-3.5 w-3.5 shrink-0 text-green-600" aria-hidden />
+				<Check
+					className="h-3.5 w-3.5 shrink-0 text-status-success"
+					aria-hidden
+				/>
 			)}
 		</>
 	);
@@ -511,7 +514,7 @@ function ProjectPreviewActivityEvent({
 			) : event.isError ? (
 				<AlertTriangle className="h-3 w-3 shrink-0 text-destructive" />
 			) : (
-				<Check className="h-3 w-3 shrink-0 text-green-600/70" />
+				<Check className="h-3 w-3 shrink-0 text-status-success/70" />
 			)}
 			<span className="shrink-0 uppercase tracking-widest text-primary/60">
 				{previewActivityLabel(event)}
@@ -672,7 +675,7 @@ export function ProjectPreviewActivityCard({
 				: "starting");
 	const statusTone =
 		state === "ready"
-			? "text-green-600/70"
+			? "text-status-success/70"
 			: state === "failed"
 				? "text-destructive/75"
 				: "text-primary/60";
@@ -851,7 +854,7 @@ export function ProjectPreviewToolBlock({
 	const state = preview?.state ?? (event.isError ? "failed" : "starting");
 	const statusTone =
 		state === "ready"
-			? "text-green-600"
+			? "text-status-success"
 			: state === "failed"
 				? "text-destructive"
 				: "text-muted-foreground";

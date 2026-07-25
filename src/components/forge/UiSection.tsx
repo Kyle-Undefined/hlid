@@ -130,13 +130,13 @@ export function UiSection({
 						aria-describedby={
 							hotkeyConflict ? "live-sessions-hotkey-conflict" : undefined
 						}
-						className="w-40 sm:w-52 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/50 cursor-pointer"
+						className="w-40 sm:w-52 bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/50 cursor-pointer"
 					/>
 					{hotkeyConflict && (
 						<div
 							id="live-sessions-hotkey-conflict"
 							role="alert"
-							className="text-[10px] text-amber-400"
+							className="text-[10px] text-status-warning"
 						>
 							Voice recording currently uses this shortcut.
 						</div>

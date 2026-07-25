@@ -39,6 +39,7 @@ const ThemePaletteSchema = z
 		cache_write: HexColorSchema.optional(),
 		status_success: HexColorSchema,
 		status_warning: HexColorSchema,
+		status_info: HexColorSchema.optional(),
 		tool_panel: HexColorSchema,
 		tool_panel_border: HexColorSchema,
 		user_msg: HexColorSchema,
@@ -50,6 +51,7 @@ const ThemePaletteSchema = z
 		token_output: palette.token_output ?? "#ca8a04",
 		cache_read: palette.cache_read ?? "#16a34a",
 		cache_write: palette.cache_write ?? "#ea580c",
+		status_info: palette.status_info ?? palette.primary,
 	}));
 
 const VaultSchema = z.object({

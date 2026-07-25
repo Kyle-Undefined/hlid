@@ -61,7 +61,7 @@ export function AgentCardHeader({
 							{agent.name}
 						</PrivacyMask>
 						{!agent.dirExists && (
-							<TriangleAlert className="w-3 h-3 text-yellow-500/70 shrink-0" />
+							<TriangleAlert className="w-3 h-3 text-status-warning/70 shrink-0" />
 						)}
 					</div>
 					<PrivacyMask className="text-[9px] font-mono text-muted-foreground/40 truncate mt-0.5">

@@ -43,7 +43,7 @@ type LevelTab = (typeof LEVEL_TABS)[number];
 
 const LEVEL_COLORS: Record<LogLevel, string> = {
 	error: "text-destructive",
-	warn: "text-yellow-500",
+	warn: "text-status-warning",
 	info: "text-muted-foreground",
 };
 

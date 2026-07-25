@@ -85,7 +85,7 @@ export function FolderBrowser({ initialPath, onSelect, external }: Props) {
 					onBlur={() => {
 						if (typedPath !== null) setCurrentPath(typedPath);
 					}}
-					className="flex-1 min-w-0 text-xs font-mono text-muted-foreground bg-secondary border border-border/50 px-2 py-1 rounded focus:outline-none focus:border-primary/50 transition-colors"
+					className="flex-1 min-w-0 text-xs font-mono text-muted-foreground bg-input border border-border/50 px-2 py-1 rounded focus:outline-none focus:border-primary/50 transition-colors"
 					spellCheck={false}
 					autoComplete="off"
 				/>

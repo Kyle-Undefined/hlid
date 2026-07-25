@@ -2,6 +2,7 @@ import { Plug } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import type { McpServerEntry } from "#/lib/mcp";
+import { semanticStatusClass } from "#/lib/themeClasses";
 
 const STATUS_ORDER: Record<McpServerEntry["status"], number> = {
 	failed: 0,
@@ -15,13 +16,13 @@ const STATUS_ORDER: Record<McpServerEntry["status"], number> = {
 function dotClass(status: McpServerEntry["status"]): string {
 	switch (status) {
 		case "connected":
-			return "bg-green-500/80";
+			return semanticStatusClass.success.dot;
 		case "needs-auth":
-			return "bg-amber-400/80";
+			return semanticStatusClass.warning.dot;
 		case "failed":
-			return "bg-red-500/80";
+			return semanticStatusClass.danger.dot;
 		case "pending":
-			return "bg-orange-500/70 animate-pulse";
+			return `${semanticStatusClass.warning.dot} animate-pulse`;
 		default:
 			return "bg-muted-foreground/35";
 	}

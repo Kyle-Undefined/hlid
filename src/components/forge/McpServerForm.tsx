@@ -103,7 +103,7 @@ function KvTextarea({
 			placeholder={placeholder}
 			aria-label={ariaLabel}
 			rows={3}
-			className="w-full bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors resize-none"
+			className="w-full bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors resize-none"
 		/>
 	);
 }
@@ -184,7 +184,7 @@ function McpServerFormBody({
 								setForm((f) => ({ ...f, command: e.target.value }))
 							}
 							placeholder="npx"
-							className="w-full bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+							className="w-full bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
 						/>
 					</div>
 					<div className="flex-1 space-y-1">
@@ -197,7 +197,7 @@ function McpServerFormBody({
 							value={form.args}
 							onChange={(e) => setForm((f) => ({ ...f, args: e.target.value }))}
 							placeholder="-y, some-mcp-package"
-							className="w-full bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+							className="w-full bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
 						/>
 					</div>
 				</div>
@@ -227,7 +227,7 @@ function McpServerFormBody({
 					value={form.url}
 					onChange={(e) => setForm((f) => ({ ...f, url: e.target.value }))}
 					placeholder="https://example.com/mcp"
-					className="w-full bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+					className="w-full bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
 				/>
 			</div>
 			<div className="space-y-1">
@@ -261,7 +261,7 @@ function McpServerTypeSelect({
 					type: event.target.value as ServerFormFields["type"],
 				}))
 			}
-			className="bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
+			className="bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 transition-colors appearance-none cursor-pointer"
 		>
 			<option value="stdio">stdio</option>
 			<option value="http">http</option>
@@ -437,7 +437,7 @@ export function AddMcpServerForm({
 						value={name}
 						onChange={(e) => setName(e.target.value)}
 						placeholder="my-server"
-						className="w-full bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+						className="w-full bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
 					/>
 				</div>
 				<div className="space-y-1">

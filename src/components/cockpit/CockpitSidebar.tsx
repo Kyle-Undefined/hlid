@@ -25,7 +25,7 @@ import type { RoutineSummary } from "#/lib/routines";
 export function UtilBar({ value, max }: { value: number; max: number }) {
 	const pct = max > 0 ? Math.min((value / max) * 100, 100) : 0;
 	const color =
-		pct > 80 ? "bg-destructive" : pct > 60 ? "bg-yellow-600" : "bg-primary";
+		pct > 80 ? "bg-destructive" : pct > 60 ? "bg-status-warning" : "bg-primary";
 	return (
 		<div className="h-1 bg-secondary overflow-hidden mt-1">
 			<div
@@ -280,7 +280,7 @@ function AttentionSummary({
 			</div>
 			<div className="grid grid-cols-3 divide-x divide-border/40 border-b border-border/40">
 				<div className="px-2 py-2 text-center">
-					<div className="font-mono text-xs text-amber-400">
+					<div className="font-mono text-xs text-status-warning">
 						{attentionCount}
 					</div>
 					<div className="mt-0.5 text-[7px] tracking-wider text-muted-foreground/45 uppercase">
@@ -294,7 +294,9 @@ function AttentionSummary({
 					</div>
 				</div>
 				<div className="px-2 py-2 text-center">
-					<div className="font-mono text-xs text-sky-400">{queuedCount}</div>
+					<div className="font-mono text-xs text-status-info">
+						{queuedCount}
+					</div>
 					<div className="mt-0.5 text-[7px] tracking-wider text-muted-foreground/45 uppercase">
 						Queued
 					</div>
@@ -316,10 +318,10 @@ function AttentionSummary({
 								<span
 									className={`h-1.5 w-1.5 shrink-0 rounded-full ${
 										row.state === "needs_attention"
-											? "bg-amber-400"
+											? "bg-status-warning"
 											: row.state === "working"
 												? "bg-primary"
-												: "bg-sky-400"
+												: "bg-status-info"
 									}`}
 								/>
 								{row.pinned && (

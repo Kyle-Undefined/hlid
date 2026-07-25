@@ -1,6 +1,7 @@
 import { type ReactNode, useId } from "react";
 import { useFieldControlProps } from "#/components/form/FieldControlContext";
 import { useDialogFocus } from "#/hooks/useDialogFocus";
+import { themeSurfaceClass } from "#/lib/themeClasses";
 
 export function BrowseFieldControl({
 	value,
@@ -26,7 +27,7 @@ export function BrowseFieldControl({
 				value={value}
 				onChange={(event) => onChange(event.target.value)}
 				placeholder={placeholder}
-				className={`${fullWidth ? "flex-1 min-w-0" : "w-32 sm:w-48"} bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors`}
+				className={`${fullWidth ? "flex-1 min-w-0" : "w-32 sm:w-48"} border border-border px-2.5 py-1.5 text-xs font-mono placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors ${themeSurfaceClass.input}`}
 			/>
 			<button
 				type="button"
@@ -61,7 +62,7 @@ export function BrowseDialog({
 				aria-modal="true"
 				aria-labelledby={titleId}
 				onKeyDown={onDialogKeyDown}
-				className="w-full max-w-md bg-card border border-border shadow-2xl p-5 space-y-4"
+				className={`w-full max-w-md border border-border shadow-2xl p-5 space-y-4 ${themeSurfaceClass.card}`}
 			>
 				<div className="flex items-center justify-between">
 					<div

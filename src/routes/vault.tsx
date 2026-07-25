@@ -156,7 +156,7 @@ function VaultPage() {
 						value={tab}
 						onChange={(e) => setTab(e.target.value)}
 						aria-label="Vault category"
-						className="md:hidden w-full min-w-0 bg-secondary border border-border px-2 py-1.5 text-xs"
+						className="md:hidden w-full min-w-0 bg-input border border-border px-2 py-1.5 text-xs"
 					>
 						{tabConfig.map((t) => (
 							<option key={t.id} value={t.id}>
@@ -169,7 +169,7 @@ function VaultPage() {
 						onChange={(e) => setQuery(e.target.value)}
 						placeholder={`Search ${title.toLowerCase()}`}
 						aria-label="Search vault"
-						className="col-span-2 row-start-2 w-full bg-secondary border border-border px-3 py-1.5 text-xs focus:outline-none focus:border-primary/50 md:col-span-1 md:row-auto md:ml-auto md:max-w-sm"
+						className="col-span-2 row-start-2 w-full bg-input border border-border px-3 py-1.5 text-xs focus:outline-none focus:border-primary/50 md:col-span-1 md:row-auto md:ml-auto md:max-w-sm"
 					/>
 				</PageHeader>
 

@@ -52,7 +52,7 @@ export function AgentCardEditForm({
 				value={editing.name}
 				onChange={(e) => onChange({ name: e.target.value })}
 				placeholder="Display name"
-				className="w-full bg-secondary border border-border px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
+				className="w-full bg-input border border-border px-2.5 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-primary/50 transition-colors"
 			/>
 			<AgentConfigurationFields
 				value={editing}

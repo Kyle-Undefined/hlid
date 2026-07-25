@@ -79,7 +79,7 @@ function Field({
 				value={value}
 				onChange={(e) => onChange(e.target.value)}
 				placeholder={placeholder}
-				className="w-full bg-secondary border border-border rounded-md px-3 py-1.5 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-ring"
+				className="w-full bg-input border border-border rounded-md px-3 py-1.5 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:ring-1 focus:ring-ring"
 			/>
 		</label>
 	);

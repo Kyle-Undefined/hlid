@@ -20,7 +20,10 @@ import {
 	MIN_PROJECT_PREVIEW_VIEWPORT_WIDTH,
 	type ProjectPreviewCaptureResult,
 } from "./projectPreviewCapture";
-import { handleProjectPreviewRelayRequest } from "./projectPreviewRelay";
+import {
+	handleProjectPreviewRelayRequest,
+	projectPreviewSelectionRedirect,
+} from "./projectPreviewRelay";
 
 const startSchema = z.object({
 	session_id: z.string().trim().min(1),
@@ -203,6 +206,10 @@ export async function handleProjectPreviewRoute(
 ): Promise<Response | null> {
 	if (!url.pathname.startsWith("/api/project-previews")) return null;
 	try {
+		const selection = projectPreviewSelectionRedirect(url, (previewId) =>
+			projectPreviewManager.relayTarget(previewId),
+		);
+		if (selection) return selection;
 		const relay = await handleProjectPreviewRelayRequest(
 			url,
 			req,

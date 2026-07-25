@@ -42,6 +42,7 @@ const COLOR_GROUPS: Array<{
 			["destructive_foreground", "Destructive text"],
 			["status_success", "Success"],
 			["status_warning", "Warning"],
+			["status_info", "Info and queued"],
 		],
 	},
 	{
@@ -115,7 +116,7 @@ function ColorControl({
 					if (event.key === "Enter") event.currentTarget.blur();
 				}}
 				aria-label={`${label} hex`}
-				className="w-20 bg-secondary border border-border px-2 py-1 text-[10px] uppercase"
+				className="w-20 bg-input border border-border px-2 py-1 text-[10px] uppercase"
 			/>
 		</label>
 	);
@@ -232,7 +233,7 @@ export function CustomThemeSection({
 							})
 						}
 						aria-label="Native control style"
-						className="bg-secondary border border-border px-2 py-1.5 text-xs"
+						className="bg-input border border-border px-2 py-1.5 text-xs"
 					>
 						<option value="dark">Dark</option>
 						<option value="light">Light</option>

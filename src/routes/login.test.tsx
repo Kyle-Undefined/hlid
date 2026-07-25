@@ -15,7 +15,7 @@ vi.mock("@tanstack/react-router", () => ({
 	useNavigate: () => mocks.navigate,
 }));
 
-const { LoginPage } = await import("./login");
+const { LoginPage } = await import("./-LoginPage");
 
 beforeEach(() => {
 	mocks.navigate.mockReset();

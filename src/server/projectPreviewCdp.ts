@@ -61,6 +61,11 @@ type CdpPending = {
 
 type CdpEventListener = (params: Record<string, unknown>) => void;
 
+type CdpEventWaiter = {
+	promise: Promise<Record<string, unknown>>;
+	cancel: () => void;
+};
+
 type CdpTarget = {
 	id: string;
 	type: string;
@@ -416,6 +421,54 @@ export async function resolveProjectPreviewBrowserCandidates(): Promise<
 	);
 }
 
+export function createProjectPreviewEventWaiter(
+	subscribe: (listener: CdpEventListener) => () => void,
+	method: string,
+	timeoutMs = PROJECT_PREVIEW_CAPTURE_TIMEOUT_MS,
+): CdpEventWaiter {
+	let settled = false;
+	let remove = () => {};
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	let resolvePromise: (value: Record<string, unknown>) => void = () => {};
+	let rejectPromise: (error: Error) => void = () => {};
+	const cleanup = () => {
+		if (timer) clearTimeout(timer);
+		remove();
+	};
+	const promise = new Promise<Record<string, unknown>>((resolve, reject) => {
+		resolvePromise = resolve;
+		rejectPromise = reject;
+	});
+	const resolve = (params: Record<string, unknown>) => {
+		if (settled) return;
+		settled = true;
+		cleanup();
+		resolvePromise(params);
+	};
+	const reject = (error: Error) => {
+		if (settled) return;
+		settled = true;
+		cleanup();
+		rejectPromise(error);
+	};
+	remove = subscribe(resolve);
+	if (settled) {
+		remove();
+	} else {
+		timer = setTimeout(() => {
+			reject(new Error(`Timed out waiting for ${method}.`));
+		}, timeoutMs);
+	}
+	// Navigation and reload start this waiter before sending their CDP command.
+	// Observe it immediately so an earlier command failure cannot leave a later
+	// timeout as an unhandled rejection in the compiled app.
+	void promise.catch(() => {});
+	return {
+		promise,
+		cancel: () => resolve({}),
+	};
+}
+
 class CdpClient {
 	private nextId = 0;
 	private readonly pending = new Map<number, CdpPending>();
@@ -476,19 +529,12 @@ class CdpClient {
 	waitFor(
 		method: string,
 		timeoutMs = PROJECT_PREVIEW_CAPTURE_TIMEOUT_MS,
-	): Promise<Record<string, unknown>> {
-		return new Promise((resolve, reject) => {
-			let timer: ReturnType<typeof setTimeout>;
-			const remove = this.on(method, (params) => {
-				clearTimeout(timer);
-				remove();
-				resolve(params);
-			});
-			timer = setTimeout(() => {
-				remove();
-				reject(new Error(`Timed out waiting for ${method}.`));
-			}, timeoutMs);
-		});
+	): CdpEventWaiter {
+		return createProjectPreviewEventWaiter(
+			(listener) => this.on(method, listener),
+			method,
+			timeoutMs,
+		);
 	}
 
 	send(
@@ -817,18 +863,27 @@ class CdpBrowserSession implements ProjectPreviewBrowserSession {
 
 	async navigate(url: string): Promise<void> {
 		const loaded = this.page.waitFor("Page.domContentEventFired");
-		const result = await this.page.send("Page.navigate", { url });
-		if (result.errorText) {
-			void loaded.catch(() => {});
-			throw new Error(`Preview navigation failed: ${String(result.errorText)}`);
+		try {
+			const result = await this.page.send("Page.navigate", { url });
+			if (result.errorText) {
+				throw new Error(
+					`Preview navigation failed: ${String(result.errorText)}`,
+				);
+			}
+			await loaded.promise;
+		} finally {
+			loaded.cancel();
 		}
-		await loaded;
 	}
 
 	async reload(): Promise<void> {
 		const loaded = this.page.waitFor("Page.domContentEventFired");
-		await this.page.send("Page.reload", { ignoreCache: false });
-		await loaded;
+		try {
+			await this.page.send("Page.reload", { ignoreCache: false });
+			await loaded.promise;
+		} finally {
+			loaded.cancel();
+		}
 	}
 
 	async setViewport(

@@ -1,13 +1,19 @@
-import { X509Certificate } from "node:crypto";
+import { createHash, X509Certificate } from "node:crypto";
 import { readFileSync } from "node:fs";
 import type { ServerWebSocket } from "bun";
 import { isAllowedOrigin, isAllowedOriginHeader } from "../lib/allowedOrigin";
 import { registerBunServer } from "../lib/lifecycle";
 import { isPublicPath } from "../lib/publicPath";
 import { unauthenticatedResponse } from "../lib/uiRequestSecurity";
-import { authenticateRequest } from "./auth";
+import { authenticateRequest, readCookie } from "./auth";
 import { SERVER_FN_NAMES } from "./embedded-server-fn-names";
 import { compressHttpResponse } from "./httpCompression";
+import {
+	parseProjectPreviewRelayPath,
+	projectPreviewSelectionCookieHeader,
+	projectPreviewWebSocketProtocols,
+	selectedProjectPreviewId,
+} from "./projectPreviewRelay";
 import { createRequestObserver } from "./requestDiagnostics";
 import { createConcurrencyGate, readRequestBodyLimited } from "./requestLimits";
 import type { UiForward } from "./uiServer";
@@ -16,6 +22,8 @@ type WsData = {
 	wsTarget: string;
 	back: WebSocket | null;
 	queue: (string | ArrayBuffer)[];
+	forwardHeaders?: Record<string, string>;
+	protocols?: string[];
 };
 
 const MAX_WS_QUEUE = 100;
@@ -25,6 +33,8 @@ const DEFAULT_FORWARD_TIMEOUT_MS = 30_000;
 const SAFE_FORWARD_FIRST_ATTEMPT_MS = 5_000;
 const VOICE_FORWARD_TIMEOUT_MS = 70_000;
 const TLS_IDLE_TIMEOUT_SECONDS = 75;
+const PREVIEW_SELECTION_TTL_MS = 4 * 60 * 60 * 1_000;
+const MAX_REMEMBERED_PREVIEW_CLIENTS = 64;
 const PREVIEW_RELAY_PATH =
 	/^\/api\/project-previews\/[0-9a-f-]+\/relay(?:\/|$)/i;
 const observeTlsForward = createRequestObserver({
@@ -46,6 +56,7 @@ const SKIP_REQ = new Set([
 	"connection",
 	"keep-alive",
 	"x-hlid-internal",
+	"x-hlid-preview-origin",
 	"x-hlid-proxy-token",
 	"x-hlid-forwarded-proto",
 	"x-hlid-forwarded-client-ip",
@@ -61,12 +72,14 @@ type HttpForwarderOptions = {
 	authenticate?: (request: Request) => Promise<boolean>;
 	forward?: (input: string, init: RequestInit) => Promise<Response>;
 	apiForward?: (input: string, init: RequestInit) => Promise<Response>;
+	forwardHeaders?: Record<string, string>;
 };
 
 function buildForwardHeaders(
 	request: Request,
 	peerIp: string | undefined,
 	internalToken: string,
+	forwardHeaders?: Record<string, string>,
 ): Headers {
 	const headers = new Headers();
 	for (const [key, value] of request.headers.entries()) {
@@ -75,6 +88,9 @@ function buildForwardHeaders(
 	headers.set("x-hlid-forwarded-proto", "https");
 	headers.set("x-hlid-forwarded-client-ip", peerIp ?? "");
 	headers.set("x-hlid-proxy-token", internalToken);
+	for (const [name, value] of Object.entries(forwardHeaders ?? {})) {
+		headers.set(name, value);
+	}
 	// Bun fetch transparently decodes compressed upstream bodies but preserves
 	// Content-Encoding. Request identity bytes on the loopback hop so the public
 	// proxy never labels already-decoded HTML as gzip.
@@ -173,6 +189,7 @@ export function createTlsHttpForwarder({
 	authenticate = authenticateRequest,
 	forward = fetch,
 	apiForward = fetch,
+	forwardHeaders,
 }: HttpForwarderOptions): (req: Request, peerIp?: string) => Promise<Response> {
 	const gate = createConcurrencyGate(maxConcurrent);
 
@@ -213,7 +230,12 @@ export function createTlsHttpForwarder({
 				`http://127.0.0.1:${targetPort}${url.pathname}${url.search}`,
 				{
 					method: req.method,
-					headers: buildForwardHeaders(req, peerIp, internalToken),
+					headers: buildForwardHeaders(
+						req,
+						peerIp,
+						internalToken,
+						forwardHeaders,
+					),
 					body,
 				},
 				url.pathname === "/api/voice/transcribe"
@@ -249,10 +271,17 @@ function createTlsWebSocketHandlers(internalToken: string) {
 			ws.data.queue = [];
 			const BunWebSocket = WebSocket as unknown as new (
 				url: string,
-				options: { headers: Record<string, string> },
+				options: {
+					headers: Record<string, string>;
+					protocols?: string[];
+				},
 			) => WebSocket;
 			const back = new BunWebSocket(ws.data.wsTarget, {
-				headers: { "x-hlid-internal": internalToken },
+				headers: {
+					"x-hlid-internal": internalToken,
+					...(ws.data.forwardHeaders ?? {}),
+				},
+				protocols: ws.data.protocols,
 			});
 			ws.data.back = back;
 			const connectTimeout = setTimeout(() => {
@@ -397,7 +426,47 @@ export function startTlsProxy({
 		internalToken,
 		maxBodyBytes,
 		authenticate: async () => true,
+		forwardHeaders: { "x-hlid-preview-origin": "1" },
 	});
+	const previewSelections = new Map<
+		string,
+		{ previewId: string; lastUsedAt: number }
+	>();
+	const rememberedPreview = (
+		request: Request,
+		explicitPreviewId?: string,
+	): string | null => {
+		const sessionToken = readCookie(request);
+		if (!sessionToken) return null;
+		const client = createHash("sha256").update(sessionToken).digest("hex");
+		const now = Date.now();
+		if (explicitPreviewId) {
+			previewSelections.set(client, {
+				previewId: explicitPreviewId,
+				lastUsedAt: now,
+			});
+			if (previewSelections.size > MAX_REMEMBERED_PREVIEW_CLIENTS) {
+				for (const [key, selection] of previewSelections) {
+					if (now - selection.lastUsedAt > PREVIEW_SELECTION_TTL_MS) {
+						previewSelections.delete(key);
+					}
+				}
+				while (previewSelections.size > MAX_REMEMBERED_PREVIEW_CLIENTS) {
+					const oldest = previewSelections.keys().next().value;
+					if (!oldest) break;
+					previewSelections.delete(oldest);
+				}
+			}
+			return explicitPreviewId;
+		}
+		const selection = previewSelections.get(client);
+		if (!selection || now - selection.lastUsedAt > PREVIEW_SELECTION_TTL_MS) {
+			previewSelections.delete(client);
+			return null;
+		}
+		selection.lastUsedAt = now;
+		return selection.previewId;
+	};
 	registerBunServer(
 		Bun.serve<WsData>({
 			port: previewTlsPort,
@@ -415,7 +484,14 @@ export function startTlsProxy({
 					return new Response("Forbidden", { status: 403 });
 				}
 				const url = new URL(req.url);
-				if (!PREVIEW_RELAY_PATH.test(url.pathname)) {
+				const explicitPreviewId = parseProjectPreviewRelayPath(
+					url.pathname,
+				)?.previewId;
+				const selectedPreviewId =
+					explicitPreviewId ??
+					rememberedPreview(req) ??
+					selectedProjectPreviewId(req.headers.get("cookie"));
+				if (!explicitPreviewId && !selectedPreviewId) {
 					return new Response("Not found", { status: 404 });
 				}
 				if (!(await authenticateRequest(req))) {
@@ -423,6 +499,9 @@ export function startTlsProxy({
 						status: 401,
 						headers: { "cache-control": "no-store" },
 					});
+				}
+				if (explicitPreviewId) {
+					rememberedPreview(req, explicitPreviewId);
 				}
 				if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
 					if (
@@ -438,12 +517,30 @@ export function startTlsProxy({
 							wsTarget: `ws://127.0.0.1:${wsPort}${url.pathname}${url.search}`,
 							back: null,
 							queue: [],
+							forwardHeaders: {
+								"x-hlid-preview-origin": "1",
+								...(req.headers.get("cookie")
+									? { cookie: req.headers.get("cookie") ?? "" }
+									: {}),
+							},
+							protocols: projectPreviewWebSocketProtocols(req),
 						},
 					});
 					if (!upgraded) {
 						return new Response("WebSocket upgrade failed", { status: 500 });
 					}
 					return undefined;
+				}
+				if (!explicitPreviewId && selectedPreviewId) {
+					const headers = new Headers(req.headers);
+					headers.set(
+						"cookie",
+						projectPreviewSelectionCookieHeader(
+							req.headers.get("cookie"),
+							selectedPreviewId,
+						),
+					);
+					return previewForward(new Request(req, { headers }), peerIp);
 				}
 				return previewForward(req, peerIp);
 			},

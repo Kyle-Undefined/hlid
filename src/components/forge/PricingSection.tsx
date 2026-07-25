@@ -99,7 +99,7 @@ function ModelsTable({ models }: { models: PricingCatalogModelView[] }) {
 							) : (
 								<td
 									colSpan={4}
-									className="px-3 py-2.5 text-[9px] tracking-widest text-[var(--status-warning)] uppercase"
+									className="px-3 py-2.5 text-[9px] tracking-widest text-status-warning uppercase"
 								>
 									Unpriced
 								</td>
@@ -335,7 +335,7 @@ export function PricingSection() {
 						setText(event.target.value);
 						setStatus(null);
 					}}
-					className="min-h-80 w-full border border-border bg-secondary p-3 font-mono text-xs focus:border-primary/50 focus:outline-none"
+					className="min-h-80 w-full border border-border bg-input p-3 font-mono text-xs focus:border-primary/50 focus:outline-none"
 				/>
 				<div className="flex flex-wrap items-center gap-3">
 					<button

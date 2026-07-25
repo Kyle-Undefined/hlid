@@ -20,7 +20,7 @@ function PasswordInput({
 			value={value}
 			onChange={(event) => onChange(event.target.value)}
 			autoComplete={autoComplete}
-			className="w-48 bg-secondary border border-border px-2.5 py-1.5 text-sm text-foreground focus:outline-none focus:border-primary/50"
+			className="w-48 bg-input border border-border px-2.5 py-1.5 text-sm text-foreground focus:outline-none focus:border-primary/50"
 		/>
 	);
 }

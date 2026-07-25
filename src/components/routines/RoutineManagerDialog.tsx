@@ -149,7 +149,7 @@ function ScheduleFields({
 					onChange={(event) =>
 						changeKind(event.target.value as RoutineSchedule["kind"])
 					}
-					className="mt-1 w-full border border-border bg-secondary px-2 py-2 text-xs text-foreground"
+					className="mt-1 w-full border border-border bg-input px-2 py-2 text-xs text-foreground"
 				>
 					<option value="once">Once</option>
 					<option value="interval">Interval</option>
@@ -167,7 +167,7 @@ function ScheduleFields({
 							timezone: event.target.value,
 						}))
 					}
-					className="mt-1 w-full border border-border bg-secondary px-2 py-2 text-xs text-foreground"
+					className="mt-1 w-full border border-border bg-input px-2 py-2 text-xs text-foreground"
 				/>
 			</label>
 			{schedule.kind === "once" && (
@@ -182,7 +182,7 @@ function ScheduleFields({
 								schedule: { kind: "once", at: localToIso(event.target.value) },
 							}))
 						}
-						className="mt-1 w-full border border-border bg-secondary px-2 py-2 text-xs text-foreground"
+						className="mt-1 w-full border border-border bg-input px-2 py-2 text-xs text-foreground"
 					/>
 				</label>
 			)}
@@ -202,7 +202,7 @@ function ScheduleFields({
 								},
 							}))
 						}
-						className="mt-1 w-full border border-border bg-secondary px-2 py-2 text-xs text-foreground"
+						className="mt-1 w-full border border-border bg-input px-2 py-2 text-xs text-foreground"
 					/>
 				</label>
 			)}
@@ -218,7 +218,7 @@ function ScheduleFields({
 								schedule: { ...schedule, time: event.target.value },
 							}))
 						}
-						className="mt-1 w-full border border-border bg-secondary px-2 py-2 text-xs text-foreground"
+						className="mt-1 w-full border border-border bg-input px-2 py-2 text-xs text-foreground"
 					/>
 				</label>
 			)}
@@ -317,7 +317,7 @@ function GrantEditor({
 								capability: event.target.value as RoutineGrantCapability,
 							})
 						}
-						className="border border-border bg-secondary px-2 py-1.5 text-xs"
+						className="border border-border bg-input px-2 py-1.5 text-xs"
 					>
 						{CAPABILITIES.map((item) => (
 							<option key={item.value} value={item.value}>
@@ -332,7 +332,7 @@ function GrantEditor({
 								update(index, { ...grant, command: event.target.value })
 							}
 							placeholder="Exact command"
-							className="border border-border bg-secondary px-2 py-1.5 text-xs"
+							className="border border-border bg-input px-2 py-1.5 text-xs"
 						/>
 					) : grant.capability === "fs.read" ||
 						grant.capability === "fs.write" ? (
@@ -346,7 +346,7 @@ function GrantEditor({
 								})
 							}
 							placeholder="Approved path or directory"
-							className="border border-border bg-secondary px-2 py-1.5 text-xs"
+							className="border border-border bg-input px-2 py-1.5 text-xs"
 						/>
 					) : (
 						<input
@@ -355,7 +355,7 @@ function GrantEditor({
 								update(index, { ...grant, tool: event.target.value })
 							}
 							placeholder="Exact tool name"
-							className="border border-border bg-secondary px-2 py-1.5 text-xs"
+							className="border border-border bg-input px-2 py-1.5 text-xs"
 						/>
 					)}
 					<button
@@ -512,7 +512,7 @@ function VaultNoteSelector({
 							onChange={(event) => setQuery(event.target.value)}
 							aria-label="Search vault notes"
 							placeholder="Search vault notes"
-							className="min-w-0 flex-1 border border-border bg-secondary px-2 py-1.5 text-xs"
+							className="min-w-0 flex-1 border border-border bg-input px-2 py-1.5 text-xs"
 						/>
 						<button
 							type="button"
@@ -719,9 +719,9 @@ function RoutineInputSelector({
 					{definition.relicIds.map((id) => (
 						<div
 							key={`relic:${id}`}
-							className="flex min-w-0 max-w-full items-center gap-1.5 border border-amber-500/30 bg-amber-500/5 px-2 py-1"
+							className="flex min-w-0 max-w-full items-center gap-1.5 border border-primary/30 bg-primary/5 px-2 py-1"
 						>
-							<Archive className="h-3 w-3 shrink-0 text-amber-500/70" />
+							<Archive className="h-3 w-3 shrink-0 text-primary/70" />
 							<span className="max-w-72 truncate font-mono text-[9px]">
 								{selectedRelics[id]?.filename ?? `Relic ${id.slice(0, 8)}`}
 							</span>
@@ -748,7 +748,7 @@ function RoutineInputSelector({
 						onChange={(event) => setQuery(event.target.value)}
 						aria-label="Search Routine inputs"
 						placeholder="Search vault notes and retained Relics"
-						className="w-full border border-border bg-secondary px-2 py-1.5 text-xs"
+						className="w-full border border-border bg-input px-2 py-1.5 text-xs"
 					/>
 					{error ? (
 						<div className="text-[10px] text-destructive">{error}</div>
@@ -792,9 +792,9 @@ function RoutineInputSelector({
 									key={`relic-result:${item.id}`}
 									onClick={() => addRelic(item)}
 									aria-label={`Add Relic input ${item.filename}`}
-									className="flex w-full items-center gap-2 border-b border-border px-2 py-2 text-left hover:bg-amber-500/5"
+									className="flex w-full items-center gap-2 border-b border-border px-2 py-2 text-left hover:bg-primary/5"
 								>
-									<Archive className="h-3.5 w-3.5 shrink-0 text-amber-500/70" />
+									<Archive className="h-3.5 w-3.5 shrink-0 text-primary/70" />
 									<span className="min-w-0">
 										<span className="block truncate font-mono text-[10px]">
 											{item.filename}
@@ -916,7 +916,7 @@ function RoutineSkillSelector({
 				onChange={(event) => setQuery(event.target.value)}
 				aria-label="Search Routine skills"
 				placeholder="Search available skills"
-				className="w-full border border-border bg-secondary px-2 py-1.5 text-xs"
+				className="w-full border border-border bg-input px-2 py-1.5 text-xs"
 			/>
 			<div className="max-h-52 overflow-y-auto border border-border">
 				{compatible.length === 0 ? (
@@ -1049,7 +1049,7 @@ function RoutineIdentityFields({
 				<select
 					value={definition.agentCwd}
 					onChange={(event) => changeTarget(event.target.value)}
-					className="mt-1 w-full min-w-0 border border-border bg-secondary px-2 py-2 text-xs normal-case tracking-normal text-foreground"
+					className="mt-1 w-full min-w-0 border border-border bg-input px-2 py-2 text-xs normal-case tracking-normal text-foreground"
 				>
 					{targets.map((target) => (
 						<option key={target.path} value={target.path}>
@@ -1063,7 +1063,7 @@ function RoutineIdentityFields({
 				<select
 					value={definition.providerId}
 					onChange={(event) => changeProvider(event.target.value)}
-					className="mt-1 w-full min-w-0 border border-border bg-secondary px-2 py-2 text-xs normal-case tracking-normal text-foreground"
+					className="mt-1 w-full min-w-0 border border-border bg-input px-2 py-2 text-xs normal-case tracking-normal text-foreground"
 				>
 					{providerChoices.map((provider) => (
 						<option key={provider.id} value={provider.id}>
@@ -1097,7 +1097,7 @@ function RoutineIdentityFields({
 										""),
 							}));
 						}}
-						className="mt-1 w-full min-w-0 border border-border bg-secondary px-2 py-2 text-xs normal-case tracking-normal text-foreground"
+						className="mt-1 w-full min-w-0 border border-border bg-input px-2 py-2 text-xs normal-case tracking-normal text-foreground"
 					>
 						<option value="">Provider default</option>
 						{definition.model &&
@@ -1122,7 +1122,7 @@ function RoutineIdentityFields({
 							}))
 						}
 						placeholder="Provider default"
-						className="mt-1 w-full min-w-0 border border-border bg-secondary px-2 py-2 text-xs normal-case tracking-normal text-foreground"
+						className="mt-1 w-full min-w-0 border border-border bg-input px-2 py-2 text-xs normal-case tracking-normal text-foreground"
 					/>
 				)}
 			</label>
@@ -1141,7 +1141,7 @@ function RoutineIdentityFields({
 								effort: event.target.value,
 							}))
 						}
-						className="mt-1 w-full min-w-0 border border-border bg-secondary px-2 py-2 text-xs normal-case tracking-normal text-foreground"
+						className="mt-1 w-full min-w-0 border border-border bg-input px-2 py-2 text-xs normal-case tracking-normal text-foreground"
 					>
 						<option value="">Provider default</option>
 						{definition.effort &&
@@ -1166,7 +1166,7 @@ function RoutineIdentityFields({
 							}))
 						}
 						placeholder="Provider default"
-						className="mt-1 w-full min-w-0 border border-border bg-secondary px-2 py-2 text-xs normal-case tracking-normal text-foreground"
+						className="mt-1 w-full min-w-0 border border-border bg-input px-2 py-2 text-xs normal-case tracking-normal text-foreground"
 					/>
 				)}
 			</label>
@@ -1256,7 +1256,7 @@ function RoutineEditor({
 								name: event.target.value,
 							}))
 						}
-						className="mt-1 w-full border border-border bg-secondary px-2 py-2 text-xs normal-case tracking-normal text-foreground"
+						className="mt-1 w-full border border-border bg-input px-2 py-2 text-xs normal-case tracking-normal text-foreground"
 					/>
 				</label>
 			</div>
@@ -1277,7 +1277,7 @@ function RoutineEditor({
 							prompt: event.target.value,
 						}))
 					}
-					className="mt-1 w-full resize-y border border-border bg-secondary px-2 py-2 text-xs normal-case tracking-normal text-foreground"
+					className="mt-1 w-full resize-y border border-border bg-input px-2 py-2 text-xs normal-case tracking-normal text-foreground"
 				/>
 			</label>
 			<RoutineSkillSelector
@@ -1311,7 +1311,7 @@ function RoutineEditor({
 									.value as RoutineDefinition["permissionMode"],
 							}))
 						}
-						className="mt-1 w-full border border-border bg-secondary px-2 py-2 text-xs text-foreground"
+						className="mt-1 w-full border border-border bg-input px-2 py-2 text-xs text-foreground"
 					>
 						<option value="read_only">Read only</option>
 						<option value="preapproved">Exact preapprovals</option>
@@ -1320,7 +1320,7 @@ function RoutineEditor({
 				</label>
 			</div>
 			{definition.permissionMode === "full_access" && (
-				<div className="space-y-3 border border-amber-500/40 bg-amber-500/5 p-3 text-[10px] text-amber-700 dark:text-amber-300">
+				<div className="space-y-3 border border-status-warning/40 bg-status-warning/5 p-3 text-[10px] text-status-warning">
 					<p>
 						Full access removes the Routine grant boundary. Umbod policy still
 						applies and can block the run.
@@ -1580,7 +1580,7 @@ export function RoutineManagerDialog({
 														: ""}
 												</div>
 												{routine.pausedReason && (
-													<div className="mt-2 text-[10px] text-amber-600">
+													<div className="mt-2 text-[10px] text-status-warning">
 														Paused: {routine.pausedReason}
 													</div>
 												)}
@@ -1664,7 +1664,7 @@ export function RoutineManagerDialog({
 															</span>
 															<span className="flex items-center gap-2">
 																{run.action_required || run.error ? (
-																	<span className="max-w-md text-amber-600">
+																	<span className="max-w-md text-status-warning">
 																		{run.action_required ?? run.error}
 																	</span>
 																) : null}

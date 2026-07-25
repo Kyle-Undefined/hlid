@@ -152,7 +152,7 @@ export function ReadAloudSection({
 						})
 					}
 					aria-label="Read aloud speech engine"
-					className="w-48 sm:w-64 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 disabled:opacity-50"
+					className="w-48 sm:w-64 bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 disabled:opacity-50"
 				>
 					<option value="device">Device browser</option>
 					<option value="microsoft" disabled={microsoft?.available === false}>
@@ -175,7 +175,7 @@ export function ReadAloudSection({
 						}
 						disabled={voices.length === 0}
 						aria-label="Read aloud device voice"
-						className="w-48 sm:w-64 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 disabled:opacity-50"
+						className="w-48 sm:w-64 bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 disabled:opacity-50"
 					>
 						<option value="">
 							{voices.length === 0 ? "No local voices found" : "Automatic"}
@@ -206,7 +206,7 @@ export function ReadAloudSection({
 							}
 							disabled={!microsoft?.available}
 							aria-label="Read aloud Microsoft voice"
-							className="w-48 sm:w-64 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 disabled:opacity-50"
+							className="w-48 sm:w-64 bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 disabled:opacity-50"
 						>
 							<option value="">Microsoft default</option>
 							{microsoft?.voices.map((voice) => (
@@ -259,7 +259,7 @@ export function ReadAloudSection({
 							})
 						}
 						aria-label="Codex realtime voice"
-						className="w-48 sm:w-64 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
+						className="w-48 sm:w-64 bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
 					>
 						{CODEX_VOICES.map((voice) => (
 							<option key={voice} value={voice}>
@@ -280,7 +280,7 @@ export function ReadAloudSection({
 							updateShared({ read_aloud_rate: Number(event.target.value) })
 						}
 						aria-label="Read aloud speed"
-						className="w-32 sm:w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
+						className="w-32 sm:w-48 bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
 					>
 						{!RATE_OPTIONS.includes(
 							preferences.rate as (typeof RATE_OPTIONS)[number],

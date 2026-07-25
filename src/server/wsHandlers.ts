@@ -384,6 +384,20 @@ async function handleSubscribeSession(
 			pending_turn_ids: [],
 			running_turn_id: null,
 		});
+		try {
+			const preview = await db.getLatestProjectPreviewForSession(
+				msg.session_id,
+			);
+			if (preview) {
+				send(ws, {
+					type: "project_preview_status",
+					session_id: preview.session_id,
+					preview,
+				});
+			}
+		} catch {
+			// Preview restoration is supplemental to the session subscription.
+		}
 		return;
 	}
 	entry.runState.addSubscriber(ws);
@@ -415,6 +429,25 @@ async function handleSubscribeSession(
 	const sleep = entry.manager.getSleepState();
 	if (sleep) send(ws, sleep);
 	sendQueueState(ws, entry);
+	const previewSessionIds = [
+		msg.session_id,
+		entry.manager.getCurrentSessionId(),
+		entry.sessionId,
+	].filter((sessionId): sessionId is string => Boolean(sessionId));
+	for (const sessionId of new Set(previewSessionIds)) {
+		try {
+			const preview = await db.getLatestProjectPreviewForSession(sessionId);
+			if (!preview) continue;
+			send(ws, {
+				type: "project_preview_status",
+				session_id: preview.session_id,
+				preview,
+			});
+			break;
+		} catch {
+			// Preview restoration is supplemental to the session subscription.
+		}
+	}
 }
 
 function handleStopSession(

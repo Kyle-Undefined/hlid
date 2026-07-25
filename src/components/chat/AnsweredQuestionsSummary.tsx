@@ -21,7 +21,7 @@ export function AnsweredQuestionsSummary({
 					return (
 						<div key={q.question} className="flex flex-col gap-0.5 min-w-0">
 							<div className="flex items-center gap-2">
-								<Check className="w-3 h-3 text-green-600/60 shrink-0" />
+								<Check className="w-3 h-3 text-status-success/60 shrink-0" />
 								<span className="tracking-wider text-[10px] uppercase">
 									{picks.length > 0 ? picks.join(", ") : "—"}
 								</span>

@@ -10,7 +10,7 @@
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
 }
 
-@custom-variant dark (&:is(.dark *));
+@custom-variant dark (&:is([data-theme-appearance="dark"] *));
 
 /* inspo.png palette, neutral dark, sky blue accent */
 :root,
@@ -56,6 +56,7 @@
   --cache-write: #ea580c;
   --status-success: #22c55e;
   --status-warning: #f59e0b;
+  --status-info: #38bdf8;
   /* tool block expanded panel, sky blue inset */
   --tool-panel: #071825;
   --tool-panel-border: #1a5580;
@@ -102,6 +103,7 @@ html[data-theme="tan"] {
   --cache-write: #ea580c;
   --status-success: #3f7d44;
   --status-warning: #a65f00;
+  --status-info: #2563eb;
   --tool-panel: #e9ddc8;
   --tool-panel-border: #c5a882;
   /* chat message text colors */
@@ -130,6 +132,7 @@ html[data-theme="tan"] {
   --color-destructive-foreground: var(--destructive-foreground);
   --color-status-success: var(--status-success);
   --color-status-warning: var(--status-warning);
+  --color-status-info: var(--status-info);
   --color-border: var(--border);
   --color-input: var(--input);
   --color-ring: var(--ring);
@@ -215,18 +218,6 @@ body {
 
 *::-webkit-scrollbar-thumb:hover {
   background: var(--primary);
-}
-
-html[data-theme="tan"] * {
-  scrollbar-color: #c5a882 transparent;
-}
-
-html[data-theme="tan"] *::-webkit-scrollbar-thumb {
-  background: #c5a882;
-}
-
-html[data-theme="tan"] *::-webkit-scrollbar-thumb:hover {
-  background: #8c4e35;
 }
 
 input[type="number"]::-webkit-inner-spin-button,
@@ -326,53 +317,53 @@ input[type="number"] {
   font-weight: bold;
 }
 
-/* highlight.js token colors — tan theme overrides */
-html[data-theme="tan"] .hljs-comment,
-html[data-theme="tan"] .hljs-quote {
+/* highlight.js token colors — light appearance overrides */
+html[data-theme-appearance="light"] .hljs-comment,
+html[data-theme-appearance="light"] .hljs-quote {
   color: #7c5a3f;
 }
-html[data-theme="tan"] .hljs-keyword,
-html[data-theme="tan"] .hljs-selector-tag,
-html[data-theme="tan"] .hljs-literal,
-html[data-theme="tan"] .hljs-built_in,
-html[data-theme="tan"] .hljs-meta {
+html[data-theme-appearance="light"] .hljs-keyword,
+html[data-theme-appearance="light"] .hljs-selector-tag,
+html[data-theme-appearance="light"] .hljs-literal,
+html[data-theme-appearance="light"] .hljs-built_in,
+html[data-theme-appearance="light"] .hljs-meta {
   color: #6b21a8;
 }
-html[data-theme="tan"] .hljs-string,
-html[data-theme="tan"] .hljs-attr,
-html[data-theme="tan"] .hljs-template-tag,
-html[data-theme="tan"] .hljs-template-variable {
+html[data-theme-appearance="light"] .hljs-string,
+html[data-theme-appearance="light"] .hljs-attr,
+html[data-theme-appearance="light"] .hljs-template-tag,
+html[data-theme-appearance="light"] .hljs-template-variable {
   color: #166534;
 }
-html[data-theme="tan"] .hljs-number,
-html[data-theme="tan"] .hljs-symbol,
-html[data-theme="tan"] .hljs-bullet {
+html[data-theme-appearance="light"] .hljs-number,
+html[data-theme-appearance="light"] .hljs-symbol,
+html[data-theme-appearance="light"] .hljs-bullet {
   color: #92400e;
 }
-html[data-theme="tan"] .hljs-title,
-html[data-theme="tan"] .hljs-section,
-html[data-theme="tan"] .hljs-name,
-html[data-theme="tan"] .hljs-tag {
+html[data-theme-appearance="light"] .hljs-title,
+html[data-theme-appearance="light"] .hljs-section,
+html[data-theme-appearance="light"] .hljs-name,
+html[data-theme-appearance="light"] .hljs-tag {
   color: #8c4e35;
 }
-html[data-theme="tan"] .hljs-variable,
-html[data-theme="tan"] .hljs-params,
-html[data-theme="tan"] .hljs-property {
+html[data-theme-appearance="light"] .hljs-variable,
+html[data-theme-appearance="light"] .hljs-params,
+html[data-theme-appearance="light"] .hljs-property {
   color: #2a1a10;
 }
-html[data-theme="tan"] .hljs-type,
-html[data-theme="tan"] .hljs-class .hljs-title {
+html[data-theme-appearance="light"] .hljs-type,
+html[data-theme-appearance="light"] .hljs-class .hljs-title {
   color: #9d174d;
 }
-html[data-theme="tan"] .hljs-regexp,
-html[data-theme="tan"] .hljs-link {
+html[data-theme-appearance="light"] .hljs-regexp,
+html[data-theme-appearance="light"] .hljs-link {
   color: #b45309;
 }
-html[data-theme="tan"] .hljs-deletion {
+html[data-theme-appearance="light"] .hljs-deletion {
   color: #991b1b;
   background: rgba(176, 58, 46, 0.12);
 }
-html[data-theme="tan"] .hljs-addition {
+html[data-theme-appearance="light"] .hljs-addition {
   color: #166534;
   background: rgba(22, 101, 52, 0.12);
 }
@@ -435,30 +426,30 @@ html[data-theme="tan"] .hljs-addition {
 }
 .markdown-alert-caution .markdown-alert-title { color: #f87171; }
 
-html[data-theme="tan"] .markdown-alert-note {
+html[data-theme-appearance="light"] .markdown-alert-note {
   border-left-color: #2563eb;
 }
-html[data-theme="tan"] .markdown-alert-note .markdown-alert-title { color: #1d4ed8; }
+html[data-theme-appearance="light"] .markdown-alert-note .markdown-alert-title { color: #1d4ed8; }
 
-html[data-theme="tan"] .markdown-alert-tip {
+html[data-theme-appearance="light"] .markdown-alert-tip {
   border-left-color: #15803d;
 }
-html[data-theme="tan"] .markdown-alert-tip .markdown-alert-title { color: #14532d; }
+html[data-theme-appearance="light"] .markdown-alert-tip .markdown-alert-title { color: #14532d; }
 
-html[data-theme="tan"] .markdown-alert-important {
+html[data-theme-appearance="light"] .markdown-alert-important {
   border-left-color: #6b21a8;
 }
-html[data-theme="tan"] .markdown-alert-important .markdown-alert-title { color: #581c87; }
+html[data-theme-appearance="light"] .markdown-alert-important .markdown-alert-title { color: #581c87; }
 
-html[data-theme="tan"] .markdown-alert-warning {
+html[data-theme-appearance="light"] .markdown-alert-warning {
   border-left-color: #b45309;
 }
-html[data-theme="tan"] .markdown-alert-warning .markdown-alert-title { color: #92400e; }
+html[data-theme-appearance="light"] .markdown-alert-warning .markdown-alert-title { color: #92400e; }
 
-html[data-theme="tan"] .markdown-alert-caution {
+html[data-theme-appearance="light"] .markdown-alert-caution {
   border-left-color: #b91c1c;
 }
-html[data-theme="tan"] .markdown-alert-caution .markdown-alert-title { color: #991b1b; }
+html[data-theme-appearance="light"] .markdown-alert-caution .markdown-alert-title { color: #991b1b; }
 
 /* Keep the compact terminal aesthetic without dropping UI copy below a
    practical reading size or making muted labels disappear on either theme. */

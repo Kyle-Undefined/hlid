@@ -40,7 +40,7 @@ function readableDate(value: string): string {
 
 function statusClass(enabled: boolean): string {
 	return enabled
-		? "border-green-500/30 bg-green-500/10 text-green-600 dark:text-green-400"
+		? "border-status-success/30 bg-status-success/10 text-status-success"
 		: "border-border bg-secondary text-muted-foreground";
 }
 
@@ -87,7 +87,7 @@ function PackageFilesReview({ files }: { files: ExtensionSkillFile[] }) {
 						</summary>
 						<div className="border-t border-border/70">
 							{file.truncated && (
-								<div className="border-b border-amber-500/20 bg-amber-500/5 px-3 py-2 text-[10px] text-[var(--status-warning)]">
+								<div className="border-b border-status-warning/20 bg-status-warning/5 px-3 py-2 text-[10px] text-status-warning">
 									Preview truncated at the extension review limit.
 								</div>
 							)}
@@ -140,7 +140,7 @@ function TrustReviewAndManifest({
 						{[...new Set(trustSignals)].map((signal) => (
 							<span
 								key={signal}
-								className="border border-amber-500/30 bg-amber-500/5 px-2 py-1 text-[10px] text-[var(--status-warning)]"
+								className="border border-status-warning/30 bg-status-warning/5 px-2 py-1 text-[10px] text-status-warning"
 							>
 								{signal}
 							</span>
@@ -393,8 +393,8 @@ function AvailableExtensionCard({
 					<div
 						className={`border px-3 py-2 text-xs ${
 							review.reviewLevel === "package"
-								? "border-green-500/30 bg-green-500/5"
-								: "border-amber-500/30 bg-amber-500/5 text-[var(--status-warning)]"
+								? "border-status-success/30 bg-status-success/5"
+								: "border-status-warning/30 bg-status-warning/5 text-status-warning"
 						}`}
 					>
 						<div className="font-medium">
@@ -411,7 +411,7 @@ function AvailableExtensionCard({
 							className={`flex flex-wrap items-center justify-between gap-3 border px-3 py-2 ${
 								review.reviewLevel === "package"
 									? "border-primary/25 bg-primary/5"
-									: "border-amber-500/40 bg-amber-500/10"
+									: "border-status-warning/40 bg-status-warning/10"
 							}`}
 						>
 							<div className="text-xs text-muted-foreground">
@@ -424,7 +424,7 @@ function AvailableExtensionCard({
 									</>
 								) : (
 									<>
-										<strong className="text-[var(--status-warning)]">
+										<strong className="text-status-warning">
 											The package files have not been reviewed.
 										</strong>{" "}
 										{extension.providerLabel} will download and activate this
@@ -460,7 +460,7 @@ function AvailableExtensionCard({
 										className={`border px-3 py-1.5 text-[10px] tracking-widest uppercase disabled:opacity-40 ${
 											review.reviewLevel === "package"
 												? "border-primary/40 text-primary hover:bg-primary/10"
-												: "border-amber-500/50 text-[var(--status-warning)] hover:bg-amber-500/10"
+												: "border-status-warning/50 text-status-warning hover:bg-status-warning/10"
 										}`}
 									>
 										{mutating ? "Installing…" : "Install"}
@@ -472,7 +472,7 @@ function AvailableExtensionCard({
 					{review.errors.map((message) => (
 						<div
 							key={message}
-							className="border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-[var(--status-warning)]"
+							className="border border-status-warning/30 bg-status-warning/5 px-3 py-2 text-xs text-status-warning"
 						>
 							{message}
 						</div>
@@ -572,7 +572,9 @@ function ExtensionCard({
 						<div className="flex flex-wrap items-center gap-2">
 							<span
 								className={`size-2 rounded-full ${
-									extension.enabled ? "bg-green-500" : "bg-muted-foreground/40"
+									extension.enabled
+										? "bg-status-success"
+										: "bg-muted-foreground/40"
 								}`}
 								aria-hidden="true"
 							/>
@@ -604,7 +606,7 @@ function ExtensionCard({
 			</summary>
 			<div className="border-t border-border px-4 py-4 space-y-4">
 				{extension.errors.length > 0 && (
-					<div className="border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-[var(--status-warning)]">
+					<div className="border border-status-warning/30 bg-status-warning/5 px-3 py-2 text-xs text-status-warning">
 						{extension.errors.map((error) => (
 							<div key={error}>{error}</div>
 						))}
@@ -1021,7 +1023,7 @@ export function ExtensionsSection() {
 								? "Filter installed extensions"
 								: "Search marketplaces"
 						}
-						className="min-w-0 flex-1 bg-secondary border border-border px-2.5 py-1.5 text-xs"
+						className="min-w-0 flex-1 bg-input border border-border px-2.5 py-1.5 text-xs"
 					/>
 					<button
 						type="button"
@@ -1039,7 +1041,7 @@ export function ExtensionsSection() {
 								value={environment}
 								onChange={(event) => setEnvironment(event.target.value)}
 								aria-label="Marketplace environment"
-								className="bg-secondary border border-border px-2.5 py-1.5 text-xs"
+								className="bg-input border border-border px-2.5 py-1.5 text-xs"
 							>
 								<option value="all">All environments</option>
 								{availableEnvironments.map((label) => (
@@ -1052,7 +1054,7 @@ export function ExtensionsSection() {
 								value={category}
 								onChange={(event) => setCategory(event.target.value)}
 								aria-label="Marketplace category"
-								className="bg-secondary border border-border px-2.5 py-1.5 text-xs"
+								className="bg-input border border-border px-2.5 py-1.5 text-xs"
 							>
 								<option value="all">All categories</option>
 								{availableCategories.map((label) => (
@@ -1079,7 +1081,7 @@ export function ExtensionsSection() {
 										onChange={(event) =>
 											setMarketplaceEnvironmentId(event.target.value)
 										}
-										className="min-w-0 bg-secondary border border-border px-2.5 py-1.5 text-xs"
+										className="min-w-0 bg-input border border-border px-2.5 py-1.5 text-xs"
 									>
 										{providerEnvironments.map((item) => (
 											<option key={item.id} value={item.id}>
@@ -1094,7 +1096,7 @@ export function ExtensionsSection() {
 											setMarketplaceSource(event.target.value)
 										}
 										placeholder="owner/repository or https://…"
-										className="min-w-0 bg-secondary border border-border px-2.5 py-1.5 text-xs"
+										className="min-w-0 bg-input border border-border px-2.5 py-1.5 text-xs"
 									/>
 								</div>
 								<div className="grid gap-2 sm:grid-cols-2">
@@ -1106,7 +1108,7 @@ export function ExtensionsSection() {
 												setMarketplaceRef(event.target.value)
 											}
 											placeholder="Optional Git ref"
-											className="min-w-0 bg-secondary border border-border px-2.5 py-1.5 text-xs"
+											className="min-w-0 bg-input border border-border px-2.5 py-1.5 text-xs"
 										/>
 									)}
 									<input
@@ -1116,7 +1118,7 @@ export function ExtensionsSection() {
 											setMarketplaceSparse(event.target.value)
 										}
 										placeholder="Optional sparse paths, comma separated"
-										className="min-w-0 bg-secondary border border-border px-2.5 py-1.5 text-xs"
+										className="min-w-0 bg-input border border-border px-2.5 py-1.5 text-xs"
 									/>
 								</div>
 								<div className="flex w-full justify-end">
@@ -1169,9 +1171,7 @@ export function ExtensionsSection() {
 				</p>
 				{error && <p className="text-xs text-destructive">{error}</p>}
 				{mutationNotice && (
-					<p className="text-xs text-green-600 dark:text-green-400">
-						{mutationNotice}
-					</p>
+					<p className="text-xs text-status-success">{mutationNotice}</p>
 				)}
 				{mutationError && (
 					<p className="text-xs text-destructive">{mutationError}</p>
@@ -1179,7 +1179,7 @@ export function ExtensionsSection() {
 				{providerErrors.map((item) => (
 					<p
 						key={`${item.environmentLabel}-${item.message}`}
-						className="text-xs text-[var(--status-warning)]"
+						className="text-xs text-status-warning"
 					>
 						{item.environmentLabel}: {item.message}
 					</p>

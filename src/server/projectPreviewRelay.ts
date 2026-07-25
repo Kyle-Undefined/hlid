@@ -1,4 +1,5 @@
 import type { ServerWebSocket } from "bun";
+import { init, parse } from "es-module-lexer";
 import { readRequestBodyLimited } from "./requestLimits";
 
 export type ProjectPreviewRelayWsData = {
@@ -6,6 +7,8 @@ export type ProjectPreviewRelayWsData = {
 	wsTarget: string;
 	back: WebSocket | null;
 	queue: Array<string | ArrayBuffer>;
+	upstreamHeaders: Record<string, string>;
+	protocols?: string[];
 };
 
 type RelayTarget = {
@@ -15,6 +18,9 @@ type RelayTarget = {
 const MAX_RELAY_REQUEST_BYTES = 10 * 1024 * 1024;
 const MAX_TRANSFORM_BYTES = 20 * 1024 * 1024;
 const MAX_WS_QUEUE = 100;
+export const PROJECT_PREVIEW_OPEN_PARAM = "__hlid_preview_open";
+const PREVIEW_SELECTION_COOKIE = "__hlid_preview_selection";
+const PREVIEW_BACKEND_PATH = "/__hlid_backend__";
 const RELAY_PATH = /^\/api\/project-previews\/([0-9a-f-]+)\/relay(?:\/(.*))?$/i;
 const STRIP_REQUEST_HEADERS = new Set([
 	"authorization",
@@ -25,6 +31,7 @@ const STRIP_REQUEST_HEADERS = new Set([
 	"proxy-authorization",
 	"referer",
 	"x-hlid-internal",
+	"x-hlid-preview-origin",
 	"x-hlid-proxy-token",
 ]);
 const STRIP_RESPONSE_HEADERS = new Set([
@@ -74,21 +81,210 @@ export function parseProjectPreviewRelayWebSocket(
 	return parseProjectPreviewRelayPath(pathname);
 }
 
-function relayRequestHeaders(request: Request, port: number): Headers {
+export function projectPreviewWebSocketProtocols(
+	request: Request,
+): string[] | undefined {
+	const protocols = request.headers
+		.get("sec-websocket-protocol")
+		?.split(",")
+		.map((protocol) => protocol.trim())
+		.filter(Boolean);
+	return protocols && protocols.length > 0 ? protocols : undefined;
+}
+
+export function selectedProjectPreviewId(
+	cookieHeader: string | null,
+): string | null {
+	if (!cookieHeader) return null;
+	for (const part of cookieHeader.split(/;\s*/)) {
+		const [name, value] = part.split("=", 2);
+		if (
+			name === PREVIEW_SELECTION_COOKIE &&
+			value &&
+			/^[0-9a-f-]+$/i.test(value)
+		) {
+			return value;
+		}
+	}
+	return null;
+}
+
+export function projectPreviewSelectionCookieHeader(
+	cookieHeader: string | null,
+	previewId: string,
+): string {
+	const cookies = (cookieHeader ?? "").split(/;\s*/).filter((cookie) => {
+		const equals = cookie.indexOf("=");
+		return (
+			cookie &&
+			(equals < 0 || cookie.slice(0, equals) !== PREVIEW_SELECTION_COOKIE)
+		);
+	});
+	cookies.push(`${PREVIEW_SELECTION_COOKIE}=${previewId}`);
+	return cookies.join("; ");
+}
+
+export function projectPreviewSelectionRedirect(
+	url: URL,
+	resolveTarget: (previewId: string) => RelayTarget,
+): Response | null {
+	if (url.searchParams.get(PROJECT_PREVIEW_OPEN_PARAM) !== "1") return null;
+	const relay = parseProjectPreviewRelayPath(url.pathname);
+	if (!relay) return null;
+	try {
+		resolveTarget(relay.previewId);
+	} catch {
+		return new Response("Project Preview is unavailable.", { status: 404 });
+	}
+	const location = new URL(relay.targetPath, url);
+	for (const [name, value] of url.searchParams) {
+		if (name !== PROJECT_PREVIEW_OPEN_PARAM) {
+			location.searchParams.append(name, value);
+		}
+	}
+	return new Response(null, {
+		status: 302,
+		headers: {
+			"cache-control": "no-store",
+			location: `${location.pathname}${location.search}${location.hash}`,
+			"set-cookie": `${PREVIEW_SELECTION_COOKIE}=${relay.previewId}; Path=/; HttpOnly; SameSite=Strict`,
+		},
+	});
+}
+
+export function selectedProjectPreviewRelayUrl(
+	url: URL,
+	cookieHeader: string | null,
+): URL | null {
+	if (parseProjectPreviewRelayPath(url.pathname)) return null;
+	const previewId = selectedProjectPreviewId(cookieHeader);
+	if (!previewId) return null;
+	const selected = new URL(url);
+	selected.pathname = `/api/project-previews/${previewId}/relay${url.pathname}`;
+	return selected;
+}
+
+export function projectPreviewUpstreamTarget(
+	port: number,
+	targetPath: string,
+): { port: number; path: string } {
+	if (
+		targetPath === PREVIEW_BACKEND_PATH ||
+		targetPath.startsWith(`${PREVIEW_BACKEND_PATH}/`)
+	) {
+		return {
+			port: port + 1,
+			path: targetPath.slice(PREVIEW_BACKEND_PATH.length) || "/",
+		};
+	}
+	return { port, path: targetPath };
+}
+
+function relayRequestHeaders(
+	request: Request,
+	port: number,
+	previewId: string,
+): Headers {
 	const headers = new Headers();
 	for (const [key, value] of request.headers.entries()) {
 		if (!STRIP_REQUEST_HEADERS.has(key.toLowerCase())) headers.set(key, value);
 	}
+	const cookie = projectPreviewUpstreamCookieHeader(
+		request.headers.get("cookie"),
+		previewId,
+	);
+	if (cookie) headers.set("cookie", cookie);
 	headers.set("accept-encoding", "identity");
 	headers.set("origin", `http://127.0.0.1:${port}`);
 	return headers;
 }
 
-function rewriteRootReferences(
+function previewCookiePrefix(previewId: string): string {
+	return `__hlid_preview_${previewId.replaceAll("-", "")}__`;
+}
+
+export function projectPreviewUpstreamCookieHeader(
+	header: string | null,
+	previewId: string,
+): string | null {
+	if (!header) return null;
+	const prefix = previewCookiePrefix(previewId);
+	const cookies: string[] = [];
+	for (const part of header.split(/;\s*/)) {
+		const equals = part.indexOf("=");
+		if (equals <= prefix.length) continue;
+		const name = part.slice(0, equals);
+		if (!name.startsWith(prefix)) continue;
+		const upstreamName = name.slice(prefix.length);
+		if (!upstreamName || /[\s;=]/.test(upstreamName)) continue;
+		cookies.push(`${upstreamName}=${part.slice(equals + 1)}`);
+	}
+	return cookies.length > 0 ? cookies.join("; ") : null;
+}
+
+function responseSetCookies(headers: Headers): string[] {
+	const extended = headers as Headers & { getSetCookie?: () => string[] };
+	const values = extended.getSetCookie?.();
+	if (values && values.length > 0) return values;
+	const combined = headers.get("set-cookie");
+	return combined ? [combined] : [];
+}
+
+function rewritePreviewSetCookie(
+	value: string,
+	previewId: string,
+): string | null {
+	const parts = value.split(";").map((part) => part.trim());
+	const pair = parts.shift();
+	const equals = pair?.indexOf("=") ?? -1;
+	if (!pair || equals <= 0) return null;
+	const name = pair.slice(0, equals).trim();
+	if (!name || /[\s;=]/.test(name)) return null;
+	const attributes = parts.filter(
+		(part) => !/^path\s*=/i.test(part) && !/^domain\s*=/i.test(part),
+	);
+	return [
+		`${previewCookiePrefix(previewId)}${name}=${pair.slice(equals + 1)}`,
+		"Path=/",
+		...attributes,
+	].join("; ");
+}
+
+async function rewriteJavascriptReferences(
+	text: string,
+	prefix: string,
+): Promise<string> {
+	await init;
+	const [imports] = parse(text);
+	const insertions = new Set<number>();
+	for (const imported of imports) {
+		if (!imported.n?.startsWith("/") || imported.n.startsWith("//")) continue;
+		const position = text.indexOf(imported.n, imported.s);
+		if (position >= imported.s && position < imported.e) {
+			insertions.add(position);
+		}
+	}
+	const rootedRuntimeReference =
+		/(\b(?:export\s+default|new\s+(?:URL|Worker|SharedWorker)|fetch|EventSource)\s*\(\s*|\b(?:src|href|poster|url)\s*:\s*)(["'`])\/(?!\/)/g;
+	for (const match of text.matchAll(rootedRuntimeReference)) {
+		const quote = match[2];
+		const matchIndex = match.index;
+		if (!quote || matchIndex === undefined) continue;
+		insertions.add(matchIndex + match[0].lastIndexOf(quote) + 1);
+	}
+	let rewritten = text;
+	for (const position of [...insertions].sort((a, b) => b - a)) {
+		rewritten =
+			rewritten.slice(0, position) + prefix + rewritten.slice(position);
+	}
+	return rewritten;
+}
+
+async function rewriteRootReferences(
 	text: string,
 	contentType: string,
 	prefix: string,
-): string {
+): Promise<string> {
 	if (contentType.includes("text/html")) {
 		return text
 			.replace(/\b(src|href|action|poster)=("|')\/(?!\/)/gi, `$1=$2${prefix}/`)
@@ -98,7 +294,7 @@ function rewriteRootReferences(
 		contentType.includes("javascript") ||
 		contentType.includes("ecmascript")
 	) {
-		return text.replace(/(["'`])\/(?!\/)/g, `$1${prefix}/`);
+		return rewriteJavascriptReferences(text, prefix);
 	}
 	if (contentType.includes("text/css")) {
 		return text.replace(/url\((["']?)\/(?!\/)/gi, `url($1${prefix}/`);
@@ -108,7 +304,12 @@ function rewriteRootReferences(
 
 function relayBootstrap(prefix: string): string {
 	const value = JSON.stringify(prefix);
-	return `<script>(()=>{const p=${value};const rewrite=(value)=>{try{const url=new URL(typeof value==="string"?value:value.url,location.href);if(url.origin===location.origin&&!url.pathname.startsWith(p)){url.pathname=p+url.pathname;return url.toString()}}catch{}return value};const NativeWebSocket=window.WebSocket;const RelayWebSocket=function(url,protocols){return new NativeWebSocket(rewrite(url),protocols)};Object.setPrototypeOf(RelayWebSocket,NativeWebSocket);RelayWebSocket.prototype=NativeWebSocket.prototype;window.WebSocket=RelayWebSocket;const nativeFetch=window.fetch.bind(window);window.fetch=(input,init)=>nativeFetch(typeof input==="string"?rewrite(input):input,init);const nativeOpen=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(method,url,...rest){return nativeOpen.call(this,method,rewrite(url),...rest)};const previewId=p.split("/")[3]||"";const route=()=>{const pathname=location.pathname.startsWith(p)?location.pathname.slice(p.length)||"/":location.pathname;return pathname+location.search+location.hash};const sendState=()=>{if(parent===window)return;parent.postMessage({type:"hlid:project-preview-state",version:1,preview_id:previewId,path:route(),width:Math.round(innerWidth),height:Math.round(innerHeight),scroll_x:Math.round(scrollX),scroll_y:Math.round(scrollY)},"*")};let scheduled=false;const scheduleState=()=>{if(scheduled)return;scheduled=true;requestAnimationFrame(()=>{scheduled=false;sendState()})};for(const name of ["load","resize","scroll","hashchange","popstate"])addEventListener(name,scheduleState,{passive:true});for(const name of ["pushState","replaceState"]){const native=history[name];history[name]=function(...args){const result=native.apply(this,args);scheduleState();return result}}addEventListener("message",(event)=>{if(event.data?.type==="hlid:project-preview-state-request")sendState()});queueMicrotask(sendState)})();</script>`;
+	// Every preview shares the isolated relay origin. A previewed PWA must not
+	// install a root-scoped worker that controls later previews or reloads the
+	// current frame during its update lifecycle.
+	const serviceWorkerGuard =
+		'<script>(()=>{const sw=navigator.serviceWorker;if(!sw)return;const blocked=()=>Promise.reject(new DOMException("Service workers are disabled in Hlid Project Preview.","SecurityError"));try{Object.defineProperty(sw,"register",{configurable:true,value:blocked})}catch{try{sw.register=blocked}catch{}}void sw.getRegistrations().then((registrations)=>Promise.all(registrations.map((registration)=>registration.unregister()))).catch(()=>{})})();</script>';
+	return `${serviceWorkerGuard}<script>(()=>{const p=${value};const rewrite=(value)=>{try{const url=new URL(typeof value==="string"?value:value.url,location.href);const pagePort=Number(location.port||(location.protocol==="https:"?443:80));const targetPort=Number(url.port||(url.protocol==="https:"||url.protocol==="wss:"?443:80));const sameEndpoint=url.hostname===location.hostname&&targetPort===pagePort;const adjacentEndpoint=url.hostname===location.hostname&&targetPort===pagePort+1;if(adjacentEndpoint){const socket=url.protocol==="ws:"||url.protocol==="wss:";url.protocol=socket?(location.protocol==="https:"?"wss:":"ws:"):location.protocol;url.host=location.host;url.pathname=p+"/__hlid_backend__"+url.pathname;return url.toString()}if(sameEndpoint&&!url.pathname.startsWith(p)){url.pathname=p+url.pathname;return url.toString()}}catch{}return value};const NativeWebSocket=window.WebSocket;const RelayWebSocket=function(url,protocols){return new NativeWebSocket(rewrite(url),protocols)};Object.setPrototypeOf(RelayWebSocket,NativeWebSocket);RelayWebSocket.prototype=NativeWebSocket.prototype;window.WebSocket=RelayWebSocket;const nativeFetch=window.fetch.bind(window);window.fetch=(input,init)=>nativeFetch(typeof input==="string"?rewrite(input):input,init);const nativeOpen=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(method,url,...rest){return nativeOpen.call(this,method,rewrite(url),...rest)};const previewId=p.split("/")[3]||"";const route=()=>{const pathname=location.pathname.startsWith(p)?location.pathname.slice(p.length)||"/":location.pathname;return pathname+location.search+location.hash};const sendState=()=>{if(parent===window)return;parent.postMessage({type:"hlid:project-preview-state",version:1,preview_id:previewId,path:route(),width:Math.round(innerWidth),height:Math.round(innerHeight),scroll_x:Math.round(scrollX),scroll_y:Math.round(scrollY)},"*")};let scheduled=false;const scheduleState=()=>{if(scheduled)return;scheduled=true;requestAnimationFrame(()=>{scheduled=false;sendState()})};for(const name of ["load","resize","scroll","hashchange","popstate"])addEventListener(name,scheduleState,{passive:true});for(const name of ["pushState","replaceState"]){const native=history[name];history[name]=function(...args){const result=native.apply(this,args);scheduleState();return result}}addEventListener("message",(event)=>{if(event.data?.type==="hlid:project-preview-state-request")sendState()});queueMicrotask(sendState);document.currentScript?.remove()})();</script>`;
 }
 
 function injectRelayBootstrap(html: string, prefix: string): string {
@@ -124,11 +325,16 @@ function injectRelayBootstrap(html: string, prefix: string): string {
 
 async function relayResponse(
 	upstream: Response,
+	previewId: string,
 	prefix: string,
 ): Promise<Response> {
 	const headers = new Headers();
 	for (const [key, value] of upstream.headers.entries()) {
 		if (!STRIP_RESPONSE_HEADERS.has(key.toLowerCase())) headers.set(key, value);
+	}
+	for (const value of responseSetCookies(upstream.headers)) {
+		const rewritten = rewritePreviewSetCookie(value, previewId);
+		if (rewritten) headers.append("set-cookie", rewritten);
 	}
 	const location = headers.get("location");
 	if (location?.startsWith("/")) {
@@ -155,7 +361,7 @@ async function relayResponse(
 		});
 	}
 	let text = new TextDecoder().decode(body);
-	text = rewriteRootReferences(text, contentType, prefix);
+	text = await rewriteRootReferences(text, contentType, prefix);
 	if (contentType.includes("text/html")) {
 		text = injectRelayBootstrap(text, prefix);
 		headers.set("content-security-policy", RELAY_CONTENT_SECURITY_POLICY);
@@ -194,17 +400,25 @@ export async function handleProjectPreviewRelayRequest(
 		body = limited.body;
 	}
 	try {
+		const upstreamTarget = projectPreviewUpstreamTarget(
+			target.port,
+			relay.targetPath,
+		);
 		const upstream = await fetch(
-			`http://127.0.0.1:${target.port}${relay.targetPath}${url.search}`,
+			`http://127.0.0.1:${upstreamTarget.port}${upstreamTarget.path}${url.search}`,
 			{
 				method: request.method,
-				headers: relayRequestHeaders(request, target.port),
+				headers: relayRequestHeaders(
+					request,
+					upstreamTarget.port,
+					relay.previewId,
+				),
 				body,
 				redirect: "manual",
 				signal: AbortSignal.timeout(30_000),
 			},
 		);
-		return relayResponse(upstream, relay.prefix);
+		return relayResponse(upstream, relay.previewId, relay.prefix);
 	} catch {
 		return new Response("Project Preview is unavailable.", {
 			status: 502,
@@ -219,7 +433,17 @@ export async function handleProjectPreviewRelayRequest(
 export function createProjectPreviewRelayWsHandlers() {
 	return {
 		open(ws: ServerWebSocket<ProjectPreviewRelayWsData>) {
-			const back = new WebSocket(ws.data.wsTarget);
+			const BunWebSocket = WebSocket as unknown as new (
+				url: string,
+				options?: {
+					headers: Record<string, string>;
+					protocols?: string[];
+				},
+			) => WebSocket;
+			const back = new BunWebSocket(ws.data.wsTarget, {
+				headers: ws.data.upstreamHeaders,
+				protocols: ws.data.protocols,
+			});
 			ws.data.back = back;
 			const timeout = setTimeout(() => {
 				if (back.readyState === WebSocket.CONNECTING) {

@@ -60,7 +60,7 @@ export function AcpAgentCard({
 								})
 							}
 							placeholder={item.command || "full command path"}
-							className="mt-1 w-full bg-secondary border border-border px-2 py-1 text-xs font-mono normal-case"
+							className="mt-1 w-full bg-input border border-border px-2 py-1 text-xs font-mono normal-case"
 						/>
 					</label>
 					<label className="text-[9px] tracking-widest text-muted-foreground uppercase">
@@ -75,7 +75,7 @@ export function AcpAgentCard({
 								})
 							}
 							placeholder={item.args.join(" ")}
-							className="mt-1 w-full bg-secondary border border-border px-2 py-1 text-xs font-mono normal-case"
+							className="mt-1 w-full bg-input border border-border px-2 py-1 text-xs font-mono normal-case"
 						/>
 					</label>
 				</div>

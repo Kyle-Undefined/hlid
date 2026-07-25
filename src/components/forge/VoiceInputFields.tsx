@@ -89,7 +89,7 @@ export function VoiceInputFields({
 						})
 					}
 					aria-label="Microphone action"
-					className="w-44 sm:w-56 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
+					className="w-44 sm:w-56 bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
 				>
 					<option value="local">Dictate with Whisper</option>
 					<option
@@ -163,7 +163,7 @@ export function VoiceInputFields({
 						<select
 							value={voice.language}
 							onChange={(e) => onChange({ language: e.target.value })}
-							className="w-32 sm:w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
+							className="w-32 sm:w-48 bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
 						>
 							{LANGUAGES.map(([value, label]) => (
 								<option key={value} value={value}>
@@ -181,7 +181,7 @@ export function VoiceInputFields({
 							onChange={(e) =>
 								onChange({ auto_send: e.target.value === "send" })
 							}
-							className="w-32 sm:w-48 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
+							className="w-32 sm:w-48 bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
 						>
 							<option value="review">Review draft</option>
 							<option value="send">Send immediately</option>
@@ -195,7 +195,7 @@ export function VoiceInputFields({
 							value={voice.threads}
 							onChange={(e) => onChange({ threads: Number(e.target.value) })}
 							aria-label="Whisper threads"
-							className="w-40 sm:w-52 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
+							className="w-40 sm:w-52 bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
 						>
 							{!THREAD_OPTIONS.some(([value]) => value === voice.threads) && (
 								<option value={voice.threads}>{voice.threads} · Custom</option>
@@ -220,7 +220,7 @@ export function VoiceInputFields({
 							rows={5}
 							maxLength={4_000}
 							aria-label="Voice vocabulary hints"
-							className="w-56 sm:w-80 resize-y bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/50"
+							className="w-56 sm:w-80 resize-y bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/50"
 						/>
 					</Field>
 				</>
@@ -244,7 +244,7 @@ export function VoiceInputFields({
 						if (hotkey) onChange({ hotkey });
 					}}
 					aria-label="Voice recording hotkey"
-					className="w-40 sm:w-52 bg-secondary border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/50 cursor-pointer"
+					className="w-40 sm:w-52 bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus:border-primary/50 cursor-pointer"
 				/>
 			</Field>
 		</Section>
