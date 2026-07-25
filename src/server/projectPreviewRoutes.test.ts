@@ -140,6 +140,10 @@ describe("Project Preview capture route", () => {
 				body: JSON.stringify({
 					session_id: "session-1",
 					viewport: "tablet",
+					width: 740,
+					height: 900,
+					scroll_x: 12,
+					scroll_y: 480,
 					full_page: true,
 				}),
 			}),
@@ -158,11 +162,33 @@ describe("Project Preview capture route", () => {
 			port: 5173,
 			path: "/app",
 			viewport: "tablet",
+			size: { width: 740, height: 900 },
+			scrollX: 12,
+			scrollY: 480,
 			fullPage: true,
 		});
 		expect(await response?.json()).toMatchObject({
 			image_base64: "AQID",
 			viewport: "tablet",
+		});
+	});
+
+	it("rejects a partial custom capture viewport", async () => {
+		const response = await handleProjectPreviewRoute(
+			new URL("http://localhost/api/project-previews/session/capture"),
+			new Request("http://localhost/api/project-previews/session/capture", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					session_id: "session-1",
+					width: 412,
+				}),
+			}),
+		);
+
+		expect(response?.status).toBe(400);
+		expect(await response?.json()).toMatchObject({
+			error: "width and height must be provided together",
 		});
 	});
 

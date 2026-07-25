@@ -41,6 +41,7 @@ function fakeBrowserSession() {
 		fillRef: vi.fn(async () => {}),
 		pressKey: vi.fn(async () => {}),
 		scroll: vi.fn(async () => {}),
+		scrollTo: vi.fn(async () => {}),
 		settle: vi.fn(async () => {}),
 		diagnostics: vi.fn(() => ({
 			consoleMessages: [],
@@ -114,6 +115,38 @@ describe("ProjectPreviewBrowserManager", () => {
 				?.frame_id,
 		).toBe(first.frame_id);
 		expect(fake.browser.close).toHaveBeenCalledOnce();
+		await manager.closeAll();
+	});
+
+	it("recaptures at the reported user viewport and document scroll", async () => {
+		const fake = fakeBrowserSession();
+		const manager = new ProjectPreviewBrowserManager({
+			browserFactory: fake.factory,
+		});
+
+		const frame = await manager.capture({
+			previewId: base.previewId,
+			sessionId: base.sessionId,
+			port: base.port,
+			path: "/settings?tab=ui",
+			viewport: "mobile",
+			size: { width: 412, height: 715 },
+			scrollX: 8,
+			scrollY: 640,
+			fullPage: false,
+		});
+
+		expect(fake.browser.setViewport).toHaveBeenCalledWith("mobile", {
+			width: 412,
+			height: 715,
+		});
+		expect(fake.browser.scrollTo).toHaveBeenCalledWith(8, 640);
+		expect(frame).toMatchObject({
+			path: "/settings?tab=ui",
+			viewport: "mobile",
+			width: 412,
+			height: 715,
+		});
 		await manager.closeAll();
 	});
 

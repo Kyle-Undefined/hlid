@@ -11,7 +11,7 @@ import {
 	Square,
 	X,
 } from "lucide-react";
-import { type CSSProperties, useEffect, useState } from "react";
+import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { ProjectPreviewFeedbackModal } from "#/components/chat/ProjectPreviewFeedbackModal";
 import { ClickableImage } from "#/components/ImageViewerModal";
 import { applyProjectPreview } from "#/hooks/projectPreviewStore";
@@ -26,6 +26,34 @@ import {
 	stopProjectPreviewFn,
 } from "#/lib/serverFns/projectPreviews";
 import { uid } from "#/lib/utils";
+
+type PreviewViewState = {
+	path: string;
+	width: number;
+	height: number;
+	scrollX: number;
+	scrollY: number;
+};
+
+const FALLBACK_VIEWPORTS = {
+	desktop: { width: 1440, height: 1000 },
+	tablet: { width: 768, height: 1024 },
+	mobile: { width: 390, height: 844 },
+} as const;
+
+function boundedInt(value: number, min: number, max: number): number {
+	return Math.min(max, Math.max(min, Math.round(value)));
+}
+
+function namedViewportForWidth(
+	viewport: "fit" | "desktop" | "tablet" | "mobile",
+	width: number,
+): "desktop" | "tablet" | "mobile" {
+	if (viewport !== "fit") return viewport;
+	if (width <= 480) return "mobile";
+	if (width <= 1024) return "tablet";
+	return "desktop";
+}
 
 export function ProjectPreviewPane({
 	preview,
@@ -60,6 +88,8 @@ export function ProjectPreviewPane({
 	const [feedbackCapturing, setFeedbackCapturing] = useState(false);
 	const [feedbackSaving, setFeedbackSaving] = useState(false);
 	const [feedbackError, setFeedbackError] = useState<string | null>(null);
+	const iframeRef = useRef<HTMLIFrameElement>(null);
+	const previewViewStateRef = useRef<PreviewViewState | null>(null);
 	const isReady = preview.state === "ready";
 	useEffect(() => {
 		if (!isReady || surface !== "agent") return;
@@ -107,6 +137,55 @@ export function ProjectPreviewPane({
 			return preview.relay_url;
 		}
 	})();
+	useEffect(() => {
+		previewViewStateRef.current = null;
+		let expectedOrigin: string;
+		try {
+			expectedOrigin = new URL(previewUrl, window.location.origin).origin;
+		} catch {
+			return;
+		}
+		const receiveState = (event: MessageEvent) => {
+			const frameWindow = iframeRef.current?.contentWindow;
+			if (
+				!frameWindow ||
+				event.source !== frameWindow ||
+				event.origin !== expectedOrigin
+			) {
+				return;
+			}
+			const data = event.data as Record<string, unknown> | null;
+			if (
+				!data ||
+				data.type !== "hlid:project-preview-state" ||
+				data.version !== 1 ||
+				data.preview_id !== preview.id ||
+				typeof data.path !== "string" ||
+				data.path.length > 2_048 ||
+				!data.path.startsWith("/") ||
+				data.path.startsWith("//") ||
+				data.path.includes("\\") ||
+				typeof data.width !== "number" ||
+				typeof data.height !== "number" ||
+				typeof data.scroll_x !== "number" ||
+				typeof data.scroll_y !== "number" ||
+				![data.width, data.height, data.scroll_x, data.scroll_y].every(
+					Number.isFinite,
+				)
+			) {
+				return;
+			}
+			previewViewStateRef.current = {
+				path: data.path,
+				width: boundedInt(data.width, 240, 3_840),
+				height: boundedInt(data.height, 240, 2_160),
+				scrollX: boundedInt(data.scroll_x, 0, 100_000),
+				scrollY: boundedInt(data.scroll_y, 0, 100_000),
+			};
+		};
+		window.addEventListener("message", receiveState);
+		return () => window.removeEventListener("message", receiveState);
+	}, [preview.id, previewUrl]);
 
 	const act = async (action: "restart" | "stop") => {
 		setPendingAction(action);
@@ -139,12 +218,42 @@ export function ProjectPreviewPane({
 		setFeedbackError(null);
 		setError(null);
 		try {
+			const iframe = iframeRef.current;
+			let expectedOrigin = "*";
+			try {
+				expectedOrigin = new URL(previewUrl, window.location.origin).origin;
+			} catch {}
+			iframe?.contentWindow?.postMessage(
+				{ type: "hlid:project-preview-state-request" },
+				expectedOrigin,
+			);
+			await new Promise((resolve) => window.setTimeout(resolve, 50));
+			const reported = previewViewStateRef.current;
+			const namedFallback =
+				viewport === "fit"
+					? FALLBACK_VIEWPORTS.desktop
+					: FALLBACK_VIEWPORTS[viewport];
+			const fallback = {
+				width: iframe?.clientWidth || namedFallback.width,
+				height: iframe?.clientHeight || namedFallback.height,
+			};
+			const width = boundedInt(reported?.width ?? fallback.width, 240, 3_840);
+			const height = boundedInt(
+				reported?.height ?? fallback.height,
+				240,
+				2_160,
+			);
 			const frame = await captureProjectPreviewFeedbackFn({
 				data: {
 					sessionId: preview.session_id,
 					previewId: preview.id,
-					path: preview.path,
-					viewport: viewport === "fit" ? "desktop" : viewport,
+					path: reported?.path ?? preview.path,
+					viewport: namedViewportForWidth(viewport, width),
+					width,
+					height,
+					...(reported
+						? { scrollX: reported.scrollX, scrollY: reported.scrollY }
+						: {}),
 				},
 			});
 			setFeedbackFrame(frame);
@@ -231,11 +340,7 @@ export function ProjectPreviewPane({
 							onClick={() => void captureFeedback()}
 							disabled={feedbackCapturing}
 							aria-label="Capture Preview feedback"
-							title={
-								viewport === "fit"
-									? "Capture feedback at desktop viewport"
-									: "Capture feedback"
-							}
+							title="Capture feedback at the current Preview size"
 							className="p-1.5 text-muted-foreground/55 hover:text-foreground disabled:opacity-30"
 						>
 							{feedbackCapturing ? (
@@ -246,7 +351,10 @@ export function ProjectPreviewPane({
 						</button>
 						<button
 							type="button"
-							onClick={() => setFrameKey((key) => key + 1)}
+							onClick={() => {
+								previewViewStateRef.current = null;
+								setFrameKey((key) => key + 1);
+							}}
 							aria-label="Reload preview"
 							title="Reload preview"
 							className="p-1.5 text-muted-foreground/55 hover:text-foreground"
@@ -391,8 +499,21 @@ export function ProjectPreviewPane({
 					>
 						<iframe
 							key={frameKey}
+							ref={iframeRef}
 							title={preview.label}
 							src={previewUrl}
+							onLoad={() => {
+								previewViewStateRef.current = null;
+								let expectedOrigin = "*";
+								try {
+									expectedOrigin = new URL(previewUrl, window.location.origin)
+										.origin;
+								} catch {}
+								iframeRef.current?.contentWindow?.postMessage(
+									{ type: "hlid:project-preview-state-request" },
+									expectedOrigin,
+								);
+							}}
 							referrerPolicy="no-referrer"
 							sandbox="allow-forms allow-modals allow-popups allow-scripts allow-same-origin"
 							className="h-full w-full border-0 bg-white"

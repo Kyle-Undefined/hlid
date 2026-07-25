@@ -135,9 +135,26 @@ describe("ProjectPreviewPane", () => {
 		};
 		vi.mocked(captureProjectPreviewFeedbackFn).mockResolvedValue(frame);
 		render(<ProjectPreviewPane preview={preview()} />);
+		const liveFrame = screen.getByTitle("Web app") as HTMLIFrameElement;
 		fireEvent.change(screen.getByLabelText("Preview viewport"), {
 			target: { value: "mobile" },
 		});
+		window.dispatchEvent(
+			new MessageEvent("message", {
+				origin: new URL(liveFrame.src).origin,
+				source: liveFrame.contentWindow,
+				data: {
+					type: "hlid:project-preview-state",
+					version: 1,
+					preview_id: preview().id,
+					path: "/settings?tab=display",
+					width: 412,
+					height: 715,
+					scroll_x: 8,
+					scroll_y: 640,
+				},
+			}),
+		);
 		fireEvent.click(screen.getByLabelText("Capture Preview feedback"));
 
 		await waitFor(() =>
@@ -145,8 +162,12 @@ describe("ProjectPreviewPane", () => {
 				data: {
 					sessionId: "session-1",
 					previewId: preview().id,
-					path: "/",
+					path: "/settings?tab=display",
 					viewport: "mobile",
+					width: 412,
+					height: 715,
+					scrollX: 8,
+					scrollY: 640,
 				},
 			}),
 		);
@@ -167,5 +188,59 @@ describe("ProjectPreviewPane", () => {
 			(screen.getByLabelText("Preview annotation canvas") as HTMLCanvasElement)
 				.style.touchAction,
 		).toBe("none");
+	});
+
+	it("ignores Preview view state from any other origin", async () => {
+		const captured: ProjectPreviewAgentFrame = {
+			preview_id: preview().id,
+			session_id: "session-1",
+			path: "/",
+			viewport: "desktop",
+			width: 1440,
+			height: 1000,
+			full_page: false,
+			captured_at: Date.now(),
+			mime: "image/png",
+			size_bytes: 3,
+			image_base64: "AQID",
+			frame_id: "e16b1643-591f-4d67-8c22-9df105659385",
+			title: "Web app",
+			elements: [],
+			console_messages: [],
+			failed_requests: [],
+		};
+		vi.mocked(captureProjectPreviewFeedbackFn).mockResolvedValue(captured);
+		render(<ProjectPreviewPane preview={preview()} />);
+		const liveFrame = screen.getByTitle("Web app") as HTMLIFrameElement;
+		window.dispatchEvent(
+			new MessageEvent("message", {
+				origin: "https://untrusted.example",
+				source: liveFrame.contentWindow,
+				data: {
+					type: "hlid:project-preview-state",
+					version: 1,
+					preview_id: preview().id,
+					path: "/forged",
+					width: 300,
+					height: 400,
+					scroll_x: 0,
+					scroll_y: 900,
+				},
+			}),
+		);
+		fireEvent.click(screen.getByLabelText("Capture Preview feedback"));
+
+		await waitFor(() =>
+			expect(captureProjectPreviewFeedbackFn).toHaveBeenCalledWith({
+				data: {
+					sessionId: "session-1",
+					previewId: preview().id,
+					path: "/",
+					viewport: "desktop",
+					width: 1440,
+					height: 1000,
+				},
+			}),
+		);
 	});
 });

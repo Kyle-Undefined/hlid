@@ -10,6 +10,7 @@ import {
 	MAX_PROJECT_PREVIEW_FULL_PAGE_HEIGHT,
 	PROJECT_PREVIEW_CAPTURE_TIMEOUT_MS,
 	PROJECT_PREVIEW_CAPTURE_VIEWPORTS,
+	type ProjectPreviewCaptureSize,
 	type ProjectPreviewCaptureViewport,
 } from "./projectPreviewCapture";
 import type { ProjectPreviewAgentElement } from "./protocol";
@@ -146,7 +147,10 @@ export interface ProjectPreviewBrowserSession {
 	currentUrl(): Promise<string>;
 	navigate(url: string): Promise<void>;
 	reload(): Promise<void>;
-	setViewport(viewport: ProjectPreviewCaptureViewport): Promise<void>;
+	setViewport(
+		viewport: ProjectPreviewCaptureViewport,
+		size?: ProjectPreviewCaptureSize,
+	): Promise<void>;
 	capture(fullPage: boolean): Promise<Buffer>;
 	title(): Promise<string>;
 	semanticSnapshot(limit: number): Promise<ProjectPreviewAgentElement[]>;
@@ -155,6 +159,7 @@ export interface ProjectPreviewBrowserSession {
 	fillRef(ref: string, text: string): Promise<void>;
 	pressKey(key: string): Promise<void>;
 	scroll(deltaX: number, deltaY: number): Promise<void>;
+	scrollTo(x: number, y: number): Promise<void>;
 	settle(): Promise<void>;
 	diagnostics(): ProjectPreviewBrowserDiagnostics;
 	close(): Promise<void>;
@@ -658,7 +663,8 @@ class CdpBrowserSession implements ProjectPreviewBrowserSession {
 		string,
 		{ method: string; url: string }
 	>();
-	private viewport: ProjectPreviewCaptureViewport = "desktop";
+	private viewportSize: ProjectPreviewCaptureSize =
+		PROJECT_PREVIEW_CAPTURE_VIEWPORTS.desktop;
 	private closed = false;
 
 	constructor(
@@ -825,15 +831,18 @@ class CdpBrowserSession implements ProjectPreviewBrowserSession {
 		await loaded;
 	}
 
-	async setViewport(viewport: ProjectPreviewCaptureViewport): Promise<void> {
-		const size = PROJECT_PREVIEW_CAPTURE_VIEWPORTS[viewport];
+	async setViewport(
+		viewport: ProjectPreviewCaptureViewport,
+		customSize?: ProjectPreviewCaptureSize,
+	): Promise<void> {
+		const size = customSize ?? PROJECT_PREVIEW_CAPTURE_VIEWPORTS[viewport];
 		await this.page.send("Emulation.setDeviceMetricsOverride", {
 			width: size.width,
 			height: size.height,
 			deviceScaleFactor: 1,
 			mobile: false,
 		});
-		this.viewport = viewport;
+		this.viewportSize = size;
 	}
 
 	async capture(fullPage: boolean): Promise<Buffer> {
@@ -1052,14 +1061,22 @@ class CdpBrowserSession implements ProjectPreviewBrowserSession {
 	}
 
 	async scroll(deltaX: number, deltaY: number): Promise<void> {
-		const size = PROJECT_PREVIEW_CAPTURE_VIEWPORTS[this.viewport];
 		await this.page.send("Input.dispatchMouseEvent", {
 			type: "mouseWheel",
-			x: Math.round(size.width / 2),
-			y: Math.round(size.height / 2),
+			x: Math.round(this.viewportSize.width / 2),
+			y: Math.round(this.viewportSize.height / 2),
 			deltaX,
 			deltaY,
 		});
+	}
+
+	async scrollTo(x: number, y: number): Promise<void> {
+		await this.evaluate(
+			`(() => {
+				window.scrollTo(${JSON.stringify(x)}, ${JSON.stringify(y)});
+				return { x: window.scrollX, y: window.scrollY };
+			})()`,
+		);
 	}
 
 	async settle(): Promise<void> {

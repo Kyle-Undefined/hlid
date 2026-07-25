@@ -12,7 +12,14 @@ import {
 	type ProjectPreviewControlAction,
 	projectPreviewBrowserManager,
 } from "./projectPreviewBrowser";
-import type { ProjectPreviewCaptureResult } from "./projectPreviewCapture";
+import {
+	MAX_PROJECT_PREVIEW_SCROLL_OFFSET,
+	MAX_PROJECT_PREVIEW_VIEWPORT_HEIGHT,
+	MAX_PROJECT_PREVIEW_VIEWPORT_WIDTH,
+	MIN_PROJECT_PREVIEW_VIEWPORT_HEIGHT,
+	MIN_PROJECT_PREVIEW_VIEWPORT_WIDTH,
+	type ProjectPreviewCaptureResult,
+} from "./projectPreviewCapture";
 import { handleProjectPreviewRelayRequest } from "./projectPreviewRelay";
 
 const startSchema = z.object({
@@ -32,11 +39,42 @@ const actionSchema = z.object({
 	session_id: z.string().trim().min(1),
 });
 
-const captureSchema = actionSchema.extend({
-	path: z.string().trim().max(2_048).optional(),
-	viewport: z.enum(["desktop", "tablet", "mobile"]).default("desktop"),
-	full_page: z.boolean().default(false),
-});
+const captureSchema = actionSchema
+	.extend({
+		path: z.string().trim().max(2_048).optional(),
+		viewport: z.enum(["desktop", "tablet", "mobile"]).default("desktop"),
+		width: z
+			.number()
+			.int()
+			.min(MIN_PROJECT_PREVIEW_VIEWPORT_WIDTH)
+			.max(MAX_PROJECT_PREVIEW_VIEWPORT_WIDTH)
+			.optional(),
+		height: z
+			.number()
+			.int()
+			.min(MIN_PROJECT_PREVIEW_VIEWPORT_HEIGHT)
+			.max(MAX_PROJECT_PREVIEW_VIEWPORT_HEIGHT)
+			.optional(),
+		scroll_x: z
+			.number()
+			.int()
+			.min(0)
+			.max(MAX_PROJECT_PREVIEW_SCROLL_OFFSET)
+			.optional(),
+		scroll_y: z
+			.number()
+			.int()
+			.min(0)
+			.max(MAX_PROJECT_PREVIEW_SCROLL_OFFSET)
+			.optional(),
+		full_page: z.boolean().default(false),
+	})
+	.refine(
+		(value) => (value.width === undefined) === (value.height === undefined),
+		{
+			message: "width and height must be provided together",
+		},
+	);
 const feedbackSchema = actionSchema.extend({
 	frame_id: z.string().uuid(),
 	attachment_id: z.string().uuid(),
@@ -235,6 +273,11 @@ export async function handleProjectPreviewRoute(
 				port: target.port,
 				path: body.path ?? preview.path,
 				viewport: body.viewport,
+				...(body.width !== undefined && body.height !== undefined
+					? { size: { width: body.width, height: body.height } }
+					: {}),
+				...(body.scroll_x !== undefined ? { scrollX: body.scroll_x } : {}),
+				...(body.scroll_y !== undefined ? { scrollY: body.scroll_y } : {}),
 				fullPage: body.full_page,
 			});
 			return Response.json(result, {

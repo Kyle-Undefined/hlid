@@ -7,12 +7,20 @@ export const PROJECT_PREVIEW_CAPTURE_VIEWPORTS = {
 export type ProjectPreviewCaptureViewport =
 	keyof typeof PROJECT_PREVIEW_CAPTURE_VIEWPORTS;
 
+export type ProjectPreviewCaptureSize = {
+	width: number;
+	height: number;
+};
+
 export type ProjectPreviewCaptureInput = {
 	previewId: string;
 	sessionId: string;
 	port: number;
 	path: string;
 	viewport: ProjectPreviewCaptureViewport;
+	size?: ProjectPreviewCaptureSize;
+	scrollX?: number;
+	scrollY?: number;
 	fullPage: boolean;
 };
 
@@ -33,6 +41,11 @@ export type ProjectPreviewCaptureResult = {
 export const MAX_PROJECT_PREVIEW_FULL_PAGE_HEIGHT = 16_000;
 export const MAX_PROJECT_PREVIEW_CAPTURE_BYTES = 10 * 1024 * 1024;
 export const PROJECT_PREVIEW_CAPTURE_TIMEOUT_MS = 20_000;
+export const MIN_PROJECT_PREVIEW_VIEWPORT_WIDTH = 240;
+export const MAX_PROJECT_PREVIEW_VIEWPORT_WIDTH = 3_840;
+export const MIN_PROJECT_PREVIEW_VIEWPORT_HEIGHT = 240;
+export const MAX_PROJECT_PREVIEW_VIEWPORT_HEIGHT = 2_160;
+export const MAX_PROJECT_PREVIEW_SCROLL_OFFSET = 100_000;
 
 export function normalizeProjectPreviewCapturePath(path: string): string {
 	const trimmed = path.trim();

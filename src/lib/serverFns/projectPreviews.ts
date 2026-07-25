@@ -21,6 +21,10 @@ const agentFrameSchema = previewActionSchema.extend({
 const captureFeedbackSchema = previewActionSchema.extend({
 	path: z.string().trim().max(2_048).optional(),
 	viewport: z.enum(["desktop", "tablet", "mobile"]),
+	width: z.number().int().min(240).max(3_840),
+	height: z.number().int().min(240).max(2_160),
+	scrollX: z.number().int().min(0).max(100_000).optional(),
+	scrollY: z.number().int().min(0).max(100_000).optional(),
 });
 const saveFeedbackSchema = previewActionSchema.extend({
 	frameId: z.string().uuid(),
@@ -64,6 +68,10 @@ export const captureProjectPreviewFeedbackFn = createServerFn({
 					session_id: data.sessionId,
 					path: data.path,
 					viewport: data.viewport,
+					width: data.width,
+					height: data.height,
+					scroll_x: data.scrollX,
+					scroll_y: data.scrollY,
 					full_page: false,
 				}),
 			},

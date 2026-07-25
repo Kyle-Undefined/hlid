@@ -99,6 +99,8 @@ describe("Project Preview relay", () => {
 			'src="/api/project-previews/123e4567-e89b-12d3-a456-426614174000/relay/@vite/client"',
 		);
 		expect(text).toContain("NativeWebSocket");
+		expect(text).toContain("hlid:project-preview-state");
+		expect(text).toContain("scroll_x");
 	});
 
 	it("relays queued and live hot-reload messages in both directions", () => {

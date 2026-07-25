@@ -68,6 +68,8 @@ type BrowserEntry = {
 	port: number;
 	browser: ProjectPreviewBrowserSession;
 	viewport: ProjectPreviewCaptureViewport;
+	width: number;
+	height: number;
 	lastFrame: ProjectPreviewAgentFrame | null;
 	idleTimer: ReturnType<typeof setTimeout>;
 };
@@ -202,6 +204,8 @@ export class ProjectPreviewBrowserManager {
 				port: input.port,
 				browser,
 				viewport: "desktop",
+				width: PROJECT_PREVIEW_CAPTURE_VIEWPORTS.desktop.width,
+				height: PROJECT_PREVIEW_CAPTURE_VIEWPORTS.desktop.height,
 				lastFrame: null,
 				idleTimer: setTimeout(() => {}, this.idleMs),
 			};
@@ -247,15 +251,14 @@ export class ProjectPreviewBrowserManager {
 		lastAction?: ProjectPreviewControlAction["action"],
 	): Promise<ProjectPreviewAgentFrame> {
 		const png = await entry.browser.capture(fullPage);
-		const viewport = PROJECT_PREVIEW_CAPTURE_VIEWPORTS[entry.viewport];
 		const diagnostics = entry.browser.diagnostics();
 		const frame: ProjectPreviewAgentFrame = {
 			preview_id: entry.previewId,
 			session_id: entry.sessionId,
 			path: await currentPath(entry.browser, entry.port),
 			viewport: entry.viewport,
-			width: viewport.width,
-			height: viewport.height,
+			width: entry.width,
+			height: entry.height,
 			full_page: fullPage,
 			captured_at: Date.now(),
 			mime: "image/png",
@@ -316,13 +319,29 @@ export class ProjectPreviewBrowserManager {
 				},
 				generation,
 			);
-			if (entry.viewport !== input.viewport) {
-				await entry.browser.setViewport(input.viewport);
+			const size =
+				input.size ?? PROJECT_PREVIEW_CAPTURE_VIEWPORTS[input.viewport];
+			if (
+				entry.viewport !== input.viewport ||
+				entry.width !== size.width ||
+				entry.height !== size.height
+			) {
+				if (input.size) {
+					await entry.browser.setViewport(input.viewport, input.size);
+				} else {
+					await entry.browser.setViewport(input.viewport);
+				}
 				entry.viewport = input.viewport;
+				entry.width = size.width;
+				entry.height = size.height;
 			}
 			const path = normalizeProjectPreviewCapturePath(input.path);
 			if ((await currentPath(entry.browser, entry.port)) !== path) {
 				await entry.browser.navigate(`http://127.0.0.1:${entry.port}${path}`);
+			}
+			if (input.scrollX !== undefined || input.scrollY !== undefined) {
+				await entry.browser.settle();
+				await entry.browser.scrollTo(input.scrollX ?? 0, input.scrollY ?? 0);
 			}
 			this.assertGeneration(input.previewId, generation);
 			return this.frame(entry, input.fullPage);
@@ -346,14 +365,13 @@ export class ProjectPreviewBrowserManager {
 				if (input.ref) {
 					await entry.browser.clickRef(input.ref);
 				} else {
-					const viewport = PROJECT_PREVIEW_CAPTURE_VIEWPORTS[entry.viewport];
 					if (
 						input.x === undefined ||
 						input.y === undefined ||
 						input.x < 0 ||
 						input.y < 0 ||
-						input.x > viewport.width ||
-						input.y > viewport.height
+						input.x > entry.width ||
+						input.y > entry.height
 					) {
 						throw new Error(
 							"Preview click coordinates are outside the viewport.",
@@ -375,6 +393,8 @@ export class ProjectPreviewBrowserManager {
 			} else {
 				await entry.browser.setViewport(input.viewport);
 				entry.viewport = input.viewport;
+				entry.width = PROJECT_PREVIEW_CAPTURE_VIEWPORTS[input.viewport].width;
+				entry.height = PROJECT_PREVIEW_CAPTURE_VIEWPORTS[input.viewport].height;
 			}
 			await entry.browser.settle();
 			this.assertGeneration(input.previewId, generation);
