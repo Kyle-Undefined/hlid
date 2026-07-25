@@ -42,6 +42,22 @@ type ProjectPreviewCaptureMetadata = {
 	last_action?: string;
 };
 
+function parseProjectPreviewToolJson(value: string): unknown {
+	try {
+		return JSON.parse(value);
+	} catch {
+		// Claude's rich MCP tool result is persisted as its text block followed
+		// by one marker for each image block. The image itself is retained by the
+		// Preview browser, so remove only that exact transport suffix before
+		// parsing the capture provenance.
+		const withoutImageSuffix = value
+			.replace(/(?:\s*\[image\]\s*)+$/, "")
+			.trimEnd();
+		if (withoutImageSuffix === value) throw new Error("Invalid tool result.");
+		return JSON.parse(withoutImageSuffix);
+	}
+}
+
 function captureMetadataFromValue(
 	value: unknown,
 	depth = 0,
@@ -49,7 +65,10 @@ function captureMetadataFromValue(
 	if (depth > 2) return null;
 	if (typeof value === "string") {
 		try {
-			return captureMetadataFromValue(JSON.parse(value), depth + 1);
+			return captureMetadataFromValue(
+				parseProjectPreviewToolJson(value),
+				depth + 1,
+			);
 		} catch {
 			return null;
 		}
@@ -83,7 +102,7 @@ function captureMetadataFromResult(
 ): ProjectPreviewCaptureMetadata | null {
 	if (!result) return null;
 	try {
-		return captureMetadataFromValue(JSON.parse(result));
+		return captureMetadataFromValue(parseProjectPreviewToolJson(result));
 	} catch {
 		return null;
 	}

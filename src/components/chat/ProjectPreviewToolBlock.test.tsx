@@ -119,7 +119,7 @@ describe("ProjectPreviewCaptureToolBlock", () => {
 					id: "capture-history",
 					name: "mcp__hlid__capture_project_preview",
 					input: {},
-					result: JSON.stringify({
+					result: `${JSON.stringify({
 						preview_id: "323e4567-e89b-12d3-a456-426614174000",
 						session_id: "historical-session",
 						path: "/history",
@@ -129,7 +129,7 @@ describe("ProjectPreviewCaptureToolBlock", () => {
 						full_page: false,
 						size_bytes: 1024,
 						frame_id: frameId,
-					}),
+					})}[image]`,
 				}}
 			/>,
 		);
@@ -343,6 +343,77 @@ describe("ProjectPreviewActivityCard", () => {
 		expect(loadToolEventDetail).toHaveBeenCalledWith(
 			frame.session_id,
 			"compacted-capture",
+		);
+		expect(getProjectPreviewAgentFrameFn).toHaveBeenCalledWith({
+			data: {
+				sessionId: frame.session_id,
+				previewId: frame.preview_id,
+				frameId: frame.frame_id,
+			},
+		});
+	});
+
+	it("hydrates Claude's compacted rich capture before opening it", async () => {
+		const frame: ProjectPreviewAgentFrame = {
+			preview_id: "623e4567-e89b-12d3-a456-426614174000",
+			session_id: "claude-session",
+			path: "/claude",
+			viewport: "desktop",
+			width: 1440,
+			height: 1000,
+			full_page: false,
+			captured_at: Date.now(),
+			mime: "image/png",
+			size_bytes: 1024,
+			image_base64: "claude",
+			frame_id: "623e4567-e89b-12d3-a456-426614174001",
+			title: "Claude",
+			elements: [],
+			console_messages: [],
+			failed_requests: [],
+		};
+		vi.mocked(loadToolEventDetail).mockResolvedValueOnce({
+			result: `${JSON.stringify({
+				preview_id: frame.preview_id,
+				session_id: frame.session_id,
+				path: frame.path,
+				viewport: frame.viewport,
+				width: frame.width,
+				height: frame.height,
+				full_page: frame.full_page,
+				size_bytes: frame.size_bytes,
+				frame_id: frame.frame_id,
+			})}[image]`,
+		});
+		vi.mocked(getProjectPreviewAgentFrameFn).mockResolvedValueOnce(frame);
+
+		render(
+			<ProjectPreviewActivityCard
+				active
+				events={[
+					{
+						type: "tool_event",
+						id: "claude-capture",
+						name: "mcp__hlid__capture_project_preview",
+						detailSessionId: frame.session_id,
+						resultTruncated: true,
+						input: { viewport: "desktop" },
+						result: '{"preview_id":"623e4567-e89b-12d3-a456-',
+					},
+				]}
+			/>,
+		);
+
+		fireEvent.click(screen.getByRole("button", { name: "Preview activity" }));
+		fireEvent.click(
+			await screen.findByRole("button", { name: "View Preview capture" }),
+		);
+		expect(
+			await screen.findByRole("dialog", { name: "Image viewer" }),
+		).toBeTruthy();
+		expect(loadToolEventDetail).toHaveBeenCalledWith(
+			frame.session_id,
+			"claude-capture",
 		);
 		expect(getProjectPreviewAgentFrameFn).toHaveBeenCalledWith({
 			data: {

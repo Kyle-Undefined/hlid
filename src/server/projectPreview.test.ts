@@ -1,7 +1,9 @@
-import { createServer } from "node:net";
+import { createConnection, createServer } from "node:net";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+	createProjectPreviewLoopbackBridge,
 	ProjectPreviewManager,
+	parseWslIpv4Address,
 	projectPreviewLaunch,
 	resolveProjectPreviewCwd,
 } from "./projectPreview";
@@ -163,6 +165,45 @@ describe("ProjectPreviewManager", () => {
 });
 
 describe("Project Preview Windows and WSL launch plans", () => {
+	it("selects the first non-loopback WSL IPv4 address", () => {
+		expect(parseWslIpv4Address("127.0.0.1 172.28.91.42 2001:db8::1\n")).toBe(
+			"172.28.91.42",
+		);
+		expect(parseWslIpv4Address("127.0.0.1 ::1")).toBeUndefined();
+	});
+
+	it("bridges a loopback port to a reachable preview target", async () => {
+		const targetPort = await freePort();
+		const localPort = await freePort();
+		const target = createServer((socket) => socket.end("ready"));
+		await new Promise<void>((resolve, reject) => {
+			target.once("error", reject);
+			target.listen(targetPort, "127.0.0.1", () => resolve());
+		});
+		const bridge = await createProjectPreviewLoopbackBridge(
+			localPort,
+			"127.0.0.1",
+			targetPort,
+		);
+
+		const response = await new Promise<string>((resolve, reject) => {
+			const socket = createConnection({
+				host: "127.0.0.1",
+				port: localPort,
+			});
+			let value = "";
+			socket.on("data", (chunk) => {
+				value += chunk.toString("utf8");
+			});
+			socket.once("end", () => resolve(value));
+			socket.once("error", reject);
+		});
+
+		expect(response).toBe("ready");
+		await bridge.close();
+		await new Promise<void>((resolve) => target.close(() => resolve()));
+	});
+
 	it("uses a native Windows shell and task workspace", () => {
 		expect(
 			projectPreviewLaunch("bun run dev", "C:\\Code\\Hlid", "win32"),

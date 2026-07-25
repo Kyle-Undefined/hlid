@@ -1,5 +1,11 @@
 import { type ChildProcess, spawn } from "node:child_process";
-import { createConnection } from "node:net";
+import {
+	createConnection,
+	createServer,
+	isIP,
+	type Server,
+	type Socket,
+} from "node:net";
 import { isAbsolute, posix, resolve, win32 } from "node:path";
 import { parseWslUncSyntax } from "#/lib/paths";
 import { projectPreviewBrowserManager } from "./projectPreviewBrowser";
@@ -23,9 +29,16 @@ type PreviewEntry = {
 	snapshot: ProjectPreviewSnapshot;
 	child: ChildProcess;
 	input: StartProjectPreviewInput;
+	bridge: LoopbackBridge | null;
 	stopping: boolean;
 	lifetimeTimer: ReturnType<typeof setTimeout>;
 	persistTimer: ReturnType<typeof setTimeout> | null;
+};
+
+type LoopbackBridge = {
+	server: Server;
+	sockets: Set<Socket>;
+	close: () => Promise<void>;
 };
 
 const MAX_LOG_LINES = 200;
@@ -151,9 +164,49 @@ function spawnPreview(command: string, cwd: string): ChildProcess {
 	});
 }
 
-async function canConnect(port: number): Promise<boolean> {
+export function parseWslIpv4Address(output: string): string | undefined {
+	return output
+		.trim()
+		.split(/\s+/)
+		.find(
+			(candidate) => isIP(candidate) === 4 && !candidate.startsWith("127."),
+		);
+}
+
+async function resolveWslIpv4Address(
+	distro: string,
+): Promise<string | undefined> {
 	return new Promise((resolveResult) => {
-		const socket = createConnection({ host: "127.0.0.1", port });
+		const child = spawn("wsl.exe", ["-d", distro, "--", "hostname", "-I"], {
+			windowsHide: true,
+			stdio: ["ignore", "pipe", "ignore"],
+		});
+		let stdout = "";
+		let settled = false;
+		const finish = (value?: string) => {
+			if (settled) return;
+			settled = true;
+			clearTimeout(timer);
+			resolveResult(value);
+		};
+		const timer = setTimeout(() => {
+			child.kill();
+			finish();
+		}, 5_000);
+		timer.unref?.();
+		child.stdout?.on("data", (chunk: Buffer) => {
+			if (stdout.length < 4_096) stdout += chunk.toString("utf8");
+		});
+		child.once("error", () => finish());
+		child.once("close", (code) =>
+			finish(code === 0 ? parseWslIpv4Address(stdout) : undefined),
+		);
+	});
+}
+
+async function canConnect(port: number, host = "127.0.0.1"): Promise<boolean> {
+	return new Promise((resolveResult) => {
+		const socket = createConnection({ host, port });
 		const finish = (result: boolean) => {
 			socket.destroy();
 			resolveResult(result);
@@ -163,6 +216,52 @@ async function canConnect(port: number): Promise<boolean> {
 		socket.once("timeout", () => finish(false));
 		socket.once("error", () => finish(false));
 	});
+}
+
+export async function createProjectPreviewLoopbackBridge(
+	localPort: number,
+	targetHost: string,
+	targetPort = localPort,
+): Promise<LoopbackBridge> {
+	const sockets = new Set<Socket>();
+	const track = (socket: Socket) => {
+		sockets.add(socket);
+		socket.once("close", () => sockets.delete(socket));
+		return socket;
+	};
+	const server = createServer((client) => {
+		track(client);
+		const upstream = track(
+			createConnection({ host: targetHost, port: targetPort }),
+		);
+		const closePair = () => {
+			client.destroy();
+			upstream.destroy();
+		};
+		client.once("error", closePair);
+		upstream.once("error", closePair);
+		client.pipe(upstream).pipe(client);
+	});
+	await new Promise<void>((resolveResult, reject) => {
+		server.once("error", reject);
+		server.listen(localPort, "127.0.0.1", () => {
+			server.off("error", reject);
+			resolveResult();
+		});
+	});
+	server.on("error", () => {
+		for (const socket of sockets) socket.destroy();
+	});
+	return {
+		server,
+		sockets,
+		close: async () => {
+			for (const socket of sockets) socket.destroy();
+			await new Promise<void>((resolveResult) =>
+				server.close(() => resolveResult()),
+			);
+		},
+	};
 }
 
 async function waitForPortRelease(
@@ -304,6 +403,11 @@ export class ProjectPreviewManager {
 			input.runtimeCwd,
 			input.workingDirectory,
 		);
+		const wsl =
+			process.platform === "win32" ? parseWslUncSyntax(cwd) : undefined;
+		const wslHostPromise = wsl
+			? resolveWslIpv4Address(wsl.distro)
+			: Promise.resolve(undefined);
 		const path = normalizePreviewPath(input.path);
 		const child = spawnPreview(input.command, cwd);
 		const id = crypto.randomUUID();
@@ -332,6 +436,7 @@ export class ProjectPreviewManager {
 			snapshot,
 			child,
 			input: { ...input, path, workingDirectory: input.workingDirectory },
+			bridge: null,
 			stopping: false,
 			lifetimeTimer,
 			persistTimer: null,
@@ -342,6 +447,8 @@ export class ProjectPreviewManager {
 		child.stderr?.on("data", (chunk: Buffer) => this.appendLogs(entry, chunk));
 		child.once("error", (error) => {
 			void this.browserManager.close(snapshot.id);
+			void entry.bridge?.close();
+			entry.bridge = null;
 			entry.snapshot.state = "failed";
 			entry.snapshot.error = error.message;
 			entry.snapshot.stop_reason = "launch_error";
@@ -351,6 +458,8 @@ export class ProjectPreviewManager {
 		});
 		child.once("exit", (code) => {
 			void this.browserManager.close(snapshot.id);
+			void entry.bridge?.close();
+			entry.bridge = null;
 			if (entry.snapshot.state === "failed") return;
 			entry.snapshot.state = entry.stopping ? "stopped" : "failed";
 			entry.snapshot.exit_code = code ?? undefined;
@@ -367,6 +476,10 @@ export class ProjectPreviewManager {
 
 		const timeoutMs = (input.readinessTimeoutSeconds ?? 30) * 1_000;
 		const deadline = Date.now() + timeoutMs;
+		let wslHost: string | undefined;
+		void wslHostPromise.then((resolvedHost) => {
+			wslHost = resolvedHost;
+		});
 		while (Date.now() < deadline && entry.snapshot.state === "starting") {
 			if (await canConnect(input.port)) {
 				entry.snapshot.state = "ready";
@@ -374,11 +487,27 @@ export class ProjectPreviewManager {
 				await this.persist(entry);
 				return this.inspect(input.sessionId, snapshot.id);
 			}
+			if (wslHost && !entry.bridge && (await canConnect(input.port, wslHost))) {
+				try {
+					entry.bridge = await createProjectPreviewLoopbackBridge(
+						input.port,
+						wslHost,
+					);
+					entry.snapshot.logs.push(
+						"[Hlid] Connected the WSL preview through a managed loopback bridge.",
+					);
+					this.publish(entry);
+					continue;
+				} catch {
+					// Windows localhost forwarding may have become ready between the
+					// reachability check and bridge creation. Let the next probe decide.
+				}
+			}
 			await new Promise((resolveResult) => setTimeout(resolveResult, 250));
 		}
 		if (entry.snapshot.state === "starting") {
 			entry.snapshot.state = "failed";
-			entry.snapshot.error = `Preview did not listen on port ${input.port} within ${Math.round(timeoutMs / 1_000)} seconds.`;
+			entry.snapshot.error = `Preview did not become reachable at 127.0.0.1:${input.port} within ${Math.round(timeoutMs / 1_000)} seconds. Ensure the command binds the exact port on IPv4 loopback (127.0.0.1). Hlid also supports a WSL server's IPv4 wildcard bind through its managed bridge.`;
 			entry.snapshot.stop_reason = "readiness_timeout";
 			entry.snapshot.ended_at = new Date().toISOString();
 			clearTimeout(entry.lifetimeTimer);
@@ -424,6 +553,8 @@ export class ProjectPreviewManager {
 			entry.persistTimer = null;
 		}
 		await this.browserManager.close(entry.snapshot.id);
+		await entry.bridge?.close();
+		entry.bridge = null;
 		await terminateProcess(entry.child);
 		entry.snapshot.state = "stopped";
 		entry.snapshot.ended_at ??= new Date().toISOString();
