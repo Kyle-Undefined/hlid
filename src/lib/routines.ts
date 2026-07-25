@@ -1,4 +1,5 @@
 import * as z from "zod";
+import type { SessionAttentionSnapshot } from "#/server/protocol";
 import { MAX_RELIC_REFERENCES, MAX_VAULT_REFERENCES } from "./vaultReferences";
 
 export const routineScheduleSchema = z.discriminatedUnion("kind", [
@@ -175,6 +176,7 @@ export type RoutineSummary = {
 	authorizationFingerprint: string;
 	createdAt: number;
 	updatedAt: number;
+	attention?: SessionAttentionSnapshot;
 	lastRun?: {
 		id: string;
 		status: RoutineStatus;

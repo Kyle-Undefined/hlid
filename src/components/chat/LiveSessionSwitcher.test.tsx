@@ -120,16 +120,15 @@ describe("LiveSessionSwitcher", () => {
 			"Open ready session",
 		]);
 		expect(rows.map((row) => row.textContent)).toEqual([
-			expect.stringContaining("Waiting"),
-			expect.stringContaining("Waiting"),
+			expect.stringContaining("Approval"),
+			expect.stringContaining("Error"),
 			expect.stringContaining("Working"),
 			expect.stringContaining("Ready"),
 		]);
 		expect(rows[2].textContent).toContain("codex · gpt-5.6-sol");
 		expect(rows[3].getAttribute("aria-current")).toBe("page");
-		expect(within(rows[3]).getByText("Current").parentElement).toBe(
-			within(rows[3]).getByText("Ready").parentElement,
-		);
+		expect(within(rows[3]).getByText("Current")).not.toBeNull();
+		expect(within(rows[3]).getByText("Ready")).not.toBeNull();
 
 		fireEvent.click(rows[2]);
 		expect(onSelectSession).toHaveBeenCalledWith("chat-working", false);
@@ -165,7 +164,7 @@ describe("LiveSessionSwitcher", () => {
 		expect(screen.queryByRole("dialog", { name: "Live sessions" })).toBeNull();
 	});
 
-	it("keeps row order stable while open and reorders on the next opening", () => {
+	it("updates attention groups and row order while open", () => {
 		replaceSessionsStatus([
 			session("alpha", { state: "running" }),
 			session("beta"),
@@ -187,28 +186,53 @@ describe("LiveSessionSwitcher", () => {
 				session("beta", { state: "running" }),
 			]);
 		});
-		const stableRows = sessionButtons();
-		expect(stableRows.map((row) => row.textContent)).toEqual([
-			expect.stringContaining("alpha"),
+		const updatedRows = sessionButtons();
+		expect(updatedRows.map((row) => row.textContent)).toEqual([
 			expect.stringContaining("beta"),
+			expect.stringContaining("alpha"),
 		]);
-		expect(stableRows[0].textContent).toContain("Ready");
-		expect(stableRows[1].textContent).toContain("Working");
+		expect(updatedRows[0].textContent).toContain("Working");
+		expect(updatedRows[1].textContent).toContain("Ready");
+		expect(screen.getByText("Working", { selector: "div" })).not.toBeNull();
+		expect(screen.getByText("Recent", { selector: "div" })).not.toBeNull();
+	});
 
-		fireEvent.click(
-			screen.getByRole("button", {
-				name: "Close live sessions, 2 total, work in progress",
+	it("keeps pins inside attention groups and shows compact provenance", () => {
+		replaceSessionsStatus([
+			session("ready", {
+				lastLabel: "Review",
+				agent_cwd: "/work/alpha",
 			}),
-		);
-		fireEvent.click(
-			screen.getByRole("button", {
-				name: "Open live sessions, 2 total, work in progress",
+			session("pinned", {
+				lastLabel: "Review",
+				agent_cwd: "/work/beta",
+				pinned: true,
+				fork_parent_session_id: "source",
+				fork_parent_label: "Original",
+				fork_kind: "exact",
 			}),
-		);
-		expect(sessionButtons().map((row) => row.textContent)).toEqual([
-			expect.stringContaining("beta"),
-			expect.stringContaining("alpha"),
+			session("urgent", {
+				state: "error",
+				lastLabel: "Urgent",
+			}),
 		]);
+		renderSwitcher();
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: "Open live sessions, 3 total, attention needed",
+			}),
+		);
+
+		const rows = sessionButtons();
+		expect(rows.map((row) => row.getAttribute("aria-label"))).toEqual([
+			"Open Urgent session",
+			"Open Review session",
+			"Open Review session",
+		]);
+		expect(rows[1].textContent).toContain("Pinned");
+		expect(rows[1].textContent).toContain("beta · claude · sonnet");
+		expect(rows[1].textContent).toContain("Fork of Original");
+		expect(rows[2].textContent).toContain("alpha · claude · sonnet");
 	});
 
 	it("retains a closed row until the drawer closes", () => {

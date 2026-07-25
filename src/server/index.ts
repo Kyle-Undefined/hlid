@@ -332,12 +332,6 @@ warmVaultSnapshot();
 warmObsidianConnection(config.vault.name);
 const pool = new SessionPool(config, providers);
 await db.stopActiveProjectPreviewsAfterRestart();
-await startRoutineScheduler(pool).catch((error) => {
-	console.error(
-		"[routines] failed to initialize:",
-		error instanceof Error ? error.message : String(error),
-	);
-});
 void cliProxy
 	.initialize()
 	.then(() =>
@@ -366,6 +360,18 @@ const terminalPool = new TerminalSessionPool(ptyWorkerPath, () => {
 		type: "sessions_status",
 		sessions: getLiveSessionsStatus(pool, terminalPool),
 	});
+});
+const broadcastLiveSessions = () => {
+	broadcast({
+		type: "sessions_status",
+		sessions: getLiveSessionsStatus(pool, terminalPool),
+	});
+};
+await startRoutineScheduler(pool, broadcastLiveSessions).catch((error) => {
+	console.error(
+		"[routines] failed to initialize:",
+		error instanceof Error ? error.message : String(error),
+	);
 });
 const shellPool = new ShellSessionPool(ptyWorkerPath);
 const SERVER_TOKEN = loadToken();
@@ -472,8 +478,16 @@ const upgradeTerminalWebSocket = createTerminalUpgradeHandler({
 	createSession: async (sessionId) => {
 		await db.createSession(sessionId, "Terminal session", "claude-cli");
 	},
-	getSessionLabel: async (sessionId) =>
-		(await db.getSessionById(sessionId))?.label ?? null,
+	getSessionPresentation: async (sessionId) => {
+		const row = await db.getSessionById(sessionId);
+		return {
+			label: row?.label ?? null,
+			pinned: row?.pinned === 1,
+			forkParentSessionId: row?.fork_parent_session_id ?? null,
+			forkParentLabel: row?.fork_parent_label ?? null,
+			forkKind: row?.fork_kind ?? null,
+		};
+	},
 	getResumeId: db.getSessionClaudeId,
 });
 

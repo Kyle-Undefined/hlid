@@ -17,6 +17,10 @@ export interface TerminalWsData {
 	cwd: string;
 	claudeSessionId: string | null;
 	label: string | null;
+	pinned: boolean;
+	forkParentSessionId: string | null;
+	forkParentLabel: string | null;
+	forkKind: "exact" | "recap" | null;
 	cols: number;
 	rows: number;
 }
@@ -31,6 +35,10 @@ export function createTerminalWsHandlers(pool: TerminalSessionPool) {
 				cwd: ws.data.cwd,
 				claudeSessionId: ws.data.claudeSessionId,
 				label: ws.data.label,
+				pinned: ws.data.pinned,
+				forkParentSessionId: ws.data.forkParentSessionId,
+				forkParentLabel: ws.data.forkParentLabel,
+				forkKind: ws.data.forkKind,
 				cols: ws.data.cols,
 				rows: ws.data.rows,
 			});

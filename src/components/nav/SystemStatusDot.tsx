@@ -40,9 +40,34 @@ function aggregateDotClass(
 		? agg.pendingPermissions
 		: fallbackPending;
 	if (state === "error") return "bg-destructive";
-	if (pending) return "bg-status-warning animate-pulse";
-	if (state === "running") return "bg-primary animate-pulse";
+	if (pending || agg.needsAttentionCount > 0)
+		return "bg-status-warning animate-pulse";
+	if (state === "running" || agg.workingCount > 0)
+		return "bg-primary animate-pulse";
+	if (agg.queuedCount > 0) return "bg-sky-400";
 	return "bg-status-success";
+}
+
+export type SystemAttentionTone =
+	| "needs_attention"
+	| "working"
+	| "queued"
+	| "none";
+
+function attentionHeadline(agg: AggregateNavStatus): {
+	count: number;
+	tone: SystemAttentionTone;
+} {
+	if (agg.needsAttentionCount > 0) {
+		return { count: agg.needsAttentionCount, tone: "needs_attention" };
+	}
+	if (agg.workingCount > 0) {
+		return { count: agg.workingCount, tone: "working" };
+	}
+	if (agg.queuedCount > 0) {
+		return { count: agg.queuedCount, tone: "queued" };
+	}
+	return { count: 0, tone: "none" };
 }
 
 export function useSystemStatusIndicator() {
@@ -61,14 +86,25 @@ export function useSystemStatusIndicator() {
 			sessionCount: 0,
 			runningCount: 0,
 			pendingPermissions: false,
+			attentionSessionCount: 0,
+			needsAttentionCount: 0,
+			workingCount: 0,
+			queuedCount: 0,
+			recentCount: 0,
 		}),
 	);
+	const headline =
+		wsStatus === "connected"
+			? attentionHeadline(agg)
+			: { count: 0, tone: "none" as const };
 
 	return {
 		wsStatus,
 		sessionState,
 		hasPendingPermissions,
 		agg,
+		attentionCount: headline.count,
+		attentionTone: headline.tone,
 		dotClass: aggregateDotClass(
 			wsStatus,
 			agg,
@@ -79,8 +115,15 @@ export function useSystemStatusIndicator() {
 }
 
 export function WsStatusDot() {
-	const { wsStatus, sessionState, hasPendingPermissions, agg, dotClass } =
-		useSystemStatusIndicator();
+	const {
+		wsStatus,
+		sessionState,
+		hasPendingPermissions,
+		agg,
+		attentionCount,
+		attentionTone,
+		dotClass,
+	} = useSystemStatusIndicator();
 
 	const statusLabel = (() => {
 		if (wsStatus === "disconnected" || wsStatus === "connecting")
@@ -91,16 +134,47 @@ export function WsStatusDot() {
 			? agg.pendingPermissions
 			: hasPendingPermissions;
 		if (state === "error") return "System error";
-		if (pending) return "Waiting for permissions";
-		if (state === "running") return "System running";
+		if (pending || agg.needsAttentionCount > 0) {
+			const count = agg.needsAttentionCount || 1;
+			return `${count} ${
+				count === 1 ? "session needs" : "sessions need"
+			} attention`;
+		}
+		if (state === "running" || agg.workingCount > 0) {
+			const count = agg.workingCount || 1;
+			return `${count} ${count === 1 ? "session" : "sessions"} working`;
+		}
+		if (agg.queuedCount > 0)
+			return `${agg.queuedCount} ${
+				agg.queuedCount === 1 ? "session" : "sessions"
+			} queued`;
 		return "System connected";
 	})();
+	const countClass =
+		attentionTone === "needs_attention"
+			? "text-status-warning"
+			: attentionTone === "working"
+				? "text-primary"
+				: "text-sky-400";
 
 	return (
 		<div
-			className={`md:hidden w-1.5 h-1.5 rounded-full shrink-0 ${dotClass}`}
+			className="flex shrink-0 items-center gap-1 md:hidden"
 			role="img"
 			aria-label={statusLabel}
-		/>
+		>
+			<span
+				data-testid="system-status-dot"
+				className={`h-1.5 w-1.5 shrink-0 rounded-full ${dotClass}`}
+			/>
+			{attentionCount > 0 && (
+				<span
+					aria-hidden="true"
+					className={`font-mono text-[8px] leading-none tabular-nums ${countClass}`}
+				>
+					{attentionCount > 9 ? "9+" : attentionCount}
+				</span>
+			)}
+		</div>
 	);
 }

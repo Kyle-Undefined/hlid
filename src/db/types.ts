@@ -20,6 +20,8 @@ export type SessionRow = {
 	history_resume_path?: string | null;
 	/** Hlid session this row was forked from, retained without a destructive FK. */
 	fork_parent_session_id?: string | null;
+	/** Current source-session label, projected for compact provenance displays. */
+	fork_parent_label?: string | null;
 	/** Source messages.id cutoff for a through-message fork; null for whole-session. */
 	fork_parent_message_id?: number | null;
 	fork_kind?: "exact" | "recap" | null;

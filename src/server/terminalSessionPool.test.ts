@@ -47,6 +47,10 @@ function makeSubOpts(
 		sessionId: string;
 		cwd: string;
 		claudeSessionId: string | null;
+		pinned: boolean;
+		forkParentSessionId: string | null;
+		forkParentLabel: string | null;
+		forkKind: "exact" | "recap" | null;
 		cols: number;
 		rows: number;
 	}> = {},
@@ -249,7 +253,14 @@ describe("TerminalSessionPool — getSessionsStatus", () => {
 		const ws = makeWs();
 		pool.subscribe(
 			ws as never,
-			makeSubOpts({ sessionId: "sess-1", cwd: "/home/kyle/project" }),
+			makeSubOpts({
+				sessionId: "sess-1",
+				cwd: "/home/kyle/project",
+				pinned: true,
+				forkParentSessionId: "source",
+				forkParentLabel: "Original",
+				forkKind: "exact",
+			}),
 		);
 
 		const statuses = pool.getSessionsStatus();
@@ -257,6 +268,16 @@ describe("TerminalSessionPool — getSessionsStatus", () => {
 		expect(statuses[0].session_id).toBe("sess-1");
 		expect(statuses[0].provider_id).toBe("claude");
 		expect(statuses[0].mode).toBe("terminal");
+		expect(statuses[0]).toMatchObject({
+			pinned: true,
+			fork_parent_session_id: "source",
+			fork_parent_label: "Original",
+			fork_kind: "exact",
+		});
+		expect(statuses[0].attention).toMatchObject({
+			bucket: "working",
+			reason: "terminal",
+		});
 		pool.closeAll();
 		vi.useRealTimers();
 	});

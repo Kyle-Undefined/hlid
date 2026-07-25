@@ -8,7 +8,7 @@ import type {
 } from "../lib/routinePermissions";
 import type { RoutineSummary } from "../lib/routines";
 import { bumpDataRevision } from "./dataRevision";
-import type { ChatAttachment } from "./protocol";
+import type { ChatAttachment, ServerMessage } from "./protocol";
 import { deliverRoutineResult } from "./routineDelivery";
 import type { SessionPool } from "./sessionPool";
 
@@ -24,6 +24,16 @@ export type RoutineSessionResult = {
 	actionRequired?: string;
 	delivery?: unknown;
 };
+
+function changesSessionAttention(event: ServerMessage): boolean {
+	return (
+		event.type === "status" ||
+		event.type === "permission_request" ||
+		event.type === "ask_user_question" ||
+		event.type === "plan_mode_exit" ||
+		event.type === "goal_state"
+	);
+}
 
 async function routineAttachments(
 	routine: RoutineSummary,
@@ -50,8 +60,9 @@ export async function runRoutineSession(options: {
 	pool: SessionPool;
 	routine: RoutineSummary;
 	run: RoutineRunRow;
+	onStatusChange?: () => void;
 }): Promise<RoutineSessionResult> {
-	const { pool, routine, run } = options;
+	const { pool, routine, run, onStatusChange } = options;
 	const provider = pool.getProvider(routine.providerId);
 	if (!provider) {
 		return {
@@ -134,7 +145,10 @@ export async function runRoutineSession(options: {
 				routine.providerCommands,
 				routine.prompt,
 			),
-			(message) => entry.runState.broadcast(message),
+			(message) => {
+				entry.runState.broadcast(message);
+				if (changesSessionAttention(message)) onStatusChange?.();
+			},
 			sessionId,
 			routine.skillContexts,
 			attachments,
@@ -185,6 +199,7 @@ export async function runRoutineSession(options: {
 		};
 	} finally {
 		pool.close(entry.sessionId);
+		onStatusChange?.();
 		bumpDataRevision("routines", "sessions", "stats");
 	}
 }

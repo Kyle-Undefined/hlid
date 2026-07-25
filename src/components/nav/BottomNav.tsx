@@ -16,9 +16,6 @@ export function BottomNav() {
 			aria-label="Primary navigation"
 			className="relative z-30 shrink-0 bg-sidebar border-t border-sidebar-border md:hidden"
 		>
-			<div className="absolute top-1.5 right-2 z-10">
-				<WsStatusDot />
-			</div>
 			<div className="flex w-full pb-[env(safe-area-inset-bottom)]">
 				{NAV_ITEMS.map(({ to, label, icon: Icon, exact }) => (
 					<Link
@@ -29,7 +26,14 @@ export function BottomNav() {
 						activeProps={{ className: `${BASE} text-primary` }}
 						activeOptions={navActiveOptions(exact)}
 					>
-						<Icon className="w-4 h-4 shrink-0" />
+						<span className="relative">
+							<Icon className="w-4 h-4 shrink-0" />
+							{to === "/" && (
+								<span className="absolute -right-4 -top-1">
+									<WsStatusDot />
+								</span>
+							)}
+						</span>
 						<span className={LABEL}>{label}</span>
 					</Link>
 				))}

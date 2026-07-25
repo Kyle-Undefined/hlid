@@ -23,8 +23,12 @@ const mockInstances: {
 	getPendingPermissionRequests: ReturnType<typeof vi.fn>;
 	getPendingAskUserQuestions: ReturnType<typeof vi.fn>;
 	getPendingPlanModeExits: ReturnType<typeof vi.fn>;
+	getQueueState: ReturnType<typeof vi.fn>;
 	getCurrentSessionId: ReturnType<typeof vi.fn>;
+	getCurrentGoal: ReturnType<typeof vi.fn>;
+	getActiveRoutine: ReturnType<typeof vi.fn>;
 	getSessionLabel: ReturnType<typeof vi.fn>;
+	getSessionPresentation: ReturnType<typeof vi.fn>;
 	getProviderId: ReturnType<typeof vi.fn>;
 	isRunning: ReturnType<typeof vi.fn>;
 }[] = [];
@@ -45,8 +49,21 @@ vi.mock("./session", () => ({
 			getPendingPermissionRequests: vi.fn().mockReturnValue([]),
 			getPendingAskUserQuestions: vi.fn().mockReturnValue([]),
 			getPendingPlanModeExits: vi.fn().mockReturnValue([]),
+			getQueueState: vi.fn().mockReturnValue({
+				pending_turn_ids: [],
+				pending_turns: [],
+				running_turn_id: null,
+			}),
 			getCurrentSessionId: vi.fn().mockReturnValue(null),
+			getCurrentGoal: vi.fn().mockReturnValue(null),
+			getActiveRoutine: vi.fn().mockReturnValue(null),
 			getSessionLabel: vi.fn().mockReturnValue(null),
+			getSessionPresentation: vi.fn().mockReturnValue({
+				pinned: false,
+				forkParentSessionId: null,
+				forkParentLabel: null,
+				forkKind: null,
+			}),
 			getProviderId: vi.fn().mockReturnValue("claude"),
 			isRunning: vi.fn().mockReturnValue(false),
 		};
@@ -406,6 +423,12 @@ describe("SessionPool.getSessionsStatus", () => {
 		expect(s.effort).toBe("medium");
 		expect(s.permission_mode).toBe("default");
 		expect(typeof s.hasPendingPermissions).toBe("boolean");
+		expect(s.attention).toMatchObject({
+			bucket: "recent",
+			reason: "ready",
+			queue_count: 0,
+			pending_count: 0,
+		});
 	});
 
 	it("reflects running state from manager.getStatus()", () => {
@@ -430,6 +453,10 @@ describe("SessionPool.getSessionsStatus", () => {
 
 		const [s] = pool.getSessionsStatus();
 		expect(s.hasPendingPermissions).toBe(true);
+		expect(s.attention).toMatchObject({
+			bucket: "needs_attention",
+			reason: "permission",
+		});
 	});
 
 	it("hasPendingPermissions is false when no pending requests", () => {
@@ -449,6 +476,57 @@ describe("SessionPool.getSessionsStatus", () => {
 		]);
 
 		expect(pool.getSessionsStatus()[0]?.hasPendingPermissions).toBe(true);
+		expect(pool.getSessionsStatus()[0]?.attention).toMatchObject({
+			bucket: "needs_attention",
+			reason: "plan_review",
+		});
+	});
+
+	it("includes queued prompt counts without replacing active work", () => {
+		const pool = makePool();
+		pool.create("/code/proj", "Agent");
+		mockInstances[0]?.getStatus.mockReturnValue({
+			state: "running",
+			model: "claude-test",
+		});
+		mockInstances[0]?.getQueueState.mockReturnValue({
+			pending_turn_ids: ["turn-2", "turn-3"],
+			pending_turns: [],
+			running_turn_id: "turn-1",
+		});
+
+		expect(pool.getSessionsStatus()[0]?.attention).toMatchObject({
+			bucket: "working",
+			reason: "provider_turn",
+			queue_count: 2,
+		});
+	});
+
+	it("derives blocked goals and active Routines from their owning manager", () => {
+		const pool = makePool();
+		pool.create("/code/proj", "Agent");
+		mockInstances[0]?.getCurrentGoal.mockReturnValue({
+			status: "blocked",
+		});
+
+		expect(pool.getSessionsStatus()[0]?.attention).toMatchObject({
+			bucket: "needs_attention",
+			reason: "goal_blocked",
+		});
+
+		mockInstances[0]?.getCurrentGoal.mockReturnValue(null);
+		mockInstances[0]?.getActiveRoutine.mockReturnValue({
+			routineId: "routine-1",
+			runId: "run-1",
+		});
+		mockInstances[0]?.getStatus.mockReturnValue({
+			state: "running",
+			model: "claude-test",
+		});
+		expect(pool.getSessionsStatus()[0]?.attention).toMatchObject({
+			bucket: "working",
+			reason: "routine_running",
+		});
 	});
 
 	it("removes closed sessions from status", () => {
@@ -470,6 +548,26 @@ describe("SessionPool.getSessionsStatus", () => {
 
 		const [s] = pool.getSessionsStatus();
 		expect(s?.lastLabel).toBe("FIX THE BUG");
+	});
+
+	it("projects pin and fork provenance without changing attention", () => {
+		const pool = makePool();
+		pool.create("/code/proj", "Agent");
+		mockInstances[0]?.getSessionPresentation.mockReturnValue({
+			pinned: true,
+			forkParentSessionId: "source",
+			forkParentLabel: "Original",
+			forkKind: "exact",
+		});
+
+		const [status] = pool.getSessionsStatus();
+		expect(status).toMatchObject({
+			pinned: true,
+			fork_parent_session_id: "source",
+			fork_parent_label: "Original",
+			fork_kind: "exact",
+			attention: { bucket: "recent", reason: "ready" },
+		});
 	});
 
 	it("omits lastLabel when manager.getSessionLabel() returns null", () => {

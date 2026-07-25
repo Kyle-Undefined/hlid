@@ -576,6 +576,11 @@ export class SessionManager {
 	private activeRoutineContext: RoutinePermissionContext | null = null;
 	private currentSessionId: string | null = null;
 	private currentSessionLabel: string | null = null;
+	private currentSessionPinned = false;
+	private currentForkParentSessionId: string | null = null;
+	private currentForkParentLabel: string | null = null;
+	private currentForkKind: "exact" | "recap" | null = null;
+	private currentGoal: ProviderThreadGoal | null = null;
 	private messageSeq = 0;
 	/** Last runtime MCP snapshot per provider for this Hlid conversation. */
 	private mcpStatusByProvider = new Map<string, McpServerStatus[]>();
@@ -708,6 +713,11 @@ export class SessionManager {
 		this.state = "idle";
 		this.currentSessionId = null;
 		this.currentSessionLabel = null;
+		this.currentSessionPinned = false;
+		this.currentForkParentSessionId = null;
+		this.currentForkParentLabel = null;
+		this.currentForkKind = null;
+		this.currentGoal = null;
 		this.providerSessionId = null;
 		this.providerSessionProviderId = null;
 		this.historyResumeMode = "none";
@@ -773,6 +783,19 @@ export class SessionManager {
 		};
 	}
 
+	getCurrentGoal(): ProviderThreadGoal | null {
+		return this.currentGoal;
+	}
+
+	getActiveRoutine(): { routineId: string; runId: string } | null {
+		return this.activeRoutineContext
+			? {
+					routineId: this.activeRoutineContext.routineId,
+					runId: this.activeRoutineContext.runId,
+				}
+			: null;
+	}
+
 	/**
 	 * Mid-session model switch (Chunk 6). Session-scoped: updates the field
 	 * `runOneTurn` reads for vault chats and delegates to the live
@@ -829,6 +852,7 @@ export class SessionManager {
 			this.agentSession = null;
 			this.agentSessionKey = null;
 			this.restartAgentSessionForEffort = false;
+			this.currentGoal = null;
 			this.providerSessionId = null;
 			this.providerSessionProviderId = providerId;
 			this.providerHandoffPending =
@@ -945,6 +969,32 @@ export class SessionManager {
 	/** Sync the in-memory label after a DB rename so live status shows it. */
 	setSessionLabel(label: string): void {
 		this.currentSessionLabel = label;
+	}
+
+	getSessionPresentation(): {
+		pinned: boolean;
+		forkParentSessionId: string | null;
+		forkParentLabel: string | null;
+		forkKind: "exact" | "recap" | null;
+	} {
+		return {
+			pinned: this.currentSessionPinned,
+			forkParentSessionId: this.currentForkParentSessionId,
+			forkParentLabel: this.currentForkParentLabel,
+			forkKind: this.currentForkKind,
+		};
+	}
+
+	// fallow-ignore-next-line unused-class-member -- Called through SessionPool entries in the DB session mutation route.
+	setSessionPinned(pinned: boolean): void {
+		this.currentSessionPinned = pinned;
+	}
+
+	// fallow-ignore-next-line unused-class-member -- Called through SessionPool entries in the DB session mutation route.
+	setForkParentLabel(parentSessionId: string, label: string): void {
+		if (this.currentForkParentSessionId === parentSessionId) {
+			this.currentForkParentLabel = label;
+		}
 	}
 
 	getLastMcpStatus(
@@ -1216,13 +1266,15 @@ export class SessionManager {
 			wrapperCommand: "codex",
 			safeAttachments: [],
 		});
-		const publishGoal = (goal: ProviderThreadGoal | null) =>
+		const publishGoal = (goal: ProviderThreadGoal | null) => {
+			this.currentGoal = goal;
 			options.emit({
 				type: "goal_state",
 				session_id: options.sessionId,
 				provider_id: provider.providerId,
 				goal: goal ? mapProviderGoal(goal) : null,
 			});
+		};
 		const ownsContinuationDrain =
 			(control.action === "resume" || control.action === "set") &&
 			!this.isDraining;
@@ -1256,6 +1308,7 @@ export class SessionManager {
 			}
 			const result: ProviderGoalControlResult =
 				await agentSession.controlGoal(control);
+			this.currentGoal = result.goal;
 			this.providerSessionId = result.providerSessionId;
 			this.providerSessionProviderId = provider.providerId;
 			await db.setSessionProviderSession(
@@ -1680,6 +1733,11 @@ export class SessionManager {
 		this.unregisterUmbodApprovalSession = null;
 		this.currentSessionId = null;
 		this.currentSessionLabel = null;
+		this.currentSessionPinned = false;
+		this.currentForkParentSessionId = null;
+		this.currentForkParentLabel = null;
+		this.currentForkKind = null;
+		this.currentGoal = null;
 		this.providerSessionId = null;
 		this.providerSessionProviderId = null;
 		this.historyResumeMode = "none";
@@ -1719,6 +1777,11 @@ export class SessionManager {
 			sessionId && sessionId === this.currentSessionId,
 		);
 		if (sessionId && sessionId !== this.currentSessionId) {
+			this.currentGoal = null;
+			this.currentSessionPinned = false;
+			this.currentForkParentSessionId = null;
+			this.currentForkParentLabel = null;
+			this.currentForkKind = null;
 			const [
 				savedSession,
 				prior,
@@ -1757,6 +1820,11 @@ export class SessionManager {
 			this.messageSeq = Math.max(nextMessageSeq, prior.length);
 			this.currentSessionId = sessionId;
 			this.currentSessionLabel = savedSession?.label ?? null;
+			this.currentSessionPinned = savedSession?.pinned === 1;
+			this.currentForkParentSessionId =
+				savedSession?.fork_parent_session_id ?? null;
+			this.currentForkParentLabel = savedSession?.fork_parent_label ?? null;
+			this.currentForkKind = savedSession?.fork_kind ?? null;
 			this.providerSessionId = savedProviderSessionId;
 			this.providerSessionProviderId = savedProviderId;
 			this.historyResumeMode = savedSession?.history_resume_mode ?? "none";
@@ -3991,6 +4059,7 @@ export class SessionManager {
 		this.currentTurnId = turnId;
 		await this.initSessionContext(sessionId, agentCwd, userMessage);
 		await this.syncPlanHtmlPath(Boolean(planMode && planHtml), sessionId);
+		this.activeRoutineContext = routineContext ?? null;
 
 		// Slice C: emit status=running AFTER initSessionContext so getCurrentSessionId()
 		// is non-null when clients receive this event. This lets the ledger detect new
@@ -4006,9 +4075,11 @@ export class SessionManager {
 
 		// Turn-boundary usage gate: hold the turn before any provider spend.
 		// State stays "running" while sleeping; agent_sleep carries the nuance.
-		if ((await this.gateOnUsage(currentProvider, emit)) === "aborted") return;
+		if ((await this.gateOnUsage(currentProvider, emit)) === "aborted") {
+			this.activeRoutineContext = null;
+			return;
+		}
 
-		this.activeRoutineContext = routineContext ?? null;
 		const turn = createTurnState();
 
 		try {
@@ -4140,6 +4211,17 @@ export class SessionManager {
 				agentSettings,
 				planMode,
 				emit,
+				onGoalChange: sessionId
+					? (goal) => {
+							this.currentGoal = goal;
+							emit({
+								type: "goal_state",
+								session_id: sessionId,
+								provider_id: currentProvider.providerId,
+								goal: goal ? mapProviderGoal(goal) : null,
+							});
+						}
+					: undefined,
 			});
 			if (goalStart) {
 				if (!isCodexRuntimeProvider(currentProvider.providerId)) {
@@ -4155,6 +4237,7 @@ export class SessionManager {
 						? { tokenBudget: goalStart.tokenBudget }
 						: {}),
 				});
+				this.currentGoal = result.goal;
 				this.providerSessionId = result.providerSessionId;
 				this.providerSessionProviderId = currentProvider.providerId;
 				if (sessionId) {

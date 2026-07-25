@@ -7,8 +7,9 @@
  */
 import { randomUUID } from "node:crypto";
 import type { HlidConfig } from "../config";
+import { deriveSessionAttention } from "../lib/sessionAttention";
 import type { AgentProvider } from "./agentProvider";
-import type { SessionStatusEntry } from "./protocol";
+import type { SessionAttentionSnapshot, SessionStatusEntry } from "./protocol";
 import { SessionRunState } from "./runState";
 import { SessionManager } from "./session";
 
@@ -27,6 +28,7 @@ export class SessionPool {
 	private config: HlidConfig;
 	private providers: Map<string, AgentProvider>;
 	private maxSize: number;
+	private attentionBySession = new Map<string, SessionAttentionSnapshot>();
 	/** Session ID of the vault's lazy singleton entry, or null if not yet created. */
 	private _vaultSessionId: string | null = null;
 
@@ -96,6 +98,7 @@ export class SessionPool {
 		if (!entry) return;
 		entry.manager.abort();
 		this.entries.delete(sessionId);
+		this.attentionBySession.delete(sessionId);
 		if (this._vaultSessionId === sessionId) {
 			this._vaultSessionId = null;
 		}
@@ -110,6 +113,7 @@ export class SessionPool {
 			entry.manager.abort();
 		}
 		this.entries.clear();
+		this.attentionBySession.clear();
 		this._vaultSessionId = null;
 	}
 
@@ -158,7 +162,22 @@ export class SessionPool {
 			const pendingPerms = entry.manager.getPendingPermissionRequests();
 			const pendingQuestions = entry.manager.getPendingAskUserQuestions();
 			const pendingPlans = entry.manager.getPendingPlanModeExits();
+			const queueCount = entry.manager.getQueueState().pending_turn_ids.length;
 			const sessionLabel = entry.manager.getSessionLabel();
+			const presentation = entry.manager.getSessionPresentation();
+			const attention = deriveSessionAttention(
+				{
+					state,
+					permissionCount: pendingPerms.length,
+					questionCount: pendingQuestions.length,
+					planReviewCount: pendingPlans.length,
+					queueCount,
+					goalStatus: entry.manager.getCurrentGoal()?.status,
+					routine: entry.manager.getActiveRoutine() !== null,
+				},
+				this.attentionBySession.get(entry.sessionId),
+			);
+			this.attentionBySession.set(entry.sessionId, attention);
 			statuses.push({
 				session_id: entry.sessionId,
 				agent_cwd: entry.agentCwd,
@@ -172,9 +191,14 @@ export class SessionPool {
 					pendingPerms.length > 0 ||
 					pendingQuestions.length > 0 ||
 					pendingPlans.length > 0,
+				attention,
 				hasDbSession: entry.manager.getCurrentSessionId() !== null,
 				db_session_id: entry.manager.getCurrentSessionId(),
 				...(sessionLabel !== null ? { lastLabel: sessionLabel } : {}),
+				pinned: presentation.pinned,
+				fork_parent_session_id: presentation.forkParentSessionId,
+				fork_parent_label: presentation.forkParentLabel,
+				fork_kind: presentation.forkKind,
 			});
 		}
 		return statuses;

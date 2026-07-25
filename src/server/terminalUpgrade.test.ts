@@ -8,7 +8,13 @@ function operations(overrides: Partial<Operations> = {}): Operations {
 		defaultCwd: "/vault",
 		resolveCwd: vi.fn((cwd) => cwd),
 		createSession: vi.fn().mockResolvedValue(undefined),
-		getSessionLabel: vi.fn().mockResolvedValue("Existing label"),
+		getSessionPresentation: vi.fn().mockResolvedValue({
+			label: "Existing label",
+			pinned: false,
+			forkParentSessionId: null,
+			forkParentLabel: null,
+			forkKind: null,
+		}),
 		getResumeId: vi.fn().mockResolvedValue("claude-session-1"),
 		...overrides,
 	};
@@ -45,9 +51,15 @@ describe("terminal WebSocket upgrade", () => {
 			createSession: async (id) => {
 				events.push(`create:${id}`);
 			},
-			getSessionLabel: async (id) => {
-				events.push(`label:${id}`);
-				return "Agent terminal";
+			getSessionPresentation: async (id) => {
+				events.push(`presentation:${id}`);
+				return {
+					label: "Agent terminal",
+					pinned: true,
+					forkParentSessionId: "source-session",
+					forkParentLabel: "Source session",
+					forkKind: "exact",
+				};
 			},
 			getResumeId: async (id) => {
 				events.push(`resume:${id}`);
@@ -72,7 +84,7 @@ describe("terminal WebSocket upgrade", () => {
 		expect(events).toEqual([
 			"authorize:/agents/reviewer",
 			"create:session-1",
-			"label:session-1",
+			"presentation:session-1",
 			"resume:session-1",
 			"upgrade",
 		]);
@@ -81,6 +93,10 @@ describe("terminal WebSocket upgrade", () => {
 			sessionId: "session-1",
 			cwd: "/real/agent",
 			label: "Agent terminal",
+			pinned: true,
+			forkParentSessionId: "source-session",
+			forkParentLabel: "Source session",
+			forkKind: "exact",
 			cols: 132,
 			rows: 40,
 			claudeSessionId: "resume-1",
@@ -93,12 +109,16 @@ describe("terminal WebSocket upgrade", () => {
 		await createTerminalUpgradeHandler(ops)(terminalUrl(), upgrade);
 		expect(ops.resolveCwd).toHaveBeenCalledWith("/vault");
 		expect(ops.createSession).not.toHaveBeenCalled();
-		expect(ops.getSessionLabel).not.toHaveBeenCalled();
+		expect(ops.getSessionPresentation).not.toHaveBeenCalled();
 		expect(ops.getResumeId).not.toHaveBeenCalled();
 		expect(upgrade).toHaveBeenCalledWith(
 			expect.objectContaining({
 				sessionId: "",
 				label: null,
+				pinned: false,
+				forkParentSessionId: null,
+				forkParentLabel: null,
+				forkKind: null,
 				cols: 80,
 				rows: 24,
 				claudeSessionId: null,
@@ -108,7 +128,13 @@ describe("terminal WebSocket upgrade", () => {
 
 	it("falls back to a new terminal when resume lookup fails", async () => {
 		const ops = operations({
-			getSessionLabel: vi.fn().mockResolvedValue(null),
+			getSessionPresentation: vi.fn().mockResolvedValue({
+				label: null,
+				pinned: false,
+				forkParentSessionId: null,
+				forkParentLabel: null,
+				forkKind: null,
+			}),
 			getResumeId: vi.fn().mockRejectedValue(new Error("database unavailable")),
 		});
 		const upgrade = vi.fn().mockReturnValue(true);

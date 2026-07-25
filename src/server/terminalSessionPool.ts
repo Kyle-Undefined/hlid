@@ -25,6 +25,11 @@ interface TerminalSessionEntry extends PtyPoolEntry {
 	cwd: string;
 	claudeSessionId: string | null;
 	label: string;
+	pinned: boolean;
+	forkParentSessionId: string | null;
+	forkParentLabel: string | null;
+	forkKind: "exact" | "recap" | null;
+	attentionStartedAt: number;
 }
 
 export interface TerminalSubscribeOpts {
@@ -32,6 +37,10 @@ export interface TerminalSubscribeOpts {
 	cwd: string;
 	claudeSessionId: string | null;
 	label?: string | null;
+	pinned?: boolean;
+	forkParentSessionId?: string | null;
+	forkParentLabel?: string | null;
+	forkKind?: "exact" | "recap" | null;
 	cols: number;
 	rows: number;
 }
@@ -67,6 +76,11 @@ export class TerminalSessionPool extends PtySessionPoolBase<TerminalSessionEntry
 				cwd: opts.cwd,
 				claudeSessionId: opts.claudeSessionId,
 				label: opts.label ?? "Terminal session",
+				pinned: opts.pinned ?? false,
+				forkParentSessionId: opts.forkParentSessionId ?? null,
+				forkParentLabel: opts.forkParentLabel ?? null,
+				forkKind: opts.forkKind ?? null,
+				attentionStartedAt: Date.now(),
 				bridge,
 				buffer: new RingBuffer(),
 				subscribers: new Set(),
@@ -81,6 +95,23 @@ export class TerminalSessionPool extends PtySessionPoolBase<TerminalSessionEntry
 		if (!entry) return;
 		entry.label = label;
 		this.onChange?.();
+	}
+
+	setSessionPinned(sessionId: string, pinned: boolean): void {
+		const entry = this.entries.get(sessionId);
+		if (!entry) return;
+		entry.pinned = pinned;
+		this.onChange?.();
+	}
+
+	setForkParentLabel(parentSessionId: string, label: string): void {
+		let changed = false;
+		for (const entry of this.entries.values()) {
+			if (entry.forkParentSessionId !== parentSessionId) continue;
+			entry.forkParentLabel = label;
+			changed = true;
+		}
+		if (changed) this.onChange?.();
 	}
 
 	/**
@@ -99,10 +130,22 @@ export class TerminalSessionPool extends PtySessionPoolBase<TerminalSessionEntry
 				provider_id: "claude",
 				model: "claude-cli",
 				hasPendingPermissions: false,
+				attention: {
+					bucket: "working",
+					reason: "terminal",
+					since: entry.attentionStartedAt,
+					last_activity_at: entry.attentionStartedAt,
+					queue_count: 0,
+					pending_count: 0,
+				},
 				// Terminal sessions pre-create their DB row (via ensureSessionFn) using
 				// the same UUID as the pool entry — so sessionId IS the DB session ID.
 				hasDbSession: true,
 				db_session_id: entry.sessionId,
+				pinned: entry.pinned,
+				fork_parent_session_id: entry.forkParentSessionId,
+				fork_parent_label: entry.forkParentLabel,
+				fork_kind: entry.forkKind,
 				mode: "terminal",
 			});
 		}

@@ -355,6 +355,14 @@ describe("subscribeToSession / getSubscribedSessionId", () => {
 					state: "running",
 					model: "codex",
 					hasPendingPermissions: false,
+					attention: {
+						bucket: "working",
+						reason: "provider_turn",
+						since: 10,
+						last_activity_at: 10,
+						queue_count: 0,
+						pending_count: 0,
+					},
 				},
 				{
 					session_id: "session-b",
@@ -732,6 +740,10 @@ describe("getAggregateNavStatus", () => {
 		});
 
 		expect(wsStore.getSessionsStatus()[0].state).toBe("idle");
+		expect(wsStore.getSessionsStatus()[0].attention).toMatchObject({
+			bucket: "recent",
+			reason: "ready",
+		});
 		expect(wsStore.getAggregateNavStatus()).toMatchObject({
 			state: "idle",
 			sessionCount: 1,
@@ -904,5 +916,67 @@ describe("getAggregateNavStatus", () => {
 			],
 		});
 		expect(wsStore.getAggregateNavStatus().pendingPermissions).toBe(false);
+	});
+
+	it("publishes shared attention counts for process-backed Raven sessions", () => {
+		receive({
+			type: "sessions_status",
+			sessions: [
+				{
+					session_id: "attention",
+					db_session_id: "chat-attention",
+					hasDbSession: true,
+					state: "idle",
+					agent_cwd: "/a",
+					agent_name: "A",
+					model: "m",
+					hasPendingPermissions: false,
+					attention: {
+						bucket: "needs_attention",
+						reason: "goal_blocked",
+						since: 1,
+						last_activity_at: 1,
+						queue_count: 0,
+						pending_count: 1,
+					},
+				},
+				{
+					session_id: "working",
+					db_session_id: "chat-working",
+					hasDbSession: true,
+					state: "running",
+					agent_cwd: "/b",
+					agent_name: "B",
+					model: "m",
+					hasPendingPermissions: false,
+					attention: {
+						bucket: "working",
+						reason: "provider_turn",
+						since: 1,
+						last_activity_at: 1,
+						queue_count: 0,
+						pending_count: 0,
+					},
+				},
+				{
+					session_id: "placeholder",
+					db_session_id: null,
+					hasDbSession: false,
+					state: "idle",
+					agent_cwd: "/c",
+					agent_name: "C",
+					model: "m",
+					hasPendingPermissions: false,
+				},
+			],
+		});
+
+		expect(wsStore.getAggregateNavStatus()).toMatchObject({
+			attentionSessionCount: 2,
+			needsAttentionCount: 1,
+			workingCount: 1,
+			queuedCount: 0,
+			recentCount: 0,
+		});
 	});
 });

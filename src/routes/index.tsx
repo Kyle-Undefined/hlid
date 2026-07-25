@@ -533,6 +533,8 @@ function CockpitTopPanels({
 			<MobileRunsPanel
 				runs={live.recentRuns}
 				weeklyStats={live.weeklyStats}
+				routines={routines}
+				onOpenRoutines={onOpenRoutines}
 				onRunClick={(id) =>
 					navigate({ to: "/raven", search: { session: id, agent: undefined } })
 				}
@@ -1072,6 +1074,10 @@ function CockpitPage() {
 	const modelShort = vaultModel ? fmtModel(vaultModel) : null;
 	const onRunClick = (id: string) =>
 		navigate({ to: "/raven", search: { session: id, agent: undefined } });
+	const openRoutines = () => {
+		setRoutineDraft(null);
+		setRoutineDialogOpen(true);
+	};
 
 	return (
 		<div className="flex min-w-0 flex-col overflow-x-hidden md:h-full">
@@ -1082,10 +1088,7 @@ function CockpitPage() {
 				initialProviderUsages={loader.providerUsages}
 				navigate={navigate}
 				routines={routines}
-				onOpenRoutines={() => {
-					setRoutineDraft(null);
-					setRoutineDialogOpen(true);
-				}}
+				onOpenRoutines={openRoutines}
 			/>
 
 			{/* Two-column body */}
@@ -1127,6 +1130,8 @@ function CockpitPage() {
 					stats={liveStats}
 					agg={live.agg}
 					activeSession={live.liveActiveSession}
+					routines={routines}
+					onOpenRoutines={openRoutines}
 					className="hidden md:flex"
 				/>
 			</div>

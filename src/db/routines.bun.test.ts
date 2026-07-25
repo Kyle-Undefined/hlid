@@ -166,4 +166,29 @@ describe("routines database", () => {
 		});
 		expect((await listRoutineRuns(created.id))[0]?.status).toBe("succeeded");
 	});
+
+	it("derives attention from the latest persisted Routine run", async () => {
+		const created = await createRoutine(definition, 1_753_185_600);
+		const due = created.nextRunAt as number;
+		const [run] = await claimDueRoutineRuns({
+			now: due,
+			leaseOwner: "boot",
+			leaseSeconds: 120,
+		});
+		expect((await getRoutine(created.id))?.attention).toMatchObject({
+			bucket: "queued",
+			reason: "routine_queued",
+		});
+
+		await finishRoutineRun({
+			runId: run?.id ?? "",
+			status: "action_required",
+			now: due + 1,
+			actionRequired: "Approval needed",
+		});
+		expect((await getRoutine(created.id))?.attention).toMatchObject({
+			bucket: "needs_attention",
+			reason: "routine_action_required",
+		});
+	});
 });

@@ -441,6 +441,49 @@ export function approvedLabel(decision: string): string | null {
 
 // ── Multi-session types ───────────────────────────────────────────────────────
 
+export type SessionAttentionBucket =
+	| "needs_attention"
+	| "working"
+	| "queued"
+	| "recent";
+
+export type SessionAttentionReason =
+	| "permission"
+	| "question"
+	| "plan_review"
+	| "error"
+	| "provider_turn"
+	| "terminal"
+	| "queued_prompt"
+	| "goal_active"
+	| "goal_blocked"
+	| "goal_budget"
+	| "goal_paused"
+	| "goal_usage_wait"
+	| "routine_running"
+	| "routine_queued"
+	| "routine_action_required"
+	| "routine_delivery_error"
+	| "routine_failed"
+	| "routine_unavailable"
+	| "routine_recent"
+	| "ready";
+
+/**
+ * Server-owned presentation snapshot derived from existing session state.
+ * This is not another lifecycle source of truth.
+ */
+export type SessionAttentionSnapshot = {
+	bucket: SessionAttentionBucket;
+	reason: SessionAttentionReason;
+	/** Millisecond timestamp for when the current bucket and reason began. */
+	since: number;
+	/** Millisecond timestamp for the latest meaningful state transition. */
+	last_activity_at: number;
+	queue_count: number;
+	pending_count: number;
+};
+
 /** Status snapshot for a single live session in the pool. */
 export type SessionStatusEntry = {
 	session_id: string;
@@ -455,11 +498,22 @@ export type SessionStatusEntry = {
 	/** Current session-scoped permission mode, when available. */
 	permission_mode?: string;
 	hasPendingPermissions: boolean;
+	/**
+	 * Rich attention state. Optional for compatibility with older connected
+	 * clients and deterministic fixtures; current servers always include it.
+	 */
+	attention?: SessionAttentionSnapshot;
 	/** True when the session has started at least one DB chat (getCurrentSessionId !== null). */
 	hasDbSession: boolean;
 	/** The DB chat session ID currently open in this pool session, if any. */
 	db_session_id: string | null;
 	lastLabel?: string;
+	/** Navigation preference; never changes the attention bucket. */
+	pinned?: boolean;
+	/** Existing exact or recap fork provenance for compact disambiguation. */
+	fork_parent_session_id?: string | null;
+	fork_parent_label?: string | null;
+	fork_kind?: "exact" | "recap" | null;
 	/**
 	 * "sdk" = custom UI backed by the Claude Agent SDK (default, undefined = sdk).
 	 * "terminal" = raw PTY session running claude CLI via xterm.js.

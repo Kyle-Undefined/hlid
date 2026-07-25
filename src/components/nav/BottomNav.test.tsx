@@ -42,6 +42,11 @@ describe("BottomNav", () => {
 
 		expect(within(nav).getAllByRole("link")).toHaveLength(7);
 		expect(within(nav).queryByRole("button", { name: /lock/i })).toBeNull();
+		expect(
+			within(screen.getByRole("link", { name: "WATCH" })).getByTestId(
+				"system-status",
+			),
+		).not.toBeNull();
 	});
 
 	it("links Raven to the last chat Raven displayed", () => {

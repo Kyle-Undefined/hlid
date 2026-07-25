@@ -1290,17 +1290,21 @@ describe("handleDbRoute — PATCH /db/session", () => {
 		const matching = {
 			getCurrentSessionId: vi.fn().mockReturnValue("s1"),
 			setSessionLabel: vi.fn(),
+			setForkParentLabel: vi.fn(),
 		};
 		const other = {
 			getCurrentSessionId: vi.fn().mockReturnValue("s2"),
 			setSessionLabel: vi.fn(),
+			setForkParentLabel: vi.fn(),
 		};
 		const pool = makePool();
 		(pool as unknown as { getAllEntries: () => unknown[] }).getAllEntries =
 			() => [{ manager: matching }, { manager: other }];
 		const setSessionLabel = vi.fn();
+		const setForkParentLabel = vi.fn();
 		const terminalPool = {
 			setSessionLabel,
+			setForkParentLabel,
 			getSessionsStatus: () => [],
 		} as never;
 
@@ -1315,8 +1319,11 @@ describe("handleDbRoute — PATCH /db/session", () => {
 		expect(await res?.json()).toEqual({ ok: true });
 		expect(mockRenameSession).toHaveBeenCalledWith("s1", "renamed");
 		expect(setSessionLabel).toHaveBeenCalledWith("s1", "renamed");
+		expect(setForkParentLabel).toHaveBeenCalledWith("s1", "renamed");
 		expect(matching.setSessionLabel).toHaveBeenCalledWith("renamed");
 		expect(other.setSessionLabel).not.toHaveBeenCalled();
+		expect(matching.setForkParentLabel).toHaveBeenCalledWith("s1", "renamed");
+		expect(other.setForkParentLabel).toHaveBeenCalledWith("s1", "renamed");
 	});
 
 	it("returns 404 instead of broadcasting a rename for a missing session", async () => {
@@ -1335,19 +1342,33 @@ describe("handleDbRoute — PATCH /db/session", () => {
 		expect(pool.getSessionsStatus).not.toHaveBeenCalled();
 	});
 
-	it("persists pin state without rewriting live session labels", async () => {
+	it("persists pin state and refreshes matching live presentation", async () => {
 		mockSetSessionPinned.mockResolvedValue(undefined);
-		const pool = makePool();
+		const setSessionPinned = vi.fn();
+		const pool = makePool({
+			findByDbSessionId: vi.fn().mockReturnValue({
+				manager: { setSessionPinned },
+			}),
+		});
+		const setTerminalPinned = vi.fn();
+		const terminalPool = {
+			setSessionPinned: setTerminalPinned,
+			getSessionsStatus: () => [],
+		} as never;
 		const res = await handleDbRoute(
 			makeUrl("/db/session", { id: "s1" }),
 			patchRequest({ pinned: true }),
 			pool,
+			terminalPool,
 		);
 
 		expect(res?.status).toBe(200);
 		expect(await res?.json()).toEqual({ ok: true });
 		expect(mockSetSessionPinned).toHaveBeenCalledWith("s1", true);
+		expect(setSessionPinned).toHaveBeenCalledWith(true);
+		expect(setTerminalPinned).toHaveBeenCalledWith("s1", true);
 		expect(mockRenameSession).not.toHaveBeenCalled();
+		expect(pool.getSessionsStatus).toHaveBeenCalled();
 	});
 
 	it("archives an idle session and rejects a running one", async () => {

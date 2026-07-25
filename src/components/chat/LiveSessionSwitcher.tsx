@@ -1,6 +1,7 @@
-import { Scroll } from "lucide-react";
+import { GitFork, Pin, Scroll } from "lucide-react";
 import {
 	createContext,
+	Fragment,
 	type ReactNode,
 	useContext,
 	useEffect,
@@ -19,6 +20,9 @@ import {
 	type LiveSessionState,
 	type LiveSessionSwitcherRow,
 	liveSessionContext,
+	liveSessionQueueLabel,
+	liveSessionReasonLabel,
+	liveSessionStateLabel,
 	liveSessionToggleTone,
 } from "#/lib/liveSessionSwitcher";
 import { displayHotkey, matchesHotkey } from "#/lib/voiceHotkey";
@@ -35,21 +39,33 @@ type LiveSessionSwitcherProps = {
 };
 
 function toneClass(tone: ReturnType<typeof liveSessionToggleTone>): string {
-	if (tone === "waiting") return "text-amber-400";
+	if (tone === "needs_attention") return "text-amber-400";
 	if (tone === "working") return "text-primary";
+	if (tone === "queued") return "text-sky-400";
 	return "text-muted-foreground/55";
 }
 
 function stateClass(state: LiveSessionState): string {
-	if (state === "waiting") return "text-amber-400";
+	if (state === "needs_attention") return "text-amber-400";
 	if (state === "working") return "text-primary";
+	if (state === "queued") return "text-sky-400";
 	return "text-muted-foreground/55";
 }
 
-function stateLabel(state: LiveSessionState): string {
-	if (state === "waiting") return "Waiting";
-	if (state === "working") return "Working";
-	return "Ready";
+function dotClass(state: LiveSessionState): string {
+	if (state === "needs_attention") return "bg-amber-400";
+	if (state === "working") return "bg-primary";
+	if (state === "queued") return "bg-sky-400";
+	return "bg-muted-foreground/35";
+}
+
+function formatElapsed(since: number, now: number): string {
+	const seconds = Math.max(0, Math.floor((now - since) / 1000));
+	if (seconds < 60) return "<1m";
+	const minutes = Math.floor(seconds / 60);
+	if (minutes < 60) return `${minutes}m`;
+	const hours = Math.floor(minutes / 60);
+	return `${hours}h ${minutes % 60}m`;
 }
 
 function toggleLabel(
@@ -58,17 +74,22 @@ function toggleLabel(
 	tone: ReturnType<typeof liveSessionToggleTone>,
 ): string {
 	const state =
-		tone === "waiting"
+		tone === "needs_attention"
 			? "attention needed"
 			: tone === "working"
 				? "work in progress"
-				: tone === "ready"
-					? "all ready"
-					: "none live";
+				: tone === "queued"
+					? "work queued"
+					: tone === "recent"
+						? "all ready"
+						: "none live";
 	return `${open ? "Close" : "Open"} live sessions, ${count} total, ${state}`;
 }
 
-type RetainedRow = LiveSessionSwitcherRow & { closed: boolean };
+type RetainedRow = LiveSessionSwitcherRow & {
+	closed: boolean;
+	groupState: LiveSessionState;
+};
 
 type LiveSessionSwitcherContextValue = {
 	count: number;
@@ -128,17 +149,23 @@ function LiveSessionDrawer({
 	const orderRef = useRef(rows.map((row) => row.session.session_id));
 	const retainedRef = useRef<Map<string, RetainedRow>>(
 		new Map(
-			rows.map((row) => [row.session.session_id, { ...row, closed: false }]),
+			rows.map((row) => [
+				row.session.session_id,
+				{ ...row, closed: false, groupState: row.state },
+			]),
 		),
 	);
+	const [now, setNow] = useState(Date.now());
+	useEffect(() => {
+		const timer = window.setInterval(() => setNow(Date.now()), 30_000);
+		return () => window.clearInterval(timer);
+	}, []);
 	const liveIds = new Set(rows.map((row) => row.session.session_id));
 	for (const row of rows) {
-		if (!retainedRef.current.has(row.session.session_id)) {
-			orderRef.current.push(row.session.session_id);
-		}
 		retainedRef.current.set(row.session.session_id, {
 			...row,
 			closed: false,
+			groupState: row.state,
 		});
 	}
 	for (const id of orderRef.current) {
@@ -147,6 +174,14 @@ function LiveSessionDrawer({
 			retainedRef.current.set(id, { ...retained, closed: true });
 		}
 	}
+	// The attention list is a live status surface, so active rows follow the
+	// latest server ordering even while the drawer remains open. Keep removed
+	// rows after them until the drawer closes so a session cannot disappear
+	// beneath a pointer during a close action.
+	orderRef.current = [
+		...rows.map((row) => row.session.session_id),
+		...orderRef.current.filter((id) => !liveIds.has(id)),
+	];
 	const retainedRows = orderRef.current
 		.map((id) => retainedRef.current.get(id))
 		.filter((row): row is RetainedRow => Boolean(row));
@@ -183,59 +218,97 @@ function LiveSessionDrawer({
 							No live sessions
 						</div>
 					) : (
-						retainedRows.map((row) => {
+						retainedRows.map((row, index) => {
 							const { session } = row;
 							const label = session.lastLabel?.trim() || session.agent_name;
-							const context = liveSessionContext(session);
+							const context = liveSessionContext(session, row.workspaceLabel);
 							const current =
 								currentSessionId === row.dbSessionId ||
 								currentSessionId === session.session_id;
+							const queueLabel = liveSessionQueueLabel(session);
+							const attentionSince = session.attention?.since;
+							const showGroup =
+								index === 0 ||
+								retainedRows[index - 1]?.groupState !== row.groupState;
 							return (
-								<button
-									key={session.session_id}
-									type="button"
-									disabled={row.closed}
-									onClick={() => onSelect(row.dbSessionId)}
-									aria-label={`Open ${label} session`}
-									aria-current={current ? "page" : undefined}
-									className="flex min-h-16 w-full items-center gap-3 border-b border-border/45 px-4 py-2.5 text-left transition-colors hover:bg-accent/35 disabled:cursor-default disabled:opacity-45"
-								>
-									<span
-										className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-											row.closed
-												? "bg-muted-foreground/30"
-												: row.state === "waiting"
-													? "bg-amber-400"
-													: row.state === "working"
-														? "bg-primary"
-														: "bg-muted-foreground/35"
-										}`}
-									/>
-									<span className="min-w-0 flex-1">
-										<PrivacyMask className="block min-w-0 truncate text-[11px] font-medium text-foreground/90">
-											{label}
-										</PrivacyMask>
-										{context && (
-											<span className="mt-1 block truncate font-mono text-[9px] text-muted-foreground/50">
-												{context}
+								<Fragment key={session.session_id}>
+									{showGroup && (
+										<div className="border-b border-border/45 bg-muted/20 px-4 py-1.5 text-[8px] tracking-widest text-muted-foreground/55 uppercase">
+											{liveSessionStateLabel(row.groupState)}
+										</div>
+									)}
+									<button
+										type="button"
+										disabled={row.closed}
+										onClick={() => onSelect(row.dbSessionId)}
+										aria-label={`Open ${label} session`}
+										aria-current={current ? "page" : undefined}
+										className="flex min-h-16 w-full items-center gap-3 border-b border-border/45 px-4 py-2.5 text-left transition-colors hover:bg-accent/35 disabled:cursor-default disabled:opacity-45"
+									>
+										<span
+											className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+												row.closed
+													? "bg-muted-foreground/30"
+													: dotClass(row.state)
+											}`}
+										/>
+										{row.pinned && (
+											<span title="Pinned" className="shrink-0 text-primary/65">
+												<Pin aria-hidden="true" className="h-3 w-3" />
+												<span className="sr-only">Pinned</span>
 											</span>
 										)}
-									</span>
-									{current && (
-										<span className="shrink-0 text-[8px] tracking-widest text-primary/70 uppercase">
-											Current
+										<span className="min-w-0 flex-1">
+											<PrivacyMask className="block min-w-0 truncate text-[11px] font-medium text-foreground/90">
+												{label}
+											</PrivacyMask>
+											{context && (
+												<span className="mt-1 block truncate font-mono text-[9px] text-muted-foreground/50">
+													{context}
+												</span>
+											)}
+											{row.forkLabel && (
+												<span className="mt-0.5 flex min-w-0 items-center gap-1 text-[8px] text-muted-foreground/45">
+													<GitFork
+														aria-hidden="true"
+														className="h-2.5 w-2.5 shrink-0"
+													/>
+													<PrivacyMask className="truncate">
+														{row.forkLabel}
+													</PrivacyMask>
+												</span>
+											)}
+											{queueLabel && (
+												<span className="mt-0.5 block font-mono text-[8px] text-sky-400/75">
+													{queueLabel}
+												</span>
+											)}
 										</span>
-									)}
-									<span
-										className={`w-14 shrink-0 text-right font-mono text-[8px] tracking-widest uppercase ${
-											row.closed
-												? "text-muted-foreground/35"
-												: stateClass(row.state)
-										}`}
-									>
-										{row.closed ? "Closed" : stateLabel(row.state)}
-									</span>
-								</button>
+										{current && (
+											<span className="shrink-0 text-[8px] tracking-widest text-primary/70 uppercase">
+												Current
+											</span>
+										)}
+										<span
+											className={`w-20 shrink-0 text-right font-mono text-[8px] tracking-widest uppercase ${
+												row.closed
+													? "text-muted-foreground/35"
+													: stateClass(row.state)
+											}`}
+										>
+											<span className="block">
+												{row.closed
+													? "Closed"
+													: liveSessionReasonLabel(session)}
+											</span>
+											{!row.closed && attentionSince !== undefined && (
+												<span className="mt-0.5 block text-[7px] tracking-normal text-muted-foreground/40 normal-case">
+													{formatElapsed(attentionSince, now)}
+												</span>
+											)}
+										</span>
+									</button>
+								</Fragment>
 							);
 						})
 					)}

@@ -5,7 +5,13 @@ type TerminalUpgradeOperations = {
 	defaultCwd: string;
 	resolveCwd: (requestedCwd: string) => string | null;
 	createSession: (sessionId: string) => Promise<void>;
-	getSessionLabel: (sessionId: string) => Promise<string | null>;
+	getSessionPresentation: (sessionId: string) => Promise<{
+		label: string | null;
+		pinned: boolean;
+		forkParentSessionId: string | null;
+		forkParentLabel: string | null;
+		forkKind: "exact" | "recap" | null;
+	}>;
 	getResumeId: (sessionId: string) => Promise<string | null>;
 };
 
@@ -22,10 +28,18 @@ export function createTerminalUpgradeHandler(
 		if (!cwd) return new Response("Forbidden", { status: 403 });
 
 		let label: string | null = null;
+		let pinned = false;
+		let forkParentSessionId: string | null = null;
+		let forkParentLabel: string | null = null;
+		let forkKind: "exact" | "recap" | null = null;
 		if (sessionId) {
 			await operations.createSession(sessionId);
-			label =
-				(await operations.getSessionLabel(sessionId)) ?? "Terminal session";
+			const presentation = await operations.getSessionPresentation(sessionId);
+			label = presentation.label ?? "Terminal session";
+			pinned = presentation.pinned;
+			forkParentSessionId = presentation.forkParentSessionId;
+			forkParentLabel = presentation.forkParentLabel;
+			forkKind = presentation.forkKind;
 		}
 		const { cols, rows } = parseInitialTerminalDimensions(
 			url.searchParams.get("cols"),
@@ -46,6 +60,10 @@ export function createTerminalUpgradeHandler(
 				sessionId,
 				cwd,
 				label,
+				pinned,
+				forkParentSessionId,
+				forkParentLabel,
+				forkKind,
 				cols,
 				rows,
 				claudeSessionId,

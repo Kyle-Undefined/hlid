@@ -1,10 +1,24 @@
 import { useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { GitFork, Pin } from "lucide-react";
+import { useState, useSyncExternalStore } from "react";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { AggStats, SessionRow, WeeklyStats } from "#/db";
 import type { LiveStats } from "#/hooks/wsLiveStatsStore";
+import {
+	getSessionsStatus,
+	subscribeSessionsStatus,
+} from "#/hooks/wsSessionStatusStore";
 import { formatDisplayCost } from "#/lib/costDisplay";
 import { fmt, fmtRunTime } from "#/lib/formatters";
+import {
+	attentionReasonLabel,
+	deriveLiveSessionSwitcherRows,
+	derivePersistedRecentSessionRows,
+	liveSessionContext,
+	liveSessionReasonLabel,
+	type PersistedRecentSessionRow,
+} from "#/lib/liveSessionSwitcher";
+import type { RoutineSummary } from "#/lib/routines";
 
 // ─── UtilBar ─────────────────────────────────────────────────────────────────
 
@@ -70,13 +84,13 @@ function WeekBarGraph({ days }: { days: number[] }) {
 // ─── RunList ──────────────────────────────────────────────────────────────────
 
 function RunList({
-	runs,
+	rows,
 	onRunClick,
 }: {
-	runs: SessionRow[];
+	rows: PersistedRecentSessionRow[];
 	onRunClick: (sessionId: string) => void;
 }) {
-	if (runs.length === 0) {
+	if (rows.length === 0) {
 		return (
 			<div className="flex items-center justify-center py-4">
 				<span className="text-[9px] tracking-widest text-muted-foreground/50">
@@ -87,30 +101,72 @@ function RunList({
 	}
 	return (
 		<>
-			{runs.map((run) => (
+			{rows.map(({ session: run, workspaceLabel, forkLabel }) => (
 				<button
 					key={run.id}
 					type="button"
 					onClick={() => onRunClick(run.id)}
-					className="flex items-center gap-2 w-full px-4 py-2 border-b border-border/20 last:border-0 hover:bg-accent/30 transition-colors text-left group"
+					aria-label={`Open ${run.label ?? "untitled"} recent session`}
+					className="group flex min-h-11 w-full items-center gap-2 border-b border-border/20 px-4 py-2 text-left transition-colors last:border-0 hover:bg-accent/30"
 				>
 					<span className="text-[9px] tabular-nums text-primary/50 shrink-0 font-mono w-9">
 						{fmtRunTime(run.started_at)}
 					</span>
-					<PrivacyMask
-						inline
-						className="text-[10px] tracking-wider text-muted-foreground/60 truncate flex-1"
-					>
-						{run.label ?? "untitled"}
-					</PrivacyMask>
-					<span className="text-[8px] tracking-widest text-muted-foreground/20 uppercase shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-						↗
+					<span className="min-w-0 flex-1">
+						<PrivacyMask className="truncate text-[10px] tracking-wider text-muted-foreground/65">
+							{run.label ?? "untitled"}
+						</PrivacyMask>
+						{(workspaceLabel || forkLabel) && (
+							<span className="mt-0.5 flex min-w-0 items-center gap-1 truncate font-mono text-[7px] text-muted-foreground/40">
+								{forkLabel && (
+									<GitFork
+										aria-hidden="true"
+										className="h-2.5 w-2.5 shrink-0"
+									/>
+								)}
+								<PrivacyMask className="truncate">
+									{[workspaceLabel, forkLabel].filter(Boolean).join(" · ")}
+								</PrivacyMask>
+							</span>
+						)}
+					</span>
+					{run.pinned === 1 && (
+						<span title="Pinned" className="shrink-0 text-primary/60">
+							<Pin aria-hidden="true" className="h-3 w-3" />
+							<span className="sr-only">Pinned</span>
+						</span>
+					)}
+					<span className="shrink-0 text-[7px] tracking-widest text-muted-foreground/30 uppercase">
+						Recent
 					</span>
 				</button>
 			))}
 		</>
 	);
 }
+
+function usePersistedRecentRows(
+	runs: SessionRow[],
+): PersistedRecentSessionRow[] {
+	const sessions = useSyncExternalStore(
+		subscribeSessionsStatus,
+		getSessionsStatus,
+		() => [],
+	);
+	return derivePersistedRecentSessionRows(runs, sessions);
+}
+
+type AttentionRow = {
+	id: string;
+	label: string;
+	state: "needs_attention" | "working" | "queued";
+	reason?: Parameters<typeof attentionReasonLabel>[0];
+	sessionId: string | null;
+	pinned: boolean;
+	context: string;
+	forkLabel: string | null;
+	session?: ReturnType<typeof getSessionsStatus>[number];
+};
 
 // ─── ViewAllLink ──────────────────────────────────────────────────────────────
 
@@ -134,6 +190,186 @@ function ViewAllLink() {
 	);
 }
 
+function AttentionSummary({
+	onRunClick,
+	onOpenRoutines,
+	routines,
+}: {
+	onRunClick: (sessionId: string) => void;
+	onOpenRoutines: () => void;
+	routines: RoutineSummary[];
+}) {
+	const sessions = useSyncExternalStore(
+		subscribeSessionsStatus,
+		getSessionsStatus,
+		() => [],
+	);
+	const liveRows = deriveLiveSessionSwitcherRows(sessions);
+	const routineRows: AttentionRow[] = routines.flatMap((routine) => {
+		const attention = routine.attention;
+		const lastRun = routine.lastRun;
+		if (!attention || attention.bucket === "recent" || !lastRun) return [];
+		return [
+			{
+				id: `routine:${routine.id}:${lastRun.id}`,
+				label: routine.name,
+				state: attention.bucket,
+				reason: attention.reason,
+				sessionId: lastRun.sessionId,
+				pinned: false,
+				context: "",
+				forkLabel: null,
+			},
+		];
+	});
+	const routineSessionIds = new Set(
+		routineRows
+			.map((row) => row.sessionId)
+			.filter((id): id is string => Boolean(id)),
+	);
+	const actionable = [
+		...liveRows
+			.filter(
+				(row) =>
+					row.state !== "recent" &&
+					!routineSessionIds.has(row.dbSessionId) &&
+					!routineSessionIds.has(row.session.session_id),
+			)
+			.map((row) => ({
+				id: row.session.session_id,
+				label: row.session.lastLabel?.trim() || row.session.agent_name,
+				state: row.state,
+				reason: row.session.attention?.reason,
+				sessionId: row.dbSessionId,
+				pinned: row.pinned,
+				context: liveSessionContext(row.session, row.workspaceLabel),
+				forkLabel: row.forkLabel,
+				session: row.session,
+			})),
+		...routineRows,
+	].sort((left, right) => {
+		const priority = {
+			needs_attention: 0,
+			working: 1,
+			queued: 2,
+			recent: 3,
+		};
+		return (
+			priority[left.state] - priority[right.state] ||
+			Number(right.pinned) - Number(left.pinned)
+		);
+	});
+	const attentionCount = actionable.filter(
+		(row) => row.state === "needs_attention",
+	).length;
+	const workingCount = actionable.filter(
+		(row) => row.state === "working",
+	).length;
+	const queuedCount = actionable.filter((row) => row.state === "queued").length;
+
+	return (
+		<div className="border-b border-border">
+			<div className="flex items-center justify-between border-b border-border/40 px-4 py-2.5">
+				<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase">
+					Attention
+				</span>
+				<span className="font-mono text-[8px] text-muted-foreground/45">
+					{liveRows.length} live
+					{routineRows.length > 0 ? ` · ${routineRows.length} routines` : ""}
+				</span>
+			</div>
+			<div className="grid grid-cols-3 divide-x divide-border/40 border-b border-border/40">
+				<div className="px-2 py-2 text-center">
+					<div className="font-mono text-xs text-amber-400">
+						{attentionCount}
+					</div>
+					<div className="mt-0.5 text-[7px] tracking-wider text-muted-foreground/45 uppercase">
+						Needs you
+					</div>
+				</div>
+				<div className="px-2 py-2 text-center">
+					<div className="font-mono text-xs text-primary">{workingCount}</div>
+					<div className="mt-0.5 text-[7px] tracking-wider text-muted-foreground/45 uppercase">
+						Working
+					</div>
+				</div>
+				<div className="px-2 py-2 text-center">
+					<div className="font-mono text-xs text-sky-400">{queuedCount}</div>
+					<div className="mt-0.5 text-[7px] tracking-wider text-muted-foreground/45 uppercase">
+						Queued
+					</div>
+				</div>
+			</div>
+			{actionable.length > 0 ? (
+				<div>
+					{actionable.slice(0, 4).map((row) => {
+						return (
+							<button
+								key={row.id}
+								type="button"
+								onClick={() =>
+									row.sessionId ? onRunClick(row.sessionId) : onOpenRoutines()
+								}
+								aria-label={`Open ${row.label} from attention summary`}
+								className="flex min-h-10 w-full items-center gap-2 border-b border-border/20 px-4 py-2 text-left last:border-0 hover:bg-accent/30"
+							>
+								<span
+									className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+										row.state === "needs_attention"
+											? "bg-amber-400"
+											: row.state === "working"
+												? "bg-primary"
+												: "bg-sky-400"
+									}`}
+								/>
+								{row.pinned && (
+									<Pin
+										aria-label="Pinned"
+										className="h-3 w-3 shrink-0 text-primary/60"
+									/>
+								)}
+								<span className="min-w-0 flex-1">
+									<PrivacyMask className="truncate text-[9px] tracking-wider text-muted-foreground/70">
+										{row.label}
+									</PrivacyMask>
+									{(row.context || row.forkLabel) && (
+										<span className="mt-0.5 flex min-w-0 items-center gap-1 truncate font-mono text-[7px] text-muted-foreground/35">
+											{row.forkLabel && (
+												<GitFork
+													aria-hidden="true"
+													className="h-2.5 w-2.5 shrink-0"
+												/>
+											)}
+											<PrivacyMask className="truncate">
+												{[row.context, row.forkLabel]
+													.filter(Boolean)
+													.join(" · ")}
+											</PrivacyMask>
+										</span>
+									)}
+								</span>
+								<span className="shrink-0 font-mono text-[7px] tracking-wider text-muted-foreground/45 uppercase">
+									{row.reason
+										? attentionReasonLabel(row.reason)
+										: row.session
+											? liveSessionReasonLabel(row.session)
+											: ""}
+								</span>
+							</button>
+						);
+					})}
+				</div>
+			) : (
+				<div className="px-4 py-2.5 text-center text-[8px] tracking-wider text-muted-foreground/40 uppercase">
+					{liveRows.length > 0
+						? "All live sessions ready"
+						: "No active attention"}
+				</div>
+			)}
+		</div>
+	);
+}
+
 // ─── RecentRunsSidebar ────────────────────────────────────────────────────────
 
 export function RecentRunsSidebar({
@@ -143,6 +379,8 @@ export function RecentRunsSidebar({
 	stats,
 	agg,
 	activeSession,
+	routines,
+	onOpenRoutines,
 	className = "",
 }: {
 	runs: SessionRow[];
@@ -151,9 +389,21 @@ export function RecentRunsSidebar({
 	stats: LiveStats;
 	agg: AggStats;
 	activeSession: SessionRow | null;
+	routines: RoutineSummary[];
+	onOpenRoutines: () => void;
 	className?: string;
 }) {
-	const session = activeSession ?? runs[0] ?? null;
+	const recentRows = usePersistedRecentRows(runs);
+	const latestRun =
+		runs.length > 0
+			? runs.reduce((latest, run) =>
+					(run.ended_at ?? run.started_at) >
+					(latest.ended_at ?? latest.started_at)
+						? run
+						: latest,
+				)
+			: null;
+	const session = activeSession ?? latestRun;
 	const hasContext =
 		stats.last_context_used != null && stats.context_window != null;
 	const contextUsed = stats.last_context_used ?? 0;
@@ -249,18 +499,24 @@ export function RecentRunsSidebar({
 				)}
 			</div>
 
+			<AttentionSummary
+				onRunClick={onRunClick}
+				onOpenRoutines={onOpenRoutines}
+				routines={routines}
+			/>
+
 			<div className="px-4 py-2.5 border-b border-border shrink-0 flex items-center justify-between">
 				<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase">
 					Recent Runs
 				</span>
-				{runs.length > 0 && (
+				{recentRows.length > 0 && (
 					<span className="text-[9px] tabular-nums text-muted-foreground/50">
-						{runs.length}
+						{recentRows.length}
 					</span>
 				)}
 			</div>
 			<div className="overflow-auto">
-				<RunList runs={runs} onRunClick={onRunClick} />
+				<RunList rows={recentRows} onRunClick={onRunClick} />
 				<ViewAllLink />
 			</div>
 			<div className="border-t border-border">
@@ -286,16 +542,27 @@ export function MobileRunsPanel({
 	runs,
 	weeklyStats,
 	onRunClick,
+	routines,
+	onOpenRoutines,
 }: {
 	runs: SessionRow[];
 	weeklyStats: WeeklyStats;
 	onRunClick: (sessionId: string) => void;
+	routines: RoutineSummary[];
+	onOpenRoutines: () => void;
 }) {
 	const [runsOpen, setRunsOpen] = useState(false);
 	const [weekOpen, setWeekOpen] = useState(true);
+	const recentRows = usePersistedRecentRows(runs);
 
 	return (
 		<div className="md:hidden border-b border-border shrink-0">
+			<AttentionSummary
+				onRunClick={onRunClick}
+				onOpenRoutines={onOpenRoutines}
+				routines={routines}
+			/>
+
 			{/* Recent runs, collapsed by default */}
 			<button
 				type="button"
@@ -306,9 +573,9 @@ export function MobileRunsPanel({
 					<span className="text-[9px] tracking-widest text-muted-foreground/40 uppercase">
 						Recent Runs
 					</span>
-					{runs.length > 0 && (
+					{recentRows.length > 0 && (
 						<span className="text-[9px] tabular-nums text-muted-foreground/25">
-							{runs.length}
+							{recentRows.length}
 						</span>
 					)}
 				</div>
@@ -321,7 +588,7 @@ export function MobileRunsPanel({
 			</button>
 			{runsOpen && (
 				<div className="border-b border-border/40">
-					<RunList runs={runs} onRunClick={onRunClick} />
+					<RunList rows={recentRows} onRunClick={onRunClick} />
 					<ViewAllLink />
 				</div>
 			)}

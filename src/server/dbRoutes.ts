@@ -192,6 +192,13 @@ async function handlePatchRoute({
 	if (typeof body.pinned === "boolean") {
 		await db.setSessionPinned(id, body.pinned);
 		bumpDataRevision("sessions");
+		const liveEntry = pool?.findByDbSessionId(id) ?? pool?.get(id);
+		liveEntry?.manager.setSessionPinned(body.pinned);
+		terminalPool?.setSessionPinned(id, body.pinned);
+		broadcast({
+			type: "sessions_status",
+			sessions: getLiveSessionsStatus(pool, terminalPool),
+		});
 		return Response.json({ ok: true });
 	}
 	if (typeof body.label !== "string") {
@@ -209,13 +216,15 @@ async function handlePatchRoute({
 	}
 	bumpDataRevision("sessions");
 	terminalPool?.setSessionLabel(id, body.label);
+	terminalPool?.setForkParentLabel(id, body.label);
 	// Live pool entries cache the label in-memory — sync + rebroadcast so
-	// the ledger ACTIVE tab reflects the rename without a restart.
+	// Raven, Watch, and Ledger reflect the rename without a restart.
 	if (pool) {
 		for (const entry of pool.getAllEntries()) {
 			if (entry.manager.getCurrentSessionId() === id) {
 				entry.manager.setSessionLabel(body.label);
 			}
+			entry.manager.setForkParentLabel(id, body.label);
 		}
 	}
 	broadcast({

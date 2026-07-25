@@ -15,9 +15,11 @@ export class RoutineScheduler {
 	private active = new Set<string>();
 	private pending: db.RoutineRunRow[] = [];
 	private ticking = false;
+	private readonly onStatusChange?: () => void;
 
-	constructor(pool: SessionPool) {
+	constructor(pool: SessionPool, onStatusChange?: () => void) {
 		this.pool = pool;
+		this.onStatusChange = onStatusChange;
 	}
 
 	async start(): Promise<void> {
@@ -107,6 +109,7 @@ export class RoutineScheduler {
 				pool: this.pool,
 				routine,
 				run,
+				onStatusChange: this.onStatusChange,
 			});
 			await db.finishRoutineRun({
 				runId: run.id,
@@ -145,9 +148,10 @@ let activeScheduler: RoutineScheduler | null = null;
 
 export async function startRoutineScheduler(
 	pool: SessionPool,
+	onStatusChange?: () => void,
 ): Promise<RoutineScheduler> {
 	activeScheduler?.stop();
-	const scheduler = new RoutineScheduler(pool);
+	const scheduler = new RoutineScheduler(pool, onStatusChange);
 	activeScheduler = scheduler;
 	await scheduler.start();
 	return scheduler;

@@ -944,6 +944,7 @@ describe("SessionManager — native Codex goals", () => {
 				updated_at: 1,
 			},
 		});
+		expect(sm.getCurrentGoal()).toEqual(goal);
 	});
 
 	it("drains a resumed goal as an active Raven continuation", async () => {
@@ -1037,6 +1038,7 @@ describe("SessionManager — native Codex goals", () => {
 		);
 
 		expect(sm.getStatus().state).toBe("running");
+		expect(sm.getCurrentGoal()?.status).toBe("active");
 		await waitFor(() => {
 			expect(emitted).toContainEqual(
 				expect.objectContaining({ type: "status", state: "running" }),
@@ -1313,6 +1315,39 @@ describe("SessionManager — setModel", () => {
 
 		expect(labelWhileRunning).toBe("MY SAVED NAME");
 		expect(sm.getSessionLabel()).toBe("MY SAVED NAME");
+	});
+
+	it("restores and refreshes live pin and fork presentation", async () => {
+		const { provider } = makeCaptureProvider("claude");
+		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
+			id: "saved-session",
+			label: "CHILD",
+			pinned: 1,
+			fork_parent_session_id: "source",
+			fork_parent_label: "Original",
+			fork_kind: "exact",
+		} as never);
+		vi.mocked(dbMock.getSessionMessages).mockResolvedValueOnce([
+			{ role: "user", text: "prior" },
+		] as never);
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await sm.runQuery("continue", () => {}, "saved-session");
+		expect(sm.getSessionPresentation()).toEqual({
+			pinned: true,
+			forkParentSessionId: "source",
+			forkParentLabel: "Original",
+			forkKind: "exact",
+		});
+
+		sm.setSessionPinned(false);
+		sm.setForkParentLabel("source", "Renamed source");
+		expect(sm.getSessionPresentation()).toEqual({
+			pinned: false,
+			forkParentSessionId: "source",
+			forkParentLabel: "Renamed source",
+			forkKind: "exact",
+		});
 	});
 
 	it("resumes after the maximum persisted transcript sequence", async () => {

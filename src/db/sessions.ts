@@ -772,7 +772,12 @@ export async function getSessionById(id: string): Promise<SessionRow | null> {
 	const db = await getDb();
 	return (
 		db
-			.query<SessionRow, [string]>(`SELECT * FROM sessions WHERE id = ?`)
+			.query<SessionRow, [string]>(
+				`SELECT child.*, parent.label AS fork_parent_label
+				 FROM sessions child
+				 LEFT JOIN sessions parent ON parent.id = child.fork_parent_session_id
+				 WHERE child.id = ?`,
+			)
 			.get(id) ?? null
 	);
 }
@@ -781,9 +786,13 @@ export async function getRecentSessions(limit = 14): Promise<SessionRow[]> {
 	const db = await getDb();
 	return db
 		.query<SessionRow, [number]>(
-			`SELECT * FROM sessions
-			 WHERE history_imported = 0 AND archived_at IS NULL
-			 ORDER BY COALESCE(ended_at, started_at) DESC LIMIT ?`,
+			`SELECT child.*, parent.label AS fork_parent_label
+			 FROM sessions child
+			 LEFT JOIN sessions parent ON parent.id = child.fork_parent_session_id
+			 WHERE child.history_imported = 0 AND child.archived_at IS NULL
+			 ORDER BY child.pinned DESC,
+			  COALESCE(child.ended_at, child.started_at) DESC
+			 LIMIT ?`,
 		)
 		.all(limit);
 }

@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { deriveRoutineAttention } from "../lib/routineAttention";
 import {
 	type CanonicalRoutineCapability,
 	grantsWithIds,
@@ -146,6 +147,18 @@ function toSummary(
 				)
 				.get(row.id)
 		: null;
+	const summarizedLastRun = lastRun
+		? {
+				id: lastRun.id,
+				status: lastRun.status,
+				scheduledFor: lastRun.scheduled_for,
+				startedAt: lastRun.started_at,
+				finishedAt: lastRun.finished_at,
+				sessionId: lastRun.session_id,
+				error: lastRun.error,
+				actionRequired: lastRun.action_required,
+			}
+		: null;
 	return {
 		id: row.id,
 		name: row.name,
@@ -174,18 +187,8 @@ function toSummary(
 		authorizationFingerprint: row.authorization_fingerprint,
 		createdAt: row.created_at,
 		updatedAt: row.updated_at,
-		lastRun: lastRun
-			? {
-					id: lastRun.id,
-					status: lastRun.status,
-					scheduledFor: lastRun.scheduled_for,
-					startedAt: lastRun.started_at,
-					finishedAt: lastRun.finished_at,
-					sessionId: lastRun.session_id,
-					error: lastRun.error,
-					actionRequired: lastRun.action_required,
-				}
-			: null,
+		attention: deriveRoutineAttention(summarizedLastRun),
+		lastRun: summarizedLastRun,
 	};
 }
 

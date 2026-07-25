@@ -20,6 +20,7 @@ import {
 	mapMcpServer,
 	mapProviderGoal,
 	type QueueStateMessage,
+	type ServerMessage,
 	type StatusMessage,
 } from "./protocol";
 import { broadcast, send, wsState } from "./runState";
@@ -74,6 +75,16 @@ function broadcastSessionsStatus({ pool, terminalPool }: MessageContext): void {
 		type: "sessions_status",
 		sessions: getLiveSessionsStatus(pool, terminalPool),
 	});
+}
+
+function changesSessionAttention(event: ServerMessage): boolean {
+	return (
+		event.type === "status" ||
+		event.type === "permission_request" ||
+		event.type === "ask_user_question" ||
+		event.type === "plan_mode_exit" ||
+		event.type === "goal_state"
+	);
 }
 
 function createPoolEntry(
@@ -185,7 +196,7 @@ async function handleGoalControl(
 			agentCwd: msg.agent_cwd,
 			emit: (event) => {
 				entry.runState.broadcast(event);
-				if (event.type === "status") broadcastSessionsStatus(context);
+				if (changesSessionAttention(event)) broadcastSessionsStatus(context);
 			},
 		});
 		entry.runState.broadcast({
@@ -883,7 +894,7 @@ async function runChatQuery(
 			msg.text,
 			(event) => {
 				entry.runState.broadcast(event);
-				if (event.type === "status") broadcastSessionsStatus(context);
+				if (changesSessionAttention(event)) broadcastSessionsStatus(context);
 			},
 			msg.session_id,
 			msg.skill_contexts ?? msg.skill_context,
@@ -921,6 +932,7 @@ async function runChatQuery(
 		// Publish the queued content immediately. Other tabs/devices can now render
 		// it without relying on the originating browser's localStorage copy.
 		broadcastQueueState(entry);
+		broadcastSessionsStatus(context);
 		await completion;
 	} catch (error) {
 		send(context.ws, {
@@ -1031,10 +1043,16 @@ async function handleSessionMessage(
 			entry.manager.skipSleep();
 			return;
 		case "cancel_queued":
-			if (entry.manager.cancelQueued(msg.turn_id)) broadcastQueueState(entry);
+			if (entry.manager.cancelQueued(msg.turn_id)) {
+				broadcastQueueState(entry);
+				broadcastSessionsStatus(context);
+			}
 			return;
 		case "promote_queued":
-			if (entry.manager.promoteQueued(msg.turn_id)) broadcastQueueState(entry);
+			if (entry.manager.promoteQueued(msg.turn_id)) {
+				broadcastQueueState(entry);
+				broadcastSessionsStatus(context);
+			}
 			return;
 		case "clear":
 			context.ws.data.pendingNewSession = true;

@@ -7,6 +7,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AggStats, SessionRow, WeeklyStats } from "#/db";
 import * as privacyStore from "#/hooks/privacyStore";
 import type { LiveStats } from "#/hooks/wsLiveStatsStore";
+import {
+	replaceSessionsStatus,
+	resetSessionStatusForTesting,
+} from "#/hooks/wsSessionStatusStore";
+import type { SessionStatusEntry } from "#/server/protocol";
 
 // ── mocks ─────────────────────────────────────────────────────────────────────
 
@@ -20,9 +25,13 @@ import { RecentRunsSidebar } from "./CockpitSidebar";
 
 // ── lifecycle ─────────────────────────────────────────────────────────────────
 
-afterEach(cleanup);
+afterEach(() => {
+	cleanup();
+	resetSessionStatusForTesting();
+});
 beforeEach(() => {
 	privacyStore.__resetForTesting();
+	resetSessionStatusForTesting();
 });
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
@@ -114,8 +123,29 @@ function renderSidebar(
 			stats={defaultStats}
 			agg={defaultAgg}
 			activeSession={activeSession}
+			routines={[]}
+			onOpenRoutines={vi.fn()}
 		/>,
 	);
+}
+
+function liveSession(
+	id: string,
+	overrides: Partial<SessionStatusEntry> = {},
+): SessionStatusEntry {
+	return {
+		session_id: `pool-${id}`,
+		agent_cwd: `/work/${id}`,
+		agent_name: `${id} agent`,
+		state: "idle",
+		provider_id: "codex",
+		model: "gpt-5.6-sol",
+		hasPendingPermissions: false,
+		hasDbSession: true,
+		db_session_id: `chat-${id}`,
+		lastLabel: id,
+		...overrides,
+	};
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────────
@@ -165,5 +195,176 @@ describe("RecentRunsSidebar — activeSession prop", () => {
 
 		expect(screen.getByText("--")).not.toBeNull();
 		expect(screen.getByText("no sessions")).not.toBeNull();
+	});
+
+	it("summarizes live attention and navigates to the selected Raven session", () => {
+		replaceSessionsStatus([
+			liveSession("approval", {
+				hasPendingPermissions: true,
+				attention: {
+					bucket: "needs_attention",
+					reason: "permission",
+					since: 1,
+					last_activity_at: 1,
+					queue_count: 0,
+					pending_count: 1,
+				},
+			}),
+			liveSession("working", {
+				state: "running",
+				attention: {
+					bucket: "working",
+					reason: "provider_turn",
+					since: 1,
+					last_activity_at: 1,
+					queue_count: 2,
+					pending_count: 0,
+				},
+			}),
+			liveSession("ready"),
+		]);
+		const onRunClick = vi.fn();
+		render(
+			<RecentRunsSidebar
+				runs={[]}
+				weeklyStats={defaultWeeklyStats}
+				onRunClick={onRunClick}
+				stats={defaultStats}
+				agg={defaultAgg}
+				activeSession={null}
+				routines={[]}
+				onOpenRoutines={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByText("3 live")).not.toBeNull();
+		expect(
+			screen.getByText("Needs you").previousElementSibling?.textContent,
+		).toBe("1");
+		expect(
+			screen.getAllByText("Working")[0]?.previousElementSibling?.textContent,
+		).toBe("1");
+		expect(screen.getByText("Queued").previousElementSibling?.textContent).toBe(
+			"0",
+		);
+
+		screen
+			.getByRole("button", {
+				name: "Open approval from attention summary",
+			})
+			.click();
+		expect(onRunClick).toHaveBeenCalledWith("chat-approval");
+	});
+
+	it("includes server-derived Routine attention without double-counting its live session", () => {
+		replaceSessionsStatus([
+			liveSession("routine-run", {
+				db_session_id: "routine-session",
+				state: "running",
+				attention: {
+					bucket: "working",
+					reason: "routine_running",
+					since: 1,
+					last_activity_at: 1,
+					queue_count: 0,
+					pending_count: 0,
+				},
+			}),
+		]);
+		const onRunClick = vi.fn();
+		render(
+			<RecentRunsSidebar
+				runs={[]}
+				weeklyStats={defaultWeeklyStats}
+				onRunClick={onRunClick}
+				stats={defaultStats}
+				agg={defaultAgg}
+				activeSession={null}
+				routines={[
+					{
+						id: "routine-1",
+						name: "Nightly review",
+						attention: {
+							bucket: "working",
+							reason: "routine_running",
+							since: 1,
+							last_activity_at: 1,
+							queue_count: 0,
+							pending_count: 0,
+						},
+						lastRun: {
+							id: "run-1",
+							status: "running",
+							scheduledFor: 1,
+							startedAt: 1,
+							finishedAt: null,
+							sessionId: "routine-session",
+							error: null,
+							actionRequired: null,
+						},
+					} as never,
+				]}
+				onOpenRoutines={vi.fn()}
+			/>,
+		);
+
+		const routineButton = screen.getByRole("button", {
+			name: "Open Nightly review from attention summary",
+		});
+		expect(
+			screen.queryByRole("button", {
+				name: "Open routine-run from attention summary",
+			}),
+		).toBeNull();
+		routineButton.click();
+		expect(onRunClick).toHaveBeenCalledWith("routine-session");
+	});
+
+	it("aligns persisted Recent rows with pin, provenance, and live deduplication", () => {
+		replaceSessionsStatus([
+			liveSession("working", {
+				db_session_id: "working",
+				state: "running",
+			}),
+		]);
+		renderSidebar(null, [
+			makeSession({
+				id: "new",
+				label: "Review",
+				agent_cwd: "/work/alpha",
+				ended_at: 30,
+			}),
+			makeSession({
+				id: "pinned",
+				label: "Review",
+				agent_cwd: "/work/beta",
+				pinned: 1,
+				ended_at: 20,
+				fork_parent_session_id: "source",
+				fork_parent_label: "Original",
+				fork_kind: "exact",
+			}),
+			makeSession({
+				id: "working",
+				label: "Live duplicate",
+				ended_at: 40,
+			}),
+		]);
+
+		const recent = screen.getAllByRole("button", {
+			name: /recent session$/,
+		});
+		expect(recent.map((button) => button.getAttribute("aria-label"))).toEqual([
+			"Open Review recent session",
+			"Open Review recent session",
+		]);
+		expect(recent[0]?.textContent).toContain("Pinned");
+		expect(recent[0]?.textContent).toContain("beta · Fork of Original");
+		expect(recent[1]?.textContent).toContain("alpha");
+		expect(
+			screen.queryByRole("button", {
+				name: "Open Live duplicate recent session",
+			}),
+		).toBeNull();
 	});
 });

@@ -1,3 +1,5 @@
+import { summarizeLiveSessionAttention } from "../lib/liveSessionSwitcher";
+import { deriveSessionAttention } from "../lib/sessionAttention";
 import type { SessionStatusEntry, StatusMessage } from "../server/protocol";
 
 const PENDING_NEW_SESSION_ID = "__hlid_pending_new_session__";
@@ -11,6 +13,11 @@ export type AggregateNavStatus = {
 	sessionCount: number;
 	runningCount: number;
 	pendingPermissions: boolean;
+	attentionSessionCount: number;
+	needsAttentionCount: number;
+	workingCount: number;
+	queuedCount: number;
+	recentCount: number;
 };
 
 let aggregateNavStatus: AggregateNavStatus = {
@@ -18,6 +25,11 @@ let aggregateNavStatus: AggregateNavStatus = {
 	sessionCount: 0,
 	runningCount: 0,
 	pendingPermissions: false,
+	attentionSessionCount: 0,
+	needsAttentionCount: 0,
+	workingCount: 0,
+	queuedCount: 0,
+	recentCount: 0,
 };
 
 function recomputeAggregateNavStatus(): void {
@@ -39,23 +51,62 @@ function recomputeAggregateNavStatus(): void {
 			? "error"
 			: "idle";
 	const sessionCount = sessionsStatus.length;
+	const attention = summarizeLiveSessionAttention(sessionsStatus);
 	if (
 		state !== aggregateNavStatus.state ||
 		sessionCount !== aggregateNavStatus.sessionCount ||
 		runningCount !== aggregateNavStatus.runningCount ||
-		pendingPermissions !== aggregateNavStatus.pendingPermissions
+		pendingPermissions !== aggregateNavStatus.pendingPermissions ||
+		attention.total !== aggregateNavStatus.attentionSessionCount ||
+		attention.needsAttention !== aggregateNavStatus.needsAttentionCount ||
+		attention.working !== aggregateNavStatus.workingCount ||
+		attention.queued !== aggregateNavStatus.queuedCount ||
+		attention.recent !== aggregateNavStatus.recentCount
 	) {
 		aggregateNavStatus = {
 			state,
 			sessionCount,
 			runningCount,
 			pendingPermissions,
+			attentionSessionCount: attention.total,
+			needsAttentionCount: attention.needsAttention,
+			workingCount: attention.working,
+			queuedCount: attention.queued,
+			recentCount: attention.recent,
 		};
 	}
 }
 
 function notifySubscribers(): void {
 	for (const subscriber of subscribers) subscriber();
+}
+
+function reconcileAttentionFromStatus(
+	session: SessionStatusEntry,
+	state: StatusMessage["state"],
+): SessionStatusEntry["attention"] {
+	const current = session.attention;
+	if (current?.bucket === "needs_attention") return current;
+	const goalStatus =
+		current?.reason === "goal_active"
+			? "active"
+			: current?.reason === "goal_paused"
+				? "paused"
+				: current?.reason === "goal_usage_wait"
+					? "usageLimited"
+					: undefined;
+	return deriveSessionAttention(
+		{
+			state,
+			permissionCount: 0,
+			questionCount: 0,
+			planReviewCount: 0,
+			queueCount: current?.queue_count ?? 0,
+			goalStatus,
+			terminal: session.mode === "terminal",
+		},
+		current,
+	);
 }
 
 export function replaceSessionsStatus(sessions: SessionStatusEntry[]): void {
@@ -98,6 +149,7 @@ export function reconcileSessionStatus(
 		return {
 			...session,
 			state: status.state,
+			attention: reconcileAttentionFromStatus(session, status.state),
 			model: status.model,
 			...(status.effort !== undefined ? { effort: status.effort } : {}),
 			...(status.permission_mode !== undefined
@@ -160,6 +212,11 @@ export function resetSessionStatusForTesting(): void {
 		sessionCount: 0,
 		runningCount: 0,
 		pendingPermissions: false,
+		attentionSessionCount: 0,
+		needsAttentionCount: 0,
+		workingCount: 0,
+		queuedCount: 0,
+		recentCount: 0,
 	};
 	subscribers.clear();
 }

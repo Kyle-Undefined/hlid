@@ -13,7 +13,11 @@ import { NAV_ITEMS, navActiveOptions, navSearch } from "./items";
 import { useSystemStatusIndicator } from "./SystemStatusDot";
 
 export function Sidebar() {
-	const { agg, dotClass: dot } = useSystemStatusIndicator();
+	const {
+		attentionCount,
+		attentionTone,
+		dotClass: dot,
+	} = useSystemStatusIndicator();
 	const lastRavenSession = useLastRavenSession();
 
 	const [updateStatus, setUpdateStatus] = useState<UpdateStatus | null>(null);
@@ -38,14 +42,27 @@ export function Sidebar() {
 					<div className="text-[13px] font-bold tracking-[0.25em] text-primary">
 						Hlið
 					</div>
-					<div className="relative flex items-center">
+					<Link
+						to="/"
+						aria-label="Open Watch attention summary"
+						title="Open Watch attention summary"
+						className="relative flex items-center"
+					>
 						<div className={`w-1.5 h-1.5 rounded-full shrink-0 ${dot}`} />
-						{agg.runningCount > 1 && (
-							<span className="absolute -top-1.5 -right-2.5 text-[8px] tabular-nums text-primary/60 font-mono leading-none">
-								{agg.runningCount > 9 ? "9+" : agg.runningCount}
+						{attentionCount > 0 && (
+							<span
+								className={`absolute -top-1.5 -right-2.5 font-mono text-[8px] leading-none tabular-nums ${
+									attentionTone === "needs_attention"
+										? "text-status-warning"
+										: attentionTone === "working"
+											? "text-primary/70"
+											: "text-sky-400/70"
+								}`}
+							>
+								{attentionCount > 9 ? "9+" : attentionCount}
 							</span>
 						)}
-					</div>
+					</Link>
 				</div>
 				<div className="text-[9px] tracking-widest text-muted-foreground/50 mt-0.5 uppercase">
 					watcher of worlds

@@ -253,6 +253,10 @@ describe("sessions — create & fetch", () => {
 		const recent = await getSessionsPaginated(1, 20, { sort: "recent" });
 		expect(recent.sessions.map((row) => row.id)).toEqual(["pinned", "newest"]);
 		expect(recent.sessions[0]?.pinned).toBe(1);
+		expect((await getRecentSessions()).map((row) => row.id)).toEqual([
+			"pinned",
+			"newest",
+		]);
 	});
 
 	it("archives sessions reversibly, removes pinning, and protects cleanup", async () => {
@@ -301,6 +305,7 @@ describe("sessions — create & fetch", () => {
 			pinned: 0,
 			archived_at: null,
 			fork_parent_session_id: "source",
+			fork_parent_label: "Renamed parent",
 			fork_kind: "exact",
 			provider_id: "codex",
 			agent_cwd: "/work/project",
@@ -308,6 +313,9 @@ describe("sessions — create & fetch", () => {
 		expect(
 			(await getSessionsPaginated(1, 20, { search: "renamed child" })).sessions,
 		).toMatchObject([{ id: "child", label: "Renamed child" }]);
+		expect(
+			(await getRecentSessions()).find((row) => row.id === "child"),
+		).toMatchObject({ fork_parent_label: "Renamed parent" });
 	});
 
 	it("rejects rename for a missing session", async () => {
