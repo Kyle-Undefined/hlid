@@ -134,7 +134,7 @@ export const HLID_AGENT_TOOL_SPECS: HlidAgentToolSpec[] = [
 	{
 		name: "start_project_preview",
 		description:
-			"Start a web development server from the active repository and present it as a Hlid Project Preview. Hlid owns the child process, authenticated relay, Windows-to-WSL loopback bridge when needed, readiness check, logs, four-hour safety lifetime, and cleanup. Pass the exact command and the exact port it will listen on. working_directory, when needed, must be relative to the active workspace. No project-side preview configuration is required.",
+			"Start a web server from the active workspace and present it as a Hlid Project Preview. The workspace does not need to be a Git or development repository; any directory works as long as the command serves something over HTTP on the specified port. Hlid owns the child process, authenticated relay, Windows-to-WSL loopback bridge when needed, readiness check, logs, four-hour safety lifetime, and cleanup. Pass the exact command and the exact port it will listen on. working_directory, when needed, must be relative to the active workspace. No project-side preview configuration is required.",
 		readOnly: false,
 		deferLoading: true,
 		searchHint: "start web dev server project preview browser app",
