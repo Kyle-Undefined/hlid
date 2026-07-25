@@ -47,6 +47,13 @@ vocabulary = ["Claude", "Codex", "Hlið", "Raven", "Forge", "Umbod", "MCP", "Ant
 # permission_mode = "default"
 # turn_recaps = true
 
+# Project Preview uses a disposable Chromium profile by default. Forge can opt
+# into a consented running profile so Preview tabs can use its signed-in state.
+# The browser must have remote debugging enabled at
+# chrome://inspect/#remote-debugging (or its browser-specific equivalent).
+[project_preview]
+use_real_browser_profile = false
+
 # A Windows-native Codex Computer Use worker can follow the calling session's
 # model while keeping its own default effort. This only works when Hlid runs on
 # Windows with a native Codex CLI and the computer-use plugin. Forge edits it.

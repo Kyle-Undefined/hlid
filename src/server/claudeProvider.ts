@@ -37,7 +37,7 @@ import type {
 import { toAgentToolCallResult } from "./agentToolResult";
 import { createClaudeHistorySessionStore } from "./claudeHistorySessionStore";
 import {
-	executeHlidAgentTool,
+	executeHlidAgentToolRich,
 	HLID_AGENT_NAMESPACE,
 	HLID_AGENT_NAMESPACE_DESCRIPTION,
 	HLID_AGENT_TOOL_SPECS,
@@ -92,7 +92,7 @@ function createHlidSdkServer(params: AgentQueryParams) {
 				hlidAgentSchemas[spec.name].shape as any,
 				(input) =>
 					toAgentToolCallResult(() =>
-						executeHlidAgentTool(spec.name, input, {
+						executeHlidAgentToolRich(spec.name, input, {
 							runtimeCwd: params.cwd,
 							sessionId: params.hostSessionId,
 						}),
@@ -103,7 +103,7 @@ function createHlidSdkServer(params: AgentQueryParams) {
 						destructiveHint: false,
 						idempotentHint: false,
 					},
-					searchHint: "publish generated report HTML PDF image Relic",
+					searchHint: spec.searchHint,
 					alwaysLoad: !spec.deferLoading,
 				},
 			),

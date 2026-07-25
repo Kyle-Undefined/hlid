@@ -29,6 +29,9 @@ vi.mock("#/components/forge/ApiSection", () => ({
 vi.mock("#/components/forge/AutoSleepSection", () => ({
 	AutoSleepSection: () => <div>Auto sleep content</div>,
 }));
+vi.mock("#/components/forge/BrowserProfileSection", () => ({
+	BrowserProfileSection: () => <div>Browser profile content</div>,
+}));
 vi.mock("#/components/forge/ClaudeSection", () => ({
 	ClaudeSection: () => <div>Claude content</div>,
 	ComputerUseSection: () => <div>Computer Use content</div>,
@@ -183,6 +186,7 @@ function renderSettings() {
 					vault: { path: "/tmp/vault" },
 					vocab: {},
 					autoSleep: {},
+					projectPreview: {},
 					server: {},
 					ui: {
 						theme: "tan",
@@ -197,6 +201,7 @@ function renderSettings() {
 					setVault: vi.fn(),
 					setVocab: vi.fn(),
 					setAutoSleep: vi.fn(),
+					setProjectPreview: vi.fn(),
 					setServer: vi.fn(),
 					setUi: vi.fn(),
 					setVoice: vi.fn(),
@@ -209,7 +214,7 @@ function renderSettings() {
 }
 
 describe("ForgeSettings category navigation", () => {
-	it("places Computer Use between the Vault agent and Auto Sleep", () => {
+	it("places Browser profile above Computer Use", () => {
 		renderSettings();
 		fireEvent.change(
 			screen.getByRole("combobox", { name: "Filtered Forge category" }),
@@ -220,6 +225,9 @@ describe("ForgeSettings category navigation", () => {
 
 		const content = document.body.textContent ?? "";
 		expect(content.indexOf("Claude content")).toBeLessThan(
+			content.indexOf("Browser profile content"),
+		);
+		expect(content.indexOf("Browser profile content")).toBeLessThan(
 			content.indexOf("Computer Use content"),
 		);
 		expect(content.indexOf("Computer Use content")).toBeLessThan(

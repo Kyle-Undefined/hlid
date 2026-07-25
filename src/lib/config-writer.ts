@@ -167,6 +167,14 @@ function serializeWindowsComputerUse(
 	]);
 }
 
+function serializeProjectPreview(
+	config: HlidConfig["project_preview"] | undefined,
+): string[] {
+	return section("project_preview", [
+		`use_real_browser_profile = ${tomlVal(config?.use_real_browser_profile ?? false)}`,
+	]);
+}
+
 function serializeUi(config: HlidConfig["ui"]): string[] {
 	return section("ui", [
 		`enter_to_submit = ${tomlVal(config.enter_to_submit)}`,
@@ -280,6 +288,8 @@ export function serializeConfig(config: HlidConfig): string {
 					...serializeWindowsComputerUse(config.codex.windows_computer_use),
 				]
 			: []),
+		"",
+		...serializeProjectPreview(config.project_preview),
 		"",
 		...serializeUi(config.ui),
 		...(config.ui.custom_theme

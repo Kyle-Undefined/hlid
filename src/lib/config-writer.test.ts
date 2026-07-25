@@ -93,6 +93,7 @@ describe("writeConfig — persistence invariants", () => {
 			codex: {
 				windows_computer_use: { model: "gpt-5.5", effort: "high" },
 			},
+			project_preview: { use_real_browser_profile: true },
 			cliproxy: {
 				enabled: true,
 				base_url: "http://127.0.0.1:8317",
@@ -182,6 +183,8 @@ describe("writeConfig — section headers", () => {
 		expect(toml).toContain("[server]");
 		expect(toml).toContain("[voice]");
 		expect(toml).toContain("[claude]");
+		expect(toml).toContain("[project_preview]");
+		expect(toml).toContain("use_real_browser_profile = false");
 		expect(toml).toContain("[ui]");
 		expect(toml).toContain("[status_vocabulary]");
 	});

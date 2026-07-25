@@ -657,6 +657,7 @@ function cascadeDeleteSessionIds(db: Db, ids: string[]): string[] {
 		ids,
 	);
 	db.run(`DELETE FROM tool_events WHERE session_id IN (${ph})`, ids);
+	db.run(`DELETE FROM project_previews WHERE session_id IN (${ph})`, ids);
 	db.run(`DELETE FROM permission_events WHERE session_id IN (${ph})`, ids);
 	db.run(`DELETE FROM messages WHERE session_id IN (${ph})`, ids);
 	db.run(`DELETE FROM queries WHERE session_id IN (${ph})`, ids);
@@ -690,7 +691,7 @@ export async function deleteSession(
 
 export async function deleteSessionsOlderThan(
 	days: number,
-): Promise<{ count: number; ephemeralPaths: string[] }> {
+): Promise<{ count: number; ephemeralPaths: string[]; sessionIds: string[] }> {
 	const db = await getDb();
 	const cutoff = Math.floor(Date.now() / 1000) - days * 86400;
 	let ids: string[] = [];
@@ -711,7 +712,7 @@ export async function deleteSessionsOlderThan(
 	if (ids.length > 0) {
 		markAnalyticsChanged(["stats", "activity"], "sessions_cleaned_up");
 	}
-	return { count: ids.length, ephemeralPaths };
+	return { count: ids.length, ephemeralPaths, sessionIds: ids };
 }
 
 export async function renameSession(id: string, label: string): Promise<void> {

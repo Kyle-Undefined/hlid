@@ -437,6 +437,38 @@ describe("subscribeToSession / getSubscribedSessionId", () => {
 // ── session-scoped message filtering ─────────────────────────────────────────
 
 describe("session message filtering", () => {
+	it("keeps an idle chat sendable while its Preview runs in the background", () => {
+		wsStore.subscribeToSession("session-preview");
+		receive({
+			type: "status",
+			state: "idle",
+			model: "gpt-5.6-sol",
+			session_id: "session-preview",
+		});
+		receive({
+			type: "project_preview_status",
+			session_id: "session-preview",
+			preview: {
+				id: "preview-1",
+				session_id: "session-preview",
+				label: "Web app",
+				command: "bun run dev",
+				cwd: "/workspace",
+				port: 5173,
+				path: "/",
+				url: "http://127.0.0.1:5173/",
+				relay_url: "/api/project-previews/preview-1/relay/",
+				state: "ready",
+				present: true,
+				started_at: "2026-07-25T03:00:00.000Z",
+				expires_at: "2026-07-25T07:00:00.000Z",
+				logs: [],
+			},
+		});
+
+		expect(wsStore.getSnapshot().sessionState).toBe("idle");
+	});
+
 	it("clear immediately detaches from the old running session until session_created", () => {
 		wsStore.subscribeToSession("old-session");
 		receive({

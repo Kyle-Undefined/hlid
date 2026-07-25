@@ -1,5 +1,9 @@
 import type { ClientMessage, ServerMessage } from "../server/protocol";
 import type { SessionState } from "../server/session";
+import {
+	applyProjectPreview,
+	clearProjectPreview,
+} from "./projectPreviewStore";
 import { forgetRavenTerminal } from "./ravenTerminalStore";
 import {
 	clearChatQueue,
@@ -394,6 +398,7 @@ function handleGlobalMessage(msg: ServerMessage): boolean {
 			}
 			forgetRavenTerminal(msg.session_id);
 			removeSessionStatus(msg.session_id);
+			clearProjectPreview(msg.session_id);
 			return true;
 		case "session_created":
 			switchStatsContext(msg.session_id);
@@ -403,6 +408,9 @@ function handleGlobalMessage(msg: ServerMessage): boolean {
 			return true;
 		case "data_revisions":
 			replaceDataRevisions(msg.revisions);
+			return true;
+		case "project_preview_status":
+			applyProjectPreview(msg.preview);
 			return true;
 		default:
 			return false;

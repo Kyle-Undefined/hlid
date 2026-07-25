@@ -5,7 +5,10 @@ import { isAllowedOrigin, isAllowedOriginHeader } from "../lib/allowedOrigin";
 import { resolveClaudeExecutable } from "../lib/claudePath";
 import { resolveCodexExecutable } from "../lib/codexPath";
 import { writeConfig } from "../lib/config-writer";
-import { registerInternalApiHandler } from "../lib/internalApiTransport";
+import {
+	registerInternalApiBase,
+	registerInternalApiHandler,
+} from "../lib/internalApiTransport";
 import { registerBunServer } from "../lib/lifecycle";
 import {
 	CLIPROXY_CODEX_HARNESS_PROVIDER_ID,
@@ -58,6 +61,13 @@ import {
 	INTERNAL_OBSIDIAN_MCP_FLAG,
 	runObsidianMcpServer,
 } from "./obsidianMcpServer";
+import { projectPreviewManager } from "./projectPreview";
+import {
+	createProjectPreviewRelayWsHandlers,
+	type ProjectPreviewRelayWsData,
+	parseProjectPreviewRelayWebSocket,
+} from "./projectPreviewRelay";
+import { handleProjectPreviewRoute } from "./projectPreviewRoutes";
 import {
 	createModelCatalog,
 	createProviderCatalogSnapshot,
@@ -69,6 +79,7 @@ import { bootstrapPtyRuntime } from "./pty-bootstrap";
 import { createReadAloudRouteHandler } from "./readAloudRoutes";
 import {
 	createRequestObserver,
+	projectPreviewSlowRequestThreshold,
 	startEventLoopLagMonitor,
 } from "./requestDiagnostics";
 import {
@@ -179,6 +190,7 @@ if (restartParentArg && process.platform !== "win32") {
 }
 
 const config = loadConfig();
+registerInternalApiBase(`http://127.0.0.1:${config.server.port + 1}`);
 
 // Bind localhost-only by default. Opt-in to LAN/Tailscale exposure via
 // `local_network_access = true` in hlid.config.toml (requires restart).
@@ -319,6 +331,7 @@ subscribeDataRevisions((revisions) => {
 warmVaultSnapshot();
 warmObsidianConnection(config.vault.name);
 const pool = new SessionPool(config, providers);
+await db.stopActiveProjectPreviewsAfterRestart();
 await startRoutineScheduler(pool).catch((error) => {
 	console.error(
 		"[routines] failed to initialize:",
@@ -376,6 +389,7 @@ function shutdown(): never {
 	pool.closeAll();
 	terminalPool.closeAll();
 	shellPool.closeAll();
+	void projectPreviewManager.closeAll();
 	closeAllCodexAppServers();
 	closeUmbod();
 	process.exit(0);
@@ -395,6 +409,8 @@ const observeApiRequest = createRequestObserver({
 		if (pathname === "/voice/transcribe") return 70_000;
 		if (pathname === "/api/attachments/upload") return 30_000;
 		if (pathname.startsWith("/api/attachments/")) return 10_000;
+		const previewThreshold = projectPreviewSlowRequestThreshold(pathname);
+		if (previewThreshold !== undefined) return previewThreshold;
 		return 1_000;
 	},
 });
@@ -446,7 +462,9 @@ const tlsConfig =
 			}
 		: {};
 
-type AppServer = Server<WsData | TerminalWsData | ShellWsData>;
+type AppServer = Server<
+	WsData | TerminalWsData | ShellWsData | ProjectPreviewRelayWsData
+>;
 
 const upgradeTerminalWebSocket = createTerminalUpgradeHandler({
 	defaultCwd: config.vault.path,
@@ -470,10 +488,12 @@ async function handleWebSocketRoute(
 	url: URL,
 	peerIp: string | undefined,
 ): Promise<Response | undefined | null> {
+	const previewRelay = parseProjectPreviewRelayWebSocket(req, url.pathname);
 	if (
 		url.pathname !== "/ws" &&
 		url.pathname !== "/ws/terminal" &&
-		url.pathname !== "/ws/shell"
+		url.pathname !== "/ws/shell" &&
+		!previewRelay
 	)
 		return null;
 	if (
@@ -486,6 +506,27 @@ async function handleWebSocketRoute(
 	}
 	if (!(await authorizeServiceRequest(req, peerIp, SERVER_TOKEN))) {
 		return new Response("Unauthorized", { status: 401 });
+	}
+	if (previewRelay) {
+		let target: { port: number };
+		try {
+			target = projectPreviewManager.relayTarget(previewRelay.previewId);
+		} catch {
+			return new Response("Project Preview is unavailable", { status: 404 });
+		}
+		if (
+			server.upgrade(req, {
+				data: {
+					isProjectPreviewRelay: true,
+					wsTarget: `ws://127.0.0.1:${target.port}${previewRelay.targetPath}${url.search}`,
+					back: null,
+					queue: [],
+				},
+			})
+		) {
+			return undefined;
+		}
+		return new Response("WebSocket upgrade required", { status: 426 });
 	}
 	if (url.pathname === "/ws/terminal") {
 		return upgradeTerminalWebSocket(url, (data) =>
@@ -805,6 +846,7 @@ const handleAuthenticatedRoute = createAuthenticatedRouteHandler({
 		handleReadAloudRoute,
 		handleAccountRoute,
 		handleRoutineRoute,
+		handleProjectPreviewRoute,
 		(url, request) => handleSkillRoute(url, request, config, providers),
 	],
 	getMcpStatus: () => pool.vaultEntry().manager.getLastMcpStatus() ?? [],
@@ -862,7 +904,9 @@ async function handleServerFetch(
 	return observeApiRequest(req, () => dispatchServerFetch(req, server));
 }
 
-const internalApiServer = Bun.serve<WsData | TerminalWsData | ShellWsData>({
+const internalApiServer = Bun.serve<
+	WsData | TerminalWsData | ShellWsData | ProjectPreviewRelayWsData
+>({
 	port: PORT,
 	hostname: BIND_HOST,
 	maxRequestBodySize: Math.max(
@@ -877,29 +921,37 @@ const internalApiServer = Bun.serve<WsData | TerminalWsData | ShellWsData>({
 		const chatHandlers = createWsHandlers(pool, terminalPool, shellPool);
 		const termHandlers = createTerminalWsHandlers(terminalPool);
 		const shellHandlers = createShellWsHandlers(shellPool);
+		const previewRelayHandlers = createProjectPreviewRelayWsHandlers();
 		type ChatWs = Parameters<typeof chatHandlers.open>[0];
 		type TerminalWs = ServerWebSocket<TerminalWsData>;
 		type ShellWs = ServerWebSocket<ShellWsData>;
-		type AppWs = ChatWs | TerminalWs | ShellWs;
+		type PreviewRelayWs = ServerWebSocket<ProjectPreviewRelayWsData>;
+		type AppWs = ChatWs | TerminalWs | ShellWs | PreviewRelayWs;
 		type WsMessage = Parameters<typeof chatHandlers.message>[1];
 		const isTerminalWs = (ws: AppWs): ws is TerminalWs =>
 			"isTerminal" in ws.data && ws.data.isTerminal === true;
 		const isShellWs = (ws: AppWs): ws is ShellWs =>
 			"isShell" in ws.data && ws.data.isShell === true;
+		const isPreviewRelayWs = (ws: AppWs): ws is PreviewRelayWs =>
+			"isProjectPreviewRelay" in ws.data &&
+			ws.data.isProjectPreviewRelay === true;
 		return {
 			maxPayloadLength: MAX_WS_PAYLOAD_BYTES,
 			open(ws: AppWs) {
-				if (isTerminalWs(ws)) termHandlers.open(ws);
+				if (isPreviewRelayWs(ws)) previewRelayHandlers.open(ws);
+				else if (isTerminalWs(ws)) termHandlers.open(ws);
 				else if (isShellWs(ws)) shellHandlers.open(ws);
 				else chatHandlers.open(ws);
 			},
 			message(ws: AppWs, data: WsMessage) {
-				if (isTerminalWs(ws)) termHandlers.message(ws, data);
+				if (isPreviewRelayWs(ws)) previewRelayHandlers.message(ws, data);
+				else if (isTerminalWs(ws)) termHandlers.message(ws, data);
 				else if (isShellWs(ws)) shellHandlers.message(ws, data);
 				else chatHandlers.message(ws, data);
 			},
 			close(ws: AppWs) {
-				if (isTerminalWs(ws)) termHandlers.close(ws);
+				if (isPreviewRelayWs(ws)) previewRelayHandlers.close(ws);
+				else if (isTerminalWs(ws)) termHandlers.close(ws);
 				else if (isShellWs(ws)) shellHandlers.close(ws);
 				else chatHandlers.close(ws);
 			},
@@ -924,6 +976,7 @@ if (config.server.tls_cert_path && config.server.tls_key_path) {
 		tlsPort: config.server.tls_proxy_port,
 		uiPort: UI_PORT,
 		wsPort: PORT,
+		apiPort: PORT,
 		bindHost: BIND_HOST,
 		certPath: config.server.tls_cert_path,
 		keyPath: config.server.tls_key_path,

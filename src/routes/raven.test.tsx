@@ -8,7 +8,11 @@ import {
 	waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ServerMessage, SessionStatusEntry } from "#/server/protocol";
+import type {
+	ProjectPreviewSnapshot,
+	ServerMessage,
+	SessionStatusEntry,
+} from "#/server/protocol";
 
 const state = vi.hoisted(() => ({
 	loaderData: {} as Record<string, unknown>,
@@ -36,6 +40,7 @@ const state = vi.hoisted(() => ({
 		terminateOnDisconnect?: boolean;
 		sessionId: string;
 	},
+	preview: null as ProjectPreviewSnapshot | null,
 }));
 
 vi.mock("@tanstack/react-router", () => ({
@@ -119,6 +124,10 @@ vi.mock("#/hooks/useChatWsHandler", () => ({
 	useChatWsHandler: () => vi.fn(),
 }));
 vi.mock("#/hooks/useLoadChatHistory", () => ({ useLoadChatHistory: vi.fn() }));
+vi.mock("#/hooks/projectPreviewStore", () => ({
+	useProjectPreview: () => state.preview,
+	useProjectPreviewPresentationRequest: () => 0,
+}));
 vi.mock("#/hooks/useVoiceInput", () => ({
 	uploadVoiceRecording: state.uploadVoiceRecording,
 	useVoiceInput: (options: typeof state.voiceOptions) => {
@@ -225,7 +234,13 @@ import {
 	getSessionSelectionFn,
 } from "#/lib/serverFns/sessions";
 import { getVoiceInfoFn } from "#/lib/serverFns/voice";
-import { ChatPage, Route } from "./raven";
+import {
+	ChatPage,
+	isNewProjectPreviewPresentationRequest,
+	Route,
+	ravenTabAfterProjectPreviewStops,
+	shouldAutoPresentProjectPreview,
+} from "./raven";
 
 afterEach(cleanup);
 
@@ -252,6 +267,7 @@ beforeEach(() => {
 		kind: "ephemeral",
 	});
 	state.terminalProps = null;
+	state.preview = null;
 	state.search = {};
 	state.loaderData = {
 		config: {
@@ -302,6 +318,97 @@ beforeEach(() => {
 			models: [],
 		},
 	};
+});
+
+describe("Project Preview tabs", () => {
+	it("returns a stopped mobile Preview to Chat without closing Terminal", () => {
+		expect(ravenTabAfterProjectPreviewStops("preview")).toBe("chat");
+		expect(ravenTabAfterProjectPreviewStops("terminal")).toBe("terminal");
+		expect(ravenTabAfterProjectPreviewStops("chat")).toBe("chat");
+	});
+
+	it("does not auto-present a Preview that was already running on chat entry", () => {
+		const sessionEnteredAt = Date.parse("2026-07-24T22:45:00.000Z");
+
+		expect(
+			shouldAutoPresentProjectPreview(
+				"2026-07-24T22:44:00.000Z",
+				sessionEnteredAt,
+			),
+		).toBe(false);
+		expect(
+			shouldAutoPresentProjectPreview(
+				"2026-07-24T22:45:00.000Z",
+				sessionEnteredAt,
+			),
+		).toBe(false);
+	});
+
+	it("can auto-present a Preview started during the current chat visit", () => {
+		expect(
+			shouldAutoPresentProjectPreview(
+				"2026-07-24T22:45:01.000Z",
+				Date.parse("2026-07-24T22:45:00.000Z"),
+			),
+		).toBe(true);
+	});
+
+	it("does not replay an old Preview presentation request on chat entry", () => {
+		expect(isNewProjectPreviewPresentationRequest(2, 2)).toBe(false);
+		expect(isNewProjectPreviewPresentationRequest(3, 2)).toBe(true);
+	});
+
+	it("ends desktop Preview resizing when the captured pointer is released", () => {
+		state.loaderData = {
+			...state.loaderData,
+			existingSessionId: "preview-session",
+			isExplicitSession: true,
+		};
+		state.preview = {
+			id: "123e4567-e89b-12d3-a456-426614174000",
+			session_id: "preview-session",
+			label: "Web app",
+			command: "bun run dev",
+			cwd: "/work/web",
+			port: 4173,
+			path: "/",
+			url: "http://127.0.0.1:4173/",
+			relay_url:
+				"/api/project-previews/123e4567-e89b-12d3-a456-426614174000/relay/",
+			state: "ready",
+			present: true,
+			started_at: "2026-07-24T10:00:00.000Z",
+			expires_at: "2026-07-24T14:00:00.000Z",
+			logs: [],
+		};
+		localStorage.setItem("hlid:raven-preview-width", "520");
+		Object.defineProperty(window, "innerWidth", {
+			configurable: true,
+			value: 1_200,
+		});
+
+		render(<ChatPage />);
+		const divider = screen.getByLabelText("Resize Project Preview");
+		const pane = screen.getByLabelText("Project Preview") as HTMLElement;
+		const releasePointerCapture = vi.fn();
+		Object.assign(divider, {
+			setPointerCapture: vi.fn(),
+			hasPointerCapture: vi.fn(() => true),
+			releasePointerCapture,
+		});
+
+		fireEvent.pointerDown(divider, { clientX: 800, pointerId: 1 });
+		expect(pane.className).toContain("pointer-events-none");
+		fireEvent.pointerMove(window, { clientX: 700, pointerId: 1 });
+		expect(pane.style.width).toBe("620px");
+
+		fireEvent.pointerUp(window, { pointerId: 1 });
+		expect(releasePointerCapture).toHaveBeenCalledWith(1);
+		expect(pane.className).not.toContain("pointer-events-none");
+
+		fireEvent.pointerMove(window, { clientX: 600, pointerId: 1 });
+		expect(pane.style.width).toBe("620px");
+	});
 });
 
 describe("Raven composed submission behavior", () => {

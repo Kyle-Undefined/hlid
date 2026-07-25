@@ -37,7 +37,7 @@ vi.mock("./obsidianAgentTools", async (importOriginal) => {
 });
 vi.mock("./hlidAgentTools", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./hlidAgentTools")>();
-	return { ...actual, executeHlidAgentTool: vi.fn() };
+	return { ...actual, executeHlidAgentToolRich: vi.fn() };
 });
 // Wrap (not replace) the real store — its shape is exercised by the
 // "imported Claude resumes" test below and by forkSession's session-store
@@ -70,7 +70,7 @@ import {
 	mapClaudeModels,
 	mapClaudeUsageWindows,
 } from "./claudeProvider";
-import { executeHlidAgentTool } from "./hlidAgentTools";
+import { executeHlidAgentToolRich } from "./hlidAgentTools";
 import { executeObsidianAgentTool } from "./obsidianAgentTools";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -2675,8 +2675,14 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 					tools: Array<{
 						name: string;
 						alwaysLoad?: boolean;
+						annotations?: { readOnlyHint?: boolean };
 						handler: (input: unknown) => Promise<{
-							content: Array<{ type: string; text: string }>;
+							content: Array<{
+								type: string;
+								text?: string;
+								data?: string;
+								mimeType?: string;
+							}>;
 						}>;
 					}>;
 				};
@@ -2686,18 +2692,53 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 			(item) => item.name === "publish_relic",
 		);
 		expect(publishRelic?.alwaysLoad).toBe(false);
-		vi.mocked(executeHlidAgentTool).mockResolvedValueOnce('{"id":"relic-1"}');
+		vi.mocked(executeHlidAgentToolRich).mockResolvedValueOnce({
+			text: '{"id":"relic-1"}',
+		});
 		expect(
 			await publishRelic?.handler({
 				filename: "report.html",
 				content: "<h1>Report</h1>",
 			}),
 		).toEqual({ content: [{ type: "text", text: '{"id":"relic-1"}' }] });
-		expect(executeHlidAgentTool).toHaveBeenCalledWith(
+		expect(executeHlidAgentToolRich).toHaveBeenCalledWith(
 			"publish_relic",
 			{ filename: "report.html", content: "<h1>Report</h1>" },
 			{ runtimeCwd: "/tmp/test", sessionId: "host-session-1" },
 		);
+		const capturePreview = hlidServer.instance.options.tools.find(
+			(item) => item.name === "capture_project_preview",
+		);
+		vi.mocked(executeHlidAgentToolRich).mockResolvedValueOnce({
+			text: '{"viewport":"mobile"}',
+			images: [{ data: "AQID", mimeType: "image/png" }],
+		});
+		expect(await capturePreview?.handler({ viewport: "mobile" })).toEqual({
+			content: [
+				{ type: "text", text: '{"viewport":"mobile"}' },
+				{ type: "image", data: "AQID", mimeType: "image/png" },
+			],
+		});
+		const controlPreview = hlidServer.instance.options.tools.find(
+			(item) => item.name === "control_project_preview",
+		);
+		expect(controlPreview?.annotations?.readOnlyHint).toBe(false);
+		vi.mocked(executeHlidAgentToolRich).mockResolvedValueOnce({
+			text: '{"last_action":"click"}',
+			images: [{ data: "BAUG", mimeType: "image/png" }],
+		});
+		expect(
+			await controlPreview?.handler({
+				action: "click",
+				frame_id: "e16b1643-591f-4d67-8c22-9df105659385",
+				ref: "e1",
+			}),
+		).toEqual({
+			content: [
+				{ type: "text", text: '{"last_action":"click"}' },
+				{ type: "image", data: "BAUG", mimeType: "image/png" },
+			],
+		});
 		const server = options?.mcpServers?.hlid_obsidian as unknown as {
 			instance: {
 				options: {

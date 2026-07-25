@@ -5,10 +5,28 @@ const DEFAULT_DEDUPE_MS = 30_000;
 const MAX_DIAGNOSTIC_KEYS = 200;
 const MAX_ERROR_SUMMARY_CHARS = 400;
 const REQUEST_ID_HEADER = "x-hlid-request-id";
+const PROJECT_PREVIEW_LIFECYCLE_SLOW_MS = 5_000;
 
 type DiagnosticLevel = "warn" | "error";
 type DiagnosticLogger = (level: DiagnosticLevel, message: string) => void;
 type SlowRequestThreshold = number | ((request: Request) => number | undefined);
+
+export function projectPreviewSlowRequestThreshold(
+	pathname: string,
+	requestName?: string,
+): number | undefined {
+	if (
+		requestName === "restartProjectPreviewFn" ||
+		requestName === "stopProjectPreviewFn"
+	) {
+		return PROJECT_PREVIEW_LIFECYCLE_SLOW_MS;
+	}
+	return /^\/api\/project-previews\/(?:start|session\/(?:stop|restart)|[^/]+\/(?:stop|restart|capture|control))$/.test(
+		pathname,
+	)
+		? PROJECT_PREVIEW_LIFECYCLE_SLOW_MS
+		: undefined;
+}
 
 export type RequestObserverOptions = {
 	scope: string;

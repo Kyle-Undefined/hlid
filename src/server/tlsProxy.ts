@@ -1,5 +1,6 @@
 import { X509Certificate } from "node:crypto";
 import { readFileSync } from "node:fs";
+import type { ServerWebSocket } from "bun";
 import { isAllowedOrigin, isAllowedOriginHeader } from "../lib/allowedOrigin";
 import { registerBunServer } from "../lib/lifecycle";
 import { isPublicPath } from "../lib/publicPath";
@@ -24,6 +25,8 @@ const DEFAULT_FORWARD_TIMEOUT_MS = 30_000;
 const SAFE_FORWARD_FIRST_ATTEMPT_MS = 5_000;
 const VOICE_FORWARD_TIMEOUT_MS = 70_000;
 const TLS_IDLE_TIMEOUT_SECONDS = 75;
+const PREVIEW_RELAY_PATH =
+	/^\/api\/project-previews\/[0-9a-f-]+\/relay(?:\/|$)/i;
 const observeTlsForward = createRequestObserver({
 	scope: "tls-proxy",
 	requestName: (request) => {
@@ -51,11 +54,13 @@ const SKIP_RES = new Set(["connection", "keep-alive", "transfer-encoding"]);
 
 type HttpForwarderOptions = {
 	uiPort: number;
+	apiPort?: number;
 	internalToken: string;
 	maxBodyBytes: number;
 	maxConcurrent?: number;
 	authenticate?: (request: Request) => Promise<boolean>;
 	forward?: (input: string, init: RequestInit) => Promise<Response>;
+	apiForward?: (input: string, init: RequestInit) => Promise<Response>;
 };
 
 function buildForwardHeaders(
@@ -161,11 +166,13 @@ async function forwardRequest(
  */
 export function createTlsHttpForwarder({
 	uiPort,
+	apiPort,
 	internalToken,
 	maxBodyBytes,
 	maxConcurrent = MAX_BUFFERED_FORWARDS,
 	authenticate = authenticateRequest,
 	forward = fetch,
+	apiForward = fetch,
 }: HttpForwarderOptions): (req: Request, peerIp?: string) => Promise<Response> {
 	const gate = createConcurrencyGate(maxConcurrent);
 
@@ -199,9 +206,11 @@ export function createTlsHttpForwarder({
 				}
 			}
 
+			const previewRelay = url.pathname.startsWith("/api/project-previews/");
+			const targetPort = previewRelay ? (apiPort ?? uiPort) : uiPort;
 			const upstream = await forwardRequest(
-				forward,
-				`http://127.0.0.1:${uiPort}${url.pathname}${url.search}`,
+				previewRelay ? apiForward : forward,
+				`http://127.0.0.1:${targetPort}${url.pathname}${url.search}`,
 				{
 					method: req.method,
 					headers: buildForwardHeaders(req, peerIp, internalToken),
@@ -224,6 +233,7 @@ export type TlsProxyOptions = {
 	tlsPort: number;
 	uiPort: number;
 	wsPort: number;
+	apiPort?: number;
 	bindHost: string;
 	certPath: string;
 	keyPath: string;
@@ -233,10 +243,70 @@ export type TlsProxyOptions = {
 	forward?: UiForward;
 };
 
+function createTlsWebSocketHandlers(internalToken: string) {
+	return {
+		open(ws: ServerWebSocket<WsData>) {
+			ws.data.queue = [];
+			const BunWebSocket = WebSocket as unknown as new (
+				url: string,
+				options: { headers: Record<string, string> },
+			) => WebSocket;
+			const back = new BunWebSocket(ws.data.wsTarget, {
+				headers: { "x-hlid-internal": internalToken },
+			});
+			ws.data.back = back;
+			const connectTimeout = setTimeout(() => {
+				if (back.readyState === WebSocket.CONNECTING) {
+					ws.data.queue = [];
+					back.close();
+					ws.close();
+				}
+			}, 10_000);
+			back.onopen = () => {
+				clearTimeout(connectTimeout);
+				for (const message of ws.data.queue) ws.data.back?.send(message);
+				ws.data.queue = [];
+			};
+			back.onmessage = (event) => {
+				if (ws.readyState === WebSocket.OPEN) ws.send(event.data);
+			};
+			back.onclose = () => {
+				clearTimeout(connectTimeout);
+				ws.close();
+			};
+			back.onerror = () => {
+				clearTimeout(connectTimeout);
+				ws.close();
+			};
+		},
+		message(ws: ServerWebSocket<WsData>, data: string | Buffer) {
+			const payload: string | ArrayBuffer =
+				typeof data === "string"
+					? data
+					: (data.buffer.slice(
+							data.byteOffset,
+							data.byteOffset + data.byteLength,
+						) as ArrayBuffer);
+			if (ws.data.back?.readyState === WebSocket.OPEN) {
+				ws.data.back.send(payload);
+			} else if (ws.data.back?.readyState === WebSocket.CONNECTING) {
+				if (ws.data.queue.length >= MAX_WS_QUEUE) ws.data.queue.shift();
+				ws.data.queue.push(payload);
+			} else {
+				ws.close();
+			}
+		},
+		close(ws: ServerWebSocket<WsData>) {
+			ws.data.back?.close();
+		},
+	};
+}
+
 export function startTlsProxy({
 	tlsPort,
 	uiPort,
 	wsPort,
+	apiPort,
 	bindHost,
 	certPath,
 	keyPath,
@@ -252,6 +322,7 @@ export function startTlsProxy({
 	const tlsHostname = dnsSan ? dnsSan.slice(4) : "localhost";
 	const forwardHttp = createTlsHttpForwarder({
 		uiPort,
+		apiPort,
 		internalToken,
 		maxBodyBytes,
 		forward,
@@ -269,67 +340,7 @@ export function startTlsProxy({
 				cert: Bun.file(certPath),
 				key: Bun.file(keyPath),
 			},
-			websocket: {
-				open(ws) {
-					ws.data.queue = [];
-					const BunWebSocket = WebSocket as unknown as new (
-						url: string,
-						options: { headers: Record<string, string> },
-					) => WebSocket;
-					const back = new BunWebSocket(ws.data.wsTarget, {
-						headers: { "x-hlid-internal": internalToken },
-					});
-					ws.data.back = back;
-					const connectTimeout = setTimeout(() => {
-						if (back.readyState === WebSocket.CONNECTING) {
-							ws.data.queue = [];
-							back.close();
-							ws.close();
-						}
-					}, 10_000);
-					back.onopen = () => {
-						clearTimeout(connectTimeout);
-						for (const msg of ws.data.queue) ws.data.back?.send(msg);
-						ws.data.queue = [];
-					};
-					back.onmessage = (ev) => {
-						if (ws.readyState === WebSocket.OPEN) ws.send(ev.data);
-					};
-					back.onclose = () => {
-						clearTimeout(connectTimeout);
-						ws.close();
-					};
-					back.onerror = () => {
-						clearTimeout(connectTimeout);
-						ws.close();
-					};
-				},
-				message(ws, data) {
-					// Normalize to string | ArrayBuffer — Uint8Array<ArrayBufferLike> is
-					// not assignable to WebSocket.send()'s BufferSource without a copy.
-					const payload: string | ArrayBuffer =
-						typeof data === "string"
-							? data
-							: (data.buffer.slice(
-									data.byteOffset,
-									data.byteOffset + data.byteLength,
-								) as ArrayBuffer);
-					if (ws.data.back?.readyState === WebSocket.OPEN) {
-						ws.data.back.send(payload);
-					} else if (ws.data.back?.readyState === WebSocket.CONNECTING) {
-						if (ws.data.queue.length >= MAX_WS_QUEUE) {
-							ws.data.queue.shift(); // drop oldest to bound memory
-						}
-						ws.data.queue.push(payload);
-					} else {
-						// Backend CLOSING or CLOSED — drop message and shut down client.
-						ws.close();
-					}
-				},
-				close(ws) {
-					ws.data.back?.close();
-				},
-			},
+			websocket: createTlsWebSocketHandlers(internalToken),
 			async fetch(req, server) {
 				const peerIp = server.requestIP(req)?.address;
 				if (!isAllowedOrigin(peerIp, localNetworkAccess)) {
@@ -364,6 +375,11 @@ export function startTlsProxy({
 					}
 					return new Response("Bad Request", { status: 400 });
 				}
+				if (PREVIEW_RELAY_PATH.test(url.pathname)) {
+					return new Response("Use the isolated Project Preview origin.", {
+						status: 421,
+					});
+				}
 
 				return forwardHttp(req, peerIp);
 			},
@@ -372,5 +388,68 @@ export function startTlsProxy({
 
 	console.log(
 		`TLS proxy listening on :${tlsPort} → https://${tlsHostname}:${tlsPort}`,
+	);
+
+	const previewTlsPort = tlsPort + 1;
+	const previewForward = createTlsHttpForwarder({
+		uiPort: apiPort ?? wsPort,
+		apiPort: apiPort ?? wsPort,
+		internalToken,
+		maxBodyBytes,
+		authenticate: async () => true,
+	});
+	registerBunServer(
+		Bun.serve<WsData>({
+			port: previewTlsPort,
+			hostname: bindHost,
+			idleTimeout: TLS_IDLE_TIMEOUT_SECONDS,
+			maxRequestBodySize: maxBodyBytes,
+			tls: {
+				cert: Bun.file(certPath),
+				key: Bun.file(keyPath),
+			},
+			websocket: createTlsWebSocketHandlers(internalToken),
+			async fetch(req, server) {
+				const peerIp = server.requestIP(req)?.address;
+				if (!isAllowedOrigin(peerIp, localNetworkAccess)) {
+					return new Response("Forbidden", { status: 403 });
+				}
+				const url = new URL(req.url);
+				if (!PREVIEW_RELAY_PATH.test(url.pathname)) {
+					return new Response("Not found", { status: 404 });
+				}
+				if (!(await authenticateRequest(req))) {
+					return new Response("Unauthorized", {
+						status: 401,
+						headers: { "cache-control": "no-store" },
+					});
+				}
+				if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
+					if (
+						!isAllowedOriginHeader(
+							req.headers.get("origin"),
+							localNetworkAccess,
+						)
+					) {
+						return new Response("Forbidden", { status: 403 });
+					}
+					const upgraded = server.upgrade(req, {
+						data: {
+							wsTarget: `ws://127.0.0.1:${wsPort}${url.pathname}${url.search}`,
+							back: null,
+							queue: [],
+						},
+					});
+					if (!upgraded) {
+						return new Response("WebSocket upgrade failed", { status: 500 });
+					}
+					return undefined;
+				}
+				return previewForward(req, peerIp);
+			},
+		}),
+	);
+	console.log(
+		`Project Preview TLS relay on :${previewTlsPort} → https://${tlsHostname}:${previewTlsPort}`,
 	);
 }

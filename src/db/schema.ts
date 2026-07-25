@@ -1267,4 +1267,38 @@ function applyMigrations(db: Db): void {
 			)
 		`);
 	});
+
+	runMigration(db, "_migrated_project_previews_v1", (db) => {
+		db.run(`
+			CREATE TABLE project_previews (
+				id TEXT PRIMARY KEY,
+				session_id TEXT NOT NULL,
+				label TEXT NOT NULL,
+				command TEXT NOT NULL,
+				cwd TEXT NOT NULL,
+				port INTEGER NOT NULL,
+				path TEXT NOT NULL,
+				url TEXT NOT NULL,
+				relay_url TEXT NOT NULL,
+				state TEXT NOT NULL,
+				present INTEGER NOT NULL DEFAULT 1,
+				started_at TEXT NOT NULL,
+				expires_at TEXT NOT NULL,
+				ended_at TEXT,
+				exit_code INTEGER,
+				error TEXT,
+				stop_reason TEXT,
+				logs_json TEXT NOT NULL DEFAULT '[]',
+				updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+			)
+		`);
+		db.run(
+			`CREATE INDEX idx_project_previews_session_started
+			 ON project_previews(session_id, started_at DESC)`,
+		);
+		db.run(
+			`CREATE INDEX idx_project_previews_state_expiry
+			 ON project_previews(state, expires_at)`,
+		);
+	});
 }

@@ -9,7 +9,7 @@ vi.mock("./obsidianAgentTools", async (importOriginal) => {
 });
 vi.mock("./hlidAgentTools", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./hlidAgentTools")>();
-	return { ...actual, executeHlidAgentTool: vi.fn() };
+	return { ...actual, executeHlidAgentToolRich: vi.fn() };
 });
 
 import { spawn } from "node:child_process";
@@ -44,7 +44,7 @@ import {
 	windowsComputerUseHostAvailable,
 	windowsComputerUseModel,
 } from "./codexProvider";
-import { executeHlidAgentTool } from "./hlidAgentTools";
+import { executeHlidAgentToolRich } from "./hlidAgentTools";
 import { executeObsidianAgentTool } from "./obsidianAgentTools";
 
 // ── fetchCodexModels test helpers ──────────────────────────────────────────
@@ -1512,12 +1512,12 @@ describe("CodexAgentSession — commands", () => {
 		const { proc, writes } = makeFakeSessionProc();
 		vi.mocked(spawn).mockReturnValue(proc as never);
 		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
-		vi.mocked(executeHlidAgentTool).mockResolvedValueOnce(
-			JSON.stringify({
+		vi.mocked(executeHlidAgentToolRich).mockResolvedValueOnce({
+			text: JSON.stringify({
 				id: "relic-1",
 				open_url: "/api/attachments/relic-1/raw",
 			}),
-		);
+		});
 		const canUseTool = vi.fn().mockResolvedValue({ behavior: "allow" });
 		const session = new CodexProvider().query(
 			baseCodexParams({
@@ -1570,10 +1570,89 @@ describe("CodexAgentSession — commands", () => {
 				title: "Hlid publish Relic",
 			}),
 		);
-		expect(executeHlidAgentTool).toHaveBeenCalledWith(
+		expect(executeHlidAgentToolRich).toHaveBeenCalledWith(
 			"publish_relic",
 			{ source_path: "reports/review.pdf" },
 			{ runtimeCwd: "/tmp/codex-test", sessionId: "host-session-1" },
+		);
+		vi.mocked(executeHlidAgentToolRich).mockResolvedValueOnce({
+			text: '{"viewport":"mobile"}',
+			images: [{ data: "AQID", mimeType: "image/png" }],
+		});
+		proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: 97,
+					method: "item/tool/call",
+					params: {
+						threadId: "thread-1",
+						callId: "capture-1",
+						namespace: "hlid",
+						tool: "capture_project_preview",
+						arguments: { viewport: "mobile" },
+					},
+				})}\n`,
+			),
+		);
+		await vi.waitFor(() =>
+			expect(
+				writes
+					.map((line) => JSON.parse(line))
+					.find((message) => message.id === 97)?.result,
+			).toEqual({
+				success: true,
+				contentItems: [
+					{ type: "inputText", text: '{"viewport":"mobile"}' },
+					{ type: "inputImage", imageUrl: "data:image/png;base64,AQID" },
+				],
+			}),
+		);
+		expect(canUseTool).toHaveBeenCalledTimes(1);
+		vi.mocked(executeHlidAgentToolRich).mockResolvedValueOnce({
+			text: '{"last_action":"click"}',
+			images: [{ data: "BAUG", mimeType: "image/png" }],
+		});
+		proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: 98,
+					method: "item/tool/call",
+					params: {
+						threadId: "thread-1",
+						callId: "control-1",
+						namespace: "hlid",
+						tool: "control_project_preview",
+						arguments: {
+							action: "click",
+							frame_id: "e16b1643-591f-4d67-8c22-9df105659385",
+							ref: "e1",
+						},
+					},
+				})}\n`,
+			),
+		);
+		await vi.waitFor(() =>
+			expect(
+				writes
+					.map((line) => JSON.parse(line))
+					.find((message) => message.id === 98)?.result,
+			).toEqual({
+				success: true,
+				contentItems: [
+					{ type: "inputText", text: '{"last_action":"click"}' },
+					{ type: "inputImage", imageUrl: "data:image/png;base64,BAUG" },
+				],
+			}),
+		);
+		expect(canUseTool).toHaveBeenLastCalledWith(
+			"mcp__hlid__control_project_preview",
+			expect.objectContaining({ action: "click", ref: "e1" }),
+			expect.objectContaining({
+				toolUseID: "control-1",
+				title: "Hlid control Project Preview",
+			}),
 		);
 		session.cancel();
 	});

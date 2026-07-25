@@ -1,6 +1,9 @@
 import { getConfig } from "#/lib/serverFns/config";
 import { safeRequestPath } from "./httpDiagnostics";
-import { getInternalApiHandler } from "./internalApiTransport";
+import {
+	getInternalApiBase,
+	getInternalApiHandler,
+} from "./internalApiTransport";
 
 let _base: string | null = null;
 const SOFT_FAILURE_DEDUP_MS = 30_000;
@@ -65,8 +68,13 @@ function reportSoftFailure(
 
 async function getBase(): Promise<string> {
 	if (!_base) {
-		const { server } = await getConfig();
-		_base = `http://127.0.0.1:${server.port + 1}`;
+		const registeredBase = getInternalApiBase();
+		if (registeredBase) {
+			_base = registeredBase;
+		} else {
+			const { server } = await getConfig();
+			_base = `http://127.0.0.1:${server.port + 1}`;
+		}
 	}
 	return _base;
 }

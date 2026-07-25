@@ -60,6 +60,7 @@ function makeConfig(agentPaths: string[] = []): HlidConfig {
 			turn_recaps: false,
 			windows_computer_use: { model: "inherit", effort: "medium" },
 		},
+		project_preview: { use_real_browser_profile: false },
 		ui: {
 			enter_to_submit: true,
 			live_sessions_hotkey: "Alt+Shift+KeyS",

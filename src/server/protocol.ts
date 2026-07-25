@@ -526,6 +526,75 @@ export type RealtimeEventMessage =
 			message: string;
 	  };
 
+export type ProjectPreviewState = "starting" | "ready" | "failed" | "stopped";
+
+export type ProjectPreviewSnapshot = {
+	id: string;
+	session_id: string;
+	label: string;
+	command: string;
+	cwd: string;
+	port: number;
+	path: string;
+	url: string;
+	relay_url: string;
+	state: ProjectPreviewState;
+	present: boolean;
+	started_at: string;
+	expires_at: string;
+	ended_at?: string;
+	exit_code?: number;
+	error?: string;
+	stop_reason?: string;
+	logs: string[];
+};
+
+export type ProjectPreviewAgentElement = {
+	ref: string;
+	role: string;
+	name: string;
+	tag: string;
+	type?: string;
+	disabled?: boolean;
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+};
+
+export type ProjectPreviewAgentFrame = {
+	preview_id: string;
+	session_id: string;
+	path: string;
+	viewport: "desktop" | "tablet" | "mobile";
+	width: number;
+	height: number;
+	full_page: boolean;
+	captured_at: number;
+	mime: "image/png";
+	size_bytes: number;
+	image_base64: string;
+	frame_id: string;
+	title: string;
+	elements: ProjectPreviewAgentElement[];
+	console_messages: string[];
+	failed_requests: string[];
+	last_action?:
+		| "click"
+		| "type"
+		| "key"
+		| "scroll"
+		| "navigate"
+		| "reload"
+		| "viewport";
+};
+
+export type ProjectPreviewStatusMessage = {
+	type: "project_preview_status";
+	session_id: string;
+	preview: ProjectPreviewSnapshot;
+};
+
 export type ServerMessage =
 	| StatusMessage
 	| ChunkMessage
@@ -557,6 +626,7 @@ export type ServerMessage =
 	| SessionClosedMessage
 	| SessionCreatedMessage
 	| RealtimeEventMessage
+	| ProjectPreviewStatusMessage
 	| DataRevisionsMessage;
 
 export type ChatAttachment = {

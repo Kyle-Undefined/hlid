@@ -13,6 +13,7 @@ import {
 import { loadConfig } from "./config";
 import { getDataRevisions } from "./dataRevision";
 import { getLiveSessionsStatus } from "./liveSessions";
+import { projectPreviewManager } from "./projectPreview";
 import {
 	type ClientMessage,
 	decisionFromScope,
@@ -448,6 +449,7 @@ function handleCloseSession(
 	if (dbSessionId && dbSessionId !== msg.session_id) {
 		shellPool?.close(dbSessionId);
 	}
+	void projectPreviewManager.closeSession(dbSessionId ?? msg.session_id);
 	broadcast({ type: "session_closed", session_id: msg.session_id });
 	broadcastSessionsStatus(context);
 }

@@ -6,6 +6,7 @@ import {
 	LoaderCircle,
 	MessageSquare,
 	Mic,
+	Monitor,
 	Paperclip,
 	ShieldCheck,
 	Square,
@@ -16,6 +17,7 @@ import {
 import {
 	type Dispatch,
 	type KeyboardEvent as ReactKeyboardEvent,
+	type PointerEvent as ReactPointerEvent,
 	type SetStateAction,
 	useCallback,
 	useEffect,
@@ -34,6 +36,7 @@ import {
 	LiveSessionToggle,
 } from "#/components/chat/LiveSessionSwitcher";
 import { MessageList } from "#/components/chat/MessageList";
+import { ProjectPreviewPane } from "#/components/chat/ProjectPreviewPane";
 import { RavenGoalStrip } from "#/components/chat/RavenGoalStrip";
 import {
 	VaultReferenceBadges,
@@ -48,6 +51,10 @@ import { TerminalView } from "#/components/TerminalView";
 import { ProviderUsageStrip } from "#/components/usage/ProviderUsageStrip";
 import { ContextWindowSection } from "#/components/usage/UsageWindowSections";
 import { useCodexRealtime } from "#/hooks/codexRealtimeStore";
+import {
+	useProjectPreview,
+	useProjectPreviewPresentationRequest,
+} from "#/hooks/projectPreviewStore";
 import {
 	rememberedRavenAgent,
 	rememberRavenSessionId,
@@ -141,6 +148,30 @@ import {
 	type GoalState,
 	type RateLimitMessage,
 } from "#/server/protocol";
+
+type RavenPaneTab = "chat" | "terminal" | "preview";
+
+export function ravenTabAfterProjectPreviewStops(
+	tab: RavenPaneTab,
+): RavenPaneTab {
+	return tab === "preview" ? "chat" : tab;
+}
+
+export function shouldAutoPresentProjectPreview(
+	startedAt: string,
+	sessionEnteredAt: number,
+): boolean {
+	const startedAtMs = Date.parse(startedAt);
+	return Number.isFinite(startedAtMs) && startedAtMs > sessionEnteredAt;
+}
+
+export function isNewProjectPreviewPresentationRequest(
+	request: number,
+	requestAtSessionEntry: number,
+): boolean {
+	return request > requestAtSessionEntry;
+}
+const RAVEN_PREVIEW_WIDTH_KEY = "hlid:raven-preview-width";
 
 // ─── route ───────────────────────────────────────────────────────────────────
 
@@ -1943,7 +1974,7 @@ export function ChatPage() {
 	// Terminal lifetime and the visible mobile pane are separate concerns. An
 	// open terminal survives site navigation, but returning to Raven should put
 	// the conversation back in view until the user explicitly selects Terminal.
-	const [shellTab, setShellTab] = useState<"chat" | "terminal">("chat");
+	const [shellTab, setShellTab] = useState<RavenPaneTab>("chat");
 	const handleToggleTerminal = useCallback(() => {
 		const next = !isRavenTerminalOpen(sessionId);
 		if (next) {
@@ -2175,8 +2206,8 @@ interface ChatPageContentProps {
 	interactiveMode: boolean;
 	terminalOpen: boolean;
 	terminalClosingSessionId: string | null;
-	shellTab: "chat" | "terminal";
-	setShellTab: Dispatch<SetStateAction<"chat" | "terminal">>;
+	shellTab: RavenPaneTab;
+	setShellTab: Dispatch<SetStateAction<RavenPaneTab>>;
 	session: ReturnType<typeof useRavenSessionIdentity>;
 	runtime: ReturnType<typeof useRavenChatRuntime>;
 	chatQueue: ReturnType<typeof useWsChatQueue>;
@@ -2204,6 +2235,186 @@ function ChatPageContent(props: ChatPageContentProps) {
 		shellTab,
 		setShellTab,
 	} = props;
+	const preview = useProjectPreview(props.session.sessionId);
+	const previewPresentationRequest = useProjectPreviewPresentationRequest(
+		props.session.sessionId,
+	);
+	const previewActive = Boolean(preview && preview.state !== "stopped");
+	const [previewPaneOpen, setPreviewPaneOpen] = useState(true);
+	const [previewMaximized, setPreviewMaximized] = useState(false);
+	const [previewResizing, setPreviewResizing] = useState(false);
+	const previewResizeCleanupRef = useRef<(() => void) | null>(null);
+	const previewSessionEntryRef = useRef({
+		sessionId: props.session.sessionId,
+		enteredAt: Date.now(),
+	});
+	if (previewSessionEntryRef.current.sessionId !== props.session.sessionId) {
+		previewSessionEntryRef.current = {
+			sessionId: props.session.sessionId,
+			enteredAt: Date.now(),
+		};
+	}
+	const previewPresentationEntryRef = useRef({
+		sessionId: props.session.sessionId,
+		request: previewPresentationRequest,
+	});
+	if (
+		previewPresentationEntryRef.current.sessionId !== props.session.sessionId
+	) {
+		previewPresentationEntryRef.current = {
+			sessionId: props.session.sessionId,
+			request: previewPresentationRequest,
+		};
+	}
+	const [previewWidth, setPreviewWidth] = useState(() => {
+		if (typeof window === "undefined") return 560;
+		const rawWidth = window.localStorage.getItem(RAVEN_PREVIEW_WIDTH_KEY);
+		const stored = rawWidth === null ? Number.NaN : Number(rawWidth);
+		const available = Math.max(360, window.innerWidth - 360);
+		return Number.isFinite(stored)
+			? Math.min(1_200, available, Math.max(360, stored))
+			: Math.min(560, available);
+	});
+	const lastPresentedPreviewRef = useRef<{
+		sessionId: string;
+		previewId: string;
+	} | null>(null);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: reset the visible pane on session navigation
+	useEffect(() => {
+		setShellTab("chat");
+		setPreviewMaximized(false);
+	}, [props.session.sessionId, setShellTab]);
+	useEffect(() => {
+		if (!preview?.present || preview.state === "stopped") return;
+		if (
+			lastPresentedPreviewRef.current?.sessionId === preview.session_id &&
+			lastPresentedPreviewRef.current.previewId === preview.id
+		) {
+			return;
+		}
+		lastPresentedPreviewRef.current = {
+			sessionId: preview.session_id,
+			previewId: preview.id,
+		};
+		setPreviewPaneOpen(true);
+		if (
+			shouldAutoPresentProjectPreview(
+				preview.started_at,
+				previewSessionEntryRef.current.enteredAt,
+			) &&
+			window.matchMedia("(max-width: 767px)").matches
+		) {
+			setShellTab("preview");
+		}
+	}, [preview, setShellTab]);
+	useEffect(() => {
+		if (
+			!isNewProjectPreviewPresentationRequest(
+				previewPresentationRequest,
+				previewPresentationEntryRef.current.request,
+			)
+		) {
+			return;
+		}
+		setPreviewPaneOpen(true);
+		if (window.matchMedia("(max-width: 767px)").matches) {
+			setShellTab("preview");
+		}
+	}, [previewPresentationRequest, setShellTab]);
+	useEffect(() => {
+		window.localStorage.setItem(
+			RAVEN_PREVIEW_WIDTH_KEY,
+			String(Math.round(previewWidth)),
+		);
+	}, [previewWidth]);
+	useEffect(() => {
+		if (!previewMaximized) return;
+		const restore = (event: globalThis.KeyboardEvent) => {
+			if (event.key === "Escape") setPreviewMaximized(false);
+		};
+		window.addEventListener("keydown", restore);
+		return () => window.removeEventListener("keydown", restore);
+	}, [previewMaximized]);
+	useEffect(() => {
+		if (previewActive) return;
+		setPreviewMaximized(false);
+		setPreviewPaneOpen(false);
+		setShellTab(ravenTabAfterProjectPreviewStops);
+	}, [previewActive, setShellTab]);
+	useEffect(() => {
+		const clampPreviewWidth = () => {
+			const available = Math.max(360, window.innerWidth - 360);
+			setPreviewWidth((width) => Math.min(width, available));
+		};
+		window.addEventListener("resize", clampPreviewWidth);
+		return () => window.removeEventListener("resize", clampPreviewWidth);
+	}, []);
+	useEffect(
+		() => () => {
+			previewResizeCleanupRef.current?.();
+			previewResizeCleanupRef.current = null;
+		},
+		[],
+	);
+	const beginPreviewResize = useCallback(
+		(event: ReactPointerEvent<HTMLDivElement>) => {
+			event.preventDefault();
+			previewResizeCleanupRef.current?.();
+			const startX = event.clientX;
+			const startWidth = previewWidth;
+			const pointerId = event.pointerId;
+			const handle = event.currentTarget;
+			try {
+				handle.setPointerCapture(pointerId);
+			} catch {
+				// Window listeners and iframe shielding remain the fallback.
+			}
+			setPreviewResizing(true);
+			const move = (moveEvent: PointerEvent) => {
+				if (moveEvent.pointerId !== pointerId) return;
+				const available = Math.max(360, window.innerWidth - 360);
+				setPreviewWidth(
+					Math.min(
+						available,
+						Math.max(360, startWidth + startX - moveEvent.clientX),
+					),
+				);
+			};
+			let stopped = false;
+			const stop = (stopEvent?: Event) => {
+				if (
+					stopEvent &&
+					"pointerId" in stopEvent &&
+					stopEvent.pointerId !== pointerId
+				) {
+					return;
+				}
+				if (stopped) return;
+				stopped = true;
+				window.removeEventListener("pointermove", move);
+				window.removeEventListener("pointerup", stop);
+				window.removeEventListener("pointercancel", stop);
+				window.removeEventListener("blur", stop);
+				handle.removeEventListener("lostpointercapture", stop);
+				try {
+					if (handle.hasPointerCapture(pointerId)) {
+						handle.releasePointerCapture(pointerId);
+					}
+				} catch {
+					// Capture may already have been released by the browser.
+				}
+				previewResizeCleanupRef.current = null;
+				setPreviewResizing(false);
+			};
+			window.addEventListener("pointermove", move);
+			window.addEventListener("pointerup", stop);
+			window.addEventListener("pointercancel", stop);
+			window.addEventListener("blur", stop);
+			handle.addEventListener("lostpointercapture", stop);
+			previewResizeCleanupRef.current = stop;
+		},
+		[previewWidth],
+	);
 	return (
 		<LiveSessionSwitcher
 			currentSessionId={props.session.sessionId}
@@ -2271,50 +2482,134 @@ function ChatPageContent(props: ChatPageContentProps) {
 				onClear={() => props.runtime.controlGoal({ action: "clear" })}
 				onDismissError={props.runtime.dismissGoalError}
 			/>
-			{props.forkParentSessionId && (
-				<div className="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-muted/15 px-4 py-1.5">
-					<span className="text-[9px] tracking-widest text-muted-foreground uppercase">
-						{props.forkKind === "exact" ? "Exact fork" : "Fork"}
-					</span>
+			{!interactiveMode && (terminalOpen || previewActive) && (
+				<RavenShellTabBar
+					activeTab={shellTab}
+					setActiveTab={(tab) => {
+						if (tab === "preview") setPreviewPaneOpen(true);
+						setShellTab(tab);
+					}}
+					terminalOpen={terminalOpen}
+					previewOpen={previewActive}
+				/>
+			)}
+			<div
+				className={`flex flex-1 min-h-0 min-w-0 ${
+					previewResizing ? "cursor-col-resize select-none" : ""
+				}`}
+			>
+				<div
+					className={`min-h-0 min-w-0 flex-1 flex-col ${
+						previewActive && shellTab === "preview" && previewPaneOpen
+							? "hidden md:flex"
+							: "flex"
+					}`}
+				>
+					{props.forkParentSessionId && (
+						<div className="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-muted/15 px-4 py-1.5">
+							<span className="text-[9px] tracking-widest text-muted-foreground uppercase">
+								{props.forkKind === "exact" ? "Exact fork" : "Fork"}
+							</span>
+							<button
+								type="button"
+								onClick={() =>
+									void navigate({
+										to: "/raven",
+										search: {
+											session: props.forkParentSessionId ?? undefined,
+											agent: undefined,
+										},
+									})
+								}
+								className="text-[9px] tracking-widest text-primary/70 hover:text-primary uppercase"
+							>
+								Open source
+							</button>
+						</div>
+					)}
+					<RavenTerminalPane {...props} />
+					<RavenMessagePane {...props} />
+					{!interactiveMode && <RavenShellPane {...props} />}
+					<ChatComposer
+						{...composerProps}
+						hideOnMobile={
+							(terminalOpen && shellTab === "terminal") ||
+							(previewActive && previewPaneOpen && shellTab === "preview")
+						}
+					/>
+				</div>
+				{preview && previewActive && previewPaneOpen && (
+					<>
+						{!previewMaximized && (
+							<hr
+								aria-orientation="vertical"
+								aria-label="Resize Project Preview"
+								aria-valuemin={360}
+								aria-valuemax={2400}
+								aria-valuenow={previewWidth}
+								tabIndex={0}
+								onPointerDown={beginPreviewResize}
+								onKeyDown={(event) => {
+									if (event.key === "ArrowLeft") {
+										setPreviewWidth((width) => width + 24);
+									} else if (event.key === "ArrowRight") {
+										setPreviewWidth((width) => Math.max(360, width - 24));
+									}
+								}}
+								className={`hidden md:block h-full w-1 shrink-0 cursor-col-resize border-0 border-l border-border/50 hover:bg-primary/20 focus:bg-primary/20 ${
+									previewResizing ? "bg-primary/20" : ""
+								}`}
+							/>
+						)}
+						<ProjectPreviewPane
+							preview={preview}
+							maximized={previewMaximized}
+							onToggleMaximize={() =>
+								setPreviewMaximized((maximized) => !maximized)
+							}
+							onClose={() => {
+								setPreviewMaximized(false);
+								setPreviewPaneOpen(false);
+								setShellTab("chat");
+							}}
+							className={`${
+								previewMaximized
+									? "fixed inset-0 z-50 flex"
+									: `flex-1 md:flex-none ${
+											shellTab === "preview" ? "flex" : "hidden md:flex"
+										}`
+							}${previewResizing ? " pointer-events-none select-none" : ""}`}
+							style={previewMaximized ? undefined : { width: previewWidth }}
+						/>
+					</>
+				)}
+				{preview && previewActive && !previewPaneOpen && (
 					<button
 						type="button"
-						onClick={() =>
-							void navigate({
-								to: "/raven",
-								search: {
-									session: props.forkParentSessionId ?? undefined,
-									agent: undefined,
-								},
-							})
-						}
-						className="text-[9px] tracking-widest text-primary/70 hover:text-primary uppercase"
+						onClick={() => setPreviewPaneOpen(true)}
+						aria-label="Open Project Preview"
+						title="Open Project Preview"
+						className="hidden md:flex h-full w-9 shrink-0 items-center justify-center border-l border-border/50 text-muted-foreground/50 hover:text-primary"
 					>
-						Open source
+						<Monitor className="h-4 w-4" />
 					</button>
-				</div>
-			)}
-
-			<RavenTerminalPane {...props} />
-			{!interactiveMode && terminalOpen && (
-				<RavenShellTabBar activeTab={shellTab} setActiveTab={setShellTab} />
-			)}
-			<RavenMessagePane {...props} />
-			{!interactiveMode && <RavenShellPane {...props} />}
-			<ChatComposer
-				{...composerProps}
-				hideOnMobile={terminalOpen && shellTab === "terminal"}
-			/>
+				)}
+			</div>
 		</LiveSessionSwitcher>
 	);
 }
 
-/** Mobile-only Chat/Terminal tab switch — desktop gets a split panel instead (chunk 4). */
+/** Mobile-only Chat/Terminal/Preview switch. Desktop keeps split panes. */
 function RavenShellTabBar({
 	activeTab,
 	setActiveTab,
+	terminalOpen,
+	previewOpen,
 }: {
-	activeTab: "chat" | "terminal";
-	setActiveTab: Dispatch<SetStateAction<"chat" | "terminal">>;
+	activeTab: RavenPaneTab;
+	setActiveTab: (tab: RavenPaneTab) => void;
+	terminalOpen: boolean;
+	previewOpen: boolean;
 }) {
 	return (
 		<div className="md:hidden flex shrink-0 border-b border-border/40">
@@ -2330,18 +2625,34 @@ function RavenShellTabBar({
 				<MessageSquare className="w-3.5 h-3.5" />
 				chat
 			</button>
-			<button
-				type="button"
-				onClick={() => setActiveTab("terminal")}
-				className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-[10px] tracking-widest uppercase transition-colors ${
-					activeTab === "terminal"
-						? "text-primary border-b border-primary"
-						: "text-muted-foreground/40"
-				}`}
-			>
-				<TerminalIcon className="w-3.5 h-3.5" />
-				terminal
-			</button>
+			{terminalOpen && (
+				<button
+					type="button"
+					onClick={() => setActiveTab("terminal")}
+					className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-[10px] tracking-widest uppercase transition-colors ${
+						activeTab === "terminal"
+							? "text-primary border-b border-primary"
+							: "text-muted-foreground/40"
+					}`}
+				>
+					<TerminalIcon className="w-3.5 h-3.5" />
+					terminal
+				</button>
+			)}
+			{previewOpen && (
+				<button
+					type="button"
+					onClick={() => setActiveTab("preview")}
+					className={`flex-1 flex items-center justify-center gap-1.5 py-2 text-[10px] tracking-widest uppercase transition-colors ${
+						activeTab === "preview"
+							? "text-primary border-b border-primary"
+							: "text-muted-foreground/40"
+					}`}
+				>
+					<Monitor className="w-3.5 h-3.5" />
+					preview
+				</button>
+			)}
 		</div>
 	);
 }

@@ -3,9 +3,14 @@ import { MarkdownBody } from "#/components/MarkdownBody";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import { useCopyToClipboard } from "#/hooks/useCopyToClipboard";
 import type { ObsidianCaptureDestination } from "#/lib/obsidianCapture";
+import type { ToolEventMessage } from "#/server/protocol";
 import { CopyButton } from "./CopyButton";
 import type { AssistantMessage } from "./chatReducer";
 import { ObsidianVaultChangeReview } from "./ObsidianVaultChangeReview";
+import {
+	isProjectPreviewToolEvent,
+	ProjectPreviewActivityCard,
+} from "./ProjectPreviewToolBlock";
 import { ReadAloudButton } from "./ReadAloudButton";
 import { SaveToObsidianActions } from "./SaveToObsidianActions";
 import { ToolBlock } from "./ToolBlock";
@@ -29,6 +34,8 @@ export function AssistantMsg({
 	branching = false,
 	onBranch,
 	obsidianCapture,
+	groupedProjectPreviewEventIds,
+	historicalProjectPreviewGroups,
 }: {
 	message: AssistantMessage;
 	permissionLabels?: Map<string, string>;
@@ -41,6 +48,8 @@ export function AssistantMsg({
 	branching?: boolean;
 	onBranch?: (dbId: number) => void;
 	obsidianCapture?: ObsidianCaptureDestination | null;
+	groupedProjectPreviewEventIds?: ReadonlySet<string>;
+	historicalProjectPreviewGroups?: ReadonlyMap<string, ToolEventMessage[]>;
 }) {
 	const { copy, copied } = useCopyToClipboard();
 	// Keep live subagents at the bottom of the active assistant turn. New parent
@@ -51,16 +60,38 @@ export function AssistantMsg({
 		const status = event.subagent?.status;
 		return status === "pending" || status === "running" || status === "paused";
 	});
+	const previewEvents = message.toolEvents.filter(isProjectPreviewToolEvent);
+	const groupedPreviewEvents = groupedProjectPreviewEventIds
+		? previewEvents.filter((event) =>
+				groupedProjectPreviewEventIds.has(event.id),
+			)
+		: previewEvents;
 	const transcriptToolEvents = message.toolEvents
 		.slice(toolEventStartIndex)
-		.filter((event) => !activeSubagentEvents.includes(event));
-	const renderTool = (event: (typeof message.toolEvents)[number]) => (
-		<ToolBlock
-			key={event.id}
-			event={event}
-			permissionLabel={permissionLabels?.get(event.id)}
-		/>
-	);
+		.filter(
+			(event) =>
+				!activeSubagentEvents.includes(event) &&
+				!groupedPreviewEvents.includes(event),
+		);
+	const renderTool = (event: (typeof message.toolEvents)[number]) => {
+		const historicalPreviewEvents = historicalProjectPreviewGroups?.get(
+			event.id,
+		);
+		return historicalPreviewEvents ? (
+			<ProjectPreviewActivityCard
+				key={event.id}
+				events={historicalPreviewEvents}
+				permissionLabels={permissionLabels}
+				historicalGroup
+			/>
+		) : (
+			<ToolBlock
+				key={event.id}
+				event={event}
+				permissionLabel={permissionLabels?.get(event.id)}
+			/>
+		);
+	};
 	return (
 		<div className="group w-full min-w-0 max-w-full overflow-hidden py-3 border-b border-border/40 space-y-1.5">
 			{olderToolEventCount > 0 && onLoadOlderToolEvents && (
@@ -177,6 +208,14 @@ export function AssistantMsg({
 				</div>
 			)}
 			{activeSubagentEvents.map(renderTool)}
+			{groupedProjectPreviewEventIds === undefined &&
+				groupedPreviewEvents.length > 0 && (
+					<ProjectPreviewActivityCard
+						events={groupedPreviewEvents}
+						permissionLabels={permissionLabels}
+						active={message.streaming}
+					/>
+				)}
 		</div>
 	);
 }

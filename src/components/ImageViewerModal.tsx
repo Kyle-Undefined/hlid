@@ -64,10 +64,12 @@ export function ClickableImage({
 	src,
 	alt,
 	className,
+	imageClassName,
 }: {
 	src: string;
 	alt: string;
 	className?: string;
+	imageClassName?: string;
 }) {
 	const [open, setOpen] = useState(false);
 	return (
@@ -91,7 +93,11 @@ export function ClickableImage({
 				}}
 				aria-label={`View ${alt || "image"}`}
 			>
-				<img src={src} alt={alt} className="block max-w-full" />
+				<img
+					src={src}
+					alt={alt}
+					className={`block max-w-full${imageClassName ? ` ${imageClassName}` : ""}`}
+				/>
 			</span>
 			{open &&
 				createPortal(

@@ -13,7 +13,9 @@ import {
 	resetDbClientForTesting,
 } from "./dbClient";
 import {
+	registerInternalApiBase,
 	registerInternalApiHandler,
+	resetInternalApiBaseForTesting,
 	resetInternalApiHandlerForTesting,
 } from "./internalApiTransport";
 
@@ -22,12 +24,14 @@ describe("internal API client", () => {
 
 	beforeEach(() => {
 		resetDbClientForTesting();
+		resetInternalApiBaseForTesting();
 		resetInternalApiHandlerForTesting();
 		fetchMock.mockReset();
 		vi.stubGlobal("fetch", fetchMock);
 	});
 
 	afterEach(() => {
+		resetInternalApiBaseForTesting();
 		resetInternalApiHandlerForTesting();
 		vi.unstubAllGlobals();
 		vi.restoreAllMocks();
@@ -46,6 +50,18 @@ describe("internal API client", () => {
 		});
 		expect(directHandler).toHaveBeenCalledOnce();
 		expect(fetchMock).not.toHaveBeenCalled();
+	});
+
+	it("uses a registered server base outside a TanStack Start context", async () => {
+		registerInternalApiBase("http://127.0.0.1:4311/");
+		fetchMock.mockResolvedValueOnce(Response.json({ ok: true }));
+
+		await dbFetch("/db/value");
+
+		expect(fetchMock).toHaveBeenCalledWith(
+			"http://127.0.0.1:4311/db/value",
+			expect.any(Object),
+		);
 	});
 
 	it("keeps timeout and retry budgets for an in-process handler", async () => {

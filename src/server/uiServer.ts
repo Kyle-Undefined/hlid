@@ -5,7 +5,10 @@ import { registerBunServer } from "../lib/lifecycle";
 import { EMBEDDED_ASSETS } from "./embedded-client";
 import { SERVER_FN_NAMES } from "./embedded-server-fn-names";
 import { compressHttpResponse } from "./httpCompression";
-import { createRequestObserver } from "./requestDiagnostics";
+import {
+	createRequestObserver,
+	projectPreviewSlowRequestThreshold,
+} from "./requestDiagnostics";
 import { uiStartupGateResponse } from "./uiStartupGate";
 
 export type UiForward = (input: string, init: RequestInit) => Promise<Response>;
@@ -38,8 +41,18 @@ const observeUiRequest = createRequestObserver({
 		const id = pathname.slice("/_serverFn/".length).split("/")[0];
 		return id ? SERVER_FN_NAMES[id] : undefined;
 	},
-	slowRequestMs: (request) =>
-		new URL(request.url).pathname === "/api/voice/transcribe" ? 70_000 : 1_000,
+	slowRequestMs: (request) => {
+		const pathname = new URL(request.url).pathname;
+		if (pathname === "/api/voice/transcribe") return 70_000;
+		const id = pathname.startsWith("/_serverFn/")
+			? pathname.slice("/_serverFn/".length).split("/")[0]
+			: undefined;
+		const previewThreshold = projectPreviewSlowRequestThreshold(
+			pathname,
+			id ? SERVER_FN_NAMES[id] : undefined,
+		);
+		return previewThreshold ?? 1_000;
+	},
 });
 
 function tryUiStatic(pathname: string): Response | null {

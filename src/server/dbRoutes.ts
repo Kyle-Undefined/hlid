@@ -8,6 +8,7 @@ import {
 import { unlinkPaths } from "./attachments";
 import { bumpDataRevision } from "./dataRevision";
 import { getLiveSessionsStatus, hasLiveTerminalSession } from "./liveSessions";
+import { projectPreviewManager } from "./projectPreview";
 import {
 	getProviderHistorySyncStatus,
 	startProviderHistorySync,
@@ -175,6 +176,7 @@ async function handlePatchRoute({
 			throw error;
 		}
 		if (body.archived) {
+			await projectPreviewManager.closeSession(id, "session_archived");
 			if ((await db.getCurrentSessionId()) === id) {
 				await db.clearCurrentSessionId();
 			}
@@ -585,6 +587,7 @@ async function handleDeleteRoute({
 		case "/db/session": {
 			const id = url.searchParams.get("id");
 			if (!id) return new Response("Missing id", { status: 400 });
+			await projectPreviewManager.closeSession(id, "session_deleted");
 			const { ephemeralPaths } = await db.deleteSession(id);
 			await unlinkPaths(ephemeralPaths);
 			bumpDataRevision("stats", "sessions", "relics", "storage");
@@ -635,7 +638,14 @@ async function cleanupSessions({
 	const fromBody = body?.older_than_days;
 	const fromQuery = url.searchParams.get("older_than_days");
 	const days = clampInt(fromBody != null ? String(fromBody) : fromQuery, 30, 1);
-	const { count, ephemeralPaths } = await db.deleteSessionsOlderThan(days);
+	const { count, ephemeralPaths, sessionIds } =
+		await db.deleteSessionsOlderThan(days);
+	await Promise.all(
+		sessionIds.map((sessionId) =>
+			projectPreviewManager.closeSession(sessionId, "session_deleted"),
+		),
+	);
+	await db.deleteProjectPreviewsForSessions(sessionIds);
 	await unlinkPaths(ephemeralPaths);
 	if (count > 0) {
 		bumpDataRevision("stats", "sessions", "relics", "storage");

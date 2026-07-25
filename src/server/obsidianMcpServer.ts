@@ -1,6 +1,9 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { toAgentToolCallResult } from "./agentToolResult";
+import {
+	type AgentToolPayload,
+	toAgentToolCallResult,
+} from "./agentToolResult";
 import {
 	executeObsidianAgentTool,
 	OBSIDIAN_AGENT_NAMESPACE,
@@ -82,7 +85,7 @@ export async function runInternalMcpToolServer<
 	// biome-ignore lint/suspicious/noExplicitAny: registerTool accepts each tool's own Zod shape; callers narrow this per tool.
 	schemaFor: (spec: Spec) => any;
 	idempotentHint: (spec: Spec) => boolean;
-	execute: (spec: Spec, input: unknown) => Promise<string>;
+	execute: (spec: Spec, input: unknown) => Promise<string | AgentToolPayload>;
 }): Promise<void> {
 	const server = new McpServer(
 		{ name: options.namespace, version: "1" },

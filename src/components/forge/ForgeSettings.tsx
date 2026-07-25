@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { AcpSection } from "#/components/forge/AcpSection";
 import { ApiSection } from "#/components/forge/ApiSection";
 import { AutoSleepSection } from "#/components/forge/AutoSleepSection";
+import { BrowserProfileSection } from "#/components/forge/BrowserProfileSection";
 import {
 	ClaudeSection,
 	ComputerUseSection,
@@ -60,11 +61,12 @@ const CATEGORIES = [
 		sections: [
 			"Vault Agent",
 			"Agent Instructions",
+			"Browser profile",
 			"Computer Use",
 			"Auto-sleep on usage limit",
 		],
 		keywords:
-			"provider model effort permissions turns recaps account instructions agents md claude global wsl computer use windows desktop auto sleep usage limit rate window resume",
+			"provider model effort permissions turns recaps account instructions agents md claude global wsl browser profile cookies storage preview computer use windows desktop auto sleep usage limit rate window resume",
 		group: "primary",
 	},
 	{
@@ -170,6 +172,12 @@ function AgentSettings({
 				accountInfo={initial.accountInfo}
 			/>
 			<InstructionFilesSection />
+			<BrowserProfileSection
+				value={state.projectPreview}
+				onChange={(patch) =>
+					state.setProjectPreview((current) => ({ ...current, ...patch }))
+				}
+			/>
 			<ComputerUseSection
 				claude={agentForm}
 				onChange={state.changeClaude}

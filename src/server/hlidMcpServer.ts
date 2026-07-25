@@ -1,5 +1,7 @@
+import { registerInternalApiBase } from "#/lib/internalApiTransport";
+import { loadConfig } from "./config";
 import {
-	executeHlidAgentTool,
+	executeHlidAgentToolRich,
 	HLID_AGENT_NAMESPACE,
 	HLID_AGENT_NAMESPACE_DESCRIPTION,
 	HLID_AGENT_TOOL_SPECS,
@@ -38,6 +40,8 @@ function processContext(): HlidAgentToolContext {
 }
 
 export async function runHlidMcpServer(): Promise<void> {
+	const { server } = loadConfig();
+	registerInternalApiBase(`http://127.0.0.1:${server.port + 1}`);
 	const context = processContext();
 	await runInternalMcpToolServer({
 		namespace: HLID_AGENT_NAMESPACE,
@@ -45,6 +49,7 @@ export async function runHlidMcpServer(): Promise<void> {
 		specs: HLID_AGENT_TOOL_SPECS,
 		schemaFor: (spec) => hlidAgentSchemas[spec.name].shape,
 		idempotentHint: () => false,
-		execute: (spec, input) => executeHlidAgentTool(spec.name, input, context),
+		execute: (spec, input) =>
+			executeHlidAgentToolRich(spec.name, input, context),
 	});
 }

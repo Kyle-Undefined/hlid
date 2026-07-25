@@ -40,6 +40,10 @@ export type AutoSleepForm = {
 	resumeBufferSeconds: string;
 };
 
+export type ProjectPreviewForm = {
+	useRealBrowserProfile: boolean;
+};
+
 export type SettingsForms = {
 	vault: VaultForm;
 	claude: ClaudeForm;
@@ -52,6 +56,7 @@ export type SettingsForms = {
 	acpAgents: NonNullable<HlidConfig["acp_agents"]>;
 	umbod: HlidConfig["umbod"];
 	autoSleep: AutoSleepForm;
+	projectPreview: ProjectPreviewForm;
 };
 
 export function applyAgentFormPatch(
@@ -228,6 +233,13 @@ function createAutoSleepForm(initial: HlidConfig): AutoSleepForm {
 	};
 }
 
+function createProjectPreviewForm(initial: HlidConfig): ProjectPreviewForm {
+	return {
+		useRealBrowserProfile:
+			initial.project_preview.use_real_browser_profile ?? false,
+	};
+}
+
 function createVocabForm(initial: HlidConfig): VocabForm {
 	return {
 		active: initial.status_vocabulary.active.join(", "),
@@ -246,6 +258,7 @@ export function createSettingsForms(initial: HlidConfig): SettingsForms {
 		acpAgents: initial.acp_agents ?? [],
 		umbod: initial.umbod,
 		autoSleep: createAutoSleepForm(initial),
+		projectPreview: createProjectPreviewForm(initial),
 		server: createServerForm(initial),
 		ui: createUiForm(initial),
 		vocab: createVocabForm(initial),
@@ -379,6 +392,9 @@ export function buildSettingsConfig(
 		voice: forms.voice,
 		umbod: forms.umbod,
 		auto_sleep: autoSleepConfig(forms.autoSleep),
+		project_preview: {
+			use_real_browser_profile: forms.projectPreview.useRealBrowserProfile,
+		},
 		agents: initial.agents ?? [],
 		acp_agents: forms.acpAgents,
 	};

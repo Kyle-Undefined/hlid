@@ -6,6 +6,10 @@ import {
 	loadToolEventDetail,
 } from "#/hooks/toolEventDetailStore";
 import type { ToolEventMessage } from "#/server/protocol";
+import {
+	ProjectPreviewCaptureToolBlock,
+	ProjectPreviewToolBlock,
+} from "./ProjectPreviewToolBlock";
 import { SubagentToolBlock } from "./SubagentToolBlock";
 import { ToolBlockExpandedPanel } from "./ToolBlockExpandedPanel";
 
@@ -117,6 +121,29 @@ export const ToolBlock = memo(function ToolBlock({
 
 	if (event.subagent) {
 		return <SubagentToolBlock subagent={event.subagent} />;
+	}
+	if (
+		event.name.endsWith("capture_project_preview") ||
+		event.name.endsWith("control_project_preview")
+	) {
+		return (
+			<ProjectPreviewCaptureToolBlock
+				event={event}
+				permissionLabel={permissionLabel}
+			/>
+		);
+	}
+	if (
+		event.name.endsWith("start_project_preview") ||
+		event.name.endsWith("inspect_project_preview") ||
+		event.name.endsWith("stop_project_preview")
+	) {
+		return (
+			<ProjectPreviewToolBlock
+				event={event}
+				permissionLabel={permissionLabel}
+			/>
+		);
 	}
 	const inputEntries = Object.entries(event.input ?? {});
 	const pills = inputEntries.slice(0, 3);

@@ -29,6 +29,7 @@ function forwarder(
 		maxConcurrent?: number;
 		authenticate?: (request: Request) => Promise<boolean>;
 		forward?: (input: string, init: RequestInit) => Promise<Response>;
+		apiForward?: (input: string, init: RequestInit) => Promise<Response>;
 	} = {},
 ) {
 	return createTlsHttpForwarder({
@@ -38,6 +39,7 @@ function forwarder(
 		maxConcurrent: overrides.maxConcurrent,
 		authenticate: overrides.authenticate ?? (async () => true),
 		forward: overrides.forward ?? (async () => new Response("ok")),
+		apiForward: overrides.apiForward,
 	});
 }
 
@@ -110,6 +112,32 @@ describe("TLS HTTP proxy limits", () => {
 
 		expect(response.status).toBe(200);
 		expect(forward).toHaveBeenCalledOnce();
+	});
+
+	it("routes an authenticated Preview relay through the internal API port", async () => {
+		const uiForward = vi.fn(async () => new Response("wrong"));
+		const apiForward = vi.fn(async () => new Response("preview"));
+		const handle = createTlsHttpForwarder({
+			uiPort: 3000,
+			apiPort: 3001,
+			internalToken: "internal-secret",
+			maxBodyBytes: 1024,
+			authenticate: async () => true,
+			forward: uiForward,
+			apiForward,
+		});
+		const response = await handle(
+			new Request(
+				"https://hlid.test/api/project-previews/123e4567-e89b-12d3-a456-426614174000/relay/",
+			),
+			"100.64.0.2",
+		);
+		expect(await response.text()).toBe("preview");
+		expect(apiForward).toHaveBeenCalledWith(
+			"http://127.0.0.1:3001/api/project-previews/123e4567-e89b-12d3-a456-426614174000/relay/",
+			expect.objectContaining({ method: "GET" }),
+		);
+		expect(uiForward).not.toHaveBeenCalled();
 	});
 
 	it("rejects oversized fixed-length bodies before reading or forwarding", async () => {

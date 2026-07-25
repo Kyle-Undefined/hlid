@@ -19,6 +19,7 @@ describe("settings form conversion", () => {
 				max_turns: 8,
 				windows_computer_use: { model: "gpt-5.5", effort: "inherit" },
 			},
+			project_preview: { use_real_browser_profile: true },
 			server: { port: 4000, tls_proxy_port: 4443 },
 			status_vocabulary: { active: ["Doing"], planning: [], done: ["Done"] },
 			ui: { html_plans: true, show_provider_entries: true },
@@ -37,6 +38,7 @@ describe("settings form conversion", () => {
 		]);
 		expect(forms.codex.windowsComputerUseModel).toBe("gpt-5.5");
 		expect(forms.codex.windowsComputerUseEffort).toBe("inherit");
+		expect(forms.projectPreview.useRealBrowserProfile).toBe(true);
 		expect(forms.server).toMatchObject({ port: "4000", tlsProxyPort: "4443" });
 		expect(forms.ui.htmlPlans).toBe(true);
 		expect(forms.ui.showProviderEntries).toBe(true);
@@ -97,6 +99,7 @@ describe("settings form conversion", () => {
 			model: "inherit",
 			effort: "medium",
 		});
+		expect(config.project_preview.use_real_browser_profile).toBe(false);
 		expect(config.status_vocabulary).toEqual({
 			active: ["Active", "Doing"],
 			planning: ["Planning"],

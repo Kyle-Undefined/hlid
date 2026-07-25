@@ -1,10 +1,18 @@
-import { memo } from "react";
+import { memo, useMemo } from "react";
+import { useProjectPreview } from "#/hooks/projectPreviewStore";
 import type { QueuedChatMessage } from "#/hooks/wsChatQueueStore";
 import type { ObsidianCaptureDestination } from "#/lib/obsidianCapture";
 import { formatVaultReferencedMessage } from "#/lib/vaultReferences";
+import type { ToolEventMessage } from "#/server/protocol";
 import { ChatMessageRow } from "./ChatMessageRow";
 import type { ChatMessage } from "./chatReducer";
 import type { PlanDecision } from "./PlanCard";
+import {
+	groupProjectPreviewEventLifecycles,
+	isProjectPreviewToolEvent,
+	ProjectPreviewActivityCard,
+	selectActiveProjectPreviewEvents,
+} from "./ProjectPreviewToolBlock";
 import { UserMsg } from "./UserMsg";
 import { useMessageListView } from "./useMessageListView";
 
@@ -86,6 +94,50 @@ export const MessageList = memo(function MessageList({
 		isLoadingOlderHistory,
 		onLoadOlderHistory,
 	});
+	const allProjectPreviewEvents = useMemo(
+		() =>
+			messages
+				.flatMap((message) =>
+					message.role === "assistant"
+						? message.toolEvents.filter(isProjectPreviewToolEvent)
+						: [],
+				)
+				.slice(-50),
+		[messages],
+	);
+	const liveProjectPreview = useProjectPreview(
+		allProjectPreviewEvents.length > 0 ? sessionId : "",
+	);
+	const projectPreviewEvents = selectActiveProjectPreviewEvents(
+		allProjectPreviewEvents,
+		liveProjectPreview,
+		sessionState === "running",
+	);
+	const groupedProjectPreviewEventIds = useMemo(() => {
+		const ids = new Set(projectPreviewEvents.map((event) => event.id));
+		for (const lifecycle of groupProjectPreviewEventLifecycles(
+			allProjectPreviewEvents,
+		)) {
+			if (lifecycle.some((event) => ids.has(event.id))) continue;
+			for (const event of lifecycle.slice(1)) ids.add(event.id);
+		}
+		return ids;
+	}, [allProjectPreviewEvents, projectPreviewEvents]);
+	const historicalProjectPreviewGroups = useMemo(() => {
+		const activeIds = new Set(projectPreviewEvents.map((event) => event.id));
+		const groups = new Map<string, ToolEventMessage[]>();
+		for (const lifecycle of groupProjectPreviewEventLifecycles(
+			allProjectPreviewEvents,
+		)) {
+			if (lifecycle.some((event) => activeIds.has(event.id))) continue;
+			const anchor = lifecycle[0];
+			if (anchor) groups.set(anchor.id, lifecycle);
+		}
+		return groups;
+	}, [allProjectPreviewEvents, projectPreviewEvents]);
+	const hasActiveProjectPreview =
+		liveProjectPreview?.state === "starting" ||
+		liveProjectPreview?.state === "ready";
 
 	return (
 		<>
@@ -123,6 +175,8 @@ export const MessageList = memo(function MessageList({
 					forkingMessageId={forkingMessageId}
 					onBranch={onBranch}
 					obsidianCapture={obsidianCapture}
+					groupedProjectPreviewEventIds={groupedProjectPreviewEventIds}
+					historicalProjectPreviewGroups={historicalProjectPreviewGroups}
 				/>
 			))}
 			{orphanQueued.map((qm) => (
@@ -142,6 +196,15 @@ export const MessageList = memo(function MessageList({
 					onPromote={handlePromoteQueued}
 				/>
 			))}
+			{(projectPreviewEvents.length > 0 || hasActiveProjectPreview) && (
+				<ProjectPreviewActivityCard
+					key={`project-preview:${liveProjectPreview?.id ?? sessionId}`}
+					events={projectPreviewEvents}
+					permissionLabels={permissionLabels}
+					active={sessionState === "running"}
+					sessionId={sessionId}
+				/>
+			)}
 			<div ref={bottomRef} />
 		</>
 	);

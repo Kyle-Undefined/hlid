@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ImageViewerModal } from "./ImageViewerModal";
+import { ClickableImage, ImageViewerModal } from "./ImageViewerModal";
 
 afterEach(cleanup);
 
@@ -64,5 +64,35 @@ describe("ImageViewerModal", () => {
 	it("shows alt text as caption when non-empty", () => {
 		render(<ImageViewerModal src="x.png" alt="my caption" onClose={vi.fn()} />);
 		expect(screen.getByText("my caption")).toBeDefined();
+	});
+});
+
+describe("ClickableImage", () => {
+	it("opens the full image in the viewer", () => {
+		render(
+			<ClickableImage
+				src="data:image/png;base64,capture"
+				alt="Preview capture at /settings"
+				imageClassName="capture-thumbnail"
+			/>,
+		);
+
+		const thumbnail = screen.getByRole("button", {
+			name: "View Preview capture at /settings",
+		});
+		expect(
+			screen
+				.getByRole("img", { name: "Preview capture at /settings" })
+				.classList.contains("capture-thumbnail"),
+		).toBe(true);
+
+		fireEvent.click(thumbnail);
+
+		expect(screen.getByRole("dialog", { name: "Image viewer" })).toBeDefined();
+		expect(
+			screen.getAllByRole("img", {
+				name: "Preview capture at /settings",
+			}),
+		).toHaveLength(2);
 	});
 });

@@ -3,6 +3,7 @@ import { safeRequestPath } from "../lib/httpDiagnostics";
 import {
 	createRequestObserver,
 	createSlowOperationObserver,
+	projectPreviewSlowRequestThreshold,
 	safeErrorSummary,
 	startEventLoopLagMonitor,
 } from "./requestDiagnostics";
@@ -161,6 +162,44 @@ describe("request diagnostics", () => {
 			2,
 			"[provider catalog] codex model snapshot took 400ms",
 		);
+	});
+});
+
+describe("project Preview request diagnostics", () => {
+	it("allows normal lifecycle work five seconds before warning", () => {
+		for (const pathname of [
+			"/api/project-previews/start",
+			"/api/project-previews/session/restart",
+			"/api/project-previews/preview-1/stop",
+			"/api/project-previews/preview-1/capture",
+			"/api/project-previews/preview-1/control",
+		]) {
+			expect(projectPreviewSlowRequestThreshold(pathname)).toBe(5_000);
+		}
+		expect(
+			projectPreviewSlowRequestThreshold(
+				"/_serverFn/id",
+				"restartProjectPreviewFn",
+			),
+		).toBe(5_000);
+		expect(
+			projectPreviewSlowRequestThreshold(
+				"/_serverFn/id",
+				"stopProjectPreviewFn",
+			),
+		).toBe(5_000);
+	});
+
+	it("leaves reads and unrelated routes on the default budget", () => {
+		expect(
+			projectPreviewSlowRequestThreshold(
+				"/api/project-previews/preview-1/agent-frame",
+			),
+		).toBeUndefined();
+		expect(
+			projectPreviewSlowRequestThreshold("/api/project-previews/preview-1"),
+		).toBeUndefined();
+		expect(projectPreviewSlowRequestThreshold("/api/updates")).toBeUndefined();
 	});
 });
 

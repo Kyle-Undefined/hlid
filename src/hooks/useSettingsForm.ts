@@ -46,6 +46,9 @@ export function useSettingsForm(
 	const [acpAgents, setAcpAgents] = useState(initialForms.acpAgents);
 	const [umbod, setUmbod] = useState(initialForms.umbod);
 	const [autoSleep, setAutoSleep] = useState(initialForms.autoSleep);
+	const [projectPreview, setProjectPreview] = useState(
+		initialForms.projectPreview,
+	);
 	const [server, setServer] = useState(initialForms.server);
 	const [ui, setUi] = useState(initialForms.ui);
 	const [vocab, setVocab] = useState(initialForms.vocab);
@@ -78,6 +81,7 @@ export function useSettingsForm(
 		acpAgents,
 		umbod,
 		autoSleep,
+		projectPreview,
 	};
 	const currentFormsRef = useRef(currentForms);
 	currentFormsRef.current = currentForms;
@@ -153,6 +157,7 @@ export function useSettingsForm(
 			acpAgents === initialForms.acpAgents &&
 			umbod === initialForms.umbod &&
 			autoSleep === initialForms.autoSleep &&
+			projectPreview === initialForms.projectPreview &&
 			server === initialForms.server
 		) {
 			return;
@@ -184,6 +189,7 @@ export function useSettingsForm(
 		acpAgents,
 		umbod,
 		autoSleep,
+		projectPreview,
 		server,
 		initialForms,
 	]);
@@ -231,6 +237,8 @@ export function useSettingsForm(
 		setUmbod,
 		autoSleep,
 		setAutoSleep,
+		projectPreview,
+		setProjectPreview,
 		server,
 		setServer,
 		ui,

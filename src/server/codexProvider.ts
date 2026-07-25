@@ -84,7 +84,7 @@ import type {
 import { bumpDataRevision } from "./dataRevision";
 import { resolveProviderExecutableForCwd } from "./executionContext";
 import {
-	executeHlidAgentTool,
+	executeHlidAgentToolRich,
 	HLID_AGENT_NAMESPACE,
 	HLID_AGENT_NAMESPACE_DESCRIPTION,
 	HLID_AGENT_TOOL_SPECS,
@@ -2247,20 +2247,25 @@ class CodexAgentSession implements AgentSession {
 		}
 		if (
 			params.namespace === HLID_AGENT_NAMESPACE &&
-			params.tool === "publish_relic"
+			HLID_AGENT_TOOL_SPECS.some((candidate) => candidate.name === params.tool)
 		) {
+			const spec = HLID_AGENT_TOOL_SPECS.find(
+				(candidate) => candidate.name === params.tool,
+			);
+			if (!spec) throw new Error(`Unknown Hlid tool: ${params.tool}`);
 			try {
 				if (
-					this.params.permissionMode !== "bypassPermissions" ||
-					this.params.policyEnforced
+					!spec.readOnly &&
+					(this.params.permissionMode !== "bypassPermissions" ||
+						this.params.policyEnforced)
 				) {
 					const decision = await this.params.canUseTool(
-						`mcp__${HLID_AGENT_NAMESPACE}__publish_relic`,
+						`mcp__${HLID_AGENT_NAMESPACE}__${params.tool}`,
 						params.arguments,
 						{
-							toolUseID: String(params.callId ?? `publish-relic-${Date.now()}`),
+							toolUseID: String(params.callId ?? `hlid-tool-${Date.now()}`),
 							signal: this.params.signal ?? new AbortController().signal,
-							title: "Hlid publish Relic",
+							title: spec.approvalTitle,
 						},
 					);
 					if (decision.behavior === "deny") {
@@ -2271,26 +2276,31 @@ class CodexAgentSession implements AgentSession {
 									type: "inputText",
 									text:
 										decision.message ??
-										"Publishing the generated Relic was not approved.",
+										`${spec.approvalTitle ?? "The Hlid action"} was not approved.`,
 								},
 							],
 						};
 					}
 				}
+				const result = await executeHlidAgentToolRich(
+					spec.name,
+					params.arguments,
+					{
+						runtimeCwd: this.params.cwd,
+						sessionId: this.params.hostSessionId,
+					},
+				);
 				return {
 					success: true,
 					contentItems: [
 						{
 							type: "inputText",
-							text: await executeHlidAgentTool(
-								"publish_relic",
-								params.arguments,
-								{
-									runtimeCwd: this.params.cwd,
-									sessionId: this.params.hostSessionId,
-								},
-							),
+							text: result.text,
 						},
+						...(result.images ?? []).map((image) => ({
+							type: "inputImage" as const,
+							imageUrl: `data:${image.mimeType};base64,${image.data}`,
+						})),
 					],
 				};
 			} catch (error) {

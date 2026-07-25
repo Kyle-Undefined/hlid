@@ -54,8 +54,20 @@ type TestClientSocket = {
 	close: ReturnType<typeof vi.fn>;
 };
 
-let captured: CapturedServerOptions;
+let captured: CapturedServerOptions[];
 let upstreamFetch: ReturnType<typeof vi.fn>;
+
+function mainServer(): CapturedServerOptions {
+	const server = captured.find(({ port }) => port === 3443);
+	if (!server) throw new Error("Main TLS server was not started.");
+	return server;
+}
+
+function previewServer(): CapturedServerOptions {
+	const server = captured.find(({ port }) => port === 3444);
+	if (!server) throw new Error("Preview TLS server was not started.");
+	return server;
+}
 
 function start(): void {
 	startTlsProxy({
@@ -88,6 +100,7 @@ function websocketRequest(path: string, origin?: string): Request {
 }
 
 beforeEach(() => {
+	captured = [];
 	upstreamFetch = vi.fn(async () => new Response("forwarded"));
 	vi.stubGlobal("fetch", upstreamFetch);
 	vi.stubGlobal("WebSocket", {
@@ -99,7 +112,7 @@ beforeEach(() => {
 	vi.stubGlobal("Bun", {
 		file: vi.fn((path: string) => path),
 		serve: vi.fn((options: CapturedServerOptions) => {
-			captured = options;
+			captured.push(options);
 			return { stop: vi.fn() };
 		}),
 	});
@@ -116,53 +129,60 @@ describe("TLS proxy server boundary", () => {
 	it("starts with the configured TLS and request limits", () => {
 		start();
 
-		expect(Bun.serve).toHaveBeenCalledOnce();
-		expect(captured).toMatchObject({
+		expect(Bun.serve).toHaveBeenCalledTimes(2);
+		expect(mainServer()).toMatchObject({
 			port: 3443,
 			hostname: "127.0.0.1",
 			idleTimeout: 75,
 			maxRequestBodySize: 4096,
 		});
-		expect(registerBunServer).toHaveBeenCalledOnce();
+		expect(previewServer()).toMatchObject({
+			port: 3444,
+			hostname: "127.0.0.1",
+			idleTimeout: 75,
+			maxRequestBodySize: 4096,
+		});
+		expect(registerBunServer).toHaveBeenCalledTimes(2);
 	});
 
 	it("enforces peer, origin, authentication, and WebSocket route checks", async () => {
 		start();
+		const main = mainServer();
 
-		const forbiddenPeer = await captured.fetch(
+		const forbiddenPeer = await main.fetch(
 			websocketRequest("/ws"),
 			requestServer("203.0.113.4"),
 		);
 		expect(forbiddenPeer?.status).toBe(403);
 
-		const wrongRoute = await captured.fetch(
+		const wrongRoute = await main.fetch(
 			websocketRequest("/not-websocket"),
 			requestServer(),
 		);
 		expect(wrongRoute?.status).toBe(400);
 
-		const forbiddenOrigin = await captured.fetch(
+		const forbiddenOrigin = await main.fetch(
 			websocketRequest("/ws", "https://evil.example"),
 			requestServer(),
 		);
 		expect(forbiddenOrigin?.status).toBe(403);
 
 		vi.mocked(authenticateRequest).mockResolvedValueOnce(false);
-		const unauthorized = await captured.fetch(
+		const unauthorized = await main.fetch(
 			websocketRequest("/ws/session-1", "https://localhost"),
 			requestServer(),
 		);
 		expect(unauthorized?.status).toBe(401);
 
 		const failedUpgradeServer = requestServer("127.0.0.1", false);
-		const failedUpgrade = await captured.fetch(
+		const failedUpgrade = await main.fetch(
 			websocketRequest("/ws/session-1?tail=1", "https://localhost"),
 			failedUpgradeServer,
 		);
 		expect(failedUpgrade?.status).toBe(500);
 
 		const upgradedServer = requestServer();
-		const upgraded = await captured.fetch(
+		const upgraded = await main.fetch(
 			websocketRequest("/ws/session-1?tail=1", "https://localhost"),
 			upgradedServer,
 		);
@@ -178,7 +198,7 @@ describe("TLS proxy server boundary", () => {
 
 	it("forwards an allowed HTTP request with trusted proxy metadata", async () => {
 		start();
-		const response = await captured.fetch(
+		const response = await mainServer().fetch(
 			new Request("https://hlid.test/api/private?view=full"),
 			requestServer(),
 		);
@@ -206,7 +226,7 @@ describe("TLS proxy server boundary", () => {
 			close: vi.fn(),
 		};
 		client.data.back = openBackend;
-		captured.websocket.message(client, "hello");
+		mainServer().websocket.message(client, "hello");
 		expect(openBackend.send).toHaveBeenCalledWith("hello");
 
 		const connectingBackend: TestBackendSocket = {
@@ -216,7 +236,7 @@ describe("TLS proxy server boundary", () => {
 		};
 		client.data.back = connectingBackend;
 		for (let index = 0; index < 101; index++) {
-			captured.websocket.message(client, new Uint8Array([index]));
+			mainServer().websocket.message(client, new Uint8Array([index]));
 		}
 		expect(client.data.queue).toHaveLength(100);
 		expect(client.data.queue[0]).toBeInstanceOf(ArrayBuffer);
@@ -226,10 +246,42 @@ describe("TLS proxy server boundary", () => {
 			send: vi.fn(),
 			close: vi.fn(),
 		};
-		captured.websocket.message(client, "late");
+		mainServer().websocket.message(client, "late");
 		expect(client.close).toHaveBeenCalledOnce();
 
-		captured.websocket.close(client);
+		mainServer().websocket.close(client);
 		expect(client.data.back.close).toHaveBeenCalledOnce();
+	});
+
+	it("isolates authenticated preview relay traffic on the adjacent TLS port", async () => {
+		start();
+		const preview = previewServer();
+
+		const wrongRoute = await preview.fetch(
+			new Request("https://hlid.test/api/private"),
+			requestServer(),
+		);
+		expect(wrongRoute?.status).toBe(404);
+
+		vi.mocked(authenticateRequest).mockResolvedValueOnce(false);
+		const unauthorized = await preview.fetch(
+			new Request(
+				"https://hlid.test/api/project-previews/11111111-1111-4111-8111-111111111111/relay/",
+			),
+			requestServer(),
+		);
+		expect(unauthorized?.status).toBe(401);
+
+		const response = await preview.fetch(
+			new Request(
+				"https://hlid.test/api/project-previews/11111111-1111-4111-8111-111111111111/relay/app",
+			),
+			requestServer(),
+		);
+		expect(response?.status).toBe(200);
+		expect(upstreamFetch).toHaveBeenCalledWith(
+			"http://127.0.0.1:3001/api/project-previews/11111111-1111-4111-8111-111111111111/relay/app",
+			expect.any(Object),
+		);
 	});
 });

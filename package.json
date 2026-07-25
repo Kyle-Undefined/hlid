@@ -1,7 +1,7 @@
 {
   "name": "hlid",
   "description": "Hliðskjálf - Watcher of Worlds",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "private": true,
   "type": "module",
   "imports": {
@@ -99,6 +99,7 @@
     "@vitest/coverage-istanbul": "4.1.9",
     "@vitest/coverage-v8": "4.1.9",
     "bumpp": "11.1.0",
+    "chromium-bidi": "0.5.24",
     "concurrently": "9.2.1",
     "fallow": "3.2.0",
     "istanbul-lib-coverage": "3.2.2",
@@ -130,6 +131,7 @@
     "@anthropic-ai/sdk": "^0.91.1",
     "dompurify": "^3.4.12",
     "@hono/node-server": "^2.0.5",
+    "postcss": "8.5.19",
     "qs": "^6.15.3",
     "undici": "^7.28.0",
     "@babel/core": "^7.29.7",

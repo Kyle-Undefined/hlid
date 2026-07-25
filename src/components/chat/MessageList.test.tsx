@@ -24,6 +24,9 @@ import type { AssistantMessage, ChatMessage, UserMessage } from "./chatReducer";
 import { MessageList } from "./MessageList";
 import { useMessageListView } from "./useMessageListView";
 
+vi.mock("#/hooks/projectPreviewStore", () => ({
+	useProjectPreview: () => null,
+}));
 vi.mock("./ChatMessageRow", () => ({
 	ChatMessageRow: ({
 		message,
@@ -31,17 +34,23 @@ vi.mock("./ChatMessageRow", () => ({
 		toolEventStartIndex,
 		olderToolEventCount,
 		onLoadOlderToolEvents,
+		groupedProjectPreviewEventIds,
+		historicalProjectPreviewGroups,
 	}: {
 		message: ChatMessage;
 		queueState?: { kind: string };
 		toolEventStartIndex?: number;
 		olderToolEventCount?: number;
 		onLoadOlderToolEvents?: () => void;
+		groupedProjectPreviewEventIds?: ReadonlySet<string>;
+		historicalProjectPreviewGroups?: ReadonlyMap<string, unknown[]>;
 	}) => (
 		<div
 			data-testid={`message-${message.id}`}
 			data-queue-state={queueState?.kind}
 			data-tool-event-start={toolEventStartIndex}
+			data-preview-grouped={String(groupedProjectPreviewEventIds?.size ?? 0)}
+			data-preview-history={String(historicalProjectPreviewGroups?.size ?? 0)}
 		>
 			{"text" in message ? message.text : message.id}
 			{Boolean(olderToolEventCount && onLoadOlderToolEvents) && (
@@ -53,6 +62,16 @@ vi.mock("./ChatMessageRow", () => ({
 		</div>
 	),
 }));
+vi.mock("./ProjectPreviewToolBlock", async (importOriginal) => {
+	const actual =
+		await importOriginal<typeof import("./ProjectPreviewToolBlock")>();
+	return {
+		...actual,
+		ProjectPreviewActivityCard: ({ events }: { events: unknown[] }) => (
+			<div data-testid="preview-activity" data-count={events.length} />
+		),
+	};
+});
 
 afterEach(cleanup);
 
@@ -81,6 +100,23 @@ function assistantMsg(id: string, toolCount: number): AssistantMessage {
 			name: "Read",
 			input: {},
 		})),
+	};
+}
+
+function previewAssistantMsg(
+	id: string,
+	toolName: "start_project_preview" | "capture_project_preview",
+): AssistantMessage {
+	return {
+		...assistantMsg(id, 0),
+		toolEvents: [
+			{
+				type: "tool_event",
+				id: `${id}-preview`,
+				name: `mcp__hlid__${toolName}`,
+				input: {},
+			},
+		],
 	};
 }
 
@@ -332,6 +368,75 @@ describe("MessageList — bounded history rendering", () => {
 });
 
 describe("MessageList — bounded tool rendering", () => {
+	it("collects Preview calls from multiple turns into one session card", () => {
+		renderList({
+			messages: [
+				previewAssistantMsg("start", "start_project_preview"),
+				previewAssistantMsg("capture", "capture_project_preview"),
+			],
+		});
+
+		expect(screen.getAllByTestId("preview-activity")).toHaveLength(1);
+		expect(screen.getByTestId("preview-activity").dataset.count).toBe("2");
+		expect(screen.getByTestId("message-start").dataset.previewGrouped).toBe(
+			"2",
+		);
+		expect(screen.getByTestId("message-capture").dataset.previewGrouped).toBe(
+			"2",
+		);
+	});
+
+	it("returns a stopped Preview card to transcript order when a new one starts", () => {
+		const previewResult = (
+			id: string,
+			state: "ready" | "stopped",
+			label: string,
+		) =>
+			JSON.stringify({
+				id,
+				session_id: "s1",
+				label,
+				command: "bun run dev",
+				cwd: "/work",
+				port: 4173,
+				path: "/",
+				url: "http://127.0.0.1:4173/",
+				relay_url: `/api/project-previews/${id}/relay/`,
+				state,
+				present: true,
+				started_at: "2026-07-24T10:00:00.000Z",
+				expires_at: "2026-07-24T14:00:00.000Z",
+				logs: [],
+			});
+		const old = previewAssistantMsg("old", "start_project_preview");
+		old.toolEvents[0] = {
+			...old.toolEvents[0],
+			result: previewResult("old-preview", "ready", "Old"),
+		};
+		const stopped = previewAssistantMsg("stopped", "capture_project_preview");
+		stopped.toolEvents[0] = {
+			...stopped.toolEvents[0],
+			name: "mcp__hlid__stop_project_preview",
+			result: previewResult("old-preview", "stopped", "Old"),
+		};
+		const current = previewAssistantMsg("current", "start_project_preview");
+		current.toolEvents[0] = {
+			...current.toolEvents[0],
+			result: previewResult("new-preview", "ready", "New"),
+		};
+
+		renderList({ messages: [old, stopped, current] });
+
+		expect(screen.getByTestId("preview-activity").dataset.count).toBe("1");
+		expect(screen.getByTestId("message-old").dataset.previewHistory).toBe("1");
+		expect(screen.getByTestId("message-stopped").dataset.previewGrouped).toBe(
+			"2",
+		);
+		expect(screen.getByTestId("message-current").dataset.previewGrouped).toBe(
+			"2",
+		);
+	});
+
 	it("allocates the latest 200 tool calls across assistant messages", () => {
 		renderList({
 			messages: [

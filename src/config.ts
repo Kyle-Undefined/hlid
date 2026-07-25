@@ -151,6 +151,14 @@ const WindowsComputerUseSchema = z.object({
 	effort: z.string().default("medium"),
 });
 
+const ProjectPreviewSchema = z.object({
+	/**
+	 * Attach Preview control to the user's consented Chromium profile instead
+	 * of launching Hlid's isolated temporary profile.
+	 */
+	use_real_browser_profile: z.boolean().default(false),
+});
+
 const CodexSchema = z.object({
 	model: z.string().default(""),
 	effort: z.string().default("medium"),
@@ -397,6 +405,9 @@ export const HlidConfigSchema = z.object({
 		permission_mode: "default" as const,
 		turn_recaps: true,
 		windows_computer_use: { model: "inherit", effort: "medium" },
+	})),
+	project_preview: ProjectPreviewSchema.default(() => ({
+		use_real_browser_profile: false,
 	})),
 	ui: UiSchema.default(() => ({
 		enter_to_submit: true,
