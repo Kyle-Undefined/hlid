@@ -1,6 +1,16 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+	waitFor,
+} from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+	captureProjectPreviewFeedbackFn,
+	type ProjectPreviewAgentFrame,
+} from "#/lib/serverFns/projectPreviews";
 import type { ProjectPreviewSnapshot } from "#/server/protocol";
 import { ProjectPreviewPane } from "./ProjectPreviewPane";
 
@@ -9,8 +19,10 @@ vi.mock("#/lib/serverFns/projectPreviews", async (importOriginal) => {
 		await importOriginal<typeof import("#/lib/serverFns/projectPreviews")>();
 	return {
 		...actual,
+		captureProjectPreviewFeedbackFn: vi.fn(),
 		getProjectPreviewAgentFrameFn: vi.fn(async () => null),
 		restartProjectPreviewFn: vi.fn(),
+		saveProjectPreviewFeedbackFn: vi.fn(),
 		stopProjectPreviewFn: vi.fn(),
 	};
 });
@@ -18,6 +30,7 @@ vi.mock("#/lib/serverFns/projectPreviews", async (importOriginal) => {
 afterEach(() => {
 	cleanup();
 	vi.clearAllMocks();
+	vi.unstubAllGlobals();
 });
 
 function preview(): ProjectPreviewSnapshot {
@@ -91,5 +104,68 @@ describe("ProjectPreviewPane", () => {
 		fireEvent.click(screen.getByLabelText("Show user preview"));
 		expect(screen.getByTitle("Web app")).toBe(liveFrame);
 		expect(liveFrame.parentElement?.className).not.toContain("hidden");
+	});
+
+	it("captures the selected named viewport for user feedback", async () => {
+		vi.stubGlobal(
+			"matchMedia",
+			vi.fn(() => ({
+				matches: true,
+				addEventListener: vi.fn(),
+				removeEventListener: vi.fn(),
+			})),
+		);
+		const frame: ProjectPreviewAgentFrame = {
+			preview_id: preview().id,
+			session_id: "session-1",
+			path: "/",
+			viewport: "mobile",
+			width: 390,
+			height: 844,
+			full_page: false,
+			captured_at: Date.now(),
+			mime: "image/png",
+			size_bytes: 3,
+			image_base64: "AQID",
+			frame_id: "e16b1643-591f-4d67-8c22-9df105659385",
+			title: "Web app",
+			elements: [],
+			console_messages: [],
+			failed_requests: [],
+		};
+		vi.mocked(captureProjectPreviewFeedbackFn).mockResolvedValue(frame);
+		render(<ProjectPreviewPane preview={preview()} />);
+		fireEvent.change(screen.getByLabelText("Preview viewport"), {
+			target: { value: "mobile" },
+		});
+		fireEvent.click(screen.getByLabelText("Capture Preview feedback"));
+
+		await waitFor(() =>
+			expect(captureProjectPreviewFeedbackFn).toHaveBeenCalledWith({
+				data: {
+					sessionId: "session-1",
+					previewId: preview().id,
+					path: "/",
+					viewport: "mobile",
+				},
+			}),
+		);
+		expect(
+			screen.getByRole("dialog", { name: "Annotate Project Preview" }),
+		).not.toBeNull();
+		await waitFor(() =>
+			expect(
+				(
+					screen.getByLabelText(
+						"Preview annotation canvas",
+					) as HTMLCanvasElement
+				).style.touchAction,
+			).toBe("pan-x pan-y"),
+		);
+		fireEvent.click(screen.getByLabelText("Pen"));
+		expect(
+			(screen.getByLabelText("Preview annotation canvas") as HTMLCanvasElement)
+				.style.touchAction,
+		).toBe("none");
 	});
 });

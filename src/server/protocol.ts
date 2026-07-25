@@ -589,6 +589,11 @@ export type ProjectPreviewAgentFrame = {
 		| "viewport";
 };
 
+export type ProjectPreviewFeedbackResult = {
+	attachment: ChatAttachment;
+	open_url: string;
+};
+
 export type ProjectPreviewStatusMessage = {
 	type: "project_preview_status";
 	session_id: string;

@@ -6,11 +6,18 @@ const mocks = vi.hoisted(() => ({
 	getProjectPreview: vi.fn(),
 	getLatestProjectPreviewForSession: vi.fn(),
 	getFrame: vi.fn(),
+	retainProjectPreviewFeedback: vi.fn(),
+	bumpDataRevision: vi.fn(),
 }));
 
 vi.mock("../db", () => ({
 	getProjectPreview: mocks.getProjectPreview,
 	getLatestProjectPreviewForSession: mocks.getLatestProjectPreviewForSession,
+	retainProjectPreviewFeedback: mocks.retainProjectPreviewFeedback,
+}));
+
+vi.mock("./dataRevision", () => ({
+	bumpDataRevision: mocks.bumpDataRevision,
 }));
 
 vi.mock("./projectPreview", () => ({
@@ -209,6 +216,78 @@ describe("Project Preview capture route", () => {
 		expect(await response?.json()).toMatchObject({
 			last_action: "click",
 			image_base64: "AQID",
+		});
+	});
+
+	it("retains annotated feedback against the exact source frame", async () => {
+		const frameId = "e16b1643-591f-4d67-8c22-9df105659385";
+		mocks.getFrame.mockReturnValue({
+			preview_id: "7c0eea4d-f74e-45c8-8674-a535fbb4412b",
+			session_id: "session-1",
+			path: "/settings",
+			viewport: "tablet",
+			width: 768,
+			height: 1024,
+			full_page: false,
+			captured_at: 1_753_400_000_000,
+			mime: "image/png",
+			size_bytes: 3,
+			image_base64: "AQID",
+			frame_id: frameId,
+			title: "Settings",
+			elements: [],
+			console_messages: [],
+			failed_requests: [],
+		});
+		mocks.retainProjectPreviewFeedback.mockResolvedValue({
+			id: "0591f46e-b4b3-4bfb-9aa2-14f65d625209",
+			path: "/library/feedback.png",
+			filename: "feedback.png",
+			mime: "image/png",
+			kind: "ephemeral",
+		});
+
+		const response = await handleProjectPreviewRoute(
+			new URL(
+				"http://localhost/api/project-previews/7c0eea4d-f74e-45c8-8674-a535fbb4412b/feedback",
+			),
+			new Request(
+				"http://localhost/api/project-previews/7c0eea4d-f74e-45c8-8674-a535fbb4412b/feedback",
+				{
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						session_id: "session-1",
+						frame_id: frameId,
+						attachment_id: "0591f46e-b4b3-4bfb-9aa2-14f65d625209",
+						comment: "Check this alignment.",
+					}),
+				},
+			),
+		);
+
+		expect(response?.status).toBe(200);
+		expect(mocks.retainProjectPreviewFeedback).toHaveBeenCalledWith({
+			attachmentId: "0591f46e-b4b3-4bfb-9aa2-14f65d625209",
+			previewId: "7c0eea4d-f74e-45c8-8674-a535fbb4412b",
+			sessionId: "session-1",
+			sourceFrameId: frameId,
+			path: "/settings",
+			viewport: "tablet",
+			width: 768,
+			height: 1024,
+			sourceSha256:
+				"039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81",
+			capturedAt: 1_753_400_000_000,
+			comment: "Check this alignment.",
+		});
+		expect(mocks.bumpDataRevision).toHaveBeenCalledWith("relics", "storage");
+		expect(await response?.json()).toMatchObject({
+			attachment: {
+				id: "0591f46e-b4b3-4bfb-9aa2-14f65d625209",
+				reference: "relic",
+			},
+			open_url: "/api/attachments/0591f46e-b4b3-4bfb-9aa2-14f65d625209/raw",
 		});
 	});
 });

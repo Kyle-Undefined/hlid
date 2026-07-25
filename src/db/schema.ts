@@ -1301,4 +1301,27 @@ function applyMigrations(db: Db): void {
 			 ON project_previews(state, expires_at)`,
 		);
 	});
+
+	runMigration(db, "_migrated_project_preview_feedback_v1", (db) => {
+		db.run(`
+			CREATE TABLE project_preview_feedback (
+				attachment_id TEXT PRIMARY KEY REFERENCES attachments(id) ON DELETE CASCADE,
+				preview_id TEXT NOT NULL,
+				session_id TEXT NOT NULL,
+				source_frame_id TEXT NOT NULL,
+				path TEXT NOT NULL,
+				viewport TEXT NOT NULL CHECK(viewport IN ('desktop', 'tablet', 'mobile')),
+				width INTEGER NOT NULL,
+				height INTEGER NOT NULL,
+				source_sha256 TEXT NOT NULL,
+				captured_at INTEGER NOT NULL,
+				comment TEXT,
+				created_at INTEGER NOT NULL DEFAULT (unixepoch())
+			)
+		`);
+		db.run(
+			`CREATE INDEX idx_project_preview_feedback_session_created
+			 ON project_preview_feedback(session_id, created_at DESC)`,
+		);
+	});
 }

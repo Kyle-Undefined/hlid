@@ -43,7 +43,8 @@ import {
 	getSessionPermissionEvents,
 	recordPermissionEvent,
 } from "./permissions";
-import { setDbForTest } from "./schema";
+import { retainProjectPreviewFeedback } from "./projectPreviewFeedback";
+import { getDb, setDbForTest } from "./schema";
 import {
 	createForkedSessionRow,
 	createSession,
@@ -1747,6 +1748,100 @@ describe("attachments — CRUD", () => {
 				path: "/vault/moved.txt",
 			}),
 		).toBe(false);
+	});
+});
+
+describe("Project Preview feedback", () => {
+	beforeEach(() => freshDb());
+
+	it("retains a session PNG and records immutable capture provenance", async () => {
+		await createSession("session-1", "Preview", "model");
+		await createAttachment({
+			id: "feedback-1",
+			session_id: "session-1",
+			kind: "ephemeral",
+			filename: "feedback.png",
+			path: "/library/artifacts/feedback-1/feedback.png",
+			mime: "image/png",
+			size_bytes: 123,
+			sha256: "annotated",
+			category: "upload",
+			retention: "session",
+			origin: "upload",
+		});
+
+		const retained = await retainProjectPreviewFeedback({
+			attachmentId: "feedback-1",
+			previewId: "preview-1",
+			sessionId: "session-1",
+			sourceFrameId: "frame-1",
+			path: "/settings",
+			viewport: "tablet",
+			width: 768,
+			height: 1024,
+			sourceSha256: "source",
+			capturedAt: 1_753_400_000_000,
+			comment: "The save button overlaps.",
+		});
+
+		expect(retained).toMatchObject({
+			category: "report",
+			retention: "retained",
+			origin: "generated",
+		});
+		const db = await getDb();
+		expect(
+			db
+				.query<
+					{
+						preview_id: string;
+						path: string;
+						viewport: string;
+						source_sha256: string;
+						comment: string;
+					},
+					[string]
+				>(`SELECT * FROM project_preview_feedback WHERE attachment_id = ?`)
+				.get("feedback-1"),
+		).toMatchObject({
+			preview_id: "preview-1",
+			path: "/settings",
+			viewport: "tablet",
+			source_sha256: "source",
+			comment: "The save button overlaps.",
+		});
+	});
+
+	it("rejects an attachment that is already retained or owned elsewhere", async () => {
+		await createSession("session-1", "Preview", "model");
+		await createAttachment({
+			id: "feedback-1",
+			session_id: "session-1",
+			kind: "ephemeral",
+			filename: "feedback.png",
+			path: "/tmp/feedback.png",
+			mime: "image/png",
+			size_bytes: 123,
+			sha256: "annotated",
+			category: "report",
+			retention: "retained",
+			origin: "generated",
+		});
+
+		expect(
+			await retainProjectPreviewFeedback({
+				attachmentId: "feedback-1",
+				previewId: "preview-1",
+				sessionId: "session-2",
+				sourceFrameId: "frame-1",
+				path: "/",
+				viewport: "desktop",
+				width: 1440,
+				height: 1000,
+				sourceSha256: "source",
+				capturedAt: 1,
+			}),
+		).toBeNull();
 	});
 });
 

@@ -3,6 +3,7 @@ import { z } from "zod";
 import { dbFetch, dbJson, requireDbOk } from "#/lib/dbClient";
 import type {
 	ProjectPreviewAgentFrame,
+	ProjectPreviewFeedbackResult,
 	ProjectPreviewSnapshot,
 } from "#/server/protocol";
 
@@ -16,6 +17,15 @@ const previewActionSchema = z.object({
 const agentFrameSchema = previewActionSchema.extend({
 	afterFrameId: z.string().uuid().optional(),
 	frameId: z.string().uuid().optional(),
+});
+const captureFeedbackSchema = previewActionSchema.extend({
+	path: z.string().trim().max(2_048).optional(),
+	viewport: z.enum(["desktop", "tablet", "mobile"]),
+});
+const saveFeedbackSchema = previewActionSchema.extend({
+	frameId: z.string().uuid(),
+	attachmentId: z.string().uuid(),
+	comment: z.string().max(10_000).optional(),
 });
 
 export const getProjectPreviewFn = createServerFn({ method: "GET" })
@@ -39,6 +49,48 @@ export const getProjectPreviewAgentFrameFn = createServerFn({ method: "GET" })
 			null,
 		),
 	);
+
+export const captureProjectPreviewFeedbackFn = createServerFn({
+	method: "POST",
+})
+	.validator((raw) => captureFeedbackSchema.parse(raw))
+	.handler(async ({ data }) => {
+		const response = await dbFetch(
+			`/api/project-previews/${encodeURIComponent(data.previewId)}/capture`,
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					session_id: data.sessionId,
+					path: data.path,
+					viewport: data.viewport,
+					full_page: false,
+				}),
+			},
+		);
+		await requireDbOk(response, "Capture Project Preview feedback");
+		return (await response.json()) as ProjectPreviewAgentFrame;
+	});
+
+export const saveProjectPreviewFeedbackFn = createServerFn({ method: "POST" })
+	.validator((raw) => saveFeedbackSchema.parse(raw))
+	.handler(async ({ data }) => {
+		const response = await dbFetch(
+			`/api/project-previews/${encodeURIComponent(data.previewId)}/feedback`,
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					session_id: data.sessionId,
+					frame_id: data.frameId,
+					attachment_id: data.attachmentId,
+					comment: data.comment,
+				}),
+			},
+		);
+		await requireDbOk(response, "Save Project Preview feedback");
+		return (await response.json()) as ProjectPreviewFeedbackResult;
+	});
 
 export const stopProjectPreviewFn = createServerFn({ method: "POST" })
 	.validator((raw) => previewActionSchema.parse(raw))

@@ -69,6 +69,7 @@ export {
 	getSessionPermissionEvents,
 	recordPermissionEvent,
 } from "./permissions";
+export { retainProjectPreviewFeedback } from "./projectPreviewFeedback";
 export {
 	deleteProjectPreviewsForSessions,
 	getLatestProjectPreviewForSession,

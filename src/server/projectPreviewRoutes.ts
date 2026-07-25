@@ -1,5 +1,11 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
-import { getLatestProjectPreviewForSession, getProjectPreview } from "../db";
+import {
+	getLatestProjectPreviewForSession,
+	getProjectPreview,
+	retainProjectPreviewFeedback,
+} from "../db";
+import { bumpDataRevision } from "./dataRevision";
 import { projectPreviewManager } from "./projectPreview";
 import {
 	type ProjectPreviewAgentFrame,
@@ -30,6 +36,11 @@ const captureSchema = actionSchema.extend({
 	path: z.string().trim().max(2_048).optional(),
 	viewport: z.enum(["desktop", "tablet", "mobile"]).default("desktop"),
 	full_page: z.boolean().default(false),
+});
+const feedbackSchema = actionSchema.extend({
+	frame_id: z.string().uuid(),
+	attachment_id: z.string().uuid(),
+	comment: z.string().max(10_000).optional(),
 });
 
 const controlSchema = actionSchema.extend({
@@ -252,6 +263,63 @@ export async function handleProjectPreviewRoute(
 			);
 			return Response.json(result, {
 				headers: { "cache-control": "no-store" },
+			});
+		}
+
+		const feedbackMatch = url.pathname.match(
+			/^\/api\/project-previews\/([^/]+)\/feedback$/,
+		);
+		if (feedbackMatch && req.method === "POST") {
+			const body = feedbackSchema.parse(await req.json());
+			const previewId = decodeURIComponent(feedbackMatch[1]);
+			const preview = await inspectPreview(body.session_id, previewId);
+			const frame = projectPreviewBrowserManager.getFrame(
+				preview.id,
+				body.session_id,
+				body.frame_id,
+			);
+			if (!frame) {
+				return Response.json(
+					{ error: "The source Preview capture is no longer available." },
+					{ status: 410 },
+				);
+			}
+			const sourceSha256 = createHash("sha256")
+				.update(Buffer.from(frame.image_base64, "base64"))
+				.digest("hex");
+			const attachment = await retainProjectPreviewFeedback({
+				attachmentId: body.attachment_id,
+				previewId: preview.id,
+				sessionId: body.session_id,
+				sourceFrameId: frame.frame_id,
+				path: frame.path,
+				viewport: frame.viewport,
+				width: frame.width,
+				height: frame.height,
+				sourceSha256,
+				capturedAt: frame.captured_at,
+				comment: body.comment,
+			});
+			if (!attachment) {
+				return Response.json(
+					{
+						error:
+							"Preview feedback must use a new PNG uploaded by this session.",
+					},
+					{ status: 409 },
+				);
+			}
+			bumpDataRevision("relics", "storage");
+			return Response.json({
+				attachment: {
+					id: attachment.id,
+					path: attachment.path,
+					filename: attachment.filename,
+					mime: attachment.mime,
+					kind: attachment.kind,
+					reference: "relic",
+				},
+				open_url: `/api/attachments/${attachment.id}/raw`,
 			});
 		}
 

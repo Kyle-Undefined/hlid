@@ -1,5 +1,6 @@
 import {
 	Bot,
+	Camera,
 	ExternalLink,
 	LoaderCircle,
 	Maximize2,
@@ -11,15 +12,20 @@ import {
 	X,
 } from "lucide-react";
 import { type CSSProperties, useEffect, useState } from "react";
+import { ProjectPreviewFeedbackModal } from "#/components/chat/ProjectPreviewFeedbackModal";
 import { ClickableImage } from "#/components/ImageViewerModal";
 import { applyProjectPreview } from "#/hooks/projectPreviewStore";
+import { enqueueChat } from "#/hooks/wsStore";
 import {
+	captureProjectPreviewFeedbackFn,
 	getProjectPreviewAgentFrameFn,
 	type ProjectPreviewAgentFrame,
 	type ProjectPreviewSnapshot,
 	restartProjectPreviewFn,
+	saveProjectPreviewFeedbackFn,
 	stopProjectPreviewFn,
 } from "#/lib/serverFns/projectPreviews";
+import { uid } from "#/lib/utils";
 
 export function ProjectPreviewPane({
 	preview,
@@ -49,6 +55,11 @@ export function ProjectPreviewPane({
 		null,
 	);
 	const [error, setError] = useState<string | null>(null);
+	const [feedbackFrame, setFeedbackFrame] =
+		useState<ProjectPreviewAgentFrame | null>(null);
+	const [feedbackCapturing, setFeedbackCapturing] = useState(false);
+	const [feedbackSaving, setFeedbackSaving] = useState(false);
+	const [feedbackError, setFeedbackError] = useState<string | null>(null);
 	const isReady = preview.state === "ready";
 	useEffect(() => {
 		if (!isReady || surface !== "agent") return;
@@ -123,6 +134,79 @@ export function ProjectPreviewPane({
 		}
 	};
 
+	const captureFeedback = async () => {
+		setFeedbackCapturing(true);
+		setFeedbackError(null);
+		setError(null);
+		try {
+			const frame = await captureProjectPreviewFeedbackFn({
+				data: {
+					sessionId: preview.session_id,
+					previewId: preview.id,
+					path: preview.path,
+					viewport: viewport === "fit" ? "desktop" : viewport,
+				},
+			});
+			setFeedbackFrame(frame);
+		} catch (cause) {
+			setError(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			setFeedbackCapturing(false);
+		}
+	};
+
+	const saveFeedback = async (blob: Blob, comment: string) => {
+		setFeedbackSaving(true);
+		setFeedbackError(null);
+		try {
+			const form = new FormData();
+			const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+			form.append(
+				"file",
+				new File([blob], `preview-feedback-${timestamp}.png`, {
+					type: "image/png",
+				}),
+			);
+			form.append("session_id", preview.session_id);
+			const uploadResponse = await fetch("/api/attachments/upload", {
+				method: "POST",
+				body: form,
+			});
+			if (!uploadResponse.ok) {
+				const detail = await uploadResponse.text().catch(() => "");
+				throw new Error(
+					detail ||
+						`Preview feedback upload failed (${uploadResponse.status}).`,
+				);
+			}
+			const upload = (await uploadResponse.json()) as { id?: string };
+			if (!upload.id)
+				throw new Error("Preview feedback upload returned no id.");
+
+			const saved = await saveProjectPreviewFeedbackFn({
+				data: {
+					sessionId: preview.session_id,
+					previewId: preview.id,
+					frameId: feedbackFrame?.frame_id ?? "",
+					attachmentId: upload.id,
+					comment,
+				},
+			});
+			enqueueChat({
+				id: uid(),
+				session_id: preview.session_id,
+				text:
+					comment || "Please review this annotated Project Preview capture.",
+				attachments: [saved.attachment],
+			});
+			setFeedbackFrame(null);
+		} catch (cause) {
+			setFeedbackError(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			setFeedbackSaving(false);
+		}
+	};
+
 	return (
 		<section
 			aria-label="Project Preview"
@@ -142,6 +226,24 @@ export function ProjectPreviewPane({
 				</div>
 				{isReady && (
 					<>
+						<button
+							type="button"
+							onClick={() => void captureFeedback()}
+							disabled={feedbackCapturing}
+							aria-label="Capture Preview feedback"
+							title={
+								viewport === "fit"
+									? "Capture feedback at desktop viewport"
+									: "Capture feedback"
+							}
+							className="p-1.5 text-muted-foreground/55 hover:text-foreground disabled:opacity-30"
+						>
+							{feedbackCapturing ? (
+								<LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+							) : (
+								<Camera className="h-3.5 w-3.5" />
+							)}
+						</button>
 						<button
 							type="button"
 							onClick={() => setFrameKey((key) => key + 1)}
@@ -368,6 +470,20 @@ export function ProjectPreviewPane({
 					</div>
 				) : null}
 			</div>
+			{feedbackFrame && (
+				<ProjectPreviewFeedbackModal
+					frame={feedbackFrame}
+					saving={feedbackSaving}
+					error={feedbackError}
+					onClose={() => {
+						if (!feedbackSaving) {
+							setFeedbackFrame(null);
+							setFeedbackError(null);
+						}
+					}}
+					onSave={saveFeedback}
+				/>
+			)}
 		</section>
 	);
 }
