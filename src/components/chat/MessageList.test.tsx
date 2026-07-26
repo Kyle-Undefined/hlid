@@ -36,6 +36,9 @@ vi.mock("./ChatMessageRow", () => ({
 		onLoadOlderToolEvents,
 		groupedProjectPreviewEventIds,
 		historicalProjectPreviewGroups,
+		requesterSubagents,
+		pendingPermissionsByWorkflow,
+		embeddedPermissionIds,
 	}: {
 		message: ChatMessage;
 		queueState?: { kind: string };
@@ -44,6 +47,9 @@ vi.mock("./ChatMessageRow", () => ({
 		onLoadOlderToolEvents?: () => void;
 		groupedProjectPreviewEventIds?: ReadonlySet<string>;
 		historicalProjectPreviewGroups?: ReadonlyMap<string, unknown[]>;
+		requesterSubagents?: ReadonlyMap<string, unknown>;
+		pendingPermissionsByWorkflow?: ReadonlyMap<string, unknown[]>;
+		embeddedPermissionIds?: ReadonlySet<string>;
 	}) => (
 		<div
 			data-testid={`message-${message.id}`}
@@ -51,6 +57,16 @@ vi.mock("./ChatMessageRow", () => ({
 			data-tool-event-start={toolEventStartIndex}
 			data-preview-grouped={String(groupedProjectPreviewEventIds?.size ?? 0)}
 			data-preview-history={String(historicalProjectPreviewGroups?.size ?? 0)}
+			data-requester-count={String(requesterSubagents?.size ?? 0)}
+			data-workflow-approval-count={String(
+				Array.from(pendingPermissionsByWorkflow?.values() ?? []).reduce(
+					(total, approvals) => total + approvals.length,
+					0,
+				),
+			)}
+			data-embedded-permission={String(
+				embeddedPermissionIds?.has(message.id) ?? false,
+			)}
 		>
 			{"text" in message ? message.text : message.id}
 			{Boolean(olderToolEventCount && onLoadOlderToolEvents) && (
@@ -281,6 +297,68 @@ describe("MessageList — orphan queue rendering", () => {
 		expect(screen.getByText("run this next").dataset.queueState).toBe(
 			"promoting",
 		);
+	});
+});
+
+describe("MessageList — workflow approval placement", () => {
+	it("attributes a pending child approval to its owning workflow", () => {
+		const workflow = assistantMsg("assistant-1", 0);
+		workflow.toolEvents = [
+			{
+				type: "tool_event",
+				id: "workflow-event",
+				name: "Workflow",
+				input: {},
+				subagent: {
+					provider: "claude",
+					agentId: "workflow-1",
+					kind: "workflow",
+					name: "Repository audit",
+					status: "running",
+					startedAtMs: 1,
+				},
+			},
+			{
+				type: "tool_event",
+				id: "child-event",
+				name: "Task",
+				input: {},
+				subagent: {
+					provider: "claude",
+					agentId: "child-1",
+					parentActivityId: "workflow-1",
+					name: "Reader",
+					status: "running",
+					startedAtMs: 1,
+				},
+			},
+		];
+		renderList({
+			messages: [
+				workflow,
+				{
+					id: "approval-1",
+					role: "permission",
+					toolName: "Bash",
+					title: "Claude requests Shell command",
+					requester: {
+						providerId: "claude",
+						agentId: "child-1",
+					},
+					decision: "pending",
+				},
+			],
+		});
+
+		expect(
+			screen.getByTestId("message-assistant-1").dataset.workflowApprovalCount,
+		).toBe("1");
+		expect(
+			screen.getByTestId("message-approval-1").dataset.embeddedPermission,
+		).toBe("true");
+		expect(
+			screen.getByTestId("message-approval-1").dataset.requesterCount,
+		).toBe("2");
 	});
 });
 

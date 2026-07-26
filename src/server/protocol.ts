@@ -182,6 +182,21 @@ export type ErrorMessage = {
 	message: string;
 };
 
+/** Exact provider activity requesting an interactive permission decision. */
+export type PermissionRequester = {
+	providerId: string;
+	agentId: string;
+	/** Provider-owned agent type when the permission hook reports it. */
+	agentType?: string;
+};
+
+/** Policy-engine context kept separate from the provider's action description. */
+export type PermissionPolicyContext = {
+	source: "umbod";
+	/** Exact engine reason, retained for technical review. */
+	reason: string;
+};
+
 export type PermissionRequestMessage = {
 	type: "permission_request";
 	id: string;
@@ -190,6 +205,8 @@ export type PermissionRequestMessage = {
 	displayName?: string;
 	description?: string;
 	input?: Record<string, unknown>;
+	requester?: PermissionRequester;
+	policy?: PermissionPolicyContext;
 	/** False when a one-shot grant would immediately cause repetitive prompts. */
 	allowOnce?: boolean;
 	/** False when permanent approval belongs in the policy manifest instead. */

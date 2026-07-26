@@ -327,6 +327,7 @@ function makeProvider(
 	toolName: string,
 	toolUseID = "tid-1",
 	onDecision?: (decision: AgentToolDecision) => void,
+	agentID?: string,
 ): AgentProvider {
 	return {
 		providerId: "claude",
@@ -342,6 +343,7 @@ function makeProvider(
 						title: undefined,
 						displayName: undefined,
 						description: undefined,
+						agentID,
 					},
 				);
 				onDecision?.(decision);
@@ -596,7 +598,13 @@ describe("SessionManager — Umbod hook approval routing", () => {
 				agent: "codex",
 				tool: "Bash",
 				command: "git status",
-				inputs: { command: "git status" },
+				inputs: {
+					session_id: "codex-thread-1",
+					transcript_path: "/tmp/transcript.jsonl",
+					tool_input: { command: "git status" },
+					agent_id: "workflow-child-1",
+					agent_type: "repository-reader",
+				},
 				workingDirectory: "/tmp/project",
 				timestamp: new Date().toISOString(),
 				sessionId: "codex-thread-1",
@@ -611,7 +619,17 @@ describe("SessionManager — Umbod hook approval routing", () => {
 			expect.objectContaining({
 				type: "permission_request",
 				id: "hook-tool-1",
-				description: "matched approval rule",
+				displayName: "Shell command",
+				input: { command: "git status" },
+				requester: {
+					providerId: "codex",
+					agentId: "workflow-child-1",
+					agentType: "repository-reader",
+				},
+				policy: {
+					source: "umbod",
+					reason: "matched approval rule",
+				},
 			}),
 		);
 		sm.handlePermissionResponse("hook-tool-1", true);
@@ -3072,7 +3090,10 @@ describe("SessionManager — session-scoped permission persistence", () => {
 			expect(sm.getPendingPermissionRequests()[0]).toMatchObject({
 				toolName: "hlid.windows_computer_use",
 				displayName: "Windows Computer Use",
-				description: "matched capability approval rule",
+				policy: {
+					source: "umbod",
+					reason: "matched capability approval rule",
+				},
 				input: { task: "open Docker" },
 				allowAlways: false,
 			});
@@ -3121,7 +3142,12 @@ describe("SessionManager — session-scoped permission persistence", () => {
 
 		const config = makeConfig();
 		config.claude.permission_mode = "bypassPermissions";
-		const sm = new SessionManager(config, makeProviders(makeProvider("Bash")));
+		const sm = new SessionManager(
+			config,
+			makeProviders(
+				makeProvider("Bash", "tid-1", undefined, "workflow-child-2"),
+			),
+		);
 		const emitted: ServerMessage[] = [];
 		const turn = sm.runQuery("hello", (event) => emitted.push(event), "sess-1");
 
@@ -3132,7 +3158,15 @@ describe("SessionManager — session-scoped permission persistence", () => {
 			expect.objectContaining({
 				type: "permission_request",
 				id: "tid-1",
-				description: "matched approval rule",
+				displayName: "Shell command",
+				requester: {
+					providerId: "claude",
+					agentId: "workflow-child-2",
+				},
+				policy: {
+					source: "umbod",
+					reason: "matched approval rule",
+				},
 			}),
 		);
 

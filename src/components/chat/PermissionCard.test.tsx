@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { SubagentSnapshot } from "#/server/agentProvider";
 import type { PermissionMessage } from "./chatReducer";
 import { PermissionCard } from "./PermissionCard";
 
@@ -27,7 +28,9 @@ describe("PermissionCard", () => {
 				onDecide={vi.fn()}
 			/>,
 		);
-		expect(screen.getByText(/BASH APPROVED FOR SESSION/)).not.toBeNull();
+		expect(
+			screen.getByText(/SHELL COMMAND APPROVED FOR SESSION/),
+		).not.toBeNull();
 		rerender(
 			<PermissionCard
 				message={permission({ decision: "denied", displayName: "Shell" })}
@@ -73,7 +76,7 @@ describe("PermissionCard", () => {
 		);
 	});
 
-	it("falls back to the first string input preview", () => {
+	it("uses a meaningful named input for the action preview", () => {
 		render(
 			<PermissionCard
 				message={permission({ input: { count: 2, target: "/tmp/output" } })}
@@ -81,6 +84,61 @@ describe("PermissionCard", () => {
 			/>,
 		);
 		expect(screen.getByText("/tmp/output")).not.toBeNull();
+	});
+
+	it("shows a friendly action and caller while keeping raw policy data in details", () => {
+		const requesterSubagent: SubagentSnapshot = {
+			provider: "claude",
+			agentId: "child-42",
+			parentActivityId: "workflow-1",
+			name: "Repository reader",
+			status: "running",
+			currentStep: "Inspecting permission routing",
+			startedAtMs: 1,
+		};
+		render(
+			<PermissionCard
+				message={permission({
+					id: "tool-use-42",
+					toolName: "mcp__hlid_obsidian__create_note",
+					title: "Claude requests Create note",
+					input: { path: "Notes/Review.md" },
+					requester: {
+						providerId: "claude",
+						agentId: "child-42",
+						agentType: "repository-reader",
+					},
+					policy: {
+						source: "umbod",
+						reason:
+							"no matching rule, fell back to policy.default_unknown=approve",
+					},
+				})}
+				requesterSubagent={requesterSubagent}
+				onDecide={vi.fn()}
+			/>,
+		);
+
+		expect(screen.getByText("Create note")).not.toBeNull();
+		expect(screen.getByText("Repository reader")).not.toBeNull();
+		expect(screen.getByText("Inspecting permission routing")).not.toBeNull();
+		expect(
+			screen.getByText(
+				"No Umbod rule matched, so the default policy requires approval.",
+			),
+		).not.toBeNull();
+		const details = screen.getByText("Technical details").closest("details");
+		expect(details?.hasAttribute("open")).toBe(false);
+		fireEvent.click(screen.getByText("Technical details"));
+		expect(details?.hasAttribute("open")).toBe(true);
+		expect(screen.getByText("mcp__hlid_obsidian__create_note")).not.toBeNull();
+		expect(screen.getByText("tool-use-42")).not.toBeNull();
+		expect(screen.getByText("claude / child-42")).not.toBeNull();
+		expect(
+			screen.getByText(
+				"no matching rule, fell back to policy.default_unknown=approve",
+			),
+		).not.toBeNull();
 	});
 
 	it("shows the active note for an Obsidian command approval", () => {

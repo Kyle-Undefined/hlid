@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ServerMessage } from "./protocol";
 import type { SessionManager } from "./session";
+import type { PoolEntry } from "./sessionPool";
 
 // ── mocks ─────────────────────────────────────────────────────────────────────
 
@@ -184,6 +185,7 @@ function wrapSession(session: SessionManager) {
 		syncConfig: vi.fn(),
 		getSize: vi.fn().mockReturnValue(1),
 		findByDbSessionId: vi.fn().mockReturnValue(undefined),
+		claimDbSessionId: vi.fn((candidate: PoolEntry) => candidate),
 		isVaultSession: vi.fn().mockReturnValue(false),
 	};
 	return { pool, entry, runState };

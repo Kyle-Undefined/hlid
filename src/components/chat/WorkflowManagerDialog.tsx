@@ -12,7 +12,15 @@ import {
 	X,
 	XCircle,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+	type ReactNode,
+	type RefObject,
+	useEffect,
+	useLayoutEffect,
+	useMemo,
+	useRef,
+	useState,
+} from "react";
 import { createPortal } from "react-dom";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import { useDialogFocus } from "#/hooks/useDialogFocus";
@@ -372,6 +380,433 @@ function SavedWorkflowControls({
 	);
 }
 
+type WorkflowSaveResult = {
+	type?: "workflow_save_result";
+	request_id: string;
+	workflow?: ProviderSavedWorkflow;
+	error?: string;
+	error_code?: string;
+};
+
+type WorkflowSourceResult = {
+	type?: "workflow_source_result";
+	request_id: string;
+	script_path: string;
+	source?: string;
+	error?: string;
+};
+
+function WorkflowManagerHeader({
+	runCount,
+	activeCount,
+	savedCount,
+	onClose,
+}: {
+	runCount: number;
+	activeCount: number;
+	savedCount: number;
+	onClose: () => void;
+}) {
+	return (
+		<header className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3">
+			<WorkflowIcon className="h-4 w-4 text-primary/65" />
+			<div className="min-w-0 flex-1">
+				<h2 className="text-[11px] font-medium tracking-[0.18em] text-primary/80 uppercase">
+					Claude workflows
+				</h2>
+				<p className="mt-0.5 text-[9px] tracking-wider text-muted-foreground/50 uppercase">
+					{runCount} {runCount === 1 ? "run" : "runs"} · {activeCount} active ·{" "}
+					{savedCount} saved
+				</p>
+			</div>
+			<button
+				type="button"
+				onClick={onClose}
+				aria-label="Close workflows"
+				className="p-1 text-muted-foreground transition-colors hover:text-foreground"
+			>
+				<X className="h-4 w-4" />
+			</button>
+		</header>
+	);
+}
+
+function WorkflowManagerEmptyState() {
+	return (
+		<div className="grid min-h-72 place-items-center p-8 text-center">
+			<div className="max-w-md space-y-2">
+				<WorkflowIcon className="mx-auto h-8 w-8 text-primary/20" />
+				<p className="text-sm text-foreground/65">
+					No workflow runs in the loaded session history.
+				</p>
+				<p className="text-[11px] leading-relaxed text-muted-foreground/55">
+					Ask Claude to use a workflow, save a completed run, or load older
+					history below.
+				</p>
+			</div>
+		</div>
+	);
+}
+
+function WorkflowListPane({
+	listRef,
+	runs,
+	savedWorkflows,
+	selectedKey,
+	hasSelection,
+	now,
+	onSelectRun,
+	onSelectSaved,
+}: {
+	listRef: RefObject<HTMLDivElement | null>;
+	runs: WorkflowRun[];
+	savedWorkflows: ProviderSavedWorkflow[];
+	selectedKey: string | null;
+	hasSelection: boolean;
+	now: number;
+	onSelectRun: (key: string) => void;
+	onSelectSaved: (workflow: ProviderSavedWorkflow, key: string) => void;
+}) {
+	return (
+		<div
+			ref={listRef}
+			role="listbox"
+			aria-label="Workflow runs and saved workflows"
+			className={`min-h-0 overflow-y-auto overscroll-contain md:max-h-none md:border-r md:border-b-0 ${
+				hasSelection
+					? "max-h-52 border-b border-border"
+					: "max-h-none border-b-0"
+			}`}
+		>
+			{savedWorkflows.length > 0 && (
+				<div className="border-b border-border/60 bg-muted/10 px-3 py-1.5 text-[9px] tracking-widest text-muted-foreground/50 uppercase">
+					Saved
+				</div>
+			)}
+			{savedWorkflows.map((workflow) => {
+				const key = `saved:${workflow.id}`;
+				return (
+					<SavedWorkflowRow
+						key={key}
+						workflow={workflow}
+						selected={key === selectedKey}
+						onSelect={() => onSelectSaved(workflow, key)}
+					/>
+				);
+			})}
+			{runs.length > 0 && (
+				<div className="border-y border-border/60 bg-muted/10 px-3 py-1.5 text-[9px] tracking-widest text-muted-foreground/50 uppercase">
+					Runs
+				</div>
+			)}
+			{runs.map((run) => {
+				const key = `run:${run.selectionKey}`;
+				return (
+					<WorkflowRunRow
+						key={key}
+						run={run}
+						selected={key === selectedKey}
+						now={now}
+						onSelect={() => onSelectRun(key)}
+					/>
+				);
+			})}
+		</div>
+	);
+}
+
+function WorkflowSavePanel({
+	panelRef,
+	sourcePending,
+	sourceResult,
+	locations,
+	location,
+	pending,
+	scope,
+	result,
+	replaceExisting,
+	onSelectScope,
+	onSubmit,
+	onCancel,
+}: {
+	panelRef: RefObject<HTMLFieldSetElement | null>;
+	sourcePending: boolean;
+	sourceResult: WorkflowSourceResult | null;
+	locations: ProviderWorkflowSaveLocation[];
+	location?: ProviderWorkflowSaveLocation;
+	pending: boolean;
+	scope: ProviderWorkflowSaveScope;
+	result: WorkflowSaveResult | null;
+	replaceExisting: boolean;
+	onSelectScope: (scope: ProviderWorkflowSaveScope) => void;
+	onSubmit: () => void;
+	onCancel: () => void;
+}) {
+	return (
+		<fieldset
+			ref={panelRef}
+			tabIndex={-1}
+			aria-label="Save workflow options"
+			className="mt-3 border border-border/60 bg-background/35 p-3 outline-none focus:border-primary/35"
+		>
+			<div className="flex items-center gap-2">
+				<Save className="h-3.5 w-3.5 text-primary/60" />
+				<h3 className="text-[10px] font-medium tracking-widest text-primary/75 uppercase">
+					Save as a Claude command
+				</h3>
+			</div>
+			<p className="mt-2 text-[10px] leading-relaxed text-muted-foreground/60">
+				Hlid copies Claude's persisted script into a native workflow command
+				location. The script's meta.name becomes the slash command.
+			</p>
+			<WorkflowSourcePreview
+				pending={sourcePending}
+				source={sourceResult?.source}
+				error={sourceResult?.error}
+			/>
+			<div className="mt-3 flex flex-wrap gap-2">
+				{locations.map((candidate) => (
+					<button
+						key={candidate.scope}
+						type="button"
+						disabled={!candidate.available || pending}
+						onClick={() => onSelectScope(candidate.scope)}
+						className={`border px-2.5 py-1.5 text-[9px] tracking-widest uppercase transition-colors disabled:opacity-40 ${
+							scope === candidate.scope
+								? "border-primary/35 bg-primary/[0.07] text-primary/80"
+								: "border-border text-muted-foreground/60 hover:text-foreground"
+						}`}
+					>
+						{candidate.scopeLabel}
+					</button>
+				))}
+			</div>
+			{location ? (
+				<PrivacyMask className="mt-2 break-all font-mono text-[9px] text-muted-foreground/50">
+					{location.path || location.error || "Location unavailable"}
+				</PrivacyMask>
+			) : (
+				<p className="mt-2 text-[10px] text-muted-foreground/55">
+					Workflow locations are still loading.
+				</p>
+			)}
+			{result?.error && (
+				<p role="alert" className="mt-2 text-[10px] text-destructive/75">
+					{result.error}
+				</p>
+			)}
+			{result?.workflow && (
+				<p className="mt-2 text-[10px] text-status-success/75">
+					Saved as /{result.workflow.name}.
+				</p>
+			)}
+			<div className="mt-3 flex flex-wrap gap-2">
+				<button
+					type="button"
+					disabled={!location?.available || pending}
+					onClick={onSubmit}
+					className="inline-flex min-h-8 items-center gap-1.5 border border-primary/25 px-2.5 py-1 text-[9px] font-medium tracking-widest text-primary/75 uppercase transition-colors hover:bg-primary/5 disabled:opacity-45"
+				>
+					{pending ? (
+						<LoaderCircle className="h-3 w-3 animate-spin" />
+					) : (
+						<Save className="h-3 w-3" />
+					)}
+					{pending
+						? "Saving"
+						: replaceExisting
+							? "Replace existing"
+							: `Save to ${scope}`}
+				</button>
+				<button
+					type="button"
+					disabled={pending}
+					onClick={onCancel}
+					className="min-h-8 border border-border px-2.5 py-1 text-[9px] tracking-widest text-muted-foreground uppercase hover:text-foreground disabled:opacity-45"
+				>
+					Cancel
+				</button>
+			</div>
+		</fieldset>
+	);
+}
+
+function WorkflowRunDetails({
+	run,
+	providerId,
+	sessionId,
+	savePanel,
+	onStop,
+	onRunPrompt,
+	onBeginSave,
+}: {
+	run: WorkflowRun;
+	providerId?: string;
+	sessionId: string;
+	savePanel: ReactNode;
+	onStop: (run: WorkflowRun) => void;
+	onRunPrompt: (prompt: string) => void;
+	onBeginSave: (run: WorkflowRun) => void;
+}) {
+	const matchesProvider = providerId === run.workflow.provider;
+	return (
+		<>
+			<div className="border border-border/60 bg-background/35">
+				<SubagentToolBlock
+					key={`${run.key}:${run.eventId}`}
+					subagent={run.workflow}
+					childSubagents={run.children}
+					initiallyOpen
+					stateScope="workflow-manager"
+					onStop={
+						matchesProvider && sessionId && run.workflow.taskId
+							? () => onStop(run)
+							: undefined
+					}
+					onResume={
+						matchesProvider && sessionId && run.workflow.workflowRunId
+							? () => onRunPrompt(workflowResumePrompt(run.workflow))
+							: undefined
+					}
+					onRerun={
+						matchesProvider && sessionId && run.workflow.workflowScriptPath
+							? () => onRunPrompt(workflowRerunPrompt(run.workflow, run.args))
+							: undefined
+					}
+					onSave={
+						matchesProvider && run.workflow.workflowScriptPath
+							? () => onBeginSave(run)
+							: undefined
+					}
+				/>
+			</div>
+			{savePanel}
+		</>
+	);
+}
+
+function SavedWorkflowDetails({
+	workflow,
+	input,
+	sourcePending,
+	sourceResult,
+	deletePending,
+	deleteSucceeded,
+	deleteError,
+	onInputChange,
+	onRun,
+	onDelete,
+}: {
+	workflow: ProviderSavedWorkflow;
+	input: string;
+	sourcePending: boolean;
+	sourceResult: WorkflowSourceResult | null;
+	deletePending: boolean;
+	deleteSucceeded: boolean;
+	deleteError?: string;
+	onInputChange: (value: string) => void;
+	onRun: () => void;
+	onDelete: () => void;
+}) {
+	return (
+		<div className="border border-border/60 bg-background/35 p-4">
+			<SavedWorkflowSummary workflow={workflow} />
+			<WorkflowSourcePreview
+				pending={sourcePending}
+				source={sourceResult?.source}
+				error={sourceResult?.error}
+			/>
+			{deleteError && (
+				<p role="alert" className="mt-2 text-[10px] text-destructive/75">
+					{deleteError}
+				</p>
+			)}
+			<SavedWorkflowControls
+				workflow={workflow}
+				input={input}
+				deletePending={deletePending}
+				deleteSucceeded={deleteSucceeded}
+				onInputChange={onInputChange}
+				onRun={onRun}
+				onDelete={onDelete}
+			/>
+		</div>
+	);
+}
+
+function WorkflowDetailsPane({
+	hasSelection,
+	children,
+}: {
+	hasSelection: boolean;
+	children: ReactNode;
+}) {
+	return (
+		<div
+			className={`min-h-0 overflow-y-auto overscroll-contain p-3 sm:p-4 ${
+				hasSelection ? "" : "hidden md:block"
+			}`}
+		>
+			{children}
+		</div>
+	);
+}
+
+function WorkflowSelectionPlaceholder() {
+	return (
+		<div className="grid min-h-64 place-items-center text-center">
+			<div className="max-w-sm space-y-2">
+				<WorkflowIcon className="mx-auto h-7 w-7 text-primary/20" />
+				<p className="text-sm text-foreground/60">Select a workflow</p>
+				<p className="text-[11px] leading-relaxed text-muted-foreground/50">
+					Choose a saved workflow or run to inspect its details.
+				</p>
+			</div>
+		</div>
+	);
+}
+
+function WorkflowManagerFooter({
+	hasOlderHistory,
+	isLoadingOlderHistory,
+	onLoadOlderHistory,
+	onRefreshSaved,
+}: {
+	hasOlderHistory: boolean;
+	isLoadingOlderHistory: boolean;
+	onLoadOlderHistory?: () => Promise<number>;
+	onRefreshSaved?: () => void;
+}) {
+	return (
+		<footer className="flex min-h-11 shrink-0 items-center justify-between gap-3 border-t border-border px-4 py-2">
+			<span className="text-[9px] text-muted-foreground/40">
+				Current Raven session
+			</span>
+			<div className="flex flex-wrap items-center gap-2">
+				{onRefreshSaved && (
+					<button
+						type="button"
+						onClick={onRefreshSaved}
+						className="border border-border px-2.5 py-1.5 text-[9px] tracking-widest text-muted-foreground uppercase transition-colors hover:bg-accent hover:text-foreground"
+					>
+						Refresh saved
+					</button>
+				)}
+				{hasOlderHistory && onLoadOlderHistory && (
+					<button
+						type="button"
+						disabled={isLoadingOlderHistory}
+						onClick={() => void onLoadOlderHistory()}
+						className="border border-border px-2.5 py-1.5 text-[9px] tracking-widest text-muted-foreground uppercase transition-colors hover:bg-accent hover:text-foreground disabled:opacity-45"
+					>
+						{isLoadingOlderHistory ? "Loading older" : "Load older history"}
+					</button>
+				)}
+			</div>
+		</footer>
+	);
+}
+
 export function WorkflowManagerDialog({
 	messages,
 	sessionId,
@@ -611,314 +1046,94 @@ export function WorkflowManagerDialog({
 				onKeyDown={onDialogKeyDown}
 				className="flex max-h-[90vh] w-[96vw] max-w-5xl flex-col overflow-hidden border border-border bg-card shadow-2xl focus:outline-none"
 			>
-				<header className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3">
-					<WorkflowIcon className="h-4 w-4 text-primary/65" />
-					<div className="min-w-0 flex-1">
-						<h2 className="text-[11px] font-medium tracking-[0.18em] text-primary/80 uppercase">
-							Claude workflows
-						</h2>
-						<p className="mt-0.5 text-[9px] tracking-wider text-muted-foreground/50 uppercase">
-							{runs.length} {runs.length === 1 ? "run" : "runs"} · {activeCount}{" "}
-							active · {savedWorkflows.length} saved
-						</p>
-					</div>
-					<button
-						type="button"
-						onClick={onClose}
-						aria-label="Close workflows"
-						className="p-1 text-muted-foreground transition-colors hover:text-foreground"
-					>
-						<X className="h-4 w-4" />
-					</button>
-				</header>
+				<WorkflowManagerHeader
+					runCount={runs.length}
+					activeCount={activeCount}
+					savedCount={savedWorkflows.length}
+					onClose={onClose}
+				/>
 
 				{runs.length === 0 && savedWorkflows.length === 0 ? (
-					<div className="grid min-h-72 place-items-center p-8 text-center">
-						<div className="max-w-md space-y-2">
-							<WorkflowIcon className="mx-auto h-8 w-8 text-primary/20" />
-							<p className="text-sm text-foreground/65">
-								No workflow runs in the loaded session history.
-							</p>
-							<p className="text-[11px] leading-relaxed text-muted-foreground/55">
-								Ask Claude to use a workflow, save a completed run, or load
-								older history below.
-							</p>
-						</div>
-					</div>
+					<WorkflowManagerEmptyState />
 				) : (
 					<div className="grid min-h-0 flex-1 md:grid-cols-[19rem_minmax(0,1fr)]">
-						<div
-							ref={listRef}
-							role="listbox"
-							aria-label="Workflow runs and saved workflows"
-							className={`min-h-0 overflow-y-auto overscroll-contain md:max-h-none md:border-r md:border-b-0 ${
-								hasSelection
-									? "max-h-52 border-b border-border"
-									: "max-h-none border-b-0"
-							}`}
-						>
-							{savedWorkflows.length > 0 && (
-								<div className="border-b border-border/60 bg-muted/10 px-3 py-1.5 text-[9px] tracking-widest text-muted-foreground/50 uppercase">
-									Saved
-								</div>
-							)}
-							{savedWorkflows.map((workflow) => {
-								const key = `saved:${workflow.id}`;
-								return (
-									<SavedWorkflowRow
-										key={key}
-										workflow={workflow}
-										selected={key === selectedKey}
-										onSelect={() => toggleSavedWorkflow(workflow, key)}
-									/>
-								);
-							})}
-							{runs.length > 0 && (
-								<div className="border-y border-border/60 bg-muted/10 px-3 py-1.5 text-[9px] tracking-widest text-muted-foreground/50 uppercase">
-									Runs
-								</div>
-							)}
-							{runs.map((run) => {
-								const key = `run:${run.selectionKey}`;
-								return (
-									<WorkflowRunRow
-										key={key}
-										run={run}
-										selected={key === selectedKey}
-										now={now}
-										onSelect={() => toggleRun(key)}
-									/>
-								);
-							})}
-						</div>
-						<div
-							className={`min-h-0 overflow-y-auto overscroll-contain p-3 sm:p-4 ${
-								hasSelection ? "" : "hidden md:block"
-							}`}
-						>
+						<WorkflowListPane
+							listRef={listRef}
+							runs={runs}
+							savedWorkflows={savedWorkflows}
+							selectedKey={selectedKey}
+							hasSelection={hasSelection}
+							now={now}
+							onSelectRun={toggleRun}
+							onSelectSaved={toggleSavedWorkflow}
+						/>
+						<WorkflowDetailsPane hasSelection={hasSelection}>
 							{!selectedRun && !selectedSaved && (
-								<div className="grid min-h-64 place-items-center text-center">
-									<div className="max-w-sm space-y-2">
-										<WorkflowIcon className="mx-auto h-7 w-7 text-primary/20" />
-										<p className="text-sm text-foreground/60">
-											Select a workflow
-										</p>
-										<p className="text-[11px] leading-relaxed text-muted-foreground/50">
-											Choose a saved workflow or run to inspect its details.
-										</p>
-									</div>
-								</div>
+								<WorkflowSelectionPlaceholder />
 							)}
 							{selectedRun && (
-								<>
-									<div className="border border-border/60 bg-background/35">
-										<SubagentToolBlock
-											key={`${selectedRun.key}:${selectedRun.eventId}`}
-											subagent={selectedRun.workflow}
-											childSubagents={selectedRun.children}
-											initiallyOpen
-											stateScope="workflow-manager"
-											onStop={
-												providerId === selectedRun.workflow.provider &&
-												sessionId &&
-												selectedRun.workflow.taskId
-													? () => onStop(selectedRun)
-													: undefined
-											}
-											onResume={
-												providerId === selectedRun.workflow.provider &&
-												sessionId &&
-												selectedRun.workflow.workflowRunId
-													? () =>
-															onRunPrompt(
-																workflowResumePrompt(selectedRun.workflow),
-															)
-													: undefined
-											}
-											onRerun={
-												providerId === selectedRun.workflow.provider &&
-												sessionId &&
-												selectedRun.workflow.workflowScriptPath
-													? () =>
-															onRunPrompt(
-																workflowRerunPrompt(
-																	selectedRun.workflow,
-																	selectedRun.args,
-																),
-															)
-													: undefined
-											}
-											onSave={
-												providerId === selectedRun.workflow.provider &&
-												selectedRun.workflow.workflowScriptPath
-													? () => beginSave(selectedRun)
-													: undefined
-											}
-										/>
-									</div>
-									{saveRunKey === selectedRun.selectionKey && (
-										<fieldset
-											ref={savePanelRef}
-											tabIndex={-1}
-											aria-label="Save workflow options"
-											className="mt-3 border border-border/60 bg-background/35 p-3 outline-none focus:border-primary/35"
-										>
-											<div className="flex items-center gap-2">
-												<Save className="h-3.5 w-3.5 text-primary/60" />
-												<h3 className="text-[10px] font-medium tracking-widest text-primary/75 uppercase">
-													Save as a Claude command
-												</h3>
-											</div>
-											<p className="mt-2 text-[10px] leading-relaxed text-muted-foreground/60">
-												Hlid copies Claude's persisted script into a native
-												workflow command location. The script's meta.name
-												becomes the slash command.
-											</p>
-											<WorkflowSourcePreview
-												pending={sourcePending}
-												source={currentSourceResult?.source}
-												error={currentSourceResult?.error}
+								<WorkflowRunDetails
+									run={selectedRun}
+									providerId={providerId}
+									sessionId={sessionId}
+									onStop={onStop}
+									onRunPrompt={onRunPrompt}
+									onBeginSave={beginSave}
+									savePanel={
+										saveRunKey === selectedRun.selectionKey ? (
+											<WorkflowSavePanel
+												panelRef={savePanelRef}
+												sourcePending={sourcePending}
+												sourceResult={currentSourceResult}
+												locations={saveLocations}
+												location={saveLocation}
+												pending={savePending}
+												scope={saveScope}
+												result={currentSaveResult}
+												replaceExisting={replaceExisting}
+												onSelectScope={(scope) => {
+													setSaveScope(scope);
+													setSaveRequestId(null);
+												}}
+												onSubmit={() => submitSave(selectedRun)}
+												onCancel={() => {
+													setSaveRunKey(null);
+													setSaveRequestId(null);
+													setSourceRequestId(null);
+												}}
 											/>
-											<div className="mt-3 flex flex-wrap gap-2">
-												{saveLocations.map((location) => (
-													<button
-														key={location.scope}
-														type="button"
-														disabled={!location.available || savePending}
-														onClick={() => {
-															setSaveScope(location.scope);
-															setSaveRequestId(null);
-														}}
-														className={`border px-2.5 py-1.5 text-[9px] tracking-widest uppercase transition-colors disabled:opacity-40 ${
-															saveScope === location.scope
-																? "border-primary/35 bg-primary/[0.07] text-primary/80"
-																: "border-border text-muted-foreground/60 hover:text-foreground"
-														}`}
-													>
-														{location.scopeLabel}
-													</button>
-												))}
-											</div>
-											{saveLocation ? (
-												<PrivacyMask className="mt-2 break-all font-mono text-[9px] text-muted-foreground/50">
-													{saveLocation.path ||
-														saveLocation.error ||
-														"Location unavailable"}
-												</PrivacyMask>
-											) : (
-												<p className="mt-2 text-[10px] text-muted-foreground/55">
-													Workflow locations are still loading.
-												</p>
-											)}
-											{currentSaveResult?.error && (
-												<p
-													role="alert"
-													className="mt-2 text-[10px] text-destructive/75"
-												>
-													{currentSaveResult.error}
-												</p>
-											)}
-											{currentSaveResult?.workflow && (
-												<p className="mt-2 text-[10px] text-status-success/75">
-													Saved as /{currentSaveResult.workflow.name}.
-												</p>
-											)}
-											<div className="mt-3 flex flex-wrap gap-2">
-												<button
-													type="button"
-													disabled={!saveLocation?.available || savePending}
-													onClick={() => submitSave(selectedRun)}
-													className="inline-flex min-h-8 items-center gap-1.5 border border-primary/25 px-2.5 py-1 text-[9px] font-medium tracking-widest text-primary/75 uppercase transition-colors hover:bg-primary/5 disabled:opacity-45"
-												>
-													{savePending ? (
-														<LoaderCircle className="h-3 w-3 animate-spin" />
-													) : (
-														<Save className="h-3 w-3" />
-													)}
-													{savePending
-														? "Saving"
-														: replaceExisting
-															? "Replace existing"
-															: `Save to ${saveScope}`}
-												</button>
-												<button
-													type="button"
-													disabled={savePending}
-													onClick={() => {
-														setSaveRunKey(null);
-														setSaveRequestId(null);
-														setSourceRequestId(null);
-													}}
-													className="min-h-8 border border-border px-2.5 py-1 text-[9px] tracking-widest text-muted-foreground uppercase hover:text-foreground disabled:opacity-45"
-												>
-													Cancel
-												</button>
-											</div>
-										</fieldset>
-									)}
-								</>
+										) : null
+									}
+								/>
 							)}
 							{selectedSaved && (
-								<div className="border border-border/60 bg-background/35 p-4">
-									<SavedWorkflowSummary workflow={selectedSaved} />
-									<WorkflowSourcePreview
-										pending={sourcePending}
-										source={currentSourceResult?.source}
-										error={currentSourceResult?.error}
-									/>
-									{currentDeleteResult?.error && (
-										<p
-											role="alert"
-											className="mt-2 text-[10px] text-destructive/75"
-										>
-											{currentDeleteResult.error}
-										</p>
-									)}
-									<SavedWorkflowControls
-										workflow={selectedSaved}
-										input={savedInput}
-										deletePending={deletePending}
-										deleteSucceeded={deleteSucceeded}
-										onInputChange={setSavedInput}
-										onRun={() =>
-											onRunPrompt(
-												savedWorkflowRunPrompt(selectedSaved, savedInput),
-											)
-										}
-										onDelete={() => setDeleteRequestId(onDelete(selectedSaved))}
-									/>
-								</div>
+								<SavedWorkflowDetails
+									workflow={selectedSaved}
+									input={savedInput}
+									sourcePending={sourcePending}
+									sourceResult={currentSourceResult}
+									deletePending={deletePending}
+									deleteSucceeded={deleteSucceeded}
+									deleteError={currentDeleteResult?.error}
+									onInputChange={setSavedInput}
+									onRun={() =>
+										onRunPrompt(
+											savedWorkflowRunPrompt(selectedSaved, savedInput),
+										)
+									}
+									onDelete={() => setDeleteRequestId(onDelete(selectedSaved))}
+								/>
 							)}
-						</div>
+						</WorkflowDetailsPane>
 					</div>
 				)}
 
-				<footer className="flex min-h-11 shrink-0 items-center justify-between gap-3 border-t border-border px-4 py-2">
-					<span className="text-[9px] text-muted-foreground/40">
-						Current Raven session
-					</span>
-					<div className="flex flex-wrap items-center gap-2">
-						{onRefreshSaved && (
-							<button
-								type="button"
-								onClick={onRefreshSaved}
-								className="border border-border px-2.5 py-1.5 text-[9px] tracking-widest text-muted-foreground uppercase transition-colors hover:bg-accent hover:text-foreground"
-							>
-								Refresh saved
-							</button>
-						)}
-						{hasOlderHistory && onLoadOlderHistory && (
-							<button
-								type="button"
-								disabled={isLoadingOlderHistory}
-								onClick={() => void onLoadOlderHistory()}
-								className="border border-border px-2.5 py-1.5 text-[9px] tracking-widest text-muted-foreground uppercase transition-colors hover:bg-accent hover:text-foreground disabled:opacity-45"
-							>
-								{isLoadingOlderHistory ? "Loading older" : "Load older history"}
-							</button>
-						)}
-					</div>
-				</footer>
+				<WorkflowManagerFooter
+					hasOlderHistory={hasOlderHistory}
+					isLoadingOlderHistory={isLoadingOlderHistory}
+					onLoadOlderHistory={onLoadOlderHistory}
+					onRefreshSaved={onRefreshSaved}
+				/>
 			</div>
 		</div>,
 		document.body,

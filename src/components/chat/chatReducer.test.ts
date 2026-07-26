@@ -743,6 +743,12 @@ describe("ADD_PERMISSION", () => {
 				displayName: "Bash",
 				description: "list files",
 				input: { command: "ls" },
+				requester: {
+					providerId: "claude",
+					agentId: "child-1",
+					agentType: "reader",
+				},
+				policy: { source: "umbod", reason: "default approval" },
 			},
 		});
 		expect(state).toHaveLength(1);
@@ -750,6 +756,12 @@ describe("ADD_PERMISSION", () => {
 			id: "p1",
 			role: "permission",
 			toolName: "Bash",
+			requester: {
+				providerId: "claude",
+				agentId: "child-1",
+				agentType: "reader",
+			},
+			policy: { source: "umbod", reason: "default approval" },
 			decision: "pending",
 		});
 	});

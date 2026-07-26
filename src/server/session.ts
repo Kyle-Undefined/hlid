@@ -10,6 +10,7 @@ import {
 	isPathAccessibleFromRuntime,
 	toProviderRuntimePath,
 } from "../lib/paths";
+import { permissionToolDisplayName } from "../lib/permissionPresentation";
 import { isCliProxyProvider } from "../lib/providerIds";
 import { estimateProviderCost } from "../lib/providerPricing";
 import {
@@ -128,6 +129,49 @@ async function obsidianCommandApprovalInput(
 	} catch {
 		return input;
 	}
+}
+
+function objectInput(value: unknown): Record<string, unknown> | null {
+	return value !== null && typeof value === "object" && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: null;
+}
+
+function stringInput(
+	input: Record<string, unknown>,
+	...keys: string[]
+): string | undefined {
+	for (const key of keys) {
+		const value = input[key];
+		if (typeof value === "string" && value.trim()) return value;
+	}
+	return undefined;
+}
+
+function hookToolContext(call: ToolCall): {
+	input: Record<string, unknown>;
+	requester:
+		| { providerId: string; agentId: string; agentType?: string }
+		| undefined;
+} {
+	const hookInput = objectInput(call.inputs) ?? {};
+	const input =
+		objectInput(hookInput.tool_input) ??
+		objectInput(hookInput.toolInput) ??
+		objectInput(hookInput.input) ??
+		hookInput;
+	const agentId = stringInput(hookInput, "agent_id", "agentId");
+	const agentType = stringInput(hookInput, "agent_type", "agentType");
+	return {
+		input,
+		requester: agentId
+			? {
+					providerId: call.agent,
+					agentId,
+					...(agentType ? { agentType } : {}),
+				}
+			: undefined,
+	};
 }
 
 /** Mutable accumulator for per-turn SDK event state, threaded through the event loop. */
@@ -2065,12 +2109,7 @@ export class SessionManager {
 	): Promise<"allow" | "block"> {
 		const toolUseID = call.toolUseId ?? `umbod-${Date.now()}`;
 		const toolName = call.tool;
-		const toolInput =
-			call.inputs &&
-			typeof call.inputs === "object" &&
-			!Array.isArray(call.inputs)
-				? (call.inputs as Record<string, unknown>)
-				: {};
+		const { input: toolInput, requester } = hookToolContext(call);
 		const obsidianCommand = resolveObsidianCommandPermission(
 			toolName,
 			toolInput,
@@ -2078,16 +2117,10 @@ export class SessionManager {
 		);
 		const permissionKey = obsidianCommand?.key ?? toolName;
 		if (this.activeRoutineContext) {
-			const routineInput =
-				call.inputs &&
-				typeof call.inputs === "object" &&
-				!Array.isArray(call.inputs)
-					? (call.inputs as Record<string, unknown>)
-					: {};
 			return authorizeRoutineCapability({
 				context: this.activeRoutineContext,
 				tool: toolName,
-				input: routineInput,
+				input: toolInput,
 				cwd: call.workingDirectory ?? this.vaultPath,
 				toolUseId: toolUseID,
 			}).then((result) => (result.allowed ? "allow" : "block"));
@@ -2111,13 +2144,18 @@ export class SessionManager {
 			title:
 				obsidianCommand !== null
 					? `Run an Obsidian command in ${this.vaultName}?`
-					: `${provider.label ?? provider.providerId} wants to use ${toolName}`,
-			displayName: obsidianCommand !== null ? "Obsidian command" : undefined,
+					: `${provider.label ?? provider.providerId} requests ${permissionToolDisplayName(toolName)}`,
+			displayName:
+				obsidianCommand !== null
+					? "Obsidian command"
+					: permissionToolDisplayName(toolName),
 			description:
 				obsidianCommand !== null
-					? `${reason}\n\nAlways applies only to command ${obsidianCommand.commandId} in the configured ${this.vaultName} vault.`
-					: reason,
+					? `Always applies only to command ${obsidianCommand.commandId} in the configured ${this.vaultName} vault.`
+					: undefined,
 			input: approvalInput,
+			requester,
+			policy: { source: "umbod" as const, reason },
 		};
 		return new Promise((finish) => {
 			this.permissions.register(toolUseID, request, (approved, saveScope) => {
@@ -3368,7 +3406,7 @@ export class SessionManager {
 		return async (
 			toolName,
 			input,
-			{ toolUseID, title, displayName, description },
+			{ toolUseID, title, displayName, description, agentID },
 		) => {
 			if ((await this.gateOnUsage(provider, emit)) === "aborted") {
 				return {
@@ -3435,6 +3473,7 @@ export class SessionManager {
 					title,
 					displayName,
 					description,
+					agentID,
 					passInput,
 					autoApproveTools,
 					resolve,
@@ -3631,8 +3670,8 @@ export class SessionManager {
 					toolName,
 					title: "Allow Hlid to start Windows Computer Use?",
 					displayName: "Windows Computer Use",
-					description: reason,
 					input: { task },
+					policy: { source: "umbod" as const, reason },
 					// Permanent capability policy belongs in umbod.toml. The approval
 					// card may still remember this decision for the current chat.
 					allowAlways: false,
@@ -3689,6 +3728,7 @@ export class SessionManager {
 		title: string | undefined;
 		displayName: string | undefined;
 		description: string | undefined;
+		agentID: string | undefined;
 		passInput: Record<string, unknown>;
 		autoApproveTools: boolean;
 		resolve: (decision: AgentToolDecision) => void;
@@ -3703,6 +3743,7 @@ export class SessionManager {
 			title,
 			displayName,
 			description,
+			agentID,
 			passInput,
 			autoApproveTools,
 			resolve,
@@ -3721,13 +3762,19 @@ export class SessionManager {
 				obsidianCommand !== null
 					? `Run an Obsidian command in ${this.vaultName}?`
 					: (title ??
-						`${provider.label ?? provider.providerId} wants to use ${toolName}`),
-			displayName: obsidianCommand !== null ? "Obsidian command" : displayName,
+						`${provider.label ?? provider.providerId} requests ${permissionToolDisplayName(toolName)}`),
+			displayName:
+				obsidianCommand !== null
+					? "Obsidian command"
+					: (displayName ?? permissionToolDisplayName(toolName)),
 			description:
 				obsidianCommand !== null
 					? `Always applies only to command ${obsidianCommand.commandId} in the configured ${this.vaultName} vault.`
 					: description,
 			input: passInput as Record<string, unknown> | undefined,
+			requester: agentID
+				? { providerId: provider.providerId, agentId: agentID }
+				: undefined,
 			...(toolName.startsWith("hlid.windows_computer_use:")
 				? { allowOnce: false }
 				: {}),
@@ -3773,7 +3820,7 @@ export class SessionManager {
 					toolUseID,
 					{
 						...approvalRequest,
-						description: reason ?? approvalRequest.description,
+						policy: reason ? { source: "umbod" as const, reason } : undefined,
 					},
 					(approved, saveScope, customDenyMessage) => {
 						this.permissions.delete(toolUseID);
@@ -3812,7 +3859,7 @@ export class SessionManager {
 				);
 				emit({
 					...approvalRequest,
-					description: reason ?? approvalRequest.description,
+					policy: reason ? { source: "umbod" as const, reason } : undefined,
 				});
 			});
 		};

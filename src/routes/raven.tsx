@@ -2757,11 +2757,7 @@ function ChatPageContent(props: ChatPageContentProps) {
 						});
 					}}
 					onRunPrompt={(prompt) => {
-						wsStore.enqueueChat({
-							id: uid(),
-							text: prompt,
-							session_id: props.session.sessionId,
-						});
+						props.composerProps.handleSend(prompt);
 						props.runtime.closeWorkflows();
 					}}
 					onSave={(run, scope, overwrite) => {

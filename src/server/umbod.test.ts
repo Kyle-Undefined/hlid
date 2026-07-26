@@ -24,12 +24,16 @@ vi.mock("@umbod/core", () => ({
 	loadManifest: vi.fn(async () => ({
 		server: { host: "127.0.0.1", port: 9090 },
 	})),
-	createUmbod: vi.fn(({ manifest }) => ({
-		manifest,
-		close: vi.fn(),
-		fetch: vi.fn(),
-		authorize: vi.fn(),
-	})),
+	createUmbod: vi.fn(({ manifest, auditLog }) => {
+		const store = auditLog ?? { close: vi.fn() };
+		return {
+			manifest,
+			auditLog: store,
+			close: vi.fn(() => store.close()),
+			fetch: vi.fn(),
+			authorize: vi.fn(),
+		};
+	}),
 	findAdapterById: vi.fn(),
 }));
 
@@ -54,9 +58,10 @@ import {
 	saveUmbodManifest,
 	umbodCalls,
 	umbodHookArtifacts,
+	umbodSnapshot,
 } from "./umbod";
 
-const manifest = (decision: "allow" | "approve") => `[env]
+const manifest = (decision: "allow" | "approve" | "block") => `[env]
 name = "hlid"
 version = "1.0.0"
 timeout = 300
@@ -75,13 +80,40 @@ describe("saveUmbodManifest", () => {
 		mkdirSync(testState.root, { recursive: true });
 		writeFileSync(join(testState.root, "umbod.toml"), manifest("allow"));
 		await bootstrapUmbod();
-		const original = testState.servers.at(-1);
+		const originalServer = testState.servers.at(-1);
+		const originalEngine = vi.mocked(createUmbod).mock.results.at(-1)
+			?.value as {
+			auditLog: unknown;
+			close: ReturnType<typeof vi.fn>;
+		};
+		const engineCount = vi.mocked(createUmbod).mock.calls.length;
+		const serverCount = testState.servers.length;
 
 		await saveUmbodManifest(manifest("approve"));
 
-		expect(original?.stop).not.toHaveBeenCalled();
-		expect(testState.servers).toHaveLength(1);
-		expect(createUmbod).toHaveBeenCalledTimes(2);
+		const replacement = vi.mocked(createUmbod).mock.results.at(-1)?.value as {
+			auditLog: unknown;
+		};
+		expect(originalServer?.stop).not.toHaveBeenCalled();
+		expect(testState.servers).toHaveLength(serverCount);
+		expect(createUmbod).toHaveBeenCalledTimes(engineCount + 1);
+		expect(originalEngine.close).not.toHaveBeenCalled();
+		expect(replacement.auditLog).toBe(originalEngine.auditLog);
+	});
+
+	it("keeps external manifest edits cached until Hlid saves", async () => {
+		mkdirSync(testState.root, { recursive: true });
+		const path = join(testState.root, "umbod.toml");
+		writeFileSync(path, manifest("allow"));
+		await bootstrapUmbod();
+		const engineCount = vi.mocked(createUmbod).mock.calls.length;
+		const loadCount = vi.mocked(loadManifest).mock.calls.length;
+
+		writeFileSync(path, manifest("block"));
+		await umbodSnapshot();
+
+		expect(createUmbod).toHaveBeenCalledTimes(engineCount);
+		expect(loadManifest).toHaveBeenCalledTimes(loadCount);
 	});
 
 	it("searches audited commands without requiring accent marks", async () => {

@@ -626,6 +626,41 @@ describe("SessionPool.findByDbSessionId", () => {
 
 		expect(pool.findByDbSessionId("db-b")).toBe(b);
 	});
+
+	it("reserves a db session before the manager finishes loading it", () => {
+		const pool = makePool();
+		const entry = pool.create("/a", "A");
+
+		expect(pool.claimDbSessionId(entry, "db-session-a")).toBe(entry);
+		expect(pool.findByDbSessionId("db-session-a")).toBe(entry);
+		expect(pool.getSessionsStatus()).toEqual([
+			expect.objectContaining({
+				session_id: entry.sessionId,
+				hasDbSession: true,
+				db_session_id: "db-session-a",
+			}),
+		]);
+	});
+
+	it("keeps the first owner when another entry claims the same db session", () => {
+		const pool = makePool();
+		const first = pool.create("/a", "A");
+		const second = pool.create("/b", "B");
+
+		expect(pool.claimDbSessionId(first, "shared-db-session")).toBe(first);
+		expect(pool.claimDbSessionId(second, "shared-db-session")).toBe(first);
+		expect(second.claimedDbSessionId).toBeNull();
+	});
+
+	it("replaces a provisional claim with the manager's loaded session", () => {
+		const pool = makePool();
+		const entry = pool.create("/a", "A");
+		pool.claimDbSessionId(entry, "provisional-session");
+		mockInstances[0]?.getCurrentSessionId.mockReturnValue("loaded-session");
+
+		expect(pool.findByDbSessionId("provisional-session")).toBeUndefined();
+		expect(pool.findByDbSessionId("loaded-session")).toBe(entry);
+	});
 });
 
 // ── getAllEntries ─────────────────────────────────────────────────────────────

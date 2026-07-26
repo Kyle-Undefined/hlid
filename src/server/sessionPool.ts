@@ -17,6 +17,12 @@ export interface PoolEntry {
 	sessionId: string;
 	agentCwd: string;
 	agentName: string;
+	/**
+	 * DB chat reserved for this process before SessionManager finishes loading it.
+	 * This closes the window where a second prompt can create another manager for
+	 * the same persisted chat.
+	 */
+	claimedDbSessionId?: string | null;
 	manager: SessionManager;
 	runState: SessionRunState;
 }
@@ -71,6 +77,7 @@ export class SessionPool {
 			sessionId,
 			agentCwd,
 			agentName,
+			claimedDbSessionId: null,
 			manager,
 			runState,
 		};
@@ -159,6 +166,12 @@ export class SessionPool {
 		for (const entry of this.entries.values()) {
 			const { state, model, effort, permission_mode } =
 				entry.manager.getStatus();
+			const currentDbSessionId = entry.manager.getCurrentSessionId();
+			if (currentDbSessionId) {
+				entry.claimedDbSessionId = currentDbSessionId;
+			}
+			const dbSessionId =
+				currentDbSessionId ?? entry.claimedDbSessionId ?? null;
 			const pendingPerms = entry.manager.getPendingPermissionRequests();
 			const pendingQuestions = entry.manager.getPendingAskUserQuestions();
 			const pendingPlans = entry.manager.getPendingPlanModeExits();
@@ -192,8 +205,8 @@ export class SessionPool {
 					pendingQuestions.length > 0 ||
 					pendingPlans.length > 0,
 				attention,
-				hasDbSession: entry.manager.getCurrentSessionId() !== null,
-				db_session_id: entry.manager.getCurrentSessionId(),
+				hasDbSession: dbSessionId !== null,
+				db_session_id: dbSessionId,
 				...(sessionLabel !== null ? { lastLabel: sessionLabel } : {}),
 				pinned: presentation.pinned,
 				fork_parent_session_id: presentation.forkParentSessionId,
@@ -221,11 +234,28 @@ export class SessionPool {
 	 */
 	findByDbSessionId(dbSessionId: string): PoolEntry | undefined {
 		for (const entry of this.entries.values()) {
-			if (entry.manager.getCurrentSessionId() === dbSessionId) {
-				return entry;
-			}
+			const currentDbSessionId = entry.manager.getCurrentSessionId();
+			if (!currentDbSessionId) continue;
+			entry.claimedDbSessionId = currentDbSessionId;
+			if (currentDbSessionId === dbSessionId) return entry;
+		}
+		for (const entry of this.entries.values()) {
+			if (entry.claimedDbSessionId === dbSessionId) return entry;
 		}
 		return undefined;
+	}
+
+	/**
+	 * Reserve a persisted chat for a newly created pool entry before its async
+	 * SessionManager initialization begins. Returns the existing owner if another
+	 * request already reserved or loaded the same chat.
+	 */
+	// fallow-ignore-next-line unused-class-member -- Called by WebSocket chat and goal routing before async session hydration.
+	claimDbSessionId(entry: PoolEntry, dbSessionId: string): PoolEntry {
+		const existing = this.findByDbSessionId(dbSessionId);
+		if (existing) return existing;
+		entry.claimedDbSessionId = dbSessionId;
+		return entry;
 	}
 
 	/** Update future and already-open sessions during hot reload. */

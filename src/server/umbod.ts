@@ -13,6 +13,7 @@ export { ensureUmbodManifest } from "#/server/umbodManifest";
 
 let instance: Umbod | null = null;
 let instancePath: string | null = null;
+let instanceReload: Promise<void> | null = null;
 let hookServer: ReturnType<typeof Bun.serve> | null = null;
 
 type HookApprovalHandler = (
@@ -38,6 +39,37 @@ type RoutedHookDecision = {
 
 const routedHookDecisions = new Map<string, RoutedHookDecision>();
 const routedHookDecisionQueue: RoutedHookDecision[] = [];
+
+async function reloadUmbod(path: string): Promise<void> {
+	const { createUmbod, loadManifest } = await import("@umbod/core");
+	const manifest = await loadManifest(path);
+	const previous = instance;
+	const replacement = createUmbod({
+		manifest,
+		...(previous
+			? { auditLog: previous.auditLog }
+			: { dbPath: resolve(APP_DIR, "umbod.hlid.db") }),
+		sessionLogSources: [{ agent: "claude" }, { agent: "codex" }],
+		approvalPrompt: routeHookApproval,
+	});
+	// Reloading shares the existing audit store. Do not close the old wrapper:
+	// its close() would close that shared store and could interrupt an in-flight
+	// authorization. The wrapper itself owns no other resource.
+	instance = replacement;
+	instancePath = path;
+	if (previous) console.info(`[umbod] manifest reloaded from ${path}`);
+}
+
+async function performUmbodReload(path: string): Promise<void> {
+	if (instanceReload) await instanceReload;
+	const reload = reloadUmbod(path);
+	instanceReload = reload;
+	try {
+		await reload;
+	} finally {
+		if (instanceReload === reload) instanceReload = null;
+	}
+}
 
 function routedDecisionKey(agent: string, toolUseId: string): string {
 	return `${agent}:${toolUseId}`;
@@ -138,19 +170,19 @@ async function getUmbod(): Promise<Umbod | null> {
 		enabled: false,
 		manifest_path: "umbod.toml",
 	};
-	if (!config.enabled) return null;
+	if (!config.enabled) {
+		instance?.close();
+		instance = null;
+		instancePath = null;
+		return null;
+	}
 	const path = resolveUmbodManifestPath(config.manifest_path);
 	if (instance && instancePath === path) return instance;
-	instance?.close();
-	const { createUmbod, loadManifest } = await import("@umbod/core");
-	const manifest = await loadManifest(path);
-	instance = createUmbod({
-		manifest,
-		dbPath: resolve(APP_DIR, "umbod.hlid.db"),
-		sessionLogSources: [{ agent: "claude" }, { agent: "codex" }],
-		approvalPrompt: routeHookApproval,
-	});
-	instancePath = path;
+	if (instanceReload) {
+		await instanceReload;
+		return getUmbod();
+	}
+	await performUmbodReload(path);
 	return instance;
 }
 
@@ -163,8 +195,8 @@ export async function bootstrapUmbod(): Promise<void> {
 		async fetch(request) {
 			const usageGateResponse = await routeHookBeforeToolUse(request);
 			if (usageGateResponse) return usageGateResponse;
-			// Resolve the current engine per request so policy saves can replace it
-			// without tearing down and rebinding the HTTP listener.
+			// Resolve the current engine per request so Hlid policy saves can replace
+			// it without tearing down and rebinding the HTTP listener.
 			const current = await getUmbod();
 			return (
 				current?.fetch(request) ??
@@ -390,21 +422,16 @@ export async function umbodHookArtifacts(
 
 export async function saveUmbodManifest(source: string): Promise<void> {
 	const { loadManifest } = await import("@umbod/core");
-	const path = resolveUmbodManifestPath(
-		loadConfig()?.umbod?.manifest_path ?? "umbod.toml",
-	);
+	const config = loadConfig()?.umbod;
+	const path = resolveUmbodManifestPath(config?.manifest_path ?? "umbod.toml");
 	const temporary = `${path}.${process.pid}.${Date.now()}.tmp`;
 	await writeFile(temporary, source, { encoding: "utf8", mode: 0o600 });
 	try {
 		await loadManifest(temporary);
 		await rename(temporary, path);
-		// Keep the embedded HTTP listener alive. Rebinding the same port
-		// immediately after stop() races Windows socket release and can fail with
-		// EADDRINUSE. The listener resolves this replacement engine per request.
-		instance?.close();
-		instance = null;
-		instancePath = null;
-		await getUmbod();
+		// Hlid-authored saves replace only the policy engine. Keep the embedded
+		// HTTP listener and audit store alive.
+		if (config?.enabled) await performUmbodReload(path);
 	} catch (error) {
 		await Bun.file(temporary)
 			.delete()
@@ -419,4 +446,5 @@ export function closeUmbod(): void {
 	instance?.close();
 	instance = null;
 	instancePath = null;
+	instanceReload = null;
 }

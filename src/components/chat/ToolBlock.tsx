@@ -7,6 +7,8 @@ import {
 } from "#/hooks/toolEventDetailStore";
 import type { SubagentSnapshot } from "#/server/agentProvider";
 import type { ToolEventMessage } from "#/server/protocol";
+import type { PermissionMessage } from "./chatReducer";
+import type { PermissionDecisionHandler } from "./PermissionCard";
 import {
 	ProjectPreviewCaptureToolBlock,
 	ProjectPreviewToolBlock,
@@ -80,12 +82,16 @@ export const ToolBlock = memo(function ToolBlock({
 	sessionId,
 	providerId,
 	childSubagents,
+	pendingPermissions,
+	onDecidePermission,
 }: {
 	event: ToolEventMessage;
 	permissionLabel?: string;
 	sessionId?: string;
 	providerId?: string;
 	childSubagents?: ReadonlyArray<SubagentSnapshot>;
+	pendingPermissions?: ReadonlyArray<PermissionMessage>;
+	onDecidePermission?: PermissionDecisionHandler;
 }) {
 	const [open, setOpen] = useState(false);
 	const [detail, setDetail] = useState<HistoricalToolEventDetail | null>(null);
@@ -140,6 +146,8 @@ export const ToolBlock = memo(function ToolBlock({
 			<SubagentToolBlock
 				subagent={subagent}
 				childSubagents={childSubagents}
+				pendingPermissions={pendingPermissions}
+				onDecidePermission={onDecidePermission}
 				onStop={
 					workflow && ownsCurrentProvider && sessionId && subagent.taskId
 						? () => stopNativeWorkflow(sessionId, subagent.taskId ?? "")

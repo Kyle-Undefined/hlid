@@ -47,6 +47,8 @@ export type PermissionMessage = {
 	displayName?: string;
 	description?: string;
 	input?: Record<string, unknown>;
+	requester?: PermissionRequestMessage["requester"];
+	policy?: PermissionRequestMessage["policy"];
 	allowOnce?: boolean;
 	allowAlways?: boolean;
 	decision: "pending" | PermissionDecision;
@@ -673,6 +675,8 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 					displayName: action.msg.displayName,
 					description: action.msg.description,
 					input: action.msg.input,
+					requester: action.msg.requester,
+					policy: action.msg.policy,
 					allowOnce: action.msg.allowOnce,
 					allowAlways: action.msg.allowAlways,
 					decision: "pending",

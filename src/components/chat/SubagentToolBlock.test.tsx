@@ -8,6 +8,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SubagentSnapshot } from "#/server/agentProvider";
+import type { PermissionMessage } from "./chatReducer";
 import {
 	resetSubagentOpenStateForTest,
 	SubagentToolBlock,
@@ -251,6 +252,60 @@ describe("SubagentToolBlock", () => {
 		fireEvent.click(screen.getByRole("button", { name: "Stop workflow" }));
 		expect(onStop).toHaveBeenCalledOnce();
 		expect(screen.getByRole("button", { name: "Stopping" })).toBeTruthy();
+	});
+
+	it("keeps a child approval visible and actionable on a collapsed workflow", () => {
+		const onDecide = vi.fn();
+		const child = snapshot({
+			provider: "claude",
+			agentId: "child-reader",
+			parentActivityId: "workflow-1",
+			name: "Reader",
+		});
+		const approval: PermissionMessage = {
+			id: "approval-1",
+			role: "permission",
+			toolName: "mcp__hlid_obsidian__create_note",
+			title: "Claude requests Create note",
+			input: { path: "Notes/Review.md" },
+			requester: {
+				providerId: "claude",
+				agentId: "child-reader",
+			},
+			policy: {
+				source: "umbod",
+				reason: "no matching rule",
+			},
+			decision: "pending",
+		};
+		render(
+			<SubagentToolBlock
+				subagent={snapshot({
+					provider: "claude",
+					agentId: "workflow-1",
+					kind: "workflow",
+					name: "Repository audit",
+				})}
+				childSubagents={[child]}
+				pendingPermissions={[approval]}
+				onDecidePermission={onDecide}
+			/>,
+		);
+
+		const workflow = screen.getByRole("button", {
+			name: /repository audit running/i,
+		});
+		expect(workflow.getAttribute("aria-expanded")).toBe("false");
+		expect(
+			screen.getByText("1 running / 0 done / 0 failed / 1 approval needed"),
+		).toBeTruthy();
+		expect(screen.getByText("Create note")).toBeTruthy();
+		expect(screen.getByText("Reader")).toBeTruthy();
+		expect(
+			screen.queryByRole("button", { name: /reader running/i }),
+		).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+		expect(onDecide).toHaveBeenCalledWith("approval-1", true);
 	});
 
 	it("offers native resume only for an interrupted run and fresh rerun for completed scripts", () => {

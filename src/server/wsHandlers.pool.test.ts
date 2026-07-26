@@ -165,6 +165,7 @@ function makePool(vaultEntry?: ReturnType<typeof makeEntry>): SessionPool & {
 	syncConfig: ReturnType<typeof vi.fn>;
 	getSize: ReturnType<typeof vi.fn>;
 	findByDbSessionId: ReturnType<typeof vi.fn>;
+	claimDbSessionId: ReturnType<typeof vi.fn>;
 	isVaultSession: ReturnType<typeof vi.fn>;
 } {
 	const vault = vaultEntry ?? makeEntry("vault-id");
@@ -179,6 +180,7 @@ function makePool(vaultEntry?: ReturnType<typeof makeEntry>): SessionPool & {
 		syncConfig: vi.fn(),
 		getSize: vi.fn().mockReturnValue(1),
 		findByDbSessionId: vi.fn().mockReturnValue(undefined),
+		claimDbSessionId: vi.fn((entry: PoolEntry) => entry),
 		isVaultSession: vi.fn().mockReturnValue(false),
 	} as unknown as ReturnType<typeof makePool>;
 }
@@ -1196,6 +1198,74 @@ describe("message — reload_session (pool)", () => {
  * reuse the existing pool entry instead of spawning a new one.
  */
 describe("message — chat pool entry reuse", () => {
+	it("reserves a revived db session while its first turn is still hydrating", async () => {
+		const vault = makeEntry("vault-id");
+		vault.manager.getCurrentSessionId.mockReturnValue(null);
+		const revived = makeEntry("revived-pool-session", {
+			agentCwd: "/wrong-vault",
+		});
+		revived.manager.getCurrentSessionId.mockReturnValue(null);
+		revived.manager.isRunning.mockReturnValue(true);
+		let finishFirstTurn: (() => void) | undefined;
+		const firstTurn = new Promise<void>((resolve) => {
+			finishFirstTurn = resolve;
+		});
+		revived.manager.runQuery
+			.mockImplementationOnce(() => firstTurn)
+			.mockResolvedValueOnce(undefined);
+
+		const pool = makePool(vault);
+		pool.get.mockImplementation((id: string) => {
+			if (id === "vault-id") return vault;
+			if (id === revived.sessionId) return revived;
+			return undefined;
+		});
+		pool.create.mockReturnValue(revived);
+		pool.claimDbSessionId.mockImplementation(
+			(entry: PoolEntry, dbSessionId: string) => {
+				entry.claimedDbSessionId = dbSessionId;
+				return entry;
+			},
+		);
+		pool.findByDbSessionId.mockImplementation((dbSessionId: string) =>
+			revived.claimedDbSessionId === dbSessionId ? revived : undefined,
+		);
+		const { message } = createWsHandlers(pool);
+		const ws = makeWs("vault-id");
+
+		const rerun = message(
+			ws as never,
+			JSON.stringify({
+				type: "chat",
+				text: "rerun workflow",
+				session_id: "persisted-chat",
+			}),
+		);
+		await vi.waitFor(() => {
+			expect(pool.claimDbSessionId).toHaveBeenCalledWith(
+				revived,
+				"persisted-chat",
+			);
+		});
+
+		const followUp = message(
+			ws as never,
+			JSON.stringify({
+				type: "chat",
+				text: "follow up",
+				session_id: "persisted-chat",
+				agent_cwd: "/work/project",
+			}),
+		);
+		await vi.waitFor(() => {
+			expect(revived.manager.runQuery).toHaveBeenCalledTimes(2);
+		});
+
+		expect(pool.create).toHaveBeenCalledTimes(1);
+		finishFirstTurn?.();
+		await Promise.all([rerun, followUp]);
+	});
+
 	it("creates a parallel entry when the subscribed session is running but the chat ID is new", async () => {
 		const vault = makeEntry("vault-id");
 		vault.manager.getCurrentSessionId.mockReturnValue("running-db-session");
@@ -1314,7 +1384,7 @@ describe("message — chat pool entry reuse", () => {
 		expect(ws.data.subscribedSessionId).toBe("session-a-id");
 	});
 
-	it("does not switch entry when subscribed session already owns the db session_id", async () => {
+	it("keeps one owner when a follow-up repeats the db session with stale workspace context", async () => {
 		// ws is already subscribed to the correct entry
 		const vault = makeEntry("vault-id");
 		vault.manager.getCurrentSessionId.mockReturnValue("db-session-vault");
@@ -1339,6 +1409,7 @@ describe("message — chat pool entry reuse", () => {
 				type: "chat",
 				text: "continue",
 				session_id: "db-session-vault",
+				agent_cwd: "/different-workspace",
 			}),
 		);
 

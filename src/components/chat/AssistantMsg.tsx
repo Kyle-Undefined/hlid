@@ -5,8 +5,9 @@ import { useCopyToClipboard } from "#/hooks/useCopyToClipboard";
 import type { ObsidianCaptureDestination } from "#/lib/obsidianCapture";
 import type { ToolEventMessage } from "#/server/protocol";
 import { CopyButton } from "./CopyButton";
-import type { AssistantMessage } from "./chatReducer";
+import type { AssistantMessage, PermissionMessage } from "./chatReducer";
 import { ObsidianVaultChangeReview } from "./ObsidianVaultChangeReview";
+import type { PermissionDecisionHandler } from "./PermissionCard";
 import {
 	isProjectPreviewToolEvent,
 	ProjectPreviewActivityCard,
@@ -38,6 +39,8 @@ export function AssistantMsg({
 	obsidianCapture,
 	groupedProjectPreviewEventIds,
 	historicalProjectPreviewGroups,
+	pendingPermissionsByWorkflow,
+	onDecidePermission,
 }: {
 	message: AssistantMessage;
 	permissionLabels?: Map<string, string>;
@@ -54,6 +57,11 @@ export function AssistantMsg({
 	obsidianCapture?: ObsidianCaptureDestination | null;
 	groupedProjectPreviewEventIds?: ReadonlySet<string>;
 	historicalProjectPreviewGroups?: ReadonlyMap<string, ToolEventMessage[]>;
+	pendingPermissionsByWorkflow?: ReadonlyMap<
+		string,
+		ReadonlyArray<PermissionMessage>
+	>;
+	onDecidePermission?: PermissionDecisionHandler;
 }) {
 	const { copy, copied } = useCopyToClipboard();
 	const workflowAgentIds = new Set<string>();
@@ -128,6 +136,14 @@ export function AssistantMsg({
 						? workflowChildren.get(event.subagent.agentId)
 						: undefined
 				}
+				pendingPermissions={
+					event.subagent?.kind === "workflow"
+						? pendingPermissionsByWorkflow?.get(
+								`${event.subagent.provider}:${event.subagent.agentId}`,
+							)
+						: undefined
+				}
+				onDecidePermission={onDecidePermission}
 			/>
 		);
 	};

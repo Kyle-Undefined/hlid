@@ -1,13 +1,14 @@
 import { memo, useMemo } from "react";
 import { useProjectPreview } from "#/hooks/projectPreviewStore";
 import { formatVaultReferencedMessage } from "#/lib/vaultReferences";
+import type { SubagentSnapshot } from "#/server/agentProvider";
 import type { ToolEventMessage } from "#/server/protocol";
 import {
 	ChatMessageRow,
 	type ObsidianCaptureDestination,
 	type PlanDecision,
 } from "./ChatMessageRow";
-import type { ChatMessage } from "./chatReducer";
+import type { ChatMessage, PermissionMessage } from "./chatReducer";
 import {
 	groupProjectPreviewEventLifecycles,
 	isProjectPreviewToolEvent,
@@ -148,6 +149,47 @@ export const MessageList = memo(function MessageList({
 	const hasActiveProjectPreview =
 		liveProjectPreview?.state === "starting" ||
 		liveProjectPreview?.state === "ready";
+	const permissionPlacement = useMemo(() => {
+		const subagents = new Map<string, SubagentSnapshot>();
+		const workflowKeys = new Set<string>();
+		const requesterKey = (provider: string, agentId: string) =>
+			`${provider}:${agentId}`;
+		for (const message of visibleMessages) {
+			if (message.role !== "assistant") continue;
+			for (const event of message.toolEvents) {
+				const subagent = event.subagent;
+				if (!subagent) continue;
+				const key = requesterKey(subagent.provider, subagent.agentId);
+				subagents.set(key, subagent);
+				if (subagent.kind === "workflow") workflowKeys.add(key);
+			}
+		}
+		const byWorkflow = new Map<string, PermissionMessage[]>();
+		const embeddedIds = new Set<string>();
+		for (const message of visibleMessages) {
+			if (
+				message.role !== "permission" ||
+				message.decision !== "pending" ||
+				!message.requester
+			) {
+				continue;
+			}
+			const caller = subagents.get(
+				requesterKey(message.requester.providerId, message.requester.agentId),
+			);
+			if (!caller?.parentActivityId) continue;
+			const workflowKey = requesterKey(
+				caller.provider,
+				caller.parentActivityId,
+			);
+			if (!workflowKeys.has(workflowKey)) continue;
+			const approvals = byWorkflow.get(workflowKey) ?? [];
+			approvals.push(message);
+			byWorkflow.set(workflowKey, approvals);
+			embeddedIds.add(message.id);
+		}
+		return { subagents, byWorkflow, embeddedIds };
+	}, [visibleMessages]);
 
 	return (
 		<>
@@ -194,6 +236,9 @@ export const MessageList = memo(function MessageList({
 					obsidianCapture={obsidianCapture}
 					groupedProjectPreviewEventIds={groupedProjectPreviewEventIds}
 					historicalProjectPreviewGroups={historicalProjectPreviewGroups}
+					requesterSubagents={permissionPlacement.subagents}
+					pendingPermissionsByWorkflow={permissionPlacement.byWorkflow}
+					embeddedPermissionIds={permissionPlacement.embeddedIds}
 				/>
 			))}
 			{orphanQueued.map((qm) => (

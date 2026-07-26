@@ -1,9 +1,10 @@
 import { memo } from "react";
 import type { ObsidianCaptureDestination } from "#/lib/obsidianCapture";
+import type { SubagentSnapshot } from "#/server/agentProvider";
 import type { ToolEventMessage } from "#/server/protocol";
 import { AskUserQuestionCard } from "./AskUserQuestionCard";
 import { AssistantMsg } from "./AssistantMsg";
-import type { ChatMessage } from "./chatReducer";
+import type { ChatMessage, PermissionMessage } from "./chatReducer";
 import { PermissionCard } from "./PermissionCard";
 import { PlanCard, type PlanDecision } from "./PlanCard";
 import { UserMsg, type UserMsgQueueState } from "./UserMsg";
@@ -33,6 +34,9 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 	obsidianCapture,
 	groupedProjectPreviewEventIds,
 	historicalProjectPreviewGroups,
+	requesterSubagents,
+	pendingPermissionsByWorkflow,
+	embeddedPermissionIds,
 }: {
 	message: ChatMessage;
 	sessionId?: string;
@@ -64,6 +68,12 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 	obsidianCapture?: ObsidianCaptureDestination | null;
 	groupedProjectPreviewEventIds?: ReadonlySet<string>;
 	historicalProjectPreviewGroups?: ReadonlyMap<string, ToolEventMessage[]>;
+	requesterSubagents?: ReadonlyMap<string, SubagentSnapshot>;
+	pendingPermissionsByWorkflow?: ReadonlyMap<
+		string,
+		ReadonlyArray<PermissionMessage>
+	>;
+	embeddedPermissionIds?: ReadonlySet<string>;
 }) {
 	if (message.role === "user") {
 		return (
@@ -81,7 +91,24 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 		// Approved variants are folded into the tool block.
 		// Pending and denied still render standalone.
 		if (permissionLabels.has(message.id)) return null;
-		return <PermissionCard message={message} onDecide={onDecide} />;
+		if (
+			message.decision === "pending" &&
+			embeddedPermissionIds?.has(message.id)
+		) {
+			return null;
+		}
+		const requesterSubagent = message.requester
+			? requesterSubagents?.get(
+					`${message.requester.providerId}:${message.requester.agentId}`,
+				)
+			: undefined;
+		return (
+			<PermissionCard
+				message={message}
+				onDecide={onDecide}
+				requesterSubagent={requesterSubagent}
+			/>
+		);
 	}
 	if (message.role === "assistant") {
 		return (
@@ -99,6 +126,8 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 				obsidianCapture={obsidianCapture}
 				groupedProjectPreviewEventIds={groupedProjectPreviewEventIds}
 				historicalProjectPreviewGroups={historicalProjectPreviewGroups}
+				pendingPermissionsByWorkflow={pendingPermissionsByWorkflow}
+				onDecidePermission={onDecide}
 			/>
 		);
 	}

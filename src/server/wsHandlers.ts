@@ -163,8 +163,10 @@ async function resolveGoalEntry(
 		resolveAgentName(targetCwd),
 	);
 	if (!created) return null;
-	subscribeToEntry(context, created);
-	return created;
+	const owner = context.pool.claimDbSessionId(created, msg.session_id);
+	if (owner !== created) context.pool.close(created.sessionId);
+	subscribeToEntry(context, owner);
+	return owner;
 }
 
 async function handleGoalControl(
@@ -829,17 +831,27 @@ function shouldCreateChatEntry(
 	needsNewSession: boolean,
 ): boolean {
 	if (chatEntry !== entry) return false;
+	const currentSessionId =
+		entry.manager.getCurrentSessionId() ?? entry.claimedDbSessionId ?? null;
+	// A persisted chat has one process owner. Its saved provider/workspace may
+	// differ from a stale client payload, but that must not fork a second manager
+	// for the same DB ID.
+	if (
+		!needsNewSession &&
+		msg.session_id !== undefined &&
+		msg.session_id === currentSessionId
+	) {
+		return false;
+	}
 	if (entry.manager.isRunning() && !needsNewSession) {
-		const currentSessionId = entry.manager.getCurrentSessionId();
 		// Missing/same IDs are follow-ups and belong in this session's queue.
 		// A different explicit ID is a parallel new chat and needs its own entry.
-		if (!msg.session_id || msg.session_id === currentSessionId) return false;
+		if (!msg.session_id) return false;
 	}
 	return (
-		entry.manager.getCurrentSessionId() === null ||
+		currentSessionId === null ||
 		(msg.agent_cwd !== undefined && msg.agent_cwd !== entry.agentCwd) ||
-		(msg.session_id !== undefined &&
-			msg.session_id !== entry.manager.getCurrentSessionId()) ||
+		(msg.session_id !== undefined && msg.session_id !== currentSessionId) ||
 		needsNewSession
 	);
 }
@@ -861,9 +873,17 @@ function resolveChatEntry(
 		resolveAgentName(targetCwd),
 	);
 	if (!created) return null;
-	subscribeToEntry(context, created);
-	sendSessionCreated(context, created);
-	return { entry: created, created: true };
+	const owner = msg.session_id
+		? context.pool.claimDbSessionId(created, msg.session_id)
+		: created;
+	if (owner !== created) {
+		context.pool.close(created.sessionId);
+		subscribeToEntry(context, owner);
+		return { entry: owner, created: false };
+	}
+	subscribeToEntry(context, owner);
+	sendSessionCreated(context, owner);
+	return { entry: owner, created: true };
 }
 
 function broadcastUserMessage(

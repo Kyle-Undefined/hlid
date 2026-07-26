@@ -14,6 +14,11 @@ import {
 import { useEffect, useState } from "react";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { SubagentSnapshot } from "#/server/agentProvider";
+import type { PermissionMessage } from "./chatReducer";
+import {
+	PermissionCard,
+	type PermissionDecisionHandler,
+} from "./PermissionCard";
 
 const subagentOpenOverrides = new Map<string, boolean>();
 
@@ -394,6 +399,8 @@ export function SubagentToolBlock({
 	onResume,
 	onRerun,
 	onSave,
+	pendingPermissions = [],
+	onDecidePermission,
 }: {
 	subagent: SubagentSnapshot;
 	childSubagents?: ReadonlyArray<SubagentSnapshot>;
@@ -404,6 +411,8 @@ export function SubagentToolBlock({
 	onResume?: () => void;
 	onRerun?: () => void;
 	onSave?: () => void;
+	pendingPermissions?: ReadonlyArray<PermissionMessage>;
+	onDecidePermission?: PermissionDecisionHandler;
 }) {
 	const active = isActive(subagent.status);
 	const stateKey = subagentStateKey(subagent, stateScope);
@@ -416,7 +425,7 @@ export function SubagentToolBlock({
 	const open =
 		openOverride ?? (active && subagent.kind !== "workflow" && !nested);
 	const durationMs = useSubagentDuration(subagent, active);
-	const workflowSummary =
+	const workflowAgentSummary =
 		subagent.kind === "workflow"
 			? childSubagents.length > 0
 				? summarizeWorkflowChildren(childSubagents)
@@ -424,6 +433,25 @@ export function SubagentToolBlock({
 					? "Waiting for agents"
 					: undefined
 			: undefined;
+	const approvalSummary =
+		pendingPermissions.length > 0
+			? `${pendingPermissions.length} ${
+					pendingPermissions.length === 1 ? "approval" : "approvals"
+				} needed`
+			: undefined;
+	const workflowSummaryParts = [workflowAgentSummary, approvalSummary].filter(
+		(value): value is string => Boolean(value),
+	);
+	const workflowSummary =
+		workflowSummaryParts.length > 0
+			? workflowSummaryParts.join(" / ")
+			: undefined;
+	const childSubagentsById = new Map(
+		childSubagents.map((child) => [
+			`${child.provider}:${child.agentId}`,
+			child,
+		]),
+	);
 
 	useEffect(() => {
 		setOpenOverride(
@@ -462,6 +490,22 @@ export function SubagentToolBlock({
 				onToggle={toggleOpen}
 				summary={workflowSummary}
 			/>
+			{onDecidePermission &&
+				pendingPermissions.map((permission) => (
+					<PermissionCard
+						key={permission.id}
+						message={permission}
+						onDecide={onDecidePermission}
+						requesterSubagent={
+							permission.requester
+								? childSubagentsById.get(
+										`${permission.requester.providerId}:${permission.requester.agentId}`,
+									)
+								: undefined
+						}
+						embedded
+					/>
+				))}
 			{open && (
 				<>
 					<SubagentDetails subagent={subagent} durationMs={durationMs} />
