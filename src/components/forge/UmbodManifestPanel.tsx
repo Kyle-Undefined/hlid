@@ -97,7 +97,9 @@ export function UmbodManifestPanel({
 							Tool calls
 						</div>
 						<div className="text-2xl mt-1">
-							{snapshot.tools?.totals?.entries ?? 0}
+							{snapshot.analyticsLoading
+								? "…"
+								: (snapshot.tools?.totals?.entries ?? 0)}
 						</div>
 					</div>
 					<div className="border border-border p-3">
@@ -105,8 +107,11 @@ export function UmbodManifestPanel({
 							Rule findings
 						</div>
 						<div className="text-2xl mt-1">
-							{snapshot.rules?.rules?.filter((rule) => rule.status !== "active")
-								.length ?? 0}
+							{snapshot.analyticsLoading
+								? "…"
+								: (snapshot.rules?.rules?.filter(
+										(rule) => rule.status !== "active",
+									).length ?? 0)}
 						</div>
 					</div>
 				</div>

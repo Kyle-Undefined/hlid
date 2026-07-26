@@ -6,6 +6,11 @@ type UmbodRouteOperations = Pick<
 	"saveUmbodManifest" | "umbodHookArtifacts"
 >;
 
+type UmbodGetOperations = Pick<
+	typeof import("#/server/umbod"),
+	"umbodAnalyticsSnapshot" | "umbodCalls" | "umbodSnapshot"
+>;
+
 const loadUmbodRouteOperations = async (): Promise<UmbodRouteOperations> => {
 	const { saveUmbodManifest, umbodHookArtifacts } = await import(
 		"#/server/umbod"
@@ -77,15 +82,33 @@ function parseUmbodCommand(body: {
 }
 
 export async function handleGetUmbod(request: Request): Promise<Response> {
+	return handleGetUmbodWithOperations(request, async () => {
+		const { umbodAnalyticsSnapshot, umbodCalls, umbodSnapshot } = await import(
+			"#/server/umbod"
+		);
+		return { umbodAnalyticsSnapshot, umbodCalls, umbodSnapshot };
+	});
+}
+
+export async function handleGetUmbodWithOperations(
+	request: Request,
+	loadOperations: () => Promise<UmbodGetOperations>,
+): Promise<Response> {
 	const forbidden = forbiddenResponse(request);
 	if (forbidden) return forbidden;
 	try {
-		const { umbodCalls, umbodSnapshot } = await import("#/server/umbod");
+		const { umbodAnalyticsSnapshot, umbodCalls, umbodSnapshot } =
+			await loadOperations();
 		const url = new URL(request.url);
+		const view = url.searchParams.get("view");
 		return Response.json(
-			url.searchParams.get("view") === "calls"
+			view === "calls"
 				? await umbodCalls(url.searchParams)
-				: await umbodSnapshot(),
+				: view === "analytics"
+					? await umbodAnalyticsSnapshot(
+							url.searchParams.get("refresh") === "1",
+						)
+					: await umbodSnapshot(),
 		);
 	} catch (error) {
 		return Response.json(

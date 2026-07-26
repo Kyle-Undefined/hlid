@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { forbiddenResponse } from "#/lib/originGate";
-import { handlePostUmbod } from "./umbod";
+import { handleGetUmbodWithOperations, handlePostUmbod } from "./umbod";
 
 vi.mock("#/lib/originGate", () => ({ forbiddenResponse: vi.fn() }));
 
@@ -18,10 +18,64 @@ const loadOperations = async () => ({
 	saveUmbodManifest,
 	umbodHookArtifacts,
 });
+const umbodSnapshot = vi.fn();
+const umbodAnalyticsSnapshot = vi.fn();
+const umbodCalls = vi.fn();
+const loadGetOperations = async () => ({
+	umbodSnapshot,
+	umbodAnalyticsSnapshot,
+	umbodCalls,
+});
 
 beforeEach(() => {
 	vi.clearAllMocks();
 	vi.mocked(forbiddenResponse).mockReturnValue(null);
+});
+
+describe("GET /api/umbod", () => {
+	it("loads the fast policy snapshot without analytics", async () => {
+		umbodSnapshot.mockResolvedValue({ enabled: true, source: "manifest" });
+		const response = await handleGetUmbodWithOperations(
+			new Request("http://localhost/api/umbod"),
+			loadGetOperations,
+		);
+
+		expect(response.status).toBe(200);
+		expect(await response.json()).toEqual({
+			enabled: true,
+			source: "manifest",
+		});
+		expect(umbodAnalyticsSnapshot).not.toHaveBeenCalled();
+		expect(umbodCalls).not.toHaveBeenCalled();
+	});
+
+	it("routes analytics and explicit refresh separately", async () => {
+		umbodAnalyticsSnapshot.mockResolvedValue({
+			enabled: true,
+			tools: { totals: { entries: 12 } },
+		});
+		const response = await handleGetUmbodWithOperations(
+			new Request("http://localhost/api/umbod?view=analytics&refresh=1"),
+			loadGetOperations,
+		);
+
+		expect(response.status).toBe(200);
+		expect(umbodAnalyticsSnapshot).toHaveBeenCalledWith(true);
+		expect(umbodSnapshot).not.toHaveBeenCalled();
+	});
+
+	it("routes call explorer reads without loading the policy snapshot", async () => {
+		umbodCalls.mockResolvedValue({ entries: [], total: 0 });
+		const request = new Request("http://localhost/api/umbod?view=calls&page=2");
+		const response = await handleGetUmbodWithOperations(
+			request,
+			loadGetOperations,
+		);
+
+		expect(response.status).toBe(200);
+		expect(umbodCalls).toHaveBeenCalledWith(new URL(request.url).searchParams);
+		expect(umbodSnapshot).not.toHaveBeenCalled();
+	});
 });
 
 describe("POST /api/umbod", () => {

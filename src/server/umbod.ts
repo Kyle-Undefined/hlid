@@ -2,8 +2,12 @@ import { readFile, rename, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { ApprovalDecision, ToolCall, Umbod } from "@umbod/core";
 import { APP_DIR } from "#/lib/paths";
-import { includesSearchText } from "#/lib/search";
 import { loadConfig } from "#/server/config";
+import {
+	invalidateUmbodAnalytics,
+	readUmbodAnalytics,
+	readUmbodCalls,
+} from "#/server/umbodAnalyticsWorkerClient";
 import {
 	defaultUmbodManifest,
 	resolveUmbodManifestPath,
@@ -291,96 +295,56 @@ export async function umbodSnapshot(): Promise<Record<string, unknown>> {
 		enabled: false,
 		manifest_path: "umbod.toml",
 	};
-	const source = await readFile(
-		resolveUmbodManifestPath(config.manifest_path),
-		"utf8",
-	).catch(() => defaultUmbodManifest());
+	const path = resolveUmbodManifestPath(config.manifest_path);
+	const source = await readFile(path, "utf8").catch(() =>
+		defaultUmbodManifest(),
+	);
 	const umbod = await getUmbod();
 	if (!umbod) return { enabled: false, source };
 	return {
 		enabled: true,
 		source,
 		manifest: umbod.manifest,
-		tools: await Promise.resolve(
-			umbod.fetch(new Request("http://hlid/api/analytics/tools?recentDays=14")),
-		).then((r) => r?.json()),
-		rules: await Promise.resolve(
-			umbod.fetch(new Request("http://hlid/api/analytics/rules")),
-		).then((r) => r?.json()),
+	};
+}
+
+export async function umbodAnalyticsSnapshot(
+	refresh = false,
+): Promise<Record<string, unknown>> {
+	const config = loadConfig()?.umbod ?? {
+		enabled: false,
+		manifest_path: "umbod.toml",
+	};
+	if (!config.enabled) return { enabled: false };
+	const umbod = await getUmbod();
+	if (!umbod) return { enabled: false };
+	return {
+		enabled: true,
+		...(await readUmbodAnalytics(
+			umbod.manifest,
+			resolve(APP_DIR, "umbod.hlid.db"),
+			refresh,
+		)),
 	};
 }
 
 export async function umbodCalls(
 	searchParams: URLSearchParams,
 ): Promise<unknown> {
+	const config = loadConfig()?.umbod ?? {
+		enabled: false,
+		manifest_path: "umbod.toml",
+	};
+	if (!config.enabled)
+		return { entries: [], page: 1, pageSize: 50, total: 0, totalPages: 1 };
 	const umbod = await getUmbod();
 	if (!umbod)
 		return { entries: [], page: 1, pageSize: 50, total: 0, totalPages: 1 };
-	const search = searchParams.get("search")?.trim();
-	if (search) return normalizedUmbodCalls(umbod, searchParams, search);
-	const url = new URL("http://hlid/api/analytics/calls");
-	for (const [key, value] of searchParams) {
-		if (key !== "view") url.searchParams.set(key, value);
-	}
-	const response = await Promise.resolve(umbod.fetch(new Request(url)));
-	if (!response) throw new Error("Umbod call explorer is unavailable");
-	return response.json();
-}
-
-type UmbodCallPage = {
-	entries: Array<{ command?: string } & Record<string, unknown>>;
-	page: number;
-	pageSize: number;
-	total: number;
-	totalPages: number;
-};
-
-/**
- * Umbod's embedded SQLite search uses ASCII-only LIKE. Page through the
- * already-filtered call stream here so its search behaves like Hlid's pages.
- */
-async function normalizedUmbodCalls(
-	umbod: Umbod,
-	searchParams: URLSearchParams,
-	search: string,
-): Promise<UmbodCallPage> {
-	const requestedPage = Math.max(Number(searchParams.get("page")) || 1, 1);
-	const requestedPageSize = Math.min(
-		Math.max(Number(searchParams.get("pageSize")) || 50, 1),
-		200,
+	return readUmbodCalls(
+		umbod.manifest,
+		resolve(APP_DIR, "umbod.hlid.db"),
+		searchParams,
 	);
-	const url = new URL("http://hlid/api/analytics/calls");
-	for (const [key, value] of searchParams) {
-		if (!["view", "search", "page", "pageSize"].includes(key))
-			url.searchParams.set(key, value);
-	}
-	url.searchParams.set("pageSize", "200");
-
-	const matches: UmbodCallPage["entries"] = [];
-	let sourcePage = 1;
-	let sourcePages = 1;
-	do {
-		url.searchParams.set("page", String(sourcePage));
-		const response = await Promise.resolve(umbod.fetch(new Request(url)));
-		if (!response) throw new Error("Umbod call explorer is unavailable");
-		const page = (await response.json()) as UmbodCallPage;
-		matches.push(
-			...page.entries.filter((entry) =>
-				includesSearchText(entry.command ?? "", search),
-			),
-		);
-		sourcePages = Math.max(page.totalPages, 1);
-		sourcePage += 1;
-	} while (sourcePage <= sourcePages);
-
-	const offset = (requestedPage - 1) * requestedPageSize;
-	return {
-		entries: matches.slice(offset, offset + requestedPageSize),
-		page: requestedPage,
-		pageSize: requestedPageSize,
-		total: matches.length,
-		totalPages: Math.max(Math.ceil(matches.length / requestedPageSize), 1),
-	};
 }
 
 export async function umbodHookArtifacts(
@@ -432,6 +396,7 @@ export async function saveUmbodManifest(source: string): Promise<void> {
 		// Hlid-authored saves replace only the policy engine. Keep the embedded
 		// HTTP listener and audit store alive.
 		if (config?.enabled) await performUmbodReload(path);
+		invalidateUmbodAnalytics();
 	} catch (error) {
 		await Bun.file(temporary)
 			.delete()
@@ -447,4 +412,5 @@ export function closeUmbod(): void {
 	instance = null;
 	instancePath = null;
 	instanceReload = null;
+	invalidateUmbodAnalytics();
 }

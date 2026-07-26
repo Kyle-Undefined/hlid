@@ -9,6 +9,8 @@ const testState = vi.hoisted(() => ({
 		port: number;
 		fetch: (request: Request) => Promise<Response>;
 	}>,
+	readUmbodCalls: vi.fn(),
+	invalidateUmbodAnalytics: vi.fn(),
 }));
 
 vi.mock("#/lib/paths", () => ({
@@ -19,6 +21,11 @@ vi.mock("#/server/config", () => ({
 	loadConfig: () => ({
 		umbod: { enabled: true, manifest_path: "umbod.toml" },
 	}),
+}));
+vi.mock("#/server/umbodAnalyticsWorkerClient", () => ({
+	readUmbodAnalytics: vi.fn(),
+	readUmbodCalls: testState.readUmbodCalls,
+	invalidateUmbodAnalytics: testState.invalidateUmbodAnalytics,
 }));
 vi.mock("@umbod/core", () => ({
 	loadManifest: vi.fn(async () => ({
@@ -56,10 +63,10 @@ import {
 	closeUmbod,
 	registerUmbodApprovalSession,
 	saveUmbodManifest,
-	umbodCalls,
 	umbodHookArtifacts,
 	umbodSnapshot,
 } from "./umbod";
+import { readUmbodCallsFromEngine } from "./umbodAnalyticsQueries";
 
 const manifest = (decision: "allow" | "approve" | "block") => `[env]
 name = "hlid"
@@ -141,7 +148,8 @@ describe("saveUmbodManifest", () => {
 		});
 
 		await expect(
-			umbodCalls(
+			readUmbodCallsFromEngine(
+				engine as never,
 				new URLSearchParams({
 					view: "calls",
 					search: "Grimr",

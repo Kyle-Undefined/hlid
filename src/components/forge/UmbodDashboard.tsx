@@ -86,17 +86,21 @@ function Chip({ value }: { value: string }) {
 	);
 }
 
-function Totals({ tools }: { tools?: ToolUsage }) {
+function Totals({ tools, loading }: { tools?: ToolUsage; loading: boolean }) {
 	return (
 		<div className="flex gap-4 text-right">
 			<div>
-				<div className="text-lg">{tools?.totals?.entries ?? 0}</div>
+				<div className="text-lg">
+					{loading ? "…" : (tools?.totals?.entries ?? 0)}
+				</div>
 				<div className="text-[9px] uppercase tracking-wider text-muted-foreground">
 					Calls
 				</div>
 			</div>
 			<div>
-				<div className="text-lg">{tools?.totals?.sessions ?? 0}</div>
+				<div className="text-lg">
+					{loading ? "…" : (tools?.totals?.sessions ?? 0)}
+				</div>
 				<div className="text-[9px] uppercase tracking-wider text-muted-foreground">
 					Sessions
 				</div>
@@ -105,7 +109,13 @@ function Totals({ tools }: { tools?: ToolUsage }) {
 	);
 }
 
-function ToolUsagePanel({ tools }: { tools?: ToolUsage }) {
+function ToolUsagePanel({
+	tools,
+	loading,
+}: {
+	tools?: ToolUsage;
+	loading: boolean;
+}) {
 	return (
 		<div className="border border-border p-3 space-y-3">
 			<div className="flex items-center justify-between">
@@ -144,20 +154,29 @@ function ToolUsagePanel({ tools }: { tools?: ToolUsage }) {
 					<div className="text-right text-muted-foreground">{row.count}</div>
 				</div>
 			))}
-			{!tools?.byTool?.length && (
+			{loading && !tools?.byTool?.length && (
+				<p className="text-xs text-muted-foreground">Loading tool analytics…</p>
+			)}
+			{!loading && !tools?.byTool?.length && (
 				<p className="text-xs text-muted-foreground">No tool history yet.</p>
 			)}
 		</div>
 	);
 }
 
-function RuleHealthPanel({ rules }: { rules?: RuleAnalysis }) {
+function RuleHealthPanel({
+	rules,
+	loading,
+}: {
+	rules?: RuleAnalysis;
+	loading: boolean;
+}) {
 	return (
 		<div className="border border-border p-3 space-y-2">
 			<div className="flex items-center justify-between">
 				<h4 className="text-xs font-medium">Rule health</h4>
 				<span className="text-[9px] uppercase tracking-wider text-muted-foreground">
-					{rules?.rules?.length ?? 0} rules
+					{loading ? "…" : (rules?.rules?.length ?? 0)} rules
 				</span>
 			</div>
 			{rules?.rules?.map((rule) => (
@@ -174,7 +193,10 @@ function RuleHealthPanel({ rules }: { rules?: RuleAnalysis }) {
 					</div>
 				</div>
 			))}
-			{!rules?.rules?.length && (
+			{loading && !rules?.rules?.length && (
+				<p className="text-xs text-muted-foreground">Loading rule analytics…</p>
+			)}
+			{!loading && !rules?.rules?.length && (
 				<p className="text-xs text-muted-foreground">No rules to inspect.</p>
 			)}
 		</div>
@@ -465,9 +487,13 @@ function CallExplorer({ tools }: { tools?: ToolUsage }) {
 export function UmbodDashboard({
 	tools,
 	rules,
+	loading = false,
+	error,
 }: {
 	tools?: ToolUsage;
 	rules?: RuleAnalysis;
+	loading?: boolean;
+	error?: string;
 }) {
 	return (
 		<section className="border border-border bg-card p-4 space-y-5">
@@ -478,12 +504,18 @@ export function UmbodDashboard({
 						Policy insights and concrete audited operations from Umbod.
 					</p>
 				</div>
-				<Totals tools={tools} />
+				<Totals tools={tools} loading={loading} />
 			</div>
 
+			{error && (
+				<p className="border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive">
+					Analytics unavailable: {error}
+				</p>
+			)}
+
 			<div className="grid gap-3 lg:grid-cols-2">
-				<ToolUsagePanel tools={tools} />
-				<RuleHealthPanel rules={rules} />
+				<ToolUsagePanel tools={tools} loading={loading} />
+				<RuleHealthPanel rules={rules} loading={loading} />
 			</div>
 
 			<CallExplorer tools={tools} />

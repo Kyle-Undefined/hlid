@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { UmbodDashboard } from "#/components/forge/UmbodDashboard";
 import { UmbodHooksPanel } from "#/components/forge/UmbodHooksPanel";
 import { UmbodManifestPanel } from "#/components/forge/UmbodManifestPanel";
@@ -8,6 +8,8 @@ export type UmbodSnapshot = {
 	enabled: boolean;
 	source?: string;
 	error?: string;
+	analyticsLoading?: boolean;
+	analyticsError?: string;
 	tools?: {
 		totals?: {
 			entries?: number;
@@ -41,11 +43,46 @@ export function UmbodSection({
 	onChange: (next: HlidConfig["umbod"]) => void;
 }) {
 	const [snapshot, setSnapshot] = useState<UmbodSnapshot | null>(null);
-	const load = useCallback(async () => {
+	const loadGeneration = useRef(0);
+	const load = useCallback(async (refresh = false) => {
+		const generation = ++loadGeneration.current;
 		const response = await fetch("/api/umbod");
-		setSnapshot((await response.json()) as UmbodSnapshot);
+		const base = (await response.json()) as UmbodSnapshot;
+		if (loadGeneration.current !== generation) return;
+		setSnapshot({
+			...base,
+			analyticsLoading: base.enabled,
+		});
+		if (!base.enabled) return;
+		try {
+			const analyticsResponse = await fetch(
+				`/api/umbod?view=analytics${refresh ? "&refresh=1" : ""}`,
+			);
+			const analytics = (await analyticsResponse.json()) as UmbodSnapshot;
+			if (loadGeneration.current !== generation) return;
+			setSnapshot({
+				...base,
+				...analytics,
+				analyticsLoading: false,
+				analyticsError: analyticsResponse.ok
+					? undefined
+					: (analytics.error ?? "Umbod analytics failed"),
+			});
+		} catch (error) {
+			if (loadGeneration.current !== generation) return;
+			setSnapshot({
+				...base,
+				analyticsLoading: false,
+				analyticsError: error instanceof Error ? error.message : String(error),
+			});
+		}
 	}, []);
-	useEffect(() => void load(), [load]);
+	useEffect(() => {
+		void load();
+		return () => {
+			loadGeneration.current += 1;
+		};
+	}, [load]);
 
 	return (
 		<div className="space-y-6">
@@ -53,10 +90,15 @@ export function UmbodSection({
 				value={value}
 				onChange={onChange}
 				snapshot={snapshot}
-				onSaved={load}
+				onSaved={() => load(true)}
 			/>
 			<UmbodHooksPanel />
-			<UmbodDashboard tools={snapshot?.tools} rules={snapshot?.rules} />
+			<UmbodDashboard
+				tools={snapshot?.tools}
+				rules={snapshot?.rules}
+				loading={snapshot?.analyticsLoading ?? snapshot === null}
+				error={snapshot?.analyticsError}
+			/>
 		</div>
 	);
 }
