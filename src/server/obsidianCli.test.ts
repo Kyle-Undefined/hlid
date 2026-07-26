@@ -309,7 +309,11 @@ describe("Obsidian CLI bridge", () => {
 			{ output: windowsDetection, code: 0 },
 			{ output: "# {{title}}", code: 0 },
 			{ output: windowsDetection, code: 0 },
+			{ output: "0 Inbox/Existing.md", code: 0 },
+			{ output: windowsDetection, code: 0 },
 			{ output: "Created", code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{ output: "0 Inbox/Existing.md\n0 Inbox/One.md", code: 0 },
 		]);
 
 		await expect(
@@ -324,7 +328,7 @@ describe("Obsidian CLI bridge", () => {
 				dependencies,
 			),
 		).resolves.toEqual({ path: "0 Inbox/One.md" });
-		expect(run.mock.calls[3]?.[1]).toEqual([
+		expect(run.mock.calls[5]?.[1]).toEqual([
 			"vault=Fornbok",
 			"create",
 			"path=0 Inbox/One.md",
@@ -332,14 +336,49 @@ describe("Obsidian CLI bridge", () => {
 			"content=Body",
 			"open",
 		]);
-		expect(run.mock.calls[3]?.[1]).not.toContain("overwrite");
+		expect(run.mock.calls[5]?.[1]).not.toContain("overwrite");
+	});
+
+	it("reports Obsidian's collision-safe path instead of echoing the request", async () => {
+		const { dependencies, run } = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "0 Inbox/_path-echo-check.md", code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{ output: "Created", code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{
+				output: "0 Inbox/_path-echo-check.md\n0 Inbox/_path-echo-check 1.md",
+				code: 0,
+			},
+		]);
+
+		await expect(
+			createObsidianNote(
+				"Fornbok",
+				{
+					path: "0 Inbox/_path-echo-check.md",
+					content: "second write",
+				},
+				dependencies,
+			),
+		).resolves.toEqual({ path: "0 Inbox/_path-echo-check 1.md" });
+		expect(run.mock.calls[3]?.[1]).toEqual([
+			"vault=Fornbok",
+			"create",
+			"path=0 Inbox/_path-echo-check.md",
+			"content=second write",
+		]);
 	});
 
 	it("chunks long direct note content without splitting Unicode", async () => {
 		const body = "😀".repeat(1_500);
 		const { dependencies, run } = wslDependencies([
 			{ output: windowsDetection, code: 0 },
+			{ output: "0 Inbox/Long.md", code: 0 },
+			{ output: windowsDetection, code: 0 },
 			{ output: "Created", code: 0 },
+			{ output: windowsDetection, code: 0 },
+			{ output: "0 Inbox/Long.md\n0 Inbox/Long 1.md", code: 0 },
 			{ output: windowsDetection, code: 0 },
 			{ output: "Appended", code: 0 },
 			{ output: windowsDetection, code: 0 },
@@ -352,22 +391,27 @@ describe("Obsidian CLI bridge", () => {
 				{ path: "0 Inbox/Long.md", content: body },
 				dependencies,
 			),
-		).resolves.toEqual({ path: "0 Inbox/Long.md" });
-		expect(run.mock.calls[1]?.[1]).toEqual([
+		).resolves.toEqual({ path: "0 Inbox/Long 1.md" });
+		expect(run.mock.calls[3]?.[1]).toEqual([
 			"vault=Fornbok",
 			"create",
 			"path=0 Inbox/Long.md",
 		]);
-		const chunks = [3, 5].map((index) =>
+		const chunks = [7, 9].map((index) =>
 			run.mock.calls[index]?.[1]?.[3]?.replace(/^content=/, ""),
 		);
 		expect(chunks.join("")).toBe(body);
 		expect(Buffer.byteLength(chunks[0] ?? "", "utf8")).toBe(4_000);
-		for (const index of [3, 5]) {
+		for (const index of [7, 9]) {
 			expect(
 				Buffer.byteLength(run.mock.calls[index]?.[1]?.[3] ?? "", "utf8"),
 			).toBeLessThan(4_096);
 			expect(run.mock.calls[index]?.[1]?.[4]).toBe("inline");
+			expect(run.mock.calls[index]?.[1]?.slice(0, 3)).toEqual([
+				"vault=Fornbok",
+				"append",
+				"path=0 Inbox/Long 1.md",
+			]);
 		}
 	});
 

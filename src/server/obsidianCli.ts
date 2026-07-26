@@ -1480,6 +1480,66 @@ function summarizeObsidianEvalOutput(
 	});
 }
 
+function directVaultParent(path: string): string {
+	const slash = path.lastIndexOf("/");
+	return slash < 0 ? "" : path.slice(0, slash);
+}
+
+async function listDirectObsidianMarkdownPaths(
+	vaultName: string,
+	parent: string,
+	dependencies: ObsidianBridgeDependencies,
+): Promise<Map<string, string>> {
+	const output = await runObsidianCommand(
+		vaultName,
+		["files", ...(parent ? [`folder=${parent}`] : []), "ext=md"],
+		dependencies,
+	);
+	if (isObsidianNoResultsOutput(output)) return new Map();
+	const paths = output
+		.split(/\r?\n/)
+		.map((candidate) => portableVaultPath(candidate.trim()))
+		.filter(
+			(candidate) =>
+				candidate.toLowerCase().endsWith(".md") &&
+				directVaultParent(candidate).toLowerCase() === parent.toLowerCase(),
+		);
+	return new Map(
+		paths.map((candidate) => [candidate.toLowerCase(), candidate]),
+	);
+}
+
+function resolveCreatedObsidianNotePath(
+	requestedPath: string,
+	before: Map<string, string>,
+	after: Map<string, string>,
+): string {
+	const parent = directVaultParent(requestedPath);
+	const requestedName = requestedPath.slice(parent ? parent.length + 1 : 0);
+	const stem = requestedName.replace(/\.md$/i, "");
+	const escapedStem = stem.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const collisionName = new RegExp(`^${escapedStem}(?: \\d+)?\\.md$`, "i");
+	const candidates = Array.from(after.entries())
+		.filter(([key]) => !before.has(key))
+		.map(([, path]) => path)
+		.filter((path) => {
+			const candidateParent = directVaultParent(path);
+			const candidateName = path.slice(
+				candidateParent ? candidateParent.length + 1 : 0,
+			);
+			return (
+				candidateParent.toLowerCase() === parent.toLowerCase() &&
+				collisionName.test(candidateName)
+			);
+		});
+	if (candidates.length !== 1) {
+		throw new Error(
+			"Obsidian did not report a unique created note path. Check the target folder before retrying.",
+		);
+	}
+	return safeVaultPath(candidates[0] ?? "", "created note path");
+}
+
 export async function createObsidianNote(
 	vaultName: string,
 	input: ObsidianCreateNoteInput,
@@ -1541,6 +1601,12 @@ export async function createObsidianNote(
 		Buffer.byteLength(content, "utf8") <= MAX_OBSIDIAN_CLI_CONTENT_BYTES
 			? content
 			: "";
+	const parent = directVaultParent(path);
+	const before = await listDirectObsidianMarkdownPaths(
+		vaultName,
+		parent,
+		dependencies,
+	);
 	const output = await runObsidianCommand(
 		vaultName,
 		[
@@ -1554,17 +1620,23 @@ export async function createObsidianNote(
 	);
 	const error = cliError(output);
 	if (error) throw new Error(`Obsidian CLI failed: ${error}`);
+	const after = await listDirectObsidianMarkdownPaths(
+		vaultName,
+		parent,
+		dependencies,
+	);
+	const createdPath = resolveCreatedObsidianNotePath(path, before, after);
 	if (content && !createContent) {
 		await runObsidianContentMutation(
 			vaultName,
 			"append",
-			[`path=${path}`],
+			[`path=${createdPath}`],
 			content,
 			dependencies,
 			{ inline: true },
 		);
 	}
-	return { path };
+	return { path: createdPath };
 }
 
 export type ObsidianNoteMutationInput = {
