@@ -7,3 +7,11 @@ export const getCockpitData = createServerFn({ method: "GET" }).handler(
 		return (await getVaultSnapshot()).cockpit;
 	},
 );
+
+/** Raven only needs the compact skill inventory, not the full Cockpit snapshot. */
+export const getCockpitSkillsFn = createServerFn({ method: "GET" }).handler(
+	async () => {
+		const { getVaultSnapshot } = await import("#/server/vaultSnapshot");
+		return (await getVaultSnapshot()).cockpit.skills;
+	},
+);

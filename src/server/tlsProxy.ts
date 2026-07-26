@@ -237,6 +237,10 @@ export function createTlsHttpForwarder({
 						forwardHeaders,
 					),
 					body,
+					// This is a transparent edge proxy. Redirects, especially the
+					// Project Preview clean-path selection redirect, must reach the
+					// browser so it can persist Set-Cookie before the next request.
+					redirect: "manual",
 				},
 				url.pathname === "/api/voice/transcribe"
 					? VOICE_FORWARD_TIMEOUT_MS

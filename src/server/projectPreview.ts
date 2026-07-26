@@ -9,6 +9,7 @@ import {
 import { isAbsolute, posix, resolve, win32 } from "node:path";
 import { parseWslUncSyntax } from "#/lib/paths";
 import { projectPreviewBrowserManager } from "./projectPreviewBrowser";
+import { disposeProjectPreviewRelay } from "./projectPreviewRelay";
 import type { ProjectPreviewSnapshot } from "./protocol";
 import { broadcast } from "./runState";
 
@@ -121,6 +122,25 @@ export type ProjectPreviewLaunch = {
 	detached: boolean;
 };
 
+const HLID_SKIP_SELF_INSTALL = "HLID_SKIP_SELF_INSTALL";
+
+export function projectPreviewEnvironment(
+	environment: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+	const wslEnvironment = (environment.WSLENV ?? "")
+		.split(":")
+		.filter(
+			(entry) =>
+				entry &&
+				entry.split("/", 1)[0]?.toUpperCase() !== HLID_SKIP_SELF_INSTALL,
+		);
+	return {
+		...environment,
+		[HLID_SKIP_SELF_INSTALL]: "1",
+		WSLENV: [`${HLID_SKIP_SELF_INSTALL}/u`, ...wslEnvironment].join(":"),
+	};
+}
+
 export function projectPreviewLaunch(
 	command: string,
 	cwd: string,
@@ -161,6 +181,7 @@ function spawnPreview(command: string, cwd: string): ChildProcess {
 		detached: launch.detached,
 		windowsHide: true,
 		stdio: ["ignore", "pipe", "pipe"],
+		env: projectPreviewEnvironment(),
 	});
 }
 
@@ -547,6 +568,7 @@ export class ProjectPreviewManager {
 		}
 		entry.stopping = true;
 		entry.snapshot.stop_reason = reason;
+		disposeProjectPreviewRelay(entry.snapshot.id);
 		clearTimeout(entry.lifetimeTimer);
 		if (entry.persistTimer) {
 			clearTimeout(entry.persistTimer);
@@ -589,6 +611,7 @@ export class ProjectPreviewManager {
 				this.closeSession(sessionId, "hlid_shutdown"),
 			),
 		);
+		disposeProjectPreviewRelay();
 		await this.browserManager.closeAll();
 	}
 }

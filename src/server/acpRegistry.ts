@@ -1,4 +1,6 @@
-import { basename } from "node:path";
+import { constants } from "node:fs";
+import { access, readdir } from "node:fs/promises";
+import { basename, delimiter, isAbsolute, join } from "node:path";
 import { z } from "zod";
 import type { HlidConfig } from "../config";
 import { bumpDataRevision } from "./dataRevision";
@@ -8,6 +10,89 @@ import { createSlowOperationObserver } from "./requestDiagnostics";
 const ACP_REGISTRY_URL =
 	"https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
 const ACP_AVAILABILITY_TTL_MS = 60_000;
+
+let pathIndexKey = "";
+let pathIndexRead: Promise<Map<string, string>> | null = null;
+
+function executableNames(command: string): string[] {
+	if (process.platform !== "win32") return [command];
+	const extensions = (process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD")
+		.split(";")
+		.filter(Boolean);
+	const lower = command.toLowerCase();
+	if (extensions.some((extension) => lower.endsWith(extension.toLowerCase()))) {
+		return [lower];
+	}
+	return [lower, ...extensions.map((extension) => `${lower}${extension}`)];
+}
+
+async function buildPathIndex(): Promise<Map<string, string>> {
+	const directories = (process.env.PATH ?? "").split(delimiter).filter(Boolean);
+	const listings = await Promise.all(
+		directories.map(async (directory) => {
+			try {
+				return {
+					directory,
+					entries: await readdir(directory, { withFileTypes: true }),
+				};
+			} catch {
+				return null;
+			}
+		}),
+	);
+	const index = new Map<string, string>();
+	for (const listing of listings) {
+		if (!listing) continue;
+		for (const entry of listing.entries) {
+			if (!entry.isFile() && !entry.isSymbolicLink()) continue;
+			const key =
+				process.platform === "win32" ? entry.name.toLowerCase() : entry.name;
+			if (!index.has(key)) index.set(key, join(listing.directory, entry.name));
+		}
+	}
+	return index;
+}
+
+async function pathIndex(): Promise<Map<string, string>> {
+	const key = `${process.env.PATH ?? ""}\0${process.env.PATHEXT ?? ""}`;
+	if (!pathIndexRead || pathIndexKey !== key) {
+		pathIndexKey = key;
+		pathIndexRead = buildPathIndex();
+	}
+	return pathIndexRead;
+}
+
+async function findExecutable(command: string): Promise<string | null> {
+	if (!command) return null;
+	if (isAbsolute(command) || command.includes("/") || command.includes("\\")) {
+		try {
+			await access(
+				command,
+				process.platform === "win32" ? constants.F_OK : constants.X_OK,
+			);
+			return command;
+		} catch {
+			return null;
+		}
+	}
+	const index = await pathIndex();
+	for (const name of executableNames(command)) {
+		const candidate = index.get(
+			process.platform === "win32" ? name.toLowerCase() : name,
+		);
+		if (!candidate) continue;
+		try {
+			await access(
+				candidate,
+				process.platform === "win32" ? constants.F_OK : constants.X_OK,
+			);
+			return candidate;
+		} catch {
+			// Keep looking through PATHEXT candidates.
+		}
+	}
+	return null;
+}
 
 const InvocationSchema = z.object({
 	cmd: z.string(),
@@ -139,7 +224,9 @@ export function resolveAcpInvocation(
 
 export class AcpRegistry {
 	private readonly cache: CachedList<z.infer<typeof RegistrySchema>>;
-	private readonly which: (command: string) => string | null | undefined;
+	private readonly which: (
+		command: string,
+	) => string | null | undefined | Promise<string | null | undefined>;
 	private readonly now: () => number;
 	private readonly availabilityTtlMs: number;
 	private readonly observeAvailability: ReturnType<
@@ -163,14 +250,17 @@ export class AcpRegistry {
 		},
 		onChange?: () => void,
 		options: {
-			which?: (command: string) => string | null | undefined;
+			which?: (
+				command: string,
+			) => string | null | undefined | Promise<string | null | undefined>;
 			now?: () => number;
 			availabilityTtlMs?: number;
 		} = {},
 	) {
-		this.which =
-			options.which ??
-			((command) => (typeof Bun === "undefined" ? null : Bun.which(command)));
+		// Bun.which performs synchronous filesystem work. On a cold PATH that held
+		// the server event loop for seconds while cataloging ACP agents. The default
+		// resolver indexes PATH through asynchronous fs reads instead.
+		this.which = options.which ?? findExecutable;
 		this.now = options.now ?? Date.now;
 		this.availabilityTtlMs =
 			options.availabilityTtlMs ?? ACP_AVAILABILITY_TTL_MS;
@@ -220,19 +310,27 @@ export class AcpRegistry {
 		const catalog = await this.observeAvailability(
 			"availability",
 			`availability scan for ${value.agents.length} agents`,
-			() =>
-				value.agents.map((agent) => {
+			async () => {
+				const resolved = value.agents.map((agent) => {
 					const override = (config.acp_agents ?? []).find(
 						(item) => item.id === agent.id,
 					);
 					const invocation = resolveAcpInvocation(agent, override);
-					const available = Boolean(
-						invocation.command && this.which(invocation.command),
-					);
+					return { agent, invocation, enabled: Boolean(override) };
+				});
+				const availability = await Promise.all(
+					resolved.map(({ invocation }) =>
+						invocation.command
+							? Promise.resolve(this.which(invocation.command)).then(Boolean)
+							: false,
+					),
+				);
+				return resolved.map(({ agent, invocation, enabled }, index) => {
+					const available = availability[index] ?? false;
 					return {
 						...agent,
 						providerId: `acp:${agent.id}`,
-						enabled: Boolean(override),
+						enabled,
 						available,
 						unavailableReason: available
 							? undefined
@@ -241,7 +339,8 @@ export class AcpRegistry {
 								: `No distribution for ${platformTarget()}`,
 						...invocation,
 					};
-				}),
+				});
+			},
 		);
 		catalog.sort((a, b) => {
 			const featured = ["opencode", "pi-acp"];

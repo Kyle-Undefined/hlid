@@ -7,6 +7,7 @@ import {
 const previews = new Map<string, ProjectPreviewSnapshot>();
 const presentationRequests = new Map<string, number>();
 const unavailableSessions = new Set<string>();
+const pendingReads = new Map<string, Promise<ProjectPreviewSnapshot | null>>();
 const subscribers = new Set<() => void>();
 let revision = 0;
 
@@ -46,15 +47,31 @@ function snapshot(): number {
 	return revision;
 }
 
+function readProjectPreview(
+	sessionId: string,
+): Promise<ProjectPreviewSnapshot | null> {
+	const existing = pendingReads.get(sessionId);
+	if (existing) return existing;
+	const pending = Promise.resolve()
+		.then(() => getProjectPreviewFn({ data: sessionId }))
+		.finally(() => {
+			if (pendingReads.get(sessionId) === pending) {
+				pendingReads.delete(sessionId);
+			}
+		});
+	pendingReads.set(sessionId, pending);
+	return pending;
+}
+
 export function useProjectPreview(
 	sessionId: string,
 ): ProjectPreviewSnapshot | null {
 	useSyncExternalStore(subscribe, snapshot, snapshot);
 	useEffect(() => {
 		if (!sessionId) return;
+		if (previews.has(sessionId)) return;
 		let cancelled = false;
-		void Promise.resolve()
-			.then(() => getProjectPreviewFn({ data: sessionId }))
+		void readProjectPreview(sessionId)
 			.then((preview) => {
 				if (cancelled) return;
 				if (preview) {

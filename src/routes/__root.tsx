@@ -98,6 +98,11 @@ function RegisterSW() {
 		);
 
 		const registration = navigator.serviceWorker.register("/sw.js");
+		// Project Preview intentionally rejects service-worker registration so
+		// one preview cannot install a root-scoped worker on the shared isolated
+		// origin. Treat that (and other unsupported-browser failures) as a
+		// non-fatal enhancement failure instead of an unhandled client error.
+		void registration.catch(() => {});
 		// Installed PWAs can sit resumed for days without a navigation, which is
 		// what normally triggers the browser's sw.js update check. Re-check
 		// whenever the app comes back to the foreground.

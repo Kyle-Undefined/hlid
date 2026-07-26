@@ -531,10 +531,29 @@ try {
 		afterIdleWebSocketMessages,
 		beforeIdleWebSocketMessages,
 	);
+	const bundle = bundleMetrics();
 	const budgets = [
 		budget("server startup", serverStartupMs, 10_000, "ms"),
 		budget("desktop Raven readiness", desktopReadinessMs, 4_000, "ms"),
-		budget("desktop DOM nodes", desktopInitial.domNodes, 12_000, "nodes"),
+		budget("desktop DOM nodes", desktopInitial.domNodes, 9_000, "nodes"),
+		budget(
+			"client bundle",
+			bundle.clientBytes,
+			8.25 * 1024 * 1024,
+			"bytes",
+		),
+		budget(
+			"shell preload",
+			bundle.shellPreloadBytes,
+			1.05 * 1024 * 1024,
+			"bytes",
+		),
+		budget(
+			"shell preload gzip",
+			bundle.shellPreloadGzipBytes,
+			310 * 1024,
+			"bytes",
+		),
 		budget(
 			"desktop heap",
 			desktopInitial.jsHeapUsedBytes,
@@ -573,7 +592,7 @@ try {
 		commit: await gitHead(),
 		idleDurationMs,
 		serverStartupMs,
-		bundle: bundleMetrics(),
+		bundle,
 		desktop: {
 			readinessMs: desktopReadinessMs,
 			initial: desktopInitial,

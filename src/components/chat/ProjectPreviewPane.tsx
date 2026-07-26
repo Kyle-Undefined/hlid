@@ -71,6 +71,10 @@ export function ProjectPreviewPane({
 	style?: CSSProperties;
 }) {
 	const [frameKey, setFrameKey] = useState(0);
+	const [frameTarget, setFrameTarget] = useState(() => ({
+		previewId: preview.id,
+		path: preview.path,
+	}));
 	const [surface, setSurface] = useState<"user" | "agent" | "logs">("user");
 	const [agentFrame, setAgentFrame] = useState<ProjectPreviewAgentFrame | null>(
 		null,
@@ -127,11 +131,25 @@ export function ProjectPreviewPane({
 		if (typeof window === "undefined") return preview.url;
 		try {
 			const url = new URL(preview.relay_url, window.location.origin);
+			const path =
+				frameTarget.previewId === preview.id ? frameTarget.path : preview.path;
+			const route = new URL(path, "http://preview.invalid");
+			const relayRoot = url.pathname.match(/^(.*\/relay)(?:\/.*)?$/)?.[1];
+			if (relayRoot) {
+				url.pathname = `${relayRoot}${route.pathname}`;
+				url.search = route.search;
+				url.hash = route.hash;
+			}
 			const uiPort = Number(
 				window.location.port ||
 					(window.location.protocol === "https:" ? "443" : "80"),
 			);
 			url.port = String(uiPort + 1);
+			// Select the preview on the isolated origin, then redirect to its
+			// clean app-local path. Client routers hydrate against location.pathname;
+			// leaving the relay prefix visible makes an SSR /login document hydrate
+			// as /api/project-previews/:id/relay/login and crash before rendering.
+			url.searchParams.set("__hlid_preview_open", "1");
 			return url.toString();
 		} catch {
 			return preview.relay_url;
@@ -352,7 +370,9 @@ export function ProjectPreviewPane({
 						<button
 							type="button"
 							onClick={() => {
+								const path = previewViewStateRef.current?.path ?? preview.path;
 								previewViewStateRef.current = null;
+								setFrameTarget({ previewId: preview.id, path });
 								setFrameKey((key) => key + 1);
 							}}
 							aria-label="Reload preview"

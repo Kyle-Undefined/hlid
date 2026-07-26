@@ -268,15 +268,15 @@ describe("MessageList — orphan queue rendering", () => {
 });
 
 describe("MessageList — bounded history rendering", () => {
-	it("renders the latest 200 messages and reveals older history", () => {
-		const messages = Array.from({ length: 201 }, (_, index) =>
+	it("renders the latest 100 messages and reveals older history", () => {
+		const messages = Array.from({ length: 101 }, (_, index) =>
 			userMsg(`u${index}`, `message ${index}`),
 		);
 		renderList({ messages });
 
 		expect(screen.queryByText("message 0")).toBeNull();
 		expect(screen.getByText("message 1")).toBeTruthy();
-		expect(screen.getByText("message 200")).toBeTruthy();
+		expect(screen.getByText("message 100")).toBeTruthy();
 
 		fireEvent.click(screen.getByRole("button", { name: "Load 1 older" }));
 		expect(screen.getByText("message 0")).toBeTruthy();
@@ -284,7 +284,7 @@ describe("MessageList — bounded history rendering", () => {
 	});
 
 	it("expands a cursor render window by the returned page size and caps later live growth", async () => {
-		const latest = Array.from({ length: 200 }, (_, index) =>
+		const latest = Array.from({ length: 100 }, (_, index) =>
 			userMsg(`u${index + 50}`, `message ${index + 50}`),
 		);
 		let resolvePage!: (count: number) => void;
@@ -300,12 +300,12 @@ describe("MessageList — bounded history rendering", () => {
 			onLoadOlderHistory,
 		});
 
-		fireEvent.click(screen.getByRole("button", { name: "Load 200 older" }));
+		fireEvent.click(screen.getByRole("button", { name: "Load 100 older" }));
 		expect(onLoadOlderHistory).toHaveBeenCalledOnce();
 
 		// The reducer prepends the fetched page before the async scroll-preserving
 		// callback resolves. Its rows must already be inside the reserved window.
-		const withFetchedPage = Array.from({ length: 250 }, (_, index) =>
+		const withFetchedPage = Array.from({ length: 150 }, (_, index) =>
 			userMsg(`u${index}`, `message ${index}`),
 		);
 		view.rerender(
@@ -320,9 +320,9 @@ describe("MessageList — bounded history rendering", () => {
 
 		await act(async () => resolvePage(50));
 
-		// The final cap is 200 + the 50 rows actually returned. A new live row
-		// displaces the oldest rendered row instead of growing the DOM to 251.
-		const withLiveGrowth = [...withFetchedPage, userMsg("u250", "message 250")];
+		// The final cap is 100 + the 50 rows actually returned. A new live row
+		// displaces the oldest rendered row instead of growing the DOM to 151.
+		const withLiveGrowth = [...withFetchedPage, userMsg("u150", "message 150")];
 		view.rerender(
 			listElement({
 				messages: withLiveGrowth,
@@ -332,14 +332,14 @@ describe("MessageList — bounded history rendering", () => {
 		);
 		expect(screen.queryByText("message 0")).toBeNull();
 		expect(screen.getByText("message 1")).toBeTruthy();
-		expect(screen.getByText("message 250")).toBeTruthy();
+		expect(screen.getByText("message 150")).toBeTruthy();
 	});
 
 	it("keeps cursor-loaded transcripts bounded before another server page is requested", () => {
-		const messages = Array.from({ length: 201 }, (_, index) =>
+		const messages = Array.from({ length: 101 }, (_, index) =>
 			userMsg(`u${index}`, `message ${index}`),
 		);
-		const onLoadOlderHistory = vi.fn().mockResolvedValue(200);
+		const onLoadOlderHistory = vi.fn().mockResolvedValue(100);
 		renderList({ messages, hasOlderHistory: true, onLoadOlderHistory });
 
 		expect(screen.queryByText("message 0")).toBeNull();

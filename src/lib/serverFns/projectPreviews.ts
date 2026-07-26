@@ -34,12 +34,16 @@ const saveFeedbackSchema = previewActionSchema.extend({
 
 export const getProjectPreviewFn = createServerFn({ method: "GET" })
 	.validator((raw) => sessionIdSchema.parse(raw))
-	.handler(({ data }) =>
-		dbJson<ProjectPreviewSnapshot | null>(
+	.handler(async ({ data }) => {
+		const response = await dbFetch(
 			`/api/project-previews/session?session_id=${encodeURIComponent(data)}`,
-			null,
-		),
-	);
+		);
+		// Most Raven sessions do not own a preview. Treat that expected state as
+		// data instead of routing it through dbJson's diagnostic warning path.
+		if (response.status === 404) return null;
+		if (!response.ok) return null;
+		return (await response.json()) as ProjectPreviewSnapshot;
+	});
 
 export const getProjectPreviewAgentFrameFn = createServerFn({ method: "GET" })
 	.validator((raw) => agentFrameSchema.parse(raw))

@@ -55,7 +55,10 @@ describe("AcpRegistry", () => {
 	});
 
 	it("uses saved executable and argument overrides", async () => {
-		const catalog = await new AcpRegistry(async () => registry).catalog(
+		const catalog = await new AcpRegistry(async () => registry, undefined, {
+			which: (command) =>
+				command === "custom-open" ? "/bin/custom-open" : null,
+		}).catalog(
 			HlidConfigSchema.parse({
 				acp_agents: [
 					{ id: "opencode", executable: "custom-open", args: ["serve"] },

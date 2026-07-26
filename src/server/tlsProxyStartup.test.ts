@@ -330,6 +330,7 @@ describe("TLS proxy server boundary", () => {
 			"http://127.0.0.1:3001/login",
 			expect.objectContaining({
 				headers: expect.any(Headers),
+				redirect: "manual",
 			}),
 		);
 		const mobileHeaders = new Headers(

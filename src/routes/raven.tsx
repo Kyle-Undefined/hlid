@@ -123,7 +123,7 @@ import {
 	touchMovesTowardOlderMessages,
 } from "#/lib/scrollContainers";
 import { getAgentListFn } from "#/lib/serverFns/agents";
-import { getCockpitData } from "#/lib/serverFns/cockpit";
+import { getCockpitSkillsFn } from "#/lib/serverFns/cockpit";
 import { getConfig } from "#/lib/serverFns/config";
 import {
 	type getProvidersFn,
@@ -232,6 +232,12 @@ async function loadRavenRoute(session?: string, agent?: string) {
 	const explicitSelection = session
 		? getSessionSelectionFn({ data: session })
 		: Promise.resolve(null);
+	const explicitRow = session
+		? getSessionRowFn({ data: session })
+		: Promise.resolve(null);
+	const liveSessionsRead = session
+		? Promise.resolve([] as RavenLiveSessions)
+		: getLiveSessionsFn();
 	const [
 		config,
 		agentList,
@@ -239,26 +245,26 @@ async function loadRavenRoute(session?: string, agent?: string) {
 		providers,
 		voiceInfo,
 		explicitSessionSelection,
+		explicitSessionRow,
+		liveSessions,
 	] = await Promise.all([
 		getConfig(),
 		optionalRavenLoaderValue(getAgentListFn(), []),
-		optionalRavenLoaderValue(
-			getCockpitData().then((cockpit) => cockpit.skills),
-			[],
-		),
+		optionalRavenLoaderValue(getCockpitSkillsFn(), []),
 		optionalRavenLoaderValue(loadRavenProviders(), []),
 		optionalRavenLoaderValue(getVoiceInfoFn(), {
 			status: { state: "unavailable", model: "" },
 			models: [],
 		}),
 		explicitSelection,
+		explicitRow,
+		liveSessionsRead,
 	]);
-	const providerUsages = await optionalRavenLoaderValue(
-		loadProviderUsages(providers),
-		[],
-	);
+	// Usage is presentation-only and ChatPage already hydrates an empty snapshot.
+	// Keeping it out of the loader removes a second provider round trip from the
+	// route's interactive critical path.
+	const providerUsages: Awaited<ReturnType<typeof loadProviderUsages>> = [];
 	const routeInteractiveMode = interactiveModeForAgent(config, agent);
-	const liveSessions = session ? [] : await getLiveSessionsFn();
 	let resolvedSessionId = await resolveSdkSession(
 		session,
 		routeInteractiveMode,
@@ -276,7 +282,9 @@ async function loadRavenRoute(session?: string, agent?: string) {
 			resolvedSessionId === session
 				? explicitSessionSelection
 				: getSessionSelectionFn({ data: resolvedSessionId }),
-			getSessionRowFn({ data: resolvedSessionId }),
+			resolvedSessionId === session
+				? explicitSessionRow
+				: getSessionRowFn({ data: resolvedSessionId }),
 		]);
 		agentSkillContext ||= savedSelection?.agentCwd ?? undefined;
 		sessionModel = savedSelection?.model ?? null;
@@ -1793,7 +1801,6 @@ export function ChatPage() {
 	} = Route.useLoaderData();
 	const [agentList, setAgentList] = useState(initialAgentList);
 	const [providers, setProviders] = useState(initialProviders);
-	const [providerUsages, setProviderUsages] = useState(initialProviderUsages);
 	useEffect(() => {
 		setAgentList(initialAgentList);
 		if (initialAgentList.length > 0) return;
@@ -1826,20 +1833,6 @@ export function ChatPage() {
 			cancelled = true;
 		};
 	}, [initialProviders]);
-	useEffect(() => {
-		setProviderUsages(initialProviderUsages);
-		if (initialProviderUsages.length > 0) return;
-		let cancelled = false;
-		void Promise.resolve(loadProviderUsages(providers)).then(
-			(next) => {
-				if (!cancelled && Array.isArray(next)) setProviderUsages(next);
-			},
-			() => {},
-		);
-		return () => {
-			cancelled = true;
-		};
-	}, [initialProviderUsages, providers]);
 	const ravenSearch = Route.useSearch();
 	const navigate = useNavigate();
 	const session = useRavenSessionIdentity({
@@ -2162,7 +2155,7 @@ export function ChatPage() {
 	return (
 		<ChatPageContent
 			config={config}
-			initialProviderUsages={providerUsages}
+			initialProviderUsages={initialProviderUsages}
 			liveStats={liveStats}
 			rateLimit={rateLimit}
 			forkParentSessionId={forkParentSessionId}

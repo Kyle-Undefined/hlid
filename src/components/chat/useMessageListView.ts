@@ -4,7 +4,7 @@ import { approvedLabel } from "#/server/protocol";
 import type { ChatMessage } from "./chatReducer";
 import type { UserMsgQueueState } from "./UserMsg";
 
-const HISTORY_RENDER_PAGE_SIZE = 200;
+const HISTORY_RENDER_PAGE_SIZE = 100;
 const TOOL_EVENT_RENDER_PAGE_SIZE = 200;
 
 function mapsEqual(a: Map<string, string>, b: Map<string, string>): boolean {
@@ -207,7 +207,7 @@ export function useMessageListView({
 		// callback in scroll-height preservation and resolves after its animation
 		// frame; reserving now lets React mount the prepended rows before that frame
 		// measures the new height. The temporary unbounded window also covers pages
-		// with auxiliary cards beyond the 200 message rows. Once the request reports
+		// with auxiliary cards beyond the 100 message rows. Once the request reports
 		// its actual row count, the lasting render cap grows by exactly N.
 		const token = {};
 		const loadSessionId = sessionId;

@@ -361,7 +361,7 @@ describe("useLoadChatHistory — initial load", () => {
 		});
 	});
 
-	it("uses a 201-row lookahead and prepends the preceding cursor page without overlap", async () => {
+	it("uses a 101-row lookahead and prepends the preceding cursor page without overlap", async () => {
 		const rows = (start: number, end: number) =>
 			Array.from({ length: end - start + 1 }, (_, index) => {
 				const seq = start + index;
@@ -378,7 +378,7 @@ describe("useLoadChatHistory — initial load", () => {
 				};
 			});
 		vi.mocked(getSessionDataFn)
-			.mockResolvedValueOnce(rows(100, 300))
+			.mockResolvedValueOnce(rows(100, 200))
 			.mockResolvedValueOnce(rows(0, 100));
 		const dispatch = vi.fn();
 		const hook = renderHistory({
@@ -399,16 +399,16 @@ describe("useLoadChatHistory — initial load", () => {
 			loaded = await hook.result.current.loadOlderHistory();
 		});
 
-		expect(loaded).toBe(101);
+		expect(loaded).toBe(100);
 		expect(getSessionDataFn).toHaveBeenNthCalledWith(1, {
-			data: { sessionId: "sess-1", limit: 201 },
+			data: { sessionId: "sess-1", limit: 101 },
 		});
 		expect(getSessionDataFn).toHaveBeenNthCalledWith(2, {
 			data: {
 				sessionId: "sess-1",
 				beforeSeq: 101,
 				beforeId: 102,
-				limit: 201,
+				limit: 101,
 			},
 		});
 		const initial = dispatch.mock.calls.find(
@@ -422,19 +422,19 @@ describe("useLoadChatHistory — initial load", () => {
 		);
 		const combinedTexts = combinedMessages.map((item) => item.text);
 		expect(combinedTexts).toEqual(
-			Array.from({ length: 301 }, (_, seq) => `message ${seq}`),
+			Array.from({ length: 200 }, (_, index) => `message ${index + 1}`),
 		);
-		expect(new Set(combinedTexts).size).toBe(301);
+		expect(new Set(combinedTexts).size).toBe(200);
 		expect(combinedMessages.map((item) => item.id)).toEqual(
 			Array.from(
-				{ length: 301 },
-				(_, index) => `persisted-message:${index + 1}`,
+				{ length: 200 },
+				(_, index) => `persisted-message:${index + 2}`,
 			),
 		);
 		expect(getSessionPlanProposalsFn).toHaveBeenNthCalledWith(2, {
 			data: {
 				sessionId: "sess-1",
-				minSeq: 0,
+				minSeq: 1,
 				maxSeq: 100,
 				beforeSeq: 101,
 			},
@@ -653,7 +653,7 @@ describe("useLoadChatHistory — reconnect recovery", () => {
 
 		expect(getSessionDataFn).toHaveBeenCalledTimes(3);
 		expect(getSessionDataFn).toHaveBeenNthCalledWith(3, {
-			data: { sessionId: "sess-1", minSeq: 0, minId: 1 },
+			data: { sessionId: "sess-1", minSeq: 1, minId: 2 },
 		});
 		expect(
 			dispatch.mock.calls

@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 
 type FetchEvent = {
 	request: Request;
+	preloadResponse?: Promise<Response | undefined>;
 	respondWith(response: Promise<Response>): void;
 };
 
@@ -46,10 +47,12 @@ function loadFetchHandler(fetchImpl: typeof fetch) {
 async function dispatchFetch(
 	handler: (event: FetchEvent) => void,
 	request: Request,
+	preloadResponse?: Promise<Response | undefined>,
 ): Promise<Response> {
 	let response: Promise<Response> | undefined;
 	handler({
 		request,
+		preloadResponse,
 		respondWith(value) {
 			response = value;
 		},
@@ -59,6 +62,22 @@ async function dispatchFetch(
 }
 
 describe("service worker dynamic request recovery", () => {
+	it("uses a navigation preload response without starting a duplicate fetch", async () => {
+		const fetchImpl = vi.fn<typeof fetch>();
+		const handler = loadFetchHandler(fetchImpl);
+		const request = new Request("https://hlid.test/raven");
+		Object.defineProperty(request, "mode", { value: "navigate" });
+
+		const response = await dispatchFetch(
+			handler,
+			request,
+			Promise.resolve(new Response("preloaded", { status: 200 })),
+		);
+
+		expect(await response.text()).toBe("preloaded");
+		expect(fetchImpl).not.toHaveBeenCalled();
+	});
+
 	it("retries a transient server-function network failure", async () => {
 		const fetchImpl = vi
 			.fn<typeof fetch>()

@@ -30,13 +30,18 @@ self.addEventListener("install", (e) => {
 
 self.addEventListener("activate", (e) => {
 	e.waitUntil(
-		caches
-			.keys()
-			.then((keys) =>
-				Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))),
-			),
+		Promise.all([
+			caches
+				.keys()
+				.then((keys) =>
+					Promise.all(
+						keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)),
+					),
+				),
+			self.registration.navigationPreload?.enable?.(),
+			self.clients.claim(),
+		]),
 	);
-	self.clients.claim();
 });
 
 self.addEventListener("message", (e) => {
@@ -51,6 +56,28 @@ self.addEventListener("fetch", (e) => {
 	if (url.pathname.startsWith("/api/")) return;
 
 	const isStatic = STATIC_EXTS.some((ext) => url.pathname.endsWith(ext));
+
+	if (e.request.mode === "navigate") {
+		e.respondWith(
+			(async () => {
+				try {
+					// Navigation preload starts the network request while a dormant
+					// worker is still waking up, avoiding a cold-worker TTFB penalty.
+					const preloaded = await e.preloadResponse;
+					if (preloaded) return preloaded;
+					return await fetchDynamic(e.request);
+				} catch {
+					const offline = await caches.match(OFFLINE_URL);
+					if (offline) return offline;
+					return new Response("Hlið is temporarily unavailable.", {
+						status: 503,
+						headers: { "content-type": "text/plain; charset=utf-8" },
+					});
+				}
+			})(),
+		);
+		return;
+	}
 
 	if (isStatic) {
 		e.respondWith(
@@ -75,10 +102,6 @@ self.addEventListener("fetch", (e) => {
 			fetchDynamic(e.request).catch(async () => {
 				const fallback = await caches.match(e.request);
 				if (fallback) return fallback;
-				if (e.request.mode === "navigate") {
-					const offline = await caches.match(OFFLINE_URL);
-					if (offline) return offline;
-				}
 				return new Response("Hlið is temporarily unavailable.", {
 					status: 503,
 					headers: { "content-type": "text/plain; charset=utf-8" },

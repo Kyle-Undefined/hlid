@@ -72,7 +72,12 @@ agent({ name: "hlid-performance-agent" })
 	.onRequest("session/prompt", async ({ params, client }) => {
 		const prompt =
 			params.prompt.find((block) => block.type === "text")?.text ?? "";
-		if (prompt !== "perf-stream") {
+		// Hlid may prepend workspace or vault context to the visible user prompt.
+		// Keep the fixture coupled to the final command, not the transport prefix.
+		const isPerformancePrompt =
+			prompt.trim() === "perf-stream" ||
+			prompt.trimEnd().endsWith("\n\nperf-stream");
+		if (!isPerformancePrompt) {
 			await sendChunk(client, params.sessionId, `echo: ${prompt}`);
 			return { stopReason: "end_turn" };
 		}

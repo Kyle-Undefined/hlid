@@ -4,6 +4,7 @@ import {
 	createProjectPreviewLoopbackBridge,
 	ProjectPreviewManager,
 	parseWslIpv4Address,
+	projectPreviewEnvironment,
 	projectPreviewLaunch,
 	resolveProjectPreviewCwd,
 } from "./projectPreview";
@@ -165,6 +166,19 @@ describe("ProjectPreviewManager", () => {
 });
 
 describe("Project Preview Windows and WSL launch plans", () => {
+	it("prevents preview executables from self-installing over Hlid", () => {
+		expect(
+			projectPreviewEnvironment({
+				PATH: "C:\\Windows",
+				WSLENV: "PATH/l:HLID_SKIP_SELF_INSTALL/w:OTHER/u",
+			}),
+		).toEqual({
+			PATH: "C:\\Windows",
+			HLID_SKIP_SELF_INSTALL: "1",
+			WSLENV: "HLID_SKIP_SELF_INSTALL/u:PATH/l:OTHER/u",
+		});
+	});
+
 	it("selects the first non-loopback WSL IPv4 address", () => {
 		expect(parseWslIpv4Address("127.0.0.1 172.28.91.42 2001:db8::1\n")).toBe(
 			"172.28.91.42",

@@ -60,7 +60,9 @@ describe("ProjectPreviewPane", () => {
 		expect(frame.src).toContain(
 			"/api/project-previews/123e4567-e89b-12d3-a456-426614174000/relay/",
 		);
-		expect(frame.src).not.toContain("__hlid_preview_open");
+		expect(new URL(frame.src).searchParams.get("__hlid_preview_open")).toBe(
+			"1",
+		);
 		const viewport = screen.getByLabelText("Preview viewport");
 		fireEvent.change(viewport, { target: { value: "mobile" } });
 		expect(frame.parentElement?.style.width).toBe("390px");
@@ -86,6 +88,39 @@ describe("ProjectPreviewPane", () => {
 		expect(newFrame.src).toContain(
 			`/api/project-previews/${replacementId}/relay/`,
 		);
+	});
+
+	it("reloads the current app route through the selected preview", () => {
+		render(<ProjectPreviewPane preview={preview()} />);
+		const oldFrame = screen.getByTitle("Web app") as HTMLIFrameElement;
+		window.dispatchEvent(
+			new MessageEvent("message", {
+				origin: new URL(oldFrame.src).origin,
+				source: oldFrame.contentWindow,
+				data: {
+					type: "hlid:project-preview-state",
+					version: 1,
+					preview_id: preview().id,
+					path: "/forge?tab=events#tail",
+					width: 1280,
+					height: 720,
+					scroll_x: 0,
+					scroll_y: 240,
+				},
+			}),
+		);
+
+		fireEvent.click(screen.getByLabelText("Reload preview"));
+
+		const newFrame = screen.getByTitle("Web app") as HTMLIFrameElement;
+		const reloaded = new URL(newFrame.src);
+		expect(newFrame).not.toBe(oldFrame);
+		expect(reloaded.pathname).toBe(
+			"/api/project-previews/123e4567-e89b-12d3-a456-426614174000/relay/forge",
+		);
+		expect(reloaded.searchParams.get("tab")).toBe("events");
+		expect(reloaded.searchParams.get("__hlid_preview_open")).toBe("1");
+		expect(reloaded.hash).toBe("#tail");
 	});
 
 	it("toggles maximize and restores through the parent layout", () => {

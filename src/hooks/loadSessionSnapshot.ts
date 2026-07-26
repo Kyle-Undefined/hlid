@@ -25,7 +25,7 @@ type PlanRow = Awaited<ReturnType<typeof getSessionPlanProposalsFn>>[number];
 type AukRow = Awaited<ReturnType<typeof getSessionAskUserQuestionsFn>>[number];
 type CtxRow = Awaited<ReturnType<typeof getSessionContextFn>>;
 
-export const SESSION_HISTORY_PAGE_SIZE = 200;
+export const SESSION_HISTORY_PAGE_SIZE = 100;
 
 function safeParseJson<T>(raw: string, fallback: T): T {
 	try {

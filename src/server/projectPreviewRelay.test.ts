@@ -6,6 +6,7 @@ import {
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
 	createProjectPreviewRelayWsHandlers,
+	disposeProjectPreviewRelay,
 	handleProjectPreviewRelayRequest,
 	parseProjectPreviewRelayPath,
 	parseProjectPreviewRelayWebSocket,
@@ -21,6 +22,7 @@ describe("Project Preview relay", () => {
 	const servers: ReturnType<typeof createServer>[] = [];
 
 	afterEach(async () => {
+		disposeProjectPreviewRelay();
 		await Promise.all(
 			servers.map(
 				(server) =>
@@ -114,7 +116,7 @@ describe("Project Preview relay", () => {
 	it("rewrites root assets and injects the WebSocket relay bootstrap", async () => {
 		const port = await upstream(() => ({
 			contentType: "text/html; charset=utf-8",
-			body: '<!doctype html><head></head><script type="module" src="/@vite/client"></script><link href="/src/app.css">',
+			body: '<!doctype html><head></head><script>window.$_TSR={router:{manifest:{routes:{__root__:{preloads:["/assets/app.js"],scripts:[{attrs:{type:"module",src:"/assets/app.js"}}]}}}}}</script><script type="module" src="/assets/app.js"></script><link href="/src/app.css">',
 		}));
 		const response = await handleProjectPreviewRelayRequest(
 			new URL(
@@ -126,9 +128,19 @@ describe("Project Preview relay", () => {
 		const text = await response?.text();
 		expect(response?.status).toBe(200);
 		expect(text).toContain(
-			'src="/api/project-previews/123e4567-e89b-12d3-a456-426614174000/relay/@vite/client"',
+			'src="/api/project-previews/123e4567-e89b-12d3-a456-426614174000/relay/assets/app.js"',
+		);
+		expect(text).not.toContain('src:"/assets/app.js"');
+		expect(text).toContain(
+			'src:"/api/project-previews/123e4567-e89b-12d3-a456-426614174000/relay/assets/app.js"',
 		);
 		expect(text).toContain("NativeWebSocket");
+		expect(text).toContain(
+			'url.pathname==="/ws"||url.pathname.startsWith("/ws/")',
+		);
+		expect(text).toContain(
+			'url.pathname=p+(backendSocket?"/__hlid_backend__":"")+url.pathname',
+		);
 		expect(text).toContain("hlid:project-preview-state");
 		expect(text).toContain("scroll_x");
 		expect(text).toContain("document.currentScript?.remove()");
@@ -161,6 +173,73 @@ describe("Project Preview relay", () => {
 			'import value from "/api/project-previews/123e4567-e89b-12d3-a456-426614174000/relay/src/value.js"',
 		);
 		expect(text).toContain("const fenced = /```[\\s\\S]*?```/g");
+	});
+
+	it("reuses bounded transformed modules while the upstream ETag is stable", async () => {
+		const previewId = "123e4567-e89b-12d3-a456-426614174000";
+		let requests = 0;
+		const port = await upstream(() => {
+			requests++;
+			return {
+				contentType: "text/javascript",
+				body: `export default ${requests};`,
+				headers: { etag: '"stable-module"' },
+			};
+		});
+		const url = new URL(
+			`http://hlid/api/project-previews/${previewId}/relay/src/main.js`,
+		);
+		const first = await handleProjectPreviewRelayRequest(
+			url,
+			new Request("http://hlid/relay"),
+			() => ({ port }),
+		);
+		const second = await handleProjectPreviewRelayRequest(
+			url,
+			new Request("http://hlid/relay"),
+			() => ({ port }),
+		);
+
+		expect(await first?.text()).toContain("export default 1");
+		expect(await second?.text()).toContain("export default 1");
+		expect(requests).toBe(2);
+
+		disposeProjectPreviewRelay(previewId);
+		const afterDispose = await handleProjectPreviewRelayRequest(
+			url,
+			new Request("http://hlid/relay"),
+			() => ({ port }),
+		);
+		expect(await afterDispose?.text()).toContain("export default 3");
+	});
+
+	it("aborts outstanding upstream work when a preview is disposed", async () => {
+		const previewId = "123e4567-e89b-12d3-a456-426614174000";
+		let requestStarted: (() => void) | undefined;
+		const started = new Promise<void>((resolve) => {
+			requestStarted = resolve;
+		});
+		const server = createServer(() => {
+			requestStarted?.();
+			// Deliberately leave the response open until relay disposal aborts fetch.
+		});
+		servers.push(server);
+		await new Promise<void>((resolve) =>
+			server.listen(0, "127.0.0.1", () => resolve()),
+		);
+		const address = server.address();
+		if (!address || typeof address === "string") throw new Error("No port");
+		const pending = handleProjectPreviewRelayRequest(
+			new URL(
+				`http://hlid/api/project-previews/${previewId}/relay/src/slow.js`,
+			),
+			new Request("http://hlid/relay"),
+			() => ({ port: address.port }),
+		);
+		await started;
+		disposeProjectPreviewRelay(previewId);
+
+		expect((await pending)?.status).toBe(499);
 	});
 
 	it("relays queued and live hot-reload messages in both directions", () => {

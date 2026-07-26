@@ -18,6 +18,9 @@ type RelayTarget = {
 const MAX_RELAY_REQUEST_BYTES = 10 * 1024 * 1024;
 const MAX_TRANSFORM_BYTES = 20 * 1024 * 1024;
 const MAX_WS_QUEUE = 100;
+const RELAY_UPSTREAM_TIMEOUT_MS = 10_000;
+const MAX_TRANSFORM_CACHE_ENTRIES = 128;
+const MAX_TRANSFORM_CACHE_BYTES = 32 * 1024 * 1024;
 export const PROJECT_PREVIEW_OPEN_PARAM = "__hlid_preview_open";
 const PREVIEW_SELECTION_COOKIE = "__hlid_preview_selection";
 const PREVIEW_BACKEND_PATH = "/__hlid_backend__";
@@ -56,6 +59,88 @@ const RELAY_CONTENT_SECURITY_POLICY = [
 	"base-uri 'none'",
 	"object-src 'none'",
 ].join("; ");
+
+type CachedRelayTransform = {
+	body: string;
+	bytes: number;
+	previewId: string;
+};
+
+const transformCache = new Map<string, CachedRelayTransform>();
+const relayControllers = new Map<string, Set<AbortController>>();
+let transformCacheBytes = 0;
+
+function transformCacheKey(
+	previewId: string,
+	requestTarget: string,
+	etag: string,
+): string {
+	return `${previewId}\0${requestTarget}\0${etag}`;
+}
+
+function cachedTransform(key: string): CachedRelayTransform | null {
+	const cached = transformCache.get(key);
+	if (!cached) return null;
+	// Refresh insertion order so the bounded map behaves like an LRU.
+	transformCache.delete(key);
+	transformCache.set(key, cached);
+	return cached;
+}
+
+function cacheTransform(key: string, value: CachedRelayTransform): void {
+	const previous = transformCache.get(key);
+	if (previous) {
+		transformCacheBytes -= previous.bytes;
+		transformCache.delete(key);
+	}
+	transformCache.set(key, value);
+	transformCacheBytes += value.bytes;
+	while (
+		transformCache.size > MAX_TRANSFORM_CACHE_ENTRIES ||
+		transformCacheBytes > MAX_TRANSFORM_CACHE_BYTES
+	) {
+		const oldestKey = transformCache.keys().next().value;
+		if (typeof oldestKey !== "string") break;
+		const oldest = transformCache.get(oldestKey);
+		transformCache.delete(oldestKey);
+		transformCacheBytes -= oldest?.bytes ?? 0;
+	}
+}
+
+function registerRelayController(
+	previewId: string,
+	controller: AbortController,
+): () => void {
+	const controllers = relayControllers.get(previewId) ?? new Set();
+	controllers.add(controller);
+	relayControllers.set(previewId, controllers);
+	return () => {
+		controllers.delete(controller);
+		if (controllers.size === 0) relayControllers.delete(previewId);
+	};
+}
+
+/** Abort in-flight work and release transformed assets owned by one preview. */
+export function disposeProjectPreviewRelay(previewId?: string): void {
+	if (previewId === undefined) {
+		for (const controllers of relayControllers.values()) {
+			for (const controller of controllers) controller.abort();
+		}
+		relayControllers.clear();
+		transformCache.clear();
+		transformCacheBytes = 0;
+		return;
+	}
+	for (const controller of relayControllers.get(previewId) ?? []) {
+		controller.abort();
+	}
+	relayControllers.delete(previewId);
+	for (const [key, cached] of transformCache) {
+		if (cached.previewId !== previewId) continue;
+		transformCache.delete(key);
+		transformCacheBytes -= cached.bytes;
+	}
+}
 
 export function parseProjectPreviewRelayPath(
 	pathname: string,
@@ -288,7 +373,8 @@ async function rewriteRootReferences(
 	if (contentType.includes("text/html")) {
 		return text
 			.replace(/\b(src|href|action|poster)=("|')\/(?!\/)/gi, `$1=$2${prefix}/`)
-			.replace(/url\((["']?)\/(?!\/)/gi, `url($1${prefix}/`);
+			.replace(/url\((["']?)\/(?!\/)/gi, `url($1${prefix}/`)
+			.replace(/(["'`])\/assets\//g, `$1${prefix}/assets/`);
 	}
 	if (
 		contentType.includes("javascript") ||
@@ -309,7 +395,7 @@ function relayBootstrap(prefix: string): string {
 	// current frame during its update lifecycle.
 	const serviceWorkerGuard =
 		'<script>(()=>{const sw=navigator.serviceWorker;if(!sw)return;const blocked=()=>Promise.reject(new DOMException("Service workers are disabled in Hlid Project Preview.","SecurityError"));try{Object.defineProperty(sw,"register",{configurable:true,value:blocked})}catch{try{sw.register=blocked}catch{}}void sw.getRegistrations().then((registrations)=>Promise.all(registrations.map((registration)=>registration.unregister()))).catch(()=>{})})();</script>';
-	return `${serviceWorkerGuard}<script>(()=>{const p=${value};const rewrite=(value)=>{try{const url=new URL(typeof value==="string"?value:value.url,location.href);const pagePort=Number(location.port||(location.protocol==="https:"?443:80));const targetPort=Number(url.port||(url.protocol==="https:"||url.protocol==="wss:"?443:80));const sameEndpoint=url.hostname===location.hostname&&targetPort===pagePort;const adjacentEndpoint=url.hostname===location.hostname&&targetPort===pagePort+1;if(adjacentEndpoint){const socket=url.protocol==="ws:"||url.protocol==="wss:";url.protocol=socket?(location.protocol==="https:"?"wss:":"ws:"):location.protocol;url.host=location.host;url.pathname=p+"/__hlid_backend__"+url.pathname;return url.toString()}if(sameEndpoint&&!url.pathname.startsWith(p)){url.pathname=p+url.pathname;return url.toString()}}catch{}return value};const NativeWebSocket=window.WebSocket;const RelayWebSocket=function(url,protocols){return new NativeWebSocket(rewrite(url),protocols)};Object.setPrototypeOf(RelayWebSocket,NativeWebSocket);RelayWebSocket.prototype=NativeWebSocket.prototype;window.WebSocket=RelayWebSocket;const nativeFetch=window.fetch.bind(window);window.fetch=(input,init)=>nativeFetch(typeof input==="string"?rewrite(input):input,init);const nativeOpen=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(method,url,...rest){return nativeOpen.call(this,method,rewrite(url),...rest)};const previewId=p.split("/")[3]||"";const route=()=>{const pathname=location.pathname.startsWith(p)?location.pathname.slice(p.length)||"/":location.pathname;return pathname+location.search+location.hash};const sendState=()=>{if(parent===window)return;parent.postMessage({type:"hlid:project-preview-state",version:1,preview_id:previewId,path:route(),width:Math.round(innerWidth),height:Math.round(innerHeight),scroll_x:Math.round(scrollX),scroll_y:Math.round(scrollY)},"*")};let scheduled=false;const scheduleState=()=>{if(scheduled)return;scheduled=true;requestAnimationFrame(()=>{scheduled=false;sendState()})};for(const name of ["load","resize","scroll","hashchange","popstate"])addEventListener(name,scheduleState,{passive:true});for(const name of ["pushState","replaceState"]){const native=history[name];history[name]=function(...args){const result=native.apply(this,args);scheduleState();return result}}addEventListener("message",(event)=>{if(event.data?.type==="hlid:project-preview-state-request")sendState()});queueMicrotask(sendState);document.currentScript?.remove()})();</script>`;
+	return `${serviceWorkerGuard}<script>(()=>{const p=${value};const rewrite=(value)=>{try{const url=new URL(typeof value==="string"?value:value.url,location.href);const pagePort=Number(location.port||(location.protocol==="https:"?443:80));const targetPort=Number(url.port||(url.protocol==="https:"||url.protocol==="wss:"?443:80));const sameEndpoint=url.hostname===location.hostname&&targetPort===pagePort;const adjacentEndpoint=url.hostname===location.hostname&&targetPort===pagePort+1;const socket=url.protocol==="ws:"||url.protocol==="wss:";if(adjacentEndpoint){url.protocol=socket?(location.protocol==="https:"?"wss:":"ws:"):location.protocol;url.host=location.host;url.pathname=p+"/__hlid_backend__"+url.pathname;return url.toString()}if(sameEndpoint&&!url.pathname.startsWith(p)){const backendSocket=socket&&(url.pathname==="/ws"||url.pathname.startsWith("/ws/"));url.pathname=p+(backendSocket?"/__hlid_backend__":"")+url.pathname;return url.toString()}}catch{}return value};const NativeWebSocket=window.WebSocket;const RelayWebSocket=function(url,protocols){return new NativeWebSocket(rewrite(url),protocols)};Object.setPrototypeOf(RelayWebSocket,NativeWebSocket);RelayWebSocket.prototype=NativeWebSocket.prototype;window.WebSocket=RelayWebSocket;const nativeFetch=window.fetch.bind(window);window.fetch=(input,init)=>nativeFetch(typeof input==="string"?rewrite(input):input,init);const nativeOpen=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(method,url,...rest){return nativeOpen.call(this,method,rewrite(url),...rest)};const previewId=p.split("/")[3]||"";const route=()=>{const pathname=location.pathname.startsWith(p)?location.pathname.slice(p.length)||"/":location.pathname;return pathname+location.search+location.hash};const sendState=()=>{if(parent===window)return;parent.postMessage({type:"hlid:project-preview-state",version:1,preview_id:previewId,path:route(),width:Math.round(innerWidth),height:Math.round(innerHeight),scroll_x:Math.round(scrollX),scroll_y:Math.round(scrollY)},"*")};let scheduled=false;const scheduleState=()=>{if(scheduled)return;scheduled=true;requestAnimationFrame(()=>{scheduled=false;sendState()})};for(const name of ["load","resize","scroll","hashchange","popstate"])addEventListener(name,scheduleState,{passive:true});for(const name of ["pushState","replaceState"]){const native=history[name];history[name]=function(...args){const result=native.apply(this,args);scheduleState();return result}}addEventListener("message",(event)=>{if(event.data?.type==="hlid:project-preview-state-request")sendState()});queueMicrotask(sendState);document.currentScript?.remove()})();</script>`;
 }
 
 function injectRelayBootstrap(html: string, prefix: string): string {
@@ -327,6 +413,8 @@ async function relayResponse(
 	upstream: Response,
 	previewId: string,
 	prefix: string,
+	requestTarget: string,
+	method: string,
 ): Promise<Response> {
 	const headers = new Headers();
 	for (const [key, value] of upstream.headers.entries()) {
@@ -353,6 +441,25 @@ async function relayResponse(
 			headers,
 		});
 	}
+	const cacheable =
+		method === "GET" &&
+		upstream.status === 200 &&
+		!contentType.includes("text/html") &&
+		!upstream.headers.has("set-cookie");
+	const etag = cacheable ? upstream.headers.get("etag") : null;
+	const cacheKey = etag
+		? transformCacheKey(previewId, requestTarget, etag)
+		: null;
+	const cached = cacheKey ? cachedTransform(cacheKey) : null;
+	if (cached) {
+		void upstream.body?.cancel().catch(() => {});
+		headers.set("cache-control", "no-store");
+		return new Response(cached.body, {
+			status: upstream.status,
+			statusText: upstream.statusText,
+			headers,
+		});
+	}
 	const body = await upstream.arrayBuffer();
 	if (body.byteLength > MAX_TRANSFORM_BYTES) {
 		return new Response("Preview response is too large to relay safely.", {
@@ -365,6 +472,13 @@ async function relayResponse(
 	if (contentType.includes("text/html")) {
 		text = injectRelayBootstrap(text, prefix);
 		headers.set("content-security-policy", RELAY_CONTENT_SECURITY_POLICY);
+	}
+	if (cacheKey) {
+		cacheTransform(cacheKey, {
+			body: text,
+			bytes: new TextEncoder().encode(text).byteLength,
+			previewId,
+		});
 	}
 	headers.set("cache-control", "no-store");
 	return new Response(text, {
@@ -399,11 +513,18 @@ export async function handleProjectPreviewRelayRequest(
 		if (!limited.ok) return limited.response;
 		body = limited.body;
 	}
+	const lifecycleController = new AbortController();
+	const unregisterController = registerRelayController(
+		relay.previewId,
+		lifecycleController,
+	);
+	const timeoutSignal = AbortSignal.timeout(RELAY_UPSTREAM_TIMEOUT_MS);
 	try {
 		const upstreamTarget = projectPreviewUpstreamTarget(
 			target.port,
 			relay.targetPath,
 		);
+		const requestTarget = `${upstreamTarget.port}${upstreamTarget.path}${url.search}`;
 		const upstream = await fetch(
 			`http://127.0.0.1:${upstreamTarget.port}${upstreamTarget.path}${url.search}`,
 			{
@@ -415,18 +536,40 @@ export async function handleProjectPreviewRelayRequest(
 				),
 				body,
 				redirect: "manual",
-				signal: AbortSignal.timeout(30_000),
+				signal: AbortSignal.any([
+					request.signal,
+					lifecycleController.signal,
+					timeoutSignal,
+				]),
 			},
 		);
-		return relayResponse(upstream, relay.previewId, relay.prefix);
+		return relayResponse(
+			upstream,
+			relay.previewId,
+			relay.prefix,
+			requestTarget,
+			request.method,
+		);
 	} catch {
-		return new Response("Project Preview is unavailable.", {
-			status: 502,
-			headers: {
-				"cache-control": "no-store",
-				"content-type": "text/plain; charset=utf-8",
+		const cancelled =
+			request.signal.aborted || lifecycleController.signal.aborted;
+		const timedOut = timeoutSignal.aborted && !cancelled;
+		return new Response(
+			cancelled
+				? null
+				: timedOut
+					? "Project Preview timed out."
+					: "Project Preview is unavailable.",
+			{
+				status: cancelled ? 499 : timedOut ? 504 : 502,
+				headers: {
+					"cache-control": "no-store",
+					"content-type": "text/plain; charset=utf-8",
+				},
 			},
-		});
+		);
+	} finally {
+		unregisterController();
 	}
 }
 

@@ -210,7 +210,7 @@ vi.mock("#/lib/serverFns/agents", () => ({
 	getAgentListFn: vi.fn(),
 }));
 vi.mock("#/lib/serverFns/cockpit", () => ({
-	getCockpitData: vi.fn(),
+	getCockpitSkillsFn: vi.fn(),
 }));
 vi.mock("#/lib/serverFns/providers", () => ({
 	getProvidersFn: vi.fn(),
@@ -224,7 +224,7 @@ vi.mock("#/lib/serverFns/config", () => ({ getConfig: vi.fn() }));
 import { resetRavenTerminalsForTesting } from "#/hooks/ravenTerminalStore";
 import { resetRavenProviderCacheForTesting } from "#/lib/ravenProviderCache";
 import { getAgentListFn } from "#/lib/serverFns/agents";
-import { getCockpitData } from "#/lib/serverFns/cockpit";
+import { getCockpitSkillsFn } from "#/lib/serverFns/cockpit";
 import { getConfig } from "#/lib/serverFns/config";
 import { getProvidersFn, loadProviderUsages } from "#/lib/serverFns/providers";
 import {
@@ -1646,7 +1646,7 @@ describe("raven route loader", () => {
 	beforeEach(() => {
 		vi.mocked(getConfig).mockResolvedValue(makeLoaderConfig() as never);
 		vi.mocked(getAgentListFn).mockResolvedValue([] as never);
-		vi.mocked(getCockpitData).mockResolvedValue({ skills: [] } as never);
+		vi.mocked(getCockpitSkillsFn).mockResolvedValue([] as never);
 		vi.mocked(getProvidersFn).mockResolvedValue([] as never);
 		vi.mocked(getVoiceInfoFn).mockResolvedValue({
 			status: { state: "unavailable", model: "" },
@@ -1707,7 +1707,9 @@ describe("raven route loader", () => {
 		vi.useFakeTimers();
 		try {
 			vi.mocked(getAgentListFn).mockImplementation(() => new Promise(() => {}));
-			vi.mocked(getCockpitData).mockImplementation(() => new Promise(() => {}));
+			vi.mocked(getCockpitSkillsFn).mockImplementation(
+				() => new Promise(() => {}),
+			);
 			vi.mocked(getVoiceInfoFn).mockImplementation(() => new Promise(() => {}));
 			const pending = route.loader({ deps: { session: "s1" } });
 			await vi.advanceTimersByTimeAsync(501);
@@ -1724,23 +1726,16 @@ describe("raven route loader", () => {
 		}
 	});
 
-	it("does not let stalled provider usage hold Raven navigation pending", async () => {
-		vi.useFakeTimers();
-		try {
-			vi.mocked(getProvidersFn).mockResolvedValue([
-				{ id: "codex", label: "Codex", available: true },
-			] as never);
-			vi.mocked(loadProviderUsages).mockImplementation(
-				() => new Promise(() => {}),
-			);
-			const pending = route.loader({ deps: { session: "s1" } });
-			await vi.advanceTimersByTimeAsync(501);
-			const data = await pending;
-			expect(data.existingSessionId).toBe("s1");
-			expect(data.providerUsages).toEqual([]);
-		} finally {
-			vi.useRealTimers();
-		}
+	it("defers provider usage until after Raven navigation", async () => {
+		vi.mocked(getProvidersFn).mockResolvedValue([
+			{ id: "codex", label: "Codex", available: true },
+		] as never);
+
+		const data = await route.loader({ deps: { session: "s1" } });
+
+		expect(data.existingSessionId).toBe("s1");
+		expect(data.providerUsages).toEqual([]);
+		expect(loadProviderUsages).not.toHaveBeenCalled();
 	});
 
 	it("falls back to the newest live SDK session", async () => {
