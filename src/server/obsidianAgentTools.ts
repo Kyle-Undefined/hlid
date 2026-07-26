@@ -1030,6 +1030,15 @@ function budgetObsidianAgentOutput(
 	}
 }
 
+function commandMatchesQuery(command: string, query: string): boolean {
+	const normalizedCommand = command.toLocaleLowerCase();
+	const queryTokens = query
+		.toLocaleLowerCase()
+		.split(/[^\p{L}\p{N}]+/u)
+		.filter(Boolean);
+	return queryTokens.every((token) => normalizedCommand.includes(token));
+}
+
 export async function executeObsidianAgentTool(
 	name: string,
 	input: unknown,
@@ -1159,9 +1168,7 @@ export async function executeObsidianAgentTool(
 			);
 			const query = parsed.query?.toLocaleLowerCase();
 			const matching = query
-				? commands.filter((command) =>
-						command.toLocaleLowerCase().includes(query),
-					)
+				? commands.filter((command) => commandMatchesQuery(command, query))
 				: commands;
 			return collectionEnvelope(matching, {
 				limit: parsed.limit,

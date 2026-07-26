@@ -378,9 +378,12 @@ describe("Obsidian agent tools", () => {
 	});
 
 	it("searches the live command inventory without exposing it in every prompt", async () => {
-		bridge.listObsidianCommands.mockResolvedValueOnce(
+		bridge.listObsidianCommands.mockResolvedValue(
 			[
 				"app:go-back",
+				"backlink:open",
+				"app:toggle-left-sidebar",
+				"app:toggle-right-sidebar",
 				"templater-obsidian:insert-templater",
 				"templater-obsidian:create-new-note-from-template",
 			].join("\n"),
@@ -400,6 +403,39 @@ describe("Obsidian agent tools", () => {
 				data: ["templater-obsidian:insert-templater"],
 			}),
 		);
+
+		const goBack = JSON.parse(
+			await executeObsidianAgentTool("list_commands", {
+				query: "go back",
+				limit: 20,
+			}),
+		);
+		expect(goBack).toMatchObject({
+			total: 1,
+			data: ["app:go-back"],
+		});
+
+		const sidebar = JSON.parse(
+			await executeObsidianAgentTool("list_commands", {
+				query: "toggle sidebar",
+				limit: 20,
+			}),
+		);
+		expect(sidebar).toMatchObject({
+			total: 2,
+			data: ["app:toggle-left-sidebar", "app:toggle-right-sidebar"],
+		});
+
+		const back = JSON.parse(
+			await executeObsidianAgentTool("list_commands", {
+				query: "back",
+				limit: 20,
+			}),
+		);
+		expect(back).toMatchObject({
+			total: 2,
+			data: ["app:go-back", "backlink:open"],
+		});
 		expect(bridge.listObsidianCommands).toHaveBeenCalledWith("Fornbok");
 	});
 
