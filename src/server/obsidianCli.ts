@@ -530,6 +530,10 @@ function optionalPathArgument(path: string | undefined): string[] {
 	return path ? [`path=${safeVaultPath(path)}`] : [];
 }
 
+function isObsidianNoResultsOutput(output: string): boolean {
+	return /^No\b.*\bfound\.?$/i.test(output.trim());
+}
+
 export type ObsidianLinksQuery = {
 	kind: "backlinks" | "outgoing" | "unresolved" | "orphans" | "deadends";
 	path?: string;
@@ -693,10 +697,15 @@ async function graphAwareSearchResults(
 		graphOnly.length,
 		Math.max(1, Math.ceil(limit / 3)),
 	);
-	return [
+	const prioritized = [
 		...direct.slice(0, Math.max(0, limit - graphSlots)),
 		...graphOnly.slice(0, graphSlots),
 	].slice(0, limit);
+	const prioritizedPaths = new Set(prioritized.map((result) => result.path));
+	return [
+		...prioritized,
+		...ranked.filter((result) => !prioritizedPaths.has(result.path)),
+	];
 }
 
 export async function queryObsidianSearch(
@@ -723,24 +732,18 @@ export async function queryObsidianSearch(
 		);
 	}
 	const args = [
-		query.context && !query.countOnly ? "search:context" : "search",
+		query.context ? "search:context" : "search",
 		`query=${searchQuery}`,
 		...optionalPathArgument(query.path),
 		...(query.caseSensitive ? ["case"] : []),
-		...(query.limit && !query.countOnly ? [`limit=${query.limit}`] : []),
-		...(query.countOnly ? ["total"] : query.context ? [] : ["format=json"]),
+		...(query.context ? [] : ["format=json"]),
 	];
 	const contentOutput = await runObsidianCommand(vaultName, args, dependencies);
-	if (/^No matches found\.?$/i.test(contentOutput.trim())) {
-		if (query.countOnly) return "0";
+	if (isObsidianNoResultsOutput(contentOutput)) {
 		if (query.context) return "";
 		return "[]";
 	}
-	if (
-		query.context ||
-		query.countOnly ||
-		!/^[\p{L}\p{N}\s._-]+$/u.test(searchQuery)
-	) {
+	if (query.context || !/^[\p{L}\p{N}\s._-]+$/u.test(searchQuery)) {
 		return contentOutput;
 	}
 	let contentPaths: string[];
@@ -787,7 +790,7 @@ export async function queryObsidianSearch(
 			),
 		);
 	}
-	return JSON.stringify(combined.slice(0, query.limit ?? 200));
+	return JSON.stringify(combined);
 }
 
 export async function queryObsidianLinks(
@@ -796,6 +799,7 @@ export async function queryObsidianLinks(
 	dependencies: ObsidianBridgeDependencies = {},
 ): Promise<string> {
 	let args: string[];
+	const scopedUnresolved = query.kind === "unresolved" && Boolean(query.path);
 	switch (query.kind) {
 		case "backlinks":
 			args = [
@@ -816,7 +820,7 @@ export async function queryObsidianLinks(
 		case "unresolved":
 			args = [
 				"unresolved",
-				...(query.countOnly
+				...(query.countOnly && !scopedUnresolved
 					? ["total"]
 					: [...(query.counts ? ["counts"] : []), "verbose", "format=json"]),
 			];
@@ -828,7 +832,35 @@ export async function queryObsidianLinks(
 			args = ["deadends", ...(query.countOnly ? ["total"] : [])];
 			break;
 	}
-	return runObsidianCommand(vaultName, args, dependencies);
+	const output = await runObsidianCommand(vaultName, args, dependencies);
+	if (isObsidianNoResultsOutput(output)) {
+		if (query.countOnly) return "0";
+		return query.kind === "backlinks" || query.kind === "unresolved"
+			? "[]"
+			: "";
+	}
+	if (!scopedUnresolved || !query.path) return output;
+	try {
+		const parsed: unknown = JSON.parse(output.trim());
+		if (!Array.isArray(parsed)) return output;
+		const path = portableVaultPath(safeVaultPath(query.path));
+		return JSON.stringify(
+			parsed.filter((result) => {
+				if (!result || typeof result !== "object" || Array.isArray(result)) {
+					return false;
+				}
+				const sources = (result as { sources?: unknown }).sources;
+				const candidates = Array.isArray(sources) ? sources : [sources];
+				return candidates.some(
+					(source) =>
+						typeof source === "string" &&
+						source.split(/,\s*/).map(portableVaultPath).includes(path),
+				);
+			}),
+		);
+	} catch {
+		return output;
+	}
 }
 
 export type ObsidianTasksQuery = {
@@ -858,7 +890,33 @@ export async function queryObsidianTasks(
 		...(status ? [`status=${status}`] : []),
 		...(query.countOnly ? ["total"] : ["verbose", "format=json"]),
 	];
-	return runObsidianCommand(vaultName, args, dependencies);
+	const output = await runObsidianCommand(vaultName, args, dependencies);
+	if (query.countOnly) {
+		return isObsidianNoResultsOutput(output) ? "0" : output;
+	}
+	if (isObsidianNoResultsOutput(output)) return "[]";
+	try {
+		const parsed: unknown = JSON.parse(output.trim());
+		if (!Array.isArray(parsed)) return output;
+		return JSON.stringify(
+			parsed.map((task) => {
+				if (!task || typeof task !== "object" || Array.isArray(task)) {
+					return task;
+				}
+				const normalized = { ...(task as Record<string, unknown>) };
+				if (
+					typeof normalized.line === "string" &&
+					/^\d+$/.test(normalized.line)
+				) {
+					const line = Number(normalized.line);
+					if (Number.isSafeInteger(line)) normalized.line = line;
+				}
+				return normalized;
+			}),
+		);
+	} catch {
+		return output;
+	}
 }
 
 export type ObsidianTaskUpdateInput = {
@@ -927,9 +985,10 @@ export async function queryObsidianProperties(
 		...optionalPathArgument(query.path),
 		...(query.active ? ["active"] : []),
 		...(name ? [`name=${name}`] : []),
-		...(query.countOnly ? ["total"] : ["format=json"]),
+		"format=json",
 	];
-	return runObsidianCommand(vaultName, args, dependencies);
+	const output = await runObsidianCommand(vaultName, args, dependencies);
+	return isObsidianNoResultsOutput(output) ? "{}" : output;
 }
 
 export type ObsidianPropertyType =

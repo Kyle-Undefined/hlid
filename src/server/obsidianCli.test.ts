@@ -965,13 +965,19 @@ describe("Obsidian CLI bridge", () => {
 
 		const unresolved = wslDependencies([
 			{ output: windowsDetection, code: 0 },
-			{ output: "[]", code: 0 },
+			{
+				output:
+					'[{"link":"Missing One","sources":"Notes/One.md"},{"link":"Missing Two","sources":"Notes/Two.md"}]',
+				code: 0,
+			},
 		]);
-		await queryObsidianLinks(
-			"Fornbok",
-			{ kind: "unresolved", counts: true },
-			unresolved.dependencies,
-		);
+		await expect(
+			queryObsidianLinks(
+				"Fornbok",
+				{ kind: "unresolved", path: "Notes/One.md", counts: true },
+				unresolved.dependencies,
+			),
+		).resolves.toBe('[{"link":"Missing One","sources":"Notes/One.md"}]');
 		expect(unresolved.run.mock.calls[1]?.[1]).toEqual([
 			"vault=Fornbok",
 			"unresolved",
@@ -979,9 +985,81 @@ describe("Obsidian CLI bridge", () => {
 			"verbose",
 			"format=json",
 		]);
+
+		const unresolvedCount = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{
+				output:
+					'[{"link":"Missing One","sources":"Notes/One.md"},{"link":"Missing Two","sources":"Notes/Two.md"}]',
+				code: 0,
+			},
+		]);
+		await expect(
+			queryObsidianLinks(
+				"Fornbok",
+				{ kind: "unresolved", path: "Notes/One.md", countOnly: true },
+				unresolvedCount.dependencies,
+			),
+		).resolves.toBe('[{"link":"Missing One","sources":"Notes/One.md"}]');
+		expect(unresolvedCount.run.mock.calls[1]?.[1]).toEqual([
+			"vault=Fornbok",
+			"unresolved",
+			"verbose",
+			"format=json",
+		]);
 	});
 
-	it("maps bounded vault search to indexed path, context, and count commands", async () => {
+	it("normalizes live no-result sentinels to empty collection shapes", async () => {
+		const backlinks = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "No backlinks found.", code: 0 },
+		]);
+		await expect(
+			queryObsidianLinks(
+				"Fornbok",
+				{ kind: "backlinks", path: "Notes/Empty.md" },
+				backlinks.dependencies,
+			),
+		).resolves.toBe("[]");
+
+		const outgoing = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "No links found.", code: 0 },
+		]);
+		await expect(
+			queryObsidianLinks(
+				"Fornbok",
+				{ kind: "outgoing", path: "Notes/Empty.md" },
+				outgoing.dependencies,
+			),
+		).resolves.toBe("");
+
+		const tasks = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "No tasks found.", code: 0 },
+		]);
+		await expect(
+			queryObsidianTasks(
+				"Fornbok",
+				{ path: "Notes/Empty.md" },
+				tasks.dependencies,
+			),
+		).resolves.toBe("[]");
+
+		const properties = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{ output: "No properties found.", code: 0 },
+		]);
+		await expect(
+			queryObsidianProperties(
+				"Fornbok",
+				{ path: "Notes/Empty.md" },
+				properties.dependencies,
+			),
+		).resolves.toBe("{}");
+	});
+
+	it("maps vault search without pre-capping and preserves context count units", async () => {
 		const paths = wslDependencies([
 			{ output: windowsDetection, code: 0 },
 			{ output: '["1 Projects/Body.md"]', code: 0 },
@@ -1009,7 +1087,6 @@ describe("Obsidian CLI bridge", () => {
 			"query=project ship",
 			"path=1 Projects",
 			"case",
-			"limit=10",
 			"format=json",
 		]);
 		expect(paths.run.mock.calls[3]?.[1]).toEqual([
@@ -1036,19 +1113,47 @@ describe("Obsidian CLI bridge", () => {
 
 		const total = wslDependencies([
 			{ output: windowsDetection, code: 0 },
-			{ output: "12", code: 0 },
+			{
+				output:
+					"1 Projects/Hlid.md:8: project ship\n1 Projects/Other.md:3: project ship",
+				code: 0,
+			},
 		]);
-		await queryObsidianSearch(
-			"Fornbok",
-			{ query: "project ship", context: true, countOnly: true },
-			total.dependencies,
-		);
+		await expect(
+			queryObsidianSearch(
+				"Fornbok",
+				{ query: "project ship", context: true, countOnly: true },
+				total.dependencies,
+			),
+		).resolves.toContain("1 Projects/Other.md:3");
 		expect(total.run.mock.calls[1]?.[1]).toEqual([
 			"vault=Fornbok",
-			"search",
+			"search:context",
 			"query=project ship",
-			"total",
 		]);
+	});
+
+	it("returns the complete combined search set for envelope-level limiting", async () => {
+		const search = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{
+				output: '["Notes/Body A.md","Notes/Body B.md","Notes/Body C.md"]',
+				code: 0,
+			},
+			{ output: windowsDetection, code: 0 },
+			{ output: "Notes/project index.md\nNotes/Other.md", code: 0 },
+		]);
+
+		await expect(
+			queryObsidianSearch(
+				"Fornbok",
+				{ query: "project", limit: 2 },
+				search.dependencies,
+			),
+		).resolves.toBe(
+			'["Notes/project index.md","Notes/Body A.md","Notes/Body B.md","Notes/Body C.md"]',
+		);
+		expect(search.run.mock.calls[1]?.[1]).not.toContain("limit=2");
 	});
 
 	it("normalizes native no-match search output and rejects file path filters", async () => {
@@ -1331,6 +1436,27 @@ describe("Obsidian CLI bridge", () => {
 		]);
 	});
 
+	it("normalizes task line numbers for task_update round trips", async () => {
+		const tasks = wslDependencies([
+			{ output: windowsDetection, code: 0 },
+			{
+				output:
+					'[{"status":" ","text":"- [ ] Ship","file":"Projects/Ship.md","line":"16"}]',
+				code: 0,
+			},
+		]);
+
+		await expect(
+			queryObsidianTasks(
+				"Fornbok",
+				{ path: "Projects/Ship.md" },
+				tasks.dependencies,
+			),
+		).resolves.toBe(
+			'[{"status":" ","text":"- [ ] Ship","file":"Projects/Ship.md","line":16}]',
+		);
+	});
+
 	it("updates exact tasks and typed properties through native commands", async () => {
 		const task = wslDependencies([
 			{ output: windowsDetection, code: 0 },
@@ -1444,7 +1570,7 @@ describe("Obsidian CLI bridge", () => {
 		).rejects.toThrow("require a boolean");
 	});
 
-	it("uses native count-only commands for broad agent queries", async () => {
+	it("uses native counts only where listing and count units match", async () => {
 		const links = wslDependencies([
 			{ output: windowsDetection, code: 0 },
 			{ output: "10", code: 0 },
@@ -1478,7 +1604,10 @@ describe("Obsidian CLI bridge", () => {
 
 		const properties = wslDependencies([
 			{ output: windowsDetection, code: 0 },
-			{ output: "48", code: 0 },
+			{
+				output: '{"status":"Stable","tags":["audit","review"]}',
+				code: 0,
+			},
 		]);
 		await queryObsidianProperties(
 			"Fornbok",
@@ -1488,7 +1617,7 @@ describe("Obsidian CLI bridge", () => {
 		expect(properties.run.mock.calls[1]?.[1]).toEqual([
 			"vault=Fornbok",
 			"properties",
-			"total",
+			"format=json",
 		]);
 	});
 

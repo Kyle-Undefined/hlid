@@ -384,7 +384,7 @@ export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
 				path: {
 					type: "string",
 					description:
-						"Exact vault-relative note path. Used by backlinks and outgoing links; omit to use Obsidian's active note.",
+						"Exact vault-relative note path. Used by backlinks, outgoing links, and unresolved links; omit to use Obsidian's active note.",
 				},
 				counts: {
 					type: "boolean",
@@ -997,7 +997,7 @@ function textEnvelope(output: string, options: BudgetOptions): string {
 		sourceFormat: "text",
 		total,
 		returned: selected.length,
-		truncated: offset > 0 || offset + selected.length < total,
+		truncated: offset + selected.length < total,
 		countOnly: false,
 		data: selected,
 	};
@@ -1073,8 +1073,7 @@ export async function executeObsidianAgentTool(
 				await queryObsidianSearch(vaultName, parsed),
 				{
 					...parsed,
-					nativeCountOnly: parsed.countOnly,
-					expectedJson: !parsed.context && !parsed.countOnly,
+					expectedJson: !parsed.context,
 				},
 			);
 		}
@@ -1124,8 +1123,7 @@ export async function executeObsidianAgentTool(
 				await queryObsidianProperties(vaultName, parsed),
 				{
 					...parsed,
-					expectedJson: !parsed.countOnly,
-					nativeCountOnly: parsed.countOnly,
+					expectedJson: true,
 				},
 			);
 		}

@@ -174,6 +174,23 @@ describe("Obsidian agent tools", () => {
 			"Fornbok",
 			"Notes/One.md",
 		);
+
+		bridge.readObsidianNote.mockResolvedValueOnce(
+			["one", "two", "three", "four"].join("\n"),
+		);
+		const tail = JSON.parse(
+			await executeObsidianAgentTool("read_note", {
+				path: "Notes/One.md",
+				startLine: 3,
+				limit: 2,
+			}),
+		);
+		expect(tail).toMatchObject({
+			total: 4,
+			returned: 2,
+			truncated: false,
+			data: ["three", "four"],
+		});
 	});
 
 	it("lists, reads, creates, and updates notes through the shared bridge", async () => {
@@ -464,6 +481,58 @@ describe("Obsidian agent tools", () => {
 		});
 	});
 
+	it("counts the same complete search units that listing envelopes", async () => {
+		bridge.queryObsidianSearch.mockResolvedValueOnce(
+			JSON.stringify(["Notes/One.md", "Notes/Two.md", "Notes/Three.md"]),
+		);
+		const paths = JSON.parse(
+			await executeObsidianAgentTool("search", {
+				query: "ship",
+				limit: 2,
+			}),
+		);
+		expect(paths).toMatchObject({
+			total: 3,
+			returned: 2,
+			truncated: true,
+		});
+
+		bridge.queryObsidianSearch.mockResolvedValueOnce(
+			JSON.stringify(["Notes/One.md", "Notes/Two.md", "Notes/Three.md"]),
+		);
+		const pathCount = JSON.parse(
+			await executeObsidianAgentTool("search", {
+				query: "ship",
+				countOnly: true,
+			}),
+		);
+		expect(pathCount).toEqual({
+			sourceFormat: "json",
+			total: 3,
+			returned: 0,
+			truncated: false,
+			countOnly: true,
+		});
+
+		bridge.queryObsidianSearch.mockResolvedValueOnce(
+			"Notes/One.md:4: ship\nNotes/Two.md:9: ship",
+		);
+		const contextCount = JSON.parse(
+			await executeObsidianAgentTool("search", {
+				query: "ship",
+				context: true,
+				countOnly: true,
+			}),
+		);
+		expect(contextCount).toEqual({
+			sourceFormat: "text",
+			total: 2,
+			returned: 0,
+			truncated: false,
+			countOnly: true,
+		});
+	});
+
 	it("passes explicit graph-aware searches through the curated search tool", async () => {
 		bridge.queryObsidianSearch.mockResolvedValueOnce(
 			JSON.stringify([
@@ -674,6 +743,28 @@ describe("Obsidian agent tools", () => {
 			returned: 2,
 			truncated: true,
 			data: ["one", "two"],
+		});
+	});
+
+	it("counts property keys rather than native value rows", async () => {
+		bridge.queryObsidianProperties.mockResolvedValueOnce(
+			JSON.stringify({
+				title: "Audit",
+				created: "2026-07-26",
+				scope: "all",
+				tags: ["audit", "review"],
+			}),
+		);
+		const output = JSON.parse(
+			await executeObsidianAgentTool("properties", { countOnly: true }),
+		);
+
+		expect(output).toEqual({
+			sourceFormat: "json",
+			total: 4,
+			returned: 0,
+			truncated: false,
+			countOnly: true,
 		});
 	});
 
