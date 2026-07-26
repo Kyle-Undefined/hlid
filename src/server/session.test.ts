@@ -5160,6 +5160,141 @@ describe("SessionManager — cancelQueued", () => {
 	});
 });
 
+describe("SessionManager — steerQueued", () => {
+	it("folds a plain queued message into the active turn without another send", async () => {
+		const ctl = makeControllableProvider();
+		const steer = vi.fn().mockResolvedValue(undefined);
+		const wrapped: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				return { ...ctl.provider.query(params), steer };
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(wrapped));
+		const first = sm.runQuery(
+			"first",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-1",
+		);
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		const second = sm.runQuery(
+			"second",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-2",
+		);
+
+		expect(sm.getQueueState().pending_turns).toEqual([
+			expect.objectContaining({ id: "turn-2", steerable: true }),
+		]);
+		await expect(sm.steerQueued("turn-2")).resolves.toBe(true);
+		expect(steer).toHaveBeenCalledWith("test prompt");
+		expect(sm.getQueueState().pending_turn_ids).toEqual([]);
+		await second;
+
+		ctl.turns[0].resolveDone();
+		await first;
+		expect(ctl.getSendCount()).toBe(1);
+	});
+
+	it("restores the queued turn when the provider rejects steering", async () => {
+		const ctl = makeControllableProvider();
+		const steer = vi.fn().mockRejectedValue(new Error("not steerable"));
+		const wrapped: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				return { ...ctl.provider.query(params), steer };
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(wrapped));
+		const first = sm.runQuery(
+			"first",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-1",
+		);
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		const second = sm.runQuery(
+			"second",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-2",
+		);
+
+		await expect(sm.steerQueued("turn-2")).rejects.toThrow("not steerable");
+		expect(sm.getQueueState().pending_turn_ids).toEqual(["turn-2"]);
+		ctl.turns[0].resolveDone();
+		await first;
+		await waitFor(() => expect(ctl.getSendCount()).toBe(2));
+		ctl.turns[1].resolveDone();
+		await second;
+	});
+
+	it("marks attachment turns as not steerable", async () => {
+		const ctl = makeControllableProvider();
+		const wrapped: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				return {
+					...ctl.provider.query(params),
+					steer: vi.fn().mockResolvedValue(undefined),
+				};
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(wrapped));
+		const first = sm.runQuery(
+			"first",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-1",
+		);
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		const second = sm.runQuery(
+			"with file",
+			() => {},
+			"sess-1",
+			undefined,
+			[
+				{
+					id: "attachment-1",
+					filename: "notes.txt",
+					mime: "text/plain",
+					path: "/tmp/notes.txt",
+					kind: "file",
+				},
+			],
+			undefined,
+			"turn-2",
+		);
+
+		expect(sm.getQueueState().pending_turns).toEqual([
+			expect.objectContaining({ id: "turn-2", steerable: false }),
+		]);
+		await expect(sm.steerQueued("turn-2")).rejects.toThrow("file attachments");
+		expect(sm.cancelQueued("turn-2")).toBe(true);
+		await second;
+		ctl.turns[0].resolveDone();
+		await first;
+		expect(ctl.getSendCount()).toBe(1);
+	});
+});
+
 describe("SessionManager — promoteQueued", () => {
 	it("moves a queued turn to the head and calls agentSession.interrupt", async () => {
 		const ctl = makeControllableProvider();

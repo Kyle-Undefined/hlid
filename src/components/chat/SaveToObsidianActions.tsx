@@ -75,7 +75,7 @@ export function SaveToObsidianActions({
 				disabled={busy !== null}
 				aria-label="Append reply to active Obsidian note"
 				title="Append reply to active Obsidian note"
-				className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 disabled:opacity-40 text-muted-foreground/50 hover:text-foreground transition-opacity"
+				className="text-muted-foreground/50 transition-colors hover:text-foreground disabled:opacity-40"
 			>
 				{icon("active")}
 			</button>
@@ -85,7 +85,7 @@ export function SaveToObsidianActions({
 				disabled={busy !== null}
 				aria-label="Append reply to today's Obsidian daily note"
 				title="Append reply to today's Obsidian daily note"
-				className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 disabled:opacity-40 text-muted-foreground/50 hover:text-foreground transition-opacity"
+				className="text-muted-foreground/50 transition-colors hover:text-foreground disabled:opacity-40"
 			>
 				{icon("daily")}
 			</button>
@@ -96,7 +96,7 @@ export function SaveToObsidianActions({
 					disabled={busy !== null}
 					aria-label={`Send reply to Obsidian ${capture.label}`}
 					title={`Send to ${capture.label}\n${capture.vaultName}/${capture.folder}`}
-					className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 disabled:opacity-40 text-muted-foreground/50 hover:text-foreground transition-opacity"
+					className="text-muted-foreground/50 transition-colors hover:text-foreground disabled:opacity-40"
 				>
 					{icon("capture")}
 				</button>

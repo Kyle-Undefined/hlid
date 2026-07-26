@@ -349,6 +349,12 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 	 * completes — for that, await the next `done` AgentEvent).
 	 */
 	send(message: string, opts?: SendOptions): Promise<void>;
+	/**
+	 * Add user guidance to the provider's currently active turn without ending
+	 * it or starting a second turn. Providers without a native steering
+	 * primitive omit this method.
+	 */
+	steer?(message: string, opts?: SendOptions): Promise<void>;
 	cancel(): void;
 	/**
 	 * Slice C: stop the currently running assistant turn early and return

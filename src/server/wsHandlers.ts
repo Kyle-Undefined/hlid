@@ -1087,6 +1087,38 @@ async function handleSessionMessage(
 				broadcastSessionsStatus(context);
 			}
 			return;
+		case "steer_queued":
+			void entry.manager
+				.steerQueued(msg.turn_id)
+				.then((steered) => {
+					if (steered) {
+						entry.runState.broadcast({
+							type: "turn_steered",
+							turn_id: msg.turn_id,
+							session_id:
+								entry.manager.getCurrentSessionId() ?? entry.sessionId,
+						});
+						return;
+					}
+					send(context.ws, {
+						type: "error",
+						message: "That queued message is no longer available to steer.",
+					});
+				})
+				.catch((error) => {
+					send(context.ws, {
+						type: "error",
+						message:
+							error instanceof Error
+								? error.message
+								: "Failed to steer the active turn",
+					});
+				})
+				.finally(() => {
+					broadcastQueueState(entry);
+					broadcastSessionsStatus(context);
+				});
+			return;
 		case "clear":
 			context.ws.data.pendingNewSession = true;
 			entry.runState.clearError();

@@ -21,6 +21,8 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 	onPlanDecide,
 	onCancelQueued,
 	onPromoteQueued,
+	onSteerQueued,
+	canSteerQueued,
 	canBranch,
 	forkingMessageId,
 	onBranch,
@@ -48,6 +50,8 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 	onPlanDecide: (id: string, decision: PlanDecision, feedback?: string) => void;
 	onCancelQueued: (id: string) => void;
 	onPromoteQueued: (id: string) => void;
+	onSteerQueued: (id: string) => void;
+	canSteerQueued: boolean;
 	canBranch?: boolean;
 	forkingMessageId?: number | null;
 	onBranch?: (dbId: number) => void;
@@ -62,6 +66,8 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 				queueState={queueState}
 				onCancel={onCancelQueued}
 				onPromote={onPromoteQueued}
+				onSteer={onSteerQueued}
+				canSteer={canSteerQueued && message.id !== undefined}
 			/>
 		);
 	}

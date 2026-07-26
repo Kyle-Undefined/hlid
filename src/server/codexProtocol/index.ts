@@ -30,6 +30,8 @@ export type { ThreadRealtimeStopParams } from "./v2/ThreadRealtimeStopParams";
 export type { ThreadGoalUpdatedNotification } from "./v2/ThreadGoalUpdatedNotification";
 export type { ThreadGoalClearedNotification } from "./v2/ThreadGoalClearedNotification";
 export type { TurnStartParams } from "./v2/TurnStartParams";
+export type { TurnSteerParams } from "./v2/TurnSteerParams";
+export type { TurnSteerResponse } from "./v2/TurnSteerResponse";
 export type { UserInput } from "./v2/UserInput";
 export type { SandboxPolicy } from "./v2/SandboxPolicy";
 export type { SandboxMode } from "./v2/SandboxMode";

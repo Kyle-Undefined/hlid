@@ -111,8 +111,9 @@ export function ProviderUsageStrip({
 		() => displayedSnapshots.map((snapshot) => snapshot.providerId),
 		[displayedSnapshots],
 	);
-	const providerIdsRef = useRef(providerIds);
-	providerIdsRef.current = providerIds;
+	const preferredProviderAvailable = Boolean(
+		preferredProviderId && providerIds.includes(preferredProviderId),
+	);
 	const refreshSequenceRef = useRef(0);
 	const [activeProvider, setActiveProvider] = useState(() =>
 		initialProvider(providerIds, preferredProviderId),
@@ -222,13 +223,10 @@ export function ProviderUsageStrip({
 	}, [rateLimit]);
 
 	useEffect(() => {
-		if (
-			preferredProviderId &&
-			providerIdsRef.current.includes(preferredProviderId)
-		) {
+		if (preferredProviderId && preferredProviderAvailable) {
 			setActiveProvider(preferredProviderId);
 		}
-	}, [preferredProviderId]);
+	}, [preferredProviderAvailable, preferredProviderId]);
 
 	const selectProvider = (providerId: string) => {
 		setActiveProvider(providerId);

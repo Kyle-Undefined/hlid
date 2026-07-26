@@ -177,6 +177,33 @@ describe("useChatWsHandler — session id domains", () => {
 });
 
 describe("useChatWsHandler — immediate messages", () => {
+	it("moves an accepted steer before the active assistant response", () => {
+		const { handler, dispatch } = renderHandler({
+			pendingId: "assistant-1",
+		});
+		handler({
+			type: "turn_steered",
+			turn_id: "steer-1",
+			session_id: "session-1",
+		});
+
+		expect(dispatch).toHaveBeenCalledWith({
+			type: "STEER_USER",
+			turnId: "steer-1",
+			assistantId: "assistant-1",
+		});
+	});
+
+	it("ignores a stale steer acknowledgement without an active response", () => {
+		const { handler, dispatch } = renderHandler();
+		handler({
+			type: "turn_steered",
+			turn_id: "steer-1",
+			session_id: "session-1",
+		});
+		expect(dispatch).not.toHaveBeenCalled();
+	});
+
 	it("renders live vault references without waiting for history refresh", () => {
 		const { handler, dispatch } = renderHandler();
 		handler({

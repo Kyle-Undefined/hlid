@@ -137,6 +137,12 @@ export type Action =
 			pendingTurnIds: string[];
 	  }
 	| {
+			/** Move an accepted steer immediately before the active response. */
+			type: "STEER_USER";
+			turnId: string;
+			assistantId: string;
+	  }
+	| {
 			type: "ADD_ASSISTANT";
 			id: string;
 			/**
@@ -270,6 +276,29 @@ function promoteUser(
 		promoted,
 		...without.slice(targetIdx),
 	];
+}
+
+function steerUser(
+	state: ChatMessage[],
+	turnId: string,
+	assistantId: string,
+): ChatMessage[] {
+	const userIdx = state.findIndex(
+		(message) => message.id === turnId && message.role === "user",
+	);
+	const assistantIdx = state.findIndex(
+		(message) => message.id === assistantId && message.role === "assistant",
+	);
+	if (userIdx === -1 || assistantIdx === -1 || userIdx === assistantIdx - 1) {
+		return state;
+	}
+	const steered = state[userIdx];
+	const without = [...state.slice(0, userIdx), ...state.slice(userIdx + 1)];
+	const targetIdx = without.findIndex(
+		(message) => message.id === assistantId && message.role === "assistant",
+	);
+	if (targetIdx === -1) return state;
+	return [...without.slice(0, targetIdx), steered, ...without.slice(targetIdx)];
 }
 
 /**
@@ -439,6 +468,8 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 		case "PROMOTE_USER": {
 			return promoteUser(state, action.turnId, action.pendingTurnIds);
 		}
+		case "STEER_USER":
+			return steerUser(state, action.turnId, action.assistantId);
 		case "ADD_ASSISTANT": {
 			const placeholder: ChatMessage = {
 				id: action.id,

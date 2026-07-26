@@ -85,6 +85,8 @@ const SEEDS: Array<[name: string, relPath: string]> = [
 		"v2/ThreadGoalClearedNotification.ts",
 	],
 	["TurnStartParams", "v2/TurnStartParams.ts"],
+	["TurnSteerParams", "v2/TurnSteerParams.ts"],
+	["TurnSteerResponse", "v2/TurnSteerResponse.ts"],
 	["UserInput", "v2/UserInput.ts"],
 	["SandboxPolicy", "v2/SandboxPolicy.ts"],
 	["SandboxMode", "v2/SandboxMode.ts"],

@@ -1,5 +1,4 @@
-import { Ellipsis, GitFork, LoaderCircle } from "lucide-react";
-import { useState } from "react";
+import { GitFork, LoaderCircle } from "lucide-react";
 import { MarkdownBody } from "#/components/MarkdownBody";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import { useCopyToClipboard } from "#/hooks/useCopyToClipboard";
@@ -53,9 +52,6 @@ export function AssistantMsg({
 	historicalProjectPreviewGroups?: ReadonlyMap<string, ToolEventMessage[]>;
 }) {
 	const { copy, copied } = useCopyToClipboard();
-	const [actionsHovered, setActionsHovered] = useState(false);
-	const [actionsPinned, setActionsPinned] = useState(false);
-	const showActions = actionsHovered || actionsPinned;
 	// Keep live subagents at the bottom of the active assistant turn. New parent
 	// tool calls and text can then stream above them without pushing the cards
 	// out of view. Once a subagent finishes it returns to its original transcript
@@ -97,11 +93,7 @@ export function AssistantMsg({
 		);
 	};
 	return (
-		<div
-			className="group w-full min-w-0 max-w-full overflow-hidden py-3 border-b border-border/40 space-y-1.5"
-			onPointerEnter={() => setActionsHovered(true)}
-			onPointerLeave={() => setActionsHovered(false)}
-		>
+		<div className="group w-full min-w-0 max-w-full overflow-hidden py-3 border-b border-border/40 space-y-1.5">
 			{olderToolEventCount > 0 && onLoadOlderToolEvents && (
 				<div className="my-1 flex w-full px-3 sm:justify-start">
 					<button
@@ -162,49 +154,34 @@ export function AssistantMsg({
 									{message.costEstimated ? "~" : ""}${message.cost.toFixed(4)}
 								</PrivacyMask>
 							)}
-							<button
-								type="button"
-								aria-label="Message actions"
-								aria-expanded={showActions}
-								title="Message actions"
-								onFocus={() => setActionsHovered(true)}
-								onClick={() => setActionsPinned((pinned) => !pinned)}
-								className="text-muted-foreground/40 hover:text-foreground transition-colors"
-							>
-								<Ellipsis className="w-3.5 h-3.5" />
-							</button>
-							{showActions && (
-								<>
-									<CopyButton
-										onCopy={() => copy(message.text ?? "")}
-										copied={copied}
-									/>
-									<ReadAloudButton
-										messageId={message.id}
-										text={message.text}
-										dbId={message.dbId}
-									/>
-									<SaveToObsidianActions
-										text={message.text}
-										capture={obsidianCapture}
-									/>
-									{canBranch && message.dbId != null && onBranch && (
-										<button
-											type="button"
-											onClick={() => onBranch(message.dbId as number)}
-											disabled={branching}
-											aria-label="Branch from here"
-											title="Fork a new session from this point in the conversation"
-											className="disabled:opacity-40 text-muted-foreground/50 hover:text-foreground transition-colors"
-										>
-											{branching ? (
-												<LoaderCircle className="w-3 h-3 animate-spin" />
-											) : (
-												<GitFork className="w-3 h-3" />
-											)}
-										</button>
+							<CopyButton
+								onCopy={() => copy(message.text ?? "")}
+								copied={copied}
+							/>
+							<ReadAloudButton
+								messageId={message.id}
+								text={message.text}
+								dbId={message.dbId}
+							/>
+							<SaveToObsidianActions
+								text={message.text}
+								capture={obsidianCapture}
+							/>
+							{canBranch && message.dbId != null && onBranch && (
+								<button
+									type="button"
+									onClick={() => onBranch(message.dbId as number)}
+									disabled={branching}
+									aria-label="Branch from here"
+									title="Fork a new session from this point in the conversation"
+									className="disabled:opacity-40 text-muted-foreground/50 hover:text-foreground transition-colors"
+								>
+									{branching ? (
+										<LoaderCircle className="w-3 h-3 animate-spin" />
+									) : (
+										<GitFork className="w-3 h-3" />
 									)}
-								</>
+								</button>
 							)}
 						</div>
 					)}

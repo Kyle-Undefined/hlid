@@ -196,6 +196,17 @@ function handleChatWsMessage(
 		});
 		return;
 	}
+	if (msg.type === "turn_steered") {
+		const assistantId = pendingIdRef.current;
+		if (assistantId) {
+			dispatch({
+				type: "STEER_USER",
+				turnId: msg.turn_id,
+				assistantId,
+			});
+		}
+		return;
+	}
 	if (dispatchImmediateMessage(msg, context)) return;
 	ensurePendingAssistant(msg, context);
 	if (msg.type === "tool_use_summary") {

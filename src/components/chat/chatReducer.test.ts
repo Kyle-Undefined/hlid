@@ -88,6 +88,61 @@ describe("ADD_ASSISTANT", () => {
 	});
 });
 
+describe("STEER_USER", () => {
+	it("moves an accepted steer immediately before the active response", () => {
+		const state: ChatMessage[] = [
+			...withUser("original", "first prompt"),
+			...withAssistant("assistant"),
+			...withUser("steer", "updated direction"),
+		];
+		const steered = reducer(state, {
+			type: "STEER_USER",
+			turnId: "steer",
+			assistantId: "assistant",
+		});
+		expect(steered.map((message) => message.id)).toEqual([
+			"original",
+			"steer",
+			"assistant",
+		]);
+	});
+
+	it("preserves the order of multiple accepted steers", () => {
+		const state: ChatMessage[] = [
+			...withUser("original", "first prompt"),
+			...withUser("steer-1", "first update"),
+			...withAssistant("assistant"),
+			...withUser("steer-2", "second update"),
+		];
+		const steered = reducer(state, {
+			type: "STEER_USER",
+			turnId: "steer-2",
+			assistantId: "assistant",
+		});
+		expect(steered.map((message) => message.id)).toEqual([
+			"original",
+			"steer-1",
+			"steer-2",
+			"assistant",
+		]);
+	});
+
+	it("returns the same state when the steer is already in place", () => {
+		const state: ChatMessage[] = [
+			...withUser("original", "first prompt"),
+			...withUser("steer", "updated direction"),
+			...withAssistant("assistant"),
+		];
+		expect(
+			reducer(state, {
+				type: "STEER_USER",
+				turnId: "steer",
+				assistantId: "assistant",
+			}),
+		).toBe(state);
+	});
+});
+
 describe("RESUME_ASSISTANT", () => {
 	it("restores streaming state on a persisted in-flight assistant", () => {
 		const history = reducer(empty(), {

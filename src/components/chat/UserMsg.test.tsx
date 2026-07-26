@@ -50,6 +50,47 @@ describe("UserMsg", () => {
 		).toBeNull();
 	});
 
+	it("offers steering separately from interrupting a queued turn", () => {
+		const onSteer = vi.fn();
+		render(
+			<UserMsg
+				message={makeMsg()}
+				queueState={{ kind: "queued", index: 0 }}
+				onPromote={vi.fn()}
+				onSteer={onSteer}
+				onCancel={vi.fn()}
+				canSteer={true}
+			/>,
+		);
+		screen.getByRole("button", { name: /steer current run/i }).click();
+		expect(onSteer).toHaveBeenCalledWith("msg-1");
+		expect(
+			screen
+				.getByRole("button", { name: /send queued message/i })
+				.getAttribute("title"),
+		).toBe("Send now (interrupts current)");
+	});
+
+	it("hides queued actions while steering is being accepted", () => {
+		render(
+			<UserMsg
+				message={makeMsg()}
+				queueState={{ kind: "steering" }}
+				onPromote={vi.fn()}
+				onSteer={vi.fn()}
+				onCancel={vi.fn()}
+				canSteer={true}
+			/>,
+		);
+		expect(screen.getByText("STEER")).toBeTruthy();
+		expect(
+			screen.queryByRole("button", { name: /steer current run/i }),
+		).toBeNull();
+		expect(
+			screen.queryByRole("button", { name: /send queued message/i }),
+		).toBeNull();
+	});
+
 	describe("CopyButton mobile visibility", () => {
 		it("copy button has [@media(hover:none)]:opacity-100 class so it shows on touch devices", () => {
 			render(<UserMsg message={makeMsg()} />);

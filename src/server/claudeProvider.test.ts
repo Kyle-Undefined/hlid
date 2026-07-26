@@ -2931,6 +2931,30 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 		expect((result.value as { priority?: string }).priority).toBe("now");
 	});
 
+	it("steer() pushes an immediate-priority message into the active stream", async () => {
+		let capturedPrompt: AsyncIterable<unknown> | undefined;
+		vi.mocked(query).mockImplementationOnce(
+			({ prompt }: { prompt: unknown; options?: unknown }) => {
+				capturedPrompt = prompt as AsyncIterable<unknown>;
+				return sdkGen([]);
+			},
+		);
+		const session = new ClaudeProvider().query(baseParams());
+		await session.steer?.("change direction");
+
+		const iter = (capturedPrompt as AsyncIterable<unknown>)[
+			Symbol.asyncIterator
+		]();
+		const result = await iter.next();
+		expect(result.value).toMatchObject({
+			priority: "now",
+			message: {
+				content: [{ type: "text", text: "change direction" }],
+			},
+		});
+		session.cancel();
+	});
+
 	it("regression: for-await `return` from consumer does not close the cached iterator", async () => {
 		// Real-world bug observed in raven: after turn 1's `done` event,
 		// iterateConversation does an early `return` from the for-await loop.

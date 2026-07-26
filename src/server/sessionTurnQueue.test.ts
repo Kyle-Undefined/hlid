@@ -46,6 +46,20 @@ describe("SessionTurnQueue", () => {
 		expect(queue.promote("missing")).toBe(false);
 	});
 
+	it("extracts and restores a claimed turn at its original position", () => {
+		const queue = new SessionTurnQueue<[string]>();
+		void queue.enqueue(["one"], "one");
+		void queue.enqueue(["two"], "two");
+		void queue.enqueue(["three"], "three");
+
+		const extracted = queue.extract("two");
+		expect(extracted?.turn.args).toEqual(["two"]);
+		expect(queue.pendingTurnIds()).toEqual(["one", "three"]);
+		if (!extracted) throw new Error("expected queued turn");
+		queue.restore(extracted);
+		expect(queue.pendingTurnIds()).toEqual(["one", "two", "three"]);
+	});
+
 	it("resolves all queued work when a session is cleared", async () => {
 		const queue = new SessionTurnQueue<[]>();
 		const first = queue.enqueue([], "one");

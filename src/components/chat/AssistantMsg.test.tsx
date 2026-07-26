@@ -88,10 +88,6 @@ describe("normalizeMd", () => {
 });
 
 describe("AssistantMsg", () => {
-	function revealMessageActions() {
-		fireEvent.click(screen.getByRole("button", { name: "Message actions" }));
-	}
-
 	it("places the mobile reveal control directly before the tool rows it reveals", () => {
 		const onLoadOlderToolEvents = vi.fn();
 		render(
@@ -250,7 +246,6 @@ describe("AssistantMsg", () => {
 	describe("completed message actions", () => {
 		it("keeps completed actions after the response at every viewport", () => {
 			render(<AssistantMsg message={makeMsg()} />);
-			revealMessageActions();
 			const btn = screen.getByRole("button", { name: /copy/i });
 			const actions = btn.parentElement;
 			expect(actions?.className).toContain("basis-full");
@@ -259,18 +254,17 @@ describe("AssistantMsg", () => {
 			expect(actions?.parentElement?.className).not.toContain("sm:flex-nowrap");
 		});
 
-		it("defers expensive controls until the row is used", () => {
+		it("always shows completed response controls", () => {
 			render(<AssistantMsg message={makeMsg()} />);
-			expect(screen.queryByRole("button", { name: /copy/i })).toBeNull();
-			expect(screen.queryByRole("button", { name: "Read aloud" })).toBeNull();
-			revealMessageActions();
 			expect(screen.getByRole("button", { name: /copy/i })).toBeTruthy();
 			expect(screen.getByRole("button", { name: "Read aloud" })).toBeTruthy();
+			expect(
+				screen.queryByRole("button", { name: "Message actions" }),
+			).toBeNull();
 		});
 
 		it("offers read aloud beside copy for completed responses", () => {
 			render(<AssistantMsg message={makeMsg()} />);
-			revealMessageActions();
 			expect(screen.getByRole("button", { name: "Read aloud" })).toBeTruthy();
 		});
 
@@ -318,7 +312,6 @@ describe("AssistantMsg", () => {
 					onBranch={onBranch}
 				/>,
 			);
-			revealMessageActions();
 			fireEvent.click(
 				screen.getByRole("button", { name: /branch from here/i }),
 			);
@@ -334,7 +327,6 @@ describe("AssistantMsg", () => {
 					onBranch={vi.fn()}
 				/>,
 			);
-			revealMessageActions();
 			const btn = screen.getByRole("button", {
 				name: /branch from here/i,
 			}) as HTMLButtonElement;

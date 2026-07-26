@@ -118,6 +118,7 @@ function makeSession(overrides: Partial<SessionManager> = {}): SessionManager {
 		runQuery: vi.fn().mockResolvedValue(undefined),
 		cancelQueued: vi.fn().mockReturnValue(false),
 		promoteQueued: vi.fn().mockReturnValue(false),
+		steerQueued: vi.fn().mockResolvedValue(false),
 		getQueueState: vi
 			.fn()
 			.mockReturnValue({ pending_turn_ids: [], running_turn_id: null }),
@@ -1513,6 +1514,77 @@ describe("message — chat", () => {
 			JSON.stringify({ type: "promote_queued", turn_id: "turn-3" }),
 		);
 		expect(session.promoteQueued).toHaveBeenCalledWith("turn-3");
+	});
+
+	it("steer_queued returns immediately, then acknowledges and republishes queue state", async () => {
+		const session = makeSession({
+			steerQueued: vi.fn().mockResolvedValue(true),
+		});
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+		await message(
+			ws as never,
+			JSON.stringify({ type: "steer_queued", turn_id: "turn-4" }),
+		);
+		expect(session.steerQueued).toHaveBeenCalledWith("turn-4");
+		await vi.waitFor(() => {
+			expect(runState.broadcast).toHaveBeenCalledWith({
+				type: "turn_steered",
+				turn_id: "turn-4",
+				session_id: expect.any(String),
+			});
+			expect(runState.broadcast).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "queue_state" }),
+			);
+		});
+	});
+
+	it("does not hold the WebSocket dispatch open while the provider accepts a steer", async () => {
+		let acceptSteer: ((value: boolean) => void) | undefined;
+		const steering = new Promise<boolean>((resolve) => {
+			acceptSteer = resolve;
+		});
+		const session = makeSession({
+			steerQueued: vi.fn().mockReturnValue(steering),
+		});
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		const handled = message(
+			ws as never,
+			JSON.stringify({ type: "steer_queued", turn_id: "turn-4" }),
+		);
+		await expect(handled).resolves.toBeUndefined();
+		acceptSteer?.(true);
+		await vi.waitFor(() => {
+			expect(runState.broadcast).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "turn_steered" }),
+			);
+		});
+	});
+
+	it("reports a provider steering failure without dropping queue state", async () => {
+		const session = makeSession({
+			steerQueued: vi.fn().mockRejectedValue(new Error("not steerable")),
+		});
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+		await message(
+			ws as never,
+			JSON.stringify({ type: "steer_queued", turn_id: "turn-4" }),
+		);
+		await vi.waitFor(() => {
+			expect(mockSend).toHaveBeenCalledWith(
+				ws,
+				expect.objectContaining({ type: "error", message: "not steerable" }),
+			);
+			expect(runState.broadcast).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "queue_state" }),
+			);
+		});
 	});
 
 	it("promote_queued allowed from any device", async () => {

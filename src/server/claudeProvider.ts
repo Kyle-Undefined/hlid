@@ -1040,6 +1040,13 @@ class ClaudeAgentSession implements AgentSession {
 		this.inputStream.push(sdkMsg);
 	}
 
+	async steer(message: string): Promise<void> {
+		// In streaming-input mode Claude's immediate-priority user message is
+		// folded into the active run instead of waiting for the next turn.
+		this.ensureSdkQuery();
+		this.inputStream.push(buildSdkUserMessage(message, "now"));
+	}
+
 	async mcpServerStatus(): Promise<McpServerStatus[]> {
 		if (!this.sdkQuery) return [];
 		return this.sdkQuery.mcpServerStatus() as Promise<McpServerStatus[]>;

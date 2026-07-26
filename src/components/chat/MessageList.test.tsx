@@ -159,6 +159,8 @@ function listElement(args: RenderListArgs) {
 			handlePlanDecide={vi.fn()}
 			handleCancelQueued={vi.fn()}
 			handlePromoteQueued={vi.fn()}
+			handleSteerQueued={vi.fn()}
+			canSteerQueued={true}
 			bottomRef={bottomRef()}
 		/>
 	);
@@ -244,6 +246,21 @@ describe("MessageList — orphan queue rendering", () => {
 		expect(screen.getByText("second queued")).toBeTruthy();
 		expect(screen.getByText("Q1")).toBeTruthy();
 		expect(screen.getByText("Q2")).toBeTruthy();
+	});
+
+	it("hides steering for a queued payload the server marked unsafe", () => {
+		renderList({
+			messages: [],
+			chatQueue: [{ ...queued("q1", "attached context"), steerable: false }],
+			sessionState: "running",
+			runningTurnId: "running",
+		});
+		expect(
+			screen.queryByRole("button", { name: /steer current run/i }),
+		).toBeNull();
+		expect(
+			screen.getByRole("button", { name: /send queued message/i }),
+		).toBeTruthy();
 	});
 
 	it("renders nothing extra when chatQueue is empty", () => {

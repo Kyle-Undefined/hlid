@@ -182,8 +182,24 @@ function SettingsPage() {
 	}, []);
 
 	useEffect(() => {
+		setInventory({
+			providers: loaded.providers,
+			accountInfo: loaded.accountInfo,
+			voiceInfo: loaded.voiceInfo,
+			cliProxyInfo: loaded.cliProxyInfo,
+			acpCatalog: loaded.acpCatalog,
+		});
+		setInventoryStatus(loaded.inventoryStatus);
 		if (loaded.inventoryStatus === "unavailable") void refreshInventory();
-	}, [loaded.inventoryStatus, refreshInventory]);
+	}, [
+		loaded.providers,
+		loaded.accountInfo,
+		loaded.voiceInfo,
+		loaded.cliProxyInfo,
+		loaded.acpCatalog,
+		loaded.inventoryStatus,
+		refreshInventory,
+	]);
 
 	const initial = useMemo(
 		() => ({ ...loaded, ...inventory }),

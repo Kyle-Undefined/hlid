@@ -12,6 +12,7 @@ import {
 	getQueue,
 	markQueuedChatPromoting,
 	markQueuedChatSent,
+	markQueuedChatSteering,
 	type QueuedChatMessage,
 	reconcileLocalQueue,
 	removeLocalChat,
@@ -715,6 +716,16 @@ export function promoteQueued(id: string): void {
 		markQueuedChatPromoting(id);
 	} catch {
 		// Connection lost — best-effort; UI stays consistent next refresh.
+	}
+}
+
+export function steerQueued(id: string): void {
+	if (_ws?.readyState !== WS_OPEN) return;
+	try {
+		_ws.send(JSON.stringify({ type: "steer_queued", turn_id: id }));
+		markQueuedChatSteering(id);
+	} catch {
+		// Connection lost — the server queue remains authoritative.
 	}
 }
 

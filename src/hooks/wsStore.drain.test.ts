@@ -388,6 +388,53 @@ describe("wsStore — Slice A: immediate-send drain", () => {
 		});
 	});
 
+	it("steerQueued sends steer_queued and marks transient steering state", () => {
+		wsStore.enqueueChat({ id: "m1", text: "redirect", session_id: "s1" });
+		currentWs.send.mockClear();
+
+		wsStore.steerQueued("m1");
+
+		const sent = currentWs.send.mock.calls
+			.map((call) => JSON.parse(call[0] as string))
+			.filter((message) => message.type === "steer_queued");
+		expect(sent).toEqual([{ type: "steer_queued", turn_id: "m1" }]);
+		expect(wsStore.getQueue()[0]).toMatchObject({
+			id: "m1",
+			_steering: true,
+		});
+		expect(localStorage.getItem("hlid:raven:chat-queue")).not.toContain(
+			"_steering",
+		);
+	});
+
+	it("clears transient steering state when the server keeps the turn queued", () => {
+		wsStore.enqueueChat({ id: "m1", text: "redirect", session_id: "s1" });
+		wsStore.steerQueued("m1");
+
+		currentWs.onmessage?.({
+			data: JSON.stringify({
+				type: "queue_state",
+				session_id: "s1",
+				pending_turn_ids: ["m1"],
+				pending_turns: [
+					{
+						id: "m1",
+						text: "redirect",
+						session_id: "s1",
+						steerable: true,
+					},
+				],
+				running_turn_id: "m0",
+			}),
+		});
+
+		expect(wsStore.getQueue()[0]).toMatchObject({
+			id: "m1",
+			steerable: true,
+		});
+		expect(wsStore.getQueue()[0]).not.toHaveProperty("_steering");
+	});
+
 	it("queue_state prunes orphan _sent items the server doesn't have (Slice C polish)", () => {
 		wsStore.enqueueChat({ id: "m1", text: "a", session_id: "s1" });
 		wsStore.enqueueChat({ id: "m2", text: "b", session_id: "s1" });

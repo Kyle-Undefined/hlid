@@ -4,6 +4,7 @@
  * DB is mocked; only the cache/catalog logic under test is real.
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { ProviderInfo } from "../lib/providerTypes";
 
 // ── mocks ─────────────────────────────────────────────────────────────────────
 
@@ -519,6 +520,68 @@ describe("createProviderCatalogSnapshot", () => {
 		await snapshot.get();
 
 		expect(check).toHaveBeenCalledTimes(2);
+	});
+
+	it("does not let an invalidated in-flight read repopulate the cache", async () => {
+		let resolveFirst: ((value: ProviderInfo[]) => void) | undefined;
+		const load = vi
+			.fn()
+			.mockImplementationOnce(
+				() =>
+					new Promise<ProviderInfo[]>((resolve) => {
+						resolveFirst = resolve;
+					}),
+			)
+			.mockResolvedValueOnce([
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					models: [],
+					hostCapabilities: {
+						windowsComputerUse: {
+							label: "Windows Computer Use",
+							available: true,
+						},
+					},
+				},
+			]);
+		const snapshot = createProviderCatalogSnapshot(
+			[makeProvider({ providerId: "codex" })],
+			{
+				modelsFor: vi.fn(),
+				cachedModelsFor: vi.fn().mockResolvedValue([]),
+			},
+			{ load },
+		);
+
+		const first = snapshot.get({ includeHostCapabilities: true });
+		snapshot.invalidate();
+		resolveFirst?.([
+			{
+				id: "codex",
+				label: "Codex",
+				available: true,
+				models: [],
+				hostCapabilities: {
+					windowsComputerUse: {
+						label: "Windows Computer Use",
+						available: false,
+						reason: "Capability status is refreshing",
+					},
+				},
+			},
+		]);
+		await first;
+
+		expect(
+			(await snapshot.get({ includeHostCapabilities: true }))[0]
+				?.hostCapabilities?.windowsComputerUse,
+		).toEqual({
+			label: "Windows Computer Use",
+			available: true,
+		});
+		expect(load).toHaveBeenCalledTimes(2);
 	});
 
 	it("reads a live provider collection after an integration is registered", async () => {

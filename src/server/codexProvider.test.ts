@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("node:child_process", () => ({ spawn: vi.fn() }));
+vi.mock("node:fs/promises", () => ({ readFile: vi.fn() }));
 vi.mock("../lib/codexPath", () => ({ resolveCodexExecutable: vi.fn() }));
 vi.mock("./obsidianAgentTools", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("./obsidianAgentTools")>();
@@ -13,6 +14,7 @@ vi.mock("./hlidAgentTools", async (importOriginal) => {
 });
 
 import { spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { resolveCodexExecutable } from "../lib/codexPath";
 import type {
 	AgentEvent,
@@ -367,6 +369,9 @@ describe("CodexProvider host capabilities", () => {
 		__resetCodexAppServersForTesting();
 		__resetCodexHostCapabilitiesForTesting();
 		vi.mocked(spawn).mockClear();
+		vi.mocked(readFile).mockResolvedValue(
+			'[plugins."computer-use@openai-bundled"]\nenabled = true\n',
+		);
 	});
 
 	it("reports the native Computer Use plugin as ready on Windows", async () => {
@@ -376,10 +381,6 @@ describe("CodexProvider host capabilities", () => {
 		const previousCwd = process.env.HLID_WINDOWS_COMPUTER_USE_CWD;
 		process.env.HLID_WINDOWS_COMPUTER_USE_CWD = "/tmp/hlid-computer-use-test";
 		try {
-			const { proc } = makeFakeSessionProc({
-				skills: [{ name: "computer-use:computer-use" }],
-			});
-			vi.mocked(spawn).mockReturnValue(proc as never);
 			vi.mocked(resolveCodexExecutable).mockReturnValue("C:\\bin\\codex.exe");
 
 			expect(await refreshCodexHostCapabilities()).toEqual({
@@ -394,6 +395,7 @@ describe("CodexProvider host capabilities", () => {
 					available: true,
 				},
 			});
+			expect(spawn).not.toHaveBeenCalled();
 		} finally {
 			if (previousCwd === undefined)
 				delete process.env.HLID_WINDOWS_COMPUTER_USE_CWD;
@@ -411,8 +413,7 @@ describe("CodexProvider host capabilities", () => {
 		process.env.HLID_WINDOWS_COMPUTER_USE_CWD =
 			"/tmp/hlid-computer-use-background-test";
 		try {
-			const { proc } = makeFakeProc({ silent: true });
-			vi.mocked(spawn).mockReturnValue(proc as never);
+			vi.mocked(readFile).mockReturnValue(new Promise<never>(() => {}));
 			vi.mocked(resolveCodexExecutable).mockReturnValue("C:\\bin\\codex.exe");
 
 			await expect(new CodexProvider().hostCapabilities()).resolves.toEqual({
@@ -422,7 +423,7 @@ describe("CodexProvider host capabilities", () => {
 					reason: "Capability status is refreshing",
 				},
 			});
-			expect(spawn).toHaveBeenCalledOnce();
+			expect(spawn).not.toHaveBeenCalled();
 			const refresh = refreshCodexHostCapabilities();
 			await vi.advanceTimersByTimeAsync(5_001);
 			await expect(refresh).resolves.toEqual({
@@ -1045,6 +1046,16 @@ function makeFakeSessionProc(
 							`${JSON.stringify({
 								id: msg.id,
 								result: { turn: { id: `turn-${turnCounter}` } },
+							})}\n`,
+						),
+					);
+				} else if (msg.method === "turn/steer") {
+					stdout.emit(
+						"data",
+						Buffer.from(
+							`${JSON.stringify({
+								id: msg.id,
+								result: { turnId: msg.params?.expectedTurnId },
 							})}\n`,
 						),
 					);
@@ -2067,6 +2078,38 @@ describe("CodexAgentSession — usage windows", () => {
 				limit: null,
 			},
 		]);
+		session.cancel();
+	});
+});
+
+describe("CodexAgentSession — steering", () => {
+	beforeEach(() => {
+		__resetCodexAppServersForTesting();
+	});
+
+	it("appends input to the active turn through turn/steer", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const session = new CodexProvider().query(baseCodexParams());
+
+		await session.send("start the work");
+		await session.steer?.("focus on the parser");
+
+		const request = writes
+			.map((value) => JSON.parse(value) as Record<string, unknown>)
+			.find((value) => value.method === "turn/steer");
+		expect(request?.params).toEqual({
+			threadId: "thread-1",
+			expectedTurnId: "turn-1",
+			input: [
+				{
+					type: "text",
+					text: "focus on the parser",
+					text_elements: [],
+				},
+			],
+		});
 		session.cancel();
 	});
 });

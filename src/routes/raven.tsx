@@ -111,7 +111,10 @@ import {
 	normalizeEffortForPlanMode,
 	resolveActiveProviderId,
 } from "#/lib/providerOptions";
-import { isCodexRuntimeProvider } from "#/lib/providerRuntime";
+import {
+	isClaudeRuntimeProvider,
+	isCodexRuntimeProvider,
+} from "#/lib/providerRuntime";
 import { loadRavenProviders } from "#/lib/ravenProviderCache";
 import {
 	createAnimationFrameCoalescer,
@@ -1545,7 +1548,11 @@ function useRavenQueueActions(props: RavenActionProps) {
 		[chatQueue, dispatch],
 	);
 
-	return { handleCancelQueued, handlePromoteQueued };
+	const handleSteerQueued = useCallback((id: string) => {
+		wsStore.steerQueued(id);
+	}, []);
+
+	return { handleCancelQueued, handlePromoteQueued, handleSteerQueued };
 }
 
 function useRavenClear(props: RavenActionProps) {
@@ -2034,6 +2041,7 @@ export function ChatPage() {
 		handleSend,
 		handleCancelQueued,
 		handlePromoteQueued,
+		handleSteerQueued,
 		handleClear,
 	} = useRavenActions({
 		config,
@@ -2175,6 +2183,7 @@ export function ChatPage() {
 				handlePlanDecide,
 				handleCancelQueued,
 				handlePromoteQueued,
+				handleSteerQueued,
 			}}
 			composerProps={composerProps}
 		/>
@@ -2204,6 +2213,7 @@ interface ChatPageContentProps {
 		| "handlePlanDecide"
 		| "handleCancelQueued"
 		| "handlePromoteQueued"
+		| "handleSteerQueued"
 	>;
 	composerProps: ChatComposerProps;
 }
@@ -2728,6 +2738,7 @@ function RavenMessagePane({
 		handlePlanDecide,
 		handleCancelQueued,
 		handlePromoteQueued,
+		handleSteerQueued,
 	} = actions;
 	const handleLoadOlderHistory = useCallback(async () => {
 		return loadOlderPreservingScroll(
@@ -2751,6 +2762,10 @@ function RavenMessagePane({
 		composerProps.providers.find(
 			(provider) => provider.id === composerProps.activeProviderId,
 		)?.forkCapability?.throughMessage === true && !runtime.isRunning;
+	const canSteerQueued =
+		runtime.isRunning &&
+		(isClaudeRuntimeProvider(composerProps.activeProviderId) ||
+			isCodexRuntimeProvider(composerProps.activeProviderId));
 	// Below md, the Terminal tab fully replaces chat (RavenShellTabBar); md+
 	// always shows chat regardless (desktop split panel is chunk 4).
 	const mobileHideChat = terminalOpen && shellTab === "terminal";
@@ -2816,6 +2831,8 @@ function RavenMessagePane({
 									handlePlanDecide={handlePlanDecide}
 									handleCancelQueued={handleCancelQueued}
 									handlePromoteQueued={handlePromoteQueued}
+									handleSteerQueued={handleSteerQueued}
+									canSteerQueued={canSteerQueued}
 									bottomRef={bottomRef}
 									canBranch={canBranch}
 									forkingMessageId={

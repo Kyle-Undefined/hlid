@@ -1,5 +1,8 @@
 import { mkdirSync } from "node:fs";
+import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
+import { parse as parseToml } from "smol-toml";
 import { resolveCodexExecutable } from "../lib/codexPath";
 import {
 	type CanonicalTokenUsage,
@@ -79,6 +82,7 @@ import type {
 	ThreadResumeParams,
 	ThreadStartParams,
 	TurnStartParams,
+	TurnSteerParams,
 	UserInput,
 } from "./codexProtocol";
 import { bumpDataRevision } from "./dataRevision";
@@ -342,14 +346,17 @@ async function probeWindowsComputerUseCapability(): Promise<WindowsComputerUseCa
 		return { label, available: false, reason: "Native Codex CLI not found" };
 	}
 	try {
-		const cwd = windowsComputerUseWorkspace();
-		mkdirSync(cwd, { recursive: true });
-		const conn = acquireCodexAppServer(executable);
-		await conn.ready;
-		const response = await conn.request("skills/list", { cwds: [cwd] });
-		const loaded = skillsFromListResponse(response).some(
-			(skill) =>
-				String(skill.name ?? "").toLowerCase() === "computer-use:computer-use",
+		const codexHome =
+			process.env.CODEX_HOME?.trim() || resolve(homedir(), ".codex");
+		const config = parseToml(
+			await readFile(resolve(codexHome, "config.toml"), "utf8"),
+		) as {
+			plugins?: Record<string, { enabled?: unknown }>;
+		};
+		const loaded = Object.entries(config.plugins ?? {}).some(
+			([id, plugin]) =>
+				id.split("@", 1)[0]?.toLowerCase() === "computer-use" &&
+				plugin?.enabled === true,
 		);
 		return {
 			label,
@@ -1265,6 +1272,27 @@ class CodexAgentSession implements AgentSession {
 			threadId: this.threadId,
 			turnId: this.activeTurnId,
 		});
+	}
+
+	async steer(message: string, opts?: SendOptions): Promise<void> {
+		await this.ensureReady();
+		if (!this.threadId || !this.activeTurnId) {
+			throw new Error("Codex has no active turn to steer");
+		}
+		if ((opts?.audioPaths?.length ?? 0) > 0) {
+			await this.assertAudioInputSupported();
+		}
+		const input: UserInput[] = [
+			{ type: "text", text: message, text_elements: [] },
+			...(opts?.audioPaths ?? []).map(
+				(path): UserInput => ({ type: "localAudio", path }),
+			),
+		];
+		await this.request("turn/steer", {
+			threadId: this.threadId,
+			expectedTurnId: this.activeTurnId,
+			input,
+		} satisfies TurnSteerParams);
 	}
 
 	async send(message: string, opts?: SendOptions): Promise<void> {

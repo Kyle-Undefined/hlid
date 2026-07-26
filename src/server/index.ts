@@ -48,7 +48,11 @@ import {
 import { CodexProvider, refreshCodexHostCapabilities } from "./codexProvider";
 import { loadConfig } from "./config";
 import { formatPersistentConsoleMessage } from "./consoleLog";
-import { bumpDataRevision, subscribeDataRevisions } from "./dataRevision";
+import {
+	bumpDataRevision,
+	getDataRevisions,
+	subscribeDataRevisions,
+} from "./dataRevision";
 import { handleDbRoute } from "./dbRoutes";
 import { resolveExecutionContext } from "./executionContext";
 import { createExtensionRouteHandler } from "./extensionRoutes";
@@ -329,7 +333,12 @@ providerCatalogSnapshot = createProviderCatalogSnapshot(
 	modelCatalog,
 );
 let cliProxyAccountsKey = JSON.stringify(cliProxy.status().accounts);
+let providerCatalogRevision = getDataRevisions().providers;
 subscribeDataRevisions((revisions) => {
+	if (revisions.providers !== providerCatalogRevision) {
+		providerCatalogRevision = revisions.providers;
+		providerCatalogSnapshot.invalidate();
+	}
 	broadcast({ type: "data_revisions", revisions });
 });
 warmVaultSnapshot();

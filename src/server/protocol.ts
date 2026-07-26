@@ -229,6 +229,8 @@ export type PendingTurnSnapshot = {
 	plan_mode?: boolean;
 	plan_html?: boolean;
 	goal?: GoalStartRequest;
+	/** Whether this queued payload can be folded into the active provider turn. */
+	steerable?: boolean;
 };
 
 export type QueueStateSnapshot = {
@@ -243,6 +245,13 @@ export type QueueStateSnapshot = {
 export type QueueStateMessage = QueueStateSnapshot & {
 	type: "queue_state";
 	/** DB session whose queue is represented by this snapshot. */
+	session_id?: string;
+};
+
+/** A queued user message was accepted into the provider's active turn. */
+export type TurnSteeredMessage = {
+	type: "turn_steered";
+	turn_id: string;
 	session_id?: string;
 };
 
@@ -670,6 +679,7 @@ export type ServerMessage =
 	| PermissionResolvedMessage
 	| UserMessageEvent
 	| QueueStateMessage
+	| TurnSteeredMessage
 	| McpStatusMessage
 	| AttachmentCreatedMessage
 	| ToolUseSummaryMessage
@@ -744,6 +754,11 @@ export type ClientCancelQueuedMessage = {
 
 export type ClientPromoteQueuedMessage = {
 	type: "promote_queued";
+	turn_id: string;
+};
+
+export type ClientSteerQueuedMessage = {
+	type: "steer_queued";
 	turn_id: string;
 };
 
@@ -924,6 +939,7 @@ export type ClientMessage =
 	| ClientChatMessage
 	| ClientCancelQueuedMessage
 	| ClientPromoteQueuedMessage
+	| ClientSteerQueuedMessage
 	| ClientAbortMessage
 	| ClientSkipSleepMessage
 	| ClientClearMessage

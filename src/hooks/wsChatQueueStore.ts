@@ -20,10 +20,13 @@ export type QueuedChatMessage = {
 	effort?: string;
 	permission_mode?: string;
 	goal?: GoalStartRequest;
+	steerable?: boolean;
 	/** True after the message has been delivered to the server. */
 	_sent?: boolean;
 	/** True while the server is interrupting the active turn to promote this one. */
 	_promoting?: boolean;
+	/** True while the server is folding this message into the active turn. */
+	_steering?: boolean;
 };
 
 let pendingPrompt: string | null = null;
@@ -57,7 +60,7 @@ function persistQueue(): void {
 			// server interrupts the current turn. A reload must rebuild that state
 			// from the server instead of reviving a stale NEXT badge.
 			const persistedQueue = chatQueue.map(
-				({ _promoting, ...queued }) => queued,
+				({ _promoting, _steering, ...queued }) => queued,
 			);
 			localStorage.setItem(
 				CHAT_QUEUE_STORAGE_KEY,
@@ -113,6 +116,19 @@ export function markQueuedChatPromoting(id: string): void {
 	notifySubscribers();
 }
 
+export function markQueuedChatSteering(id: string): void {
+	if (!chatQueue.some((queued) => queued.id === id)) return;
+	chatQueue = chatQueue.map((queued) =>
+		queued.id === id
+			? { ...queued, _steering: true }
+			: queued._steering
+				? { ...queued, _steering: false }
+				: queued,
+	);
+	persistQueue();
+	notifySubscribers();
+}
+
 export function findQueuedChat(id: string): QueuedChatMessage | undefined {
 	return chatQueue.find((queued) => queued.id === id);
 }
@@ -141,7 +157,12 @@ export function reconcileLocalQueue(
 			const snapshot = serverPending.get(queued.id);
 			if (!snapshot) return queued;
 			serverPending.delete(queued.id);
-			const restored = { ...queued, ...snapshot, _sent: true };
+			const { _steering: _ignoredSteering, ...stableQueued } = queued;
+			const restored = {
+				...stableQueued,
+				...snapshot,
+				_sent: true,
+			};
 			if (JSON.stringify(restored) !== JSON.stringify(queued)) changed = true;
 			return restored;
 		})

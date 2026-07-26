@@ -5,6 +5,11 @@ export type QueuedTurn<TArgs extends unknown[]> = {
 	reject: (error: Error) => void;
 };
 
+export type ExtractedQueuedTurn<TArgs extends unknown[]> = {
+	turn: QueuedTurn<TArgs>;
+	index: number;
+};
+
 /** Owns pending-turn ordering and promise settlement. */
 export class SessionTurnQueue<TArgs extends unknown[]> {
 	private pending: Array<QueuedTurn<TArgs>> = [];
@@ -38,11 +43,27 @@ export class SessionTurnQueue<TArgs extends unknown[]> {
 	}
 
 	cancel(turnId: string): boolean {
-		const index = this.pending.findIndex((turn) => turn.turnId === turnId);
-		if (index === -1) return false;
-		const [removed] = this.pending.splice(index, 1);
-		removed.resolve();
+		const extracted = this.extract(turnId);
+		if (!extracted) return false;
+		extracted.turn.resolve();
 		return true;
+	}
+
+	/**
+	 * Temporarily claim a pending turn for an out-of-band operation such as
+	 * native provider steering. The caller either settles it after acceptance
+	 * or restores it if the provider declines.
+	 */
+	extract(turnId: string): ExtractedQueuedTurn<TArgs> | undefined {
+		const index = this.pending.findIndex((turn) => turn.turnId === turnId);
+		if (index === -1) return undefined;
+		const [turn] = this.pending.splice(index, 1);
+		return { turn, index };
+	}
+
+	restore(extracted: ExtractedQueuedTurn<TArgs>): void {
+		const index = Math.min(extracted.index, this.pending.length);
+		this.pending.splice(index, 0, extracted.turn);
 	}
 
 	promote(turnId: string): boolean {

@@ -31,6 +31,8 @@ export const MessageList = memo(function MessageList({
 	handlePlanDecide,
 	handleCancelQueued,
 	handlePromoteQueued,
+	handleSteerQueued,
+	canSteerQueued,
 	bottomRef,
 	hasOlderHistory = false,
 	isLoadingOlderHistory = false,
@@ -63,6 +65,8 @@ export const MessageList = memo(function MessageList({
 	) => void;
 	handleCancelQueued: (id: string) => void;
 	handlePromoteQueued: (id: string) => void;
+	handleSteerQueued: (id: string) => void;
+	canSteerQueued: boolean;
 	bottomRef: React.MutableRefObject<HTMLDivElement | null>;
 	hasOlderHistory?: boolean;
 	isLoadingOlderHistory?: boolean;
@@ -171,6 +175,11 @@ export const MessageList = memo(function MessageList({
 					onPlanDecide={handlePlanDecide}
 					onCancelQueued={handleCancelQueued}
 					onPromoteQueued={handlePromoteQueued}
+					onSteerQueued={handleSteerQueued}
+					canSteerQueued={
+						canSteerQueued &&
+						chatQueue.find((queued) => queued.id === m.id)?.steerable !== false
+					}
 					canBranch={canBranch}
 					forkingMessageId={forkingMessageId}
 					onBranch={onBranch}
@@ -194,6 +203,8 @@ export const MessageList = memo(function MessageList({
 					queueState={queueStateById.get(qm.id)}
 					onCancel={handleCancelQueued}
 					onPromote={handlePromoteQueued}
+					onSteer={handleSteerQueued}
+					canSteer={canSteerQueued && qm.steerable !== false}
 				/>
 			))}
 			{(projectPreviewEvents.length > 0 || hasActiveProjectPreview) && (

@@ -307,6 +307,7 @@ export function createProviderCatalogSnapshot(
 		{ value: ProviderInfo[]; refreshedAt: number }
 	>();
 	const inflight = new Map<string, Promise<ProviderInfo[]>>();
+	let generation = 0;
 	const keyFor = (includeHostCapabilities: boolean) =>
 		includeHostCapabilities ? "with-capabilities" : "base";
 
@@ -336,8 +337,13 @@ export function createProviderCatalogSnapshot(
 		const flightKey = `${snapshotKey}:${loadOptions?.refresh ? "live" : "cached"}`;
 		const current = inflight.get(flightKey);
 		if (current) return current;
+		const refreshGeneration = generation;
 		const pending = load(providerList(), modelCatalog, loadOptions)
-			.then((value) => store(includeHostCapabilities, value))
+			.then((value) =>
+				refreshGeneration === generation
+					? store(includeHostCapabilities, value)
+					: value,
+			)
 			.finally(() => inflight.delete(flightKey));
 		inflight.set(flightKey, pending);
 		return pending;
@@ -361,6 +367,7 @@ export function createProviderCatalogSnapshot(
 			return Promise.resolve(snapshot.value);
 		},
 		invalidate() {
+			generation += 1;
 			snapshots.clear();
 		},
 	};

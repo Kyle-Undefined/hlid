@@ -2860,12 +2860,133 @@ export class SessionManager {
 	}
 
 	/**
-	 * Slice C: drop a not-yet-started turn from the queue. Returns true if a
-	 * matching pending turn was found and removed (its promise resolves
-	 * silently). Returns false if the turn id is unknown OR refers to the
-	 * currently running turn (which has already been shifted off the queue
-	 * — use abort() to stop it instead).
+	 * Explain whether a queued payload can safely join the active provider
+	 * turn. Settings, commands, and new file roots retain turn boundaries.
 	 */
+	private queuedTurnSteeringBlocker(args: RunQueryArgs): string | null {
+		const [
+			,
+			,
+			sessionId,
+			,
+			attachments,
+			agentCwd,
+			,
+			planMode,
+			planHtml,
+			commandAction,
+			,
+			routineContext,
+			goalStart,
+			workspaceReferences,
+		] = args;
+		if (this.state !== "running" || !this.currentTurnId) {
+			return "There is no active turn to steer.";
+		}
+		if (!this.agentSession?.steer) {
+			return "The active provider does not support steering.";
+		}
+		if (sessionId && sessionId !== this.currentSessionId) {
+			return "The queued message belongs to a different session.";
+		}
+		if (agentCwd && agentCwd !== this.agentCwd) {
+			return "A workspace change must run as a separate turn.";
+		}
+		if (
+			(attachments?.length ?? 0) > 0 ||
+			(workspaceReferences?.length ?? 0) > 0
+		) {
+			return "Messages with file attachments must run as a separate turn.";
+		}
+		if (commandAction) {
+			return "Slash commands must run as a separate turn.";
+		}
+		if (routineContext || goalStart) {
+			return "Goal and Routine turns cannot steer an active turn.";
+		}
+		if (planMode || planHtml) {
+			return "Plan-mode changes must run as a separate turn.";
+		}
+		return null;
+	}
+
+	private async buildQueuedSteeringPrompt(args: RunQueryArgs): Promise<{
+		prompt: string;
+		safeVaultReferences: string[];
+	}> {
+		const blocker = this.queuedTurnSteeringBlocker(args);
+		if (blocker) throw new Error(blocker);
+		const [userMessage, , , skillContexts, , , , , , , vaultReferences] = args;
+		const runtimeCwd =
+			this.agentMode === "cwd" && this.agentCwd
+				? this.agentCwd
+				: this.vaultPath;
+		const built = await buildPromptAsync({
+			vaultPath: this.vaultPath,
+			vaultName: this.vaultName,
+			allowedAgentRealPaths: this.allowedAgentRealPaths,
+			agentMode: this.agentMode,
+			agentCwd: this.agentCwd,
+			claudeSessionId: this.providerSessionId,
+			runtimeCwd,
+			userMessage,
+			skillContexts,
+			attachments: [],
+			vaultReferences,
+			workspaceReferences: [],
+			nativeAudio: false,
+			readVaultReference: (relativePath: string) =>
+				readObsidianNote(this.vaultName, relativePath),
+		});
+		return {
+			prompt: built.prompt,
+			safeVaultReferences: (built.safeVaultReferences ?? []).map(
+				(reference) => reference.relativePath,
+			),
+		};
+	}
+
+	/**
+	 * Fold one pending prompt into the active native provider turn. The pending
+	 * queue promise is settled only after the provider accepts the steer. A
+	 * rejected or raced request is restored at its original queue position.
+	 */
+	// fallow-ignore-next-line unused-class-member -- Called by the WebSocket steer_queued dispatch in wsHandlers.
+	async steerQueued(turnId: string): Promise<boolean> {
+		const pending = this.turnQueue
+			.pendingTurns()
+			.find((turn) => turn.turnId === turnId);
+		if (!pending) return false;
+		const prepared = await this.buildQueuedSteeringPrompt(pending.args);
+		const extracted = this.turnQueue.extract(turnId);
+		if (!extracted) return false;
+		let accepted = false;
+		try {
+			const agentSession = this.agentSession;
+			if (!agentSession?.steer) {
+				throw new Error("The active provider does not support steering.");
+			}
+			await agentSession.steer(prepared.prompt);
+			accepted = true;
+			extracted.turn.resolve();
+			const [userMessage, , sessionId] = extracted.turn.args;
+			await this.persistUserMessage(
+				sessionId,
+				userMessage,
+				[],
+				turnId,
+				prepared.safeVaultReferences,
+			);
+			return true;
+		} catch (error) {
+			if (!accepted) {
+				this.turnQueue.restore(extracted);
+				if (!this.isDraining) void this.drainTurnQueue();
+			}
+			throw error;
+		}
+	}
+
 	/**
 	 * Slice C polish: snapshot of the server's queue state. Used by clients
 	 * (on connect / sync) to prune orphan chatQueue entries — e.g. items
@@ -2893,6 +3014,7 @@ export class SessionManager {
 					...(turn.args[8] !== undefined ? { plan_html: turn.args[8] } : {}),
 					...(turn.args[9] ? { command_action: turn.args[9] } : {}),
 					...(turn.args[10]?.length ? { vault_references: turn.args[10] } : {}),
+					steerable: this.queuedTurnSteeringBlocker(turn.args) === null,
 					...(turn.args[13]?.length
 						? { workspace_references: turn.args[13] }
 						: {}),

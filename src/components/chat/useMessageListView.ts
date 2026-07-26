@@ -152,6 +152,8 @@ export function useMessageListView({
 		for (const qm of filtered) {
 			if (qm.id === runningTurnId && sessionState === "running") {
 				map.set(qm.id, { kind: "running" });
+			} else if (qm._steering) {
+				map.set(qm.id, { kind: "steering" });
 			} else if (qm._promoting) {
 				map.set(qm.id, { kind: "promoting" });
 			} else {

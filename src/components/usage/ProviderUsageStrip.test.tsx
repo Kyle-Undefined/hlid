@@ -171,6 +171,28 @@ describe("ProviderUsageStrip polling", () => {
 		expect(screen.getByText("CODEX 5-HOUR")).not.toBeNull();
 	});
 
+	it("selects the chat provider when it arrives through deferred hydration", async () => {
+		const providers: ProviderUsageSnapshot[] = [
+			{ providerId: "claude", providerLabel: "Claude", windows: [] },
+			{ providerId: "codex", providerLabel: "Codex", windows: [] },
+		];
+		render(
+			<ProviderUsageStrip
+				initial={[]}
+				liveQueryCount={0}
+				rateLimit={null}
+				preferredProviderId="codex"
+				fetchFn={vi.fn().mockResolvedValue(providers)}
+			/>,
+		);
+
+		await act(async () => {});
+
+		expect(screen.getByRole("button", { name: "Codex" }).className).toContain(
+			"text-foreground/70",
+		);
+	});
+
 	it("restores a stored provider after the hydration-stable first render", async () => {
 		const providers: ProviderUsageSnapshot[] = [
 			{ providerId: "claude", providerLabel: "Claude", windows: [] },

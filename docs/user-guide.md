@@ -164,8 +164,9 @@ While a run is active:
 - Tool calls show up inline and can be expanded when the details matter.
 - Permission cards can approve once, approve for the session, save a permanent
   approval, or deny with feedback.
-- Another prompt gets queued instead of interrupting the current turn. It can
-  be promoted or canceled before it runs.
+- Another prompt gets queued instead of interrupting the current turn. Supported
+  Claude and Codex runtimes can fold it into the active run as steering. It can
+  also interrupt and run next, or be canceled before it runs.
 - Agent questions show their choices inline, with a note field when the buttons
   do not quite cover the answer.
 - Plan mode waits for approval, revisions, or cancellation before the
