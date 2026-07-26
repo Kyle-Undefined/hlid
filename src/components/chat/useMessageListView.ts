@@ -4,6 +4,8 @@ import { approvedLabel } from "#/server/protocol";
 import type { ChatMessage } from "./chatReducer";
 import type { UserMsgQueueState } from "./UserMsg";
 
+export type { QueuedChatMessage };
+
 const HISTORY_RENDER_PAGE_SIZE = 100;
 const TOOL_EVENT_RENDER_PAGE_SIZE = 200;
 

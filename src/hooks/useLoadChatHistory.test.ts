@@ -578,6 +578,49 @@ describe("useLoadChatHistory — reconnect recovery", () => {
 		expect(loadHistory.items[0].id).toBe("queued-turn-1");
 	});
 
+	it("hydrates the assistant sequence targeted by a persisted steer", async () => {
+		vi.mocked(getSessionDataFn).mockResolvedValue([
+			{
+				...makeRow("assistant", "response"),
+				seq: 4,
+			},
+			{
+				...makeRow("user", "change direction"),
+				id: 2,
+				seq: 5,
+				turn_id: "steer-turn",
+				steer_target_seq: 4,
+			},
+		]);
+
+		const dispatch = vi.fn();
+		renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef: { current: null },
+			historyReadyRef: { current: false },
+			handleWsMessage: noopWsHandler,
+			wsStatus: "connected",
+			sessionIdRef: { current: "sess-1" },
+		});
+
+		await act(async () => {});
+
+		const loadHistory = dispatch.mock.calls.find(
+			([action]) => action.type === "LOAD_HISTORY",
+		)?.[0];
+		expect(loadHistory.items).toEqual([
+			expect.objectContaining({ role: "assistant", seq: 4 }),
+			expect.objectContaining({
+				id: "steer-turn",
+				role: "user",
+				seq: 5,
+				steerTargetSeq: 4,
+			}),
+		]);
+	});
+
 	it("serializes reconnect behind an in-flight older-page load", async () => {
 		const rows = (start: number, end: number) =>
 			Array.from({ length: end - start + 1 }, (_, index) => {

@@ -103,6 +103,44 @@ describe("commands", () => {
 		expect(mergeCommands([], [], "codex", "watch")).toEqual([]);
 	});
 
+	it("maps Claude workflows to Raven's run manager without forwarding the provider command", () => {
+		const claude = mergeCommands(
+			[],
+			[
+				{
+					name: "workflows",
+					description: "Provider workflow screen",
+					argumentHint: "",
+				},
+			],
+			"claude",
+			"raven",
+		);
+		expect(claude.filter((command) => command.name === "workflows")).toEqual([
+			expect.objectContaining({
+				source: "hlid",
+				execution: {
+					kind: "capability-action",
+					action: "workflows",
+				},
+			}),
+		]);
+		expect(resolveCommandSubmission(null, "/workflows", claude)).toEqual({
+			text: "/workflows",
+			commandAction: "workflows",
+		});
+		expect(
+			mergeCommands([], [], "codex", "raven").some(
+				(command) => command.name === "workflows",
+			),
+		).toBe(false);
+		expect(
+			mergeCommands([], [], "claude", "watch").some(
+				(command) => command.name === "workflows",
+			),
+		).toBe(false);
+	});
+
 	it("resolves provider-advertised compact as a structured activity", () => {
 		const commands = mergeCommands(
 			[],
@@ -143,6 +181,47 @@ describe("commands", () => {
 		});
 	});
 
+	it("runs saved Claude workflow commands through the native Workflow tool", () => {
+		const commands = mergeCommands(
+			[],
+			[
+				{
+					name: "route-audit",
+					description: "Audit every route",
+					argumentHint: "[input]",
+					workflowScriptPath: "/home/test/.claude/workflows/route-audit.js",
+					alwaysVisible: true,
+				},
+			],
+			"claude",
+		);
+		const workflow = commands.find((command) => command.name === "route-audit");
+		if (!workflow) throw new Error("Expected the saved workflow command");
+		expect(workflow).toMatchObject({
+			source: "provider",
+			providerId: "claude",
+			alwaysVisible: true,
+			execution: {
+				kind: "workflow",
+				name: "route-audit",
+				scriptPath: "/home/test/.claude/workflows/route-audit.js",
+			},
+		});
+		const submission = resolveCommandSubmission(
+			null,
+			"/route-audit routes only",
+			commands,
+		);
+		expect(submission.text).toContain(
+			'Workflow tool with scriptPath set to "/home/test/.claude/workflows/route-audit.js"',
+		);
+		expect(submission.text).toContain('"routes only"');
+		expect(submission.text).toContain("Do not pass resumeFromRunId");
+		expect(
+			addCommandSelection([workflow], skillCommand(skill), "claude"),
+		).toEqual([workflow]);
+	});
+
 	it("keeps Hlid-managed skill imports provider-neutral", () => {
 		const managed: Skill = {
 			...skill,
@@ -154,7 +233,7 @@ describe("commands", () => {
 			source: "library",
 			execution: { kind: "skill", filePath: managed.filePath },
 		});
-		expect(mergeCommands([managed], [], "claude")).toHaveLength(4);
+		expect(mergeCommands([managed], [], "claude")).toHaveLength(5);
 	});
 
 	it("shows provider-owned skills only for their provider", () => {

@@ -27,6 +27,8 @@ export function normalizeMd(text: string): string {
 export function AssistantMsg({
 	message,
 	permissionLabels,
+	sessionId,
+	providerId,
 	toolEventStartIndex = 0,
 	olderToolEventCount = 0,
 	onLoadOlderToolEvents,
@@ -39,6 +41,8 @@ export function AssistantMsg({
 }: {
 	message: AssistantMessage;
 	permissionLabels?: Map<string, string>;
+	sessionId?: string;
+	providerId?: string;
 	toolEventStartIndex?: number;
 	olderToolEventCount?: number;
 	onLoadOlderToolEvents?: () => void;
@@ -52,13 +56,40 @@ export function AssistantMsg({
 	historicalProjectPreviewGroups?: ReadonlyMap<string, ToolEventMessage[]>;
 }) {
 	const { copy, copied } = useCopyToClipboard();
+	const workflowAgentIds = new Set<string>();
+	for (const event of message.toolEvents) {
+		if (event.subagent?.kind === "workflow") {
+			workflowAgentIds.add(event.subagent.agentId);
+		}
+	}
+	const nestedSubagentEventIds = new Set<string>();
+	const workflowChildren = new Map<
+		string,
+		NonNullable<ToolEventMessage["subagent"]>[]
+	>();
+	for (const event of message.toolEvents) {
+		const child = event.subagent;
+		if (
+			!child?.parentActivityId ||
+			!workflowAgentIds.has(child.parentActivityId)
+		) {
+			continue;
+		}
+		nestedSubagentEventIds.add(event.id);
+		const children = workflowChildren.get(child.parentActivityId) ?? [];
+		children.push(child);
+		workflowChildren.set(child.parentActivityId, children);
+	}
 	// Keep live subagents at the bottom of the active assistant turn. New parent
 	// tool calls and text can then stream above them without pushing the cards
 	// out of view. Once a subagent finishes it returns to its original transcript
 	// position, preserving history order.
 	const activeSubagentEvents = message.toolEvents.filter((event) => {
 		const status = event.subagent?.status;
-		return status === "pending" || status === "running" || status === "paused";
+		return (
+			!nestedSubagentEventIds.has(event.id) &&
+			(status === "pending" || status === "running" || status === "paused")
+		);
 	});
 	const previewEvents = message.toolEvents.filter(isProjectPreviewToolEvent);
 	const groupedPreviewEvents = groupedProjectPreviewEventIds
@@ -71,6 +102,7 @@ export function AssistantMsg({
 		.filter(
 			(event) =>
 				!activeSubagentEvents.includes(event) &&
+				!nestedSubagentEventIds.has(event.id) &&
 				!groupedPreviewEvents.includes(event),
 		);
 	const renderTool = (event: (typeof message.toolEvents)[number]) => {
@@ -89,6 +121,13 @@ export function AssistantMsg({
 				key={event.id}
 				event={event}
 				permissionLabel={permissionLabels?.get(event.id)}
+				sessionId={sessionId}
+				providerId={providerId}
+				childSubagents={
+					event.subagent?.kind === "workflow"
+						? workflowChildren.get(event.subagent.agentId)
+						: undefined
+				}
 			/>
 		);
 	};

@@ -5,6 +5,7 @@ import {
 	type HistoricalToolEventDetail,
 	loadToolEventDetail,
 } from "#/hooks/toolEventDetailStore";
+import type { SubagentSnapshot } from "#/server/agentProvider";
 import type { ToolEventMessage } from "#/server/protocol";
 import {
 	ProjectPreviewCaptureToolBlock,
@@ -12,6 +13,7 @@ import {
 } from "./ProjectPreviewToolBlock";
 import { SubagentToolBlock } from "./SubagentToolBlock";
 import { ToolBlockExpandedPanel } from "./ToolBlockExpandedPanel";
+import { resumeNativeWorkflow, stopNativeWorkflow } from "./workflowActions";
 
 const RESULT_PREVIEW_CHARS = 120;
 const INPUT_PREVIEW_CHARS = 140;
@@ -75,9 +77,15 @@ export function looksLikeMarkdown(text: string): boolean {
 export const ToolBlock = memo(function ToolBlock({
 	event,
 	permissionLabel,
+	sessionId,
+	providerId,
+	childSubagents,
 }: {
 	event: ToolEventMessage;
 	permissionLabel?: string;
+	sessionId?: string;
+	providerId?: string;
+	childSubagents?: ReadonlyArray<SubagentSnapshot>;
 }) {
 	const [open, setOpen] = useState(false);
 	const [detail, setDetail] = useState<HistoricalToolEventDetail | null>(null);
@@ -120,7 +128,30 @@ export const ToolBlock = memo(function ToolBlock({
 	}, [open, needsDetail, event.detailSessionId, event.id, detail, detailError]);
 
 	if (event.subagent) {
-		return <SubagentToolBlock subagent={event.subagent} />;
+		const subagent = event.subagent;
+		const workflow = subagent.kind === "workflow";
+		const ownsCurrentProvider =
+			providerId === undefined || providerId === subagent.provider;
+		const resumeSessionId =
+			workflow && ownsCurrentProvider && subagent.workflowRunId
+				? sessionId
+				: undefined;
+		return (
+			<SubagentToolBlock
+				subagent={subagent}
+				childSubagents={childSubagents}
+				onStop={
+					workflow && ownsCurrentProvider && sessionId && subagent.taskId
+						? () => stopNativeWorkflow(sessionId, subagent.taskId ?? "")
+						: undefined
+				}
+				onResume={
+					resumeSessionId
+						? () => resumeNativeWorkflow(resumeSessionId, subagent)
+						: undefined
+				}
+			/>
+		);
 	}
 	if (
 		event.name.endsWith("capture_project_preview") ||

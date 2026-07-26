@@ -4,6 +4,11 @@ import {
 	ChevronRight,
 	CirclePause,
 	LoaderCircle,
+	RefreshCw,
+	RotateCcw,
+	Save,
+	Square,
+	Workflow as WorkflowIcon,
 	XCircle,
 } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -12,12 +17,41 @@ import type { SubagentSnapshot } from "#/server/agentProvider";
 
 const subagentOpenOverrides = new Map<string, boolean>();
 
-function subagentStateKey(subagent: SubagentSnapshot): string {
-	return `${subagent.provider}:${subagent.agentId}`;
+function subagentStateKey(
+	subagent: SubagentSnapshot,
+	stateScope: string,
+): string {
+	return `${stateScope}:${subagent.provider}:${subagent.agentId}`;
 }
 
 function isActive(status: SubagentSnapshot["status"]): boolean {
 	return status === "pending" || status === "running" || status === "paused";
+}
+
+function isTerminal(status: SubagentSnapshot["status"]): boolean {
+	return (
+		status === "completed" || status === "failed" || status === "interrupted"
+	);
+}
+
+export function summarizeWorkflowChildren(
+	children: ReadonlyArray<SubagentSnapshot>,
+): string {
+	const running = children.filter(
+		(child) => child.status === "pending" || child.status === "running",
+	).length;
+	const waiting = children.filter((child) => child.status === "paused").length;
+	const done = children.filter((child) => child.status === "completed").length;
+	const failed = children.filter(
+		(child) => child.status === "failed" || child.status === "interrupted",
+	).length;
+	if (children.length === 0) return "Waiting for agents";
+	return [
+		`${running} running`,
+		...(waiting > 0 ? [`${waiting} waiting`] : []),
+		`${done} done`,
+		`${failed} failed`,
+	].join(" / ");
 }
 
 export function formatSubagentDuration(durationMs: number): string {
@@ -87,11 +121,13 @@ function SubagentHeader({
 	open,
 	durationMs,
 	onToggle,
+	summary,
 }: {
 	subagent: SubagentSnapshot;
 	open: boolean;
 	durationMs: number;
 	onToggle: () => void;
+	summary?: string;
 }) {
 	const title = subagent.name || subagent.label || "Subagent";
 	const statusTone =
@@ -112,7 +148,11 @@ function SubagentHeader({
 			<ChevronRight
 				className={`h-3 w-3 shrink-0 text-primary/50 transition-transform duration-150 ${open ? "rotate-90" : ""}`}
 			/>
-			<Bot className="h-3.5 w-3.5 shrink-0 text-primary/60" />
+			{subagent.kind === "workflow" ? (
+				<WorkflowIcon className="h-3.5 w-3.5 shrink-0 text-primary/60" />
+			) : (
+				<Bot className="h-3.5 w-3.5 shrink-0 text-primary/60" />
+			)}
 			<PrivacyMask
 				inline
 				className="col-start-3 row-start-1 min-w-0 break-all text-[11px] font-medium tracking-wider text-primary/75 sm:col-auto sm:row-auto sm:shrink-0 sm:whitespace-nowrap"
@@ -148,7 +188,7 @@ function SubagentHeader({
 				)}
 			</div>
 			<PrivacyMask className="col-span-2 col-start-3 row-start-3 min-w-0 break-words text-[10px] text-muted-foreground/60 sm:col-auto sm:row-auto sm:flex-1 sm:truncate">
-				{subagent.currentStep ?? subagent.description ?? "Working"}
+				{summary ?? subagent.currentStep ?? subagent.description ?? "Working"}
 			</PrivacyMask>
 			<span className="col-start-4 row-start-1 shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground/55 sm:col-auto sm:row-auto">
 				{formatSubagentDuration(durationMs)}
@@ -167,6 +207,24 @@ function SubagentDetails({
 	return (
 		<PrivacyMask className="mx-3 mb-2 min-w-0 max-w-[calc(100%_-_1.5rem)] overflow-hidden border border-[var(--tool-panel-border)] bg-[var(--tool-panel)]">
 			<div className="grid min-w-0 gap-3 p-3 text-[11px] leading-relaxed sm:grid-cols-2">
+				{subagent.phase && (
+					<div className="min-w-0">
+						<div className="mb-1 text-[9px] uppercase tracking-widest text-muted-foreground/50">
+							Phase
+						</div>
+						<div className="break-words text-primary/75">{subagent.phase}</div>
+					</div>
+				)}
+				{subagent.attempt !== undefined && (
+					<div className="min-w-0">
+						<div className="mb-1 text-[9px] uppercase tracking-widest text-muted-foreground/50">
+							Attempt
+						</div>
+						<div className="font-mono text-[10px] text-primary/65">
+							{subagent.attempt}
+						</div>
+					</div>
+				)}
 				<div className="min-w-0 sm:col-span-2">
 					<div className="mb-1 text-[9px] uppercase tracking-widest text-muted-foreground/50">
 						Current step
@@ -182,6 +240,16 @@ function SubagentDetails({
 						</div>
 						<div className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[10px] text-primary/65">
 							{subagent.prompt}
+						</div>
+					</div>
+				)}
+				{subagent.resultPreview && (
+					<div className="min-w-0 sm:col-span-2">
+						<div className="mb-1 text-[9px] uppercase tracking-widest text-muted-foreground/50">
+							Result preview
+						</div>
+						<div className="max-h-48 overflow-y-auto whitespace-pre-wrap break-words font-mono text-[10px] text-primary/65">
+							{subagent.resultPreview}
 						</div>
 					</div>
 				)}
@@ -206,9 +274,9 @@ function SubagentDetails({
 					</div>
 					<div className="flex flex-wrap gap-x-3 gap-y-1 font-mono text-[10px] text-primary/60">
 						<span>{formatSubagentDuration(durationMs)}</span>
-						{subagent.lastTool && <span>{subagent.lastTool}</span>}
-						{subagent.model && <span>{subagent.model}</span>}
-						{subagent.effort && <span>{subagent.effort}</span>}
+						{subagent.lastTool && <span>tool {subagent.lastTool}</span>}
+						{subagent.model && <span>model {subagent.model}</span>}
+						{subagent.effort && <span>effort {subagent.effort}</span>}
 						{subagent.usage?.toolUses !== undefined && (
 							<span>{subagent.usage.toolUses} tools</span>
 						)}
@@ -217,27 +285,157 @@ function SubagentDetails({
 						)}
 					</div>
 				</div>
+				{subagent.kind === "workflow" && (
+					<div className="min-w-0 sm:col-span-2">
+						<div className="mb-1 text-[9px] uppercase tracking-widest text-muted-foreground/50">
+							Workflow
+						</div>
+						<div className="flex min-w-0 flex-wrap gap-x-3 gap-y-1 font-mono text-[10px] text-primary/60">
+							{subagent.activityType && <span>{subagent.activityType}</span>}
+							{subagent.workflowRunId && (
+								<span className="break-all">run {subagent.workflowRunId}</span>
+							)}
+							{subagent.workflowScriptPath && (
+								<span className="break-all">{subagent.workflowScriptPath}</span>
+							)}
+						</div>
+					</div>
+				)}
 			</div>
 		</PrivacyMask>
 	);
 }
 
-export function SubagentToolBlock({
+function WorkflowActions({
 	subagent,
+	stopRequested,
+	onStop,
+	onResume,
+	onRerun,
+	onSave,
 }: {
 	subagent: SubagentSnapshot;
+	stopRequested: boolean;
+	onStop?: () => void;
+	onResume?: () => void;
+	onRerun?: () => void;
+	onSave?: () => void;
+}) {
+	const canStop =
+		isActive(subagent.status) && Boolean(subagent.taskId) && Boolean(onStop);
+	const canResume =
+		subagent.status === "interrupted" &&
+		Boolean(subagent.workflowRunId) &&
+		Boolean(onResume);
+	const canRerun =
+		isTerminal(subagent.status) &&
+		Boolean(subagent.workflowScriptPath) &&
+		Boolean(onRerun);
+	const canSave = Boolean(subagent.workflowScriptPath) && Boolean(onSave);
+	if (!canStop && !canResume && !canRerun && !canSave) return null;
+	return (
+		<div className="mx-3 mb-2 flex flex-wrap items-center gap-2">
+			{canStop && (
+				<button
+					type="button"
+					onClick={onStop}
+					disabled={stopRequested}
+					className="inline-flex min-h-8 items-center gap-1.5 border border-destructive/25 px-2.5 py-1 text-[9px] font-medium tracking-widest text-destructive/75 uppercase transition-colors hover:bg-destructive/5 disabled:opacity-45"
+				>
+					{stopRequested ? (
+						<LoaderCircle className="h-3 w-3 animate-spin" />
+					) : (
+						<Square className="h-3 w-3" />
+					)}
+					{stopRequested ? "Stopping" : "Stop workflow"}
+				</button>
+			)}
+			{canResume && (
+				<button
+					type="button"
+					onClick={onResume}
+					className="inline-flex min-h-8 items-center gap-1.5 border border-primary/20 px-2.5 py-1 text-[9px] font-medium tracking-widest text-primary/70 uppercase transition-colors hover:bg-primary/5"
+				>
+					<RotateCcw className="h-3 w-3" />
+					Resume workflow
+				</button>
+			)}
+			{canRerun && (
+				<button
+					type="button"
+					onClick={onRerun}
+					className="inline-flex min-h-8 items-center gap-1.5 border border-primary/20 px-2.5 py-1 text-[9px] font-medium tracking-widest text-primary/70 uppercase transition-colors hover:bg-primary/5"
+				>
+					<RefreshCw className="h-3 w-3" />
+					Rerun workflow
+				</button>
+			)}
+			{canSave && (
+				<button
+					type="button"
+					onClick={onSave}
+					className="inline-flex min-h-8 items-center gap-1.5 border border-primary/20 px-2.5 py-1 text-[9px] font-medium tracking-widest text-primary/70 uppercase transition-colors hover:bg-primary/5"
+				>
+					<Save className="h-3 w-3" />
+					Save workflow
+				</button>
+			)}
+		</div>
+	);
+}
+
+export function SubagentToolBlock({
+	subagent,
+	childSubagents = [],
+	nested = false,
+	initiallyOpen = false,
+	stateScope = "transcript",
+	onStop,
+	onResume,
+	onRerun,
+	onSave,
+}: {
+	subagent: SubagentSnapshot;
+	childSubagents?: ReadonlyArray<SubagentSnapshot>;
+	nested?: boolean;
+	initiallyOpen?: boolean;
+	stateScope?: string;
+	onStop?: () => void;
+	onResume?: () => void;
+	onRerun?: () => void;
+	onSave?: () => void;
 }) {
 	const active = isActive(subagent.status);
-	const stateKey = subagentStateKey(subagent);
+	const stateKey = subagentStateKey(subagent, stateScope);
 	const [openOverride, setOpenOverride] = useState<boolean | null>(
-		() => subagentOpenOverrides.get(stateKey) ?? null,
+		() => subagentOpenOverrides.get(stateKey) ?? (initiallyOpen ? true : null),
 	);
-	const open = openOverride ?? active;
+	const [stopRequestedKey, setStopRequestedKey] = useState<string | null>(null);
+	const currentStopKey = `${stateKey}:${subagent.status}`;
+	const stopRequested = stopRequestedKey === currentStopKey;
+	const open =
+		openOverride ?? (active && subagent.kind !== "workflow" && !nested);
 	const durationMs = useSubagentDuration(subagent, active);
+	const workflowSummary =
+		subagent.kind === "workflow"
+			? childSubagents.length > 0
+				? summarizeWorkflowChildren(childSubagents)
+				: active
+					? "Waiting for agents"
+					: undefined
+			: undefined;
 
 	useEffect(() => {
-		setOpenOverride(subagentOpenOverrides.get(stateKey) ?? null);
-	}, [stateKey]);
+		setOpenOverride(
+			subagentOpenOverrides.get(stateKey) ?? (initiallyOpen ? true : null),
+		);
+	}, [stateKey, initiallyOpen]);
+
+	useEffect(() => {
+		if (!stopRequestedKey) return;
+		const timeout = window.setTimeout(() => setStopRequestedKey(null), 10_000);
+		return () => window.clearTimeout(timeout);
+	}, [stopRequestedKey]);
 
 	function toggleOpen() {
 		const next = !open;
@@ -245,15 +443,56 @@ export function SubagentToolBlock({
 		setOpenOverride(next);
 	}
 
+	function stopWorkflow() {
+		if (!onStop || stopRequested) return;
+		setStopRequestedKey(currentStopKey);
+		onStop();
+	}
+
 	return (
-		<div className="my-0.5 min-w-0 max-w-full overflow-hidden">
+		<div
+			className={`my-0.5 min-w-0 max-w-full overflow-hidden ${
+				nested ? "ml-3 border-l border-primary/10" : ""
+			}`}
+		>
 			<SubagentHeader
 				subagent={subagent}
 				open={open}
 				durationMs={durationMs}
 				onToggle={toggleOpen}
+				summary={workflowSummary}
 			/>
-			{open && <SubagentDetails subagent={subagent} durationMs={durationMs} />}
+			{open && (
+				<>
+					<SubagentDetails subagent={subagent} durationMs={durationMs} />
+					{subagent.kind === "workflow" && (
+						<WorkflowActions
+							subagent={subagent}
+							stopRequested={stopRequested}
+							onStop={onStop ? stopWorkflow : undefined}
+							onResume={onResume}
+							onRerun={onRerun}
+							onSave={onSave}
+						/>
+					)}
+					{childSubagents.length > 0 && (
+						<ul
+							aria-label="Workflow agents"
+							className="mx-3 mb-2 max-h-80 list-none overflow-y-auto overscroll-contain border border-[var(--tool-panel-border)] bg-[var(--tool-panel)] py-1 sm:max-h-96"
+						>
+							{childSubagents.map((child) => (
+								<li key={`${child.provider}:${child.agentId}`}>
+									<SubagentToolBlock
+										subagent={child}
+										nested
+										stateScope={stateScope}
+									/>
+								</li>
+							))}
+						</ul>
+					)}
+				</>
+			)}
 		</div>
 	);
 }

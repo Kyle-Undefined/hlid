@@ -2,6 +2,9 @@
  * ClaudeProvider unit tests — SDK event mapping, canUseTool pass-through,
  * session resume, retry-on-failure, and cancel.
  */
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@anthropic-ai/claude-agent-sdk", () => ({
@@ -63,7 +66,12 @@ import {
 import { resolveClaudeExecutable } from "../lib/claudePath";
 import { parseWslUnc } from "../lib/paths";
 import { runBoundedProcess } from "../lib/process";
-import type { AgentEvent, AgentQueryParams, CanUseTool } from "./agentProvider";
+import type {
+	AgentEvent,
+	AgentQueryParams,
+	CanUseTool,
+	SubagentSnapshot,
+} from "./agentProvider";
 import { createClaudeHistorySessionStore } from "./claudeHistorySessionStore";
 import {
 	ClaudeProvider,
@@ -109,8 +117,11 @@ function baseParams(
 	};
 }
 
-async function collectEvents(params: AgentQueryParams): Promise<AgentEvent[]> {
-	const provider = new ClaudeProvider();
+async function collectEvents(
+	params: AgentQueryParams,
+	options: NonNullable<ConstructorParameters<typeof ClaudeProvider>[0]> = {},
+): Promise<AgentEvent[]> {
+	const provider = new ClaudeProvider(options);
 	const events: AgentEvent[] = [];
 	for await (const e of provider.query(params)) {
 		events.push(e);
@@ -344,6 +355,1042 @@ describe("ClaudeProvider — event mapping", () => {
 		});
 	});
 
+	it("tracks a native workflow, retains resume metadata, and links its child agents", async () => {
+		const probes = [
+			{
+				type: "workflow_agent",
+				agentId: "probe-vault",
+				label: "probe:vault-info",
+				phaseTitle: "Probe",
+				model: "claude-opus-5",
+				state: "running",
+				startedAt: 1_000,
+			},
+			{
+				type: "workflow_agent",
+				agentId: "probe-search",
+				label: "probe:search",
+				phaseTitle: "Probe",
+				state: "running",
+				startedAt: 1_001,
+			},
+			{
+				type: "workflow_agent",
+				agentId: "probe-daily",
+				label: "probe:daily-note",
+				phaseTitle: "Probe",
+				state: "running",
+				startedAt: 1_002,
+			},
+		];
+		let stateReads = 0;
+		const workflowProgressReader = vi.fn(
+			async (_runtimeCwd: string, providerPath: string) => {
+				if (providerPath === "/tmp/workflow-result") {
+					return {
+						workflowProgress: [
+							...probes.map((probe) => ({
+								...probe,
+								state: "done",
+								lastProgressAt: 2_000,
+								durationMs: 1_000,
+							})),
+							{
+								type: "workflow_agent",
+								agentId: "synthesize",
+								label: "synthesize",
+								phaseTitle: "Synthesize",
+								state: "done",
+								startedAt: 2_000,
+								lastProgressAt: 2_500,
+								durationMs: 500,
+								tokens: 300,
+							},
+						],
+					};
+				}
+				if (providerPath !== "/tmp/workflow/workflow-run-1.json") {
+					return null;
+				}
+				stateReads++;
+				return {
+					workflowProgress:
+						stateReads === 1
+							? probes
+							: [
+									...probes.map((probe) => ({
+										...probe,
+										state: "done",
+										lastProgressAt: 2_000,
+										durationMs: 1_000,
+										toolCalls: 2,
+									})),
+									{
+										type: "workflow_agent",
+										agentId: "synthesize",
+										label: "synthesize",
+										phaseTitle: "Synthesize",
+										state: "running",
+										startedAt: 2_000,
+										lastToolName: "Read",
+										lastToolSummary: "Combining probe results",
+									},
+								],
+				};
+			},
+		);
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "assistant",
+					parent_tool_use_id: null,
+					message: {
+						content: [
+							{
+								type: "tool_use",
+								id: "workflow-tool-1",
+								name: "Workflow",
+								input: { name: "repository-audit" },
+							},
+						],
+						usage: { input_tokens: 10, output_tokens: 5 },
+					},
+				},
+				{
+					type: "system",
+					subtype: "task_started",
+					task_id: "workflow-task-1",
+					tool_use_id: "workflow-tool-1",
+					task_type: "local_workflow",
+					workflow_name: "repository-audit",
+					description: "Auditing repository",
+					session_id: "sid",
+					uuid: "u1",
+				},
+				{
+					type: "user",
+					tool_use_result: {
+						status: "async_launched",
+						taskId: "workflow-task-1",
+						taskType: "local_workflow",
+						workflowName: "repository-audit",
+						runId: "workflow-run-1",
+						transcriptDir: "/tmp/workflow/transcripts",
+						scriptPath:
+							"/tmp/workflow/scripts/repository-audit-workflow-run-1.js",
+					},
+					message: {
+						content: [
+							{
+								type: "tool_result",
+								tool_use_id: "workflow-tool-1",
+								content: "Workflow launched in the background.",
+							},
+						],
+					},
+				},
+				{
+					type: "system",
+					subtype: "task_progress",
+					task_id: "workflow-task-1",
+					description: "Synthesize: combining results",
+					usage: { total_tokens: 500, tool_uses: 6, duration_ms: 1200 },
+					session_id: "sid",
+					uuid: "u2",
+				},
+				{
+					type: "system",
+					subtype: "task_notification",
+					task_id: "workflow-task-1",
+					status: "completed",
+					output_file: "/tmp/workflow-result",
+					summary: "Repository audit complete",
+					usage: { total_tokens: 700, tool_uses: 3, duration_ms: 1500 },
+					session_id: "sid",
+					uuid: "u4",
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 10, output_tokens: 5 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams(), {
+			workflowProgressReader,
+		});
+		expect(
+			events.find(
+				(event) =>
+					event.type === "tool_update" &&
+					event.toolId === "workflow-tool-1" &&
+					event.subagent.workflowRunId === "workflow-run-1",
+			),
+		).toMatchObject({
+			type: "tool_update",
+			toolId: "workflow-tool-1",
+			subagent: {
+				kind: "workflow",
+				activityType: "local_workflow",
+				name: "repository-audit",
+				workflowRunId: "workflow-run-1",
+				workflowTranscriptDir: "/tmp/workflow/transcripts",
+				workflowScriptPath:
+					"/tmp/workflow/scripts/repository-audit-workflow-run-1.js",
+			},
+		});
+		const childStarts = events.filter(
+			(event) =>
+				event.type === "tool_start" &&
+				event.subagent?.parentActivityId === "workflow-task-1",
+		);
+		expect(
+			childStarts.map((event) =>
+				event.type === "tool_start" ? event.subagent?.name : undefined,
+			),
+		).toEqual([
+			"probe:vault-info",
+			"probe:search",
+			"probe:daily-note",
+			"synthesize",
+		]);
+		expect(childStarts[0]).toMatchObject({
+			type: "tool_start",
+			name: "Subagent",
+			subagent: {
+				kind: "agent",
+				activityType: "workflow_agent",
+				parentActivityId: "workflow-task-1",
+				status: "running",
+			},
+		});
+		expect(
+			events.find(
+				(event) =>
+					event.type === "tool_update" &&
+					event.subagent.agentId === "synthesize" &&
+					event.subagent.status === "completed",
+			),
+		).toMatchObject({
+			subagent: {
+				parentActivityId: "workflow-task-1",
+				usage: { totalTokens: 300, durationMs: 500 },
+			},
+		});
+		expect(
+			events.find(
+				(event) =>
+					event.type === "tool_update" &&
+					event.toolId === "workflow-tool-1" &&
+					event.subagent.status === "completed",
+			),
+		).toMatchObject({
+			subagent: {
+				currentStep: "Repository audit complete",
+			},
+		});
+		expect(workflowProgressReader).toHaveBeenCalledWith(
+			"/tmp/test",
+			"/tmp/workflow/workflow-run-1.json",
+		);
+		expect(workflowProgressReader).not.toHaveBeenCalledWith(
+			"/tmp/test",
+			"/tmp/subagents/workflows/workflow-run-1/journal.jsonl",
+		);
+		expect(workflowProgressReader).toHaveBeenCalledWith(
+			"/tmp/test",
+			"/tmp/workflow-result",
+		);
+	});
+
+	it("reads native workflow progress from the provider-owned state file", async () => {
+		const workflowDir = await mkdtemp(
+			join(tmpdir(), "hlid-claude-workflow-progress-"),
+		);
+		try {
+			const scriptsDir = join(workflowDir, "scripts");
+			const runId = "workflow-run-native";
+			const scriptPath = join(scriptsDir, `smoke-${runId}.js`);
+			const statePath = join(workflowDir, `${runId}.json`);
+			await mkdir(scriptsDir);
+			await writeFile(
+				statePath,
+				JSON.stringify({
+					workflowProgress: [
+						{ type: "workflow_phase", index: 1, title: "Probe" },
+						{
+							type: "workflow_agent",
+							agentId: "native-agent-1",
+							label: "probe:native",
+							phaseTitle: "Probe",
+							model: "claude-opus-5",
+							effort: "high",
+							attempt: 2,
+							state: "done",
+							startedAt: 1_000,
+							lastProgressAt: 1_250,
+							durationMs: 250,
+							tokens: 42,
+							toolCalls: 2,
+							lastToolName: "StructuredOutput",
+							lastToolSummary: "Summarizing native probe",
+							promptPreview: "Inspect native workflow metadata",
+							resultPreview: '{"summary":"Native probe complete"}',
+						},
+					],
+				}),
+				"utf8",
+			);
+			vi.mocked(query).mockReturnValueOnce(
+				sdkGen([
+					{
+						type: "assistant",
+						parent_tool_use_id: null,
+						message: {
+							content: [
+								{
+									type: "tool_use",
+									id: "workflow-tool-native",
+									name: "Workflow",
+									input: { name: "native-smoke" },
+								},
+							],
+							usage: { input_tokens: 1, output_tokens: 1 },
+						},
+					},
+					{
+						type: "system",
+						subtype: "task_started",
+						task_id: "workflow-task-native",
+						tool_use_id: "workflow-tool-native",
+						task_type: "local_workflow",
+						description: "Running native smoke",
+					},
+					{
+						type: "user",
+						tool_use_result: {
+							status: "async_launched",
+							taskId: "workflow-task-native",
+							taskType: "local_workflow",
+							runId,
+							scriptPath,
+						},
+						message: {
+							content: [
+								{
+									type: "tool_result",
+									tool_use_id: "workflow-tool-native",
+									content: "Workflow launched in background.",
+								},
+							],
+						},
+					},
+					{
+						type: "system",
+						subtype: "task_notification",
+						task_id: "workflow-task-native",
+						status: "completed",
+						output_file: statePath,
+						summary: "Native smoke complete",
+					},
+					{
+						type: "result",
+						subtype: "success",
+						total_cost_usd: 0,
+						num_turns: 1,
+						duration_ms: 1,
+						usage: { input_tokens: 1, output_tokens: 1 },
+					},
+				]),
+			);
+
+			const child = (await collectEvents(baseParams())).find(
+				(event) =>
+					event.type === "tool_start" &&
+					event.subagent?.agentId === "native-agent-1",
+			);
+			expect(child).toMatchObject({
+				type: "tool_start",
+				subagent: {
+					name: "probe:native",
+					parentActivityId: "workflow-task-native",
+					phase: "Probe",
+					model: "claude-opus-5",
+					effort: "high",
+					attempt: 2,
+					status: "completed",
+					currentStep: "Summarizing native probe",
+					lastTool: "StructuredOutput",
+					prompt: "Inspect native workflow metadata",
+					resultPreview: '{"summary":"Native probe complete"}',
+					usage: { totalTokens: 42, toolUses: 2, durationMs: 250 },
+				},
+			});
+		} finally {
+			await rm(workflowDir, { recursive: true, force: true });
+		}
+	});
+
+	it("discovers live workflow children from Claude's append-only journal", async () => {
+		const sessionDir = await mkdtemp(
+			join(tmpdir(), "hlid-claude-workflow-journal-"),
+		);
+		try {
+			const runId = "workflow-run-live-journal";
+			const scriptsDir = join(sessionDir, "workflows", "scripts");
+			const scriptPath = join(scriptsDir, `smoke-${runId}.js`);
+			const journalDir = join(sessionDir, "subagents", "workflows", runId);
+			const journalPath = join(journalDir, "journal.jsonl");
+			const statePath = join(sessionDir, "workflows", `${runId}.json`);
+			await mkdir(scriptsDir, { recursive: true });
+			await mkdir(journalDir, { recursive: true });
+			await writeFile(
+				statePath,
+				JSON.stringify({
+					taskId: "stopped-workflow-task",
+					workflowProgress: [
+						{
+							type: "workflow_agent",
+							agentId: "stale-state-agent",
+							state: "running",
+						},
+					],
+				}),
+				"utf8",
+			);
+
+			vi.mocked(query).mockReturnValueOnce(
+				sdkStream(async function* () {
+					yield {
+						type: "assistant",
+						parent_tool_use_id: null,
+						message: {
+							content: [
+								{
+									type: "tool_use",
+									id: "workflow-tool-journal",
+									name: "Workflow",
+									input: { name: "journal-smoke" },
+								},
+							],
+							usage: { input_tokens: 1, output_tokens: 1 },
+						},
+					};
+					yield {
+						type: "system",
+						subtype: "task_started",
+						task_id: "workflow-task-journal",
+						tool_use_id: "workflow-tool-journal",
+						task_type: "local_workflow",
+						description: "Running journal smoke",
+					};
+					await writeFile(
+						journalPath,
+						[
+							JSON.stringify({
+								type: "started",
+								key: "logical-agent-1",
+								agentId: "stopped-attempt-agent",
+							}),
+							JSON.stringify({
+								type: "started",
+								key: "logical-agent-1",
+								agentId: "journal-agent-1",
+								phaseTitle: "Probe",
+								model: "claude-opus-5",
+								effort: "high",
+								attempt: 2,
+								lastToolName: "Read",
+								lastToolSummary: "Inspecting workflow metadata",
+								promptPreview: "Inspect the live workflow journal",
+								tokens: 12,
+								toolCalls: 1,
+							}),
+							"",
+						].join("\n"),
+						"utf8",
+					);
+					yield {
+						type: "user",
+						tool_use_result: {
+							status: "async_launched",
+							taskId: "workflow-task-journal",
+							taskType: "local_workflow",
+							runId,
+							scriptPath,
+						},
+						message: {
+							content: [
+								{
+									type: "tool_result",
+									tool_use_id: "workflow-tool-journal",
+									content: "Workflow launched in background.",
+								},
+							],
+						},
+					};
+					await writeFile(
+						journalPath,
+						[
+							JSON.stringify({
+								type: "started",
+								key: "logical-agent-1",
+								agentId: "stopped-attempt-agent",
+							}),
+							JSON.stringify({
+								type: "started",
+								key: "logical-agent-1",
+								agentId: "journal-agent-1",
+							}),
+							JSON.stringify({
+								type: "result",
+								key: "logical-agent-1",
+								agentId: "journal-agent-1",
+								result: "done",
+								resultPreview: '{"summary":"Journal probe complete"}',
+							}),
+							"",
+						].join("\n"),
+						"utf8",
+					);
+					yield {
+						type: "system",
+						subtype: "task_progress",
+						task_id: "workflow-task-journal",
+						description: "Finishing journal smoke",
+						usage: { total_tokens: 1, tool_uses: 1, duration_ms: 10 },
+					};
+					yield {
+						type: "system",
+						subtype: "task_notification",
+						task_id: "workflow-task-journal",
+						status: "completed",
+						output_file: statePath,
+						summary: "Journal smoke complete",
+					};
+					yield {
+						type: "result",
+						subtype: "success",
+						total_cost_usd: 0,
+						num_turns: 1,
+						duration_ms: 1,
+						usage: { input_tokens: 1, output_tokens: 1 },
+					};
+				}),
+			);
+
+			const events = await collectEvents(baseParams());
+			const childStart = events.find(
+				(event) =>
+					event.type === "tool_start" &&
+					event.subagent?.agentId === "journal-agent-1",
+			);
+			expect(childStart).toMatchObject({
+				type: "tool_start",
+				subagent: {
+					name: "Workflow agent 1",
+					parentActivityId: "workflow-task-journal",
+					status: "running",
+				},
+			});
+			expect(
+				events.some(
+					(event) =>
+						(event.type === "tool_start" || event.type === "tool_update") &&
+						["stopped-attempt-agent", "stale-state-agent"].includes(
+							event.subagent?.agentId ?? "",
+						),
+				),
+			).toBe(false);
+			expect(
+				events.find(
+					(event) =>
+						event.type === "tool_update" &&
+						event.subagent.agentId === "journal-agent-1" &&
+						event.subagent.status === "completed" &&
+						event.subagent.currentStep === "Completed",
+				),
+			).toMatchObject({
+				subagent: {
+					phase: "Probe",
+					model: "claude-opus-5",
+					effort: "high",
+					attempt: 2,
+					lastTool: "Read",
+					prompt: "Inspect the live workflow journal",
+					resultPreview: '{"summary":"Journal probe complete"}',
+					usage: { totalTokens: 12, toolUses: 1 },
+				},
+			});
+		} finally {
+			await rm(sessionDir, { recursive: true, force: true });
+		}
+	});
+
+	it("refreshes live workflow children while the Claude SDK stream is quiet", async () => {
+		const runId = "workflow-run-background-refresh";
+		const statePath = `/tmp/workflows/${runId}.json`;
+		let stateReads = 0;
+		let resolveProgressRead: (() => void) | undefined;
+		const progressRead = new Promise<void>((resolve) => {
+			resolveProgressRead = resolve;
+		});
+		let releaseWorkflow: (() => void) | undefined;
+		const workflowReleased = new Promise<void>((resolve) => {
+			releaseWorkflow = resolve;
+		});
+		const workflowProgressReader = vi.fn(
+			async (_runtimeCwd: string, providerPath: string) => {
+				if (providerPath !== statePath) return null;
+				stateReads++;
+				if (stateReads === 1) return null;
+				resolveProgressRead?.();
+				return {
+					workflowProgress: [
+						{
+							type: "workflow_agent",
+							agentId: "background-agent",
+							label: "background probe",
+							phaseTitle: "Probe",
+							model: "claude-opus-5",
+							state: "running",
+							lastToolName: "Read",
+							lastToolSummary: "Inspecting in the background",
+							promptPreview: "Inspect live workflow progress",
+						},
+					],
+				};
+			},
+		);
+		vi.mocked(query).mockReturnValueOnce(
+			sdkStream(async function* () {
+				yield {
+					type: "assistant",
+					parent_tool_use_id: null,
+					message: {
+						content: [
+							{
+								type: "tool_use",
+								id: "workflow-tool-background-refresh",
+								name: "Workflow",
+								input: { name: "background-refresh" },
+							},
+						],
+						usage: { input_tokens: 1, output_tokens: 1 },
+					},
+				};
+				yield {
+					type: "system",
+					subtype: "task_started",
+					task_id: "workflow-task-background-refresh",
+					tool_use_id: "workflow-tool-background-refresh",
+					task_type: "local_workflow",
+					description: "Running background refresh",
+				};
+				yield {
+					type: "user",
+					tool_use_result: {
+						status: "async_launched",
+						taskId: "workflow-task-background-refresh",
+						taskType: "local_workflow",
+						runId,
+						scriptPath: `/tmp/workflows/scripts/smoke-${runId}.js`,
+					},
+					message: {
+						content: [
+							{
+								type: "tool_result",
+								tool_use_id: "workflow-tool-background-refresh",
+								content: "Workflow launched in background.",
+							},
+						],
+					},
+				};
+				yield {
+					type: "result",
+					subtype: "success",
+					terminal_reason: "background_requested",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 1,
+					usage: { input_tokens: 1, output_tokens: 1 },
+				};
+				await workflowReleased;
+				yield {
+					type: "system",
+					subtype: "task_notification",
+					task_id: "workflow-task-background-refresh",
+					status: "stopped",
+					summary: "Stopped after background refresh",
+				};
+			}),
+		);
+
+		const eventsPromise = collectEvents(baseParams(), {
+			workflowProgressReader,
+		});
+		await new Promise<void>((resolve, reject) => {
+			const timer = setTimeout(
+				() => reject(new Error("workflow progress was not refreshed")),
+				4_000,
+			);
+			progressRead.then(
+				() => {
+					clearTimeout(timer);
+					resolve();
+				},
+				(error) => {
+					clearTimeout(timer);
+					reject(error);
+				},
+			);
+		});
+		releaseWorkflow?.();
+		const events = await eventsPromise;
+
+		expect(stateReads).toBeGreaterThanOrEqual(2);
+		expect(
+			events.find(
+				(event) =>
+					event.type === "tool_start" &&
+					event.subagent?.agentId === "background-agent" &&
+					event.subagent.status === "running",
+			),
+		).toMatchObject({
+			subagent: {
+				parentActivityId: "workflow-task-background-refresh",
+				model: "claude-opus-5",
+				currentStep: "Inspecting in the background",
+				lastTool: "Read",
+				prompt: "Inspect live workflow progress",
+			},
+		});
+	});
+
+	it("interrupts active workflow children as soon as Claude confirms a stop", async () => {
+		const staleProgress = {
+			workflowProgress: [
+				{
+					type: "workflow_agent",
+					agentId: "already-done",
+					label: "already done",
+					state: "done",
+					startedAt: 1_000,
+					lastProgressAt: 1_100,
+				},
+				{
+					type: "workflow_agent",
+					agentId: "still-running",
+					label: "still running",
+					state: "running",
+					startedAt: 1_000,
+				},
+				{
+					type: "workflow_agent",
+					agentId: "still-pending",
+					label: "still pending",
+					state: "pending",
+					queuedAt: 1_000,
+				},
+			],
+		};
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "assistant",
+					parent_tool_use_id: null,
+					message: {
+						content: [
+							{
+								type: "tool_use",
+								id: "workflow-tool-stop",
+								name: "Workflow",
+								input: { name: "stop-smoke" },
+							},
+						],
+						usage: { input_tokens: 1, output_tokens: 1 },
+					},
+				},
+				{
+					type: "system",
+					subtype: "task_started",
+					task_id: "workflow-task-stop",
+					tool_use_id: "workflow-tool-stop",
+					task_type: "local_workflow",
+					description: "Running stop smoke",
+				},
+				{
+					type: "user",
+					tool_use_result: {
+						status: "async_launched",
+						taskId: "workflow-task-stop",
+						taskType: "local_workflow",
+						runId: "workflow-run-stop",
+						scriptPath: "/tmp/workflow/scripts/stop-smoke-workflow-run-stop.js",
+					},
+					message: {
+						content: [
+							{
+								type: "tool_result",
+								tool_use_id: "workflow-tool-stop",
+								content: "Workflow launched in background.",
+							},
+						],
+					},
+				},
+				{
+					type: "system",
+					subtype: "task_notification",
+					task_id: "workflow-task-stop",
+					status: "stopped",
+					summary: "Stopped by user",
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 1,
+					usage: { input_tokens: 1, output_tokens: 1 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams(), {
+			// Claude's final state snapshot can still say "running" for children
+			// even though its native stop has already interrupted their transcripts.
+			workflowProgressReader: async () => staleProgress,
+		});
+		const finalChildren = new Map<string, SubagentSnapshot>();
+		for (const event of events) {
+			if (
+				(event.type === "tool_start" || event.type === "tool_update") &&
+				event.subagent?.parentActivityId === "workflow-task-stop"
+			) {
+				finalChildren.set(event.subagent.agentId, event.subagent);
+			}
+		}
+		expect(finalChildren.get("already-done")?.status).toBe("completed");
+		expect(finalChildren.get("still-running")).toMatchObject({
+			status: "interrupted",
+			currentStep: "Workflow stopped",
+			endedAtMs: expect.any(Number),
+		});
+		expect(finalChildren.get("still-pending")).toMatchObject({
+			status: "interrupted",
+			currentStep: "Workflow stopped",
+			endedAtMs: expect.any(Number),
+		});
+		expect(
+			events.find(
+				(event) =>
+					event.type === "tool_update" &&
+					event.toolId === "workflow-tool-stop" &&
+					event.subagent.status === "interrupted",
+			),
+		).toMatchObject({
+			subagent: {
+				workflowStopConfirmed: true,
+				currentStep: "Stopped by user",
+			},
+		});
+	});
+
+	it("keeps a root Agent tool flat while a workflow is running", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "assistant",
+					parent_tool_use_id: null,
+					message: {
+						content: [
+							{
+								type: "tool_use",
+								id: "workflow-tool",
+								name: "Workflow",
+								input: { name: "audit" },
+							},
+						],
+						usage: { input_tokens: 1, output_tokens: 1 },
+					},
+				},
+				{
+					type: "system",
+					subtype: "task_started",
+					task_id: "workflow-task",
+					tool_use_id: "workflow-tool",
+					task_type: "local_workflow",
+					description: "Running workflow",
+					session_id: "sid",
+					uuid: "u1",
+				},
+				{
+					type: "assistant",
+					parent_tool_use_id: null,
+					message: {
+						content: [
+							{
+								type: "tool_use",
+								id: "root-agent-tool",
+								name: "Agent",
+								input: { prompt: "Independent work" },
+							},
+						],
+						usage: { input_tokens: 1, output_tokens: 1 },
+					},
+				},
+				{
+					type: "system",
+					subtype: "task_started",
+					task_id: "root-agent-task",
+					tool_use_id: "root-agent-tool",
+					task_type: "subagent",
+					description: "Independent work",
+					session_id: "sid",
+					uuid: "u2",
+				},
+				{
+					type: "system",
+					subtype: "task_notification",
+					task_id: "root-agent-task",
+					status: "completed",
+					output_file: "/tmp/root-result",
+					summary: "Independent work complete",
+					session_id: "sid",
+					uuid: "u3",
+				},
+				{
+					type: "system",
+					subtype: "task_notification",
+					task_id: "workflow-task",
+					status: "completed",
+					output_file: "/tmp/workflow-result",
+					summary: "Workflow complete",
+					session_id: "sid",
+					uuid: "u4",
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 1,
+					usage: { input_tokens: 1, output_tokens: 1 },
+				},
+			]),
+		);
+
+		const update = (await collectEvents(baseParams())).find(
+			(event) =>
+				event.type === "tool_update" &&
+				event.subagent.agentId === "root-agent-task" &&
+				event.subagent.status === "running",
+		);
+		expect(update).toMatchObject({
+			subagent: {
+				kind: "agent",
+				agentId: "root-agent-task",
+			},
+		});
+		expect(
+			update?.type === "tool_update"
+				? update.subagent.parentActivityId
+				: undefined,
+		).toBeUndefined();
+	});
+
+	it("keeps an unparented child flat when workflow lineage is ambiguous", async () => {
+		const workflowEvents = ["one", "two"].flatMap((suffix) => [
+			{
+				type: "assistant",
+				parent_tool_use_id: null,
+				message: {
+					content: [
+						{
+							type: "tool_use",
+							id: `workflow-tool-${suffix}`,
+							name: "Workflow",
+							input: { name: `workflow-${suffix}` },
+						},
+					],
+					usage: { input_tokens: 1, output_tokens: 1 },
+				},
+			},
+			{
+				type: "system",
+				subtype: "task_started",
+				task_id: `workflow-task-${suffix}`,
+				tool_use_id: `workflow-tool-${suffix}`,
+				task_type: "local_workflow",
+				description: `Running workflow ${suffix}`,
+				session_id: "sid",
+				uuid: `workflow-${suffix}`,
+			},
+		]);
+		const completions = ["one", "two"].map((suffix) => ({
+			type: "system",
+			subtype: "task_notification",
+			task_id: `workflow-task-${suffix}`,
+			status: "completed",
+			output_file: `/tmp/workflow-${suffix}`,
+			summary: `Workflow ${suffix} complete`,
+			session_id: "sid",
+			uuid: `done-${suffix}`,
+		}));
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				...workflowEvents,
+				{
+					type: "system",
+					subtype: "task_started",
+					task_id: "ambiguous-child",
+					task_type: "subagent",
+					description: "Unparented child",
+					session_id: "sid",
+					uuid: "child",
+				},
+				...completions,
+				{
+					type: "system",
+					subtype: "task_notification",
+					task_id: "ambiguous-child",
+					status: "completed",
+					output_file: "/tmp/child",
+					summary: "Child complete",
+					session_id: "sid",
+					uuid: "child-done",
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 1, output_tokens: 1 },
+				},
+			]),
+		);
+
+		const childStart = (await collectEvents(baseParams())).find(
+			(event) =>
+				event.type === "tool_start" &&
+				event.subagent?.agentId === "ambiguous-child",
+		);
+		expect(childStart).toMatchObject({
+			type: "tool_start",
+			subagent: { kind: "agent", status: "running" },
+		});
+		expect(
+			childStart?.type === "tool_start"
+				? childStart.subagent?.parentActivityId
+				: undefined,
+		).toBeUndefined();
+	});
+
 	it("maps task_updated status, detail, error, and completion metadata", async () => {
 		const endedAtMs = Date.now() - 1_000;
 		vi.mocked(query).mockReturnValueOnce(
@@ -410,7 +1457,7 @@ describe("ClaudeProvider — event mapping", () => {
 			"paused",
 			"running",
 			"completed",
-			"failed",
+			"interrupted",
 		]);
 		expect(updates[4]).toMatchObject({
 			subagent: {
@@ -421,7 +1468,7 @@ describe("ClaudeProvider — event mapping", () => {
 		});
 		expect(updates[5]).toMatchObject({
 			subagent: {
-				status: "failed",
+				status: "interrupted",
 				currentStep: "Stopped by operator",
 				endedAtMs: expect.any(Number),
 			},
@@ -863,6 +1910,413 @@ describe("ClaudeProvider — event mapping", () => {
 				cacheCreationTokens: 7,
 			},
 		});
+	});
+
+	it("keeps a workflow notification continuation inside one visible turn", async () => {
+		vi.useFakeTimers();
+		try {
+			let releaseContinuation = () => {};
+			let signalWaiting = () => {};
+			const continuation = new Promise<void>((resolve) => {
+				releaseContinuation = resolve;
+			});
+			const waiting = new Promise<void>((resolve) => {
+				signalWaiting = resolve;
+			});
+			vi.mocked(query).mockReturnValueOnce(
+				sdkStream(async function* () {
+					yield {
+						type: "assistant",
+						parent_tool_use_id: null,
+						message: {
+							id: "msg-workflow-root",
+							model: "claude-opus-5",
+							content: [
+								{
+									type: "tool_use",
+									id: "workflow-tool-live",
+									name: "Workflow",
+									input: { name: "live-smoke" },
+								},
+							],
+							usage: { input_tokens: 10, output_tokens: 5 },
+						},
+					};
+					yield {
+						type: "system",
+						subtype: "task_started",
+						task_id: "workflow-task-live",
+						tool_use_id: "workflow-tool-live",
+						task_type: "local_workflow",
+						workflow_name: "live-smoke",
+						description: "Running workflow",
+					};
+					yield {
+						type: "user",
+						tool_use_result: {
+							status: "async_launched",
+							taskId: "workflow-task-live",
+							taskType: "local_workflow",
+							runId: "workflow-run-live",
+							scriptPath:
+								"/tmp/workflow/scripts/live-smoke-workflow-run-live.js",
+						},
+						message: {
+							content: [
+								{
+									type: "tool_result",
+									tool_use_id: "workflow-tool-live",
+									content: "Workflow launched in background.",
+								},
+							],
+						},
+					};
+					yield {
+						type: "assistant",
+						parent_tool_use_id: null,
+						message: {
+							id: "msg-workflow-root",
+							model: "claude-opus-5",
+							content: [{ type: "text", text: "Ping you when done." }],
+							usage: { input_tokens: 10, output_tokens: 5 },
+						},
+					};
+					yield {
+						type: "result",
+						subtype: "success",
+						terminal_reason: "background_requested",
+						total_cost_usd: 0.1,
+						num_turns: 1,
+						duration_ms: 100,
+						usage: { input_tokens: 10, output_tokens: 5 },
+					};
+					yield {
+						type: "system",
+						subtype: "task_notification",
+						task_id: "workflow-task-live",
+						status: "completed",
+						output_file: "/tmp/workflow-result",
+						summary: "Workflow completed",
+					};
+					yield {
+						type: "user",
+						message: {
+							role: "user",
+							content:
+								"<task-notification><task-id>workflow-task-live</task-id><status>completed</status></task-notification>",
+						},
+					};
+					signalWaiting();
+					await continuation;
+					yield {
+						type: "assistant",
+						parent_tool_use_id: null,
+						message: {
+							id: "msg-workflow-completion",
+							model: "claude-opus-5",
+							content: [
+								{ type: "text", text: "Workflow done. 4 agents, 0 errors." },
+							],
+							usage: { input_tokens: 20, output_tokens: 8 },
+						},
+					};
+					yield {
+						type: "result",
+						subtype: "success",
+						terminal_reason: "completed",
+						total_cost_usd: 0.2,
+						num_turns: 1,
+						duration_ms: 200,
+						usage: { input_tokens: 20, output_tokens: 8 },
+					};
+				}),
+			);
+
+			const collected = collectEvents(baseParams(), {
+				workflowProgressReader: async () => null,
+			});
+			await waiting;
+			// The live failure emitted Hlid done after 250ms, before Claude's
+			// notification-driven assistant response began.
+			await vi.advanceTimersByTimeAsync(1_000);
+			releaseContinuation();
+			const events = await collected;
+			const doneEvents = events.filter((event) => event.type === "done");
+			expect(doneEvents).toHaveLength(1);
+			expect(doneEvents[0]).toMatchObject({
+				turns: 2,
+				durationMs: 300,
+				usage: { inputTokens: 30, outputTokens: 13 },
+			});
+			expect(
+				doneEvents[0]?.type === "done"
+					? doneEvents[0].estimatedCost
+					: undefined,
+			).toBeCloseTo(0.3);
+			const completionTextIndex = events.findIndex(
+				(event) =>
+					event.type === "text_delta" &&
+					event.text.includes("Workflow done. 4 agents"),
+			);
+			const doneIndex = events.findIndex((event) => event.type === "done");
+			expect(completionTextIndex).toBeGreaterThan(-1);
+			expect(doneIndex).toBeGreaterThan(completionTextIndex);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("closes a stopped workflow turn without waiting for a completion continuation", async () => {
+		vi.useFakeTimers();
+		let releaseStream = () => {};
+		try {
+			let signalWaiting = () => {};
+			const waiting = new Promise<void>((resolve) => {
+				signalWaiting = resolve;
+			});
+			const held = new Promise<void>((resolve) => {
+				releaseStream = resolve;
+			});
+			vi.mocked(query).mockReturnValueOnce(
+				sdkStream(async function* () {
+					yield {
+						type: "assistant",
+						parent_tool_use_id: null,
+						message: {
+							id: "msg-workflow-stop-root",
+							model: "claude-opus-5",
+							content: [
+								{
+									type: "tool_use",
+									id: "workflow-tool-stop-turn",
+									name: "Workflow",
+									input: { name: "stop-turn-smoke" },
+								},
+							],
+							usage: { input_tokens: 4, output_tokens: 2 },
+						},
+					};
+					yield {
+						type: "system",
+						subtype: "task_started",
+						task_id: "workflow-task-stop-turn",
+						tool_use_id: "workflow-tool-stop-turn",
+						task_type: "local_workflow",
+						workflow_name: "stop-turn-smoke",
+						description: "Running stop-turn smoke",
+					};
+					yield {
+						type: "user",
+						tool_use_result: {
+							status: "async_launched",
+							taskId: "workflow-task-stop-turn",
+							taskType: "local_workflow",
+							runId: "workflow-run-stop-turn",
+							scriptPath:
+								"/tmp/workflow/scripts/stop-turn-workflow-run-stop-turn.js",
+						},
+						message: {
+							content: [
+								{
+									type: "tool_result",
+									tool_use_id: "workflow-tool-stop-turn",
+									content: "Workflow launched in background.",
+								},
+							],
+						},
+					};
+					yield {
+						type: "assistant",
+						parent_tool_use_id: null,
+						message: {
+							id: "msg-workflow-stop-root",
+							model: "claude-opus-5",
+							content: [{ type: "text", text: "Workflow is running." }],
+							usage: { input_tokens: 4, output_tokens: 2 },
+						},
+					};
+					yield {
+						type: "result",
+						subtype: "success",
+						terminal_reason: "background_requested",
+						total_cost_usd: 0,
+						num_turns: 1,
+						duration_ms: 10,
+						usage: { input_tokens: 4, output_tokens: 2 },
+					};
+					yield {
+						type: "system",
+						subtype: "task_notification",
+						task_id: "workflow-task-stop-turn",
+						status: "stopped",
+						summary: "Stopped by user",
+					};
+					signalWaiting();
+					await held;
+				}),
+			);
+
+			const session = new ClaudeProvider({
+				workflowProgressReader: async () => null,
+			}).query(baseParams());
+			const iterator = session[Symbol.asyncIterator]();
+			let doneEvent: AgentEvent | undefined;
+			const consumeUntilDone = (async () => {
+				while (true) {
+					const next = await iterator.next();
+					if (next.done || next.value.type === "done") return next.value;
+				}
+			})();
+			void consumeUntilDone.then((event) => {
+				doneEvent = event;
+			});
+
+			await waiting;
+			await vi.advanceTimersByTimeAsync(1_000);
+			expect(doneEvent?.type).toBe("done");
+
+			releaseStream();
+			await iterator.next();
+		} finally {
+			releaseStream();
+			vi.useRealTimers();
+		}
+	});
+
+	it("waits for a delayed workflow continuation after only a terminal task update", async () => {
+		vi.useFakeTimers();
+		try {
+			let releaseContinuation = () => {};
+			let signalWaiting = () => {};
+			const continuation = new Promise<void>((resolve) => {
+				releaseContinuation = resolve;
+			});
+			const waiting = new Promise<void>((resolve) => {
+				signalWaiting = resolve;
+			});
+			vi.mocked(query).mockReturnValueOnce(
+				sdkStream(async function* () {
+					yield {
+						type: "assistant",
+						parent_tool_use_id: null,
+						message: {
+							id: "msg-workflow-delayed-root",
+							model: "claude-opus-5",
+							content: [
+								{
+									type: "tool_use",
+									id: "workflow-tool-delayed",
+									name: "Workflow",
+									input: { name: "delayed-smoke" },
+								},
+							],
+							usage: { input_tokens: 8, output_tokens: 4 },
+						},
+					};
+					yield {
+						type: "system",
+						subtype: "task_started",
+						task_id: "workflow-task-delayed",
+						tool_use_id: "workflow-tool-delayed",
+						task_type: "local_workflow",
+						workflow_name: "delayed-smoke",
+						description: "Running delayed workflow",
+					};
+					yield {
+						type: "user",
+						tool_use_result: {
+							status: "async_launched",
+							taskId: "workflow-task-delayed",
+							taskType: "local_workflow",
+							runId: "workflow-run-delayed",
+							scriptPath:
+								"/tmp/workflow/scripts/delayed-workflow-run-delayed.js",
+						},
+						message: {
+							content: [
+								{
+									type: "tool_result",
+									tool_use_id: "workflow-tool-delayed",
+									content: "Workflow launched in background.",
+								},
+							],
+						},
+					};
+					yield {
+						type: "assistant",
+						parent_tool_use_id: null,
+						message: {
+							id: "msg-workflow-delayed-root",
+							model: "claude-opus-5",
+							content: [{ type: "text", text: "Waiting for workflow." }],
+							usage: { input_tokens: 8, output_tokens: 4 },
+						},
+					};
+					yield {
+						type: "result",
+						subtype: "success",
+						terminal_reason: "background_requested",
+						total_cost_usd: 0.1,
+						num_turns: 1,
+						duration_ms: 100,
+						usage: { input_tokens: 8, output_tokens: 4 },
+					};
+					yield {
+						type: "system",
+						subtype: "task_updated",
+						task_id: "workflow-task-delayed",
+						patch: { status: "completed" },
+					};
+					signalWaiting();
+					await continuation;
+					yield {
+						type: "assistant",
+						parent_tool_use_id: null,
+						message: {
+							id: "msg-workflow-delayed-completion",
+							model: "claude-opus-5",
+							content: [{ type: "text", text: "Delayed workflow done." }],
+							usage: { input_tokens: 16, output_tokens: 7 },
+						},
+					};
+					yield {
+						type: "result",
+						subtype: "success",
+						terminal_reason: "completed",
+						total_cost_usd: 0.2,
+						num_turns: 1,
+						duration_ms: 200,
+						usage: { input_tokens: 16, output_tokens: 7 },
+					};
+				}),
+			);
+
+			const collected = collectEvents(baseParams(), {
+				workflowProgressReader: async () => null,
+			});
+			await waiting;
+			// The native completion turn can take longer than the old five-second
+			// grace before producing its first SDK assistant message.
+			await vi.advanceTimersByTimeAsync(10_000);
+			releaseContinuation();
+			const events = await collected;
+			const doneEvents = events.filter((event) => event.type === "done");
+			expect(doneEvents).toHaveLength(1);
+			expect(doneEvents[0]).toMatchObject({
+				turns: 2,
+				durationMs: 300,
+				usage: { inputTokens: 24, outputTokens: 11 },
+			});
+			expect(
+				events.find(
+					(event) =>
+						event.type === "text_delta" &&
+						event.text === "Delayed workflow done.",
+				),
+			).toBeDefined();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("does not hold a background_requested result for skip_transcript tasks", async () => {
@@ -2217,6 +3671,20 @@ describe("ClaudeProvider — accountInfo", () => {
 	});
 });
 
+describe("ClaudeProvider — stopTask", () => {
+	it("delegates workflow cancellation to the SDK control request", async () => {
+		const gen = sdkGen([]);
+		gen.stopTask = vi.fn().mockResolvedValue(undefined);
+		vi.mocked(query).mockReturnValueOnce(gen);
+
+		const session = new ClaudeProvider().query(baseParams());
+		await session.send("start");
+		await session.stopTask?.("workflow-task-1");
+
+		expect(gen.stopTask).toHaveBeenCalledWith("workflow-task-1");
+	});
+});
+
 // ── cancel ────────────────────────────────────────────────────────────────────
 
 describe("ClaudeProvider — cancel", () => {
@@ -3013,6 +4481,72 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 				(e) => e.type === "text_delta" && e.text === "second-turn-marker",
 			),
 		).toBe(true);
+		session.cancel();
+	});
+
+	it("ignores a resumed stream's empty zero-turn boundary before the queued prompt", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "result",
+					subtype: "success",
+					result: "",
+					stop_reason: null,
+					terminal_reason: undefined,
+					total_cost_usd: 0,
+					num_turns: 0,
+					duration_ms: 80,
+					usage: {
+						input_tokens: 0,
+						output_tokens: 0,
+						cache_read_input_tokens: 0,
+						cache_creation_input_tokens: 0,
+					},
+					permission_denials: [],
+				},
+				{
+					type: "assistant",
+					parent_tool_use_id: null,
+					uuid: "actual-turn-message",
+					message: {
+						model: "claude-opus-5",
+						content: [{ type: "text", text: "Launching the workflow." }],
+						usage: { input_tokens: 12, output_tokens: 7 },
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					result: "Launching the workflow.",
+					stop_reason: "end_turn",
+					total_cost_usd: 0.1,
+					num_turns: 1,
+					duration_ms: 5_000,
+					usage: { input_tokens: 12, output_tokens: 7 },
+					permission_denials: [],
+				},
+			]),
+		);
+		const session = new ClaudeProvider().query(baseParams());
+		await session.send("start the workflow");
+
+		const events: AgentEvent[] = [];
+		for await (const event of session) {
+			events.push(event);
+			if (event.type === "done") break;
+		}
+
+		expect(events.filter((event) => event.type === "done")).toHaveLength(1);
+		expect(events).toContainEqual({
+			type: "text_delta",
+			text: "Launching the workflow.",
+		});
+		expect(events.find((event) => event.type === "done")).toMatchObject({
+			turns: 1,
+			durationMs: 5_000,
+			stopReason: "end_turn",
+			usage: { inputTokens: 12, outputTokens: 7 },
+		});
 		session.cancel();
 	});
 

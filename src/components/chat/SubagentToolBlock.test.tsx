@@ -11,6 +11,7 @@ import type { SubagentSnapshot } from "#/server/agentProvider";
 import {
 	resetSubagentOpenStateForTest,
 	SubagentToolBlock,
+	summarizeWorkflowChildren,
 } from "./SubagentToolBlock";
 
 function snapshot(overrides: Partial<SubagentSnapshot> = {}): SubagentSnapshot {
@@ -33,6 +34,17 @@ afterEach(() => {
 });
 
 describe("SubagentToolBlock", () => {
+	it("summarizes native workflow children by lifecycle state", () => {
+		expect(
+			summarizeWorkflowChildren([
+				snapshot({ agentId: "running", status: "running" }),
+				snapshot({ agentId: "paused", status: "paused" }),
+				snapshot({ agentId: "done", status: "completed" }),
+				snapshot({ agentId: "failed", status: "interrupted" }),
+			]),
+		).toBe("1 running / 1 waiting / 1 done / 1 failed");
+	});
+
 	it("shows the provider name, model, and effort in the collapsed card", () => {
 		render(
 			<SubagentToolBlock
@@ -48,6 +60,61 @@ describe("SubagentToolBlock", () => {
 		).toBeTruthy();
 		expect(screen.getByTitle("Model: gpt-5.4")).toBeTruthy();
 		expect(screen.getByTitle("Effort: high")).toBeTruthy();
+	});
+
+	it("shows live workflow metadata and the completed result preview", () => {
+		render(
+			<SubagentToolBlock
+				subagent={snapshot({
+					provider: "claude",
+					agentId: "agent-survey-1",
+					name: "survey:vault-info",
+					label: "Workflow agent",
+					phase: "Survey",
+					prompt: "Inspect the vault metadata and summarize what is available.",
+					model: "claude-opus-5",
+					attempt: 2,
+					status: "completed",
+					currentStep: "mcp__hlid_obsidian__vault_info",
+					lastTool: "StructuredOutput",
+					resultPreview: '{"summary":"Vault metadata inspected"}',
+					endedAtMs: 9_146,
+					usage: {
+						durationMs: 8_146,
+						toolUses: 4,
+						totalTokens: 16_330,
+					},
+				})}
+			/>,
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: /survey:vault-info completed/i }),
+		);
+		expect(screen.getByText("Phase").parentElement?.textContent).toContain(
+			"Survey",
+		);
+		expect(screen.getByText("Attempt").parentElement?.textContent).toContain(
+			"2",
+		);
+		expect(screen.getAllByText("mcp__hlid_obsidian__vault_info")).toHaveLength(
+			2,
+		);
+		expect(
+			screen.getByText(
+				"Inspect the vault metadata and summarize what is available.",
+			),
+		).toBeTruthy();
+		expect(screen.getByText("Result preview")).toBeTruthy();
+		expect(
+			screen.getByText('{"summary":"Vault metadata inspected"}'),
+		).toBeTruthy();
+		expect(screen.getByText("agent-survey-1")).toBeTruthy();
+		expect(screen.getByText("Workflow agent")).toBeTruthy();
+		expect(screen.getByText("tool StructuredOutput")).toBeTruthy();
+		expect(screen.getByText("model claude-opus-5")).toBeTruthy();
+		expect(screen.getByText("4 tools")).toBeTruthy();
+		expect(screen.getByText("16,330 tokens")).toBeTruthy();
 	});
 
 	it("wraps long subagent identity and runtime fields on mobile", () => {
@@ -131,5 +198,109 @@ describe("SubagentToolBlock", () => {
 		fireEvent.click(button);
 		expect(button.getAttribute("aria-expanded")).toBe("true");
 		expect(screen.getByText("Inspect the authentication flow")).toBeTruthy();
+	});
+
+	it("keeps an active workflow collapsed, nests its agents, and stops it natively", () => {
+		const onStop = vi.fn();
+		render(
+			<SubagentToolBlock
+				subagent={snapshot({
+					provider: "claude",
+					agentId: "workflow-1",
+					taskId: "workflow-1",
+					kind: "workflow",
+					name: "Repository audit",
+					status: "running",
+				})}
+				childSubagents={[
+					snapshot({
+						provider: "claude",
+						agentId: "child-running",
+						name: "Reader",
+						status: "running",
+					}),
+					snapshot({
+						provider: "claude",
+						agentId: "child-done",
+						name: "Reviewer",
+						status: "completed",
+					}),
+				]}
+				onStop={onStop}
+			/>,
+		);
+
+		const workflow = screen.getByRole("button", {
+			name: /repository audit running/i,
+		});
+		expect(workflow.getAttribute("aria-expanded")).toBe("false");
+		expect(screen.getByText("1 running / 1 done / 0 failed")).toBeTruthy();
+		expect(
+			screen.queryByRole("button", { name: /reader running/i }),
+		).toBeNull();
+
+		fireEvent.click(workflow);
+		expect(
+			screen.getByRole("button", { name: /reader running/i }),
+		).toBeTruthy();
+		const agentList = screen.getByRole("list", { name: "Workflow agents" });
+		expect(agentList.className).toContain("max-h-80");
+		expect(agentList.className).toContain("overflow-y-auto");
+		expect(agentList.className).toContain("overscroll-contain");
+		expect(screen.getAllByRole("listitem")).toHaveLength(2);
+		fireEvent.click(screen.getByRole("button", { name: "Stop workflow" }));
+		expect(onStop).toHaveBeenCalledOnce();
+		expect(screen.getByRole("button", { name: "Stopping" })).toBeTruthy();
+	});
+
+	it("offers native resume only for an interrupted run and fresh rerun for completed scripts", () => {
+		const onResume = vi.fn();
+		const onRerun = vi.fn();
+		const { rerender } = render(
+			<SubagentToolBlock
+				subagent={snapshot({
+					provider: "claude",
+					agentId: "workflow-1",
+					kind: "workflow",
+					name: "Repository audit",
+					status: "interrupted",
+					workflowRunId: "run-1",
+					endedAtMs: 2_000,
+				})}
+				onResume={onResume}
+				onRerun={onRerun}
+			/>,
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", { name: /repository audit interrupted/i }),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Resume workflow" }));
+		expect(onResume).toHaveBeenCalledOnce();
+
+		rerender(
+			<SubagentToolBlock
+				subagent={snapshot({
+					provider: "claude",
+					agentId: "workflow-2",
+					kind: "workflow",
+					name: "Repository audit",
+					status: "completed",
+					workflowRunId: "run-2",
+					workflowScriptPath: "/tmp/audit.js",
+					endedAtMs: 2_000,
+				})}
+				onResume={onResume}
+				onRerun={onRerun}
+			/>,
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: /repository audit completed/i }),
+		);
+		expect(
+			screen.queryByRole("button", { name: "Resume workflow" }),
+		).toBeNull();
+		fireEvent.click(screen.getByRole("button", { name: "Rerun workflow" }));
+		expect(onRerun).toHaveBeenCalledOnce();
 	});
 });

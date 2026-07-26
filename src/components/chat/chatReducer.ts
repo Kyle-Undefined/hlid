@@ -1,3 +1,4 @@
+import { orderSteeredTranscript } from "#/lib/steeredTranscript";
 import type {
 	AskQuestion,
 	AskUserQuestionAnswers,
@@ -13,6 +14,10 @@ export type UserMessage = {
 	role: "user";
 	text: string;
 	attachments?: ChatAttachment[];
+	/** Persisted transcript sequence, available after history hydration. */
+	transcriptSeq?: number;
+	/** Assistant transcript sequence this prompt steered. */
+	steerTargetSeq?: number;
 };
 
 export type AssistantMessage = {
@@ -24,6 +29,8 @@ export type AssistantMessage = {
 	cost: number | null;
 	costEstimated?: boolean;
 	recap?: string;
+	/** Persisted transcript sequence, available after history hydration. */
+	transcriptSeq?: number;
 	/**
 	 * messages.id primary key, once persisted — undefined for messages still
 	 * arriving live before the DB row is confirmed. Lets Raven offer "branch
@@ -92,6 +99,8 @@ export type HistoryItem =
 			dbId?: number;
 			role: string;
 			text: string;
+			seq?: number;
+			steerTargetSeq?: number | null;
 			toolEvents?: ToolEventMessage[];
 			attachments?: ChatAttachment[];
 			recap?: string | null;
@@ -424,6 +433,10 @@ function historyItemToMessage(item: HistoryItem): ChatMessage {
 			role: "user",
 			text: item.text,
 			attachments: item.attachments,
+			...(item.seq !== undefined ? { transcriptSeq: item.seq } : {}),
+			...(item.steerTargetSeq != null
+				? { steerTargetSeq: item.steerTargetSeq }
+				: {}),
 		};
 	}
 	if (item.role === "assistant") {
@@ -436,6 +449,7 @@ function historyItemToMessage(item: HistoryItem): ChatMessage {
 			cost: null,
 			recap: item.recap ?? undefined,
 			dbId: item.dbId,
+			...(item.seq !== undefined ? { transcriptSeq: item.seq } : {}),
 		};
 	}
 	return {
@@ -446,6 +460,68 @@ function historyItemToMessage(item: HistoryItem): ChatMessage {
 		streaming: false,
 		cost: null,
 	};
+}
+
+function orderPersistedSteers(state: ChatMessage[]): ChatMessage[] {
+	return orderSteeredTranscript(state, {
+		role: (message) => message.role,
+		sequence: (message) =>
+			message.role === "assistant" ? message.transcriptSeq : undefined,
+		steerTargetSequence: (message) =>
+			message.role === "user" ? message.steerTargetSeq : undefined,
+	});
+}
+
+function messageKey(message: ChatMessage): string {
+	return `${message.role}:${message.id}`;
+}
+
+/**
+ * Add delayed interaction-card hydration without letting its older snapshot
+ * reorder messages that have already been steered or promoted live.
+ */
+function hydrateHistory(
+	state: ChatMessage[],
+	items: HistoryItem[],
+): ChatMessage[] {
+	const hydrated = items.map(historyItemToMessage);
+	const merged = [...state];
+	let previousHydratedKey: string | null = null;
+
+	for (let index = 0; index < hydrated.length; index++) {
+		const message = hydrated[index];
+		const key = messageKey(message);
+		if (merged.some((candidate) => messageKey(candidate) === key)) {
+			previousHydratedKey = key;
+			continue;
+		}
+
+		let insertAt = 0;
+		if (previousHydratedKey !== null) {
+			const previousIndex = merged.findIndex(
+				(candidate) => messageKey(candidate) === previousHydratedKey,
+			);
+			insertAt = previousIndex === -1 ? merged.length : previousIndex + 1;
+		} else {
+			const nextHydratedKey = hydrated
+				.slice(index + 1)
+				.map(messageKey)
+				.find((candidateKey) =>
+					merged.some((candidate) => messageKey(candidate) === candidateKey),
+				);
+			const nextIndex =
+				nextHydratedKey === undefined
+					? -1
+					: merged.findIndex(
+							(candidate) => messageKey(candidate) === nextHydratedKey,
+						);
+			insertAt = nextIndex === -1 ? 0 : nextIndex;
+		}
+		merged.splice(insertAt, 0, message);
+		previousHydratedKey = key;
+	}
+
+	return orderPersistedSteers(merged);
 }
 
 export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
@@ -626,35 +702,21 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 			];
 		}
 		case "LOAD_HISTORY":
-			return action.items.map(historyItemToMessage);
+			return orderPersistedSteers(action.items.map(historyItemToMessage));
 		case "PREPEND_HISTORY": {
-			const existing = new Set(
-				state.map((message) => `${message.role}:${message.id}`),
-			);
+			const existing = new Set(state.map(messageKey));
 			const older = action.items.map(historyItemToMessage).filter((message) => {
-				const key = `${message.role}:${message.id}`;
+				const key = messageKey(message);
 				if (existing.has(key)) return false;
 				existing.add(key);
 				return true;
 			});
-			return older.length > 0 ? [...older, ...state] : state;
+			return older.length > 0
+				? orderPersistedSteers([...older, ...state])
+				: state;
 		}
 		case "HYDRATE_HISTORY": {
-			// Existing live messages win so late DB enrichment cannot roll back
-			// streaming text or a socket-delivered decision.
-			const current = new Map(
-				state.map((message) => [`${message.role}:${message.id}`, message]),
-			);
-			const hydratedKeys = new Set<string>();
-			const hydrated = action.items.map(historyItemToMessage).map((message) => {
-				const key = `${message.role}:${message.id}`;
-				hydratedKeys.add(key);
-				return current.get(key) ?? message;
-			});
-			const liveOnly = state.filter(
-				(message) => !hydratedKeys.has(`${message.role}:${message.id}`),
-			);
-			return [...hydrated, ...liveOnly];
+			return hydrateHistory(state, action.items);
 		}
 		case "ADD_ASK_USER_QUESTION": {
 			// Dedup: LOAD_HISTORY may have already hydrated this id from DB. The

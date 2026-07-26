@@ -16,10 +16,10 @@ import { usePullToRefresh } from "#/hooks/usePullToRefresh";
 import { useVisualViewportGuard } from "#/hooks/useVisualViewportGuard";
 import {
 	changedDataDomains,
+	type DataRevisionSnapshot,
 	getDataRevisionSnapshot,
 	subscribeDataRevisionSnapshot,
 } from "#/hooks/wsDataRevisionStore";
-import type { DataRevisionSnapshot } from "#/lib/dataRevision";
 import { shouldRevalidateRouteData } from "#/lib/routeDataRevalidation";
 import { isRavenPath } from "#/lib/scrollContainers";
 import { logClientErrorFn } from "#/lib/serverFns/logging";

@@ -149,7 +149,10 @@ export function prepareChatSubmission(input: {
 	sessionId: string;
 	running: boolean;
 	skillContexts?: string[];
-	commandAction?: Exclude<CommandAction, "goal" | "mcp" | "rename" | "archive">;
+	commandAction?: Exclude<
+		CommandAction,
+		"goal" | "mcp" | "workflows" | "rename" | "archive"
+	>;
 	attachments: ChatAttachment[];
 	vaultReferences?: string[];
 	workspaceReferences?: WorkspaceReferenceSelection[];

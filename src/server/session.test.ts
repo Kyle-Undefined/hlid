@@ -1409,8 +1409,14 @@ describe("SessionManager — setProvider", () => {
 
 		await sm.runQuery("first", () => {}, "switch-chat");
 		vi.mocked(dbMock.getSessionMessages).mockResolvedValueOnce([
-			{ role: "user", text: "first" },
-			{ role: "assistant", text: "prior answer" },
+			{ role: "user", text: "first", seq: 0 },
+			{ role: "assistant", text: "prior answer", seq: 1 },
+			{
+				role: "user",
+				text: "steered direction",
+				seq: 2,
+				steer_target_seq: 1,
+			},
 		] as never);
 		await sm.setProvider("pi", {
 			model: "pi-pro",
@@ -1424,6 +1430,10 @@ describe("SessionManager — setProvider", () => {
 		expect(piSend.mock.calls[0]?.[0]).toContain("<hlid_provider_handoff>");
 		expect(piSend.mock.calls[0]?.[0]).toContain("USER: first");
 		expect(piSend.mock.calls[0]?.[0]).toContain("ASSISTANT: prior answer");
+		const handoff = String(piSend.mock.calls[0]?.[0]);
+		expect(handoff.indexOf("USER: steered direction")).toBeLessThan(
+			handoff.indexOf("ASSISTANT: prior answer"),
+		);
 		expect(piSend.mock.calls[0]?.[0]).toContain("test prompt");
 		expect(dbMock.setSessionProviderId).toHaveBeenCalledWith(
 			"switch-chat",
@@ -1861,6 +1871,30 @@ describe("SessionManager — getAccountInfo", () => {
 		await sm.runQuery("hi", () => {}, "sess-1");
 
 		expect(await sm.getAccountInfo()).toBeNull();
+	});
+});
+
+describe("SessionManager — provider background tasks", () => {
+	it("stops a task through the active provider session", async () => {
+		const stopTask = vi.fn().mockResolvedValue(undefined);
+		const { provider } = makeSwitchableProvider({ stopTask });
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		await sm.runQuery("hi", () => {}, "sess-1");
+
+		await sm.stopProviderTask("workflow-task-1");
+
+		expect(stopTask).toHaveBeenCalledWith("workflow-task-1");
+	});
+
+	it("reports unavailable control without creating a provider session", async () => {
+		const sm = new SessionManager(
+			makeConfig(),
+			makeProviders(makeProvider("Bash")),
+		);
+
+		await expect(sm.stopProviderTask("workflow-task-1")).rejects.toThrow(
+			"cannot stop background tasks from Raven",
+		);
 	});
 });
 
@@ -4910,6 +4944,7 @@ function makeControllableProvider() {
 	return {
 		provider,
 		turns,
+		pushEvent,
 		getQueryCount: () => queryCount,
 		getSendCount: () => turns.length,
 	};
@@ -5202,6 +5237,61 @@ describe("SessionManager — steerQueued", () => {
 		ctl.turns[0].resolveDone();
 		await first;
 		expect(ctl.getSendCount()).toBe(1);
+	});
+
+	it("persists which in-flight assistant row an accepted prompt steered", async () => {
+		const ctl = makeControllableProvider();
+		const steer = vi.fn().mockResolvedValue(undefined);
+		const wrapped: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				return { ...ctl.provider.query(params), steer };
+			},
+		};
+		vi.mocked(dbMock.appendMessage).mockClear();
+		const sm = new SessionManager(makeConfig(), makeProviders(wrapped));
+		const first = sm.runQuery(
+			"first",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-1",
+		);
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		ctl.pushEvent({ type: "text_delta", text: "partial response" });
+		await waitFor(() =>
+			expect(dbMock.appendMessage).toHaveBeenCalledWith(
+				"sess-1",
+				1,
+				"assistant",
+				"",
+			),
+		);
+
+		const second = sm.runQuery(
+			"second",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-2",
+		);
+		await expect(sm.steerQueued("turn-2")).resolves.toBe(true);
+
+		expect(dbMock.appendMessage).toHaveBeenCalledWith(
+			"sess-1",
+			2,
+			"user",
+			"second",
+			"turn-2",
+			1,
+		);
+		await second;
+		ctl.turns[0].resolveDone();
+		await first;
 	});
 
 	it("restores the queued turn when the provider rejects steering", async () => {
@@ -6345,6 +6435,277 @@ describe("SessionManager — probeSlashCommands", () => {
 		await expect(
 			sm.probeSlashCommands((m) => emitted.push(m)),
 		).resolves.not.toThrow();
+	});
+});
+
+describe("SessionManager — reusable workflows", () => {
+	it("discovers provider-native workflows for the requested scope", async () => {
+		const listWorkflows = vi.fn().mockResolvedValue({
+			workflows: [
+				{
+					id: "claude-workflow:audit",
+					name: "audit",
+					description: "Audit the project",
+					argumentHint: "[input]",
+					scriptPath: "/tmp/project/.claude/workflows/audit.js",
+					scope: "project",
+					scopeLabel: "Project",
+					availableAsCommand: true,
+				},
+			],
+			locations: [
+				{
+					scope: "project",
+					scopeLabel: "Project",
+					path: "/tmp/project/.claude/workflows",
+					available: true,
+				},
+			],
+		});
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query: vi.fn(),
+			listWorkflows,
+		};
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await sm.probeWorkflowCatalog((message) => emitted.push(message), {
+			agentCwd: "/tmp/project",
+			sessionId: "session-1",
+		});
+
+		expect(listWorkflows).toHaveBeenCalledWith({ cwd: "/tmp/project" });
+		expect(emitted).toEqual([
+			{
+				type: "workflow_catalog",
+				provider_id: "claude",
+				agent_cwd: "/tmp/project",
+				session_id: "session-1",
+				workflows: [
+					expect.objectContaining({
+						name: "audit",
+						scriptPath: "/tmp/project/.claude/workflows/audit.js",
+					}),
+				],
+				locations: [
+					expect.objectContaining({
+						scope: "project",
+						path: "/tmp/project/.claude/workflows",
+					}),
+				],
+			},
+		]);
+	});
+
+	it("keeps discovery non-blocking when the provider catalog is unavailable", async () => {
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query: vi.fn(),
+			listWorkflows: vi.fn().mockRejectedValue(new Error("home unavailable")),
+		};
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await sm.probeWorkflowCatalog((message) => emitted.push(message));
+
+		expect(emitted).toEqual([
+			{
+				type: "workflow_catalog",
+				provider_id: "claude",
+				workflows: [],
+				locations: [],
+			},
+		]);
+	});
+
+	it("saves through the active provider using its runtime cwd", async () => {
+		const workflow = {
+			id: "claude-workflow:audit",
+			name: "audit",
+			description: "Audit the project",
+			argumentHint: "[input]",
+			scriptPath: "/tmp/project/.claude/workflows/audit.js",
+			scope: "project" as const,
+			scopeLabel: "Project",
+			availableAsCommand: true,
+		};
+		const saveWorkflow = vi.fn().mockResolvedValue(workflow);
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query: vi.fn(),
+			saveWorkflow,
+		};
+		const sm = new SessionManager(
+			makeConfig(),
+			makeProviders(provider),
+			"/tmp/project",
+		);
+
+		await expect(
+			sm.saveProviderWorkflow({
+				sourceScriptPath:
+					"/tmp/.claude/projects/project/session/workflows/scripts/audit.js",
+				scope: "project",
+				overwrite: true,
+			}),
+		).resolves.toEqual(workflow);
+		expect(saveWorkflow).toHaveBeenCalledWith({
+			cwd: "/tmp/project",
+			sourceScriptPath:
+				"/tmp/.claude/projects/project/session/workflows/scripts/audit.js",
+			scope: "project",
+			overwrite: true,
+		});
+	});
+
+	it("saves through an archived session's recorded provider and cwd", async () => {
+		const workflow = {
+			id: "claude-workflow:archive-audit",
+			name: "archive-audit",
+			description: "Audit the archived project",
+			argumentHint: "[input]",
+			scriptPath: "/tmp/archived/.claude/workflows/archive-audit.js",
+			scope: "project" as const,
+			scopeLabel: "Project",
+			availableAsCommand: true,
+		};
+		const saveWorkflow = vi.fn().mockResolvedValue(workflow);
+		const codexQuery = vi.fn();
+		const claudeQuery = vi.fn();
+		const providers = new Map<string, AgentProvider>([
+			["codex", { providerId: "codex", query: codexQuery }],
+			[
+				"claude",
+				{
+					providerId: "claude",
+					query: claudeQuery,
+					saveWorkflow,
+				},
+			],
+		]);
+		const config = { ...makeConfig(), vault_provider: "codex" } as HlidConfig;
+		const sm = new SessionManager(config, providers);
+
+		await expect(
+			sm.saveProviderWorkflow(
+				{
+					sourceScriptPath:
+						"/tmp/.claude/projects/archived/session/workflows/scripts/archive-audit.js",
+					scope: "project",
+				},
+				{
+					agentCwd: "/tmp/archived",
+					sessionId: "archived-session",
+					providerId: "claude",
+				},
+			),
+		).resolves.toEqual(workflow);
+		expect(saveWorkflow).toHaveBeenCalledWith({
+			cwd: "/tmp/archived",
+			sourceScriptPath:
+				"/tmp/.claude/projects/archived/session/workflows/scripts/archive-audit.js",
+			scope: "project",
+		});
+		expect(codexQuery).not.toHaveBeenCalled();
+		expect(claudeQuery).not.toHaveBeenCalled();
+	});
+
+	it("deletes through an archived session's recorded provider and cwd", async () => {
+		const deleteWorkflow = vi.fn().mockResolvedValue(undefined);
+		const codexQuery = vi.fn();
+		const claudeQuery = vi.fn();
+		const providers = new Map<string, AgentProvider>([
+			["codex", { providerId: "codex", query: codexQuery }],
+			[
+				"claude",
+				{
+					providerId: "claude",
+					query: claudeQuery,
+					deleteWorkflow,
+				},
+			],
+		]);
+		const config = { ...makeConfig(), vault_provider: "codex" } as HlidConfig;
+		const sm = new SessionManager(config, providers);
+
+		await sm.deleteProviderWorkflow(
+			{
+				scriptPath: "/tmp/archived/.claude/workflows/archive-audit.js",
+				scope: "project",
+			},
+			{
+				agentCwd: "/tmp/archived",
+				sessionId: "archived-session",
+				providerId: "claude",
+			},
+		);
+
+		expect(deleteWorkflow).toHaveBeenCalledWith({
+			cwd: "/tmp/archived",
+			scriptPath: "/tmp/archived/.claude/workflows/archive-audit.js",
+			scope: "project",
+		});
+		expect(codexQuery).not.toHaveBeenCalled();
+		expect(claudeQuery).not.toHaveBeenCalled();
+	});
+
+	it("reads source through an archived session's recorded provider and cwd", async () => {
+		const source = 'export const meta = { name: "archive-audit" }';
+		const readWorkflowSource = vi.fn().mockResolvedValue(source);
+		const codexQuery = vi.fn();
+		const claudeQuery = vi.fn();
+		const providers = new Map<string, AgentProvider>([
+			["codex", { providerId: "codex", query: codexQuery }],
+			[
+				"claude",
+				{
+					providerId: "claude",
+					query: claudeQuery,
+					readWorkflowSource,
+				},
+			],
+		]);
+		const config = { ...makeConfig(), vault_provider: "codex" } as HlidConfig;
+		const sm = new SessionManager(config, providers);
+
+		await expect(
+			sm.readProviderWorkflowSource(
+				{
+					scriptPath: "/tmp/archived/.claude/workflows/archive-audit.js",
+					scope: "project",
+				},
+				{
+					agentCwd: "/tmp/archived",
+					sessionId: "archived-session",
+					providerId: "claude",
+				},
+			),
+		).resolves.toBe(source);
+		expect(readWorkflowSource).toHaveBeenCalledWith({
+			cwd: "/tmp/archived",
+			scriptPath: "/tmp/archived/.claude/workflows/archive-audit.js",
+			scope: "project",
+		});
+		expect(codexQuery).not.toHaveBeenCalled();
+		expect(claudeQuery).not.toHaveBeenCalled();
+	});
+
+	it("rejects save when the active provider has no native workflow catalog", async () => {
+		const provider: AgentProvider = {
+			providerId: "codex",
+			label: "Codex",
+			query: vi.fn(),
+		};
+		const config = { ...makeConfig(), vault_provider: "codex" } as HlidConfig;
+		const sm = new SessionManager(config, makeProviders(provider));
+
+		await expect(
+			sm.saveProviderWorkflow({
+				sourceScriptPath: "/tmp/audit.js",
+				scope: "personal",
+			}),
+		).rejects.toThrow("Codex does not expose reusable workflows");
 	});
 });
 

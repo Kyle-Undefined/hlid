@@ -8,14 +8,23 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as privacyStore from "#/hooks/privacyStore";
+import { workflowResumePrompt } from "#/lib/workflowRuns";
 import type { ToolEventMessage } from "#/server/protocol";
 
-const { mockLoadToolEventDetail } = vi.hoisted(() => ({
-	mockLoadToolEventDetail: vi.fn(),
-}));
+const { mockEnqueueChat, mockLoadToolEventDetail, mockWsSend } = vi.hoisted(
+	() => ({
+		mockEnqueueChat: vi.fn(),
+		mockLoadToolEventDetail: vi.fn(),
+		mockWsSend: vi.fn(),
+	}),
+);
 
 vi.mock("#/hooks/toolEventDetailStore", () => ({
 	loadToolEventDetail: mockLoadToolEventDetail,
+}));
+vi.mock("#/hooks/wsStore", () => ({
+	enqueueChat: mockEnqueueChat,
+	send: mockWsSend,
 }));
 
 import {
@@ -27,7 +36,9 @@ import {
 afterEach(cleanup);
 beforeEach(() => {
 	privacyStore.__resetForTesting();
+	mockEnqueueChat.mockReset();
 	mockLoadToolEventDetail.mockReset();
+	mockWsSend.mockReset();
 });
 
 function makeEvent(overrides?: Partial<ToolEventMessage>): ToolEventMessage {
@@ -85,6 +96,127 @@ describe("ToolBlock — collapsed", () => {
 		);
 		expect(screen.getByLabelText(/error/i)).not.toBeNull();
 		expect(screen.getByText("permission denied")).not.toBeNull();
+	});
+});
+
+describe("ToolBlock — native workflows", () => {
+	it("builds an explicit same-workflow resume prompt", () => {
+		const prompt = workflowResumePrompt({
+			provider: "claude",
+			agentId: "workflow-task",
+			taskId: "workflow-task",
+			kind: "workflow",
+			name: "Repository audit",
+			status: "interrupted",
+			workflowRunId: "run-1",
+			workflowStopConfirmed: true,
+			workflowScriptPath: "/tmp/workflow.js",
+			startedAtMs: 1,
+		});
+		expect(prompt).toContain(
+			'resumeFromRunId set to "run-1". Reuse the persisted scriptPath "/tmp/workflow.js".',
+		);
+		expect(prompt).toContain(
+			'Hlid requested the stop and observed native workflow task "workflow-task" enter the stopped state.',
+		);
+		expect(prompt).toContain(
+			"Continue that workflow rather than starting a new one.",
+		);
+		expect(prompt).not.toContain("Claude already confirmed");
+		expect(prompt).not.toContain("preflight");
+	});
+
+	it("sends deterministic native stop control to the owning session", () => {
+		render(
+			<ToolBlock
+				sessionId="session-1"
+				event={makeEvent({
+					name: "Workflow",
+					subagent: {
+						provider: "claude",
+						agentId: "workflow-stop-task",
+						taskId: "workflow-stop-task",
+						kind: "workflow",
+						name: "Repository audit",
+						status: "running",
+						startedAtMs: 1,
+					},
+				})}
+			/>,
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: /repository audit running/i }),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Stop workflow" }));
+		expect(mockWsSend).toHaveBeenCalledWith({
+			type: "workflow_control",
+			action: "stop",
+			task_id: "workflow-stop-task",
+			session_id: "session-1",
+		});
+	});
+
+	it("queues resume as a visible native Claude turn", () => {
+		render(
+			<ToolBlock
+				sessionId="session-1"
+				event={makeEvent({
+					name: "Workflow",
+					subagent: {
+						provider: "claude",
+						agentId: "workflow-resume-task",
+						taskId: "workflow-resume-task",
+						kind: "workflow",
+						name: "Repository audit",
+						status: "interrupted",
+						workflowRunId: "run-1",
+						workflowStopConfirmed: true,
+						startedAtMs: 1,
+						endedAtMs: 2,
+					},
+				})}
+			/>,
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: /repository audit interrupted/i }),
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Resume workflow" }));
+		expect(mockEnqueueChat).toHaveBeenCalledWith(
+			expect.objectContaining({
+				session_id: "session-1",
+				text: expect.stringContaining('resumeFromRunId set to "run-1"'),
+			}),
+		);
+	});
+
+	it("does not control a workflow after the session switches providers", () => {
+		render(
+			<ToolBlock
+				sessionId="session-1"
+				providerId="codex"
+				event={makeEvent({
+					name: "Workflow",
+					subagent: {
+						provider: "claude",
+						agentId: "stale-workflow",
+						taskId: "stale-workflow",
+						kind: "workflow",
+						name: "Repository audit",
+						status: "completed",
+						workflowRunId: "run-1",
+						startedAtMs: 1,
+						endedAtMs: 2,
+					},
+				})}
+			/>,
+		);
+		fireEvent.click(
+			screen.getByRole("button", { name: /repository audit completed/i }),
+		);
+		expect(
+			screen.queryByRole("button", { name: "Resume workflow" }),
+		).toBeNull();
+		expect(screen.queryByRole("button", { name: "Stop workflow" })).toBeNull();
 	});
 });
 

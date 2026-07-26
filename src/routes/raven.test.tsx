@@ -499,6 +499,24 @@ describe("Raven composed submission behavior", () => {
 		});
 	});
 
+	it("opens the Claude workflow manager without forwarding /workflows as a prompt", () => {
+		render(<ChatPage />);
+		fireEvent.change(screen.getByRole("combobox"), {
+			target: { value: "/workflows" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+		expect(
+			screen.getByRole("dialog", { name: "Claude workflows" }),
+		).toBeTruthy();
+		expect(state.send).not.toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "chat",
+				text: "/workflows",
+			}),
+		);
+	});
+
 	it("shows the configured agent name for a WSL UNC session path", () => {
 		state.loaderData = {
 			...state.loaderData,

@@ -941,6 +941,78 @@ describe("LOAD_HISTORY", () => {
 		expect(state[2]).toMatchObject({ text: "partial response" });
 	});
 
+	it("keeps a live accepted steer in place during delayed history hydration", () => {
+		const base = reducer(empty(), {
+			type: "LOAD_HISTORY",
+			items: [
+				{ kind: "message", id: "u1", role: "user", text: "start" },
+				{ kind: "message", id: "a1", role: "assistant", text: "working" },
+			],
+		});
+		const queued = reducer(base, {
+			type: "ADD_USER",
+			id: "steer-1",
+			text: "change direction",
+		});
+		const steered = reducer(queued, {
+			type: "STEER_USER",
+			turnId: "steer-1",
+			assistantId: "a1",
+		});
+		const state = reducer(steered, {
+			type: "HYDRATE_HISTORY",
+			items: [
+				{ kind: "message", id: "u1", role: "user", text: "start" },
+				{
+					kind: "ask_user_question",
+					id: "q1",
+					questions: [],
+					answers: null,
+				},
+				{ kind: "message", id: "a1", role: "assistant", text: "working" },
+			],
+		});
+
+		expect(state.map((message) => message.id)).toEqual([
+			"u1",
+			"q1",
+			"steer-1",
+			"a1",
+		]);
+	});
+
+	it("restores a persisted steer before the assistant response it joined", () => {
+		const state = reducer(empty(), {
+			type: "LOAD_HISTORY",
+			items: [
+				{
+					kind: "message",
+					id: "u1",
+					role: "user",
+					text: "start",
+					seq: 0,
+				},
+				{
+					kind: "message",
+					id: "a1",
+					role: "assistant",
+					text: "response",
+					seq: 1,
+				},
+				{
+					kind: "message",
+					id: "steer-1",
+					role: "user",
+					text: "change direction",
+					seq: 2,
+					steerTargetSeq: 1,
+				},
+			],
+		});
+
+		expect(state.map((message) => message.id)).toEqual(["u1", "steer-1", "a1"]);
+	});
+
 	it("deduplicates repeated persisted cards within one older page", () => {
 		const state = reducer(empty(), {
 			type: "PREPEND_HISTORY",

@@ -55,6 +55,8 @@ function mapSessionRows(
 		dbId: r.id,
 		role: r.role,
 		text: r.text,
+		seq: r.seq,
+		steerTargetSeq: r.steer_target_seq,
 		toolEvents: r.toolEvents?.map((te) => ({
 			type: "tool_event" as const,
 			id: te.tool_id,

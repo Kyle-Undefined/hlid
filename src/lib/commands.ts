@@ -1,6 +1,7 @@
 import { isClaudeRuntimeProvider } from "./providerRuntime";
 import { startsWithSearchText } from "./search";
 import type { Skill } from "./skills";
+import { savedWorkflowRunPrompt } from "./workflowRuns";
 
 export type CommandAction =
 	| "review"
@@ -8,6 +9,7 @@ export type CommandAction =
 	| "goal"
 	| "compact"
 	| "mcp"
+	| "workflows"
 	| "rename"
 	| "archive";
 
@@ -18,6 +20,7 @@ export type CommandCapability = {
 	description: string;
 	argumentHint?: string;
 	surfaces: Array<"raven" | "watch">;
+	providerIds?: string[];
 };
 
 /**
@@ -67,6 +70,14 @@ export const COMMAND_CAPABILITY_REGISTRY: Record<
 		description: "Refresh and inspect MCP servers for this session",
 		surfaces: ["raven"],
 	},
+	workflows: {
+		name: "workflows",
+		owner: "hlid",
+		lifecycle: "ui",
+		description: "Inspect and control Claude workflows in this session",
+		surfaces: ["raven"],
+		providerIds: ["claude"],
+	},
 	rename: {
 		name: "rename",
 		owner: "hlid",
@@ -87,6 +98,7 @@ export const COMMAND_CAPABILITY_REGISTRY: Record<
 export type CommandExecution =
 	| { kind: "skill"; filePath: string }
 	| { kind: "prompt" }
+	| { kind: "workflow"; name: string; scriptPath: string }
 	| { kind: "capability-action"; action: CommandAction };
 
 /** A slash command that Hlid can offer for the active provider/session. */
@@ -98,6 +110,8 @@ export type CommandDescriptor = {
 	aliases?: string[];
 	source: "vault" | "library" | "provider" | "hlid";
 	providerId?: string;
+	/** Keep a Hlid-managed provider command discoverable when raw provider entries are hidden. */
+	alwaysVisible?: boolean;
 	execution: CommandExecution;
 };
 
@@ -107,6 +121,8 @@ export type ProviderCommand = {
 	argumentHint: string;
 	aliases?: string[];
 	action?: CommandAction;
+	workflowScriptPath?: string;
+	alwaysVisible?: boolean;
 };
 
 /** Keep provider-neutral commands plus commands owned by the active provider. */
@@ -132,11 +148,18 @@ const UI_OWNED_COMMANDS = new Set([
 	"archive",
 ]);
 
-function hlidSurfaceCommands(surface: "raven" | "watch"): CommandDescriptor[] {
+function hlidSurfaceCommands(
+	surface: "raven" | "watch",
+	providerId?: string,
+): CommandDescriptor[] {
 	return Object.values(COMMAND_CAPABILITY_REGISTRY)
 		.filter(
 			(capability) =>
-				capability.owner === "hlid" && capability.surfaces.includes(surface),
+				capability.owner === "hlid" &&
+				capability.surfaces.includes(surface) &&
+				(!capability.providerIds ||
+					(providerId !== undefined &&
+						capability.providerIds.includes(providerId))),
 		)
 		.map((capability) => ({
 			id: `hlid:${capability.name}`,
@@ -177,6 +200,10 @@ export function mergeCommands(
 	providerId?: string,
 	surface: "raven" | "watch" = "raven",
 ): CommandDescriptor[] {
+	const surfaceCommands = hlidSurfaceCommands(surface, providerId);
+	const surfaceCommandNames = new Set(
+		surfaceCommands.map((command) => command.name.toLowerCase()),
+	);
 	const commands = [
 		...vaultSkills
 			.filter((skill) => !skill.providerId || skill.providerId === providerId)
@@ -185,7 +212,11 @@ export function mergeCommands(
 	for (const command of providerCommands) {
 		if (/\(user\)/i.test(command.name)) continue;
 		const normalized = command.name.replace(/\s*\(user\)\s*$/i, "");
-		if (!command.action && UI_OWNED_COMMANDS.has(normalized.toLowerCase()))
+		if (
+			!command.action &&
+			(UI_OWNED_COMMANDS.has(normalized.toLowerCase()) ||
+				surfaceCommandNames.has(normalized.toLowerCase()))
+		)
 			continue;
 		if (
 			!command.action &&
@@ -200,14 +231,21 @@ export function mergeCommands(
 			description: command.description,
 			...(command.argumentHint ? { argumentHint: command.argumentHint } : {}),
 			...(command.aliases?.length ? { aliases: command.aliases } : {}),
+			...(command.alwaysVisible ? { alwaysVisible: true } : {}),
 			source: command.action ? "hlid" : "provider",
 			...(providerId ? { providerId } : {}),
 			execution: command.action
 				? { kind: "capability-action", action: command.action }
-				: { kind: "prompt" },
+				: command.workflowScriptPath
+					? {
+							kind: "workflow",
+							name: normalized,
+							scriptPath: command.workflowScriptPath,
+						}
+					: { kind: "prompt" },
 		});
 	}
-	return [...commands, ...hlidSurfaceCommands(surface)];
+	return [...commands, ...surfaceCommands];
 }
 
 export function commandMatches(
@@ -271,6 +309,10 @@ export function canSelectCommand(
 ): boolean {
 	if (selected.some((command) => command.id === candidate.id)) return false;
 	if (candidate.execution.kind === "capability-action") return true;
+	if (candidate.execution.kind === "workflow") return selected.length === 0;
+	if (selected.some((command) => command.execution.kind === "workflow")) {
+		return false;
+	}
 	const composable = selected.filter(
 		(command) => command.execution.kind !== "capability-action",
 	);
@@ -295,7 +337,11 @@ export function addCommandSelection(
 	providerId?: string,
 ): CommandDescriptor[] {
 	if (!canSelectCommand(selected, candidate, providerId)) return selected;
-	if (candidate.execution.kind === "capability-action") return [candidate];
+	if (
+		candidate.execution.kind === "capability-action" ||
+		candidate.execution.kind === "workflow"
+	)
+		return [candidate];
 	const withoutAction = selected.filter(
 		(command) => command.execution.kind !== "capability-action",
 	);
@@ -384,6 +430,19 @@ export function resolveCommandSubmission(
 	const resolved =
 		selected.length > 0 ? selected : manualMatch ? [manualMatch] : [];
 	if (resolved.length === 0) return { text: commandText };
+
+	const workflow = resolved.find(
+		(command) => command.execution.kind === "workflow",
+	);
+	if (workflow?.execution.kind === "workflow") {
+		const input =
+			selected.length === 0 && manualMatch
+				? commandText.slice(manualMatch.name.length + 2).trim()
+				: typed.trim();
+		return {
+			text: savedWorkflowRunPrompt(workflow.execution, input || undefined),
+		};
+	}
 
 	const action = resolved.find(
 		(command) => command.execution.kind === "capability-action",

@@ -443,6 +443,13 @@ function applyMigrations(db: Db): void {
 		db.run(`ALTER TABLE messages ADD COLUMN provider_turn_id TEXT`);
 	});
 
+	// A queued Raven prompt can be folded into an assistant response that
+	// already has a transcript row. Retain that relationship so reloads and
+	// provider handoffs keep the steering prompt before the response it changed.
+	runMigration(db, "_migrated_messages_steer_target_seq", (db) => {
+		db.run(`ALTER TABLE messages ADD COLUMN steer_target_seq INTEGER`);
+	});
+
 	// Durable provenance lets Raven and Ledger link an exact fork back to its
 	// source even after both provider processes and Hlid itself restart.
 	runMigration(db, "_migrated_sessions_fork_provenance", (db) => {

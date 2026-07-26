@@ -22,6 +22,7 @@ import {
 	useCallback,
 	useEffect,
 	useLayoutEffect,
+	useMemo,
 	useReducer,
 	useRef,
 	useState,
@@ -43,6 +44,7 @@ import {
 	VaultReferencePicker,
 	WorkspaceReferenceBadges,
 } from "#/components/chat/VaultReferencePicker";
+import { WorkflowManagerDialog } from "#/components/chat/WorkflowManagerDialog";
 import { SlashPicker } from "#/components/cockpit/SlashPicker";
 import { McpIndicator } from "#/components/McpIndicator";
 import { ObsidianActiveNoteButton } from "#/components/ObsidianActiveNoteButton";
@@ -87,6 +89,7 @@ import {
 	addCommandSelection,
 	type CommandDescriptor,
 	filterProviderCompatibleCommands,
+	type ProviderCommand,
 	parseGoalCommand,
 	parseRenameCommand,
 	resolveCommandSubmission,
@@ -150,6 +153,10 @@ import {
 	decisionFromScope,
 	type GoalState,
 	type RateLimitMessage,
+	type WorkflowCatalogMessage,
+	type WorkflowDeleteResultMessage,
+	type WorkflowSaveResultMessage,
+	type WorkflowSourceResultMessage,
 } from "#/server/protocol";
 
 type RavenPaneTab = "chat" | "terminal" | "preview";
@@ -606,6 +613,25 @@ function useRavenChatRuntime({
 		ReturnType<typeof mapMcpServer>[]
 	>([]);
 	const [mcpOpenSignal, setMcpOpenSignal] = useState(0);
+	const [workflowManagerOpen, setWorkflowManagerOpen] = useState(false);
+	const [workflowCatalog, setWorkflowCatalog] = useState<
+		Pick<WorkflowCatalogMessage, "workflows" | "locations">
+	>({
+		workflows: [],
+		locations: [],
+	});
+	const [workflowCatalogProviderId, setWorkflowCatalogProviderId] = useState<
+		string | null
+	>(null);
+	const [workflowCatalogAgentCwd, setWorkflowCatalogAgentCwd] = useState<
+		string | null
+	>(null);
+	const [workflowSaveResult, setWorkflowSaveResult] =
+		useState<WorkflowSaveResultMessage | null>(null);
+	const [workflowDeleteResult, setWorkflowDeleteResult] =
+		useState<WorkflowDeleteResultMessage | null>(null);
+	const [workflowSourceResult, setWorkflowSourceResult] =
+		useState<WorkflowSourceResultMessage | null>(null);
 	const [messages, dispatch] = useReducer(reducer, []);
 	const pendingIdRef = useRef<string | null>(null);
 	const lastAssistantIdRef = useRef<string | null>(null);
@@ -683,6 +709,30 @@ function useRavenChatRuntime({
 				setSdkSlashCommandProviderId(message.provider_id);
 				return;
 			}
+			if (message.type === "workflow_catalog") {
+				if ((message.agent_cwd ?? "") !== (agentCwd ?? "")) return;
+				if (expectedProviderId && message.provider_id !== expectedProviderId)
+					return;
+				setWorkflowCatalog({
+					workflows: message.workflows,
+					locations: message.locations,
+				});
+				setWorkflowCatalogProviderId(message.provider_id);
+				setWorkflowCatalogAgentCwd(message.agent_cwd ?? null);
+				return;
+			}
+			if (message.type === "workflow_save_result") {
+				setWorkflowSaveResult(message);
+				return;
+			}
+			if (message.type === "workflow_delete_result") {
+				setWorkflowDeleteResult(message);
+				return;
+			}
+			if (message.type === "workflow_source_result") {
+				setWorkflowSourceResult(message);
+				return;
+			}
 			handleWsMessage(message);
 		},
 		[handleWsMessage, agentCwd, expectedProviderId, sessionIdRef],
@@ -728,6 +778,21 @@ function useRavenChatRuntime({
 		});
 		setMcpOpenSignal((value) => value + 1);
 	}, [agentCwd, connection.send, sessionIdRef]);
+	const refreshWorkflows = useCallback(() => {
+		connection.send({
+			type: "probe_workflows",
+			session_id: sessionIdRef.current,
+			...(agentCwd ? { agent_cwd: agentCwd } : {}),
+		});
+	}, [agentCwd, connection.send, sessionIdRef]);
+	const openWorkflows = useCallback(() => {
+		setWorkflowSaveResult(null);
+		setWorkflowDeleteResult(null);
+		setWorkflowSourceResult(null);
+		refreshWorkflows();
+		setWorkflowManagerOpen(true);
+	}, [refreshWorkflows]);
+	const closeWorkflows = useCallback(() => setWorkflowManagerOpen(false), []);
 
 	const historyPagination = useLoadChatHistory({
 		existingSessionId,
@@ -745,6 +810,11 @@ function useRavenChatRuntime({
 		setSdkSlashCommands([]);
 		setSdkSlashCommandProviderId(null);
 		setMcpServers([]);
+		setWorkflowManagerOpen(false);
+		setWorkflowCatalog({ workflows: [], locations: [] });
+		setWorkflowCatalogProviderId(null);
+		setWorkflowSaveResult(null);
+		setWorkflowDeleteResult(null);
 		setGoal(null);
 		setGoalEditorOpen(false);
 		setGoalPending(false);
@@ -766,6 +836,11 @@ function useRavenChatRuntime({
 		});
 		connection.send({
 			type: "probe_slash_commands",
+			session_id: sessionIdRef.current,
+			...(agentCwd ? { agent_cwd: agentCwd } : {}),
+		});
+		connection.send({
+			type: "probe_workflows",
 			session_id: sessionIdRef.current,
 			...(agentCwd ? { agent_cwd: agentCwd } : {}),
 		});
@@ -800,9 +875,22 @@ function useRavenChatRuntime({
 		isRunning,
 		sdkSlashCommands,
 		sdkSlashCommandProviderId,
+		workflowCatalog,
+		workflowCatalogProviderId,
+		workflowCatalogAgentCwd,
+		workflowSaveResult,
+		setWorkflowSaveResult,
+		workflowDeleteResult,
+		setWorkflowDeleteResult,
+		workflowSourceResult,
+		setWorkflowSourceResult,
+		refreshWorkflows,
 		mcpServers,
 		mcpOpenSignal,
 		openMcp,
+		workflowManagerOpen,
+		openWorkflows,
+		closeWorkflows,
 		rateLimit,
 		setRateLimit,
 		goal,
@@ -1192,6 +1280,7 @@ function useRavenSend(props: RavenActionProps) {
 		openGoalEditor,
 		closeGoalEditor,
 		openMcp,
+		openWorkflows,
 	} = props.runtime;
 	const { pendingAttachments, clearPending: clearPendingAttachments } =
 		props.upload;
@@ -1242,6 +1331,13 @@ function useRavenSend(props: RavenActionProps) {
 			}
 			if (commandAction === "mcp") {
 				openMcp();
+				clearDraft();
+				setInput("");
+				setActiveSkills([]);
+				return;
+			}
+			if (commandAction === "workflows") {
+				openWorkflows();
 				clearDraft();
 				setInput("");
 				setActiveSkills([]);
@@ -1384,6 +1480,7 @@ function useRavenSend(props: RavenActionProps) {
 			openGoalEditor,
 			closeGoalEditor,
 			openMcp,
+			openWorkflows,
 			navigate,
 		],
 	);
@@ -2008,12 +2105,63 @@ export function ChatPage() {
 			filterProviderCompatibleCommands(selected, commandProviderId),
 		);
 	}, [commandProviderId]);
+	const savedWorkflowCommands = useMemo<ProviderCommand[]>(
+		() =>
+			runtime.workflowCatalogProviderId === commandProviderId &&
+			(runtime.workflowCatalogAgentCwd ?? "") === (agentSkillContext ?? "")
+				? runtime.workflowCatalog.workflows
+						.filter((workflow) => workflow.availableAsCommand)
+						.map((workflow) => ({
+							name: workflow.name,
+							description: workflow.description,
+							argumentHint: workflow.argumentHint,
+							workflowScriptPath: workflow.scriptPath,
+							alwaysVisible: true,
+						}))
+				: [],
+		[
+			commandProviderId,
+			agentSkillContext,
+			runtime.workflowCatalog,
+			runtime.workflowCatalogAgentCwd,
+			runtime.workflowCatalogProviderId,
+		],
+	);
+	const providerCommands = useMemo<ProviderCommand[]>(
+		() => [
+			...savedWorkflowCommands,
+			...(sdkSlashCommandProviderId === commandProviderId
+				? sdkSlashCommands
+				: []),
+		],
+		[
+			commandProviderId,
+			savedWorkflowCommands,
+			sdkSlashCommandProviderId,
+			sdkSlashCommands,
+		],
+	);
 	const commands = useCommands(
 		vaultSkills,
-		sdkSlashCommandProviderId === commandProviderId ? sdkSlashCommands : [],
+		providerCommands,
 		commandProviderId,
 		"raven",
 	);
+	useEffect(() => {
+		const availableWorkflowIds = new Set(
+			commands
+				.filter((command) => command.execution.kind === "workflow")
+				.map((command) => command.id),
+		);
+		setActiveSkills((selected) => {
+			const next = selected.filter(
+				(command) =>
+					command.execution.kind !== "workflow" ||
+					availableWorkflowIds.has(command.id),
+			);
+			return next.length === selected.length ? selected : next;
+		});
+	}, [commands]);
 
 	const picker = useSlashPicker(
 		input,
@@ -2571,6 +2719,94 @@ function ChatPageContent(props: ChatPageContentProps) {
 					</button>
 				)}
 			</div>
+			{props.runtime.workflowManagerOpen && (
+				<WorkflowManagerDialog
+					messages={props.runtime.messages}
+					sessionId={props.session.sessionId}
+					providerId={props.composerProps.activeProviderId}
+					hasOlderHistory={props.runtime.hasOlderHistory}
+					isLoadingOlderHistory={props.runtime.isLoadingOlderHistory}
+					savedWorkflows={
+						props.runtime.workflowCatalogProviderId ===
+							props.composerProps.activeProviderId &&
+						(props.runtime.workflowCatalogAgentCwd ?? "") ===
+							(props.session.agentSkillContext ?? "")
+							? props.runtime.workflowCatalog.workflows
+							: []
+					}
+					saveLocations={
+						props.runtime.workflowCatalogProviderId ===
+							props.composerProps.activeProviderId &&
+						(props.runtime.workflowCatalogAgentCwd ?? "") ===
+							(props.session.agentSkillContext ?? "")
+							? props.runtime.workflowCatalog.locations
+							: []
+					}
+					saveResult={props.runtime.workflowSaveResult}
+					deleteResult={props.runtime.workflowDeleteResult}
+					sourceResult={props.runtime.workflowSourceResult}
+					onLoadOlderHistory={props.runtime.loadOlderHistory}
+					onStop={(run) => {
+						const taskId = run.workflow.taskId;
+						if (!taskId) return;
+						props.runtime.send({
+							type: "workflow_control",
+							action: "stop",
+							task_id: taskId,
+							session_id: props.session.sessionId,
+						});
+					}}
+					onRunPrompt={(prompt) => {
+						wsStore.enqueueChat({
+							id: uid(),
+							text: prompt,
+							session_id: props.session.sessionId,
+						});
+						props.runtime.closeWorkflows();
+					}}
+					onSave={(run, scope, overwrite) => {
+						const requestId = uid();
+						const scriptPath = run.workflow.workflowScriptPath;
+						if (!scriptPath) return requestId;
+						props.runtime.setWorkflowSaveResult(null);
+						props.runtime.send({
+							type: "save_workflow",
+							request_id: requestId,
+							session_id: props.session.sessionId,
+							source_script_path: scriptPath,
+							scope,
+							...(overwrite ? { overwrite: true } : {}),
+						});
+						return requestId;
+					}}
+					onDelete={(workflow) => {
+						const requestId = uid();
+						props.runtime.setWorkflowDeleteResult(null);
+						props.runtime.send({
+							type: "delete_workflow",
+							request_id: requestId,
+							session_id: props.session.sessionId,
+							script_path: workflow.scriptPath,
+							scope: workflow.scope,
+						});
+						return requestId;
+					}}
+					onReadSource={(scriptPath, scope) => {
+						const requestId = uid();
+						props.runtime.setWorkflowSourceResult(null);
+						props.runtime.send({
+							type: "read_workflow_source",
+							request_id: requestId,
+							session_id: props.session.sessionId,
+							script_path: scriptPath,
+							...(scope ? { scope } : {}),
+						});
+						return requestId;
+					}}
+					onRefreshSaved={props.runtime.refreshWorkflows}
+					onClose={props.runtime.closeWorkflows}
+				/>
+			)}
 		</LiveSessionSwitcher>
 	);
 }
@@ -2821,6 +3057,7 @@ function RavenMessagePane({
 									messages={messages}
 									chatQueue={chatQueue}
 									sessionId={sessionId}
+									providerId={composerProps.activeProviderId}
 									sessionState={sessionState}
 									runningTurnId={runningTurnId}
 									hasOlderHistory={runtime.hasOlderHistory}

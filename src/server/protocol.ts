@@ -1,7 +1,10 @@
 import type { WorkspaceReferenceRequest } from "../lib/vaultReferences";
 import type {
 	ProviderGoalStatus,
+	ProviderSavedWorkflow,
 	ProviderThreadGoal,
+	ProviderWorkflowSaveLocation,
+	ProviderWorkflowSaveScope,
 	SubagentSnapshot,
 } from "./agentProvider";
 
@@ -303,6 +306,48 @@ export type SlashCommandsMessage = {
 		aliases?: string[];
 		action?: "review" | "computer-use" | "goal" | "compact";
 	}>;
+};
+
+export type WorkflowCatalogMessage = {
+	type: "workflow_catalog";
+	provider_id: string;
+	agent_cwd?: string;
+	session_id?: string;
+	workflows: ProviderSavedWorkflow[];
+	locations: ProviderWorkflowSaveLocation[];
+};
+
+export type WorkflowSaveResultMessage = {
+	type: "workflow_save_result";
+	request_id: string;
+	workflow?: ProviderSavedWorkflow;
+	error?: string;
+	error_code?:
+		| "exists"
+		| "invalid-script"
+		| "location-unavailable"
+		| "unsafe-path";
+};
+
+export type WorkflowDeleteResultMessage = {
+	type: "workflow_delete_result";
+	request_id: string;
+	script_path?: string;
+	error?: string;
+	error_code?: "not-found" | "location-unavailable" | "unsafe-path";
+};
+
+export type WorkflowSourceResultMessage = {
+	type: "workflow_source_result";
+	request_id: string;
+	script_path: string;
+	source?: string;
+	error?: string;
+	error_code?:
+		| "not-found"
+		| "invalid-script"
+		| "location-unavailable"
+		| "unsafe-path";
 };
 
 export type GoalState = {
@@ -689,6 +734,10 @@ export type ServerMessage =
 	| PlanModeExitResolvedMessage
 	| LocalCommandOutputMessage
 	| SlashCommandsMessage
+	| WorkflowCatalogMessage
+	| WorkflowSaveResultMessage
+	| WorkflowDeleteResultMessage
+	| WorkflowSourceResultMessage
 	| GoalStateMessage
 	| GoalErrorMessage
 	| SessionsStatusMessage
@@ -803,6 +852,37 @@ export type ClientProbeSlashCommandsMessage = {
 	type: "probe_slash_commands";
 	agent_cwd?: string;
 	session_id?: string;
+};
+
+export type ClientProbeWorkflowsMessage = {
+	type: "probe_workflows";
+	agent_cwd?: string;
+	session_id?: string;
+};
+
+export type ClientSaveWorkflowMessage = {
+	type: "save_workflow";
+	request_id: string;
+	session_id?: string;
+	source_script_path: string;
+	scope: ProviderWorkflowSaveScope;
+	overwrite?: boolean;
+};
+
+export type ClientDeleteWorkflowMessage = {
+	type: "delete_workflow";
+	request_id: string;
+	session_id?: string;
+	script_path: string;
+	scope: ProviderWorkflowSaveScope;
+};
+
+export type ClientReadWorkflowSourceMessage = {
+	type: "read_workflow_source";
+	request_id: string;
+	session_id?: string;
+	script_path: string;
+	scope?: ProviderWorkflowSaveScope;
 };
 
 export type ClientGoalControlMessage = {
@@ -935,6 +1015,14 @@ export type ClientSetEffortMessage = {
 	session_id?: string;
 };
 
+/** Native control for one provider-owned workflow/background task. */
+export type ClientWorkflowControlMessage = {
+	type: "workflow_control";
+	action: "stop";
+	task_id: string;
+	session_id?: string;
+};
+
 export type ClientMessage =
 	| ClientChatMessage
 	| ClientCancelQueuedMessage
@@ -948,6 +1036,10 @@ export type ClientMessage =
 	| ClientSyncMessage
 	| ClientProbeMcpMessage
 	| ClientProbeSlashCommandsMessage
+	| ClientProbeWorkflowsMessage
+	| ClientSaveWorkflowMessage
+	| ClientDeleteWorkflowMessage
+	| ClientReadWorkflowSourceMessage
 	| ClientGoalControlMessage
 	| ClientRealtimeMessage
 	| ClientSyncMcpListMessage
@@ -960,4 +1052,5 @@ export type ClientMessage =
 	| ClientSetProviderMessage
 	| ClientSetModelMessage
 	| ClientSetPermissionModeMessage
-	| ClientSetEffortMessage;
+	| ClientSetEffortMessage
+	| ClientWorkflowControlMessage;

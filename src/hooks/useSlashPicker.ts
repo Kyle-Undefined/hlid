@@ -58,7 +58,9 @@ export function useSlashPicker(
 	const items = shouldOpen
 		? commands.filter(
 				(command) =>
-					(showProviderEntries || command.source !== "provider") &&
+					(showProviderEntries ||
+						command.source !== "provider" ||
+						command.alwaysVisible === true) &&
 					commandMatches(command, query) &&
 					canSelectCommand(selected, command, providerId),
 			)

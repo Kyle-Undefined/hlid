@@ -1,12 +1,13 @@
 import { memo, useMemo } from "react";
 import { useProjectPreview } from "#/hooks/projectPreviewStore";
-import type { QueuedChatMessage } from "#/hooks/wsChatQueueStore";
-import type { ObsidianCaptureDestination } from "#/lib/obsidianCapture";
 import { formatVaultReferencedMessage } from "#/lib/vaultReferences";
 import type { ToolEventMessage } from "#/server/protocol";
-import { ChatMessageRow } from "./ChatMessageRow";
+import {
+	ChatMessageRow,
+	type ObsidianCaptureDestination,
+	type PlanDecision,
+} from "./ChatMessageRow";
 import type { ChatMessage } from "./chatReducer";
-import type { PlanDecision } from "./PlanCard";
 import {
 	groupProjectPreviewEventLifecycles,
 	isProjectPreviewToolEvent,
@@ -14,7 +15,10 @@ import {
 	selectActiveProjectPreviewEvents,
 } from "./ProjectPreviewToolBlock";
 import { UserMsg } from "./UserMsg";
-import { useMessageListView } from "./useMessageListView";
+import {
+	type QueuedChatMessage,
+	useMessageListView,
+} from "./useMessageListView";
 
 /**
  * Renders the full message thread: history, permission cards, queued messages,
@@ -24,6 +28,7 @@ export const MessageList = memo(function MessageList({
 	messages,
 	chatQueue,
 	sessionId,
+	providerId,
 	sessionState,
 	runningTurnId,
 	handleDecide,
@@ -45,6 +50,7 @@ export const MessageList = memo(function MessageList({
 	messages: ChatMessage[];
 	chatQueue: QueuedChatMessage[];
 	sessionId: string;
+	providerId?: string;
 	sessionState: "idle" | "running" | "error";
 	runningTurnId: string | null;
 	handleDecide: (
@@ -163,6 +169,8 @@ export const MessageList = memo(function MessageList({
 				<ChatMessageRow
 					key={m.id}
 					message={m}
+					sessionId={sessionId}
+					providerId={providerId}
 					toolEventStartIndex={toolEventStartByMessageId.get(m.id) ?? 0}
 					olderToolEventCount={
 						m.id === toolEventRevealMessageId ? olderToolEventCount : 0

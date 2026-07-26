@@ -20,6 +20,7 @@ import {
 	authorizeRoutineCapability,
 	type RoutinePermissionContext,
 } from "../lib/routinePermissions";
+import { orderSteeredTranscript } from "../lib/steeredTranscript";
 import { SESSION_LABEL_LENGTH } from "../lib/utils";
 import {
 	formatVaultReferencedMessage,
@@ -44,7 +45,12 @@ import type {
 	ProviderRealtimeEvent,
 	ProviderRealtimeMode,
 	ProviderRealtimeStartResult,
+	ProviderSavedWorkflow,
 	ProviderThreadGoal,
+	ProviderWorkflowCatalog,
+	ProviderWorkflowDeleteInput,
+	ProviderWorkflowSaveInput,
+	ProviderWorkflowSourceInput,
 	SlashCommand,
 	SubagentSnapshot,
 } from "./agentProvider";
@@ -226,11 +232,20 @@ const KNOWN_PERMISSION_MODES: ReadonlySet<string> = new Set([
 ]);
 
 function buildProviderHandoff(
-	messages: ReadonlyArray<{ role: string; text: string }>,
+	messages: ReadonlyArray<{
+		role: string;
+		text: string;
+		seq?: number;
+		steer_target_seq?: number | null;
+	}>,
 	prompt: string,
 ): string {
 	if (messages.length === 0) return prompt;
-	const transcript = messages
+	const transcript = orderSteeredTranscript(messages, {
+		role: (message) => message.role,
+		sequence: (message) => message.seq,
+		steerTargetSequence: (message) => message.steer_target_seq,
+	})
 		.map((message) => `${message.role.toUpperCase()}: ${message.text}`)
 		.join("\n\n");
 	const recentTranscript = transcript.slice(-PROVIDER_HANDOFF_MAX_CHARS);
@@ -612,6 +627,8 @@ export class SessionManager {
 	// emitted `done` event so clients can correlate completions to specific
 	// submissions (and pop their queue display FIFO by id).
 	private currentTurnId: string | undefined;
+	/** Active turn accumulator, shared only so accepted steering can persist its target row. */
+	private currentTurnState: TurnState | null = null;
 	// Auto-sleep: last emitted "sleeping" message, kept for sync replay so a
 	// reconnecting client sees the banner. Cleared on wake/abort.
 	private sleepState: AgentSleepMessage | null = null;
@@ -950,6 +967,18 @@ export class SessionManager {
 		}
 	}
 
+	/** Stop one provider-owned background task without aborting its parent turn. */
+	// fallow-ignore-next-line unused-class-member -- Called by the WebSocket workflow_control dispatch in wsHandlers.
+	async stopProviderTask(taskId: string): Promise<void> {
+		if (!taskId.trim()) throw new Error("Task id is required");
+		if (!this.agentSession?.stopTask) {
+			throw new Error(
+				`${this.resolveProvider(this.agentCwd).label ?? "This provider"} cannot stop background tasks from Raven`,
+			);
+		}
+		await this.agentSession.stopTask(taskId);
+	}
+
 	getCurrentSessionId(): string | null {
 		return this.currentSessionId;
 	}
@@ -1214,6 +1243,86 @@ export class SessionManager {
 			scope.agentCwd,
 			provider,
 		);
+	}
+
+	// fallow-ignore-next-line unused-class-member -- Called by the WebSocket probe_workflows dispatch in wsHandlers.
+	async probeWorkflowCatalog(
+		emit: (msg: ServerMessage) => void,
+		scope: ProviderProbeScope = {},
+	): Promise<void> {
+		const { activeAgentCwd, provider, providerId } =
+			this.resolveProbeContext(scope);
+		let catalog: ProviderWorkflowCatalog = {
+			workflows: [],
+			locations: [],
+		};
+		if (provider.listWorkflows) {
+			try {
+				catalog = await provider.listWorkflows({
+					cwd: activeAgentCwd ?? this.vaultPath,
+				});
+			} catch {
+				// A missing provider home or detached workspace should not block Raven.
+			}
+		}
+		emit({
+			type: "workflow_catalog",
+			provider_id: providerId,
+			...(scope.agentCwd ? { agent_cwd: scope.agentCwd } : {}),
+			...(scope.sessionId ? { session_id: scope.sessionId } : {}),
+			...catalog,
+		});
+	}
+
+	// fallow-ignore-next-line unused-class-member -- Called by the WebSocket save_workflow dispatch in wsHandlers.
+	async saveProviderWorkflow(
+		input: Omit<ProviderWorkflowSaveInput, "cwd">,
+		scope: ProviderProbeScope = {},
+	): Promise<ProviderSavedWorkflow> {
+		const { activeAgentCwd, provider } = this.resolveProbeContext(scope);
+		if (!provider.saveWorkflow) {
+			throw new Error(
+				`${provider.label ?? "This provider"} does not expose reusable workflows`,
+			);
+		}
+		return provider.saveWorkflow({
+			...input,
+			cwd: activeAgentCwd ?? this.vaultPath,
+		});
+	}
+
+	// fallow-ignore-next-line unused-class-member -- Called by the WebSocket delete_workflow dispatch in wsHandlers.
+	async deleteProviderWorkflow(
+		input: Omit<ProviderWorkflowDeleteInput, "cwd">,
+		scope: ProviderProbeScope = {},
+	): Promise<void> {
+		const { activeAgentCwd, provider } = this.resolveProbeContext(scope);
+		if (!provider.deleteWorkflow) {
+			throw new Error(
+				`${provider.label ?? "This provider"} does not expose reusable workflows`,
+			);
+		}
+		await provider.deleteWorkflow({
+			...input,
+			cwd: activeAgentCwd ?? this.vaultPath,
+		});
+	}
+
+	// fallow-ignore-next-line unused-class-member -- Called by the WebSocket read_workflow_source dispatch in wsHandlers.
+	async readProviderWorkflowSource(
+		input: Omit<ProviderWorkflowSourceInput, "cwd">,
+		scope: ProviderProbeScope = {},
+	): Promise<string> {
+		const { activeAgentCwd, provider } = this.resolveProbeContext(scope);
+		if (!provider.readWorkflowSource) {
+			throw new Error(
+				`${provider.label ?? "This provider"} does not expose workflow definitions`,
+			);
+		}
+		return provider.readWorkflowSource({
+			...input,
+			cwd: activeAgentCwd ?? this.vaultPath,
+		});
 	}
 
 	// fallow-ignore-next-line unused-class-member -- Called by the WebSocket goal_control dispatch in wsHandlers.
@@ -2963,6 +3072,7 @@ export class SessionManager {
 		let accepted = false;
 		try {
 			const agentSession = this.agentSession;
+			const targetTurn = this.currentTurnState;
 			if (!agentSession?.steer) {
 				throw new Error("The active provider does not support steering.");
 			}
@@ -2976,6 +3086,8 @@ export class SessionManager {
 				[],
 				turnId,
 				prepared.safeVaultReferences,
+				[],
+				targetTurn?.reservedAssistantSeq ?? undefined,
 			);
 			return true;
 		} catch (error) {
@@ -3865,6 +3977,7 @@ export class SessionManager {
 		turnId?: string,
 		vaultReferences: string[] = [],
 		workspaceReferences: ResolvedWorkspaceReference[] = [],
+		steerTargetSeq?: number,
 	): Promise<void> {
 		const userSeq = this.messageSeq++;
 		if (!sessionId) return;
@@ -3877,13 +3990,24 @@ export class SessionManager {
 			workspaceReferences,
 		);
 		if (turnId) {
-			await db.appendMessage(
-				sessionId,
-				userSeq,
-				"user",
-				persistedMessage,
-				turnId,
-			);
+			if (steerTargetSeq !== undefined) {
+				await db.appendMessage(
+					sessionId,
+					userSeq,
+					"user",
+					persistedMessage,
+					turnId,
+					steerTargetSeq,
+				);
+			} else {
+				await db.appendMessage(
+					sessionId,
+					userSeq,
+					"user",
+					persistedMessage,
+					turnId,
+				);
+			}
 		} else {
 			await db.appendMessage(sessionId, userSeq, "user", persistedMessage);
 		}
@@ -4203,6 +4327,7 @@ export class SessionManager {
 		}
 
 		const turn = createTurnState();
+		this.currentTurnState = turn;
 
 		try {
 			const runtimeCwd =
@@ -4481,6 +4606,7 @@ export class SessionManager {
 			// per-turn status here so queued turns never see a transient idle
 			// flicker between turns.
 			this.activeRoutineContext = null;
+			if (this.currentTurnState === turn) this.currentTurnState = null;
 		}
 	}
 }

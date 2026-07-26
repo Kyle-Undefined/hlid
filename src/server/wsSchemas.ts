@@ -106,6 +106,33 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 		agent_cwd: path.optional(),
 		session_id: id.optional(),
 	}),
+	z.strictObject({
+		type: z.literal("probe_workflows"),
+		agent_cwd: path.optional(),
+		session_id: id.optional(),
+	}),
+	z.strictObject({
+		type: z.literal("save_workflow"),
+		request_id: id,
+		session_id: id.optional(),
+		source_script_path: path,
+		scope: z.enum(["project", "personal"]),
+		overwrite: z.boolean().optional(),
+	}),
+	z.strictObject({
+		type: z.literal("delete_workflow"),
+		request_id: id,
+		session_id: id.optional(),
+		script_path: path,
+		scope: z.enum(["project", "personal"]),
+	}),
+	z.strictObject({
+		type: z.literal("read_workflow_source"),
+		request_id: id,
+		session_id: id.optional(),
+		script_path: path,
+		scope: z.enum(["project", "personal"]).optional(),
+	}),
 	z
 		.strictObject({
 			type: z.literal("goal_control"),
@@ -226,6 +253,12 @@ const clientMessageSchema = z.discriminatedUnion("type", [
 	z.strictObject({
 		type: z.literal("set_effort"),
 		effort: shortText,
+		session_id: id.optional(),
+	}),
+	z.strictObject({
+		type: z.literal("workflow_control"),
+		action: z.literal("stop"),
+		task_id: id,
 		session_id: id.optional(),
 	}),
 ]);

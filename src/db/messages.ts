@@ -21,11 +21,14 @@ export async function appendMessage(
 	role: string,
 	text: string,
 	turnId?: string,
+	steerTargetSeq?: number,
 ): Promise<number> {
 	const db = await getDb();
 	const result = db.run(
-		`INSERT INTO messages (session_id, seq, role, text, timestamp, turn_id) VALUES (?, ?, ?, ?, unixepoch(), ?)`,
-		[sessionId, seq, role, text, turnId ?? null],
+		`INSERT INTO messages
+		 (session_id, seq, role, text, timestamp, turn_id, steer_target_seq)
+		 VALUES (?, ?, ?, ?, unixepoch(), ?, ?)`,
+		[sessionId, seq, role, text, turnId ?? null, steerTargetSeq ?? null],
 	);
 	return Number(result.lastInsertRowid);
 }
@@ -155,15 +158,20 @@ export async function copyForkedSessionTranscript(
 	const db = await getDb();
 	let copied = 0;
 	db.transaction(() => {
-		const messageFilter = throughSeq === undefined ? "" : " AND seq <= ?";
+		const messageFilter =
+			throughSeq === undefined
+				? ""
+				: " AND (seq <= ? OR steer_target_seq <= ?)";
 		const messageParams =
 			throughSeq === undefined
 				? [targetSessionId, sourceSessionId]
-				: [targetSessionId, sourceSessionId, throughSeq];
+				: [targetSessionId, sourceSessionId, throughSeq, throughSeq];
 		const result = db.run(
 			`INSERT INTO messages
-			 (session_id, seq, role, text, timestamp, recap, turn_id, sdk_uuid, provider_turn_id)
-			 SELECT ?, seq, role, text, timestamp, recap, turn_id, sdk_uuid, provider_turn_id
+			 (session_id, seq, role, text, timestamp, recap, turn_id, sdk_uuid,
+			  provider_turn_id, steer_target_seq)
+			 SELECT ?, seq, role, text, timestamp, recap, turn_id, sdk_uuid,
+			        provider_turn_id, steer_target_seq
 			 FROM messages WHERE session_id = ?${messageFilter}
 			 ORDER BY seq ASC, id ASC`,
 			messageParams,

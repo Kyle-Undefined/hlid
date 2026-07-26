@@ -60,6 +60,8 @@ export type MessageRow = {
 	sdk_uuid?: string | null;
 	/** Provider-native turn id for exact turn-boundary forks (Codex). */
 	provider_turn_id?: string | null;
+	/** Assistant message sequence this user prompt steered, when applicable. */
+	steer_target_seq?: number | null;
 };
 
 type ToolEventRow = {

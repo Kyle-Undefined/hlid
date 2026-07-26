@@ -8,9 +8,13 @@ import { PermissionCard } from "./PermissionCard";
 import { PlanCard, type PlanDecision } from "./PlanCard";
 import { UserMsg, type UserMsgQueueState } from "./UserMsg";
 
+export type { ObsidianCaptureDestination, PlanDecision };
+
 /** Dispatches a single transcript entry to its role-specific renderer. */
 export const ChatMessageRow = memo(function ChatMessageRow({
 	message,
+	sessionId,
+	providerId,
 	toolEventStartIndex = 0,
 	olderToolEventCount = 0,
 	onLoadOlderToolEvents,
@@ -31,6 +35,8 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 	historicalProjectPreviewGroups,
 }: {
 	message: ChatMessage;
+	sessionId?: string;
+	providerId?: string;
 	toolEventStartIndex?: number;
 	olderToolEventCount?: number;
 	onLoadOlderToolEvents?: () => void;
@@ -81,6 +87,8 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 		return (
 			<AssistantMsg
 				message={message}
+				sessionId={sessionId}
+				providerId={providerId}
 				permissionLabels={permissionLabels}
 				toolEventStartIndex={toolEventStartIndex}
 				olderToolEventCount={olderToolEventCount}

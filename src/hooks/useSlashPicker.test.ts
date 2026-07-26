@@ -168,6 +168,27 @@ describe("useSlashPicker – items", () => {
 		expect(result.current.items).toEqual([providerSkill, providerCommand]);
 	});
 
+	it("keeps Hlid-managed saved workflows visible when provider entries are hidden", () => {
+		const workflow: CommandDescriptor = {
+			id: "provider:claude:route-audit",
+			name: "route-audit",
+			description: "Audit every route",
+			source: "provider",
+			providerId: "claude",
+			alwaysVisible: true,
+			execution: {
+				kind: "workflow",
+				name: "route-audit",
+				scriptPath: "/project/.claude/workflows/route-audit.js",
+			},
+		};
+		const { result } = renderHook(() =>
+			useSlashPicker("/", [workflow], null, "claude", false),
+		);
+
+		expect(result.current.items).toEqual([workflow]);
+	});
+
 	it("returns empty items when nothing matches", () => {
 		const { result } = renderHook(() => useSlashPicker("/zzz", SKILLS, null));
 		expect(result.current.items).toHaveLength(0);

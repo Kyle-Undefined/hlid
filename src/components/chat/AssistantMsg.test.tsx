@@ -243,6 +243,58 @@ describe("AssistantMsg", () => {
 		).toBeTruthy();
 	});
 
+	it("nests workflow children under their provider-neutral parent activity", () => {
+		render(
+			<AssistantMsg
+				sessionId="session-1"
+				message={makeMsg({
+					toolEvents: [
+						{
+							type: "tool_event",
+							id: "workflow-tool",
+							name: "Workflow",
+							input: {},
+							subagent: {
+								provider: "claude",
+								agentId: "workflow-task",
+								taskId: "workflow-task",
+								kind: "workflow",
+								name: "Repository audit",
+								status: "running",
+								startedAtMs: 1,
+							},
+						},
+						{
+							type: "tool_event",
+							id: "workflow-child",
+							name: "Subagent",
+							input: {},
+							subagent: {
+								provider: "claude",
+								agentId: "child-task",
+								kind: "agent",
+								parentActivityId: "workflow-task",
+								name: "Reader",
+								status: "running",
+								startedAtMs: 1,
+							},
+						},
+					],
+				})}
+			/>,
+		);
+
+		expect(
+			screen.queryByRole("button", { name: /reader running/i }),
+		).toBeNull();
+		fireEvent.click(
+			screen.getByRole("button", { name: /repository audit running/i }),
+		);
+		expect(
+			screen.getAllByRole("button", { name: /reader running/i }),
+		).toHaveLength(1);
+	});
+
 	describe("completed message actions", () => {
 		it("keeps completed actions after the response at every viewport", () => {
 			render(<AssistantMsg message={makeMsg()} />);

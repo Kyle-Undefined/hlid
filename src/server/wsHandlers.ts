@@ -10,6 +10,11 @@ import {
 	waitForAllClaudeWarmupSnapshots,
 	waitForClaudeWarmupSnapshot,
 } from "./claudeWarmup";
+import {
+	ClaudeWorkflowDeleteError,
+	ClaudeWorkflowSaveError,
+	ClaudeWorkflowSourceError,
+} from "./claudeWorkflows";
 import { loadConfig } from "./config";
 import { getDataRevisions } from "./dataRevision";
 import { getLiveSessionsStatus } from "./liveSessions";
@@ -1119,6 +1124,17 @@ async function handleSessionMessage(
 					broadcastSessionsStatus(context);
 				});
 			return;
+		case "workflow_control":
+			try {
+				await entry.manager.stopProviderTask(msg.task_id);
+			} catch (error) {
+				send(context.ws, {
+					type: "error",
+					message:
+						error instanceof Error ? error.message : "Failed to stop workflow",
+				});
+			}
+			return;
 		case "clear":
 			context.ws.data.pendingNewSession = true;
 			entry.runState.clearError();
@@ -1137,6 +1153,108 @@ async function handleSessionMessage(
 				sendProbeResult,
 				await resolveProbeScope(msg),
 			);
+			return;
+		case "probe_workflows":
+			await entry.manager.probeWorkflowCatalog(
+				sendProbeResult,
+				await resolveProbeScope(msg),
+			);
+			return;
+		case "save_workflow":
+			try {
+				const workflowScope = await resolveProbeScope(msg);
+				const workflow = await entry.manager.saveProviderWorkflow(
+					{
+						sourceScriptPath: msg.source_script_path,
+						scope: msg.scope,
+						overwrite: msg.overwrite,
+					},
+					workflowScope,
+				);
+				sendProbeResult({
+					type: "workflow_save_result",
+					request_id: msg.request_id,
+					workflow,
+				});
+				await entry.manager.probeWorkflowCatalog(
+					sendProbeResult,
+					workflowScope,
+				);
+			} catch (error) {
+				sendProbeResult({
+					type: "workflow_save_result",
+					request_id: msg.request_id,
+					error:
+						error instanceof Error ? error.message : "Failed to save workflow",
+					...(error instanceof ClaudeWorkflowSaveError
+						? { error_code: error.code }
+						: {}),
+				});
+			}
+			return;
+		case "delete_workflow":
+			try {
+				const workflowScope = await resolveProbeScope(msg);
+				await entry.manager.deleteProviderWorkflow(
+					{
+						scriptPath: msg.script_path,
+						scope: msg.scope,
+					},
+					workflowScope,
+				);
+				sendProbeResult({
+					type: "workflow_delete_result",
+					request_id: msg.request_id,
+					script_path: msg.script_path,
+				});
+				await entry.manager.probeWorkflowCatalog(
+					sendProbeResult,
+					workflowScope,
+				);
+			} catch (error) {
+				sendProbeResult({
+					type: "workflow_delete_result",
+					request_id: msg.request_id,
+					error:
+						error instanceof Error
+							? error.message
+							: "Failed to delete workflow",
+					...(error instanceof ClaudeWorkflowDeleteError
+						? { error_code: error.code }
+						: {}),
+				});
+			}
+			return;
+		case "read_workflow_source":
+			try {
+				const workflowScope = await resolveProbeScope(msg);
+				const source = await entry.manager.readProviderWorkflowSource(
+					{
+						scriptPath: msg.script_path,
+						...(msg.scope ? { scope: msg.scope } : {}),
+					},
+					workflowScope,
+				);
+				sendProbeResult({
+					type: "workflow_source_result",
+					request_id: msg.request_id,
+					script_path: msg.script_path,
+					source,
+				});
+			} catch (error) {
+				sendProbeResult({
+					type: "workflow_source_result",
+					request_id: msg.request_id,
+					script_path: msg.script_path,
+					error:
+						error instanceof Error
+							? error.message
+							: "Failed to read workflow definition",
+					...(error instanceof ClaudeWorkflowSourceError
+						? { error_code: error.code }
+						: {}),
+				});
+			}
 			return;
 		case "set_provider": {
 			await entry.manager.setProvider(msg.provider, {
@@ -1250,21 +1368,69 @@ async function handleMessage(
 			return;
 		}
 	}
-	const requestedSettingsSession =
+	const requestedTargetSession =
 		(msg.type === "set_provider" ||
 			msg.type === "set_model" ||
 			msg.type === "set_effort" ||
-			msg.type === "set_permission_mode") &&
+			msg.type === "set_permission_mode" ||
+			msg.type === "workflow_control" ||
+			msg.type === "save_workflow" ||
+			msg.type === "delete_workflow" ||
+			msg.type === "read_workflow_source") &&
 		msg.session_id
 			? msg.session_id
 			: null;
-	if (requestedSettingsSession) {
+	if (requestedTargetSession) {
 		const requestedEntry =
-			context.pool.get(requestedSettingsSession) ??
-			context.pool.findByDbSessionId(requestedSettingsSession);
+			context.pool.get(requestedTargetSession) ??
+			context.pool.findByDbSessionId(requestedTargetSession);
 		// Archived/new chats have no live manager yet. Their chat payload repeats
 		// the selection and applies it atomically after the entry is created.
-		if (!requestedEntry) return;
+		if (!requestedEntry) {
+			if (msg.type === "workflow_control") {
+				send(context.ws, {
+					type: "error",
+					message: "This workflow session is not live.",
+				});
+			} else if (
+				msg.type === "save_workflow" ||
+				msg.type === "delete_workflow" ||
+				msg.type === "read_workflow_source"
+			) {
+				const selection = await db
+					.getSessionSelection(requestedTargetSession)
+					.catch(() => null);
+				if (!selection) {
+					if (msg.type === "save_workflow") {
+						send(context.ws, {
+							type: "workflow_save_result",
+							request_id: msg.request_id,
+							error: "This workflow session could not be found.",
+						});
+					} else if (msg.type === "delete_workflow") {
+						send(context.ws, {
+							type: "workflow_delete_result",
+							request_id: msg.request_id,
+							error: "This workflow session could not be found.",
+						});
+					} else {
+						send(context.ws, {
+							type: "workflow_source_result",
+							request_id: msg.request_id,
+							script_path: msg.script_path,
+							error: "This workflow session could not be found.",
+						});
+					}
+					return;
+				}
+				// Workflow file operations are provider-scoped filesystem operations,
+				// not live task control. Use the permanent vault manager only as
+				// access to the provider registry; handleSessionMessage resolves
+				// the archived session's provider and cwd without starting a process.
+				await handleSessionMessage(context, context.pool.vaultEntry(), msg);
+			}
+			return;
+		}
 		await handleSessionMessage(context, requestedEntry, msg);
 		return;
 	}

@@ -286,6 +286,12 @@ export function useCockpitRun(options: CockpitRunOptions) {
 			);
 			return;
 		}
+		if (commandAction === "workflows") {
+			options.setRunError(
+				"Workflows are inspected from an existing Raven session.",
+			);
+			return;
+		}
 		if (commandAction === "rename" || commandAction === "archive") {
 			options.setRunError(
 				`Session ${commandAction} is managed from an existing Raven session.`,

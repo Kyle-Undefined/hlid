@@ -1018,13 +1018,16 @@ describe("messages", () => {
 		await createSession("s1", "L", "m");
 		await appendMessage("s1", 0, "user", "hello", "turn-1");
 		await appendMessage("s1", 1, "assistant", "world");
+		await appendMessage("s1", 2, "user", "steer", "turn-2", 1);
 		const rows = await getSessionMessages("s1");
-		expect(rows).toHaveLength(2);
+		expect(rows).toHaveLength(3);
 		expect(rows[0].role).toBe("user");
 		expect(rows[0].text).toBe("hello");
 		expect(rows[0].turn_id).toBe("turn-1");
 		expect(rows[1].role).toBe("assistant");
 		expect(rows[1].turn_id).toBeNull();
+		expect(rows[2].turn_id).toBe("turn-2");
+		expect(rows[2].steer_target_seq).toBe(1);
 	});
 
 	it("returns empty array for session with no messages", async () => {
@@ -1185,14 +1188,15 @@ describe("messages", () => {
 			{ providerId: "codex", model: "gpt-5.6-sol", agentCwd: "/work/project" },
 		);
 		await setToolEventResult("source", "tool-1", "contents", false);
-		await appendMessage("source", 2, "user", "Later prompt", "turn-2");
-		await appendMessage("source", 3, "assistant", "Later answer", "turn-2");
+		await appendMessage("source", 2, "user", "Steered direction", "steer-1", 1);
+		await appendMessage("source", 3, "user", "Later prompt", "turn-2");
+		await appendMessage("source", 4, "assistant", "Later answer", "turn-2");
 
 		await createForkedSessionRow("source", "fork", "thread-fork", {
 			parentMessageId: assistantId,
 			forkKind: "exact",
 		});
-		expect(await copyForkedSessionTranscript("source", "fork", 1)).toBe(2);
+		expect(await copyForkedSessionTranscript("source", "fork", 1)).toBe(3);
 
 		const fork = await getSessionById("fork");
 		expect(fork).toMatchObject({
@@ -1213,8 +1217,10 @@ describe("messages", () => {
 		expect(messages.map((message) => message.text)).toEqual([
 			"First prompt",
 			"First answer",
+			"Steered direction",
 		]);
 		expect(messages[1].provider_turn_id).toBe("provider-turn-1");
+		expect(messages[2].steer_target_seq).toBe(1);
 		expect(await getMessageForFork(messages[1].id)).toMatchObject({
 			sessionId: "fork",
 			seq: 1,

@@ -70,6 +70,11 @@ vi.mock("./claudeWarmup", () => ({
 // ── import after mocks ────────────────────────────────────────────────────────
 
 import * as dbMock from "../db";
+import {
+	ClaudeWorkflowDeleteError,
+	ClaudeWorkflowSaveError,
+	ClaudeWorkflowSourceError,
+} from "./claudeWorkflows";
 import { createWsHandlers } from "./wsHandlers";
 
 // ── helpers ───────────────────────────────────────────────────────────────────
@@ -127,6 +132,21 @@ function makeSession(overrides: Partial<SessionManager> = {}): SessionManager {
 		handlePlanModeExitResponse: vi.fn(),
 		probeMcpStatus: vi.fn().mockResolvedValue(undefined),
 		probeSlashCommands: vi.fn().mockResolvedValue(undefined),
+		probeWorkflowCatalog: vi.fn().mockResolvedValue(undefined),
+		saveProviderWorkflow: vi.fn().mockResolvedValue({
+			id: "claude-workflow:audit",
+			name: "audit",
+			description: "Audit the project",
+			argumentHint: "[input]",
+			scriptPath: "/tmp/test/.claude/workflows/audit.js",
+			scope: "project",
+			scopeLabel: "Project",
+			availableAsCommand: true,
+		}),
+		deleteProviderWorkflow: vi.fn().mockResolvedValue(undefined),
+		readProviderWorkflowSource: vi
+			.fn()
+			.mockResolvedValue('export const meta = { name: "audit" }'),
 		controlGoal: vi.fn().mockResolvedValue({ providerId: "codex", goal: null }),
 		controlRealtime: vi.fn().mockResolvedValue(undefined),
 		restoreMcpStatus: vi.fn(),
@@ -134,6 +154,7 @@ function makeSession(overrides: Partial<SessionManager> = {}): SessionManager {
 		setProvider: vi.fn().mockResolvedValue(undefined),
 		setEffort: vi.fn().mockResolvedValue(undefined),
 		setPermissionMode: vi.fn().mockResolvedValue(undefined),
+		stopProviderTask: vi.fn().mockResolvedValue(undefined),
 		getAccountInfo: vi.fn().mockResolvedValue(null),
 		...overrides,
 	} as unknown as SessionManager;
@@ -992,6 +1013,564 @@ describe("message — set_provider", () => {
 
 		expect(session.setProvider).not.toHaveBeenCalled();
 		expect(runState.broadcast).not.toHaveBeenCalled();
+	});
+});
+
+// ── message: workflow_control ─────────────────────────────────────────────────
+
+describe("message — workflow_control", () => {
+	it("stops a native provider task in the addressed live session", async () => {
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "workflow_control",
+				action: "stop",
+				task_id: "workflow-task-1",
+				session_id: "vault-id",
+			}),
+		);
+
+		expect(session.stopProviderTask).toHaveBeenCalledWith("workflow-task-1");
+	});
+
+	it("surfaces a native task-control failure", async () => {
+		const session = makeSession({
+			stopProviderTask: vi
+				.fn()
+				.mockRejectedValue(new Error("Workflow is already complete")),
+		});
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "workflow_control",
+				action: "stop",
+				task_id: "workflow-task-1",
+			}),
+		);
+
+		expect(lastSentTo(ws)).toEqual({
+			type: "error",
+			message: "Workflow is already complete",
+		});
+	});
+
+	it("rejects a control addressed to a session that is no longer live", async () => {
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "workflow_control",
+				action: "stop",
+				task_id: "workflow-task-1",
+				session_id: "archived-session",
+			}),
+		);
+
+		expect(session.stopProviderTask).not.toHaveBeenCalled();
+		expect(lastSentTo(ws)).toEqual({
+			type: "error",
+			message: "This workflow session is not live.",
+		});
+	});
+});
+
+describe("message — workflow catalog and save", () => {
+	it("sends scoped workflow discovery only to the requesting client", async () => {
+		const probeWorkflowCatalog = vi.fn(
+			async (emit: (message: ServerMessage) => void) => {
+				emit({
+					type: "workflow_catalog",
+					provider_id: "claude",
+					workflows: [],
+					locations: [],
+				});
+			},
+		);
+		const session = makeSession({ probeWorkflowCatalog });
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({ type: "probe_workflows", session_id: "vault-id" }),
+		);
+
+		expect(probeWorkflowCatalog).toHaveBeenCalledWith(
+			expect.any(Function),
+			expect.objectContaining({ sessionId: "vault-id" }),
+		);
+		expect(runState.send).toHaveBeenCalledWith(
+			ws,
+			expect.objectContaining({ type: "workflow_catalog" }),
+		);
+		expect(runState.broadcast).not.toHaveBeenCalled();
+	});
+
+	it("saves a workflow, returns it, and refreshes the catalog", async () => {
+		const workflow = {
+			id: "claude-workflow:audit",
+			name: "audit",
+			description: "Audit the project",
+			argumentHint: "[input]",
+			scriptPath: "/tmp/test/.claude/workflows/audit.js",
+			scope: "project" as const,
+			scopeLabel: "Project",
+			availableAsCommand: true,
+		};
+		const saveProviderWorkflow = vi.fn().mockResolvedValue(workflow);
+		const probeWorkflowCatalog = vi.fn().mockResolvedValue(undefined);
+		const session = makeSession({
+			saveProviderWorkflow,
+			probeWorkflowCatalog,
+		});
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "save_workflow",
+				request_id: "save-1",
+				session_id: "vault-id",
+				source_script_path:
+					"/tmp/.claude/projects/project/session/workflows/scripts/audit.js",
+				scope: "project",
+			}),
+		);
+
+		expect(saveProviderWorkflow).toHaveBeenCalledWith(
+			{
+				sourceScriptPath:
+					"/tmp/.claude/projects/project/session/workflows/scripts/audit.js",
+				scope: "project",
+				overwrite: undefined,
+			},
+			{
+				agentCwd: undefined,
+				sessionId: "vault-id",
+				providerId: undefined,
+			},
+		);
+		expect(runState.send).toHaveBeenCalledWith(ws, {
+			type: "workflow_save_result",
+			request_id: "save-1",
+			workflow,
+		});
+		expect(probeWorkflowCatalog).toHaveBeenCalledWith(
+			expect.any(Function),
+			expect.objectContaining({
+				agentCwd: undefined,
+				sessionId: "vault-id",
+			}),
+		);
+	});
+
+	it("returns a typed collision without refreshing the catalog", async () => {
+		const saveProviderWorkflow = vi
+			.fn()
+			.mockRejectedValue(
+				new ClaudeWorkflowSaveError(
+					"/audit already exists in the project workflow location.",
+					"exists",
+				),
+			);
+		const probeWorkflowCatalog = vi.fn().mockResolvedValue(undefined);
+		const session = makeSession({
+			saveProviderWorkflow,
+			probeWorkflowCatalog,
+		});
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "save_workflow",
+				request_id: "save-2",
+				source_script_path:
+					"/tmp/.claude/projects/project/session/workflows/scripts/audit.js",
+				scope: "project",
+			}),
+		);
+
+		expect(runState.send).toHaveBeenCalledWith(ws, {
+			type: "workflow_save_result",
+			request_id: "save-2",
+			error: "/audit already exists in the project workflow location.",
+			error_code: "exists",
+		});
+		expect(probeWorkflowCatalog).not.toHaveBeenCalled();
+	});
+
+	it("deletes an exact saved workflow and refreshes the catalog", async () => {
+		const deleteProviderWorkflow = vi.fn().mockResolvedValue(undefined);
+		const probeWorkflowCatalog = vi.fn().mockResolvedValue(undefined);
+		const session = makeSession({
+			deleteProviderWorkflow,
+			probeWorkflowCatalog,
+		});
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "delete_workflow",
+				request_id: "delete-1",
+				session_id: "vault-id",
+				script_path: "/tmp/test/.claude/workflows/audit.js",
+				scope: "project",
+			}),
+		);
+
+		expect(deleteProviderWorkflow).toHaveBeenCalledWith(
+			{
+				scriptPath: "/tmp/test/.claude/workflows/audit.js",
+				scope: "project",
+			},
+			{
+				agentCwd: undefined,
+				sessionId: "vault-id",
+				providerId: undefined,
+			},
+		);
+		expect(runState.send).toHaveBeenCalledWith(ws, {
+			type: "workflow_delete_result",
+			request_id: "delete-1",
+			script_path: "/tmp/test/.claude/workflows/audit.js",
+		});
+		expect(probeWorkflowCatalog).toHaveBeenCalledWith(
+			expect.any(Function),
+			expect.objectContaining({ sessionId: "vault-id" }),
+		);
+	});
+
+	it("returns a typed delete miss without refreshing the catalog", async () => {
+		const deleteProviderWorkflow = vi
+			.fn()
+			.mockRejectedValue(
+				new ClaudeWorkflowDeleteError(
+					"This saved workflow could not be found.",
+					"not-found",
+				),
+			);
+		const probeWorkflowCatalog = vi.fn().mockResolvedValue(undefined);
+		const session = makeSession({
+			deleteProviderWorkflow,
+			probeWorkflowCatalog,
+		});
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "delete_workflow",
+				request_id: "delete-2",
+				script_path: "/tmp/test/.claude/workflows/missing.js",
+				scope: "project",
+			}),
+		);
+
+		expect(runState.send).toHaveBeenCalledWith(ws, {
+			type: "workflow_delete_result",
+			request_id: "delete-2",
+			error: "This saved workflow could not be found.",
+			error_code: "not-found",
+		});
+		expect(probeWorkflowCatalog).not.toHaveBeenCalled();
+	});
+
+	it("reads one workflow definition without refreshing the catalog", async () => {
+		const source = 'export const meta = { name: "audit" }';
+		const readProviderWorkflowSource = vi.fn().mockResolvedValue(source);
+		const probeWorkflowCatalog = vi.fn().mockResolvedValue(undefined);
+		const session = makeSession({
+			readProviderWorkflowSource,
+			probeWorkflowCatalog,
+		});
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "read_workflow_source",
+				request_id: "source-1",
+				session_id: "vault-id",
+				script_path: "/tmp/test/.claude/workflows/audit.js",
+				scope: "project",
+			}),
+		);
+
+		expect(readProviderWorkflowSource).toHaveBeenCalledWith(
+			{
+				scriptPath: "/tmp/test/.claude/workflows/audit.js",
+				scope: "project",
+			},
+			{
+				agentCwd: undefined,
+				sessionId: "vault-id",
+				providerId: undefined,
+			},
+		);
+		expect(runState.send).toHaveBeenCalledWith(ws, {
+			type: "workflow_source_result",
+			request_id: "source-1",
+			script_path: "/tmp/test/.claude/workflows/audit.js",
+			source,
+		});
+		expect(probeWorkflowCatalog).not.toHaveBeenCalled();
+	});
+
+	it("returns a typed workflow-definition access error", async () => {
+		const readProviderWorkflowSource = vi
+			.fn()
+			.mockRejectedValue(
+				new ClaudeWorkflowSourceError(
+					"This workflow definition is outside Claude's persisted scripts.",
+					"unsafe-path",
+				),
+			);
+		const session = makeSession({ readProviderWorkflowSource });
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "read_workflow_source",
+				request_id: "source-2",
+				script_path: "/tmp/outside.js",
+			}),
+		);
+
+		expect(runState.send).toHaveBeenCalledWith(ws, {
+			type: "workflow_source_result",
+			request_id: "source-2",
+			script_path: "/tmp/outside.js",
+			error: "This workflow definition is outside Claude's persisted scripts.",
+			error_code: "unsafe-path",
+		});
+	});
+
+	it("saves from an archived session without creating or reviving it", async () => {
+		const selection = {
+			agentCwd: "/tmp/archived-project",
+			providerId: "claude",
+			model: "claude-test",
+			effort: "medium",
+			permissionMode: "default",
+		};
+		vi.mocked(dbMock.getSessionSelection)
+			.mockResolvedValueOnce(selection)
+			.mockResolvedValueOnce(selection);
+		const session = makeSession();
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs("archived-session");
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "save_workflow",
+				request_id: "save-3",
+				session_id: "archived-session",
+				source_script_path:
+					"/tmp/.claude/projects/project/session/workflows/scripts/audit.js",
+				scope: "personal",
+			}),
+		);
+
+		expect(pool.create).not.toHaveBeenCalled();
+		expect(session.saveProviderWorkflow).toHaveBeenCalledWith(
+			{
+				sourceScriptPath:
+					"/tmp/.claude/projects/project/session/workflows/scripts/audit.js",
+				scope: "personal",
+				overwrite: undefined,
+			},
+			{
+				agentCwd: "/tmp/archived-project",
+				sessionId: "archived-session",
+				providerId: "claude",
+			},
+		);
+		expect(session.probeWorkflowCatalog).toHaveBeenCalledWith(
+			expect.any(Function),
+			{
+				agentCwd: "/tmp/archived-project",
+				sessionId: "archived-session",
+				providerId: "claude",
+			},
+		);
+		expect(runState.send).not.toHaveBeenCalled();
+		expect(lastSentTo(ws)).toEqual({
+			type: "workflow_save_result",
+			request_id: "save-3",
+			workflow: {
+				id: "claude-workflow:audit",
+				name: "audit",
+				description: "Audit the project",
+				argumentHint: "[input]",
+				scriptPath: "/tmp/test/.claude/workflows/audit.js",
+				scope: "project",
+				scopeLabel: "Project",
+				availableAsCommand: true,
+			},
+		});
+	});
+
+	it("reports a missing archived session instead of saving in the vault scope", async () => {
+		const session = makeSession();
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs("missing-session");
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "save_workflow",
+				request_id: "save-4",
+				session_id: "missing-session",
+				source_script_path: "/tmp/audit.js",
+				scope: "project",
+			}),
+		);
+
+		expect(session.saveProviderWorkflow).not.toHaveBeenCalled();
+		expect(pool.create).not.toHaveBeenCalled();
+		expect(lastSentTo(ws)).toEqual({
+			type: "workflow_save_result",
+			request_id: "save-4",
+			error: "This workflow session could not be found.",
+		});
+	});
+
+	it("deletes from an archived session without creating or reviving it", async () => {
+		const selection = {
+			agentCwd: "/tmp/archived-project",
+			providerId: "claude",
+			model: "claude-test",
+			effort: "medium",
+			permissionMode: "default",
+		};
+		vi.mocked(dbMock.getSessionSelection)
+			.mockResolvedValueOnce(selection)
+			.mockResolvedValueOnce(selection);
+		const session = makeSession();
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs("archived-session");
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "delete_workflow",
+				request_id: "delete-3",
+				session_id: "archived-session",
+				script_path: "/tmp/archived-project/.claude/workflows/audit.js",
+				scope: "project",
+			}),
+		);
+
+		expect(pool.create).not.toHaveBeenCalled();
+		expect(session.deleteProviderWorkflow).toHaveBeenCalledWith(
+			{
+				scriptPath: "/tmp/archived-project/.claude/workflows/audit.js",
+				scope: "project",
+			},
+			{
+				agentCwd: "/tmp/archived-project",
+				sessionId: "archived-session",
+				providerId: "claude",
+			},
+		);
+		expect(session.probeWorkflowCatalog).toHaveBeenCalledWith(
+			expect.any(Function),
+			{
+				agentCwd: "/tmp/archived-project",
+				sessionId: "archived-session",
+				providerId: "claude",
+			},
+		);
+		expect(runState.send).not.toHaveBeenCalled();
+		expect(lastSentTo(ws)).toEqual({
+			type: "workflow_delete_result",
+			request_id: "delete-3",
+			script_path: "/tmp/archived-project/.claude/workflows/audit.js",
+		});
+	});
+
+	it("reads a workflow definition from an archived session without reviving it", async () => {
+		const selection = {
+			agentCwd: "/tmp/archived-project",
+			providerId: "claude",
+			model: "claude-test",
+			effort: "medium",
+			permissionMode: "default",
+		};
+		vi.mocked(dbMock.getSessionSelection)
+			.mockResolvedValueOnce(selection)
+			.mockResolvedValueOnce(selection);
+		const source = 'export const meta = { name: "audit" }';
+		const session = makeSession({
+			readProviderWorkflowSource: vi.fn().mockResolvedValue(source),
+		});
+		const { pool, runState } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs("archived-session");
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "read_workflow_source",
+				request_id: "source-3",
+				session_id: "archived-session",
+				script_path: "/tmp/archived-project/.claude/workflows/audit.js",
+				scope: "project",
+			}),
+		);
+
+		expect(pool.create).not.toHaveBeenCalled();
+		expect(session.readProviderWorkflowSource).toHaveBeenCalledWith(
+			{
+				scriptPath: "/tmp/archived-project/.claude/workflows/audit.js",
+				scope: "project",
+			},
+			{
+				agentCwd: "/tmp/archived-project",
+				sessionId: "archived-session",
+				providerId: "claude",
+			},
+		);
+		expect(runState.send).not.toHaveBeenCalled();
+		expect(lastSentTo(ws)).toEqual({
+			type: "workflow_source_result",
+			request_id: "source-3",
+			script_path: "/tmp/archived-project/.claude/workflows/audit.js",
+			source,
+		});
 	});
 });
 

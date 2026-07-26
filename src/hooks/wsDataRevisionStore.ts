@@ -4,6 +4,8 @@ import {
 	type DataRevisionSnapshot,
 } from "#/lib/dataRevision";
 
+export type { DataRevisionSnapshot };
+
 export const EMPTY_DATA_REVISIONS: DataRevisionSnapshot = {
 	stats: 0,
 	sessions: 0,

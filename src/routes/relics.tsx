@@ -38,7 +38,7 @@ import {
 import type { AttachmentRow } from "#/db";
 import { useDialogFocus } from "#/hooks/useDialogFocus";
 import { useIsDesktop } from "#/hooks/useIsDesktop";
-import { useWs } from "#/hooks/useWs";
+import { type ServerMessage, useWs } from "#/hooks/useWs";
 import {
 	getDataRevisionSnapshot,
 	subscribeDataRevisionSnapshot,
@@ -51,7 +51,6 @@ import {
 } from "#/lib/obsidianCapture";
 import { ROUTE_SCROLL_RESTORATION_IDS } from "#/lib/scrollContainers";
 import { getConfig } from "#/lib/serverFns/config";
-import type { ServerMessage } from "#/server/protocol";
 
 type ListResult = {
 	rows: AttachmentRow[];

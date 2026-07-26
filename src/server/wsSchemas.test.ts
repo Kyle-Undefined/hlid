@@ -215,6 +215,147 @@ describe("chat WebSocket runtime schema", () => {
 		).toBeNull();
 	});
 
+	it("accepts only bounded native workflow stop controls", () => {
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "workflow_control",
+					action: "stop",
+					task_id: "workflow-task-1",
+					session_id: "session-1",
+				}),
+			),
+		).toEqual({
+			type: "workflow_control",
+			action: "stop",
+			task_id: "workflow-task-1",
+			session_id: "session-1",
+		});
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "workflow_control",
+					action: "resume",
+					task_id: "workflow-task-1",
+				}),
+			),
+		).toBeNull();
+	});
+
+	it("validates workflow discovery and save requests", () => {
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "probe_workflows",
+					agent_cwd: "/tmp/project",
+					session_id: "session-1",
+				}),
+			),
+		).toEqual({
+			type: "probe_workflows",
+			agent_cwd: "/tmp/project",
+			session_id: "session-1",
+		});
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "save_workflow",
+					request_id: "request-1",
+					session_id: "session-1",
+					source_script_path:
+						"/tmp/.claude/projects/project/session/workflows/scripts/audit.js",
+					scope: "project",
+					overwrite: true,
+				}),
+			),
+		).toEqual({
+			type: "save_workflow",
+			request_id: "request-1",
+			session_id: "session-1",
+			source_script_path:
+				"/tmp/.claude/projects/project/session/workflows/scripts/audit.js",
+			scope: "project",
+			overwrite: true,
+		});
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "save_workflow",
+					request_id: "request-1",
+					source_script_path: "/tmp/audit.js",
+					scope: "workspace",
+				}),
+			),
+		).toBeNull();
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "delete_workflow",
+					request_id: "request-2",
+					session_id: "session-1",
+					script_path: "/tmp/project/.claude/workflows/audit.js",
+					scope: "project",
+				}),
+			),
+		).toEqual({
+			type: "delete_workflow",
+			request_id: "request-2",
+			session_id: "session-1",
+			script_path: "/tmp/project/.claude/workflows/audit.js",
+			scope: "project",
+		});
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "delete_workflow",
+					request_id: "request-2",
+					script_path: "/tmp/project/.claude/workflows/audit.js",
+					scope: "workspace",
+				}),
+			),
+		).toBeNull();
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "read_workflow_source",
+					request_id: "request-3",
+					session_id: "session-1",
+					script_path: "/tmp/project/.claude/workflows/audit.js",
+					scope: "project",
+				}),
+			),
+		).toEqual({
+			type: "read_workflow_source",
+			request_id: "request-3",
+			session_id: "session-1",
+			script_path: "/tmp/project/.claude/workflows/audit.js",
+			scope: "project",
+		});
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "read_workflow_source",
+					request_id: "request-3",
+					script_path: "/tmp/generated-audit.js",
+				}),
+			),
+		).toEqual({
+			type: "read_workflow_source",
+			request_id: "request-3",
+			script_path: "/tmp/generated-audit.js",
+		});
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "read_workflow_source",
+					request_id: "request-3",
+					script_path: "/tmp/generated-audit.js",
+					scope: "workspace",
+				}),
+			),
+		).toBeNull();
+	});
+
 	it("validates native goal controls", () => {
 		expect(
 			parseClientMessage(

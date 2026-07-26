@@ -2,6 +2,8 @@ import { useCallback, useEffect, useSyncExternalStore } from "react";
 import type { ServerMessage } from "../server/protocol";
 import * as wsStore from "./wsStore";
 
+export type { ServerMessage };
+
 export function useWs(onMessage?: (msg: ServerMessage) => void) {
 	const {
 		wsStatus,

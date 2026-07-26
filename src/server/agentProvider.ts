@@ -45,6 +45,59 @@ export type SlashCommand = {
 	action?: "review" | "computer-use" | "goal" | "compact";
 };
 
+export type ProviderWorkflowSaveScope = "project" | "personal";
+
+/** Provider-owned workflow script saved into a native command location. */
+export type ProviderSavedWorkflow = {
+	id: string;
+	name: string;
+	description: string;
+	argumentHint: string;
+	/** Path expressed in the owning provider runtime's filesystem syntax. */
+	scriptPath: string;
+	scope: ProviderWorkflowSaveScope;
+	scopeLabel: string;
+	/** False when a closer project command with the same name wins. */
+	availableAsCommand: boolean;
+};
+
+export type ProviderWorkflowSaveLocation = {
+	scope: ProviderWorkflowSaveScope;
+	scopeLabel: string;
+	/** Directory expressed in the owning provider runtime's filesystem syntax. */
+	path: string;
+	available: boolean;
+	error?: string;
+};
+
+export type ProviderWorkflowCatalog = {
+	workflows: ProviderSavedWorkflow[];
+	locations: ProviderWorkflowSaveLocation[];
+};
+
+export type ProviderWorkflowSaveInput = {
+	cwd: string;
+	/** Persisted provider-owned script path returned by a prior workflow run. */
+	sourceScriptPath: string;
+	scope: ProviderWorkflowSaveScope;
+	overwrite?: boolean;
+};
+
+export type ProviderWorkflowDeleteInput = {
+	cwd: string;
+	/** Exact script path returned by the provider workflow catalog. */
+	scriptPath: string;
+	scope: ProviderWorkflowSaveScope;
+};
+
+export type ProviderWorkflowSourceInput = {
+	cwd: string;
+	/** Provider-owned workflow script path returned by a run or catalog entry. */
+	scriptPath: string;
+	/** Present for an exact saved workflow; omitted for a persisted run script. */
+	scope?: ProviderWorkflowSaveScope;
+};
+
 export type ProviderGoalStatus =
 	| "active"
 	| "paused"
@@ -156,17 +209,47 @@ export type SubagentSnapshot = {
 	provider: "codex" | "claude";
 	agentId: string;
 	taskId?: string;
+	/**
+	 * Provider-neutral activity kind. Older persisted snapshots omit this and
+	 * are treated as ordinary agents.
+	 */
+	kind?: "agent" | "workflow";
+	/**
+	 * Agent/activity id of the owning parent. Claude workflow children point to
+	 * the workflow task id; durable Hlid children can reuse the same lineage
+	 * contract later without pretending they are provider-native tasks.
+	 */
+	parentActivityId?: string;
+	/** Provider-native task discriminator retained for capability-aware UI. */
+	activityType?: string;
 	/** Provider-assigned display name (for example a Claude teammate name). */
 	name?: string;
 	/** Agent type/path when it is distinct from the provider-assigned name. */
 	label?: string;
 	prompt?: string;
 	description?: string;
+	/** Provider-owned workflow phase containing this agent, when available. */
+	phase?: string;
 	model?: string;
+	/** Optional provider-reported effort. Claude workflows do not emit this today. */
 	effort?: string;
+	/** Provider-owned retry/attempt number, when available. */
+	attempt?: number;
 	status: SubagentStatus;
 	currentStep?: string;
 	lastTool?: string;
+	/** Bounded provider-owned final output preview, when available. */
+	resultPreview?: string;
+	/** Claude local-workflow resume identity. Same-session only. */
+	workflowRunId?: string;
+	/** Claude confirmed that the prior native workflow task was stopped. */
+	workflowStopConfirmed?: boolean;
+	/** Provider-owned workflow script retained for a native resume turn. */
+	workflowScriptPath?: string;
+	/** Provider-owned directory containing workflow child transcripts. */
+	workflowTranscriptDir?: string;
+	/** Provider-owned remote workflow URL, when the task is remote. */
+	workflowSessionUrl?: string;
 	startedAtMs: number;
 	endedAtMs?: number;
 	usage?: {
@@ -365,6 +448,11 @@ export interface AgentSession extends AsyncIterable<AgentEvent> {
 	 */
 	interrupt?(): Promise<void>;
 	/**
+	 * Stop one provider-owned background task without interrupting the parent
+	 * turn. Claude exposes this as a native streaming control request.
+	 */
+	stopTask?(taskId: string): Promise<void>;
+	/**
 	 * Close the input stream without aborting the session. Use for one-shot
 	 * queries (e.g. recap) after the final send() so the SDK process sees EOF
 	 * on stdin and exits cleanly after its turn instead of waiting indefinitely.
@@ -540,6 +628,16 @@ export interface AgentProvider {
 		cwd: string;
 		executable?: string;
 	}): Promise<ProviderSkillInfo[]>;
+	/** Discover reusable workflow commands in this provider's native locations. */
+	listWorkflows?(context: { cwd: string }): Promise<ProviderWorkflowCatalog>;
+	/** Promote one provider-persisted workflow script into a native command. */
+	saveWorkflow?(
+		input: ProviderWorkflowSaveInput,
+	): Promise<ProviderSavedWorkflow>;
+	/** Permanently delete one exact workflow returned by listWorkflows(). */
+	deleteWorkflow?(input: ProviderWorkflowDeleteInput): Promise<void>;
+	/** Read one provider-owned workflow definition for an on-demand preview. */
+	readWorkflowSource?(input: ProviderWorkflowSourceInput): Promise<string>;
 	query(params: AgentQueryParams): AgentSession;
 	/**
 	 * Fork an existing (typically idle) session's transcript into a brand-new
