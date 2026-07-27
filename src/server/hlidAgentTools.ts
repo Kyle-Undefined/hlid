@@ -1,6 +1,8 @@
 import { z } from "zod";
 import { dbFetch, requireDbOk } from "#/lib/dbClient";
 import { parseHlidApiIndex } from "../lib/apiIndex";
+import { HLID_WINDOWS_COMPUTER_USE_TOOL } from "../lib/hlidContext";
+import type { ProviderInfo } from "../lib/providerTypes";
 import type { AgentToolPayload } from "./agentToolResult";
 import { buildHlidApiDiscoveryResponse } from "./hlidApiDiscovery";
 import {
@@ -114,7 +116,7 @@ export const HLID_AGENT_TOOL_SPECS: HlidAgentToolSpec[] = [
 		readOnly: true,
 		deferLoading: true,
 		searchHint:
-			"Hlid help capabilities operating context references permissions sessions plans review workflows goals Relics Project Preview MCP skills extensions providers handoff",
+			"Hlid help capabilities operating context references permissions sessions plans review workflows goals Relics Project Preview MCP skills extensions API Computer Use voice audio providers handoff",
 		inputSchema: {
 			type: "object",
 			properties: {
@@ -416,30 +418,74 @@ export type HlidAgentToolContext = HlidOperatingContext;
 async function liveHlidOperatingContext(
 	context: HlidAgentToolContext,
 ): Promise<HlidAgentToolContext> {
-	if (!context.sessionId) return context;
-	try {
-		const response = await dbFetch(
-			`/db/session-row?id=${encodeURIComponent(context.sessionId)}`,
-		);
-		if (!response.ok) return context;
-		const row = (await response.json()) as {
-			provider_id?: string | null;
-			selected_model?: string | null;
-			model?: string | null;
-			selected_effort?: string | null;
-			selected_permission_mode?: string | null;
-		} | null;
-		if (!row) return context;
-		return {
-			...context,
-			providerId: row.provider_id ?? context.providerId,
-			model: row.selected_model ?? row.model ?? context.model,
-			effort: row.selected_effort ?? context.effort,
-			permissionMode: row.selected_permission_mode ?? context.permissionMode,
-		};
-	} catch {
-		return context;
+	let live: HlidAgentToolContext = {
+		...context,
+		registeredHlidTools: HLID_AGENT_TOOL_SPECS.map((spec) => spec.name),
+	};
+	if (context.sessionId) {
+		try {
+			const response = await dbFetch(
+				`/db/session-row?id=${encodeURIComponent(context.sessionId)}`,
+			);
+			if (response.ok) {
+				const row = (await response.json()) as {
+					provider_id?: string | null;
+					selected_model?: string | null;
+					model?: string | null;
+					selected_effort?: string | null;
+					selected_permission_mode?: string | null;
+				} | null;
+				if (row) {
+					live = {
+						...live,
+						providerId: row.provider_id ?? live.providerId,
+						model: row.selected_model ?? row.model ?? live.model,
+						effort: row.selected_effort ?? live.effort,
+						permissionMode: row.selected_permission_mode ?? live.permissionMode,
+					};
+				}
+			}
+		} catch {
+			// Persisted selections are best-effort; provider context remains usable.
+		}
 	}
+	const [providerSnapshot, voiceSnapshot] = await Promise.all([
+		(async () => {
+			try {
+				const response = await dbFetch("/providers?host_capabilities=1");
+				if (!response.ok) return undefined;
+				const body = (await response.json()) as { providers?: ProviderInfo[] };
+				return body.providers?.find(
+					(provider) => provider.id === live.providerId,
+				);
+			} catch {
+				return undefined;
+			}
+		})(),
+		(async () => {
+			try {
+				const response = await dbFetch("/voice");
+				if (!response.ok) return undefined;
+				const body = (await response.json()) as {
+					status?: HlidOperatingContext["voiceSnapshot"];
+				};
+				return body.status;
+			} catch {
+				return undefined;
+			}
+		})(),
+	]);
+	return {
+		...live,
+		registeredHlidTools: [
+			...HLID_AGENT_TOOL_SPECS.map((spec) => spec.name),
+			...(providerSnapshot?.hostCapabilities?.windowsComputerUse?.available
+				? [HLID_WINDOWS_COMPUTER_USE_TOOL]
+				: []),
+		],
+		...(providerSnapshot ? { providerSnapshot } : {}),
+		...(voiceSnapshot ? { voiceSnapshot } : {}),
+	};
 }
 
 const captureResultSchema = z.object({

@@ -197,6 +197,14 @@ describe("CodexProvider capability declarations", () => {
 		});
 	});
 
+	it("declares structured goals, activities, and realtime transport", () => {
+		expect(new CodexProvider().capabilities).toEqual({
+			goalControl: true,
+			structuredActivities: ["compact", "review"],
+			realtime: true,
+		});
+	});
+
 	it("forks a Codex thread through the captured turn without auto-continuing its goal", async () => {
 		const { proc, writes } = makeFakeSessionProc();
 		vi.mocked(spawn).mockReturnValue(proc as never);
@@ -1402,7 +1410,21 @@ describe("CodexAgentSession — commands", () => {
 			});
 			vi.mocked(spawn).mockReturnValue(proc as never);
 			vi.mocked(resolveCodexExecutable).mockReturnValue("C:\\bin\\codex.exe");
-			const session = new CodexProvider().query(baseCodexParams());
+			const provider = new CodexProvider();
+			expect(provider.hlidToolLoading()).toContainEqual(
+				expect.objectContaining({
+					namespace: "hlid",
+					total: 9,
+					deferred: 8,
+					tools: expect.arrayContaining([
+						{
+							name: "windows_computer_use",
+							delivery: "loaded",
+						},
+					]),
+				}),
+			);
+			const session = provider.query(baseCodexParams());
 			expect(await session.supportedCommands?.()).toContainEqual({
 				name: "computer-use",
 				description: "Run a task in a Windows-native Codex Computer Use thread",

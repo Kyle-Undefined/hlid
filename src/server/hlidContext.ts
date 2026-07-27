@@ -46,6 +46,7 @@ export function finalizeHlidTurnContextManifest(
 		permissionMode?: string | null;
 		providerPromptChars: number;
 		providerHandoffChars?: number;
+		toolLoading?: HlidToolLoadingSummary[];
 		recordedAt?: number;
 	},
 ): HlidTurnContextManifest {
@@ -61,6 +62,7 @@ export function finalizeHlidTurnContextManifest(
 			: {}),
 		providerPromptChars: options.providerPromptChars,
 		providerHandoffChars: options.providerHandoffChars ?? 0,
-		toolLoading: hlidToolLoadingSummary(options.providerId),
+		toolLoading:
+			options.toolLoading ?? hlidToolLoadingSummary(options.providerId),
 	};
 }

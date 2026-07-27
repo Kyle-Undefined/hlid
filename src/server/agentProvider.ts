@@ -1,3 +1,5 @@
+import type { HlidToolLoadingSummary } from "../lib/hlidContext";
+
 /**
  * A single rate-limit window reading parsed from a provider's HTTP response headers.
  * Returned by AgentProvider.proxyConfig.parseHeaders and forwarded to DB + WS broadcast.
@@ -544,6 +546,17 @@ export type ProviderForkCapability = {
 	throughMessage: boolean;
 };
 
+export type ProviderCapabilityMetadata = {
+	/** Provider-native durable goal control exposed through Hlid. */
+	goalControl?: boolean;
+	/** Provider-native activities Hlid can invoke without prompt parsing. */
+	structuredActivities?: ReadonlyArray<"compact" | "review">;
+	/** Provider-native reusable workflow discovery and management. */
+	workflowCatalog?: boolean;
+	/** Provider exposes the realtime conversation transport; config/model/backend still gate use. */
+	realtime?: boolean;
+};
+
 export type ForkSessionParams = {
 	/** Native provider session id to fork from (not hlid's own session id). */
 	sessionId: string;
@@ -581,6 +594,15 @@ export interface AgentProvider {
 	readonly providerId: string;
 	/** Human-readable display name, e.g. "Claude". Defaults to providerId. */
 	readonly label?: string;
+	/** Static provider-owned capability shape combined with live catalog evidence. */
+	readonly capabilities?: ProviderCapabilityMetadata;
+	/**
+	 * Describe the Hlid-owned tool schemas this provider transport registers.
+	 * The turn receipt uses this instead of assuming every transport is alike.
+	 */
+	hlidToolLoading?():
+		| HlidToolLoadingSummary[]
+		| Promise<HlidToolLoadingSummary[]>;
 	/**
 	 * Models this provider supports. UI uses this to populate the model picker.
 	 * Omit for providers with fully dynamic or unconstrained model lists.

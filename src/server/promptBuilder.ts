@@ -35,6 +35,9 @@ export type BuildPromptOptions = {
 	/** Small capability-gated operating contract, sent once per provider conversation. */
 	operatingBrief?: string;
 	operatingBriefVersion?: number;
+	operatingBriefRevision?: string;
+	operatingBriefPreview?: string;
+	operatingBriefDelivery?: "included" | "already-established" | "not-delivered";
 	allowedAgentRealPaths: string[];
 	agentMode: "cwd" | "context";
 	agentCwd: string | undefined;
@@ -364,7 +367,20 @@ function assemblePrompt(
 				? {
 						operatingBrief: {
 							version: opts.operatingBriefVersion,
+							...(opts.operatingBriefRevision
+								? {
+										briefRevision: opts.operatingBriefRevision,
+									}
+								: {}),
+							...(opts.operatingBriefPreview
+								? { preview: opts.operatingBriefPreview }
+								: {}),
 							included: operatingBriefBlock.length > 0,
+							delivery:
+								opts.operatingBriefDelivery ??
+								(operatingBriefBlock.length > 0
+									? "included"
+									: "already-established"),
 							chars: operatingBriefBlock.length,
 						},
 					}

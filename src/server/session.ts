@@ -5,7 +5,13 @@ import type { ToolCall } from "@umbod/core";
 import type { HlidConfig } from "../config";
 import * as db from "../db";
 import { resolveClaudeExecutable } from "../lib/claudePath";
-import type { HlidTurnContextManifest } from "../lib/hlidContext";
+import {
+	estimateContextTokens,
+	type HlidContextBlock,
+	type HlidPromptContextManifest,
+	type HlidToolLoadingSummary,
+	type HlidTurnContextManifest,
+} from "../lib/hlidContext";
 import {
 	expandTilde,
 	isPathAccessibleFromRuntime,
@@ -63,8 +69,9 @@ import { bumpDataRevision } from "./dataRevision";
 import { resolveExecutionContext } from "./executionContext";
 import { finalizeHlidTurnContextManifest } from "./hlidContext";
 import {
-	buildHlidOperatingBrief,
+	buildHlidOperatingBriefResult,
 	HLID_OPERATING_CONTRACT_VERSION,
+	type HlidOperatingBriefResult,
 } from "./hlidHelp";
 import { planStagingPath, prepareLibrary } from "./libraryStore";
 import { getActiveObsidianNote, readObsidianNote } from "./obsidianCli";
@@ -307,6 +314,35 @@ function buildProviderHandoff(
 		"",
 		prompt,
 	].join("\n");
+}
+
+function providerCommandContextManifest(
+	context: HlidPromptContextManifest,
+	commandChars: number,
+	hlidAddedChars: number,
+	blocks: HlidContextBlock[],
+): HlidPromptContextManifest {
+	const { instructionFile: _instructionFile, ...delivered } = context;
+	return {
+		...delivered,
+		promptChars: commandChars,
+		hlidAddedChars,
+		estimatedHlidTokens: estimateContextTokens(hlidAddedChars),
+		blocks,
+		skills: [],
+		attachments: [],
+		planHtml: false,
+		...(context.operatingBrief
+			? {
+					operatingBrief: {
+						...context.operatingBrief,
+						included: false,
+						delivery: "not-delivered",
+						chars: 0,
+					},
+				}
+			: {}),
+	};
 }
 
 type AgentSettings = {
@@ -3077,15 +3113,8 @@ export class SessionManager {
 		providerId: string,
 		runtimeCwd: string,
 		permissionMode: string,
-	): string {
-		const providerKey = `${providerId}|${this.currentSessionId ?? "ephemeral"}`;
-		if (
-			this.operatingBriefProviderKey === providerKey &&
-			!this.providerHandoffPending
-		) {
-			return "";
-		}
-		return buildHlidOperatingBrief({
+	): HlidOperatingBriefResult {
+		const result = buildHlidOperatingBriefResult({
 			providerId,
 			model: this.model,
 			effort: this.effort,
@@ -3096,6 +3125,22 @@ export class SessionManager {
 			vaultName: this.vaultName,
 			agentMode: this.agentMode,
 		});
+		const providerKey = `${providerId}|${this.currentSessionId ?? "ephemeral"}`;
+		if (
+			this.operatingBriefProviderKey === providerKey &&
+			!this.providerHandoffPending
+		) {
+			return { ...result, text: "" };
+		}
+		return result;
+	}
+
+	private async toolLoadingFor(
+		provider: AgentProvider,
+	): Promise<HlidToolLoadingSummary[] | undefined> {
+		return provider.hlidToolLoading
+			? await provider.hlidToolLoading()
+			: undefined;
 	}
 
 	private async buildQueuedSteeringPrompt(args: RunQueryArgs): Promise<{
@@ -3110,6 +3155,13 @@ export class SessionManager {
 			this.agentMode === "cwd" && this.agentCwd
 				? this.agentCwd
 				: this.vaultPath;
+		const provider = this.resolveProvider(this.agentCwd);
+		const operatingBrief = this.operatingBriefFor(
+			provider.providerId,
+			runtimeCwd,
+			this.permissionMode,
+		);
+		const toolLoading = await this.toolLoadingFor(provider);
 		const built = await buildPromptAsync({
 			vaultPath: this.vaultPath,
 			vaultName: this.vaultName,
@@ -3118,12 +3170,13 @@ export class SessionManager {
 			agentCwd: this.agentCwd,
 			claudeSessionId: this.providerSessionId,
 			runtimeCwd,
-			operatingBrief: this.operatingBriefFor(
-				this.getProviderId(),
-				runtimeCwd,
-				this.permissionMode,
-			),
+			operatingBrief: operatingBrief.text,
 			operatingBriefVersion: HLID_OPERATING_CONTRACT_VERSION,
+			operatingBriefRevision: operatingBrief.revision,
+			operatingBriefPreview: operatingBrief.preview,
+			operatingBriefDelivery: operatingBrief.text
+				? "included"
+				: "already-established",
 			userMessage,
 			skillContexts,
 			attachments: [],
@@ -3140,11 +3193,12 @@ export class SessionManager {
 			),
 			contextManifest: finalizeHlidTurnContextManifest(built.contextManifest, {
 				delivery: "steer",
-				providerId: this.getProviderId(),
+				providerId: provider.providerId,
 				model: this.model,
 				effort: this.effort,
 				permissionMode: this.permissionMode,
 				providerPromptChars: built.prompt.length,
+				...(toolLoading ? { toolLoading } : {}),
 			}),
 		};
 	}
@@ -4466,13 +4520,12 @@ export class SessionManager {
 			const runtimePlanHtmlPath = this.planHtmlPath
 				? toProviderRuntimePath(runtimeCwd, this.planHtmlPath)
 				: undefined;
-			const operatingBrief = commandAction
-				? ""
-				: this.operatingBriefFor(
-						currentProvider.providerId,
-						runtimeCwd,
-						planMode ? "plan" : configuredPermissionMode,
-					);
+			const operatingBriefResult = this.operatingBriefFor(
+				currentProvider.providerId,
+				runtimeCwd,
+				planMode ? "plan" : configuredPermissionMode,
+			);
+			const operatingBrief = commandAction ? "" : operatingBriefResult.text;
 			const {
 				prompt,
 				safeAttachments,
@@ -4490,6 +4543,13 @@ export class SessionManager {
 				runtimeCwd,
 				operatingBrief,
 				operatingBriefVersion: HLID_OPERATING_CONTRACT_VERSION,
+				operatingBriefRevision: operatingBriefResult.revision,
+				operatingBriefPreview: operatingBriefResult.preview,
+				operatingBriefDelivery: commandAction
+					? "not-delivered"
+					: operatingBrief
+						? "included"
+						: "already-established",
 				userMessage,
 				skillContexts,
 				attachments,
@@ -4521,6 +4581,8 @@ export class SessionManager {
 				}
 			}
 			let commandArgs: string | undefined;
+			let commandHlidAddedChars = 0;
+			const commandBlocks: HlidContextBlock[] = [];
 			if (commandAction) {
 				commandArgs = userMessage
 					.replace(new RegExp(`^/${commandAction}(?:\\s+|:\\s*)?`, "i"), "")
@@ -4536,8 +4598,16 @@ export class SessionManager {
 								: toProviderRuntimePath(runtimeCwd, reference.path);
 						return `- ${path} (Vault: ${reference.relativePath})`;
 					});
-					commandArgs =
+					const next =
 						`${commandArgs}\n\nVault references:\n${referenceLines.join("\n")}`.trim();
+					const addedChars = Math.max(0, next.length - commandArgs.length);
+					commandArgs = next;
+					commandHlidAddedChars += addedChars;
+					commandBlocks.push({
+						kind: "vault_references",
+						chars: addedChars,
+						count: safeVaultReferences.length,
+					});
 				}
 				if (safeWorkspaceReferences.length > 0) {
 					const referenceLines = safeWorkspaceReferences.map((reference) => {
@@ -4547,12 +4617,29 @@ export class SessionManager {
 								: toProviderRuntimePath(runtimeCwd, reference.path);
 						return `- ${path} (Workspace: ${reference.relativePath}, ${reference.mime}, sha256:${reference.sha256})`;
 					});
-					commandArgs =
+					const next =
 						`${commandArgs}\n\nWorkspace references:\n${referenceLines.join("\n")}`.trim();
+					const addedChars = Math.max(0, next.length - commandArgs.length);
+					commandArgs = next;
+					commandHlidAddedChars += addedChars;
+					commandBlocks.push({
+						kind: "workspace_references",
+						chars: addedChars,
+						count: safeWorkspaceReferences.length,
+					});
 				}
 			}
+			const deliveredContextManifest = commandAction
+				? providerCommandContextManifest(
+						contextManifest,
+						commandArgs?.length ?? 0,
+						commandHlidAddedChars,
+						commandBlocks,
+					)
+				: contextManifest;
+			const toolLoading = await this.toolLoadingFor(currentProvider);
 			const turnContextManifest = finalizeHlidTurnContextManifest(
-				contextManifest,
+				deliveredContextManifest,
 				{
 					delivery: commandAction ? "provider-command" : "chat",
 					providerId: currentProvider.providerId,
@@ -4565,6 +4652,7 @@ export class SessionManager {
 					providerHandoffChars: commandAction
 						? 0
 						: Math.max(0, providerPrompt.length - prompt.length),
+					...(toolLoading ? { toolLoading } : {}),
 				},
 			);
 

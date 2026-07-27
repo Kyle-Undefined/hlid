@@ -268,6 +268,15 @@ export async function loadProviderCatalog(
 				permissionModes: provider.permissionModes
 					? [...provider.permissionModes]
 					: undefined,
+				...(provider.capabilities
+					? {
+							capabilities: {
+								...provider.capabilities,
+								structuredActivities:
+									provider.capabilities.structuredActivities?.slice(),
+							},
+						}
+					: {}),
 				forkCapability,
 				hostCapabilities,
 			};

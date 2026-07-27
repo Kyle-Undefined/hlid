@@ -6,7 +6,13 @@ import { useDialogFocus } from "./useDialogFocus";
 
 afterEach(cleanup);
 
-function Harness({ onClose = vi.fn() }: { onClose?: () => void }) {
+function Harness({
+	onClose = vi.fn(),
+	initialFocus = "first",
+}: {
+	onClose?: () => void;
+	initialFocus?: "first" | "dialog";
+}) {
 	const [open, setOpen] = useState(false);
 	return (
 		<>
@@ -15,6 +21,7 @@ function Harness({ onClose = vi.fn() }: { onClose?: () => void }) {
 			</button>
 			{open && (
 				<Dialog
+					initialFocus={initialFocus}
 					onClose={() => {
 						setOpen(false);
 						onClose();
@@ -25,9 +32,18 @@ function Harness({ onClose = vi.fn() }: { onClose?: () => void }) {
 	);
 }
 
-function Dialog({ onClose }: { onClose: () => void }) {
-	const { dialogRef, onDialogKeyDown } =
-		useDialogFocus<HTMLDivElement>(onClose);
+function Dialog({
+	onClose,
+	initialFocus,
+}: {
+	onClose: () => void;
+	initialFocus: "first" | "dialog";
+}) {
+	const { dialogRef, onDialogKeyDown } = useDialogFocus<HTMLDivElement>(
+		onClose,
+		true,
+		initialFocus,
+	);
 	return (
 		<div
 			ref={dialogRef}
@@ -60,5 +76,15 @@ describe("useDialogFocus", () => {
 		fireEvent.keyDown(last, { key: "Escape" });
 		expect(onClose).toHaveBeenCalledOnce();
 		expect(document.activeElement).toBe(trigger);
+	});
+
+	it("can focus the dialog surface without highlighting its first action", () => {
+		render(<Harness initialFocus="dialog" />);
+		fireEvent.click(screen.getByRole("button", { name: "Open" }));
+
+		expect(document.activeElement).toBe(screen.getByRole("dialog"));
+		expect(document.activeElement).not.toBe(
+			screen.getByRole("button", { name: "First" }),
+		);
 	});
 });

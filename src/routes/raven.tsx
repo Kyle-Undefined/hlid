@@ -1349,6 +1349,7 @@ function useRavenSend(props: RavenActionProps) {
 				openContext();
 				clearDraft();
 				setInput("");
+				setActiveSkills([]);
 				return;
 			}
 			if (commandAction === "workflows") {

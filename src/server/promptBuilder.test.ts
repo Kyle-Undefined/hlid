@@ -60,13 +60,19 @@ describe("buildPrompt — basic", async () => {
 				vaultName: "Fornbok",
 				operatingBrief: "",
 				operatingBriefVersion: 1,
+				operatingBriefRevision: "v1-a1b2c3d4",
+				operatingBriefPreview: "Hlid operating brief (v1)",
+				operatingBriefDelivery: "already-established",
 			}),
 		);
 
 		expect(prompt).toBe("hello");
 		expect(contextManifest.operatingBrief).toEqual({
 			version: 1,
+			briefRevision: "v1-a1b2c3d4",
+			preview: "Hlid operating brief (v1)",
 			included: false,
+			delivery: "already-established",
 			chars: 0,
 		});
 		expect(contextManifest.blocks).toEqual([]);
@@ -117,6 +123,7 @@ describe("buildPrompt — vault references", async () => {
 		expect(result.contextManifest.operatingBrief).toEqual({
 			version: 1,
 			included: true,
+			delivery: "included",
 			chars: 74,
 		});
 	});

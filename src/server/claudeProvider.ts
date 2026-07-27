@@ -15,6 +15,7 @@ import {
 	tool,
 } from "@anthropic-ai/claude-agent-sdk";
 import { resolveClaudeExecutable } from "../lib/claudePath";
+import { describeHlidToolLoading } from "../lib/hlidContext";
 import { parseWslUnc, toHostRuntimePath } from "../lib/paths";
 import type {
 	AgentEvent,
@@ -111,6 +112,7 @@ function createHlidSdkServer(params: AgentQueryParams) {
 							effort: params.effort,
 							permissionMode: params.permissionMode,
 							policyEnforced: params.policyEnforced,
+							codexRealtimeEnabled: params.codexRealtimeEnabled,
 							runtimeCwd: params.cwd,
 							sessionId: params.hostSessionId,
 							vaultName: params.vaultName,
@@ -2733,6 +2735,32 @@ async function hydrateForkedMessages(
 export class ClaudeProvider implements AgentProvider {
 	readonly providerId: string;
 	readonly label: string;
+	readonly capabilities = {
+		workflowCatalog: true,
+	} as const;
+	hlidToolLoading() {
+		const hlidTools = describeHlidToolLoading(HLID_AGENT_TOOL_SPECS, true);
+		const obsidianTools = describeHlidToolLoading(
+			OBSIDIAN_AGENT_TOOL_SPECS,
+			true,
+		);
+		return [
+			{
+				namespace: "hlid" as const,
+				total: hlidTools.length,
+				deferred: hlidTools.filter((tool) => tool.delivery === "deferred")
+					.length,
+				tools: hlidTools,
+			},
+			{
+				namespace: "hlid_obsidian" as const,
+				total: obsidianTools.length,
+				deferred: obsidianTools.filter((tool) => tool.delivery === "deferred")
+					.length,
+				tools: obsidianTools,
+			},
+		];
+	}
 	readonly forkCapability = {
 		kind: "exact",
 		cutoff: "message",

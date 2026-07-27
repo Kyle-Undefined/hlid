@@ -5,6 +5,7 @@ import {
 	render,
 	screen,
 	waitFor,
+	within,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -61,12 +62,28 @@ describe("ContextInspectorDialog", () => {
 				planHtml: false,
 				operatingBrief: {
 					version: 1,
+					briefRevision: "v1-a1b2c3d4",
+					preview: "Hlid operating brief (v1):\n- Exact selections.",
 					included: true,
+					delivery: "included",
 					chars: 520,
 				},
 				toolLoading: [
-					{ namespace: "hlid", total: 7, deferred: 7 },
-					{ namespace: "hlid_obsidian", total: 28, deferred: 28 },
+					{
+						namespace: "hlid",
+						total: 2,
+						deferred: 1,
+						tools: [
+							{ name: "hlid_help", delivery: "deferred" },
+							{ name: "windows_computer_use", delivery: "loaded" },
+						],
+					},
+					{
+						namespace: "hlid_obsidian",
+						total: 28,
+						deferred: 28,
+						tools: [{ name: "read_note", delivery: "deferred" }],
+					},
 				],
 			},
 		});
@@ -90,17 +107,60 @@ describe("ContextInspectorDialog", () => {
 			/>,
 		);
 
-		expect(screen.getByRole("dialog", { name: "Hlid context" })).toBeTruthy();
+		const dialog = screen.getByRole("dialog", { name: "Hlid context" });
+		expect(dialog).toBeTruthy();
+		expect(document.activeElement).toBe(dialog);
 		expect(screen.getByText("1 note")).toBeTruthy();
 		await waitFor(() => {
 			expect(screen.getByText("Inlined, truncated · 3,500 chars")).toBeTruthy();
 		});
 		expect(screen.getByText("Vault operating context")).toBeTruthy();
 		expect(screen.getByText("300 chars · 1 item")).toBeTruthy();
-		expect(screen.getByText("Operating contract v1")).toBeTruthy();
+		expect(
+			screen.getByText("Operating contract v1 · Brief v1-a1b2c3d4"),
+		).toBeTruthy();
 		expect(screen.getByText("Included · 520 chars")).toBeTruthy();
 		expect(screen.getByText("28 of 28 deferred")).toBeTruthy();
 		expect(screen.getByText("~1,000")).toBeTruthy();
+		expect(screen.getByText(/Hlid operating brief \(v1\):/)).toBeTruthy();
+		const hlidContext = screen
+			.getAllByText("Hlid context")[1]
+			.closest("details");
+		expect(hlidContext?.open).toBe(false);
+
+		const providerContext = screen
+			.getByText("Provider context")
+			.closest("details");
+		expect(providerContext?.open).toBe(false);
+		fireEvent.click(screen.getByText("Provider context"));
+		expect(providerContext?.open).toBe(true);
+		expect(screen.getByText("12,000 / 200,000 tokens")).toBeTruthy();
+		expect(
+			screen.getByText("Provider-owned and not exposed to Hlid"),
+		).toBeTruthy();
+
+		const hlidTools = screen.getByText("Hlid-owned tools").closest("details");
+		expect(hlidTools?.open).toBe(false);
+		fireEvent.click(screen.getByText("Hlid-owned tools"));
+		expect(hlidTools?.open).toBe(true);
+
+		const hlidNamespace = screen.getByText("hlid").closest("details");
+		expect(hlidNamespace?.open).toBe(false);
+		fireEvent.click(screen.getByText("hlid"));
+		expect(hlidNamespace?.open).toBe(true);
+		expect(
+			within(hlidNamespace as HTMLElement).getByText("Loaded"),
+		).toBeTruthy();
+		expect(
+			within(hlidNamespace as HTMLElement).getByText("Deferred"),
+		).toBeTruthy();
+		expect(
+			within(hlidNamespace as HTMLElement).getByText("hlid_help"),
+		).toBeTruthy();
+		expect(
+			within(hlidNamespace as HTMLElement).getByText("windows_computer_use"),
+		).toBeTruthy();
+		expect(screen.getByText("Provider-native tools")).toBeTruthy();
 
 		fireEvent.click(screen.getByRole("button", { name: "Close Hlid context" }));
 		expect(onClose).toHaveBeenCalledTimes(1);

@@ -87,6 +87,12 @@ vi.mock("./promptBuilder", () => ({
 		async (options: {
 			operatingBrief?: string;
 			operatingBriefVersion?: number;
+			operatingBriefRevision?: string;
+			operatingBriefPreview?: string;
+			operatingBriefDelivery?:
+				| "included"
+				| "already-established"
+				| "not-delivered";
 		}) => ({
 			prompt: "test prompt",
 			safeAttachments: [],
@@ -108,7 +114,18 @@ vi.mock("./promptBuilder", () => ({
 				planHtml: false,
 				operatingBrief: {
 					version: options.operatingBriefVersion ?? 1,
+					...(options.operatingBriefRevision
+						? {
+								briefRevision: options.operatingBriefRevision,
+							}
+						: {}),
+					...(options.operatingBriefPreview
+						? { preview: options.operatingBriefPreview }
+						: {}),
 					included: Boolean(options.operatingBrief),
+					delivery:
+						options.operatingBriefDelivery ??
+						(options.operatingBrief ? "included" : "already-established"),
 					chars: options.operatingBrief?.length ?? 0,
 				},
 			},
@@ -638,14 +655,24 @@ describe("SessionManager — initial state", () => {
 		expect(calls).toHaveLength(3);
 		expect(calls[0][0]).toMatchObject({
 			operatingBriefVersion: 1,
+			operatingBriefRevision: expect.stringMatching(/^v1-[0-9a-f]{8}$/),
+			operatingBriefPreview: expect.stringContaining(
+				"Hlid operating brief (v1)",
+			),
+			operatingBriefDelivery: "included",
 			operatingBrief: expect.stringContaining("Hlid operating brief (v1)"),
 		});
 		expect(calls[1][0]).toMatchObject({
 			operatingBriefVersion: 1,
+			operatingBriefRevision: calls[0][0].operatingBriefRevision,
+			operatingBriefPreview: calls[0][0].operatingBriefPreview,
+			operatingBriefDelivery: "already-established",
 			operatingBrief: "",
 		});
 		expect(calls[2][0]).toMatchObject({
 			operatingBriefVersion: 1,
+			operatingBriefRevision: expect.stringMatching(/^v1-[0-9a-f]{8}$/),
+			operatingBriefDelivery: "included",
 			operatingBrief: expect.stringContaining("Hlid operating brief (v1)"),
 		});
 	});
@@ -3147,7 +3174,38 @@ describe("SessionManager — session-scoped permission persistence", () => {
 					},
 				],
 				safeWorkspaceReferences: [],
-				contextManifest: testPromptContextManifest(),
+				contextManifest: {
+					...testPromptContextManifest(),
+					blocks: [
+						{ kind: "workspace_instruction", chars: 40, count: 1 },
+						{ kind: "attachments", chars: 50, count: 1 },
+						{ kind: "skills", chars: 60, count: 1 },
+						{ kind: "vault_references", chars: 70, count: 1 },
+					],
+					instructionFile: "C:\\Vault\\AGENTS.md",
+					skills: ["C:\\Vault\\Skills\\review.md"],
+					attachments: [
+						{
+							filename: "context.txt",
+							mime: "text/plain",
+							delivery: "path",
+						},
+					],
+					vaultReferences: [
+						{
+							path: "Projects/Hlid.md",
+							delivery: "metadata",
+							includedChars: 0,
+						},
+					],
+					operatingBrief: {
+						version: 1,
+						briefRevision: "v1-a1b2c3d4",
+						included: false,
+						delivery: "not-delivered",
+						chars: 0,
+					},
+				},
 			});
 			const { sm, executeCommand } = setup();
 
@@ -3168,6 +3226,37 @@ describe("SessionManager — session-scoped permission persistence", () => {
 				undefined,
 				expect.stringContaining('"delivery":"provider-command"'),
 			);
+			const userCall = vi
+				.mocked(dbMock.appendMessage)
+				.mock.calls.filter(
+					(call) =>
+						call[0] === "sess-1" &&
+						call[2] === "user" &&
+						call[4] === "computer-use-turn",
+				)
+				.at(-1);
+			const receipt = JSON.parse(String(userCall?.[6]));
+			expect(receipt).toMatchObject({
+				delivery: "provider-command",
+				promptChars: task.length,
+				hlidAddedChars: task.length - "open Docker".length,
+				blocks: [
+					{
+						kind: "vault_references",
+						chars: task.length - "open Docker".length,
+						count: 1,
+					},
+				],
+				skills: [],
+				attachments: [],
+				planHtml: false,
+				operatingBrief: {
+					included: false,
+					delivery: "not-delivered",
+					chars: 0,
+				},
+			});
+			expect(receipt).not.toHaveProperty("instructionFile");
 		});
 
 		it("routes an Umbod approve decision to a capability-level card", async () => {

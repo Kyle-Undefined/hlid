@@ -9,6 +9,10 @@ import {
 	canonicalizeCodexUsage,
 	estimateCodexCost,
 } from "../lib/codexPricing";
+import {
+	describeHlidToolLoading,
+	HLID_WINDOWS_COMPUTER_USE_TOOL,
+} from "../lib/hlidContext";
 import { APP_DIR, toLogical } from "../lib/paths";
 import type {
 	AgentEvent,
@@ -179,7 +183,7 @@ function skillsFromListResponse(value: unknown): Record<string, unknown>[] {
 }
 
 const WINDOWS_COMPUTER_USE_NAMESPACE = HLID_AGENT_NAMESPACE;
-const WINDOWS_COMPUTER_USE_TOOL = "windows_computer_use";
+const WINDOWS_COMPUTER_USE_TOOL = HLID_WINDOWS_COMPUTER_USE_TOOL;
 const DEFAULT_WINDOWS_COMPUTER_USE_MODEL = "gpt-5.4";
 const DEFAULT_WINDOWS_COMPUTER_USE_EFFORT = "medium";
 const CODEX_CHILD_SETTLE_TIMEOUT_MS = 10 * 60_000;
@@ -2320,6 +2324,7 @@ class CodexAgentSession implements AgentSession {
 						effort: this.params.effort,
 						permissionMode: this.params.permissionMode,
 						policyEnforced: this.params.policyEnforced,
+						codexRealtimeEnabled: this.params.codexRealtimeEnabled,
 						runtimeCwd: this.params.cwd,
 						sessionId: this.params.hostSessionId,
 						vaultName: this.params.vaultName,
@@ -3416,6 +3421,45 @@ class CodexAgentSession implements AgentSession {
 export class CodexProvider implements AgentProvider {
 	readonly providerId: string;
 	readonly label: string;
+	readonly capabilities = {
+		goalControl: true,
+		structuredActivities: ["compact", "review"],
+		realtime: true,
+	} as const;
+	hlidToolLoading() {
+		const computerUseAvailable = windowsComputerUseHostAvailable();
+		const hlidTools = [
+			...describeHlidToolLoading(HLID_AGENT_TOOL_SPECS, true),
+			...(computerUseAvailable
+				? [
+						{
+							name: HLID_WINDOWS_COMPUTER_USE_TOOL,
+							delivery: "loaded" as const,
+						},
+					]
+				: []),
+		];
+		const obsidianTools = describeHlidToolLoading(
+			OBSIDIAN_AGENT_TOOL_SPECS,
+			true,
+		);
+		return [
+			{
+				namespace: "hlid" as const,
+				total: hlidTools.length,
+				deferred: hlidTools.filter((tool) => tool.delivery === "deferred")
+					.length,
+				tools: hlidTools,
+			},
+			{
+				namespace: "hlid_obsidian" as const,
+				total: obsidianTools.length,
+				deferred: obsidianTools.filter((tool) => tool.delivery === "deferred")
+					.length,
+				tools: obsidianTools,
+			},
+		];
+	}
 	readonly forkCapability = {
 		kind: "exact",
 		cutoff: "turn",

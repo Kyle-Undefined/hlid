@@ -13,6 +13,7 @@ describe("Hlid MCP process", () => {
 					effort: "high",
 					permissionMode: "default",
 					policyEnforced: true,
+					codexRealtimeEnabled: true,
 					runtimeCwd: "/work/project",
 					sessionId: "session-1",
 					vaultName: "Fornbok",
@@ -43,6 +44,10 @@ describe("Hlid MCP process", () => {
 					},
 					{
 						name: "HLID_INTERNAL_MCP_POLICY_ENFORCED",
+						value: "true",
+					},
+					{
+						name: "HLID_INTERNAL_MCP_CODEX_REALTIME_ENABLED",
 						value: "true",
 					},
 					{ name: "HLID_INTERNAL_MCP_VAULT_NAME", value: "Fornbok" },

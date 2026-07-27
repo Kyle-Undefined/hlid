@@ -4774,6 +4774,12 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 // ── Provider capability declarations ─────────────────────────────────────────
 
 describe("ClaudeProvider capability declarations", () => {
+	it("declares the provider-native workflow catalog", () => {
+		expect(new ClaudeProvider().capabilities).toEqual({
+			workflowCatalog: true,
+		});
+	});
+
 	it("exposes a non-empty models array", () => {
 		const p = new ClaudeProvider();
 		const models = p.models ?? [];

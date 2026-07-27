@@ -168,6 +168,86 @@ describe("Hlid agent tools", () => {
 			],
 		});
 		expect(db.dbFetch).toHaveBeenCalledWith("/db/session-row?id=session-1");
+		expect(db.dbFetch).toHaveBeenCalledWith("/providers?host_capabilities=1");
+	});
+
+	it("combines the live provider catalog, feature flag, model, and registered tools", async () => {
+		db.dbFetch
+			.mockResolvedValueOnce(
+				Response.json({
+					provider_id: "codex",
+					selected_model: "gpt-audio",
+				}),
+			)
+			.mockResolvedValueOnce(
+				Response.json({
+					providers: [
+						{
+							id: "codex",
+							label: "Codex",
+							available: true,
+							models: [
+								{
+									value: "gpt-audio",
+									label: "Audio",
+									inputModalities: ["text", "audio"],
+								},
+							],
+							capabilities: { realtime: true },
+							hostCapabilities: {
+								windowsComputerUse: {
+									label: "Windows Computer Use",
+									available: true,
+								},
+							},
+						},
+					],
+				}),
+			)
+			.mockResolvedValueOnce(
+				Response.json({
+					status: { state: "ready", model: "base" },
+				}),
+			);
+
+		const result = JSON.parse(
+			await executeHlidAgentTool(
+				"hlid_help",
+				{ topic: "voice_audio" },
+				{
+					providerId: "codex",
+					sessionId: "session-1",
+					codexRealtimeEnabled: true,
+				},
+			),
+		);
+
+		expect(result.capabilities).toEqual([
+			expect.objectContaining({
+				id: "voice_audio",
+				availability: "available",
+				modes: expect.objectContaining({
+					local_dictation: expect.objectContaining({
+						availability: "available",
+					}),
+					native_audio_input: expect.objectContaining({
+						availability: "provider-native",
+					}),
+					raven_live: expect.objectContaining({
+						availability: "conditional",
+					}),
+				}),
+			}),
+		]);
+		expect(result.registry).toMatchObject({
+			providerSnapshot: "current",
+			hlidTools: expect.arrayContaining([
+				"hlid_help",
+				"hlid_api",
+				"windows_computer_use",
+			]),
+		});
+		expect(db.dbFetch).toHaveBeenCalledWith("/voice");
 	});
 
 	it("starts a session-scoped preview through Hlid's internal API", async () => {

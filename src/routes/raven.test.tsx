@@ -203,6 +203,7 @@ vi.mock("#/lib/serverFns/sessions", () => ({
 	ensureSessionFn: vi.fn(),
 	getCurrentSessionFn: vi.fn(),
 	getLiveSessionsFn: vi.fn(),
+	getSessionContextFn: vi.fn().mockResolvedValue(null),
 	getSessionRowFn: vi.fn(),
 	getSessionSelectionFn: vi.fn(),
 }));
@@ -513,6 +514,28 @@ describe("Raven composed submission behavior", () => {
 			expect.objectContaining({
 				type: "chat",
 				text: "/workflows",
+			}),
+		);
+	});
+
+	it("clears a selected /context action after opening the local inspector", async () => {
+		render(<ChatPage />);
+		const composer = screen.getByRole("combobox");
+		fireEvent.change(composer, { target: { value: "/context" } });
+		fireEvent.click(screen.getByRole("button", { name: "Select /context" }));
+
+		expect(screen.getByTestId("active-command").textContent).toContain(
+			"command/context",
+		);
+		fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+		expect(screen.getByRole("dialog", { name: "Hlid context" })).toBeTruthy();
+		expect(screen.queryByTestId("active-command")).toBeNull();
+		expect((composer as HTMLTextAreaElement).value).toBe("");
+		expect(state.send).not.toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "chat",
+				text: "/context",
 			}),
 		);
 	});

@@ -448,6 +448,29 @@ describe("loadProviderCatalog", () => {
 			windowsComputerUse: { label: "Windows Computer Use", available: true },
 		});
 	});
+
+	it("publishes provider-owned structured capability metadata", async () => {
+		const provider = makeProvider({
+			providerId: "codex",
+			capabilities: {
+				goalControl: true,
+				structuredActivities: ["compact", "review"],
+				realtime: true,
+			},
+		});
+		const result = await loadProviderCatalog([provider], {
+			modelsFor: vi.fn().mockResolvedValue([]),
+		});
+
+		expect(result[0]?.capabilities).toEqual({
+			goalControl: true,
+			structuredActivities: ["compact", "review"],
+			realtime: true,
+		});
+		expect(result[0]?.capabilities?.structuredActivities).not.toBe(
+			provider.capabilities?.structuredActivities,
+		);
+	});
 });
 
 describe("createProviderCatalogSnapshot", () => {

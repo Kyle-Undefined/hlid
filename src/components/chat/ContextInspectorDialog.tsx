@@ -1,5 +1,6 @@
 import {
 	Braces,
+	ChevronRight,
 	FileText,
 	Gauge,
 	LoaderCircle,
@@ -12,7 +13,10 @@ import { type ReactNode, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import { useDialogFocus } from "#/hooks/useDialogFocus";
-import type { HlidTurnContextManifest } from "#/lib/hlidContext";
+import type {
+	HlidToolLoadingSummary,
+	HlidTurnContextManifest,
+} from "#/lib/hlidContext";
 import { getSessionContextFn } from "#/lib/serverFns/sessions";
 
 export type PendingHlidContext = {
@@ -30,6 +34,12 @@ export type PendingHlidContext = {
 		sha256: string;
 	}>;
 	planMode: boolean;
+};
+
+type ProviderContextUsage = {
+	contextWindow: number | null;
+	used: number | null;
+	actualModel: string | null;
 };
 
 function formatCount(value: number, singular: string, plural = `${singular}s`) {
@@ -109,6 +119,73 @@ function ContextSection({
 	);
 }
 
+function ContextDisclosure({
+	title,
+	meta,
+	children,
+}: {
+	title: string;
+	meta: string;
+	children: ReactNode;
+}) {
+	return (
+		<details className="group/disclosure border border-border/40 bg-background/20">
+			<summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-[10px] [&::-webkit-details-marker]:hidden">
+				<span className="flex items-center gap-1.5 text-foreground/70 group-open/disclosure:text-primary/70">
+					<ChevronRight className="h-3 w-3 transition-transform group-open/disclosure:rotate-90" />
+					<span>{title}</span>
+				</span>
+				<span className="font-mono text-[9px] text-muted-foreground/50">
+					{meta}
+				</span>
+			</summary>
+			<div className="border-t border-border/35 px-3 py-2.5">{children}</div>
+		</details>
+	);
+}
+
+function ToolInventory({ namespace }: { namespace: HlidToolLoadingSummary }) {
+	if (!namespace.tools?.length) {
+		return (
+			<p className="text-[9px] text-muted-foreground/45">
+				Detailed inventory was not recorded for this turn.
+			</p>
+		);
+	}
+	const groups = [
+		{
+			label: "Loaded",
+			tools: namespace.tools.filter((tool) => tool.delivery === "loaded"),
+		},
+		{
+			label: "Deferred",
+			tools: namespace.tools.filter((tool) => tool.delivery === "deferred"),
+		},
+	].filter((group) => group.tools.length > 0);
+	return (
+		<div className="space-y-3">
+			{groups.map((group) => (
+				<div key={group.label}>
+					<div className="mb-1.5 flex items-center justify-between text-[8px] tracking-widest text-muted-foreground/45 uppercase">
+						<span>{group.label}</span>
+						<span>{group.tools.length.toLocaleString()}</span>
+					</div>
+					<div className="divide-y divide-border/25 border border-border/30 bg-card/15">
+						{group.tools.map((tool) => (
+							<div
+								key={tool.name}
+								className="px-2.5 py-1.5 font-mono text-[9px] text-foreground/65"
+							>
+								{tool.name}
+							</div>
+						))}
+					</div>
+				</div>
+			))}
+		</div>
+	);
+}
+
 function PendingContextSummary({ context }: { context: PendingHlidContext }) {
 	const itemCount =
 		context.skills.length +
@@ -151,7 +228,13 @@ function PendingContextSummary({ context }: { context: PendingHlidContext }) {
 	);
 }
 
-function LastSentContext({ context }: { context: HlidTurnContextManifest }) {
+function LastSentContext({
+	context,
+	providerUsage,
+}: {
+	context: HlidTurnContextManifest;
+	providerUsage: ProviderContextUsage;
+}) {
 	return (
 		<>
 			<ContextSection icon={Gauge} title="Last Hlid context sent">
@@ -187,41 +270,113 @@ function LastSentContext({ context }: { context: HlidTurnContextManifest }) {
 				</div>
 			</ContextSection>
 
-			<ContextSection icon={Braces} title="Hlid additions">
-				{context.operatingBrief && (
-					<div className="mb-3 flex items-center justify-between gap-3 border-b border-border/40 pb-2 text-[10px]">
-						<span className="text-foreground/65">
-							Operating contract v{context.operatingBrief.version}
-						</span>
-						<span className="font-mono text-muted-foreground/50">
-							{context.operatingBrief.included
-								? `Included · ${context.operatingBrief.chars.toLocaleString()} chars`
-								: "Already established"}
-						</span>
-					</div>
-				)}
-				{context.blocks.length === 0 ? (
-					<p className="text-[10px] text-muted-foreground/50">
-						No Hlid-owned context blocks were added.
-					</p>
-				) : (
-					<div className="space-y-2">
-						{context.blocks.map((block) => (
-							<div
-								key={block.kind}
-								className="flex items-center justify-between gap-3 text-[10px]"
-							>
+			<ContextSection icon={Braces} title="Context sources">
+				<div className="space-y-2">
+					<ContextDisclosure
+						title="Hlid context"
+						meta={`${context.hlidAddedChars.toLocaleString()} chars`}
+					>
+						{context.operatingBrief && (
+							<div className="mb-3 flex items-center justify-between gap-3 border-b border-border/40 pb-2 text-[10px]">
 								<span className="text-foreground/65">
-									{blockLabel(block.kind)}
+									Operating contract v{context.operatingBrief.version}
+									{context.operatingBrief.briefRevision
+										? ` · Brief ${context.operatingBrief.briefRevision}`
+										: context.operatingBrief.registryRevision
+											? ` · Legacy revision ${context.operatingBrief.registryRevision}`
+											: ""}
 								</span>
 								<span className="font-mono text-muted-foreground/50">
-									{block.chars.toLocaleString()} chars ·{" "}
-									{formatCount(block.count, "item")}
+									{context.operatingBrief.delivery === "not-delivered"
+										? "Not delivered on provider command"
+										: context.operatingBrief.included
+											? `Included · ${context.operatingBrief.chars.toLocaleString()} chars`
+											: "Already established"}
 								</span>
 							</div>
-						))}
-					</div>
-				)}
+						)}
+						{context.operatingBrief?.preview && (
+							<pre className="mb-3 max-h-48 overflow-auto whitespace-pre-wrap border border-border/35 bg-card/25 p-2 font-mono text-[9px] leading-relaxed text-muted-foreground/65">
+								{context.operatingBrief.preview}
+							</pre>
+						)}
+						{context.blocks.length === 0 ? (
+							<p className="text-[10px] text-muted-foreground/50">
+								No Hlid-owned context blocks were added.
+							</p>
+						) : (
+							<div className="space-y-2">
+								{context.blocks.map((block) => (
+									<div
+										key={block.kind}
+										className="flex items-center justify-between gap-3 text-[10px]"
+									>
+										<span className="text-foreground/65">
+											{blockLabel(block.kind)}
+										</span>
+										<span className="font-mono text-muted-foreground/50">
+											{block.chars.toLocaleString()} chars ·{" "}
+											{formatCount(block.count, "item")}
+										</span>
+									</div>
+								))}
+							</div>
+						)}
+						<p className="mt-3 text-[9px] leading-relaxed text-muted-foreground/45">
+							Exact reference identities and selected inputs are itemized below.
+							Large selected content is not duplicated into this receipt.
+						</p>
+					</ContextDisclosure>
+
+					<ContextDisclosure
+						title="Provider context"
+						meta={
+							providerUsage.used !== null &&
+							providerUsage.contextWindow !== null
+								? `${providerUsage.used.toLocaleString()} / ${providerUsage.contextWindow.toLocaleString()} tokens`
+								: "Provider-owned"
+						}
+					>
+						<div className="space-y-2 text-[10px] text-muted-foreground/60">
+							<div className="flex justify-between gap-3">
+								<span>Visible turn input</span>
+								<span className="font-mono">
+									{context.providerPromptChars.toLocaleString()} chars
+								</span>
+							</div>
+							<div className="flex justify-between gap-3">
+								<span>User message</span>
+								<span className="font-mono">
+									{context.userMessageChars.toLocaleString()} chars
+								</span>
+							</div>
+							<div className="flex justify-between gap-3">
+								<span>Hlid additions</span>
+								<span className="font-mono">
+									{context.hlidAddedChars.toLocaleString()} chars
+								</span>
+							</div>
+							<div className="flex justify-between gap-3">
+								<span>Visible transcript handoff</span>
+								<span className="font-mono">
+									{context.providerHandoffChars.toLocaleString()} chars
+								</span>
+							</div>
+							<div className="flex justify-between gap-3">
+								<span>Actual model</span>
+								<span className="font-mono">
+									{providerUsage.actualModel ?? context.model ?? "Unknown"}
+								</span>
+							</div>
+							<div className="flex items-start justify-between gap-3 border-t border-border/35 pt-2">
+								<span>Native system and hidden session context</span>
+								<span className="max-w-[55%] text-right">
+									Provider-owned and not exposed to Hlid
+								</span>
+							</div>
+						</div>
+					</ContextDisclosure>
+				</div>
 			</ContextSection>
 
 			<ContextSection icon={FileText} title="Exact references">
@@ -287,21 +442,49 @@ function LastSentContext({ context }: { context: HlidTurnContextManifest }) {
 				</div>
 			</ContextSection>
 
-			<ContextSection icon={Puzzle} title="Hlid tool loading">
+			<ContextSection icon={Puzzle} title="Tool context">
 				<div className="space-y-2">
-					{context.toolLoading.map((namespace) => (
-						<div
-							key={namespace.namespace}
-							className="flex items-center justify-between gap-3 text-[10px]"
-						>
-							<code className="text-foreground/65">{namespace.namespace}</code>
-							<span className="text-muted-foreground/50">
-								{namespace.deferred === 0
-									? `${namespace.total} loaded`
-									: `${namespace.deferred} of ${namespace.total} deferred`}
-							</span>
+					<ContextDisclosure
+						title="Hlid-owned tools"
+						meta={`${context.toolLoading.reduce((sum, item) => sum + item.total, 0)} registered`}
+					>
+						<div className="space-y-2">
+							{context.toolLoading.map((namespace) => (
+								<details
+									key={namespace.namespace}
+									className="group/tool border border-border/35"
+								>
+									<summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-2.5 py-2 text-[10px] [&::-webkit-details-marker]:hidden">
+										<span className="flex items-center gap-1.5">
+											<ChevronRight className="h-3 w-3 transition-transform group-open/tool:rotate-90" />
+											<code className="text-foreground/65">
+												{namespace.namespace}
+											</code>
+										</span>
+										<span className="text-muted-foreground/50">
+											{namespace.deferred === 0
+												? `${namespace.total} loaded`
+												: `${namespace.deferred} of ${namespace.total} deferred`}
+										</span>
+									</summary>
+									<div className="border-t border-border/30 px-2.5 py-2">
+										<ToolInventory namespace={namespace} />
+									</div>
+								</details>
+							))}
 						</div>
-					))}
+					</ContextDisclosure>
+
+					<ContextDisclosure
+						title="Provider-native tools"
+						meta="Provider-owned"
+					>
+						<p className="text-[10px] leading-relaxed text-muted-foreground/55">
+							The active provider owns its native tool catalog and system tool
+							schemas. Hlid records provider tool activity in the transcript,
+							but the complete native catalog is not exposed to Hlid.
+						</p>
+					</ContextDisclosure>
 				</div>
 			</ContextSection>
 		</>
@@ -318,10 +501,18 @@ export function ContextInspectorDialog({
 	onClose: () => void;
 }) {
 	const [context, setContext] = useState<HlidTurnContextManifest | null>(null);
+	const [providerUsage, setProviderUsage] = useState<ProviderContextUsage>({
+		contextWindow: null,
+		used: null,
+		actualModel: null,
+	});
 	const [loading, setLoading] = useState(true);
 	const [error, setError] = useState<string | null>(null);
-	const { dialogRef, onDialogKeyDown } =
-		useDialogFocus<HTMLDivElement>(onClose);
+	const { dialogRef, onDialogKeyDown } = useDialogFocus<HTMLDivElement>(
+		onClose,
+		true,
+		"dialog",
+	);
 
 	useEffect(() => {
 		let active = true;
@@ -331,6 +522,11 @@ export function ContextInspectorDialog({
 			(result) => {
 				if (!active) return;
 				setContext(result?.hlid_context ?? null);
+				setProviderUsage({
+					contextWindow: result?.context_window ?? null,
+					used: result?.last_context_used ?? null,
+					actualModel: result?.actual_model ?? null,
+				});
 				setLoading(false);
 			},
 			(fetchError) => {
@@ -363,7 +559,7 @@ export function ContextInspectorDialog({
 				aria-label="Hlid context"
 				onClick={(event) => event.stopPropagation()}
 				onKeyDown={onDialogKeyDown}
-				className="flex max-h-[min(88vh,760px)] w-full max-w-3xl flex-col overflow-hidden border border-border bg-background shadow-2xl"
+				className="flex max-h-[min(88vh,760px)] w-full max-w-3xl flex-col overflow-hidden border border-border bg-background shadow-2xl outline-none focus:outline-none focus-visible:ring-0"
 			>
 				<header className="flex shrink-0 items-center gap-3 border-b border-border px-4 py-3">
 					<ShieldCheck className="h-4 w-4 text-primary/65" />
@@ -372,8 +568,8 @@ export function ContextInspectorDialog({
 							Hlid context
 						</h2>
 						<p className="mt-0.5 text-[10px] text-muted-foreground/50">
-							Hlid-owned additions only. Provider system instructions remain
-							provider-owned.
+							Hlid additions and provider-reported usage. Hidden provider
+							instructions remain provider-owned.
 						</p>
 					</div>
 					<button
@@ -398,7 +594,7 @@ export function ContextInspectorDialog({
 							{error}
 						</p>
 					) : context ? (
-						<LastSentContext context={context} />
+						<LastSentContext context={context} providerUsage={providerUsage} />
 					) : (
 						<div className="border border-border/50 px-3 py-5 text-center text-[10px] text-muted-foreground/50">
 							No persisted Hlid context exists yet. Send a normal turn, then

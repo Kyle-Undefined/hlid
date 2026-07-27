@@ -16,6 +16,7 @@ import {
 	type ToolCallContent,
 	type ToolCallUpdate,
 } from "@agentclientprotocol/sdk";
+import { describeHlidToolLoading } from "../lib/hlidContext";
 import { legacyProjectMcpAdapter } from "../lib/mcpConfig";
 import type {
 	AgentEvent,
@@ -29,10 +30,13 @@ import type {
 	ProviderModelInfo,
 	SlashCommand,
 } from "./agentProvider";
-import { HLID_AGENT_NAMESPACE } from "./hlidAgentTools";
+import { HLID_AGENT_NAMESPACE, HLID_AGENT_TOOL_SPECS } from "./hlidAgentTools";
 import { hlidMcpProcessCommand } from "./hlidMcpServer";
 import { isHtmlPlanPath } from "./htmlPlanPath";
-import { OBSIDIAN_AGENT_NAMESPACE } from "./obsidianAgentTools";
+import {
+	OBSIDIAN_AGENT_NAMESPACE,
+	OBSIDIAN_AGENT_TOOL_SPECS,
+} from "./obsidianAgentTools";
 import { getObsidianCliStatus } from "./obsidianCli";
 import { isObsidianRunCommandRequest } from "./obsidianCommandApproval";
 import { obsidianMcpProcessCommand } from "./obsidianMcpServer";
@@ -655,6 +659,7 @@ class AcpSession implements AgentSession {
 					effort: this.params.effort,
 					permissionMode: this.params.permissionMode,
 					policyEnforced: this.params.policyEnforced,
+					codexRealtimeEnabled: this.params.codexRealtimeEnabled,
 					runtimeCwd: this.params.cwd,
 					sessionId: this.params.hostSessionId,
 					vaultName: this.params.vaultName,
@@ -1079,6 +1084,28 @@ export class AcpProvider implements AgentProvider {
 	constructor(readonly options: AcpProviderOptions) {
 		this.providerId = options.id;
 		this.label = options.label;
+	}
+
+	async hlidToolLoading() {
+		const obsidianStatus = await getObsidianCliStatus();
+		const hlidTools = describeHlidToolLoading(HLID_AGENT_TOOL_SPECS, false);
+		const obsidianTools = obsidianStatus.installed
+			? describeHlidToolLoading(OBSIDIAN_AGENT_TOOL_SPECS, false)
+			: [];
+		return [
+			{
+				namespace: "hlid" as const,
+				total: hlidTools.length,
+				deferred: 0,
+				tools: hlidTools,
+			},
+			{
+				namespace: "hlid_obsidian" as const,
+				total: obsidianTools.length,
+				deferred: 0,
+				tools: obsidianTools,
+			},
+		];
 	}
 
 	async check(): Promise<{ available: boolean; reason?: string }> {

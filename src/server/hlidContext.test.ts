@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	describeHlidToolLoading,
 	HLID_AGENT_TOOL_COUNT,
 	HLID_OBSIDIAN_TOOL_COUNT,
 	type HlidPromptContextManifest,
@@ -25,6 +26,21 @@ const promptManifest: HlidPromptContextManifest = {
 };
 
 describe("Hlid context manifest", () => {
+	it("records exact loaded and deferred tool names without copying schemas", () => {
+		expect(
+			describeHlidToolLoading(
+				[
+					{ name: "hlid_help", deferLoading: true },
+					{ name: "windows_computer_use", deferLoading: false },
+				],
+				true,
+			),
+		).toEqual([
+			{ name: "hlid_help", delivery: "deferred" },
+			{ name: "windows_computer_use", delivery: "loaded" },
+		]);
+	});
+
 	it.each([
 		"claude",
 		"cliproxy-codex",
@@ -61,6 +77,10 @@ describe("Hlid context manifest", () => {
 	});
 
 	it("records delivery settings without changing prompt accounting", () => {
+		const toolLoading = [
+			{ namespace: "hlid" as const, total: 9, deferred: 8 },
+			{ namespace: "hlid_obsidian" as const, total: 28, deferred: 28 },
+		];
 		expect(
 			finalizeHlidTurnContextManifest(promptManifest, {
 				delivery: "chat",
@@ -70,6 +90,7 @@ describe("Hlid context manifest", () => {
 				permissionMode: "ask",
 				providerPromptChars: 15,
 				providerHandoffChars: 4,
+				toolLoading,
 				recordedAt: 1_700_000_000_000,
 			}),
 		).toMatchObject({
@@ -82,6 +103,7 @@ describe("Hlid context manifest", () => {
 			permissionMode: "ask",
 			providerPromptChars: 15,
 			providerHandoffChars: 4,
+			toolLoading,
 		});
 	});
 });

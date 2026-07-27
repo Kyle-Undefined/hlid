@@ -46,6 +46,13 @@ export type ProviderInfo = {
 		string,
 		{ label: string; available: boolean; reason?: string }
 	>;
+	/** Provider-owned structured capability shape. */
+	capabilities?: {
+		goalControl?: boolean;
+		structuredActivities?: ReadonlyArray<"compact" | "review">;
+		workflowCatalog?: boolean;
+		realtime?: boolean;
+	};
 };
 
 /** Account info for the authenticated agent backing a live claude session. */

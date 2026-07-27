@@ -24,6 +24,7 @@ function focusableElements(container: HTMLElement): HTMLElement[] {
 export function useDialogFocus<T extends HTMLElement>(
 	onClose: () => void,
 	active = true,
+	initialFocus: "first" | "dialog" = "first",
 ): {
 	dialogRef: RefObject<T | null>;
 	onDialogKeyDown: (event: KeyboardEvent<T>) => void;
@@ -41,11 +42,11 @@ export function useDialogFocus<T extends HTMLElement>(
 		const dialog = dialogRef.current;
 		if (!dialog) return;
 		const first = focusableElements(dialog)[0];
-		(first ?? dialog).focus();
+		(initialFocus === "dialog" ? dialog : (first ?? dialog)).focus();
 		return () => {
 			if (previous?.isConnected) previous.focus();
 		};
-	}, [active]);
+	}, [active, initialFocus]);
 
 	function onDialogKeyDown(event: KeyboardEvent<T>): void {
 		if (event.key === "Escape") {
