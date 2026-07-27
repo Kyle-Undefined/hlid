@@ -415,15 +415,29 @@ async function getActiveSession(): Promise<Response> {
 async function getSessionContext(url: URL): Promise<Response> {
 	const sessionId = url.searchParams.get("session_id");
 	if (!sessionId) return new Response("Missing session_id", { status: 400 });
-	const [result, actualModel, rawHlidContext] = await Promise.all([
+	const limit = clampInt(url.searchParams.get("limit") ?? "20", 20, 1, 50);
+	const beforeSeqParam = url.searchParams.get("before_seq");
+	const beforeSeq = beforeSeqParam
+		? clampInt(beforeSeqParam, 0, 0, Number.MAX_SAFE_INTEGER)
+		: undefined;
+	const [result, actualModel, page] = await Promise.all([
 		db.getSessionLastQueryContext(sessionId),
 		db.getSessionActualModel(sessionId),
-		db.getSessionLatestContextManifest(sessionId),
+		db.getSessionContextManifests(sessionId, limit, beforeSeq),
 	]);
+	const contexts = page.rows.flatMap((row) => {
+		const context = parseHlidTurnContextManifest(row.context_manifest_json);
+		return context ? [{ seq: row.seq, timestamp: row.timestamp, context }] : [];
+	});
 	return Response.json({
 		...result,
 		actual_model: actualModel,
-		hlid_context: parseHlidTurnContextManifest(rawHlidContext),
+		hlid_context: page.rows[0]
+			? parseHlidTurnContextManifest(page.rows[0].context_manifest_json)
+			: null,
+		hlid_contexts: contexts,
+		has_more_contexts: page.hasMore,
+		next_context_before_seq: page.rows.at(-1)?.seq ?? null,
 	});
 }
 

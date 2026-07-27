@@ -14,6 +14,7 @@ import { createPortal } from "react-dom";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import { useDialogFocus } from "#/hooks/useDialogFocus";
 import type {
+	HlidContextReceipt,
 	HlidToolLoadingSummary,
 	HlidTurnContextManifest,
 } from "#/lib/hlidContext";
@@ -41,6 +42,8 @@ type ProviderContextUsage = {
 	used: number | null;
 	actualModel: string | null;
 };
+
+const CONTEXT_RECEIPT_PAGE_SIZE = 20;
 
 function formatCount(value: number, singular: string, plural = `${singular}s`) {
 	return `${value.toLocaleString()} ${value === 1 ? singular : plural}`;
@@ -228,16 +231,72 @@ function PendingContextSummary({ context }: { context: PendingHlidContext }) {
 	);
 }
 
+function receiptLabel(receipt: HlidContextReceipt, index: number): string {
+	const recordedAt =
+		receipt.context.recordedAt || Math.max(0, receipt.timestamp) * 1_000;
+	const timestamp = new Date(recordedAt).toLocaleString(undefined, {
+		month: "short",
+		day: "numeric",
+		hour: "numeric",
+		minute: "2-digit",
+	});
+	return index === 0 ? `Latest · ${timestamp}` : timestamp;
+}
+
 function LastSentContext({
 	context,
 	providerUsage,
+	receipts,
+	selectedSeq,
+	onSelectReceipt,
+	hasMore,
+	loadingOlder,
+	onLoadOlder,
 }: {
 	context: HlidTurnContextManifest;
 	providerUsage: ProviderContextUsage;
+	receipts: HlidContextReceipt[];
+	selectedSeq: number;
+	onSelectReceipt: (seq: number) => void;
+	hasMore: boolean;
+	loadingOlder: boolean;
+	onLoadOlder: () => void;
 }) {
+	const isLatest = receipts[0]?.seq === selectedSeq;
 	return (
 		<>
-			<ContextSection icon={Gauge} title="Last Hlid context sent">
+			<ContextSection icon={Gauge} title="Turn context receipt">
+				<div className="mb-3 flex flex-col gap-2 border-b border-border/40 pb-3 sm:flex-row sm:items-end">
+					<label className="min-w-0 flex-1">
+						<span className="mb-1 block text-[8px] tracking-widest text-muted-foreground/45 uppercase">
+							Sent turn
+						</span>
+						<select
+							aria-label="Sent turn context"
+							value={selectedSeq}
+							onChange={(event) =>
+								onSelectReceipt(Number(event.currentTarget.value))
+							}
+							className="h-9 w-full border border-border/50 bg-background px-2.5 font-mono text-[10px] text-foreground/70 outline-none focus:border-primary/45"
+						>
+							{receipts.map((receipt, index) => (
+								<option key={receipt.seq} value={receipt.seq}>
+									{receiptLabel(receipt, index)}
+								</option>
+							))}
+						</select>
+					</label>
+					{hasMore && (
+						<button
+							type="button"
+							onClick={onLoadOlder}
+							disabled={loadingOlder}
+							className="h-9 shrink-0 border border-border/50 px-3 text-[9px] text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground disabled:cursor-wait disabled:opacity-50"
+						>
+							{loadingOlder ? "Loading older" : "Load older turns"}
+						</button>
+					)}
+				</div>
 				<div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
 					<ContextMetric
 						label="Hlid added"
@@ -331,10 +390,12 @@ function LastSentContext({
 					<ContextDisclosure
 						title="Provider context"
 						meta={
-							providerUsage.used !== null &&
-							providerUsage.contextWindow !== null
-								? `${providerUsage.used.toLocaleString()} / ${providerUsage.contextWindow.toLocaleString()} tokens`
-								: "Provider-owned"
+							!isLatest
+								? "Historical receipt"
+								: providerUsage.used !== null &&
+										providerUsage.contextWindow !== null
+									? `${providerUsage.used.toLocaleString()} / ${providerUsage.contextWindow.toLocaleString()} tokens`
+									: "Provider-owned"
 						}
 					>
 						<div className="space-y-2 text-[10px] text-muted-foreground/60">
@@ -365,9 +426,19 @@ function LastSentContext({
 							<div className="flex justify-between gap-3">
 								<span>Actual model</span>
 								<span className="font-mono">
-									{providerUsage.actualModel ?? context.model ?? "Unknown"}
+									{(isLatest ? providerUsage.actualModel : null) ??
+										context.model ??
+										"Unknown"}
 								</span>
 							</div>
+							{!isLatest && (
+								<div className="flex items-start justify-between gap-3 border-t border-border/35 pt-2">
+									<span>Context-window usage</span>
+									<span className="max-w-[55%] text-right">
+										Not retained for this historical turn
+									</span>
+								</div>
+							)}
 							<div className="flex items-start justify-between gap-3 border-t border-border/35 pt-2">
 								<span>Native system and hidden session context</span>
 								<span className="max-w-[55%] text-right">
@@ -500,7 +571,12 @@ export function ContextInspectorDialog({
 	pending: PendingHlidContext;
 	onClose: () => void;
 }) {
-	const [context, setContext] = useState<HlidTurnContextManifest | null>(null);
+	const [receipts, setReceipts] = useState<HlidContextReceipt[]>([]);
+	const [selectedSeq, setSelectedSeq] = useState<number | null>(null);
+	const [hasMore, setHasMore] = useState(false);
+	const [nextBeforeSeq, setNextBeforeSeq] = useState<number | null>(null);
+	const [loadingOlder, setLoadingOlder] = useState(false);
+	const [historyError, setHistoryError] = useState<string | null>(null);
 	const [providerUsage, setProviderUsage] = useState<ProviderContextUsage>({
 		contextWindow: null,
 		used: null,
@@ -518,10 +594,27 @@ export function ContextInspectorDialog({
 		let active = true;
 		setLoading(true);
 		setError(null);
-		void getSessionContextFn({ data: sessionId }).then(
+		setHistoryError(null);
+		void getSessionContextFn({
+			data: { sessionId, limit: CONTEXT_RECEIPT_PAGE_SIZE },
+		}).then(
 			(result) => {
 				if (!active) return;
-				setContext(result?.hlid_context ?? null);
+				const nextReceipts = result?.hlid_contexts?.length
+					? result.hlid_contexts
+					: result?.hlid_context
+						? [
+								{
+									seq: -1,
+									timestamp: Math.floor(result.hlid_context.recordedAt / 1_000),
+									context: result.hlid_context,
+								},
+							]
+						: [];
+				setReceipts(nextReceipts);
+				setSelectedSeq(nextReceipts[0]?.seq ?? null);
+				setHasMore(result?.has_more_contexts ?? false);
+				setNextBeforeSeq(result?.next_context_before_seq ?? null);
 				setProviderUsage({
 					contextWindow: result?.context_window ?? null,
 					used: result?.last_context_used ?? null,
@@ -543,6 +636,42 @@ export function ContextInspectorDialog({
 			active = false;
 		};
 	}, [sessionId]);
+
+	const context =
+		receipts.find((receipt) => receipt.seq === selectedSeq)?.context ?? null;
+
+	async function loadOlderReceipts(): Promise<void> {
+		if (loadingOlder || nextBeforeSeq === null) return;
+		setLoadingOlder(true);
+		setHistoryError(null);
+		try {
+			const result = await getSessionContextFn({
+				data: {
+					sessionId,
+					beforeSeq: nextBeforeSeq,
+					limit: CONTEXT_RECEIPT_PAGE_SIZE,
+				},
+			});
+			const older = result?.hlid_contexts ?? [];
+			setReceipts((current) => {
+				const seen = new Set(current.map((receipt) => receipt.seq));
+				return [
+					...current,
+					...older.filter((receipt) => !seen.has(receipt.seq)),
+				];
+			});
+			setHasMore(result?.has_more_contexts ?? false);
+			setNextBeforeSeq(result?.next_context_before_seq ?? null);
+		} catch (loadError) {
+			setHistoryError(
+				loadError instanceof Error
+					? loadError.message
+					: "Could not load older context receipts.",
+			);
+		} finally {
+			setLoadingOlder(false);
+		}
+	}
 
 	return createPortal(
 		// biome-ignore lint/a11y/useKeyWithClickEvents: Escape is handled by the focused dialog
@@ -594,7 +723,23 @@ export function ContextInspectorDialog({
 							{error}
 						</p>
 					) : context ? (
-						<LastSentContext context={context} providerUsage={providerUsage} />
+						<>
+							<LastSentContext
+								context={context}
+								providerUsage={providerUsage}
+								receipts={receipts}
+								selectedSeq={selectedSeq ?? receipts[0]?.seq ?? -1}
+								onSelectReceipt={setSelectedSeq}
+								hasMore={hasMore}
+								loadingOlder={loadingOlder}
+								onLoadOlder={() => void loadOlderReceipts()}
+							/>
+							{historyError && (
+								<p role="alert" className="text-[10px] text-destructive/75">
+									{historyError}
+								</p>
+							)}
+						</>
 					) : (
 						<div className="border border-border/50 px-3 py-5 text-center text-[10px] text-muted-foreground/50">
 							No persisted Hlid context exists yet. Send a normal turn, then

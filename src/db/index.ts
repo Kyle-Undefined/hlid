@@ -49,7 +49,7 @@ export {
 	getAssistantMessageText,
 	getMessageForFork,
 	getSessionAskUserQuestions,
-	getSessionLatestContextManifest,
+	getSessionContextManifests,
 	getSessionMessages,
 	getSessionNextMessageSeq,
 	getSessionPlanProposals,

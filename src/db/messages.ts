@@ -578,22 +578,63 @@ export async function getSessionMessages(
 		.all(sessionId);
 }
 
-export async function getSessionLatestContextManifest(
+export async function getSessionContextManifests(
 	sessionId: string,
-): Promise<string | null> {
+	limit = 20,
+	beforeSeq?: number,
+): Promise<{
+	rows: Array<{
+		seq: number;
+		timestamp: number;
+		context_manifest_json: string;
+	}>;
+	hasMore: boolean;
+}> {
 	const db = await getDb();
-	const row = db
-		.query<{ context_manifest_json: string }, [string]>(
-			`SELECT context_manifest_json
+	const boundedLimit = Math.max(1, Math.min(50, Math.trunc(limit)));
+	const rows =
+		beforeSeq === undefined
+			? db
+					.query<
+						{
+							seq: number;
+							timestamp: number;
+							context_manifest_json: string;
+						},
+						[string, number]
+					>(
+						`SELECT seq, timestamp, context_manifest_json
+						 FROM messages
+						 WHERE session_id = ?
+						   AND role = 'user'
+						   AND context_manifest_json IS NOT NULL
+						 ORDER BY seq DESC, id DESC
+						 LIMIT ?`,
+					)
+					.all(sessionId, boundedLimit + 1)
+			: db
+					.query<
+						{
+							seq: number;
+							timestamp: number;
+							context_manifest_json: string;
+						},
+						[string, number, number]
+					>(
+						`SELECT seq, timestamp, context_manifest_json
 			 FROM messages
 			 WHERE session_id = ?
 			   AND role = 'user'
 			   AND context_manifest_json IS NOT NULL
+			   AND seq < ?
 			 ORDER BY seq DESC, id DESC
-			 LIMIT 1`,
-		)
-		.get(sessionId);
-	return row?.context_manifest_json ?? null;
+			 LIMIT ?`,
+					)
+					.all(sessionId, beforeSeq, boundedLimit + 1);
+	return {
+		rows: rows.slice(0, boundedLimit),
+		hasMore: rows.length > boundedLimit,
+	};
 }
 
 /**

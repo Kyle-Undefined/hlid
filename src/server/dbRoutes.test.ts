@@ -32,7 +32,7 @@ const {
 	mockGetSessionProviderSession,
 	mockGetSessionLastQueryContext,
 	mockGetSessionActualModel,
-	mockGetSessionLatestContextManifest,
+	mockGetSessionContextManifests,
 	mockCreateForkedSessionRow,
 	mockDeleteSession,
 	mockGetMessageForFork,
@@ -61,7 +61,7 @@ const {
 	mockGetSessionProviderSession: vi.fn(),
 	mockGetSessionLastQueryContext: vi.fn(),
 	mockGetSessionActualModel: vi.fn(),
-	mockGetSessionLatestContextManifest: vi.fn(),
+	mockGetSessionContextManifests: vi.fn(),
 	mockCreateForkedSessionRow: vi.fn(),
 	mockDeleteSession: vi.fn(),
 	mockGetMessageForFork: vi.fn(),
@@ -89,7 +89,7 @@ vi.mock("../db", () => ({
 	getSessionProviderSession: mockGetSessionProviderSession,
 	getSessionLastQueryContext: mockGetSessionLastQueryContext,
 	getSessionActualModel: mockGetSessionActualModel,
-	getSessionLatestContextManifest: mockGetSessionLatestContextManifest,
+	getSessionContextManifests: mockGetSessionContextManifests,
 	createForkedSessionRow: mockCreateForkedSessionRow,
 	deleteSession: mockDeleteSession,
 	getMessageForFork: mockGetMessageForFork,
@@ -412,31 +412,43 @@ describe("handleDbRoute — /db/session-context", () => {
 			last_context_used: 12_345,
 		});
 		mockGetSessionActualModel.mockResolvedValue("gpt-5.6-sol");
-		mockGetSessionLatestContextManifest.mockResolvedValue(
-			JSON.stringify({
-				contractVersion: 1,
-				recordedAt: 1_700_000_000_000,
-				delivery: "chat",
-				providerId: "codex",
-				userMessageChars: 5,
-				promptChars: 15,
-				hlidAddedChars: 10,
-				estimatedHlidTokens: 3,
-				blocks: [],
-				agentMode: "cwd",
-				skills: [],
-				attachments: [],
-				vaultReferences: [],
-				workspaceReferences: [],
-				planHtml: false,
-				providerPromptChars: 15,
-				providerHandoffChars: 0,
-				toolLoading: [],
-			}),
-		);
+		const manifest = JSON.stringify({
+			contractVersion: 1,
+			recordedAt: 1_700_000_000_000,
+			delivery: "chat",
+			providerId: "codex",
+			userMessageChars: 5,
+			promptChars: 15,
+			hlidAddedChars: 10,
+			estimatedHlidTokens: 3,
+			blocks: [],
+			agentMode: "cwd",
+			skills: [],
+			attachments: [],
+			vaultReferences: [],
+			workspaceReferences: [],
+			planHtml: false,
+			providerPromptChars: 15,
+			providerHandoffChars: 0,
+			toolLoading: [],
+		});
+		mockGetSessionContextManifests.mockResolvedValue({
+			rows: [
+				{
+					seq: 8,
+					timestamp: 1_700_000_000,
+					context_manifest_json: manifest,
+				},
+			],
+			hasMore: true,
+		});
 
 		const response = await handleDbRoute(
-			makeUrl("/db/session-context", { session_id: "abc-123" }),
+			makeUrl("/db/session-context", {
+				session_id: "abc-123",
+				limit: "12",
+				before_seq: "10",
+			}),
 			makeRequest(),
 		);
 
@@ -450,16 +462,36 @@ describe("handleDbRoute — /db/session-context", () => {
 				delivery: "chat",
 				hlidAddedChars: 10,
 			},
+			hlid_contexts: [
+				{
+					seq: 8,
+					timestamp: 1_700_000_000,
+					context: { contractVersion: 1, hlidAddedChars: 10 },
+				},
+			],
+			has_more_contexts: true,
+			next_context_before_seq: 8,
 		});
-		expect(mockGetSessionLatestContextManifest).toHaveBeenCalledWith("abc-123");
+		expect(mockGetSessionContextManifests).toHaveBeenCalledWith(
+			"abc-123",
+			12,
+			10,
+		);
 	});
 
 	it("treats malformed or unsupported manifests as unavailable", async () => {
 		mockGetSessionLastQueryContext.mockResolvedValue(null);
 		mockGetSessionActualModel.mockResolvedValue(null);
-		mockGetSessionLatestContextManifest.mockResolvedValue(
-			'{"contractVersion":999}',
-		);
+		mockGetSessionContextManifests.mockResolvedValue({
+			rows: [
+				{
+					seq: 2,
+					timestamp: 1_700_000_000,
+					context_manifest_json: '{"contractVersion":999}',
+				},
+			],
+			hasMore: false,
+		});
 
 		const response = await handleDbRoute(
 			makeUrl("/db/session-context", { session_id: "abc-123" }),
@@ -469,6 +501,9 @@ describe("handleDbRoute — /db/session-context", () => {
 		expect(await response?.json()).toEqual({
 			actual_model: null,
 			hlid_context: null,
+			hlid_contexts: [],
+			has_more_contexts: false,
+			next_context_before_seq: 2,
 		});
 	});
 });

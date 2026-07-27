@@ -108,6 +108,12 @@ export type HlidTurnContextManifest = HlidPromptContextManifest & {
 	toolLoading: HlidToolLoadingSummary[];
 };
 
+export type HlidContextReceipt = {
+	seq: number;
+	timestamp: number;
+	context: HlidTurnContextManifest;
+};
+
 export function estimateContextTokens(chars: number): number {
 	return Math.ceil(Math.max(0, chars) / 4);
 }

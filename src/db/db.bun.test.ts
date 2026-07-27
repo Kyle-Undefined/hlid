@@ -28,7 +28,7 @@ import {
 	copyForkedSessionTranscript,
 	getMessageForFork,
 	getSessionAskUserQuestions,
-	getSessionLatestContextManifest,
+	getSessionContextManifests,
 	getSessionMessages,
 	getSessionNextMessageSeq,
 	getSessionPlanProposals,
@@ -1031,7 +1031,7 @@ describe("messages", () => {
 		expect(rows[2].steer_target_seq).toBe(1);
 	});
 
-	it("retains the latest Hlid context manifest outside visible message text", async () => {
+	it("pages Hlid context manifests outside visible message text", async () => {
 		await createSession("s1", "L", "m");
 		const first = JSON.stringify({ contractVersion: 1, promptChars: 10 });
 		const second = JSON.stringify({ contractVersion: 1, promptChars: 20 });
@@ -1039,7 +1039,21 @@ describe("messages", () => {
 		await appendMessage("s1", 1, "assistant", "world");
 		await appendMessage("s1", 2, "user", "again", "turn-2", undefined, second);
 
-		expect(await getSessionLatestContextManifest("s1")).toBe(second);
+		const latest = await getSessionContextManifests("s1", 1);
+		expect(latest.rows).toHaveLength(1);
+		expect(latest.rows[0]).toMatchObject({
+			seq: 2,
+			context_manifest_json: second,
+		});
+		expect(latest.hasMore).toBe(true);
+
+		const previous = await getSessionContextManifests("s1", 1, 2);
+		expect(previous.rows).toHaveLength(1);
+		expect(previous.rows[0]).toMatchObject({
+			seq: 0,
+			context_manifest_json: first,
+		});
+		expect(previous.hasMore).toBe(false);
 		expect((await getSessionMessages("s1"))[2].text).toBe("again");
 	});
 

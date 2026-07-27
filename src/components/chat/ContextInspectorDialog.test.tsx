@@ -8,6 +8,7 @@ import {
 	within,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { HlidTurnContextManifest } from "#/lib/hlidContext";
 
 vi.mock("#/lib/serverFns/sessions", () => ({
 	getSessionContextFn: vi.fn(),
@@ -15,6 +16,33 @@ vi.mock("#/lib/serverFns/sessions", () => ({
 
 import { getSessionContextFn } from "#/lib/serverFns/sessions";
 import { ContextInspectorDialog } from "./ContextInspectorDialog";
+
+function contextManifest(
+	overrides: Partial<HlidTurnContextManifest> = {},
+): HlidTurnContextManifest {
+	return {
+		contractVersion: 1,
+		recordedAt: Date.now(),
+		delivery: "chat",
+		providerId: "codex",
+		model: "gpt-5.6-sol",
+		userMessageChars: 20,
+		promptChars: 120,
+		providerPromptChars: 120,
+		providerHandoffChars: 0,
+		hlidAddedChars: 100,
+		estimatedHlidTokens: 25,
+		blocks: [],
+		agentMode: "cwd",
+		skills: [],
+		attachments: [],
+		vaultReferences: [],
+		workspaceReferences: [],
+		planHtml: false,
+		toolLoading: [],
+		...overrides,
+	};
+}
 
 afterEach(() => {
 	cleanup();
@@ -192,5 +220,98 @@ describe("ContextInspectorDialog", () => {
 				screen.getByText(/No persisted Hlid context exists yet/),
 			).toBeTruthy();
 		});
+	});
+
+	it("selects previous turn receipts and loads older pages without reusing current provider usage", async () => {
+		const latest = contextManifest({
+			recordedAt: new Date("2026-07-27T16:00:00Z").getTime(),
+			model: "gpt-latest",
+			hlidAddedChars: 100,
+			estimatedHlidTokens: 25,
+			blocks: [{ kind: "operating_brief", chars: 100, count: 1 }],
+		});
+		const previous = contextManifest({
+			recordedAt: new Date("2026-07-27T15:00:00Z").getTime(),
+			model: "gpt-previous",
+			hlidAddedChars: 40,
+			estimatedHlidTokens: 10,
+			blocks: [{ kind: "skills", chars: 40, count: 1 }],
+		});
+		const older = contextManifest({
+			recordedAt: new Date("2026-07-27T14:00:00Z").getTime(),
+			model: "gpt-older",
+			hlidAddedChars: 20,
+			estimatedHlidTokens: 5,
+		});
+		vi.mocked(getSessionContextFn)
+			.mockResolvedValueOnce({
+				context_window: 200_000,
+				last_context_used: 12_000,
+				actual_model: "gpt-current",
+				hlid_context: latest,
+				hlid_contexts: [
+					{ seq: 10, timestamp: 1_722_096_000, context: latest },
+					{ seq: 6, timestamp: 1_722_092_400, context: previous },
+				],
+				has_more_contexts: true,
+				next_context_before_seq: 6,
+			})
+			.mockResolvedValueOnce({
+				context_window: 200_000,
+				last_context_used: 12_000,
+				actual_model: "gpt-current",
+				hlid_context: older,
+				hlid_contexts: [{ seq: 2, timestamp: 1_722_088_800, context: older }],
+				has_more_contexts: false,
+				next_context_before_seq: 2,
+			});
+
+		render(
+			<ContextInspectorDialog
+				sessionId="session-1"
+				pending={{
+					skills: [],
+					attachments: [],
+					vaultReferences: [],
+					workspaceReferences: [],
+					planMode: false,
+				}}
+				onClose={vi.fn()}
+			/>,
+		);
+
+		const selector = await screen.findByRole("combobox", {
+			name: "Sent turn context",
+		});
+		expect(within(selector).getAllByRole("option")).toHaveLength(2);
+		expect((selector as HTMLSelectElement).value).toBe("10");
+		expect(screen.getAllByText("100 chars").length).toBeGreaterThan(0);
+
+		fireEvent.change(selector, { target: { value: "6" } });
+		expect(screen.getAllByText("40 chars").length).toBeGreaterThan(0);
+
+		fireEvent.click(screen.getByText("Provider context"));
+		expect(screen.getByText("Historical receipt")).toBeTruthy();
+		expect(
+			screen.getByText("Not retained for this historical turn"),
+		).toBeTruthy();
+		expect(screen.queryByText("12,000 / 200,000 tokens")).toBeNull();
+		expect(screen.getAllByText("gpt-previous").length).toBeGreaterThan(0);
+		expect(screen.queryByText("gpt-current")).toBeNull();
+
+		fireEvent.click(screen.getByRole("button", { name: "Load older turns" }));
+		await waitFor(() => {
+			expect(within(selector).getAllByRole("option")).toHaveLength(3);
+		});
+		expect(getSessionContextFn).toHaveBeenNthCalledWith(2, {
+			data: {
+				sessionId: "session-1",
+				beforeSeq: 6,
+				limit: 20,
+			},
+		});
+		expect(
+			screen.queryByRole("button", { name: "Load older turns" }),
+		).toBeNull();
 	});
 });

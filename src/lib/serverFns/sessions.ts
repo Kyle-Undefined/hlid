@@ -10,7 +10,10 @@ import type {
 	ToolEventSummaryRow,
 } from "#/db";
 import { dbFetch, dbJson, requireDbOk } from "#/lib/dbClient";
-import type { HlidTurnContextManifest } from "#/lib/hlidContext";
+import type {
+	HlidContextReceipt,
+	HlidTurnContextManifest,
+} from "#/lib/hlidContext";
 import {
 	sessionArchiveSchema,
 	sessionForkSchema,
@@ -266,20 +269,40 @@ export const getSessionAskUserQuestionsFn = createServerFn({ method: "GET" })
 		),
 	);
 
+const sessionContextRequestSchema = z.union([
+	sessionIdSchema,
+	z.object({
+		sessionId: sessionIdSchema,
+		beforeSeq: z.number().int().nonnegative().optional(),
+		limit: z.number().int().min(1).max(50).optional(),
+	}),
+]);
+
 export const getSessionContextFn = createServerFn({ method: "GET" })
-	.validator((raw) => sessionIdSchema.parse(raw))
-	.handler(({ data: sessionId }) =>
-		dbJson<{
+	.validator((raw) => sessionContextRequestSchema.parse(raw))
+	.handler(({ data }) => {
+		const sessionId = typeof data === "string" ? data : data.sessionId;
+		const params = new URLSearchParams({
+			session_id: sessionId,
+			limit: String(typeof data === "string" ? 20 : (data.limit ?? 20)),
+		});
+		if (typeof data !== "string" && data.beforeSeq !== undefined) {
+			params.set("before_seq", String(data.beforeSeq));
+		}
+		return dbJson<{
 			context_window: number | null;
 			last_context_used: number | null;
 			actual_model: string | null;
 			hlid_context?: HlidTurnContextManifest | null;
+			hlid_contexts?: HlidContextReceipt[];
+			has_more_contexts?: boolean;
+			next_context_before_seq?: number | null;
 		} | null>(
-			`/db/session-context?session_id=${encodeURIComponent(sessionId)}`,
+			`/db/session-context?${params}`,
 			null,
 			SESSION_METADATA_READ_BUDGET,
-		),
-	);
+		);
+	});
 
 /**
  * Ensure a DB session row exists for the given session ID.
