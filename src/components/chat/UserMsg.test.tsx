@@ -91,11 +91,62 @@ describe("UserMsg", () => {
 		).toBeNull();
 	});
 
-	describe("CopyButton mobile visibility", () => {
-		it("copy button has [@media(hover:none)]:opacity-100 class so it shows on touch devices", () => {
+	it("opens the exact retained context receipt for a persisted turn", () => {
+		const onViewContext = vi.fn();
+		render(
+			<UserMsg
+				message={makeMsg({
+					transcriptSeq: 8,
+					hasContextReceipt: true,
+				})}
+				onViewContext={onViewContext}
+			/>,
+		);
+		screen
+			.getByRole("button", { name: "View context sent with this turn" })
+			.click();
+		expect(onViewContext).toHaveBeenCalledWith({
+			seq: 8,
+			turnId: "msg-1",
+		});
+	});
+
+	it("opens a completed live turn by its stable turn id before history reloads", () => {
+		const onViewContext = vi.fn();
+		render(
+			<UserMsg
+				message={makeMsg({ hasContextReceipt: true })}
+				onViewContext={onViewContext}
+			/>,
+		);
+		screen
+			.getByRole("button", { name: "View context sent with this turn" })
+			.click();
+		expect(onViewContext).toHaveBeenCalledWith({ turnId: "msg-1" });
+	});
+
+	it("does not offer context inspection when the turn has no receipt", () => {
+		render(
+			<UserMsg
+				message={makeMsg({ transcriptSeq: 8 })}
+				onViewContext={vi.fn()}
+			/>,
+		);
+		expect(
+			screen.queryByRole("button", {
+				name: "View context sent with this turn",
+			}),
+		).toBeNull();
+	});
+
+	describe("persistent actions", () => {
+		it("keeps user actions visible without hover-only opacity", () => {
 			render(<UserMsg message={makeMsg()} />);
 			const btn = screen.getByRole("button", { name: /copy/i });
-			expect(btn.className).toContain("[@media(hover:none)]:opacity-100");
+			expect(btn.parentElement?.className).not.toContain("opacity-0");
+			expect(btn.parentElement?.className).not.toContain(
+				"group-hover:opacity-100",
+			);
 		});
 
 		it("copy button not rendered when no text", () => {

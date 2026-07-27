@@ -111,7 +111,15 @@ export type HlidTurnContextManifest = HlidPromptContextManifest & {
 export type HlidContextReceipt = {
 	seq: number;
 	timestamp: number;
+	turnNumber?: number;
+	turnId?: string;
+	messagePreview?: string;
 	context: HlidTurnContextManifest;
+};
+
+export type HlidContextReceiptTarget = {
+	seq?: number;
+	turnId?: string;
 };
 
 export function estimateContextTokens(chars: number): number {

@@ -174,6 +174,36 @@ describe("useChatWsHandler — session id domains", () => {
 			dbId: 42,
 		});
 	});
+
+	it("marks the completed live user turn as having a context receipt", () => {
+		const dispatch = vi.fn();
+		const refs = makeRefs();
+		refs.pendingIdRef.current = "assistant-1";
+		const { result } = renderHook(() =>
+			useChatWsHandler({ dispatch, ...refs, setRateLimit: vi.fn() }),
+		);
+
+		result.current({
+			type: "done",
+			turn_id: "turn-1",
+			cost: null,
+			turns: 1,
+			duration_ms: 0,
+			input_tokens: 0,
+			output_tokens: 0,
+			cache_read_tokens: 0,
+			cache_creation_tokens: 0,
+			context_window: null,
+			max_output_tokens: null,
+			stop_reason: null,
+			tokens_in_context: null,
+		});
+
+		expect(dispatch).toHaveBeenCalledWith({
+			type: "MARK_USER_CONTEXT_RECEIPT",
+			id: "turn-1",
+		});
+	});
 });
 
 describe("useChatWsHandler — immediate messages", () => {

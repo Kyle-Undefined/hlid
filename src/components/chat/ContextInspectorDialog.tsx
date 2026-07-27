@@ -1,8 +1,11 @@
 import {
 	Braces,
+	ChevronDown,
 	ChevronRight,
+	ChevronUp,
 	FileText,
 	Gauge,
+	History,
 	LoaderCircle,
 	Paperclip,
 	Puzzle,
@@ -15,6 +18,7 @@ import { PrivacyMask } from "#/components/PrivacyMask";
 import { useDialogFocus } from "#/hooks/useDialogFocus";
 import type {
 	HlidContextReceipt,
+	HlidContextReceiptTarget,
 	HlidToolLoadingSummary,
 	HlidTurnContextManifest,
 } from "#/lib/hlidContext";
@@ -231,16 +235,166 @@ function PendingContextSummary({ context }: { context: PendingHlidContext }) {
 	);
 }
 
-function receiptLabel(receipt: HlidContextReceipt, index: number): string {
+function receiptTimestamp(receipt: HlidContextReceipt): string {
 	const recordedAt =
 		receipt.context.recordedAt || Math.max(0, receipt.timestamp) * 1_000;
-	const timestamp = new Date(recordedAt).toLocaleString(undefined, {
+	return new Date(recordedAt).toLocaleString(undefined, {
 		month: "short",
 		day: "numeric",
 		hour: "numeric",
 		minute: "2-digit",
 	});
-	return index === 0 ? `Latest · ${timestamp}` : timestamp;
+}
+
+function receiptTurnLabel(receipt: HlidContextReceipt, index: number): string {
+	return receipt.turnNumber
+		? `Turn ${receipt.turnNumber}`
+		: index === 0
+			? "Latest turn"
+			: "Earlier turn";
+}
+
+function TurnReceiptPicker({
+	receipts,
+	selectedSeq,
+	onSelectReceipt,
+	hasMore,
+	loadingOlder,
+	onLoadOlder,
+}: {
+	receipts: HlidContextReceipt[];
+	selectedSeq: number;
+	onSelectReceipt: (seq: number) => void;
+	hasMore: boolean;
+	loadingOlder: boolean;
+	onLoadOlder: () => Promise<HlidContextReceipt[]>;
+}) {
+	const selectedIndex = Math.max(
+		0,
+		receipts.findIndex((receipt) => receipt.seq === selectedSeq),
+	);
+	const selected = receipts[selectedIndex] ?? receipts[0];
+	const newer = selectedIndex > 0 ? receipts[selectedIndex - 1] : undefined;
+	const older = receipts[selectedIndex + 1];
+	const selectOlder = () => {
+		if (older) {
+			onSelectReceipt(older.seq);
+			return;
+		}
+		if (!hasMore || loadingOlder) return;
+		void onLoadOlder().then((loaded) => {
+			if (loaded[0]) onSelectReceipt(loaded[0].seq);
+		});
+	};
+	if (!selected) return null;
+	return (
+		<div className="mb-3 space-y-2 border-b border-border/40 pb-3">
+			<div className="grid grid-cols-[2.25rem_minmax(0,1fr)_2.25rem] items-stretch border border-border/50 bg-background/35">
+				<button
+					type="button"
+					onClick={() => newer && onSelectReceipt(newer.seq)}
+					disabled={!newer}
+					aria-label="Newer turn context"
+					title="Newer turn"
+					className="grid place-items-center border-r border-border/40 text-muted-foreground transition-colors hover:bg-primary/5 hover:text-primary disabled:cursor-default disabled:opacity-20"
+				>
+					<ChevronUp className="h-4 w-4" />
+				</button>
+				<div className="min-w-0 px-3 py-2.5">
+					<div className="flex min-w-0 items-center gap-2">
+						<span className="shrink-0 text-[10px] font-medium text-foreground/75">
+							{receiptTurnLabel(selected, selectedIndex)}
+						</span>
+						{selectedIndex === 0 && (
+							<span className="shrink-0 border border-primary/25 bg-primary/5 px-1.5 py-0.5 text-[7px] tracking-widest text-primary/65 uppercase">
+								Latest
+							</span>
+						)}
+						<span className="ml-auto truncate font-mono text-[9px] text-muted-foreground/50">
+							{receiptTimestamp(selected)}
+						</span>
+					</div>
+					<PrivacyMask className="mt-1 block truncate text-[10px] text-muted-foreground/65">
+						{selected.messagePreview || "No message preview retained"}
+					</PrivacyMask>
+				</div>
+				<button
+					type="button"
+					onClick={selectOlder}
+					disabled={(!older && !hasMore) || loadingOlder}
+					aria-label="Older turn context"
+					title="Older turn"
+					className="grid place-items-center border-l border-border/40 text-muted-foreground transition-colors hover:bg-primary/5 hover:text-primary disabled:cursor-default disabled:opacity-20"
+				>
+					{loadingOlder && !older ? (
+						<LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+					) : (
+						<ChevronDown className="h-4 w-4" />
+					)}
+				</button>
+			</div>
+
+			<details className="group/history border border-border/40 bg-background/20">
+				<summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-[9px] text-muted-foreground/60 transition-colors hover:text-foreground [&::-webkit-details-marker]:hidden">
+					<span className="flex items-center gap-1.5">
+						<History className="h-3.5 w-3.5" />
+						Browse turns
+					</span>
+					<span className="font-mono text-[8px]">
+						{receipts.length.toLocaleString()} loaded
+					</span>
+				</summary>
+				<div className="max-h-56 overflow-y-auto overscroll-contain border-t border-border/35">
+					{receipts.map((receipt, index) => {
+						const isSelected = receipt.seq === selectedSeq;
+						return (
+							<button
+								key={receipt.seq}
+								type="button"
+								aria-current={isSelected ? "true" : undefined}
+								onClick={() => onSelectReceipt(receipt.seq)}
+								className={`block w-full min-w-0 border-b border-border/25 px-3 py-2 text-left transition-colors last:border-b-0 ${
+									isSelected
+										? "bg-primary/[0.08]"
+										: "hover:bg-primary/5 hover:text-foreground"
+								}`}
+							>
+								<span className="flex items-center justify-between gap-3">
+									<span
+										className={`text-[9px] font-medium ${
+											isSelected ? "text-primary/75" : "text-foreground/65"
+										}`}
+									>
+										{receiptTurnLabel(receipt, index)}
+										{index === 0 ? " · Latest" : ""}
+									</span>
+									<span className="shrink-0 font-mono text-[8px] text-muted-foreground/45">
+										{receiptTimestamp(receipt)}
+									</span>
+								</span>
+								<PrivacyMask className="mt-0.5 block truncate text-[9px] text-muted-foreground/55">
+									{receipt.messagePreview || "No message preview retained"}
+								</PrivacyMask>
+							</button>
+						);
+					})}
+					{hasMore && (
+						<button
+							type="button"
+							onClick={() => void onLoadOlder()}
+							disabled={loadingOlder}
+							className="flex w-full items-center justify-center gap-1.5 px-3 py-2.5 text-[9px] text-muted-foreground transition-colors hover:bg-primary/5 hover:text-foreground disabled:cursor-wait disabled:opacity-50"
+						>
+							{loadingOlder && (
+								<LoaderCircle className="h-3 w-3 animate-spin" />
+							)}
+							{loadingOlder ? "Loading older" : "Load older turns"}
+						</button>
+					)}
+				</div>
+			</details>
+		</div>
+	);
 }
 
 function LastSentContext({
@@ -260,43 +414,20 @@ function LastSentContext({
 	onSelectReceipt: (seq: number) => void;
 	hasMore: boolean;
 	loadingOlder: boolean;
-	onLoadOlder: () => void;
+	onLoadOlder: () => Promise<HlidContextReceipt[]>;
 }) {
 	const isLatest = receipts[0]?.seq === selectedSeq;
 	return (
 		<>
 			<ContextSection icon={Gauge} title="Turn context receipt">
-				<div className="mb-3 flex flex-col gap-2 border-b border-border/40 pb-3 sm:flex-row sm:items-end">
-					<label className="min-w-0 flex-1">
-						<span className="mb-1 block text-[8px] tracking-widest text-muted-foreground/45 uppercase">
-							Sent turn
-						</span>
-						<select
-							aria-label="Sent turn context"
-							value={selectedSeq}
-							onChange={(event) =>
-								onSelectReceipt(Number(event.currentTarget.value))
-							}
-							className="h-9 w-full border border-border/50 bg-background px-2.5 font-mono text-[10px] text-foreground/70 outline-none focus:border-primary/45"
-						>
-							{receipts.map((receipt, index) => (
-								<option key={receipt.seq} value={receipt.seq}>
-									{receiptLabel(receipt, index)}
-								</option>
-							))}
-						</select>
-					</label>
-					{hasMore && (
-						<button
-							type="button"
-							onClick={onLoadOlder}
-							disabled={loadingOlder}
-							className="h-9 shrink-0 border border-border/50 px-3 text-[9px] text-muted-foreground transition-colors hover:border-primary/40 hover:text-foreground disabled:cursor-wait disabled:opacity-50"
-						>
-							{loadingOlder ? "Loading older" : "Load older turns"}
-						</button>
-					)}
-				</div>
+				<TurnReceiptPicker
+					receipts={receipts}
+					selectedSeq={selectedSeq}
+					onSelectReceipt={onSelectReceipt}
+					hasMore={hasMore}
+					loadingOlder={loadingOlder}
+					onLoadOlder={onLoadOlder}
+				/>
 				<div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
 					<ContextMetric
 						label="Hlid added"
@@ -304,7 +435,11 @@ function LastSentContext({
 					/>
 					<ContextMetric
 						label="Rough tokens"
-						value={`~${context.estimatedHlidTokens.toLocaleString()}`}
+						value={
+							context.estimatedHlidTokens === 0
+								? "0"
+								: `~${context.estimatedHlidTokens.toLocaleString()}`
+						}
 					/>
 					<ContextMetric
 						label="Provider prompt"
@@ -564,10 +699,12 @@ function LastSentContext({
 
 export function ContextInspectorDialog({
 	sessionId,
+	initialTarget,
 	pending,
 	onClose,
 }: {
 	sessionId: string;
+	initialTarget?: HlidContextReceiptTarget | null;
 	pending: PendingHlidContext;
 	onClose: () => void;
 }) {
@@ -592,56 +729,88 @@ export function ContextInspectorDialog({
 
 	useEffect(() => {
 		let active = true;
+		const matchesTarget = (receipt: HlidContextReceipt) =>
+			(initialTarget?.seq !== undefined && receipt.seq === initialTarget.seq) ||
+			(initialTarget?.turnId !== undefined &&
+				receipt.turnId === initialTarget.turnId);
 		setLoading(true);
 		setError(null);
 		setHistoryError(null);
-		void getSessionContextFn({
-			data: { sessionId, limit: CONTEXT_RECEIPT_PAGE_SIZE },
-		}).then(
-			(result) => {
-				if (!active) return;
-				const nextReceipts = result?.hlid_contexts?.length
-					? result.hlid_contexts
-					: result?.hlid_context
-						? [
-								{
-									seq: -1,
-									timestamp: Math.floor(result.hlid_context.recordedAt / 1_000),
-									context: result.hlid_context,
-								},
-							]
-						: [];
-				setReceipts(nextReceipts);
-				setSelectedSeq(nextReceipts[0]?.seq ?? null);
-				setHasMore(result?.has_more_contexts ?? false);
-				setNextBeforeSeq(result?.next_context_before_seq ?? null);
-				setProviderUsage({
-					contextWindow: result?.context_window ?? null,
-					used: result?.last_context_used ?? null,
-					actualModel: result?.actual_model ?? null,
+		void (async () => {
+			const result = await getSessionContextFn({
+				data: { sessionId, limit: CONTEXT_RECEIPT_PAGE_SIZE },
+			});
+			let nextReceipts = result?.hlid_contexts?.length
+				? result.hlid_contexts
+				: result?.hlid_context
+					? [
+							{
+								seq: -1,
+								timestamp: Math.floor(result.hlid_context.recordedAt / 1_000),
+								context: result.hlid_context,
+							},
+						]
+					: [];
+			let nextHasMore = result?.has_more_contexts ?? false;
+			let nextCursor = result?.next_context_before_seq ?? null;
+			while (
+				initialTarget &&
+				!nextReceipts.some(matchesTarget) &&
+				nextHasMore &&
+				nextCursor !== null
+			) {
+				const olderResult = await getSessionContextFn({
+					data: {
+						sessionId,
+						beforeSeq: nextCursor,
+						limit: CONTEXT_RECEIPT_PAGE_SIZE,
+					},
 				});
-				setLoading(false);
-			},
-			(fetchError) => {
-				if (!active) return;
-				setError(
-					fetchError instanceof Error
-						? fetchError.message
-						: "Could not read Hlid context.",
-				);
-				setLoading(false);
-			},
-		);
+				const olderReceipts = olderResult?.hlid_contexts ?? [];
+				const seen = new Set(nextReceipts.map((receipt) => receipt.seq));
+				nextReceipts = [
+					...nextReceipts,
+					...olderReceipts.filter((receipt) => !seen.has(receipt.seq)),
+				];
+				nextHasMore = olderResult?.has_more_contexts ?? false;
+				nextCursor = olderResult?.next_context_before_seq ?? null;
+			}
+			if (!active) return;
+			setReceipts(nextReceipts);
+			setSelectedSeq(
+				initialTarget
+					? (nextReceipts.find(matchesTarget)?.seq ??
+							nextReceipts[0]?.seq ??
+							null)
+					: (nextReceipts[0]?.seq ?? null),
+			);
+			setHasMore(nextHasMore);
+			setNextBeforeSeq(nextCursor);
+			setProviderUsage({
+				contextWindow: result?.context_window ?? null,
+				used: result?.last_context_used ?? null,
+				actualModel: result?.actual_model ?? null,
+			});
+			setLoading(false);
+		})().catch((fetchError: unknown) => {
+			if (!active) return;
+			setError(
+				fetchError instanceof Error
+					? fetchError.message
+					: "Could not read Hlid context.",
+			);
+			setLoading(false);
+		});
 		return () => {
 			active = false;
 		};
-	}, [sessionId]);
+	}, [initialTarget, sessionId]);
 
 	const context =
 		receipts.find((receipt) => receipt.seq === selectedSeq)?.context ?? null;
 
-	async function loadOlderReceipts(): Promise<void> {
-		if (loadingOlder || nextBeforeSeq === null) return;
+	async function loadOlderReceipts(): Promise<HlidContextReceipt[]> {
+		if (loadingOlder || nextBeforeSeq === null) return [];
 		setLoadingOlder(true);
 		setHistoryError(null);
 		try {
@@ -662,12 +831,14 @@ export function ContextInspectorDialog({
 			});
 			setHasMore(result?.has_more_contexts ?? false);
 			setNextBeforeSeq(result?.next_context_before_seq ?? null);
+			return older;
 		} catch (loadError) {
 			setHistoryError(
 				loadError instanceof Error
 					? loadError.message
 					: "Could not load older context receipts.",
 			);
+			return [];
 		} finally {
 			setLoadingOlder(false);
 		}
@@ -732,7 +903,7 @@ export function ContextInspectorDialog({
 								onSelectReceipt={setSelectedSeq}
 								hasMore={hasMore}
 								loadingOlder={loadingOlder}
-								onLoadOlder={() => void loadOlderReceipts()}
+								onLoadOlder={loadOlderReceipts}
 							/>
 							{historyError && (
 								<p role="alert" className="text-[10px] text-destructive/75">

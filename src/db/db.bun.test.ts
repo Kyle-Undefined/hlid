@@ -1043,6 +1043,9 @@ describe("messages", () => {
 		expect(latest.rows).toHaveLength(1);
 		expect(latest.rows[0]).toMatchObject({
 			seq: 2,
+			turn_number: 2,
+			turn_id: "turn-2",
+			message_preview: "again",
 			context_manifest_json: second,
 		});
 		expect(latest.hasMore).toBe(true);
@@ -1051,6 +1054,9 @@ describe("messages", () => {
 		expect(previous.rows).toHaveLength(1);
 		expect(previous.rows[0]).toMatchObject({
 			seq: 0,
+			turn_number: 1,
+			turn_id: "turn-1",
+			message_preview: "hello",
 			context_manifest_json: first,
 		});
 		expect(previous.hasMore).toBe(false);

@@ -437,6 +437,9 @@ describe("handleDbRoute — /db/session-context", () => {
 				{
 					seq: 8,
 					timestamp: 1_700_000_000,
+					turn_number: 4,
+					turn_id: "turn-4",
+					message_preview: "  inspect\nthis context  ",
 					context_manifest_json: manifest,
 				},
 			],
@@ -466,6 +469,9 @@ describe("handleDbRoute — /db/session-context", () => {
 				{
 					seq: 8,
 					timestamp: 1_700_000_000,
+					turnNumber: 4,
+					turnId: "turn-4",
+					messagePreview: "inspect this context",
 					context: { contractVersion: 1, hlidAddedChars: 10 },
 				},
 			],
@@ -487,6 +493,9 @@ describe("handleDbRoute — /db/session-context", () => {
 				{
 					seq: 2,
 					timestamp: 1_700_000_000,
+					turn_number: 2,
+					turn_id: null,
+					message_preview: "old turn",
 					context_manifest_json: '{"contractVersion":999}',
 				},
 			],

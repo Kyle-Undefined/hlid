@@ -16,6 +16,8 @@ export type UserMessage = {
 	attachments?: ChatAttachment[];
 	/** Persisted transcript sequence, available after history hydration. */
 	transcriptSeq?: number;
+	/** Whether Hlid retained an inspectable context receipt for this turn. */
+	hasContextReceipt?: boolean;
 	/** Assistant transcript sequence this prompt steered. */
 	steerTargetSeq?: number;
 };
@@ -102,6 +104,7 @@ export type HistoryItem =
 			role: string;
 			text: string;
 			seq?: number;
+			hasContextReceipt?: boolean;
 			steerTargetSeq?: number | null;
 			toolEvents?: ToolEventMessage[];
 			attachments?: ChatAttachment[];
@@ -136,6 +139,7 @@ export type Action =
 			text: string;
 			attachments?: ChatAttachment[];
 	  }
+	| { type: "MARK_USER_CONTEXT_RECEIPT"; id: string }
 	| { type: "REMOVE_USER"; id: string }
 	| {
 			/**
@@ -436,6 +440,7 @@ function historyItemToMessage(item: HistoryItem): ChatMessage {
 			text: item.text,
 			attachments: item.attachments,
 			...(item.seq !== undefined ? { transcriptSeq: item.seq } : {}),
+			...(item.hasContextReceipt ? { hasContextReceipt: true } : {}),
 			...(item.steerTargetSeq != null
 				? { steerTargetSeq: item.steerTargetSeq }
 				: {}),
@@ -541,6 +546,12 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 					attachments: action.attachments,
 				},
 			];
+		case "MARK_USER_CONTEXT_RECEIPT":
+			return state.map((message) =>
+				message.role === "user" && message.id === action.id
+					? { ...message, hasContextReceipt: true }
+					: message,
+			);
 		case "REMOVE_USER":
 			return state.filter((m) => !(m.id === action.id && m.role === "user"));
 		case "PROMOTE_USER": {

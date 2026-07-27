@@ -427,7 +427,23 @@ async function getSessionContext(url: URL): Promise<Response> {
 	]);
 	const contexts = page.rows.flatMap((row) => {
 		const context = parseHlidTurnContextManifest(row.context_manifest_json);
-		return context ? [{ seq: row.seq, timestamp: row.timestamp, context }] : [];
+		const normalizedPreview = row.message_preview.replace(/\s+/g, " ").trim();
+		const messagePreview =
+			normalizedPreview.length > 80
+				? `${normalizedPreview.slice(0, 79)}…`
+				: normalizedPreview;
+		return context
+			? [
+					{
+						seq: row.seq,
+						timestamp: row.timestamp,
+						turnNumber: row.turn_number,
+						...(row.turn_id ? { turnId: row.turn_id } : {}),
+						...(messagePreview ? { messagePreview } : {}),
+						context,
+					},
+				]
+			: [];
 	});
 	return Response.json({
 		...result,

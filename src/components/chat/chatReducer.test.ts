@@ -71,6 +71,22 @@ describe("ADD_USER", () => {
 	});
 });
 
+describe("MARK_USER_CONTEXT_RECEIPT", () => {
+	it("makes a completed live turn inspectable without a history reload", () => {
+		const initial = withUser("turn-1", "inspect me");
+		const state = reducer(initial, {
+			type: "MARK_USER_CONTEXT_RECEIPT",
+			id: "turn-1",
+		});
+		expect(state[0]).toMatchObject({
+			id: "turn-1",
+			role: "user",
+			hasContextReceipt: true,
+		});
+		expect(initial[0]).not.toHaveProperty("hasContextReceipt");
+	});
+});
+
 // ── ADD_ASSISTANT ─────────────────────────────────────────────────────────────
 
 describe("ADD_ASSISTANT", () => {

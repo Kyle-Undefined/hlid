@@ -195,6 +195,43 @@ describe("useLoadChatHistory — initial load", () => {
 		).toBe(true);
 	});
 
+	it("marks persisted user turns that have inspectable context receipts", async () => {
+		vi.mocked(getSessionDataFn).mockResolvedValue([
+			{
+				...makeRow("user", "inspect this turn", 1000),
+				context_manifest_json: '{"contractVersion":1}',
+			},
+			makeRow("user", "legacy turn", 2000),
+		]);
+		const dispatch = vi.fn();
+
+		renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef: { current: null },
+			historyReadyRef: { current: false },
+			handleWsMessage: noopWsHandler,
+			wsStatus: "connected",
+			sessionIdRef: { current: "sess-1" },
+		});
+
+		await act(async () => {});
+		const load = dispatch.mock.calls.find(
+			([action]) => action.type === "LOAD_HISTORY",
+		)?.[0];
+		expect(load.items).toEqual([
+			expect.objectContaining({
+				text: "inspect this turn",
+				hasContextReceipt: true,
+			}),
+			expect.objectContaining({
+				text: "legacy turn",
+				hasContextReceipt: false,
+			}),
+		]);
+	});
+
 	it("hydrates trailing pending questions and plans newer than the latest message", async () => {
 		vi.mocked(getSessionDataFn).mockResolvedValue([
 			{

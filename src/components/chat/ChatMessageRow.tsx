@@ -1,4 +1,5 @@
 import { memo } from "react";
+import type { HlidContextReceiptTarget } from "#/lib/hlidContext";
 import type { ObsidianCaptureDestination } from "#/lib/obsidianCapture";
 import type { SubagentSnapshot } from "#/server/agentProvider";
 import type { ToolEventMessage } from "#/server/protocol";
@@ -27,6 +28,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 	onCancelQueued,
 	onPromoteQueued,
 	onSteerQueued,
+	onViewContext,
 	canSteerQueued,
 	canBranch,
 	forkingMessageId,
@@ -61,6 +63,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 	onCancelQueued: (id: string) => void;
 	onPromoteQueued: (id: string) => void;
 	onSteerQueued: (id: string) => void;
+	onViewContext?: (target: HlidContextReceiptTarget) => void;
 	canSteerQueued: boolean;
 	canBranch?: boolean;
 	forkingMessageId?: number | null;
@@ -83,6 +86,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 				onCancel={onCancelQueued}
 				onPromote={onPromoteQueued}
 				onSteer={onSteerQueued}
+				onViewContext={onViewContext}
 				canSteer={canSteerQueued && message.id !== undefined}
 			/>
 		);

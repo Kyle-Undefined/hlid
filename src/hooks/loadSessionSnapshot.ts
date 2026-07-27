@@ -56,6 +56,7 @@ function mapSessionRows(
 		role: r.role,
 		text: r.text,
 		seq: r.seq,
+		hasContextReceipt: Boolean(r.context_manifest_json),
 		steerTargetSeq: r.steer_target_seq,
 		toolEvents: r.toolEvents?.map((te) => ({
 			type: "tool_event" as const,

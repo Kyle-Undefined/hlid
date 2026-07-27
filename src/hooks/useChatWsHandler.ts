@@ -155,6 +155,12 @@ function dispatchActiveMessage(
 			dispatch({ type: "ADD_TOOL_EVENT", id: activeId, event: msg });
 			break;
 		case "done":
+			if (msg.turn_id) {
+				dispatch({
+					type: "MARK_USER_CONTEXT_RECEIPT",
+					id: msg.turn_id,
+				});
+			}
 			dispatch({
 				type: "DONE",
 				id: activeId,

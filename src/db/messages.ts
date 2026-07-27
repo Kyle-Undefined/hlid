@@ -586,51 +586,53 @@ export async function getSessionContextManifests(
 	rows: Array<{
 		seq: number;
 		timestamp: number;
+		turn_number: number;
+		turn_id: string | null;
+		message_preview: string;
 		context_manifest_json: string;
 	}>;
 	hasMore: boolean;
 }> {
 	const db = await getDb();
 	const boundedLimit = Math.max(1, Math.min(50, Math.trunc(limit)));
-	const rows =
-		beforeSeq === undefined
-			? db
-					.query<
-						{
-							seq: number;
-							timestamp: number;
-							context_manifest_json: string;
-						},
-						[string, number]
-					>(
-						`SELECT seq, timestamp, context_manifest_json
-						 FROM messages
-						 WHERE session_id = ?
-						   AND role = 'user'
-						   AND context_manifest_json IS NOT NULL
-						 ORDER BY seq DESC, id DESC
-						 LIMIT ?`,
-					)
-					.all(sessionId, boundedLimit + 1)
-			: db
-					.query<
-						{
-							seq: number;
-							timestamp: number;
-							context_manifest_json: string;
-						},
-						[string, number, number]
-					>(
-						`SELECT seq, timestamp, context_manifest_json
-			 FROM messages
-			 WHERE session_id = ?
-			   AND role = 'user'
-			   AND context_manifest_json IS NOT NULL
-			   AND seq < ?
-			 ORDER BY seq DESC, id DESC
-			 LIMIT ?`,
-					)
-					.all(sessionId, beforeSeq, boundedLimit + 1);
+	const boundary = beforeSeq ?? null;
+	const rows = db
+		.query<
+			{
+				seq: number;
+				timestamp: number;
+				turn_number: number;
+				turn_id: string | null;
+				message_preview: string;
+				context_manifest_json: string;
+			},
+			[string, number | null, number | null, number]
+		>(
+			`WITH context_receipts AS (
+				SELECT id,
+				       seq,
+				       timestamp,
+				       turn_id,
+				       substr(text, 1, 160) AS message_preview,
+				       context_manifest_json,
+				       row_number() OVER (ORDER BY seq ASC, id ASC) AS turn_number
+				FROM messages
+				WHERE session_id = ?
+				  AND role = 'user'
+				  AND context_manifest_json IS NOT NULL
+			)
+			SELECT seq,
+			       timestamp,
+			       turn_number,
+			       turn_id,
+			       message_preview,
+			       context_manifest_json
+			FROM context_receipts
+			WHERE (? IS NULL OR seq < ?)
+			ORDER BY seq DESC, id DESC
+			LIMIT ?`,
+		)
+		.all(sessionId, boundary, boundary, boundedLimit + 1);
 	return {
 		rows: rows.slice(0, boundedLimit),
 		hasMore: rows.length > boundedLimit,

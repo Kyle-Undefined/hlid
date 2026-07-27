@@ -104,6 +104,7 @@ import {
 	runComposerPickerAction,
 } from "#/lib/composer";
 import { deriveModelMismatch, fmtModel } from "#/lib/formatters";
+import type { HlidContextReceiptTarget } from "#/lib/hlidContext";
 import { loaderValueOrFallback } from "#/lib/loaderFallback";
 import { mapMcpServer } from "#/lib/mcp";
 import { configuredObsidianCapture } from "#/lib/obsidianCapture";
@@ -615,6 +616,8 @@ function useRavenChatRuntime({
 	>([]);
 	const [mcpOpenSignal, setMcpOpenSignal] = useState(0);
 	const [contextInspectorOpen, setContextInspectorOpen] = useState(false);
+	const [contextInspectorTarget, setContextInspectorTarget] =
+		useState<HlidContextReceiptTarget | null>(null);
 	const [workflowManagerOpen, setWorkflowManagerOpen] = useState(false);
 	const [workflowCatalog, setWorkflowCatalog] = useState<
 		Pick<WorkflowCatalogMessage, "workflows" | "locations">
@@ -780,8 +783,14 @@ function useRavenChatRuntime({
 		});
 		setMcpOpenSignal((value) => value + 1);
 	}, [agentCwd, connection.send, sessionIdRef]);
-	const openContext = useCallback(() => setContextInspectorOpen(true), []);
-	const closeContext = useCallback(() => setContextInspectorOpen(false), []);
+	const openContext = useCallback((target?: HlidContextReceiptTarget) => {
+		setContextInspectorTarget(target ?? null);
+		setContextInspectorOpen(true);
+	}, []);
+	const closeContext = useCallback(() => {
+		setContextInspectorOpen(false);
+		setContextInspectorTarget(null);
+	}, []);
 	const refreshWorkflows = useCallback(() => {
 		connection.send({
 			type: "probe_workflows",
@@ -815,6 +824,7 @@ function useRavenChatRuntime({
 		setSdkSlashCommandProviderId(null);
 		setMcpServers([]);
 		setContextInspectorOpen(false);
+		setContextInspectorTarget(null);
 		setWorkflowManagerOpen(false);
 		setWorkflowCatalog({ workflows: [], locations: [] });
 		setWorkflowCatalogProviderId(null);
@@ -894,6 +904,7 @@ function useRavenChatRuntime({
 		mcpOpenSignal,
 		openMcp,
 		contextInspectorOpen,
+		contextInspectorTarget,
 		openContext,
 		closeContext,
 		workflowManagerOpen,
@@ -2739,6 +2750,7 @@ function ChatPageContent(props: ChatPageContentProps) {
 			{props.runtime.contextInspectorOpen && (
 				<ContextInspectorDialog
 					sessionId={props.session.sessionId}
+					initialTarget={props.runtime.contextInspectorTarget}
 					pending={{
 						providerId: props.composerProps.activeProviderId,
 						model: props.composerProps.activeModel ?? undefined,
@@ -3118,6 +3130,7 @@ function RavenMessagePane({
 									handleCancelQueued={handleCancelQueued}
 									handlePromoteQueued={handlePromoteQueued}
 									handleSteerQueued={handleSteerQueued}
+									onViewContext={runtime.openContext}
 									canSteerQueued={canSteerQueued}
 									bottomRef={bottomRef}
 									canBranch={canBranch}

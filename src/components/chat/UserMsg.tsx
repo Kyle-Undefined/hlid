@@ -1,7 +1,8 @@
-import { ChevronsUp, Route, X } from "lucide-react";
+import { Braces, ChevronsUp, Route, X } from "lucide-react";
 import type { UserMessage } from "#/components/chat/chatReducer";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import { useCopyToClipboard } from "#/hooks/useCopyToClipboard";
+import type { HlidContextReceiptTarget } from "#/lib/hlidContext";
 import { AttachmentChip } from "./AttachmentChip";
 import { CopyButton } from "./CopyButton";
 
@@ -17,6 +18,7 @@ export function UserMsg({
 	onCancel,
 	onPromote,
 	onSteer,
+	onViewContext,
 	canSteer = false,
 }: {
 	message: UserMessage;
@@ -35,6 +37,7 @@ export function UserMsg({
 	 */
 	onPromote?: (id: string) => void;
 	onSteer?: (id: string) => void;
+	onViewContext?: (target: HlidContextReceiptTarget) => void;
 	canSteer?: boolean;
 }) {
 	const { copy, copied } = useCopyToClipboard();
@@ -42,6 +45,14 @@ export function UserMsg({
 	const isRunning = queueState?.kind === "running";
 	const isSteering = queueState?.kind === "steering";
 	const isPromoting = queueState?.kind === "promoting";
+	const contextTarget = message.hasContextReceipt
+		? {
+				...(message.transcriptSeq !== undefined
+					? { seq: message.transcriptSeq }
+					: {}),
+				turnId: message.id,
+			}
+		: null;
 	const label = isRunning
 		? "ME"
 		: isSteering
@@ -86,16 +97,27 @@ export function UserMsg({
 				>
 					{label}
 				</div>
-				{message.text &&
-					!isQueued &&
+				{!isQueued &&
 					!isRunning &&
 					!isSteering &&
-					!isPromoting && (
-						<CopyButton
-							onCopy={() => copy(message.text)}
-							copied={copied}
-							className="opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity"
-						/>
+					!isPromoting &&
+					(message.text || (contextTarget && onViewContext)) && (
+						<div className="flex items-center gap-0.5">
+							{contextTarget && onViewContext && (
+								<button
+									type="button"
+									onClick={() => onViewContext(contextTarget)}
+									className="p-1 text-muted-foreground/40 transition-colors hover:text-primary"
+									aria-label="View context sent with this turn"
+									title="View turn context"
+								>
+									<Braces className="h-3.5 w-3.5" />
+								</button>
+							)}
+							{message.text && (
+								<CopyButton onCopy={() => copy(message.text)} copied={copied} />
+							)}
+						</div>
 					)}
 				{isQueued && (
 					<div className="flex items-center gap-0.5">

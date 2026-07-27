@@ -222,6 +222,32 @@ describe("ContextInspectorDialog", () => {
 		});
 	});
 
+	it("shows an exact zero instead of an approximate zero token estimate", async () => {
+		vi.mocked(getSessionContextFn).mockResolvedValue({
+			context_window: null,
+			last_context_used: null,
+			actual_model: null,
+			hlid_context: contextManifest({ estimatedHlidTokens: 0 }),
+		});
+		render(
+			<ContextInspectorDialog
+				sessionId="session-1"
+				pending={{
+					skills: [],
+					attachments: [],
+					vaultReferences: [],
+					workspaceReferences: [],
+					planMode: false,
+				}}
+				onClose={vi.fn()}
+			/>,
+		);
+
+		const metric = (await screen.findByText("Rough tokens")).parentElement;
+		expect(within(metric as HTMLElement).getByText("0")).toBeTruthy();
+		expect(within(metric as HTMLElement).queryByText("~0")).toBeNull();
+	});
+
 	it("selects previous turn receipts and loads older pages without reusing current provider usage", async () => {
 		const latest = contextManifest({
 			recordedAt: new Date("2026-07-27T16:00:00Z").getTime(),
@@ -250,8 +276,20 @@ describe("ContextInspectorDialog", () => {
 				actual_model: "gpt-current",
 				hlid_context: latest,
 				hlid_contexts: [
-					{ seq: 10, timestamp: 1_722_096_000, context: latest },
-					{ seq: 6, timestamp: 1_722_092_400, context: previous },
+					{
+						seq: 10,
+						timestamp: 1_722_096_000,
+						turnNumber: 3,
+						messagePreview: "Latest question",
+						context: latest,
+					},
+					{
+						seq: 6,
+						timestamp: 1_722_092_400,
+						turnNumber: 2,
+						messagePreview: "Previous question",
+						context: previous,
+					},
 				],
 				has_more_contexts: true,
 				next_context_before_seq: 6,
@@ -261,7 +299,15 @@ describe("ContextInspectorDialog", () => {
 				last_context_used: 12_000,
 				actual_model: "gpt-current",
 				hlid_context: older,
-				hlid_contexts: [{ seq: 2, timestamp: 1_722_088_800, context: older }],
+				hlid_contexts: [
+					{
+						seq: 2,
+						timestamp: 1_722_088_800,
+						turnNumber: 1,
+						messagePreview: "First question",
+						context: older,
+					},
+				],
 				has_more_contexts: false,
 				next_context_before_seq: 2,
 			});
@@ -280,14 +326,24 @@ describe("ContextInspectorDialog", () => {
 			/>,
 		);
 
-		const selector = await screen.findByRole("combobox", {
-			name: "Sent turn context",
-		});
-		expect(within(selector).getAllByRole("option")).toHaveLength(2);
-		expect((selector as HTMLSelectElement).value).toBe("10");
+		expect(
+			(await screen.findAllByText("Latest question")).length,
+		).toBeGreaterThan(0);
+		expect(screen.queryByRole("combobox")).toBeNull();
+		expect(screen.getByText("Turn 3")).toBeTruthy();
 		expect(screen.getAllByText("100 chars").length).toBeGreaterThan(0);
+		fireEvent.click(screen.getByRole("button", { name: "Older turn context" }));
+		expect(screen.getAllByText("40 chars").length).toBeGreaterThan(0);
 
-		fireEvent.change(selector, { target: { value: "6" } });
+		const history = screen.getByText("Browse turns").closest("details");
+		expect(history?.open).toBe(false);
+		fireEvent.click(screen.getByText("Browse turns"));
+		expect(history?.open).toBe(true);
+		fireEvent.click(
+			within(history as HTMLElement).getByRole("button", {
+				name: /Turn 2.*Previous question/,
+			}),
+		);
 		expect(screen.getAllByText("40 chars").length).toBeGreaterThan(0);
 
 		fireEvent.click(screen.getByText("Provider context"));
@@ -301,7 +357,11 @@ describe("ContextInspectorDialog", () => {
 
 		fireEvent.click(screen.getByRole("button", { name: "Load older turns" }));
 		await waitFor(() => {
-			expect(within(selector).getAllByRole("option")).toHaveLength(3);
+			expect(
+				within(history as HTMLElement).getByRole("button", {
+					name: /Turn 1.*First question/,
+				}),
+			).toBeTruthy();
 		});
 		expect(getSessionContextFn).toHaveBeenNthCalledWith(2, {
 			data: {
@@ -313,5 +373,94 @@ describe("ContextInspectorDialog", () => {
 		expect(
 			screen.queryByRole("button", { name: "Load older turns" }),
 		).toBeNull();
+	});
+
+	it("opens directly on an older receipt selected from its transcript turn", async () => {
+		const latest = contextManifest({
+			recordedAt: new Date("2026-07-27T16:00:00Z").getTime(),
+			hlidAddedChars: 100,
+		});
+		const target = contextManifest({
+			recordedAt: new Date("2026-07-27T14:00:00Z").getTime(),
+			hlidAddedChars: 20,
+		});
+		vi.mocked(getSessionContextFn)
+			.mockResolvedValueOnce({
+				context_window: 200_000,
+				last_context_used: 12_000,
+				actual_model: "gpt-current",
+				hlid_context: latest,
+				hlid_contexts: [
+					{
+						seq: 10,
+						timestamp: 1_722_096_000,
+						turnNumber: 3,
+						messagePreview: "Latest question",
+						context: latest,
+					},
+				],
+				has_more_contexts: true,
+				next_context_before_seq: 10,
+			})
+			.mockResolvedValueOnce({
+				context_window: 200_000,
+				last_context_used: 12_000,
+				actual_model: "gpt-current",
+				hlid_context: target,
+				hlid_contexts: [
+					{
+						seq: 2,
+						timestamp: 1_722_088_800,
+						turnNumber: 1,
+						turnId: "turn-1",
+						messagePreview: "First question",
+						context: target,
+					},
+				],
+				has_more_contexts: false,
+				next_context_before_seq: 2,
+			});
+
+		render(
+			<ContextInspectorDialog
+				sessionId="session-1"
+				initialTarget={{ turnId: "turn-1" }}
+				pending={{
+					skills: [],
+					attachments: [],
+					vaultReferences: [],
+					workspaceReferences: [],
+					planMode: false,
+				}}
+				onClose={vi.fn()}
+			/>,
+		);
+
+		expect(
+			(await screen.findAllByText("First question")).length,
+		).toBeGreaterThan(0);
+		expect(screen.getAllByText("Turn 1").length).toBeGreaterThan(0);
+		expect(
+			(
+				screen.getByRole("button", {
+					name: "Older turn context",
+				}) as HTMLButtonElement
+			).disabled,
+		).toBe(true);
+		expect(
+			(
+				screen.getByRole("button", {
+					name: "Newer turn context",
+				}) as HTMLButtonElement
+			).disabled,
+		).toBe(false);
+		expect(screen.getAllByText("20 chars").length).toBeGreaterThan(0);
+		expect(getSessionContextFn).toHaveBeenNthCalledWith(2, {
+			data: {
+				sessionId: "session-1",
+				beforeSeq: 10,
+				limit: 20,
+			},
+		});
 	});
 });

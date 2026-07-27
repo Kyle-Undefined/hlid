@@ -1,5 +1,6 @@
 import { memo, useMemo } from "react";
 import { useProjectPreview } from "#/hooks/projectPreviewStore";
+import type { HlidContextReceiptTarget } from "#/lib/hlidContext";
 import { formatVaultReferencedMessage } from "#/lib/vaultReferences";
 import type { SubagentSnapshot } from "#/server/agentProvider";
 import type { ToolEventMessage } from "#/server/protocol";
@@ -38,6 +39,7 @@ export const MessageList = memo(function MessageList({
 	handleCancelQueued,
 	handlePromoteQueued,
 	handleSteerQueued,
+	onViewContext,
 	canSteerQueued,
 	bottomRef,
 	hasOlderHistory = false,
@@ -73,6 +75,7 @@ export const MessageList = memo(function MessageList({
 	handleCancelQueued: (id: string) => void;
 	handlePromoteQueued: (id: string) => void;
 	handleSteerQueued: (id: string) => void;
+	onViewContext?: (target: HlidContextReceiptTarget) => void;
 	canSteerQueued: boolean;
 	bottomRef: React.MutableRefObject<HTMLDivElement | null>;
 	hasOlderHistory?: boolean;
@@ -226,6 +229,7 @@ export const MessageList = memo(function MessageList({
 					onCancelQueued={handleCancelQueued}
 					onPromoteQueued={handlePromoteQueued}
 					onSteerQueued={handleSteerQueued}
+					onViewContext={onViewContext}
 					canSteerQueued={
 						canSteerQueued &&
 						chatQueue.find((queued) => queued.id === m.id)?.steerable !== false
