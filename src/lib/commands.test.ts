@@ -75,22 +75,28 @@ describe("commands", () => {
 		expect(commandMatches(command, "resume")).toBe(true);
 	});
 
-	it("omits controls already owned by the UI", () => {
+	it("omits controls owned by the UI while preserving provider status", () => {
 		const commands = mergeCommands(
 			[],
 			[
 				{ name: "model", description: "Model", argumentHint: "" },
 				{ name: "mcp", description: "MCP", argumentHint: "" },
+				{ name: "status", description: "Provider status", argumentHint: "" },
 				{ name: "explain", description: "Explain", argumentHint: "" },
 			],
 		);
 		expect(commands.map(({ name }) => name)).toEqual([
+			"status",
 			"explain",
 			"mcp",
 			"context",
 			"rename",
 			"archive",
 		]);
+		expect(commands[0]).toMatchObject({
+			source: "provider",
+			execution: { kind: "prompt" },
+		});
 	});
 
 	it("maps MCP to Raven's scoped UI and keeps it out of Watch", () => {

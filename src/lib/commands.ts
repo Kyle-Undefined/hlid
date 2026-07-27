@@ -150,7 +150,6 @@ const UI_OWNED_COMMANDS = new Set([
 	"plan",
 	"usage",
 	"new",
-	"status",
 	"mcp",
 	"context",
 	"rename",
