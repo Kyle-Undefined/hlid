@@ -51,7 +51,7 @@ export function VoiceSection({
 	useEffect(() => {
 		const timer = setTimeout(() => void getVoiceInfoFn().then(setInfo), 1200);
 		return () => clearTimeout(timer);
-	}, [voice.enabled, voice.model, voice.threads]);
+	}, [voice.enabled, voice.model, voice.threads, voice.acceleration]);
 
 	return (
 		<div className="space-y-6">

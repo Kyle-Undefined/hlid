@@ -30,6 +30,9 @@ codex_voice = "marin"
 codex_live_mode = false
 hotkey = "Alt+Shift+KeyV"
 max_recording_seconds = 300
+# "auto" uses Vulkan when a compatible GPU is available and falls back to CPU.
+# "cpu" always disables GPU compute.
+acceleration = "auto"
 threads = 4
 vocabulary = ["Claude", "Codex", "Hlið", "Raven", "Forge", "Umbod", "MCP", "Anthropic", "OpenAI", "TypeScript", "GitHub", "Bun"]
 

@@ -241,6 +241,7 @@ export const DEFAULT_VOICE_CONFIG = {
 	codex_live_mode: false,
 	hotkey: "Alt+Shift+KeyV",
 	max_recording_seconds: 300,
+	acceleration: "auto" as const,
 	threads: 4,
 	vocabulary: [
 		"Claude",
@@ -306,6 +307,9 @@ const VoiceSchema = z.object({
 		.min(1)
 		.max(1800)
 		.default(DEFAULT_VOICE_CONFIG.max_recording_seconds),
+	acceleration: z
+		.enum(["auto", "cpu"])
+		.default(DEFAULT_VOICE_CONFIG.acceleration),
 	threads: z
 		.number()
 		.int()

@@ -1,0 +1,221 @@
+name: Build Whisper Windows runtime
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+env:
+  WHISPER_VERSION: "v1.9.1"
+  WHISPER_SOURCE_COMMIT: "f049fff95a089aa9969deb009cdd4892b3e74916"
+  VULKAN_SDK_VERSION: "1.4.350.0"
+  VULKAN_SDK_SHA256: "855b27ba05d2d8119c5114c5d4ff870ca38f2c632b11e1bb9923b9b7e6ecfe7b"
+  RUNTIME_ARCHIVE: "hlid-whisper-runtime-windows-x64-v1.9.1.zip"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout Hlid
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7
+
+      - name: Download and verify the pinned Vulkan SDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $installer = Join-Path $env:RUNNER_TEMP "vulkan-sdk.exe"
+          $url = "https://sdk.lunarg.com/sdk/download/$($env:VULKAN_SDK_VERSION)/windows/vulkan_sdk.exe"
+          Invoke-WebRequest -Uri $url -OutFile $installer
+          $actual = (Get-FileHash $installer -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:VULKAN_SDK_SHA256) {
+            throw "Vulkan SDK SHA-256 mismatch: $actual"
+          }
+          "VULKAN_INSTALLER=$installer" >> $env:GITHUB_ENV
+          "VULKAN_SDK=$($env:RUNNER_TEMP)\VulkanSDK\$($env:VULKAN_SDK_VERSION)" >> $env:GITHUB_ENV
+
+      - name: Install the pinned Vulkan SDK
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & $env:VULKAN_INSTALLER `
+            --root $env:VULKAN_SDK `
+            --accept-licenses `
+            --default-answer `
+            --confirm-command `
+            install
+          if ($LASTEXITCODE -ne 0) {
+            throw "Vulkan SDK installer exited with $LASTEXITCODE"
+          }
+
+      - name: Checkout the pinned whisper.cpp source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $source = Join-Path $env:RUNNER_TEMP "whisper.cpp"
+          git clone --filter=blob:none https://github.com/ggml-org/whisper.cpp.git $source
+          git -C $source checkout --detach $env:WHISPER_SOURCE_COMMIT
+          $actual = git -C $source rev-parse HEAD
+          if ($actual -ne $env:WHISPER_SOURCE_COMMIT) {
+            throw "whisper.cpp source mismatch: $actual"
+          }
+          "WHISPER_SOURCE=$source" >> $env:GITHUB_ENV
+          "WHISPER_BUILD=$($env:RUNNER_TEMP)\whisper-build" >> $env:GITHUB_ENV
+
+      - name: Configure the portable CPU and Vulkan runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          cmake `
+            -S $env:WHISPER_SOURCE `
+            -B $env:WHISPER_BUILD `
+            -G "Visual Studio 17 2022" `
+            -A x64 `
+            -DBUILD_SHARED_LIBS=ON `
+            -DGGML_BACKEND_DL=ON `
+            -DGGML_NATIVE=OFF `
+            -DGGML_CPU_ALL_VARIANTS=OFF `
+            -DGGML_VULKAN=ON `
+            -DGGML_VULKAN_RUN_TESTS=OFF `
+            -DWHISPER_BUILD_TESTS=OFF `
+            -DWHISPER_BUILD_EXAMPLES=ON `
+            -DWHISPER_BUILD_SERVER=ON `
+            -DWHISPER_CURL=OFF `
+            "-DCMAKE_PREFIX_PATH=$env:VULKAN_SDK"
+          if ($LASTEXITCODE -ne 0) {
+            throw "CMake configure exited with $LASTEXITCODE"
+          }
+
+      - name: Build the runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          cmake --build $env:WHISPER_BUILD --config Release --target whisper-server --parallel
+          if ($LASTEXITCODE -ne 0) {
+            throw "CMake build exited with $LASTEXITCODE"
+          }
+
+      - name: Stage and audit the portable runtime
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $bin = Join-Path $env:WHISPER_BUILD "bin\Release"
+          $release = Join-Path $env:RUNNER_TEMP "hlid-whisper-runtime\Release"
+          New-Item -ItemType Directory -Force -Path $release | Out-Null
+          $expected = @(
+            "ggml-base.dll",
+            "ggml-cpu.dll",
+            "ggml-vulkan.dll",
+            "ggml.dll",
+            "whisper.dll",
+            "whisper-server.exe"
+          )
+          foreach ($name in $expected) {
+            Copy-Item (Join-Path $bin $name) (Join-Path $release $name)
+          }
+          $actual = @(Get-ChildItem $release -File | ForEach-Object Name | Sort-Object)
+          $wanted = @($expected | Sort-Object)
+          if (Compare-Object $wanted $actual) {
+            throw "Runtime contains an unreviewed or missing binary"
+          }
+          foreach ($file in Get-ChildItem $release -File) {
+            $dependencies = (& dumpbin /dependents $file.FullName | Out-String)
+            if ($dependencies -match "(?i)amdvlk|amdxc|nvidia|nvapi|nvoglv|intel|igvk|shaderc|glslang|dxcompiler") {
+              throw "$($file.Name) links a vendor driver or Vulkan SDK tool"
+            }
+          }
+          "RUNTIME_RELEASE=$release" >> $env:GITHUB_ENV
+
+      - name: Smoke test the CPU fallback on a generic runner
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $model = Join-Path $env:RUNNER_TEMP "ggml-tiny.en.bin"
+          Invoke-WebRequest `
+            -Uri "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin" `
+            -OutFile $model
+          $modelSha1 = (Get-FileHash $model -Algorithm SHA1).Hash.ToLowerInvariant()
+          if ($modelSha1 -ne "c78c86eb1a8faa21b369bcd33207cc90d64ae9df") {
+            throw "Tiny English model SHA-1 mismatch: $modelSha1"
+          }
+          $stderr = Join-Path $env:RUNNER_TEMP "whisper-cpu.stderr.log"
+          $stdout = Join-Path $env:RUNNER_TEMP "whisper-cpu.stdout.log"
+          $server = Join-Path $env:RUNTIME_RELEASE "whisper-server.exe"
+          $process = Start-Process `
+            -FilePath $server `
+            -WorkingDirectory $env:RUNTIME_RELEASE `
+            -ArgumentList @("--host", "127.0.0.1", "--port", "18765", "--model", $model, "--no-gpu") `
+            -RedirectStandardError $stderr `
+            -RedirectStandardOutput $stdout `
+            -PassThru `
+            -WindowStyle Hidden
+          try {
+            $deadline = (Get-Date).AddSeconds(90)
+            $healthy = $false
+            do {
+              Start-Sleep -Milliseconds 250
+              if ($process.HasExited) { break }
+              try {
+                $response = Invoke-WebRequest -Uri "http://127.0.0.1:18765/" -TimeoutSec 2
+                if ($response.StatusCode -eq 200) {
+                  $healthy = $true
+                  break
+                }
+              } catch {}
+            } while ((Get-Date) -lt $deadline)
+            if (-not $healthy) {
+              throw "CPU whisper-server did not become healthy"
+            }
+            $log = Get-Content $stderr -Raw
+            if ($log -notmatch "use gpu\s*=\s*0") {
+              throw "CPU smoke did not report GPU disabled"
+            }
+          } finally {
+            if (-not $process.HasExited) {
+              Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+            }
+          }
+
+      - name: Package archive and reviewed manifest
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $artifact = Join-Path $env:RUNNER_TEMP "whisper-artifact"
+          New-Item -ItemType Directory -Force -Path $artifact | Out-Null
+          $archive = Join-Path $artifact $env:RUNTIME_ARCHIVE
+          Compress-Archive `
+            -Path $env:RUNTIME_RELEASE `
+            -DestinationPath $archive `
+            -CompressionLevel Optimal
+          $files = Get-ChildItem $env:RUNTIME_RELEASE -File | Sort-Object Name | ForEach-Object {
+            @{
+              path = "Release/$($_.Name)"
+              sha256 = (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+              size = $_.Length
+            }
+          }
+          @{
+            whisperVersion = $env:WHISPER_VERSION
+            whisperSourceCommit = $env:WHISPER_SOURCE_COMMIT
+            vulkanSdkVersion = $env:VULKAN_SDK_VERSION
+            buildFlags = @(
+              "BUILD_SHARED_LIBS=ON",
+              "GGML_BACKEND_DL=ON",
+              "GGML_NATIVE=OFF",
+              "GGML_CPU_ALL_VARIANTS=OFF",
+              "GGML_VULKAN=ON"
+            )
+            archive = $env:RUNTIME_ARCHIVE
+            archiveSha256 = (Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+            files = @($files)
+          } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $artifact "runtime-manifest.json")
+          Get-Content (Join-Path $artifact "runtime-manifest.json")
+          "RUNTIME_ARTIFACT=$artifact" >> $env:GITHUB_ENV
+
+      - name: Upload the reviewed runtime candidate
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7
+        with:
+          name: hlid-whisper-runtime-windows-x64-v1.9.1
+          path: ${{ env.RUNTIME_ARTIFACT }}
+          if-no-files-found: error

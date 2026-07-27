@@ -152,6 +152,9 @@ describe("VoiceSection", () => {
 		fireEvent.change(screen.getByLabelText("Whisper threads"), {
 			target: { value: "8" },
 		});
+		fireEvent.change(screen.getByLabelText("Whisper acceleration"), {
+			target: { value: "cpu" },
+		});
 		const vocabulary = screen.getByLabelText("Voice vocabulary hints");
 		fireEvent.change(vocabulary, {
 			target: { value: "Claude\nCodex\nKubernetes" },
@@ -160,9 +163,54 @@ describe("VoiceSection", () => {
 		expect(onChange).toHaveBeenCalledWith({ enabled: true });
 		expect(onChange).toHaveBeenCalledWith({ hotkey: "" });
 		expect(onChange).toHaveBeenCalledWith({ threads: 8 });
+		expect(onChange).toHaveBeenCalledWith({ acceleration: "cpu" });
 		expect(onChange).toHaveBeenCalledWith({
 			vocabulary: ["Claude", "Codex", "Kubernetes"],
 		});
+	});
+
+	it("shows the actual Vulkan device and a nonfatal CPU fallback reason", () => {
+		const info: VoiceInfo = {
+			...baseInfo,
+			status: {
+				state: "ready",
+				model: "base",
+				loadedModel: "base",
+				backend: "vulkan",
+				device: "AMD Radeon RX 6700 XT",
+			},
+		};
+		const { unmount } = render(
+			<VoiceSection
+				voice={{ ...DEFAULT_VOICE_CONFIG, enabled: true, model: "base" }}
+				onChange={vi.fn()}
+				initialInfo={info}
+			/>,
+		);
+		expect(
+			screen.getByText("ready · base · Vulkan · AMD Radeon RX 6700 XT"),
+		).toBeTruthy();
+
+		unmount();
+		render(
+			<VoiceSection
+				voice={{ ...DEFAULT_VOICE_CONFIG, enabled: true, model: "base" }}
+				onChange={vi.fn()}
+				initialInfo={{
+					...info,
+					status: {
+						...info.status,
+						backend: "cpu",
+						device: undefined,
+						fallbackReason: "Vulkan startup failed: no compatible GPU",
+					},
+				}}
+			/>,
+		);
+		expect(screen.getByText("ready · base · CPU")).toBeTruthy();
+		expect(
+			screen.getByText("Vulkan startup failed: no compatible GPU"),
+		).toBeTruthy();
 	});
 
 	it("keeps microphone actions separate from realtime Developer Preview", () => {

@@ -198,12 +198,17 @@ describe("writeConfig — voice section", () => {
 		expect(capturedToml()).toContain('hotkey = "Alt+Shift+KeyV"');
 	});
 
-	it("writes thread and vocabulary settings", () => {
+	it("writes acceleration, thread, and vocabulary settings", () => {
 		const config = HlidConfigSchema.parse({
-			voice: { threads: 8, vocabulary: ["Claude", "Codex", "Hlið"] },
+			voice: {
+				acceleration: "cpu",
+				threads: 8,
+				vocabulary: ["Claude", "Codex", "Hlið"],
+			},
 		});
 		writeConfig(config);
 		const toml = capturedToml();
+		expect(toml).toContain('acceleration = "cpu"');
 		expect(toml).toContain("threads = 8");
 		expect(toml).toContain('vocabulary = ["Claude", "Codex", "Hlið"]');
 	});
@@ -256,6 +261,7 @@ describe("writeConfig — voice section", () => {
 					codex_live_mode: false,
 					hotkey: "",
 					max_recording_seconds: 300,
+					acceleration: "auto",
 					threads: 4,
 					vocabulary: ["Claude", "Codex"],
 				},

@@ -9,7 +9,7 @@ import { dirname, join } from "node:path";
 import { replaceRuntimeDirectory } from "./embeddedRuntime";
 import { WHISPER_ASSETS, WHISPER_ASSETS_HASH } from "./voice-assets";
 
-const RUNTIME_LAYOUT_VERSION = "wav-shim-v2";
+const RUNTIME_LAYOUT_VERSION = "wav-shim-v3-vulkan";
 
 // whisper.cpp v1.8.x's server has an upstream bug in the direct multipart WAV
 // path. Its --convert path correctly materializes the upload before decoding,
@@ -44,16 +44,18 @@ async function materializeEmbeddedFile(
 	await Bun.write(destination, Bun.file(source));
 }
 
-function existingVoiceRuntime(
+export function existingVoiceRuntime(
 	directory: string,
 	runtimeHash: string,
+	requiredFiles: readonly string[],
 ): string | null {
 	const executable = join(directory, "whisper-server.exe");
 	const hashFile = join(directory, ".hash");
 	if (!existsSync(hashFile)) return null;
 	return readFileSync(hashFile, "utf8").trim() === runtimeHash &&
 		existsSync(executable) &&
-		existsSync(join(directory, "ffmpeg.cmd"))
+		existsSync(join(directory, "ffmpeg.cmd")) &&
+		requiredFiles.every((name) => existsSync(join(directory, name)))
 		? executable
 		: null;
 }
@@ -66,7 +68,8 @@ export async function bootstrapVoiceRuntime(): Promise<string | null> {
 		process.env.LOCALAPPDATA ?? "C:\\Users\\Default\\AppData\\Local";
 	const dir = join(local, "hlid", "whisper-rt");
 	const runtimeHash = `${WHISPER_ASSETS_HASH}-${RUNTIME_LAYOUT_VERSION}`;
-	const existingRuntime = existingVoiceRuntime(dir, runtimeHash);
+	const requiredFiles = Object.keys(WHISPER_ASSETS);
+	const existingRuntime = existingVoiceRuntime(dir, runtimeHash, requiredFiles);
 	if (existingRuntime) return existingRuntime;
 	const tempDir = `${dir}.tmp`;
 	rmSync(tempDir, { recursive: true, force: true });

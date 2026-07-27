@@ -38,6 +38,9 @@ export type VoiceStatus = {
 	state: VoiceRuntimeState;
 	model: string;
 	loadedModel?: string;
+	backend?: "vulkan" | "cpu";
+	device?: string;
+	fallbackReason?: string;
 	error?: string;
 	download?: { model: string; received: number; total: number | null };
 };
@@ -107,6 +110,64 @@ const MODEL_DEFS: ModelDef[] = [
 
 const HF_BASE = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main";
 const MAX_VOCABULARY_PROMPT_CHARS = 800;
+const MAX_RUNTIME_LOG_CHARS = 32 * 1024;
+
+export function parseVoiceRuntimeDiagnostics(log: string): {
+	backend?: "vulkan" | "cpu";
+	device?: string;
+} {
+	const device = log
+		.match(/ggml_vulkan:\s+\d+\s*=\s*([^|\r\n]+)/i)?.[1]
+		?.trim();
+	if (/use gpu\s*=\s*0/i.test(log)) return { backend: "cpu" };
+	if (device && /use gpu\s*=\s*1/i.test(log))
+		return { backend: "vulkan", device };
+	return {};
+}
+
+function drainRuntimeLog(process: ReturnType<typeof Bun.spawn>): () => string {
+	let captured = "";
+	const stderr = process.stderr;
+	if (!(stderr instanceof ReadableStream)) return () => captured;
+	const reader = stderr.getReader();
+	const decoder = new TextDecoder();
+	void (async () => {
+		try {
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+				captured = (captured + decoder.decode(value, { stream: true })).slice(
+					-MAX_RUNTIME_LOG_CHARS,
+				);
+			}
+			captured = (captured + decoder.decode()).slice(-MAX_RUNTIME_LOG_CHARS);
+		} catch {
+			// The process can close its pipe while a load is being cancelled.
+		}
+	})();
+	return () => captured;
+}
+
+function voiceRuntimeEnvironment(
+	runtimeDir: string,
+	executable: string,
+): Record<string, string> {
+	const env = Object.fromEntries(
+		Object.entries(process.env).filter(
+			(entry): entry is [string, string] => entry[1] !== undefined,
+		),
+	);
+	const pathValue =
+		Object.entries(env).find(([key]) => key.toLowerCase() === "path")?.[1] ??
+		"";
+	for (const key of Object.keys(env)) {
+		if (key.toLowerCase() === "path") delete env[key];
+	}
+	const windowsRuntime =
+		process.platform === "win32" || executable.toLowerCase().endsWith(".exe");
+	env.PATH = `${runtimeDir}${windowsRuntime ? ";" : ":"}${pathValue}`;
+	return env;
+}
 
 export function voiceVocabularyPrompt(terms: readonly string[]): string {
 	const selected: string[] = [];
@@ -216,9 +277,12 @@ type Runtime = {
 	process: ReturnType<typeof Bun.spawn>;
 	port: number;
 	model: string;
+	backend?: "vulkan" | "cpu";
+	device?: string;
+	fallbackReason?: string;
 };
 
-type LoadingRuntime = Runtime & {
+type LoadingRuntime = Pick<Runtime, "process" | "port" | "model"> & {
 	abort: AbortController;
 	generation: number;
 };
@@ -290,7 +354,8 @@ export class VoiceModelManager {
 		if (
 			!this.runtime ||
 			prior.model !== config.model ||
-			prior.threads !== config.threads
+			prior.threads !== config.threads ||
+			prior.acceleration !== config.acceleration
 		)
 			await this.load(config.model);
 	}
@@ -322,7 +387,115 @@ export class VoiceModelManager {
 	}
 
 	private isCurrentLoad(generation: number): boolean {
-		return this.loadingRuntime?.generation === generation;
+		return this.loadGeneration === generation;
+	}
+
+	private readyStatus(
+		model: string,
+		runtime: Runtime,
+		error?: string,
+	): VoiceStatus {
+		return {
+			state: "ready",
+			model,
+			loadedModel: runtime.model,
+			...(runtime.backend ? { backend: runtime.backend } : {}),
+			...(runtime.device ? { device: runtime.device } : {}),
+			...(runtime.fallbackReason
+				? { fallbackReason: runtime.fallbackReason }
+				: {}),
+			...(error ? { error } : {}),
+		};
+	}
+
+	private async startRuntimeAttempt(
+		executable: string,
+		installedModel: string,
+		model: string,
+		generation: number,
+		acceleration: "auto" | "cpu",
+	): Promise<Runtime> {
+		const port = 18000 + Math.floor(Math.random() * 4000);
+		const runtimeDir = dirname(executable);
+		const tempDir = join(voiceDataDir(), "tmp");
+		mkdirSync(tempDir, { recursive: true });
+		const args = [
+			executable,
+			"--host",
+			"127.0.0.1",
+			"--port",
+			String(port),
+			"--model",
+			installedModel,
+			"--threads",
+			String(this.config.threads),
+			"--convert",
+			"--tmp-dir",
+			tempDir,
+			...(acceleration === "cpu" ? ["--no-gpu"] : []),
+		];
+		const proc = Bun.spawn(args, {
+			cwd: runtimeDir,
+			// Some hardened Windows setups disable implicit current-directory
+			// command lookup. Put Hlid's reviewed ffmpeg.cmd shim on PATH
+			// explicitly and avoid duplicate case-variant PATH entries.
+			env: voiceRuntimeEnvironment(runtimeDir, executable),
+			stdout: "ignore",
+			// Drain native diagnostics immediately. An unread child pipe eventually
+			// blocks whisper-server once its OS buffer fills.
+			stderr: "pipe",
+			windowsHide: true,
+		});
+		const runtimeLog = drainRuntimeLog(proc);
+		const abort = new AbortController();
+		this.loadingRuntime = { process: proc, port, model, abort, generation };
+		try {
+			const deadline = Date.now() + 120_000;
+			let healthy = false;
+			while (Date.now() < deadline) {
+				if (!this.isCurrentLoad(generation)) {
+					proc.kill();
+					throw new DOMException("voice load cancelled", "AbortError");
+				}
+				if (proc.exitCode !== null)
+					throw new Error(`runtime exited with code ${proc.exitCode}`);
+				try {
+					const response = await fetch(`http://127.0.0.1:${port}/`, {
+						signal: AbortSignal.any([abort.signal, AbortSignal.timeout(500)]),
+					});
+					if (!this.isCurrentLoad(generation)) {
+						proc.kill();
+						throw new DOMException("voice load cancelled", "AbortError");
+					}
+					if (response.ok) {
+						healthy = true;
+						break;
+					}
+				} catch (error) {
+					if ((error as Error).name === "AbortError" && abort.signal.aborted)
+						throw error;
+				}
+				await Bun.sleep(200);
+			}
+			if (!healthy) throw new Error("model load timed out");
+			if (acceleration === "auto") await Bun.sleep(10);
+			const diagnostics =
+				acceleration === "cpu"
+					? { backend: "cpu" as const }
+					: parseVoiceRuntimeDiagnostics(runtimeLog());
+			return { process: proc, port, model, ...diagnostics };
+		} catch (error) {
+			proc.kill();
+			const detail = runtimeLog().trim().split(/\r?\n/).at(-1);
+			if (
+				detail &&
+				(error as Error).name !== "AbortError" &&
+				!String((error as Error).message).includes(detail)
+			) {
+				throw new Error(`${(error as Error).message}: ${detail}`);
+			}
+			throw error;
+		}
 	}
 
 	async load(model: string): Promise<void> {
@@ -354,79 +527,62 @@ export class VoiceModelManager {
 			model,
 			loadedModel: this.runtime?.model,
 		};
-		const port = 18000 + Math.floor(Math.random() * 4000);
-		const runtimeDir = dirname(executable);
-		const tempDir = join(voiceDataDir(), "tmp");
-		mkdirSync(tempDir, { recursive: true });
-		const proc = Bun.spawn(
-			[
-				executable,
-				"--host",
-				"127.0.0.1",
-				"--port",
-				String(port),
-				"--model",
-				installedModel,
-				"--threads",
-				String(this.config.threads),
-				"--convert",
-				"--tmp-dir",
-				tempDir,
-			],
-			{
-				cwd: runtimeDir,
-				stdout: "ignore",
-				// Never leave a native child pipe unread: once its OS buffer fills,
-				// whisper-server blocks and the browser waits forever.
-				stderr: "ignore",
-				windowsHide: true,
-			},
-		);
-		const abort = new AbortController();
-		this.loadingRuntime = { process: proc, port, model, abort, generation };
 		try {
-			const deadline = Date.now() + 120_000;
-			while (Date.now() < deadline) {
-				if (!this.isCurrentLoad(generation)) {
-					proc.kill();
-					return;
-				}
-				if (proc.exitCode !== null)
-					throw new Error(`runtime exited with code ${proc.exitCode}`);
+			let next: Runtime;
+			if (this.config.acceleration === "cpu") {
+				next = await this.startRuntimeAttempt(
+					executable,
+					installedModel,
+					model,
+					generation,
+					"cpu",
+				);
+			} else {
 				try {
-					const res = await fetch(`http://127.0.0.1:${port}/`, {
-						signal: AbortSignal.any([abort.signal, AbortSignal.timeout(500)]),
-					});
-					if (!this.isCurrentLoad(generation)) {
-						proc.kill();
-						return;
+					next = await this.startRuntimeAttempt(
+						executable,
+						installedModel,
+						model,
+						generation,
+						"auto",
+					);
+					if (next.backend === "cpu") {
+						next.fallbackReason =
+							"No compatible Vulkan GPU was selected; Whisper is using CPU.";
 					}
-					if (res.ok) break;
-				} catch {}
-				if (!this.isCurrentLoad(generation)) {
-					proc.kill();
-					return;
+				} catch (gpuError) {
+					if (!this.isCurrentLoad(generation)) return;
+					const fallbackReason = `Vulkan startup failed: ${(gpuError as Error).message}`;
+					try {
+						next = await this.startRuntimeAttempt(
+							executable,
+							installedModel,
+							model,
+							generation,
+							"cpu",
+						);
+						next.fallbackReason = fallbackReason;
+					} catch (cpuError) {
+						if (!this.isCurrentLoad(generation)) return;
+						throw new Error(
+							`${fallbackReason}; CPU fallback failed: ${(cpuError as Error).message}`,
+						);
+					}
 				}
-				await Bun.sleep(200);
 			}
-			if (Date.now() >= deadline) throw new Error("model load timed out");
 			if (!this.isCurrentLoad(generation)) {
-				proc.kill();
+				next.process.kill();
 				return;
 			}
 			const old = this.runtime;
-			this.runtime = { process: proc, port, model };
+			this.runtime = next;
 			old?.process.kill();
-			this.statusValue = { state: "ready", model, loadedModel: model };
+			this.statusValue = this.readyStatus(model, next);
 		} catch (error) {
-			proc.kill();
 			if (!this.isCurrentLoad(generation)) return;
-			this.statusValue = {
-				state: this.runtime ? "ready" : "error",
-				model,
-				loadedModel: this.runtime?.model,
-				error: (error as Error).message,
-			};
+			this.statusValue = this.runtime
+				? this.readyStatus(model, this.runtime, (error as Error).message)
+				: { state: "error", model, error: (error as Error).message };
 		} finally {
 			if (this.isCurrentLoad(generation)) this.loadingRuntime = null;
 		}

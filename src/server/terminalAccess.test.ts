@@ -76,6 +76,7 @@ function makeConfig(vaultPath: string, agentPaths: string[] = []): HlidConfig {
 			codex_live_mode: false,
 			hotkey: "Alt+Shift+KeyV",
 			max_recording_seconds: 300,
+			acceleration: "auto",
 			threads: 4,
 			vocabulary: ["Claude", "Codex"],
 		},

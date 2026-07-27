@@ -28,6 +28,7 @@ const config = {
 	codex_live_mode: false,
 	hotkey: "Alt+Shift+KeyV",
 	max_recording_seconds: 300,
+	acceleration: "auto" as const,
 	threads: 4,
 	vocabulary: ["Claude", "Codex"],
 };

@@ -6,6 +6,7 @@ import {
 	mkdtempSync,
 	mkdirSync,
 	readFileSync,
+	readdirSync,
 	renameSync,
 	rmSync,
 	writeFileSync,
@@ -18,11 +19,15 @@ const vendor = join(root, "vendor", "whisper");
 const generatedDir = join(root, "build", "embed-assets", "whisper");
 const stagedDir = join(generatedDir, "files");
 const outFile = join(generatedDir, "voice-assets.generated.js");
-export const WHISPER_VERSION = "v1.8.6";
-const WHISPER_ARCHIVE_URL = `https://github.com/ggml-org/whisper.cpp/releases/download/${WHISPER_VERSION}/whisper-bin-x64.zip`;
+export const WHISPER_VERSION = "v1.9.1";
+export const WHISPER_SOURCE_COMMIT =
+	"f049fff95a089aa9969deb009cdd4892b3e74916";
+export const WHISPER_RUNTIME_ARTIFACT =
+	"hlid-whisper-runtime-windows-x64-v1.9.1.zip";
+const WHISPER_ARCHIVE_URL = `https://github.com/Kyle-Undefined/hlid/releases/download/whisper-runtime-${WHISPER_VERSION}/${WHISPER_RUNTIME_ARTIFACT}`;
 export const WHISPER_ARCHIVE_SHA256 =
-	"b07ea0b1b4115a38e1a7b07debf581f0b77d999925f8acb8f39d322b0ba0a822";
-export const WHISPER_ARCHIVE_MAX_BYTES = 16 * 1024 * 1024;
+	"5db2950b25c1bce45bd2f9244a2104f48b9c99e1101f70586944e9fbda52ec9a";
+export const WHISPER_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024;
 
 export type RuntimeManifestEntry = {
 	path: string;
@@ -34,29 +39,32 @@ type Fetcher = (
 	init?: RequestInit,
 ) => Promise<Response>;
 
-// These are the complete runtime surface Hlid bundles. The release archive also
-// contains unrelated CLI, benchmark, test, and SDL executables; they are not
-// copied into the application.
+// This is the complete reviewed runtime surface Hlid bundles. Any unreviewed
+// DLL or executable in the archive causes verification to fail.
 export const WHISPER_RUNTIME_MANIFEST: readonly RuntimeManifestEntry[] = [
 	{
 		path: "Release/ggml-base.dll",
-		sha256: "017cd9c859d0da3c6d0e8da120ec5641db7c8d1f266df7ce1f9eca42029186ba",
+		sha256: "1d4a0a4d71a8d124a16ecd2e4e7be7eccf2c161e520c749b238739870d7352a2",
 	},
 	{
 		path: "Release/ggml-cpu.dll",
-		sha256: "cb5bfd79c0255e282982527fee42d8aa8407b63ae46ef1acd395c3e21d1f52f9",
+		sha256: "6187f780c7b47e2641e7e2517f4f2a25b1a49fece7943878750247c0c98231ed",
+	},
+	{
+		path: "Release/ggml-vulkan.dll",
+		sha256: "fdfc3174ce00821a9e2c60e4799d2afdc4fca85da6f10b42ab482d887433686c",
 	},
 	{
 		path: "Release/ggml.dll",
-		sha256: "722ff1350efe25a1bffa048bef2a8aa7fe7552fce3c38d2c1505f99beb0fb1f7",
+		sha256: "703feb8a697975d919185e1722c168525e30d29558766740e56489adc66b44df",
 	},
 	{
 		path: "Release/whisper.dll",
-		sha256: "aecc185550327461d74a7c89436e13a62e12cc408c05719e7a677e1586a9cda3",
+		sha256: "7d341138009e026151e701c09a4c1510620806a371df75b76b122cfbf9dc92d1",
 	},
 	{
 		path: "Release/whisper-server.exe",
-		sha256: "d52adc17f509da58717e853a0c56a281a40847c56a12d01933e227426616eabf",
+		sha256: "65d08fcde5f080e0378f2da521cc8566b1756ca6463de56df8c0ad85237dcabd",
 	},
 ] as const;
 
@@ -68,6 +76,21 @@ export function verifyRuntimeTree(
 	dir: string,
 	manifest: readonly RuntimeManifestEntry[] = WHISPER_RUNTIME_MANIFEST,
 ): boolean {
+	const reviewed = new Set(manifest.map((entry) => entry.path.replaceAll("\\", "/")));
+	const releaseDir = join(dir, "Release");
+	let binaries: string[];
+	try {
+		binaries = readdirSync(releaseDir)
+			.filter((name) => /\.(?:dll|exe)$/i.test(name))
+			.map((name) => `Release/${name}`);
+	} catch {
+		return false;
+	}
+	if (
+		binaries.length !== reviewed.size ||
+		binaries.some((path) => !reviewed.has(path))
+	)
+		return false;
 	return manifest.every((entry) => {
 		const file = join(dir, entry.path);
 		try {
@@ -119,6 +142,26 @@ export async function downloadVerifiedArchive(
 	writeFileSync(destination, archive, { flag: "wx" });
 }
 
+export function copyVerifiedArchive(
+	source: string,
+	destination: string,
+	expectedSha256 = WHISPER_ARCHIVE_SHA256,
+	maxBytes = WHISPER_ARCHIVE_MAX_BYTES,
+): void {
+	const stat = lstatSync(source);
+	if (!stat.isFile()) throw new Error("runtime archive override must be a file");
+	if (stat.size > maxBytes)
+		throw new Error(`runtime archive exceeds ${maxBytes} byte limit`);
+	const archive = readFileSync(source);
+	const actualSha256 = sha256(archive);
+	if (actualSha256 !== expectedSha256) {
+		throw new Error(
+			`runtime archive SHA-256 mismatch: expected ${expectedSha256}, received ${actualSha256}`,
+		);
+	}
+	writeFileSync(destination, archive, { flag: "wx" });
+}
+
 async function extractArchive(archive: string, destination: string): Promise<void> {
 	const commands =
 		process.platform === "win32"
@@ -146,7 +189,9 @@ async function extractArchive(archive: string, destination: string): Promise<voi
 async function ensureRuntime(): Promise<void> {
 	if (existsSync(vendor) && verifyRuntimeTree(vendor)) return;
 
-	console.log(`Downloading whisper.cpp ${WHISPER_VERSION} CPU runtime...`);
+	console.log(
+		`Preparing whisper.cpp ${WHISPER_VERSION} CPU + Vulkan runtime (${WHISPER_SOURCE_COMMIT.slice(0, 12)})...`,
+	);
 	// Stage beside the vendor directory so the final verified-tree rename stays
 	// on one filesystem and can be atomic.
 	mkdirSync(dirname(vendor), { recursive: true });
@@ -154,7 +199,13 @@ async function ensureRuntime(): Promise<void> {
 	const archive = join(temp, "whisper-bin-x64.zip");
 	const extracted = join(temp, "extracted");
 	try {
-		await downloadVerifiedArchive(WHISPER_ARCHIVE_URL, archive);
+		const override = process.env.HLID_WHISPER_RUNTIME_ARCHIVE;
+		if (override) {
+			console.log(`Using reviewed local runtime archive ${override}`);
+			copyVerifiedArchive(override, archive);
+		} else {
+			await downloadVerifiedArchive(WHISPER_ARCHIVE_URL, archive);
+		}
 		await extractArchive(archive, extracted);
 		if (!verifyRuntimeTree(extracted)) {
 			throw new Error("extracted whisper runtime does not match the reviewed manifest");

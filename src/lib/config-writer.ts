@@ -96,6 +96,7 @@ function serializeVoice(config: HlidConfig["voice"]): string[] {
 		`codex_live_mode = ${tomlVal(voice.codex_live_mode)}`,
 		`hotkey = ${tomlVal(voice.hotkey)}`,
 		`max_recording_seconds = ${tomlVal(voice.max_recording_seconds)}`,
+		`acceleration = ${tomlVal(voice.acceleration)}`,
 		`threads = ${tomlVal(voice.threads)}`,
 		`vocabulary = ${tomlVal(voice.vocabulary)}`,
 	]);

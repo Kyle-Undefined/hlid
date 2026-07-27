@@ -37,6 +37,15 @@ function parseVocabulary(value: string): string[] {
 		.slice(0, 50);
 }
 
+function runtimeStatusLabel(status: VoiceInfo["status"]): string {
+	const parts: string[] = [status.state];
+	if (status.loadedModel) parts.push(status.loadedModel);
+	if (status.backend)
+		parts.push(status.backend === "vulkan" ? "Vulkan" : "CPU");
+	if (status.device) parts.push(status.device);
+	return parts.join(" · ");
+}
+
 /** Enable toggle, runtime status, language, auto-send, and hotkey capture. */
 export function VoiceInputFields({
 	voice,
@@ -128,7 +137,9 @@ export function VoiceInputFields({
 			<Field
 				label="Runtime status"
 				hint={
-					voice.input_provider === "local" ? status.error : codexAudio.reason
+					voice.input_provider === "local"
+						? (status.error ?? status.fallbackReason)
+						: codexAudio.reason
 				}
 			>
 				{voice.input_provider === "local" ? (
@@ -136,10 +147,7 @@ export function VoiceInputFields({
 						ok={runtimeOk}
 						label={`Voice runtime ${status.state}`}
 					>
-						<span aria-live="polite">
-							{status.state}
-							{status.loadedModel ? ` · ${status.loadedModel}` : ""}
-						</span>
+						<span aria-live="polite">{runtimeStatusLabel(status)}</span>
 					</StatusIndicator>
 				) : (
 					<StatusIndicator
@@ -188,8 +196,26 @@ export function VoiceInputFields({
 						</select>
 					</Field>
 					<Field
+						label="Acceleration"
+						hint="Auto uses a compatible GPU through Vulkan and falls back to CPU. Hlid does not install GPU drivers."
+					>
+						<select
+							value={voice.acceleration}
+							onChange={(event) =>
+								onChange({
+									acceleration: event.target.value as "auto" | "cpu",
+								})
+							}
+							aria-label="Whisper acceleration"
+							className="w-40 sm:w-52 bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
+						>
+							<option value="auto">Auto · GPU when available</option>
+							<option value="cpu">CPU only</option>
+						</select>
+					</Field>
+					<Field
 						label="Whisper threads"
-						hint="higher values use more CPU while transcribing and reload the voice model"
+						hint="controls CPU fallback and CPU-only performance; changing it reloads the voice model"
 					>
 						<select
 							value={voice.threads}

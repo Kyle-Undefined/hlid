@@ -10,6 +10,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_VOICE_CONFIG } from "../config";
 import {
+	parseVoiceRuntimeDiagnostics,
 	VoiceModelManager,
 	validateVoiceRecording,
 	voiceVocabularyPrompt,
@@ -32,10 +33,11 @@ function deferred<T>() {
 	return { promise, resolve };
 }
 
-function fakeProcess() {
+function fakeProcess(stderr?: string) {
 	return {
 		exitCode: null,
 		kill: vi.fn(),
+		stderr: stderr === undefined ? undefined : new Response(stderr).body,
 	};
 }
 
@@ -52,6 +54,28 @@ describe("VoiceModelManager", () => {
 				Array.from({ length: 20 }, (_, index) => `${index}-${"x".repeat(75)}`),
 			).length,
 		).toBeLessThanOrEqual(800);
+	});
+
+	it("reports Vulkan only when model initialization selected a GPU", () => {
+		expect(
+			parseVoiceRuntimeDiagnostics(`
+ggml_vulkan: 0 = AMD Radeon RX 6700 XT (AMD proprietary driver) | uma: 0
+whisper_init_with_params_no_state: use gpu = 1
+`),
+		).toEqual({
+			backend: "vulkan",
+			device: "AMD Radeon RX 6700 XT (AMD proprietary driver)",
+		});
+		expect(
+			parseVoiceRuntimeDiagnostics(
+				"whisper_init_with_params_no_state: use gpu = 0",
+			),
+		).toEqual({ backend: "cpu" });
+		expect(
+			parseVoiceRuntimeDiagnostics(
+				"load_backend: loaded Vulkan backend from ggml-vulkan.dll",
+			),
+		).toEqual({});
 	});
 
 	it("stays disabled without affecting server startup", async () => {
@@ -229,11 +253,13 @@ describe.sequential("VoiceModelManager load lifecycle", () => {
 
 	it("keeps a healthy model active when its replacement fails", async () => {
 		const tinyProcess = fakeProcess();
-		const failedBaseProcess = { ...fakeProcess(), exitCode: 17 };
+		const failedGpuProcess = { ...fakeProcess(), exitCode: 17 };
+		const failedCpuProcess = { ...fakeProcess(), exitCode: 18 };
 		const spawn = vi
 			.fn()
 			.mockReturnValueOnce(tinyProcess)
-			.mockReturnValueOnce(failedBaseProcess);
+			.mockReturnValueOnce(failedGpuProcess)
+			.mockReturnValueOnce(failedCpuProcess);
 		vi.stubGlobal("Bun", {
 			spawn,
 			sleep: vi.fn().mockResolvedValue(undefined),
@@ -257,14 +283,16 @@ describe.sequential("VoiceModelManager load lifecycle", () => {
 			state: "ready",
 			model: "base",
 			loadedModel: "tiny",
-			error: "runtime exited with code 17",
+			error:
+				"Vulkan startup failed: runtime exited with code 17; CPU fallback failed: runtime exited with code 18",
 		});
 		expect(tinyProcess.kill).not.toHaveBeenCalled();
-		expect(failedBaseProcess.kill).toHaveBeenCalled();
+		expect(failedGpuProcess.kill).toHaveBeenCalled();
+		expect(failedCpuProcess.kill).toHaveBeenCalled();
 		manager.close();
 	});
 
-	it("passes configured threads to the runtime and reloads when they change", async () => {
+	it("passes configured threads and reloads when compute settings change", async () => {
 		const { manager, spawn } = await readyManager();
 		expect(spawn.mock.calls[0]?.[0]).toEqual(
 			expect.arrayContaining(["--threads", "4"]),
@@ -277,6 +305,112 @@ describe.sequential("VoiceModelManager load lifecycle", () => {
 			threads: 8,
 		});
 		expect(load).toHaveBeenCalledWith("tiny");
+		await manager.syncConfig({
+			...DEFAULT_VOICE_CONFIG,
+			enabled: true,
+			model: "tiny",
+			threads: 8,
+			acceleration: "cpu",
+		});
+		expect(load).toHaveBeenCalledTimes(2);
+		manager.close();
+	});
+
+	it("passes --no-gpu for explicit CPU mode", async () => {
+		const process = fakeProcess();
+		const spawn = vi.fn().mockReturnValue(process);
+		vi.stubGlobal("Bun", {
+			spawn,
+			sleep: vi.fn().mockResolvedValue(undefined),
+		});
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(null, { status: 200 }),
+		);
+		const manager = new VoiceModelManager(
+			{
+				...DEFAULT_VOICE_CONFIG,
+				enabled: true,
+				model: "tiny",
+				acceleration: "cpu",
+			},
+			executable,
+		);
+
+		await manager.load("tiny");
+
+		expect(spawn.mock.calls[0]?.[0]).toContain("--no-gpu");
+		const spawnEnv = spawn.mock.calls[0]?.[1]?.env as
+			| Record<string, string>
+			| undefined;
+		expect(spawnEnv?.PATH.startsWith(`${dataHome};`)).toBe(true);
+		expect(
+			Object.keys(spawnEnv ?? {}).filter((key) => key.toLowerCase() === "path"),
+		).toEqual(["PATH"]);
+		expect(manager.status()).toMatchObject({
+			state: "ready",
+			backend: "cpu",
+		});
+		manager.close();
+	});
+
+	it("reports the selected Vulkan device from bounded native diagnostics", async () => {
+		const process = fakeProcess(`
+ggml_vulkan: 0 = AMD Radeon RX 6700 XT (AMD proprietary driver) | uma: 0
+whisper_init_with_params_no_state: use gpu = 1
+`);
+		const spawn = vi.fn().mockReturnValue(process);
+		vi.stubGlobal("Bun", {
+			spawn,
+			sleep: vi.fn().mockResolvedValue(undefined),
+		});
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(null, { status: 200 }),
+		);
+		const manager = new VoiceModelManager(
+			{ ...DEFAULT_VOICE_CONFIG, enabled: true, model: "tiny" },
+			executable,
+		);
+
+		await manager.load("tiny");
+
+		expect(spawn.mock.calls[0]?.[1]).toMatchObject({ stderr: "pipe" });
+		expect(manager.status()).toMatchObject({
+			state: "ready",
+			backend: "vulkan",
+			device: "AMD Radeon RX 6700 XT (AMD proprietary driver)",
+		});
+		manager.close();
+	});
+
+	it("retries a failed Vulkan startup exactly once with CPU", async () => {
+		const gpuProcess = { ...fakeProcess(), exitCode: 23 };
+		const cpuProcess = fakeProcess();
+		const spawn = vi
+			.fn()
+			.mockReturnValueOnce(gpuProcess)
+			.mockReturnValueOnce(cpuProcess);
+		vi.stubGlobal("Bun", {
+			spawn,
+			sleep: vi.fn().mockResolvedValue(undefined),
+		});
+		vi.spyOn(globalThis, "fetch").mockResolvedValue(
+			new Response(null, { status: 200 }),
+		);
+		const manager = new VoiceModelManager(
+			{ ...DEFAULT_VOICE_CONFIG, enabled: true, model: "tiny" },
+			executable,
+		);
+
+		await manager.load("tiny");
+
+		expect(spawn).toHaveBeenCalledTimes(2);
+		expect(spawn.mock.calls[0]?.[0]).not.toContain("--no-gpu");
+		expect(spawn.mock.calls[1]?.[0]).toContain("--no-gpu");
+		expect(manager.status()).toMatchObject({
+			state: "ready",
+			backend: "cpu",
+			fallbackReason: "Vulkan startup failed: runtime exited with code 23",
+		});
 		manager.close();
 	});
 

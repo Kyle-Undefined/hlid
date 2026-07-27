@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+	copyVerifiedArchive,
 	downloadVerifiedArchive,
 	type RuntimeManifestEntry,
 	verifyRuntimeTree,
@@ -53,6 +54,21 @@ describe("verifyRuntimeTree", () => {
 				sha256: createHash("sha256").update("reviewed").digest("hex"),
 			},
 		];
+
+		expect(verifyRuntimeTree(dir, manifest)).toBe(false);
+	});
+
+	it("rejects unreviewed executable and driver DLL payloads", () => {
+		const dir = fixtureDir();
+		mkdirSync(join(dir, "Release"));
+		writeFileSync(join(dir, "Release", "server.exe"), "reviewed");
+		const manifest: RuntimeManifestEntry[] = [
+			{
+				path: "Release/server.exe",
+				sha256: createHash("sha256").update("reviewed").digest("hex"),
+			},
+		];
+		writeFileSync(join(dir, "Release", "amdvlk64.dll"), "vendor driver");
 
 		expect(verifyRuntimeTree(dir, manifest)).toBe(false);
 	});
@@ -112,5 +128,31 @@ describe("downloadVerifiedArchive", () => {
 				async () => new Response(body),
 			),
 		).rejects.toThrow("exceeds 10 byte limit");
+	});
+});
+
+describe("copyVerifiedArchive", () => {
+	it("accepts the same reviewed digest contract for local validation", () => {
+		const dir = fixtureDir();
+		const source = join(dir, "source.zip");
+		const destination = join(dir, "runtime.zip");
+		writeFileSync(source, "reviewed archive");
+		const digest = createHash("sha256")
+			.update("reviewed archive")
+			.digest("hex");
+
+		copyVerifiedArchive(source, destination, digest, 1024);
+
+		expect(readFileSync(destination, "utf8")).toBe("reviewed archive");
+	});
+
+	it("rejects a local archive that does not match the reviewed digest", () => {
+		const dir = fixtureDir();
+		const source = join(dir, "source.zip");
+		writeFileSync(source, "different archive");
+
+		expect(() =>
+			copyVerifiedArchive(source, join(dir, "runtime.zip"), "0".repeat(64)),
+		).toThrow("SHA-256 mismatch");
 	});
 });
