@@ -556,6 +556,7 @@ function obsidianTools(): DynamicToolSpec[] {
 				name: spec.name,
 				description: spec.description,
 				inputSchema: spec.inputSchema,
+				deferLoading: spec.deferLoading,
 			})),
 		},
 	];
@@ -2314,8 +2315,15 @@ class CodexAgentSession implements AgentSession {
 					spec.name,
 					params.arguments,
 					{
+						providerId: this.params.providerId ?? "codex",
+						model: this.params.model,
+						effort: this.params.effort,
+						permissionMode: this.params.permissionMode,
+						policyEnforced: this.params.policyEnforced,
 						runtimeCwd: this.params.cwd,
 						sessionId: this.params.hostSessionId,
+						vaultName: this.params.vaultName,
+						agentMode: this.params.agentMode,
 					},
 				);
 				return {

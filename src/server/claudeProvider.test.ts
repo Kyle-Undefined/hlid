@@ -4143,7 +4143,11 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 					tools: Array<{
 						name: string;
 						alwaysLoad?: boolean;
-						annotations?: { readOnlyHint?: boolean };
+						searchHint?: string;
+						annotations?: {
+							readOnlyHint?: boolean;
+							idempotentHint?: boolean;
+						};
 						handler: (input: unknown) => Promise<{
 							content: Array<{
 								type: string;
@@ -4156,6 +4160,14 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 				};
 			};
 		};
+		const hlidHelp = hlidServer.instance.options.tools.find(
+			(item) => item.name === "hlid_help",
+		);
+		expect(hlidHelp).toMatchObject({
+			alwaysLoad: false,
+			annotations: { readOnlyHint: true, idempotentHint: true },
+			searchHint: expect.stringContaining("capabilities"),
+		});
 		const publishRelic = hlidServer.instance.options.tools.find(
 			(item) => item.name === "publish_relic",
 		);
@@ -4172,7 +4184,11 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 		expect(executeHlidAgentToolRich).toHaveBeenCalledWith(
 			"publish_relic",
 			{ filename: "report.html", content: "<h1>Report</h1>" },
-			{ runtimeCwd: "/tmp/test", sessionId: "host-session-1" },
+			expect.objectContaining({
+				providerId: "claude",
+				runtimeCwd: "/tmp/test",
+				sessionId: "host-session-1",
+			}),
 		);
 		const capturePreview = hlidServer.instance.options.tools.find(
 			(item) => item.name === "capture_project_preview",
@@ -4212,6 +4228,8 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 				options: {
 					tools: Array<{
 						name: string;
+						alwaysLoad?: boolean;
+						searchHint?: string;
 						inputSchema: Record<string, unknown>;
 					}>;
 				};
@@ -4247,6 +4265,11 @@ describe("ClaudeProvider — Slice B streaming-input", () => {
 			"trash_file",
 			"run_command",
 		]);
+		expect(
+			server.instance.options.tools.every(
+				(item) => item.alwaysLoad === false && Boolean(item.searchHint),
+			),
+		).toBe(true);
 		const tasks = server.instance.options.tools.find(
 			(item) => item.name === "tasks",
 		);

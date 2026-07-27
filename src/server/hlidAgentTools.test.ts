@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { HLID_AGENT_TOOL_COUNT } from "../lib/hlidContext";
 
 const db = vi.hoisted(() => ({
 	dbFetch: vi.fn(),
@@ -28,8 +29,11 @@ describe("Hlid agent tools", () => {
 		db.requireDbOk.mockImplementation(async (response) => response);
 	});
 
-	it("exposes deferred Relic and Project Preview capabilities", () => {
+	it("exposes deferred help, Relic, and Project Preview capabilities", () => {
+		expect(HLID_AGENT_TOOL_SPECS).toHaveLength(HLID_AGENT_TOOL_COUNT);
 		expect(HLID_AGENT_TOOL_SPECS.map((spec) => spec.name)).toEqual([
+			"hlid_help",
+			"hlid_api",
 			"publish_relic",
 			"start_project_preview",
 			"inspect_project_preview",
@@ -39,6 +43,16 @@ describe("Hlid agent tools", () => {
 		]);
 		expect(HLID_AGENT_TOOL_SPECS).toEqual(
 			expect.arrayContaining([
+				expect.objectContaining({
+					name: "hlid_help",
+					readOnly: true,
+					deferLoading: true,
+				}),
+				expect.objectContaining({
+					name: "hlid_api",
+					readOnly: true,
+					deferLoading: true,
+				}),
 				expect.objectContaining({
 					name: "publish_relic",
 					readOnly: false,
@@ -61,11 +75,99 @@ describe("Hlid agent tools", () => {
 				}),
 			]),
 		);
-		expect(HLID_AGENT_TOOL_SPECS[0].inputSchema.properties).toMatchObject({
+		expect(
+			HLID_AGENT_TOOL_SPECS.find((spec) => spec.name === "publish_relic")
+				?.inputSchema.properties,
+		).toMatchObject({
 			source_path: { type: "string" },
 			filename: { type: "string" },
 			content: { type: "string" },
 		});
+	});
+
+	it("searches the live API index without invoking an endpoint", async () => {
+		db.dbFetch.mockResolvedValueOnce(
+			Response.json({
+				description: "catalog",
+				api_port: 3001,
+				ui_port: 3000,
+				endpoints: [
+					{
+						method: "GET",
+						path: "/db/sessions",
+						server: "api",
+						desc: "List sessions.",
+					},
+					{
+						method: "DELETE",
+						path: "/db/session",
+						server: "api",
+						desc: "Delete one session.",
+					},
+				],
+			}),
+		);
+
+		const result = JSON.parse(
+			await executeHlidAgentTool("hlid_api", {
+				query: "session",
+				method: "GET",
+			}),
+		);
+
+		expect(result).toMatchObject({
+			total: 1,
+			returned: 1,
+			truncated: false,
+			endpoints: [{ method: "GET", path: "/db/sessions" }],
+		});
+		expect(db.dbFetch).toHaveBeenCalledTimes(1);
+		expect(db.dbFetch).toHaveBeenCalledWith("/api-index");
+	});
+
+	it("returns bounded help from the live persisted session selection", async () => {
+		db.dbFetch.mockResolvedValueOnce(
+			Response.json({
+				provider_id: "codex",
+				selected_model: "gpt-5.6-sol",
+				selected_effort: "high",
+				selected_permission_mode: "acceptEdits",
+			}),
+		);
+		const result = JSON.parse(
+			await executeHlidAgentTool(
+				"hlid_help",
+				{ topic: "workflows" },
+				{
+					providerId: "codex",
+					model: "gpt-5.6-sol",
+					permissionMode: "default",
+					runtimeCwd: "/work/project",
+					sessionId: "session-1",
+					vaultName: "Fornbok",
+				},
+			),
+		);
+
+		expect(result).toMatchObject({
+			contractVersion: 1,
+			topic: "workflows",
+			runtime: {
+				providerId: "codex",
+				providerRuntime: "codex",
+				model: "gpt-5.6-sol",
+				effort: "high",
+				sessionScoped: true,
+			},
+			permissions: { mode: "acceptEdits" },
+			capabilities: [
+				{
+					id: "workflows",
+					availability: "unavailable",
+				},
+			],
+		});
+		expect(db.dbFetch).toHaveBeenCalledWith("/db/session-row?id=session-1");
 	});
 
 	it("starts a session-scoped preview through Hlid's internal API", async () => {

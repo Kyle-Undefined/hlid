@@ -22,13 +22,23 @@ export async function appendMessage(
 	text: string,
 	turnId?: string,
 	steerTargetSeq?: number,
+	contextManifestJson?: string,
 ): Promise<number> {
 	const db = await getDb();
 	const result = db.run(
 		`INSERT INTO messages
-		 (session_id, seq, role, text, timestamp, turn_id, steer_target_seq)
-		 VALUES (?, ?, ?, ?, unixepoch(), ?, ?)`,
-		[sessionId, seq, role, text, turnId ?? null, steerTargetSeq ?? null],
+		 (session_id, seq, role, text, timestamp, turn_id, steer_target_seq,
+		  context_manifest_json)
+		 VALUES (?, ?, ?, ?, unixepoch(), ?, ?, ?)`,
+		[
+			sessionId,
+			seq,
+			role,
+			text,
+			turnId ?? null,
+			steerTargetSeq ?? null,
+			contextManifestJson ?? null,
+		],
 	);
 	return Number(result.lastInsertRowid);
 }
@@ -168,11 +178,11 @@ export async function copyForkedSessionTranscript(
 				: [targetSessionId, sourceSessionId, throughSeq, throughSeq];
 		const result = db.run(
 			`INSERT INTO messages
-			 (session_id, seq, role, text, timestamp, recap, turn_id, sdk_uuid,
-			  provider_turn_id, steer_target_seq)
-			 SELECT ?, seq, role, text, timestamp, recap, turn_id, sdk_uuid,
-			        provider_turn_id, steer_target_seq
-			 FROM messages WHERE session_id = ?${messageFilter}
+				 (session_id, seq, role, text, timestamp, recap, turn_id, sdk_uuid,
+				  provider_turn_id, steer_target_seq, context_manifest_json)
+				 SELECT ?, seq, role, text, timestamp, recap, turn_id, sdk_uuid,
+				        provider_turn_id, steer_target_seq, context_manifest_json
+				 FROM messages WHERE session_id = ?${messageFilter}
 			 ORDER BY seq ASC, id ASC`,
 			messageParams,
 		);
@@ -566,6 +576,24 @@ export async function getSessionMessages(
 			`SELECT * FROM messages WHERE session_id = ? ORDER BY seq ASC, id ASC`,
 		)
 		.all(sessionId);
+}
+
+export async function getSessionLatestContextManifest(
+	sessionId: string,
+): Promise<string | null> {
+	const db = await getDb();
+	const row = db
+		.query<{ context_manifest_json: string }, [string]>(
+			`SELECT context_manifest_json
+			 FROM messages
+			 WHERE session_id = ?
+			   AND role = 'user'
+			   AND context_manifest_json IS NOT NULL
+			 ORDER BY seq DESC, id DESC
+			 LIMIT 1`,
+		)
+		.get(sessionId);
+	return row?.context_manifest_json ?? null;
 }
 
 /**

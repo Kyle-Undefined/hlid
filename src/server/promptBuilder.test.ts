@@ -34,14 +34,42 @@ function base(overrides: Partial<BuildPromptOptions> = {}): BuildPromptOptions {
 
 describe("buildPrompt — basic", async () => {
 	it("returns user message as prompt with no extras", async () => {
-		const { prompt, safeAttachments } = await buildPromptAsync(base());
+		const { prompt, safeAttachments, contextManifest } = await buildPromptAsync(
+			base(),
+		);
 		expect(prompt).toBe("hello");
 		expect(safeAttachments).toEqual([]);
+		expect(contextManifest).toMatchObject({
+			contractVersion: 1,
+			userMessageChars: 5,
+			promptChars: 5,
+			hlidAddedChars: 0,
+			estimatedHlidTokens: 0,
+			blocks: [],
+		});
 	});
 
 	it("empty userMessage still produces valid prompt", async () => {
 		const { prompt } = await buildPromptAsync(base({ userMessage: "" }));
 		expect(prompt).toBe("");
+	});
+
+	it("does not repeat the operating brief after the provider has established it", async () => {
+		const { prompt, contextManifest } = await buildPromptAsync(
+			base({
+				vaultName: "Fornbok",
+				operatingBrief: "",
+				operatingBriefVersion: 1,
+			}),
+		);
+
+		expect(prompt).toBe("hello");
+		expect(contextManifest.operatingBrief).toEqual({
+			version: 1,
+			included: false,
+			chars: 0,
+		});
+		expect(contextManifest.blocks).toEqual([]);
 	});
 });
 
@@ -53,20 +81,64 @@ describe("buildPrompt — vault references", async () => {
 		const result = await buildPromptAsync(
 			base({
 				vaultName: "Fornbok",
+				operatingBrief:
+					'Hlid operating brief (v1):\n- The configured Obsidian vault is "Fornbok".',
+				operatingBriefVersion: 1,
 				vaultReferences: ["Projects/Yggdrasil.md"],
 				readVaultReference,
 			}),
 		);
 
 		expect(readVaultReference).toHaveBeenCalledWith("Projects/Yggdrasil.md");
-		expect(result.prompt).toContain('Configured Obsidian vault: "Fornbok"');
+		expect(result.prompt).toContain('configured Obsidian vault is "Fornbok"');
 		expect(result.prompt).toContain('"path":"Projects/Yggdrasil.md"');
 		expect(result.prompt).toContain("# Yggdrasil\\nNative body");
-		expect(result.prompt).toContain("Never expand");
+		expect(result.prompt).toContain(
+			"Do not search for or include related notes",
+		);
 		expect(result.prompt).not.toContain(join(tmp, "Projects/Yggdrasil.md"));
 		expect(result.resourcePaths).not.toContain(
 			join(tmp, "Projects/Yggdrasil.md"),
 		);
+		expect(result.contextManifest.vaultReferences).toEqual([
+			{
+				path: "Projects/Yggdrasil.md",
+				delivery: "inline",
+				includedChars: 23,
+				sourceChars: 23,
+			},
+		]);
+		expect(result.contextManifest.blocks).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({ kind: "operating_brief", count: 1 }),
+				expect.objectContaining({ kind: "vault_references", count: 1 }),
+			]),
+		);
+		expect(result.contextManifest.operatingBrief).toEqual({
+			version: 1,
+			included: true,
+			chars: 74,
+		});
+	});
+
+	it("records exact-reference truncation in the Hlid manifest", async () => {
+		writeFileSync(join(tmp, "Long.md"), "filesystem copy");
+		const content = "x".repeat(20_000);
+		const result = await buildPromptAsync(
+			base({
+				vaultName: "Fornbok",
+				vaultReferences: ["Long.md"],
+				readVaultReference: async () => content,
+			}),
+		);
+		expect(result.contextManifest.vaultReferences).toEqual([
+			{
+				path: "Long.md",
+				delivery: "inline-truncated",
+				includedChars: 16_000,
+				sourceChars: 20_000,
+			},
+		]);
 	});
 
 	it("resolves selected relative paths into exact provider instructions", async () => {

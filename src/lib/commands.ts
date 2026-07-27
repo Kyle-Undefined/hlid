@@ -9,6 +9,7 @@ export type CommandAction =
 	| "goal"
 	| "compact"
 	| "mcp"
+	| "context"
 	| "workflows"
 	| "rename"
 	| "archive";
@@ -68,6 +69,13 @@ export const COMMAND_CAPABILITY_REGISTRY: Record<
 		owner: "hlid",
 		lifecycle: "ui",
 		description: "Refresh and inspect MCP servers for this session",
+		surfaces: ["raven"],
+	},
+	context: {
+		name: "context",
+		owner: "hlid",
+		lifecycle: "ui",
+		description: "Inspect what Hlid adds to this session and turn",
 		surfaces: ["raven"],
 	},
 	workflows: {
@@ -144,6 +152,7 @@ const UI_OWNED_COMMANDS = new Set([
 	"new",
 	"status",
 	"mcp",
+	"context",
 	"rename",
 	"archive",
 ]);

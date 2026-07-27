@@ -1,3 +1,5 @@
+import type { HlidApiEndpoint, HlidApiIndex } from "../lib/apiIndex";
+
 /**
  * Curated, machine-readable catalog of hlid's HTTP surface, served at
  * GET /api-index on the WS/API server. Written for the vault agent so it can
@@ -9,13 +11,7 @@
  * agent should know about.
  */
 
-export type ApiEndpoint = {
-	method: "GET" | "POST" | "PATCH" | "DELETE";
-	path: string;
-	/** Which listener serves it: "api" = WS/API port, "ui" = UI port. */
-	server: "api" | "ui";
-	desc: string;
-};
+export type ApiEndpoint = HlidApiEndpoint;
 
 export const API_ENDPOINTS: ApiEndpoint[] = [
 	// ── Authentication (UI port) ──────────────────────────────────────────────
@@ -425,15 +421,7 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 ];
 
 /** Response body for GET /api-index. */
-export function buildApiIndex(
-	apiPort: number,
-	uiPort: number,
-): {
-	description: string;
-	api_port: number;
-	ui_port: number;
-	endpoints: ApiEndpoint[];
-} {
+export function buildApiIndex(apiPort: number, uiPort: number): HlidApiIndex {
 	return {
 		description:
 			'Curated hlid HTTP API for programmatic/agent use. "api" endpoints are served on api_port, "ui" endpoints on ui_port — both localhost unless local_network_access is enabled. Non-GET requests must omit or match the allowed Origin.',

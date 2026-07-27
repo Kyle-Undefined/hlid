@@ -28,6 +28,7 @@ import {
 	copyForkedSessionTranscript,
 	getMessageForFork,
 	getSessionAskUserQuestions,
+	getSessionLatestContextManifest,
 	getSessionMessages,
 	getSessionNextMessageSeq,
 	getSessionPlanProposals,
@@ -1030,6 +1031,18 @@ describe("messages", () => {
 		expect(rows[2].steer_target_seq).toBe(1);
 	});
 
+	it("retains the latest Hlid context manifest outside visible message text", async () => {
+		await createSession("s1", "L", "m");
+		const first = JSON.stringify({ contractVersion: 1, promptChars: 10 });
+		const second = JSON.stringify({ contractVersion: 1, promptChars: 20 });
+		await appendMessage("s1", 0, "user", "hello", "turn-1", undefined, first);
+		await appendMessage("s1", 1, "assistant", "world");
+		await appendMessage("s1", 2, "user", "again", "turn-2", undefined, second);
+
+		expect(await getSessionLatestContextManifest("s1")).toBe(second);
+		expect((await getSessionMessages("s1"))[2].text).toBe("again");
+	});
+
 	it("returns empty array for session with no messages", async () => {
 		await createSession("s1", "L", "m");
 		expect(await getSessionMessages("s1")).toHaveLength(0);
@@ -1169,7 +1182,19 @@ describe("messages", () => {
 		});
 		await setSessionAgentCwd("source", "/work/project");
 		await setSessionProviderSession("source", "codex", "thread-source");
-		await appendMessage("source", 0, "user", "First prompt", "turn-1");
+		const contextManifest = JSON.stringify({
+			contractVersion: 1,
+			promptChars: 42,
+		});
+		await appendMessage(
+			"source",
+			0,
+			"user",
+			"First prompt",
+			"turn-1",
+			undefined,
+			contextManifest,
+		);
 		const assistantId = await appendMessage(
 			"source",
 			1,
@@ -1221,6 +1246,7 @@ describe("messages", () => {
 		]);
 		expect(messages[1].provider_turn_id).toBe("provider-turn-1");
 		expect(messages[2].steer_target_seq).toBe(1);
+		expect(messages[0].context_manifest_json).toBe(contextManifest);
 		expect(await getMessageForFork(messages[1].id)).toMatchObject({
 			sessionId: "fork",
 			seq: 1,

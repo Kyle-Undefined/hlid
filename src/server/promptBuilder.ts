@@ -5,6 +5,12 @@ import {
 	findAgentInstructionFileAsync,
 } from "../lib/agentInstructions";
 import {
+	estimateContextTokens,
+	HLID_CONTEXT_CONTRACT_VERSION,
+	type HlidContextBlock,
+	type HlidPromptContextManifest,
+} from "../lib/hlidContext";
+import {
 	isPathAccessibleFromRuntime,
 	pathStartsWith,
 	toLogical,
@@ -26,6 +32,9 @@ export type BuildPromptOptions = {
 	vaultPath: string;
 	/** Configured Obsidian vault name exposed as first-class agent context. */
 	vaultName?: string;
+	/** Small capability-gated operating contract, sent once per provider conversation. */
+	operatingBrief?: string;
+	operatingBriefVersion?: number;
 	allowedAgentRealPaths: string[];
 	agentMode: "cwd" | "context";
 	agentCwd: string | undefined;
@@ -57,6 +66,7 @@ type NativeVaultReference = ResolvedVaultReference & {
 	content?: string;
 	error?: string;
 	truncated?: boolean;
+	sourceChars?: number;
 };
 
 async function hydrateVaultReferences(
@@ -83,6 +93,7 @@ async function hydrateVaultReferences(
 			hydrated.push({
 				...reference,
 				content: selected,
+				sourceChars: content.length,
 				...(selected.length < content.length ? { truncated: true } : {}),
 			});
 		} catch (error) {
@@ -150,6 +161,7 @@ function assemblePrompt(
 	resourcePaths: string[];
 	safeVaultReferences: ResolvedVaultReference[];
 	safeWorkspaceReferences: ResolvedWorkspaceReference[];
+	contextManifest: HlidPromptContextManifest;
 } {
 	const { agentCwd, userMessage, planHtmlInstructions } = opts;
 	const runtimePath = (path: string) =>
@@ -170,8 +182,8 @@ function assemblePrompt(
 					)
 					.join("\n")}\n\n`
 			: "";
-	const vaultContextBlock = opts.vaultName?.trim()
-		? `Hlid vault context:\n- Configured Obsidian vault: ${JSON.stringify(opts.vaultName.trim())}\n- The hlid_obsidian tools are available from any provider, working directory, Windows host, or WSL agent. Use them instead of shell or filesystem access for supported vault operations.\n- Hlid @ references are exact-note selections. Never expand their links, backlinks, embeds, attachments, or related notes unless the user asks.\n\n`
+	const operatingBriefBlock = opts.operatingBrief?.trim()
+		? `${opts.operatingBrief.trim()}\n\n`
 		: "";
 	const vaultReferenceBlock =
 		safeVaultReferences.length > 0
@@ -217,12 +229,78 @@ function assemblePrompt(
 			: safeSkillContexts.length > 1
 				? `Please read the following skill files and follow all of their instructions:\n${safeSkillContexts.map((skillContext) => `- \`${runtimePath(skillContext)}\``).join("\n")}\n\n`
 				: "";
-	const contextBlock = `${personaBlock}${attachmentBlock}${vaultContextBlock}${vaultReferenceBlock}${workspaceReferenceBlock}${skillBlock}`;
+	const contextBlock = `${operatingBriefBlock}${personaBlock}${attachmentBlock}${vaultReferenceBlock}${workspaceReferenceBlock}${skillBlock}`;
 	const prompt = userMessage.startsWith("/")
 		? `${userMessage}\n\n${contextBlock}${planHtmlBlock}`
 		: skillBlock
 			? `${contextBlock}User: ${userMessage || "(no additional input)"}${planHtmlBlock}`
 			: `${contextBlock}${userMessage || (safeVaultReferences.length > 0 || safeWorkspaceReferences.length > 0 ? "User: (no additional input)" : "")}${planHtmlBlock}`;
+	const blocks: HlidContextBlock[] = [
+		...(personaBlock
+			? [
+					{
+						kind: "workspace_instruction" as const,
+						chars: personaBlock.length,
+						count: 1,
+					},
+				]
+			: []),
+		...(attachmentBlock
+			? [
+					{
+						kind: "attachments" as const,
+						chars: attachmentBlock.length,
+						count: promptAttachments.length,
+					},
+				]
+			: []),
+		...(operatingBriefBlock
+			? [
+					{
+						kind: "operating_brief" as const,
+						chars: operatingBriefBlock.length,
+						count: 1,
+					},
+				]
+			: []),
+		...(vaultReferenceBlock
+			? [
+					{
+						kind: "vault_references" as const,
+						chars: vaultReferenceBlock.length,
+						count: safeVaultReferences.length,
+					},
+				]
+			: []),
+		...(workspaceReferenceBlock
+			? [
+					{
+						kind: "workspace_references" as const,
+						chars: workspaceReferenceBlock.length,
+						count: safeWorkspaceReferences.length,
+					},
+				]
+			: []),
+		...(skillBlock
+			? [
+					{
+						kind: "skills" as const,
+						chars: skillBlock.length,
+						count: safeSkillContexts.length,
+					},
+				]
+			: []),
+		...(planHtmlBlock
+			? [
+					{
+						kind: "plan" as const,
+						chars: planHtmlBlock.length,
+						count: 1,
+					},
+				]
+			: []),
+	];
+	const hlidAddedChars = Math.max(0, prompt.length - userMessage.length);
 	return {
 		prompt,
 		safeAttachments,
@@ -236,6 +314,62 @@ function assemblePrompt(
 		],
 		safeVaultReferences,
 		safeWorkspaceReferences,
+		contextManifest: {
+			contractVersion: HLID_CONTEXT_CONTRACT_VERSION,
+			userMessageChars: userMessage.length,
+			promptChars: prompt.length,
+			hlidAddedChars,
+			estimatedHlidTokens: estimateContextTokens(hlidAddedChars),
+			blocks,
+			...(opts.vaultName?.trim() ? { vaultName: opts.vaultName.trim() } : {}),
+			agentMode: opts.agentMode,
+			...(agentCwd ? { agentCwd: runtimePath(agentCwd) } : {}),
+			...(opts.runtimeCwd ? { runtimeCwd: toLogical(opts.runtimeCwd) } : {}),
+			...(agentCwd && instructionFile
+				? { instructionFile: `${runtimePath(agentCwd)}/${instructionFile}` }
+				: {}),
+			skills: safeSkillContexts.map(runtimePath),
+			attachments: safeAttachments.map((attachment) => ({
+				filename: attachment.filename,
+				mime: attachment.mime,
+				delivery:
+					opts.nativeAudio && attachment.mime.startsWith("audio/")
+						? ("native" as const)
+						: ("path" as const),
+			})),
+			vaultReferences: safeVaultReferences.map((reference) => ({
+				path: reference.relativePath,
+				delivery:
+					reference.content !== undefined
+						? reference.truncated
+							? ("inline-truncated" as const)
+							: ("inline" as const)
+						: reference.error
+							? ("unavailable" as const)
+							: ("metadata" as const),
+				includedChars: reference.content?.length ?? 0,
+				...(reference.sourceChars !== undefined
+					? { sourceChars: reference.sourceChars }
+					: {}),
+				...(reference.error ? { error: reference.error } : {}),
+			})),
+			workspaceReferences: safeWorkspaceReferences.map((reference) => ({
+				path: reference.relativePath,
+				mime: reference.mime,
+				environment: reference.environmentLabel,
+				sha256: reference.sha256,
+			})),
+			planHtml: Boolean(planHtmlInstructions),
+			...(opts.operatingBriefVersion !== undefined
+				? {
+						operatingBrief: {
+							version: opts.operatingBriefVersion,
+							included: operatingBriefBlock.length > 0,
+							chars: operatingBriefBlock.length,
+						},
+					}
+				: {}),
+		},
 	};
 }
 
@@ -246,6 +380,7 @@ export async function buildPromptAsync(opts: BuildPromptOptions): Promise<{
 	resourcePaths: string[];
 	safeVaultReferences: ResolvedVaultReference[];
 	safeWorkspaceReferences: ResolvedWorkspaceReference[];
+	contextManifest: HlidPromptContextManifest;
 }> {
 	const vaultRoot = resolve(opts.vaultPath);
 	const vaultRootReal = await realpath(vaultRoot).catch(() => vaultRoot);

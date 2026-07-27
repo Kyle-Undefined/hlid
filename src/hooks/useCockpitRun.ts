@@ -286,6 +286,12 @@ export function useCockpitRun(options: CockpitRunOptions) {
 			);
 			return;
 		}
+		if (commandAction === "context") {
+			options.setRunError(
+				"Hlid context is inspected from an existing Raven session.",
+			);
+			return;
+		}
 		if (commandAction === "workflows") {
 			options.setRunError(
 				"Workflows are inspected from an existing Raven session.",

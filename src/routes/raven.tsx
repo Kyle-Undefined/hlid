@@ -31,6 +31,7 @@ import {
 import { AgentSelect } from "#/components/AgentSelect";
 import { AttachmentStrip } from "#/components/AttachmentStrip";
 import { ActiveCommandBadges } from "#/components/chat/ActiveCommandBadge";
+import { ContextInspectorDialog } from "#/components/chat/ContextInspectorDialog";
 import { reducer } from "#/components/chat/chatReducer";
 import {
 	LiveSessionSwitcher,
@@ -613,6 +614,7 @@ function useRavenChatRuntime({
 		ReturnType<typeof mapMcpServer>[]
 	>([]);
 	const [mcpOpenSignal, setMcpOpenSignal] = useState(0);
+	const [contextInspectorOpen, setContextInspectorOpen] = useState(false);
 	const [workflowManagerOpen, setWorkflowManagerOpen] = useState(false);
 	const [workflowCatalog, setWorkflowCatalog] = useState<
 		Pick<WorkflowCatalogMessage, "workflows" | "locations">
@@ -778,6 +780,8 @@ function useRavenChatRuntime({
 		});
 		setMcpOpenSignal((value) => value + 1);
 	}, [agentCwd, connection.send, sessionIdRef]);
+	const openContext = useCallback(() => setContextInspectorOpen(true), []);
+	const closeContext = useCallback(() => setContextInspectorOpen(false), []);
 	const refreshWorkflows = useCallback(() => {
 		connection.send({
 			type: "probe_workflows",
@@ -810,6 +814,7 @@ function useRavenChatRuntime({
 		setSdkSlashCommands([]);
 		setSdkSlashCommandProviderId(null);
 		setMcpServers([]);
+		setContextInspectorOpen(false);
 		setWorkflowManagerOpen(false);
 		setWorkflowCatalog({ workflows: [], locations: [] });
 		setWorkflowCatalogProviderId(null);
@@ -888,6 +893,9 @@ function useRavenChatRuntime({
 		mcpServers,
 		mcpOpenSignal,
 		openMcp,
+		contextInspectorOpen,
+		openContext,
+		closeContext,
 		workflowManagerOpen,
 		openWorkflows,
 		closeWorkflows,
@@ -1280,6 +1288,7 @@ function useRavenSend(props: RavenActionProps) {
 		openGoalEditor,
 		closeGoalEditor,
 		openMcp,
+		openContext,
 		openWorkflows,
 	} = props.runtime;
 	const { pendingAttachments, clearPending: clearPendingAttachments } =
@@ -1334,6 +1343,12 @@ function useRavenSend(props: RavenActionProps) {
 				clearDraft();
 				setInput("");
 				setActiveSkills([]);
+				return;
+			}
+			if (commandAction === "context") {
+				openContext();
+				clearDraft();
+				setInput("");
 				return;
 			}
 			if (commandAction === "workflows") {
@@ -1480,6 +1495,7 @@ function useRavenSend(props: RavenActionProps) {
 			openGoalEditor,
 			closeGoalEditor,
 			openMcp,
+			openContext,
 			openWorkflows,
 			navigate,
 		],
@@ -2719,6 +2735,42 @@ function ChatPageContent(props: ChatPageContentProps) {
 					</button>
 				)}
 			</div>
+			{props.runtime.contextInspectorOpen && (
+				<ContextInspectorDialog
+					sessionId={props.session.sessionId}
+					pending={{
+						providerId: props.composerProps.activeProviderId,
+						model: props.composerProps.activeModel ?? undefined,
+						effort: props.composerProps.activeEffort ?? undefined,
+						permissionMode:
+							props.composerProps.activePermissionMode ?? undefined,
+						agentCwd: props.session.agentSkillContext,
+						skills: props.composerProps.activeSkills.flatMap((command) =>
+							command.execution.kind === "skill"
+								? [command.execution.filePath]
+								: [],
+						),
+						attachments: [
+							...props.composerProps.upload.pendingAttachments,
+							...props.composerProps.vaultPicker.relicAttachments,
+						].map((attachment) => ({
+							filename: attachment.filename,
+							mime: attachment.mime,
+						})),
+						vaultReferences: props.composerProps.vaultPicker.referencePaths,
+						workspaceReferences:
+							props.composerProps.vaultPicker.selectedWorkspace.map(
+								(reference) => ({
+									relativePath: reference.relativePath,
+									mime: reference.mime,
+									sha256: reference.sha256,
+								}),
+							),
+						planMode: props.composerProps.planMode,
+					}}
+					onClose={props.runtime.closeContext}
+				/>
+			)}
 			{props.runtime.workflowManagerOpen && (
 				<WorkflowManagerDialog
 					messages={props.runtime.messages}

@@ -8,8 +8,15 @@ describe("Hlid MCP process", () => {
 		try {
 			expect(
 				hlidMcpProcessCommand({
+					providerId: "acp:opencode",
+					model: "gpt-test",
+					effort: "high",
+					permissionMode: "default",
+					policyEnforced: true,
 					runtimeCwd: "/work/project",
 					sessionId: "session-1",
+					vaultName: "Fornbok",
+					agentMode: "cwd",
 				}),
 			).toEqual({
 				command: process.execPath,
@@ -24,6 +31,22 @@ describe("Hlid MCP process", () => {
 						name: "HLID_INTERNAL_MCP_SESSION_ID",
 						value: "session-1",
 					},
+					{
+						name: "HLID_INTERNAL_MCP_PROVIDER_ID",
+						value: "acp:opencode",
+					},
+					{ name: "HLID_INTERNAL_MCP_MODEL", value: "gpt-test" },
+					{ name: "HLID_INTERNAL_MCP_EFFORT", value: "high" },
+					{
+						name: "HLID_INTERNAL_MCP_PERMISSION_MODE",
+						value: "default",
+					},
+					{
+						name: "HLID_INTERNAL_MCP_POLICY_ENFORCED",
+						value: "true",
+					},
+					{ name: "HLID_INTERNAL_MCP_VAULT_NAME", value: "Fornbok" },
+					{ name: "HLID_INTERNAL_MCP_AGENT_MODE", value: "cwd" },
 				],
 			});
 		} finally {

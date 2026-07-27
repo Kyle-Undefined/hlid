@@ -30,6 +30,9 @@ const {
 	mockStartProviderHistorySync,
 	mockGetProviderHistorySyncStatus,
 	mockGetSessionProviderSession,
+	mockGetSessionLastQueryContext,
+	mockGetSessionActualModel,
+	mockGetSessionLatestContextManifest,
 	mockCreateForkedSessionRow,
 	mockDeleteSession,
 	mockGetMessageForFork,
@@ -56,6 +59,9 @@ const {
 	mockStartProviderHistorySync: vi.fn(),
 	mockGetProviderHistorySyncStatus: vi.fn(),
 	mockGetSessionProviderSession: vi.fn(),
+	mockGetSessionLastQueryContext: vi.fn(),
+	mockGetSessionActualModel: vi.fn(),
+	mockGetSessionLatestContextManifest: vi.fn(),
 	mockCreateForkedSessionRow: vi.fn(),
 	mockDeleteSession: vi.fn(),
 	mockGetMessageForFork: vi.fn(),
@@ -81,6 +87,9 @@ vi.mock("../db", () => ({
 	getRecentSessions: mockGetRecentSessions,
 	getSessionsPaginated: mockGetSessionsPaginated,
 	getSessionProviderSession: mockGetSessionProviderSession,
+	getSessionLastQueryContext: mockGetSessionLastQueryContext,
+	getSessionActualModel: mockGetSessionActualModel,
+	getSessionLatestContextManifest: mockGetSessionLatestContextManifest,
 	createForkedSessionRow: mockCreateForkedSessionRow,
 	deleteSession: mockDeleteSession,
 	getMessageForFork: mockGetMessageForFork,
@@ -393,6 +402,74 @@ describe("handleDbRoute — /db/session-row", () => {
 
 		expect(res).toBeNull();
 		expect(mockGetSessionById).not.toHaveBeenCalled();
+	});
+});
+
+describe("handleDbRoute — /db/session-context", () => {
+	it("returns the persisted Hlid manifest with provider context usage", async () => {
+		mockGetSessionLastQueryContext.mockResolvedValue({
+			context_window: 200_000,
+			last_context_used: 12_345,
+		});
+		mockGetSessionActualModel.mockResolvedValue("gpt-5.6-sol");
+		mockGetSessionLatestContextManifest.mockResolvedValue(
+			JSON.stringify({
+				contractVersion: 1,
+				recordedAt: 1_700_000_000_000,
+				delivery: "chat",
+				providerId: "codex",
+				userMessageChars: 5,
+				promptChars: 15,
+				hlidAddedChars: 10,
+				estimatedHlidTokens: 3,
+				blocks: [],
+				agentMode: "cwd",
+				skills: [],
+				attachments: [],
+				vaultReferences: [],
+				workspaceReferences: [],
+				planHtml: false,
+				providerPromptChars: 15,
+				providerHandoffChars: 0,
+				toolLoading: [],
+			}),
+		);
+
+		const response = await handleDbRoute(
+			makeUrl("/db/session-context", { session_id: "abc-123" }),
+			makeRequest(),
+		);
+
+		expect(response?.status).toBe(200);
+		expect(await response?.json()).toMatchObject({
+			context_window: 200_000,
+			last_context_used: 12_345,
+			actual_model: "gpt-5.6-sol",
+			hlid_context: {
+				contractVersion: 1,
+				delivery: "chat",
+				hlidAddedChars: 10,
+			},
+		});
+		expect(mockGetSessionLatestContextManifest).toHaveBeenCalledWith("abc-123");
+	});
+
+	it("treats malformed or unsupported manifests as unavailable", async () => {
+		mockGetSessionLastQueryContext.mockResolvedValue(null);
+		mockGetSessionActualModel.mockResolvedValue(null);
+		mockGetSessionLatestContextManifest.mockResolvedValue(
+			'{"contractVersion":999}',
+		);
+
+		const response = await handleDbRoute(
+			makeUrl("/db/session-context", { session_id: "abc-123" }),
+			makeRequest(),
+		);
+
+		expect(await response?.json()).toEqual({
+			actual_model: null,
+			hlid_context: null,
+		});
 	});
 });
 

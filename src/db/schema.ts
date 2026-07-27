@@ -450,6 +450,12 @@ function applyMigrations(db: Db): void {
 		db.run(`ALTER TABLE messages ADD COLUMN steer_target_seq INTEGER`);
 	});
 
+	// Hlid-owned provenance for the prompt context assembled around a user turn.
+	// This stays outside the visible transcript and provider token accounting.
+	runMigration(db, "_migrated_messages_context_manifest", (db) => {
+		db.run(`ALTER TABLE messages ADD COLUMN context_manifest_json TEXT`);
+	});
+
 	// Durable provenance lets Raven and Ledger link an exact fork back to its
 	// source even after both provider processes and Hlid itself restart.
 	runMigration(db, "_migrated_sessions_fork_provenance", (db) => {

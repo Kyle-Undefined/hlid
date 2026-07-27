@@ -1,13 +1,29 @@
 import { z } from "zod";
 import { dbFetch, requireDbOk } from "#/lib/dbClient";
+import { parseHlidApiIndex } from "../lib/apiIndex";
 import type { AgentToolPayload } from "./agentToolResult";
+import { buildHlidApiDiscoveryResponse } from "./hlidApiDiscovery";
+import {
+	buildHlidHelpResponse,
+	HLID_HELP_TOPICS,
+	type HlidOperatingContext,
+} from "./hlidHelp";
 
 export const HLID_AGENT_NAMESPACE = "hlid";
 export const HLID_AGENT_NAMESPACE_DESCRIPTION =
-	"Curated Hlid host capabilities. Publish a generated report or other durable deliverable to Relics, or start, manage, visually inspect, and interact with a session-scoped Project Preview when developing a web project from its repository.";
+	"Curated Hlid host capabilities. Discover the active operating contract and HTTP API, publish durable deliverables to Relics, or run and inspect a session-scoped Project Preview.";
 export const MAX_HLID_INLINE_RELIC_CHARS = 2_000_000;
 
 export const hlidAgentSchemas = {
+	hlid_help: z.object({
+		topic: z.enum(HLID_HELP_TOPICS).optional(),
+	}),
+	hlid_api: z.object({
+		query: z.string().trim().max(200).optional(),
+		method: z.enum(["GET", "POST", "PATCH", "DELETE"]).optional(),
+		scope: z.enum(["data", "ui"]).optional(),
+		limit: z.number().int().min(1).max(50).optional(),
+	}),
 	publish_relic: z.object({
 		source_path: z.string().trim().min(1).max(4_096).optional(),
 		filename: z.string().trim().min(1).max(255).optional(),
@@ -91,6 +107,63 @@ export type HlidAgentToolSpec = {
 };
 
 export const HLID_AGENT_TOOL_SPECS: HlidAgentToolSpec[] = [
+	{
+		name: "hlid_help",
+		description:
+			"Return bounded, versioned operating guidance for the Hlid capabilities available in the active provider, environment, permission mode, workspace, and session. Omit topic for the live capability overview, or request one focused topic. Use this instead of guessing cross-provider behavior or loading a static Hlid manual.",
+		readOnly: true,
+		deferLoading: true,
+		searchHint:
+			"Hlid help capabilities operating context references permissions sessions plans review workflows goals Relics Project Preview MCP skills extensions providers handoff",
+		inputSchema: {
+			type: "object",
+			properties: {
+				topic: {
+					type: "string",
+					enum: [...HLID_HELP_TOPICS],
+					description:
+						"Focused help topic. Omit for the current capability overview.",
+				},
+			},
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "hlid_api",
+		description:
+			"Search Hlid's live, curated HTTP API catalog. Filter by text, method, or data/UI listener and receive a bounded result with exact live base URLs, full matching total, returned count, and truncation state. Use this for direct Hlid integration without loading the full API reference.",
+		readOnly: true,
+		deferLoading: true,
+		searchHint:
+			"Hlid HTTP REST API endpoint route integration catalog discovery search",
+		inputSchema: {
+			type: "object",
+			properties: {
+				query: {
+					type: "string",
+					description:
+						"Optional case-insensitive search across method, path, listener, and description.",
+				},
+				method: {
+					type: "string",
+					enum: ["GET", "POST", "PATCH", "DELETE"],
+					description: "Optional exact HTTP method filter.",
+				},
+				scope: {
+					type: "string",
+					enum: ["data", "ui"],
+					description:
+						"Optional listener filter. data is the Hlid data/API port; ui is the application port.",
+				},
+				limit: {
+					type: "number",
+					description:
+						"Maximum endpoints to return, from 1 to 50. Defaults to 20.",
+				},
+			},
+			additionalProperties: false,
+		},
+	},
 	{
 		name: "publish_relic",
 		description:
@@ -338,10 +411,36 @@ export const HLID_AGENT_TOOL_SPECS: HlidAgentToolSpec[] = [
 	},
 ];
 
-export type HlidAgentToolContext = {
-	runtimeCwd?: string;
-	sessionId?: string;
-};
+export type HlidAgentToolContext = HlidOperatingContext;
+
+async function liveHlidOperatingContext(
+	context: HlidAgentToolContext,
+): Promise<HlidAgentToolContext> {
+	if (!context.sessionId) return context;
+	try {
+		const response = await dbFetch(
+			`/db/session-row?id=${encodeURIComponent(context.sessionId)}`,
+		);
+		if (!response.ok) return context;
+		const row = (await response.json()) as {
+			provider_id?: string | null;
+			selected_model?: string | null;
+			model?: string | null;
+			selected_effort?: string | null;
+			selected_permission_mode?: string | null;
+		} | null;
+		if (!row) return context;
+		return {
+			...context,
+			providerId: row.provider_id ?? context.providerId,
+			model: row.selected_model ?? row.model ?? context.model,
+			effort: row.selected_effort ?? context.effort,
+			permissionMode: row.selected_permission_mode ?? context.permissionMode,
+		};
+	} catch {
+		return context;
+	}
+}
 
 const captureResultSchema = z.object({
 	preview_id: z.string(),
@@ -448,6 +547,22 @@ export async function executeHlidAgentTool(
 	if (!(name in hlidAgentSchemas))
 		throw new Error(`Unknown Hlid tool: ${name}`);
 	const toolName = name as HlidAgentToolName;
+	if (toolName === "hlid_help") {
+		const parsed = hlidAgentSchemas.hlid_help.parse(input);
+		return buildHlidHelpResponse(
+			parsed.topic ?? "overview",
+			await liveHlidOperatingContext(context),
+		);
+	}
+	if (toolName === "hlid_api") {
+		const parsed = hlidAgentSchemas.hlid_api.parse(input);
+		const response = await dbFetch("/api-index");
+		await requireDbOk(response, "Discover Hlid API");
+		return buildHlidApiDiscoveryResponse(
+			parseHlidApiIndex(await response.json()),
+			parsed,
+		);
+	}
 	if (toolName === "start_project_preview") {
 		const parsed = hlidAgentSchemas.start_project_preview.parse(input);
 		if (!context.runtimeCwd || !context.sessionId) {

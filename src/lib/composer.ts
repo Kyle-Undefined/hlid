@@ -151,7 +151,7 @@ export function prepareChatSubmission(input: {
 	skillContexts?: string[];
 	commandAction?: Exclude<
 		CommandAction,
-		"goal" | "mcp" | "workflows" | "rename" | "archive"
+		"goal" | "mcp" | "context" | "workflows" | "rename" | "archive"
 	>;
 	attachments: ChatAttachment[];
 	vaultReferences?: string[];

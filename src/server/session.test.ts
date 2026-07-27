@@ -83,10 +83,37 @@ vi.mock("./promptBuilder", () => ({
 		prompt: "test prompt",
 		safeAttachments: [],
 	}),
-	buildPromptAsync: vi.fn().mockResolvedValue({
-		prompt: "test prompt",
-		safeAttachments: [],
-	}),
+	buildPromptAsync: vi.fn(
+		async (options: {
+			operatingBrief?: string;
+			operatingBriefVersion?: number;
+		}) => ({
+			prompt: "test prompt",
+			safeAttachments: [],
+			resourcePaths: [],
+			safeVaultReferences: [],
+			safeWorkspaceReferences: [],
+			contextManifest: {
+				contractVersion: 1,
+				userMessageChars: 0,
+				promptChars: 11,
+				hlidAddedChars: 11,
+				estimatedHlidTokens: 3,
+				blocks: [],
+				agentMode: "cwd",
+				skills: [],
+				attachments: [],
+				vaultReferences: [],
+				workspaceReferences: [],
+				planHtml: false,
+				operatingBrief: {
+					version: options.operatingBriefVersion ?? 1,
+					included: Boolean(options.operatingBrief),
+					chars: options.operatingBrief?.length ?? 0,
+				},
+			},
+		}),
+	),
 }));
 vi.mock("./obsidianCli", () => ({
 	getActiveObsidianNote: vi.fn().mockResolvedValue(null),
@@ -135,6 +162,23 @@ import {
 	reportRateLimitSignal,
 	_resetForTests as resetUsageGate,
 } from "./usageGate";
+
+function testPromptContextManifest() {
+	return {
+		contractVersion: 1 as const,
+		userMessageChars: 0,
+		promptChars: 11,
+		hlidAddedChars: 11,
+		estimatedHlidTokens: 3,
+		blocks: [],
+		agentMode: "cwd" as const,
+		skills: [],
+		attachments: [],
+		vaultReferences: [],
+		workspaceReferences: [],
+		planHtml: false,
+	};
+}
 
 function routinePermissionContext(
 	providerId: string,
@@ -420,6 +464,7 @@ describe("SessionManager — initial state", () => {
 			resourcePaths: [attachment.path],
 			safeVaultReferences: [],
 			safeWorkspaceReferences: [],
+			contextManifest: testPromptContextManifest(),
 		});
 		const provider: AgentProvider = {
 			providerId: "claude",
@@ -458,6 +503,8 @@ describe("SessionManager — initial state", () => {
 			"user",
 			"Review this\n\nRelic references:\n- report.pdf",
 			"relic-turn",
+			undefined,
+			expect.stringContaining('"contractVersion":1'),
 		);
 		expect(vi.mocked(dbMock.linkAttachmentToMessage).mock.calls).toHaveLength(
 			linkCallsBefore,
@@ -557,6 +604,50 @@ describe("SessionManager — initial state", () => {
 			makeProviders(makeProvider("Bash")),
 		);
 		expect(sm.getPendingPermissionRequests()).toEqual([]);
+	});
+
+	it("sends the bounded operating brief once per provider conversation", async () => {
+		const provider: AgentProvider = {
+			providerId: "codex",
+			query(): AgentSession {
+				return {
+					async *[Symbol.asyncIterator]() {
+						yield {
+							type: "done",
+							cost: 0,
+							turns: 1,
+							durationMs: 0,
+							usage: { inputTokens: 1, outputTokens: 1 },
+						};
+					},
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+				};
+			},
+		};
+		const config = makeConfig();
+		config.vault_provider = "codex";
+		const sm = new SessionManager(config, makeProviders(provider));
+		vi.mocked(buildPromptAsync).mockClear();
+
+		await sm.runQuery("first", () => {}, "brief-session");
+		await sm.runQuery("second", () => {}, "brief-session");
+		await sm.runQuery("new conversation", () => {}, "brief-session-2");
+
+		const calls = vi.mocked(buildPromptAsync).mock.calls;
+		expect(calls).toHaveLength(3);
+		expect(calls[0][0]).toMatchObject({
+			operatingBriefVersion: 1,
+			operatingBrief: expect.stringContaining("Hlid operating brief (v1)"),
+		});
+		expect(calls[1][0]).toMatchObject({
+			operatingBriefVersion: 1,
+			operatingBrief: "",
+		});
+		expect(calls[2][0]).toMatchObject({
+			operatingBriefVersion: 1,
+			operatingBrief: expect.stringContaining("Hlid operating brief (v1)"),
+		});
 	});
 });
 
@@ -1389,6 +1480,9 @@ describe("SessionManager — setModel", () => {
 			8,
 			"user",
 			"continue",
+			undefined,
+			undefined,
+			expect.stringContaining('"contractVersion":1'),
 		);
 	});
 });
@@ -3053,6 +3147,7 @@ describe("SessionManager — session-scoped permission persistence", () => {
 					},
 				],
 				safeWorkspaceReferences: [],
+				contextManifest: testPromptContextManifest(),
 			});
 			const { sm, executeCommand } = setup();
 
@@ -3070,6 +3165,8 @@ describe("SessionManager — session-scoped permission persistence", () => {
 				"user",
 				"/computer-use open Docker\n\nVault references:\n- Projects/Hlid.md",
 				"computer-use-turn",
+				undefined,
+				expect.stringContaining('"delivery":"provider-command"'),
 			);
 		});
 
@@ -3781,7 +3878,12 @@ describe("SessionManager — provider resolution", () => {
 		await sm.runQuery("hello", () => {}, "sess-v");
 		expect(captured.params).not.toBeNull();
 		// vault query: model should be the vault model
-		expect(captured.params?.model).toBe("claude-test");
+		expect(captured.params).toMatchObject({
+			providerId: "claude",
+			vaultName: "Test",
+			agentMode: "cwd",
+			model: "claude-test",
+		});
 	});
 
 	it("agent query uses provider from agentProviderMap when set", async () => {
@@ -5322,6 +5424,7 @@ describe("SessionManager — steerQueued", () => {
 			"second",
 			"turn-2",
 			1,
+			expect.stringContaining('"delivery":"steer"'),
 		);
 		await second;
 		ctl.turns[0].resolveDone();
@@ -5676,6 +5779,8 @@ describe("SessionManager — turn_id forwarding", () => {
 			"user",
 			"first",
 			"turn-xyz",
+			undefined,
+			expect.stringContaining('"contractVersion":1'),
 		);
 		ctl.turns[0].resolveDone();
 		await turn;
@@ -5948,6 +6053,7 @@ describe("SessionManager — Slice B AgentSession reuse", () => {
 			resourcePaths: [attachment.path],
 			safeVaultReferences: [],
 			safeWorkspaceReferences: [],
+			contextManifest: testPromptContextManifest(),
 		});
 		const ctl = makeLongLivedProvider();
 		let sendSpy: ReturnType<typeof vi.fn> | undefined;

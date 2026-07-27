@@ -1440,7 +1440,7 @@ describe("CodexAgentSession — commands", () => {
 		expect(turnStartParams(writes)[0].additionalContext).toEqual({
 			hlid: {
 				kind: "application",
-				value: expect.stringContaining("generated report"),
+				value: expect.stringContaining("operating contract"),
 			},
 			hlid_obsidian: {
 				kind: "application",
@@ -1455,6 +1455,7 @@ describe("CodexAgentSession — commands", () => {
 				description: string;
 				tools: Array<{
 					name: string;
+					deferLoading?: boolean;
 					inputSchema: { properties: Record<string, unknown> };
 				}>;
 			}>
@@ -1469,6 +1470,9 @@ describe("CodexAgentSession — commands", () => {
 			limit: { type: "integer", minimum: 1, maximum: 200 },
 			countOnly: { type: "boolean" },
 		});
+		expect(
+			obsidianNamespace?.tools.every((tool) => tool.deferLoading === true),
+		).toBe(true);
 		expect(
 			obsidianNamespace?.tools.find((tool) => tool.name === "search")
 				?.inputSchema.properties,
@@ -1545,6 +1549,12 @@ describe("CodexAgentSession — commands", () => {
 		).find((tool) => tool.name === "hlid");
 		expect(hlidNamespace?.tools).toContainEqual(
 			expect.objectContaining({
+				name: "hlid_help",
+				deferLoading: true,
+			}),
+		);
+		expect(hlidNamespace?.tools).toContainEqual(
+			expect.objectContaining({
 				name: "publish_relic",
 				deferLoading: true,
 			}),
@@ -1584,7 +1594,13 @@ describe("CodexAgentSession — commands", () => {
 		expect(executeHlidAgentToolRich).toHaveBeenCalledWith(
 			"publish_relic",
 			{ source_path: "reports/review.pdf" },
-			{ runtimeCwd: "/tmp/codex-test", sessionId: "host-session-1" },
+			expect.objectContaining({
+				providerId: "codex",
+				model: "gpt-5.4",
+				permissionMode: "default",
+				runtimeCwd: "/tmp/codex-test",
+				sessionId: "host-session-1",
+			}),
 		);
 		vi.mocked(executeHlidAgentToolRich).mockResolvedValueOnce({
 			text: '{"viewport":"mobile"}',

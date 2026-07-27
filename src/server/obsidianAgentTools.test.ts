@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { HLID_OBSIDIAN_TOOL_COUNT } from "../lib/hlidContext";
 
 const bridge = vi.hoisted(() => ({
 	MAX_OBSIDIAN_AGENT_OUTPUT_CHARS: 120_000,
@@ -64,6 +65,7 @@ describe("Obsidian agent tools", () => {
 	});
 
 	it("publishes curated vault reads and non-destructive note writes", () => {
+		expect(OBSIDIAN_AGENT_TOOL_SPECS).toHaveLength(HLID_OBSIDIAN_TOOL_COUNT);
 		expect(OBSIDIAN_AGENT_TOOL_SPECS.map((tool) => tool.name)).toEqual([
 			"vault_info",
 			"search",
@@ -136,6 +138,11 @@ describe("Obsidian agent tools", () => {
 			"trash_file",
 			"run_command",
 		]);
+		expect(
+			OBSIDIAN_AGENT_TOOL_SPECS.every(
+				(tool) => tool.deferLoading && tool.searchHint.length > 0,
+			),
+		).toBe(true);
 	});
 
 	it("reports the native vault connection and reads one exact note", async () => {

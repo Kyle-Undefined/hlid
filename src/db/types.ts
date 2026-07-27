@@ -62,6 +62,8 @@ export type MessageRow = {
 	provider_turn_id?: string | null;
 	/** Assistant message sequence this user prompt steered, when applicable. */
 	steer_target_seq?: number | null;
+	/** Hlid-owned context provenance for this user turn. Never sent to providers. */
+	context_manifest_json?: string | null;
 };
 
 type ToolEventRow = {

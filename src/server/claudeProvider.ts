@@ -106,15 +106,22 @@ function createHlidSdkServer(params: AgentQueryParams) {
 				(input) =>
 					toAgentToolCallResult(() =>
 						executeHlidAgentToolRich(spec.name, input, {
+							providerId: params.providerId ?? "claude",
+							model: params.model,
+							effort: params.effort,
+							permissionMode: params.permissionMode,
+							policyEnforced: params.policyEnforced,
 							runtimeCwd: params.cwd,
 							sessionId: params.hostSessionId,
+							vaultName: params.vaultName,
+							agentMode: params.agentMode,
 						}),
 					),
 				{
 					annotations: {
 						readOnlyHint: spec.readOnly,
 						destructiveHint: false,
-						idempotentHint: false,
+						idempotentHint: spec.readOnly,
 					},
 					searchHint: spec.searchHint,
 					alwaysLoad: !spec.deferLoading,
@@ -164,7 +171,8 @@ function createObsidianSdkServer(
 						destructiveHint: false,
 						idempotentHint: spec.readOnly,
 					},
-					alwaysLoad: true,
+					searchHint: spec.searchHint,
+					alwaysLoad: !spec.deferLoading,
 				},
 			),
 		),
@@ -1935,6 +1943,7 @@ class ClaudeAgentSession implements AgentSession {
 		) => SdkQuery,
 		abortController: AbortController,
 		resumeId: string | undefined,
+		private readonly hostParams: AgentQueryParams,
 		private readonly runtimeCwd: string,
 		private readonly workflowProgressReader: ClaudeWorkflowProgressReader,
 		private readonly policyEnforced: boolean,
@@ -2038,6 +2047,7 @@ class ClaudeAgentSession implements AgentSession {
 	 * mcpServerStatus()/supportedCommands() null-guard pattern.
 	 */
 	async setModel(model?: string): Promise<void> {
+		this.hostParams.model = model;
 		if (!this.sdkQuery) return;
 		await this.sdkQuery.setModel(model ? this.requestModel(model) : model);
 	}
@@ -2053,6 +2063,7 @@ class ClaudeAgentSession implements AgentSession {
 		if (!KNOWN_PERMISSION_MODES.has(mode)) {
 			throw new Error(`Unknown permission mode: ${mode}`);
 		}
+		this.hostParams.permissionMode = mode as AgentQueryParams["permissionMode"];
 		if (!this.sdkQuery) return;
 		await this.sdkQuery.setPermissionMode(
 			effectiveSdkPermissionMode(
@@ -3001,6 +3012,7 @@ export class ClaudeProvider implements AgentProvider {
 			makeQuery,
 			abortController,
 			params.sessionId,
+			params,
 			params.cwd,
 			this.workflowProgressReader,
 			params.policyEnforced ?? false,

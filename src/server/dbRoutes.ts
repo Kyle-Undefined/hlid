@@ -1,5 +1,6 @@
 import * as db from "../db";
 import type { AttachmentListFilter } from "../db/types";
+import { parseHlidTurnContextManifest } from "../lib/hlidContext";
 import { clampInt, uid } from "../lib/utils";
 import {
 	msUntilNextLocalDay,
@@ -414,11 +415,16 @@ async function getActiveSession(): Promise<Response> {
 async function getSessionContext(url: URL): Promise<Response> {
 	const sessionId = url.searchParams.get("session_id");
 	if (!sessionId) return new Response("Missing session_id", { status: 400 });
-	const [result, actualModel] = await Promise.all([
+	const [result, actualModel, rawHlidContext] = await Promise.all([
 		db.getSessionLastQueryContext(sessionId),
 		db.getSessionActualModel(sessionId),
+		db.getSessionLatestContextManifest(sessionId),
 	]);
-	return Response.json({ ...result, actual_model: actualModel });
+	return Response.json({
+		...result,
+		actual_model: actualModel,
+		hlid_context: parseHlidTurnContextManifest(rawHlidContext),
+	});
 }
 
 async function getSessionScopedRows<T>(

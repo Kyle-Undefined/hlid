@@ -5,6 +5,7 @@ import type { ToolCall } from "@umbod/core";
 import type { HlidConfig } from "../config";
 import * as db from "../db";
 import { resolveClaudeExecutable } from "../lib/claudePath";
+import type { HlidTurnContextManifest } from "../lib/hlidContext";
 import {
 	expandTilde,
 	isPathAccessibleFromRuntime,
@@ -60,6 +61,11 @@ import { prewarmClaudeCli, waitForClaudeWarmupSnapshot } from "./claudeWarmup";
 import { loadConfig } from "./config";
 import { bumpDataRevision } from "./dataRevision";
 import { resolveExecutionContext } from "./executionContext";
+import { finalizeHlidTurnContextManifest } from "./hlidContext";
+import {
+	buildHlidOperatingBrief,
+	HLID_OPERATING_CONTRACT_VERSION,
+} from "./hlidHelp";
 import { planStagingPath, prepareLibrary } from "./libraryStore";
 import { getActiveObsidianNote, readObsidianNote } from "./obsidianCli";
 import { resolveObsidianCommandPermission } from "./obsidianCommandApproval";
@@ -342,6 +348,9 @@ function configuredAgentSettings(
 
 function buildAgentQueryParams(options: {
 	activeCwd: string;
+	providerId: string;
+	vaultName: string;
+	agentMode: "cwd" | "context";
 	hostSessionId: string | undefined;
 	resumeProviderSessionId: string | null;
 	historyResumeMode: AgentQueryParams["historyResumeMode"];
@@ -372,6 +381,9 @@ function buildAgentQueryParams(options: {
 			: options.configuredPermissionMode;
 	return {
 		cwd: options.activeCwd,
+		providerId: options.providerId,
+		vaultName: options.vaultName,
+		agentMode: options.agentMode,
 		hostSessionId: options.hostSessionId,
 		sessionId: options.resumeProviderSessionId ?? undefined,
 		historyResumeMode: options.historyResumeMode,
@@ -600,6 +612,8 @@ export class SessionManager {
 	private permissionModeOverride: PermissionMode | null = null;
 	/** The next provider thread needs the persisted Hlid transcript as context. */
 	private providerHandoffPending = false;
+	/** Provider conversation that has accepted the compact Hlid operating brief. */
+	private operatingBriefProviderKey: string | null = null;
 	/** Providers without a live effort control (currently Claude) restart on the next turn. */
 	private restartAgentSessionForEffort = false;
 	/** Extension changes made mid-turn retire the native runtime before its next turn. */
@@ -783,6 +797,7 @@ export class SessionManager {
 		this.providerSessionProviderId = null;
 		this.historyResumeMode = "none";
 		this.providerHandoffPending = false;
+		this.operatingBriefProviderKey = null;
 		this.messageSeq = 0;
 		this.sessionAllowedTools.clear();
 		db.clearCurrentSessionId().catch((e) =>
@@ -918,6 +933,7 @@ export class SessionManager {
 			this.providerSessionProviderId = providerId;
 			this.providerHandoffPending =
 				this.currentSessionId !== null && this.messageSeq > 0;
+			this.operatingBriefProviderKey = null;
 		}
 
 		this.providerOverride = providerId;
@@ -3057,9 +3073,35 @@ export class SessionManager {
 		return null;
 	}
 
+	private operatingBriefFor(
+		providerId: string,
+		runtimeCwd: string,
+		permissionMode: string,
+	): string {
+		const providerKey = `${providerId}|${this.currentSessionId ?? "ephemeral"}`;
+		if (
+			this.operatingBriefProviderKey === providerKey &&
+			!this.providerHandoffPending
+		) {
+			return "";
+		}
+		return buildHlidOperatingBrief({
+			providerId,
+			model: this.model,
+			effort: this.effort,
+			permissionMode,
+			policyEnforced: this.policyEnforced,
+			runtimeCwd,
+			sessionId: this.currentSessionId ?? undefined,
+			vaultName: this.vaultName,
+			agentMode: this.agentMode,
+		});
+	}
+
 	private async buildQueuedSteeringPrompt(args: RunQueryArgs): Promise<{
 		prompt: string;
 		safeVaultReferences: string[];
+		contextManifest: HlidTurnContextManifest;
 	}> {
 		const blocker = this.queuedTurnSteeringBlocker(args);
 		if (blocker) throw new Error(blocker);
@@ -3076,6 +3118,12 @@ export class SessionManager {
 			agentCwd: this.agentCwd,
 			claudeSessionId: this.providerSessionId,
 			runtimeCwd,
+			operatingBrief: this.operatingBriefFor(
+				this.getProviderId(),
+				runtimeCwd,
+				this.permissionMode,
+			),
+			operatingBriefVersion: HLID_OPERATING_CONTRACT_VERSION,
 			userMessage,
 			skillContexts,
 			attachments: [],
@@ -3090,6 +3138,14 @@ export class SessionManager {
 			safeVaultReferences: (built.safeVaultReferences ?? []).map(
 				(reference) => reference.relativePath,
 			),
+			contextManifest: finalizeHlidTurnContextManifest(built.contextManifest, {
+				delivery: "steer",
+				providerId: this.getProviderId(),
+				model: this.model,
+				effort: this.effort,
+				permissionMode: this.permissionMode,
+				providerPromptChars: built.prompt.length,
+			}),
 		};
 	}
 
@@ -3116,6 +3172,9 @@ export class SessionManager {
 			}
 			await agentSession.steer(prepared.prompt);
 			accepted = true;
+			if (prepared.contextManifest.operatingBrief?.included) {
+				this.operatingBriefProviderKey = `${prepared.contextManifest.providerId}|${this.currentSessionId ?? "ephemeral"}`;
+			}
 			extracted.turn.resolve();
 			const [userMessage, , sessionId] = extracted.turn.args;
 			await this.persistUserMessage(
@@ -3126,6 +3185,7 @@ export class SessionManager {
 				prepared.safeVaultReferences,
 				[],
 				targetTurn?.reservedAssistantSeq ?? undefined,
+				prepared.contextManifest,
 			);
 			return true;
 		} catch (error) {
@@ -4025,6 +4085,7 @@ export class SessionManager {
 		vaultReferences: string[] = [],
 		workspaceReferences: ResolvedWorkspaceReference[] = [],
 		steerTargetSeq?: number,
+		contextManifest?: HlidTurnContextManifest,
 	): Promise<void> {
 		const userSeq = this.messageSeq++;
 		if (!sessionId) return;
@@ -4045,6 +4106,7 @@ export class SessionManager {
 					persistedMessage,
 					turnId,
 					steerTargetSeq,
+					contextManifest ? JSON.stringify(contextManifest) : undefined,
 				);
 			} else {
 				await db.appendMessage(
@@ -4053,10 +4115,20 @@ export class SessionManager {
 					"user",
 					persistedMessage,
 					turnId,
+					undefined,
+					contextManifest ? JSON.stringify(contextManifest) : undefined,
 				);
 			}
 		} else {
-			await db.appendMessage(sessionId, userSeq, "user", persistedMessage);
+			await db.appendMessage(
+				sessionId,
+				userSeq,
+				"user",
+				persistedMessage,
+				undefined,
+				undefined,
+				contextManifest ? JSON.stringify(contextManifest) : undefined,
+			);
 		}
 		for (const attachment of attachments) {
 			if (attachment.reference === "relic") continue;
@@ -4126,6 +4198,9 @@ export class SessionManager {
 		const session = provider.query(
 			buildAgentQueryParams({
 				activeCwd,
+				providerId: provider.providerId,
+				vaultName: this.vaultName,
+				agentMode: this.agentMode,
 				hostSessionId: sessionId,
 				resumeProviderSessionId,
 				historyResumeMode: this.historyResumeMode,
@@ -4365,6 +4440,13 @@ export class SessionManager {
 			agentSettings,
 			resumeProviderSessionId,
 		} = this.prepareProviderForTurn(sessionId);
+		const configuredPermissionMode = this.activeRoutineContext
+			? this.activeRoutineContext.mode === "full_access"
+				? "bypassPermissions"
+				: "default"
+			: (this.permissionModeOverride ??
+				agentSettings?.permissionMode ??
+				this.permissionMode);
 
 		// Turn-boundary usage gate: hold the turn before any provider spend.
 		// State stays "running" while sleeping; agent_sleep carries the nuance.
@@ -4384,12 +4466,20 @@ export class SessionManager {
 			const runtimePlanHtmlPath = this.planHtmlPath
 				? toProviderRuntimePath(runtimeCwd, this.planHtmlPath)
 				: undefined;
+			const operatingBrief = commandAction
+				? ""
+				: this.operatingBriefFor(
+						currentProvider.providerId,
+						runtimeCwd,
+						planMode ? "plan" : configuredPermissionMode,
+					);
 			const {
 				prompt,
 				safeAttachments,
 				resourcePaths,
 				safeVaultReferences = [],
 				safeWorkspaceReferences = [],
+				contextManifest,
 			} = await buildPromptAsync({
 				vaultPath: this.vaultPath,
 				vaultName: this.vaultName,
@@ -4398,6 +4488,8 @@ export class SessionManager {
 				agentCwd: this.agentCwd,
 				claudeSessionId: resumeProviderSessionId,
 				runtimeCwd,
+				operatingBrief,
+				operatingBriefVersion: HLID_OPERATING_CONTRACT_VERSION,
 				userMessage,
 				skillContexts,
 				attachments,
@@ -4428,31 +4520,6 @@ export class SessionManager {
 					logDbError("getSessionMessages provider handoff", error);
 				}
 			}
-			// With `resume`, the CLI maintains conversation state on its end. We
-			// send only the new user turn — no transcript replay.
-			await this.persistUserMessage(
-				sessionId,
-				userMessage,
-				safeAttachments,
-				turnId,
-				safeVaultReferences.map((reference) => reference.relativePath),
-				safeWorkspaceReferences,
-			);
-
-			const { activeCwd, extraDirs, executable } = resolveExecutionContext({
-				agentMode: this.agentMode,
-				agentCwd: this.agentCwd,
-				vaultPath: this.vaultPath,
-				allowedAgentRealPaths: this.allowedAgentRealPaths,
-				claudeExecutable: isClaudeRuntimeProvider(currentProvider.providerId)
-					? this.claudeExecutable
-					: this.codexExecutable,
-				wrapperCommand: isCodexRuntimeProvider(currentProvider.providerId)
-					? "codex"
-					: "claude",
-				safeAttachments,
-				resourcePaths,
-			});
 			let commandArgs: string | undefined;
 			if (commandAction) {
 				commandArgs = userMessage
@@ -4483,16 +4550,62 @@ export class SessionManager {
 					commandArgs =
 						`${commandArgs}\n\nWorkspace references:\n${referenceLines.join("\n")}`.trim();
 				}
-				if (commandAction === "computer-use") {
-					await this.authorizeWindowsComputerUseCommand({
-						provider: currentProvider,
-						activeCwd,
-						sessionId,
-						turnId,
-						task: commandArgs,
-						emit,
-					});
-				}
+			}
+			const turnContextManifest = finalizeHlidTurnContextManifest(
+				contextManifest,
+				{
+					delivery: commandAction ? "provider-command" : "chat",
+					providerId: currentProvider.providerId,
+					model: this.model,
+					effort: this.effort,
+					permissionMode: planMode ? "plan" : configuredPermissionMode,
+					providerPromptChars: commandAction
+						? (commandArgs?.length ?? 0)
+						: providerPrompt.length,
+					providerHandoffChars: commandAction
+						? 0
+						: Math.max(0, providerPrompt.length - prompt.length),
+				},
+			);
+
+			// With `resume`, the CLI maintains conversation state on its end. We
+			// send only the new user turn — no transcript replay. The Hlid-owned
+			// manifest is stored beside the user row, not in its visible text.
+			await this.persistUserMessage(
+				sessionId,
+				userMessage,
+				safeAttachments,
+				turnId,
+				safeVaultReferences.map((reference) => reference.relativePath),
+				safeWorkspaceReferences,
+				undefined,
+				turnContextManifest,
+			);
+
+			const { activeCwd, extraDirs, executable } = resolveExecutionContext({
+				agentMode: this.agentMode,
+				agentCwd: this.agentCwd,
+				vaultPath: this.vaultPath,
+				allowedAgentRealPaths: this.allowedAgentRealPaths,
+				claudeExecutable: isClaudeRuntimeProvider(currentProvider.providerId)
+					? this.claudeExecutable
+					: this.codexExecutable,
+				wrapperCommand: isCodexRuntimeProvider(currentProvider.providerId)
+					? "codex"
+					: "claude",
+				safeAttachments,
+				resourcePaths,
+			});
+
+			if (commandAction === "computer-use") {
+				await this.authorizeWindowsComputerUseCommand({
+					provider: currentProvider,
+					activeCwd,
+					sessionId,
+					turnId,
+					task: commandArgs ?? "",
+					emit,
+				});
 			}
 
 			const agentSession = this.getOrCreateAgentSession({
@@ -4548,13 +4661,6 @@ export class SessionManager {
 					goal: result.goal ? mapProviderGoal(result.goal) : null,
 				});
 			}
-			const configuredPermissionMode = this.activeRoutineContext
-				? this.activeRoutineContext.mode === "full_access"
-					? "bypassPermissions"
-					: "default"
-				: (this.permissionModeOverride ??
-					agentSettings?.permissionMode ??
-					this.permissionMode);
 			await agentSession.setPermissionMode?.(
 				planMode ? "plan" : configuredPermissionMode,
 			);
@@ -4584,6 +4690,9 @@ export class SessionManager {
 					await agentSession.send(providerPrompt, { audioPaths });
 				} else {
 					await agentSession.send(providerPrompt);
+				}
+				if (contextManifest.operatingBrief?.included) {
+					this.operatingBriefProviderKey = `${currentProvider.providerId}|${this.currentSessionId ?? "ephemeral"}`;
 				}
 			}
 			this.providerHandoffPending = false;

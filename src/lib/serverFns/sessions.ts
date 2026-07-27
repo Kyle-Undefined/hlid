@@ -10,6 +10,7 @@ import type {
 	ToolEventSummaryRow,
 } from "#/db";
 import { dbFetch, dbJson, requireDbOk } from "#/lib/dbClient";
+import type { HlidTurnContextManifest } from "#/lib/hlidContext";
 import {
 	sessionArchiveSchema,
 	sessionForkSchema,
@@ -272,6 +273,7 @@ export const getSessionContextFn = createServerFn({ method: "GET" })
 			context_window: number | null;
 			last_context_used: number | null;
 			actual_model: string | null;
+			hlid_context?: HlidTurnContextManifest | null;
 		} | null>(
 			`/db/session-context?session_id=${encodeURIComponent(sessionId)}`,
 			null,

@@ -62,6 +62,7 @@ describe("commands", () => {
 			"hlid",
 			"hlid",
 			"hlid",
+			"hlid",
 		]);
 		expect(commandMatches(commands[1], "wh")).toBe(true);
 	});
@@ -86,6 +87,7 @@ describe("commands", () => {
 		expect(commands.map(({ name }) => name)).toEqual([
 			"explain",
 			"mcp",
+			"context",
 			"rename",
 			"archive",
 		]);
@@ -101,6 +103,21 @@ describe("commands", () => {
 			}),
 		);
 		expect(mergeCommands([], [], "codex", "watch")).toEqual([]);
+	});
+
+	it("maps context to Raven's local inspector", () => {
+		const raven = mergeCommands([], [], "codex", "raven");
+		expect(resolveCommandSubmission(null, "/context", raven)).toEqual({
+			text: "/context",
+			commandAction: "context",
+		});
+		expect(raven).toContainEqual(
+			expect.objectContaining({
+				name: "context",
+				source: "hlid",
+				execution: { kind: "capability-action", action: "context" },
+			}),
+		);
 	});
 
 	it("maps Claude workflows to Raven's run manager without forwarding the provider command", () => {
@@ -233,7 +250,7 @@ describe("commands", () => {
 			source: "library",
 			execution: { kind: "skill", filePath: managed.filePath },
 		});
-		expect(mergeCommands([managed], [], "claude")).toHaveLength(5);
+		expect(mergeCommands([managed], [], "claude")).toHaveLength(6);
 	});
 
 	it("shows provider-owned skills only for their provider", () => {
@@ -248,7 +265,7 @@ describe("commands", () => {
 			mergeCommands([skill, claudeSkill], [], "codex").map(
 				(command) => command.name,
 			),
-		).toEqual(["garden-check", "mcp", "rename", "archive"]);
+		).toEqual(["garden-check", "mcp", "context", "rename", "archive"]);
 
 		const commands = mergeCommands([skill, claudeSkill], [], "claude");
 		const claude = commands.find((command) => command.name === "kyle-voice");

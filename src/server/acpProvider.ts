@@ -650,8 +650,15 @@ class AcpSession implements AgentSession {
 			this.mcpServers.unshift({
 				name: HLID_AGENT_NAMESPACE,
 				...hlidMcpProcessCommand({
+					providerId: this.params.providerId ?? this.options.id,
+					model: this.params.model,
+					effort: this.params.effort,
+					permissionMode: this.params.permissionMode,
+					policyEnforced: this.params.policyEnforced,
 					runtimeCwd: this.params.cwd,
 					sessionId: this.params.hostSessionId,
+					vaultName: this.params.vaultName,
+					agentMode: this.params.agentMode,
 				}),
 			});
 			this.mcpStatuses.unshift({

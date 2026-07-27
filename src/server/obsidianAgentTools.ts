@@ -251,7 +251,14 @@ export type ObsidianAgentToolSpec = {
 	description: string;
 	inputSchema: JsonSchema;
 	readOnly: boolean;
+	deferLoading: boolean;
+	searchHint: string;
 };
+
+type ObsidianAgentToolBaseSpec = Omit<
+	ObsidianAgentToolSpec,
+	"deferLoading" | "searchHint"
+>;
 
 const budgetSchemaProperties: Record<string, JsonValue> = {
 	limit: {
@@ -268,7 +275,7 @@ const budgetSchemaProperties: Record<string, JsonValue> = {
 	},
 };
 
-export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
+const OBSIDIAN_AGENT_TOOL_BASE_SPECS: ObsidianAgentToolBaseSpec[] = [
 	{
 		name: "vault_info",
 		description:
@@ -629,7 +636,7 @@ export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
 		},
 	},
 	...(["append_note", "prepend_note"] as const).map(
-		(name): ObsidianAgentToolSpec => ({
+		(name): ObsidianAgentToolBaseSpec => ({
 			name,
 			description: `${name === "append_note" ? "Append" : "Prepend"} content through Obsidian to the active note, daily note, or an exact vault-relative note path. The result reports the updated path.`,
 			readOnly: false,
@@ -865,6 +872,13 @@ export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] = [
 		},
 	},
 ];
+
+export const OBSIDIAN_AGENT_TOOL_SPECS: ObsidianAgentToolSpec[] =
+	OBSIDIAN_AGENT_TOOL_BASE_SPECS.map((spec) => ({
+		...spec,
+		deferLoading: true,
+		searchHint: `${spec.name.replaceAll("_", " ")} Obsidian vault`,
+	}));
 
 export function isObsidianAgentToolReadOnly(name: string): boolean {
 	return (

@@ -373,6 +373,12 @@ export type BeforeToolUse = (
 
 export type AgentQueryParams = {
 	cwd: string;
+	/** Active Hlid provider identity for capability-gated host guidance. */
+	providerId?: string;
+	/** Configured Hlid Vault name, when this runtime belongs to Raven. */
+	vaultName?: string;
+	/** Whether the workspace supplies cwd or context-only agent instructions. */
+	agentMode?: "cwd" | "context";
 	/** Owning Hlid conversation id for host-managed artifacts and auditing. */
 	hostSessionId?: string;
 	/** Resume token from a prior session; undefined starts fresh. */
