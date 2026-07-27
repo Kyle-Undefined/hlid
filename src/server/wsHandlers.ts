@@ -1,15 +1,5 @@
-import { realpathSync } from "node:fs";
 import type { ServerWebSocket } from "bun";
 import * as db from "../db";
-import { readAgentMcpFile } from "../lib/agentMcp";
-import { type McpRegistryEntry, mergeMcpRegistry } from "../lib/mcpRegistry";
-import { expandTilde } from "../lib/paths";
-import { readVaultMcpFile } from "../lib/vaultMcp";
-import { computeAllowedAgentRealPaths, isAllowedAgentPath } from "./agentPaths";
-import {
-	waitForAllClaudeWarmupSnapshots,
-	waitForClaudeWarmupSnapshot,
-} from "./claudeWarmup";
 import {
 	ClaudeWorkflowDeleteError,
 	ClaudeWorkflowSaveError,
@@ -18,6 +8,11 @@ import {
 import { loadConfig } from "./config";
 import { getDataRevisions } from "./dataRevision";
 import { getLiveSessionsStatus } from "./liveSessions";
+import {
+	syncAgentMcpList,
+	syncMcpInventory,
+	syncVaultMcpList,
+} from "./mcpInventory";
 import { projectPreviewManager } from "./projectPreview";
 import {
 	type ClientMessage,
@@ -29,7 +24,7 @@ import {
 	type StatusMessage,
 } from "./protocol";
 import { broadcast, send, wsState } from "./runState";
-import { resolveConfiguredSessionDefaults } from "./session";
+import { resolveDeclaredSessionDefaults } from "./session";
 import type { PoolEntry, SessionPool } from "./sessionPool";
 import type { ShellSessionPool } from "./shellSessionPool";
 import type { TerminalSessionPool } from "./terminalSessionPool";
@@ -347,66 +342,80 @@ function handleNewSession(
 	broadcastSessionsStatus(context);
 }
 
-async function handleSubscribeSession(
-	{ ws, pool }: MessageContext,
-	msg: MessageOf<"subscribe_session">,
-): Promise<void> {
-	ws.data.pendingNewSession = false;
-	pool.get(ws.data.subscribedSessionId)?.runState.removeSubscriber(ws);
-	const entry =
-		pool.get(msg.session_id) ?? pool.findByDbSessionId(msg.session_id);
-	if (!entry) {
-		// Keep archived/unknown DB sessions detached from every live pool entry.
-		// Falling back to the vault here leaks the vault's in-flight events into
-		// whichever transcript Raven is displaying.
-		ws.data.subscribedSessionId = msg.session_id;
-		const vaultStatus = pool.vaultEntry().manager.getStatus();
-		let detachedStatus: Omit<StatusMessage, "type"> = {
-			...vaultStatus,
+async function restoreDetachedStatus(
+	pool: SessionPool,
+	sessionId: string,
+): Promise<Omit<StatusMessage, "type">> {
+	const vaultStatus = pool.vaultEntry().manager.getStatus();
+	const fallback: Omit<StatusMessage, "type"> = {
+		...vaultStatus,
+		state: "idle",
+	};
+	try {
+		const savedSelection = await db.getSessionSelection(sessionId);
+		const configured = resolveDeclaredSessionDefaults(
+			loadConfig(),
+			savedSelection?.agentCwd ?? undefined,
+			savedSelection?.providerId ?? undefined,
+		);
+		return {
 			state: "idle",
+			model: savedSelection?.model ?? configured.model,
+			effort: savedSelection?.effort ?? configured.effort,
+			permission_mode:
+				savedSelection?.permissionMode ?? configured.permissionMode,
 		};
-		try {
-			const savedSelection = await db.getSessionSelection(msg.session_id);
-			const configured = resolveConfiguredSessionDefaults(
-				loadConfig(),
-				savedSelection?.agentCwd ?? undefined,
-			);
-			detachedStatus = {
-				state: "idle",
-				model: savedSelection?.model ?? configured.model,
-				effort: savedSelection?.effort ?? configured.effort,
-				permission_mode:
-					savedSelection?.permissionMode ?? configured.permissionMode,
-			};
-		} catch {
-			// A missing/corrupt archived row still gets a safe idle vault snapshot.
-		}
-		send(ws, {
-			type: "status",
-			...detachedStatus,
-		});
-		send(ws, {
-			type: "queue_state",
-			session_id: msg.session_id,
-			pending_turn_ids: [],
-			running_turn_id: null,
-		});
-		try {
-			const preview = await db.getLatestProjectPreviewForSession(
-				msg.session_id,
-			);
-			if (preview) {
-				send(ws, {
-					type: "project_preview_status",
-					session_id: preview.session_id,
-					preview,
-				});
-			}
-		} catch {
-			// Preview restoration is supplemental to the session subscription.
-		}
-		return;
+	} catch {
+		// A missing/corrupt archived row still gets a safe idle vault snapshot.
+		return fallback;
 	}
+}
+
+async function sendRestoredPreview(
+	ws: ServerWebSocket<WsData>,
+	sessionId: string,
+): Promise<boolean> {
+	try {
+		const preview = await db.getLatestProjectPreviewForSession(sessionId);
+		if (!preview) return false;
+		send(ws, {
+			type: "project_preview_status",
+			session_id: preview.session_id,
+			preview,
+		});
+		return true;
+	} catch {
+		// Preview restoration is supplemental to the session subscription.
+		return false;
+	}
+}
+
+async function subscribeToDetachedSession(
+	ws: ServerWebSocket<WsData>,
+	pool: SessionPool,
+	sessionId: string,
+): Promise<void> {
+	// Keep archived/unknown DB sessions detached from every live pool entry.
+	// Falling back to the vault here leaks the vault's in-flight events into
+	// whichever transcript Raven is displaying.
+	ws.data.subscribedSessionId = sessionId;
+	send(ws, {
+		type: "status",
+		...(await restoreDetachedStatus(pool, sessionId)),
+	});
+	send(ws, {
+		type: "queue_state",
+		session_id: sessionId,
+		pending_turn_ids: [],
+		running_turn_id: null,
+	});
+	await sendRestoredPreview(ws, sessionId);
+}
+
+function subscribeToLiveSession(
+	ws: ServerWebSocket<WsData>,
+	entry: PoolEntry,
+): void {
 	entry.runState.addSubscriber(ws);
 	ws.data.subscribedSessionId = entry.sessionId;
 	send(ws, { type: "status", ...entry.manager.getStatus() });
@@ -436,25 +445,37 @@ async function handleSubscribeSession(
 	const sleep = entry.manager.getSleepState();
 	if (sleep) send(ws, sleep);
 	sendQueueState(ws, entry);
+}
+
+async function restoreLiveSessionPreview(
+	ws: ServerWebSocket<WsData>,
+	entry: PoolEntry,
+	requestedSessionId: string,
+): Promise<void> {
 	const previewSessionIds = [
-		msg.session_id,
+		requestedSessionId,
 		entry.manager.getCurrentSessionId(),
 		entry.sessionId,
 	].filter((sessionId): sessionId is string => Boolean(sessionId));
 	for (const sessionId of new Set(previewSessionIds)) {
-		try {
-			const preview = await db.getLatestProjectPreviewForSession(sessionId);
-			if (!preview) continue;
-			send(ws, {
-				type: "project_preview_status",
-				session_id: preview.session_id,
-				preview,
-			});
-			break;
-		} catch {
-			// Preview restoration is supplemental to the session subscription.
-		}
+		if (await sendRestoredPreview(ws, sessionId)) break;
 	}
+}
+
+async function handleSubscribeSession(
+	{ ws, pool }: MessageContext,
+	msg: MessageOf<"subscribe_session">,
+): Promise<void> {
+	ws.data.pendingNewSession = false;
+	pool.get(ws.data.subscribedSessionId)?.runState.removeSubscriber(ws);
+	const entry =
+		pool.get(msg.session_id) ?? pool.findByDbSessionId(msg.session_id);
+	if (!entry) {
+		await subscribeToDetachedSession(ws, pool, msg.session_id);
+		return;
+	}
+	subscribeToLiveSession(ws, entry);
+	await restoreLiveSessionPreview(ws, entry, msg.session_id);
 }
 
 function handleStopSession(
@@ -572,157 +593,6 @@ async function handlePermissionMode(
 		return;
 	}
 	entry.runState.broadcast({ type: "status", ...entry.manager.getStatus() });
-}
-
-function readAgentServers(resolvedAgent: string) {
-	try {
-		return readAgentMcpFile(resolvedAgent).servers;
-	} catch {
-		return [];
-	}
-}
-
-function syncAgentMcpList(
-	ws: ServerWebSocket<WsData>,
-	entry: PoolEntry,
-	agentCwd: string,
-): void {
-	const config = loadConfig();
-	let resolvedAgent: string;
-	try {
-		resolvedAgent = realpathSync(expandTilde(agentCwd));
-	} catch {
-		return;
-	}
-	if (!isAllowedAgentPath(computeAllowedAgentRealPaths(config), resolvedAgent))
-		return;
-	const servers = readAgentServers(resolvedAgent).map(({ name, disabled }) =>
-		mapMcpServer({
-			name,
-			status: disabled ? "disabled" : "pending",
-			scope: "project",
-		}),
-	);
-	send(ws, {
-		type: "mcp_status",
-		...(entry.manager.getProviderId(resolvedAgent)
-			? { provider_id: entry.manager.getProviderId(resolvedAgent) }
-			: {}),
-		servers,
-		agent_cwd: agentCwd,
-	});
-}
-
-function readVaultServers(vaultPath: string) {
-	try {
-		return readVaultMcpFile(vaultPath).servers;
-	} catch {
-		return [];
-	}
-}
-
-async function syncMcpInventory(
-	ws: ServerWebSocket<WsData>,
-	pool: SessionPool,
-	agentCwd?: string,
-): Promise<void> {
-	const config = loadConfig();
-	let resolvedAgent: string | undefined;
-	if (agentCwd) {
-		try {
-			resolvedAgent = realpathSync(expandTilde(agentCwd));
-		} catch {
-			return;
-		}
-		if (
-			!isAllowedAgentPath(computeAllowedAgentRealPaths(config), resolvedAgent)
-		)
-			return;
-	}
-
-	const inventory: McpRegistryEntry[] = [];
-	const configuredProvider = pool
-		.vaultEntry()
-		.manager.getProviderId(resolvedAgent);
-	const configuredServers = resolvedAgent
-		? readAgentServers(resolvedAgent)
-		: config.vault.path
-			? readVaultServers(config.vault.path)
-			: [];
-	for (const { name, disabled } of configuredServers) {
-		inventory.push({
-			name,
-			providerId: configuredProvider,
-			status: disabled ? "disabled" : "pending",
-			scope: resolvedAgent ? "agent" : "vault",
-			source: resolvedAgent ? "agent" : "vault",
-		});
-	}
-
-	// Claude metadata is discovered and cached at startup independently of chat
-	// sessions. Cockpit is a cross-provider inventory, so include that cache even
-	// when no Claude SessionManager has ever been started.
-	const claudeSnapshots = resolvedAgent
-		? [await waitForClaudeWarmupSnapshot(resolvedAgent)]
-		: await waitForAllClaudeWarmupSnapshots();
-	for (const snapshot of claudeSnapshots) {
-		for (const server of snapshot?.mcpServers ?? []) {
-			inventory.push({
-				...server,
-				providerId: "claude",
-				scope: "provider",
-				source: "provider",
-			});
-		}
-	}
-
-	for (const entry of pool.getAllEntries()) {
-		if (resolvedAgent && entry.agentCwd !== resolvedAgent) continue;
-		for (const snapshot of entry.manager.getMcpSnapshots()) {
-			for (const server of snapshot.servers) {
-				inventory.push({
-					...server,
-					providerId: snapshot.providerId,
-					scope: "provider",
-					source: "runtime",
-				});
-			}
-		}
-	}
-
-	send(ws, {
-		type: "mcp_status",
-		inventory: true,
-		...(agentCwd ? { agent_cwd: agentCwd } : {}),
-		servers: mergeMcpRegistry(inventory).map(mapMcpServer),
-	});
-}
-
-function syncVaultMcpList(pool: SessionPool): void {
-	const config = loadConfig();
-	if (!config.vault.path) return;
-	const cached = pool.vaultEntry().manager.getLastMcpStatus() ?? [];
-	const cachedByName = new Map(cached.map((server) => [server.name, server]));
-	const preserved = cached
-		.filter((server) => server.scope !== "project")
-		.map(mapMcpServer);
-	const vault = readVaultServers(config.vault.path).map(
-		({ name, disabled }) => {
-			const known = cachedByName.get(name);
-			return mapMcpServer({
-				name,
-				status: disabled ? "disabled" : (known?.status ?? "pending"),
-				scope: "project",
-				error: disabled ? undefined : known?.error,
-			});
-		},
-	);
-	const providerId = pool.vaultEntry().manager.getProviderId();
-	broadcast({
-		type: "mcp_status",
-		...(providerId ? { provider_id: providerId } : {}),
-		servers: [...preserved, ...vault],
-	});
 }
 
 function handlePermissionResponse(
@@ -1062,6 +932,186 @@ async function handleChat(
 	await runChatQuery(context, chatEntry, msg);
 }
 
+type ProbeResultSender = (event: Parameters<typeof send>[1]) => void;
+type ProbeScopeResolver = (scope: {
+	agent_cwd?: string;
+	session_id?: string;
+}) => Promise<{
+	agentCwd: string | undefined;
+	sessionId: string | undefined;
+	providerId: string | undefined;
+}>;
+
+function handleSteerQueued(
+	context: MessageContext,
+	entry: PoolEntry,
+	msg: MessageOf<"steer_queued">,
+): void {
+	void entry.manager
+		.steerQueued(msg.turn_id)
+		.then((steered) => {
+			if (steered) {
+				entry.runState.broadcast({
+					type: "turn_steered",
+					turn_id: msg.turn_id,
+					session_id: entry.manager.getCurrentSessionId() ?? entry.sessionId,
+				});
+				return;
+			}
+			send(context.ws, {
+				type: "error",
+				message: "That queued message is no longer available to steer.",
+			});
+		})
+		.catch((error) => {
+			send(context.ws, {
+				type: "error",
+				message:
+					error instanceof Error
+						? error.message
+						: "Failed to steer the active turn",
+			});
+		})
+		.finally(() => {
+			broadcastQueueState(entry);
+			broadcastSessionsStatus(context);
+		});
+}
+
+async function handleSaveWorkflow(
+	entry: PoolEntry,
+	msg: MessageOf<"save_workflow">,
+	sendProbeResult: ProbeResultSender,
+	resolveProbeScope: ProbeScopeResolver,
+): Promise<void> {
+	try {
+		const workflowScope = await resolveProbeScope(msg);
+		const workflow = await entry.manager.saveProviderWorkflow(
+			{
+				sourceScriptPath: msg.source_script_path,
+				scope: msg.scope,
+				overwrite: msg.overwrite,
+			},
+			workflowScope,
+		);
+		sendProbeResult({
+			type: "workflow_save_result",
+			request_id: msg.request_id,
+			workflow,
+		});
+		await entry.manager.probeWorkflowCatalog(sendProbeResult, workflowScope);
+	} catch (error) {
+		sendProbeResult({
+			type: "workflow_save_result",
+			request_id: msg.request_id,
+			error: error instanceof Error ? error.message : "Failed to save workflow",
+			...(error instanceof ClaudeWorkflowSaveError
+				? { error_code: error.code }
+				: {}),
+		});
+	}
+}
+
+async function handleDeleteWorkflow(
+	entry: PoolEntry,
+	msg: MessageOf<"delete_workflow">,
+	sendProbeResult: ProbeResultSender,
+	resolveProbeScope: ProbeScopeResolver,
+): Promise<void> {
+	try {
+		const workflowScope = await resolveProbeScope(msg);
+		await entry.manager.deleteProviderWorkflow(
+			{ scriptPath: msg.script_path, scope: msg.scope },
+			workflowScope,
+		);
+		sendProbeResult({
+			type: "workflow_delete_result",
+			request_id: msg.request_id,
+			script_path: msg.script_path,
+		});
+		await entry.manager.probeWorkflowCatalog(sendProbeResult, workflowScope);
+	} catch (error) {
+		sendProbeResult({
+			type: "workflow_delete_result",
+			request_id: msg.request_id,
+			error:
+				error instanceof Error ? error.message : "Failed to delete workflow",
+			...(error instanceof ClaudeWorkflowDeleteError
+				? { error_code: error.code }
+				: {}),
+		});
+	}
+}
+
+async function handleReadWorkflowSource(
+	entry: PoolEntry,
+	msg: MessageOf<"read_workflow_source">,
+	sendProbeResult: ProbeResultSender,
+	resolveProbeScope: ProbeScopeResolver,
+): Promise<void> {
+	try {
+		const workflowScope = await resolveProbeScope(msg);
+		const source = await entry.manager.readProviderWorkflowSource(
+			{
+				scriptPath: msg.script_path,
+				...(msg.scope ? { scope: msg.scope } : {}),
+			},
+			workflowScope,
+		);
+		sendProbeResult({
+			type: "workflow_source_result",
+			request_id: msg.request_id,
+			script_path: msg.script_path,
+			source,
+		});
+	} catch (error) {
+		sendProbeResult({
+			type: "workflow_source_result",
+			request_id: msg.request_id,
+			script_path: msg.script_path,
+			error:
+				error instanceof Error
+					? error.message
+					: "Failed to read workflow definition",
+			...(error instanceof ClaudeWorkflowSourceError
+				? { error_code: error.code }
+				: {}),
+		});
+	}
+}
+
+async function handleSetProvider(
+	context: MessageContext,
+	entry: PoolEntry,
+	msg: MessageOf<"set_provider">,
+): Promise<void> {
+	await entry.manager.setProvider(msg.provider, {
+		model: msg.model,
+		effort: msg.effort,
+		permissionMode: msg.permission_mode,
+	});
+	entry.runState.broadcast({
+		type: "status",
+		...entry.manager.getStatus(),
+	});
+	const providerId = entry.manager.getProviderId();
+	const agentCwd = entry.manager.getAgentCwd();
+	const cachedMcp = entry.manager.getLastMcpStatus(providerId) ?? [];
+	entry.runState.broadcast({
+		type: "mcp_status",
+		...(providerId ? { provider_id: providerId } : {}),
+		...(agentCwd ? { agent_cwd: agentCwd } : {}),
+		servers: cachedMcp.map(mapMcpServer),
+	});
+	void entry.manager.probeMcpStatus?.((event) =>
+		entry.runState.broadcast(event),
+	);
+	void entry.manager.probeSlashCommands?.((event) =>
+		entry.runState.broadcast(event),
+	);
+	broadcastSessionsStatus(context);
+}
+
 async function handleSessionMessage(
 	context: MessageContext,
 	entry: PoolEntry,
@@ -1113,36 +1163,7 @@ async function handleSessionMessage(
 			}
 			return;
 		case "steer_queued":
-			void entry.manager
-				.steerQueued(msg.turn_id)
-				.then((steered) => {
-					if (steered) {
-						entry.runState.broadcast({
-							type: "turn_steered",
-							turn_id: msg.turn_id,
-							session_id:
-								entry.manager.getCurrentSessionId() ?? entry.sessionId,
-						});
-						return;
-					}
-					send(context.ws, {
-						type: "error",
-						message: "That queued message is no longer available to steer.",
-					});
-				})
-				.catch((error) => {
-					send(context.ws, {
-						type: "error",
-						message:
-							error instanceof Error
-								? error.message
-								: "Failed to steer the active turn",
-					});
-				})
-				.finally(() => {
-					broadcastQueueState(entry);
-					broadcastSessionsStatus(context);
-				});
+			handleSteerQueued(context, entry, msg);
 			return;
 		case "workflow_control":
 			try {
@@ -1181,129 +1202,27 @@ async function handleSessionMessage(
 			);
 			return;
 		case "save_workflow":
-			try {
-				const workflowScope = await resolveProbeScope(msg);
-				const workflow = await entry.manager.saveProviderWorkflow(
-					{
-						sourceScriptPath: msg.source_script_path,
-						scope: msg.scope,
-						overwrite: msg.overwrite,
-					},
-					workflowScope,
-				);
-				sendProbeResult({
-					type: "workflow_save_result",
-					request_id: msg.request_id,
-					workflow,
-				});
-				await entry.manager.probeWorkflowCatalog(
-					sendProbeResult,
-					workflowScope,
-				);
-			} catch (error) {
-				sendProbeResult({
-					type: "workflow_save_result",
-					request_id: msg.request_id,
-					error:
-						error instanceof Error ? error.message : "Failed to save workflow",
-					...(error instanceof ClaudeWorkflowSaveError
-						? { error_code: error.code }
-						: {}),
-				});
-			}
+			await handleSaveWorkflow(entry, msg, sendProbeResult, resolveProbeScope);
 			return;
 		case "delete_workflow":
-			try {
-				const workflowScope = await resolveProbeScope(msg);
-				await entry.manager.deleteProviderWorkflow(
-					{
-						scriptPath: msg.script_path,
-						scope: msg.scope,
-					},
-					workflowScope,
-				);
-				sendProbeResult({
-					type: "workflow_delete_result",
-					request_id: msg.request_id,
-					script_path: msg.script_path,
-				});
-				await entry.manager.probeWorkflowCatalog(
-					sendProbeResult,
-					workflowScope,
-				);
-			} catch (error) {
-				sendProbeResult({
-					type: "workflow_delete_result",
-					request_id: msg.request_id,
-					error:
-						error instanceof Error
-							? error.message
-							: "Failed to delete workflow",
-					...(error instanceof ClaudeWorkflowDeleteError
-						? { error_code: error.code }
-						: {}),
-				});
-			}
+			await handleDeleteWorkflow(
+				entry,
+				msg,
+				sendProbeResult,
+				resolveProbeScope,
+			);
 			return;
 		case "read_workflow_source":
-			try {
-				const workflowScope = await resolveProbeScope(msg);
-				const source = await entry.manager.readProviderWorkflowSource(
-					{
-						scriptPath: msg.script_path,
-						...(msg.scope ? { scope: msg.scope } : {}),
-					},
-					workflowScope,
-				);
-				sendProbeResult({
-					type: "workflow_source_result",
-					request_id: msg.request_id,
-					script_path: msg.script_path,
-					source,
-				});
-			} catch (error) {
-				sendProbeResult({
-					type: "workflow_source_result",
-					request_id: msg.request_id,
-					script_path: msg.script_path,
-					error:
-						error instanceof Error
-							? error.message
-							: "Failed to read workflow definition",
-					...(error instanceof ClaudeWorkflowSourceError
-						? { error_code: error.code }
-						: {}),
-				});
-			}
-			return;
-		case "set_provider": {
-			await entry.manager.setProvider(msg.provider, {
-				model: msg.model,
-				effort: msg.effort,
-				permissionMode: msg.permission_mode,
-			});
-			entry.runState.broadcast({
-				type: "status",
-				...entry.manager.getStatus(),
-			});
-			const providerId = entry.manager.getProviderId();
-			const agentCwd = entry.manager.getAgentCwd();
-			const cachedMcp = entry.manager.getLastMcpStatus(providerId) ?? [];
-			entry.runState.broadcast({
-				type: "mcp_status",
-				...(providerId ? { provider_id: providerId } : {}),
-				...(agentCwd ? { agent_cwd: agentCwd } : {}),
-				servers: cachedMcp.map(mapMcpServer),
-			});
-			void entry.manager.probeMcpStatus?.((event) =>
-				entry.runState.broadcast(event),
+			await handleReadWorkflowSource(
+				entry,
+				msg,
+				sendProbeResult,
+				resolveProbeScope,
 			);
-			void entry.manager.probeSlashCommands?.((event) =>
-				entry.runState.broadcast(event),
-			);
-			broadcastSessionsStatus(context);
 			return;
-		}
+		case "set_provider":
+			await handleSetProvider(context, entry, msg);
+			return;
 		case "set_model":
 			await entry.manager.setModel(msg.model);
 			entry.runState.broadcast({

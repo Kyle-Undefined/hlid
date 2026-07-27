@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
 import { unlink } from "node:fs/promises";
-import { resolve as resolvePath } from "node:path";
+import { posix, resolve as resolvePath, win32 } from "node:path";
 import type { ToolCall } from "@umbod/core";
 import type { HlidConfig } from "../config";
 import * as db from "../db";
@@ -15,6 +15,7 @@ import {
 import {
 	expandTilde,
 	isPathAccessibleFromRuntime,
+	parseWslUncSyntax,
 	toProviderRuntimePath,
 } from "../lib/paths";
 import { permissionToolDisplayName } from "../lib/permissionPresentation";
@@ -382,6 +383,25 @@ function configuredAgentSettings(
 	return Object.keys(settings).length > 0 ? settings : null;
 }
 
+/**
+ * Stable comparison key for configured and persisted path strings.
+ * This intentionally performs no filesystem access: detached Raven sessions
+ * must be presentable even while a Windows/WSL mount is cold or unavailable.
+ */
+function declaredPathKey(path: string): string {
+	const expanded = expandTilde(path);
+	const wslPath = parseWslUncSyntax(expanded);
+	if (wslPath) {
+		return `wsl:${wslPath.distro.toLowerCase()}:${posix.normalize(
+			wslPath.posixPath,
+		)}`;
+	}
+	if (/^[a-z]:[\\/]/i.test(expanded) || expanded.startsWith("\\\\")) {
+		return `windows:${win32.normalize(expanded).toLowerCase()}`;
+	}
+	return `native:${resolvePath(expanded)}`;
+}
+
 function buildAgentQueryParams(options: {
 	activeCwd: string;
 	providerId: string;
@@ -536,26 +556,12 @@ function buildAgentMaps(config: HlidConfig): {
 	return { providers, settings };
 }
 
-function configuredSessionDefaultsFromMaps(
+function sessionDefaultsFromSelection(
 	config: HlidConfig,
-	configuredAgentCwd: string | undefined,
-	agentMaps: ReturnType<typeof buildAgentMaps>,
+	configuredAgentPath: string | undefined,
+	providerId: string,
+	configuredAgent: AgentSettings | undefined,
 ): ConfiguredSessionDefaults {
-	let configuredAgentPath: string | undefined;
-	if (configuredAgentCwd) {
-		try {
-			configuredAgentPath = realpathSync(expandTilde(configuredAgentCwd));
-		} catch {
-			configuredAgentPath = undefined;
-		}
-	}
-	const configuredAgent = configuredAgentPath
-		? agentMaps.settings.get(configuredAgentPath)
-		: undefined;
-	const vaultProviderId = config.vault_provider ?? "claude";
-	const providerId = configuredAgentPath
-		? (agentMaps.providers.get(configuredAgentPath) ?? vaultProviderId)
-		: vaultProviderId;
 	const codexConfig = config.codex ?? {
 		model: "",
 		effort: "medium" as const,
@@ -586,15 +592,66 @@ function configuredSessionDefaultsFromMaps(
 	};
 }
 
-/** Resolve the controls an idle vault/Einherjar session should advertise. */
-export function resolveConfiguredSessionDefaults(
+function configuredSessionDefaultsFromMaps(
+	config: HlidConfig,
+	configuredAgentCwd: string | undefined,
+	agentMaps: ReturnType<typeof buildAgentMaps>,
+): ConfiguredSessionDefaults {
+	let configuredAgentPath: string | undefined;
+	if (configuredAgentCwd) {
+		try {
+			configuredAgentPath = realpathSync(expandTilde(configuredAgentCwd));
+		} catch {
+			configuredAgentPath = undefined;
+		}
+	}
+	const configuredAgent = configuredAgentPath
+		? agentMaps.settings.get(configuredAgentPath)
+		: undefined;
+	const vaultProviderId = config.vault_provider ?? "claude";
+	const providerId = configuredAgentPath
+		? (agentMaps.providers.get(configuredAgentPath) ?? vaultProviderId)
+		: vaultProviderId;
+	return sessionDefaultsFromSelection(
+		config,
+		configuredAgentPath,
+		providerId,
+		configuredAgent,
+	);
+}
+
+/**
+ * Resolve display-only controls from declared configuration without touching
+ * the filesystem. Use this for detached/history-only sessions; provider
+ * execution continues to use canonical path validation.
+ */
+export function resolveDeclaredSessionDefaults(
 	config: HlidConfig,
 	configuredAgentCwd?: string,
+	configuredProviderId?: string,
 ): ConfiguredSessionDefaults {
-	return configuredSessionDefaultsFromMaps(
+	const configuredAgentPathKey = configuredAgentCwd
+		? declaredPathKey(configuredAgentCwd)
+		: undefined;
+	const configuredAgent = configuredAgentPathKey
+		? (config.agents ?? []).find(
+				(agent) => declaredPathKey(agent.path) === configuredAgentPathKey,
+			)
+		: undefined;
+	const configuredAgentPath = configuredAgent
+		? expandTilde(configuredAgent.path)
+		: undefined;
+	const configuredAgentOverrides = configuredAgent
+		? configuredAgentSettings(configuredAgent)
+		: undefined;
+	const vaultProviderId = config.vault_provider ?? "claude";
+	const providerId =
+		configuredAgent?.provider ?? configuredProviderId ?? vaultProviderId;
+	return sessionDefaultsFromSelection(
 		config,
-		configuredAgentCwd,
-		buildAgentMaps(config),
+		configuredAgentPath,
+		providerId,
+		configuredAgentOverrides ?? undefined,
 	);
 }
 
@@ -1967,6 +2024,97 @@ export class SessionManager {
 		);
 	}
 
+	private async restoreSessionContext(sessionId: string): Promise<boolean> {
+		this.currentGoal = null;
+		this.currentSessionPinned = false;
+		this.currentForkParentSessionId = null;
+		this.currentForkParentLabel = null;
+		this.currentForkKind = null;
+		const [
+			savedSession,
+			prior,
+			nextMessageSeq,
+			savedAgentCwd,
+			savedModel,
+			savedProviderId,
+			savedProviderSessionId,
+		] = await Promise.all([
+			db.getSessionById(sessionId),
+			// Only existence matters here. Provider handoff loads the transcript
+			// later and only when needed; do not materialize a long chat on every
+			// ordinary session resume.
+			db.getSessionMessages(sessionId, undefined, 1),
+			db.getSessionNextMessageSeq(sessionId),
+			db.getSessionAgentCwd(sessionId),
+			db.getSessionModel(sessionId),
+			db.getSessionProviderId(sessionId),
+			db.getSessionProviderSession(sessionId),
+		]);
+		if (
+			savedSession?.history_imported &&
+			(savedSession.history_resume_mode ?? "none") === "none"
+		) {
+			throw new Error(
+				"This imported provider history has accounting data only and cannot be resumed.",
+			);
+		}
+		this.agentCwd = undefined;
+		this.agentMode = "cwd";
+		this.sessionAllowedTools.clear();
+		// The persisted max accounts for sequence values consumed by messages,
+		// tools, plans, questions, and linked attachments. The one-row existence
+		// sample is a defensive floor for older or partially migrated databases.
+		this.messageSeq = Math.max(nextMessageSeq, prior.length);
+		this.currentSessionId = sessionId;
+		this.currentSessionLabel = savedSession?.label ?? null;
+		this.currentSessionPinned = savedSession?.pinned === 1;
+		this.currentForkParentSessionId =
+			savedSession?.fork_parent_session_id ?? null;
+		this.currentForkParentLabel = savedSession?.fork_parent_label ?? null;
+		this.currentForkKind = savedSession?.fork_kind ?? null;
+		this.providerSessionId = savedProviderSessionId;
+		this.providerSessionProviderId = savedProviderId;
+		this.historyResumeMode = savedSession?.history_resume_mode ?? "none";
+		if (
+			this.providerOverride &&
+			savedProviderId &&
+			this.providerOverride !== savedProviderId &&
+			prior.length > 0
+		) {
+			this.providerSessionId = null;
+			this.providerSessionProviderId = this.providerOverride;
+			this.providerHandoffPending = true;
+		}
+		if (savedAgentCwd) {
+			this.agentCwd = savedAgentCwd;
+			this.agentMode = resolveAgentMode(savedAgentCwd);
+		}
+		// Resume with the chat's saved selection, not today's configured
+		// vault/Einherjar model.
+		if (savedModel !== null && this.modelOverride === null) {
+			this.model = savedModel;
+			this.modelOverride = { value: savedModel };
+		}
+		if (savedSession?.selected_effort && this.effortOverride === null) {
+			this.effort = savedSession.selected_effort;
+			this.effortOverride = savedSession.selected_effort;
+		}
+		if (
+			savedSession?.selected_permission_mode &&
+			KNOWN_PERMISSION_MODES.has(savedSession.selected_permission_mode) &&
+			this.permissionModeOverride === null
+		) {
+			this.permissionMode =
+				savedSession.selected_permission_mode as PermissionMode;
+			this.permissionModeOverride =
+				savedSession.selected_permission_mode as PermissionMode;
+		}
+		db.setCurrentSessionId(sessionId).catch((e) =>
+			logDbError("setCurrentSessionId", e),
+		);
+		return Boolean(savedSession);
+	}
+
 	/**
 	 * Switches to the given session (loading saved state from DB) and resolves
 	 * the agent cwd. Creates the session row when this is the first message.
@@ -1982,94 +2130,7 @@ export class SessionManager {
 			sessionId && sessionId === this.currentSessionId,
 		);
 		if (sessionId && sessionId !== this.currentSessionId) {
-			this.currentGoal = null;
-			this.currentSessionPinned = false;
-			this.currentForkParentSessionId = null;
-			this.currentForkParentLabel = null;
-			this.currentForkKind = null;
-			const [
-				savedSession,
-				prior,
-				nextMessageSeq,
-				savedAgentCwd,
-				savedModel,
-				savedProviderId,
-				savedProviderSessionId,
-			] = await Promise.all([
-				db.getSessionById(sessionId),
-				// Only existence matters here. Provider handoff loads the transcript
-				// later and only when needed; do not materialize a long chat on every
-				// ordinary session resume.
-				db.getSessionMessages(sessionId, undefined, 1),
-				db.getSessionNextMessageSeq(sessionId),
-				db.getSessionAgentCwd(sessionId),
-				db.getSessionModel(sessionId),
-				db.getSessionProviderId(sessionId),
-				db.getSessionProviderSession(sessionId),
-			]);
-			sessionExists = Boolean(savedSession);
-			if (
-				savedSession?.history_imported &&
-				(savedSession.history_resume_mode ?? "none") === "none"
-			) {
-				throw new Error(
-					"This imported provider history has accounting data only and cannot be resumed.",
-				);
-			}
-			this.agentCwd = undefined;
-			this.agentMode = "cwd";
-			this.sessionAllowedTools.clear();
-			// The persisted max accounts for sequence values consumed by messages,
-			// tools, plans, questions, and linked attachments. The one-row existence
-			// sample is a defensive floor for older or partially migrated databases.
-			this.messageSeq = Math.max(nextMessageSeq, prior.length);
-			this.currentSessionId = sessionId;
-			this.currentSessionLabel = savedSession?.label ?? null;
-			this.currentSessionPinned = savedSession?.pinned === 1;
-			this.currentForkParentSessionId =
-				savedSession?.fork_parent_session_id ?? null;
-			this.currentForkParentLabel = savedSession?.fork_parent_label ?? null;
-			this.currentForkKind = savedSession?.fork_kind ?? null;
-			this.providerSessionId = savedProviderSessionId;
-			this.providerSessionProviderId = savedProviderId;
-			this.historyResumeMode = savedSession?.history_resume_mode ?? "none";
-			if (
-				this.providerOverride &&
-				savedProviderId &&
-				this.providerOverride !== savedProviderId &&
-				prior.length > 0
-			) {
-				this.providerSessionId = null;
-				this.providerSessionProviderId = this.providerOverride;
-				this.providerHandoffPending = true;
-			}
-			if (savedAgentCwd) {
-				this.agentCwd = savedAgentCwd;
-				this.agentMode = resolveAgentMode(savedAgentCwd);
-			}
-			// Resume with the chat's saved selection, not today's configured
-			// vault/Einherjar model.
-			if (savedModel !== null && this.modelOverride === null) {
-				this.model = savedModel;
-				this.modelOverride = { value: savedModel };
-			}
-			if (savedSession?.selected_effort && this.effortOverride === null) {
-				this.effort = savedSession.selected_effort;
-				this.effortOverride = savedSession.selected_effort;
-			}
-			if (
-				savedSession?.selected_permission_mode &&
-				KNOWN_PERMISSION_MODES.has(savedSession.selected_permission_mode) &&
-				this.permissionModeOverride === null
-			) {
-				this.permissionMode =
-					savedSession.selected_permission_mode as PermissionMode;
-				this.permissionModeOverride =
-					savedSession.selected_permission_mode as PermissionMode;
-			}
-			db.setCurrentSessionId(sessionId).catch((e) =>
-				logDbError("setCurrentSessionId", e),
-			);
+			sessionExists = await this.restoreSessionContext(sessionId);
 		}
 
 		// Set agent dir + mode on first message of an agent session (in-memory).

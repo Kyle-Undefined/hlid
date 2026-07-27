@@ -48,3 +48,18 @@ export function isAllowedAgentPath(
 ): boolean {
 	return allowed.some((p) => samePath(p, candidate));
 }
+
+/** Resolve a candidate only when it still matches a configured agent path. */
+export function resolveAllowedAgentPath(
+	config: HlidConfig,
+	candidate: string,
+): string | undefined {
+	try {
+		const resolved = realpathSync(resolve(expandTilde(candidate)));
+		return isAllowedAgentPath(computeAllowedAgentRealPaths(config), resolved)
+			? resolved
+			: undefined;
+	} catch {
+		return undefined;
+	}
+}

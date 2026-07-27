@@ -6,6 +6,7 @@ import {
 	computeAllowedAgentRealPaths,
 	isAllowedAgentPath,
 	resolveAgentMode,
+	resolveAllowedAgentPath,
 } from "./agentPaths";
 import { loadConfig } from "./config";
 
@@ -90,6 +91,39 @@ describe("computeAllowedAgentRealPaths", () => {
 		} as never);
 		// May or may not exist — just confirm it doesn't throw
 		expect(Array.isArray(result)).toBe(true);
+	});
+});
+
+describe("resolveAllowedAgentPath", () => {
+	let configuredDir: string;
+	let unregisteredDir: string;
+
+	beforeEach(() => {
+		configuredDir = mkdtempSync(join(tmpdir(), "hlid-agent-allowed-"));
+		unregisteredDir = mkdtempSync(join(tmpdir(), "hlid-agent-denied-"));
+	});
+
+	afterEach(() => {
+		rmSync(configuredDir, { recursive: true, force: true });
+		rmSync(unregisteredDir, { recursive: true, force: true });
+	});
+
+	it("returns the canonical path for a configured agent", () => {
+		expect(
+			resolveAllowedAgentPath(
+				{ agents: [{ path: configuredDir }] } as never,
+				configuredDir,
+			),
+		).toBe(configuredDir);
+	});
+
+	it("rejects an existing path that is not configured", () => {
+		expect(
+			resolveAllowedAgentPath(
+				{ agents: [{ path: configuredDir }] } as never,
+				unregisteredDir,
+			),
+		).toBeUndefined();
 	});
 });
 

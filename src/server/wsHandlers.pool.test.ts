@@ -700,7 +700,7 @@ describe("message — subscribe_session", () => {
 		const pool = makePool(vault);
 		pool.get.mockReturnValue(undefined);
 		mockGetSessionSelection.mockResolvedValueOnce({
-			agentCwd: "/tmp",
+			agentCwd: "/tmp/missing-hlid-agent",
 			providerId: "codex",
 			model: "gpt-session",
 			effort: null,
@@ -723,7 +723,7 @@ describe("message — subscribe_session", () => {
 			},
 			agents: [
 				{
-					path: "/tmp",
+					path: "/tmp/missing-hlid-agent",
 					provider: "codex",
 					model: "gpt-agent",
 					effort: "high",
@@ -748,6 +748,54 @@ describe("message — subscribe_session", () => {
 			model: "gpt-session",
 			effort: "high",
 			permission_mode: "bypassPermissions",
+		});
+	});
+
+	it("uses the archived provider defaults when its agent is no longer configured", async () => {
+		const vault = makeEntry("vault-id");
+		const pool = makePool(vault);
+		pool.get.mockReturnValue(undefined);
+		mockGetSessionSelection.mockResolvedValueOnce({
+			agentCwd: "/tmp/removed-hlid-agent",
+			providerId: "codex",
+			model: null,
+			effort: null,
+			permissionMode: null,
+		});
+		mockLoadConfig.mockReturnValueOnce({
+			vault: { path: "/tmp/test", name: "Test Vault" },
+			vault_provider: "claude",
+			codex: {
+				model: "gpt-default",
+				effort: "xhigh",
+				permission_mode: "acceptEdits",
+				turn_recaps: false,
+			},
+			claude: {
+				model: "claude-default",
+				effort: "medium",
+				permission_mode: "default",
+				turn_recaps: false,
+			},
+			agents: [],
+		});
+		const { message } = createWsHandlers(pool);
+		const ws = makeWs("vault-id");
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "subscribe_session",
+				session_id: "removed-einherjar",
+			}),
+		);
+
+		expect(mockSend).toHaveBeenCalledWith(ws, {
+			type: "status",
+			state: "idle",
+			model: "gpt-default",
+			effort: "xhigh",
+			permission_mode: "acceptEdits",
 		});
 	});
 

@@ -172,7 +172,7 @@ import { buildPromptAsync } from "./promptBuilder";
 import type { RateLimitMessage, ServerMessage } from "./protocol";
 import { getWindowMark } from "./proxy";
 import { generateTurnRecap } from "./recap";
-import { resolveConfiguredSessionDefaults, SessionManager } from "./session";
+import { resolveDeclaredSessionDefaults, SessionManager } from "./session";
 import { authorizeHlidTool, registerUmbodApprovalSession } from "./umbod";
 import {
 	evaluateSleep,
@@ -542,7 +542,7 @@ describe("SessionManager — initial state", () => {
 				turn_recaps: true,
 			},
 		} as HlidConfig;
-		expect(resolveConfiguredSessionDefaults(config)).toMatchObject({
+		expect(resolveDeclaredSessionDefaults(config)).toMatchObject({
 			providerId: "cliproxy-codex",
 			model: "gpt-5.6-sol",
 			effort: "xhigh",
@@ -566,7 +566,7 @@ describe("SessionManager — initial state", () => {
 		} as HlidConfig;
 		for (const providerId of ["cliproxy:codex", "cliproxy:opencode"]) {
 			expect(
-				resolveConfiguredSessionDefaults({
+				resolveDeclaredSessionDefaults({
 					...base,
 					vault_provider: providerId,
 				}),
@@ -576,6 +576,36 @@ describe("SessionManager — initial state", () => {
 				effort: "high",
 			});
 		}
+	});
+
+	it("resolves detached WSL agent defaults without filesystem access", () => {
+		vi.mocked(fsMock.realpathSync).mockClear();
+		const config = {
+			...makeConfig(),
+			vault_provider: "claude",
+			agents: [
+				{
+					path: "\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\project",
+					provider: "codex",
+					model: "gpt-agent",
+					effort: "high",
+					permission_mode: "bypassPermissions",
+				},
+			],
+		} as HlidConfig;
+
+		expect(
+			resolveDeclaredSessionDefaults(
+				config,
+				"\\\\wsl$\\ubuntu-24.04\\home\\kyle\\project",
+			),
+		).toMatchObject({
+			providerId: "codex",
+			model: "gpt-agent",
+			effort: "high",
+			permissionMode: "bypassPermissions",
+		});
+		expect(fsMock.realpathSync).not.toHaveBeenCalled();
 	});
 
 	it("reports idle state and configured model", () => {
