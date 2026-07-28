@@ -65,9 +65,17 @@ jobs:
       - name: Tests (Bun — DB)
         run: bun run test:db
 
+  whisper-runtime:
+    needs: validate
+    uses: ./.github/workflows/whisper-runtime.yml
+    permissions:
+      contents: read
+
   build:
     runs-on: windows-latest
-    needs: validate
+    needs:
+      - validate
+      - whisper-runtime
     permissions:
       contents: read
     steps:
@@ -76,6 +84,12 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6  # v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Download the reviewed Whisper runtime
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+        with:
+          name: hlid-whisper-runtime-windows-x64-v1.9.1
+          path: .cache/whisper
 
       - name: Resolve version
         id: ver
@@ -99,6 +113,7 @@ jobs:
       - name: Build hlid.exe
         env:
           HLID_BUILD_OUTFILE: build/hlid.exe
+          HLID_WHISPER_RUNTIME_ARCHIVE: ${{ github.workspace }}\.cache\whisper\hlid-whisper-runtime-windows-x64-v1.9.1.zip
         run: bun run build:win
 
       - name: Smoke test hlid.exe
@@ -187,11 +202,46 @@ jobs:
           name: hlid-windows-x64
           path: dist/
 
+      - name: Download Whisper runtime artifact
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8
+        with:
+          name: hlid-whisper-runtime-windows-x64-v1.9.1
+          path: dist/runtime/
+
       - name: Generate checksums
         run: |
           cd dist
           sha256sum *.exe > hlid-checksums.txt
           cat hlid-checksums.txt
+
+      - name: Publish the reviewed Whisper runtime
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUNTIME_ARCHIVE: hlid-whisper-runtime-windows-x64-v1.9.1.zip
+          RUNTIME_TAG: whisper-runtime-v1.9.1
+        run: |
+          set -euo pipefail
+          archive="dist/runtime/${RUNTIME_ARCHIVE}"
+          manifest="dist/runtime/runtime-manifest.json"
+          if gh release view "${RUNTIME_TAG}" >/dev/null 2>&1; then
+            existing="$(mktemp -d)"
+            gh release download "${RUNTIME_TAG}" \
+              --pattern "${RUNTIME_ARCHIVE}" \
+              --pattern "runtime-manifest.json" \
+              --dir "${existing}"
+            cmp "${archive}" "${existing}/${RUNTIME_ARCHIVE}"
+            cmp "${manifest}" "${existing}/runtime-manifest.json"
+            echo "Reviewed Whisper runtime release already matches."
+          else
+            gh release create "${RUNTIME_TAG}" \
+              "${archive}" \
+              "${manifest}" \
+              --target "${GITHUB_SHA}" \
+              --title "Whisper runtime v1.9.1" \
+              --latest=false \
+              --notes "Reviewed Windows x64 whisper.cpp v1.9.1 runtime with CPU and Vulkan backends."
+          fi
 
       - name: Publish release
         uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228  # v3

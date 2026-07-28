@@ -6,11 +6,18 @@ import {
 	screen,
 	waitFor,
 } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_VOICE_CONFIG } from "#/config";
 
 const server = vi.hoisted(() => ({
 	getInfo: vi.fn(),
+	startDownload: vi.fn(),
+	cancelDownload: vi.fn(),
+	deleteModel: vi.fn(),
+}));
+const ttsServer = vi.hoisted(() => ({
+	getInfo: vi.fn(),
+	sync: vi.fn(),
 	startDownload: vi.fn(),
 	cancelDownload: vi.fn(),
 	deleteModel: vi.fn(),
@@ -21,6 +28,13 @@ vi.mock("#/lib/serverFns/voice", () => ({
 	startVoiceDownloadFn: server.startDownload,
 	cancelVoiceDownloadFn: server.cancelDownload,
 	deleteVoiceModelFn: server.deleteModel,
+}));
+vi.mock("#/lib/serverFns/tts", () => ({
+	getTtsInfoFn: ttsServer.getInfo,
+	syncTtsConfigFn: ttsServer.sync,
+	startTtsDownloadFn: ttsServer.startDownload,
+	cancelTtsDownloadFn: ttsServer.cancelDownload,
+	deleteTtsModelFn: ttsServer.deleteModel,
 }));
 
 import type { VoiceInfo } from "#/lib/serverFns/voice";
@@ -49,6 +63,13 @@ afterEach(() => {
 });
 
 describe("VoiceSection", () => {
+	beforeEach(() => {
+		ttsServer.getInfo.mockResolvedValue({
+			status: { state: "disabled", model: "" },
+			models: [],
+		});
+		ttsServer.sync.mockResolvedValue({ ok: true });
+	});
 	it("reports download failure and allows retry", async () => {
 		server.startDownload
 			.mockRejectedValueOnce(new Error("checksum mismatch"))

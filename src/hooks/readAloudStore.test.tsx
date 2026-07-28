@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, renderHook } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { READ_ALOUD_PREFERENCES_KEY } from "#/lib/readAloud";
 import {
@@ -84,6 +84,15 @@ beforeEach(() => {
 	});
 	vi.stubGlobal("SpeechSynthesisUtterance", MockUtterance);
 	vi.stubGlobal("Audio", MockAudio);
+	const NativeUrl = URL;
+	let objectUrl = 0;
+	vi.stubGlobal(
+		"URL",
+		class extends NativeUrl {
+			static createObjectURL = vi.fn(() => `blob:neural-${objectUrl++}`);
+			static revokeObjectURL = vi.fn();
+		},
+	);
 });
 
 afterEach(() => {
@@ -214,6 +223,7 @@ describe("readAloudStore", () => {
 			provider: "device",
 			voiceURI: localVoice.voiceURI,
 			microsoftVoiceId: "",
+			neuralVoiceId: "expr-voice-2-f",
 			rate: 1.5,
 		});
 		expect(
@@ -251,6 +261,7 @@ describe("readAloudStore", () => {
 			provider: "microsoft",
 			voiceURI: localVoice.voiceURI,
 			microsoftVoiceId: "windows:mark",
+			neuralVoiceId: "expr-voice-2-f",
 			rate: 1.5,
 		});
 		expect(
@@ -310,6 +321,53 @@ describe("readAloudStore", () => {
 
 		act(() => audio?.onended?.());
 		expect(result.current.phase).toBe("idle");
+	});
+
+	it("prefetches and plays local neural chunks in order", async () => {
+		const fetch = vi
+			.fn()
+			.mockResolvedValueOnce(
+				new Response(new Blob(["first"]), {
+					headers: { "x-hlid-has-next-chunk": "1" },
+				}),
+			)
+			.mockResolvedValueOnce(
+				new Response(new Blob(["second"]), {
+					headers: { "x-hlid-has-next-chunk": "0" },
+				}),
+			);
+		vi.stubGlobal("fetch", fetch);
+		const { result } = renderHook(() => useReadAloudState());
+		act(() =>
+			setReadAloudPreferences({
+				provider: "neural",
+				neuralVoiceId: "expr-voice-5-f",
+				rate: 1.25,
+			}),
+		);
+		act(() => startReadAloud("message-1", "Stored text", 42));
+
+		await waitFor(() => expect(MockAudio.instances).toHaveLength(1));
+		expect(fetch).toHaveBeenNthCalledWith(
+			1,
+			"/api/read-aloud/audio?message_id=42&provider=neural&chunk_index=0",
+			expect.objectContaining({ cache: "no-store" }),
+		);
+		await waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+		const first = MockAudio.instances[0];
+		expect(first?.src).toBe("blob:neural-0");
+		act(() => first?.onplaying?.());
+		expect(result.current.phase).toBe("speaking");
+
+		act(() => first?.onended?.());
+		await waitFor(() => expect(MockAudio.instances).toHaveLength(2));
+		const second = MockAudio.instances[1];
+		expect(second?.src).toBe("blob:neural-1");
+		act(() => second?.onplaying?.());
+		expect(result.current.phase).toBe("speaking");
+		act(() => second?.onended?.());
+		expect(result.current.phase).toBe("idle");
+		expect(URL.revokeObjectURL).toHaveBeenCalledTimes(2);
 	});
 
 	it("only lists voices the browser reports as local", () => {

@@ -16,6 +16,12 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const vendor = join(root, "vendor", "whisper");
+const cachedArchive = join(
+	root,
+	".cache",
+	"whisper",
+	"hlid-whisper-runtime-windows-x64-v1.9.1.zip",
+);
 const generatedDir = join(root, "build", "embed-assets", "whisper");
 const stagedDir = join(generatedDir, "files");
 const outFile = join(generatedDir, "voice-assets.generated.js");
@@ -26,7 +32,7 @@ export const WHISPER_RUNTIME_ARTIFACT =
 	"hlid-whisper-runtime-windows-x64-v1.9.1.zip";
 const WHISPER_ARCHIVE_URL = `https://github.com/Kyle-Undefined/hlid/releases/download/whisper-runtime-${WHISPER_VERSION}/${WHISPER_RUNTIME_ARTIFACT}`;
 export const WHISPER_ARCHIVE_SHA256 =
-	"5db2950b25c1bce45bd2f9244a2104f48b9c99e1101f70586944e9fbda52ec9a";
+	"47b215473946a33ba916507a687ef4c5914c08030a10e93a4b37763ac25f9577";
 export const WHISPER_ARCHIVE_MAX_BYTES = 64 * 1024 * 1024;
 
 export type RuntimeManifestEntry = {
@@ -162,6 +168,15 @@ export function copyVerifiedArchive(
 	writeFileSync(destination, archive, { flag: "wx" });
 }
 
+export function resolveLocalRuntimeArchive(
+	override: string | undefined,
+	cache = cachedArchive,
+	fileExists: (path: string) => boolean = existsSync,
+): string | undefined {
+	if (override) return override;
+	return fileExists(cache) ? cache : undefined;
+}
+
 async function extractArchive(archive: string, destination: string): Promise<void> {
 	const commands =
 		process.platform === "win32"
@@ -199,10 +214,12 @@ async function ensureRuntime(): Promise<void> {
 	const archive = join(temp, "whisper-bin-x64.zip");
 	const extracted = join(temp, "extracted");
 	try {
-		const override = process.env.HLID_WHISPER_RUNTIME_ARCHIVE;
-		if (override) {
-			console.log(`Using reviewed local runtime archive ${override}`);
-			copyVerifiedArchive(override, archive);
+		const localArchive = resolveLocalRuntimeArchive(
+			process.env.HLID_WHISPER_RUNTIME_ARCHIVE,
+		);
+		if (localArchive) {
+			console.log(`Using reviewed local runtime archive ${localArchive}`);
+			copyVerifiedArchive(localArchive, archive);
 		} else {
 			await downloadVerifiedArchive(WHISPER_ARCHIVE_URL, archive);
 		}

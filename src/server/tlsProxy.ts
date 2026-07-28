@@ -32,6 +32,7 @@ export const MAX_TLS_PUBLIC_BODY_BYTES = 2 * 1024;
 const DEFAULT_FORWARD_TIMEOUT_MS = 30_000;
 const SAFE_FORWARD_FIRST_ATTEMPT_MS = 5_000;
 const VOICE_FORWARD_TIMEOUT_MS = 70_000;
+const READ_ALOUD_FORWARD_TIMEOUT_MS = 15_000;
 const TLS_IDLE_TIMEOUT_SECONDS = 75;
 const PREVIEW_SELECTION_TTL_MS = 4 * 60 * 60 * 1_000;
 const MAX_REMEMBERED_PREVIEW_CLIENTS = 64;
@@ -244,7 +245,9 @@ export function createTlsHttpForwarder({
 				},
 				url.pathname === "/api/voice/transcribe"
 					? VOICE_FORWARD_TIMEOUT_MS
-					: DEFAULT_FORWARD_TIMEOUT_MS,
+					: url.pathname.startsWith("/api/read-aloud/")
+						? READ_ALOUD_FORWARD_TIMEOUT_MS
+						: DEFAULT_FORWARD_TIMEOUT_MS,
 			);
 			// Compress exactly once at the public edge, negotiated against the real
 			// browser request rather than the proxy's internal fetch implementation.

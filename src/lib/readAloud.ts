@@ -1,11 +1,12 @@
 export const READ_ALOUD_PREFERENCES_KEY = "hlid:read-aloud";
 
-export type ReadAloudProvider = "device" | "microsoft" | "codex";
+export type ReadAloudProvider = "device" | "microsoft" | "neural" | "codex";
 
 export type ReadAloudPreferences = {
 	provider: ReadAloudProvider;
 	voiceURI: string;
 	microsoftVoiceId: string;
+	neuralVoiceId: string;
 	rate: number;
 };
 
@@ -13,6 +14,7 @@ export const DEFAULT_READ_ALOUD_PREFERENCES: ReadAloudPreferences = {
 	provider: "device",
 	voiceURI: "",
 	microsoftVoiceId: "",
+	neuralVoiceId: "expr-voice-2-f",
 	rate: 1,
 };
 
@@ -106,6 +108,35 @@ export function chunkReadAloudText(
 	return chunks;
 }
 
+/**
+ * Neural synthesis gets one deliberately short first chunk so playback can
+ * start while the next sentence-sized chunk is generated.
+ */
+export function chunkNeuralReadAloudText(
+	text: string,
+	firstChunkCharacters = 20,
+	maxCharacters = 220,
+): string[] {
+	const chunks = chunkReadAloudText(text, maxCharacters).flatMap((chunk) => {
+		if (chunk.length <= maxCharacters) return [chunk];
+		const bounded: string[] = [];
+		for (let index = 0; index < chunk.length; index += maxCharacters)
+			bounded.push(chunk.slice(index, index + maxCharacters));
+		return bounded;
+	});
+	const first = chunks[0];
+	if (!first || first.length <= firstChunkCharacters) return chunks;
+	let split = first.lastIndexOf(" ", firstChunkCharacters);
+	if (split <= 0) split = Math.min(firstChunkCharacters, first.length);
+	const leading = first.slice(0, split).trim();
+	const trailing = first.slice(split).trim();
+	return [
+		...(leading ? [leading] : []),
+		...(trailing ? [trailing] : []),
+		...chunks.slice(1),
+	];
+}
+
 const CONSERVATIVE_WORD_MS = 550;
 
 /**
@@ -137,7 +168,9 @@ export function normalizeReadAloudPreferences(
 	const candidate = value as Partial<ReadAloudPreferences>;
 	return {
 		provider:
-			candidate.provider === "microsoft" || candidate.provider === "codex"
+			candidate.provider === "microsoft" ||
+			candidate.provider === "codex" ||
+			candidate.provider === "neural"
 				? candidate.provider
 				: "device",
 		voiceURI: typeof candidate.voiceURI === "string" ? candidate.voiceURI : "",
@@ -145,6 +178,10 @@ export function normalizeReadAloudPreferences(
 			typeof candidate.microsoftVoiceId === "string"
 				? candidate.microsoftVoiceId
 				: "",
+		neuralVoiceId:
+			typeof candidate.neuralVoiceId === "string" && candidate.neuralVoiceId
+				? candidate.neuralVoiceId
+				: DEFAULT_READ_ALOUD_PREFERENCES.neuralVoiceId,
 		rate:
 			typeof candidate.rate === "number" &&
 			Number.isFinite(candidate.rate) &&

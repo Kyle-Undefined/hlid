@@ -178,6 +178,36 @@ export const API_ENDPOINTS: ApiEndpoint[] = [
 		server: "api",
 		desc: "Local Whisper runtime status and cached model catalog; ?refresh=1 refreshes the catalog.",
 	},
+	{
+		method: "GET",
+		path: "/tts",
+		server: "api",
+		desc: "Local neural speech runtime status and model catalog.",
+	},
+	{
+		method: "POST",
+		path: "/tts/sync",
+		server: "api",
+		desc: "Apply the saved local neural speech configuration and load or stop its runtime.",
+	},
+	{
+		method: "POST",
+		path: "/tts/download",
+		server: "api",
+		desc: 'Start the checksummed runtime and model download. Body: {"model": string}.',
+	},
+	{
+		method: "POST",
+		path: "/tts/download/cancel",
+		server: "api",
+		desc: "Cancel the active local neural speech download.",
+	},
+	{
+		method: "DELETE",
+		path: "/tts/model?model=",
+		server: "api",
+		desc: "Delete one installed local neural speech model that is not loaded.",
+	},
 	// ── Codex app-server maintenance (api port) ───────────────────────────────
 	{
 		method: "GET",

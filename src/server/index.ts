@@ -115,6 +115,8 @@ import { resolveAllowedTerminalCwd } from "./terminalAccess";
 import { TerminalSessionPool } from "./terminalSessionPool";
 import { createTerminalUpgradeHandler } from "./terminalUpgrade";
 import { startTlsProxy } from "./tlsProxy";
+import { TtsModelManager } from "./tts";
+import { INTERNAL_TTS_RUNTIME_FLAG, runTtsRuntimeServer } from "./tts-runtime";
 import { startUiServer } from "./uiServer";
 import { markUiServerReady } from "./uiStartupGate";
 import { bootstrapUmbod, closeUmbod } from "./umbod";
@@ -129,6 +131,10 @@ import {
 	type TerminalWsData,
 } from "./wsHandlers.terminal";
 import { MAX_WS_PAYLOAD_BYTES } from "./wsSchemas";
+
+if (process.argv.includes(INTERNAL_TTS_RUNTIME_FLAG)) {
+	await runTtsRuntimeServer();
+}
 
 if (process.argv.includes(INTERNAL_HLID_MCP_FLAG)) {
 	await runHlidMcpServer();
@@ -362,10 +368,27 @@ const voice = new VoiceModelManager(
 );
 voice.warmCatalog();
 void voice.initialize();
+const tts = new TtsModelManager(config.voice);
+void tts.initialize().catch((error) => {
+	console.error(
+		"[tts] failed to initialize:",
+		error instanceof Error ? error.message : String(error),
+	);
+});
 const microsoftSpeech = new MicrosoftSpeechManager();
 const handleReadAloudRoute = createReadAloudRouteHandler({
 	speech: microsoftSpeech,
+	tts: {
+		synthesize: (text, voiceId, speed) => tts.synthesize(text, voiceId, speed),
+	},
 	getAssistantMessageText: db.getAssistantMessageText,
+	getNeuralSettings: () => {
+		const voiceConfig = loadConfig().voice;
+		return {
+			voiceId: voiceConfig.tts_voice,
+			rate: voiceConfig.read_aloud_rate,
+		};
+	},
 });
 const ptyWorkerPath = await bootstrapPtyRuntime();
 const terminalPool = new TerminalSessionPool(ptyWorkerPath, () => {
@@ -405,6 +428,7 @@ function shutdown(): never {
 	stopRoutineScheduler();
 	cliProxy.close();
 	voice.close();
+	tts.close();
 	pool.closeAll();
 	terminalPool.closeAll();
 	shellPool.closeAll();
@@ -426,6 +450,7 @@ const observeApiRequest = createRequestObserver({
 	slowRequestMs: (request) => {
 		const pathname = new URL(request.url).pathname;
 		if (pathname === "/voice/transcribe") return 70_000;
+		if (pathname.startsWith("/read-aloud/")) return 10_000;
 		if (pathname === "/api/attachments/upload") return 30_000;
 		if (pathname.startsWith("/api/attachments/")) return 10_000;
 		const previewThreshold = projectPreviewSlowRequestThreshold(pathname);
@@ -661,6 +686,34 @@ function deleteVoiceModel(url: URL): Response {
 	}
 }
 
+async function downloadTtsModel(req: Request): Promise<Response> {
+	try {
+		const { model } = (await req.json()) as { model?: string };
+		if (!model) {
+			return Response.json({ error: "model is required" }, { status: 400 });
+		}
+		void tts
+			.download(model)
+			.catch((error) => console.error("[tts] download failed:", error));
+		return Response.json({ ok: true }, { status: 202 });
+	} catch (error) {
+		return Response.json({ error: (error as Error).message }, { status: 400 });
+	}
+}
+
+async function deleteTtsModel(url: URL): Promise<Response> {
+	try {
+		const model = url.searchParams.get("model");
+		if (!model) {
+			return Response.json({ error: "model is required" }, { status: 400 });
+		}
+		await tts.deleteModel(model);
+		return Response.json({ ok: true });
+	} catch (error) {
+		return Response.json({ error: (error as Error).message }, { status: 409 });
+	}
+}
+
 async function transcribeVoice(req: Request): Promise<Response> {
 	if (contentLengthExceeds(req, MAX_VOICE_BODY_BYTES)) {
 		return payloadTooLarge(MAX_VOICE_BODY_BYTES);
@@ -858,6 +911,37 @@ async function handleVoiceRoute(url: URL, req: Request) {
 	return handler ? handler(url, req) : null;
 }
 
+const TTS_ROUTE_HANDLERS: Record<string, ServerRouteHandler> = {
+	"GET /tts": async () =>
+		Response.json({
+			status: tts.status(),
+			models: tts.models(),
+		}),
+	"POST /tts/sync": async () => {
+		await tts.syncConfig(loadConfig().voice);
+		return Response.json({ status: tts.status() });
+	},
+	"POST /tts/download": (_url, request) => downloadTtsModel(request),
+	"POST /tts/download/cancel": async () => {
+		tts.cancelDownload();
+		return Response.json({ ok: true });
+	},
+	"DELETE /tts/model": (url) => deleteTtsModel(url),
+};
+
+async function handleTtsRoute(url: URL, req: Request) {
+	const handler = TTS_ROUTE_HANDLERS[`${req.method} ${url.pathname}`];
+	if (!handler) return null;
+	try {
+		return await handler(url, req);
+	} catch (error) {
+		return Response.json(
+			{ error: error instanceof Error ? error.message : String(error) },
+			{ status: 409 },
+		);
+	}
+}
+
 async function handleAccountRoute(url: URL, req: Request) {
 	if (url.pathname !== "/account" || req.method !== "GET") return null;
 	for (const entry of pool.getAllEntries()) {
@@ -901,6 +985,7 @@ const handleAuthenticatedRoute = createAuthenticatedRouteHandler({
 		handleExtensionRoute,
 		handleCliProxyRoute,
 		handleVoiceRoute,
+		handleTtsRoute,
 		handleReadAloudRoute,
 		handleAccountRoute,
 		handleRoutineRoute,

@@ -11,19 +11,23 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_VOICE_CONFIG, type HlidConfig } from "#/config";
 import { __resetReadAloudForTesting } from "#/hooks/readAloudStore";
 import { READ_ALOUD_PREFERENCES_KEY } from "#/lib/readAloud";
+import type { TtsInfo } from "#/lib/serverFns/tts";
 import { ReadAloudSection } from "./ReadAloudSection";
 
 function Harness({
 	onChange = vi.fn(),
 	initialVoice = DEFAULT_VOICE_CONFIG,
+	ttsInfo,
 }: {
 	onChange?: (patch: Partial<HlidConfig["voice"]>) => void;
 	initialVoice?: HlidConfig["voice"];
+	ttsInfo?: TtsInfo;
 }) {
 	const [voice, setVoice] = useState<HlidConfig["voice"]>(initialVoice);
 	return (
 		<ReadAloudSection
 			voice={voice}
+			ttsInfo={ttsInfo}
 			onChange={(patch) => {
 				onChange(patch);
 				setVoice((current) => ({ ...current, ...patch }));
@@ -181,5 +185,95 @@ describe("ReadAloudSection", () => {
 		expect(
 			await screen.findByRole("option", { name: "Microsoft Zira · en-US" }),
 		).toBeTruthy();
+	});
+
+	it("offers installed local neural voices and CPU thread control", async () => {
+		const previewAudio = {
+			onended: null,
+			onerror: null,
+			onplaying: null,
+			pause: vi.fn(),
+			play: vi.fn(() => new Promise<void>(() => {})),
+		};
+		const Audio = vi.fn(function AudioMock() {
+			return previewAudio;
+		});
+		vi.stubGlobal("Audio", Audio);
+		vi.stubGlobal(
+			"fetch",
+			vi.fn().mockResolvedValue(
+				Response.json({
+					available: true,
+					voices: [],
+				}),
+			),
+		);
+		const onChange = vi.fn();
+		render(
+			<Harness
+				onChange={onChange}
+				initialVoice={{
+					...DEFAULT_VOICE_CONFIG,
+					tts_model: "kitten-nano-v0.8-int8",
+				}}
+				ttsInfo={{
+					status: {
+						state: "ready",
+						model: "kitten-nano-v0.8-int8",
+						loadedModel: "kitten-nano-v0.8-int8",
+					},
+					models: [
+						{
+							id: "kitten-nano-v0.8-int8",
+							label: "Kitten Nano v0.8",
+							description: "Fast English speech",
+							tier: "fast",
+							sizeBytes: 25_000_000,
+							runtimeSizeBytes: 9_000_000,
+							installed: true,
+							recommended: true,
+							quantized: true,
+							language: "English",
+							license: "Apache-2.0",
+							voices: [
+								{
+									id: "expr-voice-2-f",
+									label: "Expressive 2 · feminine",
+									language: "en-US",
+									speaker: 1,
+								},
+								{
+									id: "expr-voice-5-f",
+									label: "Expressive 5 · feminine",
+									language: "en-US",
+									speaker: 7,
+								},
+							],
+						},
+					],
+				}}
+			/>,
+		);
+		fireEvent.change(screen.getByLabelText("Read aloud speech engine"), {
+			target: { value: "neural" },
+		});
+		fireEvent.change(screen.getByLabelText("Read aloud neural voice"), {
+			target: { value: "expr-voice-5-f" },
+		});
+		fireEvent.change(screen.getByLabelText("Neural speech threads"), {
+			target: { value: "8" },
+		});
+		expect(onChange).toHaveBeenCalledWith({
+			read_aloud_provider: "neural",
+		});
+		expect(onChange).toHaveBeenCalledWith({ tts_voice: "expr-voice-5-f" });
+		expect(onChange).toHaveBeenCalledWith({ tts_threads: 8 });
+		const previewButton = screen.getByRole("button", {
+			name: "Play preview",
+		}) as HTMLButtonElement;
+		expect(previewButton.disabled).toBe(false);
+		fireEvent.click(previewButton);
+		expect(Audio).toHaveBeenCalledWith("/api/read-aloud/preview");
+		expect(screen.getByRole("button", { name: "Loading…" })).toBeTruthy();
 	});
 });

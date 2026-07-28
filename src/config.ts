@@ -237,6 +237,9 @@ export const DEFAULT_VOICE_CONFIG = {
 	read_aloud_provider: "device" as const,
 	read_aloud_voice: "",
 	read_aloud_rate: 1,
+	tts_model: "",
+	tts_voice: "expr-voice-2-f",
+	tts_threads: 4,
 	codex_voice: "marin" as const,
 	codex_live_mode: false,
 	hotkey: "Alt+Shift+KeyV",
@@ -268,7 +271,7 @@ const VoiceSchema = z.object({
 	language: z.string().min(1).default(DEFAULT_VOICE_CONFIG.language),
 	auto_send: z.boolean().default(DEFAULT_VOICE_CONFIG.auto_send),
 	read_aloud_provider: z
-		.enum(["device", "microsoft", "codex"])
+		.enum(["device", "microsoft", "neural", "codex"])
 		.default(DEFAULT_VOICE_CONFIG.read_aloud_provider),
 	read_aloud_voice: z.string().default(DEFAULT_VOICE_CONFIG.read_aloud_voice),
 	read_aloud_rate: z
@@ -276,6 +279,14 @@ const VoiceSchema = z.object({
 		.min(0.5)
 		.max(2)
 		.default(DEFAULT_VOICE_CONFIG.read_aloud_rate),
+	tts_model: z.string().default(DEFAULT_VOICE_CONFIG.tts_model),
+	tts_voice: z.string().min(1).default(DEFAULT_VOICE_CONFIG.tts_voice),
+	tts_threads: z
+		.number()
+		.int()
+		.min(1)
+		.max(32)
+		.default(DEFAULT_VOICE_CONFIG.tts_threads),
 	codex_voice: z
 		.enum([
 			"alloy",

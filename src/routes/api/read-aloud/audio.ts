@@ -12,6 +12,10 @@ export async function handleMicrosoftAudio(
 	query.set("message_id", source.searchParams.get("message_id") ?? "");
 	const voiceId = source.searchParams.get("voice_id");
 	if (voiceId) query.set("voice_id", voiceId);
+	if (source.searchParams.get("provider") === "neural") {
+		query.set("provider", "neural");
+		query.set("chunk_index", source.searchParams.get("chunk_index") ?? "");
+	}
 	return dbFetch(`/read-aloud/audio?${query}`, {
 		signal: request.signal,
 	});

@@ -48,6 +48,8 @@ let generation = 0;
 let utteranceGeneration = 0;
 let activeUtterance: SpeechSynthesisUtterance | null = null;
 let activeAudio: HTMLAudioElement | null = null;
+let activeAudioObjectUrl: string | null = null;
+let activeAudioFailureLabel = "Audio";
 let sharedPreferencesRequest: Promise<void> | null = null;
 let pendingVoiceDiscoveryCleanup: (() => void) | null = null;
 
@@ -65,6 +67,23 @@ type ActiveReading = {
 };
 
 let activeReading: ActiveReading | null = null;
+
+type PreparedNeuralChunk = {
+	index: number;
+	url: string;
+	hasNext: boolean;
+	used: boolean;
+};
+
+type ActiveNeuralReading = {
+	messageId: string;
+	dbId: number;
+	generation: number;
+	controller: AbortController;
+	prefetched: Promise<PreparedNeuralChunk> | null;
+};
+
+let activeNeuralReading: ActiveNeuralReading | null = null;
 
 const stateSubscribers = new Set<() => void>();
 const preferenceSubscribers = new Set<() => void>();
@@ -103,6 +122,22 @@ function releaseActiveAudio(): void {
 	audio.onerror = null;
 	audio.pause();
 	if (audio.src) audio.removeAttribute("src");
+	if (activeAudioObjectUrl) URL.revokeObjectURL(activeAudioObjectUrl);
+	activeAudioObjectUrl = null;
+}
+
+function releaseActiveNeuralReading(): void {
+	const reading = activeNeuralReading;
+	activeNeuralReading = null;
+	if (!reading) return;
+	reading.controller.abort();
+	const pending = reading.prefetched;
+	reading.prefetched = null;
+	void pending
+		?.then((chunk) => {
+			if (!chunk.used) URL.revokeObjectURL(chunk.url);
+		})
+		.catch(() => {});
 }
 
 function releasePendingVoiceDiscovery(): void {
@@ -163,6 +198,7 @@ function preferencesEqual(
 		left.provider === right.provider &&
 		left.voiceURI === right.voiceURI &&
 		left.microsoftVoiceId === right.microsoftVoiceId &&
+		left.neuralVoiceId === right.neuralVoiceId &&
 		left.rate === right.rate
 	);
 }
@@ -170,7 +206,7 @@ function preferencesEqual(
 export function applyReadAloudSharedPreferences(
 	preferences: Pick<
 		ReadAloudPreferences,
-		"provider" | "microsoftVoiceId" | "rate"
+		"provider" | "microsoftVoiceId" | "neuralVoiceId" | "rate"
 	>,
 ): void {
 	initializePreferences();
@@ -201,6 +237,7 @@ export function refreshReadAloudPreferences(): Promise<void> {
 				read_aloud_provider?: unknown;
 				read_aloud_voice?: unknown;
 				read_aloud_rate?: unknown;
+				tts_voice?: unknown;
 				codex_live_mode?: unknown;
 			};
 		};
@@ -208,6 +245,7 @@ export function refreshReadAloudPreferences(): Promise<void> {
 		applyReadAloudSharedPreferences({
 			provider:
 				voice?.read_aloud_provider === "microsoft" ||
+				voice?.read_aloud_provider === "neural" ||
 				(voice?.read_aloud_provider === "codex" &&
 					voice.codex_live_mode === true)
 					? voice.read_aloud_provider
@@ -216,6 +254,10 @@ export function refreshReadAloudPreferences(): Promise<void> {
 				typeof voice?.read_aloud_voice === "string"
 					? voice.read_aloud_voice
 					: "",
+			neuralVoiceId:
+				typeof voice?.tts_voice === "string"
+					? voice.tts_voice
+					: DEFAULT_READ_ALOUD_PREFERENCES.neuralVoiceId,
 			rate:
 				typeof voice?.read_aloud_rate === "number"
 					? voice.read_aloud_rate
@@ -366,7 +408,10 @@ export function readAloudSupported(provider?: ReadAloudProvider): boolean {
 	initializePreferences();
 	if ((provider ?? preferencesSnapshot.provider) === "codex")
 		return typeof RTCPeerConnection !== "undefined";
-	if ((provider ?? preferencesSnapshot.provider) === "microsoft")
+	if (
+		(provider ?? preferencesSnapshot.provider) === "microsoft" ||
+		(provider ?? preferencesSnapshot.provider) === "neural"
+	)
 		return typeof Audio !== "undefined";
 	return (
 		speechController() !== null &&
@@ -471,6 +516,7 @@ function startDeviceReadAloud(messageId: string, markdown: string): void {
 	const currentGeneration = ++generation;
 	utteranceGeneration++;
 	releasePendingVoiceDiscovery();
+	releaseActiveNeuralReading();
 	releaseActiveAudio();
 	releaseActiveUtterance();
 	activeReading = null;
@@ -507,6 +553,7 @@ function startMicrosoftReadAloud(messageId: string, dbId?: number): void {
 	const currentGeneration = ++generation;
 	utteranceGeneration++;
 	releasePendingVoiceDiscovery();
+	releaseActiveNeuralReading();
 	releaseActiveUtterance();
 	activeReading = null;
 	speechController()?.cancel();
@@ -515,6 +562,7 @@ function startMicrosoftReadAloud(messageId: string, dbId?: number): void {
 	if (preferencesSnapshot.microsoftVoiceId)
 		query.set("voice_id", preferencesSnapshot.microsoftVoiceId);
 	const audio = new Audio(`/api/read-aloud/audio?${query}`);
+	activeAudioFailureLabel = "Microsoft speech";
 	audio.preload = "auto";
 	audio.playbackRate = preferencesSnapshot.rate;
 	audio.onplaying = () => {
@@ -553,6 +601,147 @@ function startMicrosoftReadAloud(messageId: string, dbId?: number): void {
 	});
 }
 
+async function fetchNeuralChunk(
+	reading: ActiveNeuralReading,
+	index: number,
+): Promise<PreparedNeuralChunk> {
+	const query = new URLSearchParams({
+		message_id: String(reading.dbId),
+		provider: "neural",
+		chunk_index: String(index),
+	});
+	const response = await fetch(`/api/read-aloud/audio?${query}`, {
+		cache: "no-store",
+		signal: reading.controller.signal,
+	});
+	if (!response.ok) {
+		const detail = (await response.json().catch(() => null)) as {
+			error?: string;
+		} | null;
+		throw new Error(
+			detail?.error ?? `local neural speech failed (${response.status})`,
+		);
+	}
+	const url = URL.createObjectURL(await response.blob());
+	return {
+		index,
+		url,
+		hasNext: response.headers.get("x-hlid-has-next-chunk") === "1",
+		used: false,
+	};
+}
+
+function failNeuralReading(reading: ActiveNeuralReading, cause: unknown): void {
+	if (
+		activeNeuralReading !== reading ||
+		reading.generation !== generation ||
+		reading.controller.signal.aborted
+	)
+		return;
+	generation++;
+	releaseActiveAudio();
+	releaseActiveNeuralReading();
+	updateState({
+		messageId: reading.messageId,
+		phase: "error",
+		error:
+			cause instanceof Error
+				? `Local neural speech failed: ${cause.message}`
+				: "Local neural speech failed",
+	});
+}
+
+function playNeuralChunk(
+	reading: ActiveNeuralReading,
+	chunk: PreparedNeuralChunk,
+): void {
+	if (
+		activeNeuralReading !== reading ||
+		reading.generation !== generation ||
+		reading.controller.signal.aborted
+	) {
+		if (!chunk.used) URL.revokeObjectURL(chunk.url);
+		return;
+	}
+	chunk.used = true;
+	const audio = new Audio(chunk.url);
+	activeAudioFailureLabel = "Local neural speech";
+	activeAudioObjectUrl = chunk.url;
+	activeAudio = audio;
+	audio.preload = "auto";
+	if (chunk.hasNext)
+		reading.prefetched = fetchNeuralChunk(reading, chunk.index + 1);
+	audio.onplaying = () => {
+		if (activeAudio !== audio || reading.generation !== generation) return;
+		updateState({
+			messageId: reading.messageId,
+			phase: "speaking",
+			error: null,
+		});
+	};
+	audio.onended = () => {
+		if (activeAudio !== audio || reading.generation !== generation) return;
+		releaseActiveAudio();
+		if (!chunk.hasNext) {
+			releaseActiveNeuralReading();
+			updateState(IDLE_STATE);
+			return;
+		}
+		const next = reading.prefetched;
+		reading.prefetched = null;
+		updateState({
+			messageId: reading.messageId,
+			phase: "loading",
+			error: null,
+		});
+		void next
+			?.then((prepared) => playNeuralChunk(reading, prepared))
+			.catch((cause) => failNeuralReading(reading, cause));
+	};
+	audio.onerror = () =>
+		failNeuralReading(reading, new Error("audio playback failed"));
+	void audio.play().catch((cause) => failNeuralReading(reading, cause));
+}
+
+function startNeuralReadAloud(messageId: string, dbId?: number): void {
+	if (typeof Audio === "undefined") {
+		updateState({
+			messageId,
+			phase: "error",
+			error: "Audio playback is not supported by this browser",
+		});
+		return;
+	}
+	if (!dbId) {
+		updateState({
+			messageId,
+			phase: "error",
+			error: "This response is not ready for local neural speech yet",
+		});
+		return;
+	}
+	const currentGeneration = ++generation;
+	utteranceGeneration++;
+	releasePendingVoiceDiscovery();
+	releaseActiveNeuralReading();
+	releaseActiveUtterance();
+	activeReading = null;
+	speechController()?.cancel();
+	releaseActiveAudio();
+	const reading: ActiveNeuralReading = {
+		messageId,
+		dbId,
+		generation: currentGeneration,
+		controller: new AbortController(),
+		prefetched: null,
+	};
+	activeNeuralReading = reading;
+	updateState({ messageId, phase: "loading", error: null });
+	void fetchNeuralChunk(reading, 0)
+		.then((chunk) => playNeuralChunk(reading, chunk))
+		.catch((cause) => failNeuralReading(reading, cause));
+}
+
 function startCodexProviderReadAloud(
 	messageId: string,
 	markdown: string,
@@ -577,6 +766,7 @@ function startCodexProviderReadAloud(
 	const currentGeneration = ++generation;
 	utteranceGeneration++;
 	releasePendingVoiceDiscovery();
+	releaseActiveNeuralReading();
 	releaseActiveUtterance();
 	activeReading = null;
 	speechController()?.cancel();
@@ -610,6 +800,10 @@ export function startReadAloud(
 	initializePreferences();
 	if (preferencesSnapshot.provider === "microsoft") {
 		startMicrosoftReadAloud(messageId, dbId);
+		return;
+	}
+	if (preferencesSnapshot.provider === "neural") {
+		startNeuralReadAloud(messageId, dbId);
 		return;
 	}
 	if (preferencesSnapshot.provider === "codex") {
@@ -657,8 +851,8 @@ export function toggleReadAloud(
 				phase: "error",
 				error:
 					error instanceof Error
-						? `Microsoft speech playback failed: ${error.message}`
-						: "Microsoft speech playback failed",
+						? `${activeAudioFailureLabel} playback failed: ${error.message}`
+						: `${activeAudioFailureLabel} playback failed`,
 			});
 		});
 		return;
@@ -686,6 +880,7 @@ export function stopReadAloud(): void {
 	generation++;
 	utteranceGeneration++;
 	releasePendingVoiceDiscovery();
+	releaseActiveNeuralReading();
 	releaseActiveUtterance();
 	activeReading = null;
 	speechController()?.cancel();
@@ -777,6 +972,7 @@ export function __resetReadAloudForTesting(): void {
 	releasePendingVoiceDiscovery();
 	releaseActiveUtterance();
 	activeReading = null;
+	releaseActiveNeuralReading();
 	releaseActiveAudio();
 	stateSnapshot = IDLE_STATE;
 	preferencesSnapshot = DEFAULT_READ_ALOUD_PREFERENCES;

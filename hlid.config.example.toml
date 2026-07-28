@@ -26,6 +26,10 @@ auto_send = false
 read_aloud_provider = "device"
 read_aloud_voice = ""
 read_aloud_rate = 1
+# Local neural read aloud uses a selected, separately downloaded model and CPU runtime.
+tts_model = ""
+tts_voice = "expr-voice-2-f"
+tts_threads = 4
 codex_voice = "marin"
 codex_live_mode = false
 hotkey = "Alt+Shift+KeyV"

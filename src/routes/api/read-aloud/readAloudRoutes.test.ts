@@ -6,6 +6,7 @@ vi.mock("#/lib/dbClient", () => ({ dbFetch: vi.fn() }));
 import { dbFetch } from "#/lib/dbClient";
 import { forbiddenResponse } from "#/lib/originGate";
 import { handleMicrosoftAudio } from "./audio";
+import { handleNeuralPreview } from "./preview";
 import { handleMicrosoftVoices } from "./voices";
 
 const mockDbFetch = vi.mocked(dbFetch);
@@ -55,6 +56,28 @@ describe("read aloud route adapters", () => {
 		);
 		expect(mockDbFetch).toHaveBeenCalledWith(
 			"/read-aloud/audio?message_id=42&voice_id=windows%3Amark",
+			expect.objectContaining({ signal: expect.any(AbortSignal) }),
+		);
+	});
+
+	it("forwards only the bounded neural chunk parameters", async () => {
+		await handleMicrosoftAudio(
+			new Request(
+				"http://localhost/api/read-aloud/audio?message_id=42&provider=neural&chunk_index=3&voice_id=ignored",
+			),
+		);
+		expect(mockDbFetch).toHaveBeenCalledWith(
+			"/read-aloud/audio?message_id=42&voice_id=ignored&provider=neural&chunk_index=3",
+			expect.objectContaining({ signal: expect.any(AbortSignal) }),
+		);
+	});
+
+	it("proxies the fixed neural voice preview", async () => {
+		await handleNeuralPreview(
+			new Request("http://localhost/api/read-aloud/preview"),
+		);
+		expect(mockDbFetch).toHaveBeenCalledWith(
+			"/read-aloud/preview",
 			expect.objectContaining({ signal: expect.any(AbortSignal) }),
 		);
 	});

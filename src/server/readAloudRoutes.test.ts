@@ -119,4 +119,65 @@ describe("read aloud internal routes", () => {
 		resolveAudio?.(new TextEncoder().encode("RIFF0000WAVEaudio"));
 		expect((await first)?.status).toBe(200);
 	});
+
+	it("synthesizes a bounded neural chunk with server-owned settings", async () => {
+		const synthesize = vi.fn().mockResolvedValue({
+			audio: new TextEncoder().encode("RIFF0000WAVEaudio"),
+			synthesisMs: 640,
+			durationMs: 1_800,
+		});
+		const handler = createReadAloudRouteHandler({
+			speech: { voices: vi.fn(), synthesize: vi.fn() },
+			tts: { synthesize },
+			getAssistantMessageText: vi
+				.fn()
+				.mockResolvedValue(
+					"Hlid reads a short first chunk and prepares the remainder.",
+				),
+			getNeuralSettings: () => ({
+				voiceId: "expr-voice-5-f",
+				rate: 1.25,
+			}),
+		});
+		const url = new URL(
+			"http://localhost/read-aloud/audio?message_id=42&provider=neural&chunk_index=0&voice_id=ignored",
+		);
+		const response = await handler(
+			url,
+			request(`${url.pathname}${url.search}`),
+		);
+		expect(response?.status).toBe(200);
+		expect(response?.headers.get("x-hlid-has-next-chunk")).toBe("1");
+		expect(response?.headers.get("x-hlid-synthesis-ms")).toBe("640");
+		expect(synthesize).toHaveBeenCalledWith(
+			expect.stringMatching(/^Hlid reads.*\.$/),
+			"expr-voice-5-f",
+			1.25,
+		);
+	});
+
+	it("uses fixed text for neural voice preview", async () => {
+		const synthesize = vi.fn().mockResolvedValue({
+			audio: new TextEncoder().encode("RIFF0000WAVEaudio"),
+		});
+		const handler = createReadAloudRouteHandler({
+			speech: { voices: vi.fn(), synthesize: vi.fn() },
+			tts: { synthesize },
+			getAssistantMessageText: vi.fn(),
+			getNeuralSettings: () => ({
+				voiceId: "expr-voice-2-f",
+				rate: 1,
+			}),
+		});
+		const response = await handler(
+			new URL("http://localhost/read-aloud/preview"),
+			request("/read-aloud/preview"),
+		);
+		expect(response?.status).toBe(200);
+		expect(synthesize).toHaveBeenCalledWith(
+			"Hlid is ready to read replies aloud.",
+			"expr-voice-2-f",
+			1,
+		);
+	});
 });

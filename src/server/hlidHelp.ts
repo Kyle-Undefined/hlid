@@ -55,6 +55,16 @@ export type HlidOperatingContext = {
 			| "error";
 		model?: string;
 	};
+	ttsSnapshot?: {
+		state:
+			| "disabled"
+			| "unconfigured"
+			| "unavailable"
+			| "loading"
+			| "ready"
+			| "error";
+		model?: string;
+	};
 	registeredHlidTools?: readonly string[];
 	providerSnapshot?: ProviderInfo;
 };
@@ -261,6 +271,13 @@ export function buildHlidCapabilityManifest(
 					context.voiceSnapshot === undefined
 				? "conditional"
 				: "unavailable";
+	const localReadAloudAvailability: CapabilityAvailability =
+		context.ttsSnapshot?.state === "ready"
+			? "available"
+			: context.ttsSnapshot?.state === "loading" ||
+					context.ttsSnapshot === undefined
+				? "conditional"
+				: "unavailable";
 	const nativeAudioAvailability: CapabilityAvailability =
 		provider?.available === false || modelAudioAvailable === false
 			? "unavailable"
@@ -286,6 +303,7 @@ export function buildHlidCapabilityManifest(
 			: "unavailable";
 	const voiceAvailability: CapabilityAvailability = [
 		localDictationAvailability,
+		localReadAloudAvailability,
 		nativeAudioAvailability,
 		ravenLiveAvailability,
 	].some(
@@ -295,6 +313,7 @@ export function buildHlidCapabilityManifest(
 		? "available"
 		: [
 					localDictationAvailability,
+					localReadAloudAvailability,
 					nativeAudioAvailability,
 					ravenLiveAvailability,
 				].includes("conditional")
@@ -344,6 +363,14 @@ export function buildHlidCapabilityManifest(
 					state: context.voiceSnapshot.state,
 					model: context.voiceSnapshot.model
 						? boundedValue(context.voiceSnapshot.model, 200)
+						: undefined,
+				}
+			: null,
+		tts: context.ttsSnapshot
+			? {
+					state: context.ttsSnapshot.state,
+					model: context.ttsSnapshot.model
+						? boundedValue(context.ttsSnapshot.model, 200)
 						: undefined,
 				}
 			: null,
@@ -508,7 +535,7 @@ export function buildHlidCapabilityManifest(
 				owner: "hlid",
 				availability: voiceAvailability,
 				summary:
-					"Voice is reported as separate local dictation, provider-native audio input, and Raven Live modes.",
+					"Voice is reported as separate local dictation, local neural read aloud, provider-native audio input, and Raven Live modes.",
 				modes: {
 					local_dictation: {
 						owner: "hlid",
@@ -521,6 +548,18 @@ export function buildHlidCapabilityManifest(
 									: context.voiceSnapshot
 										? `Local Whisper dictation is ${context.voiceSnapshot.state}.`
 										: "Local Whisper status is not available in this snapshot.",
+					},
+					local_read_aloud: {
+						owner: "hlid",
+						availability: localReadAloudAvailability,
+						summary:
+							context.ttsSnapshot?.state === "ready"
+								? "Local neural read aloud is ready."
+								: context.ttsSnapshot?.state === "loading"
+									? "The configured local neural speech model is loading."
+									: context.ttsSnapshot
+										? `Local neural read aloud is ${context.ttsSnapshot.state}.`
+										: "Local neural read-aloud status is not available in this snapshot.",
 					},
 					native_audio_input: {
 						owner: "provider",
@@ -634,6 +673,7 @@ const TOPIC_GUIDANCE: Record<HlidHelpTopic, string[]> = {
 	],
 	voice_audio: [
 		"Local Whisper dictation is user input and is separate from provider-native audio turns or Raven Live.",
+		"Local neural read aloud is host-generated output. It uses its own downloaded model and runtime, independently of Whisper input and provider-native audio.",
 		"Native Codex audio requires an audio-capable selected model. Raven Live additionally requires the Hlid feature flag and provider backend support.",
 		"Do not claim audio or realtime availability from the provider name alone; use the live capability state.",
 	],

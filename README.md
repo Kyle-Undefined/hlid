@@ -50,7 +50,8 @@ own folder vocabulary. `Hlið` does not care as long as the paths are set up.
 - Runs `Whisper` locally for editable dictation. Native Codex chats can also
   take a recorded audio turn or use the separately gated `Raven Live` mode.
   Completed replies can be read aloud through a local device voice, Microsoft
-  speech on the Windows host, or supported Codex realtime audio.
+  speech on the Windows host, a downloaded Kitten or Piper neural voice, or
+  supported Codex realtime audio.
 - Opens a real project shell in `Raven`, with an optional interactive `Claude
   CLI` mode when the full terminal makes more sense than the structured chat UI.
 - Keeps linked vaults and workspaces, provider commands, permissions, scoped
@@ -193,6 +194,12 @@ bun run test:db        # Bun-only database and auth tests
 bun run validate       # Static checks, merged coverage, and full Fallow analysis
 bun run build:win      # Windows executable build
 ```
+
+`build:win` uses the reviewed Whisper archive from
+`.cache/whisper/hlid-whisper-runtime-windows-x64-v1.9.1.zip` when it is
+available. That cache is ignored by Git. The `Release` workflow builds and
+audits the same runtime, passes it directly into the Windows build, and
+publishes it under the `whisper-runtime-v1.9.1` release tag for clean builds.
 
 Ledger's **Import provider history** action discovers Claude CLI/SDK/Cowork and
 Codex CLI/Desktop/editor sessions on Windows and configured WSL distros. It

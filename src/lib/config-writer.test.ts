@@ -219,6 +219,9 @@ describe("writeConfig — voice section", () => {
 				read_aloud_provider: "microsoft",
 				read_aloud_voice: "voice-mark",
 				read_aloud_rate: 1.25,
+				tts_model: "kitten-nano-v0.8-int8",
+				tts_voice: "expr-voice-5-f",
+				tts_threads: 8,
 			},
 		});
 		writeConfig(config);
@@ -226,6 +229,9 @@ describe("writeConfig — voice section", () => {
 		expect(toml).toContain('read_aloud_provider = "microsoft"');
 		expect(toml).toContain('read_aloud_voice = "voice-mark"');
 		expect(toml).toContain("read_aloud_rate = 1.25");
+		expect(toml).toContain('tts_model = "kitten-nano-v0.8-int8"');
+		expect(toml).toContain('tts_voice = "expr-voice-5-f"');
+		expect(toml).toContain("tts_threads = 8");
 	});
 
 	it("preserves Talk to Codex input and realtime Developer Preview", () => {
@@ -257,6 +263,9 @@ describe("writeConfig — voice section", () => {
 					read_aloud_provider: "device",
 					read_aloud_voice: "",
 					read_aloud_rate: 1,
+					tts_model: "",
+					tts_voice: "expr-voice-2-f",
+					tts_threads: 4,
 					codex_voice: "marin",
 					codex_live_mode: false,
 					hotkey: "",

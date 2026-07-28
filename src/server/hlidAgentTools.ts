@@ -449,7 +449,7 @@ async function liveHlidOperatingContext(
 			// Persisted selections are best-effort; provider context remains usable.
 		}
 	}
-	const [providerSnapshot, voiceSnapshot] = await Promise.all([
+	const [providerSnapshot, voiceSnapshot, ttsSnapshot] = await Promise.all([
 		(async () => {
 			try {
 				const response = await dbFetch("/providers?host_capabilities=1");
@@ -474,6 +474,18 @@ async function liveHlidOperatingContext(
 				return undefined;
 			}
 		})(),
+		(async () => {
+			try {
+				const response = await dbFetch("/tts");
+				if (!response.ok) return undefined;
+				const body = (await response.json()) as {
+					status?: HlidOperatingContext["ttsSnapshot"];
+				};
+				return body.status;
+			} catch {
+				return undefined;
+			}
+		})(),
 	]);
 	return {
 		...live,
@@ -485,6 +497,7 @@ async function liveHlidOperatingContext(
 		],
 		...(providerSnapshot ? { providerSnapshot } : {}),
 		...(voiceSnapshot ? { voiceSnapshot } : {}),
+		...(ttsSnapshot ? { ttsSnapshot } : {}),
 	};
 }
 

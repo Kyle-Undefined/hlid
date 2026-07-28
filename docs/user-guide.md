@@ -583,17 +583,38 @@ viewing `Raven`. `Hlið` excludes voices that the browser reports as remote.
 option works from a phone connected through `Tailscale` and gives the browser
 exact media pause and resume behavior.
 
+**Local neural** uses a downloaded speech model and the sherpa-onnx runtime on
+the `Hlið` host. Forge offers Kitten Nano and three single-voice Piper packs as
+fast choices with different tones and accents. Kitten remains the recommended
+default.
+
+Forge shows each model's tier, download size, license, voice choices, CPU
+thread setting, download progress, and a fixed voice preview. Downloads are
+explicit and models can be removed separately. Hlið checks the runtime and
+model archives before installing them and does not include them in its
+executable.
+
+Local neural speech runs in a separate child process so native inference does
+not block the main Hlið server. Replies use a short opening chunk, then
+sentence-sized chunks with one chunk prepared ahead. Playback can begin while
+the rest of a long reply is still being generated. Only the selected model is
+loaded into memory. The current speech runtime is CPU-based. Whisper input can
+use Vulkan independently.
+
 When **Codex realtime Developer Preview** is available for the signed-in Codex
 account, **Codex realtime** appears as another read-aloud engine with its own
 voice. This is a separately gated Codex capability. The local device and
 Microsoft choices remain available without it.
 
-The speech engine, Microsoft voice, and reading speed are saved in the Hlið
+The speech engine, host voice, and reading speed are saved in the Hlið
 configuration and apply to every device. The selected device-browser voice
 stays on that device because each browser can expose a different voice list.
-Microsoft speech and device speech both run locally without a cloud speech
-service. Microsoft speech audio does travel from the `Hlið` host to the viewing
-device over the current Hlið connection.
+Microsoft, neural, and device speech all run without a cloud speech service.
+Host-generated speech audio travels from the `Hlið` host to the viewing device
+over the current Hlið connection.
+
+See [Third-party notices](../THIRD_PARTY_NOTICES.md) for the exact local neural
+speech archives, checksums, source, and licenses.
 
 Read aloud skips fenced code blocks, link addresses, and Markdown formatting.
 It reads the finished response text, not tool activity or a reply that is still

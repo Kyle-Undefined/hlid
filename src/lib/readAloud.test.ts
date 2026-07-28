@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+	chunkNeuralReadAloudText,
 	chunkReadAloudText,
 	DEFAULT_READ_ALOUD_PREFERENCES,
 	estimateReadAloudResumeIndex,
@@ -50,6 +51,22 @@ describe("chunkReadAloudText", () => {
 	});
 });
 
+describe("chunkNeuralReadAloudText", () => {
+	it("uses a short first chunk and preserves the complete text", () => {
+		const text =
+			"Hlid reads a deliberately short opening before preparing the rest of this reply.";
+		const chunks = chunkNeuralReadAloudText(text);
+		expect(chunks[0]?.length).toBeLessThanOrEqual(20);
+		expect(chunks.join(" ")).toBe(text);
+		expect(chunks.slice(1).every((chunk) => chunk.length <= 220)).toBe(true);
+	});
+
+	it("keeps an unbroken token inside the runtime limit", () => {
+		const chunks = chunkNeuralReadAloudText("x".repeat(900));
+		expect(chunks.every((chunk) => chunk.length <= 220)).toBe(true);
+	});
+});
+
 describe("estimateReadAloudResumeIndex", () => {
 	it("uses elapsed speech to resume at a conservative prior word", () => {
 		const text = "One two three four five six seven eight.";
@@ -82,6 +99,7 @@ describe("normalizeReadAloudPreferences", () => {
 			provider: "microsoft",
 			voiceURI: "local:voice",
 			microsoftVoiceId: "windows:mark",
+			neuralVoiceId: "expr-voice-2-f",
 			rate: 1.25,
 		});
 	});
@@ -93,6 +111,7 @@ describe("normalizeReadAloudPreferences", () => {
 			provider: "device",
 			voiceURI: "local:voice",
 			microsoftVoiceId: "",
+			neuralVoiceId: "expr-voice-2-f",
 			rate: 1.5,
 		});
 	});
@@ -101,5 +120,17 @@ describe("normalizeReadAloudPreferences", () => {
 		expect(normalizeReadAloudPreferences({ voiceURI: 7, rate: 12 })).toEqual(
 			DEFAULT_READ_ALOUD_PREFERENCES,
 		);
+	});
+
+	it("accepts the local neural provider and voice", () => {
+		expect(
+			normalizeReadAloudPreferences({
+				provider: "neural",
+				neuralVoiceId: "expr-voice-5-f",
+			}),
+		).toMatchObject({
+			provider: "neural",
+			neuralVoiceId: "expr-voice-5-f",
+		});
 	});
 });

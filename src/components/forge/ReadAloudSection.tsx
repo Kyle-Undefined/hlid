@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { HlidConfig } from "#/config";
 import {
 	applyReadAloudSharedPreferences,
@@ -6,6 +6,7 @@ import {
 	useLocalReadAloudVoices,
 	useReadAloudPreferences,
 } from "#/hooks/readAloudStore";
+import type { TtsInfo } from "#/lib/serverFns/tts";
 import { Field, Section } from "./fields";
 
 const RATE_OPTIONS = [0.75, 1, 1.25, 1.5, 2] as const;
@@ -50,33 +51,47 @@ type MicrosoftInventory = {
 type VoiceConfig = HlidConfig["voice"];
 type SharedPatch = Pick<
 	VoiceConfig,
-	"read_aloud_provider" | "read_aloud_voice" | "read_aloud_rate" | "codex_voice"
+	| "read_aloud_provider"
+	| "read_aloud_voice"
+	| "read_aloud_rate"
+	| "codex_voice"
+	| "tts_voice"
+	| "tts_threads"
 >;
 
 export function ReadAloudSection({
 	voice,
 	onChange,
+	ttsInfo,
 }: {
 	voice: VoiceConfig;
 	onChange: (patch: Partial<VoiceConfig>) => void;
+	ttsInfo?: TtsInfo;
 }) {
 	const browserPreferences = useReadAloudPreferences(false);
 	const preferences = {
 		provider: voice.read_aloud_provider,
 		voiceURI: browserPreferences.voiceURI,
 		microsoftVoiceId: voice.read_aloud_voice,
+		neuralVoiceId: voice.tts_voice,
 		rate: voice.read_aloud_rate,
 		codexVoice: voice.codex_voice,
 	};
 	const voices = useLocalReadAloudVoices();
 	const [microsoft, setMicrosoft] = useState<MicrosoftInventory | null>(null);
 	const [refreshingMicrosoft, setRefreshingMicrosoft] = useState(false);
+	const [previewState, setPreviewState] = useState<
+		"idle" | "loading" | "playing"
+	>("idle");
+	const [previewError, setPreviewError] = useState<string | null>(null);
+	const previewAudio = useRef<HTMLAudioElement | null>(null);
 	const updateShared = (patch: Partial<SharedPatch>) => {
 		const next = { ...voice, ...patch };
 		onChange(patch);
 		applyReadAloudSharedPreferences({
 			provider: next.read_aloud_provider,
 			microsoftVoiceId: next.read_aloud_voice,
+			neuralVoiceId: next.tts_voice,
 			rate: next.read_aloud_rate,
 		});
 	};
@@ -84,12 +99,14 @@ export function ReadAloudSection({
 		applyReadAloudSharedPreferences({
 			provider: voice.read_aloud_provider,
 			microsoftVoiceId: voice.read_aloud_voice,
+			neuralVoiceId: voice.tts_voice,
 			rate: voice.read_aloud_rate,
 		});
 	}, [
 		voice.read_aloud_provider,
 		voice.read_aloud_rate,
 		voice.read_aloud_voice,
+		voice.tts_voice,
 	]);
 	useEffect(() => {
 		const abort = new AbortController();
@@ -113,6 +130,37 @@ export function ReadAloudSection({
 			});
 		return () => abort.abort();
 	}, []);
+	useEffect(
+		() => () => {
+			previewAudio.current?.pause();
+			previewAudio.current = null;
+		},
+		[],
+	);
+	const playNeuralPreview = () => {
+		previewAudio.current?.pause();
+		setPreviewError(null);
+		setPreviewState("loading");
+		const audio = new Audio("/api/read-aloud/preview");
+		previewAudio.current = audio;
+		audio.onplaying = () => setPreviewState("playing");
+		audio.onended = () => {
+			if (previewAudio.current === audio) previewAudio.current = null;
+			setPreviewState("idle");
+		};
+		audio.onerror = () => {
+			if (previewAudio.current === audio) previewAudio.current = null;
+			setPreviewState("idle");
+			setPreviewError("Preview could not be prepared");
+		};
+		void audio.play().catch((cause) => {
+			if (previewAudio.current === audio) previewAudio.current = null;
+			setPreviewState("idle");
+			setPreviewError(
+				cause instanceof Error ? cause.message : "Preview playback failed",
+			);
+		});
+	};
 	const refreshMicrosoftVoices = async () => {
 		setRefreshingMicrosoft(true);
 		try {
@@ -137,6 +185,16 @@ export function ReadAloudSection({
 	)
 		? preferences.voiceURI
 		: "";
+	const neuralModel =
+		ttsInfo?.models.find((model) => model.id === voice.tts_model) ??
+		ttsInfo?.models.find((model) => model.recommended);
+	const neuralVoiceId =
+		neuralModel?.voices.find(
+			(candidate) => candidate.id === preferences.neuralVoiceId,
+		)?.id ??
+		neuralModel?.voices[0]?.id ??
+		"";
+	const neuralReady = ttsInfo?.status.state === "ready";
 	return (
 		<Section title="Read aloud">
 			<Field label="Speech engine" hint="saved for every device">
@@ -146,6 +204,7 @@ export function ReadAloudSection({
 						updateShared({
 							read_aloud_provider:
 								event.target.value === "microsoft" ||
+								event.target.value === "neural" ||
 								event.target.value === "codex"
 									? event.target.value
 									: "device",
@@ -158,6 +217,7 @@ export function ReadAloudSection({
 					<option value="microsoft" disabled={microsoft?.available === false}>
 						Microsoft host
 					</option>
+					<option value="neural">Local neural</option>
 					{(voice.codex_live_mode || preferences.provider === "codex") && (
 						<option value="codex">Codex realtime · Developer Preview</option>
 					)}
@@ -244,6 +304,73 @@ export function ReadAloudSection({
 								{refreshingMicrosoft ? "Refreshing…" : "Refresh voices"}
 							</button>
 						</div>
+					</Field>
+				</>
+			) : preferences.provider === "neural" ? (
+				<>
+					<Field
+						label="Neural voice"
+						hint={
+							neuralReady
+								? "generated on the Hlid host with the downloaded local model"
+								: ttsInfo?.status.error ||
+									"download and select the neural voice model below"
+						}
+					>
+						<select
+							value={neuralVoiceId}
+							onChange={(event) =>
+								updateShared({ tts_voice: event.target.value })
+							}
+							disabled={!neuralModel?.installed}
+							aria-label="Read aloud neural voice"
+							className="w-48 sm:w-64 bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50 disabled:opacity-50"
+						>
+							{neuralModel?.voices.map((candidate) => (
+								<option key={candidate.id} value={candidate.id}>
+									{candidate.label}
+								</option>
+							))}
+						</select>
+					</Field>
+					<Field
+						label="Speech threads"
+						hint="CPU threads reserved for local neural speech"
+					>
+						<select
+							value={voice.tts_threads}
+							onChange={(event) =>
+								updateShared({ tts_threads: Number(event.target.value) })
+							}
+							aria-label="Neural speech threads"
+							className="w-32 sm:w-48 bg-input border border-border px-2.5 py-1.5 text-xs font-mono text-foreground focus:outline-none focus:border-primary/50"
+						>
+							{![1, 2, 4, 8, 16, 32].includes(voice.tts_threads) && (
+								<option value={voice.tts_threads}>{voice.tts_threads}</option>
+							)}
+							{[1, 2, 4, 8, 16, 32].map((threads) => (
+								<option key={threads} value={threads}>
+									{threads}
+								</option>
+							))}
+						</select>
+					</Field>
+					<Field
+						label="Voice preview"
+						hint={previewError || "plays a fixed phrase with the saved voice"}
+					>
+						<button
+							type="button"
+							onClick={playNeuralPreview}
+							disabled={!neuralReady || previewState !== "idle"}
+							className="px-3 py-1.5 border border-border text-[10px] tracking-widest uppercase disabled:opacity-40"
+						>
+							{previewState === "loading"
+								? "Loading…"
+								: previewState === "playing"
+									? "Playing…"
+									: "Play preview"}
+						</button>
 					</Field>
 				</>
 			) : (

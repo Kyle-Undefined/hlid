@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
 	copyVerifiedArchive,
 	downloadVerifiedArchive,
+	resolveLocalRuntimeArchive,
 	type RuntimeManifestEntry,
 	verifyRuntimeTree,
 } from "./bundle-whisper-assets";
@@ -154,5 +155,25 @@ describe("copyVerifiedArchive", () => {
 		expect(() =>
 			copyVerifiedArchive(source, join(dir, "runtime.zip"), "0".repeat(64)),
 		).toThrow("SHA-256 mismatch");
+	});
+});
+
+describe("resolveLocalRuntimeArchive", () => {
+	it("prefers an explicit reviewed archive override", () => {
+		expect(
+			resolveLocalRuntimeArchive("/tmp/override.zip", "/tmp/cache.zip", () => true),
+		).toBe("/tmp/override.zip");
+	});
+
+	it("uses the ignored dev cache when it exists", () => {
+		expect(
+			resolveLocalRuntimeArchive(undefined, "/tmp/cache.zip", () => true),
+		).toBe("/tmp/cache.zip");
+	});
+
+	it("falls back to the reviewed release download without a local archive", () => {
+		expect(
+			resolveLocalRuntimeArchive(undefined, "/tmp/cache.zip", () => false),
+		).toBeUndefined();
 	});
 });

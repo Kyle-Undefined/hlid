@@ -44,6 +44,7 @@ const observeUiRequest = createRequestObserver({
 	slowRequestMs: (request) => {
 		const pathname = new URL(request.url).pathname;
 		if (pathname === "/api/voice/transcribe") return 70_000;
+		if (pathname.startsWith("/api/read-aloud/")) return 10_000;
 		const id = pathname.startsWith("/_serverFn/")
 			? pathname.slice("/_serverFn/".length).split("/")[0]
 			: undefined;
