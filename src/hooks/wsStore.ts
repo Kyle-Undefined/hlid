@@ -273,7 +273,13 @@ function getWsUrl(): string {
 		return `wss://${window.location.host}/ws`;
 	}
 
-	// HTTP: WS server runs on app port + 1
+	// Compiled build over plain HTTP: same-origin — the UI server bridges /ws
+	// to the API port. Cross-port ws:// is a known adblocker kill target.
+	if (!(import.meta as { env?: { DEV?: boolean } }).env?.DEV) {
+		return `ws://${window.location.host}/ws`;
+	}
+
+	// Vite dev over plain HTTP (no /ws proxy): WS server runs on app port + 1
 	const appPort = Number(window.location.port) || 80;
 	return `ws://${window.location.hostname}:${appPort + 1}/ws`;
 }

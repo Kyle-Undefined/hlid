@@ -540,7 +540,11 @@ const isCompiled = process.execPath.endsWith(".exe");
 let directUiForward: import("./uiServer").UiForward | undefined;
 
 if (isCompiled) {
-	directUiForward = await startUiServer(UI_PORT, BIND_HOST);
+	directUiForward = await startUiServer(UI_PORT, BIND_HOST, {
+		wsPort: PORT,
+		internalToken: SERVER_TOKEN,
+		localNetworkAccess: config.server.local_network_access,
+	});
 
 	// Interactive launch (double-click) gets a browser pop. Autostart-at-login
 	// (registry value carries `--background`) does not.

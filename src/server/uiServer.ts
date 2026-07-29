@@ -10,8 +10,14 @@ import {
 	projectPreviewSlowRequestThreshold,
 } from "./requestDiagnostics";
 import { uiStartupGateResponse } from "./uiStartupGate";
+import { handleUiWsUpgrade, type UiWsBridgeOptions } from "./uiWsBridge";
+import {
+	createWebSocketBridgeHandlers,
+	type WebSocketBridgeData,
+} from "./webSocketBridge";
 
 export type UiForward = (input: string, init: RequestInit) => Promise<Response>;
+export type { UiWsBridgeOptions } from "./uiWsBridge";
 
 type UiServerContext = {
 	requestIP(request: Request): { address: string } | null;
@@ -81,6 +87,7 @@ function tryUiStatic(pathname: string): Response | null {
 export async function startUiServer(
 	port: number,
 	bindHost: string,
+	wsBridge: UiWsBridgeOptions,
 ): Promise<UiForward> {
 	// Lazy import — only resolves in the compiled exe after `vite build`.
 	// Keeping this dynamic prevents the SSR bundle (and its bundled React)
@@ -138,11 +145,21 @@ export async function startUiServer(
 	let uiServer: UiServerContext;
 	while (true) {
 		try {
-			const server = Bun.serve({
+			const server = Bun.serve<WebSocketBridgeData>({
 				port,
 				hostname: bindHost,
 				idleTimeout: 60,
-				fetch(req, srv) {
+				websocket: createWebSocketBridgeHandlers<WebSocketBridgeData>({
+					headers: () => ({ "x-hlid-internal": wsBridge.internalToken }),
+				}),
+				async fetch(req, srv) {
+					const wsResponse = await handleUiWsUpgrade(
+						req,
+						srv,
+						new URL(req.url),
+						wsBridge,
+					);
+					if (wsResponse !== null) return wsResponse;
 					return handleRequest(req, srv);
 				},
 			});

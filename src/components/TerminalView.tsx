@@ -18,8 +18,10 @@ import { useEffect, useRef, useState } from "react";
 import { TerminalExitedOverlay } from "./TerminalExitedOverlay";
 
 /**
- * Builds the /ws/terminal URL. Same-origin (proxy routes to backend) under
- * HTTPS; explicit backend port (frontend port + 1) in plain HTTP dev mode.
+ * Builds the /ws/terminal URL. Same-origin everywhere except plain-HTTP Vite
+ * dev: HTTPS routes /ws through the TLS proxy, and the compiled build's UI
+ * server bridges /ws to the API port (cross-port ws:// is a known adblocker
+ * kill target). Vite dev has no /ws proxy, so it dials backend port + 1.
  */
 function buildTerminalWsUrl(
 	wsPath: string,
@@ -29,10 +31,12 @@ function buildTerminalWsUrl(
 	rows: number,
 ): URL {
 	const wsProto = location.protocol === "https:" ? "wss:" : "ws:";
-	const wsBase =
-		location.protocol === "https:"
-			? `${wsProto}//${location.host}${wsPath}`
-			: `${wsProto}//${location.hostname}:${Number(location.port) + 1}${wsPath}`;
+	const sameOrigin =
+		location.protocol === "https:" ||
+		!(import.meta as { env?: { DEV?: boolean } }).env?.DEV;
+	const wsBase = sameOrigin
+		? `${wsProto}//${location.host}${wsPath}`
+		: `${wsProto}//${location.hostname}:${Number(location.port) + 1}${wsPath}`;
 	const url = new URL(wsBase);
 	url.searchParams.set("session_id", sessionId);
 	url.searchParams.set("cwd", cwd);
