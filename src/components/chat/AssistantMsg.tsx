@@ -44,6 +44,7 @@ function AcceptedSteerReceipt({
 	const [expanded, setExpanded] = useState(false);
 	const [canExpand, setCanExpand] = useState(false);
 	const textRef = useRef<HTMLSpanElement>(null);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: canExpand swaps the wrapper and must rebind measurement to the replacement text node
 	useLayoutEffect(() => {
 		if (!message.text) {
 			setCanExpand(false);
@@ -62,7 +63,7 @@ function AcceptedSteerReceipt({
 		}
 		window.addEventListener("resize", measure);
 		return () => window.removeEventListener("resize", measure);
-	}, [expanded, message.text]);
+	}, [canExpand, expanded, message.text]);
 	const content = (
 		<>
 			<Route

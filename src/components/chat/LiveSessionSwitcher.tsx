@@ -3,8 +3,10 @@ import {
 	createContext,
 	Fragment,
 	type ReactNode,
+	useCallback,
 	useContext,
 	useEffect,
+	useLayoutEffect,
 	useRef,
 	useState,
 	useSyncExternalStore,
@@ -32,6 +34,27 @@ import { displayHotkey, matchesHotkey } from "#/lib/voiceHotkey";
 
 const MOBILE_HISTORY_KEY = "__hlidLiveSessionSwitcher";
 
+function browserRouteKey(): string {
+	if (typeof window === "undefined") return "";
+	return `${window.location.pathname}${window.location.search}${window.location.hash}`;
+}
+
+function pushMobileHistoryMarker(
+	marker: { current: boolean },
+	routeKey: string,
+): void {
+	window.history.pushState(
+		{ ...(window.history.state ?? {}), [MOBILE_HISTORY_KEY]: routeKey },
+		"",
+	);
+	marker.current = true;
+}
+
+function mobileHistoryMarkerMatches(routeKey: string): boolean {
+	const current = window.history.state as Record<string, unknown> | null;
+	return current?.[MOBILE_HISTORY_KEY] === routeKey;
+}
+
 function clearMobileHistoryMarker(marker: { current: boolean }): void {
 	if (!marker.current) return;
 	const current = window.history.state as Record<string, unknown> | null;
@@ -51,6 +74,18 @@ type LiveSessionSwitcherProps = {
 	onSelectSession: (sessionId: string, replace: boolean) => void;
 	onOpenLedger: (replace: boolean) => void;
 };
+
+type LiveSessionSwitcherRegistration = Omit<
+	LiveSessionSwitcherProps,
+	"children"
+>;
+
+type LiveSessionSwitcherBoundaryContextValue = {
+	register: (registration: LiveSessionSwitcherRegistration) => void;
+};
+
+const LiveSessionSwitcherBoundaryContext =
+	createContext<LiveSessionSwitcherBoundaryContextValue | null>(null);
 
 function toneClass(tone: ReturnType<typeof liveSessionToggleTone>): string {
 	if (tone === "needs_attention") return semanticStatusClass.warning.text;
@@ -389,14 +424,17 @@ function LiveSessionDrawer({
 	);
 }
 
-export function LiveSessionSwitcher({
+/**
+ * Keeps the attention drawer mounted above Raven's pending and session-keyed
+ * route content so an in-flight route adoption cannot dismiss it.
+ */
+export function LiveSessionSwitcherBoundary({
 	children,
-	currentSessionId,
-	hotkey,
-	voiceHotkey = "",
-	onSelectSession,
-	onOpenLedger,
-}: LiveSessionSwitcherProps) {
+	routeKey,
+}: {
+	children: ReactNode;
+	routeKey?: string;
+}) {
 	const sessions = useSyncExternalStore(
 		subscribeSessionsStatus,
 		getSessionsStatus,
@@ -405,30 +443,62 @@ export function LiveSessionSwitcher({
 	const rows = deriveLiveSessionSwitcherRows(sessions);
 	const tone = liveSessionToggleTone(rows);
 	const isDesktop = useIsDesktop();
-	const effectiveHotkey = hotkey !== voiceHotkey ? hotkey : "";
 	const [open, setOpen] = useState(false);
 	const mobileHistoryPushedRef = useRef(false);
+	const registrationRef = useRef<LiveSessionSwitcherRegistration | null>(null);
+	const [presentation, setPresentation] = useState<{
+		currentSessionId: string;
+		hotkey: string;
+		voiceHotkey: string;
+	} | null>(null);
+	const effectiveRouteKey = routeKey ?? browserRouteKey();
+	const effectiveHotkey =
+		presentation && presentation.hotkey !== presentation.voiceHotkey
+			? presentation.hotkey
+			: "";
+	const register = useCallback(
+		(registration: LiveSessionSwitcherRegistration) => {
+			const previous = registrationRef.current;
+			registrationRef.current = registration;
+			const voiceHotkey = registration.voiceHotkey ?? "";
+			if (
+				previous?.currentSessionId === registration.currentSessionId &&
+				previous.hotkey === registration.hotkey &&
+				(previous.voiceHotkey ?? "") === voiceHotkey
+			) {
+				return;
+			}
+			setPresentation({
+				currentSessionId: registration.currentSessionId,
+				hotkey: registration.hotkey,
+				voiceHotkey,
+			});
+		},
+		[],
+	);
 
 	function openDrawer(): void {
 		if (document.activeElement instanceof HTMLElement) {
 			document.activeElement.blur();
 		}
 		if (!isDesktop) {
-			window.history.pushState(
-				{ ...(window.history.state ?? {}), [MOBILE_HISTORY_KEY]: true },
-				"",
+			pushMobileHistoryMarker(
+				mobileHistoryPushedRef,
+				effectiveRouteKey || browserRouteKey(),
 			);
-			mobileHistoryPushedRef.current = true;
 		}
 		setOpen(true);
 	}
 
 	function closeDrawer(): void {
 		setOpen(false);
-		if (mobileHistoryPushedRef.current) {
+		if (!mobileHistoryPushedRef.current) return;
+		if (mobileHistoryMarkerMatches(effectiveRouteKey || browserRouteKey())) {
 			mobileHistoryPushedRef.current = false;
 			window.history.back();
+			return;
 		}
+		clearMobileHistoryMarker(mobileHistoryPushedRef);
 	}
 
 	function leaveDrawer(action: (replace: boolean) => void): void {
@@ -464,42 +534,90 @@ export function LiveSessionSwitcher({
 	});
 
 	useEffect(() => {
-		if (!open || isDesktop) return;
+		if (!open) return;
 		function onPopState() {
 			if (!mobileHistoryPushedRef.current) return;
-			mobileHistoryPushedRef.current = false;
+			clearMobileHistoryMarker(mobileHistoryPushedRef);
 			setOpen(false);
 		}
 		window.addEventListener("popstate", onPopState);
 		return () => window.removeEventListener("popstate", onPopState);
-	}, [isDesktop, open]);
+	}, [open]);
+
+	// Raven adopts a newly created session with replace-navigation. Restore a
+	// marker on that new URL before paint so mobile Back still only closes this.
+	useLayoutEffect(() => {
+		if (
+			!open ||
+			isDesktop ||
+			!mobileHistoryPushedRef.current ||
+			mobileHistoryMarkerMatches(effectiveRouteKey)
+		) {
+			return;
+		}
+		pushMobileHistoryMarker(mobileHistoryPushedRef, effectiveRouteKey);
+	}, [effectiveRouteKey, isDesktop, open]);
 
 	useEffect(() => () => clearMobileHistoryMarker(mobileHistoryPushedRef), []);
 
 	return (
-		<LiveSessionSwitcherContext.Provider
-			value={{
-				count: rows.length,
-				hotkey: effectiveHotkey,
-				open,
-				toggle: open ? closeDrawer : openDrawer,
-				tone,
-			}}
-		>
-			<div className="relative h-full min-h-0 flex flex-col overflow-hidden">
-				{children}
-				{open && (
-					<LiveSessionDrawer
-						rows={rows}
-						currentSessionId={currentSessionId}
-						onClose={closeDrawer}
-						onSelect={(sessionId) =>
-							leaveDrawer((replace) => onSelectSession(sessionId, replace))
-						}
-						onOpenLedger={() => leaveDrawer((replace) => onOpenLedger(replace))}
-					/>
-				)}
-			</div>
-		</LiveSessionSwitcherContext.Provider>
+		<LiveSessionSwitcherBoundaryContext.Provider value={{ register }}>
+			<LiveSessionSwitcherContext.Provider
+				value={{
+					count: rows.length,
+					hotkey: effectiveHotkey,
+					open,
+					toggle: open ? closeDrawer : openDrawer,
+					tone,
+				}}
+			>
+				<div className="relative h-full min-h-0 flex flex-col overflow-hidden">
+					{children}
+					{open && registrationRef.current && presentation && (
+						<LiveSessionDrawer
+							rows={rows}
+							currentSessionId={presentation.currentSessionId}
+							onClose={closeDrawer}
+							onSelect={(sessionId) =>
+								leaveDrawer((replace) =>
+									registrationRef.current?.onSelectSession(sessionId, replace),
+								)
+							}
+							onOpenLedger={() =>
+								leaveDrawer((replace) =>
+									registrationRef.current?.onOpenLedger(replace),
+								)
+							}
+						/>
+					)}
+				</div>
+			</LiveSessionSwitcherContext.Provider>
+		</LiveSessionSwitcherBoundaryContext.Provider>
+	);
+}
+
+function RegisteredLiveSessionSwitcher({
+	children,
+	boundary,
+	...registration
+}: LiveSessionSwitcherProps & {
+	boundary: LiveSessionSwitcherBoundaryContextValue;
+}) {
+	useLayoutEffect(() => {
+		// A Raven pending match temporarily removes this registrar. Retain the
+		// latest callbacks until the next keyed ChatPage registers its own.
+		boundary.register(registration);
+	});
+	return children;
+}
+
+export function LiveSessionSwitcher(props: LiveSessionSwitcherProps) {
+	const boundary = useContext(LiveSessionSwitcherBoundaryContext);
+	return boundary ? (
+		<RegisteredLiveSessionSwitcher {...props} boundary={boundary} />
+	) : (
+		<LiveSessionSwitcherBoundary>
+			<LiveSessionSwitcher {...props} />
+		</LiveSessionSwitcherBoundary>
 	);
 }

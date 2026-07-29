@@ -8,6 +8,7 @@ import {
 	waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { LiveSessionSwitcherBoundary } from "#/components/chat/LiveSessionSwitcher";
 import {
 	getDataRevisionSnapshot,
 	replaceDataRevisions,
@@ -763,6 +764,58 @@ describe("Raven composed submission behavior", () => {
 		expect(localStorage.getItem("hlid:draft:chat-current")).toBe(
 			"draft before switching",
 		);
+	});
+
+	it("keeps session attention open while the keyed chat page changes", () => {
+		state.loaderData = {
+			...state.loaderData,
+			existingSessionId: "chat-current",
+			isExplicitSession: true,
+		};
+		state.sessions = [
+			{
+				session_id: "pool-current",
+				agent_cwd: "/current",
+				agent_name: "Current agent",
+				lastLabel: "Current work",
+				state: "running",
+				provider_id: "claude",
+				model: "sonnet",
+				hasPendingPermissions: false,
+				hasDbSession: true,
+				db_session_id: "chat-current",
+			},
+		] satisfies SessionStatusEntry[];
+		const RavenPage = (Route as unknown as { component: React.ComponentType })
+			.component;
+		const view = render(
+			<LiveSessionSwitcherBoundary>
+				<RavenPage />
+			</LiveSessionSwitcherBoundary>,
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: "Open session attention, 1 total, work in progress",
+			}),
+		);
+		expect(
+			screen.getByRole("dialog", { name: "Session attention" }),
+		).toBeTruthy();
+
+		state.loaderData = {
+			...state.loaderData,
+			existingSessionId: "chat-next",
+		};
+		view.rerender(
+			<LiveSessionSwitcherBoundary>
+				<RavenPage />
+			</LiveSessionSwitcherBoundary>,
+		);
+
+		expect(
+			screen.getByRole("dialog", { name: "Session attention" }),
+		).toBeTruthy();
 	});
 
 	it("aligns the agent and model badges to the same top edge", () => {

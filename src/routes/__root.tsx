@@ -6,6 +6,7 @@ import {
 	useRouterState,
 } from "@tanstack/react-router";
 import { useEffect, useRef, useSyncExternalStore } from "react";
+import { LiveSessionSwitcherBoundary } from "#/components/chat/LiveSessionSwitcher";
 import { ErrorBoundary } from "#/components/ErrorBoundary";
 import { BottomNav } from "#/components/nav/BottomNav";
 import { Sidebar } from "#/components/nav/Sidebar";
@@ -237,6 +238,9 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 	const pathname = useRouterState({
 		select: (state) => state.location.pathname,
 	});
+	const routeKey = useRouterState({
+		select: (state) => state.location.href,
+	});
 	const shellRef = useRef<HTMLDivElement>(null);
 	const wrapperRef = useRef<HTMLDivElement>(null);
 	const { pullY, isRefreshing } = usePullToRefresh(wrapperRef);
@@ -289,7 +293,13 @@ function RootDocument({ children }: { children: React.ReactNode }) {
 								data-scroll-to-top="app"
 								className={`flex-1 min-h-0 overscroll-y-contain ${ravenRoute ? "overflow-hidden" : "overflow-auto"}`}
 							>
-								{children}
+								{ravenRoute ? (
+									<LiveSessionSwitcherBoundary routeKey={routeKey}>
+										{children}
+									</LiveSessionSwitcherBoundary>
+								) : (
+									children
+								)}
 							</main>
 							<ErrorBoundary>
 								<BottomNav />

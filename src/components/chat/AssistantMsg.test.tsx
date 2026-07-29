@@ -1,5 +1,11 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import {
+	act,
+	cleanup,
+	fireEvent,
+	render,
+	screen,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as privacyStore from "#/hooks/privacyStore";
 import { AssistantMsg, normalizeMd } from "./AssistantMsg";
@@ -223,6 +229,59 @@ describe("AssistantMsg", () => {
 		} finally {
 			scrollHeight.mockRestore();
 			clientHeight.mockRestore();
+		}
+	});
+
+	it("keeps observing the connected text after adding the expand control", () => {
+		const callbacks: ResizeObserverCallback[] = [];
+		const observed: Element[] = [];
+		class ResizeObserverMock {
+			constructor(callback: ResizeObserverCallback) {
+				callbacks.push(callback);
+			}
+			observe(target: Element) {
+				observed.push(target);
+			}
+			disconnect() {}
+			unobserve() {}
+		}
+		vi.stubGlobal("ResizeObserver", ResizeObserverMock);
+		const scrollHeight = vi
+			.spyOn(Element.prototype, "scrollHeight", "get")
+			.mockImplementation(function (this: Element) {
+				if (!this.hasAttribute("data-steer-text")) return 0;
+				return this.isConnected ? 48 : 0;
+			});
+		const clientHeight = vi
+			.spyOn(Element.prototype, "clientHeight", "get")
+			.mockImplementation(function (this: Element) {
+				return this.hasAttribute("data-steer-text") && this.isConnected
+					? 32
+					: 0;
+			});
+		try {
+			const { container } = render(
+				<AssistantMsg
+					message={makeMsg()}
+					acceptedSteers={[
+						acceptedSteer({
+							text: "A mobile steering instruction that is longer than the two-line compact receipt.",
+						}),
+					]}
+				/>,
+			);
+
+			expect(screen.getByTitle("Expand accepted steer")).toBeTruthy();
+			expect(observed.at(-1)).toBe(
+				container.querySelector("[data-steer-text]"),
+			);
+
+			act(() => callbacks.at(-1)?.([], {} as ResizeObserver));
+			expect(screen.getByTitle("Expand accepted steer")).toBeTruthy();
+		} finally {
+			scrollHeight.mockRestore();
+			clientHeight.mockRestore();
+			vi.unstubAllGlobals();
 		}
 	});
 

@@ -13,7 +13,11 @@ import {
 	resetSessionStatusForTesting,
 } from "#/hooks/wsSessionStatusStore";
 import type { SessionStatusEntry } from "#/server/protocol";
-import { LiveSessionSwitcher, LiveSessionToggle } from "./LiveSessionSwitcher";
+import {
+	LiveSessionSwitcher,
+	LiveSessionSwitcherBoundary,
+	LiveSessionToggle,
+} from "./LiveSessionSwitcher";
 
 function session(
 	id: string,
@@ -68,6 +72,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	cleanup();
+	window.history.replaceState({}, "", "/");
 	resetSessionStatusForTesting();
 	vi.restoreAllMocks();
 	vi.unstubAllGlobals();
@@ -391,6 +396,102 @@ describe("LiveSessionSwitcher", () => {
 			}),
 		);
 		act(() => window.dispatchEvent(new PopStateEvent("popstate")));
+		expect(
+			screen.queryByRole("dialog", { name: "Session attention" }),
+		).toBeNull();
+	});
+
+	it("keeps the mobile drawer and Back marker through a Raven remount", () => {
+		vi.stubGlobal(
+			"matchMedia",
+			vi.fn(() => ({
+				matches: false,
+				addEventListener: vi.fn(),
+				removeEventListener: vi.fn(),
+			})),
+		);
+		const pushState = vi.spyOn(window.history, "pushState");
+		replaceSessionsStatus([session("mobile")]);
+		const onSelectSession = vi.fn();
+		const onOpenLedger = vi.fn();
+		const switcher = (key: string) => (
+			<LiveSessionSwitcher
+				key={key}
+				currentSessionId={key}
+				hotkey="Alt+Shift+KeyS"
+				onSelectSession={onSelectSession}
+				onOpenLedger={onOpenLedger}
+			>
+				<LiveSessionToggle />
+			</LiveSessionSwitcher>
+		);
+		const view = render(
+			<LiveSessionSwitcherBoundary routeKey="/raven?session=chat-current">
+				{switcher("chat-current")}
+			</LiveSessionSwitcherBoundary>,
+		);
+
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: "Open session attention, 1 total, all ready",
+			}),
+		);
+		expect(pushState).toHaveBeenCalledTimes(1);
+
+		window.history.replaceState({}, "", "/raven?session=chat-next");
+		view.rerender(
+			<LiveSessionSwitcherBoundary routeKey="/raven?session=chat-next">
+				<div data-testid="raven-session-pending" />
+			</LiveSessionSwitcherBoundary>,
+		);
+
+		expect(
+			screen.getByRole("dialog", { name: "Session attention" }),
+		).toBeTruthy();
+		expect(pushState).toHaveBeenCalledTimes(2);
+
+		window.history.replaceState({}, "", "/raven?session=chat-next");
+		act(() => window.dispatchEvent(new PopStateEvent("popstate")));
+		expect(
+			screen.queryByRole("dialog", { name: "Session attention" }),
+		).toBeNull();
+
+		view.rerender(
+			<LiveSessionSwitcherBoundary routeKey="/raven?session=chat-next">
+				{switcher("chat-next")}
+			</LiveSessionSwitcherBoundary>,
+		);
+		expect(
+			screen.queryByRole("dialog", { name: "Session attention" }),
+		).toBeNull();
+	});
+
+	it("does not navigate back when Raven replaces a mobile marker", () => {
+		vi.stubGlobal(
+			"matchMedia",
+			vi.fn(() => ({
+				matches: false,
+				addEventListener: vi.fn(),
+				removeEventListener: vi.fn(),
+			})),
+		);
+		const back = vi.spyOn(window.history, "back").mockImplementation(() => {});
+		replaceSessionsStatus([session("mobile")]);
+		renderSwitcher();
+
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: "Open session attention, 1 total, all ready",
+			}),
+		);
+		window.history.replaceState({}, "", "/raven?session=chat-next");
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: "Close session attention, 1 total, all ready",
+			}),
+		);
+
+		expect(back).not.toHaveBeenCalled();
 		expect(
 			screen.queryByRole("dialog", { name: "Session attention" }),
 		).toBeNull();
