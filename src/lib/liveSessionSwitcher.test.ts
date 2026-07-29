@@ -4,6 +4,8 @@ import type { SessionStatusEntry } from "#/server/protocol";
 import {
 	deriveLiveSessionSwitcherRows,
 	derivePersistedRecentSessionRows,
+	liveDelegationRollupLabel,
+	liveDelegationUsageLabel,
 	liveSessionContext,
 	liveSessionQueueLabel,
 	liveSessionReasonLabel,
@@ -133,7 +135,7 @@ describe("deriveLiveSessionSwitcherRows", () => {
 		]);
 	});
 
-	it("adds workspace context only for ambiguous labels and keeps fork provenance", () => {
+	it("adds workspace context only for ambiguous labels and keeps child provenance", () => {
 		const rows = deriveLiveSessionSwitcherRows([
 			session("one", {
 				agent_cwd: "/work/alpha",
@@ -145,6 +147,8 @@ describe("deriveLiveSessionSwitcherRows", () => {
 			session("two", {
 				agent_cwd: "C:\\work\\beta",
 				lastLabel: "Review",
+				delegation_parent_session_id: "parent",
+				delegation_parent_label: "Parent task",
 			}),
 			session("three", { lastLabel: "Unique" }),
 		]);
@@ -154,6 +158,7 @@ describe("deriveLiveSessionSwitcherRows", () => {
 			null,
 		]);
 		expect(rows[0]?.forkLabel).toBe("Fork of Original");
+		expect(rows[1]?.delegationLabel).toBe("Delegated from Parent task");
 	});
 });
 
@@ -212,7 +217,7 @@ describe("live session presentation", () => {
 		).toBe("hlid · codex · gpt-5.6-sol");
 	});
 
-	it("summarizes the same process-backed rows used by Raven", () => {
+	it("summarizes the same database-backed rows used by Raven", () => {
 		expect(
 			summarizeLiveSessionAttention([
 				session("attention", { state: "error" }),
@@ -240,6 +245,98 @@ describe("live session presentation", () => {
 			queued: 1,
 			recent: 1,
 		});
+	});
+
+	it("labels durable restart interruption without calling it a provider error", () => {
+		expect(
+			liveSessionReasonLabel(
+				session("interrupted", {
+					durable_only: true,
+					attention: {
+						bucket: "needs_attention",
+						reason: "delegation_interrupted",
+						since: 1,
+						last_activity_at: 1,
+						queue_count: 0,
+						pending_count: 0,
+					},
+				}),
+			),
+		).toBe("Restart interrupted");
+	});
+
+	it("formats delegated descendant rollups compactly", () => {
+		expect(
+			liveDelegationRollupLabel(
+				session("parent", {
+					delegated_attention: {
+						direct_count: 2,
+						descendant_count: 3,
+						waiting_count: 0,
+						completed_count: 0,
+						failed_count: 0,
+						needs_attention_count: 1,
+						working_count: 2,
+						queued_count: 0,
+						recent_count: 0,
+						leading_bucket: "needs_attention",
+						since: 1,
+						last_activity_at: 2,
+					},
+				}),
+			),
+		).toBe("3 delegated · 1 needs you · 2 working");
+	});
+
+	it("formats durable lifecycle counts without expanding descendant detail", () => {
+		const parent = session("parent", {
+			delegated_attention: {
+				direct_count: 3,
+				descendant_count: 5,
+				waiting_count: 1,
+				completed_count: 2,
+				failed_count: 1,
+				needs_attention_count: 0,
+				working_count: 1,
+				queued_count: 0,
+				recent_count: 0,
+				leading_bucket: "working",
+				since: 1,
+				last_activity_at: 2,
+				total_tokens: 1_234_567,
+				total_cost: 1.234,
+				elapsed_duration_seconds: 7_441,
+			},
+		});
+		expect(liveDelegationRollupLabel(parent)).toBe(
+			"5 delegated · 1 working · 1 waiting · 2 completed · 1 failed",
+		);
+		expect(liveDelegationUsageLabel(parent)).toBe(
+			"1.2m tokens · $1.23 · 2h 4m elapsed",
+		);
+	});
+
+	it("omits delegation usage totals from older status snapshots", () => {
+		expect(
+			liveDelegationUsageLabel(
+				session("parent", {
+					delegated_attention: {
+						direct_count: 1,
+						descendant_count: 1,
+						waiting_count: 0,
+						completed_count: 1,
+						failed_count: 0,
+						needs_attention_count: 0,
+						working_count: 0,
+						queued_count: 0,
+						recent_count: 0,
+						leading_bucket: "recent",
+						since: 1,
+						last_activity_at: 2,
+					},
+				}),
+			),
+		).toBeNull();
 	});
 });
 

@@ -1783,6 +1783,18 @@ function translateAssistantMessage(
 			});
 		}
 	}
+	if (message.error && message.parent_tool_use_id == null) {
+		const providerMessage = message.message.content
+			.flatMap((block) => (block.type === "text" ? [block.text.trim()] : []))
+			.filter(Boolean)
+			.join("\n");
+		events.push({
+			type: "transport_error",
+			message:
+				providerMessage ||
+				`Claude provider returned ${message.error.replaceAll("_", " ")}.`,
+		});
+	}
 	return { events, hadText: nextHadText };
 }
 

@@ -1,6 +1,10 @@
 import * as db from "../db";
 import type { AttachmentListFilter } from "../db/types";
 import { parseHlidTurnContextManifest } from "../lib/hlidContext";
+import {
+	HLID_DELEGATION_CONTROL_OWNERSHIP_ERROR,
+	isHlidDelegationControlOwned,
+} from "../lib/hlidDelegation";
 import { clampInt, uid } from "../lib/utils";
 import {
 	msUntilNextLocalDay,
@@ -171,6 +175,12 @@ async function handlePatchRoute({
 		try {
 			await db.setSessionArchived(id, body.archived);
 		} catch (error) {
+			if (
+				error instanceof Error &&
+				error.name === "SessionDelegationOwnershipError"
+			) {
+				return new Response(error.message, { status: 409 });
+			}
 			if (error instanceof Error && error.message === "Session not found") {
 				return new Response(error.message, { status: 404 });
 			}
@@ -182,11 +192,12 @@ async function handlePatchRoute({
 				await db.clearCurrentSessionId();
 			}
 			if (liveEntry) pool?.close(liveEntry.sessionId);
-			broadcast({
-				type: "sessions_status",
-				sessions: getLiveSessionsStatus(pool, terminalPool),
-			});
 		}
+		await pool?.refreshDurableDelegationAttention();
+		broadcast({
+			type: "sessions_status",
+			sessions: getLiveSessionsStatus(pool, terminalPool),
+		});
 		bumpDataRevision("sessions");
 		return Response.json({ ok: true });
 	}
@@ -627,14 +638,43 @@ async function getLogs(url: URL): Promise<Response> {
 
 async function handleDeleteRoute({
 	url,
+	pool,
+	terminalPool,
 }: DbRouteContext): Promise<Response | null> {
 	switch (url.pathname) {
 		case "/db/session": {
 			const id = url.searchParams.get("id");
 			if (!id) return new Response("Missing id", { status: 400 });
+			const liveEntry = pool?.findByDbSessionId(id) ?? pool?.get(id);
+			if (
+				liveEntry?.manager.getStatus().state === "running" ||
+				hasLiveTerminalSession(terminalPool, id)
+			) {
+				return new Response("Cannot delete a running session. Stop it first.", {
+					status: 409,
+				});
+			}
+			let ephemeralPaths: string[];
+			try {
+				({ ephemeralPaths } = await db.deleteSession(id));
+			} catch (error) {
+				if (
+					error instanceof Error &&
+					(error.name === "SessionHasDelegationDescendantsError" ||
+						error.name === "SessionDelegationOwnershipError")
+				) {
+					return new Response(error.message, { status: 409 });
+				}
+				throw error;
+			}
+			if (liveEntry) pool?.close(liveEntry.sessionId);
 			await projectPreviewManager.closeSession(id, "session_deleted");
-			const { ephemeralPaths } = await db.deleteSession(id);
 			await unlinkPaths(ephemeralPaths);
+			await pool?.refreshDurableDelegationAttention();
+			broadcast({
+				type: "sessions_status",
+				sessions: getLiveSessionsStatus(pool, terminalPool),
+			});
 			bumpDataRevision("stats", "sessions", "relics", "storage");
 			return Response.json({ ok: true });
 		}
@@ -675,16 +715,37 @@ async function handlePostRoute(
 	}
 }
 
+function getLiveDbSessionIds(
+	pool: SessionPool | undefined,
+	terminalPool: TerminalSessionPool | undefined,
+): string[] {
+	const sessionIds = new Set<string>();
+	for (const entry of pool?.getAllEntries() ?? []) {
+		const currentSessionId = entry.manager.getCurrentSessionId();
+		if (currentSessionId) sessionIds.add(currentSessionId);
+		if (entry.claimedDbSessionId) sessionIds.add(entry.claimedDbSessionId);
+	}
+	for (const status of terminalPool?.getSessionsStatus() ?? []) {
+		const dbSessionId =
+			status.db_session_id ?? (status.hasDbSession ? status.session_id : null);
+		if (dbSessionId) sessionIds.add(dbSessionId);
+	}
+	return [...sessionIds];
+}
+
 async function cleanupSessions({
 	url,
 	req,
+	pool,
+	terminalPool,
 }: DbRouteContext): Promise<Response> {
 	const body = await req.json().catch(() => null);
 	const fromBody = body?.older_than_days;
 	const fromQuery = url.searchParams.get("older_than_days");
 	const days = clampInt(fromBody != null ? String(fromBody) : fromQuery, 30, 1);
+	const excludedSessionIds = getLiveDbSessionIds(pool, terminalPool);
 	const { count, ephemeralPaths, sessionIds } =
-		await db.deleteSessionsOlderThan(days);
+		await db.deleteSessionsOlderThan(days, excludedSessionIds);
 	await Promise.all(
 		sessionIds.map((sessionId) =>
 			projectPreviewManager.closeSession(sessionId, "session_deleted"),
@@ -693,6 +754,11 @@ async function cleanupSessions({
 	await db.deleteProjectPreviewsForSessions(sessionIds);
 	await unlinkPaths(ephemeralPaths);
 	if (count > 0) {
+		await pool?.refreshDurableDelegationAttention();
+		broadcast({
+			type: "sessions_status",
+			sessions: getLiveSessionsStatus(pool, terminalPool),
+		});
 		bumpDataRevision("stats", "sessions", "relics", "storage");
 	}
 	return Response.json({ deleted: count });
@@ -705,6 +771,21 @@ async function readLiveSessionId(req: Request): Promise<string | Response> {
 	);
 }
 
+async function delegatedLiveSessionConflict(
+	pool: SessionPool | undefined,
+	sessionId: string,
+): Promise<Response | null> {
+	const entry = pool?.get(sessionId) ?? pool?.findByDbSessionId(sessionId);
+	const childSessionId =
+		entry?.manager.getCurrentSessionId() ??
+		entry?.claimedDbSessionId ??
+		sessionId;
+	const delegation = await db.getHlidDelegationByChildSession(childSessionId);
+	return isHlidDelegationControlOwned(delegation)
+		? new Response(HLID_DELEGATION_CONTROL_OWNERSHIP_ERROR, { status: 409 })
+		: null;
+}
+
 async function stopLiveSession({
 	req,
 	pool,
@@ -712,6 +793,8 @@ async function stopLiveSession({
 }: DbRouteContext): Promise<Response> {
 	const id = await readLiveSessionId(req);
 	if (id instanceof Response) return id;
+	const conflict = await delegatedLiveSessionConflict(pool, id);
+	if (conflict) return conflict;
 	const entry = pool?.get(id);
 	if (entry) {
 		entry.manager.abort();
@@ -730,6 +813,38 @@ async function closeLiveSession({
 }: DbRouteContext): Promise<Response> {
 	const id = await readLiveSessionId(req);
 	if (id instanceof Response) return id;
+	const delegatedEntry = pool?.get(id) ?? pool?.findByDbSessionId(id);
+	const delegatedChildSessionId =
+		delegatedEntry?.manager.getCurrentSessionId() ??
+		delegatedEntry?.claimedDbSessionId ??
+		id;
+	let delegation = await db.getHlidDelegationByChildSession(
+		delegatedChildSessionId,
+	);
+	if (delegation?.status === "interrupted" && delegation.resumable) {
+		delegation = await db.abandonInterruptedHlidDelegation(
+			delegation.id,
+			"The user closed this restart-interrupted child without continuing it.",
+		);
+		if (delegation?.status === "cancelled") {
+			if (delegatedEntry) pool?.close(delegatedEntry.sessionId);
+			else if (hasLiveTerminalSession(terminalPool, id)) {
+				terminalPool?.close(id);
+			}
+			await pool?.refreshDurableDelegationAttention();
+			broadcast({
+				type: "sessions_status",
+				sessions: getLiveSessionsStatus(pool, terminalPool),
+			});
+			bumpDataRevision("sessions");
+			return Response.json({ ok: true });
+		}
+	}
+	if (isHlidDelegationControlOwned(delegation)) {
+		return new Response(HLID_DELEGATION_CONTROL_OWNERSHIP_ERROR, {
+			status: 409,
+		});
+	}
 	const entry = pool?.get(id);
 	const terminalExists = hasLiveTerminalSession(terminalPool, id);
 	if (!entry && !terminalExists)

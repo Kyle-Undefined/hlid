@@ -22,6 +22,7 @@ vi.mock("../db", () => ({
 	saveSetting: vi.fn().mockResolvedValue(undefined),
 	setAskUserQuestionResolution: vi.fn().mockResolvedValue(undefined),
 	getSessionSelection: vi.fn().mockResolvedValue(null),
+	getHlidDelegationByChildSession: vi.fn().mockResolvedValue(null),
 }));
 
 // vi.mock factories are hoisted before module-level code, so vars referenced
@@ -1811,6 +1812,7 @@ describe("message — chat", () => {
 			ws as never,
 			JSON.stringify({ type: "chat", text: "second" }),
 		);
+		await vi.waitFor(() => expect(session.runQuery).toHaveBeenCalledTimes(2));
 
 		// Resolve turn 1 — ownership must NOT clear because turn 2 still in-flight
 		// from the same ws.

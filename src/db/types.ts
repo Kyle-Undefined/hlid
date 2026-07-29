@@ -25,6 +25,20 @@ export type SessionRow = {
 	/** Source messages.id cutoff for a through-message fork; null for whole-session. */
 	fork_parent_message_id?: number | null;
 	fork_kind?: "exact" | "recap" | null;
+	/** Hlid session that explicitly delegated this ordinary Raven child. */
+	delegation_parent_session_id?: string | null;
+	/** Current or snapshotted parent label for compact provenance displays. */
+	delegation_parent_label?: string | null;
+	/** Stable parent user-turn identity that created this child. */
+	delegation_parent_turn_id?: string | null;
+	/** Bounded orchestration depth for this delegated Raven child. */
+	delegation_depth?: number | null;
+	/** 1 while Hlid reserves direct mutation for the parent delegation controls. */
+	delegation_control_owned?: number | null;
+	/** Durable provider-reported child usage used only as a display fallback. */
+	delegation_tokens_used?: number | null;
+	/** Durable provider-reported child cost used only as an estimated display fallback. */
+	delegation_cost_used?: number | null;
 	started_at: number;
 	ended_at: number | null;
 	query_count: number;
@@ -36,6 +50,8 @@ export type SessionRow = {
 	total_cache_read_tokens: number;
 	total_cache_creation_tokens: number;
 	total_turns: number;
+	/** Derived from persisted tool events for session list/read projections. */
+	tool_call_count?: number;
 };
 
 export type SessionSelection = {

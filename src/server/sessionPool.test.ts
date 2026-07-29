@@ -5,6 +5,15 @@
  * Strategy: SessionManager is mocked so pool tests only exercise routing
  * and bookkeeping logic, not the full SDK stack.
  */
+import {
+	mkdirSync,
+	mkdtempSync,
+	realpathSync,
+	rmSync,
+	symlinkSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { HlidConfig } from "../config";
 import type { AgentProvider } from "./agentProvider";
@@ -63,6 +72,10 @@ vi.mock("./session", () => ({
 				forkParentSessionId: null,
 				forkParentLabel: null,
 				forkKind: null,
+				delegationParentSessionId: null,
+				delegationParentLabel: null,
+				delegationParentTurnId: null,
+				delegationDepth: null,
 			}),
 			getProviderId: vi.fn().mockReturnValue("claude"),
 			isRunning: vi.fn().mockReturnValue(false),
@@ -75,10 +88,15 @@ vi.mock("./session", () => ({
 vi.mock("../db", () => ({
 	clearCurrentSessionId: vi.fn().mockResolvedValue(undefined),
 	appendLog: vi.fn().mockResolvedValue(undefined),
+	listResumableInterruptedHlidDelegations: vi.fn().mockResolvedValue([]),
+	listHlidDelegationAncestorLineage: vi.fn().mockResolvedValue([]),
+	listHlidDelegationLifecycleRollups: vi.fn().mockResolvedValue([]),
+	getSessionById: vi.fn().mockResolvedValue(null),
 }));
 
 // ── import after mocks ────────────────────────────────────────────────────────
 
+import * as dbMock from "../db";
 import { SessionManager } from "./session";
 import { SessionPool } from "./sessionPool";
 
@@ -122,6 +140,44 @@ function makePool(maxSize?: number): SessionPool {
 beforeEach(() => {
 	vi.clearAllMocks();
 	mockInstances.length = 0;
+});
+
+describe("SessionPool delegation workspaces", () => {
+	it("accepts only canonical exact configured workspaces", () => {
+		const root = mkdtempSync(join(tmpdir(), "hlid-delegation-workspace-"));
+		try {
+			const vault = join(root, "vault");
+			const agent = join(root, "agent");
+			const nested = join(agent, "nested");
+			const unrelated = join(root, "unrelated");
+			const agentAlias = join(root, "agent-alias");
+			for (const path of [vault, agent, nested, unrelated]) {
+				mkdirSync(path, { recursive: true });
+			}
+			symlinkSync(agent, agentAlias, "dir");
+			const config = makeConfig(vault);
+			config.agents = [
+				{
+					path: agent,
+					name: "Agent",
+					mode: "cwd",
+					provider: "claude",
+				},
+			];
+			const pool = new SessionPool(config, makeProviders());
+
+			expect(pool.resolveDelegationWorkspace(vault)).toBe(realpathSync(vault));
+			expect(pool.resolveDelegationWorkspace(agent)).toBe(realpathSync(agent));
+			expect(pool.resolveDelegationWorkspace(agentAlias)).toBe(
+				realpathSync(agent),
+			);
+			expect(pool.resolveDelegationWorkspace(nested)).toBeNull();
+			expect(pool.resolveDelegationWorkspace(unrelated)).toBeNull();
+			expect(pool.resolveDelegationWorkspace(join(root, "missing"))).toBeNull();
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
 });
 
 // ── create ────────────────────────────────────────────────────────────────────
@@ -200,6 +256,344 @@ describe("SessionPool.create", () => {
 			providers,
 			"/code/proj",
 		);
+	});
+});
+
+describe("SessionPool durable delegation attention", () => {
+	it("projects restart-interrupted children and rolls them into a live parent", async () => {
+		vi.mocked(
+			dbMock.listResumableInterruptedHlidDelegations,
+		).mockResolvedValueOnce([
+			{
+				id: "delegation-1",
+				parent_session_id: "parent-db",
+				parent_turn_id: "turn-parent",
+				parent_label: "Parent",
+				parent_delegation_id: null,
+				routine_run_id: null,
+				child_session_id: "child-db",
+				depth: 1,
+				task: "Child task",
+				provider_id: "codex",
+				model: "gpt-test",
+				effort: "high",
+				service_tier: null,
+				workspace: "/code/proj",
+				permission_mode: "default",
+				timeout_seconds: 600,
+				token_budget: null,
+				tokens_used: 0,
+				cost_budget: null,
+				cost_used: 0,
+				attempt_count: 1,
+				continuation_mode: "initial",
+				handoff: {
+					visible_transcript_chars: 0,
+					selected_skills: 0,
+					selected_relics: 0,
+					vault_references: 0,
+					workspace_references: 0,
+				},
+				status: "interrupted",
+				started_at: 10,
+				updated_at: 20,
+				ended_at: 20,
+				result_text: null,
+				error: "Hlid restarted",
+				progress_text: null,
+				open_url: "/raven?session=child-db",
+				complete: true,
+				resumable: true,
+			},
+		]);
+		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
+			id: "child-db",
+			label: "Child",
+			model: "gpt-test",
+			provider_id: "codex",
+			agent_cwd: "/code/proj",
+			pinned: 0,
+			archived_at: null,
+			started_at: 10,
+			ended_at: null,
+			query_count: 0,
+			total_cost: 0,
+			total_input_tokens: 0,
+			total_output_tokens: 0,
+			total_cache_read_tokens: 0,
+			total_cache_creation_tokens: 0,
+			total_turns: 0,
+		});
+		const pool = makePool();
+		pool.create("/code/proj", "Parent");
+		mockInstances[0]?.getCurrentSessionId.mockReturnValue("parent-db");
+
+		await pool.refreshDurableDelegationAttention();
+
+		const statuses = pool.getSessionsStatus();
+		expect(statuses).toHaveLength(2);
+		expect(statuses[0]).toMatchObject({
+			db_session_id: "parent-db",
+			attention: {
+				bucket: "needs_attention",
+				reason: "delegated_child_attention",
+			},
+			delegated_attention: {
+				descendant_count: 1,
+				needs_attention_count: 1,
+			},
+		});
+		expect(statuses[1]).toMatchObject({
+			session_id: "child-db",
+			db_session_id: "child-db",
+			durable_only: true,
+			delegation_status: "interrupted",
+			delegation_resumable: true,
+			attention: {
+				bucket: "needs_attention",
+				reason: "delegation_interrupted",
+			},
+		});
+	});
+
+	it("rolls a restart-interrupted grandchild through a completed non-live parent", async () => {
+		vi.mocked(
+			dbMock.listResumableInterruptedHlidDelegations,
+		).mockResolvedValueOnce([
+			{
+				id: "delegation-2",
+				parent_session_id: "completed-child-db",
+				parent_turn_id: "turn-child",
+				parent_label: "Completed child",
+				parent_delegation_id: "delegation-1",
+				routine_run_id: null,
+				child_session_id: "grandchild-db",
+				depth: 2,
+				task: "Grandchild task",
+				provider_id: "codex",
+				model: "gpt-test",
+				effort: "high",
+				service_tier: null,
+				workspace: "/code/proj",
+				permission_mode: "default",
+				timeout_seconds: 600,
+				token_budget: null,
+				tokens_used: 0,
+				cost_budget: null,
+				cost_used: 0,
+				attempt_count: 1,
+				continuation_mode: "initial",
+				handoff: {
+					visible_transcript_chars: 0,
+					selected_skills: 0,
+					selected_relics: 0,
+					vault_references: 0,
+					workspace_references: 0,
+				},
+				status: "interrupted",
+				started_at: 10,
+				updated_at: 20,
+				ended_at: 20,
+				result_text: null,
+				error: "Hlid restarted",
+				progress_text: null,
+				open_url: "/raven?session=grandchild-db",
+				complete: true,
+				resumable: true,
+			},
+		]);
+		vi.mocked(dbMock.listHlidDelegationAncestorLineage).mockResolvedValueOnce([
+			{
+				child_session_id: "grandchild-db",
+				parent_session_id: "completed-child-db",
+			},
+			{
+				child_session_id: "completed-child-db",
+				parent_session_id: "root-db",
+			},
+		]);
+		vi.mocked(dbMock.listHlidDelegationLifecycleRollups).mockResolvedValueOnce([
+			{
+				parent_session_id: "root-db",
+				direct_count: 1,
+				descendant_count: 2,
+				waiting_count: 1,
+				completed_count: 1,
+				failed_count: 0,
+				total_tokens: 1_000,
+				total_cost: 1.5,
+				elapsed_duration_seconds: 120,
+				last_activity_at: 20_000,
+			},
+			{
+				parent_session_id: "completed-child-db",
+				direct_count: 1,
+				descendant_count: 1,
+				waiting_count: 1,
+				completed_count: 0,
+				failed_count: 0,
+				total_tokens: 400,
+				total_cost: 0.5,
+				elapsed_duration_seconds: 45,
+				last_activity_at: 20_000,
+			},
+		]);
+		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
+			id: "grandchild-db",
+			label: "Grandchild",
+			model: "gpt-test",
+			provider_id: "codex",
+			agent_cwd: "/code/proj",
+			pinned: 0,
+			archived_at: null,
+			started_at: 10,
+			ended_at: null,
+			query_count: 0,
+			total_cost: 0,
+			total_input_tokens: 0,
+			total_output_tokens: 0,
+			total_cache_read_tokens: 0,
+			total_cache_creation_tokens: 0,
+			total_turns: 0,
+		});
+		const pool = makePool();
+		pool.create("/code/proj", "Root");
+		mockInstances[0]?.getCurrentSessionId.mockReturnValue("root-db");
+
+		await pool.refreshDurableDelegationAttention();
+
+		const statuses = pool.getSessionsStatus();
+		expect(statuses).toHaveLength(2);
+		expect(statuses[0]).toMatchObject({
+			db_session_id: "root-db",
+			attention: {
+				bucket: "needs_attention",
+				reason: "delegated_child_attention",
+			},
+			delegated_attention: {
+				direct_count: 1,
+				descendant_count: 2,
+				waiting_count: 1,
+				completed_count: 1,
+				total_tokens: 1_000,
+				total_cost: 1.5,
+				elapsed_duration_seconds: 120,
+				needs_attention_count: 1,
+			},
+		});
+		expect(
+			statuses.some((status) => status.db_session_id === "completed-child-db"),
+		).toBe(false);
+	});
+
+	it("rolls live grandchild attention through a completed non-live parent", async () => {
+		vi.mocked(dbMock.listHlidDelegationAncestorLineage).mockResolvedValueOnce([
+			{
+				child_session_id: "grandchild-db",
+				parent_session_id: "completed-child-db",
+			},
+			{
+				child_session_id: "completed-child-db",
+				parent_session_id: "root-db",
+			},
+		]);
+		const pool = makePool();
+		pool.create("/code/proj", "Root");
+		pool.create("/code/proj", "Grandchild");
+		mockInstances[0]?.getCurrentSessionId.mockReturnValue("root-db");
+		mockInstances[1]?.getCurrentSessionId.mockReturnValue("grandchild-db");
+		mockInstances[1]?.getPendingPermissionRequests.mockReturnValue([
+			{ id: "permission-1" },
+		]);
+
+		await pool.refreshDurableDelegationAttention();
+
+		expect(dbMock.listHlidDelegationAncestorLineage).toHaveBeenCalledWith([
+			"root-db",
+			"grandchild-db",
+		]);
+		const statuses = pool.getSessionsStatus();
+		expect(statuses).toHaveLength(2);
+		expect(statuses[0]).toMatchObject({
+			db_session_id: "root-db",
+			attention: {
+				bucket: "needs_attention",
+				reason: "delegated_child_attention",
+			},
+			delegated_attention: {
+				direct_count: 0,
+				descendant_count: 1,
+				needs_attention_count: 1,
+			},
+		});
+		expect(
+			statuses.some((status) => status.db_session_id === "completed-child-db"),
+		).toBe(false);
+	});
+
+	it("projects mixed durable lifecycle counts without creating terminal live rows", async () => {
+		vi.mocked(dbMock.listHlidDelegationLifecycleRollups).mockResolvedValueOnce([
+			{
+				parent_session_id: "root-db",
+				direct_count: 2,
+				descendant_count: 3,
+				waiting_count: 1,
+				completed_count: 1,
+				failed_count: 1,
+				total_tokens: 2_400,
+				total_cost: 3.75,
+				elapsed_duration_seconds: 300,
+				last_activity_at: 42_000,
+			},
+			{
+				parent_session_id: "closed-completed-child",
+				direct_count: 1,
+				descendant_count: 1,
+				waiting_count: 0,
+				completed_count: 0,
+				failed_count: 1,
+				total_tokens: 500,
+				total_cost: 0.75,
+				elapsed_duration_seconds: 60,
+				last_activity_at: 42_000,
+			},
+		]);
+		const pool = makePool();
+		pool.create("/code/proj", "Root");
+		mockInstances[0]?.getCurrentSessionId.mockReturnValue("root-db");
+
+		await pool.refreshDurableDelegationAttention();
+
+		const statuses = pool.getSessionsStatus();
+		expect(statuses).toHaveLength(1);
+		expect(statuses[0]).toMatchObject({
+			db_session_id: "root-db",
+			attention: {
+				bucket: "recent",
+				reason: "ready",
+			},
+			delegated_attention: {
+				direct_count: 2,
+				descendant_count: 3,
+				waiting_count: 1,
+				completed_count: 1,
+				failed_count: 1,
+				total_tokens: 2_400,
+				total_cost: 3.75,
+				elapsed_duration_seconds: 300,
+				needs_attention_count: 0,
+				working_count: 0,
+				queued_count: 0,
+				last_activity_at: 42_000,
+			},
+		});
+		expect(
+			statuses.some(
+				(status) =>
+					status.db_session_id === "closed-completed-child" ||
+					status.db_session_id === "closed-failed-grandchild",
+			),
+		).toBe(false);
 	});
 });
 
@@ -550,7 +944,7 @@ describe("SessionPool.getSessionsStatus", () => {
 		expect(s?.lastLabel).toBe("FIX THE BUG");
 	});
 
-	it("projects pin and fork provenance without changing attention", () => {
+	it("projects pin, fork, and delegation provenance without changing attention", () => {
 		const pool = makePool();
 		pool.create("/code/proj", "Agent");
 		mockInstances[0]?.getSessionPresentation.mockReturnValue({
@@ -558,6 +952,10 @@ describe("SessionPool.getSessionsStatus", () => {
 			forkParentSessionId: "source",
 			forkParentLabel: "Original",
 			forkKind: "exact",
+			delegationParentSessionId: "delegator",
+			delegationParentLabel: "Parent task",
+			delegationParentTurnId: "turn-1",
+			delegationDepth: 1,
 		});
 
 		const [status] = pool.getSessionsStatus();
@@ -566,7 +964,75 @@ describe("SessionPool.getSessionsStatus", () => {
 			fork_parent_session_id: "source",
 			fork_parent_label: "Original",
 			fork_kind: "exact",
+			delegation_parent_session_id: "delegator",
+			delegation_parent_label: "Parent task",
+			delegation_parent_turn_id: "turn-1",
+			delegation_depth: 1,
 			attention: { bucket: "recent", reason: "ready" },
+		});
+	});
+
+	it("rolls live descendant attention through bounded delegation lineage", () => {
+		const pool = makePool();
+		pool.create("/code/proj", "Root");
+		pool.create("/code/proj", "Child");
+		pool.create("/code/proj", "Grandchild");
+		mockInstances[0]?.getCurrentSessionId.mockReturnValue("root-db");
+		mockInstances[1]?.getCurrentSessionId.mockReturnValue("child-db");
+		mockInstances[2]?.getCurrentSessionId.mockReturnValue("grandchild-db");
+		mockInstances[1]?.getStatus.mockReturnValue({
+			state: "running",
+			model: "claude-test",
+			effort: "medium",
+			permission_mode: "default",
+		});
+		mockInstances[1]?.getSessionPresentation.mockReturnValue({
+			pinned: false,
+			forkParentSessionId: null,
+			forkParentLabel: null,
+			forkKind: null,
+			delegationParentSessionId: "root-db",
+			delegationParentLabel: "Root",
+			delegationParentTurnId: "turn-root",
+			delegationDepth: 1,
+		});
+		mockInstances[2]?.getPendingPermissionRequests.mockReturnValue([
+			{ id: "permission-1" },
+		]);
+		mockInstances[2]?.getSessionPresentation.mockReturnValue({
+			pinned: false,
+			forkParentSessionId: null,
+			forkParentLabel: null,
+			forkKind: null,
+			delegationParentSessionId: "child-db",
+			delegationParentLabel: "Child",
+			delegationParentTurnId: "turn-child",
+			delegationDepth: 2,
+		});
+
+		const statuses = pool.getSessionsStatus();
+		const root = statuses.find((status) => status.db_session_id === "root-db");
+		const child = statuses.find(
+			(status) => status.db_session_id === "child-db",
+		);
+		expect(root).toMatchObject({
+			attention: {
+				bucket: "needs_attention",
+				reason: "delegated_child_attention",
+			},
+			delegated_attention: {
+				direct_count: 1,
+				descendant_count: 2,
+				needs_attention_count: 1,
+				working_count: 1,
+			},
+		});
+		expect(child).toMatchObject({
+			attention: {
+				bucket: "needs_attention",
+				reason: "delegated_child_attention",
+			},
+			delegated_attention: { descendant_count: 1 },
 		});
 	});
 

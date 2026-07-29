@@ -930,6 +930,35 @@ export function mapCodexModels(raw: unknown): ProviderModelInfo[] {
 				];
 			},
 		);
+		const defaultServiceTier =
+			typeof item.defaultServiceTier === "string"
+				? item.defaultServiceTier
+				: undefined;
+		const serviceTiers = Array.isArray(item.serviceTiers)
+			? item.serviceTiers.flatMap((tier) => {
+					const tierObject = asObj(tier);
+					const tierValue =
+						typeof tierObject.id === "string" ? tierObject.id : undefined;
+					if (!tierValue) return [];
+					return [
+						{
+							value: tierValue,
+							label:
+								typeof tierObject.name === "string"
+									? tierObject.name
+									: tierValue,
+							desc:
+								typeof tierObject.description === "string"
+									? tierObject.description
+									: undefined,
+							isDefault:
+								defaultServiceTier !== undefined
+									? tierValue === defaultServiceTier
+									: undefined,
+						},
+					];
+				})
+			: undefined;
 		return [
 			{
 				value,
@@ -939,6 +968,7 @@ export function mapCodexModels(raw: unknown): ProviderModelInfo[] {
 				hidden,
 				inputModalities,
 				efforts,
+				serviceTiers,
 			},
 		];
 	});
@@ -1351,6 +1381,9 @@ class CodexAgentSession implements AgentSession {
 			...(cwd ? { cwd } : {}),
 			...(this.params.model ? { model: this.params.model } : {}),
 			...(this.params.effort ? { effort: this.params.effort } : {}),
+			...(this.params.serviceTier
+				? { serviceTier: this.params.serviceTier }
+				: {}),
 			...(this.params.permissionMode
 				? {
 						approvalPolicy: effectiveApprovalPolicy(this.params),
@@ -1841,6 +1874,9 @@ class CodexAgentSession implements AgentSession {
 			// thread and performs app actions without asking its client.
 			...(this.delegatedWindowsComputerUse ? { threadSource: "user" } : {}),
 			...(this.params.model ? { model: this.params.model } : {}),
+			...(this.params.serviceTier
+				? { serviceTier: this.params.serviceTier }
+				: {}),
 			...(this.params.permissionMode
 				? {
 						approvalPolicy: effectiveApprovalPolicy(this.params),
@@ -3205,12 +3241,12 @@ class CodexAgentSession implements AgentSession {
 		this.cumulativeUsageTurns.delete(threadId);
 		this.queryTurns += 1;
 		this.activeTurnId = null;
-		if (this.params.permissionMode === "plan") {
-			const plan =
-				this.nativePlanText ||
-				(this.htmlPlanReady || this.params.planHtmlPath
-					? "HTML plan ready for review."
-					: "Codex completed its plan.");
+		const plan =
+			this.nativePlanText.trim() ||
+			(this.htmlPlanReady || this.params.planHtmlPath
+				? "HTML plan ready for review."
+				: null);
+		if (this.params.permissionMode === "plan" && plan) {
 			const planDecision = await this.params.canUseTool(
 				"ExitPlanMode",
 				{ plan },

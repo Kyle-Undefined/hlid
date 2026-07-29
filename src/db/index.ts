@@ -27,6 +27,30 @@ export {
 	moveAttachmentIntoLibrary,
 	promoteAttachmentToVault,
 } from "./attachments";
+// Durable Hlid-owned cross-harness delegation
+export {
+	abandonInterruptedHlidDelegation,
+	countActiveHlidDelegations,
+	createHlidDelegation,
+	finishHlidDelegation,
+	getHlidDelegationByChildSession,
+	getHlidDelegationForParent,
+	interruptActiveHlidDelegationsAfterRestart,
+	listHlidDelegationAncestorLineage,
+	listHlidDelegationLifecycleRollups,
+	listHlidDelegationsByParentDelegation,
+	listHlidDelegationsForParent,
+	listHlidDelegationsForRoutineRun,
+	listResumableInterruptedHlidDelegations,
+	markHlidDelegationRunning,
+	reconcileOrphanedHlidDelegationsAfterRestart,
+	recordHlidDelegationPartialResult,
+	resumeHlidDelegation,
+	rollbackHlidDelegationResume,
+	updateHlidDelegationCost,
+	updateHlidDelegationProgress,
+	updateHlidDelegationTokens,
+} from "./delegations";
 export type {
 	LedgerAnalytics,
 	LedgerAnalyticsFilter,
@@ -114,6 +138,7 @@ export {
 	getSessionsPaginated,
 	recordQuery,
 	renameSession,
+	rollbackHlidDelegationSetup,
 	setSessionActualModel,
 	setSessionAgentCwd,
 	setSessionArchived,

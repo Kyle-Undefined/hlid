@@ -1,5 +1,5 @@
 import { useNavigate } from "@tanstack/react-router";
-import { GitFork, Pin } from "lucide-react";
+import { Bot, GitFork, Pin } from "lucide-react";
 import { useState, useSyncExternalStore } from "react";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import type { AggStats, SessionRow, WeeklyStats } from "#/db";
@@ -9,11 +9,14 @@ import {
 	subscribeSessionsStatus,
 } from "#/hooks/wsSessionStatusStore";
 import { formatDisplayCost } from "#/lib/costDisplay";
+import { collapsibleDelegatedDescendantIds } from "#/lib/delegationAttention";
 import { fmt, fmtRunTime } from "#/lib/formatters";
 import {
 	attentionReasonLabel,
 	deriveLiveSessionSwitcherRows,
 	derivePersistedRecentSessionRows,
+	liveDelegationRollupLabel,
+	liveDelegationUsageLabel,
 	liveSessionContext,
 	liveSessionReasonLabel,
 	type PersistedRecentSessionRow,
@@ -101,46 +104,53 @@ function RunList({
 	}
 	return (
 		<>
-			{rows.map(({ session: run, workspaceLabel, forkLabel }) => (
-				<button
-					key={run.id}
-					type="button"
-					onClick={() => onRunClick(run.id)}
-					aria-label={`Open ${run.label ?? "untitled"} recent session`}
-					className="group flex min-h-11 w-full items-center gap-2 border-b border-border/20 px-4 py-2 text-left transition-colors last:border-0 hover:bg-accent/30"
-				>
-					<span className="text-[9px] tabular-nums text-primary/50 shrink-0 font-mono w-9">
-						{fmtRunTime(run.started_at)}
-					</span>
-					<span className="min-w-0 flex-1">
-						<PrivacyMask className="truncate text-[10px] tracking-wider text-muted-foreground/65">
-							{run.label ?? "untitled"}
-						</PrivacyMask>
-						{(workspaceLabel || forkLabel) && (
-							<span className="mt-0.5 flex min-w-0 items-center gap-1 truncate font-mono text-[7px] text-muted-foreground/40">
-								{forkLabel && (
-									<GitFork
-										aria-hidden="true"
-										className="h-2.5 w-2.5 shrink-0"
-									/>
-								)}
-								<PrivacyMask className="truncate">
-									{[workspaceLabel, forkLabel].filter(Boolean).join(" · ")}
-								</PrivacyMask>
+			{rows.map(
+				({ session: run, workspaceLabel, forkLabel, delegationLabel }) => (
+					<button
+						key={run.id}
+						type="button"
+						onClick={() => onRunClick(run.id)}
+						aria-label={`Open ${run.label ?? "untitled"} recent session`}
+						className="group flex min-h-11 w-full items-center gap-2 border-b border-border/20 px-4 py-2 text-left transition-colors last:border-0 hover:bg-accent/30"
+					>
+						<span className="text-[9px] tabular-nums text-primary/50 shrink-0 font-mono w-9">
+							{fmtRunTime(run.started_at)}
+						</span>
+						<span className="min-w-0 flex-1">
+							<PrivacyMask className="truncate text-[10px] tracking-wider text-muted-foreground/65">
+								{run.label ?? "untitled"}
+							</PrivacyMask>
+							{(workspaceLabel || forkLabel || delegationLabel) && (
+								<span className="mt-0.5 flex min-w-0 items-center gap-1 truncate font-mono text-[7px] text-muted-foreground/40">
+									{forkLabel && (
+										<GitFork
+											aria-hidden="true"
+											className="h-2.5 w-2.5 shrink-0"
+										/>
+									)}
+									{delegationLabel && (
+										<Bot aria-hidden="true" className="h-2.5 w-2.5 shrink-0" />
+									)}
+									<PrivacyMask className="truncate">
+										{[workspaceLabel, forkLabel, delegationLabel]
+											.filter(Boolean)
+											.join(" · ")}
+									</PrivacyMask>
+								</span>
+							)}
+						</span>
+						{run.pinned === 1 && (
+							<span title="Pinned" className="shrink-0 text-primary/60">
+								<Pin aria-hidden="true" className="h-3 w-3" />
+								<span className="sr-only">Pinned</span>
 							</span>
 						)}
-					</span>
-					{run.pinned === 1 && (
-						<span title="Pinned" className="shrink-0 text-primary/60">
-							<Pin aria-hidden="true" className="h-3 w-3" />
-							<span className="sr-only">Pinned</span>
+						<span className="shrink-0 text-[7px] tracking-widest text-muted-foreground/30 uppercase">
+							Recent
 						</span>
-					)}
-					<span className="shrink-0 text-[7px] tracking-widest text-muted-foreground/30 uppercase">
-						Recent
-					</span>
-				</button>
-			))}
+					</button>
+				),
+			)}
 		</>
 	);
 }
@@ -165,8 +175,18 @@ type AttentionRow = {
 	pinned: boolean;
 	context: string;
 	forkLabel: string | null;
+	delegationLabel: string | null;
+	delegationRollup?: string | null;
+	delegationUsage?: string | null;
 	session?: ReturnType<typeof getSessionsStatus>[number];
 };
+
+const ATTENTION_PRIORITY = {
+	needs_attention: 0,
+	working: 1,
+	queued: 2,
+	recent: 3,
+} as const;
 
 // ─── ViewAllLink ──────────────────────────────────────────────────────────────
 
@@ -205,20 +225,41 @@ function AttentionSummary({
 		() => [],
 	);
 	const liveRows = deriveLiveSessionSwitcherRows(sessions);
+	const liveByDbSessionId = new Map(
+		liveRows.map((row) => [row.dbSessionId, row]),
+	);
 	const routineRows: AttentionRow[] = routines.flatMap((routine) => {
 		const attention = routine.attention;
 		const lastRun = routine.lastRun;
-		if (!attention || attention.bucket === "recent" || !lastRun) return [];
+		if (!lastRun) return [];
+		const live = lastRun.sessionId
+			? liveByDbSessionId.get(lastRun.sessionId)
+			: undefined;
+		const routineState = attention?.bucket ?? "recent";
+		const liveState = live?.state ?? "recent";
+		const state =
+			ATTENTION_PRIORITY[liveState] < ATTENTION_PRIORITY[routineState]
+				? liveState
+				: routineState;
+		if (state === "recent") return [];
+		const liveLeads =
+			ATTENTION_PRIORITY[liveState] < ATTENTION_PRIORITY[routineState];
 		return [
 			{
 				id: `routine:${routine.id}:${lastRun.id}`,
 				label: routine.name,
-				state: attention.bucket,
-				reason: attention.reason,
+				state,
+				reason: liveLeads ? live?.session.attention?.reason : attention?.reason,
 				sessionId: lastRun.sessionId,
-				pinned: false,
-				context: "",
-				forkLabel: null,
+				pinned: live?.pinned ?? false,
+				context: live
+					? liveSessionContext(live.session, live.workspaceLabel)
+					: "",
+				forkLabel: live?.forkLabel ?? null,
+				delegationLabel: live?.delegationLabel ?? null,
+				delegationRollup: live ? liveDelegationRollupLabel(live.session) : null,
+				delegationUsage: live ? liveDelegationUsageLabel(live.session) : null,
+				session: live?.session,
 			},
 		];
 	});
@@ -227,13 +268,30 @@ function AttentionSummary({
 			.map((row) => row.sessionId)
 			.filter((id): id is string => Boolean(id)),
 	);
+	const replacedLiveDbSessionIds = new Set(
+		liveRows
+			.filter(
+				(row) =>
+					routineSessionIds.has(row.dbSessionId) ||
+					routineSessionIds.has(row.session.session_id),
+			)
+			.map((row) => row.dbSessionId),
+	);
+	const collapsedDelegatedSessionIds = collapsibleDelegatedDescendantIds(
+		liveRows.map((row) => ({
+			id: row.dbSessionId,
+			parentId: row.session.delegation_parent_session_id ?? null,
+		})),
+		replacedLiveDbSessionIds,
+	);
 	const actionable = [
 		...liveRows
 			.filter(
 				(row) =>
 					row.state !== "recent" &&
 					!routineSessionIds.has(row.dbSessionId) &&
-					!routineSessionIds.has(row.session.session_id),
+					!routineSessionIds.has(row.session.session_id) &&
+					!collapsedDelegatedSessionIds.has(row.dbSessionId),
 			)
 			.map((row) => ({
 				id: row.session.session_id,
@@ -244,18 +302,15 @@ function AttentionSummary({
 				pinned: row.pinned,
 				context: liveSessionContext(row.session, row.workspaceLabel),
 				forkLabel: row.forkLabel,
+				delegationLabel: row.delegationLabel,
 				session: row.session,
+				delegationRollup: liveDelegationRollupLabel(row.session),
+				delegationUsage: liveDelegationUsageLabel(row.session),
 			})),
 		...routineRows,
 	].sort((left, right) => {
-		const priority = {
-			needs_attention: 0,
-			working: 1,
-			queued: 2,
-			recent: 3,
-		};
 		return (
-			priority[left.state] - priority[right.state] ||
+			ATTENTION_PRIORITY[left.state] - ATTENTION_PRIORITY[right.state] ||
 			Number(right.pinned) - Number(left.pinned)
 		);
 	});
@@ -266,6 +321,10 @@ function AttentionSummary({
 		(row) => row.state === "working",
 	).length;
 	const queuedCount = actionable.filter((row) => row.state === "queued").length;
+	const durableCount = liveRows.filter(
+		(row) => row.session.durable_only === true,
+	).length;
+	const processCount = liveRows.length - durableCount;
 
 	return (
 		<div className="border-b border-border">
@@ -274,7 +333,8 @@ function AttentionSummary({
 					Attention
 				</span>
 				<span className="font-mono text-[8px] text-muted-foreground/45">
-					{liveRows.length} live
+					{processCount} live
+					{durableCount > 0 ? ` · ${durableCount} interrupted` : ""}
 					{routineRows.length > 0 ? ` · ${routineRows.length} routines` : ""}
 				</span>
 			</div>
@@ -334,7 +394,10 @@ function AttentionSummary({
 									<PrivacyMask className="truncate text-[9px] tracking-wider text-muted-foreground/70">
 										{row.label}
 									</PrivacyMask>
-									{(row.context || row.forkLabel) && (
+									{(row.context ||
+										row.forkLabel ||
+										row.delegationLabel ||
+										row.delegationRollup) && (
 										<span className="mt-0.5 flex min-w-0 items-center gap-1 truncate font-mono text-[7px] text-muted-foreground/35">
 											{row.forkLabel && (
 												<GitFork
@@ -342,12 +405,31 @@ function AttentionSummary({
 													className="h-2.5 w-2.5 shrink-0"
 												/>
 											)}
+											{row.delegationLabel && (
+												<Bot
+													aria-hidden="true"
+													className="h-2.5 w-2.5 shrink-0"
+												/>
+											)}
 											<PrivacyMask className="truncate">
-												{[row.context, row.forkLabel]
+												{[
+													row.context,
+													row.forkLabel,
+													row.delegationLabel,
+													row.delegationRollup,
+												]
 													.filter(Boolean)
 													.join(" · ")}
 											</PrivacyMask>
 										</span>
+									)}
+									{row.delegationUsage && (
+										<div
+											title="Tokens and cost are cumulative across all delegated descendants. Elapsed time spans the first descendant start through the last stop, or now while work is active."
+											className="mt-0.5 block truncate font-mono text-[7px] text-primary/40"
+										>
+											<PrivacyMask>{row.delegationUsage}</PrivacyMask>
+										</div>
 									)}
 								</span>
 								<span className="shrink-0 font-mono text-[7px] tracking-wider text-muted-foreground/45 uppercase">

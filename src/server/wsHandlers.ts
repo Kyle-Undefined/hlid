@@ -1,12 +1,16 @@
 import type { ServerWebSocket } from "bun";
 import * as db from "../db";
 import {
+	HLID_DELEGATION_CONTROL_OWNERSHIP_ERROR,
+	isHlidDelegationControlOwned,
+} from "../lib/hlidDelegation";
+import {
 	ClaudeWorkflowDeleteError,
 	ClaudeWorkflowSaveError,
 	ClaudeWorkflowSourceError,
 } from "./claudeWorkflows";
 import { loadConfig } from "./config";
-import { getDataRevisions } from "./dataRevision";
+import { bumpDataRevision, getDataRevisions } from "./dataRevision";
 import { getLiveSessionsStatus } from "./liveSessions";
 import {
 	syncAgentMcpList,
@@ -68,6 +72,100 @@ interface MessageContext {
 	pool: SessionPool;
 	terminalPool?: TerminalSessionPool;
 	shellPool?: ShellSessionPool;
+}
+
+function delegationMutationTarget(
+	context: MessageContext,
+	msg: ClientMessage,
+): string | null {
+	const subscribedSessionId = context.ws.data.subscribedSessionId;
+	switch (msg.type) {
+		case "chat":
+			return msg.session_id ?? subscribedSessionId;
+		case "stop_session":
+		case "close_session":
+			return msg.session_id;
+		case "abort":
+		case "cancel_queued":
+		case "promote_queued":
+		case "steer_queued":
+		case "reload_session":
+		case "skip_sleep":
+			return subscribedSessionId;
+		case "set_provider":
+		case "set_model":
+		case "set_effort":
+		case "set_permission_mode":
+		case "workflow_control":
+			return msg.session_id ?? subscribedSessionId;
+		case "goal_control":
+			return msg.action === "get" ? null : msg.session_id;
+		case "realtime_start":
+		case "realtime_speak":
+		case "realtime_stop":
+			return msg.session_id;
+		default:
+			return null;
+	}
+}
+
+function resolveDbSessionTarget(
+	context: MessageContext,
+	requestedSessionId: string,
+): string {
+	const entry =
+		context.pool.get(requestedSessionId) ??
+		context.pool.findByDbSessionId(requestedSessionId);
+	return (
+		entry?.manager.getCurrentSessionId() ??
+		entry?.claimedDbSessionId ??
+		requestedSessionId
+	);
+}
+
+async function rejectDelegationOwnedMutation(
+	context: MessageContext,
+	msg: ClientMessage,
+): Promise<boolean> {
+	const requestedSessionId = delegationMutationTarget(context, msg);
+	if (!requestedSessionId) return false;
+	const childSessionId = resolveDbSessionTarget(context, requestedSessionId);
+	try {
+		let delegation = await db.getHlidDelegationByChildSession(childSessionId);
+		if (
+			msg.type === "close_session" &&
+			delegation?.status === "interrupted" &&
+			delegation.resumable
+		) {
+			delegation = await db.abandonInterruptedHlidDelegation(
+				delegation.id,
+				"The user closed this restart-interrupted child without continuing it.",
+			);
+			if (delegation?.status === "cancelled") {
+				await context.pool.refreshDurableDelegationAttention();
+				bumpDataRevision("sessions");
+				broadcastSessionsStatus(context);
+				return false;
+			}
+		}
+		if (!isHlidDelegationControlOwned(delegation)) return false;
+		send(context.ws, {
+			type: "error",
+			message: HLID_DELEGATION_CONTROL_OWNERSHIP_ERROR,
+		});
+		return true;
+	} catch (error) {
+		console.error(
+			`[delegation] failed to verify Raven ownership for ${childSessionId}:`,
+			error instanceof Error ? error.message : String(error),
+		);
+		send(context.ws, {
+			type: "error",
+			message:
+				"Could not verify whether this Raven session is owned by a Hlid delegation.",
+		});
+		return true;
+	}
 }
 
 function broadcastSessionsStatus({ pool, terminalPool }: MessageContext): void {
@@ -978,6 +1076,68 @@ function handleSteerQueued(
 		});
 }
 
+async function handleSteerActive(
+	context: MessageContext,
+	msg: MessageOf<"steer_active">,
+): Promise<void> {
+	const entry =
+		context.pool.get(msg.session_id) ??
+		context.pool.findByDbSessionId(msg.session_id);
+	if (!entry) {
+		send(context.ws, {
+			type: "error",
+			message: "This delegated child is not active in this Hlid process.",
+		});
+		return;
+	}
+	const childSessionId =
+		entry.manager.getCurrentSessionId() ??
+		entry.claimedDbSessionId ??
+		msg.session_id;
+	try {
+		const delegation = await db.getHlidDelegationByChildSession(childSessionId);
+		if (
+			!delegation ||
+			delegation.status !== "running" ||
+			!isHlidDelegationControlOwned(delegation) ||
+			!entry.manager.isRunning()
+		) {
+			throw new Error(
+				"Only a currently running delegation-owned child can be steered here.",
+			);
+		}
+		await entry.manager.steerActiveTurn(
+			msg.text,
+			(event) => {
+				entry.runState.broadcast(event);
+				if (changesSessionAttention(event)) broadcastSessionsStatus(context);
+			},
+			childSessionId,
+			msg.turn_id,
+		);
+		entry.runState.broadcast({
+			type: "user_message",
+			text: msg.text,
+			id: msg.turn_id,
+			session_id: childSessionId,
+		});
+		entry.runState.broadcast({
+			type: "turn_steered",
+			turn_id: msg.turn_id,
+			session_id: childSessionId,
+		});
+		broadcastSessionsStatus(context);
+	} catch (error) {
+		send(context.ws, {
+			type: "error",
+			message:
+				error instanceof Error
+					? error.message
+					: "Failed to steer the active child turn",
+		});
+	}
+}
+
 async function handleSaveWorkflow(
 	entry: PoolEntry,
 	msg: MessageOf<"save_workflow">,
@@ -1277,6 +1437,11 @@ async function handleMessage(
 		await handleSubscribeSession(context, msg);
 		return;
 	}
+	if (msg.type === "steer_active") {
+		await handleSteerActive(context, msg);
+		return;
+	}
+	if (await rejectDelegationOwnedMutation(context, msg)) return;
 	if (msg.type === "goal_control") {
 		await handleGoalControl(context, msg);
 		return;

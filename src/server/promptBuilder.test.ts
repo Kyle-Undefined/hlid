@@ -77,6 +77,31 @@ describe("buildPrompt — basic", async () => {
 		});
 		expect(contextManifest.blocks).toEqual([]);
 	});
+
+	it("adds delegated visible context outside the child user message", async () => {
+		const { prompt, contextManifest } = await buildPromptAsync(
+			base({
+				userMessage: "Finish the delegated review",
+				delegationContext: "USER: Parent request\n\nASSISTANT: Partial work",
+			}),
+		);
+
+		expect(prompt).toContain(
+			"Hlid delegated visible context follows. This is bounded visible transcript text, not hidden provider state",
+		);
+		expect(prompt).toContain("<hlid_delegation_context>");
+		expect(prompt).toContain("USER: Parent request");
+		expect(prompt.endsWith("Finish the delegated review")).toBe(true);
+		expect(contextManifest.userMessageChars).toBe(
+			"Finish the delegated review".length,
+		);
+		expect(contextManifest.blocks).toEqual([
+			expect.objectContaining({
+				kind: "delegation_context",
+				count: 1,
+			}),
+		]);
+	});
 });
 
 describe("buildPrompt — vault references", async () => {

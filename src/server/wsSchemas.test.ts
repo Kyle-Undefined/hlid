@@ -215,6 +215,45 @@ describe("chat WebSocket runtime schema", () => {
 		).toBeNull();
 	});
 
+	it("accepts only bounded text-only active steering", () => {
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "steer_active",
+					session_id: "child-session",
+					turn_id: "steer-1",
+					text: "Check the failing branch",
+				}),
+			),
+		).toEqual({
+			type: "steer_active",
+			session_id: "child-session",
+			turn_id: "steer-1",
+			text: "Check the failing branch",
+		});
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "steer_active",
+					session_id: "child-session",
+					turn_id: "steer-1",
+					text: " ",
+				}),
+			),
+		).toBeNull();
+		expect(
+			parseClientMessage(
+				JSON.stringify({
+					type: "steer_active",
+					session_id: "child-session",
+					turn_id: "steer-1",
+					text: "Check the failing branch",
+					attachments: [],
+				}),
+			),
+		).toBeNull();
+	});
+
 	it("accepts only bounded native workflow stop controls", () => {
 		expect(
 			parseClientMessage(

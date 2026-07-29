@@ -160,6 +160,31 @@ describe("sessionDisplayUsage", () => {
 			}),
 		).toEqual({ cost: 1.25, tokens: 185 });
 	});
+
+	it("uses durable delegated-child usage only when it exceeds persisted and live totals", () => {
+		expect(
+			sessionDisplayUsage(
+				{
+					...session,
+					delegation_cost_used: 2.5,
+					delegation_tokens_used: 800,
+				},
+				false,
+				liveStats,
+			),
+		).toEqual({ cost: 2.5, tokens: 800 });
+		expect(
+			sessionDisplayUsage(
+				{
+					...session,
+					delegation_cost_used: 1,
+					delegation_tokens_used: 100,
+				},
+				false,
+				liveStats,
+			),
+		).toEqual({ cost: 1.25, tokens: 150 });
+	});
 });
 
 describe("SessionsLedger session actions", () => {
@@ -259,6 +284,99 @@ describe("SessionsLedger session actions", () => {
 	it("navigates to the selected session", () => {
 		const props = renderLedger();
 		fireEvent.click(screen.getByRole("button", { name: /original name/i }));
+		expect(props.onNavigate).toHaveBeenCalledWith("session-1");
+	});
+
+	it("shows the persisted tool-call count in compact session metadata", () => {
+		renderLedger({
+			data: {
+				sessions: [{ ...session, tool_call_count: 7 }],
+				total: 1,
+			},
+		});
+
+		expect(screen.getByText(/2q · 7 tools/i)).toBeTruthy();
+	});
+
+	it("shows durable delegated-child usage as an estimated fallback", () => {
+		renderLedger({
+			data: {
+				sessions: [
+					{
+						...session,
+						total_cost: 0,
+						total_input_tokens: 0,
+						total_output_tokens: 0,
+						delegation_cost_used: 0.172,
+						delegation_tokens_used: 175_800,
+					},
+				],
+				total: 1,
+			},
+		});
+
+		expect(screen.getByText("~$0.1720")).toBeTruthy();
+		expect(screen.getByText("175.8k tok")).toBeTruthy();
+	});
+
+	it("shows descendant-wide delegation totals on the parent row", () => {
+		renderLedger({
+			sessionsStatus: [
+				{
+					session_id: "pool-parent",
+					agent_cwd: "/code/proj",
+					agent_name: "Proj",
+					state: "idle",
+					model: "model",
+					hasPendingPermissions: false,
+					hasDbSession: true,
+					db_session_id: "session-1",
+					delegated_attention: {
+						direct_count: 2,
+						descendant_count: 4,
+						waiting_count: 0,
+						completed_count: 4,
+						failed_count: 0,
+						needs_attention_count: 0,
+						working_count: 0,
+						queued_count: 0,
+						recent_count: 0,
+						leading_bucket: "recent",
+						since: 1,
+						last_activity_at: 2,
+						total_tokens: 82_500,
+						total_cost: 0.725,
+						elapsed_duration_seconds: 3_661,
+					},
+				},
+			],
+		});
+
+		expect(screen.getByText(/4 delegated · 4 completed/i)).toBeTruthy();
+		expect(screen.getByTitle(/all delegated descendants/).textContent).toBe(
+			"82.5k tokens · $0.725 · 1h 1m elapsed",
+		);
+	});
+
+	it("keeps a completed delegated child as an ordinary navigable Ledger row", () => {
+		const props = renderLedger({
+			data: {
+				sessions: [
+					{
+						...session,
+						ended_at: 1_700_000_100,
+						delegation_parent_session_id: "parent-session",
+						delegation_parent_label: "Parent task",
+					},
+				],
+				total: 1,
+			},
+		});
+
+		expect(screen.getByText(/delegated from Parent task/i)).toBeTruthy();
+		fireEvent.click(
+			screen.getByRole("button", { name: "Open Original name session" }),
+		);
 		expect(props.onNavigate).toHaveBeenCalledWith("session-1");
 	});
 

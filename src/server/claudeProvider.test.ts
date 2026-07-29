@@ -210,6 +210,88 @@ describe("ClaudeProvider — event mapping", () => {
 		expect(textEvents).toEqual([{ type: "text_delta", text: "Hello world" }]);
 	});
 
+	it("surfaces structured Claude assistant failures as terminal provider errors", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "assistant",
+					error: "authentication_failed",
+					message: {
+						content: [
+							{
+								type: "text",
+								text: "Failed to authenticate: OAuth session expired.",
+							},
+						],
+						usage: { input_tokens: 0, output_tokens: 0 },
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					is_error: true,
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 100,
+					result: "Failed to authenticate: OAuth session expired.",
+					usage: { input_tokens: 0, output_tokens: 0 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		const textEvent = {
+			type: "text_delta",
+			text: "Failed to authenticate: OAuth session expired.",
+		} as const;
+		const errorEvent = {
+			type: "transport_error",
+			message: "Failed to authenticate: OAuth session expired.",
+		} as const;
+		expect(events).toContainEqual(textEvent);
+		expect(events).toContainEqual(errorEvent);
+		expect(
+			events.findIndex((event) => event.type === "transport_error"),
+		).toBeGreaterThan(
+			events.findIndex(
+				(event) =>
+					event.type === "text_delta" &&
+					event.text === "Failed to authenticate: OAuth session expired.",
+			),
+		);
+	});
+
+	it("does not fail the root turn for a structured Claude subagent error", async () => {
+		vi.mocked(query).mockReturnValueOnce(
+			sdkGen([
+				{
+					type: "assistant",
+					parent_tool_use_id: "agent-tool-1",
+					error: "authentication_failed",
+					message: {
+						content: [
+							{ type: "text", text: "Subagent authentication failed." },
+						],
+						usage: { input_tokens: 0, output_tokens: 0 },
+					},
+				},
+				{
+					type: "result",
+					subtype: "success",
+					total_cost_usd: 0,
+					num_turns: 1,
+					duration_ms: 100,
+					usage: { input_tokens: 10, output_tokens: 5 },
+				},
+			]),
+		);
+
+		const events = await collectEvents(baseParams());
+		expect(events.some((event) => event.type === "transport_error")).toBe(
+			false,
+		);
+	});
+
 	it("yields tool_start for assistant tool_use content blocks", async () => {
 		vi.mocked(query).mockReturnValueOnce(
 			sdkGen([

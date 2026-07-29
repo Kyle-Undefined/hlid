@@ -1,5 +1,9 @@
 import { resolve } from "node:path";
 import { estimateCodexCost } from "../lib/codexPricing";
+import {
+	HLID_DELEGATION_MAX_ERROR_CHARS,
+	HLID_DELEGATION_MAX_RESULT_CHARS,
+} from "../lib/hlidDelegation";
 import { APP_DIR } from "../lib/paths";
 import {
 	estimateProviderCost,
@@ -1335,6 +1339,188 @@ function applyMigrations(db: Db): void {
 		db.run(
 			`CREATE INDEX idx_project_preview_feedback_session_created
 			 ON project_preview_feedback(session_id, created_at DESC)`,
+		);
+	});
+
+	// Hlid-owned cross-harness delegation creates an ordinary child Raven
+	// session while retaining lifecycle and bounded-result provenance outside
+	// either provider transcript. Parent IDs intentionally have no foreign key:
+	// deleting a parent must not erase the child's origin record.
+	runMigration(db, "_migrated_session_delegations_v1", (db) => {
+		db.run(`
+			CREATE TABLE session_delegations (
+				id TEXT PRIMARY KEY,
+				parent_session_id TEXT NOT NULL,
+				parent_turn_id TEXT,
+				parent_label TEXT,
+				child_session_id TEXT NOT NULL UNIQUE,
+				depth INTEGER NOT NULL CHECK(depth >= 1),
+				task TEXT NOT NULL,
+				target_provider_id TEXT NOT NULL,
+				selected_model TEXT,
+				selected_effort TEXT,
+				selected_permission_mode TEXT NOT NULL,
+				timeout_seconds INTEGER NOT NULL,
+				status TEXT NOT NULL CHECK(status IN (
+					'pending', 'running', 'completed', 'failed',
+					'timed_out', 'interrupted'
+				)),
+				started_at INTEGER NOT NULL DEFAULT (unixepoch()),
+				ended_at INTEGER,
+				result_text TEXT,
+				error TEXT
+			)
+		`);
+		db.run(
+			`CREATE INDEX idx_session_delegations_parent_started
+			 ON session_delegations(parent_session_id, started_at DESC)`,
+		);
+		db.run(
+			`CREATE INDEX idx_session_delegations_status
+			 ON session_delegations(status)`,
+		);
+	});
+
+	// Complete the durable orchestration lifecycle without changing the v1
+	// migration that may already exist in user databases. SQLite cannot widen
+	// a CHECK constraint in place, so rebuild the bounded table and preserve
+	// every first-slice row with conservative defaults.
+	runMigration(db, "_migrated_session_delegations_v2", (db) => {
+		db.run(
+			`ALTER TABLE session_delegations
+			 RENAME TO session_delegations_v1`,
+		);
+		db.run(`
+			CREATE TABLE session_delegations (
+				id TEXT PRIMARY KEY,
+				parent_session_id TEXT NOT NULL,
+				parent_turn_id TEXT,
+				parent_label TEXT,
+				parent_delegation_id TEXT,
+				child_session_id TEXT NOT NULL UNIQUE,
+				depth INTEGER NOT NULL CHECK(depth BETWEEN 1 AND 3),
+				task TEXT NOT NULL,
+				target_provider_id TEXT NOT NULL,
+				selected_model TEXT,
+				selected_effort TEXT,
+				selected_permission_mode TEXT NOT NULL,
+				timeout_seconds INTEGER NOT NULL,
+				token_budget INTEGER CHECK(token_budget IS NULL OR token_budget > 0),
+				tokens_used INTEGER NOT NULL DEFAULT 0 CHECK(tokens_used >= 0),
+				attempt_count INTEGER NOT NULL DEFAULT 1 CHECK(attempt_count BETWEEN 1 AND 3),
+				continuation_mode TEXT NOT NULL DEFAULT 'initial' CHECK(
+					continuation_mode IN ('initial', 'explicit_new_turn')
+				),
+				handoff_json TEXT NOT NULL DEFAULT '{}',
+				status TEXT NOT NULL CHECK(status IN (
+					'pending', 'running', 'completed', 'failed',
+					'timed_out', 'interrupted', 'cancelled',
+					'budget_exhausted'
+				)),
+				started_at INTEGER NOT NULL DEFAULT (unixepoch()),
+				updated_at INTEGER NOT NULL DEFAULT (unixepoch()),
+				ended_at INTEGER,
+				result_text TEXT,
+				error TEXT
+			)
+		`);
+		db.run(`
+			INSERT INTO session_delegations (
+				id, parent_session_id, parent_turn_id, parent_label,
+				parent_delegation_id, child_session_id, depth, task,
+				target_provider_id, selected_model, selected_effort,
+				selected_permission_mode, timeout_seconds, token_budget,
+				tokens_used, attempt_count, continuation_mode, handoff_json,
+				status, started_at, updated_at, ended_at, result_text, error
+			)
+			SELECT
+				id, parent_session_id, parent_turn_id, parent_label,
+				NULL, child_session_id, MIN(depth, 3), task,
+				target_provider_id, selected_model, selected_effort,
+				selected_permission_mode, timeout_seconds, NULL,
+				0, 1, 'initial', '{}',
+				status, started_at, COALESCE(ended_at, started_at),
+				ended_at,
+				CASE
+					WHEN result_text IS NULL OR result_text = '' THEN NULL
+					WHEN length(result_text) <= ${HLID_DELEGATION_MAX_RESULT_CHARS}
+						THEN result_text
+					ELSE substr(result_text, 1, ${HLID_DELEGATION_MAX_RESULT_CHARS - 1}) || '…'
+				END,
+				CASE
+					WHEN error IS NULL OR error = '' THEN NULL
+					WHEN length(error) <= ${HLID_DELEGATION_MAX_ERROR_CHARS}
+						THEN error
+					ELSE substr(error, 1, ${HLID_DELEGATION_MAX_ERROR_CHARS - 1}) || '…'
+				END
+			FROM session_delegations_v1
+		`);
+		db.run(`DROP TABLE session_delegations_v1`);
+		db.run(
+			`CREATE INDEX idx_session_delegations_parent_started
+			 ON session_delegations(parent_session_id, started_at DESC)`,
+		);
+		db.run(
+			`CREATE INDEX idx_session_delegations_status
+			 ON session_delegations(status)`,
+		);
+		db.run(
+			`CREATE INDEX idx_session_delegations_parent_delegation
+			 ON session_delegations(parent_delegation_id, started_at)`,
+		);
+	});
+
+	// Retain one bounded current-step summary for the parent progress card.
+	// Detailed provider activity remains in the ordinary child Raven session.
+	runMigration(db, "_migrated_session_delegations_v3", (db) => {
+		db.run(
+			`ALTER TABLE session_delegations
+			 ADD COLUMN progress_text TEXT`,
+		);
+	});
+
+	// Persist the full validated execution selection and both bounded usage
+	// dimensions. Existing rows inherit their ordinary child session workspace.
+	runMigration(db, "_migrated_session_delegations_v4", (db) => {
+		db.run(
+			`ALTER TABLE session_delegations
+			 ADD COLUMN selected_service_tier TEXT`,
+		);
+		db.run(
+			`ALTER TABLE session_delegations
+			 ADD COLUMN selected_workspace TEXT NOT NULL DEFAULT ''`,
+		);
+		db.run(
+			`UPDATE session_delegations
+			 SET selected_workspace = COALESCE((
+			   SELECT child.agent_cwd
+			   FROM sessions child
+			   WHERE child.id = session_delegations.child_session_id
+			 ), '')`,
+		);
+		db.run(
+			`ALTER TABLE session_delegations
+			 ADD COLUMN cost_budget REAL CHECK(
+			   cost_budget IS NULL OR cost_budget > 0
+			 )`,
+		);
+		db.run(
+			`ALTER TABLE session_delegations
+			 ADD COLUMN cost_used REAL NOT NULL DEFAULT 0 CHECK(cost_used >= 0)`,
+		);
+	});
+
+	// A detached Routine child remains owned by the immutable Routine run after
+	// the parent provider turn ends. The run id is also the fail-closed boundary
+	// that prevents an interrupted child from being resumed without its grants.
+	runMigration(db, "_migrated_session_delegations_v5", (db) => {
+		db.run(
+			`ALTER TABLE session_delegations
+			 ADD COLUMN routine_run_id TEXT`,
+		);
+		db.run(
+			`CREATE INDEX idx_session_delegations_routine_run
+			 ON session_delegations(routine_run_id, status)`,
 		);
 	});
 }

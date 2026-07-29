@@ -1,4 +1,4 @@
-import { GitFork, Pin, Scroll } from "lucide-react";
+import { Bot, GitFork, Pin, Scroll } from "lucide-react";
 import {
 	createContext,
 	Fragment,
@@ -19,6 +19,8 @@ import {
 	deriveLiveSessionSwitcherRows,
 	type LiveSessionState,
 	type LiveSessionSwitcherRow,
+	liveDelegationRollupLabel,
+	liveDelegationUsageLabel,
 	liveSessionContext,
 	liveSessionQueueLabel,
 	liveSessionReasonLabel,
@@ -83,8 +85,8 @@ function toggleLabel(
 					? "work queued"
 					: tone === "recent"
 						? "all ready"
-						: "none live";
-	return `${open ? "Close" : "Open"} live sessions, ${count} total, ${state}`;
+						: "none active";
+	return `${open ? "Close" : "Open"} session attention, ${count} total, ${state}`;
 }
 
 type RetainedRow = LiveSessionSwitcherRow & {
@@ -121,8 +123,8 @@ export function LiveSessionToggle() {
 			aria-label={toggleLabel(false, switcher.count, switcher.tone)}
 			title={
 				switcher.hotkey
-					? `Live sessions (${displayHotkey(switcher.hotkey)})`
-					: "Live sessions"
+					? `Session attention (${displayHotkey(switcher.hotkey)})`
+					: "Session attention"
 			}
 			className={`relative flex shrink-0 select-none items-center px-4 py-3 text-sm transition-colors hover:text-foreground ${toneClass(switcher.tone)}`}
 		>
@@ -175,8 +177,8 @@ function LiveSessionDrawer({
 			retainedRef.current.set(id, { ...retained, closed: true });
 		}
 	}
-	// The attention list is a live status surface, so active rows follow the
-	// latest server ordering even while the drawer remains open. Keep removed
+	// The attention list follows the latest live and durable server ordering
+	// while the drawer remains open. Keep removed
 	// rows after them until the drawer closes so a session cannot disappear
 	// beneath a pointer during a close action.
 	orderRef.current = [
@@ -186,29 +188,34 @@ function LiveSessionDrawer({
 	const retainedRows = orderRef.current
 		.map((id) => retainedRef.current.get(id))
 		.filter((row): row is RetainedRow => Boolean(row));
+	const durableCount = rows.filter(
+		(row) => row.session.durable_only === true,
+	).length;
+	const liveCount = rows.length - durableCount;
 
 	return (
 		<>
 			<button
 				type="button"
 				onClick={onClose}
-				aria-label="Dismiss live sessions"
+				aria-label="Dismiss session attention"
 				className="absolute inset-0 z-30 bg-black/20 md:bg-black/10"
 			/>
 			<aside
 				id="raven-live-session-drawer"
 				role="dialog"
 				aria-modal="true"
-				aria-label="Live sessions"
+				aria-label="Session attention"
 				className={`absolute inset-y-0 left-0 z-40 flex w-[88vw] max-w-80 flex-col overflow-hidden border-r border-border shadow-2xl md:w-80 ${themeSurfaceClass.popover}`}
 			>
 				<header className="flex min-h-14 shrink-0 items-center gap-3 border-b border-border px-4">
 					<div className="min-w-0 flex-1">
 						<div className="text-[10px] tracking-widest text-popover-foreground/85 uppercase">
-							Live sessions
+							Session attention
 						</div>
 						<div className="font-mono text-[9px] text-popover-foreground/55">
-							{rows.length} process-backed
+							{liveCount} live
+							{durableCount > 0 ? ` · ${durableCount} interrupted` : ""}
 						</div>
 					</div>
 				</header>
@@ -216,7 +223,7 @@ function LiveSessionDrawer({
 				<div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
 					{retainedRows.length === 0 ? (
 						<div className="px-4 py-10 text-center text-[10px] tracking-widest text-popover-foreground/45 uppercase">
-							No live sessions
+							No active sessions
 						</div>
 					) : (
 						retainedRows.map((row, index) => {
@@ -227,6 +234,8 @@ function LiveSessionDrawer({
 								currentSessionId === row.dbSessionId ||
 								currentSessionId === session.session_id;
 							const queueLabel = liveSessionQueueLabel(session);
+							const delegationRollup = liveDelegationRollupLabel(session);
+							const delegationUsage = liveDelegationUsageLabel(session);
 							const attentionSince = session.attention?.since;
 							const showGroup =
 								index === 0 ||
@@ -279,11 +288,35 @@ function LiveSessionDrawer({
 													</PrivacyMask>
 												</span>
 											)}
+											{row.delegationLabel && (
+												<span className="mt-0.5 flex min-w-0 items-center gap-1 text-[8px] text-muted-foreground/45">
+													<Bot
+														aria-hidden="true"
+														className="h-2.5 w-2.5 shrink-0"
+													/>
+													<PrivacyMask className="truncate">
+														{row.delegationLabel}
+													</PrivacyMask>
+												</span>
+											)}
 											{queueLabel && (
 												<span
 													className={`mt-0.5 block font-mono text-[8px] ${semanticStatusClass.info.textMuted}`}
 												>
 													{queueLabel}
+												</span>
+											)}
+											{delegationRollup && (
+												<span className="mt-0.5 block truncate font-mono text-[8px] text-primary/45">
+													{delegationRollup}
+												</span>
+											)}
+											{delegationUsage && (
+												<span
+													title="Tokens and cost are cumulative across all delegated descendants. Elapsed time spans the first descendant start through the last stop, or now while work is active."
+													className="mt-0.5 block font-mono text-[8px] leading-tight text-primary/45"
+												>
+													{delegationUsage}
 												</span>
 											)}
 										</span>

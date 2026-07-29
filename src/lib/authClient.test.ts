@@ -1,9 +1,21 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { installAuthRedirect, shouldRedirectUnauthorized } from "./authClient";
+import {
+	enterAuthenticatedApp,
+	installAuthRedirect,
+	shouldRedirectUnauthorized,
+} from "./authClient";
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe("client authentication redirect policy", () => {
+	it("re-enters the authenticated app with a document replacement", () => {
+		const replace = vi.fn();
+
+		enterAuthenticatedApp({ replace });
+
+		expect(replace).toHaveBeenCalledWith("/");
+	});
+
 	it("redirects same-origin protected 401 responses", () => {
 		expect(
 			shouldRedirectUnauthorized(

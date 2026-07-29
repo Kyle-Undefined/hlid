@@ -16,6 +16,8 @@ const {
 	mockLoadConfig,
 	mockGetSessionSelection,
 	mockGetLatestProjectPreviewForSession,
+	mockGetHlidDelegationByChildSession,
+	mockAbandonInterruptedHlidDelegation,
 } = vi.hoisted(() => ({
 	wsState: {
 		clients: new Set<object>(),
@@ -24,6 +26,8 @@ const {
 	mockBroadcast: vi.fn(),
 	mockGetSessionSelection: vi.fn().mockResolvedValue(null),
 	mockGetLatestProjectPreviewForSession: vi.fn().mockResolvedValue(null),
+	mockGetHlidDelegationByChildSession: vi.fn().mockResolvedValue(null),
+	mockAbandonInterruptedHlidDelegation: vi.fn().mockResolvedValue(null),
 	mockLoadConfig: vi.fn().mockReturnValue({
 		vault: { path: "/tmp/test", name: "Test Vault" },
 		claude: {
@@ -43,6 +47,8 @@ vi.mock("../db", () => ({
 	setAskUserQuestionResolution: vi.fn().mockResolvedValue(undefined),
 	getSessionSelection: mockGetSessionSelection,
 	getLatestProjectPreviewForSession: mockGetLatestProjectPreviewForSession,
+	getHlidDelegationByChildSession: mockGetHlidDelegationByChildSession,
+	abandonInterruptedHlidDelegation: mockAbandonInterruptedHlidDelegation,
 }));
 
 vi.mock("./config", () => ({ loadConfig: mockLoadConfig }));
@@ -82,6 +88,7 @@ function makeManager(
 	handleAskUserQuestionResponse: ReturnType<typeof vi.fn>;
 	handlePlanModeExitResponse: ReturnType<typeof vi.fn>;
 	probeMcpStatus: ReturnType<typeof vi.fn>;
+	steerActiveTurn: ReturnType<typeof vi.fn>;
 } {
 	return {
 		getStatus: vi.fn().mockReturnValue({ state: "idle", model: "test-model" }),
@@ -109,6 +116,7 @@ function makeManager(
 		handleAskUserQuestionResponse: vi.fn(),
 		handlePlanModeExitResponse: vi.fn(),
 		probeMcpStatus: vi.fn().mockResolvedValue(undefined),
+		steerActiveTurn: vi.fn().mockResolvedValue(undefined),
 		restoreMcpStatus: vi.fn(),
 		...overrides,
 	} as unknown as ReturnType<typeof makeManager>;
@@ -167,6 +175,7 @@ function makePool(vaultEntry?: ReturnType<typeof makeEntry>): SessionPool & {
 	findByDbSessionId: ReturnType<typeof vi.fn>;
 	claimDbSessionId: ReturnType<typeof vi.fn>;
 	isVaultSession: ReturnType<typeof vi.fn>;
+	refreshDurableDelegationAttention: ReturnType<typeof vi.fn>;
 } {
 	const vault = vaultEntry ?? makeEntry("vault-id");
 	return {
@@ -182,6 +191,7 @@ function makePool(vaultEntry?: ReturnType<typeof makeEntry>): SessionPool & {
 		findByDbSessionId: vi.fn().mockReturnValue(undefined),
 		claimDbSessionId: vi.fn((entry: PoolEntry) => entry),
 		isVaultSession: vi.fn().mockReturnValue(false),
+		refreshDurableDelegationAttention: vi.fn().mockResolvedValue(undefined),
 	} as unknown as ReturnType<typeof makePool>;
 }
 
@@ -197,6 +207,10 @@ beforeEach(() => {
 	wsState.clients.clear();
 	mockSend.mockClear();
 	mockBroadcast.mockClear();
+	mockGetHlidDelegationByChildSession.mockReset();
+	mockGetHlidDelegationByChildSession.mockResolvedValue(null);
+	mockAbandonInterruptedHlidDelegation.mockReset();
+	mockAbandonInterruptedHlidDelegation.mockResolvedValue(null);
 });
 
 // ── open ──────────────────────────────────────────────────────────────────────
@@ -834,6 +848,396 @@ describe("message — subscribe_session", () => {
 	});
 });
 
+// ── delegated-child ownership ─────────────────────────────────────────────────
+
+describe("message — delegated-child ownership", () => {
+	it("steers the active child natively without entering the fresh-turn queue", async () => {
+		const child = makeEntry("delegated-live");
+		child.manager.getCurrentSessionId.mockReturnValue("delegated-db");
+		child.manager.isRunning.mockReturnValue(true);
+		const pool = makePool(child);
+		pool.findByDbSessionId.mockImplementation((id: string) =>
+			id === "delegated-db" ? child : undefined,
+		);
+		mockGetHlidDelegationByChildSession.mockResolvedValue({
+			id: "delegation-1",
+			status: "running",
+			resumable: false,
+		});
+		const { message } = createWsHandlers(pool);
+		const ws = makeWs(child.sessionId);
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "steer_active",
+				session_id: "delegated-db",
+				turn_id: "child-steer-1",
+				text: "Check the failing branch",
+			}),
+		);
+
+		expect(child.manager.steerActiveTurn).toHaveBeenCalledWith(
+			"Check the failing branch",
+			expect.any(Function),
+			"delegated-db",
+			"child-steer-1",
+		);
+		expect(child.manager.runQuery).not.toHaveBeenCalled();
+		expect(child.manager.getQueueState().pending_turn_ids).toEqual([]);
+		expect(child.runState.broadcast).toHaveBeenCalledWith({
+			type: "user_message",
+			text: "Check the failing branch",
+			id: "child-steer-1",
+			session_id: "delegated-db",
+		});
+		expect(child.runState.broadcast).toHaveBeenCalledWith({
+			type: "turn_steered",
+			turn_id: "child-steer-1",
+			session_id: "delegated-db",
+		});
+	});
+
+	it("does not queue a fallback when native child steering is unsupported", async () => {
+		const child = makeEntry("delegated-live");
+		child.manager.getCurrentSessionId.mockReturnValue("delegated-db");
+		child.manager.isRunning.mockReturnValue(true);
+		child.manager.steerActiveTurn.mockRejectedValue(
+			new Error("Provider acp does not support steering"),
+		);
+		const pool = makePool(child);
+		pool.findByDbSessionId.mockImplementation((id: string) =>
+			id === "delegated-db" ? child : undefined,
+		);
+		mockGetHlidDelegationByChildSession.mockResolvedValue({
+			id: "delegation-1",
+			status: "running",
+			resumable: false,
+		});
+		const { message } = createWsHandlers(pool);
+		const ws = makeWs(child.sessionId);
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "steer_active",
+				session_id: "delegated-db",
+				turn_id: "child-steer-unsupported",
+				text: "Do not run this as a fresh turn",
+			}),
+		);
+
+		expect(child.manager.steerActiveTurn).toHaveBeenCalledOnce();
+		expect(child.manager.runQuery).not.toHaveBeenCalled();
+		expect(child.manager.getQueueState().pending_turn_ids).toEqual([]);
+		expect(child.runState.broadcast).not.toHaveBeenCalledWith(
+			expect.objectContaining({ type: "user_message" }),
+		);
+		expect(mockSend).toHaveBeenCalledWith(ws, {
+			type: "error",
+			message: "Provider acp does not support steering",
+		});
+	});
+
+	const blockedMessages = [
+		["chat", { type: "chat", text: "Take over this child" }],
+		["abort", { type: "abort" }],
+		["stop_session", { type: "stop_session", session_id: "delegated-live" }],
+		["close_session", { type: "close_session", session_id: "delegated-live" }],
+		["set_provider", { type: "set_provider", provider: "claude" }],
+		["set_model", { type: "set_model", model: "different-model" }],
+		["set_effort", { type: "set_effort", effort: "low" }],
+		[
+			"set_permission_mode",
+			{ type: "set_permission_mode", mode: "bypassPermissions" },
+		],
+		[
+			"goal_control",
+			{
+				type: "goal_control",
+				request_id: "goal-mutation",
+				session_id: "delegated-db",
+				action: "clear",
+			},
+		],
+		[
+			"realtime_start",
+			{
+				type: "realtime_start",
+				session_id: "delegated-db",
+				mode: "dictation",
+				sdp: "v=0\r\no=hlid",
+			},
+		],
+		[
+			"realtime_speak",
+			{
+				type: "realtime_speak",
+				session_id: "delegated-db",
+				text: "Take over",
+			},
+		],
+		[
+			"realtime_stop",
+			{
+				type: "realtime_stop",
+				session_id: "delegated-db",
+			},
+		],
+		["cancel_queued", { type: "cancel_queued", turn_id: "turn-2" }],
+		["promote_queued", { type: "promote_queued", turn_id: "turn-2" }],
+		["steer_queued", { type: "steer_queued", turn_id: "turn-2" }],
+		["reload_session", { type: "reload_session" }],
+		[
+			"workflow_control",
+			{
+				type: "workflow_control",
+				action: "stop",
+				task_id: "provider-task-1",
+			},
+		],
+	] as const;
+
+	it.each(
+		blockedMessages,
+	)("rejects ordinary %s control while the durable delegation owns the child", async (_name, clientMessage) => {
+		const vault = makeEntry("vault-id");
+		const child = makeEntry("delegated-live");
+		child.manager.getCurrentSessionId.mockReturnValue("delegated-db");
+		const pool = makePool(vault);
+		pool.get.mockImplementation((id: string) => {
+			if (id === vault.sessionId) return vault;
+			if (id === child.sessionId) return child;
+			return undefined;
+		});
+		pool.findByDbSessionId.mockImplementation((id: string) =>
+			id === "delegated-db" ? child : undefined,
+		);
+		mockGetHlidDelegationByChildSession.mockResolvedValue({
+			id: "delegation-1",
+			status: "running",
+			resumable: false,
+		});
+		const { message } = createWsHandlers(pool);
+		const ws = makeWs(child.sessionId);
+
+		await message(ws as never, JSON.stringify(clientMessage));
+
+		expect(mockGetHlidDelegationByChildSession).toHaveBeenCalledWith(
+			"delegated-db",
+		);
+		expect(mockSend).toHaveBeenCalledWith(ws, {
+			type: "error",
+			message:
+				"This Raven session is owned by an active or resumable Hlid delegation. Use the delegation controls from its parent session.",
+		});
+		expect(child.manager.runQuery).not.toHaveBeenCalled();
+		expect(child.manager.abort).not.toHaveBeenCalled();
+		expect(child.manager.reinitialize).not.toHaveBeenCalled();
+		expect(pool.close).not.toHaveBeenCalled();
+	});
+
+	it("rejects a detached resumable child before chat creates or claims a live entry", async () => {
+		const pool = makePool();
+		mockGetHlidDelegationByChildSession.mockResolvedValue({
+			id: "delegation-1",
+			status: "interrupted",
+			resumable: true,
+		});
+		const { message } = createWsHandlers(pool);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "chat",
+				text: "Continue outside the delegation lifecycle",
+				session_id: "delegated-db",
+			}),
+		);
+
+		expect(mockGetHlidDelegationByChildSession).toHaveBeenCalledWith(
+			"delegated-db",
+		);
+		expect(pool.create).not.toHaveBeenCalled();
+		expect(pool.claimDbSessionId).not.toHaveBeenCalled();
+		expect(mockSend).toHaveBeenCalledWith(
+			ws,
+			expect.objectContaining({
+				type: "error",
+				message: expect.stringContaining("owned by an active or resumable"),
+			}),
+		);
+	});
+
+	it("closes a detached restart-interrupted child by abandoning its continuation", async () => {
+		const pool = makePool();
+		mockGetHlidDelegationByChildSession.mockResolvedValue({
+			id: "delegation-1",
+			status: "interrupted",
+			resumable: true,
+		});
+		mockAbandonInterruptedHlidDelegation.mockResolvedValue({
+			id: "delegation-1",
+			status: "cancelled",
+			resumable: false,
+		});
+		const { message } = createWsHandlers(pool);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "close_session",
+				session_id: "delegated-db",
+			}),
+		);
+
+		expect(mockAbandonInterruptedHlidDelegation).toHaveBeenCalledWith(
+			"delegation-1",
+			"The user closed this restart-interrupted child without continuing it.",
+		);
+		expect(pool.refreshDurableDelegationAttention).toHaveBeenCalledOnce();
+		expect(mockSend).not.toHaveBeenCalledWith(
+			ws,
+			expect.objectContaining({
+				type: "error",
+				message: expect.stringContaining("owned by an active or resumable"),
+			}),
+		);
+		expect(mockBroadcast).toHaveBeenCalledWith({
+			type: "session_closed",
+			session_id: "delegated-db",
+		});
+	});
+
+	it.each([
+		["pending", "pending", false],
+		["running", "running", false],
+		["resumable interrupted", "interrupted", true],
+	] as const)("rejects skip_sleep for a %s delegation-owned child", async (_label, status, resumable) => {
+		const child = makeEntry("delegated-live");
+		child.manager.getCurrentSessionId.mockReturnValue("delegated-db");
+		const pool = makePool(child);
+		mockGetHlidDelegationByChildSession.mockResolvedValue({
+			id: "delegation-1",
+			status,
+			resumable,
+		});
+		const { message } = createWsHandlers(pool);
+		const ws = makeWs(child.sessionId);
+
+		await message(ws as never, JSON.stringify({ type: "skip_sleep" }));
+
+		expect(mockGetHlidDelegationByChildSession).toHaveBeenCalledWith(
+			"delegated-db",
+		);
+		expect(child.manager.skipSleep).not.toHaveBeenCalled();
+		expect(mockSend).toHaveBeenCalledWith(
+			ws,
+			expect.objectContaining({
+				type: "error",
+				message: expect.stringContaining("owned by an active or resumable"),
+			}),
+		);
+	});
+
+	it.each([
+		["completed", "completed", false],
+		["non-resumable interrupted", "interrupted", false],
+	] as const)("allows skip_sleep for a %s child", async (_label, status, resumable) => {
+		const child = makeEntry("delegated-live");
+		child.manager.getCurrentSessionId.mockReturnValue("delegated-db");
+		const pool = makePool(child);
+		mockGetHlidDelegationByChildSession.mockResolvedValue({
+			id: "delegation-1",
+			status,
+			resumable,
+		});
+		const { message } = createWsHandlers(pool);
+		const ws = makeWs(child.sessionId);
+
+		await message(ws as never, JSON.stringify({ type: "skip_sleep" }));
+
+		expect(child.manager.skipSleep).toHaveBeenCalledOnce();
+		expect(mockSend).not.toHaveBeenCalledWith(
+			ws,
+			expect.objectContaining({
+				message: expect.stringContaining("owned by an active or resumable"),
+			}),
+		);
+	});
+
+	it.each([
+		["completed", false],
+		["interrupted", false],
+	] as const)("restores ordinary chat behavior for a %s non-owned delegation", async (status, resumable) => {
+		const child = makeEntry("delegated-live");
+		child.manager.getCurrentSessionId.mockReturnValue("delegated-db");
+		const pool = makePool(child);
+		mockGetHlidDelegationByChildSession.mockResolvedValue({
+			id: "delegation-1",
+			status,
+			resumable,
+		});
+		const { message } = createWsHandlers(pool);
+		const ws = makeWs(child.sessionId);
+
+		await message(
+			ws as never,
+			JSON.stringify({ type: "chat", text: "Ordinary follow-up" }),
+		);
+
+		expect(child.manager.runQuery).toHaveBeenCalledOnce();
+		expect(mockSend).not.toHaveBeenCalledWith(
+			ws,
+			expect.objectContaining({
+				message: expect.stringContaining("owned by an active or resumable"),
+			}),
+		);
+	});
+
+	it("continues to allow observation and responses needed by the owned run", async () => {
+		const child = makeEntry("delegated-live");
+		child.manager.getCurrentSessionId.mockReturnValue("delegated-db");
+		child.manager.getPendingPermissionRequests.mockReturnValue([
+			{
+				id: "permission-1",
+				toolName: "Read",
+				displayName: "Read file",
+			},
+		]);
+		const pool = makePool(child);
+		mockGetHlidDelegationByChildSession.mockResolvedValue({
+			id: "delegation-1",
+			status: "running",
+			resumable: false,
+		});
+		const { message } = createWsHandlers(pool);
+		const ws = makeWs(child.sessionId);
+
+		await message(ws as never, JSON.stringify({ type: "sync" }));
+		await message(ws as never, JSON.stringify({ type: "probe_mcp" }));
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "permission_response",
+				id: "permission-1",
+				approved: true,
+			}),
+		);
+
+		expect(mockGetHlidDelegationByChildSession).not.toHaveBeenCalled();
+		expect(child.manager.probeMcpStatus).toHaveBeenCalledOnce();
+		expect(child.manager.handlePermissionResponse).toHaveBeenCalledWith(
+			"permission-1",
+			true,
+			undefined,
+			undefined,
+		);
+	});
+});
+
 // ── stop_session ──────────────────────────────────────────────────────────────
 
 describe("message — stop_session", () => {
@@ -1056,7 +1460,7 @@ describe("message — chat routing (pool)", () => {
 			JSON.stringify({ type: "chat", text: "hi" }),
 		);
 		// Ownership claimed on this session's runState
-		expect(vault.runState.ownerWs).toBe(ws);
+		await vi.waitFor(() => expect(vault.runState.ownerWs).toBe(ws));
 		resolve();
 		await p;
 	});

@@ -6,7 +6,15 @@
  * via close() or closeAll().
  */
 import { randomUUID } from "node:crypto";
+import { realpathSync } from "node:fs";
+import { resolve } from "node:path";
 import type { HlidConfig } from "../config";
+import * as db from "../db";
+import {
+	type DelegatedLifecycleCounts,
+	withDelegatedAttentionRollups,
+} from "../lib/delegationAttention";
+import { expandTilde, samePath } from "../lib/paths";
 import { deriveSessionAttention } from "../lib/sessionAttention";
 import type { AgentProvider } from "./agentProvider";
 import type { SessionAttentionSnapshot, SessionStatusEntry } from "./protocol";
@@ -35,6 +43,13 @@ export class SessionPool {
 	private providers: Map<string, AgentProvider>;
 	private maxSize: number;
 	private attentionBySession = new Map<string, SessionAttentionSnapshot>();
+	private durableDelegationAttention: SessionStatusEntry[] = [];
+	private durableDelegationLineage = new Map<string, string>();
+	private durableDelegationLifecycle = new Map<
+		string,
+		DelegatedLifecycleCounts
+	>();
+	private durableDelegationRefreshGeneration = 0;
 	/** Session ID of the vault's lazy singleton entry, or null if not yet created. */
 	private _vaultSessionId: string | null = null;
 
@@ -93,6 +108,35 @@ export class SessionPool {
 	/** Look up a registered provider by id (e.g. "claude"). Returns undefined if not registered. */
 	getProvider(providerId: string): AgentProvider | undefined {
 		return this.providers.get(providerId);
+	}
+
+	/**
+	 * Resolve an orchestration cwd only when it is the configured vault or one
+	 * exact registered agent workspace. Returning the canonical path prevents
+	 * aliases and symlinks from bypassing the live workspace catalog.
+	 */
+	resolveDelegationWorkspace(candidate: string): string | null {
+		let resolvedCandidate: string;
+		try {
+			resolvedCandidate = realpathSync(resolve(expandTilde(candidate)));
+		} catch {
+			return null;
+		}
+		const configured = [
+			this.config.vault.path,
+			...(this.config.agents ?? []).map((agent) => agent.path),
+		].filter((path) => path.trim().length > 0);
+		for (const path of configured) {
+			try {
+				const resolvedConfigured = realpathSync(resolve(expandTilde(path)));
+				if (samePath(resolvedConfigured, resolvedCandidate)) {
+					return resolvedConfigured;
+				}
+			} catch {
+				// Missing configured paths are unavailable until a config refresh.
+			}
+		}
+		return null;
 	}
 
 	/**
@@ -212,9 +256,105 @@ export class SessionPool {
 				fork_parent_session_id: presentation.forkParentSessionId,
 				fork_parent_label: presentation.forkParentLabel,
 				fork_kind: presentation.forkKind,
+				delegation_parent_session_id: presentation.delegationParentSessionId,
+				delegation_parent_label: presentation.delegationParentLabel,
+				delegation_parent_turn_id: presentation.delegationParentTurnId,
+				delegation_depth: presentation.delegationDepth,
 			});
 		}
-		return statuses;
+		const liveDbSessionIds = new Set(
+			statuses
+				.map((status) => status.db_session_id)
+				.filter((id): id is string => id !== null),
+		);
+		for (const durable of this.durableDelegationAttention) {
+			if (!liveDbSessionIds.has(durable.db_session_id ?? "")) {
+				statuses.push(durable);
+			}
+		}
+		return withDelegatedAttentionRollups(
+			statuses,
+			this.durableDelegationLineage,
+			this.durableDelegationLifecycle,
+		);
+	}
+
+	/**
+	 * Project restart-interrupted children into the shared attention feed without
+	 * starting provider processes. A newer refresh always wins if DB reads overlap.
+	 */
+	async refreshDurableDelegationAttention(): Promise<void> {
+		const generation = ++this.durableDelegationRefreshGeneration;
+		const [delegations, lifecycle] = await Promise.all([
+			db.listResumableInterruptedHlidDelegations(),
+			db.listHlidDelegationLifecycleRollups(),
+		]);
+		const lineageSessionIds = new Set(
+			delegations.map((delegation) => delegation.child_session_id),
+		);
+		for (const entry of this.entries.values()) {
+			const currentDbSessionId = entry.manager.getCurrentSessionId();
+			if (currentDbSessionId) {
+				entry.claimedDbSessionId = currentDbSessionId;
+			}
+			const dbSessionId =
+				currentDbSessionId ?? entry.claimedDbSessionId ?? null;
+			if (dbSessionId) {
+				lineageSessionIds.add(dbSessionId);
+			}
+		}
+		const lineage = await db.listHlidDelegationAncestorLineage([
+			...lineageSessionIds,
+		]);
+		const projected: Array<SessionStatusEntry | null> = await Promise.all(
+			delegations.map(async (delegation) => {
+				const session = await db.getSessionById(delegation.child_session_id);
+				if (!session || session.archived_at !== null) return null;
+				const timestamp = delegation.updated_at * 1_000;
+				return {
+					session_id: delegation.child_session_id,
+					agent_cwd: session.agent_cwd ?? this.config.vault.path,
+					agent_name: `${delegation.provider_id} delegate`,
+					state: "idle" as const,
+					provider_id: delegation.provider_id,
+					model: delegation.model ?? "",
+					...(delegation.effort ? { effort: delegation.effort } : {}),
+					permission_mode: delegation.permission_mode,
+					hasPendingPermissions: false,
+					attention: {
+						bucket: "needs_attention" as const,
+						reason: "delegation_interrupted" as const,
+						since: timestamp,
+						last_activity_at: timestamp,
+						queue_count: 0,
+						pending_count: 0,
+					},
+					hasDbSession: true,
+					db_session_id: delegation.child_session_id,
+					lastLabel: session.label ?? delegation.task,
+					pinned: session.pinned === 1,
+					delegation_parent_session_id: delegation.parent_session_id,
+					delegation_parent_label: delegation.parent_label,
+					delegation_parent_turn_id: delegation.parent_turn_id,
+					delegation_depth: delegation.depth,
+					delegation_id: delegation.id,
+					delegation_status: "interrupted" as const,
+					delegation_resumable: true,
+					durable_only: true,
+				} satisfies SessionStatusEntry;
+			}),
+		);
+		if (generation === this.durableDelegationRefreshGeneration) {
+			this.durableDelegationAttention = projected.filter(
+				(status): status is SessionStatusEntry => status !== null,
+			);
+			this.durableDelegationLineage = new Map(
+				lineage.map((row) => [row.child_session_id, row.parent_session_id]),
+			);
+			this.durableDelegationLifecycle = new Map(
+				lifecycle.map((rollup) => [rollup.parent_session_id, rollup]),
+			);
+		}
 	}
 
 	/** Iterate all live pool entries. */
@@ -250,7 +390,6 @@ export class SessionPool {
 	 * SessionManager initialization begins. Returns the existing owner if another
 	 * request already reserved or loaded the same chat.
 	 */
-	// fallow-ignore-next-line unused-class-member -- Called by WebSocket chat and goal routing before async session hydration.
 	claimDbSessionId(entry: PoolEntry, dbSessionId: string): PoolEntry {
 		const existing = this.findByDbSessionId(dbSessionId);
 		if (existing) return existing;

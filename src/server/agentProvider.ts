@@ -196,6 +196,13 @@ export type ProviderModelInfo = {
 	/** Input kinds the provider says this model accepts. */
 	inputModalities?: Array<"text" | "image" | "audio">;
 	efforts?: ProviderEffortInfo[];
+	/** Provider-native service tiers advertised for this exact model. */
+	serviceTiers?: Array<{
+		value: string;
+		label: string;
+		desc?: string;
+		isDefault?: boolean;
+	}>;
 };
 
 export type SubagentStatus =
@@ -390,6 +397,8 @@ export type AgentQueryParams = {
 	additionalDirectories?: string[];
 	model?: string;
 	effort?: string;
+	/** Provider-native service tier selected from the live model catalog. */
+	serviceTier?: string;
 	maxTurns?: number;
 	permissionMode?: "default" | "acceptEdits" | "bypassPermissions" | "plan";
 	/** Narrow a provider sandbox independently of its conversational mode. */

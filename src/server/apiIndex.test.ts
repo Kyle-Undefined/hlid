@@ -21,6 +21,59 @@ describe("buildApiIndex", () => {
 		).toBe(true);
 	});
 
+	it("describes orchestration progress, partial results, and resume admission", () => {
+		const endpoint = (path: string) =>
+			API_ENDPOINTS.find((entry) => entry.path === path)?.desc ?? "";
+		expect(endpoint("/hlid-agents/:id?parent_session_id=")).toContain(
+			"bounded active progress",
+		);
+		expect(endpoint("/hlid-agents/:id/wait")).toContain("partial result");
+		expect(endpoint("/hlid-agents/:id/resume")).toContain(
+			"live running parent turn",
+		);
+		expect(endpoint("/hlid-agents/:id/resume")).toContain(
+			"active-capacity admission",
+		);
+		expect(endpoint("/hlid-agents/delegate")).toContain("model service_tier");
+		expect(endpoint("/hlid-agents/delegate")).toContain("exact configured cwd");
+		expect(endpoint("/hlid-agents/delegate")).toContain("recorded passively");
+		expect(endpoint("/hlid-agents/delegate")).toContain(
+			"no elapsed-time or inactivity cap",
+		);
+		expect(endpoint("/hlid-agents/delegate")).toContain(
+			"cross-provider silence is not proof of failure",
+		);
+		expect(endpoint("/hlid-agents/delegate")).toContain(
+			"never transition automatically to timed_out",
+		);
+		expect(endpoint("/hlid-agents/delegate")).toContain(
+			"Provider availability is checked before launch",
+		);
+		expect(endpoint("/hlid-agents/delegate")).toContain(
+			"explicit cancellation stops work",
+		);
+		expect(endpoint("/hlid-agents/delegate")).toContain(
+			"Scheduled Routines may delegate",
+		);
+		expect(endpoint("/hlid-agents/:id/resume")).toContain(
+			"recorded configured workspace",
+		);
+		expect(endpoint("/hlid-agents/:id/resume")).toContain("service tier");
+		expect(endpoint("/hlid-agents/:id/resume")).toContain(
+			"passive observations",
+		);
+		expect(endpoint("/hlid-agents/:id/resume")).toContain(
+			"no elapsed-time or inactivity cap",
+		);
+		expect(endpoint("/hlid-agents/:id/resume")).toContain("non-Routine child");
+		expect(endpoint("/hlid-agents/:id/cancel")).toContain(
+			"retains provider control",
+		);
+		expect(endpoint("/hlid-agents/:id/cancel")).toContain(
+			"until each provider turn settles",
+		);
+	});
+
 	it("routes ui-server paths under /api/ and api-server paths outside it", () => {
 		for (const e of API_ENDPOINTS) {
 			if (e.server === "ui") expect(e.path.startsWith("/api/")).toBe(true);

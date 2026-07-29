@@ -19,6 +19,11 @@ import {
 	listAttachments,
 	promoteAttachmentToVault,
 } from "./attachments";
+import {
+	createHlidDelegation,
+	updateHlidDelegationCost,
+	updateHlidDelegationTokens,
+} from "./delegations";
 import { appendLog, clearLogs, getLogs } from "./logs";
 import {
 	appendAskUserQuestion,
@@ -51,6 +56,7 @@ import {
 	createSession,
 	deleteSession,
 	deleteSessionsOlderThan,
+	getAllSessions,
 	getRecentSessions,
 	getSessionActualModel,
 	getSessionAgentCwd,
@@ -113,6 +119,27 @@ function baseQuery(overrides: Partial<QueryData> = {}): QueryData {
 		...overrides,
 	};
 }
+
+describe("session creation", () => {
+	it("persists a delegated child's complete runtime selection atomically", async () => {
+		freshDb();
+		await createSession("delegated-child", "Child", "gpt-5.6-sol", {
+			effort: "high",
+			permissionMode: "acceptEdits",
+			agentCwd: "/work/project",
+			providerId: "codex",
+		});
+
+		expect(await getSessionById("delegated-child")).toMatchObject({
+			model: "gpt-5.6-sol",
+			selected_model: "gpt-5.6-sol",
+			selected_effort: "high",
+			selected_permission_mode: "acceptEdits",
+			agent_cwd: "/work/project",
+			provider_id: "codex",
+		});
+	});
+});
 
 describe("analytics revisions", () => {
 	beforeEach(() => {
@@ -239,6 +266,70 @@ describe("sessions — create & fetch", () => {
 		const { sessions, total } = await getSessionsPaginated(1, 3);
 		expect(total).toBe(5);
 		expect(sessions).toHaveLength(3);
+	});
+
+	it("derives tool-call counts in session list and read projections", async () => {
+		await createSession("with-tools", "With tools", "m");
+		await createSession("without-tools", "Without tools", "m");
+		await appendToolEvent("with-tools", 1, "tool-1", "Read", {});
+		await appendToolEvent("with-tools", 1, "tool-2", "Bash", {});
+
+		expect((await getSessionById("with-tools"))?.tool_call_count).toBe(2);
+		expect((await getSessionById("without-tools"))?.tool_call_count).toBe(0);
+		expect(
+			(await getRecentSessions()).find((row) => row.id === "with-tools")
+				?.tool_call_count,
+		).toBe(2);
+		expect(
+			(await getSessionsPaginated(1, 20)).sessions.find(
+				(row) => row.id === "with-tools",
+			)?.tool_call_count,
+		).toBe(2);
+		expect(
+			(await getAllSessions()).find((row) => row.id === "with-tools")
+				?.tool_call_count,
+		).toBe(2);
+	});
+
+	it("projects durable delegated-child usage without rewriting session accounting", async () => {
+		await createSession("parent", "Parent", "m");
+		await createSession("child", "Child", "m");
+		await createHlidDelegation({
+			id: "delegation",
+			parentSessionId: "parent",
+			parentTurnId: "turn",
+			parentLabel: "Parent",
+			childSessionId: "child",
+			depth: 1,
+			task: "Test usage fallback",
+			providerId: "codex",
+			model: "m",
+			effort: null,
+			serviceTier: null,
+			workspace: "/workspace",
+			permissionMode: "default",
+			timeoutSeconds: 120,
+		});
+		await updateHlidDelegationTokens("delegation", 175_800);
+		await updateHlidDelegationCost("delegation", 0.172);
+
+		const rows = [
+			await getSessionById("child"),
+			(await getRecentSessions()).find((row) => row.id === "child"),
+			(await getSessionsPaginated(1, 20)).sessions.find(
+				(row) => row.id === "child",
+			),
+			(await getAllSessions()).find((row) => row.id === "child"),
+		];
+		for (const row of rows) {
+			expect(row).toMatchObject({
+				delegation_tokens_used: 175_800,
+				delegation_cost_used: 0.172,
+				total_cost: 0,
+				total_input_tokens: 0,
+				total_output_tokens: 0,
+			});
+		}
 	});
 
 	it("keeps pinned sessions above the selected list sort", async () => {
@@ -2017,6 +2108,29 @@ describe("sessions — deleteSessionsOlderThan", () => {
 		const { count } = await deleteSessionsOlderThan(30);
 		expect(count).toBe(0);
 		expect(await getRecentSessions()).toHaveLength(1);
+	});
+
+	it("atomically excludes explicitly protected live session IDs", async () => {
+		const oldTs = Math.floor(Date.now() / 1000) - 10 * 86400;
+		db.run(
+			`INSERT INTO sessions (id, label, model, started_at) VALUES (?, ?, ?, ?), (?, ?, ?, ?)`,
+			[
+				"live-old",
+				"Live old",
+				"m",
+				oldTs,
+				"stale-old",
+				"Stale old",
+				"m",
+				oldTs,
+			],
+		);
+
+		const result = await deleteSessionsOlderThan(5, ["live-old", "live-old"]);
+
+		expect(result.sessionIds).toEqual(["stale-old"]);
+		expect(await getSessionById("live-old")).not.toBeNull();
+		expect(await getSessionById("stale-old")).toBeNull();
 	});
 
 	it("returns ephemeral attachment paths for deleted sessions", async () => {

@@ -3,12 +3,25 @@ import {
 	buildHlidCapabilityManifest,
 	buildHlidHelpResponse,
 	buildHlidOperatingBriefResult,
+	HLID_HELP_TOPICS,
 	HLID_OPERATING_CONTRACT_VERSION,
 	MAX_HLID_HELP_RESPONSE_CHARS,
 	MAX_HLID_OPERATING_BRIEF_CHARS,
+	MAX_HLID_ORCHESTRATION_TARGET_CATALOG_CHARS,
 } from "./hlidHelp";
 
 describe("Hlid operating guidance", () => {
+	it("publishes the complete source topic registry through overview help", () => {
+		const manifest = buildHlidCapabilityManifest({});
+		const overview = JSON.parse(buildHlidHelpResponse("overview", {}));
+
+		expect(manifest.helpTopics).toEqual(HLID_HELP_TOPICS);
+		expect(overview.relatedTopics).toEqual(
+			HLID_HELP_TOPICS.filter((topic) => topic !== "overview"),
+		);
+		expect(overview.relatedTopics).toContain("orchestration");
+	});
+
 	it("builds a live Codex capability manifest without claiming Claude workflows", () => {
 		const manifest = buildHlidCapabilityManifest({
 			providerId: "codex",
@@ -100,6 +113,394 @@ describe("Hlid operating guidance", () => {
 		expect(
 			manifest.capabilities.find((item) => item.id === "goals"),
 		).toMatchObject({ owner: "provider", availability: "unavailable" });
+	});
+
+	it("advertises orchestration only with a live workspace session and the complete lifecycle tools", () => {
+		const available = buildHlidCapabilityManifest({
+			providerId: "codex",
+			runtimeCwd: "/work/hlid",
+			sessionId: "session-1",
+			providerCatalog: [
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+				},
+			],
+			registeredHlidTools: [
+				"delegate_hlid_agent",
+				"list_hlid_agents",
+				"inspect_hlid_agent",
+				"wait_hlid_agent",
+				"steer_hlid_agent",
+				"cancel_hlid_agent",
+				"resume_hlid_agent",
+			],
+		});
+		expect(
+			available.capabilities.find((item) => item.id === "orchestration"),
+		).toMatchObject({
+			owner: "hlid",
+			availability: "available",
+		});
+
+		const unknownTargets = buildHlidCapabilityManifest({
+			providerId: "codex",
+			runtimeCwd: "/work/hlid",
+			sessionId: "session-1",
+			registeredHlidTools: [
+				"delegate_hlid_agent",
+				"list_hlid_agents",
+				"inspect_hlid_agent",
+				"wait_hlid_agent",
+				"steer_hlid_agent",
+				"cancel_hlid_agent",
+				"resume_hlid_agent",
+			],
+		});
+		expect(
+			unknownTargets.capabilities.find((item) => item.id === "orchestration"),
+		).toMatchObject({ availability: "conditional" });
+
+		const noAvailableTargets = buildHlidCapabilityManifest({
+			providerId: "codex",
+			runtimeCwd: "/work/hlid",
+			sessionId: "session-1",
+			providerCatalog: [],
+			registeredHlidTools: [
+				"delegate_hlid_agent",
+				"list_hlid_agents",
+				"inspect_hlid_agent",
+				"wait_hlid_agent",
+				"steer_hlid_agent",
+				"cancel_hlid_agent",
+				"resume_hlid_agent",
+			],
+		});
+		expect(
+			noAvailableTargets.capabilities.find(
+				(item) => item.id === "orchestration",
+			),
+		).toMatchObject({ availability: "unavailable" });
+
+		const detached = buildHlidCapabilityManifest({
+			providerId: "codex",
+			registeredHlidTools: [
+				"delegate_hlid_agent",
+				"list_hlid_agents",
+				"inspect_hlid_agent",
+				"wait_hlid_agent",
+				"steer_hlid_agent",
+				"cancel_hlid_agent",
+				"resume_hlid_agent",
+			],
+		});
+		expect(
+			detached.capabilities.find((item) => item.id === "orchestration"),
+		).toMatchObject({ availability: "conditional" });
+	});
+
+	it("exposes exact live target provider and model values only in focused orchestration help", () => {
+		const providerCatalog = [
+			{
+				id: "codex",
+				label: "Codex",
+				available: true,
+				effortLevels: [
+					{ value: "medium", label: "Medium" },
+					{ value: "high", label: "High" },
+				],
+				models: [
+					{
+						value: "gpt-5.6-sol",
+						label: "GPT-5.6 Sol",
+						isDefault: true,
+						efforts: [
+							{ value: "high", label: "High" },
+							{ value: "xhigh", label: "Extra high" },
+						],
+						serviceTiers: [
+							{ value: "fast", label: "Fast" },
+							{ value: "flex", label: "Flex" },
+						],
+					},
+					{
+						value: "hidden-model",
+						label: "Hidden",
+						hidden: true,
+					},
+				],
+			},
+			{
+				id: "acp:offline",
+				label: "Offline ACP",
+				available: false,
+				unavailableReason: "Agent command is not configured.",
+				models: [{ value: "acp-default", label: "ACP default" }],
+			},
+		];
+		const focused = JSON.parse(
+			buildHlidHelpResponse("orchestration", {
+				providerId: "codex",
+				runtimeCwd: "/work/hlid",
+				sessionId: "session-1",
+				providerCatalog,
+				registeredHlidTools: [
+					"delegate_hlid_agent",
+					"list_hlid_agents",
+					"inspect_hlid_agent",
+					"wait_hlid_agent",
+					"steer_hlid_agent",
+					"cancel_hlid_agent",
+					"resume_hlid_agent",
+				],
+			}),
+		);
+
+		expect(focused.orchestrationTargets).toMatchObject({
+			source: "live-provider-catalog",
+			snapshot: "current",
+			totalProviders: 2,
+			availableProviders: 1,
+			returnedProviders: 2,
+			truncated: false,
+			providers: [
+				{
+					id: "codex",
+					available: true,
+					effortLevels: {
+						total: 2,
+						returned: 2,
+						truncated: false,
+						items: ["medium", "high"],
+					},
+					models: {
+						total: 1,
+						returned: 1,
+						truncated: false,
+						items: [
+							{
+								value: "gpt-5.6-sol",
+								label: "GPT-5.6 Sol",
+								isDefault: true,
+								efforts: {
+									total: 2,
+									returned: 2,
+									truncated: false,
+									items: ["high", "xhigh"],
+								},
+								serviceTiers: {
+									total: 2,
+									returned: 2,
+									truncated: false,
+									items: ["fast", "flex"],
+								},
+							},
+						],
+					},
+				},
+				{
+					id: "acp:offline",
+					available: false,
+					unavailableReason: "Agent command is not configured.",
+				},
+			],
+		});
+		expect(focused.capabilities[0]).toMatchObject({
+			id: "orchestration",
+			availability: "available",
+		});
+		expect(focused.guidance.join(" ")).toContain("bounded active progress");
+		expect(focused.guidance.join(" ")).toContain("live running parent turn");
+		expect(focused.guidance.join(" ")).toContain("active-capacity limits");
+		expect(focused.guidance.join(" ")).toContain(
+			"exact configured vault or a registered workspace",
+		);
+		expect(focused.guidance.join(" ")).toContain(
+			"without using either as a lifecycle cap",
+		);
+		expect(focused.guidance.join(" ")).toContain("token_budget");
+		expect(focused.guidance.join(" ")).toContain("cost_budget");
+		expect(focused.guidance.join(" ")).toContain("budget_exhausted");
+		expect(focused.guidance.join(" ")).toContain(
+			"no elapsed-time or inactivity cap",
+		);
+		expect(focused.guidance.join(" ")).toContain(
+			"cross-provider silence is not proof",
+		);
+		expect(focused.guidance.join(" ")).toContain(
+			"Historical snapshots may retain inert timeout_seconds",
+		);
+		expect(focused.guidance.join(" ")).toContain(
+			"Provider availability is checked before launch",
+		);
+		expect(focused.guidance).toContain(
+			"For Codex user-input children, set permission_mode=plan: request_user_input is unavailable in default mode. A question-only turn does not enter plan review without a real plan.",
+		);
+		expect(focused.guidance.join(" ")).toContain(
+			"Explicit cancel_hlid_agent is the way to stop work",
+		);
+		expect(focused.guidance.join(" ")).toContain(
+			"Scheduled Routines may delegate",
+		);
+		expect(focused.guidance.join(" ")).toContain(
+			"restart-interrupted non-Routine child",
+		);
+		expect(focused.guidance.join(" ")).toContain("retains provider control");
+		expect(focused.guidance.join(" ")).toContain(
+			"Closing that interrupted child from the live-session surface",
+		);
+		expect(focused.guidance.join(" ")).toContain(
+			"until each provider turn settles",
+		);
+
+		const overview = JSON.parse(
+			buildHlidHelpResponse("overview", {
+				providerId: "codex",
+				providerCatalog,
+			}),
+		);
+		expect(overview.orchestrationTargets).toBeUndefined();
+	});
+
+	it("bounds oversized live orchestration catalogs and reports truncation", () => {
+		const providerCatalog = Array.from({ length: 20 }, (_, providerIndex) => ({
+			id: `provider-${providerIndex}-${"p".repeat(500)}`,
+			label: `Provider ${providerIndex} ${"l".repeat(500)}`,
+			available: true,
+			models: Array.from({ length: 20 }, (_, modelIndex) => ({
+				value: `model-${modelIndex}-${"m".repeat(500)}`,
+				label: `Model ${modelIndex} ${"n".repeat(500)}`,
+				efforts: Array.from({ length: 10 }, (_, effortIndex) => ({
+					value: `effort-${effortIndex}-${"e".repeat(100)}`,
+					label: `Effort ${effortIndex}`,
+				})),
+			})),
+		}));
+		const response = buildHlidHelpResponse("orchestration", {
+			providerId: "codex",
+			runtimeCwd: "/work/hlid",
+			sessionId: "session-1",
+			providerCatalog,
+			registeredHlidTools: [
+				"delegate_hlid_agent",
+				"list_hlid_agents",
+				"inspect_hlid_agent",
+				"wait_hlid_agent",
+				"steer_hlid_agent",
+				"cancel_hlid_agent",
+				"resume_hlid_agent",
+			],
+		});
+		const parsed = JSON.parse(response);
+
+		expect(response.length).toBeLessThanOrEqual(MAX_HLID_HELP_RESPONSE_CHARS);
+		expect(
+			JSON.stringify(parsed.orchestrationTargets).length,
+		).toBeLessThanOrEqual(MAX_HLID_ORCHESTRATION_TARGET_CATALOG_CHARS);
+		expect(parsed.orchestrationTargets).toMatchObject({
+			totalProviders: 20,
+			availableProviders: 20,
+			truncated: true,
+		});
+		expect(parsed.orchestrationTargets.returnedProviders).toBeLessThan(20);
+		expect(parsed.orchestrationTargets.providers[0].id).toBe(
+			providerCatalog[0].id,
+		);
+		expect(
+			parsed.orchestrationTargets.providers.some(
+				(provider: { models: { truncated: boolean } }) =>
+					provider.models.truncated,
+			),
+		).toBe(true);
+	});
+
+	it("fits a saturated live target projection inside the total help budget", () => {
+		const providerCatalog = Array.from({ length: 100 }, (_, providerIndex) => ({
+			id: `provider-${providerIndex}`,
+			label: `Provider ${providerIndex}`,
+			available: true,
+			effortLevels: Array.from({ length: 4 }, (_, effortIndex) => ({
+				value: `provider-effort-${effortIndex}`,
+				label: `Provider effort ${effortIndex}`,
+			})),
+			models: Array.from({ length: 8 }, (_, modelIndex) => ({
+				value: `model-${modelIndex}`,
+				label: `Model ${modelIndex}`,
+				efforts: Array.from({ length: 4 }, (_, effortIndex) => ({
+					value: `model-effort-${effortIndex}`,
+					label: `Model effort ${effortIndex}`,
+				})),
+				serviceTiers: Array.from({ length: 4 }, (_, tierIndex) => ({
+					value: `tier-${tierIndex}`,
+					label: `Tier ${tierIndex}`,
+				})),
+			})),
+		}));
+		const response = buildHlidHelpResponse("orchestration", {
+			providerId: `codex-${"p".repeat(120)}`,
+			model: `model-${"m".repeat(200)}`,
+			effort: `effort-${"e".repeat(80)}`,
+			permissionMode: `permission-${"r".repeat(80)}`,
+			policyEnforced: true,
+			runtimeCwd: "/work/hlid",
+			sessionId: "session-1",
+			vaultName: "Fornbok",
+			agentMode: "cwd",
+			codexRealtimeEnabled: true,
+			codexRealtimeBackendAvailable: true,
+			voiceSnapshot: { state: "ready", model: `voice-${"v".repeat(200)}` },
+			ttsSnapshot: { state: "ready", model: `tts-${"t".repeat(200)}` },
+			providerSnapshot: {
+				id: "codex",
+				label: "Codex",
+				available: true,
+				capabilities: {
+					goalControl: true,
+					structuredActivities: ["compact", "review"],
+					realtime: true,
+				},
+				hostCapabilities: {
+					windowsComputerUse: {
+						label: "Windows Computer Use",
+						available: true,
+						reason: "r".repeat(300),
+					},
+				},
+			},
+			providerCatalog,
+			registeredHlidTools: [
+				"hlid_help",
+				"hlid_api",
+				"delegate_hlid_agent",
+				"list_hlid_agents",
+				"inspect_hlid_agent",
+				"wait_hlid_agent",
+				"steer_hlid_agent",
+				"cancel_hlid_agent",
+				"resume_hlid_agent",
+				"publish_relic",
+				"start_project_preview",
+				"inspect_project_preview",
+				"capture_project_preview",
+				"control_project_preview",
+				"stop_project_preview",
+				"windows_computer_use",
+			],
+		});
+		const parsed = JSON.parse(response);
+
+		expect(response.length).toBeLessThanOrEqual(MAX_HLID_HELP_RESPONSE_CHARS);
+		expect(
+			JSON.stringify(parsed.orchestrationTargets).length,
+		).toBeLessThanOrEqual(MAX_HLID_ORCHESTRATION_TARGET_CATALOG_CHARS);
+		expect(parsed.orchestrationTargets).toMatchObject({
+			totalProviders: 100,
+			availableProviders: 100,
+			truncated: true,
+		});
+		expect(parsed.orchestrationTargets.returnedProviders).toBeLessThan(100);
+		expect(parsed.orchestrationTargets.providers[0].id).toBe("provider-0");
 	});
 
 	it("derives Computer Use and realtime audio from live host, feature, model, and backend evidence", () => {
@@ -438,24 +839,9 @@ describe("Hlid operating guidance", () => {
 		);
 	});
 
-	it.each([
-		"overview",
-		"references",
-		"permissions",
-		"sessions",
-		"context",
-		"plans_review",
-		"workflows",
-		"goals",
-		"relics",
-		"project_preview",
-		"mcp",
-		"skills_extensions",
-		"api",
-		"computer_use",
-		"voice_audio",
-		"providers",
-	] as const)("keeps %s help within the hard response budget", (topic) => {
+	it.each(
+		HLID_HELP_TOPICS,
+	)("keeps %s help within the hard response budget", (topic) => {
 		const response = buildHlidHelpResponse(topic, {
 			providerId: "codex",
 			model: "gpt-5.6-sol",
@@ -468,6 +854,13 @@ describe("Hlid operating guidance", () => {
 			registeredHlidTools: [
 				"hlid_help",
 				"hlid_api",
+				"delegate_hlid_agent",
+				"list_hlid_agents",
+				"inspect_hlid_agent",
+				"wait_hlid_agent",
+				"steer_hlid_agent",
+				"cancel_hlid_agent",
+				"resume_hlid_agent",
 				"publish_relic",
 				"start_project_preview",
 				"inspect_project_preview",

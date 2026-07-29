@@ -12,7 +12,9 @@ import {
 	executeHlidAgentTool,
 	executeHlidAgentToolRich,
 	HLID_AGENT_TOOL_SPECS,
+	hlidAgentSchemas,
 } from "./hlidAgentTools";
+import { HLID_HELP_TOPICS } from "./hlidHelp";
 
 describe("Hlid agent tools", () => {
 	beforeEach(() => {
@@ -29,11 +31,33 @@ describe("Hlid agent tools", () => {
 		db.requireDbOk.mockImplementation(async (response) => response);
 	});
 
-	it("exposes deferred help, Relic, and Project Preview capabilities", () => {
+	it("derives the callable help topic schemas from the help registry", () => {
+		const helpSpec = HLID_AGENT_TOOL_SPECS.find(
+			(spec) => spec.name === "hlid_help",
+		);
+		const advertisedTopics = (
+			helpSpec?.inputSchema.properties.topic as { enum?: string[] } | undefined
+		)?.enum;
+
+		expect(advertisedTopics).toEqual([...HLID_HELP_TOPICS]);
+		expect(advertisedTopics).toContain("orchestration");
+		for (const topic of HLID_HELP_TOPICS) {
+			expect(hlidAgentSchemas.hlid_help.parse({ topic })).toEqual({ topic });
+		}
+	});
+
+	it("exposes deferred orchestration, Relic, and Project Preview capabilities", () => {
 		expect(HLID_AGENT_TOOL_SPECS).toHaveLength(HLID_AGENT_TOOL_COUNT);
 		expect(HLID_AGENT_TOOL_SPECS.map((spec) => spec.name)).toEqual([
 			"hlid_help",
 			"hlid_api",
+			"delegate_hlid_agent",
+			"list_hlid_agents",
+			"inspect_hlid_agent",
+			"wait_hlid_agent",
+			"steer_hlid_agent",
+			"cancel_hlid_agent",
+			"resume_hlid_agent",
 			"publish_relic",
 			"start_project_preview",
 			"inspect_project_preview",
@@ -52,6 +76,42 @@ describe("Hlid agent tools", () => {
 					name: "hlid_api",
 					readOnly: true,
 					deferLoading: true,
+				}),
+				expect.objectContaining({
+					name: "delegate_hlid_agent",
+					readOnly: false,
+					deferLoading: true,
+					approvalTitle: "Hlid delegate child agent",
+				}),
+				expect.objectContaining({
+					name: "list_hlid_agents",
+					readOnly: true,
+					deferLoading: true,
+				}),
+				expect.objectContaining({
+					name: "inspect_hlid_agent",
+					readOnly: true,
+					deferLoading: true,
+				}),
+				expect.objectContaining({
+					name: "wait_hlid_agent",
+					readOnly: true,
+					deferLoading: true,
+				}),
+				expect.objectContaining({
+					name: "steer_hlid_agent",
+					readOnly: false,
+					approvalTitle: "Hlid steer child agent",
+				}),
+				expect.objectContaining({
+					name: "cancel_hlid_agent",
+					readOnly: false,
+					approvalTitle: "Hlid cancel child agent",
+				}),
+				expect.objectContaining({
+					name: "resume_hlid_agent",
+					readOnly: false,
+					approvalTitle: "Hlid continue interrupted child",
 				}),
 				expect.objectContaining({
 					name: "publish_relic",
@@ -83,6 +143,264 @@ describe("Hlid agent tools", () => {
 			filename: { type: "string" },
 			content: { type: "string" },
 		});
+		expect(
+			HLID_AGENT_TOOL_SPECS.find((spec) => spec.name === "delegate_hlid_agent")
+				?.inputSchema.properties,
+		).toMatchObject({
+			service_tier: { type: "string" },
+			cwd: { type: "string" },
+		});
+		const delegationPermissionDescription = (
+			HLID_AGENT_TOOL_SPECS.find((spec) => spec.name === "delegate_hlid_agent")
+				?.inputSchema.properties.permission_mode as
+				| { description?: string }
+				| undefined
+		)?.description;
+		expect(delegationPermissionDescription).toContain(
+			"Set plan explicitly when a Codex child must use native request_user_input",
+		);
+		expect(delegationPermissionDescription).toContain(
+			"does not enter plan review unless Codex emits a real plan",
+		);
+		for (const name of ["delegate_hlid_agent", "resume_hlid_agent"]) {
+			const properties = HLID_AGENT_TOOL_SPECS.find(
+				(spec) => spec.name === name,
+			)?.inputSchema.properties;
+			expect(properties).not.toHaveProperty("token_budget");
+			expect(properties).not.toHaveProperty("cost_budget");
+			expect(properties).not.toHaveProperty("timeout_seconds");
+		}
+		expect(
+			Object.fromEntries(
+				HLID_AGENT_TOOL_SPECS.filter((spec) =>
+					[
+						"delegate_hlid_agent",
+						"list_hlid_agents",
+						"inspect_hlid_agent",
+						"wait_hlid_agent",
+						"steer_hlid_agent",
+						"cancel_hlid_agent",
+						"resume_hlid_agent",
+					].includes(spec.name),
+				).map((spec) => [spec.name, spec.inputSchema.required]),
+			),
+		).toEqual({
+			delegate_hlid_agent: ["task", "provider"],
+			list_hlid_agents: [],
+			inspect_hlid_agent: ["id"],
+			wait_hlid_agent: ["id"],
+			steer_hlid_agent: ["id", "instruction"],
+			cancel_hlid_agent: ["id"],
+			resume_hlid_agent: ["id", "instruction"],
+		});
+		const orchestrationSpecs = Object.fromEntries(
+			HLID_AGENT_TOOL_SPECS.map((spec) => [spec.name, spec]),
+		);
+		expect(orchestrationSpecs.inspect_hlid_agent?.description).toContain(
+			"bounded active progress",
+		);
+		expect(orchestrationSpecs.wait_hlid_agent?.description).toContain(
+			"partial result plus error",
+		);
+		expect(orchestrationSpecs.resume_hlid_agent?.description).toContain(
+			"live running parent turn",
+		);
+		expect(orchestrationSpecs.resume_hlid_agent?.description).toContain(
+			"recorded configured workspace",
+		);
+		expect(orchestrationSpecs.resume_hlid_agent?.description).toContain(
+			"four-per-parent and twelve-global active limits",
+		);
+		expect(orchestrationSpecs.delegate_hlid_agent?.description).toContain(
+			"passively recorded usage",
+		);
+		expect(orchestrationSpecs.delegate_hlid_agent?.description).toContain(
+			"no elapsed-time or inactivity cap",
+		);
+		expect(orchestrationSpecs.delegate_hlid_agent?.description).toContain(
+			"cross-provider silence is not proof of failure",
+		);
+		expect(orchestrationSpecs.delegate_hlid_agent?.description).toContain(
+			"do not accept a timeout input or transition automatically to timed_out",
+		);
+		expect(orchestrationSpecs.delegate_hlid_agent?.description).toContain(
+			"Provider availability is checked before launch",
+		);
+		expect(orchestrationSpecs.delegate_hlid_agent?.description).toContain(
+			"Scheduled Routines may delegate",
+		);
+		expect(orchestrationSpecs.resume_hlid_agent?.description).toContain(
+			"service tier",
+		);
+		expect(orchestrationSpecs.resume_hlid_agent?.description).toContain(
+			"Routine-owned child",
+		);
+		expect(orchestrationSpecs.resume_hlid_agent?.description).toContain(
+			"no elapsed-time or inactivity cap",
+		);
+		expect(orchestrationSpecs.cancel_hlid_agent?.description).toContain(
+			"retains provider control",
+		);
+		expect(orchestrationSpecs.cancel_hlid_agent?.description).toContain(
+			"until each active provider turn settles",
+		);
+		expect(orchestrationSpecs.cancel_hlid_agent?.description).toContain(
+			"explicitly abandons continuation",
+		);
+	});
+
+	it("creates, inspects, and waits on parent-owned durable children", async () => {
+		const delegationId = "7c0eea4d-f74e-45c8-8674-a535fbb4412b";
+		db.dbFetch
+			.mockResolvedValueOnce(
+				Response.json({
+					id: delegationId,
+					child_session_id: "child-1",
+					status: "pending",
+				}),
+			)
+			.mockResolvedValueOnce(
+				Response.json({
+					id: delegationId,
+					child_session_id: "child-1",
+					status: "running",
+				}),
+			)
+			.mockResolvedValueOnce(
+				Response.json({
+					id: delegationId,
+					child_session_id: "child-1",
+					status: "completed",
+					result_text: "Done",
+				}),
+			);
+
+		await executeHlidAgentTool(
+			"delegate_hlid_agent",
+			{
+				task: "Inspect the provider boundary",
+				provider: "codex",
+				permission_mode: "plan",
+				timeout_seconds: 120,
+				token_budget: 12_000,
+				cost_budget: 1,
+			},
+			{ sessionId: "parent-1" },
+		);
+		expect(db.dbFetch).toHaveBeenLastCalledWith(
+			"/hlid-agents/delegate",
+			expect.objectContaining({
+				method: "POST",
+				body: JSON.stringify({
+					task: "Inspect the provider boundary",
+					provider: "codex",
+					permission_mode: "plan",
+					parent_session_id: "parent-1",
+				}),
+			}),
+		);
+
+		await executeHlidAgentTool(
+			"inspect_hlid_agent",
+			{ id: delegationId },
+			{ sessionId: "parent-1" },
+		);
+		expect(db.dbFetch).toHaveBeenLastCalledWith(
+			`/hlid-agents/${delegationId}?parent_session_id=parent-1`,
+		);
+
+		await executeHlidAgentTool(
+			"wait_hlid_agent",
+			{ id: delegationId, wait_seconds: 5 },
+			{ sessionId: "parent-1" },
+		);
+		expect(db.dbFetch).toHaveBeenLastCalledWith(
+			`/hlid-agents/${delegationId}/wait`,
+			expect.objectContaining({
+				method: "POST",
+				body: JSON.stringify({
+					parent_session_id: "parent-1",
+					wait_seconds: 5,
+				}),
+			}),
+		);
+	});
+
+	it("lists and controls the complete parent-owned child lifecycle", async () => {
+		const delegationId = "7c0eea4d-f74e-45c8-8674-a535fbb4412b";
+		db.dbFetch.mockImplementation(async () =>
+			Response.json({ id: delegationId }),
+		);
+
+		await executeHlidAgentTool(
+			"list_hlid_agents",
+			{ limit: 10 },
+			{ sessionId: "parent-1" },
+		);
+		expect(db.dbFetch).toHaveBeenLastCalledWith(
+			"/hlid-agents?parent_session_id=parent-1&limit=10",
+		);
+
+		await executeHlidAgentTool(
+			"steer_hlid_agent",
+			{ id: delegationId, instruction: "Check the edge case" },
+			{ sessionId: "parent-1" },
+		);
+		expect(db.dbFetch).toHaveBeenLastCalledWith(
+			`/hlid-agents/${delegationId}/steer`,
+			expect.objectContaining({
+				method: "POST",
+				body: JSON.stringify({
+					instruction: "Check the edge case",
+					parent_session_id: "parent-1",
+				}),
+			}),
+		);
+
+		await executeHlidAgentTool(
+			"cancel_hlid_agent",
+			{ id: delegationId },
+			{ sessionId: "parent-1" },
+		);
+		expect(db.dbFetch).toHaveBeenLastCalledWith(
+			`/hlid-agents/${delegationId}/cancel`,
+			expect.objectContaining({
+				method: "POST",
+				body: JSON.stringify({ parent_session_id: "parent-1" }),
+			}),
+		);
+
+		await executeHlidAgentTool(
+			"resume_hlid_agent",
+			{
+				id: delegationId,
+				instruction: "Continue explicitly",
+				timeout_seconds: 180,
+				token_budget: 24_000,
+				cost_budget: 2,
+			},
+			{ sessionId: "parent-1" },
+		);
+		expect(db.dbFetch).toHaveBeenLastCalledWith(
+			`/hlid-agents/${delegationId}/resume`,
+			expect.objectContaining({
+				method: "POST",
+				body: JSON.stringify({
+					instruction: "Continue explicitly",
+					parent_session_id: "parent-1",
+				}),
+			}),
+		);
+	});
+
+	it("requires an active parent session for orchestration tools", async () => {
+		await expect(
+			executeHlidAgentTool("delegate_hlid_agent", {
+				task: "Do work",
+				provider: "codex",
+			}),
+		).rejects.toThrow("active parent Raven session");
+		expect(db.dbFetch).not.toHaveBeenCalled();
 	});
 
 	it("searches the live API index without invoking an endpoint", async () => {
@@ -169,6 +487,79 @@ describe("Hlid agent tools", () => {
 		});
 		expect(db.dbFetch).toHaveBeenCalledWith("/db/session-row?id=session-1");
 		expect(db.dbFetch).toHaveBeenCalledWith("/providers?host_capabilities=1");
+	});
+
+	it("uses the full live provider catalog for orchestration target discovery", async () => {
+		db.dbFetch.mockImplementation((path: string) => {
+			if (path === "/db/session-row?id=session-1") {
+				return Promise.resolve(
+					Response.json({
+						provider_id: "codex",
+						selected_model: "gpt-5.6-sol",
+					}),
+				);
+			}
+			if (path === "/providers?host_capabilities=1") {
+				return Promise.resolve(
+					Response.json({
+						providers: [
+							{
+								id: "codex",
+								label: "Codex",
+								available: true,
+								models: [{ value: "gpt-5.6-sol", label: "GPT-5.6 Sol" }],
+							},
+							{
+								id: "claude",
+								label: "Claude",
+								available: true,
+								models: [{ value: "claude-sonnet", label: "Claude Sonnet" }],
+							},
+						],
+					}),
+				);
+			}
+			return Promise.resolve(Response.json({}));
+		});
+
+		const result = JSON.parse(
+			await executeHlidAgentTool(
+				"hlid_help",
+				{ topic: "orchestration" },
+				{
+					providerId: "codex",
+					runtimeCwd: "/work/project",
+					sessionId: "session-1",
+				},
+			),
+		);
+
+		expect(result.capabilities).toEqual([
+			expect.objectContaining({
+				id: "orchestration",
+				availability: "available",
+			}),
+		]);
+		expect(result.orchestrationTargets).toMatchObject({
+			source: "live-provider-catalog",
+			snapshot: "current",
+			totalProviders: 2,
+			availableProviders: 2,
+			providers: [
+				{
+					id: "codex",
+					models: {
+						items: [{ value: "gpt-5.6-sol", label: "GPT-5.6 Sol" }],
+					},
+				},
+				{
+					id: "claude",
+					models: {
+						items: [{ value: "claude-sonnet", label: "Claude Sonnet" }],
+					},
+				},
+			],
+		});
 	});
 
 	it("combines the live provider catalog, feature flag, model, and registered tools", async () => {

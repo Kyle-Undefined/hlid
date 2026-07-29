@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import * as db from "../db";
 import { bumpDataRevision } from "./dataRevision";
+import type { HlidDelegationManager } from "./hlidDelegation";
 import type { SessionPool } from "./sessionPool";
 import { runRoutineSession } from "./sessionRunner";
 
@@ -11,14 +12,20 @@ const LEASE_REFRESH_MS = 30_000;
 export class RoutineScheduler {
 	private readonly bootId = randomUUID();
 	private readonly pool: SessionPool;
+	private readonly delegations: HlidDelegationManager;
 	private timer: ReturnType<typeof setInterval> | null = null;
 	private active = new Set<string>();
 	private pending: db.RoutineRunRow[] = [];
 	private ticking = false;
 	private readonly onStatusChange?: () => void;
 
-	constructor(pool: SessionPool, onStatusChange?: () => void) {
+	constructor(
+		pool: SessionPool,
+		delegations: HlidDelegationManager,
+		onStatusChange?: () => void,
+	) {
 		this.pool = pool;
+		this.delegations = delegations;
 		this.onStatusChange = onStatusChange;
 	}
 
@@ -107,6 +114,7 @@ export class RoutineScheduler {
 			}
 			const result = await runRoutineSession({
 				pool: this.pool,
+				delegations: this.delegations,
 				routine,
 				run,
 				onStatusChange: this.onStatusChange,
@@ -148,10 +156,11 @@ let activeScheduler: RoutineScheduler | null = null;
 
 export async function startRoutineScheduler(
 	pool: SessionPool,
+	delegations: HlidDelegationManager,
 	onStatusChange?: () => void,
 ): Promise<RoutineScheduler> {
 	activeScheduler?.stop();
-	const scheduler = new RoutineScheduler(pool, onStatusChange);
+	const scheduler = new RoutineScheduler(pool, delegations, onStatusChange);
 	activeScheduler = scheduler;
 	await scheduler.start();
 	return scheduler;

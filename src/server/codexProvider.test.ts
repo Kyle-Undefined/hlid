@@ -16,6 +16,7 @@ vi.mock("./hlidAgentTools", async (importOriginal) => {
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { resolveCodexExecutable } from "../lib/codexPath";
+import { HLID_AGENT_TOOL_COUNT } from "../lib/hlidContext";
 import type {
 	AgentEvent,
 	AgentQueryParams,
@@ -47,6 +48,7 @@ import {
 	windowsComputerUseModel,
 } from "./codexProvider";
 import { executeHlidAgentToolRich } from "./hlidAgentTools";
+import { HLID_HELP_TOPICS } from "./hlidHelp";
 import { executeObsidianAgentTool } from "./obsidianAgentTools";
 
 // ── fetchCodexModels test helpers ──────────────────────────────────────────
@@ -82,6 +84,19 @@ const MODEL_LIST_FIXTURE = {
 				},
 			],
 			defaultReasoningEffort: "medium",
+			serviceTiers: [
+				{
+					id: "fast",
+					name: "Fast",
+					description: "Priority processing",
+				},
+				{
+					id: "standard",
+					name: "Standard",
+					description: "Standard processing",
+				},
+			],
+			defaultServiceTier: "standard",
 		},
 	],
 };
@@ -655,6 +670,20 @@ describe("mapCodexModels", () => {
 						label: "Xhigh",
 						desc: "Extra high reasoning depth for complex problems",
 						isDefault: false,
+					},
+				],
+				serviceTiers: [
+					{
+						value: "fast",
+						label: "Fast",
+						desc: "Priority processing",
+						isDefault: false,
+					},
+					{
+						value: "standard",
+						label: "Standard",
+						desc: "Standard processing",
+						isDefault: true,
 					},
 				],
 			},
@@ -1414,8 +1443,8 @@ describe("CodexAgentSession — commands", () => {
 			expect(provider.hlidToolLoading()).toContainEqual(
 				expect.objectContaining({
 					namespace: "hlid",
-					total: 9,
-					deferred: 8,
+					total: HLID_AGENT_TOOL_COUNT + 1,
+					deferred: HLID_AGENT_TOOL_COUNT,
 					tools: expect.arrayContaining([
 						{
 							name: "windows_computer_use",
@@ -1566,14 +1595,27 @@ describe("CodexAgentSession — commands", () => {
 		const hlidNamespace = (
 			threadStartParams(writes)[0].dynamicTools as Array<{
 				name: string;
-				tools: Array<{ name: string; deferLoading?: boolean }>;
+				tools: Array<{
+					name: string;
+					deferLoading?: boolean;
+					inputSchema?: {
+						properties?: { topic?: { enum?: string[] } };
+					};
+				}>;
 			}>
 		).find((tool) => tool.name === "hlid");
-		expect(hlidNamespace?.tools).toContainEqual(
-			expect.objectContaining({
-				name: "hlid_help",
-				deferLoading: true,
-			}),
+		const hlidHelp = hlidNamespace?.tools.find(
+			(tool) => tool.name === "hlid_help",
+		);
+		expect(hlidHelp).toMatchObject({
+			name: "hlid_help",
+			deferLoading: true,
+		});
+		expect(hlidHelp?.inputSchema?.properties?.topic?.enum).toEqual([
+			...HLID_HELP_TOPICS,
+		]);
+		expect(hlidHelp?.inputSchema?.properties?.topic?.enum).toContain(
+			"orchestration",
 		);
 		expect(hlidNamespace?.tools).toContainEqual(
 			expect.objectContaining({
@@ -2173,6 +2215,21 @@ describe("CodexAgentSession — setModel", () => {
 		expect(turns).toHaveLength(2);
 		expect(turns[0].model).toBe("gpt-5.4");
 		expect(turns[1].model).toBe("gpt-5.5");
+	});
+
+	it("carries a catalog-selected service tier into the thread and turn", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+
+		const session = new CodexProvider().query(
+			baseCodexParams({ serviceTier: "fast" }),
+		);
+		await session.send("Run with priority processing");
+
+		expect(threadStartParams(writes)[0]?.serviceTier).toBe("fast");
+		expect(turnStartParams(writes)[0]?.serviceTier).toBe("fast");
+		session.cancel();
 	});
 
 	it("includes local audio paths as native Codex turn input", async () => {
@@ -3670,6 +3727,98 @@ describe("CodexAgentSession — notifications", () => {
 		session.cancel();
 	});
 
+	it("finishes a question-only plan turn without manufacturing a plan or implementation turn", async () => {
+		const { proc, writes } = makeFakeSessionProc();
+		vi.mocked(spawn).mockReturnValue(proc as never);
+		vi.mocked(resolveCodexExecutable).mockReturnValue("/usr/bin/codex");
+		const canUseTool = vi.fn().mockImplementation(async (name: string) =>
+			name === "AskUserQuestion"
+				? {
+						behavior: "allow" as const,
+						updatedInput: {
+							answers: { "Acceptance choice?": "Beta" },
+						},
+					}
+				: { behavior: "allow" as const },
+		);
+		const session = new CodexProvider().query(
+			baseCodexParams({ permissionMode: "plan", canUseTool }),
+		);
+		const events = session[Symbol.asyncIterator]();
+		await session.send("ask me");
+		await nextSessionEvent(events);
+
+		emitSessionNotification(proc, "turn/started", {
+			threadId: "thread-1",
+			turn: { id: "question-turn" },
+		});
+		proc.stdout.emit(
+			"data",
+			Buffer.from(
+				`${JSON.stringify({
+					id: 79,
+					method: "item/tool/requestUserInput",
+					params: {
+						threadId: "thread-1",
+						turnId: "question-turn",
+						itemId: "question-1",
+						questions: [
+							{
+								id: "choice",
+								header: "Choice",
+								question: "Acceptance choice?",
+								options: [
+									{ label: "Alpha", description: "First" },
+									{ label: "Beta", description: "Second" },
+								],
+							},
+						],
+					},
+				})}\n`,
+			),
+		);
+		await vi.waitFor(() => {
+			const response = writes
+				.map((line) => JSON.parse(line))
+				.find((message) => message.id === 79);
+			expect(response?.result).toEqual({
+				answers: { choice: { answers: ["Beta"] } },
+			});
+		});
+		emitSessionNotification(proc, "item/completed", {
+			threadId: "thread-1",
+			item: {
+				id: "answer-1",
+				type: "agentMessage",
+				text: "QUESTION_OK:Beta",
+			},
+		});
+		emitSessionNotification(proc, "turn/completed", {
+			threadId: "thread-1",
+			turn: { id: "question-turn", status: "completed" },
+		});
+
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "provider_turn_id",
+			id: "question-turn",
+		});
+		expect(await nextSessionEvent(events)).toEqual({
+			type: "text_delta",
+			text: "QUESTION_OK:Beta",
+		});
+		expect(await nextSessionEvent(events)).toMatchObject({
+			type: "done",
+			turns: 1,
+		});
+		expect(canUseTool).not.toHaveBeenCalledWith(
+			"ExitPlanMode",
+			expect.anything(),
+			expect.anything(),
+		);
+		expect(turnStartParams(writes)).toHaveLength(1);
+		session.cancel();
+	});
+
 	it.each([
 		{
 			label: "once",
@@ -4066,6 +4215,14 @@ describe("CodexAgentSession — notifications", () => {
 			threadId: "thread-1",
 			usage: { inputTokens: 10, outputTokens: 2 },
 		});
+		emitSessionNotification(proc, "item/completed", {
+			threadId: "thread-1",
+			item: {
+				id: "plan-1",
+				type: "plan",
+				text: "## Plan\n\n1. Implement it.",
+			},
+		});
 		emitSessionNotification(proc, "turn/completed", {
 			threadId: "thread-1",
 			turn: { id: "plan-turn", status: "completed" },
@@ -4192,6 +4349,14 @@ describe("CodexAgentSession — notifications", () => {
 			item: { id: "change-1", type: "fileChange" },
 		});
 		await nextSessionEvent(events);
+		emitSessionNotification(proc, "item/completed", {
+			threadId: "thread-1",
+			item: {
+				id: "plan-1",
+				type: "plan",
+				text: "## Plan\n\n1. Implement it.",
+			},
+		});
 		emitSessionNotification(proc, "turn/completed", {
 			threadId: "thread-1",
 			turn: { id: "turn-1", status: "completed" },

@@ -190,7 +190,10 @@ function hookToolContext(call: ToolCall): {
 
 /** Mutable accumulator for per-turn SDK event state, threaded through the event loop. */
 type TurnState = {
+	startedAtMs: number;
 	receivedAny: boolean;
+	receivedUsage: boolean;
+	queryRecorded: boolean;
 	assistantText: string;
 	lastAssistantText: string;
 	lastBlockType: "text" | "tool_use" | null;
@@ -276,7 +279,26 @@ type RunQueryArgs = [
 	routineContext?: RoutinePermissionContext,
 	goalStart?: { objective: string; tokenBudget?: number | null },
 	workspaceReferences?: WorkspaceReferenceRequest[],
+	delegationContext?: string,
+	backgroundSession?: boolean,
 ];
+
+export type CurrentDelegationHandoff = {
+	skillContexts: string[];
+	relics: ChatAttachment[];
+	vaultReferences: string[];
+	workspaceReferences: WorkspaceReferenceRequest[];
+	currentAssistantSequence: number | null;
+};
+
+type ActiveSteeringTarget = {
+	turnId: string;
+	sessionId: string | null;
+	agentSession: AgentSession;
+	steer: (prompt: string) => Promise<void>;
+	turnState: TurnState;
+	handoff: CurrentDelegationHandoff | null;
+};
 
 export type SessionState = "idle" | "running" | "error";
 
@@ -415,6 +437,7 @@ function buildAgentQueryParams(options: {
 	agentSettings: AgentSettings | undefined;
 	modelOverride: { value: string | undefined } | null;
 	effortOverride: string | null;
+	serviceTierOverride: string | null;
 	defaultModel: string | undefined;
 	configuredPermissionMode: PermissionMode;
 	planMode: boolean | undefined;
@@ -475,6 +498,7 @@ function buildAgentQueryParams(options: {
 			options.effortOverride ??
 			options.agentSettings?.effort ??
 			options.defaultEffort,
+		serviceTier: options.serviceTierOverride ?? undefined,
 		maxTurns: options.agentSettings?.maxTurns ?? options.defaultMaxTurns,
 		executable: options.executable,
 		windowsComputerUse: options.windowsComputerUse,
@@ -657,7 +681,10 @@ export function resolveDeclaredSessionDefaults(
 
 function createTurnState(): TurnState {
 	return {
+		startedAtMs: Date.now(),
 		receivedAny: false,
+		receivedUsage: false,
+		queryRecorded: false,
 		assistantText: "",
 		lastAssistantText: "",
 		lastBlockType: null,
@@ -702,6 +729,7 @@ export class SessionManager {
 	/** Explicit Raven picker values, which outrank refreshed config and agent defaults. */
 	private modelOverride: { value: string | undefined } | null = null;
 	private effortOverride: string | null = null;
+	private serviceTierOverride: string | null = null;
 	private permissionModeOverride: PermissionMode | null = null;
 	/** The next provider thread needs the persisted Hlid transcript as context. */
 	private providerHandoffPending = false;
@@ -746,6 +774,10 @@ export class SessionManager {
 	private currentForkParentSessionId: string | null = null;
 	private currentForkParentLabel: string | null = null;
 	private currentForkKind: "exact" | "recap" | null = null;
+	private currentDelegationParentSessionId: string | null = null;
+	private currentDelegationParentLabel: string | null = null;
+	private currentDelegationParentTurnId: string | null = null;
+	private currentDelegationDepth: number | null = null;
 	private currentGoal: ProviderThreadGoal | null = null;
 	private messageSeq = 0;
 	/** Last runtime MCP snapshot per provider for this Hlid conversation. */
@@ -778,6 +810,10 @@ export class SessionManager {
 	// emitted `done` event so clients can correlate completions to specific
 	// submissions (and pop their queue display FIFO by id).
 	private currentTurnId: string | undefined;
+	/** Effective permission boundary for the running turn, including plan mode and Routines. */
+	private currentTurnPermissionMode: PermissionMode | null = null;
+	/** Exact, validated current-turn inputs available only for explicit child handoff. */
+	private currentDelegationHandoff: CurrentDelegationHandoff | null = null;
 	/** Active turn accumulator, shared only so accepted steering can persist its target row. */
 	private currentTurnState: TurnState | null = null;
 	// Auto-sleep: last emitted "sleeping" message, kept for sync replay so a
@@ -876,6 +912,7 @@ export class SessionManager {
 		this.providerOverride = null;
 		this.modelOverride = null;
 		this.effortOverride = null;
+		this.serviceTierOverride = null;
 		this.permissionModeOverride = null;
 		this.applyConfig(config);
 		this.state = "idle";
@@ -885,6 +922,12 @@ export class SessionManager {
 		this.currentForkParentSessionId = null;
 		this.currentForkParentLabel = null;
 		this.currentForkKind = null;
+		this.currentDelegationParentSessionId = null;
+		this.currentDelegationParentLabel = null;
+		this.currentDelegationParentTurnId = null;
+		this.currentDelegationDepth = null;
+		this.currentTurnPermissionMode = null;
+		this.currentDelegationHandoff = null;
 		this.currentGoal = null;
 		this.providerSessionId = null;
 		this.providerSessionProviderId = null;
@@ -911,6 +954,7 @@ export class SessionManager {
 			// A picker value from one provider may not be meaningful for another.
 			this.modelOverride = null;
 			this.effortOverride = null;
+			this.serviceTierOverride = null;
 			this.permissionModeOverride = null;
 		}
 		this.applyConfig(config, !providerChanged);
@@ -998,7 +1042,10 @@ export class SessionManager {
 		selection: {
 			model?: string;
 			effort?: string;
+			serviceTier?: string;
 			permissionMode?: string;
+			/** Internal orchestration can persist selection in its own DB CAS. */
+			persistSessionSelection?: boolean;
 		} = {},
 	): Promise<void> {
 		if (!this.providers.has(providerId)) {
@@ -1034,13 +1081,14 @@ export class SessionManager {
 		this.model = selection.model ?? "";
 		this.effortOverride = selection.effort ?? null;
 		this.effort = selection.effort ?? "";
+		this.serviceTierOverride = selection.serviceTier ?? null;
 		this.permissionModeOverride = selection.permissionMode
 			? (selection.permissionMode as PermissionMode)
 			: null;
 		this.permissionMode =
 			(selection.permissionMode as PermissionMode | undefined) ?? "default";
 
-		if (this.currentSessionId) {
+		if (this.currentSessionId && selection.persistSessionSelection !== false) {
 			await Promise.all([
 				db.setSessionProviderId(this.currentSessionId, providerId),
 				selection.model
@@ -1136,6 +1184,42 @@ export class SessionManager {
 		return this.currentSessionId;
 	}
 
+	// fallow-ignore-next-line unused-class-member -- HlidDelegationManager correlates the durable child with its active parent turn.
+	getCurrentTurnId(): string | null {
+		return this.currentTurnId ?? null;
+	}
+
+	// fallow-ignore-next-line unused-class-member -- HlidDelegationManager enforces inherited-or-narrower permissions against the effective turn boundary.
+	getCurrentTurnPermissionMode(): PermissionMode | null {
+		return this.currentTurnState ? this.currentTurnPermissionMode : null;
+	}
+
+	// fallow-ignore-next-line unused-class-member -- HlidDelegationManager prevents ordinary delegation from escaping a Routine's grant-scoped authorization context.
+	isCurrentTurnRoutine(): boolean {
+		return this.activeRoutineContext !== null;
+	}
+
+	// fallow-ignore-next-line unused-class-member -- HlidDelegationManager preserves the exact shared per-run Routine grant envelope in detached children.
+	getCurrentRoutinePermissionContext(): RoutinePermissionContext | null {
+		return this.activeRoutineContext;
+	}
+
+	// fallow-ignore-next-line unused-class-member -- HlidDelegationManager reads only this active turn's exact validated selections.
+	getCurrentDelegationHandoff(): CurrentDelegationHandoff | null {
+		const handoff = this.currentDelegationHandoff;
+		return handoff
+			? {
+					skillContexts: [...handoff.skillContexts],
+					relics: handoff.relics.map((relic) => ({ ...relic })),
+					vaultReferences: [...handoff.vaultReferences],
+					workspaceReferences: handoff.workspaceReferences.map((reference) => ({
+						...reference,
+					})),
+					currentAssistantSequence: handoff.currentAssistantSequence,
+				}
+			: null;
+	}
+
 	getAgentCwd(): string | undefined {
 		return this.agentCwd;
 	}
@@ -1158,12 +1242,20 @@ export class SessionManager {
 		forkParentSessionId: string | null;
 		forkParentLabel: string | null;
 		forkKind: "exact" | "recap" | null;
+		delegationParentSessionId: string | null;
+		delegationParentLabel: string | null;
+		delegationParentTurnId: string | null;
+		delegationDepth: number | null;
 	} {
 		return {
 			pinned: this.currentSessionPinned,
 			forkParentSessionId: this.currentForkParentSessionId,
 			forkParentLabel: this.currentForkParentLabel,
 			forkKind: this.currentForkKind,
+			delegationParentSessionId: this.currentDelegationParentSessionId,
+			delegationParentLabel: this.currentDelegationParentLabel,
+			delegationParentTurnId: this.currentDelegationParentTurnId,
+			delegationDepth: this.currentDelegationDepth,
 		};
 	}
 
@@ -1176,6 +1268,9 @@ export class SessionManager {
 	setForkParentLabel(parentSessionId: string, label: string): void {
 		if (this.currentForkParentSessionId === parentSessionId) {
 			this.currentForkParentLabel = label;
+		}
+		if (this.currentDelegationParentSessionId === parentSessionId) {
+			this.currentDelegationParentLabel = label;
 		}
 	}
 
@@ -1887,6 +1982,7 @@ export class SessionManager {
 		this.permissions.clearAll();
 		this.askUserQuestions.clearAll();
 		this.planModeManager.clearAll();
+		this.currentDelegationHandoff = null;
 		// Drop queued turns so abort cancels everything in flight, not just
 		// the currently running turn.
 		this.turnQueue.resolveAll();
@@ -1939,6 +2035,7 @@ export class SessionManager {
 			this.providerOverride = null;
 			this.modelOverride = null;
 			this.effortOverride = null;
+			this.serviceTierOverride = null;
 			this.permissionModeOverride = null;
 		}
 		return true;
@@ -1999,6 +2096,12 @@ export class SessionManager {
 		this.currentForkParentSessionId = null;
 		this.currentForkParentLabel = null;
 		this.currentForkKind = null;
+		this.currentDelegationParentSessionId = null;
+		this.currentDelegationParentLabel = null;
+		this.currentDelegationParentTurnId = null;
+		this.currentDelegationDepth = null;
+		this.currentTurnPermissionMode = null;
+		this.currentDelegationHandoff = null;
 		this.currentGoal = null;
 		this.providerSessionId = null;
 		this.providerSessionProviderId = null;
@@ -2024,12 +2127,21 @@ export class SessionManager {
 		);
 	}
 
-	private async restoreSessionContext(sessionId: string): Promise<boolean> {
+	private async restoreSessionContext(
+		sessionId: string,
+		updateGlobalFocus = true,
+	): Promise<boolean> {
 		this.currentGoal = null;
 		this.currentSessionPinned = false;
 		this.currentForkParentSessionId = null;
 		this.currentForkParentLabel = null;
 		this.currentForkKind = null;
+		this.currentDelegationParentSessionId = null;
+		this.currentDelegationParentLabel = null;
+		this.currentDelegationParentTurnId = null;
+		this.currentDelegationDepth = null;
+		this.currentTurnPermissionMode = null;
+		this.currentDelegationHandoff = null;
 		const [
 			savedSession,
 			prior,
@@ -2072,6 +2184,13 @@ export class SessionManager {
 			savedSession?.fork_parent_session_id ?? null;
 		this.currentForkParentLabel = savedSession?.fork_parent_label ?? null;
 		this.currentForkKind = savedSession?.fork_kind ?? null;
+		this.currentDelegationParentSessionId =
+			savedSession?.delegation_parent_session_id ?? null;
+		this.currentDelegationParentLabel =
+			savedSession?.delegation_parent_label ?? null;
+		this.currentDelegationParentTurnId =
+			savedSession?.delegation_parent_turn_id ?? null;
+		this.currentDelegationDepth = savedSession?.delegation_depth ?? null;
 		this.providerSessionId = savedProviderSessionId;
 		this.providerSessionProviderId = savedProviderId;
 		this.historyResumeMode = savedSession?.history_resume_mode ?? "none";
@@ -2109,9 +2228,11 @@ export class SessionManager {
 			this.permissionModeOverride =
 				savedSession.selected_permission_mode as PermissionMode;
 		}
-		db.setCurrentSessionId(sessionId).catch((e) =>
-			logDbError("setCurrentSessionId", e),
-		);
+		if (updateGlobalFocus) {
+			db.setCurrentSessionId(sessionId).catch((e) =>
+				logDbError("setCurrentSessionId", e),
+			);
+		}
 		return Boolean(savedSession);
 	}
 
@@ -2125,12 +2246,16 @@ export class SessionManager {
 		sessionId: string | undefined,
 		agentCwd: string | undefined,
 		userMessage: string,
+		updateGlobalFocus = true,
 	): Promise<void> {
 		let sessionExists = Boolean(
 			sessionId && sessionId === this.currentSessionId,
 		);
 		if (sessionId && sessionId !== this.currentSessionId) {
-			sessionExists = await this.restoreSessionContext(sessionId);
+			sessionExists = await this.restoreSessionContext(
+				sessionId,
+				updateGlobalFocus,
+			);
 		}
 
 		// Set agent dir + mode on first message of an agent session (in-memory).
@@ -2485,6 +2610,7 @@ export class SessionManager {
 				queryData,
 				provider.providerId,
 			);
+			turn.queryRecorded = true;
 			if (recorded) queryData.estimated_cost = recorded.estimatedCost;
 			bumpDataRevision("stats", "sessions");
 			if (turn.lastActualModel) {
@@ -2540,6 +2666,53 @@ export class SessionManager {
 	}
 
 	/**
+	 * Delegated provider turns can be stopped by a timeout or parent cancellation
+	 * before the provider emits its ordinary `done` event.
+	 * Their incremental usage is still authoritative and belongs in Ledger.
+	 *
+	 * Keep this fallback background-only and guarded by `queryRecorded`: normal
+	 * Raven turns retain their existing cancellation semantics, while completed
+	 * delegated turns continue through handleDone without being counted twice.
+	 */
+	private async persistIncompleteBackgroundQuery(
+		sessionId: string,
+		turn: TurnState,
+		provider: AgentProvider,
+	): Promise<void> {
+		if (turn.queryRecorded || !turn.receivedUsage) return;
+		const usage = turn.liveQueryUsage;
+		const model = turn.lastActualModel ?? this.model;
+		const estimatedCost = estimateProviderCost(
+			provider.providerId,
+			model,
+			usage,
+		);
+		await db.recordQuery(
+			sessionId,
+			{
+				cost: 0,
+				cost_known: false,
+				estimated_cost: estimatedCost,
+				input_tokens: usage.inputTokens,
+				output_tokens: usage.outputTokens,
+				cache_read_tokens: usage.cacheReadTokens,
+				cache_creation_tokens: usage.cacheCreationTokens,
+				duration_ms: Math.max(0, Date.now() - turn.startedAtMs),
+				turns: 1,
+				context_window: turn.lastKnownContextWindow,
+				stop_reason: null,
+				tokens_in_context:
+					turn.lastContextTokens ?? turn.lastTurnUsage?.input_tokens ?? null,
+				model,
+				agent_cwd: this.agentCwd ?? null,
+			},
+			provider.providerId,
+		);
+		turn.queryRecorded = true;
+		bumpDataRevision("stats", "sessions");
+	}
+
+	/**
 	 * Processes the provider AgentEvent stream for one query, updating
 	 * turn state in place.
 	 */
@@ -2574,6 +2747,12 @@ export class SessionManager {
 		if (turn.reservedAssistantSeq != null) return turn.reservedAssistantSeq;
 		const seq = this.messageSeq++;
 		turn.reservedAssistantSeq = seq;
+		if (
+			this.currentTurnState === turn &&
+			this.currentDelegationHandoff !== null
+		) {
+			this.currentDelegationHandoff.currentAssistantSequence = seq;
+		}
 		void db
 			.appendMessage(sessionId, seq, "assistant", "")
 			.then(async (dbId) => {
@@ -2857,6 +3036,7 @@ export class SessionManager {
 					cacheCreationTokens:
 						turn.liveQueryUsage.cacheCreationTokens + cacheCreation,
 				};
+		turn.receivedUsage = true;
 		turn.lastTurnUsage = {
 			input_tokens: event.inputTokens,
 			cache_read_input_tokens: event.cacheReadTokens,
@@ -3139,6 +3319,7 @@ export class SessionManager {
 			routineContext,
 			goalStart,
 			workspaceReferences,
+			delegationContext,
 		] = args;
 		if (this.state !== "running" || !this.currentTurnId) {
 			return "There is no active turn to steer.";
@@ -3157,6 +3338,9 @@ export class SessionManager {
 			(workspaceReferences?.length ?? 0) > 0
 		) {
 			return "Messages with file attachments must run as a separate turn.";
+		}
+		if (delegationContext) {
+			return "Delegation context must run as a separate turn.";
 		}
 		if (commandAction) {
 			return "Slash commands must run as a separate turn.";
@@ -3206,11 +3390,10 @@ export class SessionManager {
 
 	private async buildQueuedSteeringPrompt(args: RunQueryArgs): Promise<{
 		prompt: string;
+		safeSkillContexts: string[];
 		safeVaultReferences: string[];
 		contextManifest: HlidTurnContextManifest;
 	}> {
-		const blocker = this.queuedTurnSteeringBlocker(args);
-		if (blocker) throw new Error(blocker);
 		const [userMessage, , , skillContexts, , , , , , , vaultReferences] = args;
 		const runtimeCwd =
 			this.agentMode === "cwd" && this.agentCwd
@@ -3249,6 +3432,7 @@ export class SessionManager {
 		});
 		return {
 			prompt: built.prompt,
+			safeSkillContexts: built.safeSkillContexts ?? [],
 			safeVaultReferences: (built.safeVaultReferences ?? []).map(
 				(reference) => reference.relativePath,
 			),
@@ -3264,6 +3448,88 @@ export class SessionManager {
 		};
 	}
 
+	private captureActiveSteeringTarget(
+		args: RunQueryArgs,
+	): ActiveSteeringTarget {
+		const blocker = this.queuedTurnSteeringBlocker(args);
+		if (blocker) throw new Error(blocker);
+		const turnId = this.currentTurnId;
+		const agentSession = this.agentSession;
+		const turnState = this.currentTurnState;
+		const steer = agentSession?.steer;
+		if (!turnId || !agentSession || !turnState || !steer) {
+			throw new Error("There is no active provider turn to steer.");
+		}
+		return {
+			turnId,
+			sessionId: this.currentSessionId,
+			agentSession,
+			steer: steer.bind(agentSession),
+			turnState,
+			handoff: this.currentDelegationHandoff,
+		};
+	}
+
+	private assertActiveSteeringTarget(target: ActiveSteeringTarget): void {
+		if (
+			this.currentTurnId !== target.turnId ||
+			this.currentSessionId !== target.sessionId ||
+			this.agentSession !== target.agentSession ||
+			this.currentTurnState !== target.turnState
+		) {
+			throw new Error(
+				"The active provider turn changed while steering was being prepared. The instruction was not sent; retry only against the intended active turn.",
+			);
+		}
+	}
+
+	private async deliverPreparedSteer(
+		args: RunQueryArgs,
+		turnId: string,
+		prepared: Awaited<ReturnType<SessionManager["buildQueuedSteeringPrompt"]>>,
+		target: ActiveSteeringTarget,
+		onAccepted?: () => void,
+	): Promise<void> {
+		this.assertActiveSteeringTarget(target);
+		await target.steer(prepared.prompt);
+		onAccepted?.();
+		try {
+			if (prepared.contextManifest.operatingBrief?.included) {
+				this.operatingBriefProviderKey = `${prepared.contextManifest.providerId}|${target.sessionId ?? "ephemeral"}`;
+			}
+			const [userMessage, , sessionId] = args;
+			await this.persistUserMessage(
+				sessionId,
+				userMessage,
+				[],
+				turnId,
+				prepared.safeVaultReferences,
+				[],
+				target.turnState.reservedAssistantSeq ?? undefined,
+				prepared.contextManifest,
+			);
+			if (target.handoff) {
+				target.handoff.skillContexts = [
+					...new Set([
+						...target.handoff.skillContexts,
+						...prepared.safeSkillContexts,
+					]),
+				];
+				target.handoff.vaultReferences = [
+					...new Set([
+						...target.handoff.vaultReferences,
+						...prepared.safeVaultReferences,
+					]),
+				];
+			}
+		} catch (error) {
+			const detail = error instanceof Error ? error.message : String(error);
+			throw new Error(
+				`The provider accepted the steering instruction, but Hlid could not persist its transcript record: ${detail}. Do not retry this instruction automatically because that may duplicate it.`,
+			);
+		}
+	}
+
 	/**
 	 * Fold one pending prompt into the active native provider turn. The pending
 	 * queue promise is settled only after the provider accepts the steer. A
@@ -3275,41 +3541,59 @@ export class SessionManager {
 			.pendingTurns()
 			.find((turn) => turn.turnId === turnId);
 		if (!pending) return false;
+		const target = this.captureActiveSteeringTarget(pending.args);
 		const prepared = await this.buildQueuedSteeringPrompt(pending.args);
+		this.assertActiveSteeringTarget(target);
 		const extracted = this.turnQueue.extract(turnId);
 		if (!extracted) return false;
 		let accepted = false;
 		try {
-			const agentSession = this.agentSession;
-			const targetTurn = this.currentTurnState;
-			if (!agentSession?.steer) {
-				throw new Error("The active provider does not support steering.");
-			}
-			await agentSession.steer(prepared.prompt);
-			accepted = true;
-			if (prepared.contextManifest.operatingBrief?.included) {
-				this.operatingBriefProviderKey = `${prepared.contextManifest.providerId}|${this.currentSessionId ?? "ephemeral"}`;
-			}
-			extracted.turn.resolve();
-			const [userMessage, , sessionId] = extracted.turn.args;
-			await this.persistUserMessage(
-				sessionId,
-				userMessage,
-				[],
+			await this.deliverPreparedSteer(
+				extracted.turn.args,
 				turnId,
-				prepared.safeVaultReferences,
-				[],
-				targetTurn?.reservedAssistantSeq ?? undefined,
-				prepared.contextManifest,
+				prepared,
+				target,
+				() => {
+					accepted = true;
+				},
 			);
+			extracted.turn.resolve();
 			return true;
 		} catch (error) {
 			if (!accepted) {
 				this.turnQueue.restore(extracted);
 				if (!this.isDraining) void this.drainTurnQueue();
+			} else {
+				extracted.turn.resolve();
 			}
 			throw error;
 		}
+	}
+
+	/**
+	 * Deliver a Hlid-owned child instruction only through the provider's native
+	 * active-turn steering primitive. This never queues a fallback turn.
+	 */
+	// fallow-ignore-next-line unused-class-member -- Called by HlidDelegationManager.
+	async steerActiveTurn(
+		instruction: string,
+		emit: (msg: ServerMessage) => void,
+		sessionId: string,
+		turnId: string,
+	): Promise<void> {
+		const args: RunQueryArgs = [
+			instruction,
+			emit,
+			sessionId,
+			undefined,
+			[],
+			this.agentCwd,
+			turnId,
+		];
+		const target = this.captureActiveSteeringTarget(args);
+		const prepared = await this.buildQueuedSteeringPrompt(args);
+		this.assertActiveSteeringTarget(target);
+		await this.deliverPreparedSteer(args, turnId, prepared, target);
 	}
 
 	/**
@@ -4324,6 +4608,7 @@ export class SessionManager {
 				agentSettings,
 				modelOverride: this.modelOverride,
 				effortOverride: this.effortOverride,
+				serviceTierOverride: this.serviceTierOverride,
 				defaultModel: this.agentCwd ? undefined : this.model,
 				configuredPermissionMode,
 				planMode,
@@ -4538,9 +4823,16 @@ export class SessionManager {
 			routineContext,
 			goalStart,
 			workspaceReferences,
+			delegationContext,
+			backgroundSession,
 		] = args;
 		this.currentTurnId = turnId;
-		await this.initSessionContext(sessionId, agentCwd, userMessage);
+		await this.initSessionContext(
+			sessionId,
+			agentCwd,
+			userMessage,
+			!backgroundSession,
+		);
 		await this.syncPlanHtmlPath(Boolean(planMode && planHtml), sessionId);
 		this.activeRoutineContext = routineContext ?? null;
 
@@ -4572,6 +4864,9 @@ export class SessionManager {
 
 		const turn = createTurnState();
 		this.currentTurnState = turn;
+		this.currentTurnPermissionMode = planMode
+			? "plan"
+			: configuredPermissionMode;
 
 		try {
 			const runtimeCwd =
@@ -4589,6 +4884,7 @@ export class SessionManager {
 			const operatingBrief = commandAction ? "" : operatingBriefResult.text;
 			const {
 				prompt,
+				safeSkillContexts = [],
 				safeAttachments,
 				resourcePaths,
 				safeVaultReferences = [],
@@ -4616,6 +4912,7 @@ export class SessionManager {
 				attachments,
 				vaultReferences,
 				workspaceReferences,
+				delegationContext,
 				nativeAudio: currentProvider.providerId === "codex",
 				...(commandAction
 					? {}
@@ -4730,6 +5027,41 @@ export class SessionManager {
 				undefined,
 				turnContextManifest,
 			);
+			const retainedRelics = (
+				await Promise.all(
+					safeAttachments
+						.filter((attachment) => attachment.reference === "relic")
+						.map(async (attachment): Promise<ChatAttachment | null> => {
+							try {
+								const retained = await db.getAttachment(attachment.id);
+								if (!retained || retained.retention !== "retained") return null;
+								return {
+									id: retained.id,
+									path: retained.path,
+									filename: retained.filename,
+									mime: retained.mime,
+									kind: retained.kind,
+									reference: "relic",
+								};
+							} catch (error) {
+								logDbError("getAttachment (delegation handoff)", error);
+								return null;
+							}
+						}),
+				)
+			).filter((relic): relic is ChatAttachment => relic !== null);
+			this.currentDelegationHandoff = {
+				skillContexts: [...safeSkillContexts],
+				relics: retainedRelics,
+				vaultReferences: safeVaultReferences.map(
+					(reference) => reference.relativePath,
+				),
+				workspaceReferences: safeWorkspaceReferences.map((reference) => ({
+					relativePath: reference.relativePath,
+					sha256: reference.sha256,
+				})),
+				currentAssistantSequence: turn.reservedAssistantSeq,
+			};
 
 			const { activeCwd, extraDirs, executable } = resolveExecutionContext({
 				agentMode: this.agentMode,
@@ -4866,23 +5198,26 @@ export class SessionManager {
 				agentSettings,
 			});
 		} catch (err) {
-			this.state = "error";
+			const expectedAbort = this.abortController?.signal.aborted === true;
+			if (!expectedAbort) this.state = "error";
 			const msg = err instanceof Error ? err.message : "Unknown error";
 			// Compiled Hlið redirects console.error into this same table. Keep the
 			// development console useful without storing every production failure
 			// twice (once as console and once as the structured session record).
-			if (!process.execPath.endsWith(".exe")) {
+			if (!expectedAbort && !process.execPath.endsWith(".exe")) {
 				console.error("[session] runQuery error:", err);
 			}
-			void db.appendLog("error", "session", "runQuery error", {
-				message: msg,
-				name: err instanceof Error ? err.name : undefined,
-				stack: err instanceof Error ? err.stack?.slice(0, 500) : undefined,
-			});
-			emit({ type: "error", message: msg });
+			if (!expectedAbort) {
+				void db.appendLog("error", "session", "runQuery error", {
+					message: msg,
+					name: err instanceof Error ? err.name : undefined,
+					stack: err instanceof Error ? err.stack?.slice(0, 500) : undefined,
+				});
+				emit({ type: "error", message: msg });
+			}
 			// Slice B: tear down the AgentSession on error — its iterator may
-			// be in an inconsistent state. The next queued turn (or new
-			// runQuery) rebuilds a fresh SDK stream.
+			// be in an inconsistent state. Explicit aborts also retire the stream,
+			// but settle as idle instead of fabricating a child-session error.
 			this.agentSession?.cancel();
 			this.agentSession = null;
 			this.agentSessionKey = null;
@@ -4906,12 +5241,27 @@ export class SessionManager {
 					logDbError("appendMessage (assistant)", error);
 				}
 			}
+			if (backgroundSession && sessionId && !turn.queryRecorded) {
+				try {
+					await this.persistIncompleteBackgroundQuery(
+						sessionId,
+						turn,
+						currentProvider,
+					);
+				} catch (error) {
+					logDbError("recordQuery (background incomplete)", error);
+				}
+			}
 			// drainTurnQueue handles the final status emit + abortController
 			// reset after the queue fully drains. We intentionally do not emit
 			// per-turn status here so queued turns never see a transient idle
 			// flicker between turns.
 			this.activeRoutineContext = null;
-			if (this.currentTurnState === turn) this.currentTurnState = null;
+			if (this.currentTurnState === turn) {
+				this.currentTurnState = null;
+				this.currentTurnPermissionMode = null;
+				this.currentDelegationHandoff = null;
+			}
 		}
 	}
 }

@@ -30,6 +30,10 @@ import { formatDisplayCost } from "#/lib/costDisplay";
 import { fmt, fmtDate, fmtDateUtc, fmtModel } from "#/lib/formatters";
 import type { LedgerAgentOption, SessionSortKey } from "#/lib/ledgerState";
 import {
+	liveDelegationRollupLabel,
+	liveDelegationUsageLabel,
+} from "#/lib/liveSessionSwitcher";
+import {
 	isClaudeRuntimeProvider,
 	isCodexRuntimeProvider,
 } from "#/lib/providerRuntime";
@@ -63,17 +67,22 @@ export function sessionDisplayUsage(
 			liveStats.pending_cache_read_tokens +
 			liveStats.pending_cache_creation_tokens
 		: 0;
+	const persistedAndLiveCost =
+		(session.total_cost ?? 0) +
+		(session.total_estimated_cost ?? 0) +
+		(isActive ? (liveStats?.pending_estimated_cost ?? 0) : 0);
+	const persistedAndLiveTokens =
+		(session.total_input_tokens ?? 0) +
+		(session.total_output_tokens ?? 0) +
+		(session.total_cache_read_tokens ?? 0) +
+		(session.total_cache_creation_tokens ?? 0) +
+		(isActive ? pendingTokens : 0);
 	return {
-		cost:
-			(session.total_cost ?? 0) +
-			(session.total_estimated_cost ?? 0) +
-			(isActive ? (liveStats?.pending_estimated_cost ?? 0) : 0),
-		tokens:
-			(session.total_input_tokens ?? 0) +
-			(session.total_output_tokens ?? 0) +
-			(session.total_cache_read_tokens ?? 0) +
-			(session.total_cache_creation_tokens ?? 0) +
-			(isActive ? pendingTokens : 0),
+		cost: Math.max(persistedAndLiveCost, session.delegation_cost_used ?? 0),
+		tokens: Math.max(
+			persistedAndLiveTokens,
+			session.delegation_tokens_used ?? 0,
+		),
 	};
 }
 
@@ -323,6 +332,12 @@ function SessionItem({
 				isCodexRuntimeProvider(providerId))) &&
 		canNavigate;
 	const forkBlocked = poolSession?.state === "running";
+	const delegationRollup = poolSession
+		? liveDelegationRollupLabel(poolSession)
+		: null;
+	const delegationUsage = poolSession
+		? liveDelegationUsageLabel(poolSession)
+		: null;
 	const actionPosition = useAnchoredPopover(
 		menuOpen,
 		actionButtonRef,
@@ -336,6 +351,8 @@ function SessionItem({
 	);
 	const usageSource = usageSession?.id === session.id ? usageSession : session;
 	const usage = sessionDisplayUsage(usageSource, Boolean(isActive), liveStats);
+	const toolCallCount =
+		usageSource.tool_call_count ?? session.tool_call_count ?? 0;
 	const configuredModel = session.selected_model || session.model;
 	const providerModel = [
 		session.provider_id || "claude",
@@ -343,9 +360,16 @@ function SessionItem({
 	]
 		.filter((part): part is string => Boolean(part))
 		.join(" · ");
+	const reportedCost = usageSource.total_cost ?? 0;
+	const persistedAndLiveEstimatedCost =
+		(usageSource.total_estimated_cost ?? 0) +
+		(isActive ? (liveStats?.pending_estimated_cost ?? 0) : 0);
 	const costSummary = {
-		cost: usageSource.total_cost ?? 0,
-		estimated_cost: usageSource.total_estimated_cost ?? 0,
+		cost: reportedCost,
+		estimated_cost: Math.max(
+			persistedAndLiveEstimatedCost,
+			usage.cost - reportedCost,
+		),
 		unpriced_queries: usageSource.unpriced_query_count ?? 0,
 	};
 
@@ -474,12 +498,27 @@ function SessionItem({
 								"—"
 							)}{" "}
 							· {session.query_count}q
+							{` · ${toolCallCount} ${toolCallCount === 1 ? "tool" : "tools"}`}
 							{providerModel ? ` · ${providerModel}` : ""}
 							{importedHistory
 								? ` · ${importedSourceLabel(session.history_source)}${resumableHistory ? " · resumable" : ""}`
 								: ""}
 							{session.fork_kind === "exact" ? " · exact fork" : ""}
+							{session.delegation_parent_session_id
+								? ` · delegated from ${
+										session.delegation_parent_label ?? "parent session"
+									}`
+								: ""}
+							{delegationRollup ? ` · ${delegationRollup}` : ""}
 						</PrivacyMask>
+						{delegationUsage && (
+							<div
+								title="Tokens and cost are cumulative across all delegated descendants. Elapsed time spans the first descendant start through the last stop, or now while work is active."
+								className="mt-0.5 truncate font-mono text-[8px] text-primary/40"
+							>
+								<PrivacyMask>{delegationUsage}</PrivacyMask>
+							</div>
+						)}
 					</div>
 					<div className="text-right shrink-0">
 						<PrivacyMask className="text-[11px] tabular-nums text-[var(--data)]/70">

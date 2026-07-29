@@ -99,6 +99,173 @@ describe("ToolBlock — collapsed", () => {
 	});
 });
 
+describe("ToolBlock — Hlid orchestration audit rows", () => {
+	it.each([
+		["delegate_hlid_agent", "Delegate child", "CREATED"],
+		["list_hlid_agents", "List children", "CHECKED"],
+		["inspect_hlid_agent", "Inspect child", "CHECKED"],
+		["wait_hlid_agent", "Wait for child", "CHECKED"],
+		["steer_hlid_agent", "Steer child", "SENT"],
+		["cancel_hlid_agent", "Cancel child", "REQUESTED"],
+		["resume_hlid_agent", "Resume child", "STARTED"],
+	] as const)("renders %s as a compact expandable audit action", (toolName, label, status) => {
+		const list = toolName === "list_hlid_agents";
+		render(
+			<ToolBlock
+				event={makeEvent({
+					name: `mcp__hlid__${toolName}`,
+					input: list
+						? {}
+						: {
+								id: "7c0eea4d-f74e-45c8-8674-a535fbb4412b",
+								task: "Review the provider boundary",
+								instruction: "Check the cancellation edge case",
+								provider: "codex",
+							},
+					result: JSON.stringify(
+						list
+							? [{ id: "delegation-1" }, { id: "delegation-2" }]
+							: {
+									id: "7c0eea4d-f74e-45c8-8674-a535fbb4412b",
+									status: "running",
+								},
+					),
+				})}
+			/>,
+		);
+
+		expect(screen.getByText(label)).not.toBeNull();
+		expect(screen.getByText(status)).not.toBeNull();
+		expect(screen.queryByText("Hlid child")).toBeNull();
+		expect(screen.queryByRole("link", { name: /open child/i })).toBeNull();
+		if (list) expect(screen.getByText("2 children")).not.toBeNull();
+
+		const toggle = screen.getByRole("button", {
+			name: `${label} details`,
+			expanded: false,
+		});
+		fireEvent.click(toggle);
+		expect(toggle.getAttribute("aria-expanded")).toBe("true");
+		expect(
+			screen.getByText(/Recorded tool call · response at call time/i),
+		).not.toBeNull();
+		expect(document.querySelector("pre")?.textContent).toContain(
+			list ? "delegation-1" : '"status":"running"',
+		);
+		if (!list) {
+			expect(
+				screen.getByText("7c0eea4d-f74e-45c8-8674-a535fbb4412b"),
+			).not.toBeNull();
+		}
+	});
+
+	it("does not present a control response as the child's live lifecycle", () => {
+		render(
+			<ToolBlock
+				event={makeEvent({
+					name: "mcp__hlid__cancel_hlid_agent",
+					input: { id: "delegation-1" },
+					result: JSON.stringify({
+						id: "delegation-1",
+						status: "running",
+						progress_text: "Cancellation requested by parent",
+					}),
+				})}
+			/>,
+		);
+
+		expect(screen.getByText("REQUESTED")).not.toBeNull();
+		expect(screen.queryByText("RUNNING")).toBeNull();
+		expect(screen.queryByText("Cancellation requested by parent")).toBeNull();
+	});
+
+	it("keeps an orchestration action failure visible and bounded", () => {
+		const error = `Cancellation request failed ${"x".repeat(500)}`;
+		render(
+			<ToolBlock
+				event={makeEvent({
+					name: "mcp__hlid__cancel_hlid_agent",
+					input: { id: "delegation-1" },
+					result: error,
+					isError: true,
+				})}
+			/>,
+		);
+
+		expect(screen.getByText("FAILED")).not.toBeNull();
+		const detail = screen.getByText(/Cancellation request failed/);
+		expect(detail.textContent?.length).toBe(240);
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: "Cancel child details",
+				expanded: false,
+			}),
+		);
+		expect(screen.getByText(/^Error$/i)).not.toBeNull();
+		expect(document.querySelector("pre")?.textContent).toBe(error);
+	});
+
+	it("hydrates a truncated historical orchestration response on expansion", async () => {
+		mockLoadToolEventDetail.mockResolvedValue({
+			result: JSON.stringify({
+				id: "delegation-1",
+				status: "completed",
+				result: "The complete persisted child report",
+			}),
+			isError: false,
+		});
+		render(
+			<ToolBlock
+				event={makeEvent({
+					name: "mcp__hlid__inspect_hlid_agent",
+					input: { id: "delegation-1" },
+					result: '{"id":"delegation-1","status":"completed","res',
+					resultLength: 120,
+					resultTruncated: true,
+					detailSessionId: "parent-session",
+				})}
+			/>,
+		);
+
+		expect(mockLoadToolEventDetail).not.toHaveBeenCalled();
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: "Inspect child details",
+				expanded: false,
+			}),
+		);
+		expect(screen.getByText("Loading full result…")).not.toBeNull();
+		await waitFor(() => {
+			expect(document.querySelector("pre")?.textContent).toContain(
+				"The complete persisted child report",
+			);
+		});
+		expect(mockLoadToolEventDetail).toHaveBeenCalledWith(
+			"parent-session",
+			"te1",
+		);
+	});
+
+	it("uses a mobile-safe grid instead of a competing full-width child link", () => {
+		render(
+			<ToolBlock
+				event={makeEvent({
+					name: "mcp__hlid__delegate_hlid_agent",
+					input: {
+						task: "A long delegated task that still belongs inside the row",
+						provider: "claude",
+					},
+					result: JSON.stringify({ id: "delegation-1" }),
+				})}
+			/>,
+		);
+
+		const row = screen.getByText("Delegate child").closest(".grid");
+		expect(row?.className).toContain("grid-cols-[auto_minmax(0,1fr)_auto]");
+		expect(row?.className).toContain("min-w-0");
+	});
+});
+
 describe("ToolBlock — native workflows", () => {
 	it("builds an explicit same-workflow resume prompt", () => {
 		const prompt = workflowResumePrompt({

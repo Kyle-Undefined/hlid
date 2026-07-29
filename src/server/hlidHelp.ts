@@ -11,6 +11,12 @@ import type { ProviderInfo } from "../lib/providerTypes";
 export const HLID_OPERATING_CONTRACT_VERSION = 1 as const;
 export const MAX_HLID_OPERATING_BRIEF_CHARS = 700;
 export const MAX_HLID_HELP_RESPONSE_CHARS = 8_000;
+export const MAX_HLID_ORCHESTRATION_TARGET_CATALOG_CHARS = 2_600;
+
+const MAX_HLID_ORCHESTRATION_TARGET_PROVIDERS = 12;
+const MAX_HLID_ORCHESTRATION_TARGET_MODELS = 8;
+const MAX_HLID_ORCHESTRATION_TARGET_EFFORTS = 4;
+const MAX_HLID_ORCHESTRATION_TARGET_SERVICE_TIERS = 4;
 
 export const HLID_HELP_TOPICS = [
 	"overview",
@@ -20,6 +26,7 @@ export const HLID_HELP_TOPICS = [
 	"context",
 	"plans_review",
 	"workflows",
+	"orchestration",
 	"goals",
 	"relics",
 	"project_preview",
@@ -67,6 +74,7 @@ export type HlidOperatingContext = {
 	};
 	registeredHlidTools?: readonly string[];
 	providerSnapshot?: ProviderInfo;
+	providerCatalog?: readonly ProviderInfo[];
 };
 
 type CapabilityAvailability =
@@ -99,6 +107,45 @@ type HlidCapability = {
 	providerGuidance?: ProviderGuidancePointer;
 };
 
+type HlidOrchestrationModelTarget = {
+	value: string;
+	label: string;
+	isDefault?: boolean;
+	efforts?: HlidExactOptionCatalog;
+	serviceTiers?: HlidExactOptionCatalog;
+};
+
+type HlidExactOptionCatalog = {
+	total: number;
+	returned: number;
+	truncated: boolean;
+	items: string[];
+};
+
+type HlidOrchestrationProviderTarget = {
+	id: string;
+	label: string;
+	available: boolean;
+	unavailableReason?: string;
+	effortLevels?: HlidExactOptionCatalog;
+	models: {
+		total: number;
+		returned: number;
+		truncated: boolean;
+		items: HlidOrchestrationModelTarget[];
+	};
+};
+
+export type HlidOrchestrationTargetCatalog = {
+	source: "live-provider-catalog";
+	snapshot: "current" | "unavailable";
+	totalProviders: number;
+	availableProviders: number;
+	returnedProviders: number;
+	truncated: boolean;
+	providers: HlidOrchestrationProviderTarget[];
+};
+
 export type HlidCapabilityManifest = {
 	contractVersion: typeof HLID_OPERATING_CONTRACT_VERSION;
 	runtime: {
@@ -127,6 +174,7 @@ export type HlidCapabilityManifest = {
 		providerSnapshot: "current" | "unavailable";
 	};
 	capabilities: HlidCapability[];
+	orchestrationTargets: HlidOrchestrationTargetCatalog;
 	helpTopics: readonly HlidHelpTopic[];
 };
 
@@ -217,6 +265,203 @@ function toolAvailability(
 		: "unavailable";
 }
 
+function buildOrchestrationTargetCatalog(
+	providerCatalog: readonly ProviderInfo[] | undefined,
+	maxChars = MAX_HLID_ORCHESTRATION_TARGET_CATALOG_CHARS,
+): HlidOrchestrationTargetCatalog {
+	if (!providerCatalog) {
+		return {
+			source: "live-provider-catalog",
+			snapshot: "unavailable",
+			totalProviders: 0,
+			availableProviders: 0,
+			returnedProviders: 0,
+			truncated: false,
+			providers: [],
+		};
+	}
+
+	const totalProviders = providerCatalog.length;
+	const availableProviders = providerCatalog.filter(
+		(provider) => provider.available,
+	).length;
+	const orderedProviders = providerCatalog
+		.map((provider, index) => ({ provider, index }))
+		.sort(
+			(left, right) =>
+				Number(right.provider.available) - Number(left.provider.available) ||
+				left.index - right.index,
+		)
+		.slice(0, MAX_HLID_ORCHESTRATION_TARGET_PROVIDERS);
+	const providers: HlidOrchestrationProviderTarget[] = [];
+	const catalogWith = (
+		items: HlidOrchestrationProviderTarget[],
+	): HlidOrchestrationTargetCatalog => ({
+		source: "live-provider-catalog",
+		snapshot: "current",
+		totalProviders,
+		availableProviders,
+		returnedProviders: items.length,
+		truncated: items.length < totalProviders,
+		providers: items,
+	});
+
+	for (const { provider } of orderedProviders) {
+		const models = (provider.models ?? []).filter((model) => !model.hidden);
+		const providerEfforts = provider.effortLevels ?? [];
+		let entry: HlidOrchestrationProviderTarget = {
+			id: provider.id,
+			label: boundedValue(provider.label, 80),
+			available: provider.available,
+			...(provider.unavailableReason
+				? {
+						unavailableReason: boundedValue(provider.unavailableReason, 160),
+					}
+				: {}),
+			...(providerEfforts.length
+				? {
+						effortLevels: {
+							total: providerEfforts.length,
+							returned: 0,
+							truncated: true,
+							items: [],
+						},
+					}
+				: {}),
+			models: {
+				total: models.length,
+				returned: 0,
+				truncated: models.length > 0,
+				items: [],
+			},
+		};
+		if (JSON.stringify(catalogWith([...providers, entry])).length > maxChars) {
+			continue;
+		}
+
+		for (const model of models.slice(0, MAX_HLID_ORCHESTRATION_TARGET_MODELS)) {
+			const modelEfforts = model.efforts ?? [];
+			const modelServiceTiers = model.serviceTiers ?? [];
+			let modelTarget: HlidOrchestrationModelTarget = {
+				value: model.value,
+				label: boundedValue(model.label, 80),
+				...(model.isDefault ? { isDefault: true } : {}),
+				...(modelEfforts.length
+					? {
+							efforts: {
+								total: modelEfforts.length,
+								returned: 0,
+								truncated: true,
+								items: [],
+							},
+						}
+					: {}),
+				...(modelServiceTiers.length
+					? {
+							serviceTiers: {
+								total: modelServiceTiers.length,
+								returned: 0,
+								truncated: true,
+								items: [],
+							},
+						}
+					: {}),
+			};
+			const withModel = (target: HlidOrchestrationModelTarget) => {
+				const items = [...entry.models.items, target];
+				return {
+					...entry,
+					models: {
+						total: models.length,
+						returned: items.length,
+						truncated: items.length < models.length,
+						items,
+					},
+				};
+			};
+			if (
+				JSON.stringify(catalogWith([...providers, withModel(modelTarget)]))
+					.length > maxChars
+			) {
+				continue;
+			}
+			for (const effort of modelEfforts.slice(
+				0,
+				MAX_HLID_ORCHESTRATION_TARGET_EFFORTS,
+			)) {
+				const items = [...(modelTarget.efforts?.items ?? []), effort.value];
+				const candidate: HlidOrchestrationModelTarget = {
+					...modelTarget,
+					efforts: {
+						total: modelEfforts.length,
+						returned: items.length,
+						truncated: items.length < modelEfforts.length,
+						items,
+					},
+				};
+				if (
+					JSON.stringify(catalogWith([...providers, withModel(candidate)]))
+						.length > maxChars
+				) {
+					break;
+				}
+				modelTarget = candidate;
+			}
+			for (const serviceTier of modelServiceTiers.slice(
+				0,
+				MAX_HLID_ORCHESTRATION_TARGET_SERVICE_TIERS,
+			)) {
+				const items = [
+					...(modelTarget.serviceTiers?.items ?? []),
+					serviceTier.value,
+				];
+				const candidate: HlidOrchestrationModelTarget = {
+					...modelTarget,
+					serviceTiers: {
+						total: modelServiceTiers.length,
+						returned: items.length,
+						truncated: items.length < modelServiceTiers.length,
+						items,
+					},
+				};
+				if (
+					JSON.stringify(catalogWith([...providers, withModel(candidate)]))
+						.length > maxChars
+				) {
+					break;
+				}
+				modelTarget = candidate;
+			}
+			entry = withModel(modelTarget);
+		}
+
+		for (const effort of providerEfforts.slice(
+			0,
+			MAX_HLID_ORCHESTRATION_TARGET_EFFORTS,
+		)) {
+			const items = [...(entry.effortLevels?.items ?? []), effort.value];
+			const candidate: HlidOrchestrationProviderTarget = {
+				...entry,
+				effortLevels: {
+					total: providerEfforts.length,
+					returned: items.length,
+					truncated: items.length < providerEfforts.length,
+					items,
+				},
+			};
+			if (
+				JSON.stringify(catalogWith([...providers, candidate])).length > maxChars
+			) {
+				break;
+			}
+			entry = candidate;
+		}
+		providers.push(entry);
+	}
+
+	return catalogWith(providers);
+}
+
 function runtimeEnvironment(
 	runtimeCwd: string | undefined,
 ): HlidCapabilityManifest["runtime"]["environment"] {
@@ -242,6 +487,9 @@ export function buildHlidCapabilityManifest(
 	const workspaceAvailable = Boolean(context.runtimeCwd);
 	const vaultConfigured = Boolean(context.vaultName?.trim());
 	const provider = context.providerSnapshot;
+	const orchestrationTargets = buildOrchestrationTargetCatalog(
+		context.providerCatalog,
+	);
 	const commandActions = activeCommandActions(providerId, provider);
 	const commands = new Set(commandActions);
 	const toolNames = context.registeredHlidTools
@@ -250,6 +498,26 @@ export function buildHlidCapabilityManifest(
 	const tools = context.registeredHlidTools
 		? new Set(context.registeredHlidTools)
 		: null;
+	const orchestrationToolAvailability =
+		sessionScoped && workspaceAvailable
+			? toolAvailability(tools, [
+					"delegate_hlid_agent",
+					"list_hlid_agents",
+					"inspect_hlid_agent",
+					"wait_hlid_agent",
+					"steer_hlid_agent",
+					"cancel_hlid_agent",
+					"resume_hlid_agent",
+				])
+			: "conditional";
+	const orchestrationAvailability: CapabilityAvailability =
+		orchestrationToolAvailability !== "available"
+			? orchestrationToolAvailability
+			: orchestrationTargets.snapshot !== "current"
+				? "conditional"
+				: orchestrationTargets.availableProviders > 0
+					? "available"
+					: "unavailable";
 	const workflowsAvailable = commands.has("workflows");
 	const goalsAvailable = commands.has("goal");
 	const computerUse = provider?.hostCapabilities?.windowsComputerUse;
@@ -379,6 +647,7 @@ export function buildHlidCapabilityManifest(
 			codexRealtimeBackendAvailable:
 				context.codexRealtimeBackendAvailable ?? false,
 		},
+		orchestrationTargets,
 	};
 	return {
 		contractVersion: HLID_OPERATING_CONTRACT_VERSION,
@@ -458,6 +727,13 @@ export function buildHlidCapabilityManifest(
 				summary: workflowsAvailable
 					? "Claude Dynamic Workflows remain provider-native; Hlid supplies the Raven lifecycle and review surface."
 					: "The active provider does not expose Claude Dynamic Workflows.",
+			},
+			{
+				id: "orchestration",
+				owner: "hlid",
+				availability: orchestrationAvailability,
+				summary:
+					"Hlid can create nested durable Raven children across registered providers and exact configured workspaces, with bounded depth, explicit model, effort, and service-tier selection, explicit handoff, independent transcripts, passive usage reporting, native steering when available, explicit cancellation, restart continuation, provenance, and bounded results. Focused orchestration help includes a bounded snapshot of the live target provider and model catalog.",
 			},
 			{
 				id: "goals",
@@ -598,6 +874,7 @@ export function buildHlidCapabilityManifest(
 					"Claude, Codex, ACP, and future providers retain their own commands, hidden context, forks, models, and lifecycle limits.",
 			},
 		],
+		orchestrationTargets,
 		helpTopics: HLID_HELP_TOPICS,
 	};
 }
@@ -637,6 +914,21 @@ const TOPIC_GUIDANCE: Record<HlidHelpTopic, string[]> = {
 	workflows: [
 		"Dynamic Workflows are Claude-native.",
 		"Hlid owns their Raven presentation, parent-child correlation, lifecycle controls, and retained transcript state.",
+	],
+	orchestration: [
+		"Choose the exact provider ID and optional model, effort, and model service-tier values from orchestrationTargets. This is a bounded snapshot of the live provider catalog; do not guess unavailable or truncated entries.",
+		"For Codex user-input children, set permission_mode=plan: request_user_input is unavailable in default mode. A question-only turn does not enter plan review without a real plan.",
+		"Use provider-native same-provider subagents when a durable Raven child is unnecessary. Hlid delegation is an explicit ordinary child session.",
+		"Delegation is bounded to three levels, four active direct children per parent, and twelve active delegated children across Hlid. The ordinary session pool has its own separate capacity. Children default to the parent workspace; cwd may select only the exact configured vault or a registered workspace. Permissions must be inherited or narrower.",
+		"Visible transcript, selected skills, durable Relics, and exact current-turn Vault or Workspace references are empty by default and require explicit handoff switches. Hlid never expands an exact selection, borrows an ordinary upload, or claims hidden provider context moved.",
+		"Hlid imposes no elapsed-time or inactivity cap on delegated work because cross-provider silence is not proof that a child is unresponsive. New runs do not accept timeout_seconds, token_budget, or cost_budget, and do not transition automatically to timed_out or budget_exhausted. Historical snapshots may retain inert timeout_seconds, token_budget, or cost_budget values and timed_out or budget_exhausted states for compatibility. Provider availability is checked before launch. Native launch, transport, or process failures settle the child naturally. Explicit cancel_hlid_agent is the way to stop work. Hlid passively records provider-reported token usage and available cost without using either as a lifecycle cap.",
+		"steer_hlid_agent uses only the active provider's native same-turn steering primitive. Unsupported providers return unavailable; Hlid does not substitute cancellation or a queued fresh turn.",
+		"cancel_hlid_agent requests cancellation of the addressed child and every active nested descendant immediately. Hlid retains provider control, delegation ownership, and active capacity until each provider turn settles, then persists terminal cancelled state. For a resumable restart-interrupted child with no active provider turn, cancel explicitly abandons continuation and marks it cancelled immediately while retaining its Raven transcript and Ledger provenance. Closing that interrupted child from the live-session surface has the same abandonment semantics. A terminal ancestor stays terminal while active descendants stop. After restart, active work becomes interrupted instead of being replayed.",
+		"Children remain independent after the parent turn finishes, the browser disconnects, or the parent is archived. Those events do not imply cancellation. Deleting a parent is blocked while delegated descendants remain; use cancel_hlid_agent when the work should stop.",
+		"Parent rollups retain bounded durable waiting, completed, and failed descendant counts. Completed and failed child sessions remain ordinary Raven and Ledger history; Hlid does not present them as live provider processes.",
+		"Scheduled Routines may delegate after the delegation call passes both the reviewed Routine envelope and Umbod. Detached descendants share the exact per-run Routine context, grant-use counters, and action-required callback while the Routine run owns their lifecycle after its parent provider turn closes. A late unmatched action pauses the Routine and cancels its remaining children. Restart-interrupted Routine children cannot be continued outside the ended run.",
+		"resume_hlid_agent starts an explicit new turn only for a restart-interrupted non-Routine child with a remaining attempt and from a live running parent turn. It revalidates the recorded configured workspace plus provider, model, effort, and service tier, enforces inherited or narrower permissions and active-capacity limits, and supplies bounded visible child transcript context without inheriting references or Relics.",
+		"delegate_hlid_agent returns immediately and its parent card retains a bounded current step. Use list_hlid_agents for compact lifecycle and result-availability snapshots; use inspect_hlid_agent or wait_hlid_agent for bounded active progress and terminal result, partial result, and error details.",
 	],
 	goals: [
 		"Goals are Codex-native state, not prompt conventions.",
@@ -702,18 +994,42 @@ export function buildHlidHelpResponse(
 		topic === "overview"
 			? manifest.capabilities
 			: manifest.capabilities.filter((item) => item.id === topic);
+	const shared = {
+		contractVersion: manifest.contractVersion,
+		topic,
+		runtime: manifest.runtime,
+		permissions: manifest.permissions,
+		references: manifest.references,
+		registry: manifest.registry,
+		capabilities: capability,
+	};
+	const tail = {
+		guidance: TOPIC_GUIDANCE[topic],
+		relatedTopics: manifest.helpTopics.filter((item) => item !== topic),
+	};
+	if (topic !== "orchestration") {
+		return boundedJson({ ...shared, ...tail }, MAX_HLID_HELP_RESPONSE_CHARS);
+	}
+
+	// The live runtime and registry fields vary in size. Reserve their exact
+	// serialized footprint first, then use only the remaining response budget
+	// for target projection so a rich live catalog cannot make focused help fail.
+	const withPlaceholder = JSON.stringify({
+		...shared,
+		orchestrationTargets: null,
+		...tail,
+	});
+	const fixedChars = withPlaceholder.length - JSON.stringify(null).length;
+	const targetBudget = Math.min(
+		MAX_HLID_ORCHESTRATION_TARGET_CATALOG_CHARS,
+		MAX_HLID_HELP_RESPONSE_CHARS - fixedChars,
+	);
+	const orchestrationTargets = buildOrchestrationTargetCatalog(
+		context.providerCatalog,
+		targetBudget,
+	);
 	return boundedJson(
-		{
-			contractVersion: manifest.contractVersion,
-			topic,
-			runtime: manifest.runtime,
-			permissions: manifest.permissions,
-			references: manifest.references,
-			registry: manifest.registry,
-			capabilities: capability,
-			guidance: TOPIC_GUIDANCE[topic],
-			relatedTopics: manifest.helpTopics.filter((item) => item !== topic),
-		},
+		{ ...shared, orchestrationTargets, ...tail },
 		MAX_HLID_HELP_RESPONSE_CHARS,
 	);
 }
@@ -742,7 +1058,7 @@ export function buildHlidOperatingBriefResult(
 		: "";
 	const brief = `Hlid operating brief (v${HLID_OPERATING_CONTRACT_VERSION}):
 - Hlid @ references are exact selections. Do not expand links, backlinks, embeds, attachments, imports, neighboring files, or related content unless the user asks.${vault}
-- Hlid owns shared session, approval, Relic, Project Preview, and reference flows. Provider-native capabilities keep their own semantics.
+- Hlid owns shared session, delegation, approval, Relic, Project Preview, and reference flows. Provider-native capabilities keep their own semantics.
 - Use hlid_help for current capability availability and focused operating guidance. Do not infer unavailable features.`;
 	if (brief.length > MAX_HLID_OPERATING_BRIEF_CHARS) {
 		throw new Error(

@@ -2,7 +2,7 @@
 /**
  * Tests for RecentRunsSidebar focusing on the activeSession prop logic.
  */
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AggStats, SessionRow, WeeklyStats } from "#/db";
 import * as privacyStore from "#/hooks/privacyStore";
@@ -318,6 +318,122 @@ describe("RecentRunsSidebar — activeSession prop", () => {
 		).toBeNull();
 		routineButton.click();
 		expect(onRunClick).toHaveBeenCalledWith("routine-session");
+	});
+
+	it("keeps a Routine representative when its delegated child needs attention", () => {
+		replaceSessionsStatus([
+			liveSession("routine-run", {
+				db_session_id: "routine-session",
+				attention: {
+					bucket: "needs_attention",
+					reason: "delegated_child_attention",
+					since: 1,
+					last_activity_at: 1,
+					queue_count: 0,
+					pending_count: 0,
+				},
+				delegated_attention: {
+					direct_count: 1,
+					descendant_count: 1,
+					waiting_count: 0,
+					completed_count: 0,
+					failed_count: 0,
+					needs_attention_count: 1,
+					working_count: 0,
+					queued_count: 0,
+					recent_count: 0,
+					leading_bucket: "needs_attention",
+					since: 1,
+					last_activity_at: 1,
+					total_tokens: 7_500,
+					total_cost: 0.125,
+					elapsed_duration_seconds: 605,
+				},
+			}),
+			liveSession("child", {
+				db_session_id: "child-session",
+				delegation_parent_session_id: "routine-session",
+				attention: {
+					bucket: "needs_attention",
+					reason: "permission",
+					since: 1,
+					last_activity_at: 1,
+					queue_count: 0,
+					pending_count: 1,
+				},
+			}),
+		]);
+		render(
+			<RecentRunsSidebar
+				runs={[]}
+				weeklyStats={defaultWeeklyStats}
+				onRunClick={vi.fn()}
+				stats={defaultStats}
+				agg={defaultAgg}
+				activeSession={null}
+				routines={[
+					{
+						id: "routine-1",
+						name: "Nightly review",
+						attention: {
+							bucket: "working",
+							reason: "routine_running",
+							since: 1,
+							last_activity_at: 1,
+							queue_count: 0,
+							pending_count: 0,
+						},
+						lastRun: {
+							id: "run-1",
+							status: "running",
+							scheduledFor: 1,
+							startedAt: 1,
+							finishedAt: null,
+							sessionId: "routine-session",
+							error: null,
+							actionRequired: null,
+						},
+					} as never,
+				]}
+				onOpenRoutines={vi.fn()}
+			/>,
+		);
+
+		const routineButton = screen.getByRole("button", {
+			name: "Open Nightly review from attention summary",
+		});
+		expect(routineButton.textContent).toContain("1 delegated · 1 needs you");
+		expect(
+			within(routineButton).getByTitle(/all delegated descendants/).textContent,
+		).toBe("7.5k tokens · $0.125 · 10m 5s elapsed");
+		expect(
+			screen.queryByRole("button", {
+				name: "Open child from attention summary",
+			}),
+		).toBeNull();
+	});
+
+	it("distinguishes durable interrupted attention from live processes", () => {
+		replaceSessionsStatus([
+			liveSession("interrupted", {
+				durable_only: true,
+				delegation_status: "interrupted",
+				delegation_resumable: true,
+				attention: {
+					bucket: "needs_attention",
+					reason: "delegation_interrupted",
+					since: 1,
+					last_activity_at: 1,
+					queue_count: 0,
+					pending_count: 0,
+				},
+			}),
+		]);
+
+		renderSidebar(null);
+
+		expect(screen.getByText("0 live · 1 interrupted")).not.toBeNull();
+		expect(screen.getByText("Restart interrupted")).not.toBeNull();
 	});
 
 	it("aligns persisted Recent rows with pin, provenance, and live deduplication", () => {

@@ -1,3 +1,4 @@
+import { HLID_DELEGATION_MAX_ATTEMPTS } from "../lib/hlidDelegation";
 import {
 	estimateProviderCost,
 	hasProviderPricing,
@@ -14,6 +15,29 @@ import type {
 	SessionSelection,
 	SessionSort,
 } from "./types";
+
+export class SessionHasDelegationDescendantsError extends Error {
+	constructor(readonly sessionId: string) {
+		super(
+			"Delete this session's delegated descendants before deleting their delegated parent.",
+		);
+		this.name = "SessionHasDelegationDescendantsError";
+	}
+}
+
+export class SessionDelegationOwnershipError extends Error {
+	constructor(
+		readonly sessionId: string,
+		readonly operation: "archive" | "delete",
+	) {
+		super(
+			operation === "archive"
+				? "Cannot archive a session owned by a pending or running delegation."
+				: "Cannot delete a session owned by a pending, running, or resumable interrupted delegation.",
+		);
+		this.name = "SessionDelegationOwnershipError";
+	}
+}
 
 export async function setSessionAgentCwd(
 	sessionId: string,
@@ -221,15 +245,21 @@ export async function createSession(
 	id: string,
 	label: string,
 	model: string,
-	selection: { effort?: string; permissionMode?: string } = {},
+	selection: {
+		effort?: string;
+		permissionMode?: string;
+		agentCwd?: string;
+		providerId?: string;
+	} = {},
 ): Promise<void> {
 	const db = await getDb();
 	let changes = 0;
 	db.transaction(() => {
 		({ changes } = db.run(
 			`INSERT OR IGNORE INTO sessions
-			 (id, label, model, selected_model, selected_effort, selected_permission_mode, started_at)
-			 VALUES (?, ?, ?, ?, ?, ?, unixepoch())`,
+			 (id, label, model, selected_model, selected_effort,
+			  selected_permission_mode, agent_cwd, provider_id, started_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, unixepoch())`,
 			[
 				id,
 				label,
@@ -237,6 +267,8 @@ export async function createSession(
 				model,
 				selection.effort ?? null,
 				selection.permissionMode ?? null,
+				selection.agentCwd ?? null,
+				selection.providerId ?? "claude",
 			],
 		));
 		if (changes > 0) {
@@ -466,6 +498,62 @@ const SESSION_SORT_SQL: Record<SessionSort, string> = {
 const SESSION_EFFECTIVE_MODEL_SQL =
 	"COALESCE(NULLIF(actual_model, ''), NULLIF(selected_model, ''), NULLIF(model, ''))";
 
+function sessionToolCallCountColumn(sessionAlias: string): string {
+	return `(SELECT COUNT(*)
+		 FROM tool_events tool_call
+		 WHERE tool_call.session_id = ${sessionAlias}.id)
+		 AS tool_call_count`;
+}
+
+function sessionDelegationColumns(sessionAlias: string): string {
+	return `
+		(SELECT delegation.parent_session_id
+		 FROM session_delegations delegation
+		 WHERE delegation.child_session_id = ${sessionAlias}.id)
+		 AS delegation_parent_session_id,
+		(SELECT COALESCE(
+				(SELECT parent.label
+				 FROM sessions parent
+				 WHERE parent.id = delegation.parent_session_id),
+				delegation.parent_label
+			)
+		 FROM session_delegations delegation
+		 WHERE delegation.child_session_id = ${sessionAlias}.id)
+		 AS delegation_parent_label,
+			(SELECT delegation.parent_turn_id
+			 FROM session_delegations delegation
+			 WHERE delegation.child_session_id = ${sessionAlias}.id)
+			 AS delegation_parent_turn_id,
+			(SELECT delegation.depth
+			 FROM session_delegations delegation
+			 WHERE delegation.child_session_id = ${sessionAlias}.id)
+			 AS delegation_depth,
+			(SELECT CASE
+					WHEN ${sessionAlias}.archived_at IS NULL
+					 AND (
+					   delegation.status IN ('pending', 'running')
+					   OR (
+					     delegation.status = 'interrupted'
+					     AND delegation.routine_run_id IS NULL
+					     AND delegation.attempt_count < ${HLID_DELEGATION_MAX_ATTEMPTS}
+					   )
+					 )
+					THEN 1
+					ELSE 0
+				END
+			 FROM session_delegations delegation
+			 WHERE delegation.child_session_id = ${sessionAlias}.id)
+			 AS delegation_control_owned,
+			(SELECT delegation.tokens_used
+			 FROM session_delegations delegation
+			 WHERE delegation.child_session_id = ${sessionAlias}.id)
+			 AS delegation_tokens_used,
+			(SELECT delegation.cost_used
+			 FROM session_delegations delegation
+			 WHERE delegation.child_session_id = ${sessionAlias}.id)
+			 AS delegation_cost_used`;
+}
+
 type SessionListOptions = {
 	search?: string;
 	sort?: SessionSort;
@@ -575,7 +663,10 @@ export async function getSessionsPaginated(
 	const orderSql = SESSION_SORT_SQL[opts.sort ?? "recent"];
 	const sessions = db
 		.query<SessionRow, (string | number)[]>(
-			`SELECT * FROM sessions ${whereSql}
+			`SELECT sessions.*,
+			        ${sessionToolCallCountColumn("sessions")},
+			        ${sessionDelegationColumns("sessions")}
+			 FROM sessions ${whereSql}
 			 ORDER BY pinned DESC, ${orderSql} LIMIT ? OFFSET ?`,
 		)
 		.all(...params, pageSize, offset);
@@ -629,7 +720,11 @@ export async function getAllSessions(): Promise<SessionRow[]> {
 	const db = await getDb();
 	return db
 		.query<SessionRow, []>(
-			`SELECT * FROM sessions ORDER BY COALESCE(ended_at, started_at) DESC`,
+			`SELECT sessions.*,
+			        ${sessionToolCallCountColumn("sessions")},
+			        ${sessionDelegationColumns("sessions")}
+			 FROM sessions
+			 ORDER BY COALESCE(ended_at, started_at) DESC`,
 		)
 		.all();
 }
@@ -658,6 +753,10 @@ function cascadeDeleteSessionIds(db: Db, ids: string[]): string[] {
 	);
 	db.run(`DELETE FROM tool_events WHERE session_id IN (${ph})`, ids);
 	db.run(`DELETE FROM project_previews WHERE session_id IN (${ph})`, ids);
+	db.run(
+		`DELETE FROM session_delegations WHERE child_session_id IN (${ph})`,
+		ids,
+	);
 	db.run(`DELETE FROM permission_events WHERE session_id IN (${ph})`, ids);
 	db.run(`DELETE FROM messages WHERE session_id IN (${ph})`, ids);
 	db.run(`DELETE FROM queries WHERE session_id IN (${ph})`, ids);
@@ -677,12 +776,116 @@ function cascadeDeleteSessionIds(db: Db, ids: string[]): string[] {
 	return ephemeralPaths;
 }
 
+/**
+ * Atomically remove a delegated child whose setup failed before launch.
+ * The exact pending provenance row is deleted before ordinary session cleanup
+ * so delegation ownership cannot block its own rollback.
+ */
+export async function rollbackHlidDelegationSetup(
+	delegationId: string,
+	childSessionId: string,
+): Promise<void> {
+	const db = await getDb();
+	let removedSession = false;
+	db.transaction(() => {
+		const delegation = db
+			.query<{ child_session_id: string; status: string }, [string]>(
+				`SELECT child_session_id, status
+				 FROM session_delegations
+				 WHERE id = ?`,
+			)
+			.get(delegationId);
+		if (
+			delegation &&
+			(delegation.child_session_id !== childSessionId ||
+				delegation.status !== "pending")
+		) {
+			throw new Error(
+				"Delegated child setup rollback no longer owns an exact pending child.",
+			);
+		}
+		if (delegation) {
+			const removed = db.run(
+				`DELETE FROM session_delegations
+				 WHERE id = ? AND child_session_id = ? AND status = 'pending'`,
+				[delegationId, childSessionId],
+			);
+			if (removed.changes !== 1) {
+				throw new Error(
+					"Delegated child setup rollback lost its pending lifecycle claim.",
+				);
+			}
+		}
+		removedSession =
+			db
+				.query<{ present: number }, [string]>(
+					`SELECT 1 AS present FROM sessions WHERE id = ?`,
+				)
+				.get(childSessionId)?.present === 1;
+		cascadeDeleteSessionIds(db, [childSessionId]);
+	})();
+	if (removedSession) {
+		markAnalyticsChanged(["stats", "activity"], "delegation_setup_rolled_back");
+	}
+}
+
+function hasDelegationDescendants(db: Db, sessionId: string): boolean {
+	return (
+		db
+			.query<{ present: number }, [string]>(
+				`SELECT 1 AS present
+				 FROM session_delegations
+				 WHERE parent_session_id = ?
+				 LIMIT 1`,
+			)
+			.get(sessionId)?.present === 1
+	);
+}
+
+function hasBlockingDelegationOwnership(
+	db: Db,
+	sessionId: string,
+	operation: "archive" | "delete",
+): boolean {
+	const resumableInterrupted =
+		operation === "delete"
+			? `OR (
+			     delegation.status = 'interrupted'
+			     AND delegation.routine_run_id IS NULL
+			     AND delegation.attempt_count < ${HLID_DELEGATION_MAX_ATTEMPTS}
+			     AND child.archived_at IS NULL
+			   )`
+			: "";
+	return (
+		db
+			.query<{ present: number }, [string]>(
+				`SELECT 1 AS present
+				 FROM session_delegations delegation
+				 JOIN sessions child
+				   ON child.id = delegation.child_session_id
+				 WHERE delegation.child_session_id = ?
+				   AND (
+				     delegation.status IN ('pending', 'running')
+				     ${resumableInterrupted}
+				   )
+				 LIMIT 1`,
+			)
+			.get(sessionId)?.present === 1
+	);
+}
+
 export async function deleteSession(
 	id: string,
 ): Promise<{ ephemeralPaths: string[] }> {
 	const db = await getDb();
 	let ephemeralPaths: string[] = [];
 	db.transaction(() => {
+		if (hasBlockingDelegationOwnership(db, id, "delete")) {
+			throw new SessionDelegationOwnershipError(id, "delete");
+		}
+		if (hasDelegationDescendants(db, id)) {
+			throw new SessionHasDelegationDescendantsError(id);
+		}
 		ephemeralPaths = cascadeDeleteSessionIds(db, [id]);
 	})();
 	markAnalyticsChanged(["stats", "activity"], "session_deleted");
@@ -691,19 +894,61 @@ export async function deleteSession(
 
 export async function deleteSessionsOlderThan(
 	days: number,
+	excludedSessionIds: readonly string[] = [],
 ): Promise<{ count: number; ephemeralPaths: string[]; sessionIds: string[] }> {
 	const db = await getDb();
 	const cutoff = Math.floor(Date.now() / 1000) - days * 86400;
+	const excludedIds = [...new Set(excludedSessionIds.filter(Boolean))];
+	const excludedSql =
+		excludedIds.length > 0
+			? `AND id NOT IN (${excludedIds.map(() => "?").join(",")})`
+			: "";
 	let ids: string[] = [];
 	let ephemeralPaths: string[] = [];
 	db.transaction(() => {
 		const sessionRows = db
-			.query<{ id: string }, [number]>(
-				`SELECT id FROM sessions
-				 WHERE started_at < ? AND history_imported = 0
-				   AND archived_at IS NULL`,
+			.query<{ id: string }, (number | string)[]>(
+				`WITH RECURSIVE
+				 cleanup_candidates(id) AS (
+				   SELECT id
+				   FROM sessions
+				   WHERE started_at < ?
+				     AND history_imported = 0
+				     AND archived_at IS NULL
+				     ${excludedSql}
+				 ),
+					 blocked_delegations(id, parent_delegation_id) AS (
+					   SELECT delegation.id, delegation.parent_delegation_id
+					   FROM session_delegations delegation
+					   WHERE NOT EXISTS (
+					     SELECT 1
+					     FROM cleanup_candidates candidate
+					     WHERE candidate.id = delegation.child_session_id
+					   )
+					      OR delegation.status IN ('pending', 'running')
+					      OR (
+					        delegation.status = 'interrupted'
+					        AND delegation.routine_run_id IS NULL
+					        AND delegation.attempt_count < ${HLID_DELEGATION_MAX_ATTEMPTS}
+					      )
+					   UNION
+					   SELECT parent.id, parent.parent_delegation_id
+					   FROM session_delegations parent
+				   JOIN blocked_delegations child
+				     ON child.parent_delegation_id = parent.id
+				 )
+				 SELECT candidate.id
+				 FROM cleanup_candidates candidate
+				 WHERE NOT EXISTS (
+				   SELECT 1
+				   FROM session_delegations protected_lineage
+				   JOIN blocked_delegations blocked
+				     ON blocked.id = protected_lineage.id
+				   WHERE protected_lineage.child_session_id = candidate.id
+				      OR protected_lineage.parent_session_id = candidate.id
+				 )`,
 			)
-			.all(cutoff);
+			.all(cutoff, ...excludedIds);
 		ids = sessionRows.map((r) => r.id);
 		if (ids.length > 0) {
 			ephemeralPaths = cascadeDeleteSessionIds(db, ids);
@@ -729,6 +974,12 @@ export async function renameSession(id: string, label: string): Promise<void> {
 				 ON CONFLICT(session_id) DO UPDATE SET text = excluded.text`,
 				[id, normalizeSearchText(label)],
 			);
+			db.run(
+				`UPDATE session_delegations
+				 SET parent_label = ?
+				 WHERE parent_session_id = ?`,
+				[label, id],
+			);
 		}
 	})();
 	if (changes === 0) throw new Error("Session not found");
@@ -748,24 +999,29 @@ export async function setSessionArchived(
 	archived: boolean,
 ): Promise<void> {
 	const db = await getDb();
-	const result = archived
-		? db.run(
-				`UPDATE sessions
-				 SET archived_at = unixepoch(), pinned = 0
-				 WHERE id = ? AND archived_at IS NULL`,
-				[id],
-			)
-		: db.run(
-				`UPDATE sessions SET archived_at = NULL
-				 WHERE id = ? AND archived_at IS NOT NULL`,
-				[id],
-			);
-	if (result.changes === 0) {
-		const existing = db
-			.query<{ id: string }, [string]>(`SELECT id FROM sessions WHERE id = ?`)
-			.get(id);
-		if (!existing) throw new Error("Session not found");
-	}
+	db.transaction(() => {
+		if (archived && hasBlockingDelegationOwnership(db, id, "archive")) {
+			throw new SessionDelegationOwnershipError(id, "archive");
+		}
+		const result = archived
+			? db.run(
+					`UPDATE sessions
+					 SET archived_at = unixepoch(), pinned = 0
+					 WHERE id = ? AND archived_at IS NULL`,
+					[id],
+				)
+			: db.run(
+					`UPDATE sessions SET archived_at = NULL
+					 WHERE id = ? AND archived_at IS NOT NULL`,
+					[id],
+				);
+		if (result.changes === 0) {
+			const existing = db
+				.query<{ id: string }, [string]>(`SELECT id FROM sessions WHERE id = ?`)
+				.get(id);
+			if (!existing) throw new Error("Session not found");
+		}
+	})();
 }
 
 export async function getSessionById(id: string): Promise<SessionRow | null> {
@@ -773,7 +1029,9 @@ export async function getSessionById(id: string): Promise<SessionRow | null> {
 	return (
 		db
 			.query<SessionRow, [string]>(
-				`SELECT child.*, parent.label AS fork_parent_label
+				`SELECT child.*, parent.label AS fork_parent_label,
+				        ${sessionToolCallCountColumn("child")},
+				        ${sessionDelegationColumns("child")}
 				 FROM sessions child
 				 LEFT JOIN sessions parent ON parent.id = child.fork_parent_session_id
 				 WHERE child.id = ?`,
@@ -786,7 +1044,9 @@ export async function getRecentSessions(limit = 14): Promise<SessionRow[]> {
 	const db = await getDb();
 	return db
 		.query<SessionRow, [number]>(
-			`SELECT child.*, parent.label AS fork_parent_label
+			`SELECT child.*, parent.label AS fork_parent_label,
+			        ${sessionToolCallCountColumn("child")},
+			        ${sessionDelegationColumns("child")}
 			 FROM sessions child
 			 LEFT JOIN sessions parent ON parent.id = child.fork_parent_session_id
 			 WHERE child.history_imported = 0 AND child.archived_at IS NULL

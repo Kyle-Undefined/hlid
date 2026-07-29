@@ -35,9 +35,14 @@ const {
 	mockGetSessionContextManifests,
 	mockCreateForkedSessionRow,
 	mockDeleteSession,
+	mockDeleteSessionsOlderThan,
+	mockDeleteProjectPreviewsForSessions,
 	mockGetMessageForFork,
 	mockInsertForkedMessages,
 	mockCopyForkedSessionTranscript,
+	mockGetHlidDelegationByChildSession,
+	mockAbandonInterruptedHlidDelegation,
+	mockCloseProjectPreviewSession,
 } = vi.hoisted(() => ({
 	mockGetSessionById: vi.fn(),
 	mockGetCurrentSessionId: vi.fn(),
@@ -64,9 +69,14 @@ const {
 	mockGetSessionContextManifests: vi.fn(),
 	mockCreateForkedSessionRow: vi.fn(),
 	mockDeleteSession: vi.fn(),
+	mockDeleteSessionsOlderThan: vi.fn(),
+	mockDeleteProjectPreviewsForSessions: vi.fn(),
 	mockGetMessageForFork: vi.fn(),
 	mockInsertForkedMessages: vi.fn(),
 	mockCopyForkedSessionTranscript: vi.fn(),
+	mockGetHlidDelegationByChildSession: vi.fn(),
+	mockAbandonInterruptedHlidDelegation: vi.fn(),
+	mockCloseProjectPreviewSession: vi.fn(),
 }));
 
 vi.mock("../db", () => ({
@@ -92,9 +102,13 @@ vi.mock("../db", () => ({
 	getSessionContextManifests: mockGetSessionContextManifests,
 	createForkedSessionRow: mockCreateForkedSessionRow,
 	deleteSession: mockDeleteSession,
+	deleteSessionsOlderThan: mockDeleteSessionsOlderThan,
+	deleteProjectPreviewsForSessions: mockDeleteProjectPreviewsForSessions,
 	getMessageForFork: mockGetMessageForFork,
 	insertForkedMessages: mockInsertForkedMessages,
 	copyForkedSessionTranscript: mockCopyForkedSessionTranscript,
+	getHlidDelegationByChildSession: mockGetHlidDelegationByChildSession,
+	abandonInterruptedHlidDelegation: mockAbandonInterruptedHlidDelegation,
 }));
 
 // dbRoutes also imports from ./attachments and ./proxy — stub them out.
@@ -112,6 +126,12 @@ vi.mock("./providerHistorySync", () => ({
 	syncClaudeProviderHistory: mockSyncClaudeProviderHistory,
 }));
 
+vi.mock("./projectPreview", () => ({
+	projectPreviewManager: {
+		closeSession: mockCloseProjectPreviewSession,
+	},
+}));
+
 import type { SessionStatusEntry } from "./protocol";
 // ── pool mock factory ─────────────────────────────────────────────────────────
 // Pool is passed as a parameter, no module mock needed — just a plain object.
@@ -122,18 +142,22 @@ function makePool(
 		getSessionsStatus: () => SessionStatusEntry[];
 		get: (id: string) => unknown;
 		findByDbSessionId: (id: string) => unknown;
+		getAllEntries: () => IterableIterator<unknown>;
 		close: (id: string) => void;
 		isVaultSession: (id: string) => boolean;
 		getProvider: (id: string) => unknown;
+		refreshDurableDelegationAttention: () => Promise<void>;
 	}> = {},
 ): SessionPool {
 	return {
 		getSessionsStatus: vi.fn().mockReturnValue([]),
 		get: vi.fn().mockReturnValue(undefined),
 		findByDbSessionId: vi.fn().mockReturnValue(undefined),
+		getAllEntries: vi.fn().mockReturnValue([].values()),
 		close: vi.fn(),
 		isVaultSession: vi.fn().mockReturnValue(false),
 		getProvider: vi.fn().mockReturnValue(undefined),
+		refreshDurableDelegationAttention: vi.fn().mockResolvedValue(undefined),
 		...overrides,
 	} as unknown as SessionPool;
 }
@@ -254,6 +278,10 @@ describe("handleDbRoute — POST provider history import", () => {
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	mockGetHlidDelegationByChildSession.mockReset();
+	mockGetHlidDelegationByChildSession.mockResolvedValue(null);
+	mockAbandonInterruptedHlidDelegation.mockReset();
+	mockAbandonInterruptedHlidDelegation.mockResolvedValue(null);
 	resetAnalyticsRevisionForTest();
 	resetAnalyticsSnapshotsForTest();
 });
@@ -637,6 +665,25 @@ const sampleStatus: SessionStatusEntry = {
 	db_session_id: "db-session-1",
 };
 
+function makeLiveSdkEntry(dbSessionId: string) {
+	return {
+		manager: {
+			abort: vi.fn(),
+			getCurrentSessionId: vi.fn().mockReturnValue(dbSessionId),
+		},
+	};
+}
+
+const activeDelegationStates = [
+	["pending", "pending", false],
+	["running", "running", false],
+] as const;
+
+const ownedDelegationStates = [
+	...activeDelegationStates,
+	["resumable interrupted", "interrupted", true],
+] as const;
+
 describe("handleDbRoute — GET /db/live-sessions", () => {
 	it("returns SessionStatusEntry[] from pool", async () => {
 		const pool = makePool({
@@ -710,9 +757,46 @@ describe("handleDbRoute — POST /db/live-sessions/stop", () => {
 		expect(await res.text()).toMatch(/session not found/i);
 	});
 
+	it.each(
+		ownedDelegationStates,
+	)("returns 409 for a %s delegation-owned child", async (_label, status, resumable) => {
+		const fakeEntry = makeLiveSdkEntry("delegated-db-session");
+		const pool = makePool({
+			get: vi.fn().mockReturnValue(fakeEntry),
+		});
+		mockGetHlidDelegationByChildSession.mockResolvedValueOnce({
+			status,
+			resumable,
+		});
+		const url = makeUrl("/db/live-sessions/stop");
+		const req = new Request("http://localhost/db/live-sessions/stop", {
+			method: "POST",
+			body: JSON.stringify({ session_id: "delegated-pool-session" }),
+			headers: { "Content-Type": "application/json" },
+		});
+
+		const res = await handleDbRoute(url, req, pool);
+
+		expect(res?.status).toBe(409);
+		expect(await res?.text()).toMatch(/owned by an active or resumable/i);
+		expect(mockGetHlidDelegationByChildSession).toHaveBeenCalledWith(
+			"delegated-db-session",
+		);
+		expect(fakeEntry.manager.abort).not.toHaveBeenCalled();
+	});
+
 	it("calls manager.abort() and returns ok for valid session_id", async () => {
 		const mockAbort = vi.fn();
-		const fakeEntry = { manager: { abort: mockAbort } };
+		const fakeEntry = {
+			manager: {
+				abort: mockAbort,
+				getCurrentSessionId: vi.fn().mockReturnValue("db-session-1"),
+			},
+		};
+		mockGetHlidDelegationByChildSession.mockResolvedValueOnce({
+			status: "completed",
+			resumable: false,
+		});
 		const pool = makePool({ get: vi.fn().mockReturnValue(fakeEntry) });
 		const url = makeUrl("/db/live-sessions/stop");
 		const req = new Request("http://localhost/db/live-sessions/stop", {
@@ -727,6 +811,9 @@ describe("handleDbRoute — POST /db/live-sessions/stop", () => {
 		expect(res.status).toBe(200);
 		expect(await res.json()).toEqual({ ok: true });
 		expect(mockAbort).toHaveBeenCalledTimes(1);
+		expect(mockGetHlidDelegationByChildSession).toHaveBeenCalledWith(
+			"db-session-1",
+		);
 	});
 
 	it("returns null for GET to /db/live-sessions/stop", async () => {
@@ -773,8 +860,77 @@ describe("handleDbRoute — POST /db/live-sessions/close", () => {
 		expect(await res.text()).toMatch(/session not found/i);
 	});
 
+	it.each(
+		activeDelegationStates,
+	)("returns 409 for a %s delegation-owned child", async (_label, status, resumable) => {
+		const fakeEntry = makeLiveSdkEntry("delegated-db-session");
+		const mockClose = vi.fn();
+		const pool = makePool({
+			get: vi.fn().mockReturnValue(fakeEntry),
+			close: mockClose,
+			isVaultSession: vi.fn().mockReturnValue(false),
+		});
+		mockGetHlidDelegationByChildSession.mockResolvedValueOnce({
+			status,
+			resumable,
+		});
+		const url = makeUrl("/db/live-sessions/close");
+		const req = new Request("http://localhost/db/live-sessions/close", {
+			method: "POST",
+			body: JSON.stringify({ session_id: "delegated-pool-session" }),
+			headers: { "Content-Type": "application/json" },
+		});
+
+		const res = await handleDbRoute(url, req, pool);
+
+		expect(res?.status).toBe(409);
+		expect(await res?.text()).toMatch(/owned by an active or resumable/i);
+		expect(mockGetHlidDelegationByChildSession).toHaveBeenCalledWith(
+			"delegated-db-session",
+		);
+		expect(mockClose).not.toHaveBeenCalled();
+	});
+
+	it("abandons and closes a detached restart-interrupted child", async () => {
+		const refreshDurableDelegationAttention = vi
+			.fn()
+			.mockResolvedValue(undefined);
+		const pool = makePool({ refreshDurableDelegationAttention });
+		mockGetHlidDelegationByChildSession.mockResolvedValueOnce({
+			id: "delegation-1",
+			status: "interrupted",
+			resumable: true,
+		});
+		mockAbandonInterruptedHlidDelegation.mockResolvedValueOnce({
+			id: "delegation-1",
+			status: "cancelled",
+			resumable: false,
+		});
+		const url = makeUrl("/db/live-sessions/close");
+		const req = new Request("http://localhost/db/live-sessions/close", {
+			method: "POST",
+			body: JSON.stringify({ session_id: "delegated-db-session" }),
+			headers: { "Content-Type": "application/json" },
+		});
+
+		const res = await handleDbRoute(url, req, pool);
+
+		expect(res?.status).toBe(200);
+		expect(await res?.json()).toEqual({ ok: true });
+		expect(mockAbandonInterruptedHlidDelegation).toHaveBeenCalledWith(
+			"delegation-1",
+			"The user closed this restart-interrupted child without continuing it.",
+		);
+		expect(refreshDurableDelegationAttention).toHaveBeenCalledOnce();
+	});
+
 	it("returns 403 when attempting to close the vault session", async () => {
-		const fakeEntry = { manager: { abort: vi.fn() } };
+		const fakeEntry = {
+			manager: {
+				abort: vi.fn(),
+				getCurrentSessionId: vi.fn().mockReturnValue("vault-db-session"),
+			},
+		};
 		const mockIsVaultSession = vi.fn().mockReturnValue(true);
 		const pool = makePool({
 			get: vi.fn().mockReturnValue(fakeEntry),
@@ -798,7 +954,16 @@ describe("handleDbRoute — POST /db/live-sessions/close", () => {
 
 	it("calls pool.close() and returns ok for valid non-vault session_id", async () => {
 		const mockClose = vi.fn();
-		const fakeEntry = { manager: { abort: vi.fn() } };
+		const fakeEntry = {
+			manager: {
+				abort: vi.fn(),
+				getCurrentSessionId: vi.fn().mockReturnValue("agent-db-session-1"),
+			},
+		};
+		mockGetHlidDelegationByChildSession.mockResolvedValueOnce({
+			status: "completed",
+			resumable: false,
+		});
 		const pool = makePool({
 			get: vi.fn().mockReturnValue(fakeEntry),
 			close: mockClose,
@@ -817,6 +982,9 @@ describe("handleDbRoute — POST /db/live-sessions/close", () => {
 		expect(res.status).toBe(200);
 		expect(await res.json()).toEqual({ ok: true });
 		expect(mockClose).toHaveBeenCalledWith("agent-uuid-1");
+		expect(mockGetHlidDelegationByChildSession).toHaveBeenCalledWith(
+			"agent-db-session-1",
+		);
 	});
 
 	it("returns null for GET to /db/live-sessions/close", async () => {
@@ -1541,6 +1709,231 @@ describe("handleDbRoute — PATCH /db/session", () => {
 		);
 		expect(restored?.status).toBe(200);
 		expect(mockSetSessionArchived).toHaveBeenCalledWith("s1", false);
+	});
+
+	it("rejects archiving a durable pending delegation without a live running manager", async () => {
+		const blocked = new Error(
+			"Cannot archive a session owned by a pending or running delegation.",
+		);
+		blocked.name = "SessionDelegationOwnershipError";
+		mockSetSessionArchived.mockRejectedValueOnce(blocked);
+		const pool = makePool();
+
+		const response = await handleDbRoute(
+			makeUrl("/db/session", { id: "delegated-child" }),
+			patchRequest({ archived: true }),
+			pool,
+		);
+
+		expect(response?.status).toBe(409);
+		expect(await response?.text()).toMatch(/pending or running delegation/i);
+		expect(mockSetSessionArchived).toHaveBeenCalledWith(
+			"delegated-child",
+			true,
+		);
+		expect(pool.close).not.toHaveBeenCalled();
+	});
+});
+
+describe("handleDbRoute — DELETE /db/session", () => {
+	it("rejects a running parent before async delegation admission can orphan it", async () => {
+		const runningEntry = {
+			sessionId: "admission-parent-pool",
+			manager: {
+				getStatus: vi.fn().mockReturnValue({ state: "running" }),
+			},
+		};
+		const pool = makePool({
+			findByDbSessionId: vi.fn().mockReturnValue(runningEntry),
+		});
+
+		const response = await handleDbRoute(
+			makeUrl("/db/session", { id: "admission-parent" }),
+			makeRequest("DELETE"),
+			pool,
+		);
+
+		expect(response?.status).toBe(409);
+		expect(await response?.text()).toMatch(/running session/i);
+		expect(mockDeleteSession).not.toHaveBeenCalled();
+		expect(mockCloseProjectPreviewSession).not.toHaveBeenCalled();
+	});
+
+	it("rejects deleting a live terminal session before DB mutation", async () => {
+		const terminalPool = {
+			getSessionsStatus: vi.fn().mockReturnValue([
+				{
+					session_id: "terminal-session",
+				},
+			]),
+		} as never;
+
+		const response = await handleDbRoute(
+			makeUrl("/db/session", { id: "terminal-session" }),
+			makeRequest("DELETE"),
+			undefined,
+			terminalPool,
+		);
+
+		expect(response?.status).toBe(409);
+		expect(await response?.text()).toMatch(/running session/i);
+		expect(mockDeleteSession).not.toHaveBeenCalled();
+	});
+
+	it("still deletes an idle live session", async () => {
+		mockDeleteSession.mockResolvedValueOnce({
+			ephemeralPaths: ["/tmp/idle-session-attachment"],
+		});
+		const idleEntry = {
+			sessionId: "idle-pool",
+			manager: {
+				getStatus: vi.fn().mockReturnValue({ state: "idle" }),
+			},
+		};
+		const pool = makePool({
+			findByDbSessionId: vi.fn().mockReturnValue(idleEntry),
+		});
+
+		const response = await handleDbRoute(
+			makeUrl("/db/session", { id: "idle-session" }),
+			makeRequest("DELETE"),
+			pool,
+		);
+
+		expect(response?.status).toBe(200);
+		expect(await response?.json()).toEqual({ ok: true });
+		expect(mockDeleteSession).toHaveBeenCalledWith("idle-session");
+		expect(mockCloseProjectPreviewSession).toHaveBeenCalledWith(
+			"idle-session",
+			"session_deleted",
+		);
+		expect(pool.close).toHaveBeenCalledWith("idle-pool");
+		expect(pool.refreshDurableDelegationAttention).toHaveBeenCalledOnce();
+	});
+
+	it("returns 409 when deleting a delegated parent would orphan descendants", async () => {
+		const blocked = new Error(
+			"Delete this session's delegated descendants before deleting their delegated parent.",
+		);
+		blocked.name = "SessionHasDelegationDescendantsError";
+		mockDeleteSession.mockRejectedValueOnce(blocked);
+		const pool = makePool();
+
+		const response = await handleDbRoute(
+			makeUrl("/db/session", { id: "delegated-parent" }),
+			makeRequest("DELETE"),
+			pool,
+		);
+
+		expect(response?.status).toBe(409);
+		expect(await response?.text()).toMatch(/delegated descendants/i);
+		expect(mockDeleteSession).toHaveBeenCalledWith("delegated-parent");
+		expect(pool.refreshDurableDelegationAttention).not.toHaveBeenCalled();
+	});
+
+	it("returns 409 for a child still owned by an active or resumable delegation", async () => {
+		const blocked = new Error(
+			"Cannot delete a session owned by a pending, running, or resumable interrupted delegation.",
+		);
+		blocked.name = "SessionDelegationOwnershipError";
+		mockDeleteSession.mockRejectedValueOnce(blocked);
+		const pool = makePool();
+
+		const response = await handleDbRoute(
+			makeUrl("/db/session", { id: "delegated-child" }),
+			makeRequest("DELETE"),
+			pool,
+		);
+
+		expect(response?.status).toBe(409);
+		expect(await response?.text()).toMatch(/resumable interrupted delegation/i);
+		expect(mockDeleteSession).toHaveBeenCalledWith("delegated-child");
+		expect(pool.refreshDurableDelegationAttention).not.toHaveBeenCalled();
+	});
+});
+
+describe("handleDbRoute — POST /db/sessions/cleanup", () => {
+	it("atomically excludes every DB session claimed by a live pool or terminal", async () => {
+		mockDeleteSessionsOlderThan.mockResolvedValueOnce({
+			count: 1,
+			ephemeralPaths: [],
+			sessionIds: ["unrelated-old-session"],
+		});
+		mockDeleteProjectPreviewsForSessions.mockResolvedValueOnce(undefined);
+		const pool = makePool({
+			getAllEntries: vi.fn().mockReturnValue(
+				[
+					{
+						claimedDbSessionId: "claimed-during-admission",
+						manager: {
+							getCurrentSessionId: vi
+								.fn()
+								.mockReturnValue("current-live-session"),
+						},
+					},
+					{
+						claimedDbSessionId: "claimed-only-session",
+						manager: {
+							getCurrentSessionId: vi.fn().mockReturnValue(null),
+						},
+					},
+					{
+						claimedDbSessionId: "current-live-session",
+						manager: {
+							getCurrentSessionId: vi
+								.fn()
+								.mockReturnValue("current-live-session"),
+						},
+					},
+				].values(),
+			),
+		});
+		const terminalPool = {
+			getSessionsStatus: vi.fn().mockReturnValue([
+				{
+					session_id: "terminal-pool-session",
+					hasDbSession: true,
+					db_session_id: "terminal-db-session",
+				},
+				{
+					session_id: "legacy-terminal-db-session",
+					hasDbSession: true,
+					db_session_id: null,
+				},
+			]),
+		} as never;
+
+		const response = await handleDbRoute(
+			makeUrl("/db/sessions/cleanup"),
+			makeRequest("POST", { older_than_days: 7 }),
+			pool,
+			terminalPool,
+		);
+
+		expect(response?.status).toBe(200);
+		expect(await response?.json()).toEqual({ deleted: 1 });
+		const [, excludedSessionIds] =
+			mockDeleteSessionsOlderThan.mock.calls[0] ?? [];
+		expect(new Set(excludedSessionIds)).toEqual(
+			new Set([
+				"current-live-session",
+				"claimed-during-admission",
+				"claimed-only-session",
+				"terminal-db-session",
+				"legacy-terminal-db-session",
+			]),
+		);
+		expect(mockDeleteSessionsOlderThan).toHaveBeenCalledWith(
+			7,
+			expect.arrayContaining(["claimed-during-admission"]),
+		);
+		expect(mockCloseProjectPreviewSession).toHaveBeenCalledWith(
+			"unrelated-old-session",
+			"session_deleted",
+		);
+		expect(mockDeleteProjectPreviewsForSessions).toHaveBeenCalledWith([
+			"unrelated-old-session",
+		]);
 	});
 });
 

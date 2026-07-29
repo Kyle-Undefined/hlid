@@ -78,6 +78,11 @@ vi.mock("./ChatMessageRow", () => ({
 		</div>
 	),
 }));
+vi.mock("./HlidDelegationActivityPanel", () => ({
+	HlidDelegationActivityPanel: ({ sessionId }: { sessionId: string }) => (
+		<div data-testid="hlid-children" data-session-id={sessionId} />
+	),
+}));
 vi.mock("./ProjectPreviewToolBlock", async (importOriginal) => {
 	const actual =
 		await importOriginal<typeof import("./ProjectPreviewToolBlock")>();
@@ -463,6 +468,26 @@ describe("MessageList — bounded history rendering", () => {
 });
 
 describe("MessageList — bounded tool rendering", () => {
+	it("keeps durable Hlid children at the session bottom after Preview activity", () => {
+		const { container } = renderList({
+			messages: [previewAssistantMsg("start", "start_project_preview")],
+		});
+
+		const message = screen.getByTestId("message-start");
+		const preview = screen.getByTestId("preview-activity");
+		const children = screen.getByTestId("hlid-children");
+		expect(
+			message.compareDocumentPosition(preview) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		expect(
+			preview.compareDocumentPosition(children) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		expect(children.dataset.sessionId).toBe("s1");
+		expect(children.nextElementSibling).toBe(container.lastElementChild);
+	});
+
 	it("collects Preview calls from multiple turns into one session card", () => {
 		renderList({
 			messages: [

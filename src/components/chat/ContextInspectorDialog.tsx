@@ -86,6 +86,8 @@ function blockLabel(
 			return "Workspace references";
 		case "skills":
 			return "Skills";
+		case "delegation_context":
+			return "Delegated visible context";
 		case "plan":
 			return "HTML plan instructions";
 	}

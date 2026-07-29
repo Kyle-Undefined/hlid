@@ -8,6 +8,11 @@ import {
 	waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+	getDataRevisionSnapshot,
+	replaceDataRevisions,
+	resetDataRevisionsForTesting,
+} from "#/hooks/wsDataRevisionStore";
 import type {
 	ProjectPreviewSnapshot,
 	ServerMessage,
@@ -95,7 +100,13 @@ vi.mock("#/components/cockpit/SlashPicker", () => ({
 		) : null,
 }));
 vi.mock("#/components/PrivacyMask", () => ({
-	PrivacyMask: ({ children }: { children: React.ReactNode }) => children,
+	PrivacyMask: ({
+		children,
+		inline,
+	}: {
+		children: React.ReactNode;
+		inline?: boolean;
+	}) => (inline ? <span data-privacy-mask="true">{children}</span> : children),
 }));
 vi.mock("#/components/TerminalView", () => ({
 	TerminalView: (props: {
@@ -246,6 +257,7 @@ afterEach(cleanup);
 
 beforeEach(() => {
 	vi.clearAllMocks();
+	resetDataRevisionsForTesting();
 	resetRavenProviderCacheForTesting();
 	localStorage.clear();
 	resetRavenTerminalsForTesting();
@@ -313,6 +325,10 @@ beforeEach(() => {
 		],
 		forkParentSessionId: null,
 		forkKind: null,
+		delegationParentSessionId: null,
+		delegationParentLabel: null,
+		delegationDepth: null,
+		delegationControlOwned: false,
 		voiceInfo: {
 			status: { state: "unavailable", model: "" },
 			models: [],
@@ -704,7 +720,7 @@ describe("Raven composed submission behavior", () => {
 
 		fireEvent.click(
 			screen.getByRole("button", {
-				name: "Open live sessions, 2 total, work in progress",
+				name: "Open session attention, 2 total, work in progress",
 			}),
 		);
 		expect(
@@ -855,6 +871,127 @@ describe("Raven composed submission behavior", () => {
 			to: "/raven",
 			search: { session: "source-session", agent: undefined },
 		});
+	});
+
+	it("shows durable delegation provenance with a parent-session link", () => {
+		state.loaderData = {
+			...state.loaderData,
+			existingSessionId: "child-session",
+			delegationParentSessionId: "parent-session",
+			delegationParentLabel: "Parent task",
+			delegationDepth: 1,
+		};
+		render(<ChatPage />);
+
+		expect(screen.getByText(/Delegated child · depth 1/i)).toBeTruthy();
+		const parentLabel = screen.getByText("Parent task");
+		expect(parentLabel.dataset.privacyMask).toBe("true");
+		fireEvent.click(screen.getByRole("button", { name: "Open parent" }));
+		expect(state.navigate).toHaveBeenCalledWith({
+			to: "/raven",
+			search: { session: "parent-session", agent: undefined },
+		});
+	});
+
+	it("keeps navigation and native steering available inside an active delegated child", async () => {
+		vi.mocked(getSessionRowFn).mockResolvedValue({
+			delegation_control_owned: 1,
+		} as never);
+		state.sessionState = "running";
+		state.loaderData = {
+			...state.loaderData,
+			existingSessionId: "child-session",
+			isExplicitSession: true,
+			delegationParentSessionId: "parent-session",
+			delegationParentLabel: "Parent task",
+			delegationDepth: 1,
+			delegationControlOwned: true,
+		};
+		render(<ChatPage />);
+
+		expect(
+			screen.getByText(/Native steering is available here/i),
+		).not.toBeNull();
+		expect(
+			screen.getByRole("button", { name: /Open session attention/i }),
+		).not.toBeNull();
+		const composer = screen.getByRole("combobox");
+		expect(composer.getAttribute("placeholder")).toBe(
+			"steer the active child turn…",
+		);
+		expect(screen.queryByRole("button", { name: "Abort" })).toBeNull();
+		expect(screen.queryByRole("button", { name: "Queue message" })).toBeNull();
+		fireEvent.change(composer, {
+			target: { value: "Check the failing branch" },
+		});
+		state.send.mockClear();
+		fireEvent.click(
+			screen.getByRole("button", { name: "Steer current child" }),
+		);
+		expect(state.send).toHaveBeenCalledWith({
+			type: "steer_active",
+			session_id: "child-session",
+			turn_id: expect.any(String),
+			text: "Check the failing branch",
+		});
+		expect(state.enqueueChat).not.toHaveBeenCalled();
+		expect((composer as HTMLTextAreaElement).value).toBe("");
+
+		vi.mocked(getSessionRowFn).mockResolvedValue({
+			delegation_control_owned: 0,
+		} as never);
+		act(() => {
+			replaceDataRevisions({
+				...getDataRevisionSnapshot(),
+				sessions: getDataRevisionSnapshot().sessions + 1,
+			});
+		});
+
+		await waitFor(() =>
+			expect(
+				screen.getByRole("button", { name: "Queue message" }),
+			).not.toBeNull(),
+		);
+		expect(screen.queryByText(/Native steering is available here/i)).toBeNull();
+	});
+
+	it("does not offer a queued fallback when a delegated provider lacks native steering", () => {
+		state.sessionState = "running";
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as Record<string, unknown>),
+				vault_provider: "acp:test",
+			},
+			existingSessionId: "child-session",
+			isExplicitSession: true,
+			sessionProviderId: "acp:test",
+			delegationParentSessionId: "parent-session",
+			delegationParentLabel: "Parent task",
+			delegationDepth: 1,
+			delegationControlOwned: true,
+			providers: [
+				{
+					id: "acp:test",
+					label: "ACP test",
+					available: true,
+				},
+			],
+		};
+		render(<ChatPage />);
+
+		expect(screen.getByText(/has no native steering/i)).not.toBeNull();
+		expect((screen.getByRole("combobox") as HTMLTextAreaElement).disabled).toBe(
+			true,
+		);
+		expect(
+			(
+				screen.getByRole("button", {
+					name: "Steer current child",
+				}) as HTMLButtonElement
+			).disabled,
+		).toBe(true);
+		expect(screen.queryByRole("button", { name: "Queue message" })).toBeNull();
 	});
 
 	it("makes long mobile drafts independently touch-scrollable", () => {
@@ -1790,6 +1927,22 @@ describe("raven route loader", () => {
 		expect(getCurrentSessionFn).not.toHaveBeenCalled();
 	});
 
+	it("does not make a background delegated child the default Raven session", async () => {
+		vi.mocked(getLiveSessionsFn).mockResolvedValue([
+			{ mode: "chat", db_session_id: "focused-parent" },
+			{
+				mode: "chat",
+				db_session_id: "background-child",
+				delegation_parent_session_id: "focused-parent",
+			},
+		] as never);
+
+		const data = await route.loader({ deps: {} });
+
+		expect(data.existingSessionId).toBe("focused-parent");
+		expect(getCurrentSessionFn).not.toHaveBeenCalled();
+	});
+
 	it("falls back to the current DB session when no live SDK session exists", async () => {
 		vi.mocked(getCurrentSessionFn).mockResolvedValue("cur" as never);
 		const data = await route.loader({ deps: {} });
@@ -1844,6 +1997,26 @@ describe("raven route loader", () => {
 			forkKind: "exact",
 		});
 		expect(getSessionRowFn).toHaveBeenCalledWith({ data: "fork" });
+	});
+
+	it("loads durable delegation provenance for the resolved session", async () => {
+		vi.mocked(getCurrentSessionFn).mockResolvedValue("child" as never);
+		vi.mocked(getSessionRowFn).mockResolvedValue({
+			delegation_parent_session_id: "parent",
+			delegation_parent_label: "Parent task",
+			delegation_depth: 1,
+			delegation_control_owned: 1,
+		} as never);
+
+		const data = await route.loader({ deps: {} });
+
+		expect(data).toMatchObject({
+			delegationParentSessionId: "parent",
+			delegationParentLabel: "Parent task",
+			delegationDepth: 1,
+			delegationControlOwned: true,
+		});
+		expect(getSessionRowFn).toHaveBeenCalledWith({ data: "child" });
 	});
 
 	it("attaches to a running terminal session in interactive vault mode", async () => {

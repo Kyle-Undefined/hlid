@@ -43,6 +43,7 @@ vi.mock("../db", () => ({
 	getSessionProviderId: vi.fn().mockResolvedValue(null),
 	getSessionProviderSession: vi.fn().mockResolvedValue(null),
 	getSessionClaudeId: vi.fn().mockResolvedValue(null),
+	getAttachment: vi.fn().mockResolvedValue(null),
 	setSessionProviderId: vi.fn().mockResolvedValue(undefined),
 	setSessionProviderSession: vi.fn().mockResolvedValue(undefined),
 	setSessionClaudeId: vi.fn().mockResolvedValue(undefined),
@@ -1384,6 +1385,38 @@ describe("SessionManager — setModel", () => {
 		expect(sm.getStatus().model).toBe("claude-fable-5");
 	});
 
+	it("does not replace the globally focused session for a background turn", async () => {
+		const { provider } = makeCaptureProvider("claude");
+		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
+			id: "delegated-child",
+			label: "Delegated child",
+		} as never);
+		vi.mocked(dbMock.setCurrentSessionId).mockClear();
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await sm.runQuery(
+			"continue in the background",
+			() => {},
+			"delegated-child",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			true,
+		);
+
+		expect(dbMock.setCurrentSessionId).not.toHaveBeenCalled();
+		expect(sm.getCurrentSessionId()).toBe("delegated-child");
+	});
+
 	it("rejects imported provider history before making it a live session", async () => {
 		const query = vi.fn<AgentProvider["query"]>();
 		const provider: AgentProvider = { providerId: "claude", query };
@@ -1483,7 +1516,7 @@ describe("SessionManager — setModel", () => {
 		expect(sm.getSessionLabel()).toBe("MY SAVED NAME");
 	});
 
-	it("restores and refreshes live pin and fork presentation", async () => {
+	it("restores and refreshes live pin, fork, and delegation presentation", async () => {
 		const { provider } = makeCaptureProvider("claude");
 		vi.mocked(dbMock.getSessionById).mockResolvedValueOnce({
 			id: "saved-session",
@@ -1492,6 +1525,10 @@ describe("SessionManager — setModel", () => {
 			fork_parent_session_id: "source",
 			fork_parent_label: "Original",
 			fork_kind: "exact",
+			delegation_parent_session_id: "delegator",
+			delegation_parent_label: "Parent task",
+			delegation_parent_turn_id: "parent-turn",
+			delegation_depth: 1,
 		} as never);
 		vi.mocked(dbMock.getSessionMessages).mockResolvedValueOnce([
 			{ role: "user", text: "prior" },
@@ -1504,15 +1541,24 @@ describe("SessionManager — setModel", () => {
 			forkParentSessionId: "source",
 			forkParentLabel: "Original",
 			forkKind: "exact",
+			delegationParentSessionId: "delegator",
+			delegationParentLabel: "Parent task",
+			delegationParentTurnId: "parent-turn",
+			delegationDepth: 1,
 		});
 
 		sm.setSessionPinned(false);
 		sm.setForkParentLabel("source", "Renamed source");
+		sm.setForkParentLabel("delegator", "Renamed parent");
 		expect(sm.getSessionPresentation()).toEqual({
 			pinned: false,
 			forkParentSessionId: "source",
 			forkParentLabel: "Renamed source",
 			forkKind: "exact",
+			delegationParentSessionId: "delegator",
+			delegationParentLabel: "Renamed parent",
+			delegationParentTurnId: "parent-turn",
+			delegationDepth: 1,
 		});
 	});
 
@@ -4335,6 +4381,34 @@ describe("SessionManager — per-agent settings", () => {
 		expect(config.claude.permission_mode).toBe("default");
 	});
 
+	it("exposes the effective plan boundary only while that turn is active", async () => {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { provider, gateReached } = makeControlledProvider(
+			[{ type: "session_start", sessionId: "sdk-plan-active" }],
+			gate,
+		);
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const running = sm.runQuery(
+			"inspect only",
+			() => {},
+			"sess-plan-active",
+			undefined,
+			undefined,
+			undefined,
+			"turn-plan-active",
+			true,
+		);
+
+		await gateReached;
+		expect(sm.getCurrentTurnPermissionMode()).toBe("plan");
+		release();
+		await running;
+		expect(sm.getCurrentTurnPermissionMode()).toBeNull();
+	});
+
 	it("preserves auto-approve all as the post-plan implementation mode", async () => {
 		const { provider, captured } = makeCaptureProvider("codex");
 		const base = makeConfig();
@@ -5206,6 +5280,239 @@ function makeControllableProvider() {
 }
 
 describe("SessionManager — runQuery queueing", () => {
+	it("settles an explicitly aborted background turn idle and records its partial usage once", async () => {
+		let step = 0;
+		let rejectPending: ((error: Error) => void) | null = null;
+		let pending = false;
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(): AgentSession {
+				const iterator: AsyncIterator<AgentEvent> = {
+					async next(): Promise<IteratorResult<AgentEvent>> {
+						if (step++ === 0) {
+							return {
+								value: {
+									type: "session_start",
+									sessionId: "sdk-aborted-child",
+								},
+								done: false,
+							};
+						}
+						if (step === 2) {
+							return {
+								value: {
+									type: "usage",
+									inputTokens: 10,
+									outputTokens: 5,
+									cacheReadTokens: 20,
+									cacheCreationTokens: 2,
+									queryUsage: {
+										inputTokens: 10,
+										outputTokens: 5,
+										cacheReadTokens: 20,
+										cacheCreationTokens: 2,
+									},
+									model: "claude-sonnet-4-6",
+								},
+								done: false,
+							};
+						}
+						pending = true;
+						return new Promise<IteratorResult<AgentEvent>>((_, reject) => {
+							rejectPending = reject;
+						});
+					},
+				};
+				return {
+					[Symbol.asyncIterator]: () => iterator,
+					cancel: () => {
+						rejectPending?.(new Error("provider cancelled"));
+					},
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		vi.mocked(dbMock.recordQuery).mockClear();
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const turn = sm.runQuery(
+			"delegated work",
+			(message) => emitted.push(message),
+			"child-session",
+			undefined,
+			[],
+			undefined,
+			"child-turn",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			true,
+		);
+
+		await waitFor(() => expect(pending).toBe(true));
+		sm.abort();
+		await turn;
+
+		expect(sm.getStatus().state).toBe("idle");
+		expect(emitted.some((message) => message.type === "error")).toBe(false);
+		expect(dbMock.recordQuery).toHaveBeenCalledTimes(1);
+		expect(dbMock.recordQuery).toHaveBeenCalledWith(
+			"child-session",
+			expect.objectContaining({
+				input_tokens: 10,
+				output_tokens: 5,
+				cache_read_tokens: 20,
+				cache_creation_tokens: 2,
+				stop_reason: null,
+			}),
+			"claude",
+		);
+	});
+
+	it("does not duplicate normal done accounting for a background turn", async () => {
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(): AgentSession {
+				const generator = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-complete-child" };
+					yield {
+						type: "usage",
+						inputTokens: 8,
+						outputTokens: 3,
+						queryUsage: {
+							inputTokens: 8,
+							outputTokens: 3,
+							cacheReadTokens: 0,
+							cacheCreationTokens: 0,
+						},
+						model: "claude-sonnet-4-6",
+					};
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 12,
+						usage: { inputTokens: 8, outputTokens: 3 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => generator[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		vi.mocked(dbMock.recordQuery).mockClear();
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await sm.runQuery(
+			"delegated work",
+			() => {},
+			"child-session",
+			undefined,
+			[],
+			undefined,
+			"child-turn",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			true,
+		);
+
+		expect(dbMock.recordQuery).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not invent a zero-token background query before usage is reported", async () => {
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(): AgentSession {
+				const generator = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-no-usage-child" };
+				})();
+				return {
+					[Symbol.asyncIterator]: () => generator[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		vi.mocked(dbMock.recordQuery).mockClear();
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await sm.runQuery(
+			"delegated work",
+			() => {},
+			"child-session",
+			undefined,
+			[],
+			undefined,
+			"child-turn",
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			undefined,
+			true,
+		);
+
+		expect(dbMock.recordQuery).not.toHaveBeenCalled();
+	});
+
+	it("preserves the ordinary error path when the provider was not explicitly aborted", async () => {
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(): AgentSession {
+				const generator = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-real-error" };
+					throw new Error("real provider failure");
+				})();
+				return {
+					[Symbol.asyncIterator]: () => generator[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		vi.mocked(dbMock.appendLog).mockClear();
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await sm.runQuery(
+			"ordinary work",
+			(message) => emitted.push(message),
+			"session-1",
+		);
+
+		expect(sm.getStatus().state).toBe("error");
+		expect(emitted).toContainEqual({
+			type: "error",
+			message: "real provider failure",
+		});
+		expect(dbMock.appendLog).toHaveBeenCalledWith(
+			"error",
+			"session",
+			"runQuery error",
+			expect.objectContaining({ message: "real provider failure" }),
+		);
+	});
+
 	it("queues second runQuery while first is running and drains FIFO at done", async () => {
 		const ctl = makeControllableProvider();
 		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
@@ -5451,6 +5758,199 @@ describe("SessionManager — cancelQueued", () => {
 });
 
 describe("SessionManager — steerQueued", () => {
+	it("steers a delegated instruction directly without creating a queued fallback", async () => {
+		const ctl = makeControllableProvider();
+		const steer = vi.fn().mockResolvedValue(undefined);
+		const wrapped: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				return { ...ctl.provider.query(params), steer };
+			},
+		};
+		vi.mocked(dbMock.appendMessage).mockClear();
+		const sm = new SessionManager(makeConfig(), makeProviders(wrapped));
+		const first = sm.runQuery(
+			"first",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-1",
+		);
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		ctl.pushEvent({ type: "text_delta", text: "partial response" });
+		await waitFor(() =>
+			expect(dbMock.appendMessage).toHaveBeenCalledWith(
+				"sess-1",
+				1,
+				"assistant",
+				"",
+			),
+		);
+
+		await sm.steerActiveTurn(
+			"Check the delegated edge case",
+			() => {},
+			"sess-1",
+			"delegation-steer-1",
+		);
+
+		expect(steer).toHaveBeenCalledWith("test prompt");
+		expect(sm.getQueueState().pending_turn_ids).toEqual([]);
+		expect(dbMock.appendMessage).toHaveBeenCalledWith(
+			"sess-1",
+			2,
+			"user",
+			"Check the delegated edge case",
+			"delegation-steer-1",
+			1,
+			expect.stringContaining('"delivery":"steer"'),
+		);
+		ctl.turns[0].resolveDone();
+		await first;
+	});
+
+	it("reports unsupported direct steering without queuing a new turn", async () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+		const first = sm.runQuery(
+			"first",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-1",
+		);
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+
+		await expect(
+			sm.steerActiveTurn(
+				"Do not queue this",
+				() => {},
+				"sess-1",
+				"delegation-steer-unsupported",
+			),
+		).rejects.toThrow("does not support steering");
+		expect(sm.getQueueState().pending_turn_ids).toEqual([]);
+		expect(ctl.getSendCount()).toBe(1);
+		ctl.turns[0].resolveDone();
+		await first;
+	});
+
+	it("does not steer a replacement turn when prompt preparation outlives the original turn", async () => {
+		const ctl = makeControllableProvider();
+		const steer = vi.fn().mockResolvedValue(undefined);
+		const wrapped: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				return { ...ctl.provider.query(params), steer };
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(wrapped));
+		const first = sm.runQuery(
+			"first",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-1",
+		);
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+
+		let preparationStarted!: () => void;
+		const started = new Promise<void>((resolve) => {
+			preparationStarted = resolve;
+		});
+		let releasePreparation!: () => void;
+		const preparationGate = new Promise<void>((resolve) => {
+			releasePreparation = resolve;
+		});
+		vi.mocked(buildPromptAsync).mockImplementationOnce(async () => {
+			preparationStarted();
+			await preparationGate;
+			return {
+				prompt: "prepared steer",
+				safeSkillContexts: [],
+				safeAttachments: [],
+				resourcePaths: [],
+				safeVaultReferences: [],
+				safeWorkspaceReferences: [],
+				contextManifest: testPromptContextManifest(),
+			};
+		});
+		const steering = sm.steerActiveTurn(
+			"Do not leak into the next turn",
+			() => {},
+			"sess-1",
+			"delegation-steer-race",
+		);
+		await started;
+		const second = sm.runQuery(
+			"second",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-2",
+		);
+		ctl.turns[0].resolveDone();
+		await first;
+		await waitFor(() => expect(ctl.getSendCount()).toBe(2));
+
+		releasePreparation();
+		await expect(steering).rejects.toThrow(
+			"active provider turn changed while steering was being prepared",
+		);
+		expect(steer).not.toHaveBeenCalled();
+
+		ctl.turns[1].resolveDone();
+		await second;
+	});
+
+	it("reports when direct steering was accepted but transcript persistence failed", async () => {
+		const ctl = makeControllableProvider();
+		const steer = vi.fn().mockResolvedValue(undefined);
+		const wrapped: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				return { ...ctl.provider.query(params), steer };
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(wrapped));
+		const first = sm.runQuery(
+			"first",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-1",
+		);
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		vi.mocked(dbMock.appendMessage).mockRejectedValueOnce(
+			new Error("transcript write failed"),
+		);
+
+		await expect(
+			sm.steerActiveTurn(
+				"Accepted once",
+				() => {},
+				"sess-1",
+				"delegation-steer-persist-failure",
+			),
+		).rejects.toThrow(
+			"Do not retry this instruction automatically because that may duplicate it",
+		);
+		expect(steer).toHaveBeenCalledTimes(1);
+
+		ctl.turns[0].resolveDone();
+		await first;
+	});
+
 	it("folds a plain queued message into the active turn without another send", async () => {
 		const ctl = makeControllableProvider();
 		const steer = vi.fn().mockResolvedValue(undefined);
@@ -5488,6 +5988,51 @@ describe("SessionManager — steerQueued", () => {
 		expect(steer).toHaveBeenCalledWith("test prompt");
 		expect(sm.getQueueState().pending_turn_ids).toEqual([]);
 		await second;
+
+		ctl.turns[0].resolveDone();
+		await first;
+		expect(ctl.getSendCount()).toBe(1);
+	});
+
+	it("settles an accepted queued turn when transcript persistence fails", async () => {
+		const ctl = makeControllableProvider();
+		const steer = vi.fn().mockResolvedValue(undefined);
+		const wrapped: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				return { ...ctl.provider.query(params), steer };
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(wrapped));
+		const first = sm.runQuery(
+			"first",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-1",
+		);
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		const second = sm.runQuery(
+			"second",
+			() => {},
+			"sess-1",
+			undefined,
+			undefined,
+			undefined,
+			"turn-2",
+		);
+		vi.mocked(dbMock.appendMessage).mockRejectedValueOnce(
+			new Error("transcript write failed"),
+		);
+
+		await expect(sm.steerQueued("turn-2")).rejects.toThrow(
+			"provider accepted the steering instruction, but Hlid could not persist",
+		);
+		await expect(second).resolves.toBeUndefined();
+		expect(sm.getQueueState().pending_turn_ids).toEqual([]);
+		expect(steer).toHaveBeenCalledTimes(1);
 
 		ctl.turns[0].resolveDone();
 		await first;
@@ -5638,6 +6183,159 @@ describe("SessionManager — steerQueued", () => {
 		ctl.turns[0].resolveDone();
 		await first;
 		expect(ctl.getSendCount()).toBe(1);
+	});
+
+	it("exposes only validated current-turn selections for explicit delegation handoff", async () => {
+		const ctl = makeControllableProvider();
+		vi.mocked(buildPromptAsync).mockResolvedValueOnce({
+			prompt: "test prompt",
+			safeSkillContexts: ["/vault/skills/review/SKILL.md"],
+			safeAttachments: [
+				{
+					id: "relic-1",
+					path: "/artifacts/client-claimed-report.html",
+					filename: "client-claimed-report.html",
+					mime: "text/plain",
+					kind: "ephemeral",
+					reference: "relic",
+				},
+				{
+					id: "upload-1",
+					path: "/artifacts/upload.txt",
+					filename: "upload.txt",
+					mime: "text/plain",
+					kind: "ephemeral",
+				},
+				{
+					id: "spoofed-relic",
+					path: "/artifacts/spoofed.html",
+					filename: "spoofed.html",
+					mime: "text/html",
+					kind: "vault",
+					reference: "relic",
+				},
+			],
+			resourcePaths: [],
+			safeVaultReferences: [
+				{ relativePath: "Plans/Exact.md", path: "/vault/Plans/Exact.md" },
+			],
+			safeWorkspaceReferences: [
+				{
+					relativePath: "src/exact.ts",
+					sha256: "abc123",
+					path: "/work/project/src/exact.ts",
+					sizeBytes: 100,
+					mime: "text/typescript",
+					environment: "host",
+					environmentLabel: "Host",
+					previewKind: "text",
+				},
+			],
+			contextManifest: testPromptContextManifest(),
+		});
+		vi.mocked(dbMock.getAttachment)
+			.mockResolvedValueOnce({
+				id: "relic-1",
+				session_id: "source-session",
+				message_seq: 4,
+				kind: "vault",
+				filename: "durable-report.html",
+				path: "/library/durable-report.html",
+				mime: "text/html",
+				size_bytes: 100,
+				sha256: "a".repeat(64),
+				created_at: 1,
+				retention: "retained",
+			})
+			.mockResolvedValueOnce({
+				id: "spoofed-relic",
+				session_id: "sess-handoff",
+				message_seq: 0,
+				kind: "ephemeral",
+				filename: "spoofed.html",
+				path: "/artifacts/spoofed.html",
+				mime: "text/html",
+				size_bytes: 100,
+				sha256: "b".repeat(64),
+				created_at: 1,
+				retention: "session",
+			});
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+		expect(sm.getCurrentDelegationHandoff()).toBeNull();
+
+		const run = sm.runQuery(
+			"parent task",
+			() => {},
+			"sess-handoff",
+			["/vault/skills/review/SKILL.md"],
+			[],
+			undefined,
+			"turn-handoff",
+			undefined,
+			undefined,
+			undefined,
+			["Plans/Exact.md"],
+			undefined,
+			undefined,
+			[{ relativePath: "src/exact.ts", sha256: "abc123" }],
+		);
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+
+		expect(sm.getCurrentDelegationHandoff()).toEqual({
+			skillContexts: ["/vault/skills/review/SKILL.md"],
+			relics: [
+				{
+					id: "relic-1",
+					path: "/library/durable-report.html",
+					filename: "durable-report.html",
+					mime: "text/html",
+					kind: "vault",
+					reference: "relic",
+				},
+			],
+			vaultReferences: ["Plans/Exact.md"],
+			workspaceReferences: [{ relativePath: "src/exact.ts", sha256: "abc123" }],
+			currentAssistantSequence: null,
+		});
+		expect(dbMock.getAttachment).toHaveBeenCalledWith("relic-1");
+		expect(dbMock.getAttachment).toHaveBeenCalledWith("spoofed-relic");
+		ctl.turns[0].resolveDone();
+		await run;
+		expect(sm.getCurrentDelegationHandoff()).toBeNull();
+	});
+
+	it("updates the handoff exclusion cursor when partial assistant output starts streaming", async () => {
+		const ctl = makeControllableProvider();
+		vi.mocked(dbMock.appendMessage).mockClear();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+		const run = sm.runQuery(
+			"parent task",
+			() => {},
+			"sess-partial-handoff",
+			undefined,
+			undefined,
+			undefined,
+			"turn-partial-handoff",
+		);
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		expect(
+			sm.getCurrentDelegationHandoff()?.currentAssistantSequence,
+		).toBeNull();
+
+		ctl.pushEvent({ type: "text_delta", text: "incomplete assistant work" });
+		await waitFor(() =>
+			expect(dbMock.appendMessage).toHaveBeenCalledWith(
+				"sess-partial-handoff",
+				1,
+				"assistant",
+				"",
+			),
+		);
+		expect(sm.getCurrentDelegationHandoff()?.currentAssistantSequence).toBe(1);
+
+		ctl.turns[0].resolveDone();
+		await run;
+		expect(sm.getCurrentDelegationHandoff()).toBeNull();
 	});
 });
 

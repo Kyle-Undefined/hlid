@@ -10,6 +10,7 @@ import {
 	type PlanDecision,
 } from "./ChatMessageRow";
 import type { ChatMessage, PermissionMessage } from "./chatReducer";
+import { HlidDelegationActivityPanel } from "./HlidDelegationActivityPanel";
 import {
 	groupProjectPreviewEventLifecycles,
 	isProjectPreviewToolEvent,
@@ -273,6 +274,7 @@ export const MessageList = memo(function MessageList({
 					sessionId={sessionId}
 				/>
 			)}
+			<HlidDelegationActivityPanel sessionId={sessionId} />
 			<div ref={bottomRef} />
 		</>
 	);

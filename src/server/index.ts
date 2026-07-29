@@ -56,6 +56,8 @@ import {
 import { handleDbRoute } from "./dbRoutes";
 import { resolveExecutionContext } from "./executionContext";
 import { createExtensionRouteHandler } from "./extensionRoutes";
+import { HlidDelegationManager } from "./hlidDelegation";
+import { createHlidDelegationRouteHandler } from "./hlidDelegationRoutes";
 import { INTERNAL_HLID_MCP_FLAG, runHlidMcpServer } from "./hlidMcpServer";
 import { migrateLegacyAttachmentsToLibrary } from "./libraryMigration";
 import { getLiveSessionsStatus } from "./liveSessions";
@@ -351,6 +353,13 @@ warmVaultSnapshot();
 warmObsidianConnection(config.vault.name);
 const pool = new SessionPool(config, providers);
 await db.stopActiveProjectPreviewsAfterRestart();
+const reconciledDelegations =
+	await db.reconcileOrphanedHlidDelegationsAfterRestart();
+const interruptedDelegations =
+	await db.interruptActiveHlidDelegationsAfterRestart();
+if (reconciledDelegations > 0 || interruptedDelegations > 0) {
+	bumpDataRevision("sessions");
+}
 void cliProxy
 	.initialize()
 	.then(() =>
@@ -403,7 +412,52 @@ const broadcastLiveSessions = () => {
 		sessions: getLiveSessionsStatus(pool, terminalPool),
 	});
 };
-await startRoutineScheduler(pool, broadcastLiveSessions).catch((error) => {
+let durableDelegationRefresh: Promise<void> | null = null;
+let durableDelegationRefreshAgain = false;
+const refreshDurableDelegationAttention = (): Promise<void> => {
+	if (durableDelegationRefresh) {
+		durableDelegationRefreshAgain = true;
+		return durableDelegationRefresh;
+	}
+	durableDelegationRefresh = (async () => {
+		do {
+			durableDelegationRefreshAgain = false;
+			await pool.refreshDurableDelegationAttention();
+		} while (durableDelegationRefreshAgain);
+	})().finally(() => {
+		durableDelegationRefresh = null;
+	});
+	return durableDelegationRefresh;
+};
+await refreshDurableDelegationAttention();
+const hlidDelegationManager = new HlidDelegationManager(
+	pool,
+	() =>
+		providerCatalogSnapshot.get({
+			refresh: true,
+			preferCachedModels: false,
+		}),
+	() => {
+		bumpDataRevision("sessions");
+		broadcastLiveSessions();
+		void refreshDurableDelegationAttention()
+			.then(broadcastLiveSessions)
+			.catch((error) => {
+				console.error(
+					"[delegation attention] refresh failed:",
+					error instanceof Error ? error.message : String(error),
+				);
+			});
+	},
+);
+const handleHlidDelegationRoute = createHlidDelegationRouteHandler(
+	hlidDelegationManager,
+);
+await startRoutineScheduler(
+	pool,
+	hlidDelegationManager,
+	broadcastLiveSessions,
+).catch((error) => {
 	console.error(
 		"[routines] failed to initialize:",
 		error instanceof Error ? error.message : String(error),
@@ -455,6 +509,9 @@ const observeApiRequest = createRequestObserver({
 		if (pathname.startsWith("/api/attachments/")) return 10_000;
 		const previewThreshold = projectPreviewSlowRequestThreshold(pathname);
 		if (previewThreshold !== undefined) return previewThreshold;
+		if (pathname.startsWith("/hlid-agents/") && pathname.endsWith("/wait")) {
+			return 65_000;
+		}
 		return 1_000;
 	},
 });
@@ -989,6 +1046,7 @@ const handleAuthenticatedRoute = createAuthenticatedRouteHandler({
 		handleReadAloudRoute,
 		handleAccountRoute,
 		handleRoutineRoute,
+		handleHlidDelegationRoute,
 		handleProjectPreviewRoute,
 		(url, request) => handleSkillRoute(url, request, config, providers),
 	],

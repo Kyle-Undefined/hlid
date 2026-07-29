@@ -91,7 +91,11 @@ export function normalizeRoutineCapability(options: {
 	let capability: RoutineGrantCapability;
 	if (SHELL_TOOL.test(tool) || command) capability = "shell.exec";
 	else if (lower.includes("obsidian")) capability = "obsidian.call";
-	else if (lower.startsWith("hlid") || lower.includes("publish_relic"))
+	else if (
+		lower.startsWith("hlid") ||
+		lower.startsWith("mcp__hlid__") ||
+		lower.includes("publish_relic")
+	)
 		capability = "hlid.call";
 	else if (tool.includes("__") || lower.startsWith("mcp"))
 		capability = "mcp.call";

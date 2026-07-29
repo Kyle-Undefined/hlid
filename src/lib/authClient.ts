@@ -1,5 +1,17 @@
 const AUTH_PATH_PREFIX = "/api/auth/";
 
+/**
+ * Re-enter the authenticated app through a document navigation.
+ *
+ * Client transports intentionally stay dormant on `/login`; a SPA transition
+ * would preserve that module state and leave the app disconnected.
+ */
+export function enterAuthenticatedApp(
+	target: Pick<Location, "replace"> = window.location,
+): void {
+	target.replace("/");
+}
+
 export function shouldRedirectUnauthorized(
 	status: number,
 	requestUrl: string,

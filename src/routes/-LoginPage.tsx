@@ -1,6 +1,6 @@
-import { useNavigate } from "@tanstack/react-router";
 import { ShieldCheck } from "lucide-react";
 import { useEffect, useState } from "react";
+import { enterAuthenticatedApp } from "#/lib/authClient";
 import {
 	applyThemeToDocument,
 	type CustomThemePalette,
@@ -37,7 +37,6 @@ function applyTheme(status: AuthStatus): void {
 }
 
 export function LoginPage() {
-	const navigate = useNavigate();
 	const [state, setState] = useState<AuthState | null>(null);
 	const [password, setPassword] = useState("");
 	const [confirm, setConfirm] = useState("");
@@ -52,7 +51,7 @@ export function LoginPage() {
 			})
 			.then((result) => {
 				applyTheme(result);
-				if (result.state === "authenticated") window.location.replace("/");
+				if (result.state === "authenticated") enterAuthenticatedApp();
 				else setState(result.state);
 			})
 			.catch((reason) =>
@@ -91,7 +90,7 @@ export function LoginPage() {
 			await new Promise<void>((resolve) =>
 				requestAnimationFrame(() => resolve()),
 			);
-			await navigate({ to: "/", replace: true });
+			enterAuthenticatedApp();
 		} catch {
 			setError("Unable to reach Hlid");
 		} finally {

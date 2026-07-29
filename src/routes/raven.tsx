@@ -78,6 +78,10 @@ import { uploadVoiceRecording, useVoiceInput } from "#/hooks/useVoiceInput";
 import { useWs } from "#/hooks/useWs";
 import { useWsChatQueue, useWsLiveStats } from "#/hooks/useWsSelectors";
 import { clearChatQueue } from "#/hooks/wsChatQueueStore";
+import {
+	getDataRevisionSnapshot,
+	subscribeDataRevisionSnapshot,
+} from "#/hooks/wsDataRevisionStore";
 import { resetLiveStats } from "#/hooks/wsLiveStatsStore";
 import {
 	canonicalSessionId,
@@ -214,7 +218,10 @@ async function resolveSdkSession(
 		.slice()
 		.reverse()
 		.find(
-			(candidate) => candidate.mode !== "terminal" && candidate.db_session_id,
+			(candidate) =>
+				candidate.mode !== "terminal" &&
+				candidate.db_session_id &&
+				!candidate.delegation_parent_session_id,
 		);
 	return newestLiveSdk?.db_session_id ?? (await getCurrentSessionFn());
 }
@@ -289,6 +296,10 @@ async function loadRavenRoute(session?: string, agent?: string) {
 	let sessionPermissionMode: string | null = null;
 	let forkParentSessionId: string | null = null;
 	let forkKind: "exact" | "recap" | null = null;
+	let delegationParentSessionId: string | null = null;
+	let delegationParentLabel: string | null = null;
+	let delegationDepth: number | null = null;
+	let delegationControlOwned = false;
 	if (resolvedSessionId) {
 		const [savedSelection, savedRow] = await Promise.all([
 			resolvedSessionId === session
@@ -305,6 +316,10 @@ async function loadRavenRoute(session?: string, agent?: string) {
 		sessionPermissionMode = savedSelection?.permissionMode ?? null;
 		forkParentSessionId = savedRow?.fork_parent_session_id ?? null;
 		forkKind = savedRow?.fork_kind ?? null;
+		delegationParentSessionId = savedRow?.delegation_parent_session_id ?? null;
+		delegationParentLabel = savedRow?.delegation_parent_label ?? null;
+		delegationDepth = savedRow?.delegation_depth ?? null;
+		delegationControlOwned = savedRow?.delegation_control_owned === 1;
 	}
 	const interactiveMode = interactiveModeForAgent(config, agentSkillContext);
 	resolvedSessionId = resolveTerminalSession(
@@ -327,6 +342,10 @@ async function loadRavenRoute(session?: string, agent?: string) {
 		sessionPermissionMode,
 		forkParentSessionId,
 		forkKind,
+		delegationParentSessionId,
+		delegationParentLabel,
+		delegationDepth,
+		delegationControlOwned,
 		agentList,
 		vaultSkills,
 		interactiveMode,
@@ -1926,6 +1945,10 @@ export function ChatPage() {
 		sessionPermissionMode: initialSessionPermissionMode,
 		forkParentSessionId,
 		forkKind,
+		delegationParentSessionId,
+		delegationParentLabel,
+		delegationDepth,
+		delegationControlOwned: initialDelegationControlOwned,
 		agentList: initialAgentList,
 		vaultSkills,
 		providers: initialProviders,
@@ -1967,6 +1990,41 @@ export function ChatPage() {
 	}, [initialProviders]);
 	const ravenSearch = Route.useSearch();
 	const navigate = useNavigate();
+	const sessionsDataRevision = useSyncExternalStore(
+		subscribeDataRevisionSnapshot,
+		() => getDataRevisionSnapshot().sessions,
+		() => 0,
+	);
+	const [delegationControlOwned, setDelegationControlOwned] = useState(
+		initialDelegationControlOwned,
+	);
+	// biome-ignore lint/correctness/useExhaustiveDependencies: reset cached ownership on session navigation
+	useEffect(() => {
+		setDelegationControlOwned(initialDelegationControlOwned);
+	}, [existingSessionId, initialDelegationControlOwned]);
+	useEffect(() => {
+		if (!existingSessionId || !delegationParentSessionId) {
+			setDelegationControlOwned(false);
+			return;
+		}
+		let cancelled = false;
+		void Promise.resolve(getSessionRowFn({ data: existingSessionId }))
+			.then((row) => {
+				if (
+					!cancelled &&
+					row &&
+					getDataRevisionSnapshot().sessions === sessionsDataRevision
+				) {
+					setDelegationControlOwned(row.delegation_control_owned === 1);
+				}
+			})
+			.catch(() => {
+				// Preserve the last known ownership state until a later revision retries.
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, [delegationParentSessionId, existingSessionId, sessionsDataRevision]);
 	const session = useRavenSessionIdentity({
 		config,
 		existingSessionId,
@@ -2281,6 +2339,34 @@ export function ChatPage() {
 		sessionProviderId: initialSessionProviderId,
 		planMode,
 	});
+	const delegatedNativeSteeringAvailable =
+		delegationControlOwned &&
+		isRunning &&
+		(isClaudeRuntimeProvider(activeProviderId) ||
+			isCodexRuntimeProvider(activeProviderId));
+	const canSteerDelegatedChild =
+		delegatedNativeSteeringAvailable &&
+		wsStatus === "connected" &&
+		input.trim().length > 0;
+	const handleSteerDelegatedChild = useCallback(() => {
+		const instruction = input.trim();
+		if (!canSteerDelegatedChild || !instruction) return;
+		runtime.send({
+			type: "steer_active",
+			session_id: session.sessionId,
+			turn_id: uid(),
+			text: instruction,
+		});
+		clearDraft();
+		setInput("");
+	}, [
+		canSteerDelegatedChild,
+		clearDraft,
+		input,
+		runtime,
+		session.sessionId,
+		setInput,
+	]);
 	const composerProps: ChatComposerProps = {
 		interactiveMode,
 		config,
@@ -2330,6 +2416,10 @@ export function ChatPage() {
 		effortOptions,
 		canSend,
 		canQueue,
+		delegationSteering: delegationControlOwned,
+		delegatedNativeSteeringAvailable,
+		canSteerDelegatedChild,
+		handleSteerDelegatedChild,
 		handleSkillSelect,
 		handleSend,
 		handleClear,
@@ -2344,6 +2434,10 @@ export function ChatPage() {
 			rateLimit={rateLimit}
 			forkParentSessionId={forkParentSessionId}
 			forkKind={forkKind}
+			delegationParentSessionId={delegationParentSessionId}
+			delegationParentLabel={delegationParentLabel}
+			delegationDepth={delegationDepth}
+			delegationControlOwned={delegationControlOwned}
 			interactiveMode={interactiveMode}
 			terminalOpen={terminalOpen}
 			terminalClosingSessionId={terminalClosingSessionId}
@@ -2373,6 +2467,10 @@ interface ChatPageContentProps {
 	rateLimit: RateLimitMessage | null;
 	forkParentSessionId: string | null;
 	forkKind: "exact" | "recap" | null;
+	delegationParentSessionId: string | null;
+	delegationParentLabel: string | null;
+	delegationDepth: number | null;
+	delegationControlOwned: boolean;
 	interactiveMode: boolean;
 	terminalOpen: boolean;
 	terminalClosingSessionId: string | null;
@@ -2606,34 +2704,36 @@ function ChatPageContent(props: ChatPageContentProps) {
 				fetchFn={loadProviderUsages}
 				tail={<ContextWindowSection stats={liveStats} />}
 			/>
-			<RavenGoalStrip
-				goal={props.runtime.goal}
-				editorOpen={props.runtime.goalEditorOpen}
-				pending={props.runtime.goalPending}
-				error={props.runtime.goalError}
-				onOpenEditor={props.runtime.openGoalEditor}
-				onCloseEditor={props.runtime.closeGoalEditor}
-				onSet={(objective, tokenBudget) => {
-					if (props.runtime.goal) {
-						props.runtime.controlGoal({
-							action: "set",
-							objective,
-							tokenBudget,
-						});
-					} else {
-						props.runtime.stageGoalStart(objective, tokenBudget);
-						props.composerProps.handleSend(objective, {
-							objective,
-							tokenBudget,
-						});
-					}
-					props.runtime.closeGoalEditor();
-				}}
-				onPause={() => props.runtime.controlGoal({ action: "pause" })}
-				onResume={() => props.runtime.controlGoal({ action: "resume" })}
-				onClear={() => props.runtime.controlGoal({ action: "clear" })}
-				onDismissError={props.runtime.dismissGoalError}
-			/>
+			{!props.delegationControlOwned && (
+				<RavenGoalStrip
+					goal={props.runtime.goal}
+					editorOpen={props.runtime.goalEditorOpen}
+					pending={props.runtime.goalPending}
+					error={props.runtime.goalError}
+					onOpenEditor={props.runtime.openGoalEditor}
+					onCloseEditor={props.runtime.closeGoalEditor}
+					onSet={(objective, tokenBudget) => {
+						if (props.runtime.goal) {
+							props.runtime.controlGoal({
+								action: "set",
+								objective,
+								tokenBudget,
+							});
+						} else {
+							props.runtime.stageGoalStart(objective, tokenBudget);
+							props.composerProps.handleSend(objective, {
+								objective,
+								tokenBudget,
+							});
+						}
+						props.runtime.closeGoalEditor();
+					}}
+					onPause={() => props.runtime.controlGoal({ action: "pause" })}
+					onResume={() => props.runtime.controlGoal({ action: "resume" })}
+					onClear={() => props.runtime.controlGoal({ action: "clear" })}
+					onDismissError={props.runtime.dismissGoalError}
+				/>
+			)}
 			{!interactiveMode && (terminalOpen || previewActive) && (
 				<RavenShellTabBar
 					activeTab={shellTab}
@@ -2676,6 +2776,50 @@ function ChatPageContent(props: ChatPageContentProps) {
 								className="text-[9px] tracking-widest text-primary/70 hover:text-primary uppercase"
 							>
 								Open source
+							</button>
+						</div>
+					)}
+					{props.delegationParentSessionId && (
+						<div className="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-primary/[0.035] px-4 py-1.5">
+							<span className="min-w-0">
+								<span className="block truncate text-[9px] tracking-widest text-muted-foreground uppercase">
+									Delegated child
+									{props.delegationDepth
+										? ` · depth ${props.delegationDepth}`
+										: ""}
+									{props.delegationParentLabel && (
+										<>
+											{" · "}
+											<PrivacyMask inline>
+												{props.delegationParentLabel}
+											</PrivacyMask>
+										</>
+									)}
+								</span>
+								{props.delegationControlOwned && (
+									<output className="mt-0.5 block truncate text-[9px] text-primary/65">
+										{props.runtime.isRunning
+											? props.composerProps.delegatedNativeSteeringAvailable
+												? "Native steering is available here. Open the parent to cancel or manage this child."
+												: "This provider has no native steering. Open the parent to cancel or manage this child."
+											: "Open the parent to continue or manage this child."}
+									</output>
+								)}
+							</span>
+							<button
+								type="button"
+								onClick={() =>
+									void navigate({
+										to: "/raven",
+										search: {
+											session: props.delegationParentSessionId ?? undefined,
+											agent: undefined,
+										},
+									})
+								}
+								className="shrink-0 text-[9px] tracking-widest text-primary/70 uppercase hover:text-primary"
+							>
+								Open parent
 							</button>
 						</div>
 					)}
@@ -3454,6 +3598,32 @@ function ChatModelBadge({
 function ChatInputArea(props: ChatComposerProps) {
 	const { dragOver, setDragOver, upload } = props;
 	const { uploadFiles } = upload;
+	if (props.delegationSteering) {
+		return (
+			<div className="relative border-t border-border bg-background">
+				<div className="flex min-w-0 items-start">
+					<LiveSessionToggle />
+					<ChatTextarea {...props} />
+					<button
+						type="button"
+						onClick={props.handleSteerDelegatedChild}
+						disabled={!props.canSteerDelegatedChild}
+						className="self-start shrink-0 px-4 py-2 text-[10px] font-bold tracking-widest text-primary/70 uppercase transition-colors hover:text-primary disabled:text-muted-foreground/35 md:py-3"
+						aria-label="Steer current child"
+						title={
+							props.delegatedNativeSteeringAvailable
+								? "Append this instruction to the active native provider turn"
+								: props.runtime.isRunning
+									? "This provider does not support native steering"
+									: "This child does not have an active provider turn"
+						}
+					>
+						STEER
+					</button>
+				</div>
+			</div>
+		);
+	}
 	return (
 		// biome-ignore lint/a11y/noStaticElementInteractions: drop zone wraps the input, interactive children handle keyboard input
 		<div
@@ -3844,22 +4014,23 @@ function ChatVoiceControls(props: ChatVoiceControlsProps) {
 
 function handleComposerKeyDown(
 	event: ReactKeyboardEvent<HTMLTextAreaElement>,
-	{
+	props: ChatComposerProps,
+): void {
+	const {
 		config,
 		picker,
 		vaultPicker,
 		handleSkillSelect,
 		handleSend,
 		viewport,
-	}: ChatComposerProps,
-): void {
+	} = props;
 	const vaultPickerOpen = vaultPicker.isOpen;
 	const action = composerKeyAction({
 		key: event.key,
 		shiftKey: event.shiftKey,
 		metaKey: event.metaKey,
 		ctrlKey: event.ctrlKey,
-		pickerOpen: vaultPickerOpen || picker.isOpen,
+		pickerOpen: !props.delegationSteering && (vaultPickerOpen || picker.isOpen),
 		isTouch:
 			typeof window !== "undefined" &&
 			window.matchMedia("(pointer: coarse)").matches,
@@ -3881,7 +4052,10 @@ function handleComposerKeyDown(
 			handleSkillSelect(picker.items[picker.selectedIndex]);
 		}
 	});
-	if (submit) handleSend();
+	if (submit) {
+		if (props.delegationSteering) props.handleSteerDelegatedChild();
+		else handleSend();
+	}
 }
 
 function composerPlaceholder(
@@ -3890,6 +4064,8 @@ function composerPlaceholder(
 	activeSkills: ActiveRavenSkill[],
 	vaultReferenceCount: number,
 	isRunning: boolean,
+	delegationSteering: boolean,
+	delegatedNativeSteeringAvailable: boolean,
 ): string {
 	if (voice.phase === "recording") {
 		return `${voice.engine === "codex" ? "recording for Codex" : "recording for Whisper"}… ${voice.seconds}s`;
@@ -3897,6 +4073,12 @@ function composerPlaceholder(
 	if (voice.phase === "transcribing") return "transcribing locally…";
 	if (voice.phase === "submitting") return "sending voice message to Codex…";
 	if (wsStatus !== "connected") return "connecting…";
+	if (delegationSteering) {
+		if (delegatedNativeSteeringAvailable) return "steer the active child turn…";
+		return isRunning
+			? "native steering is unavailable for this provider"
+			: "this child has no active provider turn";
+	}
 	if (activeSkills.length > 0 || vaultReferenceCount > 0)
 		return "add more context, @file, or /command…";
 	return isRunning ? "type to queue next…" : "speak to the watcher…";
@@ -3932,6 +4114,8 @@ function ChatTextarea(props: ChatComposerProps) {
 	const { textareaRef } = viewport;
 	const { isOpen: pickerOpen, selectedIndex: pickerIndex } = picker;
 	const vaultPickerOpen = props.vaultPicker.isOpen;
+	const pickerExpanded =
+		!props.delegationSteering && (vaultPickerOpen || pickerOpen);
 	return (
 		<>
 			<textarea
@@ -3939,6 +4123,7 @@ function ChatTextarea(props: ChatComposerProps) {
 				value={input}
 				onChange={(e) => setInput(e.target.value)}
 				onPaste={(e) => {
+					if (props.delegationSteering) return;
 					const files = Array.from(e.clipboardData?.files ?? []);
 					if (files.length > 0) {
 						e.preventDefault();
@@ -3947,7 +4132,7 @@ function ChatTextarea(props: ChatComposerProps) {
 				}}
 				onKeyDown={(event) => handleComposerKeyDown(event, props)}
 				role="combobox"
-				aria-expanded={vaultPickerOpen || pickerOpen}
+				aria-expanded={pickerExpanded}
 				aria-controls={
 					vaultPickerOpen ? "vault-reference-picker" : "slash-picker"
 				}
@@ -3968,9 +4153,13 @@ function ChatTextarea(props: ChatComposerProps) {
 						props.vaultPicker.selectedRelics.length +
 						props.vaultPicker.selectedWorkspace.length,
 					isRunning,
+					props.delegationSteering,
+					props.delegatedNativeSteeringAvailable,
 				)}
 				disabled={
 					wsStatus !== "connected" ||
+					(props.delegationSteering &&
+						!props.delegatedNativeSteeringAvailable) ||
 					voice.phase === "transcribing" ||
 					voice.phase === "submitting"
 				}
@@ -4188,6 +4377,10 @@ interface ChatComposerProps {
 	effortOptions: ReturnType<typeof effortOptionsFor>;
 	canSend: boolean;
 	canQueue: boolean;
+	delegationSteering: boolean;
+	delegatedNativeSteeringAvailable: boolean;
+	canSteerDelegatedChild: boolean;
+	handleSteerDelegatedChild: () => void;
 	handleSkillSelect: (command: CommandDescriptor) => void;
 	handleSend: (
 		overrideText?: string,
@@ -4228,7 +4421,7 @@ function ChatComposer(props: ChatComposerProps) {
 		<div
 			className={`shrink-0 relative ${hideOnMobile ? "hidden md:block" : ""}`}
 		>
-			{vaultPicker.isOpen ? (
+			{!props.delegationSteering && vaultPicker.isOpen ? (
 				<VaultReferencePicker
 					rootLabel={vaultPicker.rootLabel}
 					workspaceRootLabel={vaultPicker.workspaceRootLabel}
@@ -4262,7 +4455,7 @@ function ChatComposer(props: ChatComposerProps) {
 					}}
 					direction="up"
 				/>
-			) : pickerOpen ? (
+			) : !props.delegationSteering && pickerOpen ? (
 				<SlashPicker
 					items={pickerItems}
 					selectedIndex={pickerIndex}
@@ -4270,7 +4463,7 @@ function ChatComposer(props: ChatComposerProps) {
 					direction="up"
 				/>
 			) : null}
-			{agentSkillContext && (
+			{!props.delegationSteering && agentSkillContext && (
 				<div className="absolute -top-5 left-3 z-10">
 					<button
 						type="button"
@@ -4285,10 +4478,10 @@ function ChatComposer(props: ChatComposerProps) {
 					</button>
 				</div>
 			)}
-			<ChatModelBadge {...props} />
+			{!props.delegationSteering && <ChatModelBadge {...props} />}
 
 			{/* Auto-sleep banner */}
-			{sleepState && (
+			{!props.delegationSteering && sleepState && (
 				<div className="border-t border-primary/30 bg-primary/5 px-4 py-2 flex items-center justify-between gap-4">
 					<span className="text-[10px] tracking-widest text-primary/70 uppercase">
 						sleeping
@@ -4312,7 +4505,7 @@ function ChatComposer(props: ChatComposerProps) {
 			)}
 
 			{/* Error banner */}
-			{sessionState === "error" && (
+			{!props.delegationSteering && sessionState === "error" && (
 				<div className="border-t border-destructive/30 bg-destructive/5 px-4 py-2 flex items-center justify-between gap-4">
 					<span className="text-[10px] tracking-widest text-destructive/70 uppercase">
 						session error

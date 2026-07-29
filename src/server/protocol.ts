@@ -538,6 +538,10 @@ export type SessionAttentionReason =
 	| "routine_failed"
 	| "routine_unavailable"
 	| "routine_recent"
+	| "delegation_interrupted"
+	| "delegated_child_attention"
+	| "delegated_child_working"
+	| "delegated_child_queued"
 	| "ready";
 
 /**
@@ -553,6 +557,30 @@ export type SessionAttentionSnapshot = {
 	last_activity_at: number;
 	queue_count: number;
 	pending_count: number;
+};
+
+export type DelegatedAttentionRollup = {
+	direct_count: number;
+	descendant_count: number;
+	/** Durable descendants that are pending or resumably restart-interrupted. */
+	waiting_count: number;
+	/** Durable descendants that completed successfully. */
+	completed_count: number;
+	/** Durable descendants that failed, timed out, exhausted budget, or cannot resume. */
+	failed_count: number;
+	/** Cumulative tokens reported across durable descendants. */
+	total_tokens?: number;
+	/** Cumulative available reported or estimated cost across durable descendants. */
+	total_cost?: number;
+	/** Wall-clock span from the first descendant start through the last stop or now. */
+	elapsed_duration_seconds?: number;
+	needs_attention_count: number;
+	working_count: number;
+	queued_count: number;
+	recent_count: number;
+	leading_bucket: SessionAttentionBucket;
+	since: number;
+	last_activity_at: number;
 };
 
 /** Status snapshot for a single live session in the pool. */
@@ -574,6 +602,8 @@ export type SessionStatusEntry = {
 	 * clients and deterministic fixtures; current servers always include it.
 	 */
 	attention?: SessionAttentionSnapshot;
+	/** Fixed durable lifecycle counts plus cycle-safe live descendant attention. */
+	delegated_attention?: DelegatedAttentionRollup;
 	/** True when the session has started at least one DB chat (getCurrentSessionId !== null). */
 	hasDbSession: boolean;
 	/** The DB chat session ID currently open in this pool session, if any. */
@@ -585,6 +615,17 @@ export type SessionStatusEntry = {
 	fork_parent_session_id?: string | null;
 	fork_parent_label?: string | null;
 	fork_kind?: "exact" | "recap" | null;
+	/** Durable Hlid delegation provenance, kept distinct from native forks. */
+	delegation_parent_session_id?: string | null;
+	delegation_parent_label?: string | null;
+	delegation_parent_turn_id?: string | null;
+	delegation_depth?: number | null;
+	/** Durable delegation lifecycle projected after its provider process is gone. */
+	delegation_id?: string;
+	delegation_status?: "interrupted";
+	delegation_resumable?: boolean;
+	/** True when this attention row is DB-backed but has no live provider process. */
+	durable_only?: boolean;
 	/**
 	 * "sdk" = custom UI backed by the Claude Agent SDK (default, undefined = sdk).
 	 * "terminal" = raw PTY session running claude CLI via xterm.js.
@@ -828,6 +869,17 @@ export type ClientSteerQueuedMessage = {
 	turn_id: string;
 };
 
+/**
+ * Send a text-only instruction directly into a delegation-owned provider turn.
+ * This never enters the ordinary fresh-turn queue.
+ */
+export type ClientSteerActiveMessage = {
+	type: "steer_active";
+	session_id: string;
+	turn_id: string;
+	text: string;
+};
+
 export type ClientAbortMessage = {
 	type: "abort";
 };
@@ -1045,6 +1097,7 @@ export type ClientMessage =
 	| ClientCancelQueuedMessage
 	| ClientPromoteQueuedMessage
 	| ClientSteerQueuedMessage
+	| ClientSteerActiveMessage
 	| ClientAbortMessage
 	| ClientSkipSleepMessage
 	| ClientClearMessage

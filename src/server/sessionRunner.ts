@@ -8,6 +8,7 @@ import type {
 } from "../lib/routinePermissions";
 import type { RoutineSummary } from "../lib/routines";
 import { bumpDataRevision } from "./dataRevision";
+import type { HlidDelegationManager } from "./hlidDelegation";
 import type { ChatAttachment, ServerMessage } from "./protocol";
 import { deliverRoutineResult } from "./routineDelivery";
 import type { SessionPool } from "./sessionPool";
@@ -58,11 +59,12 @@ async function routineAttachments(
 
 export async function runRoutineSession(options: {
 	pool: SessionPool;
+	delegations: HlidDelegationManager;
 	routine: RoutineSummary;
 	run: RoutineRunRow;
 	onStatusChange?: () => void;
 }): Promise<RoutineSessionResult> {
-	const { pool, routine, run, onStatusChange } = options;
+	const { pool, delegations, routine, run, onStatusChange } = options;
 	const provider = pool.getProvider(routine.providerId);
 	if (!provider) {
 		return {
@@ -99,6 +101,7 @@ export async function runRoutineSession(options: {
 	const grants = routine.grants.map(
 		(grant): RoutineGrant => ({ ...grant, id: grant.id ?? randomUUID() }),
 	);
+	let actionRequiredWork: Promise<void> | null = null;
 	const routineContext: RoutinePermissionContext = {
 		routineId: routine.id,
 		runId: run.id,
@@ -117,6 +120,34 @@ export async function runRoutineSession(options: {
 				request,
 				decision: "approved_routine",
 			}),
+		onActionRequired: (reason) => {
+			actionRequiredWork ??= Promise.allSettled([
+				db.pauseRoutine(routine.id, reason),
+				delegations.cancelRoutineRun(run.id),
+			]).then((results) => {
+				for (const result of results) {
+					if (result.status === "rejected") {
+						console.error(
+							`[routine ${run.id}] action-required cleanup failed:`,
+							result.reason,
+						);
+					}
+				}
+				onStatusChange?.();
+			});
+			return actionRequiredWork;
+		},
+	};
+	let entryClosed = false;
+	const settleRoutineOwnership = async () => {
+		if (!entryClosed) {
+			pool.close(entry.sessionId);
+			entryClosed = true;
+			onStatusChange?.();
+		}
+		const childRuns = await delegations.waitForRoutineRun(run.id);
+		if (actionRequiredWork) await actionRequiredWork;
+		return childRuns;
 	};
 	try {
 		await entry.manager.setProvider(routine.providerId, {
@@ -160,6 +191,8 @@ export async function runRoutineSession(options: {
 			routine.vaultReferences,
 			routineContext,
 		);
+		const providerFailed = entry.manager.getStatus().state === "error";
+		const childRuns = await settleRoutineOwnership();
 		if (routineContext.actionRequired) {
 			return {
 				status: "action_required",
@@ -167,11 +200,21 @@ export async function runRoutineSession(options: {
 				actionRequired: routineContext.actionRequired.reason,
 			};
 		}
-		if (entry.manager.getStatus().state === "error") {
+		if (providerFailed) {
 			return {
 				status: "failed",
 				sessionId,
 				error: "The provider session ended in an error state",
+			};
+		}
+		const failedChild = childRuns.find((child) => child.status !== "completed");
+		if (failedChild) {
+			return {
+				status: "failed",
+				sessionId,
+				error:
+					failedChild.error ??
+					`Delegated child ${failedChild.id} ended with ${failedChild.status}.`,
 			};
 		}
 		const delivery = await deliverRoutineResult({
@@ -188,6 +231,7 @@ export async function runRoutineSession(options: {
 			delivery,
 		};
 	} catch (error) {
+		await settleRoutineOwnership();
 		return {
 			status: routineContext.actionRequired ? "action_required" : "failed",
 			sessionId,
@@ -198,7 +242,7 @@ export async function runRoutineSession(options: {
 					}),
 		};
 	} finally {
-		pool.close(entry.sessionId);
+		if (!entryClosed) pool.close(entry.sessionId);
 		onStatusChange?.();
 		bumpDataRevision("routines", "sessions", "stats");
 	}

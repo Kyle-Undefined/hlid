@@ -8,6 +8,10 @@ import {
 import type { SubagentSnapshot } from "#/server/agentProvider";
 import type { ToolEventMessage } from "#/server/protocol";
 import type { PermissionMessage } from "./chatReducer";
+import {
+	HlidDelegationToolBlock,
+	isHlidDelegationToolEvent,
+} from "./HlidDelegationToolBlock";
 import type { PermissionDecisionHandler } from "./PermissionCard";
 import {
 	ProjectPreviewCaptureToolBlock,
@@ -206,18 +210,64 @@ export const ToolBlock = memo(function ToolBlock({
 	const resultPreview = hasResult
 		? firstLine(event.result ?? resultText).slice(0, RESULT_PREVIEW_CHARS)
 		: null;
+	const toggleOpen = () => {
+		const nextOpen = !open;
+		setOpen(nextOpen);
+		// The shared detail cache is byte-bounded. Drop this component's
+		// additional reference when it closes so evicted results can be GC'd.
+		if (!nextOpen && needsDetail) setDetail(null);
+	};
+	const detailPanel = (
+		<>
+			{open && needsDetail && !detail && (
+				<div className="mx-3 mb-1.5 min-w-0 max-w-[calc(100%_-_1.5rem)] border border-[var(--tool-panel-border)] bg-[var(--tool-panel)] px-3 py-2 text-[11px] text-muted-foreground/70">
+					{detailError ? (
+						<div className="flex items-center justify-between gap-3">
+							<span>{detailError}</span>
+							<button
+								type="button"
+								onClick={() => setDetailError(null)}
+								className="shrink-0 text-primary/75 underline underline-offset-2 hover:text-primary"
+							>
+								Retry
+							</button>
+						</div>
+					) : (
+						<span>{detailLoading ? "Loading full result…" : "Loading…"}</span>
+					)}
+				</div>
+			)}
+			{open && (!needsDetail || detail) && (
+				<ToolBlockExpandedPanel
+					inputEntries={inputEntries}
+					hasResult={hasResult}
+					isError={isError}
+					isReasoning={isReasoning}
+					renderResultAsMarkdown={renderResultAsMarkdown}
+					strippedResult={strippedResult}
+				/>
+			)}
+		</>
+	);
+
+	if (isHlidDelegationToolEvent(event)) {
+		return (
+			<HlidDelegationToolBlock
+				event={event}
+				permissionLabel={permissionLabel}
+				open={open}
+				onToggle={toggleOpen}
+			>
+				{detailPanel}
+			</HlidDelegationToolBlock>
+		);
+	}
 
 	return (
 		<div className="my-0.5 min-w-0 max-w-full overflow-hidden">
 			<button
 				type="button"
-				onClick={() => {
-					const nextOpen = !open;
-					setOpen(nextOpen);
-					// The shared detail cache is byte-bounded. Drop this component's
-					// additional reference when it closes so evicted results can be GC'd.
-					if (!nextOpen && needsDetail) setDetail(null);
-				}}
+				onClick={toggleOpen}
 				aria-expanded={open}
 				className="flex items-center gap-2.5 w-full min-w-0 max-w-full overflow-hidden px-3 py-1.5 group hover:bg-primary/[0.03] transition-colors text-left"
 			>
@@ -270,34 +320,7 @@ export const ToolBlock = memo(function ToolBlock({
 					</span>
 				</div>
 			)}
-			{open && needsDetail && !detail && (
-				<div className="mx-3 mb-1.5 min-w-0 max-w-[calc(100%_-_1.5rem)] border border-[var(--tool-panel-border)] bg-[var(--tool-panel)] px-3 py-2 text-[11px] text-muted-foreground/70">
-					{detailError ? (
-						<div className="flex items-center justify-between gap-3">
-							<span>{detailError}</span>
-							<button
-								type="button"
-								onClick={() => setDetailError(null)}
-								className="shrink-0 text-primary/75 hover:text-primary underline underline-offset-2"
-							>
-								Retry
-							</button>
-						</div>
-					) : (
-						<span>{detailLoading ? "Loading full result…" : "Loading…"}</span>
-					)}
-				</div>
-			)}
-			{open && (!needsDetail || detail) && (
-				<ToolBlockExpandedPanel
-					inputEntries={inputEntries}
-					hasResult={hasResult}
-					isError={isError}
-					isReasoning={isReasoning}
-					renderResultAsMarkdown={renderResultAsMarkdown}
-					strippedResult={strippedResult}
-				/>
-			)}
+			{detailPanel}
 		</div>
 	);
 });

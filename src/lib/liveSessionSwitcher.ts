@@ -14,6 +14,7 @@ export type LiveSessionSwitcherRow = {
 	pinned: boolean;
 	workspaceLabel: string | null;
 	forkLabel: string | null;
+	delegationLabel: string | null;
 };
 
 const STATE_PRIORITY: Record<LiveSessionState, number> = {
@@ -35,8 +36,9 @@ export function liveSessionState(
 }
 
 /**
- * A Raven switch target must be both process-backed and attached to a real
- * database chat. Fresh pool placeholders are intentionally excluded.
+ * A Raven switch target must be attached to a real database chat. This includes
+ * durable restart-interrupted delegation attention, while fresh pool
+ * placeholders remain excluded.
  */
 export function deriveLiveSessionSwitcherRows(
 	sessions: SessionStatusEntry[],
@@ -75,6 +77,10 @@ export function deriveLiveSessionSwitcherRows(
 				row.session.fork_parent_label,
 				row.session.fork_parent_session_id,
 				row.session.fork_kind,
+			),
+			delegationLabel: compactDelegationLabel(
+				row.session.delegation_parent_label,
+				row.session.delegation_parent_session_id,
 			),
 		}))
 		.sort(
@@ -132,10 +138,19 @@ export function compactForkLabel(
 	return `${kind === "recap" ? "Recap from" : "Fork of"} ${source}`;
 }
 
+export function compactDelegationLabel(
+	parentLabel: string | null | undefined,
+	parentSessionId: string | null | undefined,
+): string | null {
+	if (!parentSessionId) return null;
+	return `Delegated from ${parentLabel?.trim() || "parent session"}`;
+}
+
 export type PersistedRecentSessionRow = {
 	session: SessionRow;
 	workspaceLabel: string | null;
 	forkLabel: string | null;
+	delegationLabel: string | null;
 };
 
 export function derivePersistedRecentSessionRows(
@@ -168,6 +183,10 @@ export function derivePersistedRecentSessionRows(
 				session.fork_parent_label,
 				session.fork_parent_session_id,
 				session.fork_kind,
+			),
+			delegationLabel: compactDelegationLabel(
+				session.delegation_parent_label,
+				session.delegation_parent_session_id,
 			),
 		}))
 		.sort(
@@ -248,6 +267,10 @@ const REASON_LABELS: Record<SessionAttentionReason, string> = {
 	routine_failed: "Routine failed",
 	routine_unavailable: "Provider unavailable",
 	routine_recent: "Routine settled",
+	delegation_interrupted: "Restart interrupted",
+	delegated_child_attention: "Child needs attention",
+	delegated_child_working: "Children working",
+	delegated_child_queued: "Children queued",
 	ready: "Ready",
 };
 
@@ -269,6 +292,79 @@ export function liveSessionQueueLabel(
 	const count = session.attention?.queue_count ?? 0;
 	if (count === 0) return null;
 	return `${count} queued`;
+}
+
+export function liveDelegationRollupLabel(
+	session: SessionStatusEntry,
+): string | null {
+	const rollup = session.delegated_attention;
+	if (!rollup || rollup.descendant_count === 0) return null;
+	return [
+		`${rollup.descendant_count} delegated`,
+		rollup.needs_attention_count > 0
+			? `${rollup.needs_attention_count} needs you`
+			: null,
+		rollup.working_count > 0 ? `${rollup.working_count} working` : null,
+		rollup.queued_count > 0 ? `${rollup.queued_count} queued` : null,
+		rollup.waiting_count > 0 ? `${rollup.waiting_count} waiting` : null,
+		rollup.completed_count > 0 ? `${rollup.completed_count} completed` : null,
+		rollup.failed_count > 0 ? `${rollup.failed_count} failed` : null,
+	]
+		.filter((part): part is string => part !== null)
+		.join(" · ");
+}
+
+function compactDelegationCount(value: number): string {
+	const safeValue = Math.max(0, value);
+	if (safeValue < 1_000) return `${Math.floor(safeValue)}`;
+	if (safeValue < 1_000_000) {
+		return `${Number((safeValue / 1_000).toFixed(1))}k`;
+	}
+	return `${Number((safeValue / 1_000_000).toFixed(1))}m`;
+}
+
+function compactDelegationCost(value: number): string {
+	const safeValue = Math.max(0, value);
+	if (safeValue === 0) return "$0";
+	if (safeValue < 0.01) return `$${safeValue.toFixed(4)}`;
+	if (safeValue < 1) return `$${safeValue.toFixed(3)}`;
+	return `$${safeValue.toFixed(2)}`;
+}
+
+function compactDelegationDuration(seconds: number): string {
+	const totalSeconds = Math.max(0, Math.floor(seconds));
+	if (totalSeconds < 60) return `${totalSeconds}s`;
+	const totalMinutes = Math.floor(totalSeconds / 60);
+	const remainderSeconds = totalSeconds % 60;
+	if (totalMinutes < 60) {
+		return `${totalMinutes}m${remainderSeconds ? ` ${remainderSeconds}s` : ""}`;
+	}
+	const totalHours = Math.floor(totalMinutes / 60);
+	const remainderMinutes = totalMinutes % 60;
+	return `${totalHours}h${remainderMinutes ? ` ${remainderMinutes}m` : ""}`;
+}
+
+/**
+ * Compact descendant-wide resource totals for a delegation roll-up. Tokens and
+ * cost are additive; duration is the wall-clock orchestration span.
+ */
+export function liveDelegationUsageLabel(
+	session: SessionStatusEntry,
+): string | null {
+	const rollup = session.delegated_attention;
+	if (!rollup || rollup.descendant_count === 0) return null;
+	const parts = [
+		rollup.total_tokens !== undefined
+			? `${compactDelegationCount(rollup.total_tokens)} tokens`
+			: null,
+		rollup.total_cost !== undefined
+			? compactDelegationCost(rollup.total_cost)
+			: null,
+		rollup.elapsed_duration_seconds !== undefined
+			? `${compactDelegationDuration(rollup.elapsed_duration_seconds)} elapsed`
+			: null,
+	].filter((part): part is string => part !== null);
+	return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 export function liveSessionContext(

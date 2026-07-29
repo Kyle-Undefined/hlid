@@ -95,17 +95,19 @@ describe("LiveSessionSwitcher", () => {
 		const { onSelectSession } = renderSwitcher();
 
 		const toggle = screen.getByRole("button", {
-			name: "Open live sessions, 4 total, attention needed",
+			name: "Open session attention, 4 total, attention needed",
 		});
 		expect(toggle.textContent).toContain("›");
-		expect(toggle.title).toBe("Live sessions (Alt + Shift + S)");
+		expect(toggle.title).toBe("Session attention (Alt + Shift + S)");
 		expect(toggle.className).toContain("relative");
 		expect(toggle.className).not.toContain("absolute");
 		fireEvent.click(toggle);
 
-		expect(screen.getByRole("dialog", { name: "Live sessions" })).toBeTruthy();
+		expect(
+			screen.getByRole("dialog", { name: "Session attention" }),
+		).toBeTruthy();
 		const close = screen.getByRole("button", {
-			name: "Close live sessions, 4 total, attention needed",
+			name: "Close session attention, 4 total, attention needed",
 		});
 		expect(close.textContent).toBe("‹");
 		expect(close.previousElementSibling?.className).toContain("w-10");
@@ -132,7 +134,9 @@ describe("LiveSessionSwitcher", () => {
 
 		fireEvent.click(rows[2]);
 		expect(onSelectSession).toHaveBeenCalledWith("chat-working", false);
-		expect(screen.queryByRole("dialog", { name: "Live sessions" })).toBeNull();
+		expect(
+			screen.queryByRole("dialog", { name: "Session attention" }),
+		).toBeNull();
 	});
 
 	it("toggles from the configured desktop hotkey unless voice owns it", () => {
@@ -144,13 +148,17 @@ describe("LiveSessionSwitcher", () => {
 			shiftKey: true,
 			code: "KeyS",
 		});
-		expect(screen.getByRole("dialog", { name: "Live sessions" })).toBeTruthy();
+		expect(
+			screen.getByRole("dialog", { name: "Session attention" }),
+		).toBeTruthy();
 		fireEvent.keyDown(window, {
 			altKey: true,
 			shiftKey: true,
 			code: "KeyS",
 		});
-		expect(screen.queryByRole("dialog", { name: "Live sessions" })).toBeNull();
+		expect(
+			screen.queryByRole("dialog", { name: "Session attention" }),
+		).toBeNull();
 
 		cleanup();
 		renderSwitcher("chat-ready", {
@@ -161,7 +169,9 @@ describe("LiveSessionSwitcher", () => {
 			shiftKey: true,
 			code: "KeyS",
 		});
-		expect(screen.queryByRole("dialog", { name: "Live sessions" })).toBeNull();
+		expect(
+			screen.queryByRole("dialog", { name: "Session attention" }),
+		).toBeNull();
 	});
 
 	it("updates attention groups and row order while open", () => {
@@ -172,7 +182,7 @@ describe("LiveSessionSwitcher", () => {
 		renderSwitcher();
 		fireEvent.click(
 			screen.getByRole("button", {
-				name: "Open live sessions, 2 total, work in progress",
+				name: "Open session attention, 2 total, work in progress",
 			}),
 		);
 		expect(sessionButtons().map((row) => row.textContent)).toEqual([
@@ -219,7 +229,7 @@ describe("LiveSessionSwitcher", () => {
 		renderSwitcher();
 		fireEvent.click(
 			screen.getByRole("button", {
-				name: "Open live sessions, 3 total, attention needed",
+				name: "Open session attention, 3 total, attention needed",
 			}),
 		);
 
@@ -235,12 +245,49 @@ describe("LiveSessionSwitcher", () => {
 		expect(rows[2].textContent).toContain("alpha · claude · sonnet");
 	});
 
+	it("shows fixed durable lifecycle counts on the parent row", () => {
+		replaceSessionsStatus([
+			session("parent", {
+				delegated_attention: {
+					direct_count: 3,
+					descendant_count: 5,
+					waiting_count: 1,
+					completed_count: 2,
+					failed_count: 1,
+					needs_attention_count: 0,
+					working_count: 1,
+					queued_count: 0,
+					recent_count: 0,
+					leading_bucket: "working",
+					since: 1,
+					last_activity_at: 2,
+					total_tokens: 48_200,
+					total_cost: 0.321,
+					elapsed_duration_seconds: 3_725,
+				},
+			}),
+		]);
+		renderSwitcher("chat-parent");
+		fireEvent.click(
+			screen.getByRole("button", {
+				name: "Open session attention, 1 total, all ready",
+			}),
+		);
+
+		expect(sessionButtons()[0]?.textContent).toContain(
+			"5 delegated · 1 working · 1 waiting · 2 completed · 1 failed",
+		);
+		expect(screen.getByTitle(/all delegated descendants/).textContent).toBe(
+			"48.2k tokens · $0.321 · 1h 2m elapsed",
+		);
+	});
+
 	it("retains a closed row until the drawer closes", () => {
 		replaceSessionsStatus([session("closing"), session("ready")]);
 		renderSwitcher();
 		fireEvent.click(
 			screen.getByRole("button", {
-				name: "Open live sessions, 2 total, all ready",
+				name: "Open session attention, 2 total, all ready",
 			}),
 		);
 
@@ -255,7 +302,7 @@ describe("LiveSessionSwitcher", () => {
 		fireEvent.keyDown(window, { key: "Escape" });
 		fireEvent.click(
 			screen.getByRole("button", {
-				name: "Open live sessions, 1 total, all ready",
+				name: "Open session attention, 1 total, all ready",
 			}),
 		);
 		expect(
@@ -268,7 +315,7 @@ describe("LiveSessionSwitcher", () => {
 		const { onOpenLedger } = renderSwitcher();
 		fireEvent.click(
 			screen.getByRole("button", {
-				name: "Open live sessions, 1 total, all ready",
+				name: "Open session attention, 1 total, all ready",
 			}),
 		);
 		expect(screen.queryByText(/^stop$/i)).toBeNull();
@@ -279,13 +326,15 @@ describe("LiveSessionSwitcher", () => {
 
 		fireEvent.click(
 			screen.getByRole("button", {
-				name: "Open live sessions, 1 total, all ready",
+				name: "Open session attention, 1 total, all ready",
 			}),
 		);
 		fireEvent.click(
-			screen.getByRole("button", { name: "Dismiss live sessions" }),
+			screen.getByRole("button", { name: "Dismiss session attention" }),
 		);
-		expect(screen.queryByRole("dialog", { name: "Live sessions" })).toBeNull();
+		expect(
+			screen.queryByRole("dialog", { name: "Session attention" }),
+		).toBeNull();
 	});
 
 	it("uses mobile history for Back and replaces that marker on selection", () => {
@@ -311,16 +360,18 @@ describe("LiveSessionSwitcher", () => {
 			shiftKey: true,
 			code: "KeyS",
 		});
-		expect(screen.queryByRole("dialog", { name: "Live sessions" })).toBeNull();
+		expect(
+			screen.queryByRole("dialog", { name: "Session attention" }),
+		).toBeNull();
 
 		fireEvent.click(
 			screen.getByRole("button", {
-				name: "Open live sessions, 1 total, all ready",
+				name: "Open session attention, 1 total, all ready",
 			}),
 		);
 		expect(pushState).toHaveBeenCalled();
 		expect(document.activeElement).not.toBe(composer);
-		const drawer = screen.getByRole("dialog", { name: "Live sessions" });
+		const drawer = screen.getByRole("dialog", { name: "Session attention" });
 		expect(drawer.className).toContain("w-[88vw]");
 		expect(
 			within(drawer).getByRole("button", { name: "Open Ledger" }).parentElement
@@ -336,10 +387,12 @@ describe("LiveSessionSwitcher", () => {
 
 		fireEvent.click(
 			screen.getByRole("button", {
-				name: "Open live sessions, 1 total, all ready",
+				name: "Open session attention, 1 total, all ready",
 			}),
 		);
 		act(() => window.dispatchEvent(new PopStateEvent("popstate")));
-		expect(screen.queryByRole("dialog", { name: "Live sessions" })).toBeNull();
+		expect(
+			screen.queryByRole("dialog", { name: "Session attention" }),
+		).toBeNull();
 	});
 });

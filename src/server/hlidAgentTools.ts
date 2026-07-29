@@ -6,6 +6,15 @@ import type { ProviderInfo } from "../lib/providerTypes";
 import type { AgentToolPayload } from "./agentToolResult";
 import { buildHlidApiDiscoveryResponse } from "./hlidApiDiscovery";
 import {
+	cancelHlidAgentSchema,
+	delegateHlidAgentSchema,
+	inspectHlidAgentSchema,
+	listHlidAgentsSchema,
+	resumeHlidAgentSchema,
+	steerHlidAgentSchema,
+	waitHlidAgentSchema,
+} from "./hlidDelegationSchemas";
+import {
 	buildHlidHelpResponse,
 	HLID_HELP_TOPICS,
 	type HlidOperatingContext,
@@ -13,7 +22,7 @@ import {
 
 export const HLID_AGENT_NAMESPACE = "hlid";
 export const HLID_AGENT_NAMESPACE_DESCRIPTION =
-	"Curated Hlid host capabilities. Discover the active operating contract and HTTP API, publish durable deliverables to Relics, or run and inspect a session-scoped Project Preview.";
+	"Curated Hlid host capabilities. Discover the active operating contract and HTTP API, create durable Raven child sessions, publish deliverables to Relics, or run and inspect a session-scoped Project Preview.";
 export const MAX_HLID_INLINE_RELIC_CHARS = 2_000_000;
 
 export const hlidAgentSchemas = {
@@ -26,6 +35,13 @@ export const hlidAgentSchemas = {
 		scope: z.enum(["data", "ui"]).optional(),
 		limit: z.number().int().min(1).max(50).optional(),
 	}),
+	delegate_hlid_agent: delegateHlidAgentSchema,
+	list_hlid_agents: listHlidAgentsSchema,
+	inspect_hlid_agent: inspectHlidAgentSchema,
+	wait_hlid_agent: waitHlidAgentSchema,
+	steer_hlid_agent: steerHlidAgentSchema,
+	cancel_hlid_agent: cancelHlidAgentSchema,
+	resume_hlid_agent: resumeHlidAgentSchema,
 	publish_relic: z.object({
 		source_path: z.string().trim().min(1).max(4_096).optional(),
 		filename: z.string().trim().min(1).max(255).optional(),
@@ -95,6 +111,7 @@ type JsonValue =
 type JsonSchema = {
 	type: "object";
 	properties: Record<string, JsonValue>;
+	required?: string[];
 	additionalProperties: false;
 };
 
@@ -163,6 +180,229 @@ export const HLID_AGENT_TOOL_SPECS: HlidAgentToolSpec[] = [
 						"Maximum endpoints to return, from 1 to 50. Defaults to 20.",
 				},
 			},
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "delegate_hlid_agent",
+		description:
+			"Create a durable Raven child session in the current workspace or an exact configured workspace using an explicitly selected provider, model, effort, and optional model service tier. Delegation is bounded to three levels, four active direct children per parent, and twelve active delegated children across Hlid. The child uses inherited or narrower permissions, appears independently in Raven and Ledger, and keeps its own provider-native transcript and passively recorded usage. Hlid imposes no elapsed-time or inactivity cap because cross-provider silence is not proof of failure. New runs do not accept a timeout input or transition automatically to timed_out. Provider availability is checked before launch, and native launch, transport, or process failures settle the child naturally. Use cancel_hlid_agent when the work should stop. Token and cost usage are observations rather than lifecycle caps. This returns immediately with a delegation ID and child-session link; call wait_hlid_agent or inspect_hlid_agent for its bounded result. Context, exact references, and Relics remain empty unless their handoff switches are explicitly selected. Scheduled Routines may delegate only in their approved workspace when the call is allowed by the Routine grant envelope and Umbod; every descendant shares the same per-run grant-use limits.",
+		readOnly: false,
+		deferLoading: true,
+		searchHint:
+			"delegate cross-provider cross-harness durable child Raven session agent orchestration",
+		approvalTitle: "Hlid delegate child agent",
+		inputSchema: {
+			type: "object",
+			properties: {
+				task: {
+					type: "string",
+					description:
+						"Self-contained task for the child. Explicitly include any context it needs; exact references are not inherited automatically.",
+				},
+				provider: {
+					type: "string",
+					description:
+						"Exact registered provider ID for the durable child, such as claude or codex.",
+				},
+				model: {
+					type: "string",
+					description:
+						"Optional exact model from the target provider's current catalog.",
+				},
+				effort: {
+					type: "string",
+					description:
+						"Optional target-provider effort level. Same-provider children otherwise inherit the parent effort.",
+				},
+				service_tier: {
+					type: "string",
+					description:
+						"Optional exact service tier from the selected model's current serviceTiers catalog.",
+				},
+				cwd: {
+					type: "string",
+					description:
+						"Optional exact configured vault or registered workspace path. Defaults to the parent workspace. Routine children must stay in the Routine's approved workspace.",
+				},
+				permission_mode: {
+					type: "string",
+					enum: ["default", "acceptEdits", "bypassPermissions", "plan"],
+					description:
+						"Optional child permission mode. It must be equal to or narrower than the parent mode. Set plan explicitly when a Codex child must use native request_user_input; default mode does not expose that mechanism. A question-only plan turn does not enter plan review unless Codex emits a real plan.",
+				},
+				handoff: {
+					type: "object",
+					properties: {
+						visible_transcript: {
+							type: "boolean",
+							description:
+								"Include up to 40,000 characters of bounded visible parent transcript. Hidden provider state and partial assistant output are not copied.",
+						},
+						selected_skills: {
+							type: "boolean",
+							description:
+								"Pass only the current turn's already-validated selected skill files.",
+						},
+						selected_relics: {
+							type: "boolean",
+							description:
+								"Pass only durable Relics explicitly selected on the current parent turn. Ordinary uploads are never borrowed.",
+						},
+						exact_references: {
+							type: "boolean",
+							description:
+								"Pass only the current turn's exact Vault and Workspace selections. Hlid revalidates them and never expands related content.",
+						},
+					},
+					additionalProperties: false,
+				},
+			},
+			required: ["task", "provider"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "list_hlid_agents",
+		description:
+			"List the current parent session's durable Hlid children, newest first. Returns compact lifecycle snapshots, task previews, child-session links, and result/error availability flags, including restart-interrupted children eligible for explicit continuation. Use inspect_hlid_agent for bounded result or error details.",
+		readOnly: true,
+		deferLoading: true,
+		searchHint:
+			"list delegated Hlid children orchestration status interrupted continuation",
+		inputSchema: {
+			type: "object",
+			properties: {
+				limit: {
+					type: "number",
+					description:
+						"Maximum children to return, from 1 to 100. Defaults to 50.",
+				},
+			},
+			required: [],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "inspect_hlid_agent",
+		description:
+			"Inspect one durable Hlid child created by the current parent session. Returns lifecycle, provider selection, child-session link, bounded active progress, and any bounded terminal result or partial result plus error.",
+		readOnly: true,
+		deferLoading: true,
+		searchHint:
+			"inspect delegated Hlid child agent orchestration status result Raven session",
+		inputSchema: {
+			type: "object",
+			properties: {
+				id: {
+					type: "string",
+					description: "Delegation ID returned by delegate_hlid_agent.",
+				},
+			},
+			required: ["id"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "wait_hlid_agent",
+		description:
+			"Wait up to 60 seconds for one durable Hlid child created by the current parent session, then return its latest lifecycle, bounded active progress, and any bounded terminal result or partial result plus error. A still-running child remains independent and can be waited on again.",
+		readOnly: true,
+		deferLoading: true,
+		searchHint:
+			"wait delegated Hlid child agent orchestration completion result",
+		inputSchema: {
+			type: "object",
+			properties: {
+				id: {
+					type: "string",
+					description: "Delegation ID returned by delegate_hlid_agent.",
+				},
+				wait_seconds: {
+					type: "number",
+					description: "Wait duration from 1 to 60 seconds. Defaults to 60.",
+				},
+			},
+			required: ["id"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "steer_hlid_agent",
+		description:
+			"Steer one currently running child through that provider's native same-turn steering primitive. Codex and Claude expose native steering when active; providers without it return unavailable. Hlid never queues a fresh-turn fallback.",
+		readOnly: false,
+		deferLoading: true,
+		searchHint:
+			"steer active delegated Hlid child native provider same turn instruction",
+		approvalTitle: "Hlid steer child agent",
+		inputSchema: {
+			type: "object",
+			properties: {
+				id: {
+					type: "string",
+					description: "Delegation ID returned by delegate_hlid_agent.",
+				},
+				instruction: {
+					type: "string",
+					description:
+						"Instruction to append to the child's active provider turn.",
+				},
+			},
+			required: ["id", "instruction"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "cancel_hlid_agent",
+		description:
+			"Request cancellation of the addressed durable Hlid child and all active nested descendants immediately. Hlid retains provider control, delegation ownership, and active capacity until each active provider turn settles, then persists terminal cancelled state. For a resumable restart-interrupted child with no active provider turn, cancellation explicitly abandons continuation and marks it cancelled immediately while retaining its Raven transcript and Ledger provenance. A terminal ancestor remains terminal while its active descendants stop. Cancellation is a Hlid-owned lifecycle action and remains distinct from provider-native steering.",
+		readOnly: false,
+		deferLoading: true,
+		searchHint:
+			"cancel stop delegated Hlid child orchestration nested descendants",
+		approvalTitle: "Hlid cancel child agent",
+		inputSchema: {
+			type: "object",
+			properties: {
+				id: {
+					type: "string",
+					description: "Delegation ID returned by delegate_hlid_agent.",
+				},
+			},
+			required: ["id"],
+			additionalProperties: false,
+		},
+	},
+	{
+		name: "resume_hlid_agent",
+		description:
+			"Start an explicit new continuation turn in a restart-interrupted durable child with a remaining attempt. This requires a live running parent turn, revalidates the recorded configured workspace plus provider, model, effort, and service tier, and enforces inherited or narrower permissions plus the four-per-parent and twelve-global active limits. Hlid imposes no elapsed-time or inactivity cap because cross-provider silence is not proof of failure. Native launch, transport, or process failures settle the child naturally; use cancel_hlid_agent when the work should stop. Token and cost usage remain passive observations. The instruction remains the visible child message; Hlid also supplies bounded visible child transcript context. This never claims to resume the interrupted in-flight turn, inherits no references or Relics, and cannot continue a Routine-owned child outside its ended authorization envelope.",
+		readOnly: false,
+		deferLoading: true,
+		searchHint:
+			"resume continue restart interrupted delegated Hlid child explicit new turn",
+		approvalTitle: "Hlid continue interrupted child",
+		inputSchema: {
+			type: "object",
+			properties: {
+				id: {
+					type: "string",
+					description: "Restart-interrupted delegation ID.",
+				},
+				instruction: {
+					type: "string",
+					description:
+						"Required visible continuation instruction for the new child turn.",
+				},
+				permission_mode: {
+					type: "string",
+					enum: ["default", "acceptEdits", "bypassPermissions", "plan"],
+					description:
+						"Optional continuation permission mode, equal to or narrower than the current parent turn.",
+				},
+			},
+			required: ["id", "instruction"],
 			additionalProperties: false,
 		},
 	},
@@ -449,15 +689,13 @@ async function liveHlidOperatingContext(
 			// Persisted selections are best-effort; provider context remains usable.
 		}
 	}
-	const [providerSnapshot, voiceSnapshot, ttsSnapshot] = await Promise.all([
+	const [providerCatalog, voiceSnapshot, ttsSnapshot] = await Promise.all([
 		(async () => {
 			try {
 				const response = await dbFetch("/providers?host_capabilities=1");
 				if (!response.ok) return undefined;
 				const body = (await response.json()) as { providers?: ProviderInfo[] };
-				return body.providers?.find(
-					(provider) => provider.id === live.providerId,
-				);
+				return body.providers;
 			} catch {
 				return undefined;
 			}
@@ -487,6 +725,9 @@ async function liveHlidOperatingContext(
 			}
 		})(),
 	]);
+	const providerSnapshot = providerCatalog?.find(
+		(provider) => provider.id === live.providerId,
+	);
 	return {
 		...live,
 		registeredHlidTools: [
@@ -496,6 +737,7 @@ async function liveHlidOperatingContext(
 				: []),
 		],
 		...(providerSnapshot ? { providerSnapshot } : {}),
+		...(providerCatalog ? { providerCatalog } : {}),
 		...(voiceSnapshot ? { voiceSnapshot } : {}),
 		...(ttsSnapshot ? { ttsSnapshot } : {}),
 	};
@@ -621,6 +863,103 @@ export async function executeHlidAgentTool(
 			parseHlidApiIndex(await response.json()),
 			parsed,
 		);
+	}
+	if (
+		toolName === "delegate_hlid_agent" ||
+		toolName === "list_hlid_agents" ||
+		toolName === "inspect_hlid_agent" ||
+		toolName === "wait_hlid_agent" ||
+		toolName === "steer_hlid_agent" ||
+		toolName === "cancel_hlid_agent" ||
+		toolName === "resume_hlid_agent"
+	) {
+		if (!context.sessionId) {
+			throw new Error(
+				"Hlid delegation requires an active parent Raven session.",
+			);
+		}
+		if (toolName === "delegate_hlid_agent") {
+			const parsed = hlidAgentSchemas.delegate_hlid_agent.parse(input);
+			const response = await dbFetch("/hlid-agents/delegate", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					...parsed,
+					parent_session_id: context.sessionId,
+				}),
+			});
+			await requireDbOk(response, "Delegate Hlid child agent");
+			return JSON.stringify(await response.json());
+		}
+		if (toolName === "inspect_hlid_agent") {
+			const parsed = hlidAgentSchemas.inspect_hlid_agent.parse(input);
+			const response = await dbFetch(
+				`/hlid-agents/${encodeURIComponent(parsed.id)}?parent_session_id=${encodeURIComponent(context.sessionId)}`,
+			);
+			await requireDbOk(response, "Inspect Hlid child agent");
+			return JSON.stringify(await response.json());
+		}
+		if (toolName === "list_hlid_agents") {
+			const parsed = hlidAgentSchemas.list_hlid_agents.parse(input);
+			const search = new URLSearchParams({
+				parent_session_id: context.sessionId,
+				...(parsed.limit !== undefined ? { limit: String(parsed.limit) } : {}),
+			});
+			const response = await dbFetch(`/hlid-agents?${search.toString()}`);
+			await requireDbOk(response, "List Hlid child agents");
+			return JSON.stringify(await response.json());
+		}
+		if (toolName === "wait_hlid_agent") {
+			const parsed = hlidAgentSchemas.wait_hlid_agent.parse(input);
+			const response = await dbFetch(
+				`/hlid-agents/${encodeURIComponent(parsed.id)}/wait`,
+				{
+					method: "POST",
+					headers: { "content-type": "application/json" },
+					body: JSON.stringify({
+						parent_session_id: context.sessionId,
+						...(parsed.wait_seconds !== undefined
+							? { wait_seconds: parsed.wait_seconds }
+							: {}),
+					}),
+				},
+			);
+			await requireDbOk(response, "Wait for Hlid child agent");
+			return JSON.stringify(await response.json());
+		}
+		const parsed =
+			toolName === "steer_hlid_agent"
+				? hlidAgentSchemas.steer_hlid_agent.parse(input)
+				: toolName === "cancel_hlid_agent"
+					? hlidAgentSchemas.cancel_hlid_agent.parse(input)
+					: hlidAgentSchemas.resume_hlid_agent.parse(input);
+		const action =
+			toolName === "steer_hlid_agent"
+				? "steer"
+				: toolName === "cancel_hlid_agent"
+					? "cancel"
+					: "resume";
+		const response = await dbFetch(
+			`/hlid-agents/${encodeURIComponent(parsed.id)}/${action}`,
+			{
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					...parsed,
+					id: undefined,
+					parent_session_id: context.sessionId,
+				}),
+			},
+		);
+		await requireDbOk(
+			response,
+			toolName === "steer_hlid_agent"
+				? "Steer Hlid child agent"
+				: toolName === "cancel_hlid_agent"
+					? "Cancel Hlid child agent"
+					: "Continue Hlid child agent",
+		);
+		return JSON.stringify(await response.json());
 	}
 	if (toolName === "start_project_preview") {
 		const parsed = hlidAgentSchemas.start_project_preview.parse(input);

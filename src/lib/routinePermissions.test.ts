@@ -39,6 +39,13 @@ describe("routine permissions", () => {
 				cwd: "/workspace/project",
 			}),
 		).toMatchObject({ capability: "obsidian.call" });
+		expect(
+			normalizeRoutineCapability({
+				tool: "mcp__hlid__delegate_hlid_agent",
+				input: { provider: "codex", task: "Review it" },
+				cwd: "/workspace/project",
+			}),
+		).toMatchObject({ capability: "hlid.call" });
 	});
 
 	it("matches exact commands and rejects a changed command", () => {
