@@ -5,6 +5,7 @@ import {
 	APP_DIR,
 	CONFIG_PATH,
 	canonical,
+	declaredPathKey,
 	expandTilde,
 	isPathAccessibleFromRuntime,
 	LIBRARY_DIR,
@@ -64,6 +65,27 @@ describe("expandTilde", () => {
 
 	it("leaves paths with ~ in middle unchanged", () => {
 		expect(expandTilde("/foo/~bar")).toBe("/foo/~bar");
+	});
+});
+
+describe("declaredPathKey", () => {
+	it("matches equivalent WSL share aliases without filesystem access", () => {
+		expect(
+			declaredPathKey(
+				"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\project\\.",
+			),
+		).toBe(declaredPathKey("\\\\wsl$\\ubuntu-24.04\\home\\kyle\\project"));
+	});
+
+	it("normalizes WSL dot segments while preserving POSIX path case", () => {
+		expect(
+			declaredPathKey(
+				"\\\\wsl.localhost\\Ubuntu\\home\\kyle\\project\\..\\other",
+			),
+		).toBe(declaredPathKey("\\\\wsl$\\Ubuntu\\home\\kyle\\other"));
+		expect(
+			declaredPathKey("\\\\wsl.localhost\\Ubuntu\\home\\kyle\\Other"),
+		).not.toBe(declaredPathKey("\\\\wsl$\\Ubuntu\\home\\kyle\\other"));
 	});
 });
 

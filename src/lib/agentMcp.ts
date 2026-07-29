@@ -121,6 +121,12 @@ export function readAgentMcpFile(resolvedPath: string): {
 	return legacyProjectMcpAdapter.read(resolvedPath);
 }
 
+export function readAgentMcpFileAsync(resolvedPath: string): Promise<{
+	servers: Array<{ name: string; config: unknown; disabled: boolean }>;
+}> {
+	return legacyProjectMcpAdapter.readAsync(resolvedPath);
+}
+
 // ─── Write helpers ────────────────────────────────────────────────────────────
 
 /**

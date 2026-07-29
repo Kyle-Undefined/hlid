@@ -2719,6 +2719,53 @@ describe("message — sync_mcp_list (agent_cwd)", () => {
 		expect(search?.status).not.toBe("disabled");
 	});
 
+	it("accepts a configured WSL alias without requiring the share to be mounted", async () => {
+		const configured =
+			"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\development\\repos\\hlid";
+		mockLoadConfig.mockReturnValue({
+			vault: { path: "/tmp/test", name: "Test Vault" },
+			claude: {
+				model: "test-model",
+				effort: "medium",
+				permission_mode: "default",
+				turn_recaps: false,
+			},
+			agents: [
+				{
+					path: configured,
+					name: "Hlid",
+					mode: "cwd",
+					provider: "codex",
+				},
+			],
+		});
+		const session = makeSession({
+			getProviderId: vi.fn().mockReturnValue("codex"),
+		});
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+		mockSend.mockClear();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "sync_mcp_list",
+				agent_cwd:
+					"\\\\wsl$\\ubuntu-24.04\\home\\kyle\\development\\repos\\hlid\\.",
+			}),
+		);
+
+		expect(mockSend).toHaveBeenCalledWith(
+			ws,
+			expect.objectContaining({
+				type: "mcp_status",
+				provider_id: "codex",
+				servers: [],
+			}),
+		);
+	});
+
 	it("with unregistered agent_cwd: silently does nothing", async () => {
 		const session = makeSession();
 		const { pool } = wrapSession(session);

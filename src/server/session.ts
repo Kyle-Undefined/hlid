@@ -1,6 +1,6 @@
 import { realpathSync } from "node:fs";
 import { unlink } from "node:fs/promises";
-import { posix, resolve as resolvePath, win32 } from "node:path";
+import { resolve as resolvePath } from "node:path";
 import type { ToolCall } from "@umbod/core";
 import type { HlidConfig } from "../config";
 import * as db from "../db";
@@ -13,9 +13,9 @@ import {
 	type HlidTurnContextManifest,
 } from "../lib/hlidContext";
 import {
+	declaredPathKey,
 	expandTilde,
 	isPathAccessibleFromRuntime,
-	parseWslUncSyntax,
 	toProviderRuntimePath,
 } from "../lib/paths";
 import { permissionToolDisplayName } from "../lib/permissionPresentation";
@@ -403,25 +403,6 @@ function configuredAgentSettings(
 	if (agent.permission_mode) settings.permissionMode = agent.permission_mode;
 	if (agent.recap_model) settings.recapModel = agent.recap_model;
 	return Object.keys(settings).length > 0 ? settings : null;
-}
-
-/**
- * Stable comparison key for configured and persisted path strings.
- * This intentionally performs no filesystem access: detached Raven sessions
- * must be presentable even while a Windows/WSL mount is cold or unavailable.
- */
-function declaredPathKey(path: string): string {
-	const expanded = expandTilde(path);
-	const wslPath = parseWslUncSyntax(expanded);
-	if (wslPath) {
-		return `wsl:${wslPath.distro.toLowerCase()}:${posix.normalize(
-			wslPath.posixPath,
-		)}`;
-	}
-	if (/^[a-z]:[\\/]/i.test(expanded) || expanded.startsWith("\\\\")) {
-		return `windows:${win32.normalize(expanded).toLowerCase()}`;
-	}
-	return `native:${resolvePath(expanded)}`;
 }
 
 function buildAgentQueryParams(options: {

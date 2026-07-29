@@ -1407,8 +1407,8 @@ async function handleSessionMessage(
 			if (msg.inventory)
 				await syncMcpInventory(context.ws, context.pool, msg.agent_cwd);
 			else if (msg.agent_cwd)
-				syncAgentMcpList(context.ws, entry, msg.agent_cwd);
-			else syncVaultMcpList(context.pool);
+				await syncAgentMcpList(context.ws, entry, msg.agent_cwd);
+			else await syncVaultMcpList(context.pool);
 			return;
 		case "permission_response":
 			handlePermissionResponse(context, entry, msg);

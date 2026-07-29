@@ -115,6 +115,33 @@ describe("Claude startup metadata cache", () => {
 		);
 	});
 
+	it("shares a filesystem-free cache key across equivalent WSL aliases", async () => {
+		const configured =
+			"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\development\\repos\\hlid";
+		const alias =
+			"\\\\wsl$\\ubuntu-24.04\\home\\kyle\\development\\repos\\hlid\\.";
+		vi.mocked(query).mockReturnValueOnce(
+			sdkQuery({
+				commands: [{ name: "wsl-command", description: "WSL" }],
+			}) as never,
+		);
+
+		await prewarmClaudeCli({
+			executable: undefined,
+			cwd: "/tmp/wsl-runtime",
+			cacheCwd: configured,
+		});
+
+		expect(getClaudeWarmupSnapshot(alias)?.commands[0]?.name).toBe(
+			"wsl-command",
+		);
+		expect(
+			getClaudeWarmupSnapshot(
+				"\\\\wsl.localhost\\Other\\home\\kyle\\development\\repos\\hlid",
+			),
+		).toBeNull();
+	});
+
 	it("shares provider-wide MCPs with an archived scope without leaking project MCPs", async () => {
 		vi.mocked(query)
 			.mockReturnValueOnce(

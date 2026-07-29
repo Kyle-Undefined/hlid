@@ -1,6 +1,7 @@
 import {
 	type ProjectMcpServer,
 	readProjectMcpFile,
+	readProjectMcpFileAsync,
 	toggleProjectMcpFile,
 	writeProjectMcpFile,
 } from "./projectMcp";
@@ -9,6 +10,7 @@ import {
 export type McpConfigAdapter = {
 	id: string;
 	read(projectPath: string): { servers: ProjectMcpServer[] };
+	readAsync(projectPath: string): Promise<{ servers: ProjectMcpServer[] }>;
 	write(projectPath: string, servers: Record<string, unknown>): void;
 	toggle(projectPath: string, name: string, disabled: boolean): void;
 };
@@ -22,6 +24,7 @@ export type McpConfigAdapter = {
 export const legacyProjectMcpAdapter: McpConfigAdapter = {
 	id: "legacy-project-mcp-json",
 	read: readProjectMcpFile,
+	readAsync: readProjectMcpFileAsync,
 	write: writeProjectMcpFile,
 	toggle: toggleProjectMcpFile,
 };

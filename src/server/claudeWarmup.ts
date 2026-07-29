@@ -18,7 +18,7 @@
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import { query } from "@anthropic-ai/claude-agent-sdk";
-import { expandTilde } from "../lib/paths";
+import { declaredPathKey, expandTilde, parseWslUncSyntax } from "../lib/paths";
 import type { McpServerStatus, SlashCommand } from "./agentProvider";
 
 export type ClaudeWarmupSnapshot = {
@@ -56,6 +56,7 @@ const PROVIDER_WIDE_MCP_SCOPES = new Set(["claudeai", "user", "managed"]);
 
 function cacheKey(cwd: string): string {
 	const expanded = expandTilde(cwd);
+	if (parseWslUncSyntax(expanded)) return declaredPathKey(expanded);
 	try {
 		return realpathSync(expanded);
 	} catch {

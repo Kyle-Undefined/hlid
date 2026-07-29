@@ -860,10 +860,6 @@ function useRavenChatRuntime({
 	useEffect(() => {
 		if (connection.wsStatus !== "connected") return;
 		connection.send({
-			type: "sync_mcp_list",
-			...(agentCwd ? { agent_cwd: agentCwd } : {}),
-		});
-		connection.send({
 			type: "probe_mcp",
 			session_id: sessionIdRef.current,
 			...(agentCwd ? { agent_cwd: agentCwd } : {}),

@@ -1,8 +1,8 @@
 import type { ServerWebSocket } from "bun";
-import { readAgentMcpFile } from "../lib/agentMcp";
+import { readAgentMcpFileAsync } from "../lib/agentMcp";
 import { type McpRegistryEntry, mergeMcpRegistry } from "../lib/mcpRegistry";
-import { readVaultMcpFile } from "../lib/vaultMcp";
-import { resolveAllowedAgentPath } from "./agentPaths";
+import { readVaultMcpFileAsync } from "../lib/vaultMcp";
+import { resolveAgentMetadataPath } from "./agentPaths";
 import {
 	waitForAllClaudeWarmupSnapshots,
 	waitForClaudeWarmupSnapshot,
@@ -12,31 +12,32 @@ import { mapMcpServer } from "./protocol";
 import { broadcast, send } from "./runState";
 import type { PoolEntry, SessionPool } from "./sessionPool";
 
-function readAgentServers(resolvedAgent: string) {
+async function readAgentServers(resolvedAgent: string) {
 	try {
-		return readAgentMcpFile(resolvedAgent).servers;
+		return (await readAgentMcpFileAsync(resolvedAgent)).servers;
 	} catch {
 		return [];
 	}
 }
 
 function resolveRegisteredAgent(agentCwd: string): string | undefined {
-	return resolveAllowedAgentPath(loadConfig(), agentCwd);
+	return resolveAgentMetadataPath(loadConfig(), agentCwd);
 }
 
-export function syncAgentMcpList(
+export async function syncAgentMcpList(
 	ws: ServerWebSocket<unknown>,
 	entry: PoolEntry,
 	agentCwd: string,
-): void {
+): Promise<void> {
 	const resolvedAgent = resolveRegisteredAgent(agentCwd);
 	if (!resolvedAgent) return;
-	const servers = readAgentServers(resolvedAgent).map(({ name, disabled }) =>
-		mapMcpServer({
-			name,
-			status: disabled ? "disabled" : "pending",
-			scope: "project",
-		}),
+	const servers = (await readAgentServers(resolvedAgent)).map(
+		({ name, disabled }) =>
+			mapMcpServer({
+				name,
+				status: disabled ? "disabled" : "pending",
+				scope: "project",
+			}),
 	);
 	send(ws, {
 		type: "mcp_status",
@@ -48,9 +49,9 @@ export function syncAgentMcpList(
 	});
 }
 
-function readVaultServers(vaultPath: string) {
+async function readVaultServers(vaultPath: string) {
 	try {
-		return readVaultMcpFile(vaultPath).servers;
+		return (await readVaultMcpFileAsync(vaultPath)).servers;
 	} catch {
 		return [];
 	}
@@ -70,9 +71,9 @@ export async function syncMcpInventory(
 		.vaultEntry()
 		.manager.getProviderId(resolvedAgent);
 	const configuredServers = resolvedAgent
-		? readAgentServers(resolvedAgent)
+		? await readAgentServers(resolvedAgent)
 		: config.vault.path
-			? readVaultServers(config.vault.path)
+			? await readVaultServers(config.vault.path)
 			: [];
 	for (const { name, disabled } of configuredServers) {
 		inventory.push({
@@ -123,7 +124,7 @@ export async function syncMcpInventory(
 	});
 }
 
-export function syncVaultMcpList(pool: SessionPool): void {
+export async function syncVaultMcpList(pool: SessionPool): Promise<void> {
 	const config = loadConfig();
 	if (!config.vault.path) return;
 	const cached = pool.vaultEntry().manager.getLastMcpStatus() ?? [];
@@ -131,7 +132,7 @@ export function syncVaultMcpList(pool: SessionPool): void {
 	const preserved = cached
 		.filter((server) => server.scope !== "project")
 		.map(mapMcpServer);
-	const vault = readVaultServers(config.vault.path).map(
+	const vault = (await readVaultServers(config.vault.path)).map(
 		({ name, disabled }) => {
 			const known = cachedByName.get(name);
 			return mapMcpServer({

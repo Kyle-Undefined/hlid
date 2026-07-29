@@ -1,5 +1,5 @@
 import { homedir, tmpdir } from "node:os";
-import { basename, dirname, posix, resolve, sep } from "node:path";
+import { basename, dirname, posix, resolve, sep, win32 } from "node:path";
 
 // When running as a compiled exe, resolve data files relative to the exe dir
 // so the Windows Run-key CWD (System32) doesn't break config/DB paths.
@@ -43,6 +43,25 @@ export function expandTilde(p: string): string {
 	if (p.startsWith("~/") || p.startsWith("~\\"))
 		return resolve(homedir(), p.slice(2));
 	return p;
+}
+
+/**
+ * Stable comparison key for configured and persisted path strings.
+ * This intentionally performs no filesystem access so display-only metadata
+ * remains available while a Windows/WSL mount is cold or unavailable.
+ */
+export function declaredPathKey(path: string): string {
+	const expanded = expandTilde(path);
+	const wslPath = parseWslUncSyntax(expanded);
+	if (wslPath) {
+		return `wsl:${wslPath.distro.toLowerCase()}:${posix.normalize(
+			wslPath.posixPath,
+		)}`;
+	}
+	if (/^[a-z]:[\\/]/i.test(expanded) || expanded.startsWith("\\\\")) {
+		return `windows:${win32.normalize(expanded).toLowerCase()}`;
+	}
+	return `native:${resolve(expanded)}`;
 }
 
 // Canonical form for path comparison. Resolves to absolute; on Windows also

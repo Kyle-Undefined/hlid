@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { HlidConfig } from "../config";
 import {
 	readAgentMcpFile,
+	readAgentMcpFileAsync,
 	toggleAgentMcpFile,
 	validateAgentPath,
 	writeAgentMcpFile,
@@ -167,6 +168,42 @@ describe("readAgentMcpFile", () => {
 	it("returns empty servers when mcpServers key is absent", () => {
 		writeFileSync(join(agentDir, ".mcp.json"), JSON.stringify({}), "utf8");
 		expect(readAgentMcpFile(agentDir)).toEqual({ servers: [] });
+	});
+
+	it("reads missing project files asynchronously without failing", async () => {
+		await expect(readAgentMcpFileAsync(agentDir)).resolves.toEqual({
+			servers: [],
+		});
+	});
+
+	it("merges disabled server settings asynchronously", async () => {
+		writeFileSync(
+			join(agentDir, ".mcp.json"),
+			JSON.stringify({
+				mcpServers: {
+					filesystem: { command: "npx" },
+					search: { command: "bun" },
+				},
+			}),
+			"utf8",
+		);
+		mkdirSync(join(agentDir, ".claude"), { recursive: true });
+		writeFileSync(
+			join(agentDir, ".claude", "settings.local.json"),
+			JSON.stringify({ disabledMcpjsonServers: ["filesystem"] }),
+			"utf8",
+		);
+
+		await expect(readAgentMcpFileAsync(agentDir)).resolves.toEqual({
+			servers: [
+				{
+					name: "filesystem",
+					config: { command: "npx" },
+					disabled: true,
+				},
+				{ name: "search", config: { command: "bun" }, disabled: false },
+			],
+		});
 	});
 });
 

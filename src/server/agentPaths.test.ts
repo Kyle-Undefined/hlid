@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	computeAllowedAgentRealPaths,
 	isAllowedAgentPath,
+	resolveAgentMetadataPath,
 	resolveAgentMode,
 	resolveAllowedAgentPath,
 } from "./agentPaths";
@@ -122,6 +123,42 @@ describe("resolveAllowedAgentPath", () => {
 			resolveAllowedAgentPath(
 				{ agents: [{ path: configuredDir }] } as never,
 				unregisteredDir,
+			),
+		).toBeUndefined();
+	});
+});
+
+describe("resolveAgentMetadataPath", () => {
+	const configured =
+		"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\development\\repos\\hlid";
+
+	it("returns the configured declaration for an equivalent WSL alias", () => {
+		expect(
+			resolveAgentMetadataPath(
+				{ agents: [{ path: configured }] } as never,
+				"\\\\wsl$\\ubuntu-24.04\\home\\kyle\\development\\repos\\hlid\\.",
+			),
+		).toBe(configured);
+	});
+
+	it("rejects unregistered WSL paths without falling back to filesystem access", () => {
+		const config = { agents: [{ path: configured }] } as never;
+		expect(
+			resolveAgentMetadataPath(
+				config,
+				"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\development\\repos\\other",
+			),
+		).toBeUndefined();
+		expect(
+			resolveAgentMetadataPath(
+				config,
+				"\\\\wsl.localhost\\Other\\home\\kyle\\development\\repos\\hlid",
+			),
+		).toBeUndefined();
+		expect(
+			resolveAgentMetadataPath(
+				config,
+				"\\\\wsl.localhost\\Ubuntu-24.04\\home\\kyle\\development\\repos\\Hlid",
 			),
 		).toBeUndefined();
 	});

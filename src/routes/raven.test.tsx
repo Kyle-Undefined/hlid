@@ -493,7 +493,7 @@ describe("Raven composed submission behavior", () => {
 		);
 	});
 
-	it("requests MCP and command metadata automatically when the WebSocket connects", async () => {
+	it("requests authoritative provider metadata when the WebSocket connects", async () => {
 		state.wsStatus = "connecting";
 		const { rerender } = render(<ChatPage />);
 		expect(state.send).not.toHaveBeenCalledWith(
@@ -504,7 +504,9 @@ describe("Raven composed submission behavior", () => {
 		rerender(<ChatPage />);
 
 		await waitFor(() => {
-			expect(state.send).toHaveBeenCalledWith({ type: "sync_mcp_list" });
+			expect(state.send).not.toHaveBeenCalledWith(
+				expect.objectContaining({ type: "sync_mcp_list" }),
+			);
 			expect(state.send).toHaveBeenCalledWith({
 				type: "probe_mcp",
 				session_id: expect.any(String),

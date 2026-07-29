@@ -1,7 +1,12 @@
 import { realpathSync } from "node:fs";
 import { resolve } from "node:path";
 import type { HlidConfig } from "../config";
-import { expandTilde, samePath } from "../lib/paths";
+import {
+	declaredPathKey,
+	expandTilde,
+	parseWslUncSyntax,
+	samePath,
+} from "../lib/paths";
 import { loadConfig } from "./config";
 
 /** Look up agent mode ("context" | "cwd") for a resolved agent path. */
@@ -62,4 +67,28 @@ export function resolveAllowedAgentPath(
 	} catch {
 		return undefined;
 	}
+}
+
+/**
+ * Resolve a registered agent for read-only metadata without probing a WSL UNC
+ * share. Non-WSL paths retain canonical filesystem validation. Execution and
+ * mutation paths must continue to use resolveAllowedAgentPath or stricter.
+ */
+export function resolveAgentMetadataPath(
+	config: HlidConfig,
+	candidate: string,
+): string | undefined {
+	const expandedCandidate = expandTilde(candidate);
+	if (!parseWslUncSyntax(expandedCandidate)) {
+		return resolveAllowedAgentPath(config, candidate);
+	}
+	const candidateKey = declaredPathKey(expandedCandidate);
+	const configured = (config.agents ?? []).find((agent) => {
+		const expandedAgent = expandTilde(agent.path);
+		return (
+			parseWslUncSyntax(expandedAgent) !== null &&
+			declaredPathKey(expandedAgent) === candidateKey
+		);
+	});
+	return configured ? expandTilde(configured.path) : undefined;
 }

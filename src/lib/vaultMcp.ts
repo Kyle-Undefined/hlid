@@ -27,6 +27,12 @@ export function readVaultMcpFile(vaultPath: string): {
 	return legacyProjectMcpAdapter.read(vaultPath);
 }
 
+export function readVaultMcpFileAsync(vaultPath: string): Promise<{
+	servers: VaultMcpServer[];
+}> {
+	return legacyProjectMcpAdapter.readAsync(vaultPath);
+}
+
 // ─── Write ────────────────────────────────────────────────────────────────────
 
 /**
