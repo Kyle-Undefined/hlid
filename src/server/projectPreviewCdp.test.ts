@@ -93,6 +93,117 @@ describe("Project Preview browser selection", () => {
 				env,
 			),
 		).toBe("C:\\Users\\Kyle\\AppData\\Local\\Google\\Chrome\\User Data");
+		expect(
+			projectPreviewBrowserUserDataDir(
+				"C:\\Browsers\\chromium.exe",
+				"win32",
+				env,
+			),
+		).toBe("C:\\Users\\Kyle\\AppData\\Local\\Chromium\\User Data");
+		expect(
+			projectPreviewBrowserUserDataDir(
+				"C:\\Browsers\\msedge.exe",
+				"win32",
+				env,
+			),
+		).toBe("C:\\Users\\Kyle\\AppData\\Local\\Microsoft\\Edge\\User Data");
+		expect(
+			projectPreviewBrowserUserDataDir(
+				"C:\\Browsers\\vivaldi.exe",
+				"win32",
+				env,
+			),
+		).toBe("C:\\Users\\Kyle\\AppData\\Local\\Vivaldi\\User Data");
+		expect(
+			projectPreviewBrowserUserDataDir("C:\\Browsers\\opera.exe", "win32", env),
+		).toBe("C:\\Users\\Kyle\\AppData\\Roaming\\Opera Software\\Opera Stable");
+	});
+
+	it("requires the matching Windows profile root", () => {
+		expect(
+			projectPreviewBrowserUserDataDir("C:\\Browsers\\chrome.exe", "win32", {
+				APPDATA: "C:\\Users\\Kyle\\AppData\\Roaming",
+			}),
+		).toBeNull();
+		expect(
+			projectPreviewBrowserUserDataDir("C:\\Browsers\\opera.exe", "win32", {
+				LOCALAPPDATA: "C:\\Users\\Kyle\\AppData\\Local",
+			}),
+		).toBeNull();
+	});
+
+	it("resolves Linux browser profiles using Chromium config precedence", () => {
+		const chromeConfigHome = "/tmp/chrome-config";
+		const xdgConfigHome = "/tmp/xdg-config";
+		const home = "/home/kyle";
+		const env = {
+			CHROME_CONFIG_HOME: chromeConfigHome,
+			XDG_CONFIG_HOME: xdgConfigHome,
+			HOME: home,
+		};
+
+		expect(
+			projectPreviewBrowserUserDataDir("/usr/bin/brave-browser", "linux", env),
+		).toBe(`${chromeConfigHome}/BraveSoftware/Brave-Browser`);
+		expect(
+			projectPreviewBrowserUserDataDir("/usr/bin/google-chrome", "linux", {
+				XDG_CONFIG_HOME: xdgConfigHome,
+				HOME: home,
+			}),
+		).toBe(`${xdgConfigHome}/google-chrome`);
+		expect(
+			projectPreviewBrowserUserDataDir("/usr/bin/chromium-browser", "linux", {
+				HOME: home,
+			}),
+		).toBe(`${home}/.config/chromium`);
+	});
+
+	it.each([
+		["brave", "BraveSoftware/Brave-Browser"],
+		["google-chrome-stable", "google-chrome"],
+		["chromium", "chromium"],
+		["microsoft-edge", "microsoft-edge"],
+		["microsoft-edge-stable", "microsoft-edge"],
+		["vivaldi", "vivaldi"],
+	])("maps the Linux %s profile", (executable, profile) => {
+		expect(
+			projectPreviewBrowserUserDataDir(`/usr/bin/${executable}`, "linux", {
+				CHROME_CONFIG_HOME: "/profiles",
+			}),
+		).toBe(`/profiles/${profile}`);
+	});
+
+	it("rejects unsupported browsers and platforms", () => {
+		expect(
+			projectPreviewBrowserUserDataDir("C:\\Browsers\\firefox.exe", "win32", {
+				LOCALAPPDATA: "C:\\Users\\Kyle\\AppData\\Local",
+				APPDATA: "C:\\Users\\Kyle\\AppData\\Roaming",
+			}),
+		).toBeNull();
+		expect(
+			projectPreviewBrowserUserDataDir("/usr/bin/firefox", "linux", {
+				HOME: "/home/kyle",
+			}),
+		).toBeNull();
+		expect(
+			projectPreviewBrowserUserDataDir("/usr/bin/constructor", "linux", {
+				HOME: "/home/kyle",
+			}),
+		).toBeNull();
+		expect(
+			projectPreviewBrowserUserDataDir("C:\\Browsers\\constructor", "win32", {
+				LOCALAPPDATA: "C:\\Users\\Kyle\\AppData\\Local",
+			}),
+		).toBeNull();
+		expect(
+			projectPreviewBrowserUserDataDir(
+				"/Applications/Google Chrome",
+				"darwin",
+				{
+					HOME: "/Users/kyle",
+				},
+			),
+		).toBeNull();
 	});
 
 	it("parses consented DevTools connection metadata", () => {

@@ -116,64 +116,117 @@ type ControlProjectPreview = (
 	input: ProjectPreviewControlAction,
 ) => Promise<ProjectPreviewAgentFrame>;
 
-function parseControlInput(
-	body: z.infer<typeof controlSchema>,
-	base: {
-		previewId: string;
-		sessionId: string;
-		port: number;
-		initialPath: string;
-	},
-): ProjectPreviewControlAction {
-	if (body.action === "click") {
-		if (!body.frame_id || (!body.ref && (body.x == null || body.y == null))) {
-			throw new Error(
-				"click requires frame_id and either ref or x and y coordinates.",
-			);
-		}
+type ControlInput = z.infer<typeof controlSchema>;
+type ControlBase = {
+	previewId: string;
+	sessionId: string;
+	port: number;
+	initialPath: string;
+};
+type ControlAction<Action extends ProjectPreviewControlAction["action"]> =
+	Extract<ProjectPreviewControlAction, { action: Action }>;
+
+function parseClickControlInput(
+	body: ControlInput,
+	base: ControlBase,
+): ControlAction<"click"> {
+	if (!body.frame_id || (!body.ref && (body.x == null || body.y == null))) {
+		throw new Error(
+			"click requires frame_id and either ref or x and y coordinates.",
+		);
+	}
+	if (body.ref) {
 		return {
 			...base,
 			action: "click",
 			frameId: body.frame_id,
-			...(body.ref ? { ref: body.ref } : { x: body.x, y: body.y }),
-		};
-	}
-	if (body.action === "type") {
-		if (!body.frame_id || !body.ref || body.text === undefined) {
-			throw new Error("type requires frame_id, ref, and text.");
-		}
-		return {
-			...base,
-			action: "type",
-			frameId: body.frame_id,
 			ref: body.ref,
-			text: body.text,
 		};
 	}
-	if (body.action === "key") {
-		if (!body.key) throw new Error("key requires a key value.");
-		return { ...base, action: "key", key: body.key };
+	return {
+		...base,
+		action: "click",
+		frameId: body.frame_id,
+		x: body.x,
+		y: body.y,
+	};
+}
+
+function parseTypeControlInput(
+	body: ControlInput,
+	base: ControlBase,
+): ControlAction<"type"> {
+	if (!body.frame_id || !body.ref || body.text === undefined) {
+		throw new Error("type requires frame_id, ref, and text.");
 	}
-	if (body.action === "scroll") {
-		if (body.delta_x === undefined && body.delta_y === undefined) {
-			throw new Error("scroll requires delta_x or delta_y.");
-		}
-		return {
-			...base,
-			action: "scroll",
-			deltaX: body.delta_x ?? 0,
-			deltaY: body.delta_y ?? 0,
-		};
+	return {
+		...base,
+		action: "type",
+		frameId: body.frame_id,
+		ref: body.ref,
+		text: body.text,
+	};
+}
+
+function parseKeyControlInput(
+	body: ControlInput,
+	base: ControlBase,
+): ControlAction<"key"> {
+	if (!body.key) throw new Error("key requires a key value.");
+	return { ...base, action: "key", key: body.key };
+}
+
+function parseScrollControlInput(
+	body: ControlInput,
+	base: ControlBase,
+): ControlAction<"scroll"> {
+	if (body.delta_x === undefined && body.delta_y === undefined) {
+		throw new Error("scroll requires delta_x or delta_y.");
 	}
-	if (body.action === "navigate") {
-		if (!body.path) throw new Error("navigate requires a Preview-local path.");
-		return { ...base, action: "navigate", path: body.path };
+	return {
+		...base,
+		action: "scroll",
+		deltaX: body.delta_x ?? 0,
+		deltaY: body.delta_y ?? 0,
+	};
+}
+
+function parseNavigateControlInput(
+	body: ControlInput,
+	base: ControlBase,
+): ControlAction<"navigate"> {
+	if (!body.path) throw new Error("navigate requires a Preview-local path.");
+	return { ...base, action: "navigate", path: body.path };
+}
+
+function parseViewportControlInput(
+	body: ControlInput,
+	base: ControlBase,
+): ControlAction<"viewport"> {
+	if (!body.viewport) throw new Error("viewport requires a named viewport.");
+	return { ...base, action: "viewport", viewport: body.viewport };
+}
+
+export function parseControlInput(
+	body: ControlInput,
+	base: ControlBase,
+): ProjectPreviewControlAction {
+	switch (body.action) {
+		case "click":
+			return parseClickControlInput(body, base);
+		case "type":
+			return parseTypeControlInput(body, base);
+		case "key":
+			return parseKeyControlInput(body, base);
+		case "scroll":
+			return parseScrollControlInput(body, base);
+		case "navigate":
+			return parseNavigateControlInput(body, base);
+		case "viewport":
+			return parseViewportControlInput(body, base);
+		case "reload":
+			return { ...base, action: "reload" };
 	}
-	if (body.action === "viewport") {
-		if (!body.viewport) throw new Error("viewport requires a named viewport.");
-		return { ...base, action: "viewport", viewport: body.viewport };
-	}
-	return { ...base, action: body.action };
 }
 
 function errorResponse(error: unknown): Response {

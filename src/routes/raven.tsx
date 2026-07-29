@@ -157,8 +157,13 @@ import { voiceInputPresentation } from "#/lib/voiceInputPresentation";
 import {
 	type ChatAttachment,
 	decisionFromScope,
+	type ErrorMessage,
+	type GoalErrorMessage,
 	type GoalState,
+	type GoalStateMessage,
+	type McpStatusMessage,
 	type RateLimitMessage,
+	type SlashCommandsMessage,
 	type WorkflowCatalogMessage,
 	type WorkflowDeleteResultMessage,
 	type WorkflowSaveResultMessage,
@@ -667,99 +672,174 @@ function useRavenChatRuntime({
 		historyReadyRef,
 		setRateLimit,
 	});
-	const handleAllMessages = useCallback(
-		(message: Parameters<typeof handleWsMessage>[0]) => {
-			if (message.type === "goal_state") {
-				if (expectedProviderId && !isCodexRuntimeProvider(expectedProviderId))
-					return;
-				if (
-					canonicalSessionId(message.session_id) !==
-					canonicalSessionId(sessionIdRef.current)
-				)
-					return;
-				setGoal(message.goal);
-				if (
-					goalStartPendingRef.current ||
-					message.request_id === goalRequestIdRef.current
-				) {
-					goalStartPendingRef.current = false;
-					goalRequestIdRef.current = null;
-					setGoalPending(false);
-					setGoalError(null);
-				}
+	const handleGoalStateMessage = useCallback(
+		function handleGoalStateMessage(message: GoalStateMessage) {
+			if (expectedProviderId && !isCodexRuntimeProvider(expectedProviderId))
 				return;
+			if (
+				canonicalSessionId(message.session_id) !==
+				canonicalSessionId(sessionIdRef.current)
+			)
+				return;
+			setGoal(message.goal);
+			if (
+				!goalStartPendingRef.current &&
+				message.request_id !== goalRequestIdRef.current
+			)
+				return;
+			goalStartPendingRef.current = false;
+			goalRequestIdRef.current = null;
+			setGoalPending(false);
+			setGoalError(null);
+		},
+		[expectedProviderId, sessionIdRef],
+	);
+	const handleGoalErrorMessage = useCallback(
+		function handleGoalErrorMessage(message: GoalErrorMessage) {
+			if (
+				canonicalSessionId(message.session_id) !==
+					canonicalSessionId(sessionIdRef.current) ||
+				message.request_id !== goalRequestIdRef.current
+			)
+				return;
+			goalRequestIdRef.current = null;
+			setGoalPending(false);
+			setGoalError(message.message);
+		},
+		[sessionIdRef],
+	);
+	const handlePendingGoalRuntimeError = useCallback(
+		function handlePendingGoalRuntimeError(message: ErrorMessage) {
+			if (!goalStartPendingRef.current) return;
+			goalStartPendingRef.current = false;
+			setGoal(null);
+			setGoalPending(false);
+			setGoalError(message.message);
+		},
+		[],
+	);
+	const handleGoalMessage = useCallback(
+		function handleGoalMessage(message: Parameters<typeof handleWsMessage>[0]) {
+			if (message.type === "goal_state") {
+				handleGoalStateMessage(message);
+				return true;
 			}
 			if (message.type === "goal_error") {
-				if (
-					canonicalSessionId(message.session_id) !==
-						canonicalSessionId(sessionIdRef.current) ||
-					message.request_id !== goalRequestIdRef.current
-				)
-					return;
-				goalRequestIdRef.current = null;
-				setGoalPending(false);
-				setGoalError(message.message);
+				handleGoalErrorMessage(message);
+				return true;
+			}
+			if (message.type === "error") {
+				handlePendingGoalRuntimeError(message);
+			}
+			return false;
+		},
+		[
+			handleGoalErrorMessage,
+			handleGoalStateMessage,
+			handlePendingGoalRuntimeError,
+		],
+	);
+	const handleMcpStatusMessage = useCallback(
+		function handleMcpStatusMessage(message: McpStatusMessage) {
+			if ((message.agent_cwd ?? "") !== (agentCwd ?? "")) return;
+			const messageProviderId =
+				message.provider_id ?? message.servers[0]?.provider_id;
+			if (
+				expectedProviderId &&
+				messageProviderId &&
+				messageProviderId !== expectedProviderId
+			)
 				return;
-			}
-			if (message.type === "error" && goalStartPendingRef.current) {
-				goalStartPendingRef.current = false;
-				setGoal(null);
-				setGoalPending(false);
-				setGoalError(message.message);
-			}
+			setMcpServers(
+				message.servers.map((server) =>
+					mapMcpServer({
+						...server,
+						providerId: server.provider_id ?? message.provider_id,
+					}),
+				),
+			);
+		},
+		[agentCwd, expectedProviderId],
+	);
+	const handleSlashCommandsMessage = useCallback(
+		function handleSlashCommandsMessage(message: SlashCommandsMessage) {
+			if ((message.agent_cwd ?? "") !== (agentCwd ?? "")) return;
+			setSdkSlashCommands(message.commands);
+			setSdkSlashCommandProviderId(message.provider_id);
+		},
+		[agentCwd],
+	);
+	const handleWorkflowCatalogMessage = useCallback(
+		function handleWorkflowCatalogMessage(message: WorkflowCatalogMessage) {
+			if ((message.agent_cwd ?? "") !== (agentCwd ?? "")) return;
+			if (expectedProviderId && message.provider_id !== expectedProviderId)
+				return;
+			setWorkflowCatalog({
+				workflows: message.workflows,
+				locations: message.locations,
+			});
+			setWorkflowCatalogProviderId(message.provider_id);
+			setWorkflowCatalogAgentCwd(message.agent_cwd ?? null);
+		},
+		[agentCwd, expectedProviderId],
+	);
+	const handleRuntimeMetadataMessage = useCallback(
+		function handleRuntimeMetadataMessage(
+			message: Parameters<typeof handleWsMessage>[0],
+		) {
 			if (message.type === "mcp_status") {
-				if ((message.agent_cwd ?? "") !== (agentCwd ?? "")) return;
-				const messageProviderId =
-					message.provider_id ?? message.servers[0]?.provider_id;
-				if (
-					expectedProviderId &&
-					messageProviderId &&
-					messageProviderId !== expectedProviderId
-				)
-					return;
-				setMcpServers(
-					message.servers.map((server) =>
-						mapMcpServer({
-							...server,
-							providerId: server.provider_id ?? message.provider_id,
-						}),
-					),
-				);
-				return;
+				handleMcpStatusMessage(message);
+				return true;
 			}
 			if (message.type === "slash_commands") {
-				if ((message.agent_cwd ?? "") !== (agentCwd ?? "")) return;
-				setSdkSlashCommands(message.commands);
-				setSdkSlashCommandProviderId(message.provider_id);
-				return;
+				handleSlashCommandsMessage(message);
+				return true;
 			}
 			if (message.type === "workflow_catalog") {
-				if ((message.agent_cwd ?? "") !== (agentCwd ?? "")) return;
-				if (expectedProviderId && message.provider_id !== expectedProviderId)
-					return;
-				setWorkflowCatalog({
-					workflows: message.workflows,
-					locations: message.locations,
-				});
-				setWorkflowCatalogProviderId(message.provider_id);
-				setWorkflowCatalogAgentCwd(message.agent_cwd ?? null);
-				return;
+				handleWorkflowCatalogMessage(message);
+				return true;
 			}
-			if (message.type === "workflow_save_result") {
-				setWorkflowSaveResult(message);
-				return;
+			return false;
+		},
+		[
+			handleMcpStatusMessage,
+			handleSlashCommandsMessage,
+			handleWorkflowCatalogMessage,
+		],
+	);
+	const handleWorkflowResultMessage = useCallback(
+		function handleWorkflowResultMessage(
+			message: Parameters<typeof handleWsMessage>[0],
+		) {
+			switch (message.type) {
+				case "workflow_save_result":
+					setWorkflowSaveResult(message);
+					return true;
+				case "workflow_delete_result":
+					setWorkflowDeleteResult(message);
+					return true;
+				case "workflow_source_result":
+					setWorkflowSourceResult(message);
+					return true;
+				default:
+					return false;
 			}
-			if (message.type === "workflow_delete_result") {
-				setWorkflowDeleteResult(message);
-				return;
-			}
-			if (message.type === "workflow_source_result") {
-				setWorkflowSourceResult(message);
-				return;
-			}
+		},
+		[],
+	);
+	const handleAllMessages = useCallback(
+		function handleAllMessages(message: Parameters<typeof handleWsMessage>[0]) {
+			if (handleGoalMessage(message)) return;
+			if (handleRuntimeMetadataMessage(message)) return;
+			if (handleWorkflowResultMessage(message)) return;
 			handleWsMessage(message);
 		},
-		[handleWsMessage, agentCwd, expectedProviderId, sessionIdRef],
+		[
+			handleGoalMessage,
+			handleRuntimeMetadataMessage,
+			handleWorkflowResultMessage,
+			handleWsMessage,
+		],
 	);
 	const connection = useWs(handleAllMessages);
 	const controlGoal = useCallback(

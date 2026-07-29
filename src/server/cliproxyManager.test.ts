@@ -1,7 +1,17 @@
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	existsSync,
+	mkdirSync,
+	mkdtempSync,
+	readdirSync,
+	readFileSync,
+	rmSync,
+	symlinkSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HlidConfigSchema } from "../config";
 import {
@@ -19,6 +29,105 @@ import {
 } from "./cliproxyManager";
 
 const temporaryRoots: string[] = [];
+
+function temporaryRoot(): string {
+	const root = mkdtempSync(join(tmpdir(), "hlid-cliproxy-test-"));
+	temporaryRoots.push(root);
+	return root;
+}
+
+function managedConfig() {
+	return HlidConfigSchema.parse({
+		cliproxy: { enabled: true, mode: "managed" },
+	}).cliproxy;
+}
+
+function writePriorInstall(root: string) {
+	const installDir = join(root, "versions", "7.2.87-prior");
+	const executable = join(installDir, "cli-proxy-api.exe");
+	const linuxExecutable = join(installDir, "cli-proxy-api");
+	mkdirSync(installDir, { recursive: true });
+	writeFileSync(executable, "prior-windows");
+	writeFileSync(linuxExecutable, "prior-linux");
+	const prior = {
+		version: "7.2.87",
+		installDir,
+		executable,
+		linuxExecutable,
+		clientKey: "retained-client-key",
+	};
+	writeFileSync(join(root, "managed.json"), JSON.stringify(prior, null, 2));
+	return prior;
+}
+
+function createInstallOperations(
+	options: {
+		windowsExitCode?: number;
+		linuxExitCode?: number;
+		windowsChecksumMatches?: boolean;
+	} = {},
+) {
+	const windowsArchive = Buffer.from("verified-windows-archive");
+	const linuxArchive = Buffer.from("verified-linux-archive");
+	const digest = (value: Buffer) =>
+		createHash("sha256").update(value).digest("hex");
+	const windowsRelease = {
+		version: "test-version",
+		archiveName: "cliproxy.zip",
+		downloadUrl: "https://example.test/cliproxy.zip",
+		sha256:
+			options.windowsChecksumMatches === false
+				? "0".repeat(64)
+				: digest(windowsArchive),
+	};
+	const linuxRelease = {
+		version: "test-version",
+		archiveName: "cliproxy.tar.gz",
+		downloadUrl: "https://example.test/cliproxy.tar.gz",
+		sha256: digest(linuxArchive),
+	};
+	const runProcess = vi.fn(
+		async (executable: string, args: string[], _options: unknown) => {
+			if (executable === "powershell.exe") {
+				if (options.windowsExitCode !== undefined) {
+					return { output: "PowerShell failed", code: options.windowsExitCode };
+				}
+				const command = args.at(-1) ?? "";
+				const destination = command.match(/-DestinationPath '([^']+)'/)?.[1];
+				if (!destination) throw new Error("missing Windows extraction path");
+				mkdirSync(destination, { recursive: true });
+				writeFileSync(join(destination, "cli-proxy-api.exe"), "windows");
+				return { output: "", code: 0 };
+			}
+			if (options.linuxExitCode !== undefined) {
+				return { output: "tar failed", code: options.linuxExitCode };
+			}
+			const destination = args.at(-1);
+			if (!destination) throw new Error("missing Linux extraction path");
+			mkdirSync(destination, { recursive: true });
+			writeFileSync(join(destination, "cli-proxy-api"), "linux");
+			return { output: "", code: 0 };
+		},
+	);
+	return {
+		runProcess,
+		operations: {
+			release: (_arch?: NodeJS.Architecture, target = "windows") =>
+				target === "linux" ? linuxRelease : windowsRelease,
+			download: async (
+				url: string,
+				_limit: number,
+				onProgress?: (received: number, total: number | null) => void,
+			) => {
+				const archive =
+					url === linuxRelease.downloadUrl ? linuxArchive : windowsArchive;
+				onProgress?.(archive.byteLength, archive.byteLength);
+				return archive;
+			},
+			runProcess,
+		},
+	};
+}
 
 afterEach(() => {
 	for (const root of temporaryRoots.splice(0)) {
@@ -52,6 +161,172 @@ describe("CLIProxy release verification", () => {
 		expect(() => approvedCliProxyRelease("ia32")).toThrow(
 			"managed CLIProxy does not support ia32",
 		);
+	});
+});
+
+describe("managed CLIProxy installation", () => {
+	it("installs both targets atomically and removes the superseded version", async () => {
+		const root = temporaryRoot();
+		const prior = writePriorInstall(root);
+		const { operations, runProcess } = createInstallOperations();
+		const manager = new CliProxyManager(
+			managedConfig(),
+			root,
+			"win32",
+			() => false,
+			operations,
+		);
+		const stop = vi.spyOn(manager, "stop").mockResolvedValue();
+		const start = vi.spyOn(manager, "start").mockResolvedValue();
+
+		const install = manager.startInstall();
+
+		expect(install.status.state).toBe("downloading");
+		await install.completion;
+		const state = JSON.parse(
+			readFileSync(join(root, "managed.json"), "utf8"),
+		) as {
+			version: string;
+			installDir: string;
+			executable: string;
+			linuxExecutable: string;
+			clientKey: string;
+		};
+		expect(manager.status()).toMatchObject({
+			state: "installed",
+			installedVersion: "test-version",
+			wslInstalled: true,
+			versionMismatch: false,
+		});
+		expect(state).toMatchObject({
+			version: "test-version",
+			clientKey: prior.clientKey,
+		});
+		expect(existsSync(state.executable)).toBe(true);
+		expect(existsSync(state.linuxExecutable)).toBe(true);
+		expect(existsSync(prior.installDir)).toBe(false);
+		expect(readdirSync(join(root, "versions"))).toEqual([
+			basename(state.installDir),
+		]);
+		expect(readdirSync(root).some((entry) => entry.startsWith(".stage-"))).toBe(
+			false,
+		);
+		expect(stop).toHaveBeenCalledOnce();
+		expect(start).toHaveBeenCalledWith(true);
+		expect(runProcess).toHaveBeenCalledTimes(2);
+	});
+
+	it("restores and restarts the prior install when extraction fails", async () => {
+		const root = temporaryRoot();
+		const prior = writePriorInstall(root);
+		const { operations } = createInstallOperations({ windowsExitCode: 1 });
+		const manager = new CliProxyManager(
+			managedConfig(),
+			root,
+			"win32",
+			() => false,
+			operations,
+		);
+		vi.spyOn(manager, "stop").mockResolvedValue();
+		const start = vi.spyOn(manager, "start").mockResolvedValue();
+
+		const install = manager.startInstall();
+
+		await expect(install.completion).rejects.toThrow(
+			"PowerShell could not extract CLIProxy",
+		);
+		expect(
+			JSON.parse(readFileSync(join(root, "managed.json"), "utf8")),
+		).toEqual(prior);
+		expect(start).toHaveBeenCalledOnce();
+		expect(start).toHaveBeenCalledWith(true);
+		expect(readdirSync(join(root, "versions"))).toEqual([
+			basename(prior.installDir),
+		]);
+		expect(readdirSync(root).some((entry) => entry.startsWith(".stage-"))).toBe(
+			false,
+		);
+	});
+
+	it("removes a fresh install when its first startup fails", async () => {
+		const root = temporaryRoot();
+		const { operations } = createInstallOperations();
+		const manager = new CliProxyManager(
+			managedConfig(),
+			root,
+			"win32",
+			() => false,
+			operations,
+		);
+		vi.spyOn(manager, "stop").mockResolvedValue();
+		const start = vi
+			.spyOn(manager, "start")
+			.mockRejectedValue(new Error("startup failed"));
+
+		const install = manager.startInstall();
+
+		await expect(install.completion).rejects.toThrow("startup failed");
+		expect(manager.status()).toMatchObject({
+			state: "error",
+			error: "startup failed",
+			installedVersion: undefined,
+			wslInstalled: false,
+		});
+		expect(start).toHaveBeenCalledOnce();
+		expect(existsSync(join(root, "managed.json"))).toBe(false);
+		expect(existsSync(join(root, "config.yaml"))).toBe(false);
+		expect(readdirSync(join(root, "versions"))).toEqual([]);
+	});
+
+	it("removes the moved version when publishing install state fails", async () => {
+		const root = temporaryRoot();
+		symlinkSync(join(root, "missing-auth"), join(root, "auth"), "dir");
+		const { operations } = createInstallOperations();
+		const manager = new CliProxyManager(
+			managedConfig(),
+			root,
+			"win32",
+			() => false,
+			operations,
+		);
+		vi.spyOn(manager, "stop").mockResolvedValue();
+		const start = vi.spyOn(manager, "start").mockResolvedValue();
+
+		const install = manager.startInstall();
+
+		await expect(install.completion).rejects.toThrow();
+		expect(start).not.toHaveBeenCalled();
+		expect(existsSync(join(root, "managed.json"))).toBe(false);
+		expect(existsSync(join(root, "config.yaml"))).toBe(false);
+		expect(readdirSync(join(root, "versions"))).toEqual([]);
+		expect(readdirSync(root).some((entry) => entry.startsWith(".stage-"))).toBe(
+			false,
+		);
+	});
+
+	it("rejects an unverified archive before stopping the current install", async () => {
+		const root = temporaryRoot();
+		writePriorInstall(root);
+		const { operations, runProcess } = createInstallOperations({
+			windowsChecksumMatches: false,
+		});
+		const manager = new CliProxyManager(
+			managedConfig(),
+			root,
+			"win32",
+			() => false,
+			operations,
+		);
+		const stop = vi.spyOn(manager, "stop").mockResolvedValue();
+
+		const install = manager.startInstall();
+
+		await expect(install.completion).rejects.toThrow(
+			"download checksum did not match the approved release",
+		);
+		expect(stop).not.toHaveBeenCalled();
+		expect(runProcess).not.toHaveBeenCalled();
+		expect(manager.status().download).toBeUndefined();
 	});
 });
 
@@ -181,8 +456,7 @@ describe("managed CLIProxy configuration", () => {
 	});
 
 	it("reports every OAuth account found in the private auth directory", async () => {
-		const root = mkdtempSync(join(tmpdir(), "hlid-cliproxy-test-"));
-		temporaryRoots.push(root);
+		const root = temporaryRoot();
 		const auth = join(root, "auth");
 		mkdirSync(auth);
 		writeFileSync(join(auth, "openai.json"), JSON.stringify({ type: "codex" }));
@@ -211,8 +485,7 @@ describe("managed CLIProxy configuration", () => {
 	});
 
 	it("does not report expired or disabled OAuth files as connected", async () => {
-		const root = mkdtempSync(join(tmpdir(), "hlid-cliproxy-test-"));
-		temporaryRoots.push(root);
+		const root = temporaryRoot();
 		const auth = join(root, "auth");
 		mkdirSync(auth);
 		writeFileSync(
@@ -241,8 +514,7 @@ describe("managed CLIProxy configuration", () => {
 	});
 
 	it("refreshes account expiry while Hlid remains open", async () => {
-		const root = mkdtempSync(join(tmpdir(), "hlid-cliproxy-test-"));
-		temporaryRoots.push(root);
+		const root = temporaryRoot();
 		const auth = join(root, "auth");
 		mkdirSync(auth);
 		const authPath = join(auth, "claude.json");

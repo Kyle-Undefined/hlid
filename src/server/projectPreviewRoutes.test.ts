@@ -35,7 +35,171 @@ vi.mock("./projectPreviewBrowser", () => ({
 	},
 }));
 
-import { handleProjectPreviewRoute } from "./projectPreviewRoutes";
+import {
+	handleProjectPreviewRoute,
+	parseControlInput,
+} from "./projectPreviewRoutes";
+
+const controlBase = {
+	previewId: "7c0eea4d-f74e-45c8-8674-a535fbb4412b",
+	sessionId: "session-1",
+	port: 5173,
+	initialPath: "/app",
+};
+
+describe("Project Preview control input", () => {
+	it("maps every supported action to its browser action", () => {
+		const frameId = "e16b1643-591f-4d67-8c22-9df105659385";
+
+		expect(
+			parseControlInput(
+				{
+					session_id: "session-1",
+					action: "click",
+					frame_id: frameId,
+					ref: "e1",
+					x: 12,
+					y: 24,
+				},
+				controlBase,
+			),
+		).toEqual({
+			...controlBase,
+			action: "click",
+			frameId,
+			ref: "e1",
+		});
+		expect(
+			parseControlInput(
+				{
+					session_id: "session-1",
+					action: "click",
+					frame_id: frameId,
+					x: 0,
+					y: 0,
+				},
+				controlBase,
+			),
+		).toEqual({
+			...controlBase,
+			action: "click",
+			frameId,
+			x: 0,
+			y: 0,
+		});
+		expect(
+			parseControlInput(
+				{
+					session_id: "session-1",
+					action: "type",
+					frame_id: frameId,
+					ref: "e2",
+					text: "",
+				},
+				controlBase,
+			),
+		).toEqual({
+			...controlBase,
+			action: "type",
+			frameId,
+			ref: "e2",
+			text: "",
+		});
+		expect(
+			parseControlInput(
+				{ session_id: "session-1", action: "key", key: "Control+L" },
+				controlBase,
+			),
+		).toEqual({ ...controlBase, action: "key", key: "Control+L" });
+		expect(
+			parseControlInput(
+				{ session_id: "session-1", action: "scroll", delta_x: -10 },
+				controlBase,
+			),
+		).toEqual({ ...controlBase, action: "scroll", deltaX: -10, deltaY: 0 });
+		expect(
+			parseControlInput(
+				{ session_id: "session-1", action: "scroll", delta_y: 250 },
+				controlBase,
+			),
+		).toEqual({ ...controlBase, action: "scroll", deltaX: 0, deltaY: 250 });
+		expect(
+			parseControlInput(
+				{ session_id: "session-1", action: "navigate", path: "/settings" },
+				controlBase,
+			),
+		).toEqual({ ...controlBase, action: "navigate", path: "/settings" });
+		expect(
+			parseControlInput(
+				{ session_id: "session-1", action: "viewport", viewport: "mobile" },
+				controlBase,
+			),
+		).toEqual({ ...controlBase, action: "viewport", viewport: "mobile" });
+		expect(
+			parseControlInput(
+				{ session_id: "session-1", action: "reload" },
+				controlBase,
+			),
+		).toEqual({ ...controlBase, action: "reload" });
+	});
+
+	it.each([
+		[
+			{ session_id: "session-1", action: "click" },
+			"click requires frame_id and either ref or x and y coordinates.",
+		],
+		[
+			{
+				session_id: "session-1",
+				action: "click",
+				frame_id: "e16b1643-591f-4d67-8c22-9df105659385",
+				x: 10,
+			},
+			"click requires frame_id and either ref or x and y coordinates.",
+		],
+		[
+			{ session_id: "session-1", action: "type" },
+			"type requires frame_id, ref, and text.",
+		],
+		[
+			{
+				session_id: "session-1",
+				action: "type",
+				frame_id: "e16b1643-591f-4d67-8c22-9df105659385",
+			},
+			"type requires frame_id, ref, and text.",
+		],
+		[
+			{
+				session_id: "session-1",
+				action: "type",
+				frame_id: "e16b1643-591f-4d67-8c22-9df105659385",
+				ref: "e1",
+			},
+			"type requires frame_id, ref, and text.",
+		],
+		[{ session_id: "session-1", action: "key" }, "key requires a key value."],
+		[
+			{ session_id: "session-1", action: "scroll" },
+			"scroll requires delta_x or delta_y.",
+		],
+		[
+			{ session_id: "session-1", action: "navigate" },
+			"navigate requires a Preview-local path.",
+		],
+		[
+			{ session_id: "session-1", action: "viewport" },
+			"viewport requires a named viewport.",
+		],
+	] as const)("rejects incomplete control input %#", (input, message) => {
+		expect(() =>
+			parseControlInput(
+				input as Parameters<typeof parseControlInput>[0],
+				controlBase,
+			),
+		).toThrow(message);
+	});
+});
 
 describe("Project Preview capture route", () => {
 	beforeEach(() => {

@@ -33,6 +33,12 @@ type ApprovedRelease = {
 
 type ApprovedTarget = "windows" | "linux";
 
+type CliProxyInstallOperations = {
+	release: typeof approvedCliProxyRelease;
+	download: typeof boundedDownload;
+	runProcess: typeof runBoundedProcess;
+};
+
 // Managed CLIProxy releases advance only through reviewed Hlid changes. Keep the
 // archive digest here rather than trusting a checksum fetched beside the binary.
 const APPROVED_RELEASES: Record<
@@ -232,6 +238,11 @@ export function windowsSystemExecutable(
 
 const WSL_DISTRO_RE = /^[A-Za-z0-9._-]+$/;
 const WSL_LAUNCH_SCRIPT = 'printf "%s" "$$" > "$1"; exec "$2" --config "$3"';
+const DEFAULT_INSTALL_OPERATIONS: CliProxyInstallOperations = {
+	release: approvedCliProxyRelease,
+	download: boundedDownload,
+	runProcess: runBoundedProcess,
+};
 
 export function wslCliProxyLaunchArgs(
 	distro: string,
@@ -412,6 +423,7 @@ export class CliProxyManager {
 		private readonly root = CLIPROXY_DIR,
 		private readonly platform = process.platform,
 		private readonly browserOpen: (url: string) => boolean = openInBrowser,
+		private readonly installOperations = DEFAULT_INSTALL_OPERATIONS,
 	) {
 		this.config = config;
 		const installed = this.installed();
@@ -675,44 +687,75 @@ export class CliProxyManager {
 		return { status: this.status(), completion: this.operation };
 	}
 
-	private async installInner(): Promise<void> {
-		const prior = this.installed();
-		const priorWasRunning = Boolean(
-			this.runtime && this.runtime.exitCode === null,
-		);
-		this.statusValue = {
-			...this.statusValue,
-			state: "downloading",
-			error: undefined,
-			download: { received: 0, total: null },
-		};
-		const selected = approvedCliProxyRelease();
-		const linuxSelected = approvedCliProxyRelease(process.arch, "linux");
-		const archive = await boundedDownload(
-			selected.downloadUrl,
+	private async downloadRelease(
+		release: ApprovedRelease,
+		checksumError: string,
+	): Promise<Buffer> {
+		const archive = await this.installOperations.download(
+			release.downloadUrl,
 			MAX_ARCHIVE_BYTES,
 			(received, total) => {
 				this.statusValue.download = { received, total };
 			},
 		);
 		const actual = createHash("sha256").update(archive).digest("hex");
-		if (actual !== selected.sha256)
-			throw new Error("download checksum did not match the approved release");
-		const linuxArchive = await boundedDownload(
-			linuxSelected.downloadUrl,
-			MAX_ARCHIVE_BYTES,
-			(received, total) => {
-				this.statusValue.download = { received, total };
-			},
-		);
-		const linuxActual = createHash("sha256").update(linuxArchive).digest("hex");
-		if (linuxActual !== linuxSelected.sha256) {
-			throw new Error(
-				"WSL download checksum did not match the approved release",
-			);
-		}
+		if (actual !== release.sha256) throw new Error(checksumError);
+		return archive;
+	}
 
-		await this.stop();
+	private async rollbackInstall(
+		prior: InstalledState | null,
+		priorWasRunning: boolean,
+	): Promise<void> {
+		const failed = this.installed();
+		if (prior) {
+			writeFileSync(this.statePath, JSON.stringify(prior, null, 2), {
+				mode: 0o600,
+			});
+			writeFileSync(
+				this.configPath,
+				managedCliProxyConfig(this.authDir, prior.clientKey),
+				{ mode: 0o600 },
+			);
+			this.statusValue.installedVersion = prior.version;
+			this.statusValue.wslInstalled = Boolean(prior.linuxExecutable);
+			if (
+				priorWasRunning ||
+				(this.config.mode === "managed" && this.config.enabled)
+			) {
+				await this.start(true).catch(() => {});
+			}
+		} else {
+			rmSync(this.statePath, { force: true });
+			rmSync(this.configPath, { force: true });
+			this.statusValue.installedVersion = undefined;
+			this.statusValue.wslInstalled = false;
+		}
+		if (failed && failed.executable !== prior?.executable) {
+			rmSync(failed.installDir, { recursive: true, force: true });
+		}
+	}
+
+	private removeSupersededVersions(): void {
+		const current = this.installed();
+		const versionsDir = join(this.root, "versions");
+		if (!current || !existsSync(versionsDir)) return;
+		for (const entry of readdirSync(versionsDir, { withFileTypes: true })) {
+			if (!entry.isDirectory()) continue;
+			const candidate = join(versionsDir, entry.name);
+			if (candidate !== current.installDir) {
+				rmSync(candidate, { recursive: true, force: true });
+			}
+		}
+	}
+
+	private async stageInstall(
+		selected: ApprovedRelease,
+		archive: Buffer,
+		linuxSelected: ApprovedRelease,
+		linuxArchive: Buffer,
+		prior: InstalledState | null,
+	): Promise<void> {
 		mkdirSync(this.root, { recursive: true });
 		const stage = join(this.root, `.stage-${randomBytes(8).toString("hex")}`);
 		const archivePath = join(stage, selected.archiveName);
@@ -724,9 +767,10 @@ export class CliProxyManager {
 		mkdirSync(linuxExtractPath, { recursive: true });
 		writeFileSync(archivePath, archive, { mode: 0o600 });
 		writeFileSync(linuxArchivePath, linuxArchive, { mode: 0o600 });
+		let movedVersionDir: string | null = null;
 		try {
 			const literal = (value: string) => `'${value.replaceAll("'", "''")}'`;
-			const result = await runBoundedProcess(
+			const result = await this.installOperations.runProcess(
 				"powershell.exe",
 				[
 					"-NoProfile",
@@ -738,7 +782,7 @@ export class CliProxyManager {
 			);
 			if (result.code !== 0)
 				throw new Error("PowerShell could not extract CLIProxy");
-			const linuxResult = await runBoundedProcess(
+			const linuxResult = await this.installOperations.runProcess(
 				windowsSystemExecutable("tar.exe"),
 				["-xzf", linuxArchivePath, "-C", linuxExtractPath],
 				{
@@ -765,6 +809,7 @@ export class CliProxyManager {
 			);
 			mkdirSync(dirname(versionDir), { recursive: true });
 			renameSync(extractPath, versionDir);
+			movedVersionDir = versionDir;
 			const executable = join(
 				versionDir,
 				relative(extractPath, stagedExecutable),
@@ -806,52 +851,53 @@ export class CliProxyManager {
 				wslInstalled: true,
 				download: undefined,
 			};
+		} catch (error) {
+			if (movedVersionDir) {
+				rmSync(movedVersionDir, { recursive: true, force: true });
+			}
+			throw error;
 		} finally {
 			rmSync(stage, { recursive: true, force: true });
 		}
+	}
+
+	private async installInner(): Promise<void> {
+		const prior = this.installed();
+		const priorWasRunning = Boolean(
+			this.runtime && this.runtime.exitCode === null,
+		);
+		this.statusValue = {
+			...this.statusValue,
+			state: "downloading",
+			error: undefined,
+			download: { received: 0, total: null },
+		};
+		const selected = this.installOperations.release();
+		const linuxSelected = this.installOperations.release(process.arch, "linux");
+		const archive = await this.downloadRelease(
+			selected,
+			"download checksum did not match the approved release",
+		);
+		const linuxArchive = await this.downloadRelease(
+			linuxSelected,
+			"WSL download checksum did not match the approved release",
+		);
+
+		await this.stop();
 		try {
+			await this.stageInstall(
+				selected,
+				archive,
+				linuxSelected,
+				linuxArchive,
+				prior,
+			);
 			await this.start(true);
 		} catch (error) {
-			const failed = this.installed();
-			if (prior) {
-				writeFileSync(this.statePath, JSON.stringify(prior, null, 2), {
-					mode: 0o600,
-				});
-				writeFileSync(
-					this.configPath,
-					managedCliProxyConfig(this.authDir, prior.clientKey),
-					{ mode: 0o600 },
-				);
-				this.statusValue.installedVersion = prior.version;
-				this.statusValue.wslInstalled = Boolean(prior.linuxExecutable);
-				if (
-					priorWasRunning ||
-					(this.config.mode === "managed" && this.config.enabled)
-				) {
-					await this.start(true).catch(() => {});
-				}
-			} else {
-				rmSync(this.statePath, { force: true });
-				rmSync(this.configPath, { force: true });
-				this.statusValue.installedVersion = undefined;
-				this.statusValue.wslInstalled = false;
-			}
-			if (failed && failed.executable !== prior?.executable) {
-				rmSync(failed.installDir, { recursive: true, force: true });
-			}
+			await this.rollbackInstall(prior, priorWasRunning);
 			throw error;
 		}
-		const current = this.installed();
-		const versionsDir = join(this.root, "versions");
-		if (current && existsSync(versionsDir)) {
-			for (const entry of readdirSync(versionsDir, { withFileTypes: true })) {
-				if (!entry.isDirectory()) continue;
-				const candidate = join(versionsDir, entry.name);
-				if (candidate !== current.installDir) {
-					rmSync(candidate, { recursive: true, force: true });
-				}
-			}
-		}
+		this.removeSupersededVersions();
 	}
 
 	async start(force = false): Promise<void> {

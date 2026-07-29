@@ -82,6 +82,76 @@ type BrowserCandidate = {
 	executablePath: string;
 };
 
+type BrowserProfileRoot = "local" | "roaming";
+type WindowsBrowserProfile = {
+	root: BrowserProfileRoot;
+	segments: readonly string[];
+};
+
+const WINDOWS_BROWSER_PROFILES: Readonly<
+	Record<string, WindowsBrowserProfile>
+> = {
+	"brave.exe": {
+		root: "local",
+		segments: ["BraveSoftware", "Brave-Browser", "User Data"],
+	},
+	"chrome.exe": {
+		root: "local",
+		segments: ["Google", "Chrome", "User Data"],
+	},
+	"chromium.exe": {
+		root: "local",
+		segments: ["Chromium", "User Data"],
+	},
+	"msedge.exe": {
+		root: "local",
+		segments: ["Microsoft", "Edge", "User Data"],
+	},
+	"vivaldi.exe": {
+		root: "local",
+		segments: ["Vivaldi", "User Data"],
+	},
+	"opera.exe": {
+		root: "roaming",
+		segments: ["Opera Software", "Opera Stable"],
+	},
+};
+
+const LINUX_BROWSER_PROFILES: Readonly<Record<string, readonly string[]>> = {
+	brave: ["BraveSoftware", "Brave-Browser"],
+	"brave-browser": ["BraveSoftware", "Brave-Browser"],
+	"google-chrome": ["google-chrome"],
+	"google-chrome-stable": ["google-chrome"],
+	chromium: ["chromium"],
+	"chromium-browser": ["chromium"],
+	"microsoft-edge": ["microsoft-edge"],
+	"microsoft-edge-stable": ["microsoft-edge"],
+	vivaldi: ["vivaldi"],
+};
+
+function windowsBrowserUserDataDir(
+	executable: string,
+	env: NodeJS.ProcessEnv,
+): string | null {
+	if (!Object.hasOwn(WINDOWS_BROWSER_PROFILES, executable)) return null;
+	const profile = WINDOWS_BROWSER_PROFILES[executable];
+	const root = profile.root === "local" ? env.LOCALAPPDATA : env.APPDATA;
+	return root ? win32.join(root, ...profile.segments) : null;
+}
+
+function linuxBrowserUserDataDir(
+	executable: string,
+	env: NodeJS.ProcessEnv,
+): string | null {
+	if (!Object.hasOwn(LINUX_BROWSER_PROFILES, executable)) return null;
+	const segments = LINUX_BROWSER_PROFILES[executable];
+	const configHome =
+		env.CHROME_CONFIG_HOME ??
+		env.XDG_CONFIG_HOME ??
+		join(env.HOME ?? homedir(), ".config");
+	return join(configHome, ...segments);
+}
+
 export function projectPreviewBrowserUserDataDir(
 	executablePath: string,
 	platform: NodeJS.Platform = process.platform,
@@ -90,54 +160,10 @@ export function projectPreviewBrowserUserDataDir(
 	const executable =
 		executablePath.replace(/\\/g, "/").split("/").at(-1)?.toLowerCase() ?? "";
 	if (platform === "win32") {
-		const local = env.LOCALAPPDATA;
-		const roaming = env.APPDATA;
-		if (executable === "brave.exe" && local) {
-			return win32.join(local, "BraveSoftware", "Brave-Browser", "User Data");
-		}
-		if (executable === "chrome.exe" && local) {
-			return win32.join(local, "Google", "Chrome", "User Data");
-		}
-		if (executable === "chromium.exe" && local) {
-			return win32.join(local, "Chromium", "User Data");
-		}
-		if (executable === "msedge.exe" && local) {
-			return win32.join(local, "Microsoft", "Edge", "User Data");
-		}
-		if (executable === "vivaldi.exe" && local) {
-			return win32.join(local, "Vivaldi", "User Data");
-		}
-		if (executable === "opera.exe" && roaming) {
-			return win32.join(roaming, "Opera Software", "Opera Stable");
-		}
-		return null;
+		return windowsBrowserUserDataDir(executable, env);
 	}
 	if (platform === "linux") {
-		const configHome =
-			env.CHROME_CONFIG_HOME ??
-			env.XDG_CONFIG_HOME ??
-			join(env.HOME ?? homedir(), ".config");
-		if (executable === "brave" || executable === "brave-browser") {
-			return join(configHome, "BraveSoftware", "Brave-Browser");
-		}
-		if (executable === "google-chrome") {
-			return join(configHome, "google-chrome");
-		}
-		if (executable === "google-chrome-stable") {
-			return join(configHome, "google-chrome");
-		}
-		if (executable === "chromium" || executable === "chromium-browser") {
-			return join(configHome, "chromium");
-		}
-		if (
-			executable === "microsoft-edge" ||
-			executable === "microsoft-edge-stable"
-		) {
-			return join(configHome, "microsoft-edge");
-		}
-		if (executable === "vivaldi") {
-			return join(configHome, "vivaldi");
-		}
+		return linuxBrowserUserDataDir(executable, env);
 	}
 	return null;
 }

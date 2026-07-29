@@ -34,6 +34,7 @@ const state = vi.hoisted(() => ({
 	permissionMode: "default",
 	sessions: [] as unknown[],
 	onMessage: null as ((message: ServerMessage) => void) | null,
+	handleChatWsMessage: vi.fn(),
 	onAgentChange: null as ((value: string) => void) | null,
 	voiceOptions: null as null | {
 		onAudioTurn?: (audio: Blob) => void | Promise<void>;
@@ -132,7 +133,7 @@ vi.mock("#/components/usage/UsageWindowSections", () => ({
 }));
 
 vi.mock("#/hooks/useChatWsHandler", () => ({
-	useChatWsHandler: () => vi.fn(),
+	useChatWsHandler: () => state.handleChatWsMessage,
 }));
 vi.mock("#/hooks/useLoadChatHistory", () => ({ useLoadChatHistory: vi.fn() }));
 vi.mock("#/hooks/projectPreviewStore", () => ({
@@ -209,6 +210,13 @@ vi.mock("#/hooks/wsLiveStatsStore", () => ({
 vi.mock("#/hooks/wsSessionStatusStore", () => ({
 	subscribeSessionsStatus: () => () => {},
 	getSessionsStatus: () => state.sessions,
+	canonicalSessionId: (sessionId: string) => {
+		const status = (state.sessions as SessionStatusEntry[]).find(
+			(session) =>
+				session.session_id === sessionId || session.db_session_id === sessionId,
+		);
+		return status?.db_session_id ?? status?.session_id ?? sessionId;
+	},
 }));
 vi.mock("#/lib/serverFns/sessions", () => ({
 	ensureSessionFn: vi.fn(),
@@ -269,6 +277,7 @@ beforeEach(() => {
 	state.permissionMode = "default";
 	state.sessions = [];
 	state.onMessage = null;
+	state.handleChatWsMessage.mockReset();
 	state.onAgentChange = null;
 	state.voiceOptions = null;
 	state.uploadVoiceRecording.mockResolvedValue({
@@ -1607,6 +1616,237 @@ describe("Raven composed submission behavior", () => {
 		expect(
 			screen.getByRole("button", { name: "MCP server status" }).textContent,
 		).toContain("0");
+	});
+
+	it("routes matching Codex goal messages without leaking them into chat", () => {
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as Record<string, unknown>),
+				vault_provider: "codex",
+				codex: { model: "gpt-5.6-sol" },
+			},
+			existingSessionId: "goal-session",
+			isExplicitSession: true,
+			sessionProviderId: "codex",
+			providers: [
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					models: [{ value: "gpt-5.6-sol", label: "Sol" }],
+				},
+			],
+		};
+		render(<ChatPage />);
+		state.handleChatWsMessage.mockClear();
+		const goalGetRequest = state.send.mock.calls.find(
+			([message]) =>
+				message.type === "goal_control" && message.action === "get",
+		)?.[0];
+		expect(goalGetRequest?.request_id).toEqual(expect.any(String));
+
+		const goal = {
+			thread_id: "thread-1",
+			objective: "Finish the advisory cleanup",
+			status: "active" as const,
+			token_budget: 10_000,
+			tokens_used: 250,
+			time_used_seconds: 30,
+			created_at: 1_700_000_000,
+			updated_at: Math.floor(Date.now() / 1_000),
+		};
+		act(() => {
+			state.onMessage?.({
+				type: "goal_state",
+				session_id: "other-session",
+				provider_id: "codex",
+				goal: { ...goal, objective: "Wrong session" },
+			});
+		});
+		expect(screen.queryByText("Wrong session")).toBeNull();
+
+		act(() => {
+			state.onMessage?.({
+				type: "goal_state",
+				session_id: "goal-session",
+				provider_id: "codex",
+				request_id: goalGetRequest?.request_id,
+				goal,
+			});
+		});
+		expect(screen.getByText("Finish the advisory cleanup")).toBeTruthy();
+
+		state.send.mockClear();
+		fireEvent.click(screen.getByRole("button", { name: "Pause goal" }));
+		const pauseRequest = state.send.mock.calls.find(
+			([message]) =>
+				message.type === "goal_control" && message.action === "pause",
+		)?.[0];
+		expect(pauseRequest).toEqual(
+			expect.objectContaining({
+				type: "goal_control",
+				request_id: expect.any(String),
+				session_id: "goal-session",
+				action: "pause",
+			}),
+		);
+
+		act(() => {
+			state.onMessage?.({
+				type: "goal_error",
+				session_id: "goal-session",
+				request_id: "not-the-active-request",
+				message: "Ignore this error",
+			});
+		});
+		expect(screen.queryByText("Ignore this error")).toBeNull();
+
+		act(() => {
+			state.onMessage?.({
+				type: "goal_error",
+				session_id: "goal-session",
+				request_id: pauseRequest?.request_id ?? "",
+				message: "Pause failed",
+			});
+		});
+		expect(screen.getByText("Pause failed")).toBeTruthy();
+		expect(state.handleChatWsMessage).not.toHaveBeenCalled();
+	});
+
+	it("keeps Raven metadata and workflow results out of the chat handler", () => {
+		render(<ChatPage />);
+		state.handleChatWsMessage.mockClear();
+
+		act(() => {
+			state.onMessage?.({
+				type: "slash_commands",
+				provider_id: "claude",
+				commands: [
+					{
+						name: "diagnose",
+						description: "Diagnose the current issue",
+						argumentHint: "[scope]",
+					},
+				],
+			});
+			state.onMessage?.({
+				type: "workflow_catalog",
+				provider_id: "claude",
+				workflows: [
+					{
+						id: "saved-audit",
+						name: "saved-audit",
+						description: "Audit the project",
+						argumentHint: "[input]",
+						scriptPath: "/project/.claude/workflows/saved-audit.js",
+						scope: "project",
+						scopeLabel: "Project",
+						availableAsCommand: true,
+					},
+				],
+				locations: [],
+			});
+			state.onMessage?.({
+				type: "workflow_save_result",
+				request_id: "save-1",
+			});
+			state.onMessage?.({
+				type: "workflow_delete_result",
+				request_id: "delete-1",
+			});
+			state.onMessage?.({
+				type: "workflow_source_result",
+				request_id: "source-1",
+				script_path: "/project/.claude/workflows/saved-audit.js",
+				source: "export default async function audit() {}",
+			});
+		});
+
+		fireEvent.change(screen.getByRole("combobox"), {
+			target: { value: "/diag" },
+		});
+		expect(
+			screen.getByRole("button", { name: "Select /diagnose" }),
+		).toBeTruthy();
+		expect(state.handleChatWsMessage).not.toHaveBeenCalled();
+
+		const runtimeError = {
+			type: "error" as const,
+			message: "Provider runtime failed",
+		};
+		act(() => state.onMessage?.(runtimeError));
+		expect(state.handleChatWsMessage).toHaveBeenCalledWith(runtimeError);
+	});
+
+	it("shows a pending goal-start error while still forwarding the runtime error", () => {
+		state.loaderData = {
+			...state.loaderData,
+			config: {
+				...(state.loaderData.config as Record<string, unknown>),
+				vault_provider: "codex",
+				codex: { model: "gpt-5.6-sol" },
+			},
+			existingSessionId: "goal-session",
+			isExplicitSession: true,
+			sessionProviderId: "codex",
+			providers: [
+				{
+					id: "codex",
+					label: "Codex",
+					available: true,
+					models: [{ value: "gpt-5.6-sol", label: "Sol" }],
+				},
+			],
+		};
+		render(<ChatPage />);
+		const goalGetRequest = state.send.mock.calls.find(
+			([message]) =>
+				message.type === "goal_control" && message.action === "get",
+		)?.[0];
+		act(() => {
+			state.onMessage?.({
+				type: "goal_state",
+				session_id: "goal-session",
+				provider_id: "codex",
+				request_id: goalGetRequest?.request_id,
+				goal: null,
+			});
+			state.onMessage?.({
+				type: "slash_commands",
+				provider_id: "codex",
+				commands: [
+					{
+						name: "goal",
+						description: "Control the Codex goal",
+						argumentHint: "[objective]",
+						action: "goal",
+					},
+				],
+			});
+		});
+
+		const composer = screen.getByRole("combobox");
+		fireEvent.change(composer, { target: { value: "/goal" } });
+		fireEvent.click(screen.getByRole("button", { name: "Select /goal" }));
+		fireEvent.click(screen.getByRole("button", { name: "Send" }));
+
+		fireEvent.change(screen.getByRole("textbox", { name: "Goal objective" }), {
+			target: { value: "Finish the Raven cleanup" },
+		});
+		fireEvent.click(screen.getByRole("button", { name: "Save" }));
+		expect(screen.getByText("Finish the Raven cleanup")).toBeTruthy();
+
+		state.handleChatWsMessage.mockClear();
+		const runtimeError = {
+			type: "error" as const,
+			message: "Goal startup failed",
+		};
+		act(() => state.onMessage?.(runtimeError));
+
+		expect(screen.getByText("Goal startup failed")).toBeTruthy();
+		expect(screen.queryByText("Finish the Raven cleanup")).toBeNull();
+		expect(state.handleChatWsMessage).toHaveBeenCalledWith(runtimeError);
 	});
 
 	it("sends an idle message through the WebSocket boundary", () => {
