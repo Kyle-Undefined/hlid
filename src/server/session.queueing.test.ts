@@ -252,6 +252,7 @@ describe("SessionManager — runQuery queueing", () => {
 		expect(emitted).toContainEqual({
 			type: "error",
 			message: "real provider failure",
+			turn_scoped: true,
 		});
 		expect(dbMock.appendLog).toHaveBeenCalledWith(
 			"error",
@@ -525,13 +526,19 @@ describe("SessionManager — steerQueued", () => {
 			),
 		);
 
-		await sm.steerActiveTurn(
+		const receipt = await sm.steerActiveTurn(
 			"Check the delegated edge case",
 			() => {},
 			"sess-1",
 			"delegation-steer-1",
 		);
 
+		expect(receipt).toEqual({
+			targetTurnId: "turn-1",
+			targetAssistantSeq: 1,
+			steerSeq: 2,
+			steerToolEventIndex: 0,
+		});
 		expect(steer).toHaveBeenCalledWith("test prompt");
 		expect(sm.getQueueState().pending_turn_ids).toEqual([]);
 		expect(dbMock.appendMessage).toHaveBeenCalledWith(
@@ -542,6 +549,7 @@ describe("SessionManager — steerQueued", () => {
 			"delegation-steer-1",
 			1,
 			expect.stringContaining('"delivery":"steer"'),
+			0,
 		);
 		ctl.turns[0].resolveDone();
 		await first;
@@ -682,6 +690,10 @@ describe("SessionManager — steerQueued", () => {
 			turnId: "turn-1",
 		});
 		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		expect(sm.getStatus()).toMatchObject({
+			state: "running",
+			turn_id: "turn-1",
+		});
 		const second = sm.runQuery("second", () => {}, {
 			sessionId: "sess-1",
 			turnId: "turn-2",
@@ -690,7 +702,11 @@ describe("SessionManager — steerQueued", () => {
 		expect(sm.getQueueState().pending_turns).toEqual([
 			expect.objectContaining({ id: "turn-2", steerable: true }),
 		]);
-		await expect(sm.steerQueued("turn-2")).resolves.toBe(true);
+		await expect(sm.steerQueued("turn-2")).resolves.toMatchObject({
+			targetTurnId: "turn-1",
+			steerSeq: expect.any(Number),
+			steerToolEventIndex: 0,
+		});
 		expect(steer).toHaveBeenCalledWith("test prompt");
 		expect(sm.getQueueState().pending_turn_ids).toEqual([]);
 		await second;
@@ -765,7 +781,12 @@ describe("SessionManager — steerQueued", () => {
 			sessionId: "sess-1",
 			turnId: "turn-2",
 		});
-		await expect(sm.steerQueued("turn-2")).resolves.toBe(true);
+		await expect(sm.steerQueued("turn-2")).resolves.toMatchObject({
+			targetTurnId: "turn-1",
+			targetAssistantSeq: 1,
+			steerSeq: 2,
+			steerToolEventIndex: 0,
+		});
 
 		expect(dbMock.appendMessage).toHaveBeenCalledWith(
 			"sess-1",
@@ -775,10 +796,220 @@ describe("SessionManager — steerQueued", () => {
 			"turn-2",
 			1,
 			expect.stringContaining('"delivery":"steer"'),
+			0,
 		);
 		await second;
 		ctl.turns[0].resolveDone();
 		await first;
+	});
+
+	it("persists the raw tool-event boundary at provider acceptance", async () => {
+		const ctl = makeControllableProvider();
+		let acceptSteer: (() => void) | undefined;
+		const steer = vi.fn(
+			() =>
+				new Promise<void>((resolve) => {
+					acceptSteer = resolve;
+				}),
+		);
+		const wrapped: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				return { ...ctl.provider.query(params), steer };
+			},
+		};
+		vi.mocked(dbMock.appendMessage).mockClear();
+		vi.mocked(dbMock.appendToolEvent).mockClear();
+		const sm = new SessionManager(makeConfig(), makeProviders(wrapped));
+		const first = sm.runQuery("first", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-1",
+		});
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		ctl.pushEvent({
+			type: "tool_start",
+			toolId: "before-1",
+			name: "Read",
+			input: { path: "one" },
+		});
+		await waitFor(() =>
+			expect(dbMock.appendToolEvent).toHaveBeenCalledWith(
+				"sess-1",
+				1,
+				"before-1",
+				"Read",
+				{ path: "one" },
+				undefined,
+				expect.objectContaining({ providerId: "claude" }),
+			),
+		);
+
+		const second = sm.runQuery("second", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-2",
+		});
+		const steering = sm.steerQueued("turn-2");
+		await waitFor(() => expect(steer).toHaveBeenCalledOnce());
+		ctl.pushEvent({
+			type: "tool_start",
+			toolId: "before-2",
+			name: "Read",
+			input: { path: "two" },
+		});
+		await waitFor(() =>
+			expect(dbMock.appendToolEvent).toHaveBeenCalledWith(
+				"sess-1",
+				1,
+				"before-2",
+				"Read",
+				{ path: "two" },
+				undefined,
+				expect.objectContaining({ providerId: "claude" }),
+			),
+		);
+
+		acceptSteer?.();
+		await expect(steering).resolves.toMatchObject({
+			targetTurnId: "turn-1",
+			targetAssistantSeq: 1,
+			steerSeq: 2,
+			steerToolEventIndex: 2,
+		});
+		expect(dbMock.appendMessage).toHaveBeenCalledWith(
+			"sess-1",
+			2,
+			"user",
+			"second",
+			"turn-2",
+			1,
+			expect.stringContaining('"delivery":"steer"'),
+			2,
+		);
+		await second;
+		ctl.turns[0].resolveDone();
+		await first;
+	});
+
+	it("reserves a durable assistant row before persisting an early steer", async () => {
+		const ctl = makeControllableProvider();
+		const steer = vi.fn().mockResolvedValue(undefined);
+		const wrapped: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				return { ...ctl.provider.query(params), steer };
+			},
+		};
+		vi.mocked(dbMock.appendMessage).mockClear();
+		vi.mocked(dbMock.setMessageSteerTargetSeq).mockClear();
+		const sm = new SessionManager(makeConfig(), makeProviders(wrapped));
+		const first = sm.runQuery("first", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-1",
+		});
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		const second = sm.runQuery("second", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-2",
+		});
+
+		await expect(sm.steerQueued("turn-2")).resolves.toEqual({
+			targetTurnId: "turn-1",
+			targetAssistantSeq: 1,
+			steerSeq: 2,
+			steerToolEventIndex: 0,
+		});
+		expect(dbMock.appendMessage).toHaveBeenCalledWith(
+			"sess-1",
+			1,
+			"assistant",
+			"",
+		);
+		expect(dbMock.appendMessage).toHaveBeenCalledWith(
+			"sess-1",
+			2,
+			"user",
+			"second",
+			"turn-2",
+			1,
+			expect.stringContaining('"delivery":"steer"'),
+			0,
+		);
+		expect(dbMock.setMessageSteerTargetSeq).not.toHaveBeenCalled();
+		const assistantCall = vi
+			.mocked(dbMock.appendMessage)
+			.mock.calls.findIndex((call) => call[1] === 1);
+		const steerCall = vi
+			.mocked(dbMock.appendMessage)
+			.mock.calls.findIndex((call) => call[1] === 2);
+		expect(assistantCall).toBeGreaterThanOrEqual(0);
+		expect(steerCall).toBeGreaterThan(assistantCall);
+
+		await second;
+		ctl.turns[0].resolveDone();
+		await first;
+		expect(dbMock.setMessageSteerTargetSeq).not.toHaveBeenCalled();
+	});
+
+	it("retains the target assistant when done races ahead of steer persistence", async () => {
+		const ctl = makeControllableProvider();
+		let acceptSteer: (() => void) | undefined;
+		const steer = vi.fn(
+			() =>
+				new Promise<void>((resolve) => {
+					acceptSteer = resolve;
+				}),
+		);
+		const wrapped: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				return { ...ctl.provider.query(params), steer };
+			},
+		};
+		vi.mocked(dbMock.appendMessage).mockClear();
+		const sm = new SessionManager(makeConfig(), makeProviders(wrapped));
+		const first = sm.runQuery("first", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-1",
+		});
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		ctl.pushEvent({ type: "text_delta", text: "partial response" });
+		await waitFor(() =>
+			expect(dbMock.appendMessage).toHaveBeenCalledWith(
+				"sess-1",
+				1,
+				"assistant",
+				"",
+			),
+		);
+
+		const second = sm.runQuery("second", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-2",
+		});
+		const steering = sm.steerQueued("turn-2");
+		await waitFor(() => expect(steer).toHaveBeenCalledOnce());
+
+		ctl.turns[0].resolveDone();
+		await first;
+		acceptSteer?.();
+		await expect(steering).resolves.toMatchObject({
+			targetTurnId: "turn-1",
+			targetAssistantSeq: 1,
+			steerSeq: 2,
+			steerToolEventIndex: 0,
+		});
+		await second;
+
+		expect(dbMock.appendMessage).toHaveBeenCalledWith(
+			"sess-1",
+			2,
+			"user",
+			"second",
+			"turn-2",
+			1,
+			expect.stringContaining('"delivery":"steer"'),
+			0,
+		);
 	});
 
 	it("restores the queued turn when the provider rejects steering", async () => {

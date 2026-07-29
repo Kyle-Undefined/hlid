@@ -133,6 +133,7 @@ describe("wsStore — Slice A: immediate-send drain", () => {
 	});
 
 	it("re-promotes a queued prompt when the server starts it after a remount", () => {
+		wsStore.setBufferingEnabled(true);
 		wsStore.enqueueChat({
 			id: "m1",
 			text: "survive navigation",
@@ -184,6 +185,13 @@ describe("wsStore — Slice A: immediate-send drain", () => {
 		]);
 		expect(wsStore.getQueue()).toEqual([]);
 		expect(localStorage.getItem("hlid:raven:chat-queue")).toBeNull();
+		expect(wsStore.drainMessageBuffer()).toEqual([
+			expect.objectContaining({
+				type: "user_message",
+				id: "m1",
+				text: "survive navigation",
+			}),
+		]);
 		unsubscribe();
 	});
 
@@ -208,6 +216,90 @@ describe("wsStore — Slice A: immediate-send drain", () => {
 				vault_references: ["Projects/Hlid.md"],
 			},
 		]);
+	});
+
+	it("buffers steer placement while history is loading", () => {
+		wsStore.setBufferingEnabled(true);
+		currentWs.onmessage?.({
+			data: JSON.stringify({
+				type: "turn_steered",
+				turn_id: "steer-1",
+				target_turn_id: "active-turn",
+				session_id: "s1",
+			}),
+		});
+
+		expect(wsStore.drainMessageBuffer()).toEqual([
+			{
+				type: "turn_steered",
+				turn_id: "steer-1",
+				target_turn_id: "active-turn",
+				session_id: "s1",
+			},
+		]);
+	});
+
+	it("buffers completion so an in-flight history read can refetch", () => {
+		wsStore.setBufferingEnabled(true);
+		currentWs.onmessage?.({
+			data: JSON.stringify({
+				type: "done",
+				session_id: "s1",
+				turn_id: "m1",
+				cost: 0,
+				turns: 1,
+				duration_ms: 0,
+				input_tokens: 0,
+				output_tokens: 0,
+				cache_read_tokens: 0,
+				cache_creation_tokens: 0,
+				context_window: 200000,
+				max_output_tokens: 4096,
+				stop_reason: "end_turn",
+				tokens_in_context: 0,
+			}),
+		});
+
+		expect(wsStore.drainMessageBuffer()).toEqual([
+			expect.objectContaining({
+				type: "done",
+				session_id: "s1",
+				turn_id: "m1",
+			}),
+		]);
+	});
+
+	it("buffers an error as a completed-turn boundary during history loading", () => {
+		wsStore.setBufferingEnabled(true);
+		currentWs.onmessage?.({
+			data: JSON.stringify({
+				type: "error",
+				message: "provider failed",
+				turn_scoped: true,
+				session_id: "s1",
+			}),
+		});
+
+		expect(wsStore.drainMessageBuffer()).toEqual([
+			{
+				type: "error",
+				message: "provider failed",
+				turn_scoped: true,
+				session_id: "s1",
+			},
+		]);
+	});
+
+	it("does not buffer a generic command error into the active transcript", () => {
+		wsStore.setBufferingEnabled(true);
+		currentWs.onmessage?.({
+			data: JSON.stringify({
+				type: "error",
+				message: "That queued message is no longer available to steer.",
+			}),
+		});
+
+		expect(wsStore.drainMessageBuffer()).toEqual([]);
 	});
 
 	it("done event removes the queued item matching its turn_id (not just the head)", () => {

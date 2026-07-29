@@ -5,7 +5,11 @@ import type { SubagentSnapshot } from "#/server/agentProvider";
 import type { ToolEventMessage } from "#/server/protocol";
 import { AskUserQuestionCard } from "./AskUserQuestionCard";
 import { AssistantMsg } from "./AssistantMsg";
-import type { ChatMessage, PermissionMessage } from "./chatReducer";
+import type {
+	ChatMessage,
+	PermissionMessage,
+	UserMessage,
+} from "./chatReducer";
 import { PermissionCard } from "./PermissionCard";
 import { PlanCard, type PlanDecision } from "./PlanCard";
 import { UserMsg, type UserMsgQueueState } from "./UserMsg";
@@ -15,6 +19,7 @@ export type { ObsidianCaptureDestination, PlanDecision };
 /** Dispatches a single transcript entry to its role-specific renderer. */
 export const ChatMessageRow = memo(function ChatMessageRow({
 	message,
+	acceptedSteers,
 	sessionId,
 	providerId,
 	toolEventStartIndex = 0,
@@ -41,6 +46,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 	embeddedPermissionIds,
 }: {
 	message: ChatMessage;
+	acceptedSteers?: readonly UserMessage[];
 	sessionId?: string;
 	providerId?: string;
 	toolEventStartIndex?: number;
@@ -118,6 +124,7 @@ export const ChatMessageRow = memo(function ChatMessageRow({
 		return (
 			<AssistantMsg
 				message={message}
+				acceptedSteers={acceptedSteers}
 				sessionId={sessionId}
 				providerId={providerId}
 				permissionLabels={permissionLabels}

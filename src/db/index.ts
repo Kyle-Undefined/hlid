@@ -84,6 +84,7 @@ export {
 	setMessageProviderTurnId,
 	setMessageRecap,
 	setMessageSdkUuid,
+	setMessageSteerTargetSeq,
 	setMessageText,
 	setPlanProposalDecision,
 	setToolEventResult,

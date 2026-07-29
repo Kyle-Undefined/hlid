@@ -195,6 +195,49 @@ describe("useLoadChatHistory — initial load", () => {
 		).toBe(true);
 	});
 
+	it("refetches when completion lands during the initial DB snapshot", async () => {
+		const staleUser = makeRow("user", "still running", 1000);
+		const finalAssistant = makeRow("assistant", "completed response", 2000);
+		vi.mocked(getSessionDataFn)
+			.mockResolvedValueOnce([staleUser])
+			.mockResolvedValueOnce([staleUser, finalAssistant]);
+		vi.mocked(wsStore.drainMessageBuffer)
+			.mockReturnValueOnce([{ type: "done" } as ServerMessage])
+			.mockReturnValueOnce([]);
+		const dispatch = vi.fn();
+
+		renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef: { current: null },
+			historyReadyRef: { current: false },
+			handleWsMessage: noopWsHandler,
+			wsStatus: "connected",
+			sessionIdRef: { current: "sess-1" },
+		});
+
+		await vi.waitFor(() => {
+			expect(
+				dispatch.mock.calls.filter(
+					([action]) => action.type === "LOAD_HISTORY",
+				),
+			).toHaveLength(1);
+		});
+		expect(getSessionDataFn).toHaveBeenCalledTimes(2);
+		const load = dispatch.mock.calls.find(
+			([action]) => action.type === "LOAD_HISTORY",
+		)?.[0];
+		expect(load?.items).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					role: "assistant",
+					text: "completed response",
+				}),
+			]),
+		);
+	});
+
 	it("marks persisted user turns that have inspectable context receipts", async () => {
 		vi.mocked(getSessionDataFn).mockResolvedValue([
 			{
@@ -618,7 +661,7 @@ describe("useLoadChatHistory — reconnect recovery", () => {
 	it("hydrates the assistant sequence targeted by a persisted steer", async () => {
 		vi.mocked(getSessionDataFn).mockResolvedValue([
 			{
-				...makeRow("assistant", "response"),
+				...makeRow("assistant", ""),
 				seq: 4,
 			},
 			{
@@ -627,6 +670,7 @@ describe("useLoadChatHistory — reconnect recovery", () => {
 				seq: 5,
 				turn_id: "steer-turn",
 				steer_target_seq: 4,
+				steer_tool_event_index: 2,
 			},
 		]);
 
@@ -648,12 +692,13 @@ describe("useLoadChatHistory — reconnect recovery", () => {
 			([action]) => action.type === "LOAD_HISTORY",
 		)?.[0];
 		expect(loadHistory.items).toEqual([
-			expect.objectContaining({ role: "assistant", seq: 4 }),
+			expect.objectContaining({ role: "assistant", text: "", seq: 4 }),
 			expect.objectContaining({
 				id: "steer-turn",
 				role: "user",
 				seq: 5,
 				steerTargetSeq: 4,
+				steerToolEventIndex: 2,
 			}),
 		]);
 	});
@@ -1130,6 +1175,406 @@ describe("useLoadChatHistory — in-flight assistant reuse during running turn",
 			type: "RESUME_ASSISTANT",
 			id: placeholder?.id,
 		});
+	});
+
+	it("reuses the in-flight assistant when a persisted steer trails it", async () => {
+		const dispatch = vi.fn();
+		const historyReadyRef = { current: false };
+		const pendingIdRef = { current: null as string | null };
+		const sessionIdRef = { current: "sess-1" };
+		const original = makeRow("user", "start", 1000);
+		const assistant = makeRow("assistant", "partial response", 2000);
+		const steer = {
+			...makeRow("user", "change direction", 3000),
+			turn_id: "steer-turn",
+			steer_target_seq: assistant.seq,
+		};
+
+		vi.mocked(getSessionDataFn).mockResolvedValue([original, assistant, steer]);
+
+		renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef,
+			historyReadyRef,
+			handleWsMessage: noopWsHandler,
+			wsStatus: "connected",
+			sessionIdRef,
+		});
+
+		await act(async () => {});
+
+		expect(
+			dispatch.mock.calls.filter(([action]) => action.type === "ADD_ASSISTANT"),
+		).toHaveLength(0);
+		const loadCall = dispatch.mock.calls.find(
+			([action]) => action.type === "LOAD_HISTORY",
+		);
+		const items = loadCall?.[0].items as Array<{
+			role: string;
+			id: string;
+			seq?: number;
+		}>;
+		const restoredAssistant = items.find(
+			(item) => item.role === "assistant" && item.seq === assistant.seq,
+		);
+		expect(pendingIdRef.current).toBe(restoredAssistant?.id);
+		expect(dispatch).toHaveBeenCalledWith({
+			type: "RESUME_ASSISTANT",
+			id: restoredAssistant?.id,
+		});
+	});
+
+	it("reuses an assistant after a steer accepted before its row was reserved", async () => {
+		vi.mocked(wsStore.getSnapshot).mockReturnValue({
+			sessionState: "running",
+			wsStatus: "connected",
+			model: "",
+			actualModel: null,
+			permissionMode: null,
+			effort: null,
+			hasPendingPermissions: false,
+			runningTurnId: "original-turn",
+			sleepState: null,
+		});
+		const original = {
+			...makeRow("user", "start", 1000),
+			turn_id: "original-turn",
+		};
+		const earlySteer = {
+			...makeRow("user", "change direction", 2000),
+			turn_id: "steer-turn",
+			steer_target_seq: null,
+		};
+		const assistant = makeRow("assistant", "partial response", 3000);
+		vi.mocked(getSessionDataFn).mockResolvedValue([
+			original,
+			earlySteer,
+			assistant,
+		]);
+		const dispatch = vi.fn();
+
+		renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef: { current: null },
+			historyReadyRef: { current: false },
+			handleWsMessage: noopWsHandler,
+			wsStatus: "connected",
+			sessionIdRef: { current: "sess-1" },
+		});
+
+		await vi.waitFor(() =>
+			expect(dispatch).toHaveBeenCalledWith(
+				expect.objectContaining({ type: "RESUME_ASSISTANT" }),
+			),
+		);
+		expect(
+			dispatch.mock.calls.filter(([action]) => action.type === "ADD_ASSISTANT"),
+		).toHaveLength(0);
+		expect(dispatch).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "SET_ASSISTANT_TURN",
+				turnId: "original-turn",
+			}),
+		);
+	});
+
+	it("refetches a running snapshot after a buffered steer acknowledgement", async () => {
+		const dispatch = vi.fn();
+		const original = makeRow("user", "start", 1000);
+		const assistant = makeRow("assistant", "partial response", 2000);
+		const steer = {
+			...makeRow("user", "change direction", 3000),
+			turn_id: "steer-turn",
+			steer_target_seq: assistant.seq,
+		};
+		vi.mocked(getSessionDataFn)
+			.mockResolvedValueOnce([original, assistant])
+			.mockResolvedValueOnce([original, assistant, steer]);
+		vi.mocked(wsStore.drainMessageBuffer)
+			.mockReturnValueOnce([
+				{
+					type: "turn_steered",
+					turn_id: "steer-turn",
+					target_turn_id: "original-turn",
+					target_assistant_seq: assistant.seq,
+					steer_seq: steer.seq,
+					session_id: "sess-1",
+				},
+			])
+			.mockReturnValueOnce([]);
+
+		renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef: { current: null },
+			historyReadyRef: { current: false },
+			handleWsMessage: noopWsHandler,
+			wsStatus: "connected",
+			sessionIdRef: { current: "sess-1" },
+		});
+
+		await vi.waitFor(() => expect(getSessionDataFn).toHaveBeenCalledTimes(2));
+		const load = dispatch.mock.calls.find(
+			([action]) => action.type === "LOAD_HISTORY",
+		)?.[0];
+		expect(load?.items).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					id: "steer-turn",
+					steerTargetSeq: assistant.seq,
+				}),
+			]),
+		);
+	});
+
+	it("replays only the next-turn tail when a queued turn starts during refetch", async () => {
+		vi.mocked(wsStore.getSnapshot).mockReturnValue({
+			sessionState: "running",
+			wsStatus: "connected",
+			model: "",
+			actualModel: null,
+			permissionMode: null,
+			effort: null,
+			hasPendingPermissions: false,
+			runningTurnId: "turn-b",
+			sleepState: null,
+		});
+		const turnAUser = {
+			...makeRow("user", "first turn", 1000),
+			turn_id: "turn-a",
+		};
+		const turnAAssistant = makeRow("assistant", "finished A", 2000);
+		vi.mocked(getSessionDataFn).mockResolvedValue([turnAUser, turnAAssistant]);
+		const doneA = {
+			type: "done",
+			turn_id: "turn-a",
+			session_id: "sess-1",
+		} as ServerMessage;
+		const buffered: ServerMessage[] = [
+			{ type: "chunk", text: "stale A", offset: 0 },
+			{ type: "tool_result", id: "tool-a", content: "settled" },
+			doneA,
+			{
+				type: "user_message",
+				id: "turn-b",
+				text: "second turn",
+				session_id: "sess-1",
+			},
+			{ type: "chunk", text: "live B", offset: 0 },
+		];
+		vi.mocked(wsStore.drainMessageBuffer)
+			.mockReturnValueOnce(buffered)
+			.mockReturnValueOnce([]);
+		const dispatch = vi.fn();
+		const handleWsMessage = vi.fn();
+
+		renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef: { current: null },
+			historyReadyRef: { current: false },
+			handleWsMessage,
+			wsStatus: "connected",
+			sessionIdRef: { current: "sess-1" },
+		});
+
+		await vi.waitFor(() =>
+			expect(dispatch).toHaveBeenCalledWith({
+				type: "ADD_ASSISTANT",
+				id: "test-uid",
+				afterUserId: "turn-b",
+			}),
+		);
+		expect(handleWsMessage.mock.calls.map(([message]) => message)).toEqual([
+			{ type: "tool_result", id: "tool-a", content: "settled" },
+			{
+				type: "user_message",
+				id: "turn-b",
+				text: "second turn",
+				session_id: "sess-1",
+			},
+			{ type: "chunk", text: "live B", offset: 0 },
+		]);
+	});
+
+	it("does not replay a failed turn onto the queued turn that follows it", async () => {
+		vi.mocked(wsStore.getSnapshot).mockReturnValue({
+			sessionState: "running",
+			wsStatus: "connected",
+			model: "",
+			actualModel: null,
+			permissionMode: null,
+			effort: null,
+			hasPendingPermissions: false,
+			runningTurnId: "turn-b",
+			sleepState: null,
+		});
+		vi.mocked(getSessionDataFn).mockResolvedValue([
+			{
+				...makeRow("user", "first turn", 1000),
+				turn_id: "turn-a",
+			},
+			makeRow("assistant", "partial A", 2000),
+		]);
+		vi.mocked(wsStore.drainMessageBuffer)
+			.mockReturnValueOnce([
+				{ type: "chunk", text: "stale A", offset: 0 },
+				{
+					type: "error",
+					message: "turn A failed",
+					turn_id: "turn-a",
+					turn_scoped: true,
+				},
+				{
+					type: "user_message",
+					id: "turn-b",
+					text: "second turn",
+					session_id: "sess-1",
+				},
+				{ type: "chunk", text: "live B", offset: 0 },
+			])
+			.mockReturnValueOnce([]);
+		const handleWsMessage = vi.fn();
+
+		renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch: vi.fn(),
+			pendingIdRef: { current: null },
+			historyReadyRef: { current: false },
+			handleWsMessage,
+			wsStatus: "connected",
+			sessionIdRef: { current: "sess-1" },
+		});
+
+		await vi.waitFor(() =>
+			expect(handleWsMessage).toHaveBeenCalledWith({
+				type: "chunk",
+				text: "live B",
+				offset: 0,
+			}),
+		);
+		expect(handleWsMessage.mock.calls.map(([message]) => message)).toEqual([
+			{
+				type: "user_message",
+				id: "turn-b",
+				text: "second turn",
+				session_id: "sess-1",
+			},
+			{ type: "chunk", text: "live B", offset: 0 },
+		]);
+	});
+
+	it("retains an error for the same turn while its terminal status is pending", async () => {
+		vi.mocked(wsStore.getSnapshot).mockReturnValue({
+			sessionState: "running",
+			wsStatus: "connected",
+			model: "",
+			actualModel: null,
+			permissionMode: null,
+			effort: null,
+			hasPendingPermissions: false,
+			runningTurnId: "turn-a",
+			sleepState: null,
+		});
+		const error: ServerMessage = {
+			type: "error",
+			message: "turn A failed",
+			turn_id: "turn-a",
+			turn_scoped: true,
+		};
+		vi.mocked(getSessionDataFn).mockResolvedValue([
+			{
+				...makeRow("user", "first turn", 1000),
+				turn_id: "turn-a",
+			},
+			makeRow("assistant", "partial A", 2000),
+		]);
+		vi.mocked(wsStore.drainMessageBuffer)
+			.mockReturnValueOnce([error])
+			.mockReturnValueOnce([]);
+		const handleWsMessage = vi.fn();
+
+		renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch: vi.fn(),
+			pendingIdRef: { current: null },
+			historyReadyRef: { current: false },
+			handleWsMessage,
+			wsStatus: "connected",
+			sessionIdRef: { current: "sess-1" },
+		});
+
+		await vi.waitFor(() => expect(handleWsMessage).toHaveBeenCalledWith(error));
+	});
+
+	it("retains an uncorrelated done for a running goal continuation", async () => {
+		const done = {
+			type: "done",
+			session_id: "sess-1",
+		} as ServerMessage;
+		vi.mocked(getSessionDataFn).mockResolvedValue([
+			makeRow("assistant", "goal continuation", 1000),
+		]);
+		vi.mocked(wsStore.drainMessageBuffer)
+			.mockReturnValueOnce([done])
+			.mockReturnValueOnce([]);
+		const handleWsMessage = vi.fn();
+
+		renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch: vi.fn(),
+			pendingIdRef: { current: null },
+			historyReadyRef: { current: false },
+			handleWsMessage,
+			wsStatus: "connected",
+			sessionIdRef: { current: "sess-1" },
+		});
+
+		await vi.waitFor(() => expect(handleWsMessage).toHaveBeenCalledWith(done));
+	});
+
+	it("does not reuse an unrelated assistant when a steer target is outside the page", async () => {
+		const dispatch = vi.fn();
+		const historyReadyRef = { current: false };
+		const pendingIdRef = { current: null as string | null };
+		const sessionIdRef = { current: "sess-1" };
+
+		vi.mocked(getSessionDataFn).mockResolvedValue([
+			makeRow("assistant", "older completed response", 1000),
+			{
+				...makeRow("user", "change direction", 3000),
+				turn_id: "steer-turn",
+				steer_target_seq: 999,
+			},
+		]);
+
+		renderHistory({
+			existingSessionId: "sess-1",
+			isExplicitSession: true,
+			dispatch,
+			pendingIdRef,
+			historyReadyRef,
+			handleWsMessage: noopWsHandler,
+			wsStatus: "connected",
+			sessionIdRef,
+		});
+
+		await act(async () => {});
+
+		const addAssistantCalls = dispatch.mock.calls.filter(
+			([action]) => action.type === "ADD_ASSISTANT",
+		);
+		expect(addAssistantCalls).toHaveLength(1);
+		expect(pendingIdRef.current).toBe(addAssistantCalls[0][0].id);
 	});
 
 	it("opens a fresh bubble when no placeholder exists (last row is user)", async () => {

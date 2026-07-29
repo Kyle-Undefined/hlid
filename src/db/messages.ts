@@ -23,13 +23,14 @@ export async function appendMessage(
 	turnId?: string,
 	steerTargetSeq?: number,
 	contextManifestJson?: string,
+	steerToolEventIndex?: number,
 ): Promise<number> {
 	const db = await getDb();
 	const result = db.run(
 		`INSERT INTO messages
 		 (session_id, seq, role, text, timestamp, turn_id, steer_target_seq,
-		  context_manifest_json)
-		 VALUES (?, ?, ?, ?, unixepoch(), ?, ?, ?)`,
+		  context_manifest_json, steer_tool_event_index)
+		 VALUES (?, ?, ?, ?, unixepoch(), ?, ?, ?, ?)`,
 		[
 			sessionId,
 			seq,
@@ -38,9 +39,33 @@ export async function appendMessage(
 			turnId ?? null,
 			steerTargetSeq ?? null,
 			contextManifestJson ?? null,
+			steerToolEventIndex ?? null,
 		],
 	);
 	return Number(result.lastInsertRowid);
+}
+
+/**
+ * Backfill a steering row that was accepted before the active response had
+ * allocated its assistant transcript sequence.
+ */
+export async function setMessageSteerTargetSeq(
+	sessionId: string,
+	seq: number,
+	steerTargetSeq: number,
+): Promise<void> {
+	const db = await getDb();
+	const { changes } = db.run(
+		`UPDATE messages
+		 SET steer_target_seq = ?
+		 WHERE session_id = ? AND seq = ? AND role = 'user'`,
+		[steerTargetSeq, sessionId, seq],
+	);
+	if (changes === 0) {
+		throw new Error(
+			`setMessageSteerTargetSeq: no user row found for session=${sessionId} seq=${seq}`,
+		);
+	}
 }
 
 export async function setMessageText(
@@ -179,9 +204,11 @@ export async function copyForkedSessionTranscript(
 		const result = db.run(
 			`INSERT INTO messages
 				 (session_id, seq, role, text, timestamp, recap, turn_id, sdk_uuid,
-				  provider_turn_id, steer_target_seq, context_manifest_json)
+				  provider_turn_id, steer_target_seq, context_manifest_json,
+				  steer_tool_event_index)
 				 SELECT ?, seq, role, text, timestamp, recap, turn_id, sdk_uuid,
-				        provider_turn_id, steer_target_seq, context_manifest_json
+				        provider_turn_id, steer_target_seq, context_manifest_json,
+				        steer_tool_event_index
 				 FROM messages WHERE session_id = ?${messageFilter}
 			 ORDER BY seq ASC, id ASC`,
 			messageParams,

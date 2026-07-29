@@ -240,6 +240,7 @@ function consumeRunningQueuedUser(turnId: string | undefined): void {
 			? { workspace_references: queued.workspace_references }
 			: {}),
 	};
+	if (_bufferingEnabled) _messageBuffer.push(userEvent);
 	for (const subscriber of messageSubs) subscriber(userEvent);
 	// A running turn is no longer queued. Remove it only after re-emitting its
 	// prompt so a Raven reducer that remounted during navigation can restore the
@@ -494,6 +495,8 @@ function applySessionMessage(msg: ServerMessage): boolean {
 
 const BUFFERED_MESSAGE_TYPES: ReadonlySet<ServerMessage["type"]> = new Set([
 	"user_message",
+	"turn_steered",
+	"done",
 	"chunk",
 	"tool_event",
 	"tool_update",
@@ -507,13 +510,19 @@ const BUFFERED_MESSAGE_TYPES: ReadonlySet<ServerMessage["type"]> = new Set([
 ]);
 
 function updateMessageBuffer(msg: ServerMessage): void {
-	if (BUFFERED_MESSAGE_TYPES.has(msg.type)) {
-		if (_bufferingEnabled) _messageBuffer.push(msg);
+	if (msg.type === "error") {
+		setPendingSessionToday(false);
+		if (_bufferingEnabled && msg.turn_scoped) _messageBuffer.push(msg);
+		else if (!_bufferingEnabled) _messageBuffer = [];
 		return;
 	}
-	if (msg.type !== "done" && msg.type !== "error") return;
+	if (BUFFERED_MESSAGE_TYPES.has(msg.type)) {
+		if (_bufferingEnabled) _messageBuffer.push(msg);
+		else if (msg.type === "done") _messageBuffer = [];
+		return;
+	}
+	if (msg.type !== "done") return;
 	if (!_bufferingEnabled) _messageBuffer = [];
-	if (msg.type === "error") setPendingSessionToday(false);
 }
 
 function handleSocketMessage(event: MessageEvent): void {

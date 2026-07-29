@@ -1016,6 +1016,8 @@ describe("SessionManager — session-scoped permission persistence", () => {
 			expect(emitted).toContainEqual({
 				type: "error",
 				message: "matched capability block rule",
+				turn_id: "computer-use-turn",
+				turn_scoped: true,
 			});
 		});
 	});

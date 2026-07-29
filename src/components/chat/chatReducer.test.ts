@@ -64,6 +64,23 @@ describe("ADD_USER", () => {
 		expect(state).toHaveLength(1);
 	});
 
+	it("restores a late running prompt before its correlated assistant", () => {
+		const assistant = {
+			...withAssistant("assistant")[0],
+			turnId: "queued-turn",
+		} as ChatMessage;
+		const state = reducer([assistant], {
+			type: "ADD_USER",
+			id: "queued-turn",
+			text: "queued prompt",
+		});
+
+		expect(state.map((message) => message.id)).toEqual([
+			"queued-turn",
+			"assistant",
+		]);
+	});
+
 	it("does not mutate previous state", () => {
 		const initial = empty();
 		reducer(initial, { type: "ADD_USER", id: "x", text: "x" });
@@ -100,6 +117,19 @@ describe("ADD_ASSISTANT", () => {
 			streaming: true,
 			cost: null,
 			toolEvents: [],
+		});
+	});
+
+	it("retains the user turn that opened a live response", () => {
+		const state = reducer(withUser("u1", "start"), {
+			type: "ADD_ASSISTANT",
+			id: "a1",
+			afterUserId: "u1",
+		});
+		expect(state[1]).toMatchObject({
+			id: "a1",
+			role: "assistant",
+			turnId: "u1",
 		});
 	});
 });
@@ -143,19 +173,250 @@ describe("STEER_USER", () => {
 		]);
 	});
 
-	it("returns the same state when the steer is already in place", () => {
+	it("restores persisted steer order when acknowledgements arrive in reverse", () => {
+		let state = reducer(empty(), {
+			type: "ADD_USER",
+			id: "original",
+			text: "first prompt",
+		});
+		state = reducer(state, {
+			type: "ADD_ASSISTANT",
+			id: "assistant",
+			afterUserId: "original",
+		});
+		state = reducer(state, {
+			type: "ADD_USER",
+			id: "steer-1",
+			text: "first update",
+		});
+		state = reducer(state, {
+			type: "ADD_USER",
+			id: "steer-2",
+			text: "second update",
+		});
+
+		state = reducer(state, {
+			type: "STEER_USER",
+			turnId: "steer-2",
+			targetTurnId: "original",
+			steerSeq: 4,
+			assistantId: "assistant",
+		});
+		state = reducer(state, {
+			type: "STEER_USER",
+			turnId: "steer-1",
+			targetTurnId: "original",
+			steerSeq: 3,
+			assistantId: "assistant",
+		});
+
+		expect(state.map((message) => message.id)).toEqual([
+			"original",
+			"steer-1",
+			"steer-2",
+			"assistant",
+		]);
+		expect(
+			state
+				.filter((message) => message.role === "user")
+				.map((message) => message.transcriptSeq),
+		).toEqual([undefined, 3, 4]);
+	});
+
+	it("returns the same state when an accepted steer is already fully correlated", () => {
 		const state: ChatMessage[] = [
 			...withUser("original", "first prompt"),
-			...withUser("steer", "updated direction"),
-			...withAssistant("assistant"),
+			{
+				id: "steer",
+				role: "user",
+				text: "updated direction",
+				steerTargetTurnId: "original",
+				steerToolEventIndex: 0,
+			},
+			{
+				...withAssistant("assistant")[0],
+				turnId: "original",
+			} as ChatMessage,
 		];
 		expect(
 			reducer(state, {
 				type: "STEER_USER",
 				turnId: "steer",
+				targetTurnId: "original",
 				assistantId: "assistant",
 			}),
 		).toBe(state);
+	});
+
+	it("pins the raw tool boundary when the steer is accepted", () => {
+		const assistant = {
+			...withAssistant("assistant")[0],
+			turnId: "original",
+			toolEvents: [
+				{
+					type: "tool_event" as const,
+					id: "tool-before",
+					name: "Read",
+					input: {},
+				},
+			],
+		} as ChatMessage;
+		let state: ChatMessage[] = [
+			...withUser("original", "first prompt"),
+			assistant,
+			...withUser("steer", "updated direction"),
+		];
+		state = reducer(state, {
+			type: "STEER_USER",
+			turnId: "steer",
+			targetTurnId: "original",
+			steerToolEventIndex: 1,
+			assistantId: "assistant",
+		});
+
+		expect(state.find((message) => message.id === "steer")).toMatchObject({
+			steerTargetTurnId: "original",
+			steerToolEventIndex: 1,
+		});
+
+		state = reducer(state, {
+			type: "ADD_TOOL_EVENT",
+			id: "assistant",
+			event: {
+				type: "tool_event",
+				id: "tool-after",
+				name: "Read",
+				input: {},
+			},
+		});
+		expect(state.find((message) => message.id === "steer")).toMatchObject({
+			steerToolEventIndex: 1,
+		});
+	});
+
+	it("targets the exact completed turn instead of a newer active response", () => {
+		const oldAssistant = {
+			...withAssistant("old-assistant")[0],
+			turnId: "original",
+		} as ChatMessage;
+		const newAssistant = {
+			...withAssistant("new-assistant")[0],
+			turnId: "new-turn",
+		} as ChatMessage;
+		const state: ChatMessage[] = [
+			...withUser("original", "first prompt"),
+			oldAssistant,
+			...withUser("new-turn", "next prompt"),
+			newAssistant,
+			...withUser("steer", "updated direction"),
+		];
+
+		const steered = reducer(state, {
+			type: "STEER_USER",
+			turnId: "steer",
+			targetTurnId: "original",
+			assistantId: "new-assistant",
+		});
+
+		expect(steered.map((message) => message.id)).toEqual([
+			"original",
+			"steer",
+			"old-assistant",
+			"new-turn",
+			"new-assistant",
+		]);
+	});
+
+	it("does not attach an exact steer target to a known different turn", () => {
+		const assistant = {
+			...withAssistant("new-assistant")[0],
+			turnId: "new-turn",
+		} as ChatMessage;
+		const state: ChatMessage[] = [
+			...withUser("new-turn", "next prompt"),
+			assistant,
+			...withUser("steer", "updated direction"),
+		];
+
+		expect(
+			reducer(state, {
+				type: "STEER_USER",
+				turnId: "steer",
+				targetTurnId: "old-turn",
+				assistantId: "new-assistant",
+			}),
+		).toBe(state);
+	});
+
+	it("targets a persisted assistant sequence when turn correlation is absent", () => {
+		const oldAssistant = {
+			...withAssistant("old-assistant")[0],
+			transcriptSeq: 10,
+		} as ChatMessage;
+		const newAssistant = {
+			...withAssistant("new-assistant")[0],
+			transcriptSeq: 20,
+		} as ChatMessage;
+		const state: ChatMessage[] = [
+			...withUser("original", "first prompt"),
+			oldAssistant,
+			...withUser("new-turn", "next prompt"),
+			newAssistant,
+			...withUser("steer", "updated direction"),
+		];
+
+		const steered = reducer(state, {
+			type: "STEER_USER",
+			turnId: "steer",
+			targetAssistantSeq: 10,
+			steerSeq: 30,
+			assistantId: "new-assistant",
+		});
+
+		expect(steered.map((message) => message.id)).toEqual([
+			"original",
+			"steer",
+			"old-assistant",
+			"new-turn",
+			"new-assistant",
+		]);
+		expect(steered[1]).toMatchObject({
+			steerTargetSeq: 10,
+			transcriptSeq: 30,
+		});
+	});
+
+	it("does not fall back when an exact assistant sequence is absent", () => {
+		const assistant = {
+			...withAssistant("assistant")[0],
+			transcriptSeq: 20,
+		} as ChatMessage;
+		const state: ChatMessage[] = [
+			...withUser("turn", "prompt"),
+			assistant,
+			...withUser("steer", "updated direction"),
+		];
+
+		expect(
+			reducer(state, {
+				type: "STEER_USER",
+				turnId: "steer",
+				targetAssistantSeq: 10,
+				steerSeq: 30,
+				assistantId: "assistant",
+			}),
+		).toBe(state);
+	});
+});
+
+describe("SET_ASSISTANT_TURN", () => {
+	it("correlates a restored assistant row with the active user turn", () => {
+		const state = reducer(withAssistant("a1"), {
+			type: "SET_ASSISTANT_TURN",
+			id: "a1",
+			turnId: "u1",
+		});
+		expect(state[0]).toMatchObject({ id: "a1", turnId: "u1" });
 	});
 });
 
@@ -1034,7 +1295,7 @@ describe("LOAD_HISTORY", () => {
 	});
 
 	it("restores a persisted steer before the assistant response it joined", () => {
-		const state = reducer(empty(), {
+		let state = reducer(empty(), {
 			type: "LOAD_HISTORY",
 			items: [
 				{
@@ -1050,6 +1311,20 @@ describe("LOAD_HISTORY", () => {
 					role: "assistant",
 					text: "response",
 					seq: 1,
+					toolEvents: [
+						{
+							type: "tool_event",
+							id: "restored-tool-1",
+							name: "Read",
+							input: {},
+						},
+						{
+							type: "tool_event",
+							id: "restored-tool-2",
+							name: "Read",
+							input: {},
+						},
+					],
 				},
 				{
 					kind: "message",
@@ -1063,6 +1338,28 @@ describe("LOAD_HISTORY", () => {
 		});
 
 		expect(state.map((message) => message.id)).toEqual(["u1", "steer-1", "a1"]);
+		expect(state[1]).toMatchObject({
+			role: "user",
+			steerTargetSeq: 1,
+			steerToolEventIndex: 2,
+		});
+		expect(state[2]).toMatchObject({
+			role: "assistant",
+			turnId: "u1",
+			transcriptSeq: 1,
+		});
+
+		state = reducer(state, {
+			type: "ADD_TOOL_EVENT",
+			id: "a1",
+			event: {
+				type: "tool_event",
+				id: "later-tool",
+				name: "Read",
+				input: {},
+			},
+		});
+		expect(state[1]).toMatchObject({ steerToolEventIndex: 2 });
 	});
 
 	it("deduplicates repeated persisted cards within one older page", () => {

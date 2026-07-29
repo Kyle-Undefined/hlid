@@ -84,6 +84,7 @@ function makeManager(
 	reinitialize: ReturnType<typeof vi.fn>;
 	getQueueState: ReturnType<typeof vi.fn>;
 	getCurrentSessionId: ReturnType<typeof vi.fn>;
+	getCurrentTurnId: ReturnType<typeof vi.fn>;
 	handlePermissionResponse: ReturnType<typeof vi.fn>;
 	handleAskUserQuestionResponse: ReturnType<typeof vi.fn>;
 	handlePlanModeExitResponse: ReturnType<typeof vi.fn>;
@@ -100,6 +101,7 @@ function makeManager(
 		getPendingAskUserQuestions: vi.fn().mockReturnValue([]),
 		getPendingPlanModeExits: vi.fn().mockReturnValue([]),
 		getCurrentSessionId: vi.fn().mockReturnValue("mock-db-session"),
+		getCurrentTurnId: vi.fn().mockReturnValue(null),
 		abort: vi.fn(),
 		skipSleep: vi.fn(),
 		getSleepState: vi.fn().mockReturnValue(null),
@@ -116,7 +118,12 @@ function makeManager(
 		handleAskUserQuestionResponse: vi.fn(),
 		handlePlanModeExitResponse: vi.fn(),
 		probeMcpStatus: vi.fn().mockResolvedValue(undefined),
-		steerActiveTurn: vi.fn().mockResolvedValue(undefined),
+		steerActiveTurn: vi.fn().mockResolvedValue({
+			targetTurnId: "child-active-turn",
+			targetAssistantSeq: 4,
+			steerSeq: 5,
+			steerToolEventIndex: 2,
+		}),
 		restoreMcpStatus: vi.fn(),
 		...overrides,
 	} as unknown as ReturnType<typeof makeManager>;
@@ -854,6 +861,7 @@ describe("message — delegated-child ownership", () => {
 	it("steers the active child natively without entering the fresh-turn queue", async () => {
 		const child = makeEntry("delegated-live");
 		child.manager.getCurrentSessionId.mockReturnValue("delegated-db");
+		child.manager.getCurrentTurnId.mockReturnValue("child-active-turn");
 		child.manager.isRunning.mockReturnValue(true);
 		const pool = makePool(child);
 		pool.findByDbSessionId.mockImplementation((id: string) =>
@@ -894,6 +902,10 @@ describe("message — delegated-child ownership", () => {
 		expect(child.runState.broadcast).toHaveBeenCalledWith({
 			type: "turn_steered",
 			turn_id: "child-steer-1",
+			target_turn_id: "child-active-turn",
+			target_assistant_seq: 4,
+			steer_seq: 5,
+			steer_tool_event_index: 2,
 			session_id: "delegated-db",
 		});
 	});

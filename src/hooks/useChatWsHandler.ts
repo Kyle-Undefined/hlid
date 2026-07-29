@@ -1,5 +1,6 @@
-import { useCallback } from "react";
+import { useCallback, useRef } from "react";
 import type { Action } from "#/components/chat/chatReducer";
+import { findQueuedChat } from "#/hooks/wsChatQueueStore";
 import { uid } from "#/lib/utils";
 import { formatVaultReferencedMessage } from "#/lib/vaultReferences";
 import type { RateLimitMessage, ServerMessage } from "#/server/protocol";
@@ -8,6 +9,7 @@ type ChatWsHandlerContext = {
 	dispatch: React.Dispatch<Action>;
 	pendingIdRef: React.MutableRefObject<string | null>;
 	lastAssistantIdRef: React.MutableRefObject<string | null>;
+	runningTurnIdRef: React.MutableRefObject<string | null>;
 	setRateLimit: (rateLimit: RateLimitMessage | null) => void;
 };
 
@@ -88,6 +90,14 @@ function dispatchImmediateMessage(
 				content: msg.content,
 			});
 			return true;
+		case "error":
+			if (msg.turn_scoped) return false;
+			dispatch({
+				type: "ADD_LOCAL_COMMAND_OUTPUT",
+				id: uid(),
+				content: `ERROR: ${msg.message}`,
+			});
+			return true;
 		case "tool_result":
 			dispatch({
 				type: "ADD_TOOL_RESULT",
@@ -129,7 +139,11 @@ function ensurePendingAssistant(
 	context: ChatWsHandlerContext,
 ): void {
 	if (context.pendingIdRef.current) return;
-	if (msg.type !== "chunk" && msg.type !== "tool_event" && msg.type !== "error")
+	if (
+		msg.type !== "chunk" &&
+		msg.type !== "tool_event" &&
+		!(msg.type === "error" && msg.turn_scoped)
+	)
 		return;
 	const id = uid();
 	context.pendingIdRef.current = id;
@@ -180,6 +194,7 @@ function dispatchActiveMessage(
 			pendingIdRef.current = null;
 			break;
 		case "error":
+			if (!msg.turn_scoped) break;
 			dispatch({
 				type: "APPEND_CHUNK",
 				id: activeId,
@@ -195,12 +210,35 @@ function handleChatWsMessage(
 	msg: ServerMessage,
 	context: ChatWsHandlerContext,
 ): void {
-	const { dispatch, pendingIdRef, lastAssistantIdRef } = context;
+	const { dispatch, pendingIdRef, lastAssistantIdRef, runningTurnIdRef } =
+		context;
+	if (msg.type === "status") {
+		runningTurnIdRef.current =
+			msg.state === "running" ? (msg.turn_id ?? null) : null;
+	}
 	if (
-		msg.type === "status" &&
-		msg.state === "running" &&
-		!pendingIdRef.current
+		msg.type === "error" &&
+		msg.turn_scoped &&
+		msg.turn_id !== undefined &&
+		runningTurnIdRef.current !== null &&
+		msg.turn_id !== runningTurnIdRef.current
 	) {
+		// A buffered failure from an older turn must not terminate the newer
+		// assistant that currently owns pendingIdRef.
+		return;
+	}
+	if (msg.type === "status" && msg.state === "running") {
+		const pendingId = pendingIdRef.current;
+		if (pendingId) {
+			if (msg.turn_id !== undefined) {
+				dispatch({
+					type: "SET_ASSISTANT_TURN",
+					id: pendingId,
+					turnId: msg.turn_id,
+				});
+			}
+			return;
+		}
 		const id = uid();
 		pendingIdRef.current = id;
 		dispatch({
@@ -211,12 +249,44 @@ function handleChatWsMessage(
 		return;
 	}
 	if (msg.type === "turn_steered") {
-		const assistantId = pendingIdRef.current;
-		if (assistantId) {
+		// A remounted or late-subscribing Raven can know this prompt only through
+		// the durable local/server queue. Materialize it before queue_state removes
+		// the accepted item, then place it against the acknowledged response.
+		const queued = findQueuedChat(msg.turn_id);
+		if (queued) {
+			dispatch({
+				type: "ADD_USER",
+				id: queued.id,
+				text: formatVaultReferencedMessage(
+					queued.text,
+					queued.vault_references ?? [],
+					[],
+					queued.workspace_references ?? [],
+				),
+				...(queued.attachments ? { attachments: queued.attachments } : {}),
+			});
+		}
+		const assistantId =
+			pendingIdRef.current ?? lastAssistantIdRef.current ?? undefined;
+		if (
+			msg.target_turn_id !== undefined ||
+			msg.target_assistant_seq !== undefined ||
+			assistantId !== undefined
+		) {
 			dispatch({
 				type: "STEER_USER",
 				turnId: msg.turn_id,
-				assistantId,
+				...(msg.target_turn_id !== undefined
+					? { targetTurnId: msg.target_turn_id }
+					: {}),
+				...(msg.target_assistant_seq !== undefined
+					? { targetAssistantSeq: msg.target_assistant_seq }
+					: {}),
+				...(msg.steer_seq !== undefined ? { steerSeq: msg.steer_seq } : {}),
+				...(msg.steer_tool_event_index !== undefined
+					? { steerToolEventIndex: msg.steer_tool_event_index }
+					: {}),
+				...(assistantId !== undefined ? { assistantId } : {}),
 			});
 		}
 		return;
@@ -251,6 +321,7 @@ export function useChatWsHandler({
 	historyReadyRef: React.MutableRefObject<boolean>;
 	setRateLimit: (r: RateLimitMessage | null) => void;
 }): (msg: ServerMessage) => void {
+	const runningTurnIdRef = useRef<string | null>(null);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: dispatch from useReducer is stable; all other deps are refs or stable setters
 	return useCallback((msg: ServerMessage) => {
 		// Gate all messages until history has loaded. Events that arrive before
@@ -262,6 +333,7 @@ export function useChatWsHandler({
 			dispatch,
 			pendingIdRef,
 			lastAssistantIdRef,
+			runningTurnIdRef,
 			setRateLimit,
 		});
 	}, []);

@@ -21,6 +21,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as privacyStore from "#/hooks/privacyStore";
 import type { QueuedChatMessage } from "#/hooks/wsChatQueueStore";
 import type { AssistantMessage, ChatMessage, UserMessage } from "./chatReducer";
+import { reducer } from "./chatReducer";
 import { MessageList } from "./MessageList";
 import { useMessageListView } from "./useMessageListView";
 
@@ -30,6 +31,7 @@ vi.mock("#/hooks/projectPreviewStore", () => ({
 vi.mock("./ChatMessageRow", () => ({
 	ChatMessageRow: ({
 		message,
+		acceptedSteers,
 		queueState,
 		toolEventStartIndex,
 		olderToolEventCount,
@@ -41,6 +43,7 @@ vi.mock("./ChatMessageRow", () => ({
 		embeddedPermissionIds,
 	}: {
 		message: ChatMessage;
+		acceptedSteers?: readonly UserMessage[];
 		queueState?: { kind: string };
 		toolEventStartIndex?: number;
 		olderToolEventCount?: number;
@@ -54,6 +57,10 @@ vi.mock("./ChatMessageRow", () => ({
 		<div
 			data-testid={`message-${message.id}`}
 			data-queue-state={queueState?.kind}
+			data-accepted-steers={acceptedSteers?.map((steer) => steer.id).join(",")}
+			data-steer-boundaries={acceptedSteers
+				?.map((steer) => steer.steerToolEventIndex)
+				.join(",")}
 			data-tool-event-start={toolEventStartIndex}
 			data-preview-grouped={String(groupedProjectPreviewEventIds?.size ?? 0)}
 			data-preview-history={String(historicalProjectPreviewGroups?.size ?? 0)}
@@ -589,6 +596,200 @@ describe("MessageList — bounded tool rendering", () => {
 		expect(
 			screen.queryByRole("button", { name: /earlier tool calls/i }),
 		).toBeNull();
+	});
+
+	it("folds a steer into a response without losing its 200-tool boundary", () => {
+		const original = userMsg("original", "first submission");
+		const response = {
+			...assistantMsg("response", 250),
+			turnId: "original",
+		};
+		const steer = userMsg("steer", "change direction");
+		const messages = reducer([original, response, steer], {
+			type: "STEER_USER",
+			turnId: "steer",
+			targetTurnId: "original",
+			assistantId: "response",
+		});
+		const view = renderList({ messages });
+
+		const responseRow = screen.getByTestId("message-response");
+		expect(screen.queryByTestId("message-steer")).toBeNull();
+		expect(responseRow.dataset.acceptedSteers).toBe("steer");
+		expect(responseRow.dataset.steerBoundaries).toBe("250");
+		expect(responseRow.dataset.toolEventStart).toBe("50");
+
+		const updatedResponse = {
+			...response,
+			toolEvents: [
+				...response.toolEvents,
+				...assistantMsg("later", 10).toolEvents,
+			],
+		};
+		view.rerender(
+			listElement({
+				messages: messages.map((message) =>
+					message.id === "response" ? updatedResponse : message,
+				),
+			}),
+		);
+
+		const updatedRow = screen.getByTestId("message-response");
+		expect(screen.queryByTestId("message-steer")).toBeNull();
+		expect(updatedRow.dataset.acceptedSteers).toBe("steer");
+		expect(updatedRow.dataset.steerBoundaries).toBe("250");
+		expect(updatedRow.dataset.toolEventStart).toBe("60");
+	});
+
+	it("associates a steer before applying the 100-row render window", () => {
+		const response = {
+			...assistantMsg("response", 0),
+			turnId: "original",
+			transcriptSeq: 2,
+		};
+		const steer: UserMessage = {
+			...userMsg("steer", "change direction"),
+			steerTargetSeq: 2,
+			steerToolEventIndex: 0,
+			transcriptSeq: 3,
+		};
+		const newer = Array.from({ length: 99 }, (_, index) =>
+			userMsg(`newer-${index}`, `newer ${index}`),
+		);
+
+		renderList({
+			messages: [
+				userMsg("original", "first submission"),
+				steer,
+				response,
+				...newer,
+			],
+		});
+
+		expect(screen.queryByTestId("message-original")).toBeNull();
+		expect(screen.queryByTestId("message-steer")).toBeNull();
+		expect(screen.getByTestId("message-response").dataset.acceptedSteers).toBe(
+			"steer",
+		);
+	});
+
+	it("orders multiple accepted steers by persisted steering sequence", () => {
+		const response = {
+			...assistantMsg("response", 1),
+			turnId: "original",
+			transcriptSeq: 2,
+		};
+		const laterSteer: UserMessage = {
+			...userMsg("steer-later", "second direction"),
+			steerTargetSeq: 2,
+			steerToolEventIndex: 1,
+			transcriptSeq: 4,
+		};
+		const earlierSteer: UserMessage = {
+			...userMsg("steer-earlier", "first direction"),
+			steerTargetSeq: 2,
+			steerToolEventIndex: 1,
+			transcriptSeq: 3,
+		};
+
+		renderList({
+			messages: [
+				userMsg("original", "first submission"),
+				laterSteer,
+				earlierSteer,
+				response,
+			],
+		});
+
+		expect(screen.getByTestId("message-response").dataset.acceptedSteers).toBe(
+			"steer-earlier,steer-later",
+		);
+	});
+
+	it("folds a late steer into its exact old response instead of the active one", () => {
+		const oldResponse = {
+			...assistantMsg("old-response", 1),
+			turnId: "old-turn",
+			transcriptSeq: 10,
+		};
+		const activeResponse = {
+			...assistantMsg("active-response", 1),
+			turnId: "active-turn",
+			transcriptSeq: 20,
+			streaming: true,
+		};
+		const messages = reducer(
+			[
+				userMsg("old-turn", "old prompt"),
+				oldResponse,
+				userMsg("active-turn", "active prompt"),
+				activeResponse,
+				userMsg("late-steer", "change the old response"),
+			],
+			{
+				type: "STEER_USER",
+				turnId: "late-steer",
+				targetTurnId: "old-turn",
+				targetAssistantSeq: 10,
+				steerSeq: 30,
+				steerToolEventIndex: 1,
+				assistantId: "active-response",
+			},
+		);
+
+		renderList({ messages });
+
+		expect(screen.queryByTestId("message-late-steer")).toBeNull();
+		expect(
+			screen.getByTestId("message-old-response").dataset.acceptedSteers,
+		).toBe("late-steer");
+		expect(
+			screen.getByTestId("message-active-response").dataset.acceptedSteers,
+		).toBeUndefined();
+	});
+
+	it("falls back to the exact live turn when its persisted sequence is not mounted", () => {
+		const liveResponse = {
+			...assistantMsg("live-response", 0),
+			turnId: "original-turn",
+			streaming: true,
+		};
+		const steer: UserMessage = {
+			...userMsg("steer", "change direction"),
+			steerTargetSeq: 999,
+			steerTargetTurnId: "original-turn",
+			steerToolEventIndex: 0,
+		};
+
+		renderList({ messages: [liveResponse, steer] });
+
+		expect(screen.queryByTestId("message-steer")).toBeNull();
+		expect(
+			screen.getByTestId("message-live-response").dataset.acceptedSteers,
+		).toBe("steer");
+	});
+
+	it("does not render an accepted steer as a user row while its target page is hidden", () => {
+		const steer: UserMessage = {
+			...userMsg("steer", "change direction"),
+			steerTargetSeq: 999,
+			steerToolEventIndex: 0,
+		};
+
+		const view = renderList({ messages: [steer] });
+
+		expect(screen.queryByTestId("message-steer")).toBeNull();
+
+		const target = {
+			...assistantMsg("older-target", 0),
+			transcriptSeq: 999,
+		};
+		view.rerender(listElement({ messages: [target, steer] }));
+
+		expect(screen.queryByTestId("message-steer")).toBeNull();
+		expect(
+			screen.getByTestId("message-older-target").dataset.acceptedSteers,
+		).toBe("steer");
 	});
 
 	it("keeps the permission lookup stable across unrelated streaming updates", () => {

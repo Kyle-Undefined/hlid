@@ -58,6 +58,7 @@ function mapSessionRows(
 		seq: r.seq,
 		hasContextReceipt: Boolean(r.context_manifest_json),
 		steerTargetSeq: r.steer_target_seq,
+		steerToolEventIndex: r.steer_tool_event_index,
 		toolEvents: r.toolEvents?.map((te) => ({
 			type: "tool_event" as const,
 			id: te.tool_id,
@@ -303,13 +304,42 @@ export async function loadSessionHistoryPage({
  */
 function findInFlightAssistant(
 	items: SessionItems,
+	runningTurnId: string | null,
 ): { id: string; text: string } | null {
+	let steeredAssistantSeq: number | null = null;
+	let candidate: { id: string; text: string } | null = null;
 	for (let i = items.length - 1; i >= 0; i--) {
 		const item = items[i];
 		if (item.kind !== "message") continue;
-		if (item.role === "user") return null;
+		if (item.role === "user") {
+			// A steering prompt is persisted after the assistant row it joined.
+			// Skip it so a mid-turn remount reuses that row instead of opening a
+			// duplicate assistant bubble below the steer.
+			if (item.steerTargetSeq != null) {
+				if (
+					steeredAssistantSeq !== null &&
+					steeredAssistantSeq !== item.steerTargetSeq
+				) {
+					return null;
+				}
+				steeredAssistantSeq = item.steerTargetSeq;
+				continue;
+			}
+			if (candidate === null) return null;
+			if (runningTurnId === null || item.id === runningTurnId) return candidate;
+			// A steer accepted before the first assistant/tool event has no
+			// assistant sequence to persist yet. The running turn ID remains the
+			// authoritative opening prompt, so keep scanning through such rows.
+			continue;
+		}
 		if (item.role === "assistant") {
-			return { id: item.id, text: item.text };
+			if (candidate !== null) return null;
+			if (steeredAssistantSeq !== null && item.seq !== steeredAssistantSeq) {
+				return null;
+			}
+			candidate = { id: item.id, text: item.text };
+			if (runningTurnId === null) return candidate;
+			continue;
 		}
 		return null;
 	}
@@ -323,11 +353,12 @@ function findInFlightAssistant(
  * the reducer, so replay them after LOAD_HISTORY. Only offset-less legacy chunks
  * are unsafe once the DB snapshot already contains assistant text.
  */
-function drainBufferDeduped(
+function replayBufferDeduped(
+	messages: ServerMessage[],
 	handle: (msg: ServerMessage) => void,
 	hasPersistedText: boolean,
 ): void {
-	for (const msg of wsStore.drainMessageBuffer()) {
+	for (const msg of messages) {
 		// Offset-aware chunks are safe to replay: APPEND_CHUNK trims the portion
 		// already present in the DB snapshot. Legacy offset-less chunks cannot be
 		// reconciled once text was persisted, so retain the previous drop behavior.
@@ -336,6 +367,47 @@ function drainBufferDeduped(
 		}
 		handle(msg);
 	}
+}
+
+/**
+ * When one turn completes while the history refresh is in flight, the queue
+ * can already have started the next turn by the time the final page arrives.
+ * The refreshed DB is authoritative through the completed turn, so do not
+ * replay its assistant-bound chunks/tool starts/done onto the new in-flight
+ * assistant. Preserve queued user broadcasts and ID-addressed updates from
+ * that prefix because they are independently idempotent and may not have
+ * finished persistence yet.
+ */
+function currentTurnBuffer(
+	messages: ServerMessage[],
+	runningTurnId: string | null,
+): ServerMessage[] {
+	let completedThrough = -1;
+	for (let index = 0; index < messages.length; index++) {
+		const message = messages[index];
+		if (
+			runningTurnId !== null &&
+			((message.type === "done" && message.turn_id !== runningTurnId) ||
+				(message.type === "error" &&
+					message.turn_id !== undefined &&
+					message.turn_id !== runningTurnId))
+		) {
+			completedThrough = index;
+		}
+	}
+	if (completedThrough === -1) return messages;
+	return [
+		...messages
+			.slice(0, completedThrough + 1)
+			.filter(
+				(message) =>
+					message.type !== "chunk" &&
+					message.type !== "tool_event" &&
+					message.type !== "done" &&
+					message.type !== "error",
+			),
+		...messages.slice(completedThrough + 1),
+	];
 }
 
 function applyCtx(ctx: CtxRow, sessionId: string): void {
@@ -387,23 +459,55 @@ export async function loadSessionSnapshot({
 	// should hold the base transcript blank. Start context in parallel and hydrate
 	// cards after LOAD_HISTORY, preserving any newer live socket state in reducer.
 	const ctxRead = getSessionContextFn({ data: sessionId });
-	const page =
+	const readBasePage = () =>
 		preserveFromSeq === undefined
-			? await loadNewestSessionRows({ sessionId, pageSize })
-			: await loadSessionWindowRows({
+			? loadNewestSessionRows({ sessionId, pageSize })
+			: loadSessionWindowRows({
 					sessionId,
 					minSeq: preserveFromSeq,
 					minId: preserveFromId ?? 0,
 					hasOlder: preserveHasOlder,
 				});
+	let page = await readBasePage();
 	if (isCancelled()) return null;
+	let newlyBuffered = wsStore.drainMessageBuffer();
+	let bufferedMessages = [...newlyBuffered];
+	const hasPersistedWriteMarker = (messages: ServerMessage[]) =>
+		messages.some(
+			(message) =>
+				message.type === "done" ||
+				message.type === "error" ||
+				message.type === "turn_steered",
+		);
+	// Done and steer acknowledgements follow their transcript writes; an error
+	// is followed by final persistence before the queue advances. If one arrives
+	// while the DB read is in flight, that page may predate the final assistant
+	// or steering rows. Refresh before opening the reducer gate.
+	for (let retry = 0; retry < 2; retry++) {
+		if (!hasPersistedWriteMarker(newlyBuffered)) break;
+		page = await readBasePage();
+		if (isCancelled()) return null;
+		newlyBuffered = wsStore.drainMessageBuffer();
+		bufferedMessages = [...bufferedMessages, ...newlyBuffered];
+	}
+	// If both bounded refreshes raced another persisted completion, the last
+	// marker still predates one final authoritative read.
+	if (hasPersistedWriteMarker(newlyBuffered)) {
+		page = await readBasePage();
+		if (isCancelled()) return null;
+		bufferedMessages = [...bufferedMessages, ...wsStore.drainMessageBuffer()];
+	}
 	const { items } = page;
 	dispatch({ type: "LOAD_HISTORY", items });
 	// Dispatches are processed in order, so opening the gate here lets buffered
 	// events enqueue immediately after LOAD_HISTORY without being discarded by
 	// useChatWsHandler during an initial remount.
 	historyReadyRef.current = true;
-	const inFlightAssistant = findInFlightAssistant(items);
+	const snapshot = wsStore.getSnapshot();
+	const inFlightAssistant = findInFlightAssistant(
+		items,
+		snapshot.runningTurnId,
+	);
 
 	// Reset any stale pending ID — LOAD_HISTORY wiped the bubble it referenced,
 	// so we must start fresh before draining. Without this, chunks buffered
@@ -411,7 +515,11 @@ export async function loadSessionSnapshot({
 	// silently vanish (the reducer map-over just skips the missing ID).
 	pendingIdRef.current = null;
 
-	if (wsStore.getSnapshot().sessionState === "running") {
+	if (snapshot.sessionState === "running") {
+		const replayableMessages = currentTurnBuffer(
+			bufferedMessages,
+			snapshot.runningTurnId,
+		);
 		if (inFlightAssistant) {
 			// Reuse the in-flight assistant row loaded from DB instead of opening
 			// a fresh bubble. History rows are non-streaming by default, so restore
@@ -420,14 +528,31 @@ export async function loadSessionSnapshot({
 			// subscribe/remount recovery idempotent.
 			pendingIdRef.current = inFlightAssistant.id;
 			dispatch({ type: "RESUME_ASSISTANT", id: inFlightAssistant.id });
-			drainBufferDeduped(handleWsMessage, inFlightAssistant.text.length > 0);
+			if (snapshot.runningTurnId !== null) {
+				dispatch({
+					type: "SET_ASSISTANT_TURN",
+					id: inFlightAssistant.id,
+					turnId: snapshot.runningTurnId,
+				});
+			}
+			replayBufferDeduped(
+				replayableMessages,
+				handleWsMessage,
+				inFlightAssistant.text.length > 0,
+			);
 		} else {
 			const newId = uid();
 			pendingIdRef.current = newId;
-			dispatch({ type: "ADD_ASSISTANT", id: newId });
+			dispatch({
+				type: "ADD_ASSISTANT",
+				id: newId,
+				...(snapshot.runningTurnId !== null
+					? { afterUserId: snapshot.runningTurnId }
+					: {}),
+			});
 			// Replay events that arrived before history was ready (from open() buffer
 			// replay or live events during the async DB fetch).
-			for (const msg of wsStore.drainMessageBuffer()) {
+			for (const msg of replayableMessages) {
 				handleWsMessage(msg);
 			}
 		}

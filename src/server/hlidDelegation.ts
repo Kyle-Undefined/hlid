@@ -876,7 +876,7 @@ export class HlidDelegationManager {
 			);
 		}
 		const turnId = `delegation-steer-${randomUUID()}`;
-		await active.entry.manager.steerActiveTurn(
+		const receipt = await active.entry.manager.steerActiveTurn(
 			instruction,
 			(event) => this.emitFor(active.entry, event),
 			delegation.child_session_id,
@@ -890,6 +890,12 @@ export class HlidDelegationManager {
 		active.entry.runState.broadcast({
 			type: "turn_steered",
 			turn_id: turnId,
+			target_turn_id: receipt.targetTurnId,
+			...(receipt.targetAssistantSeq !== undefined
+				? { target_assistant_seq: receipt.targetAssistantSeq }
+				: {}),
+			steer_seq: receipt.steerSeq,
+			steer_tool_event_index: receipt.steerToolEventIndex,
 			session_id: delegation.child_session_id,
 		});
 		this.notifyStatusChange();

@@ -1,11 +1,16 @@
-import { GitFork, LoaderCircle } from "lucide-react";
+import { ChevronRight, GitFork, LoaderCircle, Route } from "lucide-react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { MarkdownBody } from "#/components/MarkdownBody";
 import { PrivacyMask } from "#/components/PrivacyMask";
 import { useCopyToClipboard } from "#/hooks/useCopyToClipboard";
 import type { ObsidianCaptureDestination } from "#/lib/obsidianCapture";
 import type { ToolEventMessage } from "#/server/protocol";
 import { CopyButton } from "./CopyButton";
-import type { AssistantMessage, PermissionMessage } from "./chatReducer";
+import type {
+	AssistantMessage,
+	PermissionMessage,
+	UserMessage,
+} from "./chatReducer";
 import { ObsidianVaultChangeReview } from "./ObsidianVaultChangeReview";
 import type { PermissionDecisionHandler } from "./PermissionCard";
 import {
@@ -25,8 +30,102 @@ export function normalizeMd(text: string): string {
 	);
 }
 
+function acceptedSteerReceiptId(responseId: string, steerId: string): string {
+	return `accepted-steer-${encodeURIComponent(responseId)}-${encodeURIComponent(steerId)}`;
+}
+
+function AcceptedSteerReceipt({
+	message,
+	responseId,
+}: {
+	message: UserMessage;
+	responseId: string;
+}) {
+	const [expanded, setExpanded] = useState(false);
+	const [canExpand, setCanExpand] = useState(false);
+	const textRef = useRef<HTMLSpanElement>(null);
+	useLayoutEffect(() => {
+		if (!message.text) {
+			setCanExpand(false);
+			return;
+		}
+		const text = textRef.current;
+		if (!text || expanded) return;
+		const measure = () => {
+			setCanExpand(text.scrollHeight > text.clientHeight + 1);
+		};
+		measure();
+		if (typeof ResizeObserver !== "undefined") {
+			const observer = new ResizeObserver(measure);
+			observer.observe(text);
+			return () => observer.disconnect();
+		}
+		window.addEventListener("resize", measure);
+		return () => window.removeEventListener("resize", measure);
+	}, [expanded, message.text]);
+	const content = (
+		<>
+			<Route
+				className="mt-0.5 h-3 w-3 shrink-0 text-primary/65"
+				aria-hidden="true"
+			/>
+			<span className="mt-px shrink-0 text-[8px] font-medium tracking-[0.14em] text-primary/65 uppercase">
+				Steer accepted
+			</span>
+			<span
+				ref={textRef}
+				data-steer-text
+				className={`min-w-0 flex-1 text-[11px] leading-4 text-muted-foreground/75 ${
+					expanded
+						? "whitespace-pre-wrap break-words"
+						: "line-clamp-2 break-words"
+				}`}
+			>
+				<PrivacyMask inline>{message.text}</PrivacyMask>
+			</span>
+			{canExpand && (
+				<ChevronRight
+					className={`mt-0.5 h-3 w-3 shrink-0 text-muted-foreground/40 transition-transform ${
+						expanded ? "rotate-90" : ""
+					}`}
+					aria-hidden="true"
+				/>
+			)}
+		</>
+	);
+	const contentClassName =
+		"flex w-full min-w-0 items-start gap-2 px-2.5 py-1.5 text-left";
+	return (
+		<output
+			id={acceptedSteerReceiptId(responseId, message.id)}
+			aria-live="polite"
+			aria-atomic="true"
+			data-steer-receipt={message.id}
+			className="mx-3 my-1 block min-w-0 border-l border-primary/45 bg-primary/[0.035]"
+		>
+			{canExpand ? (
+				<button
+					type="button"
+					data-steer-focus
+					aria-expanded={expanded}
+					onClick={() => setExpanded((value) => !value)}
+					className={`${contentClassName} transition-colors hover:bg-primary/[0.045]`}
+					title={expanded ? "Collapse accepted steer" : "Expand accepted steer"}
+				>
+					{content}
+				</button>
+			) : (
+				<div data-steer-focus tabIndex={-1} className={contentClassName}>
+					{content}
+				</div>
+			)}
+		</output>
+	);
+}
+
 export function AssistantMsg({
 	message,
+	acceptedSteers = [],
 	permissionLabels,
 	sessionId,
 	providerId,
@@ -43,6 +142,7 @@ export function AssistantMsg({
 	onDecidePermission,
 }: {
 	message: AssistantMessage;
+	acceptedSteers?: readonly UserMessage[];
 	permissionLabels?: Map<string, string>;
 	sessionId?: string;
 	providerId?: string;
@@ -64,10 +164,16 @@ export function AssistantMsg({
 	onDecidePermission?: PermissionDecisionHandler;
 }) {
 	const { copy, copied } = useCopyToClipboard();
-	const workflowAgentIds = new Set<string>();
-	for (const event of message.toolEvents) {
+	const rawSteerBoundaries = acceptedSteers.map((steer) => {
+		const rawBoundary = Number.isFinite(steer.steerToolEventIndex)
+			? Math.floor(steer.steerToolEventIndex as number)
+			: message.toolEvents.length;
+		return Math.min(message.toolEvents.length, Math.max(0, rawBoundary));
+	});
+	const workflowEventIndexByAgentId = new Map<string, number>();
+	for (const [eventIndex, event] of message.toolEvents.entries()) {
 		if (event.subagent?.kind === "workflow") {
-			workflowAgentIds.add(event.subagent.agentId);
+			workflowEventIndexByAgentId.set(event.subagent.agentId, eventIndex);
 		}
 	}
 	const nestedSubagentEventIds = new Set<string>();
@@ -75,11 +181,17 @@ export function AssistantMsg({
 		string,
 		NonNullable<ToolEventMessage["subagent"]>[]
 	>();
-	for (const event of message.toolEvents) {
+	for (const [eventIndex, event] of message.toolEvents.entries()) {
 		const child = event.subagent;
+		if (!child?.parentActivityId) continue;
+		const parentIndex = workflowEventIndexByAgentId.get(child.parentActivityId);
+		if (parentIndex === undefined) continue;
+		// A child emitted after an accepted steer belongs below that receipt.
+		// Keep only same-boundary children inside the earlier workflow card.
 		if (
-			!child?.parentActivityId ||
-			!workflowAgentIds.has(child.parentActivityId)
+			rawSteerBoundaries.some(
+				(boundary) => parentIndex < boundary && boundary <= eventIndex,
+			)
 		) {
 			continue;
 		}
@@ -105,14 +217,25 @@ export function AssistantMsg({
 				groupedProjectPreviewEventIds.has(event.id),
 			)
 		: previewEvents;
-	const transcriptToolEvents = message.toolEvents
-		.slice(toolEventStartIndex)
-		.filter(
-			(event) =>
-				!activeSubagentEvents.includes(event) &&
-				!nestedSubagentEventIds.has(event.id) &&
-				!groupedPreviewEvents.includes(event),
-		);
+	const visibleToolStart = Math.min(
+		Math.max(0, toolEventStartIndex),
+		message.toolEvents.length,
+	);
+	const transcriptToolEventIndices = new Set<number>();
+	for (
+		let eventIndex = visibleToolStart;
+		eventIndex < message.toolEvents.length;
+		eventIndex++
+	) {
+		const event = message.toolEvents[eventIndex];
+		if (
+			!activeSubagentEvents.includes(event) &&
+			!nestedSubagentEventIds.has(event.id) &&
+			!groupedPreviewEvents.includes(event)
+		) {
+			transcriptToolEventIndices.add(eventIndex);
+		}
+	}
 	const renderTool = (event: (typeof message.toolEvents)[number]) => {
 		const historicalPreviewEvents = historicalProjectPreviewGroups?.get(
 			event.id,
@@ -147,6 +270,50 @@ export function AssistantMsg({
 			/>
 		);
 	};
+	const steerReceiptsByBoundary = new Map<number, UserMessage[]>();
+	for (const [steerIndex, steer] of acceptedSteers.entries()) {
+		const boundary = Math.min(
+			message.toolEvents.length,
+			Math.max(visibleToolStart, rawSteerBoundaries[steerIndex]),
+		);
+		const receipts = steerReceiptsByBoundary.get(boundary) ?? [];
+		receipts.push(steer);
+		steerReceiptsByBoundary.set(boundary, receipts);
+	}
+	const transcriptItems: React.ReactNode[] = [];
+	for (
+		let eventIndex = visibleToolStart;
+		eventIndex <= message.toolEvents.length;
+		eventIndex++
+	) {
+		for (const steer of steerReceiptsByBoundary.get(eventIndex) ?? []) {
+			transcriptItems.push(
+				<AcceptedSteerReceipt
+					key={`steer:${steer.id}`}
+					message={steer}
+					responseId={message.id}
+				/>,
+			);
+		}
+		if (
+			eventIndex < message.toolEvents.length &&
+			transcriptToolEventIndices.has(eventIndex)
+		) {
+			transcriptItems.push(renderTool(message.toolEvents[eventIndex]));
+		}
+	}
+	const hasAcceptedSteer = acceptedSteers.length > 0;
+	const latestAcceptedSteer = acceptedSteers.at(-1);
+	const jumpToAcceptedSteer = () => {
+		if (!latestAcceptedSteer) return;
+		const receipt = document.getElementById(
+			acceptedSteerReceiptId(message.id, latestAcceptedSteer.id),
+		);
+		receipt?.scrollIntoView?.({ behavior: "smooth", block: "center" });
+		receipt
+			?.querySelector<HTMLElement>("[data-steer-focus]")
+			?.focus({ preventScroll: true });
+	};
 	return (
 		<div className="group w-full min-w-0 max-w-full overflow-hidden py-3 border-b border-border/40 space-y-1.5">
 			{olderToolEventCount > 0 && onLoadOlderToolEvents && (
@@ -161,7 +328,7 @@ export function AssistantMsg({
 					</button>
 				</div>
 			)}
-			{transcriptToolEvents.map(renderTool)}
+			{transcriptItems}
 			{(message.text || message.streaming) && (
 				<div className="flex flex-wrap items-start gap-0">
 					<div className="shrink-0 pt-0.5 w-12 flex">
@@ -198,9 +365,31 @@ export function AssistantMsg({
 						{message.streaming && (
 							<span className="inline-block w-[7px] h-[1em] ml-0.5 align-middle bg-primary/50 cursor-blink" />
 						)}
+						{message.streaming && hasAcceptedSteer && (
+							<button
+								type="button"
+								onClick={jumpToAcceptedSteer}
+								aria-label="View accepted steer receipt"
+								className="ml-1 inline-flex min-h-6 min-w-6 items-center justify-center rounded-sm px-1 align-middle text-[8px] font-medium tracking-[0.14em] text-primary/55 uppercase transition-colors hover:text-primary/80 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/60"
+								title={`${acceptedSteers.length} accepted steer${acceptedSteers.length === 1 ? "" : "s"} in this response`}
+							>
+								Steered
+							</button>
+						)}
 					</PrivacyMask>
 					{!message.streaming && message.text && (
 						<div className="flex w-full basis-full shrink-0 items-center justify-end gap-1 pr-4 pl-12 pt-1">
+							{hasAcceptedSteer && (
+								<button
+									type="button"
+									onClick={jumpToAcceptedSteer}
+									aria-label="View accepted steer receipt"
+									className="mr-auto inline-flex min-h-6 min-w-6 items-center justify-center rounded-sm px-1 text-[8px] font-medium tracking-[0.14em] text-primary/45 uppercase transition-colors hover:text-primary/70 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/60"
+									title={`${acceptedSteers.length} accepted steer${acceptedSteers.length === 1 ? "" : "s"} in this response`}
+								>
+									Steered
+								</button>
+							)}
 							{message.cost !== null && (
 								<PrivacyMask
 									inline

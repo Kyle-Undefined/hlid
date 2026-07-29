@@ -3,7 +3,11 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SubagentSnapshot } from "#/server/agentProvider";
 import { ChatMessageRow } from "./ChatMessageRow";
-import type { PermissionMessage } from "./chatReducer";
+import type {
+	AssistantMessage,
+	PermissionMessage,
+	UserMessage,
+} from "./chatReducer";
 
 afterEach(cleanup);
 
@@ -61,5 +65,51 @@ describe("ChatMessageRow permission placement", () => {
 		});
 		expect(screen.getByText("Reader")).toBeTruthy();
 		expect(screen.getByText("Inspecting the vault")).toBeTruthy();
+	});
+});
+
+describe("ChatMessageRow steering placement", () => {
+	it("forwards accepted steers into the assistant row instead of a user row", () => {
+		const assistant: AssistantMessage = {
+			id: "assistant-1",
+			role: "assistant",
+			turnId: "original-turn",
+			text: "Agent final response",
+			toolEvents: [
+				{
+					type: "tool_event",
+					id: "tool-before",
+					name: "Read",
+					input: { path: "/before" },
+				},
+			],
+			streaming: true,
+			cost: null,
+		};
+		const steer: UserMessage = {
+			id: "steer-1",
+			role: "user",
+			text: "Change direction",
+			steerTargetTurnId: "original-turn",
+			steerToolEventIndex: 1,
+		};
+		const { container } = renderRow({
+			message: assistant,
+			acceptedSteers: [steer],
+		});
+		const firstTool = screen.getByRole("button", {
+			name: /^Read path: \/before/,
+		});
+		const receipt = container.querySelector("[data-steer-receipt='steer-1']");
+		const agentText = screen.getByText("Agent final response");
+		expect(receipt).not.toBeNull();
+		expect(
+			firstTool.compareDocumentPosition(receipt as Element) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
+		expect(
+			(receipt as Element).compareDocumentPosition(agentText) &
+				Node.DOCUMENT_POSITION_FOLLOWING,
+		).toBeTruthy();
 	});
 });

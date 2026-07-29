@@ -954,6 +954,8 @@ async function runChatQuery(
 		send(context.ws, {
 			type: "error",
 			message: error instanceof Error ? error.message : "Unknown error",
+			turn_scoped: true,
+			...(msg.turn_id !== undefined ? { turn_id: msg.turn_id } : {}),
 		});
 	} finally {
 		broadcastQueueState(entry);
@@ -1037,11 +1039,17 @@ function handleSteerQueued(
 ): void {
 	void entry.manager
 		.steerQueued(msg.turn_id)
-		.then((steered) => {
-			if (steered) {
+		.then((receipt) => {
+			if (receipt) {
 				entry.runState.broadcast({
 					type: "turn_steered",
 					turn_id: msg.turn_id,
+					target_turn_id: receipt.targetTurnId,
+					...(receipt.targetAssistantSeq !== undefined
+						? { target_assistant_seq: receipt.targetAssistantSeq }
+						: {}),
+					steer_seq: receipt.steerSeq,
+					steer_tool_event_index: receipt.steerToolEventIndex,
 					session_id: entry.manager.getCurrentSessionId() ?? entry.sessionId,
 				});
 				return;
@@ -1096,7 +1104,7 @@ async function handleSteerActive(
 				"Only a currently running delegation-owned child can be steered here.",
 			);
 		}
-		await entry.manager.steerActiveTurn(
+		const receipt = await entry.manager.steerActiveTurn(
 			msg.text,
 			(event) => {
 				entry.runState.broadcast(event);
@@ -1114,6 +1122,12 @@ async function handleSteerActive(
 		entry.runState.broadcast({
 			type: "turn_steered",
 			turn_id: msg.turn_id,
+			target_turn_id: receipt.targetTurnId,
+			...(receipt.targetAssistantSeq !== undefined
+				? { target_assistant_seq: receipt.targetAssistantSeq }
+				: {}),
+			steer_seq: receipt.steerSeq,
+			steer_tool_event_index: receipt.steerToolEventIndex,
 			session_id: childSessionId,
 		});
 		broadcastSessionsStatus(context);

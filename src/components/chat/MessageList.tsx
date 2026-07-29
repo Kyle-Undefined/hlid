@@ -92,6 +92,7 @@ export const MessageList = memo(function MessageList({
 		olderHistoryCount,
 		olderToolEventCount,
 		visibleMessages,
+		acceptedSteersByAssistantId,
 		toolEventStartByMessageId,
 		toolEventRevealMessageId,
 		permissionLabels,
@@ -215,6 +216,11 @@ export const MessageList = memo(function MessageList({
 				<ChatMessageRow
 					key={m.id}
 					message={m}
+					acceptedSteers={
+						m.role === "assistant"
+							? acceptedSteersByAssistantId.get(m.id)
+							: undefined
+					}
 					sessionId={sessionId}
 					providerId={providerId}
 					toolEventStartIndex={toolEventStartByMessageId.get(m.id) ?? 0}

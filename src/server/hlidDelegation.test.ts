@@ -157,6 +157,7 @@ describe("Hlid delegation manager", () => {
 		runQuery: ReturnType<typeof vi.fn>;
 		getStatus: ReturnType<typeof vi.fn>;
 		getCurrentSessionId: ReturnType<typeof vi.fn>;
+		getCurrentTurnId: ReturnType<typeof vi.fn>;
 		getProviderId: ReturnType<typeof vi.fn>;
 		abort: ReturnType<typeof vi.fn>;
 		isRunning: ReturnType<typeof vi.fn>;
@@ -209,11 +210,17 @@ describe("Hlid delegation manager", () => {
 				effort: "high",
 			}),
 			getCurrentSessionId: vi.fn().mockReturnValue("child-1"),
+			getCurrentTurnId: vi.fn().mockReturnValue("child-active-turn"),
 			getProviderId: vi.fn().mockReturnValue("codex"),
 			abort: vi.fn(),
 			isRunning: vi.fn().mockReturnValue(false),
 			setPermissionMode: vi.fn().mockResolvedValue(undefined),
-			steerActiveTurn: vi.fn().mockResolvedValue(undefined),
+			steerActiveTurn: vi.fn().mockResolvedValue({
+				targetTurnId: "child-active-turn",
+				targetAssistantSeq: 4,
+				steerSeq: 5,
+				steerToolEventIndex: 2,
+			}),
 		};
 		const parent = {
 			get agentCwd() {
@@ -1750,6 +1757,16 @@ describe("Hlid delegation manager", () => {
 			expect.any(Function),
 			"child-1",
 			expect.stringMatching(/^delegation-steer-/),
+		);
+		expect(broadcast).toHaveBeenCalledWith(
+			expect.objectContaining({
+				type: "turn_steered",
+				target_turn_id: "child-active-turn",
+				target_assistant_seq: 4,
+				steer_seq: 5,
+				steer_tool_event_index: 2,
+				session_id: "child-1",
+			}),
 		);
 
 		const requested = await manager.cancel("parent-1", created.id);

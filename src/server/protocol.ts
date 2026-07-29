@@ -185,6 +185,10 @@ export type ContextUpdateMessage = {
 export type ErrorMessage = {
 	type: "error";
 	message: string;
+	/** Active user turn that failed, when the error came from a chat run. */
+	turn_id?: string;
+	/** Distinguishes transcript-bound failures from generic command errors. */
+	turn_scoped?: true;
 };
 
 /** Exact provider activity requesting an interactive permission decision. */
@@ -277,6 +281,18 @@ export type QueueStateMessage = QueueStateSnapshot & {
 export type TurnSteeredMessage = {
 	type: "turn_steered";
 	turn_id: string;
+	/**
+	 * Original user turn whose assistant response accepted this instruction.
+	 * Lets Raven place a late acknowledgement above the exact response even
+	 * when that response has already completed or a newer turn has started.
+	 */
+	target_turn_id?: string;
+	/** Persisted assistant sequence targeted by this steer, when available. */
+	target_assistant_seq?: number;
+	/** Persisted sequence of the steering user row. */
+	steer_seq?: number;
+	/** Raw assistant tool-event count when the provider accepted the steer. */
+	steer_tool_event_index?: number;
 	session_id?: string;
 };
 

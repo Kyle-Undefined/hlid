@@ -212,6 +212,8 @@ type TurnState = {
 	lastKnownContextWindow: number | null;
 	lastContextTokens: number | null;
 	hadToolEvents: boolean;
+	/** Monotonic count of tool events exposed for this assistant response. */
+	rawToolEventCount: number;
 	lastAssistantSeq: number;
 	pendingToolEvents: {
 		toolId: string;
@@ -229,6 +231,14 @@ type TurnState = {
 	 * event inserts) attach to a real row that mid-turn reloads can render.
 	 */
 	reservedAssistantSeq: number | null;
+	/**
+	 * Durable placeholder insert for reservedAssistantSeq. Steering awaits this
+	 * before persisting its user row so an accepted boundary cannot outlive its
+	 * target assistant row after a crash or an otherwise empty provider turn.
+	 */
+	assistantRowWrite: Promise<void> | null;
+	/** Steering user rows awaiting the assistant sequence allocated later. */
+	pendingSteerTargetSeqs: Set<number>;
 	/** Latest native provider turn contributing to this displayed row. */
 	providerTurnId: string | null;
 	/**
@@ -301,7 +311,20 @@ type ActiveSteeringTarget = {
 	agentSession: AgentSession;
 	steer: (prompt: string) => Promise<void>;
 	turnState: TurnState;
+	/** Assistant sequence before provider acceptance can race with turn done. */
+	assistantSeqAtCapture: number | null;
 	handoff: CurrentDelegationHandoff | null;
+};
+
+export type SteeringReceipt = {
+	/** Original user turn whose live assistant accepted the steer. */
+	targetTurnId: string;
+	/** Persisted assistant sequence, when the response already owns one. */
+	targetAssistantSeq?: number;
+	/** Persisted sequence of the steering user message. */
+	steerSeq: number;
+	/** Raw tool-event count at the provider acceptance boundary. */
+	steerToolEventIndex: number;
 };
 
 export type SessionState = "idle" | "running" | "error";
@@ -709,12 +732,15 @@ function createTurnState(): TurnState {
 		lastKnownContextWindow: null,
 		lastContextTokens: null,
 		hadToolEvents: false,
+		rawToolEventCount: 0,
 		lastAssistantSeq: -1,
 		pendingToolEvents: [],
 		pendingToolResults: new Map(),
 		pendingToolUpdates: new Map(),
 		pendingToolEventWrites: new Map(),
 		reservedAssistantSeq: null,
+		assistantRowWrite: null,
+		pendingSteerTargetSeqs: new Set(),
 		providerTurnId: null,
 		dbMessageId: null,
 		persistedToolIds: new Set(),
@@ -1005,12 +1031,16 @@ export class SessionManager {
 		model: string;
 		permission_mode: PermissionMode;
 		effort: string;
+		turn_id?: string;
 	} {
 		return {
 			state: this.state,
 			model: this.model,
 			permission_mode: this.permissionMode,
 			effort: this.effort,
+			...(this.state === "running" && this.currentTurnId !== undefined
+				? { turn_id: this.currentTurnId }
+				: {}),
 		};
 	}
 
@@ -1942,7 +1972,7 @@ export class SessionManager {
 					stack:
 						error instanceof Error ? error.stack?.slice(0, 500) : undefined,
 				});
-				emit({ type: "error", message });
+				emit({ type: "error", message, turn_scoped: true });
 				this.agentSession?.cancel();
 				this.agentSession = null;
 				this.agentSessionKey = null;
@@ -2494,6 +2524,7 @@ export class SessionManager {
 		}
 		turn.textWriteDirty = false;
 		if (reused) {
+			await turn.assistantRowWrite;
 			await db.setMessageText(sessionId, assistantSeq, turn.assistantText);
 		} else {
 			await db.appendMessage(
@@ -2503,7 +2534,22 @@ export class SessionManager {
 				turn.assistantText,
 			);
 		}
+		await this.backfillPendingSteerTargets(sessionId, turn, assistantSeq);
 		return assistantSeq;
+	}
+
+	private async backfillPendingSteerTargets(
+		sessionId: string,
+		turn: TurnState,
+		assistantSeq: number,
+	): Promise<void> {
+		const pending = [...turn.pendingSteerTargetSeqs];
+		await Promise.all(
+			pending.map(async (steerSeq) => {
+				await db.setMessageSteerTargetSeq(sessionId, steerSeq, assistantSeq);
+				turn.pendingSteerTargetSeqs.delete(steerSeq);
+			}),
+		);
 	}
 
 	private persistPendingToolEvents(
@@ -2635,6 +2681,7 @@ export class SessionManager {
 				turn.pendingToolEventWrites.clear();
 				turn.persistedToolIds.clear();
 				turn.reservedAssistantSeq = null;
+				turn.assistantRowWrite = null;
 				turn.dbMessageId = null;
 				turn.assistantText = "";
 			}
@@ -2735,9 +2782,9 @@ export class SessionManager {
 
 	/**
 	 * Allocate the assistant message seq + insert an empty placeholder row on
-	 * first call. Subsequent calls return the same seq. Used by text_delta and
-	 * tool_start so live writes (text streaming, tool_event inserts) attach to
-	 * a real row that mid-turn reloads can render.
+	 * first call. Subsequent calls return the same seq. Used by text_delta,
+	 * tool_start, and accepted early steers so live state attaches to a real row
+	 * that mid-turn reloads can render.
 	 */
 	private ensureAssistantRow(turn: TurnState, sessionId: string): number {
 		if (turn.reservedAssistantSeq != null) return turn.reservedAssistantSeq;
@@ -2749,7 +2796,7 @@ export class SessionManager {
 		) {
 			this.currentDelegationHandoff.currentAssistantSequence = seq;
 		}
-		void db
+		const rowWrite = db
 			.appendMessage(sessionId, seq, "assistant", "")
 			.then(async (dbId) => {
 				turn.dbMessageId = dbId;
@@ -2760,8 +2807,10 @@ export class SessionManager {
 						turn.providerTurnId,
 					);
 				}
-			})
-			.catch((e) => logDbError("appendMessage (placeholder)", e));
+				await this.backfillPendingSteerTargets(sessionId, turn, seq);
+			});
+		turn.assistantRowWrite = rowWrite;
+		void rowWrite.catch((e) => logDbError("appendMessage (placeholder)", e));
 		return seq;
 	}
 
@@ -2871,6 +2920,7 @@ export class SessionManager {
 			turn.lastBlockType = "tool_use";
 			return;
 		}
+		turn.rawToolEventCount++;
 		turn.pendingToolEvents.push({
 			toolId: event.toolId,
 			name: event.name,
@@ -3507,6 +3557,7 @@ export class SessionManager {
 			agentSession,
 			steer: steer.bind(agentSession),
 			turnState,
+			assistantSeqAtCapture: turnState.reservedAssistantSeq,
 			handoff: this.currentDelegationHandoff,
 		};
 	}
@@ -3530,9 +3581,10 @@ export class SessionManager {
 		prepared: Awaited<ReturnType<SessionManager["buildQueuedSteeringPrompt"]>>,
 		target: ActiveSteeringTarget,
 		onAccepted?: () => void,
-	): Promise<void> {
+	): Promise<SteeringReceipt> {
 		this.assertActiveSteeringTarget(target);
 		await target.steer(prepared.prompt);
+		const steerToolEventIndex = target.turnState.rawToolEventCount;
 		onAccepted?.();
 		try {
 			if (prepared.contextManifest.operatingBrief?.included) {
@@ -3540,16 +3592,47 @@ export class SessionManager {
 			}
 			const { userMessage } = args;
 			const { sessionId } = args.options;
-			await this.persistUserMessage(
+			let steerTargetSeq =
+				target.assistantSeqAtCapture ??
+				target.turnState.reservedAssistantSeq ??
+				(target.turnState.lastAssistantSeq >= 0
+					? target.turnState.lastAssistantSeq
+					: undefined);
+			if (sessionId) {
+				if (steerTargetSeq === undefined) {
+					steerTargetSeq = this.ensureAssistantRow(target.turnState, sessionId);
+				}
+				if (steerTargetSeq === target.turnState.reservedAssistantSeq) {
+					await target.turnState.assistantRowWrite;
+				}
+			}
+			const steerSeq = await this.persistUserMessage(
 				sessionId,
 				userMessage,
 				[],
 				turnId,
 				prepared.safeVaultReferences,
 				[],
-				target.turnState.reservedAssistantSeq ?? undefined,
+				steerTargetSeq,
 				prepared.contextManifest,
+				steerToolEventIndex,
 			);
+			if (sessionId && steerTargetSeq === undefined) {
+				const allocatedAfterAcceptance =
+					target.turnState.reservedAssistantSeq ??
+					(target.turnState.lastAssistantSeq >= 0
+						? target.turnState.lastAssistantSeq
+						: undefined);
+				target.turnState.pendingSteerTargetSeqs.add(steerSeq);
+				if (allocatedAfterAcceptance !== undefined) {
+					await this.backfillPendingSteerTargets(
+						sessionId,
+						target.turnState,
+						allocatedAfterAcceptance,
+					);
+					steerTargetSeq = allocatedAfterAcceptance;
+				}
+			}
 			if (target.handoff) {
 				target.handoff.skillContexts = [
 					...new Set([
@@ -3564,6 +3647,14 @@ export class SessionManager {
 					]),
 				];
 			}
+			return {
+				targetTurnId: target.turnId,
+				...(steerTargetSeq !== undefined
+					? { targetAssistantSeq: steerTargetSeq }
+					: {}),
+				steerSeq,
+				steerToolEventIndex,
+			};
 		} catch (error) {
 			const detail = error instanceof Error ? error.message : String(error);
 			throw new Error(
@@ -3578,7 +3669,7 @@ export class SessionManager {
 	 * rejected or raced request is restored at its original queue position.
 	 */
 	// fallow-ignore-next-line unused-class-member -- Called by the WebSocket steer_queued dispatch in wsHandlers.
-	async steerQueued(turnId: string): Promise<boolean> {
+	async steerQueued(turnId: string): Promise<false | SteeringReceipt> {
 		const pending = this.turnQueue
 			.pendingTurns()
 			.find((turn) => turn.turnId === turnId);
@@ -3590,7 +3681,7 @@ export class SessionManager {
 		if (!extracted) return false;
 		let accepted = false;
 		try {
-			await this.deliverPreparedSteer(
+			const receipt = await this.deliverPreparedSteer(
 				extracted.turn.args,
 				turnId,
 				prepared,
@@ -3600,7 +3691,7 @@ export class SessionManager {
 				},
 			);
 			extracted.turn.resolve();
-			return true;
+			return receipt;
 		} catch (error) {
 			if (!accepted) {
 				this.turnQueue.restore(extracted);
@@ -3622,7 +3713,7 @@ export class SessionManager {
 		emit: (msg: ServerMessage) => void,
 		sessionId: string,
 		turnId: string,
-	): Promise<void> {
+	): Promise<SteeringReceipt> {
 		const args: RunQueryArgs = {
 			userMessage: instruction,
 			emit,
@@ -3636,7 +3727,7 @@ export class SessionManager {
 		const target = this.captureActiveSteeringTarget(args);
 		const prepared = await this.buildQueuedSteeringPrompt(args);
 		this.assertActiveSteeringTarget(target);
-		await this.deliverPreparedSteer(args, turnId, prepared, target);
+		return this.deliverPreparedSteer(args, turnId, prepared, target);
 	}
 
 	/**
@@ -4531,9 +4622,10 @@ export class SessionManager {
 		workspaceReferences: ResolvedWorkspaceReference[] = [],
 		steerTargetSeq?: number,
 		contextManifest?: HlidTurnContextManifest,
-	): Promise<void> {
+		steerToolEventIndex?: number,
+	): Promise<number> {
 		const userSeq = this.messageSeq++;
-		if (!sessionId) return;
+		if (!sessionId) return userSeq;
 		const persistedMessage = formatVaultReferencedMessage(
 			userMessage,
 			vaultReferences,
@@ -4542,7 +4634,18 @@ export class SessionManager {
 				.map((attachment) => attachment.filename),
 			workspaceReferences,
 		);
-		if (turnId) {
+		if (turnId && steerToolEventIndex !== undefined) {
+			await db.appendMessage(
+				sessionId,
+				userSeq,
+				"user",
+				persistedMessage,
+				turnId,
+				steerTargetSeq,
+				contextManifest ? JSON.stringify(contextManifest) : undefined,
+				steerToolEventIndex,
+			);
+		} else if (turnId) {
 			if (steerTargetSeq !== undefined) {
 				await db.appendMessage(
 					sessionId,
@@ -4583,6 +4686,7 @@ export class SessionManager {
 					console.error("[session] linkAttachmentToMessage failed:", error);
 				});
 		}
+		return userSeq;
 	}
 
 	private getOrCreateAgentSession(options: {
@@ -5250,7 +5354,12 @@ export class SessionManager {
 					name: err instanceof Error ? err.name : undefined,
 					stack: err instanceof Error ? err.stack?.slice(0, 500) : undefined,
 				});
-				emit({ type: "error", message: msg });
+				emit({
+					type: "error",
+					message: msg,
+					turn_scoped: true,
+					...(turnId !== undefined ? { turn_id: turnId } : {}),
+				});
 			}
 			// Slice B: tear down the AgentSession on error — its iterator may
 			// be in an inconsistent state. Explicit aborts also retire the stream,

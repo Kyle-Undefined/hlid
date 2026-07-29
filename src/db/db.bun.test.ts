@@ -44,6 +44,7 @@ import {
 	setAskUserQuestionResolution,
 	setMessageProviderTurnId,
 	setMessageRecap,
+	setMessageSteerTargetSeq,
 	setToolEventResult,
 	setToolEventSubagent,
 } from "./messages";
@@ -1106,7 +1107,7 @@ describe("messages", () => {
 		await createSession("s1", "L", "m");
 		await appendMessage("s1", 0, "user", "hello", "turn-1");
 		await appendMessage("s1", 1, "assistant", "world");
-		await appendMessage("s1", 2, "user", "steer", "turn-2", 1);
+		await appendMessage("s1", 2, "user", "steer", "turn-2", 1, undefined, 2);
 		const rows = await getSessionMessages("s1");
 		expect(rows).toHaveLength(3);
 		expect(rows[0].role).toBe("user");
@@ -1116,6 +1117,31 @@ describe("messages", () => {
 		expect(rows[1].turn_id).toBeNull();
 		expect(rows[2].turn_id).toBe("turn-2");
 		expect(rows[2].steer_target_seq).toBe(1);
+		expect(rows[2].steer_tool_event_index).toBe(2);
+	});
+
+	it("backfills the assistant target for a steer persisted before its response", async () => {
+		await createSession("s1", "L", "m");
+		await appendMessage(
+			"s1",
+			1,
+			"user",
+			"early steer",
+			"steer-1",
+			undefined,
+			undefined,
+			0,
+		);
+		await appendMessage("s1", 2, "assistant", "response");
+
+		await setMessageSteerTargetSeq("s1", 1, 2);
+
+		const rows = await getSessionMessages("s1");
+		expect(rows[0].steer_target_seq).toBe(2);
+		expect(rows[0].steer_tool_event_index).toBe(0);
+		await expect(setMessageSteerTargetSeq("s1", 99, 2)).rejects.toThrow(
+			"no user row found",
+		);
 	});
 
 	it("pages Hlid context manifests outside visible message text", async () => {
@@ -1320,7 +1346,16 @@ describe("messages", () => {
 			{ providerId: "codex", model: "gpt-5.6-sol", agentCwd: "/work/project" },
 		);
 		await setToolEventResult("source", "tool-1", "contents", false);
-		await appendMessage("source", 2, "user", "Steered direction", "steer-1", 1);
+		await appendMessage(
+			"source",
+			2,
+			"user",
+			"Steered direction",
+			"steer-1",
+			1,
+			undefined,
+			1,
+		);
 		await appendMessage("source", 3, "user", "Later prompt", "turn-2");
 		await appendMessage("source", 4, "assistant", "Later answer", "turn-2");
 
@@ -1353,6 +1388,7 @@ describe("messages", () => {
 		]);
 		expect(messages[1].provider_turn_id).toBe("provider-turn-1");
 		expect(messages[2].steer_target_seq).toBe(1);
+		expect(messages[2].steer_tool_event_index).toBe(1);
 		expect(messages[0].context_manifest_json).toBe(contextManifest);
 		expect(await getMessageForFork(messages[1].id)).toMatchObject({
 			sessionId: "fork",

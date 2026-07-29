@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { QueuedChatMessage } from "#/hooks/wsChatQueueStore";
 import { approvedLabel } from "#/server/protocol";
-import type { ChatMessage } from "./chatReducer";
+import type { AssistantMessage, ChatMessage, UserMessage } from "./chatReducer";
 import type { UserMsgQueueState } from "./UserMsg";
 
 export type { QueuedChatMessage };
@@ -21,6 +21,82 @@ function isActiveSubagent(message: ChatMessage, index: number): boolean {
 	if (message.role !== "assistant") return false;
 	const status = message.toolEvents[index]?.subagent?.status;
 	return status === "pending" || status === "running" || status === "paused";
+}
+
+/**
+ * Accepted steers belong to the assistant response they redirected. Keep them
+ * in reducer/history state for persistence and correlation, but render them as
+ * compact acknowledgements inside that assistant row instead of as another
+ * full user-message section.
+ */
+export function groupAcceptedSteers(messages: ChatMessage[]): {
+	messages: ChatMessage[];
+	acceptedSteersByAssistantId: Map<string, UserMessage[]>;
+} {
+	const assistantBySequence = new Map<number, AssistantMessage>();
+	const assistantByTurn = new Map<string, AssistantMessage>();
+	for (const message of messages) {
+		if (message.role !== "assistant") continue;
+		if (message.transcriptSeq !== undefined) {
+			assistantBySequence.set(message.transcriptSeq, message);
+		}
+		if (message.turnId !== undefined) {
+			assistantByTurn.set(message.turnId, message);
+		}
+	}
+
+	const acceptedSteersByAssistantId = new Map<string, UserMessage[]>();
+	const groupedSteerIds = new Set<string>();
+	const transcriptOrder = new Map(
+		messages.map((message, index) => [message, index] as const),
+	);
+	for (const message of messages) {
+		if (message.role !== "user") continue;
+		if (
+			message.steerTargetSeq === undefined &&
+			message.steerTargetTurnId === undefined
+		) {
+			continue;
+		}
+		// An accepted steer is receipt data, never a second standalone user
+		// section. Its target may live on an older page that is not loaded yet.
+		groupedSteerIds.add(message.id);
+		// Persisted sequence correlation is authoritative when that row is
+		// mounted. During a live remount the exact row can exist only as a
+		// synthetic turn-bound assistant, so fall back to the same turn id.
+		const assistant =
+			(message.steerTargetSeq !== undefined
+				? assistantBySequence.get(message.steerTargetSeq)
+				: undefined) ??
+			(message.steerTargetTurnId !== undefined
+				? assistantByTurn.get(message.steerTargetTurnId)
+				: undefined);
+		if (!assistant) continue;
+		const steers = acceptedSteersByAssistantId.get(assistant.id) ?? [];
+		steers.push(message);
+		acceptedSteersByAssistantId.set(assistant.id, steers);
+	}
+	for (const steers of acceptedSteersByAssistantId.values()) {
+		steers.sort((left, right) => {
+			if (
+				left.transcriptSeq !== undefined &&
+				right.transcriptSeq !== undefined &&
+				left.transcriptSeq !== right.transcriptSeq
+			) {
+				return left.transcriptSeq - right.transcriptSeq;
+			}
+			return (
+				(transcriptOrder.get(left) ?? 0) - (transcriptOrder.get(right) ?? 0)
+			);
+		});
+	}
+
+	return {
+		messages: messages.filter(
+			(message) => message.role !== "user" || !groupedSteerIds.has(message.id),
+		),
+		acceptedSteersByAssistantId,
+	};
 }
 
 /**
@@ -72,12 +148,16 @@ export function useMessageListView({
 	// page expands this window by the number of rows the server actually returned;
 	// later live messages then displace the oldest rendered rows instead of growing
 	// the mounted transcript forever.
+	const { messages: groupedMessages, acceptedSteersByAssistantId } = useMemo(
+		() => groupAcceptedSteers(messages),
+		[messages],
+	);
 	const hiddenHistoryCount = isCursorLoadReserved
 		? 0
-		: Math.max(0, messages.length - visibleHistoryCount);
+		: Math.max(0, groupedMessages.length - visibleHistoryCount);
 	const visibleMessages = useMemo(
-		() => messages.slice(hiddenHistoryCount),
-		[messages, hiddenHistoryCount],
+		() => groupedMessages.slice(hiddenHistoryCount),
+		[groupedMessages, hiddenHistoryCount],
 	);
 
 	// Approved permissions render as a chip under the matching tool block
@@ -201,7 +281,7 @@ export function useMessageListView({
 		if (isLoadingOlderHistory) return;
 		if (hiddenHistoryCount > 0) {
 			setVisibleHistoryCount((count) =>
-				Math.min(messages.length, count + HISTORY_RENDER_PAGE_SIZE),
+				Math.min(groupedMessages.length, count + HISTORY_RENDER_PAGE_SIZE),
 			);
 			return;
 		}
@@ -245,6 +325,7 @@ export function useMessageListView({
 		olderHistoryCount,
 		isLoadingOlderHistory,
 		visibleMessages,
+		acceptedSteersByAssistantId,
 		toolEventStartByMessageId,
 		toolEventRevealMessageId,
 		olderToolEventCount,

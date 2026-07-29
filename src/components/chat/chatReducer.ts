@@ -20,11 +20,21 @@ export type UserMessage = {
 	hasContextReceipt?: boolean;
 	/** Assistant transcript sequence this prompt steered. */
 	steerTargetSeq?: number;
+	/** Live target correlation used until history can hydrate by sequence. */
+	steerTargetTurnId?: string;
+	/**
+	 * Number of raw tool events already present when the provider accepted this
+	 * steer. Tools before this boundary render above the receipt; later tools
+	 * resume below it.
+	 */
+	steerToolEventIndex?: number;
 };
 
 export type AssistantMessage = {
 	id: string;
 	role: "assistant";
+	/** User turn that opened this live assistant response. */
+	turnId?: string;
 	text: string;
 	toolEvents: ToolEventMessage[];
 	streaming: boolean;
@@ -106,6 +116,7 @@ export type HistoryItem =
 			seq?: number;
 			hasContextReceipt?: boolean;
 			steerTargetSeq?: number | null;
+			steerToolEventIndex?: number | null;
 			toolEvents?: ToolEventMessage[];
 			attachments?: ChatAttachment[];
 			recap?: string | null;
@@ -152,10 +163,19 @@ export type Action =
 			pendingTurnIds: string[];
 	  }
 	| {
-			/** Move an accepted steer immediately before the active response. */
+			/** Correlate an accepted steer with the exact response it redirected. */
 			type: "STEER_USER";
 			turnId: string;
-			assistantId: string;
+			/** Exact originating turn supplied by the server. */
+			targetTurnId?: string;
+			/** Exact persisted assistant row supplied by the server. */
+			targetAssistantSeq?: number;
+			/** Persisted sequence of the accepted steering prompt. */
+			steerSeq?: number;
+			/** Raw tool-event boundary captured when the provider accepted it. */
+			steerToolEventIndex?: number;
+			/** Compatibility fallback for acknowledgements without a target turn. */
+			assistantId?: string;
 	  }
 	| {
 			type: "ADD_ASSISTANT";
@@ -169,6 +189,12 @@ export type Action =
 			 * user/assistant/user/assistant/user/assistant.
 			 */
 			afterUserId?: string;
+	  }
+	| {
+			/** Correlate a restored in-flight assistant with its running turn. */
+			type: "SET_ASSISTANT_TURN";
+			id: string;
+			turnId: string;
 	  }
 	| { type: "RESUME_ASSISTANT"; id: string }
 	| { type: "APPEND_CHUNK"; id: string; text: string; offset?: number }
@@ -297,24 +323,116 @@ function promoteUser(
 function steerUser(
 	state: ChatMessage[],
 	turnId: string,
-	assistantId: string,
+	targetTurnId?: string,
+	targetAssistantSeq?: number,
+	steerSeq?: number,
+	steerToolEventIndex?: number,
+	assistantId?: string,
 ): ChatMessage[] {
 	const userIdx = state.findIndex(
 		(message) => message.id === turnId && message.role === "user",
 	);
-	const assistantIdx = state.findIndex(
-		(message) => message.id === assistantId && message.role === "assistant",
-	);
-	if (userIdx === -1 || assistantIdx === -1 || userIdx === assistantIdx - 1) {
-		return state;
+	let assistantIdx =
+		targetAssistantSeq === undefined
+			? -1
+			: state.findIndex(
+					(message) =>
+						message.role === "assistant" &&
+						message.transcriptSeq === targetAssistantSeq,
+				);
+	if (assistantIdx === -1 && targetTurnId !== undefined) {
+		assistantIdx = state.findIndex(
+			(message) =>
+				message.role === "assistant" && message.turnId === targetTurnId,
+		);
 	}
-	const steered = state[userIdx];
-	const without = [...state.slice(0, userIdx), ...state.slice(userIdx + 1)];
+	if (assistantIdx === -1 && assistantId !== undefined) {
+		assistantIdx = state.findIndex(
+			(message) =>
+				message.role === "assistant" &&
+				message.id === assistantId &&
+				// An explicit target must never attach to an unknown or newer turn.
+				((targetTurnId === undefined && targetAssistantSeq === undefined) ||
+					(targetTurnId !== undefined && message.turnId === targetTurnId) ||
+					(targetAssistantSeq !== undefined &&
+						message.transcriptSeq === targetAssistantSeq)),
+		);
+	}
+	if (userIdx === -1 || assistantIdx === -1) return state;
+
+	const selected = state[userIdx] as UserMessage;
+	const targetAssistant = state[assistantIdx] as AssistantMessage;
+	const correlatedTargetTurnId = targetTurnId ?? targetAssistant.turnId;
+	const correlatedTargetSeq =
+		targetAssistantSeq ?? targetAssistant.transcriptSeq;
+	const acceptedToolEventIndex =
+		selected.steerToolEventIndex ??
+		steerToolEventIndex ??
+		targetAssistant.toolEvents.length;
+	const needsSteerPatch =
+		(correlatedTargetTurnId !== undefined &&
+			selected.steerTargetTurnId !== correlatedTargetTurnId) ||
+		(correlatedTargetSeq !== undefined &&
+			selected.steerTargetSeq !== correlatedTargetSeq) ||
+		(steerSeq !== undefined && selected.transcriptSeq !== steerSeq) ||
+		selected.steerToolEventIndex !== acceptedToolEventIndex;
+	const steered: UserMessage = needsSteerPatch
+		? {
+				...selected,
+				...(correlatedTargetTurnId !== undefined
+					? { steerTargetTurnId: correlatedTargetTurnId }
+					: {}),
+				...(correlatedTargetSeq !== undefined
+					? { steerTargetSeq: correlatedTargetSeq }
+					: {}),
+				...(steerSeq !== undefined ? { transcriptSeq: steerSeq } : {}),
+				steerToolEventIndex: acceptedToolEventIndex,
+			}
+		: selected;
+	const sharesTarget = (message: ChatMessage): message is UserMessage =>
+		message.role === "user" &&
+		message.id !== turnId &&
+		((correlatedTargetSeq !== undefined &&
+			message.steerTargetSeq === correlatedTargetSeq) ||
+			(correlatedTargetTurnId !== undefined &&
+				message.steerTargetTurnId === correlatedTargetTurnId));
+	const group = state
+		.flatMap((message, index) => {
+			if (message.id === turnId && message.role === "user") {
+				return [{ message: steered, index }];
+			}
+			return sharesTarget(message) ? [{ message, index }] : [];
+		})
+		.sort((left, right) => {
+			const leftSeq = left.message.transcriptSeq;
+			const rightSeq = right.message.transcriptSeq;
+			if (
+				leftSeq !== undefined &&
+				rightSeq !== undefined &&
+				leftSeq !== rightSeq
+			) {
+				return leftSeq - rightSeq;
+			}
+			return left.index - right.index;
+		})
+		.map(({ message }) => message);
+	const groupedIds = new Set(group.map((message) => message.id));
+	const without = state.filter(
+		(message) => !(message.role === "user" && groupedIds.has(message.id)),
+	);
 	const targetIdx = without.findIndex(
-		(message) => message.id === assistantId && message.role === "assistant",
+		(message) =>
+			message.role === "assistant" && message.id === state[assistantIdx].id,
 	);
 	if (targetIdx === -1) return state;
-	return [...without.slice(0, targetIdx), steered, ...without.slice(targetIdx)];
+	const next = [
+		...without.slice(0, targetIdx),
+		...group,
+		...without.slice(targetIdx),
+	];
+	return next.every((message, index) => message === state[index])
+		? state
+		: next;
 }
 
 /**
@@ -445,6 +563,9 @@ function historyItemToMessage(item: HistoryItem): ChatMessage {
 			...(item.steerTargetSeq != null
 				? { steerTargetSeq: item.steerTargetSeq }
 				: {}),
+			...(item.steerToolEventIndex != null
+				? { steerToolEventIndex: item.steerToolEventIndex }
+				: {}),
 		};
 	}
 	if (item.role === "assistant") {
@@ -471,13 +592,52 @@ function historyItemToMessage(item: HistoryItem): ChatMessage {
 }
 
 function orderPersistedSteers(state: ChatMessage[]): ChatMessage[] {
-	return orderSteeredTranscript(state, {
+	const ordered = orderSteeredTranscript(state, {
 		role: (message) => message.role,
 		sequence: (message) =>
 			message.role === "assistant" ? message.transcriptSeq : undefined,
 		steerTargetSequence: (message) =>
 			message.role === "user" ? message.steerTargetSeq : undefined,
 	});
+	const assistantBySequence = new Map<number, AssistantMessage>();
+	for (const message of ordered) {
+		if (message.role === "assistant" && message.transcriptSeq !== undefined) {
+			assistantBySequence.set(message.transcriptSeq, message);
+		}
+	}
+	let currentTurnId: string | undefined;
+	let changed = false;
+	const correlated = ordered.map((message) => {
+		if (message.role === "user") {
+			if (
+				message.steerTargetSeq !== undefined &&
+				message.steerToolEventIndex === undefined
+			) {
+				const target = assistantBySequence.get(message.steerTargetSeq);
+				if (target) {
+					changed = true;
+					return {
+						...message,
+						// Legacy rows predate the durable boundary. Pin the receipt
+						// after the tools restored with this history page so later
+						// live tools cannot make it drift.
+						steerToolEventIndex: target.toolEvents.length,
+					};
+				}
+			}
+			if (message.steerTargetSeq === undefined) currentTurnId = message.id;
+			return message;
+		}
+		if (message.role !== "assistant") return message;
+		const next =
+			message.turnId === undefined && currentTurnId !== undefined
+				? { ...message, turnId: currentTurnId }
+				: message;
+		if (next !== message) changed = true;
+		currentTurnId = undefined;
+		return next;
+	});
+	return changed ? correlated : ordered;
 }
 
 function messageKey(message: ChatMessage): string {
@@ -538,15 +698,25 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 			if (state.some((m) => m.role === "user" && m.id === action.id)) {
 				return state;
 			}
-			return [
-				...state,
-				{
+			{
+				const user: UserMessage = {
 					id: action.id,
 					role: "user",
 					text: action.text,
 					attachments: action.attachments,
-				},
-			];
+				};
+				const correlatedAssistant = state.findIndex(
+					(message) =>
+						message.role === "assistant" && message.turnId === action.id,
+				);
+				return correlatedAssistant === -1
+					? [...state, user]
+					: [
+							...state.slice(0, correlatedAssistant),
+							user,
+							...state.slice(correlatedAssistant),
+						];
+			}
 		case "MARK_USER_CONTEXT_RECEIPT":
 			return state.map((message) =>
 				message.role === "user" && message.id === action.id
@@ -559,11 +729,20 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 			return promoteUser(state, action.turnId, action.pendingTurnIds);
 		}
 		case "STEER_USER":
-			return steerUser(state, action.turnId, action.assistantId);
+			return steerUser(
+				state,
+				action.turnId,
+				action.targetTurnId,
+				action.targetAssistantSeq,
+				action.steerSeq,
+				action.steerToolEventIndex,
+				action.assistantId,
+			);
 		case "ADD_ASSISTANT": {
 			const placeholder: ChatMessage = {
 				id: action.id,
 				role: "assistant",
+				...(action.afterUserId ? { turnId: action.afterUserId } : {}),
 				text: "",
 				toolEvents: [],
 				streaming: true,
@@ -583,6 +762,12 @@ export function reducer(state: ChatMessage[], action: Action): ChatMessage[] {
 			}
 			return [...state, placeholder];
 		}
+		case "SET_ASSISTANT_TURN":
+			return patchMessage(state, action.id, "assistant", (message) =>
+				message.turnId === action.turnId
+					? message
+					: { ...message, turnId: action.turnId },
+			);
 		case "RESUME_ASSISTANT":
 			return patchMessage(state, action.id, "assistant", (m) =>
 				m.streaming ? m : { ...m, streaming: true },

@@ -116,6 +116,7 @@ function makeSession(overrides: Partial<SessionManager> = {}): SessionManager {
 		getPendingAskUserQuestions: vi.fn().mockReturnValue([]),
 		getPendingPlanModeExits: vi.fn().mockReturnValue([]),
 		getCurrentSessionId: vi.fn().mockReturnValue("mock-db-session"),
+		getCurrentTurnId: vi.fn().mockReturnValue(null),
 		abort: vi.fn(),
 		skipSleep: vi.fn(),
 		getSleepState: vi.fn().mockReturnValue(null),
@@ -1642,6 +1643,31 @@ describe("message — chat", () => {
 		expect(session.runQuery).not.toHaveBeenCalled();
 	});
 
+	it("marks a rejected chat run as a turn-scoped error", async () => {
+		const session = makeSession({
+			runQuery: vi.fn().mockRejectedValue(new Error("setup failed")),
+		});
+		const { pool } = wrapSession(session);
+		const { message } = createWsHandlers(pool as never);
+		const ws = makeWs();
+
+		await message(
+			ws as never,
+			JSON.stringify({
+				type: "chat",
+				text: "hello",
+				turn_id: "turn-1",
+			}),
+		);
+
+		expect(lastSentTo(ws)).toEqual({
+			type: "error",
+			message: "setup failed",
+			turn_scoped: true,
+			turn_id: "turn-1",
+		});
+	});
+
 	it("allows chat from any device regardless of who owns the session", async () => {
 		const session = makeSession();
 		const { pool, runState } = wrapSession(session);
@@ -2077,7 +2103,12 @@ describe("message — chat", () => {
 
 	it("steer_queued returns immediately, then acknowledges and republishes queue state", async () => {
 		const session = makeSession({
-			steerQueued: vi.fn().mockResolvedValue(true),
+			steerQueued: vi.fn().mockResolvedValue({
+				targetTurnId: "active-turn",
+				targetAssistantSeq: 7,
+				steerSeq: 8,
+				steerToolEventIndex: 3,
+			}),
 		});
 		const { pool, runState } = wrapSession(session);
 		const { message } = createWsHandlers(pool as never);
@@ -2091,6 +2122,10 @@ describe("message — chat", () => {
 			expect(runState.broadcast).toHaveBeenCalledWith({
 				type: "turn_steered",
 				turn_id: "turn-4",
+				target_turn_id: "active-turn",
+				target_assistant_seq: 7,
+				steer_seq: 8,
+				steer_tool_event_index: 3,
 				session_id: expect.any(String),
 			});
 			expect(runState.broadcast).toHaveBeenCalledWith(
@@ -2100,8 +2135,20 @@ describe("message — chat", () => {
 	});
 
 	it("does not hold the WebSocket dispatch open while the provider accepts a steer", async () => {
-		let acceptSteer: ((value: boolean) => void) | undefined;
-		const steering = new Promise<boolean>((resolve) => {
+		let acceptSteer:
+			| ((value: {
+					targetTurnId: string;
+					targetAssistantSeq: number;
+					steerSeq: number;
+					steerToolEventIndex: number;
+			  }) => void)
+			| undefined;
+		const steering = new Promise<{
+			targetTurnId: string;
+			targetAssistantSeq: number;
+			steerSeq: number;
+			steerToolEventIndex: number;
+		}>((resolve) => {
 			acceptSteer = resolve;
 		});
 		const session = makeSession({
@@ -2116,7 +2163,12 @@ describe("message — chat", () => {
 			JSON.stringify({ type: "steer_queued", turn_id: "turn-4" }),
 		);
 		await expect(handled).resolves.toBeUndefined();
-		acceptSteer?.(true);
+		acceptSteer?.({
+			targetTurnId: "active-turn",
+			targetAssistantSeq: 7,
+			steerSeq: 8,
+			steerToolEventIndex: 3,
+		});
 		await vi.waitFor(() => {
 			expect(runState.broadcast).toHaveBeenCalledWith(
 				expect.objectContaining({ type: "turn_steered" }),

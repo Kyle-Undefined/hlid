@@ -9,6 +9,7 @@
 import { renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Action } from "#/components/chat/chatReducer";
+import { clearChatQueue, enqueueLocalChat } from "#/hooks/wsChatQueueStore";
 import type { RateLimitMessage, ServerMessage } from "#/server/protocol";
 
 vi.mock("#/lib/utils", () => ({
@@ -16,6 +17,10 @@ vi.mock("#/lib/utils", () => ({
 }));
 
 import { useChatWsHandler } from "./useChatWsHandler";
+
+beforeEach(() => {
+	clearChatQueue();
+});
 
 function makeRefs() {
 	return {
@@ -214,17 +219,100 @@ describe("useChatWsHandler — immediate messages", () => {
 		handler({
 			type: "turn_steered",
 			turn_id: "steer-1",
+			target_turn_id: "original-turn",
+			target_assistant_seq: 7,
+			steer_seq: 8,
+			steer_tool_event_index: 3,
 			session_id: "session-1",
 		});
 
 		expect(dispatch).toHaveBeenCalledWith({
 			type: "STEER_USER",
 			turnId: "steer-1",
+			targetTurnId: "original-turn",
+			targetAssistantSeq: 7,
+			steerSeq: 8,
+			steerToolEventIndex: 3,
 			assistantId: "assistant-1",
 		});
 	});
 
-	it("ignores a stale steer acknowledgement without an active response", () => {
+	it("materializes a queued steer before its acknowledgement removes it", () => {
+		enqueueLocalChat({
+			id: "steer-from-queue",
+			text: "Use the narrower approach",
+			session_id: "session-1",
+			vault_references: ["Plans/Current.md"],
+			_sent: true,
+		});
+		const { handler, dispatch } = renderHandler({
+			pendingId: "assistant-1",
+		});
+
+		handler({
+			type: "turn_steered",
+			turn_id: "steer-from-queue",
+			target_turn_id: "original-turn",
+			target_assistant_seq: 7,
+			steer_seq: 8,
+			session_id: "session-1",
+		});
+
+		expect(dispatch.mock.calls.map(([action]) => action)).toEqual([
+			{
+				type: "ADD_USER",
+				id: "steer-from-queue",
+				text: "Use the narrower approach\n\nVault references:\n- Plans/Current.md",
+			},
+			{
+				type: "STEER_USER",
+				turnId: "steer-from-queue",
+				targetTurnId: "original-turn",
+				targetAssistantSeq: 7,
+				steerSeq: 8,
+				assistantId: "assistant-1",
+			},
+		]);
+	});
+
+	it("moves a late steer acknowledgement above the just-completed response", () => {
+		const { handler, dispatch } = renderHandler({
+			lastAssistantId: "assistant-1",
+		});
+		handler({
+			type: "turn_steered",
+			turn_id: "steer-1",
+			target_turn_id: "original-turn",
+			session_id: "session-1",
+		});
+		expect(dispatch).toHaveBeenCalledWith({
+			type: "STEER_USER",
+			turnId: "steer-1",
+			targetTurnId: "original-turn",
+			assistantId: "assistant-1",
+		});
+	});
+
+	it("keeps the exact target when a newer response is already active", () => {
+		const { handler, dispatch } = renderHandler({
+			pendingId: "new-assistant",
+			lastAssistantId: "old-assistant",
+		});
+		handler({
+			type: "turn_steered",
+			turn_id: "steer-1",
+			target_turn_id: "old-turn",
+			session_id: "session-1",
+		});
+		expect(dispatch).toHaveBeenCalledWith({
+			type: "STEER_USER",
+			turnId: "steer-1",
+			targetTurnId: "old-turn",
+			assistantId: "new-assistant",
+		});
+	});
+
+	it("ignores a legacy steer acknowledgement without a known response", () => {
 		const { handler, dispatch } = renderHandler();
 		handler({
 			type: "turn_steered",
@@ -232,6 +320,22 @@ describe("useChatWsHandler — immediate messages", () => {
 			session_id: "session-1",
 		});
 		expect(dispatch).not.toHaveBeenCalled();
+	});
+
+	it("falls back to the known response for a legacy steer acknowledgement", () => {
+		const { handler, dispatch } = renderHandler({
+			pendingId: "assistant-1",
+		});
+		handler({
+			type: "turn_steered",
+			turn_id: "steer-1",
+			session_id: "session-1",
+		});
+		expect(dispatch).toHaveBeenCalledWith({
+			type: "STEER_USER",
+			turnId: "steer-1",
+			assistantId: "assistant-1",
+		});
 	});
 
 	it("renders live vault references without waiting for history refresh", () => {
@@ -500,6 +604,23 @@ describe("useChatWsHandler — assistant lifecycle", () => {
 		});
 	});
 
+	it("anchors a restored pending assistant to the running turn id", () => {
+		const { handler, dispatch } = renderHandler({
+			pendingId: "persisted-assistant",
+		});
+		handler({
+			type: "status",
+			state: "running",
+			model: "model",
+			turn_id: "user-1",
+		});
+		expect(dispatch).toHaveBeenCalledWith({
+			type: "SET_ASSISTANT_TURN",
+			id: "persisted-assistant",
+			turnId: "user-1",
+		});
+	});
+
 	it("completes the active assistant and makes it the recap fallback", () => {
 		const { handler, dispatch, refs } = renderHandler({
 			pendingId: "assistant-1",
@@ -531,7 +652,11 @@ describe("useChatWsHandler — assistant lifecycle", () => {
 		const { handler, dispatch, refs } = renderHandler({
 			pendingId: "assistant-1",
 		});
-		handler({ type: "error", message: "connection lost" });
+		handler({
+			type: "error",
+			message: "connection lost",
+			turn_scoped: true,
+		});
 		expect(dispatch.mock.calls).toEqual([
 			[
 				{
@@ -543,6 +668,45 @@ describe("useChatWsHandler — assistant lifecycle", () => {
 			[{ type: "DONE", id: "assistant-1", cost: null }],
 		]);
 		expect(refs.pendingIdRef.current).toBeNull();
+	});
+
+	it("surfaces a rejected steer without closing the active assistant", () => {
+		const { handler, dispatch, refs } = renderHandler({
+			pendingId: "assistant-1",
+		});
+
+		handler({ type: "error", message: "not steerable" });
+
+		expect(dispatch).toHaveBeenCalledOnce();
+		expect(dispatch).toHaveBeenCalledWith({
+			type: "ADD_LOCAL_COMMAND_OUTPUT",
+			id: "test-uid",
+			content: "ERROR: not steerable",
+		});
+		expect(refs.pendingIdRef.current).toBe("assistant-1");
+	});
+
+	it("ignores a stale turn-scoped error after a newer turn starts", () => {
+		const { handler, dispatch, refs } = renderHandler({
+			pendingId: "assistant-1",
+		});
+		handler({
+			type: "status",
+			state: "running",
+			model: "model",
+			turn_id: "new-turn",
+		});
+		dispatch.mockClear();
+
+		handler({
+			type: "error",
+			message: "old failure",
+			turn_scoped: true,
+			turn_id: "old-turn",
+		});
+
+		expect(dispatch).not.toHaveBeenCalled();
+		expect(refs.pendingIdRef.current).toBe("assistant-1");
 	});
 
 	it.each([

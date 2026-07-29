@@ -454,6 +454,13 @@ function applyMigrations(db: Db): void {
 		db.run(`ALTER TABLE messages ADD COLUMN steer_target_seq INTEGER`);
 	});
 
+	// Raw assistant tool-event count when a queued prompt was accepted into the
+	// active provider turn. Raven uses this durable boundary to keep tool calls
+	// emitted before and after the steer on their original sides after reload.
+	runMigration(db, "_migrated_messages_steer_tool_event_index", (db) => {
+		db.run(`ALTER TABLE messages ADD COLUMN steer_tool_event_index INTEGER`);
+	});
+
 	// Hlid-owned provenance for the prompt context assembled around a user turn.
 	// This stays outside the visible transcript and provider token accounting.
 	runMigration(db, "_migrated_messages_context_manifest", (db) => {

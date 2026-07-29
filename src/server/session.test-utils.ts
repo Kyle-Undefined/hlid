@@ -51,6 +51,7 @@ export function mockDbModule() {
 		setMessageRecap: vi.fn().mockResolvedValue(undefined),
 		setMessageSdkUuid: vi.fn().mockResolvedValue(undefined),
 		setMessageProviderTurnId: vi.fn().mockResolvedValue(undefined),
+		setMessageSteerTargetSeq: vi.fn().mockResolvedValue(undefined),
 		setToolEventResult: vi.fn().mockResolvedValue(undefined),
 		setToolEventSubagent: vi.fn().mockResolvedValue(undefined),
 		appendLog: vi.fn().mockResolvedValue(undefined),
