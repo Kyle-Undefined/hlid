@@ -11,6 +11,7 @@
 import { appendFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { normalizeWindowsPathEnvCasing } from "../lib/windowsEnv";
+import { STDIO_MODE_FLAGS, stdioModeRequested } from "./preludeStdio";
 
 // Parents that launch us with an uppercase "PATH" env key (Claude Desktop's
 // MCP spawner) break Bun's spawning of *.com executables — including the
@@ -19,12 +20,10 @@ import { normalizeWindowsPathEnvCasing } from "../lib/windowsEnv";
 normalizeWindowsPathEnvCasing(process.env);
 
 if (process.execPath.endsWith(".exe")) {
-	const authReset = process.argv[2] === "auth" && process.argv[3] === "reset";
-	const internalVaultWorker = process.argv.includes(
-		"--internal-vault-snapshot-worker",
-	);
-	const internalObsidianMcp = process.argv.includes("--internal-obsidian-mcp");
-	if (!authReset && !internalVaultWorker && !internalObsidianMcp) {
+	// Modes that speak a protocol (or print for a human) over stdio keep real
+	// streams; see preludeStdio.ts. Everything else gets no-op writes so
+	// Windows never allocates a console window.
+	if (!stdioModeRequested(process.argv)) {
 		(process.stdout as unknown as { write: () => boolean }).write = () => true;
 		(process.stderr as unknown as { write: () => boolean }).write = () => true;
 	}
@@ -55,11 +54,13 @@ if (process.execPath.endsWith(".exe")) {
 	});
 
 	try {
-		if (
-			!internalVaultWorker &&
-			!internalObsidianMcp &&
-			process.env.HLID_SKIP_SELF_INSTALL !== "1"
-		) {
+		// Internal child-process modes never self-install: they run on behalf of
+		// an already-running canonical instance (or Claude Desktop, which also
+		// sets HLID_SKIP_SELF_INSTALL=1).
+		const internalChildMode = STDIO_MODE_FLAGS.some(
+			(flag) => flag.startsWith("--internal-") && process.argv.includes(flag),
+		);
+		if (!internalChildMode && process.env.HLID_SKIP_SELF_INSTALL !== "1") {
 			const [{ maybeSelfInstall }, { cleanupStagingDir }] = await Promise.all([
 				import("../lib/install"),
 				import("../lib/updates"),
