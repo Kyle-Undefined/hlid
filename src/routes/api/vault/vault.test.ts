@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { makeRequest } from "#/test/routeTestKit";
 import { handleGetMemory } from "./memory";
 import { handleGetSkills } from "./skills";
 
-vi.mock("#/server/config", () => ({ loadConfig: vi.fn() }));
-vi.mock("#/lib/originGate", () => ({ forbiddenResponse: vi.fn(() => null) }));
+vi.mock("#/server/config");
+vi.mock("#/lib/originGate");
 vi.mock("#/server/vaultSnapshot", () => ({ getVaultSnapshot: vi.fn() }));
 
 const { loadConfig } = await import("#/server/config");
@@ -31,13 +32,8 @@ function noVault() {
 	mockLoadConfig.mockReturnValue({ vault: {} } as never);
 }
 
-function getReq(path: string, params?: Record<string, string>): Request {
-	const url = new URL(`http://localhost${path}`);
-	if (params) {
-		for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-	}
-	return new Request(url, { method: "GET" });
-}
+const getReq = (path: string, params?: Record<string, string>) =>
+	makeRequest(path, { params });
 
 beforeEach(() => {
 	vi.resetAllMocks();

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { useWs } from "#/hooks/useWs";
@@ -11,6 +12,7 @@ import {
 	getWeeklyStatsFn,
 } from "#/lib/serverFns/stats";
 import type { ServerMessage } from "#/server/protocol";
+import { deferred } from "#/test/utils";
 import { useCockpitLiveData } from "./useCockpitLiveData";
 
 let onMessage: ((message: ServerMessage) => void) | undefined;
@@ -88,14 +90,6 @@ const initial = {
 	activeSession: null,
 	mcpServers: [],
 };
-
-function deferred<T>() {
-	let resolve!: (value: T) => void;
-	const promise = new Promise<T>((done) => {
-		resolve = done;
-	});
-	return { promise, resolve };
-}
 
 beforeEach(() => {
 	vi.clearAllMocks();

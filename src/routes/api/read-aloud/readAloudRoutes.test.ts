@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("#/lib/originGate", () => ({ forbiddenResponse: vi.fn(() => null) }));
-vi.mock("#/lib/dbClient", () => ({ dbFetch: vi.fn() }));
+vi.mock("#/lib/originGate");
+vi.mock("#/lib/dbClient");
 
 import { dbFetch } from "#/lib/dbClient";
 import { forbiddenResponse } from "#/lib/originGate";

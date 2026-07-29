@@ -9,6 +9,7 @@ import {
 	uninstallAutostart,
 } from "#/lib/lifecycle";
 import { forbiddenResponse } from "#/lib/originGate";
+import { makeRequest } from "#/test/routeTestKit";
 import { handleGetLifecycle, handlePostLifecycle } from "./lifecycle";
 
 vi.mock("#/lib/lifecycle", () => ({
@@ -21,15 +22,14 @@ vi.mock("#/lib/lifecycle", () => ({
 	uninstallAutostart: vi.fn(),
 }));
 
-vi.mock("#/lib/originGate", () => ({ forbiddenResponse: vi.fn() }));
+vi.mock("#/lib/originGate");
 
-function request(action?: string): Request {
-	return new Request("http://localhost/api/lifecycle", {
+const request = (action?: string) =>
+	makeRequest("/api/lifecycle", {
 		method: action ? "POST" : "GET",
 		headers: { "content-type": "application/json" },
-		body: action ? JSON.stringify({ action }) : undefined,
+		...(action && { json: { action } }),
 	});
-}
 
 beforeEach(() => {
 	vi.clearAllMocks();

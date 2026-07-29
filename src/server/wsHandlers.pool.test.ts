@@ -1502,13 +1502,7 @@ describe("message — chat routing (pool)", () => {
 		expect(newEntry.manager.runQuery).toHaveBeenCalledWith(
 			"hello",
 			expect.any(Function),
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
+			expect.objectContaining({ sessionId: undefined }),
 		);
 		expect(vault.manager.runQuery).not.toHaveBeenCalled();
 		// sessions_status broadcast after create

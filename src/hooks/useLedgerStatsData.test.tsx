@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LedgerAnalyticsFilter } from "#/db";
@@ -10,6 +11,7 @@ import {
 	getLedgerAnalyticsFn,
 	getThirtyDayStatsFn,
 } from "#/lib/serverFns/stats";
+import { deferred } from "#/test/utils";
 import {
 	resetLedgerStatsDataForTest,
 	useLedgerStatsData,
@@ -26,10 +28,6 @@ vi.mock("#/lib/serverFns/stats", async (importOriginal) => {
 		getThirtyDayStatsFn: vi.fn(),
 	};
 });
-
-function deferred<T>() {
-	return Promise.withResolvers<T>();
-}
 
 const statsData = (sessions: number) => ({
 	agg: {

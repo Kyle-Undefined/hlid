@@ -9,9 +9,10 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { makeRequest } from "#/test/routeTestKit";
 
-vi.mock("#/server/config", () => ({ loadConfig: vi.fn() }));
-vi.mock("#/lib/originGate", () => ({ forbiddenResponse: vi.fn(() => null) }));
+vi.mock("#/server/config");
+vi.mock("#/lib/originGate");
 
 import { forbiddenResponse } from "#/lib/originGate";
 import { loadConfig } from "#/server/config";
@@ -22,12 +23,10 @@ const mockForbiddenResponse = vi.mocked(forbiddenResponse);
 let root: string;
 let outside: string;
 
-function request(path?: string, external = false): Request {
-	const url = new URL("http://localhost/api/browse");
-	if (path) url.searchParams.set("path", path);
-	if (external) url.searchParams.set("external", "1");
-	return new Request(url);
-}
+const request = (path?: string, external = false) =>
+	makeRequest("/api/browse", {
+		params: { ...(path && { path }), ...(external && { external: "1" }) },
+	});
 
 beforeEach(() => {
 	root = mkdtempSync(join(tmpdir(), "hlid-browse-root-"));

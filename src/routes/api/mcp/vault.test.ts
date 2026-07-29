@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { makeRequest } from "#/test/routeTestKit";
 import {
 	handleGetVaultMcp,
 	handlePostVaultMcp,
 	handleToggleVaultMcp,
 } from "./vault";
 
-vi.mock("#/server/config", () => ({ loadConfig: vi.fn() }));
-vi.mock("#/lib/originGate", () => ({ forbiddenResponse: vi.fn(() => null) }));
+vi.mock("#/server/config");
+vi.mock("#/lib/originGate");
 vi.mock("#/lib/vaultMcp", () => ({
 	readVaultMcpFile: vi.fn(),
 	writeVaultMcpFile: vi.fn(),
@@ -24,13 +25,8 @@ const mockRead = vi.mocked(readVaultMcpFile);
 const mockWrite = vi.mocked(writeVaultMcpFile);
 const mockToggle = vi.mocked(toggleVaultMcpFile);
 
-function req(method: string, body?: unknown): Request {
-	return new Request("http://localhost/api/mcp/vault", {
-		method,
-		headers: body ? { "Content-Type": "application/json" } : {},
-		body: body ? JSON.stringify(body) : undefined,
-	});
-}
+const req = (method: string, body?: unknown) =>
+	makeRequest("/api/mcp/vault", { method, ...(body ? { json: body } : {}) });
 
 function withVault() {
 	mockLoadConfig.mockReturnValue({ vault: { path: "/v" } } as never);

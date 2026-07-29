@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+
 import {
 	act,
 	cleanup,
@@ -14,6 +15,7 @@ import {
 } from "#/hooks/updateStore";
 import type { CliUpdateStatus } from "#/lib/cliUpdateTypes";
 import type { ReleaseNotes } from "#/lib/updates";
+import { jsonResponse } from "#/test/utils";
 import { UpdatesSection } from "./UpdatesSection";
 
 const claudeDesktopMcpMocks = vi.hoisted(() => ({
@@ -68,13 +70,6 @@ function makeStatus(overrides?: Partial<UpdateStatus>): UpdateStatus {
 		release: null,
 		...overrides,
 	};
-}
-
-function jsonResponse(body: unknown): Response {
-	return {
-		ok: true,
-		json: () => Promise.resolve(body),
-	} as Response;
 }
 
 /**

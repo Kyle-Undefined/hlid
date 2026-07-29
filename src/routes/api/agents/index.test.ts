@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { makeRequest } from "#/test/routeTestKit";
 import { handleGetAgents, handlePostAgents } from "./index";
 
-vi.mock("#/server/config", () => ({ loadConfig: vi.fn() }));
-vi.mock("#/lib/originGate", () => ({ forbiddenResponse: vi.fn(() => null) }));
+vi.mock("#/server/config");
+vi.mock("#/lib/originGate");
 vi.mock("#/lib/config-writer", () => ({ writeConfig: vi.fn() }));
 vi.mock("node:fs", () => ({ existsSync: vi.fn(() => false) }));
 
@@ -16,17 +17,9 @@ const mockForbiddenResponse = vi.mocked(forbiddenResponse);
 const mockWriteConfig = vi.mocked(writeConfig);
 const mockExistsSync = vi.mocked(existsSync);
 
-function getReq(): Request {
-	return new Request("http://localhost/api/agents", { method: "GET" });
-}
-
-function postReq(body: unknown): Request {
-	return new Request("http://localhost/api/agents", {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify(body),
-	});
-}
+const getReq = () => makeRequest("/api/agents");
+const postReq = (body: unknown) =>
+	makeRequest("/api/agents", { method: "POST", json: body });
 
 beforeEach(() => {
 	vi.resetAllMocks();

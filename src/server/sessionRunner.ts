@@ -180,16 +180,17 @@ export async function runRoutineSession(options: {
 				entry.runState.broadcast(message);
 				if (changesSessionAttention(message)) onStatusChange?.();
 			},
-			sessionId,
-			routine.skillContexts,
-			attachments,
-			routine.agentCwd,
-			`routine-${run.id}`,
-			false,
-			false,
-			undefined,
-			routine.vaultReferences,
-			routineContext,
+			{
+				sessionId,
+				skillContexts: routine.skillContexts,
+				attachments,
+				agentCwd: routine.agentCwd,
+				turnId: `routine-${run.id}`,
+				planMode: false,
+				planHtml: false,
+				vaultReferences: routine.vaultReferences,
+				routineContext,
+			},
 		);
 		const providerFailed = entry.manager.getStatus().state === "error";
 		const childRuns = await settleRoutineOwnership();

@@ -1,5 +1,5 @@
-import { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "bun:test";
+import { freshDb } from "./db.test-utils";
 import {
 	claimDueRoutineRuns,
 	createRoutine,
@@ -10,11 +10,6 @@ import {
 	setRoutineEnabled,
 	updateRoutine,
 } from "./routines";
-import { setDbForTest } from "./schema";
-
-function freshDb(): void {
-	setDbForTest(new Database(":memory:"));
-}
 
 const definition = {
 	name: "Claude daily review",

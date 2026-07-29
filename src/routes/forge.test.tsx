@@ -38,7 +38,7 @@ vi.mock("#/lib/serverFns/cliproxy", () => ({
 	}),
 	refreshCliProxyInfoFn: vi.fn(),
 }));
-vi.mock("#/lib/serverFns/config", () => ({ getConfig: vi.fn() }));
+vi.mock("#/lib/serverFns/config");
 vi.mock("#/lib/serverFns/providers", () => ({
 	getAccountInfoFn: vi.fn(),
 	getProvidersFn: vi.fn(),

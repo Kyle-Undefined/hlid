@@ -916,45 +916,35 @@ async function runChatQuery(
 				type: "status",
 				...entry.manager.getStatus(),
 			});
-		const queryArgs = [
+		const completion = entry.manager.runQuery(
 			msg.text,
 			(event) => {
 				entry.runState.broadcast(event);
 				if (changesSessionAttention(event)) broadcastSessionsStatus(context);
 			},
-			msg.session_id,
-			msg.skill_contexts ?? msg.skill_context,
-			msg.attachments,
-			msg.agent_cwd,
-			msg.turn_id,
-			msg.plan_mode,
-			msg.plan_html,
-		] as Parameters<typeof entry.manager.runQuery>;
-		if (
-			msg.vault_references?.length ||
-			msg.command_action ||
-			msg.goal ||
-			msg.workspace_references?.length
-		) {
-			queryArgs.push(msg.command_action, msg.vault_references);
-		}
-		if (msg.goal || msg.workspace_references?.length) {
-			queryArgs.push(
-				undefined,
-				msg.goal
+			{
+				sessionId: msg.session_id,
+				skillContexts: msg.skill_contexts ?? msg.skill_context,
+				attachments: msg.attachments,
+				agentCwd: msg.agent_cwd,
+				turnId: msg.turn_id,
+				planMode: msg.plan_mode,
+				planHtml: msg.plan_html,
+				commandAction: msg.command_action,
+				vaultReferences: msg.vault_references,
+				...(msg.goal
 					? {
-							objective: msg.goal.objective,
-							...(msg.goal.token_budget !== undefined
-								? { tokenBudget: msg.goal.token_budget }
-								: {}),
+							goalStart: {
+								objective: msg.goal.objective,
+								...(msg.goal.token_budget !== undefined
+									? { tokenBudget: msg.goal.token_budget }
+									: {}),
+							},
 						}
-					: undefined,
-			);
-		}
-		if (msg.workspace_references?.length) {
-			queryArgs.push(msg.workspace_references);
-		}
-		const completion = entry.manager.runQuery(...queryArgs);
+					: {}),
+				workspaceReferences: msg.workspace_references,
+			},
+		);
 		// Publish the queued content immediately. Other tabs/devices can now render
 		// it without relying on the originating browser's localStorage copy.
 		broadcastQueueState(entry);

@@ -5,6 +5,7 @@
  * Strategy: SessionManager is mocked so pool tests only exercise routing
  * and bookkeeping logic, not the full SDK stack.
  */
+
 import {
 	mkdirSync,
 	mkdtempSync,
@@ -15,6 +16,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { makeConfig as makeBaseConfig } from "#/test/fixtures";
 import type { HlidConfig } from "../config";
 import type { AgentProvider } from "./agentProvider";
 
@@ -102,11 +104,11 @@ import { SessionPool } from "./sessionPool";
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
 
-function makeConfig(
+const makeConfig = (
 	vaultPath = "/tmp/test-vault",
 	vaultName = "Test Vault",
-): HlidConfig {
-	return {
+): HlidConfig =>
+	makeBaseConfig({
 		claude: {
 			model: "claude-test",
 			effort: "medium",
@@ -114,9 +116,7 @@ function makeConfig(
 			turn_recaps: false,
 		},
 		vault: { path: vaultPath, name: vaultName },
-		agents: [],
-	} as unknown as HlidConfig;
-}
+	});
 
 function makeProviders(): Map<string, AgentProvider> {
 	return new Map([

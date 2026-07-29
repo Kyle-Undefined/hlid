@@ -500,20 +500,16 @@ describe("Hlid delegation manager", () => {
 		expect(childManager.runQuery).toHaveBeenCalledWith(
 			"Review the provider boundary",
 			expect.any(Function),
-			"child-1",
-			[],
-			[],
-			"/work/project",
-			expect.stringMatching(/^delegation-/),
-			undefined,
-			undefined,
-			undefined,
-			[],
-			undefined,
-			undefined,
-			[],
-			undefined,
-			true,
+			expect.objectContaining({
+				sessionId: "child-1",
+				skillContexts: [],
+				attachments: [],
+				agentCwd: "/work/project",
+				turnId: expect.stringMatching(/^delegation-/),
+				vaultReferences: [],
+				workspaceReferences: [],
+				backgroundSession: true,
+			}),
 		);
 		expect(completed).toMatchObject({
 			status: "completed",
@@ -917,7 +913,7 @@ describe("Hlid delegation manager", () => {
 				routineRunId: parentRoutineContext.runId,
 			}),
 		);
-		expect(childManager.runQuery.mock.calls[0]?.[11]).toBe(
+		expect(childManager.runQuery.mock.calls[0]?.[2]?.routineContext).toBe(
 			parentRoutineContext,
 		);
 		expect(pool.close).toHaveBeenCalledWith("child-1");
@@ -1515,15 +1511,17 @@ describe("Hlid delegation manager", () => {
 				},
 			}),
 		);
-		const call = childManager.runQuery.mock.calls[0] ?? [];
-		expect(call[3]).toEqual(["/vault/skills/review/SKILL.md"]);
-		expect(call[4]).toEqual([expect.objectContaining({ id: "relic-1" })]);
-		expect(call[10]).toEqual(["Plans/Exact.md"]);
-		expect(call[13]).toEqual([
+		const options = childManager.runQuery.mock.calls[0]?.[2] ?? {};
+		expect(options.skillContexts).toEqual(["/vault/skills/review/SKILL.md"]);
+		expect(options.attachments).toEqual([
+			expect.objectContaining({ id: "relic-1" }),
+		]);
+		expect(options.vaultReferences).toEqual(["Plans/Exact.md"]);
+		expect(options.workspaceReferences).toEqual([
 			{ relativePath: "src/exact.ts", sha256: "abc123" },
 		]);
-		expect(call[14]).toContain("A later interactive turn");
-		expect(call[14]).not.toContain("Completed child result");
+		expect(options.delegationContext).toContain("A later interactive turn");
+		expect(options.delegationContext).not.toContain("Completed child result");
 	});
 
 	it("records provider-reported tokens without enforcing a ceiling", async () => {
@@ -1998,11 +1996,12 @@ describe("Hlid delegation manager", () => {
 		});
 		const call = childManager.runQuery.mock.calls[0] ?? [];
 		expect(call[0]).toBe("Continue from the durable evidence and finish.");
-		expect(call[3]).toEqual([]);
-		expect(call[4]).toEqual([]);
-		expect(call[10]).toEqual([]);
-		expect(call[13]).toEqual([]);
-		expect(call[14]).toContain("Original task");
+		const options = call[2] ?? {};
+		expect(options.skillContexts).toEqual([]);
+		expect(options.attachments).toEqual([]);
+		expect(options.vaultReferences).toEqual([]);
+		expect(options.workspaceReferences).toEqual([]);
+		expect(options.delegationContext).toContain("Original task");
 	});
 
 	it("rolls back continuation admission when the parent turn ends during its CAS", async () => {

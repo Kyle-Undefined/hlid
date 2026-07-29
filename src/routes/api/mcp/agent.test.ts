@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { makeRequest } from "#/test/routeTestKit";
 import {
 	handleGetAgentMcp,
 	handlePostAgentMcp,
 	handleToggleAgentMcp,
 } from "./agent";
 
-vi.mock("#/server/config", () => ({ loadConfig: vi.fn() }));
-vi.mock("#/lib/originGate", () => ({ forbiddenResponse: vi.fn(() => null) }));
+vi.mock("#/server/config");
+vi.mock("#/lib/originGate");
 vi.mock("#/lib/agentMcp", () => ({
 	resolveAuthorizedAgentPath: vi.fn(),
 	readAgentMcpFile: vi.fn(),
@@ -32,19 +33,10 @@ const mockToggle = vi.mocked(toggleAgentMcpFile);
 
 const AGENT_PATH = "/agents/my-agent";
 
-function getReq(path?: string): Request {
-	const url = new URL("http://localhost/api/mcp/agent");
-	if (path) url.searchParams.set("path", path);
-	return new Request(url, { method: "GET" });
-}
-
-function postReq(body: unknown, endpoint = "/api/mcp/agent"): Request {
-	return new Request(`http://localhost${endpoint}`, {
-		method: "POST",
-		headers: { "Content-Type": "application/json" },
-		body: JSON.stringify(body),
-	});
-}
+const getReq = (path?: string) =>
+	makeRequest("/api/mcp/agent", path ? { params: { path } } : {});
+const postReq = (body: unknown, endpoint = "/api/mcp/agent") =>
+	makeRequest(endpoint, { method: "POST", json: body });
 
 beforeEach(() => {
 	vi.resetAllMocks();

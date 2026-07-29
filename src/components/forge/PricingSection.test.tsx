@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+
 import {
 	cleanup,
 	fireEvent,
@@ -8,6 +9,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PricingCatalogState } from "#/lib/pricingCatalog";
+import { jsonResponse } from "#/test/utils";
 import { PricingSection } from "./PricingSection";
 
 afterEach(() => {
@@ -54,14 +56,6 @@ const catalog: PricingCatalogState = {
 		},
 	],
 };
-
-function jsonResponse(data: unknown, ok = true, status = 200) {
-	return {
-		ok,
-		status,
-		json: vi.fn().mockResolvedValue(data),
-	} as unknown as Response;
-}
 
 describe("PricingSection", () => {
 	it("shows the merged timelines and local file contract", async () => {

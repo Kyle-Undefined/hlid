@@ -145,9 +145,13 @@ describe("Routine detached delegation ownership", () => {
 		const manager = {
 			setProvider: vi.fn().mockResolvedValue(undefined),
 			getProviderId: vi.fn().mockReturnValue("codex"),
-			runQuery: vi.fn(async (...args: unknown[]) => {
-				routineContext = args[11] as RoutinePermissionContext;
-			}),
+			runQuery: vi.fn(
+				async (_msg: unknown, _emit: unknown, options?: unknown) => {
+					routineContext = (
+						options as { routineContext?: RoutinePermissionContext }
+					)?.routineContext;
+				},
+			),
 			getStatus: vi.fn().mockReturnValue({ state: "idle" }),
 		};
 		pool = {

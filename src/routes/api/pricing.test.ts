@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { makeRequest } from "#/test/routeTestKit";
 import { handleGetPricing, handlePostPricing } from "./pricing";
 
-vi.mock("#/lib/originGate", () => ({ forbiddenResponse: vi.fn(() => null) }));
+vi.mock("#/lib/originGate");
 vi.mock("#/lib/pricingCatalog", () => ({
 	getPricingCatalogState: vi.fn(),
 	parsePricingOverrides: vi.fn(),
@@ -22,17 +23,9 @@ const state = {
 	aliases: [],
 };
 
-function get(): Request {
-	return new Request("http://localhost/api/pricing");
-}
-
-function post(body: unknown): Request {
-	return new Request("http://localhost/api/pricing", {
-		method: "POST",
-		headers: { "content-type": "application/json" },
-		body: JSON.stringify(body),
-	});
-}
+const get = () => makeRequest("/api/pricing");
+const post = (body: unknown) =>
+	makeRequest("/api/pricing", { method: "POST", json: body });
 
 describe("/api/pricing", () => {
 	beforeEach(() => {

@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
+import { makeConfig as makeBaseConfig } from "#/test/fixtures";
 import type { HlidConfig } from "../config";
 import { resolveAllowedTerminalCwd } from "./terminalAccess";
 
@@ -15,89 +16,15 @@ function makeDir(name: string): string {
 	return dir;
 }
 
-function makeConfig(vaultPath: string, agentPaths: string[] = []): HlidConfig {
-	return {
-		vault: {
-			name: "Vault",
-			path: vaultPath,
-			delete_vault_attachments: false,
-		},
-		server: {
-			port: 3000,
-			tls_proxy_port: 3443,
-			local_network_access: false,
-			allow_external_agents: false,
-		},
-		claude: {
-			model: "claude-sonnet-4-6",
-			effort: "high",
-			permission_mode: "default",
-			turn_recaps: true,
-			interactive_mode: false,
-		},
-		cliproxy: {
-			enabled: false,
-			mode: "external",
-			base_url: "http://127.0.0.1:8317",
-			api_key: "",
-			model: "gpt-5.6-sol",
-			effort: "xhigh",
-			permission_mode: "default",
-			turn_recaps: true,
-		},
-		codex: {
-			model: "",
-			effort: "medium",
-			permission_mode: "default",
-			turn_recaps: true,
-			windows_computer_use: { model: "inherit", effort: "medium" },
-		},
-		project_preview: { use_real_browser_profile: false },
-		ui: {
-			enter_to_submit: true,
-			live_sessions_hotkey: "Alt+Shift+KeyS",
-			hide_skills_index: false,
-			show_provider_entries: false,
-			theme: "tan",
-			html_plans: false,
-		},
-		status_vocabulary: { active: [], planning: [], done: [] },
-		attachments: { max_bytes: 1, allowed_mimes: [] },
-		voice: {
-			enabled: false,
-			input_provider: "local",
-			model: "",
-			language: "auto",
-			auto_send: false,
-			read_aloud_provider: "device",
-			read_aloud_voice: "",
-			read_aloud_rate: 1,
-			tts_model: "",
-			tts_voice: "expr-voice-2-f",
-			tts_threads: 4,
-			codex_voice: "marin",
-			codex_live_mode: false,
-			hotkey: "Alt+Shift+KeyV",
-			max_recording_seconds: 300,
-			acceleration: "auto",
-			threads: 4,
-			vocabulary: ["Claude", "Codex"],
-		},
-		umbod: { enabled: false, manifest_path: "umbod.toml" },
-		auto_sleep: {
-			enabled: false,
-			threshold: 0.95,
-			max_sleep_minutes: 360,
-			resume_buffer_seconds: 60,
-		},
-		vault_provider: "claude",
+const makeConfig = (vaultPath: string, agentPaths: string[] = []): HlidConfig =>
+	makeBaseConfig({
+		vault: { name: "Vault", path: vaultPath },
 		agents: agentPaths.map((path) => ({
 			path,
 			mode: "cwd" as const,
 			provider: "claude" as const,
 		})),
-	};
-}
+	});
 
 afterEach(() => {
 	for (const root of roots.splice(0)) {

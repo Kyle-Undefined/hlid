@@ -1,0 +1,1396 @@
+/**
+ * SessionManager — runQuery queueing, steer/cancel/promote, AgentSession reuse.
+ * Shared module mocks and provider builders: see session.test-utils.ts.
+ */
+import { describe, expect, it, vi } from "vitest";
+
+vi.mock("./config", async () =>
+	(await import("./session.test-utils")).mockConfigModule(),
+);
+vi.mock("./agentPaths", async () =>
+	(await import("./session.test-utils")).mockAgentPaths(),
+);
+vi.mock("../lib/claudePath", async () =>
+	(await import("./session.test-utils")).mockClaudePath(),
+);
+vi.mock("../db", async () =>
+	(await import("./session.test-utils")).mockDbModule(),
+);
+vi.mock("./recap", async () =>
+	(await import("./session.test-utils")).mockRecap(),
+);
+vi.mock("./claudeWarmup", async () =>
+	(await import("./session.test-utils")).mockClaudeWarmup(),
+);
+vi.mock("./umbod", async () =>
+	(await import("./session.test-utils")).mockUmbod(),
+);
+vi.mock("./executionContext", async () =>
+	(await import("./session.test-utils")).mockExecutionContext(),
+);
+vi.mock("./libraryStore", async () =>
+	(await import("./session.test-utils")).mockLibraryStore(),
+);
+vi.mock("./promptBuilder", async () =>
+	(await import("./session.test-utils")).mockPromptBuilder(),
+);
+vi.mock("./obsidianCli", async () =>
+	(await import("./session.test-utils")).mockObsidianCli(),
+);
+vi.mock("node:fs", async () =>
+	(await import("./session.test-utils")).mockNodeFs(),
+);
+
+import type { HlidConfig } from "../config";
+import * as dbMock from "../db";
+import type {
+	AgentEvent,
+	AgentProvider,
+	AgentQueryParams,
+	AgentSession,
+} from "./agentProvider";
+import { buildPromptAsync } from "./promptBuilder";
+import type { ServerMessage } from "./protocol";
+import { SessionManager } from "./session";
+import {
+	makeConfig,
+	makeControllableProvider,
+	makeLongLivedProvider,
+	makeProviders,
+	testPromptContextManifest,
+	waitFor,
+} from "./session.test-utils";
+
+describe("SessionManager — runQuery queueing", () => {
+	it("settles an explicitly aborted background turn idle and records its partial usage once", async () => {
+		let step = 0;
+		let rejectPending: ((error: Error) => void) | null = null;
+		let pending = false;
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(): AgentSession {
+				const iterator: AsyncIterator<AgentEvent> = {
+					async next(): Promise<IteratorResult<AgentEvent>> {
+						if (step++ === 0) {
+							return {
+								value: {
+									type: "session_start",
+									sessionId: "sdk-aborted-child",
+								},
+								done: false,
+							};
+						}
+						if (step === 2) {
+							return {
+								value: {
+									type: "usage",
+									inputTokens: 10,
+									outputTokens: 5,
+									cacheReadTokens: 20,
+									cacheCreationTokens: 2,
+									queryUsage: {
+										inputTokens: 10,
+										outputTokens: 5,
+										cacheReadTokens: 20,
+										cacheCreationTokens: 2,
+									},
+									model: "claude-sonnet-4-6",
+								},
+								done: false,
+							};
+						}
+						pending = true;
+						return new Promise<IteratorResult<AgentEvent>>((_, reject) => {
+							rejectPending = reject;
+						});
+					},
+				};
+				return {
+					[Symbol.asyncIterator]: () => iterator,
+					cancel: () => {
+						rejectPending?.(new Error("provider cancelled"));
+					},
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		vi.mocked(dbMock.recordQuery).mockClear();
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const turn = sm.runQuery(
+			"delegated work",
+			(message) => emitted.push(message),
+			{
+				sessionId: "child-session",
+				attachments: [],
+				turnId: "child-turn",
+				backgroundSession: true,
+			},
+		);
+
+		await waitFor(() => expect(pending).toBe(true));
+		sm.abort();
+		await turn;
+
+		expect(sm.getStatus().state).toBe("idle");
+		expect(emitted.some((message) => message.type === "error")).toBe(false);
+		expect(dbMock.recordQuery).toHaveBeenCalledTimes(1);
+		expect(dbMock.recordQuery).toHaveBeenCalledWith(
+			"child-session",
+			expect.objectContaining({
+				input_tokens: 10,
+				output_tokens: 5,
+				cache_read_tokens: 20,
+				cache_creation_tokens: 2,
+				stop_reason: null,
+			}),
+			"claude",
+		);
+	});
+
+	it("does not duplicate normal done accounting for a background turn", async () => {
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(): AgentSession {
+				const generator = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-complete-child" };
+					yield {
+						type: "usage",
+						inputTokens: 8,
+						outputTokens: 3,
+						queryUsage: {
+							inputTokens: 8,
+							outputTokens: 3,
+							cacheReadTokens: 0,
+							cacheCreationTokens: 0,
+						},
+						model: "claude-sonnet-4-6",
+					};
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 12,
+						usage: { inputTokens: 8, outputTokens: 3 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => generator[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		vi.mocked(dbMock.recordQuery).mockClear();
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await sm.runQuery("delegated work", () => {}, {
+			sessionId: "child-session",
+			attachments: [],
+			turnId: "child-turn",
+			backgroundSession: true,
+		});
+
+		expect(dbMock.recordQuery).toHaveBeenCalledTimes(1);
+	});
+
+	it("does not invent a zero-token background query before usage is reported", async () => {
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(): AgentSession {
+				const generator = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-no-usage-child" };
+				})();
+				return {
+					[Symbol.asyncIterator]: () => generator[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		vi.mocked(dbMock.recordQuery).mockClear();
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await sm.runQuery("delegated work", () => {}, {
+			sessionId: "child-session",
+			attachments: [],
+			turnId: "child-turn",
+			backgroundSession: true,
+		});
+
+		expect(dbMock.recordQuery).not.toHaveBeenCalled();
+	});
+
+	it("preserves the ordinary error path when the provider was not explicitly aborted", async () => {
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(): AgentSession {
+				const generator = (async function* (): AsyncGenerator<AgentEvent> {
+					yield { type: "session_start", sessionId: "sdk-real-error" };
+					throw new Error("real provider failure");
+				})();
+				return {
+					[Symbol.asyncIterator]: () => generator[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		vi.mocked(dbMock.appendLog).mockClear();
+		const emitted: ServerMessage[] = [];
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+
+		await sm.runQuery("ordinary work", (message) => emitted.push(message), {
+			sessionId: "session-1",
+		});
+
+		expect(sm.getStatus().state).toBe("error");
+		expect(emitted).toContainEqual({
+			type: "error",
+			message: "real provider failure",
+		});
+		expect(dbMock.appendLog).toHaveBeenCalledWith(
+			"error",
+			"session",
+			"runQuery error",
+			expect.objectContaining({ message: "real provider failure" }),
+		);
+	});
+
+	it("queues second runQuery while first is running and drains FIFO at done", async () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		const events1: unknown[] = [];
+		const events2: unknown[] = [];
+		const turn1 = sm.runQuery("first", (m) => events1.push(m), {
+			sessionId: "sess-1",
+		});
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+
+		// Second runQuery while first is still running — must queue, not reject.
+		const turn2 = sm.runQuery("second", (m) => events2.push(m), {
+			sessionId: "sess-1",
+		});
+
+		// Provider must NOT have been invoked for turn 2 yet.
+		expect(ctl.getSendCount()).toBe(1);
+
+		// Release turn 1 — turn 2 should then start.
+		ctl.turns[0].resolveDone();
+		await turn1;
+		await waitFor(() => expect(ctl.getSendCount()).toBe(2));
+		ctl.turns[1].resolveDone();
+		await turn2;
+
+		expect(events1.some((m) => (m as { type: string }).type === "done")).toBe(
+			true,
+		);
+		expect(events2.some((m) => (m as { type: string }).type === "done")).toBe(
+			true,
+		);
+	});
+
+	it("preserves FIFO order across multiple queued turns", async () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		const order: string[] = [];
+		const recordDone =
+			(label: string) =>
+			(m: ServerMessage): void => {
+				if (m.type === "done") order.push(label);
+			};
+		const t1 = sm.runQuery("a", recordDone("a"), {
+			sessionId: "sess-1",
+		});
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		const t2 = sm.runQuery("b", recordDone("b"), {
+			sessionId: "sess-1",
+		});
+		const t3 = sm.runQuery("c", recordDone("c"), {
+			sessionId: "sess-1",
+		});
+
+		ctl.turns[0].resolveDone();
+		await t1;
+		await waitFor(() => expect(ctl.getSendCount()).toBe(2));
+		ctl.turns[1].resolveDone();
+		await t2;
+		await waitFor(() => expect(ctl.getSendCount()).toBe(3));
+		ctl.turns[2].resolveDone();
+		await t3;
+
+		expect(order).toEqual(["a", "b", "c"]);
+	});
+
+	it("emits status=running per queued turn (with turn_id) and status=idle once at drain end", async () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		const statusEvents: Array<{ state: string; turn_id?: string }> = [];
+		const onMsg = (m: ServerMessage): void => {
+			if (m.type === "status") {
+				statusEvents.push({
+					state: m.state,
+					...(m.turn_id !== undefined ? { turn_id: m.turn_id } : {}),
+				});
+			}
+		};
+
+		const t1 = sm.runQuery("a", onMsg, {
+			sessionId: "sess-1",
+			turnId: "turn-a",
+		});
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		const t2 = sm.runQuery("b", onMsg, {
+			sessionId: "sess-1",
+			turnId: "turn-b",
+		});
+
+		ctl.turns[0].resolveDone();
+		await t1;
+		await waitFor(() => expect(ctl.getSendCount()).toBe(2));
+
+		// Between turn 1 and turn 2 we must NOT see an idle status.
+		expect(statusEvents.map((e) => e.state)).not.toContain("idle");
+
+		ctl.turns[1].resolveDone();
+		await t2;
+
+		// Slice C: each turn emits a running status with its turn_id so the
+		// client can mark the corresponding chatQueue entry as RUN.
+		const runningEvents = statusEvents.filter((e) => e.state === "running");
+		expect(runningEvents).toHaveLength(2);
+		expect(runningEvents[0].turn_id).toBe("turn-a");
+		expect(runningEvents[1].turn_id).toBe("turn-b");
+		// Idle emitted exactly once after full drain.
+		expect(statusEvents.filter((e) => e.state === "idle")).toHaveLength(1);
+	});
+
+	it("first turn error does not block subsequent queued turn from running", async () => {
+		let calls = 0;
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(_p: AgentQueryParams): AgentSession {
+				calls++;
+				const willThrow = calls === 1;
+				const gen = (async function* (): AsyncGenerator<AgentEvent> {
+					if (willThrow) throw new Error("first turn fail");
+					yield { type: "session_start", sessionId: "sdk-2" };
+					yield {
+						type: "done",
+						cost: 0,
+						turns: 1,
+						durationMs: 0,
+						usage: { inputTokens: 1, outputTokens: 1 },
+					};
+				})();
+				return {
+					[Symbol.asyncIterator]: () => gen[Symbol.asyncIterator](),
+					cancel: vi.fn(),
+					send: vi.fn().mockResolvedValue(undefined),
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const t1 = sm.runQuery("a", () => {}, {
+			sessionId: "sess-1",
+		});
+		const t2 = sm.runQuery("b", () => {}, {
+			sessionId: "sess-1",
+		});
+
+		const results = await Promise.allSettled([t1, t2]);
+		// runQuery itself never throws — errors are emitted as events. Both
+		// promises resolve; second turn must have invoked the provider.
+		expect(results[0].status).toBe("fulfilled");
+		expect(results[1].status).toBe("fulfilled");
+		expect(calls).toBe(2);
+	});
+
+	it("clearHistory drops queued turns silently and does not start them", async () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		const t1 = sm.runQuery("a", () => {}, {
+			sessionId: "sess-1",
+		});
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		const t2 = sm.runQuery("b", () => {}, {
+			sessionId: "sess-1",
+		});
+
+		// Clear before turn 1 completes — turn 2 should never start.
+		sm.clearHistory();
+
+		// Let turn 1 finish so its iterator drains.
+		ctl.turns[0].resolveDone();
+		await t1;
+
+		// Give the drain loop a tick; turn 2 must not have invoked the provider.
+		await new Promise((r) => setTimeout(r, 20));
+		expect(ctl.getSendCount()).toBe(1);
+
+		// t2 should resolve (or reject) without hanging.
+		await Promise.race([
+			t2,
+			new Promise((_, rej) => setTimeout(() => rej(new Error("t2 hung")), 200)),
+		]).catch(() => {
+			/* either resolution acceptable */
+		});
+	});
+});
+
+// ── Slice C: cancelQueued ─────────────────────────────────────────────────────
+
+describe("SessionManager — cancelQueued", () => {
+	it("removes a pending queued turn by turn_id and resolves its promise silently", async () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		const t1 = sm.runQuery("first", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-1",
+		});
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		const t2 = sm.runQuery("second", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-2",
+		});
+
+		expect(sm.cancelQueued("turn-2")).toBe(true);
+
+		ctl.turns[0].resolveDone();
+		await t1;
+		// t2 was cancelled — its promise resolves silently; no second send.
+		await t2;
+		expect(ctl.getSendCount()).toBe(1);
+	});
+
+	it("returns false when the turn_id is unknown", () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+		expect(sm.cancelQueued("nope")).toBe(false);
+	});
+
+	it("returns false for the currently running turn (cannot cancel-running)", async () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		const t1 = sm.runQuery("first", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-1",
+		});
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+
+		// turn-1 is currently running (already shifted off turnQueue), so
+		// cancelQueued must NOT match it.
+		expect(sm.cancelQueued("turn-1")).toBe(false);
+
+		ctl.turns[0].resolveDone();
+		await t1;
+	});
+});
+
+describe("SessionManager — steerQueued", () => {
+	it("steers a delegated instruction directly without creating a queued fallback", async () => {
+		const ctl = makeControllableProvider();
+		const steer = vi.fn().mockResolvedValue(undefined);
+		const wrapped: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				return { ...ctl.provider.query(params), steer };
+			},
+		};
+		vi.mocked(dbMock.appendMessage).mockClear();
+		const sm = new SessionManager(makeConfig(), makeProviders(wrapped));
+		const first = sm.runQuery("first", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-1",
+		});
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		ctl.pushEvent({ type: "text_delta", text: "partial response" });
+		await waitFor(() =>
+			expect(dbMock.appendMessage).toHaveBeenCalledWith(
+				"sess-1",
+				1,
+				"assistant",
+				"",
+			),
+		);
+
+		await sm.steerActiveTurn(
+			"Check the delegated edge case",
+			() => {},
+			"sess-1",
+			"delegation-steer-1",
+		);
+
+		expect(steer).toHaveBeenCalledWith("test prompt");
+		expect(sm.getQueueState().pending_turn_ids).toEqual([]);
+		expect(dbMock.appendMessage).toHaveBeenCalledWith(
+			"sess-1",
+			2,
+			"user",
+			"Check the delegated edge case",
+			"delegation-steer-1",
+			1,
+			expect.stringContaining('"delivery":"steer"'),
+		);
+		ctl.turns[0].resolveDone();
+		await first;
+	});
+
+	it("reports unsupported direct steering without queuing a new turn", async () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+		const first = sm.runQuery("first", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-1",
+		});
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+
+		await expect(
+			sm.steerActiveTurn(
+				"Do not queue this",
+				() => {},
+				"sess-1",
+				"delegation-steer-unsupported",
+			),
+		).rejects.toThrow("does not support steering");
+		expect(sm.getQueueState().pending_turn_ids).toEqual([]);
+		expect(ctl.getSendCount()).toBe(1);
+		ctl.turns[0].resolveDone();
+		await first;
+	});
+
+	it("does not steer a replacement turn when prompt preparation outlives the original turn", async () => {
+		const ctl = makeControllableProvider();
+		const steer = vi.fn().mockResolvedValue(undefined);
+		const wrapped: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				return { ...ctl.provider.query(params), steer };
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(wrapped));
+		const first = sm.runQuery("first", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-1",
+		});
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+
+		let preparationStarted!: () => void;
+		const started = new Promise<void>((resolve) => {
+			preparationStarted = resolve;
+		});
+		let releasePreparation!: () => void;
+		const preparationGate = new Promise<void>((resolve) => {
+			releasePreparation = resolve;
+		});
+		vi.mocked(buildPromptAsync).mockImplementationOnce(async () => {
+			preparationStarted();
+			await preparationGate;
+			return {
+				prompt: "prepared steer",
+				safeSkillContexts: [],
+				safeAttachments: [],
+				resourcePaths: [],
+				safeVaultReferences: [],
+				safeWorkspaceReferences: [],
+				contextManifest: testPromptContextManifest(),
+			};
+		});
+		const steering = sm.steerActiveTurn(
+			"Do not leak into the next turn",
+			() => {},
+			"sess-1",
+			"delegation-steer-race",
+		);
+		await started;
+		const second = sm.runQuery("second", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-2",
+		});
+		ctl.turns[0].resolveDone();
+		await first;
+		await waitFor(() => expect(ctl.getSendCount()).toBe(2));
+
+		releasePreparation();
+		await expect(steering).rejects.toThrow(
+			"active provider turn changed while steering was being prepared",
+		);
+		expect(steer).not.toHaveBeenCalled();
+
+		ctl.turns[1].resolveDone();
+		await second;
+	});
+
+	it("reports when direct steering was accepted but transcript persistence failed", async () => {
+		const ctl = makeControllableProvider();
+		const steer = vi.fn().mockResolvedValue(undefined);
+		const wrapped: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				return { ...ctl.provider.query(params), steer };
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(wrapped));
+		const first = sm.runQuery("first", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-1",
+		});
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		vi.mocked(dbMock.appendMessage).mockRejectedValueOnce(
+			new Error("transcript write failed"),
+		);
+
+		await expect(
+			sm.steerActiveTurn(
+				"Accepted once",
+				() => {},
+				"sess-1",
+				"delegation-steer-persist-failure",
+			),
+		).rejects.toThrow(
+			"Do not retry this instruction automatically because that may duplicate it",
+		);
+		expect(steer).toHaveBeenCalledTimes(1);
+
+		ctl.turns[0].resolveDone();
+		await first;
+	});
+
+	it("folds a plain queued message into the active turn without another send", async () => {
+		const ctl = makeControllableProvider();
+		const steer = vi.fn().mockResolvedValue(undefined);
+		const wrapped: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				return { ...ctl.provider.query(params), steer };
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(wrapped));
+		const first = sm.runQuery("first", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-1",
+		});
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		const second = sm.runQuery("second", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-2",
+		});
+
+		expect(sm.getQueueState().pending_turns).toEqual([
+			expect.objectContaining({ id: "turn-2", steerable: true }),
+		]);
+		await expect(sm.steerQueued("turn-2")).resolves.toBe(true);
+		expect(steer).toHaveBeenCalledWith("test prompt");
+		expect(sm.getQueueState().pending_turn_ids).toEqual([]);
+		await second;
+
+		ctl.turns[0].resolveDone();
+		await first;
+		expect(ctl.getSendCount()).toBe(1);
+	});
+
+	it("settles an accepted queued turn when transcript persistence fails", async () => {
+		const ctl = makeControllableProvider();
+		const steer = vi.fn().mockResolvedValue(undefined);
+		const wrapped: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				return { ...ctl.provider.query(params), steer };
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(wrapped));
+		const first = sm.runQuery("first", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-1",
+		});
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		const second = sm.runQuery("second", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-2",
+		});
+		vi.mocked(dbMock.appendMessage).mockRejectedValueOnce(
+			new Error("transcript write failed"),
+		);
+
+		await expect(sm.steerQueued("turn-2")).rejects.toThrow(
+			"provider accepted the steering instruction, but Hlid could not persist",
+		);
+		await expect(second).resolves.toBeUndefined();
+		expect(sm.getQueueState().pending_turn_ids).toEqual([]);
+		expect(steer).toHaveBeenCalledTimes(1);
+
+		ctl.turns[0].resolveDone();
+		await first;
+		expect(ctl.getSendCount()).toBe(1);
+	});
+
+	it("persists which in-flight assistant row an accepted prompt steered", async () => {
+		const ctl = makeControllableProvider();
+		const steer = vi.fn().mockResolvedValue(undefined);
+		const wrapped: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				return { ...ctl.provider.query(params), steer };
+			},
+		};
+		vi.mocked(dbMock.appendMessage).mockClear();
+		const sm = new SessionManager(makeConfig(), makeProviders(wrapped));
+		const first = sm.runQuery("first", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-1",
+		});
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		ctl.pushEvent({ type: "text_delta", text: "partial response" });
+		await waitFor(() =>
+			expect(dbMock.appendMessage).toHaveBeenCalledWith(
+				"sess-1",
+				1,
+				"assistant",
+				"",
+			),
+		);
+
+		const second = sm.runQuery("second", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-2",
+		});
+		await expect(sm.steerQueued("turn-2")).resolves.toBe(true);
+
+		expect(dbMock.appendMessage).toHaveBeenCalledWith(
+			"sess-1",
+			2,
+			"user",
+			"second",
+			"turn-2",
+			1,
+			expect.stringContaining('"delivery":"steer"'),
+		);
+		await second;
+		ctl.turns[0].resolveDone();
+		await first;
+	});
+
+	it("restores the queued turn when the provider rejects steering", async () => {
+		const ctl = makeControllableProvider();
+		const steer = vi.fn().mockRejectedValue(new Error("not steerable"));
+		const wrapped: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				return { ...ctl.provider.query(params), steer };
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(wrapped));
+		const first = sm.runQuery("first", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-1",
+		});
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		const second = sm.runQuery("second", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-2",
+		});
+
+		await expect(sm.steerQueued("turn-2")).rejects.toThrow("not steerable");
+		expect(sm.getQueueState().pending_turn_ids).toEqual(["turn-2"]);
+		ctl.turns[0].resolveDone();
+		await first;
+		await waitFor(() => expect(ctl.getSendCount()).toBe(2));
+		ctl.turns[1].resolveDone();
+		await second;
+	});
+
+	it("marks attachment turns as not steerable", async () => {
+		const ctl = makeControllableProvider();
+		const wrapped: AgentProvider = {
+			providerId: "claude",
+			query(params: AgentQueryParams): AgentSession {
+				return {
+					...ctl.provider.query(params),
+					steer: vi.fn().mockResolvedValue(undefined),
+				};
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(wrapped));
+		const first = sm.runQuery("first", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-1",
+		});
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		const second = sm.runQuery("with file", () => {}, {
+			sessionId: "sess-1",
+			attachments: [
+				{
+					id: "attachment-1",
+					filename: "notes.txt",
+					mime: "text/plain",
+					path: "/tmp/notes.txt",
+					kind: "file",
+				},
+			],
+			turnId: "turn-2",
+		});
+
+		expect(sm.getQueueState().pending_turns).toEqual([
+			expect.objectContaining({ id: "turn-2", steerable: false }),
+		]);
+		await expect(sm.steerQueued("turn-2")).rejects.toThrow("file attachments");
+		expect(sm.cancelQueued("turn-2")).toBe(true);
+		await second;
+		ctl.turns[0].resolveDone();
+		await first;
+		expect(ctl.getSendCount()).toBe(1);
+	});
+
+	it("exposes only validated current-turn selections for explicit delegation handoff", async () => {
+		const ctl = makeControllableProvider();
+		vi.mocked(buildPromptAsync).mockResolvedValueOnce({
+			prompt: "test prompt",
+			safeSkillContexts: ["/vault/skills/review/SKILL.md"],
+			safeAttachments: [
+				{
+					id: "relic-1",
+					path: "/artifacts/client-claimed-report.html",
+					filename: "client-claimed-report.html",
+					mime: "text/plain",
+					kind: "ephemeral",
+					reference: "relic",
+				},
+				{
+					id: "upload-1",
+					path: "/artifacts/upload.txt",
+					filename: "upload.txt",
+					mime: "text/plain",
+					kind: "ephemeral",
+				},
+				{
+					id: "spoofed-relic",
+					path: "/artifacts/spoofed.html",
+					filename: "spoofed.html",
+					mime: "text/html",
+					kind: "vault",
+					reference: "relic",
+				},
+			],
+			resourcePaths: [],
+			safeVaultReferences: [
+				{ relativePath: "Plans/Exact.md", path: "/vault/Plans/Exact.md" },
+			],
+			safeWorkspaceReferences: [
+				{
+					relativePath: "src/exact.ts",
+					sha256: "abc123",
+					path: "/work/project/src/exact.ts",
+					sizeBytes: 100,
+					mime: "text/typescript",
+					environment: "host",
+					environmentLabel: "Host",
+					previewKind: "text",
+				},
+			],
+			contextManifest: testPromptContextManifest(),
+		});
+		vi.mocked(dbMock.getAttachment)
+			.mockResolvedValueOnce({
+				id: "relic-1",
+				session_id: "source-session",
+				message_seq: 4,
+				kind: "vault",
+				filename: "durable-report.html",
+				path: "/library/durable-report.html",
+				mime: "text/html",
+				size_bytes: 100,
+				sha256: "a".repeat(64),
+				created_at: 1,
+				retention: "retained",
+			})
+			.mockResolvedValueOnce({
+				id: "spoofed-relic",
+				session_id: "sess-handoff",
+				message_seq: 0,
+				kind: "ephemeral",
+				filename: "spoofed.html",
+				path: "/artifacts/spoofed.html",
+				mime: "text/html",
+				size_bytes: 100,
+				sha256: "b".repeat(64),
+				created_at: 1,
+				retention: "session",
+			});
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+		expect(sm.getCurrentDelegationHandoff()).toBeNull();
+
+		const run = sm.runQuery("parent task", () => {}, {
+			sessionId: "sess-handoff",
+			skillContexts: ["/vault/skills/review/SKILL.md"],
+			attachments: [],
+			turnId: "turn-handoff",
+			vaultReferences: ["Plans/Exact.md"],
+			workspaceReferences: [{ relativePath: "src/exact.ts", sha256: "abc123" }],
+		});
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+
+		expect(sm.getCurrentDelegationHandoff()).toEqual({
+			skillContexts: ["/vault/skills/review/SKILL.md"],
+			relics: [
+				{
+					id: "relic-1",
+					path: "/library/durable-report.html",
+					filename: "durable-report.html",
+					mime: "text/html",
+					kind: "vault",
+					reference: "relic",
+				},
+			],
+			vaultReferences: ["Plans/Exact.md"],
+			workspaceReferences: [{ relativePath: "src/exact.ts", sha256: "abc123" }],
+			currentAssistantSequence: null,
+		});
+		expect(dbMock.getAttachment).toHaveBeenCalledWith("relic-1");
+		expect(dbMock.getAttachment).toHaveBeenCalledWith("spoofed-relic");
+		ctl.turns[0].resolveDone();
+		await run;
+		expect(sm.getCurrentDelegationHandoff()).toBeNull();
+	});
+
+	it("updates the handoff exclusion cursor when partial assistant output starts streaming", async () => {
+		const ctl = makeControllableProvider();
+		vi.mocked(dbMock.appendMessage).mockClear();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+		const run = sm.runQuery("parent task", () => {}, {
+			sessionId: "sess-partial-handoff",
+			turnId: "turn-partial-handoff",
+		});
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		expect(
+			sm.getCurrentDelegationHandoff()?.currentAssistantSequence,
+		).toBeNull();
+
+		ctl.pushEvent({ type: "text_delta", text: "incomplete assistant work" });
+		await waitFor(() =>
+			expect(dbMock.appendMessage).toHaveBeenCalledWith(
+				"sess-partial-handoff",
+				1,
+				"assistant",
+				"",
+			),
+		);
+		expect(sm.getCurrentDelegationHandoff()?.currentAssistantSequence).toBe(1);
+
+		ctl.turns[0].resolveDone();
+		await run;
+		expect(sm.getCurrentDelegationHandoff()).toBeNull();
+	});
+});
+
+describe("SessionManager — promoteQueued", () => {
+	it("moves a queued turn to the head and calls agentSession.interrupt", async () => {
+		const ctl = makeControllableProvider();
+		// Wrap provider so we can capture the interrupt spy on the live session.
+		let capturedInterrupt: ReturnType<typeof vi.fn> | null = null;
+		const wrapped: AgentProvider = {
+			providerId: "claude",
+			query(p: AgentQueryParams): AgentSession {
+				const sess = ctl.provider.query(p);
+				const interruptSpy = vi.fn().mockResolvedValue(undefined);
+				capturedInterrupt = interruptSpy;
+				return { ...sess, interrupt: interruptSpy };
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(wrapped));
+
+		const t1 = sm.runQuery("first", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-1",
+		});
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		const t2 = sm.runQuery("second", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-2",
+		});
+		const t3 = sm.runQuery("third", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-3",
+		});
+		expect(sm.getQueueState()).toMatchObject({
+			pending_turn_ids: ["turn-2", "turn-3"],
+			pending_turns: [
+				{ id: "turn-2", text: "second", session_id: "sess-1" },
+				{ id: "turn-3", text: "third", session_id: "sess-1" },
+			],
+			running_turn_id: "turn-1",
+		});
+
+		// Promote turn-3 — should reorder turnQueue (turn-3 before turn-2) and
+		// interrupt the currently running turn.
+		expect(sm.promoteQueued("turn-3")).toBe(true);
+		expect(capturedInterrupt).not.toBeNull();
+		expect(capturedInterrupt).toHaveBeenCalledTimes(1);
+
+		// Resolve current turn (turn-1) — drain proceeds to turn-3 (promoted),
+		// then turn-2.
+		ctl.turns[0].resolveDone();
+		await t1;
+		await waitFor(() => expect(ctl.getSendCount()).toBe(2));
+		ctl.turns[1].resolveDone();
+		await t3;
+		await waitFor(() => expect(ctl.getSendCount()).toBe(3));
+		ctl.turns[2].resolveDone();
+		await t2;
+	});
+
+	it("returns false for unknown turn id", () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+		expect(sm.promoteQueued("nope")).toBe(false);
+	});
+
+	it("returns false for the currently running turn (already shifted off queue)", async () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		const t1 = sm.runQuery("first", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-1",
+		});
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		expect(sm.promoteQueued("turn-1")).toBe(false);
+		ctl.turns[0].resolveDone();
+		await t1;
+	});
+});
+
+describe("SessionManager — Slice C edge cases", () => {
+	it("cancel after promote: cancels the promoted turn (still in queue, just at head)", async () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		const t1 = sm.runQuery("first", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-1",
+		});
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		const t2 = sm.runQuery("second", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-2",
+		});
+		const t3 = sm.runQuery("third", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-3",
+		});
+
+		expect(sm.promoteQueued("turn-3")).toBe(true);
+		// Now turnQueue is [turn-3, turn-2]. Cancel turn-3 → only turn-2 remains.
+		expect(sm.cancelQueued("turn-3")).toBe(true);
+
+		ctl.turns[0].resolveDone();
+		await t1;
+		await t3; // resolved silently by cancel
+		await waitFor(() => expect(ctl.getSendCount()).toBe(2));
+		ctl.turns[1].resolveDone();
+		await t2;
+		expect(ctl.getSendCount()).toBe(2); // turn-3 never ran
+	});
+
+	it("double promote: second promote moves a different turn to head", async () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		const t1 = sm.runQuery("first", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-1",
+		});
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		const t2 = sm.runQuery("second", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-2",
+		});
+		const t3 = sm.runQuery("third", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-3",
+		});
+
+		expect(sm.promoteQueued("turn-3")).toBe(true);
+		// Queue: [turn-3, turn-2]. Promote turn-2 → [turn-2, turn-3].
+		expect(sm.promoteQueued("turn-2")).toBe(true);
+
+		ctl.turns[0].resolveDone();
+		await t1;
+		await waitFor(() => expect(ctl.getSendCount()).toBe(2));
+		ctl.turns[1].resolveDone();
+		await t2;
+		await waitFor(() => expect(ctl.getSendCount()).toBe(3));
+		ctl.turns[2].resolveDone();
+		await t3;
+	});
+
+	it("abort clears queue and tears down session even if queue had promotions", async () => {
+		const ctl = makeControllableProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		const t1 = sm.runQuery("first", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-1",
+		});
+		await waitFor(() => expect(ctl.getSendCount()).toBe(1));
+		const t2 = sm.runQuery("second", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-2",
+		});
+		const t3 = sm.runQuery("third", () => {}, {
+			sessionId: "sess-1",
+			turnId: "turn-3",
+		});
+		expect(sm.promoteQueued("turn-3")).toBe(true);
+
+		sm.abort();
+		// Drain the running turn so Promise.allSettled resolves.
+		ctl.turns[0].resolveDone();
+
+		await Promise.allSettled([t1, t2, t3]);
+		// Queue was cleared by abort — turn-2 and turn-3 never ran.
+		expect(ctl.getSendCount()).toBe(1);
+	});
+});
+
+describe("SessionManager — Slice B AgentSession reuse", () => {
+	it("two consecutive runQuery calls in same chat reuse one provider.query()", async () => {
+		const ctl = makeLongLivedProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		await sm.runQuery("first", () => {}, {
+			sessionId: "sess-1",
+		});
+		await sm.runQuery("second", () => {}, {
+			sessionId: "sess-1",
+		});
+
+		expect(ctl.getQueryCallCount()).toBe(1);
+		ctl.closeStream();
+	});
+
+	it("switching to a different sessionId rebuilds the AgentSession", async () => {
+		const ctl = makeLongLivedProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		await sm.runQuery("first", () => {}, {
+			sessionId: "sess-A",
+		});
+		await sm.runQuery("second", () => {}, {
+			sessionId: "sess-B",
+		});
+
+		expect(ctl.getQueryCallCount()).toBe(2);
+		ctl.closeStream();
+	});
+
+	it("clearHistory tears down the cached AgentSession", async () => {
+		const ctl = makeLongLivedProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		await sm.runQuery("first", () => {}, {
+			sessionId: "sess-1",
+		});
+		sm.clearHistory();
+		await sm.runQuery("second", () => {}, {
+			sessionId: "sess-2",
+		});
+
+		expect(ctl.getQueryCallCount()).toBe(2);
+		ctl.closeStream();
+	});
+
+	it("abort tears down the cached AgentSession", async () => {
+		const ctl = makeLongLivedProvider();
+		const sm = new SessionManager(makeConfig(), makeProviders(ctl.provider));
+
+		await sm.runQuery("first", () => {}, {
+			sessionId: "sess-1",
+		});
+		sm.abort();
+		await sm.runQuery("second", () => {}, {
+			sessionId: "sess-1",
+		});
+
+		expect(ctl.getQueryCallCount()).toBe(2);
+		ctl.closeStream();
+	});
+
+	it("regression: cached iterator survives turn-boundary break (for-await must not close it)", async () => {
+		// Use a real AsyncGenerator (which has a `return` method) to catch
+		// the for-await early-exit bug. A naive impl that returns the
+		// underlying iter from [Symbol.asyncIterator] gets closed by
+		// iterateConversation's `return` on done — symptom: turn 2 hangs
+		// because every iter.next() resolves done=true forever.
+		let generatorReturnCalled = 0;
+		const eventQueue: AgentEvent[] = [];
+		const waiters: Array<(e: AgentEvent | null) => void> = [];
+
+		function pushEvent(e: AgentEvent): void {
+			const w = waiters.shift();
+			if (w) w(e);
+			else eventQueue.push(e);
+		}
+
+		const realGenerator = (async function* (): AsyncGenerator<AgentEvent> {
+			try {
+				yield { type: "session_start", sessionId: "sdk-real" };
+				while (true) {
+					if (eventQueue.length > 0) {
+						const next = eventQueue.shift();
+						if (next) yield next;
+						continue;
+					}
+					const next = await new Promise<AgentEvent | null>((r) => {
+						waiters.push(r);
+					});
+					if (next === null) return;
+					yield next;
+				}
+			} finally {
+				generatorReturnCalled++;
+			}
+		})();
+
+		// Wrap the inner iterator so consumer's break/return DOES NOT close
+		// the underlying generator (mirrors ClaudeAgentSession's wrapper).
+		const innerIter = realGenerator[Symbol.asyncIterator]();
+		const wrapperIter: AsyncIterator<AgentEvent> = {
+			next: () => innerIter.next(),
+			return: async () =>
+				({ value: undefined, done: true }) as IteratorResult<AgentEvent>,
+		};
+
+		const provider: AgentProvider = {
+			providerId: "claude",
+			query(_p: AgentQueryParams): AgentSession {
+				return {
+					[Symbol.asyncIterator]: () => wrapperIter,
+					send: vi.fn(async () => {
+						pushEvent({
+							type: "done",
+							cost: 0,
+							turns: 1,
+							durationMs: 0,
+							usage: { inputTokens: 1, outputTokens: 1 },
+						});
+					}),
+					cancel: () => {
+						const w = waiters.shift();
+						w?.(null);
+					},
+					mcpServerStatus: () => Promise.resolve([]),
+				};
+			},
+		};
+
+		const sm = new SessionManager(makeConfig(), makeProviders(provider));
+		const events1: ServerMessage[] = [];
+		const events2: ServerMessage[] = [];
+
+		await sm.runQuery("first", (m) => events1.push(m), {
+			sessionId: "sess-1",
+		});
+		expect(events1.some((m) => m.type === "done")).toBe(true);
+		expect(generatorReturnCalled).toBe(0);
+
+		// CRITICAL: turn 2 must receive its own done event. With a naive
+		// [Symbol.asyncIterator] that returns the raw AsyncGenerator,
+		// for-await's exit closes it and turn 2 hangs.
+		await Promise.race([
+			sm.runQuery("second", (m) => events2.push(m), {
+				sessionId: "sess-1",
+			}),
+			new Promise((_, rej) =>
+				setTimeout(() => rej(new Error("turn 2 hung")), 1000),
+			),
+		]);
+		expect(events2.some((m) => m.type === "done")).toBe(true);
+	});
+
+	it("runOneTurn calls agentSession.send() with the user message", async () => {
+		const ctl = makeLongLivedProvider();
+		const sendSpies: Array<ReturnType<typeof vi.fn>> = [];
+		const wrappedProvider: AgentProvider = {
+			providerId: "claude",
+			query(p: AgentQueryParams): AgentSession {
+				const sess = ctl.provider.query(p);
+				sendSpies.push(sess.send as ReturnType<typeof vi.fn>);
+				return sess;
+			},
+		};
+		const sm = new SessionManager(makeConfig(), makeProviders(wrappedProvider));
+		await sm.runQuery("hello world", () => {}, {
+			sessionId: "sess-1",
+		});
+		const lastSendSpy = sendSpies[0];
+		expect(lastSendSpy).not.toBeNull();
+		if (!lastSendSpy) throw new Error("send spy was never assigned");
+		expect(lastSendSpy).toHaveBeenCalledTimes(1);
+		const sentArg = lastSendSpy.mock.calls[0][0] as string;
+		// buildPromptAsync is mocked at module level to return "test prompt", which
+		// SessionManager forwards verbatim to agentSession.send().
+		expect(sentArg).toBe("test prompt");
+		ctl.closeStream();
+	});
+
+	it("passes managed audio attachments to a native Codex turn", async () => {
+		const attachment = {
+			id: "voice-1",
+			path: "/tmp/hlid-test-vault/voice-message.wav",
+			filename: "voice-message.wav",
+			mime: "audio/wav",
+			kind: "ephemeral",
+		};
+		vi.mocked(buildPromptAsync).mockResolvedValueOnce({
+			prompt: "Voice message",
+			safeAttachments: [attachment],
+			resourcePaths: [attachment.path],
+			safeVaultReferences: [],
+			safeWorkspaceReferences: [],
+			contextManifest: testPromptContextManifest(),
+		});
+		const ctl = makeLongLivedProvider();
+		let sendSpy: ReturnType<typeof vi.fn> | undefined;
+		const provider: AgentProvider = {
+			providerId: "codex",
+			query(p: AgentQueryParams): AgentSession {
+				const session = ctl.provider.query(p);
+				sendSpy = session.send as ReturnType<typeof vi.fn>;
+				return session;
+			},
+		};
+		const sm = new SessionManager(
+			{ ...makeConfig(), vault_provider: "codex" } as HlidConfig,
+			makeProviders(provider),
+		);
+
+		await sm.runQuery("Voice message", () => {}, {
+			sessionId: "voice-session",
+			attachments: [attachment],
+		});
+
+		expect(sendSpy).toHaveBeenCalledWith("Voice message", {
+			audioPaths: [attachment.path],
+		});
+		expect(vi.mocked(buildPromptAsync).mock.calls.at(-1)?.[0]).toMatchObject({
+			nativeAudio: true,
+		});
+		ctl.closeStream();
+	});
+});
+
+// ── handleRateLimit → updateWindowMark ───────────────────────────────────────
+// proxy.ts is NOT mocked in this file, so updateWindowMark writes to the real
+// in-memory windowHighMark and getWindowMark can verify it. Uses unique
+// ── local_command_output ──────────────────────────────────────────────────────

@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { makeRequest } from "#/test/routeTestKit";
 
-vi.mock("#/lib/originGate", () => ({ forbiddenResponse: vi.fn(() => null) }));
-vi.mock("#/lib/dbClient", () => ({ dbFetch: vi.fn() }));
+vi.mock("#/lib/originGate");
+vi.mock("#/lib/dbClient");
 
 import { dbFetch } from "#/lib/dbClient";
 import { forbiddenResponse } from "#/lib/originGate";
@@ -11,8 +12,8 @@ import { handleVoiceTranscription } from "./transcribe";
 const mockDbFetch = vi.mocked(dbFetch);
 const mockForbidden = vi.mocked(forbiddenResponse);
 
-function request(body: BodyInit = "audio", headers: HeadersInit = {}): Request {
-	return new Request("http://localhost/api/voice/transcribe", {
+const request = (body: BodyInit = "audio", headers: HeadersInit = {}) =>
+	makeRequest("/api/voice/transcribe", {
 		method: "POST",
 		headers: {
 			"content-type": "multipart/form-data; boundary=test",
@@ -20,7 +21,6 @@ function request(body: BodyInit = "audio", headers: HeadersInit = {}): Request {
 		},
 		body,
 	});
-}
 
 beforeEach(() => {
 	vi.clearAllMocks();

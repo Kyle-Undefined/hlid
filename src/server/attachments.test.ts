@@ -5,7 +5,9 @@
  * through the public handleUpload / unlinkPaths API surface.  DB and filesystem
  * calls are fully mocked so no disk I/O occurs.
  */
+
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { makeConfig as makeBaseConfig } from "#/test/fixtures";
 
 // ── module mocks (hoisted) ────────────────────────────────────────────────────
 
@@ -62,27 +64,17 @@ import {
 
 // ── fixtures ──────────────────────────────────────────────────────────────────
 
-function makeConfig(vaultPath = "/tmp/test-vault"): HlidConfig {
-	return {
+const makeConfig = (vaultPath = "/tmp/test-vault"): HlidConfig =>
+	makeBaseConfig({
 		vault: { name: "Test", path: vaultPath },
-		server: {
-			port: 3000,
-			tls_proxy_port: 3443,
-			local_network_access: false,
-			allow_external_agents: false,
-		},
 		attachments: { ...DEFAULT_ATTACHMENTS_CONFIG },
-		agents: [],
 		claude: {
 			model: "claude-test",
 			effort: "medium",
 			permission_mode: "default",
 			turn_recaps: false,
 		},
-		ui: { enter_to_submit: true, hide_skills_index: true, theme: "tan" },
-		status_vocabulary: { active: [], planning: [], done: [] },
-	} as unknown as HlidConfig;
-}
+	});
 
 function makeFormData(file: File, extra?: Record<string, string>): FormData {
 	const form = new FormData();

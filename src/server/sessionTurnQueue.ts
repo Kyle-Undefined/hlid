@@ -1,17 +1,17 @@
-export type QueuedTurn<TArgs extends unknown[]> = {
+export type QueuedTurn<TArgs> = {
 	args: TArgs;
 	turnId?: string;
 	resolve: () => void;
 	reject: (error: Error) => void;
 };
 
-export type ExtractedQueuedTurn<TArgs extends unknown[]> = {
+export type ExtractedQueuedTurn<TArgs> = {
 	turn: QueuedTurn<TArgs>;
 	index: number;
 };
 
 /** Owns pending-turn ordering and promise settlement. */
-export class SessionTurnQueue<TArgs extends unknown[]> {
+export class SessionTurnQueue<TArgs> {
 	private pending: Array<QueuedTurn<TArgs>> = [];
 
 	get length(): number {

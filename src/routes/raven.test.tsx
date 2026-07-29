@@ -239,7 +239,7 @@ vi.mock("#/lib/serverFns/providers", () => ({
 vi.mock("#/lib/serverFns/voice", () => ({
 	getVoiceInfoFn: vi.fn(),
 }));
-vi.mock("#/lib/serverFns/config", () => ({ getConfig: vi.fn() }));
+vi.mock("#/lib/serverFns/config");
 
 import { resetRavenTerminalsForTesting } from "#/hooks/ravenTerminalStore";
 import { resetRavenProviderCacheForTesting } from "#/lib/ravenProviderCache";

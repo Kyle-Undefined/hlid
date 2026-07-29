@@ -3,7 +3,7 @@
  * Requires Bun runtime (uses bun:sqlite).
  * Run with: bun test src/db/activity.bun.test.ts
  */
-import { Database } from "bun:sqlite";
+
 import { beforeEach, describe, expect, it } from "bun:test";
 import {
 	DURATION_BUCKETS_MS,
@@ -13,16 +13,11 @@ import {
 	getStopReasonSplit,
 	getTopToolCalls,
 } from "./activity";
+import { freshDb } from "./db.test-utils";
 import { appendMessage, appendToolEvent, setToolEventResult } from "./messages";
-import { getDb, setDbForTest } from "./schema";
+import { getDb } from "./schema";
 import { createSession, recordQuery, setSessionActualModel } from "./sessions";
 import type { QueryData } from "./types";
-
-function freshDb(): Database {
-	const db = new Database(":memory:");
-	setDbForTest(db);
-	return db;
-}
 
 function baseQuery(overrides: Partial<QueryData> = {}): QueryData {
 	return {

@@ -1403,20 +1403,18 @@ export class HlidDelegationManager {
 					if (event.type === "error") providerError = event.message;
 					this.emitFor(entry, event);
 				},
-				delegation.child_session_id,
-				payload.skillContexts,
-				payload.relics,
-				entry.agentCwd,
-				`delegation-${delegation.id}-attempt-${delegation.attempt_count}`,
-				undefined,
-				undefined,
-				undefined,
-				payload.vaultReferences,
-				payload.routineContext,
-				undefined,
-				payload.workspaceReferences,
-				payload.delegationContext,
-				true,
+				{
+					sessionId: delegation.child_session_id,
+					skillContexts: payload.skillContexts,
+					attachments: payload.relics,
+					agentCwd: entry.agentCwd,
+					turnId: `delegation-${delegation.id}-attempt-${delegation.attempt_count}`,
+					vaultReferences: payload.vaultReferences,
+					routineContext: payload.routineContext,
+					workspaceReferences: payload.workspaceReferences,
+					delegationContext: payload.delegationContext,
+					backgroundSession: true,
+				},
 			);
 			let runError: unknown;
 			let outcome = await Promise.race([

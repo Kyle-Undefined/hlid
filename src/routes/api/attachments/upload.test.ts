@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { makeRequest } from "#/test/routeTestKit";
 
-vi.mock("#/lib/serverFns/config", () => ({ getConfig: vi.fn() }));
-vi.mock("#/lib/dbClient", () => ({ dbFetch: vi.fn() }));
-vi.mock("#/lib/originGate", () => ({ forbiddenResponse: vi.fn(() => null) }));
+vi.mock("#/lib/serverFns/config");
+vi.mock("#/lib/dbClient");
+vi.mock("#/lib/originGate");
 
 import { dbFetch } from "#/lib/dbClient";
 import { forbiddenResponse } from "#/lib/originGate";
@@ -14,11 +15,8 @@ const mockGetConfig = vi.mocked(getConfig);
 const mockDbFetch = vi.mocked(dbFetch);
 const mockForbidden = vi.mocked(forbiddenResponse);
 
-function request(
-	body: BodyInit = "upload",
-	headers: HeadersInit = {},
-): Request {
-	return new Request("http://localhost/api/attachments/upload", {
+const request = (body: BodyInit = "upload", headers: HeadersInit = {}) =>
+	makeRequest("/api/attachments/upload", {
 		method: "POST",
 		headers: {
 			"content-type": "multipart/form-data; boundary=test",
@@ -26,7 +24,6 @@ function request(
 		},
 		body,
 	});
-}
 
 beforeEach(() => {
 	vi.clearAllMocks();

@@ -15,7 +15,13 @@ export default defineConfig({
 			reporter: ["json"],
 			reportsDirectory: "coverage/bun",
 			include: ["src/db/**/*.ts", "src/server/auth.ts"],
-			exclude: ["src/**/*.test.ts", "src/**/*.bun.test.ts"],
+			exclude: [
+				"src/**/*.test.ts",
+				"src/**/*.bun.test.ts",
+				"src/test/**",
+				"src/**/__mocks__/**",
+				"src/**/*.test-utils.ts",
+			],
 		},
 	},
 	resolve: {

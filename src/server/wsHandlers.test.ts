@@ -1843,13 +1843,10 @@ describe("message — chat", () => {
 		expect(session.runQuery).toHaveBeenCalledWith(
 			"hello",
 			expect.any(Function),
-			"sess-1",
-			"/vault/skills/s.md",
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
+			expect.objectContaining({
+				sessionId: "sess-1",
+				skillContexts: "/vault/skills/s.md",
+			}),
 		);
 	});
 
@@ -1870,13 +1867,11 @@ describe("message — chat", () => {
 		expect(session.runQuery).toHaveBeenCalledWith(
 			"hello",
 			expect.any(Function),
-			"sess-1",
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			true,
-			undefined,
+			expect.objectContaining({
+				sessionId: "sess-1",
+				planMode: true,
+				planHtml: undefined,
+			}),
 		);
 	});
 
@@ -1898,13 +1893,11 @@ describe("message — chat", () => {
 		expect(session.runQuery).toHaveBeenCalledWith(
 			"hello",
 			expect.any(Function),
-			"sess-1",
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			true,
-			true,
+			expect.objectContaining({
+				sessionId: "sess-1",
+				planMode: true,
+				planHtml: true,
+			}),
 		);
 	});
 
@@ -1925,15 +1918,10 @@ describe("message — chat", () => {
 		expect(session.runQuery).toHaveBeenCalledWith(
 			"compare these",
 			expect.any(Function),
-			"sess-1",
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			["Projects/Hlid.md", "Notes/Decision.md"],
+			expect.objectContaining({
+				sessionId: "sess-1",
+				vaultReferences: ["Projects/Hlid.md", "Notes/Decision.md"],
+			}),
 		);
 	});
 
@@ -1960,18 +1948,10 @@ describe("message — chat", () => {
 		expect(session.runQuery).toHaveBeenCalledWith(
 			"review this",
 			expect.any(Function),
-			"sess-1",
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			workspaceReferences,
+			expect.objectContaining({
+				sessionId: "sess-1",
+				workspaceReferences,
+			}),
 		);
 	});
 
@@ -1995,17 +1975,13 @@ describe("message — chat", () => {
 		expect(session.runQuery).toHaveBeenCalledWith(
 			"Finish the release gate",
 			expect.any(Function),
-			"sess-goal",
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			undefined,
-			{ objective: "Finish the release gate", tokenBudget: 50_000 },
+			expect.objectContaining({
+				sessionId: "sess-goal",
+				goalStart: {
+					objective: "Finish the release gate",
+					tokenBudget: 50_000,
+				},
+			}),
 		);
 	});
 

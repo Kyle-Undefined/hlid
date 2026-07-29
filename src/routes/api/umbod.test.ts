@@ -1,16 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { forbiddenResponse } from "#/lib/originGate";
+import { makeRequest } from "#/test/routeTestKit";
 import { handleGetUmbodWithOperations, handlePostUmbod } from "./umbod";
 
-vi.mock("#/lib/originGate", () => ({ forbiddenResponse: vi.fn() }));
+vi.mock("#/lib/originGate");
 
-function post(body: unknown): Request {
-	return new Request("http://localhost/api/umbod", {
-		method: "POST",
-		headers: { "content-type": "application/json" },
-		body: typeof body === "string" ? body : JSON.stringify(body),
-	});
-}
+const post = (body: unknown) =>
+	makeRequest("/api/umbod", { method: "POST", json: body });
 
 const saveUmbodManifest = vi.fn();
 const umbodHookArtifacts = vi.fn();

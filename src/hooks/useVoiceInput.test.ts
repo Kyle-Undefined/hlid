@@ -1,6 +1,8 @@
 // @vitest-environment jsdom
+
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { deferred } from "#/test/utils";
 
 vi.mock("#/lib/serverFns/voice", () => ({ getVoiceInfoFn: vi.fn() }));
 
@@ -69,14 +71,6 @@ afterEach(() => {
 });
 
 describe("useVoiceInput", () => {
-	function deferred<T>() {
-		let resolve!: (value: T) => void;
-		const promise = new Promise<T>((done) => {
-			resolve = done;
-		});
-		return { promise, resolve };
-	}
-
 	it("surfaces insecure/unavailable microphone access and can recover", async () => {
 		Object.defineProperty(navigator, "mediaDevices", {
 			value: undefined,

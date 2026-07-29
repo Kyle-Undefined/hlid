@@ -264,24 +264,28 @@ const TEXT_WRITE_THROTTLE_MS = 800;
 const LIVE_USAGE_REFRESH_MS = 5_000;
 const PROVIDER_HANDOFF_MAX_CHARS = 80_000;
 
-type RunQueryArgs = [
-	userMessage: string,
-	emit: (msg: ServerMessage) => void,
-	sessionId?: string,
-	skillContexts?: string | string[],
-	attachments?: ChatAttachment[],
-	agentCwd?: string,
-	turnId?: string,
-	planMode?: boolean,
-	planHtml?: boolean,
-	commandAction?: "review" | "computer-use" | "compact",
-	vaultReferences?: string[],
-	routineContext?: RoutinePermissionContext,
-	goalStart?: { objective: string; tokenBudget?: number | null },
-	workspaceReferences?: WorkspaceReferenceRequest[],
-	delegationContext?: string,
-	backgroundSession?: boolean,
-];
+export interface RunQueryOptions {
+	sessionId?: string;
+	skillContexts?: string | string[];
+	attachments?: ChatAttachment[];
+	agentCwd?: string;
+	turnId?: string;
+	planMode?: boolean;
+	planHtml?: boolean;
+	commandAction?: "review" | "computer-use" | "compact";
+	vaultReferences?: string[];
+	routineContext?: RoutinePermissionContext;
+	goalStart?: { objective: string; tokenBudget?: number | null };
+	workspaceReferences?: WorkspaceReferenceRequest[];
+	delegationContext?: string;
+	backgroundSession?: boolean;
+}
+
+type RunQueryArgs = {
+	userMessage: string;
+	emit: (msg: ServerMessage) => void;
+	options: RunQueryOptions;
+};
 
 export type CurrentDelegationHandoff = {
 	skillContexts: string[];
@@ -3327,8 +3331,15 @@ export class SessionManager {
 	 * drained (mirrors CLI behavior — typed-while-running messages are accepted
 	 * and processed at the next turn boundary).
 	 */
-	async runQuery(...args: RunQueryArgs): Promise<void> {
-		const completion = this.turnQueue.enqueue(args, args[6]);
+	async runQuery(
+		userMessage: string,
+		emit: (msg: ServerMessage) => void,
+		options: RunQueryOptions = {},
+	): Promise<void> {
+		const completion = this.turnQueue.enqueue(
+			{ userMessage, emit, options },
+			options.turnId,
+		);
 		if (!this.isDraining) void this.drainTurnQueue();
 		return completion;
 	}
@@ -3338,23 +3349,18 @@ export class SessionManager {
 	 * turn. Settings, commands, and new file roots retain turn boundaries.
 	 */
 	private queuedTurnSteeringBlocker(args: RunQueryArgs): string | null {
-		const [
-			,
-			,
+		const {
 			sessionId,
-			,
 			attachments,
 			agentCwd,
-			,
 			planMode,
 			planHtml,
 			commandAction,
-			,
 			routineContext,
 			goalStart,
 			workspaceReferences,
 			delegationContext,
-		] = args;
+		} = args.options;
 		if (this.state !== "running" || !this.currentTurnId) {
 			return "There is no active turn to steer.";
 		}
@@ -3428,7 +3434,8 @@ export class SessionManager {
 		safeVaultReferences: string[];
 		contextManifest: HlidTurnContextManifest;
 	}> {
-		const [userMessage, , , skillContexts, , , , , , , vaultReferences] = args;
+		const { userMessage } = args;
+		const { skillContexts, vaultReferences } = args.options;
 		const runtimeCwd =
 			this.agentMode === "cwd" && this.agentCwd
 				? this.agentCwd
@@ -3531,7 +3538,8 @@ export class SessionManager {
 			if (prepared.contextManifest.operatingBrief?.included) {
 				this.operatingBriefProviderKey = `${prepared.contextManifest.providerId}|${target.sessionId ?? "ephemeral"}`;
 			}
-			const [userMessage, , sessionId] = args;
+			const { userMessage } = args;
+			const { sessionId } = args.options;
 			await this.persistUserMessage(
 				sessionId,
 				userMessage,
@@ -3615,15 +3623,16 @@ export class SessionManager {
 		sessionId: string,
 		turnId: string,
 	): Promise<void> {
-		const args: RunQueryArgs = [
-			instruction,
+		const args: RunQueryArgs = {
+			userMessage: instruction,
 			emit,
-			sessionId,
-			undefined,
-			[],
-			this.agentCwd,
-			turnId,
-		];
+			options: {
+				sessionId,
+				attachments: [],
+				agentCwd: this.agentCwd,
+				turnId,
+			},
+		};
 		const target = this.captureActiveSteeringTarget(args);
 		const prepared = await this.buildQueuedSteeringPrompt(args);
 		this.assertActiveSteeringTarget(target);
@@ -3639,34 +3648,37 @@ export class SessionManager {
 	getQueueState(): QueueStateSnapshot {
 		const pendingTurns = this.turnQueue.pendingTurns().flatMap((turn) => {
 			const id = turn.turnId;
-			const sessionId = turn.args[2] ?? this.currentSessionId;
+			const o = turn.args.options;
+			const sessionId = o.sessionId ?? this.currentSessionId;
 			if (!id || !sessionId) return [];
 			return [
 				{
 					id,
-					text: turn.args[0],
+					text: turn.args.userMessage,
 					session_id: sessionId,
-					...(typeof turn.args[3] === "string"
-						? { skill_context: turn.args[3] }
-						: turn.args[3]?.length
-							? { skill_contexts: turn.args[3] }
+					...(typeof o.skillContexts === "string"
+						? { skill_context: o.skillContexts }
+						: o.skillContexts?.length
+							? { skill_contexts: o.skillContexts }
 							: {}),
-					...(turn.args[4] ? { attachments: turn.args[4] } : {}),
-					...(turn.args[5] ? { agent_cwd: turn.args[5] } : {}),
-					...(turn.args[7] !== undefined ? { plan_mode: turn.args[7] } : {}),
-					...(turn.args[8] !== undefined ? { plan_html: turn.args[8] } : {}),
-					...(turn.args[9] ? { command_action: turn.args[9] } : {}),
-					...(turn.args[10]?.length ? { vault_references: turn.args[10] } : {}),
-					steerable: this.queuedTurnSteeringBlocker(turn.args) === null,
-					...(turn.args[13]?.length
-						? { workspace_references: turn.args[13] }
+					...(o.attachments ? { attachments: o.attachments } : {}),
+					...(o.agentCwd ? { agent_cwd: o.agentCwd } : {}),
+					...(o.planMode !== undefined ? { plan_mode: o.planMode } : {}),
+					...(o.planHtml !== undefined ? { plan_html: o.planHtml } : {}),
+					...(o.commandAction ? { command_action: o.commandAction } : {}),
+					...(o.vaultReferences?.length
+						? { vault_references: o.vaultReferences }
 						: {}),
-					...(turn.args[12]
+					steerable: this.queuedTurnSteeringBlocker(turn.args) === null,
+					...(o.workspaceReferences?.length
+						? { workspace_references: o.workspaceReferences }
+						: {}),
+					...(o.goalStart
 						? {
 								goal: {
-									objective: turn.args[12].objective,
-									...(turn.args[12].tokenBudget !== undefined
-										? { token_budget: turn.args[12].tokenBudget }
+									objective: o.goalStart.objective,
+									...(o.goalStart.tokenBudget !== undefined
+										? { token_budget: o.goalStart.tokenBudget }
 										: {}),
 								},
 							}
@@ -3724,9 +3736,9 @@ export class SessionManager {
 				// cleanly. Per-turn errors are already signaled to the UI via the
 				// "error" event emitted from runOneTurn.
 				if (this.state === "error") this.state = "running";
-				lastEmit = next.args[1];
+				lastEmit = next.args.emit;
 				try {
-					await this.runOneTurn(...next.args);
+					await this.runOneTurn(next.args);
 					next.resolve();
 				} catch (err) {
 					next.reject(err instanceof Error ? err : new Error(String(err)));
@@ -4841,10 +4853,9 @@ export class SessionManager {
 		};
 	}
 
-	private async runOneTurn(...args: RunQueryArgs): Promise<void> {
-		const [
-			userMessage,
-			emit,
+	private async runOneTurn(args: RunQueryArgs): Promise<void> {
+		const { userMessage, emit } = args;
+		const {
 			sessionId,
 			skillContexts,
 			attachments,
@@ -4859,7 +4870,7 @@ export class SessionManager {
 			workspaceReferences,
 			delegationContext,
 			backgroundSession,
-		] = args;
+		} = args.options;
 		this.currentTurnId = turnId;
 		await this.initSessionContext(
 			sessionId,

@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { makeRequest } from "#/test/routeTestKit";
 import { createUpdateRequestHandlers } from "./updates";
 
 type Operations = Parameters<typeof createUpdateRequestHandlers>[0];
@@ -17,13 +18,8 @@ function operations(overrides: Partial<Operations> = {}): Operations {
 	} as Operations;
 }
 
-function post(action: unknown): Request {
-	return new Request("http://localhost/api/updates", {
-		method: "POST",
-		headers: { "content-type": "application/json" },
-		body: JSON.stringify({ action }),
-	});
-}
+const post = (action: unknown) =>
+	makeRequest("/api/updates", { method: "POST", json: { action } });
 
 describe("update request handlers", () => {
 	it("rejects forbidden requests before reading or mutating anything", async () => {

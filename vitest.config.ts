@@ -25,6 +25,10 @@ export default defineConfig({
 			exclude: [
 				"src/**/*.test.{ts,tsx}",
 				"src/**/*.bun.test.ts",
+				// Test-only helpers and vitest __mocks__ modules.
+				"src/test/**",
+				"src/**/__mocks__/**",
+				"src/**/*.test-utils.ts",
 				// Covered by the separate Bun test runner, which supports bun:sqlite.
 				"src/db/**",
 				// Generated or embedded artifacts are not authored coverage targets.

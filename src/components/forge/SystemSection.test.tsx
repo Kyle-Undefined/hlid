@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+
 import {
 	cleanup,
 	fireEvent,
@@ -7,6 +8,7 @@ import {
 	waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { jsonResponse } from "#/test/utils";
 import { SystemSection } from "./SystemSection";
 
 const serverFns = vi.hoisted(() => ({
@@ -34,14 +36,6 @@ afterEach(() => {
 	serverFns.getStorageStatsFn.mockClear();
 	serverFns.optimizeStorageFn.mockReset();
 });
-
-function jsonResponse(data: unknown, ok = true, status = 200) {
-	return {
-		ok,
-		status,
-		json: vi.fn().mockResolvedValue(data),
-	} as unknown as Response;
-}
 
 describe("SystemSection", () => {
 	it("loads lifecycle state and performs install, folder, and shutdown actions", async () => {

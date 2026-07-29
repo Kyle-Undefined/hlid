@@ -5,12 +5,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HlidConfigSchema } from "#/config";
 import { writeConfig } from "#/lib/config-writer";
 import { dbFetch } from "#/lib/dbClient";
+import { makeRequest } from "#/test/routeTestKit";
 import { handleGetConfig, handlePostConfig } from "./config";
 
-vi.mock("#/server/config", () => ({ loadConfig: vi.fn() }));
-vi.mock("#/lib/originGate", () => ({ forbiddenResponse: vi.fn(() => null) }));
+vi.mock("#/server/config");
+vi.mock("#/lib/originGate");
 vi.mock("#/lib/config-writer", () => ({ writeConfig: vi.fn() }));
-vi.mock("#/lib/dbClient", () => ({ dbFetch: vi.fn() }));
+vi.mock("#/lib/dbClient");
 vi.mock("node:fs/promises", () => ({ stat: vi.fn() }));
 
 const { loadConfig } = await import("#/server/config");
@@ -19,17 +20,9 @@ const { forbiddenResponse } = await import("#/lib/originGate");
 const mockLoadConfig = vi.mocked(loadConfig);
 const mockForbiddenResponse = vi.mocked(forbiddenResponse);
 
-function makeRequest(url = "http://localhost/api/config"): Request {
-	return new Request(url, { method: "GET" });
-}
-
-function post(body: unknown): Request {
-	return new Request("http://localhost/api/config", {
-		method: "POST",
-		headers: { "content-type": "application/json" },
-		body: JSON.stringify(body),
-	});
-}
+const get = () => makeRequest("/api/config");
+const post = (body: unknown) =>
+	makeRequest("/api/config", { method: "POST", json: body });
 
 describe("GET /api/config — handleGetConfig", () => {
 	beforeEach(() => {
@@ -44,7 +37,7 @@ describe("GET /api/config — handleGetConfig", () => {
 			server: { port: 3000 },
 		});
 		mockLoadConfig.mockReturnValue(config);
-		const res = await handleGetConfig(makeRequest());
+		const res = await handleGetConfig(get());
 		expect(res.status).toBe(200);
 		expect(await res.json()).toEqual(config);
 	});
@@ -52,7 +45,7 @@ describe("GET /api/config — handleGetConfig", () => {
 	it("returns forbidden response when origin is blocked", async () => {
 		const forbidden = new Response("Forbidden", { status: 403 });
 		mockForbiddenResponse.mockReturnValue(forbidden);
-		const res = await handleGetConfig(makeRequest());
+		const res = await handleGetConfig(get());
 		expect(res.status).toBe(403);
 	});
 });
@@ -86,7 +79,7 @@ describe("POST /api/config — handlePostConfig", () => {
 			},
 		});
 		mockLoadConfig.mockReturnValue(current);
-		const getResponse = await handleGetConfig(makeRequest());
+		const getResponse = await handleGetConfig(get());
 		const publicValue = (await getResponse.json()) as typeof current;
 		expect(publicValue.cliproxy.api_key).toBe("__HLID_SECRET_SET__");
 

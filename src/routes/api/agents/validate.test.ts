@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { makeRequest } from "#/test/routeTestKit";
 import { handleValidateAgentPath } from "./validate";
 
-vi.mock("#/server/config", () => ({ loadConfig: vi.fn() }));
-vi.mock("#/lib/originGate", () => ({ forbiddenResponse: vi.fn(() => null) }));
+vi.mock("#/server/config");
+vi.mock("#/lib/originGate");
 vi.mock("node:fs", () => ({ existsSync: vi.fn(() => false) }));
 
 const { loadConfig } = await import("#/server/config");
@@ -13,11 +14,8 @@ const mockLoadConfig = vi.mocked(loadConfig);
 const mockForbiddenResponse = vi.mocked(forbiddenResponse);
 const mockExistsSync = vi.mocked(existsSync);
 
-function getReq(path?: string): Request {
-	const url = new URL("http://localhost/api/agents/validate");
-	if (path) url.searchParams.set("path", path);
-	return new Request(url, { method: "GET" });
-}
+const getReq = (path?: string) =>
+	makeRequest("/api/agents/validate", path ? { params: { path } } : {});
 
 beforeEach(() => {
 	vi.resetAllMocks();

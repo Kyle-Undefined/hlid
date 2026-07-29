@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { makeRequest } from "#/test/routeTestKit";
 import { handleGetClaudeMd } from "./claudemd";
 
-vi.mock("#/server/config", () => ({ loadConfig: vi.fn() }));
-vi.mock("#/lib/originGate", () => ({ forbiddenResponse: vi.fn(() => null) }));
+vi.mock("#/server/config");
+vi.mock("#/lib/originGate");
 vi.mock("#/lib/agentMcp", () => ({ validateAgentPath: vi.fn() }));
 vi.mock("#/lib/agentInstructions", () => ({
 	readAgentInstructions: vi.fn(() => null),
@@ -20,11 +21,8 @@ const mockReadAgentInstructions = vi.mocked(readAgentInstructions);
 
 const AGENT_PATH = "/agents/my-agent";
 
-function getReq(path?: string): Request {
-	const url = new URL("http://localhost/api/agents/claudemd");
-	if (path) url.searchParams.set("path", path);
-	return new Request(url, { method: "GET" });
-}
+const getReq = (path?: string) =>
+	makeRequest("/api/agents/claudemd", path ? { params: { path } } : {});
 
 beforeEach(() => {
 	vi.resetAllMocks();

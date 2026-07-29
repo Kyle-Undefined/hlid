@@ -1,9 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { makeRequest } from "#/test/routeTestKit";
 
 vi.mock("@tanstack/react-start/server", () => ({
 	getRequestIP: vi.fn(() => "127.0.0.1"),
 }));
-vi.mock("#/lib/originGate", () => ({ forbiddenResponse: vi.fn(() => null) }));
+vi.mock("#/lib/originGate");
 vi.mock("#/lib/token", () => ({ loadToken: vi.fn(() => null) }));
 vi.mock("#/server/config", () => ({
 	loadConfig: vi.fn(() => ({ ui: { theme: "dark", mobile_theme: "dark" } })),
@@ -46,10 +47,9 @@ const handlers = (
 
 function post(action: string, body?: unknown): Promise<Response> {
 	return handlers.POST({
-		request: new Request(`http://localhost/api/auth/${action}`, {
+		request: makeRequest(`/api/auth/${action}`, {
 			method: "POST",
-			headers: { "content-type": "application/json" },
-			body: JSON.stringify(body ?? {}),
+			json: body ?? {},
 		}),
 		params: { action },
 	});

@@ -8,6 +8,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { deferred } from "#/test/utils";
 import { DEFAULT_VOICE_CONFIG } from "../config";
 import {
 	parseVoiceRuntimeDiagnostics,
@@ -23,14 +24,6 @@ function wavBlob(payloadBytes: number, bytesPerSecond = 16_000): Blob {
 	view.setUint32(8, 0x57415645, false);
 	view.setUint32(28, bytesPerSecond, true);
 	return new Blob([bytes], { type: "audio/wav" });
-}
-
-function deferred<T>() {
-	let resolve!: (value: T) => void;
-	const promise = new Promise<T>((done) => {
-		resolve = done;
-	});
-	return { promise, resolve };
 }
 
 function fakeProcess(stderr?: string) {

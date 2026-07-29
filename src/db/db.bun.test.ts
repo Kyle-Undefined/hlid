@@ -3,7 +3,8 @@
  * Requires Bun runtime (uses bun:sqlite).
  * Run with: bun test src/db/
  */
-import { Database } from "bun:sqlite";
+
+import type { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, it } from "bun:test";
 import {
 	ANALYTICS_SCOPES,
@@ -19,6 +20,7 @@ import {
 	listAttachments,
 	promoteAttachmentToVault,
 } from "./attachments";
+import { freshDb } from "./db.test-utils";
 import {
 	createHlidDelegation,
 	updateHlidDelegationCost,
@@ -97,12 +99,6 @@ import {
 	getWeeklyStats,
 	registerProvider,
 } from "./usage";
-
-function freshDb(): Database {
-	const db = new Database(":memory:");
-	setDbForTest(db);
-	return db;
-}
 
 function baseQuery(overrides: Partial<QueryData> = {}): QueryData {
 	return {
