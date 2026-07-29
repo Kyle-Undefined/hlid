@@ -10,6 +10,13 @@
 // from a non-canonical execPath.
 import { appendFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { normalizeWindowsPathEnvCasing } from "../lib/windowsEnv";
+
+// Parents that launch us with an uppercase "PATH" env key (Claude Desktop's
+// MCP spawner) break Bun's spawning of *.com executables — including the
+// Obsidian CLI shim. Normalize to native "Path" casing before anything else
+// spawns a child. See src/lib/windowsEnv.ts for the full story.
+normalizeWindowsPathEnvCasing(process.env);
 
 if (process.execPath.endsWith(".exe")) {
 	const authReset = process.argv[2] === "auth" && process.argv[3] === "reset";
